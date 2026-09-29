@@ -1,0 +1,343 @@
+﻿unit NES.Controller;
+
+interface
+
+uses
+  NES.State, NES.Types;
+
+{$SCOPEDENUMS ON}
+
+type
+  TNesButton = (A, B, Select, Start, Up, Down, Left, Right);
+
+  TNesButtons = set of TNesButton;
+
+  TKeyMap = record
+    A, B, Select, Start, Up, Down, Left, Right: UInt32;
+  end;
+
+{$SCOPEDENUMS OFF}
+  TSuborKey = (
+    SkA, SkB, SkC, SkD, SkE, SkF, SkG, SkH, SkI, SkJ, SkK, SkL, SkM,
+    SkN, SkO, SkP, SkQ, SkR, SkS, SkT, SkU, SkV, SkW, SkX, SkY, SkZ,
+    SkNum0, SkNum1, SkNum2, SkNum3, SkNum4, SkNum5, SkNum6, SkNum7, SkNum8, SkNum9,
+    SkF1, SkF2, SkF3, SkF4, SkF5, SkF6, SkF7, SkF8, SkF9, SkF10, SkF11, SkF12,
+    SkNumpad0, SkNumpad1, SkNumpad2, SkNumpad3, SkNumpad4, SkNumpad5, SkNumpad6,
+    SkNumpad7, SkNumpad8, SkNumpad9, SkNumpadEnter, SkNumpadDot, SkNumpadPlus,
+    SkNumpadMultiply, SkNumpadDivide, SkNumpadMinus, SkNumLock, SkComma, SkDot,
+    SkSemiColon, SkApostrophe, SkSlash, SkBackslash, SkEqual, SkMinus, SkGrave,
+    SkLeftBracket, SkRightBracket, SkCapsLock, SkPause, SkCtrl, SkShift, SkAlt,
+    SkSpace, SkBackspace, SkTab, SkEsc, SkEnter, SkEnd, SkHome, SkIns, SkDelete,
+    SkPageUp, SkPageDown, SkUp, SkDown, SkLeft, SkRight, SkUnknown1, SkUnknown2,
+    SkUnknown3, SkNone);
+{$SCOPEDENUMS ON}
+
+  TSuborKeys = set of TSuborKey;
+
+  // Famicom expansion-port keyboard used by Subor educational computers.
+  TSuborKeyboard = class
+  private
+    FHostKeys: TSuborKeys;
+    FScreenKeys: TSuborKeys;
+    FRow, FColumn: Byte;
+    FEnabled, FConnected, FStrobe: Boolean;
+    function HostKey(Code: UInt32): TSuborKey;
+    function ActiveKeys: Byte;
+  public
+    procedure SerializeState(State: TNesStateArchive);
+    procedure Reset;
+    procedure SetHostKey(Code: UInt32; Pressed: Boolean);
+    procedure SetScreenKeys(const Keys: TSuborKeys);
+    procedure Write(Value: UInt8);
+    function Read: UInt8;
+    procedure Clear;
+    property Connected: Boolean read FConnected write FConnected;
+  end;
+
+  TController = class
+  private
+    FState: UInt8;
+    FShift: UInt8;
+    FStrobe: Boolean;
+    FPowerPadEnabled: Boolean;
+    FPowerPadState: UInt16;
+    FPowerPadLowShift: UInt8;
+    FPowerPadHighShift: UInt8;
+    procedure Latch;
+  public
+    procedure SerializeState(State: TNesStateArchive);
+    procedure SetButton(Button: TNesButton; Pressed: Boolean);
+    procedure SetPowerPadButton(Button: Integer; Pressed: Boolean);
+    procedure Write(Value: UInt8);
+    function Read: UInt8;
+    property PowerPadEnabled: Boolean read FPowerPadEnabled write FPowerPadEnabled;
+  end;
+
+implementation
+
+procedure TSuborKeyboard.SerializeState(State: TNesStateArchive);
+begin
+  State.Field(FHostKeys, SizeOf(FHostKeys));
+  State.Field(FScreenKeys, SizeOf(FScreenKeys));
+  State.Field(FRow, SizeOf(FRow));
+  State.Field(FColumn, SizeOf(FColumn));
+  State.Field(FEnabled, SizeOf(FEnabled));
+  State.Field(FConnected, SizeOf(FConnected));
+  State.Field(FStrobe, SizeOf(FStrobe));
+end;
+
+procedure TSuborKeyboard.Reset;
+begin
+  FRow := 0;
+  FColumn := 0;
+  FEnabled := False;
+  FStrobe := False;
+end;
+
+procedure TSuborKeyboard.Clear;
+begin
+  FHostKeys := [];
+  FScreenKeys := [];
+end;
+
+function TSuborKeyboard.HostKey(Code: UInt32): TSuborKey;
+begin
+  Result := SkNone;
+  if (Code >= Ord('A')) and (Code <= Ord('Z')) then
+    Exit(TSuborKey(Ord(SkA) + Integer(Code) - Ord('A')));
+  if (Code >= Ord('0')) and (Code <= Ord('9')) then
+    Exit(TSuborKey(Ord(SkNum0) + Integer(Code) - Ord('0')));
+  if (Code >= $70) and (Code <= $7B) then
+    Exit(TSuborKey(Ord(SkF1) + Integer(Code) - $70));
+  if (Code >= $60) and (Code <= $69) then
+    Exit(TSuborKey(Ord(SkNumpad0) + Integer(Code) - $60));
+  case Code of
+    8:
+      Result := SkBackspace;
+    9:
+      Result := SkTab;
+    13:
+      Result := SkEnter;
+    16:
+      Result := SkShift;
+    17:
+      Result := SkCtrl;
+    18:
+      Result := SkAlt;
+    19:
+      Result := SkPause;
+    20:
+      Result := SkCapsLock;
+    27:
+      Result := SkEsc;
+    32:
+      Result := SkSpace;
+    33:
+      Result := SkPageUp;
+    34:
+      Result := SkPageDown;
+    35:
+      Result := SkEnd;
+    36:
+      Result := SkHome;
+    37:
+      Result := SkLeft;
+    38:
+      Result := SkUp;
+    39:
+      Result := SkRight;
+    40:
+      Result := SkDown;
+    45:
+      Result := SkIns;
+    46:
+      Result := SkDelete;
+    106:
+      Result := SkNumpadMultiply;
+    107:
+      Result := SkNumpadPlus;
+    109:
+      Result := SkNumpadMinus;
+    110:
+      Result := SkNumpadDot;
+    111:
+      Result := SkNumpadDivide;
+    144:
+      Result := SkNumLock;
+    186:
+      Result := SkSemiColon;
+    187:
+      Result := SkEqual;
+    188:
+      Result := SkComma;
+    189:
+      Result := SkMinus;
+    190:
+      Result := SkDot;
+    191:
+      Result := SkSlash;
+    192:
+      Result := SkGrave;
+    219:
+      Result := SkLeftBracket;
+    220:
+      Result := SkBackslash;
+    221:
+      Result := SkRightBracket;
+    222:
+      Result := SkApostrophe;
+  end;
+end;
+
+procedure TSuborKeyboard.SetHostKey(Code: UInt32; Pressed: Boolean);
+begin
+  var Key := HostKey(Code);
+  if Key = SkNone then
+    Exit;
+  if Pressed then
+    Include(FHostKeys, Key)
+  else
+    Exclude(FHostKeys, Key);
+end;
+
+procedure TSuborKeyboard.SetScreenKeys(const Keys: TSuborKeys);
+begin
+  FScreenKeys := Keys;
+end;
+
+function TSuborKeyboard.ActiveKeys: Byte;
+const
+  MATRIX: array[0..12, 0..7] of TSuborKey = (
+    (SkNum4, SkG, SkF, SkC, SkF2, SkE, SkNum5, SkV),
+    (SkNum2, SkD, SkS, SkEnd, SkF1, SkW, SkNum3, SkX),
+    (SkIns, SkBackspace, SkPageDown, SkRight, SkF8, SkPageUp, SkDelete, SkHome),
+    (SkNum9, SkI, SkL, SkComma, SkF5, SkO, SkNum0, SkDot),
+    (SkRightBracket, SkEnter, SkUp, SkLeft, SkF7, SkLeftBracket, SkBackslash, SkDown),
+    (SkQ, SkCapsLock, SkZ, SkTab, SkEsc, SkA, SkNum1, SkCtrl),
+    (SkNum7, SkY, SkK, SkM, SkF4, SkU, SkNum8, SkJ),
+    (SkMinus, SkSemiColon, SkApostrophe, SkSlash, SkF6, SkP, SkEqual, SkShift),
+    (SkT, SkH, SkN, SkSpace, SkF3, SkR, SkNum6, SkB),
+    (SkNumpad6, SkNumpadEnter, SkNumpad4, SkNumpad8, SkNone, SkUnknown1, SkUnknown2, SkUnknown3),
+    (SkAlt, SkNumpad4, SkNumpad7, SkF11, SkF12, SkNumpad1, SkNumpad2, SkNumpad8),
+    (SkNumpadMinus, SkNumpadPlus, SkNumpadMultiply, SkNumpad9, SkF10, SkNumpad5, SkNumpadDivide, SkNumLock),
+    (SkGrave, SkNumpad6, SkPause, SkSpace, SkF9, SkNumpad3, SkNumpadDot, SkNumpad0));
+begin
+  Result := 0;
+  var Keys := FHostKeys + FScreenKeys;
+  var Base := FColumn * 4;
+  for var i := 0 to 3 do
+    if MATRIX[FRow, Base + i] in Keys then
+      Result := Result or (1 shl i);
+  if (FRow = 9) and (FColumn = 1) then
+    Result := Result or 1;
+end;
+
+procedure TSuborKeyboard.Write(Value: UInt8);
+begin
+  if not FConnected then
+    Exit;
+  var NewStrobe := (Value and 1) <> 0;
+  // A falling strobe latches a new matrix scan, starting at row zero.  Without
+  // this reset, a new query can resume in an old row and look like a held key.
+  if FStrobe and not NewStrobe then
+  begin
+    FRow := 0;
+    FColumn := 0;
+  end;
+  FStrobe := NewStrobe;
+  var PreviousColumn := FColumn;
+  FColumn := (Value shr 1) and 1;
+  FEnabled := (Value and 4) <> 0;
+  if FEnabled and (FColumn = 0) and (PreviousColumn = 1) then
+    FRow := (FRow + 1) mod 13;
+end;
+
+function TSuborKeyboard.Read: UInt8;
+begin
+  if not FConnected then
+    Exit(0);
+  if not FEnabled then
+    Exit($1E);
+  Result := (not (ActiveKeys shl 1)) and $1E;
+end;
+
+procedure TController.SerializeState(State: TNesStateArchive);
+begin
+  State.Field(FState, SizeOf(FState));
+  State.Field(FShift, SizeOf(FShift));
+  State.Field(FStrobe, SizeOf(FStrobe));
+  State.Field(FPowerPadEnabled, SizeOf(FPowerPadEnabled));
+  State.Field(FPowerPadState, SizeOf(FPowerPadState));
+  State.Field(FPowerPadLowShift, SizeOf(FPowerPadLowShift));
+  State.Field(FPowerPadHighShift, SizeOf(FPowerPadHighShift));
+end;
+
+procedure TController.Latch;
+const
+  LOW_BUTTONS: array[0..7] of Integer = (2, 1, 5, 9, 6, 10, 11, 7);
+  HIGH_BUTTONS: array[0..3] of Integer = (4, 3, 12, 8);
+begin
+  FShift := FState;
+  FPowerPadLowShift := 0;
+  FPowerPadHighShift := $F0;
+  for var i := 0 to High(LOW_BUTTONS) do
+    if (FPowerPadState and (UInt16(1) shl (LOW_BUTTONS[i] - 1))) <> 0 then
+      FPowerPadLowShift := FPowerPadLowShift or (UInt8(1) shl i);
+  for var i := 0 to High(HIGH_BUTTONS) do
+    if (FPowerPadState and (UInt16(1) shl (HIGH_BUTTONS[i] - 1))) <> 0 then
+      FPowerPadHighShift := FPowerPadHighShift or (UInt8(1) shl i);
+end;
+
+procedure TController.SetButton(Button: TNesButton; Pressed: Boolean);
+const
+  MASKS: array[TNesButton] of UInt8 = ($01, $02, $04, $08, $10, $20, $40, $80);
+begin
+  if Pressed then
+    FState := FState or MASKS[Button]
+  else
+    FState := FState and not MASKS[Button];
+
+  if FStrobe then
+    Latch;
+end;
+
+procedure TController.SetPowerPadButton(Button: Integer; Pressed: Boolean);
+begin
+  if (Button < 1) or (Button > 12) then
+    Exit;
+  var Mask := UInt16(1) shl (Button - 1);
+  if Pressed then
+    FPowerPadState := FPowerPadState or Mask
+  else
+    FPowerPadState := FPowerPadState and not Mask;
+  if FStrobe then
+    Latch;
+end;
+
+procedure TController.Write(Value: UInt8);
+begin
+  var NewStrobe: Boolean := (Value and 1) <> 0;
+  if FStrobe and not NewStrobe then
+    Latch;
+  FStrobe := NewStrobe;
+  if FStrobe then
+    Latch;
+end;
+
+function TController.Read: UInt8;
+begin
+  if FStrobe then
+    Latch;
+  Result := FShift and 1;
+  FShift := (FShift shr 1) or $80;
+  if FPowerPadEnabled then
+  begin
+    Result := Result or ((FPowerPadLowShift and 1) shl 3)
+      or ((FPowerPadHighShift and 1) shl 4);
+    FPowerPadLowShift := (FPowerPadLowShift shr 1) or $80;
+    FPowerPadHighShift := (FPowerPadHighShift shr 1) or $80;
+  end;
+end;
+
+end.
+

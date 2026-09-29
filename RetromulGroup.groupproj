@@ -1,0 +1,48 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{D1D610E6-27EB-415C-851B-6ACE1A335D30}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="fmx\RetroMul.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="term\RetromulTerm.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="RetroMul">
+        <MSBuild Projects="fmx\RetroMul.dproj"/>
+    </Target>
+    <Target Name="RetroMul:Clean">
+        <MSBuild Projects="fmx\RetroMul.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="RetroMul:Make">
+        <MSBuild Projects="fmx\RetroMul.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="RetromulTerm">
+        <MSBuild Projects="term\RetromulTerm.dproj"/>
+    </Target>
+    <Target Name="RetromulTerm:Clean">
+        <MSBuild Projects="term\RetromulTerm.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="RetromulTerm:Make">
+        <MSBuild Projects="term\RetromulTerm.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="RetroMul;RetromulTerm"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="RetroMul:Clean;RetromulTerm:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="RetroMul:Make;RetromulTerm:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>

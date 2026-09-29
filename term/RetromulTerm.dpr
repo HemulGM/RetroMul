@@ -89,7 +89,7 @@ end;
 begin
   TRetromulTerminal.Initialize;
   try
-    TRetromulTerminal.SetTitle('Retromul');
+    TRetromulTerminal.SetTitle('RetroMul');
     TRetromulTerminal.Clear;
     var RomName := ParamStr(1);
     {$IFDEF DEBUG}

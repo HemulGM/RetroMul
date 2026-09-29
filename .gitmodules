@@ -1,0 +1,6 @@
+[submodule "fmx/DelphiWinUI3"]
+	path = fmx/DelphiWinUI3
+	url = https://github.com/HemulGM/DelphiWinUI3
+[submodule "source/pcm"]
+	path = source/pcm
+	url = https://github.com/HemulGM/PCMAudio

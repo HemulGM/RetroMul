@@ -54,7 +54,7 @@ type
 implementation
 
 uses
-  NES.RomMetadata, NES.Mapper.Factory, NES.SavePaths, System.Hash,
+  NES.RomMetadata, NES.Mapper.Factory, Core.SavePaths, System.Hash,
   System.IOUtils
   {$IFDEF MSWINDOWS}, Winapi.Windows{$ENDIF}
   {$IFDEF POSIX}, Posix.Stdio, Posix.Unistd{$ENDIF};

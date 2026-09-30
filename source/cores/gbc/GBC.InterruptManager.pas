@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils;
+  Core.Snapshots, System.Classes, System.SysUtils;
 
 type
   TGBCInterrupt = record
@@ -48,6 +48,7 @@ type
 
     class procedure ReleaseInstance;
     class property Instance: TGBCInterruptManager read GetInstance;
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
@@ -183,5 +184,17 @@ begin
   FreeAndNil(FInstance);
 end;
 
-end.
 
+procedure TGBCInterruptManager.SerializeState(State: TStateArchive);
+begin
+  State.Field(FMasterEnabled, SizeOf(FMasterEnabled));
+  State.Field(FEnableRegisterUpperBits, SizeOf(FEnableRegisterUpperBits));
+  State.Field(FFlagRegisterUpperBits, SizeOf(FFlagRegisterUpperBits));
+  for var I := 0 to High(FInterrupts) do
+  begin
+    State.Field(FInterrupts[I].IsRaised, SizeOf(Boolean));
+    State.Field(FInterrupts[I].IsEnabled, SizeOf(Boolean));
+  end;
+end;
+
+end.

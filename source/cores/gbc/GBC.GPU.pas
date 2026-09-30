@@ -3,7 +3,7 @@
 interface
 
 uses
-  GBC.InterruptManager;
+  Core.Snapshots, System.Classes, GBC.InterruptManager;
 
 {$SCOPEDENUMS ON}
 
@@ -128,6 +128,7 @@ type
     procedure WriteCGBPalette(Address: Integer; Value: Byte);
 
     constructor Create(Callback: TDrawCallback); reintroduce;
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
@@ -814,6 +815,57 @@ begin
     var Value := Tmp1 or Tmp2;
     TileSet[FVBK and 1][Tile][Y][I] := Value;
   end;
+end;
+
+
+procedure TGBCGPU.SerializeState(State: TStateArchive);
+begin
+  State.Field(FCurrentMode, SizeOf(FCurrentMode));
+  State.Field(FMode3Cycles, SizeOf(FMode3Cycles));
+  State.Field(FWindowLine, SizeOf(FWindowLine));
+  State.Field(FWindowTriggered, SizeOf(FWindowTriggered));
+  State.Field(FSTATLineActive, SizeOf(FSTATLineActive));
+  State.Field(FLYCInterruptEnabled, SizeOf(FLYCInterruptEnabled));
+  State.Field(FOAMInterruptEnabled, SizeOf(FOAMInterruptEnabled));
+  State.Field(FVBlankInterruptEnabled, SizeOf(FVBlankInterruptEnabled));
+  State.Field(FHBlankInterruptEnabled, SizeOf(FHBlankInterruptEnabled));
+  State.Field(FLineMatchesLYC, SizeOf(FLineMatchesLYC));
+  State.Field(FLCDEnabled, SizeOf(FLCDEnabled));
+  State.Field(FWindowTileMapHigh, SizeOf(FWindowTileMapHigh));
+  State.Field(FWindowEnabled, SizeOf(FWindowEnabled));
+  State.Field(FUnsignedTileData, SizeOf(FUnsignedTileData));
+  State.Field(FBackgroundTileMapHigh, SizeOf(FBackgroundTileMapHigh));
+  State.Field(FTallSprites, SizeOf(FTallSprites));
+  State.Field(FSpritesEnabled, SizeOf(FSpritesEnabled));
+  State.Field(FBackgroundEnabled, SizeOf(FBackgroundEnabled));
+  State.Field(FCGBMode, SizeOf(FCGBMode));
+  State.Field(FVBK, SizeOf(FVBK));
+  State.Field(FBGPaletteIndex, SizeOf(FBGPaletteIndex));
+  State.Field(FOBJPaletteIndex, SizeOf(FOBJPaletteIndex));
+  State.Field(FBGPaletteRAM, SizeOf(FBGPaletteRAM));
+  State.Field(FOBJPaletteRAM, SizeOf(FOBJPaletteRAM));
+  State.Field(FColorIndexBuffer, SizeOf(FColorIndexBuffer));
+  State.Field(FPaletteIndexBuffer, SizeOf(FPaletteIndexBuffer));
+  State.Field(FObjectPixelBuffer, SizeOf(FObjectPixelBuffer));
+  State.Field(FDisplayVRAM, SizeOf(FDisplayVRAM));
+  State.Field(FDisplayVRAMBank1, SizeOf(FDisplayVRAMBank1));
+  State.Field(ModeClock, SizeOf(ModeClock));
+  State.Field(Width, SizeOf(Width));
+  State.Field(Height, SizeOf(Height));
+  State.Field(Line, SizeOf(Line));
+  State.Field(LYC, SizeOf(LYC));
+  State.Field(ScrollX, SizeOf(ScrollX));
+  State.Field(ScrollY, SizeOf(ScrollY));
+  State.Field(WindowX, SizeOf(WindowX));
+  State.Field(WindowY, SizeOf(WindowY));
+  State.Field(VRAM, SizeOf(VRAM));
+  State.Field(VRAMBank1, SizeOf(VRAMBank1));
+  State.Field(TileSet, SizeOf(TileSet));
+  State.Field(Screen, SizeOf(Screen));
+  State.Field(BackgroundPalette, SizeOf(BackgroundPalette));
+  State.Field(SpritePalette, SizeOf(SpritePalette));
+  State.Field(Palette, SizeOf(Palette));
+  State.Field(SpriteList, SizeOf(SpriteList));
 end;
 
 end.

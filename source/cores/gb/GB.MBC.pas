@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, GB.ROM;
+  Core.Snapshots, System.Classes, System.SysUtils, GB.ROM;
 
 {$SCOPEDENUMS ON}
 
@@ -26,6 +26,7 @@ type
     function MbcRead(Address: Integer): Integer;
     procedure MbcWrite(Address, Value: Integer);
     constructor Create(AROM: TGBROM); overload;
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
@@ -263,5 +264,18 @@ begin
   end;
 end;
 
-end.
 
+procedure TGBMBC.SerializeState(State: TStateArchive);
+begin
+  State.Field(FRAMEnabled, SizeOf(FRAMEnabled));
+  State.Field(FHasRAM, SizeOf(FHasRAM));
+  State.Field(FIsROMMode, SizeOf(FIsROMMode));
+  if Length(FRAM) > 0 then State.Field(FRAM[0], Length(FRAM) * SizeOf(FRAM[0]));
+  State.Field(FBankLow, SizeOf(FBankLow));
+  State.Field(FBankHigh, SizeOf(FBankHigh));
+  State.Field(FROMBankCount, SizeOf(FROMBankCount));
+  State.Field(ROMBankSelected, SizeOf(ROMBankSelected));
+  State.Field(RAMBankSelected, SizeOf(RAMBankSelected));
+end;
+
+end.

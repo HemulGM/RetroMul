@@ -24,6 +24,7 @@ type
   private
     FThread: TMDWorker;
     FData: TBytes;
+    FSnapshotDirectory: string;
     FSavePath, FError: string;
     FConfig: IEmulatorConfig;
     FKeys: TMDKeyMap;
@@ -102,6 +103,8 @@ begin
   Hash := THashSHA2.Create;
   Hash.Update(FData);
   FSavePath := TPath.Combine(FSavePath, 'MD-' + Hash.HashAsString + '.sav');
+  FSnapshotDirectory := ResolveGameSavePath(GetSnapshotDirectory, FileName,
+    'MD-' + Hash.HashAsString, '');
 end;
 
 destructor TMDCoreAdapter.Destroy;
@@ -122,6 +125,7 @@ begin
   if FThread <> nil then
     Exit;
   FThread := TMDWorker.Create(FData, FSavePath);
+  FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplySettings;
   FThread.Start;
 end;
@@ -218,7 +222,7 @@ end;
 
 function TMDCoreAdapter.GetSupportsSnapshots: Boolean;
 begin
-  Result := False;
+  Result := True;
 end;
 
 function TMDCoreAdapter.GetUsesSuborKeyboard: Boolean;
@@ -233,12 +237,14 @@ end;
 
 procedure TMDCoreAdapter.SaveSnapshot(const Name: string);
 begin
-  raise ENotSupportedException.Create('Mega Drive snapshots are not implemented');
+  if FThread = nil then raise EInvalidOpException.Create('Emulation worker is not running');
+  FThread.SaveSnapshot(Name);
 end;
 
 procedure TMDCoreAdapter.LoadSnapshot(const Name: string);
 begin
-  raise ENotSupportedException.Create('Mega Drive snapshots are not implemented');
+  if FThread = nil then raise EInvalidOpException.Create('Emulation worker is not running');
+  FThread.LoadSnapshot(Name);
 end;
 
 end.

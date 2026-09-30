@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs, Core.Emulation, MD.Console;
+  Core.Snapshots, System.SysUtils, System.Classes, System.SyncObjs, Core.Emulation, MD.Console;
 
 const
   MD_SAMPLE_RATE = 44100;
@@ -13,6 +13,8 @@ const
 type
   TMDWorker = class(TThread)
   private
+    FSnapshots: TSnapshotQueue;
+    FSnapshotDirectory: string;
     FLock: TCriticalSection;
     FWake: TEvent;
     FData: TBytes;
@@ -31,6 +33,9 @@ type
     destructor Destroy; override;
     procedure WakeSetEvent;
     procedure Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single);
+    procedure SaveSnapshot(const Name: string);
+    procedure LoadSnapshot(const Name: string);
+    property SnapshotDirectory: string read FSnapshotDirectory write FSnapshotDirectory;
     procedure RequestReset;
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
     function TakeError: string;
@@ -47,6 +52,7 @@ constructor TMDWorker.Create(const Data: TBytes; const SavePath: string);
 begin
   inherited Create(True);
   FreeOnTerminate := False;
+  FSnapshots := TSnapshotQueue.Create;
   FLock := TCriticalSection.Create;
   FWake := TEvent.Create(nil, False, False, '');
   FData := Copy(Data);
@@ -59,6 +65,7 @@ begin
   if FWake <> nil then
     FWake.SetEvent;
   inherited Destroy;
+  FSnapshots.Free;
   FWake.Free;
   FLock.Free;
 end;
@@ -74,6 +81,16 @@ begin
   finally
     FLock.Release;
   end;
+end;
+
+procedure TMDWorker.SaveSnapshot(const Name: string);
+begin
+  FSnapshots.Execute(Self, Name, False);
+end;
+
+procedure TMDWorker.LoadSnapshot(const Name: string);
+begin
+  FSnapshots.Execute(Self, Name, True);
 end;
 
 procedure TMDWorker.RequestReset;
@@ -150,18 +167,12 @@ procedure TMDWorker.Execute;
         end;
     if Unchanged then
       Exit;
-    ForceDirectories(ExtractFilePath(FSavePath));
-    var TempName := FSavePath + '.' + TGUID.NewGuid.ToString + '.tmp';
+    var Stream := TBytesStream.Create(Data);
     try
-      TFile.WriteAllBytes(TempName, Data);
-      if TFile.Exists(FSavePath) then
-        TFile.Replace(TempName, FSavePath, '')
-      else
-        TFile.Move(TempName, FSavePath);
+      SaveStreamAtomically(Stream, FSavePath);
       LastBattery := Data;
     finally
-      if TFile.Exists(TempName) then
-        TFile.Delete(TempName);
+      Stream.Free;
     end;
   end;
 
@@ -197,6 +208,43 @@ begin
       WasEnabled := False;
       while not Terminated do
       begin
+        FSnapshots.Process(
+          procedure(const Name: string; Loading: Boolean)
+          begin
+            var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
+            var Transfer: TStateTransfer := procedure(State: TStateArchive)
+            begin
+              Console.SerializeState(State);
+            end;
+            if Loading then
+            begin
+              LoadCoreSnapshot(Path, 'MD', FData, Transfer);
+              Console.MarkBatteryDirty;
+              if Audio <> nil then Audio.Clear;
+              Frame.Width := Console.Width;
+              Frame.Height := Console.Height;
+              Frame.FrameNumber := Console.FrameNumber;
+              Frame.FramesPerSecond := Console.FramesPerSecond;
+              Frame.Pixels := nil;
+              SetLength(Frame.Pixels, Frame.Width * Frame.Height);
+              for var Y := 0 to Frame.Height - 1 do
+                for var X := 0 to Frame.Width - 1 do
+                  Frame.Pixels[Y * Frame.Width + X] := Console.Pixels[Y * 320 + X];
+              FLock.Acquire;
+              try
+                FFrame := Frame;
+                FAvailable := True;
+              finally
+                FLock.Release;
+              end;
+            end
+            else
+            begin
+              SaveCoreSnapshot(Path, 'MD', FData, Transfer);
+              SaveSnapshotPreview(Path, Console.Width, Console.Height, 320, @Console.Pixels[0]);
+            end;
+            Deadline := Watch.Elapsed.TotalMilliseconds;
+          end);
         FLock.Acquire;
         try
           Input := FInput;

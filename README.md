@@ -80,8 +80,8 @@ If there is no `gamelist.xml` file in the system folders, the list will load as 
 | Ctrl+O | "Open" another ROM |
 | R | Reset console |
 | P | Pause console |
-| F5 | Save quick snapshot (NES only) |
-| F6 | Load quick snapshot (NES only) |
+| F5 | Save quick snapshot (NES, GB, GBC, Mega Drive) |
+| F6 | Load quick snapshot (NES, GB, GBC, Mega Drive) |
 | F11 | Fullscreen mode |
 
 When you lose focus, the emulation and sound continue, and the pressed buttons are reset.

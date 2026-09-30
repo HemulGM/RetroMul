@@ -33,6 +33,7 @@ type
   TGBCCoreAdapter = class(TInterfacedObject, IEmulationCore)
   private
     FThread: TGBCEmulationThread;
+    FSnapshotDirectory: string;
     FROMData: TArray<Byte>;
     FGamepadInput: TEmulatorInput;
     FKeyboardInput: TEmulatorInput;
@@ -65,7 +66,7 @@ type
 implementation
 
 uses
-  System.SysUtils, System.UITypes, GBC.GPU, GBC.ROM, GBC.MBC;
+  Core.Snapshots, Core.SavePaths, System.SysUtils, System.UITypes, GBC.GPU, GBC.ROM, GBC.MBC;
 
 constructor TGBCCoreAdapter.Create(const FileName: string);
 begin
@@ -86,12 +87,15 @@ begin
   finally
     ROM.Free;
   end;
+  FSnapshotDirectory := ResolveGameSavePath(GetSnapshotDirectory, FileName,
+    'GBC-' + SnapshotIdentity(FROMData), '');
   CreateThread;
 end;
 
 procedure TGBCCoreAdapter.CreateThread;
 begin
   FThread := TGBCEmulationThread.Create(FROMData, FConfig.AudioEnabled);
+  FThread.SnapshotDirectory := FSnapshotDirectory;
   FThread.SoundVolume := FConfig.AudioVolume;
 end;
 
@@ -127,7 +131,7 @@ end;
 
 function TGBCCoreAdapter.GetSupportsSnapshots: Boolean;
 begin
-  Result := False;
+  Result := True;
 end;
 
 function TGBCCoreAdapter.GetUsesSuborKeyboard: Boolean;
@@ -142,7 +146,7 @@ end;
 
 procedure TGBCCoreAdapter.LoadSnapshot(const Name: string);
 begin
-  raise ENotSupportedException.Create('Game Boy Color snapshots are not implemented');
+  FThread.LoadSnapshot(Name);
 end;
 
 procedure TGBCCoreAdapter.Pause;
@@ -168,7 +172,7 @@ end;
 
 procedure TGBCCoreAdapter.SaveSnapshot(const Name: string);
 begin
-  raise ENotSupportedException.Create('Game Boy Color snapshots are not implemented');
+  FThread.SaveSnapshot(Name);
 end;
 
 procedure TGBCCoreAdapter.SetGamepadInput(const Input: TEmulatorInput);

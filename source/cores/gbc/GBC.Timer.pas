@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, GBC.InterruptManager;
+  Core.Snapshots, System.Classes, System.SysUtils, GBC.InterruptManager;
 
 type
   TGBCTimer = class
@@ -32,6 +32,7 @@ type
     procedure SetDivider(Value: Integer);
     class procedure ReleaseInstance;
     class property Instance: TGBCTimer read GetInstance;
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
@@ -169,5 +170,17 @@ begin
   FPreviousBit := TimerBit;
 end;
 
-end.
 
+procedure TGBCTimer.SerializeState(State: TStateArchive);
+begin
+  State.Field(FDivider, SizeOf(FDivider));
+  State.Field(FControl, SizeOf(FControl));
+  State.Field(FModulo, SizeOf(FModulo));
+  State.Field(FCounter, SizeOf(FCounter));
+  State.Field(FTicksSinceOverflow, SizeOf(FTicksSinceOverflow));
+  State.Field(FPreviousBit, SizeOf(FPreviousBit));
+  State.Field(FOverflow, SizeOf(FOverflow));
+  State.Field(FFrequencyBits, SizeOf(FFrequencyBits));
+end;
+
+end.

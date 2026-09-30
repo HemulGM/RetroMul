@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Classes, System.SyncObjs, System.Generics.Collections,
+  Core.Snapshots, System.Classes, System.SyncObjs, System.Generics.Collections,
   System.Diagnostics, GBC.Joypad, GBC.GPU;
 
 type
@@ -15,6 +15,8 @@ type
   // Run one session at a time: the core's timer, joypad and interrupts are singletons.
   TGBCEmulationThread = class(TThread)
   private
+    FSnapshots: TSnapshotQueue;
+    FSnapshotDirectory: string;
     FROMData: TArray<Byte>;
     FEnableAudio: Boolean;
     FLock: TCriticalSection;
@@ -38,6 +40,9 @@ type
     constructor Create(const FileName: string; EnableAudio: Boolean = True); overload;
     constructor Create(const ROMData: TArray<Byte>; EnableAudio: Boolean = True); overload;
     destructor Destroy; override;
+    procedure SaveSnapshot(const Name: string);
+    procedure LoadSnapshot(const Name: string);
+    property SnapshotDirectory: string read FSnapshotDirectory write FSnapshotDirectory;
     procedure RequestStop;
     procedure RequestPause;
     procedure RequestResume;
@@ -69,6 +74,7 @@ begin
   FSoundVolume := 0.5;
   FLock := TCriticalSection.Create;
   FStopEvent := TEvent.Create(nil, True, False, '');
+  FSnapshots := TSnapshotQueue.Create;
   FInputEvents := TQueue<TGBInputEvent>.Create;
 end;
 
@@ -78,9 +84,20 @@ begin
   // TThread joins the worker (including an unstarted thread) before shared data is freed.
   // Execute never synchronizes with the UI, so joining cannot wait for a UI callback.
   inherited Destroy;
+  FSnapshots.Free;
   FInputEvents.Free;
   FStopEvent.Free;
   FLock.Free;
+end;
+
+procedure TGBCEmulationThread.SaveSnapshot(const Name: string);
+begin
+  FSnapshots.Execute(Self, Name, False);
+end;
+
+procedure TGBCEmulationThread.LoadSnapshot(const Name: string);
+begin
+  FSnapshots.Execute(Self, Name, True);
 end;
 
 procedure TGBCEmulationThread.RequestStop;
@@ -250,6 +267,46 @@ begin
       var StartCycles := CPU.Cycles;
       while not Terminated do
       begin
+        FSnapshots.Process(
+          procedure(const Name: string; Loading: Boolean)
+          begin
+            var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
+            var Transfer: TStateTransfer := procedure(State: TStateArchive)
+            begin
+              CPU.SerializeState(State);
+              Memory.SerializeState(State);
+              GPU.SerializeState(State);
+              MBC.SerializeState(State);
+              Sound.SerializeState(State);
+              TGBCTimer.Instance.SerializeState(State);
+              TGBCInterruptManager.Instance.SerializeState(State);
+              TGBCJoypad.Instance.SerializeState(State);
+            end;
+            if Loading then
+            begin
+              LoadCoreSnapshot(Path, 'GBC', FROMData, Transfer);
+              if Sound.Audio <> nil then Sound.Audio.Clear;
+              // Host key state is authoritative after restoring the emulated JOYP.
+              FLock.Acquire;
+              try
+                for var Key := Low(TGBCKey) to High(TGBCKey) do
+                  if Key in FPressedKeys then
+                    TGBCJoypad.Instance.KeyDown(TGBCJoypad.Instance.KeyBindings[Key])
+                  else
+                    TGBCJoypad.Instance.KeyUp(TGBCJoypad.Instance.KeyBindings[Key]);
+              finally
+                FLock.Release;
+              end;
+              PublishFrame(GPU.Screen);
+            end
+            else
+            begin
+              SaveCoreSnapshot(Path, 'GBC', FROMData, Transfer);
+              SaveSnapshotPreview(Path, 160, 144, 160, @GPU.Screen[0]);
+            end;
+            StartCycles := CPU.Cycles;
+            Stopwatch := TStopwatch.StartNew;
+          end);
         ApplyInput;
         FLock.Acquire;
         try

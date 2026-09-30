@@ -27,6 +27,7 @@ uses
   {$ENDIF }
   PCM.Audio.Null in '..\source\PCM\PCM.Audio.Null.pas',
   PCM.Audio.Factory in '..\source\PCM\PCM.Audio.Factory.pas',
+  Core.Snapshots in '..\source\cores\Core.Snapshots.pas',
   Core.AudioFilter in '..\source\cores\Core.AudioFilter.pas',
   PCM.Audio in '..\source\PCM\PCM.Audio.pas',
   PCM.Audio.Backend in '..\source\PCM\PCM.Audio.Backend.pas',

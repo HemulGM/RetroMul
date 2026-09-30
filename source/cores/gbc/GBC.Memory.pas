@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, GBC.ROM, GBC.GPU, GBC.MBC, GBC.Timer, GBC.InterruptManager,
+  Core.Snapshots, System.Classes, System.SysUtils, GBC.ROM, GBC.GPU, GBC.MBC, GBC.Timer, GBC.InterruptManager,
   GBC.Joypad;
 
 const
@@ -78,6 +78,7 @@ type
     function ConsumeDMACyclePenalty: Integer;
     procedure InitializeMemory;
     constructor Create(AMbc: TGBCMBC; AGPU: TGBCGPU); overload;
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
@@ -505,6 +506,32 @@ begin
   var UpperVal: Integer := (Value and $FF00) shr 8;
   WriteByte(Address, LowVal);
   WriteByte((Address + 1) and $FFFF, UpperVal);
+end;
+
+
+procedure TGBCMemory.SerializeState(State: TStateArchive);
+begin
+  State.Field(FWRAMBank, SizeOf(FWRAMBank));
+  State.Field(FPrepareSpeedSwitch, SizeOf(FPrepareSpeedSwitch));
+  State.Field(FDoubleSpeed, SizeOf(FDoubleSpeed));
+  State.Field(FHDMAActive, SizeOf(FHDMAActive));
+  State.Field(FHDMASource, SizeOf(FHDMASource));
+  State.Field(FHDMADestination, SizeOf(FHDMADestination));
+  State.Field(FHDMARemainingBlocks, SizeOf(FHDMARemainingBlocks));
+  State.Field(FDMACyclePenalty, SizeOf(FDMACyclePenalty));
+  State.Field(FWRAMBanks, SizeOf(FWRAMBanks));
+  State.Field(ROMBank00, SizeOf(ROMBank00));
+  State.Field(ROMBank01NN, SizeOf(ROMBank01NN));
+  State.Field(VRAM, SizeOf(VRAM));
+  State.Field(ExtRAM, SizeOf(ExtRAM));
+  State.Field(WRAM0, SizeOf(WRAM0));
+  State.Field(WRAM1, SizeOf(WRAM1));
+  State.Field(WRAM, SizeOf(WRAM));
+  State.Field(ECHO, SizeOf(ECHO));
+  State.Field(OAM, SizeOf(OAM));
+  State.Field(IOPort, SizeOf(IOPort));
+  State.Field(HRAM, SizeOf(HRAM));
+  State.Field(UseBIOS, SizeOf(UseBIOS));
 end;
 
 end.

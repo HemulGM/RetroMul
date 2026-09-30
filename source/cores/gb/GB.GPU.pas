@@ -3,7 +3,7 @@
 interface
 
 uses
-  GB.InterruptManager;
+  Core.Snapshots, System.Classes, GB.InterruptManager;
 
 {$SCOPEDENUMS ON}
 
@@ -96,6 +96,7 @@ type
     procedure BuildSprite(Address, Value: Integer);
 
     constructor Create(Callback: TDrawCallback); reintroduce;
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
@@ -514,5 +515,42 @@ begin
   end;
 end;
 
-end.
 
+procedure TGBGPU.SerializeState(State: TStateArchive);
+begin
+  State.Field(FCurrentMode, SizeOf(FCurrentMode));
+  State.Field(FWindowLine, SizeOf(FWindowLine));
+  State.Field(FWindowTriggered, SizeOf(FWindowTriggered));
+  State.Field(FSTATLineActive, SizeOf(FSTATLineActive));
+  State.Field(FLYCInterruptEnabled, SizeOf(FLYCInterruptEnabled));
+  State.Field(FOAMInterruptEnabled, SizeOf(FOAMInterruptEnabled));
+  State.Field(FVBlankInterruptEnabled, SizeOf(FVBlankInterruptEnabled));
+  State.Field(FHBlankInterruptEnabled, SizeOf(FHBlankInterruptEnabled));
+  State.Field(FLineMatchesLYC, SizeOf(FLineMatchesLYC));
+  State.Field(FLCDEnabled, SizeOf(FLCDEnabled));
+  State.Field(FWindowTileMapHigh, SizeOf(FWindowTileMapHigh));
+  State.Field(FWindowEnabled, SizeOf(FWindowEnabled));
+  State.Field(FUnsignedTileData, SizeOf(FUnsignedTileData));
+  State.Field(FBackgroundTileMapHigh, SizeOf(FBackgroundTileMapHigh));
+  State.Field(FTallSprites, SizeOf(FTallSprites));
+  State.Field(FSpritesEnabled, SizeOf(FSpritesEnabled));
+  State.Field(FBackgroundEnabled, SizeOf(FBackgroundEnabled));
+  State.Field(ModeClock, SizeOf(ModeClock));
+  State.Field(Width, SizeOf(Width));
+  State.Field(Height, SizeOf(Height));
+  State.Field(Line, SizeOf(Line));
+  State.Field(LYC, SizeOf(LYC));
+  State.Field(ScrollX, SizeOf(ScrollX));
+  State.Field(ScrollY, SizeOf(ScrollY));
+  State.Field(WindowX, SizeOf(WindowX));
+  State.Field(WindowY, SizeOf(WindowY));
+  State.Field(VRAM, SizeOf(VRAM));
+  State.Field(TileSet, SizeOf(TileSet));
+  State.Field(Screen, SizeOf(Screen));
+  State.Field(BackgroundPalette, SizeOf(BackgroundPalette));
+  State.Field(SpritePalette, SizeOf(SpritePalette));
+  State.Field(Palette, SizeOf(Palette));
+  State.Field(SpriteList, SizeOf(SpriteList));
+end;
+
+end.

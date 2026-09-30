@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, GBC.ROM;
+  Core.Snapshots, System.Classes, System.SysUtils, GBC.ROM;
 
 {$SCOPEDENUMS ON}
 
@@ -27,6 +27,7 @@ type
     procedure MbcWrite(Address, Value: Integer);
     function IsCGBCartridge: Boolean;
     constructor Create(AROM: TGBCROM); overload;
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
@@ -279,5 +280,18 @@ begin
   end;
 end;
 
-end.
 
+procedure TGBCMBC.SerializeState(State: TStateArchive);
+begin
+  State.Field(FRAMEnabled, SizeOf(FRAMEnabled));
+  State.Field(FHasRAM, SizeOf(FHasRAM));
+  State.Field(FIsROMMode, SizeOf(FIsROMMode));
+  if Length(FRAM) > 0 then State.Field(FRAM[0], Length(FRAM) * SizeOf(FRAM[0]));
+  State.Field(FBankLow, SizeOf(FBankLow));
+  State.Field(FBankHigh, SizeOf(FBankHigh));
+  State.Field(FROMBankCount, SizeOf(FROMBankCount));
+  State.Field(ROMBankSelected, SizeOf(ROMBankSelected));
+  State.Field(RAMBankSelected, SizeOf(RAMBankSelected));
+end;
+
+end.

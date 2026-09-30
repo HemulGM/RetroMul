@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.UITypes, MD.Cartridge, MD.M68k, MD.Z80, MD.VDP,
+  Core.Snapshots, System.Classes, System.SysUtils, System.UITypes, MD.Cartridge, MD.M68k, MD.Z80, MD.VDP,
   MD.Sound, Core.AudioFilter;
 
 {$SCOPEDENUMS ON}
@@ -75,6 +75,7 @@ type
     procedure WriteByte(Address: Cardinal; Value: Byte);
     procedure WriteWord(Address: Cardinal; Value: Word);
     procedure LoadBattery(const Data: TBytes);
+    procedure MarkBatteryDirty;
     function BatteryData: TBytes;
     property BatteryDirty: Boolean read FSRAMDirty;
     property Pixels: TArray<TAlphaColor> read FFrame;
@@ -85,6 +86,7 @@ type
     property FrameNumber: UInt64 read FFrameNumber;
     function FramesPerSecond: Double;
 
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
@@ -797,9 +799,77 @@ begin
   Result := Copy(FSRAM);
 end;
 
+procedure TMDConsole.SerializeState(State: TStateArchive);
+begin
+  State.Field(FCPU, SizeOf(FCPU));
+  State.Field(FZ80, SizeOf(FZ80));
+  State.Field(FVDP, SizeOf(FVDP));
+  State.Field(FFM, SizeOf(FFM));
+  State.Field(FPSG, SizeOf(FPSG));
+  State.Field(FRAM, SizeOf(FRAM));
+  State.Field(FZRAM, SizeOf(FZRAM));
+  State.Field(FIO, SizeOf(FIO));
+  State.Field(FPalette, SizeOf(FPalette));
+  if Length(FFrame) > 0 then State.Field(FFrame[0], Length(FFrame) * SizeOf(FFrame[0]));
+  if Length(FAudio) > 0 then State.Field(FAudio[0], Length(FAudio) * SizeOf(FAudio[0]));
+  State.Field(FAudioCount, SizeOf(FAudioCount));
+  State.Field(FWidth, SizeOf(FWidth));
+  State.Field(FHeight, SizeOf(FHeight));
+  State.Field(FScanline, SizeOf(FScanline));
+  State.Field(FMasterClock, SizeOf(FMasterClock));
+  State.Field(FLines, SizeOf(FLines));
+  State.Field(FFrameNumber, SizeOf(FFrameNumber));
+  State.Field(FFrameTime, SizeOf(FFrameTime));
+  State.Field(FCPUTime, SizeOf(FCPUTime));
+  State.Field(FCPUBase, SizeOf(FCPUBase));
+  State.Field(FZ80Time, SizeOf(FZ80Time));
+  State.Field(FBusTime, SizeOf(FBusTime));
+  State.Field(FAudioTime, SizeOf(FAudioTime));
+  State.Field(FNextFM, SizeOf(FNextFM));
+  State.Field(FNextPSG, SizeOf(FNextPSG));
+  State.Field(FNextPCM, SizeOf(FNextPCM));
+  State.Field(FPCMNumber, SizeOf(FPCMNumber));
+  State.Field(FLastPCM, SizeOf(FLastPCM));
+  State.Field(FAreaLeft, SizeOf(FAreaLeft));
+  State.Field(FAreaRight, SizeOf(FAreaRight));
+  State.Field(FFMFilter, SizeOf(FFMFilter));
+  State.Field(FPSGFilter, SizeOf(FPSGFilter));
+  State.Field(FOutputDC, SizeOf(FOutputDC));
+  State.Field(FFilteredFM, SizeOf(FFilteredFM));
+  State.Field(FFilteredPSG, SizeOf(FFilteredPSG));
+  State.Field(FFMSamples, SizeOf(FFMSamples));
+  State.Field(FPSGSamples, SizeOf(FPSGSamples));
+  State.Field(FBusyUntil, SizeOf(FBusyUntil));
+  State.Field(FPadTimeout, SizeOf(FPadTimeout));
+  State.Field(FBusRequested, SizeOf(FBusRequested));
+  State.Field(FZReset, SizeOf(FZReset));
+  State.Field(FInZ80, SizeOf(FInZ80));
+  State.Field(FVInt, SizeOf(FVInt));
+  State.Field(FHInt, SizeOf(FHInt));
+  State.Field(FZBank, SizeOf(FZBank));
+  State.Field(FButtons, SizeOf(FButtons));
+  State.Field(FStrobes, SizeOf(FStrobes));
+  State.Field(FTH, SizeOf(FTH));
+  if Length(FSRAM) > 0 then State.Field(FSRAM[0], Length(FSRAM) * SizeOf(FSRAM[0]));
+  State.Field(FSRAMStart, SizeOf(FSRAMStart));
+  State.Field(FSRAMEnd, SizeOf(FSRAMEnd));
+  State.Field(FSRAMStride, SizeOf(FSRAMStride));
+  State.Field(FSRAMEnabled, SizeOf(FSRAMEnabled));
+  State.Field(FSRAMReadOnly, SizeOf(FSRAMReadOnly));
+  State.Field(FBanks, SizeOf(FBanks));
+  State.Field(FDMADebt, SizeOf(FDMADebt));
+  if (FWidth < 1) or (FWidth > 320) or (FHeight < 1) or (FHeight > 480) or
+    (FAudioCount < 0) or (FAudioCount > Length(FAudio) div 2) then
+    raise EReadError.Create('Invalid snapshot display or audio dimensions');
+end;
+
+procedure TMDConsole.MarkBatteryDirty;
+begin
+  FSRAMDirty := Length(FSRAM) > 0;
+end;
+
 initialization
   MD.VDP.ConstantInitialise;
   MD.Z80.ConstantInitialise;
 
 end.
-

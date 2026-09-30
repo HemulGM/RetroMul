@@ -3,7 +3,7 @@
 interface
 
 uses
-  GBC.Memory, GBC.InterruptManager, GBC.Timer, GBC.GPU, System.SysUtils,
+  Core.Snapshots, System.Classes, GBC.Memory, GBC.InterruptManager, GBC.Timer, GBC.GPU, System.SysUtils,
   GBC.Sound;
 
 type
@@ -136,6 +136,7 @@ type
     property InstructionCount: UInt64 read FInstructionCount;
     property LastOpCode: Integer read FLastOpCode;
 
+    procedure SerializeState(State: TStateArchive);
   end;
 
 const
@@ -2687,6 +2688,28 @@ procedure TGBCCPU.SetRegisterHL(Value: Word);
 begin
   FRegisterH := Hi(Value);
   FRegisterL := Lo(Value);
+end;
+
+
+procedure TGBCCPU.SerializeState(State: TStateArchive);
+begin
+  State.Field(FLastOpCode, SizeOf(FLastOpCode));
+  State.Field(FStopped, SizeOf(FStopped));
+  State.Field(FInstructionCount, SizeOf(FInstructionCount));
+  State.Field(FCycles, SizeOf(FCycles));
+  State.Field(FRegisterA, SizeOf(FRegisterA));
+  State.Field(FRegisterF, SizeOf(FRegisterF));
+  State.Field(FRegisterB, SizeOf(FRegisterB));
+  State.Field(FRegisterC, SizeOf(FRegisterC));
+  State.Field(FRegisterD, SizeOf(FRegisterD));
+  State.Field(FRegisterE, SizeOf(FRegisterE));
+  State.Field(FRegisterH, SizeOf(FRegisterH));
+  State.Field(FRegisterL, SizeOf(FRegisterL));
+  State.Field(FIsHalted, SizeOf(FIsHalted));
+  State.Field(FPendingInterruptEnable, SizeOf(FPendingInterruptEnable));
+  State.Field(FSuppressPCIncrement, SizeOf(FSuppressPCIncrement));
+  State.Field(StackPointer, SizeOf(StackPointer));
+  State.Field(ProgramCounter, SizeOf(ProgramCounter));
 end;
 
 end.

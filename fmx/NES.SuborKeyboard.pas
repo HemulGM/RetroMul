@@ -164,23 +164,19 @@ begin
 end;
 
 procedure TNesSuborKeyboard.AddKey(Key: TSuborKey; Row: Integer; Column, Span: Single);
-var
-  U, Gap, H: Single;
 begin
-  U := Width / 24;
-  Gap := Max(1.5, U * 0.08);
-  H := (Height - Gap * 7) / 6;
+  var U := Width / 24;
+  var Gap := Max(1.5, U * 0.08);
+  var H := (Height - Gap * 7) / 6;
   AddVisualKey(Key, RectF(Column * U + Gap, Row * (H + Gap) + Gap,
       (Column + Span) * U - Gap, Row * (H + Gap) + H));
 end;
 
 procedure TNesSuborKeyboard.AddTallKey(Key: TSuborKey; Row: Integer; Column, Span, Rows: Single);
-var
-  U, Gap, H: Single;
 begin
-  U := Width / 24;
-  Gap := Max(1.5, U * 0.08);
-  H := (Height - Gap * 7) / 6;
+  var U := Width / 24;
+  var Gap := Max(1.5, U * 0.08);
+  var H := (Height - Gap * 7) / 6;
   AddVisualKey(Key, RectF(Column * U + Gap, Row * (H + Gap) + Gap,
       (Column + Span) * U - Gap, (Row + Rows) * (H + Gap) - Gap));
 end;
@@ -322,30 +318,27 @@ begin
 end;
 
 procedure TNesSuborKeyboard.PointerDown(Id: NativeInt; const Point: TPointF);
-var
-  Key: TSuborKey;
 begin
   if not AbsoluteEnabled or not ParentedVisible then
     Exit;
   FContacts.Remove(Id);
-  Key := KeyAt(Point);
+  var Key := KeyAt(Point);
   if Key <> SkNone then
     FContacts.AddOrSetValue(Id, Key);
   UpdateKeys;
 end;
 
 procedure TNesSuborKeyboard.PointerMove(Id: NativeInt; const Point: TPointF);
-var
-  Key, OldKey: TSuborKey;
 begin
   if not AbsoluteEnabled or not ParentedVisible then
   begin
     ReleaseAll;
     Exit;
   end;
+  var OldKey: TSuborKey;
   if not FContacts.TryGetValue(Id, OldKey) then
     Exit;
-  Key := KeyAt(Point);
+  var Key := KeyAt(Point);
   if Key = OldKey then
     Exit;
   if Key = SkNone then
@@ -598,22 +591,28 @@ end;
 
 procedure TNesSuborKeyboard.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
-  inherited; {$IFNDEF ANDROID}
+  inherited;
+  {$IFNDEF ANDROID}
   if Button = TMouseButton.mbLeft then
-    PointerDown(-1, PointF(X, Y)); {$ENDIF}
+    PointerDown(-1, PointF(X, Y));
+  {$ENDIF}
 end;
 
 procedure TNesSuborKeyboard.MouseMove(Shift: TShiftState; X, Y: Single);
 begin
-  inherited; {$IFNDEF ANDROID}
-  PointerMove(-1, PointF(X, Y)); {$ENDIF}
+  inherited;
+  {$IFNDEF ANDROID}
+  PointerMove(-1, PointF(X, Y));
+  {$ENDIF}
 end;
 
 procedure TNesSuborKeyboard.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
-  inherited; {$IFNDEF ANDROID}
+  inherited;
+  {$IFNDEF ANDROID}
   if Button = TMouseButton.mbLeft then
-    PointerUp(-1); {$ENDIF}
+    PointerUp(-1);
+  {$ENDIF}
 end;
 
 end.

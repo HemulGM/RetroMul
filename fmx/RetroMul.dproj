@@ -434,6 +434,7 @@
         <DCCReference Include="..\source\PCM\PCM.Audio.Apple.AudioQueue.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.Null.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.Factory.pas"/>
+        <DCCReference Include="..\source\cores\Core.Snapshots.pas"/>
         <DCCReference Include="..\source\cores\Core.AudioFilter.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.Backend.pas"/>

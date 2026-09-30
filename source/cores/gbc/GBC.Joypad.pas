@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, GBC.InterruptManager;
+  Core.Snapshots, System.Classes, System.SysUtils, GBC.InterruptManager;
 
 {$SCOPEDENUMS ON}
 
@@ -29,6 +29,7 @@ type
     procedure KeyUp(Key: Integer);
     class procedure ReleaseInstance;
     class property Instance: TGBCJoypad read GetInstance;
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
@@ -119,5 +120,11 @@ begin
   CheckInterrupt(Previous);
 end;
 
-end.
 
+procedure TGBCJoypad.SerializeState(State: TStateArchive);
+begin
+  State.Field(FPressed, SizeOf(FPressed));
+  State.Field(FSelection, SizeOf(FSelection));
+end;
+
+end.

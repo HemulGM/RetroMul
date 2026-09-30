@@ -3,7 +3,7 @@
 interface
 
 uses
-  GB.Memory, GB.InterruptManager, GB.Timer, GB.GPU, System.SysUtils, GB.Sound;
+  Core.Snapshots, System.Classes, GB.Memory, GB.InterruptManager, GB.Timer, GB.GPU, System.SysUtils, GB.Sound;
 
 type
   TGBCPU = class
@@ -134,6 +134,7 @@ type
     property InstructionCount: UInt64 read FInstructionCount;
     property LastOpCode: Integer read FLastOpCode;
 
+    procedure SerializeState(State: TStateArchive);
   end;
 
 const
@@ -2659,5 +2660,26 @@ begin
   FRegisterL := Lo(Value);
 end;
 
-end.
 
+procedure TGBCPU.SerializeState(State: TStateArchive);
+begin
+  State.Field(FLastOpCode, SizeOf(FLastOpCode));
+  State.Field(FStopped, SizeOf(FStopped));
+  State.Field(FInstructionCount, SizeOf(FInstructionCount));
+  State.Field(FCycles, SizeOf(FCycles));
+  State.Field(FRegisterA, SizeOf(FRegisterA));
+  State.Field(FRegisterF, SizeOf(FRegisterF));
+  State.Field(FRegisterB, SizeOf(FRegisterB));
+  State.Field(FRegisterC, SizeOf(FRegisterC));
+  State.Field(FRegisterD, SizeOf(FRegisterD));
+  State.Field(FRegisterE, SizeOf(FRegisterE));
+  State.Field(FRegisterH, SizeOf(FRegisterH));
+  State.Field(FRegisterL, SizeOf(FRegisterL));
+  State.Field(FIsHalted, SizeOf(FIsHalted));
+  State.Field(FPendingInterruptEnable, SizeOf(FPendingInterruptEnable));
+  State.Field(FSuppressPCIncrement, SizeOf(FSuppressPCIncrement));
+  State.Field(StackPointer, SizeOf(StackPointer));
+  State.Field(ProgramCounter, SizeOf(ProgramCounter));
+end;
+
+end.

@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Math, GB.Memory, PCM.Audio, PCM.Audio.Backend, Core.AudioFilter;
+  Core.Snapshots, System.Classes, System.SysUtils, System.Math, GB.Memory, PCM.Audio, PCM.Audio.Backend, Core.AudioFilter;
 
 const
   GB_AUDIO_SAMPLE_RATE = 44100;
@@ -36,6 +36,7 @@ type
     procedure SetIndex(Value: Integer);
 
     procedure HandleSweep;
+    procedure SerializeState(State: TStateArchive);
   end;
 
   TBaseChannel = class
@@ -69,6 +70,7 @@ type
     function GetWaveValue(Index: Integer): Integer;
     procedure SetWave(const Value: TIntegerArray);
     function NextWaveSample(VolumeShift: Integer = 0): Double;
+    procedure SerializeState(State: TStateArchive); virtual;
   end;
 
 const
@@ -112,6 +114,7 @@ type
     procedure SetSweepShift(Value: Integer);
 
     procedure SetWaveDuty(Value: Integer);
+    procedure SerializeState(State: TStateArchive); override;
   end;
 
   TWaveChannel = class(TBaseChannel)
@@ -145,6 +148,7 @@ type
 
     procedure ResetLFSR;
     function NextSample: Double;
+    procedure SerializeState(State: TStateArchive); override;
   end;
 
   TGBSound = class
@@ -240,6 +244,7 @@ type
     property Volume: Single read FVolume write SetVolume;
 
     property Audio: TPCMAudio read FAudio;
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
@@ -1381,5 +1386,84 @@ begin
   end;
 end;
 
-end.
 
+procedure TEnvelope.SerializeState(State: TStateArchive);
+begin
+  State.Field(FBase, SizeOf(FBase));
+  State.Field(FDirection, SizeOf(FDirection));
+  State.Field(FStepLength, SizeOf(FStepLength));
+  State.Field(FIndex, SizeOf(FIndex));
+end;
+
+procedure TBaseChannel.SerializeState(State: TStateArchive);
+begin
+  State.Field(FEnabled, SizeOf(FEnabled));
+  State.Field(FLengthEnabled, SizeOf(FLengthEnabled));
+  State.Field(FLength, SizeOf(FLength));
+  State.Field(FFrequency, SizeOf(FFrequency));
+  State.Field(FIndex, SizeOf(FIndex));
+  var Count := Length(FWave);
+  State.Field(Count, SizeOf(Count));
+  if (Count < 0) or (Count > 32768) then raise EReadError.Create('Invalid waveform length');
+  if State.Loading then System.SetLength(FWave, Count);
+  if Count > 0 then State.Field(FWave[0], Count * SizeOf(FWave[0]));
+  State.Field(FWavePhase, SizeOf(FWavePhase));
+end;
+
+procedure TSquareWaveChannel.SerializeState(State: TStateArchive);
+begin
+  inherited SerializeState(State);
+  var HasEnvelope := FVolume <> nil;
+  State.Field(HasEnvelope, SizeOf(HasEnvelope));
+  if State.Loading then
+    if HasEnvelope then
+    begin
+      if FVolume = nil then FVolume := TEnvelope.Create;
+    end
+    else FreeAndNil(FVolume);
+  if HasEnvelope then FVolume.SerializeState(State);
+  State.Field(FGBFrequency, SizeOf(FGBFrequency));
+  State.Field(FSweepIndex, SizeOf(FSweepIndex));
+  State.Field(FSweepLength, SizeOf(FSweepLength));
+  State.Field(FSweepDirection, SizeOf(FSweepDirection));
+  State.Field(FSweepShift, SizeOf(FSweepShift));
+  State.Field(FWaveDuty, SizeOf(FWaveDuty));
+end;
+
+procedure TNoiseChannel.SerializeState(State: TStateArchive);
+begin
+  inherited SerializeState(State);
+  var HasEnvelope := FVolume <> nil;
+  State.Field(HasEnvelope, SizeOf(HasEnvelope));
+  if State.Loading then
+    if HasEnvelope then
+    begin
+      if FVolume = nil then FVolume := TEnvelope.Create;
+    end
+    else FreeAndNil(FVolume);
+  if HasEnvelope then FVolume.SerializeState(State);
+  State.Field(FShiftFrequency, SizeOf(FShiftFrequency));
+  State.Field(FCounterStep, SizeOf(FCounterStep));
+  State.Field(FDivisorRatio, SizeOf(FDivisorRatio));
+  State.Field(FLFSR, SizeOf(FLFSR));
+  State.Field(FPhase, SizeOf(FPhase));
+end;
+
+procedure TGBSound.SerializeState(State: TStateArchive);
+begin
+  FChannel1.SerializeState(State);
+  FChannel2.SerializeState(State);
+  FChannel3.SerializeState(State);
+  FChannel4.SerializeState(State);
+  State.Field(FSoundTimer, SizeOf(FSoundTimer));
+  State.Field(FSoundBufferIndex, SizeOf(FSoundBufferIndex));
+  State.Field(FChannelSamples, SizeOf(FChannelSamples));
+  State.Field(FOutputPhase, SizeOf(FOutputPhase));
+  State.Field(FFilter, SizeOf(FFilter));
+  State.Field(FDCFilter, SizeOf(FDCFilter));
+  State.Field(FMixedBuffer, SizeOf(FMixedBuffer));
+  if (FSoundBufferIndex < 0) or (FSoundBufferIndex >= GB_AUDIO_BLOCK_SAMPLES) then
+    raise EReadError.Create('Invalid sound buffer index');
+end;
+
+end.

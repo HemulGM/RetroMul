@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, GB.ROM, GB.GPU, GB.MBC, GB.Timer, GB.InterruptManager,
+  Core.Snapshots, System.Classes, System.SysUtils, GB.ROM, GB.GPU, GB.MBC, GB.Timer, GB.InterruptManager,
   GB.Joypad;
 
 const
@@ -65,6 +65,7 @@ type
     function GetROMBank: Integer;
     procedure InitializeMemory;
     constructor Create(AMbc: TGBMBC; AGPU: TGBGPU); overload;
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
@@ -366,5 +367,21 @@ begin
   WriteByte((Address + 1) and $FFFF, UpperVal);
 end;
 
-end.
 
+procedure TGBMemory.SerializeState(State: TStateArchive);
+begin
+  State.Field(ROMBank00, SizeOf(ROMBank00));
+  State.Field(ROMBank01NN, SizeOf(ROMBank01NN));
+  State.Field(VRAM, SizeOf(VRAM));
+  State.Field(ExtRAM, SizeOf(ExtRAM));
+  State.Field(WRAM0, SizeOf(WRAM0));
+  State.Field(WRAM1, SizeOf(WRAM1));
+  State.Field(WRAM, SizeOf(WRAM));
+  State.Field(ECHO, SizeOf(ECHO));
+  State.Field(OAM, SizeOf(OAM));
+  State.Field(IOPort, SizeOf(IOPort));
+  State.Field(HRAM, SizeOf(HRAM));
+  State.Field(UseBIOS, SizeOf(UseBIOS));
+end;
+
+end.

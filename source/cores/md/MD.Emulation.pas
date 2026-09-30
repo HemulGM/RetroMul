@@ -95,7 +95,7 @@ begin
     if FError = '' then
       FError := Value
     else
-      FError := FError + sLineBreak + Value;
+      FError := FError + SLineBreak + Value;
   finally
     FLock.Release;
   end;
@@ -133,29 +133,22 @@ begin
 end;
 
 procedure TMDWorker.Execute;
-var
-  Console: TMDConsole;
-  Audio: TPCMAudio;
-  Format: TPCMAudioFormat;
-  Input: TMDButtons;
-  Paused, ResetRequested, Enabled, WasPaused, WasEnabled: Boolean;
-  Volume: Single;
-  Frame: TEmulatorFrame;
-  Samples: TArray<SmallInt>;
-  Watch: TStopwatch;
-  Deadline: Double;
-  WaitMS: Integer;
-  LastBattery: TBytes;
-  LastAudioError: string;
-
-  procedure SaveBattery;
+  procedure SaveBattery(Console: TMDConsole; var LastBattery: TBytes);
   begin
     if (Console = nil) or not Console.BatteryDirty then
       Exit;
     var Data := Console.BatteryData;
     if Length(Data) = 0 then
       Exit;
-    if (Length(Data) = Length(LastBattery)) and CompareMem(@Data[0], @LastBattery[0], Length(Data)) then
+    var Unchanged := Length(Data) = Length(LastBattery);
+    if Unchanged then
+      for var I := 0 to High(Data) do
+        if Data[I] <> LastBattery[I] then
+        begin
+          Unchanged := False;
+          Break;
+        end;
+    if Unchanged then
       Exit;
     ForceDirectories(ExtractFilePath(FSavePath));
     var TempName := FSavePath + '.' + TGUID.NewGuid.ToString + '.tmp';
@@ -173,8 +166,19 @@ var
   end;
 
 begin
-  Console := nil;
-  Audio := nil;
+  var Format: TPCMAudioFormat;
+  var Input: TMDButtons;
+  var Paused, ResetRequested, Enabled, WasPaused, WasEnabled: Boolean;
+  var Volume: Single;
+  var Frame: TEmulatorFrame;
+  var Samples: TArray<SmallInt>;
+  var Watch: TStopwatch;
+  var Deadline: Double;
+  var WaitMS: Integer;
+  var LastBattery: TBytes;
+  var LastAudioError: string;
+  var Console: TMDConsole := nil;
+  var Audio: TPCMAudio := nil;
   try
     try
       Console := TMDConsole.Create(FData, '.md');
@@ -206,7 +210,7 @@ begin
         end;
         if ResetRequested then
         begin
-          SaveBattery;
+          SaveBattery(Console, LastBattery);
           Console.Reset;
           if Audio <> nil then
             Audio.Clear;
@@ -218,7 +222,7 @@ begin
           begin
             if Audio <> nil then
               Audio.Clear;
-            SaveBattery;
+            SaveBattery(Console, LastBattery);
           end;
           WasPaused := True;
           FWake.WaitFor(10);
@@ -252,8 +256,8 @@ begin
           if Audio = nil then
             Audio := TPCMAudio.Create(Format);
           SetLength(Samples, Console.SampleFrames * 2);
-          for var i := 0 to High(Samples) do
-            Samples[i] := Round(Console.Samples[i] * Volume);
+          for var I := 0 to High(Samples) do
+            Samples[I] := Round(Console.Samples[I] * Volume);
           Audio.Submit(Samples, Console.SampleFrames);
           if (Audio.Error <> '') and (Audio.Error <> LastAudioError) then
           begin
@@ -265,7 +269,7 @@ begin
           Audio.Clear;
         WasEnabled := Enabled;
         if Console.FrameNumber mod 120 = 0 then
-          SaveBattery;
+          SaveBattery(Console, LastBattery);
         Deadline := Deadline + 1000 / Console.FramesPerSecond;
         if Watch.Elapsed.TotalMilliseconds - Deadline > 100 then
           Deadline := Watch.Elapsed.TotalMilliseconds;
@@ -279,7 +283,7 @@ begin
     end;
   finally
     try
-      SaveBattery;
+      SaveBattery(Console, LastBattery);
     except
       on E: Exception do
         SetError('Mega Drive SRAM: ' + E.Message);

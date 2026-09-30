@@ -1,4 +1,4 @@
-﻿unit MD.Console;
+unit MD.Console;
 
 interface
 
@@ -87,14 +87,14 @@ implementation
 uses
   System.Math;
 
-function CPURead(User: Pointer; Address: Cardinal; Hi, Lo: Byte; Cycle: Cardinal; Early: PByte): Cardinal;
+function CPURead(User: Pointer; Address: Cardinal; Hi, Lo: Byte; Cycle: Cardinal; var Early: Byte): Cardinal;
 begin
   var C := TMDConsole(User);
   C.FBusTime := C.FCPUBase + Int64(Cycle) * 7;
   Result := C.ReadBus(Address * 2, Hi <> 0, Lo <> 0);
 end;
 
-procedure CPUWrite(User: Pointer; Address: Cardinal; Hi, Lo: Byte; Cycle: Cardinal; Early: PByte; Value: Cardinal);
+procedure CPUWrite(User: Pointer; Address: Cardinal; Hi, Lo: Byte; Cycle: Cardinal; var Early: Byte; Value: Cardinal);
 begin
   var C := TMDConsole(User);
   C.FBusTime := C.FCPUBase + Int64(Cycle) * 7;
@@ -131,11 +131,8 @@ begin
 end;
 
 procedure ScanlineRendered(User: Pointer; Line: Cardinal; const Pixels: array of Byte; PixelOffset: Integer; Left, Right, Width, Height: Cardinal);
-var
-  C: TMDConsole;
-  X: Integer;
 begin
-  C := TMDConsole(User);
+  var C: TMDConsole := TMDConsole(User);
   if (Width > 320) or (Height > 480) or (Line >= Height) or
     (Left > Right) or (Right > Width) then
     raise Exception.Create('Invalid Mega Drive video dimensions');
@@ -144,7 +141,7 @@ begin
   // Window and scrolling planes can publish separate spans of the same line.
   // Pixels outside this span still contain intermediate priority metadata.
   // Fixed stride inside the core; the frontend receives tightly packed pixels.
-  for X := Integer(Left) to Integer(Right) - 1 do
+  for var X := Integer(Left) to Integer(Right) - 1 do
     C.FFrame[Integer(Line) * 320 + X] := C.FPalette[Pixels[PixelOffset + X]];
 end;
 
@@ -160,14 +157,13 @@ begin
   Inc(TMDConsole(User).FDMADebt, Int64(Reads) * 7);
 end;
 
-procedure KDebug(User: Pointer; Text: PByte);
+procedure KDebug(User: Pointer; const Text: array of Byte);
 begin
 end;
 
 constructor TMDConsole.Create(const Data: TBytes; const Extension: string);
-var
-  StartAddress, EndAddress: Cardinal;
 begin
+  var StartAddress, EndAddress: Cardinal;
   inherited Create;
   FCartridge := TMDCartridge.Create(Data, Extension);
   FCPUCallbacks.UserData := Self;
@@ -212,8 +208,6 @@ begin
 end;
 
 procedure TMDConsole.Reset;
-var
-  I: Integer;
 begin
   FillChar(FRAM, SizeOf(FRAM), 0);
   FillChar(FZRAM, SizeOf(FZRAM), 0);
@@ -223,15 +217,15 @@ begin
   FVDP := Default(TVDP);
   FFM := Default(TFM);
   FPSG := Default(TPSG);
-  c_VDP_Initialise(@FVDP);
-  FM_Initialise(@FFM);
-  PSG_Initialise(@FPSG);
-  Z80StateInitialise(@FZ80);
-  for I := 0 to High(FPalette) do
+  VDPInitialise(FVDP);
+  FMInitialise(FFM);
+  PSGInitialise(FPSG);
+  Z80StateInitialise(FZ80);
+  for var I := 0 to High(FPalette) do
     FPalette[I] := $FF000000;
-  for I := 0 to High(FFrame) do
+  for var I := 0 to High(FFrame) do
     FFrame[I] := $FF000000;
-  for I := 0 to High(FBanks) do
+  for var I := 0 to High(FBanks) do
     FBanks[I] := I;
   FWidth := 256;
   FHeight := 224;
@@ -269,14 +263,14 @@ begin
   FIO[2] := $7F;
   FSRAMEnabled := (Length(FSRAM) <> 0) and (Length(FCartridge.Data) <= Integer(FSRAMStart));
   FSRAMReadOnly := False;
-  Clown68000Reset(@FCPU, @FCPUCallbacks);
+  Clown68000Reset(FCPU, FCPUCallbacks);
 end;
 
 procedure TMDConsole.UpdateIRQ;
 begin
-  if FVInt and (FVDP.c_state.c_v_int_enabled <> 0) then
+  if FVInt and (FVDP.State.VIntEnabled <> 0) then
     FCPU.PendingInterrupt := 6
-  else if FHInt and (FVDP.c_state.c_h_int_enabled <> 0) then
+  else if FHInt and (FVDP.State.HIntEnabled <> 0) then
     FCPU.PendingInterrupt := 4
   else
     FCPU.PendingInterrupt := 0;
@@ -322,9 +316,8 @@ begin
 end;
 
 procedure TMDConsole.WriteIO(Index: Integer; Value: Byte);
-var
-  NewTH: Boolean;
 begin
+  var NewTH: Boolean;
   FIO[Index] := Value;
   if (Index = 1) or (Index = 4) then
   begin
@@ -352,10 +345,9 @@ begin
 end;
 
 function TMDConsole.ReadBus(Address: Cardinal; HighByte, LowByte: Boolean): Word;
-var
-  Index, A: Cardinal;
-  V: Byte;
 begin
+  var Index, A: Cardinal;
+  var V: Byte;
   Address := Address and $FFFFFE;
   if Address < $400000 then
   begin
@@ -409,10 +401,10 @@ begin
   begin
     case Address and $1E of
       0, 2:
-        Result := c_VDP_ReadData(@FVDP);
+        Result := VDPReadData(FVDP);
       4, 6:
         begin
-          Result := c_VDP_ReadControl(@FVDP);
+          Result := VDPReadControl(FVDP);
           if FLines = 313 then
             Result := Result or 1;
           if (FBusTime mod 3420) >= 2680 then
@@ -436,10 +428,9 @@ begin
 end;
 
 procedure TMDConsole.WriteBus(Address: Cardinal; Value: Word; HighByte, LowByte: Boolean);
-var
-  Index: Cardinal;
-  V: Byte;
 begin
+  var Index: Cardinal;
+  var V: Byte;
   Address := Address and $FFFFFE;
   if Address < $400000 then
   begin
@@ -492,12 +483,12 @@ begin
     if HighByte then
     begin
       if FZReset and (Value and $100 <> 0) then
-        Z80Reset(@FZ80);
+        Z80Reset(FZ80);
       FZReset := Value and $100 = 0;
       if FZReset then
       begin
         SyncAudio(FBusTime);
-        FM_Initialise(@FFM);
+        FMInitialise(FFM);
       end;
     end;
   end
@@ -526,10 +517,10 @@ begin
     end;
     case Address and $1E of
       0, 2:
-        c_VDP_WriteData(@FVDP, Value, ColourUpdated, Self);
+        VDPWriteData(FVDP, Value, ColourUpdated, Self);
       4, 6:
         begin
-          c_VDP_WriteControl(@FVDP, Value, ColourUpdated, Self, DMABegin,
+          VDPWriteControl(FVDP, Value, ColourUpdated, Self, DMABegin,
             DMARead, Self, KDebug, Self, 0);
           UpdateIRQ;
         end;
@@ -537,21 +528,19 @@ begin
         if LowByte then
         begin
           SyncAudio(FBusTime);
-          PSG_DoCommand(@FPSG, Value and $FF);
+          PSGDoCommand(FPSG, Value and $FF);
         end;
       28:
-        c_VDP_WriteDebugData(@FVDP, Value);
+        VDPWriteDebugData(FVDP, Value);
       30:
-        c_VDP_WriteDebugControl(@FVDP, Value);
+        VDPWriteDebugControl(FVDP, Value);
     end;
   end;
 end;
 
 function TMDConsole.ReadByte(Address: Cardinal): Byte;
-var
-  V: Word;
 begin
-  V := ReadBus(Address and $FFFFFE, not Odd(Address), Odd(Address));
+  var V: Word := ReadBus(Address and $FFFFFE, not Odd(Address), Odd(Address));
   if Odd(Address) then
     Result := V and $FF
   else
@@ -608,10 +597,10 @@ begin
   begin
     SyncAudio(FBusTime);
     if not Odd(Address) then
-      FM_DoAddress(@FFM, (Address shr 1) and 1, Value)
+      FMDoAddress(FFM, (Address shr 1) and 1, Value)
     else
     begin
-      FM_DoData(@FFM, Value);
+      FMDoData(FFM, Value);
       FBusyUntil := FBusTime + 32 * 7;
     end;
   end
@@ -627,10 +616,8 @@ begin
 end;
 
 procedure TMDConsole.SyncZ80(Target: Int64);
-var
-  SavedBus: Int64;
-  Cycles: Cardinal;
 begin
+  var Cycles: Cardinal;
   if FInZ80 or (Target <= FZ80Time) then
     Exit;
   if FBusRequested or FZReset then
@@ -639,12 +626,12 @@ begin
     Exit;
   end;
   FInZ80 := True;
-  SavedBus := FBusTime;
+  var SavedBus: Int64 := FBusTime;
   try
     while FZ80Time < Target do
     begin
       FBusTime := FZ80Time;
-      Cycles := Z80DoInstruction(@FZ80, @FZ80Callbacks);
+      Cycles := Z80DoInstruction(FZ80, FZ80Callbacks);
       Inc(FZ80Time, Max(1, Integer(Cycles)) * 15);
       if FBusRequested or FZReset then
       begin
@@ -659,9 +646,8 @@ begin
 end;
 
 procedure TMDConsole.SyncAudio(Target: Int64);
-var
-  Next, Delta, Span: Int64;
 begin
+  var Next, Delta, Span: Int64;
   while FAudioTime < Target do
   begin
     Next := Min(Target, Min(FNextPCM, Min(FNextFM, FNextPSG)));
@@ -673,13 +659,13 @@ begin
     begin
       FFMSamples[0] := 0;
       FFMSamples[1] := 0;
-      FM_OutputSamples(@FFM, FFMSamples);
+      FMOutputSamples(FFM, FFMSamples);
       Inc(FNextFM, 1008);
     end;
     if Next = FNextPSG then
     begin
       FPSGSamples[0] := 0;
-      PSG_Update(@FPSG, FPSGSamples);
+      PSGUpdate(FPSG, FPSGSamples);
       Inc(FNextPSG, 240);
     end;
     if Next = FNextPCM then
@@ -701,9 +687,8 @@ begin
 end;
 
 procedure TMDConsole.RunUntil(Target: Int64);
-var
-  Stall, Cycles: Int64;
 begin
+  var Stall, Cycles: Int64;
   if FCPUTime < Target then
   begin
     Stall := Min(FDMADebt, Target - FCPUTime);
@@ -713,7 +698,7 @@ begin
     begin
       FCPUBase := FCPUTime;
 
-      Cycles := Clown68000DoCycles(@FCPU, @FCPUCallbacks, (Target - FCPUTime + 6) div 7);
+      Cycles := Clown68000DoCycles(FCPU, FCPUCallbacks, (Target - FCPUTime + 6) div 7);
       Inc(FCPUTime, Cycles * 7);
     end;
   end;
@@ -722,46 +707,45 @@ begin
 end;
 
 procedure TMDConsole.RunFrame;
-var
-  Line, Visible, HCounter: Integer;
-  Target: Int64;
 begin
+  var Visible, HCounter: Integer;
+  var Target: Int64;
   FAudioCount := 0;
   Visible := 224;
-  if FVDP.c_state.c_v30_enabled <> 0 then
+  if FVDP.State.V30Enabled <> 0 then
     Visible := 240;
-  HCounter := FVDP.c_state.c_h_int_interval;
-  for Line := 0 to FLines - 1 do
+  HCounter := FVDP.State.HIntInterval;
+  for var Line := 0 to FLines - 1 do
   begin
     FScanline := Line;
     if Line = 0 then
-      FVDP.c_state.c_currently_in_vblank := 0;
+      FVDP.State.CurrentlyInVblank := 0;
     if Line = Visible then
     begin
-      FVDP.c_state.c_currently_in_vblank := 1;
+      FVDP.State.CurrentlyInVblank := 1;
       FVInt := True;
       UpdateIRQ;
-      Z80Interrupt(@FZ80, 1);
+      Z80Interrupt(FZ80, 1);
     end;
     if Line = Visible + 1 then
-      Z80Interrupt(@FZ80, 0);
+      Z80Interrupt(FZ80, 0);
     if Line < Visible then
     begin
-      c_VDP_BeginScanline(@FVDP);
+      VDPBeginScanline(FVDP);
       Target := FFrameTime + Int64(Line) * 3420 + 1710;
       RunUntil(Target);
-      if FVDP.c_state.c_double_resolution_enabled <> 0 then
+      if FVDP.State.DoubleResolutionEnabled <> 0 then
       begin
-        c_VDP_EndScanline(@FVDP, Line * 2, ScanlineRendered, Self);
-        c_VDP_EndScanline(@FVDP, Line * 2 + 1, ScanlineRendered, Self);
+        VDPEndScanline(FVDP, Line * 2, ScanlineRendered, Self);
+        VDPEndScanline(FVDP, Line * 2 + 1, ScanlineRendered, Self);
       end
       else
-        c_VDP_EndScanline(@FVDP, Line, ScanlineRendered, Self);
+        VDPEndScanline(FVDP, Line, ScanlineRendered, Self);
       if HCounter = 0 then
       begin
         FHInt := True;
         UpdateIRQ;
-        HCounter := FVDP.c_state.c_h_int_interval;
+        HCounter := FVDP.State.HIntInterval;
       end
       else
         Dec(HCounter);

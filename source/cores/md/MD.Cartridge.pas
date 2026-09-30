@@ -33,14 +33,14 @@ uses
   System.IOUtils;
 
 const
-  MaxROMSize = 8 * 1024 * 1024;
+  MAX_ROM_SIZE = 8 * 1024 * 1024;
 
 constructor TMDCartridge.Create(const FileName: string);
 begin
   var Bytes: TBytes;
-  var Stream := TFileStream.Create(FileName, fmOpenRead or fmShareDenyWrite);
+  var Stream := TFileStream.Create(FileName, FmOpenRead or FmShareDenyWrite);
   try
-    if (Stream.Size < $200) or (Stream.Size > MaxROMSize + 512) then
+    if (Stream.Size < $200) or (Stream.Size > MAX_ROM_SIZE + 512) then
       raise EMDCartridge.Create('Mega Drive ROM must contain 512 bytes to 8 MiB');
     SetLength(Bytes, Integer(Stream.Size));
     Stream.ReadBuffer(Bytes[0], Length(Bytes));
@@ -59,23 +59,23 @@ begin
     (Data[$100] = Ord('S')) and (Data[$101] = Ord('E')) and
     (Data[$102] = Ord('G')) and (Data[$103] = Ord('A'))) then
   begin
-    if (Length(Data) <= 512) or ((Length(Data) - 512) mod $4000 <> 0) or (Length(Data) > MaxROMSize + 512) then
+    if (Length(Data) <= 512) or ((Length(Data) - 512) mod $4000 <> 0) or (Length(Data) > MAX_ROM_SIZE + 512) then
       raise EMDCartridge.Create('Invalid SMD size: expected a 512-byte header and 16 KiB blocks');
     SetLength(FData, Length(Data) - 512);
     for var Block := 0 to Length(FData) div $4000 - 1 do
     begin
       var Source := 512 + Block * $4000;
-      for var i := 0 to $1FFF do
+      for var I := 0 to $1FFF do
       begin
-        FData[Block * $4000 + i * 2] := Data[Source + $2000 + i];
-        FData[Block * $4000 + i * 2 + 1] := Data[Source + i];
+        FData[Block * $4000 + I * 2] := Data[Source + $2000 + I];
+        FData[Block * $4000 + I * 2 + 1] := Data[Source + I];
       end;
     end;
   end
   else
     FData := Copy(Data);
 
-  if (Length(FData) < $200) or (Length(FData) > MaxROMSize) or Odd(Length(FData)) then
+  if (Length(FData) < $200) or (Length(FData) > MAX_ROM_SIZE) or Odd(Length(FData)) then
     raise EMDCartridge.Create('Invalid Mega Drive ROM size');
   if HeaderText($100, 4) <> 'SEGA' then
     raise EMDCartridge.Create('Mega Drive ROM has no SEGA header at $100');
@@ -109,9 +109,9 @@ end;
 function TMDCartridge.HeaderText(Offset, Count: Integer): string;
 begin
   Result := '';
-  for var i := Offset to Offset + Count - 1 do
-    if (FData[i] >= 32) and (FData[i] < 127) then
-      Result := Result + Char(FData[i]);
+  for var I := Offset to Offset + Count - 1 do
+    if (FData[I] >= 32) and (FData[I] < 127) then
+      Result := Result + Char(FData[I]);
   Result := Trim(Result);
 end;
 

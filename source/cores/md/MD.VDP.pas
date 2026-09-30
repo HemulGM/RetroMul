@@ -5,405 +5,366 @@ interface
 uses
   System.SysUtils, System.Math, MD.Arithmetic;
 
-{$Q-}
-{$R-}
+{$Q+}
+{$R+}
 
 type
   TVDPConfiguration = record
-    c_sprites_disabled: Byte;
-    c_window_disabled: Byte;
-    c_planes_disabled: array[0..1] of Byte;
-    c_widescreen_tiles: Byte;
+    SpritesDisabled: Byte;
+    WindowDisabled: Byte;
+    PlanesDisabled: array[0..1] of Byte;
+    WidescreenTiles: Byte;
   end;
 
   TVDPTileMetadata = record
-    c_tile_index: Cardinal;
-    c_palette_line: Cardinal;
-    c_x_flip: Byte;
-    c_y_flip: Byte;
-    c_priority: Byte;
+    TileIndex: Cardinal;
+    PaletteLine: Cardinal;
+    XFlip: Byte;
+    YFlip: Byte;
+    Priority: Byte;
   end;
 
   TVDPCachedSprite = record
-    c_y: Cardinal;
-    c_link: Cardinal;
-    c_width: Cardinal;
-    c_height: Cardinal;
+    Y: Cardinal;
+    Link: Cardinal;
+    Width: Cardinal;
+    Height: Cardinal;
   end;
 
   TVDPSpriteRowCacheEntry = record
-    c_table_index: Byte;
-    c_y_in_sprite: Byte;
-    c_width: Byte;
-    c_height: Byte;
+    TableIndex: Byte;
+    YInSprite: Byte;
+    Width: Byte;
+    Height: Byte;
   end;
 
   TVDPSpriteRowCacheRow = record
-    c_total: Byte;
-    c_sprites: array[0..31] of TVDPSpriteRowCacheEntry;
+    Total: Byte;
+    Sprites: array[0..31] of TVDPSpriteRowCacheEntry;
   end;
 
   TVDPAccessState = record
-    c_write_pending: Byte;
-    c_address_register: Cardinal;
-    c_code_register: Word;
-    c_increment: Byte;
-    c_selected_buffer: Integer;
+    WritePending: Byte;
+    AddressRegister: Cardinal;
+    CodeRegister: Word;
+    Increment: Byte;
+    SelectedBuffer: Integer;
   end;
 
   TVDPDMAState = record
-    c_enabled: Byte;
-    c_mode: Integer;
-    c_source_address_high: Byte;
-    c_source_address_low: Word;
-    c_length: Word;
+    Enabled: Byte;
+    Mode: Integer;
+    SourceAddressHigh: Byte;
+    SourceAddressLow: Word;
+    Length: Word;
   end;
 
   TVDPWindowState = record
-    c_aligned_right: Byte;
-    c_aligned_bottom: Byte;
-    c_horizontal_boundary: Word;
-    c_vertical_boundary: Word;
+    AlignedRight: Byte;
+    AlignedBottom: Byte;
+    HorizontalBoundary: Word;
+    VerticalBoundary: Word;
   end;
 
   TVDPDebugState = record
-    c_selected_register: Byte;
-    c_hide_layers: Byte;
-    c_forced_layer: Byte;
+    SelectedRegister: Byte;
+    HideLayers: Byte;
+    ForcedLayer: Byte;
   end;
 
   TVDPSpriteRowCache = record
-    c_needs_updating: Byte;
-    c_rows: array[0..479] of TVDPSpriteRowCacheRow;
+    NeedsUpdating: Byte;
+    Rows: array[0..479] of TVDPSpriteRowCacheRow;
   end;
 
   TVDPState = record
-    c_access: TVDPAccessState;
-    c_dma: TVDPDMAState;
-    c_plane_a_address: Cardinal;
-    c_plane_b_address: Cardinal;
-    c_window_address: Cardinal;
-    c_sprite_table_address: Cardinal;
-    c_hscroll_address: Cardinal;
-    c_window: TVDPWindowState;
-    c_plane_width_shift: Byte;
-    c_plane_height_bitmask: Byte;
-    c_extended_vram_enabled: Byte;
-    c_display_enabled: Byte;
-    c_v_int_enabled: Byte;
-    c_h_int_enabled: Byte;
-    c_h40_enabled: Byte;
-    c_v30_enabled: Byte;
-    c_mega_drive_mode_enabled: Byte;
-    c_shadow_highlight_enabled: Byte;
-    c_double_resolution_enabled: Byte;
-    c_sprite_tile_index_rebase: Byte;
-    c_plane_a_tile_index_rebase: Byte;
-    c_plane_b_tile_index_rebase: Byte;
-    c_background_colour: Byte;
-    c_h_int_interval: Byte;
-    c_currently_in_vblank: Byte;
-    c_allow_sprite_masking: Byte;
-    c_hscroll_mask: Byte;
-    c_vscroll_mode: Integer;
-    c_debug: TVDPDebugState;
-    c_vram: array[0..65535] of Byte;
-    c_cram: array[0..63] of Word;
-    c_vsram: array[0..63] of Word;
-    c_vsram_cache: array[0..1] of Word;
-    c_sprite_table_cache: array[0..127] of array[0..3] of Byte;
-    c_sprite_row_cache: TVDPSpriteRowCache;
-    c_previous_data_writes: array[0..3] of Word;
-    c_kdebug_buffer_index: Word;
-    c_kdebug_buffer: array[0..255] of Byte;
+    Access: TVDPAccessState;
+    Dma: TVDPDMAState;
+    PlaneAAddress: Cardinal;
+    PlaneBAddress: Cardinal;
+    WindowAddress: Cardinal;
+    SpriteTableAddress: Cardinal;
+    HscrollAddress: Cardinal;
+    Window: TVDPWindowState;
+    PlaneWidthShift: Byte;
+    PlaneHeightBitmask: Byte;
+    ExtendedVramEnabled: Byte;
+    DisplayEnabled: Byte;
+    VIntEnabled: Byte;
+    HIntEnabled: Byte;
+    H40Enabled: Byte;
+    V30Enabled: Byte;
+    MegaDriveModeEnabled: Byte;
+    ShadowHighlightEnabled: Byte;
+    DoubleResolutionEnabled: Byte;
+    SpriteTileIndexRebase: Byte;
+    PlaneATileIndexRebase: Byte;
+    PlaneBTileIndexRebase: Byte;
+    BackgroundColour: Byte;
+    HIntInterval: Byte;
+    CurrentlyInVblank: Byte;
+    AllowSpriteMasking: Byte;
+    HscrollMask: Byte;
+    VscrollMode: Integer;
+    Debug: TVDPDebugState;
+    Vram: array[0..65535] of Byte;
+    Cram: array[0..63] of Word;
+    Vsram: array[0..63] of Word;
+    VsramCache: array[0..1] of Word;
+    SpriteTableCache: array[0..127] of array[0..3] of Byte;
+    SpriteRowCache: TVDPSpriteRowCache;
+    PreviousDataWrites: array[0..3] of Word;
+    KdebugBufferIndex: Word;
+    KdebugBuffer: array[0..255] of Byte;
   end;
 
   TVDP = record
-    c_configuration: TVDPConfiguration;
-    c_state: TVDPState;
+    Configuration: TVDPConfiguration;
+    State: TVDPState;
   end;
 
-  TVDPScanlineRenderedCallback = procedure(c_user_data: Pointer; c_scanline: Cardinal; const c_pixels: array of Byte; PixelOffset: Integer; c_left_boundary: Cardinal; c_right_boundary: Cardinal; c_screen_width: Cardinal; c_screen_height: Cardinal);
+  TVDPScanlineRenderedCallback = procedure(UserData: Pointer; Scanline: Cardinal; const Pixels: array of Byte; PixelOffset: Integer; LeftBoundary: Cardinal; RightBoundary: Cardinal; ScreenWidth: Cardinal; ScreenHeight: Cardinal);
 
-  TVDPColourUpdatedCallback = procedure(c_user_data: Pointer; c_index: Cardinal; c_colour: Cardinal);
+  TVDPColourUpdatedCallback = procedure(UserData: Pointer; Index: Cardinal; Colour: Cardinal);
 
-  TVDPDMATransferBeginCallback = procedure(c_user_data: Pointer; c_total_reads: Cardinal; c_target_cycle: Cardinal);
+  TVDPDMATransferBeginCallback = procedure(UserData: Pointer; TotalReads: Cardinal; TargetCycle: Cardinal);
 
-  TVDPReadCallback = function(c_user_data: Pointer; c_address: Cardinal; c_target_cycle: Cardinal): Cardinal;
+  TVDPReadCallback = function(UserData: Pointer; Address: Cardinal; TargetCycle: Cardinal): Cardinal;
 
-  TVDPKDebugCallback = procedure(c_user_data: Pointer; c_string: PByte);
+  TVDPKDebugCallback = procedure(UserData: Pointer; const Text: array of Byte);
 
   TBlitLookupLower = record
-    c_pixels: array[0..255] of Byte;
+    Pixels: array[0..255] of Byte;
   end;
 
   TBlitLookup = record
-    c_lower: array[0..127] of TBlitLookupLower;
+    Lower: array[0..127] of TBlitLookupLower;
   end;
 
   TBlitLookupTables = record
-    c_normal: TBlitLookup;
-    c_shadow_highlight: TBlitLookup;
-    c_forced_layer: TBlitLookup;
+    Normal: TBlitLookup;
+    ShadowHighlight: TBlitLookup;
+    ForcedLayer: TBlitLookup;
   end;
 
-  PVDPState = ^TVDPState;
-
-  PVDP = ^TVDP;
-
-  PBlitLookup = ^TBlitLookup;
-
-  PVDPSpriteRowCacheRow = ^TVDPSpriteRowCacheRow;
-
-  PVDPSpriteRowCacheEntry = ^TVDPSpriteRowCacheEntry;
-
 const
-  c_VDP_ACCESS_VRAM = ( -1) + 1;
-  c_VDP_ACCESS_CRAM = ( c_VDP_ACCESS_VRAM) + 1;
-  c_VDP_ACCESS_VSRAM = ( c_VDP_ACCESS_CRAM) + 1;
-  c_VDP_ACCESS_VRAM_8BIT = ( c_VDP_ACCESS_VSRAM) + 1;
-  c_VDP_ACCESS_INVALID = ( c_VDP_ACCESS_VRAM_8BIT) + 1;
-  c_VDP_DMA_MODE_MEMORY_TO_VRAM = ( -1) + 1;
-  c_VDP_DMA_MODE_FILL = ( c_VDP_DMA_MODE_MEMORY_TO_VRAM) + 1;
-  c_VDP_DMA_MODE_COPY = ( c_VDP_DMA_MODE_FILL) + 1;
-  c_VDP_HSCROLL_MODE_FULL = ( -1) + 1;
-  c_VDP_HSCROLL_MODE_INVALID = ( c_VDP_HSCROLL_MODE_FULL) + 1;
-  c_VDP_HSCROLL_MODE_1CELL = ( c_VDP_HSCROLL_MODE_INVALID) + 1;
-  c_VDP_HSCROLL_MODE_1LINE = ( c_VDP_HSCROLL_MODE_1CELL) + 1;
-  c_VDP_VSCROLL_MODE_FULL = ( -1) + 1;
-  c_VDP_VSCROLL_MODE_2CELL = ( c_VDP_VSCROLL_MODE_FULL) + 1;
-  c_SHADOW_HIGHLIGHT_NORMAL = ( 0 shl 6);
-  c_SHADOW_HIGHLIGHT_SHADOW = ( 1 shl 6);
-  c_SHADOW_HIGHLIGHT_HIGHLIGHT = ( 2 shl 6);
+  VDP_ACCESS_VRAM = 0;
+  VDP_ACCESS_CRAM = VDP_ACCESS_VRAM + 1;
+  VDP_ACCESS_VSRAM = VDP_ACCESS_CRAM + 1;
+  VDP_ACCESS_VRAM_8_BIT = VDP_ACCESS_VSRAM + 1;
+  VDP_ACCESS_INVALID = VDP_ACCESS_VRAM_8_BIT + 1;
+  VDP_DMA_MODE_MEMORY_TO_VRAM = 0;
+  VDP_DMA_MODE_FILL = VDP_DMA_MODE_MEMORY_TO_VRAM + 1;
+  VDP_DMA_MODE_COPY = VDP_DMA_MODE_FILL + 1;
+  VDP_HSCROLL_MODE_FULL = 0;
+  VDP_HSCROLL_MODE_INVALID = VDP_HSCROLL_MODE_FULL + 1;
+  VDP_HSCROLL_MODE_1_CELL = VDP_HSCROLL_MODE_INVALID + 1;
+  VDP_HSCROLL_MODE_1_LINE = VDP_HSCROLL_MODE_1_CELL + 1;
+  VDP_VSCROLL_MODE_FULL = 0;
+  VDP_VSCROLL_MODE_2_CELL = VDP_VSCROLL_MODE_FULL + 1;
+  SHADOW_HIGHLIGHT_NORMAL = ( 0 shl 6);
+  SHADOW_HIGHLIGHT_SHADOW = ( 1 shl 6);
+  SHADOW_HIGHLIGHT_HIGHLIGHT = ( 2 shl 6);
 
-function c_IsDMAPending(c_state: PVDPState): Byte;
+function IsDMAPending(const State: TVDPState): Byte;
 
-procedure c_ClearDMAPending(c_state: PVDPState);
+procedure ClearDMAPending(var State: TVDPState);
 
-function c_IsInReadMode(c_state: PVDPState): Byte;
+function IsInReadMode(const State: TVDPState): Byte;
 
-procedure c_SetHScrollMode(c_state: PVDPState; c_mode: Integer);
+procedure SetHScrollMode(var State: TVDPState; Mode: Integer);
 
-function c_GetSpriteTableAddress(c_state: PVDPState): Cardinal;
+function GetSpriteTableAddress(const State: TVDPState): Cardinal;
 
-function c_GetWindowPlaneTableAddress(c_state: PVDPState): Cardinal;
+function GetWindowPlaneTableAddress(const State: TVDPState): Cardinal;
 
-function c_DecodeVRAMAddress(c_state: PVDPState; c_address: Cardinal): Cardinal;
+function DecodeVRAMAddress(const State: TVDPState; Address: Cardinal): Cardinal;
 
-function c_ReadVRAM(c_state: PVDPState; c_address: Cardinal): Cardinal;
+function ReadVRAM(const State: TVDPState; Address: Cardinal): Cardinal;
 
-procedure c_WriteVRAM(c_vdp_: PVDP; c_address: Cardinal; c_value: Cardinal);
+procedure WriteVRAM(var Vdp: TVDP; Address: Cardinal; Value: Cardinal);
 
-procedure c_IncrementAccessAddressRegister(c_state: PVDPState);
+procedure IncrementAccessAddressRegister(var State: TVDPState);
 
-procedure c_WriteAndIncrement(c_vdp_: PVDP; c_value: Cardinal; c_colour_updated_callback: TVDPColourUpdatedCallback; c_colour_updated_callback_user_data: Pointer);
+procedure WriteAndIncrement(var Vdp: TVDP; Value: Cardinal; ColourUpdatedCallback: TVDPColourUpdatedCallback; ColourUpdatedCallbackUserData: Pointer);
 
-function c_ReadAndIncrement(c_state: PVDPState): Cardinal;
+function ReadAndIncrement(var State: TVDPState): Cardinal;
 
-procedure ConstantInitialise();
+procedure ConstantInitialise;
 
-procedure c_VDP_Initialise(c_vdp_: PVDP);
+procedure VDPInitialise(var Vdp: TVDP);
 
-function c_GetHScrollTableOffset(c_state: PVDPState; c_scanline: Cardinal): Cardinal;
+function GetHScrollTableOffset(const State: TVDPState; Scanline: Cardinal): Cardinal;
 
-function c_GetVScrollValue(c_vdp_: PVDP; c_plane_index: Cardinal; c_tile_pair: Cardinal): Cardinal;
+function GetVScrollValue(var Vdp: TVDP; PlaneIndex: Cardinal; TilePair: Cardinal): Cardinal;
 
-procedure c_RenderTilePair(c_vdp_: PVDP; c_pixel_y_in_plane: Cardinal; c_vram_address: Cardinal; c_base_tile_vram_address: Cardinal; var c_metapixels: array of Byte; var PixelIndex: Integer; c_blit_lookup_list: PBlitLookup);
+procedure RenderTilePair(var Vdp: TVDP; PixelYInPlane: Cardinal; VramAddress: Cardinal; BaseTileVramAddress: Cardinal; var Metapixels: array of Byte; var PixelIndex: Integer; const BlitLookupList: TBlitLookup);
 
-procedure c_RenderScrollingPlane(c_vdp_: PVDP; c_start: Cardinal; c_end: Cardinal; c_scanline: Cardinal; c_plane_index: Cardinal; c_plane_x_offset: Cardinal; PixelOffset: Integer; var c_metapixels: array of Byte; c_blit_lookup_list: PBlitLookup);
+procedure RenderScrollingPlane(var Vdp: TVDP; Start: Cardinal; EndColumn: Cardinal; Scanline: Cardinal; PlaneIndex: Cardinal; PlaneXOffset: Cardinal; PixelOffset: Integer; var Metapixels: array of Byte; const BlitLookupList: TBlitLookup);
 
-procedure c_RenderWindowPlane(c_vdp_: PVDP; c_start: Cardinal; c_end: Cardinal; c_scanline: Cardinal; var c_metapixels: array of Byte; c_blit_lookup_list: PBlitLookup);
+procedure RenderWindowPlane(var Vdp: TVDP; Start: Cardinal; EndColumn: Cardinal; Scanline: Cardinal; var Metapixels: array of Byte; const BlitLookupList: TBlitLookup);
 
-procedure c_UpdateSpriteCache(c_vdp_: PVDP);
+procedure UpdateSpriteCache(var Vdp: TVDP);
 
-procedure c_RenderSprites(c_vdp_: PVDP; var c_sprite_metapixels: array of Byte; c_scanline: Cardinal);
+procedure RenderSprites(var Vdp: TVDP; var SpriteMetapixels: array of Byte; Scanline: Cardinal);
 
-procedure c_RenderScrollPlane(c_vdp_: PVDP; c_left_boundary: Cardinal; c_right_boundary: Cardinal; c_scanline: Cardinal; var c_plane_metapixels: array of Byte; c_blit_lookup_list: PBlitLookup; c_plane_index: Cardinal);
+procedure RenderScrollPlane(var Vdp: TVDP; LeftBoundary: Cardinal; RightBoundary: Cardinal; Scanline: Cardinal; var PlaneMetapixels: array of Byte; const BlitLookupList: TBlitLookup; PlaneIndex: Cardinal);
 
-procedure c_RenderForegroundPlane(c_vdp_: PVDP; c_left_boundary: Cardinal; c_right_boundary: Cardinal; c_scanline: Cardinal; var c_plane_metapixels: array of Byte; c_blit_lookup_list: PBlitLookup; c_window_plane: Byte);
+procedure RenderForegroundPlane(var Vdp: TVDP; LeftBoundary: Cardinal; RightBoundary: Cardinal; Scanline: Cardinal; var PlaneMetapixels: array of Byte; const BlitLookupList: TBlitLookup; WindowPlane: Byte);
 
-procedure c_RenderSpritePlane(var c_plane_metapixels: array of Byte; var c_sprite_metapixels: array of Byte; c_blit_lookup_list: PBlitLookup; c_mask: Cardinal; c_left_boundary_pixels: Cardinal; c_right_boundary_pixels: Cardinal);
+procedure RenderSpritePlane(var PlaneMetapixels: array of Byte; var SpriteMetapixels: array of Byte; const BlitLookupList: TBlitLookup; Mask: Cardinal; LeftBoundaryPixels: Cardinal; RightBoundaryPixels: Cardinal);
 
-procedure c_RenderForegroundAndSpritePlanes(c_vdp_: PVDP; c_scanline: Cardinal; var c_plane_metapixels: array of Byte; var c_sprite_metapixels: array of Byte; c_window_plane: Byte; c_scanline_rendered_callback: TVDPScanlineRenderedCallback; c_scanline_rendered_callback_user_data: Pointer);
+procedure RenderForegroundAndSpritePlanes(var Vdp: TVDP; Scanline: Cardinal; var PlaneMetapixels: array of Byte; var SpriteMetapixels: array of Byte; WindowPlane: Byte; ScanlineRenderedCallback: TVDPScanlineRenderedCallback; ScanlineRenderedCallbackUserData: Pointer);
 
-procedure c_VDP_BeginScanline(c_vdp_: PVDP);
+procedure VDPBeginScanline(var Vdp: TVDP);
 
-procedure c_VDP_EndScanline(c_vdp_: PVDP; c_scanline: Cardinal; c_scanline_rendered_callback: TVDPScanlineRenderedCallback; c_scanline_rendered_callback_user_data: Pointer);
+procedure VDPEndScanline(var Vdp: TVDP; Scanline: Cardinal; ScanlineRenderedCallback: TVDPScanlineRenderedCallback; ScanlineRenderedCallbackUserData: Pointer);
 
-function c_VDP_ReadData(c_vdp_: PVDP): Cardinal;
+function VDPReadData(var Vdp: TVDP): Cardinal;
 
-function c_VDP_ReadControl(c_vdp_: PVDP): Cardinal;
+function VDPReadControl(var Vdp: TVDP): Cardinal;
 
-procedure c_UpdateFakeFIFO(c_state: PVDPState; c_value: Cardinal);
+procedure UpdateFakeFIFO(var State: TVDPState; Value: Cardinal);
 
-procedure c_VDP_WriteData(c_vdp_: PVDP; c_value: Cardinal; c_colour_updated_callback: TVDPColourUpdatedCallback; c_colour_updated_callback_user_data: Pointer);
+procedure VDPWriteData(var Vdp: TVDP; Value: Cardinal; ColourUpdatedCallback: TVDPColourUpdatedCallback; ColourUpdatedCallbackUserData: Pointer);
 
-procedure c_VDP_WriteControl(c_vdp_: PVDP; c_value: Cardinal; c_colour_updated_callback: TVDPColourUpdatedCallback; c_colour_updated_callback_user_data: Pointer; c_dma_transfer_begin_callback: TVDPDMATransferBeginCallback; c_read_callback: TVDPReadCallback; c_read_callback_user_data: Pointer; c_kdebug_callback: TVDPKDebugCallback; c_kdebug_callback_user_data: Pointer; c_target_cycle: Cardinal);
+procedure VDPWriteControl(var Vdp: TVDP; Value: Cardinal; ColourUpdatedCallback: TVDPColourUpdatedCallback; ColourUpdatedCallbackUserData: Pointer; DmaTransferBeginCallback: TVDPDMATransferBeginCallback; ReadCallback: TVDPReadCallback; ReadCallbackUserData: Pointer; KdebugCallback: TVDPKDebugCallback; KdebugCallbackUserData: Pointer; TargetCycle: Cardinal);
 
-procedure c_VDP_WriteDebugData(c_vdp_: PVDP; c_value: Cardinal);
+procedure VDPWriteDebugData(var Vdp: TVDP; Value: Cardinal);
 
-procedure c_VDP_WriteDebugControl(c_vdp_: PVDP; c_value: Cardinal);
+procedure VDPWriteDebugControl(var Vdp: TVDP; Value: Cardinal);
 
-function c_VDP_ReadVRAMWord(c_state: PVDPState; c_address: Cardinal): Cardinal;
+function VDPReadVRAMWord(const State: TVDPState; Address: Cardinal): Cardinal;
 
-function c_VDP_DecomposeTileMetadata(c_packed_tile_metadata: Cardinal): TVDPTileMetadata;
+function VDPDecomposeTileMetadata(PackedTileMetadata: Cardinal): TVDPTileMetadata;
 
-function c_VDP_GetCachedSprite(c_state: PVDPState; c_sprite_index: Cardinal): TVDPCachedSprite;
+function VDPGetCachedSprite(const State: TVDPState; SpriteIndex: Cardinal): TVDPCachedSprite;
 
 implementation
 
 const
-  PlanePadding = 16;
-  SpritePadding = 31;
+  PLANE_PADDING = 16;
+  SPRITE_PADDING = 31;
+  // 320 + 12 * 16 pixels, plus the fixed scanline padding.
+  MAX_WIDESCREEN_TILES = 12;
 
 var
-  c_blit_lookup: TBlitLookupTables;
+  BlitLookup: TBlitLookupTables;
 
-function ArithmeticShiftRight(Value: Integer; Bits: Cardinal): Integer; inline;
+function GetWidescreenTiles(const Vdp: TVDP): Cardinal; inline;
 begin
-  if Bits = 0 then
-    Exit(Value);
-  Result := Integer((Cardinal(Value) shr Bits) or (Cardinal(-Ord(Value < 0)) shl (32 - Bits)));
+  Result := Min(Vdp.Configuration.WidescreenTiles, MAX_WIDESCREEN_TILES);
 end;
 
-function c_IsDMAPending(c_state: PVDPState): Byte;
+function IsDMAPending(const State: TVDPState): Byte;
 begin
-  Exit(Byte(Ord(Integer(c_state^.c_access.c_code_register and $20) <> Integer(0))));
+  Exit(Ord((State.Access.CodeRegister and $20) <> 0));
 end;
 
-procedure c_ClearDMAPending(c_state: PVDPState);
+procedure ClearDMAPending(var State: TVDPState);
 begin
-  c_state^.c_access.c_code_register := Word(c_state^.c_access.c_code_register and (not $20));
+  State.Access.CodeRegister := Word(State.Access.CodeRegister and (not $20));
 end;
 
-function c_IsInReadMode(c_state: PVDPState): Byte;
+function IsInReadMode(const State: TVDPState): Byte;
 begin
-  Exit(Byte(Ord(Integer(c_state^.c_access.c_code_register and 1) = Integer(0))));
+  Exit(Ord((State.Access.CodeRegister and 1) = 0));
 end;
 
-procedure c_SetHScrollMode(c_state: PVDPState; c_mode: Integer);
+procedure SetHScrollMode(var State: TVDPState; Mode: Integer);
 const
-  c_masks: array[0..3] of Byte = ($00, $07, $F8, $FF);
+  MASKS: array[0..3] of Byte = ($00, $07, $F8, $FF);
 begin
-  c_state^.c_hscroll_mask := Byte(c_masks[Cardinal(c_mode)]);
+  State.HscrollMask := Byte(MASKS[Cardinal(Mode)]);
 end;
 
-function c_GetSpriteTableAddress(c_state: PVDPState): Cardinal;
+function GetSpriteTableAddress(const State: TVDPState): Cardinal;
 begin
-  Exit(Cardinal(Cardinal(c_state^.c_sprite_table_address) and Cardinal((not Cardinal($1FF)) shl c_state^.c_h40_enabled)));
+  Exit(State.SpriteTableAddress and ((not Cardinal($1FF)) shl State.H40Enabled));
 end;
 
-function c_GetWindowPlaneTableAddress(c_state: PVDPState): Cardinal;
+function GetWindowPlaneTableAddress(const State: TVDPState): Cardinal;
 begin
-  Exit(Cardinal(Cardinal(c_state^.c_window_address) and Cardinal((not Cardinal($7FF)) shl c_state^.c_h40_enabled)));
+  Exit(State.WindowAddress and ((not Cardinal($7FF)) shl State.H40Enabled));
 end;
 
-function c_DecodeVRAMAddress(c_state: PVDPState; c_address: Cardinal): Cardinal;
+function DecodeVRAMAddress(const State: TVDPState; Address: Cardinal): Cardinal;
 begin
-  if (c_state^.c_extended_vram_enabled <> 0) then
-  begin
-    c_address := Cardinal(Cardinal(Cardinal(Cardinal((Cardinal(c_address) and Cardinal($1F802)) shr 1) or Cardinal((Cardinal(c_address) and Cardinal($400)) shr 9)) or Cardinal(Cardinal(c_address) and Cardinal($3FC))) or Cardinal((Cardinal(c_address) and Cardinal(1)) shl 16));
-  end
+  if State.ExtendedVramEnabled <> 0 then
+    Address := ((((Address and $1F802) shr 1) or ((Address and $400) shr 9)) or (Address and $3FC)) or ((Address and 1) shl 16)
   else
-  begin
-    c_address := Cardinal(Cardinal(c_address) and Cardinal($FFFF));
-  end;
-  Exit(Cardinal(Cardinal(c_address) xor Cardinal(1)));
+    Address := Address and $FFFF;
+  Exit(Address xor 1);
 end;
 
-function c_ReadVRAM(c_state: PVDPState; c_address: Cardinal): Cardinal;
+function ReadVRAM(const State: TVDPState; Address: Cardinal): Cardinal;
 begin
-  Exit(Cardinal(c_state^.c_vram[(Cardinal(c_DecodeVRAMAddress(c_state, c_address)) mod Cardinal(Length(c_state^.c_vram)))]));
+  Exit(Cardinal(State.Vram[(DecodeVRAMAddress(State, Address) mod Cardinal(Length(State.Vram)))]));
 end;
 
-procedure c_WriteVRAM(c_vdp_: PVDP; c_address: Cardinal; c_value: Cardinal);
-var
-  c_state: PVDPState;
-  c_decoded_address: Cardinal;
-  c_sprite_table_index: Cardinal;
-  temp30: Integer;
-  temp31: Integer;
+procedure WriteVRAM(var Vdp: TVDP; Address: Cardinal; Value: Cardinal);
 begin
-  c_state := @c_vdp_^.c_state;
-  c_decoded_address := Cardinal(c_DecodeVRAMAddress(c_state, c_address));
-  c_sprite_table_index := Cardinal(Sub32(c_address, c_GetSpriteTableAddress(c_state)));
-  if (c_vdp_^.c_state.c_h40_enabled <> 0) then
-  begin
-    temp31 := 20;
-  end
+  var Temp31: Integer;
+
+  var DecodedAddress: Cardinal := DecodeVRAMAddress(Vdp.State, Address);
+  var SpriteTableIndex: Cardinal := Sub32(Address, GetSpriteTableAddress(Vdp.State));
+  if Vdp.State.H40Enabled <> 0 then
+    Temp31 := 20
   else
-  begin
-    temp31 := 16;
-  end;
-  temp30 := Ord(Cardinal(c_sprite_table_index) < Cardinal(Mul32(Mul32(Mul32(Add32(temp31, Mul32(Cardinal(Add32(Cardinal(c_vdp_^.c_configuration.c_widescreen_tiles), 2 - 1)) div Cardinal(2), 2)), 2), 2), 8)));
-  if temp30 <> 0 then
-  begin
-    temp30 := Ord(Cardinal(Cardinal(c_sprite_table_index) and Cardinal(4)) = Cardinal(0));
-  end;
-  if (temp30 <> 0) then
+    Temp31 := 16;
+  if (SpriteTableIndex < Mul32(Mul32(Mul32(Add32(Temp31, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)), 2), 2), 8)) and ((SpriteTableIndex and 4) = 0) then
   begin
 
-    c_state^.c_sprite_table_cache[c_sprite_table_index div 8][c_sprite_table_index and 3] := Byte(c_value);
-    c_state^.c_sprite_row_cache.c_needs_updating := Byte(1);
+    Vdp.State.SpriteTableCache[SpriteTableIndex div 8][SpriteTableIndex and 3] := Byte(Value);
+    Vdp.State.SpriteRowCache.NeedsUpdating := 1;
   end;
-  if (Cardinal(c_decoded_address) < Cardinal(Length(c_state^.c_vram))) then
-  begin
-    c_state^.c_vram[c_decoded_address] := Byte(c_value);
-  end;
+  if DecodedAddress < Cardinal(Length(Vdp.State.Vram)) then
+    Vdp.State.Vram[DecodedAddress] := Byte(Value);
 end;
 
-procedure c_IncrementAccessAddressRegister(c_state: PVDPState);
+procedure IncrementAccessAddressRegister(var State: TVDPState);
 begin
-  c_state^.c_access.c_address_register := Cardinal(Add32(c_state^.c_access.c_address_register, c_state^.c_access.c_increment));
-  c_state^.c_access.c_address_register := Cardinal(Cardinal(c_state^.c_access.c_address_register) and Cardinal($1FFFF));
+  State.Access.AddressRegister := Add32(State.Access.AddressRegister, State.Access.Increment);
+  State.Access.AddressRegister := State.Access.AddressRegister and $1FFFF;
 end;
 
-procedure c_WriteAndIncrement(c_vdp_: PVDP; c_value: Cardinal; c_colour_updated_callback: TVDPColourUpdatedCallback; c_colour_updated_callback_user_data: Pointer);
-var
-  c_state: PVDPState;
-  c_colour: Cardinal;
-  c_index_wrapped: Cardinal;
-  c_limit: Cardinal;
-  c_index_wrapped_scope32: Cardinal;
-  c_vscroll: Word;
-  c_i: Cardinal;
+procedure WriteAndIncrement(var Vdp: TVDP; Value: Cardinal; ColourUpdatedCallback: TVDPColourUpdatedCallback; ColourUpdatedCallbackUserData: Pointer);
 begin
-  c_state := @c_vdp_^.c_state;
-  case c_state^.c_access.c_selected_buffer of
-    c_VDP_ACCESS_VRAM:
+  case Vdp.State.Access.SelectedBuffer of
+    VDP_ACCESS_VRAM:
       begin
-        c_WriteVRAM(c_vdp_, (Cardinal(c_state^.c_access.c_address_register) xor Cardinal(0)), Cardinal(Cardinal(c_value) and Cardinal($FF)));
-        c_WriteVRAM(c_vdp_, (Cardinal(c_state^.c_access.c_address_register) xor Cardinal(1)), Cardinal(c_value shr 8));
+        WriteVRAM(Vdp, (Vdp.State.Access.AddressRegister xor 0), (Value and $FF));
+        WriteVRAM(Vdp, (Vdp.State.Access.AddressRegister xor 1), (Value shr 8));
       end;
-    c_VDP_ACCESS_CRAM:
+    VDP_ACCESS_CRAM:
       begin
-        c_colour := Cardinal(Cardinal(c_value) and Cardinal($EEE));
-        c_index_wrapped := Cardinal(Cardinal(Cardinal(c_state^.c_access.c_address_register) div Cardinal(2)) mod Cardinal(Length(c_state^.c_cram)));
-        c_state^.c_cram[c_index_wrapped] := Word(c_colour);
-        c_colour_updated_callback(Pointer(c_colour_updated_callback_user_data), (Add32(c_SHADOW_HIGHLIGHT_NORMAL, c_index_wrapped)), (Cardinal(c_colour) or Cardinal((Cardinal(c_colour) and Cardinal($888)) shr 3)));
-        c_colour_updated_callback(Pointer(c_colour_updated_callback_user_data), (Add32(c_SHADOW_HIGHLIGHT_SHADOW, c_index_wrapped)), (c_colour shr 1));
-        c_colour_updated_callback(Pointer(c_colour_updated_callback_user_data), (Add32(c_SHADOW_HIGHLIGHT_HIGHLIGHT, c_index_wrapped)), (Add32($888, c_colour shr 1)));
+        var Colour := Value and $EEE;
+        var IndexWrapped := Cardinal(Cardinal(Vdp.State.Access.AddressRegister div 2) mod Cardinal(Length(Vdp.State.Cram)));
+        Vdp.State.Cram[IndexWrapped] := Word(Colour);
+        ColourUpdatedCallback(ColourUpdatedCallbackUserData, (Add32(SHADOW_HIGHLIGHT_NORMAL, IndexWrapped)), (Colour or ((Colour and $888) shr 3)));
+        ColourUpdatedCallback(ColourUpdatedCallbackUserData, (Add32(SHADOW_HIGHLIGHT_SHADOW, IndexWrapped)), (Colour shr 1));
+        ColourUpdatedCallback(ColourUpdatedCallbackUserData, (Add32(SHADOW_HIGHLIGHT_HIGHLIGHT, IndexWrapped)), (Add32($888, Colour shr 1)));
       end;
-    c_VDP_ACCESS_VSRAM:
+    VDP_ACCESS_VSRAM:
       begin
-        c_limit := Cardinal(40);
-        c_index_wrapped_scope32 := Cardinal(Cardinal(Cardinal(c_state^.c_access.c_address_register) div Cardinal(2)) mod Cardinal(Length(c_state^.c_vsram)));
-        if (Cardinal(c_index_wrapped_scope32) < Cardinal(c_limit)) then
+        var Limit: Cardinal := 40;
+        var IndexWrappedScope32 := Cardinal(Cardinal(Vdp.State.Access.AddressRegister div 2) mod Cardinal(Length(Vdp.State.Vsram)));
+        if IndexWrappedScope32 < Limit then
         begin
-          c_vscroll := Word(Word(Cardinal(c_value) and Cardinal($7FF)));
-          if (Cardinal(c_index_wrapped_scope32) < Cardinal(2)) then
+          var Vscroll := Word(Value and $7FF);
+          if IndexWrappedScope32 < 2 then
           begin
-            c_i := Cardinal(Add32(c_limit, c_index_wrapped_scope32));
-            while (Cardinal(c_i) < Cardinal(Length(c_state^.c_vsram))) do
+            var i: Cardinal := Add32(Limit, IndexWrappedScope32);
+            while (i < Cardinal(Length(Vdp.State.Vsram))) do
             begin
-              c_state^.c_vsram[c_i] := Word(c_vscroll);
-              c_i := Cardinal(Add32(c_i, 2));
+              Vdp.State.Vsram[i] := Vscroll;
+              i := Add32(i, 2);
             end;
           end;
-          c_state^.c_vsram[c_index_wrapped_scope32] := Word(c_vscroll);
+          Vdp.State.Vsram[IndexWrappedScope32] := Vscroll;
         end;
       end;
-    c_VDP_ACCESS_INVALID, c_VDP_ACCESS_VRAM_8BIT:
+    VDP_ACCESS_INVALID, VDP_ACCESS_VRAM_8_BIT:
       begin
         ;
       end;
@@ -413,34 +374,34 @@ begin
       ;
     end;
   end;
-  c_IncrementAccessAddressRegister(c_state);
+  IncrementAccessAddressRegister(Vdp.State);
 end;
 
-function c_ReadAndIncrement(c_state: PVDPState): Cardinal;
+function ReadAndIncrement(var State: TVDPState): Cardinal;
 begin
-  var c_word_address: Cardinal := Cardinal(Cardinal(c_state^.c_access.c_address_register) div Cardinal(2));
-  var c_value: Cardinal := c_state^.c_previous_data_writes[0];
-  case c_state^.c_access.c_selected_buffer of
-    c_VDP_ACCESS_VRAM:
+  var WordAddress: Cardinal := Cardinal(State.Access.AddressRegister div 2);
+  var Value: Cardinal := State.PreviousDataWrites[0];
+  case State.Access.SelectedBuffer of
+    VDP_ACCESS_VRAM:
       begin
-        c_value := Cardinal(Cardinal(c_ReadVRAM(c_state, (Cardinal(Mul32(c_word_address, 2)) xor Cardinal(0)))) or Cardinal(c_ReadVRAM(c_state, (Cardinal(Mul32(c_word_address, 2)) xor Cardinal(1))) shl 8));
+        Value := ReadVRAM(State, (Mul32(WordAddress, 2) xor 0)) or (ReadVRAM(State, (Mul32(WordAddress, 2) xor 1)) shl 8);
       end;
-    c_VDP_ACCESS_CRAM:
+    VDP_ACCESS_CRAM:
       begin
-        c_value := Cardinal(Cardinal(c_value) and Cardinal(not $EEE));
-        c_value := Cardinal(Cardinal(c_value) or Cardinal(c_state^.c_cram[(Cardinal(c_word_address) mod Cardinal(Length(c_state^.c_cram)))]));
+        Value := Value and Cardinal(not $EEE);
+        Value := Value or Cardinal(State.Cram[(WordAddress mod Cardinal(Length(State.Cram)))]);
       end;
-    c_VDP_ACCESS_VSRAM:
+    VDP_ACCESS_VSRAM:
       begin
-        c_value := Cardinal(Cardinal(c_value) and Cardinal(not $7FF));
-        c_value := Cardinal(Cardinal(c_value) or Cardinal(c_state^.c_vsram[(Cardinal(c_word_address) mod Cardinal(Length(c_state^.c_vsram)))]));
+        Value := Value and Cardinal(not $7FF);
+        Value := Value or Cardinal(State.Vsram[(WordAddress mod Cardinal(Length(State.Vsram)))]);
       end;
-    c_VDP_ACCESS_VRAM_8BIT:
+    VDP_ACCESS_VRAM_8_BIT:
       begin
-        c_value := Cardinal(Cardinal(c_value) and Cardinal(not $FF));
-        c_value := Cardinal(Cardinal(c_value) or Cardinal(c_ReadVRAM(c_state, c_state^.c_access.c_address_register)));
+        Value := Value and Cardinal(not $FF);
+        Value := Value or ReadVRAM(State, State.Access.AddressRegister);
       end;
-    c_VDP_ACCESS_INVALID:
+    VDP_ACCESS_INVALID:
       begin
         ;
       end;
@@ -450,1549 +411,1177 @@ begin
       ;
     end;
   end;
-  c_IncrementAccessAddressRegister(c_state);
-  Exit(Cardinal(c_value));
+  IncrementAccessAddressRegister(State);
+  Exit(Value);
 end;
 
-procedure ConstantInitialise();
-var
-  c_old_pixel: Cardinal;
-  c_palette_line_index_mask: Cardinal;
-  c_colour_index_mask: Cardinal;
-  c_priority_mask: Cardinal;
-  c_not_shadowed_mask: Cardinal;
-  c_old_palette_line_index: Cardinal;
-  c_old_colour_index: Cardinal;
-  c_old_priority: Byte;
-  c_old_not_shadowed: Byte;
-  c_new_palette_line_index: Cardinal;
-  c_new_colour_index: Cardinal;
-  c_new_priority: Byte;
-  c_new_not_shadowed: Byte;
-  c_draw_new_pixel: Byte;
-  temp53: Integer;
-  temp54: Integer;
-  temp55: Integer;
-  c_output: Cardinal;
-  temp56: Cardinal;
-  temp57: Cardinal;
-  temp58: Integer;
-  temp66: Integer;
-  temp67: Integer;
-  temp68: Integer;
-  temp69: Integer;
+procedure ConstantInitialise;
 begin
-  var c_new_pixel: Cardinal := 0;
-  while (Cardinal(c_new_pixel) < Cardinal(Length(c_blit_lookup.c_normal.c_lower))) do
+  var PaletteLineIndexMask: Cardinal;
+  var ColourIndexMask: Cardinal;
+  var PriorityMask: Cardinal;
+  var NotShadowedMask: Cardinal;
+  var OldPaletteLineIndex: Cardinal;
+  var OldColourIndex: Cardinal;
+  var OldPriority: Byte;
+  var OldNotShadowed: Byte;
+  var NewPaletteLineIndex: Cardinal;
+  var NewColourIndex: Cardinal;
+  var NewPriority: Byte;
+  var NewNotShadowed: Byte;
+  var DrawNewPixel: Byte;
+  var Temp53: Integer;
+  var Temp54: Integer;
+  var Temp55: Integer;
+  var Output: Cardinal;
+  var Temp56: Cardinal;
+  var Temp57: Cardinal;
+  var Temp66: Integer;
+  var Temp67: Integer;
+  var Temp69: Integer;
+  for var NewPixelItem := 0 to High(BlitLookup.Normal.Lower) do
   begin
-    c_old_pixel := Cardinal(0);
-    while (Cardinal(c_old_pixel) < Cardinal(Length(c_blit_lookup.c_normal.c_lower[0].c_pixels))) do
+    for var OldPixelItem := 0 to High(BlitLookup.Normal.Lower[0].Pixels) do
     begin
-      c_palette_line_index_mask := Cardinal($F);
-      c_colour_index_mask := Cardinal($3F);
-      c_priority_mask := Cardinal($40);
-      c_not_shadowed_mask := Cardinal($80);
-      c_old_palette_line_index := Cardinal(Cardinal(c_old_pixel) and Cardinal(c_palette_line_index_mask));
-      c_old_colour_index := Cardinal(Cardinal(c_old_pixel) and Cardinal(c_colour_index_mask));
-      c_old_priority := Byte(Ord(Cardinal(Cardinal(c_old_pixel) and Cardinal(c_priority_mask)) <> Cardinal(0)));
-      c_old_not_shadowed := Byte(Ord(Cardinal(Cardinal(c_old_pixel) and Cardinal(c_not_shadowed_mask)) <> Cardinal(0)));
-      c_new_palette_line_index := Cardinal(Cardinal(c_new_pixel) and Cardinal(c_palette_line_index_mask));
-      c_new_colour_index := Cardinal(Cardinal(c_new_pixel) and Cardinal(c_colour_index_mask));
-      c_new_priority := Byte(Ord(Cardinal(Cardinal(c_new_pixel) and Cardinal(c_priority_mask)) <> Cardinal(0)));
-      c_new_not_shadowed := Byte(c_new_priority);
-      temp53 := Ord(Cardinal(c_new_palette_line_index) <> Cardinal(0));
-      if temp53 <> 0 then
+      PaletteLineIndexMask := $F;
+      ColourIndexMask := $3F;
+      PriorityMask := $40;
+      NotShadowedMask := $80;
+      OldPaletteLineIndex := Cardinal(OldPixelItem and PaletteLineIndexMask);
+      OldColourIndex := Cardinal(OldPixelItem and ColourIndexMask);
+      OldPriority := Ord(Cardinal(OldPixelItem and PriorityMask) <> 0);
+      OldNotShadowed := Ord(Cardinal(OldPixelItem and NotShadowedMask) <> 0);
+      NewPaletteLineIndex := Cardinal(NewPixelItem and PaletteLineIndexMask);
+      NewColourIndex := Cardinal(NewPixelItem and ColourIndexMask);
+      NewPriority := Ord(Cardinal(NewPixelItem and PriorityMask) <> 0);
+      NewNotShadowed := NewPriority;
+      Temp53 := Ord(NewPaletteLineIndex <> 0);
+      if Temp53 <> 0 then
       begin
-        temp55 := Ord(Cardinal(c_old_palette_line_index) = Cardinal(0));
-        if temp55 = 0 then
-        begin
-          temp55 := Ord(not (c_old_priority <> 0));
-        end;
-        temp54 := Ord(temp55 <> 0);
-        if temp54 = 0 then
-        begin
-          temp54 := Ord(c_new_priority <> 0);
-        end;
-        temp53 := Ord(temp54 <> 0);
+        Temp55 := Ord((OldPaletteLineIndex = 0) or ((OldPriority = 0)));
+        Temp54 := Ord((Temp55 <> 0) or (NewPriority <> 0));
+        Temp53 := Ord(Temp54 <> 0);
       end;
-      c_draw_new_pixel := Byte(temp53);
-      if (c_draw_new_pixel <> 0) then
-      begin
-        temp56 := c_new_pixel;
-      end
+      DrawNewPixel := Byte(Temp53);
+      if DrawNewPixel <> 0 then
+        Temp56 := NewPixelItem
       else
-      begin
-        temp56 := c_old_pixel;
-      end;
-      c_output := Cardinal(temp56);
-      temp58 := Ord(c_old_not_shadowed <> 0);
-      if temp58 = 0 then
-      begin
-        temp58 := Ord(c_new_not_shadowed <> 0);
-      end;
-      if (temp58 <> 0) then
-      begin
-        temp57 := c_not_shadowed_mask;
-      end
+        Temp56 := OldPixelItem;
+      Output := Temp56;
+      if (OldNotShadowed <> 0) or (NewNotShadowed <> 0) then
+        Temp57 := NotShadowedMask
       else
+        Temp57 := 0;
+      Output := Output or Temp57;
+      BlitLookup.Normal.Lower[NewPixelItem].Pixels[OldPixelItem] := Byte(Output);
+      if DrawNewPixel <> 0 then
       begin
-        temp57 := 0;
-      end;
-      c_output := Cardinal(Cardinal(c_output) or Cardinal(temp57));
-      c_blit_lookup.c_normal.c_lower[c_new_pixel].c_pixels[c_old_pixel] := Byte(Byte(c_output));
-      if (c_draw_new_pixel <> 0) then
-      begin
-        case c_new_colour_index of
+        case NewColourIndex of
           $0E, $1E, $2E:
             begin
-              c_output := Cardinal(Cardinal(c_new_colour_index) or Cardinal(c_SHADOW_HIGHLIGHT_NORMAL));
+              Output := NewColourIndex or Cardinal(SHADOW_HIGHLIGHT_NORMAL);
             end;
           $3E:
             begin
-              if (c_old_not_shadowed <> 0) then
-              begin
-                temp66 := c_SHADOW_HIGHLIGHT_HIGHLIGHT;
-              end
+              if OldNotShadowed <> 0 then
+                Temp66 := SHADOW_HIGHLIGHT_HIGHLIGHT
               else
-              begin
-                temp66 := c_SHADOW_HIGHLIGHT_NORMAL;
-              end;
-              c_output := Cardinal(Cardinal(c_old_colour_index) or Cardinal(temp66));
+                Temp66 := SHADOW_HIGHLIGHT_NORMAL;
+              Output := OldColourIndex or Cardinal(Temp66);
             end;
           $3F:
             begin
-              c_output := Cardinal(Cardinal(c_old_colour_index) or Cardinal(c_SHADOW_HIGHLIGHT_SHADOW));
+              Output := OldColourIndex or Cardinal(SHADOW_HIGHLIGHT_SHADOW);
             end;
         else
           begin
-            temp68 := Ord(c_new_not_shadowed <> 0);
-            if temp68 = 0 then
-            begin
-              temp68 := Ord(c_old_not_shadowed <> 0);
-            end;
-            if (temp68 <> 0) then
-            begin
-              temp67 := c_SHADOW_HIGHLIGHT_NORMAL;
-            end
+            if (NewNotShadowed <> 0) or (OldNotShadowed <> 0) then
+              Temp67 := SHADOW_HIGHLIGHT_NORMAL
             else
-            begin
-              temp67 := c_SHADOW_HIGHLIGHT_SHADOW;
-            end;
-            c_output := Cardinal(Cardinal(c_new_colour_index) or Cardinal(temp67));
+              Temp67 := SHADOW_HIGHLIGHT_SHADOW;
+            Output := NewColourIndex or Cardinal(Temp67);
           end;
         end;
       end
       else
       begin
-        if (c_old_not_shadowed <> 0) then
-        begin
-          temp69 := c_SHADOW_HIGHLIGHT_NORMAL;
-        end
+        if OldNotShadowed <> 0 then
+          Temp69 := SHADOW_HIGHLIGHT_NORMAL
         else
-        begin
-          temp69 := c_SHADOW_HIGHLIGHT_SHADOW;
-        end;
-        c_output := Cardinal(Cardinal(c_old_colour_index) or Cardinal(temp69));
+          Temp69 := SHADOW_HIGHLIGHT_SHADOW;
+        Output := OldColourIndex or Cardinal(Temp69);
       end;
-      c_blit_lookup.c_shadow_highlight.c_lower[c_new_pixel].c_pixels[c_old_pixel] := Byte(Byte(c_output));
-      c_blit_lookup.c_forced_layer.c_lower[c_new_pixel].c_pixels[c_old_pixel] := Byte(Byte(Cardinal(c_old_pixel) and Cardinal(Cardinal(c_new_colour_index) or Cardinal(not c_colour_index_mask))));
-      Inc(c_old_pixel);
+      BlitLookup.ShadowHighlight.Lower[NewPixelItem].Pixels[OldPixelItem] := Byte(Output);
+      BlitLookup.ForcedLayer.Lower[NewPixelItem].Pixels[OldPixelItem] := Byte(OldPixelItem and (NewColourIndex or not ColourIndexMask));
     end;
-    Inc(c_new_pixel);
   end;
 end;
 
-procedure c_VDP_Initialise(c_vdp_: PVDP);
+procedure VDPInitialise(var Vdp: TVDP);
 begin
-  c_vdp_^.c_state.c_access.c_write_pending := Byte(0);
-  c_vdp_^.c_state.c_access.c_address_register := Cardinal(0);
-  c_vdp_^.c_state.c_access.c_code_register := Word(0);
-  c_vdp_^.c_state.c_access.c_selected_buffer := c_VDP_ACCESS_VRAM;
-  c_vdp_^.c_state.c_access.c_increment := Byte(0);
-  c_vdp_^.c_state.c_dma.c_enabled := Byte(0);
-  c_vdp_^.c_state.c_dma.c_mode := c_VDP_DMA_MODE_MEMORY_TO_VRAM;
-  c_vdp_^.c_state.c_dma.c_source_address_high := Byte(0);
-  c_vdp_^.c_state.c_dma.c_source_address_low := Word(0);
-  c_vdp_^.c_state.c_dma.c_length := Word(0);
-  c_vdp_^.c_state.c_plane_a_address := Cardinal(0);
-  c_vdp_^.c_state.c_plane_b_address := Cardinal(0);
-  c_vdp_^.c_state.c_window_address := Cardinal(0);
-  c_vdp_^.c_state.c_sprite_table_address := Cardinal(0);
-  c_vdp_^.c_state.c_hscroll_address := Cardinal(0);
-  c_vdp_^.c_state.c_window.c_aligned_right := Byte(0);
-  c_vdp_^.c_state.c_window.c_aligned_bottom := Byte(0);
-  c_vdp_^.c_state.c_window.c_horizontal_boundary := Word(0);
-  c_vdp_^.c_state.c_window.c_vertical_boundary := Word(0);
-  c_vdp_^.c_state.c_plane_width_shift := Byte(5);
-  c_vdp_^.c_state.c_plane_height_bitmask := Byte($1F);
-  c_vdp_^.c_state.c_extended_vram_enabled := Byte(0);
-  c_vdp_^.c_state.c_display_enabled := Byte(0);
-  c_vdp_^.c_state.c_v_int_enabled := Byte(0);
-  c_vdp_^.c_state.c_h_int_enabled := Byte(0);
-  c_vdp_^.c_state.c_h40_enabled := Byte(0);
-  c_vdp_^.c_state.c_v30_enabled := Byte(0);
-  c_vdp_^.c_state.c_mega_drive_mode_enabled := Byte(0);
-  c_vdp_^.c_state.c_shadow_highlight_enabled := Byte(0);
-  c_vdp_^.c_state.c_double_resolution_enabled := Byte(0);
-  c_vdp_^.c_state.c_sprite_tile_index_rebase := Byte(0);
-  c_vdp_^.c_state.c_plane_a_tile_index_rebase := Byte(0);
-  c_vdp_^.c_state.c_plane_b_tile_index_rebase := Byte(0);
-  c_vdp_^.c_state.c_background_colour := Byte(0);
-  c_vdp_^.c_state.c_h_int_interval := Byte(0);
-  c_vdp_^.c_state.c_currently_in_vblank := Byte(1);
-  c_vdp_^.c_state.c_allow_sprite_masking := Byte(0);
-  c_SetHScrollMode(@c_vdp_^.c_state, c_VDP_HSCROLL_MODE_FULL);
-  c_vdp_^.c_state.c_vscroll_mode := c_VDP_VSCROLL_MODE_FULL;
-  c_vdp_^.c_state.c_debug.c_selected_register := Byte(0);
-  c_vdp_^.c_state.c_debug.c_hide_layers := Byte(0);
-  c_vdp_^.c_state.c_debug.c_forced_layer := Byte(0);
-  FillChar(c_vdp_^.c_state.c_vram, SizeOf(c_vdp_^.c_state.c_vram), 0);
-  FillChar(c_vdp_^.c_state.c_cram, SizeOf(c_vdp_^.c_state.c_cram), 0);
-  FillChar(c_vdp_^.c_state.c_vsram, SizeOf(c_vdp_^.c_state.c_vsram), 0);
-  FillChar(c_vdp_^.c_state.c_sprite_table_cache, SizeOf(c_vdp_^.c_state.c_sprite_table_cache), 0);
-  c_vdp_^.c_state.c_sprite_row_cache.c_needs_updating := Byte(1);
-  FillChar(c_vdp_^.c_state.c_sprite_row_cache.c_rows, SizeOf(c_vdp_^.c_state.c_sprite_row_cache.c_rows), 0);
-  FillChar(c_vdp_^.c_state.c_previous_data_writes, SizeOf(c_vdp_^.c_state.c_previous_data_writes), 0);
-  c_vdp_^.c_state.c_kdebug_buffer_index := Word(0);
-  c_vdp_^.c_state.c_kdebug_buffer[(Length(c_vdp_^.c_state.c_kdebug_buffer) - 1)] := Byte(0);
+  Vdp.State.Access.WritePending := 0;
+  Vdp.State.Access.AddressRegister := 0;
+  Vdp.State.Access.CodeRegister := 0;
+  Vdp.State.Access.SelectedBuffer := VDP_ACCESS_VRAM;
+  Vdp.State.Access.Increment := 0;
+  Vdp.State.Dma.Enabled := 0;
+  Vdp.State.Dma.Mode := VDP_DMA_MODE_MEMORY_TO_VRAM;
+  Vdp.State.Dma.SourceAddressHigh := 0;
+  Vdp.State.Dma.SourceAddressLow := 0;
+  Vdp.State.Dma.Length := 0;
+  Vdp.State.PlaneAAddress := 0;
+  Vdp.State.PlaneBAddress := 0;
+  Vdp.State.WindowAddress := 0;
+  Vdp.State.SpriteTableAddress := 0;
+  Vdp.State.HscrollAddress := 0;
+  Vdp.State.Window.AlignedRight := 0;
+  Vdp.State.Window.AlignedBottom := 0;
+  Vdp.State.Window.HorizontalBoundary := 0;
+  Vdp.State.Window.VerticalBoundary := 0;
+  Vdp.State.PlaneWidthShift := 5;
+  Vdp.State.PlaneHeightBitmask := $1F;
+  Vdp.State.ExtendedVramEnabled := 0;
+  Vdp.State.DisplayEnabled := 0;
+  Vdp.State.VIntEnabled := 0;
+  Vdp.State.HIntEnabled := 0;
+  Vdp.State.H40Enabled := 0;
+  Vdp.State.V30Enabled := 0;
+  Vdp.State.MegaDriveModeEnabled := 0;
+  Vdp.State.ShadowHighlightEnabled := 0;
+  Vdp.State.DoubleResolutionEnabled := 0;
+  Vdp.State.SpriteTileIndexRebase := 0;
+  Vdp.State.PlaneATileIndexRebase := 0;
+  Vdp.State.PlaneBTileIndexRebase := 0;
+  Vdp.State.BackgroundColour := 0;
+  Vdp.State.HIntInterval := 0;
+  Vdp.State.CurrentlyInVblank := 1;
+  Vdp.State.AllowSpriteMasking := 0;
+  SetHScrollMode(Vdp.State, VDP_HSCROLL_MODE_FULL);
+  Vdp.State.VscrollMode := VDP_VSCROLL_MODE_FULL;
+  Vdp.State.Debug.SelectedRegister := 0;
+  Vdp.State.Debug.HideLayers := 0;
+  Vdp.State.Debug.ForcedLayer := 0;
+  FillChar(Vdp.State.Vram, SizeOf(Vdp.State.Vram), 0);
+  FillChar(Vdp.State.Cram, SizeOf(Vdp.State.Cram), 0);
+  FillChar(Vdp.State.Vsram, SizeOf(Vdp.State.Vsram), 0);
+  FillChar(Vdp.State.SpriteTableCache, SizeOf(Vdp.State.SpriteTableCache), 0);
+  Vdp.State.SpriteRowCache.NeedsUpdating := 1;
+  FillChar(Vdp.State.SpriteRowCache.Rows, SizeOf(Vdp.State.SpriteRowCache.Rows), 0);
+  FillChar(Vdp.State.PreviousDataWrites, SizeOf(Vdp.State.PreviousDataWrites), 0);
+  Vdp.State.KdebugBufferIndex := 0;
+  Vdp.State.KdebugBuffer[(Length(Vdp.State.KdebugBuffer) - 1)] := 0;
 end;
 
-function c_GetHScrollTableOffset(c_state: PVDPState; c_scanline: Cardinal): Cardinal;
+function GetHScrollTableOffset(const State: TVDPState; Scanline: Cardinal): Cardinal;
 begin
-  Exit(Cardinal(Mul32(Cardinal(c_scanline shr c_state^.c_double_resolution_enabled) and Cardinal(c_state^.c_hscroll_mask), 4)));
+  Exit(Mul32((Scanline shr State.DoubleResolutionEnabled) and Cardinal(State.HscrollMask), 4));
 end;
 
-function c_GetVScrollValue(c_vdp_: PVDP; c_plane_index: Cardinal; c_tile_pair: Cardinal): Cardinal;
-var
-  c_state: PVDPState;
+function GetVScrollValue(var Vdp: TVDP; PlaneIndex: Cardinal; TilePair: Cardinal): Cardinal;
 begin
-  c_state := @c_vdp_^.c_state;
-  case c_state^.c_vscroll_mode of
-    c_VDP_VSCROLL_MODE_FULL:
+
+  case Vdp.State.VscrollMode of
+    VDP_VSCROLL_MODE_FULL:
       begin
-        Exit(Cardinal(c_state^.c_vsram_cache[c_plane_index]));
+        Exit(Cardinal(Vdp.State.VsramCache[PlaneIndex]));
       end;
-    c_VDP_VSCROLL_MODE_2CELL:
+    VDP_VSCROLL_MODE_2_CELL:
       begin
-        Exit(Cardinal(c_state^.c_vsram[(Add32(c_plane_index, Cardinal(Mul32(Sub32(c_tile_pair, (c_vdp_^.c_configuration.c_widescreen_tiles + (2 - 1)) div 2), 2)) mod Cardinal(Length(c_state^.c_vsram))))]));
+        Exit(Cardinal(Vdp.State.Vsram[(Add32(PlaneIndex, Mul32(Sub32(TilePair, (GetWidescreenTiles(Vdp) + (2 - 1)) div 2), 2) mod Cardinal(Length(Vdp.State.Vsram))))]));
       end;
   else
     begin
       Assert(0 <> 0);
-      Exit(Cardinal(c_state^.c_vsram_cache[c_plane_index]));
+      Exit(Cardinal(Vdp.State.VsramCache[PlaneIndex]));
     end;
   end;
 end;
 
-procedure c_RenderTilePair(c_vdp_: PVDP; c_pixel_y_in_plane: Cardinal; c_vram_address: Cardinal; c_base_tile_vram_address: Cardinal; var c_metapixels: array of Byte; var PixelIndex: Integer; c_blit_lookup_list: PBlitLookup);
-var
-  c_state: PVDPState;
-  c_word_vram_address: Cardinal;
-  c_word: Cardinal;
-  c_x_flip: Cardinal;
-  c_y_flip: Cardinal;
-  c_pixel_y_in_tile: Cardinal;
-  c_tile_row_vram_address: Cardinal;
-  c_byte_index_xor: Cardinal;
-  c_nybble_shift_2: Cardinal;
-  c_nybble_shift_1: Cardinal;
-  c_j: Cardinal;
-  c_byte: Cardinal;
+procedure RenderTilePair(var Vdp: TVDP; PixelYInPlane: Cardinal; VramAddress: Cardinal; BaseTileVramAddress: Cardinal; var Metapixels: array of Byte; var PixelIndex: Integer; const BlitLookupList: TBlitLookup);
 begin
-  c_state := @c_vdp_^.c_state;
-  var c_tile_height_shift: Cardinal := 3 + c_state^.c_double_resolution_enabled;
-  var c_tile_height_mask: Cardinal := Cardinal((1 shl c_tile_height_shift) - 1);
-  var c_pixel_y_in_tile_unflipped: Cardinal := Cardinal(Cardinal(c_pixel_y_in_plane) and Cardinal(c_tile_height_mask));
-  var c_i: Cardinal := 0;
-  while (Cardinal(c_i) < Cardinal(2)) do
+  var WordVramAddress: Cardinal;
+  var WordValue: Cardinal;
+  var XFlip: Cardinal;
+  var YFlip: Cardinal;
+  var PixelYInTile: Cardinal;
+  var TileRowVramAddress: Cardinal;
+  var ByteIndexXor: Cardinal;
+  var NybbleShift2: Cardinal;
+  var NybbleShift1: Cardinal;
+  var ByteValue: Cardinal;
+
+  var TileHeightShift: Cardinal := 3 + Vdp.State.DoubleResolutionEnabled;
+  var TileHeightMask: Cardinal := Cardinal((1 shl TileHeightShift) - 1);
+  var PixelYInTileUnflipped: Cardinal := PixelYInPlane and TileHeightMask;
+  for var ItemIndex := 0 to 2 - 1 do
   begin
-    c_word_vram_address := Cardinal(Add32(c_vram_address, Mul32(c_i, 2)));
-    c_word := Cardinal(Cardinal(c_ReadVRAM(c_state, (Cardinal(c_word_vram_address) xor Cardinal(0)))) or Cardinal(c_ReadVRAM(c_state, (Cardinal(c_word_vram_address) xor Cardinal(1))) shl 8));
-    c_x_flip := Cardinal(-Cardinal(Ord(Cardinal(Cardinal(c_word) and Cardinal($800)) <> Cardinal(0))));
-    c_y_flip := Cardinal(-Cardinal(Ord(Cardinal(Cardinal(c_word) and Cardinal($1000)) <> Cardinal(0))));
-    c_pixel_y_in_tile := Cardinal(Cardinal(c_pixel_y_in_tile_unflipped) xor Cardinal(Cardinal(c_tile_height_mask) and Cardinal(c_y_flip)));
-    c_tile_row_vram_address := Cardinal(Add32(c_base_tile_vram_address, (Add32((Cardinal(c_word) and Cardinal($7FF)) shl c_tile_height_shift, c_pixel_y_in_tile)) shl 2));
-    c_byte_index_xor := Cardinal(Cardinal(1) xor Cardinal(Cardinal(3) and Cardinal(c_x_flip)));
-    c_nybble_shift_2 := Cardinal(Cardinal(4) and Cardinal(c_x_flip));
-    c_nybble_shift_1 := Cardinal(Cardinal(4) xor Cardinal(c_nybble_shift_2));
-    var LookupIndex := (c_word shr 9) and $70;
-    c_j := Cardinal(0);
-    while (Cardinal(c_j) < Cardinal(8 div 2)) do
+    WordVramAddress := Add32(VramAddress, Mul32(ItemIndex, 2));
+    WordValue := ReadVRAM(Vdp.State, (WordVramAddress xor 0)) or (ReadVRAM(Vdp.State, (WordVramAddress xor 1)) shl 8);
+    XFlip := Sub32(0, Ord((WordValue and $800) <> 0));
+    YFlip := Sub32(0, Ord((WordValue and $1000) <> 0));
+    PixelYInTile := PixelYInTileUnflipped xor (TileHeightMask and YFlip);
+    TileRowVramAddress := Add32(BaseTileVramAddress, (Add32((WordValue and $7FF) shl TileHeightShift, PixelYInTile)) shl 2);
+    ByteIndexXor := 1 xor (3 and XFlip);
+    NybbleShift2 := 4 and XFlip;
+    NybbleShift1 := 4 xor NybbleShift2;
+    var LookupIndex := (WordValue shr 9) and $70;
+    for var JIndex := 0 to Integer(8 div 2) - 1 do
     begin
-      c_byte := Cardinal(c_ReadVRAM(c_state, (Cardinal(Add32(c_tile_row_vram_address, c_j)) xor Cardinal(c_byte_index_xor))));
-      c_metapixels[PixelIndex] := Byte(c_blit_lookup_list^.c_lower[LookupIndex + ((c_byte shr c_nybble_shift_1) and $F)].c_pixels[c_metapixels[PixelIndex]]);
+      ByteValue := ReadVRAM(Vdp.State, (Add32(TileRowVramAddress, JIndex) xor ByteIndexXor));
+      Metapixels[PixelIndex] := Byte(BlitLookupList.Lower[LookupIndex + ((ByteValue shr NybbleShift1) and $F)].Pixels[Metapixels[PixelIndex]]);
       Inc(PixelIndex);
-      c_metapixels[PixelIndex] := Byte(c_blit_lookup_list^.c_lower[LookupIndex + ((c_byte shr c_nybble_shift_2) and $F)].c_pixels[c_metapixels[PixelIndex]]);
+      Metapixels[PixelIndex] := Byte(BlitLookupList.Lower[LookupIndex + ((ByteValue shr NybbleShift2) and $F)].Pixels[Metapixels[PixelIndex]]);
       Inc(PixelIndex);
-      Inc(c_j);
     end;
-    Inc(c_i);
   end;
 end;
 
-procedure c_RenderScrollingPlane(c_vdp_: PVDP; c_start: Cardinal; c_end: Cardinal; c_scanline: Cardinal; c_plane_index: Cardinal; c_plane_x_offset: Cardinal; PixelOffset: Integer; var c_metapixels: array of Byte; c_blit_lookup_list: PBlitLookup);
-var
-  c_state: PVDPState;
-  temp79: Integer;
-  temp80: Byte;
-  c_plane_height_bitmask: Cardinal;
-  temp81: Cardinal;
-  temp84: Integer;
-  temp85: Integer;
-  temp86: Integer;
-  temp87: Integer;
-  c_vscroll: Cardinal;
-  c_pixel_y_in_plane: Cardinal;
-  c_clamped_i: Cardinal;
-  temp88: Cardinal;
-  c_tile_x: Cardinal;
-  c_tile_y: Cardinal;
-  c_vram_address: Cardinal;
+procedure RenderScrollingPlane(var Vdp: TVDP; Start: Cardinal; EndColumn: Cardinal; Scanline: Cardinal; PlaneIndex: Cardinal; PlaneXOffset: Cardinal; PixelOffset: Integer; var Metapixels: array of Byte; const BlitLookupList: TBlitLookup);
 begin
-  c_state := @c_vdp_^.c_state;
-  if (Cardinal(c_plane_index) = Cardinal(0)) then
-  begin
-    temp80 := c_state^.c_plane_a_tile_index_rebase;
-  end
+  var Temp79: Integer;
+  var Temp80: Byte;
+  var Temp81: Cardinal;
+  var Temp84: Integer;
+  var Temp85: Integer;
+  var Temp86: Integer;
+  var Temp87: Integer;
+  var Vscroll: Cardinal;
+  var PixelYInPlane: Cardinal;
+  var ClampedI: Cardinal;
+  var Temp88: Cardinal;
+  var TileX: Cardinal;
+  var TileY: Cardinal;
+  var VramAddress: Cardinal;
+
+  if PlaneIndex = 0 then
+    Temp80 := Vdp.State.PlaneATileIndexRebase
   else
-  begin
-    temp80 := c_state^.c_plane_b_tile_index_rebase;
-  end;
-  if (temp80 <> 0) then
-  begin
-    temp79 := $10000;
-  end
+    Temp80 := Vdp.State.PlaneBTileIndexRebase;
+  if Temp80 <> 0 then
+    Temp79 := $10000
   else
-  begin
-    temp79 := 0;
-  end;
-  var c_base_tile_vram_address: Cardinal := temp79;
-  var c_plane_pitch_shift: Cardinal := c_state^.c_plane_width_shift;
-  var c_plane_width_bitmask: Cardinal := Cardinal((1 shl c_plane_pitch_shift) - 1);
-  c_plane_height_bitmask := Cardinal(c_state^.c_plane_height_bitmask);
-  if (Cardinal(c_plane_index) = Cardinal(0)) then
-  begin
-    temp81 := c_state^.c_plane_a_address;
-  end
+    Temp79 := 0;
+  var BaseTileVramAddress: Cardinal := Temp79;
+  var PlanePitchShift: Cardinal := Vdp.State.PlaneWidthShift;
+  var PlaneWidthBitmask: Cardinal := Cardinal((1 shl PlanePitchShift) - 1);
+  var PlaneHeightBitmask: Cardinal := Cardinal(Vdp.State.PlaneHeightBitmask);
+  if PlaneIndex = 0 then
+    Temp81 := Vdp.State.PlaneAAddress
   else
-  begin
-    temp81 := c_state^.c_plane_b_address;
-  end;
-  var c_plane_address: Cardinal := temp81;
-  var c_tile_height_shift: Cardinal := 3 + c_state^.c_double_resolution_enabled;
-  var PixelIndex := PixelOffset + Integer(c_start) * 16;
-  var c_i: Cardinal := c_start;
+    Temp81 := Vdp.State.PlaneBAddress;
+  var PlaneAddress: Cardinal := Temp81;
+  var TileHeightShift: Cardinal := 3 + Vdp.State.DoubleResolutionEnabled;
+  var PixelIndex := PixelOffset + Integer(Start) * 16;
+  var i: Cardinal := Start;
   while True do
   begin
-    temp84 := Ord(Cardinal(c_i) <= Cardinal(c_end));
-    if temp84 <> 0 then
+    Temp84 := Ord(i <= EndColumn);
+    if Temp84 <> 0 then
     begin
-      if (Integer(20) > Integer(16)) then
-      begin
-        temp85 := 20;
-      end
+      if 20 > 16 then
+        Temp85 := 20
       else
-      begin
-        temp85 := 16;
-      end;
-      if (Integer(20) > Integer(16)) then
-      begin
-        temp86 := 20;
-      end
+        Temp85 := 16;
+      if 20 > 16 then
+        Temp86 := 20
       else
-      begin
-        temp86 := 16;
-      end;
-      if (Integer(20) > Integer(16)) then
-      begin
-        temp87 := 20;
-      end
+        Temp86 := 16;
+      if 20 > 16 then
+        Temp87 := 20
       else
-      begin
-        temp87 := 16;
-      end;
-      temp84 := Ord(Cardinal(c_i) < Cardinal(((((32 - temp85) div 2) + temp86) + ((32 - temp87) div 2)) + 1));
+        Temp87 := 16;
+      Temp84 := Ord(i < Cardinal(((((32 - Temp85) div 2) + Temp86) + ((32 - Temp87) div 2)) + 1));
     end;
-    if not (temp84 <> 0) then
+    if Temp84 = 0 then
       Break;
-    c_vscroll := Cardinal(c_GetVScrollValue(c_vdp_, c_plane_index, (Sub32(c_i, 1))));
-    c_pixel_y_in_plane := Cardinal(Add32(c_vscroll, c_scanline));
-    if (Cardinal(c_start) > Cardinal(Sub32(c_i, 1))) then
-    begin
-      temp88 := c_start;
-    end
+    Vscroll := GetVScrollValue(Vdp, PlaneIndex, (Sub32(i, 1)));
+    PixelYInPlane := Add32(Vscroll, Scanline);
+    if Start > Sub32(i, 1) then
+      Temp88 := Start
     else
-    begin
-      temp88 := (Sub32(c_i, 1));
-    end;
-    c_clamped_i := Cardinal(temp88);
-    c_tile_x := Cardinal(Cardinal(Mul32(Add32(c_plane_x_offset, c_clamped_i), 2)) and Cardinal(c_plane_width_bitmask));
-    c_tile_y := Cardinal(Cardinal(c_pixel_y_in_plane shr c_tile_height_shift) and Cardinal(c_plane_height_bitmask));
-    c_vram_address := Cardinal(Add32(c_plane_address, Mul32(Add32(c_tile_y shl c_plane_pitch_shift, c_tile_x), 2)));
-    c_RenderTilePair(c_vdp_, c_pixel_y_in_plane, c_vram_address, c_base_tile_vram_address, c_metapixels, PixelIndex, c_blit_lookup_list);
-    Inc(c_i);
+      Temp88 := Sub32(i, 1);
+    ClampedI := Temp88;
+    TileX := Mul32(Add32(PlaneXOffset, ClampedI), 2) and PlaneWidthBitmask;
+    TileY := (PixelYInPlane shr TileHeightShift) and PlaneHeightBitmask;
+    VramAddress := Add32(PlaneAddress, Mul32(Add32(TileY shl PlanePitchShift, TileX), 2));
+    RenderTilePair(Vdp, PixelYInPlane, VramAddress, BaseTileVramAddress, Metapixels, PixelIndex, BlitLookupList);
+    Inc(i);
   end;
 end;
 
-procedure c_RenderWindowPlane(c_vdp_: PVDP; c_start: Cardinal; c_end: Cardinal; c_scanline: Cardinal; var c_metapixels: array of Byte; c_blit_lookup_list: PBlitLookup);
-var
-  c_state: PVDPState;
-  temp89: Integer;
-  temp92: Integer;
-  temp93: Integer;
-  temp94: Integer;
-  temp95: Integer;
+procedure RenderWindowPlane(var Vdp: TVDP; Start: Cardinal; EndColumn: Cardinal; Scanline: Cardinal; var Metapixels: array of Byte; const BlitLookupList: TBlitLookup);
 begin
-  c_state := @c_vdp_^.c_state;
-  if (c_state^.c_plane_a_tile_index_rebase <> 0) then
-  begin
-    temp89 := $10000;
-  end
+  var Temp89: Integer;
+  var Temp92: Integer;
+  var Temp93: Integer;
+  var Temp94: Integer;
+  var Temp95: Integer;
+
+  if Vdp.State.PlaneATileIndexRebase <> 0 then
+    Temp89 := $10000
   else
-  begin
-    temp89 := 0;
-  end;
-  var c_base_tile_vram_address: Cardinal := temp89;
-  var c_tile_y: Cardinal := Cardinal(c_scanline shr (3 + c_state^.c_double_resolution_enabled));
-  var c_plane_pitch_shift: Cardinal := 5 + c_state^.c_h40_enabled;
-  var c_plane_width_bitmask: Cardinal := Cardinal((1 shl c_plane_pitch_shift) - 1);
-  var c_vram_address_base: Cardinal := Cardinal(Add32(c_GetWindowPlaneTableAddress(c_state), Mul32(c_tile_y shl c_plane_pitch_shift, 2)));
-  var c_tile_x_base: Cardinal := Cardinal(Cardinal(0 - (((c_vdp_^.c_configuration.c_widescreen_tiles + (2 - 1)) div 2) * 2)) and Cardinal(c_plane_width_bitmask));
-  var PixelIndex := PlanePadding + Integer(c_start) * 16;
-  var c_i: Cardinal := c_start;
+    Temp89 := 0;
+  var BaseTileVramAddress: Cardinal := Temp89;
+  var TileY: Cardinal := Scanline shr (3 + Vdp.State.DoubleResolutionEnabled);
+  var PlanePitchShift: Cardinal := 5 + Vdp.State.H40Enabled;
+  var PlaneWidthBitmask: Cardinal := Cardinal((1 shl PlanePitchShift) - 1);
+  var VramAddressBase: Cardinal := Add32(GetWindowPlaneTableAddress(Vdp.State), Mul32(TileY shl PlanePitchShift, 2));
+  var TileXBase: Cardinal := Cardinal(0 - (((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) * 2)) and PlaneWidthBitmask;
+  var PixelIndex := PLANE_PADDING + Integer(Start) * 16;
+  var i: Cardinal := Start;
   while True do
   begin
-    temp92 := Ord(Cardinal(c_i) < Cardinal(c_end));
-    if temp92 <> 0 then
+    Temp92 := Ord(i < EndColumn);
+    if Temp92 <> 0 then
     begin
-      if (Integer(20) > Integer(16)) then
-      begin
-        temp93 := 20;
-      end
+      if 20 > 16 then
+        Temp93 := 20
       else
-      begin
-        temp93 := 16;
-      end;
-      if (Integer(20) > Integer(16)) then
-      begin
-        temp94 := 20;
-      end
+        Temp93 := 16;
+      if 20 > 16 then
+        Temp94 := 20
       else
-      begin
-        temp94 := 16;
-      end;
-      if (Integer(20) > Integer(16)) then
-      begin
-        temp95 := 20;
-      end
+        Temp94 := 16;
+      if 20 > 16 then
+        Temp95 := 20
       else
-      begin
-        temp95 := 16;
-      end;
-      temp92 := Ord(Cardinal(c_i) < Cardinal((((32 - temp93) div 2) + temp94) + ((32 - temp95) div 2)));
+        Temp95 := 16;
+      Temp92 := Ord(i < Cardinal((((32 - Temp93) div 2) + Temp94) + ((32 - Temp95) div 2)));
     end;
-    if not (temp92 <> 0) then
+    if Temp92 = 0 then
       Break;
-    c_RenderTilePair(c_vdp_, c_scanline, (Add32(c_vram_address_base, Mul32(Cardinal(Add32(c_tile_x_base, Mul32(c_i, 2))) and Cardinal(c_plane_width_bitmask), 2))), c_base_tile_vram_address, c_metapixels, PixelIndex, c_blit_lookup_list);
-    Inc(c_i);
+    RenderTilePair(Vdp, Scanline, (Add32(VramAddressBase, Mul32(Add32(TileXBase, Mul32(i, 2)) and PlaneWidthBitmask, 2))), BaseTileVramAddress, Metapixels, PixelIndex, BlitLookupList);
+    Inc(i);
   end;
 end;
 
-procedure c_UpdateSpriteCache(c_vdp_: PVDP);
-var
-  c_state: PVDPState;
-  temp96: Integer;
-  c_cached_sprite: TVDPCachedSprite;
-  c_blank_lines: Cardinal;
-  temp103: Cardinal;
-  temp104: Cardinal;
-  temp105: Integer;
-  temp106: Integer;
-  c_row: PVDPSpriteRowCacheRow;
-  temp108: Integer;
-  c_sprite_row_cache_entry: PVDPSpriteRowCacheEntry;
-  temp110: Byte;
-  temp111: Integer;
+procedure UpdateSpriteCache(var Vdp: TVDP);
 begin
-  c_state := @c_vdp_^.c_state;
-  var c_tile_height_shift: Cardinal := 3 + c_state^.c_double_resolution_enabled;
-  if (c_vdp_^.c_state.c_h40_enabled <> 0) then
-  begin
-    temp96 := 20;
-  end
+  var Temp96: Integer;
+  var CachedSprite: TVDPCachedSprite;
+  var BlankLines: Cardinal;
+  var Temp103: Cardinal;
+  var Temp104: Cardinal;
+  var Temp105: Integer;
+  var Temp106: Integer;
+  var Temp108: Integer;
+  var Temp110: Byte;
+  var Temp111: Integer;
+
+  var TileHeightShift: Cardinal := 3 + Vdp.State.DoubleResolutionEnabled;
+  if Vdp.State.H40Enabled <> 0 then
+    Temp96 := 20
   else
-  begin
-    temp96 := 16;
-  end;
-  var c_max_sprites: Cardinal := Cardinal(Mul32(Mul32(Add32(temp96, Mul32(Cardinal(Add32(Cardinal(c_vdp_^.c_configuration.c_widescreen_tiles), 2 - 1)) div Cardinal(2), 2)), 2), 2));
-  var c_sprites_remaining: Cardinal := c_max_sprites;
-  if (not (c_state^.c_sprite_row_cache.c_needs_updating <> 0)) then
-  begin
+    Temp96 := 16;
+  var MaxSprites: Cardinal := Mul32(Mul32(Add32(Temp96, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)), 2), 2);
+  var SpritesRemaining: Cardinal := MaxSprites;
+  if Vdp.State.SpriteRowCache.NeedsUpdating = 0 then
     Exit;
-  end;
-  c_state^.c_sprite_row_cache.c_needs_updating := Byte(0);
-  var c_i: Cardinal := 0;
-  while (Cardinal(c_i) < Cardinal(Length(c_state^.c_sprite_row_cache.c_rows))) do
+  Vdp.State.SpriteRowCache.NeedsUpdating := 0;
+  for var ItemIndex := 0 to High(Vdp.State.SpriteRowCache.Rows) do
   begin
-    c_state^.c_sprite_row_cache.c_rows[c_i].c_total := Byte(0);
-    Inc(c_i);
+    Vdp.State.SpriteRowCache.Rows[ItemIndex].Total := 0;
   end;
-  var c_sprite_index: Cardinal := 0;
+  var SpriteIndex: Cardinal := 0;
   while True do
   begin
-    c_cached_sprite := c_VDP_GetCachedSprite(c_state, c_sprite_index);
-    c_blank_lines := Cardinal(128 shl c_state^.c_double_resolution_enabled);
-    if (Cardinal(c_blank_lines) > Cardinal(c_cached_sprite.c_y)) then
-    begin
-      temp103 := c_blank_lines;
-    end
+    CachedSprite := VDPGetCachedSprite(Vdp.State, SpriteIndex);
+    BlankLines := Cardinal(128 shl Vdp.State.DoubleResolutionEnabled);
+    if BlankLines > CachedSprite.Y then
+      Temp103 := BlankLines
     else
-    begin
-      temp103 := c_cached_sprite.c_y;
-    end;
-    c_i := Cardinal(temp103);
+      Temp103 := CachedSprite.Y;
+    var i: Cardinal := Temp103;
     while True do
     begin
-      if (c_state^.c_v30_enabled <> 0) then
-      begin
-        temp105 := 30;
-      end
+      if Vdp.State.V30Enabled <> 0 then
+        Temp105 := 30
       else
+        Temp105 := 28;
+      if Add32(BlankLines, Temp105 shl TileHeightShift) < Add32(CachedSprite.Y, CachedSprite.Height shl TileHeightShift) then
       begin
-        temp105 := 28;
-      end;
-      if (Cardinal(Add32(c_blank_lines, temp105 shl c_tile_height_shift)) < Cardinal(Add32(c_cached_sprite.c_y, c_cached_sprite.c_height shl c_tile_height_shift))) then
-      begin
-        if (c_state^.c_v30_enabled <> 0) then
-        begin
-          temp106 := 30;
-        end
+        if Vdp.State.V30Enabled <> 0 then
+          Temp106 := 30
         else
-        begin
-          temp106 := 28;
-        end;
-        temp104 := (Add32(c_blank_lines, temp106 shl c_tile_height_shift));
+          Temp106 := 28;
+        Temp104 := Add32(BlankLines, Temp106 shl TileHeightShift);
       end
       else
-      begin
-        temp104 := (Add32(c_cached_sprite.c_y, c_cached_sprite.c_height shl c_tile_height_shift));
-      end;
-      if not (Cardinal(c_i) < Cardinal(temp104)) then
+        Temp104 := Add32(CachedSprite.Y, CachedSprite.Height shl TileHeightShift);
+      if not (i < Temp104) then
         Break;
-      c_row := @c_state^.c_sprite_row_cache.c_rows[(Sub32(c_i, c_blank_lines))];
-      if (c_vdp_^.c_state.c_h40_enabled <> 0) then
-      begin
-        temp108 := 20;
-      end
+
+      if Vdp.State.H40Enabled <> 0 then
+        Temp108 := 20
       else
+        Temp108 := 16;
+      if Cardinal(Vdp.State.SpriteRowCache.Rows[(Sub32(i, BlankLines))].Total) <> Add32(Temp108, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)) then
       begin
-        temp108 := 16;
+        Temp110 := Vdp.State.SpriteRowCache.Rows[(Sub32(i, BlankLines))].Total;
+        Inc(Vdp.State.SpriteRowCache.Rows[(Sub32(i, BlankLines))].Total);
+
+        Vdp.State.SpriteRowCache.Rows[(Sub32(i, BlankLines))].Sprites[Temp110].TableIndex := Byte(SpriteIndex);
+        Vdp.State.SpriteRowCache.Rows[(Sub32(i, BlankLines))].Sprites[Temp110].Width := CachedSprite.Width;
+        Vdp.State.SpriteRowCache.Rows[(Sub32(i, BlankLines))].Sprites[Temp110].Height := CachedSprite.Height;
+        Vdp.State.SpriteRowCache.Rows[(Sub32(i, BlankLines))].Sprites[Temp110].YInSprite := Byte(Sub32(i, CachedSprite.Y));
       end;
-      if (Cardinal(c_row^.c_total) <> Cardinal(Add32(temp108, Mul32(Cardinal(Add32(Cardinal(c_vdp_^.c_configuration.c_widescreen_tiles), 2 - 1)) div Cardinal(2), 2)))) then
-      begin
-        temp110 := c_row^.c_total;
-        Inc(c_row^.c_total);
-        c_sprite_row_cache_entry := @c_row^.c_sprites[temp110];
-        c_sprite_row_cache_entry^.c_table_index := Byte(Byte(c_sprite_index));
-        c_sprite_row_cache_entry^.c_width := Byte(Byte(c_cached_sprite.c_width));
-        c_sprite_row_cache_entry^.c_height := Byte(Byte(c_cached_sprite.c_height));
-        c_sprite_row_cache_entry^.c_y_in_sprite := Byte(Byte(Sub32(c_i, c_cached_sprite.c_y)));
-      end;
-      Inc(c_i);
+      Inc(i);
     end;
-    if (Cardinal(c_cached_sprite.c_link) >= Cardinal(c_max_sprites)) then
-    begin
+    if CachedSprite.Link >= MaxSprites then
       Break;
-    end;
-    c_sprite_index := Cardinal(c_cached_sprite.c_link);
-    temp111 := Ord(Cardinal(c_sprite_index) <> Cardinal(0));
-    if temp111 <> 0 then
+    SpriteIndex := CachedSprite.Link;
+    Temp111 := Ord(SpriteIndex <> 0);
+    if Temp111 <> 0 then
     begin
-      Dec(c_sprites_remaining);
-      temp111 := Ord(Cardinal(c_sprites_remaining) <> Cardinal(0));
+      Dec(SpritesRemaining);
+      Temp111 := Ord(SpritesRemaining <> 0);
     end;
-    if not (temp111 <> 0) then
+    if Temp111 = 0 then
       Break;
   end;
 end;
 
-procedure c_RenderSprites(c_vdp_: PVDP; var c_sprite_metapixels: array of Byte; c_scanline: Cardinal);
-var
-  c_state: PVDPState;
-  temp112: Integer;
-  temp113: Integer;
-  c_sprite_row_cache_entry: PVDPSpriteRowCacheEntry;
-  c_sprite_index: Cardinal;
-  c_width: Cardinal;
-  c_raw_x: Cardinal;
-  c_x: Cardinal;
-  temp116: Integer;
-  temp117: Integer;
-  temp118: Integer;
-  c_height: Cardinal;
-  c_word: Cardinal;
-  c_sprite_tile_index: Cardinal;
-  c_x_flip: Byte;
-  c_y_flip: Byte;
-  c_metapixel_high_bits: Cardinal;
-  c_byte_index_xor: Cardinal;
-  temp119: Integer;
-  c_y_in_sprite_non_flipped: Cardinal;
-  c_y_in_sprite: Cardinal;
-  temp120: Cardinal;
-  c_pixel_y_in_tile: Cardinal;
-  c_nybble_shift: array[0..1] of Cardinal;
-  c_j: Cardinal;
-  c_x_in_sprite: Cardinal;
-  temp124: Cardinal;
-  c_tile_index: Cardinal;
-  c_tile_row_vram_address: Cardinal;
-  c_k: Cardinal;
-  c_byte: Cardinal;
-  c_l: Cardinal;
-  c_palette_line_index: Cardinal;
+procedure RenderSprites(var Vdp: TVDP; var SpriteMetapixels: array of Byte; Scanline: Cardinal);
 begin
-  c_state := @c_vdp_^.c_state;
-  if (c_state^.c_sprite_tile_index_rebase <> 0) then
-  begin
-    temp112 := $10000;
-  end
+  var Temp112: Integer;
+  var Temp113: Integer;
+  var SpriteIndex: Cardinal;
+  var Width: Cardinal;
+  var RawX: Cardinal;
+  var X: Cardinal;
+  var Temp116: Integer;
+  var Temp117: Integer;
+  var Temp118: Integer;
+  var Height: Cardinal;
+  var WordValue: Cardinal;
+  var SpriteTileIndex: Cardinal;
+  var XFlip: Byte;
+  var YFlip: Byte;
+  var MetapixelHighBits: Cardinal;
+  var ByteIndexXor: Cardinal;
+  var Temp119: Integer;
+  var YInSpriteNonFlipped: Cardinal;
+  var YInSprite: Cardinal;
+  var Temp120: Cardinal;
+  var PixelYInTile: Cardinal;
+  var NybbleShift: array[0..1] of Cardinal;
+  var XInSprite: Cardinal;
+  var Temp124: Cardinal;
+  var TileIndex: Cardinal;
+  var TileRowVramAddress: Cardinal;
+  var ByteValue: Cardinal;
+  var PaletteLineIndex: Cardinal;
+
+  if Vdp.State.SpriteTileIndexRebase <> 0 then
+    Temp112 := $10000
   else
-  begin
-    temp112 := 0;
-  end;
-  var c_base_tile_vram_address: Cardinal := temp112;
-  var c_tile_height_shift: Cardinal := 3 + c_state^.c_double_resolution_enabled;
-  var c_tile_height_mask: Cardinal := Cardinal((1 shl (3 + c_state^.c_double_resolution_enabled)) - 1);
-  if (c_vdp_^.c_state.c_h40_enabled <> 0) then
-  begin
-    temp113 := 20;
-  end
+    Temp112 := 0;
+  var BaseTileVramAddress: Cardinal := Temp112;
+  var TileHeightShift: Cardinal := 3 + Vdp.State.DoubleResolutionEnabled;
+  var TileHeightMask: Cardinal := Cardinal((1 shl (3 + Vdp.State.DoubleResolutionEnabled)) - 1);
+  if Vdp.State.H40Enabled <> 0 then
+    Temp113 := 20
   else
+    Temp113 := 16;
+  var SpriteLimit: Cardinal := Add32(Temp113, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2));
+  var PixelLimit: Cardinal := Mul32(SpriteLimit, 16);
+  var Masked: Byte := 0;
+  for var ItemIndex := 0 to Vdp.State.SpriteRowCache.Rows[Scanline].Total - 1 do
   begin
-    temp113 := 16;
-  end;
-  var c_sprite_limit: Cardinal := Cardinal(Add32(temp113, Mul32(Cardinal(Add32(Cardinal(c_vdp_^.c_configuration.c_widescreen_tiles), 2 - 1)) div Cardinal(2), 2)));
-  var c_pixel_limit: Cardinal := Cardinal(Mul32(c_sprite_limit, 16));
-  var c_masked: Byte := 0;
-  var c_i: Cardinal := 0;
-  while (Cardinal(c_i) < Cardinal(c_state^.c_sprite_row_cache.c_rows[c_scanline].c_total)) do
-  begin
-    c_sprite_row_cache_entry := @c_state^.c_sprite_row_cache.c_rows[c_scanline].c_sprites[c_i];
-    c_sprite_index := Cardinal(Add32(c_GetSpriteTableAddress(c_state), c_sprite_row_cache_entry^.c_table_index * 8));
-    c_width := Cardinal(c_sprite_row_cache_entry^.c_width);
-    c_raw_x := Cardinal(Cardinal(Cardinal(c_ReadVRAM(c_state, (Cardinal(Add32(c_sprite_index, 6)) xor Cardinal(0)))) or Cardinal(c_ReadVRAM(c_state, (Cardinal(Add32(c_sprite_index, 6)) xor Cardinal(1))) shl 8)) and Cardinal($1FF));
-    c_x := Cardinal(Add32(c_raw_x, (((c_vdp_^.c_configuration.c_widescreen_tiles + (2 - 1)) div 2) * 2) * 8));
-    if (Cardinal(c_raw_x) = Cardinal(0)) then
-    begin
-      c_masked := Byte(c_state^.c_allow_sprite_masking);
-    end
+
+    SpriteIndex := Add32(GetSpriteTableAddress(Vdp.State), Vdp.State.SpriteRowCache.Rows[Scanline].Sprites[ItemIndex].TableIndex * 8);
+    Width := Cardinal(Vdp.State.SpriteRowCache.Rows[Scanline].Sprites[ItemIndex].Width);
+    RawX := (ReadVRAM(Vdp.State, (Add32(SpriteIndex, 6) xor 0)) or (ReadVRAM(Vdp.State, (Add32(SpriteIndex, 6) xor 1)) shl 8)) and $1FF;
+    X := Add32(RawX, (((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) * 2) * 8);
+    if RawX = 0 then
+      Masked := Vdp.State.AllowSpriteMasking
     else
+      Vdp.State.AllowSpriteMasking := 1;
+    Temp117 := Ord((Masked <> 0) or (Add32(X, Mul32(Width, 8)) <= $80));
+    Temp116 := Ord(Temp117 <> 0);
+    if Temp116 = 0 then
     begin
-      c_state^.c_allow_sprite_masking := Byte(1);
-    end;
-    temp117 := Ord(c_masked <> 0);
-    if temp117 = 0 then
-    begin
-      temp117 := Ord(Cardinal(Add32(c_x, Mul32(c_width, 8))) <= Cardinal($80));
-    end;
-    temp116 := Ord(temp117 <> 0);
-    if temp116 = 0 then
-    begin
-      if (c_vdp_^.c_state.c_h40_enabled <> 0) then
-      begin
-        temp118 := 20;
-      end
+      if Vdp.State.H40Enabled <> 0 then
+        Temp118 := 20
       else
-      begin
-        temp118 := 16;
-      end;
-      temp116 := Ord(Cardinal(c_x) >= Cardinal(Add32($80, Mul32(Mul32(Add32(temp118, Mul32(Cardinal(Add32(Cardinal(c_vdp_^.c_configuration.c_widescreen_tiles), 2 - 1)) div Cardinal(2), 2)), 2), 8))));
+        Temp118 := 16;
+      Temp116 := Ord(X >= Add32($80, Mul32(Mul32(Add32(Temp118, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)), 2), 8)));
     end;
-    if (temp116 <> 0) then
+    if Temp116 <> 0 then
     begin
-      if (Cardinal(c_pixel_limit) <= Cardinal(Mul32(c_width, 8))) then
-      begin
+      if PixelLimit <= Mul32(Width, 8) then
         Exit;
-      end;
-      c_pixel_limit := Cardinal(Sub32(c_pixel_limit, Mul32(c_width, 8)));
+      PixelLimit := Sub32(PixelLimit, Mul32(Width, 8));
     end
     else
     begin
-      c_height := Cardinal(c_sprite_row_cache_entry^.c_height);
-      c_word := Cardinal(Cardinal(c_ReadVRAM(c_state, (Cardinal(Add32(c_sprite_index, 4)) xor Cardinal(0)))) or Cardinal(c_ReadVRAM(c_state, (Cardinal(Add32(c_sprite_index, 4)) xor Cardinal(1))) shl 8));
-      c_sprite_tile_index := Cardinal(Cardinal(c_word) and Cardinal($7FF));
-      c_x_flip := Byte(Ord(Cardinal(Cardinal(c_word) and Cardinal($800)) <> Cardinal(0)));
-      c_y_flip := Byte(Ord(Cardinal(Cardinal(c_word) and Cardinal($1000)) <> Cardinal(0)));
-      c_metapixel_high_bits := Cardinal(Cardinal(c_word shr 9) and Cardinal($70));
-      if (c_x_flip <> 0) then
+      Height := Cardinal(Vdp.State.SpriteRowCache.Rows[Scanline].Sprites[ItemIndex].Height);
+      WordValue := ReadVRAM(Vdp.State, (Add32(SpriteIndex, 4) xor 0)) or (ReadVRAM(Vdp.State, (Add32(SpriteIndex, 4) xor 1)) shl 8);
+      SpriteTileIndex := WordValue and $7FF;
+      XFlip := Ord((WordValue and $800) <> 0);
+      YFlip := Ord((WordValue and $1000) <> 0);
+      MetapixelHighBits := (WordValue shr 9) and $70;
+      if XFlip <> 0 then
+        Temp119 := 3
+      else
+        Temp119 := 0;
+      ByteIndexXor := Cardinal(1 xor Temp119);
+      YInSpriteNonFlipped := Cardinal(Vdp.State.SpriteRowCache.Rows[Scanline].Sprites[ItemIndex].YInSprite);
+      if YFlip <> 0 then
+        Temp120 := Sub32(Sub32(Height shl TileHeightShift, YInSpriteNonFlipped), 1)
+      else
+        Temp120 := YInSpriteNonFlipped;
+      YInSprite := Temp120;
+      PixelYInTile := YInSprite and TileHeightMask;
+      var PixelIndex := SPRITE_PADDING + Integer(X) - $80;
+      if XFlip <> 0 then
       begin
-        temp119 := 3;
+        NybbleShift[0] := 0;
+        NybbleShift[1] := 4;
       end
       else
       begin
-        temp119 := 0;
+        NybbleShift[0] := 4;
+        NybbleShift[1] := 0;
       end;
-      c_byte_index_xor := Cardinal(1 xor temp119);
-      c_y_in_sprite_non_flipped := Cardinal(c_sprite_row_cache_entry^.c_y_in_sprite);
-      if (c_y_flip <> 0) then
+      for var JIndex := 0 to Integer(Width) - 1 do
       begin
-        temp120 := (Sub32(Sub32(c_height shl c_tile_height_shift, c_y_in_sprite_non_flipped), 1));
-      end
-      else
-      begin
-        temp120 := c_y_in_sprite_non_flipped;
-      end;
-      c_y_in_sprite := Cardinal(temp120);
-      c_pixel_y_in_tile := Cardinal(Cardinal(c_y_in_sprite) and Cardinal(c_tile_height_mask));
-      var PixelIndex := SpritePadding + Integer(c_x) - $80;
-      if (c_x_flip <> 0) then
-      begin
-        c_nybble_shift[0] := Cardinal(0);
-        c_nybble_shift[1] := Cardinal(4);
-      end
-      else
-      begin
-        c_nybble_shift[0] := Cardinal(4);
-        c_nybble_shift[1] := Cardinal(0);
-      end;
-      c_j := Cardinal(0);
-      while (Cardinal(c_j) < Cardinal(c_width)) do
-      begin
-        if (c_x_flip <> 0) then
-        begin
-          temp124 := (Sub32(Sub32(c_width, c_j), 1));
-        end
+        if XFlip <> 0 then
+          Temp124 := Sub32(Sub32(Width, JIndex), 1)
         else
+          Temp124 := JIndex;
+        XInSprite := Temp124;
+        TileIndex := Add32(Add32(SpriteTileIndex, YInSprite shr TileHeightShift), Mul32(XInSprite, Height));
+        TileRowVramAddress := Add32(BaseTileVramAddress, (Add32(TileIndex shl (3 + Vdp.State.DoubleResolutionEnabled), PixelYInTile)) shl 2);
+        for var KIndex := 0 to Integer(8 div 2) - 1 do
         begin
-          temp124 := c_j;
-        end;
-        c_x_in_sprite := Cardinal(temp124);
-        c_tile_index := Cardinal(Add32(Add32(c_sprite_tile_index, c_y_in_sprite shr c_tile_height_shift), Mul32(c_x_in_sprite, c_height)));
-        c_tile_row_vram_address := Cardinal(Add32(c_base_tile_vram_address, (Add32(c_tile_index shl (3 + c_state^.c_double_resolution_enabled), c_pixel_y_in_tile)) shl 2));
-        c_k := Cardinal(0);
-        while (Cardinal(c_k) < Cardinal(8 div 2)) do
-        begin
-          c_byte := Cardinal(c_ReadVRAM(c_state, (Cardinal(Add32(c_tile_row_vram_address, c_k)) xor Cardinal(c_byte_index_xor))));
-          c_l := Cardinal(0);
-          while (Cardinal(c_l) < Cardinal(Length(c_nybble_shift))) do
+          ByteValue := ReadVRAM(Vdp.State, (Add32(TileRowVramAddress, KIndex) xor ByteIndexXor));
+          for var LIndex := 0 to High(NybbleShift) do
           begin
-            if (Integer(c_sprite_metapixels[PixelIndex] and $F) = Integer(0)) then
+            if Integer(SpriteMetapixels[PixelIndex] and $F) = 0 then
             begin
-              c_palette_line_index := Cardinal(Cardinal(c_byte shr c_nybble_shift[c_l]) and Cardinal($F));
-              c_sprite_metapixels[PixelIndex] := Byte(Cardinal(c_metapixel_high_bits) or Cardinal(c_palette_line_index));
+              PaletteLineIndex := (ByteValue shr NybbleShift[LIndex]) and $F;
+              SpriteMetapixels[PixelIndex] := Byte(MetapixelHighBits or PaletteLineIndex);
             end;
             Inc(PixelIndex);
-            Dec(c_pixel_limit);
-            if (Cardinal(c_pixel_limit) = Cardinal(0)) then
-            begin
+            Dec(PixelLimit);
+            if PixelLimit = 0 then
               Exit;
-            end;
-            Inc(c_l);
           end;
-          Inc(c_k);
         end;
-        Inc(c_j);
       end;
     end;
-    Dec(c_sprite_limit);
-    if (Cardinal(c_sprite_limit) = Cardinal(0)) then
-    begin
+    Dec(SpriteLimit);
+    if SpriteLimit = 0 then
       Break;
-    end;
-    Inc(c_i);
   end;
-  c_state^.c_allow_sprite_masking := Byte(0);
+  Vdp.State.AllowSpriteMasking := 0;
 end;
 
-procedure c_RenderScrollPlane(c_vdp_: PVDP; c_left_boundary: Cardinal; c_right_boundary: Cardinal; c_scanline: Cardinal; var c_plane_metapixels: array of Byte; c_blit_lookup_list: PBlitLookup; c_plane_index: Cardinal);
-var
-  c_state: PVDPState;
-  c_hscroll_vram_address: Cardinal;
-  c_hscroll: Cardinal;
-  c_scroll_offset: Cardinal;
-  c_plane_x_offset: Cardinal;
+procedure RenderScrollPlane(var Vdp: TVDP; LeftBoundary: Cardinal; RightBoundary: Cardinal; Scanline: Cardinal; var PlaneMetapixels: array of Byte; const BlitLookupList: TBlitLookup; PlaneIndex: Cardinal);
 begin
-  c_state := @c_vdp_^.c_state;
-  if (not (c_vdp_^.c_configuration.c_planes_disabled[c_plane_index] <> 0)) then
+  var HscrollVramAddress: Cardinal;
+  var Hscroll: Cardinal;
+  var ScrollOffset: Cardinal;
+  var PlaneXOffset: Cardinal;
+
+  if not (Vdp.Configuration.PlanesDisabled[PlaneIndex] <> 0) then
   begin
-    c_hscroll_vram_address := Cardinal(Add32(Add32(c_state^.c_hscroll_address, Mul32(c_plane_index, 2)), c_GetHScrollTableOffset(c_state, c_scanline)));
-    c_hscroll := Cardinal(Add32(Cardinal(c_ReadVRAM(c_state, (Cardinal(c_hscroll_vram_address) xor Cardinal(0)))) or Cardinal(c_ReadVRAM(c_state, (Cardinal(c_hscroll_vram_address) xor Cardinal(1))) shl 8), (((c_vdp_^.c_configuration.c_widescreen_tiles + (2 - 1)) div 2) * 2) * 8));
-    c_scroll_offset := Cardinal(Sub32(8 * 2, Cardinal(c_hscroll) mod Cardinal(8 * 2)));
-    c_plane_x_offset := Sub32(0, c_hscroll div (8 * 2));
-    c_RenderScrollingPlane(c_vdp_, c_left_boundary, c_right_boundary, c_scanline, c_plane_index, c_plane_x_offset, PlanePadding - Integer(c_scroll_offset), c_plane_metapixels, c_blit_lookup_list);
+    HscrollVramAddress := Add32(Add32(Vdp.State.HscrollAddress, Mul32(PlaneIndex, 2)), GetHScrollTableOffset(Vdp.State, Scanline));
+    Hscroll := Add32(ReadVRAM(Vdp.State, (HscrollVramAddress xor 0)) or (ReadVRAM(Vdp.State, (HscrollVramAddress xor 1)) shl 8), (((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) * 2) * 8);
+    ScrollOffset := Sub32(8 * 2, Hscroll mod Cardinal(8 * 2));
+    PlaneXOffset := Sub32(0, Hscroll div (8 * 2));
+    RenderScrollingPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneIndex, PlaneXOffset, PLANE_PADDING - Integer(ScrollOffset), PlaneMetapixels, BlitLookupList);
   end;
 end;
 
-procedure c_RenderForegroundPlane(c_vdp_: PVDP; c_left_boundary: Cardinal; c_right_boundary: Cardinal; c_scanline: Cardinal; var c_plane_metapixels: array of Byte; c_blit_lookup_list: PBlitLookup; c_window_plane: Byte);
+procedure RenderForegroundPlane(var Vdp: TVDP; LeftBoundary: Cardinal; RightBoundary: Cardinal; Scanline: Cardinal; var PlaneMetapixels: array of Byte; const BlitLookupList: TBlitLookup; WindowPlane: Byte);
 begin
-  var temp129: Integer := Ord(c_window_plane <> 0);
-  if temp129 <> 0 then
+  var Temp129: Integer := Ord(WindowPlane <> 0);
+  if Temp129 <> 0 then
+    Temp129 := Ord((Vdp.Configuration.WindowDisabled = 0));
+  if Temp129 <> 0 then
+    RenderWindowPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneMetapixels, BlitLookupList)
+  else
+    RenderScrollPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneMetapixels, BlitLookupList, 0);
+end;
+
+procedure RenderSpritePlane(var PlaneMetapixels: array of Byte; var SpriteMetapixels: array of Byte; const BlitLookupList: TBlitLookup; Mask: Cardinal; LeftBoundaryPixels: Cardinal; RightBoundaryPixels: Cardinal);
+begin
+  for var PixelIndex := Integer(LeftBoundaryPixels) to Integer(RightBoundaryPixels) - 1 do
   begin
-    temp129 := Ord(not (c_vdp_^.c_configuration.c_window_disabled <> 0));
+    var PlaneIndex := PLANE_PADDING + PixelIndex;
+    var SpritePixel := SpriteMetapixels[SPRITE_PADDING + PixelIndex];
+    var PlanePixel := PlaneMetapixels[PlaneIndex];
+    PlaneMetapixels[PlaneIndex] := BlitLookupList.Lower[SpritePixel].Pixels[PlanePixel] and Mask;
   end;
-  if (temp129 <> 0) then
-  begin
-    c_RenderWindowPlane(c_vdp_, c_left_boundary, c_right_boundary, c_scanline, c_plane_metapixels, c_blit_lookup_list);
-  end
+end;
+
+procedure RenderForegroundAndSpritePlanes(var Vdp: TVDP; Scanline: Cardinal; var PlaneMetapixels: array of Byte; var SpriteMetapixels: array of Byte; WindowPlane: Byte; ScanlineRenderedCallback: TVDPScanlineRenderedCallback; ScanlineRenderedCallbackUserData: Pointer);
+begin
+  var Temp132: Integer;
+  var Temp133: Integer;
+  var Temp134: Cardinal;
+  var Temp135: Cardinal;
+  var Temp136: Cardinal;
+  var Temp137: Integer;
+  var Temp138: Cardinal;
+  var Temp139: Integer;
+  var Temp144: Integer;
+  var Temp145: Integer;
+  var Temp146: Cardinal;
+  var Temp147: Cardinal;
+  var Temp148: Cardinal;
+  var Temp149: Cardinal;
+  var Temp150: Cardinal;
+  var Temp151: Cardinal;
+
+  var FullWindowPlaneLine: Byte := Ord(Integer(Ord(Scanline < Cardinal(Vdp.State.Window.VerticalBoundary))) <> Vdp.State.Window.AlignedBottom);
+  if Vdp.State.Window.HorizontalBoundary = 0 then
+    Temp132 := 0
+  else
+    Temp132 := ((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) + Vdp.State.Window.HorizontalBoundary;
+  var WindowHorizontalBoundary: Cardinal := Temp132;
+  if FullWindowPlaneLine <> 0 then
+    Temp133 := 0
   else
   begin
-    c_RenderScrollPlane(c_vdp_, c_left_boundary, c_right_boundary, c_scanline, c_plane_metapixels, c_blit_lookup_list, 0);
-  end;
-end;
-
-procedure c_RenderSpritePlane(var c_plane_metapixels: array of Byte; var c_sprite_metapixels: array of Byte; c_blit_lookup_list: PBlitLookup; c_mask: Cardinal; c_left_boundary_pixels: Cardinal; c_right_boundary_pixels: Cardinal);
-begin
-  for var PixelIndex := Integer(c_left_boundary_pixels) to Integer(c_right_boundary_pixels) - 1 do
-  begin
-    var PlaneIndex := PlanePadding + PixelIndex;
-    var SpritePixel := c_sprite_metapixels[SpritePadding + PixelIndex];
-    var PlanePixel := c_plane_metapixels[PlaneIndex];
-    c_plane_metapixels[PlaneIndex] := c_blit_lookup_list^.c_lower[SpritePixel].c_pixels[PlanePixel] and c_mask;
-  end;
-end;
-
-procedure c_RenderForegroundAndSpritePlanes(c_vdp_: PVDP; c_scanline: Cardinal; var c_plane_metapixels: array of Byte; var c_sprite_metapixels: array of Byte; c_window_plane: Byte; c_scanline_rendered_callback: TVDPScanlineRenderedCallback; c_scanline_rendered_callback_user_data: Pointer);
-var
-  c_state: PVDPState;
-  temp132: Integer;
-  temp133: Integer;
-  temp134: Cardinal;
-  temp135: Cardinal;
-  temp136: Cardinal;
-  temp137: Integer;
-  temp138: Cardinal;
-  temp139: Integer;
-  temp144: Integer;
-  temp145: Integer;
-  temp146: Cardinal;
-  temp147: Cardinal;
-  temp148: Cardinal;
-  temp149: Cardinal;
-  temp150: Cardinal;
-  temp151: Cardinal;
-begin
-  c_state := @c_vdp_^.c_state;
-  var c_full_window_plane_line: Byte := Byte(Ord(Integer(Ord(Cardinal(c_scanline) < Cardinal(c_state^.c_window.c_vertical_boundary))) <> Integer(c_state^.c_window.c_aligned_bottom)));
-  if (Integer(c_state^.c_window.c_horizontal_boundary) = Integer(0)) then
-  begin
-    temp132 := 0;
-  end
-  else
-  begin
-    temp132 := (((c_vdp_^.c_configuration.c_widescreen_tiles + (2 - 1)) div 2) + c_state^.c_window.c_horizontal_boundary);
-  end;
-  var c_window_horizontal_boundary: Cardinal := temp132;
-  if (c_full_window_plane_line <> 0) then
-  begin
-    temp133 := 0;
-  end
-  else
-  begin
-    if (Integer(c_state^.c_window.c_aligned_right) = Integer(c_window_plane)) then
-    begin
-      temp134 := c_window_horizontal_boundary;
-    end
+    if Vdp.State.Window.AlignedRight = WindowPlane then
+      Temp134 := WindowHorizontalBoundary
     else
-    begin
-      temp134 := 0;
-    end;
-    temp133 := temp134;
+      Temp134 := 0;
+    Temp133 := Temp134;
   end;
-  var c_left_boundary: Cardinal := temp133;
-  if (c_full_window_plane_line <> 0) then
+  var LeftBoundary: Cardinal := Temp133;
+  if FullWindowPlaneLine <> 0 then
   begin
-    if (c_window_plane <> 0) then
+    if WindowPlane <> 0 then
     begin
-      if (c_vdp_^.c_state.c_h40_enabled <> 0) then
-      begin
-        temp137 := 20;
-      end
+      if Vdp.State.H40Enabled <> 0 then
+        Temp137 := 20
       else
-      begin
-        temp137 := 16;
-      end;
-      temp136 := (Add32(temp137, Mul32(Cardinal(Add32(Cardinal(c_vdp_^.c_configuration.c_widescreen_tiles), 2 - 1)) div Cardinal(2), 2)));
+        Temp137 := 16;
+      Temp136 := Add32(Temp137, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2));
     end
     else
-    begin
-      temp136 := 0;
-    end;
-    temp135 := temp136;
+      Temp136 := 0;
+    Temp135 := Temp136;
   end
   else
   begin
-    if (Integer(c_state^.c_window.c_aligned_right) = Integer(c_window_plane)) then
+    if Vdp.State.Window.AlignedRight = WindowPlane then
     begin
-      if (c_vdp_^.c_state.c_h40_enabled <> 0) then
-      begin
-        temp139 := 20;
-      end
+      if Vdp.State.H40Enabled <> 0 then
+        Temp139 := 20
       else
-      begin
-        temp139 := 16;
-      end;
-      temp138 := (Add32(temp139, Mul32(Cardinal(Add32(Cardinal(c_vdp_^.c_configuration.c_widescreen_tiles), 2 - 1)) div Cardinal(2), 2)));
+        Temp139 := 16;
+      Temp138 := Add32(Temp139, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2));
     end
     else
-    begin
-      temp138 := c_window_horizontal_boundary;
-    end;
-    temp135 := temp138;
+      Temp138 := WindowHorizontalBoundary;
+    Temp135 := Temp138;
   end;
-  var c_right_boundary: Cardinal := temp135;
-  var c_left_boundary_pixels: Cardinal := Cardinal(Mul32(c_left_boundary, 8 * 2));
-  var c_right_boundary_pixels: Cardinal := Cardinal(Mul32(c_right_boundary, 8 * 2));
-  if (Cardinal(c_left_boundary) = Cardinal(c_right_boundary)) then
-  begin
+  var RightBoundary: Cardinal := Temp135;
+  var LeftBoundaryPixels: Cardinal := Mul32(LeftBoundary, 8 * 2);
+  var RightBoundaryPixels: Cardinal := Mul32(RightBoundary, 8 * 2);
+  if LeftBoundary = RightBoundary then
     Exit;
-  end;
-  if (c_state^.c_display_enabled <> 0) then
+  if Vdp.State.DisplayEnabled <> 0 then
   begin
-    if (not (c_state^.c_debug.c_hide_layers <> 0)) then
+    if Vdp.State.Debug.HideLayers = 0 then
     begin
-      c_RenderForegroundPlane(c_vdp_, c_left_boundary, c_right_boundary, c_scanline, c_plane_metapixels, @c_blit_lookup.c_normal, c_window_plane);
-      if (c_state^.c_shadow_highlight_enabled <> 0) then
-      begin
-        c_RenderSpritePlane(c_plane_metapixels, c_sprite_metapixels, @c_blit_lookup.c_shadow_highlight, $FF, c_left_boundary_pixels, c_right_boundary_pixels);
-      end
+      RenderForegroundPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneMetapixels, BlitLookup.Normal, WindowPlane);
+      if Vdp.State.ShadowHighlightEnabled <> 0 then
+        RenderSpritePlane(PlaneMetapixels, SpriteMetapixels, BlitLookup.ShadowHighlight, $FF, LeftBoundaryPixels, RightBoundaryPixels)
       else
-      begin
-        c_RenderSpritePlane(c_plane_metapixels, c_sprite_metapixels, @c_blit_lookup.c_normal, $3F, c_left_boundary_pixels, c_right_boundary_pixels);
-      end;
+        RenderSpritePlane(PlaneMetapixels, SpriteMetapixels, BlitLookup.Normal, $3F, LeftBoundaryPixels, RightBoundaryPixels);
     end;
-    case c_state^.c_debug.c_forced_layer of
+    case Vdp.State.Debug.ForcedLayer of
       1:
         begin
-          c_RenderSpritePlane(c_plane_metapixels, c_sprite_metapixels, @c_blit_lookup.c_forced_layer, $FF, c_left_boundary_pixels, c_right_boundary_pixels);
+          RenderSpritePlane(PlaneMetapixels, SpriteMetapixels, BlitLookup.ForcedLayer, $FF, LeftBoundaryPixels, RightBoundaryPixels);
         end;
       2:
         begin
-          c_RenderScrollPlane(c_vdp_, c_left_boundary, c_right_boundary, c_scanline, c_plane_metapixels, @c_blit_lookup.c_forced_layer, 0);
+          RenderScrollPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneMetapixels, BlitLookup.ForcedLayer, 0);
         end;
       3:
         begin
-          c_RenderScrollPlane(c_vdp_, c_left_boundary, c_right_boundary, c_scanline, c_plane_metapixels, @c_blit_lookup.c_forced_layer, 1);
+          RenderScrollPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneMetapixels, BlitLookup.ForcedLayer, 1);
         end;
     end;
   end;
-  var c_input_extra_tiles: Cardinal := Cardinal((((c_vdp_^.c_configuration.c_widescreen_tiles + (2 - 1)) div 2) * 2) * 2);
-  var c_input_extra_tiles_in_pixels: Cardinal := Cardinal(Mul32(c_input_extra_tiles, 8));
-  var c_output_extra_tiles: Cardinal := c_vdp_^.c_configuration.c_widescreen_tiles * 2;
-  var c_output_extra_tiles_in_pixels: Cardinal := Cardinal(Mul32(c_output_extra_tiles, 8));
-  var c_x_offset: Cardinal := Cardinal(Cardinal(Sub32(c_input_extra_tiles_in_pixels, c_output_extra_tiles_in_pixels)) div Cardinal(2));
-  if (c_state^.c_h40_enabled <> 0) then
-  begin
-    temp144 := 20;
-  end
+  var InputExtraTiles: Cardinal := Cardinal((((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) * 2) * 2);
+  var InputExtraTilesInPixels: Cardinal := Mul32(InputExtraTiles, 8);
+  var OutputExtraTiles: Cardinal := GetWidescreenTiles(Vdp) * 2;
+  var OutputExtraTilesInPixels: Cardinal := Mul32(OutputExtraTiles, 8);
+  var XOffset: Cardinal := Cardinal(Sub32(InputExtraTilesInPixels, OutputExtraTilesInPixels) div 2);
+  if Vdp.State.H40Enabled <> 0 then
+    Temp144 := 20
+  else
+    Temp144 := 16;
+  var OutputWidth: Cardinal := Add32((Temp144 * 2) * 8, OutputExtraTilesInPixels);
+  if Vdp.State.V30Enabled <> 0 then
+    Temp145 := 30
+  else
+    Temp145 := 28;
+  var OutputHeight: Cardinal := Cardinal(Temp145 shl (3 + Vdp.State.DoubleResolutionEnabled));
+  if Add32(XOffset, OutputWidth) < LeftBoundaryPixels then
+    Temp147 := Add32(XOffset, OutputWidth)
+  else
+    Temp147 := LeftBoundaryPixels;
+  if XOffset > Temp147 then
+    Temp146 := XOffset
   else
   begin
-    temp144 := 16;
-  end;
-  var c_output_width: Cardinal := Cardinal(Add32((temp144 * 2) * 8, c_output_extra_tiles_in_pixels));
-  if (c_state^.c_v30_enabled <> 0) then
-  begin
-    temp145 := 30;
-  end
-  else
-  begin
-    temp145 := 28;
-  end;
-  var c_output_height: Cardinal := Cardinal(temp145 shl (3 + c_state^.c_double_resolution_enabled));
-  if (Cardinal(Add32(c_x_offset, c_output_width)) < Cardinal(c_left_boundary_pixels)) then
-  begin
-    temp147 := (Add32(c_x_offset, c_output_width));
-  end
-  else
-  begin
-    temp147 := c_left_boundary_pixels;
-  end;
-  if (Cardinal(c_x_offset) > Cardinal(temp147)) then
-  begin
-    temp146 := c_x_offset;
-  end
-  else
-  begin
-    if (Cardinal(Add32(c_x_offset, c_output_width)) < Cardinal(c_left_boundary_pixels)) then
-    begin
-      temp148 := (Add32(c_x_offset, c_output_width));
-    end
+    if Add32(XOffset, OutputWidth) < LeftBoundaryPixels then
+      Temp148 := Add32(XOffset, OutputWidth)
     else
-    begin
-      temp148 := c_left_boundary_pixels;
-    end;
-    temp146 := temp148;
+      Temp148 := LeftBoundaryPixels;
+    Temp146 := Temp148;
   end;
-  var c_clamped_left_boundary_pixels: Cardinal := Cardinal(Sub32(temp146, c_x_offset));
-  if (Cardinal(Add32(c_x_offset, c_output_width)) < Cardinal(c_right_boundary_pixels)) then
-  begin
-    temp150 := (Add32(c_x_offset, c_output_width));
-  end
+  var ClampedLeftBoundaryPixels: Cardinal := Sub32(Temp146, XOffset);
+  if Add32(XOffset, OutputWidth) < RightBoundaryPixels then
+    Temp150 := Add32(XOffset, OutputWidth)
+  else
+    Temp150 := RightBoundaryPixels;
+  if XOffset > Temp150 then
+    Temp149 := XOffset
   else
   begin
-    temp150 := c_right_boundary_pixels;
-  end;
-  if (Cardinal(c_x_offset) > Cardinal(temp150)) then
-  begin
-    temp149 := c_x_offset;
-  end
-  else
-  begin
-    if (Cardinal(Add32(c_x_offset, c_output_width)) < Cardinal(c_right_boundary_pixels)) then
-    begin
-      temp151 := (Add32(c_x_offset, c_output_width));
-    end
+    if Add32(XOffset, OutputWidth) < RightBoundaryPixels then
+      Temp151 := Add32(XOffset, OutputWidth)
     else
-    begin
-      temp151 := c_right_boundary_pixels;
-    end;
-    temp149 := temp151;
+      Temp151 := RightBoundaryPixels;
+    Temp149 := Temp151;
   end;
-  var c_clamped_right_boundary_pixels: Cardinal := Cardinal(Sub32(temp149, c_x_offset));
-  c_scanline_rendered_callback(Pointer(c_scanline_rendered_callback_user_data), c_scanline, c_plane_metapixels, PlanePadding + Integer(c_x_offset), c_clamped_left_boundary_pixels, c_clamped_right_boundary_pixels, c_output_width, c_output_height);
+  var ClampedRightBoundaryPixels: Cardinal := Sub32(Temp149, XOffset);
+  ScanlineRenderedCallback(ScanlineRenderedCallbackUserData, Scanline, PlaneMetapixels, PLANE_PADDING + Integer(XOffset), ClampedLeftBoundaryPixels, ClampedRightBoundaryPixels, OutputWidth, OutputHeight);
 end;
 
-procedure c_VDP_BeginScanline(c_vdp_: PVDP);
-var
-  c_state: PVDPState;
+procedure VDPBeginScanline(var Vdp: TVDP);
 begin
-  c_state := @c_vdp_^.c_state;
-  var c_i: Cardinal := 0;
-  while (Cardinal(c_i) < Cardinal(Length(c_state^.c_vsram_cache))) do
+
+  for var ItemIndex := 0 to High(Vdp.State.VsramCache) do
   begin
-    c_state^.c_vsram_cache[c_i] := Word(c_state^.c_vsram[c_i]);
-    Inc(c_i);
+    Vdp.State.VsramCache[ItemIndex] := Vdp.State.Vsram[ItemIndex];
   end;
 end;
 
-procedure c_VDP_EndScanline(c_vdp_: PVDP; c_scanline: Cardinal; c_scanline_rendered_callback: TVDPScanlineRenderedCallback; c_scanline_rendered_callback_user_data: Pointer);
-var
-  c_state: PVDPState;
-  c_plane_metapixels_buffer: array[0..543] of Byte;
-  c_sprite_metapixels_buffer: array[0..573] of Byte;
-  temp156: Integer;
-  temp157: Integer;
-  temp158: Byte;
-  temp159: Integer;
-  temp160: Integer;
-  temp161: Integer;
-  temp163: Integer;
+procedure VDPEndScanline(var Vdp: TVDP; Scanline: Cardinal; ScanlineRenderedCallback: TVDPScanlineRenderedCallback; ScanlineRenderedCallbackUserData: Pointer);
 begin
-  c_state := @c_vdp_^.c_state;
-  if (Integer(30) > Integer(28)) then
-  begin
-    temp156 := 30;
-  end
+  var PlaneMetapixelsBuffer: array[0..543] of Byte;
+  var SpriteMetapixelsBuffer: array[0..573] of Byte;
+  var Temp156: Integer;
+  var Temp157: Integer;
+  var Temp158: Byte;
+  var Temp159: Integer;
+  var Temp160: Integer;
+  var Temp161: Integer;
+  var Temp163: Integer;
+
+  if 30 > 28 then
+    Temp156 := 30
   else
-  begin
-    temp156 := 28;
-  end;
-  if (Integer(8) > Integer(16)) then
-  begin
-    temp157 := 8;
-  end
+    Temp156 := 28;
+  if 8 > 16 then
+    Temp157 := 8
   else
-  begin
-    temp157 := 16;
-  end;
-  Assert(Cardinal(c_scanline) < Cardinal(temp156 * temp157));
-  c_UpdateSpriteCache(c_vdp_);
-  FillChar(c_sprite_metapixels_buffer, SizeOf(c_sprite_metapixels_buffer), 0);
-  if (not (c_vdp_^.c_configuration.c_sprites_disabled <> 0)) then
-  begin
-    c_RenderSprites(c_vdp_, c_sprite_metapixels_buffer, c_scanline);
-  end;
-  if (Integer(c_state^.c_debug.c_forced_layer) = Integer(0)) then
-  begin
-    temp158 := c_state^.c_background_colour;
-  end
+    Temp157 := 16;
+  Assert(Scanline < Cardinal(Temp156 * Temp157));
+  UpdateSpriteCache(Vdp);
+  FillChar(SpriteMetapixelsBuffer, SizeOf(SpriteMetapixelsBuffer), 0);
+  if Vdp.Configuration.SpritesDisabled = 0 then
+    RenderSprites(Vdp, SpriteMetapixelsBuffer, Scanline);
+  if Vdp.State.Debug.ForcedLayer = 0 then
+    Temp158 := Vdp.State.BackgroundColour
   else
-  begin
-    temp158 := $3F;
-  end;
-  if (Integer(20) > Integer(16)) then
-  begin
-    temp159 := 20;
-  end
+    Temp158 := $3F;
+  if 20 > 16 then
+    Temp159 := 20
   else
-  begin
-    temp159 := 16;
-  end;
-  if (Integer(20) > Integer(16)) then
-  begin
-    temp160 := 20;
-  end
+    Temp159 := 16;
+  if 20 > 16 then
+    Temp160 := 20
   else
-  begin
-    temp160 := 16;
-  end;
-  if (Integer(20) > Integer(16)) then
-  begin
-    temp161 := 20;
-  end
+    Temp160 := 16;
+  if 20 > 16 then
+    Temp161 := 20
   else
+    Temp161 := 16;
+  FillChar(PlaneMetapixelsBuffer[PLANE_PADDING], (((((32 - Temp159) div 2) + Temp160) + ((32 - Temp161) div 2)) * (8 * 2)), Temp158);
+  var Temp162: Integer := Ord(Vdp.State.DisplayEnabled <> 0);
+  if Temp162 <> 0 then
+    Temp162 := Ord((Vdp.State.Debug.HideLayers = 0));
+  if Temp162 <> 0 then
   begin
-    temp161 := 16;
-  end;
-  FillChar(c_plane_metapixels_buffer[PlanePadding], (((((32 - temp159) div 2) + temp160) + ((32 - temp161) div 2)) * (8 * 2)), temp158);
-  var temp162: Integer := Ord(c_state^.c_display_enabled <> 0);
-  if temp162 <> 0 then
-  begin
-    temp162 := Ord(not (c_state^.c_debug.c_hide_layers <> 0));
-  end;
-  if (temp162 <> 0) then
-  begin
-    if (c_vdp_^.c_state.c_h40_enabled <> 0) then
-    begin
-      temp163 := 20;
-    end
+    if Vdp.State.H40Enabled <> 0 then
+      Temp163 := 20
     else
-    begin
-      temp163 := 16;
-    end;
-    c_RenderScrollPlane(c_vdp_, 0, (Add32(temp163, Mul32(Cardinal(Add32(Cardinal(c_vdp_^.c_configuration.c_widescreen_tiles), 2 - 1)) div Cardinal(2), 2))), c_scanline, c_plane_metapixels_buffer, @c_blit_lookup.c_normal, 1);
+      Temp163 := 16;
+    RenderScrollPlane(Vdp, 0, (Add32(Temp163, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2))), Scanline, PlaneMetapixelsBuffer, BlitLookup.Normal, 1);
   end;
-  c_RenderForegroundAndSpritePlanes(c_vdp_, c_scanline, c_plane_metapixels_buffer, c_sprite_metapixels_buffer, 1, c_scanline_rendered_callback, c_scanline_rendered_callback_user_data);
-  c_RenderForegroundAndSpritePlanes(c_vdp_, c_scanline, c_plane_metapixels_buffer, c_sprite_metapixels_buffer, 0, c_scanline_rendered_callback, c_scanline_rendered_callback_user_data);
+  RenderForegroundAndSpritePlanes(Vdp, Scanline, PlaneMetapixelsBuffer, SpriteMetapixelsBuffer, 1, ScanlineRenderedCallback, ScanlineRenderedCallbackUserData);
+  RenderForegroundAndSpritePlanes(Vdp, Scanline, PlaneMetapixelsBuffer, SpriteMetapixelsBuffer, 0, ScanlineRenderedCallback, ScanlineRenderedCallbackUserData);
 end;
 
-function c_VDP_ReadData(c_vdp_: PVDP): Cardinal;
-var
-  c_state: PVDPState;
+function VDPReadData(var Vdp: TVDP): Cardinal;
 begin
-  c_state := @c_vdp_^.c_state;
-  var c_value: Cardinal := 0;
-  c_state^.c_access.c_write_pending := Byte(0);
-  if (not (c_IsInReadMode(c_state) <> 0)) then
+
+  var Value: Cardinal := 0;
+  Vdp.State.Access.WritePending := 0;
+  if not (IsInReadMode(Vdp.State) <> 0) then
   begin
     ;
   end
   else
+    Value := ReadAndIncrement(Vdp.State);
+  Exit(Value);
+end;
+
+function VDPReadControl(var Vdp: TVDP): Cardinal;
+begin
+
+  var FifoEmpty: Byte := 1;
+  Vdp.State.Access.WritePending := 0;
+  Exit(Cardinal((($3400 or (FifoEmpty shl 9)) or (Vdp.State.CurrentlyInVblank shl 7)) or (Vdp.State.CurrentlyInVblank shl 3)));
+end;
+
+procedure UpdateFakeFIFO(var State: TVDPState; Value: Cardinal);
+begin
+  var Last: Cardinal := Cardinal(Length(State.PreviousDataWrites) - 1);
+  for var ItemIndex := 0 to Integer(Last) - 1 do
   begin
-    c_value := Cardinal(c_ReadAndIncrement(c_state));
+    State.PreviousDataWrites[ItemIndex] := State.PreviousDataWrites[(Add32(ItemIndex, 1))];
   end;
-  Exit(Cardinal(c_value));
+  State.PreviousDataWrites[Last] := Word(Value);
 end;
 
-function c_VDP_ReadControl(c_vdp_: PVDP): Cardinal;
-var
-  c_state: PVDPState;
+procedure VDPWriteData(var Vdp: TVDP; Value: Cardinal; ColourUpdatedCallback: TVDPColourUpdatedCallback; ColourUpdatedCallbackUserData: Pointer);
 begin
-  c_state := @c_vdp_^.c_state;
-  var c_fifo_empty: Byte := 1;
-  c_state^.c_access.c_write_pending := Byte(0);
-  Exit(Cardinal((($3400 or (c_fifo_empty shl 9)) or (c_state^.c_currently_in_vblank shl 7)) or (c_state^.c_currently_in_vblank shl 3)));
-end;
 
-procedure c_UpdateFakeFIFO(c_state: PVDPState; c_value: Cardinal);
-begin
-  var c_last: Cardinal := Cardinal(Length(c_state^.c_previous_data_writes) - 1);
-  var c_i: Cardinal := 0;
-  while (Cardinal(c_i) < Cardinal(c_last)) do
-  begin
-    c_state^.c_previous_data_writes[c_i] := Word(c_state^.c_previous_data_writes[(Add32(c_i, 1))]);
-    Inc(c_i);
-  end;
-  c_state^.c_previous_data_writes[c_last] := Word(c_value);
-end;
-
-procedure c_VDP_WriteData(c_vdp_: PVDP; c_value: Cardinal; c_colour_updated_callback: TVDPColourUpdatedCallback; c_colour_updated_callback_user_data: Pointer);
-var
-  c_state: PVDPState;
-begin
-  c_state := @c_vdp_^.c_state;
-  c_state^.c_access.c_write_pending := Byte(0);
-  c_UpdateFakeFIFO(c_state, c_value);
-  if (c_IsInReadMode(c_state) <> 0) then
+  Vdp.State.Access.WritePending := 0;
+  UpdateFakeFIFO(Vdp.State, Value);
+  if IsInReadMode(Vdp.State) <> 0 then
   begin
     ;
-    c_IncrementAccessAddressRegister(c_state);
+    IncrementAccessAddressRegister(Vdp.State);
   end
   else
   begin
-    c_WriteAndIncrement(c_vdp_, c_value, c_colour_updated_callback, c_colour_updated_callback_user_data);
-    if (c_IsDMAPending(c_state) <> 0) then
+    WriteAndIncrement(Vdp, Value, ColourUpdatedCallback, ColourUpdatedCallbackUserData);
+    if IsDMAPending(Vdp.State) <> 0 then
     begin
-      c_ClearDMAPending(c_state);
+      ClearDMAPending(Vdp.State);
       while True do
       begin
-        if (Integer(c_state^.c_access.c_selected_buffer) = Integer(c_VDP_ACCESS_VRAM)) then
+        if Vdp.State.Access.SelectedBuffer = Integer(VDP_ACCESS_VRAM) then
         begin
-          c_WriteVRAM(c_vdp_, c_state^.c_access.c_address_register, Cardinal(c_value shr 8));
-          c_IncrementAccessAddressRegister(c_state);
+          WriteVRAM(Vdp, Vdp.State.Access.AddressRegister, (Value shr 8));
+          IncrementAccessAddressRegister(Vdp.State);
         end
         else
-        begin
-          c_WriteAndIncrement(c_vdp_, c_state^.c_previous_data_writes[0], c_colour_updated_callback, c_colour_updated_callback_user_data);
-        end;
-        c_state^.c_dma.c_source_address_low := (c_state^.c_dma.c_source_address_low + 1) and $FFFF;
-        c_state^.c_dma.c_source_address_low := Word(c_state^.c_dma.c_source_address_low and $FFFF);
-        c_state^.c_dma.c_length := (c_state^.c_dma.c_length + $FFFF) and $FFFF;
-        c_state^.c_dma.c_length := Word(c_state^.c_dma.c_length and $FFFF);
-        if not (Integer(c_state^.c_dma.c_length) <> Integer(0)) then
+          WriteAndIncrement(Vdp, Vdp.State.PreviousDataWrites[0], ColourUpdatedCallback, ColourUpdatedCallbackUserData);
+        Vdp.State.Dma.SourceAddressLow := (Vdp.State.Dma.SourceAddressLow + 1) and $FFFF;
+        Vdp.State.Dma.Length := (Vdp.State.Dma.Length + $FFFF) and $FFFF;
+        if not (Vdp.State.Dma.Length <> 0) then
           Break;
       end;
     end;
   end;
 end;
 
-procedure c_VDP_WriteControl(c_vdp_: PVDP; c_value: Cardinal; c_colour_updated_callback: TVDPColourUpdatedCallback; c_colour_updated_callback_user_data: Pointer; c_dma_transfer_begin_callback: TVDPDMATransferBeginCallback; c_read_callback: TVDPReadCallback; c_read_callback_user_data: Pointer; c_kdebug_callback: TVDPKDebugCallback; c_kdebug_callback_user_data: Pointer; c_target_cycle: Cardinal);
-var
-  c_state: PVDPState;
-  c_code_bitmask: Cardinal;
-  temp170: Integer;
-  c_reg: Cardinal;
-  c_data: Cardinal;
-  temp178: Integer;
-  temp206: Integer;
-  temp212: Integer;
-  temp218: Integer;
-  temp219: Integer;
-  temp220: Integer;
-  temp221: Integer;
-  temp222: Integer;
-  temp223: Integer;
-  temp224: Integer;
-  temp225: Integer;
-  c_character: Byte;
-  temp226: Integer;
-  temp227: Word;
-  temp228: Integer;
-  c_total_reads: Cardinal;
-  temp230: Integer;
-  temp231: Integer;
-  c_value_scope168: Cardinal;
+procedure VDPWriteControl(var Vdp: TVDP; Value: Cardinal; ColourUpdatedCallback: TVDPColourUpdatedCallback; ColourUpdatedCallbackUserData: Pointer; DmaTransferBeginCallback: TVDPDMATransferBeginCallback; ReadCallback: TVDPReadCallback; ReadCallbackUserData: Pointer; KdebugCallback: TVDPKDebugCallback; KdebugCallbackUserData: Pointer; TargetCycle: Cardinal);
 begin
-  c_state := @c_vdp_^.c_state;
-  var temp169: Integer := Ord(c_state^.c_access.c_write_pending <> 0);
-  if temp169 = 0 then
+  var CodeBitmask: Cardinal;
+  var Temp170: Integer;
+  var Reg: Cardinal;
+  var Data: Cardinal;
+  var Temp206: Integer;
+  var Temp212: Integer;
+  var Temp218: Integer;
+  var Temp219: Integer;
+  var Temp220: Integer;
+  var Temp221: Integer;
+  var Temp222: Integer;
+  var Temp223: Integer;
+  var Temp224: Integer;
+  var Temp225: Integer;
+  var Character: Byte;
+  var Temp227: Word;
+  var TotalReads: Cardinal;
+  var Temp230: Integer;
+  var Temp231: Integer;
+  var ValueScope168: Cardinal;
+
+  var Temp169: Integer := Ord(Vdp.State.Access.WritePending <> 0);
+  if Temp169 = 0 then
+    Temp169 := Ord((Value and $C000) <> $8000);
+  if Temp169 <> 0 then
   begin
-    temp169 := Ord(Cardinal(Cardinal(c_value) and Cardinal($C000)) <> Cardinal($8000));
-  end;
-  if (temp169 <> 0) then
-  begin
-    if (c_state^.c_access.c_write_pending <> 0) then
+    if Vdp.State.Access.WritePending <> 0 then
     begin
-      if (c_state^.c_dma.c_enabled <> 0) then
-      begin
-        temp170 := $3C;
-      end
+      if Vdp.State.Dma.Enabled <> 0 then
+        Temp170 := $3C
       else
-      begin
-        temp170 := $1C;
-      end;
-      c_code_bitmask := Cardinal(temp170);
-      c_state^.c_access.c_write_pending := Byte(0);
-      c_state^.c_access.c_address_register := Cardinal(Cardinal(Cardinal(c_state^.c_access.c_address_register) and Cardinal($3FFF)) or Cardinal((Cardinal(c_value) and Cardinal(7)) shl 14));
-      c_state^.c_access.c_code_register := Word(Cardinal(Cardinal(c_state^.c_access.c_code_register) and Cardinal(not c_code_bitmask)) or Cardinal(Cardinal(c_value shr 2) and Cardinal(c_code_bitmask)));
+        Temp170 := $1C;
+      CodeBitmask := Cardinal(Temp170);
+      Vdp.State.Access.WritePending := 0;
+      Vdp.State.Access.AddressRegister := (Vdp.State.Access.AddressRegister and $3FFF) or ((Value and 7) shl 14);
+      Vdp.State.Access.CodeRegister := Word((Cardinal(Vdp.State.Access.CodeRegister) and not CodeBitmask) or ((Value shr 2) and CodeBitmask));
     end
     else
     begin
-      c_state^.c_access.c_write_pending := Byte(1);
-      c_state^.c_access.c_address_register := Cardinal(Cardinal(Cardinal(c_value) and Cardinal($3FFF)) or Cardinal(Cardinal(c_state^.c_access.c_address_register) and Cardinal(3 shl 14)));
-      c_state^.c_access.c_code_register := Word(Cardinal(Cardinal(c_value shr 14) and Cardinal(3)) or Cardinal(c_state^.c_access.c_code_register and $3C));
+      Vdp.State.Access.WritePending := 1;
+      Vdp.State.Access.AddressRegister := (Value and $3FFF) or (Vdp.State.Access.AddressRegister and Cardinal(3 shl 14));
+      Vdp.State.Access.CodeRegister := Word(((Value shr 14) and 3) or Cardinal(Vdp.State.Access.CodeRegister and $3C));
     end;
-    case (ArithmeticShiftRight(Integer(c_state^.c_access.c_code_register), 1) and 7) of
+    case (ArithmeticShiftRight(Vdp.State.Access.CodeRegister, 1) and 7) of
       0:
         begin
-          c_state^.c_access.c_selected_buffer := c_VDP_ACCESS_VRAM;
+          Vdp.State.Access.SelectedBuffer := VDP_ACCESS_VRAM;
         end;
       4, 1:
         begin
-          c_state^.c_access.c_selected_buffer := c_VDP_ACCESS_CRAM;
+          Vdp.State.Access.SelectedBuffer := VDP_ACCESS_CRAM;
         end;
       2:
         begin
-          c_state^.c_access.c_selected_buffer := c_VDP_ACCESS_VSRAM;
+          Vdp.State.Access.SelectedBuffer := VDP_ACCESS_VSRAM;
         end;
       6:
         begin
-          c_state^.c_access.c_selected_buffer := c_VDP_ACCESS_VRAM_8BIT;
+          Vdp.State.Access.SelectedBuffer := VDP_ACCESS_VRAM_8_BIT;
         end;
     else
       begin
-        c_state^.c_access.c_selected_buffer := c_VDP_ACCESS_INVALID;
+        Vdp.State.Access.SelectedBuffer := VDP_ACCESS_INVALID;
       end;
     end;
   end
   else
   begin
-    c_reg := Cardinal(Cardinal(c_value shr 8) and Cardinal($1F));
-    c_data := Cardinal(Cardinal(c_value) and Cardinal($FF));
-    c_state^.c_access.c_selected_buffer := c_VDP_ACCESS_INVALID;
-    temp178 := Ord(Cardinal(c_reg) <= Cardinal(10));
-    if temp178 = 0 then
+    Reg := (Value shr 8) and $1F;
+    Data := Value and $FF;
+    Vdp.State.Access.SelectedBuffer := VDP_ACCESS_INVALID;
+    if (Reg <= 10) or (Vdp.State.MegaDriveModeEnabled <> 0) then
     begin
-      temp178 := Ord(c_state^.c_mega_drive_mode_enabled <> 0);
-    end;
-    if (temp178 <> 0) then
-    begin
-      case c_reg of
+      case Reg of
         0:
           begin
-            if (Cardinal(Cardinal(c_data) and Cardinal(1 shl 5)) <> Cardinal(0)) then
+            if (Data and Cardinal(1 shl 5)) <> 0 then
             begin
               ;
             end;
-            c_state^.c_h_int_enabled := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal(1 shl 4)) <> Cardinal(0)));
-            if (Cardinal(Cardinal(c_data) and Cardinal(1 shl 1)) <> Cardinal(0)) then
+            Vdp.State.HIntEnabled := Ord((Data and Cardinal(1 shl 4)) <> 0);
+            if (Data and Cardinal(1 shl 1)) <> 0 then
             begin
               ;
             end;
           end;
         1:
           begin
-            c_state^.c_extended_vram_enabled := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal(1 shl 7)) <> Cardinal(0)));
-            c_state^.c_display_enabled := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal(1 shl 6)) <> Cardinal(0)));
-            c_state^.c_v_int_enabled := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal(1 shl 5)) <> Cardinal(0)));
-            c_state^.c_dma.c_enabled := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal(1 shl 4)) <> Cardinal(0)));
-            c_state^.c_v30_enabled := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal(1 shl 3)) <> Cardinal(0)));
-            c_state^.c_mega_drive_mode_enabled := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal(1 shl 2)) <> Cardinal(0)));
+            Vdp.State.ExtendedVramEnabled := Ord((Data and Cardinal(1 shl 7)) <> 0);
+            Vdp.State.DisplayEnabled := Ord((Data and Cardinal(1 shl 6)) <> 0);
+            Vdp.State.VIntEnabled := Ord((Data and Cardinal(1 shl 5)) <> 0);
+            Vdp.State.Dma.Enabled := Ord((Data and Cardinal(1 shl 4)) <> 0);
+            Vdp.State.V30Enabled := Ord((Data and Cardinal(1 shl 3)) <> 0);
+            Vdp.State.MegaDriveModeEnabled := Ord((Data and Cardinal(1 shl 2)) <> 0);
           end;
         2:
           begin
-            c_state^.c_plane_a_address := Cardinal((Cardinal(c_data) and Cardinal($78)) shl 10);
+            Vdp.State.PlaneAAddress := (Data and $78) shl 10;
           end;
         3:
           begin
-            c_state^.c_window_address := Cardinal((Cardinal(c_data) and Cardinal($7E)) shl 10);
+            Vdp.State.WindowAddress := (Data and $7E) shl 10;
           end;
         4:
           begin
-            c_state^.c_plane_b_address := Cardinal((Cardinal(c_data) and Cardinal($F)) shl 13);
+            Vdp.State.PlaneBAddress := (Data and $F) shl 13;
           end;
         5:
           begin
-            c_state^.c_sprite_table_address := Cardinal(Cardinal(c_data) shl 9);
+            Vdp.State.SpriteTableAddress := Data shl 9;
           end;
         6:
           begin
-            c_state^.c_sprite_tile_index_rebase := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal(1 shl 5)) <> Cardinal(0)));
+            Vdp.State.SpriteTileIndexRebase := Ord((Data and Cardinal(1 shl 5)) <> 0);
           end;
         7:
           begin
-            c_state^.c_background_colour := Byte(Cardinal(c_data) and Cardinal($3F));
+            Vdp.State.BackgroundColour := Byte(Data and $3F);
           end;
         8, 9:
           begin
           end;
         10:
           begin
-            c_state^.c_h_int_interval := Byte(Byte(c_data));
+            Vdp.State.HIntInterval := Byte(Data);
           end;
         11:
           begin
-            if (Cardinal(Cardinal(c_data) and Cardinal(1 shl 3)) <> Cardinal(0)) then
+            if (Data and Cardinal(1 shl 3)) <> 0 then
             begin
               ;
             end;
-            if ((Cardinal(c_data) and Cardinal(4)) <> 0) then
-            begin
-              temp206 := c_VDP_VSCROLL_MODE_2CELL;
-            end
+            if (Data and 4) <> 0 then
+              Temp206 := VDP_VSCROLL_MODE_2_CELL
             else
-            begin
-              temp206 := c_VDP_VSCROLL_MODE_FULL;
-            end;
-            c_state^.c_vscroll_mode := temp206;
-            c_SetHScrollMode(c_state, Integer(Cardinal(c_data) and Cardinal(3)));
+              Temp206 := VDP_VSCROLL_MODE_FULL;
+            Vdp.State.VscrollMode := Temp206;
+            SetHScrollMode(Vdp.State, Integer(Data and 3));
           end;
         12:
           begin
-            c_state^.c_h40_enabled := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal((1 shl 7) or (1 shl 0))) <> Cardinal(0)));
-            c_state^.c_shadow_highlight_enabled := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal(1 shl 3)) <> Cardinal(0)));
-            case (Cardinal(c_data shr 1) and Cardinal(3)) of
+            Vdp.State.H40Enabled := Ord((Data and Cardinal((1 shl 7) or (1))) <> 0);
+            Vdp.State.ShadowHighlightEnabled := Ord((Data and Cardinal(1 shl 3)) <> 0);
+            case ((Data shr 1) and 3) of
               0, 1:
                 begin
-                  c_state^.c_double_resolution_enabled := Byte(0);
+                  Vdp.State.DoubleResolutionEnabled := 0;
                 end;
               2:
                 begin
-                  c_state^.c_double_resolution_enabled := Byte(0);
+                  Vdp.State.DoubleResolutionEnabled := 0;
                   ;
                 end;
               3:
                 begin
-                  c_state^.c_double_resolution_enabled := Byte(1);
+                  Vdp.State.DoubleResolutionEnabled := 1;
                 end;
             end;
           end;
         13:
           begin
-            c_state^.c_hscroll_address := Cardinal((Cardinal(c_data) and Cardinal($7F)) shl 10);
+            Vdp.State.HscrollAddress := (Data and $7F) shl 10;
           end;
         14:
           begin
-            c_state^.c_plane_a_tile_index_rebase := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal(1 shl 0)) <> Cardinal(0)));
-            temp212 := Ord(Cardinal(Cardinal(c_data) and Cardinal(1 shl 4)) <> Cardinal(0));
-            if temp212 <> 0 then
-            begin
-              temp212 := Ord(c_state^.c_plane_a_tile_index_rebase <> 0);
-            end;
-            c_state^.c_plane_b_tile_index_rebase := Byte(temp212);
+            Vdp.State.PlaneATileIndexRebase := Ord((Data and 1) <> 0);
+            Temp212 := Ord(((Data and Cardinal(1 shl 4)) <> 0) and (Vdp.State.PlaneATileIndexRebase <> 0));
+            Vdp.State.PlaneBTileIndexRebase := Byte(Temp212);
           end;
         15:
           begin
-            c_state^.c_access.c_increment := Byte(Byte(c_data));
+            Vdp.State.Access.Increment := Byte(Data);
           end;
         16:
           begin
-            c_state^.c_plane_height_bitmask := Byte(Cardinal(c_data shl 1) or Cardinal($1F));
-            case (Cardinal(c_data) and Cardinal(3)) of
+            Vdp.State.PlaneHeightBitmask := Byte((Data shl 1) or $1F);
+            case (Data and 3) of
               0:
                 begin
-                  c_state^.c_plane_width_shift := Byte(5);
-                  c_state^.c_plane_height_bitmask := Byte(c_state^.c_plane_height_bitmask and $7F);
+                  Vdp.State.PlaneWidthShift := 5;
+                  Vdp.State.PlaneHeightBitmask := Byte(Vdp.State.PlaneHeightBitmask and $7F);
                 end;
               1:
                 begin
-                  c_state^.c_plane_width_shift := Byte(6);
-                  c_state^.c_plane_height_bitmask := Byte(c_state^.c_plane_height_bitmask and $3F);
+                  Vdp.State.PlaneWidthShift := 6;
+                  Vdp.State.PlaneHeightBitmask := Byte(Vdp.State.PlaneHeightBitmask and $3F);
                 end;
               2:
                 begin
-                  c_state^.c_plane_width_shift := Byte(5);
-                  c_state^.c_plane_height_bitmask := Byte(c_state^.c_plane_height_bitmask and 0);
+                  Vdp.State.PlaneWidthShift := 5;
+                  Vdp.State.PlaneHeightBitmask := Byte(Vdp.State.PlaneHeightBitmask and 0);
                 end;
               3:
                 begin
-                  c_state^.c_plane_width_shift := Byte(7);
-                  c_state^.c_plane_height_bitmask := Byte(c_state^.c_plane_height_bitmask and $1F);
+                  Vdp.State.PlaneWidthShift := 7;
+                  Vdp.State.PlaneHeightBitmask := Byte(Vdp.State.PlaneHeightBitmask and $1F);
                 end;
             end;
           end;
         17:
           begin
-            c_state^.c_window.c_aligned_right := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal($80)) <> Cardinal(0)));
-            if (Integer(20) > Integer(16)) then
-            begin
-              temp219 := 20;
-            end
+            Vdp.State.Window.AlignedRight := Ord((Data and $80) <> 0);
+            if 20 > 16 then
+              Temp219 := 20
             else
-            begin
-              temp219 := 16;
-            end;
-            if (Integer(20) > Integer(16)) then
-            begin
-              temp220 := 20;
-            end
+              Temp219 := 16;
+            if 20 > 16 then
+              Temp220 := 20
             else
-            begin
-              temp220 := 16;
-            end;
-            if (Integer(20) > Integer(16)) then
-            begin
-              temp221 := 20;
-            end
+              Temp220 := 16;
+            if 20 > 16 then
+              Temp221 := 20
             else
+              Temp221 := 16;
+            if Cardinal((((32 - Temp219) div 2) + Temp220) + ((32 - Temp221) div 2)) < (Data and $1F) then
             begin
-              temp221 := 16;
-            end;
-            if (Cardinal((((32 - temp219) div 2) + temp220) + ((32 - temp221) div 2)) < Cardinal(Cardinal(c_data) and Cardinal($1F))) then
-            begin
-              if (Integer(20) > Integer(16)) then
-              begin
-                temp222 := 20;
-              end
+              if 20 > 16 then
+                Temp222 := 20
               else
-              begin
-                temp222 := 16;
-              end;
-              if (Integer(20) > Integer(16)) then
-              begin
-                temp223 := 20;
-              end
+                Temp222 := 16;
+              if 20 > 16 then
+                Temp223 := 20
               else
-              begin
-                temp223 := 16;
-              end;
-              if (Integer(20) > Integer(16)) then
-              begin
-                temp224 := 20;
-              end
+                Temp223 := 16;
+              if 20 > 16 then
+                Temp224 := 20
               else
-              begin
-                temp224 := 16;
-              end;
-              temp218 := ((((32 - temp222) div 2) + temp223) + ((32 - temp224) div 2));
+                Temp224 := 16;
+              Temp218 := (((32 - Temp222) div 2) + Temp223) + ((32 - Temp224) div 2);
             end
             else
-            begin
-              temp218 := (Cardinal(c_data) and Cardinal($1F));
-            end;
-            c_state^.c_window.c_horizontal_boundary := Word(temp218);
+              Temp218 := Data and $1F;
+            Vdp.State.Window.HorizontalBoundary := Word(Temp218);
           end;
         18:
           begin
-            c_state^.c_window.c_aligned_bottom := Byte(Ord(Cardinal(Cardinal(c_data) and Cardinal($80)) <> Cardinal(0)));
-            c_state^.c_window.c_vertical_boundary := Word((Cardinal(c_data) and Cardinal($1F)) shl (3 + c_state^.c_double_resolution_enabled));
+            Vdp.State.Window.AlignedBottom := Ord((Data and $80) <> 0);
+            Vdp.State.Window.VerticalBoundary := Word((Data and $1F) shl (3 + Vdp.State.DoubleResolutionEnabled));
           end;
         19:
           begin
-            c_state^.c_dma.c_length := Word(c_state^.c_dma.c_length and (not ($FF shl 0)));
-            c_state^.c_dma.c_length := Word(c_state^.c_dma.c_length or (c_data shl 0));
+            Vdp.State.Dma.Length := Word(Vdp.State.Dma.Length and (not ($FF)));
+            Vdp.State.Dma.Length := Word(Vdp.State.Dma.Length or (Data));
           end;
         20:
           begin
-            c_state^.c_dma.c_length := Word(c_state^.c_dma.c_length and (not ($FF shl 8)));
-            c_state^.c_dma.c_length := Word(c_state^.c_dma.c_length or (c_data shl 8));
+            Vdp.State.Dma.Length := Word(Vdp.State.Dma.Length and (not ($FF shl 8)));
+            Vdp.State.Dma.Length := Word(Vdp.State.Dma.Length or (Data shl 8));
           end;
         21:
           begin
-            c_state^.c_dma.c_source_address_low := Word(c_state^.c_dma.c_source_address_low and (not ($FF shl 0)));
-            c_state^.c_dma.c_source_address_low := Word(c_state^.c_dma.c_source_address_low or (c_data shl 0));
+            Vdp.State.Dma.SourceAddressLow := Word(Vdp.State.Dma.SourceAddressLow and (not ($FF)));
+            Vdp.State.Dma.SourceAddressLow := Word(Vdp.State.Dma.SourceAddressLow or (Data));
           end;
         22:
           begin
-            c_state^.c_dma.c_source_address_low := Word(c_state^.c_dma.c_source_address_low and (not ($FF shl 8)));
-            c_state^.c_dma.c_source_address_low := Word(c_state^.c_dma.c_source_address_low or (c_data shl 8));
+            Vdp.State.Dma.SourceAddressLow := Word(Vdp.State.Dma.SourceAddressLow and (not ($FF shl 8)));
+            Vdp.State.Dma.SourceAddressLow := Word(Vdp.State.Dma.SourceAddressLow or (Data shl 8));
           end;
         23:
           begin
-            if (Cardinal(Cardinal(c_data) and Cardinal($80)) <> Cardinal(0)) then
+            if (Data and $80) <> 0 then
             begin
-              c_state^.c_dma.c_source_address_high := Byte(Cardinal(c_data) and Cardinal($3F));
-              if (Cardinal(Cardinal(c_data) and Cardinal($40)) <> Cardinal(0)) then
-              begin
-                temp225 := c_VDP_DMA_MODE_COPY;
-              end
+              Vdp.State.Dma.SourceAddressHigh := Byte(Data and $3F);
+              if (Data and $40) <> 0 then
+                Temp225 := VDP_DMA_MODE_COPY
               else
-              begin
-                temp225 := c_VDP_DMA_MODE_FILL;
-              end;
-              c_state^.c_dma.c_mode := temp225;
+                Temp225 := VDP_DMA_MODE_FILL;
+              Vdp.State.Dma.Mode := Temp225;
             end
             else
             begin
-              c_state^.c_dma.c_source_address_high := Byte(Cardinal(c_data) and Cardinal($7F));
-              c_state^.c_dma.c_mode := c_VDP_DMA_MODE_MEMORY_TO_VRAM;
+              Vdp.State.Dma.SourceAddressHigh := Byte(Data and $7F);
+              Vdp.State.Dma.Mode := VDP_DMA_MODE_MEMORY_TO_VRAM;
             end;
           end;
         30:
           begin
             repeat
-              c_character := Byte((Integer(c_data) and ((Integer(1) shl 7) - 1)) - (Integer(c_data) and (Integer(1) shl 7)));
-              temp226 := Ord(Integer(c_character) < Integer($20));
-              if temp226 <> 0 then
-              begin
-                temp226 := Ord(Integer(c_character) <> Integer(0));
-              end;
-              if (temp226 <> 0) then
-              begin
+              Character := Byte((Integer(Data) and ((1 shl 7) - 1)) - (Integer(Data) and (1 shl 7)));
+              if (Character < $20) and (Character <> 0) then
                 Break;
-              end;
-              temp227 := c_state^.c_kdebug_buffer_index;
-              Inc(c_state^.c_kdebug_buffer_index);
-              c_state^.c_kdebug_buffer[temp227] := Byte(c_character);
-              temp228 := Ord(Integer(c_character) = Integer(0));
-              if temp228 = 0 then
+              Temp227 := Vdp.State.KdebugBufferIndex;
+              Inc(Vdp.State.KdebugBufferIndex);
+              Vdp.State.KdebugBuffer[Temp227] := Character;
+              if (Character = 0) or (Vdp.State.KdebugBufferIndex = Integer(Length(Vdp.State.KdebugBuffer) - 1)) then
               begin
-                temp228 := Ord(Integer(c_state^.c_kdebug_buffer_index) = Integer(Length(c_state^.c_kdebug_buffer) - 1));
-              end;
-              if (temp228 <> 0) then
-              begin
-                c_state^.c_kdebug_buffer_index := Word(0);
-                c_kdebug_callback(Pointer(c_kdebug_callback_user_data), @c_state^.c_kdebug_buffer[0]);
+                Vdp.State.KdebugBufferIndex := 0;
+                KdebugCallback(KdebugCallbackUserData, Vdp.State.KdebugBuffer);
               end;
             until True;
           end;
@@ -2003,98 +1592,84 @@ begin
       end;
     end;
   end;
-  var temp229: Integer := Ord(c_IsDMAPending(c_state) <> 0);
-  if temp229 <> 0 then
+  var Temp229: Integer := Ord(IsDMAPending(Vdp.State) <> 0);
+  if Temp229 <> 0 then
+    Temp229 := Ord(Vdp.State.Dma.Mode <> Integer(VDP_DMA_MODE_FILL));
+  if Temp229 <> 0 then
   begin
-    temp229 := Ord(Integer(c_state^.c_dma.c_mode) <> Integer(c_VDP_DMA_MODE_FILL));
-  end;
-  if (temp229 <> 0) then
-  begin
-    c_ClearDMAPending(c_state);
-    if (Integer(c_state^.c_dma.c_mode) = Integer(c_VDP_DMA_MODE_MEMORY_TO_VRAM)) then
+    ClearDMAPending(Vdp.State);
+    if Vdp.State.Dma.Mode = Integer(VDP_DMA_MODE_MEMORY_TO_VRAM) then
     begin
-      if (Integer(c_state^.c_dma.c_length) = Integer(0)) then
-      begin
-        temp230 := $10000;
-      end
+      if Vdp.State.Dma.Length = 0 then
+        Temp230 := $10000
       else
-      begin
-        temp230 := c_state^.c_dma.c_length;
-      end;
-      c_total_reads := Cardinal(temp230);
-      temp231 := Ord(Integer(c_state^.c_access.c_selected_buffer) = Integer(c_VDP_ACCESS_VRAM));
-      if temp231 <> 0 then
-      begin
-        temp231 := Ord(not (c_state^.c_extended_vram_enabled <> 0));
-      end;
-      c_dma_transfer_begin_callback(Pointer(c_read_callback_user_data), (c_total_reads shl temp231), c_target_cycle);
+        Temp230 := Vdp.State.Dma.Length;
+      TotalReads := Cardinal(Temp230);
+      Temp231 := Ord((Vdp.State.Access.SelectedBuffer = Integer(VDP_ACCESS_VRAM)) and ((Vdp.State.ExtendedVramEnabled = 0)));
+      DmaTransferBeginCallback(ReadCallbackUserData, (TotalReads shl Temp231), TargetCycle);
     end;
     while True do
     begin
-      if (Integer(c_state^.c_dma.c_mode) = Integer(c_VDP_DMA_MODE_MEMORY_TO_VRAM)) then
+      if Vdp.State.Dma.Mode = Integer(VDP_DMA_MODE_MEMORY_TO_VRAM) then
       begin
-        c_value_scope168 := Cardinal(c_read_callback(Pointer(c_read_callback_user_data), (Cardinal(Cardinal(c_state^.c_dma.c_source_address_high) shl 17) or Cardinal(Cardinal(c_state^.c_dma.c_source_address_low) shl 1)), c_target_cycle));
-        c_UpdateFakeFIFO(c_state, c_value_scope168);
-        c_WriteAndIncrement(c_vdp_, c_value_scope168, c_colour_updated_callback, c_colour_updated_callback_user_data);
+        ValueScope168 := Cardinal(ReadCallback(ReadCallbackUserData, ((Cardinal(Vdp.State.Dma.SourceAddressHigh) shl 17) or (Cardinal(Vdp.State.Dma.SourceAddressLow) shl 1)), TargetCycle));
+        UpdateFakeFIFO(Vdp.State, ValueScope168);
+        WriteAndIncrement(Vdp, ValueScope168, ColourUpdatedCallback, ColourUpdatedCallbackUserData);
       end
       else
       begin
-        c_WriteVRAM(c_vdp_, c_state^.c_access.c_address_register, c_ReadVRAM(c_state, c_state^.c_dma.c_source_address_low));
-        c_IncrementAccessAddressRegister(c_state);
+        WriteVRAM(Vdp, Vdp.State.Access.AddressRegister, ReadVRAM(Vdp.State, Vdp.State.Dma.SourceAddressLow));
+        IncrementAccessAddressRegister(Vdp.State);
       end;
-      c_state^.c_dma.c_source_address_low := (c_state^.c_dma.c_source_address_low + 1) and $FFFF;
-      c_state^.c_dma.c_source_address_low := Word(c_state^.c_dma.c_source_address_low and $FFFF);
-      c_state^.c_dma.c_length := (c_state^.c_dma.c_length + $FFFF) and $FFFF;
-      c_state^.c_dma.c_length := Word(c_state^.c_dma.c_length and $FFFF);
-      if not (Integer(c_state^.c_dma.c_length) <> Integer(0)) then
+      Vdp.State.Dma.SourceAddressLow := (Vdp.State.Dma.SourceAddressLow + 1) and $FFFF;
+      Vdp.State.Dma.Length := (Vdp.State.Dma.Length + $FFFF) and $FFFF;
+      if not (Vdp.State.Dma.Length <> 0) then
         Break;
     end;
   end;
 end;
 
-procedure c_VDP_WriteDebugData(c_vdp_: PVDP; c_value: Cardinal);
+procedure VDPWriteDebugData(var Vdp: TVDP; Value: Cardinal);
 begin
-  case c_vdp_^.c_state.c_debug.c_selected_register of
+  case Vdp.State.Debug.SelectedRegister of
     0:
       begin
-        c_vdp_^.c_state.c_debug.c_hide_layers := Byte(Ord(Cardinal(Cardinal(c_value) and Cardinal(1 shl 6)) <> Cardinal(0)));
-        c_vdp_^.c_state.c_debug.c_forced_layer := Byte(Cardinal(c_value shr 7) and Cardinal(3));
+        Vdp.State.Debug.HideLayers := Ord((Value and Cardinal(1 shl 6)) <> 0);
+        Vdp.State.Debug.ForcedLayer := Byte((Value shr 7) and 3);
       end;
   end;
 end;
 
-procedure c_VDP_WriteDebugControl(c_vdp_: PVDP; c_value: Cardinal);
+procedure VDPWriteDebugControl(var Vdp: TVDP; Value: Cardinal);
 begin
-  c_vdp_^.c_state.c_debug.c_selected_register := Byte(Cardinal(c_value shr 8) and Cardinal($F));
+  Vdp.State.Debug.SelectedRegister := Byte((Value shr 8) and $F);
 end;
 
-function c_VDP_ReadVRAMWord(c_state: PVDPState; c_address: Cardinal): Cardinal;
+function VDPReadVRAMWord(const State: TVDPState; Address: Cardinal): Cardinal;
 begin
-  Exit(Cardinal(Cardinal(c_ReadVRAM(c_state, (Cardinal(c_address) xor Cardinal(0)))) or Cardinal(c_ReadVRAM(c_state, (Cardinal(c_address) xor Cardinal(1))) shl 8)));
+  Exit(ReadVRAM(State, (Address xor 0)) or (ReadVRAM(State, (Address xor 1)) shl 8));
 end;
 
-function c_VDP_DecomposeTileMetadata(c_packed_tile_metadata: Cardinal): TVDPTileMetadata;
-var
-  c_tile_metadata: TVDPTileMetadata;
+function VDPDecomposeTileMetadata(PackedTileMetadata: Cardinal): TVDPTileMetadata;
 begin
-  c_tile_metadata.c_tile_index := Cardinal(Cardinal(c_packed_tile_metadata) and Cardinal($7FF));
-  c_tile_metadata.c_palette_line := Cardinal(Cardinal(c_packed_tile_metadata shr 13) and Cardinal(3));
-  c_tile_metadata.c_x_flip := Byte(Ord(Cardinal(Cardinal(c_packed_tile_metadata) and Cardinal($800)) <> Cardinal(0)));
-  c_tile_metadata.c_y_flip := Byte(Ord(Cardinal(Cardinal(c_packed_tile_metadata) and Cardinal($1000)) <> Cardinal(0)));
-  c_tile_metadata.c_priority := Byte(Ord(Cardinal(Cardinal(c_packed_tile_metadata) and Cardinal($8000)) <> Cardinal(0)));
-  Exit(c_tile_metadata);
+  var TileMetadata: TVDPTileMetadata;
+  TileMetadata.TileIndex := PackedTileMetadata and $7FF;
+  TileMetadata.PaletteLine := (PackedTileMetadata shr 13) and 3;
+  TileMetadata.XFlip := Ord((PackedTileMetadata and $800) <> 0);
+  TileMetadata.YFlip := Ord((PackedTileMetadata and $1000) <> 0);
+  TileMetadata.Priority := Ord((PackedTileMetadata and $8000) <> 0);
+  Exit(TileMetadata);
 end;
 
-function c_VDP_GetCachedSprite(c_state: PVDPState; c_sprite_index: Cardinal): TVDPCachedSprite;
-var
-  c_cached_sprite: TVDPCachedSprite;
+function VDPGetCachedSprite(const State: TVDPState; SpriteIndex: Cardinal): TVDPCachedSprite;
 begin
-  var SpriteBytes := c_state^.c_sprite_table_cache[c_sprite_index];
-  c_cached_sprite.c_y := Cardinal((SpriteBytes[0] or ((SpriteBytes[1] and 3) shl 8)) and ArithmeticShiftRight(Integer($3FF), Ord(not (c_state^.c_double_resolution_enabled <> 0))));
-  c_cached_sprite.c_link := Cardinal(SpriteBytes[2] and $7F);
-  c_cached_sprite.c_width := Cardinal((ArithmeticShiftRight(Integer(SpriteBytes[3]), 2) and 3) + 1);
-  c_cached_sprite.c_height := Cardinal((SpriteBytes[3] and 3) + 1);
-  Exit(c_cached_sprite);
+  var CachedSprite: TVDPCachedSprite;
+  var SpriteBytes := State.SpriteTableCache[SpriteIndex];
+  CachedSprite.Y := Cardinal((SpriteBytes[0] or ((SpriteBytes[1] and 3) shl 8)) and ArithmeticShiftRight($3FF, Ord((State.DoubleResolutionEnabled = 0))));
+  CachedSprite.Link := Cardinal(SpriteBytes[2] and $7F);
+  CachedSprite.Width := Cardinal((ArithmeticShiftRight(Integer(SpriteBytes[3]), 2) and 3) + 1);
+  CachedSprite.Height := Cardinal((SpriteBytes[3] and 3) + 1);
+  Exit(CachedSprite);
 end;
 
 end.

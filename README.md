@@ -77,20 +77,12 @@ If there is no `gamelist.xml` file in the system folders, the list will load as 
 | A / S / D | X / Y / Z|
 | Space / Enter | Select (Mode) / Start |
 | Arrows | Directions |
-| G / H | A / B of the second player |
-| T / Y | Select / Start of the second player |
-| W / S / A / D | Up / down / left / right of the second player |
-| N / M | A / B of the third player |
-| U / O | Select / Start of the third player |
-| I / K / J / L | Up / Down / Left / Right of the third player |
-| Num 1 / Num 3 | A / B of the fourth player |
-| Num 7 / Num 9 | Select / Start the fourth player |
-| Num 8 / Num 5 / Num 4 / Num 6 | Directions of the fourth player (Num Lock enabled) |
 | Ctrl+O | "Open" another ROM |
-|R | Reset console |
-| F5 | Save PNG 256×240 to "Documents" folder |
-| F6 | Save the last ~30 seconds of audio and diagnostics to "Documents" |
-| Esc | Close the application |
+| R | Reset console |
+| P | Pause console |
+| F5 | Save quick snapshot (NES only) |
+| F6 | Load quick snapshot (NES only) |
+| F11 | Fullscreen mode |
 
 When you lose focus, the emulation and sound continue, and the pressed buttons are reset.
 The window can be scaled;

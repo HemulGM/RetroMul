@@ -8,6 +8,10 @@ uses
 {$SCOPEDENUMS ON}
 
 type
+  // Header-recognized families; recognition does not imply emulation support.
+  TMapperType = (Unknown, ROMOnly, MBC1, MBC2, MBC3, MBC5, MBC6, MBC7,
+    MMM01, PocketCamera, TAMA5, HuC1, HuC3);
+
   TCartridgeRegion = (Japanese, World, Unknown);
 
   EGBCInvalidROM = class(Exception);
@@ -15,7 +19,7 @@ type
   TCartridgeType = record
     ID: Integer;
     Name: string;
-    MapperType: string;
+    MapperType: TMapperType;
     HasRAM: Boolean; // External RAM as indicated by the cartridge type.
     HasBattery: Boolean;
     HasTimer: Boolean;
@@ -138,146 +142,146 @@ begin
     $00:
       begin
         Result.Name := 'ROM Only';
-        Result.MapperType := 'ROM_ONLY';
+        Result.MapperType := TMapperType.ROMOnly;
       end;
     $01:
       begin
         Result.Name := 'MBC1';
-        Result.MapperType := 'MBC1';
+        Result.MapperType := TMapperType.MBC1;
       end;
     $02:
       begin
         Result.Name := 'MBC1 + RAM';
-        Result.MapperType := 'MBC1';
+        Result.MapperType := TMapperType.MBC1;
       end;
     $03:
       begin
         Result.Name := 'MBC1 + RAM + Battery';
-        Result.MapperType := 'MBC1';
+        Result.MapperType := TMapperType.MBC1;
       end;
     $05:
       begin
         Result.Name := 'MBC2';
-        Result.MapperType := 'MBC2';
+        Result.MapperType := TMapperType.MBC2;
       end;
     $06:
       begin
         Result.Name := 'MBC2 + Battery';
-        Result.MapperType := 'MBC2';
+        Result.MapperType := TMapperType.MBC2;
       end;
     $08:
       begin
         Result.Name := 'ROM + RAM';
-        Result.MapperType := 'ROM_ONLY';
+        Result.MapperType := TMapperType.ROMOnly;
       end;
     $09:
       begin
         Result.Name := 'ROM + RAM + Battery';
-        Result.MapperType := 'ROM_ONLY';
+        Result.MapperType := TMapperType.ROMOnly;
       end;
     $0B:
       begin
         Result.Name := 'MMM01';
-        Result.MapperType := 'MMM01';
+        Result.MapperType := TMapperType.MMM01;
       end;
     $0C:
       begin
         Result.Name := 'MMM01 + RAM';
-        Result.MapperType := 'MMM01';
+        Result.MapperType := TMapperType.MMM01;
       end;
     $0D:
       begin
         Result.Name := 'MMM01 + RAM + Battery';
-        Result.MapperType := 'MMM01';
+        Result.MapperType := TMapperType.MMM01;
       end;
     $0F:
       begin
         Result.Name := 'MBC3 + Timer + Battery';
-        Result.MapperType := 'MBC3';
+        Result.MapperType := TMapperType.MBC3;
       end;
     $10:
       begin
         Result.Name := 'MBC3 + Timer + RAM + Battery';
-        Result.MapperType := 'MBC3';
+        Result.MapperType := TMapperType.MBC3;
       end;
     $11:
       begin
         Result.Name := 'MBC3';
-        Result.MapperType := 'MBC3';
+        Result.MapperType := TMapperType.MBC3;
       end;
     $12:
       begin
         Result.Name := 'MBC3 + RAM';
-        Result.MapperType := 'MBC3';
+        Result.MapperType := TMapperType.MBC3;
       end;
     $13:
       begin
         Result.Name := 'MBC3 + RAM + Battery';
-        Result.MapperType := 'MBC3';
+        Result.MapperType := TMapperType.MBC3;
       end;
     $19:
       begin
         Result.Name := 'MBC5';
-        Result.MapperType := 'MBC5';
+        Result.MapperType := TMapperType.MBC5;
       end;
     $1A:
       begin
         Result.Name := 'MBC5 + RAM';
-        Result.MapperType := 'MBC5';
+        Result.MapperType := TMapperType.MBC5;
       end;
     $1B:
       begin
         Result.Name := 'MBC5 + RAM + Battery';
-        Result.MapperType := 'MBC5';
+        Result.MapperType := TMapperType.MBC5;
       end;
     $1C:
       begin
         Result.Name := 'MBC5 + Rumble';
-        Result.MapperType := 'MBC5';
+        Result.MapperType := TMapperType.MBC5;
       end;
     $1D:
       begin
         Result.Name := 'MBC5 + Rumble + RAM';
-        Result.MapperType := 'MBC5';
+        Result.MapperType := TMapperType.MBC5;
       end;
     $1E:
       begin
         Result.Name := 'MBC5 + Rumble + RAM + Battery';
-        Result.MapperType := 'MBC5';
+        Result.MapperType := TMapperType.MBC5;
       end;
     $20:
       begin
         Result.Name := 'MBC6';
-        Result.MapperType := 'MBC6';
+        Result.MapperType := TMapperType.MBC6;
       end;
     $22:
       begin
         Result.Name := 'MBC7 + Sensor + Rumble + RAM + Battery';
-        Result.MapperType := 'MBC7';
+        Result.MapperType := TMapperType.MBC7;
       end;
     $FC:
       begin
         Result.Name := 'Pocket Camera';
-        Result.MapperType := 'POCKET_CAMERA';
+        Result.MapperType := TMapperType.PocketCamera;
       end;
     $FD:
       begin
         Result.Name := 'Bandai TAMA5';
-        Result.MapperType := 'TAMA5';
+        Result.MapperType := TMapperType.TAMA5;
       end;
     $FE:
       begin
         Result.Name := 'HuC3';
-        Result.MapperType := 'HuC3';
+        Result.MapperType := TMapperType.HuC3;
       end;
     $FF:
       begin
         Result.Name := 'HuC1 + RAM + Battery';
-        Result.MapperType := 'HuC1';
+        Result.MapperType := TMapperType.HuC1;
       end;
   else
     Result.Name := 'Unknown ($' + IntToHex(Code, 2) + ')';
-    Result.MapperType := 'UNKNOWN';
+    Result.MapperType := TMapperType.Unknown;
   end;
   Result.HasRAM := Code in [
       $02, $03, $08, $09, $0C, $0D, $10, $12, $13,
@@ -331,7 +335,7 @@ begin
     Include(FIssues, TCartridgeIssue.UnknownDestination);
   end;
   FCartridgeType := DecodeCartridgeType(Data[AddressCartType]);
-  if FCartridgeType.MapperType = 'UNKNOWN' then
+  if FCartridgeType.MapperType = TMapperType.Unknown then
     Include(FIssues, TCartridgeIssue.UnknownCartridgeType);
   FROMSizeCode := Data[AddressROMSize];
   case FROMSizeCode of
@@ -408,7 +412,7 @@ end;
 
 function TGBCCartridge.GetInternalRAMSizeBytes: Integer;
 begin
-  if FCartridgeType.ID in [$05, $06] then
+  if FCartridgeType.MapperType = TMapperType.MBC2 then
     Result := 256
   else
     Result := 0;

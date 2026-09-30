@@ -53,7 +53,7 @@ begin
     Result := Default(TCartridgeType);
     Result.ID := -1;
     Result.Name := 'Unknown';
-    Result.MapperType := 'UNKNOWN';
+    Result.MapperType := TMapperType.Unknown;
   end;
 end;
 

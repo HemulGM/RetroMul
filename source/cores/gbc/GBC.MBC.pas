@@ -3,12 +3,12 @@
 interface
 
 uses
-  Core.Snapshots, System.Classes, System.SysUtils, GBC.ROM;
+  Core.Snapshots, System.Classes, System.SysUtils, GBC.ROM, GBC.Cartridge;
 
 {$SCOPEDENUMS ON}
 
 type
-  TMapperType = (ROMOnly, MBC1, MBC2, MBC3, MBC5, MBC07, MMM01, HuC1, HuC3);
+  TMapperType = GBC.Cartridge.TMapperType;
 
 type
   TGBCMBC = class
@@ -39,9 +39,9 @@ begin
   inherited Create;
   if AROM = nil then
     raise EArgumentNilException.Create('ROM must not be nil');
-  if not (AROM.GetCartridgeType.ID in
-    [$00, $01, $02, $03, $05, $06, $08, $09, $0F, $10, $11, $12, $13,
-      $19, $1A, $1B, $1C, $1D, $1E]) then
+  if not (AROM.GetCartridgeType.MapperType in
+    [TMapperType.ROMOnly, TMapperType.MBC1, TMapperType.MBC2,
+      TMapperType.MBC3, TMapperType.MBC5]) then
     raise ENotSupportedException.Create('Unsupported cartridge: ' + AROM.GetCartridgeType.Name);
   FROM := AROM;
   FROMBankCount := Length(FROM.ROMData) div $4000;
@@ -52,7 +52,7 @@ begin
   FRAMEnabled := False;
   FIsROMMode := True;
   FHasRAM := FROM.GetCartridgeType.HasRAM;
-  if FROM.GetCartridgeType.MapperType = 'MBC2' then
+  if FROM.GetCartridgeType.MapperType = TMapperType.MBC2 then
     SetLength(FRAM, $200) // 512 four-bit internal RAM cells
   else if FHasRAM and Assigned(FROM.Cartridge) then
     // The header also permits 64 KiB (8-bank) and 128 KiB (16-bank) RAM.
@@ -65,12 +65,12 @@ end;
 
 procedure TGBCMBC.UpdateBanks;
 begin
-  if FROM.GetCartridgeType.MapperType = 'MBC3' then
+  if FROM.GetCartridgeType.MapperType = TMapperType.MBC3 then
   begin
     ROMBankSelected := (FBankLow and $7F) mod FROMBankCount;
     RAMBankSelected := FBankHigh and $0F;
   end
-  else if FROM.GetCartridgeType.MapperType = 'MBC5' then
+  else if FROM.GetCartridgeType.MapperType = TMapperType.MBC5 then
   begin
     // MBC5 uses a nine-bit ROM bank number and does not remap bank zero.
     ROMBankSelected := FBankLow mod FROMBankCount;
@@ -99,11 +99,8 @@ begin
   Result := $FF;
   if (Address < 0) or (Address > $BFFF) then
     Exit;
-  case FROM.GetCartridgeType.ID of
-    $00:
-      if (Address < $8000) and (Address < Length(FROM.ROMData)) then
-        Result := FROM.ROMData[Address];
-    $08, $09: // ROM + RAM (no bank controller)
+  case FROM.GetCartridgeType.MapperType of
+    TMapperType.ROMOnly:
       if Address < $8000 then
       begin
         if Address < Length(FROM.ROMData) then
@@ -111,7 +108,7 @@ begin
       end
       else if (Address >= $A000) and FHasRAM then
         Result := FRAM[(Address - $A000) mod Length(FRAM)];
-    $01, $02, $03:
+    TMapperType.MBC1:
       if Address < $8000 then
       begin
         var Bank: Integer;
@@ -132,7 +129,7 @@ begin
         var EffectiveAddress: Integer := (RAMBankSelected * $2000 + Address - $A000) mod Length(FRAM);
         Result := FRAM[EffectiveAddress];
       end;
-    $05, $06:
+    TMapperType.MBC2:
       if Address < $4000 then
         Result := FROM.ROMData[Address]
       else if Address < $8000 then
@@ -143,7 +140,7 @@ begin
       end
       else if (Address >= $A000) and FRAMEnabled then
         Result := $F0 or FRAM[Address and $1FF];
-    $0F, $10, $11, $12, $13:
+    TMapperType.MBC3:
       if Address < $4000 then
         Result := FROM.ROMData[Address]
       else if Address < $8000 then
@@ -158,7 +155,7 @@ begin
         var EffectiveAddress := (RAMBankSelected * $2000 + Address - $A000) mod Length(FRAM);
         Result := FRAM[EffectiveAddress];
       end;
-    $19, $1A, $1B, $1C, $1D, $1E:
+    TMapperType.MBC5:
       if Address < $4000 then
         Result := FROM.ROMData[Address]
       else if Address < $8000 then
@@ -179,13 +176,13 @@ procedure TGBCMBC.MbcWrite(Address, Value: Integer);
 begin
   if (Address < 0) or (Address > $BFFF) then
     Exit;
-  if FROM.GetCartridgeType.ID in [$08, $09] then
+  if FROM.GetCartridgeType.MapperType = TMapperType.ROMOnly then
   begin
     // Plain ROM+RAM cartridges expose their RAM permanently at A000-BFFF.
     if (Address >= $A000) and FHasRAM then
       FRAM[(Address - $A000) mod Length(FRAM)] := Value and $FF;
   end
-  else if FROM.GetCartridgeType.MapperType = 'MBC1' then
+  else if FROM.GetCartridgeType.MapperType = TMapperType.MBC1 then
   begin
     if Address <= $1FFF then
       FRAMEnabled := (Value and $0F) = $0A
@@ -212,7 +209,7 @@ begin
       FRAM[EffectiveAddress] := Value and $FF;
     end;
   end
-  else if FROM.GetCartridgeType.MapperType = 'MBC3' then
+  else if FROM.GetCartridgeType.MapperType = TMapperType.MBC3 then
   begin
     if Address <= $1FFF then
       FRAMEnabled := (Value and $0F) = $0A
@@ -236,7 +233,7 @@ begin
       FRAM[EffectiveAddress] := Value and $FF;
     end;
   end
-  else if FROM.GetCartridgeType.MapperType = 'MBC5' then
+  else if FROM.GetCartridgeType.MapperType = TMapperType.MBC5 then
   begin
     if Address <= $1FFF then
       FRAMEnabled := (Value and $0F) = $0A
@@ -261,7 +258,7 @@ begin
       FRAM[EffectiveAddress] := Value and $FF;
     end;
   end
-  else if FROM.GetCartridgeType.MapperType = 'MBC2' then
+  else if FROM.GetCartridgeType.MapperType = TMapperType.MBC2 then
   begin
     if Address <= $3FFF then
     begin
@@ -280,13 +277,13 @@ begin
   end;
 end;
 
-
 procedure TGBCMBC.SerializeState(State: TStateArchive);
 begin
   State.Field(FRAMEnabled, SizeOf(FRAMEnabled));
   State.Field(FHasRAM, SizeOf(FHasRAM));
   State.Field(FIsROMMode, SizeOf(FIsROMMode));
-  if Length(FRAM) > 0 then State.Field(FRAM[0], Length(FRAM) * SizeOf(FRAM[0]));
+  if Length(FRAM) > 0 then
+    State.Field(FRAM[0], Length(FRAM) * SizeOf(FRAM[0]));
   State.Field(FBankLow, SizeOf(FBankLow));
   State.Field(FBankHigh, SizeOf(FBankHigh));
   State.Field(FROMBankCount, SizeOf(FROMBankCount));
@@ -295,3 +292,4 @@ begin
 end;
 
 end.
+

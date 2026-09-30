@@ -770,7 +770,8 @@ begin
 
   Mask := 1 shl (ChannelNumber - 1);
   Value := FMemory.ReadByte(NR52);
-  FMemory.WriteByte(NR52, Value or Mask);
+  // The APU owns the status bits; CPU writes to NR52 cannot change them.
+  FMemory.IOPort[$26] := (Value or Mask) and $8F;
 end;
 
 procedure TGBSound.SetSoundOff(ChannelNumber: Integer);
@@ -783,7 +784,7 @@ begin
 
   Mask := 1 shl (ChannelNumber - 1);
   Value := FMemory.ReadByte(NR52);
-  FMemory.WriteByte(NR52, Value and not Mask);
+  FMemory.IOPort[$26] := (Value and not Mask) and $8F;
 end;
 
 function TGBSound.IsSoundToTerminal(ChannelNumber: Integer; OutputNumber: Integer): Boolean;
@@ -1204,17 +1205,19 @@ var
 begin
   FChannelSamples[2] := 0;
 
-  if not FChannel3.IsEnabled then
-    Exit;
-
   NR30Value := FMemory.ReadByte(NR30);
 
-  if (NR30Value and $80) = 0 then
+  // NR30 can be switched off and back on between audio samples. The cleared
+  // NR52 bit latches that stop until a fresh trigger, even with the DAC on.
+  if ((NR30Value and $80) = 0) or ((FMemory.ReadByte(NR52) and 4) = 0) then
   begin
     FChannel3.SetEnabled(False);
     SetSoundOff(3);
     Exit;
   end;
+
+  if not FChannel3.IsEnabled then
+    Exit;
 
   NR32Value := FMemory.ReadByte(NR32);
   FChannel3.SetFrequency(65536.0 / (2048 -

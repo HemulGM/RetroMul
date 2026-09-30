@@ -406,6 +406,19 @@ begin
   else if (Address >= $FF00) and (Address <= $FF7F) then
   begin
     case Address of
+      $FF26: // NR52: channel status bits are read-only to the CPU.
+        begin
+          if (Value and $80) = 0 then
+            IOPort[$26] := 0
+          else
+            IOPort[$26] := $80 or (IOPort[$26] and $0F);
+        end;
+      $FF1A: // Disabling the wave DAC immediately clears channel 3 status.
+        begin
+          IOPort[$1A] := Value;
+          if (Value and $80) = 0 then
+            IOPort[$26] := IOPort[$26] and $FB;
+        end;
       $FF00: // joypad
         begin
           TGBCJoypad.Instance.SetSelection(Value);

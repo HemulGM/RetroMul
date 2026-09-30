@@ -264,13 +264,13 @@ begin
   end;
 end;
 
-
 procedure TGBMBC.SerializeState(State: TStateArchive);
 begin
   State.Field(FRAMEnabled, SizeOf(FRAMEnabled));
   State.Field(FHasRAM, SizeOf(FHasRAM));
   State.Field(FIsROMMode, SizeOf(FIsROMMode));
-  if Length(FRAM) > 0 then State.Field(FRAM[0], Length(FRAM) * SizeOf(FRAM[0]));
+  if Length(FRAM) > 0 then
+    State.Field(FRAM[0], Length(FRAM) * SizeOf(FRAM[0]));
   State.Field(FBankLow, SizeOf(FBankLow));
   State.Field(FBankHigh, SizeOf(FBankHigh));
   State.Field(FROMBankCount, SizeOf(FROMBankCount));
@@ -279,3 +279,4 @@ begin
 end;
 
 end.
+

@@ -73,8 +73,9 @@ If there is no `gamelist.xml` file in the system folders, the list will load as 
 
 | Key | Action |
 | --- | --- |
-| Z / X | A / B |
-| Space / Enter | Select / Start |
+| Z / X / C | A / B / C|
+| A / S / D | X / Y / Z|
+| Space / Enter | Select (Mode) / Start |
 | Arrows | Directions |
 | G / H | A / B of the second player |
 | T / Y | Select / Start of the second player |

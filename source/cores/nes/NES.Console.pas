@@ -23,7 +23,7 @@ type
     FPalPpuPhase: Integer;
     FRegion: TNesRegion;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 3);
     function GetRomIdentity: string;
   public
     constructor Create(FourScoreEnabled: Boolean = False);
@@ -58,7 +58,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 2;
+  SNAPSHOT_VERSION = 3;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -86,9 +86,9 @@ begin
   Result := FCartridge.RomIdentity;
 end;
 
-procedure TNesConsole.SerializeState(Stream: TStream; Loading: Boolean);
+procedure TNesConsole.SerializeState(Stream: TStream; Loading: Boolean; Version: Integer);
 begin
-  var State := TNesStateArchive.Create(Stream, Loading);
+  var State := TNesStateArchive.Create(Stream, Loading, Version);
   try
     State.Field(FCpuCycles, SizeOf(FCpuCycles));
     State.Field(FPalPpuPhase, SizeOf(FPalPpuPhase));
@@ -180,7 +180,7 @@ begin
     var Identity: AnsiString;
     SetString(Identity, PAnsiChar(@Header.RomHash[0]), Length(RomIdentity));
     if not CompareMem(@Header.Magic, @SNAPSHOT_MAGIC, SizeOf(SNAPSHOT_MAGIC)) or
-      (Header.Version <> SNAPSHOT_VERSION) or
+      ((Header.Version <> 2) and (Header.Version <> SNAPSHOT_VERSION)) or
       (Header.MapperId <> FCartridge.MapperId) or
       (Integer(Header.Region) <> Ord(FRegion)) or (string(Identity) <> RomIdentity) or
       (Header.PayloadSize > UInt32(64 * 1024 * 1024)) or
@@ -196,7 +196,7 @@ begin
     SerializeState(Backup, False);
     try
       Payload.Position := 0;
-      SerializeState(Payload, True);
+      SerializeState(Payload, True, Header.Version);
       if Payload.Position <> Payload.Size then
         raise ENesException.Create('Unexpected snapshot data');
     except

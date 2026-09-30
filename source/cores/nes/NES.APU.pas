@@ -3,7 +3,7 @@
 interface
 
 uses
-  NES.State, System.Math, NES.Types, NES.Consts;
+  NES.State, System.Math, NES.Types, NES.Consts, Core.AudioFilter;
 
 type
   TApuRegisterWriteEvent = procedure(Cycle: UInt32; Address: UInt16; Value: UInt8) of object;
@@ -94,6 +94,7 @@ type
     FHp440Output: Double;
     FHp440Input: Double;
     FLp14Output: Double;
+    FAntiAlias: TPCMLowPass;
     FHp90Coefficient: Double;
     FHp440Coefficient: Double;
     FLp14Coefficient: Double;
@@ -185,6 +186,10 @@ begin
   State.Field(FHp90Coefficient, SizeOf(FHp90Coefficient));
   State.Field(FHp440Coefficient, SizeOf(FHp440Coefficient));
   State.Field(FLp14Coefficient, SizeOf(FLp14Coefficient));
+  if State.Version >= 3 then
+    State.Field(FAntiAlias, SizeOf(FAntiAlias))
+  else if State.Loading then
+    FAntiAlias.Reset;
   // Rebuild derived coefficients, including when loading older snapshots.
   SetSampleRate(FSampleRate);
 end;
@@ -269,6 +274,7 @@ begin
   FHp440Output := 0;
   FHp440Input := 0;
   FLp14Output := 0;
+  FAntiAlias.Reset;
 end;
 
 procedure TApu.SetSampleRate(Value: Integer);
@@ -277,6 +283,7 @@ begin
     Value := 44100;
   FSampleRate := Value;
   FSampleStep := CpuFrequency(FRegion) / FSampleRate;
+  FAntiAlias.Configure(CpuFrequency(FRegion), Min(12000.0, FSampleRate * 0.27));
   var Dt: Double := 1.0 / FSampleRate;
   var Rc: Double := 1.0 / (2.0 * Pi * 90.0);
   FHp90Coefficient := Rc / (Rc + Dt);
@@ -857,7 +864,7 @@ begin
 
   // An output-rate low-pass cannot remove frequencies that have already
   // folded into the audible band. Keep its history at the APU clock rate.
-  FLp14Output := FLp14Output + FLp14Coefficient * (MixSample - FLp14Output);
+  FLp14Output := FLp14Output + FLp14Coefficient * (FAntiAlias.Process(MixSample) - FLp14Output);
   FSampleTimer := FSampleTimer + 1.0;
   while FSampleTimer >= FSampleStep do
   begin
@@ -869,7 +876,7 @@ begin
       Sample := 1
     else if Sample < -1 then
       Sample := -1;
-    PushSample(Round(Sample * 16000));
+    PushSample(Round(Sample * 32767));
   end;
 end;
 

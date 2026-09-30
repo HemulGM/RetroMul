@@ -12,8 +12,11 @@ type
   private
     FStream: TStream;
     FLoading: Boolean;
+    FVersion: Integer;
   public
-    constructor Create(Stream: TStream; Loading: Boolean);
+    constructor Create(Stream: TStream; Loading: Boolean; Version: Integer = 3);
+    property Version: Integer read FVersion;
+    property Loading: Boolean read FLoading;
     procedure Field(var Value; Size: Integer);
   end;
 
@@ -29,11 +32,12 @@ uses
   {$ENDIF}
   System.SysUtils;
 
-constructor TNesStateArchive.Create(Stream: TStream; Loading: Boolean);
+constructor TNesStateArchive.Create(Stream: TStream; Loading: Boolean; Version: Integer);
 begin
   inherited Create;
   FStream := Stream;
   FLoading := Loading;
+  FVersion := Version;
 end;
 
 procedure TNesStateArchive.Field(var Value; Size: Integer);

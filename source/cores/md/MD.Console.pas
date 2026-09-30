@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, System.UITypes, MD.Cartridge, MD.M68k, MD.Z80, MD.VDP,
-  MD.Sound;
+  MD.Sound, Core.AudioFilter;
 
 {$SCOPEDENUMS ON}
 
@@ -34,7 +34,12 @@ type
     FFrameNumber: UInt64;
     FFrameTime, FCPUTime, FCPUBase, FZ80Time, FBusTime: Int64;
     FAudioTime, FNextFM, FNextPSG, FNextPCM, FPCMNumber, FLastPCM: Int64;
-    FAreaLeft, FAreaRight: Int64;
+    FAreaLeft, FAreaRight: Double;
+    FFMFilter: array[0..1] of TPCMLowPass;
+    FPSGFilter: TPCMLowPass;
+    FOutputDC: array[0..1] of TPCMDCBlocker;
+    FFilteredFM: array[0..1] of Double;
+    FFilteredPSG: Double;
     FFMSamples: array[0..1] of SmallInt;
     FPSGSamples: array[0..0] of SmallInt;
     FBusyUntil, FPadTimeout: Int64;
@@ -247,6 +252,17 @@ begin
   FFMSamples[1] := 0;
   FPSGSamples[0] := 0;
   FAudioCount := 0;
+  for var Channel := 0 to 1 do
+  begin
+    FFMFilter[Channel].Configure(FMasterClock / 1008.0, 12000);
+    FFMFilter[Channel].Reset;
+    FOutputDC[Channel].Configure(44100, 20);
+    FOutputDC[Channel].Reset;
+    FFilteredFM[Channel] := 0;
+  end;
+  FPSGFilter.Configure(FMasterClock / 240.0, 12000);
+  FPSGFilter.Reset;
+  FFilteredPSG := 0;
   FFrameNumber := 0;
   FScanline := 0;
   FDMADebt := 0;
@@ -653,20 +669,25 @@ begin
   begin
     Next := Min(Target, Min(FNextPCM, Min(FNextFM, FNextPSG)));
     Delta := Next - FAudioTime;
-    Inc(FAreaLeft, (Integer(FFMSamples[0]) + Integer(FPSGSamples[0])) * Delta);
-    Inc(FAreaRight, (Integer(FFMSamples[1]) + Integer(FPSGSamples[0])) * Delta);
+    FAreaLeft := FAreaLeft + (FFilteredFM[0] + FFilteredPSG) * Delta;
+    FAreaRight := FAreaRight + (FFilteredFM[1] + FFilteredPSG) * Delta;
     FAudioTime := Next;
     if Next = FNextFM then
     begin
       FFMSamples[0] := 0;
       FFMSamples[1] := 0;
       FMOutputSamples(FFM, FFMSamples);
+      for var Channel := 0 to 1 do
+        FFilteredFM[Channel] := FFMFilter[Channel].Process(FFMSamples[Channel]);
       Inc(FNextFM, 1008);
     end;
     if Next = FNextPSG then
     begin
       FPSGSamples[0] := 0;
       PSGUpdate(FPSG, FPSGSamples);
+      // The ported FM core already divides its channels by 8; PSG does not.
+      // Match ClownMDEmu's CLOWNMDEMU_PSG_VOLUME_DIVISOR at the mixing boundary.
+      FFilteredPSG := FPSGFilter.Process(FPSGSamples[0] / 8.0);
       Inc(FNextPSG, 240);
     end;
     if Next = FNextPCM then
@@ -674,8 +695,9 @@ begin
       Span := Next - FLastPCM;
       if FAudioCount < Length(FAudio) div 2 then
       begin
-        FAudio[FAudioCount * 2] := EnsureRange(FAreaLeft div Span, Int64(-32768), Int64(32767));
-        FAudio[FAudioCount * 2 + 1] := EnsureRange(FAreaRight div Span, Int64(-32768), Int64(32767));
+        // Chip normalization already reserves mixing headroom.
+        FAudio[FAudioCount * 2] := EnsureRange(Round(FOutputDC[0].Process(FAreaLeft / Span)), Int64(-32768), Int64(32767));
+        FAudio[FAudioCount * 2 + 1] := EnsureRange(Round(FOutputDC[1].Process(FAreaRight / Span)), Int64(-32768), Int64(32767));
         Inc(FAudioCount);
       end;
       FAreaLeft := 0;

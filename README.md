@@ -65,7 +65,9 @@ ROMS\
   megadrive -> (gamelist.xml +*.gen, *.md, *.bin, *.smd)
   nes -> (gamelist.xml +*.nes)
 ```
-Use [Skraper](https://www.skraper.net) to create gamelist.xml and parsing your rom files (select RecalBox as platform)
+Use [Skraper](https://www.skraper.net) to create gamelist.xml and parsing your rom files (select `RecalBox` as platform)
+
+If there is no `gamelist.xml` file in the system folders, the list will load as it is, without logos and additional information.
 
 ## Game
 

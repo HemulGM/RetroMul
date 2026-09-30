@@ -1,4 +1,4 @@
-unit GBC.EmulationThread;
+﻿unit GBC.EmulationThread;
 
 interface
 
@@ -52,8 +52,8 @@ type
 implementation
 
 uses
-  System.SysUtils, System.IOUtils, GBC.ROM, GBC.MBC, GBC.Memory, GBC.CPU, GBC.Sound, GBC.Timer,
-  GBC.InterruptManager;
+  System.SysUtils, System.IOUtils, GBC.ROM, GBC.MBC, GBC.Memory, GBC.CPU,
+  GBC.Sound, GBC.Timer, GBC.InterruptManager;
 
 constructor TGBCEmulationThread.Create(const FileName: string; EnableAudio: Boolean);
 begin

@@ -1,4 +1,4 @@
-unit GBC.Joypad;
+﻿unit GBC.Joypad;
 
 interface
 
@@ -78,17 +78,25 @@ begin
   Result := $CF or FSelection;
   if (FSelection and $10) = 0 then
   begin
-    if TGBCKey.Right in FPressed then Result := Result and $FE;
-    if TGBCKey.Left in FPressed then Result := Result and $FD;
-    if TGBCKey.Up in FPressed then Result := Result and $FB;
-    if TGBCKey.Down in FPressed then Result := Result and $F7;
+    if TGBCKey.Right in FPressed then
+      Result := Result and $FE;
+    if TGBCKey.Left in FPressed then
+      Result := Result and $FD;
+    if TGBCKey.Up in FPressed then
+      Result := Result and $FB;
+    if TGBCKey.Down in FPressed then
+      Result := Result and $F7;
   end;
   if (FSelection and $20) = 0 then
   begin
-    if TGBCKey.A in FPressed then Result := Result and $FE;
-    if TGBCKey.B in FPressed then Result := Result and $FD;
-    if TGBCKey.Select in FPressed then Result := Result and $FB;
-    if TGBCKey.Start in FPressed then Result := Result and $F7;
+    if TGBCKey.A in FPressed then
+      Result := Result and $FE;
+    if TGBCKey.B in FPressed then
+      Result := Result and $FD;
+    if TGBCKey.Select in FPressed then
+      Result := Result and $FB;
+    if TGBCKey.Start in FPressed then
+      Result := Result and $F7;
   end;
 end;
 
@@ -112,3 +120,4 @@ begin
 end;
 
 end.
+

@@ -1,4 +1,4 @@
-unit MD.Arithmetic;
+﻿unit MD.Arithmetic;
 
 // Explicit hardware arithmetic: independent of Delphi range/overflow settings.
 interface

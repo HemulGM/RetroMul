@@ -1,9 +1,10 @@
-unit Core.Adapter.GBC;
+﻿unit Core.Adapter.GBC;
 
 interface
 
 uses
-  System.Classes, System.IniFiles, Core.Emulation, GBC.EmulationThread, GBC.Joypad;
+  System.Classes, System.IniFiles, Core.Emulation, GBC.EmulationThread,
+  GBC.Joypad;
 
 type
   TGBCKeyMap = record
@@ -274,8 +275,8 @@ end;
 constructor TGBCEmulatorConfig.Create(const AFileName: string);
 begin
   inherited Create(AFileName);
-  FKeys.A := Ord('Z');
-  FKeys.B := Ord('X');
+  FKeys.A := vkZ;
+  FKeys.B := vkX;
   FKeys.Select := vkSpace;
   FKeys.Start := vkReturn;
   FKeys.Up := vkUp;

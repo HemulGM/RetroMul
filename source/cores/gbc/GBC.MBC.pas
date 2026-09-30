@@ -1,4 +1,4 @@
-unit GBC.MBC;
+﻿unit GBC.MBC;
 
 interface
 
@@ -40,7 +40,7 @@ begin
     raise EArgumentNilException.Create('ROM must not be nil');
   if not (AROM.GetCartridgeType.ID in
     [$00, $01, $02, $03, $05, $06, $08, $09, $0F, $10, $11, $12, $13,
-     $19, $1A, $1B, $1C, $1D, $1E]) then
+      $19, $1A, $1B, $1C, $1D, $1E]) then
     raise ENotSupportedException.Create('Unsupported cartridge: ' + AROM.GetCartridgeType.Name);
   FROM := AROM;
   FROMBankCount := Length(FROM.ROMData) div $4000;

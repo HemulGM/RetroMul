@@ -1,4 +1,4 @@
-unit Core.Adapter.GB;
+﻿unit Core.Adapter.GB;
 
 interface
 
@@ -71,7 +71,8 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Math, System.UITypes, GB.GPU, GB.Palettes, GB.ROM, GB.MBC;
+  System.SysUtils, System.Math, System.UITypes, GB.GPU, GB.Palettes, GB.ROM,
+  GB.MBC;
 
 constructor TGBCoreAdapter.Create(const FileName: string);
 begin
@@ -280,8 +281,8 @@ end;
 constructor TGBEmulatorConfig.Create(const AFileName: string);
 begin
   inherited Create(AFileName);
-  FKeys.A := Ord('Z');
-  FKeys.B := Ord('X');
+  FKeys.A := vkZ;
+  FKeys.B := vkX;
   FKeys.Select := vkSpace;
   FKeys.Start := vkReturn;
   FKeys.Up := vkUp;

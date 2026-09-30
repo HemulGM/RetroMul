@@ -1,4 +1,4 @@
-unit GBC.InterruptManager;
+﻿unit GBC.InterruptManager;
 
 interface
 

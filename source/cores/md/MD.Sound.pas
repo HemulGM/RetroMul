@@ -1,4 +1,4 @@
-unit MD.Sound;
+﻿unit MD.Sound;
 
 interface
 

@@ -1,4 +1,4 @@
-unit Core.Emulation;
+﻿unit Core.Emulation;
 
 interface
 

@@ -28455,13 +28455,26 @@ object FormMain: TFormMain
       object LabelStatus: TLabel
         Align = Client
         StyledSettings = [Family, Size, Style]
-        Size.Width = 707.000000000000000000
+        Size.Width = 665.000000000000000000
         Size.Height = 32.000000000000000000
         Size.PlatformDefault = False
         TextSettings.FontColor = claWhite
         TextSettings.WordWrap = False
         Text = 'NESFMX - Open ROM'
         TabOrder = 0
+      end
+      object ButtonCloseRom: TButton
+        Align = Left
+        Margins.Right = 10.000000000000000000
+        Position.X = 9.000000000000000000
+        Position.Y = 9.000000000000000000
+        Size.Width = 32.000000000000000000
+        Size.Height = 32.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'arrowlefttoolbutton'
+        TabOrder = 1
+        Text = 'ButtonCloseRom'
+        OnClick = ButtonCloseRomClick
       end
     end
   end

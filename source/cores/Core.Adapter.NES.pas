@@ -1,4 +1,4 @@
-unit Core.Adapter.NES;
+﻿unit Core.Adapter.NES;
 
 interface
 
@@ -230,7 +230,6 @@ function TNesCoreAdapter.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
 var
   NesFrame: TFrameBuffer;
   Status: TEmulationStatus;
-  X, Y: Integer;
 begin
   Result := FThread.TakeSnapshot(NesFrame, Status);
   if Status.Error <> '' then
@@ -240,8 +239,8 @@ begin
   Frame.Width := 256;
   Frame.Height := 240;
   SetLength(Frame.Pixels, Frame.Width * Frame.Height);
-  for Y := 0 to Frame.Height - 1 do
-    for X := 0 to Frame.Width - 1 do
+  for var Y := 0 to Frame.Height - 1 do
+    for var X := 0 to Frame.Width - 1 do
       Frame.Pixels[Y * Frame.Width + X] := NesFrame[X, Y] or $FF000000;
   Inc(FFrameNumber);
   Frame.FrameNumber := FFrameNumber;
@@ -253,30 +252,30 @@ end;
 constructor TNesEmulatorConfig.Create(const AFileName: string);
 begin
   inherited Create(AFileName);
-  FKeys.A := Ord('Z');
-  FKeys.B := Ord('X');
+  FKeys.A := vkZ;
+  FKeys.B := vkX;
   FKeys.Select := vkSpace;
   FKeys.Start := vkReturn;
   FKeys.Up := vkUp;
   FKeys.Down := vkDown;
   FKeys.Left := vkLeft;
   FKeys.Right := vkRight;
-  FKeys2.A := Ord('G');
-  FKeys2.B := Ord('H');
-  FKeys2.Select := Ord('T');
-  FKeys2.Start := Ord('Y');
-  FKeys2.Up := Ord('W');
-  FKeys2.Down := Ord('S');
-  FKeys2.Left := Ord('A');
-  FKeys2.Right := Ord('D');
-  FKeys3.A := Ord('N');
-  FKeys3.B := Ord('M');
-  FKeys3.Select := Ord('U');
-  FKeys3.Start := Ord('O');
-  FKeys3.Up := Ord('I');
-  FKeys3.Down := Ord('K');
-  FKeys3.Left := Ord('J');
-  FKeys3.Right := Ord('L');
+  FKeys2.A := vkG;
+  FKeys2.B := vkH;
+  FKeys2.Select := vkT;
+  FKeys2.Start := vkY;
+  FKeys2.Up := vkW;
+  FKeys2.Down := vkS;
+  FKeys2.Left := vkA;
+  FKeys2.Right := vkD;
+  FKeys3.A := vkN;
+  FKeys3.B := vkM;
+  FKeys3.Select := vkU;
+  FKeys3.Start := vkO;
+  FKeys3.Up := vkI;
+  FKeys3.Down := vkK;
+  FKeys3.Left := vkJ;
+  FKeys3.Right := vkL;
   FKeys4.A := vkNumpad1;
   FKeys4.B := vkNumpad3;
   FKeys4.Select := vkNumpad7;

@@ -13,13 +13,15 @@ uses
   Androidapi.JNI.Widget, Androidapi.JNI.Os, Androidapi.JNI.Media, FMX.Platform,
   FMX.ApplicationEvents, RM.RomPicker.Android,
   {$ENDIF}
-  NES.Gamepad, FMX.ListBox, SCRP.GameList, FMX.Edit, FMX.SearchBox;
+  RM.FolderPicker.Android, NES.Gamepad, FMX.ListBox, SCRP.GameList, FMX.Edit,
+  FMX.SearchBox;
 
 type
   TListBoxItemGame = class(TListBoxItem)
   protected
     FLoaded: Boolean;
   public
+    RomFile: TRomFile;
     procedure ApplyStyle; override;
   end;
 
@@ -52,6 +54,7 @@ type
     PathLabel3: TPathLabel;
     Panel2: TPanel;
     ButtonSetRoot: TButton;
+    ButtonCloseRom: TButton;
     procedure FormActivate(Sender: TObject);
     procedure FormResize(Sender: TObject);
     procedure FormDeactivate(Sender: TObject);
@@ -69,6 +72,7 @@ type
     procedure LayoutClientDblClick(Sender: TObject);
     procedure ButtonSetRootClick(Sender: TObject);
     procedure FormSaveState(Sender: TObject);
+    procedure ButtonCloseRomClick(Sender: TObject);
   private
     FEmulation: IEmulationCore;
     FGamepad: TNesGamepad;
@@ -83,7 +87,7 @@ type
     FKeysDown: array[0..2048] of Boolean;
     FRomsRoot: string;
     {$IFDEF ANDROID}
-    FPicker: TNesAndroidRomPicker;
+    FPicker: TAndroidRomPicker;
     FAppEvents: TApplicationEvents;
     FInBackground, FActivityPaused: Boolean;
     FSuborKeyboardTouchAttached: Boolean;
@@ -103,6 +107,8 @@ type
     procedure SwitchFullScreen;
     procedure Load;
     procedure Save;
+    procedure MobileCloseRom;
+    procedure Stop;
   protected
     procedure DoOnSettingChange; override;
   public
@@ -139,6 +145,18 @@ end;
 
 { TFormMain }
 
+procedure TFormMain.ButtonCloseRomClick(Sender: TObject);
+begin
+  Stop;
+  MobileCloseRom;
+end;
+
+procedure TFormMain.MobileCloseRom;
+begin
+
+  SwitchFullScreen;
+end;
+
 procedure TFormMain.ButtonOpenClick(Sender: TObject);
 begin
   try
@@ -168,6 +186,15 @@ end;
 
 procedure TFormMain.ButtonSetRootClick(Sender: TObject);
 begin
+  {$IFDEF ANDROID}
+  TRomStorage.SelectFolder(
+    procedure(Success: Boolean)
+    begin
+      FRomsRoot := TRomStorage.FolderUri;
+      LoadSystem(FSystemId);
+    end);
+  Exit;
+  {$ENDIF}
   var Dir: string := FRomsRoot;
   if SelectDirectory(Translate('Select ROM folder'), '', Dir) then
     FRomsRoot := Dir
@@ -178,6 +205,11 @@ begin
 end;
 
 procedure TFormMain.ButtonStopClick(Sender: TObject);
+begin
+  Stop;
+end;
+
+procedure TFormMain.Stop;
 begin
   if FEmulation <> nil then
   begin
@@ -201,50 +233,91 @@ begin
   else if RadioButtonMD.IsChecked then
     SystemId := RadioButtonMD.TagString;
 
+  if FSystemId = SystemId then
+    Exit;
   LoadSystem(SystemId);
 end;
 
 procedure TFormMain.Load;
 begin
-  if TFile.Exists(TPath.Combine(GetDocumentsDirectory, ConfigFileName)) then
-  begin
-    var Ini := TIniFile.Create(TPath.Combine(GetDocumentsDirectory, ConfigFileName));
-    try
-      FRomsRoot := Trim(Ini.ReadString('General', 'Path', FRomsRoot));
-    finally
-      Ini.Free;
-    end;
-  end
-  else
-    Save;
+  try
+    if TFile.Exists(TPath.Combine(GetDocumentsDirectory, ConfigFileName)) then
+    begin
+      var Ini := TIniFile.Create(TPath.Combine(GetDocumentsDirectory, ConfigFileName));
+      try
+        FRomsRoot := Trim(Ini.ReadString('General', 'Path', FRomsRoot));
+      finally
+        Ini.Free;
+      end;
+    end
+    else
+      Save;
+  except
+    // silent
+  end;
 end;
 
 procedure TFormMain.Save;
 begin
-  TDirectory.CreateDirectory(GetDocumentsDirectory);
-  var Ini := TIniFile.Create(TPath.Combine(GetDocumentsDirectory, ConfigFileName));
   try
-    Ini.WriteString('General', 'Path', FRomsRoot);
-  finally
-    Ini.Free;
+    TDirectory.CreateDirectory(GetDocumentsDirectory);
+    var Ini := TIniFile.Create(TPath.Combine(GetDocumentsDirectory, ConfigFileName));
+    try
+      Ini.WriteString('General', 'Path', FRomsRoot);
+    finally
+      Ini.Free;
+    end;
+  except
+    //silent
   end;
 end;
 
 procedure TFormMain.LoadSystem(const SystemId: string);
 begin
   FSystemId := SystemId;
-  ButtonSetRoot.Visible := True;
 
   LayoutLeft.Enabled := False;
   ListBoxGames.Visible := False;
   ListBoxGames.BeginUpdate;
   ListBoxGames.Clear;
   ListBoxGames.EndUpdate;
+  //ShowMessage(TPath.Combine(FRomsRoot, SystemId));
   TTask.Run(
     procedure
     begin
       ListBoxGames.BeginUpdate;
       try
+        {$IFDEF ANDROID}
+        TRomStorage.FolderUri := FRomsRoot;
+        var GameXML := TRomStorage.GetFiles(['xml'], True);
+        if Length(GameXML) > 0 then
+        begin
+          //TRomStorage.OpenFile()
+        end
+        else
+        begin
+          ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle';
+          ListBoxGames.ItemHeight := 32;
+          var Games := TRomStorage.GetFiles(['gb', 'gbc', 'nes', 'gen', 'md', 'smd', 'bin'], True);
+          for var GameFile in Games do
+            if GameFile.RelativePath.StartsWith(SystemId) then
+            begin
+              var Game := TGame.Create;
+              try
+                Game.Path := GameFile.Uri;
+                Game.Name := TPath.GetFileNameWithoutExtension(GameFile.Name);
+                var Item := TListBoxItemGame.Create(ListBoxGames);
+                Item.RomFile := GameFile;
+                ListBoxGames.AddObject(Item);
+                FillGameItem(Item, Game, '');
+              finally
+                Game.Free;
+              end;
+            end;
+        end;
+
+        Exit;
+        {$ENDIF}
         var Folder := TPath.Combine(FRomsRoot, SystemId);
 
         if not TDirectory.Exists(Folder) then
@@ -298,6 +371,7 @@ begin
       finally
         ListBoxGames.EndUpdate;
         LayoutLeft.Enabled := True;
+        ButtonSetRoot.Visible := ListBoxGames.Count <= 0;
         ListBoxGames.Visible := True;
         ListBoxGames.Opacity := 0;
         TAnimator.AnimateFloat(ListBoxGames, 'Opacity', 1);
@@ -325,6 +399,7 @@ end;
 
 constructor TFormMain.Create(AOwner: TComponent);
 begin
+  FormStyles := TFormStyles.Create(Application);
   inherited;
   LayoutClient.CanFocus := True;
   LayoutClient.OnKeyDown := FormKeyDown;
@@ -335,9 +410,11 @@ begin
   {$IFDEF ANDROID}
   // Hardware volume keys control game audio, including before a ROM is loaded.
   TAndroidHelper.Activity.setVolumeControlStream(TJAudioManager.JavaClass.STREAM_MUSIC);
-  FPicker := TNesAndroidRomPicker.Create;
+  FPicker := TAndroidRomPicker.Create;
   FAppEvents := TApplicationEvents.Create(Self);
   FAppEvents.OnStateChanged := ApplicationStateChanged;
+  LayoutClient.Visible := False;
+  LayoutLeft.Align := TAlignLayout.Client;
   {$ENDIF}
   Fill.Color := TAlphaColors.Black;
   ImageCanvas.WrapMode := TImageWrapMode.Fit;
@@ -483,11 +560,6 @@ begin
       ClientWidth - Padding.Left - Padding.Right,
       ClientHeight - Padding.Top - Padding.Bottom - LayoutHead.Height);
   end;
-  LayoutLeft.Visible := not FullScreen;
-  if FullScreen then
-    LayoutClient.Cursor := crNone
-  else
-    LayoutClient.Cursor := crDefault;
 end;
 
 procedure TFormMain.GamepadChanged(Sender: TObject);
@@ -662,8 +734,17 @@ end;
 procedure TFormMain.SwitchFullScreen;
 begin
   FullScreen := not FullScreen;
+  LayoutLeft.Visible := not FullScreen;
+  {$IFDEF ANDROID}
+  LayoutClient.Visible := FullScreen;
+  {$ENDIF}
   if FullScreen then
+  begin
+    LayoutClient.Cursor := crNone;
     LayoutClient.SetFocus;
+  end
+  else
+    LayoutClient.Cursor := crDefault;
 end;
 
 procedure TFormMain.FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
@@ -824,11 +905,19 @@ end;
 
 procedure TFormMain.LayoutClientDblClick(Sender: TObject);
 begin
+  {$IFDEF ANDROID}
+  Exit;
+  {$ENDIF}
   SwitchFullScreen;
 end;
 
 procedure TFormMain.ListBoxGamesItemClick(const Sender: TCustomListBox; const Item: TListBoxItem);
 begin
+  {$IFDEF ANDROID}
+  var TempRomFile := TRomStorage.SaveToFile((Item as TListBoxItemGame).RomFile);
+  LoadRom(TempRomFile);
+  Exit;
+  {$ENDIF}
   LoadRom(Item.TagString);
 end;
 
@@ -873,6 +962,9 @@ begin
     StopOnError;
     raise;
   end;
+  {$IFDEF ANDROID}
+  SwitchFullscreen;
+  {$ENDIF}
 end;
 
 procedure TFormMain.OpenRom;

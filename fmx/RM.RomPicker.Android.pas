@@ -1,4 +1,4 @@
-unit RM.RomPicker.Android;
+﻿unit RM.RomPicker.Android;
 
 interface
 
@@ -7,7 +7,7 @@ uses
   Androidapi.JNI.Net;
 
 type
-  INesRomImport = interface
+  IRomImport = interface
     ['{871CFC81-D811-4B37-9A59-E8468E861B41}']
     procedure Run(const Resolver: JContentResolver; const Uri: Jnet_Uri);
     procedure Cancel;
@@ -16,11 +16,11 @@ type
 
   // Activity results are asynchronous. A detached worker owns its import job;
   // it never captures the form/picker or queues callbacks to a destroyed owner.
-  TNesAndroidRomPicker = class
+  TAndroidRomPicker = class
   private
     FWaiting, FReady: Boolean;
     FError: string;
-    FJob: INesRomImport;
+    FJob: IRomImport;
     procedure ActivityResult(const Sender: TObject; const Message: TMessage);
   public
     constructor Create;
@@ -42,7 +42,7 @@ const
   MAX_ROM_IMPORT_BYTES = 64 * 1024 * 1024;
 
 type
-  TRomImport = class(TInterfacedObject, INesRomImport)
+  TRomImport = class(TInterfacedObject, IRomImport)
   private
     FCancelled, FDone: Boolean;
     FFileName, FDisplayName, FError: string;
@@ -58,8 +58,8 @@ type
 constructor TRomImport.Create;
 begin
   inherited;
-  FFileName := TPath.Combine(TPath.GetTempPath, TGUID.NewGuid.ToString + '.nes');
-  FDisplayName := 'ROM.nes';
+  FFileName := TPath.Combine(TPath.GetTempPath, TGUID.NewGuid.ToString + '.rom');
+  FDisplayName := 'Temp.rom';
 end;
 
 destructor TRomImport.Destroy;
@@ -180,20 +180,20 @@ begin
   end;
 end;
 
-constructor TNesAndroidRomPicker.Create;
+constructor TAndroidRomPicker.Create;
 begin
   inherited;
   TMessageManager.DefaultManager.SubscribeToMessage(TMessageResultNotification, ActivityResult);
 end;
 
-destructor TNesAndroidRomPicker.Destroy;
+destructor TAndroidRomPicker.Destroy;
 begin
   TMessageManager.DefaultManager.Unsubscribe(TMessageResultNotification, ActivityResult);
   Finish;
   inherited;
 end;
 
-procedure TNesAndroidRomPicker.Open;
+procedure TAndroidRomPicker.Open;
 begin
   if FWaiting or FReady or (FJob <> nil) then
     Exit;
@@ -211,7 +211,7 @@ begin
   end;
 end;
 
-procedure TNesAndroidRomPicker.ActivityResult(const Sender: TObject; const Message: TMessage);
+procedure TAndroidRomPicker.ActivityResult(const Sender: TObject; const Message: TMessage);
 begin
   if not FWaiting or not (Message is TMessageResultNotification) then
     Exit;
@@ -228,7 +228,7 @@ begin
       raise Exception.Create('No document was returned by the file picker');
     var Uri := Notification.Value.getData;
     var Resolver := TAndroidHelper.Context.getContentResolver;
-    var Job: INesRomImport := TRomImport.Create;
+    var Job: IRomImport := TRomImport.Create;
     FJob := Job;
     TThread.CreateAnonymousThread(
       procedure
@@ -244,7 +244,7 @@ begin
   end;
 end;
 
-function TNesAndroidRomPicker.Poll(out FileName, DisplayName, Error: string): Boolean;
+function TAndroidRomPicker.Poll(out FileName, DisplayName, Error: string): Boolean;
 begin
   FileName := '';
   DisplayName := '';
@@ -256,7 +256,7 @@ begin
     Error := FError;
 end;
 
-procedure TNesAndroidRomPicker.Finish;
+procedure TAndroidRomPicker.Finish;
 begin
   if FJob <> nil then
     FJob.Cancel;

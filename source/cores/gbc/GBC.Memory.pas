@@ -1,4 +1,4 @@
-unit GBC.Memory;
+﻿unit GBC.Memory;
 
 interface
 

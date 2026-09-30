@@ -1,4 +1,4 @@
-unit GBC.ROM;
+﻿unit GBC.ROM;
 
 interface
 

@@ -1,4 +1,4 @@
-unit HGM.FMX.Image;
+п»їunit HGM.FMX.Image;
 
 interface
 
@@ -248,7 +248,7 @@ begin
         try
           TFile.Delete(FileName);
         except
-          // не смог удалить файл
+          // РЅРµ СЃРјРѕРі СѓРґР°Р»РёС‚СЊ С„Р°Р№Р»
         end;
         Exit;
       end;

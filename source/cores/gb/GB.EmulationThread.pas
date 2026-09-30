@@ -1,10 +1,10 @@
-unit GB.EmulationThread;
+﻿unit GB.EmulationThread;
 
 interface
 
 uses
-  System.Classes, System.SyncObjs, System.Generics.Collections, System.Diagnostics, GB.Joypad,
-  GB.GPU;
+  System.Classes, System.SyncObjs, System.Generics.Collections,
+  System.Diagnostics, GB.Joypad, GB.GPU;
 
 type
   TGBInputEvent = record
@@ -52,8 +52,8 @@ type
 implementation
 
 uses
-  System.SysUtils, System.IOUtils, GB.ROM, GB.MBC, GB.Memory, GB.CPU,
-  GB.Sound, GB.Timer, GB.InterruptManager;
+  System.SysUtils, System.IOUtils, GB.ROM, GB.MBC, GB.Memory, GB.CPU, GB.Sound,
+  GB.Timer, GB.InterruptManager;
 
 constructor TGBEmulationThread.Create(const FileName: string; EnableAudio: Boolean);
 begin
@@ -183,8 +183,7 @@ begin
   end;
 end;
 
-function TGBEmulationThread.TryGetFrame(out Screen: TScreenArray;
-  out FramesPerSecond: Double): Boolean;
+function TGBEmulationThread.TryGetFrame(out Screen: TScreenArray; out FramesPerSecond: Double): Boolean;
 begin
   FLock.Acquire;
   try

@@ -1,10 +1,12 @@
 program RetroMul;
 
-{$R *.dres}
-
 uses
   System.StartUpCopy,
   FMX.Forms,
+  {$IFDEF ANDROID}
+  FMX.Skia,
+  {$ENDIF }
+  FMX.Dialogs,
   NES.Gamepad in 'NES.Gamepad.pas',
   NES.SuborKeyboard in 'NES.SuborKeyboard.pas',
   RM.Main in 'RM.Main.pas' {FormMain},
@@ -107,14 +109,20 @@ uses
   FMX.StyledContextMenu in 'DelphiWinUI3\Fixes\D13\FMX.StyledContextMenu.pas',
   FMX.Windows.Hints in 'DelphiWinUI3\FMXWindowsHint\FMX.Windows.Hints.pas',
   HGM.FMX.Image in 'HGM.FMX.Image.pas',
-  Core.SavePaths in '..\source\cores\Core.SavePaths.pas';
+  Core.SavePaths in '..\source\cores\Core.SavePaths.pas',
+  RM.FolderPicker.Android in 'RM.FolderPicker.Android.pas',
+  MD.Emulation in '..\source\cores\md\MD.Emulation.pas';
 
 {$R *.res}
 
 begin
+  {$IFDEF ANDROID}
+  GlobalUseSkia := True;
+  {$ENDIF}
   Application.Initialize;
-  FormStyles := TFormStyles.Create(Application);
+  //FormStyles := TFormStyles.Create(Application);
   Application.CreateForm(TFormMain, FormMain);
+  //Application.CreateForm(TFormStyles, FormStyles);
   Application.Run;
 end.
 

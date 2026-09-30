@@ -1,4 +1,4 @@
-unit NES.Emulation;
+﻿unit NES.Emulation;
 
 interface
 
@@ -514,9 +514,6 @@ procedure TNesEmulationThread.Execute;
 begin
   if Terminated then
     Exit;
-  {$IFDEF ANDROID}
-  TJNesProcess.JavaClass.setThreadPriority(ANDROID_THREAD_PRIORITY_URGENT_AUDIO);
-  {$ENDIF}
   try
     FConsole.LoadBattery(FSaveDirectory);
     try
@@ -565,7 +562,7 @@ begin
   var Failed := False;
   var NextSave := TStopwatch.GetTimeStamp + TStopwatch.Frequency * 5;
   {$IFDEF ANDROID}
-  var FrameHints := TNesFrameHints.Create(Round(1000000000.0 / FrameRate(FConsole.Region)));
+  //var FrameHints := TNesFrameHints.Create(Round(1000000000.0 / FrameRate(FConsole.Region)));
   try
   {$ENDIF}
     while not Terminated do
@@ -635,9 +632,9 @@ begin
         end;
         if FPaused then
         begin
-          {$IFDEF ANDROID}
-          FrameHints.Pause;
-          {$ENDIF}
+          //{$IFDEF ANDROID}
+          //FrameHints.Pause;
+          //{$ENDIF}
           FWake.WaitFor(INFINITE);
           Continue;
         end;
@@ -649,10 +646,10 @@ begin
         end;
         if Terminated then
           Break;
-        {$IFDEF ANDROID}
+        //{$IFDEF ANDROID}
         // Report frame work only, excluding the frame limiter and paused time.
-        FrameHints.BeginFrame;
-        {$ENDIF}
+        //FrameHints.BeginFrame;
+        //{$ENDIF}
         var T1 := TStopwatch.GetTimeStamp;
         FConsole.RunFrame;
         var T2 := TStopwatch.GetTimeStamp;
@@ -697,9 +694,9 @@ begin
         finally
           FLock.Leave;
         end;
-        {$IFDEF ANDROID}
-        FrameHints.EndFrame;
-        {$ENDIF}
+        //{$IFDEF ANDROID}
+        //FrameHints.EndFrame;
+        //{$ENDIF}
         Inc(NextFrame, FramePeriod);
         // Bound catch-up after debugging or an unusually slow frame.
         if ClockNow - NextFrame > FramePeriod * 3 then
@@ -723,7 +720,7 @@ begin
     end;
   {$IFDEF ANDROID}
   finally
-    FrameHints.Free;
+    //FrameHints.Free;
   end;
   {$ENDIF}
 end;

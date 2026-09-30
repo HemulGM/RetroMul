@@ -1,4 +1,4 @@
-unit GB.MBC;
+﻿unit GB.MBC;
 
 interface
 
@@ -39,7 +39,7 @@ begin
     raise EArgumentNilException.Create('ROM must not be nil');
   if not (AROM.GetCartridgeType.ID in
     [$00, $01, $02, $03, $05, $06, $08, $09, $0F, $10, $11, $12, $13,
-     $19, $1A, $1B, $1C, $1D, $1E]) then
+      $19, $1A, $1B, $1C, $1D, $1E]) then
     raise ENotSupportedException.Create('Unsupported cartridge: ' + AROM.GetCartridgeType.Name);
   FROM := AROM;
   FROMBankCount := Length(FROM.ROMData) div $4000;
@@ -52,8 +52,7 @@ begin
   FHasRAM := FROM.GetCartridgeType.HasRAM;
   if FROM.GetCartridgeType.MapperType = 'MBC2' then
     SetLength(FRAM, $200) // 512 four-bit internal RAM cells
-  else
-  if FHasRAM and Assigned(FROM.Cartridge) then
+  else if FHasRAM and Assigned(FROM.Cartridge) then
     if FROM.Cartridge.RAMSizeBytes > 0 then
       SetLength(FRAM, FROM.Cartridge.RAMSizeBytes);
   FHasRAM := Length(FRAM) > 0;

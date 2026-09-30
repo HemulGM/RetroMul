@@ -200,7 +200,7 @@ procedure c_WriteAndIncrement(c_vdp_: PVDP; c_value: Cardinal; c_colour_updated_
 
 function c_ReadAndIncrement(c_state: PVDPState): Cardinal;
 
-procedure c_VDP_Constant_Initialise();
+procedure ConstantInitialise();
 
 procedure c_VDP_Initialise(c_vdp_: PVDP);
 
@@ -454,7 +454,7 @@ begin
   Exit(Cardinal(c_value));
 end;
 
-procedure c_VDP_Constant_Initialise();
+procedure ConstantInitialise();
 var
   c_old_pixel: Cardinal;
   c_palette_line_index_mask: Cardinal;

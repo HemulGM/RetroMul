@@ -226,7 +226,7 @@ begin
   c_VDP_Initialise(@FVDP);
   FM_Initialise(@FFM);
   PSG_Initialise(@FPSG);
-  c_ClownZ80_State_Initialise(@FZ80);
+  Z80StateInitialise(@FZ80);
   for I := 0 to High(FPalette) do
     FPalette[I] := $FF000000;
   for I := 0 to High(FFrame) do
@@ -492,7 +492,7 @@ begin
     if HighByte then
     begin
       if FZReset and (Value and $100 <> 0) then
-        c_ClownZ80_Reset(@FZ80);
+        Z80Reset(@FZ80);
       FZReset := Value and $100 = 0;
       if FZReset then
       begin
@@ -644,7 +644,7 @@ begin
     while FZ80Time < Target do
     begin
       FBusTime := FZ80Time;
-      Cycles := c_ClownZ80_DoInstruction(@FZ80, @FZ80Callbacks);
+      Cycles := Z80DoInstruction(@FZ80, @FZ80Callbacks);
       Inc(FZ80Time, Max(1, Integer(Cycles)) * 15);
       if FBusRequested or FZReset then
       begin
@@ -741,10 +741,10 @@ begin
       FVDP.c_state.c_currently_in_vblank := 1;
       FVInt := True;
       UpdateIRQ;
-      c_ClownZ80_Interrupt(@FZ80, 1);
+      Z80Interrupt(@FZ80, 1);
     end;
     if Line = Visible + 1 then
-      c_ClownZ80_Interrupt(@FZ80, 0);
+      Z80Interrupt(@FZ80, 0);
     if Line < Visible then
     begin
       c_VDP_BeginScanline(@FVDP);
@@ -791,8 +791,9 @@ begin
 end;
 
 initialization
-  c_VDP_Constant_Initialise;
-  c_ClownZ80_Constant_Initialise;
+  MD.VDP.ConstantInitialise;
+  MD.Z80.ConstantInitialise;
+  ;
 
 end.
 

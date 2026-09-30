@@ -239,353 +239,385 @@ const
   FLAG_MASK_ZERO = ( 1 shl FLAG_BIT_ZERO);
   FLAG_MASK_SIGN = ( 1 shl FLAG_BIT_SIGN);
 
-procedure DecodeInstructionMetadata(var Metadata: TZ80InstructionMetadata; InstructionMode: Integer; RegisterMode: Integer; Opcode: Byte);
 const
-  REGISTERS: array[0..7] of Integer = (CLOWNZ80_OPERAND_B, CLOWNZ80_OPERAND_C, CLOWNZ80_OPERAND_D, CLOWNZ80_OPERAND_E, CLOWNZ80_OPERAND_H, CLOWNZ80_OPERAND_L, CLOWNZ80_OPERAND_HL_INDIRECT, CLOWNZ80_OPERAND_A);
-  REGISTER_PAIRS_1: array[0..3] of Integer = (CLOWNZ80_OPERAND_BC, CLOWNZ80_OPERAND_DE, CLOWNZ80_OPERAND_HL, CLOWNZ80_OPERAND_SP);
-  REGISTER_PAIRS_2: array[0..3] of Integer = (CLOWNZ80_OPERAND_BC, CLOWNZ80_OPERAND_DE, CLOWNZ80_OPERAND_HL, CLOWNZ80_OPERAND_AF);
-  ARITHMETIC_LOGIC_OPCODES: array[0..7] of Integer = (CLOWNZ80_OPCODE_ADD_A, CLOWNZ80_OPCODE_ADC_A, CLOWNZ80_OPCODE_SUB, CLOWNZ80_OPCODE_SBC_A, CLOWNZ80_OPCODE_AND, CLOWNZ80_OPCODE_XOR, CLOWNZ80_OPCODE_OR, CLOWNZ80_OPCODE_CP);
-  ROTATE_SHIFT_OPCODES: array[0..7] of Integer = (CLOWNZ80_OPCODE_RLC, CLOWNZ80_OPCODE_RRC, CLOWNZ80_OPCODE_RL, CLOWNZ80_OPCODE_RR, CLOWNZ80_OPCODE_SLA, CLOWNZ80_OPCODE_SRA, CLOWNZ80_OPCODE_SLL, CLOWNZ80_OPCODE_SRL);
-  BLOCK_OPCODES: array[0..3] of array[0..3] of Integer = ((CLOWNZ80_OPCODE_LDI, CLOWNZ80_OPCODE_LDD, CLOWNZ80_OPCODE_LDIR, CLOWNZ80_OPCODE_LDDR), (CLOWNZ80_OPCODE_CPI, CLOWNZ80_OPCODE_CPD, CLOWNZ80_OPCODE_CPIR, CLOWNZ80_OPCODE_CPDR), (CLOWNZ80_OPCODE_INI, CLOWNZ80_OPCODE_IND, CLOWNZ80_OPCODE_INIR, CLOWNZ80_OPCODE_INDR), (CLOWNZ80_OPCODE_OUTI, CLOWNZ80_OPCODE_OUTD, CLOWNZ80_OPCODE_OTIR, CLOWNZ80_OPCODE_OTDR));
-  OPERANDS: array[0..3] of Integer = (CLOWNZ80_OPERAND_BC_INDIRECT, CLOWNZ80_OPERAND_DE_INDIRECT, CLOWNZ80_OPERAND_ADDRESS, CLOWNZ80_OPERAND_ADDRESS);
-  OPCODES: array[0..7] of Integer = (CLOWNZ80_OPCODE_RLCA, CLOWNZ80_OPCODE_RRCA, CLOWNZ80_OPCODE_RLA, CLOWNZ80_OPCODE_RRA, CLOWNZ80_OPCODE_DAA, CLOWNZ80_OPCODE_CPL, CLOWNZ80_OPCODE_SCF, CLOWNZ80_OPCODE_CCF);
-  INTERRUPT_MODES: array[0..3] of Cardinal = (0, 0, 1, 2);
-  ASSORTED_OPCODES: array[0..7] of Integer = (CLOWNZ80_OPCODE_LD_I_A, CLOWNZ80_OPCODE_LD_R_A, CLOWNZ80_OPCODE_LD_A_I, CLOWNZ80_OPCODE_LD_A_R, CLOWNZ80_OPCODE_RRD, CLOWNZ80_OPCODE_RLD, CLOWNZ80_OPCODE_NOP, CLOWNZ80_OPCODE_NOP);
+  DECODE_REGISTERS: array[0..7] of Byte = (CLOWNZ80_OPERAND_B, CLOWNZ80_OPERAND_C, CLOWNZ80_OPERAND_D, CLOWNZ80_OPERAND_E, CLOWNZ80_OPERAND_H, CLOWNZ80_OPERAND_L, CLOWNZ80_OPERAND_HL_INDIRECT, CLOWNZ80_OPERAND_A);
+  DECODE_REGISTER_PAIRS: array[0..3] of Byte = (CLOWNZ80_OPERAND_BC, CLOWNZ80_OPERAND_DE, CLOWNZ80_OPERAND_HL, CLOWNZ80_OPERAND_SP);
+
+procedure DecodeNormalInstructionMetadata(var Metadata: TZ80InstructionMetadata; RegisterMode: Integer; Opcode: Byte);
+const
+  STACK_REGISTER_PAIRS: array[0..3] of Byte = (CLOWNZ80_OPERAND_BC, CLOWNZ80_OPERAND_DE, CLOWNZ80_OPERAND_HL, CLOWNZ80_OPERAND_AF);
+  ARITHMETIC_LOGIC_OPCODES: array[0..7] of Byte = (CLOWNZ80_OPCODE_ADD_A, CLOWNZ80_OPCODE_ADC_A, CLOWNZ80_OPCODE_SUB, CLOWNZ80_OPCODE_SBC_A, CLOWNZ80_OPCODE_AND, CLOWNZ80_OPCODE_XOR, CLOWNZ80_OPCODE_OR, CLOWNZ80_OPCODE_CP);
 begin
-  var X: Cardinal := Cardinal(ArithmeticShiftRight(Opcode, 6) and 3);
-  var Y: Cardinal := Cardinal(ArithmeticShiftRight(Opcode, 3) and 7);
-  var Z: Cardinal := Cardinal(ArithmeticShiftRight(Opcode, 0) and 7);
-  var P: Cardinal := (Y shr 1) and 3;
-  var Q: Byte := Ord((Y and 1) <> 0);
-  Metadata.HasDisplacement := 0;
-  Metadata.Operands[0] := CLOWNZ80_OPERAND_NONE;
-  Metadata.Operands[1] := CLOWNZ80_OPERAND_NONE;
-  case InstructionMode of
-    CLOWNZ80_INSTRUCTION_MODE_NORMAL:
-      case X of
-        0:
-          case Z of
-            0:
-              case Y of
-                0:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_NOP);
-                  end;
-                1:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_EX_AF_AF);
-                  end;
-                2:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_DJNZ);
-                    Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_8_BIT);
-                  end;
-                3:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_JR_UNCONDITIONAL);
-                    Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_8_BIT);
-                  end;
-                4, 5, 6, 7:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_JR_CONDITIONAL);
-                    Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_8_BIT);
-                    Metadata.Condition := Byte(Sub32(Y, 4));
-                  end;
-              end;
-            1:
-              if Q = 0 then
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_LD_16_BIT);
-                Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_16_BIT);
-                Metadata.Operands[1] := Byte(REGISTER_PAIRS_1[P]);
-              end
-              else
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_ADD_HL);
-                Metadata.Operands[0] := Byte(REGISTER_PAIRS_1[P]);
-                Metadata.Operands[1] := Byte(CLOWNZ80_OPERAND_HL);
-              end;
-            2:
-              begin
-                var OperandA: Integer;
-                if P = 2 then
-                  OperandA := CLOWNZ80_OPERAND_HL
-                else
-                  OperandA := CLOWNZ80_OPERAND_A;
-                var OperandB := OPERANDS[P];
-                if P = 2 then
-                  Metadata.Opcode := Byte(CLOWNZ80_OPCODE_LD_16_BIT)
-                else
-                  Metadata.Opcode := Byte(CLOWNZ80_OPCODE_LD_8_BIT);
-                if Q = 0 then
-                begin
-                  Metadata.Operands[0] := Byte(OperandA);
-                  Metadata.Operands[1] := Byte(OperandB);
-                end
-                else
-                begin
-                  Metadata.Operands[0] := Byte(OperandB);
-                  Metadata.Operands[1] := Byte(OperandA);
-                end;
-              end;
-            3:
-              begin
-                if Q = 0 then
-                  Metadata.Opcode := Byte(CLOWNZ80_OPCODE_INC_16_BIT)
-                else
-                  Metadata.Opcode := Byte(CLOWNZ80_OPCODE_DEC_16_BIT);
-                Metadata.Operands[1] := Byte(REGISTER_PAIRS_1[P]);
-              end;
-            4:
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_INC_8_BIT);
-                Metadata.Operands[1] := Byte(REGISTERS[Y]);
-              end;
-            5:
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_DEC_8_BIT);
-                Metadata.Operands[1] := Byte(REGISTERS[Y]);
-              end;
-            6:
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_LD_8_BIT);
-                Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_8_BIT);
-                Metadata.Operands[1] := Byte(REGISTERS[Y]);
-              end;
-            7:
-              begin
-                Metadata.Opcode := Byte(OPCODES[Y]);
-              end;
-          end;
-        1:
-          if (Z = 6) and (Y = 6) then
-            Metadata.Opcode := Byte(CLOWNZ80_OPCODE_HALT)
-          else
-          begin
-            Metadata.Opcode := Byte(CLOWNZ80_OPCODE_LD_8_BIT);
-            Metadata.Operands[0] := Byte(REGISTERS[Z]);
-            Metadata.Operands[1] := Byte(REGISTERS[Y]);
-          end;
-        2:
-          begin
-            Metadata.Opcode := Byte(ARITHMETIC_LOGIC_OPCODES[Y]);
-            Metadata.Operands[0] := Byte(REGISTERS[Z]);
-          end;
-        3:
-          case Z of
-            0:
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_RET_CONDITIONAL);
-                Metadata.Condition := Byte(Y);
-              end;
-            1:
-              if Q = 0 then
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_POP);
-                Metadata.Operands[1] := Byte(REGISTER_PAIRS_2[P]);
-              end
-              else
-              begin
-                case P of
-                  0:
-                    begin
-                      Metadata.Opcode := Byte(CLOWNZ80_OPCODE_RET_UNCONDITIONAL);
-                    end;
-                  1:
-                    begin
-                      Metadata.Opcode := Byte(CLOWNZ80_OPCODE_EXX);
-                    end;
-                  2:
-                    begin
-                      Metadata.Opcode := Byte(CLOWNZ80_OPCODE_JP_HL);
-                      Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_HL);
-                    end;
-                  3:
-                    begin
-                      Metadata.Opcode := Byte(CLOWNZ80_OPCODE_LD_SP_HL);
-                      Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_HL);
-                    end;
-                end;
-              end;
-            2:
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_JP_CONDITIONAL);
-                Metadata.Condition := Byte(Y);
-                Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_16_BIT);
-              end;
-            3:
-              case Y of
-                0:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_JP_UNCONDITIONAL);
-                    Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_16_BIT);
-                  end;
-                1:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_CB_PREFIX);
-                    if RegisterMode <> CLOWNZ80_REGISTER_MODE_HL then
-                      Metadata.HasDisplacement := 1;
-                  end;
-                2:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_OUT);
-                    Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_8_BIT);
-                  end;
-                3:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_IN);
-                    Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_8_BIT);
-                  end;
-                4:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_EX_SP_HL);
-                    Metadata.Operands[1] := Byte(CLOWNZ80_OPERAND_HL);
-                  end;
-                5:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_EX_DE_HL);
-                  end;
-                6:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_DI);
-                  end;
-                7:
-                  begin
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_EI);
-                  end;
-              end;
-            4:
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_CALL_CONDITIONAL);
-                Metadata.Condition := Byte(Y);
-                Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_16_BIT);
-              end;
-            5:
-              if Q = 0 then
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_PUSH);
-                Metadata.Operands[0] := Byte(REGISTER_PAIRS_2[P]);
-              end
-              else
-                case P of
-                  0:
-                    begin
-                      Metadata.Opcode := Byte(CLOWNZ80_OPCODE_CALL_UNCONDITIONAL);
-                      Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_16_BIT);
-                    end;
-                  1:
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_DD_PREFIX);
-                  2:
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_ED_PREFIX);
-                  3:
-                    Metadata.Opcode := Byte(CLOWNZ80_OPCODE_FD_PREFIX);
-                end;
-            6:
-              begin
-                Metadata.Opcode := Byte(ARITHMETIC_LOGIC_OPCODES[Y]);
-                Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_LITERAL_8_BIT);
-              end;
-            7:
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_RST);
-                Metadata.EmbeddedLiteral := Byte(Mul32(Y, 8));
-              end;
-          end;
+  // Operand 0 is the source; operand 1 is the destination.
+  case Opcode of
+    $00:
+      Metadata.Opcode := CLOWNZ80_OPCODE_NOP;
+    $08:
+      Metadata.Opcode := CLOWNZ80_OPCODE_EX_AF_AF;
+    $10:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_DJNZ;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_8_BIT;
       end;
-    CLOWNZ80_INSTRUCTION_MODE_BITS:
-      case X of
-        0:
-          begin
-            Metadata.Opcode := Byte(ROTATE_SHIFT_OPCODES[Y]);
-            Metadata.Operands[1] := Byte(REGISTERS[Z]);
-          end;
-        1:
-          begin
-            Metadata.Opcode := Byte(CLOWNZ80_OPCODE_BIT);
-            Metadata.Operands[1] := Byte(REGISTERS[Z]);
-            Metadata.EmbeddedLiteral := Byte(1 shl Y);
-          end;
-        2:
-          begin
-            Metadata.Opcode := Byte(CLOWNZ80_OPCODE_RES);
-            Metadata.Operands[1] := Byte(REGISTERS[Z]);
-            Metadata.EmbeddedLiteral := Byte(not (1 shl Y));
-          end;
-        3:
-          begin
-            Metadata.Opcode := Byte(CLOWNZ80_OPCODE_SET);
-            Metadata.Operands[1] := Byte(REGISTERS[Z]);
-            Metadata.EmbeddedLiteral := Byte(1 shl Y);
-          end;
+    $18:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_JR_UNCONDITIONAL;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_8_BIT;
       end;
-    CLOWNZ80_INSTRUCTION_MODE_MISC:
-      case X of
-        0, 3:
-          Metadata.Opcode := Byte(CLOWNZ80_OPCODE_NOP);
-        1:
-          case Z of
-            0:
-              if Y <> 6 then
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_IN_REGISTER)
-              else
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_IN_NO_REGISTER);
-            1:
-              if Y <> 6 then
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_OUT_REGISTER)
-              else
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_OUT_NO_REGISTER);
-            2:
-              begin
-                if Q = 0 then
-                  Metadata.Opcode := Byte(CLOWNZ80_OPCODE_SBC_HL)
-                else
-                  Metadata.Opcode := Byte(CLOWNZ80_OPCODE_ADC_HL);
-                Metadata.Operands[0] := Byte(REGISTER_PAIRS_1[P]);
-                Metadata.Operands[1] := Byte(CLOWNZ80_OPERAND_HL);
-              end;
-            3:
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_LD_16_BIT);
-                if Q = 0 then
-                begin
-                  Metadata.Operands[0] := Byte(REGISTER_PAIRS_1[P]);
-                  Metadata.Operands[1] := Byte(CLOWNZ80_OPERAND_ADDRESS);
-                end
-                else
-                begin
-                  Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_ADDRESS);
-                  Metadata.Operands[1] := Byte(REGISTER_PAIRS_1[P]);
-                end;
-              end;
-            4:
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_NEG);
-                Metadata.Operands[0] := Byte(CLOWNZ80_OPERAND_A);
-                Metadata.Operands[1] := Byte(CLOWNZ80_OPERAND_A);
-              end;
-            5:
-              if Y <> 1 then
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_RETN)
-              else
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_RETI);
-            6:
-              begin
-                Metadata.Opcode := Byte(CLOWNZ80_OPCODE_IM);
-                Metadata.EmbeddedLiteral := Byte(INTERRUPT_MODES[(Y and 3)]);
-              end;
-            7:
-              begin
-                Metadata.Opcode := Byte(ASSORTED_OPCODES[Y]);
-              end;
-          end;
-        2:
-          if (Z <= 3) and (Y >= 4) then
-            Metadata.Opcode := Byte(BLOCK_OPCODES[Z][(Sub32(Y, 4))])
-          else
-            Metadata.Opcode := Byte(CLOWNZ80_OPCODE_NOP);
+    $20, $28, $30, $38: // JR cc, displacement
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_JR_CONDITIONAL;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_8_BIT;
+        Metadata.Condition := (Opcode - $20) shr 3;
+      end;
+    $01, $11, $21, $31: // LD rr, nn
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_16_BIT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_16_BIT;
+        Metadata.Operands[1] := DECODE_REGISTER_PAIRS[Opcode shr 4];
+      end;
+    $09, $19, $29, $39: // ADD HL, rr
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_ADD_HL;
+        Metadata.Operands[0] := DECODE_REGISTER_PAIRS[Opcode shr 4];
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_HL;
+      end;
+    $02:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_8_BIT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_A;
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_BC_INDIRECT;
+      end;
+    $12:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_8_BIT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_A;
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_DE_INDIRECT;
+      end;
+    $0A:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_8_BIT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_BC_INDIRECT;
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_A;
+      end;
+    $1A:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_8_BIT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_DE_INDIRECT;
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_A;
+      end;
+    $22:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_16_BIT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_HL;
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_ADDRESS;
+      end;
+    $2A:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_16_BIT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_ADDRESS;
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_HL;
+      end;
+    $32:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_8_BIT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_A;
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_ADDRESS;
+      end;
+    $3A:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_8_BIT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_ADDRESS;
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_A;
+      end;
+    $03, $13, $23, $33: // INC rr
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_INC_16_BIT;
+        Metadata.Operands[1] := DECODE_REGISTER_PAIRS[Opcode shr 4];
+      end;
+    $0B, $1B, $2B, $3B: // DEC rr
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_DEC_16_BIT;
+        Metadata.Operands[1] := DECODE_REGISTER_PAIRS[Opcode shr 4];
+      end;
+    $04, $0C, $14, $1C, $24, $2C, $34, $3C: // INC r
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_INC_8_BIT;
+        Metadata.Operands[1] := DECODE_REGISTERS[Opcode shr 3];
+      end;
+    $05, $0D, $15, $1D, $25, $2D, $35, $3D: // DEC r
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_DEC_8_BIT;
+        Metadata.Operands[1] := DECODE_REGISTERS[Opcode shr 3];
+      end;
+    $06, $0E, $16, $1E, $26, $2E, $36, $3E: // LD r, n
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_8_BIT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_8_BIT;
+        Metadata.Operands[1] := DECODE_REGISTERS[Opcode shr 3];
+      end;
+    $07:
+      Metadata.Opcode := CLOWNZ80_OPCODE_RLCA;
+    $0F:
+      Metadata.Opcode := CLOWNZ80_OPCODE_RRCA;
+    $17:
+      Metadata.Opcode := CLOWNZ80_OPCODE_RLA;
+    $1F:
+      Metadata.Opcode := CLOWNZ80_OPCODE_RRA;
+    $27:
+      Metadata.Opcode := CLOWNZ80_OPCODE_DAA;
+    $2F:
+      Metadata.Opcode := CLOWNZ80_OPCODE_CPL;
+    $37:
+      Metadata.Opcode := CLOWNZ80_OPCODE_SCF;
+    $3F:
+      Metadata.Opcode := CLOWNZ80_OPCODE_CCF;
+    $40..$75, $77..$7F: // LD r, r
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_8_BIT;
+        Metadata.Operands[0] := DECODE_REGISTERS[Opcode and $07];
+        Metadata.Operands[1] := DECODE_REGISTERS[(Opcode shr 3) and $07];
+      end;
+    $76:
+      Metadata.Opcode := CLOWNZ80_OPCODE_HALT;
+    $80..$BF: // ALU A, r
+      begin
+        Metadata.Opcode := ARITHMETIC_LOGIC_OPCODES[(Opcode shr 3) and $07];
+        Metadata.Operands[0] := DECODE_REGISTERS[Opcode and $07];
+      end;
+    $C0, $C8, $D0, $D8, $E0, $E8, $F0, $F8: // RET cc
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_RET_CONDITIONAL;
+        Metadata.Condition := (Opcode shr 3) and $07;
+      end;
+    $C1, $D1, $E1, $F1: // POP rr
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_POP;
+        Metadata.Operands[1] := STACK_REGISTER_PAIRS[(Opcode shr 4) and $03];
+      end;
+    $C9:
+      Metadata.Opcode := CLOWNZ80_OPCODE_RET_UNCONDITIONAL;
+    $D9:
+      Metadata.Opcode := CLOWNZ80_OPCODE_EXX;
+    $E9:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_JP_HL;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_HL;
+      end;
+    $F9:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_SP_HL;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_HL;
+      end;
+    $C2, $CA, $D2, $DA, $E2, $EA, $F2, $FA: // JP cc, nn
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_JP_CONDITIONAL;
+        Metadata.Condition := (Opcode shr 3) and $07;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_16_BIT;
+      end;
+    $C3:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_JP_UNCONDITIONAL;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_16_BIT;
+      end;
+    $CB:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_CB_PREFIX;
+        Metadata.HasDisplacement := Ord(RegisterMode <> CLOWNZ80_REGISTER_MODE_HL);
+      end;
+    $D3:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_OUT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_8_BIT;
+      end;
+    $DB:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_IN;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_8_BIT;
+      end;
+    $E3:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_EX_SP_HL;
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_HL;
+      end;
+    $EB:
+      Metadata.Opcode := CLOWNZ80_OPCODE_EX_DE_HL;
+    $F3:
+      Metadata.Opcode := CLOWNZ80_OPCODE_DI;
+    $FB:
+      Metadata.Opcode := CLOWNZ80_OPCODE_EI;
+    $C4, $CC, $D4, $DC, $E4, $EC, $F4, $FC: // CALL cc, nn
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_CALL_CONDITIONAL;
+        Metadata.Condition := (Opcode shr 3) and $07;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_16_BIT;
+      end;
+    $C5, $D5, $E5, $F5: // PUSH rr
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_PUSH;
+        Metadata.Operands[0] := STACK_REGISTER_PAIRS[(Opcode shr 4) and $03];
+      end;
+    $CD:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_CALL_UNCONDITIONAL;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_16_BIT;
+      end;
+    $DD:
+      Metadata.Opcode := CLOWNZ80_OPCODE_DD_PREFIX;
+    $ED:
+      Metadata.Opcode := CLOWNZ80_OPCODE_ED_PREFIX;
+    $FD:
+      Metadata.Opcode := CLOWNZ80_OPCODE_FD_PREFIX;
+    $C6, $CE, $D6, $DE, $E6, $EE, $F6, $FE: // ALU A, n
+      begin
+        Metadata.Opcode := ARITHMETIC_LOGIC_OPCODES[(Opcode shr 3) and $07];
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_LITERAL_8_BIT;
+      end;
+    $C7, $CF, $D7, $DF, $E7, $EF, $F7, $FF:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_RST;
+        Metadata.EmbeddedLiteral := Opcode and $38;
       end;
   end;
+end;
 
+procedure DecodeBitsInstructionMetadata(var Metadata: TZ80InstructionMetadata; Opcode: Byte);
+const
+  ROTATE_SHIFT_OPCODES: array[0..7] of Byte = (CLOWNZ80_OPCODE_RLC, CLOWNZ80_OPCODE_RRC, CLOWNZ80_OPCODE_RL, CLOWNZ80_OPCODE_RR, CLOWNZ80_OPCODE_SLA, CLOWNZ80_OPCODE_SRA, CLOWNZ80_OPCODE_SLL, CLOWNZ80_OPCODE_SRL);
+begin
+  Metadata.Operands[1] := DECODE_REGISTERS[Opcode and $07];
+  case Opcode of
+    $00..$3F:
+      Metadata.Opcode := ROTATE_SHIFT_OPCODES[Opcode shr 3];
+    $40..$7F:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_BIT;
+        Metadata.EmbeddedLiteral := 1 shl ((Opcode shr 3) and $07);
+      end;
+    $80..$BF:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_RES;
+        Metadata.EmbeddedLiteral := Byte(not (1 shl ((Opcode shr 3) and $07)));
+      end;
+    $C0..$FF:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_SET;
+        Metadata.EmbeddedLiteral := 1 shl ((Opcode shr 3) and $07);
+      end;
+  end;
+end;
+
+procedure DecodeMiscInstructionMetadata(var Metadata: TZ80InstructionMetadata; Opcode: Byte);
+begin
+  case Opcode of
+    $40, $48, $50, $58, $60, $68, $78:
+      Metadata.Opcode := CLOWNZ80_OPCODE_IN_REGISTER;
+    $70:
+      Metadata.Opcode := CLOWNZ80_OPCODE_IN_NO_REGISTER;
+    $41, $49, $51, $59, $61, $69, $79:
+      Metadata.Opcode := CLOWNZ80_OPCODE_OUT_REGISTER;
+    $71:
+      Metadata.Opcode := CLOWNZ80_OPCODE_OUT_NO_REGISTER;
+    $42, $52, $62, $72: // SBC HL, rr
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_SBC_HL;
+        Metadata.Operands[0] := DECODE_REGISTER_PAIRS[(Opcode shr 4) and $03];
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_HL;
+      end;
+    $4A, $5A, $6A, $7A: // ADC HL, rr
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_ADC_HL;
+        Metadata.Operands[0] := DECODE_REGISTER_PAIRS[(Opcode shr 4) and $03];
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_HL;
+      end;
+    $43, $53, $63, $73: // LD (nn), rr
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_16_BIT;
+        Metadata.Operands[0] := DECODE_REGISTER_PAIRS[(Opcode shr 4) and $03];
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_ADDRESS;
+      end;
+    $4B, $5B, $6B, $7B: // LD rr, (nn)
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_LD_16_BIT;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_ADDRESS;
+        Metadata.Operands[1] := DECODE_REGISTER_PAIRS[(Opcode shr 4) and $03];
+      end;
+    $44, $4C, $54, $5C, $64, $6C, $74, $7C:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_NEG;
+        Metadata.Operands[0] := CLOWNZ80_OPERAND_A;
+        Metadata.Operands[1] := CLOWNZ80_OPERAND_A;
+      end;
+    $45, $55, $5D, $65, $6D, $75, $7D:
+      Metadata.Opcode := CLOWNZ80_OPCODE_RETN;
+    $4D:
+      Metadata.Opcode := CLOWNZ80_OPCODE_RETI;
+    $46, $4E, $66, $6E:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_IM;
+        Metadata.EmbeddedLiteral := 0;
+      end;
+    $56, $76:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_IM;
+        Metadata.EmbeddedLiteral := 1;
+      end;
+    $5E, $7E:
+      begin
+        Metadata.Opcode := CLOWNZ80_OPCODE_IM;
+        Metadata.EmbeddedLiteral := 2;
+      end;
+    $47:
+      Metadata.Opcode := CLOWNZ80_OPCODE_LD_I_A;
+    $4F:
+      Metadata.Opcode := CLOWNZ80_OPCODE_LD_R_A;
+    $57:
+      Metadata.Opcode := CLOWNZ80_OPCODE_LD_A_I;
+    $5F:
+      Metadata.Opcode := CLOWNZ80_OPCODE_LD_A_R;
+    $67:
+      Metadata.Opcode := CLOWNZ80_OPCODE_RRD;
+    $6F:
+      Metadata.Opcode := CLOWNZ80_OPCODE_RLD;
+    $A0:
+      Metadata.Opcode := CLOWNZ80_OPCODE_LDI;
+    $A8:
+      Metadata.Opcode := CLOWNZ80_OPCODE_LDD;
+    $B0:
+      Metadata.Opcode := CLOWNZ80_OPCODE_LDIR;
+    $B8:
+      Metadata.Opcode := CLOWNZ80_OPCODE_LDDR;
+    $A1:
+      Metadata.Opcode := CLOWNZ80_OPCODE_CPI;
+    $A9:
+      Metadata.Opcode := CLOWNZ80_OPCODE_CPD;
+    $B1:
+      Metadata.Opcode := CLOWNZ80_OPCODE_CPIR;
+    $B9:
+      Metadata.Opcode := CLOWNZ80_OPCODE_CPDR;
+    $A2:
+      Metadata.Opcode := CLOWNZ80_OPCODE_INI;
+    $AA:
+      Metadata.Opcode := CLOWNZ80_OPCODE_IND;
+    $B2:
+      Metadata.Opcode := CLOWNZ80_OPCODE_INIR;
+    $BA:
+      Metadata.Opcode := CLOWNZ80_OPCODE_INDR;
+    $A3:
+      Metadata.Opcode := CLOWNZ80_OPCODE_OUTI;
+    $AB:
+      Metadata.Opcode := CLOWNZ80_OPCODE_OUTD;
+    $B3:
+      Metadata.Opcode := CLOWNZ80_OPCODE_OTIR;
+    $BB:
+      Metadata.Opcode := CLOWNZ80_OPCODE_OTDR;
+  else
+    Metadata.Opcode := CLOWNZ80_OPCODE_NOP;
+  end;
+end;
+
+procedure ApplyInstructionRegisterMode(var Metadata: TZ80InstructionMetadata; RegisterMode: Integer);
+begin
   for var i := 0 to 1 do
   begin
     var OtherOperand := i xor 1;
@@ -631,6 +663,22 @@ begin
         end;
     end;
   end;
+end;
+
+procedure DecodeInstructionMetadata(var Metadata: TZ80InstructionMetadata; InstructionMode: Integer; RegisterMode: Integer; Opcode: Byte);
+begin
+  Metadata.HasDisplacement := 0;
+  Metadata.Operands[0] := CLOWNZ80_OPERAND_NONE;
+  Metadata.Operands[1] := CLOWNZ80_OPERAND_NONE;
+  case InstructionMode of
+    CLOWNZ80_INSTRUCTION_MODE_NORMAL:
+      DecodeNormalInstructionMetadata(Metadata, RegisterMode, Opcode);
+    CLOWNZ80_INSTRUCTION_MODE_BITS:
+      DecodeBitsInstructionMetadata(Metadata, Opcode);
+    CLOWNZ80_INSTRUCTION_MODE_MISC:
+      DecodeMiscInstructionMetadata(Metadata, Opcode);
+  end;
+  ApplyInstructionRegisterMode(Metadata, RegisterMode);
 end;
 
 function EvaluateCondition(Flags: Byte; Condition: Integer): Boolean;

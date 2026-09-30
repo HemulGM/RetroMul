@@ -57,6 +57,16 @@ emulation continues without sound, with the reason available through `Audio.Erro
 
 Run the EXE and select `rom` in the dialog
 
+### ROMs folder
+```
+ROMS\
+  gb -> (gamelist.xml + *.gb)
+  gbc -> (gamelist.xml +*.gbc)
+  megadrive -> (gamelist.xml +*.gen, *.md, *.bin, *.smd)
+  nes -> (gamelist.xml +*.nes)
+```
+Use [Skraper](https://www.skraper.net) to create gamelist.xml and parsing your rom files (select RecalBox as platform)
+
 ## Game
 
 | Key | Action |

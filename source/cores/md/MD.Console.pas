@@ -88,28 +88,22 @@ uses
   System.Math;
 
 function CPURead(User: Pointer; Address: Cardinal; Hi, Lo: Byte; Cycle: Cardinal; Early: PByte): Cardinal;
-var
-  C: TMDConsole;
 begin
-  C := TMDConsole(User);
+  var C := TMDConsole(User);
   C.FBusTime := C.FCPUBase + Int64(Cycle) * 7;
   Result := C.ReadBus(Address * 2, Hi <> 0, Lo <> 0);
 end;
 
 procedure CPUWrite(User: Pointer; Address: Cardinal; Hi, Lo: Byte; Cycle: Cardinal; Early: PByte; Value: Cardinal);
-var
-  C: TMDConsole;
 begin
-  C := TMDConsole(User);
+  var C := TMDConsole(User);
   C.FBusTime := C.FCPUBase + Int64(Cycle) * 7;
   C.WriteBus(Address * 2, Word(Value), Hi <> 0, Lo <> 0);
 end;
 
 procedure CPUAck(User: Pointer);
-var
-  C: TMDConsole;
 begin
-  C := TMDConsole(User);
+  var C := TMDConsole(User);
   if C.FCPU.PendingInterrupt = 6 then
     C.FVInt := False
   else
@@ -129,10 +123,11 @@ end;
 
 procedure ColourUpdated(User: Pointer; Index, Colour: Cardinal);
 begin
-  if Index < 192 then
-    TMDConsole(User).FPalette[Index] := $FF000000 or
-      ((Colour and $F) * 17 shl 16) or (((Colour shr 4) and $F) * 17 shl 8) or
-      (((Colour shr 8) and $F) * 17);
+  if Index >= 192 then
+    Exit;
+  TMDConsole(User).FPalette[Index] := $FF000000 or
+    ((Colour and $F) * 17 shl 16) or (((Colour shr 4) and $F) * 17 shl 8) or
+    (((Colour shr 8) and $F) * 17);
 end;
 
 procedure ScanlineRendered(User: Pointer; Line: Cardinal; const Pixels: array of Byte; PixelOffset: Integer; Left, Right, Width, Height: Cardinal);

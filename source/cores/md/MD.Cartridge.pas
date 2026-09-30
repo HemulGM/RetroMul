@@ -74,10 +74,12 @@ begin
   end
   else
     FData := Copy(Data);
+
   if (Length(FData) < $200) or (Length(FData) > MaxROMSize) or Odd(Length(FData)) then
     raise EMDCartridge.Create('Invalid Mega Drive ROM size');
   if HeaderText($100, 4) <> 'SEGA' then
     raise EMDCartridge.Create('Mega Drive ROM has no SEGA header at $100');
+
   FTitle := HeaderText($150, 48);
   if FTitle = '' then
     FTitle := HeaderText($120, 48);

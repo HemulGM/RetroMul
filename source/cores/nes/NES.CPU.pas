@@ -451,15 +451,15 @@ begin
   var OldPc: UInt16;
   var NewPc: UInt16;
   Cycles := 2;
-  if Condition then
-  begin
+  if not Condition then
+    Exit;
+
+  Inc(Cycles);
+  OldPc := Pc;
+  NewPc := (Integer(Pc) + Offset) and $FFFF;
+  if (OldPc and $FF00) <> (NewPc and $FF00) then
     Inc(Cycles);
-    OldPc := Pc;
-    NewPc := (Integer(Pc) + Offset) and $FFFF;
-    if (OldPc and $FF00) <> (NewPc and $FF00) then
-      Inc(Cycles);
-    Pc := NewPc;
-  end;
+  Pc := NewPc;
 end;
 
 procedure TCpu6502.BeginInterruptSequence(Kind: TInterruptKind; BreakFlag: Boolean);
@@ -653,13 +653,6 @@ end;
 
 procedure TCpu6502.ExecuteOpcode(Opcode: UInt8);
 begin
-  var Addr: UInt16;
-  var Base: UInt16;
-  var Value: UInt8;
-  var Mask: UInt8;
-  var Ptr: UInt8;
-  var Offset: Int16;
-  var Carry: UInt8;
   var OpcodePc: UInt16 := Pc;
   Pc := (Pc + 1) and $FFFF;
   var PageCrossed: Boolean := False;
@@ -679,15 +672,13 @@ begin
       end;
     $01:
       begin
-        Addr := Izx;
-        A := A or Read(Addr);
+        A := A or Read(Izx);
         SetZeroNegative(A);
         Cycles := 6;
       end;
     $03:
       begin
-        Addr := Izx;
-        OpSlo(Addr);
+        OpSlo(Izx);
         Cycles := 8;
       end;
     $04, $44, $64:
@@ -697,21 +688,19 @@ begin
       end;
     $05:
       begin
-        Addr := Zp0;
-        A := A or Read(Addr);
+        A := A or Read(Zp0);
         SetZeroNegative(A);
         Cycles := 3;
       end;
     $07:
       begin
-        Addr := Zp0;
-        OpSlo(Addr);
+        OpSlo(Zp0);
         Cycles := 5;
       end;
     $06:
       begin
-        Addr := Zp0;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zp0;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         SetFlag(FLAG_CARRY, (Value and $80) <> 0);
         Value := (Value shl 1) and $FF;
@@ -726,14 +715,12 @@ begin
       end;
     $0B, $2B:
       begin
-        Addr := Imm;
-        Anc(Read(Addr));
+        Anc(Read(Imm));
         Cycles := 2;
       end;
     $09:
       begin
-        Addr := Imm;
-        A := A or Read(Addr);
+        A := A or Read(Imm);
         SetZeroNegative(A);
         Cycles := 2;
       end;
@@ -751,15 +738,14 @@ begin
       end;
     $0D:
       begin
-        Addr := AbsAddr;
-        A := A or Read(Addr);
+        A := A or Read(AbsAddr);
         SetZeroNegative(A);
         Cycles := 4;
       end;
     $0E:
       begin
-        Addr := AbsAddr;
-        Value := Read(Addr);
+        var Addr: UInt16 := AbsAddr;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         SetFlag(FLAG_CARRY, (Value and $80) <> 0);
         Value := (Value shl 1) and $FF;
@@ -769,26 +755,22 @@ begin
       end;
     $0F:
       begin
-        Addr := AbsAddr;
-        OpSlo(Addr);
+        OpSlo(AbsAddr);
         Cycles := 6;
       end;
     $10:
       begin
-        Offset := Rel;
-        Branch(not GetFlag(FLAG_NEGATIVE), Offset, Cycles);
+        Branch(not GetFlag(FLAG_NEGATIVE), Rel, Cycles);
       end;
     $11:
       begin
-        Addr := Izy(PageCrossed);
-        A := A or Read(Addr);
+        A := A or Read(Izy(PageCrossed));
         SetZeroNegative(A);
         Cycles := 5 + Ord(PageCrossed);
       end;
     $13:
       begin
-        Addr := Izy(PageCrossed);
-        OpSlo(Addr);
+        OpSlo(Izy(PageCrossed));
         Cycles := 8;
       end;
     $14, $34, $54, $74, $D4, $F4:
@@ -798,15 +780,14 @@ begin
       end;
     $15:
       begin
-        Addr := Zpx;
-        A := A or Read(Addr);
+        A := A or Read(Zpx);
         SetZeroNegative(A);
         Cycles := 4;
       end;
     $16:
       begin
-        Addr := Zpx;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zpx;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         SetFlag(FLAG_CARRY, (Value and $80) <> 0);
         Value := (Value shl 1) and $FF;
@@ -816,8 +797,7 @@ begin
       end;
     $17:
       begin
-        Addr := Zpx;
-        OpSlo(Addr);
+        OpSlo(Zpx);
         Cycles := 6;
       end;
     $18:
@@ -827,15 +807,13 @@ begin
       end;
     $19:
       begin
-        Addr := Aby(PageCrossed);
-        A := A or Read(Addr);
+        A := A or Read(Aby(PageCrossed));
         SetZeroNegative(A);
         Cycles := 4 + Ord(PageCrossed);
       end;
     $1B:
       begin
-        Addr := Aby(PageCrossed);
-        OpSlo(Addr);
+        OpSlo(Aby(PageCrossed));
         Cycles := 7;
       end;
     $1A, $3A, $5A, $7A, $DA, $FA:
@@ -849,21 +827,19 @@ begin
       end;
     $1D:
       begin
-        Addr := Abx(PageCrossed);
-        A := A or Read(Addr);
+        A := A or Read(Abx(PageCrossed));
         SetZeroNegative(A);
         Cycles := 4 + Ord(PageCrossed);
       end;
     $1F:
       begin
-        Addr := Abx(PageCrossed);
-        OpSlo(Addr);
+        OpSlo(Abx(PageCrossed));
         Cycles := 7;
       end;
     $1E:
       begin
-        Addr := Abx(PageCrossed);
-        Value := Read(Addr);
+        var Addr: UInt16 := Abx(PageCrossed);
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         SetFlag(FLAG_CARRY, (Value and $80) <> 0);
         Value := (Value shl 1) and $FF;
@@ -873,7 +849,7 @@ begin
       end;
     $20:
       begin
-        Addr := AbsAddr;
+        var Addr: UInt16 := AbsAddr;
         Push((((Integer(Pc) - 1) and $FFFF) shr 8) and $FF);
         Push((Integer(Pc) - 1) and $FF);
         Pc := Addr;
@@ -881,42 +857,37 @@ begin
       end;
     $21:
       begin
-        Addr := Izx;
-        A := A and Read(Addr);
+        A := A and Read(Izx);
         SetZeroNegative(A);
         Cycles := 6;
       end;
     $23:
       begin
-        Addr := Izx;
-        OpRla(Addr);
+        OpRla(Izx);
         Cycles := 8;
       end;
     $24:
       begin
-        Addr := Zp0;
-        Bit(Read(Addr));
+        Bit(Read(Zp0));
         Cycles := 3;
       end;
     $25:
       begin
-        Addr := Zp0;
-        A := A and Read(Addr);
+        A := A and Read(Zp0);
         SetZeroNegative(A);
         Cycles := 3;
       end;
     $27:
       begin
-        Addr := Zp0;
-        OpRla(Addr);
+        OpRla(Zp0);
         Cycles := 5;
       end;
     $26:
       begin
-        Addr := Zp0;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zp0;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
-        Carry := Ord(GetFlag(FLAG_CARRY));
+        var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
         SetFlag(FLAG_CARRY, (Value and $80) <> 0);
         Value := ((Value shl 1) or Carry) and $FF;
         Write(Addr, Value);
@@ -931,14 +902,13 @@ begin
       end;
     $29:
       begin
-        Addr := Imm;
-        A := A and Read(Addr);
+        A := A and Read(Imm);
         SetZeroNegative(A);
         Cycles := 2;
       end;
     $2A:
       begin
-        Carry := Ord(GetFlag(FLAG_CARRY));
+        var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
         SetFlag(FLAG_CARRY, (A and $80) <> 0);
         A := ((A shl 1) or Carry) and $FF;
         SetZeroNegative(A);
@@ -946,23 +916,21 @@ begin
       end;
     $2C:
       begin
-        Addr := AbsAddr;
-        Bit(Read(Addr));
+        Bit(Read(AbsAddr));
         Cycles := 4;
       end;
     $2D:
       begin
-        Addr := AbsAddr;
-        A := A and Read(Addr);
+        A := A and Read(AbsAddr);
         SetZeroNegative(A);
         Cycles := 4;
       end;
     $2E:
       begin
-        Addr := AbsAddr;
-        Value := Read(Addr);
+        var Addr: UInt16 := AbsAddr;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
-        Carry := Ord(GetFlag(FLAG_CARRY));
+        var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
         SetFlag(FLAG_CARRY, (Value and $80) <> 0);
         Value := ((Value shl 1) or Carry) and $FF;
         Write(Addr, Value);
@@ -971,41 +939,36 @@ begin
       end;
     $2F:
       begin
-        Addr := AbsAddr;
-        OpRla(Addr);
+        OpRla(AbsAddr);
         Cycles := 6;
       end;
     $30:
       begin
-        Offset := Rel;
-        Branch(GetFlag(FLAG_NEGATIVE), Offset, Cycles);
+        Branch(GetFlag(FLAG_NEGATIVE), Rel, Cycles);
       end;
     $31:
       begin
-        Addr := Izy(PageCrossed);
-        A := A and Read(Addr);
+        A := A and Read(Izy(PageCrossed));
         SetZeroNegative(A);
         Cycles := 5 + Ord(PageCrossed);
       end;
     $33:
       begin
-        Addr := Izy(PageCrossed);
-        OpRla(Addr);
+        OpRla(Izy(PageCrossed));
         Cycles := 8;
       end;
     $35:
       begin
-        Addr := Zpx;
-        A := A and Read(Addr);
+        A := A and Read(Zpx);
         SetZeroNegative(A);
         Cycles := 4;
       end;
     $36:
       begin
-        Addr := Zpx;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zpx;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
-        Carry := Ord(GetFlag(FLAG_CARRY));
+        var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
         SetFlag(FLAG_CARRY, (Value and $80) <> 0);
         Value := ((Value shl 1) or Carry) and $FF;
         Write(Addr, Value);
@@ -1014,8 +977,7 @@ begin
       end;
     $37:
       begin
-        Addr := Zpx;
-        OpRla(Addr);
+        OpRla(Zpx);
         Cycles := 6;
       end;
     $38:
@@ -1025,36 +987,32 @@ begin
       end;
     $39:
       begin
-        Addr := Aby(PageCrossed);
-        A := A and Read(Addr);
+        A := A and Read(Aby(PageCrossed));
         SetZeroNegative(A);
         Cycles := 4 + Ord(PageCrossed);
       end;
     $3B:
       begin
-        Addr := Aby(PageCrossed);
-        OpRla(Addr);
+        OpRla(Aby(PageCrossed));
         Cycles := 7;
       end;
     $3D:
       begin
-        Addr := Abx(PageCrossed);
-        A := A and Read(Addr);
+        A := A and Read(Abx(PageCrossed));
         SetZeroNegative(A);
         Cycles := 4 + Ord(PageCrossed);
       end;
     $3F:
       begin
-        Addr := Abx(PageCrossed);
-        OpRla(Addr);
+        OpRla(Abx(PageCrossed));
         Cycles := 7;
       end;
     $3E:
       begin
-        Addr := Abx(PageCrossed);
-        Value := Read(Addr);
+        var Addr: UInt16 := Abx(PageCrossed);
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
-        Carry := Ord(GetFlag(FLAG_CARRY));
+        var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
         SetFlag(FLAG_CARRY, (Value and $80) <> 0);
         Value := ((Value shl 1) or Carry) and $FF;
         Write(Addr, Value);
@@ -1065,7 +1023,7 @@ begin
       begin
         P := Pull;
         P := (P or FLAG_UNUSED) and not FLAG_BREAK;
-        Value := Pull;
+        var Value: UInt8 := Pull;
         Pc := Value;
         Value := Pull;
         Pc := Pc or (UInt16(Value) shl 8);
@@ -1073,34 +1031,30 @@ begin
       end;
     $41:
       begin
-        Addr := Izx;
-        A := A xor Read(Addr);
+        A := A xor Read(Izx);
         SetZeroNegative(A);
         Cycles := 6;
       end;
     $43:
       begin
-        Addr := Izx;
-        OpSre(Addr);
+        OpSre(Izx);
         Cycles := 8;
       end;
     $45:
       begin
-        Addr := Zp0;
-        A := A xor Read(Addr);
+        A := A xor Read(Zp0);
         SetZeroNegative(A);
         Cycles := 3;
       end;
     $47:
       begin
-        Addr := Zp0;
-        OpSre(Addr);
+        OpSre(Zp0);
         Cycles := 5;
       end;
     $46:
       begin
-        Addr := Zp0;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zp0;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         SetFlag(FLAG_CARRY, (Value and 1) <> 0);
         Value := Value shr 1;
@@ -1115,15 +1069,13 @@ begin
       end;
     $49:
       begin
-        Addr := Imm;
-        A := A xor Read(Addr);
+        A := A xor Read(Imm);
         SetZeroNegative(A);
         Cycles := 2;
       end;
     $4B:
       begin
-        Addr := Imm;
-        Alr(Read(Addr));
+        Alr(Read(Imm));
         Cycles := 2;
       end;
     $4A:
@@ -1140,15 +1092,14 @@ begin
       end;
     $4D:
       begin
-        Addr := AbsAddr;
-        A := A xor Read(Addr);
+        A := A xor Read(AbsAddr);
         SetZeroNegative(A);
         Cycles := 4;
       end;
     $4E:
       begin
-        Addr := AbsAddr;
-        Value := Read(Addr);
+        var Addr: UInt16 := AbsAddr;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         SetFlag(FLAG_CARRY, (Value and 1) <> 0);
         Value := Value shr 1;
@@ -1158,39 +1109,34 @@ begin
       end;
     $4F:
       begin
-        Addr := AbsAddr;
-        OpSre(Addr);
+        OpSre(AbsAddr);
         Cycles := 6;
       end;
     $50:
       begin
-        Offset := Rel;
-        Branch(not GetFlag(FLAG_OVERFLOW), Offset, Cycles);
+        Branch(not GetFlag(FLAG_OVERFLOW), Rel, Cycles);
       end;
     $51:
       begin
-        Addr := Izy(PageCrossed);
-        A := A xor Read(Addr);
+        A := A xor Read(Izy(PageCrossed));
         SetZeroNegative(A);
         Cycles := 5 + Ord(PageCrossed);
       end;
     $53:
       begin
-        Addr := Izy(PageCrossed);
-        OpSre(Addr);
+        OpSre(Izy(PageCrossed));
         Cycles := 8;
       end;
     $55:
       begin
-        Addr := Zpx;
-        A := A xor Read(Addr);
+        A := A xor Read(Zpx);
         SetZeroNegative(A);
         Cycles := 4;
       end;
     $56:
       begin
-        Addr := Zpx;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zpx;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         SetFlag(FLAG_CARRY, (Value and 1) <> 0);
         Value := Value shr 1;
@@ -1200,8 +1146,7 @@ begin
       end;
     $57:
       begin
-        Addr := Zpx;
-        OpSre(Addr);
+        OpSre(Zpx);
         Cycles := 6;
       end;
     $58:
@@ -1211,34 +1156,30 @@ begin
       end;
     $59:
       begin
-        Addr := Aby(PageCrossed);
-        A := A xor Read(Addr);
+        A := A xor Read(Aby(PageCrossed));
         SetZeroNegative(A);
         Cycles := 4 + Ord(PageCrossed);
       end;
     $5B:
       begin
-        Addr := Aby(PageCrossed);
-        OpSre(Addr);
+        OpSre(Aby(PageCrossed));
         Cycles := 7;
       end;
     $5D:
       begin
-        Addr := Abx(PageCrossed);
-        A := A xor Read(Addr);
+        A := A xor Read(Abx(PageCrossed));
         SetZeroNegative(A);
         Cycles := 4 + Ord(PageCrossed);
       end;
     $5F:
       begin
-        Addr := Abx(PageCrossed);
-        OpSre(Addr);
+        OpSre(Abx(PageCrossed));
         Cycles := 7;
       end;
     $5E:
       begin
-        Addr := Abx(PageCrossed);
-        Value := Read(Addr);
+        var Addr: UInt16 := Abx(PageCrossed);
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         SetFlag(FLAG_CARRY, (Value and 1) <> 0);
         Value := Value shr 1;
@@ -1248,7 +1189,7 @@ begin
       end;
     $60:
       begin
-        Value := Pull;
+        var Value: UInt8 := Pull;
         Pc := Value;
         Value := Pull;
         Pc := Pc or (UInt16(Value) shl 8);
@@ -1257,34 +1198,30 @@ begin
       end;
     $61:
       begin
-        Addr := Izx;
-        Adc(Read(Addr));
+        Adc(Read(Izx));
         Cycles := 6;
       end;
     $63:
       begin
-        Addr := Izx;
-        OpRra(Addr);
+        OpRra(Izx);
         Cycles := 8;
       end;
     $65:
       begin
-        Addr := Zp0;
-        Adc(Read(Addr));
+        Adc(Read(Zp0));
         Cycles := 3;
       end;
     $67:
       begin
-        Addr := Zp0;
-        OpRra(Addr);
+        OpRra(Zp0);
         Cycles := 5;
       end;
     $66:
       begin
-        Addr := Zp0;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zp0;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
-        Carry := Ord(GetFlag(FLAG_CARRY));
+        var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
         SetFlag(FLAG_CARRY, (Value and 1) <> 0);
         Value := (Value shr 1) or (Carry shl 7);
         Write(Addr, Value);
@@ -1299,19 +1236,17 @@ begin
       end;
     $69:
       begin
-        Addr := Imm;
-        Adc(Read(Addr));
+        Adc(Read(Imm));
         Cycles := 2;
       end;
     $6B:
       begin
-        Addr := Imm;
-        Arr(Read(Addr));
+        Arr(Read(Imm));
         Cycles := 2;
       end;
     $6A:
       begin
-        Carry := Ord(GetFlag(FLAG_CARRY));
+        var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
         SetFlag(FLAG_CARRY, (A and 1) <> 0);
         A := (A shr 1) or (Carry shl 7);
         SetZeroNegative(A);
@@ -1324,16 +1259,15 @@ begin
       end;
     $6D:
       begin
-        Addr := AbsAddr;
-        Adc(Read(Addr));
+        Adc(Read(AbsAddr));
         Cycles := 4;
       end;
     $6E:
       begin
-        Addr := AbsAddr;
-        Value := Read(Addr);
+        var Addr: UInt16 := AbsAddr;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
-        Carry := Ord(GetFlag(FLAG_CARRY));
+        var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
         SetFlag(FLAG_CARRY, (Value and 1) <> 0);
         Value := (Value shr 1) or (Carry shl 7);
         Write(Addr, Value);
@@ -1342,39 +1276,34 @@ begin
       end;
     $6F:
       begin
-        Addr := AbsAddr;
-        OpRra(Addr);
+        OpRra(AbsAddr);
         Cycles := 6;
       end;
     $70:
       begin
-        Offset := Rel;
-        Branch(GetFlag(FLAG_OVERFLOW), Offset, Cycles);
+        Branch(GetFlag(FLAG_OVERFLOW), Rel, Cycles);
       end;
     $71:
       begin
-        Addr := Izy(PageCrossed);
-        Adc(Read(Addr));
+        Adc(Read(Izy(PageCrossed)));
         Cycles := 5 + Ord(PageCrossed);
       end;
     $73:
       begin
-        Addr := Izy(PageCrossed);
-        OpRra(Addr);
+        OpRra(Izy(PageCrossed));
         Cycles := 8;
       end;
     $75:
       begin
-        Addr := Zpx;
-        Adc(Read(Addr));
+        Adc(Read(Zpx));
         Cycles := 4;
       end;
     $76:
       begin
-        Addr := Zpx;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zpx;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
-        Carry := Ord(GetFlag(FLAG_CARRY));
+        var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
         SetFlag(FLAG_CARRY, (Value and 1) <> 0);
         Value := (Value shr 1) or (Carry shl 7);
         Write(Addr, Value);
@@ -1383,8 +1312,7 @@ begin
       end;
     $77:
       begin
-        Addr := Zpx;
-        OpRra(Addr);
+        OpRra(Zpx);
         Cycles := 6;
       end;
     $78:
@@ -1394,34 +1322,30 @@ begin
       end;
     $79:
       begin
-        Addr := Aby(PageCrossed);
-        Adc(Read(Addr));
+        Adc(Read(Aby(PageCrossed)));
         Cycles := 4 + Ord(PageCrossed);
       end;
     $7B:
       begin
-        Addr := Aby(PageCrossed);
-        OpRra(Addr);
+        OpRra(Aby(PageCrossed));
         Cycles := 7;
       end;
     $7D:
       begin
-        Addr := Abx(PageCrossed);
-        Adc(Read(Addr));
+        Adc(Read(Abx(PageCrossed)));
         Cycles := 4 + Ord(PageCrossed);
       end;
     $7F:
       begin
-        Addr := Abx(PageCrossed);
-        OpRra(Addr);
+        OpRra(Abx(PageCrossed));
         Cycles := 7;
       end;
     $7E:
       begin
-        Addr := Abx(PageCrossed);
-        Value := Read(Addr);
+        var Addr: UInt16 := Abx(PageCrossed);
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
-        Carry := Ord(GetFlag(FLAG_CARRY));
+        var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
         SetFlag(FLAG_CARRY, (Value and 1) <> 0);
         Value := (Value shr 1) or (Carry shl 7);
         Write(Addr, Value);
@@ -1435,38 +1359,32 @@ begin
       end;
     $81:
       begin
-        Addr := Izx;
-        Write(Addr, A);
+        Write(Izx, A);
         Cycles := 6;
       end;
     $83:
       begin
-        Addr := Izx;
-        Write(Addr, A and X);
+        Write(Izx, A and X);
         Cycles := 6;
       end;
     $84:
       begin
-        Addr := Zp0;
-        Write(Addr, Y);
+        Write(Zp0, Y);
         Cycles := 3;
       end;
     $85:
       begin
-        Addr := Zp0;
-        Write(Addr, A);
+        Write(Zp0, A);
         Cycles := 3;
       end;
     $86:
       begin
-        Addr := Zp0;
-        Write(Addr, X);
+        Write(Zp0, X);
         Cycles := 3;
       end;
     $87:
       begin
-        Addr := Zp0;
-        Write(Addr, A and X);
+        Write(Zp0, A and X);
         Cycles := 3;
       end;
     $88:
@@ -1483,53 +1401,46 @@ begin
       end;
     $8B:
       begin
-        Addr := Imm;
-        Atx(Read(Addr));
+        Atx(Read(Imm));
         Cycles := 2;
       end;
     $8C:
       begin
-        Addr := AbsAddr;
-        Write(Addr, Y);
+        Write(AbsAddr, Y);
         Cycles := 4;
       end;
     $8D:
       begin
-        Addr := AbsAddr;
-        Write(Addr, A);
+        Write(AbsAddr, A);
         Cycles := 4;
       end;
     $8E:
       begin
-        Addr := AbsAddr;
-        Write(Addr, X);
+        Write(AbsAddr, X);
         Cycles := 4;
       end;
     $8F:
       begin
-        Addr := AbsAddr;
-        Write(Addr, A and X);
+        Write(AbsAddr, A and X);
         Cycles := 4;
       end;
     $90:
       begin
-        Offset := Rel;
-        Branch(not GetFlag(FLAG_CARRY), Offset, Cycles);
+        Branch(not GetFlag(FLAG_CARRY), Rel, Cycles);
       end;
     $91:
       begin
-        Addr := Izy(PageCrossed);
-        Write(Addr, A);
+        Write(Izy(PageCrossed), A);
         Cycles := 6;
       end;
     $93:
       begin
-        Ptr := Read(Pc);
+        var Ptr: UInt8 := Read(Pc);
         Pc := (Pc + 1) and $FFFF;
-        Value := Read(Ptr);
-        Mask := Read((Ptr + 1) and $FF);
-        Base := Value or (UInt16(Mask) shl 8);
-        Addr := (Base + Y) and $FFFF;
+        var Value: UInt8 := Read(Ptr);
+        var Mask: UInt8 := Read((Ptr + 1) and $FF);
+        var Base: UInt16 := Value or (UInt16(Mask) shl 8);
+        var Addr: UInt16 := (Base + Y) and $FFFF;
         Mask := A and X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
@@ -1538,26 +1449,22 @@ begin
       end;
     $94:
       begin
-        Addr := Zpx;
-        Write(Addr, Y);
+        Write(Zpx, Y);
         Cycles := 4;
       end;
     $95:
       begin
-        Addr := Zpx;
-        Write(Addr, A);
+        Write(Zpx, A);
         Cycles := 4;
       end;
     $96:
       begin
-        Addr := Zpy;
-        Write(Addr, X);
+        Write(Zpy, X);
         Cycles := 4;
       end;
     $97:
       begin
-        Addr := Zpy;
-        Write(Addr, A and X);
+        Write(Zpy, A and X);
         Cycles := 4;
       end;
     $98:
@@ -1568,16 +1475,15 @@ begin
       end;
     $99:
       begin
-        Addr := Aby(PageCrossed);
-        Write(Addr, A);
+        Write(Aby(PageCrossed), A);
         Cycles := 5;
       end;
     $9B:
       begin
-        Base := AbsAddr;
-        Addr := (Base + Y) and $FFFF;
+        var Base: UInt16 := AbsAddr;
+        var Addr: UInt16 := (Base + Y) and $FFFF;
         Sp := A and X;
-        Mask := Sp and UInt8((((Base shr 8) + 1) and $FF));
+        var Mask: UInt8 := Sp and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
         Write(Addr, Mask);
@@ -1585,9 +1491,9 @@ begin
       end;
     $9C:
       begin
-        Base := AbsAddr;
-        Addr := (Base + X) and $FFFF;
-        Mask := Y and UInt8((((Base shr 8) + 1) and $FF));
+        var Base: UInt16 := AbsAddr;
+        var Addr: UInt16 := (Base + X) and $FFFF;
+        var Mask: UInt8 := Y and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
         Write(Addr, Mask);
@@ -1600,15 +1506,14 @@ begin
       end;
     $9D:
       begin
-        Addr := Abx(PageCrossed);
-        Write(Addr, A);
+        Write(Abx(PageCrossed), A);
         Cycles := 5;
       end;
     $9E:
       begin
-        Base := AbsAddr;
-        Addr := (Base + Y) and $FFFF;
-        Mask := X and UInt8((((Base shr 8) + 1) and $FF));
+        var Base: UInt16 := AbsAddr;
+        var Addr: UInt16 := (Base + Y) and $FFFF;
+        var Mask: UInt8 := X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
         Write(Addr, Mask);
@@ -1616,9 +1521,9 @@ begin
       end;
     $9F:
       begin
-        Base := AbsAddr;
-        Addr := (Base + Y) and $FFFF;
-        Mask := A and X and UInt8((((Base shr 8) + 1) and $FF));
+        var Base: UInt16 := AbsAddr;
+        var Addr: UInt16 := (Base + Y) and $FFFF;
+        var Mask: UInt8 := A and X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
         Write(Addr, Mask);
@@ -1626,56 +1531,48 @@ begin
       end;
     $A0:
       begin
-        Addr := Imm;
-        Y := Read(Addr);
+        Y := Read(Imm);
         SetZeroNegative(Y);
         Cycles := 2;
       end;
     $A1:
       begin
-        Addr := Izx;
-        A := Read(Addr);
+        A := Read(Izx);
         SetZeroNegative(A);
         Cycles := 6;
       end;
     $A3:
       begin
-        Addr := Izx;
-        LaxValue(Read(Addr));
+        LaxValue(Read(Izx));
         Cycles := 6;
       end;
     $A2:
       begin
-        Addr := Imm;
-        X := Read(Addr);
+        X := Read(Imm);
         SetZeroNegative(X);
         Cycles := 2;
       end;
     $A4:
       begin
-        Addr := Zp0;
-        Y := Read(Addr);
+        Y := Read(Zp0);
         SetZeroNegative(Y);
         Cycles := 3;
       end;
     $A5:
       begin
-        Addr := Zp0;
-        A := Read(Addr);
+        A := Read(Zp0);
         SetZeroNegative(A);
         Cycles := 3;
       end;
     $A6:
       begin
-        Addr := Zp0;
-        X := Read(Addr);
+        X := Read(Zp0);
         SetZeroNegative(X);
         Cycles := 3;
       end;
     $A7:
       begin
-        Addr := Zp0;
-        LaxValue(Read(Addr));
+        LaxValue(Read(Zp0));
         Cycles := 3;
       end;
     $A8:
@@ -1686,15 +1583,13 @@ begin
       end;
     $A9:
       begin
-        Addr := Imm;
-        A := Read(Addr);
+        A := Read(Imm);
         SetZeroNegative(A);
         Cycles := 2;
       end;
     $AB:
       begin
-        Addr := Imm;
-        Atx(Read(Addr));
+        Atx(Read(Imm));
         Cycles := 2;
       end;
     $AA:
@@ -1705,74 +1600,63 @@ begin
       end;
     $AC:
       begin
-        Addr := AbsAddr;
-        Y := Read(Addr);
+        Y := Read(AbsAddr);
         SetZeroNegative(Y);
         Cycles := 4;
       end;
     $AD:
       begin
-        Addr := AbsAddr;
-        A := Read(Addr);
+        A := Read(AbsAddr);
         SetZeroNegative(A);
         Cycles := 4;
       end;
     $AE:
       begin
-        Addr := AbsAddr;
-        X := Read(Addr);
+        X := Read(AbsAddr);
         SetZeroNegative(X);
         Cycles := 4;
       end;
     $AF:
       begin
-        Addr := AbsAddr;
-        LaxValue(Read(Addr));
+        LaxValue(Read(AbsAddr));
         Cycles := 4;
       end;
     $B0:
       begin
-        Offset := Rel;
-        Branch(GetFlag(FLAG_CARRY), Offset, Cycles);
+        Branch(GetFlag(FLAG_CARRY), Rel, Cycles);
       end;
     $B1:
       begin
-        Addr := Izy(PageCrossed);
-        A := Read(Addr);
+        A := Read(Izy(PageCrossed));
         SetZeroNegative(A);
         Cycles := 5 + Ord(PageCrossed);
       end;
     $B3:
       begin
-        Addr := Izy(PageCrossed);
-        LaxValue(Read(Addr));
+        LaxValue(Read(Izy(PageCrossed)));
         Cycles := 5 + Ord(PageCrossed);
       end;
     $B4:
       begin
-        Addr := Zpx;
-        Y := Read(Addr);
+        Y := Read(Zpx);
         SetZeroNegative(Y);
         Cycles := 4;
       end;
     $B5:
       begin
-        Addr := Zpx;
-        A := Read(Addr);
+        A := Read(Zpx);
         SetZeroNegative(A);
         Cycles := 4;
       end;
     $B6:
       begin
-        Addr := Zpy;
-        X := Read(Addr);
+        X := Read(Zpy);
         SetZeroNegative(X);
         Cycles := 4;
       end;
     $B7:
       begin
-        Addr := Zpy;
-        LaxValue(Read(Addr));
+        LaxValue(Read(Zpy));
         Cycles := 4;
       end;
     $B8:
@@ -1782,8 +1666,7 @@ begin
       end;
     $B9:
       begin
-        Addr := Aby(PageCrossed);
-        A := Read(Addr);
+        A := Read(Aby(PageCrossed));
         SetZeroNegative(A);
         Cycles := 4 + Ord(PageCrossed);
       end;
@@ -1795,8 +1678,7 @@ begin
       end;
     $BB:
       begin
-        Addr := Aby(PageCrossed);
-        Value := Read(Addr) and Sp;
+        var Value: UInt8 := Read(Aby(PageCrossed)) and Sp;
         A := Value;
         X := Value;
         Sp := Value;
@@ -1805,65 +1687,56 @@ begin
       end;
     $BC:
       begin
-        Addr := Abx(PageCrossed);
-        Y := Read(Addr);
+        Y := Read(Abx(PageCrossed));
         SetZeroNegative(Y);
         Cycles := 4 + Ord(PageCrossed);
       end;
     $BD:
       begin
-        Addr := Abx(PageCrossed);
-        A := Read(Addr);
+        A := Read(Abx(PageCrossed));
         SetZeroNegative(A);
         Cycles := 4 + Ord(PageCrossed);
       end;
     $BE:
       begin
-        Addr := Aby(PageCrossed);
-        X := Read(Addr);
+        X := Read(Aby(PageCrossed));
         SetZeroNegative(X);
         Cycles := 4 + Ord(PageCrossed);
       end;
     $BF:
       begin
-        Addr := Aby(PageCrossed);
-        LaxValue(Read(Addr));
+        LaxValue(Read(Aby(PageCrossed)));
         Cycles := 4 + Ord(PageCrossed);
       end;
     $C0:
       begin
-        Addr := Imm;
-        Cmp(Y, Read(Addr));
+        Cmp(Y, Read(Imm));
         Cycles := 2;
       end;
     $C1:
       begin
-        Addr := Izx;
-        Cmp(A, Read(Addr));
+        Cmp(A, Read(Izx));
         Cycles := 6;
       end;
     $C3:
       begin
-        Addr := Izx;
-        OpDcp(Addr);
+        OpDcp(Izx);
         Cycles := 8;
       end;
     $C4:
       begin
-        Addr := Zp0;
-        Cmp(Y, Read(Addr));
+        Cmp(Y, Read(Zp0));
         Cycles := 3;
       end;
     $C5:
       begin
-        Addr := Zp0;
-        Cmp(A, Read(Addr));
+        Cmp(A, Read(Zp0));
         Cycles := 3;
       end;
     $C6:
       begin
-        Addr := Zp0;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zp0;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         Value := (Integer(Value) - 1) and $FF;
         Write(Addr, Value);
@@ -1872,8 +1745,7 @@ begin
       end;
     $C7:
       begin
-        Addr := Zp0;
-        OpDcp(Addr);
+        OpDcp(Zp0);
         Cycles := 5;
       end;
     $C8:
@@ -1884,8 +1756,7 @@ begin
       end;
     $C9:
       begin
-        Addr := Imm;
-        Cmp(A, Read(Addr));
+        Cmp(A, Read(Imm));
         Cycles := 2;
       end;
     $CA:
@@ -1896,9 +1767,8 @@ begin
       end;
     $CB:
       begin
-        Addr := Imm;
-        Value := Read(Addr);
-        Carry := A and X;
+        var Value: UInt8 := Read(Imm);
+        var Carry: UInt8 := A and X;
         SetFlag(FLAG_CARRY, Carry >= Value);
         X := (Integer(Carry) - Integer(Value)) and $FF;
         SetZeroNegative(X);
@@ -1906,20 +1776,18 @@ begin
       end;
     $CC:
       begin
-        Addr := AbsAddr;
-        Cmp(Y, Read(Addr));
+        Cmp(Y, Read(AbsAddr));
         Cycles := 4;
       end;
     $CD:
       begin
-        Addr := AbsAddr;
-        Cmp(A, Read(Addr));
+        Cmp(A, Read(AbsAddr));
         Cycles := 4;
       end;
     $CE:
       begin
-        Addr := AbsAddr;
-        Value := Read(Addr);
+        var Addr: UInt16 := AbsAddr;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         Value := (Integer(Value) - 1) and $FF;
         Write(Addr, Value);
@@ -1928,37 +1796,32 @@ begin
       end;
     $CF:
       begin
-        Addr := AbsAddr;
-        OpDcp(Addr);
+        OpDcp(AbsAddr);
         Cycles := 6;
       end;
     $D0:
       begin
-        Offset := Rel;
-        Branch(not GetFlag(FLAG_ZERO), Offset, Cycles);
+        Branch(not GetFlag(FLAG_ZERO), Rel, Cycles);
       end;
     $D1:
       begin
-        Addr := Izy(PageCrossed);
-        Cmp(A, Read(Addr));
+        Cmp(A, Read(Izy(PageCrossed)));
         Cycles := 5 + Ord(PageCrossed);
       end;
     $D3:
       begin
-        Addr := Izy(PageCrossed);
-        OpDcp(Addr);
+        OpDcp(Izy(PageCrossed));
         Cycles := 8;
       end;
     $D5:
       begin
-        Addr := Zpx;
-        Cmp(A, Read(Addr));
+        Cmp(A, Read(Zpx));
         Cycles := 4;
       end;
     $D6:
       begin
-        Addr := Zpx;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zpx;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         Value := (Integer(Value) - 1) and $FF;
         Write(Addr, Value);
@@ -1967,8 +1830,7 @@ begin
       end;
     $D7:
       begin
-        Addr := Zpx;
-        OpDcp(Addr);
+        OpDcp(Zpx);
         Cycles := 6;
       end;
     $D8:
@@ -1978,32 +1840,28 @@ begin
       end;
     $D9:
       begin
-        Addr := Aby(PageCrossed);
-        Cmp(A, Read(Addr));
+        Cmp(A, Read(Aby(PageCrossed)));
         Cycles := 4 + Ord(PageCrossed);
       end;
     $DB:
       begin
-        Addr := Aby(PageCrossed);
-        OpDcp(Addr);
+        OpDcp(Aby(PageCrossed));
         Cycles := 7;
       end;
     $DD:
       begin
-        Addr := Abx(PageCrossed);
-        Cmp(A, Read(Addr));
+        Cmp(A, Read(Abx(PageCrossed)));
         Cycles := 4 + Ord(PageCrossed);
       end;
     $DF:
       begin
-        Addr := Abx(PageCrossed);
-        OpDcp(Addr);
+        OpDcp(Abx(PageCrossed));
         Cycles := 7;
       end;
     $DE:
       begin
-        Addr := Abx(PageCrossed);
-        Value := Read(Addr);
+        var Addr: UInt16 := Abx(PageCrossed);
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         Value := (Integer(Value) - 1) and $FF;
         Write(Addr, Value);
@@ -2012,38 +1870,33 @@ begin
       end;
     $E0:
       begin
-        Addr := Imm;
-        Cmp(X, Read(Addr));
+        Cmp(X, Read(Imm));
         Cycles := 2;
       end;
     $E1:
       begin
-        Addr := Izx;
-        Sbc(Read(Addr));
+        Sbc(Read(Izx));
         Cycles := 6;
       end;
     $E3:
       begin
-        Addr := Izx;
-        OpIsc(Addr);
+        OpIsc(Izx);
         Cycles := 8;
       end;
     $E4:
       begin
-        Addr := Zp0;
-        Cmp(X, Read(Addr));
+        Cmp(X, Read(Zp0));
         Cycles := 3;
       end;
     $E5:
       begin
-        Addr := Zp0;
-        Sbc(Read(Addr));
+        Sbc(Read(Zp0));
         Cycles := 3;
       end;
     $E6:
       begin
-        Addr := Zp0;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zp0;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         Value := (Value + 1) and $FF;
         Write(Addr, Value);
@@ -2052,8 +1905,7 @@ begin
       end;
     $E7:
       begin
-        Addr := Zp0;
-        OpIsc(Addr);
+        OpIsc(Zp0);
         Cycles := 5;
       end;
     $E8:
@@ -2064,8 +1916,7 @@ begin
       end;
     $E9, $EB:
       begin
-        Addr := Imm;
-        Sbc(Read(Addr));
+        Sbc(Read(Imm));
         Cycles := 2;
       end;
     $EA:
@@ -2074,20 +1925,18 @@ begin
       end;
     $EC:
       begin
-        Addr := AbsAddr;
-        Cmp(X, Read(Addr));
+        Cmp(X, Read(AbsAddr));
         Cycles := 4;
       end;
     $ED:
       begin
-        Addr := AbsAddr;
-        Sbc(Read(Addr));
+        Sbc(Read(AbsAddr));
         Cycles := 4;
       end;
     $EE:
       begin
-        Addr := AbsAddr;
-        Value := Read(Addr);
+        var Addr: UInt16 := AbsAddr;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         Value := (Value + 1) and $FF;
         Write(Addr, Value);
@@ -2096,37 +1945,32 @@ begin
       end;
     $EF:
       begin
-        Addr := AbsAddr;
-        OpIsc(Addr);
+        OpIsc(AbsAddr);
         Cycles := 6;
       end;
     $F0:
       begin
-        Offset := Rel;
-        Branch(GetFlag(FLAG_ZERO), Offset, Cycles);
+        Branch(GetFlag(FLAG_ZERO), Rel, Cycles);
       end;
     $F1:
       begin
-        Addr := Izy(PageCrossed);
-        Sbc(Read(Addr));
+        Sbc(Read(Izy(PageCrossed)));
         Cycles := 5 + Ord(PageCrossed);
       end;
     $F3:
       begin
-        Addr := Izy(PageCrossed);
-        OpIsc(Addr);
+        OpIsc(Izy(PageCrossed));
         Cycles := 8;
       end;
     $F5:
       begin
-        Addr := Zpx;
-        Sbc(Read(Addr));
+        Sbc(Read(Zpx));
         Cycles := 4;
       end;
     $F6:
       begin
-        Addr := Zpx;
-        Value := Read(Addr);
+        var Addr: UInt16 := Zpx;
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         Value := (Value + 1) and $FF;
         Write(Addr, Value);
@@ -2135,8 +1979,7 @@ begin
       end;
     $F7:
       begin
-        Addr := Zpx;
-        OpIsc(Addr);
+        OpIsc(Zpx);
         Cycles := 6;
       end;
     $F8:
@@ -2146,32 +1989,28 @@ begin
       end;
     $F9:
       begin
-        Addr := Aby(PageCrossed);
-        Sbc(Read(Addr));
+        Sbc(Read(Aby(PageCrossed)));
         Cycles := 4 + Ord(PageCrossed);
       end;
     $FB:
       begin
-        Addr := Aby(PageCrossed);
-        OpIsc(Addr);
+        OpIsc(Aby(PageCrossed));
         Cycles := 7;
       end;
     $FD:
       begin
-        Addr := Abx(PageCrossed);
-        Sbc(Read(Addr));
+        Sbc(Read(Abx(PageCrossed)));
         Cycles := 4 + Ord(PageCrossed);
       end;
     $FF:
       begin
-        Addr := Abx(PageCrossed);
-        OpIsc(Addr);
+        OpIsc(Abx(PageCrossed));
         Cycles := 7;
       end;
     $FE:
       begin
-        Addr := Abx(PageCrossed);
-        Value := Read(Addr);
+        var Addr: UInt16 := Abx(PageCrossed);
+        var Value: UInt8 := Read(Addr);
         Write(Addr, Value);
         Value := (Value + 1) and $FF;
         Write(Addr, Value);

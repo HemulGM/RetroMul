@@ -762,8 +762,11 @@ begin
   if not WasDown then
   begin
     if (Code = vkEscape) and not SuborKeyboardActive then
-      FullScreen := False
-    else if (Code = vkF11) and not SuborKeyboardActive then
+    begin
+      if FullScreen then
+        SwitchFullScreen
+    end
+    else if (Code = vkF11) then
       SwitchFullScreen
     else if (Code = vkO) and (ssCtrl in Shift) then
       OpenRom

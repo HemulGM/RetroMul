@@ -116,10 +116,11 @@ procedure TBitmapHelper.LoadFromFileAsync(AOwner: TComponent; const FileName: st
 begin
   if AOwner = nil then
     raise Exception.Create('You must specify an owner (responsible) who will ensure that the Bitmap is not destroyed before the owner');
+  var RequestKey := FileName + #0 + AFitWidth.ToString + #0 + AFitHeight.ToString;
   var Callback: TCallbackObject;
   Callback.Owner := AOwner;
   Callback.Bitmap := Self;
-  Callback.Url := FileName + AFitWidth.ToString + AFitWidth.ToString;
+  Callback.Url := RequestKey;
   Callback.OnDone := OnDone;
   Callback.Task := TTask.Create(
     procedure
@@ -129,13 +130,13 @@ begin
         TThread.ForceQueue(nil,
           procedure
           begin
-            Ready(FileName + AFitWidth.ToString + AFitWidth.ToString, Mem);
+            Ready(RequestKey, Mem);
           end);
       except
         TThread.ForceQueue(nil,
           procedure
           begin
-            Ready(FileName + AFitWidth.ToString + AFitWidth.ToString, nil);
+            Ready(RequestKey, nil);
           end);
       end;
     end, Pool);

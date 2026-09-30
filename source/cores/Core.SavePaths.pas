@@ -7,6 +7,8 @@ interface
 
 function GetDocumentsDirectory: string;
 
+function ResolveDocumentsDirectory(const DocumentsPath, HomePath: string): string;
+
 function GetSaveDirectory: string;
 
 function GetSnapshotDirectory: string;
@@ -20,11 +22,16 @@ uses
 
 function GetDocumentsDirectory: string;
 begin
+  Result := ResolveDocumentsDirectory(TPath.GetDocumentsPath, TPath.GetHomePath);
+end;
+
+function ResolveDocumentsDirectory(const DocumentsPath, HomePath: string): string;
+begin
   // Linux may have no XDG Documents entry. Never turn that into a path
   // relative to the executable: It can then collide with the binary.
-  var Root := TPath.GetDocumentsPath;
+  var Root := DocumentsPath;
   if (Root = '') or not TPath.IsPathRooted(Root) then
-    Root := TPath.GetHomePath;
+    Root := HomePath;
   if (Root = '') or not TPath.IsPathRooted(Root) then
     raise EInOutError.Create('Cannot determine an absolute save directory');
   Result := TPath.Combine(Root, 'RetroMul');

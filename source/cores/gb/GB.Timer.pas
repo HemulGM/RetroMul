@@ -103,7 +103,17 @@ end;
 
 procedure TGBTimer.SetControl(Value: Integer);
 begin
-  FControl := Value;
+  // Changing the enabled divider input can clock TIMA without a CPU tick.
+  var OldBitPosition := FFrequencyBits[FControl and 3];
+  var OldTimerBit := ((FDivider and (1 shl OldBitPosition)) <> 0) and
+    ((FControl and 4) <> 0);
+  FControl := Value and 7;
+  var NewBitPosition := FFrequencyBits[FControl and 3];
+  var NewTimerBit := ((FDivider and (1 shl NewBitPosition)) <> 0) and
+    ((FControl and 4) <> 0);
+  if OldTimerBit and not NewTimerBit then
+    IncrementCounter;
+  FPreviousBit := NewTimerBit;
 end;
 
 procedure TGBTimer.SetCounter(Value: Integer);

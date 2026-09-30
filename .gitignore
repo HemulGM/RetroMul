@@ -30,3 +30,5 @@ __recovery/
 /tools/*
 /MULTICORE_AUDIT.md
 /fmx/Android/*
+/audit-output/
+*

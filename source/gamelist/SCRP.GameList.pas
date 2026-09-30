@@ -60,10 +60,12 @@ type
     FVideo: string;
     FManual: string;
     FFavorite: Boolean;
+    FHasFavorite: Boolean;
     FTips: string;
     FMaps: TObjectList<TGameMap>;
     function GetRomName: string;
     function GetRomNameWoExt: string;
+    procedure SetFavorite(const Value: Boolean);
   public
     constructor Create;
     destructor Destroy; override;
@@ -95,7 +97,8 @@ type
     property Manual: string read FManual write FManual;
     property Tips: string read FTips write FTips;
     property Maps: TObjectList<TGameMap> read FMaps;
-    property Favorite: Boolean read FFavorite write FFavorite;
+    property Favorite: Boolean read FFavorite write SetFavorite;
+    property HasFavorite: Boolean read FHasFavorite;
     //
     property RomName: string read GetRomName;
     property RomNameWoExt: string read GetRomNameWoExt;
@@ -236,7 +239,20 @@ begin
   if APath.IsEmpty then
     Result := ''
   else
-    Result := TPath.Combine(ARootFolder, APath.Replace('./', ''));
+  begin
+    // Strip only the leading current-directory marker. Replacing every './'
+    // corrupts parent paths ('../') and valid directory names ending in a dot.
+    var RelativePath := APath;
+    if RelativePath.StartsWith('./') then
+      Delete(RelativePath, 1, 2);
+    Result := TPath.Combine(ARootFolder, RelativePath);
+  end;
+end;
+
+procedure TGame.SetFavorite(const Value: Boolean);
+begin
+  FFavorite := Value;
+  FHasFavorite := True;
 end;
 
 function TGame.GetRomName: string;
@@ -273,6 +289,7 @@ begin
   FVideo := '';
   FManual := '';
   FFavorite := False;
+  FHasFavorite := False;
   FTips := '';
 end;
 
@@ -306,6 +323,7 @@ begin
   FVideo := XMLReadString(ANode, 'video');
   FManual := XMLReadString(ANode, 'manual');
   FFavorite := XMLReadBool(ANode, 'favorite');
+  FHasFavorite := Assigned(XMLChild(ANode, 'favorite'));
   FTips := XMLReadString(ANode, 'tips');
 
   var MapsNode := XMLChild(ANode, 'maps');
@@ -408,7 +426,7 @@ begin
       Map.SaveToXML(MapsNode);
   end;
 
-  if FFavorite then
+  if FHasFavorite then
     XMLAddElement(Result, 'favorite', XMLBoolToString(FFavorite));
 end;
 

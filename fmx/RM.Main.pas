@@ -130,9 +130,8 @@ var
 implementation
 
 uses
-  System.IOUtils, FMX.Ani, System.IniFiles, System.Threading, System.Messaging,
-  RM.Styles, Core.Adapter.GB, GB.Palettes, Core.Adapter.NES, Core.SavePaths,
-  HGM.FMX.Image;
+  System.IOUtils, FMX.Ani, System.IniFiles, System.Messaging, RM.Styles,
+  Core.Adapter.GB, GB.Palettes, Core.Adapter.NES, Core.SavePaths, HGM.FMX.Image;
 
 {$R *.fmx}
 
@@ -147,13 +146,12 @@ end;
 
 procedure TFormMain.ButtonCloseRomClick(Sender: TObject);
 begin
-  Stop;
   MobileCloseRom;
 end;
 
 procedure TFormMain.MobileCloseRom;
 begin
-
+  Stop;
   SwitchFullScreen;
 end;
 
@@ -275,108 +273,97 @@ end;
 procedure TFormMain.LoadSystem(const SystemId: string);
 begin
   FSystemId := SystemId;
-
+  // FMX controls and their styles belong to the main thread. Keeping this
+  // operation scoped to the call also prevents work outliving the form.
   LayoutLeft.Enabled := False;
   ListBoxGames.Visible := False;
   ListBoxGames.BeginUpdate;
-  ListBoxGames.Clear;
-  ListBoxGames.EndUpdate;
-  //ShowMessage(TPath.Combine(FRomsRoot, SystemId));
-  TTask.Run(
-    procedure
-    begin
-      ListBoxGames.BeginUpdate;
-      try
-        {$IFDEF ANDROID}
-        TRomStorage.FolderUri := FRomsRoot;
-        var GameXML := TRomStorage.GetFiles(['xml'], True);
-        if Length(GameXML) > 0 then
+  try
+    ListBoxGames.Clear;
+    try
+      {$IFDEF ANDROID}
+      TRomStorage.FolderUri := FRomsRoot;
+      // XML metadata is not supported by the SAF reader yet. Its presence
+      // must not suppress the ROM scan.
+      ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle';
+      ListBoxGames.ItemHeight := 32;
+      var Games := TRomStorage.GetFiles(['gb', 'gbc', 'nes', 'gen', 'md', 'smd', 'bin'], True);
+      for var GameFile in Games do
+        if GameFile.RelativePath.StartsWith(SystemId + '/') or
+          GameFile.RelativePath.StartsWith(SystemId + '\') then
         begin
-          //TRomStorage.OpenFile()
-        end
-        else
-        begin
-          ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle';
-          ListBoxGames.ItemHeight := 32;
-          var Games := TRomStorage.GetFiles(['gb', 'gbc', 'nes', 'gen', 'md', 'smd', 'bin'], True);
-          for var GameFile in Games do
-            if GameFile.RelativePath.StartsWith(SystemId) then
-            begin
-              var Game := TGame.Create;
-              try
-                Game.Path := GameFile.Uri;
-                Game.Name := TPath.GetFileNameWithoutExtension(GameFile.Name);
-                var Item := TListBoxItemGame.Create(ListBoxGames);
-                Item.RomFile := GameFile;
-                ListBoxGames.AddObject(Item);
-                FillGameItem(Item, Game, '');
-              finally
-                Game.Free;
-              end;
-            end;
-        end;
-
-        Exit;
-        {$ENDIF}
-        var Folder := TPath.Combine(FRomsRoot, SystemId);
-
-        if not TDirectory.Exists(Folder) then
-          Exit;
-
-        ButtonSetRoot.Visible := False;
-
-        var GameListXML := TPath.Combine(Folder, 'gamelist.xml');
-        if TFile.Exists(GameListXML) then
-        begin
-          ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle_game';
-          ListBoxGames.ItemHeight := 70;
-          var GameList := TGameList.Create;
+          var Game := TGame.Create;
           try
-            GameList.LoadFromFile(GameListXML);
-            GameList.SaveToFile(GameListXML + '.xml');
-            for var Game in GameList.Games do
-            begin
-              var Item := TListBoxItemGame.Create(ListBoxGames);
-              ListBoxGames.AddObject(Item);
-              FillGameItem(Item, Game, Folder);
-            end;
+            Game.Path := GameFile.Uri;
+            Game.Name := TPath.GetFileNameWithoutExtension(GameFile.Name);
+            var Item := TListBoxItemGame.Create(ListBoxGames);
+            Item.RomFile := GameFile;
+            ListBoxGames.AddObject(Item);
+            FillGameItem(Item, Game, '');
           finally
-            GameList.Free;
-          end;
-        end
-        else
-        begin
-          ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle';
-          ListBoxGames.ItemHeight := 32;
-          for var GameFile in TDirectory.GetFiles(Folder) do
-          begin
-            var Ext := TPath.GetExtension(GameFile).ToLower;
-            if (Ext <> '.nes') and (Ext <> '.gb') and
-              (Ext <> '.gbc') and (Ext <> '.smd') and
-              (Ext <> '.bin') and (Ext <> '.md') and (Ext <> '.gen')
-              then
-              Continue;
-            var Game := TGame.Create;
-            try
-              Game.Path := GameFile;
-              Game.Name := TPath.GetFileNameWithoutExtension(GameFile);
-              var Item := TListBoxItemGame.Create(ListBoxGames);
-              ListBoxGames.AddObject(Item);
-              FillGameItem(Item, Game, Folder);
-            finally
-              Game.Free;
-            end;
+            Game.Free;
           end;
         end;
-      finally
-        ListBoxGames.EndUpdate;
-        LayoutLeft.Enabled := True;
-        ButtonSetRoot.Visible := ListBoxGames.Count <= 0;
-        ListBoxGames.Visible := True;
-        ListBoxGames.Opacity := 0;
-        TAnimator.AnimateFloat(ListBoxGames, 'Opacity', 1);
+      {$ELSE}
+      var Folder := TPath.Combine(FRomsRoot, SystemId);
+      if not TDirectory.Exists(Folder) then
+        Exit;
+      var GameListXML := TPath.Combine(Folder, 'gamelist.xml');
+      if TFile.Exists(GameListXML) then
+      begin
+        ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle_game';
+        ListBoxGames.ItemHeight := 70;
+        var GameList := TGameList.Create;
+        try
+          GameList.LoadFromFile(GameListXML);
+          for var Game in GameList.Games do
+          begin
+            var Item := TListBoxItemGame.Create(ListBoxGames);
+            ListBoxGames.AddObject(Item);
+            FillGameItem(Item, Game, Folder);
+          end;
+        finally
+          GameList.Free;
+        end;
+      end
+      else
+      begin
+        ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle';
+        ListBoxGames.ItemHeight := 32;
+        for var GameFile in TDirectory.GetFiles(Folder) do
+        begin
+          var Ext := TPath.GetExtension(GameFile).ToLower;
+          if (Ext <> '.nes') and (Ext <> '.gb') and (Ext <> '.gbc') and
+            (Ext <> '.smd') and (Ext <> '.bin') and (Ext <> '.md') and (Ext <> '.gen') then
+            Continue;
+          var Game := TGame.Create;
+          try
+            Game.Path := GameFile;
+            Game.Name := TPath.GetFileNameWithoutExtension(GameFile);
+            var Item := TListBoxItemGame.Create(ListBoxGames);
+            ListBoxGames.AddObject(Item);
+            FillGameItem(Item, Game, Folder);
+          finally
+            Game.Free;
+          end;
+        end;
       end;
-    end);
+      {$ENDIF}
+    except
+      on E: Exception do
+      begin
+        ListBoxGames.Clear;
+        SetStatus('Cannot load game list: ' + E.Message);
+      end;
+    end;
+  finally
+    ListBoxGames.EndUpdate;
+    LayoutLeft.Enabled := True;
+    ButtonSetRoot.Visible := ListBoxGames.Count <= 0;
+    ListBoxGames.Visible := True;
+    ListBoxGames.Opacity := 0;
+    TAnimator.AnimateFloat(ListBoxGames, 'Opacity', 1);
+  end;
 end;
 
 procedure TFormMain.FillGameItem(Item: TListBoxItem; Game: TGame; const Root: string);

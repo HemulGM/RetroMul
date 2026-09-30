@@ -1599,9 +1599,15 @@ begin
       end;
     $F0:
       begin
-        SetRegisterA(FMemory.ReadByte($FF00 + FMemory.ReadByte(ProgramCounter)));
+        var Address := $FF00 + FMemory.ReadByte(ProgramCounter);
         ProgramCounter := (Integer(ProgramCounter) + 1) and $FFFF;
-        ConsumeClockCycles(12);
+        // LDH reads I/O in its third machine cycle. In particular, LY can
+        // enter VBlank during this instruction, before the pending interrupt
+        // is serviced. Sampling it at opcode fetch can miss line 144 forever
+        // when the VBlank handler runs into the next frame.
+        ConsumeClockCycles(8);
+        SetRegisterA(FMemory.ReadByte(Address));
+        ConsumeClockCycles(4);
       end;
     $01: //LD BC,nn
       begin

@@ -201,6 +201,9 @@ begin
     OAM[I] := $00;
   for var I := 0 to High(IOPort) do
     IOPort[I] := $00;
+  // HDMA5 bit 7 is clear only while a transfer is active. Games may poll
+  // this before their first DMA request (LEGO Racers does so in VBlank).
+  IOPort[$55] := $FF;
   for var I := 0 to High(HRAM) do
     HRAM[I] := $00;
   for var I := 0 to High(WRAM) do

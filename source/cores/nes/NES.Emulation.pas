@@ -56,7 +56,7 @@ type
     procedure TerminatedSet; override;
   public
     // Validates the ROM before replacing the current session. Call Start once.
-    constructor Create(const FileName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1);
+    constructor Create(const FileName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = '');
     destructor Destroy; override;
     procedure StopAndSave;
     procedure SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2: TKeyMap); overload;
@@ -217,7 +217,7 @@ begin
 end;
 {$ENDIF}
 
-constructor TNesEmulationThread.Create(const FileName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride; AudioEnabled: Boolean; AudioVolume: Single);
+constructor TNesEmulationThread.Create(const FileName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride; AudioEnabled: Boolean; AudioVolume: Single; const SaveDirectory, SnapshotRoot: string);
 begin
   inherited Create(True);
   FreeOnTerminate := False;
@@ -234,11 +234,16 @@ begin
   FAudioFormat.BlockCount := AUDIO_BLOCK_COUNT;
   FDiagnostics := TAudioDiagnostics.Create(FAudioFormat);
   FRomPath := FileName;
-  FSaveDirectory := GetSaveDirectory;
+  FSaveDirectory := SaveDirectory;
+  if FSaveDirectory = '' then
+    FSaveDirectory := GetSaveDirectory;
   FConsole := TNesConsole.Create(FourScoreEnabled);
   FConsole.LoadRom(FileName, RegionOverride);
   FUsesSuborKeyboard := FConsole.SuborKeyboard.Connected;
-  FSnapshotDirectory := ResolveGameSavePath(GetSnapshotDirectory, FileName, FConsole.RomIdentity, '');
+  var SnapshotBase := SnapshotRoot;
+  if SnapshotBase = '' then
+    SnapshotBase := GetSnapshotDirectory;
+  FSnapshotDirectory := ResolveGameSavePath(SnapshotBase, FileName, FConsole.RomIdentity, '');
   FStatus.Region := FConsole.Region;
   FConsole.Apu.SetSampleRate(NES_SAMPLE_RATE);
 end;

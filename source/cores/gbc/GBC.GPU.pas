@@ -82,7 +82,6 @@ type
     procedure SnapshotDisplayVRAM;
 
     procedure RenderScanLine;
-    procedure ResolveCGBFrame;
     procedure RenderWindow(var ScanlineRow: TScanlineRow;
       var PriorityRow: TScanlinePriorityRow);
     procedure RenderBackground(var ScanlineRow: TScanlineRow;
@@ -703,15 +702,6 @@ begin
   end;
 end;
 
-procedure TGBCGPU.ResolveCGBFrame;
-begin
-  if not FCGBMode then
-    Exit;
-  for var I := 0 to High(Screen) do
-    Screen[I] := PixelColor(FObjectPixelBuffer[I], FPaletteIndexBuffer[I],
-      FColorIndexBuffer[I]);
-end;
-
 procedure TGBCGPU.Step(Cycle: Integer);
 begin
   if not FLCDEnabled then
@@ -736,6 +726,9 @@ begin
     case FCurrentMode of
       TGPUMode.OAMAccess:
         begin
+          // HBlank DMA and CPU writes may change tiles between scanlines.
+          // Latch the data for this line, not once for the entire frame.
+          SnapshotDisplayVRAM;
           FMode3Cycles := GetMode3Cycles;
           FCurrentMode := TGPUMode.VRAMAccess;
         end;
@@ -754,7 +747,8 @@ begin
             FCurrentMode := TGPUMode.VBlank;
             TGBCInterruptManager.Instance.RaiseInterruptByIndex(4);
             ProcessLCDStatus;
-            ResolveCGBFrame;
+            // RenderScanLine has already resolved each line's palette.
+            // Recoloring here would erase raster palette effects (LEGO Racers).
             if Assigned(FDrawCallback) then
               FDrawCallback(Screen);
           end

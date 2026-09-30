@@ -2,9 +2,6 @@
 
 interface
 
-{$Q+}
-{$R+}
-
 uses
   System.SysUtils, System.Math, MD.Arithmetic;
 
@@ -291,7 +288,6 @@ end;
 
 procedure PSGDoCommand(var Psg: TPSG; Command: Cardinal);
 begin
-  var Temp25: Integer;
   var Latch: Byte := Ord((Command and $80) <> 0);
   if Latch <> 0 then
   begin
@@ -300,7 +296,6 @@ begin
   end;
   if Psg.State.LatchedCommand.Channel < Integer(Length(Psg.State.Tones)) then
   begin
-
     if Psg.State.LatchedCommand.IsVolumeCommand <> 0 then
       Psg.State.Tones[Psg.State.LatchedCommand.Channel].Attenuation := Byte(Command and $F)
     else
@@ -324,10 +319,9 @@ begin
     else
     begin
       if (Command and 4) <> 0 then
-        Temp25 := PSG_NOISE_TYPE_WHITE
+        Psg.State.Noise.NoiseType := Byte(PSG_NOISE_TYPE_WHITE)
       else
-        Temp25 := PSG_NOISE_TYPE_PERIODIC;
-      Psg.State.Noise.NoiseType := Byte(Temp25);
+        Psg.State.Noise.NoiseType := Byte(PSG_NOISE_TYPE_PERIODIC);
       Psg.State.Noise.FrequencyMode := Byte(Command and 3);
       Psg.State.Noise.ShiftRegister := 1;
     end;
@@ -438,13 +432,11 @@ end;
 
 procedure FMPhaseSetDetuneAndMultiplier(var Phase: TFMPhase; Modulation: Cardinal; Sensitivity: Cardinal; Detune: Cardinal; Multiplier: Cardinal);
 begin
-  var Temp44: Integer;
   Phase.Detune := Word(Detune);
   if Multiplier = 0 then
-    Temp44 := 1
+    Phase.Multiplier := Word(1)
   else
-    Temp44 := Mul32(Multiplier, 2);
-  Phase.Multiplier := Word(Temp44);
+    Phase.Multiplier := Word(Mul32(Multiplier, 2));
   Phase.Step := RecalculatePhaseStep(Phase, Modulation, Sensitivity);
 end;
 
@@ -455,13 +447,8 @@ end;
 
 function GetSSGEGCorrectedAttenuation(var State: TFMOperator; DisableInversion: Byte): Cardinal;
 begin
-  var Temp46: Integer := Ord((DisableInversion = 0));
-  if Temp46 <> 0 then
-    Temp46 := Ord(State.SSGEg.Enabled <> 0);
-  var Temp45: Integer := Ord(Temp46 <> 0);
-  if Temp45 <> 0 then
-    Temp45 := Ord(State.SSGEg.Invert <> State.SSGEg.Attack);
-  if Temp45 <> 0 then
+  var Temp46: Integer := Ord(((DisableInversion = 0)) and (State.SSGEg.Enabled <> 0));
+  if (Temp46 <> 0) and (State.SSGEg.Invert <> State.SSGEg.Attack) then
     Exit(Cardinal(($200 - State.Attenuation) and $3FF))
   else
     Exit(Cardinal(State.Attenuation));
@@ -538,18 +525,12 @@ end;
 
 procedure FMOperatorSetSSGEG(var State: TFMOperator; SSGEg: Cardinal);
 begin
-  State.SSGEg.Enabled := Ord((SSGEg and Cardinal(1 shl 3)) <> 0);
-  var Temp48: Integer := Ord((SSGEg and Cardinal(1 shl 2)) <> 0);
-  if Temp48 <> 0 then
-    Temp48 := Ord(State.SSGEg.Enabled <> 0);
+  State.SSGEg.Enabled := Ord((SSGEg and $8) <> 0);
+  var Temp48: Integer := Ord(((SSGEg and $4) <> 0) and (State.SSGEg.Enabled <> 0));
   State.SSGEg.Attack := Byte(Temp48);
-  var Temp49: Integer := Ord((SSGEg and Cardinal(1 shl 1)) <> 0);
-  if Temp49 <> 0 then
-    Temp49 := Ord(State.SSGEg.Enabled <> 0);
+  var Temp49: Integer := Ord(((SSGEg and $2) <> 0) and (State.SSGEg.Enabled <> 0));
   State.SSGEg.Alternate := Byte(Temp49);
-  var Temp50: Integer := Ord((SSGEg and 1) <> 0);
-  if Temp50 <> 0 then
-    Temp50 := Ord(State.SSGEg.Enabled <> 0);
+  var Temp50: Integer := Ord(((SSGEg and 1) <> 0) and (State.SSGEg.Enabled <> 0));
   State.SSGEg.Hold := Byte(Temp50);
 end;
 
@@ -566,12 +547,10 @@ end;
 
 procedure FMOperatorSetSustainLevelAndReleaseRate(var State: TFMOperator; SustainLevel: Cardinal; ReleaseRate: Cardinal);
 begin
-  var Temp51: Integer;
   if SustainLevel = $F then
-    Temp51 := $3E0
+    State.SustainLevel := Word($3E0)
   else
-    Temp51 := Mul32(SustainLevel, $20);
-  State.SustainLevel := Word(Temp51);
+    State.SustainLevel := Word(Mul32(SustainLevel, $20));
   State.Rates[FM_OPERATOR_ENVELOPE_MODE_RELEASE] := Word((ReleaseRate shl 1) or 1);
 end;
 
@@ -615,19 +594,14 @@ end;
 
 procedure UpdateEnvelopeSSGEG(var State: TFMOperator);
 begin
-  var Temp58: Integer;
-  var Temp57: Integer := Ord(State.SSGEg.Enabled <> 0);
-  if Temp57 <> 0 then
-    Temp57 := Ord(State.Attenuation >= $200);
-  if Temp57 <> 0 then
+  if (State.SSGEg.Enabled <> 0) and (State.Attenuation >= $200) then
   begin
     if State.SSGEg.Alternate <> 0 then
     begin
       if State.SSGEg.Hold <> 0 then
-        Temp58 := 1
+        State.SSGEg.Invert := Byte(1)
       else
-        Temp58 := Ord((State.SSGEg.Invert = 0));
-      State.SSGEg.Invert := Byte(Temp58);
+        State.SSGEg.Invert := Byte(Ord((State.SSGEg.Invert = 0)));
     end
     else
     begin
@@ -731,13 +705,12 @@ end;
 
 function GetEnvelopeAttenuation(var State: TFMOperator; AmplitudeModulation: Cardinal; AmplitudeModulationShift: Cardinal): Cardinal;
 begin
-  var Temp70: Cardinal;
   var Temp71: Integer;
+  var FinalAmplitudeModulation: Cardinal;
   if State.AmplitudeModulationOn <> 0 then
-    Temp70 := AmplitudeModulation shr AmplitudeModulationShift
+    FinalAmplitudeModulation := AmplitudeModulation shr AmplitudeModulationShift
   else
-    Temp70 := 0;
-  var FinalAmplitudeModulation: Cardinal := Temp70;
+    FinalAmplitudeModulation := 0;
   var Attenuation: Cardinal := Add32(Add32(GetSSGEGCorrectedAttenuation(State, Ord((State.KeyOn = 0))), FinalAmplitudeModulation), State.TotalLevel);
   if $3FF < Attenuation then
     Temp71 := $3FF
@@ -756,7 +729,6 @@ end;
 function FMOperatorProcess(var State: TFMOperator; AmplitudeModulation: Cardinal; AmplitudeModulationShift: Cardinal; PhaseModulation: Cardinal): Cardinal;
 begin
   var Temp72: Integer;
-  var Temp73: Cardinal;
   State.Phase.Position := Add32(State.Phase.Position, State.Phase.Step);
   var Phase: Cardinal := State.Phase.Position shr 10;
   var Attenuation: Cardinal := UpdateEnvelope(State, AmplitudeModulation, AmplitudeModulationShift);
@@ -771,11 +743,11 @@ begin
   var PhaseAsAttenuation: Cardinal := LOGARITHMIC_ATTENUATION_SINE_TABLE[QuarterPhase];
   var CombinedAttenuation: Cardinal := Add32(PhaseAsAttenuation, Attenuation shl 2);
   var SampleAbsolute: Cardinal := InversePow2(CombinedAttenuation);
+  var Sample: Cardinal;
   if PhaseIsInNegativeWave <> 0 then
-    Temp73 := Sub32(0, SampleAbsolute)
+    Sample := Sub32(0, SampleAbsolute)
   else
-    Temp73 := SampleAbsolute;
-  var Sample: Cardinal := Temp73;
+    Sample := SampleAbsolute;
   Exit(Sample);
 end;
 
@@ -1023,7 +995,6 @@ procedure FMInitialise(var Fm: TFM);
 begin
   for var ChannelIndex := Low(Fm.State.Channels) to High(Fm.State.Channels) do
   begin
-
     FMChannelInitialise(Fm.State.Channels[ChannelIndex].State);
     Fm.State.Channels[ChannelIndex].PanLeft := 1;
     Fm.State.Channels[ChannelIndex].PanRight := 1;
@@ -1090,7 +1061,6 @@ begin
             begin
               for var ModulationChannelIndex := Low(Fm.State.Channels) to High(Fm.State.Channels) do
               begin
-
                 FMChannelSetPhaseModulation(Fm.State.Channels[ModulationChannelIndex].State, Fm.State.LFO.PhaseModulation);
               end;
             end;
@@ -1143,7 +1113,6 @@ begin
             ChannelIndex := Cardinal(TABLE[(Data mod Cardinal(Length(TABLE)))]);
             if ChannelIndex <> $FF then
             begin
-
               for var IScope101Item := 0 to High(Fm.State.Channels[ChannelIndex].State.Operators) do
               begin
                 FMOperatorSetKeyOn(Fm.State.Channels[ChannelIndex].State.Operators[IScope101Item], Ord((Data and Cardinal(1 shl (Add32(4, IScope101Item)))) <> 0));
@@ -1163,12 +1132,8 @@ begin
           begin
             Fm.State.DacSample := Word(Fm.State.DacSample and (not 1));
             Fm.State.DacSample := Word(Fm.State.DacSample or ((Data shr 3) and 1));
-            Fm.State.DacTest := Ord((Data and Cardinal(1 shl 5)) <> 0);
+            Fm.State.DacTest := Ord((Data and $20) <> 0);
           end;
-      else
-        begin
-          ;
-        end;
       end;
     end;
   end
@@ -1213,10 +1178,6 @@ begin
             begin
               FMOperatorSetSSGEG(Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex], Data);
             end;
-        else
-          begin
-            ;
-          end;
         end;
       end
       else
@@ -1267,10 +1228,6 @@ begin
               Fm.State.Channels[ChannelIndexScope102].PanRight := Ord((Data and $40) <> 0);
               FMChannelSetModulationSensitivity(Fm.State.Channels[ChannelIndexScope102].State, Fm.State.LFO.PhaseModulation, ((Data shr 4) and 3), (Data and 7));
             end;
-        else
-          begin
-            ;
-          end;
         end;
       end;
     end;
@@ -1282,7 +1239,6 @@ begin
   var Offset: Integer;
   var Temp147: Integer;
   var Temp148: Integer;
-  var Temp149: Integer;
   if Fm.Configuration.LadderEffectDisabled <> 0 then
     Offset := 0
   else
@@ -1309,10 +1265,9 @@ begin
     else
     begin
       if $FF < Sample then
-        Temp149 := $FF
+        Temp147 := $FF
       else
-        Temp149 := Sample;
-      Temp147 := Temp149;
+        Temp147 := Sample;
     end;
     Sample := Temp147;
   end
@@ -1331,14 +1286,10 @@ begin
   var PanLeft: Byte;
   var PanRight: Byte;
   var IsDac: Byte;
-  var Temp157: Integer;
   var Temp158: Integer;
   var ChannelDisabled: Byte;
-  var Temp159: Byte;
   var FmSample: Integer;
   var Sample: Integer;
-  var Temp160: Integer;
-  var Temp164: Integer;
 
   var DacSample: Integer := FMToNativeSigned(Fm.State.DacSample xor $100);
   if Odd(Length(SampleBuffer)) then
@@ -1350,29 +1301,24 @@ begin
     begin
       for var ModulationChannelIndex := Low(Fm.State.Channels) to High(Fm.State.Channels) do
       begin
-
         FMChannelSetPhaseModulation(Fm.State.Channels[ModulationChannelIndex].State, Fm.State.LFO.PhaseModulation);
       end;
     end;
     for var ChannelIndex := 0 to High(Fm.State.Channels) do
     begin
-
       PanLeft := Fm.State.Channels[ChannelIndex].PanLeft;
       PanRight := Fm.State.Channels[ChannelIndex].PanRight;
       Temp158 := Ord((ChannelIndex = 5) and (Fm.State.DacEnabled <> 0));
-      Temp157 := Ord((Temp158 <> 0) or (Fm.State.DacTest <> 0));
-      IsDac := Byte(Temp157);
+      IsDac := Byte(Ord((Temp158 <> 0) or (Fm.State.DacTest <> 0)));
       if IsDac <> 0 then
-        Temp159 := Fm.Configuration.DacChannelDisabled
+        ChannelDisabled := Fm.Configuration.DacChannelDisabled
       else
-        Temp159 := Fm.Configuration.FMChannelsDisabled[ChannelIndex];
-      ChannelDisabled := Temp159;
+        ChannelDisabled := Fm.Configuration.FMChannelsDisabled[ChannelIndex];
       FmSample := FMToNativeSigned(FMChannelGetSample(Fm.State.Channels[ChannelIndex].State, Fm.State.LFO.AmplitudeModulation));
       if IsDac <> 0 then
-        Temp160 := DacSample
+        Sample := DacSample
       else
-        Temp160 := FmSample;
-      Sample := Temp160;
+        Sample := FmSample;
       if ChannelDisabled = 0 then
       begin
         SampleBuffer[SampleIndex] := SmallInt(SampleBuffer[SampleIndex] + GetFinalSample(Fm, Sample, PanLeft));
@@ -1381,15 +1327,11 @@ begin
     end;
     for var TimerIndex := 0 to High(Fm.State.Timers) do
     begin
-
       Dec(Fm.State.Timers[TimerIndex].Counter);
       if Fm.State.Timers[TimerIndex].Counter = 0 then
       begin
         if Fm.State.Timers[TimerIndex].Enabled <> 0 then
-          Temp164 := 1 shl TimerIndex
-        else
-          Temp164 := 0;
-        Fm.State.Status := Byte(Fm.State.Status or Temp164);
+          Fm.State.Status := Byte(Fm.State.Status or 1 shl TimerIndex);
         Fm.State.Timers[TimerIndex].Counter := Fm.State.Timers[TimerIndex].Value;
         if (Fm.State.Channel3Metadata.CsmModeEnabled <> 0) and (TimerIndex = 0) then
         begin

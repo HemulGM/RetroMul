@@ -5,9 +5,6 @@ interface
 uses
   System.SysUtils, System.Math, MD.Arithmetic;
 
-{$Q+}
-{$R+}
-
 type
   TVDPConfiguration = record
     SpritesDisabled: Byte;
@@ -153,15 +150,23 @@ const
   VDP_ACCESS_VSRAM = VDP_ACCESS_CRAM + 1;
   VDP_ACCESS_VRAM_8_BIT = VDP_ACCESS_VSRAM + 1;
   VDP_ACCESS_INVALID = VDP_ACCESS_VRAM_8_BIT + 1;
+
+const
   VDP_DMA_MODE_MEMORY_TO_VRAM = 0;
   VDP_DMA_MODE_FILL = VDP_DMA_MODE_MEMORY_TO_VRAM + 1;
   VDP_DMA_MODE_COPY = VDP_DMA_MODE_FILL + 1;
+
+const
   VDP_HSCROLL_MODE_FULL = 0;
   VDP_HSCROLL_MODE_INVALID = VDP_HSCROLL_MODE_FULL + 1;
   VDP_HSCROLL_MODE_1_CELL = VDP_HSCROLL_MODE_INVALID + 1;
   VDP_HSCROLL_MODE_1_LINE = VDP_HSCROLL_MODE_1_CELL + 1;
+
+const
   VDP_VSCROLL_MODE_FULL = 0;
   VDP_VSCROLL_MODE_2_CELL = VDP_VSCROLL_MODE_FULL + 1;
+
+const
   SHADOW_HIGHLIGHT_NORMAL = ( 0 shl 6);
   SHADOW_HIGHLIGHT_SHADOW = ( 1 shl 6);
   SHADOW_HIGHLIGHT_HIGHLIGHT = ( 2 shl 6);
@@ -244,6 +249,9 @@ implementation
 
 const
   PLANE_PADDING = 16;
+  MAX_PLANE_COLUMNS = 32;
+  PIXELS_PER_TILE_PAIR = 16;
+  MAX_PLANE_PIXELS = MAX_PLANE_COLUMNS * PIXELS_PER_TILE_PAIR;
   SPRITE_PADDING = 31;
   // 320 + 12 * 16 pixels, plus the fixed scanline padding.
   MAX_WIDESCREEN_TILES = 12;
@@ -254,6 +262,14 @@ var
 function GetWidescreenTiles(const Vdp: TVDP): Cardinal; inline;
 begin
   Result := Min(Vdp.Configuration.WidescreenTiles, MAX_WIDESCREEN_TILES);
+end;
+
+function GetVisibleTilePairs(const Vdp: TVDP): Cardinal; inline;
+begin
+  if Vdp.State.H40Enabled <> 0 then
+    Result := 20
+  else
+    Result := 16;
 end;
 
 function IsDMAPending(const State: TVDPState): Byte;
@@ -304,17 +320,11 @@ end;
 
 procedure WriteVRAM(var Vdp: TVDP; Address: Cardinal; Value: Cardinal);
 begin
-  var Temp31: Integer;
-
   var DecodedAddress: Cardinal := DecodeVRAMAddress(Vdp.State, Address);
   var SpriteTableIndex: Cardinal := Sub32(Address, GetSpriteTableAddress(Vdp.State));
-  if Vdp.State.H40Enabled <> 0 then
-    Temp31 := 20
-  else
-    Temp31 := 16;
-  if (SpriteTableIndex < Mul32(Mul32(Mul32(Add32(Temp31, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)), 2), 2), 8)) and ((SpriteTableIndex and 4) = 0) then
-  begin
 
+  if (SpriteTableIndex < Mul32(Mul32(Mul32(Add32(GetVisibleTilePairs(Vdp), Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)), 2), 2), 8)) and ((SpriteTableIndex and 4) = 0) then
+  begin
     Vdp.State.SpriteTableCache[SpriteTableIndex div 8][SpriteTableIndex and 3] := Byte(Value);
     Vdp.State.SpriteRowCache.NeedsUpdating := 1;
   end;
@@ -333,7 +343,7 @@ begin
   case Vdp.State.Access.SelectedBuffer of
     VDP_ACCESS_VRAM:
       begin
-        WriteVRAM(Vdp, (Vdp.State.Access.AddressRegister xor 0), (Value and $FF));
+        WriteVRAM(Vdp, (Vdp.State.Access.AddressRegister), (Value and $FF));
         WriteVRAM(Vdp, (Vdp.State.Access.AddressRegister xor 1), (Value shr 8));
       end;
     VDP_ACCESS_CRAM:
@@ -365,14 +375,9 @@ begin
         end;
       end;
     VDP_ACCESS_INVALID, VDP_ACCESS_VRAM_8_BIT:
-      begin
-        ;
-      end;
-  else
-    begin
-      Assert(0 <> 0);
       ;
-    end;
+  else
+    Assert(False);
   end;
   IncrementAccessAddressRegister(Vdp.State);
 end;
@@ -384,7 +389,7 @@ begin
   case State.Access.SelectedBuffer of
     VDP_ACCESS_VRAM:
       begin
-        Value := ReadVRAM(State, (Mul32(WordAddress, 2) xor 0)) or (ReadVRAM(State, (Mul32(WordAddress, 2) xor 1)) shl 8);
+        Value := ReadVRAM(State, Mul32(WordAddress, 2)) or (ReadVRAM(State, (Mul32(WordAddress, 2) xor 1)) shl 8);
       end;
     VDP_ACCESS_CRAM:
       begin
@@ -402,117 +407,74 @@ begin
         Value := Value or ReadVRAM(State, State.Access.AddressRegister);
       end;
     VDP_ACCESS_INVALID:
-      begin
-        ;
-      end;
-  else
-    begin
-      Assert(0 <> 0);
       ;
-    end;
+  else
+    Assert(False);
   end;
   IncrementAccessAddressRegister(State);
   Exit(Value);
 end;
 
 procedure ConstantInitialise;
+const
+  PALETTE_LINE_INDEX_MASK = $0F;
+  COLOUR_INDEX_MASK = $3F;
+  PRIORITY_MASK = $40;
+  NOT_SHADOWED_MASK = $80;
 begin
-  var PaletteLineIndexMask: Cardinal;
-  var ColourIndexMask: Cardinal;
-  var PriorityMask: Cardinal;
-  var NotShadowedMask: Cardinal;
-  var OldPaletteLineIndex: Cardinal;
-  var OldColourIndex: Cardinal;
-  var OldPriority: Byte;
-  var OldNotShadowed: Byte;
-  var NewPaletteLineIndex: Cardinal;
-  var NewColourIndex: Cardinal;
-  var NewPriority: Byte;
-  var NewNotShadowed: Byte;
-  var DrawNewPixel: Byte;
-  var Temp53: Integer;
-  var Temp54: Integer;
-  var Temp55: Integer;
-  var Output: Cardinal;
-  var Temp56: Cardinal;
-  var Temp57: Cardinal;
-  var Temp66: Integer;
-  var Temp67: Integer;
-  var Temp69: Integer;
-  for var NewPixelItem := 0 to High(BlitLookup.Normal.Lower) do
+  for var NewPixel := 0 to High(BlitLookup.Normal.Lower) do
   begin
-    for var OldPixelItem := 0 to High(BlitLookup.Normal.Lower[0].Pixels) do
+    var NewPaletteLineIndex := NewPixel and PALETTE_LINE_INDEX_MASK;
+    var NewColourIndex := NewPixel and COLOUR_INDEX_MASK;
+    var NewPriority := (NewPixel and PRIORITY_MASK) <> 0;
+    var NewNotShadowed := NewPriority;
+
+    for var OldPixel := 0 to High(BlitLookup.Normal.Lower[0].Pixels) do
     begin
-      PaletteLineIndexMask := $F;
-      ColourIndexMask := $3F;
-      PriorityMask := $40;
-      NotShadowedMask := $80;
-      OldPaletteLineIndex := Cardinal(OldPixelItem and PaletteLineIndexMask);
-      OldColourIndex := Cardinal(OldPixelItem and ColourIndexMask);
-      OldPriority := Ord(Cardinal(OldPixelItem and PriorityMask) <> 0);
-      OldNotShadowed := Ord(Cardinal(OldPixelItem and NotShadowedMask) <> 0);
-      NewPaletteLineIndex := Cardinal(NewPixelItem and PaletteLineIndexMask);
-      NewColourIndex := Cardinal(NewPixelItem and ColourIndexMask);
-      NewPriority := Ord(Cardinal(NewPixelItem and PriorityMask) <> 0);
-      NewNotShadowed := NewPriority;
-      Temp53 := Ord(NewPaletteLineIndex <> 0);
-      if Temp53 <> 0 then
-      begin
-        Temp55 := Ord((OldPaletteLineIndex = 0) or ((OldPriority = 0)));
-        Temp54 := Ord((Temp55 <> 0) or (NewPriority <> 0));
-        Temp53 := Ord(Temp54 <> 0);
-      end;
-      DrawNewPixel := Byte(Temp53);
-      if DrawNewPixel <> 0 then
-        Temp56 := NewPixelItem
+      var OldPaletteLineIndex := OldPixel and PALETTE_LINE_INDEX_MASK;
+      var OldColourIndex := OldPixel and COLOUR_INDEX_MASK;
+      var OldPriority := (OldPixel and PRIORITY_MASK) <> 0;
+      var OldNotShadowed := (OldPixel and NOT_SHADOWED_MASK) <> 0;
+      var DrawNewPixel := (NewPaletteLineIndex <> 0) and ((OldPaletteLineIndex = 0) or not OldPriority or NewPriority);
+
+      var Output: Cardinal;
+      if DrawNewPixel then
+        Output := NewPixel
       else
-        Temp56 := OldPixelItem;
-      Output := Temp56;
-      if (OldNotShadowed <> 0) or (NewNotShadowed <> 0) then
-        Temp57 := NotShadowedMask
-      else
-        Temp57 := 0;
-      Output := Output or Temp57;
-      BlitLookup.Normal.Lower[NewPixelItem].Pixels[OldPixelItem] := Byte(Output);
-      if DrawNewPixel <> 0 then
-      begin
+        Output := OldPixel;
+
+      if OldNotShadowed or NewNotShadowed then
+        Output := Output or NOT_SHADOWED_MASK;
+
+      BlitLookup.Normal.Lower[NewPixel].Pixels[OldPixel] := Byte(Output);
+
+      if DrawNewPixel then
         case NewColourIndex of
           $0E, $1E, $2E:
-            begin
-              Output := NewColourIndex or Cardinal(SHADOW_HIGHLIGHT_NORMAL);
-            end;
+            Output := NewColourIndex or SHADOW_HIGHLIGHT_NORMAL;
           $3E:
-            begin
-              if OldNotShadowed <> 0 then
-                Temp66 := SHADOW_HIGHLIGHT_HIGHLIGHT
-              else
-                Temp66 := SHADOW_HIGHLIGHT_NORMAL;
-              Output := OldColourIndex or Cardinal(Temp66);
-            end;
-          $3F:
-            begin
-              Output := OldColourIndex or Cardinal(SHADOW_HIGHLIGHT_SHADOW);
-            end;
-        else
-          begin
-            if (NewNotShadowed <> 0) or (OldNotShadowed <> 0) then
-              Temp67 := SHADOW_HIGHLIGHT_NORMAL
+            if OldNotShadowed then
+              Output := OldColourIndex or SHADOW_HIGHLIGHT_HIGHLIGHT
             else
-              Temp67 := SHADOW_HIGHLIGHT_SHADOW;
-            Output := NewColourIndex or Cardinal(Temp67);
-          end;
-        end;
-      end
+              Output := OldColourIndex or SHADOW_HIGHLIGHT_NORMAL;
+          $3F:
+            Output := OldColourIndex or SHADOW_HIGHLIGHT_SHADOW;
+        else
+          if NewNotShadowed or OldNotShadowed then
+            Output := NewColourIndex or SHADOW_HIGHLIGHT_NORMAL
+          else
+            Output := NewColourIndex or SHADOW_HIGHLIGHT_SHADOW;
+        end
       else
       begin
-        if OldNotShadowed <> 0 then
-          Temp69 := SHADOW_HIGHLIGHT_NORMAL
+        if OldNotShadowed then
+          Output := OldColourIndex or SHADOW_HIGHLIGHT_NORMAL
         else
-          Temp69 := SHADOW_HIGHLIGHT_SHADOW;
-        Output := OldColourIndex or Cardinal(Temp69);
+          Output := OldColourIndex or SHADOW_HIGHLIGHT_SHADOW;
       end;
-      BlitLookup.ShadowHighlight.Lower[NewPixelItem].Pixels[OldPixelItem] := Byte(Output);
-      BlitLookup.ForcedLayer.Lower[NewPixelItem].Pixels[OldPixelItem] := Byte(OldPixelItem and (NewColourIndex or not ColourIndexMask));
+
+      BlitLookup.ShadowHighlight.Lower[NewPixel].Pixels[OldPixel] := Byte(Output);
+      BlitLookup.ForcedLayer.Lower[NewPixel].Pixels[OldPixel] := Byte(OldPixel and (NewColourIndex or not COLOUR_INDEX_MASK));
     end;
   end;
 end;
@@ -579,201 +541,147 @@ end;
 
 function GetVScrollValue(var Vdp: TVDP; PlaneIndex: Cardinal; TilePair: Cardinal): Cardinal;
 begin
-
   case Vdp.State.VscrollMode of
     VDP_VSCROLL_MODE_FULL:
-      begin
-        Exit(Cardinal(Vdp.State.VsramCache[PlaneIndex]));
-      end;
-    VDP_VSCROLL_MODE_2_CELL:
-      begin
-        Exit(Cardinal(Vdp.State.Vsram[(Add32(PlaneIndex, Mul32(Sub32(TilePair, (GetWidescreenTiles(Vdp) + (2 - 1)) div 2), 2) mod Cardinal(Length(Vdp.State.Vsram))))]));
-      end;
-  else
-    begin
-      Assert(0 <> 0);
       Exit(Cardinal(Vdp.State.VsramCache[PlaneIndex]));
-    end;
+    VDP_VSCROLL_MODE_2_CELL:
+      Exit(Cardinal(Vdp.State.Vsram[(Add32(PlaneIndex, Mul32(Sub32(TilePair, (GetWidescreenTiles(Vdp) + (2 - 1)) div 2), 2) mod Cardinal(Length(Vdp.State.Vsram))))]));
+  else
+    Assert(0 <> 0);
+    Exit(Cardinal(Vdp.State.VsramCache[PlaneIndex]));
   end;
 end;
 
 procedure RenderTilePair(var Vdp: TVDP; PixelYInPlane: Cardinal; VramAddress: Cardinal; BaseTileVramAddress: Cardinal; var Metapixels: array of Byte; var PixelIndex: Integer; const BlitLookupList: TBlitLookup);
 begin
-  var WordVramAddress: Cardinal;
-  var WordValue: Cardinal;
-  var XFlip: Cardinal;
-  var YFlip: Cardinal;
-  var PixelYInTile: Cardinal;
-  var TileRowVramAddress: Cardinal;
-  var ByteIndexXor: Cardinal;
-  var NybbleShift2: Cardinal;
-  var NybbleShift1: Cardinal;
-  var ByteValue: Cardinal;
+  var TileHeightShift := 3 + Vdp.State.DoubleResolutionEnabled;
+  var TileHeightMask := Cardinal((1 shl TileHeightShift) - 1);
+  var PixelYInTileUnflipped := PixelYInPlane and TileHeightMask;
 
-  var TileHeightShift: Cardinal := 3 + Vdp.State.DoubleResolutionEnabled;
-  var TileHeightMask: Cardinal := Cardinal((1 shl TileHeightShift) - 1);
-  var PixelYInTileUnflipped: Cardinal := PixelYInPlane and TileHeightMask;
-  for var ItemIndex := 0 to 2 - 1 do
+  for var i := 0 to 1 do
   begin
-    WordVramAddress := Add32(VramAddress, Mul32(ItemIndex, 2));
-    WordValue := ReadVRAM(Vdp.State, (WordVramAddress xor 0)) or (ReadVRAM(Vdp.State, (WordVramAddress xor 1)) shl 8);
-    XFlip := Sub32(0, Ord((WordValue and $800) <> 0));
-    YFlip := Sub32(0, Ord((WordValue and $1000) <> 0));
-    PixelYInTile := PixelYInTileUnflipped xor (TileHeightMask and YFlip);
-    TileRowVramAddress := Add32(BaseTileVramAddress, (Add32((WordValue and $7FF) shl TileHeightShift, PixelYInTile)) shl 2);
-    ByteIndexXor := 1 xor (3 and XFlip);
-    NybbleShift2 := 4 and XFlip;
-    NybbleShift1 := 4 xor NybbleShift2;
+    var WordVramAddress := VramAddress + Cardinal(i * 2);
+    var WordValue := ReadVRAM(Vdp.State, WordVramAddress) or (ReadVRAM(Vdp.State, WordVramAddress xor 1) shl 8);
+    var XFlip := (WordValue and $0800) <> 0;
+    var YFlip := (WordValue and $1000) <> 0;
+    var PixelYInTile := PixelYInTileUnflipped;
+
+    if YFlip then
+      PixelYInTile := PixelYInTile xor TileHeightMask;
+
+    var TileRowVramAddress := BaseTileVramAddress + (((WordValue and $07FF) shl TileHeightShift) + PixelYInTile) shl 2;
     var LookupIndex := (WordValue shr 9) and $70;
-    for var JIndex := 0 to Integer(8 div 2) - 1 do
+
+    for var JIndex := 0 to 3 do
     begin
-      ByteValue := ReadVRAM(Vdp.State, (Add32(TileRowVramAddress, JIndex) xor ByteIndexXor));
-      Metapixels[PixelIndex] := Byte(BlitLookupList.Lower[LookupIndex + ((ByteValue shr NybbleShift1) and $F)].Pixels[Metapixels[PixelIndex]]);
-      Inc(PixelIndex);
-      Metapixels[PixelIndex] := Byte(BlitLookupList.Lower[LookupIndex + ((ByteValue shr NybbleShift2) and $F)].Pixels[Metapixels[PixelIndex]]);
-      Inc(PixelIndex);
+      var ByteAddress := TileRowVramAddress + Cardinal(JIndex);
+      if XFlip then
+        ByteAddress := ByteAddress xor 2
+      else
+        ByteAddress := ByteAddress xor 1;
+
+      var ByteValue := ReadVRAM(Vdp.State, ByteAddress);
+      if XFlip then
+      begin
+        Metapixels[PixelIndex] := BlitLookupList.Lower[LookupIndex + (ByteValue and $0F)].Pixels[Metapixels[PixelIndex]];
+        Inc(PixelIndex);
+
+        Metapixels[PixelIndex] := BlitLookupList.Lower[LookupIndex + ((ByteValue shr 4) and $0F)].Pixels[Metapixels[PixelIndex]];
+        Inc(PixelIndex);
+      end
+      else
+      begin
+        Metapixels[PixelIndex] := BlitLookupList.Lower[LookupIndex + ((ByteValue shr 4) and $0F)].Pixels[Metapixels[PixelIndex]];
+        Inc(PixelIndex);
+
+        Metapixels[PixelIndex] := BlitLookupList.Lower[LookupIndex + (ByteValue and $0F)].Pixels[Metapixels[PixelIndex]];
+        Inc(PixelIndex);
+      end;
     end;
   end;
 end;
 
 procedure RenderScrollingPlane(var Vdp: TVDP; Start: Cardinal; EndColumn: Cardinal; Scanline: Cardinal; PlaneIndex: Cardinal; PlaneXOffset: Cardinal; PixelOffset: Integer; var Metapixels: array of Byte; const BlitLookupList: TBlitLookup);
 begin
-  var Temp79: Integer;
-  var Temp80: Byte;
-  var Temp81: Cardinal;
-  var Temp84: Integer;
-  var Temp85: Integer;
-  var Temp86: Integer;
-  var Temp87: Integer;
+  var PlaneATileIndex: Byte;
   var Vscroll: Cardinal;
   var PixelYInPlane: Cardinal;
-  var ClampedI: Cardinal;
-  var Temp88: Cardinal;
+  var ClampedColumn: Cardinal;
   var TileX: Cardinal;
   var TileY: Cardinal;
   var VramAddress: Cardinal;
 
   if PlaneIndex = 0 then
-    Temp80 := Vdp.State.PlaneATileIndexRebase
+    PlaneATileIndex := Vdp.State.PlaneATileIndexRebase
   else
-    Temp80 := Vdp.State.PlaneBTileIndexRebase;
-  if Temp80 <> 0 then
-    Temp79 := $10000
+    PlaneATileIndex := Vdp.State.PlaneBTileIndexRebase;
+
+  var BaseTileVramAddress: Cardinal;
+  if PlaneATileIndex <> 0 then
+    BaseTileVramAddress := $10000
   else
-    Temp79 := 0;
-  var BaseTileVramAddress: Cardinal := Temp79;
+    BaseTileVramAddress := 0;
   var PlanePitchShift: Cardinal := Vdp.State.PlaneWidthShift;
   var PlaneWidthBitmask: Cardinal := Cardinal((1 shl PlanePitchShift) - 1);
   var PlaneHeightBitmask: Cardinal := Cardinal(Vdp.State.PlaneHeightBitmask);
+  var PlaneAddress: Cardinal;
   if PlaneIndex = 0 then
-    Temp81 := Vdp.State.PlaneAAddress
+    PlaneAddress := Vdp.State.PlaneAAddress
   else
-    Temp81 := Vdp.State.PlaneBAddress;
-  var PlaneAddress: Cardinal := Temp81;
+    PlaneAddress := Vdp.State.PlaneBAddress;
   var TileHeightShift: Cardinal := 3 + Vdp.State.DoubleResolutionEnabled;
   var PixelIndex := PixelOffset + Integer(Start) * 16;
-  var i: Cardinal := Start;
-  while True do
+  var Column: Cardinal := Start;
+  while (Column <= EndColumn) and (Column <= MAX_PLANE_COLUMNS) do
   begin
-    Temp84 := Ord(i <= EndColumn);
-    if Temp84 <> 0 then
-    begin
-      if 20 > 16 then
-        Temp85 := 20
-      else
-        Temp85 := 16;
-      if 20 > 16 then
-        Temp86 := 20
-      else
-        Temp86 := 16;
-      if 20 > 16 then
-        Temp87 := 20
-      else
-        Temp87 := 16;
-      Temp84 := Ord(i < Cardinal(((((32 - Temp85) div 2) + Temp86) + ((32 - Temp87) div 2)) + 1));
-    end;
-    if Temp84 = 0 then
-      Break;
-    Vscroll := GetVScrollValue(Vdp, PlaneIndex, (Sub32(i, 1)));
+    Vscroll := GetVScrollValue(Vdp, PlaneIndex, (Sub32(Column, 1)));
     PixelYInPlane := Add32(Vscroll, Scanline);
-    if Start > Sub32(i, 1) then
-      Temp88 := Start
+    if Start > Sub32(Column, 1) then
+      ClampedColumn := Start
     else
-      Temp88 := Sub32(i, 1);
-    ClampedI := Temp88;
-    TileX := Mul32(Add32(PlaneXOffset, ClampedI), 2) and PlaneWidthBitmask;
+      ClampedColumn := Sub32(Column, 1);
+    TileX := Mul32(Add32(PlaneXOffset, ClampedColumn), 2) and PlaneWidthBitmask;
     TileY := (PixelYInPlane shr TileHeightShift) and PlaneHeightBitmask;
     VramAddress := Add32(PlaneAddress, Mul32(Add32(TileY shl PlanePitchShift, TileX), 2));
     RenderTilePair(Vdp, PixelYInPlane, VramAddress, BaseTileVramAddress, Metapixels, PixelIndex, BlitLookupList);
-    Inc(i);
+    Inc(Column);
   end;
 end;
 
 procedure RenderWindowPlane(var Vdp: TVDP; Start: Cardinal; EndColumn: Cardinal; Scanline: Cardinal; var Metapixels: array of Byte; const BlitLookupList: TBlitLookup);
 begin
-  var Temp89: Integer;
-  var Temp92: Integer;
-  var Temp93: Integer;
-  var Temp94: Integer;
-  var Temp95: Integer;
-
+  var BaseTileVramAddress: Cardinal;
   if Vdp.State.PlaneATileIndexRebase <> 0 then
-    Temp89 := $10000
+    BaseTileVramAddress := $10000
   else
-    Temp89 := 0;
-  var BaseTileVramAddress: Cardinal := Temp89;
+    BaseTileVramAddress := 0;
   var TileY: Cardinal := Scanline shr (3 + Vdp.State.DoubleResolutionEnabled);
   var PlanePitchShift: Cardinal := 5 + Vdp.State.H40Enabled;
   var PlaneWidthBitmask: Cardinal := Cardinal((1 shl PlanePitchShift) - 1);
   var VramAddressBase: Cardinal := Add32(GetWindowPlaneTableAddress(Vdp.State), Mul32(TileY shl PlanePitchShift, 2));
   var TileXBase: Cardinal := Cardinal(0 - (((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) * 2)) and PlaneWidthBitmask;
   var PixelIndex := PLANE_PADDING + Integer(Start) * 16;
-  var i: Cardinal := Start;
-  while True do
+  var Column: Cardinal := Start;
+  while (Column < EndColumn) and (Column < MAX_PLANE_COLUMNS) do
   begin
-    Temp92 := Ord(i < EndColumn);
-    if Temp92 <> 0 then
-    begin
-      if 20 > 16 then
-        Temp93 := 20
-      else
-        Temp93 := 16;
-      if 20 > 16 then
-        Temp94 := 20
-      else
-        Temp94 := 16;
-      if 20 > 16 then
-        Temp95 := 20
-      else
-        Temp95 := 16;
-      Temp92 := Ord(i < Cardinal((((32 - Temp93) div 2) + Temp94) + ((32 - Temp95) div 2)));
-    end;
-    if Temp92 = 0 then
-      Break;
-    RenderTilePair(Vdp, Scanline, (Add32(VramAddressBase, Mul32(Add32(TileXBase, Mul32(i, 2)) and PlaneWidthBitmask, 2))), BaseTileVramAddress, Metapixels, PixelIndex, BlitLookupList);
-    Inc(i);
+    RenderTilePair(Vdp, Scanline, (Add32(VramAddressBase, Mul32(Add32(TileXBase, Mul32(Column, 2)) and PlaneWidthBitmask, 2))), BaseTileVramAddress, Metapixels, PixelIndex, BlitLookupList);
+    Inc(Column);
   end;
 end;
 
 procedure UpdateSpriteCache(var Vdp: TVDP);
 begin
-  var Temp96: Integer;
   var CachedSprite: TVDPCachedSprite;
   var BlankLines: Cardinal;
-  var Temp103: Cardinal;
   var Temp104: Cardinal;
   var Temp105: Integer;
   var Temp106: Integer;
-  var Temp108: Integer;
   var Temp110: Byte;
   var Temp111: Integer;
 
   var TileHeightShift: Cardinal := 3 + Vdp.State.DoubleResolutionEnabled;
-  if Vdp.State.H40Enabled <> 0 then
-    Temp96 := 20
-  else
-    Temp96 := 16;
-  var MaxSprites: Cardinal := Mul32(Mul32(Add32(Temp96, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)), 2), 2);
+
+  var MaxSprites: Cardinal := Mul32(Mul32(Add32(GetVisibleTilePairs(Vdp), Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)), 2), 2);
   var SpritesRemaining: Cardinal := MaxSprites;
   if Vdp.State.SpriteRowCache.NeedsUpdating = 0 then
     Exit;
@@ -787,11 +695,11 @@ begin
   begin
     CachedSprite := VDPGetCachedSprite(Vdp.State, SpriteIndex);
     BlankLines := Cardinal(128 shl Vdp.State.DoubleResolutionEnabled);
+    var i: Cardinal;
     if BlankLines > CachedSprite.Y then
-      Temp103 := BlankLines
+      i := BlankLines
     else
-      Temp103 := CachedSprite.Y;
-    var i: Cardinal := Temp103;
+      i := CachedSprite.Y;
     while True do
     begin
       if Vdp.State.V30Enabled <> 0 then
@@ -811,11 +719,7 @@ begin
       if not (i < Temp104) then
         Break;
 
-      if Vdp.State.H40Enabled <> 0 then
-        Temp108 := 20
-      else
-        Temp108 := 16;
-      if Cardinal(Vdp.State.SpriteRowCache.Rows[(Sub32(i, BlankLines))].Total) <> Add32(Temp108, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)) then
+      if Cardinal(Vdp.State.SpriteRowCache.Rows[(Sub32(i, BlankLines))].Total) <> Add32(GetVisibleTilePairs(Vdp), Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)) then
       begin
         Temp110 := Vdp.State.SpriteRowCache.Rows[(Sub32(i, BlankLines))].Total;
         Inc(Vdp.State.SpriteRowCache.Rows[(Sub32(i, BlankLines))].Total);
@@ -843,15 +747,12 @@ end;
 
 procedure RenderSprites(var Vdp: TVDP; var SpriteMetapixels: array of Byte; Scanline: Cardinal);
 begin
-  var Temp112: Integer;
-  var Temp113: Integer;
   var SpriteIndex: Cardinal;
   var Width: Cardinal;
   var RawX: Cardinal;
   var X: Cardinal;
   var Temp116: Integer;
   var Temp117: Integer;
-  var Temp118: Integer;
   var Height: Cardinal;
   var WordValue: Cardinal;
   var SpriteTileIndex: Cardinal;
@@ -862,36 +763,30 @@ begin
   var Temp119: Integer;
   var YInSpriteNonFlipped: Cardinal;
   var YInSprite: Cardinal;
-  var Temp120: Cardinal;
   var PixelYInTile: Cardinal;
   var NybbleShift: array[0..1] of Cardinal;
   var XInSprite: Cardinal;
-  var Temp124: Cardinal;
   var TileIndex: Cardinal;
   var TileRowVramAddress: Cardinal;
   var ByteValue: Cardinal;
   var PaletteLineIndex: Cardinal;
 
+  var BaseTileVramAddress: Cardinal;
   if Vdp.State.SpriteTileIndexRebase <> 0 then
-    Temp112 := $10000
+    BaseTileVramAddress := $10000
   else
-    Temp112 := 0;
-  var BaseTileVramAddress: Cardinal := Temp112;
+    BaseTileVramAddress := 0;
   var TileHeightShift: Cardinal := 3 + Vdp.State.DoubleResolutionEnabled;
   var TileHeightMask: Cardinal := Cardinal((1 shl (3 + Vdp.State.DoubleResolutionEnabled)) - 1);
-  if Vdp.State.H40Enabled <> 0 then
-    Temp113 := 20
-  else
-    Temp113 := 16;
-  var SpriteLimit: Cardinal := Add32(Temp113, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2));
+
+  var SpriteLimit: Cardinal := Add32(GetVisibleTilePairs(Vdp), Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2));
   var PixelLimit: Cardinal := Mul32(SpriteLimit, 16);
   var Masked: Byte := 0;
   for var ItemIndex := 0 to Vdp.State.SpriteRowCache.Rows[Scanline].Total - 1 do
   begin
-
     SpriteIndex := Add32(GetSpriteTableAddress(Vdp.State), Vdp.State.SpriteRowCache.Rows[Scanline].Sprites[ItemIndex].TableIndex * 8);
     Width := Cardinal(Vdp.State.SpriteRowCache.Rows[Scanline].Sprites[ItemIndex].Width);
-    RawX := (ReadVRAM(Vdp.State, (Add32(SpriteIndex, 6) xor 0)) or (ReadVRAM(Vdp.State, (Add32(SpriteIndex, 6) xor 1)) shl 8)) and $1FF;
+    RawX := (ReadVRAM(Vdp.State, Add32(SpriteIndex, 6)) or (ReadVRAM(Vdp.State, (Add32(SpriteIndex, 6) xor 1)) shl 8)) and $1FF;
     X := Add32(RawX, (((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) * 2) * 8);
     if RawX = 0 then
       Masked := Vdp.State.AllowSpriteMasking
@@ -901,11 +796,7 @@ begin
     Temp116 := Ord(Temp117 <> 0);
     if Temp116 = 0 then
     begin
-      if Vdp.State.H40Enabled <> 0 then
-        Temp118 := 20
-      else
-        Temp118 := 16;
-      Temp116 := Ord(X >= Add32($80, Mul32(Mul32(Add32(Temp118, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)), 2), 8)));
+      Temp116 := Ord(X >= Add32($80, Mul32(Mul32(Add32(GetVisibleTilePairs(Vdp), Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2)), 2), 8)));
     end;
     if Temp116 <> 0 then
     begin
@@ -916,7 +807,7 @@ begin
     else
     begin
       Height := Cardinal(Vdp.State.SpriteRowCache.Rows[Scanline].Sprites[ItemIndex].Height);
-      WordValue := ReadVRAM(Vdp.State, (Add32(SpriteIndex, 4) xor 0)) or (ReadVRAM(Vdp.State, (Add32(SpriteIndex, 4) xor 1)) shl 8);
+      WordValue := ReadVRAM(Vdp.State, Add32(SpriteIndex, 4)) or (ReadVRAM(Vdp.State, (Add32(SpriteIndex, 4) xor 1)) shl 8);
       SpriteTileIndex := WordValue and $7FF;
       XFlip := Ord((WordValue and $800) <> 0);
       YFlip := Ord((WordValue and $1000) <> 0);
@@ -928,10 +819,9 @@ begin
       ByteIndexXor := Cardinal(1 xor Temp119);
       YInSpriteNonFlipped := Cardinal(Vdp.State.SpriteRowCache.Rows[Scanline].Sprites[ItemIndex].YInSprite);
       if YFlip <> 0 then
-        Temp120 := Sub32(Sub32(Height shl TileHeightShift, YInSpriteNonFlipped), 1)
+        YInSprite := Sub32(Sub32(Height shl TileHeightShift, YInSpriteNonFlipped), 1)
       else
-        Temp120 := YInSpriteNonFlipped;
-      YInSprite := Temp120;
+        YInSprite := YInSpriteNonFlipped;
       PixelYInTile := YInSprite and TileHeightMask;
       var PixelIndex := SPRITE_PADDING + Integer(X) - $80;
       if XFlip <> 0 then
@@ -947,10 +837,9 @@ begin
       for var JIndex := 0 to Integer(Width) - 1 do
       begin
         if XFlip <> 0 then
-          Temp124 := Sub32(Sub32(Width, JIndex), 1)
+          XInSprite := Sub32(Sub32(Width, JIndex), 1)
         else
-          Temp124 := JIndex;
-        XInSprite := Temp124;
+          XInSprite := JIndex;
         TileIndex := Add32(Add32(SpriteTileIndex, YInSprite shr TileHeightShift), Mul32(XInSprite, Height));
         TileRowVramAddress := Add32(BaseTileVramAddress, (Add32(TileIndex shl (3 + Vdp.State.DoubleResolutionEnabled), PixelYInTile)) shl 2);
         for var KIndex := 0 to Integer(8 div 2) - 1 do
@@ -985,10 +874,10 @@ begin
   var ScrollOffset: Cardinal;
   var PlaneXOffset: Cardinal;
 
-  if not (Vdp.Configuration.PlanesDisabled[PlaneIndex] <> 0) then
+  if Vdp.Configuration.PlanesDisabled[PlaneIndex] = 0 then
   begin
     HscrollVramAddress := Add32(Add32(Vdp.State.HscrollAddress, Mul32(PlaneIndex, 2)), GetHScrollTableOffset(Vdp.State, Scanline));
-    Hscroll := Add32(ReadVRAM(Vdp.State, (HscrollVramAddress xor 0)) or (ReadVRAM(Vdp.State, (HscrollVramAddress xor 1)) shl 8), (((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) * 2) * 8);
+    Hscroll := Add32(ReadVRAM(Vdp.State, (HscrollVramAddress)) or (ReadVRAM(Vdp.State, (HscrollVramAddress xor 1)) shl 8), (((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) * 2) * 8);
     ScrollOffset := Sub32(8 * 2, Hscroll mod Cardinal(8 * 2));
     PlaneXOffset := Sub32(0, Hscroll div (8 * 2));
     RenderScrollingPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneIndex, PlaneXOffset, PLANE_PADDING - Integer(ScrollOffset), PlaneMetapixels, BlitLookupList);
@@ -997,10 +886,7 @@ end;
 
 procedure RenderForegroundPlane(var Vdp: TVDP; LeftBoundary: Cardinal; RightBoundary: Cardinal; Scanline: Cardinal; var PlaneMetapixels: array of Byte; const BlitLookupList: TBlitLookup; WindowPlane: Byte);
 begin
-  var Temp129: Integer := Ord(WindowPlane <> 0);
-  if Temp129 <> 0 then
-    Temp129 := Ord((Vdp.Configuration.WindowDisabled = 0));
-  if Temp129 <> 0 then
+  if (WindowPlane <> 0) and ((Vdp.Configuration.WindowDisabled = 0)) then
     RenderWindowPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneMetapixels, BlitLookupList)
   else
     RenderScrollPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneMetapixels, BlitLookupList, 0);
@@ -1019,49 +905,33 @@ end;
 
 procedure RenderForegroundAndSpritePlanes(var Vdp: TVDP; Scanline: Cardinal; var PlaneMetapixels: array of Byte; var SpriteMetapixels: array of Byte; WindowPlane: Byte; ScanlineRenderedCallback: TVDPScanlineRenderedCallback; ScanlineRenderedCallbackUserData: Pointer);
 begin
-  var Temp132: Integer;
   var Temp133: Integer;
-  var Temp134: Cardinal;
   var Temp135: Cardinal;
   var Temp136: Cardinal;
-  var Temp137: Integer;
   var Temp138: Cardinal;
-  var Temp139: Integer;
-  var Temp144: Integer;
-  var Temp145: Integer;
-  var Temp146: Cardinal;
-  var Temp147: Cardinal;
-  var Temp148: Cardinal;
-  var Temp149: Cardinal;
-  var Temp150: Cardinal;
-  var Temp151: Cardinal;
+  var VisibleTileRows: Integer;
 
   var FullWindowPlaneLine: Byte := Ord(Integer(Ord(Scanline < Cardinal(Vdp.State.Window.VerticalBoundary))) <> Vdp.State.Window.AlignedBottom);
+  var WindowHorizontalBoundary: Cardinal;
   if Vdp.State.Window.HorizontalBoundary = 0 then
-    Temp132 := 0
+    WindowHorizontalBoundary := 0
   else
-    Temp132 := ((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) + Vdp.State.Window.HorizontalBoundary;
-  var WindowHorizontalBoundary: Cardinal := Temp132;
+    WindowHorizontalBoundary := ((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) + Vdp.State.Window.HorizontalBoundary;
   if FullWindowPlaneLine <> 0 then
     Temp133 := 0
   else
   begin
     if Vdp.State.Window.AlignedRight = WindowPlane then
-      Temp134 := WindowHorizontalBoundary
+      Temp133 := WindowHorizontalBoundary
     else
-      Temp134 := 0;
-    Temp133 := Temp134;
+      Temp133 := 0;
   end;
   var LeftBoundary: Cardinal := Temp133;
   if FullWindowPlaneLine <> 0 then
   begin
     if WindowPlane <> 0 then
     begin
-      if Vdp.State.H40Enabled <> 0 then
-        Temp137 := 20
-      else
-        Temp137 := 16;
-      Temp136 := Add32(Temp137, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2));
+      Temp136 := Add32(GetVisibleTilePairs(Vdp), Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2));
     end
     else
       Temp136 := 0;
@@ -1071,11 +941,7 @@ begin
   begin
     if Vdp.State.Window.AlignedRight = WindowPlane then
     begin
-      if Vdp.State.H40Enabled <> 0 then
-        Temp139 := 20
-      else
-        Temp139 := 16;
-      Temp138 := Add32(Temp139, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2));
+      Temp138 := Add32(GetVisibleTilePairs(Vdp), Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2));
     end
     else
       Temp138 := WindowHorizontalBoundary;
@@ -1116,52 +982,22 @@ begin
   var OutputExtraTiles: Cardinal := GetWidescreenTiles(Vdp) * 2;
   var OutputExtraTilesInPixels: Cardinal := Mul32(OutputExtraTiles, 8);
   var XOffset: Cardinal := Cardinal(Sub32(InputExtraTilesInPixels, OutputExtraTilesInPixels) div 2);
-  if Vdp.State.H40Enabled <> 0 then
-    Temp144 := 20
-  else
-    Temp144 := 16;
-  var OutputWidth: Cardinal := Add32((Temp144 * 2) * 8, OutputExtraTilesInPixels);
+
+  var OutputWidth: Cardinal := Add32((GetVisibleTilePairs(Vdp) * 2) * 8, OutputExtraTilesInPixels);
   if Vdp.State.V30Enabled <> 0 then
-    Temp145 := 30
+    VisibleTileRows := 30
   else
-    Temp145 := 28;
-  var OutputHeight: Cardinal := Cardinal(Temp145 shl (3 + Vdp.State.DoubleResolutionEnabled));
-  if Add32(XOffset, OutputWidth) < LeftBoundaryPixels then
-    Temp147 := Add32(XOffset, OutputWidth)
-  else
-    Temp147 := LeftBoundaryPixels;
-  if XOffset > Temp147 then
-    Temp146 := XOffset
-  else
-  begin
-    if Add32(XOffset, OutputWidth) < LeftBoundaryPixels then
-      Temp148 := Add32(XOffset, OutputWidth)
-    else
-      Temp148 := LeftBoundaryPixels;
-    Temp146 := Temp148;
-  end;
-  var ClampedLeftBoundaryPixels: Cardinal := Sub32(Temp146, XOffset);
-  if Add32(XOffset, OutputWidth) < RightBoundaryPixels then
-    Temp150 := Add32(XOffset, OutputWidth)
-  else
-    Temp150 := RightBoundaryPixels;
-  if XOffset > Temp150 then
-    Temp149 := XOffset
-  else
-  begin
-    if Add32(XOffset, OutputWidth) < RightBoundaryPixels then
-      Temp151 := Add32(XOffset, OutputWidth)
-    else
-      Temp151 := RightBoundaryPixels;
-    Temp149 := Temp151;
-  end;
-  var ClampedRightBoundaryPixels: Cardinal := Sub32(Temp149, XOffset);
+    VisibleTileRows := 28;
+  var OutputHeight: Cardinal := Cardinal(VisibleTileRows shl (3 + Vdp.State.DoubleResolutionEnabled));
+  var ClampedLeftBoundaryPixels := Sub32(
+    Max(XOffset, Min(Add32(XOffset, OutputWidth), LeftBoundaryPixels)), XOffset);
+  var ClampedRightBoundaryPixels := Sub32(
+    Max(XOffset, Min(Add32(XOffset, OutputWidth), RightBoundaryPixels)), XOffset);
   ScanlineRenderedCallback(ScanlineRenderedCallbackUserData, Scanline, PlaneMetapixels, PLANE_PADDING + Integer(XOffset), ClampedLeftBoundaryPixels, ClampedRightBoundaryPixels, OutputWidth, OutputHeight);
 end;
 
 procedure VDPBeginScanline(var Vdp: TVDP);
 begin
-
   for var ItemIndex := 0 to High(Vdp.State.VsramCache) do
   begin
     Vdp.State.VsramCache[ItemIndex] := Vdp.State.Vsram[ItemIndex];
@@ -1170,56 +1006,25 @@ end;
 
 procedure VDPEndScanline(var Vdp: TVDP; Scanline: Cardinal; ScanlineRenderedCallback: TVDPScanlineRenderedCallback; ScanlineRenderedCallbackUserData: Pointer);
 begin
-  var PlaneMetapixelsBuffer: array[0..543] of Byte;
-  var SpriteMetapixelsBuffer: array[0..573] of Byte;
-  var Temp156: Integer;
-  var Temp157: Integer;
-  var Temp158: Byte;
-  var Temp159: Integer;
-  var Temp160: Integer;
-  var Temp161: Integer;
-  var Temp163: Integer;
+  var PlaneMetapixelsBuffer: array[0..MAX_PLANE_PIXELS + 2 * PLANE_PADDING - 1] of Byte;
+  var SpriteMetapixelsBuffer: array[0..MAX_PLANE_PIXELS + 2 * SPRITE_PADDING - 1] of Byte;
+  var BackgroundPixel: Byte;
 
-  if 30 > 28 then
-    Temp156 := 30
-  else
-    Temp156 := 28;
-  if 8 > 16 then
-    Temp157 := 8
-  else
-    Temp157 := 16;
-  Assert(Scanline < Cardinal(Temp156 * Temp157));
+  Assert(Scanline < Cardinal(Length(Vdp.State.SpriteRowCache.Rows)));
   UpdateSpriteCache(Vdp);
-  FillChar(SpriteMetapixelsBuffer, SizeOf(SpriteMetapixelsBuffer), 0);
+  for var PixelIndex := Low(SpriteMetapixelsBuffer) to High(SpriteMetapixelsBuffer) do
+    SpriteMetapixelsBuffer[PixelIndex] := 0;
   if Vdp.Configuration.SpritesDisabled = 0 then
     RenderSprites(Vdp, SpriteMetapixelsBuffer, Scanline);
   if Vdp.State.Debug.ForcedLayer = 0 then
-    Temp158 := Vdp.State.BackgroundColour
+    BackgroundPixel := Vdp.State.BackgroundColour
   else
-    Temp158 := $3F;
-  if 20 > 16 then
-    Temp159 := 20
-  else
-    Temp159 := 16;
-  if 20 > 16 then
-    Temp160 := 20
-  else
-    Temp160 := 16;
-  if 20 > 16 then
-    Temp161 := 20
-  else
-    Temp161 := 16;
-  FillChar(PlaneMetapixelsBuffer[PLANE_PADDING], (((((32 - Temp159) div 2) + Temp160) + ((32 - Temp161) div 2)) * (8 * 2)), Temp158);
-  var Temp162: Integer := Ord(Vdp.State.DisplayEnabled <> 0);
-  if Temp162 <> 0 then
-    Temp162 := Ord((Vdp.State.Debug.HideLayers = 0));
-  if Temp162 <> 0 then
+    BackgroundPixel := $3F;
+  for var PixelIndex := PLANE_PADDING to PLANE_PADDING + MAX_PLANE_PIXELS - 1 do
+    PlaneMetapixelsBuffer[PixelIndex] := BackgroundPixel;
+  if (Vdp.State.DisplayEnabled <> 0) and (Vdp.State.Debug.HideLayers = 0) then
   begin
-    if Vdp.State.H40Enabled <> 0 then
-      Temp163 := 20
-    else
-      Temp163 := 16;
-    RenderScrollPlane(Vdp, 0, (Add32(Temp163, Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2))), Scanline, PlaneMetapixelsBuffer, BlitLookup.Normal, 1);
+    RenderScrollPlane(Vdp, 0, (Add32(GetVisibleTilePairs(Vdp), Mul32(Add32(Cardinal(GetWidescreenTiles(Vdp)), 2 - 1) div 2, 2))), Scanline, PlaneMetapixelsBuffer, BlitLookup.Normal, 1);
   end;
   RenderForegroundAndSpritePlanes(Vdp, Scanline, PlaneMetapixelsBuffer, SpriteMetapixelsBuffer, 1, ScanlineRenderedCallback, ScanlineRenderedCallbackUserData);
   RenderForegroundAndSpritePlanes(Vdp, Scanline, PlaneMetapixelsBuffer, SpriteMetapixelsBuffer, 0, ScanlineRenderedCallback, ScanlineRenderedCallbackUserData);
@@ -1227,24 +1032,17 @@ end;
 
 function VDPReadData(var Vdp: TVDP): Cardinal;
 begin
-
   var Value: Cardinal := 0;
   Vdp.State.Access.WritePending := 0;
-  if not (IsInReadMode(Vdp.State) <> 0) then
-  begin
-    ;
-  end
-  else
+  if IsInReadMode(Vdp.State) <> 0 then
     Value := ReadAndIncrement(Vdp.State);
   Exit(Value);
 end;
 
 function VDPReadControl(var Vdp: TVDP): Cardinal;
 begin
-
-  var FifoEmpty: Byte := 1;
   Vdp.State.Access.WritePending := 0;
-  Exit(Cardinal((($3400 or (FifoEmpty shl 9)) or (Vdp.State.CurrentlyInVblank shl 7)) or (Vdp.State.CurrentlyInVblank shl 3)));
+  Exit(Cardinal((($3600) or (Vdp.State.CurrentlyInVblank shl 7)) or (Vdp.State.CurrentlyInVblank shl 3)));
 end;
 
 procedure UpdateFakeFIFO(var State: TVDPState; Value: Cardinal);
@@ -1259,12 +1057,10 @@ end;
 
 procedure VDPWriteData(var Vdp: TVDP; Value: Cardinal; ColourUpdatedCallback: TVDPColourUpdatedCallback; ColourUpdatedCallbackUserData: Pointer);
 begin
-
   Vdp.State.Access.WritePending := 0;
   UpdateFakeFIFO(Vdp.State, Value);
   if IsInReadMode(Vdp.State) <> 0 then
   begin
-    ;
     IncrementAccessAddressRegister(Vdp.State);
   end
   else
@@ -1275,7 +1071,7 @@ begin
       ClearDMAPending(Vdp.State);
       while True do
       begin
-        if Vdp.State.Access.SelectedBuffer = Integer(VDP_ACCESS_VRAM) then
+        if Vdp.State.Access.SelectedBuffer = VDP_ACCESS_VRAM then
         begin
           WriteVRAM(Vdp, Vdp.State.Access.AddressRegister, (Value shr 8));
           IncrementAccessAddressRegister(Vdp.State);
@@ -1284,7 +1080,7 @@ begin
           WriteAndIncrement(Vdp, Vdp.State.PreviousDataWrites[0], ColourUpdatedCallback, ColourUpdatedCallbackUserData);
         Vdp.State.Dma.SourceAddressLow := (Vdp.State.Dma.SourceAddressLow + 1) and $FFFF;
         Vdp.State.Dma.Length := (Vdp.State.Dma.Length + $FFFF) and $FFFF;
-        if not (Vdp.State.Dma.Length <> 0) then
+        if Vdp.State.Dma.Length = 0 then
           Break;
       end;
     end;
@@ -1294,38 +1090,22 @@ end;
 procedure VDPWriteControl(var Vdp: TVDP; Value: Cardinal; ColourUpdatedCallback: TVDPColourUpdatedCallback; ColourUpdatedCallbackUserData: Pointer; DmaTransferBeginCallback: TVDPDMATransferBeginCallback; ReadCallback: TVDPReadCallback; ReadCallbackUserData: Pointer; KdebugCallback: TVDPKDebugCallback; KdebugCallbackUserData: Pointer; TargetCycle: Cardinal);
 begin
   var CodeBitmask: Cardinal;
-  var Temp170: Integer;
   var Reg: Cardinal;
   var Data: Cardinal;
-  var Temp206: Integer;
-  var Temp212: Integer;
-  var Temp218: Integer;
-  var Temp219: Integer;
-  var Temp220: Integer;
-  var Temp221: Integer;
-  var Temp222: Integer;
-  var Temp223: Integer;
-  var Temp224: Integer;
-  var Temp225: Integer;
   var Character: Byte;
   var Temp227: Word;
   var TotalReads: Cardinal;
-  var Temp230: Integer;
   var Temp231: Integer;
   var ValueScope168: Cardinal;
 
-  var Temp169: Integer := Ord(Vdp.State.Access.WritePending <> 0);
-  if Temp169 = 0 then
-    Temp169 := Ord((Value and $C000) <> $8000);
-  if Temp169 <> 0 then
+  if (Vdp.State.Access.WritePending <> 0) or ((Value and $C000) <> $8000) then
   begin
     if Vdp.State.Access.WritePending <> 0 then
     begin
       if Vdp.State.Dma.Enabled <> 0 then
-        Temp170 := $3C
+        CodeBitmask := Cardinal($3C)
       else
-        Temp170 := $1C;
-      CodeBitmask := Cardinal(Temp170);
+        CodeBitmask := Cardinal($1C);
       Vdp.State.Access.WritePending := 0;
       Vdp.State.Access.AddressRegister := (Vdp.State.Access.AddressRegister and $3FFF) or ((Value and 7) shl 14);
       Vdp.State.Access.CodeRegister := Word((Cardinal(Vdp.State.Access.CodeRegister) and not CodeBitmask) or ((Value shr 2) and CodeBitmask));
@@ -1369,24 +1149,16 @@ begin
       case Reg of
         0:
           begin
-            if (Data and Cardinal(1 shl 5)) <> 0 then
-            begin
-              ;
-            end;
-            Vdp.State.HIntEnabled := Ord((Data and Cardinal(1 shl 4)) <> 0);
-            if (Data and Cardinal(1 shl 1)) <> 0 then
-            begin
-              ;
-            end;
+            Vdp.State.HIntEnabled := Ord((Data and $10) <> 0);
           end;
         1:
           begin
-            Vdp.State.ExtendedVramEnabled := Ord((Data and Cardinal(1 shl 7)) <> 0);
-            Vdp.State.DisplayEnabled := Ord((Data and Cardinal(1 shl 6)) <> 0);
-            Vdp.State.VIntEnabled := Ord((Data and Cardinal(1 shl 5)) <> 0);
-            Vdp.State.Dma.Enabled := Ord((Data and Cardinal(1 shl 4)) <> 0);
-            Vdp.State.V30Enabled := Ord((Data and Cardinal(1 shl 3)) <> 0);
-            Vdp.State.MegaDriveModeEnabled := Ord((Data and Cardinal(1 shl 2)) <> 0);
+            Vdp.State.ExtendedVramEnabled := Ord((Data and $80) <> 0);
+            Vdp.State.DisplayEnabled := Ord((Data and $40) <> 0);
+            Vdp.State.VIntEnabled := Ord((Data and $20) <> 0);
+            Vdp.State.Dma.Enabled := Ord((Data and $10) <> 0);
+            Vdp.State.V30Enabled := Ord((Data and $8) <> 0);
+            Vdp.State.MegaDriveModeEnabled := Ord((Data and $4) <> 0);
           end;
         2:
           begin
@@ -1406,14 +1178,11 @@ begin
           end;
         6:
           begin
-            Vdp.State.SpriteTileIndexRebase := Ord((Data and Cardinal(1 shl 5)) <> 0);
+            Vdp.State.SpriteTileIndexRebase := Ord((Data and $20) <> 0);
           end;
         7:
           begin
             Vdp.State.BackgroundColour := Byte(Data and $3F);
-          end;
-        8, 9:
-          begin
           end;
         10:
           begin
@@ -1421,21 +1190,16 @@ begin
           end;
         11:
           begin
-            if (Data and Cardinal(1 shl 3)) <> 0 then
-            begin
-              ;
-            end;
             if (Data and 4) <> 0 then
-              Temp206 := VDP_VSCROLL_MODE_2_CELL
+              Vdp.State.VscrollMode := VDP_VSCROLL_MODE_2_CELL
             else
-              Temp206 := VDP_VSCROLL_MODE_FULL;
-            Vdp.State.VscrollMode := Temp206;
+              Vdp.State.VscrollMode := VDP_VSCROLL_MODE_FULL;
             SetHScrollMode(Vdp.State, Integer(Data and 3));
           end;
         12:
           begin
             Vdp.State.H40Enabled := Ord((Data and Cardinal((1 shl 7) or (1))) <> 0);
-            Vdp.State.ShadowHighlightEnabled := Ord((Data and Cardinal(1 shl 3)) <> 0);
+            Vdp.State.ShadowHighlightEnabled := Ord((Data and $8) <> 0);
             case ((Data shr 1) and 3) of
               0, 1:
                 begin
@@ -1444,7 +1208,6 @@ begin
               2:
                 begin
                   Vdp.State.DoubleResolutionEnabled := 0;
-                  ;
                 end;
               3:
                 begin
@@ -1459,8 +1222,7 @@ begin
         14:
           begin
             Vdp.State.PlaneATileIndexRebase := Ord((Data and 1) <> 0);
-            Temp212 := Ord(((Data and Cardinal(1 shl 4)) <> 0) and (Vdp.State.PlaneATileIndexRebase <> 0));
-            Vdp.State.PlaneBTileIndexRebase := Byte(Temp212);
+            Vdp.State.PlaneBTileIndexRebase := Byte(Ord(((Data and $10) <> 0) and (Vdp.State.PlaneATileIndexRebase <> 0)));
           end;
         15:
           begin
@@ -1483,7 +1245,7 @@ begin
               2:
                 begin
                   Vdp.State.PlaneWidthShift := 5;
-                  Vdp.State.PlaneHeightBitmask := Byte(Vdp.State.PlaneHeightBitmask and 0);
+                  Vdp.State.PlaneHeightBitmask := 0;
                 end;
               3:
                 begin
@@ -1495,37 +1257,7 @@ begin
         17:
           begin
             Vdp.State.Window.AlignedRight := Ord((Data and $80) <> 0);
-            if 20 > 16 then
-              Temp219 := 20
-            else
-              Temp219 := 16;
-            if 20 > 16 then
-              Temp220 := 20
-            else
-              Temp220 := 16;
-            if 20 > 16 then
-              Temp221 := 20
-            else
-              Temp221 := 16;
-            if Cardinal((((32 - Temp219) div 2) + Temp220) + ((32 - Temp221) div 2)) < (Data and $1F) then
-            begin
-              if 20 > 16 then
-                Temp222 := 20
-              else
-                Temp222 := 16;
-              if 20 > 16 then
-                Temp223 := 20
-              else
-                Temp223 := 16;
-              if 20 > 16 then
-                Temp224 := 20
-              else
-                Temp224 := 16;
-              Temp218 := (((32 - Temp222) div 2) + Temp223) + ((32 - Temp224) div 2);
-            end
-            else
-              Temp218 := Data and $1F;
-            Vdp.State.Window.HorizontalBoundary := Word(Temp218);
+            Vdp.State.Window.HorizontalBoundary := Data and $1F;
           end;
         18:
           begin
@@ -1558,10 +1290,9 @@ begin
             begin
               Vdp.State.Dma.SourceAddressHigh := Byte(Data and $3F);
               if (Data and $40) <> 0 then
-                Temp225 := VDP_DMA_MODE_COPY
+                Vdp.State.Dma.Mode := VDP_DMA_MODE_COPY
               else
-                Temp225 := VDP_DMA_MODE_FILL;
-              Vdp.State.Dma.Mode := Temp225;
+                Vdp.State.Dma.Mode := VDP_DMA_MODE_FILL;
             end
             else
             begin
@@ -1585,32 +1316,24 @@ begin
               end;
             until True;
           end;
-      else
-        begin
-          ;
-        end;
       end;
     end;
   end;
-  var Temp229: Integer := Ord(IsDMAPending(Vdp.State) <> 0);
-  if Temp229 <> 0 then
-    Temp229 := Ord(Vdp.State.Dma.Mode <> Integer(VDP_DMA_MODE_FILL));
-  if Temp229 <> 0 then
+  if (IsDMAPending(Vdp.State) <> 0) and (Vdp.State.Dma.Mode <> VDP_DMA_MODE_FILL) then
   begin
     ClearDMAPending(Vdp.State);
-    if Vdp.State.Dma.Mode = Integer(VDP_DMA_MODE_MEMORY_TO_VRAM) then
+    if Vdp.State.Dma.Mode = VDP_DMA_MODE_MEMORY_TO_VRAM then
     begin
       if Vdp.State.Dma.Length = 0 then
-        Temp230 := $10000
+        TotalReads := Cardinal($10000)
       else
-        Temp230 := Vdp.State.Dma.Length;
-      TotalReads := Cardinal(Temp230);
-      Temp231 := Ord((Vdp.State.Access.SelectedBuffer = Integer(VDP_ACCESS_VRAM)) and ((Vdp.State.ExtendedVramEnabled = 0)));
+        TotalReads := Cardinal(Vdp.State.Dma.Length);
+      Temp231 := Ord((Vdp.State.Access.SelectedBuffer = VDP_ACCESS_VRAM) and ((Vdp.State.ExtendedVramEnabled = 0)));
       DmaTransferBeginCallback(ReadCallbackUserData, (TotalReads shl Temp231), TargetCycle);
     end;
     while True do
     begin
-      if Vdp.State.Dma.Mode = Integer(VDP_DMA_MODE_MEMORY_TO_VRAM) then
+      if Vdp.State.Dma.Mode = VDP_DMA_MODE_MEMORY_TO_VRAM then
       begin
         ValueScope168 := Cardinal(ReadCallback(ReadCallbackUserData, ((Cardinal(Vdp.State.Dma.SourceAddressHigh) shl 17) or (Cardinal(Vdp.State.Dma.SourceAddressLow) shl 1)), TargetCycle));
         UpdateFakeFIFO(Vdp.State, ValueScope168);
@@ -1623,7 +1346,7 @@ begin
       end;
       Vdp.State.Dma.SourceAddressLow := (Vdp.State.Dma.SourceAddressLow + 1) and $FFFF;
       Vdp.State.Dma.Length := (Vdp.State.Dma.Length + $FFFF) and $FFFF;
-      if not (Vdp.State.Dma.Length <> 0) then
+      if Vdp.State.Dma.Length = 0 then
         Break;
     end;
   end;
@@ -1634,7 +1357,7 @@ begin
   case Vdp.State.Debug.SelectedRegister of
     0:
       begin
-        Vdp.State.Debug.HideLayers := Ord((Value and Cardinal(1 shl 6)) <> 0);
+        Vdp.State.Debug.HideLayers := Ord((Value and $40) <> 0);
         Vdp.State.Debug.ForcedLayer := Byte((Value shr 7) and 3);
       end;
   end;
@@ -1647,7 +1370,7 @@ end;
 
 function VDPReadVRAMWord(const State: TVDPState; Address: Cardinal): Cardinal;
 begin
-  Exit(ReadVRAM(State, (Address xor 0)) or (ReadVRAM(State, (Address xor 1)) shl 8));
+  Exit(ReadVRAM(State, (Address)) or (ReadVRAM(State, (Address xor 1)) shl 8));
 end;
 
 function VDPDecomposeTileMetadata(PackedTileMetadata: Cardinal): TVDPTileMetadata;

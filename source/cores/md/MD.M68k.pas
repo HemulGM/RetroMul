@@ -5,9 +5,6 @@ interface
 uses
   System.SysUtils, System.Math, MD.Arithmetic;
 
-{$Q+}
-{$R+}
-
 type
   TSplitOpcode = record
     Raw: Cardinal;
@@ -193,6 +190,8 @@ const
   INSTRUCTION_UNLK = INSTRUCTION_TST + 1;
   INSTRUCTION_UNIMPLEMENTED_1 = INSTRUCTION_UNLK + 1;
   INSTRUCTION_UNIMPLEMENTED_2 = INSTRUCTION_UNIMPLEMENTED_1 + 1;
+
+const
   ADDRESS_MODE_DATA_REGISTER = 0;
   ADDRESS_MODE_ADDRESS_REGISTER = 1;
   ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT = 2;
@@ -206,6 +205,8 @@ const
   ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_DISPLACEMENT = 2;
   ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_INDEX = 3;
   ADDRESS_MODE_REGISTER_SPECIAL_IMMEDIATE = 4;
+
+const
   CONDITION_CODE_CARRY_BIT = 0;
   CONDITION_CODE_OVERFLOW_BIT = 1;
   CONDITION_CODE_ZERO_BIT = 2;
@@ -217,10 +218,14 @@ const
   CONDITION_CODE_NEGATIVE = ( 1 shl CONDITION_CODE_NEGATIVE_BIT);
   CONDITION_CODE_EXTEND = ( 1 shl CONDITION_CODE_EXTEND_BIT);
   CONDITION_CODE_REGISTER_MASK = ( ( ( ( CONDITION_CODE_EXTEND or CONDITION_CODE_NEGATIVE) or CONDITION_CODE_ZERO) or CONDITION_CODE_OVERFLOW) or CONDITION_CODE_CARRY);
+
+const
   STATUS_INTERRUPT_MASK = ( 7 shl 8);
   STATUS_SUPERVISOR = ( 1 shl 13);
   STATUS_TRACE = ( 1 shl 15);
   STATUS_REGISTER_MASK = ( ( ( STATUS_TRACE or STATUS_SUPERVISOR) or STATUS_INTERRUPT_MASK) or CONDITION_CODE_REGISTER_MASK);
+
+const
   DECODED_ADDRESS_MODE_TYPE_REGISTER = 0;
   DECODED_ADDRESS_MODE_TYPE_MEMORY = DECODED_ADDRESS_MODE_TYPE_REGISTER + 1;
   DECODED_ADDRESS_MODE_TYPE_STATUS_REGISTER = DECODED_ADDRESS_MODE_TYPE_MEMORY + 1;
@@ -525,7 +530,7 @@ procedure ActionMOVEQ(var Stuff: TInstructionContext);
 
 function CountBitsSet(Value: Cardinal): Cardinal;
 
-procedure ActionDIVCommon(var Stuff: TInstructionContext; IsSigned: Byte);
+procedure ActionDIVCommon(var Stuff: TInstructionContext; IsSigned: Boolean);
 
 procedure ActionDIVS(var Stuff: TInstructionContext);
 
@@ -541,7 +546,7 @@ procedure ActionSBCD(var Stuff: TInstructionContext);
 
 procedure ActionNBCD(var Stuff: TInstructionContext);
 
-procedure ActionMULCommon(var Stuff: TInstructionContext; IsSigned: Byte; TotalOperations: Cardinal);
+procedure ActionMULCommon(var Stuff: TInstructionContext; IsSigned: Boolean; TotalOperations: Cardinal);
 
 procedure ActionMULS(var Stuff: TInstructionContext);
 
@@ -573,8 +578,6 @@ procedure ActionUNIMPLEMENTED1(var Stuff: TInstructionContext);
 
 procedure ActionUNIMPLEMENTED2(var Stuff: TInstructionContext);
 
-procedure ActionNOP(var Stuff: TInstructionContext);
-
 procedure Clown68000Reset(var State: TM68kState; var Callbacks: TM68kReadWriteCallbacks);
 
 procedure Clown68000Interrupt(var State: TM68kState; Level: Cardinal);
@@ -591,132 +594,76 @@ end;
 
 function GetInstruction(var OpCode: TSplitOpcode): Integer;
 begin
-  var Temp79: Integer;
-  var Temp88: Integer;
-  var Temp89: Integer;
-  var Temp90: Integer;
-  var Temp91: Integer;
-  var Temp92: Integer;
   var Instruction: Integer := INSTRUCTION_ILLEGAL;
   case ((OpCode.Raw shr 12) and $F) of
     $0:
       begin
         if OpCode.Bit8 <> 0 then
         begin
-          if OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER) then
+          if OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER then
             Instruction := INSTRUCTION_MOVEP
           else
-          begin
             case OpCode.Bits6and7 of
               0:
-                begin
-                  Instruction := INSTRUCTION_BTST_DYNAMIC;
-                end;
+                Instruction := INSTRUCTION_BTST_DYNAMIC;
               1:
-                begin
-                  Instruction := INSTRUCTION_BCHG_DYNAMIC;
-                end;
+                Instruction := INSTRUCTION_BCHG_DYNAMIC;
               2:
-                begin
-                  Instruction := INSTRUCTION_BCLR_DYNAMIC;
-                end;
+                Instruction := INSTRUCTION_BCLR_DYNAMIC;
               3:
-                begin
-                  Instruction := INSTRUCTION_BSET_DYNAMIC;
-                end;
+                Instruction := INSTRUCTION_BSET_DYNAMIC;
             end;
-          end;
         end
         else
         begin
           case OpCode.SecondaryRegister of
             0:
-              begin
-                if (OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_SPECIAL)) and (OpCode.PrimaryRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_IMMEDIATE)) then
-                begin
-                  case OpCode.Bits6and7 of
-                    0:
-                      begin
-                        Instruction := INSTRUCTION_ORI_TO_CCR;
-                      end;
-                    1:
-                      begin
-                        Instruction := INSTRUCTION_ORI_TO_SR;
-                      end;
-                  end;
-                end
-                else
-                  Instruction := INSTRUCTION_ORI;
-              end;
-            1:
-              begin
-                if (OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_SPECIAL)) and (OpCode.PrimaryRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_IMMEDIATE)) then
-                begin
-                  case OpCode.Bits6and7 of
-                    0:
-                      begin
-                        Instruction := INSTRUCTION_ANDI_TO_CCR;
-                      end;
-                    1:
-                      begin
-                        Instruction := INSTRUCTION_ANDI_TO_SR;
-                      end;
-                  end;
-                end
-                else
-                  Instruction := INSTRUCTION_ANDI;
-              end;
-            2:
-              begin
-                Instruction := INSTRUCTION_SUBI;
-              end;
-            3:
-              begin
-                Instruction := INSTRUCTION_ADDI;
-              end;
-            4:
-              begin
+              if (OpCode.PrimaryAddressMode = ADDRESS_MODE_SPECIAL) and (OpCode.PrimaryRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_IMMEDIATE)) then
                 case OpCode.Bits6and7 of
                   0:
-                    begin
-                      Instruction := INSTRUCTION_BTST_STATIC;
-                    end;
+                    Instruction := INSTRUCTION_ORI_TO_CCR;
                   1:
-                    begin
-                      Instruction := INSTRUCTION_BCHG_STATIC;
-                    end;
-                  2:
-                    begin
-                      Instruction := INSTRUCTION_BCLR_STATIC;
-                    end;
-                  3:
-                    begin
-                      Instruction := INSTRUCTION_BSET_STATIC;
-                    end;
-                end;
+                    Instruction := INSTRUCTION_ORI_TO_SR;
+                end
+              else
+                Instruction := INSTRUCTION_ORI;
+            1:
+              if (OpCode.PrimaryAddressMode = ADDRESS_MODE_SPECIAL) and (OpCode.PrimaryRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_IMMEDIATE)) then
+                case OpCode.Bits6and7 of
+                  0:
+                    Instruction := INSTRUCTION_ANDI_TO_CCR;
+                  1:
+                    Instruction := INSTRUCTION_ANDI_TO_SR;
+                end
+              else
+                Instruction := INSTRUCTION_ANDI;
+            2:
+              Instruction := INSTRUCTION_SUBI;
+            3:
+              Instruction := INSTRUCTION_ADDI;
+            4:
+              case OpCode.Bits6and7 of
+                0:
+                  Instruction := INSTRUCTION_BTST_STATIC;
+                1:
+                  Instruction := INSTRUCTION_BCHG_STATIC;
+                2:
+                  Instruction := INSTRUCTION_BCLR_STATIC;
+                3:
+                  Instruction := INSTRUCTION_BSET_STATIC;
               end;
             5:
-              begin
-                if (OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_SPECIAL)) and (OpCode.PrimaryRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_IMMEDIATE)) then
-                begin
-                  case OpCode.Bits6and7 of
-                    0:
-                      begin
-                        Instruction := INSTRUCTION_EORI_TO_CCR;
-                      end;
-                    1:
-                      begin
-                        Instruction := INSTRUCTION_EORI_TO_SR;
-                      end;
-                  end;
+              if (OpCode.PrimaryAddressMode = ADDRESS_MODE_SPECIAL) and (OpCode.PrimaryRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_IMMEDIATE)) then
+                case OpCode.Bits6and7 of
+                  0:
+                    Instruction := INSTRUCTION_EORI_TO_CCR;
+                  1:
+                    Instruction := INSTRUCTION_EORI_TO_SR;
                 end
-                else
-                  Instruction := INSTRUCTION_EORI;
-              end;
+              else
+                Instruction := INSTRUCTION_EORI;
             6:
-              begin
-                Instruction := INSTRUCTION_CMPI;
-              end;
+              Instruction := INSTRUCTION_CMPI;
           end;
         end;
       end;
@@ -730,63 +677,36 @@ begin
     $4:
       begin
         if OpCode.Bit8 <> 0 then
-        begin
           case OpCode.Bits6and7 of
             3:
-              begin
-                Instruction := INSTRUCTION_LEA;
-              end;
+              Instruction := INSTRUCTION_LEA;
             2:
-              begin
-                Instruction := INSTRUCTION_CHK;
-              end;
-          else
-            begin
-            end;
-          end;
-        end
+              Instruction := INSTRUCTION_CHK;
+          end
         else
         begin
           if (OpCode.Raw and $0800) = 0 then
           begin
             if OpCode.Bits6and7 = 3 then
-            begin
               case OpCode.SecondaryRegister of
                 0:
-                  begin
-                    Instruction := INSTRUCTION_MOVE_FROM_SR;
-                  end;
+                  Instruction := INSTRUCTION_MOVE_FROM_SR;
                 2:
-                  begin
-                    Instruction := INSTRUCTION_MOVE_TO_CCR;
-                  end;
+                  Instruction := INSTRUCTION_MOVE_TO_CCR;
                 3:
-                  begin
-                    Instruction := INSTRUCTION_MOVE_TO_SR;
-                  end;
-              end;
-            end
+                  Instruction := INSTRUCTION_MOVE_TO_SR;
+              end
             else
-            begin
               case OpCode.SecondaryRegister of
                 0:
-                  begin
-                    Instruction := INSTRUCTION_NEGX;
-                  end;
+                  Instruction := INSTRUCTION_NEGX;
                 1:
-                  begin
-                    Instruction := INSTRUCTION_CLR;
-                  end;
+                  Instruction := INSTRUCTION_CLR;
                 2:
-                  begin
-                    Instruction := INSTRUCTION_NEG;
-                  end;
+                  Instruction := INSTRUCTION_NEG;
                 3:
-                  begin
-                    Instruction := INSTRUCTION_NOT;
-                  end;
+                  Instruction := INSTRUCTION_NOT;
               end;
-            end;
           end
           else
           begin
@@ -794,109 +714,50 @@ begin
             begin
               if (OpCode.Raw and $01B8) = $0080 then
                 Instruction := INSTRUCTION_EXT
-              else
-              begin
-                if (OpCode.Raw and $01C0) = $0000 then
-                  Instruction := INSTRUCTION_NBCD
-                else
-                begin
-                  if (OpCode.Raw and $01F8) = $0040 then
-                    Instruction := INSTRUCTION_SWAP
-                  else
-                  begin
-                    if (OpCode.Raw and $01C0) = $0040 then
-                      Instruction := INSTRUCTION_PEA
-                    else
-                    begin
-                      if (OpCode.Raw and $0B80) = $0880 then
-                        Instruction := INSTRUCTION_MOVEM;
-                    end;
-                  end;
-                end;
-              end;
+              else if (OpCode.Raw and $01C0) = $0000 then
+                Instruction := INSTRUCTION_NBCD
+              else if (OpCode.Raw and $01F8) = $0040 then
+                Instruction := INSTRUCTION_SWAP
+              else if (OpCode.Raw and $01C0) = $0040 then
+                Instruction := INSTRUCTION_PEA
+              else if (OpCode.Raw and $0B80) = $0880 then
+                Instruction := INSTRUCTION_MOVEM
             end
-            else
-            begin
-              Temp79 := Ord((OpCode.Raw = $4AFA) or (OpCode.Raw = $4AFB));
-              if (Temp79 <> 0) or (OpCode.Raw = $4AFC) then
-                Instruction := INSTRUCTION_ILLEGAL
-              else
-              begin
-                if (OpCode.Raw and $0FC0) = $0AC0 then
-                  Instruction := INSTRUCTION_TAS
-                else
-                begin
-                  if (OpCode.Raw and $0F00) = $0A00 then
-                    Instruction := INSTRUCTION_TST
-                  else
-                  begin
-                    if (OpCode.Raw and $0FF0) = $0E40 then
-                      Instruction := INSTRUCTION_TRAP
-                    else
-                    begin
-                      if (OpCode.Raw and $0FF8) = $0E50 then
-                        Instruction := INSTRUCTION_LINK
-                      else
-                      begin
-                        if (OpCode.Raw and $0FF8) = $0E58 then
-                          Instruction := INSTRUCTION_UNLK
-                        else
-                        begin
-                          if (OpCode.Raw and $0FF0) = $0E60 then
-                            Instruction := INSTRUCTION_MOVE_USP
-                          else
-                          begin
-                            if (OpCode.Raw and $0FF8) = $0E70 then
-                            begin
-                              case OpCode.PrimaryRegister of
-                                0:
-                                  begin
-                                    Instruction := INSTRUCTION_RESET;
-                                  end;
-                                1:
-                                  begin
-                                    Instruction := INSTRUCTION_NOP;
-                                  end;
-                                2:
-                                  begin
-                                    Instruction := INSTRUCTION_STOP;
-                                  end;
-                                3:
-                                  begin
-                                    Instruction := INSTRUCTION_RTE;
-                                  end;
-                                5:
-                                  begin
-                                    Instruction := INSTRUCTION_RTS;
-                                  end;
-                                6:
-                                  begin
-                                    Instruction := INSTRUCTION_TRAPV;
-                                  end;
-                                7:
-                                  begin
-                                    Instruction := INSTRUCTION_RTR;
-                                  end;
-                              end;
-                            end
-                            else
-                            begin
-                              if (OpCode.Raw and $0FC0) = $0E80 then
-                                Instruction := INSTRUCTION_JSR
-                              else
-                              begin
-                                if (OpCode.Raw and $0FC0) = $0EC0 then
-                                  Instruction := INSTRUCTION_JMP;
-                              end;
-                            end;
-                          end;
-                        end;
-                      end;
-                    end;
-                  end;
-                end;
-              end;
-            end;
+            else if (OpCode.Raw = $4AFA) or (OpCode.Raw = $4AFB) or (OpCode.Raw = $4AFC) then
+              Instruction := INSTRUCTION_ILLEGAL
+            else if (OpCode.Raw and $0FC0) = $0AC0 then
+              Instruction := INSTRUCTION_TAS
+            else if (OpCode.Raw and $0F00) = $0A00 then
+              Instruction := INSTRUCTION_TST
+            else if (OpCode.Raw and $0FF0) = $0E40 then
+              Instruction := INSTRUCTION_TRAP
+            else if (OpCode.Raw and $0FF8) = $0E50 then
+              Instruction := INSTRUCTION_LINK
+            else if (OpCode.Raw and $0FF8) = $0E58 then
+              Instruction := INSTRUCTION_UNLK
+            else if (OpCode.Raw and $0FF0) = $0E60 then
+              Instruction := INSTRUCTION_MOVE_USP
+            else if (OpCode.Raw and $0FF8) = $0E70 then
+              case OpCode.PrimaryRegister of
+                0:
+                  Instruction := INSTRUCTION_RESET;
+                1:
+                  Instruction := INSTRUCTION_NOP;
+                2:
+                  Instruction := INSTRUCTION_STOP;
+                3:
+                  Instruction := INSTRUCTION_RTE;
+                5:
+                  Instruction := INSTRUCTION_RTS;
+                6:
+                  Instruction := INSTRUCTION_TRAPV;
+                7:
+                  Instruction := INSTRUCTION_RTR;
+              end
+            else if (OpCode.Raw and $0FC0) = $0E80 then
+              Instruction := INSTRUCTION_JSR
+            else if (OpCode.Raw and $0FC0) = $0EC0 then
+              Instruction := INSTRUCTION_JMP;
           end;
         end;
       end;
@@ -904,28 +765,26 @@ begin
       begin
         if OpCode.Bits6and7 = 3 then
         begin
-          if OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER) then
+          if OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER then
             Instruction := INSTRUCTION_DBCC
           else
             Instruction := INSTRUCTION_SCC;
         end
         else
         begin
-          if OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER) then
+          if OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER then
           begin
             if OpCode.Bit8 <> 0 then
-              Temp88 := INSTRUCTION_SUBAQ
+              Instruction := INSTRUCTION_SUBAQ
             else
-              Temp88 := INSTRUCTION_ADDAQ;
-            Instruction := Temp88;
+              Instruction := INSTRUCTION_ADDAQ;
           end
           else
           begin
             if OpCode.Bit8 <> 0 then
-              Temp89 := INSTRUCTION_SUBQ
+              Instruction := INSTRUCTION_SUBQ
             else
-              Temp89 := INSTRUCTION_ADDQ;
-            Instruction := Temp89;
+              Instruction := INSTRUCTION_ADDQ;
           end;
         end;
       end;
@@ -934,35 +793,30 @@ begin
         if OpCode.SecondaryRegister <> 0 then
         begin
           if (OpCode.Raw and $00FF) = 0 then
-            Temp90 := INSTRUCTION_BCC_WORD
+            Instruction := INSTRUCTION_BCC_WORD
           else
-            Temp90 := INSTRUCTION_BCC_SHORT;
-          Instruction := Temp90;
+            Instruction := INSTRUCTION_BCC_SHORT;
         end
         else
         begin
           if OpCode.Bit8 <> 0 then
           begin
             if (OpCode.Raw and $00FF) = 0 then
-              Temp91 := INSTRUCTION_BSR_WORD
+              Instruction := INSTRUCTION_BSR_WORD
             else
-              Temp91 := INSTRUCTION_BSR_SHORT;
-            Instruction := Temp91;
+              Instruction := INSTRUCTION_BSR_SHORT;
           end
           else
           begin
             if (OpCode.Raw and $00FF) = 0 then
-              Temp92 := INSTRUCTION_BRA_WORD
+              Instruction := INSTRUCTION_BRA_WORD
             else
-              Temp92 := INSTRUCTION_BRA_SHORT;
-            Instruction := Temp92;
+              Instruction := INSTRUCTION_BRA_SHORT;
           end;
         end;
       end;
     $7:
-      begin
-        Instruction := INSTRUCTION_MOVEQ;
-      end;
+      Instruction := INSTRUCTION_MOVEQ;
     $8:
       begin
         if OpCode.Bits6and7 = 3 then
@@ -993,20 +847,18 @@ begin
         end;
       end;
     $A:
-      begin
-        Instruction := INSTRUCTION_UNIMPLEMENTED_1;
-      end;
+      Instruction := INSTRUCTION_UNIMPLEMENTED_1;
     $B:
       begin
         if OpCode.Bits6and7 = 3 then
           Instruction := INSTRUCTION_CMPA
         else
         begin
-          if not (OpCode.Bit8 <> 0) then
+          if OpCode.Bit8 = 0 then
             Instruction := INSTRUCTION_CMP
           else
           begin
-            if OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER) then
+            if OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER then
               Instruction := INSTRUCTION_CMPM
             else
               Instruction := INSTRUCTION_EOR;
@@ -1050,52 +902,30 @@ begin
     $E:
       begin
         if OpCode.Bits6and7 = 3 then
-        begin
           case OpCode.SecondaryRegister of
             0:
-              begin
-                Instruction := INSTRUCTION_ASD_MEMORY;
-              end;
+              Instruction := INSTRUCTION_ASD_MEMORY;
             1:
-              begin
-                Instruction := INSTRUCTION_LSD_MEMORY;
-              end;
+              Instruction := INSTRUCTION_LSD_MEMORY;
             2:
-              begin
-                Instruction := INSTRUCTION_ROXD_MEMORY;
-              end;
+              Instruction := INSTRUCTION_ROXD_MEMORY;
             3:
-              begin
-                Instruction := INSTRUCTION_ROD_MEMORY;
-              end;
-          end;
-        end
+              Instruction := INSTRUCTION_ROD_MEMORY;
+          end
         else
-        begin
-          case (OpCode.Raw and $0018) of
+          case OpCode.Raw and $0018 of
             $0000:
-              begin
-                Instruction := INSTRUCTION_ASD_REGISTER;
-              end;
+              Instruction := INSTRUCTION_ASD_REGISTER;
             $0008:
-              begin
-                Instruction := INSTRUCTION_LSD_REGISTER;
-              end;
+              Instruction := INSTRUCTION_LSD_REGISTER;
             $0010:
-              begin
-                Instruction := INSTRUCTION_ROXD_REGISTER;
-              end;
+              Instruction := INSTRUCTION_ROXD_REGISTER;
             $0018:
-              begin
-                Instruction := INSTRUCTION_ROD_REGISTER;
-              end;
+              Instruction := INSTRUCTION_ROD_REGISTER;
           end;
-        end;
       end;
     $F:
-      begin
-        Instruction := INSTRUCTION_UNIMPLEMENTED_2;
-      end;
+      Instruction := INSTRUCTION_UNIMPLEMENTED_2;
   end;
   Exit(Instruction);
 end;
@@ -1119,14 +949,22 @@ end;
 
 function ReadByte(var Stuff: TInstructionContext; Address: Cardinal): Cardinal;
 begin
-  var Temp103: Integer;
-  var Callbacks: PM68kReadWriteCallbacks := Stuff.Callbacks;
-  var Odd: Byte := Ord((Address and 1) <> 0);
-  if Odd <> 0 then
-    Temp103 := 0
-  else
-    Temp103 := 8;
-  Exit(Cardinal(Callbacks^.ReadCallback(Callbacks^.UserData, (Cardinal(Address div 2) and $7FFFFF), Ord((Odd = 0)), Odd, Stuff.CyclesDone, Stuff.TerminateEarly) shr Temp103) and $FF);
+  var Callbacks := Stuff.Callbacks;
+  var IsOdd := (Address and 1) <> 0;
+
+  Result := Callbacks^.ReadCallback(
+    Callbacks^.UserData,
+    (Address shr 1) and $7FFFFF,
+    Ord(not IsOdd),
+    Ord(IsOdd),
+    Stuff.CyclesDone,
+    Stuff.TerminateEarly
+  );
+
+  if not IsOdd then
+    Result := Result shr 8;
+
+  Result := Result and $FF;
 end;
 
 function ReadWord(var Stuff: TInstructionContext; Address: Cardinal): Cardinal;
@@ -1134,23 +972,26 @@ begin
   var Callbacks: PM68kReadWriteCallbacks := Stuff.Callbacks;
   if (Address and 1) <> 0 then
     Group0Exception(Stuff, 3, Address, 1);
-  Exit(Cardinal(Callbacks^.ReadCallback(Callbacks^.UserData, (Cardinal(Address div 2) and $7FFFFF), 1, 1, Stuff.CyclesDone, Stuff.TerminateEarly)));
+  Result := Callbacks^.ReadCallback(
+    Callbacks^.UserData,
+    (Cardinal(Address div 2) and $7FFFFF),
+    1, 1,
+    Stuff.CyclesDone,
+    Stuff.TerminateEarly);
 end;
 
 function ReadLongWord(var Stuff: TInstructionContext; Address: Cardinal): Cardinal;
 begin
   var Value: Cardinal := 0;
   Value := Value or (ReadWord(Stuff, (Address)) shl 16);
-  Value := Value or ReadWord(Stuff, (Add32(Address, 2)));
-  Exit(Value);
+  Exit(Value or ReadWord(Stuff, (Add32(Address, 2))));
 end;
 
 function ReadLongWordBackwards(var Stuff: TInstructionContext; Address: Cardinal): Cardinal;
 begin
   var Value: Cardinal := 0;
   Value := Value or ReadWord(Stuff, (Add32(Address, 2)));
-  Value := Value or (ReadWord(Stuff, (Address)) shl 16);
-  Exit(Value);
+  Exit(Value or (ReadWord(Stuff, (Address)) shl 16));
 end;
 
 procedure WriteByte(var Stuff: TInstructionContext; Address: Cardinal; Value: Cardinal);
@@ -1158,7 +999,14 @@ begin
   var Callbacks: PM68kReadWriteCallbacks := Stuff.Callbacks;
   var Odd: Byte := Ord((Address and 1) <> 0);
   var ByteValue: Cardinal := Value and $FF;
-  Callbacks^.WriteCallback(Callbacks^.UserData, (Cardinal(Address div 2) and $7FFFFF), Ord((Odd = 0)), Odd, Stuff.CyclesDone, Stuff.TerminateEarly, (ByteValue or (ByteValue shl 8)));
+  Callbacks^.WriteCallback(
+    Callbacks^.UserData,
+    (Cardinal(Address div 2) and $7FFFFF),
+    Ord((Odd = 0)),
+    Odd,
+    Stuff.CyclesDone,
+    Stuff.TerminateEarly,
+    (ByteValue or (ByteValue shl 8)));
 end;
 
 procedure WriteWord(var Stuff: TInstructionContext; Address: Cardinal; Value: Cardinal);
@@ -1166,7 +1014,13 @@ begin
   var Callbacks: PM68kReadWriteCallbacks := Stuff.Callbacks;
   if (Address and 1) <> 0 then
     Group0Exception(Stuff, 3, Address, 0);
-  Callbacks^.WriteCallback(Callbacks^.UserData, (Cardinal(Address div 2) and $7FFFFF), 1, 1, Stuff.CyclesDone, Stuff.TerminateEarly, (Value and $FFFF));
+  Callbacks^.WriteCallback(
+    Callbacks^.UserData,
+    (Cardinal(Address div 2) and $7FFFFF),
+    1, 1,
+    Stuff.CyclesDone,
+    Stuff.TerminateEarly,
+    (Value and $FFFF));
 end;
 
 procedure WriteLongWord(var Stuff: TInstructionContext; Address: Cardinal; Value: Cardinal);
@@ -1269,244 +1123,156 @@ end;
 
 procedure DecodeMemoryAddressMode(var Stuff: TInstructionContext; var DecodedMemoryAddressMode: TDecodedMemoryAddressMode; OperationSizeInBytes: Cardinal; AddressMode: Integer; AddressModeRegister: Cardinal);
 begin
+  var State := Stuff.State;
   var Address: Cardinal;
-  var ShortAddress: Cardinal;
-  var Temp112: Integer;
-  var Temp114: Integer;
-  var Temp116: Integer;
-  var Temp117: Integer;
-  var IncrementDecrementSize: Cardinal;
-  var Temp118: Integer;
-  var Temp120: Integer;
-  var IncrementDecrementSizeScope104: Cardinal;
-  var Temp121: Integer;
-  var Temp123: Integer;
-  var Temp124: Integer;
-  var Temp125: Integer;
-  var Temp126: Integer;
-  var Temp127: Integer;
-  var Displacement: Cardinal;
-  var Temp128: Integer;
-  var Temp129: Integer;
-  var Temp130: Integer;
-  var ExtensionWord: Cardinal;
-  var IsAddressRegister: Byte;
-  var DisplacementReg: Cardinal;
-  var DisplacementIsLongword: Byte;
-  var DisplacementLiteralValue: Cardinal;
-  var DisplacementRegValue: Cardinal;
-  var Temp131: Cardinal;
-  var Temp132: Integer;
-  var Temp133: Cardinal;
-  var Temp134: Integer;
-  var Temp135: Integer;
-  var State: PM68kState := Stuff.State;
-  var IsLongword: Byte := Ord(OperationSizeInBytes = 4);
+  var IsLongword := OperationSizeInBytes = 4;
+
   case OperationSizeInBytes of
     0:
-      begin
-        DecodedMemoryAddressMode.AccessKind := MEMORY_ADDRESS;
-
-      end;
+      DecodedMemoryAddressMode.AccessKind := MEMORY_ADDRESS;
     1:
-      begin
-        DecodedMemoryAddressMode.AccessKind := MEMORY_BYTE;
-
-      end;
-    2:
-      begin
-        DecodedMemoryAddressMode.AccessKind := MEMORY_WORD;
-
-      end;
-    4:
-      begin
-        if AddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT) then
-        begin
-          DecodedMemoryAddressMode.AccessKind := MEMORY_LONGWORD_BACKWARDS;
-
-        end
-        else
-        begin
-          DecodedMemoryAddressMode.AccessKind := MEMORY_LONGWORD;
-
-        end;
-      end;
-  else
-    begin
-      Assert(0 <> 0);
       DecodedMemoryAddressMode.AccessKind := MEMORY_BYTE;
-
-    end;
-  end;
-  var Temp111: Integer := Ord(AddressMode = Integer(ADDRESS_MODE_SPECIAL));
-  if Temp111 <> 0 then
-    Temp111 := Ord(AddressModeRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_ABSOLUTE_SHORT));
-  if Temp111 <> 0 then
-  begin
-    ShortAddress := ReadWord(Stuff, State^.ProgramCounter);
-    Address := Sub32(ShortAddress and Sub32(Cardinal(1) shl 15, 1), ShortAddress and (Cardinal(1) shl 15));
-    IncrementProgramCounter(State, 2);
-    if IsLongword <> 0 then
-      Temp112 := 12
-    else
-      Temp112 := 8;
-    Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Cardinal(Temp112));
-  end
-  else
-  begin
-    if (AddressMode = Integer(ADDRESS_MODE_SPECIAL)) and (AddressModeRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_ABSOLUTE_LONG)) then
-    begin
-      Address := ReadLongWord(Stuff, State^.ProgramCounter);
-      IncrementProgramCounter(State, 4);
-      if IsLongword <> 0 then
-        Temp114 := 16
+    2:
+      DecodedMemoryAddressMode.AccessKind := MEMORY_WORD;
+    4:
+      if AddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT then
+        DecodedMemoryAddressMode.AccessKind := MEMORY_LONGWORD_BACKWARDS
       else
-        Temp114 := 12;
-      Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Cardinal(Temp114));
+        DecodedMemoryAddressMode.AccessKind := MEMORY_LONGWORD;
+  else
+    Assert(False);
+    DecodedMemoryAddressMode.AccessKind := MEMORY_BYTE;
+  end;
+
+  if (AddressMode = ADDRESS_MODE_SPECIAL) and (AddressModeRegister = ADDRESS_MODE_REGISTER_SPECIAL_ABSOLUTE_SHORT) then
+  begin
+    var ShortAddress := ReadWord(Stuff, State^.ProgramCounter);
+    Address := Sub32(ShortAddress and $7FFF, ShortAddress and $8000);
+    IncrementProgramCounter(State, 2);
+
+    if IsLongword then
+      Inc(Stuff.CyclesLeftInInstruction, 12)
+    else
+      Inc(Stuff.CyclesLeftInInstruction, 8);
+  end
+  else if (AddressMode = ADDRESS_MODE_SPECIAL) and (AddressModeRegister = ADDRESS_MODE_REGISTER_SPECIAL_ABSOLUTE_LONG) then
+  begin
+    Address := ReadLongWord(Stuff, State^.ProgramCounter);
+    IncrementProgramCounter(State, 4);
+
+    if IsLongword then
+      Inc(Stuff.CyclesLeftInInstruction, 16)
+    else
+      Inc(Stuff.CyclesLeftInInstruction, 12);
+  end
+  else if (AddressMode = ADDRESS_MODE_SPECIAL) and (AddressModeRegister = ADDRESS_MODE_REGISTER_SPECIAL_IMMEDIATE) then
+  begin
+    if OperationSizeInBytes = 1 then
+    begin
+      Address := State^.ProgramCounter + 1;
+      IncrementProgramCounter(State, 2);
     end
     else
     begin
-      if (AddressMode = Integer(ADDRESS_MODE_SPECIAL)) and (AddressModeRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_IMMEDIATE)) then
-      begin
-        if OperationSizeInBytes = 1 then
-        begin
-          Address := Add32(State^.ProgramCounter, 1);
-          IncrementProgramCounter(State, 2);
-        end
-        else
-        begin
-          Address := State^.ProgramCounter;
-          IncrementProgramCounter(State, OperationSizeInBytes);
-        end;
-        if IsLongword <> 0 then
-          Temp116 := 8
-        else
-          Temp116 := 4;
-        Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Cardinal(Temp116));
-      end
+      Address := State^.ProgramCounter;
+      IncrementProgramCounter(State, OperationSizeInBytes);
+    end;
+
+    if IsLongword then
+      Inc(Stuff.CyclesLeftInInstruction, 8)
+    else
+      Inc(Stuff.CyclesLeftInInstruction, 4);
+  end
+  else if AddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT then
+  begin
+    Address := State^.AddressRegisters[AddressModeRegister];
+
+    if IsLongword then
+      Inc(Stuff.CyclesLeftInInstruction, 8)
+    else
+      Inc(Stuff.CyclesLeftInInstruction, 4);
+  end
+  else if AddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT then
+  begin
+    var IncrementDecrementSize := OperationSizeInBytes;
+
+    if (AddressModeRegister = 7) and (OperationSizeInBytes = 1) then
+      IncrementDecrementSize := 2;
+
+    DecrementAddressRegister(State, AddressModeRegister, IncrementDecrementSize);
+    Address := State^.AddressRegisters[AddressModeRegister];
+
+    if IsLongword then
+      Inc(Stuff.CyclesLeftInInstruction, 10)
+    else
+      Inc(Stuff.CyclesLeftInInstruction, 6);
+  end
+  else if AddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_POSTINCREMENT then
+  begin
+    var IncrementDecrementSize := OperationSizeInBytes;
+
+    if (AddressModeRegister = 7) and (OperationSizeInBytes = 1) then
+      IncrementDecrementSize := 2;
+
+    Address := State^.AddressRegisters[AddressModeRegister];
+    IncrementAddressRegister(State, AddressModeRegister, IncrementDecrementSize);
+
+    if IsLongword then
+      Inc(Stuff.CyclesLeftInInstruction, 8)
+    else
+      Inc(Stuff.CyclesLeftInInstruction, 4);
+  end
+  else
+  begin
+    var IsPCDisplacement := (AddressMode = ADDRESS_MODE_SPECIAL) and
+      (AddressModeRegister = ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_DISPLACEMENT);
+
+    var IsPCIndex := (AddressMode = ADDRESS_MODE_SPECIAL) and
+      (AddressModeRegister = ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_INDEX);
+
+    if IsPCDisplacement or IsPCIndex then
+      Address := State^.ProgramCounter
+    else
+      Address := State^.AddressRegisters[AddressModeRegister];
+
+    if (AddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_DISPLACEMENT) or IsPCDisplacement then
+    begin
+      var Displacement := ReadWord(Stuff, State^.ProgramCounter);
+      Address := Add32(Address, Sub32(Displacement and $7FFF, Displacement and $8000));
+      IncrementProgramCounter(State, 2);
+
+      if IsLongword then
+        Inc(Stuff.CyclesLeftInInstruction, 12)
       else
-      begin
-        if AddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT) then
-        begin
-          Address := State^.AddressRegisters[AddressModeRegister];
-          if IsLongword <> 0 then
-            Temp117 := 8
-          else
-            Temp117 := 4;
-          Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Cardinal(Temp117));
-        end
-        else
-        begin
-          if AddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT) then
-          begin
-            if (AddressModeRegister = 7) and (OperationSizeInBytes = 1) then
-              Temp118 := 2
-            else
-              Temp118 := OperationSizeInBytes;
-            IncrementDecrementSize := Cardinal(Temp118);
-            DecrementAddressRegister(State, AddressModeRegister, IncrementDecrementSize);
-            Address := State^.AddressRegisters[AddressModeRegister];
-            if IsLongword <> 0 then
-              Temp120 := 10
-            else
-              Temp120 := 6;
-            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Cardinal(Temp120));
-          end
-          else
-          begin
-            if AddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_POSTINCREMENT) then
-            begin
-              if (AddressModeRegister = 7) and (OperationSizeInBytes = 1) then
-                Temp121 := 2
-              else
-                Temp121 := OperationSizeInBytes;
-              IncrementDecrementSizeScope104 := Cardinal(Temp121);
-              Address := State^.AddressRegisters[AddressModeRegister];
-              IncrementAddressRegister(State, AddressModeRegister, IncrementDecrementSizeScope104);
-              if IsLongword <> 0 then
-                Temp123 := 8
-              else
-                Temp123 := 4;
-              Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Cardinal(Temp123));
-            end
-            else
-            begin
-              Temp124 := Ord(AddressMode = Integer(ADDRESS_MODE_SPECIAL));
-              if Temp124 <> 0 then
-              begin
-                Temp125 := Ord((AddressModeRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_DISPLACEMENT)) or (AddressModeRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_INDEX)));
-                Temp124 := Ord(Temp125 <> 0);
-              end;
-              if Temp124 <> 0 then
-                Address := State^.ProgramCounter
-              else
-                Address := State^.AddressRegisters[AddressModeRegister];
-              Temp126 := Ord(AddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_DISPLACEMENT));
-              if Temp126 = 0 then
-              begin
-                Temp127 := Ord((AddressMode = Integer(ADDRESS_MODE_SPECIAL)) and (AddressModeRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_DISPLACEMENT)));
-                Temp126 := Ord(Temp127 <> 0);
-              end;
-              if Temp126 <> 0 then
-              begin
-                Displacement := ReadWord(Stuff, State^.ProgramCounter);
-                Address := Add32(Address, Sub32(Displacement and Sub32(Cardinal(1) shl 15, 1), Displacement and (Cardinal(1) shl 15)));
-                IncrementProgramCounter(State, 2);
-                if IsLongword <> 0 then
-                  Temp128 := 12
-                else
-                  Temp128 := 8;
-                Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Cardinal(Temp128));
-              end
-              else
-              begin
-                Temp129 := Ord(AddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_INDEX));
-                if Temp129 = 0 then
-                begin
-                  Temp130 := Ord((AddressMode = Integer(ADDRESS_MODE_SPECIAL)) and (AddressModeRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_INDEX)));
-                  Temp129 := Ord(Temp130 <> 0);
-                end;
-                if Temp129 <> 0 then
-                begin
-                  ExtensionWord := ReadWord(Stuff, State^.ProgramCounter);
-                  IsAddressRegister := Ord((ExtensionWord and $8000) <> 0);
-                  DisplacementReg := (ExtensionWord shr 12) and 7;
-                  DisplacementIsLongword := Ord((ExtensionWord and $0800) <> 0);
-                  DisplacementLiteralValue := Sub32(ExtensionWord and Sub32(Cardinal(1) shl 7, 1), ExtensionWord and (Cardinal(1) shl 7));
-                  if IsAddressRegister <> 0 then
-                    Temp131 := State^.AddressRegisters[DisplacementReg]
-                  else
-                    Temp131 := State^.DataRegisters[DisplacementReg];
-                  if DisplacementIsLongword <> 0 then
-                    Temp132 := 31
-                  else
-                    Temp132 := 15;
-                  if IsAddressRegister <> 0 then
-                    Temp133 := State^.AddressRegisters[DisplacementReg]
-                  else
-                    Temp133 := State^.DataRegisters[DisplacementReg];
-                  if DisplacementIsLongword <> 0 then
-                    Temp134 := 31
-                  else
-                    Temp134 := 15;
-                  DisplacementRegValue := Sub32(Temp131 and Sub32(Cardinal(1) shl Temp132, 1), Temp133 and (Cardinal(1) shl Temp134));
-                  Address := Add32(Address, DisplacementRegValue);
-                  Address := Add32(Address, DisplacementLiteralValue);
-                  IncrementProgramCounter(State, 2);
-                  if IsLongword <> 0 then
-                    Temp135 := 14
-                  else
-                    Temp135 := 10;
-                  Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Cardinal(Temp135));
-                end;
-              end;
-            end;
-          end;
-        end;
-      end;
+        Inc(Stuff.CyclesLeftInInstruction, 8);
+    end
+    else if (AddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_INDEX) or IsPCIndex then
+    begin
+      var ExtensionWord := ReadWord(Stuff, State^.ProgramCounter);
+      var DisplacementRegister := (ExtensionWord shr 12) and 7;
+      var DisplacementRegisterValue: Cardinal;
+
+      if (ExtensionWord and $8000) <> 0 then
+        DisplacementRegisterValue := State^.AddressRegisters[DisplacementRegister]
+      else
+        DisplacementRegisterValue := State^.DataRegisters[DisplacementRegister];
+
+      if (ExtensionWord and $0800) = 0 then
+        DisplacementRegisterValue := Sub32(DisplacementRegisterValue and $7FFF, DisplacementRegisterValue and $8000);
+
+      var DisplacementLiteralValue := Sub32(ExtensionWord and $7F, ExtensionWord and $80);
+      Address := Add32(Address, DisplacementRegisterValue);
+      Address := Add32(Address, DisplacementLiteralValue);
+      IncrementProgramCounter(State, 2);
+
+      if IsLongword then
+        Inc(Stuff.CyclesLeftInInstruction, 14)
+      else
+        Inc(Stuff.CyclesLeftInInstruction, 10);
     end;
   end;
-  DecodedMemoryAddressMode.Address := Address and $FFFFFFFF;
+
+  DecodedMemoryAddressMode.Address := Address;
 end;
 
 procedure DecodeAddressMode(var Stuff: TInstructionContext; var DecodedAddressMode: TDecodedAddressMode; OperationSizeInBytes: Cardinal; AddressMode: Integer; AddressModeRegister: Cardinal);
@@ -1515,7 +1281,7 @@ begin
     ADDRESS_MODE_DATA_REGISTER, ADDRESS_MODE_ADDRESS_REGISTER:
       begin
         DecodedAddressMode.ModeType := DECODED_ADDRESS_MODE_TYPE_REGISTER;
-        if AddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER) then
+        if AddressMode = ADDRESS_MODE_ADDRESS_REGISTER then
           DecodedAddressMode.Data.Reg.IsAddressRegister := True
         else
           DecodedAddressMode.Data.Reg.IsAddressRegister := False;
@@ -1549,11 +1315,16 @@ end;
 function ReadDecodedMemory(var Stuff: TInstructionContext; const Memory: TDecodedMemoryAddressMode): Cardinal;
 begin
   case Memory.AccessKind of
-    MEMORY_ADDRESS: Result := Memory.Address;
-    MEMORY_BYTE: Result := ReadByte(Stuff, Memory.Address);
-    MEMORY_WORD: Result := ReadWord(Stuff, Memory.Address);
-    MEMORY_LONGWORD: Result := ReadLongWord(Stuff, Memory.Address);
-    MEMORY_LONGWORD_BACKWARDS: Result := ReadLongWordBackwards(Stuff, Memory.Address);
+    MEMORY_ADDRESS:
+      Result := Memory.Address;
+    MEMORY_BYTE:
+      Result := ReadByte(Stuff, Memory.Address);
+    MEMORY_WORD:
+      Result := ReadWord(Stuff, Memory.Address);
+    MEMORY_LONGWORD:
+      Result := ReadLongWord(Stuff, Memory.Address);
+    MEMORY_LONGWORD_BACKWARDS:
+      Result := ReadLongWordBackwards(Stuff, Memory.Address);
   else
     Result := 0;
   end;
@@ -1562,10 +1333,14 @@ end;
 procedure WriteDecodedMemory(var Stuff: TInstructionContext; const Memory: TDecodedMemoryAddressMode; Value: Cardinal);
 begin
   case Memory.AccessKind of
-    MEMORY_BYTE: WriteByte(Stuff, Memory.Address, Value);
-    MEMORY_WORD: WriteWord(Stuff, Memory.Address, Value);
-    MEMORY_LONGWORD: WriteLongWord(Stuff, Memory.Address, Value);
-    MEMORY_LONGWORD_BACKWARDS: WriteLongWordBackwards(Stuff, Memory.Address, Value);
+    MEMORY_BYTE:
+      WriteByte(Stuff, Memory.Address, Value);
+    MEMORY_WORD:
+      WriteWord(Stuff, Memory.Address, Value);
+    MEMORY_LONGWORD:
+      WriteLongWord(Stuff, Memory.Address, Value);
+    MEMORY_LONGWORD_BACKWARDS:
+      WriteLongWordBackwards(Stuff, Memory.Address, Value);
   end;
 end;
 
@@ -1575,21 +1350,13 @@ begin
   var State := Stuff.State;
   case DecodedAddressMode.ModeType of
     DECODED_ADDRESS_MODE_TYPE_REGISTER:
-      begin
-        Value := ReadDecodedRegister(State^, DecodedAddressMode.Data.Reg) and DecodedAddressMode.Data.Reg.OperationSizeBitmask;
-      end;
+      Value := ReadDecodedRegister(State^, DecodedAddressMode.Data.Reg) and DecodedAddressMode.Data.Reg.OperationSizeBitmask;
     DECODED_ADDRESS_MODE_TYPE_MEMORY:
-      begin
-        Value := ReadDecodedMemory(Stuff, DecodedAddressMode.Data.Memory);
-      end;
+      Value := ReadDecodedMemory(Stuff, DecodedAddressMode.Data.Memory);
     DECODED_ADDRESS_MODE_TYPE_STATUS_REGISTER:
-      begin
-        Value := Cardinal(State^.StatusRegister);
-      end;
+      Value := Cardinal(State^.StatusRegister);
     DECODED_ADDRESS_MODE_TYPE_CONDITION_CODE_REGISTER:
-      begin
-        Value := Cardinal(State^.StatusRegister and $FF);
-      end;
+      Value := Cardinal(State^.StatusRegister and $FF);
   end;
   Exit(Value);
 end;
@@ -1713,7 +1480,7 @@ end;
 procedure SingleOperandInstructionExecutionTimeWordOnly(var Stuff: TInstructionContext; RegisterWord: Cardinal; MemoryWord: Cardinal);
 begin
   var Value: Cardinal;
-  if Stuff.DestinationDecodedAddressMode.ModeType = Integer(DECODED_ADDRESS_MODE_TYPE_REGISTER) then
+  if Stuff.DestinationDecodedAddressMode.ModeType = DECODED_ADDRESS_MODE_TYPE_REGISTER then
     Value := RegisterWord
   else
     Value := MemoryWord;
@@ -1723,7 +1490,7 @@ end;
 procedure SingleOperandInstructionExecutionTimeLongwordOnly(var Stuff: TInstructionContext; RegisterLongword: Cardinal; MemoryLongword: Cardinal);
 begin
   var Value: Cardinal;
-  if Stuff.DestinationDecodedAddressMode.ModeType = Integer(DECODED_ADDRESS_MODE_TYPE_REGISTER) then
+  if Stuff.DestinationDecodedAddressMode.ModeType = DECODED_ADDRESS_MODE_TYPE_REGISTER then
     Value := RegisterLongword
   else
     Value := MemoryLongword;
@@ -1762,48 +1529,28 @@ end;
 
 procedure StandardInstructionExecutionTime(var Stuff: TInstructionContext);
 begin
-  var Temp184: Integer;
-  var Temp185: Integer;
-  var Temp186: Integer;
   SingleOperandInstructionExecutionTimeCommon(Stuff);
+
   case Stuff.DestinationDecodedAddressMode.ModeType of
     DECODED_ADDRESS_MODE_TYPE_REGISTER:
-      begin
-        Temp184 := Ord(Stuff.OperationSize = 4);
-        if Temp184 <> 0 then
-        begin
-          Temp185 := Ord(Stuff.SourceDecodedAddressMode.ModeType = Integer(DECODED_ADDRESS_MODE_TYPE_REGISTER));
-          if Temp185 = 0 then
-          begin
-            Temp186 := Ord((Stuff.SourceDecodedAddressMode.ModeType = Integer(DECODED_ADDRESS_MODE_TYPE_MEMORY)) and (Stuff.SourceDecodedAddressMode.Data.Memory.Address = Sub32(Stuff.State^.ProgramCounter, 4)));
-            Temp185 := Ord(Temp186 <> 0);
-          end;
-          Temp184 := Ord(Temp185 <> 0);
-        end;
-        if Temp184 <> 0 then
-          Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
-      end;
+      if (Stuff.OperationSize = 4) and (
+        (Stuff.SourceDecodedAddressMode.ModeType = DECODED_ADDRESS_MODE_TYPE_REGISTER) or
+        ((Stuff.SourceDecodedAddressMode.ModeType = DECODED_ADDRESS_MODE_TYPE_MEMORY) and
+        (Stuff.SourceDecodedAddressMode.Data.Memory.Address = Sub32(Stuff.State^.ProgramCounter, 4)))
+        ) then
+        Inc(Stuff.CyclesLeftInInstruction, 2);
     DECODED_ADDRESS_MODE_TYPE_CONDITION_CODE_REGISTER, DECODED_ADDRESS_MODE_TYPE_STATUS_REGISTER:
-      begin
-        Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 8);
-      end;
-  else
-    begin
-    end;
+      Inc(Stuff.CyclesLeftInInstruction, 8);
   end;
 end;
 
 procedure StandardInstructionExecutionTimeQuick(var Stuff: TInstructionContext);
 begin
-  var Temp188: Integer;
-  var Temp187: Integer := Ord(Stuff.OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER));
-  if Temp187 = 0 then
-  begin
-    Temp188 := Ord((Stuff.OperationSize = 4) and (Stuff.DestinationDecodedAddressMode.ModeType = Integer(DECODED_ADDRESS_MODE_TYPE_REGISTER)));
-    Temp187 := Ord(Temp188 <> 0);
-  end;
-  if Temp187 <> 0 then
-    Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
+  if (Stuff.OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER) or
+    ((Stuff.OperationSize = 4) and
+    (Stuff.DestinationDecodedAddressMode.ModeType = DECODED_ADDRESS_MODE_TYPE_REGISTER))
+    then
+    Inc(Stuff.CyclesLeftInInstruction, 2);
 end;
 
 procedure LEAPEAInstructionExecutionTime(var Stuff: TInstructionContext);
@@ -1828,25 +1575,17 @@ begin
             begin
               Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 8);
             end;
-        else
-          begin
-          end;
         end;
       end;
-  else
-    begin
-    end;
   end;
 end;
 
 procedure ABCDSBCDExecutionTime(var Stuff: TInstructionContext);
 begin
-  var Temp200: Integer;
   if (Stuff.OpCode.Raw and $0008) <> 0 then
-    Temp200 := 18
+    Stuff.CyclesLeftInInstruction := Cardinal(18)
   else
-    Temp200 := 6;
-  Stuff.CyclesLeftInInstruction := Cardinal(Temp200);
+    Stuff.CyclesLeftInInstruction := Cardinal(6);
 end;
 
 procedure SupervisorCheck(var Stuff: TInstructionContext);
@@ -1873,40 +1612,30 @@ end;
 
 procedure SetSizeLongwordRegisterByteMemory(var Stuff: TInstructionContext);
 begin
-  var Temp201: Integer;
-  if Stuff.OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_DATA_REGISTER) then
-    Temp201 := 4
+  if Stuff.OpCode.PrimaryAddressMode = ADDRESS_MODE_DATA_REGISTER then
+    Stuff.OperationSize := Cardinal(4)
   else
-    Temp201 := 1;
-  Stuff.OperationSize := Cardinal(Temp201);
+    Stuff.OperationSize := Cardinal(1);
 end;
 
 procedure SetSizeMove(var Stuff: TInstructionContext);
 begin
-  case (Stuff.OpCode.Raw and $3000) of
+  case Stuff.OpCode.Raw and $3000 of
     $0000, $1000:
-      begin
-        Stuff.OperationSize := 1;
-      end;
+      Stuff.OperationSize := 1;
     $2000:
-      begin
-        Stuff.OperationSize := 4;
-      end;
+      Stuff.OperationSize := 4;
     $3000:
-      begin
-        Stuff.OperationSize := 2;
-      end;
+      Stuff.OperationSize := 2;
   end;
 end;
 
 procedure SetSizeExt(var Stuff: TInstructionContext);
 begin
-  var Temp207: Integer;
   if (Stuff.OpCode.Raw and $0040) <> 0 then
-    Temp207 := 4
+    Stuff.OperationSize := Cardinal(4)
   else
-    Temp207 := 2;
-  Stuff.OperationSize := Cardinal(Temp207);
+    Stuff.OperationSize := Cardinal(2);
 end;
 
 procedure SetSizeStandard(var Stuff: TInstructionContext);
@@ -1953,37 +1682,37 @@ end;
 
 procedure DecodeSourceBCDX(var Stuff: TInstructionContext);
 begin
-  var Temp209: Integer;
+  var AddressMode: Integer;
   if (Stuff.OpCode.Raw and $0008) <> 0 then
-    Temp209 := ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT
+    AddressMode := ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT
   else
-    Temp209 := ADDRESS_MODE_DATA_REGISTER;
-  DecodeAddressMode(Stuff, Stuff.SourceDecodedAddressMode, Stuff.OperationSize, Temp209, Stuff.OpCode.PrimaryRegister);
+    AddressMode := ADDRESS_MODE_DATA_REGISTER;
+  DecodeAddressMode(Stuff, Stuff.SourceDecodedAddressMode, Stuff.OperationSize, AddressMode, Stuff.OpCode.PrimaryRegister);
 end;
 
 procedure DecodeSourceDataRegisterSecondaryOrPrimaryAddressMode(var Stuff: TInstructionContext);
 begin
-  var Temp210: Integer;
-  var Temp211: Cardinal;
+  var AddressMode: Integer;
+  var AddressModeReg: Cardinal;
   if Stuff.OpCode.Bit8 <> 0 then
-    Temp210 := ADDRESS_MODE_DATA_REGISTER
+    AddressMode := ADDRESS_MODE_DATA_REGISTER
   else
-    Temp210 := Stuff.OpCode.PrimaryAddressMode;
+    AddressMode := Stuff.OpCode.PrimaryAddressMode;
   if Stuff.OpCode.Bit8 <> 0 then
-    Temp211 := Stuff.OpCode.SecondaryRegister
+    AddressModeReg := Stuff.OpCode.SecondaryRegister
   else
-    Temp211 := Stuff.OpCode.PrimaryRegister;
-  DecodeAddressMode(Stuff, Stuff.SourceDecodedAddressMode, Stuff.OperationSize, Temp210, Temp211);
+    AddressModeReg := Stuff.OpCode.PrimaryRegister;
+  DecodeAddressMode(Stuff, Stuff.SourceDecodedAddressMode, Stuff.OperationSize, AddressMode, AddressModeReg);
 end;
 
 procedure DecodeSourcePrimaryAddressModeSized(var Stuff: TInstructionContext);
 begin
-  var Temp212: Integer;
+  var OperationSizeInBytes: Integer;
   if Stuff.OpCode.Bit8 <> 0 then
-    Temp212 := 4
+    OperationSizeInBytes := 4
   else
-    Temp212 := 2;
-  DecodeAddressMode(Stuff, Stuff.SourceDecodedAddressMode, Temp212, Stuff.OpCode.PrimaryAddressMode, Stuff.OpCode.PrimaryRegister);
+    OperationSizeInBytes := 2;
+  DecodeAddressMode(Stuff, Stuff.SourceDecodedAddressMode, OperationSizeInBytes, Stuff.OpCode.PrimaryAddressMode, Stuff.OpCode.PrimaryRegister);
 end;
 
 procedure DecodeSourceAddressRegisterPrimaryPostIncrement(var Stuff: TInstructionContext);
@@ -2023,27 +1752,27 @@ end;
 
 procedure DecodeDestinationBCDX(var Stuff: TInstructionContext);
 begin
-  var Temp213: Integer;
+  var AddressMode: Integer;
   if (Stuff.OpCode.Raw and $0008) <> 0 then
-    Temp213 := ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT
+    AddressMode := ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT
   else
-    Temp213 := ADDRESS_MODE_DATA_REGISTER;
-  DecodeAddressMode(Stuff, Stuff.DestinationDecodedAddressMode, Stuff.OperationSize, Temp213, Stuff.OpCode.SecondaryRegister);
+    AddressMode := ADDRESS_MODE_DATA_REGISTER;
+  DecodeAddressMode(Stuff, Stuff.DestinationDecodedAddressMode, Stuff.OperationSize, AddressMode, Stuff.OpCode.SecondaryRegister);
 end;
 
 procedure DecodeDestinationDataRegisterSecondaryOrPrimaryAddressMode(var Stuff: TInstructionContext);
 begin
-  var Temp214: Integer;
-  var Temp215: Cardinal;
+  var AddressMode: Integer;
+  var AddressModeReg: Cardinal;
   if Stuff.OpCode.Bit8 <> 0 then
-    Temp214 := Stuff.OpCode.PrimaryAddressMode
+    AddressMode := Stuff.OpCode.PrimaryAddressMode
   else
-    Temp214 := ADDRESS_MODE_DATA_REGISTER;
+    AddressMode := ADDRESS_MODE_DATA_REGISTER;
   if Stuff.OpCode.Bit8 <> 0 then
-    Temp215 := Stuff.OpCode.PrimaryRegister
+    AddressModeReg := Stuff.OpCode.PrimaryRegister
   else
-    Temp215 := Stuff.OpCode.SecondaryRegister;
-  DecodeAddressMode(Stuff, Stuff.DestinationDecodedAddressMode, Stuff.OperationSize, Temp214, Temp215);
+    AddressModeReg := Stuff.OpCode.SecondaryRegister;
+  DecodeAddressMode(Stuff, Stuff.DestinationDecodedAddressMode, Stuff.OperationSize, AddressMode, AddressModeReg);
 end;
 
 procedure DecodeDestinationAddressRegisterSecondaryFull(var Stuff: TInstructionContext);
@@ -2196,22 +1925,19 @@ end;
 
 procedure ActionCMP(var Stuff: TInstructionContext);
 begin
-  var Temp216: Integer;
+  var Cycles: Integer;
   ActionSUBCommon(Stuff);
   if Stuff.OperationSize = 4 then
-    Temp216 := 2
+    Cycles := 2
   else
-    Temp216 := 0;
-  Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Cardinal(Temp216));
+    Cycles := 0;
+  Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Cardinal(Cycles));
 end;
 
 procedure ActionCMPI(var Stuff: TInstructionContext);
 begin
   ActionSUBCommon(Stuff);
-  var Temp217: Integer := Ord(Stuff.OperationSize = 4);
-  if Temp217 <> 0 then
-    Temp217 := Ord(Stuff.DestinationDecodedAddressMode.ModeType = Integer(DECODED_ADDRESS_MODE_TYPE_REGISTER));
-  if Temp217 <> 0 then
+  if (Stuff.OperationSize = 4) and (Stuff.DestinationDecodedAddressMode.ModeType = DECODED_ADDRESS_MODE_TYPE_REGISTER) then
     Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
 end;
 
@@ -2228,17 +1954,17 @@ end;
 
 procedure ActionADDASUBACommon(var Stuff: TInstructionContext);
 begin
-  if not (Stuff.OpCode.Bit8 <> 0) then
+  if Stuff.OpCode.Bit8 = 0 then
   begin
     Stuff.SourceValue := Sub32(Stuff.SourceValue and Sub32(Cardinal(1) shl 15, 1), Stuff.SourceValue and (Cardinal(1) shl 15));
-    if Stuff.SourceDecodedAddressMode.ModeType <> Integer(DECODED_ADDRESS_MODE_TYPE_REGISTER) then
+    if Stuff.SourceDecodedAddressMode.ModeType <> DECODED_ADDRESS_MODE_TYPE_REGISTER then
       Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
   end;
 end;
 
 procedure ActionCMPA(var Stuff: TInstructionContext);
 begin
-  if not (Stuff.OpCode.Bit8 <> 0) then
+  if Stuff.OpCode.Bit8 = 0 then
     Stuff.SourceValue := Sub32(Stuff.SourceValue and Sub32(Cardinal(1) shl 15, 1), Stuff.SourceValue and (Cardinal(1) shl 15));
   ActionCMP(Stuff);
 end;
@@ -2291,16 +2017,12 @@ end;
 
 procedure ActionBTST(var Stuff: TInstructionContext);
 begin
-  var Temp219: Integer;
   ActionBxxx(Stuff);
-  var Temp218: Integer := Ord(Stuff.OperationSize = 4);
-  if Temp218 = 0 then
-  begin
-    Temp219 := Ord((Stuff.OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_SPECIAL)) and (Stuff.OpCode.PrimaryRegister = Cardinal(ADDRESS_MODE_REGISTER_SPECIAL_IMMEDIATE)));
-    Temp218 := Ord(Temp219 <> 0);
-  end;
-  if Temp218 <> 0 then
-    Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
+
+  if (Stuff.OperationSize = 4) or
+    ((Stuff.OpCode.PrimaryAddressMode = ADDRESS_MODE_SPECIAL) and
+    (Stuff.OpCode.PrimaryRegister = ADDRESS_MODE_REGISTER_SPECIAL_IMMEDIATE)) then
+    Inc(Stuff.CyclesLeftInInstruction, 2);
 end;
 
 procedure ActionBCHG(var Stuff: TInstructionContext);
@@ -2308,10 +2030,7 @@ begin
   ActionBxxx(Stuff);
   Stuff.ResultValue := Stuff.DestinationValue xor Cardinal(1 shl Stuff.SourceValue);
   Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
-  var Temp220: Integer := Ord(Stuff.OperationSize = 4);
-  if Temp220 <> 0 then
-    Temp220 := Ord(Stuff.SourceValue < 16);
-  if Temp220 <> 0 then
+  if (Stuff.OperationSize = 4) and (Stuff.SourceValue < 16) then
     Stuff.CyclesLeftInInstruction := Sub32(Stuff.CyclesLeftInInstruction, 2);
 end;
 
@@ -2320,10 +2039,7 @@ begin
   ActionBxxx(Stuff);
   Stuff.ResultValue := Stuff.DestinationValue and Cardinal(not (1 shl Stuff.SourceValue));
   Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
-  var Temp221: Integer := Ord(Stuff.OperationSize = 4);
-  if Temp221 <> 0 then
-    Temp221 := Ord(Stuff.SourceValue >= 16);
-  if Temp221 <> 0 then
+  if (Stuff.OperationSize = 4) and (Stuff.SourceValue >= 16) then
     Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
 end;
 
@@ -2332,10 +2048,7 @@ begin
   ActionBxxx(Stuff);
   Stuff.ResultValue := Stuff.DestinationValue or Cardinal(1 shl Stuff.SourceValue);
   Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
-  var Temp222: Integer := Ord(Stuff.OperationSize = 4);
-  if Temp222 <> 0 then
-    Temp222 := Ord(Stuff.SourceValue < 16);
-  if Temp222 <> 0 then
+  if (Stuff.OperationSize = 4) and (Stuff.SourceValue < 16) then
     Stuff.CyclesLeftInInstruction := Sub32(Stuff.CyclesLeftInInstruction, 2);
 end;
 
@@ -2389,20 +2102,20 @@ end;
 procedure ActionMOVE(var Stuff: TInstructionContext);
 begin
   ActionMOVECommon(Stuff);
-  if Stuff.SourceDecodedAddressMode.ModeType = Integer(DECODED_ADDRESS_MODE_TYPE_STATUS_REGISTER) then
+  if Stuff.SourceDecodedAddressMode.ModeType = DECODED_ADDRESS_MODE_TYPE_STATUS_REGISTER then
   begin
-    if Stuff.DestinationDecodedAddressMode.ModeType = Integer(DECODED_ADDRESS_MODE_TYPE_REGISTER) then
+    if Stuff.DestinationDecodedAddressMode.ModeType = DECODED_ADDRESS_MODE_TYPE_REGISTER then
       Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2)
     else
       Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
   end
   else
   begin
-    if (Stuff.DestinationDecodedAddressMode.ModeType = Integer(DECODED_ADDRESS_MODE_TYPE_STATUS_REGISTER)) or (Stuff.DestinationDecodedAddressMode.ModeType = Integer(DECODED_ADDRESS_MODE_TYPE_CONDITION_CODE_REGISTER)) then
+    if (Stuff.DestinationDecodedAddressMode.ModeType = DECODED_ADDRESS_MODE_TYPE_STATUS_REGISTER) or (Stuff.DestinationDecodedAddressMode.ModeType = DECODED_ADDRESS_MODE_TYPE_CONDITION_CODE_REGISTER) then
       Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 8)
     else
     begin
-      if Stuff.OpCode.SecondaryAddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT) then
+      if Stuff.OpCode.SecondaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT then
         Stuff.CyclesLeftInInstruction := Sub32(Stuff.CyclesLeftInInstruction, 2);
     end;
   end;
@@ -2432,13 +2145,8 @@ end;
 
 procedure ActionNEGX(var Stuff: TInstructionContext);
 begin
-  var Temp229: Integer;
   var State: PM68kState := Stuff.State;
-  if Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0 then
-    Temp229 := 1
-  else
-    Temp229 := 0;
-  Stuff.ResultValue := Sub32(Sub32(0, Stuff.DestinationValue), Temp229);
+  Stuff.ResultValue := Sub32(Sub32(0, Stuff.DestinationValue), Ord(Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0));
   SingleOperandInstructionExecutionTimeCommon(Stuff);
 end;
 
@@ -2462,17 +2170,16 @@ end;
 
 procedure ActionEXT(var Stuff: TInstructionContext);
 begin
-  var Temp230: Integer;
-  var Temp231: Integer;
+  var SignBit: Integer;
+
   if (Stuff.OpCode.Raw and $0040) <> 0 then
-    Temp230 := 15
+    SignBit := 15
   else
-    Temp230 := 7;
-  if (Stuff.OpCode.Raw and $0040) <> 0 then
-    Temp231 := 15
-  else
-    Temp231 := 7;
-  Stuff.ResultValue := Sub32(Stuff.DestinationValue and Sub32(Cardinal(1) shl Temp230, 1), Stuff.DestinationValue and (Cardinal(1) shl Temp231));
+    SignBit := 7;
+
+  Stuff.ResultValue := Sub32(
+    Stuff.DestinationValue and ((Cardinal(1) shl SignBit) - 1),
+    Stuff.DestinationValue and (Cardinal(1) shl SignBit));
 end;
 
 procedure ActionSWAP(var Stuff: TInstructionContext);
@@ -2617,14 +2324,8 @@ begin
             begin
               Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 6);
             end;
-        else
-          begin
-          end;
         end;
       end;
-  else
-    begin
-    end;
   end;
 end;
 
@@ -2662,16 +2363,15 @@ procedure ActionMOVEM(var Stuff: TInstructionContext);
 begin
   var AddressDelta: Integer;
   var WriteKind: TMemoryAccessKind;
-  var Temp243: Integer;
   var State: PM68kState := Stuff.State;
   var MemoryAddress: Cardinal := Stuff.DestinationValue;
   var MemoryToRegister: Byte := Ord((Stuff.OpCode.Raw and $0400) <> 0);
   var IsLongword: Byte := Ord((Stuff.OpCode.Raw and $0040) <> 0);
+  var CycleDelta: Cardinal;
   if IsLongword <> 0 then
-    Temp243 := 8
+    CycleDelta := 8
   else
-    Temp243 := 4;
-  var CycleDelta: Cardinal := Temp243;
+    CycleDelta := 4;
   Stuff.CyclesLeftInInstruction := 8;
   if MemoryToRegister <> 0 then
     Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
@@ -2703,16 +2403,10 @@ begin
             begin
               Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 8);
             end;
-        else
-          begin
-          end;
         end;
       end;
-  else
-    begin
-    end;
   end;
-  if Stuff.OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT) then
+  if Stuff.OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT then
   begin
     if IsLongword <> 0 then
     begin
@@ -2753,7 +2447,7 @@ begin
       end
       else
       begin
-        if Stuff.OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT) then
+        if Stuff.OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT then
           WriteMemoryByKind(Stuff, WriteKind, (Add32(MemoryAddress, Cardinal(AddressDelta))), State^.AddressRegisters[(Sub32(7, ItemIndex))])
         else
           WriteMemoryByKind(Stuff, WriteKind, MemoryAddress, State^.DataRegisters[ItemIndex]);
@@ -2777,7 +2471,7 @@ begin
       end
       else
       begin
-        if Stuff.OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT) then
+        if Stuff.OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT then
           WriteMemoryByKind(Stuff, WriteKind, (Add32(MemoryAddress, Cardinal(AddressDelta))), State^.DataRegisters[(Sub32(7, ItemIndex))])
         else
           WriteMemoryByKind(Stuff, WriteKind, MemoryAddress, State^.AddressRegisters[ItemIndex]);
@@ -2787,10 +2481,7 @@ begin
     end;
     Bitfield := Bitfield shr 1;
   end;
-  var Temp259: Integer := Ord(Stuff.OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT));
-  if Temp259 = 0 then
-    Temp259 := Ord(Stuff.OpCode.PrimaryAddressMode = Integer(ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_POSTINCREMENT));
-  if Temp259 <> 0 then
+  if (Stuff.OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT) or (Stuff.OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_POSTINCREMENT) then
     State^.AddressRegisters[Stuff.OpCode.PrimaryRegister] := MemoryAddress;
 end;
 
@@ -2882,14 +2573,14 @@ end;
 procedure ActionDBCC(var Stuff: TInstructionContext);
 begin
   var LoopCounter: Cardinal;
-  var Temp260: Cardinal;
+  var SaveLoopCounter: Cardinal;
   var State: PM68kState := Stuff.State;
   if not (IsOpcodeConditionTrue(State, Stuff.OpCode.Raw) <> 0) then
   begin
     LoopCounter := State^.DataRegisters[Stuff.OpCode.PrimaryRegister] and $FFFF;
-    Temp260 := LoopCounter;
+    SaveLoopCounter := LoopCounter;
     LoopCounter := (LoopCounter + $FFFF) and $FFFF;
-    if Temp260 <> 0 then
+    if SaveLoopCounter <> 0 then
       ActionBRAWORD(Stuff)
     else
       Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 6);
@@ -2908,7 +2599,7 @@ end;
 function CountBitsSet(Value: Cardinal): Cardinal;
 begin
   var TotalBitsSet: Cardinal := 0;
-  while (Value <> 0) do
+  while Value <> 0 do
   begin
     Value := Value and Sub32(Value, 1);
     Inc(TotalBitsSet);
@@ -2916,158 +2607,150 @@ begin
   Exit(TotalBitsSet);
 end;
 
-procedure ActionDIVCommon(var Stuff: TInstructionContext; IsSigned: Byte);
+procedure ActionDIVCommon(var Stuff: TInstructionContext; IsSigned: Boolean);
 begin
-  var SourceIsNegative: Byte;
-  var Temp263: Integer;
-  var DestinationIsNegative: Byte;
-  var Temp264: Integer;
-  var ResultIsNegative: Byte;
-  var AbsoluteSourceValue: Cardinal;
-  var Temp265: Cardinal;
-  var AbsoluteDestinationValue: Cardinal;
-  var Temp266: Cardinal;
-  var Temp267: Integer;
-  var AbsoluteQuotient: Cardinal;
-  var ShiftedDivisor: Cardinal;
-  var WorkingDividend: Cardinal;
-  var I: Cardinal;
-  var HighBitSet: Byte;
-  var Temp270: Integer;
-  var Temp271: Cardinal;
-  var AbsoluteRemainder: Cardinal;
-  var Quotient: Cardinal;
-  var Temp272: Cardinal;
-  var Remainder: Cardinal;
-  var Temp273: Cardinal;
-  var State: PM68kState := Stuff.State;
-  State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
+  var State := Stuff.State;
+  State^.StatusRegister := State^.StatusRegister and not CONDITION_CODE_CARRY;
+
   if Stuff.SourceValue = 0 then
   begin
-    State^.StatusRegister := Word(State^.StatusRegister and (not ((CONDITION_CODE_NEGATIVE or CONDITION_CODE_ZERO) or CONDITION_CODE_OVERFLOW)));
+    State^.StatusRegister := State^.StatusRegister and not (
+      CONDITION_CODE_NEGATIVE or
+      CONDITION_CODE_ZERO or
+      CONDITION_CODE_OVERFLOW
+      );
+
     Stuff.ResultValue := Stuff.DestinationValue;
     DoInterrupt(Stuff, 5);
-  end
-  else
-  begin
-    Temp263 := Ord((IsSigned <> 0) and ((Stuff.SourceValue and $8000) <> 0));
-    SourceIsNegative := Byte(Temp263);
-    Temp264 := Ord((IsSigned <> 0) and ((Stuff.DestinationValue and $80000000) <> 0));
-    DestinationIsNegative := Byte(Temp264);
-    ResultIsNegative := Ord(SourceIsNegative <> DestinationIsNegative);
-    if SourceIsNegative <> 0 then
-      Temp265 := Sub32(0, Sub32(Stuff.SourceValue and Sub32(Cardinal(1) shl 15, 1), Stuff.SourceValue and (Cardinal(1) shl 15)))
-    else
-      Temp265 := Stuff.SourceValue;
-    AbsoluteSourceValue := Temp265;
-    if DestinationIsNegative <> 0 then
-      Temp266 := Sub32(0, Sub32(Stuff.DestinationValue and Sub32(Cardinal(1) shl 31, 1), Stuff.DestinationValue and (Cardinal(1) shl 31)))
-    else
-      Temp266 := Stuff.DestinationValue;
-    AbsoluteDestinationValue := Temp266;
-    Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 6);
-    if IsSigned <> 0 then
-    begin
-      if DestinationIsNegative <> 0 then
-        Temp267 := 8
-      else
-        Temp267 := 6;
-      Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Cardinal(Temp267));
-    end;
-    if AbsoluteSourceValue > (AbsoluteDestinationValue shr 16) then
-    begin
-      AbsoluteQuotient := Cardinal(AbsoluteDestinationValue div AbsoluteSourceValue);
-      if IsSigned <> 0 then
-      begin
-        Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 104);
-        if SourceIsNegative <> 0 then
-          Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2)
-        else
-        begin
-          if DestinationIsNegative <> 0 then
-            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
-        end;
-        Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Mul32(Sub32(15, CountBitsSet(AbsoluteQuotient shr 1)), 2));
-      end
-      else
-      begin
-        ShiftedDivisor := (AbsoluteSourceValue and $FFFF) shl 16;
-        WorkingDividend := AbsoluteDestinationValue;
-        Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 66);
-        I := 0;
-        while (I < 15) do
-        begin
-          HighBitSet := Ord((WorkingDividend and $80000000) <> 0);
-          WorkingDividend := WorkingDividend shl 1;
-          if HighBitSet = 0 then
-          begin
-            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
-            if WorkingDividend < ShiftedDivisor then
-            begin
-              Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
-              Inc(I);
-              Continue;
-            end;
-          end;
-          WorkingDividend := Sub32(WorkingDividend, ShiftedDivisor);
-          Inc(I);
-        end;
-      end;
-      Temp270 := Ord((IsSigned = 0));
-      if Temp270 = 0 then
-      begin
-        if ResultIsNegative <> 0 then
-          Temp271 := $8000
-        else
-          Temp271 := $7FFF;
-        Temp270 := Ord(AbsoluteQuotient <= Temp271);
-      end;
-      if Temp270 <> 0 then
-      begin
-        AbsoluteRemainder := Cardinal(AbsoluteDestinationValue mod AbsoluteSourceValue);
-        if ResultIsNegative <> 0 then
-          Temp272 := Sub32(0, AbsoluteQuotient)
-        else
-          Temp272 := AbsoluteQuotient;
-        Quotient := Temp272;
-        if DestinationIsNegative <> 0 then
-          Temp273 := Sub32(0, AbsoluteRemainder)
-        else
-          Temp273 := AbsoluteRemainder;
-        Remainder := Temp273;
-        Stuff.ResultValue := (Quotient and $FFFF) or ((Remainder and $FFFF) shl 16);
-        State^.StatusRegister := Word(State^.StatusRegister and (not ((CONDITION_CODE_NEGATIVE or CONDITION_CODE_ZERO) or CONDITION_CODE_OVERFLOW)));
-        State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_NEGATIVE and (0 - Ord((Quotient and $8000) <> 0))));
-        State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_ZERO and (0 - Ord(Quotient = 0))));
-        Exit;
-      end;
-    end;
-    State^.StatusRegister := Word(State^.StatusRegister or CONDITION_CODE_OVERFLOW);
-    State^.StatusRegister := Word(State^.StatusRegister or CONDITION_CODE_NEGATIVE);
-    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_ZERO));
-    Stuff.ResultValue := Stuff.DestinationValue;
+    Exit;
   end;
+
+  var SourceIsNegative := IsSigned and ((Stuff.SourceValue and $8000) <> 0);
+  var DestinationIsNegative := IsSigned and ((Stuff.DestinationValue and $80000000) <> 0);
+  var ResultIsNegative := SourceIsNegative <> DestinationIsNegative;
+
+  var AbsoluteSourceValue: Cardinal;
+  if SourceIsNegative then
+    AbsoluteSourceValue := Sub32(0, Sub32(Stuff.SourceValue and $7FFF, Stuff.SourceValue and $8000))
+  else
+    AbsoluteSourceValue := Stuff.SourceValue;
+
+  var AbsoluteDestinationValue: Cardinal;
+  if DestinationIsNegative then
+    AbsoluteDestinationValue := Sub32(0, Stuff.DestinationValue)
+  else
+    AbsoluteDestinationValue := Stuff.DestinationValue;
+
+  Inc(Stuff.CyclesLeftInInstruction, 6);
+
+  if IsSigned then
+  begin
+    if DestinationIsNegative then
+      Inc(Stuff.CyclesLeftInInstruction, 8)
+    else
+      Inc(Stuff.CyclesLeftInInstruction, 6);
+  end;
+
+  if AbsoluteSourceValue > (AbsoluteDestinationValue shr 16) then
+  begin
+    var AbsoluteQuotient := AbsoluteDestinationValue div AbsoluteSourceValue;
+    if IsSigned then
+    begin
+      Inc(Stuff.CyclesLeftInInstruction, 104);
+
+      if SourceIsNegative then
+        Inc(Stuff.CyclesLeftInInstruction, 2)
+      else if DestinationIsNegative then
+        Inc(Stuff.CyclesLeftInInstruction, 4);
+
+      Inc(Stuff.CyclesLeftInInstruction, Mul32(15 - CountBitsSet(AbsoluteQuotient shr 1), 2));
+    end
+    else
+    begin
+      var ShiftedDivisor := (AbsoluteSourceValue and $FFFF) shl 16;
+      var WorkingDividend := AbsoluteDestinationValue;
+
+      Inc(Stuff.CyclesLeftInInstruction, 66);
+
+      for var i := 0 to 14 do
+      begin
+        var HighBitSet := (WorkingDividend and $80000000) <> 0;
+        WorkingDividend := WorkingDividend shl 1;
+
+        if not HighBitSet then
+        begin
+          Inc(Stuff.CyclesLeftInInstruction, 2);
+
+          if WorkingDividend < ShiftedDivisor then
+          begin
+            Inc(Stuff.CyclesLeftInInstruction, 2);
+            Continue;
+          end;
+        end;
+
+        WorkingDividend := Sub32(WorkingDividend, ShiftedDivisor);
+      end;
+    end;
+
+    var QuotientFits: Boolean;
+    if not IsSigned then
+      QuotientFits := True
+    else if ResultIsNegative then
+      QuotientFits := AbsoluteQuotient <= $8000
+    else
+      QuotientFits := AbsoluteQuotient <= $7FFF;
+
+    if QuotientFits then
+    begin
+      var AbsoluteRemainder := AbsoluteDestinationValue mod AbsoluteSourceValue;
+
+      var Quotient: Cardinal;
+      if ResultIsNegative then
+        Quotient := Sub32(0, AbsoluteQuotient)
+      else
+        Quotient := AbsoluteQuotient;
+
+      var Remainder: Cardinal;
+      if DestinationIsNegative then
+        Remainder := Sub32(0, AbsoluteRemainder)
+      else
+        Remainder := AbsoluteRemainder;
+
+      Stuff.ResultValue := (Quotient and $FFFF) or ((Remainder and $FFFF) shl 16);
+      State^.StatusRegister := State^.StatusRegister and not (
+        CONDITION_CODE_NEGATIVE or
+        CONDITION_CODE_ZERO or
+        CONDITION_CODE_OVERFLOW);
+
+      if (Quotient and $8000) <> 0 then
+        State^.StatusRegister := State^.StatusRegister or CONDITION_CODE_NEGATIVE;
+
+      if Quotient = 0 then
+        State^.StatusRegister := State^.StatusRegister or CONDITION_CODE_ZERO;
+
+      Exit;
+    end;
+  end;
+
+  State^.StatusRegister := State^.StatusRegister or CONDITION_CODE_OVERFLOW or CONDITION_CODE_NEGATIVE;
+  State^.StatusRegister := State^.StatusRegister and not CONDITION_CODE_ZERO;
+  Stuff.ResultValue := Stuff.DestinationValue;
 end;
 
 procedure ActionDIVS(var Stuff: TInstructionContext);
 begin
-  ActionDIVCommon(Stuff, 1);
+  ActionDIVCommon(Stuff, True);
 end;
 
 procedure ActionDIVU(var Stuff: TInstructionContext);
 begin
-  ActionDIVCommon(Stuff, 0);
+  ActionDIVCommon(Stuff, False);
 end;
 
 procedure ActionSUBXCommon(var Stuff: TInstructionContext);
 begin
-  var Temp274: Integer;
   var State: PM68kState := Stuff.State;
-  if Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0 then
-    Temp274 := 1
-  else
-    Temp274 := 0;
-  Stuff.ResultValue := Sub32(Sub32(Stuff.DestinationValue, Stuff.SourceValue), Temp274);
+  Stuff.ResultValue := Sub32(Sub32(Stuff.DestinationValue, Stuff.SourceValue), Ord(Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0));
 end;
 
 procedure ActionSUBX(var Stuff: TInstructionContext);
@@ -3078,7 +2761,6 @@ end;
 
 procedure ActionSBCDCommon(var Stuff: TInstructionContext);
 begin
-  var Temp275: Integer;
   var State: PM68kState := Stuff.State;
   ActionSUBXCommon(Stuff);
   Stuff.SourceValue := (((Stuff.SourceValue and not Stuff.DestinationValue) or ((Stuff.SourceValue or not Stuff.DestinationValue) and Stuff.ResultValue)) and $88) shl 1;
@@ -3086,14 +2768,8 @@ begin
   Stuff.DestinationValue := Stuff.ResultValue;
   ActionSUBCommon(Stuff);
   State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
-  var Temp276: Integer := Ord((Stuff.SourceValue and $40) <> 0);
-  if Temp276 = 0 then
-    Temp276 := Ord(((not Stuff.DestinationValue and Stuff.ResultValue) and $80) <> 0);
-  if Temp276 <> 0 then
-    Temp275 := CONDITION_CODE_CARRY
-  else
-    Temp275 := 0;
-  State^.StatusRegister := Word(State^.StatusRegister or Temp275);
+  if ((Stuff.SourceValue and $40) <> 0) or (((not Stuff.DestinationValue and Stuff.ResultValue) and $80) <> 0) then
+    State^.StatusRegister := Word(State^.StatusRegister or CONDITION_CODE_CARRY);
 end;
 
 procedure ActionSBCD(var Stuff: TInstructionContext);
@@ -3110,37 +2786,31 @@ begin
   SingleOperandInstructionExecutionTimeWordOnly(Stuff, 2, 4);
 end;
 
-procedure ActionMULCommon(var Stuff: TInstructionContext; IsSigned: Byte; TotalOperations: Cardinal);
+procedure ActionMULCommon(var Stuff: TInstructionContext; IsSigned: Boolean; TotalOperations: Cardinal);
 begin
-  var Temp279: Cardinal;
-  var Temp280: Cardinal;
-  var Temp281: Cardinal;
-  var Temp277: Integer := Ord(IsSigned <> 0);
-  if Temp277 <> 0 then
-    Temp277 := Ord((Stuff.SourceValue and $8000) <> 0);
-  var MultiplierIsNegative: Byte := Temp277;
-  var Temp278: Integer := Ord(IsSigned <> 0);
-  if Temp278 <> 0 then
-    Temp278 := Ord((Stuff.DestinationValue and $8000) <> 0);
-  var MultiplicandIsNegative: Byte := Temp278;
-  var ResultIsNegative: Byte := Ord(MultiplierIsNegative <> MultiplicandIsNegative);
-  if MultiplierIsNegative <> 0 then
-    Temp279 := Sub32(0, Sub32(Stuff.SourceValue and Sub32(Cardinal(1) shl 15, 1), Stuff.SourceValue and (Cardinal(1) shl 15)))
+  var MultiplierIsNegative := IsSigned and ((Stuff.SourceValue and $8000) <> 0);
+  var MultiplicandIsNegative := IsSigned and ((Stuff.DestinationValue and $8000) <> 0);
+  var ResultIsNegative := MultiplierIsNegative <> MultiplicandIsNegative;
+
+  var Multiplier: Cardinal;
+  if MultiplierIsNegative then
+    Multiplier := Sub32(0, Sub32(Stuff.SourceValue and $7FFF, Stuff.SourceValue and $8000))
   else
-    Temp279 := Stuff.SourceValue;
-  var Multiplier: Cardinal := Temp279;
-  if MultiplicandIsNegative <> 0 then
-    Temp280 := Sub32(0, Sub32(Stuff.DestinationValue and Sub32(Cardinal(1) shl 15, 1), Stuff.DestinationValue and (Cardinal(1) shl 15)))
+    Multiplier := Stuff.SourceValue and $FFFF;
+
+  var Multiplicand: Cardinal;
+  if MultiplicandIsNegative then
+    Multiplicand := Sub32(0, Sub32(Stuff.DestinationValue and $7FFF, Stuff.DestinationValue and $8000))
   else
-    Temp280 := Stuff.DestinationValue and $FFFF;
-  var Multiplicand: Cardinal := Temp280;
-  var AbsoluteResult: Cardinal := Mul32(Multiplicand, Multiplier);
-  if ResultIsNegative <> 0 then
-    Temp281 := Sub32(0, AbsoluteResult)
+    Multiplicand := Stuff.DestinationValue and $FFFF;
+
+  var AbsoluteResult := Mul32(Multiplicand, Multiplier);
+  if ResultIsNegative then
+    Stuff.ResultValue := Sub32(0, AbsoluteResult)
   else
-    Temp281 := AbsoluteResult;
-  Stuff.ResultValue := Temp281;
-  Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + Add32(34, Mul32(TotalOperations, 2)));
+    Stuff.ResultValue := AbsoluteResult;
+
+  Inc(Stuff.CyclesLeftInInstruction, 34 + TotalOperations * 2);
 end;
 
 procedure ActionMULS(var Stuff: TInstructionContext);
@@ -3148,29 +2818,23 @@ begin
   var ShiftedSourceValue: Cardinal := Stuff.SourceValue shl 1;
   var Total10Patterns: Cardinal := CountBitsSet((ShiftedSourceValue xor (ShiftedSourceValue shl 1)) and Cardinal($AAAA shl 1));
   var Total01Patterns: Cardinal := CountBitsSet((ShiftedSourceValue xor (ShiftedSourceValue shr 1)) and Cardinal(ArithmeticShiftRight($AAAA, 1)));
-  ActionMULCommon(Stuff, 1, (Add32(Total10Patterns, Total01Patterns)));
+  ActionMULCommon(Stuff, True, (Add32(Total10Patterns, Total01Patterns)));
 end;
 
 procedure ActionMULU(var Stuff: TInstructionContext);
 begin
-  ActionMULCommon(Stuff, 0, CountBitsSet(Stuff.SourceValue));
+  ActionMULCommon(Stuff, False, CountBitsSet(Stuff.SourceValue));
 end;
 
 procedure ActionADDX(var Stuff: TInstructionContext);
 begin
-  var Temp282: Integer;
   var State: PM68kState := Stuff.State;
-  if Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0 then
-    Temp282 := 1
-  else
-    Temp282 := 0;
-  Stuff.ResultValue := Add32(Add32(Stuff.DestinationValue, Stuff.SourceValue), Temp282);
+  Stuff.ResultValue := Add32(Add32(Stuff.DestinationValue, Stuff.SourceValue), Ord(Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0));
   ADDXSUBXExecutionTime(Stuff);
 end;
 
 procedure ActionABCD(var Stuff: TInstructionContext);
 begin
-  var Temp283: Integer;
   var State: PM68kState := Stuff.State;
   ActionADDX(Stuff);
   Stuff.SourceValue := (((Stuff.SourceValue and Stuff.DestinationValue) or ((Stuff.SourceValue or Stuff.DestinationValue) and not Stuff.ResultValue)) and $88) shl 1;
@@ -3180,38 +2844,31 @@ begin
   ActionADD(Stuff);
   ABCDSBCDExecutionTime(Stuff);
   State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
-  var Temp284: Integer := Ord((Stuff.SourceValue and $40) <> 0);
-  if Temp284 = 0 then
-    Temp284 := Ord(((Stuff.DestinationValue and not Stuff.ResultValue) and $80) <> 0);
-  if Temp284 <> 0 then
-    Temp283 := CONDITION_CODE_CARRY
-  else
-    Temp283 := 0;
-  State^.StatusRegister := Word(State^.StatusRegister or Temp283);
+  if ((Stuff.SourceValue and $40) <> 0) or (((Stuff.DestinationValue and not Stuff.ResultValue) and $80) <> 0) then
+    State^.StatusRegister := Word(State^.StatusRegister or CONDITION_CODE_CARRY);
 end;
 
 procedure ActionEXG(var Stuff: TInstructionContext);
 begin
-  var Temp: Cardinal;
   var State: PM68kState := Stuff.State;
   case (Stuff.OpCode.Raw and $00F8) of
     $0040:
       begin
-        Temp := State^.DataRegisters[Stuff.OpCode.SecondaryRegister];
+        var Data := State^.DataRegisters[Stuff.OpCode.SecondaryRegister];
         State^.DataRegisters[Stuff.OpCode.SecondaryRegister] := State^.DataRegisters[Stuff.OpCode.PrimaryRegister];
-        State^.DataRegisters[Stuff.OpCode.PrimaryRegister] := Temp;
+        State^.DataRegisters[Stuff.OpCode.PrimaryRegister] := Data;
       end;
     $0048:
       begin
-        Temp := State^.AddressRegisters[Stuff.OpCode.SecondaryRegister];
+        var Data := State^.AddressRegisters[Stuff.OpCode.SecondaryRegister];
         State^.AddressRegisters[Stuff.OpCode.SecondaryRegister] := State^.AddressRegisters[Stuff.OpCode.PrimaryRegister];
-        State^.AddressRegisters[Stuff.OpCode.PrimaryRegister] := Temp;
+        State^.AddressRegisters[Stuff.OpCode.PrimaryRegister] := Data;
       end;
     $0088:
       begin
-        Temp := State^.DataRegisters[Stuff.OpCode.SecondaryRegister];
+        var Data := State^.DataRegisters[Stuff.OpCode.SecondaryRegister];
         State^.DataRegisters[Stuff.OpCode.SecondaryRegister] := State^.AddressRegisters[Stuff.OpCode.PrimaryRegister];
-        State^.AddressRegisters[Stuff.OpCode.PrimaryRegister] := Temp;
+        State^.AddressRegisters[Stuff.OpCode.PrimaryRegister] := Data;
       end;
   end;
   Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
@@ -3223,51 +2880,43 @@ begin
   var SignBitBitmask: Cardinal := Cardinal(1) shl Stuff.MSBBitIndex;
   var OriginalSignBit: Cardinal := Stuff.DestinationValue and SignBitBitmask;
   Stuff.ResultValue := Stuff.DestinationValue;
-  var Count: Cardinal := 1;
   State^.StatusRegister := Word(State^.StatusRegister and (not (CONDITION_CODE_OVERFLOW or CONDITION_CODE_CARRY)));
   if Stuff.OpCode.Bit8 <> 0 then
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
-    begin
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
-      Stuff.ResultValue := Stuff.ResultValue shl 1;
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_OVERFLOW and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> OriginalSignBit))));
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
-    end;
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
+    Stuff.ResultValue := Stuff.ResultValue shl 1;
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_OVERFLOW and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> OriginalSignBit))));
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
   end
   else
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
-    begin
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
-      Stuff.ResultValue := Stuff.ResultValue shr 1;
-      Stuff.ResultValue := Stuff.ResultValue or OriginalSignBit;
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
-    end;
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
+    Stuff.ResultValue := Stuff.ResultValue shr 1;
+    Stuff.ResultValue := Stuff.ResultValue or OriginalSignBit;
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
   end;
   ShiftRotateInstructionExecutionTimeMemory(Stuff);
 end;
 
 procedure ActionASDREGISTER(var Stuff: TInstructionContext);
 begin
-  var Temp293: Cardinal;
   var State: PM68kState := Stuff.State;
   var SignBitBitmask: Cardinal := Cardinal(1) shl Stuff.MSBBitIndex;
   var OriginalSignBit: Cardinal := Stuff.DestinationValue and SignBitBitmask;
   Stuff.ResultValue := Stuff.DestinationValue;
+  var Count: Cardinal;
   if (Stuff.OpCode.Raw and $0020) <> 0 then
-    Temp293 := State^.DataRegisters[Stuff.OpCode.SecondaryRegister] mod 64
+    Count := State^.DataRegisters[Stuff.OpCode.SecondaryRegister] mod 64
   else
-    Temp293 := Add32(Sub32(Stuff.OpCode.SecondaryRegister, 1) and 7, 1);
-  var Count: Cardinal := Temp293;
+    Count := Add32(Sub32(Stuff.OpCode.SecondaryRegister, 1) and 7, 1);
   State^.StatusRegister := Word(State^.StatusRegister and (not (CONDITION_CODE_OVERFLOW or CONDITION_CODE_CARRY)));
   if Stuff.OpCode.Bit8 <> 0 then
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
+    for var i := 0 to Integer(Count) - 1 do
     begin
       State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
       State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
@@ -3279,7 +2928,7 @@ begin
   end
   else
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
+    for var i := 0 to Integer(Count) - 1 do
     begin
       State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
       State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
@@ -3297,48 +2946,40 @@ begin
   var State: PM68kState := Stuff.State;
   var SignBitBitmask: Cardinal := Cardinal(1) shl Stuff.MSBBitIndex;
   Stuff.ResultValue := Stuff.DestinationValue;
-  var Count: Cardinal := 1;
   State^.StatusRegister := Word(State^.StatusRegister and (not (CONDITION_CODE_OVERFLOW or CONDITION_CODE_CARRY)));
   if Stuff.OpCode.Bit8 <> 0 then
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
-    begin
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
-      Stuff.ResultValue := Stuff.ResultValue shl 1;
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
-    end;
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
+    Stuff.ResultValue := Stuff.ResultValue shl 1;
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
   end
   else
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
-    begin
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
-      Stuff.ResultValue := Stuff.ResultValue shr 1;
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
-    end;
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
+    Stuff.ResultValue := Stuff.ResultValue shr 1;
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
   end;
   ShiftRotateInstructionExecutionTimeMemory(Stuff);
 end;
 
 procedure ActionLSDREGISTER(var Stuff: TInstructionContext);
 begin
-  var Temp302: Cardinal;
   var State: PM68kState := Stuff.State;
   var SignBitBitmask: Cardinal := Cardinal(1) shl Stuff.MSBBitIndex;
   Stuff.ResultValue := Stuff.DestinationValue;
+  var Count: Cardinal;
   if (Stuff.OpCode.Raw and $0020) <> 0 then
-    Temp302 := State^.DataRegisters[Stuff.OpCode.SecondaryRegister] mod 64
+    Count := State^.DataRegisters[Stuff.OpCode.SecondaryRegister] mod 64
   else
-    Temp302 := Add32(Sub32(Stuff.OpCode.SecondaryRegister, 1) and 7, 1);
-  var Count: Cardinal := Temp302;
+    Count := Add32(Sub32(Stuff.OpCode.SecondaryRegister, 1) and 7, 1);
   State^.StatusRegister := Word(State^.StatusRegister and (not (CONDITION_CODE_OVERFLOW or CONDITION_CODE_CARRY)));
   if Stuff.OpCode.Bit8 <> 0 then
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
+    for var i := 0 to Integer(Count) - 1 do
     begin
       State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
       State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
@@ -3349,7 +2990,7 @@ begin
   end
   else
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
+    for var i := 0 to Integer(Count) - 1 do
     begin
       State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
       State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
@@ -3366,44 +3007,36 @@ begin
   var State: PM68kState := Stuff.State;
   var SignBitBitmask: Cardinal := Cardinal(1) shl Stuff.MSBBitIndex;
   Stuff.ResultValue := Stuff.DestinationValue;
-  var Count: Cardinal := 1;
   State^.StatusRegister := Word(State^.StatusRegister and (not (CONDITION_CODE_OVERFLOW or CONDITION_CODE_CARRY)));
   if Stuff.OpCode.Bit8 <> 0 then
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
-    begin
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
-      Stuff.ResultValue := (Stuff.ResultValue shl 1) or Cardinal(Ord((Stuff.ResultValue and SignBitBitmask) <> 0));
-    end;
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
+    Stuff.ResultValue := (Stuff.ResultValue shl 1) or Cardinal(Ord((Stuff.ResultValue and SignBitBitmask) <> 0));
   end
   else
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
-    begin
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
-      Stuff.ResultValue := (Stuff.ResultValue shr 1) or (SignBitBitmask and Cardinal(0 - Ord((Stuff.ResultValue and 1) <> 0)));
-    end;
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
+    Stuff.ResultValue := (Stuff.ResultValue shr 1) or (SignBitBitmask and Cardinal(0 - Ord((Stuff.ResultValue and 1) <> 0)));
   end;
   ShiftRotateInstructionExecutionTimeMemory(Stuff);
 end;
 
 procedure ActionRODREGISTER(var Stuff: TInstructionContext);
 begin
-  var Temp311: Cardinal;
   var State: PM68kState := Stuff.State;
   var SignBitBitmask: Cardinal := Cardinal(1) shl Stuff.MSBBitIndex;
   Stuff.ResultValue := Stuff.DestinationValue;
+  var Count: Cardinal;
   if (Stuff.OpCode.Raw and $0020) <> 0 then
-    Temp311 := State^.DataRegisters[Stuff.OpCode.SecondaryRegister] mod 64
+    Count := State^.DataRegisters[Stuff.OpCode.SecondaryRegister] mod 64
   else
-    Temp311 := Add32(Sub32(Stuff.OpCode.SecondaryRegister, 1) and 7, 1);
-  var Count: Cardinal := Temp311;
+    Count := Add32(Sub32(Stuff.OpCode.SecondaryRegister, 1) and 7, 1);
   State^.StatusRegister := Word(State^.StatusRegister and (not (CONDITION_CODE_OVERFLOW or CONDITION_CODE_CARRY)));
   if Stuff.OpCode.Bit8 <> 0 then
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
+    for var i := 0 to Integer(Count) - 1 do
     begin
       State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
       State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
@@ -3412,7 +3045,7 @@ begin
   end
   else
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
+    for var i := 0 to Integer(Count) - 1 do
     begin
       State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
       State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
@@ -3427,52 +3060,44 @@ begin
   var State: PM68kState := Stuff.State;
   var SignBitBitmask: Cardinal := Cardinal(1) shl Stuff.MSBBitIndex;
   Stuff.ResultValue := Stuff.DestinationValue;
-  var Count: Cardinal := 1;
   State^.StatusRegister := Word(State^.StatusRegister and (not (CONDITION_CODE_OVERFLOW or CONDITION_CODE_CARRY)));
   State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0))));
   if Stuff.OpCode.Bit8 <> 0 then
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
-    begin
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
-      Stuff.ResultValue := Stuff.ResultValue shl 1;
-      Stuff.ResultValue := Stuff.ResultValue or Cardinal(Ord(Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0));
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
-    end;
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
+    Stuff.ResultValue := Stuff.ResultValue shl 1;
+    Stuff.ResultValue := Stuff.ResultValue or Cardinal(Ord(Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0));
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
   end
   else
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
-    begin
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
-      Stuff.ResultValue := Stuff.ResultValue shr 1;
-      Stuff.ResultValue := Stuff.ResultValue or (SignBitBitmask and Cardinal(0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0)));
-      State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
-      State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
-    end;
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
+    Stuff.ResultValue := Stuff.ResultValue shr 1;
+    Stuff.ResultValue := Stuff.ResultValue or (SignBitBitmask and Cardinal(0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0)));
+    State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_EXTEND));
+    State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_EXTEND and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_CARRY) <> 0))));
   end;
   ShiftRotateInstructionExecutionTimeMemory(Stuff);
 end;
 
 procedure ActionROXDREGISTER(var Stuff: TInstructionContext);
 begin
-  var Temp320: Cardinal;
   var State: PM68kState := Stuff.State;
   var SignBitBitmask: Cardinal := Cardinal(1) shl Stuff.MSBBitIndex;
   Stuff.ResultValue := Stuff.DestinationValue;
+  var Count: Cardinal;
   if (Stuff.OpCode.Raw and $0020) <> 0 then
-    Temp320 := State^.DataRegisters[Stuff.OpCode.SecondaryRegister] mod 64
+    Count := State^.DataRegisters[Stuff.OpCode.SecondaryRegister] mod 64
   else
-    Temp320 := Add32(Sub32(Stuff.OpCode.SecondaryRegister, 1) and 7, 1);
-  var Count: Cardinal := Temp320;
+    Count := Add32(Sub32(Stuff.OpCode.SecondaryRegister, 1) and 7, 1);
   State^.StatusRegister := Word(State^.StatusRegister and (not (CONDITION_CODE_OVERFLOW or CONDITION_CODE_CARRY)));
   State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord(Integer(State^.StatusRegister and CONDITION_CODE_EXTEND) <> 0))));
   if Stuff.OpCode.Bit8 <> 0 then
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
+    for var i := 0 to Integer(Count) - 1 do
     begin
       State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
       State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and SignBitBitmask) <> 0))));
@@ -3484,7 +3109,7 @@ begin
   end
   else
   begin
-    for var ItemIndex := 0 to Integer(Count) - 1 do
+    for var i := 0 to Integer(Count) - 1 do
     begin
       State^.StatusRegister := Word(State^.StatusRegister and (not CONDITION_CODE_CARRY));
       State^.StatusRegister := Word(State^.StatusRegister or (CONDITION_CODE_CARRY and (0 - Ord((Stuff.ResultValue and 1) <> 0))));
@@ -3507,17 +3132,12 @@ begin
   Group1Or2Exception(Stuff, 11);
 end;
 
-procedure ActionNOP(var Stuff: TInstructionContext);
-begin
-end;
-
 procedure Clown68000Reset(var State: TM68kState; var Callbacks: TM68kReadWriteCallbacks);
 begin
   var StateRef: PM68kState := @State;
-  var CallbacksRef: PM68kReadWriteCallbacks := @Callbacks;
   var Stuff: TInstructionContext := Default(TInstructionContext);
   Stuff.State := StateRef;
-  Stuff.Callbacks := CallbacksRef;
+  Stuff.Callbacks := @Callbacks;
   try
     StateRef^.Halted := 0;
     StateRef^.Stopped := 0;
@@ -3544,7 +3164,6 @@ function Clown68000DoCycles(var State: TM68kState; var Callbacks: TM68kReadWrite
 begin
   var StateRef: PM68kState := @State;
   var CallbacksRef: PM68kReadWriteCallbacks := @Callbacks;
-  var Temp330: Integer;
   var PendingInterrupt: Cardinal;
   var Instruction: Integer;
   if StateRef^.Halted <> 0 then
@@ -3558,14 +3177,13 @@ begin
   while True do
   begin
     Stuff.CyclesDone := Add32(Stuff.CyclesDone, Stuff.CyclesLeftInInstruction);
-    Temp330 := Ord((Stuff.CyclesDone < CyclesToDo) and ((Stuff.TerminateEarly = 0)));
-    if Temp330 = 0 then
+    if not ((Stuff.CyclesDone < CyclesToDo) and ((Stuff.TerminateEarly = 0))) then
       Break;
     try
       PendingInterrupt := Cardinal(StateRef^.PendingInterrupt);
       Stuff.CyclesLeftInInstruction := 4;
       Stuff.StartingProgramCounter := StateRef^.ProgramCounter;
-      if not (StateRef^.Stopped <> 0) then
+      if StateRef^.Stopped = 0 then
       begin
         Instruction := DecodeOpcode(Stuff.OpCode, ReadWord(Stuff, StateRef^.ProgramCounter));
         StateRef^.InstructionRegister := Word(Stuff.OpCode.Raw);
@@ -4254,10 +3872,8 @@ begin
               ExtendSetToCarry(Stuff);
             end;
           INSTRUCTION_NOP:
-            begin
-              ActionNOP(Stuff);
-            end;
-          INSTRUCTION_NOT:
+            ; // Fetch and base instruction timing are already accounted for.
+            INSTRUCTION_NOT:
             begin
               SetSizeStandard(Stuff);
               SetMSBBitIndex(Stuff);

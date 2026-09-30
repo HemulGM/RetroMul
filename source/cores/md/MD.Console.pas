@@ -159,6 +159,7 @@ end;
 
 procedure KDebug(User: Pointer; const Text: array of Byte);
 begin
+  // The frontend does not expose the cartridge debug output.
 end;
 
 constructor TMDConsole.Create(const Data: TBytes; const Extension: string);
@@ -221,12 +222,12 @@ begin
   FMInitialise(FFM);
   PSGInitialise(FPSG);
   Z80StateInitialise(FZ80);
-  for var I := 0 to High(FPalette) do
-    FPalette[I] := $FF000000;
-  for var I := 0 to High(FFrame) do
-    FFrame[I] := $FF000000;
-  for var I := 0 to High(FBanks) do
-    FBanks[I] := I;
+  for var i := 0 to High(FPalette) do
+    FPalette[i] := $FF000000;
+  for var i := 0 to High(FFrame) do
+    FFrame[i] := $FF000000;
+  for var i := 0 to High(FBanks) do
+    FBanks[i] := i;
   FWidth := 256;
   FHeight := 224;
   FFrameTime := 0;
@@ -777,7 +778,6 @@ end;
 initialization
   MD.VDP.ConstantInitialise;
   MD.Z80.ConstantInitialise;
-  ;
 
 end.
 

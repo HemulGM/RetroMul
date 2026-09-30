@@ -38,13 +38,14 @@ Open `fmx/RetroMul.dproj` in RAD Studio with Delphi FMX support, select
 Win32 or Win64 and run Build. The form `fmx/RM.Main.fmx` is available for
 visual editing. Sources are grouped by responsibility:
 
-`IEmulationCore` is the frontend boundary for every console: it receives a
-logical eight-button input state and produces a size-tagged, row-major FMX
+`IEmulationCore` is the frontend boundary for every console: it receives
+logical button states (including SEGA's six action buttons and a second pad)
+and produces a size-tagged, row-major FMX
 frame. Platform-specific settings stay in the adapter, so a future core only
 needs an adapter plus a folder under `source/cores/`. The current frontend
 selects NES for .nes, Game Boy for .gb, Game Boy Color for .gbc,
 and SEGA Mega Drive (Genesis) for .smd, .bin, .gen, .md ROMs.
-All three adapters support reset. GB/GBC/SEGA save states remain unsupported.
+All adapters support reset and save states.
 Tested with Delphi 13 / compiler 37.0.
 
 The audio subsystem is separate from the platform API: `PCM.Audio` provides a common
@@ -83,6 +84,26 @@ If there is no `gamelist.xml` file in the system folders, the list will load as 
 | F5 | Save quick snapshot (NES, GB, GBC, Mega Drive) |
 | F6 | Load quick snapshot (NES, GB, GBC, Mega Drive) |
 | F11 | Fullscreen mode |
+
+SEGA supports two independent six-button controllers. Player 1 uses the keys
+above and the Android screen gamepad. Player 2 uses the numeric keypad
+(with Num Lock enabled):
+
+| Player 2 key | SEGA button |
+| --- | --- |
+| Numpad 8 / 5 / 4 / 6 | Up / Down / Left / Right |
+| Numpad 1 / 2 / 3 | A / B / C |
+| Numpad 7 / 9 / Decimal | X / Y / Z |
+| Numpad 0 | Start |
+| Numpad Multiply | Mode |
+
+Both mappings can be configured in `md.ini`: `[Keys]` for player 1 and `[Keys2]`
+for player 2, using the button names and numeric virtual-key codes.
+The game must support two players; select its two-player mode in the game menu.
+Frontends can supply both pads through `TEmulatorInput.Buttons` and `Buttons2`.
+Keyboard and gamepad input are merged independently for each player.
+Mega Drive snapshots now use version 2 to preserve both controller handshakes;
+older Mega Drive snapshots are rejected. GB/GBC snapshot versions are unchanged.
 
 When you lose focus, the emulation and sound continue, and the pressed buttons are reset.
 The window can be scaled;

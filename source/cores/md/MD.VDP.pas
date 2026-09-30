@@ -964,17 +964,11 @@ begin
     end;
     case Vdp.State.Debug.ForcedLayer of
       1:
-        begin
-          RenderSpritePlane(PlaneMetapixels, SpriteMetapixels, BlitLookup.ForcedLayer, $FF, LeftBoundaryPixels, RightBoundaryPixels);
-        end;
+        RenderSpritePlane(PlaneMetapixels, SpriteMetapixels, BlitLookup.ForcedLayer, $FF, LeftBoundaryPixels, RightBoundaryPixels);
       2:
-        begin
-          RenderScrollPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneMetapixels, BlitLookup.ForcedLayer, 0);
-        end;
+        RenderScrollPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneMetapixels, BlitLookup.ForcedLayer, 0);
       3:
-        begin
-          RenderScrollPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneMetapixels, BlitLookup.ForcedLayer, 1);
-        end;
+        RenderScrollPlane(Vdp, LeftBoundary, RightBoundary, Scanline, PlaneMetapixels, BlitLookup.ForcedLayer, 1);
     end;
   end;
   var InputExtraTiles: Cardinal := Cardinal((((GetWidescreenTiles(Vdp) + (2 - 1)) div 2) * 2) * 2);
@@ -998,10 +992,8 @@ end;
 
 procedure VDPBeginScanline(var Vdp: TVDP);
 begin
-  for var ItemIndex := 0 to High(Vdp.State.VsramCache) do
-  begin
-    Vdp.State.VsramCache[ItemIndex] := Vdp.State.Vsram[ItemIndex];
-  end;
+  for var i := 0 to High(Vdp.State.VsramCache) do
+    Vdp.State.VsramCache[i] := Vdp.State.Vsram[i];
 end;
 
 procedure VDPEndScanline(var Vdp: TVDP; Scanline: Cardinal; ScanlineRenderedCallback: TVDPScanlineRenderedCallback; ScanlineRenderedCallbackUserData: Pointer);
@@ -1048,10 +1040,8 @@ end;
 procedure UpdateFakeFIFO(var State: TVDPState; Value: Cardinal);
 begin
   var Last: Cardinal := Cardinal(Length(State.PreviousDataWrites) - 1);
-  for var ItemIndex := 0 to Integer(Last) - 1 do
-  begin
-    State.PreviousDataWrites[ItemIndex] := State.PreviousDataWrites[(Add32(ItemIndex, 1))];
-  end;
+  for var i := 0 to Integer(Last) - 1 do
+    State.PreviousDataWrites[i] := State.PreviousDataWrites[(Add32(i, 1))];
   State.PreviousDataWrites[Last] := Word(Value);
 end;
 
@@ -1060,9 +1050,7 @@ begin
   Vdp.State.Access.WritePending := 0;
   UpdateFakeFIFO(Vdp.State, Value);
   if IsInReadMode(Vdp.State) <> 0 then
-  begin
-    IncrementAccessAddressRegister(Vdp.State);
-  end
+    IncrementAccessAddressRegister(Vdp.State)
   else
   begin
     WriteAndIncrement(Vdp, Value, ColourUpdatedCallback, ColourUpdatedCallbackUserData);
@@ -1118,25 +1106,15 @@ begin
     end;
     case (ArithmeticShiftRight(Vdp.State.Access.CodeRegister, 1) and 7) of
       0:
-        begin
-          Vdp.State.Access.SelectedBuffer := VDP_ACCESS_VRAM;
-        end;
+        Vdp.State.Access.SelectedBuffer := VDP_ACCESS_VRAM;
       4, 1:
-        begin
-          Vdp.State.Access.SelectedBuffer := VDP_ACCESS_CRAM;
-        end;
+        Vdp.State.Access.SelectedBuffer := VDP_ACCESS_CRAM;
       2:
-        begin
-          Vdp.State.Access.SelectedBuffer := VDP_ACCESS_VSRAM;
-        end;
+        Vdp.State.Access.SelectedBuffer := VDP_ACCESS_VSRAM;
       6:
-        begin
-          Vdp.State.Access.SelectedBuffer := VDP_ACCESS_VRAM_8_BIT;
-        end;
+        Vdp.State.Access.SelectedBuffer := VDP_ACCESS_VRAM_8_BIT;
     else
-      begin
-        Vdp.State.Access.SelectedBuffer := VDP_ACCESS_INVALID;
-      end;
+      Vdp.State.Access.SelectedBuffer := VDP_ACCESS_INVALID;
     end;
   end
   else
@@ -1148,9 +1126,7 @@ begin
     begin
       case Reg of
         0:
-          begin
-            Vdp.State.HIntEnabled := Ord((Data and $10) <> 0);
-          end;
+          Vdp.State.HIntEnabled := Ord((Data and $10) <> 0);
         1:
           begin
             Vdp.State.ExtendedVramEnabled := Ord((Data and $80) <> 0);
@@ -1161,33 +1137,19 @@ begin
             Vdp.State.MegaDriveModeEnabled := Ord((Data and $4) <> 0);
           end;
         2:
-          begin
-            Vdp.State.PlaneAAddress := (Data and $78) shl 10;
-          end;
+          Vdp.State.PlaneAAddress := (Data and $78) shl 10;
         3:
-          begin
-            Vdp.State.WindowAddress := (Data and $7E) shl 10;
-          end;
+          Vdp.State.WindowAddress := (Data and $7E) shl 10;
         4:
-          begin
-            Vdp.State.PlaneBAddress := (Data and $F) shl 13;
-          end;
+          Vdp.State.PlaneBAddress := (Data and $F) shl 13;
         5:
-          begin
-            Vdp.State.SpriteTableAddress := Data shl 9;
-          end;
+          Vdp.State.SpriteTableAddress := Data shl 9;
         6:
-          begin
-            Vdp.State.SpriteTileIndexRebase := Ord((Data and $20) <> 0);
-          end;
+          Vdp.State.SpriteTileIndexRebase := Ord((Data and $20) <> 0);
         7:
-          begin
-            Vdp.State.BackgroundColour := Byte(Data and $3F);
-          end;
+          Vdp.State.BackgroundColour := Byte(Data and $3F);
         10:
-          begin
-            Vdp.State.HIntInterval := Byte(Data);
-          end;
+          Vdp.State.HIntInterval := Byte(Data);
         11:
           begin
             if (Data and 4) <> 0 then
@@ -1202,32 +1164,22 @@ begin
             Vdp.State.ShadowHighlightEnabled := Ord((Data and $8) <> 0);
             case ((Data shr 1) and 3) of
               0, 1:
-                begin
-                  Vdp.State.DoubleResolutionEnabled := 0;
-                end;
+                Vdp.State.DoubleResolutionEnabled := 0;
               2:
-                begin
-                  Vdp.State.DoubleResolutionEnabled := 0;
-                end;
+                Vdp.State.DoubleResolutionEnabled := 0;
               3:
-                begin
-                  Vdp.State.DoubleResolutionEnabled := 1;
-                end;
+                Vdp.State.DoubleResolutionEnabled := 1;
             end;
           end;
         13:
-          begin
-            Vdp.State.HscrollAddress := (Data and $7F) shl 10;
-          end;
+          Vdp.State.HscrollAddress := (Data and $7F) shl 10;
         14:
           begin
             Vdp.State.PlaneATileIndexRebase := Ord((Data and 1) <> 0);
             Vdp.State.PlaneBTileIndexRebase := Byte(Ord(((Data and $10) <> 0) and (Vdp.State.PlaneATileIndexRebase <> 0)));
           end;
         15:
-          begin
-            Vdp.State.Access.Increment := Byte(Data);
-          end;
+          Vdp.State.Access.Increment := Byte(Data);
         16:
           begin
             Vdp.State.PlaneHeightBitmask := Byte((Data shl 1) or $1F);
@@ -1301,21 +1253,19 @@ begin
             end;
           end;
         30:
-          begin
-            repeat
-              Character := Byte((Integer(Data) and ((1 shl 7) - 1)) - (Integer(Data) and (1 shl 7)));
-              if (Character < $20) and (Character <> 0) then
-                Break;
-              Temp227 := Vdp.State.KdebugBufferIndex;
-              Inc(Vdp.State.KdebugBufferIndex);
-              Vdp.State.KdebugBuffer[Temp227] := Character;
-              if (Character = 0) or (Vdp.State.KdebugBufferIndex = Integer(Length(Vdp.State.KdebugBuffer) - 1)) then
-              begin
-                Vdp.State.KdebugBufferIndex := 0;
-                KdebugCallback(KdebugCallbackUserData, Vdp.State.KdebugBuffer);
-              end;
-            until True;
-          end;
+          repeat
+            Character := Byte((Integer(Data) and ((1 shl 7) - 1)) - (Integer(Data) and (1 shl 7)));
+            if (Character < $20) and (Character <> 0) then
+              Break;
+            Temp227 := Vdp.State.KdebugBufferIndex;
+            Inc(Vdp.State.KdebugBufferIndex);
+            Vdp.State.KdebugBuffer[Temp227] := Character;
+            if (Character = 0) or (Vdp.State.KdebugBufferIndex = Integer(Length(Vdp.State.KdebugBuffer) - 1)) then
+            begin
+              Vdp.State.KdebugBufferIndex := 0;
+              KdebugCallback(KdebugCallbackUserData, Vdp.State.KdebugBuffer);
+            end;
+          until True;
       end;
     end;
   end;
@@ -1354,12 +1304,10 @@ end;
 
 procedure VDPWriteDebugData(var Vdp: TVDP; Value: Cardinal);
 begin
-  case Vdp.State.Debug.SelectedRegister of
-    0:
-      begin
-        Vdp.State.Debug.HideLayers := Ord((Value and $40) <> 0);
-        Vdp.State.Debug.ForcedLayer := Byte((Value shr 7) and 3);
-      end;
+  if Vdp.State.Debug.SelectedRegister = 0 then
+  begin
+    Vdp.State.Debug.HideLayers := Ord((Value and $40) <> 0);
+    Vdp.State.Debug.ForcedLayer := Byte((Value shr 7) and 3);
   end;
 end;
 

@@ -66,7 +66,8 @@ type
 implementation
 
 uses
-  Core.Snapshots, Core.SavePaths, System.SysUtils, System.UITypes, GBC.GPU, GBC.ROM, GBC.MBC;
+  Core.Snapshots, Core.SavePaths, System.SysUtils, System.UITypes, GBC.GPU,
+  GBC.ROM, GBC.MBC;
 
 constructor TGBCCoreAdapter.Create(const FileName: string);
 begin
@@ -108,11 +109,11 @@ end;
 
 procedure TGBCCoreAdapter.ApplyInput;
 const
-  ButtonKeys: array[TEmulatorButton] of TGBCKey =
+  ButtonKeys: array[TEmulatorButton.Up..TEmulatorButton.Start] of TGBCKey =
     (TGBCKey.Up, TGBCKey.Down, TGBCKey.Left, TGBCKey.Right,
     TGBCKey.A, TGBCKey.B, TGBCKey.Select, TGBCKey.Start);
 begin
-  for var Button := Low(TEmulatorButton) to High(TEmulatorButton) do
+  for var Button := Low(ButtonKeys) to High(ButtonKeys) do
     FThread.SetKeyState(ButtonKeys[Button],
       (Button in FGamepadInput.Buttons) or (Button in FKeyboardInput.Buttons));
 end;
@@ -251,7 +252,6 @@ end;
 function TGBCCoreAdapter.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
 var
   Screen: TScreenArray;
-  X, Y, Index: Integer;
   FramesPerSecond: Double;
 begin
   Result := FThread.TryGetFrame(Screen, FramesPerSecond);
@@ -260,10 +260,10 @@ begin
   Frame.Width := 160;
   Frame.Height := 144;
   SetLength(Frame.Pixels, Frame.Width * Frame.Height);
-  for Y := 0 to Frame.Height - 1 do
-    for X := 0 to Frame.Width - 1 do
+  for var Y := 0 to Frame.Height - 1 do
+    for var X := 0 to Frame.Width - 1 do
     begin
-      Index := Screen[Y * Frame.Width + X];
+      var Index := Screen[Y * Frame.Width + X];
       // GBC pixels are stored as ARGB bit patterns.  With range checks enabled
       // a direct Integer -> TAlphaColor conversion rejects every opaque color
       // (the high alpha bit makes its signed Integer value negative).

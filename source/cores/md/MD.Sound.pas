@@ -382,12 +382,12 @@ const
   DETUNE_LOOKUP: array[0..7] of array[0..3] of array[0..3] of Cardinal = (((0, 0, 1, 2), (0, 0, 1, 2), (0, 0, 1, 2), (0, 0, 1, 2)), ((0, 1, 2, 2), (0, 1, 2, 3), (0, 1, 2, 3), (0, 1, 2, 3)), ((0, 1, 2, 4), (0, 1, 3, 4), (0, 1, 3, 4), (0, 1, 3, 5)), ((0, 2, 4, 5), (0, 2, 4, 6), (0, 2, 4, 6), (0, 2, 5, 7)), ((0, 2, 5, 8), (0, 3, 6, 8), (0, 3, 6, 9), (0, 3, 7, 10)), ((0, 4, 8, 11), (0, 4, 8, 12), (0, 4, 9, 13), (0, 5, 10, 14)), ((0, 5, 11, 16), (0, 6, 12, 17), (0, 6, 13, 19), (0, 7, 14, 20)), ((0, 8, 16, 22), (0, 8, 16, 22), (0, 8, 16, 22), (0, 8, 16, 22)));
   LFO_SHIFT_LOOKUP: array[0..7] of array[0..7] of array[0..1] of Byte = (((7, 7), (7, 7), (7, 7), (7, 7), (7, 7), (7, 7), (7, 7), (7, 7)), ((7, 7), (7, 7), (7, 7), (7, 7), (7, 2), (7, 2), (7, 2), (7, 2)), ((7, 7), (7, 7), (7, 7), (7, 2), (7, 2), (7, 2), (1, 7), (1, 7)), ((7, 7), (7, 7), (7, 2), (7, 2), (1, 7), (1, 7), (1, 2), (1, 2)), ((7, 7), (7, 7), (7, 2), (1, 7), (1, 7), (1, 7), (1, 2), (0, 7)), ((7, 7), (7, 7), (1, 7), (1, 2), (0, 7), (0, 7), (0, 2), (0, 1)), ((7, 7), (7, 7), (1, 7), (1, 2), (0, 7), (0, 7), (0, 2), (0, 1)), ((7, 7), (7, 7), (1, 7), (1, 2), (0, 7), (0, 7), (0, 2), (0, 1)));
 begin
-  var Temp39: Integer;
   var Block: Cardinal := Cardinal(ArithmeticShiftRight(Phase.FNumberAndBlock, 11) and 7);
   var FNumber: Cardinal := Phase.FNumberAndBlock and $7FF;
   var Detune: Cardinal := Cardinal(DETUNE_LOOKUP[Block][KEY_CODES[(FNumber shr 7)]][(Phase.Detune mod Length(DETUNE_LOOKUP[0][0]))]);
   var PhaseModulationIsNegativeLobe: Byte := Ord((Modulation and $10) <> 0);
   var PhaseModulationIsMirroredSizeOfLobe: Byte := Ord((Modulation and 8) <> 0);
+  var Temp39: Integer;
   if PhaseModulationIsMirroredSizeOfLobe <> 0 then
     Temp39 := 7
   else
@@ -468,14 +468,13 @@ end;
 
 procedure EnterAttackMode(var State: TFMOperator);
 begin
-  if State.KeyOn <> 0 then
+  if State.KeyOn = 0 then
+    Exit;
+  State.EnvelopeMode := FM_OPERATOR_ENVELOPE_MODE_ATTACK;
+  if CalculateRate(State) >= Cardinal($1F * 2) then
   begin
-    State.EnvelopeMode := FM_OPERATOR_ENVELOPE_MODE_ATTACK;
-    if CalculateRate(State) >= Cardinal($1F * 2) then
-    begin
-      State.EnvelopeMode := FM_OPERATOR_ENVELOPE_MODE_DECAY;
-      State.Attenuation := 0;
-    end;
+    State.EnvelopeMode := FM_OPERATOR_ENVELOPE_MODE_DECAY;
+    State.Attenuation := 0;
   end;
 end;
 
@@ -506,20 +505,19 @@ end;
 
 procedure FMOperatorSetKeyOn(var State: TFMOperator; KeyOn: Byte);
 begin
-  if State.KeyOn <> KeyOn then
+  if State.KeyOn = KeyOn then
+    Exit;
+  State.KeyOn := KeyOn;
+  if KeyOn <> 0 then
   begin
-    State.KeyOn := KeyOn;
-    if KeyOn <> 0 then
-    begin
-      EnterAttackMode(State);
-      State.Phase.Position := 0;
-    end
-    else
-    begin
-      State.EnvelopeMode := FM_OPERATOR_ENVELOPE_MODE_RELEASE;
-      State.Attenuation := Word(GetSSGEGCorrectedAttenuation(State, 0));
-      State.SSGEg.Invert := 0;
-    end;
+    EnterAttackMode(State);
+    State.Phase.Position := 0;
+  end
+  else
+  begin
+    State.EnvelopeMode := FM_OPERATOR_ENVELOPE_MODE_RELEASE;
+    State.Attenuation := Word(GetSSGEGCorrectedAttenuation(State, 0));
+    State.SSGEg.Invert := 0;
   end;
 end;
 
@@ -568,25 +566,23 @@ const
     4), (4, 4, 4, 4, 4, 4, 4, 4), (4, 4, 4, 4, 4, 4, 4, 4), (4, 4, 4, 4, 4, 4, 4, 4));
 begin
   var Rate: Cardinal;
-  var Temp52: Word;
-  var Temp53: Integer;
-  var Temp56: Word;
   Dec(State.CountDown);
   if State.CountDown = 0 then
   begin
     Rate := CalculateRate(State);
     State.CountDown := 3;
-    Temp52 := State.CycleCounter;
+    var CycleCounter := State.CycleCounter;
     State.CycleCounter := (State.CycleCounter + 1) and $FFFF;
+    var Temp53: Integer;
     if 11 > Cardinal(Rate div 4) then
       Temp53 := 11
     else
       Temp53 := Rate div 4;
-    if Integer(Temp52 and ((1 shl (Sub32(Temp53, Rate div 4))) - 1)) = 0 then
+    if Integer(CycleCounter and ((1 shl (Sub32(Temp53, Rate div 4))) - 1)) = 0 then
     begin
-      Temp56 := State.DeltaIndex;
+      var DeltaIndex := State.DeltaIndex;
       State.DeltaIndex := (State.DeltaIndex + 1) and $FFFF;
-      Exit(Cardinal(DELTAS[Rate][(Temp56 mod Length(DELTAS[Rate]))]));
+      Exit(Cardinal(DELTAS[Rate][(DeltaIndex mod Length(DELTAS[Rate]))]));
     end;
   end;
   Exit(0);
@@ -1149,41 +1145,29 @@ begin
         OperatorIndexScrambled := Cardinal(ArithmeticShiftRight(Fm.State.Address, 2) and 3);
         OperatorIndex := ((OperatorIndexScrambled shr 1) or (OperatorIndexScrambled shl 1)) and 3;
         case (Fm.State.Address div $10) of
-          (          $30 div $10):
-            begin
-              FMPhaseSetDetuneAndMultiplier(Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex].Phase, Fm.State.LFO.PhaseModulation, Fm.State.Channels[ChannelIndexScope102].State.PhaseModulationSensitivity, ((Data shr 4) and 7), (Data and $F));
-            end;
-          (          $40 div $10):
-            begin
-              FMOperatorSetTotalLevel(Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex], (Data and $7F));
-            end;
-          (          $50 div $10):
-            begin
-              FMOperatorSetKeyScaleAndAttackRate(Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex], ((Data shr 6) and 3), (Data and $1F));
-            end;
-          (          $60 div $10):
+          $30 div $10:
+            FMPhaseSetDetuneAndMultiplier(Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex].Phase, Fm.State.LFO.PhaseModulation, Fm.State.Channels[ChannelIndexScope102].State.PhaseModulationSensitivity, ((Data shr 4) and 7), (Data and $F));
+          $40 div $10:
+            FMOperatorSetTotalLevel(Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex], (Data and $7F));
+          $50 div $10:
+            FMOperatorSetKeyScaleAndAttackRate(Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex], ((Data shr 6) and 3), (Data and $1F));
+          $60 div $10:
             begin
               Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex].Rates[FM_OPERATOR_ENVELOPE_MODE_DECAY] := Word(Data and $1F);
               Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex].AmplitudeModulationOn := Ord((Data and $80) <> 0);
             end;
-          (          $70 div $10):
-            begin
-              Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex].Rates[FM_OPERATOR_ENVELOPE_MODE_SUSTAIN] := Word(Data and $1F);
-            end;
-          (          $80 div $10):
-            begin
-              FMOperatorSetSustainLevelAndReleaseRate(Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex], ((Data shr 4) and $F), (Data and $F));
-            end;
-          (          $90 div $10):
-            begin
-              FMOperatorSetSSGEG(Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex], Data);
-            end;
+          $70 div $10:
+            Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex].Rates[FM_OPERATOR_ENVELOPE_MODE_SUSTAIN] := Word(Data and $1F);
+          $80 div $10:
+            FMOperatorSetSustainLevelAndReleaseRate(Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex], ((Data shr 4) and $F), (Data and $F));
+          $90 div $10:
+            FMOperatorSetSSGEG(Fm.State.Channels[ChannelIndexScope102].State.Operators[OperatorIndex], Data);
         end;
       end
       else
       begin
         case (Fm.State.Address div 4) of
-          (          $A0 div 4):
+          $A0 div 4:
             begin
               repeat
                 Frequency := Data or Cardinal(Fm.State.CachedUpperFrequencyBits shl 8);
@@ -1199,11 +1183,11 @@ begin
                 FMChannelSetFrequencies(Fm.State.Channels[ChannelIndexScope102].State, Fm.State.LFO.PhaseModulation, Frequency);
               until True;
             end;
-          (          $A4 div 4):
+          $A4 div 4:
             begin
               Fm.State.CachedUpperFrequencyBits := Byte(Data and $3F);
             end;
-          (          $A8 div 4):
+          $A8 div 4:
             begin
               if Fm.State.Port = 0 then
               begin
@@ -1214,15 +1198,15 @@ begin
                   FMPhaseSetFrequency(Fm.State.Channels[2].State.Operators[OperatorIndexScope104].Phase, Fm.State.LFO.PhaseModulation, Fm.State.Channels[2].State.PhaseModulationSensitivity, FrequencyScope105);
               end;
             end;
-          (          $AC div 4):
+          $AC div 4:
             begin
               Fm.State.CachedUpperFrequencyBitsFM3MultiFrequency := Byte(Data and $3F);
             end;
-          (          $B0 div 4):
+          $B0 div 4:
             begin
               FMChannelSetFeedbackAndAlgorithm(Fm.State.Channels[ChannelIndexScope102].State, ((Data shr 3) and 7), (Data and 7));
             end;
-          (          $B4 div 4):
+          $B4 div 4:
             begin
               Fm.State.Channels[ChannelIndexScope102].PanLeft := Ord((Data and $80) <> 0);
               Fm.State.Channels[ChannelIndexScope102].PanRight := Ord((Data and $40) <> 0);
@@ -1348,14 +1332,13 @@ end;
 
 function FMUpdate(var Fm: TFM; CyclesToDo: Cardinal; FmAudioToBeGenerated: TFMAudioCallback; UserData: Pointer): Cardinal;
 begin
-  var Temp168: Byte;
-
   var TotalFrames: Cardinal := Cardinal(Add32(Fm.State.LeftoverCycles, CyclesToDo) div Cardinal((6 * 6) * 4));
   Fm.State.LeftoverCycles := Byte(Add32(Fm.State.LeftoverCycles, CyclesToDo) mod Cardinal((6 * 6) * 4));
   if TotalFrames <> 0 then
     FmAudioToBeGenerated(UserData, TotalFrames);
   if Fm.State.BusyFlagCounter <> 0 then
   begin
+    var Temp168: Byte;
     if Cardinal(Fm.State.BusyFlagCounter) < CyclesToDo then
       Temp168 := Fm.State.BusyFlagCounter
     else

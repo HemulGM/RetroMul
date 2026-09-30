@@ -11,13 +11,14 @@ type
 
   TMDConfig = class(TEmulatorConfigBase)
   private
-    FKeys: TMDKeyMap;
+    FKeys, FKeys2: TMDKeyMap;
   protected
     procedure LoadCoreSettings(Ini: TIniFile); override;
     procedure SaveCoreSettings(Ini: TIniFile); override;
   public
     constructor Create(const FileName: string);
     property Keys: TMDKeyMap read FKeys;
+    property Keys2: TMDKeyMap read FKeys2;
   end;
 
   TMDCoreAdapter = class(TInterfacedObject, IEmulationCore)
@@ -27,8 +28,8 @@ type
     FSnapshotDirectory: string;
     FSavePath, FError: string;
     FConfig: IEmulatorConfig;
-    FKeys: TMDKeyMap;
-    FKeyboard, FGamepad: TMDButtons;
+    FKeys, FKeys2: TMDKeyMap;
+    FKeyboard, FGamepad, FKeyboard2, FGamepad2: TMDButtons;
     FPaused: Boolean;
     procedure ApplySettings;
   public
@@ -65,21 +66,31 @@ const
 constructor TMDConfig.Create(const FileName: string);
 const
   Defaults: TMDKeyMap = (vkUp, vkDown, vkLeft, vkRight, vkZ, vkX, vkC, vkReturn, vkA, vkS, vkD, vkSpace);
+  Defaults2: TMDKeyMap = (vkNumpad8, vkNumpad5, vkNumpad4, vkNumpad6,
+    vkNumpad1, vkNumpad2, vkNumpad3, vkNumpad0, vkNumpad7, vkNumpad9,
+    vkDecimal, vkMultiply);
 begin
   inherited Create(FileName);
   FKeys := Defaults;
+  FKeys2 := Defaults2;
 end;
 
 procedure TMDConfig.LoadCoreSettings(Ini: TIniFile);
 begin
   for var Button := Low(TMDButton) to High(TMDButton) do
+  begin
     FKeys[Button] := ReadEmulatorKey(Ini, 'Keys', KeyNames[Button], FKeys[Button]);
+    FKeys2[Button] := ReadEmulatorKey(Ini, 'Keys2', KeyNames[Button], FKeys2[Button]);
+  end;
 end;
 
 procedure TMDConfig.SaveCoreSettings(Ini: TIniFile);
 begin
   for var Button := Low(TMDButton) to High(TMDButton) do
+  begin
     Ini.WriteInteger('Keys', KeyNames[Button], FKeys[Button]);
+    Ini.WriteInteger('Keys2', KeyNames[Button], FKeys2[Button]);
+  end;
 end;
 
 constructor TMDCoreAdapter.Create(const FileName: string);
@@ -99,6 +110,7 @@ begin
   FConfig := Config;
   Config.Load;
   FKeys := Config.Keys;
+  FKeys2 := Config.Keys2;
   FSavePath := GetSaveDirectory;
   Hash := THashSHA2.Create;
   Hash.Update(FData);
@@ -117,7 +129,7 @@ procedure TMDCoreAdapter.ApplySettings;
 begin
   if FThread <> nil then
     FThread.Configure(FKeyboard + FGamepad, FPaused,
-      FConfig.AudioEnabled, FConfig.AudioVolume);
+      FConfig.AudioEnabled, FConfig.AudioVolume, FKeyboard2 + FGamepad2);
 end;
 
 procedure TMDCoreAdapter.Start;
@@ -165,6 +177,8 @@ procedure TMDCoreAdapter.ClearInput;
 begin
   FKeyboard := [];
   FGamepad := [];
+  FKeyboard2 := [];
+  FGamepad2 := [];
   ApplySettings;
 end;
 
@@ -173,11 +187,18 @@ var
   Button: TMDButton;
 begin
   for Button := Low(TMDButton) to High(TMDButton) do
+  begin
     if Code = FKeys[Button] then
       if Pressed then
         Include(FKeyboard, Button)
       else
         Exclude(FKeyboard, Button);
+    if Code = FKeys2[Button] then
+      if Pressed then
+        Include(FKeyboard2, Button)
+      else
+        Exclude(FKeyboard2, Button);
+  end;
   ApplySettings;
 end;
 
@@ -185,14 +206,20 @@ procedure TMDCoreAdapter.SetGamepadInput(const Input: TEmulatorInput);
 const
   Mapping: array[TEmulatorButton] of TMDButton =
     (TMDButton.Up, TMDButton.Down, TMDButton.Left, TMDButton.Right,
-    TMDButton.A, TMDButton.B, TMDButton.C, TMDButton.Start);
+    TMDButton.A, TMDButton.B, TMDButton.C, TMDButton.Start,
+    TMDButton.C, TMDButton.X, TMDButton.Y, TMDButton.Z, TMDButton.Mode);
 var
   Button: TEmulatorButton;
 begin
   FGamepad := [];
+  FGamepad2 := [];
   for Button := Low(TEmulatorButton) to High(TEmulatorButton) do
+  begin
     if Button in Input.Buttons then
       Include(FGamepad, Mapping[Button]);
+    if Button in Input.Buttons2 then
+      Include(FGamepad2, Mapping[Button]);
+  end;
   ApplySettings;
 end;
 
@@ -237,13 +264,15 @@ end;
 
 procedure TMDCoreAdapter.SaveSnapshot(const Name: string);
 begin
-  if FThread = nil then raise EInvalidOpException.Create('Emulation worker is not running');
+  if FThread = nil then
+    raise EInvalidOpException.Create('Emulation worker is not running');
   FThread.SaveSnapshot(Name);
 end;
 
 procedure TMDCoreAdapter.LoadSnapshot(const Name: string);
 begin
-  if FThread = nil then raise EInvalidOpException.Create('Emulation worker is not running');
+  if FThread = nil then
+    raise EInvalidOpException.Create('Emulation worker is not running');
   FThread.LoadSnapshot(Name);
 end;
 

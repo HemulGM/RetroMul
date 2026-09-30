@@ -4,34 +4,39 @@ interface
 
 uses
   System.Classes, System.Types, System.UITypes, System.Generics.Collections,
-  FMX.Types, FMX.Controls, FMX.Forms, NES.Controller;
+  FMX.Types, FMX.Controls, FMX.Forms, NES.Controller, Core.Emulation;
 
 type
+  TScreenGamepadLayout = (Nes, Sega);
+
   // Coordinates passed to PointerDown/Move are local logical FMX coordinates.
   // OnChange runs on the UI thread. The consumer owns the emulator connection.
-  TNesGamepad = class(TControl)
+  TScreenGamepad = class(TControl)
   private
     type
       TRegion = (None, DPad, Actions, Menu);
 
       TContact = record
         Region: TRegion;
-        Buttons: TNesButtons;
+        Buttons: TEmulatorButtons;
       end;
   private
     FContacts: TDictionary<NativeInt, TContact>;
-    FButtons: TNesButtons;
+    FButtons: TEmulatorButtons;
+    FLayout: TScreenGamepadLayout;
     FOnChange: TNotifyEvent;
-    FBounds: array[TNesButton] of TRectF;
+    FBounds: array[TEmulatorButton] of TRectF;
     FDPad: TRectF;
     FUnit: Single;
-    FLevels, FStarts, FTargets: array[TNesButton] of Single;
-    FTimes: array[TNesButton] of Int64;
+    FLevels, FStarts, FTargets: array[TEmulatorButton] of Single;
+    FTimes: array[TEmulatorButton] of Int64;
     FAnimation: TTimer;
     FNativeInput: TObject;
+    procedure SetLayout(Value: TScreenGamepadLayout);
+    function ActiveButtons: TEmulatorButtons;
     procedure LayoutButtons;
     function RegionAt(const Point: TPointF): TRegion;
-    function ButtonsAt(const Point: TPointF; Region: TRegion): TNesButtons;
+    function ButtonsAt(const Point: TPointF; Region: TRegion): TEmulatorButtons;
     procedure UpdateButtons;
     procedure Animate(Sender: TObject);
   protected
@@ -54,8 +59,9 @@ type
     procedure PointerMove(Id: NativeInt; const Point: TPointF);
     procedure PointerUp(Id: NativeInt);
     procedure ReleaseAll;
-    function ButtonBounds(Button: TNesButton): TRectF;
-    property Buttons: TNesButtons read FButtons;
+    function ButtonBounds(Button: TEmulatorButton): TRectF;
+    property Buttons: TEmulatorButtons read FButtons;
+    property Layout: TScreenGamepadLayout read FLayout write SetLayout;
   published
     property Align;
     property Anchors;
@@ -65,6 +71,15 @@ type
     property Size;
     property Visible;
     property OnChange: TNotifyEvent read FOnChange write FOnChange;
+  end;
+
+  // Preserve the NES control's public API for existing hosts.
+  TNesGamepad = class(TScreenGamepad)
+  private
+    function GetNesButtons: TNesButtons;
+  public
+    function ButtonBounds(Button: TNesButton): TRectF; reintroduce;
+    property Buttons: TNesButtons read GetNesButtons;
   end;
 
 implementation
@@ -77,20 +92,42 @@ uses
   {$ENDIF}
   FMX.Graphics;
 
+const
+  NesButtonMap: array[TNesButton] of TEmulatorButton =
+    (TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Select,
+    TEmulatorButton.Start, TEmulatorButton.Up, TEmulatorButton.Down,
+    TEmulatorButton.Left, TEmulatorButton.Right);
+  ActionButtons =[ TEmulatorButton.A,  TEmulatorButton.B,  TEmulatorButton.C,
+      TEmulatorButton.X,  TEmulatorButton.Y,  TEmulatorButton.Z];
+  MenuButtons =[ TEmulatorButton.Select,  TEmulatorButton.Start,  TEmulatorButton.Mode];
+
+function TNesGamepad.GetNesButtons: TNesButtons;
+begin
+  Result := [];
+  for var Button := Low(TNesButton) to High(TNesButton) do
+    if NesButtonMap[Button] in inherited Buttons then
+      Include(Result, Button);
+end;
+
+function TNesGamepad.ButtonBounds(Button: TNesButton): TRectF;
+begin
+  Result := inherited ButtonBounds(NesButtonMap[Button]);
+end;
+
 {$IFDEF ANDROID}
 type
   TGamepadAndroidInput = class(TJavaLocal, JView_OnTouchListener)
   private
-    FPad: TNesGamepad;
+    FPad: TScreenGamepad;
     FView: JView;
     FScale: Single;
   public
-    constructor Create(Pad: TNesGamepad; Form: TCommonCustomForm);
+    constructor Create(Pad: TScreenGamepad; Form: TCommonCustomForm);
     destructor Destroy; override;
     function onTouch(v: JView; event: JMotionEvent): Boolean; cdecl;
   end;
 
-constructor TGamepadAndroidInput.Create(Pad: TNesGamepad; Form: TCommonCustomForm);
+constructor TGamepadAndroidInput.Create(Pad: TScreenGamepad; Form: TCommonCustomForm);
 begin
   inherited Create;
   FPad := Pad;
@@ -142,7 +179,7 @@ begin
 end;
 {$ENDIF}
 
-constructor TNesGamepad.Create(AOwner: TComponent);
+constructor TScreenGamepad.Create(AOwner: TComponent);
 begin
   inherited;
   FContacts := TDictionary<NativeInt, TContact>.Create;
@@ -157,7 +194,7 @@ begin
   LayoutButtons;
 end;
 
-destructor TNesGamepad.Destroy;
+destructor TScreenGamepad.Destroy;
 begin
   FreeAndNil(FNativeInput);
   if FAnimation <> nil then
@@ -167,13 +204,13 @@ begin
   inherited;
 end;
 
-class function TNesGamepad.PreferredHeight(AvailableWidth, AvailableHeight: Single): Single;
+class function TScreenGamepad.PreferredHeight(AvailableWidth, AvailableHeight: Single): Single;
 begin
   Result := Min(212.0, Min(AvailableWidth * 0.46, AvailableHeight * 0.36));
   Result := Max(128.0, Result);
 end;
 
-procedure TNesGamepad.AttachToForm(Form: TCommonCustomForm);
+procedure TScreenGamepad.AttachToForm(Form: TCommonCustomForm);
 begin
   ReleaseAll;
   FreeAndNil(FNativeInput);
@@ -183,32 +220,76 @@ begin
   {$ENDIF}
 end;
 
-procedure TNesGamepad.LayoutButtons;
+procedure TScreenGamepad.LayoutButtons;
+const
+  SegaActions: array[0..5] of TEmulatorButton =
+    (TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.Z,
+    TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.C);
 var
   U, CX, CY, AX, AY, BX, BY: Single;
 begin
+  for var Button := Low(TEmulatorButton) to High(TEmulatorButton) do
+    FBounds[Button] := TRectF.Empty;
   // Controls grow up to a comfortable tablet size; extra width separates hands.
   U := Max(0.01, Min(1.5, Min(Width / 400, Height / 160)));
+  if FLayout = TScreenGamepadLayout.Sega then
+    U := Max(0.01, Min(1.5, Min(Width / 400, Height / 200)));
+  if FLayout = TScreenGamepadLayout.Sega then
+    U := Max(0.01, Min(1.5, Min(Width / 400, Height / 200)));
   FUnit := U;
   CX := 76 * U;
   CY := Height * 0.43;
   FDPad := RectF(CX - 60 * U, CY - 60 * U, CX + 60 * U, CY + 60 * U);
-  FBounds[TNesButton.Up] := RectF(CX - 20 * U, CY - 58 * U, CX + 20 * U, CY - 18 * U);
-  FBounds[TNesButton.Down] := RectF(CX - 20 * U, CY + 18 * U, CX + 20 * U, CY + 58 * U);
-  FBounds[TNesButton.Left] := RectF(CX - 58 * U, CY - 20 * U, CX - 18 * U, CY + 20 * U);
-  FBounds[TNesButton.Right] := RectF(CX + 18 * U, CY - 20 * U, CX + 58 * U, CY + 20 * U);
+  FBounds[TEmulatorButton.Up] := RectF(CX - 20 * U, CY - 58 * U, CX + 20 * U, CY - 18 * U);
+  FBounds[TEmulatorButton.Down] := RectF(CX - 20 * U, CY + 18 * U, CX + 20 * U, CY + 58 * U);
+  FBounds[TEmulatorButton.Left] := RectF(CX - 58 * U, CY - 20 * U, CX - 18 * U, CY + 20 * U);
+  FBounds[TEmulatorButton.Right] := RectF(CX + 18 * U, CY - 20 * U, CX + 58 * U, CY + 20 * U);
   AX := Width - 45 * U;
   AY := CY - 18 * U;
   BX := AX - 66 * U;
   BY := CY + 18 * U;
-  FBounds[TNesButton.A] := RectF(AX - 27 * U, AY - 27 * U, AX + 27 * U, AY + 27 * U);
-  FBounds[TNesButton.B] := RectF(BX - 27 * U, BY - 27 * U, BX + 27 * U, BY + 27 * U);
+  FBounds[TEmulatorButton.A] := RectF(AX - 27 * U, AY - 27 * U, AX + 27 * U, AY + 27 * U);
+  FBounds[TEmulatorButton.B] := RectF(BX - 27 * U, BY - 27 * U, BX + 27 * U, BY + 27 * U);
   CY := Height - 34 * U;
-  FBounds[TNesButton.Select] := RectF(Width / 2 - 58 * U, CY - 14 * U, Width / 2 - 8 * U, CY + 10 * U);
-  FBounds[TNesButton.Start] := RectF(Width / 2 + 8 * U, CY - 14 * U, Width / 2 + 58 * U, CY + 10 * U);
+  FBounds[TEmulatorButton.Select] := RectF(Width / 2 - 58 * U, CY - 14 * U, Width / 2 - 8 * U, CY + 10 * U);
+  FBounds[TEmulatorButton.Start] := RectF(Width / 2 + 8 * U, CY - 14 * U, Width / 2 + 58 * U, CY + 10 * U);
+  if FLayout = TScreenGamepadLayout.Sega then
+  begin
+    // Two rows of three; leave a full gap between the cross and action area.
+    for var I := Low(SegaActions) to High(SegaActions) do
+    begin
+      AX := Width - (145 - (I mod 3) * 54) * U;
+      AY := Height * 0.43 + ((I div 3) * 54 - 27) * U;
+      FBounds[SegaActions[I]] := RectF(AX - 23 * U, AY - 23 * U,
+          AX + 23 * U, AY + 23 * U);
+    end;
+    FBounds[TEmulatorButton.Mode] := FBounds[TEmulatorButton.Select];
+    FBounds[TEmulatorButton.Select] := TRectF.Empty;
+  end;
 end;
 
-procedure TNesGamepad.Resize;
+function TScreenGamepad.ActiveButtons: TEmulatorButtons;
+begin
+  Result := [TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left,
+      TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Start];
+  if FLayout = TScreenGamepadLayout.Sega then
+    Result := Result + [TEmulatorButton.C, TEmulatorButton.X, TEmulatorButton.Y,
+        TEmulatorButton.Z, TEmulatorButton.Mode]
+  else
+    Include(Result, TEmulatorButton.Select);
+end;
+
+procedure TScreenGamepad.SetLayout(Value: TScreenGamepadLayout);
+begin
+  if FLayout = Value then
+    Exit;
+  ReleaseAll;
+  FLayout := Value;
+  LayoutButtons;
+  Repaint;
+end;
+
+procedure TScreenGamepad.Resize;
 begin
   inherited;
   // A rotation/layout change invalidates all old contact coordinates.
@@ -217,7 +298,7 @@ begin
   Repaint;
 end;
 
-procedure TNesGamepad.EnabledChanged;
+procedure TScreenGamepad.EnabledChanged;
 begin
   inherited;
   if not Enabled then
@@ -225,26 +306,26 @@ begin
   Repaint;
 end;
 
-procedure TNesGamepad.VisibleChanged;
+procedure TScreenGamepad.VisibleChanged;
 begin
   inherited;
   if not Visible then
     ReleaseAll;
 end;
 
-procedure TNesGamepad.AncestorVisibleChanged(const Visible: Boolean);
+procedure TScreenGamepad.AncestorVisibleChanged(const Visible: Boolean);
 begin
   inherited;
   if not Visible then
     ReleaseAll;
 end;
 
-function TNesGamepad.ButtonBounds(Button: TNesButton): TRectF;
+function TScreenGamepad.ButtonBounds(Button: TEmulatorButton): TRectF;
 begin
   Result := FBounds[Button];
 end;
 
-function TNesGamepad.RegionAt(const Point: TPointF): TRegion;
+function TScreenGamepad.RegionAt(const Point: TPointF): TRegion;
 begin
   Result := TRegion.None;
   if not LocalRect.Contains(Point) then
@@ -257,7 +338,7 @@ begin
     Exit(TRegion.Menu);
 end;
 
-function TNesGamepad.ButtonsAt(const Point: TPointF; Region: TRegion): TNesButtons;
+function TScreenGamepad.ButtonsAt(const Point: TPointF; Region: TRegion): TEmulatorButtons;
 begin
   Result := [];
   if not LocalRect.Contains(Point) then
@@ -273,21 +354,21 @@ begin
           Exit;
         if DX >= DY * 0.42 then
           if Delta.X < 0 then
-            Include(Result, TNesButton.Left)
+            Include(Result, TEmulatorButton.Left)
           else
-            Include(Result, TNesButton.Right);
+            Include(Result, TEmulatorButton.Right);
         if DY >= DX * 0.42 then
           if Delta.Y < 0 then
-            Include(Result, TNesButton.Up)
+            Include(Result, TEmulatorButton.Up)
           else
-            Include(Result, TNesButton.Down);
+            Include(Result, TEmulatorButton.Down);
       end;
     TRegion.Actions:
-      for var Button := TNesButton.A to TNesButton.B do
-        if Point.Distance(FBounds[Button].CenterPoint) <= 33 * FUnit then
+      for var Button in (ActiveButtons * ActionButtons) do
+        if Point.Distance(FBounds[Button].CenterPoint) <= FBounds[Button].Width / 2 + 6 * FUnit then
           Include(Result, Button);
     TRegion.Menu:
-      for var Button := TNesButton.Select to TNesButton.Start do
+      for var Button in (ActiveButtons * MenuButtons) do
       begin
         var Bounds := FBounds[Button];
         Bounds.Inflate(5 * FUnit, 9 * FUnit);
@@ -297,7 +378,7 @@ begin
   end;
 end;
 
-procedure TNesGamepad.PointerDown(Id: NativeInt; const Point: TPointF);
+procedure TScreenGamepad.PointerDown(Id: NativeInt; const Point: TPointF);
 begin
   if not AbsoluteEnabled or not ParentedVisible then
     Exit;
@@ -314,7 +395,7 @@ begin
   UpdateButtons;
 end;
 
-procedure TNesGamepad.PointerMove(Id: NativeInt; const Point: TPointF);
+procedure TScreenGamepad.PointerMove(Id: NativeInt; const Point: TPointF);
 begin
   if not AbsoluteEnabled or not ParentedVisible then
   begin
@@ -329,13 +410,13 @@ begin
   UpdateButtons;
 end;
 
-procedure TNesGamepad.PointerUp(Id: NativeInt);
+procedure TScreenGamepad.PointerUp(Id: NativeInt);
 begin
   FContacts.Remove(Id);
   UpdateButtons;
 end;
 
-procedure TNesGamepad.ReleaseAll;
+procedure TScreenGamepad.ReleaseAll;
 begin
   if FContacts = nil then
     Exit;
@@ -349,19 +430,19 @@ begin
   Repaint;
 end;
 
-procedure TNesGamepad.UpdateButtons;
+procedure TScreenGamepad.UpdateButtons;
 begin
-  var NewButtons: TNesButtons := [];
+  var NewButtons: TEmulatorButtons := [];
   for var Contact in FContacts.Values do
     NewButtons := NewButtons + Contact.Buttons;
-  if [TNesButton.Left, TNesButton.Right] <= NewButtons then
-    NewButtons := NewButtons - [TNesButton.Left, TNesButton.Right];
-  if [TNesButton.Up, TNesButton.Down] <= NewButtons then
-    NewButtons := NewButtons - [TNesButton.Up, TNesButton.Down];
+  if [TEmulatorButton.Left, TEmulatorButton.Right] <= NewButtons then
+    NewButtons := NewButtons - [TEmulatorButton.Left, TEmulatorButton.Right];
+  if [TEmulatorButton.Up, TEmulatorButton.Down] <= NewButtons then
+    NewButtons := NewButtons - [TEmulatorButton.Up, TEmulatorButton.Down];
   if NewButtons = FButtons then
     Exit;
   var NowTicks := TStopwatch.GetTimeStamp;
-  for var Button := Low(TNesButton) to High(TNesButton) do
+  for var Button := Low(TEmulatorButton) to High(TEmulatorButton) do
     if (Button in NewButtons) <> (Button in FButtons) then
     begin
       FStarts[Button] := FLevels[Button];
@@ -375,11 +456,11 @@ begin
     FOnChange(Self);
 end;
 
-procedure TNesGamepad.Animate(Sender: TObject);
+procedure TScreenGamepad.Animate(Sender: TObject);
 begin
   var Active := False;
   var NowTicks := TStopwatch.GetTimeStamp;
-  for var Button := Low(TNesButton) to High(TNesButton) do
+  for var Button := Low(TEmulatorButton) to High(TEmulatorButton) do
     if FLevels[Button] <> FTargets[Button] then
     begin
       var Duration: Double := 0.14;
@@ -407,9 +488,10 @@ begin
   end;
 end;
 
-procedure TNesGamepad.Paint;
+procedure TScreenGamepad.Paint;
 const
-  Labels: array[TNesButton] of string = ('A', 'B', 'SELECT', 'START', '', '', '', '');
+  Labels: array[TEmulatorButton] of string =
+    ('', '', '', '', 'A', 'B', 'SELECT', 'START', 'C', 'X', 'Y', 'Z', 'MODE');
 begin
   inherited;
   Canvas.Fill.Kind := TBrushKind.Solid;
@@ -428,7 +510,7 @@ begin
   const CenterSize = 11;
   Canvas.FillRect(RectF(Center.X - CenterSize * FUnit, Center.Y - CenterSize * FUnit,
       Center.X + CenterSize * FUnit, Center.Y + CenterSize * FUnit), 6 * FUnit, 6 * FUnit, AllCorners, Opacity);
-  for var Button := Low(TNesButton) to High(TNesButton) do
+  for var Button in ActiveButtons do
   begin
     var R := FBounds[Button];
     var Level := FLevels[Button];
@@ -437,12 +519,14 @@ begin
     var Shadow := R;
     Shadow.Offset(0, 4 * FUnit * (1 - Level));
     Canvas.Fill.Color := $FF080D15;
-    var RoundButton := Button in [TNesButton.A, TNesButton.B];
+    var RoundButton := Button in ActionButtons;
     if RoundButton then
       Canvas.FillEllipse(Shadow, Opacity)
     else
       Canvas.FillRect(Shadow, 7 * FUnit, 7 * FUnit, AllCorners, Opacity);
-    if RoundButton then
+    if Button in [TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.Z] then
+      Canvas.Fill.Color := MixColor($FF65758D, $FFA9C6E8, Level)
+    else if RoundButton then
       Canvas.Fill.Color := MixColor($FFCB4660, $FFFF8A92, Level)
     else
       Canvas.Fill.Color := MixColor($FF303B4D, $FF5989B2, Level);
@@ -453,12 +537,12 @@ begin
     Canvas.Fill.Color := $FFF3F5FA;
     Canvas.Font.Family := 'sans-serif';
     Canvas.Font.Style := [TFontStyle.fsBold];
-    if Button in [TNesButton.A, TNesButton.B] then
+    if RoundButton then
     begin
       Canvas.Font.Size := 23 * FUnit;
       Canvas.FillText(R, Labels[Button], False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
     end
-    else if Button in [TNesButton.Select, TNesButton.Start] then
+    else if Button in MenuButtons then
     begin
       var Bar := R;
       Bar.Inflate(-14 * FUnit, -10 * FUnit);
@@ -476,25 +560,25 @@ begin
       var C := R.CenterPoint;
       var S := 6 * FUnit;
       case Button of
-        TNesButton.Up:
+        TEmulatorButton.Up:
           begin
             P[0] := PointF(C.X, C.Y - S);
             P[1] := PointF(C.X - S, C.Y + S);
             P[2] := PointF(C.X + S, C.Y + S);
           end;
-        TNesButton.Down:
+        TEmulatorButton.Down:
           begin
             P[0] := PointF(C.X, C.Y + S);
             P[1] := PointF(C.X - S, C.Y - S);
             P[2] := PointF(C.X + S, C.Y - S);
           end;
-        TNesButton.Left:
+        TEmulatorButton.Left:
           begin
             P[0] := PointF(C.X - S, C.Y);
             P[1] := PointF(C.X + S, C.Y - S);
             P[2] := PointF(C.X + S, C.Y + S);
           end;
-        TNesButton.Right:
+        TEmulatorButton.Right:
           begin
             P[0] := PointF(C.X + S, C.Y);
             P[1] := PointF(C.X - S, C.Y - S);
@@ -506,7 +590,7 @@ begin
   end;
 end;
 
-procedure TNesGamepad.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
+procedure TScreenGamepad.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
   inherited;
   {$IFNDEF ANDROID}
@@ -515,7 +599,7 @@ begin
   {$ENDIF}
 end;
 
-procedure TNesGamepad.MouseMove(Shift: TShiftState; X, Y: Single);
+procedure TScreenGamepad.MouseMove(Shift: TShiftState; X, Y: Single);
 begin
   inherited;
   {$IFNDEF ANDROID}
@@ -523,7 +607,7 @@ begin
   {$ENDIF}
 end;
 
-procedure TNesGamepad.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
+procedure TScreenGamepad.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
   inherited;
   {$IFNDEF ANDROID}

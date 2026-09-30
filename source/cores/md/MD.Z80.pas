@@ -999,7 +999,6 @@ end;
 
 procedure ExecuteInstruction(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; var Instruction: TZ80Instruction);
 begin
-  var SourceValue: Cardinal;
   var DestinationValue: Cardinal;
   var ResultValue: Cardinal;
   var ResultValueWithCarry: Cardinal;
@@ -1008,29 +1007,6 @@ begin
   var Carry: Byte;
   var CorrectionFactor: Cardinal;
   var OriginalA: Cardinal;
-  var Temp356: Integer;
-  var Temp357: Integer;
-  var Temp362: Integer;
-  var Temp363: Integer;
-  var Temp368: Integer;
-  var Temp369: Integer;
-  var Temp374: Integer;
-  var Temp375: Integer;
-  var Temp380: Integer;
-  var Temp381: Integer;
-  var Temp386: Integer;
-  var Temp387: Integer;
-  var Temp392: Integer;
-  var Temp393: Integer;
-  var Temp398: Integer;
-  var Temp399: Integer;
-  var Temp403: Integer;
-  var Temp404: Integer;
-  var Temp405: Integer;
-  var Temp406: Integer;
-  var Temp407: Integer;
-  var Temp408: Integer;
-  var Temp409: Integer;
   var Hl: Cardinal;
   var HlValue: Cardinal;
   var HlHigh: Cardinal;
@@ -1044,17 +1020,6 @@ begin
   var AHighScope215: Cardinal;
   var ALowScope216: Cardinal;
   var De: Cardinal;
-  var HlScope217: Cardinal;
-  var DeScope218: Cardinal;
-  var HlScope219: Cardinal;
-  var DeScope220: Cardinal;
-  var HlScope221: Cardinal;
-  var DeScope222: Cardinal;
-  var HlScope223: Cardinal;
-  var HlScope224: Cardinal;
-  var HlScope225: Cardinal;
-  var HlScope226: Cardinal;
-  var HlScope227: Cardinal;
   State.RegisterMode := Byte(CLOWNZ80_REGISTER_MODE_HL);
   case Instruction.Metadata.Opcode of
     CLOWNZ80_OPCODE_NOP:
@@ -1094,13 +1059,13 @@ begin
       end;
     CLOWNZ80_OPCODE_LD_8_BIT, CLOWNZ80_OPCODE_LD_16_BIT:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         ResultValue := SourceValue;
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
       end;
     CLOWNZ80_OPCODE_ADD_HL:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         DestinationValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1]);
         ResultValueWithCarry16bit := Add32(SourceValue, DestinationValue);
         ResultValue := ResultValueWithCarry16bit and $FFFF;
@@ -1126,7 +1091,7 @@ begin
       end;
     CLOWNZ80_OPCODE_INC_8_BIT:
       begin
-        SourceValue := 1;
+        var SourceValue: Cardinal := 1;
         DestinationValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1]);
         ResultValue := Add32(DestinationValue, SourceValue) and $FF;
         State.F := Byte(State.F and FLAG_MASK_CARRY);
@@ -1144,7 +1109,7 @@ begin
       end;
     CLOWNZ80_OPCODE_DEC_8_BIT:
       begin
-        SourceValue := $FFFFFFFF;
+        var SourceValue: Cardinal := $FFFFFFFF;
         DestinationValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1]);
         ResultValue := Add32(DestinationValue, SourceValue) and $FF;
         State.F := Byte(State.F and FLAG_MASK_CARRY);
@@ -1245,7 +1210,7 @@ begin
       ;
     CLOWNZ80_OPCODE_ADD_A:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         DestinationValue := Cardinal(State.A);
         ResultValueWithCarry := Add32(DestinationValue, SourceValue);
         ResultValue := ResultValueWithCarry and $FF;
@@ -1260,7 +1225,7 @@ begin
       end;
     CLOWNZ80_OPCODE_ADC_A:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         DestinationValue := Cardinal(State.A);
         ResultValueWithCarry := Add32(Add32(DestinationValue, SourceValue), Ord((State.F and FLAG_MASK_CARRY) <> 0));
         ResultValue := ResultValueWithCarry and $FF;
@@ -1275,7 +1240,7 @@ begin
       end;
     CLOWNZ80_OPCODE_SUB:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         SourceValue := not SourceValue;
         DestinationValue := Cardinal(State.A);
         ResultValueWithCarry := Add32(Add32(DestinationValue, SourceValue), 1);
@@ -1293,7 +1258,7 @@ begin
       end;
     CLOWNZ80_OPCODE_SBC_A:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         SourceValue := not SourceValue;
         DestinationValue := Cardinal(State.A);
         ResultValueWithCarry := Add32(Add32(DestinationValue, SourceValue), Ord((State.F and FLAG_MASK_CARRY) = 0));
@@ -1311,7 +1276,7 @@ begin
       end;
     CLOWNZ80_OPCODE_AND:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         DestinationValue := Cardinal(State.A);
         ResultValue := DestinationValue and SourceValue;
         State.F := 0;
@@ -1325,7 +1290,7 @@ begin
       end;
     CLOWNZ80_OPCODE_XOR:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         DestinationValue := Cardinal(State.A);
         ResultValue := DestinationValue xor SourceValue;
         State.F := 0;
@@ -1338,7 +1303,7 @@ begin
       end;
     CLOWNZ80_OPCODE_OR:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         DestinationValue := Cardinal(State.A);
         ResultValue := DestinationValue or SourceValue;
         State.F := 0;
@@ -1351,7 +1316,7 @@ begin
       end;
     CLOWNZ80_OPCODE_CP:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         SourceValue := not SourceValue;
         DestinationValue := Cardinal(State.A);
         ResultValueWithCarry := Add32(Add32(DestinationValue, SourceValue), 1);
@@ -1414,7 +1379,7 @@ begin
     CLOWNZ80_OPCODE_LD_SP_HL:
       begin
         State.Cycles := Word(State.Cycles + 2);
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         State.StackPointer := Word(SourceValue);
       end;
     CLOWNZ80_OPCODE_JP_CONDITIONAL:
@@ -1422,13 +1387,13 @@ begin
         repeat
           if not EvaluateCondition(State.F, Instruction.Metadata.Condition) then
             Break;
-          SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+          var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
           State.ProgramCounter := Word(SourceValue);
         until True;
       end;
     CLOWNZ80_OPCODE_JP_UNCONDITIONAL, CLOWNZ80_OPCODE_JP_HL:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         State.ProgramCounter := Word(SourceValue);
       end;
     CLOWNZ80_OPCODE_CB_PREFIX, CLOWNZ80_OPCODE_ED_PREFIX:
@@ -1473,7 +1438,7 @@ begin
     CLOWNZ80_OPCODE_PUSH:
       begin
         State.Cycles := Word(State.Cycles + 1);
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         State.StackPointer := (State.StackPointer + $FFFF) and $FFFF;
         MemoryWrite(State, Callbacks, State.StackPointer, (SourceValue shr 8));
         State.StackPointer := (State.StackPointer + $FFFF) and $FFFF;
@@ -1526,8 +1491,8 @@ begin
         if ComputeParity(ResultValue) <> 0 then
           State.F := Byte(State.F or FLAG_MASK_PARITY_OVERFLOW);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
-        Temp357 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        Temp356 := Ord((Temp357 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp357 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
+        var Temp356 := Ord((Temp357 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         State.Cycles := Word(State.Cycles + Temp356);
       end;
     CLOWNZ80_OPCODE_RRC:
@@ -1546,8 +1511,8 @@ begin
         if ComputeParity(ResultValue) <> 0 then
           State.F := Byte(State.F or FLAG_MASK_PARITY_OVERFLOW);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
-        Temp363 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        Temp362 := Ord((Temp363 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp363 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
+        var Temp362 := Ord((Temp363 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         State.Cycles := Word(State.Cycles + Temp362);
       end;
     CLOWNZ80_OPCODE_RL:
@@ -1567,8 +1532,8 @@ begin
         if ComputeParity(ResultValue) <> 0 then
           State.F := Byte(State.F or FLAG_MASK_PARITY_OVERFLOW);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
-        Temp369 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        Temp368 := Ord((Temp369 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp369 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
+        var Temp368 := Ord((Temp369 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         State.Cycles := Word(State.Cycles + Temp368);
       end;
     CLOWNZ80_OPCODE_RR:
@@ -1588,8 +1553,8 @@ begin
         if ComputeParity(ResultValue) <> 0 then
           State.F := Byte(State.F or FLAG_MASK_PARITY_OVERFLOW);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
-        Temp375 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        Temp374 := Ord((Temp375 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp375 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
+        var Temp374 := Ord((Temp375 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         State.Cycles := Word(State.Cycles + Temp374);
       end;
     CLOWNZ80_OPCODE_SLA:
@@ -1607,8 +1572,8 @@ begin
         if Carry <> 0 then
           State.F := Byte(State.F or FLAG_MASK_CARRY);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
-        Temp381 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        Temp380 := Ord((Temp381 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp381 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
+        var Temp380 := Ord((Temp381 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         State.Cycles := Word(State.Cycles + Temp380);
       end;
     CLOWNZ80_OPCODE_SLL:
@@ -1626,8 +1591,8 @@ begin
         if Carry <> 0 then
           State.F := Byte(State.F or FLAG_MASK_CARRY);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
-        Temp387 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        Temp386 := Ord((Temp387 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp387 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
+        var Temp386 := Ord((Temp387 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         State.Cycles := Word(State.Cycles + Temp386);
       end;
     CLOWNZ80_OPCODE_SRA:
@@ -1645,8 +1610,8 @@ begin
         if Carry <> 0 then
           State.F := Byte(State.F or FLAG_MASK_CARRY);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
-        Temp393 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        Temp392 := Ord((Temp393 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp393 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
+        var Temp392 := Ord((Temp393 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         State.Cycles := Word(State.Cycles + Temp392);
       end;
     CLOWNZ80_OPCODE_SRL:
@@ -1664,8 +1629,8 @@ begin
         if Carry <> 0 then
           State.F := Byte(State.F or FLAG_MASK_CARRY);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
-        Temp399 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        Temp398 := Ord((Temp399 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp399 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
+        var Temp398 := Ord((Temp399 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         State.Cycles := Word(State.Cycles + Temp398);
       end;
     CLOWNZ80_OPCODE_BIT:
@@ -1677,8 +1642,8 @@ begin
         State.F := Byte(State.F or FLAG_MASK_HALF_CARRY);
         if (Instruction.Metadata.EmbeddedLiteral = $80) and (Integer(State.F and FLAG_MASK_ZERO) = 0) then
           State.F := Byte(State.F or FLAG_MASK_SIGN);
-        Temp404 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        Temp403 := Ord((Temp404 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp404 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
+        var Temp403 := Ord((Temp404 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         State.Cycles := Word(State.Cycles + Temp403);
       end;
     CLOWNZ80_OPCODE_RES:
@@ -1686,8 +1651,8 @@ begin
         DestinationValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1]);
         ResultValue := DestinationValue and Cardinal(Instruction.Metadata.EmbeddedLiteral);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
-        Temp406 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        Temp405 := Ord((Temp406 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp406 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
+        var Temp405 := Ord((Temp406 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         State.Cycles := Word(State.Cycles + Temp405);
       end;
     CLOWNZ80_OPCODE_SET:
@@ -1695,17 +1660,18 @@ begin
         DestinationValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1]);
         ResultValue := DestinationValue or Cardinal(Instruction.Metadata.EmbeddedLiteral);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
-        Temp408 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        Temp407 := Ord((Temp408 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp408 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
+        var Temp407 := Ord((Temp408 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         State.Cycles := Word(State.Cycles + Temp407);
       end;
     CLOWNZ80_OPCODE_IN_REGISTER, CLOWNZ80_OPCODE_IN_NO_REGISTER, CLOWNZ80_OPCODE_OUT_REGISTER, CLOWNZ80_OPCODE_OUT_NO_REGISTER:
       ; // This core does not emulate Z80 I/O ports.
       CLOWNZ80_OPCODE_SBC_HL:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         DestinationValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1]);
         SourceValue := not SourceValue;
+        var Temp409: Integer;
         if Integer(State.F and FLAG_MASK_CARRY) <> 0 then
           Temp409 := 0
         else
@@ -1726,7 +1692,7 @@ begin
       end;
     CLOWNZ80_OPCODE_ADC_HL:
       begin
-        SourceValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
         DestinationValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1]);
         ResultValueWithCarry16bit := Add32(Add32(SourceValue, DestinationValue), Ord(Integer(State.F and FLAG_MASK_CARRY) <> 0));
         ResultValue := ResultValueWithCarry16bit and $FFFF;
@@ -1742,7 +1708,7 @@ begin
       end;
     CLOWNZ80_OPCODE_NEG:
       begin
-        SourceValue := Cardinal(State.A);
+        var SourceValue: Cardinal := Cardinal(State.A);
         SourceValue := not SourceValue;
         DestinationValue := 0;
         ResultValueWithCarry := Add32(Add32(DestinationValue, SourceValue), 1);
@@ -1829,7 +1795,7 @@ begin
     CLOWNZ80_OPCODE_LDI:
       begin
         De := (Cardinal(State.D) shl 8) or Cardinal(State.E);
-        HlScope217 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
+        var HlScope217 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
         MemoryWrite(State, Callbacks, De, MemoryRead(State, Callbacks, HlScope217));
         State.L := (State.L + 1) and $FF;
         if State.L = 0 then
@@ -1847,8 +1813,8 @@ begin
       end;
     CLOWNZ80_OPCODE_LDD:
       begin
-        DeScope218 := (Cardinal(State.D) shl 8) or Cardinal(State.E);
-        HlScope219 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
+        var DeScope218 := (Cardinal(State.D) shl 8) or Cardinal(State.E);
+        var HlScope219 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
         MemoryWrite(State, Callbacks, DeScope218, MemoryRead(State, Callbacks, HlScope219));
         State.L := (State.L + $FF) and $FF;
         if State.L = $FF then
@@ -1866,8 +1832,8 @@ begin
       end;
     CLOWNZ80_OPCODE_LDIR:
       begin
-        DeScope220 := (Cardinal(State.D) shl 8) or Cardinal(State.E);
-        HlScope221 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
+        var DeScope220 := (Cardinal(State.D) shl 8) or Cardinal(State.E);
+        var HlScope221 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
         MemoryWrite(State, Callbacks, DeScope220, MemoryRead(State, Callbacks, HlScope221));
         State.L := (State.L + 1) and $FF;
         if State.L = 0 then
@@ -1890,8 +1856,8 @@ begin
       end;
     CLOWNZ80_OPCODE_LDDR:
       begin
-        DeScope222 := (Cardinal(State.D) shl 8) or Cardinal(State.E);
-        HlScope223 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
+        var DeScope222 := (Cardinal(State.D) shl 8) or Cardinal(State.E);
+        var HlScope223 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
         MemoryWrite(State, Callbacks, DeScope222, MemoryRead(State, Callbacks, HlScope223));
         State.L := (State.L + $FF) and $FF;
         if State.L = $FF then
@@ -1914,8 +1880,8 @@ begin
       end;
     CLOWNZ80_OPCODE_CPI:
       begin
-        HlScope224 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
-        SourceValue := MemoryRead(State, Callbacks, HlScope224);
+        var HlScope224 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
+        var SourceValue: Cardinal := MemoryRead(State, Callbacks, HlScope224);
         DestinationValue := Cardinal(State.A);
         ResultValue := Sub32(DestinationValue, SourceValue);
         State.L := (State.L + 1) and $FF;
@@ -1936,8 +1902,8 @@ begin
       end;
     CLOWNZ80_OPCODE_CPD:
       begin
-        HlScope225 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
-        SourceValue := MemoryRead(State, Callbacks, HlScope225);
+        var HlScope225 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
+        var SourceValue: Cardinal := MemoryRead(State, Callbacks, HlScope225);
         DestinationValue := Cardinal(State.A);
         ResultValue := Sub32(DestinationValue, SourceValue);
         State.L := (State.L + $FF) and $FF;
@@ -1958,8 +1924,8 @@ begin
       end;
     CLOWNZ80_OPCODE_CPIR:
       begin
-        HlScope226 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
-        SourceValue := MemoryRead(State, Callbacks, HlScope226);
+        var HlScope226 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
+        var SourceValue: Cardinal := MemoryRead(State, Callbacks, HlScope226);
         DestinationValue := Cardinal(State.A);
         ResultValue := Sub32(DestinationValue, SourceValue);
         State.L := (State.L + 1) and $FF;
@@ -1985,8 +1951,8 @@ begin
       end;
     CLOWNZ80_OPCODE_CPDR:
       begin
-        HlScope227 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
-        SourceValue := MemoryRead(State, Callbacks, HlScope227);
+        var HlScope227 := (Cardinal(State.H) shl 8) or Cardinal(State.L);
+        var SourceValue: Cardinal := MemoryRead(State, Callbacks, HlScope227);
         DestinationValue := Cardinal(State.A);
         ResultValue := Sub32(DestinationValue, SourceValue);
         State.L := (State.L + $FF) and $FF;

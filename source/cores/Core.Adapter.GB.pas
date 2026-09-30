@@ -72,8 +72,8 @@ type
 implementation
 
 uses
-  Core.Snapshots, Core.SavePaths, System.SysUtils, System.Math, System.UITypes, GB.GPU, GB.Palettes, GB.ROM,
-  GB.MBC;
+  Core.Snapshots, Core.SavePaths, System.SysUtils, System.Math, System.UITypes,
+  GB.GPU, GB.Palettes, GB.ROM, GB.MBC;
 
 constructor TGBCoreAdapter.Create(const FileName: string);
 begin
@@ -115,11 +115,11 @@ end;
 
 procedure TGBCoreAdapter.ApplyInput;
 const
-  ButtonKeys: array[TEmulatorButton] of TGBKey =
+  ButtonKeys: array[TEmulatorButton.Up..TEmulatorButton.Start] of TGBKey =
     (TGBKey.Up, TGBKey.Down, TGBKey.Left, TGBKey.Right,
     TGBKey.A, TGBKey.B, TGBKey.Select, TGBKey.Start);
 begin
-  for var Button := Low(TEmulatorButton) to High(TEmulatorButton) do
+  for var Button := Low(ButtonKeys) to High(ButtonKeys) do
     FThread.SetKeyState(ButtonKeys[Button],
       (Button in FGamepadInput.Buttons) or (Button in FKeyboardInput.Buttons));
 end;
@@ -258,7 +258,6 @@ end;
 function TGBCoreAdapter.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
 var
   Screen: TScreenArray;
-  X, Y, Index: Integer;
   FramesPerSecond: Double;
 begin
   Result := FThread.TryGetFrame(Screen, FramesPerSecond);
@@ -267,10 +266,10 @@ begin
   Frame.Width := 160;
   Frame.Height := 144;
   SetLength(Frame.Pixels, Frame.Width * Frame.Height);
-  for Y := 0 to Frame.Height - 1 do
-    for X := 0 to Frame.Width - 1 do
+  for var Y := 0 to Frame.Height - 1 do
+    for var X := 0 to Frame.Width - 1 do
     begin
-      Index := Screen[Y * Frame.Width + X];
+      var Index := Screen[Y * Frame.Width + X];
       if (Index < 0) or (Index > 3) then
         Index := 0;
       Frame.Pixels[Y * Frame.Width + X] := ScreenPalettes[FConfig.ScreenPalette].Colors[Index];

@@ -3,7 +3,8 @@
 interface
 
 uses
-  Core.Snapshots, System.SysUtils, System.Classes, System.SyncObjs, Core.Emulation, MD.Console;
+  Core.Snapshots, System.SysUtils, System.Classes, System.SyncObjs,
+  Core.Emulation, MD.Console;
 
 const
   MD_SAMPLE_RATE = 44100;
@@ -19,7 +20,7 @@ type
     FWake: TEvent;
     FData: TBytes;
     FSavePath: string;
-    FInput: TMDButtons;
+    FInput, FInput2: TMDButtons;
     FPause, FReset, FAudioEnabled: Boolean;
     FVolume: Single;
     FFrame: TEmulatorFrame;
@@ -32,7 +33,7 @@ type
     constructor Create(const Data: TBytes; const SavePath: string);
     destructor Destroy; override;
     procedure WakeSetEvent;
-    procedure Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single);
+    procedure Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TMDButtons = []);
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     property SnapshotDirectory: string read FSnapshotDirectory write FSnapshotDirectory;
@@ -70,11 +71,12 @@ begin
   FLock.Free;
 end;
 
-procedure TMDWorker.Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single);
+procedure TMDWorker.Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TMDButtons);
 begin
   FLock.Acquire;
   try
     FInput := Input;
+    FInput2 := Input2;
     FPause := Paused;
     FAudioEnabled := AudioEnabled;
     FVolume := Volume;
@@ -150,6 +152,7 @@ begin
 end;
 
 procedure TMDWorker.Execute;
+
   procedure SaveBattery(Console: TMDConsole; var LastBattery: TBytes);
   begin
     if (Console = nil) or not Console.BatteryDirty then
@@ -159,8 +162,8 @@ procedure TMDWorker.Execute;
       Exit;
     var Unchanged := Length(Data) = Length(LastBattery);
     if Unchanged then
-      for var I := 0 to High(Data) do
-        if Data[I] <> LastBattery[I] then
+      for var i := 0 to High(Data) do
+        if Data[i] <> LastBattery[i] then
         begin
           Unchanged := False;
           Break;
@@ -177,8 +180,6 @@ procedure TMDWorker.Execute;
   end;
 
 begin
-  var Format: TPCMAudioFormat;
-  var Input: TMDButtons;
   var Paused, ResetRequested, Enabled, WasPaused, WasEnabled: Boolean;
   var Volume: Single;
   var Frame: TEmulatorFrame;
@@ -198,6 +199,7 @@ begin
         LastBattery := TFile.ReadAllBytes(FSavePath);
         Console.LoadBattery(LastBattery);
       end;
+      var Format: TPCMAudioFormat;
       Format.SampleRate := MD_SAMPLE_RATE;
       Format.Channels := 2;
       Format.BlockFrames := AUDIO_BLOCK_SAMPLES;
@@ -212,15 +214,17 @@ begin
           procedure(const Name: string; Loading: Boolean)
           begin
             var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
-            var Transfer: TStateTransfer := procedure(State: TStateArchive)
-            begin
-              Console.SerializeState(State);
-            end;
+            var Transfer: TStateTransfer :=
+              procedure(State: TStateArchive)
+              begin
+                Console.SerializeState(State);
+              end;
             if Loading then
             begin
               LoadCoreSnapshot(Path, 'MD', FData, Transfer);
               Console.MarkBatteryDirty;
-              if Audio <> nil then Audio.Clear;
+              if Audio <> nil then
+                Audio.Clear;
               Frame.Width := Console.Width;
               Frame.Height := Console.Height;
               Frame.FrameNumber := Console.FrameNumber;
@@ -245,9 +249,11 @@ begin
             end;
             Deadline := Watch.Elapsed.TotalMilliseconds;
           end);
+        var Input, Input2: TMDButtons;
         FLock.Acquire;
         try
           Input := FInput;
+          Input2 := FInput2;
           Paused := FPause;
           Enabled := FAudioEnabled;
           Volume := FVolume;
@@ -278,7 +284,7 @@ begin
           Continue;
         end;
         WasPaused := False;
-        Console.SetInput(Input);
+        Console.SetInput(Input, Input2);
         Console.RunFrame;
         if Terminated then
           Break;
@@ -304,8 +310,8 @@ begin
           if Audio = nil then
             Audio := TPCMAudio.Create(Format);
           SetLength(Samples, Console.SampleFrames * 2);
-          for var I := 0 to High(Samples) do
-            Samples[I] := Round(Console.Samples[I] * Volume);
+          for var i := 0 to High(Samples) do
+            Samples[i] := Round(Console.Samples[i] * Volume);
           Audio.Submit(Samples, Console.SampleFrames);
           if (Audio.Error <> '') and (Audio.Error <> LastAudioError) then
           begin

@@ -25,7 +25,8 @@ type
 
 implementation
 
-uses System.Math;
+uses
+  System.Math;
 
 procedure TPCMLowPass.Configure(SampleRate, Cutoff: Double);
 begin
@@ -70,3 +71,4 @@ begin
 end;
 
 end.
+

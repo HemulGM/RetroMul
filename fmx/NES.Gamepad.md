@@ -1,10 +1,22 @@
 # Screen gamepad
 
+`TScreenGamepad` shares the touch tracking and painting implementation between
+NES and the six-button SEGA Mega Drive / Genesis layout. Set `Layout` to
+`TScreenGamepadLayout.Sega` for X/Y/Z above A/B/C, a D-pad, Start and Mode.
+Its `Buttons` and `ButtonBounds` use `TEmulatorButton` from `Core.Emulation`.
+Changing layouts releases all contacts, including stale pointer IDs.
+`RM.Main` selects the layout from the loaded core's configuration and forwards
+the complete button set through `IEmulationCore.SetGamepadInput`. The MD adapter
+maps C/X/Y/Z/Mode directly; Select remains a legacy alias for C. NES, GB and GBC
+ignore the additional SEGA buttons. The Android form still uses one native
+touch listener for the active screen control.
+
 `TNesGamepad` is a self-painted FMX control in `NES.Gamepad.pas`. It contains
 the D-pad, A/B and Select/Start, without a dependency on the emulator thread.
 It scales its geometry from its actual width and height. Extra width separates
 the two hand areas; `PreferredHeight` provides a suitable height for a bottom
-panel. Hit areas stay fixed while buttons animate.
+panel. Hit areas stay fixed while buttons animate. It now wraps `TScreenGamepad`
+and preserves the existing `TNesButton` / `TNesButtons` API.
 
 ```pascal
 Gamepad := TNesGamepad.Create(Self);
@@ -45,3 +57,7 @@ Local checks: `tests/GamepadTests.dpr` covers responsive geometry, three contact
 IDs, diagonal sliding, independent release, duplicate contacts, cancellation and
 rotation. It also renders normal/pressed states to PNG. Thread tests verify
 that releasing screen input preserves a keyboard-held button.
+The same tests cover all twelve SEGA controls at portrait/landscape sizes,
+simultaneous touches across both action rows, independent release, sliding and
+NES/SEGA layout changes. `GamepadFrontendTests` checks layout selection on ROM replacement;
+`MultiCoreAdapterTests` verifies GB/GBC ignore the SEGA-only buttons.

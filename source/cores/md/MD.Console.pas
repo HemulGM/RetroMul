@@ -3,8 +3,8 @@
 interface
 
 uses
-  Core.Snapshots, System.Classes, System.SysUtils, System.UITypes, MD.Cartridge, MD.M68k, MD.Z80, MD.VDP,
-  MD.Sound, Core.AudioFilter;
+  Core.Snapshots, System.Classes, System.SysUtils, System.UITypes, MD.Cartridge,
+  MD.M68k, MD.Z80, MD.VDP, MD.Sound, Core.AudioFilter;
 
 {$SCOPEDENUMS ON}
 
@@ -42,12 +42,13 @@ type
     FFilteredPSG: Double;
     FFMSamples: array[0..1] of SmallInt;
     FPSGSamples: array[0..0] of SmallInt;
-    FBusyUntil, FPadTimeout: Int64;
+    FBusyUntil: Int64;
+    FPadTimeout: array[1..2] of Int64;
     FBusRequested, FZReset, FInZ80, FVInt, FHInt: Boolean;
     FZBank: Word;
-    FButtons: TMDButtons;
-    FStrobes: Integer;
-    FTH: Boolean;
+    FButtons: array[1..2] of TMDButtons;
+    FStrobes: array[1..2] of Integer;
+    FTH: array[1..2] of Boolean;
     FSRAM: TBytes;
     FSRAMStart, FSRAMEnd, FSRAMStride: Cardinal;
     FSRAMEnabled, FSRAMReadOnly, FSRAMDirty: Boolean;
@@ -57,7 +58,7 @@ type
     procedure SyncZ80(Target: Int64);
     procedure RunUntil(Target: Int64);
     procedure UpdateIRQ;
-    function ReadPad: Byte;
+    function ReadPad(Port: Integer): Byte;
     procedure WriteIO(Index: Integer; Value: Byte);
     function ReadZ80(Address: Word): Byte;
     procedure WriteZ80(Address: Word; Value: Byte);
@@ -69,7 +70,7 @@ type
     destructor Destroy; override;
     procedure Reset;
     procedure RunFrame;
-    procedure SetInput(const Buttons: TMDButtons);
+    procedure SetInput(const Buttons: TMDButtons; const Buttons2: TMDButtons = []);
     function ReadByte(Address: Cardinal): Byte;
     function ReadWord(Address: Cardinal): Word;
     procedure WriteByte(Address: Cardinal; Value: Byte);
@@ -269,15 +270,16 @@ begin
   FScanline := 0;
   FDMADebt := 0;
   FBusyUntil := 0;
-  FPadTimeout := 0;
+  FillChar(FPadTimeout, SizeOf(FPadTimeout), 0);
   FZReset := True;
   FBusRequested := False;
   FInZ80 := False;
   FVInt := False;
   FHInt := False;
   FZBank := 0;
-  FTH := True;
-  FStrobes := 0;
+  FTH[1] := True;
+  FTH[2] := True;
+  FillChar(FStrobes, SizeOf(FStrobes), 0);
   FIO[1] := $7F;
   FIO[2] := $7F;
   FSRAMEnabled := (Length(FSRAM) <> 0) and (Length(FCartridge.Data) <= Integer(FSRAMStart));
@@ -295,28 +297,29 @@ begin
     FCPU.PendingInterrupt := 0;
 end;
 
-procedure TMDConsole.SetInput(const Buttons: TMDButtons);
+procedure TMDConsole.SetInput(const Buttons: TMDButtons; const Buttons2: TMDButtons);
 begin
-  FButtons := Buttons;
+  FButtons[1] := Buttons;
+  FButtons[2] := Buttons2;
 end;
 
-function TMDConsole.ReadPad: Byte;
+function TMDConsole.ReadPad(Port: Integer): Byte;
 
   function Released(Button: TMDButton; Bit: Integer): Byte;
   begin
-    if Button in FButtons then
+    if Button in FButtons[Port] then
       Result := 0
     else
       Result := 1 shl Bit;
   end;
 
 begin
-  if FBusTime >= FPadTimeout then
-    FStrobes := 0;
-  if FTH then
+  if FBusTime >= FPadTimeout[Port] then
+    FStrobes[Port] := 0;
+  if FTH[Port] then
   begin
     Result := $40 or Released(TMDButton.B, 4) or Released(TMDButton.C, 5);
-    if FStrobes = 3 then
+    if FStrobes[Port] = 3 then
       Result := Result or Released(TMDButton.Z, 0) or Released(TMDButton.Y, 1) or
         Released(TMDButton.X, 2) or Released(TMDButton.Mode, 3)
     else
@@ -326,29 +329,32 @@ begin
   else
   begin
     Result := Released(TMDButton.A, 4) or Released(TMDButton.Start, 5);
-    if FStrobes = 3 then
+    if FStrobes[Port] = 3 then
       Result := Result or $F
-    else if FStrobes <> 2 then
+    else if FStrobes[Port] <> 2 then
       Result := Result or Released(TMDButton.Up, 0) or Released(TMDButton.Down, 1);
   end;
-  Result := (Result and not FIO[4]) or (FIO[1] and FIO[4]);
+  Result := (Result and not FIO[Port + 3]) or (FIO[Port] and FIO[Port + 3]);
 end;
 
 procedure TMDConsole.WriteIO(Index: Integer; Value: Byte);
 begin
   var NewTH: Boolean;
   FIO[Index] := Value;
-  if (Index = 1) or (Index = 4) then
+  if Index in [1, 2, 4, 5] then
   begin
-    NewTH := (FIO[4] and $40 = 0) or (FIO[1] and $40 <> 0);
-    if FBusTime >= FPadTimeout then
-      FStrobes := 0;
-    if NewTH and not FTH then
+    var Port := Index;
+    if Port > 3 then
+      Dec(Port, 3);
+    NewTH := (FIO[Port + 3] and $40 = 0) or (FIO[Port] and $40 <> 0);
+    if FBusTime >= FPadTimeout[Port] then
+      FStrobes[Port] := 0;
+    if NewTH and not FTH[Port] then
     begin
-      FStrobes := (FStrobes + 1) and 3;
-      FPadTimeout := FBusTime + FMasterClock * 3 div 2000;
+      FStrobes[Port] := (FStrobes[Port] + 1) and 3;
+      FPadTimeout[Port] := FBusTime + FMasterClock * 3 div 2000;
     end;
-    FTH := NewTH;
+    FTH[Port] := NewTH;
   end;
 end;
 
@@ -405,9 +411,9 @@ begin
           if FCartridge.Region = TMDRegion.Europe then
             V := $E0;
         end;
-      1:
-        V := ReadPad;
-      2, 3:
+      1, 2:
+        V := ReadPad(Index);
+      3:
         V := $7F;
     else
       V := FIO[Index];
@@ -810,8 +816,10 @@ begin
   State.Field(FZRAM, SizeOf(FZRAM));
   State.Field(FIO, SizeOf(FIO));
   State.Field(FPalette, SizeOf(FPalette));
-  if Length(FFrame) > 0 then State.Field(FFrame[0], Length(FFrame) * SizeOf(FFrame[0]));
-  if Length(FAudio) > 0 then State.Field(FAudio[0], Length(FAudio) * SizeOf(FAudio[0]));
+  if Length(FFrame) > 0 then
+    State.Field(FFrame[0], Length(FFrame) * SizeOf(FFrame[0]));
+  if Length(FAudio) > 0 then
+    State.Field(FAudio[0], Length(FAudio) * SizeOf(FAudio[0]));
   State.Field(FAudioCount, SizeOf(FAudioCount));
   State.Field(FWidth, SizeOf(FWidth));
   State.Field(FHeight, SizeOf(FHeight));
@@ -850,7 +858,8 @@ begin
   State.Field(FButtons, SizeOf(FButtons));
   State.Field(FStrobes, SizeOf(FStrobes));
   State.Field(FTH, SizeOf(FTH));
-  if Length(FSRAM) > 0 then State.Field(FSRAM[0], Length(FSRAM) * SizeOf(FSRAM[0]));
+  if Length(FSRAM) > 0 then
+    State.Field(FSRAM[0], Length(FSRAM) * SizeOf(FSRAM[0]));
   State.Field(FSRAMStart, SizeOf(FSRAMStart));
   State.Field(FSRAMEnd, SizeOf(FSRAMEnd));
   State.Field(FSRAMStride, SizeOf(FSRAMStride));
@@ -873,3 +882,4 @@ initialization
   MD.Z80.ConstantInitialise;
 
 end.
+

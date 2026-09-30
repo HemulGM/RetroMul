@@ -5,9 +5,9 @@ interface
 uses
   System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Forms,
   FMX.Types, FMX.Controls, FMX.Objects, FMX.Graphics, FMX.Dialogs, NES.Consts,
-  NES.Controller, Core.Emulation, Core.EmulatorFactory, WinUI3.Form,
-  WinUI3.Style, FMX.Controls.Presentation, FMX.StdCtrls, FMX.Layouts,
-  NES.SuborKeyboard,
+  NES.Controller, Core.Emulation, Core.EmulatorFactory, Core.Adapter.MD,
+  WinUI3.Form, WinUI3.Style, FMX.Controls.Presentation, FMX.StdCtrls,
+  FMX.Layouts, NES.SuborKeyboard,
   {$IFDEF ANDROID}
   Androidapi.Helpers, Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.App,
   Androidapi.JNI.Widget, Androidapi.JNI.Os, Androidapi.JNI.Media, FMX.Platform,
@@ -75,7 +75,7 @@ type
     procedure ButtonCloseRomClick(Sender: TObject);
   private
     FEmulation: IEmulationCore;
-    FGamepad: TNesGamepad;
+    FGamepad: TScreenGamepad;
     FSystemId: string;
     FSuborKeyboard: TNesSuborKeyboard;
     FGamepadInput: TEmulatorInput;
@@ -421,7 +421,7 @@ begin
   ImageCanvas.DisableInterpolation := True;
   ImageCanvas.Bitmap.SetSize(NES_WIDTH, NES_HEIGHT);
   ImageCanvas.Bitmap.Clear(TAlphaColors.Black);
-  FGamepad := TNesGamepad.Create(Self);
+  FGamepad := TScreenGamepad.Create(Self);
   FGamepad.Name := 'ScreenGamepad';
   FGamepad.Parent := LayoutClient;
   FGamepad.Align := TAlignLayout.Bottom;
@@ -550,7 +550,7 @@ procedure TFormMain.FormResize(Sender: TObject);
 begin
   if FGamepad <> nil then
   begin
-    FGamepad.Height := TNesGamepad.PreferredHeight(
+    FGamepad.Height := TScreenGamepad.PreferredHeight(
       ClientWidth - Padding.Left - Padding.Right,
       ClientHeight - Padding.Top - Padding.Bottom - LayoutHead.Height);
   end;
@@ -564,23 +564,7 @@ end;
 
 procedure TFormMain.GamepadChanged(Sender: TObject);
 begin
-  FGamepadInput.Buttons := [];
-  if TNesButton.A in FGamepad.Buttons then
-    Include(FGamepadInput.Buttons, TEmulatorButton.A);
-  if TNesButton.B in FGamepad.Buttons then
-    Include(FGamepadInput.Buttons, TEmulatorButton.B);
-  if TNesButton.Select in FGamepad.Buttons then
-    Include(FGamepadInput.Buttons, TEmulatorButton.Select);
-  if TNesButton.Start in FGamepad.Buttons then
-    Include(FGamepadInput.Buttons, TEmulatorButton.Start);
-  if TNesButton.Up in FGamepad.Buttons then
-    Include(FGamepadInput.Buttons, TEmulatorButton.Up);
-  if TNesButton.Down in FGamepad.Buttons then
-    Include(FGamepadInput.Buttons, TEmulatorButton.Down);
-  if TNesButton.Left in FGamepad.Buttons then
-    Include(FGamepadInput.Buttons, TEmulatorButton.Left);
-  if TNesButton.Right in FGamepad.Buttons then
-    Include(FGamepadInput.Buttons, TEmulatorButton.Right);
+  FGamepadInput.Buttons := FGamepad.Buttons;
   if FEmulation <> nil then
     FEmulation.SetGamepadInput(FGamepadInput);
 end;
@@ -944,6 +928,10 @@ begin
   TimerUpdate.Enabled := False;
   FEmulation := nil; // Join before replacing the session.
   FEmulation := NewEmulation;
+  if FEmulation.Config is TMDConfig then
+    FGamepad.Layout := TScreenGamepadLayout.Sega
+  else
+    FGamepad.Layout := TScreenGamepadLayout.Nes;
   FUserPaused := False;
   ImageCanvas.DisableInterpolation := SameText(FEmulation.Config.Filter, 'nearest');
   FillChar(FKeysDown, SizeOf(FKeysDown), 0);

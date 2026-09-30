@@ -10,12 +10,13 @@ uses
 type
   // Every frontend supplies the same logical pad.  A core can ignore buttons
   // which do not exist on its hardware.
-  TEmulatorButton = (Up, Down, Left, Right, A, B, Select, Start);
+  TEmulatorButton = (Up, Down, Left, Right, A, B, Select, Start, C, X, Y, Z, Mode);
 
   TEmulatorButtons = set of TEmulatorButton;
 
   TEmulatorInput = record
     Buttons: TEmulatorButtons;
+    Buttons2: TEmulatorButtons; // Second controller; ignored by single-player cores.
   end;
 
   IEmulatorConfig = interface

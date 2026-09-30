@@ -146,6 +146,9 @@ begin
   var Magic: AnsiString := 'RMSNAP01';
   Move(Magic[1], Result.Magic, 8);
   Result.Version := 1;
+  // MD v2 stores independent six-button handshake state for both ports.
+  if PlatformCore = 'MD' then
+    Result.Version := 2;
   var Core := AnsiString(PlatformCore);
   if (Length(Core) = 0) or (Length(Core) > 8) then
     raise EArgumentException.Create('Invalid snapshot platform');

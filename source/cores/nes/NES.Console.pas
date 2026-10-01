@@ -25,7 +25,7 @@ type
     FRegion: TNesRegion;
     FConfiguredFourScore: Boolean;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 8);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 9);
     function GetRomIdentity: string;
     function GetUsesPowerPad: Boolean;
   public
@@ -63,7 +63,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 8;
+  SNAPSHOT_VERSION = 9;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -365,7 +365,7 @@ begin
   begin
     Dec(FDmcDmaCycles);
     if FDmcDmaCycles = 0 then
-      FApu.CompleteDmcDma(FBus.CpuRead(FApu.DmcDmaAddress));
+      FApu.CompleteDmcDma(FBus.DmaRead(FApu.DmcDmaAddress));
   end
   else if FBus.IsDmaActive and not FCpu.NextCycleIsWrite then
     FBus.ClockDma(CpuOdd)

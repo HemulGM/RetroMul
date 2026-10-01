@@ -78,26 +78,30 @@ function ResolveLegacyMirror(Declared: TMirrorMode; const Prg, Chr: NES.Types.TB
 const
   // Exact payloads; board wiring confirmed in puNES misc/nes20db.xml.
   Horizontal: array[0..1] of string = (
-    '121a482aa2b2808d98d4070b4b6598d851334f54', { Battle Storm }
-    'bf03da873d76a87ab669688d0c47d7554c08c176'); { Due K }
+    '121a482aa2b2808d98d4070b4b6598d851334f54',  // Battle Storm
+    'bf03da873d76a87ab669688d0c47d7554c08c176'); // Due K
   Vertical: array[0..5] of string = (
-    '847d56e43754e402666a91188520737094e9ecfa', { Castelia }
-    '4970ab23575cfd29db8f95d4f8fa34169478ca6a', { Ninja Kid }
-    'f3658b888b21f2ebff1d3f373f3b58486815468e', { Pipe Dream }
-    '3e814b7307730e30ec6067cb4487f2a826a3f7d6', { Silent Assault }
-    '1d3b449f06d9698a42cd6255e684d313d1dd98bf', { Tiles of Fate }
-    '047e37f639f36f1e5eb251c9b31b433052fd64b3'); { Track and Field }
+    '847d56e43754e402666a91188520737094e9ecfa',  // Castelia
+    '4970ab23575cfd29db8f95d4f8fa34169478ca6a',  // Ninja Kid
+    'f3658b888b21f2ebff1d3f373f3b58486815468e',  // Pipe Dream
+    '3e814b7307730e30ec6067cb4487f2a826a3f7d6',  // Silent Assault
+    '1d3b449f06d9698a42cd6255e684d313d1dd98bf',  // Tiles of Fate
+    '047e37f639f36f1e5eb251c9b31b433052fd64b3'); // Track and Field }
 begin
   Result := Declared;
-  if Length(Prg) = 0 then Exit;
+  if Length(Prg) = 0 then
+    Exit;
   var PayloadHash := THashSHA1.Create;
   PayloadHash.Update(Prg[0], Length(Prg));
-  if Length(Chr) > 0 then PayloadHash.Update(Chr[0], Length(Chr));
+  if Length(Chr) > 0 then
+    PayloadHash.Update(Chr[0], Length(Chr));
   var Identity := PayloadHash.HashAsString;
   for var Entry in Horizontal do
-    if SameText(Identity, Entry) then Exit(TMirrorMode.Horizontal);
+    if SameText(Identity, Entry) then
+      Exit(TMirrorMode.Horizontal);
   for var Entry in Vertical do
-    if SameText(Identity, Entry) then Exit(TMirrorMode.Vertical);
+    if SameText(Identity, Entry) then
+      Exit(TMirrorMode.Vertical);
   if (Declared <> TMirrorMode.Horizontal) or (Length(Prg) <> $20000) or (Length(Chr) <> 0) then
     Exit;
   var Hash := THashSHA1.Create;

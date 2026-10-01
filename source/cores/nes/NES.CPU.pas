@@ -35,7 +35,7 @@ type
     Addresses: array[0..7] of UInt16;
   end;
 
-  TCpu6502 = class
+  TCPU6502 = class
   private
     FRead: TCpuReadFunc;
     FWrite: TCpuWriteProc;
@@ -194,8 +194,7 @@ const
     0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 2,
     0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 2, 0, 0, 2, 2);
 
-
-procedure TCpu6502.SerializeState(State: TNesStateArchive);
+procedure TCPU6502.SerializeState(State: TNesStateArchive);
 begin
   State.Field(FPendingNmi, SizeOf(FPendingNmi));
   State.Field(FPendingIrq, SizeOf(FPendingIrq));
@@ -244,19 +243,19 @@ begin
     FBusSequence := Default(TBusSequence);
 end;
 
-constructor TCpu6502.Create;
+constructor TCPU6502.Create;
 begin
   inherited Create;
   Reset;
 end;
 
-procedure TCpu6502.Connect(Reader: TCpuReadFunc; Writer: TCpuWriteProc);
+procedure TCPU6502.Connect(Reader: TCpuReadFunc; Writer: TCpuWriteProc);
 begin
   FRead := Reader;
   FWrite := Writer;
 end;
 
-function TCpu6502.Read(Address: UInt16): UInt8;
+function TCPU6502.Read(Address: UInt16): UInt8;
 begin
   if FApplyLatchedReads then
   begin
@@ -270,7 +269,7 @@ begin
   Result := FRead(Address);
 end;
 
-procedure TCpu6502.Write(Address: UInt16; Value: UInt8);
+procedure TCPU6502.Write(Address: UInt16; Value: UInt8);
 begin
   if FExecutingOpcode then
   begin
@@ -282,26 +281,26 @@ begin
     FWrite(Address, Value);
 end;
 
-procedure TCpu6502.Push(Value: UInt8);
+procedure TCPU6502.Push(Value: UInt8);
 begin
   Write($0100 or Sp, Value);
   Sp := (Integer(Sp) - 1) and $FF;
 end;
 
-function TCpu6502.Pull: UInt8;
+function TCPU6502.Pull: UInt8;
 begin
   Sp := (Sp + 1) and $FF;
   Result := Read($0100 or Sp);
 end;
 
-function TCpu6502.Read16(Address: UInt16): UInt16;
+function TCPU6502.Read16(Address: UInt16): UInt16;
 begin
   var Lo: UInt8 := Read(Address);
   var Hi: UInt8 := Read((Address + 1) and $FFFF);
   Result := Lo or (UInt16(Hi) shl 8);
 end;
 
-function TCpu6502.Read16Bug(Address: UInt16): UInt16;
+function TCPU6502.Read16Bug(Address: UInt16): UInt16;
 begin
   var Lo: UInt8 := Read(Address);
   var WrapAddr: UInt16 := (Address and $FF00) or ((Address + 1) and $00FF);
@@ -309,12 +308,12 @@ begin
   Result := Lo or (UInt16(Hi) shl 8);
 end;
 
-function TCpu6502.GetFlag(Flag: UInt8): Boolean;
+function TCPU6502.GetFlag(Flag: UInt8): Boolean;
 begin
   Result := (P and Flag) <> 0;
 end;
 
-procedure TCpu6502.SetFlag(Flag: UInt8; Value: Boolean);
+procedure TCPU6502.SetFlag(Flag: UInt8; Value: Boolean);
 begin
   if Value then
     P := P or Flag
@@ -322,25 +321,25 @@ begin
     P := P and not Flag;
 end;
 
-procedure TCpu6502.SetZeroNegative(Value: UInt8);
+procedure TCPU6502.SetZeroNegative(Value: UInt8);
 begin
   SetFlag(FLAG_ZERO, Value = 0);
   SetFlag(FLAG_NEGATIVE, (Value and $80) <> 0);
 end;
 
-function TCpu6502.Imm: UInt16;
+function TCPU6502.Imm: UInt16;
 begin
   Result := Pc;
   Pc := (Pc + 1) and $FFFF;
 end;
 
-function TCpu6502.Zp0: UInt16;
+function TCPU6502.Zp0: UInt16;
 begin
   Result := Read(Pc);
   Pc := (Pc + 1) and $FFFF;
 end;
 
-function TCpu6502.Zpx: UInt16;
+function TCPU6502.Zpx: UInt16;
 begin
   var Base: UInt8 := Read(Pc);
   Read(Base);
@@ -348,7 +347,7 @@ begin
   Pc := (Pc + 1) and $FFFF;
 end;
 
-function TCpu6502.Zpy: UInt16;
+function TCPU6502.Zpy: UInt16;
 begin
   var Base: UInt8 := Read(Pc);
   Read(Base);
@@ -356,13 +355,13 @@ begin
   Pc := (Pc + 1) and $FFFF;
 end;
 
-function TCpu6502.AbsAddr: UInt16;
+function TCPU6502.AbsAddr: UInt16;
 begin
   Result := Read16(Pc);
   Pc := (Pc + 2) and $FFFF;
 end;
 
-function TCpu6502.Abx(out PageCrossed: Boolean): UInt16;
+function TCPU6502.Abx(out PageCrossed: Boolean): UInt16;
 begin
   var Base: UInt16 := Read16(Pc);
   Pc := (Pc + 2) and $FFFF;
@@ -372,7 +371,7 @@ begin
     Read((Base and $FF00) or (Result and $00FF));
 end;
 
-function TCpu6502.Aby(out PageCrossed: Boolean): UInt16;
+function TCPU6502.Aby(out PageCrossed: Boolean): UInt16;
 begin
   var Base: UInt16 := Read16(Pc);
   Pc := (Pc + 2) and $FFFF;
@@ -382,14 +381,14 @@ begin
     Read((Base and $FF00) or (Result and $00FF));
 end;
 
-function TCpu6502.Ind: UInt16;
+function TCPU6502.Ind: UInt16;
 begin
   var Ptr: UInt16 := Read16(Pc);
   Pc := (Pc + 2) and $FFFF;
   Result := Read16Bug(Ptr);
 end;
 
-function TCpu6502.Izx: UInt16;
+function TCPU6502.Izx: UInt16;
 begin
   var Base: UInt8 := Read(Pc);
   Read(Base);
@@ -400,7 +399,7 @@ begin
   Result := Lo or (UInt16(Hi) shl 8);
 end;
 
-function TCpu6502.Izy(out PageCrossed: Boolean): UInt16;
+function TCPU6502.Izy(out PageCrossed: Boolean): UInt16;
 begin
   var Ptr: UInt8 := Read(Pc);
   Pc := (Pc + 1) and $FFFF;
@@ -413,7 +412,7 @@ begin
     Read((Base and $FF00) or (Result and $00FF));
 end;
 
-function TCpu6502.Rel: Int16;
+function TCPU6502.Rel: Int16;
 begin
   var Offset: UInt8 := Read(Pc);
   Pc := (Pc + 1) and $FFFF;
@@ -423,7 +422,7 @@ begin
     Result := Offset - $100;
 end;
 
-procedure TCpu6502.Adc(Value: UInt8);
+procedure TCPU6502.Adc(Value: UInt8);
 begin
   var CarryIn: UInt16;
   if GetFlag(FLAG_CARRY) then
@@ -438,12 +437,12 @@ begin
   SetZeroNegative(A);
 end;
 
-procedure TCpu6502.Sbc(Value: UInt8);
+procedure TCPU6502.Sbc(Value: UInt8);
 begin
   Adc(Value xor $FF);
 end;
 
-procedure TCpu6502.Cmp(RegValue, Value: UInt8);
+procedure TCPU6502.Cmp(RegValue, Value: UInt8);
 begin
   var Temp: Integer := Integer(RegValue) - Integer(Value);
   SetFlag(FLAG_CARRY, RegValue >= Value);
@@ -451,14 +450,14 @@ begin
   SetFlag(FLAG_NEGATIVE, (Temp and $80) <> 0);
 end;
 
-procedure TCpu6502.Bit(Value: UInt8);
+procedure TCPU6502.Bit(Value: UInt8);
 begin
   SetFlag(FLAG_ZERO, (A and Value) = 0);
   SetFlag(FLAG_OVERFLOW, (Value and $40) <> 0);
   SetFlag(FLAG_NEGATIVE, (Value and $80) <> 0);
 end;
 
-procedure TCpu6502.OpSlo(Address: UInt16);
+procedure TCPU6502.OpSlo(Address: UInt16);
 begin
   var Value: UInt8 := Read(Address);
   Write(Address, Value);
@@ -469,7 +468,7 @@ begin
   SetZeroNegative(A);
 end;
 
-procedure TCpu6502.OpRla(Address: UInt16);
+procedure TCPU6502.OpRla(Address: UInt16);
 begin
   var Value: UInt8 := Read(Address);
   Write(Address, Value);
@@ -481,7 +480,7 @@ begin
   SetZeroNegative(A);
 end;
 
-procedure TCpu6502.OpSre(Address: UInt16);
+procedure TCPU6502.OpSre(Address: UInt16);
 begin
   var Value: UInt8 := Read(Address);
   Write(Address, Value);
@@ -492,7 +491,7 @@ begin
   SetZeroNegative(A);
 end;
 
-procedure TCpu6502.OpRra(Address: UInt16);
+procedure TCPU6502.OpRra(Address: UInt16);
 begin
   var Value: UInt8 := Read(Address);
   Write(Address, Value);
@@ -503,7 +502,7 @@ begin
   Adc(Value);
 end;
 
-procedure TCpu6502.OpDcp(Address: UInt16);
+procedure TCPU6502.OpDcp(Address: UInt16);
 begin
   var Value: UInt8 := Read(Address);
   Write(Address, Value);
@@ -512,7 +511,7 @@ begin
   Cmp(A, Value);
 end;
 
-procedure TCpu6502.OpIsc(Address: UInt16);
+procedure TCPU6502.OpIsc(Address: UInt16);
 begin
   var Value: UInt8 := Read(Address);
   Write(Address, Value);
@@ -521,21 +520,21 @@ begin
   Sbc(Value);
 end;
 
-procedure TCpu6502.LaxValue(Value: UInt8);
+procedure TCPU6502.LaxValue(Value: UInt8);
 begin
   A := Value;
   X := Value;
   SetZeroNegative(A);
 end;
 
-procedure TCpu6502.Anc(Value: UInt8);
+procedure TCPU6502.Anc(Value: UInt8);
 begin
   A := A and Value;
   SetZeroNegative(A);
   SetFlag(FLAG_CARRY, (A and $80) <> 0);
 end;
 
-procedure TCpu6502.Alr(Value: UInt8);
+procedure TCPU6502.Alr(Value: UInt8);
 begin
   A := A and Value;
   SetFlag(FLAG_CARRY, (A and 1) <> 0);
@@ -543,7 +542,7 @@ begin
   SetZeroNegative(A);
 end;
 
-procedure TCpu6502.Arr(Value: UInt8);
+procedure TCPU6502.Arr(Value: UInt8);
 begin
   A := A and Value;
   var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
@@ -553,14 +552,14 @@ begin
   SetFlag(FLAG_OVERFLOW, (((A shr 6) xor (A shr 5)) and 1) <> 0);
 end;
 
-procedure TCpu6502.Atx(Value: UInt8);
+procedure TCPU6502.Atx(Value: UInt8);
 begin
   A := A and Value;
   X := A;
   SetZeroNegative(A);
 end;
 
-procedure TCpu6502.Branch(Condition: Boolean; Offset: Int16; out Cycles: Integer);
+procedure TCPU6502.Branch(Condition: Boolean; Offset: Int16; out Cycles: Integer);
 begin
   var OldPc: UInt16;
   var NewPc: UInt16;
@@ -580,7 +579,7 @@ begin
   Pc := NewPc;
 end;
 
-procedure TCpu6502.BeginInterruptSequence(Kind: TInterruptKind; BreakFlag: Boolean);
+procedure TCPU6502.BeginInterruptSequence(Kind: TInterruptKind; BreakFlag: Boolean);
 begin
   FInterruptSequenceActive := True;
   FInterruptKind := Kind;
@@ -593,7 +592,7 @@ begin
   CyclesRemaining := 7;
 end;
 
-procedure TCpu6502.ClockInterrupt;
+procedure TCPU6502.ClockInterrupt;
 begin
   // NMI may hijack IRQ/BRK until vector selection, without changing stacked B.
   if (CyclesRemaining >= 3) and (FInterruptKind <> ikNmi) and FPendingNmi then
@@ -629,7 +628,7 @@ begin
   end;
 end;
 
-procedure TCpu6502.Reset;
+procedure TCPU6502.Reset;
 begin
   FBusSequence := Default(TBusSequence);
   FApplyLatchedReads := False;
@@ -671,37 +670,38 @@ begin
   FLastUnknownPc := 0;
 end;
 
-procedure TCpu6502.TriggerNmi;
+procedure TCPU6502.TriggerNmi;
 begin
   FPendingNmi := True;
 end;
 
-procedure TCpu6502.TriggerIrq;
+procedure TCPU6502.TriggerIrq;
 begin
   FPendingIrq := True;
 end;
 
-procedure TCpu6502.SetIrqLine(Active: Boolean);
+procedure TCPU6502.SetIrqLine(Active: Boolean);
 begin
   FPendingIrq := Active;
 end;
 
-function TCpu6502.NextCycleIsWrite: Boolean;
+function TCPU6502.NextCycleIsWrite: Boolean;
 begin
   Result := ((FQueuedWriteCount > 0) and (CyclesRemaining <= FQueuedWriteCount)) or
     (FJsrActive and (CyclesRemaining in [2, 3])) or
     (FInterruptSequenceActive and (CyclesRemaining >= 3) and (CyclesRemaining <= 5));
 end;
 
-procedure TCpu6502.PollInterrupts;
+procedure TCPU6502.PollInterrupts;
 begin
-  if not FPollRequested then Exit;
+  if not FPollRequested then
+    Exit;
   FPollRequested := False;
   FNmiAfterInstruction := FNmiAfterInstruction or FPendingNmi;
   FIrqAfterInstruction := FIrqAfterInstruction or (FPendingIrq and not FPollInterruptDisable);
 end;
 
-procedure TCpu6502.Clock(DeferInterruptPoll: Boolean);
+procedure TCPU6502.Clock(DeferInterruptPoll: Boolean);
 begin
   FPollRequested := False;
   // KIL locks the instruction sequencer until reset; IRQ and NMI cannot resume it.
@@ -739,7 +739,7 @@ begin
         Pc := (Pc + 1) and $FFFF;
         CyclesRemaining := 6;
       end
-      else if Opcode in [$00,$02,$12,$22,$32,$42,$52,$62,$72,$92,$B2,$D2,$F2] then
+      else if Opcode in [$00, $02, $12, $22, $32, $42, $52, $62, $72, $92, $B2, $D2, $F2] then
       begin
         FExecutingOpcode := True;
         try
@@ -788,9 +788,12 @@ begin
           FJsrLow := Read(Pc);
           Pc := (Pc + 1) and $FFFF;
         end;
-      4: Read($0100 or Sp);
-      3: Push(Pc shr 8);
-      2: Push(Pc and $FF);
+      4:
+        Read($0100 or Sp);
+      3:
+        Push(Pc shr 8);
+      2:
+        Push(Pc and $FF);
       1:
         begin
           Pc := FJsrLow or (UInt16(Read(Pc)) shl 8);
@@ -811,12 +814,14 @@ begin
   end;
   if CyclesRemaining > 0 then
     Dec(CyclesRemaining);
-  if FBusSequence.Active then Inc(FBusSequence.Cycle);
-  if not DeferInterruptPoll then PollInterrupts;
+  if FBusSequence.Active then
+    Inc(FBusSequence.Cycle);
+  if not DeferInterruptPoll then
+    PollInterrupts;
   TotalCycles := (UInt64(TotalCycles) + 1) and $FFFFFFFF;
 end;
 
-procedure TCpu6502.StartBusSequence(Opcode: UInt8);
+procedure TCPU6502.StartBusSequence(Opcode: UInt8);
 begin
   FBusSequence := Default(TBusSequence);
   FBusSequence.Active := True;
@@ -828,7 +833,7 @@ begin
   Pc := (Pc + 1) and $FFFF;
 end;
 
-procedure TCpu6502.ApplyBusSequence;
+procedure TCPU6502.ApplyBusSequence;
 begin
   // The bus sequencer has already performed each read on its real clock.
   // Apply the existing ALU/flag logic once, using only the latched values.
@@ -850,7 +855,7 @@ begin
   FBusSequence.Active := False;
 end;
 
-procedure TCpu6502.ClockBusSequence;
+procedure TCPU6502.ClockBusSequence;
 begin
   var BusAddress: UInt16 := 0;
   with FBusSequence do
@@ -859,57 +864,85 @@ begin
         BusAddress := (OpcodePc + 1) and $FFFF;
       bmZero, bmZeroX, bmZeroY:
         case Cycle of
-          2: BusAddress := (OpcodePc + 1) and $FFFF;
-          3: BusAddress := Values[0];
+          2:
+            BusAddress := (OpcodePc + 1) and $FFFF;
+          3:
+            BusAddress := Values[0];
         else
-          if Mode = bmZeroX then BusAddress := (Values[0] + X) and $FF
-          else BusAddress := (Values[0] + Y) and $FF;
+          if Mode = bmZeroX then
+            BusAddress := (Values[0] + X) and $FF
+          else
+            BusAddress := (Values[0] + Y) and $FF;
         end;
       bmAbsolute, bmAbsoluteX, bmAbsoluteY:
         case Cycle of
-          2, 3: BusAddress := (OpcodePc + Cycle - 1) and $FFFF;
+          2, 3:
+            BusAddress := (OpcodePc + Cycle - 1) and $FFFF;
           4:
-            if Mode = bmAbsolute then BusAddress := Address
-            else BusAddress := (Base and $FF00) or (Address and $FF);
+            if Mode = bmAbsolute then
+              BusAddress := Address
+            else
+              BusAddress := (Base and $FF00) or (Address and $FF);
         else
           BusAddress := Address;
         end;
       bmIndirectX:
         case Cycle of
-          2: BusAddress := (OpcodePc + 1) and $FFFF;
-          3: BusAddress := Values[0];
-          4: BusAddress := (Values[0] + X) and $FF;
-          5: BusAddress := (Values[0] + X + 1) and $FF;
-          6: BusAddress := Values[2] or (UInt16(Values[3]) shl 8);
+          2:
+            BusAddress := (OpcodePc + 1) and $FFFF;
+          3:
+            BusAddress := Values[0];
+          4:
+            BusAddress := (Values[0] + X) and $FF;
+          5:
+            BusAddress := (Values[0] + X + 1) and $FF;
+          6:
+            BusAddress := Values[2] or (UInt16(Values[3]) shl 8);
         end;
       bmIndirectY:
         case Cycle of
-          2: BusAddress := (OpcodePc + 1) and $FFFF;
-          3: BusAddress := Values[0];
-          4: BusAddress := (Values[0] + 1) and $FF;
-          5: BusAddress := (Base and $FF00) or (Address and $FF);
-          6: BusAddress := Address;
+          2:
+            BusAddress := (OpcodePc + 1) and $FFFF;
+          3:
+            BusAddress := Values[0];
+          4:
+            BusAddress := (Values[0] + 1) and $FF;
+          5:
+            BusAddress := (Base and $FF00) or (Address and $FF);
+          6:
+            BusAddress := Address;
         end;
       bmIndirect:
         case Cycle of
-          2, 3: BusAddress := (OpcodePc + Cycle - 1) and $FFFF;
-          4: BusAddress := Values[0] or (UInt16(Values[1]) shl 8);
-          5: BusAddress := (UInt16(Values[1]) shl 8) or ((Values[0] + 1) and $FF);
+          2, 3:
+            BusAddress := (OpcodePc + Cycle - 1) and $FFFF;
+          4:
+            BusAddress := Values[0] or (UInt16(Values[1]) shl 8);
+          5:
+            BusAddress := (UInt16(Values[1]) shl 8) or ((Values[0] + 1) and $FF);
         end;
       bmBranch:
         case Cycle of
-          2: BusAddress := (OpcodePc + 1) and $FFFF;
-          3: BusAddress := (OpcodePc + 2) and $FFFF;
-          4: BusAddress := (Base and $FF00) or (Address and $FF);
+          2:
+            BusAddress := (OpcodePc + 1) and $FFFF;
+          3:
+            BusAddress := (OpcodePc + 2) and $FFFF;
+          4:
+            BusAddress := (Base and $FF00) or (Address and $FF);
         end;
       bmPull, bmRti, bmRts:
         case Cycle of
-          2: BusAddress := (OpcodePc + 1) and $FFFF;
-          3: BusAddress := $0100 or Sp;
-          4, 5: BusAddress := $0100 or ((Sp + Cycle - 3) and $FF);
+          2:
+            BusAddress := (OpcodePc + 1) and $FFFF;
+          3:
+            BusAddress := $0100 or Sp;
+          4, 5:
+            BusAddress := $0100 or ((Sp + Cycle - 3) and $FF);
           6:
-            if Mode = bmRti then BusAddress := $0100 or ((Sp + 3) and $FF)
-            else BusAddress := Values[2] or (UInt16(Values[3]) shl 8);
+            if Mode = bmRti then
+              BusAddress := $0100 or ((Sp + 3) and $FF)
+            else
+              BusAddress := Values[2] or (UInt16(Values[3]) shl 8);
         end;
     end;
 
@@ -922,11 +955,15 @@ begin
     if ((Mode in [bmAbsolute, bmAbsoluteX, bmAbsoluteY]) and (Cycle = 3)) or
       ((Mode = bmIndirectY) and (Cycle = 4)) then
     begin
-      if Mode = bmIndirectY then Base := Values[1] or (UInt16(Value) shl 8)
-      else Base := Values[0] or (UInt16(Value) shl 8);
+      if Mode = bmIndirectY then
+        Base := Values[1] or (UInt16(Value) shl 8)
+      else
+        Base := Values[0] or (UInt16(Value) shl 8);
       Address := Base;
-      if Mode = bmAbsoluteX then Address := (Base + X) and $FFFF
-      else if Mode in [bmAbsoluteY, bmIndirectY] then Address := (Base + Y) and $FFFF;
+      if Mode = bmAbsoluteX then
+        Address := (Base + X) and $FFFF
+      else if Mode in [bmAbsoluteY, bmIndirectY] then
+        Address := (Base + Y) and $FFFF;
       if (BUS_WRITES[Opcode] = 0) and ((Base and $FF00) <> (Address and $FF00)) then
         Inc(CyclesRemaining);
     end;
@@ -936,24 +973,35 @@ begin
     begin
       var Taken := False;
       case Opcode of
-        $10: Taken := (P and FLAG_NEGATIVE) = 0;
-        $30: Taken := (P and FLAG_NEGATIVE) <> 0;
-        $50: Taken := (P and FLAG_OVERFLOW) = 0;
-        $70: Taken := (P and FLAG_OVERFLOW) <> 0;
-        $90: Taken := (P and FLAG_CARRY) = 0;
-        $B0: Taken := (P and FLAG_CARRY) <> 0;
-        $D0: Taken := (P and FLAG_ZERO) = 0;
-        $F0: Taken := (P and FLAG_ZERO) <> 0;
+        $10:
+          Taken := (P and FLAG_NEGATIVE) = 0;
+        $30:
+          Taken := (P and FLAG_NEGATIVE) <> 0;
+        $50:
+          Taken := (P and FLAG_OVERFLOW) = 0;
+        $70:
+          Taken := (P and FLAG_OVERFLOW) <> 0;
+        $90:
+          Taken := (P and FLAG_CARRY) = 0;
+        $B0:
+          Taken := (P and FLAG_CARRY) <> 0;
+        $D0:
+          Taken := (P and FLAG_ZERO) = 0;
+        $F0:
+          Taken := (P and FLAG_ZERO) <> 0;
       end;
       if Taken then
       begin
         Base := (OpcodePc + 2) and $FFFF;
         var Offset: Integer := Value;
-        if Offset >= $80 then Dec(Offset, $100);
+        if Offset >= $80 then
+          Dec(Offset, $100);
         Address := (Base + Offset) and $FFFF;
         Inc(CyclesRemaining);
-        if (Base and $FF00) <> (Address and $FF00) then Inc(CyclesRemaining)
-        else FPollCycle := 3;
+        if (Base and $FF00) <> (Address and $FF00) then
+          Inc(CyclesRemaining)
+        else
+          FPollCycle := 3;
       end;
     end;
     if CyclesRemaining = BUS_WRITES[Opcode] + 1 then
@@ -961,21 +1009,21 @@ begin
   end;
 end;
 
-procedure TCpu6502.ExecuteOpcode(Opcode: UInt8);
+procedure TCPU6502.ExecuteOpcode(Opcode: UInt8);
 begin
   var OpcodePc: UInt16 := Pc;
   Pc := (Pc + 1) and $FFFF;
   var PageCrossed: Boolean := False;
   var Cycles: Integer := 2;
-  FIndexedDummyRead := Opcode in [$13,$1B,$1E,$1F,$33,$3B,$3E,$3F,
-    $53,$5B,$5E,$5F,$73,$7B,$7E,$7F,$91,$99,$9D,
-    $D3,$DB,$DE,$DF,$F3,$FB,$FE,$FF];
+  FIndexedDummyRead := Opcode in [$13, $1B, $1E, $1F, $33, $3B, $3E, $3F,
+      $53, $5B, $5E, $5F, $73, $7B, $7E, $7F, $91, $99, $9D,
+      $D3, $DB, $DE, $DF, $F3, $FB, $FE, $FF];
   // Implied/accumulator instructions still read the byte following the opcode.
-  if Opcode in [$08,$0A,$18,$1A,$28,$2A,$38,$3A,$40,$48,$4A,$58,$5A,
-    $60,$68,$6A,$78,$7A,$88,$8A,$98,$9A,$A8,$AA,$B8,$BA,$C8,$CA,
-    $D8,$DA,$E8,$EA,$F8,$FA] then
+  if Opcode in [$08, $0A, $18, $1A, $28, $2A, $38, $3A, $40, $48, $4A, $58, $5A,
+      $60, $68, $6A, $78, $7A, $88, $8A, $98, $9A, $A8, $AA, $B8, $BA, $C8, $CA,
+      $D8, $DA, $E8, $EA, $F8, $FA] then
     Read(Pc);
-  if Opcode in [$28,$40,$60,$68] then
+  if Opcode in [$28, $40, $60, $68] then
     Read($0100 or Sp);
   case Opcode of
     $02, $12, $22, $32, $42, $52, $62, $72, $92, $B2, $D2, $F2:

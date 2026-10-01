@@ -82,6 +82,7 @@ type
     FPendingFrameIrqInhibit: Boolean;
     FFrameResetDelay: Integer;
     FFrameIrqFlag: Boolean;
+    FFrameIrqClearPending: Boolean;
     FSampleRate: Integer;
     FSampleTimer: Double;
     FSampleStep: Double;
@@ -179,6 +180,10 @@ begin
   State.Field(FPendingFrameIrqInhibit, SizeOf(FPendingFrameIrqInhibit));
   State.Field(FFrameResetDelay, SizeOf(FFrameResetDelay));
   State.Field(FFrameIrqFlag, SizeOf(FFrameIrqFlag));
+  if State.Version >= 9 then
+    State.Field(FFrameIrqClearPending, SizeOf(FFrameIrqClearPending))
+  else if State.Loading then
+    FFrameIrqClearPending := False;
   State.Field(FSampleRate, SizeOf(FSampleRate));
   State.Field(FSampleTimer, SizeOf(FSampleTimer));
   State.Field(FSampleStep, SizeOf(FSampleStep));
@@ -275,6 +280,7 @@ begin
   FPendingFrameIrqInhibit := False;
   FFrameResetDelay := 0;
   FFrameIrqFlag := False;
+  FFrameIrqClearPending := False;
   FSampleTimer := 0;
   FWritePos := 0;
   FReadPos := 0;
@@ -602,7 +608,8 @@ begin
           FFrameIrqInhibit := True;
           FFrameIrqFlag := False;
         end;
-        if (FCycle and 1) = 0 then
+        // Clock runs before the CPU access: odd FCycle is the PUT phase.
+        if (FCycle and 1) <> 0 then
           FFrameResetDelay := 3
         else
           FFrameResetDelay := 4;
@@ -632,7 +639,9 @@ end;
 function TApu.CpuReadStatus: UInt8;
 begin
   Result := ReadStatus;
-  FFrameIrqFlag := False;
+  // The status read requests a clear on the next GET phase. Two adjacent
+  // reads starting on GET therefore both see the old frame IRQ flag.
+  FFrameIrqClearPending := True;
 end;
 
 function TApu.IrqPending: Boolean;
@@ -785,7 +794,13 @@ begin
   var Feedback: UInt16;
   var Sample: Double;
   FCycle := (UInt64(FCycle) + 1) and $FFFFFFFF;
-  if FDmcDmaDelay > 0 then Dec(FDmcDmaDelay);
+  if FFrameIrqClearPending and ((FCycle and 1) = 0) then
+  begin
+    FFrameIrqFlag := False;
+    FFrameIrqClearPending := False;
+  end;
+  if FDmcDmaDelay > 0 then
+    Dec(FDmcDmaDelay);
 
   var FrameReset: Boolean := False;
   if FFrameResetDelay > 0 then
@@ -824,8 +839,10 @@ begin
     end;
     if (FFrameCounter >= FRAME_STEPS[FRegion, 3] - 1) and (FFrameCounter <= FRAME_STEPS[FRegion, 3] + 1) then
     begin
-      if not FFrameIrqInhibit then
-        FFrameIrqFlag := True;
+      // Inhibit masks the IRQ pin, but the status latch still pulses during
+      // the first two terminal clocks. The third clock applies inhibit.
+      FFrameIrqFlag := not FFrameIrqInhibit or
+        (FFrameCounter < FRAME_STEPS[FRegion, 3] + 1);
       if FFrameCounter = FRAME_STEPS[FRegion, 3] + 1 then
         FFrameCounter := 0;
     end;

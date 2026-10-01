@@ -35,6 +35,7 @@ type
     FT: UInt16;
     FDataBuffer: UInt8;
     FOpenBus: UInt8;
+    FOpenBusExpiry: array[0..7] of UInt64;
     FNmiOccurred: Boolean;
     FNmiPending: Boolean;
     FNmiDelay: Integer;
@@ -56,6 +57,7 @@ type
     FPpuClock: UInt64;
     FFetchTile: UInt8;
     procedure ClockMapperAddress;
+    procedure RefreshOpenBus(Value, Mask: UInt8);
     procedure IncrementX;
     procedure IncrementY;
     procedure IncrementDataAddress;
@@ -154,6 +156,10 @@ begin
   State.Field(FSprite0HitY, SizeOf(FSprite0HitY));
   State.Field(FPpuClock, SizeOf(FPpuClock));
   State.Field(FFetchTile, SizeOf(FFetchTile));
+  if State.Version >= 9 then
+    State.Field(FOpenBusExpiry, SizeOf(FOpenBusExpiry))
+  else if State.Loading then
+    RefreshOpenBus(FOpenBus, $FF);
 end;
 
 constructor TPPU.Create;
@@ -203,6 +209,7 @@ begin
   FT := 0;
   FDataBuffer := 0;
   FOpenBus := 0;
+  FillChar(FOpenBusExpiry, SizeOf(FOpenBusExpiry), 0);
   FNmiOccurred := False;
   FNmiPending := False;
   FNmiDelay := 0;
@@ -615,14 +622,29 @@ begin
     FMapper.ClockPpuAddress(FV and $3FFF, FPpuClock);
 end;
 
+procedure TPPU.RefreshOpenBus(Value, Mask: UInt8);
+begin
+  FOpenBus := (FOpenBus and not Mask) or (Value and Mask);
+  // Analogue retention varies with temperature/chip. Use a deterministic
+  // ~0.3 second lifetime (20 NTSC frames), independently for each driven bit.
+  for var I := 0 to 7 do
+    if (Mask and (1 shl I)) <> 0 then
+      FOpenBusExpiry[I] := FPpuClock + 1786840;
+end;
+
 function TPPU.CpuRead(Address: UInt16): UInt8;
 begin
   var VramAddress: UInt16;
+  var DrivenMask: UInt8 := 0;
+  for var I := 0 to 7 do
+    if FPpuClock >= FOpenBusExpiry[I] then
+      FOpenBus := FOpenBus and not (1 shl I);
   Result := FOpenBus;
   case Address and 7 of
     2:
       begin
         Result := (FStatus and $E0) or (FOpenBus and $1F);
+        DrivenMask := $E0;
         if ((Result and $80) = 0) and (FScanline = 241) and (FCycle = 1) then
         begin
           FVblSetSuppressed := True;
@@ -643,6 +665,7 @@ begin
     4:
       begin
         Result := FOam[FOamAddress];
+        DrivenMask := $FF;
         // Attribute bits 2..4 are unimplemented in primary OAM.
         if (FOamAddress and 3) = 2 then Result := Result and $E3;
       end;
@@ -652,23 +675,25 @@ begin
         if VramAddress < $3F00 then
         begin
           Result := FDataBuffer;
+          DrivenMask := $FF;
           FDataBuffer := PpuReadMemory(VramAddress);
         end
         else
         begin
           Result := (PpuReadMemory(VramAddress) and $3F) or (FOpenBus and $C0);
+          DrivenMask := $3F;
           if (FMask and 1) <> 0 then Result := Result and $F0;
           FDataBuffer := PpuReadMemory(VramAddress - $1000);
         end;
         IncrementDataAddress;
       end;
   end;
-  FOpenBus := Result;
+  RefreshOpenBus(Result, DrivenMask);
 end;
 
 procedure TPPU.CpuWrite(Address: UInt16; Value: UInt8);
 begin
-  FOpenBus := Value;
+  RefreshOpenBus(Value, $FF);
   case Address and 7 of
     0:
       begin

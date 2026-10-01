@@ -30,6 +30,7 @@ type
     FDmaHaveData: Boolean;
     FCpuCycle: UInt64;
     FDataBus: UInt8;
+    FInternalDataBus: UInt8;
     procedure WriteControllers(Value: UInt8);
     function ReadController(Port: Integer): UInt8;
     function ReadDevice(Address: UInt16): UInt8;
@@ -41,6 +42,7 @@ type
     procedure Reset;
     procedure Connect(Cartridge: TCartridge; Ppu: TPpu; Apu: TApu; Controller1, Controller2: TController; Controller3: TController = nil; Controller4: TController = nil; SuborKeyboard: TSuborKeyboard = nil);
     function CpuRead(Address: UInt16): UInt8;
+    function DmaRead(Address: UInt16): UInt8;
     procedure CpuWrite(Address: UInt16; Value: UInt8);
     function IsDmaActive: Boolean;
     procedure ClockDma(CpuCycleOdd: Boolean);
@@ -59,6 +61,10 @@ begin
     State.Field(FDataBus, SizeOf(FDataBus))
   else if State.Loading then
     FDataBus := 0;
+  if State.Version >= 9 then
+    State.Field(FInternalDataBus, SizeOf(FInternalDataBus))
+  else if State.Loading then
+    FInternalDataBus := FDataBus;
 end;
 
 procedure TNesBus.SerializeState(State: TNesStateArchive);
@@ -159,7 +165,16 @@ end;
 function TNesBus.CpuRead(Address: UInt16): UInt8;
 begin
   Result := ReadDevice(Address);
+  FInternalDataBus := Result;
   // $4015 is internal to the CPU; it does not drive the external bus.
+  if Address <> $4015 then
+    FDataBus := Result;
+end;
+
+function TNesBus.DmaRead(Address: UInt16): UInt8;
+begin
+  // DMA drives the external bus without replacing the CPU's internal latch.
+  Result := ReadDevice(Address);
   if Address <> $4015 then
     FDataBus := Result;
 end;
@@ -173,7 +188,7 @@ begin
 
   case Address of
     $4015:
-      Exit((FApu.CpuReadStatus and $DF) or (FDataBus and $20));
+      Exit((FApu.CpuReadStatus and $DF) or (FInternalDataBus and $20));
     $4016:
       Exit((ReadController(0) and $1F) or (FDataBus and $E0));
     $4017:
@@ -199,6 +214,7 @@ end;
 procedure TNesBus.CpuWrite(Address: UInt16; Value: UInt8);
 begin
   FDataBus := Value;
+  FInternalDataBus := Value;
   if (FCartridge <> nil) and (FCartridge.Mapper <> nil) then
     FCartridge.Mapper.ClockCpuWrite;
   if Address < $2000 then
@@ -268,7 +284,7 @@ begin
 
   if CpuCycleOdd then
   begin
-    FDmaData := CpuRead((UInt16(FDmaPage) shl 8) or FDmaAddress);
+    FDmaData := DmaRead((UInt16(FDmaPage) shl 8) or FDmaAddress);
     FDmaHaveData := True;
   end
   else if FDmaHaveData then
@@ -288,6 +304,7 @@ end;
 procedure TNesBus.Reset;
 begin
   FDataBus := 0;
+  FInternalDataBus := 0;
   FDmaActive := False;
   FDmaDummy := True;
   FDmaAlign := False;

@@ -408,7 +408,8 @@ begin
     if Code = Keys.Right then
       FPowerPadShortcuts[4] := Pressed;
     for var Button := Low(PadKeys) to High(PadKeys) do
-      if Code = PadKeys[Button] then FPowerPad[Button] := Pressed;
+      if Code = PadKeys[Button] then
+        FPowerPad[Button] := Pressed;
   finally
     FLock.Leave;
   end;

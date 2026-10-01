@@ -12,6 +12,7 @@ type
     FChrMemory: TByteArray;
     FPrgRam: array[0..$1FFF] of UInt8;
     FHasChrRam: Boolean;
+    FBusConflicts: Boolean;
     FMirrorMode: TMirrorMode;
     FPrgBankSelect: UInt8;
     function GetPrgBankCount: Integer;
@@ -20,7 +21,7 @@ type
     procedure SerializeState(State: TNesStateArchive); override;
     function GetSaveMemory: TByteArray; override;
     procedure SetSaveMemory(const Data: TByteArray); override;
-    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode);
+    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; BusConflicts: Boolean = False);
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
@@ -55,13 +56,15 @@ begin
   Move(Data[0], FPrgRam[0], Length(Data));
 end;
 
-constructor TMapperUxrom.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode);
+constructor TMapperUxrom.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; BusConflicts: Boolean);
 begin
   inherited Create;
   ValidateMemory(APrgRom, AChrData);
   FPrgRom := Copy(APrgRom);
   FChrMemory := Copy(AChrData);
   FHasChrRam := AHasChrRam;
+  // Immutable board wiring comes from the ROM header, not save states.
+  FBusConflicts := BusConflicts;
   FMirrorMode := AMirrorMode;
   if Length(FChrMemory) = 0 then
     SetLength(FChrMemory, $2000);
@@ -114,7 +117,12 @@ begin
 
   Result := Address >= $8000;
   if Result then
-    FPrgBankSelect := Value and $0F;
+  begin
+    var RomValue: UInt8;
+    if FBusConflicts and CpuRead(Address, RomValue) then
+      Value := Value and RomValue;
+    FPrgBankSelect := Value;
+  end;
 end;
 
 function TMapperUxrom.PpuRead(Address: UInt16; out Value: UInt8): Boolean;

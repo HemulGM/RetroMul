@@ -5,7 +5,7 @@ interface
 uses
   NES.Types, NES.Mapper;
 
-function CreateMapper(MapperId: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; LegacyHeader: Boolean = False): TMapper;
+function CreateMapper(MapperId: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; LegacyHeader: Boolean = False; Submapper: Integer = 0): TMapper;
 
 implementation
 
@@ -16,7 +16,7 @@ uses
   NES.Mapper.Vrc, NES.Mapper.Sunsoft, NES.Mapper.Rambo, NES.Mapper.Cony,
   NES.Mapper.Bandai, NES.Mapper.Jy, NES.Mapper.Mmc5, NES.Mapper.Subor;
 
-function CreateMapper(MapperId: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; LegacyHeader: Boolean): TMapper;
+function CreateMapper(MapperId: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; LegacyHeader: Boolean; Submapper: Integer): TMapper;
 begin
   case MapperId of
     MAPPER_NROM:
@@ -24,13 +24,13 @@ begin
     MAPPER_MMC1:
       Result := TMapperMmc1.Create(Prg, Chr, HasChrRam, MirrorMode);
     MAPPER_UXROM:
-      Result := TMapperUxrom.Create(Prg, Chr, HasChrRam, MirrorMode);
+      Result := TMapperUxrom.Create(Prg, Chr, HasChrRam, MirrorMode, Submapper = 2);
     MAPPER_CNROM:
-      Result := TMapperCnrom.Create(Prg, Chr, HasChrRam, MirrorMode);
+      Result := TMapperCnrom.Create(Prg, Chr, HasChrRam, MirrorMode, Submapper <> 1);
     MAPPER_MMC3:
       Result := TMapperMmc3.Create(Prg, Chr, HasChrRam, MirrorMode);
     MAPPER_AXROM:
-      Result := TMapperAxrom.Create(Prg, Chr, HasChrRam);
+      Result := TMapperAxrom.Create(Prg, Chr, HasChrRam, Submapper = 2);
     MAPPER_COLOR_DREAMS:
       Result := TMapperColorDreams.Create(Prg, Chr, HasChrRam, MirrorMode);
     MAPPER_GXROM:
@@ -43,6 +43,8 @@ begin
       Result := TMapperJy.Create(MapperId, Prg, Chr, HasChrRam, MirrorMode);
     MAPPER_SUBOR:
       Result := TMapperSubor.Create(Prg, Chr, HasChrRam, MirrorMode);
+    MAPPER_JALECO_140, MAPPER_REVERSE_UNROM, MAPPER_NSF_CART, MAPPER_JALECO_101, MAPPER_SACHEN_133, MAPPER_SACHEN_145, MAPPER_SUNSOFT1, MAPPER_TAITO_TC0190, MAPPER_VRC1:
+      Result := TMapperDiscrete.Create(MapperId, Prg, Chr, HasChrRam, MirrorMode);
     MAPPER_FFE_F3XXX, MAPPER_CPROM, MAPPER_MULTICART_15, MAPPER_IREM_G101, MAPPER_BNROM_NINA001, MAPPER_BANDAI_70, MAPPER_CAMERICA, MAPPER_NINA03, MAPPER_JALECO_87, MAPPER_NAMCO_118, MAPPER_VS_SYSTEM, MAPPER_DISCRETE_112, MAPPER_NINA_113, MAPPER_AGCI, MAPPER_BANDAI_152, MAPPER_NAMCO_154, MAPPER_DXROM, MAPPER_ACTION52, MAPPER_CAMERICA_QUATTRO, MAPPER_DISCRETE_240, MAPPER_WAIXING_242:
       Result := TMapperDiscrete.Create(MapperId, Prg, Chr, HasChrRam, MirrorMode, LegacyHeader);
     MAPPER_MMC2, MAPPER_MMC4:
@@ -63,5 +65,4 @@ begin
 end;
 
 end.
-
 

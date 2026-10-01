@@ -10,11 +10,12 @@ type
   private
     FPrgRom, FChrMemory: TByteArray;
     FHasChrRam: Boolean;
+    FBusConflicts: Boolean;
     FMirrorMode: TMirrorMode;
     FChrBank: UInt8;
   public
     procedure SerializeState(State: TNesStateArchive); override;
-    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode);
+    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; BusConflicts: Boolean = True);
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
@@ -35,13 +36,14 @@ begin
   State.Field(FChrBank, SizeOf(FChrBank));
 end;
 
-constructor TMapperCnrom.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode);
+constructor TMapperCnrom.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; BusConflicts: Boolean);
 begin
   inherited Create;
   ValidateMemory(APrgRom, AChrData);
   FPrgRom := Copy(APrgRom);
   FChrMemory := Copy(AChrData);
   FHasChrRam := AHasChrRam;
+  FBusConflicts := BusConflicts;
   FMirrorMode := AMirrorMode;
   if Length(FChrMemory) = 0 then
     SetLength(FChrMemory, $2000);
@@ -61,7 +63,11 @@ begin
   Result := CpuRead(Address, RomValue);
   // Standard CNROM boards AND the CPU data with the still-driven PRG ROM.
   if Result then
-    FChrBank := (Value and RomValue) and 3;
+  begin
+    if FBusConflicts then
+      Value := Value and RomValue;
+    FChrBank := Value;
+  end;
 end;
 
 function TMapperCnrom.PpuRead(Address: UInt16; out Value: UInt8): Boolean;

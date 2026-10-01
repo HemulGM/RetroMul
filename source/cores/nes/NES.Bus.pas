@@ -29,10 +29,14 @@ type
     FDmaData: UInt8;
     FDmaHaveData: Boolean;
     FCpuCycle: UInt64;
+    FDataBus: UInt8;
     procedure WriteControllers(Value: UInt8);
     function ReadController(Port: Integer): UInt8;
+    function ReadDevice(Address: UInt16): UInt8;
   public
     procedure SerializeState(State: TNesStateArchive);
+    // Appended to the console snapshot after v4 fields for legacy compatibility.
+    procedure SerializeDataBus(State: TNesStateArchive);
     constructor Create;
     procedure Reset;
     procedure Connect(Cartridge: TCartridge; Ppu: TPpu; Apu: TApu; Controller1, Controller2: TController; Controller3: TController = nil; Controller4: TController = nil; SuborKeyboard: TSuborKeyboard = nil);
@@ -48,6 +52,14 @@ type
   end;
 
 implementation
+
+procedure TNesBus.SerializeDataBus(State: TNesStateArchive);
+begin
+  if State.Version >= 5 then
+    State.Field(FDataBus, SizeOf(FDataBus))
+  else if State.Loading then
+    FDataBus := 0;
+end;
 
 procedure TNesBus.SerializeState(State: TNesStateArchive);
 begin
@@ -146,6 +158,14 @@ end;
 
 function TNesBus.CpuRead(Address: UInt16): UInt8;
 begin
+  Result := ReadDevice(Address);
+  // $4015 is internal to the CPU; it does not drive the external bus.
+  if Address <> $4015 then
+    FDataBus := Result;
+end;
+
+function TNesBus.ReadDevice(Address: UInt16): UInt8;
+begin
   if Address < $2000 then
     Exit(FRam[Address and $07FF]);
   if Address < $4000 then
@@ -153,18 +173,19 @@ begin
 
   case Address of
     $4015:
-      Exit(FApu.CpuReadStatus);
+      Exit((FApu.CpuReadStatus and $DF) or (FDataBus and $20));
     $4016:
-      Exit(ReadController(0));
+      Exit((ReadController(0) and $1F) or (FDataBus and $E0));
     $4017:
       begin
         // Zapper replaces port 2, including Power Pad/Four Score/keyboard.
         // Parallel inputs are live and independent of $4016 strobes.
         if (FZapper <> nil) and FZapper.Enabled then
-          Exit(FZapper.Read(FPpu.GetZapperMask^));
+          Exit((FZapper.Read(FPpu.GetZapperMask^) and $1F) or (FDataBus and $E0));
         Result := ReadController(1);
         if FSuborKeyboard <> nil then
           Result := Result or FSuborKeyboard.Read;
+        Result := (Result and $1F) or (FDataBus and $E0);
         Exit;
       end;
   end;
@@ -172,11 +193,12 @@ begin
   var Value: UInt8;
   if (FCartridge <> nil) and (FCartridge.Mapper <> nil) and FCartridge.Mapper.CpuRead(Address, Value) then
     Exit(Value);
-  Result := 0;
+  Result := FDataBus;
 end;
 
 procedure TNesBus.CpuWrite(Address: UInt16; Value: UInt8);
 begin
+  FDataBus := Value;
   if (FCartridge <> nil) and (FCartridge.Mapper <> nil) then
     FCartridge.Mapper.ClockCpuWrite;
   if Address < $2000 then
@@ -265,6 +287,7 @@ end;
 
 procedure TNesBus.Reset;
 begin
+  FDataBus := 0;
   FDmaActive := False;
   FDmaDummy := True;
   FDmaAlign := False;

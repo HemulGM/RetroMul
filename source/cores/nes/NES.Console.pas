@@ -24,7 +24,7 @@ type
     FPalPpuPhase: Integer;
     FRegion: TNesRegion;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 4);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 5);
     function GetRomIdentity: string;
   public
     constructor Create(FourScoreEnabled: Boolean = False);
@@ -60,7 +60,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 4;
+  SNAPSHOT_VERSION = 5;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -108,6 +108,15 @@ begin
       FZapper.SerializeState(State)
     else if Loading then
       FZapper.TriggerPressed := False;
+    FBus.SerializeDataBus(State);
+    if Version >= 5 then
+    begin
+      // Identical PRG/CHR hashes can have different NES 2.0 board wiring.
+      var Submapper := FCartridge.Metadata.Submapper;
+      State.Field(Submapper, SizeOf(Submapper));
+      if Loading and (Submapper <> FCartridge.Metadata.Submapper) then
+        raise ENesException.Create('Snapshot belongs to a different NES 2.0 submapper');
+    end;
   finally
     State.Free;
   end;

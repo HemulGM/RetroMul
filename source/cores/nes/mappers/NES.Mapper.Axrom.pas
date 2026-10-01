@@ -10,10 +10,11 @@ type
   private
     FPrgRom, FChrMemory: TByteArray;
     FHasChrRam: Boolean;
+    FBusConflicts: Boolean;
     FBankRegister: UInt8;
   public
     procedure SerializeState(State: TNesStateArchive); override;
-    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean);
+    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; BusConflicts: Boolean = False);
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
@@ -33,13 +34,14 @@ begin
   State.Field(FBankRegister, SizeOf(FBankRegister));
 end;
 
-constructor TMapperAxrom.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean);
+constructor TMapperAxrom.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; BusConflicts: Boolean);
 begin
   inherited Create;
   ValidateMemory(APrgRom, AChrData);
   FPrgRom := Copy(APrgRom);
   FChrMemory := Copy(AChrData);
   FHasChrRam := AHasChrRam;
+  FBusConflicts := BusConflicts;
   if Length(FChrMemory) = 0 then
     SetLength(FChrMemory, $2000);
   Reset;
@@ -57,7 +59,12 @@ begin
   Result := Address >= $8000;
   // iNES mapper 7 defaults to ANROM/AOROM without bus conflicts.
   if Result then
+  begin
+    var RomValue: UInt8;
+    if FBusConflicts and CpuRead(Address, RomValue) then
+      Value := Value and RomValue;
     FBankRegister := Value;
+  end;
 end;
 
 function TMapperAxrom.PpuRead(Address: UInt16; out Value: UInt8): Boolean;

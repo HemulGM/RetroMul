@@ -280,7 +280,8 @@ begin
       if (FMapperId = MAPPER_UXROM) and IsLegacyPalRom(PrgRom, ChrRom) then
         FMetadata.Timing := TRomTiming.PAL;
     end;
-    FMapper := CreateMapper(FMapperId, PrgRom, ChrRom, ChrRam, Mirror, (Header.Flags7 and $0C) <> $08);
+    FMapper := CreateMapper(FMapperId, PrgRom, ChrRom, ChrRam, Mirror,
+      FMetadata.Format = TRomFormat.INes, FMetadata.Submapper);
     if FMapper = nil then
       raise ENesException.CreateFmt('Unsupported mapper: %d', [FMapperId]);
 

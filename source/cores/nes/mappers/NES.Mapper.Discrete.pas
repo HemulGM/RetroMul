@@ -18,6 +18,7 @@ type
     procedure SerializeState(State: TNesStateArchive); override;
     constructor Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; LegacyHeader: Boolean = False);
     procedure Reset; override;
+    function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function PpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     procedure ClockCpu; override;
@@ -44,6 +45,8 @@ constructor TMapperDiscrete.Create(Board: Integer; const Prg, Chr: TByteArray; H
 begin
   inherited Create(Prg, Chr, HasChrRam, MirrorMode);
   FBoard := Board;
+  if Board = 31 then
+    FRegisters[7] := $FF;
   // Legacy mapper-15 game hacks require writable CHR in all modes (NESdev).
   FLegacyChrWrites := (Board = 15) and LegacyHeader;
   if Board = 13 then
@@ -56,6 +59,12 @@ end;
 
 procedure TMapperDiscrete.Reset;
 begin
+  // Mapper 31's latches have power-on defaults but survive the reset button.
+  if FBoard = 31 then
+  begin
+    FRamEnabled := False;
+    Exit;
+  end;
   inherited;
   FillChar(FRegisters, SizeOf(FRegisters), 0);
   FSelect := 0;
@@ -65,8 +74,10 @@ begin
   FIrqPending := False;
   FChrWritable := True;
   case FBoard of
-    8, 13, 34, 79, 87, 99, 113, 144, 228, 240, 242:
+    8, 13, 34, 79, 87, 99, 101, 113, 133, 140, 144, 145, 184, 228, 240, 242:
       Prg32(0);
+    180:
+      Prg16(1, 0);
     32, 88, 112, 154, 206:
       begin
         Prg8(0, 0);
@@ -77,6 +88,13 @@ begin
   end;
   if FBoard in [13, 242] then
     Mirror(0);
+  if FBoard = 184 then
+    Chr4(1, 4);
+  if FBoard = 75 then
+  begin
+    Prg8(2, 0);
+    Chr4(1, 0);
+  end;
   if FBoard = 15 then
     CpuWrite($8000, 0);
   if FBoard in [88, 154, 206, 112] then
@@ -112,11 +130,90 @@ begin
   end;
 end;
 
+function TMapperDiscrete.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
+begin
+  if (FBoard = 31) and (Address >= $8000) then
+  begin
+    Value := FPrgRom[(Integer(FRegisters[(Address - $8000) shr 12]) * $1000 +
+      (Address and $0FFF)) mod Length(FPrgRom)];
+    Exit(True);
+  end;
+  Result := inherited;
+end;
+
 function TMapperDiscrete.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
   Result := inherited CpuWrite(Address, Value);
   var Bank: Integer;
   case FBoard of
+    33:
+      if (Address >= $8000) and (Address < $C000) then
+      begin
+        case Address and $A003 of
+          $8000:
+            begin
+              Prg8(0, Value and $3F);
+              Mirror((Value shr 6) and 1);
+            end;
+          $8001: Prg8(1, Value and $3F);
+          $8002: Chr2(0, Value);
+          $8003: Chr2(1, Value);
+          $A000..$A003: Chr1(4 + (Address and 3), Value);
+        end;
+        Result := True;
+      end;
+    75:
+      if Address >= $8000 then
+      begin
+        case Address and $F000 of
+          $8000: Prg8(0, Value and $0F);
+          $A000: Prg8(1, Value and $0F);
+          $C000: Prg8(2, Value and $0F);
+          $9000:
+            begin
+              if FInitialMirror <> TMirrorMode.FourScreen then
+                Mirror(Value and 1);
+              FOuter := Value;
+            end;
+          $E000: FRegisters[0] := Value and $0F;
+          $F000: FRegisters[1] := Value and $0F;
+        end;
+        Chr4(0, FRegisters[0] or ((FOuter and 2) shl 3));
+        Chr4(1, FRegisters[1] or ((FOuter and 4) shl 2));
+        Result := True;
+      end;
+    31:
+      if (Address and $F000) = $5000 then
+      begin
+        FRegisters[Address and 7] := Value;
+        Result := True;
+      end;
+    184:
+      if (Address >= $6000) and (Address < $8000) then
+      begin
+        Chr4(0, Value and 7);
+        Chr4(1, ((Value shr 4) and 3) or 4);
+        Result := True;
+      end;
+    101:
+      if (Address >= $6000) and (Address < $8000) then
+      begin
+        Chr8(Value);
+        Result := True;
+      end;
+    133, 145:
+      if (Address and $E100) = $4100 then
+      begin
+        if FBoard = 133 then
+        begin
+          // SA-72008 (72-pin): the 60-pin analog feedback board is not modeled.
+          Prg32((Value shr 2) and 1);
+          Chr8(Value and 3);
+        end
+        else
+          Chr8(Value shr 7);
+        Result := True;
+      end;
     8:
       begin
         case Address of
@@ -296,6 +393,22 @@ begin
             Mirror(Value and 1);
         end;
         UpdateIndexedBanks;
+        Result := True;
+      end;
+    // Independently implemented from NESdev's JF-11/JF-14 register description.
+    140:
+      if (Address >= $6000) and (Address < $8000) then
+      begin
+        Prg32((Value shr 4) and 3);
+        Chr8(Value and $0F);
+        Result := True;
+      end;
+    // Inverted UxROM: bank zero stays at $8000, upper window is switchable.
+    180:
+      if Address >= $8000 then
+      begin
+        Value := Value and FPrgRom[PrgOffset(Address)];
+        Prg16(1, Value);
         Result := True;
       end;
     144:

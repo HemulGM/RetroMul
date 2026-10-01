@@ -29,4 +29,3 @@ __recovery/
 /tools/*
 /MULTICORE_AUDIT.md
 /audit-output/*
-/audit-output/nes-mapper-coverage.csv

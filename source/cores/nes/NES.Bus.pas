@@ -17,6 +17,7 @@ type
     FController3: TController;
     FController4: TController;
     FSuborKeyboard: TSuborKeyboard;
+    FZapper: TZapper;
     FFourScoreEnabled: Boolean;
     FControllerStrobe: Boolean;
     FControllerReadIndex: array[0..1] of Integer;
@@ -43,6 +44,7 @@ type
     property CpuCycle: UInt64 read FCpuCycle write FCpuCycle;
     property DmaWritePending: Boolean read FDmaHaveData;
     property FourScoreEnabled: Boolean read FFourScoreEnabled write FFourScoreEnabled;
+    property Zapper: TZapper read FZapper write FZapper;
   end;
 
 implementation
@@ -156,6 +158,10 @@ begin
       Exit(ReadController(0));
     $4017:
       begin
+        // Zapper replaces port 2, including Power Pad/Four Score/keyboard.
+        // Parallel inputs are live and independent of $4016 strobes.
+        if (FZapper <> nil) and FZapper.Enabled then
+          Exit(FZapper.Read(FPpu.GetZapperMask^));
         Result := ReadController(1);
         if FSuborKeyboard <> nil then
           Result := Result or FSuborKeyboard.Read;

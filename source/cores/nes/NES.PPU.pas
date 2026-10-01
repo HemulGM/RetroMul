@@ -18,6 +18,8 @@ type
     FLineSpriteCount: Integer;
     FFrame: TFrameBuffer;
     FDrawingFrame: TFrameBuffer;
+    FZapperMask: TNesZapperMask;
+    FZapperMaskValid: Boolean;
     FRenderingLine: Boolean;
     FCycle: Integer;
     FScanline: Integer;
@@ -81,6 +83,8 @@ type
     procedure WriteOamDma(Index: Integer; Value: UInt8);
     function ConsumeNmi: Boolean;
     procedure RebuildFrame;
+    // Borrowed mask, invalidated by Clock, Reset and snapshot loading.
+    function GetZapperMask: PNesZapperMask;
     function DebugReadMemory(Address: UInt16): UInt8;
     function DebugMask: UInt8;
     function DebugCtrl: UInt8;
@@ -104,6 +108,7 @@ implementation
 
 procedure TPpu.SerializeState(State: TNesStateArchive);
 begin
+  FZapperMaskValid := False;
   State.Field(FRegion, SizeOf(FRegion));
   State.Field(FPreRenderLine, SizeOf(FPreRenderLine));
   State.Field(FNameTable, SizeOf(FNameTable));
@@ -218,6 +223,7 @@ begin
   FRenderingLine := False;
   FillChar(FFrame, SizeOf(FFrame), 0);
   FillChar(FDrawingFrame, SizeOf(FDrawingFrame), 0);
+  FZapperMaskValid := False;
   for var i := Low(FNameTable) to High(FNameTable) do
     FNameTable[i] := 0;
   for var i := Low(FPaletteRam) to High(FPaletteRam) do
@@ -478,9 +484,43 @@ begin
     FMapper.ClockPpuRead;
 end;
 
+function TPpu.GetZapperMask: PNesZapperMask;
+const
+  LIGHT_SCANLINES = 26;
+  LIGHT_THRESHOLD = 128;
+begin
+  if not FZapperMaskValid then
+  begin
+    FillChar(FZapperMask, SizeOf(FZapperMask), 0);
+    // Rendering emits a complete line at dot 1. Include only recently drawn
+    // lines, including the previous frame's tail during early scanlines.
+    // This approximates persistence; it is not an analog photodiode model.
+    var LastLine := FScanline;
+    if FCycle <= 1 then
+      Dec(LastLine);
+    for var Age := 0 to LIGHT_SCANLINES - 1 do
+    begin
+      var Y := (LastLine - Age + FPreRenderLine + 1) mod (FPreRenderLine + 1);
+      if Y >= NES_HEIGHT then
+        Continue;
+      for var X := 0 to NES_WIDTH - 1 do
+      begin
+        var Color := FDrawingFrame[X, Y];
+        var Luma := (299 * Integer((Color shr 16) and $FF) +
+          587 * Integer((Color shr 8) and $FF) + 114 * Integer(Color and $FF)) div 1000;
+        FZapperMask[X, Y] := Ord(Luma >= LIGHT_THRESHOLD);
+      end;
+    end;
+    FZapperMaskValid := True;
+  end;
+  Result := @FZapperMask;
+end;
+
 procedure TPpu.Clock;
 begin
   var RenderingEnabled: Boolean := (FMask and $18) <> 0;
+  if FCycle = 1 then
+    FZapperMaskValid := False;
   ClockMapperAddress;
   Inc(FPpuClock);
   if (FCycle = 1) and (FMapper <> nil) then

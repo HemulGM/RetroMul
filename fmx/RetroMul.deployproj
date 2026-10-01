@@ -5,13 +5,13 @@
     </ProjectExtensions>
     <PropertyGroup>
         <DeviceId Condition="'$(Platform)'=='Android'"/>
-        <DeviceId Condition="'$(Platform)'=='Android64'">192.168.0.67:43225</DeviceId>
+        <DeviceId Condition="'$(Platform)'=='Android64'"/>
         <DeviceId Condition="'$(Platform)'=='iOSDevice64'"/>
-        <DeviceId Condition="'$(Platform)'=='iOSSimARM64'"/>
+        <DeviceId Condition="'$(Platform)'=='iOSSimARM64'">FD93557D-C4AE-4A3D-84FB-0D1A33D12589</DeviceId>
     </PropertyGroup>
     <ItemGroup Condition="'$(Platform)'=='WinARM64EC'"/>
     <ItemGroup Condition="'$(Platform)'=='OSX64'">
-        <DeployFile Include="$(BDS)\bin\delphi_PROJECTICNS.icns" Condition="'$(Config)'=='Release'">
+        <DeployFile Include="$(ProjectName).Artwork\macOS\AppIcon.icns" Condition="'$(Config)'=='Release'">
             <RemoteDir>RetroMul.app\Contents\Resources\</RemoteDir>
             <RemoteName>RetroMul.icns</RemoteName>
             <DeployClass>ProjectOSXResource</DeployClass>
@@ -34,15 +34,6 @@
             <RemoteDir>RetroMul.app\Contents\</RemoteDir>
             <RemoteName>Info.plist</RemoteName>
             <DeployClass>ProjectOSXInfoPList</DeployClass>
-            <Operation>1</Operation>
-            <LocalCommand/>
-            <RemoteCommand/>
-            <Overwrite>True</Overwrite>
-        </DeployFile>
-        <DeployFile Include="OSX64\Debug\RetroMul.dSYM" Condition="'$(Config)'=='Debug'">
-            <RemoteDir>RetroMul.app\..\$(PROJECTNAME).app.dSYM\Contents\Resources\DWARF\</RemoteDir>
-            <RemoteName>RetroMul</RemoteName>
-            <DeployClass>ProjectOSXDebug</DeployClass>
             <Operation>1</Operation>
             <LocalCommand/>
             <RemoteCommand/>
@@ -1231,19 +1222,19 @@
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
         </DeployFile>
-        <DeployFile Include="Android\Release\ic_launcher.xml" Condition="'$(Config)'=='Release'">
-            <RemoteDir>RetroMul\res\drawable-anydpi-v26\</RemoteDir>
-            <RemoteName>ic_launcher.xml</RemoteName>
-            <DeployClass>Android_AdaptiveIcon</DeployClass>
+        <DeployFile Include="$(ProjectName).Artwork\Android\FM_VectorizedSplashV31Dark.xml" Condition="'$(Config)'=='Debug'">
+            <RemoteDir>RetroMul\res\drawable-night-anydpi-v31\</RemoteDir>
+            <RemoteName>splash_vector.xml</RemoteName>
+            <DeployClass>Android_VectorizedSplashV31Dark</DeployClass>
             <Operation>1</Operation>
             <LocalCommand/>
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
         </DeployFile>
-        <DeployFile Include="$(ProjectName).Artwork\Android\FM_VectorizedSplashV31Dark.xml" Condition="'$(Config)'=='Debug'">
-            <RemoteDir>RetroMul\res\drawable-night-anydpi-v31\</RemoteDir>
-            <RemoteName>splash_vector.xml</RemoteName>
-            <DeployClass>Android_VectorizedSplashV31Dark</DeployClass>
+        <DeployFile Include="Android\Release\ic_launcher.xml" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\res\drawable-anydpi-v26\</RemoteDir>
+            <RemoteName>ic_launcher.xml</RemoteName>
+            <DeployClass>Android_AdaptiveIcon</DeployClass>
             <Operation>1</Operation>
             <LocalCommand/>
             <RemoteCommand/>
@@ -1357,19 +1348,19 @@
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
         </DeployFile>
-        <DeployFile Include="Android\Release\styles.xml" Condition="'$(Config)'=='Release'">
-            <RemoteDir>RetroMul\res\values\</RemoteDir>
-            <RemoteName>styles.xml</RemoteName>
-            <DeployClass>AndroidSplashStyles</DeployClass>
+        <DeployFile Include="$(ProjectName).Artwork\Android\FM_LauncherIcon_72x72.png" Condition="'$(Config)'=='Debug'">
+            <RemoteDir>RetroMul\res\drawable-hdpi\</RemoteDir>
+            <RemoteName>ic_launcher.png</RemoteName>
+            <DeployClass>Android_LauncherIcon72</DeployClass>
             <Operation>1</Operation>
             <LocalCommand/>
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
         </DeployFile>
-        <DeployFile Include="$(ProjectName).Artwork\Android\FM_LauncherIcon_72x72.png" Condition="'$(Config)'=='Debug'">
-            <RemoteDir>RetroMul\res\drawable-hdpi\</RemoteDir>
-            <RemoteName>ic_launcher.png</RemoteName>
-            <DeployClass>Android_LauncherIcon72</DeployClass>
+        <DeployFile Include="Android\Release\styles.xml" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\res\values\</RemoteDir>
+            <RemoteName>styles.xml</RemoteName>
+            <DeployClass>AndroidSplashStyles</DeployClass>
             <Operation>1</Operation>
             <LocalCommand/>
             <RemoteCommand/>
@@ -1585,15 +1576,6 @@
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
             <Required>True</Required>
-        </DeployFile>
-        <DeployFile Include="OSXARM64\Debug\RetroMul.dSYM" Condition="'$(Config)'=='Debug'">
-            <RemoteDir>RetroMul.app\..\$(PROJECTNAME).app.dSYM\Contents\Resources\DWARF\</RemoteDir>
-            <RemoteName>RetroMul</RemoteName>
-            <DeployClass>ProjectOSXDebug</DeployClass>
-            <Operation>1</Operation>
-            <LocalCommand/>
-            <RemoteCommand/>
-            <Overwrite>True</Overwrite>
         </DeployFile>
     </ItemGroup>
     <ItemGroup Condition="'$(Platform)'=='Win64'">
@@ -2162,19 +2144,19 @@
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
         </DeployFile>
-        <DeployFile Include="iOSSimARM64\Release\RetroMul.info.plist" Condition="'$(Config)'=='Release'">
-            <RemoteDir>RetroMul.app\</RemoteDir>
-            <RemoteName>Info.plist</RemoteName>
-            <DeployClass>ProjectiOSInfoPList</DeployClass>
+        <DeployFile Include="$(BDS)\bin\Artwork\iOS\iPad\FM_SpotlightSearchIcon_80x80.png" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul.app\..\$(PROJECTNAME).launchscreen\Assets\AppIcon.appiconset\</RemoteDir>
+            <RemoteName>FM_SpotlightSearchIcon_80x80.png</RemoteName>
+            <DeployClass>iPad_SpotLight80</DeployClass>
             <Operation>1</Operation>
             <LocalCommand/>
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
         </DeployFile>
-        <DeployFile Include="$(BDS)\bin\Artwork\iOS\iPad\FM_SpotlightSearchIcon_80x80.png" Condition="'$(Config)'=='Release'">
-            <RemoteDir>RetroMul.app\..\$(PROJECTNAME).launchscreen\Assets\AppIcon.appiconset\</RemoteDir>
-            <RemoteName>FM_SpotlightSearchIcon_80x80.png</RemoteName>
-            <DeployClass>iPad_SpotLight80</DeployClass>
+        <DeployFile Include="iOSSimARM64\Release\RetroMul.info.plist" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul.app\</RemoteDir>
+            <RemoteName>Info.plist</RemoteName>
+            <DeployClass>ProjectiOSInfoPList</DeployClass>
             <Operation>1</Operation>
             <LocalCommand/>
             <RemoteCommand/>

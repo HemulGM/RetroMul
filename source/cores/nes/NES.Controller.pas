@@ -54,6 +54,20 @@ type
     property Connected: Boolean read FConnected write FConnected;
   end;
 
+  // Change host configuration only while stopped or on the emulation thread.
+  TZapper = class
+  private
+    FEnabled: Boolean;
+    FTriggerPressed: Boolean;
+    FOnReadLight: TNesZapperLightCallback;
+  public
+    procedure SerializeState(State: TNesStateArchive);
+    function Read(const Mask: TNesZapperMask): UInt8;
+    property Enabled: Boolean read FEnabled write FEnabled;
+    property TriggerPressed: Boolean read FTriggerPressed write FTriggerPressed;
+    property OnReadLight: TNesZapperLightCallback read FOnReadLight write FOnReadLight;
+  end;
+
   TController = class
   private
     FState: UInt8;
@@ -259,6 +273,26 @@ begin
   if not FEnabled then
     Exit($1E);
   Result := (not (ActiveKeys shl 1)) and $1E;
+end;
+
+procedure TZapper.SerializeState(State: TNesStateArchive);
+begin
+  State.Field(FEnabled, SizeOf(FEnabled));
+  State.Field(FTriggerPressed, SizeOf(FTriggerPressed));
+  // The callback belongs to the host and is never serialized.
+end;
+
+function TZapper.Read(const Mask: TNesZapperMask): UInt8;
+begin
+  Result := 0;
+  if not FEnabled then
+    Exit;
+  Result := $08;
+  if Assigned(FOnReadLight) then
+    if FOnReadLight(Mask) then
+      Result := 0;
+  if FTriggerPressed then
+    Result := Result or $10;
 end;
 
 procedure TController.SerializeState(State: TNesStateArchive);

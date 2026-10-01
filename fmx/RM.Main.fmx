@@ -374,6 +374,8 @@ object FormMain: TFormMain
       Size.Width = 725.000000000000000000
       Size.Height = 595.000000000000000000
       Size.PlatformDefault = False
+      OnMouseDown = ImageCanvasMouseDown
+      OnMouseUp = ImageCanvasMouseUp
       object ImageLogo: TImage
         MultiResBitmap.Height = 1024
         MultiResBitmap.Width = 1536

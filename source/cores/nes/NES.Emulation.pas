@@ -76,6 +76,7 @@ type
     property RunFrameMs: Double read FRunFrameMs;
     property UsesSuborKeyboard: Boolean read FUsesSuborKeyboard;
     property IsPausd: Boolean read FPaused;
+    property Console: TNesConsole read FConsole;
   end;
 
 implementation

@@ -4,12 +4,11 @@
         <ProjectVersion>20.4</ProjectVersion>
         <FrameworkType>FMX</FrameworkType>
         <Base>True</Base>
-        <Config Condition="'$(Config)'==''">Debug</Config>
-        <Platform Condition="'$(Platform)'==''">Win32</Platform>
+        <Config Condition="'$(Config)'==''">Release</Config>
+        <Platform Condition="'$(Platform)'==''">OSX64</Platform>
         <TargetedPlatforms>2790547</TargetedPlatforms>
         <AppType>Application</AppType>
         <MainSource>RetroMul.dpr</MainSource>
-        <ProjectName Condition="'$(ProjectName)'==''">RetroMul</ProjectName>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Config)'=='Base' or '$(Base)'!=''">
         <Base>true</Base>
@@ -993,12 +992,6 @@
                     </Platform>
                 </DeployFile>
                 <DeployFile LocalName="$(BDS)\bin\delphi_PROJECTICNS.icns" Configuration="Release" Class="ProjectOSXResource">
-                    <Platform Name="OSX64">
-                        <RemoteName>RetroMul.icns</RemoteName>
-                        <Overwrite>true</Overwrite>
-                    </Platform>
-                </DeployFile>
-                <DeployFile LocalName="$(BDS)\bin\delphi_PROJECTICNS.icns" Configuration="Release" Class="ProjectOSXResource">
                     <Platform Name="OSXARM64">
                         <RemoteName>RetroMul.icns</RemoteName>
                         <Overwrite>true</Overwrite>
@@ -1628,6 +1621,12 @@
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
+                <DeployFile LocalName="$(ProjectName).Artwork\macOS\AppIcon.icns" Configuration="Release" Class="ProjectOSXResource">
+                    <Platform Name="OSX64">
+                        <RemoteName>RetroMul.icns</RemoteName>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
                 <DeployFile LocalName="All Platforms\Debug\RetroMul" Configuration="Debug" Class="ProjectOutput">
                     <Platform Name="All Platforms">
                         <RemoteName>RetroMul</RemoteName>
@@ -1946,12 +1945,6 @@
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>
-                <DeployFile LocalName="OSX64\Debug\RetroMul.dSYM" Configuration="Debug" Class="ProjectOSXDebug">
-                    <Platform Name="OSX64">
-                        <RemoteName>RetroMul</RemoteName>
-                        <Overwrite>true</Overwrite>
-                    </Platform>
-                </DeployFile>
                 <DeployFile LocalName="OSX64\Debug\RetroMul.entitlements" Configuration="Debug" Class="ProjectOSXEntitlements">
                     <Platform Name="OSX64">
                         <Overwrite>true</Overwrite>
@@ -1982,12 +1975,6 @@
                 </DeployFile>
                 <DeployFile LocalName="OSX64\Release\RetroMul" Configuration="Release" Class="ProjectOutput">
                     <Platform Name="OSX64">
-                        <RemoteName>RetroMul</RemoteName>
-                        <Overwrite>true</Overwrite>
-                    </Platform>
-                </DeployFile>
-                <DeployFile LocalName="OSXARM64\Debug\RetroMul.dSYM" Configuration="Debug" Class="ProjectOSXDebug">
-                    <Platform Name="OSXARM64">
                         <RemoteName>RetroMul</RemoteName>
                         <Overwrite>true</Overwrite>
                     </Platform>

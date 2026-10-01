@@ -7,9 +7,12 @@ uses
   NES.Controller;
 
 type
+  TNesZapperMask = NES.Types.TNesZapperMask;
+
   INesPeripheralCore = interface
     ['{E2878EE8-4AED-4E93-A006-7DBD5A63ABED}']
     procedure SetSuborKeys(const Keys: TSuborKeys);
+    function Zapper: TZapper;
   end;
 
   INesEmulatorConfig = interface(IEmulatorConfig)
@@ -89,6 +92,7 @@ type
     function TakeError: string;
     function GetConfig: IEmulatorConfig;
     function IsPaused: Boolean;
+    function Zapper: TZapper;
   end;
 
 implementation
@@ -245,6 +249,11 @@ begin
   Inc(FFrameNumber);
   Frame.FrameNumber := FFrameNumber;
   Frame.FramesPerSecond := Status.FramesPerSecond;
+end;
+
+function TNesCoreAdapter.Zapper: TZapper;
+begin
+  Result := FThread.Console.Zapper;
 end;
 
 { TNesEmulatorConfig }

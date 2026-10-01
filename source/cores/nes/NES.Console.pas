@@ -19,11 +19,12 @@ type
     FController3: TController;
     FController4: TController;
     FSuborKeyboard: TSuborKeyboard;
+    FZapper: TZapper;
     FCpuCycles: UInt64;
     FPalPpuPhase: Integer;
     FRegion: TNesRegion;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 3);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 4);
     function GetRomIdentity: string;
   public
     constructor Create(FourScoreEnabled: Boolean = False);
@@ -50,6 +51,7 @@ type
     property Controller3: TController read FController3;
     property Controller4: TController read FController4;
     property SuborKeyboard: TSuborKeyboard read FSuborKeyboard;
+    property Zapper: TZapper read FZapper;
   end;
 
 implementation
@@ -58,7 +60,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 3;
+  SNAPSHOT_VERSION = 4;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -102,6 +104,10 @@ begin
     FController3.SerializeState(State);
     FController4.SerializeState(State);
     FCartridge.Mapper.SerializeState(State);
+    if Version >= 4 then
+      FZapper.SerializeState(State)
+    else if Loading then
+      FZapper.TriggerPressed := False;
   finally
     State.Free;
   end;
@@ -180,7 +186,7 @@ begin
     var Identity: AnsiString;
     SetString(Identity, PAnsiChar(@Header.RomHash[0]), Length(RomIdentity));
     if not CompareMem(@Header.Magic, @SNAPSHOT_MAGIC, SizeOf(SNAPSHOT_MAGIC)) or
-      ((Header.Version <> 2) and (Header.Version <> SNAPSHOT_VERSION)) or
+      ((Header.Version < 2) or (Header.Version > SNAPSHOT_VERSION)) or
       (Header.MapperId <> FCartridge.MapperId) or
       (Integer(Header.Region) <> Ord(FRegion)) or (string(Identity) <> RomIdentity) or
       (Header.PayloadSize > UInt32(64 * 1024 * 1024)) or
@@ -225,6 +231,8 @@ begin
   FController3 := TController.Create;
   FController4 := TController.Create;
   FSuborKeyboard := TSuborKeyboard.Create;
+  FZapper := TZapper.Create;
+  FBus.Zapper := FZapper;
   FController2.PowerPadEnabled := not FourScoreEnabled;
   FBus.FourScoreEnabled := FourScoreEnabled;
   FBus.Connect(FCartridge, FPpu, FApu, FController1, FController2,
@@ -234,6 +242,7 @@ end;
 
 destructor TNesConsole.Destroy;
 begin
+  FZapper.Free;
   FSuborKeyboard.Free;
   FController4.Free;
   FController3.Free;
@@ -281,6 +290,7 @@ end;
 
 procedure TNesConsole.Reset;
 begin
+  FZapper.TriggerPressed := False;
   if FCartridge.Valid then
     FCartridge.Reset;
   FPpu.Reset;

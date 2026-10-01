@@ -73,6 +73,8 @@ type
     procedure ButtonSetRootClick(Sender: TObject);
     procedure FormSaveState(Sender: TObject);
     procedure ButtonCloseRomClick(Sender: TObject);
+    procedure ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
+    procedure ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
   private
     FEmulation: IEmulationCore;
     FGamepad: TScreenGamepad;
@@ -86,6 +88,7 @@ type
     FUserPaused: Boolean;
     FKeysDown: array[0..2048] of Boolean;
     FRomsRoot: string;
+    FZapperPixel: TPoint;
     {$IFDEF ANDROID}
     FPicker: TAndroidRomPicker;
     FAppEvents: TApplicationEvents;
@@ -130,10 +133,45 @@ var
 implementation
 
 uses
-  System.IOUtils, FMX.Ani, System.IniFiles, System.Messaging, RM.Styles,
-  Core.Adapter.GB, GB.Palettes, Core.Adapter.NES, Core.SavePaths, HGM.FMX.Image;
+  System.IOUtils, System.Math, FMX.Ani, System.IniFiles, System.Messaging,
+  RM.Styles, Core.Adapter.GB, GB.Palettes, Core.Adapter.NES, Core.SavePaths,
+  HGM.FMX.Image;
 
 {$R *.fmx}
+
+function ReadZapperMask(const Mask: TNesZapperMask; const PixelX, PixelY: Integer): Boolean;
+begin
+  Result := False;
+  if (PixelX < Low(Mask)) or (PixelX > High(Mask)) then
+    Exit;
+  if (PixelY < Low(Mask[PixelX])) or (PixelY > High(Mask[PixelX])) then
+    Exit;
+
+  Result := Mask[PixelX, PixelY] <> 0;
+end;
+
+function TryGetImagePixel(const Image: TImage; const X, Y: Single; out PixelX, PixelY: Integer): Boolean;
+begin
+  Result := False;
+  PixelX := -1;
+  PixelY := -1;
+
+  if (Image.Width <= 0) or (Image.Height <= 0) or (Image.Bitmap.Width <= 0) or (Image.Bitmap.Height <= 0) then
+    Exit;
+
+  var Scale := Min(Image.Width / Image.Bitmap.Width, Image.Height / Image.Bitmap.Height);
+  var DrawWidth := Image.Bitmap.Width * Scale;
+  var DrawHeight := Image.Bitmap.Height * Scale;
+  var Left := (Image.Width - DrawWidth) / 2;
+  var Top := (Image.Height - DrawHeight) / 2;
+
+  if (X < Left) or (Y < Top) or (X >= Left + DrawWidth) or (Y >= Top + DrawHeight) then
+    Exit;
+
+  PixelX := Min(Image.Bitmap.Width - 1, Floor((X - Left) / Scale));
+  PixelY := Min(Image.Bitmap.Height - 1, Floor((Y - Top) / Scale));
+  Result := True;
+end;
 
 function EventKey(Key: Word; KeyChar: WideChar): Word;
 begin
@@ -556,6 +594,25 @@ begin
     FEmulation.SetGamepadInput(FGamepadInput);
 end;
 
+procedure TFormMain.ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
+begin
+  var Peripheral: INesPeripheralCore;
+  if Supports(FEmulation, INesPeripheralCore, Peripheral) then
+  begin
+    TryGetImagePixel(ImageCanvas, X, Y, FZapperPixel.X, FZapperPixel.Y);
+    Peripheral.Zapper.TriggerPressed := True;
+  end;
+end;
+
+procedure TFormMain.ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
+begin
+  var Peripheral: INesPeripheralCore;
+  if Supports(FEmulation, INesPeripheralCore, Peripheral) then
+  begin
+    Peripheral.Zapper.TriggerPressed := False;
+  end;
+end;
+
 procedure TFormMain.SuborKeyboardChanged(Sender: TObject);
 begin
   var Peripheral: INesPeripheralCore;
@@ -919,6 +976,38 @@ begin
     FGamepad.Layout := TScreenGamepadLayout.Sega
   else
     FGamepad.Layout := TScreenGamepadLayout.Nes;
+
+  ImageCanvas.HitTest := False;
+  ImageCanvas.CanFocus := False;
+  ImageCanvas.DisableFocusEffect := True;
+  var Peripheral: INesPeripheralCore;
+  if Supports(FEmulation, INesPeripheralCore, Peripheral) then
+  begin
+    ImageCanvas.HitTest := True;
+    ImageCanvas.CanFocus := True;
+    ImageCanvas.OnKeyDown := FormKeyDown;
+    ImageCanvas.OnKeyUp := FormKeyUp;
+    ImageCanvas.DisableFocusEffect := False;
+    ImageCanvas.CanParentFocus := True;
+    Peripheral.Zapper.OnReadLight :=
+      function(const Mask: TNesZapperMask): Boolean
+      begin
+        // External photosensor implementation goes here.
+        // True = light detected; False = darkness / aim outside the screen.
+        //Result := ReadExternalPhotoSensor(Mask);
+
+        Result := ReadZapperMask(Mask, FZapperPixel.X, FZapperPixel.Y);
+
+        {for var X := Low(Mask) to High(Mask) do
+          for var Y := Low(Mask[X]) to High(Mask[X]) do
+            if Mask[X, Y] <> 0 then
+              Exit(True);
+        Result := False;  }
+      end;
+    Peripheral.Zapper.Enabled := True;
+    //Peripheral.SetSuborKeys(FSuborKeyboard.Keys);
+  end;
+
   FUserPaused := False;
   ImageCanvas.DisableInterpolation := SameText(FEmulation.Config.Filter, 'nearest');
   FillChar(FKeysDown, SizeOf(FKeysDown), 0);

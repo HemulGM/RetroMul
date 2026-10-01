@@ -84,6 +84,10 @@ type
   public
     constructor Create(const FileName: string);
     destructor Destroy; override;
+    function GetHasCoinAcceptor: Boolean;
+    procedure InsertCoin1;
+    procedure InsertCoin2;
+    property HasCoinAcceptor: Boolean read GetHasCoinAcceptor;
     procedure Start;
     procedure Stop;
     procedure Pause;
@@ -165,6 +169,21 @@ end;
 function TNesCoreAdapter.GetSupportsSnapshots: Boolean;
 begin
   Result := True;
+end;
+
+function TNesCoreAdapter.GetHasCoinAcceptor: Boolean;
+begin
+  Result := FThread.Console.HasCoinAcceptor;
+end;
+
+procedure TNesCoreAdapter.InsertCoin1;
+begin
+  FThread.InsertCoin1;
+end;
+
+procedure TNesCoreAdapter.InsertCoin2;
+begin
+  FThread.InsertCoin2;
 end;
 
 function TNesCoreAdapter.GetUsesSuborKeyboard: Boolean;

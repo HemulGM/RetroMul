@@ -38,6 +38,10 @@ type
     function GetName: string;
     function GetSupportsSnapshots: Boolean;
     function GetUsesSuborKeyboard: Boolean;
+    function GetHasCoinAcceptor: Boolean;
+    procedure InsertCoin1;
+    procedure InsertCoin2;
+    property HasCoinAcceptor: Boolean read GetHasCoinAcceptor;
     procedure Start;
     procedure Stop;
     procedure Pause;
@@ -250,6 +254,19 @@ end;
 function TMDCoreAdapter.GetSupportsSnapshots: Boolean;
 begin
   Result := True;
+end;
+
+function TMDCoreAdapter.GetHasCoinAcceptor: Boolean;
+begin
+  Result := False;
+end;
+
+procedure TMDCoreAdapter.InsertCoin1;
+begin
+end;
+
+procedure TMDCoreAdapter.InsertCoin2;
+begin
 end;
 
 function TMDCoreAdapter.GetUsesSuborKeyboard: Boolean;

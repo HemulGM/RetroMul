@@ -47,6 +47,10 @@ type
   public
     constructor Create(const FileName: string);
     destructor Destroy; override;
+    function GetHasCoinAcceptor: Boolean;
+    procedure InsertCoin1;
+    procedure InsertCoin2;
+    property HasCoinAcceptor: Boolean read GetHasCoinAcceptor;
     procedure Start;
     procedure Stop;
     procedure Pause;
@@ -133,6 +137,19 @@ end;
 function TGBCCoreAdapter.GetSupportsSnapshots: Boolean;
 begin
   Result := True;
+end;
+
+function TGBCCoreAdapter.GetHasCoinAcceptor: Boolean;
+begin
+  Result := False;
+end;
+
+procedure TGBCCoreAdapter.InsertCoin1;
+begin
+end;
+
+procedure TGBCCoreAdapter.InsertCoin2;
+begin
 end;
 
 function TGBCCoreAdapter.GetUsesSuborKeyboard: Boolean;

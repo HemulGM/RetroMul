@@ -31,6 +31,7 @@ type
     FAudioVolume: Single;
     FDiagnostics: TAudioDiagnostics;
     FInput: TNesInput;
+    FPendingCoins: array[0..1] of Integer;
     FLock: TCriticalSection;
     FWake: TEvent;
     FRomPath: string;
@@ -49,6 +50,7 @@ type
     FStatus: TEmulationStatus;
     FRunFrameMs: Double;
     FPaused: Boolean;
+    procedure RequestCoin(Player: Integer);
     procedure RunEmulation;
     procedure SnapshotCommand(const Name: string; Loading: Boolean);
     function ProcessSnapshot: Boolean;
@@ -65,6 +67,8 @@ type
     procedure SetSuborKeys(const Keys: TSuborKeys);
     procedure ClearInput;
     procedure SetButtons(Source: UInt32; Player: Integer; const Buttons: TNesButtons);
+    procedure InsertCoin1;
+    procedure InsertCoin2;
     procedure RequestReset;
     procedure RequestPause;
     procedure RequestResume;
@@ -450,10 +454,33 @@ begin
   end;
 end;
 
+procedure TNesEmulationThread.RequestCoin(Player: Integer);
+begin
+  if not FConsole.HasCoinAcceptor then Exit;
+  FLock.Enter;
+  try
+    if FPendingCoins[Player] < High(Integer) then Inc(FPendingCoins[Player]);
+  finally
+    FLock.Leave;
+  end;
+  FWake.SetEvent;
+end;
+
+procedure TNesEmulationThread.InsertCoin1;
+begin
+  RequestCoin(0);
+end;
+
+procedure TNesEmulationThread.InsertCoin2;
+begin
+  RequestCoin(1);
+end;
+
 procedure TNesEmulationThread.RequestReset;
 begin
   FLock.Enter;
   try
+    FillChar(FPendingCoins, SizeOf(FPendingCoins), 0);
     FResetRequested := True;
     FPauseRequested := False;
     FResumeRequested := False;
@@ -669,6 +696,22 @@ begin
         // Report frame work only, excluding the frame limiter and paused time.
         //FrameHints.BeginFrame;
         //{$ENDIF}
+        // Consume one request per slot per emulated frame. Pausing keeps requests.
+        FLock.Enter;
+        try
+          if FPendingCoins[0] > 0 then
+          begin
+            FConsole.InsertCoin1;
+            Dec(FPendingCoins[0]);
+          end;
+          if FPendingCoins[1] > 0 then
+          begin
+            FConsole.InsertCoin2;
+            Dec(FPendingCoins[1]);
+          end;
+        finally
+          FLock.Leave;
+        end;
         var T1 := TStopwatch.GetTimeStamp;
         FConsole.RunFrame;
         var T2 := TStopwatch.GetTimeStamp;

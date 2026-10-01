@@ -80,6 +80,9 @@ type
     function GetName: string;
     function GetSupportsSnapshots: Boolean;
     function GetUsesSuborKeyboard: Boolean;
+    function GetHasCoinAcceptor: Boolean;
+    procedure InsertCoin1;
+    procedure InsertCoin2;
     procedure Start;
     procedure Stop;
     procedure Pause;
@@ -96,6 +99,8 @@ type
     property Name: string read GetName;
     property SupportsSnapshots: Boolean read GetSupportsSnapshots;
     property UsesSuborKeyboard: Boolean read GetUsesSuborKeyboard;
+    // Coin methods do nothing when the loaded ROM has no coin acceptor.
+    property HasCoinAcceptor: Boolean read GetHasCoinAcceptor;
     property Config: IEmulatorConfig read GetConfig;
     function IsPaused: Boolean;
   end;

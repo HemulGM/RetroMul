@@ -25,9 +25,10 @@ type
     FRegion: TNesRegion;
     FConfiguredFourScore: Boolean;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 10);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 11);
     function GetRomIdentity: string;
     function GetUsesPowerPad: Boolean;
+    function GetHasCoinAcceptor: Boolean;
   public
     constructor Create(FourScoreEnabled: Boolean = False);
     destructor Destroy; override;
@@ -38,6 +39,9 @@ type
     procedure LoadSnapshot(const FileName: string);
     property RomIdentity: string read GetRomIdentity;
     property UsesPowerPad: Boolean read GetUsesPowerPad;
+    property HasCoinAcceptor: Boolean read GetHasCoinAcceptor;
+    procedure InsertCoin1;
+    procedure InsertCoin2;
     procedure Reset;
     procedure Clock;
     procedure RunFrame;
@@ -63,7 +67,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 10;
+  SNAPSHOT_VERSION = 11;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -89,6 +93,21 @@ type
 function TNesConsole.GetRomIdentity: string;
 begin
   Result := FCartridge.RomIdentity;
+end;
+
+function TNesConsole.GetHasCoinAcceptor: Boolean;
+begin
+  Result := FBus.HasCoinAcceptor;
+end;
+
+procedure TNesConsole.InsertCoin1;
+begin
+  FBus.InsertCoin1;
+end;
+
+procedure TNesConsole.InsertCoin2;
+begin
+  FBus.InsertCoin2;
 end;
 
 function TNesConsole.GetUsesPowerPad: Boolean;
@@ -126,6 +145,7 @@ begin
         raise ENesException.Create('Snapshot belongs to a different NES 2.0 submapper');
     end;
     FApu.SerializeDmaState(State);
+    FBus.SerializeCoins(State);
   finally
     State.Free;
   end;
@@ -331,6 +351,7 @@ end;
 
 procedure TNesConsole.Clock;
 begin
+  var WasFrameReady := FPpu.FrameReady;
   FBus.CpuCycle := FCpuCycles;
   FBus.HaltedCpuAddress := FCpu.NextReadAddress;
   var CpuOdd: Boolean := (FBus.CpuCycle and 1) <> 0;
@@ -401,6 +422,7 @@ begin
   if FPpu.ConsumeNmi then FCpu.TriggerNmi;
   FCpu.PollInterrupts;
 
+  if FPpu.FrameReady and not WasFrameReady then FBus.ClockCoinFrame;
   Inc(FCpuCycles);
 end;
 

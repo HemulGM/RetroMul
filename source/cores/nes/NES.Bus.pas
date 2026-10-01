@@ -35,10 +35,19 @@ type
     FTimedIo: Boolean;
     FPendingStrobe: UInt8;
     FStrobeDirty: Boolean;
+    FCoinFrames: array[0..1] of Byte;
+    FPendingCoins: array[0..1] of Integer;
+    function GetHasCoinAcceptor: Boolean;
+    procedure InsertCoin(Player: Integer);
     procedure WriteControllers(Value: UInt8);
     function ReadController(Port: Integer): UInt8;
     function ReadDevice(Address: UInt16): UInt8;
   public
+    property HasCoinAcceptor: Boolean read GetHasCoinAcceptor;
+    procedure InsertCoin1;
+    procedure InsertCoin2;
+    procedure ClockCoinFrame;
+    procedure SerializeCoins(State: TNesStateArchive);
     procedure SerializeState(State: TNesStateArchive);
     // Appended to the console snapshot after v4 fields for legacy compatibility.
     procedure SerializeDataBus(State: TNesStateArchive);
@@ -64,6 +73,63 @@ type
 implementation
 
 uses NES.Mapper;
+
+function TNesBus.GetHasCoinAcceptor: Boolean;
+begin
+  Result := (FCartridge <> nil) and ((FCartridge.MapperId = MAPPER_VS_SYSTEM) or
+    (FCartridge.Metadata.ConsoleType = 1));
+end;
+
+procedure TNesBus.InsertCoin(Player: Integer);
+begin
+  if not HasCoinAcceptor then Exit;
+  if FCoinFrames[Player] = 0 then
+    FCoinFrames[Player] := 8
+  else if FPendingCoins[Player] < High(Integer) then
+    Inc(FPendingCoins[Player]);
+end;
+
+procedure TNesBus.InsertCoin1;
+begin
+  InsertCoin(0);
+end;
+
+procedure TNesBus.InsertCoin2;
+begin
+  InsertCoin(1);
+end;
+
+procedure TNesBus.ClockCoinFrame;
+begin
+  // Four frames high, then four low so consecutive coins have separate edges.
+  for var Player := 0 to 1 do
+  begin
+    if FCoinFrames[Player] > 0 then Dec(FCoinFrames[Player]);
+    if (FCoinFrames[Player] = 0) and (FPendingCoins[Player] > 0) then
+    begin
+      Dec(FPendingCoins[Player]);
+      FCoinFrames[Player] := 8;
+    end;
+  end;
+end;
+
+procedure TNesBus.SerializeCoins(State: TNesStateArchive);
+begin
+  if State.Version >= 11 then
+  begin
+    State.Field(FCoinFrames, SizeOf(FCoinFrames));
+    State.Field(FPendingCoins, SizeOf(FPendingCoins));
+    if State.Loading then
+      for var Player := 0 to 1 do
+        if (FCoinFrames[Player] > 8) or (FPendingCoins[Player] < 0) then
+          raise ENesException.Create('Invalid coin input state');
+  end
+  else if State.Loading then
+  begin
+    FillChar(FCoinFrames, SizeOf(FCoinFrames), 0);
+    FillChar(FPendingCoins, SizeOf(FPendingCoins), 0);
+  end;
+end;
 
 procedure TNesBus.SerializeDataBus(State: TNesStateArchive);
 begin
@@ -253,14 +319,12 @@ begin
     $4016:
       begin
         Result := (ReadController(0) and $1F) or (FDataBus and $E0);
-        // VS UniSystem coin input is a live bit on $4016. Use Select as
-        // the coin button so the existing keyboard/gamepad mapping can start
-        // arcade games without introducing a new frontend control.
-        if (FCartridge <> nil) and (FCartridge.MapperId = MAPPER_VS_SYSTEM) then
+        // VS coin slots are independent live inputs on $4016 bits 5 and 6.
+        if HasCoinAcceptor then
         begin
           Result := Result and $1F;
-          if FController1.IsButtonPressed(TNesButton.Select) then
-            Result := Result or $20;
+          if FCoinFrames[0] > 4 then Result := Result or $20;
+          if FCoinFrames[1] > 4 then Result := Result or $40;
         end;
         Exit;
       end;
@@ -383,6 +447,8 @@ end;
 
 procedure TNesBus.Reset;
 begin
+  FillChar(FCoinFrames, SizeOf(FCoinFrames), 0);
+  FillChar(FPendingCoins, SizeOf(FPendingCoins), 0);
   FDataBus := 0;
   FInternalDataBus := 0;
   FPendingStrobe := 0;

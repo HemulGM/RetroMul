@@ -31,6 +31,10 @@ type
     FCpuCycle: UInt64;
     FDataBus: UInt8;
     FInternalDataBus: UInt8;
+    FHaltedCpuAddress: UInt16;
+    FTimedIo: Boolean;
+    FPendingStrobe: UInt8;
+    FStrobeDirty: Boolean;
     procedure WriteControllers(Value: UInt8);
     function ReadController(Port: Integer): UInt8;
     function ReadDevice(Address: UInt16): UInt8;
@@ -43,12 +47,16 @@ type
     procedure Connect(Cartridge: TCartridge; Ppu: TPpu; Apu: TApu; Controller1, Controller2: TController; Controller3: TController = nil; Controller4: TController = nil; SuborKeyboard: TSuborKeyboard = nil);
     function CpuRead(Address: UInt16): UInt8;
     function DmaRead(Address: UInt16): UInt8;
+    function DmaTransferRead(Address: UInt16): UInt8;
     procedure CpuWrite(Address: UInt16; Value: UInt8);
     function IsDmaActive: Boolean;
     procedure ClockDma(CpuCycleOdd: Boolean);
+    procedure ClockIo;
     function DebugCpuRead(Address: UInt16): UInt8;
     property CpuCycle: UInt64 read FCpuCycle write FCpuCycle;
     property DmaWritePending: Boolean read FDmaHaveData;
+    property HaltedCpuAddress: UInt16 read FHaltedCpuAddress write FHaltedCpuAddress;
+    property TimedIo: Boolean read FTimedIo write FTimedIo;
     property FourScoreEnabled: Boolean read FFourScoreEnabled write FFourScoreEnabled;
     property Zapper: TZapper read FZapper write FZapper;
   end;
@@ -65,6 +73,16 @@ begin
     State.Field(FInternalDataBus, SizeOf(FInternalDataBus))
   else if State.Loading then
     FInternalDataBus := FDataBus;
+  if State.Version >= 10 then
+  begin
+    State.Field(FPendingStrobe, SizeOf(FPendingStrobe));
+    State.Field(FStrobeDirty, SizeOf(FStrobeDirty));
+  end
+  else if State.Loading then
+  begin
+    FPendingStrobe := 0;
+    FStrobeDirty := False;
+  end;
 end;
 
 procedure TNesBus.SerializeState(State: TNesStateArchive);
@@ -126,6 +144,17 @@ begin
     FController4.Write(Value);
 end;
 
+procedure TNesBus.ClockIo;
+begin
+  // Sample the output latch on the GET-to-PUT transition, before the next
+  // CPU write. A pulse wholly between sampling edges is invisible.
+  if FTimedIo and FStrobeDirty and ((FCpuCycle and 1) = 0) then
+  begin
+    WriteControllers(FPendingStrobe);
+    FStrobeDirty := False;
+  end;
+end;
+
 function TNesBus.ReadController(Port: Integer): UInt8;
 begin
   var Primary, Extra: TController;
@@ -177,6 +206,36 @@ begin
   Result := ReadDevice(Address);
   if Address <> $4015 then
     FDataBus := Result;
+end;
+
+function TNesBus.DmaTransferRead(Address: UInt16): UInt8;
+begin
+  // The CPU's held address enables the internal I/O decoder; DMA supplies
+  // the low five address bits. External memory remains selected in parallel.
+  if (FHaltedCpuAddress and $FFE0) <> $4000 then
+  begin
+    if (Address >= $4015) and (Address <= $4017) then Exit(FDataBus);
+    Exit(DmaRead(Address));
+  end;
+  var RegisterAddress: UInt16 := $4000 or (Address and $1F);
+  if RegisterAddress = $4015 then
+  begin
+    Result := ReadDevice($4015);
+    FInternalDataBus := Result;
+    if Address <> RegisterAddress then DmaRead(Address);
+  end
+  else if (RegisterAddress = $4016) or (RegisterAddress = $4017) then
+  begin
+    var ControllerValue := DmaRead(RegisterAddress);
+    Result := ControllerValue;
+    if Address <> RegisterAddress then
+    begin
+      var ExternalValue := DmaRead(Address);
+      Result := (ExternalValue and $E0) or (ControllerValue and ExternalValue and $1F);
+      FDataBus := (ExternalValue and $E0) or (ControllerValue and $1F);
+    end;
+  end
+  else Result := DmaRead(Address);
 end;
 
 function TNesBus.ReadDevice(Address: UInt16): UInt8;
@@ -246,7 +305,12 @@ begin
       end;
     $4016:
       begin
-        WriteControllers(Value);
+        if FTimedIo then
+        begin
+          FPendingStrobe := Value;
+          FStrobeDirty := True;
+        end
+        else WriteControllers(Value);
         if FSuborKeyboard <> nil then
           FSuborKeyboard.Write(Value);
         if (FCartridge <> nil) and (FCartridge.Mapper <> nil) then
@@ -284,12 +348,14 @@ begin
 
   if CpuCycleOdd then
   begin
-    FDmaData := DmaRead((UInt16(FDmaPage) shl 8) or FDmaAddress);
+    FDmaData := DmaTransferRead((UInt16(FDmaPage) shl 8) or FDmaAddress);
     FDmaHaveData := True;
   end
   else if FDmaHaveData then
   begin
     FDmaHaveData := False;
+    FDataBus := FDmaData;
+    FInternalDataBus := FDmaData;
     FPpu.WriteOamDma(FDmaAddress, FDmaData);
     FDmaAddress := (FDmaAddress + 1) and $FF;
     if FDmaAddress = 0 then
@@ -305,6 +371,8 @@ procedure TNesBus.Reset;
 begin
   FDataBus := 0;
   FInternalDataBus := 0;
+  FPendingStrobe := 0;
+  FStrobeDirty := False;
   FDmaActive := False;
   FDmaDummy := True;
   FDmaAlign := False;

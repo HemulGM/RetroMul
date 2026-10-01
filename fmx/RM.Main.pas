@@ -975,6 +975,14 @@ begin
     FGamepad.Layout := TScreenGamepadLayout.Sega
   else
     FGamepad.Layout := TScreenGamepadLayout.Nes;
+    {
+  var NesEmulatorConfig: INesEmulatorConfig;
+  if Supports(FEmulation.Config, INesEmulatorConfig, NesEmulatorConfig) then
+  begin
+    NesEmulatorConfig.FourScore := False;
+    NesEmulatorConfig.ZapperEnabled := False;
+    FEmulation.Config.Save;
+  end;  }
 
   ImageCanvas.HitTest := False;
   ImageCanvas.CanFocus := False;

@@ -62,6 +62,7 @@ type
     FJsrActive: Boolean;
     FJsrLow: UInt8;
     FBusSequence: TBusSequence;
+    FDmaOnStoreDummy: Boolean;
     FApplyLatchedReads: Boolean;
     FLatchedReadIndex: Integer;
     FPollRequested: Boolean;
@@ -131,6 +132,8 @@ type
     procedure TriggerIrq;
     procedure SetIrqLine(Active: Boolean);
     function NextCycleIsWrite: Boolean;
+    function NextReadAddress: UInt16;
+    procedure NotifyDmaHalt;
     property UnknownOpcodeCount: Integer read FUnknownOpcodeCount;
     property Jammed: Boolean read FJammed;
     property JamOpcode: UInt8 read FJamOpcode;
@@ -241,6 +244,10 @@ begin
     State.Field(FBusSequence, SizeOf(FBusSequence))
   else if State.Loading then
     FBusSequence := Default(TBusSequence);
+  if State.Version >= 10 then
+    State.Field(FDmaOnStoreDummy, SizeOf(FDmaOnStoreDummy))
+  else if State.Loading then
+    FDmaOnStoreDummy := False;
 end;
 
 constructor TCPU6502.Create;
@@ -606,8 +613,11 @@ begin
   else
     Vector := $FFFE;
   case CyclesRemaining of
-    7, 6:
+    7:
       Read(Pc);
+    6:
+      if FInterruptBreakFlag then Read((FInterruptLatchedPc - 1) and $FFFF)
+      else Read(Pc);
     5:
       Push(FInterruptLatchedPc shr 8);
     4:
@@ -630,6 +640,7 @@ end;
 
 procedure TCPU6502.Reset;
 begin
+  FDmaOnStoreDummy := False;
   FBusSequence := Default(TBusSequence);
   FApplyLatchedReads := False;
   FLatchedReadIndex := 0;
@@ -823,6 +834,7 @@ end;
 
 procedure TCPU6502.StartBusSequence(Opcode: UInt8);
 begin
+  FDmaOnStoreDummy := False;
   FBusSequence := Default(TBusSequence);
   FBusSequence.Active := True;
   FBusSequence.Opcode := Opcode;
@@ -855,8 +867,32 @@ begin
   FBusSequence.Active := False;
 end;
 
-procedure TCPU6502.ClockBusSequence;
+procedure TCPU6502.NotifyDmaHalt;
 begin
+  if FBusSequence.Active and
+    (((FBusSequence.Opcode = $93) and (FBusSequence.Cycle = 5)) or
+     ((FBusSequence.Opcode in [$9B, $9C, $9E, $9F]) and
+       (FBusSequence.Cycle = 4))) then
+    FDmaOnStoreDummy := True;
+end;
+
+function TCPU6502.NextReadAddress: UInt16;
+begin
+  if not FBusSequence.Active then
+  begin
+    Result := Pc;
+    if FInterruptSequenceActive and FInterruptBreakFlag and (CyclesRemaining = 6) then
+      Result := (FInterruptLatchedPc - 1) and $FFFF;
+    if FJsrActive and (CyclesRemaining = 4) then Result := $0100 or Sp;
+    if FInterruptSequenceActive and (CyclesRemaining <= 2) then
+    begin
+      if (FInterruptKind = ikNmi) or
+        ((CyclesRemaining = 2) and FPendingNmi) then Result := $FFFA
+      else Result := $FFFE;
+      if CyclesRemaining = 1 then Inc(Result);
+    end;
+    Exit;
+  end;
   var BusAddress: UInt16 := 0;
   with FBusSequence do
     case Mode of
@@ -946,6 +982,12 @@ begin
         end;
     end;
 
+  Result := BusAddress;
+end;
+
+procedure TCPU6502.ClockBusSequence;
+begin
+  var BusAddress := NextReadAddress;
   var Value := FRead(BusAddress);
   with FBusSequence do
   begin
@@ -1807,6 +1849,7 @@ begin
         Mask := A and X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
+        if FDmaOnStoreDummy then Mask := A and X;
         Write(Addr, Mask);
         Cycles := 6;
       end;
@@ -1850,6 +1893,7 @@ begin
         var Mask: UInt8 := Sp and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
+        if FDmaOnStoreDummy then Mask := Sp;
         Write(Addr, Mask);
         Cycles := 5;
       end;
@@ -1861,6 +1905,7 @@ begin
         var Mask: UInt8 := Y and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
+        if FDmaOnStoreDummy then Mask := Y;
         Write(Addr, Mask);
         Cycles := 5;
       end;
@@ -1882,6 +1927,7 @@ begin
         var Mask: UInt8 := X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
+        if FDmaOnStoreDummy then Mask := X;
         Write(Addr, Mask);
         Cycles := 5;
       end;
@@ -1893,6 +1939,7 @@ begin
         var Mask: UInt8 := A and X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
+        if FDmaOnStoreDummy then Mask := A and X;
         Write(Addr, Mask);
         Cycles := 5;
       end;

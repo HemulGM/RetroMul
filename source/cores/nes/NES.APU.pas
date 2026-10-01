@@ -74,6 +74,8 @@ type
     FNoise: TNoiseChannel;
     FDmc: TDmcChannel;
     FDmcDmaDelay: Integer;
+    FDmcDisableDelay: Integer;
+    FDmcAbortRequested: Boolean;
     FCycle: UInt32;
     FFrameCounter: UInt32;
     FFrameMode5: Boolean;
@@ -133,6 +135,7 @@ type
     function IrqPending: Boolean;
     procedure Clock;
     function DmcDmaRequested: Boolean;
+    function ConsumeDmcAbort: Boolean;
     function DmcDmaAddress: UInt16;
     procedure CompleteDmcDma(Value: UInt8);
     function PopSamples(var Samples: array of SmallInt): Integer;
@@ -162,6 +165,16 @@ begin
     State.Field(FDmcDmaDelay, SizeOf(FDmcDmaDelay))
   else if State.Loading then
     FDmcDmaDelay := 0;
+  if State.Version >= 10 then
+  begin
+    State.Field(FDmcDisableDelay, SizeOf(FDmcDisableDelay));
+    State.Field(FDmcAbortRequested, SizeOf(FDmcAbortRequested));
+  end
+  else if State.Loading then
+  begin
+    FDmcDisableDelay := 0;
+    FDmcAbortRequested := False;
+  end;
 end;
 
 procedure TApu.SerializeState(State: TNesStateArchive);
@@ -272,6 +285,8 @@ begin
   FDmc.BufferEmpty := True;
   FDmc.Silence := True;
   FDmcDmaDelay := 0;
+  FDmcDisableDelay := 0;
+  FDmcAbortRequested := False;
   FCycle := 0;
   FFrameCounter := 0;
   FFrameMode5 := False;
@@ -587,15 +602,16 @@ begin
         FDmc.IrqFlag := False;
         if (Value and $10) = 0 then
         begin
-          FDmcDmaDelay := 0;
-          FDmc.BytesRemaining := 0
+          if FDmcDisableDelay = 0 then
+            FDmcDisableDelay := 3 + Ord((FCycle and 1) = 0);
         end
         else if FDmc.BytesRemaining = 0 then
         begin
           RestartDmc;
           // Load DMA halts on the get phase of the second following APU cycle.
-          if FDmc.BufferEmpty then
-            FDmcDmaDelay := 3 + Ord((FCycle and 1) = 0);
+          // Enable propagation also gates a reload if the output buffer
+          // empties immediately after this write.
+          FDmcDmaDelay := 3 + Ord((FCycle and 1) = 0);
         end;
       end;
     $4017:
@@ -725,6 +741,12 @@ begin
   FDmc.BytesRemaining := FDmc.SampleLength;
 end;
 
+function TApu.ConsumeDmcAbort: Boolean;
+begin
+  Result := FDmcAbortRequested;
+  FDmcAbortRequested := False;
+end;
+
 function TApu.DmcDmaRequested: Boolean;
 begin
   Result := FDmc.BufferEmpty and (FDmc.BytesRemaining > 0) and (FDmcDmaDelay = 0);
@@ -752,6 +774,15 @@ begin
       RestartDmc
     else if (FDmc.Control and $80) <> 0 then
       FDmc.IrqFlag := True;
+  end;
+  // A one-byte fetch ending just before the output shifter reload produces
+  // a spurious reload request, then the length gate cancels it one cycle later.
+  if (FDmc.SampleLength = 1) and ((FDmc.Control and $40) = 0) and
+    (FDmc.BitsRemaining = 1) and (FDmc.Timer < 2) then
+  begin
+    FDmc.Shift := FDmc.SampleBuffer;
+    RestartDmc;
+    FDmcDisableDelay := 4;
   end;
 end;
 
@@ -784,7 +815,7 @@ begin
       FDmc.Shift := FDmc.SampleBuffer;
       FDmc.BufferEmpty := True;
       // The output unit empties on get; reload DMA first tries to halt on put.
-      FDmcDmaDelay := 1;
+      if FDmcDmaDelay < 1 then FDmcDmaDelay := 1;
     end;
   end;
 end;
@@ -801,6 +832,15 @@ begin
   end;
   if FDmcDmaDelay > 0 then
     Dec(FDmcDmaDelay);
+  if FDmcDisableDelay > 0 then
+  begin
+    Dec(FDmcDisableDelay);
+    if FDmcDisableDelay = 0 then
+    begin
+      FDmc.BytesRemaining := 0;
+      FDmcAbortRequested := True;
+    end;
+  end;
 
   var FrameReset: Boolean := False;
   if FFrameResetDelay > 0 then

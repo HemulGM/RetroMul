@@ -25,7 +25,7 @@ type
     FRegion: TNesRegion;
     FConfiguredFourScore: Boolean;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 9);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 10);
     function GetRomIdentity: string;
     function GetUsesPowerPad: Boolean;
   public
@@ -63,7 +63,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 9;
+  SNAPSHOT_VERSION = 10;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -243,6 +243,7 @@ begin
   FPpu := TPpu.Create;
   FApu := TApu.Create;
   FBus := TNesBus.Create;
+  FBus.TimedIo := True;
   FCartridge := TCartridge.Create;
   FController1 := TController.Create;
   FController2 := TController.Create;
@@ -252,7 +253,7 @@ begin
   FZapper := TZapper.Create;
   FBus.Zapper := FZapper;
   FConfiguredFourScore := FourScoreEnabled;
-  FController2.PowerPadEnabled := not FourScoreEnabled;
+  FController2.PowerPadEnabled := False;
   FBus.FourScoreEnabled := FourScoreEnabled;
   FBus.Connect(FCartridge, FPpu, FApu, FController1, FController2,
     FController3, FController4, FSuborKeyboard);
@@ -279,7 +280,7 @@ procedure TNesConsole.LoadRom(const FileName: string; RegionOverride: TRegionOve
 begin
   FCartridge.LoadFromFile(FileName);
   FBus.FourScoreEnabled := FConfiguredFourScore and not UsesPowerPad;
-  FController2.PowerPadEnabled := not FBus.FourScoreEnabled;
+  FController2.PowerPadEnabled := UsesPowerPad;
   FSuborKeyboard.Connected := FCartridge.MapperId = MAPPER_SUBOR;
   FRegion := TNesRegion.NTSC;
   case RegionOverride of
@@ -327,6 +328,7 @@ end;
 procedure TNesConsole.Clock;
 begin
   FBus.CpuCycle := FCpuCycles;
+  FBus.HaltedCpuAddress := FCpu.NextReadAddress;
   var CpuOdd: Boolean := (FBus.CpuCycle and 1) <> 0;
   FPpu.Clock;
   FPpu.Clock;
@@ -342,19 +344,26 @@ begin
     end;
   end;
 
+  FBus.ClockIo;
   FApu.Clock;
+  // The read phase is already committed when its clock begins; a disable
+  // arriving on this phase prevents playback, but cannot recover that cycle.
+  if FApu.ConsumeDmcAbort and (FDmcDmaCycles <> 1) then FDmcDmaCycles := 0;
   if FCartridge.Mapper <> nil then
     FCartridge.Mapper.ClockCpu;
   FCpu.SetIrqLine(FApu.IrqPending or
     ((FCartridge.Mapper <> nil) and FCartridge.Mapper.IrqPending));
 
   var CanHalt: Boolean;
+  var DmcHaltStarted := False;
   if FBus.IsDmaActive then
     CanHalt := not FBus.DmaWritePending
   else
     CanHalt := not FCpu.NextCycleIsWrite;
   if (FDmcDmaCycles = 0) and FApu.DmcDmaRequested and CanHalt then
   begin
+    DmcHaltStarted := True;
+    FCpu.NotifyDmaHalt;
     // Halt + dummy + optional alignment + get. Get shares OAM's read phase.
     if CpuOdd then
       FDmcDmaCycles := 3
@@ -365,7 +374,17 @@ begin
   begin
     Dec(FDmcDmaCycles);
     if FDmcDmaCycles = 0 then
-      FApu.CompleteDmcDma(FBus.DmaRead(FApu.DmcDmaAddress));
+      FApu.CompleteDmcDma(FBus.DmaTransferRead(FApu.DmcDmaAddress))
+    else if FBus.IsDmaActive then
+      FBus.ClockDma(CpuOdd)
+    else
+    begin
+      var Address := FCpu.NextReadAddress;
+      // RDY holds the CPU read address. Joypad clocks remain low across
+      // consecutive held reads; the DMC fetch releases them before resume.
+      if DmcHaltStarted or ((Address <> $4016) and (Address <> $4017)) then
+        FBus.DmaRead(Address);
+    end;
   end
   else if FBus.IsDmaActive and not FCpu.NextCycleIsWrite then
     FBus.ClockDma(CpuOdd)

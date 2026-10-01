@@ -20,6 +20,8 @@ type
     ['{EDE593B6-24DD-4D4E-B4CA-30E4B33D7688}']
     function GetFourScore: Boolean;
     procedure SetFourScore(const Value: Boolean);
+    function GetZapperEnabled: Boolean;
+    procedure SetZapperEnabled(const Value: Boolean);
     function GetRegion: TRegionOverride;
     procedure SetRegion(const Value: TRegionOverride);
     function GetKeys: TKeyMap;
@@ -31,6 +33,7 @@ type
     function GetKeys4: TKeyMap;
     procedure SetKeys4(const Value: TKeyMap);
     property FourScore: Boolean read GetFourScore write SetFourScore;
+    property ZapperEnabled: Boolean read GetZapperEnabled write SetZapperEnabled;
     property Region: TRegionOverride read GetRegion write SetRegion;
     property Keys: TKeyMap read GetKeys write SetKeys;
     property Keys2: TKeyMap read GetKeys2 write SetKeys2;
@@ -41,6 +44,7 @@ type
   TNesEmulatorConfig = class(TEmulatorConfigBase, INesEmulatorConfig)
   private
     FFourScore: Boolean;
+    FZapperEnabled: Boolean;
     FRegion: TRegionOverride;
     FKeys, FKeys2, FKeys3, FKeys4: TKeyMap;
     procedure LoadKeyMap(Ini: TIniFile; const Section: string; var Keys: TKeyMap);
@@ -52,6 +56,8 @@ type
     constructor Create(const AFileName: string);
     function GetFourScore: Boolean;
     procedure SetFourScore(const Value: Boolean);
+    function GetZapperEnabled: Boolean;
+    procedure SetZapperEnabled(const Value: Boolean);
     function GetRegion: TRegionOverride;
     procedure SetRegion(const Value: TRegionOverride);
     function GetKeys: TKeyMap;
@@ -108,6 +114,10 @@ begin
   FConfig := TNesEmulatorConfig.Create(EmulatorConfigFileName('nes'));
   FConfig.Load;
   FThread := TNesEmulationThread.Create(FileName, FConfig.FourScore, FConfig.Region, FConfig.AudioEnabled, FConfig.AudioVolume);
+  // Select port 2 before starting the worker. A light gun replaces the pad
+  // and changes reads even when the trigger is not pressed.
+  FThread.Console.Zapper.Enabled := FConfig.ZapperEnabled and
+    not FThread.Console.UsesPowerPad;
 end;
 
 destructor TNesCoreAdapter.Destroy;
@@ -301,6 +311,7 @@ begin
   FKeys4.Left := vkNumpad4;
   FKeys4.Right := vkNumpad6;
   FFourScore := True;
+  FZapperEnabled := False;
   FRegion := TRegionOverride.Auto;
 end;
 
@@ -336,6 +347,7 @@ end;
 procedure TNesEmulatorConfig.LoadCoreSettings(Ini: TIniFile);
 begin
   FFourScore := Ini.ReadBool('Input', 'FourScore', FFourScore);
+  FZapperEnabled := Ini.ReadBool('Input', 'Zapper', False);
   var Region := Ini.ReadString('Video', 'Region', 'Auto');
   if SameText(Region, 'PAL') then
     FRegion := TRegionOverride.PAL
@@ -352,6 +364,7 @@ end;
 procedure TNesEmulatorConfig.SaveCoreSettings(Ini: TIniFile);
 begin
   Ini.WriteBool('Input', 'FourScore', FFourScore);
+  Ini.WriteBool('Input', 'Zapper', FZapperEnabled);
   case FRegion of
     TRegionOverride.NTSC:
       Ini.WriteString('Video', 'Region', 'NTSC');
@@ -369,6 +382,16 @@ end;
 function TNesEmulatorConfig.GetFourScore: Boolean;
 begin
   Result := FFourScore;
+end;
+
+function TNesEmulatorConfig.GetZapperEnabled: Boolean;
+begin
+  Result := FZapperEnabled;
+end;
+
+procedure TNesEmulatorConfig.SetZapperEnabled(const Value: Boolean);
+begin
+  FZapperEnabled := Value;
 end;
 
 function TNesEmulatorConfig.GetRegion: TRegionOverride;

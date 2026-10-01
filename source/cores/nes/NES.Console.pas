@@ -25,7 +25,7 @@ type
     FRegion: TNesRegion;
     FConfiguredFourScore: Boolean;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 7);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 8);
     function GetRomIdentity: string;
     function GetUsesPowerPad: Boolean;
   public
@@ -63,7 +63,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 7;
+  SNAPSHOT_VERSION = 8;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -125,6 +125,7 @@ begin
       if Loading and (Submapper <> FCartridge.Metadata.Submapper) then
         raise ENesException.Create('Snapshot belongs to a different NES 2.0 submapper');
     end;
+    FApu.SerializeDmaState(State);
   finally
     State.Free;
   end;
@@ -329,7 +330,6 @@ begin
   var CpuOdd: Boolean := (FBus.CpuCycle and 1) <> 0;
   FPpu.Clock;
   FPpu.Clock;
-  FPpu.Clock;
   // PAL divides the master clock by 16 for CPU and by 5 for PPU.
   // Carry the fractional dot across CPU cycles and frame boundaries.
   if FRegion = TNesRegion.PAL then
@@ -341,9 +341,6 @@ begin
       FPalPpuPhase := 0;
     end;
   end;
-
-  if FPpu.ConsumeNmi then
-    FCpu.TriggerNmi;
 
   FApu.Clock;
   if FCartridge.Mapper <> nil then
@@ -373,7 +370,13 @@ begin
   else if FBus.IsDmaActive and not FCpu.NextCycleIsWrite then
     FBus.ClockDma(CpuOdd)
   else
-    FCpu.Clock;
+    FCpu.Clock(True);
+
+  // Register access precedes interrupt sampling within phi2. Keep one PPU
+  // dot between them, including when the access reads/clears PPUSTATUS.
+  FPpu.Clock;
+  if FPpu.ConsumeNmi then FCpu.TriggerNmi;
+  FCpu.PollInterrupts;
 
   Inc(FCpuCycles);
 end;

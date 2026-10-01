@@ -307,6 +307,9 @@ end;
 
 function TNesBus.DebugCpuRead(Address: UInt16): UInt8;
 begin
+  // Inspecting RAM must not drive the emulated CPU data bus.
+  if Address < $2000 then
+    Exit(FRam[Address and $07FF]);
   Result := CpuRead(Address);
 end;
 

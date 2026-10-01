@@ -22,6 +22,19 @@ type
 
   TInterruptKind = (ikNone, ikIrq, ikNmi);
 
+  TBusMode = (bmImplied, bmImmediate, bmZero, bmZeroX, bmZeroY,
+    bmAbsolute, bmAbsoluteX, bmAbsoluteY, bmIndirectX, bmIndirectY,
+    bmIndirect, bmBranch, bmPush, bmPull, bmRti, bmRts);
+
+  TBusSequence = record
+    Active: Boolean;
+    Opcode, Cycle, Count: Byte;
+    Mode: TBusMode;
+    OpcodePc, Address, Base: UInt16;
+    Values: array[0..7] of Byte;
+    Addresses: array[0..7] of UInt16;
+  end;
+
   TCpu6502 = class
   private
     FRead: TCpuReadFunc;
@@ -48,6 +61,10 @@ type
     FIndexedDummyRead: Boolean;
     FJsrActive: Boolean;
     FJsrLow: UInt8;
+    FBusSequence: TBusSequence;
+    FApplyLatchedReads: Boolean;
+    FLatchedReadIndex: Integer;
+    FPollRequested: Boolean;
     FQueuedWriteCount: Integer;
     FWriteAddresses: array[0..2] of UInt16;
     FWriteValues: array[0..2] of UInt8;
@@ -92,6 +109,9 @@ type
     procedure ClockInterrupt;
     procedure BeginInterruptSequence(Kind: TInterruptKind; BreakFlag: Boolean);
     procedure ExecuteOpcode(Opcode: UInt8);
+    procedure StartBusSequence(Opcode: UInt8);
+    procedure ClockBusSequence;
+    procedure ApplyBusSequence;
   public
     A: UInt8;
     X: UInt8;
@@ -105,7 +125,8 @@ type
     constructor Create;
     procedure Connect(Reader: TCpuReadFunc; Writer: TCpuWriteProc);
     procedure Reset;
-    procedure Clock;
+    procedure Clock(DeferInterruptPoll: Boolean = False);
+    procedure PollInterrupts;
     procedure TriggerNmi;
     procedure TriggerIrq;
     procedure SetIrqLine(Active: Boolean);
@@ -119,6 +140,60 @@ type
   end;
 
 implementation
+
+const
+  BUS_MODES: array[0..255] of TBusMode = (
+    bmImplied, bmIndirectX, bmImplied, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmPush, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
+    bmImplied, bmIndirectX, bmImplied, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmPull, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
+    bmRti, bmIndirectX, bmImplied, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmPush, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
+    bmRts, bmIndirectX, bmImplied, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmPull, bmImmediate, bmImplied, bmImmediate, bmIndirect, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
+    bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmImplied, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroY, bmZeroY, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteY, bmAbsoluteY,
+    bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmImplied, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroY, bmZeroY, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteY, bmAbsoluteY,
+    bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmImplied, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
+    bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmImplied, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX);
+  BUS_CYCLES: array[0..255] of Byte = (
+    7, 6, 2, 8, 3, 3, 5, 5, 3, 2, 2, 2, 4, 4, 6, 6,
+    2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
+    6, 6, 2, 8, 3, 3, 5, 5, 4, 2, 2, 2, 4, 4, 6, 6,
+    2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
+    6, 6, 2, 8, 3, 3, 5, 5, 3, 2, 2, 2, 3, 4, 6, 6,
+    2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
+    6, 6, 2, 8, 3, 3, 5, 5, 4, 2, 2, 2, 5, 4, 6, 6,
+    2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
+    2, 6, 2, 6, 3, 3, 3, 3, 2, 2, 2, 2, 4, 4, 4, 4,
+    2, 6, 2, 6, 4, 4, 4, 4, 2, 5, 2, 5, 5, 5, 5, 5,
+    2, 6, 2, 6, 3, 3, 3, 3, 2, 2, 2, 2, 4, 4, 4, 4,
+    2, 5, 2, 5, 4, 4, 4, 4, 2, 4, 2, 4, 4, 4, 4, 4,
+    2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6,
+    2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
+    2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6,
+    2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7);
+  BUS_WRITES: array[0..255] of Byte = (
+    0, 0, 0, 2, 0, 0, 2, 2, 1, 0, 0, 0, 0, 0, 2, 2,
+    0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 2, 0, 0, 2, 2,
+    0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 2,
+    0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 2, 0, 0, 2, 2,
+    0, 0, 0, 2, 0, 0, 2, 2, 1, 0, 0, 0, 0, 0, 2, 2,
+    0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 2, 0, 0, 2, 2,
+    0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 2,
+    0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 2, 0, 0, 2, 2,
+    0, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1,
+    0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 2,
+    0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 2, 0, 0, 2, 2,
+    0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 2, 2,
+    0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 2, 0, 0, 2, 2);
+
 
 procedure TCpu6502.SerializeState(State: TNesStateArchive);
 begin
@@ -163,6 +238,10 @@ begin
     FJsrActive := False;
     FJsrLow := 0;
   end;
+  if State.Version >= 8 then
+    State.Field(FBusSequence, SizeOf(FBusSequence))
+  else if State.Loading then
+    FBusSequence := Default(TBusSequence);
 end;
 
 constructor TCpu6502.Create;
@@ -179,6 +258,15 @@ end;
 
 function TCpu6502.Read(Address: UInt16): UInt8;
 begin
+  if FApplyLatchedReads then
+  begin
+    if (FLatchedReadIndex >= FBusSequence.Count) or
+      (FBusSequence.Addresses[FLatchedReadIndex] <> Address) then
+      raise ENesException.Create('CPU bus sequence does not match opcode reads');
+    Result := FBusSequence.Values[FLatchedReadIndex];
+    Inc(FLatchedReadIndex);
+    Exit;
+  end;
   Result := FRead(Address);
 end;
 
@@ -543,6 +631,10 @@ end;
 
 procedure TCpu6502.Reset;
 begin
+  FBusSequence := Default(TBusSequence);
+  FApplyLatchedReads := False;
+  FLatchedReadIndex := 0;
+  FPollRequested := False;
   A := 0;
   X := 0;
   Y := 0;
@@ -601,8 +693,17 @@ begin
     (FInterruptSequenceActive and (CyclesRemaining >= 3) and (CyclesRemaining <= 5));
 end;
 
-procedure TCpu6502.Clock;
+procedure TCpu6502.PollInterrupts;
 begin
+  if not FPollRequested then Exit;
+  FPollRequested := False;
+  FNmiAfterInstruction := FNmiAfterInstruction or FPendingNmi;
+  FIrqAfterInstruction := FIrqAfterInstruction or (FPendingIrq and not FPollInterruptDisable);
+end;
+
+procedure TCpu6502.Clock(DeferInterruptPoll: Boolean);
+begin
+  FPollRequested := False;
   // KIL locks the instruction sequencer until reset; IRQ and NMI cannot resume it.
   if FJammed then
   begin
@@ -638,7 +739,7 @@ begin
         Pc := (Pc + 1) and $FFFF;
         CyclesRemaining := 6;
       end
-      else
+      else if Opcode in [$00,$02,$12,$22,$32,$42,$52,$62,$72,$92,$B2,$D2,$F2] then
       begin
         FExecutingOpcode := True;
         try
@@ -646,7 +747,9 @@ begin
         finally
           FExecutingOpcode := False;
         end;
-      end;
+      end
+      else
+        StartBusSequence(Opcode);
       ExecutedBrk := Opcode = $00;
       FInstructionActive := not ExecutedBrk;
       // CLI/SEI/PLP poll the old I flag. RTI polls the restored flag.
@@ -666,6 +769,9 @@ begin
     end;
   end;
 
+  if FBusSequence.Active and (FBusSequence.Cycle > 1) then
+    ClockBusSequence;
+
   if FInterruptSequenceActive then
   begin
     // BRK's opcode fetch already performed the first cycle.
@@ -673,10 +779,7 @@ begin
       ClockInterrupt;
   end
   else if FInstructionActive and (CyclesRemaining = FPollCycle) then
-  begin
-    FNmiAfterInstruction := FNmiAfterInstruction or FPendingNmi;
-    FIrqAfterInstruction := FIrqAfterInstruction or (FPendingIrq and not FPollInterruptDisable);
-  end;
+    FPollRequested := True;
 
   if FJsrActive then
     case CyclesRemaining of
@@ -708,7 +811,154 @@ begin
   end;
   if CyclesRemaining > 0 then
     Dec(CyclesRemaining);
+  if FBusSequence.Active then Inc(FBusSequence.Cycle);
+  if not DeferInterruptPoll then PollInterrupts;
   TotalCycles := (UInt64(TotalCycles) + 1) and $FFFFFFFF;
+end;
+
+procedure TCpu6502.StartBusSequence(Opcode: UInt8);
+begin
+  FBusSequence := Default(TBusSequence);
+  FBusSequence.Active := True;
+  FBusSequence.Opcode := Opcode;
+  FBusSequence.OpcodePc := Pc;
+  FBusSequence.Cycle := 1;
+  FBusSequence.Mode := BUS_MODES[Opcode];
+  CyclesRemaining := BUS_CYCLES[Opcode];
+  Pc := (Pc + 1) and $FFFF;
+end;
+
+procedure TCpu6502.ApplyBusSequence;
+begin
+  // The bus sequencer has already performed each read on its real clock.
+  // Apply the existing ALU/flag logic once, using only the latched values.
+  // Writes are queued here and occupy the remaining one or two bus cycles.
+  var Remaining := CyclesRemaining;
+  Pc := FBusSequence.OpcodePc;
+  FLatchedReadIndex := 0;
+  FApplyLatchedReads := True;
+  FExecutingOpcode := True;
+  try
+    ExecuteOpcode(FBusSequence.Opcode);
+    if FLatchedReadIndex <> FBusSequence.Count then
+      raise ENesException.Create('CPU bus sequence contains unused reads');
+  finally
+    FExecutingOpcode := False;
+    FApplyLatchedReads := False;
+  end;
+  CyclesRemaining := Remaining;
+  FBusSequence.Active := False;
+end;
+
+procedure TCpu6502.ClockBusSequence;
+begin
+  var BusAddress: UInt16 := 0;
+  with FBusSequence do
+    case Mode of
+      bmImplied, bmImmediate, bmPush:
+        BusAddress := (OpcodePc + 1) and $FFFF;
+      bmZero, bmZeroX, bmZeroY:
+        case Cycle of
+          2: BusAddress := (OpcodePc + 1) and $FFFF;
+          3: BusAddress := Values[0];
+        else
+          if Mode = bmZeroX then BusAddress := (Values[0] + X) and $FF
+          else BusAddress := (Values[0] + Y) and $FF;
+        end;
+      bmAbsolute, bmAbsoluteX, bmAbsoluteY:
+        case Cycle of
+          2, 3: BusAddress := (OpcodePc + Cycle - 1) and $FFFF;
+          4:
+            if Mode = bmAbsolute then BusAddress := Address
+            else BusAddress := (Base and $FF00) or (Address and $FF);
+        else
+          BusAddress := Address;
+        end;
+      bmIndirectX:
+        case Cycle of
+          2: BusAddress := (OpcodePc + 1) and $FFFF;
+          3: BusAddress := Values[0];
+          4: BusAddress := (Values[0] + X) and $FF;
+          5: BusAddress := (Values[0] + X + 1) and $FF;
+          6: BusAddress := Values[2] or (UInt16(Values[3]) shl 8);
+        end;
+      bmIndirectY:
+        case Cycle of
+          2: BusAddress := (OpcodePc + 1) and $FFFF;
+          3: BusAddress := Values[0];
+          4: BusAddress := (Values[0] + 1) and $FF;
+          5: BusAddress := (Base and $FF00) or (Address and $FF);
+          6: BusAddress := Address;
+        end;
+      bmIndirect:
+        case Cycle of
+          2, 3: BusAddress := (OpcodePc + Cycle - 1) and $FFFF;
+          4: BusAddress := Values[0] or (UInt16(Values[1]) shl 8);
+          5: BusAddress := (UInt16(Values[1]) shl 8) or ((Values[0] + 1) and $FF);
+        end;
+      bmBranch:
+        case Cycle of
+          2: BusAddress := (OpcodePc + 1) and $FFFF;
+          3: BusAddress := (OpcodePc + 2) and $FFFF;
+          4: BusAddress := (Base and $FF00) or (Address and $FF);
+        end;
+      bmPull, bmRti, bmRts:
+        case Cycle of
+          2: BusAddress := (OpcodePc + 1) and $FFFF;
+          3: BusAddress := $0100 or Sp;
+          4, 5: BusAddress := $0100 or ((Sp + Cycle - 3) and $FF);
+          6:
+            if Mode = bmRti then BusAddress := $0100 or ((Sp + 3) and $FF)
+            else BusAddress := Values[2] or (UInt16(Values[3]) shl 8);
+        end;
+    end;
+
+  var Value := FRead(BusAddress);
+  with FBusSequence do
+  begin
+    Addresses[Count] := BusAddress;
+    Values[Count] := Value;
+    Inc(Count);
+    if ((Mode in [bmAbsolute, bmAbsoluteX, bmAbsoluteY]) and (Cycle = 3)) or
+      ((Mode = bmIndirectY) and (Cycle = 4)) then
+    begin
+      if Mode = bmIndirectY then Base := Values[1] or (UInt16(Value) shl 8)
+      else Base := Values[0] or (UInt16(Value) shl 8);
+      Address := Base;
+      if Mode = bmAbsoluteX then Address := (Base + X) and $FFFF
+      else if Mode in [bmAbsoluteY, bmIndirectY] then Address := (Base + Y) and $FFFF;
+      if (BUS_WRITES[Opcode] = 0) and ((Base and $FF00) <> (Address and $FF00)) then
+        Inc(CyclesRemaining);
+    end;
+    if (Mode = bmRti) and (Cycle = 4) then
+      FPollInterruptDisable := (Value and FLAG_INTERRUPT) <> 0;
+    if (Mode = bmBranch) and (Cycle = 2) then
+    begin
+      var Taken := False;
+      case Opcode of
+        $10: Taken := (P and FLAG_NEGATIVE) = 0;
+        $30: Taken := (P and FLAG_NEGATIVE) <> 0;
+        $50: Taken := (P and FLAG_OVERFLOW) = 0;
+        $70: Taken := (P and FLAG_OVERFLOW) <> 0;
+        $90: Taken := (P and FLAG_CARRY) = 0;
+        $B0: Taken := (P and FLAG_CARRY) <> 0;
+        $D0: Taken := (P and FLAG_ZERO) = 0;
+        $F0: Taken := (P and FLAG_ZERO) <> 0;
+      end;
+      if Taken then
+      begin
+        Base := (OpcodePc + 2) and $FFFF;
+        var Offset: Integer := Value;
+        if Offset >= $80 then Dec(Offset, $100);
+        Address := (Base + Offset) and $FFFF;
+        Inc(CyclesRemaining);
+        if (Base and $FF00) <> (Address and $FF00) then Inc(CyclesRemaining)
+        else FPollCycle := 3;
+      end;
+    end;
+    if CyclesRemaining = BUS_WRITES[Opcode] + 1 then
+      ApplyBusSequence;
+  end;
 end;
 
 procedure TCpu6502.ExecuteOpcode(Opcode: UInt8);
@@ -1505,6 +1755,7 @@ begin
         var Mask: UInt8 := Read((Ptr + 1) and $FF);
         var Base: UInt16 := Value or (UInt16(Mask) shl 8);
         var Addr: UInt16 := (Base + Y) and $FFFF;
+        Read((Base and $FF00) or (Addr and $FF));
         Mask := A and X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
@@ -1546,6 +1797,7 @@ begin
       begin
         var Base: UInt16 := AbsAddr;
         var Addr: UInt16 := (Base + Y) and $FFFF;
+        Read((Base and $FF00) or (Addr and $FF));
         Sp := A and X;
         var Mask: UInt8 := Sp and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
@@ -1557,6 +1809,7 @@ begin
       begin
         var Base: UInt16 := AbsAddr;
         var Addr: UInt16 := (Base + X) and $FFFF;
+        Read((Base and $FF00) or (Addr and $FF));
         var Mask: UInt8 := Y and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
@@ -1577,6 +1830,7 @@ begin
       begin
         var Base: UInt16 := AbsAddr;
         var Addr: UInt16 := (Base + Y) and $FFFF;
+        Read((Base and $FF00) or (Addr and $FF));
         var Mask: UInt8 := X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
@@ -1587,6 +1841,7 @@ begin
       begin
         var Base: UInt16 := AbsAddr;
         var Addr: UInt16 := (Base + Y) and $FFFF;
+        Read((Base and $FF00) or (Addr and $FF));
         var Mask: UInt8 := A and X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);

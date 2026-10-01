@@ -1003,7 +1003,8 @@ begin
               Exit(True);
         Result := False;  }
       end;
-    Peripheral.Zapper.Enabled := not Peripheral.UsesPowerPad;
+    // Port 2 is selected by the NES configuration before the worker starts.
+    // Attaching the light-sensor callback must not connect a gun to every ROM.
     //Peripheral.SetSuborKeys(FSuborKeyboard.Keys);
   end;
 

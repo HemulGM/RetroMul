@@ -73,6 +73,7 @@ type
     FTriangle: TTriangleChannel;
     FNoise: TNoiseChannel;
     FDmc: TDmcChannel;
+    FDmcDmaDelay: Integer;
     FCycle: UInt32;
     FFrameCounter: UInt32;
     FFrameMode5: Boolean;
@@ -120,6 +121,7 @@ type
     function FilterSample(Value: Double): Double;
   public
     procedure SerializeState(State: TNesStateArchive);
+    procedure SerializeDmaState(State: TNesStateArchive);
     constructor Create;
     // Select timing before running; resets channels and buffered PCM.
     procedure SetRegion(Value: TNesRegion);
@@ -152,6 +154,14 @@ type
   end;
 
 implementation
+
+procedure TApu.SerializeDmaState(State: TNesStateArchive);
+begin
+  if State.Version >= 8 then
+    State.Field(FDmcDmaDelay, SizeOf(FDmcDmaDelay))
+  else if State.Loading then
+    FDmcDmaDelay := 0;
+end;
 
 procedure TApu.SerializeState(State: TNesStateArchive);
 begin
@@ -256,6 +266,7 @@ begin
   FDmc.BitsRemaining := 8;
   FDmc.BufferEmpty := True;
   FDmc.Silence := True;
+  FDmcDmaDelay := 0;
   FCycle := 0;
   FFrameCounter := 0;
   FFrameMode5 := False;
@@ -569,9 +580,17 @@ begin
           FNoise.LengthCounter := 0;
         FDmc.IrqFlag := False;
         if (Value and $10) = 0 then
+        begin
+          FDmcDmaDelay := 0;
           FDmc.BytesRemaining := 0
+        end
         else if FDmc.BytesRemaining = 0 then
+        begin
           RestartDmc;
+          // Load DMA halts on the get phase of the second following APU cycle.
+          if FDmc.BufferEmpty then
+            FDmcDmaDelay := 3 + Ord((FCycle and 1) = 0);
+        end;
       end;
     $4017:
       begin
@@ -699,7 +718,7 @@ end;
 
 function TApu.DmcDmaRequested: Boolean;
 begin
-  Result := FDmc.BufferEmpty and (FDmc.BytesRemaining > 0);
+  Result := FDmc.BufferEmpty and (FDmc.BytesRemaining > 0) and (FDmcDmaDelay = 0);
 end;
 
 function TApu.DmcDmaAddress: UInt16;
@@ -755,6 +774,8 @@ begin
     begin
       FDmc.Shift := FDmc.SampleBuffer;
       FDmc.BufferEmpty := True;
+      // The output unit empties on get; reload DMA first tries to halt on put.
+      FDmcDmaDelay := 1;
     end;
   end;
 end;
@@ -764,6 +785,7 @@ begin
   var Feedback: UInt16;
   var Sample: Double;
   FCycle := (UInt64(FCycle) + 1) and $FFFFFFFF;
+  if FDmcDmaDelay > 0 then Dec(FDmcDmaDelay);
 
   var FrameReset: Boolean := False;
   if FFrameResetDelay > 0 then

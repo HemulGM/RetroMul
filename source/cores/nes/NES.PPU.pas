@@ -369,7 +369,10 @@ procedure TPPU.UpdateNmiState;
 begin
   var NewLine: Boolean := FNmiOccurred and ((FCtrl and $80) <> 0);
   if NewLine and not FNmiLine then
-    FNmiDelay := 8
+  begin
+    FNmiDelay := 0;
+    FNmiPending := True;
+  end
   else if not NewLine then
   begin
     if (FNmiDelay > 0) and (FNmiDelay <= 6) then
@@ -626,6 +629,8 @@ begin
           FNmiPending := False;
         end;
         FStatus := FStatus and not $80;
+        if (FScanline = VblankStartLine) and (FCycle <= 3) then
+          FNmiPending := False;
         if (Result and $80) = 0 then
           FNmiPending := False
         else if (FNmiDelay > 0) and (FNmiDelay <= 6) then

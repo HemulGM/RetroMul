@@ -13,7 +13,7 @@ uses
   Androidapi.JNI.Widget, Androidapi.JNI.Os, Androidapi.JNI.Media, FMX.Platform,
   FMX.ApplicationEvents, RM.RomPicker.Android,
   {$ENDIF}
-  RM.FolderPicker.Android, NES.Gamepad, FMX.ListBox, SCRP.GameList, FMX.Edit,
+  RM.FolderPicker.Android, RM.Gamepad, FMX.ListBox, SCRP.GameList, FMX.Edit,
   FMX.SearchBox;
 
 type

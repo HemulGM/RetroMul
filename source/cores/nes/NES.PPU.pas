@@ -6,7 +6,7 @@ uses
   NES.State, NES.Types, NES.Consts, NES.Mapper;
 
 type
-  TPpu = class
+  TPPU = class
   private
     FRegion: TNesRegion;
     FPreRenderLine: Integer;
@@ -106,7 +106,7 @@ type
 
 implementation
 
-procedure TPpu.SerializeState(State: TNesStateArchive);
+procedure TPPU.SerializeState(State: TNesStateArchive);
 begin
   FZapperMaskValid := False;
   State.Field(FRegion, SizeOf(FRegion));
@@ -155,13 +155,13 @@ begin
   State.Field(FFetchTile, SizeOf(FFetchTile));
 end;
 
-constructor TPpu.Create;
+constructor TPPU.Create;
 begin
   inherited Create;
   SetRegion(TNesRegion.NTSC);
 end;
 
-procedure TPpu.SetRegion(Value: TNesRegion);
+procedure TPPU.SetRegion(Value: TNesRegion);
 begin
   FRegion := Value;
   if Value in [TNesRegion.PAL, TNesRegion.Dendy] then
@@ -171,7 +171,7 @@ begin
   Reset;
 end;
 
-function TPpu.VblankStartLine: Integer;
+function TPPU.VblankStartLine: Integer;
 begin
   if FRegion = TNesRegion.Dendy then
     Result := 291
@@ -179,12 +179,12 @@ begin
     Result := 241;
 end;
 
-procedure TPpu.ConnectMapper(AMapper: TMapper);
+procedure TPPU.ConnectMapper(AMapper: TMapper);
 begin
   FMapper := AMapper;
 end;
 
-procedure TPpu.Reset;
+procedure TPPU.Reset;
 begin
   FCycle := 0;
   FPpuClock := 0;
@@ -232,7 +232,7 @@ begin
     FOam[i] := 0;
 end;
 
-procedure TPpu.IncrementX;
+procedure TPPU.IncrementX;
 begin
   if (FV and $001F) = 31 then
   begin
@@ -243,7 +243,7 @@ begin
     FV := (FV + 1) and $7FFF;
 end;
 
-procedure TPpu.IncrementY;
+procedure TPPU.IncrementY;
 begin
   var Y: UInt16;
   if (FV and $7000) <> $7000 then
@@ -265,17 +265,17 @@ begin
   end;
 end;
 
-procedure TPpu.CopyX;
+procedure TPPU.CopyX;
 begin
   FV := (FV and not UInt16($041F)) or (FT and $041F);
 end;
 
-procedure TPpu.CopyY;
+procedure TPPU.CopyY;
 begin
   FV := (FV and not UInt16($7BE0)) or (FT and $7BE0);
 end;
 
-function TPpu.MirrorNameTableAddress(Address: UInt16): UInt16;
+function TPPU.MirrorNameTableAddress(Address: UInt16): UInt16;
 begin
   var Index: UInt16 := (Address - $2000) and $0FFF;
   var TableIndex: UInt16 := Index shr 10;
@@ -308,7 +308,7 @@ begin
   end;
 end;
 
-function TPpu.PpuReadMemory(Address: UInt16): UInt8;
+function TPPU.PpuReadMemory(Address: UInt16): UInt8;
 begin
   var Temp: UInt8;
   Address := Address and $3FFF;
@@ -335,7 +335,7 @@ begin
   Result := FPaletteRam[PalAddr] and $3F;
 end;
 
-procedure TPpu.PpuWriteMemory(Address: UInt16; Value: UInt8);
+procedure TPPU.PpuWriteMemory(Address: UInt16; Value: UInt8);
 begin
   Address := Address and $3FFF;
   if (Address < $3F00) and (FMapper <> nil) and FMapper.PpuWrite(Address, Value) then
@@ -364,7 +364,7 @@ begin
   FPaletteRam[PalAddr] := Value and $3F;
 end;
 
-procedure TPpu.UpdateNmiState;
+procedure TPPU.UpdateNmiState;
 begin
   var NewLine: Boolean := FNmiOccurred and ((FCtrl and $80) <> 0);
   if NewLine and not FNmiLine then
@@ -378,7 +378,7 @@ begin
   FNmiLine := NewLine;
 end;
 
-procedure TPpu.CaptureSplitState;
+procedure TPPU.CaptureSplitState;
 begin
   if (FScanline < 0) or (FScanline >= 240) then
     Exit;
@@ -393,7 +393,7 @@ begin
   FSplitMask := FMask;
 end;
 
-procedure TPpu.SetVblank(Value: Boolean);
+procedure TPPU.SetVblank(Value: Boolean);
 begin
   if Value then
   begin
@@ -418,7 +418,7 @@ begin
   UpdateNmiState;
 end;
 
-procedure TPpu.ClockMapperAddress;
+procedure TPPU.ClockMapperAddress;
 begin
   if FMapper = nil then
     Exit;
@@ -484,7 +484,7 @@ begin
     FMapper.ClockPpuRead;
 end;
 
-function TPpu.GetZapperMask: PNesZapperMask;
+function TPPU.GetZapperMask: PNesZapperMask;
 const
   LIGHT_SCANLINES = 26;
   LIGHT_THRESHOLD = 128;
@@ -516,7 +516,7 @@ begin
   Result := @FZapperMask;
 end;
 
-procedure TPpu.Clock;
+procedure TPPU.Clock;
 begin
   var RenderingEnabled: Boolean := (FMask and $18) <> 0;
   if FCycle = 1 then
@@ -594,7 +594,7 @@ begin
   end;
 end;
 
-function TPpu.CpuRead(Address: UInt16): UInt8;
+function TPPU.CpuRead(Address: UInt16): UInt8;
 begin
   var VramAddress: UInt16;
   Result := FOpenBus;
@@ -643,7 +643,7 @@ begin
   FOpenBus := Result;
 end;
 
-procedure TPpu.CpuWrite(Address: UInt16; Value: UInt8);
+procedure TPPU.CpuWrite(Address: UInt16; Value: UInt8);
 begin
   FOpenBus := Value;
   case Address and 7 of
@@ -721,18 +721,18 @@ begin
   end;
 end;
 
-procedure TPpu.WriteOamDma(Index: Integer; Value: UInt8);
+procedure TPPU.WriteOamDma(Index: Integer; Value: UInt8);
 begin
   FOam[(FOamAddress + (Index and $FF)) and $FF] := Value;
 end;
 
-function TPpu.ConsumeNmi: Boolean;
+function TPPU.ConsumeNmi: Boolean;
 begin
   Result := FNmiPending;
   FNmiPending := False;
 end;
 
-function TPpu.SampleBackgroundPixel(X, Y: Integer; out PaletteIndex: UInt8): UInt8;
+function TPPU.SampleBackgroundPixel(X, Y: Integer; out PaletteIndex: UInt8): UInt8;
 begin
   if FMapper <> nil then
     FMapper.SetPpuFetchKind(False, X, Y);
@@ -801,7 +801,7 @@ begin
   Result := (((Hi shr BitPosition) and 1) shl 1) or ((Lo shr BitPosition) and 1);
 end;
 
-function TPpu.SampleSpritePixel(X, Y: Integer; out PaletteIndex: UInt8; out PriorityBehindBg: Boolean; out IsSpriteZero: Boolean): UInt8;
+function TPPU.SampleSpritePixel(X, Y: Integer; out PaletteIndex: UInt8; out PriorityBehindBg: Boolean; out IsSpriteZero: Boolean): UInt8;
 begin
   if FMapper <> nil then
     FMapper.SetPpuFetchKind(True, X, Y);
@@ -880,7 +880,7 @@ begin
   end;
 end;
 
-procedure TPpu.RenderScanline;
+procedure TPPU.RenderScanline;
 begin
   var BgPixel: UInt8;
   var BgPalette: UInt8;
@@ -950,70 +950,70 @@ begin
   end;
 end;
 
-procedure TPpu.RebuildFrame;
+procedure TPPU.RebuildFrame;
 begin
   // The completed image was published at the frame boundary by Clock.
   FSplitActive := False;
   FSplitY := 240;
 end;
 
-function TPpu.DebugReadMemory(Address: UInt16): UInt8;
+function TPPU.DebugReadMemory(Address: UInt16): UInt8;
 begin
   Result := PpuReadMemory(Address);
 end;
 
-function TPpu.DebugMask: UInt8;
+function TPPU.DebugMask: UInt8;
 begin
   Result := FMask;
 end;
 
-function TPpu.DebugCtrl: UInt8;
+function TPPU.DebugCtrl: UInt8;
 begin
   Result := FCtrl;
 end;
 
-function TPpu.DebugStatus: UInt8;
+function TPPU.DebugStatus: UInt8;
 begin
   Result := FStatus;
 end;
 
-function TPpu.DebugV: UInt16;
+function TPPU.DebugV: UInt16;
 begin
   Result := FV;
 end;
 
-function TPpu.DebugT: UInt16;
+function TPPU.DebugT: UInt16;
 begin
   Result := FT;
 end;
 
-function TPpu.DebugBackgroundPixel(X, Y: Integer): UInt8;
+function TPPU.DebugBackgroundPixel(X, Y: Integer): UInt8;
 begin
   var P: UInt8;
   Result := SampleBackgroundPixel(X, Y, P);
 end;
 
-function TPpu.DebugOam(Index: Integer): UInt8;
+function TPPU.DebugOam(Index: Integer): UInt8;
 begin
   Result := FOam[Index and $FF];
 end;
 
-function TPpu.DebugSprite0HitX: Integer;
+function TPPU.DebugSprite0HitX: Integer;
 begin
   Result := FSprite0HitX;
 end;
 
-function TPpu.DebugSprite0HitY: Integer;
+function TPPU.DebugSprite0HitY: Integer;
 begin
   Result := FSprite0HitY;
 end;
 
-function TPpu.DebugSplitActive: Boolean;
+function TPPU.DebugSplitActive: Boolean;
 begin
   Result := FSplitActive;
 end;
 
-function TPpu.DebugSplitY: Integer;
+function TPPU.DebugSplitY: Integer;
 begin
   Result := FSplitY;
 end;

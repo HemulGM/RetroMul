@@ -7,7 +7,7 @@ uses
   FMX.Skia,
   {$ENDIF }
   FMX.Dialogs,
-  NES.Gamepad in 'NES.Gamepad.pas',
+  RM.Gamepad in 'RM.Gamepad.pas',
   NES.SuborKeyboard in 'NES.SuborKeyboard.pas',
   RM.Main in 'RM.Main.pas' {FormMain},
   {$IFDEF ANDROID}

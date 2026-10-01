@@ -21,7 +21,9 @@ type
 
   // Native NES coordinates [X, Y], top-left origin; 0 = dark, 1 = lit.
   TNesZapperMask = array[0..255, 0..239] of Byte;
+
   PNesZapperMask = ^TNesZapperMask;
+
   // Synchronous on the emulation thread. Borrowed mask, valid for this call
   // only. Return True when the external photosensor detects light.
   TNesZapperLightCallback = reference to function(const Mask: TNesZapperMask): Boolean;

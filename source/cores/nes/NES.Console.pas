@@ -25,7 +25,7 @@ type
     FRegion: TNesRegion;
     FConfiguredFourScore: Boolean;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 6);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 7);
     function GetRomIdentity: string;
     function GetUsesPowerPad: Boolean;
   public
@@ -63,7 +63,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 6;
+  SNAPSHOT_VERSION = 7;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type

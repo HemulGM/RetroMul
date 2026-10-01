@@ -58,6 +58,7 @@ type
     procedure ClockMapperAddress;
     procedure IncrementX;
     procedure IncrementY;
+    procedure IncrementDataAddress;
     procedure CopyX;
     procedure CopyY;
     function MirrorNameTableAddress(Address: UInt16): UInt16;
@@ -594,6 +595,23 @@ begin
   end;
 end;
 
+procedure TPPU.IncrementDataAddress;
+begin
+  // During rendering PPUDATA clocks both scroll counters, regardless of PPUCTRL.
+  if ((FMask and $18) <> 0) and
+    ((FScanline < 240) or (FScanline = FPreRenderLine)) then
+  begin
+    IncrementX;
+    IncrementY;
+  end
+  else if (FCtrl and $04) <> 0 then
+    FV := (FV + 32) and $7FFF
+  else
+    FV := (FV + 1) and $7FFF;
+  if FMapper <> nil then
+    FMapper.ClockPpuAddress(FV and $3FFF, FPpuClock);
+end;
+
 function TPPU.CpuRead(Address: UInt16): UInt8;
 begin
   var VramAddress: UInt16;
@@ -618,7 +636,11 @@ begin
         FAddrLatch := False;
       end;
     4:
-      Result := FOam[FOamAddress];
+      begin
+        Result := FOam[FOamAddress];
+        // Attribute bits 2..4 are unimplemented in primary OAM.
+        if (FOamAddress and 3) = 2 then Result := Result and $E3;
+      end;
     7:
       begin
         VramAddress := FV and $3FFF;
@@ -629,15 +651,11 @@ begin
         end
         else
         begin
-          Result := PpuReadMemory(VramAddress);
+          Result := (PpuReadMemory(VramAddress) and $3F) or (FOpenBus and $C0);
+          if (FMask and 1) <> 0 then Result := Result and $F0;
           FDataBuffer := PpuReadMemory(VramAddress - $1000);
         end;
-        if (FCtrl and $04) <> 0 then
-          FV := (FV + 32) and $7FFF
-        else
-          FV := (FV + 1) and $7FFF;
-        if FMapper <> nil then
-          FMapper.ClockPpuAddress(FV and $3FFF, FPpuClock);
+        IncrementDataAddress;
       end;
   end;
   FOpenBus := Result;
@@ -711,12 +729,7 @@ begin
     7:
       begin
         PpuWriteMemory(FV, Value);
-        if (FCtrl and $04) <> 0 then
-          FV := (FV + 32) and $7FFF
-        else
-          FV := (FV + 1) and $7FFF;
-        if FMapper <> nil then
-          FMapper.ClockPpuAddress(FV and $3FFF, FPpuClock);
+        IncrementDataAddress;
       end;
   end;
 end;

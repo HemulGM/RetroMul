@@ -44,6 +44,10 @@ type
     FInstructionActive: Boolean;
     FPollCycle: Integer;
     FExecutingOpcode: Boolean;
+    // Derived for each opcode; indexed stores/RMW always perform the fixup read.
+    FIndexedDummyRead: Boolean;
+    FJsrActive: Boolean;
+    FJsrLow: UInt8;
     FQueuedWriteCount: Integer;
     FWriteAddresses: array[0..2] of UInt16;
     FWriteValues: array[0..2] of UInt8;
@@ -149,6 +153,16 @@ begin
   State.Field(P, SizeOf(P));
   State.Field(CyclesRemaining, SizeOf(CyclesRemaining));
   State.Field(TotalCycles, SizeOf(TotalCycles));
+  if State.Version >= 7 then
+  begin
+    State.Field(FJsrActive, SizeOf(FJsrActive));
+    State.Field(FJsrLow, SizeOf(FJsrLow));
+  end
+  else if State.Loading then
+  begin
+    FJsrActive := False;
+    FJsrLow := 0;
+  end;
 end;
 
 constructor TCpu6502.Create;
@@ -240,13 +254,17 @@ end;
 
 function TCpu6502.Zpx: UInt16;
 begin
-  Result := (Read(Pc) + X) and $FF;
+  var Base: UInt8 := Read(Pc);
+  Read(Base);
+  Result := (Base + X) and $FF;
   Pc := (Pc + 1) and $FFFF;
 end;
 
 function TCpu6502.Zpy: UInt16;
 begin
-  Result := (Read(Pc) + Y) and $FF;
+  var Base: UInt8 := Read(Pc);
+  Read(Base);
+  Result := (Base + Y) and $FF;
   Pc := (Pc + 1) and $FFFF;
 end;
 
@@ -262,6 +280,8 @@ begin
   Pc := (Pc + 2) and $FFFF;
   Result := (Base + X) and $FFFF;
   PageCrossed := (Base and $FF00) <> (Result and $FF00);
+  if PageCrossed or FIndexedDummyRead then
+    Read((Base and $FF00) or (Result and $00FF));
 end;
 
 function TCpu6502.Aby(out PageCrossed: Boolean): UInt16;
@@ -270,6 +290,8 @@ begin
   Pc := (Pc + 2) and $FFFF;
   Result := (Base + Y) and $FFFF;
   PageCrossed := (Base and $FF00) <> (Result and $FF00);
+  if PageCrossed or FIndexedDummyRead then
+    Read((Base and $FF00) or (Result and $00FF));
 end;
 
 function TCpu6502.Ind: UInt16;
@@ -281,7 +303,9 @@ end;
 
 function TCpu6502.Izx: UInt16;
 begin
-  var Ptr: UInt8 := (Read(Pc) + X) and $FF;
+  var Base: UInt8 := Read(Pc);
+  Read(Base);
+  var Ptr: UInt8 := (Base + X) and $FF;
   Pc := (Pc + 1) and $FFFF;
   var Lo: UInt8 := Read(Ptr);
   var Hi: UInt8 := Read((Ptr + 1) and $FF);
@@ -297,6 +321,8 @@ begin
   var Base: UInt16 := Lo or (UInt16(Hi) shl 8);
   Result := (Base + Y) and $FFFF;
   PageCrossed := (Base and $FF00) <> (Result and $FF00);
+  if PageCrossed or FIndexedDummyRead then
+    Read((Base and $FF00) or (Result and $00FF));
 end;
 
 function TCpu6502.Rel: Int16;
@@ -457,8 +483,12 @@ begin
   Inc(Cycles);
   OldPc := Pc;
   NewPc := (Integer(Pc) + Offset) and $FFFF;
+  Read(OldPc);
   if (OldPc and $FF00) <> (NewPc and $FF00) then
+  begin
+    Read((OldPc and $FF00) or (NewPc and $00FF));
     Inc(Cycles);
+  end;
   Pc := NewPc;
 end;
 
@@ -538,6 +568,8 @@ begin
   FInstructionActive := False;
   FPollCycle := 2;
   FExecutingOpcode := False;
+  FJsrActive := False;
+  FJsrLow := 0;
   FQueuedWriteCount := 0;
   FUnknownOpcodeCount := 0;
   FJammed := False;
@@ -565,6 +597,7 @@ end;
 function TCpu6502.NextCycleIsWrite: Boolean;
 begin
   Result := ((FQueuedWriteCount > 0) and (CyclesRemaining <= FQueuedWriteCount)) or
+    (FJsrActive and (CyclesRemaining in [2, 3])) or
     (FInterruptSequenceActive and (CyclesRemaining >= 3) and (CyclesRemaining <= 5));
 end;
 
@@ -598,11 +631,21 @@ begin
     begin
       Opcode := Read(Pc);
       FPollInterruptDisable := GetFlag(FLAG_INTERRUPT);
-      FExecutingOpcode := True;
-      try
-        ExecuteOpcode(Opcode);
-      finally
-        FExecutingOpcode := False;
+      if Opcode = $20 then
+      begin
+        // JSR reads its high operand only AFTER pushing the return address.
+        FJsrActive := True;
+        Pc := (Pc + 1) and $FFFF;
+        CyclesRemaining := 6;
+      end
+      else
+      begin
+        FExecutingOpcode := True;
+        try
+          ExecuteOpcode(Opcode);
+        finally
+          FExecutingOpcode := False;
+        end;
       end;
       ExecutedBrk := Opcode = $00;
       FInstructionActive := not ExecutedBrk;
@@ -635,6 +678,23 @@ begin
     FIrqAfterInstruction := FIrqAfterInstruction or (FPendingIrq and not FPollInterruptDisable);
   end;
 
+  if FJsrActive then
+    case CyclesRemaining of
+      5:
+        begin
+          FJsrLow := Read(Pc);
+          Pc := (Pc + 1) and $FFFF;
+        end;
+      4: Read($0100 or Sp);
+      3: Push(Pc shr 8);
+      2: Push(Pc and $FF);
+      1:
+        begin
+          Pc := FJsrLow or (UInt16(Read(Pc)) shl 8);
+          FJsrActive := False;
+        end;
+    end;
+
   // Writes occupy the final bus cycles, including both writes of an RMW.
   if (FQueuedWriteCount > 0) and (CyclesRemaining <= FQueuedWriteCount) then
   begin
@@ -657,6 +717,16 @@ begin
   Pc := (Pc + 1) and $FFFF;
   var PageCrossed: Boolean := False;
   var Cycles: Integer := 2;
+  FIndexedDummyRead := Opcode in [$13,$1B,$1E,$1F,$33,$3B,$3E,$3F,
+    $53,$5B,$5E,$5F,$73,$7B,$7E,$7F,$91,$99,$9D,
+    $D3,$DB,$DE,$DF,$F3,$FB,$FE,$FF];
+  // Implied/accumulator instructions still read the byte following the opcode.
+  if Opcode in [$08,$0A,$18,$1A,$28,$2A,$38,$3A,$40,$48,$4A,$58,$5A,
+    $60,$68,$6A,$78,$7A,$88,$8A,$98,$9A,$A8,$AA,$B8,$BA,$C8,$CA,
+    $D8,$DA,$E8,$EA,$F8,$FA] then
+    Read(Pc);
+  if Opcode in [$28,$40,$60,$68] then
+    Read($0100 or Sp);
   case Opcode of
     $02, $12, $22, $32, $42, $52, $62, $72, $92, $B2, $D2, $F2:
       begin
@@ -683,7 +753,7 @@ begin
       end;
     $04, $44, $64:
       begin
-        Zp0;
+        Read(Zp0);
         Cycles := 3;
       end;
     $05:
@@ -733,7 +803,7 @@ begin
       end;
     $0C:
       begin
-        AbsAddr;
+        Read(AbsAddr);
         Cycles := 4;
       end;
     $0D:
@@ -775,7 +845,7 @@ begin
       end;
     $14, $34, $54, $74, $D4, $F4:
       begin
-        Zpx;
+        Read(Zpx);
         Cycles := 4;
       end;
     $15:
@@ -822,7 +892,7 @@ begin
       end;
     $1C, $3C, $5C, $7C, $DC, $FC:
       begin
-        Abx(PageCrossed);
+        Read(Abx(PageCrossed));
         Cycles := 4 + Ord(PageCrossed);
       end;
     $1D:
@@ -846,14 +916,6 @@ begin
         Write(Addr, Value);
         SetZeroNegative(Value);
         Cycles := 7;
-      end;
-    $20:
-      begin
-        var Addr: UInt16 := AbsAddr;
-        Push((((Integer(Pc) - 1) and $FFFF) shr 8) and $FF);
-        Push((Integer(Pc) - 1) and $FF);
-        Pc := Addr;
-        Cycles := 6;
       end;
     $21:
       begin
@@ -1193,6 +1255,7 @@ begin
         Pc := Value;
         Value := Pull;
         Pc := Pc or (UInt16(Value) shl 8);
+        Read(Pc);
         Pc := (Pc + 1) and $FFFF;
         Cycles := 6;
       end;
@@ -1354,7 +1417,7 @@ begin
       end;
     $80, $82, $89, $C2, $E2:
       begin
-        Imm;
+        Read(Imm);
         Cycles := 2;
       end;
     $81:
@@ -1401,7 +1464,8 @@ begin
       end;
     $8B:
       begin
-        Atx(Read(Imm));
+        A := (A or $EE) and X and Read(Imm);
+        SetZeroNegative(A);
         Cycles := 2;
       end;
     $8C:

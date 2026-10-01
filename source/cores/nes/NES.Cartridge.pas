@@ -265,19 +265,20 @@ begin
       Hash.Update(ChrRom[0], Length(ChrRom));
     FRomIdentity := LowerCase(Hash.HashAsString);
     if FMetadata.Format = TRomFormat.INes then
+    begin
       FMetadata.HasBattery := FMetadata.HasBattery or IsLegacyBatteryRom(FRomIdentity);
+      if IsLegacyPowerPadRom(FRomIdentity) then
+        FMetadata.DefaultExpansionDevice := 12;
+    end;
 
     FMetadata.Title := ReadRomTitle(Stream, FMetadata);
     // Preserve explicit NES 2.0 metadata; legacy corrections require exact payload identity.
     if (Header.Flags7 and $0C) <> $08 then
     begin
       FMapperId := ResolveLegacyMapper(FMapperId, PrgRom, ChrRom);
-      if FMapperId = MAPPER_UXROM then
-      begin
-        Mirror := ResolveLegacyMirror(Mirror, PrgRom, ChrRom);
-        FMetadata.MirrorMode := Mirror;
-      end;
-      if (FMapperId = MAPPER_UXROM) and IsLegacyPalRom(PrgRom, ChrRom) then
+      Mirror := ResolveLegacyMirror(Mirror, PrgRom, ChrRom);
+      FMetadata.MirrorMode := Mirror;
+      if IsLegacyPalRom(PrgRom, ChrRom) then
         FMetadata.Timing := TRomTiming.PAL;
     end;
     FMapper := CreateMapper(FMapperId, PrgRom, ChrRom, ChrRam, Mirror,

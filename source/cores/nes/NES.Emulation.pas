@@ -40,7 +40,8 @@ type
     FSnapshotDone: TEvent;
     FSnapshotPending, FSnapshotLoading: Boolean;
     FSnapshotName, FSnapshotError: string;
-    FPowerPad: array[1..4] of Boolean;
+    FPowerPad: array[1..12] of Boolean;
+    FPowerPadShortcuts: array[1..4] of Boolean;
     FResetRequested, FPauseRequested, FResumeRequested: Boolean;
     FFrame: TFrameBuffer;
     FFramePending: Boolean;
@@ -384,6 +385,9 @@ begin
 end;
 
 procedure TNesEmulationThread.SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2, Keys3, Keys4: TKeyMap);
+const
+  PadKeys: array[1..12] of UInt32 = ($31, $32, $33, $34, $35, $36,
+    $37, $38, $39, $30, $BD, $BB); // 1..9, 0, minus, equals.
 begin
   if Code = 0 then
     Exit;
@@ -396,13 +400,15 @@ begin
     FInput.SetKey(3, Code, Pressed, Keys3);
     FInput.SetKey(4, Code, Pressed, Keys4);
     if Code = Keys.A then
-      FPowerPad[1] := Pressed;
+      FPowerPadShortcuts[1] := Pressed;
     if Code = Keys.B then
-      FPowerPad[2] := Pressed;
+      FPowerPadShortcuts[2] := Pressed;
     if Code = Keys.Left then
-      FPowerPad[3] := Pressed;
+      FPowerPadShortcuts[3] := Pressed;
     if Code = Keys.Right then
-      FPowerPad[4] := Pressed;
+      FPowerPadShortcuts[4] := Pressed;
+    for var Button := Low(PadKeys) to High(PadKeys) do
+      if Code = PadKeys[Button] then FPowerPad[Button] := Pressed;
   finally
     FLock.Leave;
   end;
@@ -426,6 +432,7 @@ begin
     FInput.Clear;
     FConsole.SuborKeyboard.Clear;
     FillChar(FPowerPad, SizeOf(FPowerPad), 0);
+    FillChar(FPowerPadShortcuts, SizeOf(FPowerPadShortcuts), 0);
   finally
     FLock.Leave;
   end;
@@ -599,7 +606,12 @@ begin
           FInput.Apply(3, FConsole.Controller3);
           FInput.Apply(4, FConsole.Controller4);
           for var Button := Low(FPowerPad) to High(FPowerPad) do
-            FConsole.Controller2.SetPowerPadButton(Button, FPowerPad[Button]);
+          begin
+            var PadPressed := FPowerPad[Button];
+            if Button <= High(FPowerPadShortcuts) then
+              PadPressed := PadPressed or FPowerPadShortcuts[Button];
+            FConsole.Controller2.SetPowerPadButton(Button, PadPressed);
+          end;
         finally
           FLock.Leave;
         end;

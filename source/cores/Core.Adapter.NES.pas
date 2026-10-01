@@ -13,6 +13,7 @@ type
     ['{E2878EE8-4AED-4E93-A006-7DBD5A63ABED}']
     procedure SetSuborKeys(const Keys: TSuborKeys);
     function Zapper: TZapper;
+    function UsesPowerPad: Boolean;
   end;
 
   INesEmulatorConfig = interface(IEmulatorConfig)
@@ -93,6 +94,7 @@ type
     function GetConfig: IEmulatorConfig;
     function IsPaused: Boolean;
     function Zapper: TZapper;
+    function UsesPowerPad: Boolean;
   end;
 
 implementation
@@ -254,6 +256,11 @@ end;
 function TNesCoreAdapter.Zapper: TZapper;
 begin
   Result := FThread.Console.Zapper;
+end;
+
+function TNesCoreAdapter.UsesPowerPad: Boolean;
+begin
+  Result := FThread.Console.UsesPowerPad;
 end;
 
 { TNesEmulatorConfig }

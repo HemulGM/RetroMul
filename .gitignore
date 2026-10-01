@@ -29,3 +29,5 @@ __recovery/
 /tools/*
 /MULTICORE_AUDIT.md
 /audit-output/*
+/rom-investigation/*
+/NES_MAPPER_PORT_STATUS.md

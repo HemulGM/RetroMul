@@ -205,18 +205,17 @@ end;
 
 procedure TFormMain.ButtonPaletteClick(Sender: TObject);
 begin
-  if FEmulation <> nil then
+  if FEmulation = nil then
+    Exit;
+  var GBEmulatorConfig: IGBEmulatorConfig;
+  if Supports(FEmulation.Config, IGBEmulatorConfig, GBEmulatorConfig) then
   begin
-    var GBEmulatorConfig: IGBEmulatorConfig;
-    if Supports(FEmulation.Config, IGBEmulatorConfig, GBEmulatorConfig) then
-    begin
-      var CP := GBEmulatorConfig.ScreenPalette;
-      Inc(CP);
-      if CP >= SCREEN_PALETTE_COUNT then
-        CP := 0;
-      GBEmulatorConfig.ScreenPalette := CP;
-      GBEmulatorConfig.Save;
-    end;
+    var CP := GBEmulatorConfig.ScreenPalette;
+    Inc(CP);
+    if CP >= SCREEN_PALETTE_COUNT then
+      CP := 0;
+    GBEmulatorConfig.ScreenPalette := CP;
+    GBEmulatorConfig.Save;
   end;
 end;
 
@@ -1004,7 +1003,7 @@ begin
               Exit(True);
         Result := False;  }
       end;
-    Peripheral.Zapper.Enabled := True;
+    Peripheral.Zapper.Enabled := not Peripheral.UsesPowerPad;
     //Peripheral.SetSuborKeys(FSuborKeyboard.Keys);
   end;
 

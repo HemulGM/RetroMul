@@ -13,9 +13,11 @@ type
     FBusConflicts: Boolean;
     FMirrorMode: TMirrorMode;
     FChrBank: UInt8;
+    FPrgRam: array[0..$1FFF] of UInt8;
+    FPrgRamEnabled: Boolean;
   public
     procedure SerializeState(State: TNesStateArchive); override;
-    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; BusConflicts: Boolean = True);
+    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; BusConflicts: Boolean = True; PrgRamEnabled: Boolean = False);
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
@@ -34,9 +36,13 @@ begin
   State.Field(FHasChrRam, SizeOf(FHasChrRam));
   State.Field(FMirrorMode, SizeOf(FMirrorMode));
   State.Field(FChrBank, SizeOf(FChrBank));
+  if State.Version >= 6 then
+    State.Field(FPrgRam, SizeOf(FPrgRam))
+  else if State.Loading then
+    FillChar(FPrgRam, SizeOf(FPrgRam), 0);
 end;
 
-constructor TMapperCnrom.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; BusConflicts: Boolean);
+constructor TMapperCnrom.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; BusConflicts: Boolean; PrgRamEnabled: Boolean);
 begin
   inherited Create;
   ValidateMemory(APrgRom, AChrData);
@@ -44,6 +50,7 @@ begin
   FChrMemory := Copy(AChrData);
   FHasChrRam := AHasChrRam;
   FBusConflicts := BusConflicts;
+  FPrgRamEnabled := PrgRamEnabled;
   FMirrorMode := AMirrorMode;
   if Length(FChrMemory) = 0 then
     SetLength(FChrMemory, $2000);
@@ -52,6 +59,11 @@ end;
 
 function TMapperCnrom.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
 begin
+  if FPrgRamEnabled and (Address >= $6000) and (Address < $8000) then
+  begin
+    Value := FPrgRam[Address and $1FFF];
+    Exit(True);
+  end;
   Result := Address >= $8000;
   if Result then
     Value := FPrgRom[(Address - $8000) mod Length(FPrgRom)];
@@ -60,6 +72,11 @@ end;
 function TMapperCnrom.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
   var RomValue: UInt8;
+  if FPrgRamEnabled and (Address >= $6000) and (Address < $8000) then
+  begin
+    FPrgRam[Address and $1FFF] := Value;
+    Exit(True);
+  end;
   Result := CpuRead(Address, RomValue);
   // Standard CNROM boards AND the CPU data with the still-driven PRG ROM.
   if Result then

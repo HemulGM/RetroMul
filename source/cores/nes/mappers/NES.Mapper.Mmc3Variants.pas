@@ -17,6 +17,7 @@ type
     constructor Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
     procedure Reset; override;
     procedure ClockPpuAddress(Address: UInt16; PpuCycle: UInt64); override;
+    procedure ClockScanline(Scanline: Integer; RenderingEnabled: Boolean); override;
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
@@ -26,11 +27,36 @@ type
 implementation
 
 procedure TMapperMmc3Variant.SerializeState(State: TNesStateArchive);
+var
+  Banks: array[0..7] of UInt8;
 begin
-  inherited;
-  State.Field(FBoard, SizeOf(FBoard));
-  State.Field(FOuterChr, SizeOf(FOuterChr));
-  State.Field(FExtraRam, SizeOf(FExtraRam));
+  Move(FBankRegisters, Banks, SizeOf(Banks));
+  if (FBoard = 91) and (State.Version < 6) and not State.Loading then
+  begin
+    FBankRegisters[0] := (Integer(Banks[0]) * 2) and $FF;
+    FBankRegisters[1] := (Integer(Banks[1]) * 2) and $FF;
+    FBankRegisters[2] := (Integer(Banks[2]) * 2) and $FF;
+    FBankRegisters[3] := (Integer(Banks[2]) * 2 + 1) and $FF;
+    FBankRegisters[4] := (Integer(Banks[3]) * 2) and $FF;
+    FBankRegisters[5] := (Integer(Banks[3]) * 2 + 1) and $FF;
+  end;
+  try
+    inherited;
+    State.Field(FBoard, SizeOf(FBoard));
+    State.Field(FOuterChr, SizeOf(FOuterChr));
+    State.Field(FExtraRam, SizeOf(FExtraRam));
+  finally
+    if (FBoard = 91) and (State.Version < 6) and not State.Loading then
+      Move(Banks, FBankRegisters, SizeOf(Banks));
+  end;
+  if (FBoard = 91) and (State.Version < 6) and State.Loading then
+  begin
+    Move(FBankRegisters, Banks, SizeOf(Banks));
+    FBankRegisters[0] := Banks[0] shr 1;
+    FBankRegisters[1] := Banks[1] shr 1;
+    FBankRegisters[2] := Banks[2] shr 1;
+    FBankRegisters[3] := Banks[4] shr 1;
+  end;
 end;
 
 constructor TMapperMmc3Variant.Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
@@ -48,6 +74,7 @@ end;
 
 procedure TMapperMmc3Variant.ClockPpuAddress(Address: UInt16; PpuCycle: UInt64);
 begin
+  if FBoard = 91 then Exit;
   var WasPending := FIrqPending;
   var CanTrigger := (FIrqCounter <> 0) or FIrqReloadPending;
   inherited;
@@ -56,8 +83,29 @@ begin
     FIrqPending := WasPending;
 end;
 
+procedure TMapperMmc3Variant.ClockScanline(Scanline: Integer; RenderingEnabled: Boolean);
+begin
+  if FBoard <> 91 then
+  begin
+    inherited;
+    Exit;
+  end;
+  // JY-016 asserts once after eight rendered scanlines, until acknowledged.
+  if RenderingEnabled and (Scanline >= 0) and (Scanline < 240) and
+    FIrqEnabled and (FIrqCounter < 8) then
+  begin
+    Inc(FIrqCounter);
+    if FIrqCounter = 8 then FIrqPending := True;
+  end;
+end;
+
 function TMapperMmc3Variant.ChrBank(Address: UInt16): Integer;
 begin
+  // Mapper 91 has four full-width 2 KiB registers. Expanding them into
+  // byte-sized MMC3 registers loses CHR A18 on 512 KiB cartridges.
+  if FBoard = 91 then
+    Exit((Integer(FBankRegisters[Address shr 11]) or ((FOuterChr and 1) shl 8)) * 2 +
+      ((Address shr 10) and 1));
   var Original := Address;
   if (FBankSelect and $80) <> 0 then
     Address := Address xor $1000;
@@ -76,8 +124,21 @@ end;
 
 function TMapperMmc3Variant.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
 begin
-  if (FBoard = 91) and (Address < $8000) then
-    Exit(False);
+  if FBoard = 91 then
+  begin
+    Result := Address >= $8000;
+    if not Result then Exit;
+    var Bank: Integer;
+    case (Address - $8000) shr 13 of
+      0: Bank := FBankRegisters[6];
+      1: Bank := FBankRegisters[7];
+      2: Bank := $0E;
+    else Bank := $0F;
+    end;
+    Bank := Bank or ((FOuterChr and 6) shl 3);
+    Value := FPrgRom[(Bank * $2000 + (Address and $1FFF)) mod Length(FPrgRom)];
+    Exit;
+  end;
   if (FBoard <> 245) or (Address < $8000) then
     Exit(inherited CpuRead(Address, Value));
   var Outer := (FBankRegisters[0] and 2) shl 5;
@@ -115,27 +176,31 @@ begin
   end;
   if FBoard = 91 then
   begin
+    if (Address >= $8000) and (Address < $A000) then
+    begin
+      FOuterChr := Address and 7;
+      Exit(True);
+    end;
     Result := (Address >= $6000) and (Address < $8000);
     if not Result then
       Exit;
-    case Address and $7003 of
-      $6000, $6001:
-        FBankRegisters[Address and 1] := (Integer(Value) * 2) and $FF;
-      $6002, $6003:
-        begin
-          var Slot := 2 + (Address and 1) * 2;
-          FBankRegisters[Slot] := (Integer(Value) * 2) and $FF;
-          FBankRegisters[Slot + 1] := (Integer(Value) * 2 + 1) and $FF;
-        end;
+    var RegisterAddress := Address and $7003;
+    if (Address < $7000) and ((Address and 7) >= 4) then Exit;
+    case RegisterAddress of
+      $6000..$6003:
+        FBankRegisters[Address and 3] := Value;
       $7000, $7001:
-        FBankRegisters[6 + (Address and 1)] := Value and $0F;
+        FBankRegisters[6 + (Address and 1)] := Value;
       $7002:
-        inherited CpuWrite($E000, 0);
+        begin
+          FIrqEnabled := False;
+          FIrqPending := False;
+          FIrqCounter := 0;
+        end;
       $7003:
         begin
-          inherited CpuWrite($C000, 7);
-          inherited CpuWrite($C001, 0);
-          inherited CpuWrite($E001, 0);
+          FIrqEnabled := True;
+          FIrqPending := False;
         end;
     end;
     Exit;

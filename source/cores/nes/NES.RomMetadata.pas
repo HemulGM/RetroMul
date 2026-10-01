@@ -13,6 +13,8 @@ function ResolveLegacyMirror(Declared: TMirrorMode; const Prg, Chr: NES.Types.TB
 
 function IsLegacyBatteryRom(const Sha1: string): Boolean;
 
+function IsLegacyPowerPadRom(const Sha1: string): Boolean;
+
 implementation
 
 uses
@@ -25,7 +27,7 @@ type
   end;
 
 const
-  MAPPER_IDENTITIES: array[0..10] of TMapperIdentity = (
+  MAPPER_IDENTITIES: array[0..15] of TMapperIdentity = (
     (Declared: 2; Actual: 1; Sha1: '5b05c8859f356013d37f0545f5de5fa1693da5da'),
     (Declared: 2; Actual: 206; Sha1: '881b6413fbcbfb9a0308583f0510c09283a72d2a'),
     (Declared: 70; Actual: 152; Sha1: '627d4f20667eded6f26a379c8477669348f3ecab'),
@@ -36,7 +38,19 @@ const
     (Declared: 71; Actual: 232; Sha1: '6f288136923adfa0b1dc7c5ca5782bf0892dfce1'),
     (Declared: 90; Actual: 209; Sha1: '2e0889131da5ba9505a15b94887113f4360d98cd'),
     (Declared: 12; Actual: 13; Sha1: '3e24edd8c06713b775eaa66f3468f71693a542a9'),
-    (Declared: 11; Actual: 144; Sha1: '80cd18bb63a5b52b1f3ad36c9191845eb29dd807'));
+    (Declared: 11; Actual: 144; Sha1: '80cd18bb63a5b52b1f3ad36c9191845eb29dd807'),
+    (Declared: 4; Actual: 119; Sha1: 'b3537088ed6f8379f2c30ca45061bfccba1007b9'),
+    (Declared: 0; Actual: 3; Sha1: '4970ab23575cfd29db8f95d4f8fa34169478ca6a'),
+    (Declared: 0; Actual: 3; Sha1: 'f3658b888b21f2ebff1d3f373f3b58486815468e'),
+    (Declared: 7; Actual: 11; Sha1: '3e814b7307730e30ec6067cb4487f2a826a3f7d6'),
+    (Declared: 7; Actual: 79; Sha1: '1d3b449f06d9698a42cd6255e684d313d1dd98bf'));
+
+function IsLegacyPowerPadRom(const Sha1: string): Boolean;
+begin
+  // Short Order and Street Cop collection payloads, Power Pad side B.
+  Result := SameText(Sha1, '0380a74aad3771edf2b37c739c489832ebe6d06b') or
+    SameText(Sha1, 'e26f34a8a4c9419a8a90b0346fde019e8ab5aad2');
+end;
 
 function IsLegacyBatteryRom(const Sha1: string): Boolean;
 const
@@ -61,8 +75,29 @@ begin
 end;
 
 function ResolveLegacyMirror(Declared: TMirrorMode; const Prg, Chr: NES.Types.TByteArray): TMirrorMode;
+const
+  // Exact payloads; board wiring confirmed in puNES misc/nes20db.xml.
+  Horizontal: array[0..1] of string = (
+    '121a482aa2b2808d98d4070b4b6598d851334f54', { Battle Storm }
+    'bf03da873d76a87ab669688d0c47d7554c08c176'); { Due K }
+  Vertical: array[0..5] of string = (
+    '847d56e43754e402666a91188520737094e9ecfa', { Castelia }
+    '4970ab23575cfd29db8f95d4f8fa34169478ca6a', { Ninja Kid }
+    'f3658b888b21f2ebff1d3f373f3b58486815468e', { Pipe Dream }
+    '3e814b7307730e30ec6067cb4487f2a826a3f7d6', { Silent Assault }
+    '1d3b449f06d9698a42cd6255e684d313d1dd98bf', { Tiles of Fate }
+    '047e37f639f36f1e5eb251c9b31b433052fd64b3'); { Track and Field }
 begin
   Result := Declared;
+  if Length(Prg) = 0 then Exit;
+  var PayloadHash := THashSHA1.Create;
+  PayloadHash.Update(Prg[0], Length(Prg));
+  if Length(Chr) > 0 then PayloadHash.Update(Chr[0], Length(Chr));
+  var Identity := PayloadHash.HashAsString;
+  for var Entry in Horizontal do
+    if SameText(Identity, Entry) then Exit(TMirrorMode.Horizontal);
+  for var Entry in Vertical do
+    if SameText(Identity, Entry) then Exit(TMirrorMode.Vertical);
   if (Declared <> TMirrorMode.Horizontal) or (Length(Prg) <> $20000) or (Length(Chr) <> 0) then
     Exit;
   var Hash := THashSHA1.Create;
@@ -82,7 +117,8 @@ begin
     Exit;
   var Hash := THashSHA1.Create;
   Hash.Update(Prg[0], Length(Prg));
-  Result := SameText(Hash.HashAsString, '7b0b8d19bd56aa255501852136828300ee2d2457');
+  Result := SameText(Hash.HashAsString, '7b0b8d19bd56aa255501852136828300ee2d2457') or
+    SameText(Hash.HashAsString, 'fcf9ff27f097892148eaec439ab79bc53164d751'); { Elite PAL }
 end;
 
 function ResolveLegacyMapper(Declared: Integer; const Prg, Chr: NES.Types.TByteArray): Integer;

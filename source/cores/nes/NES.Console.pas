@@ -23,9 +23,11 @@ type
     FCpuCycles: UInt64;
     FPalPpuPhase: Integer;
     FRegion: TNesRegion;
+    FConfiguredFourScore: Boolean;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 5);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 6);
     function GetRomIdentity: string;
+    function GetUsesPowerPad: Boolean;
   public
     constructor Create(FourScoreEnabled: Boolean = False);
     destructor Destroy; override;
@@ -35,6 +37,7 @@ type
     procedure SaveSnapshot(const FileName: string);
     procedure LoadSnapshot(const FileName: string);
     property RomIdentity: string read GetRomIdentity;
+    property UsesPowerPad: Boolean read GetUsesPowerPad;
     procedure Reset;
     procedure Clock;
     procedure RunFrame;
@@ -60,7 +63,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 5;
+  SNAPSHOT_VERSION = 6;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -86,6 +89,11 @@ type
 function TNesConsole.GetRomIdentity: string;
 begin
   Result := FCartridge.RomIdentity;
+end;
+
+function TNesConsole.GetUsesPowerPad: Boolean;
+begin
+  Result := FCartridge.Metadata.DefaultExpansionDevice in [11, 12];
 end;
 
 procedure TNesConsole.SerializeState(Stream: TStream; Loading: Boolean; Version: Integer);
@@ -242,6 +250,7 @@ begin
   FSuborKeyboard := TSuborKeyboard.Create;
   FZapper := TZapper.Create;
   FBus.Zapper := FZapper;
+  FConfiguredFourScore := FourScoreEnabled;
   FController2.PowerPadEnabled := not FourScoreEnabled;
   FBus.FourScoreEnabled := FourScoreEnabled;
   FBus.Connect(FCartridge, FPpu, FApu, FController1, FController2,
@@ -268,6 +277,8 @@ end;
 procedure TNesConsole.LoadRom(const FileName: string; RegionOverride: TRegionOverride);
 begin
   FCartridge.LoadFromFile(FileName);
+  FBus.FourScoreEnabled := FConfiguredFourScore and not UsesPowerPad;
+  FController2.PowerPadEnabled := not FBus.FourScoreEnabled;
   FSuborKeyboard.Connected := FCartridge.MapperId = MAPPER_SUBOR;
   FRegion := TNesRegion.NTSC;
   case RegionOverride of

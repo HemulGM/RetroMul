@@ -59,6 +59,7 @@ uses
   NES.Mapper.Jy in '..\source\cores\nes\mappers\NES.Mapper.Jy.pas',
   NES.Mapper.Mmc5 in '..\source\cores\nes\mappers\NES.Mapper.Mmc5.pas',
   NES.Mapper.Subor in '..\source\cores\nes\mappers\NES.Mapper.Subor.pas',
+  NES.Mapper.Warface in '..\source\cores\nes\mappers\NES.Mapper.Warface.pas',
   NES.Mapper.Mmc1 in '..\source\cores\nes\mappers\NES.Mapper.Mmc1.pas',
   NES.Mapper.Mmc3 in '..\source\cores\nes\mappers\NES.Mapper.Mmc3.pas',
   NES.Mapper.Nrom in '..\source\cores\nes\mappers\NES.Mapper.Nrom.pas',

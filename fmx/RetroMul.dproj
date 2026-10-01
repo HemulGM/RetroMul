@@ -466,6 +466,7 @@
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Jy.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Mmc5.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Subor.pas"/>
+        <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Warface.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Mmc1.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Mmc3.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Nrom.pas"/>

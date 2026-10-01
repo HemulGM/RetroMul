@@ -84,6 +84,7 @@ const
   MAPPER_WAIXING_242 = 242;
   MAPPER_MMC3_245 = 245;
   MAPPER_MMC3_250 = 250;
+  MAPPER_WARFACE = 3914;
 
 type
   TMirrorMode = (Horizontal, Vertical, Single0, Single1, FourScreen);

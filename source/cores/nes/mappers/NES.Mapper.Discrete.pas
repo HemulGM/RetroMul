@@ -93,6 +93,19 @@ begin
   case FBoard of
     8, 13, 34, 41, 58, 61, 79, 87, 99, 101, 113, 133, 140, 144, 145, 148, 184, 212, 228, 240, 242:
       Prg32(0);
+    202:
+      begin
+        Prg16(0, 0);
+        Prg16(1, 0);
+      end;
+    204:
+      begin
+        // The supplied 255-in-1 cart boots its menu from the last PRG bank.
+        Prg16(0, 0);
+        Prg16(1, -1);
+      end;
+    213, 217:
+      Prg32(0);
     180:
       Prg16(1, 0);
     200:
@@ -136,7 +149,7 @@ begin
     CpuWrite($8000, 0);
   if FBoard in [88, 154, 206, 112] then
     UpdateIndexedBanks;
-  FRamEnabled := FBoard in [8, 15, 32, 34, 73, 112, 242];
+  FRamEnabled := FBoard in [8, 15, 32, 34, 73, 99, 112, 242];
 end;
 
 procedure TMapperDiscrete.UpdateIndexedBanks;
@@ -185,6 +198,16 @@ begin
     if (Address and $10) = 0 then
       Value := $80;
     Exit(True);
+  end;
+  if (FBoard = 204) and (Address >= $8000) then
+  begin
+    var RegisterAddress := (Integer(FRegisters[1]) shl 8) or FRegisters[0];
+    if ((RegisterAddress and $FF0F) = $F008) or
+       (((RegisterAddress and $FF0F) = $F004) and (Length(FPrgRom) <= $10000)) then
+    begin
+      Value := 0;
+      Exit(True);
+    end;
   end;
   if (FBoard = 31) and (Address >= $8000) then
   begin
@@ -428,6 +451,40 @@ begin
         Mirror((Address shr 3) and 1);
         Result := True;
       end;
+    202:
+      if Address >= $8000 then
+      begin
+        Bank := (Address shr 1) and 7;
+        Chr8(Bank);
+        if (Address and 9) = 9 then
+          Prg32(Bank shr 1)
+        else
+        begin
+          Prg16(0, Bank);
+          Prg16(1, Bank);
+        end;
+        Mirror(Address and 1);
+        Result := True;
+      end;
+    204:
+      if Address >= $8000 then
+      begin
+        FRegisters[0] := Address and $FF;
+        FRegisters[1] := Address shr 8;
+        if (Address and $20) <> 0 then
+        begin
+          Prg32(Address shr 1);
+          Chr8(Address and $0E);
+        end
+        else
+        begin
+          Prg16(0, Address);
+          Prg16(1, Address);
+          Chr8(Address and $0F);
+        end;
+        Mirror((Address shr 4) and 1);
+        Result := True;
+      end;
     212:
       if Address >= $8000 then
       begin
@@ -441,6 +498,20 @@ begin
         else
           Prg32(Bank shr 1);
         Mirror((Address shr 3) and 1);
+        Result := True;
+      end;
+    213:
+      if Address >= $8000 then
+      begin
+        Prg32((Address shr 1) and 3);
+        Chr8((Address shr 3) and 7);
+        Result := True;
+      end;
+    217:
+      if Address >= $8000 then
+      begin
+        Prg32(Address shr 2);
+        Chr8(Address);
         Result := True;
       end;
     33:

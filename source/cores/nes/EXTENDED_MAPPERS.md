@@ -18,6 +18,16 @@ correct legacy headers:
 | JY | 90, 209 | PRG/CHR modes, 209 nametable mapping/latches, multiplier and four IRQ clock sources |
 | SUBOR | 167 | Educational-computer PRG banking modes, 8 KiB CHR-RAM and H/V mirroring |
 
+The `H:\test\nes` set adds address-selected multicart boards 202, 204, 213,
+and 217 to `NES.Mapper.Discrete`. Mapper 99 now exposes VS work RAM and a
+coin input on `$4016` bit 5. Select inserts a coin (Space by default); Start
+then starts the game. VS controller serial input swaps Start and Select as on
+the arcade wiring. The supplied mapper-99 VS Super Mario Bros ROM reaches
+interactive level 1-1 after these changes.
+
+The supplied mapper-204 `255-in-1` image boots its menu from the last PRG bank.
+The tested control sequence changes its menu page after the initial splash.
+
 `NES.Mapper.Banked` provides bounded array-based bank access. Hardware wrap is
 explicit. CPU, CPU-write, PPU-address, PPU-fetch and scanline hooks connect the
 boards to the console. Unknown IDs still raise an unsupported-mapper error.
@@ -68,9 +78,9 @@ from ROM. Mapper 11 remains available for ordinary Color Dreams cartridges.
   changes and latch-sensitive drawing are not cycle-accurate.
 - MMC5 and Sunsoft 5B expansion audio are not implemented. The base NES APU
   continues to produce sound; these additional voices are absent.
-- Mapper 99 implements cartridge banking, not complete VS System emulation.
-  Dual CPU boards, security devices, arcade inputs and variant PPU palettes
-  require separate work.
+- Mapper 99 does not yet emulate dual CPU boards, security devices, or the full
+  arcade input panel. The supplied VS Super Mario Bros image uses its identified
+  2C04-0004 palette; other VS PPU variants are not yet modeled.
 - NES 2.0 submapper-specific wiring and RAM sizes are not fully modeled.
   VRC 23/25 use legacy address-line decoding; Sunsoft-4 dual-cartridge hardware
   and some unlicensed-board variants remain outside the tested behavior.

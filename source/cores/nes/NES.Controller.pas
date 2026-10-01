@@ -77,14 +77,17 @@ type
     FPowerPadState: UInt16;
     FPowerPadLowShift: UInt8;
     FPowerPadHighShift: UInt8;
+    FSwapStartSelect: Boolean;
     procedure Latch;
   public
     procedure SerializeState(State: TNesStateArchive);
     procedure SetButton(Button: TNesButton; Pressed: Boolean);
+    function IsButtonPressed(Button: TNesButton): Boolean;
     procedure SetPowerPadButton(Button: Integer; Pressed: Boolean);
     procedure Write(Value: UInt8);
     function Read: UInt8;
     property PowerPadEnabled: Boolean read FPowerPadEnabled write FPowerPadEnabled;
+    property SwapStartSelect: Boolean read FSwapStartSelect write FSwapStartSelect;
   end;
 
 implementation
@@ -312,6 +315,8 @@ const
   HIGH_BUTTONS: array[0..3] of Integer = (4, 3, 12, 8);
 begin
   FShift := FState;
+  if FSwapStartSelect then
+    FShift := (FShift and $F3) or ((FShift and $04) shl 1) or ((FShift and $08) shr 1);
   FPowerPadLowShift := 0;
   FPowerPadHighShift := $F0;
   for var i := 0 to High(LOW_BUTTONS) do
@@ -333,6 +338,11 @@ begin
 
   if FStrobe then
     Latch;
+end;
+
+function TController.IsButtonPressed(Button: TNesButton): Boolean;
+begin
+  Result := (FState and (UInt8(1) shl Ord(Button))) <> 0;
 end;
 
 procedure TController.SetPowerPadButton(Button: Integer; Pressed: Boolean);

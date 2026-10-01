@@ -29,6 +29,7 @@ type
   TPPU = class
   private
     FRegion: TNesRegion;
+    FUseVs2C04DPalette: Boolean;
     FPreRenderLine: Integer;
     FMapper: TMapper;
     FNameTable: array[0..4095] of UInt8;
@@ -104,6 +105,7 @@ type
     // Select timing before running; resets PPU state.
     procedure SetRegion(Value: TNesRegion);
     procedure ConnectMapper(AMapper: TMapper);
+    property UseVs2C04DPalette: Boolean read FUseVs2C04DPalette write FUseVs2C04DPalette;
     procedure Reset;
     procedure Clock;
     function CpuRead(Address: UInt16): UInt8;
@@ -1361,7 +1363,11 @@ begin
         FinalPaletteAddress := (BgPalette shl 2) or BgPixel
       else
         FinalPaletteAddress := (SprPalette shl 2) or SprPixel;
-      FDrawingFrame[X, Y] := NES_PALETTE[PpuReadMemory($3F00 + FinalPaletteAddress) and $3F];
+      var ColorIndex := PpuReadMemory($3F00 + FinalPaletteAddress) and $3F;
+      if FUseVs2C04DPalette then
+        FDrawingFrame[X, Y] := NES_VS_2C04D_PALETTE[ColorIndex]
+      else
+        FDrawingFrame[X, Y] := NES_PALETTE[ColorIndex];
     end;
   finally
     FRenderingLine := False;

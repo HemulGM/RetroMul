@@ -16,6 +16,7 @@ type
     FData: TBytes;
     FTitle: string;
     FRegion: TMDRegion;
+    FHeaderOffset: Integer;
     function HeaderText(Offset, Count: Integer): string;
   public
     constructor Create(const Data: TBytes; const Extension: string); overload;
@@ -53,6 +54,7 @@ end;
 constructor TMDCartridge.Create(const Data: TBytes; const Extension: string);
 begin
   inherited Create;
+  FHeaderOffset := $100;
   // Some collections label ordinary big-endian dumps as .smd. Trust the
   // cartridge signature before attempting the copier's interleaving format.
   if SameText(Extension, '.smd') and not ((Length(Data) >= $200) and
@@ -78,7 +80,13 @@ begin
   if (Length(FData) < $200) or (Length(FData) > MAX_ROM_SIZE) or Odd(Length(FData)) then
     raise EMDCartridge.Create('Invalid Mega Drive ROM size');
   if HeaderText($100, 4) <> 'SEGA' then
-    raise EMDCartridge.Create('Mega Drive ROM has no SEGA header at $100');
+  begin
+    // Some early diagnostics retain the first 128 vector entries and
+    // place the identification header at $200 (Charles MacDonald's itest).
+    if (Length(FData) < $300) or (HeaderText($200, 4) <> 'SEGA') then
+      raise EMDCartridge.Create('Mega Drive ROM has no SEGA header at $100 or $200');
+    FHeaderOffset := $200;
+  end;
 
   FTitle := HeaderText($150, 48);
   if FTitle = '' then
@@ -108,6 +116,7 @@ end;
 
 function TMDCartridge.HeaderText(Offset, Count: Integer): string;
 begin
+  Inc(Offset, FHeaderOffset - $100);
   Result := '';
   for var I := Offset to Offset + Count - 1 do
     if (FData[I] >= 32) and (FData[I] < 127) then

@@ -63,6 +63,8 @@ type
 
 implementation
 
+uses NES.Mapper;
+
 procedure TNesBus.SerializeDataBus(State: TNesStateArchive);
 begin
   if State.Version >= 5 then
@@ -249,7 +251,19 @@ begin
     $4015:
       Exit((FApu.CpuReadStatus and $DF) or (FInternalDataBus and $20));
     $4016:
-      Exit((ReadController(0) and $1F) or (FDataBus and $E0));
+      begin
+        Result := (ReadController(0) and $1F) or (FDataBus and $E0);
+        // VS UniSystem coin input is a live bit on $4016. Use Select as
+        // the coin button so the existing keyboard/gamepad mapping can start
+        // arcade games without introducing a new frontend control.
+        if (FCartridge <> nil) and (FCartridge.MapperId = MAPPER_VS_SYSTEM) then
+        begin
+          Result := Result and $1F;
+          if FController1.IsButtonPressed(TNesButton.Select) then
+            Result := Result or $20;
+        end;
+        Exit;
+      end;
     $4017:
       begin
         // Zapper replaces port 2, including Power Pad/Four Score/keyboard.

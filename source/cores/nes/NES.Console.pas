@@ -279,6 +279,8 @@ end;
 procedure TNesConsole.LoadRom(const FileName: string; RegionOverride: TRegionOverride);
 begin
   FCartridge.LoadFromFile(FileName);
+  FController1.SwapStartSelect := FCartridge.MapperId = MAPPER_VS_SYSTEM;
+  FController2.SwapStartSelect := FController1.SwapStartSelect;
   FBus.FourScoreEnabled := FConfiguredFourScore and not UsesPowerPad;
   FController2.PowerPadEnabled := UsesPowerPad;
   FSuborKeyboard.Connected := FCartridge.MapperId = MAPPER_SUBOR;
@@ -295,6 +297,8 @@ begin
       end;
   end;
   FPpu.SetRegion(FRegion);
+  FPpu.UseVs2C04DPalette := (FCartridge.MapperId = MAPPER_VS_SYSTEM) and
+    (FCartridge.Metadata.VsPpuType = 5);
   FApu.SetRegion(FRegion);
   FPpu.ConnectMapper(FCartridge.Mapper);
   Reset;

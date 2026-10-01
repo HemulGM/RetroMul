@@ -11,6 +11,8 @@ type
     WindowDisabled: Byte;
     PlanesDisabled: array[0..1] of Byte;
     WidescreenTiles: Byte;
+    TimedAccess: Byte;
+    PAL: Byte;
   end;
 
   TVDPTileMetadata = record
@@ -113,6 +115,20 @@ type
     PreviousDataWrites: array[0..3] of Word;
     KdebugBufferIndex: Word;
     KdebugBuffer: array[0..255] of Byte;
+    MasterTime: Int64;
+    NextAccessSlot: Int64;
+    FIFOCount: Integer;
+    FIFOData: array[0..3] of Word;
+    FIFOAccess: array[0..3] of TVDPAccessState;
+    FIFOSlotsLeft: Integer;
+    DMAActive: Byte;
+    DMAWaitingFill: Byte;
+    DMABusy: Byte;
+    DMARemaining: Cardinal;
+    DMAFillData: Word;
+    DMASlotsLeft: Integer;
+    HVCounterLatchEnabled: Byte;
+    HVCounterLatched: Word;
   end;
 
   TVDP = record
@@ -129,6 +145,13 @@ type
   TVDPReadCallback = function(UserData: Pointer; Address: Cardinal; TargetCycle: Cardinal): Cardinal;
 
   TVDPKDebugCallback = procedure(UserData: Pointer; const Text: array of Byte);
+
+function VDPNextAccessSlot(const Vdp: TVDP; AfterTime: Int64): Int64;
+procedure VDPAdvance(var Vdp: TVDP; Target: Int64; ColourCallback: TVDPColourUpdatedCallback;
+  ReadCallback: TVDPReadCallback; UserData: Pointer);
+function VDPReadHV(const Vdp: TVDP): Word;
+
+type
 
   TBlitLookupLower = record
     Pixels: array[0..255] of Byte;
@@ -246,6 +269,152 @@ function VDPDecomposeTileMetadata(PackedTileMetadata: Cardinal): TVDPTileMetadat
 function VDPGetCachedSprite(const State: TVDPState; SpriteIndex: Cardinal): TVDPCachedSprite;
 
 implementation
+
+function VDPNextAccessSlot(const Vdp: TVDP; AfterTime: Int64): Int64;
+const
+  H32: array[0..15] of Integer = (230,510,810,970,1130,1450,1610,1770,2090,2250,2410,2730,2890,3050,3350,3370);
+  H40: array[0..17] of Integer = (352,820,948,1076,1332,1460,1588,1844,1972,2100,2356,2484,2612,2868,2996,3124,3364,3380);
+begin
+  var Base := AfterTime div 3420 * 3420;
+  var Position := Integer(AfterTime mod 3420);
+  var Lines := 262 + 51 * Integer(Vdp.Configuration.PAL);
+  var Line := (AfterTime div 3420) mod Lines;
+  var Active := (Vdp.State.DisplayEnabled <> 0) and (Line < 224 + 16 * Integer(Vdp.State.V30Enabled));
+  if Active then
+  begin
+    if Vdp.State.H40Enabled <> 0 then
+    begin
+      for var Slot in H40 do if Slot > Position then Exit(Base + Slot);
+      Exit(Base + 3420 + H40[0]);
+    end;
+    for var Slot in H32 do if Slot > Position then Exit(Base + Slot);
+    Exit(Base + 3420 + H32[0]);
+  end;
+  // Blank display exposes every two-pixel VRAM slot except refresh.
+  var Slots := 171;
+  if Vdp.State.H40Enabled <> 0 then Slots := 210;
+  var Index := Position * Slots div 3420 + 1;
+  while (Index < Slots) and ((Index mod 32 = 0) or
+    ((Vdp.State.DisplayEnabled = 0) and (Index > 1) and (Index mod 32 = 1))) do Inc(Index);
+  Result := Base + (Int64(Index) * 3420 + Slots - 1) div Slots;
+end;
+
+function VDPReadHV(const Vdp: TVDP): Word;
+begin
+  if Vdp.State.HVCounterLatchEnabled <> 0 then Exit(Vdp.State.HVCounterLatched);
+  var Lines := 262 + 51 * Integer(Vdp.Configuration.PAL);
+  var V := Integer((Vdp.State.MasterTime div 3420) mod Lines);
+  var Limit := 234;
+  if Vdp.Configuration.PAL <> 0 then Limit := 258;
+  if Vdp.State.V30Enabled <> 0 then
+    if Vdp.Configuration.PAL <> 0 then Limit := 266 else Limit := 262;
+  if V > Limit then Dec(V, Lines - 256);
+  var H := Integer(Vdp.State.MasterTime mod 3420);
+  if Vdp.State.H40Enabled <> 0 then
+  begin
+    H := H * 210 div 3420;
+    if H > $B6 then Inc(H, $E4 - $B7);
+  end
+  else
+  begin
+    H := H div 20;
+    if H > $93 then Inc(H, $E9 - $94);
+  end;
+  if Vdp.State.DoubleResolutionEnabled <> 0 then V := (V shl 1) or ((V shr 8) and 1);
+  Result := Word(((V and $FF) shl 8) or (H and $FF));
+end;
+
+procedure VDPAdvance(var Vdp: TVDP; Target: Int64; ColourCallback: TVDPColourUpdatedCallback;
+  ReadCallback: TVDPReadCallback; UserData: Pointer);
+  procedure RefillDMAFIFO;
+  begin
+    while (Vdp.State.DMAActive <> 0) and (Vdp.State.Dma.Mode = VDP_DMA_MODE_MEMORY_TO_VRAM) and
+      (Vdp.State.FIFOCount < 4) do
+    begin
+      var Value := ReadCallback(UserData, (Cardinal(Vdp.State.Dma.SourceAddressHigh) shl 17) or
+        (Cardinal(Vdp.State.Dma.SourceAddressLow) shl 1), 0);
+      UpdateFakeFIFO(Vdp.State, Value);
+      Vdp.State.FIFOData[Vdp.State.FIFOCount] := Word(Value);
+      Vdp.State.FIFOAccess[Vdp.State.FIFOCount] := Vdp.State.Access;
+      Inc(Vdp.State.FIFOCount);
+      IncrementAccessAddressRegister(Vdp.State);
+      Vdp.State.Dma.SourceAddressLow := (Vdp.State.Dma.SourceAddressLow + 1) and $FFFF;
+      Vdp.State.Dma.Length := (Vdp.State.Dma.Length + $FFFF) and $FFFF;
+      Dec(Vdp.State.DMARemaining);
+      if Vdp.State.DMARemaining = 0 then
+      begin
+        // The 68k bus is released after the last source read, while the
+        // final four words still have to leave the VDP FIFO.
+        Vdp.State.DMAActive := 0;
+        Vdp.State.DMABusy := 0;
+      end;
+    end;
+  end;
+begin
+  if (Vdp.Configuration.TimedAccess = 0) or (Target < Vdp.State.MasterTime) then Exit;
+  RefillDMAFIFO;
+  while (Vdp.State.FIFOCount > 0) or (Vdp.State.DMAActive <> 0) do
+  begin
+    if Vdp.State.NextAccessSlot <= Vdp.State.MasterTime then
+      Vdp.State.NextAccessSlot := VDPNextAccessSlot(Vdp, Vdp.State.MasterTime);
+    if Vdp.State.NextAccessSlot > Target then Break;
+    Vdp.State.MasterTime := Vdp.State.NextAccessSlot;
+    if Vdp.State.FIFOCount > 0 then
+    begin
+      if Vdp.State.FIFOSlotsLeft = 0 then
+        Vdp.State.FIFOSlotsLeft := 1 + Ord((Vdp.State.FIFOAccess[0].SelectedBuffer = VDP_ACCESS_VRAM) and
+          (Vdp.State.ExtendedVramEnabled = 0));
+      Dec(Vdp.State.FIFOSlotsLeft);
+      if Vdp.State.FIFOSlotsLeft = 0 then
+      begin
+        var Access := Vdp.State.Access;
+        Vdp.State.Access := Vdp.State.FIFOAccess[0];
+        WriteAndIncrement(Vdp, Vdp.State.FIFOData[0], ColourCallback, UserData);
+        Vdp.State.Access := Access;
+        Dec(Vdp.State.FIFOCount);
+        for var I := 0 to Vdp.State.FIFOCount - 1 do
+        begin
+          Vdp.State.FIFOData[I] := Vdp.State.FIFOData[I + 1];
+          Vdp.State.FIFOAccess[I] := Vdp.State.FIFOAccess[I + 1];
+        end;
+        RefillDMAFIFO;
+      end;
+    end
+    else if Vdp.State.DMAActive <> 0 then
+    begin
+      if Vdp.State.DMASlotsLeft = 0 then
+        Vdp.State.DMASlotsLeft := 1 + Ord(Vdp.State.Dma.Mode = VDP_DMA_MODE_COPY);
+      Dec(Vdp.State.DMASlotsLeft);
+      if Vdp.State.DMASlotsLeft = 0 then
+      begin
+        case Vdp.State.Dma.Mode of
+          VDP_DMA_MODE_COPY:
+            begin
+              WriteVRAM(Vdp, Vdp.State.Access.AddressRegister, ReadVRAM(Vdp.State, Vdp.State.Dma.SourceAddressLow));
+              IncrementAccessAddressRegister(Vdp.State);
+            end;
+          VDP_DMA_MODE_FILL:
+            if Vdp.State.Access.SelectedBuffer = VDP_ACCESS_VRAM then
+            begin
+              WriteVRAM(Vdp, Vdp.State.Access.AddressRegister, Vdp.State.DMAFillData shr 8);
+              IncrementAccessAddressRegister(Vdp.State);
+            end
+            else WriteAndIncrement(Vdp, Vdp.State.PreviousDataWrites[0], ColourCallback, UserData);
+        end;
+        Vdp.State.Dma.SourceAddressLow := (Vdp.State.Dma.SourceAddressLow + 1) and $FFFF;
+        Vdp.State.Dma.Length := (Vdp.State.Dma.Length + $FFFF) and $FFFF;
+        Dec(Vdp.State.DMARemaining);
+        if Vdp.State.DMARemaining = 0 then
+        begin
+          Vdp.State.DMAActive := 0;
+          Vdp.State.DMABusy := 0;
+        end;
+      end;
+    end;
+    Vdp.State.NextAccessSlot := VDPNextAccessSlot(Vdp, Vdp.State.MasterTime);
+  end;
+  Vdp.State.MasterTime := Target;
+end;
 
 const
   PLANE_PADDING = 16;
@@ -481,6 +650,7 @@ end;
 
 procedure VDPInitialise(var Vdp: TVDP);
 begin
+  Vdp.State := Default(TVDPState);
   Vdp.State.Access.WritePending := 0;
   Vdp.State.Access.AddressRegister := 0;
   Vdp.State.Access.CodeRegister := 0;
@@ -1034,7 +1204,11 @@ end;
 function VDPReadControl(var Vdp: TVDP): Cardinal;
 begin
   Vdp.State.Access.WritePending := 0;
-  Exit(Cardinal((($3600) or (Vdp.State.CurrentlyInVblank shl 7)) or (Vdp.State.CurrentlyInVblank shl 3)));
+  Result := Cardinal(Vdp.State.CurrentlyInVblank shl 7);
+  if (Vdp.State.CurrentlyInVblank <> 0) or (Vdp.State.DisplayEnabled = 0) then Result := Result or 8;
+  if Vdp.State.FIFOCount = 0 then Result := Result or $200;
+  if Vdp.State.FIFOCount = 4 then Result := Result or $100;
+  if Vdp.State.DMABusy <> 0 then Result := Result or 2;
 end;
 
 procedure UpdateFakeFIFO(var State: TVDPState; Value: Cardinal);
@@ -1049,6 +1223,29 @@ procedure VDPWriteData(var Vdp: TVDP; Value: Cardinal; ColourUpdatedCallback: TV
 begin
   Vdp.State.Access.WritePending := 0;
   UpdateFakeFIFO(Vdp.State, Value);
+  if Vdp.Configuration.TimedAccess <> 0 then
+  begin
+    if IsInReadMode(Vdp.State) <> 0 then
+      IncrementAccessAddressRegister(Vdp.State)
+    else
+    begin
+      if Vdp.State.FIFOCount >= 4 then raise Exception.Create('VDP FIFO overflow');
+      Vdp.State.FIFOData[Vdp.State.FIFOCount] := Word(Value);
+      Vdp.State.FIFOAccess[Vdp.State.FIFOCount] := Vdp.State.Access;
+      Inc(Vdp.State.FIFOCount);
+      IncrementAccessAddressRegister(Vdp.State);
+      if (Vdp.State.DMAActive <> 0) and (Vdp.State.Dma.Mode = VDP_DMA_MODE_FILL) then
+        Vdp.State.DMAFillData := Word(Value);
+      if Vdp.State.DMAWaitingFill <> 0 then
+      begin
+        Vdp.State.DMAWaitingFill := 0;
+        Vdp.State.DMAFillData := Word(Value);
+        Vdp.State.DMAActive := 1;
+        ClearDMAPending(Vdp.State);
+      end;
+    end;
+    Exit;
+  end;
   if IsInReadMode(Vdp.State) <> 0 then
     IncrementAccessAddressRegister(Vdp.State)
   else
@@ -1126,7 +1323,12 @@ begin
     begin
       case Reg of
         0:
-          Vdp.State.HIntEnabled := Ord((Data and $10) <> 0);
+          begin
+            Vdp.State.HIntEnabled := Ord((Data and $10) <> 0);
+            if (Data and 2 <> 0) and (Vdp.State.HVCounterLatchEnabled = 0) then
+              Vdp.State.HVCounterLatched := VDPReadHV(Vdp);
+            Vdp.State.HVCounterLatchEnabled := Ord(Data and 2 <> 0);
+          end;
         1:
           begin
             Vdp.State.ExtendedVramEnabled := Ord((Data and $80) <> 0);
@@ -1268,6 +1470,24 @@ begin
           until True;
       end;
     end;
+  end;
+  if Vdp.Configuration.TimedAccess <> 0 then
+  begin
+    if (IsDMAPending(Vdp.State) <> 0) and (Vdp.State.DMAActive = 0) and (Vdp.State.DMAWaitingFill = 0) then
+    begin
+      Vdp.State.DMARemaining := Vdp.State.Dma.Length;
+      if Vdp.State.DMARemaining = 0 then Vdp.State.DMARemaining := $10000;
+      Vdp.State.DMABusy := 1;
+      Vdp.State.DMASlotsLeft := 0;
+      if Vdp.State.Dma.Mode = VDP_DMA_MODE_FILL then
+        Vdp.State.DMAWaitingFill := 1
+      else
+      begin
+        Vdp.State.DMAActive := 1;
+        ClearDMAPending(Vdp.State);
+      end;
+    end;
+    Exit;
   end;
   if (IsDMAPending(Vdp.State) <> 0) and (Vdp.State.Dma.Mode <> VDP_DMA_MODE_FILL) then
   begin

@@ -269,6 +269,10 @@ begin
       FMetadata.HasBattery := FMetadata.HasBattery or IsLegacyBatteryRom(FRomIdentity);
       if IsLegacyPowerPadRom(FRomIdentity) then
         FMetadata.DefaultExpansionDevice := 12;
+      // Legacy iNES cannot declare the VS PPU model. This exact ROM uses RP2C04-0004.
+      if (FMapperId = MAPPER_VS_SYSTEM) and
+        (FRomIdentity = '91fa719b4b05adbac0b9d507d2051ed361d1ded4') then
+        FMetadata.VsPpuType := 5;
     end;
 
     FMetadata.Title := ReadRomTitle(Stream, FMetadata);

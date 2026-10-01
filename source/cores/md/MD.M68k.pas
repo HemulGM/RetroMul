@@ -712,15 +712,15 @@ begin
           begin
             if (OpCode.Raw and $0200) = 0 then
             begin
-              if (OpCode.Raw and $01B8) = $0080 then
+              if (OpCode.Raw and $FFB8) = $4880 then
                 Instruction := INSTRUCTION_EXT
-              else if (OpCode.Raw and $01C0) = $0000 then
+              else if (OpCode.Raw and $FFC0) = $4800 then
                 Instruction := INSTRUCTION_NBCD
-              else if (OpCode.Raw and $01F8) = $0040 then
+              else if (OpCode.Raw and $FFF8) = $4840 then
                 Instruction := INSTRUCTION_SWAP
-              else if (OpCode.Raw and $01C0) = $0040 then
+              else if (OpCode.Raw and $FFC0) = $4840 then
                 Instruction := INSTRUCTION_PEA
-              else if (OpCode.Raw and $0B80) = $0880 then
+              else if (OpCode.Raw and $FB80) = $4880 then
                 Instruction := INSTRUCTION_MOVEM
             end
             else if (OpCode.Raw = $4AFA) or (OpCode.Raw = $4AFB) or (OpCode.Raw = $4AFC) then
@@ -927,6 +927,76 @@ begin
     $F:
       Instruction := INSTRUCTION_UNIMPLEMENTED_2;
   end;
+  // The 68000 must reject illegal size/addressing combinations before
+  // consuming extension words or modifying registers. Later 68k models
+  // accept some of these encodings, but the Mega Drive's CPU does not.
+  var Mode := OpCode.PrimaryAddressMode;
+  var Reg := OpCode.PrimaryRegister;
+  var Size := OpCode.Bits6and7;
+  var EA := (Mode < 7) or (Reg <= 4);
+  var DataEA := EA and (Mode <> 1);
+  var MemoryAlterable := (Mode >= 2) and ((Mode < 7) or (Reg <= 1));
+  var DataAlterable := (Mode = 0) or MemoryAlterable;
+  var ControlEA := (Mode in [2, 5, 6]) or ((Mode = 7) and (Reg <= 3));
+  var Valid := True;
+  case Instruction of
+    INSTRUCTION_SBCD:
+      Valid := Size = 0;
+    INSTRUCTION_MOVE, INSTRUCTION_MOVEA:
+      begin
+        Valid := EA and ((OpCode.SecondaryAddressMode < 7) or (OpCode.SecondaryRegister <= 1));
+        if OpCode.Raw shr 12 = 1 then
+          Valid := Valid and (Mode <> 1) and (OpCode.SecondaryAddressMode <> 1);
+      end;
+    INSTRUCTION_ORI, INSTRUCTION_ANDI, INSTRUCTION_SUBI, INSTRUCTION_ADDI,
+    INSTRUCTION_EORI, INSTRUCTION_CMPI, INSTRUCTION_NEGX, INSTRUCTION_CLR,
+    INSTRUCTION_NEG, INSTRUCTION_NOT, INSTRUCTION_TST:
+      Valid := (Size <> 3) and DataAlterable;
+    INSTRUCTION_ADDQ, INSTRUCTION_SUBQ:
+      Valid := DataAlterable;
+    INSTRUCTION_ADDAQ, INSTRUCTION_SUBAQ:
+      Valid := Size <> 0;
+    INSTRUCTION_BTST_STATIC:
+      Valid := DataEA and not ((Mode = 7) and (Reg = 4));
+    INSTRUCTION_BTST_DYNAMIC:
+      Valid := DataEA;
+    INSTRUCTION_BCHG_STATIC, INSTRUCTION_BCHG_DYNAMIC,
+    INSTRUCTION_BCLR_STATIC, INSTRUCTION_BCLR_DYNAMIC,
+    INSTRUCTION_BSET_STATIC, INSTRUCTION_BSET_DYNAMIC,
+    INSTRUCTION_NBCD, INSTRUCTION_TAS, INSTRUCTION_SCC, INSTRUCTION_MOVE_FROM_SR:
+      Valid := DataAlterable;
+    INSTRUCTION_MOVE_TO_SR, INSTRUCTION_MOVE_TO_CCR,
+    INSTRUCTION_CHK, INSTRUCTION_MULS, INSTRUCTION_MULU,
+    INSTRUCTION_DIVS, INSTRUCTION_DIVU:
+      Valid := DataEA;
+    INSTRUCTION_LEA, INSTRUCTION_PEA, INSTRUCTION_JMP, INSTRUCTION_JSR:
+      Valid := ControlEA;
+    INSTRUCTION_MOVEM:
+      if OpCode.Raw and $400 <> 0 then
+        Valid := ControlEA or (Mode = 3)
+      else
+        Valid := MemoryAlterable and (Mode <> 3);
+    INSTRUCTION_MOVEQ:
+      Valid := OpCode.Bit8 = 0;
+    INSTRUCTION_OR, INSTRUCTION_AND:
+      if OpCode.Bit8 <> 0 then Valid := MemoryAlterable else Valid := DataEA;
+    INSTRUCTION_ADD, INSTRUCTION_SUB:
+      if OpCode.Bit8 <> 0 then Valid := MemoryAlterable
+      else Valid := EA and ((Size <> 0) or (Mode <> 1));
+    INSTRUCTION_CMP:
+      Valid := EA and ((Size <> 0) or (Mode <> 1));
+    INSTRUCTION_ADDA, INSTRUCTION_SUBA, INSTRUCTION_CMPA:
+      Valid := EA;
+    INSTRUCTION_EOR:
+      Valid := DataAlterable;
+    INSTRUCTION_EXG:
+      Valid := (OpCode.Raw and $F1F8 = $C140) or
+        (OpCode.Raw and $F1F8 = $C148) or (OpCode.Raw and $F1F8 = $C188);
+    INSTRUCTION_ASD_MEMORY, INSTRUCTION_LSD_MEMORY,
+    INSTRUCTION_ROXD_MEMORY, INSTRUCTION_ROD_MEMORY:
+      Valid := MemoryAlterable;
+  end;
+  if not Valid then Instruction := INSTRUCTION_ILLEGAL;
   Exit(Instruction);
 end;
 
@@ -4195,7 +4265,14 @@ begin
         if E.Code = 2 then
         begin
           StateRef^.ProgramCounter := Stuff.StartingProgramCounter;
-          DoInterrupt(Stuff, Stuff.Exception.VectorOffset);
+          try
+            DoInterrupt(Stuff, Stuff.Exception.VectorOffset);
+          except
+            // Address errors while stacking an exception are handled by
+            // Group0Exception (including a double-fault CPU halt).
+            on Nested: ECPUException do
+              if Nested.Code <> 1 then raise;
+          end;
         end;
         if StateRef^.Halted <> 0 then
           Exit(CyclesToDo);

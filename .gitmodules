@@ -4,3 +4,6 @@
 [submodule "source/pcm"]
 	path = source/pcm
 	url = https://github.com/HemulGM/PCMAudio
+[submodule "source/input"]
+	path = source/input
+	url = https://github.com/HemulGM/FMXInput.git

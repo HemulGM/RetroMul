@@ -168,6 +168,42 @@ uses
 
 {$R *.fmx}
 
+function HostKeyCode(Key: Word; KeyChar: WideChar): Word;
+begin
+  // Some FMX backends report printable keys through KeyChar alone.
+  // Preserve native codes (including numpad keys); use the same fallback
+  // on down and up so lowercase/uppercase characters address one held key.
+  if Key <> 0 then
+    Exit(Key);
+  case KeyChar of
+    'a'..'z': Result := Ord(KeyChar) - Ord('a') + vkA;
+    'A'..'Z', '0'..'9': Result := Ord(KeyChar);
+    ' ': Result := vkSpace;
+    '!': Result := vk1;
+    '@': Result := vk2;
+    '#': Result := vk3;
+    '$': Result := vk4;
+    '%': Result := vk5;
+    '^': Result := vk6;
+    '&': Result := vk7;
+    '*': Result := vk8;
+    '(': Result := vk9;
+    ')': Result := vk0;
+    ';', ':': Result := vkSemicolon;
+    '=', '+': Result := vkEqual;
+    ',', '<': Result := vkComma;
+    '-', '_': Result := vkMinus;
+    '.', '>': Result := vkPeriod;
+    '/', '?': Result := vkSlash;
+    '`', '~': Result := vkTilde;
+    '[', '{': Result := vkLeftBracket;
+    '\', '|': Result := vkBackslash;
+    ']', '}': Result := vkRightBracket;
+    '''', '"': Result := vkQuote;
+    else Result := 0;
+  end;
+end;
+
 function TryGetImagePixel(const Image: TImage; const X, Y: Single; out PixelX, PixelY: Integer): Boolean;
 begin
   Result := False;
@@ -1038,6 +1074,7 @@ end;
 
 procedure TFormMain.FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
+  Key := HostKeyCode(Key, KeyChar);
   if Key in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
     Exit;
   if Key = 0 then
@@ -1118,6 +1155,7 @@ end;
 
 procedure TFormMain.FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
+  Key := HostKeyCode(Key, KeyChar);
   if Key in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
     Exit;
   if Key = 0 then

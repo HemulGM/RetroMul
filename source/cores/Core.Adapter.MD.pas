@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, Core.Emulation, MD.Console,
+  System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation, MD.Console,
   MD.Emulation;
 
 type
@@ -13,10 +13,10 @@ type
   private
     FKeys, FKeys2: TMDKeyMap;
   protected
-    procedure LoadCoreSettings(Ini: TIniFile); override;
-    procedure SaveCoreSettings(Ini: TIniFile); override;
+    procedure LoadCoreSettings(Ini: TCustomIniFile); override;
+    procedure SaveCoreSettings(Ini: TCustomIniFile); override;
   public
-    constructor Create(const FileName: string);
+    constructor Create(const FileName: string; const Storage: IStorage = nil);
     property Keys: TMDKeyMap read FKeys;
     property Keys2: TMDKeyMap read FKeys2;
   end;
@@ -26,6 +26,7 @@ type
     FThread: TMDWorker;
     FData: TBytes;
     FSnapshotDirectory: string;
+    FStorage: IStorage;
     FSavePath, FError: string;
     FConfig: IEmulatorConfig;
     FKeys, FKeys2: TMDKeyMap;
@@ -33,7 +34,8 @@ type
     FPaused: Boolean;
     procedure ApplySettings;
   public
-    constructor Create(const FileName: string);
+    constructor Create(const FileName: string); overload;
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string); overload;
     destructor Destroy; override;
     function GetName: string;
     function GetSupportsSnapshots: Boolean;
@@ -50,6 +52,7 @@ type
     procedure ClearInput;
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
+    function GetInputState: TEmulatorInput;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -61,25 +64,25 @@ type
 implementation
 
 uses
-  System.IOUtils, System.UITypes, System.Hash, MD.Cartridge, Core.SavePaths;
+  System.IOUtils, System.UITypes, System.Hash, MD.Cartridge, Core.RomFormat;
 
 const
   KeyNames: array[TMDButton] of string =
     ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'C', 'Start', 'X', 'Y', 'Z', 'Mode');
 
-constructor TMDConfig.Create(const FileName: string);
+constructor TMDConfig.Create(const FileName: string; const Storage: IStorage);
 const
   Defaults: TMDKeyMap = (vkUp, vkDown, vkLeft, vkRight, vkZ, vkX, vkC, vkReturn, vkA, vkS, vkD, vkSpace);
   Defaults2: TMDKeyMap = (vkNumpad8, vkNumpad5, vkNumpad4, vkNumpad6,
     vkNumpad1, vkNumpad2, vkNumpad3, vkNumpad0, vkNumpad7, vkNumpad9,
     vkDecimal, vkMultiply);
 begin
-  inherited Create(FileName);
+  inherited Create(FileName, Storage);
   FKeys := Defaults;
   FKeys2 := Defaults2;
 end;
 
-procedure TMDConfig.LoadCoreSettings(Ini: TIniFile);
+procedure TMDConfig.LoadCoreSettings(Ini: TCustomIniFile);
 begin
   for var Button := Low(TMDButton) to High(TMDButton) do
   begin
@@ -88,7 +91,7 @@ begin
   end;
 end;
 
-procedure TMDConfig.SaveCoreSettings(Ini: TIniFile);
+procedure TMDConfig.SaveCoreSettings(Ini: TCustomIniFile);
 begin
   for var Button := Low(TMDButton) to High(TMDButton) do
   begin
@@ -98,29 +101,38 @@ begin
 end;
 
 constructor TMDCoreAdapter.Create(const FileName: string);
+begin
+  var Storage := TStorage.Default;
+  var Stream := Storage.OpenRead(FileName);
+  try Create(Stream, Storage, FileName); finally Stream.Free; end;
+end;
+
+constructor TMDCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
 var
   Cart: TMDCartridge;
   Config: TMDConfig;
   Hash: THashSHA2;
 begin
   inherited Create;
-  Cart := TMDCartridge.Create(FileName);
+  FStorage := Storage;
+  if FStorage = nil then FStorage := TStorage.Default;
+  var Data := ReadRomData(Stream);
+  var Format := DetectRom(Data);
+  Cart := TMDCartridge.Create(NormalizeRom(Data, Format), '');
   try
     FData := Copy(Cart.Data);
   finally
     Cart.Free;
   end;
-  Config := TMDConfig.Create(EmulatorConfigFileName('md'));
+  Config := TMDConfig.Create(FStorage.ConfigFile('md'), FStorage);
   FConfig := Config;
   Config.Load;
   FKeys := Config.Keys;
   FKeys2 := Config.Keys2;
-  FSavePath := GetSaveDirectory;
   Hash := THashSHA2.Create;
   Hash.Update(FData);
-  FSavePath := TPath.Combine(FSavePath, 'MD-' + Hash.HashAsString + '.sav');
-  FSnapshotDirectory := ResolveGameSavePath(GetSnapshotDirectory, FileName,
-    'MD-' + Hash.HashAsString, '');
+  FSavePath := FStorage.GameSave('md', RomName, Hash.HashAsString);
+  FSnapshotDirectory := FStorage.GameSnapshots('md', RomName, Hash.HashAsString);
 end;
 
 destructor TMDCoreAdapter.Destroy;
@@ -140,7 +152,7 @@ procedure TMDCoreAdapter.Start;
 begin
   if FThread <> nil then
     Exit;
-  FThread := TMDWorker.Create(FData, FSavePath);
+  FThread := TMDWorker.Create(FData, FSavePath, FStorage);
   FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplySettings;
   FThread.Start;
@@ -204,6 +216,24 @@ begin
         Exclude(FKeyboard2, Button);
   end;
   ApplySettings;
+end;
+
+function TMDCoreAdapter.GetInputState: TEmulatorInput;
+const
+  Mapping: array[TMDButton] of TEmulatorButton =
+    (TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left,
+    TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B,
+    TEmulatorButton.C, TEmulatorButton.Start, TEmulatorButton.X,
+    TEmulatorButton.Y, TEmulatorButton.Z, TEmulatorButton.Mode);
+begin
+  Result := Default(TEmulatorInput);
+  for var Button := Low(TMDButton) to High(TMDButton) do
+  begin
+    if Button in (FKeyboard + FGamepad) then
+      Include(Result.Buttons, Mapping[Button]);
+    if Button in (FKeyboard2 + FGamepad2) then
+      Include(Result.Buttons2, Mapping[Button]);
+  end;
 end;
 
 procedure TMDCoreAdapter.SetGamepadInput(const Input: TEmulatorInput);

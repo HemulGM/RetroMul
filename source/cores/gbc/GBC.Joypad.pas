@@ -34,6 +34,9 @@ type
 
 implementation
 
+uses
+  System.UITypes;
+
 { TGBCJoypad }
 
 constructor TGBCJoypad.Create;
@@ -41,15 +44,15 @@ begin
   inherited;
   FSelection := $30;
 
-  KeyBindings[TGBCKey.Up] := 87;
-  KeyBindings[TGBCKey.Down] := 83;
-  KeyBindings[TGBCKey.Left] := 65;
-  KeyBindings[TGBCKey.Right] := 68;
+  KeyBindings[TGBCKey.Up] := vkW;
+  KeyBindings[TGBCKey.Down] := vkS;
+  KeyBindings[TGBCKey.Left] := vkA;
+  KeyBindings[TGBCKey.Right] := vkD;
 
-  KeyBindings[TGBCKey.A] := 74;
-  KeyBindings[TGBCKey.B] := 75;
-  KeyBindings[TGBCKey.Select] := 90;
-  KeyBindings[TGBCKey.Start] := 88;
+  KeyBindings[TGBCKey.A] := vkJ;
+  KeyBindings[TGBCKey.B] := vkK;
+  KeyBindings[TGBCKey.Select] := vkZ;
+  KeyBindings[TGBCKey.Start] := vkX;
 end;
 
 procedure TGBCJoypad.CheckInterrupt(Previous: Integer);

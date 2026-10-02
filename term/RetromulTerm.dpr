@@ -6,11 +6,12 @@
 
 uses
   System.SysUtils,
-  System.Classes,
+  System.Classes, System.UITypes,
   Winapi.Windows,
   FMX.Graphics,
   Core.Emulation,
   Core.EmulatorFactory,
+  Core.Storage,
   Retromul.Terminal in 'Retromul.Terminal.pas';
 
 var
@@ -38,7 +39,10 @@ procedure LoadRom(const FileName: string; const DisplayName: string);
 begin
   // Construct first: an invalid ROM leaves the current worker running.
   var NewEmulation: IEmulationCore;
-  NewEmulation := CreateEmulationCore(FileName);
+  var Storage := TStorage.Default;
+  var Stream := Storage.OpenRead(FileName);
+  try NewEmulation := CreateEmulationCore(Stream, Storage, DisplayName);
+  finally Stream.Free; end;
   try
     if FEmulation <> nil then
       FEmulation.Stop;
@@ -118,8 +122,8 @@ begin
       FEmulation.SetKeyState(VK_RIGHT, TRetromulTerminal.IsKeyDown(VK_RIGHT));
       FEmulation.SetKeyState(VK_UP, TRetromulTerminal.IsKeyDown(VK_UP));
       FEmulation.SetKeyState(VK_DOWN, TRetromulTerminal.IsKeyDown(VK_DOWN));
-      FEmulation.SetKeyState(Ord('Z'), TRetromulTerminal.IsKeyDown('Z'));
-      FEmulation.SetKeyState(Ord('X'), TRetromulTerminal.IsKeyDown('X'));
+      FEmulation.SetKeyState(vkZ, TRetromulTerminal.IsKeyDown(vkZ));
+      FEmulation.SetKeyState(vkX, TRetromulTerminal.IsKeyDown(vkX));
       FEmulation.SetKeyState(VK_RETURN, TRetromulTerminal.IsKeyDown(VK_RETURN));
       FEmulation.SetKeyState(VK_SPACE, TRetromulTerminal.IsKeyDown(VK_SPACE));
 

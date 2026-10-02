@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Classes, System.SysUtils, NES.Types, NES.Mapper;
+  Core.Storage, System.Classes, System.SysUtils, NES.Types, NES.Mapper;
 
 {$SCOPEDENUMS ON}
 
@@ -36,9 +36,13 @@ type
     FRomFileName: string;
     FSaveSize: Integer;
     FLastSaveMemory: TByteArray;
+    FStorage: IStorage;
+    procedure LoadBufferedRom(Stream: TStream; const RomName: string);
   public
     destructor Destroy; override;
     procedure LoadFromFile(const FileName: string);
+    procedure LoadFromStream(Stream: TStream; const RomName: string = '');
+    property Storage: IStorage read FStorage write FStorage;
     procedure Reset;
     procedure LoadBattery(const DirectoryName: string);
     procedure SaveBattery;
@@ -54,7 +58,7 @@ type
 implementation
 
 uses
-  NES.RomMetadata, NES.Mapper.Factory, Core.SavePaths, System.Hash,
+  NES.RomMetadata, NES.Mapper.Factory, Core.SavePaths, Core.RomFormat, System.Hash,
   System.IOUtils
   {$IFDEF MSWINDOWS}, Winapi.Windows{$ENDIF}
   {$IFDEF POSIX}, Posix.Stdio, Posix.Unistd{$ENDIF};
@@ -72,7 +76,7 @@ type
     Zero: array[0..4] of UInt8;
   end;
 
-procedure ReadExact(Stream: TFileStream; var Buffer; Count: Integer);
+procedure ReadExact(Stream: TStream; var Buffer; Count: Integer);
 begin
   if Stream.Read(Buffer, Count) <> Count then
     raise ENesException.Create('Unexpected end of file');
@@ -158,7 +162,7 @@ begin
   end;
 end;
 
-function ReadRomTitle(Stream: TFileStream; const Metadata: TCartridgeMetadata): string;
+function ReadRomTitle(Stream: TStream; const Metadata: TCartridgeMetadata): string;
 begin
   Result := '';
   // NES 2.0 trailing data may contain miscellaneous ROMs, not a title.
@@ -201,6 +205,20 @@ end;
 
 procedure TCartridge.LoadFromFile(const FileName: string);
 begin
+  if FStorage = nil then FStorage := TStorage.Default;
+  var Stream := FStorage.OpenRead(FileName);
+  try LoadFromStream(Stream, FileName); finally Stream.Free; end;
+end;
+
+procedure TCartridge.LoadFromStream(Stream: TStream; const RomName: string);
+begin
+  var Input := TBytesStream.Create(ReadRomData(Stream));
+  try LoadBufferedRom(Input, RomName); finally Input.Free; end;
+end;
+
+procedure TCartridge.LoadBufferedRom(Stream: TStream; const RomName: string);
+begin
+  if FStorage = nil then FStorage := TStorage.Default;
   SaveBattery;
   FSaveFileName := '';
   FLastSaveMemory := nil;
@@ -210,10 +228,8 @@ begin
   FMapperId := -1;
   FHeaderMapperId := -1;
   FMetadata := Default(TCartridgeMetadata);
-  FRomFileName := FileName;
+  FRomFileName := RomName;
 
-  var Stream: TFileStream := TFileStream.Create(FileName, fmOpenRead or fmShareDenyWrite);
-  try
     var Header: TInesHeader;
     var PrgRom: TByteArray;
     var ChrRom: TByteArray;
@@ -267,6 +283,10 @@ begin
     if FMetadata.Format = TRomFormat.INes then
     begin
       FMetadata.HasBattery := FMetadata.HasBattery or IsLegacyBatteryRom(FRomIdentity);
+      if IsLegacyFamicomKeyboardRom(FRomIdentity) then
+        FMetadata.DefaultExpansionDevice := $23;
+      if IsLegacyDataRecorderRom(FRomIdentity) then
+        FMetadata.DefaultExpansionDevice := $20;
       if IsLegacyPowerPadRom(FRomIdentity) then
         FMetadata.DefaultExpansionDevice := 12;
       // Legacy iNES cannot declare the VS PPU model. This exact ROM uses RP2C04-0004.
@@ -291,9 +311,6 @@ begin
       raise ENesException.CreateFmt('Unsupported mapper: %d', [FMapperId]);
 
     FValid := True;
-  finally
-    Stream.Free;
-  end;
 end;
 
 procedure TCartridge.LoadBattery(const DirectoryName: string);
@@ -317,10 +334,10 @@ begin
   // Some legacy headers set the battery bit on boards with no writable memory.
   if FSaveSize = 0 then
     Exit;
-  var Path := ResolveGameSavePath(DirectoryName, FRomFileName, FRomIdentity, '.sav');
-  if TFile.Exists(Path) then
+  var Path := FStorage.GamePath(DirectoryName, FRomFileName, FRomIdentity, '.sav');
+  if FStorage.Exists(Path) then
   begin
-    var Stream := TFileStream.Create(Path, fmOpenRead or fmShareDenyWrite);
+    var Stream := FStorage.OpenRead(Path);
     try
       if Stream.Size <> FSaveSize then
         raise ENesException.CreateFmt('Invalid save size: %s (expected %d bytes)', [Path, FSaveSize]);
@@ -344,42 +361,11 @@ begin
     raise ENesException.Create('Cartridge persistent memory size changed');
   if CompareMem(@Memory[0], @FLastSaveMemory[0], FSaveSize) then
     Exit;
-  ForceDirectories(ExtractFilePath(FSaveFileName));
-  var Id: TGUID;
-  CreateGUID(Id);
-  var Temporary := FSaveFileName + '.' + GUIDToString(Id) + '.tmp';
-  try
-    var Stream := TFileStream.Create(Temporary, fmCreate);
-    try
-      Stream.WriteBuffer(Memory[0], FSaveSize);
-      {$IFDEF MSWINDOWS}
-      if not FlushFileBuffers(Stream.Handle) then
-        RaiseLastOSError;
-      {$ENDIF}
-      {$IFDEF POSIX}
-      if fsync(Stream.Handle) <> 0 then
-        RaiseLastOSError;
-      {$ENDIF}
-    finally
-      Stream.Free;
-    end;
-    // Same-directory replacement: never delete the previous save first.
-    {$IFDEF MSWINDOWS}
-    if not MoveFileEx(PChar(Temporary), PChar(FSaveFileName),
-      MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
-      RaiseLastOSError;
-    {$ENDIF}
-    {$IFDEF POSIX}
-    var SourcePath := UTF8String(Temporary);
-    var TargetPath := UTF8String(FSaveFileName);
-    if Posix.Stdio.__rename(PAnsiChar(SourcePath), PAnsiChar(TargetPath)) <> 0 then
-      RaiseLastOSError;
-    {$ENDIF}
-    FLastSaveMemory := Copy(Memory, 0, FSaveSize);
-  finally
-    if TFile.Exists(Temporary) then
-      TFile.Delete(Temporary);
-  end;
+  var Data: TBytes;
+  SetLength(Data, FSaveSize);
+  if FSaveSize > 0 then Move(Memory[0], Data[0], FSaveSize);
+  FStorage.WriteBytes(FSaveFileName, Data);
+  FLastSaveMemory := Copy(Memory, 0, FSaveSize);
 end;
 
 procedure TCartridge.Reset;

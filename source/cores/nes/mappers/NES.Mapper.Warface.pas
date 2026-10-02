@@ -29,6 +29,7 @@ implementation
 
 // Board wiring and PPU read detector:
 // https://github.com/ClusterM/nes-warface/blob/master/Mapper/WarfaceMapper.v
+
 constructor TMapperWarface.Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
 begin
   inherited Create(Prg, Chr, HasChrRam, MirrorMode);
@@ -64,11 +65,13 @@ end;
 function TMapperWarface.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
   Result := (Address >= $6000) and (Address < $8000);
-  if not Result then Exit;
+  if not Result then
+    Exit;
   if (Address and 1) = 0 then
   begin
     Prg16(0, Value and 7);
-    if (Value and $80) <> 0 then FTimer := 4095;
+    if (Value and $80) <> 0 then
+      FTimer := 4095;
     // Acknowledging does not stop a timer that is still counting.
     FIrqPending := False;
   end
@@ -84,9 +87,11 @@ begin
   if FTimer > 0 then
   begin
     Dec(FTimer);
-    if FTimer = 0 then FIrqPending := True;
+    if FTimer = 0 then
+      FIrqPending := True;
   end;
-  if FIdleCycles < 16 then Inc(FIdleCycles);
+  if FIdleCycles < 16 then
+    Inc(FIdleCycles);
 end;
 
 procedure TMapperWarface.ClockPpuAddress(Address: UInt16; PpuCycle: UInt64);
@@ -107,13 +112,17 @@ begin
   end
   else if (FPpuAddress and $3000) = $2000 then
   begin
-    if FNametableReads < 3 then Inc(FNametableReads)
+    if FNametableReads < 3 then
+      Inc(FNametableReads)
     else
     begin
       case FScanline of
-        64: FChrLatch := 1;
-        128: FChrLatch := 2;
-        192: FChrLatch := 3;
+        64:
+          FChrLatch := 1;
+        128:
+          FChrLatch := 2;
+        192:
+          FChrLatch := 3;
       end;
       FScanline := (Integer(FScanline) + 1) and $FF;
       UpdateChr;
@@ -135,12 +144,14 @@ begin
   // arrives at dot 3, before its pattern fetches, but after that software
   // render. Project the imminent CHR bank for the row without advancing
   // the hardware detector (which still clocks on the real read at dot 3).
-  if Rendering and (Line < 240) and (FNametableReads = 3) and
-    ((FChrRegister and $80) <> 0) then
+  if Rendering and (Line < 240) and (FNametableReads = 3) and ((FChrRegister and $80) <> 0) then
     case FScanline of
-      64: Chr4(0, (FChrRegister and $1C) or 1);
-      128: Chr4(0, (FChrRegister and $1C) or 2);
-      192: Chr4(0, (FChrRegister and $1C) or 3);
+      64:
+        Chr4(0, (FChrRegister and $1C) or 1);
+      128:
+        Chr4(0, (FChrRegister and $1C) or 2);
+      192:
+        Chr4(0, (FChrRegister and $1C) or 3);
     end;
 end;
 
@@ -158,3 +169,4 @@ begin
 end;
 
 end.
+

@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Diagnostics, NES.Console, PCM.Audio;
+  Core.Storage, System.SysUtils, System.Classes, System.Diagnostics, NES.Console, PCM.Audio;
 
 const
   AUDIO_DIAGNOSTIC_FRAMES = 1800;
@@ -27,8 +27,9 @@ type
     FNext, FCount: Integer;
     FSampleRate: Integer;
     FBlockFrames: Integer;
+    FStorage: IStorage;
   public
-    constructor Create(const AudioFormat: TPCMAudioFormat);
+    constructor Create(const AudioFormat: TPCMAudioFormat; const Storage: IStorage = nil);
     procedure Clear;
     function Clone: TAudioDiagnostics;
     procedure Capture(Console: TNesConsole; Audio: TPCMAudio; const Samples: array of SmallInt; Count: Integer);
@@ -38,9 +39,11 @@ type
 
 implementation
 
-constructor TAudioDiagnostics.Create(const AudioFormat: TPCMAudioFormat);
+constructor TAudioDiagnostics.Create(const AudioFormat: TPCMAudioFormat; const Storage: IStorage);
 begin
   inherited Create;
+  FStorage := Storage;
+  if FStorage = nil then FStorage := TStorage.Default;
   if (AudioFormat.SampleRate <= 0) or (AudioFormat.Channels <> 1) or
     (AudioFormat.BlockFrames <= 0) then
     raise EArgumentException.Create('Audio diagnostics requires a mono PCM format with a positive sample rate and block size');
@@ -63,7 +66,7 @@ begin
   AudioFormat.SampleRate := FSampleRate;
   AudioFormat.Channels := 1;
   AudioFormat.BlockFrames := FBlockFrames;
-  Result := TAudioDiagnostics.Create(AudioFormat);
+  Result := TAudioDiagnostics.Create(AudioFormat, FStorage);
   try
     Result.FSampleRate := FSampleRate;
     Result.FBlockFrames := FBlockFrames;
@@ -119,7 +122,8 @@ begin
   var TotalSamples: Cardinal := 0;
   for var i := 0 to FCount - 1 do
     Inc(TotalSamples, FFrames[(FirstFrameIndex + i) mod Length(FFrames)].Count);
-  var Info: TStreamWriter := TStreamWriter.Create(Prefix + '.txt', False, TEncoding.UTF8);
+  var Info := TStreamWriter.Create(FStorage.OpenWrite(Prefix + '.txt'), TEncoding.UTF8);
+  Info.OwnStream;
   try
     Info.WriteLine('ROM: ' + RomPath);
     Info.WriteLine('Executable: ' + ParamStr(0));
@@ -130,9 +134,10 @@ begin
   finally
     Info.Free;
   end;
-  var Log: TStreamWriter := TStreamWriter.Create(Prefix + '.csv', False, TEncoding.UTF8);
+  var Log := TStreamWriter.Create(FStorage.OpenWrite(Prefix + '.csv'), TEncoding.UTF8);
+  Log.OwnStream;
   try
-    var Wave: TFileStream := TFileStream.Create(Prefix + '.wav', fmCreate);
+    var Wave := FStorage.OpenWrite(Prefix + '.wav');
     try
       var ChunkSize: Cardinal;
       var HeaderWord: Word;

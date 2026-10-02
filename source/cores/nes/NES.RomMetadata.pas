@@ -15,10 +15,34 @@ function IsLegacyBatteryRom(const Sha1: string): Boolean;
 
 function IsLegacyPowerPadRom(const Sha1: string): Boolean;
 
+function IsLegacyFamicomKeyboardRom(const Sha1: string): Boolean;
+
+function IsLegacyDataRecorderRom(const Sha1: string): Boolean;
+
 implementation
 
 uses
   System.Hash, System.SysUtils;
+
+function IsLegacyDataRecorderRom(const Sha1: string): Boolean;
+const
+  // Exact PRG+CHR identities; puNES nes20db.xml expansion type 32.
+  Identities: array[0..7] of string = (
+    'dee513dad7223cfc81bcd859d0aac6746349cb25', // Wrecking Crew
+    'ba8d9227a0d02b62ee6cb9e691fa5a5134c303a8', // Excitebike NTSC
+    '6281d62c1cbb34b1734d20747a8e3d8de2af1443', // Excitebike PAL
+    '8363d8f95cc29cbf4191640e6bb25009dcaf5fb0', // Excitebike F1023 (collection dump)
+    '3959de9e2f63b34bc992a60ddcc73027f401dc64', // Mach Rider NTSC rev0
+    '65caac674f3847ed46654313382ecc0f854a0f54', // Mach Rider NTSC rev1
+    'a322ba4cefaff2668763cc20491fcbfcace7347e', // Mach Rider PAL
+    // Collection Machrider variant; not listed in puNES, canonical Mach Rider CHR.
+    '8eb7512c7b6fefd332a6c667c76017a443692645');
+begin
+  for var Identity in Identities do
+    if SameText(Sha1, Identity) then
+      Exit(True);
+  Result := False;
+end;
 
 type
   TMapperIdentity = record
@@ -47,9 +71,20 @@ const
 
 function IsLegacyPowerPadRom(const Sha1: string): Boolean;
 begin
-  // Short Order and Street Cop collection payloads, Power Pad side B.
+  // Exact legacy payloads, Power Pad side B. Super Team Games is also
+  // identified as expansion device 12 in puNES misc/nes20db.xml.
   Result := SameText(Sha1, '0380a74aad3771edf2b37c739c489832ebe6d06b') or
-    SameText(Sha1, 'e26f34a8a4c9419a8a90b0346fde019e8ab5aad2');
+    SameText(Sha1, 'e26f34a8a4c9419a8a90b0346fde019e8ab5aad2') or
+    SameText(Sha1, 'ea660abbc1cdb74e85f932e38013e4fa5b9f6bb8');
+end;
+
+function IsLegacyFamicomKeyboardRom(const Sha1: string): Boolean;
+begin
+  // Family BASIC v1.0, v2.0, v2.1 and v3.0 payloads from puNES nes20db.xml.
+  Result := SameText(Sha1, '4e819c20f41e06059f4336e05b4cbad52551423b') or
+    SameText(Sha1, '17720ae1afc6a3750384d6b082391c0c2f8a0699') or
+    SameText(Sha1, '8e90d9a6a6090307a7e408d1c1704d09ba8f94fc') or
+    SameText(Sha1, 'e232c621bfedbfc6b100677bfbfc50b910248282');
 end;
 
 function IsLegacyBatteryRom(const Sha1: string): Boolean;

@@ -20,6 +20,7 @@ type
     function HeaderText(Offset, Count: Integer): string;
   public
     constructor Create(const Data: TBytes; const Extension: string); overload;
+    constructor Create(Stream: TStream); overload;
     constructor Create(const FileName: string); overload;
     function ReadByte(Address: Cardinal): Byte;
     function ReadWord(Address: Cardinal): Word;
@@ -31,24 +32,24 @@ type
 implementation
 
 uses
-  System.IOUtils;
+  Core.Storage, Core.RomFormat;
 
 const
   MAX_ROM_SIZE = 8 * 1024 * 1024;
 
 constructor TMDCartridge.Create(const FileName: string);
 begin
-  var Bytes: TBytes;
-  var Stream := TFileStream.Create(FileName, FmOpenRead or FmShareDenyWrite);
-  try
-    if (Stream.Size < $200) or (Stream.Size > MAX_ROM_SIZE + 512) then
-      raise EMDCartridge.Create('Mega Drive ROM must contain 512 bytes to 8 MiB');
-    SetLength(Bytes, Integer(Stream.Size));
-    Stream.ReadBuffer(Bytes[0], Length(Bytes));
-  finally
-    Stream.Free;
-  end;
-  Create(Bytes, TPath.GetExtension(FileName));
+  var Stream := TStorage.Default.OpenRead(FileName);
+  try Create(Stream); finally Stream.Free; end;
+end;
+
+constructor TMDCartridge.Create(Stream: TStream);
+begin
+  var Bytes := ReadRomData(Stream);
+  var Format := DetectRom(Bytes);
+  if Format.System <> TRomSystem.MD then
+    raise EMDCartridge.Create('Unrecognized Mega Drive ROM header');
+  Create(NormalizeRom(Bytes, Format), '');
 end;
 
 constructor TMDCartridge.Create(const Data: TBytes; const Extension: string);

@@ -1,4 +1,4 @@
-﻿unit RM.Gamepad;
+unit RM.Gamepad;
 
 interface
 
@@ -19,14 +19,17 @@ type
       TContact = record
         Region: TRegion;
         Buttons: TEmulatorButtons;
+        HeldButtons: TEmulatorButtons;
       end;
   private
     FContacts: TDictionary<NativeInt, TContact>;
     FButtons: TEmulatorButtons;
+    FCoreButtons: TEmulatorButtons;
     FLayout: TScreenGamepadLayout;
     FOnChange: TNotifyEvent;
     FBounds: array[TEmulatorButton] of TRectF;
     FDPad: TRectF;
+    FActionArea: TRectF;
     FUnit: Single;
     FLevels, FStarts, FTargets: array[TEmulatorButton] of Single;
     FTimes: array[TEmulatorButton] of Int64;
@@ -38,6 +41,9 @@ type
     function RegionAt(const Point: TPointF): TRegion;
     function ButtonsAt(const Point: TPointF; Region: TRegion): TEmulatorButtons;
     procedure UpdateButtons;
+    procedure UpdateHighlight;
+    function GetHighlightedButtons: TEmulatorButtons;
+    procedure SetCoreButtons(const Value: TEmulatorButtons);
     procedure Animate(Sender: TObject);
   protected
     procedure Paint; override;
@@ -61,6 +67,9 @@ type
     procedure ReleaseAll;
     function ButtonBounds(Button: TEmulatorButton): TRectF;
     property Buttons: TEmulatorButtons read FButtons;
+    // Feedback never becomes input. Local contacts always keep their highlight.
+    property CoreButtons: TEmulatorButtons read FCoreButtons write SetCoreButtons;
+    property HighlightedButtons: TEmulatorButtons read GetHighlightedButtons;
     property Layout: TScreenGamepadLayout read FLayout write SetLayout;
   published
     property Align;
@@ -87,8 +96,7 @@ implementation
 uses
   System.SysUtils, System.Math, System.Math.Vectors, System.Diagnostics,
   {$IFDEF ANDROID}
-  Androidapi.JNIBridge, Androidapi.JNI.GraphicsContentViewText,
-  FMX.Platform.Android,
+  RM.TouchInput.Android,
   {$ENDIF}
   FMX.Graphics;
 
@@ -114,70 +122,6 @@ begin
   Result := inherited ButtonBounds(NesButtonMap[Button]);
 end;
 
-{$IFDEF ANDROID}
-type
-  TGamepadAndroidInput = class(TJavaLocal, JView_OnTouchListener)
-  private
-    FPad: TScreenGamepad;
-    FView: JView;
-    FScale: Single;
-  public
-    constructor Create(Pad: TScreenGamepad; Form: TCommonCustomForm);
-    destructor Destroy; override;
-    function onTouch(v: JView; event: JMotionEvent): Boolean; cdecl;
-  end;
-
-constructor TGamepadAndroidInput.Create(Pad: TScreenGamepad; Form: TCommonCustomForm);
-begin
-  inherited Create;
-  FPad := Pad;
-  var Handle := WindowHandleToPlatform(Form.Handle);
-  FScale := Handle.Scale;
-  FView := Handle.View;
-  FView.setOnTouchListener(Self);
-end;
-
-destructor TGamepadAndroidInput.Destroy;
-begin
-  if FView <> nil then
-    FView.setOnTouchListener(nil);
-  FPad := nil;
-  FView := nil;
-  inherited;
-end;
-
-function TGamepadAndroidInput.onTouch(v: JView; event: JMotionEvent): Boolean;
-begin
-  // Do not consume the event: Open ROM and the rest of the form keep working.
-  // FMX's synthesized mouse input is ignored by the gamepad on Android.
-  Result := False;
-  if FPad = nil then
-    Exit;
-  var Action := event.getActionMasked;
-  if Action = TJMotionEvent.JavaClass.ACTION_DOWN then
-    FPad.ReleaseAll; // A fresh gesture cannot inherit a lost pointer-up.
-  if Action = TJMotionEvent.JavaClass.ACTION_CANCEL then
-  begin
-    FPad.ReleaseAll;
-    Exit;
-  end;
-  var ChangedIndex := event.getActionIndex;
-  for var i := 0 to event.getPointerCount - 1 do
-  begin
-    var Id := event.getPointerId(i);
-    var Point := FPad.AbsoluteToLocal(TPointF.Create(event.getX(i) / FScale,
-        event.getY(i) / FScale));
-    if (i = ChangedIndex) and ((Action = TJMotionEvent.JavaClass.ACTION_UP) or
-      (Action = TJMotionEvent.JavaClass.ACTION_POINTER_UP)) then
-      FPad.PointerUp(Id)
-    else if (i = ChangedIndex) and ((Action = TJMotionEvent.JavaClass.ACTION_DOWN) or
-      (Action = TJMotionEvent.JavaClass.ACTION_POINTER_DOWN)) then
-      FPad.PointerDown(Id, Point)
-    else
-      FPad.PointerMove(Id, Point);
-  end;
-end;
-{$ENDIF}
 
 constructor TScreenGamepad.Create(AOwner: TComponent);
 begin
@@ -216,7 +160,7 @@ begin
   FreeAndNil(FNativeInput);
   {$IFDEF ANDROID}
   if Form <> nil then
-    FNativeInput := TGamepadAndroidInput.Create(Self, Form);
+    FNativeInput := TAndroidTouchInput.Create(Self, Form, PointerDown, PointerMove, PointerUp, ReleaseAll, True);
   {$ENDIF}
 end;
 
@@ -266,6 +210,16 @@ begin
     FBounds[TEmulatorButton.Mode] := FBounds[TEmulatorButton.Select];
     FBounds[TEmulatorButton.Select] := TRectF.Empty;
   end;
+  // Keep the initial action pressed while the finger crosses gaps between keys.
+  FActionArea := TRectF.Empty;
+  for var Button in (ActiveButtons * ActionButtons) do
+  begin
+    var R := FBounds[Button];
+    if FActionArea.IsEmpty then FActionArea := R
+    else FActionArea := RectF(Min(FActionArea.Left, R.Left), Min(FActionArea.Top, R.Top),
+      Max(FActionArea.Right, R.Right), Max(FActionArea.Bottom, R.Bottom));
+  end;
+  FActionArea.Inflate(6 * FUnit, 6 * FUnit);
 end;
 
 function TScreenGamepad.ActiveButtons: TEmulatorButtons;
@@ -391,6 +345,8 @@ begin
     Exit;
   end;
   Contact.Buttons := ButtonsAt(Point, Contact.Region);
+  Contact.HeldButtons := [];
+  if Contact.Region = TRegion.Actions then Contact.HeldButtons := Contact.Buttons;
   FContacts.AddOrSetValue(Id, Contact);
   UpdateButtons;
 end;
@@ -406,6 +362,16 @@ begin
   if not FContacts.TryGetValue(Id, Contact) then
     Exit;
   Contact.Buttons := ButtonsAt(Point, Contact.Region);
+  if Contact.Region = TRegion.Actions then
+  begin
+    if LocalRect.Contains(Point) and FActionArea.Contains(Point) then
+      Contact.Buttons := Contact.Buttons + Contact.HeldButtons
+    else
+    begin
+      Contact.Buttons := [];
+      Contact.HeldButtons := [];
+    end;
+  end;
   FContacts.AddOrSetValue(Id, Contact);
   UpdateButtons;
 end;
@@ -421,6 +387,7 @@ begin
   if FContacts = nil then
     Exit;
   FContacts.Clear;
+  FCoreButtons := [];
   UpdateButtons;
   // Backgrounded/hidden controls should not keep an animation timer alive.
   if FAnimation <> nil then
@@ -441,19 +408,38 @@ begin
     NewButtons := NewButtons - [TEmulatorButton.Up, TEmulatorButton.Down];
   if NewButtons = FButtons then
     Exit;
+  FButtons := NewButtons;
+  UpdateHighlight;
+  if Assigned(FOnChange) then
+    FOnChange(Self);
+end;
+
+function TScreenGamepad.GetHighlightedButtons: TEmulatorButtons;
+begin
+  Result := (FButtons + FCoreButtons) * ActiveButtons;
+end;
+
+procedure TScreenGamepad.SetCoreButtons(const Value: TEmulatorButtons);
+begin
+  if FCoreButtons = Value then
+    Exit;
+  FCoreButtons := Value;
+  UpdateHighlight;
+end;
+
+procedure TScreenGamepad.UpdateHighlight;
+begin
+  var NewButtons := GetHighlightedButtons;
   var NowTicks := TStopwatch.GetTimeStamp;
   for var Button := Low(TEmulatorButton) to High(TEmulatorButton) do
-    if (Button in NewButtons) <> (Button in FButtons) then
+    if Ord(Button in NewButtons) <> FTargets[Button] then
     begin
       FStarts[Button] := FLevels[Button];
       FTargets[Button] := Ord(Button in NewButtons);
       FTimes[Button] := NowTicks;
     end;
-  FButtons := NewButtons;
   FAnimation.Enabled := True;
   Repaint;
-  if Assigned(FOnChange) then
-    FOnChange(Self);
 end;
 
 procedure TScreenGamepad.Animate(Sender: TObject);

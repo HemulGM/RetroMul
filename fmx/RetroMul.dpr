@@ -7,14 +7,28 @@ uses
   FMX.Skia,
   {$ENDIF }
   FMX.Dialogs,
-  RM.Gamepad in 'RM.Gamepad.pas',
-  NES.SuborKeyboard in 'NES.SuborKeyboard.pas',
+  FMX.OpenDialog in 'FMX.OpenDialog.pas',
+  Core.Storage in '..\source\cores\Core.Storage.pas',
+  Core.RomFormat in '..\source\cores\Core.RomFormat.pas',
+  RM.Storage.Dialogs in 'RM.Storage.Dialogs.pas',
+  RM.Gamepad in 'devices\RM.Gamepad.pas',
+  RM.TouchInput.Android in 'devices\RM.TouchInput.Android.pas',
+  NES.SuborKeyboard in 'devices\NES.SuborKeyboard.pas',
+  NES.FamicomKeyboard in 'devices\NES.FamicomKeyboard.pas',
+  NES.FamicomKeyboardDevice in '..\source\cores\nes\NES.FamicomKeyboardDevice.pas',
+  NES.FamicomDataRecorder in '..\source\cores\nes\NES.FamicomDataRecorder.pas',
+  NES.PowerPad in 'devices\NES.PowerPad.pas',
+  NES.DataRecorder in 'devices\NES.DataRecorder.pas',
   RM.Main in 'RM.Main.pas' {FormMain},
   {$IFDEF ANDROID}
-  RM.RomPicker.Android in 'RM.RomPicker.Android.pas',
+  RM.DocumentTransfer.Android in 'RM.DocumentTransfer.Android.pas',
+  Core.Storage.Android in '..\source\cores\Core.Storage.Android.pas',
   {$ENDIF }
   {$IF Defined(ANDROID) and not Defined(PCM_AUDIO_NULL)}
   PCM.Audio.Android.AudioTrack in '..\source\PCM\PCM.Audio.Android.AudioTrack.pas',
+  {$ENDIF }
+  {$IF Defined(MSWINDOWS)}
+  FMX.Platform.Win in 'DelphiWinUI3\Fixes\D13\FMX.Platform.Win.pas',
   {$ENDIF }
   {$IF Defined(MSWINDOWS) and not Defined(PCM_AUDIO_NULL)}
   PCM.Audio.Windows.MMSystem in '..\source\PCM\PCM.Audio.Windows.MMSystem.pas',
@@ -113,7 +127,6 @@ uses
   FMX.Windows.Hints in 'DelphiWinUI3\FMXWindowsHint\FMX.Windows.Hints.pas',
   HGM.FMX.Image in 'HGM.FMX.Image.pas',
   Core.SavePaths in '..\source\cores\Core.SavePaths.pas',
-  RM.FolderPicker.Android in 'RM.FolderPicker.Android.pas',
   MD.Emulation in '..\source\cores\md\MD.Emulation.pas';
 
 {$R *.res}
@@ -123,9 +136,7 @@ begin
   GlobalUseSkia := True;
   {$ENDIF}
   Application.Initialize;
-  //FormStyles := TFormStyles.Create(Application);
   Application.CreateForm(TFormMain, FormMain);
-  //Application.CreateForm(TFormStyles, FormStyles);
   Application.Run;
 end.
 

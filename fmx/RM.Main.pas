@@ -1,4 +1,4 @@
-﻿unit RM.Main;
+unit RM.Main;
 
 interface
 
@@ -7,21 +7,23 @@ uses
   FMX.Types, FMX.Controls, FMX.Objects, FMX.Graphics, FMX.Dialogs, NES.Consts,
   NES.Controller, Core.Emulation, Core.EmulatorFactory, Core.Adapter.MD,
   WinUI3.Form, WinUI3.Style, FMX.Controls.Presentation, FMX.StdCtrls,
-  FMX.Layouts, NES.SuborKeyboard,
+  FMX.Layouts, NES.SuborKeyboard, NES.PowerPad, NES.FamicomKeyboard,
   {$IFDEF ANDROID}
   Androidapi.Helpers, Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.App,
   Androidapi.JNI.Widget, Androidapi.JNI.Os, Androidapi.JNI.Media, FMX.Platform,
-  FMX.ApplicationEvents, RM.RomPicker.Android,
+  FMX.ApplicationEvents, RM.DocumentTransfer.Android,
   {$ENDIF}
-  RM.FolderPicker.Android, RM.Gamepad, FMX.ListBox, SCRP.GameList, FMX.Edit,
-  FMX.SearchBox;
+  Core.Storage, RM.Storage.Dialogs, FMX.OpenDialog, RM.Gamepad, FMX.ListBox,
+  SCRP.GameList, FMX.Edit, FMX.SearchBox, NES.FamicomDataRecorder,
+  NES.DataRecorder;
 
 type
   TListBoxItemGame = class(TListBoxItem)
   protected
     FLoaded: Boolean;
   public
-    RomFile: TRomFile;
+    RomFile: TStorageFile;
+    Storage: IStorage;
     procedure ApplyStyle; override;
   end;
 
@@ -80,6 +82,9 @@ type
     FGamepad: TScreenGamepad;
     FSystemId: string;
     FSuborKeyboard: TNesSuborKeyboard;
+    FFamicomKeyboard: TNesFamicomKeyboard;
+    FPowerPad: TNesPowerPad;
+    FDataRecorder: TNesDataRecorder;
     FGamepadInput: TEmulatorInput;
     FSoundErrorShown: Boolean;
     FRomDisplayName: string;
@@ -87,21 +92,38 @@ type
     FEmulationFaulted: Boolean;
     FUserPaused: Boolean;
     FKeysDown: array[0..2048] of Boolean;
-    FRomsRoot: string;
+    FStorage: IStorage;
     FZapperPixel: TPoint;
+    FFileDialog: TFMXOpenDialog;
+    FCallbackAlive: TFunc<Boolean>;
+    FInvalidateCallbacks: TProc;
     {$IFDEF ANDROID}
-    FPicker: TAndroidRomPicker;
+    FTransfer: TAndroidDocumentTransfer;
+    FChoosingTape: Boolean;
     FAppEvents: TApplicationEvents;
     FInBackground, FActivityPaused: Boolean;
     FSuborKeyboardTouchAttached: Boolean;
+    FFamicomKeyboardTouchAttached: Boolean;
+    FPowerPadTouchAttached: Boolean;
     function ApplicationStateChanged(Sender: TObject; const AAppEvent: TApplicationEvent; const AContext: TObject): Boolean;
-    procedure PollRomPicker;
+    procedure PollDocumentTransfer;
     {$ENDIF}
+    procedure ScreenshotClick(Sender: TObject);
     procedure GamepadChanged(Sender: TObject);
     procedure SuborKeyboardChanged(Sender: TObject);
+    procedure FamicomKeyboardChanged(Sender: TObject);
+    procedure ForwardKeyState(Code: Word; Pressed: Boolean);
+    procedure SuborKeyboardPower(Sender: TObject);
+    procedure PowerPadChanged(Sender: TObject);
+    procedure TapeAction(Sender: TObject; Action: TTapeAction; const FileName: string);
+    procedure ChooseTapeFile(Sender: TObject);
+    procedure SaveTapeAs(Sender: TObject);
+    procedure UpdatePeripheralFeedback;
     procedure SetStatus(const Text: string);
     procedure SyncActivity;
     procedure OpenRom;
+    procedure SelectDocument(ForCassette: Boolean);
+    procedure FinishFileSelection;
     procedure StopOnError;
     procedure UpdateFrame;
     procedure SwitchPause;
@@ -113,11 +135,15 @@ type
     procedure MobileCloseRom;
     procedure Stop;
   protected
+    function CreateStorage: IStorage; virtual;
+    function CreateCore(const FileName: string): IEmulationCore; virtual;
     procedure DoOnSettingChange; override;
   public
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     procedure LoadRom(const FileName: string; const DisplayName: string = '');
+    procedure SelectTapeFile(const FileName: string);
+    function SaveScreenshot: string;
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
 
@@ -135,20 +161,12 @@ implementation
 uses
   System.IOUtils, System.Math, FMX.Ani, System.IniFiles, System.Messaging,
   RM.Styles, Core.Adapter.GB, GB.Palettes, Core.Adapter.NES, Core.SavePaths,
+  {$IFDEF MSWINDOWS}
+  Winapi.Windows,
+  {$ENDIF}
   HGM.FMX.Image;
 
 {$R *.fmx}
-
-function ReadZapperMask(const Mask: TNesZapperMask; const PixelX, PixelY: Integer): Boolean;
-begin
-  Result := False;
-  if (PixelX < Low(Mask)) or (PixelX > High(Mask)) then
-    Exit;
-  if (PixelY < Low(Mask[PixelX])) or (PixelY > High(Mask[PixelX])) then
-    Exit;
-
-  Result := Mask[PixelX, PixelY] <> 0;
-end;
 
 function TryGetImagePixel(const Image: TImage; const X, Y: Single; out PixelX, PixelY: Integer): Boolean;
 begin
@@ -171,13 +189,6 @@ begin
   PixelX := Min(Image.Bitmap.Width - 1, Floor((X - Left) / Scale));
   PixelY := Min(Image.Bitmap.Height - 1, Floor((Y - Top) / Scale));
   Result := True;
-end;
-
-function EventKey(Key: Word; KeyChar: WideChar): Word;
-begin
-  Result := Key;
-  if (Result = 0) and (KeyChar <> #0) then
-    Result := Ord(UpCase(KeyChar));
 end;
 
 { TFormMain }
@@ -221,22 +232,32 @@ end;
 
 procedure TFormMain.ButtonSetRootClick(Sender: TObject);
 begin
-  {$IFDEF ANDROID}
-  TRomStorage.SelectFolder(
-    procedure(Success: Boolean)
-    begin
-      FRomsRoot := TRomStorage.FolderUri;
-      LoadSystem(FSystemId);
-    end);
-  Exit;
-  {$ENDIF}
-  var Dir: string := FRomsRoot;
-  if SelectDirectory(Translate('Select ROM folder'), '', Dir) then
-    FRomsRoot := Dir
-  else
+  if FOpeningRom then
     Exit;
-
-  LoadSystem(FSystemId);
+  FOpeningRom := True;
+  ButtonOpen.Enabled := False;
+  FormDeactivate(Self);
+  SyncActivity;
+  var IsAlive: TFunc<Boolean> := FCallbackAlive;
+  FStorage.SelectRomFolder(
+    procedure(const Selection: TStorageSelection)
+    begin
+      if not IsAlive() then
+        Exit;
+      try
+        try
+          if Selection.Error <> '' then
+            raise Exception.Create(Selection.Error);
+          if not Selection.Cancelled then
+            LoadSystem(FSystemId);
+        except
+          on E: Exception do
+            ShowMessage(E.Message);
+        end;
+      finally
+        FinishFileSelection;
+      end;
+    end);
 end;
 
 procedure TFormMain.ButtonStopClick(Sender: TObject);
@@ -246,6 +267,7 @@ end;
 
 procedure TFormMain.Stop;
 begin
+  FormDeactivate(Self);
   if FEmulation <> nil then
   begin
     TimerUpdate.Enabled := False;
@@ -254,6 +276,7 @@ begin
     FEmulation.Stop;
     FEmulation := nil;
   end;
+  SyncActivity;
 end;
 
 procedure TFormMain.ChangeSystem(Sender: TObject);
@@ -275,117 +298,86 @@ end;
 
 procedure TFormMain.Load;
 begin
+  var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
   try
-    if TFile.Exists(TPath.Combine(GetDocumentsDirectory, ConfigFileName)) then
+    // Import the previously selected folder once.
+    if FStorage.RomFolder = '' then
     begin
-      var Ini := TIniFile.Create(TPath.Combine(GetDocumentsDirectory, ConfigFileName));
-      try
-        FRomsRoot := Trim(Ini.ReadString('General', 'Path', FRomsRoot));
-      finally
-        Ini.Free;
-      end;
-    end
-    else
-      Save;
-  except
-    // silent
+      var LegacyFolder := Ini.ReadString('General', 'Path', '');
+      if LegacyFolder <> '' then
+        FStorage.RomFolder := LegacyFolder;
+    end;
+  finally
+    Ini.Free;
   end;
 end;
 
 procedure TFormMain.Save;
 begin
+  var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
   try
-    TDirectory.CreateDirectory(GetDocumentsDirectory);
-    var Ini := TIniFile.Create(TPath.Combine(GetDocumentsDirectory, ConfigFileName));
-    try
-      Ini.WriteString('General', 'Path', FRomsRoot);
-    finally
-      Ini.Free;
-    end;
-  except
-    //silent
+    Ini.WriteString('General', 'Path', FStorage.RomFolder);
+    FStorage.WriteConfig(Ini);
+  finally
+    Ini.Free;
   end;
 end;
 
 procedure TFormMain.LoadSystem(const SystemId: string);
 begin
   FSystemId := SystemId;
-  // FMX controls and their styles belong to the main thread. Keeping this
-  // operation scoped to the call also prevents work outliving the form.
   LayoutLeft.Enabled := False;
   ListBoxGames.Visible := False;
   ListBoxGames.BeginUpdate;
   try
     ListBoxGames.Clear;
     try
-      {$IFDEF ANDROID}
-      TRomStorage.FolderUri := FRomsRoot;
-      // XML metadata is not supported by the SAF reader yet. Its presence
-      // must not suppress the ROM scan.
-      ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle';
-      ListBoxGames.ItemHeight := 32;
-      var Games := TRomStorage.GetFiles(['gb', 'gbc', 'nes', 'gen', 'md', 'smd', 'bin'], True);
-      for var GameFile in Games do
-        if GameFile.RelativePath.StartsWith(SystemId + '/') or
-          GameFile.RelativePath.StartsWith(SystemId + '\') then
+      var Folder := TPath.Combine(FStorage.RomFolder, SystemId);
+      var Metadata := TGameList.Create;
+      try
+        var XMLPath := TPath.Combine(Folder, 'gamelist.xml');
+        if not FStorage.RomFolder.StartsWith('content://') and FStorage.Exists(XMLPath) then
         begin
-          var Game := TGame.Create;
+          var Input := FStorage.OpenRead(XMLPath);
           try
-            Game.Path := GameFile.Uri;
-            Game.Name := TPath.GetFileNameWithoutExtension(GameFile.Name);
-            var Item := TListBoxItemGame.Create(ListBoxGames);
-            Item.RomFile := GameFile;
-            ListBoxGames.AddObject(Item);
-            FillGameItem(Item, Game, '');
+            Metadata.LoadFromStream(Input);
           finally
-            Game.Free;
+            Input.Free;
           end;
         end;
-      {$ELSE}
-      var Folder := TPath.Combine(FRomsRoot, SystemId);
-      if not TDirectory.Exists(Folder) then
-        Exit;
-      var GameListXML := TPath.Combine(Folder, 'gamelist.xml');
-      if TFile.Exists(GameListXML) then
-      begin
-        ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle_game';
-        ListBoxGames.ItemHeight := 70;
-        var GameList := TGameList.Create;
-        try
-          GameList.LoadFromFile(GameListXML);
-          for var Game in GameList.Games do
-          begin
-            var Item := TListBoxItemGame.Create(ListBoxGames);
-            ListBoxGames.AddObject(Item);
-            FillGameItem(Item, Game, Folder);
-          end;
-        finally
-          GameList.Free;
-        end;
-      end
-      else
-      begin
         ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle';
         ListBoxGames.ItemHeight := 32;
-        for var GameFile in TDirectory.GetFiles(Folder) do
+        if Metadata.Games.Count > 0 then
         begin
-          var Ext := TPath.GetExtension(GameFile).ToLower;
-          if (Ext <> '.nes') and (Ext <> '.gb') and (Ext <> '.gbc') and
-            (Ext <> '.smd') and (Ext <> '.bin') and (Ext <> '.md') and (Ext <> '.gen') then
-            Continue;
+          ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle_game';
+          ListBoxGames.ItemHeight := 70;
+        end;
+        for var FileInfo in FStorage.Roms(SystemId) do
+        begin
           var Game := TGame.Create;
           try
-            Game.Path := GameFile;
-            Game.Name := TPath.GetFileNameWithoutExtension(GameFile);
+            Game.Path := FileInfo.Location;
+            Game.Name := TPath.GetFileNameWithoutExtension(FileInfo.Name);
+            var DisplayGame := Game;
+            for var Entry in Metadata.Games do
+              if SameFileName(ExpandFileName(Entry.GetPhysicalPath(Folder, Entry.Path)),
+                ExpandFileName(FileInfo.Location)) then
+              begin
+                DisplayGame := Entry;
+                Break;
+              end;
             var Item := TListBoxItemGame.Create(ListBoxGames);
+            Item.RomFile := FileInfo;
+            Item.Storage := FStorage;
             ListBoxGames.AddObject(Item);
-            FillGameItem(Item, Game, Folder);
+            FillGameItem(Item, DisplayGame, Folder);
           finally
             Game.Free;
           end;
         end;
+      finally
+        Metadata.Free;
       end;
-      {$ENDIF}
     except
       on E: Exception do
       begin
@@ -398,8 +390,6 @@ begin
     LayoutLeft.Enabled := True;
     ButtonSetRoot.Visible := ListBoxGames.Count <= 0;
     ListBoxGames.Visible := True;
-    ListBoxGames.Opacity := 0;
-    TAnimator.AnimateFloat(ListBoxGames, 'Opacity', 1);
   end;
 end;
 
@@ -421,10 +411,37 @@ begin
   Item.TagString := Game.GetPhysicalPath(Root, Game.Path);
 end;
 
+function TFormMain.CreateStorage: IStorage;
+begin
+  Result := TStorage.Create('', TStoragePicker.Create);
+end;
+
 constructor TFormMain.Create(AOwner: TComponent);
 begin
   FormStyles := TFormStyles.Create(Application);
   inherited;
+  FStorage := CreateStorage;
+  var Alive := True;
+  FCallbackAlive :=
+    function: Boolean
+    begin
+      Result := Alive;
+    end;
+  FInvalidateCallbacks :=
+    procedure
+    begin
+      Alive := False;
+    end;
+  FFileDialog := TFMXOpenDialog.Create(Self);
+  FFileDialog.MultipleSelection := False;
+  var ScreenshotButton := TButton.Create(Self);
+  ScreenshotButton.Name := 'ButtonScreenshot';
+  ScreenshotButton.Parent := LayoutHead;
+  ScreenshotButton.Align := TAlignLayout.Right;
+  ScreenshotButton.Width := 60;
+  ScreenshotButton.Text := 'PNG';
+  ScreenshotButton.Hint := 'Screenshot (F8)';
+  ScreenshotButton.OnClick := ScreenshotClick;
   LayoutClient.CanFocus := True;
   LayoutClient.OnKeyDown := FormKeyDown;
   LayoutClient.OnKeyUp := FormKeyUp;
@@ -434,7 +451,7 @@ begin
   {$IFDEF ANDROID}
   // Hardware volume keys control game audio, including before a ROM is loaded.
   TAndroidHelper.Activity.setVolumeControlStream(TJAudioManager.JavaClass.STREAM_MUSIC);
-  FPicker := TAndroidRomPicker.Create;
+  FTransfer := TAndroidDocumentTransfer.Create(FStorage);
   FAppEvents := TApplicationEvents.Create(Self);
   FAppEvents.OnStateChanged := ApplicationStateChanged;
   LayoutClient.Visible := False;
@@ -457,8 +474,33 @@ begin
   FSuborKeyboard.Parent := LayoutClient;
   FSuborKeyboard.Align := TAlignLayout.Bottom;
   FSuborKeyboard.OnChange := SuborKeyboardChanged;
+  FSuborKeyboard.OnPower := SuborKeyboardPower;
+  FSuborKeyboard.OnReset := SuborKeyboardPower;
   FSuborKeyboard.Enabled := False;
   FSuborKeyboard.Visible := False;
+  FFamicomKeyboard := TNesFamicomKeyboard.Create(Self);
+  FFamicomKeyboard.Name := 'ScreenFamicomKeyboard';
+  FFamicomKeyboard.Parent := LayoutClient;
+  FFamicomKeyboard.Align := TAlignLayout.Bottom;
+  FFamicomKeyboard.OnChange := FamicomKeyboardChanged;
+  FFamicomKeyboard.Enabled := False;
+  FFamicomKeyboard.Visible := False;
+  FPowerPad := TNesPowerPad.Create(Self);
+  FPowerPad.Name := 'ScreenPowerPad';
+  FPowerPad.Parent := LayoutClient;
+  FPowerPad.Align := TAlignLayout.Bottom;
+  FPowerPad.OnChange := PowerPadChanged;
+  FPowerPad.Enabled := False;
+  FPowerPad.Visible := False;
+  FDataRecorder := TNesDataRecorder.Create(Self);
+  FDataRecorder.Name := 'ScreenDataRecorder';
+  FDataRecorder.Parent := LayoutClient;
+  FDataRecorder.Align := TAlignLayout.Bottom;
+  FDataRecorder.OnAction := TapeAction;
+  FDataRecorder.OnChooseFile := ChooseTapeFile;
+  FDataRecorder.OnSaveAs := SaveTapeAs;
+  FDataRecorder.Visible := False;
+  FDataRecorder.Enabled := False;
   FormResize(Self);
   TimerUpdate.Interval := 8;
   ListBoxGames.Clear;
@@ -468,13 +510,18 @@ end;
 
 destructor TFormMain.Destroy;
 begin
+  if Assigned(FInvalidateCallbacks) then
+    FInvalidateCallbacks();
   if TimerUpdate <> nil then
     TimerUpdate.Enabled := False;
   FreeAndNil(FSuborKeyboard);
+  FreeAndNil(FFamicomKeyboard);
+  FreeAndNil(FPowerPad);
+  FreeAndNil(FDataRecorder);
   FreeAndNil(FGamepad); // Detach the native listener before destroying the form.
   {$IFDEF ANDROID}
   FreeAndNil(FAppEvents);
-  FreeAndNil(FPicker);
+  FreeAndNil(FTransfer);
   {$ENDIF}
   if FEmulation <> nil then
   try
@@ -489,8 +536,12 @@ end;
 procedure TFormMain.FormActivate(Sender: TObject);
 begin
   {$IFDEF ANDROID}
-  if FSuborKeyboardTouchAttached then
+  if FPowerPadTouchAttached then
+    FPowerPad.AttachToForm(Self)
+  else if FSuborKeyboardTouchAttached then
     FSuborKeyboard.AttachToForm(Self)
+  else if FFamicomKeyboardTouchAttached then
+    FFamicomKeyboard.AttachToForm(Self)
   else if FGamepad <> nil then
     FGamepad.AttachToForm(Self);
   {$ENDIF}
@@ -572,6 +623,12 @@ end;
 
 procedure TFormMain.FormResize(Sender: TObject);
 begin
+  if FDataRecorder <> nil then
+    FDataRecorder.Height := TNesDataRecorder.PreferredHeight(LayoutClient.Width,
+      ClientHeight - Padding.Top - Padding.Bottom - LayoutHead.Height);
+  if FPowerPad <> nil then
+    FPowerPad.Height := TNesPowerPad.PreferredHeight(LayoutClient.Width,
+      ClientHeight - Padding.Top - Padding.Bottom - LayoutHead.Height);
   if FGamepad <> nil then
   begin
     FGamepad.Height := TScreenGamepad.PreferredHeight(
@@ -584,6 +641,84 @@ begin
       ClientWidth - Padding.Left - Padding.Right,
       ClientHeight - Padding.Top - Padding.Bottom - LayoutHead.Height);
   end;
+  if FFamicomKeyboard <> nil then
+    FFamicomKeyboard.Height := TNesFamicomKeyboard.PreferredHeight(
+      ClientWidth - Padding.Left - Padding.Right,
+      ClientHeight - Padding.Top - Padding.Bottom - LayoutHead.Height);
+end;
+
+procedure TFormMain.TapeAction(Sender: TObject; Action: TTapeAction; const FileName: string);
+begin
+  var Tape: INesTapeCore;
+  if not Supports(FEmulation, INesTapeCore, Tape) then
+    Exit;
+  try
+    Tape.TapeCommand(Action, FileName);
+    FDataRecorder.Progress := Tape.GetTapeProgress;
+  except
+    on E: Exception do
+      ShowMessage('Cassette: ' + E.Message);
+  end;
+end;
+
+procedure TFormMain.SelectTapeFile(const FileName: string);
+begin
+  var Tape: INesTapeCore;
+  if not Supports(FEmulation, INesTapeCore, Tape) or not Tape.UsesDataRecorder then
+    raise EInvalidOperation.Create('No data recorder connected');
+  Tape.TapeCommand(TapeSelectFile, FileName);
+  FDataRecorder.Progress := Tape.GetTapeProgress;
+end;
+
+procedure TFormMain.ChooseTapeFile(Sender: TObject);
+begin
+  SelectDocument(True);
+end;
+
+procedure TFormMain.SaveTapeAs(Sender: TObject);
+begin
+  var Tape: INesTapeCore;
+  if not Supports(FEmulation, INesTapeCore, Tape) or not Tape.UsesDataRecorder then
+    Exit;
+  FormDeactivate(Self);
+  {$IFDEF ANDROID}
+  if FOpeningRom then
+    Exit;
+  var Path := FStorage.TemporaryFile('.tape');
+  try
+    Tape.TapeCommand(TapeSaveAs, Path);
+    FTransfer.Save(Path, ExtractFileName(Tape.GetTapeProgress.FileName));
+    FOpeningRom := True;
+    ButtonOpen.Enabled := False;
+    SyncActivity;
+  except
+    on E: Exception do
+    begin
+      FStorage.Delete(Path);
+      ShowMessage('Cassette: ' + E.Message);
+    end;
+  end;
+  {$ELSE}
+  var Dialog := TSaveDialog.Create(Self);
+  try
+    Dialog.Title := 'Save cassette as';
+    Dialog.Filter := 'Cassette (*.tape)|*.tape';
+    Dialog.DefaultExt := 'tape';
+    Dialog.Options := [TOpenOption.ofPathMustExist, TOpenOption.ofOverwritePrompt];
+    Dialog.FileName := Tape.GetTapeProgress.FileName;
+    if Dialog.Execute then
+    try
+      Tape.TapeCommand(TapeSaveAs, Dialog.FileName);
+      FDataRecorder.Progress := Tape.GetTapeProgress;
+    except
+      on E: Exception do
+        ShowMessage('Cassette: ' + E.Message);
+    end;
+  finally
+    Dialog.Free;
+    FormActivate(Self);
+  end;
+  {$ENDIF}
 end;
 
 procedure TFormMain.GamepadChanged(Sender: TObject);
@@ -612,11 +747,55 @@ begin
   end;
 end;
 
+procedure TFormMain.ForwardKeyState(Code: Word; Pressed: Boolean);
+begin
+  if FEmulation = nil then
+    Exit;
+  {$IFDEF MSWINDOWS}
+  // Windows FMX reports generic Shift. HVC-007 has two separate contacts.
+  var Peripheral: INesPeripheralCore;
+  if (Code = vkShift) and Supports(FEmulation, INesPeripheralCore, Peripheral) and
+    Peripheral.UsesFamicomKeyboard then
+  begin
+    FEmulation.SetKeyState(vkLShift, Winapi.Windows.GetKeyState(vkLShift) < 0);
+    FEmulation.SetKeyState(vkRShift, Winapi.Windows.GetKeyState(vkRShift) < 0);
+    Exit;
+  end;
+  {$ENDIF}
+  FEmulation.SetKeyState(Code, Pressed);
+end;
+
+procedure TFormMain.FamicomKeyboardChanged(Sender: TObject);
+begin
+  var Peripheral: INesPeripheralCore;
+  if Supports(FEmulation, INesPeripheralCore, Peripheral) then
+    Peripheral.SetFamicomKeys(FFamicomKeyboard.Keys);
+end;
+
 procedure TFormMain.SuborKeyboardChanged(Sender: TObject);
 begin
   var Peripheral: INesPeripheralCore;
   if Supports(FEmulation, INesPeripheralCore, Peripheral) then
     Peripheral.SetSuborKeys(FSuborKeyboard.Keys);
+end;
+
+procedure TFormMain.SuborKeyboardPower(Sender: TObject);
+begin
+  if (FEmulation = nil) or FEmulationFaulted then
+    Exit;
+  try
+    FEmulation.Reset;
+  except
+    StopOnError;
+    raise;
+  end;
+end;
+
+procedure TFormMain.PowerPadChanged(Sender: TObject);
+begin
+  var Peripheral: INesPeripheralCore;
+  if Supports(FEmulation, INesPeripheralCore, Peripheral) then
+    Peripheral.SetPowerPadButtons(FPowerPad.Buttons);
 end;
 
 procedure TFormMain.SetStatus(const Text: string);
@@ -631,12 +810,27 @@ end;
 
 procedure TFormMain.SyncActivity;
 begin
+  var Tape: INesTapeCore;
+  if FDataRecorder <> nil then
+  begin
+    FDataRecorder.Visible := Supports(FEmulation, INesTapeCore, Tape) and Tape.UsesDataRecorder;
+    FDataRecorder.Enabled := FDataRecorder.Visible and not FOpeningRom and not FEmulationFaulted;
+    if FDataRecorder.Visible then
+      FDataRecorder.Progress := Tape.GetTapeProgress;
+  end;
   var SuborKeyboardActive := (FEmulation <> nil) and FEmulation.UsesSuborKeyboard;
+  var Peripheral: INesPeripheralCore;
+  var FamicomKeyboardActive := Supports(FEmulation, INesPeripheralCore, Peripheral) and
+    Peripheral.UsesFamicomKeyboard;
+  var KeyboardActive := SuborKeyboardActive or FamicomKeyboardActive;
+  var PowerPadActive := Supports(FEmulation, INesPeripheralCore, Peripheral);
+  if PowerPadActive then
+    PowerPadActive := Peripheral.UsesPowerPad and not KeyboardActive;
   if FGamepad <> nil then
   begin
     {$IFDEF ANDROID}
-    FGamepad.Visible := not SuborKeyboardActive;
-    FGamepad.Enabled := (FEmulation <> nil) and not FEmulationFaulted and not FOpeningRom and not SuborKeyboardActive;
+    FGamepad.Visible := not KeyboardActive and not PowerPadActive;
+    FGamepad.Enabled := (FEmulation <> nil) and not FEmulationFaulted and not FOpeningRom and not KeyboardActive and not PowerPadActive;
     {$ENDIF}
   end;
   if FSuborKeyboard <> nil then
@@ -644,27 +838,54 @@ begin
     FSuborKeyboard.Visible := SuborKeyboardActive;
     FSuborKeyboard.Enabled := SuborKeyboardActive and not FEmulationFaulted and not FOpeningRom;
   end;
+  if FFamicomKeyboard <> nil then
+  begin
+    FFamicomKeyboard.Visible := FamicomKeyboardActive;
+    FFamicomKeyboard.Enabled := FamicomKeyboardActive and not FEmulationFaulted and not FOpeningRom;
+  end;
+
+  if FPowerPad <> nil then
+  begin
+    FPowerPad.Visible := PowerPadActive;
+    FPowerPad.Enabled := PowerPadActive and not FEmulationFaulted and not FOpeningRom;
+  end;
 
   {$IFDEF ANDROID}
   // The Android view accepts one native touch listener.
   // The controls are mutually exclusive, so hand it to the currently visible control.
-  if FSuborKeyboardTouchAttached <> SuborKeyboardActive then
+  if (FSuborKeyboardTouchAttached <> SuborKeyboardActive) or
+    (FFamicomKeyboardTouchAttached <> FamicomKeyboardActive) or
+    (FPowerPadTouchAttached <> PowerPadActive) then
   begin
-    if FSuborKeyboardTouchAttached then
+    if FPowerPadTouchAttached then
+      FPowerPad.AttachToForm(nil)
+    else if FSuborKeyboardTouchAttached then
       FSuborKeyboard.AttachToForm(nil)
+    else if FFamicomKeyboardTouchAttached then
+      FFamicomKeyboard.AttachToForm(nil)
     else
       FGamepad.AttachToForm(nil);
-    if SuborKeyboardActive then
+    if PowerPadActive then
+      FPowerPad.AttachToForm(Self)
+    else if SuborKeyboardActive then
       FSuborKeyboard.AttachToForm(Self)
+    else if FamicomKeyboardActive then
+      FFamicomKeyboard.AttachToForm(Self)
     else
       FGamepad.AttachToForm(Self);
     FSuborKeyboardTouchAttached := SuborKeyboardActive;
+    FFamicomKeyboardTouchAttached := FamicomKeyboardActive;
+    FPowerPadTouchAttached := PowerPadActive;
   end;
   var Paused := FInBackground or FOpeningRom or FUserPaused;
+  if FPowerPad <> nil then
+    FPowerPad.Enabled := FPowerPad.Enabled and not FInBackground;
   if FGamepad <> nil then
     FGamepad.Enabled := FGamepad.Enabled and not FInBackground;
   if FSuborKeyboard <> nil then
     FSuborKeyboard.Enabled := FSuborKeyboard.Enabled and not FInBackground;
+  if FFamicomKeyboard <> nil then
+    FFamicomKeyboard.Enabled := FFamicomKeyboard.Enabled and not FInBackground;
   if Paused <> FActivityPaused then
   begin
     FActivityPaused := Paused;
@@ -698,28 +919,39 @@ begin
   Result := False;
 end;
 
-procedure TFormMain.PollRomPicker;
+procedure TFormMain.PollDocumentTransfer;
 begin
   if not FOpeningRom then
     Exit;
   var FileName, DisplayName, Error: string;
-  if not FPicker.Poll(FileName, DisplayName, Error) then
+  if not FTransfer.Poll(FileName, DisplayName, Error) then
     Exit;
   try
     try
       if Error <> '' then
         raise Exception.Create(Error);
       if FileName <> '' then
-        LoadRom(FileName, DisplayName);
+        if FChoosingTape then
+        begin
+          // SAF documents are imported into a durable app-owned cassette file.
+          var Root := TPath.Combine(FStorage.SaveRoot, 'cassettes');
+          var Path := FStorage.GamePath(Root, DisplayName, TGUID.NewGuid.ToString, '.tape');
+          var Input := FStorage.OpenRead(FileName);
+          try
+            FStorage.WriteAtomic(Path, Input);
+          finally
+            Input.Free;
+          end;
+          SelectTapeFile(Path);
+        end
+        else
+          LoadRom(FileName, DisplayName);
     except
       on E: Exception do
         ShowMessage(E.Message);
     end;
   finally
-    FPicker.Finish;
-    FOpeningRom := False;
-    ButtonOpen.Enabled := True;
-    SyncActivity;
+    FinishFileSelection;
   end;
 end;
 {$ENDIF}
@@ -732,9 +964,39 @@ begin
     FGamepad.ReleaseAll;
   if FSuborKeyboard <> nil then
     FSuborKeyboard.ReleaseAll;
+  if FFamicomKeyboard <> nil then
+    FFamicomKeyboard.ReleaseAll;
+  if FPowerPad <> nil then
+    FPowerPad.ReleaseAll;
   if FEmulation <> nil then
     FEmulation.ClearInput;
   FGamepadInput := Default(TEmulatorInput);
+end;
+
+procedure TFormMain.ScreenshotClick(Sender: TObject);
+begin
+  if FEmulation = nil then
+    Exit;
+  try
+    SetStatus('Screenshot: ' + SaveScreenshot);
+  except
+    on E: Exception do
+      SetStatus(E.Message);
+  end;
+end;
+
+function TFormMain.SaveScreenshot: string;
+begin
+  if FEmulation = nil then
+    raise EInvalidOperation.Create('No game loaded');
+  Result := FStorage.ScreenshotFile(FRomDisplayName);
+  var Stream := TMemoryStream.Create;
+  try
+    ImageCanvas.Bitmap.SaveToStream(Stream);
+    FStorage.WriteAtomic(Result, Stream);
+  finally
+    Stream.Free;
+  end;
 end;
 
 procedure TFormMain.SaveSnapshot(const Name: string);
@@ -778,8 +1040,16 @@ procedure TFormMain.FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: Wid
 begin
   if Key in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
     Exit;
-  var Code: Word := EventKey(Key, KeyChar);
+  if Key = 0 then
+  begin
+    KeyChar := #0;
+    Exit;
+  end;
+  var Code: Word := Key;
   var SuborKeyboardActive := (FEmulation <> nil) and FEmulation.UsesSuborKeyboard;
+  var Peripheral: INesPeripheralCore;
+  var KeyboardActive := SuborKeyboardActive or
+    (Supports(FEmulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard);
   var WasDown: Boolean := False;
   if Code <= High(FKeysDown) then
   begin
@@ -788,16 +1058,16 @@ begin
   end;
   if not WasDown then
   begin
-    if (Code = vkEscape) and not SuborKeyboardActive then
+    if (Code = vkEscape) and not KeyboardActive then
     begin
       if FullScreen then
         SwitchFullScreen
     end
     else if (Code = vkF11) then
       SwitchFullScreen
-    else if (Code = vkO) and (ssCtrl in Shift) then
+    else if (Code = vkO) and (ssCtrl in Shift) and not KeyboardActive then
       OpenRom
-    else if (Code = vkR) and (FEmulation <> nil) and not SuborKeyboardActive then
+    else if (Code = vkR) and (FEmulation <> nil) and not KeyboardActive then
     begin
       TimerUpdate.Enabled := False;
       try
@@ -815,9 +1085,18 @@ begin
         raise;
       end;
     end
-    else if (Code = vkP) and not SuborKeyboardActive then
+    else if (Code = vkP) and not KeyboardActive then
       SwitchPause
-    else if (Code in [vkF5, vkF6]) and (FEmulation <> nil) and not SuborKeyboardActive then
+    else if (Code = vkF8) and (FEmulation <> nil) and not KeyboardActive then
+    begin
+      try
+        SetStatus('Screenshot: ' + SaveScreenshot);
+      except
+        on E: Exception do
+          ShowMessage(E.Message);
+      end;
+    end
+    else if (Code in [vkF5, vkF6]) and (FEmulation <> nil) and not KeyboardActive then
     begin
       try
         if Code = vkF5 then
@@ -830,9 +1109,9 @@ begin
       end;
     end;
   end;
-  if SuborKeyboardActive or not (ssCtrl in Shift) then
+  if KeyboardActive or not (ssCtrl in Shift) then
     if FEmulation <> nil then
-      FEmulation.SetKeyState(Code, True);
+      ForwardKeyState(Code, True);
   Key := 0;
   KeyChar := #0;
 end;
@@ -841,11 +1120,16 @@ procedure TFormMain.FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideC
 begin
   if Key in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
     Exit;
-  var Code: Word := EventKey(Key, KeyChar);
+  if Key = 0 then
+  begin
+    KeyChar := #0;
+    Exit;
+  end;
+  var Code: Word := Key;
   if Code <= High(FKeysDown) then
     FKeysDown[Code] := False;
   if FEmulation <> nil then
-    FEmulation.SetKeyState(Code, False);
+    ForwardKeyState(Code, False);
   Key := 0;
   KeyChar := #0;
 end;
@@ -890,10 +1174,35 @@ begin
   end;
 end;
 
+procedure TFormMain.UpdatePeripheralFeedback;
+var
+  Peripheral: INesPeripheralCore;
+  Tape: INesTapeCore;
+begin
+  if (FEmulation = nil) or FEmulationFaulted then
+    Exit;
+  if (FDataRecorder <> nil) and Supports(FEmulation, INesTapeCore, Tape) and Tape.UsesDataRecorder then
+    FDataRecorder.Progress := Tape.GetTapeProgress;
+  if (FGamepad <> nil) and FGamepad.Visible and FGamepad.Enabled then
+    FGamepad.CoreButtons := FEmulation.GetInputState.Buttons;
+  if Supports(FEmulation, INesPeripheralCore, Peripheral) then
+  begin
+    if (FSuborKeyboard <> nil) and FSuborKeyboard.Visible and FSuborKeyboard.Enabled then
+    begin
+      FSuborKeyboard.CoreKeys := Peripheral.GetSuborKeys;
+      FSuborKeyboard.Indicators := Peripheral.GetSuborIndicators;
+    end;
+    if (FFamicomKeyboard <> nil) and FFamicomKeyboard.Visible and FFamicomKeyboard.Enabled then
+      FFamicomKeyboard.CoreKeys := Peripheral.GetFamicomKeys;
+    if (FPowerPad <> nil) and FPowerPad.Visible and FPowerPad.Enabled then
+      FPowerPad.CoreButtons := Peripheral.GetPowerPadButtons;
+  end;
+end;
+
 procedure TFormMain.TimerUpdateTimer(Sender: TObject);
 begin
   {$IFDEF ANDROID}
-  PollRomPicker;
+  PollDocumentTransfer;
   if FOpeningRom then
     Exit;
   {$ENDIF}
@@ -910,6 +1219,7 @@ begin
     LabelPaused.Visible := False;
   end;
   try
+    UpdatePeripheralFeedback;
     UpdateFrame;
   except
     StopOnError;
@@ -943,12 +1253,20 @@ end;
 
 procedure TFormMain.ListBoxGamesItemClick(const Sender: TCustomListBox; const Item: TListBoxItem);
 begin
-  {$IFDEF ANDROID}
-  var TempRomFile := TRomStorage.SaveToFile((Item as TListBoxItemGame).RomFile);
-  LoadRom(TempRomFile);
-  Exit;
-  {$ENDIF}
-  LoadRom(Item.TagString);
+  if FOpeningRom then
+    Exit;
+  var FileInfo := (Item as TListBoxItemGame).RomFile;
+  LoadRom(FileInfo.Location, FileInfo.Name);
+end;
+
+function TFormMain.CreateCore(const FileName: string): IEmulationCore;
+begin
+  var Stream := FStorage.OpenRead(FileName);
+  try
+    Result := CreateEmulationCore(Stream, FStorage, FStorage.Describe(FileName).Name);
+  finally
+    Stream.Free;
+  end;
 end;
 
 procedure TFormMain.LoadRom(const FileName: string; const DisplayName: string);
@@ -956,7 +1274,7 @@ begin
   ImageLogo.Visible := False;
   // Construct first: an invalid ROM leaves the current worker running.
   var NewEmulation: IEmulationCore;
-  NewEmulation := CreateEmulationCore(FileName);
+  NewEmulation := CreateCore(FileName);
   try
     if FEmulation <> nil then
       FEmulation.Stop;
@@ -968,6 +1286,10 @@ begin
     FGamepad.ReleaseAll;
   if FSuborKeyboard <> nil then
     FSuborKeyboard.ReleaseAll;
+  if FFamicomKeyboard <> nil then
+    FFamicomKeyboard.ReleaseAll;
+  if FPowerPad <> nil then
+    FPowerPad.ReleaseAll;
   TimerUpdate.Enabled := False;
   FEmulation := nil; // Join before replacing the session.
   FEmulation := NewEmulation;
@@ -1003,17 +1325,10 @@ begin
         // True = light detected; False = darkness / aim outside the screen.
         //Result := ReadExternalPhotoSensor(Mask);
 
-        Result := ReadZapperMask(Mask, FZapperPixel.X, FZapperPixel.Y);
-
-        {for var X := Low(Mask) to High(Mask) do
-          for var Y := Low(Mask[X]) to High(Mask[X]) do
-            if Mask[X, Y] <> 0 then
-              Exit(True);
-        Result := False;  }
+        Result := TZapper.ReadMask(Mask, FZapperPixel.X, FZapperPixel.Y);
       end;
     // Port 2 is selected by the NES configuration before the worker starts.
     // Attaching the light-sensor callback must not connect a gun to every ROM.
-    //Peripheral.SetSuborKeys(FSuborKeyboard.Keys);
   end;
 
   FUserPaused := False;
@@ -1042,39 +1357,87 @@ begin
   {$ENDIF}
 end;
 
-procedure TFormMain.OpenRom;
+procedure TFormMain.FinishFileSelection;
+begin
+  {$IFDEF ANDROID}
+  FTransfer.Finish;
+  FChoosingTape := False;
+  {$ENDIF}
+  FOpeningRom := False;
+  ButtonOpen.Enabled := True;
+  FormActivate(Self);
+end;
+
+procedure TFormMain.SelectDocument(ForCassette: Boolean);
 begin
   if FOpeningRom then
     Exit;
   FOpeningRom := True;
   ButtonOpen.Enabled := False;
-  ImageLogo.Visible := False;
   FormDeactivate(Self);
-  {$IFDEF ANDROID}
-  try
-    SyncActivity;
-    FPicker.Open;
-  except
-    FPicker.Finish;
-    FOpeningRom := False;
-    ButtonOpen.Enabled := True;
-    SyncActivity;
-    raise;
+  SyncActivity;
+  var IsAlive: TFunc<Boolean> := FCallbackAlive;
+  var Completion: TStorageSelectionCallback :=
+    procedure(const Selection: TStorageSelection)
+    begin
+      if not IsAlive() then
+        Exit;
+      var Importing := False;
+      try
+        try
+          if Selection.Error <> '' then
+            raise Exception.Create(Selection.Error);
+          if not Selection.Cancelled then
+          begin
+            if ForCassette then
+            begin
+              {$IFDEF ANDROID}
+              FChoosingTape := True;
+              FTransfer.Import(Selection.Location, True);
+              Importing := True;
+              {$ELSE}
+              SelectTapeFile(Selection.Location);
+              {$ENDIF}
+            end
+            else
+              LoadRom(Selection.Location, FStorage.Describe(Selection.Location).Name);
+          end;
+        except
+          on E: Exception do
+            ShowMessage(E.Message);
+        end;
+      finally
+        if not Importing then
+          FinishFileSelection;
+      end;
+    end;
+  if ForCassette then
+  begin
+    FFileDialog.InitialDirectory := '';
+    FFileDialog.FileMustExist := False;
+    FFileDialog.Title := 'Choose a cassette file';
+    FFileDialog.Filter := 'Cassette (*.tape)|*.tape|All files|*.*';
+    FFileDialog.SelectFiles(
+      procedure(const Selection: TFMXSelectionResult)
+      begin
+        var Result := Default(TStorageSelection);
+        Result.Cancelled := Selection.Status = TFMXSelectionStatus.Cancelled;
+        Result.Error := Selection.Error;
+        if Selection.Status = TFMXSelectionStatus.Selected then
+          Result.Location := Selection.Locations[0];
+        Completion(Result);
+      end);
+  end
+  else
+  begin
+    ImageLogo.Visible := False;
+    FStorage.SelectRom(Completion);
   end;
-  {$ELSE}
-  var Dialog: TOpenDialog := TOpenDialog.Create(Self);
-  try
-    Dialog.Filter := 'Console ROM|*.nes;*.gb;*.gbc;*.md;*.gen;*.bin;*.smd|NES ROM (*.nes)|*.nes|Game Boy ROM (*.gb;*.gbc)|*.gb;*.gbc|Mega Drive ROM (*.md;*.gen;*.bin;*.smd)|*.md;*.gen;*.bin;*.smd';
-    Dialog.Options := [TOpenOption.ofFileMustExist, TOpenOption.ofPathMustExist];
-    if Dialog.Execute then
-      LoadRom(Dialog.FileName);
-  finally
-    Dialog.Free;
-    FOpeningRom := False;
-    ButtonOpen.Enabled := True;
-    FormActivate(Self);
-  end;
-  {$ENDIF}
+end;
+
+procedure TFormMain.OpenRom;
+begin
+  SelectDocument(False);
 end;
 
 procedure TFormMain.UpdateFrame;
@@ -1162,8 +1525,8 @@ begin
   FLoaded := True;
   var BoxPath := StylesData['box'].AsString;
   try
-    if TFile.Exists(BoxPath) then
-      ItemData.Bitmap.LoadFromFileAsync(Self, BoxPath, 64, 64)
+    if (Storage <> nil) and Storage.Exists(BoxPath) then
+      ItemData.Bitmap.LoadFromFileAsync(Self, BoxPath, 64, 64, nil, Storage)
     else
       ItemData.Bitmap := nil;
   except

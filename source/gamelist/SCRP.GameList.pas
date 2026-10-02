@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Generics.Collections, Xml.XMLIntf,
-  Xml.XMLDoc, Xml.xmldom, Xml.OmniXMLDom;
+  Xml.XMLDoc, Xml.xmldom, Xml.OmniXMLDom, Core.Storage;
 
 type
   TGameProvider = class
@@ -118,6 +118,7 @@ type
     procedure SaveToXML(const ADocument: IXMLDocument);
 
     procedure LoadFromFile(const AFileName: string);
+    procedure LoadFromStream(Stream: TStream);
     procedure SaveToFile(const AFileName: string);
 
     property Provider: TGameProvider read FProvider;
@@ -511,14 +512,20 @@ end;
 
 procedure TGameList.LoadFromFile(const AFileName: string);
 begin
+  var Stream := TStorage.Default.OpenRead(AFileName);
+  try LoadFromStream(Stream); finally Stream.Free; end;
+end;
+
+procedure TGameList.LoadFromStream(Stream: TStream);
+begin
   var Document := TXMLDocument.Create(nil);
   Document.DOMVendor := GetDOMVendor(sOmniXmlVendor);
 
   var XML: IXMLDocument := Document;
-  XML.LoadFromFile(AFileName);
+  XML.LoadFromStream(Stream);
 
   if not XML.Active then
-    raise Exception.CreateFmt('Unable to load XML file: %s', [AFileName]);
+    raise Exception.Create('Unable to load XML stream');
 
   var Root := XML.DocumentElement;
 
@@ -539,7 +546,11 @@ begin
   var XML: IXMLDocument := Document;
   SaveToXML(XML);
   try
-    XML.SaveToFile(AFileName);
+    var Stream := TMemoryStream.Create;
+    try
+      XML.SaveToStream(Stream);
+      TStorage.Default.WriteAtomic(AFileName, Stream);
+    finally Stream.Free; end;
   except
     on E: Exception do
       raise Exception.CreateFmt('Unable to save XML file: %s' + sLineBreak + '%s', [AFileName, E.Message]);

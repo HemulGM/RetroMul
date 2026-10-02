@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Classes, System.Types, System.SysUtils, FMX.Forms, FMX.Graphics,
+  Core.Storage, System.Classes, System.Types, System.SysUtils, FMX.Forms, FMX.Graphics,
   FMX.Objects, System.Threading, System.Generics.Collections,
   System.Net.HttpClient;
 
@@ -43,7 +43,7 @@ type
     class procedure AddCacheFileName(const FileName: string; Bitmap: TBitmap);
     class function FindCachedFileName(const FileName: string; out Bitmap: TBitmap): Boolean; static;
     class procedure SetCacheExpire(const Value: Double); static;
-    class function GetBitmapFromFile(const FileName: string; const AFitWidth, AFitHeight: Single): TBitmap; static;
+    class function GetBitmapFromFile(const FileName: string; const AFitWidth, AFitHeight: Single; const Storage: IStorage = nil): TBitmap; static;
   public
     class procedure RemoveCallback(const AOwner: TComponent);
     class procedure CancelAll;
@@ -53,7 +53,7 @@ type
     procedure LoadFromUrlAsyncCF(AOwner: TComponent; const Url: string; Cache: Boolean = True; OnDone: TProc<Boolean> = nil); overload;
     procedure LoadFromUrlAsyncCF(AOwner: TComponent; const Url, CachedFileName: string; OnDone: TProc<Boolean> = nil); overload;
     procedure LoadFromFileAsync(AOwner: TComponent; const FileName: string; OnDone: TProc<Boolean> = nil); overload;
-    procedure LoadFromFileAsync(AOwner: TComponent; const FileName: string; const AFitWidth, AFitHeight: Single; OnDone: TProc<Boolean> = nil); overload;
+    procedure LoadFromFileAsync(AOwner: TComponent; const FileName: string; const AFitWidth, AFitHeight: Single; OnDone: TProc<Boolean> = nil; const Storage: IStorage = nil); overload;
     procedure LoadFromResource(ResName: string); overload;
     procedure LoadFromResource(Instanse: NativeUInt; ResName: string); overload;
     procedure SaveToStream(Stream: TStream; const Ext: string); overload;
@@ -112,7 +112,7 @@ begin
   LoadFromFileAsync(AOwner, FileName, 0, 0, OnDone);
 end;
 
-procedure TBitmapHelper.LoadFromFileAsync(AOwner: TComponent; const FileName: string; const AFitWidth, AFitHeight: Single; OnDone: TProc<Boolean>);
+procedure TBitmapHelper.LoadFromFileAsync(AOwner: TComponent; const FileName: string; const AFitWidth, AFitHeight: Single; OnDone: TProc<Boolean>; const Storage: IStorage);
 begin
   if AOwner = nil then
     raise Exception.Create('You must specify an owner (responsible) who will ensure that the Bitmap is not destroyed before the owner');
@@ -126,7 +126,7 @@ begin
     procedure
     begin
       try
-        var Mem := GetBitmapFromFile(FileName, AFitWidth, AFitHeight);
+        var Mem := GetBitmapFromFile(FileName, AFitWidth, AFitHeight, Storage);
         TThread.ForceQueue(nil,
           procedure
           begin
@@ -211,14 +211,26 @@ begin
   end;
 end;
 
-class function TBitmapHelper.GetBitmapFromFile(const FileName: string; const AFitWidth, AFitHeight: Single): TBitmap;
+class function TBitmapHelper.GetBitmapFromFile(const FileName: string; const AFitWidth, AFitHeight: Single; const Storage: IStorage): TBitmap;
 begin
   Result := TBitmap.Create;
   try
-    if (AFitWidth = 0) or (AFitHeight = 0) then
-      Result.LoadFromFile(FileName)
-    else
-      Result.LoadThumbnailFromFile(FileName, AFitWidth, AFitHeight);
+    var Source := Storage;
+    if Source = nil then Source := TStorage.Default;
+    var Stream := Source.OpenRead(FileName);
+    try Result.LoadFromStream(Stream); finally Stream.Free; end;
+    if (AFitWidth > 0) and (AFitHeight > 0) then
+    begin
+      var Fit := TRectF.Create(0, 0, Result.Width, Result.Height);
+      Fit.Fit(TRectF.Create(0, 0, AFitWidth, AFitHeight));
+      var Width := Trunc(Fit.Width);
+      var Height := Trunc(Fit.Height);
+      if Width < 1 then Width := 1;
+      if Height < 1 then Height := 1;
+      var Thumbnail := Result.CreateThumbnail(Width, Height);
+      Result.Free;
+      Result := Thumbnail;
+    end;
   except
     Result.Free;
     raise;
@@ -240,14 +252,15 @@ begin
   Result := False;
   Bitmap := nil;
   var FileName := TPath.Combine(FCachePath, UrlToCacheName(Url));
-  if TFile.Exists(FileName) then
+  var Storage := TStorage.Default;
+  if Storage.Exists(FileName) then
   begin
     if CacheExpire > 0 then
     begin
-      if TFile.GetCreationTime(FileName) + CacheExpire < Now then
+      if Storage.ModifiedTime(FileName) + CacheExpire < Now then
       begin
         try
-          TFile.Delete(FileName);
+          Storage.Delete(FileName);
         except
           // не смог удалить файл
         end;
@@ -255,8 +268,7 @@ begin
       end;
     end;
     try
-      Bitmap := TBitmap.Create;
-      Bitmap.LoadThumbnailFromFile(FileName, 150, 150);
+      Bitmap := GetBitmapFromFile(FileName, 150, 150, Storage);
       Result := True;
     except
       Bitmap.Free;
@@ -270,10 +282,10 @@ begin
   Result := False;
   Bitmap := nil;
   var FilePath := TPath.Combine(FCachePath, FileName);
-  if TFile.Exists(FilePath) then
+  var Storage := TStorage.Default;
+  if Storage.Exists(FilePath) then
   try
-    Bitmap := TBitmap.Create;
-    Bitmap.LoadThumbnailFromFile(FilePath, 150, 150);
+    Bitmap := GetBitmapFromFile(FilePath, 150, 150, Storage);
     Result := True;
   except
     Bitmap.Free;
@@ -285,13 +297,12 @@ class procedure TBitmapHelper.AddCacheFileName(const FileName: string; Bitmap: T
 begin
   var FilePath := TPath.Combine(FCachePath, FileName);
   try
-    if TFile.Exists(FilePath) then
-      TFile.Delete(FilePath);
+    TStorage.Default.Delete(FilePath);
   except
     Exit;
   end;
   try
-    Bitmap.SaveToFile(FilePath);
+    Bitmap.SaveToFile(FilePath, '.png');
   except
     //
   end;
@@ -301,8 +312,7 @@ class procedure TBitmapHelper.AddCache(const Url: string; Bitmap: TBitmap);
 begin
   var FileName := TPath.Combine(FCachePath, UrlToCacheName(Url));
   try
-    if TFile.Exists(FileName) then
-      TFile.Delete(FileName);
+    TStorage.Default.Delete(FileName);
   except
     Exit;
   end;
@@ -483,11 +493,12 @@ end;
 
 procedure TBitmapHelper.SaveToFile(const AFileName, Ext: string);
 var
-  Stream: TFileStream;
+  Stream: TMemoryStream;
 begin
-  Stream := TFileStream.Create(AFileName, fmCreate);
+  Stream := TMemoryStream.Create;
   try
     SaveToStream(Stream, Ext);
+    TStorage.Default.WriteAtomic(AFileName, Stream);
   finally
     Stream.Free;
   end;

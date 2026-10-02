@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.Snapshots, System.SysUtils, System.Classes, System.SyncObjs,
+  Core.Storage, Core.Snapshots, System.SysUtils, System.Classes, System.SyncObjs,
   Core.Emulation, MD.Console;
 
 const
@@ -20,6 +20,7 @@ type
     FWake: TEvent;
     FData: TBytes;
     FSavePath: string;
+    FStorage: IStorage;
     FInput, FInput2: TMDButtons;
     FPause, FReset, FAudioEnabled: Boolean;
     FVolume: Single;
@@ -30,7 +31,7 @@ type
   protected
     procedure Execute; override;
   public
-    constructor Create(const Data: TBytes; const SavePath: string);
+    constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil);
     destructor Destroy; override;
     procedure WakeSetEvent;
     procedure Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TMDButtons = []);
@@ -49,9 +50,11 @@ uses
 
 { TMDWorker }
 
-constructor TMDWorker.Create(const Data: TBytes; const SavePath: string);
+constructor TMDWorker.Create(const Data: TBytes; const SavePath: string; const Storage: IStorage);
 begin
   inherited Create(True);
+  FStorage := Storage;
+  if FStorage = nil then FStorage := TStorage.Default;
   FreeOnTerminate := False;
   FSnapshots := TSnapshotQueue.Create;
   FLock := TCriticalSection.Create;
@@ -172,7 +175,7 @@ procedure TMDWorker.Execute;
       Exit;
     var Stream := TBytesStream.Create(Data);
     try
-      SaveStreamAtomically(Stream, FSavePath);
+      SaveStreamAtomically(Stream, FSavePath, FStorage);
       LastBattery := Data;
     finally
       Stream.Free;
@@ -194,9 +197,9 @@ begin
   try
     try
       Console := TMDConsole.Create(FData, '.md');
-      if TFile.Exists(FSavePath) then
+      if FStorage.Exists(FSavePath) then
       begin
-        LastBattery := TFile.ReadAllBytes(FSavePath);
+        LastBattery := FStorage.ReadBytes(FSavePath);
         Console.LoadBattery(LastBattery);
       end;
       var Format: TPCMAudioFormat;
@@ -221,7 +224,7 @@ begin
               end;
             if Loading then
             begin
-              LoadCoreSnapshot(Path, 'MD', FData, Transfer);
+              LoadCoreSnapshot(Path, 'MD', FData, Transfer, FStorage);
               Console.MarkBatteryDirty;
               if Audio <> nil then
                 Audio.Clear;
@@ -244,8 +247,8 @@ begin
             end
             else
             begin
-              SaveCoreSnapshot(Path, 'MD', FData, Transfer);
-              SaveSnapshotPreview(Path, Console.Width, Console.Height, 320, @Console.Pixels[0]);
+              SaveCoreSnapshot(Path, 'MD', FData, Transfer, FStorage);
+              SaveSnapshotPreview(Path, Console.Width, Console.Height, 320, @Console.Pixels[0], FStorage);
             end;
             Deadline := Watch.Elapsed.TotalMilliseconds;
           end);

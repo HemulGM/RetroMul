@@ -1,10 +1,10 @@
-﻿unit NES.Emulation;
+unit NES.Emulation;
 
 interface
 
 uses
-  System.Classes, System.SysUtils, System.SyncObjs, NES.Types, NES.Console,
-  NES.Input, PCM.Audio, NES.AudioDiagnostics, NES.Controller;
+  Core.Storage, System.Classes, System.SysUtils, System.SyncObjs, NES.Types, NES.Console,
+  NES.Input, PCM.Audio, NES.AudioDiagnostics, NES.Controller, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
 
 const
   NES_SAMPLE_RATE = 44100;
@@ -18,6 +18,8 @@ type
     FramesPerSecond: Double;
     AudioQueue: TPCMAudioQueueState;
     AudioError, Error: string;
+    TapeState: TTapeState;
+    TapeProgress: TTapeProgress;
   end;
 
   // The core and audio backend belong to Execute after Start. The UI only exchanges
@@ -25,6 +27,7 @@ type
   TNesEmulationThread = class(TThread)
   private
     FConsole: TNesConsole;
+    FStorage: IStorage;
     FAudio: TPCMAudio;
     FAudioFormat: TPCMAudioFormat;
     FAudioEnabled: Boolean;
@@ -37,34 +40,52 @@ type
     FRomPath: string;
     FSaveDirectory: string;
     FSnapshotDirectory: string;
+    FTapeDirectory: string;
+    FSelectedTapeFile: string;
     FSnapshotLock: TCriticalSection;
     FSnapshotDone: TEvent;
     FSnapshotPending, FSnapshotLoading: Boolean;
+    FSnapshotTape, FUsesDataRecorder: Boolean;
+    FTapeAction: TTapeAction;
     FSnapshotName, FSnapshotError: string;
     FPowerPad: array[1..12] of Boolean;
+    FScreenPowerPad: TPowerPadButtons;
     FPowerPadShortcuts: array[1..4] of Boolean;
     FResetRequested, FPauseRequested, FResumeRequested: Boolean;
     FFrame: TFrameBuffer;
     FFramePending: Boolean;
     FUsesSuborKeyboard: Boolean;
+    FUsesFamicomKeyboard: Boolean;
     FStatus: TEmulationStatus;
     FRunFrameMs: Double;
     FPaused: Boolean;
     procedure RequestCoin(Player: Integer);
     procedure RunEmulation;
     procedure SnapshotCommand(const Name: string; Loading: Boolean);
+    procedure WorkerCommand(const Name: string; Loading, Tape: Boolean; Action: TTapeAction);
     function ProcessSnapshot: Boolean;
   protected
     procedure Execute; override;
     procedure TerminatedSet; override;
   public
     // Validates the ROM before replacing the current session. Call Start once.
-    constructor Create(const FileName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = '');
+    constructor Create(const FileName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = ''); overload;
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string;
+      FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto;
+      AudioEnabled: Boolean = True; AudioVolume: Single = 1;
+      const SaveDirectory: string = ''; const SnapshotRoot: string = ''); overload;
     destructor Destroy; override;
     procedure StopAndSave;
     procedure SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2: TKeyMap); overload;
     procedure SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2, Keys3, Keys4: TKeyMap); overload;
     procedure SetSuborKeys(const Keys: TSuborKeys);
+    procedure SetFamicomKeys(const Keys: TFamicomKeys);
+    function GetFamicomKeys: TFamicomKeys;
+    procedure SetPowerPadButtons(const Buttons: TPowerPadButtons);
+    procedure GetButtons(out Buttons, Buttons2: TNesButtons);
+    function GetSuborKeys: TSuborKeys;
+    function GetSuborIndicators: TSuborIndicators;
+    function GetPowerPadButtons: TPowerPadButtons;
     procedure ClearInput;
     procedure SetButtons(Source: UInt32; Player: Integer; const Buttons: TNesButtons);
     procedure InsertCoin1;
@@ -77,9 +98,14 @@ type
     // Synchronous commands executed by the worker at a frame boundary.
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
+    procedure TapeCommand(Action: TTapeAction; const FileName: string = '');
+    function GetTapeState: TTapeState;
+    function GetTapeProgress: TTapeProgress;
+    property UsesDataRecorder: Boolean read FUsesDataRecorder;
     property SnapshotDirectory: string read FSnapshotDirectory;
     property RunFrameMs: Double read FRunFrameMs;
     property UsesSuborKeyboard: Boolean read FUsesSuborKeyboard;
+    property UsesFamicomKeyboard: Boolean read FUsesFamicomKeyboard;
     property IsPausd: Boolean read FPaused;
     property Console: TNesConsole read FConsole;
   end;
@@ -91,7 +117,7 @@ uses
   Androidapi.Helpers, Androidapi.JNIBridge, Androidapi.JNI.JavaTypes,
   Androidapi.JNI.Os,
   {$ENDIF}
-  System.Diagnostics, System.Math, System.IOUtils, NES.Consts, Core.SavePaths,
+  System.Diagnostics, System.Math, System.IOUtils, System.UITypes, NES.Consts, Core.SavePaths,
   PCM.Audio.Null;
 
 {$IFDEF ANDROID}
@@ -225,7 +251,19 @@ end;
 
 constructor TNesEmulationThread.Create(const FileName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride; AudioEnabled: Boolean; AudioVolume: Single; const SaveDirectory, SnapshotRoot: string);
 begin
+  var Storage := TStorage.Default;
+  var Stream := Storage.OpenRead(FileName);
+  try Create(Stream, Storage, FileName, FourScoreEnabled, RegionOverride,
+    AudioEnabled, AudioVolume, SaveDirectory, SnapshotRoot); finally Stream.Free; end;
+end;
+
+constructor TNesEmulationThread.Create(Stream: TStream; const Storage: IStorage;
+  const RomName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride;
+  AudioEnabled: Boolean; AudioVolume: Single; const SaveDirectory, SnapshotRoot: string);
+begin
   inherited Create(True);
+  FStorage := Storage;
+  if FStorage = nil then FStorage := TStorage.Default;
   FreeOnTerminate := False;
   FAudioEnabled := AudioEnabled;
   FAudioVolume := EnsureRange(AudioVolume, 0.0, 1.0);
@@ -238,18 +276,25 @@ begin
   FAudioFormat.Channels := 1;
   FAudioFormat.BlockFrames := AUDIO_BLOCK_SAMPLES;
   FAudioFormat.BlockCount := AUDIO_BLOCK_COUNT;
-  FDiagnostics := TAudioDiagnostics.Create(FAudioFormat);
-  FRomPath := FileName;
+  FDiagnostics := TAudioDiagnostics.Create(FAudioFormat, FStorage);
+  FRomPath := RomName;
   FSaveDirectory := SaveDirectory;
   if FSaveDirectory = '' then
-    FSaveDirectory := GetSaveDirectory;
-  FConsole := TNesConsole.Create(FourScoreEnabled);
-  FConsole.LoadRom(FileName, RegionOverride);
+    FSaveDirectory := FStorage.SaveRoot;
+  FConsole := TNesConsole.Create(FourScoreEnabled, FStorage);
+  FConsole.LoadRom(Stream, RomName, RegionOverride);
   FUsesSuborKeyboard := FConsole.SuborKeyboard.Connected;
+  FUsesFamicomKeyboard := FConsole.FamicomKeyboard.Connected;
+  FUsesDataRecorder := FConsole.DataRecorder.Connected;
   var SnapshotBase := SnapshotRoot;
   if SnapshotBase = '' then
-    SnapshotBase := GetSnapshotDirectory;
-  FSnapshotDirectory := ResolveGameSavePath(SnapshotBase, FileName, FConsole.RomIdentity, '');
+    SnapshotBase := FStorage.SnapshotRoot;
+  FSnapshotDirectory := FStorage.GamePath(SnapshotBase, RomName, FConsole.RomIdentity, '');
+  FTapeDirectory := FStorage.GamePath(FSaveDirectory, RomName, FConsole.RomIdentity, '');
+  if FUsesDataRecorder then
+    FConsole.DataRecorder.LoadTape(TPath.Combine(FTapeDirectory, 'data.tape'), True);
+  FStatus.TapeProgress := FConsole.DataRecorder.GetProgress;
+  FStatus.TapeProgress.DefaultFile := True;
   FStatus.Region := FConsole.Region;
   FConsole.Apu.SetSampleRate(NES_SAMPLE_RATE);
 end;
@@ -263,6 +308,7 @@ begin
   // Retry on the caller after joining, propagating any disk error to the UI.
   // Execute's final save also covers owners that just destroy the thread.
   FConsole.SaveBattery;
+  FConsole.DataRecorder.Stop;
 end;
 
 destructor TNesEmulationThread.Destroy;
@@ -298,6 +344,33 @@ begin
   for var C in Name do
     if not CharInSet(C, ['a'..'z', 'A'..'Z', '0'..'9', '-', '_']) then
       raise EArgumentException.Create('Snapshot names use letters, digits, - and _');
+  WorkerCommand(Name, Loading, False, TapeStop);
+end;
+
+procedure TNesEmulationThread.TapeCommand(Action: TTapeAction; const FileName: string);
+begin
+  if not FUsesDataRecorder then raise ENesException.Create('No data recorder connected');
+  WorkerCommand(FileName, False, True, Action);
+end;
+
+function TNesEmulationThread.GetTapeState: TTapeState;
+begin
+  FLock.Enter;
+  try Result := FStatus.TapeState; finally FLock.Leave; end;
+end;
+
+function TNesEmulationThread.GetTapeProgress: TTapeProgress;
+begin
+  FLock.Enter;
+  try
+    Result := FStatus.TapeProgress;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TNesEmulationThread.WorkerCommand(const Name: string; Loading, Tape: Boolean; Action: TTapeAction);
+begin
   FSnapshotLock.Enter;
   try
     if Suspended or Terminated or Finished then
@@ -307,6 +380,8 @@ begin
       FSnapshotDone.ResetEvent;
       FSnapshotName := Name;
       FSnapshotLoading := Loading;
+      FSnapshotTape := Tape;
+      FTapeAction := Action;
       FSnapshotError := '';
       FSnapshotPending := True;
     finally
@@ -315,7 +390,7 @@ begin
     FWake.SetEvent;
     while FSnapshotDone.WaitFor(50) <> wrSignaled do
       if Finished then
-        raise ENesException.Create('Emulation stopped before completing the snapshot');
+        raise ENesException.Create('Emulation stopped before completing the command');
     FLock.Enter;
     try
       if FSnapshotError <> '' then
@@ -333,36 +408,83 @@ begin
   Result := False;
   var Name: string;
   var Loading: Boolean;
+  var Tape: Boolean;
+  var Action: TTapeAction;
   FLock.Enter;
   try
     if not FSnapshotPending then
       Exit;
     Name := FSnapshotName;
     Loading := FSnapshotLoading;
+    Tape := FSnapshotTape;
+    Action := FTapeAction;
     FSnapshotPending := False;
   finally
     FLock.Leave;
   end;
   var ErrorText := '';
   try
-    var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
-    if Loading then
+    if Tape then
     begin
-      FConsole.LoadSnapshot(Path);
-      FAudio.Clear;
-      FLock.Enter;
-      try
-        FDiagnostics.Clear;
-        FFrame := FConsole.Ppu.Frame;
-        FFramePending := True;
-        FStatus.Error := '';
-      finally
-        FLock.Leave;
+      var TapePath := FSelectedTapeFile;
+      if TapePath = '' then TapePath := TPath.Combine(FTapeDirectory, 'data.tape');
+      case Action of
+        TapePlay, TapeRecord:
+          begin
+            if Name <> '' then TapePath := Name;
+            if FConsole.DataRecorder.GetProgress.FileName <> TapePath then
+              FConsole.DataRecorder.LoadTape(TapePath, Action = TapeRecord);
+            if Action = TapePlay then FConsole.DataRecorder.ResumeTape
+            else
+            begin
+              FStorage.EnsureFolder(ExtractFilePath(ExpandFileName(TapePath)));
+              FConsole.DataRecorder.RecordTape(TapePath);
+            end;
+          end;
+        TapeStop: FConsole.DataRecorder.Stop;
+        TapeSaveAs: FConsole.DataRecorder.SaveCopy(Name);
+        TapeRewind, TapeForward:
+          begin
+            var Progress := FConsole.DataRecorder.GetProgress;
+            var Step := Int64(Progress.TapeBytes div 20);
+            if Step < 1 then Step := 1;
+            if Action = TapeRewind then Step := -Step;
+            FConsole.DataRecorder.SeekRelative(Step);
+          end;
+        TapeSelectFile:
+          begin
+            if Name = '' then raise ENesException.Create('A cassette filename is required');
+            FConsole.DataRecorder.LoadTape(Name, True);
+            FSelectedTapeFile := Name;
+          end;
+        TapeDefaultFile:
+          begin
+            FConsole.DataRecorder.LoadTape(TPath.Combine(FTapeDirectory, 'data.tape'), True);
+            FSelectedTapeFile := '';
+          end;
       end;
-      Result := True;
     end
     else
-      FConsole.SaveSnapshot(Path);
+    begin
+      var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
+      if Loading then
+      begin
+        FConsole.LoadSnapshot(Path);
+        FAudio.Clear;
+        FLock.Enter;
+        try
+          FDiagnostics.Clear;
+          FFrame := FConsole.Ppu.Frame;
+          FFramePending := True;
+          FStatus.Error := '';
+        finally
+          FLock.Leave;
+        end;
+        Result := True;
+      end
+      else
+        FConsole.SaveSnapshot(Path);
+    end;
   except
     on E: Exception do
       ErrorText := E.Message;
@@ -370,6 +492,9 @@ begin
   FLock.Enter;
   try
     FSnapshotError := ErrorText;
+    FStatus.TapeState := FConsole.DataRecorder.TransportState;
+    FStatus.TapeProgress := FConsole.DataRecorder.GetProgress;
+    FStatus.TapeProgress.DefaultFile := FSelectedTapeFile = '';
   finally
     FLock.Leave;
   end;
@@ -390,8 +515,8 @@ end;
 
 procedure TNesEmulationThread.SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2, Keys3, Keys4: TKeyMap);
 const
-  PadKeys: array[1..12] of UInt32 = ($31, $32, $33, $34, $35, $36,
-    $37, $38, $39, $30, $BD, $BB); // 1..9, 0, minus, equals.
+  PadKeys: array[1..12] of UInt32 = (vk1, vk2, vk3, vk4, vk5, vk6,
+    vk7, vk8, vk9, vk0, vkMinus, vkEqual);
 begin
   if Code = 0 then
     Exit;
@@ -399,6 +524,8 @@ begin
   try
     if FUsesSuborKeyboard then
       FConsole.SuborKeyboard.SetHostKey(Code, Pressed);
+    if FUsesFamicomKeyboard then
+      FConsole.FamicomKeyboard.SetHostKey(Code, Pressed);
     FInput.SetKey(1, Code, Pressed, Keys);
     FInput.SetKey(2, Code, Pressed, Keys2);
     FInput.SetKey(3, Code, Pressed, Keys3);
@@ -430,12 +557,45 @@ begin
   end;
 end;
 
+procedure TNesEmulationThread.SetFamicomKeys(const Keys: TFamicomKeys);
+begin
+  FLock.Enter;
+  try
+    if FUsesFamicomKeyboard then
+      FConsole.FamicomKeyboard.SetScreenKeys(Keys);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TNesEmulationThread.GetFamicomKeys: TFamicomKeys;
+begin
+  FLock.Enter;
+  try
+    Result := FConsole.FamicomKeyboard.GetPressedKeys;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TNesEmulationThread.SetPowerPadButtons(const Buttons: TPowerPadButtons);
+begin
+  FLock.Enter;
+  try
+    FScreenPowerPad := Buttons;
+  finally
+    FLock.Leave;
+  end;
+end;
+
 procedure TNesEmulationThread.ClearInput;
 begin
   FLock.Enter;
   try
     FInput.Clear;
+    FScreenPowerPad := [];
     FConsole.SuborKeyboard.Clear;
+    FConsole.FamicomKeyboard.Clear;
     FillChar(FPowerPad, SizeOf(FPowerPad), 0);
     FillChar(FPowerPadShortcuts, SizeOf(FPowerPadShortcuts), 0);
   finally
@@ -449,6 +609,60 @@ begin
   try
     for var Button := Low(TNesButton) to High(TNesButton) do
       FInput.SetButton(Source, Player, Button, Button in Buttons);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TNesEmulationThread.GetButtons(out Buttons, Buttons2: TNesButtons);
+begin
+  FLock.Enter;
+  try
+    Buttons := [];
+    Buttons2 := [];
+    for var Button := Low(TNesButton) to High(TNesButton) do
+    begin
+      if FInput.IsPressed(1, Button) then
+        Include(Buttons, Button);
+      if FInput.IsPressed(2, Button) then
+        Include(Buttons2, Button);
+    end;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TNesEmulationThread.GetSuborKeys: TSuborKeys;
+begin
+  FLock.Enter;
+  try
+    Result := FConsole.SuborKeyboard.GetPressedKeys;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TNesEmulationThread.GetSuborIndicators: TSuborIndicators;
+begin
+  FLock.Enter;
+  try
+    Result := FConsole.SuborKeyboard.Indicators;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TNesEmulationThread.GetPowerPadButtons: TPowerPadButtons;
+begin
+  FLock.Enter;
+  try
+    Result := FScreenPowerPad;
+    for var Button := Low(FPowerPad) to High(FPowerPad) do
+      if FPowerPad[Button] then
+        Include(Result, Button);
+    for var Button := Low(FPowerPadShortcuts) to High(FPowerPadShortcuts) do
+      if FPowerPadShortcuts[Button] then
+        Include(Result, Button);
   finally
     FLock.Leave;
   end;
@@ -568,6 +782,9 @@ begin
         try
           FStatus.AudioError := FAudio.Error;
           FStatus.AudioQueue := FAudio.QueueState;
+          FStatus.TapeState := FConsole.DataRecorder.TransportState;
+          FStatus.TapeProgress := FConsole.DataRecorder.GetProgress;
+          FStatus.TapeProgress.DefaultFile := FSelectedTapeFile = '';
         finally
           FLock.Leave;
         end;
@@ -577,6 +794,7 @@ begin
       end;
     finally
       FConsole.SaveBattery;
+      FConsole.DataRecorder.Stop;
     end;
   except
     on E: Exception do
@@ -635,7 +853,7 @@ begin
           FInput.Apply(4, FConsole.Controller4);
           for var Button := Low(FPowerPad) to High(FPowerPad) do
           begin
-            var PadPressed := FPowerPad[Button];
+            var PadPressed := FPowerPad[Button] or (Button in FScreenPowerPad);
             if Button <= High(FPowerPadShortcuts) then
               PadPressed := PadPressed or FPowerPadShortcuts[Button];
             FConsole.Controller2.SetPowerPadButton(Button, PadPressed);
@@ -745,6 +963,9 @@ begin
           FFrame := FConsole.Ppu.Frame;
           FFramePending := True;
           Inc(FStatus.FrameNumber);
+          FStatus.TapeProgress := FConsole.DataRecorder.GetProgress;
+          FStatus.TapeProgress.DefaultFile := FSelectedTapeFile = '';
+          FStatus.TapeState := FConsole.DataRecorder.TransportState;
           FStatus.AudioError := FAudio.Error;
           FStatus.AudioQueue := FAudio.QueueState;
           if ClockNow - FpsStart >= TStopwatch.Frequency then
@@ -788,4 +1009,3 @@ begin
 end;
 
 end.
-

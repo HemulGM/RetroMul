@@ -1,4 +1,4 @@
-﻿unit NES.SuborKeyboard;
+unit NES.SuborKeyboard;
 
 interface
 
@@ -19,9 +19,20 @@ type
   private
     FContacts: TDictionary<NativeInt, TSuborKey>;
     FKeys: TSuborKeys;
+    FCoreKeys: TSuborKeys;
     FOnChange: TNotifyEvent;
     FNativeInput: TObject;
     FVisualKeys: TArray<TVisualKey>;
+    FIndicators: TSuborIndicators;
+    FIndicatorBounds: array[0..2] of TRectF;
+    FPowerBounds: TRectF;
+    FPowerContact, FPowerPressed: Boolean;
+    FPowerPointer: NativeInt;
+    FOnPower: TNotifyEvent;
+    FOnReset: TNotifyEvent;
+    procedure SetIndicators(const Value: TSuborIndicators);
+    procedure SetCoreKeys(const Value: TSuborKeys);
+    function GetHighlightedKeys: TSuborKeys;
     procedure LayoutKeys;
     procedure AddKey(Key: TSuborKey; Row: Integer; Column, Span: Single);
     procedure AddTallKey(Key: TSuborKey; Row: Integer; Column, Span, Rows: Single);
@@ -46,7 +57,12 @@ type
     procedure PointerMove(Id: NativeInt; const Point: TPointF);
     procedure PointerUp(Id: NativeInt);
     procedure ReleaseAll;
+    function ButtonBounds(Key: TSuborKey): TRectF;
+    property PowerBounds: TRectF read FPowerBounds;
+    property Indicators: TSuborIndicators read FIndicators write SetIndicators;
     property Keys: TSuborKeys read FKeys;
+    property CoreKeys: TSuborKeys read FCoreKeys write SetCoreKeys;
+    property HighlightedKeys: TSuborKeys read GetHighlightedKeys;
   published
     property Align;
     property Anchors;
@@ -56,6 +72,8 @@ type
     property Size;
     property Visible;
     property OnChange: TNotifyEvent read FOnChange write FOnChange;
+    property OnPower: TNotifyEvent read FOnPower write FOnPower;
+    property OnReset: TNotifyEvent read FOnReset write FOnReset;
   end;
 
 implementation
@@ -63,70 +81,10 @@ implementation
 uses
   System.SysUtils, System.TypInfo, FMX.Graphics,
   {$IFDEF ANDROID}
-  Androidapi.JNIBridge, Androidapi.JNI.GraphicsContentViewText,
-  FMX.Platform.Android,
+  RM.TouchInput.Android,
   {$ENDIF}
   System.Math;
 
-{$IFDEF ANDROID}
-type
-  TSuborKeyboardAndroidInput = class(TJavaLocal, JView_OnTouchListener)
-  private
-    FKeyboard: TNesSuborKeyboard;
-    FView: JView;
-    FScale: Single;
-  public
-    constructor Create(Keyboard: TNesSuborKeyboard; Form: TCommonCustomForm);
-    destructor Destroy; override;
-    function onTouch(v: JView; event: JMotionEvent): Boolean; cdecl;
-  end;
-
-constructor TSuborKeyboardAndroidInput.Create(Keyboard: TNesSuborKeyboard; Form: TCommonCustomForm);
-begin
-  inherited Create;
-  FKeyboard := Keyboard;
-  var Handle := WindowHandleToPlatform(Form.Handle);
-  FScale := Handle.Scale;
-  FView := Handle.View;
-  FView.setOnTouchListener(Self);
-end;
-
-destructor TSuborKeyboardAndroidInput.Destroy;
-begin
-  if FView <> nil then
-    FView.setOnTouchListener(nil);
-  FKeyboard := nil;
-  FView := nil;
-  inherited;
-end;
-
-function TSuborKeyboardAndroidInput.onTouch(v: JView; event: JMotionEvent): Boolean;
-begin
-  Result := False;
-  if FKeyboard = nil then
-    Exit;
-  var Action := event.getActionMasked;
-  if Action = TJMotionEvent.JavaClass.ACTION_CANCEL then
-  begin
-    FKeyboard.ReleaseAll;
-    Exit;
-  end;
-  var ChangedIndex := event.getActionIndex;
-  for var i := 0 to event.getPointerCount - 1 do
-  begin
-    var Id := event.getPointerId(i);
-    var Point := FKeyboard.AbsoluteToLocal(TPointF.Create(event.getX(i) / FScale, event.getY(i) / FScale));
-    if (i = ChangedIndex) and ((Action = TJMotionEvent.JavaClass.ACTION_UP) or
-      (Action = TJMotionEvent.JavaClass.ACTION_POINTER_UP)) then
-      FKeyboard.PointerUp(Id)
-    else if (i = ChangedIndex) and ((Action = TJMotionEvent.JavaClass.ACTION_DOWN) or
-      (Action = TJMotionEvent.JavaClass.ACTION_POINTER_DOWN)) then
-      FKeyboard.PointerDown(Id, Point)
-    else
-      FKeyboard.PointerMove(Id, Point);
-  end;
-end;
-{$ENDIF}
 
 constructor TNesSuborKeyboard.Create(AOwner: TComponent);
 begin
@@ -153,7 +111,7 @@ begin
   FreeAndNil(FNativeInput);
   {$IFDEF ANDROID}
   if Form <> nil then
-    FNativeInput := TSuborKeyboardAndroidInput.Create(Self, Form);
+    FNativeInput := TAndroidTouchInput.Create(Self, Form, PointerDown, PointerMove, PointerUp, ReleaseAll);
   {$ENDIF}
 end;
 
@@ -192,6 +150,15 @@ end;
 procedure TNesSuborKeyboard.LayoutKeys;
 begin
   SetLength(FVisualKeys, 0);
+  var U := Width / 24;
+  var Gap := Max(1.5, U * 0.08);
+  var H := (Height - Gap * 7) / 6;
+  for var I := 0 to 2 do
+    FIndicatorBounds[I] := RectF((20 + I) * U + Gap, Gap,
+        (21 + I) * U - Gap, H);
+  var Diameter := Max(0, Min(U - Gap * 2, H - Gap));
+  FPowerBounds := RectF(23.5 * U - Diameter / 2, (H + Gap - Diameter) / 2,
+    23.5 * U + Diameter / 2, (H + Gap + Diameter) / 2);
   // Original Subor geometry: main keyboard, navigation cluster, then numpad.
   AddKey(SkEsc, 0, 0, 1);
   AddKey(SkF1, 0, 2, 1);
@@ -207,6 +174,8 @@ begin
   AddKey(SkF11, 0, 14, 1);
   AddKey(SkF12, 0, 15, 1);
   AddKey(SkPause, 0, 17, 1);
+  AddKey(SkBreak, 0, 18, 1);
+  AddKey(SkReset, 0, 19, 1);
   AddKey(SkNumLock, 1, 20, 1);
   AddKey(SkNumpadDivide, 1, 21, 1);
   AddKey(SkNumpadMultiply, 1, 22, 1);
@@ -304,11 +273,43 @@ begin
       Exit(VisualKey.Key);
 end;
 
+function TNesSuborKeyboard.GetHighlightedKeys: TSuborKeys;
+begin
+  Result := FKeys + FCoreKeys;
+  if (FContacts <> nil) and FContacts.ContainsValue(SkReset) then
+    Include(Result, SkReset);
+end;
+
+function TNesSuborKeyboard.ButtonBounds(Key: TSuborKey): TRectF;
+begin
+  Result := TRectF.Empty;
+  for var VisualKey in FVisualKeys do
+    if VisualKey.Key = Key then
+      Exit(VisualKey.Bounds);
+end;
+
+procedure TNesSuborKeyboard.SetIndicators(const Value: TSuborIndicators);
+begin
+  if (FIndicators.NumLock = Value.NumLock) and (FIndicators.CapsLock = Value.CapsLock) then
+    Exit;
+  FIndicators := Value;
+  Repaint;
+end;
+
+procedure TNesSuborKeyboard.SetCoreKeys(const Value: TSuborKeys);
+begin
+  if FCoreKeys = Value then
+    Exit;
+  FCoreKeys := Value;
+  Repaint;
+end;
+
 procedure TNesSuborKeyboard.UpdateKeys;
 begin
   var NewKeys: TSuborKeys := [];
   for var Key in FContacts.Values do
-    Include(NewKeys, Key);
+    if Key <> SkReset then
+      Include(NewKeys, Key);
   if NewKeys = FKeys then
     Exit;
   FKeys := NewKeys;
@@ -321,11 +322,23 @@ procedure TNesSuborKeyboard.PointerDown(Id: NativeInt; const Point: TPointF);
 begin
   if not AbsoluteEnabled or not ParentedVisible then
     Exit;
+  if FPowerBounds.Contains(Point) then
+  begin
+    if not FPowerContact then
+    begin
+      FPowerContact := True;
+      FPowerPressed := True;
+      FPowerPointer := Id;
+      Repaint;
+    end;
+    Exit;
+  end;
   FContacts.Remove(Id);
   var Key := KeyAt(Point);
   if Key <> SkNone then
     FContacts.AddOrSetValue(Id, Key);
   UpdateKeys;
+  Repaint;
 end;
 
 procedure TNesSuborKeyboard.PointerMove(Id: NativeInt; const Point: TPointF);
@@ -333,6 +346,12 @@ begin
   if not AbsoluteEnabled or not ParentedVisible then
   begin
     ReleaseAll;
+    Exit;
+  end;
+  if FPowerContact and (Id = FPowerPointer) then
+  begin
+    FPowerPressed := FPowerBounds.Contains(Point);
+    Repaint;
     Exit;
   end;
   var OldKey: TSuborKey;
@@ -346,12 +365,28 @@ begin
   else
     FContacts.AddOrSetValue(Id, Key);
   UpdateKeys;
+  Repaint;
 end;
 
 procedure TNesSuborKeyboard.PointerUp(Id: NativeInt);
 begin
+  if FPowerContact and (Id = FPowerPointer) then
+  begin
+    var Activate := FPowerPressed and AbsoluteEnabled and ParentedVisible;
+    FPowerContact := False;
+    FPowerPressed := False;
+    Repaint;
+    if Activate and Assigned(FOnPower) then
+      FOnPower(Self);
+    Exit;
+  end;
+  var Key: TSuborKey;
+  var ResetPressed := FContacts.TryGetValue(Id, Key) and (Key = SkReset);
   FContacts.Remove(Id);
   UpdateKeys;
+  Repaint;
+  if ResetPressed and AbsoluteEnabled and ParentedVisible and Assigned(FOnReset) then
+    FOnReset(Self);
 end;
 
 procedure TNesSuborKeyboard.ReleaseAll;
@@ -359,6 +394,9 @@ begin
   if FContacts = nil then
     Exit;
   FContacts.Clear;
+  FPowerContact := False;
+  FPowerPressed := False;
+  FCoreKeys := [];
   UpdateKeys;
   Repaint;
 end;
@@ -550,6 +588,10 @@ begin
       Result := 'Insert';
     SkPause:
       Result := 'Pause';
+    SkBreak:
+      Result := 'Break';
+    SkReset:
+      Result := 'Reset';
     SkHome:
       Result := 'Home';
     SkDelete:
@@ -564,6 +606,8 @@ begin
 end;
 
 procedure TNesSuborKeyboard.Paint;
+const
+  IndicatorCaptions: array[0..2] of string = ('Num' + sLineBreak + 'Lock', 'Caps', 'Power');
 begin
   inherited;
   Canvas.Fill.Kind := TBrushKind.Solid;
@@ -576,7 +620,7 @@ begin
   begin
     var Key := VisualKey.Key;
     var R := VisualKey.Bounds;
-    if Key in FKeys then
+    if Key in HighlightedKeys then
       Canvas.Fill.Color := $FF5989B2
     else
       Canvas.Fill.Color := $FF303B4D;
@@ -587,6 +631,37 @@ begin
     Canvas.Fill.Color := $FFF3F5FA;
     Canvas.FillText(R, KeyCaption(Key), True, AbsoluteOpacity * Ord(Enabled), [], TTextAlign.Center, TTextAlign.Center);
   end;
+  for var I := 0 to 2 do
+  begin
+    var R := FIndicatorBounds[I];
+    var Lit := (I = 2) or ((I = 0) and FIndicators.NumLock) or
+      ((I = 1) and FIndicators.CapsLock);
+    Canvas.Fill.Color := $FF303B4D;
+    Canvas.FillRect(R, 3, 3, AllCorners, AbsoluteOpacity);
+    var LabelRect := R;
+    LabelRect.Bottom := R.Top + R.Height * 0.7;
+    Canvas.Fill.Color := $FFF3F5FA;
+    Canvas.FillText(LabelRect, IndicatorCaptions[I], True, AbsoluteOpacity, [],
+      TTextAlign.Center, TTextAlign.Center);
+    var Lamp := RectF(R.Left + R.Width * 0.25, R.Top + R.Height * 0.76,
+      R.Right - R.Width * 0.25, R.Top + R.Height * 0.9);
+    if Lit then
+      Canvas.Fill.Color := $FF70E080
+    else
+      Canvas.Fill.Color := $FF17281D;
+    Canvas.FillRect(Lamp, 2, 2, AllCorners, AbsoluteOpacity);
+  end;
+  if FPowerPressed then
+    Canvas.Fill.Color := $FF5989B2
+  else
+    Canvas.Fill.Color := $FF46546B;
+  Canvas.FillEllipse(FPowerBounds, AbsoluteOpacity);
+  Canvas.Stroke.Color := $FF080D15;
+  Canvas.Stroke.Thickness := 1;
+  Canvas.DrawEllipse(FPowerBounds, AbsoluteOpacity);
+  Canvas.Fill.Color := $FFF3F5FA;
+  Canvas.Font.Size := Max(8, FPowerBounds.Width * 0.65);
+  Canvas.FillText(FPowerBounds, '⏻', False, AbsoluteOpacity, [], TTextAlign.Center, TTextAlign.Center);
 end;
 
 procedure TNesSuborKeyboard.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Single);

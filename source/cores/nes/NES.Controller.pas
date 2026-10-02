@@ -12,6 +12,10 @@ type
 
   TNesButtons = set of TNesButton;
 
+  TPowerPadButton = 1..12;
+
+  TPowerPadButtons = set of TPowerPadButton;
+
   TKeyMap = record
     A, B, Select, Start, Up, Down, Left, Right: UInt32;
   end;
@@ -29,25 +33,34 @@ type
     SkLeftBracket, SkRightBracket, SkCapsLock, SkPause, SkCtrl, SkShift, SkAlt,
     SkSpace, SkBackspace, SkTab, SkEsc, SkEnter, SkEnd, SkHome, SkIns, SkDelete,
     SkPageUp, SkPageDown, SkUp, SkDown, SkLeft, SkRight, SkUnknown1, SkUnknown2,
-    SkUnknown3, SkNone);
+    SkUnknown3, SkNone, SkBreak, SkReset);
 {$SCOPEDENUMS ON}
 
   TSuborKeys = set of TSuborKey;
+
+  TSuborIndicators = record
+    NumLock, CapsLock: Boolean;
+  end;
 
   // Famicom expansion-port keyboard used by Subor educational computers.
   TSuborKeyboard = class
   private
     FHostKeys: TSuborKeys;
     FScreenKeys: TSuborKeys;
+    // Keyboard lamps belong to the input device, independent of ROM snapshots.
+    FIndicators: TSuborIndicators;
     FRow, FColumn: Byte;
     FEnabled, FConnected, FStrobe: Boolean;
     function HostKey(Code: UInt32): TSuborKey;
     function ActiveKeys: Byte;
+    procedure UpdateIndicators(const PreviousKeys: TSuborKeys);
   public
     procedure SerializeState(State: TNesStateArchive);
     procedure Reset;
     procedure SetHostKey(Code: UInt32; Pressed: Boolean);
     procedure SetScreenKeys(const Keys: TSuborKeys);
+    function GetPressedKeys: TSuborKeys;
+    property Indicators: TSuborIndicators read FIndicators;
     procedure Write(Value: UInt8);
     function Read: UInt8;
     procedure Clear;
@@ -60,6 +73,8 @@ type
     FEnabled: Boolean;
     FTriggerPressed: Boolean;
     FOnReadLight: TNesZapperLightCallback;
+  public
+    class function ReadMask(const Mask: TNesZapperMask; const PixelX, PixelY: Integer): Boolean;
   public
     procedure SerializeState(State: TNesStateArchive);
     function Read(const Mask: TNesZapperMask): UInt8;
@@ -92,6 +107,11 @@ type
 
 implementation
 
+uses
+  System.UITypes;
+
+{ TSuborKeyboard }
+
 procedure TSuborKeyboard.SerializeState(State: TNesStateArchive);
 begin
   State.Field(FHostKeys, SizeOf(FHostKeys));
@@ -120,88 +140,90 @@ end;
 function TSuborKeyboard.HostKey(Code: UInt32): TSuborKey;
 begin
   Result := SkNone;
-  if (Code >= Ord('A')) and (Code <= Ord('Z')) then
-    Exit(TSuborKey(Ord(SkA) + Integer(Code) - Ord('A')));
-  if (Code >= Ord('0')) and (Code <= Ord('9')) then
-    Exit(TSuborKey(Ord(SkNum0) + Integer(Code) - Ord('0')));
-  if (Code >= $70) and (Code <= $7B) then
-    Exit(TSuborKey(Ord(SkF1) + Integer(Code) - $70));
-  if (Code >= $60) and (Code <= $69) then
-    Exit(TSuborKey(Ord(SkNumpad0) + Integer(Code) - $60));
+  if (Code >= vkA) and (Code <= vkZ) then
+    Exit(TSuborKey(Ord(SkA) + Integer(Code) - vkA));
+  if (Code >= vk0) and (Code <= vk9) then
+    Exit(TSuborKey(Ord(SkNum0) + Integer(Code) - vk0));
+  if (Code >= vkF1) and (Code <= vkF12) then
+    Exit(TSuborKey(Ord(SkF1) + Integer(Code) - vkF1));
+  if (Code >= vkNumpad0) and (Code <= vkNumpad9) then
+    Exit(TSuborKey(Ord(SkNumpad0) + Integer(Code) - vkNumpad0));
   case Code of
-    8:
+    vkCancel: // Ctrl+Break.
+      Result := SkBreak;
+    vkBack:
       Result := SkBackspace;
-    9:
+    vkTab:
       Result := SkTab;
-    13:
+    vkReturn:
       Result := SkEnter;
-    16:
+    vkShift:
       Result := SkShift;
-    17:
+    vkControl:
       Result := SkCtrl;
-    18:
+    vkMenu:
       Result := SkAlt;
-    19:
+    vkPause:
       Result := SkPause;
-    20:
+    vkCapital:
       Result := SkCapsLock;
-    27:
+    vkEscape:
       Result := SkEsc;
-    32:
+    vkSpace:
       Result := SkSpace;
-    33:
+    vkPrior:
       Result := SkPageUp;
-    34:
+    vkNext:
       Result := SkPageDown;
-    35:
+    vkEnd:
       Result := SkEnd;
-    36:
+    vkHome:
       Result := SkHome;
-    37:
+    vkLeft:
       Result := SkLeft;
-    38:
+    vkUp:
       Result := SkUp;
-    39:
+    vkRight:
       Result := SkRight;
-    40:
+    vkDown:
       Result := SkDown;
-    45:
+    vkInsert:
       Result := SkIns;
-    46:
+    vkDelete:
       Result := SkDelete;
-    106:
+    vkMultiply:
       Result := SkNumpadMultiply;
-    107:
+    vkAdd:
       Result := SkNumpadPlus;
-    109:
+    vkSubtract:
       Result := SkNumpadMinus;
-    110:
+    vkDecimal:
       Result := SkNumpadDot;
-    111:
+    vkDivide:
       Result := SkNumpadDivide;
-    144:
+    vkNumLock:
       Result := SkNumLock;
-    186:
+    vkSemicolon:
       Result := SkSemiColon;
-    187:
+    vkEqual:
       Result := SkEqual;
-    188:
+    vkComma:
       Result := SkComma;
-    189:
+    vkMinus:
       Result := SkMinus;
-    190:
+    vkPeriod:
       Result := SkDot;
-    191:
+    vkSlash:
       Result := SkSlash;
-    192:
+    vkTilde:
       Result := SkGrave;
-    219:
+    vkLeftBracket:
       Result := SkLeftBracket;
-    220:
+    vkBackslash:
       Result := SkBackslash;
-    221:
+    vkRightBracket:
       Result := SkRightBracket;
-    222:
+    vkQuote:
       Result := SkApostrophe;
   end;
 end;
@@ -211,15 +233,33 @@ begin
   var Key := HostKey(Code);
   if Key = SkNone then
     Exit;
+  var PreviousKeys := GetPressedKeys;
   if Pressed then
     Include(FHostKeys, Key)
   else
     Exclude(FHostKeys, Key);
+  UpdateIndicators(PreviousKeys);
+end;
+
+procedure TSuborKeyboard.UpdateIndicators(const PreviousKeys: TSuborKeys);
+begin
+  var NewKeys := GetPressedKeys - PreviousKeys;
+  if SkNumLock in NewKeys then
+    FIndicators.NumLock := not FIndicators.NumLock;
+  if SkCapsLock in NewKeys then
+    FIndicators.CapsLock := not FIndicators.CapsLock;
+end;
+
+function TSuborKeyboard.GetPressedKeys: TSuborKeys;
+begin
+  Result := FHostKeys + FScreenKeys;
 end;
 
 procedure TSuborKeyboard.SetScreenKeys(const Keys: TSuborKeys);
 begin
+  var PreviousKeys := GetPressedKeys;
   FScreenKeys := Keys;
+  UpdateIndicators(PreviousKeys);
 end;
 
 function TSuborKeyboard.ActiveKeys: Byte;
@@ -230,14 +270,14 @@ const
     (SkIns, SkBackspace, SkPageDown, SkRight, SkF8, SkPageUp, SkDelete, SkHome),
     (SkNum9, SkI, SkL, SkComma, SkF5, SkO, SkNum0, SkDot),
     (SkRightBracket, SkEnter, SkUp, SkLeft, SkF7, SkLeftBracket, SkBackslash, SkDown),
-    (SkQ, SkCapsLock, SkZ, SkTab, SkEsc, SkA, SkNum1, SkCtrl),
+    (SkQ, SkCapsLock, SkZ, SkPause, SkEsc, SkA, SkNum1, SkCtrl),
     (SkNum7, SkY, SkK, SkM, SkF4, SkU, SkNum8, SkJ),
     (SkMinus, SkSemiColon, SkApostrophe, SkSlash, SkF6, SkP, SkEqual, SkShift),
     (SkT, SkH, SkN, SkSpace, SkF3, SkR, SkNum6, SkB),
     (SkNumpad6, SkNumpadEnter, SkNumpad4, SkNumpad8, SkNone, SkUnknown1, SkUnknown2, SkUnknown3),
-    (SkAlt, SkNumpad4, SkNumpad7, SkF11, SkF12, SkNumpad1, SkNumpad2, SkNumpad8),
+    (SkBreak, SkNumpad4, SkNumpad7, SkF11, SkF12, SkNumpad1, SkNumpad2, SkNumpad8),
     (SkNumpadMinus, SkNumpadPlus, SkNumpadMultiply, SkNumpad9, SkF10, SkNumpad5, SkNumpadDivide, SkNumLock),
-    (SkGrave, SkNumpad6, SkPause, SkSpace, SkF9, SkNumpad3, SkNumpadDot, SkNumpad0));
+    (SkGrave, SkNumpad6, SkAlt, SkTab, SkF9, SkNumpad3, SkNumpadDot, SkNumpad0));
 begin
   Result := 0;
   var Keys := FHostKeys + FScreenKeys;
@@ -276,6 +316,17 @@ begin
   if not FEnabled then
     Exit($1E);
   Result := (not (ActiveKeys shl 1)) and $1E;
+end;
+
+class function TZapper.ReadMask(const Mask: TNesZapperMask; const PixelX, PixelY: Integer): Boolean;
+begin
+  Result := False;
+  if (PixelX < Low(Mask)) or (PixelX > High(Mask)) then
+    Exit;
+  if (PixelY < Low(Mask[PixelX])) or (PixelY > High(Mask[PixelX])) then
+    Exit;
+
+  Result := Mask[PixelX, PixelY] <> 0;
 end;
 
 procedure TZapper.SerializeState(State: TNesStateArchive);

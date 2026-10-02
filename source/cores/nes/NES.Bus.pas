@@ -3,7 +3,7 @@
 interface
 
 uses
-  NES.State, NES.Types, NES.PPU, NES.Cartridge, NES.Controller, NES.APU;
+  NES.State, NES.Types, NES.PPU, NES.Cartridge, NES.Controller, NES.APU, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
 
 type
   TNesBus = class
@@ -17,6 +17,8 @@ type
     FController3: TController;
     FController4: TController;
     FSuborKeyboard: TSuborKeyboard;
+    FFamicomKeyboard: TFamicomKeyboard;
+    FDataRecorder: TFamicomDataRecorder;
     FZapper: TZapper;
     FFourScoreEnabled: Boolean;
     FControllerStrobe: Boolean;
@@ -44,6 +46,7 @@ type
     function ReadDevice(Address: UInt16): UInt8;
   public
     property HasCoinAcceptor: Boolean read GetHasCoinAcceptor;
+    property DataRecorder: TFamicomDataRecorder read FDataRecorder write FDataRecorder;
     procedure InsertCoin1;
     procedure InsertCoin2;
     procedure ClockCoinFrame;
@@ -53,7 +56,7 @@ type
     procedure SerializeDataBus(State: TNesStateArchive);
     constructor Create;
     procedure Reset;
-    procedure Connect(Cartridge: TCartridge; Ppu: TPpu; Apu: TApu; Controller1, Controller2: TController; Controller3: TController = nil; Controller4: TController = nil; SuborKeyboard: TSuborKeyboard = nil);
+    procedure Connect(Cartridge: TCartridge; Ppu: TPpu; Apu: TApu; Controller1, Controller2: TController; Controller3: TController = nil; Controller4: TController = nil; SuborKeyboard: TSuborKeyboard = nil; FamicomKeyboard: TFamicomKeyboard = nil);
     function CpuRead(Address: UInt16): UInt8;
     function DmaRead(Address: UInt16): UInt8;
     function DmaTransferRead(Address: UInt16): UInt8;
@@ -184,7 +187,7 @@ begin
   FDmaData := 0;
 end;
 
-procedure TNesBus.Connect(Cartridge: TCartridge; Ppu: TPpu; Apu: TApu; Controller1, Controller2, Controller3, Controller4: TController; SuborKeyboard: TSuborKeyboard);
+procedure TNesBus.Connect(Cartridge: TCartridge; Ppu: TPpu; Apu: TApu; Controller1, Controller2, Controller3, Controller4: TController; SuborKeyboard: TSuborKeyboard; FamicomKeyboard: TFamicomKeyboard);
 begin
   FCartridge := Cartridge;
   FPpu := Ppu;
@@ -194,6 +197,7 @@ begin
   FController3 := Controller3;
   FController4 := Controller4;
   FSuborKeyboard := SuborKeyboard;
+  FFamicomKeyboard := FamicomKeyboard;
 end;
 
 procedure TNesBus.WriteControllers(Value: UInt8);
@@ -319,6 +323,7 @@ begin
     $4016:
       begin
         Result := (ReadController(0) and $1F) or (FDataBus and $E0);
+        if FDataRecorder <> nil then Result := Result or FDataRecorder.Read;
         // VS coin slots are independent live inputs on $4016 bits 5 and 6.
         if HasCoinAcceptor then
         begin
@@ -337,6 +342,8 @@ begin
         Result := ReadController(1);
         if FSuborKeyboard <> nil then
           Result := Result or FSuborKeyboard.Read;
+        if FFamicomKeyboard <> nil then
+          Result := Result or FFamicomKeyboard.Read;
         Result := (Result and $1F) or (FDataBus and $E0);
         Exit;
       end;
@@ -391,6 +398,9 @@ begin
         else WriteControllers(Value);
         if FSuborKeyboard <> nil then
           FSuborKeyboard.Write(Value);
+        if FFamicomKeyboard <> nil then
+          FFamicomKeyboard.Write(Value);
+        if FDataRecorder <> nil then FDataRecorder.Write(Value);
         if (FCartridge <> nil) and (FCartridge.Mapper <> nil) then
           FCartridge.Mapper.CpuWriteTimed(Address, Value, FCpuCycle);
         Exit;
@@ -463,6 +473,8 @@ begin
   FControllerReadIndex[1] := 0;
   if FSuborKeyboard <> nil then
     FSuborKeyboard.Reset;
+  if FFamicomKeyboard <> nil then
+    FFamicomKeyboard.Reset;
   if (FController1 <> nil) and (FController2 <> nil) then
   begin
     WriteControllers(1);

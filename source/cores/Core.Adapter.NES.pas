@@ -1,10 +1,10 @@
-﻿unit Core.Adapter.NES;
+unit Core.Adapter.NES;
 
 interface
 
 uses
-  System.IniFiles, Core.Emulation, NES.Emulation, NES.Input, NES.Types,
-  NES.Controller;
+  System.Classes, System.IniFiles, Core.Storage, Core.Emulation, NES.Emulation, NES.Input, NES.Types,
+  NES.Controller, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
 
 type
   TNesZapperMask = NES.Types.TNesZapperMask;
@@ -12,8 +12,23 @@ type
   INesPeripheralCore = interface
     ['{E2878EE8-4AED-4E93-A006-7DBD5A63ABED}']
     procedure SetSuborKeys(const Keys: TSuborKeys);
+    procedure SetFamicomKeys(const Keys: TFamicomKeys);
+    function GetFamicomKeys: TFamicomKeys;
+    function UsesFamicomKeyboard: Boolean;
+    procedure SetPowerPadButtons(const Buttons: TPowerPadButtons);
+    function GetSuborKeys: TSuborKeys;
+    function GetSuborIndicators: TSuborIndicators;
+    function GetPowerPadButtons: TPowerPadButtons;
     function Zapper: TZapper;
     function UsesPowerPad: Boolean;
+  end;
+
+  INesTapeCore = interface
+    ['{0A3514F2-7804-45BB-BFD0-2BACD5DE9AD3}']
+    function UsesDataRecorder: Boolean;
+    function GetTapeState: TTapeState;
+    function GetTapeProgress: TTapeProgress;
+    procedure TapeCommand(Action: TTapeAction; const FileName: string = '');
   end;
 
   INesEmulatorConfig = interface(IEmulatorConfig)
@@ -47,13 +62,13 @@ type
     FZapperEnabled: Boolean;
     FRegion: TRegionOverride;
     FKeys, FKeys2, FKeys3, FKeys4: TKeyMap;
-    procedure LoadKeyMap(Ini: TIniFile; const Section: string; var Keys: TKeyMap);
-    procedure SaveKeyMap(Ini: TIniFile; const Section: string; const Keys: TKeyMap);
+    procedure LoadKeyMap(Ini: TCustomIniFile; const Section: string; var Keys: TKeyMap);
+    procedure SaveKeyMap(Ini: TCustomIniFile; const Section: string; const Keys: TKeyMap);
   protected
-    procedure LoadCoreSettings(Ini: TIniFile); override;
-    procedure SaveCoreSettings(Ini: TIniFile); override;
+    procedure LoadCoreSettings(Ini: TCustomIniFile); override;
+    procedure SaveCoreSettings(Ini: TCustomIniFile); override;
   public
-    constructor Create(const AFileName: string);
+    constructor Create(const AFileName: string; const Storage: IStorage = nil);
     function GetFourScore: Boolean;
     procedure SetFourScore(const Value: Boolean);
     function GetZapperEnabled: Boolean;
@@ -70,7 +85,7 @@ type
     procedure SetKeys4(const Value: TKeyMap);
   end;
 
-  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, INesPeripheralCore)
+  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, INesPeripheralCore, INesTapeCore)
   private
     FThread: TNesEmulationThread;
     FGamepadInput: TEmulatorInput;
@@ -82,13 +97,19 @@ type
     function GetSupportsSnapshots: Boolean;
     function GetUsesSuborKeyboard: Boolean;
   public
-    constructor Create(const FileName: string);
+    constructor Create(const FileName: string; const ConfigFileName: string = ''); overload;
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string;
+      const ConfigFileName: string = ''); overload;
     destructor Destroy; override;
     function GetHasCoinAcceptor: Boolean;
     procedure InsertCoin1;
     procedure InsertCoin2;
     property HasCoinAcceptor: Boolean read GetHasCoinAcceptor;
     procedure Start;
+    function UsesDataRecorder: Boolean;
+    function GetTapeState: TTapeState;
+    function GetTapeProgress: TTapeProgress;
+    procedure TapeCommand(Action: TTapeAction; const FileName: string = '');
     procedure Stop;
     procedure Pause;
     procedure Resume;
@@ -96,7 +117,15 @@ type
     procedure ClearInput;
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
+    function GetInputState: TEmulatorInput;
+    function GetSuborKeys: TSuborKeys;
+    function GetSuborIndicators: TSuborIndicators;
+    function GetPowerPadButtons: TPowerPadButtons;
     procedure SetSuborKeys(const Keys: TSuborKeys);
+    procedure SetFamicomKeys(const Keys: TFamicomKeys);
+    function GetFamicomKeys: TFamicomKeys;
+    function UsesFamicomKeyboard: Boolean;
+    procedure SetPowerPadButtons(const Buttons: TPowerPadButtons);
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -112,12 +141,45 @@ implementation
 uses
   System.SysUtils, System.UITypes;
 
-constructor TNesCoreAdapter.Create(const FileName: string);
+function TNesCoreAdapter.UsesDataRecorder: Boolean;
+begin
+  Result := FThread.UsesDataRecorder;
+end;
+
+function TNesCoreAdapter.GetTapeState: TTapeState;
+begin
+  Result := FThread.GetTapeState;
+end;
+
+function TNesCoreAdapter.GetTapeProgress: TTapeProgress;
+begin
+  Result := FThread.GetTapeProgress;
+end;
+
+procedure TNesCoreAdapter.TapeCommand(Action: TTapeAction; const FileName: string);
+begin
+  FThread.TapeCommand(Action, FileName);
+end;
+
+constructor TNesCoreAdapter.Create(const FileName, ConfigFileName: string);
+begin
+  var Storage := TStorage.Default;
+  var Stream := Storage.OpenRead(FileName);
+  try Create(Stream, Storage, FileName, ConfigFileName); finally Stream.Free; end;
+end;
+
+constructor TNesCoreAdapter.Create(Stream: TStream; const Storage: IStorage;
+  const RomName, ConfigFileName: string);
 begin
   inherited Create;
-  FConfig := TNesEmulatorConfig.Create(EmulatorConfigFileName('nes'));
+  var CoreStorage := Storage;
+  if CoreStorage = nil then CoreStorage := TStorage.Default;
+  var ConfigPath := ConfigFileName;
+  if ConfigPath = '' then ConfigPath := CoreStorage.ConfigFile('nes');
+  FConfig := TNesEmulatorConfig.Create(ConfigPath, CoreStorage);
   FConfig.Load;
-  FThread := TNesEmulationThread.Create(FileName, FConfig.FourScore, FConfig.Region, FConfig.AudioEnabled, FConfig.AudioVolume);
+  FThread := TNesEmulationThread.Create(Stream, CoreStorage, RomName,
+    FConfig.FourScore, FConfig.Region, FConfig.AudioEnabled, FConfig.AudioVolume);
   // Select port 2 before starting the worker. A light gun replaces the pad
   // and changes reads even when the trigger is not pressed.
   FThread.Console.Zapper.Enabled := FConfig.ZapperEnabled and
@@ -129,6 +191,56 @@ begin
   Stop;
   FThread.Free;
   inherited;
+end;
+
+function TNesCoreAdapter.GetInputState: TEmulatorInput;
+const
+  Mapping: array[TNesButton] of TEmulatorButton =
+    (TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Select,
+    TEmulatorButton.Start, TEmulatorButton.Up, TEmulatorButton.Down,
+    TEmulatorButton.Left, TEmulatorButton.Right);
+var
+  Buttons, Buttons2: TNesButtons;
+begin
+  FThread.GetButtons(Buttons, Buttons2);
+  Result := Default(TEmulatorInput);
+  for var Button := Low(TNesButton) to High(TNesButton) do
+  begin
+    if Button in Buttons then
+      Include(Result.Buttons, Mapping[Button]);
+    if Button in Buttons2 then
+      Include(Result.Buttons2, Mapping[Button]);
+  end;
+end;
+
+function TNesCoreAdapter.GetFamicomKeys: TFamicomKeys;
+begin
+  Result := FThread.GetFamicomKeys;
+end;
+
+function TNesCoreAdapter.UsesFamicomKeyboard: Boolean;
+begin
+  Result := FThread.UsesFamicomKeyboard;
+end;
+
+procedure TNesCoreAdapter.SetFamicomKeys(const Keys: TFamicomKeys);
+begin
+  FThread.SetFamicomKeys(Keys);
+end;
+
+function TNesCoreAdapter.GetSuborKeys: TSuborKeys;
+begin
+  Result := FThread.GetSuborKeys;
+end;
+
+function TNesCoreAdapter.GetSuborIndicators: TSuborIndicators;
+begin
+  Result := FThread.GetSuborIndicators;
+end;
+
+function TNesCoreAdapter.GetPowerPadButtons: TPowerPadButtons;
+begin
+  Result := FThread.GetPowerPadButtons;
 end;
 
 procedure TNesCoreAdapter.ApplyGamepadInput;
@@ -239,6 +351,11 @@ begin
   FThread.SetSuborKeys(Keys);
 end;
 
+procedure TNesCoreAdapter.SetPowerPadButtons(const Buttons: TPowerPadButtons);
+begin
+  FThread.SetPowerPadButtons(Buttons);
+end;
+
 procedure TNesCoreAdapter.Start;
 begin
   FThread.Start;
@@ -294,9 +411,9 @@ end;
 
 { TNesEmulatorConfig }
 
-constructor TNesEmulatorConfig.Create(const AFileName: string);
+constructor TNesEmulatorConfig.Create(const AFileName: string; const Storage: IStorage);
 begin
-  inherited Create(AFileName);
+  inherited Create(AFileName, Storage);
   FKeys.A := vkZ;
   FKeys.B := vkX;
   FKeys.Select := vkSpace;
@@ -334,12 +451,12 @@ begin
   FRegion := TRegionOverride.Auto;
 end;
 
-function ReadKey(Ini: TIniFile; const Section, Name: string; DefaultValue: UInt32): UInt32;
+function ReadKey(Ini: TCustomIniFile; const Section, Name: string; DefaultValue: UInt32): UInt32;
 begin
   Result := ReadEmulatorKey(Ini, Section, Name, DefaultValue);
 end;
 
-procedure TNesEmulatorConfig.LoadKeyMap(Ini: TIniFile; const Section: string; var Keys: TKeyMap);
+procedure TNesEmulatorConfig.LoadKeyMap(Ini: TCustomIniFile; const Section: string; var Keys: TKeyMap);
 begin
   Keys.A := ReadKey(Ini, Section, 'A', Keys.A);
   Keys.B := ReadKey(Ini, Section, 'B', Keys.B);
@@ -351,7 +468,7 @@ begin
   Keys.Right := ReadKey(Ini, Section, 'Right', Keys.Right);
 end;
 
-procedure TNesEmulatorConfig.SaveKeyMap(Ini: TIniFile; const Section: string; const Keys: TKeyMap);
+procedure TNesEmulatorConfig.SaveKeyMap(Ini: TCustomIniFile; const Section: string; const Keys: TKeyMap);
 begin
   Ini.WriteInteger(Section, 'A', Keys.A);
   Ini.WriteInteger(Section, 'B', Keys.B);
@@ -363,7 +480,7 @@ begin
   Ini.WriteInteger(Section, 'Right', Keys.Right);
 end;
 
-procedure TNesEmulatorConfig.LoadCoreSettings(Ini: TIniFile);
+procedure TNesEmulatorConfig.LoadCoreSettings(Ini: TCustomIniFile);
 begin
   FFourScore := Ini.ReadBool('Input', 'FourScore', FFourScore);
   FZapperEnabled := Ini.ReadBool('Input', 'Zapper', False);
@@ -380,7 +497,7 @@ begin
   LoadKeyMap(Ini, 'Controls4', FKeys4);
 end;
 
-procedure TNesEmulatorConfig.SaveCoreSettings(Ini: TIniFile);
+procedure TNesEmulatorConfig.SaveCoreSettings(Ini: TCustomIniFile);
 begin
   Ini.WriteBool('Input', 'FourScore', FFourScore);
   Ini.WriteBool('Input', 'Zapper', FZapperEnabled);
@@ -469,4 +586,3 @@ begin
 end;
 
 end.
-

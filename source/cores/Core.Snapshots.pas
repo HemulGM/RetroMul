@@ -3,7 +3,7 @@ unit Core.Snapshots;
 interface
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs;
+  Core.Storage, System.SysUtils, System.Classes, System.SyncObjs;
 
 type
   // Persist fields, never object references, callbacks or host audio handles.
@@ -39,13 +39,13 @@ type
 function SnapshotIdentity(const ROM: TBytes): string;
 
 // Replace in the same directory without requiring a backup filename.
-procedure SaveStreamAtomically(Stream: TMemoryStream; const Path: string);
+procedure SaveStreamAtomically(Stream: TMemoryStream; const Path: string; const Storage: IStorage = nil);
 
-procedure SaveCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer);
+procedure SaveCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage = nil);
 
-procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer);
+procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage = nil);
 
-procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer; Pixels: Pointer);
+procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer; Pixels: Pointer; const Storage: IStorage = nil);
 
 implementation
 
@@ -112,25 +112,11 @@ begin
   end;
 end;
 
-procedure SaveStreamAtomically(Stream: TMemoryStream; const Path: string);
+procedure SaveStreamAtomically(Stream: TMemoryStream; const Path: string; const Storage: IStorage);
 begin
-  ForceDirectories(ExtractFilePath(ExpandFileName(Path)));
-  var Temporary := Path + '.' + TGUID.NewGuid.ToString + '.tmp';
-  try
-    Stream.SaveToFile(Temporary);
-    {$IFDEF MSWINDOWS}
-    if not MoveFileEx(PChar(Temporary), PChar(Path), MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
-      RaiseLastOSError;
-    {$ELSE}
-    var Source := UTF8String(Temporary);
-    var Dest := UTF8String(Path);
-    if Posix.Stdio.__rename(PAnsiChar(Source), PAnsiChar(Dest)) <> 0 then
-      RaiseLastOSError;
-    {$ENDIF}
-  finally
-    if TFile.Exists(Temporary) then
-      TFile.Delete(Temporary);
-  end;
+  var TargetStorage := Storage;
+  if TargetStorage = nil then TargetStorage := TStorage.Default;
+  TargetStorage.WriteAtomic(Path, Stream);
 end;
 
 function SnapshotIdentity(const ROM: TBytes): string;
@@ -159,7 +145,7 @@ begin
   Move(Digest[0], Result.ROMHash, 32);
 end;
 
-procedure SaveCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer);
+procedure SaveCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
 begin
   var Payload := TMemoryStream.Create;
   var Output := TMemoryStream.Create;
@@ -172,16 +158,18 @@ begin
     Move(Digest[0], Header.Digest, 32);
     Output.WriteBuffer(Header, SizeOf(Header));
     Output.WriteBuffer(Payload.Memory^, Payload.Size);
-    SaveStreamAtomically(Output, Path);
+    SaveStreamAtomically(Output, Path, Storage);
   finally
     Output.Free;
     Payload.Free;
   end;
 end;
 
-procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer);
+procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
 begin
-  var Input := TFileStream.Create(Path, fmOpenRead or fmShareDenyWrite);
+  var SourceStorage := Storage;
+  if SourceStorage = nil then SourceStorage := TStorage.Default;
+  var Input := SourceStorage.OpenRead(Path);
   var Payload := TMemoryStream.Create;
   var Backup := TMemoryStream.Create;
   try
@@ -218,7 +206,7 @@ begin
   end;
 end;
 
-procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer; Pixels: Pointer);
+procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer; Pixels: Pointer; const Storage: IStorage);
 begin
   var Stream := TMemoryStream.Create;
   try
@@ -239,7 +227,7 @@ begin
       Stream.WriteBuffer(Row^, Width * 4);
       Inc(Row, Stride * 4);
     end;
-    SaveStreamAtomically(Stream, ChangeFileExt(Path, '.bmp'));
+    SaveStreamAtomically(Stream, ChangeFileExt(Path, '.bmp'), Storage);
   finally
     Stream.Free;
   end;

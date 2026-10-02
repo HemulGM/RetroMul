@@ -30,7 +30,7 @@ uses
   {$ELSE}
   Posix.Stdio,
   {$ENDIF}
-  System.SysUtils;
+  Core.Storage, System.SysUtils;
 
 constructor TNesStateArchive.Create(Stream: TStream; Loading: Boolean; Version: Integer);
 begin
@@ -61,15 +61,7 @@ end;
 
 procedure ReplaceSnapshotFile(const Temporary, Destination: string);
 begin
-  {$IFDEF MSWINDOWS}
-  if not MoveFileEx(PChar(Temporary), PChar(Destination), MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
-    RaiseLastOSError;
-  {$ELSE}
-  var SourcePath := UTF8String(Temporary);
-  var TargetPath := UTF8String(Destination);
-  if Posix.Stdio.__rename(PAnsiChar(SourcePath), PAnsiChar(TargetPath)) <> 0 then
-    RaiseLastOSError;
-  {$ENDIF}
+  TStorage.Default.Replace(Temporary, Destination);
 end;
 
 end.

@@ -1,10 +1,10 @@
-﻿unit NES.Console;
+unit NES.Console;
 
 interface
 
 uses
-  System.SysUtils, System.Classes, NES.State, NES.Types, NES.CPU, NES.PPU,
-  NES.APU, NES.Bus, NES.Cartridge, NES.Controller;
+  Core.Storage, System.SysUtils, System.Classes, NES.State, NES.Types, NES.CPU, NES.PPU,
+  NES.APU, NES.Bus, NES.Cartridge, NES.Controller, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
 
 type
   TNesConsole = class
@@ -14,25 +14,30 @@ type
     FApu: TApu;
     FBus: TNesBus;
     FCartridge: TCartridge;
+    FStorage: IStorage;
     FController1: TController;
     FController2: TController;
     FController3: TController;
     FController4: TController;
     FSuborKeyboard: TSuborKeyboard;
+    FFamicomKeyboard: TFamicomKeyboard;
+    FDataRecorder: TFamicomDataRecorder;
     FZapper: TZapper;
     FCpuCycles: UInt64;
     FPalPpuPhase: Integer;
     FRegion: TNesRegion;
     FConfiguredFourScore: Boolean;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 11);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 14);
     function GetRomIdentity: string;
     function GetUsesPowerPad: Boolean;
     function GetHasCoinAcceptor: Boolean;
   public
-    constructor Create(FourScoreEnabled: Boolean = False);
+    constructor Create(FourScoreEnabled: Boolean = False; const Storage: IStorage = nil);
     destructor Destroy; override;
-    procedure LoadRom(const FileName: string; RegionOverride: TRegionOverride = TRegionOverride.Auto);
+    procedure LoadRom(const FileName: string; RegionOverride: TRegionOverride = TRegionOverride.Auto); overload;
+    procedure LoadRom(Stream: TStream; const RomName: string;
+      RegionOverride: TRegionOverride = TRegionOverride.Auto); overload;
     procedure LoadBattery(const DirectoryName: string);
     procedure SaveBattery;
     procedure SaveSnapshot(const FileName: string);
@@ -58,6 +63,8 @@ type
     property Controller3: TController read FController3;
     property Controller4: TController read FController4;
     property SuborKeyboard: TSuborKeyboard read FSuborKeyboard;
+    property FamicomKeyboard: TFamicomKeyboard read FFamicomKeyboard;
+    property DataRecorder: TFamicomDataRecorder read FDataRecorder;
     property Zapper: TZapper read FZapper;
   end;
 
@@ -67,7 +74,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 11;
+  SNAPSHOT_VERSION = 14;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -146,6 +153,17 @@ begin
     end;
     FApu.SerializeDmaState(State);
     FBus.SerializeCoins(State);
+    if Version >= 12 then
+      FFamicomKeyboard.SerializeState(State)
+    else if Loading then
+    begin
+      FFamicomKeyboard.Clear;
+      FFamicomKeyboard.Reset;
+    end;
+    if Version >= 13 then
+      FDataRecorder.SerializeState(State)
+    else if Loading then
+      FDataRecorder.Reset(True);
   finally
     State.Free;
   end;
@@ -172,14 +190,14 @@ begin
     Move(Digest[0], Header.Digest[0], SizeOf(Header.Digest));
     Output.WriteBuffer(Header, SizeOf(Header));
     Output.WriteBuffer(Payload.Memory^, Payload.Size);
-    TDirectory.CreateDirectory(ExtractFilePath(ExpandFileName(FileName)));
+    FStorage.EnsureFolder(ExtractFilePath(ExpandFileName(FileName)));
     var Id: TGUID;
     CreateGUID(Id);
     var Temporary := FileName + '.' + GUIDToString(Id) + '.tmp';
     var PreviewName := ChangeFileExt(FileName, '.bmp');
     var PreviewTemporary := Temporary + '.bmp';
     try
-      Output.SaveToFile(Temporary);
+      FStorage.WriteAtomic(Temporary, Output);
       Output.Clear;
       var BitmapHeader := Default(TSnapshotBitmapHeader);
       BitmapHeader.Signature := $4D42;
@@ -196,14 +214,12 @@ begin
       for var Y := 0 to 239 do
         for var X := 0 to 255 do
           Output.WriteBuffer(Frame[X, Y], SizeOf(UInt32));
-      Output.SaveToFile(PreviewTemporary);
-      ReplaceSnapshotFile(PreviewTemporary, PreviewName);
-      ReplaceSnapshotFile(Temporary, FileName);
+      FStorage.WriteAtomic(PreviewTemporary, Output);
+      FStorage.Replace(PreviewTemporary, PreviewName);
+      FStorage.Replace(Temporary, FileName);
     finally
-      if TFile.Exists(Temporary) then
-        TFile.Delete(Temporary);
-      if TFile.Exists(PreviewTemporary) then
-        TFile.Delete(PreviewTemporary);
+      FStorage.Delete(Temporary);
+      FStorage.Delete(PreviewTemporary);
     end;
   finally
     Output.Free;
@@ -215,7 +231,7 @@ procedure TNesConsole.LoadSnapshot(const FileName: string);
 begin
   if not HasCartridge then
     raise ENesException.Create('No game loaded');
-  var Input := TFileStream.Create(FileName, fmOpenRead or fmShareDenyWrite);
+  var Input := FStorage.OpenRead(FileName);
   var Payload := TMemoryStream.Create;
   var Backup := TMemoryStream.Create;
   try
@@ -256,27 +272,34 @@ begin
   end;
 end;
 
-constructor TNesConsole.Create(FourScoreEnabled: Boolean);
+constructor TNesConsole.Create(FourScoreEnabled: Boolean; const Storage: IStorage);
 begin
   inherited Create;
+  FStorage := Storage;
+  if FStorage = nil then FStorage := TStorage.Default;
   FCpu := TCpu6502.Create;
   FPpu := TPpu.Create;
   FApu := TApu.Create;
   FBus := TNesBus.Create;
   FBus.TimedIo := True;
   FCartridge := TCartridge.Create;
+  FCartridge.Storage := FStorage;
   FController1 := TController.Create;
   FController2 := TController.Create;
   FController3 := TController.Create;
   FController4 := TController.Create;
   FSuborKeyboard := TSuborKeyboard.Create;
+  FFamicomKeyboard := TFamicomKeyboard.Create;
+  FDataRecorder := TFamicomDataRecorder.Create;
+  FDataRecorder.Storage := FStorage;
+  FBus.DataRecorder := FDataRecorder;
   FZapper := TZapper.Create;
   FBus.Zapper := FZapper;
   FConfiguredFourScore := FourScoreEnabled;
   FController2.PowerPadEnabled := False;
   FBus.FourScoreEnabled := FourScoreEnabled;
   FBus.Connect(FCartridge, FPpu, FApu, FController1, FController2,
-    FController3, FController4, FSuborKeyboard);
+    FController3, FController4, FSuborKeyboard, FFamicomKeyboard);
   FCpu.Connect(FBus.CpuRead, FBus.CpuWrite);
 end;
 
@@ -284,6 +307,8 @@ destructor TNesConsole.Destroy;
 begin
   FZapper.Free;
   FSuborKeyboard.Free;
+  FFamicomKeyboard.Free;
+  FDataRecorder.Free;
   FController4.Free;
   FController3.Free;
   FController2.Free;
@@ -298,12 +323,22 @@ end;
 
 procedure TNesConsole.LoadRom(const FileName: string; RegionOverride: TRegionOverride);
 begin
-  FCartridge.LoadFromFile(FileName);
+  var Stream := FStorage.OpenRead(FileName);
+  try LoadRom(Stream, FileName, RegionOverride); finally Stream.Free; end;
+end;
+
+procedure TNesConsole.LoadRom(Stream: TStream; const RomName: string; RegionOverride: TRegionOverride);
+begin
+  FCartridge.LoadFromStream(Stream, RomName);
+  FDataRecorder.Reset;
+  FDataRecorder.Connected := FCartridge.Metadata.DefaultExpansionDevice in [$20, $23];
   FController1.SwapStartSelect := FCartridge.MapperId = MAPPER_VS_SYSTEM;
   FController2.SwapStartSelect := FController1.SwapStartSelect;
   FBus.FourScoreEnabled := FConfiguredFourScore and not UsesPowerPad;
   FController2.PowerPadEnabled := UsesPowerPad;
-  FSuborKeyboard.Connected := FCartridge.MapperId = MAPPER_SUBOR;
+  FFamicomKeyboard.Clear;
+  FFamicomKeyboard.Connected := FCartridge.Metadata.DefaultExpansionDevice = $23;
+  FSuborKeyboard.Connected := (FCartridge.MapperId = MAPPER_SUBOR) and not FFamicomKeyboard.Connected;
   FRegion := TNesRegion.NTSC;
   case RegionOverride of
     TRegionOverride.PAL:
@@ -336,6 +371,7 @@ end;
 
 procedure TNesConsole.Reset;
 begin
+  FDataRecorder.Reset;
   FZapper.TriggerPressed := False;
   if FCartridge.Valid then
     FCartridge.Reset;
@@ -353,6 +389,12 @@ procedure TNesConsole.Clock;
 begin
   var WasFrameReady := FPpu.FrameReady;
   FBus.CpuCycle := FCpuCycles;
+  case FRegion of
+    TNesRegion.PAL: FDataRecorder.Clock(FCpuCycles * 16);
+    TNesRegion.Dendy: FDataRecorder.Clock(FCpuCycles * 15);
+  else
+    FDataRecorder.Clock(FCpuCycles * 12);
+  end;
   FBus.HaltedCpuAddress := FCpu.NextReadAddress;
   var CpuOdd: Boolean := (FBus.CpuCycle and 1) <> 0;
   FPpu.Clock;
@@ -461,4 +503,3 @@ begin
 end;
 
 end.
-

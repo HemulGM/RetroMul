@@ -42,9 +42,11 @@ visual editing. Sources are grouped by responsibility:
 logical button states (including SEGA's six action buttons and a second pad)
 and produces a size-tagged, row-major FMX
 frame. Platform-specific settings stay in the adapter, so a future core only
-needs an adapter plus a folder under `source/cores/`. The current frontend
-selects NES for .nes, Game Boy for .gb, Game Boy Color for .gbc,
-and SEGA Mega Drive (Genesis) for .smd, .bin, .gen, .md ROMs.
+needs an adapter plus a folder under `source/cores/`. ROMs are loaded from
+`TStream`; NES, Game Boy, Game Boy Color and Mega Drive are identified by
+their headers, regardless of the filename extension. SMD and byte-swapped
+Mega Drive dumps are normalized before loading. The caller owns the stream
+and may release it immediately after construction; reset uses the loaded bytes.
 All adapters support reset and save states.
 Tested with Delphi 13 / compiler 37.0.
 
@@ -70,6 +72,20 @@ Use [Skraper](https://www.skraper.net) to create gamelist.xml and parsing your r
 
 If there is no `gamelist.xml` file in the system folders, the list will load as it is, without logos and additional information.
 
+`TStorage` implements the shared `IStorage` interface passed to each core.
+It provides streams for ROMs, core configuration, battery saves, snapshots,
+previews and cassettes. The selected ROM folder is persisted in `storage.ini`;
+lists use filenames and sizes, include only `root/<system>/*`, and skip files
+larger than 64 MiB. Headers are checked only when opening a ROM. Android
+document URIs are opened directly through the document provider.
+The listing size filter can be disabled with `Storage.CheckRomFileSize := False`.
+Set `Storage.MaxRomFileSize` to a positive byte count to change its limit;
+the default is `64 * 1024 * 1024`. These settings belong to the storage instance
+and affect listing; each core still validates its ROM format when opening it.
+Application data is stored under `Documents/RetroMul` (or the platform's
+home directory when Documents is unavailable). Manual snapshot enumeration
+returns both the state location and its optional BMP preview.
+
 ## Game
 
 | Key | Action |
@@ -83,6 +99,7 @@ If there is no `gamelist.xml` file in the system folders, the list will load as 
 | P | Pause console |
 | F5 | Save quick snapshot (NES, GB, GBC, Mega Drive) |
 | F6 | Load quick snapshot (NES, GB, GBC, Mega Drive) |
+| F8 / PNG button | Save a screenshot to `Documents/RetroMul/screenshots` |
 | F11 | Fullscreen mode |
 
 SEGA supports two independent six-button controllers. Player 1 uses the keys
@@ -102,6 +119,10 @@ for player 2, using the button names and numeric virtual-key codes.
 The game must support two players; select its two-player mode in the game menu.
 Frontends can supply both pads through `TEmulatorInput.Buttons` and `Buttons2`.
 Keyboard and gamepad input are merged independently for each player.
+On the screen gamepad, rolling one finger from an action button onto another
+keeps the first button held and adds the button under the finger. Rolling back
+releases the added button; lifting the finger or leaving the action area releases
+the combination. This works for NES A/B and all six SEGA action buttons.
 Mega Drive snapshots now use version 2 to preserve both controller handshakes;
 older Mega Drive snapshots are rejected. GB/GBC snapshot versions are unchanged.
 
@@ -123,3 +144,38 @@ Keyboard. The PC keyboard then supplies its 13-row matrix through `$4016/$4017`;
 letters, number row, arrows, editing keys, modifiers and F1–F12 are supported.
 For these ROMs Esc, R and F5/F6 are delivered to the emulated keyboard rather
 than handled as application shortcuts.
+
+Family BASIC Keyboard (HVC-007) connects automatically for NES 2.0 expansion
+device `$23` and the known legacy Family BASIC v1.0, v2.0, v2.1 and v3.0 ROMs.
+Its separate screen control follows the original 72-key layout and supplies
+the nine-row matrix plus the empty tenth scan row through `$4016/$4017`.
+Screen and host input are combined; Windows distinguishes both Shift keys.
+Host Alt maps to GRPH, Caps Lock to KANA, Home to CLR HOME, Pause to STOP,
+backslash to yen, equals to caret, grave to `@`, quote to colon, and the extra
+ISO key to underscore. The ROM interprets shifted and kana characters.
+Keyboard input takes precedence over Esc, R, P, F5/F6 and Ctrl+O shortcuts.
+
+Famicom Data Recorder connects for NES 2.0 expansion device `$20`, alongside
+Family BASIC Keyboard (`$23`), and for known legacy Wrecking Crew, Excitebike
+and Mach Rider ROMs. Legacy detection uses the PRG+CHR SHA-1, excluding headers
+and trailing title data; explicit NES 2.0 device metadata takes precedence.
+Its standalone cassette control offers Play, Record and Stop. To save, click Record before
+starting SAVE in the game, then Stop when SAVE completes. To load, click Play
+before starting LOAD in the game. One cassette per game is stored as
+`saves/<game>_<ROM hash>/data.tape` under the configured save root.
+The cassette map shows a line where the signal changes, with gaps for constant
+signal and a marker for the current position. Rewind/forward move by 5% of the
+cassette length; Stop preserves the position for the next Play. Seeking is
+disabled during recording. The control shows read/write activity, progress and
+counts of raw signal bytes (not decoded game data).
+Choose file mounts an existing `.tape` or a new empty cassette; ROM cassette
+returns to the game's default `data.tape`. On Android, selected documents are
+imported into the application's cassette directory; recording updates that copy.
+Save as exports the current cassette to a new file without changing the mounted
+file, transport or position; partial recording bytes are included. Android uses
+the system document picker to save outside the application's private directory.
+The core API also accepts an explicit cassette filename. Tape commands work
+while paused; pausing freezes the tape, and closing/resetting a game finishes
+recording. NES snapshots version 14 include tape contents, transport state and
+the seek position. Version 13 tapes remain readable; older snapshots restore
+an idle recorder.

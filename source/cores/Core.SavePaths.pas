@@ -18,11 +18,11 @@ function ResolveGameSavePath(const Root, RomFileName, Hash, Extension: string): 
 implementation
 
 uses
-  System.SysUtils, System.IOUtils, System.StrUtils;
+  Core.Storage, System.SysUtils, System.IOUtils, System.StrUtils;
 
 function GetDocumentsDirectory: string;
 begin
-  Result := ResolveDocumentsDirectory(TPath.GetDocumentsPath, TPath.GetHomePath);
+  Result := TStorage.Default.Root;
 end;
 
 function ResolveDocumentsDirectory(const DocumentsPath, HomePath: string): string;
@@ -39,46 +39,17 @@ end;
 
 function GetSnapshotDirectory: string;
 begin
-  Result := TPath.Combine(GetDocumentsDirectory, 'snapshots');
+  Result := TStorage.Default.SnapshotRoot;
 end;
 
 function GetSaveDirectory: string;
 begin
-  Result := TPath.Combine(GetDocumentsDirectory, 'saves');
+  Result := TStorage.Default.SaveRoot;
 end;
 
 function ResolveGameSavePath(const Root, RomFileName, Hash, Extension: string): string;
 begin
-  Result := '';
-  if TDirectory.Exists(Root) then
-  begin
-    var Candidates: TArray<string>;
-    if Extension = '' then
-      Candidates := TDirectory.GetDirectories(Root)
-    else
-      Candidates := TDirectory.GetFiles(Root);
-    for var Path in Candidates do
-    begin
-      var Name := ExtractFileName(Path);
-      if SameText(Name, Hash + Extension) or EndsText('_' + Hash + Extension, Name) then
-      begin
-        if Result <> '' then
-          raise EInOutError.CreateFmt('Multiple saves for ROM %s in %s', [Hash, Root]);
-        Result := Path;
-      end;
-    end;
-  end;
-  if Result <> '' then
-    Exit;
-  var Title := ChangeFileExt(ExtractFileName(RomFileName), '').Trim;
-  // Use portable names even when moving saves between Android/Linux and Windows.
-  for var i := 1 to Length(Title) do
-    if (Ord(Title[i]) < 32) or CharInSet(Title[i], ['<', '>', ':', '"', '/', '\', '|', '?', '*']) then
-      Title[i] := '_';
-  Title := Copy(Title, 1, 80).Trim;
-  if Title = '' then
-    Title := 'Game';
-  Result := TPath.Combine(Root, Title + '_' + Hash + Extension);
+  Result := TStorage.Default.GamePath(Root, RomFileName, Hash, Extension);
 end;
 
 end.

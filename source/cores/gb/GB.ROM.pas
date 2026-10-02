@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Classes, System.SysUtils, GB.Cartridge;
+  System.Classes, System.SysUtils, GB.Cartridge, Core.RomFormat;
 
 type
   TCartridgeType = GB.Cartridge.TCartridgeType;
@@ -94,14 +94,11 @@ procedure TGBROM.ReadROM(Stream: TStream);
 begin
   if Stream = nil then
     raise EArgumentNilException.Create('ROM stream must not be nil.');
-  var DataSize: Int64 := Stream.Size;
+  var Data := ReadRomData(Stream);
+  var DataSize: Int64 := Length(Data);
   if (DataSize < $8000) or (DataSize > 8 * 1024 * 1024) or
     (DataSize mod $4000 <> 0) then
     raise EGBInvalidROM.CreateFmt('Invalid ROM length: %d bytes.', [DataSize]);
-  Stream.Position := 0;
-  var Data: TBytes;
-  SetLength(Data, Integer(DataSize));
-  Stream.ReadBuffer(Data[0], Length(Data));
   var ParsedCartridge: TGBCartridge := TGBCartridge.Create(Data);
   // Commit only after the whole stream and header have been read successfully.
   FCartridge.Free;

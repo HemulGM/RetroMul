@@ -1,9 +1,9 @@
-﻿unit RM.RomPicker.Android;
+unit RM.DocumentTransfer.Android;
 
 interface
 
 uses
-  System.Messaging, Androidapi.Jni, Androidapi.JNI.GraphicsContentViewText,
+  Core.Storage, System.Messaging, Androidapi.Jni, Androidapi.JNI.GraphicsContentViewText,
   Androidapi.JNI.Net;
 
 type
@@ -16,16 +16,20 @@ type
 
   // Activity results are asynchronous. A detached worker owns its import job;
   // it never captures the form/picker or queues callbacks to a destroyed owner.
-  TAndroidRomPicker = class
+  TAndroidDocumentTransfer = class
   private
     FWaiting, FReady: Boolean;
+    FForCassette: Boolean;
     FError: string;
+    FExportSource: string;
     FJob: IRomImport;
+    FStorage: IStorage;
     procedure ActivityResult(const Sender: TObject; const Message: TMessage);
   public
-    constructor Create;
+    constructor Create(const Storage: IStorage);
     destructor Destroy; override;
-    procedure Open;
+    procedure Import(const Uri: string; ForCassette: Boolean = False);
+    procedure Save(const SourceFile, SuggestedName: string);
     function Poll(out FileName, DisplayName, Error: string): Boolean;
     // Keep the private file alive until LoadRom has finished reading it.
     procedure Finish;
@@ -45,28 +49,35 @@ type
   TRomImport = class(TInterfacedObject, IRomImport)
   private
     FCancelled, FDone: Boolean;
+    FForCassette: Boolean;
+    FExporting: Boolean;
     FFileName, FDisplayName, FError: string;
+    FStorage: IStorage;
     function Cancelled: Boolean;
   public
-    constructor Create;
+    constructor Create(ForCassette: Boolean; const Storage: IStorage; const ExportSource: string = '');
     destructor Destroy; override;
     procedure Run(const Resolver: JContentResolver; const Uri: Jnet_Uri);
     procedure Cancel;
     function Snapshot(out FileName, DisplayName, Error: string): Boolean;
   end;
 
-constructor TRomImport.Create;
+constructor TRomImport.Create(ForCassette: Boolean; const Storage: IStorage; const ExportSource: string);
 begin
-  inherited;
-  FFileName := TPath.Combine(TPath.GetTempPath, TGUID.NewGuid.ToString + '.rom');
+  inherited Create;
+  FStorage := Storage;
+  FForCassette := ForCassette;
+  FFileName := FStorage.TemporaryFile('.tape');
   FDisplayName := 'Temp.rom';
+  FExporting := ExportSource <> '';
+  if FExporting then
+    FFileName := ExportSource;
 end;
 
 destructor TRomImport.Destroy;
 begin
   try
-    if TFile.Exists(FFileName) then
-      TFile.Delete(FFileName);
+    FStorage.Delete(FFileName);
   except
     // Cache eviction/cleanup must not raise during form or thread destruction.
   end;
@@ -101,6 +112,8 @@ begin
     if Result then
     begin
       FileName := FFileName;
+      if FExporting then
+        FileName := ''; // Export completion must not load a ROM.
       DisplayName := FDisplayName;
       Error := FError;
     end;
@@ -113,105 +126,97 @@ procedure TRomImport.Run(const Resolver: JContentResolver; const Uri: Jnet_Uri);
 begin
   try
     try
-      if Cancelled then
-        Exit;
-      // A provider URI is not a filesystem path. Metadata is only a UI label;
-      // never use an untrusted document name to build the private cache path.
-      try
-        var Cursor := Resolver.query(Uri, nil, nil, nil, nil);
-        if Cursor <> nil then
-        try
-          var Column := Cursor.getColumnIndex(StringToJString('_display_name'));
-          if (Column >= 0) and Cursor.moveToFirst then
-            FDisplayName := JStringToString(Cursor.getString(Column));
-        finally
-          Cursor.close;
-        end;
-      except
-        // Some document providers do not expose a display name.
+      if Cancelled then Exit;
+      var Location := JStringToString(Uri.toString);
+      if not FExporting then
+      begin
+        var Info := FStorage.Describe(Location);
+        FDisplayName := Info.Name;
+        if FForCassette and not SameText(ExtractFileExt(FDisplayName), '.tape') then
+          raise EReadError.Create('Choose a .tape cassette');
       end;
-      if Cancelled then
-        Exit;
-      var Extension := TPath.GetExtension(FDisplayName).ToLower;
-      if (Extension <> '.nes') and (Extension <> '.gb') and (Extension <> '.gbc') and
-        (Extension <> '.md') and (Extension <> '.gen') and (Extension <> '.bin') and (Extension <> '.smd') then
-        raise Exception.Create('Choose a .nes, .gb, .gbc, .md, .gen, .bin or .smd ROM');
-      FFileName := ChangeFileExt(FFileName, Extension);
-      var Input := Resolver.openInputStream(Uri);
-      if Input = nil then
-        raise Exception.Create('Cannot open the selected document');
-      try
-        var Output := TFileStream.Create(FFileName, fmCreate);
-        try
-          var Buffer := TJavaArray<Byte>.Create(64 * 1024);
-          try
-            while not Cancelled do
-            begin
-              var Count := Input.read(Buffer);
-              if Count = -1 then
-                Break;
-              if (Count <= 0) or (Count > Buffer.Length) then
-                raise Exception.Create('Document provider returned an invalid read');
-              if Output.Size + Count > MAX_ROM_IMPORT_BYTES then
-                raise Exception.Create('ROM exceeds the 64 MiB import limit');
-              Output.WriteBuffer(Buffer.Data^, Count);
-              Buffer.Sync;
-            end;
-          finally
-            Buffer.Free;
-          end;
-        finally
-          Output.Free;
-        end;
-      finally
-        Input.close;
+      var Input: TStream;
+      var Output: TStream;
+      if FExporting then
+      begin
+        Input := FStorage.OpenRead(FFileName);
+        try Output := FStorage.OpenWrite(Location); except Input.Free; raise; end;
+      end
+      else
+      begin
+        Input := FStorage.OpenRead(Location);
+        try Output := FStorage.OpenWrite(FFileName); except Input.Free; raise; end;
       end;
-    except
-      on E: Exception do
-        FError := E.Message;
-    end;
+      try
+        var Buffer: array[0..65535] of Byte;
+        var Total: Int64 := 0;
+        while not Cancelled do
+        begin
+          var Count := Input.Read(Buffer, SizeOf(Buffer));
+          if Count = 0 then Break;
+          Inc(Total, Count);
+          if Total > MAX_ROM_IMPORT_BYTES then raise EReadError.Create('Document exceeds 64 MiB');
+          Output.WriteBuffer(Buffer, Count);
+        end;
+      finally Output.Free; Input.Free; end;
+    except on E: Exception do FError := E.Message; end;
   finally
     TMonitor.Enter(Self);
-    try
-      FDone := True;
-    finally
-      TMonitor.Exit(Self);
-    end;
+    try FDone := True; finally TMonitor.Exit(Self); end;
   end;
 end;
 
-constructor TAndroidRomPicker.Create;
+constructor TAndroidDocumentTransfer.Create(const Storage: IStorage);
 begin
-  inherited;
+  inherited Create;
+  FStorage := Storage;
   TMessageManager.DefaultManager.SubscribeToMessage(TMessageResultNotification, ActivityResult);
 end;
 
-destructor TAndroidRomPicker.Destroy;
+destructor TAndroidDocumentTransfer.Destroy;
 begin
   TMessageManager.DefaultManager.Unsubscribe(TMessageResultNotification, ActivityResult);
   Finish;
   inherited;
 end;
 
-procedure TAndroidRomPicker.Open;
+procedure TAndroidDocumentTransfer.Import(const Uri: string; ForCassette: Boolean);
 begin
   if FWaiting or FReady or (FJob <> nil) then
-    Exit;
-  var Intent := TJIntent.JavaClass.init(TJIntent.JavaClass.ACTION_OPEN_DOCUMENT);
+    raise EInvalidOperation.Create('A document transfer is already active');
+  var Resolver := TAndroidHelper.Context.getContentResolver;
+  var DocumentUri := TJnet_Uri.JavaClass.parse(StringToJString(Uri));
+  var Job: IRomImport := TRomImport.Create(ForCassette, FStorage);
+  FJob := Job;
+  TThread.CreateAnonymousThread(
+    procedure
+    begin
+      Job.Run(Resolver, DocumentUri);
+    end).Start;
+end;
+
+procedure TAndroidDocumentTransfer.Save(const SourceFile, SuggestedName: string);
+begin
+  if FWaiting or FReady or (FJob <> nil) then
+    raise EInvalidOperation.Create('A file picker is already open');
+  FForCassette := True;
+  FExportSource := SourceFile;
+  var Intent := TJIntent.JavaClass.init(TJIntent.JavaClass.ACTION_CREATE_DOCUMENT);
   Intent.addCategory(TJIntent.JavaClass.CATEGORY_OPENABLE);
-  // .nes has no universally registered MIME type. Validate the file in the core.
-  Intent.setType(StringToJString('*/*'));
-  Intent.addFlags(TJIntent.JavaClass.FLAG_GRANT_READ_URI_PERMISSION);
+  Intent.setType(StringToJString('application/octet-stream'));
+  Intent.putExtra(TJIntent.JavaClass.EXTRA_TITLE, StringToJString(SuggestedName));
+  Intent.addFlags(TJIntent.JavaClass.FLAG_GRANT_WRITE_URI_PERMISSION);
   FWaiting := True;
   try
     TAndroidHelper.Activity.startActivityForResult(Intent, ROM_REQUEST_CODE);
   except
     FWaiting := False;
+    FExportSource := '';
     raise;
   end;
 end;
 
-procedure TAndroidRomPicker.ActivityResult(const Sender: TObject; const Message: TMessage);
+procedure TAndroidDocumentTransfer.ActivityResult(const Sender: TObject; const Message: TMessage);
 begin
   if not FWaiting or not (Message is TMessageResultNotification) then
     Exit;
@@ -228,8 +233,9 @@ begin
       raise Exception.Create('No document was returned by the file picker');
     var Uri := Notification.Value.getData;
     var Resolver := TAndroidHelper.Context.getContentResolver;
-    var Job: IRomImport := TRomImport.Create;
+    var Job: IRomImport := TRomImport.Create(FForCassette, FStorage, FExportSource);
     FJob := Job;
+    FExportSource := ''; // The job now owns the temporary export file.
     TThread.CreateAnonymousThread(
       procedure
       begin
@@ -244,7 +250,7 @@ begin
   end;
 end;
 
-function TAndroidRomPicker.Poll(out FileName, DisplayName, Error: string): Boolean;
+function TAndroidDocumentTransfer.Poll(out FileName, DisplayName, Error: string): Boolean;
 begin
   FileName := '';
   DisplayName := '';
@@ -256,11 +262,16 @@ begin
     Error := FError;
 end;
 
-procedure TAndroidRomPicker.Finish;
+procedure TAndroidDocumentTransfer.Finish;
 begin
   if FJob <> nil then
     FJob.Cancel;
   FJob := nil;
+  if FExportSource <> '' then
+  begin
+    FStorage.Delete(FExportSource);
+    FExportSource := '';
+  end;
   FReady := False;
   FError := '';
 end;

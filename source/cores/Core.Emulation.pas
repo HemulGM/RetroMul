@@ -3,7 +3,8 @@
 interface
 
 uses
-  System.UITypes, System.SysUtils, System.IniFiles, System.IOUtils, System.Math;
+  Core.Storage, System.UITypes, System.SysUtils, System.IniFiles, System.IOUtils,
+  System.Math;
 
 {$SCOPEDENUMS ON}
 
@@ -44,13 +45,14 @@ type
   TEmulatorConfigBase = class(TInterfacedObject, IEmulatorConfig)
   private
     FFileName: string;
+    FStorage: IStorage;
     FAudioEnabled: Boolean;
     FAudioVolume: Single;
     FFilter: string;
     FScale: Integer;
   protected
-    procedure LoadCoreSettings(Ini: TIniFile); virtual;
-    procedure SaveCoreSettings(Ini: TIniFile); virtual;
+    procedure LoadCoreSettings(Ini: TCustomIniFile); virtual;
+    procedure SaveCoreSettings(Ini: TCustomIniFile); virtual;
     function GetAudioEnabled: Boolean;
     procedure SetAudioEnabled(const Value: Boolean);
     function GetAudioVolume: Single;
@@ -61,7 +63,7 @@ type
     procedure SetScale(const Value: Integer);
     function GetFileName: string;
   public
-    constructor Create(const AFileName: string);
+    constructor Create(const AFileName: string; const Storage: IStorage = nil);
     procedure Load;
     procedure Save;
   end;
@@ -91,6 +93,9 @@ type
     procedure ClearInput;
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
+    // Read-only feedback for virtual controls. Call on the frontend thread,
+    // just like the input setters; implementations synchronize with workers.
+    function GetInputState: TEmulatorInput;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -107,14 +112,14 @@ type
 
 function EmulatorConfigFileName(const EmulatorId: string): string;
 
-function ReadEmulatorKey(Ini: TIniFile; const Section, Name: string; DefaultValue: UInt32): UInt32;
+function ReadEmulatorKey(Ini: TCustomIniFile; const Section, Name: string; DefaultValue: UInt32): UInt32;
 
 implementation
 
 uses
   Core.SavePaths;
 
-function ReadEmulatorKey(Ini: TIniFile; const Section, Name: string; DefaultValue: UInt32): UInt32;
+function ReadEmulatorKey(Ini: TCustomIniFile; const Section, Name: string; DefaultValue: UInt32): UInt32;
 begin
   var Value := Ini.ReadInteger(Section, Name, Integer(DefaultValue and $FFFF));
   if (Value < 0) or (Value > $FFFF) then
@@ -125,14 +130,17 @@ end;
 
 function EmulatorConfigFileName(const EmulatorId: string): string;
 begin
-  Result := TPath.Combine(GetDocumentsDirectory, EmulatorId + '.ini');
+  Result := TStorage.Default.ConfigFile(EmulatorId);
 end;
 
 { TEmulatorConfigBase }
 
-constructor TEmulatorConfigBase.Create(const AFileName: string);
+constructor TEmulatorConfigBase.Create(const AFileName: string; const Storage: IStorage);
 begin
   inherited Create;
+  FStorage := Storage;
+  if FStorage = nil then
+    FStorage := TStorage.Default;
   FFileName := AFileName;
   FAudioEnabled := True;
   FAudioVolume := 0.5;
@@ -167,9 +175,9 @@ end;
 
 procedure TEmulatorConfigBase.Load;
 begin
-  if TFile.Exists(FFileName) then
+  if FStorage.Exists(FFileName) then
   begin
-    var Ini := TIniFile.Create(FFileName);
+    var Ini := FStorage.ReadConfig(FFileName);
     try
       SetScale(Ini.ReadInteger('Video', 'Scale', FScale));
       FFilter := Ini.ReadString('Video', 'Filter', FFilter).Trim;
@@ -186,27 +194,27 @@ begin
     Save;
 end;
 
-procedure TEmulatorConfigBase.LoadCoreSettings(Ini: TIniFile);
+procedure TEmulatorConfigBase.LoadCoreSettings(Ini: TCustomIniFile);
 begin
 
 end;
 
 procedure TEmulatorConfigBase.Save;
 begin
-  TDirectory.CreateDirectory(ExtractFilePath(FFileName));
-  var Ini := TIniFile.Create(FFileName);
+  var Ini := FStorage.ReadConfig(FFileName);
   try
     Ini.WriteInteger('Video', 'Scale', FScale);
     Ini.WriteString('Video', 'Filter', FFilter);
     Ini.WriteBool('Audio', 'Enabled', FAudioEnabled);
     Ini.WriteFloat('Audio', 'Volume', FAudioVolume);
     SaveCoreSettings(Ini);
+    FStorage.WriteConfig(Ini);
   finally
     Ini.Free;
   end;
 end;
 
-procedure TEmulatorConfigBase.SaveCoreSettings(Ini: TIniFile);
+procedure TEmulatorConfigBase.SaveCoreSettings(Ini: TCustomIniFile);
 begin
 
 end;

@@ -5,11 +5,10 @@
         <FrameworkType>FMX</FrameworkType>
         <Base>True</Base>
         <Config Condition="'$(Config)'==''">Debug</Config>
-        <Platform Condition="'$(Platform)'==''">Win32</Platform>
+        <Platform Condition="'$(Platform)'==''">Linux64</Platform>
         <TargetedPlatforms>2790547</TargetedPlatforms>
         <AppType>Application</AppType>
         <MainSource>RetroMul.dpr</MainSource>
-        <ProjectName Condition="'$(ProjectName)'==''">RetroMul</ProjectName>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Config)'=='Base' or '$(Base)'!=''">
         <Base>true</Base>
@@ -163,7 +162,7 @@
         <Icon_MainIcon>$(BDS)\bin\delphi_PROJECTICON.ico</Icon_MainIcon>
         <Icns_MainIcns>$(BDS)\bin\delphi_PROJECTICNS.icns</Icns_MainIcns>
         <SanitizedProjectName>RetroMul</SanitizedProjectName>
-        <DCC_UnitSearchPath>..\source\cores;..\source\cores\md;..\source\cores\nes;..\source\cores\nes\mappers;..\source\cores\gb;..\source\cores\gbc;..\source\gamelist;..\source\PCM;DelphiWinUI3\Sources;DelphiWinUI3\DelphiWindowStyle;DelphiWinUI3\FMXWindowsDispatch;DelphiWinUI3\FMXWindowsHint;DelphiWinUI3\WindowsNotificationManager;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>devices;..\source\cores;..\source\cores\md;..\source\cores\nes;..\source\cores\nes\mappers;..\source\cores\gb;..\source\cores\gbc;..\source\gamelist;..\source\PCM;DelphiWinUI3\Sources;DelphiWinUI3\DelphiWindowStyle;DelphiWinUI3\FMXWindowsDispatch;DelphiWinUI3\FMXWindowsHint;DelphiWinUI3\WindowsNotificationManager;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Android)'!=''">
         <DCC_UsePackage>fmx;DbxCommonDriver;bindengine;IndyIPCommon;emsclient;IndyProtocols;dbxcds;FmxTeeUI;FireDACSqliteDriver;DbxClientDriver;soapmidas;dbexpress;inet;FireDACDBXDriver;CustomIPTransport;IndySystem;FireDACCommon;emsserverresource;bindcompdbx;rtl;DBXSqliteDriver;DataSnapFireDAC;FireDAC;xmlrtl;dsnap;DataSnapNativeClient;emshosting;FireDACCommonDriver;IndyIPClient;emsedge;bindcompfmx;fmxFireDAC;FMXAudioHGM;DataSnapCommon;fmxase;dbrtl;DBXInterBaseDriver;bindcomp;VLCPlayer;inetstn;IndyCore;RESTBackendComponents;RESTComponents;IndyIPServer;dsnapxml;DataSnapClient;DataSnapProviderClient;emsclientfiredac;FireDACDSDriver;tethering;CloudService;FMXTee;soaprtl;soapserver;FireDACIBDriver;$(DCC_UsePackage)</DCC_UsePackage>
@@ -422,13 +421,24 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
-        <DCCReference Include="RM.Gamepad.pas"/>
-        <DCCReference Include="NES.SuborKeyboard.pas"/>
+        <DCCReference Include="FMX.OpenDialog.pas"/>
+        <DCCReference Include="..\source\cores\Core.Storage.pas"/>
+        <DCCReference Include="..\source\cores\Core.RomFormat.pas"/>
+        <DCCReference Include="RM.Storage.Dialogs.pas"/>
+        <DCCReference Include="devices\RM.Gamepad.pas"/>
+        <DCCReference Include="devices\RM.TouchInput.Android.pas"/>
+        <DCCReference Include="devices\NES.SuborKeyboard.pas"/>
+        <DCCReference Include="devices\NES.FamicomKeyboard.pas"/>
+        <DCCReference Include="..\source\cores\nes\NES.FamicomKeyboardDevice.pas"/>
+        <DCCReference Include="..\source\cores\nes\NES.FamicomDataRecorder.pas"/>
+        <DCCReference Include="devices\NES.PowerPad.pas"/>
+        <DCCReference Include="devices\NES.DataRecorder.pas"/>
         <DCCReference Include="RM.Main.pas">
             <Form>FormMain</Form>
         </DCCReference>
-        <DCCReference Include="RM.RomPicker.Android.pas"/>
+        <DCCReference Include="RM.DocumentTransfer.Android.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.Android.AudioTrack.pas"/>
+        <DCCReference Include="DelphiWinUI3\Fixes\D13\FMX.Platform.Win.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.Windows.MMSystem.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.Linux.Alsa.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.Apple.AudioQueue.pas"/>
@@ -522,7 +532,6 @@
         <DCCReference Include="DelphiWinUI3\FMXWindowsHint\FMX.Windows.Hints.pas"/>
         <DCCReference Include="HGM.FMX.Image.pas"/>
         <DCCReference Include="..\source\cores\Core.SavePaths.pas"/>
-        <DCCReference Include="RM.FolderPicker.Android.pas"/>
         <DCCReference Include="..\source\cores\md\MD.Emulation.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>

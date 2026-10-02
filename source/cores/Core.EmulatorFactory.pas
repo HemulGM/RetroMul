@@ -3,31 +3,52 @@
 interface
 
 uses
-  System.SysUtils, System.IOUtils, Core.Emulation;
+  System.Classes, System.SysUtils, Core.Storage, Core.Emulation;
 
-function CreateEmulationCore(const FileName: string): IEmulationCore;
+function CreateEmulationCore(const FileName: string): IEmulationCore; overload;
+
+// The caller owns Stream. Construction copies and validates its remaining bytes.
+function CreateEmulationCore(Stream: TStream; const Storage: IStorage; const RomName: string = ''): IEmulationCore; overload;
 
 implementation
 
 uses
-  Core.Adapter.NES, Core.Adapter.GB, Core.Adapter.GBC, Core.Adapter.MD;
+  Core.RomFormat, Core.Adapter.NES, Core.Adapter.GB, Core.Adapter.GBC,
+  Core.Adapter.MD;
 
 function CreateEmulationCore(const FileName: string): IEmulationCore;
-var
-  Extension: string;
 begin
-  Extension := TPath.GetExtension(FileName).ToLower;
-  if Extension = '.nes' then
-    Result := TNesCoreAdapter.Create(FileName)
-  else if Extension = '.gb' then
-    Result := TGBCoreAdapter.Create(FileName)
-  else if Extension = '.gbc' then
-    Result := TGBCCoreAdapter.Create(FileName)
-  else if (Extension = '.md') or (Extension = '.gen') or
-    (Extension = '.bin') or (Extension = '.smd') then
-    Result := TMDCoreAdapter.Create(FileName)
-  else
-    raise Exception.Create('Unsupported ROM type. Choose .nes, .gb, .gbc, .md, .gen, .bin or .smd');
+  var Storage := TStorage.Default;
+  var Stream := Storage.OpenRead(FileName);
+  try
+    Result := CreateEmulationCore(Stream, Storage, FileName);
+  finally
+    Stream.Free;
+  end;
+end;
+
+function CreateEmulationCore(Stream: TStream; const Storage: IStorage; const RomName: string): IEmulationCore;
+begin
+  var Data := ReadRomData(Stream);
+  var Format := DetectRom(Data);
+  if Format.System = TRomSystem.Unknown then
+    raise EReadError.Create('Unrecognized ROM header (NES, Game Boy, Game Boy Color or Mega Drive expected)');
+  Data := NormalizeRom(Data, Format);
+  var Input := TBytesStream.Create(Data);
+  try
+    case Format.System of
+      TRomSystem.NES:
+        Result := TNesCoreAdapter.Create(Input, Storage, RomName);
+      TRomSystem.GB:
+        Result := TGBCoreAdapter.Create(Input, Storage, RomName);
+      TRomSystem.GBC:
+        Result := TGBCCoreAdapter.Create(Input, Storage, RomName);
+      TRomSystem.MD:
+        Result := TMDCoreAdapter.Create(Input, Storage, RomName);
+    end;
+  finally
+    Input.Free;
+  end;
 end;
 
 end.

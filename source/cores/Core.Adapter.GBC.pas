@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Classes, System.IniFiles, Core.Emulation, GBC.EmulationThread,
+  System.Classes, System.IniFiles, Core.Storage, Core.Emulation, GBC.EmulationThread,
   GBC.Joypad;
 
 type
@@ -22,10 +22,10 @@ type
   private
     FKeys: TGBCKeyMap;
   protected
-    procedure LoadCoreSettings(Ini: TIniFile); override;
-    procedure SaveCoreSettings(Ini: TIniFile); override;
+    procedure LoadCoreSettings(Ini: TCustomIniFile); override;
+    procedure SaveCoreSettings(Ini: TCustomIniFile); override;
   public
-    constructor Create(const AFileName: string);
+    constructor Create(const AFileName: string; const Storage: IStorage = nil);
     function GetKeys: TGBCKeyMap;
     procedure SetKeys(const Value: TGBCKeyMap);
   end;
@@ -34,6 +34,7 @@ type
   private
     FThread: TGBCEmulationThread;
     FSnapshotDirectory: string;
+    FStorage: IStorage;
     FROMData: TArray<Byte>;
     FGamepadInput: TEmulatorInput;
     FKeyboardInput: TEmulatorInput;
@@ -45,7 +46,8 @@ type
     function GetSupportsSnapshots: Boolean;
     function GetUsesSuborKeyboard: Boolean;
   public
-    constructor Create(const FileName: string);
+    constructor Create(const FileName: string); overload;
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string); overload;
     destructor Destroy; override;
     function GetHasCoinAcceptor: Boolean;
     procedure InsertCoin1;
@@ -59,6 +61,7 @@ type
     procedure ClearInput;
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
+    function GetInputState: TEmulatorInput;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -75,31 +78,35 @@ uses
 
 constructor TGBCCoreAdapter.Create(const FileName: string);
 begin
+  var Storage := TStorage.Default;
+  var Stream := Storage.OpenRead(FileName);
+  try Create(Stream, Storage, FileName); finally Stream.Free; end;
+end;
+
+constructor TGBCCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
+begin
   inherited Create;
-  FConfig := TGBCEmulatorConfig.Create(EmulatorConfigFileName('gbc'));
+  FStorage := Storage;
+  if FStorage = nil then FStorage := TStorage.Default;
+  FConfig := TGBCEmulatorConfig.Create(FStorage.ConfigFile('gbc'), FStorage);
   FConfig.Load;
   var ROM := TGBCROM.Create;
   try
-    var Stream := TFileStream.Create(FileName, fmOpenRead or fmShareDenyWrite);
-    try
-      ROM.ReadROM(Stream);
-    finally
-      Stream.Free;
-    end;
+    ROM.ReadROM(Stream);
     FROMData := ROM.ROMData;
     // Validate mapper support before the frontend replaces the active session.
     TGBCMBC.Create(ROM).Free;
   finally
     ROM.Free;
   end;
-  FSnapshotDirectory := ResolveGameSavePath(GetSnapshotDirectory, FileName,
-    'GBC-' + SnapshotIdentity(FROMData), '');
+  FSnapshotDirectory := FStorage.GameSnapshots('gbc', RomName, SnapshotIdentity(FROMData));
   CreateThread;
 end;
 
 procedure TGBCCoreAdapter.CreateThread;
 begin
   FThread := TGBCEmulationThread.Create(FROMData, FConfig.AudioEnabled);
+  FThread.Storage := FStorage;
   FThread.SnapshotDirectory := FSnapshotDirectory;
   FThread.SoundVolume := FConfig.AudioVolume;
 end;
@@ -109,6 +116,13 @@ begin
   Stop;
   FThread.Free;
   inherited;
+end;
+
+function TGBCCoreAdapter.GetInputState: TEmulatorInput;
+begin
+  Result := Default(TEmulatorInput);
+  Result.Buttons := (FGamepadInput.Buttons + FKeyboardInput.Buttons) *
+    [TEmulatorButton.Up..TEmulatorButton.Start];
 end;
 
 procedure TGBCCoreAdapter.ApplyInput;
@@ -293,9 +307,9 @@ end;
 
 { TGBCEmulatorConfig }
 
-constructor TGBCEmulatorConfig.Create(const AFileName: string);
+constructor TGBCEmulatorConfig.Create(const AFileName: string; const Storage: IStorage);
 begin
-  inherited Create(AFileName);
+  inherited Create(AFileName, Storage);
   FKeys.A := vkZ;
   FKeys.B := vkX;
   FKeys.Select := vkSpace;
@@ -306,7 +320,7 @@ begin
   FKeys.Right := vkRight;
 end;
 
-procedure TGBCEmulatorConfig.LoadCoreSettings(Ini: TIniFile);
+procedure TGBCEmulatorConfig.LoadCoreSettings(Ini: TCustomIniFile);
 begin
   FKeys.A := ReadEmulatorKey(Ini, 'Controls', 'A', FKeys.A);
   FKeys.B := ReadEmulatorKey(Ini, 'Controls', 'B', FKeys.B);
@@ -318,7 +332,7 @@ begin
   FKeys.Right := ReadEmulatorKey(Ini, 'Controls', 'Right', FKeys.Right);
 end;
 
-procedure TGBCEmulatorConfig.SaveCoreSettings(Ini: TIniFile);
+procedure TGBCEmulatorConfig.SaveCoreSettings(Ini: TCustomIniFile);
 begin
   Ini.WriteInteger('Controls', 'A', FKeys.A);
   Ini.WriteInteger('Controls', 'B', FKeys.B);

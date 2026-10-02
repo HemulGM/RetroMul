@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.Snapshots, System.Classes, System.SyncObjs, System.Generics.Collections,
+  Core.Storage, Core.Snapshots, System.Classes, System.SyncObjs, System.Generics.Collections,
   System.Diagnostics, GB.Joypad, GB.GPU;
 
 type
@@ -17,6 +17,7 @@ type
   private
     FSnapshots: TSnapshotQueue;
     FSnapshotDirectory: string;
+    FStorage: IStorage;
     FROMData: TArray<Byte>;
     FEnableAudio: Boolean;
     FLock: TCriticalSection;
@@ -43,6 +44,7 @@ type
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     property SnapshotDirectory: string read FSnapshotDirectory write FSnapshotDirectory;
+    property Storage: IStorage read FStorage write FStorage;
     procedure RequestStop;
     procedure RequestPause;
     procedure RequestResume;
@@ -62,13 +64,14 @@ uses
 
 constructor TGBEmulationThread.Create(const FileName: string; EnableAudio: Boolean);
 begin
-  Create(TFile.ReadAllBytes(FileName), EnableAudio);
+  Create(TStorage.Default.ReadBytes(FileName), EnableAudio);
 end;
 
 constructor TGBEmulationThread.Create(const ROMData: TArray<Byte>; EnableAudio: Boolean);
 begin
   inherited Create(True);
   FreeOnTerminate := False;
+  FStorage := TStorage.Default;
   FROMData := Copy(ROMData);
   FEnableAudio := EnableAudio;
   FSoundVolume := 0.5;
@@ -281,7 +284,7 @@ begin
             end;
             if Loading then
             begin
-              LoadCoreSnapshot(Path, 'GB', FROMData, Transfer);
+              LoadCoreSnapshot(Path, 'GB', FROMData, Transfer, FStorage);
               if Sound.Audio <> nil then Sound.Audio.Clear;
               // Host key state is authoritative after restoring the emulated JOYP.
               FLock.Acquire;
@@ -298,8 +301,8 @@ begin
             end
             else
             begin
-              SaveCoreSnapshot(Path, 'GB', FROMData, Transfer);
-              SaveSnapshotPreview(Path, 160, 144, 160, @GPU.Screen[0]);
+              SaveCoreSnapshot(Path, 'GB', FROMData, Transfer, FStorage);
+              SaveSnapshotPreview(Path, 160, 144, 160, @GPU.Screen[0], FStorage);
             end;
             StartCycles := CPU.Cycles;
             Stopwatch := TStopwatch.StartNew;

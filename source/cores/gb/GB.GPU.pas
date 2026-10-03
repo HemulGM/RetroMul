@@ -40,8 +40,9 @@ type
   TGBSprites = array[0..39] of TSprite;
 
 type
-  TGBGPU = class
-  private
+  // Shared bus and clock contract; each renderer retains its own state layout.
+  TGBVideo = class abstract
+  protected
     FDrawCallback: TDrawCallback;
     FCurrentMode: TGPUMode;
     FWindowLine: Integer;
@@ -52,7 +53,6 @@ type
     FVBlankInterruptEnabled: Boolean;
     FHBlankInterruptEnabled: Boolean;
     FLineMatchesLYC: Boolean;
-
     FLCDEnabled: Boolean;
     FWindowTileMapHigh: Boolean;
     FWindowEnabled: Boolean;
@@ -61,13 +61,8 @@ type
     FTallSprites: Boolean;
     FSpritesEnabled: Boolean;
     FBackgroundEnabled: Boolean;
+    FInterruptManager: TGBInterruptManager;
     function GetSpriteHeight: Integer;
-
-    procedure RenderScanLine;
-    procedure RenderWindow(var ScanlineRow: TScanlineRow);
-    procedure RenderBackground(var ScanlineRow: TScanlineRow);
-    procedure RenderSprites(const ScanlineRow: TScanlineRow);
-
   public
     ModeClock: Integer;
     Width, Height: Integer;
@@ -75,59 +70,54 @@ type
     ScrollX, ScrollY: Integer;
     WindowX, WindowY: Integer;
     VRAM: array[0..$2000 - 1] of Integer;
-    TileSet: array[0..383, 0..15, 0..7] of Integer;
     Screen: TScreenArray;
     BackgroundPalette: array[0..3] of Integer;
     SpritePalette: array[0..1, 0..3] of Integer;
     Palette: array[0..3] of Integer;
+    procedure ProcessLCDStatus;
+    constructor Create(Callback: TDrawCallback; InterruptManager: TGBInterruptManager);
+    procedure Step(Cycle: Integer); virtual; abstract;
+    function GetLCDStatus: Integer;
+    procedure SetLCDStatus(Value: Integer);
+    procedure SetLCDControl(Value: Integer);
+    function GetLCDControl: Integer;
+    procedure BuildSprite(Address, Value: Integer); virtual; abstract;
+    function ReadVRAM(Address: Integer): Byte; virtual; abstract;
+    procedure WriteVRAM(Address: Integer; Value: Byte); virtual; abstract;
+    function CanAccessVRAM: Boolean; virtual; abstract;
+    procedure SerializeState(State: TStateArchive); virtual; abstract;
+  end;
+
+  TGBGPU = class(TGBVideo)
+  private
+    procedure RenderScanLine;
+    procedure RenderWindow(var ScanlineRow: TScanlineRow);
+    procedure RenderBackground(var ScanlineRow: TScanlineRow);
+    procedure RenderSprites(const ScanlineRow: TScanlineRow);
+
+  public
+    TileSet: array[0..383, 0..15, 0..7] of Integer;
 
     SpriteList: TGBSprites;
 
-    procedure Step(Cycle: Integer);
+    procedure Step(Cycle: Integer); override;
 
-    function GetLCDStatus: Integer;
-    procedure SetLCDStatus(Value: Integer);
-    procedure ProcessLCDStatus;
-
-    procedure SetLCDControl(Value: Integer);
-    function GetLCDControl: Integer;
-
+    function ReadVRAM(Address: Integer): Byte; override;
+    procedure WriteVRAM(Address: Integer; Value: Byte); override;
+    function CanAccessVRAM: Boolean; override;
     procedure UpdateTile(Address: Integer);
-    procedure BuildSprite(Address, Value: Integer);
+    procedure BuildSprite(Address, Value: Integer); override;
 
     constructor Create(Callback: TDrawCallback); reintroduce;
-    procedure SerializeState(State: TStateArchive);
+    procedure SerializeState(State: TStateArchive); override;
   end;
 
 implementation
 
-{ TGBGPU }
-
-procedure TGBGPU.BuildSprite(Address, Value: Integer);
+constructor TGBVideo.Create(Callback: TDrawCallback; InterruptManager: TGBInterruptManager);
 begin
-  var SpriteNumber: Integer := Address shr 2;
-  if SpriteNumber >= 40 then
-    Exit;
-
-  case Address and $3 of
-    0: // Y-coordinate
-      SpriteList[SpriteNumber].Y := Value - 16;
-    1: // X-coordinate
-      SpriteList[SpriteNumber].X := Value - 8;
-    2: // Data tile
-      SpriteList[SpriteNumber].TileNumber := Value;
-    3: // Options
-      begin
-        SpriteList[SpriteNumber].IsPalette1 := (Value and $10) <> 0;
-        SpriteList[SpriteNumber].IsXFlip := (Value and $20) <> 0;
-        SpriteList[SpriteNumber].IsYFlip := (Value and $40) <> 0;
-        SpriteList[SpriteNumber].BelowBackground := (Value and $80) <> 0;
-      end;
-  end;
-end;
-
-constructor TGBGPU.Create(Callback: TDrawCallback);
-begin
+  inherited Create;
+  FInterruptManager := InterruptManager;
   FDrawCallback := Callback;
   Width := 160;
   Height := 144;
@@ -170,21 +160,17 @@ begin
   ModeClock := 0;
   FCurrentMode := TGPUMode.OAMAccess;
   SetLCDControl($91);
-
-  for var I := 0 to 39 do
-    with SpriteList[I] do
-    begin
-      Y := -16; // Y-coordinate of top-left corner, (Value stored is Y-coordinate minus 16)
-      X := -8;  // X-coordinate of top-left corner, (Value stored is X-coordinate minus 8)
-      TileNumber := 0;
-      BelowBackground := False; // false = above background, true = below background
-      IsYFlip := False;
-      IsXFlip := False;
-      IsPalette1 := False; // false = palette 0, true = palette 1
-    end;
 end;
 
-function TGBGPU.GetLCDControl: Integer;
+function TGBVideo.GetSpriteHeight: Integer;
+begin
+  if FTallSprites then
+    Result := 16
+  else
+    Result := 8;
+end;
+
+function TGBVideo.GetLCDControl: Integer;
 begin
   Result :=
     (Ord(FLCDEnabled) shl 7) or
@@ -196,15 +182,18 @@ begin
     (Ord(FSpritesEnabled) shl 1) or Ord(FBackgroundEnabled);
 end;
 
-function TGBGPU.GetSpriteHeight: Integer;
+function TGBVideo.GetLCDStatus: Integer;
 begin
-  if FTallSprites then
-    Result := 16
-  else
-    Result := 8;
+  // Bit 7 is unused and always reads as 1.
+  Result := $80 or
+    (Ord(FLYCInterruptEnabled) shl 6) or
+    (Ord(FOAMInterruptEnabled) shl 5) or
+    (Ord(FVBlankInterruptEnabled) shl 4) or
+    (Ord(FHBlankInterruptEnabled) shl 3) or
+    (Ord(Line = LYC) shl 2) or Ord(FCurrentMode);
 end;
 
-procedure TGBGPU.SetLCDControl(Value: Integer);
+procedure TGBVideo.SetLCDControl(Value: Integer);
 begin
   var NewLCDEnable: Boolean := Value and $80 <> 0;
   var NewWndTileMapDisplaySelect: Boolean := Value and $40 <> 0;
@@ -241,18 +230,19 @@ begin
   FBackgroundEnabled := NewBGWndDisplayPriority;
 end;
 
-function TGBGPU.GetLCDStatus: Integer;
+procedure TGBVideo.SetLCDStatus(Value: Integer);
 begin
-  // Bit 7 is unused and always reads as 1.
-  Result := $80 or
-    (Ord(FLYCInterruptEnabled) shl 6) or
-    (Ord(FOAMInterruptEnabled) shl 5) or
-    (Ord(FVBlankInterruptEnabled) shl 4) or
-    (Ord(FHBlankInterruptEnabled) shl 3) or
-    (Ord(Line = LYC) shl 2) or Ord(FCurrentMode);
+  // bit 6 is ly==lyc enable
+  FLYCInterruptEnabled := (Value and $40) <> 0;
+  // bit 5 is mode 2 enable
+  FOAMInterruptEnabled := (Value and $20) <> 0;
+  // bit 4 is mode 1 enable
+  FVBlankInterruptEnabled := (Value and $10) <> 0;
+  // bit 3 is mode 0 enable
+  FHBlankInterruptEnabled := (Value and $8) <> 0;
 end;
 
-procedure TGBGPU.ProcessLCDStatus;
+procedure TGBVideo.ProcessLCDStatus;
 begin
   if not FLCDEnabled then
   begin
@@ -269,23 +259,70 @@ begin
     if not FSTATLineActive then
     begin
       FSTATLineActive := True;
-      TGBInterruptManager.Instance.RaiseInterruptByIndex(3); // LCDC_STATUS
+      FInterruptManager.RaiseInterruptByIndex(3); // LCDC_STATUS
     end;
   end
   else
     FSTATLineActive := False;
 end;
 
-procedure TGBGPU.SetLCDStatus(Value: Integer);
+function TGBGPU.ReadVRAM(Address: Integer): Byte;
 begin
-  // bit 6 is ly==lyc enable
-  FLYCInterruptEnabled := (Value and $40) <> 0;
-  // bit 5 is mode 2 enable
-  FOAMInterruptEnabled := (Value and $20) <> 0;
-  // bit 4 is mode 1 enable
-  FVBlankInterruptEnabled := (Value and $10) <> 0;
-  // bit 3 is mode 0 enable
-  FHBlankInterruptEnabled := (Value and $8) <> 0;
+  Result := VRAM[Address and $1FFF];
+end;
+
+procedure TGBGPU.WriteVRAM(Address: Integer; Value: Byte);
+begin
+  Address := Address and $1FFF;
+  VRAM[Address] := Value;
+  if Address <= $17FF then
+    UpdateTile(Address);
+end;
+
+function TGBGPU.CanAccessVRAM: Boolean;
+begin
+  Result := True;
+end;
+
+{ TGBGPU }
+
+procedure TGBGPU.BuildSprite(Address, Value: Integer);
+begin
+  var SpriteNumber: Integer := Address shr 2;
+  if SpriteNumber >= 40 then
+    Exit;
+
+  case Address and $3 of
+    0: // Y-coordinate
+      SpriteList[SpriteNumber].Y := Value - 16;
+    1: // X-coordinate
+      SpriteList[SpriteNumber].X := Value - 8;
+    2: // Data tile
+      SpriteList[SpriteNumber].TileNumber := Value;
+    3: // Options
+      begin
+        SpriteList[SpriteNumber].IsPalette1 := (Value and $10) <> 0;
+        SpriteList[SpriteNumber].IsXFlip := (Value and $20) <> 0;
+        SpriteList[SpriteNumber].IsYFlip := (Value and $40) <> 0;
+        SpriteList[SpriteNumber].BelowBackground := (Value and $80) <> 0;
+      end;
+  end;
+end;
+
+constructor TGBGPU.Create(Callback: TDrawCallback);
+begin
+  inherited Create(Callback, TGBInterruptManager.Instance);
+  for var I := 0 to 39 do
+    with SpriteList[I] do
+    begin
+      Y := -16; // Y-coordinate of top-left corner, (Value stored is Y-coordinate minus 16)
+      X := -8;  // X-coordinate of top-left corner, (Value stored is X-coordinate minus 8)
+      TileNumber := 0;
+      BelowBackground := False; // false = above background, true = below background
+      IsYFlip := False;
+      IsXFlip := False;
+      IsPalette1 := False; // false = palette 0, true = palette 1
+    end;
 end;
 
 procedure TGBGPU.RenderBackground(var ScanlineRow: TScanlineRow);
@@ -463,7 +500,7 @@ begin
           if Line = 144 then
           begin
             FCurrentMode := TGPUMode.VBlank;
-            TGBInterruptManager.Instance.RaiseInterruptByIndex(4);
+            FInterruptManager.RaiseInterruptByIndex(4);
             ProcessLCDStatus;
             if Assigned(FDrawCallback) then
               FDrawCallback(Screen);
@@ -515,7 +552,6 @@ begin
   end;
 end;
 
-
 procedure TGBGPU.SerializeState(State: TStateArchive);
 begin
   State.Field(FCurrentMode, SizeOf(FCurrentMode));
@@ -554,3 +590,4 @@ begin
 end;
 
 end.
+

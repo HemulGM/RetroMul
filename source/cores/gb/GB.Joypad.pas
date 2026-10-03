@@ -17,12 +17,13 @@ type
       FInstance: TGBJoypad;
     class function GetInstance: TGBJoypad; static;
   private
+    FInterruptManager: TGBInterruptManager;
     FPressed: set of TGBKey;
     FSelection: Integer;
     procedure CheckInterrupt(Previous: Integer);
   public
     KeyBindings: array[TGBKey] of Integer;
-    constructor Create; overload;
+    constructor Create(AInterruptManager: TGBInterruptManager = nil); overload;
     function GetPressedKeys: Integer;
     procedure SetSelection(Value: Integer);
     procedure KeyDown(Key: Integer);
@@ -39,9 +40,12 @@ uses
 
 { TGBJoypad }
 
-constructor TGBJoypad.Create;
+constructor TGBJoypad.Create(AInterruptManager: TGBInterruptManager);
 begin
-  inherited;
+  FInterruptManager := AInterruptManager;
+  if FInterruptManager = nil then
+    FInterruptManager := TGBInterruptManager.Instance;
+  inherited Create;
   FSelection := $30;
 
   KeyBindings[TGBKey.Up] := vkW;
@@ -58,7 +62,7 @@ end;
 procedure TGBJoypad.CheckInterrupt(Previous: Integer);
 begin
   if (Previous and not GetPressedKeys and $0F) <> 0 then
-    TGBInterruptManager.Instance.RaiseInterruptByIndex(0);
+    FInterruptManager.RaiseInterruptByIndex(0);
 end;
 
 procedure TGBJoypad.KeyDown(Key: Integer);
@@ -123,7 +127,6 @@ begin
   CheckInterrupt(Previous);
 end;
 
-
 procedure TGBJoypad.SerializeState(State: TStateArchive);
 begin
   State.Field(FPressed, SizeOf(FPressed));
@@ -131,3 +134,4 @@ begin
 end;
 
 end.
+

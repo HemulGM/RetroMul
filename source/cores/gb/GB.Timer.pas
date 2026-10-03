@@ -12,13 +12,14 @@ type
       FInstance: TGBTimer;
     class function GetInstance: TGBTimer; static;
   private
+    FInterruptManager: TGBInterruptManager;
     FDivider, FControl, FModulo, FCounter, FTicksSinceOverflow: Integer;
     FPreviousBit, FOverflow: Boolean;
     FFrequencyBits: array[0..3] of Integer;
     procedure IncrementCounter;
     procedure UpdateDivider(NewDivider: Integer);
   public
-    constructor Create; overload;
+    constructor Create(AInterruptManager: TGBInterruptManager = nil); overload;
     procedure Step(StepCount: Integer);
     procedure Tick;
     procedure ClearDivider;
@@ -44,8 +45,11 @@ begin
   UpdateDivider(0);
 end;
 
-constructor TGBTimer.Create;
+constructor TGBTimer.Create(AInterruptManager: TGBInterruptManager);
 begin
+  FInterruptManager := AInterruptManager;
+  if FInterruptManager = nil then
+    FInterruptManager := TGBInterruptManager.Instance;
   FFrequencyBits[0] := 9;
   FFrequencyBits[1] := 3;
   FFrequencyBits[2] := 5;
@@ -105,12 +109,10 @@ procedure TGBTimer.SetControl(Value: Integer);
 begin
   // Changing the enabled divider input can clock TIMA without a CPU tick.
   var OldBitPosition := FFrequencyBits[FControl and 3];
-  var OldTimerBit := ((FDivider and (1 shl OldBitPosition)) <> 0) and
-    ((FControl and 4) <> 0);
+  var OldTimerBit := ((FDivider and (1 shl OldBitPosition)) <> 0) and ((FControl and 4) <> 0);
   FControl := Value and 7;
   var NewBitPosition := FFrequencyBits[FControl and 3];
-  var NewTimerBit := ((FDivider and (1 shl NewBitPosition)) <> 0) and
-    ((FControl and 4) <> 0);
+  var NewTimerBit := ((FDivider and (1 shl NewBitPosition)) <> 0) and ((FControl and 4) <> 0);
   if OldTimerBit and not NewTimerBit then
     IncrementCounter;
   FPreviousBit := NewTimerBit;
@@ -137,7 +139,7 @@ end;
 
 procedure TGBTimer.Step(StepCount: Integer);
 begin
-  for var I := 0 to StepCount - 1 do
+  for var i := 0 to StepCount - 1 do
     Tick;
 end;
 
@@ -148,7 +150,7 @@ begin
     Exit;
   Inc(FTicksSinceOverflow);
   if FTicksSinceOverflow = 4 then
-    TGBInterruptManager.Instance.RaiseInterruptByIndex(2); // 'TIMER_OVERFLOW';
+    FInterruptManager.RaiseInterruptByIndex(2); // 'TIMER_OVERFLOW';
   if FTicksSinceOverflow = 5 then
     FCounter := FModulo;
   if FTicksSinceOverflow = 6 then
@@ -169,7 +171,6 @@ begin
   FPreviousBit := TimerBit;
 end;
 
-
 procedure TGBTimer.SerializeState(State: TStateArchive);
 begin
   State.Field(FDivider, SizeOf(FDivider));
@@ -183,3 +184,4 @@ begin
 end;
 
 end.
+

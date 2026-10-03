@@ -3,13 +3,10 @@
 interface
 
 uses
-  System.Classes, System.IniFiles, Core.Storage, Core.Emulation, GBC.EmulationThread,
-  GBC.Joypad;
+  System.IniFiles, Core.Emulation, Core.Adapter.GB, GB.EmulationThread, GB.GPU;
 
 type
-  TGBCKeyMap = record
-    A, B, Select, Start, Up, Down, Left, Right: UInt32;
-  end;
+  TGBCKeyMap = Core.Adapter.GB.TGBKeyMap;
 
   IGBCEmulatorConfig = interface(IEmulatorConfig)
     ['{A222ECCD-315C-49EF-8B71-E25A2369E045}']
@@ -18,129 +15,45 @@ type
     property Keys: TGBCKeyMap read GetKeys write SetKeys;
   end;
 
-  TGBCEmulatorConfig = class(TEmulatorConfigBase, IGBCEmulatorConfig)
-  private
-    FKeys: TGBCKeyMap;
+  TGBCEmulatorConfig = class(TGBEmulatorConfig, IGBCEmulatorConfig)
   protected
     procedure LoadCoreSettings(Ini: TCustomIniFile); override;
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
-  public
-    constructor Create(const AFileName: string; const Storage: IStorage = nil);
-    function GetKeys: TGBCKeyMap;
-    procedure SetKeys(const Value: TGBCKeyMap);
   end;
 
-  TGBCCoreAdapter = class(TInterfacedObject, IEmulationCore)
-  private
-    FThread: TGBCEmulationThread;
-    FSnapshotDirectory: string;
-    FStorage: IStorage;
-    FROMData: TArray<Byte>;
-    FGamepadInput: TEmulatorInput;
-    FKeyboardInput: TEmulatorInput;
-    FConfig: IGBCEmulatorConfig;
-    FFrameNumber: UInt64;
-    procedure CreateThread;
-    procedure ApplyInput;
-    function GetName: string;
-    function GetSupportsSnapshots: Boolean;
-    function GetUsesSuborKeyboard: Boolean;
-  public
-    constructor Create(const FileName: string); overload;
-    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string); overload;
-    destructor Destroy; override;
-    function GetHasCoinAcceptor: Boolean;
-    procedure InsertCoin1;
-    procedure InsertCoin2;
-    property HasCoinAcceptor: Boolean read GetHasCoinAcceptor;
-    procedure Start;
-    procedure Stop;
-    procedure Pause;
-    procedure Resume;
-    procedure Reset;
-    procedure ClearInput;
-    procedure SetKeyState(Code: UInt32; Pressed: Boolean);
-    procedure SetGamepadInput(const Input: TEmulatorInput);
-    function GetInputState: TEmulatorInput;
-    procedure SaveSnapshot(const Name: string);
-    procedure LoadSnapshot(const Name: string);
-    function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
-    function TakeError: string;
-    function GetConfig: IEmulatorConfig;
-    function IsPaused: Boolean;
+  TGBCCoreAdapter = class(TGBCoreAdapter)
+  protected
+    function ConfigPrefix: string; override;
+    function CreateConfig(const FileName: string): IGBEmulatorConfig; override;
+    function CreateWorker: TGBEmulationThread; override;
+    procedure CopyFrame(const Screen: TScreenArray; var Frame: TEmulatorFrame); override;
+    function GetName: string; override;
   end;
 
 implementation
 
 uses
-  Core.Snapshots, Core.SavePaths, System.SysUtils, System.UITypes, GBC.GPU,
-  GBC.ROM, GBC.MBC;
+  GBC.EmulationThread;
 
-constructor TGBCCoreAdapter.Create(const FileName: string);
+function TGBCCoreAdapter.ConfigPrefix: string;
 begin
-  var Storage := TStorage.Default;
-  var Stream := Storage.OpenRead(FileName);
-  try Create(Stream, Storage, FileName); finally Stream.Free; end;
+  Result := 'gbc';
 end;
 
-constructor TGBCCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
+function TGBCCoreAdapter.CreateConfig(const FileName: string): IGBEmulatorConfig;
 begin
-  inherited Create;
-  FStorage := Storage;
-  if FStorage = nil then FStorage := TStorage.Default;
-  FConfig := TGBCEmulatorConfig.Create(FStorage.ConfigFile('gbc'), FStorage);
-  FConfig.Load;
-  var ROM := TGBCROM.Create;
-  try
-    ROM.ReadROM(Stream);
-    FROMData := ROM.ROMData;
-    // Validate mapper support before the frontend replaces the active session.
-    TGBCMBC.Create(ROM).Free;
-  finally
-    ROM.Free;
-  end;
-  FSnapshotDirectory := FStorage.GameSnapshots('gbc', RomName, SnapshotIdentity(FROMData));
-  CreateThread;
+  Result := TGBCEmulatorConfig.Create(FileName, FStorage);
 end;
 
-procedure TGBCCoreAdapter.CreateThread;
+function TGBCCoreAdapter.CreateWorker: TGBEmulationThread;
 begin
-  FThread := TGBCEmulationThread.Create(FROMData, FConfig.AudioEnabled);
-  FThread.Storage := FStorage;
-  FThread.SnapshotDirectory := FSnapshotDirectory;
-  FThread.SoundVolume := FConfig.AudioVolume;
+  Result := TGBCEmulationThread.Create(FROMData, FConfig.AudioEnabled);
 end;
 
-destructor TGBCCoreAdapter.Destroy;
+procedure TGBCCoreAdapter.CopyFrame(const Screen: TScreenArray; var Frame: TEmulatorFrame);
 begin
-  Stop;
-  FThread.Free;
-  inherited;
-end;
-
-function TGBCCoreAdapter.GetInputState: TEmulatorInput;
-begin
-  Result := Default(TEmulatorInput);
-  Result.Buttons := (FGamepadInput.Buttons + FKeyboardInput.Buttons) *
-    [TEmulatorButton.Up..TEmulatorButton.Start];
-end;
-
-procedure TGBCCoreAdapter.ApplyInput;
-const
-  ButtonKeys: array[TEmulatorButton.Up..TEmulatorButton.Start] of TGBCKey =
-    (TGBCKey.Up, TGBCKey.Down, TGBCKey.Left, TGBCKey.Right,
-    TGBCKey.A, TGBCKey.B, TGBCKey.Select, TGBCKey.Start);
-begin
-  for var Button := Low(ButtonKeys) to High(ButtonKeys) do
-    FThread.SetKeyState(ButtonKeys[Button],
-      (Button in FGamepadInput.Buttons) or (Button in FKeyboardInput.Buttons));
-end;
-
-procedure TGBCCoreAdapter.ClearInput;
-begin
-  FGamepadInput := Default(TEmulatorInput);
-  FKeyboardInput := Default(TEmulatorInput);
-  FThread.ReleaseKeys;
+  // Preserve signed ARGB bit patterns, including when range checking is enabled.
+  Move(Screen[0], Frame.Pixels[0], SizeOf(Screen));
 end;
 
 function TGBCCoreAdapter.GetName: string;
@@ -148,210 +61,14 @@ begin
   Result := 'Game Boy Color';
 end;
 
-function TGBCCoreAdapter.GetSupportsSnapshots: Boolean;
-begin
-  Result := True;
-end;
-
-function TGBCCoreAdapter.GetHasCoinAcceptor: Boolean;
-begin
-  Result := False;
-end;
-
-procedure TGBCCoreAdapter.InsertCoin1;
-begin
-end;
-
-procedure TGBCCoreAdapter.InsertCoin2;
-begin
-end;
-
-function TGBCCoreAdapter.GetUsesSuborKeyboard: Boolean;
-begin
-  Result := False;
-end;
-
-function TGBCCoreAdapter.IsPaused: Boolean;
-begin
-  Result := FThread.PauseRequested;
-end;
-
-procedure TGBCCoreAdapter.LoadSnapshot(const Name: string);
-begin
-  FThread.LoadSnapshot(Name);
-end;
-
-procedure TGBCCoreAdapter.Pause;
-begin
-  FThread.RequestPause;
-end;
-
-procedure TGBCCoreAdapter.Reset;
-begin
-  // The Game Boy Color core has no in-place reset path. Recreate its worker so all
-  // singleton CPU, GPU and memory state is returned to the power-on state.
-  FreeAndNil(FThread);
-  CreateThread;
-  FFrameNumber := 0;
-  FThread.Start;
-  ApplyInput;
-end;
-
-procedure TGBCCoreAdapter.Resume;
-begin
-  FThread.RequestResume;
-end;
-
-procedure TGBCCoreAdapter.SaveSnapshot(const Name: string);
-begin
-  FThread.SaveSnapshot(Name);
-end;
-
-procedure TGBCCoreAdapter.SetGamepadInput(const Input: TEmulatorInput);
-begin
-  FGamepadInput := Input;
-  ApplyInput;
-end;
-
-procedure TGBCCoreAdapter.SetKeyState(Code: UInt32; Pressed: Boolean);
-begin
-  var Keys := FConfig.Keys;
-  if Code = Keys.A then
-    if Pressed then
-      Include(FKeyboardInput.Buttons, TEmulatorButton.A)
-    else
-      Exclude(FKeyboardInput.Buttons, TEmulatorButton.A);
-  if Code = Keys.B then
-    if Pressed then
-      Include(FKeyboardInput.Buttons, TEmulatorButton.B)
-    else
-      Exclude(FKeyboardInput.Buttons, TEmulatorButton.B);
-  if Code = Keys.Select then
-    if Pressed then
-      Include(FKeyboardInput.Buttons, TEmulatorButton.Select)
-    else
-      Exclude(FKeyboardInput.Buttons, TEmulatorButton.Select);
-  if Code = Keys.Start then
-    if Pressed then
-      Include(FKeyboardInput.Buttons, TEmulatorButton.Start)
-    else
-      Exclude(FKeyboardInput.Buttons, TEmulatorButton.Start);
-  if Code = Keys.Up then
-    if Pressed then
-      Include(FKeyboardInput.Buttons, TEmulatorButton.Up)
-    else
-      Exclude(FKeyboardInput.Buttons, TEmulatorButton.Up);
-  if Code = Keys.Down then
-    if Pressed then
-      Include(FKeyboardInput.Buttons, TEmulatorButton.Down)
-    else
-      Exclude(FKeyboardInput.Buttons, TEmulatorButton.Down);
-  if Code = Keys.Left then
-    if Pressed then
-      Include(FKeyboardInput.Buttons, TEmulatorButton.Left)
-    else
-      Exclude(FKeyboardInput.Buttons, TEmulatorButton.Left);
-  if Code = Keys.Right then
-    if Pressed then
-      Include(FKeyboardInput.Buttons, TEmulatorButton.Right)
-    else
-      Exclude(FKeyboardInput.Buttons, TEmulatorButton.Right);
-  ApplyInput;
-end;
-
-procedure TGBCCoreAdapter.Start;
-begin
-  FThread.Start;
-end;
-
-procedure TGBCCoreAdapter.Stop;
-begin
-  if (FThread <> nil) and not FThread.Finished then
-    FThread.RequestStop;
-end;
-
-function TGBCCoreAdapter.TakeError: string;
-begin
-  Result := FThread.TakeError;
-end;
-
-function TGBCCoreAdapter.GetConfig: IEmulatorConfig;
-begin
-  Result := FConfig;
-end;
-
-function TGBCCoreAdapter.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
-var
-  Screen: TScreenArray;
-  FramesPerSecond: Double;
-begin
-  Result := FThread.TryGetFrame(Screen, FramesPerSecond);
-  if not Result then
-    Exit;
-  Frame.Width := 160;
-  Frame.Height := 144;
-  SetLength(Frame.Pixels, Frame.Width * Frame.Height);
-  for var Y := 0 to Frame.Height - 1 do
-    for var X := 0 to Frame.Width - 1 do
-    begin
-      var Index := Screen[Y * Frame.Width + X];
-      // GBC pixels are stored as ARGB bit patterns.  With range checks enabled
-      // a direct Integer -> TAlphaColor conversion rejects every opaque color
-      // (the high alpha bit makes its signed Integer value negative).
-      Move(Index, Frame.Pixels[Y * Frame.Width + X], SizeOf(Index));
-    end;
-  Inc(FFrameNumber);
-  Frame.FrameNumber := FFrameNumber;
-  Frame.FramesPerSecond := FramesPerSecond;
-end;
-
-{ TGBCEmulatorConfig }
-
-constructor TGBCEmulatorConfig.Create(const AFileName: string; const Storage: IStorage);
-begin
-  inherited Create(AFileName, Storage);
-  FKeys.A := vkZ;
-  FKeys.B := vkX;
-  FKeys.Select := vkSpace;
-  FKeys.Start := vkReturn;
-  FKeys.Up := vkUp;
-  FKeys.Down := vkDown;
-  FKeys.Left := vkLeft;
-  FKeys.Right := vkRight;
-end;
-
 procedure TGBCEmulatorConfig.LoadCoreSettings(Ini: TCustomIniFile);
 begin
-  FKeys.A := ReadEmulatorKey(Ini, 'Controls', 'A', FKeys.A);
-  FKeys.B := ReadEmulatorKey(Ini, 'Controls', 'B', FKeys.B);
-  FKeys.Select := ReadEmulatorKey(Ini, 'Controls', 'Select', FKeys.Select);
-  FKeys.Start := ReadEmulatorKey(Ini, 'Controls', 'Start', FKeys.Start);
-  FKeys.Up := ReadEmulatorKey(Ini, 'Controls', 'Up', FKeys.Up);
-  FKeys.Down := ReadEmulatorKey(Ini, 'Controls', 'Down', FKeys.Down);
-  FKeys.Left := ReadEmulatorKey(Ini, 'Controls', 'Left', FKeys.Left);
-  FKeys.Right := ReadEmulatorKey(Ini, 'Controls', 'Right', FKeys.Right);
+  LoadControls(Ini);
 end;
 
 procedure TGBCEmulatorConfig.SaveCoreSettings(Ini: TCustomIniFile);
 begin
-  Ini.WriteInteger('Controls', 'A', FKeys.A);
-  Ini.WriteInteger('Controls', 'B', FKeys.B);
-  Ini.WriteInteger('Controls', 'Select', FKeys.Select);
-  Ini.WriteInteger('Controls', 'Start', FKeys.Start);
-  Ini.WriteInteger('Controls', 'Up', FKeys.Up);
-  Ini.WriteInteger('Controls', 'Down', FKeys.Down);
-  Ini.WriteInteger('Controls', 'Left', FKeys.Left);
-  Ini.WriteInteger('Controls', 'Right', FKeys.Right);
-end;
-
-function TGBCEmulatorConfig.GetKeys: TGBCKeyMap;
-begin
-  Result := FKeys;
-end;
-
-procedure TGBCEmulatorConfig.SetKeys(const Value: TGBCKeyMap);
-begin
-  FKeys := Value;
+  SaveControls(Ini);
 end;
 
 end.

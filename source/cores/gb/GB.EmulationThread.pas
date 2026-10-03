@@ -3,8 +3,9 @@
 interface
 
 uses
-  Core.Storage, Core.Snapshots, System.Classes, System.SyncObjs, System.Generics.Collections,
-  System.Diagnostics, GB.Joypad, GB.GPU;
+  Core.Storage, Core.Snapshots, System.Classes, System.SyncObjs,
+  System.Generics.Collections, System.Diagnostics, GB.Joypad, GB.GPU, GB.ROM,
+  GB.MBC, GB.Memory, GB.Timer, GB.InterruptManager;
 
 type
   TGBInputEvent = record
@@ -32,10 +33,17 @@ type
     FErrorMessage: string;
     FSoundVolume: Single;
     FPauseRequested: Boolean;
-    procedure PublishFrame(const Screen: TScreenArray);
     procedure ApplyInput;
     procedure SetSoundVolume(const Value: Single);
   protected
+    procedure PublishFrame(const Screen: TScreenArray);
+    function CoreID: string; virtual;
+    function CreateVideo(ROM: TGBROM): TGBVideo; virtual;
+    function CreateMemory(MBC: TGBMBC; Video: TGBVideo): TGBMemory; virtual;
+    function GetJoypad: TGBJoypad; virtual;
+    function GetTimer: TGBTimer; virtual;
+    function GetInterruptManager: TGBInterruptManager; virtual;
+    procedure ReleasePeripherals; virtual;
     procedure Execute; override;
   public
     constructor Create(const FileName: string; EnableAudio: Boolean = True); overload;
@@ -59,8 +67,44 @@ type
 implementation
 
 uses
-  Core.PerformanceHints, System.SysUtils, System.IOUtils, GB.ROM, GB.MBC, GB.Memory, GB.CPU, GB.Sound,
-  GB.Timer, GB.InterruptManager;
+  Core.PerformanceHints, System.SysUtils, System.IOUtils, GB.CPU, GB.Sound;
+
+function TGBEmulationThread.CoreID: string;
+begin
+  Result := 'GB';
+end;
+
+function TGBEmulationThread.CreateVideo(ROM: TGBROM): TGBVideo;
+begin
+  Result := TGBGPU.Create(PublishFrame);
+end;
+
+function TGBEmulationThread.CreateMemory(MBC: TGBMBC; Video: TGBVideo): TGBMemory;
+begin
+  Result := TGBMemory.Create(MBC, Video);
+end;
+
+function TGBEmulationThread.GetJoypad: TGBJoypad;
+begin
+  Result := TGBJoypad.Instance;
+end;
+
+function TGBEmulationThread.GetTimer: TGBTimer;
+begin
+  Result := TGBTimer.Instance;
+end;
+
+function TGBEmulationThread.GetInterruptManager: TGBInterruptManager;
+begin
+  Result := TGBInterruptManager.Instance;
+end;
+
+procedure TGBEmulationThread.ReleasePeripherals;
+begin
+  TGBJoypad.ReleaseInstance;
+  TGBTimer.ReleaseInstance;
+  TGBInterruptManager.ReleaseInstance;
+end;
 
 constructor TGBEmulationThread.Create(const FileName: string; EnableAudio: Boolean);
 begin
@@ -172,7 +216,7 @@ begin
     while FInputEvents.Count > 0 do
     begin
       var Input := FInputEvents.Dequeue;
-      var Joypad := TGBJoypad.Instance;
+      var Joypad := GetJoypad;
       if Input.Pressed then
         Joypad.KeyDown(Joypad.KeyBindings[Input.Key])
       else
@@ -239,7 +283,7 @@ begin
     Exit;
   var ROM: TGBROM := nil;
   var MBC: TGBMBC := nil;
-  var GPU: TGBGPU := nil;
+  var GPU: TGBVideo := nil;
   var Memory: TGBMemory := nil;
   var Sound: TGBSound := nil;
   var FrameHints: TEmulationPerformanceHints := nil;
@@ -259,15 +303,15 @@ begin
       FFrameRateStopwatch := TStopwatch.StartNew;
       FFramesSinceRateUpdate := 0;
       FFramesPerSecond := 0;
-      GPU := TGBGPU.Create(PublishFrame);
+      GPU := CreateVideo(ROM);
       MBC := TGBMBC.Create(ROM);
-      Memory := TGBMemory.Create(MBC, GPU);
+      Memory := CreateMemory(MBC, GPU);
       Sound := TGBSound.Create(Memory, FEnableAudio);
       Sound.Volume := FSoundVolume;
       CPU := TGBCPU.Create(Memory, GPU, Sound);
       CPU.SkipBIOS;
       FrameHints := TEmulationPerformanceHints.Create(
-        Round(FrameCycles * 1000000000.0 / CPUClockFrequency), 'GB');
+        Round(FrameCycles * 1000000000.0 / CPUClockFrequency), CoreID);
       HintNextCycles := CPU.Cycles + FrameCycles;
       var Stopwatch := TStopwatch.StartNew;
       var StartCycles := CPU.Cycles;
@@ -278,29 +322,31 @@ begin
           begin
             FrameHints.Pause;
             var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
-            var Transfer: TStateTransfer := procedure(State: TStateArchive)
-            begin
-              CPU.SerializeState(State);
-              Memory.SerializeState(State);
-              GPU.SerializeState(State);
-              MBC.SerializeState(State);
-              Sound.SerializeState(State);
-              TGBTimer.Instance.SerializeState(State);
-              TGBInterruptManager.Instance.SerializeState(State);
-              TGBJoypad.Instance.SerializeState(State);
-            end;
+            var Transfer: TStateTransfer :=
+              procedure(State: TStateArchive)
+              begin
+                CPU.SerializeState(State);
+                Memory.SerializeState(State);
+                GPU.SerializeState(State);
+                MBC.SerializeState(State);
+                Sound.SerializeState(State);
+                GetTimer.SerializeState(State);
+                GetInterruptManager.SerializeState(State);
+                GetJoypad.SerializeState(State);
+              end;
             if Loading then
             begin
-              LoadCoreSnapshot(Path, 'GB', FROMData, Transfer, FStorage);
-              if Sound.Audio <> nil then Sound.Audio.Clear;
+              LoadCoreSnapshot(Path, CoreID, FROMData, Transfer, FStorage);
+              if Sound.Audio <> nil then
+                Sound.Audio.Clear;
               // Host key state is authoritative after restoring the emulated JOYP.
               FLock.Acquire;
               try
                 for var Key := Low(TGBKey) to High(TGBKey) do
                   if Key in FPressedKeys then
-                    TGBJoypad.Instance.KeyDown(TGBJoypad.Instance.KeyBindings[Key])
+                    GetJoypad.KeyDown(GetJoypad.KeyBindings[Key])
                   else
-                    TGBJoypad.Instance.KeyUp(TGBJoypad.Instance.KeyBindings[Key]);
+                    GetJoypad.KeyUp(GetJoypad.KeyBindings[Key]);
               finally
                 FLock.Release;
               end;
@@ -308,7 +354,7 @@ begin
             end
             else
             begin
-              SaveCoreSnapshot(Path, 'GB', FROMData, Transfer, FStorage);
+              SaveCoreSnapshot(Path, CoreID, FROMData, Transfer, FStorage);
               SaveSnapshotPreview(Path, 160, 144, 160, @GPU.Screen[0], FStorage);
             end;
             HintNextCycles := CPU.Cycles + FrameCycles;
@@ -369,9 +415,7 @@ begin
       MBC.Free;
       GPU.Free;
       ROM.Free;
-      TGBJoypad.ReleaseInstance;
-      TGBTimer.ReleaseInstance;
-      TGBInterruptManager.ReleaseInstance;
+      ReleasePeripherals;
     end;
   except
     on E: Exception do

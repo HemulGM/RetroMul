@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Classes, System.IniFiles, Core.Storage, Core.Emulation, GB.EmulationThread, GB.Joypad;
+  System.Classes, System.IniFiles, Core.Storage, Core.Emulation, GB.EmulationThread, GB.Joypad, GB.GPU;
 
 type
   TGBKeyMap = record
@@ -25,6 +25,8 @@ type
     FKeys: TGBKeyMap;
     FScreenPalette: Integer;
   protected
+    procedure LoadControls(Ini: TCustomIniFile);
+    procedure SaveControls(Ini: TCustomIniFile);
     procedure LoadCoreSettings(Ini: TCustomIniFile); override;
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
   public
@@ -37,7 +39,7 @@ type
   end;
 
   TGBCoreAdapter = class(TInterfacedObject, IEmulationCore)
-  private
+  protected
     FThread: TGBEmulationThread;
     FSnapshotDirectory: string;
     FStorage: IStorage;
@@ -48,7 +50,11 @@ type
     FFrameNumber: UInt64;
     procedure CreateThread;
     procedure ApplyInput;
-    function GetName: string;
+    function ConfigPrefix: string; virtual;
+    function CreateConfig(const FileName: string): IGBEmulatorConfig; virtual;
+    function CreateWorker: TGBEmulationThread; virtual;
+    procedure CopyFrame(const Screen: TScreenArray; var Frame: TEmulatorFrame); virtual;
+    function GetName: string; virtual;
     function GetSupportsSnapshots: Boolean;
     function GetUsesSuborKeyboard: Boolean;
   public
@@ -80,7 +86,32 @@ implementation
 
 uses
   Core.Snapshots, Core.SavePaths, System.SysUtils, System.Math, System.UITypes,
-  GB.GPU, GB.Palettes, GB.ROM, GB.MBC;
+  GB.Palettes, GB.ROM, GB.MBC;
+
+function TGBCoreAdapter.ConfigPrefix: string;
+begin
+  Result := 'gb';
+end;
+
+function TGBCoreAdapter.CreateConfig(const FileName: string): IGBEmulatorConfig;
+begin
+  Result := TGBEmulatorConfig.Create(FileName, FStorage);
+end;
+
+function TGBCoreAdapter.CreateWorker: TGBEmulationThread;
+begin
+  Result := TGBEmulationThread.Create(FROMData, FConfig.AudioEnabled);
+end;
+
+procedure TGBCoreAdapter.CopyFrame(const Screen: TScreenArray; var Frame: TEmulatorFrame);
+begin
+  for var I := 0 to High(Screen) do
+  begin
+    var Shade := Screen[I];
+    if (Shade < 0) or (Shade > 3) then Shade := 0;
+    Frame.Pixels[I] := ScreenPalettes[FConfig.ScreenPalette].Colors[Shade];
+  end;
+end;
 
 constructor TGBCoreAdapter.Create(const FileName: string);
 begin
@@ -94,7 +125,7 @@ begin
   inherited Create;
   FStorage := Storage;
   if FStorage = nil then FStorage := TStorage.Default;
-  FConfig := TGBEmulatorConfig.Create(FStorage.ConfigFile('gb'), FStorage);
+  FConfig := CreateConfig(FStorage.ConfigFile(ConfigPrefix));
   FConfig.Load;
   var ROM := TGBROM.Create;
   try
@@ -105,13 +136,13 @@ begin
   finally
     ROM.Free;
   end;
-  FSnapshotDirectory := FStorage.GameSnapshots('gb', RomName, SnapshotIdentity(FROMData));
+  FSnapshotDirectory := FStorage.GameSnapshots(ConfigPrefix, RomName, SnapshotIdentity(FROMData));
   CreateThread;
 end;
 
 procedure TGBCoreAdapter.CreateThread;
 begin
-  FThread := TGBEmulationThread.Create(FROMData, FConfig.AudioEnabled);
+  FThread := CreateWorker;
   FThread.Storage := FStorage;
   FThread.SnapshotDirectory := FSnapshotDirectory;
   FThread.SoundVolume := FConfig.AudioVolume;
@@ -297,14 +328,7 @@ begin
   Frame.Width := 160;
   Frame.Height := 144;
   SetLength(Frame.Pixels, Frame.Width * Frame.Height);
-  for var Y := 0 to Frame.Height - 1 do
-    for var X := 0 to Frame.Width - 1 do
-    begin
-      var Index := Screen[Y * Frame.Width + X];
-      if (Index < 0) or (Index > 3) then
-        Index := 0;
-      Frame.Pixels[Y * Frame.Width + X] := ScreenPalettes[FConfig.ScreenPalette].Colors[Index];
-    end;
+  CopyFrame(Screen, Frame);
   Inc(FFrameNumber);
   Frame.FrameNumber := FFrameNumber;
   Frame.FramesPerSecond := FramesPerSecond;
@@ -326,7 +350,7 @@ begin
   FScreenPalette := 0;
 end;
 
-procedure TGBEmulatorConfig.LoadCoreSettings(Ini: TCustomIniFile);
+procedure TGBEmulatorConfig.LoadControls(Ini: TCustomIniFile);
 begin
   FKeys.A := ReadEmulatorKey(Ini, 'Controls', 'A', FKeys.A);
   FKeys.B := ReadEmulatorKey(Ini, 'Controls', 'B', FKeys.B);
@@ -336,10 +360,15 @@ begin
   FKeys.Down := ReadEmulatorKey(Ini, 'Controls', 'Down', FKeys.Down);
   FKeys.Left := ReadEmulatorKey(Ini, 'Controls', 'Left', FKeys.Left);
   FKeys.Right := ReadEmulatorKey(Ini, 'Controls', 'Right', FKeys.Right);
+end;
+
+procedure TGBEmulatorConfig.LoadCoreSettings(Ini: TCustomIniFile);
+begin
+  LoadControls(Ini);
   FScreenPalette := EnsureRange(Ini.ReadInteger('Video', 'Palette', 0), 0, SCREEN_PALETTE_COUNT - 1);
 end;
 
-procedure TGBEmulatorConfig.SaveCoreSettings(Ini: TCustomIniFile);
+procedure TGBEmulatorConfig.SaveControls(Ini: TCustomIniFile);
 begin
   Ini.WriteInteger('Controls', 'A', FKeys.A);
   Ini.WriteInteger('Controls', 'B', FKeys.B);
@@ -349,6 +378,11 @@ begin
   Ini.WriteInteger('Controls', 'Down', FKeys.Down);
   Ini.WriteInteger('Controls', 'Left', FKeys.Left);
   Ini.WriteInteger('Controls', 'Right', FKeys.Right);
+end;
+
+procedure TGBEmulatorConfig.SaveCoreSettings(Ini: TCustomIniFile);
+begin
+  SaveControls(Ini);
   Ini.WriteInteger('Video', 'Palette', FScreenPalette);
 end;
 

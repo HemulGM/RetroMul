@@ -3,7 +3,8 @@
 interface
 
 uses
-  Core.Snapshots, System.Classes, System.SysUtils, System.Math, GB.Memory, PCM.Audio, PCM.Audio.Backend, Core.AudioFilter;
+  Core.Snapshots, System.Classes, System.SysUtils, System.Math, GB.Memory,
+  PCM.Audio, PCM.Audio.Backend, Core.AudioFilter;
 
 const
   GB_AUDIO_SAMPLE_RATE = 44100;
@@ -224,8 +225,7 @@ type
     procedure DisableAllChannels;
 
   public
-    constructor Create(AMemory: TGBMemory; EnableOutput: Boolean = True;
-      const Backend: IPCMAudioBackend = nil); overload;
+    constructor Create(AMemory: TGBMemory; EnableOutput: Boolean = True; const Backend: IPCMAudioBackend = nil); overload;
     destructor Destroy; override;
 
     procedure StartAudio;
@@ -605,13 +605,19 @@ begin
   Step := GetFrequency / GB_AUDIO_INTERNAL_RATE;
   if Step <= 0 then
   begin
-    if (FLFSR and 1) = 0 then Exit(1) else Exit(-1);
+    if (FLFSR and 1) = 0 then
+      Exit(1)
+    else
+      Exit(-1);
   end;
   Remaining := Step;
   Area := 0;
   while Remaining > 1E-10 do
   begin
-    if (FLFSR and 1) = 0 then Level := 1 else Level := -1;
+    if (FLFSR and 1) = 0 then
+      Level := 1
+    else
+      Level := -1;
     Span := Min(Remaining, 1.0 - FPhase);
     Area := Area + Level * Span;
     FPhase := FPhase + Span;
@@ -630,8 +636,7 @@ end;
 
 { TGBSound }
 
-constructor TGBSound.Create(AMemory: TGBMemory; EnableOutput: Boolean;
-  const Backend: IPCMAudioBackend);
+constructor TGBSound.Create(AMemory: TGBMemory; EnableOutput: Boolean; const Backend: IPCMAudioBackend);
 begin
   inherited Create;
 
@@ -770,7 +775,8 @@ begin
 
   Mask := 1 shl (ChannelNumber - 1);
   Value := FMemory.ReadByte(NR52);
-  FMemory.WriteByte(NR52, Value or Mask);
+  // The APU owns the status bits; CPU writes to NR52 cannot change them.
+  FMemory.IOPort[$26] := (Value or Mask) and $8F;
 end;
 
 procedure TGBSound.SetSoundOff(ChannelNumber: Integer);
@@ -783,7 +789,7 @@ begin
 
   Mask := 1 shl (ChannelNumber - 1);
   Value := FMemory.ReadByte(NR52);
-  FMemory.WriteByte(NR52, Value and not Mask);
+  FMemory.IOPort[$26] := (Value and not Mask) and $8F;
 end;
 
 function TGBSound.IsSoundToTerminal(ChannelNumber: Integer; OutputNumber: Integer): Boolean;
@@ -1037,11 +1043,7 @@ begin
   if (NR44Value and $40) <> 0 then
   begin
     FChannel4.SetLengthEnabled(True);
-
-    FChannel4.SetLength(
-      ((64 - (NR41Value and $3F)) *
-      GB_AUDIO_INTERNAL_RATE) div 256
-    );
+    FChannel4.SetLength(((64 - (NR41Value and $3F)) * GB_AUDIO_INTERNAL_RATE) div 256);
   end
   else
     FChannel4.SetLengthEnabled(False);
@@ -1100,11 +1102,9 @@ begin
     Exit;
 
   FChannel1.SetWaveDuty((FMemory.ReadByte(NR11) shr 6) and 3);
-  FChannel1.SetFrequency(131072.0 / (2048 -
-    (FMemory.ReadByte(NR13) or ((FMemory.ReadByte(NR14) and 7) shl 8))));
+  FChannel1.SetFrequency(131072.0 / (2048 - (FMemory.ReadByte(NR13) or ((FMemory.ReadByte(NR14) and 7) shl 8))));
   FChannel1.SetLengthEnabled((FMemory.ReadByte(NR14) and $40) <> 0);
-  FChannel1.SetGBFrequency(FMemory.ReadByte(NR13) or
-    ((FMemory.ReadByte(NR14) and 7) shl 8));
+  FChannel1.SetGBFrequency(FMemory.ReadByte(NR13) or ((FMemory.ReadByte(NR14) and 7) shl 8));
   Sample := FChannel1.NextWaveSample;
 
   if FChannel1.GetVolume <> nil then
@@ -1127,8 +1127,7 @@ begin
   if FChannel1.GetVolume <> nil then
     FChannel1.GetVolume.HandleSweep;
 
-  if ((FMemory.ReadByte(NR10) and $70) <> 0) and
-    (FChannel1.GetSweepLength > 0) and (FChannel1.GetSweepShift > 0) then
+  if ((FMemory.ReadByte(NR10) and $70) <> 0) and (FChannel1.GetSweepLength > 0) and (FChannel1.GetSweepShift > 0) then
   begin
     FChannel1.DecSweepIndex;
 
@@ -1155,8 +1154,6 @@ begin
 end;
 
 procedure TGBSound.UpdateChannel2;
-var
-  Sample: Double;
 begin
   FChannelSamples[1] := 0;
 
@@ -1172,7 +1169,7 @@ begin
   FChannel2.SetFrequency(131072.0 / (2048 -
     (FMemory.ReadByte(NR23) or ((FMemory.ReadByte(NR24) and 7) shl 8))));
   FChannel2.SetLengthEnabled((FMemory.ReadByte(NR24) and $40) <> 0);
-  Sample := FChannel2.NextWaveSample;
+  var Sample := FChannel2.NextWaveSample;
 
   if FChannel2.GetVolume <> nil then
     FChannelSamples[1] := Sample * FChannel2.GetVolume.GetBase;
@@ -1204,21 +1201,22 @@ var
 begin
   FChannelSamples[2] := 0;
 
-  if not FChannel3.IsEnabled then
-    Exit;
-
   NR30Value := FMemory.ReadByte(NR30);
 
-  if (NR30Value and $80) = 0 then
+  // NR30 can be switched off and back on between audio samples. The cleared
+  // NR52 bit latches that stop until a fresh trigger, even with the DAC on.
+  if ((NR30Value and $80) = 0) or ((FMemory.ReadByte(NR52) and 4) = 0) then
   begin
     FChannel3.SetEnabled(False);
     SetSoundOff(3);
     Exit;
   end;
 
+  if not FChannel3.IsEnabled then
+    Exit;
+
   NR32Value := FMemory.ReadByte(NR32);
-  FChannel3.SetFrequency(65536.0 / (2048 -
-    (FMemory.ReadByte(NR33) or ((FMemory.ReadByte(NR34) and 7) shl 8))));
+  FChannel3.SetFrequency(65536.0 / (2048 - (FMemory.ReadByte(NR33) or ((FMemory.ReadByte(NR34) and 7) shl 8))));
   FChannel3.SetLengthEnabled((FMemory.ReadByte(NR34) and $40) <> 0);
   VolumeCode := (NR32Value shr 5) and $03;
   Sample := FChannel3.NextWaveSample(Max(0, VolumeCode - 1));
@@ -1253,7 +1251,8 @@ begin
 
   var NoiseRegister := FMemory.ReadByte(NR43);
   var Divisor := (NoiseRegister and 7) * 16;
-  if Divisor = 0 then Divisor := 8;
+  if Divisor = 0 then
+    Divisor := 8;
   var Shift := NoiseRegister shr 4;
   if Shift >= 14 then
     FChannel4.SetFrequency(0)
@@ -1386,7 +1385,6 @@ begin
   end;
 end;
 
-
 procedure TEnvelope.SerializeState(State: TStateArchive);
 begin
   State.Field(FBase, SizeOf(FBase));
@@ -1404,9 +1402,12 @@ begin
   State.Field(FIndex, SizeOf(FIndex));
   var Count := Length(FWave);
   State.Field(Count, SizeOf(Count));
-  if (Count < 0) or (Count > 32768) then raise EReadError.Create('Invalid waveform length');
-  if State.Loading then System.SetLength(FWave, Count);
-  if Count > 0 then State.Field(FWave[0], Count * SizeOf(FWave[0]));
+  if (Count < 0) or (Count > 32768) then
+    raise EReadError.Create('Invalid waveform length');
+  if State.Loading then
+    System.SetLength(FWave, Count);
+  if Count > 0 then
+    State.Field(FWave[0], Count * SizeOf(FWave[0]));
   State.Field(FWavePhase, SizeOf(FWavePhase));
 end;
 
@@ -1418,10 +1419,13 @@ begin
   if State.Loading then
     if HasEnvelope then
     begin
-      if FVolume = nil then FVolume := TEnvelope.Create;
+      if FVolume = nil then
+        FVolume := TEnvelope.Create;
     end
-    else FreeAndNil(FVolume);
-  if HasEnvelope then FVolume.SerializeState(State);
+    else
+      FreeAndNil(FVolume);
+  if HasEnvelope then
+    FVolume.SerializeState(State);
   State.Field(FGBFrequency, SizeOf(FGBFrequency));
   State.Field(FSweepIndex, SizeOf(FSweepIndex));
   State.Field(FSweepLength, SizeOf(FSweepLength));
@@ -1438,10 +1442,13 @@ begin
   if State.Loading then
     if HasEnvelope then
     begin
-      if FVolume = nil then FVolume := TEnvelope.Create;
+      if FVolume = nil then
+        FVolume := TEnvelope.Create;
     end
-    else FreeAndNil(FVolume);
-  if HasEnvelope then FVolume.SerializeState(State);
+    else
+      FreeAndNil(FVolume);
+  if HasEnvelope then
+    FVolume.SerializeState(State);
   State.Field(FShiftFrequency, SizeOf(FShiftFrequency));
   State.Field(FCounterStep, SizeOf(FCounterStep));
   State.Field(FDivisorRatio, SizeOf(FDivisorRatio));
@@ -1467,3 +1474,4 @@ begin
 end;
 
 end.
+

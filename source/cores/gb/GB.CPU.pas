@@ -3,14 +3,15 @@
 interface
 
 uses
-  Core.Snapshots, System.Classes, GB.Memory, GB.InterruptManager, GB.Timer, GB.GPU, System.SysUtils, GB.Sound;
+  Core.Snapshots, System.Classes, GB.Memory, GB.InterruptManager, GB.Timer,
+  GB.GPU, System.SysUtils, GB.Sound;
 
 type
   TGBCPU = class
   private
     FLastOpCode: Integer;
     FMemory: TGBMemory;
-    FGPU: TGBGPU;
+    FGPU: TGBVideo;
     FSound: TGBSound;
     FStopped: Boolean;
     FInstructionCount: UInt64;
@@ -112,7 +113,7 @@ type
     procedure ExecutePop(OpCode: Integer);
     procedure ExecutePush(OpCode: Integer);
 
-    constructor Create(AMemory: TGBMemory; AGPU: TGBGPU; ASound: TGBSound); overload;
+    constructor Create(AMemory: TGBMemory; AGPU: TGBVideo; ASound: TGBSound); overload;
 
     procedure SetZeroFlag(Value: Boolean);
     function GetZeroFlag: Boolean;
@@ -130,6 +131,7 @@ type
     procedure Main;
     procedure Stop;
     property Stopped: Boolean read GetStopped;
+    // Base-speed clocks for video, sound and host pacing, including double speed.
     property Cycles: UInt64 read FCycles;
     property InstructionCount: UInt64 read FInstructionCount;
     property LastOpCode: Integer read FLastOpCode;
@@ -460,12 +462,21 @@ end;
 
 procedure TGBCPU.ConsumeClockCycles(Cycles: Integer);
 begin
-  Inc(FCycles, Cycles);
-
-  TGBTimer.Instance.Step(Cycles);
-  FGPU.Step(Cycles);
-  if FSound <> nil then
-    FSound.UpdateSound(Cycles);
+  repeat
+    var BaseCycles := Cycles;
+    if FMemory.DoubleSpeed then
+      BaseCycles := BaseCycles div 2;
+    Inc(FCycles, BaseCycles);
+    FMemory.Timer.Step(Cycles);
+    FGPU.Step(BaseCycles);
+    if FSound <> nil then
+      FSound.UpdateSound(BaseCycles);
+    // General DMA queues its stall while the CPU instruction writes FF55;
+    // HBlank DMA queues it from the GPU mode transition above.
+    Cycles := FMemory.ConsumeDMACyclePenalty;
+    if FMemory.DoubleSpeed then
+      Cycles := Cycles * 2;
+  until Cycles = 0;
 end;
 
 procedure TGBCPU.ExecuteCP(OpCode: Byte);
@@ -509,7 +520,7 @@ begin
     ConsumeClockCycles(4);
 end;
 
-constructor TGBCPU.Create(AMemory: TGBMemory; AGPU: TGBGPU; ASound: TGBSound);
+constructor TGBCPU.Create(AMemory: TGBMemory; AGPU: TGBVideo; ASound: TGBSound);
 begin
   FMemory := AMemory;
   FGPU := AGPU;
@@ -562,23 +573,27 @@ begin
       ConsumeClockCycles(4);
     $76: // HALT
       begin
-        if (not TGBInterruptManager.Instance.IsMasterEnabled) and
-          ((TGBInterruptManager.Instance.GetInterruptsRaised and
-          TGBInterruptManager.Instance.GetInterruptsEnabled and $1F) <> 0) then
+        if (not FMemory.InterruptManager.IsMasterEnabled) and
+          ((FMemory.InterruptManager.GetInterruptsRaised and
+          FMemory.InterruptManager.GetInterruptsEnabled and $1F) <> 0) then
           FSuppressPCIncrement := True
         else
           FIsHalted := True;
         ConsumeClockCycles(4);
       end;
-    $10: // STOP 0
+    $10: // STOP 0 / CGB speed switch
       begin
         ProgramCounter := (Integer(ProgramCounter) + 1) and $FFFF; // skip second byte 00
+        // KEY1 prepares a CGB speed switch.  The STOP instruction completes
+        // it and execution resumes at the following instruction.
+        if FMemory.StopHalts then
+          FIsHalted := True;
         ConsumeClockCycles(4);
       end;
     $F3: // DI
       begin
         FPendingInterruptEnable := 0;
-        TGBInterruptManager.Instance.MasterDisable;
+        FMemory.InterruptManager.MasterDisable;
         ConsumeClockCycles(4);
       end;
     $FB: // EI
@@ -748,7 +763,7 @@ begin
     $D9: // RETI
       begin
         ReturnFromCall;
-        TGBInterruptManager.Instance.MasterEnable;
+        FMemory.InterruptManager.MasterEnable;
         ConsumeClockCycles(16);
       end;
     $39, $29, $19, $09, $E8:
@@ -1584,9 +1599,15 @@ begin
       end;
     $F0:
       begin
-        SetRegisterA(FMemory.ReadByte($FF00 + FMemory.ReadByte(ProgramCounter)));
+        var Address := $FF00 + FMemory.ReadByte(ProgramCounter);
         ProgramCounter := (Integer(ProgramCounter) + 1) and $FFFF;
-        ConsumeClockCycles(12);
+        // LDH reads I/O in its third machine cycle. In particular, LY can
+        // enter VBlank during this instruction, before the pending interrupt
+        // is serviced. Sampling it at opcode fetch can miss line 144 forever
+        // when the VBlank handler runs into the next frame.
+        ConsumeClockCycles(8);
+        SetRegisterA(FMemory.ReadByte(Address));
+        ConsumeClockCycles(4);
       end;
     $01: //LD BC,nn
       begin
@@ -1722,8 +1743,8 @@ end;
 function TGBCPU.PopWord: Integer;
 begin
   var Low: Integer := FMemory.ReadByte(StackPointer);
-  // The LR35902 stack is a 16-bit address bus and wraps at both ends.
-  // Widen first so range checking accepts the valid $FFFF -> $0000 wrap.
+  // The Game Boy stack wraps across $FFFF->$0000.  Widen before adding so
+  // Delphi range checks do not reject the valid 16-bit wrap.
   StackPointer := (Integer(StackPointer) + 1) and $FFFF;
   var High: Integer := FMemory.ReadByte(StackPointer);
   StackPointer := (Integer(StackPointer) + 1) and $FFFF;
@@ -1763,12 +1784,12 @@ begin
     Exit;
   Dec(FPendingInterruptEnable);
   if FPendingInterruptEnable = 0 then
-    TGBInterruptManager.Instance.MasterEnable;
+    FMemory.InterruptManager.MasterEnable;
 end;
 
 procedure TGBCPU.ProcessInterrupts;
 begin
-  var Interrupts: TGBInterruptArray := TGBInterruptManager.Instance.GetAllInterrupts;
+  var Interrupts: TGBInterruptArray := FMemory.InterruptManager.GetAllInterrupts;
   // The manager stores Joypad first and VBlank last.
   for var I := High(Interrupts) downto 0 do
   begin
@@ -1777,11 +1798,11 @@ begin
       Continue;
 
     FIsHalted := False;
-    if not TGBInterruptManager.Instance.IsMasterEnabled then
+    if not FMemory.InterruptManager.IsMasterEnabled then
       Exit;
 
-    TGBInterruptManager.Instance.ClearInterruptByIndex(I);
-    TGBInterruptManager.Instance.MasterDisable;
+    FMemory.InterruptManager.ClearInterruptByIndex(I);
+    FMemory.InterruptManager.MasterDisable;
     FPendingInterruptEnable := 0;
     if FSuppressPCIncrement then
     begin
@@ -2268,20 +2289,35 @@ end;
 
 procedure TGBCPU.SkipBIOS;
 begin
-  SetRegisterA($01);
-  SetRegisterB($00);
-  SetRegisterC($13);
-  SetRegisterD($00);
-  SetRegisterE($D8);
-  SetRegisterH($01);
-  SetRegisterL($4D);
+  if FMemory.IsCGBMode then
+  begin
+    // CGB-only ROMs observe these registers to distinguish a real CGB boot
+    // from a DMG-compatible launch.
+    SetRegisterA($11);
+    SetRegisterB($00);
+    SetRegisterC($00);
+    SetRegisterD($FF);
+    SetRegisterE($56);
+    SetRegisterH($00);
+    SetRegisterL($0D);
+  end
+  else
+  begin
+    SetRegisterA($01);
+    SetRegisterB($00);
+    SetRegisterC($13);
+    SetRegisterD($00);
+    SetRegisterE($D8);
+    SetRegisterH($01);
+    SetRegisterL($4D);
+  end;
   SetZeroFlag(True);
   SetSubtractFlag(False);
-  SetHalfCarryFlag(True);
-  SetCarryFlag(True);
+  SetHalfCarryFlag(not FMemory.IsCGBMode);
+  SetCarryFlag(not FMemory.IsCGBMode);
   StackPointer := $FFFE;
   ProgramCounter := $100;
-  TGBTimer.Instance.SetDivider($AB);
+  FMemory.Timer.SetDivider($AB);
   FMemory.WriteByte($FF0F, $E1);
   FMemory.WriteByte($FF05, $00); // TIMA
   FMemory.WriteByte($FF06, $00); // TMA
@@ -2660,7 +2696,6 @@ begin
   FRegisterL := Lo(Value);
 end;
 
-
 procedure TGBCPU.SerializeState(State: TStateArchive);
 begin
   State.Field(FLastOpCode, SizeOf(FLastOpCode));
@@ -2683,3 +2718,4 @@ begin
 end;
 
 end.
+

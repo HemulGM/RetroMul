@@ -25,6 +25,7 @@ type
     RAMBankSelected: Integer;
     function MbcRead(Address: Integer): Integer;
     procedure MbcWrite(Address, Value: Integer);
+    function IsCGBCartridge: Boolean;
     constructor Create(AROM: TGBROM); overload;
     procedure SerializeState(State: TStateArchive);
   end;
@@ -54,6 +55,8 @@ begin
   if FROM.GetCartridgeType.MapperType = TMapperType.MBC2 then
     SetLength(FRAM, $200) // 512 four-bit internal RAM cells
   else if FHasRAM and Assigned(FROM.Cartridge) then
+    // The header also permits 64 KiB (8-bank) and 128 KiB (16-bank) RAM.
+    // Do not silently turn these cartridges into RAM-less ones.
     if FROM.Cartridge.RAMSizeBytes > 0 then
       SetLength(FRAM, FROM.Cartridge.RAMSizeBytes);
   FHasRAM := Length(FRAM) > 0;
@@ -85,6 +88,12 @@ begin
   end;
 end;
 
+function TGBMBC.IsCGBCartridge: Boolean;
+begin
+  Result := Assigned(FROM) and Assigned(FROM.Cartridge) and
+    FROM.Cartridge.SupportsCGB;
+end;
+
 function TGBMBC.MbcRead(Address: Integer): Integer;
 begin
   Result := $FF;
@@ -92,8 +101,11 @@ begin
     Exit;
   case FROM.GetCartridgeType.MapperType of
     TMapperType.ROMOnly:
-      if (Address < $8000) and (Address < Length(FROM.ROMData)) then
-        Result := FROM.ROMData[Address]
+      if Address < $8000 then
+      begin
+        if Address < Length(FROM.ROMData) then
+          Result := FROM.ROMData[Address];
+      end
       else if (Address >= $A000) and FHasRAM then
         Result := FRAM[(Address - $A000) mod Length(FRAM)];
     TMapperType.MBC1:
@@ -166,6 +178,7 @@ begin
     Exit;
   if FROM.GetCartridgeType.MapperType = TMapperType.ROMOnly then
   begin
+    // Plain ROM+RAM cartridges expose their RAM permanently at A000-BFFF.
     if (Address >= $A000) and FHasRAM then
       FRAM[(Address - $A000) mod Length(FRAM)] := Value and $FF;
   end

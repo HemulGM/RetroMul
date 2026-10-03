@@ -184,7 +184,6 @@ begin
   FreeAndNil(FInstance);
 end;
 
-
 procedure TGBInterruptManager.SerializeState(State: TStateArchive);
 begin
   State.Field(FMasterEnabled, SizeOf(FMasterEnabled));
@@ -198,3 +197,4 @@ begin
 end;
 
 end.
+

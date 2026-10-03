@@ -3,8 +3,8 @@
 interface
 
 uses
-  Core.Snapshots, System.Classes, System.SysUtils, GB.ROM, GB.GPU, GB.MBC, GB.Timer, GB.InterruptManager,
-  GB.Joypad;
+  Core.Snapshots, System.Classes, System.SysUtils, GB.ROM, GB.GPU, GB.MBC,
+  GB.Timer, GB.InterruptManager, GB.Joypad;
 
 const
   BootROM: array[0..255] of Integer = (
@@ -27,9 +27,18 @@ const
 
 type
   TGBMemory = class
-  private
-    FGPU: TGBGPU;
+  protected
+    FGPU: TGBVideo;
     function ProcessUnusedBits(Address, Value: Integer): Integer;
+    function ReadWorkRAM(Offset: Integer): Byte; virtual;
+    procedure WriteWorkRAM(Offset: Integer; Value: Byte); virtual;
+    function ReadModelRegister(Address: Integer; out Value: Byte): Boolean; virtual;
+    function WriteModelRegister(Address: Integer; Value: Byte): Boolean; virtual;
+    function GetDoubleSpeed: Boolean; virtual;
+  private
+    FTimer: TGBTimer;
+    FInterruptManager: TGBInterruptManager;
+    FJoypad: TGBJoypad;
   public
     // 0000-3FFF   16KB ROM Bank 00     (in cartridge, fixed at bank 00)
     ROMBank00: array[0..16383] of Byte;
@@ -63,17 +72,80 @@ type
     function ReadByte(Address: Integer): Byte;
     function ReadWord(Address: Integer): Word;
     function GetROMBank: Integer;
-    procedure InitializeMemory;
-    constructor Create(AMbc: TGBMBC; AGPU: TGBGPU); overload;
-    procedure SerializeState(State: TStateArchive);
+    function IsCGBMode: Boolean; virtual;
+    function PerformSpeedSwitch: Boolean; virtual;
+    function StopHalts: Boolean; virtual;
+    function ConsumeDMACyclePenalty: Integer; virtual;
+    property DoubleSpeed: Boolean read GetDoubleSpeed;
+    property Timer: TGBTimer read FTimer;
+    property InterruptManager: TGBInterruptManager read FInterruptManager;
+    property Joypad: TGBJoypad read FJoypad;
+    procedure InitializeMemory; virtual;
+    constructor Create(AMbc: TGBMBC; AGPU: TGBVideo; ATimer: TGBTimer = nil; AInterruptManager: TGBInterruptManager = nil; AJoypad: TGBJoypad = nil); overload;
+    procedure SerializeState(State: TStateArchive); virtual;
   end;
 
 implementation
 
+function TGBMemory.ReadWorkRAM(Offset: Integer): Byte;
+begin
+  Result := WRAM[Offset];
+end;
+
+procedure TGBMemory.WriteWorkRAM(Offset: Integer; Value: Byte);
+begin
+  WRAM[Offset] := Value;
+end;
+
+function TGBMemory.ReadModelRegister(Address: Integer; out Value: Byte): Boolean;
+begin
+  Value := 0;
+  Result := False;
+end;
+
+function TGBMemory.WriteModelRegister(Address: Integer; Value: Byte): Boolean;
+begin
+  Result := False;
+end;
+
+function TGBMemory.IsCGBMode: Boolean;
+begin
+  Result := False;
+end;
+
+function TGBMemory.GetDoubleSpeed: Boolean;
+begin
+  Result := False;
+end;
+
+function TGBMemory.PerformSpeedSwitch: Boolean;
+begin
+  Result := False;
+end;
+
+function TGBMemory.StopHalts: Boolean;
+begin
+  Result := False;
+end;
+
+function TGBMemory.ConsumeDMACyclePenalty: Integer;
+begin
+  Result := 0;
+end;
+
 { TGBMemory }
 
-constructor TGBMemory.Create(AMbc: TGBMBC; AGPU: TGBGPU);
+constructor TGBMemory.Create(AMbc: TGBMBC; AGPU: TGBVideo; ATimer: TGBTimer; AInterruptManager: TGBInterruptManager; AJoypad: TGBJoypad);
 begin
+  FTimer := ATimer;
+  if FTimer = nil then
+    FTimer := TGBTimer.Instance;
+  FInterruptManager := AInterruptManager;
+  if FInterruptManager = nil then
+    FInterruptManager := TGBInterruptManager.Instance;
+  FJoypad := AJoypad;
+  if FJoypad = nil then
+    FJoypad := TGBJoypad.Instance;
   FGPU := AGPU;
   FMBC := AMbc;
   UseBIOS := True;
@@ -165,6 +237,9 @@ end;
 
 function TGBMemory.ReadByte(Address: Integer): Byte;
 begin
+  if (Address >= $FF4D) and (Address <= $FF7F) and
+    ReadModelRegister(Address, Result) then
+    Exit;
   Result := $00;
   if (Address <= $7fff) then
   begin
@@ -184,13 +259,18 @@ begin
     Result := FMBC.MbcRead(Address);
   end
   else if (Address >= $8000) and (Address <= $9fff) then
-    Result := FGPU.VRAM[Address - $8000]
+  begin
+    if FGPU.CanAccessVRAM then
+      Result := FGPU.ReadVRAM(Address - $8000)
+    else
+      Result := $FF;
+  end
   else if (Address >= $a000) and (Address <= $bfff) then
     Result := FMBC.MbcRead(Address)
   else if (Address >= $c000) and (Address <= $dfff) then
-    Result := WRAM[Address - $c000]
+    Result := ReadWorkRAM(Address - $c000)
   else if (Address >= $e000) and (Address <= $fdff) then
-    Result := WRAM[Address - $e000]
+    Result := ReadWorkRAM(Address - $e000)
   else if (Address >= $fe00) and (Address <= $FE9F) then
     Result := OAM[Address - $fe00]
   else if (Address = $ff40) then
@@ -214,21 +294,21 @@ begin
   else if (Address = $FF4B) then
     Result := FGPU.WindowX
   else if (Address = $FF00) then
-    Result := TGBJoypad.Instance.GetPressedKeys
+    Result := FJoypad.GetPressedKeys
   else if (Address >= $FF01) and (Address <= $FFFF) then
   begin
     if Address = $FF04 then
-      Result := TGBTimer.Instance.GetDivider
+      Result := FTimer.GetDivider
     else if Address = $FF05 then
-      Result := TGBTimer.Instance.GetCounter
+      Result := FTimer.GetCounter
     else if Address = $FF06 then
-      Result := TGBTimer.Instance.GetModulo
+      Result := FTimer.GetModulo
     else if Address = $FF07 then
-      Result := ProcessUnusedBits(Address, TGBTimer.Instance.GetControl)
+      Result := ProcessUnusedBits(Address, FTimer.GetControl)
     else if Address = $FF0F then
-      Result := ProcessUnusedBits(Address, TGBInterruptManager.Instance.GetInterruptsRaised)
+      Result := ProcessUnusedBits(Address, FInterruptManager.GetInterruptsRaised)
     else if Address = $FFFF then
-      Result := ProcessUnusedBits(Address, TGBInterruptManager.Instance.GetInterruptsEnabled)
+      Result := ProcessUnusedBits(Address, FInterruptManager.GetInterruptsEnabled)
     else if (Address >= $FF80) and (Address <= $FFFE) then
       Result := ProcessUnusedBits(Address, HRAM[Address - $FF80])
     else if (Address >= $FF10) and (Address <= $FF3F) then
@@ -248,6 +328,9 @@ end;
 
 procedure TGBMemory.WriteByte(Address: Integer; Value: Byte);
 begin
+  if (Address >= $FF4D) and (Address <= $FF7F) and
+    WriteModelRegister(Address, Value) then
+    Exit;
   if (Address >= 0) and (Address <= $7FFF) then
   begin
     FMBC.MbcWrite(Address, Value);
@@ -259,15 +342,14 @@ begin
 
   if (Address >= $8000) and (Address <= $9FFF) then
   begin
-    FGPU.VRAM[Address - $8000] := Value;
-    if Address <= $97FF then
-      FGPU.UpdateTile(Address);
+    if FGPU.CanAccessVRAM then
+      FGPU.WriteVRAM(Address - $8000, Value);
   end;
 
   if (Address >= $C000) and (Address <= $DFFF) then
-    WRAM[Address - $C000] := Value
+    WriteWorkRAM(Address - $C000, Value)
   else if (Address >= $E000) and (Address <= $FDFF) then
-    WRAM[Address - $E000] := Value
+    WriteWorkRAM(Address - $E000, Value)
   else if (Address >= $FE00) and (Address <= $FE9F) then
   begin
     OAM[Address - $FE00] := Value;
@@ -278,9 +360,20 @@ begin
   else if (Address >= $FF00) and (Address <= $FF7F) then
   begin
     case Address of
+      $FF26: // Only the APU can set channel status bits.
+        if (Value and $80) = 0 then
+          IOPort[$26] := 0
+        else
+          IOPort[$26] := $80 or (IOPort[$26] and $0F);
+      $FF1A:
+        begin
+          IOPort[$1A] := Value;
+          if (Value and $80) = 0 then
+            IOPort[$26] := IOPort[$26] and $FB;
+        end;
       $FF00: // joypad
         begin
-          TGBJoypad.Instance.SetSelection(Value);
+          FJoypad.SetSelection(Value);
         end;
       $FF40:
         begin
@@ -331,23 +424,23 @@ begin
         end;
       $FF0F:
         begin
-          TGBInterruptManager.Instance.RaiseInterruptByReg(Value);
+          FInterruptManager.RaiseInterruptByReg(Value);
         end;
       $FF04:
         begin
-          TGBTimer.Instance.ClearDivider;
+          FTimer.ClearDivider;
         end;
       $FF05:
         begin
-          TGBTimer.Instance.SetCounter(Value);
+          FTimer.SetCounter(Value);
         end;
       $FF06:
         begin
-          TGBTimer.Instance.SetModulo(Value);
+          FTimer.SetModulo(Value);
         end;
       $FF07:
         begin
-          TGBTimer.Instance.SetControl(Value);
+          FTimer.SetControl(Value);
         end;
     else
       IOPort[Address - $FF00] := Value;
@@ -355,7 +448,7 @@ begin
   end
   else if Address = $FFFF then
   begin
-    TGBInterruptManager.Instance.EnableInterruptByReg(Value);
+    FInterruptManager.EnableInterruptByReg(Value);
   end;
 end;
 
@@ -366,7 +459,6 @@ begin
   WriteByte(Address, LowVal);
   WriteByte((Address + 1) and $FFFF, UpperVal);
 end;
-
 
 procedure TGBMemory.SerializeState(State: TStateArchive);
 begin
@@ -385,3 +477,4 @@ begin
 end;
 
 end.
+

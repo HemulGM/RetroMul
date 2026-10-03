@@ -9,8 +9,8 @@ Builds Release binaries and packages them into releases/RetroMul-<platform>.zip.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('win32', 'win64', 'linux64', 'android64')]
-    [string[]] $Platforms = @('win32', 'win64', 'linux64', 'android64'),
+    [ValidateSet('win32', 'win64', 'linux64', 'android32', 'android64')]
+    [string[]] $Platforms = @('win32', 'win64', 'linux64', 'android32', 'android64'),
     [string] $BdsPath = $env:BDS
 )
 
@@ -56,13 +56,14 @@ Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 New-Item -ItemType Directory -Force -Path $releaseDirectory | Out-Null
 
-$platformNames = @{ win32 = 'Win32'; win64 = 'Win64'; linux64 = 'Linux64'; android64 = 'Android64' }
+$platformNames = @{ win32 = 'Win32'; win64 = 'Win64'; linux64 = 'Linux64'; android32 = 'Android'; android64 = 'Android64' }
 foreach ($prefix in ($Platforms | Select-Object -Unique)) {
     $prefix = $prefix.ToLowerInvariant()
     $platform = $platformNames[$prefix]
+    $isAndroid = $prefix -in @('android32', 'android64')
     $outputDirectory = Join-Path $projectDirectory "$platform\Release"
-    $binaryName = if ($prefix -eq 'android64') { 'RetroMul.apk' } elseif ($prefix -eq 'linux64') { 'RetroMul' } else { 'RetroMul.exe' }
-    $binaryPath = if ($prefix -eq 'android64') {
+    $binaryName = if ($isAndroid) { 'RetroMul.apk' } elseif ($prefix -eq 'linux64') { 'RetroMul' } else { 'RetroMul.exe' }
+    $binaryPath = if ($isAndroid) {
         Join-Path $outputDirectory "RetroMul\bin\$binaryName"
     } else {
         Join-Path $outputDirectory $binaryName
@@ -72,10 +73,10 @@ foreach ($prefix in ($Platforms | Select-Object -Unique)) {
 
     # Delete only the expected previous binary so it cannot pass as a fresh build.
     if (Test-Path -LiteralPath $binaryPath) { Remove-Item -LiteralPath $binaryPath -Force }
-    $target = if ($prefix -eq 'android64') { '/t:Build;Deploy' } else { '/t:Build' }
+    $target = if ($isAndroid) { '/t:Build;Deploy' } else { '/t:Build' }
     $arguments = @($projectFile, '/nologo', '/v:minimal', $target, '/p:Config=Release', "/p:Platform=$platform",
         '/p:DCC_Optimize=true', '/p:DCC_DebugDCUs=false', '/p:DCC_DebugInformation=0', '/p:DCC_LocalDebugSymbols=false')
-    if ($prefix -eq 'android64') {
+    if ($isAndroid) {
         # Debug is RAD Studio's APK packaging mode; Config=Release still controls
         # native compilation. AppStore produces an AAB instead. Use the SDK debug
         # certificate for a sideloadable APK. This packaging mode also enables

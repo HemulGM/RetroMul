@@ -24,6 +24,8 @@ begin
       Result := TMapperNrom.Create(Prg, Chr, HasChrRam, MirrorMode);
     MAPPER_MMC1:
       Result := TMapperMmc1.Create(Prg, Chr, HasChrRam, MirrorMode);
+    155: // NES 2.0/iNES mapper 155 identifies MMC1A, with RAM permanently enabled.
+      Result := TMapperMmc1.Create(Prg, Chr, HasChrRam, MirrorMode, True);
     MAPPER_UXROM:
       Result := TMapperUxrom.Create(Prg, Chr, HasChrRam, MirrorMode, Submapper = 2);
     MAPPER_CNROM:

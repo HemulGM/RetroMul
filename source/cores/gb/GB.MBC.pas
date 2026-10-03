@@ -19,6 +19,13 @@ type
     FIsROMMode: Boolean;
     FRAM: array of Integer;
     FBankLow, FBankHigh, FROMBankCount: Integer;
+    FHasTimer, FRTCLatched: Boolean;
+    FRTC, FRTCSnapshot: array[0..4] of Byte;
+    FRTCLatchWrite: Byte;
+    FRTCLastTime: Int64;
+    FRTCClock: TFunc<Int64>;
+    function RTCNow: Int64;
+    procedure UpdateRTC;
     procedure UpdateBanks;
   public
     ROMBankSelected: Integer;
@@ -26,15 +33,23 @@ type
     function MbcRead(Address: Integer): Integer;
     procedure MbcWrite(Address, Value: Integer);
     function IsCGBCartridge: Boolean;
-    constructor Create(AROM: TGBROM); overload;
+    constructor Create(AROM: TGBROM; const RTCClock: TFunc<Int64> = nil); overload;
+    function SaveMemory: TBytes;
+    procedure LoadSaveMemory(const Data: TBytes);
+    function RTCData: TBytes;
+    procedure LoadRTCData(const Data: TBytes);
+    function HasBattery: Boolean;
+    property HasTimer: Boolean read FHasTimer;
     procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
 
+uses System.DateUtils;
+
 { TGBMBC }
 
-constructor TGBMBC.Create(AROM: TGBROM);
+constructor TGBMBC.Create(AROM: TGBROM; const RTCClock: TFunc<Int64>);
 begin
   inherited Create;
   if AROM = nil then
@@ -44,6 +59,9 @@ begin
       TMapperType.MBC3, TMapperType.MBC5]) then
     raise ENotSupportedException.Create('Unsupported cartridge: ' + AROM.GetCartridgeType.Name);
   FROM := AROM;
+  FRTCClock := RTCClock;
+  FHasTimer := FROM.GetCartridgeType.HasTimer;
+  FRTCLastTime := RTCNow;
   FROMBankCount := Length(FROM.ROMData) div $4000;
   if FROMBankCount = 0 then
     FROMBankCount := 1;
@@ -88,6 +106,90 @@ begin
   end;
 end;
 
+function TGBMBC.RTCNow: Int64;
+begin
+  if Assigned(FRTCClock) then
+    Result := FRTCClock()
+  else
+    Result := DateTimeToUnix(Now, False);
+end;
+
+procedure TGBMBC.UpdateRTC;
+begin
+  if not FHasTimer then
+    Exit;
+  var Current := RTCNow;
+  var Elapsed := Current - FRTCLastTime;
+  FRTCLastTime := Current;
+  if (Elapsed <= 0) or ((FRTC[4] and $40) <> 0) then
+    Exit;
+  var Days := Integer(FRTC[3]) or ((Integer(FRTC[4]) and 1) shl 8);
+  var Total := Int64(Days) * 86400 + Integer(FRTC[2]) * 3600 +
+    Integer(FRTC[1]) * 60 + FRTC[0] + Elapsed;
+  FRTC[0] := Total mod 60;
+  FRTC[1] := (Total div 60) mod 60;
+  FRTC[2] := (Total div 3600) mod 24;
+  var TotalDays := Total div 86400;
+  if TotalDays >= 512 then
+    FRTC[4] := FRTC[4] or $80;
+  FRTC[3] := TotalDays and $FF;
+  FRTC[4] := (FRTC[4] and $C0) or ((TotalDays shr 8) and 1);
+end;
+
+function TGBMBC.HasBattery: Boolean;
+begin
+  Result := FROM.GetCartridgeType.HasBattery;
+end;
+
+function TGBMBC.SaveMemory: TBytes;
+begin
+  SetLength(Result, Length(FRAM));
+  for var I := 0 to High(FRAM) do
+    Result[I] := FRAM[I];
+end;
+
+procedure TGBMBC.LoadSaveMemory(const Data: TBytes);
+begin
+  if Length(Data) <> Length(FRAM) then
+    raise EReadError.Create('Invalid Game Boy battery RAM size');
+  for var I := 0 to High(FRAM) do
+    if FROM.GetCartridgeType.MapperType = TMapperType.MBC2 then
+      FRAM[I] := Data[I] and $0F
+    else
+      FRAM[I] := Data[I];
+end;
+
+function TGBMBC.RTCData: TBytes;
+begin
+  Result := nil;
+  if not FHasTimer then
+    Exit;
+  UpdateRTC;
+  SetLength(Result, 17);
+  Result[0] := Ord('G'); Result[1] := Ord('B');
+  Result[2] := Ord('R'); Result[3] := 1;
+  Move(FRTC[0], Result[4], 5);
+  Move(FRTCLastTime, Result[9], SizeOf(FRTCLastTime));
+end;
+
+procedure TGBMBC.LoadRTCData(const Data: TBytes);
+begin
+  if not FHasTimer or (Length(Data) <> 17) then
+    raise EReadError.Create('Invalid Game Boy RTC save size');
+  if (Data[0] <> Ord('G')) or (Data[1] <> Ord('B')) or
+    (Data[2] <> Ord('R')) or (Data[3] <> 1) or
+    (Data[4] > 63) or (Data[5] > 63) or (Data[6] > 31) or
+    ((Data[8] and $3E) <> 0) then
+    raise EReadError.Create('Invalid Game Boy RTC save');
+  var SavedTime: Int64;
+  Move(Data[9], SavedTime, SizeOf(SavedTime));
+  if (SavedTime < 0) or (SavedTime > 253402300799) then
+    raise EReadError.Create('Invalid Game Boy RTC timestamp');
+  Move(Data[4], FRTC[0], 5);
+  FRTCLastTime := SavedTime;
+  UpdateRTC;
+end;
+
 function TGBMBC.IsCGBCartridge: Boolean;
 begin
   Result := Assigned(FROM) and Assigned(FROM.Cartridge) and
@@ -99,6 +201,17 @@ begin
   Result := $FF;
   if (Address < 0) or (Address > $BFFF) then
     Exit;
+  if (FROM.GetCartridgeType.MapperType = TMapperType.MBC3) and
+    (Address >= $A000) and FRAMEnabled and FHasTimer and
+    (RAMBankSelected >= 8) and (RAMBankSelected <= 12) then
+  begin
+    UpdateRTC;
+    if FRTCLatched then
+      Result := FRTCSnapshot[RAMBankSelected - 8]
+    else
+      Result := FRTC[RAMBankSelected - 8];
+    Exit;
+  end;
   case FROM.GetCartridgeType.MapperType of
     TMapperType.ROMOnly:
       if Address < $8000 then
@@ -225,7 +338,27 @@ begin
       FBankHigh := Value and $0F;
       UpdateBanks;
     end
-    // $6000-$7FFF latches the RTC, which is not present on cartridge type $13.
+    else if Address <= $7FFF then
+    begin
+      if FHasTimer and (FRTCLatchWrite = 0) and (Value = 1) then
+      begin
+        UpdateRTC;
+        FRTCSnapshot := FRTC;
+        FRTCLatched := True;
+      end;
+      FRTCLatchWrite := Value and $FF;
+    end
+    else if (Address >= $A000) and FRAMEnabled and FHasTimer and
+      (RAMBankSelected >= 8) and (RAMBankSelected <= 12) then
+    begin
+      UpdateRTC;
+      case RAMBankSelected of
+        8, 9: FRTC[RAMBankSelected - 8] := Value and $3F;
+        10: FRTC[2] := Value and $1F;
+        11: FRTC[3] := Value and $FF;
+        12: FRTC[4] := Value and $C1;
+      end;
+    end
     else if (Address >= $A000) and FRAMEnabled and FHasRAM and
       (RAMBankSelected <= 3) then
     begin
@@ -279,6 +412,8 @@ end;
 
 procedure TGBMBC.SerializeState(State: TStateArchive);
 begin
+  if not State.Loading then
+    UpdateRTC;
   State.Field(FRAMEnabled, SizeOf(FRAMEnabled));
   State.Field(FHasRAM, SizeOf(FHasRAM));
   State.Field(FIsROMMode, SizeOf(FIsROMMode));
@@ -289,6 +424,13 @@ begin
   State.Field(FROMBankCount, SizeOf(FROMBankCount));
   State.Field(ROMBankSelected, SizeOf(ROMBankSelected));
   State.Field(RAMBankSelected, SizeOf(RAMBankSelected));
+  State.Field(FRTC, SizeOf(FRTC));
+  State.Field(FRTCSnapshot, SizeOf(FRTCSnapshot));
+  State.Field(FRTCLatched, SizeOf(FRTCLatched));
+  State.Field(FRTCLatchWrite, SizeOf(FRTCLatchWrite));
+  // Snapshot restores emulated clock values, not elapsed host time since capture.
+  if State.Loading then
+    FRTCLastTime := RTCNow;
 end;
 
 end.

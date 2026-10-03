@@ -325,6 +325,11 @@ begin
   if FMapper = nil then
     raise ENesException.CreateFmt('Unsupported mapper: %d', [FMapperId]);
 
+  // Trainer data initializes the cartridge's CPU RAM before battery activation.
+  // A persisted save, when present, subsequently takes precedence.
+  for var I := 0 to Length(Trainer) - 1 do
+    FMapper.CpuWrite($7000 + I, Trainer[I]);
+
   FValid := True;
 end;
 

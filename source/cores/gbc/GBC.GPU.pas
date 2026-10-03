@@ -199,11 +199,17 @@ begin
     $FF68:
       Result := FBGPaletteIndex;
     $FF69:
-      Result := FBGPaletteRAM[FBGPaletteIndex and $3F];
+      if CanAccessVRAM then
+        Result := FBGPaletteRAM[FBGPaletteIndex and $3F]
+      else
+        Result := $FF;
     $FF6A:
       Result := FOBJPaletteIndex;
   else
-    Result := FOBJPaletteRAM[FOBJPaletteIndex and $3F];
+    if CanAccessVRAM then
+      Result := FOBJPaletteRAM[FOBJPaletteIndex and $3F]
+    else
+      Result := $FF;
   end;
 end;
 
@@ -214,7 +220,8 @@ begin
       FBGPaletteIndex := Value and $BF;
     $FF69:
       begin
-        FBGPaletteRAM[FBGPaletteIndex and $3F] := Value;
+        if CanAccessVRAM then
+          FBGPaletteRAM[FBGPaletteIndex and $3F] := Value;
         if (FBGPaletteIndex and $80) <> 0 then
           FBGPaletteIndex := $80 or ((FBGPaletteIndex + 1) and $3F);
       end;
@@ -222,7 +229,8 @@ begin
       FOBJPaletteIndex := Value and $BF;
     $FF6B:
       begin
-        FOBJPaletteRAM[FOBJPaletteIndex and $3F] := Value;
+        if CanAccessVRAM then
+          FOBJPaletteRAM[FOBJPaletteIndex and $3F] := Value;
         if (FOBJPaletteIndex and $80) <> 0 then
           FOBJPaletteIndex := $80 or ((FOBJPaletteIndex + 1) and $3F);
       end;
@@ -494,8 +502,8 @@ begin
       if FCGBMode then
         DrawSprite :=
           (not FBackgroundEnabled) or
-          ((not PriorityRow[X]) and
-          ((not Sprite.BelowBackground) or (ScanlineRow[X] = 0)))
+          (ScanlineRow[X] = 0) or
+          ((not PriorityRow[X]) and (not Sprite.BelowBackground))
       else
         DrawSprite := (not Sprite.BelowBackground) or (ScanlineRow[X] = 0);
       if DrawSprite then
@@ -532,7 +540,15 @@ begin
       TGPUMode.HBlank:
         Duration := 456 - 80 - FMode3Cycles;
     else
-      Duration := 456;
+      // LY becomes zero four dots into the final VBlank line, while STAT
+      // stays in mode 1 for the remaining 452 dots. Games use this interval
+      // to prepare palettes before the first visible line (Aladdin).
+      if Line = 153 then
+        Duration := 4
+      else if Line = 0 then
+        Duration := 452
+      else
+        Duration := 456;
     end;
     if ModeClock < Duration then
       Break;
@@ -571,15 +587,17 @@ begin
         end;
       TGPUMode.VBlank:
         begin
-          Inc(Line);
-          if Line > 153 then
+          if Line = 153 then
+            Line := 0
+          else if Line = 0 then
           begin
-            Line := 0;
             SnapshotDisplayVRAM;
             FWindowLine := 0;
             FWindowTriggered := False;
             FCurrentMode := TGPUMode.OAMAccess;
-          end;
+          end
+          else
+            Inc(Line);
         end;
     end;
     ProcessLCDStatus;

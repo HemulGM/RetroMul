@@ -14,12 +14,12 @@ type
   private
     FInterruptManager: TGBInterruptManager;
     FDivider, FControl, FModulo, FCounter, FTicksSinceOverflow: Integer;
-    FPreviousBit, FOverflow: Boolean;
+    FPreviousBit, FOverflow, FReloadCycle, FColorHardware: Boolean;
     FFrequencyBits: array[0..3] of Integer;
     procedure IncrementCounter;
     procedure UpdateDivider(NewDivider: Integer);
   public
-    constructor Create(AInterruptManager: TGBInterruptManager = nil); overload;
+    constructor Create(AInterruptManager: TGBInterruptManager = nil; ColorHardware: Boolean = False); overload;
     procedure Step(StepCount: Integer);
     procedure Tick;
     procedure ClearDivider;
@@ -45,8 +45,9 @@ begin
   UpdateDivider(0);
 end;
 
-constructor TGBTimer.Create(AInterruptManager: TGBInterruptManager);
+constructor TGBTimer.Create(AInterruptManager: TGBInterruptManager; ColorHardware: Boolean);
 begin
+  FColorHardware := ColorHardware;
   FInterruptManager := AInterruptManager;
   if FInterruptManager = nil then
     FInterruptManager := TGBInterruptManager.Instance;
@@ -92,6 +93,8 @@ end;
 
 procedure TGBTimer.IncrementCounter;
 begin
+  if FOverflow or FReloadCycle then
+    Exit;
   Inc(FCounter);
   FCounter := FCounter mod $100;
   if FCounter <> 0 then
@@ -113,16 +116,17 @@ begin
   FControl := Value and 7;
   var NewBitPosition := FFrequencyBits[FControl and 3];
   var NewTimerBit := ((FDivider and (1 shl NewBitPosition)) <> 0) and ((FControl and 4) <> 0);
-  if OldTimerBit and not NewTimerBit then
+  if OldTimerBit and not NewTimerBit and
+    (not FColorHardware or ((FControl and 4) <> 0)) then
     IncrementCounter;
   FPreviousBit := NewTimerBit;
 end;
 
 procedure TGBTimer.SetCounter(Value: Integer);
 begin
-  if FTicksSinceOverflow >= 5 then
+  if FReloadCycle then
     Exit;
-  FCounter := Value;
+  FCounter := Value and $FF;
   FOverflow := False;
   FTicksSinceOverflow := 0;
 end;
@@ -134,7 +138,9 @@ end;
 
 procedure TGBTimer.SetModulo(Value: Integer);
 begin
-  FModulo := Value;
+  FModulo := Value and $FF;
+  if FReloadCycle then
+    FCounter := FModulo;
 end;
 
 procedure TGBTimer.Step(StepCount: Integer);
@@ -145,20 +151,21 @@ end;
 
 procedure TGBTimer.Tick;
 begin
-  UpdateDivider((FDivider + 1) and $ffff);
-  if not FOverflow then
-    Exit;
-  Inc(FTicksSinceOverflow);
-  if FTicksSinceOverflow = 4 then
-    FInterruptManager.RaiseInterruptByIndex(2); // 'TIMER_OVERFLOW';
-  if FTicksSinceOverflow = 5 then
-    FCounter := FModulo;
-  if FTicksSinceOverflow = 6 then
+  FReloadCycle := False;
+  // Advance a pending overflow before the divider can start a new one.
+  if FOverflow then
   begin
-    FCounter := FModulo;
-    FOverflow := False;
-    FTicksSinceOverflow := 0;
+    Inc(FTicksSinceOverflow);
+    if FTicksSinceOverflow = 4 then
+    begin
+      FCounter := FModulo;
+      FInterruptManager.RaiseInterruptByIndex(2);
+      FOverflow := False;
+      FTicksSinceOverflow := 0;
+      FReloadCycle := True;
+    end;
   end;
+  UpdateDivider((FDivider + 1) and $FFFF);
 end;
 
 procedure TGBTimer.UpdateDivider(NewDivider: Integer);
@@ -180,6 +187,7 @@ begin
   State.Field(FTicksSinceOverflow, SizeOf(FTicksSinceOverflow));
   State.Field(FPreviousBit, SizeOf(FPreviousBit));
   State.Field(FOverflow, SizeOf(FOverflow));
+  State.Field(FReloadCycle, SizeOf(FReloadCycle));
   State.Field(FFrequencyBits, SizeOf(FFrequencyBits));
 end;
 

@@ -24,7 +24,7 @@ uses
 
 constructor TGBCTimer.Create;
 begin
-  inherited Create(TGBCInterruptManager.Instance);
+  inherited Create(TGBCInterruptManager.Instance, True);
 end;
 
 class function TGBCTimer.GetColorInstance: TGBCTimer;

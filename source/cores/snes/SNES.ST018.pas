@@ -6,6 +6,12 @@ uses
   System.SysUtils, Core.Snapshots;
 
 type
+  TArmProduct = record
+    Value: UInt64;
+    Carry: Boolean;
+    Cycles: Integer;
+  end;
+
   TArmState = packed record
     R: array[0..15] of Cardinal;
     CPSR: Cardinal;
@@ -54,14 +60,11 @@ type
     procedure SerializeState(Archive: TStateArchive);
   end;
 
+function ArmMultiply(A, B, Accumulator: UInt64; LongResult, SignedResult: Boolean): TArmProduct;
+
 implementation
 
 type
-  TArmProduct = record
-    Value: UInt64;
-    Carry: Boolean;
-    Cycles: Integer;
-  end;
 
   TArmWide = record
     Lo, Hi: UInt64;

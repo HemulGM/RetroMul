@@ -133,9 +133,12 @@ begin
   var Magic: AnsiString := 'RMSNAP01';
   Move(Magic[1], Result.Magic, 8);
   Result.Version := 1;
-  // MD v3 adds timed VDP FIFO/DMA and raster state.
+  // GB/GBC v2 adds OAM DMA, serial, timer reload and MBC3 RTC state.
+  if (PlatformCore = 'GB') or (PlatformCore = 'GBC') then
+    Result.Version := 2;
+  // MD v4 adds Z80 HALT, interrupt mode and EI delay.
   if PlatformCore = 'MD' then
-    Result.Version := 3;
+    Result.Version := 4;
   // SNES v7 adds the CPU-cycle NMI edge delay to the system state.
   if PlatformCore = 'SNES' then
     Result.Version := 7;

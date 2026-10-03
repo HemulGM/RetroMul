@@ -12,6 +12,7 @@ type
     FChrMemory: TByteArray;
     FPrgRam: array[0..$1FFF] of UInt8;
     FHasChrRam: Boolean;
+    FForceRamEnabled: Boolean;
     FBoardMirrorMode: TMirrorMode;
     FShiftRegister: UInt8;
     FWriteCount: Integer;
@@ -29,7 +30,7 @@ type
     procedure SerializeState(State: TNesStateArchive); override;
     function GetSaveMemory: TByteArray; override;
     procedure SetSaveMemory(const Data: TByteArray); override;
-    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode);
+    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; ForceRamEnabled: Boolean = False);
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function CpuWriteTimed(Address: UInt16; Value: UInt8; CpuCycle: UInt64): Boolean; override;
@@ -79,13 +80,14 @@ begin
   Move(Data[0], FPrgRam[0], Length(Data));
 end;
 
-constructor TMapperMmc1.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode);
+constructor TMapperMmc1.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; ForceRamEnabled: Boolean);
 begin
   inherited Create;
   ValidateMemory(APrgRom, AChrData);
   FPrgRom := Copy(APrgRom);
   FChrMemory := Copy(AChrData);
   FHasChrRam := AHasChrRam;
+  FForceRamEnabled := ForceRamEnabled;
   FBoardMirrorMode := AMirrorMode;
   if Length(FChrMemory) = 0 then
     SetLength(FChrMemory, $2000);
@@ -126,6 +128,8 @@ begin
   var Offset: Integer;
   if (Address >= $6000) and (Address < $8000) then
   begin
+    if not FForceRamEnabled and ((FPrgBank and $10) <> 0) then
+      Exit(False); // Unmapped PRG RAM leaves the CPU's open bus intact.
     Value := FPrgRam[Address and $1FFF];
     Exit(True);
   end;
@@ -172,7 +176,8 @@ function TMapperMmc1.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
   if (Address >= $6000) and (Address < $8000) then
   begin
-    FPrgRam[Address and $1FFF] := Value;
+    if FForceRamEnabled or ((FPrgBank and $10) = 0) then
+      FPrgRam[Address and $1FFF] := Value;
     Exit(True);
   end;
 

@@ -550,7 +550,7 @@ begin
             // An INIDISP write on the first vblank line resets OAM if blank was active.
             if (A = $2100) and (FState.Line = FPPU.Height + 1) and ((FPPU.State.Regs[0] and $80) <> 0) then
               FPPU.State.OAMAddress := FPPU.State.OAMReload;
-            FPPU.Write(Word(A), Value);
+            FPPU.Write(Word(A), Value, FState.Line);
           end;
         $2140..$217F:
           begin

@@ -43,7 +43,7 @@ type
     State: TSnesPPUState;
     constructor Create;
     procedure Reset;
-    procedure Write(Address: Word; Value: Byte);
+    procedure Write(Address: Word; Value: Byte; V: Integer = 0);
     function Read(Address: Word; OpenBus: Byte; H, V: Integer; PAL, Odd: Boolean; LatchEnabled: Boolean = True): Byte;
     procedure LatchCounters(H, V: Integer);
     procedure RenderLine(Y: Integer; Odd: Boolean = False);
@@ -125,7 +125,7 @@ begin
     Result := 512 + (Result and 31);
 end;
 
-procedure TSnesPPU.Write(Address: Word; Value: Byte);
+procedure TSnesPPU.Write(Address: Word; Value: Byte; V: Integer);
 begin
   var R := Address and $FF;
   if R > $33 then
@@ -179,7 +179,8 @@ begin
       end;
     $18, $19:
       begin
-        State.VRAM[(VRAMIndex + R - $18) and $FFFF] := Value;
+        if ((State.Regs[0] and $80) <> 0) or (V >= Height + 1) then
+          State.VRAM[(VRAMIndex + R - $18) and $FFFF] := Value;
         if ((R = $19) = ((State.Regs[$15] and $80) <> 0)) then
           IncrementVRAM;
       end;

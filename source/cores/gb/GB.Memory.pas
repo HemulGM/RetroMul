@@ -35,10 +35,15 @@ type
     function ReadModelRegister(Address: Integer; out Value: Byte): Boolean; virtual;
     function WriteModelRegister(Address: Integer; Value: Byte): Boolean; virtual;
     function GetDoubleSpeed: Boolean; virtual;
+    function ReadDMASource(Address: Integer): Byte;
   private
     FTimer: TGBTimer;
     FInterruptManager: TGBInterruptManager;
     FJoypad: TGBJoypad;
+    FDMASource, FDMAIndex, FDMAClocks: Integer;
+    FDMAActive: Boolean;
+    FSerialClocks, FSerialBits: Integer;
+    function DMABlocksCPU(Address: Integer): Boolean;
   public
     // 0000-3FFF   16KB ROM Bank 00     (in cartridge, fixed at bank 00)
     ROMBank00: array[0..16383] of Byte;
@@ -76,6 +81,7 @@ type
     function PerformSpeedSwitch: Boolean; virtual;
     function StopHalts: Boolean; virtual;
     function ConsumeDMACyclePenalty: Integer; virtual;
+    procedure StepHardware(Clocks: Integer);
     property DoubleSpeed: Boolean read GetDoubleSpeed;
     property Timer: TGBTimer read FTimer;
     property InterruptManager: TGBInterruptManager read FInterruptManager;
@@ -133,6 +139,78 @@ begin
   Result := 0;
 end;
 
+function TGBMemory.DMABlocksCPU(Address: Integer): Boolean;
+begin
+  Result := False;
+  if not FDMAActive or ((Address >= $FF80) and (Address <= $FFFE)) or
+    (Address = $FF46) then
+    Exit;
+  if not IsCGBMode then
+    Exit(True);
+  // CGB separates the cartridge and WRAM buses. OAM remains unavailable.
+  Result := ((Address >= $FE00) and (Address < $FEA0)) or
+    ((FDMASource < $8000) and ((Address < $8000) or
+      ((Address >= $A000) and (Address < $C000)))) or
+    (((FDMASource >= $A000) and (FDMASource < $C000)) and
+      ((Address < $8000) or ((Address >= $A000) and (Address < $C000)))) or
+    ((FDMASource >= $C000) and (Address >= $C000) and (Address < $FE00)) or
+    (((FDMASource >= $8000) and (FDMASource < $A000)) and
+      (Address >= $8000) and (Address < $A000));
+end;
+
+function TGBMemory.ReadDMASource(Address: Integer): Byte;
+begin
+  // DMA bypasses CPU/PPU access restrictions, using the currently selected banks.
+  if Address < $8000 then
+    Result := FMBC.MbcRead(Address)
+  else if Address < $A000 then
+    Result := FGPU.ReadVRAM(Address - $8000)
+  else if Address < $C000 then
+    Result := FMBC.MbcRead(Address)
+  else
+    Result := ReadWorkRAM((Address - $C000) and $1FFF);
+end;
+
+procedure TGBMemory.StepHardware(Clocks: Integer);
+begin
+  if not FDMAActive and ((IOPort[$02] and $81) <> $81) then
+    Exit;
+  for var I := 1 to Clocks do
+  begin
+    if FDMAActive then
+    begin
+      Inc(FDMAClocks);
+      if FDMAClocks = 4 then
+      begin
+        FDMAClocks := 0;
+        var Value := ReadDMASource(FDMASource + FDMAIndex);
+        OAM[FDMAIndex] := Value;
+        FGPU.BuildSprite(FDMAIndex, Value);
+        Inc(FDMAIndex);
+        FDMAActive := FDMAIndex < 160;
+      end;
+    end;
+    if ((IOPort[$02] and $81) = $81) then
+    begin
+      Inc(FSerialClocks);
+      var Period := 512;
+      if IsCGBMode and ((IOPort[$02] and 2) <> 0) then
+        Period := 16;
+      if FSerialClocks >= Period then
+      begin
+        FSerialClocks := 0;
+        IOPort[$01] := ((Integer(IOPort[$01]) shl 1) or 1) and $FF;
+        Inc(FSerialBits);
+        if FSerialBits = 8 then
+        begin
+          IOPort[$02] := IOPort[$02] and $7F;
+          FInterruptManager.RaiseInterruptByIndex(1);
+        end;
+      end;
+    end;
+  end;
+end;
+
 { TGBMemory }
 
 constructor TGBMemory.Create(AMbc: TGBMBC; AGPU: TGBVideo; ATimer: TGBTimer; AInterruptManager: TGBInterruptManager; AJoypad: TGBJoypad);
@@ -159,6 +237,12 @@ end;
 
 procedure TGBMemory.InitializeMemory;
 begin
+  FDMAActive := False;
+  FDMASource := 0;
+  FDMAIndex := 0;
+  FDMAClocks := 0;
+  FSerialClocks := 0;
+  FSerialBits := 0;
   for var i := 0 to High(ROMBank00) do
     ROMBank00[i] := $00;
   for var i := 0 to High(ROMBank01NN) do
@@ -189,7 +273,10 @@ begin
   case Address of
     $FF02:
       begin
-        Ret := Value or $7E;
+        if IsCGBMode then
+          Ret := Value or $7C
+        else
+          Ret := Value or $7E;
       end;
     $FF07:
       begin
@@ -237,6 +324,8 @@ end;
 
 function TGBMemory.ReadByte(Address: Integer): Byte;
 begin
+  if DMABlocksCPU(Address) then
+    Exit($FF);
   if (Address >= $FF4D) and (Address <= $FF7F) and
     ReadModelRegister(Address, Result) then
     Exit;
@@ -297,7 +386,9 @@ begin
     Result := FJoypad.GetPressedKeys
   else if (Address >= $FF01) and (Address <= $FFFF) then
   begin
-    if Address = $FF04 then
+    if (Address = $FF01) or (Address = $FF02) or (Address = $FF46) then
+      Result := ProcessUnusedBits(Address, IOPort[Address - $FF00])
+    else if Address = $FF04 then
       Result := FTimer.GetDivider
     else if Address = $FF05 then
       Result := FTimer.GetCounter
@@ -328,6 +419,8 @@ end;
 
 procedure TGBMemory.WriteByte(Address: Integer; Value: Byte);
 begin
+  if DMABlocksCPU(Address) then
+    Exit;
   if (Address >= $FF4D) and (Address <= $FF7F) and
     WriteModelRegister(Address, Value) then
     Exit;
@@ -360,6 +453,12 @@ begin
   else if (Address >= $FF00) and (Address <= $FF7F) then
   begin
     case Address of
+      $FF02:
+        begin
+          IOPort[$02] := Value and $83;
+          FSerialClocks := 0;
+          FSerialBits := 0;
+        end;
       $FF26: // Only the APU can set channel status bits.
         if (Value and $80) = 0 then
           IOPort[$26] := 0
@@ -401,8 +500,14 @@ begin
         FGPU.WindowX := Value;
       $FF46:
         begin // OAM DMA
-          for var i := 0 to 159 do
-            WriteByte($FE00 + i, ReadByte((Value shl 8) + i));
+          IOPort[$46] := Value;
+          FDMASource := Value shl 8;
+          // E000-FFFF mirrors C000-DFFF on the DMA source bus.
+          if FDMASource >= $E000 then
+            Dec(FDMASource, $2000);
+          FDMAIndex := 0;
+          FDMAClocks := 0;
+          FDMAActive := True;
         end;
       $FF47:
         begin
@@ -474,6 +579,12 @@ begin
   State.Field(IOPort, SizeOf(IOPort));
   State.Field(HRAM, SizeOf(HRAM));
   State.Field(UseBIOS, SizeOf(UseBIOS));
+  State.Field(FDMASource, SizeOf(FDMASource));
+  State.Field(FDMAIndex, SizeOf(FDMAIndex));
+  State.Field(FDMAClocks, SizeOf(FDMAClocks));
+  State.Field(FDMAActive, SizeOf(FDMAActive));
+  State.Field(FSerialClocks, SizeOf(FSerialClocks));
+  State.Field(FSerialBits, SizeOf(FSerialBits));
 end;
 
 end.

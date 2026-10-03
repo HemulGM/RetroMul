@@ -157,7 +157,7 @@ begin
   if FHDMARemainingBlocks <= 0 then
     Exit;
   for var I := 0 to $0F do
-    FColorGPU.WriteVRAM((FHDMADestination + I) and $1FFF, ReadByte((FHDMASource + I) and $FFFF));
+    FColorGPU.WriteVRAM((FHDMADestination + I) and $1FFF, ReadDMASource((FHDMASource + I) and $FFFF));
   // A 16-byte CGB DMA block occupies the CPU bus for eight machine cycles
   // (32 normal-speed clock cycles).  Peripheral time still advances while
   // the CPU is paused, so the CPU consumes this after the current operation.

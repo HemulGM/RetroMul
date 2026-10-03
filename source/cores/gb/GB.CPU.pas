@@ -468,6 +468,7 @@ begin
       BaseCycles := BaseCycles div 2;
     Inc(FCycles, BaseCycles);
     FMemory.Timer.Step(Cycles);
+    FMemory.StepHardware(Cycles);
     FGPU.Step(BaseCycles);
     if FSound <> nil then
       FSound.UpdateSound(BaseCycles);

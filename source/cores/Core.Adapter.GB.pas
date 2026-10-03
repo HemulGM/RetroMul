@@ -43,6 +43,7 @@ type
   protected
     FThread: TGBEmulationThread;
     FSnapshotDirectory: string;
+    FSavePath: string;
     FStorage: IStorage;
     FROMData: TArray<Byte>;
     FGamepadInput: TEmulatorInput;
@@ -144,6 +145,7 @@ begin
     ROM.Free;
   end;
   FSnapshotDirectory := FStorage.GameSnapshots(ConfigPrefix, RomName, SnapshotIdentity(FROMData));
+  FSavePath := FStorage.GameSave(ConfigPrefix, RomName, SnapshotIdentity(FROMData));
   CreateThread;
 end;
 
@@ -152,6 +154,7 @@ begin
   FThread := CreateWorker;
   FThread.Storage := FStorage;
   FThread.SnapshotDirectory := FSnapshotDirectory;
+  FThread.SavePath := FSavePath;
   FThread.SoundVolume := FConfig.AudioVolume;
 end;
 

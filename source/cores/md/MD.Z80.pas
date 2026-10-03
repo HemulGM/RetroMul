@@ -43,6 +43,8 @@ type
     i: Byte;
     InterruptsEnabled: Byte;
     InterruptPending: Byte;
+    Halted: Boolean;
+    InterruptMode, EIDelay: Byte;
   end;
 
   TZ80ReadCallback = function(UserData: Pointer; Address: Cardinal): Cardinal;
@@ -1207,7 +1209,7 @@ begin
         State.F := Byte(State.F xor FLAG_MASK_CARRY);
       end;
     CLOWNZ80_OPCODE_HALT:
-      ;
+      State.Halted := True;
     CLOWNZ80_OPCODE_ADD_A:
       begin
         var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
@@ -1430,10 +1432,12 @@ begin
     CLOWNZ80_OPCODE_DI:
       begin
         State.InterruptsEnabled := 0;
+        State.EIDelay := 0;
       end;
     CLOWNZ80_OPCODE_EI:
       begin
         State.InterruptsEnabled := 1;
+        State.EIDelay := 2;
       end;
     CLOWNZ80_OPCODE_PUSH:
       begin
@@ -1725,7 +1729,7 @@ begin
         State.A := Byte(ResultValue);
       end;
     CLOWNZ80_OPCODE_IM:
-      ; // Interrupt modes are not modelled by this core.
+      State.InterruptMode := Instruction.Metadata.EmbeddedLiteral;
       CLOWNZ80_OPCODE_LD_I_A:
       begin
         State.Cycles := Word(State.Cycles + 1);
@@ -2014,6 +2018,9 @@ begin
   State.ProgramCounter := 0;
   State.InterruptsEnabled := 0;
   State.InterruptPending := 0;
+  State.Halted := False;
+  State.InterruptMode := 0;
+  State.EIDelay := 0;
 end;
 
 procedure Z80Interrupt(var State: TZ80State; AssertInterrupt: Byte);
@@ -2025,22 +2032,42 @@ function Z80DoInstruction(var State: TZ80State; var Callbacks: TZ80ReadAndWriteC
 begin
   var Instruction: TZ80Instruction;
   State.Cycles := 0;
-  DecodeInstruction(State, Callbacks, Instruction);
-  ExecuteInstruction(State, Callbacks, Instruction);
-  var Temp439: Integer := Ord((State.InterruptPending <> 0) and (State.InterruptsEnabled <> 0));
-  var Temp438: Integer := Ord((Temp439 <> 0) and (Instruction.Metadata.Opcode <> CLOWNZ80_OPCODE_DD_PREFIX));
-  var Temp437: Integer := Ord((Temp438 <> 0) and (Instruction.Metadata.Opcode <> CLOWNZ80_OPCODE_FD_PREFIX));
-  if (Temp437 <> 0) and (Instruction.Metadata.Opcode <> CLOWNZ80_OPCODE_EI) then
+  // Interrupts are accepted at instruction boundaries, never between DD/FD and
+  // the following opcode. EI defers acceptance until one full instruction ends.
+  if (State.InterruptPending <> 0) and (State.InterruptsEnabled <> 0) and
+    (State.EIDelay = 0) and (State.RegisterMode = CLOWNZ80_REGISTER_MODE_HL) then
   begin
     State.InterruptsEnabled := 0;
-    State.InterruptPending := 0;
-    State.Cycles := Word(State.Cycles + 13);
+    State.Halted := False;
+    State.R := Byte((State.R and $80) or ((State.R + 1) and $7F));
+    State.Cycles := 13;
     State.StackPointer := (State.StackPointer + $FFFF) and $FFFF;
     Callbacks.WriteCallback(Callbacks.UserData, State.StackPointer, ArithmeticShiftRight(State.ProgramCounter, 8));
     State.StackPointer := (State.StackPointer + $FFFF) and $FFFF;
     Callbacks.WriteCallback(Callbacks.UserData, State.StackPointer, (State.ProgramCounter and $FF));
-    State.ProgramCounter := $38;
+    // The Mega Drive's undriven interrupt data bus supplies $FF (RST $38 in IM 0).
+    if State.InterruptMode = 2 then
+    begin
+      State.ProgramCounter := Word(MemoryRead16Bit(State, Callbacks,
+        (Cardinal(State.i) shl 8) or $FF));
+      State.Cycles := 19;
+    end
+    else
+      State.ProgramCounter := $38;
+    Exit(State.Cycles);
   end;
+  if State.Halted then
+  begin
+    State.R := Byte((State.R and $80) or ((State.R + 1) and $7F));
+    State.Cycles := 4;
+    Exit(State.Cycles);
+  end;
+  DecodeInstruction(State, Callbacks, Instruction);
+  ExecuteInstruction(State, Callbacks, Instruction);
+  if (State.EIDelay > 0) and
+    (Instruction.Metadata.Opcode <> CLOWNZ80_OPCODE_DD_PREFIX) and
+    (Instruction.Metadata.Opcode <> CLOWNZ80_OPCODE_FD_PREFIX) then
+    Dec(State.EIDelay);
   Exit(Cardinal(State.Cycles));
 end;
 

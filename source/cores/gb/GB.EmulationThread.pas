@@ -18,6 +18,7 @@ type
   private
     FSnapshots: TSnapshotQueue;
     FSnapshotDirectory: string;
+    FSavePath: string;
     FStorage: IStorage;
     FROMData: TArray<Byte>;
     FEnableAudio: Boolean;
@@ -52,6 +53,7 @@ type
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     property SnapshotDirectory: string read FSnapshotDirectory write FSnapshotDirectory;
+    property SavePath: string read FSavePath write FSavePath;
     property Storage: IStorage read FStorage write FStorage;
     procedure RequestStop;
     procedure RequestPause;
@@ -109,6 +111,7 @@ end;
 constructor TGBEmulationThread.Create(const FileName: string; EnableAudio: Boolean);
 begin
   Create(TStorage.Default.ReadBytes(FileName), EnableAudio);
+  FSavePath := FStorage.GameSave(LowerCase(CoreID), FileName, SnapshotIdentity(FROMData));
 end;
 
 constructor TGBEmulationThread.Create(const ROMData: TArray<Byte>; EnableAudio: Boolean);
@@ -278,7 +281,33 @@ procedure TGBEmulationThread.Execute;
 const
   BatchCycles = 4096;
   FrameCycles = 70224; // 456 dots * 154 lines, also in CGB double-speed mode.
+var
+  LastRAM, LastRTC: TBytes;
+  BatteryArmed: Boolean;
+
+  procedure SaveBattery(MBC: TGBMBC);
+    procedure SaveChanged(const Path: string; const Data: TBytes; var Last: TBytes);
+    begin
+      if (Length(Data) = Length(Last)) and
+        ((Length(Data) = 0) or CompareMem(@Data[0], @Last[0], Length(Data))) then
+        Exit;
+      var Stream := TBytesStream.Create(Data);
+      try
+        SaveStreamAtomically(Stream, Path, FStorage);
+        Last := Copy(Data);
+      finally
+        Stream.Free;
+      end;
+    end;
+  begin
+    if not BatteryArmed then
+      Exit;
+    SaveChanged(FSavePath, MBC.SaveMemory, LastRAM);
+    if MBC.HasTimer then
+      SaveChanged(ChangeFileExt(FSavePath, '.rtc'), MBC.RTCData, LastRTC);
+  end;
 begin
+  BatteryArmed := False;
   if Terminated then
     Exit;
   var ROM: TGBROM := nil;
@@ -305,6 +334,18 @@ begin
       FFramesPerSecond := 0;
       GPU := CreateVideo(ROM);
       MBC := TGBMBC.Create(ROM);
+      if MBC.HasBattery and (FSavePath <> '') then
+      begin
+        if FStorage.Exists(FSavePath) then
+          MBC.LoadSaveMemory(FStorage.ReadBytes(FSavePath));
+        var RTCPath := ChangeFileExt(FSavePath, '.rtc');
+        if MBC.HasTimer and FStorage.Exists(RTCPath) then
+          MBC.LoadRTCData(FStorage.ReadBytes(RTCPath));
+        LastRAM := MBC.SaveMemory;
+        LastRTC := MBC.RTCData;
+        // Never overwrite an invalid file when activation failed above.
+        BatteryArmed := True;
+      end;
       Memory := CreateMemory(MBC, GPU);
       Sound := TGBSound.Create(Memory, FEnableAudio);
       Sound.Volume := FSoundVolume;
@@ -315,6 +356,7 @@ begin
       HintNextCycles := CPU.Cycles + FrameCycles;
       var Stopwatch := TStopwatch.StartNew;
       var StartCycles := CPU.Cycles;
+      var BatteryWatch := TStopwatch.StartNew;
       while not Terminated do
       begin
         FSnapshots.Process(
@@ -366,6 +408,7 @@ begin
         try
           if FPauseRequested then
           begin
+            SaveBattery(MBC);
             FrameHints.Pause;
             // The stop event also wakes this short sleep during shutdown.
             FLock.Release;
@@ -387,6 +430,11 @@ begin
         var NextCycles := CPU.Cycles + BatchCycles;
         while (CPU.Cycles < NextCycles) and not Terminated do
           CPU.Step;
+        if BatteryWatch.ElapsedMilliseconds >= 2000 then
+        begin
+          SaveBattery(MBC);
+          BatteryWatch := TStopwatch.StartNew;
+        end;
         // Sum only active batches: limiter waits between them are excluded.
         var HintComplete := CPU.Cycles >= HintNextCycles;
         FrameHints.EndWork(HintComplete);
@@ -408,14 +456,18 @@ begin
         end;
       end;
     finally
-      FrameHints.Free;
-      CPU.Free;
-      Sound.Free;
-      Memory.Free;
-      MBC.Free;
-      GPU.Free;
-      ROM.Free;
-      ReleasePeripherals;
+      try
+        SaveBattery(MBC);
+      finally
+        FrameHints.Free;
+        CPU.Free;
+        Sound.Free;
+        Memory.Free;
+        MBC.Free;
+        GPU.Free;
+        ROM.Free;
+        ReleasePeripherals;
+      end;
     end;
   except
     on E: Exception do

@@ -481,7 +481,14 @@ begin
       TGPUMode.HBlank:
         Duration := 204;
     else
-      Duration := 456;
+      // LY resets early on the last VBlank line; mode 1 continues until
+      // the full 456-dot line ends.
+      if Line = 153 then
+        Duration := 4
+      else if Line = 0 then
+        Duration := 452
+      else
+        Duration := 456;
     end;
     if ModeClock < Duration then
       Break;
@@ -510,14 +517,16 @@ begin
         end;
       TGPUMode.VBlank:
         begin
-          Inc(Line);
-          if Line > 153 then
+          if Line = 153 then
+            Line := 0
+          else if Line = 0 then
           begin
-            Line := 0;
             FWindowLine := 0;
             FWindowTriggered := False;
             FCurrentMode := TGPUMode.OAMAccess;
-          end;
+          end
+          else
+            Inc(Line);
         end;
     end;
     ProcessLCDStatus;

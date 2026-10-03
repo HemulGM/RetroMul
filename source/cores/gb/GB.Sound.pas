@@ -223,6 +223,8 @@ type
     function IsSoundToTerminal(ChannelNumber: Integer; OutputNumber: Integer): Boolean;
     function GetSoundLevel(OutputNumber: Integer): Integer;
     procedure DisableAllChannels;
+    function ReadRegister(Address: Integer): Byte;
+    procedure WriteRegister(Address: Integer; Value: Byte);
 
   public
     constructor Create(AMemory: TGBMemory; EnableOutput: Boolean = True; const Backend: IPCMAudioBackend = nil); overload;
@@ -718,9 +720,22 @@ begin
   FChannel4.SetEnabled(False);
 end;
 
+function TGBSound.ReadRegister(Address: Integer): Byte;
+begin
+  // APU registers are internal hardware state, not CPU bus accesses. OAM DMA
+  // restricts the CPU only; it must never turn an APU register read into $FF.
+  Result := FMemory.IOPort[Address - $FF00];
+end;
+
+procedure TGBSound.WriteRegister(Address: Integer; Value: Byte);
+begin
+  // Trigger acknowledgement and sweep writeback also run while CPU DMA is active.
+  FMemory.IOPort[Address - $FF00] := Value;
+end;
+
 function TGBSound.IsAllSoundOn: Boolean;
 begin
-  Result := (FMemory.ReadByte(NR52) and $80) <> 0;
+  Result := (ReadRegister(NR52) and $80) <> 0;
 end;
 
 function TGBSound.IsSoundReset(ChannelNumber: Integer): Boolean;
@@ -729,13 +744,13 @@ var
 begin
   case ChannelNumber of
     1:
-      Value := FMemory.ReadByte(NR14);
+      Value := ReadRegister(NR14);
     2:
-      Value := FMemory.ReadByte(NR24);
+      Value := ReadRegister(NR24);
     3:
-      Value := FMemory.ReadByte(NR34);
+      Value := ReadRegister(NR34);
     4:
-      Value := FMemory.ReadByte(NR44);
+      Value := ReadRegister(NR44);
   else
     Exit(False);
   end;
@@ -761,8 +776,8 @@ begin
     Exit;
   end;
 
-  Value := FMemory.ReadByte(Address);
-  FMemory.WriteByte(Address, Value and $7F);
+  Value := ReadRegister(Address);
+  WriteRegister(Address, Value and $7F);
 end;
 
 procedure TGBSound.SetSoundOn(ChannelNumber: Integer);
@@ -774,7 +789,7 @@ begin
     Exit;
 
   Mask := 1 shl (ChannelNumber - 1);
-  Value := FMemory.ReadByte(NR52);
+  Value := ReadRegister(NR52);
   // The APU owns the status bits; CPU writes to NR52 cannot change them.
   FMemory.IOPort[$26] := (Value or Mask) and $8F;
 end;
@@ -788,19 +803,19 @@ begin
     Exit;
 
   Mask := 1 shl (ChannelNumber - 1);
-  Value := FMemory.ReadByte(NR52);
+  Value := ReadRegister(NR52);
   FMemory.IOPort[$26] := (Value and not Mask) and $8F;
 end;
 
 function TGBSound.IsSoundToTerminal(ChannelNumber: Integer; OutputNumber: Integer): Boolean;
 begin
   var Mask := 1 shl ((ChannelNumber - 1) + ((OutputNumber - 1) * 4));
-  Result := (FMemory.ReadByte(NR51) and Mask) <> 0;
+  Result := (ReadRegister(NR51) and Mask) <> 0;
 end;
 
 function TGBSound.GetSoundLevel(OutputNumber: Integer): Integer;
 begin
-  var Value: Integer := FMemory.ReadByte(NR50);
+  var Value: Integer := ReadRegister(NR50);
 
   if OutputNumber = 1 then
     Result := (Value and $07) + 1
@@ -832,11 +847,11 @@ begin
 
   RemoveSoundReset(1);
 
-  NR10Value := FMemory.ReadByte(NR10);
-  NR11Value := FMemory.ReadByte(NR11);
-  NR12Value := FMemory.ReadByte(NR12);
-  NR13Value := FMemory.ReadByte(NR13);
-  NR14Value := FMemory.ReadByte(NR14);
+  NR10Value := ReadRegister(NR10);
+  NR11Value := ReadRegister(NR11);
+  NR12Value := ReadRegister(NR12);
+  NR13Value := ReadRegister(NR13);
+  NR14Value := ReadRegister(NR14);
 
   FrequencyValue := NR13Value or ((NR14Value and $07) shl 8);
 
@@ -907,10 +922,10 @@ begin
 
   RemoveSoundReset(2);
 
-  NR21Value := FMemory.ReadByte(NR21);
-  NR22Value := FMemory.ReadByte(NR22);
-  NR23Value := FMemory.ReadByte(NR23);
-  NR24Value := FMemory.ReadByte(NR24);
+  NR21Value := ReadRegister(NR21);
+  NR22Value := ReadRegister(NR22);
+  NR23Value := ReadRegister(NR23);
+  NR24Value := ReadRegister(NR24);
 
   FrequencyValue := NR23Value or ((NR24Value and $07) shl 8);
 
@@ -966,10 +981,10 @@ begin
 
   RemoveSoundReset(3);
 
-  NR30Value := FMemory.ReadByte(NR30);
-  NR31Value := FMemory.ReadByte(NR31);
-  NR33Value := FMemory.ReadByte(NR33);
-  NR34Value := FMemory.ReadByte(NR34);
+  NR30Value := ReadRegister(NR30);
+  NR31Value := ReadRegister(NR31);
+  NR33Value := ReadRegister(NR33);
+  NR34Value := ReadRegister(NR34);
 
   FChannel3.SetIndex(0);
 
@@ -991,7 +1006,7 @@ begin
 
   for var i := $FF30 to $FF3F do
   begin
-    Value := FMemory.ReadByte(i);
+    Value := ReadRegister(i);
     WaveSamples[(i - $FF30) * 2] := (Value shr 4) and $0F;
     WaveSamples[((i - $FF30) * 2) + 1] := Value and $0F;
   end;
@@ -1031,10 +1046,10 @@ begin
 
   RemoveSoundReset(4);
 
-  NR41Value := FMemory.ReadByte(NR41);
-  NR42Value := FMemory.ReadByte(NR42);
-  NR43Value := FMemory.ReadByte(NR43);
-  NR44Value := FMemory.ReadByte(NR44);
+  NR41Value := ReadRegister(NR41);
+  NR42Value := ReadRegister(NR42);
+  NR43Value := ReadRegister(NR43);
+  NR44Value := ReadRegister(NR44);
 
   FChannel4.SetEnabled(True);
   FChannel4.SetIndex(0);
@@ -1093,7 +1108,7 @@ var
 begin
   FChannelSamples[0] := 0;
 
-  if (FMemory.ReadByte(NR12) and $F8) = 0 then
+  if (ReadRegister(NR12) and $F8) = 0 then
   begin
     FChannel1.SetEnabled(False);
     SetSoundOff(1);
@@ -1101,10 +1116,10 @@ begin
   if not FChannel1.IsEnabled then
     Exit;
 
-  FChannel1.SetWaveDuty((FMemory.ReadByte(NR11) shr 6) and 3);
-  FChannel1.SetFrequency(131072.0 / (2048 - (FMemory.ReadByte(NR13) or ((FMemory.ReadByte(NR14) and 7) shl 8))));
-  FChannel1.SetLengthEnabled((FMemory.ReadByte(NR14) and $40) <> 0);
-  FChannel1.SetGBFrequency(FMemory.ReadByte(NR13) or ((FMemory.ReadByte(NR14) and 7) shl 8));
+  FChannel1.SetWaveDuty((ReadRegister(NR11) shr 6) and 3);
+  FChannel1.SetFrequency(131072.0 / (2048 - (ReadRegister(NR13) or ((ReadRegister(NR14) and 7) shl 8))));
+  FChannel1.SetLengthEnabled((ReadRegister(NR14) and $40) <> 0);
+  FChannel1.SetGBFrequency(ReadRegister(NR13) or ((ReadRegister(NR14) and 7) shl 8));
   Sample := FChannel1.NextWaveSample;
 
   if FChannel1.GetVolume <> nil then
@@ -1127,7 +1142,7 @@ begin
   if FChannel1.GetVolume <> nil then
     FChannel1.GetVolume.HandleSweep;
 
-  if ((FMemory.ReadByte(NR10) and $70) <> 0) and (FChannel1.GetSweepLength > 0) and (FChannel1.GetSweepShift > 0) then
+  if ((ReadRegister(NR10) and $70) <> 0) and (FChannel1.GetSweepLength > 0) and (FChannel1.GetSweepShift > 0) then
   begin
     FChannel1.DecSweepIndex;
 
@@ -1146,9 +1161,9 @@ begin
 
       FChannel1.SetGBFrequency(NewFrequency);
       FChannel1.SetFrequency(131072.0 / (2048 - NewFrequency));
-      FMemory.WriteByte(NR13, NewFrequency and $FF);
-      FrequencyRegister := (FMemory.ReadByte(NR14) and $F8) or ((NewFrequency shr 8) and $07);
-      FMemory.WriteByte(NR14, FrequencyRegister);
+      WriteRegister(NR13, NewFrequency and $FF);
+      FrequencyRegister := (ReadRegister(NR14) and $F8) or ((NewFrequency shr 8) and $07);
+      WriteRegister(NR14, FrequencyRegister);
     end;
   end;
 end;
@@ -1157,7 +1172,7 @@ procedure TGBSound.UpdateChannel2;
 begin
   FChannelSamples[1] := 0;
 
-  if (FMemory.ReadByte(NR22) and $F8) = 0 then
+  if (ReadRegister(NR22) and $F8) = 0 then
   begin
     FChannel2.SetEnabled(False);
     SetSoundOff(2);
@@ -1165,10 +1180,10 @@ begin
   if not FChannel2.IsEnabled then
     Exit;
 
-  FChannel2.SetWaveDuty((FMemory.ReadByte(NR21) shr 6) and 3);
+  FChannel2.SetWaveDuty((ReadRegister(NR21) shr 6) and 3);
   FChannel2.SetFrequency(131072.0 / (2048 -
-    (FMemory.ReadByte(NR23) or ((FMemory.ReadByte(NR24) and 7) shl 8))));
-  FChannel2.SetLengthEnabled((FMemory.ReadByte(NR24) and $40) <> 0);
+    (ReadRegister(NR23) or ((ReadRegister(NR24) and 7) shl 8))));
+  FChannel2.SetLengthEnabled((ReadRegister(NR24) and $40) <> 0);
   var Sample := FChannel2.NextWaveSample;
 
   if FChannel2.GetVolume <> nil then
@@ -1201,11 +1216,11 @@ var
 begin
   FChannelSamples[2] := 0;
 
-  NR30Value := FMemory.ReadByte(NR30);
+  NR30Value := ReadRegister(NR30);
 
   // NR30 can be switched off and back on between audio samples. The cleared
   // NR52 bit latches that stop until a fresh trigger, even with the DAC on.
-  if ((NR30Value and $80) = 0) or ((FMemory.ReadByte(NR52) and 4) = 0) then
+  if ((NR30Value and $80) = 0) or ((ReadRegister(NR52) and 4) = 0) then
   begin
     FChannel3.SetEnabled(False);
     SetSoundOff(3);
@@ -1215,9 +1230,9 @@ begin
   if not FChannel3.IsEnabled then
     Exit;
 
-  NR32Value := FMemory.ReadByte(NR32);
-  FChannel3.SetFrequency(65536.0 / (2048 - (FMemory.ReadByte(NR33) or ((FMemory.ReadByte(NR34) and 7) shl 8))));
-  FChannel3.SetLengthEnabled((FMemory.ReadByte(NR34) and $40) <> 0);
+  NR32Value := ReadRegister(NR32);
+  FChannel3.SetFrequency(65536.0 / (2048 - (ReadRegister(NR33) or ((ReadRegister(NR34) and 7) shl 8))));
+  FChannel3.SetLengthEnabled((ReadRegister(NR34) and $40) <> 0);
   VolumeCode := (NR32Value shr 5) and $03;
   Sample := FChannel3.NextWaveSample(Max(0, VolumeCode - 1));
   if VolumeCode <> 0 then
@@ -1241,7 +1256,7 @@ procedure TGBSound.UpdateChannel4;
 begin
   FChannelSamples[3] := 0;
 
-  if (FMemory.ReadByte(NR42) and $F8) = 0 then
+  if (ReadRegister(NR42) and $F8) = 0 then
   begin
     FChannel4.SetEnabled(False);
     SetSoundOff(4);
@@ -1249,7 +1264,7 @@ begin
   if not FChannel4.IsEnabled then
     Exit;
 
-  var NoiseRegister := FMemory.ReadByte(NR43);
+  var NoiseRegister := ReadRegister(NR43);
   var Divisor := (NoiseRegister and 7) * 16;
   if Divisor = 0 then
     Divisor := 8;
@@ -1259,7 +1274,7 @@ begin
   else
     FChannel4.SetFrequency(CPUClockFrequency / (Divisor shl Shift));
   FChannel4.SetCounterStep(NoiseRegister and 8);
-  FChannel4.SetLengthEnabled((FMemory.ReadByte(NR44) and $40) <> 0);
+  FChannel4.SetLengthEnabled((ReadRegister(NR44) and $40) <> 0);
   var Sample := FChannel4.NextSample;
 
   if FChannel4.GetVolume <> nil then

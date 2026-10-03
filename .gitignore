@@ -1,4 +1,5 @@
 /build/
+/releases/
 /accuracy-investigation/
 *.dcu
 *.identcache

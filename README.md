@@ -50,6 +50,27 @@ and may release it immediately after construction; reset uses the loaded bytes.
 All adapters support reset and save states.
 Tested with Delphi 13 / compiler 37.0.
 
+To build release archives for Win32, Win64, Linux64 and Android64 on Windows:
+
+```powershell
+.\BuildReleases.ps1
+# Build selected platforms or choose a RAD Studio installation:
+.\BuildReleases.ps1 -Platforms win32,win64 -BdsPath 'G:\Program Files (x86)\Embarcadero\Studio\37.0'
+```
+
+The script discovers RAD Studio, loads `rsvars.bat`, and builds
+`fmx/RetroMul.dproj` with `Config=Release`. Install the corresponding platform
+compilers and configure the Linux and Android SDKs in RAD Studio first.
+Archives are written to `releases/RetroMul-win32.zip`, `RetroMul-win64.zip`,
+`RetroMul-linux64.zip`, and `RetroMul-android64.zip`. Each contains only the
+application: `RetroMul.exe`, `RetroMul` (with Linux execute permission), or
+`RetroMul.apk`. Linux requires the FMX system libraries and ALSA.
+Android uses APK packaging with the SDK debug certificate for sideloading;
+the native binary is optimized Release code. RAD Studio's APK packaging mode
+sets `android:debuggable=true`; this is a sideload build, not a store-signed release.
+The script does not install the APK on a device. A failed build stops the script
+and leaves the previous archive for that platform untouched.
+
 The audio subsystem is separate from the platform API: `PCM.Audio` provides a common
 facade, `PCM.Audio.Windows.MMSystem` implements output via WaveOut, `PCM.Audio.Linux.Alsa` via
 ALSA, `PCM.Audio.Android.AudioTrack` via AudioTrack, and `PCM.Audio.Apple.AudioQueue` via

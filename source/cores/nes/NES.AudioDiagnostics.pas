@@ -3,7 +3,8 @@
 interface
 
 uses
-  Core.Storage, System.SysUtils, System.Classes, System.Diagnostics, NES.Console, PCM.Audio;
+  Core.Storage, System.SysUtils, System.Classes, System.Diagnostics, NES.Console,
+  PCM.Audio;
 
 const
   AUDIO_DIAGNOSTIC_FRAMES = 1800;
@@ -43,9 +44,9 @@ constructor TAudioDiagnostics.Create(const AudioFormat: TPCMAudioFormat; const S
 begin
   inherited Create;
   FStorage := Storage;
-  if FStorage = nil then FStorage := TStorage.Default;
-  if (AudioFormat.SampleRate <= 0) or (AudioFormat.Channels <> 1) or
-    (AudioFormat.BlockFrames <= 0) then
+  if FStorage = nil then
+    FStorage := TStorage.Default;
+  if (AudioFormat.SampleRate <= 0) or (AudioFormat.Channels <> 1) or (AudioFormat.BlockFrames <= 0) then
     raise EArgumentException.Create('Audio diagnostics requires a mono PCM format with a positive sample rate and block size');
   FSampleRate := AudioFormat.SampleRate;
   FBlockFrames := AudioFormat.BlockFrames;
@@ -101,8 +102,8 @@ begin
   Frame.NoiseReg0 := Console.Apu.DebugNoise.Reg0;
   Frame.DmcLevel := Console.Apu.DebugDmc.OutputLevel;
   Frame.Writes := 0;
-  for var address := $4000 to $4017 do
-    Inc(Frame.Writes, Console.Apu.DebugWriteCount(address));
+  for var Addr := $4000 to $4017 do
+    Inc(Frame.Writes, Console.Apu.DebugWriteCount(Addr));
   Frame.Queue := Audio.QueueState;
   Frame.Count := Count;
   if Count > 0 then

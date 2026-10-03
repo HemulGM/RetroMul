@@ -12,6 +12,7 @@ uses
   Core.Emulation,
   Core.EmulatorFactory,
   Core.Storage,
+  Core.RomFormat,
   Retromul.Terminal in 'Retromul.Terminal.pas';
 
 var
@@ -97,7 +98,7 @@ begin
     TRetromulTerminal.Clear;
     var RomName := ParamStr(1);
     {$IFDEF DEBUG}
-    RomName := 'H:\ROMS\nes\Super Mario Brothers.nes';
+    RomName := 'H:\ROMS\' + ROM_SYSTEM_NES + '\Super Mario Brothers' + ROM_EXTENSION_NES;
     //RomName := 'H:\ROMS\megadrive\Sonic The Hedgehog (USA, Europe).gen';
     //RomName := 'H:\ROMS\gb\DuckTales (USA).gb';
     {$ENDIF}

@@ -1,0 +1,8 @@
+SNES_DSP1 RCDATA "firmware\\dsp1.rom"
+SNES_DSP1B RCDATA "firmware\\dsp1b.rom"
+SNES_DSP2 RCDATA "firmware\\dsp2.rom"
+SNES_DSP3 RCDATA "firmware\\dsp3.rom"
+SNES_DSP4 RCDATA "firmware\\dsp4.rom"
+SNES_ST010 RCDATA "firmware\\st010.rom"
+SNES_ST011 RCDATA "firmware\\st011.rom"
+SNES_ST018 RCDATA "firmware\\st018.rom"

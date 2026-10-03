@@ -1,10 +1,10 @@
-unit RM.DocumentTransfer.Android;
+﻿unit RM.DocumentTransfer.Android;
 
 interface
 
 uses
-  Core.Storage, System.Messaging, Androidapi.Jni, Androidapi.JNI.GraphicsContentViewText,
-  Androidapi.JNI.Net;
+  Core.Storage, System.Messaging, Androidapi.Jni,
+  Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.Net;
 
 type
   IRomImport = interface
@@ -38,12 +38,12 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.IOUtils, Androidapi.Helpers,
-  Androidapi.JNI.App, Androidapi.JNI.JavaTypes, Androidapi.JNIBridge;
+  Core.RomFormat, System.SysUtils, System.Classes, System.IOUtils,
+  Androidapi.Helpers, Androidapi.JNI.App, Androidapi.JNI.JavaTypes,
+  Androidapi.JNIBridge;
 
 const
   ROM_REQUEST_CODE = $4E45;
-  MAX_ROM_IMPORT_BYTES = 64 * 1024 * 1024;
 
 type
   TRomImport = class(TInterfacedObject, IRomImport)
@@ -68,7 +68,7 @@ begin
   FStorage := Storage;
   FForCassette := ForCassette;
   FFileName := FStorage.TemporaryFile('.tape');
-  FDisplayName := 'Temp.rom';
+  FDisplayName := 'Temp' + ROM_EXTENSION_GENERIC;
   FExporting := ExportSource <> '';
   if FExporting then
     FFileName := ExportSource;
@@ -126,7 +126,8 @@ procedure TRomImport.Run(const Resolver: JContentResolver; const Uri: Jnet_Uri);
 begin
   try
     try
-      if Cancelled then Exit;
+      if Cancelled then
+        Exit;
       var Location := JStringToString(Uri.toString);
       if not FExporting then
       begin
@@ -140,12 +141,22 @@ begin
       if FExporting then
       begin
         Input := FStorage.OpenRead(FFileName);
-        try Output := FStorage.OpenWrite(Location); except Input.Free; raise; end;
+        try
+          Output := FStorage.OpenWrite(Location);
+        except
+          Input.Free;
+          raise;
+        end;
       end
       else
       begin
         Input := FStorage.OpenRead(Location);
-        try Output := FStorage.OpenWrite(FFileName); except Input.Free; raise; end;
+        try
+          Output := FStorage.OpenWrite(FFileName);
+        except
+          Input.Free;
+          raise;
+        end;
       end;
       try
         var Buffer: array[0..65535] of Byte;
@@ -153,16 +164,28 @@ begin
         while not Cancelled do
         begin
           var Count := Input.Read(Buffer, SizeOf(Buffer));
-          if Count = 0 then Break;
+          if Count = 0 then
+            Break;
           Inc(Total, Count);
-          if Total > MAX_ROM_IMPORT_BYTES then raise EReadError.Create('Document exceeds 64 MiB');
+          if Total > ROM_MAX_SIZE then
+            raise EReadError.Create('Document exceeds 64 MiB');
           Output.WriteBuffer(Buffer, Count);
         end;
-      finally Output.Free; Input.Free; end;
-    except on E: Exception do FError := E.Message; end;
+      finally
+        Output.Free;
+        Input.Free;
+      end;
+    except
+      on E: Exception do
+        FError := E.Message;
+    end;
   finally
     TMonitor.Enter(Self);
-    try FDone := True; finally TMonitor.Exit(Self); end;
+    try
+      FDone := True;
+    finally
+      TMonitor.Exit(Self);
+    end;
   end;
 end;
 

@@ -33,11 +33,11 @@ type
 implementation
 
 uses
-  GBC.EmulationThread;
+  Core.RomFormat, GBC.EmulationThread;
 
 function TGBCCoreAdapter.ConfigPrefix: string;
 begin
-  Result := 'gbc';
+  Result := ROM_SYSTEM_GBC;
 end;
 
 function TGBCCoreAdapter.CreateConfig(const FileName: string): IGBEmulatorConfig;

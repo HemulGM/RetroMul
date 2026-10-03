@@ -1,10 +1,11 @@
-unit Core.Adapter.NES;
+﻿unit Core.Adapter.NES;
 
 interface
 
 uses
-  System.Classes, System.IniFiles, Core.Storage, Core.Emulation, NES.Emulation, NES.Input, NES.Types,
-  NES.Controller, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
+  System.Classes, System.IniFiles, Core.Storage, Core.Emulation, NES.Emulation,
+  NES.Input, NES.Types, NES.Controller, NES.FamicomKeyboardDevice,
+  NES.FamicomDataRecorder;
 
 type
   TNesZapperMask = NES.Types.TNesZapperMask;
@@ -98,8 +99,7 @@ type
     function GetUsesSuborKeyboard: Boolean;
   public
     constructor Create(const FileName: string; const ConfigFileName: string = ''); overload;
-    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string;
-      const ConfigFileName: string = ''); overload;
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; const ConfigFileName: string = ''); overload;
     destructor Destroy; override;
     function GetHasCoinAcceptor: Boolean;
     procedure InsertCoin1;
@@ -139,7 +139,7 @@ type
 implementation
 
 uses
-  System.SysUtils, System.UITypes;
+  Core.RomFormat, System.SysUtils, System.UITypes;
 
 function TNesCoreAdapter.UsesDataRecorder: Boolean;
 begin
@@ -165,17 +165,22 @@ constructor TNesCoreAdapter.Create(const FileName, ConfigFileName: string);
 begin
   var Storage := TStorage.Default;
   var Stream := Storage.OpenRead(FileName);
-  try Create(Stream, Storage, FileName, ConfigFileName); finally Stream.Free; end;
+  try
+    Create(Stream, Storage, FileName, ConfigFileName);
+  finally
+    Stream.Free;
+  end;
 end;
 
-constructor TNesCoreAdapter.Create(Stream: TStream; const Storage: IStorage;
-  const RomName, ConfigFileName: string);
+constructor TNesCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName, ConfigFileName: string);
 begin
   inherited Create;
   var CoreStorage := Storage;
-  if CoreStorage = nil then CoreStorage := TStorage.Default;
+  if CoreStorage = nil then
+    CoreStorage := TStorage.Default;
   var ConfigPath := ConfigFileName;
-  if ConfigPath = '' then ConfigPath := CoreStorage.ConfigFile('nes');
+  if ConfigPath = '' then
+    ConfigPath := CoreStorage.ConfigFile(ROM_SYSTEM_NES);
   FConfig := TNesEmulatorConfig.Create(ConfigPath, CoreStorage);
   FConfig.Load;
   FThread := TNesEmulationThread.Create(Stream, CoreStorage, RomName,

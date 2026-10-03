@@ -7,7 +7,7 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, NES.Controller, Core.Emulation;
 
 type
-  TScreenGamepadLayout = (Nes, Sega);
+  TScreenGamepadLayout = (Nes, Sega, Snes);
 
   // Coordinates passed to PointerDown/Move are local logical FMX coordinates.
   // OnChange runs on the UI thread. The consumer owns the emulator connection.
@@ -211,6 +211,17 @@ begin
     FBounds[TEmulatorButton.Select] := TRectF.Empty;
   end;
   // Keep the initial action pressed while the finger crosses gaps between keys.
+  if FLayout = TScreenGamepadLayout.Snes then
+  begin
+    AX := Width - 90 * U;
+    AY := Height * 0.43;
+    FBounds[TEmulatorButton.X] := RectF(AX - 22*U, AY - 64*U, AX + 22*U, AY - 20*U);
+    FBounds[TEmulatorButton.B] := RectF(AX - 22*U, AY + 20*U, AX + 22*U, AY + 64*U);
+    FBounds[TEmulatorButton.Y] := RectF(AX - 64*U, AY - 22*U, AX - 20*U, AY + 22*U);
+    FBounds[TEmulatorButton.A] := RectF(AX + 20*U, AY - 22*U, AX + 64*U, AY + 22*U);
+    FBounds[TEmulatorButton.C] := RectF(Width/2 - 58*U, 5*U, Width/2 - 8*U, 39*U);
+    FBounds[TEmulatorButton.Z] := RectF(Width/2 + 8*U, 5*U, Width/2 + 58*U, 39*U);
+  end;
   FActionArea := TRectF.Empty;
   for var Button in (ActiveButtons * ActionButtons) do
   begin
@@ -231,6 +242,8 @@ begin
         TEmulatorButton.Z, TEmulatorButton.Mode]
   else
     Include(Result, TEmulatorButton.Select);
+  if FLayout = TScreenGamepadLayout.Snes then
+    Result := Result + [TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.C, TEmulatorButton.Z];
 end;
 
 procedure TScreenGamepad.SetLayout(Value: TScreenGamepadLayout);
@@ -526,7 +539,10 @@ begin
     if RoundButton then
     begin
       Canvas.Font.Size := 23 * FUnit;
-      Canvas.FillText(R, Labels[Button], False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
+      var Caption := Labels[Button];
+      if FLayout = TScreenGamepadLayout.Snes then
+        case Button of TEmulatorButton.C: Caption := 'L'; TEmulatorButton.Z: Caption := 'R'; end;
+      Canvas.FillText(R, Caption, False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
     end
     else if Button in MenuButtons then
     begin

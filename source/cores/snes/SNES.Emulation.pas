@@ -1,27 +1,27 @@
-﻿unit MD.Emulation;
+﻿unit SNES.Emulation;
 
 interface
 
 uses
   Core.Storage, Core.RomFormat, Core.Snapshots, System.SysUtils, System.Classes, System.SyncObjs,
-  Core.Emulation, MD.Console;
+  Core.Emulation, SNES.Console;
 
 const
-  MD_SAMPLE_RATE = 44100;
+  SNES_SAMPLE_RATE = 32000;
   AUDIO_BLOCK_SAMPLES = 2048;
   AUDIO_BLOCK_COUNT = 4;
 
 type
-  TMDWorker = class(TThread)
+  TSnesWorker = class(TThread)
   private
     FSnapshots: TSnapshotQueue;
     FSnapshotDirectory: string;
     FLock: TCriticalSection;
     FWake: TEvent;
-    FData: TBytes;
+    FData, FFirmware: TBytes;
     FSavePath: string;
     FStorage: IStorage;
-    FInput, FInput2: TMDButtons;
+    FInput, FInput2: TSnesButtons;
     FPause, FReset, FAudioEnabled: Boolean;
     FVolume: Single;
     FFrame: TEmulatorFrame;
@@ -31,10 +31,10 @@ type
   protected
     procedure Execute; override;
   public
-    constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil);
+    constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil; const Firmware: TBytes = nil);
     destructor Destroy; override;
     procedure WakeSetEvent;
-    procedure Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TMDButtons = []);
+    procedure Configure(const Input: TSnesButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TSnesButtons = []);
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     property SnapshotDirectory: string read FSnapshotDirectory write FSnapshotDirectory;
@@ -46,24 +46,27 @@ type
 implementation
 
 uses
-  Core.PerformanceHints, System.IOUtils, System.UITypes, System.Diagnostics, System.Math, PCM.Audio;
+  Core.PerformanceHints, System.IOUtils, System.UITypes, System.Diagnostics,
+  System.Math, PCM.Audio;
 
-{ TMDWorker }
+{ TSnesWorker }
 
-constructor TMDWorker.Create(const Data: TBytes; const SavePath: string; const Storage: IStorage);
+constructor TSnesWorker.Create(const Data: TBytes; const SavePath: string; const Storage: IStorage; const Firmware: TBytes);
 begin
   inherited Create(True);
   FStorage := Storage;
-  if FStorage = nil then FStorage := TStorage.Default;
+  if FStorage = nil then
+    FStorage := TStorage.Default;
   FreeOnTerminate := False;
   FSnapshots := TSnapshotQueue.Create;
   FLock := TCriticalSection.Create;
   FWake := TEvent.Create(nil, False, False, '');
   FData := Copy(Data);
+  FFirmware := Copy(Firmware);
   FSavePath := SavePath;
 end;
 
-destructor TMDWorker.Destroy;
+destructor TSnesWorker.Destroy;
 begin
   Terminate;
   if FWake <> nil then
@@ -74,7 +77,7 @@ begin
   FLock.Free;
 end;
 
-procedure TMDWorker.Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TMDButtons);
+procedure TSnesWorker.Configure(const Input: TSnesButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TSnesButtons);
 begin
   FLock.Acquire;
   try
@@ -88,17 +91,17 @@ begin
   end;
 end;
 
-procedure TMDWorker.SaveSnapshot(const Name: string);
+procedure TSnesWorker.SaveSnapshot(const Name: string);
 begin
   FSnapshots.Execute(Self, Name, False);
 end;
 
-procedure TMDWorker.LoadSnapshot(const Name: string);
+procedure TSnesWorker.LoadSnapshot(const Name: string);
 begin
   FSnapshots.Execute(Self, Name, True);
 end;
 
-procedure TMDWorker.RequestReset;
+procedure TSnesWorker.RequestReset;
 begin
   FLock.Acquire;
   try
@@ -110,7 +113,7 @@ begin
   FWake.SetEvent;
 end;
 
-procedure TMDWorker.SetError(const Value: string);
+procedure TSnesWorker.SetError(const Value: string);
 begin
   FLock.Acquire;
   try
@@ -123,7 +126,7 @@ begin
   end;
 end;
 
-function TMDWorker.TakeError: string;
+function TSnesWorker.TakeError: string;
 begin
   FLock.Acquire;
   try
@@ -134,7 +137,7 @@ begin
   end;
 end;
 
-function TMDWorker.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
+function TSnesWorker.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
 begin
   FLock.Acquire;
   try
@@ -149,14 +152,14 @@ begin
   end;
 end;
 
-procedure TMDWorker.WakeSetEvent;
+procedure TSnesWorker.WakeSetEvent;
 begin
   FWake.SetEvent;
 end;
 
-procedure TMDWorker.Execute;
+procedure TSnesWorker.Execute;
 
-  procedure SaveBattery(Console: TMDConsole; var LastBattery: TBytes);
+  procedure SaveBattery(Console: TSnesConsole; var LastBattery: TBytes);
   begin
     if (Console = nil) or not Console.BatteryDirty then
       Exit;
@@ -186,32 +189,31 @@ begin
   var Paused, ResetRequested, Enabled, WasPaused, WasEnabled: Boolean;
   var Volume: Single;
   var Frame: TEmulatorFrame;
-  var Samples: TArray<SmallInt>;
-  var Watch: TStopwatch;
-  var Deadline: Double;
-  var WaitMS: Integer;
-  var LastBattery: TBytes;
-  var LastAudioError: string;
-  var Console: TMDConsole := nil;
+  var SnapshotData := FData;
+  if Length(FFirmware) > 0 then
+    SnapshotData := FData + FFirmware;
+  var Console: TSnesConsole := nil;
   var Audio: TPCMAudio := nil;
   var FrameHints: TEmulationPerformanceHints := nil;
+  var LastBattery: TBytes;
   try
     try
-      Console := TMDConsole.Create(FData, ROM_EXTENSION_MD);
+      Console := TSnesConsole.Create(FData, ROM_EXTENSION_SFC, FFirmware);
       FrameHints := TEmulationPerformanceHints.Create(
-        Round(1000000000.0 / Console.FramesPerSecond), 'MD');
+        Round(1000000000.0 / Console.FramesPerSecond), 'SNES');
       if FStorage.Exists(FSavePath) then
       begin
         LastBattery := FStorage.ReadBytes(FSavePath);
         Console.LoadBattery(LastBattery);
       end;
+      var LastAudioError: string;
       var Format: TPCMAudioFormat;
-      Format.SampleRate := MD_SAMPLE_RATE;
+      Format.SampleRate := SNES_SAMPLE_RATE;
       Format.Channels := 2;
       Format.BlockFrames := AUDIO_BLOCK_SAMPLES;
       Format.BlockCount := AUDIO_BLOCK_COUNT;
-      Watch := TStopwatch.StartNew;
-      Deadline := 0;
+      var Watch := TStopwatch.StartNew;
+      var Deadline: Double := 0;
       WasPaused := False;
       WasEnabled := False;
       while not Terminated do
@@ -228,7 +230,7 @@ begin
               end;
             if Loading then
             begin
-              LoadCoreSnapshot(Path, 'MD', FData, Transfer, FStorage);
+              LoadCoreSnapshot(Path, 'SNES', SnapshotData, Transfer, FStorage);
               Console.MarkBatteryDirty;
               if Audio <> nil then
                 Audio.Clear;
@@ -240,7 +242,7 @@ begin
               SetLength(Frame.Pixels, Frame.Width * Frame.Height);
               for var Y := 0 to Frame.Height - 1 do
                 for var X := 0 to Frame.Width - 1 do
-                  Frame.Pixels[Y * Frame.Width + X] := Console.Pixels[Y * 320 + X];
+                  Frame.Pixels[Y * Frame.Width + X] := Console.Pixels[Y * 512 + X];
               FLock.Acquire;
               try
                 FFrame := Frame;
@@ -251,12 +253,12 @@ begin
             end
             else
             begin
-              SaveCoreSnapshot(Path, 'MD', FData, Transfer, FStorage);
-              SaveSnapshotPreview(Path, Console.Width, Console.Height, 320, @Console.Pixels[0], FStorage);
+              SaveCoreSnapshot(Path, 'SNES', SnapshotData, Transfer, FStorage);
+              SaveSnapshotPreview(Path, Console.Width, Console.Height, 512, @Console.Pixels[0], FStorage);
             end;
             Deadline := Watch.Elapsed.TotalMilliseconds;
           end);
-        var Input, Input2: TMDButtons;
+        var Input, Input2: TSnesButtons;
         FLock.Acquire;
         try
           Input := FInput;
@@ -308,7 +310,7 @@ begin
         SetLength(Frame.Pixels, Frame.Width * Frame.Height);
         for var Y := 0 to Frame.Height - 1 do
           for var X := 0 to Frame.Width - 1 do
-            Frame.Pixels[Y * Frame.Width + X] := Console.Pixels[Y * 320 + X];
+            Frame.Pixels[Y * Frame.Width + X] := Console.Pixels[Y * 512 + X];
         FLock.Acquire;
         try
           FFrame := Frame;
@@ -320,6 +322,7 @@ begin
         begin
           if Audio = nil then
             Audio := TPCMAudio.Create(Format);
+          var Samples: TArray<SmallInt>;
           SetLength(Samples, Console.SampleFrames * 2);
           for var i := 0 to High(Samples) do
             Samples[i] := Round(Console.Samples[i] * Volume);
@@ -327,7 +330,7 @@ begin
           if (Audio.Error <> '') and (Audio.Error <> LastAudioError) then
           begin
             LastAudioError := Audio.Error;
-            SetError('Mega Drive audio: ' + LastAudioError);
+            SetError('SNES audio: ' + LastAudioError);
           end;
         end
         else if WasEnabled and (Audio <> nil) then
@@ -339,13 +342,13 @@ begin
         Deadline := Deadline + 1000 / Console.FramesPerSecond;
         if Watch.Elapsed.TotalMilliseconds - Deadline > 100 then
           Deadline := Watch.Elapsed.TotalMilliseconds;
-        WaitMS := Floor(Deadline - Watch.Elapsed.TotalMilliseconds);
+        var WaitMS := Floor(Deadline - Watch.Elapsed.TotalMilliseconds);
         if WaitMS > 0 then
           FWake.WaitFor(WaitMS);
       end;
     except
       on E: Exception do
-        SetError('Mega Drive: ' + E.Message);
+        SetError('SNES: ' + E.Message);
     end;
   finally
     FrameHints.Free;
@@ -353,7 +356,7 @@ begin
       SaveBattery(Console, LastBattery);
     except
       on E: Exception do
-        SetError('Mega Drive SRAM: ' + E.Message);
+        SetError('SNES SRAM: ' + E.Message);
     end;
     Audio.Free;
     Console.Free;

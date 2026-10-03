@@ -1,4 +1,4 @@
-unit Core.Storage;
+﻿unit Core.Storage;
 
 interface
 
@@ -144,7 +144,7 @@ constructor TStorage.Create(const Root: string; const Picker: IStoragePicker);
 begin
   inherited Create;
   FCheckRomFileSize := True;
-  FMaxRomFileSize := Int64(64) * 1024 * 1024;
+  FMaxRomFileSize := ROM_MAX_SIZE;
   FRoot := Root;
   if FRoot = '' then
   begin
@@ -476,7 +476,7 @@ end;
 function GameIdentity(const SystemId, Identity: string): string;
 begin
   Result := Identity;
-  if not SameText(SystemId, 'nes') and not StartsText(UpperCase(SystemId) + '-', Identity) then
+  if not SameText(SystemId, ROM_SYSTEM_NES) and not StartsText(UpperCase(SystemId) + '-', Identity) then
     Result := UpperCase(SafeName(SystemId)) + '-' + Identity;
 end;
 
@@ -526,15 +526,13 @@ end;
 
 function TStorage.Roms(const SystemId: string): TArray<TStorageFile>;
 begin
-  if FRomFolder = '' then Exit(nil);
-  var FolderName := LowerCase(SafeName(SystemId));
-  if FolderName = 'md' then FolderName := 'megadrive';
-  var Extensions: TArray<string>;
-  if FolderName = 'nes' then Extensions := ['.nes']
-  else if FolderName = 'gb' then Extensions := ['.gb']
-  else if FolderName = 'gbc' then Extensions := ['.gbc']
-  else if FolderName = 'megadrive' then Extensions := ['.smd', '.bin', '.gen', '.md']
-  else Exit(nil);
+  if FRomFolder = '' then
+    Exit(nil);
+  var RomSystem := RomSystemFromId(LowerCase(SafeName(SystemId)));
+  if RomSystem = TRomSystem.Unknown then
+    Exit(nil);
+  var FolderName := RomSystemFolder(RomSystem);
+  var Extensions := RomExtensions(RomSystem);
   var Candidates: TArray<TStorageFile>;
   {$IFDEF ANDROID}
   if FRomFolder.StartsWith('content://') then
@@ -554,7 +552,8 @@ begin
     try
       for var Path in Files(TPath.Combine(FRomFolder, FolderName)) do
       begin
-        if not MatchText(ExtractFileExt(Path), Extensions) then Continue;
+        if not MatchText(ExtractFileExt(Path), Extensions) then
+          Continue;
         var Item := Describe(Path);
         Item.RelativePath := ExtractRelativePath(IncludeTrailingPathDelimiter(FRomFolder), Path);
         List.Add(Item);
@@ -570,7 +569,8 @@ begin
     begin
       // Listing never opens ROM streams. Header validation belongs to loading.
       if (FCheckRomFileSize and (Item.Size > FMaxRomFileSize)) or
-        not MatchText(ExtractFileExt(Item.Name), Extensions) then Continue;
+        not MatchText(ExtractFileExt(Item.Name), Extensions) then
+        Continue;
       var Match := Item;
       Match.RelativePath := FolderName + '/' + Item.Name;
       Matches.Add(Match);

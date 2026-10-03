@@ -4,7 +4,7 @@
         <ProjectVersion>20.4</ProjectVersion>
         <FrameworkType>FMX</FrameworkType>
         <Base>True</Base>
-        <Config Condition="'$(Config)'==''">Release</Config>
+        <Config Condition="'$(Config)'==''">Debug</Config>
         <Platform Condition="'$(Platform)'==''">Win32</Platform>
         <TargetedPlatforms>2790547</TargetedPlatforms>
         <AppType>Application</AppType>
@@ -163,7 +163,7 @@
         <Icon_MainIcon>$(BDS)\bin\delphi_PROJECTICON.ico</Icon_MainIcon>
         <Icns_MainIcns>$(BDS)\bin\delphi_PROJECTICNS.icns</Icns_MainIcns>
         <SanitizedProjectName>RetroMul</SanitizedProjectName>
-        <DCC_UnitSearchPath>devices;..\source\cores;..\source\cores\md;..\source\cores\nes;..\source\cores\nes\mappers;..\source\cores\gb;..\source\cores\gbc;..\source\gamelist;..\source\PCM;DelphiWinUI3\Sources;DelphiWinUI3\DelphiWindowStyle;DelphiWinUI3\FMXWindowsDispatch;DelphiWinUI3\FMXWindowsHint;DelphiWinUI3\WindowsNotificationManager;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>devices;..\source\cores;..\source\cores\snes;..\source\cores\md;..\source\cores\nes;..\source\cores\nes\mappers;..\source\cores\gb;..\source\cores\gbc;..\source\gamelist;..\source\PCM;DelphiWinUI3\Sources;DelphiWinUI3\DelphiWindowStyle;DelphiWinUI3\FMXWindowsDispatch;DelphiWinUI3\FMXWindowsHint;DelphiWinUI3\WindowsNotificationManager;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Android)'!=''">
         <DCC_UsePackage>fmx;DbxCommonDriver;bindengine;IndyIPCommon;emsclient;IndyProtocols;dbxcds;FmxTeeUI;FireDACSqliteDriver;DbxClientDriver;soapmidas;dbexpress;inet;FireDACDBXDriver;CustomIPTransport;IndySystem;FireDACCommon;emsserverresource;bindcompdbx;rtl;DBXSqliteDriver;DataSnapFireDAC;FireDAC;xmlrtl;dsnap;DataSnapNativeClient;emshosting;FireDACCommonDriver;IndyIPClient;emsedge;bindcompfmx;fmxFireDAC;FMXAudioHGM;DataSnapCommon;fmxase;dbrtl;DBXInterBaseDriver;bindcomp;VLCPlayer;inetstn;IndyCore;RESTBackendComponents;RESTComponents;IndyIPServer;dsnapxml;DataSnapClient;DataSnapProviderClient;emsclientfiredac;FireDACDSDriver;tethering;CloudService;FMXTee;soaprtl;soapserver;FireDACIBDriver;$(DCC_UsePackage)</DCC_UsePackage>
@@ -456,6 +456,20 @@
         <DCCReference Include="..\source\cores\Core.Adapter.GB.pas"/>
         <DCCReference Include="..\source\cores\Core.Adapter.GBC.pas"/>
         <DCCReference Include="..\source\cores\Core.Adapter.MD.pas"/>
+        <DCCReference Include="..\source\cores\Core.Adapter.SNES.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.Cartridge.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.SDD1.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.NecDSP.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.CX4.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.SA1.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.GSU.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.SPC7110.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.ST018.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.CPU.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.PPU.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.SPC.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.Console.pas"/>
+        <DCCReference Include="..\source\cores\snes\SNES.Emulation.pas"/>
         <DCCReference Include="..\source\cores\md\MD.Arithmetic.pas"/>
         <DCCReference Include="..\source\cores\md\MD.Cartridge.pas"/>
         <DCCReference Include="..\source\cores\md\MD.Console.pas"/>

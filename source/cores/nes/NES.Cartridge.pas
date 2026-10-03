@@ -58,10 +58,15 @@ type
 implementation
 
 uses
-  NES.RomMetadata, NES.Mapper.Factory, Core.SavePaths, Core.RomFormat, System.Hash,
-  System.IOUtils
-  {$IFDEF MSWINDOWS}, Winapi.Windows{$ENDIF}
-  {$IFDEF POSIX}, Posix.Stdio, Posix.Unistd{$ENDIF};
+  NES.RomMetadata, NES.Mapper.Factory, Core.SavePaths, Core.RomFormat,
+  System.Hash,
+  {$IFDEF MSWINDOWS}
+  Winapi.Windows,
+  {$ENDIF}
+  {$IFDEF POSIX}
+  Posix.Stdio, Posix.Unistd,
+  {$ENDIF}
+  System.IOUtils;
 
 type
   TInesHeader = packed record
@@ -205,20 +210,30 @@ end;
 
 procedure TCartridge.LoadFromFile(const FileName: string);
 begin
-  if FStorage = nil then FStorage := TStorage.Default;
+  if FStorage = nil then
+    FStorage := TStorage.Default;
   var Stream := FStorage.OpenRead(FileName);
-  try LoadFromStream(Stream, FileName); finally Stream.Free; end;
+  try
+    LoadFromStream(Stream, FileName);
+  finally
+    Stream.Free;
+  end;
 end;
 
 procedure TCartridge.LoadFromStream(Stream: TStream; const RomName: string);
 begin
   var Input := TBytesStream.Create(ReadRomData(Stream));
-  try LoadBufferedRom(Input, RomName); finally Input.Free; end;
+  try
+    LoadBufferedRom(Input, RomName);
+  finally
+    Input.Free;
+  end;
 end;
 
 procedure TCartridge.LoadBufferedRom(Stream: TStream; const RomName: string);
 begin
-  if FStorage = nil then FStorage := TStorage.Default;
+  if FStorage = nil then
+    FStorage := TStorage.Default;
   SaveBattery;
   FSaveFileName := '';
   FLastSaveMemory := nil;
@@ -230,87 +245,87 @@ begin
   FMetadata := Default(TCartridgeMetadata);
   FRomFileName := RomName;
 
-    var Header: TInesHeader;
-    var PrgRom: TByteArray;
-    var ChrRom: TByteArray;
-    var Trainer: TByteArray;
-    var Mirror: TMirrorMode;
-    var HasTrainer: Boolean;
-    var ChrRam: Boolean;
-    ReadExact(Stream, Header, SizeOf(Header));
-    if (Header.Magic[0] <> 'N') or (Header.Magic[1] <> 'E') or (Header.Magic[2] <> 'S') or (Ord(Header.Magic[3]) <> $1A) then
-      raise ENesException.Create('Invalid iNES file');
+  var Header: TInesHeader;
+  var PrgRom: TByteArray;
+  var ChrRom: TByteArray;
+  var Trainer: TByteArray;
+  var Mirror: TMirrorMode;
+  var HasTrainer: Boolean;
+  var ChrRam: Boolean;
+  ReadExact(Stream, Header, SizeOf(Header));
+  if not CompareMem(@Header.Magic[0], PAnsiChar(NES_ROM_SIGNATURE), Length(NES_ROM_SIGNATURE)) then
+    raise ENesException.Create('Invalid iNES file');
 
-    FMetadata := ParseMetadata(Header);
-    FMapperId := FMetadata.MapperId;
-    FHeaderMapperId := FMapperId;
-    Mirror := FMetadata.MirrorMode;
-    HasTrainer := FMetadata.HasTrainer;
+  FMetadata := ParseMetadata(Header);
+  FMapperId := FMetadata.MapperId;
+  FHeaderMapperId := FMapperId;
+  Mirror := FMetadata.MirrorMode;
+  HasTrainer := FMetadata.HasTrainer;
     // Validate before allocating; malformed size fields must not exhaust memory.
-    var Remaining := UInt64(Stream.Size - Stream.Position);
-    if HasTrainer then
-    begin
-      if Remaining < 512 then
-        raise ENesException.Create('Unexpected end of file');
-      Dec(Remaining, 512);
-    end;
-    if (FMetadata.PrgRomSize > Remaining) or (FMetadata.PrgRomSize > UInt64(High(Integer))) then
-      raise ENesException.Create('Invalid PRG ROM size');
-    Dec(Remaining, FMetadata.PrgRomSize);
-    if (FMetadata.ChrRomSize > Remaining) or (FMetadata.ChrRomSize > UInt64(High(Integer))) then
-      raise ENesException.Create('Invalid CHR ROM size');
-    if HasTrainer then
-    begin
-      SetLength(Trainer, 512);
-      ReadExact(Stream, Trainer[0], 512);
-    end;
+  var Remaining := UInt64(Stream.Size - Stream.Position);
+  if HasTrainer then
+  begin
+    if Remaining < 512 then
+      raise ENesException.Create('Unexpected end of file');
+    Dec(Remaining, 512);
+  end;
+  if (FMetadata.PrgRomSize > Remaining) or (FMetadata.PrgRomSize > UInt64(High(Integer))) then
+    raise ENesException.Create('Invalid PRG ROM size');
+  Dec(Remaining, FMetadata.PrgRomSize);
+  if (FMetadata.ChrRomSize > Remaining) or (FMetadata.ChrRomSize > UInt64(High(Integer))) then
+    raise ENesException.Create('Invalid CHR ROM size');
+  if HasTrainer then
+  begin
+    SetLength(Trainer, 512);
+    ReadExact(Stream, Trainer[0], 512);
+  end;
 
-    SetLength(PrgRom, Integer(FMetadata.PrgRomSize));
-    if Length(PrgRom) = 0 then
-      raise ENesException.Create('ROM has no PRG data');
-    ReadExact(Stream, PrgRom[0], Length(PrgRom));
+  SetLength(PrgRom, Integer(FMetadata.PrgRomSize));
+  if Length(PrgRom) = 0 then
+    raise ENesException.Create('ROM has no PRG data');
+  ReadExact(Stream, PrgRom[0], Length(PrgRom));
 
-    SetLength(ChrRom, Integer(FMetadata.ChrRomSize));
-    ChrRam := Length(ChrRom) = 0;
-    if Length(ChrRom) > 0 then
-      ReadExact(Stream, ChrRom[0], Length(ChrRom));
+  SetLength(ChrRom, Integer(FMetadata.ChrRomSize));
+  ChrRam := Length(ChrRom) = 0;
+  if Length(ChrRom) > 0 then
+    ReadExact(Stream, ChrRom[0], Length(ChrRom));
 
-    var Hash := THashSHA1.Create;
-    Hash.Update(PrgRom[0], Length(PrgRom));
-    if Length(ChrRom) > 0 then
-      Hash.Update(ChrRom[0], Length(ChrRom));
-    FRomIdentity := LowerCase(Hash.HashAsString);
-    if FMetadata.Format = TRomFormat.INes then
-    begin
-      FMetadata.HasBattery := FMetadata.HasBattery or IsLegacyBatteryRom(FRomIdentity);
-      if IsLegacyFamicomKeyboardRom(FRomIdentity) then
-        FMetadata.DefaultExpansionDevice := $23;
-      if IsLegacyDataRecorderRom(FRomIdentity) then
-        FMetadata.DefaultExpansionDevice := $20;
-      if IsLegacyPowerPadRom(FRomIdentity) then
-        FMetadata.DefaultExpansionDevice := 12;
+  var Hash := THashSHA1.Create;
+  Hash.Update(PrgRom[0], Length(PrgRom));
+  if Length(ChrRom) > 0 then
+    Hash.Update(ChrRom[0], Length(ChrRom));
+  FRomIdentity := LowerCase(Hash.HashAsString);
+  if FMetadata.Format = TRomFormat.INes then
+  begin
+    FMetadata.HasBattery := FMetadata.HasBattery or IsLegacyBatteryRom(FRomIdentity);
+    if IsLegacyFamicomKeyboardRom(FRomIdentity) then
+      FMetadata.DefaultExpansionDevice := $23;
+    if IsLegacyDataRecorderRom(FRomIdentity) then
+      FMetadata.DefaultExpansionDevice := $20;
+    if IsLegacyPowerPadRom(FRomIdentity) then
+      FMetadata.DefaultExpansionDevice := 12;
       // Legacy iNES cannot declare the VS PPU model. This exact ROM uses RP2C04-0004.
-      if (FMapperId = MAPPER_VS_SYSTEM) and
-        (FRomIdentity = '91fa719b4b05adbac0b9d507d2051ed361d1ded4') then
-        FMetadata.VsPpuType := 5;
-    end;
+    if (FMapperId = MAPPER_VS_SYSTEM) and
+      (FRomIdentity = '91fa719b4b05adbac0b9d507d2051ed361d1ded4') then
+      FMetadata.VsPpuType := 5;
+  end;
 
-    FMetadata.Title := ReadRomTitle(Stream, FMetadata);
+  FMetadata.Title := ReadRomTitle(Stream, FMetadata);
     // Preserve explicit NES 2.0 metadata; legacy corrections require exact payload identity.
-    if (Header.Flags7 and $0C) <> $08 then
-    begin
-      FMapperId := ResolveLegacyMapper(FMapperId, PrgRom, ChrRom);
-      Mirror := ResolveLegacyMirror(Mirror, PrgRom, ChrRom);
-      FMetadata.MirrorMode := Mirror;
-      if IsLegacyPalRom(PrgRom, ChrRom) then
-        FMetadata.Timing := TRomTiming.PAL;
-    end;
-    FMapper := CreateMapper(FMapperId, PrgRom, ChrRom, ChrRam, Mirror,
-      FMetadata.Format = TRomFormat.INes, FMetadata.Submapper);
-    if FMapper = nil then
-      raise ENesException.CreateFmt('Unsupported mapper: %d', [FMapperId]);
+  if (Header.Flags7 and $0C) <> $08 then
+  begin
+    FMapperId := ResolveLegacyMapper(FMapperId, PrgRom, ChrRom);
+    Mirror := ResolveLegacyMirror(Mirror, PrgRom, ChrRom);
+    FMetadata.MirrorMode := Mirror;
+    if IsLegacyPalRom(PrgRom, ChrRom) then
+      FMetadata.Timing := TRomTiming.PAL;
+  end;
+  FMapper := CreateMapper(FMapperId, PrgRom, ChrRom, ChrRam, Mirror,
+    FMetadata.Format = TRomFormat.INes, FMetadata.Submapper);
+  if FMapper = nil then
+    raise ENesException.CreateFmt('Unsupported mapper: %d', [FMapperId]);
 
-    FValid := True;
+  FValid := True;
 end;
 
 procedure TCartridge.LoadBattery(const DirectoryName: string);
@@ -363,7 +378,8 @@ begin
     Exit;
   var Data: TBytes;
   SetLength(Data, FSaveSize);
-  if FSaveSize > 0 then Move(Memory[0], Data[0], FSaveSize);
+  if FSaveSize > 0 then
+    Move(Memory[0], Data[0], FSaveSize);
   FStorage.WriteBytes(FSaveFileName, Data);
   FLastSaveMemory := Copy(Memory, 0, FSaveSize);
 end;

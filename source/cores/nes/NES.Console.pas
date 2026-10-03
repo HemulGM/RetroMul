@@ -1,10 +1,11 @@
-unit NES.Console;
+﻿unit NES.Console;
 
 interface
 
 uses
-  Core.Storage, System.SysUtils, System.Classes, NES.State, NES.Types, NES.CPU, NES.PPU,
-  NES.APU, NES.Bus, NES.Cartridge, NES.Controller, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
+  Core.Storage, System.SysUtils, System.Classes, NES.State, NES.Types, NES.CPU,
+  NES.PPU, NES.APU, NES.Bus, NES.Cartridge, NES.Controller,
+  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
 
 type
   TNesConsole = class
@@ -36,8 +37,7 @@ type
     constructor Create(FourScoreEnabled: Boolean = False; const Storage: IStorage = nil);
     destructor Destroy; override;
     procedure LoadRom(const FileName: string; RegionOverride: TRegionOverride = TRegionOverride.Auto); overload;
-    procedure LoadRom(Stream: TStream; const RomName: string;
-      RegionOverride: TRegionOverride = TRegionOverride.Auto); overload;
+    procedure LoadRom(Stream: TStream; const RomName: string; RegionOverride: TRegionOverride = TRegionOverride.Auto); overload;
     procedure LoadBattery(const DirectoryName: string);
     procedure SaveBattery;
     procedure SaveSnapshot(const FileName: string);
@@ -276,7 +276,8 @@ constructor TNesConsole.Create(FourScoreEnabled: Boolean; const Storage: IStorag
 begin
   inherited Create;
   FStorage := Storage;
-  if FStorage = nil then FStorage := TStorage.Default;
+  if FStorage = nil then
+    FStorage := TStorage.Default;
   FCpu := TCpu6502.Create;
   FPpu := TPpu.Create;
   FApu := TApu.Create;
@@ -324,7 +325,11 @@ end;
 procedure TNesConsole.LoadRom(const FileName: string; RegionOverride: TRegionOverride);
 begin
   var Stream := FStorage.OpenRead(FileName);
-  try LoadRom(Stream, FileName, RegionOverride); finally Stream.Free; end;
+  try
+    LoadRom(Stream, FileName, RegionOverride);
+  finally
+    Stream.Free;
+  end;
 end;
 
 procedure TNesConsole.LoadRom(Stream: TStream; const RomName: string; RegionOverride: TRegionOverride);
@@ -390,8 +395,10 @@ begin
   var WasFrameReady := FPpu.FrameReady;
   FBus.CpuCycle := FCpuCycles;
   case FRegion of
-    TNesRegion.PAL: FDataRecorder.Clock(FCpuCycles * 16);
-    TNesRegion.Dendy: FDataRecorder.Clock(FCpuCycles * 15);
+    TNesRegion.PAL:
+      FDataRecorder.Clock(FCpuCycles * 16);
+    TNesRegion.Dendy:
+      FDataRecorder.Clock(FCpuCycles * 15);
   else
     FDataRecorder.Clock(FCpuCycles * 12);
   end;
@@ -415,7 +422,8 @@ begin
   FApu.Clock;
   // The read phase is already committed when its clock begins; a disable
   // arriving on this phase prevents playback, but cannot recover that cycle.
-  if FApu.ConsumeDmcAbort and (FDmcDmaCycles <> 1) then FDmcDmaCycles := 0;
+  if FApu.ConsumeDmcAbort and (FDmcDmaCycles <> 1) then
+    FDmcDmaCycles := 0;
   if FCartridge.Mapper <> nil then
     FCartridge.Mapper.ClockCpu;
   FCpu.SetIrqLine(FApu.IrqPending or
@@ -461,10 +469,12 @@ begin
   // Register access precedes interrupt sampling within phi2. Keep one PPU
   // dot between them, including when the access reads/clears PPUSTATUS.
   FPpu.Clock;
-  if FPpu.ConsumeNmi then FCpu.TriggerNmi;
+  if FPpu.ConsumeNmi then
+    FCpu.TriggerNmi;
   FCpu.PollInterrupts;
 
-  if FPpu.FrameReady and not WasFrameReady then FBus.ClockCoinFrame;
+  if FPpu.FrameReady and not WasFrameReady then
+    FBus.ClockCoinFrame;
   Inc(FCpuCycles);
 end;
 
@@ -503,3 +513,4 @@ begin
 end;
 
 end.
+

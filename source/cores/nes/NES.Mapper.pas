@@ -127,6 +127,7 @@ end;
 function TMapper.HasPpuClockCallbacks: Boolean;
 type
   TAddressCallback = procedure(Address: UInt16; PpuCycle: UInt64) of object;
+
   TReadCallback = procedure of object;
 var
   AddressCallback: TAddressCallback;

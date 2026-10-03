@@ -330,6 +330,21 @@ object FormMain: TFormMain
         TextSettings.Trimming = Character
         OnChange = ChangeSystem
       end
+      object RadioButtonSNES: TRadioButton
+        Align = Top
+        GroupName = 'system'
+        Hint = 'Super Nintendo (SNES)'
+        Position.Y = 232.000000000000000000
+        Size.Width = 64.000000000000000000
+        Size.Height = 58.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'radiobuttonstyle_subtle_menu'
+        TabOrder = 4
+        Text = 'SNES'
+        TextSettings.HorzAlign = Center
+        TextSettings.Trimming = Character
+        OnChange = ChangeSystem
+      end
       object RadioButtonMD: TRadioButton
         Align = Top
         GroupName = 'system'

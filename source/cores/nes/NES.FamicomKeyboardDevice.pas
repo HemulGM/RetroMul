@@ -1,4 +1,4 @@
-unit NES.FamicomKeyboardDevice;
+﻿unit NES.FamicomKeyboardDevice;
 
 interface
 
@@ -15,6 +15,7 @@ type
     FkDot, FkComma, FkColon, FkSemiColon, FkUnderscore, FkSlash, FkMinus, FkCaret,
     FkF1, FkF2, FkF3, FkF4, FkF5, FkF6, FkF7, FkF8,
     FkYen, FkStop, FkAtSign, FkGrph, FkClrHome, FkKana);
+
   TFamicomKeys = set of TFamicomKey;
 
   // HVC-007: nine populated rows and one empty row on a decade counter.
@@ -75,42 +76,74 @@ begin
   if (Code >= vkF1) and (Code <= vkF8) then
     Exit(TFamicomKey(Ord(FkF1) + Integer(Code) - vkF1));
   case Code of
-    vkReturn: Result := FkReturn;
-    vkSpace: Result := FkSpace;
-    vkDelete, vkBack: Result := FkDel;
-    vkInsert: Result := FkIns;
-    vkEscape: Result := FkEsc;
-    vkControl, vkLControl, vkRControl: Result := FkCtrl;
-    vkShift, vkLShift: Result := FkLeftShift;
-    vkRShift: Result := FkRightShift;
-    vkLeftBracket: Result := FkLeftBracket;
-    vkRightBracket: Result := FkRightBracket;
-    vkUp: Result := FkUp;
-    vkDown: Result := FkDown;
-    vkLeft: Result := FkLeft;
-    vkRight: Result := FkRight;
-    vkPeriod: Result := FkDot;
-    vkComma: Result := FkComma;
-    vkQuote: Result := FkColon;
-    vkSemicolon: Result := FkSemiColon;
-    vkOem102: Result := FkUnderscore;
-    vkSlash: Result := FkSlash;
-    vkMinus: Result := FkMinus;
-    vkEqual: Result := FkCaret;
-    vkBackslash: Result := FkYen;
-    vkPause, vkCancel: Result := FkStop;
-    vkTilde: Result := FkAtSign;
-    vkMenu, vkLMenu, vkRMenu: Result := FkGrph;
-    vkHome: Result := FkClrHome;
-    vkCapital, vkKana: Result := FkKana;
+    vkReturn:
+      Result := FkReturn;
+    vkSpace:
+      Result := FkSpace;
+    vkDelete, vkBack:
+      Result := FkDel;
+    vkInsert:
+      Result := FkIns;
+    vkEscape:
+      Result := FkEsc;
+    vkControl, vkLControl, vkRControl:
+      Result := FkCtrl;
+    vkShift, vkLShift:
+      Result := FkLeftShift;
+    vkRShift:
+      Result := FkRightShift;
+    vkLeftBracket:
+      Result := FkLeftBracket;
+    vkRightBracket:
+      Result := FkRightBracket;
+    vkUp:
+      Result := FkUp;
+    vkDown:
+      Result := FkDown;
+    vkLeft:
+      Result := FkLeft;
+    vkRight:
+      Result := FkRight;
+    vkPeriod:
+      Result := FkDot;
+    vkComma:
+      Result := FkComma;
+    vkQuote:
+      Result := FkColon;
+    vkSemicolon:
+      Result := FkSemiColon;
+    vkOem102:
+      Result := FkUnderscore;
+    vkSlash:
+      Result := FkSlash;
+    vkMinus:
+      Result := FkMinus;
+    vkEqual:
+      Result := FkCaret;
+    vkBackslash:
+      Result := FkYen;
+    vkPause, vkCancel:
+      Result := FkStop;
+    vkTilde:
+      Result := FkAtSign;
+    vkMenu, vkLMenu, vkRMenu:
+      Result := FkGrph;
+    vkHome:
+      Result := FkClrHome;
+    vkCapital, vkKana:
+      Result := FkKana;
   end;
 end;
 
 procedure TFamicomKeyboard.SetHostKey(Code: UInt32; Pressed: Boolean);
 begin
   var Key := HostKey(Code);
-  if Key = FkNone then Exit;
-  if Pressed then Include(FHostKeys, Key) else Exclude(FHostKeys, Key);
+  if Key = FkNone then
+    Exit;
+  if Pressed then
+    Include(FHostKeys, Key)
+  else
+    Exclude(FHostKeys, Key);
 end;
 
 procedure TFamicomKeyboard.SetScreenKeys(const Keys: TFamicomKeys);
@@ -137,7 +170,8 @@ const
     (FkClrHome, FkUp, FkRight, FkLeft, FkDown, FkSpace, FkDel, FkIns));
 begin
   Result := 0;
-  if FRow >= 9 then Exit;
+  if FRow >= 9 then
+    Exit;
   var Keys := GetPressedKeys;
   for var I := 0 to 3 do
     if Matrix[FRow, FColumn * 4 + I] in Keys then
@@ -146,19 +180,23 @@ end;
 
 procedure TFamicomKeyboard.Write(Value: UInt8);
 begin
-  if not FConnected then Exit;
+  if not FConnected then
+    Exit;
   var PreviousColumn := FColumn;
   FColumn := (Value shr 1) and 1;
   if (FColumn = 0) and (PreviousColumn = 1) then
     FRow := (FRow + 1) mod 10;
-  if (Value and 1) <> 0 then FRow := 0;
+  if (Value and 1) <> 0 then
+    FRow := 0;
   FEnabled := (Value and 4) <> 0;
 end;
 
 function TFamicomKeyboard.Read: UInt8;
 begin
-  if not FConnected or not FEnabled then Exit(0);
+  if not FConnected or not FEnabled then
+    Exit(0);
   Result := (not (ActiveKeys shl 1)) and $1E;
 end;
 
 end.
+

@@ -1,36 +1,36 @@
-﻿unit Core.Adapter.MD;
+﻿unit Core.Adapter.SNES;
 
 interface
 
 uses
   System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  MD.Console, MD.Emulation;
+  SNES.Console, SNES.Emulation;
 
 type
-  TMDKeyMap = array[TMDButton] of UInt32;
+  TSnesKeyMap = array[TSnesButton] of UInt32;
 
-  TMDConfig = class(TEmulatorConfigBase)
+  TSnesConfig = class(TEmulatorConfigBase)
   private
-    FKeys, FKeys2: TMDKeyMap;
+    FKeys, FKeys2: TSnesKeyMap;
   protected
     procedure LoadCoreSettings(Ini: TCustomIniFile); override;
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
   public
     constructor Create(const FileName: string; const Storage: IStorage = nil);
-    property Keys: TMDKeyMap read FKeys;
-    property Keys2: TMDKeyMap read FKeys2;
+    property Keys: TSnesKeyMap read FKeys;
+    property Keys2: TSnesKeyMap read FKeys2;
   end;
 
-  TMDCoreAdapter = class(TInterfacedObject, IEmulationCore)
+  TSnesCoreAdapter = class(TInterfacedObject, IEmulationCore)
   private
-    FThread: TMDWorker;
-    FData: TBytes;
+    FThread: TSnesWorker;
+    FData, FFirmware: TBytes;
     FSnapshotDirectory: string;
     FStorage: IStorage;
     FSavePath, FError: string;
     FConfig: IEmulatorConfig;
-    FKeys, FKeys2: TMDKeyMap;
-    FKeyboard, FGamepad, FKeyboard2, FGamepad2: TMDButtons;
+    FKeys, FKeys2: TSnesKeyMap;
+    FKeyboard, FGamepad, FKeyboard2, FGamepad2: TSnesButtons;
     FPaused: Boolean;
     procedure ApplySettings;
   public
@@ -64,16 +64,16 @@ type
 implementation
 
 uses
-  System.IOUtils, System.UITypes, System.Hash, MD.Cartridge, Core.RomFormat;
+  System.IOUtils, System.UITypes, System.Hash, SNES.Cartridge, Core.RomFormat;
 
 const
-  KeyNames: array[TMDButton] of string =
-    ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'C', 'Start', 'X', 'Y', 'Z', 'Mode');
+  KeyNames: array[TSnesButton] of string =
+    ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Select', 'Start', 'X', 'Y', 'L', 'R');
 
-constructor TMDConfig.Create(const FileName: string; const Storage: IStorage);
+constructor TSnesConfig.Create(const FileName: string; const Storage: IStorage);
 const
-  Defaults: TMDKeyMap = (vkUp, vkDown, vkLeft, vkRight, vkZ, vkX, vkC, vkReturn, vkA, vkS, vkD, vkSpace);
-  Defaults2: TMDKeyMap = (vkNumpad8, vkNumpad5, vkNumpad4, vkNumpad6,
+  Defaults: TSnesKeyMap = (vkUp, vkDown, vkLeft, vkRight, vkX, vkZ, vkSpace, vkReturn, vkS, vkA, vkQ, vkW);
+  Defaults2: TSnesKeyMap = (vkNumpad8, vkNumpad5, vkNumpad4, vkNumpad6,
     vkNumpad1, vkNumpad2, vkNumpad3, vkNumpad0, vkNumpad7, vkNumpad9,
     vkDecimal, vkMultiply);
 begin
@@ -82,25 +82,25 @@ begin
   FKeys2 := Defaults2;
 end;
 
-procedure TMDConfig.LoadCoreSettings(Ini: TCustomIniFile);
+procedure TSnesConfig.LoadCoreSettings(Ini: TCustomIniFile);
 begin
-  for var Button := Low(TMDButton) to High(TMDButton) do
+  for var Button := Low(TSnesButton) to High(TSnesButton) do
   begin
     FKeys[Button] := ReadEmulatorKey(Ini, 'Keys', KeyNames[Button], FKeys[Button]);
     FKeys2[Button] := ReadEmulatorKey(Ini, 'Keys2', KeyNames[Button], FKeys2[Button]);
   end;
 end;
 
-procedure TMDConfig.SaveCoreSettings(Ini: TCustomIniFile);
+procedure TSnesConfig.SaveCoreSettings(Ini: TCustomIniFile);
 begin
-  for var Button := Low(TMDButton) to High(TMDButton) do
+  for var Button := Low(TSnesButton) to High(TSnesButton) do
   begin
     Ini.WriteInteger('Keys', KeyNames[Button], FKeys[Button]);
     Ini.WriteInteger('Keys2', KeyNames[Button], FKeys2[Button]);
   end;
 end;
 
-constructor TMDCoreAdapter.Create(const FileName: string);
+constructor TSnesCoreAdapter.Create(const FileName: string);
 begin
   var Storage := TStorage.Default;
   var Stream := Storage.OpenRead(FileName);
@@ -111,10 +111,10 @@ begin
   end;
 end;
 
-constructor TMDCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
+constructor TSnesCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
 var
-  Cart: TMDCartridge;
-  Config: TMDConfig;
+  Cart: TSnesCartridge;
+  Config: TSnesConfig;
   Hash: THashSHA2;
 begin
   inherited Create;
@@ -123,47 +123,59 @@ begin
     FStorage := TStorage.Default;
   var Data := ReadRomData(Stream);
   var Format := DetectRom(Data);
-  Cart := TMDCartridge.Create(NormalizeRom(Data, Format), '');
+  Data := NormalizeRom(Data, Format);
+  Config := TSnesConfig.Create(FStorage.ConfigFile(ROM_SYSTEM_SNES), FStorage);
+  FConfig := Config;
+  Config.Load;
+  var FirmwareName := SnesDSPFirmwareName(Data);
+  if FirmwareName <> '' then
+  begin
+    var EmbeddedSize := SnesEmbeddedFirmwareSize(Data);
+    if EmbeddedSize > 0 then
+      FFirmware := Copy(Data, Length(Data) - EmbeddedSize, EmbeddedSize)
+    else
+      FFirmware := SnesResourceFirmware(FirmwareName);
+  end;
+  Cart := TSnesCartridge.Create(Data, FFirmware);
   try
     FData := Copy(Cart.Data);
   finally
     Cart.Free;
   end;
-  Config := TMDConfig.Create(FStorage.ConfigFile(ROM_SYSTEM_MD), FStorage);
-  FConfig := Config;
-  Config.Load;
   FKeys := Config.Keys;
   FKeys2 := Config.Keys2;
   Hash := THashSHA2.Create;
   Hash.Update(FData);
-  FSavePath := FStorage.GameSave(ROM_SYSTEM_MD, RomName, Hash.HashAsString);
-  FSnapshotDirectory := FStorage.GameSnapshots(ROM_SYSTEM_MD, RomName, Hash.HashAsString);
+  if Length(FFirmware) > 0 then
+    Hash.Update(FFirmware);
+  FSavePath := FStorage.GameSave(ROM_SYSTEM_SNES, RomName, Hash.HashAsString);
+  FSnapshotDirectory := FStorage.GameSnapshots(ROM_SYSTEM_SNES, RomName, Hash.HashAsString);
 end;
 
-destructor TMDCoreAdapter.Destroy;
+destructor TSnesCoreAdapter.Destroy;
 begin
   Stop;
   inherited;
 end;
 
-procedure TMDCoreAdapter.ApplySettings;
+procedure TSnesCoreAdapter.ApplySettings;
 begin
   if FThread <> nil then
     FThread.Configure(FKeyboard + FGamepad, FPaused,
       FConfig.AudioEnabled, FConfig.AudioVolume, FKeyboard2 + FGamepad2);
 end;
 
-procedure TMDCoreAdapter.Start;
+procedure TSnesCoreAdapter.Start;
 begin
   if FThread <> nil then
     Exit;
-  FThread := TMDWorker.Create(FData, FSavePath, FStorage);
+  FThread := TSnesWorker.Create(FData, FSavePath, FStorage, FFirmware);
   FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplySettings;
   FThread.Start;
 end;
 
-procedure TMDCoreAdapter.Stop;
+procedure TSnesCoreAdapter.Stop;
 begin
   if FThread = nil then
     Exit;
@@ -174,19 +186,19 @@ begin
   FreeAndNil(FThread);
 end;
 
-procedure TMDCoreAdapter.Pause;
+procedure TSnesCoreAdapter.Pause;
 begin
   FPaused := True;
   ApplySettings;
 end;
 
-procedure TMDCoreAdapter.Resume;
+procedure TSnesCoreAdapter.Resume;
 begin
   FPaused := False;
   ApplySettings;
 end;
 
-procedure TMDCoreAdapter.Reset;
+procedure TSnesCoreAdapter.Reset;
 begin
   FPaused := False;
   if FThread <> nil then
@@ -194,7 +206,7 @@ begin
   ApplySettings;
 end;
 
-procedure TMDCoreAdapter.ClearInput;
+procedure TSnesCoreAdapter.ClearInput;
 begin
   FKeyboard := [];
   FGamepad := [];
@@ -203,11 +215,11 @@ begin
   ApplySettings;
 end;
 
-procedure TMDCoreAdapter.SetKeyState(Code: UInt32; Pressed: Boolean);
+procedure TSnesCoreAdapter.SetKeyState(Code: UInt32; Pressed: Boolean);
 var
-  Button: TMDButton;
+  Button: TSnesButton;
 begin
-  for Button := Low(TMDButton) to High(TMDButton) do
+  for Button := Low(TSnesButton) to High(TSnesButton) do
   begin
     if Code = FKeys[Button] then
       if Pressed then
@@ -223,16 +235,12 @@ begin
   ApplySettings;
 end;
 
-function TMDCoreAdapter.GetInputState: TEmulatorInput;
+function TSnesCoreAdapter.GetInputState: TEmulatorInput;
 const
-  Mapping: array[TMDButton] of TEmulatorButton =
-    (TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left,
-    TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B,
-    TEmulatorButton.C, TEmulatorButton.Start, TEmulatorButton.X,
-    TEmulatorButton.Y, TEmulatorButton.Z, TEmulatorButton.Mode);
+  Mapping: array[TSnesButton] of TEmulatorButton = (TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Select, TEmulatorButton.Start, TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.C, TEmulatorButton.Z);
 begin
   Result := Default(TEmulatorInput);
-  for var Button := Low(TMDButton) to High(TMDButton) do
+  for var Button := Low(TSnesButton) to High(TSnesButton) do
   begin
     if Button in (FKeyboard + FGamepad) then
       Include(Result.Buttons, Mapping[Button]);
@@ -241,12 +249,9 @@ begin
   end;
 end;
 
-procedure TMDCoreAdapter.SetGamepadInput(const Input: TEmulatorInput);
+procedure TSnesCoreAdapter.SetGamepadInput(const Input: TEmulatorInput);
 const
-  Mapping: array[TEmulatorButton] of TMDButton =
-    (TMDButton.Up, TMDButton.Down, TMDButton.Left, TMDButton.Right,
-    TMDButton.A, TMDButton.B, TMDButton.C, TMDButton.Start,
-    TMDButton.C, TMDButton.X, TMDButton.Y, TMDButton.Z, TMDButton.Mode);
+  Mapping: array[TEmulatorButton] of TSnesButton = (TSnesButton.Up, TSnesButton.Down, TSnesButton.Left, TSnesButton.Right, TSnesButton.A, TSnesButton.B, TSnesButton.Select, TSnesButton.Start, TSnesButton.L, TSnesButton.X, TSnesButton.Y, TSnesButton.R, TSnesButton.Select);
 var
   Button: TEmulatorButton;
 begin
@@ -254,21 +259,21 @@ begin
   FGamepad2 := [];
   for Button := Low(TEmulatorButton) to High(TEmulatorButton) do
   begin
-    if Button in Input.Buttons then
+    if (Button <> TEmulatorButton.Mode) and (Button in Input.Buttons) then
       Include(FGamepad, Mapping[Button]);
-    if Button in Input.Buttons2 then
+    if (Button <> TEmulatorButton.Mode) and (Button in Input.Buttons2) then
       Include(FGamepad2, Mapping[Button]);
   end;
   ApplySettings;
 end;
 
-function TMDCoreAdapter.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
+function TSnesCoreAdapter.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
 begin
   ApplySettings;
   Result := (FThread <> nil) and FThread.TryGetFrame(Frame);
 end;
 
-function TMDCoreAdapter.TakeError: string;
+function TSnesCoreAdapter.TakeError: string;
 begin
   Result := FError;
   FError := '';
@@ -276,52 +281,52 @@ begin
     Result := FThread.TakeError;
 end;
 
-function TMDCoreAdapter.GetConfig: IEmulatorConfig;
+function TSnesCoreAdapter.GetConfig: IEmulatorConfig;
 begin
   Result := FConfig;
 end;
 
-function TMDCoreAdapter.GetName: string;
+function TSnesCoreAdapter.GetName: string;
 begin
-  Result := 'SEGA Genesis / Mega Drive';
+  Result := 'Super Nintendo (SNES)';
 end;
 
-function TMDCoreAdapter.GetSupportsSnapshots: Boolean;
+function TSnesCoreAdapter.GetSupportsSnapshots: Boolean;
 begin
   Result := True;
 end;
 
-function TMDCoreAdapter.GetHasCoinAcceptor: Boolean;
+function TSnesCoreAdapter.GetHasCoinAcceptor: Boolean;
 begin
   Result := False;
 end;
 
-procedure TMDCoreAdapter.InsertCoin1;
+procedure TSnesCoreAdapter.InsertCoin1;
 begin
 end;
 
-procedure TMDCoreAdapter.InsertCoin2;
+procedure TSnesCoreAdapter.InsertCoin2;
 begin
 end;
 
-function TMDCoreAdapter.GetUsesSuborKeyboard: Boolean;
+function TSnesCoreAdapter.GetUsesSuborKeyboard: Boolean;
 begin
   Result := False;
 end;
 
-function TMDCoreAdapter.IsPaused: Boolean;
+function TSnesCoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
 end;
 
-procedure TMDCoreAdapter.SaveSnapshot(const Name: string);
+procedure TSnesCoreAdapter.SaveSnapshot(const Name: string);
 begin
   if FThread = nil then
     raise EInvalidOpException.Create('Emulation worker is not running');
   FThread.SaveSnapshot(Name);
 end;
 
-procedure TMDCoreAdapter.LoadSnapshot(const Name: string);
+procedure TSnesCoreAdapter.LoadSnapshot(const Name: string);
 begin
   if FThread = nil then
     raise EInvalidOpException.Create('Emulation worker is not running');

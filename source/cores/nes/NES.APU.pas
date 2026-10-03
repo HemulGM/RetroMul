@@ -826,7 +826,8 @@ begin
       FDmc.Shift := FDmc.SampleBuffer;
       FDmc.BufferEmpty := True;
       // The output unit empties on get; reload DMA first tries to halt on put.
-      if FDmcDmaDelay < 1 then FDmcDmaDelay := 1;
+      if FDmcDmaDelay < 1 then
+        FDmcDmaDelay := 1;
     end;
   end;
 end;

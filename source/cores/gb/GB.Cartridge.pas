@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils;
+  System.SysUtils, Core.RomFormat;
 
 {$SCOPEDENUMS ON}
 
@@ -40,13 +40,13 @@ const
   AddressLocale: Integer = $14A;
   AddressROMSize: Integer = $148;
   AddressCartType: Integer = $0147;
-  AddressLogoStart: Integer = $104;
+  AddressLogoStart: Integer = GB_ROM_LOGO_OFFSET;
   AddressLogoEnd: Integer = $0133;
   AddressHeaderChecksumExpected: Integer = $014D;
   AddressHeaderChecksumCalculatedStart: Integer = $0134;
   AddressHeaderChecksumCalculatedEnd: Integer = $014C;
-  CartridgeHeaderSize = $150;
-  AddressCGBFlag = $143;
+  CartridgeHeaderSize = GB_ROM_HEADER_SIZE;
+  AddressCGBFlag = GB_ROM_CGB_FLAG_OFFSET;
   AddressNewLicensee = $144;
   AddressSGBFlag = $146;
   AddressOldLicensee = $14B;
@@ -116,12 +116,6 @@ type
 implementation
 
 // Header format: https://gbdev.io/pandocs/The_Cartridge_Header.html
-
-const
-  NintendoLogo: array[0..47] of Byte = (
-    $CE, $ED, $66, $66, $CC, $0D, $00, $0B, $03, $73, $00, $83, $00, $0C, $00, $0D,
-    $00, $08, $11, $1F, $88, $89, $00, $0E, $DC, $CC, $6E, $E6, $DD, $DD, $D9, $99,
-    $BB, $BB, $67, $63, $6E, $0E, $EC, $CC, $DD, $DC, $99, $9F, $BB, $B9, $33, $3E);
 
 function HeaderText(const Data: TBytes; First, Count: Integer): string;
 begin
@@ -380,7 +374,7 @@ begin
     FRAMBanks := (FRAMSizeBytes + $1FFF) div $2000
   else
     FRAMBanks := -1;
-  FLogoValid := CompareMem(@Data[AddressLogoStart], @NintendoLogo[0], SizeOf(NintendoLogo));
+  FLogoValid := CompareMem(@Data[AddressLogoStart], @GB_ROM_LOGO[0], SizeOf(GB_ROM_LOGO));
   if not FLogoValid then
     Include(FIssues, TCartridgeIssue.InvalidLogo);
   var Checksum: Integer := 0;

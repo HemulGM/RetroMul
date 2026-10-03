@@ -1,4 +1,4 @@
-unit Core.AudioFilter;
+﻿unit Core.AudioFilter;
 
 interface
 

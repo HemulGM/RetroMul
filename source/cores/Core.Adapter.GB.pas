@@ -3,7 +3,8 @@
 interface
 
 uses
-  System.Classes, System.IniFiles, Core.Storage, Core.Emulation, GB.EmulationThread, GB.Joypad, GB.GPU;
+  System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
+  GB.EmulationThread, GB.Joypad, GB.GPU;
 
 type
   TGBKeyMap = record
@@ -85,12 +86,12 @@ type
 implementation
 
 uses
-  Core.Snapshots, Core.SavePaths, System.SysUtils, System.Math, System.UITypes,
-  GB.Palettes, GB.ROM, GB.MBC;
+  Core.RomFormat, Core.Snapshots, Core.SavePaths, System.SysUtils, System.Math,
+  System.UITypes, GB.Palettes, GB.ROM, GB.MBC;
 
 function TGBCoreAdapter.ConfigPrefix: string;
 begin
-  Result := 'gb';
+  Result := ROM_SYSTEM_GB;
 end;
 
 function TGBCoreAdapter.CreateConfig(const FileName: string): IGBEmulatorConfig;
@@ -108,7 +109,8 @@ begin
   for var I := 0 to High(Screen) do
   begin
     var Shade := Screen[I];
-    if (Shade < 0) or (Shade > 3) then Shade := 0;
+    if (Shade < 0) or (Shade > 3) then
+      Shade := 0;
     Frame.Pixels[I] := ScreenPalettes[FConfig.ScreenPalette].Colors[Shade];
   end;
 end;
@@ -117,14 +119,19 @@ constructor TGBCoreAdapter.Create(const FileName: string);
 begin
   var Storage := TStorage.Default;
   var Stream := Storage.OpenRead(FileName);
-  try Create(Stream, Storage, FileName); finally Stream.Free; end;
+  try
+    Create(Stream, Storage, FileName);
+  finally
+    Stream.Free;
+  end;
 end;
 
 constructor TGBCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
 begin
   inherited Create;
   FStorage := Storage;
-  if FStorage = nil then FStorage := TStorage.Default;
+  if FStorage = nil then
+    FStorage := TStorage.Default;
   FConfig := CreateConfig(FStorage.ConfigFile(ConfigPrefix));
   FConfig.Load;
   var ROM := TGBROM.Create;

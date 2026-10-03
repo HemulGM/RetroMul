@@ -513,7 +513,11 @@ end;
 procedure TGameList.LoadFromFile(const AFileName: string);
 begin
   var Stream := TStorage.Default.OpenRead(AFileName);
-  try LoadFromStream(Stream); finally Stream.Free; end;
+  try
+    LoadFromStream(Stream);
+  finally
+    Stream.Free;
+  end;
 end;
 
 procedure TGameList.LoadFromStream(Stream: TStream);
@@ -550,7 +554,9 @@ begin
     try
       XML.SaveToStream(Stream);
       TStorage.Default.WriteAtomic(AFileName, Stream);
-    finally Stream.Free; end;
+    finally
+      Stream.Free;
+    end;
   except
     on E: Exception do
       raise Exception.CreateFmt('Unable to save XML file: %s' + sLineBreak + '%s', [AFileName, E.Message]);
@@ -583,5 +589,4 @@ begin
 end;
 
 end.
-
 

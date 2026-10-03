@@ -2,7 +2,11 @@
 
 ![screen](https://github.com/HemulGM/RetroMul/blob/main/screen/screen1.png?raw=true)
 
-A Delphi multi-system emulator with an FMX interface for NES, Game Boy and Game Boy Color, Mega Drive (Genesis).
+A Delphi multi-system emulator with an FMX interface for NES, Game Boy and Game Boy Color, Mega Drive (Genesis), and SNES.
+The new native Delphi [SNES core] includes two controllers, audio, SRAM and save states. This initial
+port supports ordinary ROM/RAM cartridges, OBC1, S-DD1, NEC DSP, ST010/ST011 and CX4 cartridges;
+DSP-1/1B/2/3/4 and ST010/ST011/ST018 firmware is embedded in the program resources;
+no separate firmware files are needed.
 For NES, 47 mapper numbers are supported:
 NROM, MMC1–MMC5, UxROM, CNROM, AxROM, Color Dreams, GxROM, Bandai, VRC,
 Sunsoft, RAMBO-1, Namco 108, JY, Subor and other boards from the proven ROM collection.
@@ -43,7 +47,7 @@ logical button states (including SEGA's six action buttons and a second pad)
 and produces a size-tagged, row-major FMX
 frame. Platform-specific settings stay in the adapter, so a future core only
 needs an adapter plus a folder under `source/cores/`. ROMs are loaded from
-`TStream`; NES, Game Boy, Game Boy Color and Mega Drive are identified by
+`TStream`; NES, Game Boy, Game Boy Color, Mega Drive and SNES are identified by
 their headers, regardless of the filename extension. SMD and byte-swapped
 Mega Drive dumps are normalized before loading. The caller owns the stream
 and may release it immediately after construction; reset uses the loaded bytes.
@@ -90,6 +94,7 @@ ROMS\
   gbc -> (gamelist.xml +*.gbc)
   megadrive -> (gamelist.xml +*.gen, *.md, *.bin, *.smd)
   nes -> (gamelist.xml +*.nes)
+  snes -> (gamelist.xml + *.sfc, *.smc, *.swc, *.fig)
 ```
 Use [Skraper](https://www.skraper.net) to create gamelist.xml and parsing your rom files (select `RecalBox` as platform)
 

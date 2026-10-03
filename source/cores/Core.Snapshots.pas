@@ -1,4 +1,4 @@
-unit Core.Snapshots;
+﻿unit Core.Snapshots;
 
 interface
 
@@ -115,7 +115,8 @@ end;
 procedure SaveStreamAtomically(Stream: TMemoryStream; const Path: string; const Storage: IStorage);
 begin
   var TargetStorage := Storage;
-  if TargetStorage = nil then TargetStorage := TStorage.Default;
+  if TargetStorage = nil then
+    TargetStorage := TStorage.Default;
   TargetStorage.WriteAtomic(Path, Stream);
 end;
 
@@ -135,6 +136,9 @@ begin
   // MD v3 adds timed VDP FIFO/DMA and raster state.
   if PlatformCore = 'MD' then
     Result.Version := 3;
+  // SNES v7 adds the CPU-cycle NMI edge delay to the system state.
+  if PlatformCore = 'SNES' then
+    Result.Version := 7;
   var Core := AnsiString(PlatformCore);
   if (Length(Core) = 0) or (Length(Core) > 8) then
     raise EArgumentException.Create('Invalid snapshot platform');
@@ -168,7 +172,8 @@ end;
 procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
 begin
   var SourceStorage := Storage;
-  if SourceStorage = nil then SourceStorage := TStorage.Default;
+  if SourceStorage = nil then
+    SourceStorage := TStorage.Default;
   var Input := SourceStorage.OpenRead(Path);
   var Payload := TMemoryStream.Create;
   var Backup := TMemoryStream.Create;

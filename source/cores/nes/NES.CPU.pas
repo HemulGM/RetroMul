@@ -146,22 +146,38 @@ implementation
 
 const
   BUS_MODES: array[0..255] of TBusMode = (
-    bmImplied, bmIndirectX, bmImplied, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmPush, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
-    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
-    bmImplied, bmIndirectX, bmImplied, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmPull, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
-    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
-    bmRti, bmIndirectX, bmImplied, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmPush, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
-    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
-    bmRts, bmIndirectX, bmImplied, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmPull, bmImmediate, bmImplied, bmImmediate, bmIndirect, bmAbsolute, bmAbsolute, bmAbsolute,
-    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
-    bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmImplied, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
-    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroY, bmZeroY, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteY, bmAbsoluteY,
-    bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmImplied, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
-    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroY, bmZeroY, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteY, bmAbsoluteY,
-    bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmImplied, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
-    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
-    bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmImplied, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
-    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX);
+    bmImplied, bmIndirectX, bmImplied, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmPush,
+    bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX,
+    bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
+    bmAbsoluteX, bmImplied, bmIndirectX, bmImplied, bmIndirectX, bmZero, bmZero, bmZero,
+    bmZero, bmPull, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX,
+    bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
+    bmRti, bmIndirectX, bmImplied, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmPush, bmImmediate,
+    bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute, bmBranch, bmIndirectY,
+    bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied,
+    bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmRts, bmIndirectX, bmImplied,
+    bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmPull, bmImmediate, bmImplied, bmImmediate,
+    bmIndirect, bmAbsolute, bmAbsolute, bmAbsolute, bmBranch, bmIndirectY, bmImplied, bmIndirectY,
+    bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX,
+    bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero,
+    bmZero, bmZero, bmZero, bmImplied, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute,
+    bmAbsolute, bmAbsolute, bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroY,
+    bmZeroY, bmImplied, bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteY,
+    bmAbsoluteY, bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero, bmZero, bmZero, bmZero,
+    bmImplied, bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroY, bmZeroY, bmImplied,
+    bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteY, bmAbsoluteY,
+    bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmImplied,
+    bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied,
+    bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX,
+    bmImmediate, bmIndirectX, bmImmediate, bmIndirectX, bmZero, bmZero, bmZero, bmZero, bmImplied,
+    bmImmediate, bmImplied, bmImmediate, bmAbsolute, bmAbsolute, bmAbsolute, bmAbsolute,
+    bmBranch, bmIndirectY, bmImplied, bmIndirectY, bmZeroX, bmZeroX, bmZeroX, bmZeroX, bmImplied,
+    bmAbsoluteY, bmImplied, bmAbsoluteY, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX, bmAbsoluteX);
+  //
   BUS_CYCLES: array[0..255] of Byte = (
     7, 6, 2, 8, 3, 3, 5, 5, 3, 2, 2, 2, 4, 4, 6, 6,
     2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
@@ -179,6 +195,7 @@ const
     2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7,
     2, 6, 2, 8, 3, 3, 5, 5, 2, 2, 2, 2, 4, 4, 6, 6,
     2, 5, 2, 8, 4, 4, 6, 6, 2, 4, 2, 7, 4, 4, 7, 7);
+  //
   BUS_WRITES: array[0..255] of Byte = (
     0, 0, 0, 2, 0, 0, 2, 2, 1, 0, 0, 0, 0, 0, 2, 2,
     0, 0, 0, 2, 0, 0, 2, 2, 0, 0, 0, 2, 0, 0, 2, 2,
@@ -616,8 +633,10 @@ begin
     7:
       Read(Pc);
     6:
-      if FInterruptBreakFlag then Read((FInterruptLatchedPc - 1) and $FFFF)
-      else Read(Pc);
+      if FInterruptBreakFlag then
+        Read((FInterruptLatchedPc - 1) and $FFFF)
+      else
+        Read(Pc);
     5:
       Push(FInterruptLatchedPc shr 8);
     4:
@@ -871,8 +890,8 @@ procedure TCPU6502.NotifyDmaHalt;
 begin
   if FBusSequence.Active and
     (((FBusSequence.Opcode = $93) and (FBusSequence.Cycle = 5)) or
-     ((FBusSequence.Opcode in [$9B, $9C, $9E, $9F]) and
-       (FBusSequence.Cycle = 4))) then
+    ((FBusSequence.Opcode in [$9B, $9C, $9E, $9F]) and
+    (FBusSequence.Cycle = 4))) then
     FDmaOnStoreDummy := True;
 end;
 
@@ -883,13 +902,17 @@ begin
     Result := Pc;
     if FInterruptSequenceActive and FInterruptBreakFlag and (CyclesRemaining = 6) then
       Result := (FInterruptLatchedPc - 1) and $FFFF;
-    if FJsrActive and (CyclesRemaining = 4) then Result := $0100 or Sp;
+    if FJsrActive and (CyclesRemaining = 4) then
+      Result := $0100 or Sp;
     if FInterruptSequenceActive and (CyclesRemaining <= 2) then
     begin
       if (FInterruptKind = ikNmi) or
-        ((CyclesRemaining = 2) and FPendingNmi) then Result := $FFFA
-      else Result := $FFFE;
-      if CyclesRemaining = 1 then Inc(Result);
+        ((CyclesRemaining = 2) and FPendingNmi) then
+        Result := $FFFA
+      else
+        Result := $FFFE;
+      if CyclesRemaining = 1 then
+        Inc(Result);
     end;
     Exit;
   end;
@@ -1849,7 +1872,8 @@ begin
         Mask := A and X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
-        if FDmaOnStoreDummy then Mask := A and X;
+        if FDmaOnStoreDummy then
+          Mask := A and X;
         Write(Addr, Mask);
         Cycles := 6;
       end;
@@ -1893,7 +1917,8 @@ begin
         var Mask: UInt8 := Sp and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
-        if FDmaOnStoreDummy then Mask := Sp;
+        if FDmaOnStoreDummy then
+          Mask := Sp;
         Write(Addr, Mask);
         Cycles := 5;
       end;
@@ -1905,7 +1930,8 @@ begin
         var Mask: UInt8 := Y and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
-        if FDmaOnStoreDummy then Mask := Y;
+        if FDmaOnStoreDummy then
+          Mask := Y;
         Write(Addr, Mask);
         Cycles := 5;
       end;
@@ -1927,7 +1953,8 @@ begin
         var Mask: UInt8 := X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
-        if FDmaOnStoreDummy then Mask := X;
+        if FDmaOnStoreDummy then
+          Mask := X;
         Write(Addr, Mask);
         Cycles := 5;
       end;
@@ -1939,7 +1966,8 @@ begin
         var Mask: UInt8 := A and X and UInt8((((Base shr 8) + 1) and $FF));
         if (Base and $FF00) <> (Addr and $FF00) then
           Addr := (Addr and $00FF) or (UInt16(Mask) shl 8);
-        if FDmaOnStoreDummy then Mask := A and X;
+        if FDmaOnStoreDummy then
+          Mask := A and X;
         Write(Addr, Mask);
         Cycles := 5;
       end;

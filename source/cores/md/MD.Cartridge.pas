@@ -34,13 +34,14 @@ implementation
 uses
   Core.Storage, Core.RomFormat;
 
-const
-  MAX_ROM_SIZE = 8 * 1024 * 1024;
-
 constructor TMDCartridge.Create(const FileName: string);
 begin
   var Stream := TStorage.Default.OpenRead(FileName);
-  try Create(Stream); finally Stream.Free; end;
+  try
+    Create(Stream);
+  finally
+    Stream.Free;
+  end;
 end;
 
 constructor TMDCartridge.Create(Stream: TStream);
@@ -55,38 +56,42 @@ end;
 constructor TMDCartridge.Create(const Data: TBytes; const Extension: string);
 begin
   inherited Create;
-  FHeaderOffset := $100;
+  FHeaderOffset := MD_ROM_HEADER_OFFSET;
   // Some collections label ordinary big-endian dumps as .smd. Trust the
   // cartridge signature before attempting the copier's interleaving format.
-  if SameText(Extension, '.smd') and not ((Length(Data) >= $200) and
-    (Data[$100] = Ord('S')) and (Data[$101] = Ord('E')) and
-    (Data[$102] = Ord('G')) and (Data[$103] = Ord('A'))) then
+  if SameText(Extension, ROM_EXTENSION_SMD) and
+    not ((Length(Data) >= MD_ROM_HEADER_OFFSET + MD_ROM_HEADER_SIZE) and
+    CompareMem(@Data[MD_ROM_HEADER_OFFSET], PAnsiChar(MD_ROM_SIGNATURE), Length(MD_ROM_SIGNATURE))) then
   begin
-    if (Length(Data) <= 512) or ((Length(Data) - 512) mod $4000 <> 0) or (Length(Data) > MAX_ROM_SIZE + 512) then
+    if (Length(Data) <= ROM_COPIER_HEADER_SIZE) or
+      ((Length(Data) - ROM_COPIER_HEADER_SIZE) mod SMD_BLOCK_SIZE <> 0) or
+      (Length(Data) > MD_ROM_MAX_SIZE + ROM_COPIER_HEADER_SIZE) then
       raise EMDCartridge.Create('Invalid SMD size: expected a 512-byte header and 16 KiB blocks');
-    SetLength(FData, Length(Data) - 512);
-    for var Block := 0 to Length(FData) div $4000 - 1 do
+    SetLength(FData, Length(Data) - ROM_COPIER_HEADER_SIZE);
+    for var Block := 0 to Length(FData) div SMD_BLOCK_SIZE - 1 do
     begin
-      var Source := 512 + Block * $4000;
-      for var I := 0 to $1FFF do
+      var Source := ROM_COPIER_HEADER_SIZE + Block * SMD_BLOCK_SIZE;
+      for var I := 0 to SMD_HALF_BLOCK_SIZE - 1 do
       begin
-        FData[Block * $4000 + I * 2] := Data[Source + $2000 + I];
-        FData[Block * $4000 + I * 2 + 1] := Data[Source + I];
+        FData[Block * SMD_BLOCK_SIZE + I * 2] := Data[Source + SMD_HALF_BLOCK_SIZE + I];
+        FData[Block * SMD_BLOCK_SIZE + I * 2 + 1] := Data[Source + I];
       end;
     end;
   end
   else
     FData := Copy(Data);
 
-  if (Length(FData) < $200) or (Length(FData) > MAX_ROM_SIZE) or Odd(Length(FData)) then
+  if (Length(FData) < MD_ROM_HEADER_OFFSET + MD_ROM_HEADER_SIZE) or
+    (Length(FData) > MD_ROM_MAX_SIZE) or Odd(Length(FData)) then
     raise EMDCartridge.Create('Invalid Mega Drive ROM size');
-  if HeaderText($100, 4) <> 'SEGA' then
+  if HeaderText(MD_ROM_HEADER_OFFSET, Length(MD_ROM_SIGNATURE)) <> string(MD_ROM_SIGNATURE) then
   begin
     // Some early diagnostics retain the first 128 vector entries and
     // place the identification header at $200 (Charles MacDonald's itest).
-    if (Length(FData) < $300) or (HeaderText($200, 4) <> 'SEGA') then
+    if (Length(FData) < MD_ROM_ALTERNATE_HEADER_OFFSET + MD_ROM_HEADER_SIZE) or
+      (HeaderText(MD_ROM_ALTERNATE_HEADER_OFFSET, Length(MD_ROM_SIGNATURE)) <> string(MD_ROM_SIGNATURE)) then
       raise EMDCartridge.Create('Mega Drive ROM has no SEGA header at $100 or $200');
-    FHeaderOffset := $200;
+    FHeaderOffset := MD_ROM_ALTERNATE_HEADER_OFFSET;
   end;
 
   FTitle := HeaderText($150, 48);

@@ -495,8 +495,7 @@ begin
   // Expose only timed PPU fetches; frame/debug reads must not clock IRQs.
   var Phase: Integer := FCycle and 7;
   var Address: UInt16 := $2000 or (FV and $0FFF);
-  if ((FCycle >= 1) and (FCycle < 256)) or
-    ((FCycle >= 320) and (FCycle < 336)) then
+  if ((FCycle >= 1) and (FCycle < 256)) or ((FCycle >= 320) and (FCycle < 336)) then
   begin
     if Phase >= 4 then
       Address := (UInt16(FCtrl and $10) shl 8) or
@@ -522,7 +521,8 @@ begin
         Address := $1FE0
       else
         Address := (UInt16(FCtrl and $08) shl 9) or $0FF0;
-      for var Slot := 0 to 7 do FMapperSpriteAddresses[Slot] := Address;
+      for var Slot := 0 to 7 do
+        FMapperSpriteAddresses[Slot] := Address;
       var Count: Integer := 0;
       for var i := 0 to 63 do
         if (NextLine > FOam[i * 4]) and (NextLine <= Integer(FOam[i * 4]) + Height) then
@@ -530,7 +530,8 @@ begin
           var Tile := FOam[i * 4 + 1];
           var Attributes := FOam[i * 4 + 2];
           var Row := NextLine - FOam[i * 4] - 1;
-          if (Attributes and $80) <> 0 then Row := Height - 1 - Row;
+          if (Attributes and $80) <> 0 then
+            Row := Height - 1 - Row;
           if Height = 16 then
             Address := (UInt16(Tile and 1) shl 12) or (UInt16(Tile and $FE) shl 4) or
               ((Row and 8) shl 1) or (Row and 7)
@@ -538,7 +539,8 @@ begin
             Address := (UInt16(FCtrl and $08) shl 9) or (UInt16(Tile) shl 4) or (Row and 7);
           FMapperSpriteAddresses[Count] := Address;
           Inc(Count);
-          if Count = 8 then Break;
+          if Count = 8 then
+            Break;
         end;
       FMapperSpriteScanline := FScanline;
       FMapperSpriteAddressValid := True;
@@ -557,7 +559,8 @@ begin
   if FPixel.AddressDelay > 0 then
   begin
     Dec(FPixel.AddressDelay);
-    if FPixel.AddressDelay = 0 then FV := FPixel.AddressValue;
+    if FPixel.AddressDelay = 0 then
+      FV := FPixel.AddressValue;
   end;
   var ReadRequest := False;
   var AddressRequest := False;
@@ -567,8 +570,7 @@ begin
     ReadRequest := FPixel.ReadDelay = 0;
     AddressRequest := FPixel.ReadDelay = 2;
   end;
-  var Rendering := ((FPixel.Mask and $18) <> 0) and
-    ((FScanline < 240) or (FScanline = FPreRenderLine));
+  var Rendering := ((FPixel.Mask and $18) <> 0) and ((FScanline < 240) or (FScanline = FPreRenderLine));
   var Fetch := Rendering and (FCycle >= 1) and (FCycle <= 340);
   var Background := (FCycle <= 256) or (FCycle >= 321);
   var Phase := (FCycle - 1) and 7;
@@ -578,18 +580,22 @@ begin
     Address := $2000 or (FV and $0FFF);
     if Background and (FCycle <= 336) then
       case Phase of
-        2, 3: Address := $23C0 or (FV and $0C00) or ((FV shr 4) and $38) or ((FV shr 2) and 7);
-        4..7: Address := (UInt16(FCtrl and $10) shl 8) or (UInt16(FFetchTile) shl 4) or
-          ((FV shr 12) and 7) or ((Phase and 2) shl 2);
+        2, 3:
+          Address := $23C0 or (FV and $0C00) or ((FV shr 4) and $38) or ((FV shr 2) and 7);
+        4..7:
+          Address := (UInt16(FCtrl and $10) shl 8) or (UInt16(FFetchTile) shl 4) or
+            ((FV shr 12) and 7) or ((Phase and 2) shl 2);
       end
     else if not Background and (Phase >= 4) then
     begin
-      var I := (FCycle - 257) div 8;
-      var Row := (FScanline - Integer(FPixel.SpriteY[I])) and $FF;
-      var Tile := FPixel.SpriteTile[I];
+      var i := (FCycle - 257) div 8;
+      var Row := (FScanline - Integer(FPixel.SpriteY[i])) and $FF;
+      var Tile := FPixel.SpriteTile[i];
       var Height := 8;
-      if (FCtrl and $20) <> 0 then Height := 16;
-      if (FPixel.SpriteAttr[I] and $80) <> 0 then Row := Row xor (Height - 1);
+      if (FCtrl and $20) <> 0 then
+        Height := 16;
+      if (FPixel.SpriteAttr[i] and $80) <> 0 then
+        Row := Row xor (Height - 1);
       if Height = 16 then
         Address := (UInt16(Tile and 1) shl 12) or (UInt16(Tile and $FE) shl 4) or ((Row and 8) shl 1) or (Row and 7)
       else
@@ -599,37 +605,49 @@ begin
   end;
   var Ale := AddressRequest or (Fetch and ((FCycle and 1) <> 0));
   var ReadLine := ReadRequest or (Fetch and ((FCycle and 1) = 0));
+
+  // Simultaneous ALE/read feeds data back into the address latch.
+  // Preserve the stable digital case; analogue oscillation is not modeled.
   if Ale then
-    // Simultaneous ALE/read feeds data back into the address latch.
-    // Preserve the stable digital case; analogue oscillation is not modeled.
-    if ReadLine then FPixel.AddressLatch := FPixel.DataBus
-    else FPixel.AddressLatch := Address and $FF;
+    if ReadLine then
+      FPixel.AddressLatch := FPixel.DataBus
+    else
+      FPixel.AddressLatch := Address and $FF;
   FPixel.AddressBus := (Address and $3F00) or FPixel.AddressLatch;
   if ReadLine then
   begin
     var BusAddress := FPixel.AddressBus;
     // Palette RAM is internal; its read buffer comes from nametable RAM.
-    if BusAddress >= $3F00 then Dec(BusAddress, $1000);
+    if BusAddress >= $3F00 then
+      Dec(BusAddress, $1000);
     FPixel.DataBus := PpuReadMemory(BusAddress);
-    if ReadRequest then FDataBuffer := FPixel.DataBus;
+    if ReadRequest then
+      FDataBuffer := FPixel.DataBus;
     if Fetch and ((FCycle and 1) = 0) then
     begin
       if Background then
         case Phase of
-          1: FFetchTile := FPixel.DataBus;
-          3: FPixel.Attribute := (FPixel.DataBus shr (((FV shr 4) and 4) or (FV and 2))) and 3;
-          5: FPixel.NextLow := FPixel.DataBus;
-          7: FPixel.NextHigh := FPixel.DataBus;
+          1:
+            FFetchTile := FPixel.DataBus;
+          3:
+            FPixel.Attribute := (FPixel.DataBus shr (((FV shr 4) and 4) or (FV and 2))) and 3;
+          5:
+            FPixel.NextLow := FPixel.DataBus;
+          7:
+            FPixel.NextHigh := FPixel.DataBus;
         end
       else
       begin
-        var I := (FCycle - 257) div 8;
-        if Phase = 5 then FPixel.SpriteLow[I] := FPixel.DataBus;
-        if Phase = 7 then FPixel.SpriteHigh[I] := FPixel.DataBus;
+        var i := (FCycle - 257) div 8;
+        if Phase = 5 then
+          FPixel.SpriteLow[i] := FPixel.DataBus;
+        if Phase = 7 then
+          FPixel.SpriteHigh[i] := FPixel.DataBus;
       end;
     end;
   end;
-  if ReadRequest then IncrementDataAddress;
+  if ReadRequest then
+    IncrementDataAddress;
 end;
 
 function TPPU.GetZapperMask: PNesZapperMask;
@@ -651,6 +669,7 @@ begin
       var Y := (LastLine - Age + FPreRenderLine + 1) mod (FPreRenderLine + 1);
       if Y >= NES_HEIGHT then
         Continue;
+
       for var X := 0 to NES_WIDTH - 1 do
       begin
         var Color := FDrawingFrame[X, Y];
@@ -668,7 +687,8 @@ procedure TPPU.ClockOam;
 begin
   if (FCycle = 63) or (FCycle = 255) or (FCycle = 339) then
     FOamEval.Frozen := False;
-  if (FCycle = 0) or (FCycle = 257) then FOamEval.WriteIndex := 0;
+  if (FCycle = 0) or (FCycle = 257) then
+    FOamEval.WriteIndex := 0;
   if (FScanline < 240) and (FCycle >= 1) and (FCycle <= 256) then
   begin
     if FCycle <= 64 then
@@ -678,7 +698,8 @@ begin
       if ((FCycle and 1) = 0) and not FOamEval.Frozen then
       begin
         FOamEval.WriteIndex := (FOamEval.WriteIndex + 1) and 31;
-        if FOamEval.WriteIndex = 0 then FOamEval.Frozen := True;
+        if FOamEval.WriteIndex = 0 then
+          FOamEval.Frozen := True;
       end;
     end
     else if (FCycle and 1) <> 0 then
@@ -700,9 +721,9 @@ begin
       var N := FOamAddress shr 2;
       var M := FOamAddress and 3;
       var Height := 8;
-      if (FCtrl and $20) <> 0 then Height := 16;
-      var YInRange := (FScanline >= FOamEval.BufferValue) and
-        (FScanline < Integer(FOamEval.BufferValue) + Height);
+      if (FCtrl and $20) <> 0 then
+        Height := 16;
+      var YInRange := (FScanline >= FOamEval.BufferValue) and (FScanline < Integer(FOamEval.BufferValue) + Height);
       if FOamEval.Done then
       begin
         N := (N + 1) and 63;
@@ -716,19 +737,31 @@ begin
           FOamEval.Secondary[FOamEval.WriteIndex] := FOamEval.BufferValue;
           if FOamEval.InRange then
           begin
-            if FCycle = 66 then FOamEval.ZeroAdded := True;
+            if FCycle = 66 then
+              FOamEval.ZeroAdded := True;
             Inc(M);
             Inc(FOamEval.WriteIndex);
-            if FOamEval.WriteIndex = 32 then FOamEval.Frozen := True;
-            if M = 4 then begin M := 0; N := (N + 1) and 63; end;
+            if FOamEval.WriteIndex = 32 then
+              FOamEval.Frozen := True;
+            if M = 4 then
+            begin
+              M := 0;
+              N := (N + 1) and 63;
+            end;
             if (FOamEval.WriteIndex and 3) = 0 then
             begin
               FOamEval.InRange := False;
-              if not YInRange then M := 0;
+              if not YInRange then
+                M := 0;
             end;
           end
-          else begin N := (N + 1) and 63; M := 0; end;
-          if (N = 0) and (M = 0) then FOamEval.Done := True;
+          else
+          begin
+            N := (N + 1) and 63;
+            M := 0;
+          end;
+          if (N = 0) and (M = 0) then
+            FOamEval.Done := True;
         end
         else
         begin
@@ -738,20 +771,29 @@ begin
           begin
             FStatus := FStatus or $20;
             Inc(M);
-            if M = 4 then begin M := 0; N := (N + 1) and 63; end;
-            if FOamEval.OverflowLeft = 0 then FOamEval.OverflowLeft := 3
+            if M = 4 then
+            begin
+              M := 0;
+              N := (N + 1) and 63;
+            end;
+            if FOamEval.OverflowLeft = 0 then
+              FOamEval.OverflowLeft := 3
             else
             begin
               Dec(FOamEval.OverflowLeft);
               if FOamEval.OverflowLeft = 0 then
-              begin FOamEval.Done := True; M := 0; end;
+              begin
+                FOamEval.Done := True;
+                M := 0;
+              end;
             end;
           end
           else
           begin
             N := (N + 1) and 63;
             M := (M + 1) and 3;
-            if N = 0 then FOamEval.Done := True;
+            if N = 0 then
+              FOamEval.Done := True;
           end;
         end;
       end;
@@ -764,7 +806,8 @@ begin
     if (Phase < 4) and (FCycle <> 257) and not FOamEval.Frozen then
     begin
       FOamEval.WriteIndex := (FOamEval.WriteIndex + 1) and 31;
-      if FOamEval.WriteIndex = 0 then FOamEval.Frozen := True;
+      if FOamEval.WriteIndex = 0 then
+        FOamEval.Frozen := True;
     end;
     FOamEval.BufferValue := FOamEval.Secondary[FOamEval.WriteIndex and 31];
   end
@@ -773,7 +816,8 @@ begin
     if (FCycle = 321) and not FOamEval.Frozen then
     begin
       FOamEval.WriteIndex := (FOamEval.WriteIndex + 1) and 31;
-      if FOamEval.WriteIndex = 0 then FOamEval.Frozen := True;
+      if FOamEval.WriteIndex = 0 then
+        FOamEval.Frozen := True;
     end;
     FOamEval.BufferValue := FOamEval.Secondary[FOamEval.WriteIndex and 31];
   end;
@@ -786,8 +830,11 @@ begin
     FStatus := FStatus or $40;
     FPixel.HitPending := False;
   end;
+
+  if (FScanline >= 240) and (FScanline <> FPreRenderLine) then
+    Exit;
+
   var Rendering := (FPixel.Mask and $18) <> 0;
-  if (FScanline >= 240) and (FScanline <> FPreRenderLine) then Exit;
   if (FScanline < 240) and (FCycle >= 1) and (FCycle <= 256) then
   begin
     var X := FCycle - 1;
@@ -795,32 +842,33 @@ begin
     if ((FMask and $08) <> 0) and ((X >= 8) or ((FMask and 2) <> 0)) then
       Background := ((FPixel.Low shr (15 - FFineX)) and 1) or
         (((FPixel.High shr (15 - FFineX)) and 1) shl 1);
-    for var I := 0 to 7 do
+    for var i := 0 to 7 do
     begin
-      var OutputSprite := ((FPixel.Counting and (1 shl I)) = 0) or
+      var OutputSprite := ((FPixel.Counting and (1 shl i)) = 0) or
         ((X = 0) and FPixel.DotSkipped);
-      if (FPixel.Counting and (1 shl I)) <> 0 then
+      if (FPixel.Counting and (1 shl i)) <> 0 then
       begin
-        if FPixel.SpriteX[I] > 0 then Dec(FPixel.SpriteX[I]);
-        if FPixel.SpriteX[I] = 0 then
-          FPixel.Counting := FPixel.Counting and not (1 shl I);
+        if FPixel.SpriteX[i] > 0 then
+          Dec(FPixel.SpriteX[i]);
+        if FPixel.SpriteX[i] = 0 then
+          FPixel.Counting := FPixel.Counting and not (1 shl i);
       end;
       if OutputSprite and Rendering then
       begin
         var SpritePixel: UInt8;
-        if (FPixel.SpriteAttr[I] and $40) <> 0 then
+        if (FPixel.SpriteAttr[i] and $40) <> 0 then
         begin
-          SpritePixel := (FPixel.SpriteLow[I] and 1) or ((FPixel.SpriteHigh[I] and 1) shl 1);
-          FPixel.SpriteLow[I] := FPixel.SpriteLow[I] shr 1;
-          FPixel.SpriteHigh[I] := FPixel.SpriteHigh[I] shr 1;
+          SpritePixel := (FPixel.SpriteLow[i] and 1) or ((FPixel.SpriteHigh[i] and 1) shl 1);
+          FPixel.SpriteLow[i] := FPixel.SpriteLow[i] shr 1;
+          FPixel.SpriteHigh[i] := FPixel.SpriteHigh[i] shr 1;
         end
         else
         begin
-          SpritePixel := ((FPixel.SpriteLow[I] shr 7) and 1) or ((FPixel.SpriteHigh[I] shr 6) and 2);
-          FPixel.SpriteLow[I] := (FPixel.SpriteLow[I] shl 1) and $FF;
-          FPixel.SpriteHigh[I] := (FPixel.SpriteHigh[I] shl 1) and $FF;
+          SpritePixel := ((FPixel.SpriteLow[i] shr 7) and 1) or ((FPixel.SpriteHigh[i] shr 6) and 2);
+          FPixel.SpriteLow[i] := (FPixel.SpriteLow[i] shl 1) and $FF;
+          FPixel.SpriteHigh[i] := (FPixel.SpriteHigh[i] shl 1) and $FF;
         end;
-        if (Background <> 0) and (SpritePixel <> 0) and FPixel.SpriteZero[I] and
+        if (Background <> 0) and (SpritePixel <> 0) and FPixel.SpriteZero[i] and
           ((FMask and $10) <> 0) and ((X >= 8) or ((FMask and 4) <> 0)) and
           (X <> 255) and ((FStatus and $40) = 0) then
         begin
@@ -832,52 +880,55 @@ begin
     end;
     FPixel.DotSkipped := False;
   end;
-  if not Rendering then Exit;
+  if not Rendering then
+    Exit;
   if FCycle = 339 then
   begin
     FPixel.Counting := 0;
-    for var I := 0 to 7 do
-      if FPixel.SpriteX[I] <> 0 then
-        FPixel.Counting := FPixel.Counting or (1 shl I);
+    for var i := 0 to 7 do
+      if FPixel.SpriteX[i] <> 0 then
+        FPixel.Counting := FPixel.Counting or (1 shl i);
   end;
-  if ((FCycle >= 1) and (FCycle <= 256)) or
-    ((FCycle >= 321) and (FCycle <= 336)) then
+  if ((FCycle >= 1) and (FCycle <= 256)) or ((FCycle >= 321) and (FCycle <= 336)) then
   begin
     FPixel.Low := (FPixel.Low shl 1) and $FFFF;
     FPixel.High := ((FPixel.High shl 1) or 1) and $FFFF;
     FPixel.AttrLow := (FPixel.AttrLow shl 1) and $FFFF;
     FPixel.AttrHigh := (FPixel.AttrHigh shl 1) and $FFFF;
-    case FCycle and 7 of
-      0:
-        begin
-          FPixel.Low := (FPixel.Low and $FF00) or FPixel.NextLow;
-          FPixel.High := (FPixel.High and $FF00) or FPixel.NextHigh;
-          FPixel.AttrLow := (FPixel.AttrLow and $FF00) or (Ord((FPixel.Attribute and 1) <> 0) * $FF);
-          FPixel.AttrHigh := (FPixel.AttrHigh and $FF00) or (Ord((FPixel.Attribute and 2) <> 0) * $FF);
-        end;
+    if (FCycle and 7) = 0 then
+    begin
+      FPixel.Low := (FPixel.Low and $FF00) or FPixel.NextLow;
+      FPixel.High := (FPixel.High and $FF00) or FPixel.NextHigh;
+      FPixel.AttrLow := (FPixel.AttrLow and $FF00) or (Ord((FPixel.Attribute and 1) <> 0) * $FF);
+      FPixel.AttrHigh := (FPixel.AttrHigh and $FF00) or (Ord((FPixel.Attribute and 2) <> 0) * $FF);
     end;
   end;
   if (FCycle >= 257) and (FCycle <= 320) then
   begin
-    var I := (FCycle - 257) div 8;
+    var i := (FCycle - 257) div 8;
     var Phase := (FCycle - 257) and 7;
     if Phase = 0 then
     begin
-      FPixel.SpriteZero[I] := (I = 0) and FOamEval.ZeroAdded;
+      FPixel.SpriteZero[i] := (i = 0) and FOamEval.ZeroAdded;
     end;
     case Phase of
-      0: FPixel.SpriteY[I] := FOamEval.BufferValue;
-      1: FPixel.SpriteTile[I] := FOamEval.BufferValue;
-      2: FPixel.SpriteAttr[I] := FOamEval.BufferValue;
-      3: FPixel.SpriteX[I] := FOamEval.BufferValue;
+      0:
+        FPixel.SpriteY[i] := FOamEval.BufferValue;
+      1:
+        FPixel.SpriteTile[i] := FOamEval.BufferValue;
+      2:
+        FPixel.SpriteAttr[i] := FOamEval.BufferValue;
+      3:
+        FPixel.SpriteX[i] := FOamEval.BufferValue;
     end;
     if (Phase = 4) or (Phase = 6) then
     begin
-      var Row := (FScanline - Integer(FPixel.SpriteY[I])) and $FF;
+      var Row := (FScanline - Integer(FPixel.SpriteY[i])) and $FF;
       var Height := 8;
-      if (FCtrl and $20) <> 0 then Height := 16;
+      if (FCtrl and $20) <> 0 then
+        Height := 16;
       if (FScanline = FPreRenderLine) and (Row >= Height) then
-        FPixel.SpriteZero[I] := False;
+        FPixel.SpriteZero[i] := False;
     end;
   end;
 end;
@@ -889,8 +940,7 @@ begin
     Dec(FPixel.MaskDelay);
     if FPixel.MaskDelay = 0 then
     begin
-      if ((FPixel.Mask and $18) <> 0) and ((FMask and $18) = 0) and
-        ((FScanline < 240) or (FScanline = FPreRenderLine)) then
+      if ((FPixel.Mask and $18) <> 0) and ((FMask and $18) = 0) and ((FScanline < 240) or (FScanline = FPreRenderLine)) then
       begin
         FOamEval.CorruptRow := FOamEval.WriteIndex and 31;
         if (FCycle >= 65) and (FCycle <= 256) then
@@ -900,23 +950,27 @@ begin
       FPixel.Mask := FMask;
     end;
   end;
+
   var RenderingEnabled: Boolean := (FPixel.Mask and $18) <> 0;
-  if RenderingEnabled and FOamEval.CorruptPending and
-    ((FScanline < 240) or (FScanline = FPreRenderLine)) then
+  if RenderingEnabled and FOamEval.CorruptPending and ((FScanline < 240) or (FScanline = FPreRenderLine)) then
   begin
     FMapperSpriteAddressValid := False;
-    for var I := 0 to 7 do FOam[Integer(FOamEval.CorruptRow) * 8 + I] := FOam[I];
+    for var i := 0 to 7 do
+      FOam[Integer(FOamEval.CorruptRow) * 8 + i] := FOam[i];
     FOamEval.Secondary[FOamEval.CorruptRow] := FOamEval.Secondary[0];
     FOamEval.CorruptPending := False;
   end;
+
   if FCycle = 1 then
     FZapperMaskValid := False;
   ClockMapperAddress;
+
   Inc(FPpuClock);
   if RenderingEnabled and ((FScanline < 240) or (FScanline = FPreRenderLine)) then
     ClockOam;
   ClockMemory;
   ClockPixels;
+
   if (FCycle = 1) and (FMapper <> nil) then
     FMapper.ClockScanline(FScanline, RenderingEnabled);
   if (FScanline < 240) and (FCycle = 1) then
@@ -928,7 +982,6 @@ begin
     if (FNmiDelay = 0) and FNmiLine then
       FNmiPending := True;
   end;
-
 
   if RenderingEnabled then
   begin
@@ -994,8 +1047,7 @@ end;
 procedure TPPU.IncrementDataAddress;
 begin
   // During rendering PPUDATA clocks both scroll counters, regardless of PPUCTRL.
-  if ((FMask and $18) <> 0) and
-    ((FScanline < 240) or (FScanline = FPreRenderLine)) then
+  if ((FMask and $18) <> 0) and ((FScanline < 240) or (FScanline = FPreRenderLine)) then
   begin
     IncrementX;
     IncrementY;
@@ -1013,18 +1065,18 @@ begin
   FOpenBus := (FOpenBus and not Mask) or (Value and Mask);
   // Analogue retention varies with temperature/chip. Use a deterministic
   // ~0.3 second lifetime (20 NTSC frames), independently for each driven bit.
-  for var I := 0 to 7 do
-    if (Mask and (1 shl I)) <> 0 then
-      FOpenBusExpiry[I] := FPpuClock + 1786840;
+  for var i := 0 to 7 do
+    if (Mask and (1 shl i)) <> 0 then
+      FOpenBusExpiry[i] := FPpuClock + 1786840;
 end;
 
 function TPPU.CpuRead(Address: UInt16): UInt8;
 begin
   var VramAddress: UInt16;
   var DrivenMask: UInt8 := 0;
-  for var I := 0 to 7 do
-    if FPpuClock >= FOpenBusExpiry[I] then
-      FOpenBus := FOpenBus and not (1 shl I);
+  for var i := 0 to 7 do
+    if FPpuClock >= FOpenBusExpiry[i] then
+      FOpenBus := FOpenBus and not (1 shl i);
   Result := FOpenBus;
   case Address and 7 of
     2:
@@ -1053,30 +1105,35 @@ begin
         Result := FOam[FOamAddress];
         DrivenMask := $FF;
         // Attribute bits 2..4 are unimplemented in primary OAM.
-        if (FOamAddress and 3) = 2 then Result := Result and $E3;
-        if ((FMask and $18) <> 0) and
-          ((FScanline < 240) or (FScanline = FPreRenderLine)) then
+        if (FOamAddress and 3) = 2 then
+          Result := Result and $E3;
+        if ((FMask and $18) <> 0) and ((FScanline < 240) or (FScanline = FPreRenderLine)) then
           Result := FOamEval.BufferValue;
       end;
     7:
       begin
         VramAddress := FV and $3FFF;
-        var TimedRead := ((FPixel.Mask and $18) <> 0) and
-          ((FScanline < 240) or (FScanline = FPreRenderLine));
+        var TimedRead := ((FPixel.Mask and $18) <> 0) and ((FScanline < 240) or (FScanline = FPreRenderLine));
         if VramAddress < $3F00 then
         begin
           Result := FDataBuffer;
           DrivenMask := $FF;
-          if not TimedRead then FDataBuffer := PpuReadMemory(VramAddress);
+          if not TimedRead then
+            FDataBuffer := PpuReadMemory(VramAddress);
         end
         else
         begin
           Result := (PpuReadMemory(VramAddress) and $3F) or (FOpenBus and $C0);
           DrivenMask := $3F;
-          if (FMask and 1) <> 0 then Result := Result and $F0;
-          if not TimedRead then FDataBuffer := PpuReadMemory(VramAddress - $1000);
+          if (FMask and 1) <> 0 then
+            Result := Result and $F0;
+          if not TimedRead then
+            FDataBuffer := PpuReadMemory(VramAddress - $1000);
         end;
-        if TimedRead then FPixel.ReadDelay := 6 else IncrementDataAddress;
+        if TimedRead then
+          FPixel.ReadDelay := 6
+        else
+          IncrementDataAddress;
       end;
   end;
   RefreshOpenBus(Result, DrivenMask);
@@ -1114,8 +1171,7 @@ begin
       FOamAddress := Value;
     4:
       begin
-        if ((FMask and $18) <> 0) and
-          ((FScanline < 240) or (FScanline = FPreRenderLine)) then
+        if ((FMask and $18) <> 0) and ((FScanline < 240) or (FScanline = FPreRenderLine)) then
           FOamAddress := (FOamAddress + 4) and $FC
         else
         begin
@@ -1149,13 +1205,13 @@ begin
         else
         begin
           FT := (FT and $7F00) or Value;
-          if ((FPixel.Mask and $18) <> 0) and
-            ((FScanline < 240) or (FScanline = FPreRenderLine)) then
+          if ((FPixel.Mask and $18) <> 0) and ((FScanline < 240) or (FScanline = FPreRenderLine)) then
           begin
             FPixel.AddressValue := FT;
             FPixel.AddressDelay := 3;
           end
-          else FV := FT;
+          else
+            FV := FT;
           if FMapper <> nil then
             FMapper.ClockPpuAddress(FV and $3FFF, FPpuClock);
           FAddrLatch := False;
@@ -1203,6 +1259,7 @@ begin
     PaletteIndex := 0;
     Exit(0);
   end;
+
   if (X < 8) and ((RenderMask and $02) = 0) then
   begin
     PaletteIndex := 0;
@@ -1227,6 +1284,7 @@ begin
     WorldY := ScrollY mod 480
   else
     WorldY := (Y + ScrollY) mod 480;
+
   var TableX: Integer := ((BaseNameTable and 1) + (WorldX div 256)) and 1;
   var TableY: Integer := (((BaseNameTable shr 1) and 1) + (WorldY div 240)) and 1;
   var Table: Integer := (TableY shl 1) or TableX;
@@ -1261,6 +1319,7 @@ begin
     FBackgroundHigh := Hi;
     FBackgroundPalette := PaletteIndex;
   end;
+
   var BitPosition: UInt8 := 7 - (LocalX and 7);
   Result := (((Hi shr BitPosition) and 1) shl 1) or ((Lo shr BitPosition) and 1);
 end;
@@ -1286,6 +1345,7 @@ begin
   PriorityBehindBg := False;
   IsSpriteZero := False;
   Result := 0;
+
   if (FRenderMask and $10) = 0 then
     Exit;
   if (X < 8) and ((FRenderMask and $04) = 0) then
@@ -1333,6 +1393,7 @@ begin
     Lo := PpuReadMemory(Address);
     Hi := PpuReadMemory(Address + 8);
     BitPosition := 7 - Column;
+
     Result := (((Hi shr BitPosition) and 1) shl 1) or ((Lo shr BitPosition) and 1);
     if Result <> 0 then
     begin

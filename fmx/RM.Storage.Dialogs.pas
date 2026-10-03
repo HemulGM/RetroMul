@@ -1,8 +1,9 @@
-unit RM.Storage.Dialogs;
+﻿unit RM.Storage.Dialogs;
 
 interface
 
-uses Core.Storage;
+uses
+  Core.Storage;
 
 type
   TStoragePicker = class(TInterfacedObject, IStoragePicker)
@@ -12,7 +13,8 @@ type
 
 implementation
 
-uses System.SysUtils, FMX.OpenDialog;
+uses
+  System.SysUtils, FMX.OpenDialog;
 
 procedure TStoragePicker.Select(Folder: Boolean; const Callback: TStorageSelectionCallback);
 begin
@@ -25,8 +27,10 @@ begin
         var Result := Default(TStorageSelection);
         Result.Cancelled := Selection.Status = TFMXSelectionStatus.Cancelled;
         Result.Error := Selection.Error;
-        if Selection.Status = TFMXSelectionStatus.Selected then Result.Location := Selection.Locations[0];
-        if Assigned(Callback) then Callback(Result);
+        if Selection.Status = TFMXSelectionStatus.Selected then
+          Result.Location := Selection.Locations[0];
+        if Assigned(Callback) then
+          Callback(Result);
       end;
     if Folder then
     begin
@@ -40,7 +44,10 @@ begin
       Dialog.Filter := 'All files|*';
       Dialog.SelectFiles(Completion);
     end;
-  finally Dialog.Free; end;
+  finally
+    Dialog.Free;
+  end;
 end;
 
 end.
+

@@ -3,8 +3,9 @@ unit NES.Emulation;
 interface
 
 uses
-  Core.Storage, System.Classes, System.SysUtils, System.SyncObjs, NES.Types, NES.Console,
-  NES.Input, PCM.Audio, NES.AudioDiagnostics, NES.Controller, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
+  Core.Storage, System.Classes, System.SysUtils, System.SyncObjs, NES.Types,
+  NES.Console, NES.Input, PCM.Audio, NES.AudioDiagnostics, NES.Controller,
+  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
 
 const
   NES_SAMPLE_RATE = 44100;
@@ -70,10 +71,7 @@ type
   public
     // Validates the ROM before replacing the current session. Call Start once.
     constructor Create(const FileName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = ''); overload;
-    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string;
-      FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto;
-      AudioEnabled: Boolean = True; AudioVolume: Single = 1;
-      const SaveDirectory: string = ''; const SnapshotRoot: string = ''); overload;
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = ''); overload;
     destructor Destroy; override;
     procedure StopAndSave;
     procedure SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2: TKeyMap); overload;
@@ -113,24 +111,27 @@ type
 implementation
 
 uses
-  System.Diagnostics, System.Math, System.IOUtils, System.UITypes, NES.Consts, Core.SavePaths,
-  Core.PerformanceHints, PCM.Audio.Null;
+  System.Diagnostics, System.Math, System.IOUtils, System.UITypes, NES.Consts,
+  Core.SavePaths, Core.PerformanceHints, PCM.Audio.Null;
 
 constructor TNesEmulationThread.Create(const FileName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride; AudioEnabled: Boolean; AudioVolume: Single; const SaveDirectory, SnapshotRoot: string);
 begin
   var Storage := TStorage.Default;
   var Stream := Storage.OpenRead(FileName);
-  try Create(Stream, Storage, FileName, FourScoreEnabled, RegionOverride,
-    AudioEnabled, AudioVolume, SaveDirectory, SnapshotRoot); finally Stream.Free; end;
+  try
+    Create(Stream, Storage, FileName, FourScoreEnabled, RegionOverride,
+      AudioEnabled, AudioVolume, SaveDirectory, SnapshotRoot);
+  finally
+    Stream.Free;
+  end;
 end;
 
-constructor TNesEmulationThread.Create(Stream: TStream; const Storage: IStorage;
-  const RomName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride;
-  AudioEnabled: Boolean; AudioVolume: Single; const SaveDirectory, SnapshotRoot: string);
+constructor TNesEmulationThread.Create(Stream: TStream; const Storage: IStorage; const RomName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride; AudioEnabled: Boolean; AudioVolume: Single; const SaveDirectory, SnapshotRoot: string);
 begin
   inherited Create(True);
   FStorage := Storage;
-  if FStorage = nil then FStorage := TStorage.Default;
+  if FStorage = nil then
+    FStorage := TStorage.Default;
   FreeOnTerminate := False;
   FAudioEnabled := AudioEnabled;
   FAudioVolume := EnsureRange(AudioVolume, 0.0, 1.0);
@@ -216,14 +217,19 @@ end;
 
 procedure TNesEmulationThread.TapeCommand(Action: TTapeAction; const FileName: string);
 begin
-  if not FUsesDataRecorder then raise ENesException.Create('No data recorder connected');
+  if not FUsesDataRecorder then
+    raise ENesException.Create('No data recorder connected');
   WorkerCommand(FileName, False, True, Action);
 end;
 
 function TNesEmulationThread.GetTapeState: TTapeState;
 begin
   FLock.Enter;
-  try Result := FStatus.TapeState; finally FLock.Leave; end;
+  try
+    Result := FStatus.TapeState;
+  finally
+    FLock.Leave;
+  end;
 end;
 
 function TNesEmulationThread.GetTapeProgress: TTapeProgress;
@@ -294,33 +300,41 @@ begin
     if Tape then
     begin
       var TapePath := FSelectedTapeFile;
-      if TapePath = '' then TapePath := TPath.Combine(FTapeDirectory, 'data.tape');
+      if TapePath = '' then
+        TapePath := TPath.Combine(FTapeDirectory, 'data.tape');
       case Action of
         TapePlay, TapeRecord:
           begin
-            if Name <> '' then TapePath := Name;
+            if Name <> '' then
+              TapePath := Name;
             if FConsole.DataRecorder.GetProgress.FileName <> TapePath then
               FConsole.DataRecorder.LoadTape(TapePath, Action = TapeRecord);
-            if Action = TapePlay then FConsole.DataRecorder.ResumeTape
+            if Action = TapePlay then
+              FConsole.DataRecorder.ResumeTape
             else
             begin
               FStorage.EnsureFolder(ExtractFilePath(ExpandFileName(TapePath)));
               FConsole.DataRecorder.RecordTape(TapePath);
             end;
           end;
-        TapeStop: FConsole.DataRecorder.Stop;
-        TapeSaveAs: FConsole.DataRecorder.SaveCopy(Name);
+        TapeStop:
+          FConsole.DataRecorder.Stop;
+        TapeSaveAs:
+          FConsole.DataRecorder.SaveCopy(Name);
         TapeRewind, TapeForward:
           begin
             var Progress := FConsole.DataRecorder.GetProgress;
             var Step := Int64(Progress.TapeBytes div 20);
-            if Step < 1 then Step := 1;
-            if Action = TapeRewind then Step := -Step;
+            if Step < 1 then
+              Step := 1;
+            if Action = TapeRewind then
+              Step := -Step;
             FConsole.DataRecorder.SeekRelative(Step);
           end;
         TapeSelectFile:
           begin
-            if Name = '' then raise ENesException.Create('A cassette filename is required');
+            if Name = '' then
+              raise ENesException.Create('A cassette filename is required');
             FConsole.DataRecorder.LoadTape(Name, True);
             FSelectedTapeFile := Name;
           end;
@@ -537,10 +551,12 @@ end;
 
 procedure TNesEmulationThread.RequestCoin(Player: Integer);
 begin
-  if not FConsole.HasCoinAcceptor then Exit;
+  if not FConsole.HasCoinAcceptor then
+    Exit;
   FLock.Enter;
   try
-    if FPendingCoins[Player] < High(Integer) then Inc(FPendingCoins[Player]);
+    if FPendingCoins[Player] < High(Integer) then
+      Inc(FPendingCoins[Player]);
   finally
     FLock.Leave;
   end;
@@ -871,3 +887,4 @@ begin
 end;
 
 end.
+

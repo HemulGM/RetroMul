@@ -141,6 +141,7 @@ begin
     Exit;
   var Hash := THashSHA1.Create;
   Hash.Update(Prg[0], Length(Prg));
+
   // Super Cars (USA), PRG CRC32 419461D0: NES-UNROM, vertical CIRAM wiring.
   // https://nescartdb.com/profile/view/1033/super-cars
   if SameText(Hash.HashAsString, '4f55afaf521841b3d50f8076be674321c1cf4623') then
@@ -150,6 +151,7 @@ end;
 function IsLegacyPalRom(const Prg, Chr: NES.Types.TByteArray): Boolean;
 begin
   Result := False;
+
   // Asterix: confirmed against PAL/NTSC runs; this legacy dump has byte 9 = 0.
   // Match payload identity, never a filename or all cartridges on mapper 2.
   if (Length(Prg) <> $20000) or (Length(Chr) <> 0) then

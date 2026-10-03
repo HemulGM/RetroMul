@@ -14,7 +14,7 @@ implementation
 
 uses
   Core.RomFormat, Core.Adapter.NES, Core.Adapter.GB, Core.Adapter.GBC,
-  Core.Adapter.MD;
+  Core.Adapter.MD, Core.Adapter.SNES;
 
 function CreateEmulationCore(const FileName: string): IEmulationCore;
 begin
@@ -32,7 +32,8 @@ begin
   var Data := ReadRomData(Stream);
   var Format := DetectRom(Data);
   if Format.System = TRomSystem.Unknown then
-    raise EReadError.Create('Unrecognized ROM header (NES, Game Boy, Game Boy Color or Mega Drive expected)');
+    raise EReadError.Create('Unrecognized ROM header (NES, Game Boy, Game Boy Color, Mega Drive or SNES expected)');
+
   Data := NormalizeRom(Data, Format);
   var Input := TBytesStream.Create(Data);
   try
@@ -45,6 +46,8 @@ begin
         Result := TGBCCoreAdapter.Create(Input, Storage, RomName);
       TRomSystem.MD:
         Result := TMDCoreAdapter.Create(Input, Storage, RomName);
+      TRomSystem.SNES:
+        Result := TSnesCoreAdapter.Create(Input, Storage, RomName);
     end;
   finally
     Input.Free;

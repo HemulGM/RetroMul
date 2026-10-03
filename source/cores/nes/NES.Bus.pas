@@ -3,7 +3,8 @@
 interface
 
 uses
-  NES.State, NES.Types, NES.PPU, NES.Cartridge, NES.Controller, NES.APU, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
+  NES.State, NES.Types, NES.PPU, NES.Cartridge, NES.Controller, NES.APU,
+  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
 
 type
   TNesBus = class
@@ -75,7 +76,8 @@ type
 
 implementation
 
-uses NES.Mapper;
+uses
+  NES.Mapper;
 
 function TNesBus.GetHasCoinAcceptor: Boolean;
 begin
@@ -85,7 +87,8 @@ end;
 
 procedure TNesBus.InsertCoin(Player: Integer);
 begin
-  if not HasCoinAcceptor then Exit;
+  if not HasCoinAcceptor then
+    Exit;
   if FCoinFrames[Player] = 0 then
     FCoinFrames[Player] := 8
   else if FPendingCoins[Player] < High(Integer) then
@@ -107,7 +110,8 @@ begin
   // Four frames high, then four low so consecutive coins have separate edges.
   for var Player := 0 to 1 do
   begin
-    if FCoinFrames[Player] > 0 then Dec(FCoinFrames[Player]);
+    if FCoinFrames[Player] > 0 then
+      Dec(FCoinFrames[Player]);
     if (FCoinFrames[Player] = 0) and (FPendingCoins[Player] > 0) then
     begin
       Dec(FPendingCoins[Player]);
@@ -286,7 +290,8 @@ begin
   // the low five address bits. External memory remains selected in parallel.
   if (FHaltedCpuAddress and $FFE0) <> $4000 then
   begin
-    if (Address >= $4015) and (Address <= $4017) then Exit(FDataBus);
+    if (Address >= $4015) and (Address <= $4017) then
+      Exit(FDataBus);
     Exit(DmaRead(Address));
   end;
   var RegisterAddress: UInt16 := $4000 or (Address and $1F);
@@ -294,7 +299,8 @@ begin
   begin
     Result := ReadDevice($4015);
     FInternalDataBus := Result;
-    if Address <> RegisterAddress then DmaRead(Address);
+    if Address <> RegisterAddress then
+      DmaRead(Address);
   end
   else if (RegisterAddress = $4016) or (RegisterAddress = $4017) then
   begin
@@ -307,7 +313,8 @@ begin
       FDataBus := (ExternalValue and $E0) or (ControllerValue and $1F);
     end;
   end
-  else Result := DmaRead(Address);
+  else
+    Result := DmaRead(Address);
 end;
 
 function TNesBus.ReadDevice(Address: UInt16): UInt8;
@@ -323,13 +330,16 @@ begin
     $4016:
       begin
         Result := (ReadController(0) and $1F) or (FDataBus and $E0);
-        if FDataRecorder <> nil then Result := Result or FDataRecorder.Read;
+        if FDataRecorder <> nil then
+          Result := Result or FDataRecorder.Read;
         // VS coin slots are independent live inputs on $4016 bits 5 and 6.
         if HasCoinAcceptor then
         begin
           Result := Result and $1F;
-          if FCoinFrames[0] > 4 then Result := Result or $20;
-          if FCoinFrames[1] > 4 then Result := Result or $40;
+          if FCoinFrames[0] > 4 then
+            Result := Result or $20;
+          if FCoinFrames[1] > 4 then
+            Result := Result or $40;
         end;
         Exit;
       end;
@@ -395,12 +405,14 @@ begin
           FPendingStrobe := Value;
           FStrobeDirty := True;
         end
-        else WriteControllers(Value);
+        else
+          WriteControllers(Value);
         if FSuborKeyboard <> nil then
           FSuborKeyboard.Write(Value);
         if FFamicomKeyboard <> nil then
           FFamicomKeyboard.Write(Value);
-        if FDataRecorder <> nil then FDataRecorder.Write(Value);
+        if FDataRecorder <> nil then
+          FDataRecorder.Write(Value);
         if (FCartridge <> nil) and (FCartridge.Mapper <> nil) then
           FCartridge.Mapper.CpuWriteTimed(Address, Value, FCpuCycle);
         Exit;

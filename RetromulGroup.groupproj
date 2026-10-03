@@ -9,9 +9,6 @@
         <Projects Include="term\RetromulTerm.dproj">
             <Dependencies/>
         </Projects>
-        <Projects Include="source\input\examples\InputProbe.dproj">
-            <Dependencies/>
-        </Projects>
         <Projects Include="source\input\examples\FMXDemo\FMXInputDemo.dproj">
             <Dependencies/>
         </Projects>
@@ -41,15 +38,6 @@
     <Target Name="RetromulTerm:Make">
         <MSBuild Projects="term\RetromulTerm.dproj" Targets="Make"/>
     </Target>
-    <Target Name="InputProbe">
-        <MSBuild Projects="source\input\examples\InputProbe.dproj"/>
-    </Target>
-    <Target Name="InputProbe:Clean">
-        <MSBuild Projects="source\input\examples\InputProbe.dproj" Targets="Clean"/>
-    </Target>
-    <Target Name="InputProbe:Make">
-        <MSBuild Projects="source\input\examples\InputProbe.dproj" Targets="Make"/>
-    </Target>
     <Target Name="FMXInputDemo">
         <MSBuild Projects="source\input\examples\FMXDemo\FMXInputDemo.dproj"/>
     </Target>
@@ -60,13 +48,13 @@
         <MSBuild Projects="source\input\examples\FMXDemo\FMXInputDemo.dproj" Targets="Make"/>
     </Target>
     <Target Name="Build">
-        <CallTarget Targets="RetroMul;RetromulTerm;InputProbe;FMXInputDemo"/>
+        <CallTarget Targets="RetroMul;RetromulTerm;FMXInputDemo"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="RetroMul:Clean;RetromulTerm:Clean;InputProbe:Clean;FMXInputDemo:Clean"/>
+        <CallTarget Targets="RetroMul:Clean;RetromulTerm:Clean;FMXInputDemo:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="RetroMul:Make;RetromulTerm:Make;InputProbe:Make;FMXInputDemo:Make"/>
+        <CallTarget Targets="RetroMul:Make;RetromulTerm:Make;FMXInputDemo:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>

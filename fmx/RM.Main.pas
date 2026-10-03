@@ -1,4 +1,4 @@
-unit RM.Main;
+﻿unit RM.Main;
 
 interface
 
@@ -176,31 +176,56 @@ begin
   if Key <> 0 then
     Exit(Key);
   case KeyChar of
-    'a'..'z': Result := Ord(KeyChar) - Ord('a') + vkA;
-    'A'..'Z', '0'..'9': Result := Ord(KeyChar);
-    ' ': Result := vkSpace;
-    '!': Result := vk1;
-    '@': Result := vk2;
-    '#': Result := vk3;
-    '$': Result := vk4;
-    '%': Result := vk5;
-    '^': Result := vk6;
-    '&': Result := vk7;
-    '*': Result := vk8;
-    '(': Result := vk9;
-    ')': Result := vk0;
-    ';', ':': Result := vkSemicolon;
-    '=', '+': Result := vkEqual;
-    ',', '<': Result := vkComma;
-    '-', '_': Result := vkMinus;
-    '.', '>': Result := vkPeriod;
-    '/', '?': Result := vkSlash;
-    '`', '~': Result := vkTilde;
-    '[', '{': Result := vkLeftBracket;
-    '\', '|': Result := vkBackslash;
-    ']', '}': Result := vkRightBracket;
-    '''', '"': Result := vkQuote;
-    else Result := 0;
+    'a'..'z':
+      Result := Ord(KeyChar) - Ord('a') + vkA;
+    'A'..'Z', '0'..'9':
+      Result := Ord(KeyChar);
+    ' ':
+      Result := vkSpace;
+    '!':
+      Result := vk1;
+    '@':
+      Result := vk2;
+    '#':
+      Result := vk3;
+    '$':
+      Result := vk4;
+    '%':
+      Result := vk5;
+    '^':
+      Result := vk6;
+    '&':
+      Result := vk7;
+    '*':
+      Result := vk8;
+    '(':
+      Result := vk9;
+    ')':
+      Result := vk0;
+    ';', ':':
+      Result := vkSemicolon;
+    '=', '+':
+      Result := vkEqual;
+    ',', '<':
+      Result := vkComma;
+    '-', '_':
+      Result := vkMinus;
+    '.', '>':
+      Result := vkPeriod;
+    '/', '?':
+      Result := vkSlash;
+    '`', '~':
+      Result := vkTilde;
+    '[', '{':
+      Result := vkLeftBracket;
+    '\', '|':
+      Result := vkBackslash;
+    ']', '}':
+      Result := vkRightBracket;
+    '''', '"':
+      Result := vkQuote;
+  else
+    Result := 0;
   end;
 end;
 

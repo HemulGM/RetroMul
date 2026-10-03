@@ -59,7 +59,7 @@ type
 implementation
 
 uses
-  System.SysUtils, System.IOUtils, GB.ROM, GB.MBC, GB.Memory, GB.CPU, GB.Sound,
+  Core.PerformanceHints, System.SysUtils, System.IOUtils, GB.ROM, GB.MBC, GB.Memory, GB.CPU, GB.Sound,
   GB.Timer, GB.InterruptManager;
 
 constructor TGBEmulationThread.Create(const FileName: string; EnableAudio: Boolean);
@@ -233,6 +233,7 @@ end;
 procedure TGBEmulationThread.Execute;
 const
   BatchCycles = 4096;
+  FrameCycles = 70224; // 456 dots * 154 lines, also in CGB double-speed mode.
 begin
   if Terminated then
     Exit;
@@ -241,6 +242,8 @@ begin
   var GPU: TGBGPU := nil;
   var Memory: TGBMemory := nil;
   var Sound: TGBSound := nil;
+  var FrameHints: TEmulationPerformanceHints := nil;
+  var HintNextCycles: UInt64;
   var CPU: TGBCPU := nil;
   try
     try
@@ -263,6 +266,9 @@ begin
       Sound.Volume := FSoundVolume;
       CPU := TGBCPU.Create(Memory, GPU, Sound);
       CPU.SkipBIOS;
+      FrameHints := TEmulationPerformanceHints.Create(
+        Round(FrameCycles * 1000000000.0 / CPUClockFrequency), 'GB');
+      HintNextCycles := CPU.Cycles + FrameCycles;
       var Stopwatch := TStopwatch.StartNew;
       var StartCycles := CPU.Cycles;
       while not Terminated do
@@ -270,6 +276,7 @@ begin
         FSnapshots.Process(
           procedure(const Name: string; Loading: Boolean)
           begin
+            FrameHints.Pause;
             var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
             var Transfer: TStateTransfer := procedure(State: TStateArchive)
             begin
@@ -304,6 +311,7 @@ begin
               SaveCoreSnapshot(Path, 'GB', FROMData, Transfer, FStorage);
               SaveSnapshotPreview(Path, 160, 144, 160, @GPU.Screen[0], FStorage);
             end;
+            HintNextCycles := CPU.Cycles + FrameCycles;
             StartCycles := CPU.Cycles;
             Stopwatch := TStopwatch.StartNew;
           end);
@@ -312,6 +320,7 @@ begin
         try
           if FPauseRequested then
           begin
+            FrameHints.Pause;
             // The stop event also wakes this short sleep during shutdown.
             FLock.Release;
             try
@@ -319,6 +328,7 @@ begin
             finally
               FLock.Acquire;
             end;
+            HintNextCycles := CPU.Cycles + FrameCycles;
             StartCycles := CPU.Cycles;
             Stopwatch := TStopwatch.StartNew;
             Continue;
@@ -326,10 +336,16 @@ begin
         finally
           FLock.Release;
         end;
+        FrameHints.BeginWork;
         Sound.Volume := FSoundVolume;
         var NextCycles := CPU.Cycles + BatchCycles;
         while (CPU.Cycles < NextCycles) and not Terminated do
           CPU.Step;
+        // Sum only active batches: limiter waits between them are excluded.
+        var HintComplete := CPU.Cycles >= HintNextCycles;
+        FrameHints.EndWork(HintComplete);
+        if HintComplete then
+          Inc(HintNextCycles, FrameCycles);
 
         var TargetMilliseconds := Int64((CPU.Cycles - StartCycles) * 1000 div CPUClockFrequency);
         var WaitMilliseconds := TargetMilliseconds - Stopwatch.ElapsedMilliseconds;
@@ -346,6 +362,7 @@ begin
         end;
       end;
     finally
+      FrameHints.Free;
       CPU.Free;
       Sound.Free;
       Memory.Free;

@@ -4,12 +4,11 @@
         <ProjectVersion>20.4</ProjectVersion>
         <FrameworkType>FMX</FrameworkType>
         <Base>True</Base>
-        <Config Condition="'$(Config)'==''">Release</Config>
-        <Platform Condition="'$(Platform)'==''">Win32</Platform>
+        <Config Condition="'$(Config)'==''">Debug</Config>
+        <Platform Condition="'$(Platform)'==''">Android64</Platform>
         <TargetedPlatforms>2790547</TargetedPlatforms>
         <AppType>Application</AppType>
         <MainSource>RetroMul.dpr</MainSource>
-        <ProjectName Condition="'$(ProjectName)'==''">RetroMul</ProjectName>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Config)'=='Base' or '$(Base)'!=''">
         <Base>true</Base>
@@ -438,6 +437,7 @@
             <Form>FormMain</Form>
         </DCCReference>
         <DCCReference Include="RM.DocumentTransfer.Android.pas"/>
+        <DCCReference Include="..\source\cores\Core.Storage.Android.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.Android.AudioTrack.pas"/>
         <DCCReference Include="DelphiWinUI3\Fixes\D13\FMX.Platform.Win.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.Windows.MMSystem.pas"/>
@@ -449,6 +449,7 @@
         <DCCReference Include="..\source\cores\Core.AudioFilter.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.Backend.pas"/>
+        <DCCReference Include="..\source\cores\Core.PerformanceHints.pas"/>
         <DCCReference Include="..\source\cores\Core.Emulation.pas"/>
         <DCCReference Include="..\source\cores\Core.EmulatorFactory.pas"/>
         <DCCReference Include="..\source\cores\Core.Adapter.NES.pas"/>

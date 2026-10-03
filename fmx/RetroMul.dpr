@@ -45,6 +45,7 @@ uses
   Core.AudioFilter in '..\source\cores\Core.AudioFilter.pas',
   PCM.Audio in '..\source\PCM\PCM.Audio.pas',
   PCM.Audio.Backend in '..\source\PCM\PCM.Audio.Backend.pas',
+  Core.PerformanceHints in '..\source\cores\Core.PerformanceHints.pas',
   Core.Emulation in '..\source\cores\Core.Emulation.pas',
   Core.EmulatorFactory in '..\source\cores\Core.EmulatorFactory.pas',
   Core.Adapter.NES in '..\source\cores\Core.Adapter.NES.pas',

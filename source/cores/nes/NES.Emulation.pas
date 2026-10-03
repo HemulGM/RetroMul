@@ -113,141 +113,8 @@ type
 implementation
 
 uses
-  {$IFDEF ANDROID}
-  Androidapi.Helpers, Androidapi.JNIBridge, Androidapi.JNI.JavaTypes,
-  Androidapi.JNI.Os,
-  {$ENDIF}
   System.Diagnostics, System.Math, System.IOUtils, System.UITypes, NES.Consts, Core.SavePaths,
-  PCM.Audio.Null;
-
-{$IFDEF ANDROID}
-
-const
-  ANDROID_THREAD_PRIORITY_URGENT_AUDIO = -19;
-  ANDROID_THREAD_PRIORITY_AUDIO = -16;
-  ANDROID_THREAD_PRIORITY_URGENT_DISPLAY = -8;
-  ANDROID_THREAD_PRIORITY_DISPLAY = -4;
-  ANDROID_THREAD_PRIORITY_FOREGROUND = -2;
-  ANDROID_THREAD_PRIORITY_DEFAULT = 0;
-  ANDROID_THREAD_PRIORITY_BACKGROUND = 10;
-  ANDROID_THREAD_PRIORITY_LOWEST = 19;
-
-type
-  // Java API is available from Android 12 (the native API needs Android 13).
-  [JavaSignature('android/os/PerformanceHintManager$Session')]
-  JNesHintSession = interface(IJavaInstance)
-    ['{3FDDC238-C7FA-423C-BDAA-650E68791F85}']
-    procedure reportActualWorkDuration(actualDurationNanos: Int64); cdecl;
-    procedure close; cdecl;
-  end;
-
-  JNesHintManagerClass = interface(JObjectClass)
-    ['{22FC8E24-BA27-4AE5-A350-A4DB0B4F7A53}']
-  end;
-
-  [JavaSignature('android/os/PerformanceHintManager')]
-  JNesHintManager = interface(JObject)
-    ['{DD96F349-F4DD-4710-BF21-54D1A1A17C61}']
-    function createHintSession(tids: TJavaArray<Integer>; initialTargetWorkDurationNanos: Int64): JNesHintSession; cdecl;
-  end;
-
-  TJNesHintManager = class(TJavaGenericImport<JNesHintManagerClass, JNesHintManager>);
-
-  JNesProcessClass = interface(JObjectClass)
-    ['{932F55BF-E2E8-40E5-9DAE-0B66840CDBA9}']
-    function myTid: Integer; cdecl;
-    procedure setThreadPriority(priority: Integer); cdecl;
-  end;
-
-  [JavaSignature('android/os/Process')]
-  JNesProcess = interface(JObject)
-    ['{C315F8A1-388B-44C2-B6A2-12ED8FD1531F}']
-  end;
-
-  TJNesProcess = class(TJavaGenericImport<JNesProcessClass, JNesProcess>);
-
-  // Owned and called exclusively by the emulation worker, including teardown.
-  TNesFrameHints = class
-  private
-    FManager: JNesHintManager;
-    FSession: JNesHintSession;
-    FTargetNanos, FStart: Int64;
-  public
-    constructor Create(TargetNanos: Int64);
-    destructor Destroy; override;
-    procedure BeginFrame;
-    procedure EndFrame;
-    procedure Pause;
-  end;
-
-constructor TNesFrameHints.Create(TargetNanos: Int64);
-begin
-  inherited Create;
-  FTargetNanos := TargetNanos;
-  if TJBuild_VERSION.JavaClass.SDK_INT < 31 then
-    Exit;
-  try
-    var Service := TAndroidHelper.Context.getSystemService(StringToJString('performance_hint'));
-    if Service <> nil then
-      FManager := TJNesHintManager.Wrap((Service as ILocalObject).GetObjectID);
-  except
-    // Optional scheduling advice must never prevent a game from running.
-    FManager := nil;
-  end;
-end;
-
-destructor TNesFrameHints.Destroy;
-begin
-  Pause;
-  inherited;
-end;
-
-procedure TNesFrameHints.Pause;
-begin
-  if FSession <> nil then
-  try
-    FSession.close;
-  except
-    FManager := nil;
-  end;
-  FSession := nil;
-end;
-
-procedure TNesFrameHints.BeginFrame;
-begin
-  if FManager = nil then
-    Exit;
-  if FSession = nil then
-  try
-    var Tids := TJavaArray<Integer>.Create(1);
-    try
-      // TThread.ThreadID is a pthread handle, not Android's Linux thread ID.
-      Tids[0] := TJNesProcess.JavaClass.myTid;
-      FSession := FManager.createHintSession(Tids, FTargetNanos);
-      if FSession = nil then
-        FManager := nil; // Unsupported device: do not retry on every frame.
-    finally
-      Tids.Free;
-    end;
-  except
-    FManager := nil;
-  end;
-  FStart := TStopwatch.GetTimeStamp;
-end;
-
-procedure TNesFrameHints.EndFrame;
-begin
-  if FSession = nil then
-    Exit;
-  try
-    var Elapsed := TStopwatch.GetTimeStamp - FStart;
-    FSession.reportActualWorkDuration(Max(Int64(1), Round(Elapsed * (1000000000.0 / TStopwatch.Frequency))));
-  except
-    Pause;
-    FManager := nil;
-  end;
-end;
-{$ENDIF}
+  Core.PerformanceHints, PCM.Audio.Null;
 
 constructor TNesEmulationThread.Create(const FileName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride; AudioEnabled: Boolean; AudioVolume: Single; const SaveDirectory, SnapshotRoot: string);
 begin
@@ -820,15 +687,15 @@ begin
   FPaused := False;
   var Failed := False;
   var NextSave := TStopwatch.GetTimeStamp + TStopwatch.Frequency * 5;
-  {$IFDEF ANDROID}
-  //var FrameHints := TNesFrameHints.Create(Round(1000000000.0 / FrameRate(FConsole.Region)));
+  var FrameHints := TEmulationPerformanceHints.Create(
+    Round(1000000000.0 / FrameRate(FConsole.Region)), 'NES');
   try
-  {$ENDIF}
     while not Terminated do
     begin
       try
         if ProcessSnapshot then
         begin
+          FrameHints.Pause;
           NextFrame := TStopwatch.GetTimeStamp;
           FpsStart := NextFrame;
           Frames := 0;
@@ -863,6 +730,7 @@ begin
         end;
         if ResetRequested then
         begin
+          FrameHints.Pause;
           FAudio.Clear;
           FConsole.Reset;
           FLock.Enter;
@@ -890,15 +758,14 @@ begin
         end;
         if PauseRequested then
         begin
+          FrameHints.Pause;
           FAudio.Clear;
           FPaused := True;
           FConsole.SaveBattery;
         end;
         if FPaused then
         begin
-          //{$IFDEF ANDROID}
-          //FrameHints.Pause;
-          //{$ENDIF}
+          FrameHints.Pause;
           FWake.WaitFor(INFINITE);
           Continue;
         end;
@@ -910,10 +777,8 @@ begin
         end;
         if Terminated then
           Break;
-        //{$IFDEF ANDROID}
-        // Report frame work only, excluding the frame limiter and paused time.
-        //FrameHints.BeginFrame;
-        //{$ENDIF}
+        FrameHints.TargetDurationNanos := Round(1000000000.0 / FrameRate(FConsole.Region));
+        FrameHints.BeginWork;
         // Consume one request per slot per emulated frame. Pausing keeps requests.
         FLock.Enter;
         try
@@ -950,6 +815,7 @@ begin
             end;
           end;
         until Count = 0;
+        FrameHints.EndWork;
         Inc(Frames);
         ClockNow := TStopwatch.GetTimeStamp;
         if ClockNow >= NextSave then
@@ -977,9 +843,6 @@ begin
         finally
           FLock.Leave;
         end;
-        //{$IFDEF ANDROID}
-        //FrameHints.EndFrame;
-        //{$ENDIF}
         Inc(NextFrame, FramePeriod);
         // Bound catch-up after debugging or an unusually slow frame.
         if ClockNow - NextFrame > FramePeriod * 3 then
@@ -987,6 +850,7 @@ begin
       except
         on E: Exception do
         begin
+          FrameHints.Pause;
           FAudio.Clear;
           FPaused := True;
           FLock.Enter;
@@ -1001,11 +865,9 @@ begin
         end;
       end;
     end;
-  {$IFDEF ANDROID}
   finally
-    //FrameHints.Free;
+    FrameHints.Free;
   end;
-  {$ENDIF}
 end;
 
 end.

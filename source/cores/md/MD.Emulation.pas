@@ -46,7 +46,7 @@ type
 implementation
 
 uses
-  System.IOUtils, System.UITypes, System.Diagnostics, System.Math, PCM.Audio;
+  Core.PerformanceHints, System.IOUtils, System.UITypes, System.Diagnostics, System.Math, PCM.Audio;
 
 { TMDWorker }
 
@@ -194,9 +194,12 @@ begin
   var LastAudioError: string;
   var Console: TMDConsole := nil;
   var Audio: TPCMAudio := nil;
+  var FrameHints: TEmulationPerformanceHints := nil;
   try
     try
       Console := TMDConsole.Create(FData, '.md');
+      FrameHints := TEmulationPerformanceHints.Create(
+        Round(1000000000.0 / Console.FramesPerSecond), 'MD');
       if FStorage.Exists(FSavePath) then
       begin
         LastBattery := FStorage.ReadBytes(FSavePath);
@@ -216,6 +219,7 @@ begin
         FSnapshots.Process(
           procedure(const Name: string; Loading: Boolean)
           begin
+            FrameHints.Pause;
             var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
             var Transfer: TStateTransfer :=
               procedure(State: TStateArchive)
@@ -267,6 +271,7 @@ begin
         end;
         if ResetRequested then
         begin
+          FrameHints.Pause;
           SaveBattery(Console, LastBattery);
           Console.Reset;
           if Audio <> nil then
@@ -275,6 +280,7 @@ begin
         end;
         if Paused then
         begin
+          FrameHints.Pause;
           if not WasPaused then
           begin
             if Audio <> nil then
@@ -287,6 +293,8 @@ begin
           Continue;
         end;
         WasPaused := False;
+        FrameHints.TargetDurationNanos := Round(1000000000.0 / Console.FramesPerSecond);
+        FrameHints.BeginWork;
         Console.SetInput(Input, Input2);
         Console.RunFrame;
         if Terminated then
@@ -324,6 +332,7 @@ begin
         end
         else if WasEnabled and (Audio <> nil) then
           Audio.Clear;
+        FrameHints.EndWork;
         WasEnabled := Enabled;
         if Console.FrameNumber mod 120 = 0 then
           SaveBattery(Console, LastBattery);
@@ -339,6 +348,7 @@ begin
         SetError('Mega Drive: ' + E.Message);
     end;
   finally
+    FrameHints.Free;
     try
       SaveBattery(Console, LastBattery);
     except

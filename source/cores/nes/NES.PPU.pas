@@ -79,6 +79,13 @@ type
     FSprite0HitY: Integer;
     FPpuClock: UInt64;
     FFetchTile: UInt8;
+    FMapperHasPpuClock: Boolean;
+    FCacheBackground: Boolean;
+    FBackgroundTileX: Integer;
+    FBackgroundLow, FBackgroundHigh, FBackgroundPalette: UInt8;
+    FMapperSpriteScanline: Integer;
+    FMapperSpriteAddresses: array[0..7] of UInt16;
+    FMapperSpriteAddressValid: Boolean;
     procedure ClockMapperAddress;
     procedure RefreshOpenBus(Value, Mask: UInt8);
     procedure ClockOam;
@@ -138,6 +145,8 @@ implementation
 
 procedure TPPU.SerializeState(State: TNesStateArchive);
 begin
+  FMapperSpriteAddressValid := False;
+  FCacheBackground := False;
   FZapperMaskValid := False;
   State.Field(FRegion, SizeOf(FRegion));
   State.Field(FPreRenderLine, SizeOf(FPreRenderLine));
@@ -227,10 +236,13 @@ end;
 procedure TPPU.ConnectMapper(AMapper: TMapper);
 begin
   FMapper := AMapper;
+  // Cache callback presence once; plain cartridges need no timed mapper fetches.
+  FMapperHasPpuClock := (AMapper <> nil) and AMapper.HasPpuClockCallbacks;
 end;
 
 procedure TPPU.Reset;
 begin
+  FMapperSpriteAddressValid := False;
   FCycle := 0;
   FPpuClock := 0;
   FFetchTile := 0;
@@ -471,7 +483,7 @@ end;
 
 procedure TPPU.ClockMapperAddress;
 begin
-  if FMapper = nil then
+  if not FMapperHasPpuClock then
     Exit;
   if (FMask and $18) = 0 then
   begin
@@ -492,41 +504,46 @@ begin
   end
   else if (FCycle >= 256) and (FCycle < 320) and (Phase >= 4) then
   begin
-    var Slot: Integer := (FCycle - 256) div 8;
-    var NextLine: Integer;
-    if FScanline = FPreRenderLine then
-      NextLine := 0
-    else
-      NextLine := FScanline + 1;
-    var Height: Integer;
-    if (FCtrl and $20) <> 0 then
-      Height := 16
-    else
-      Height := 8;
-    var Count: Integer := 0;
-    var Tile: UInt8 := $FF;
-    var Attributes: UInt8 := 0;
-    var Row: Integer := 0;
-    for var i := 0 to 63 do
-      if (NextLine > FOam[i * 4]) and (NextLine <= Integer(FOam[i * 4]) + Height) then
-      begin
-        if Count = Slot then
+    // Select the eight sprite rows in one OAM pass. Reuse only calculations;
+    // still deliver every timed callback. OAM/control writes invalidate these.
+    if not FMapperSpriteAddressValid or (FMapperSpriteScanline <> FScanline) then
+    begin
+      var NextLine: Integer;
+      if FScanline = FPreRenderLine then
+        NextLine := 0
+      else
+        NextLine := FScanline + 1;
+      var Height: Integer;
+      if (FCtrl and $20) <> 0 then
+        Height := 16
+      else
+        Height := 8;
+      if Height = 16 then
+        Address := $1FE0
+      else
+        Address := (UInt16(FCtrl and $08) shl 9) or $0FF0;
+      for var Slot := 0 to 7 do FMapperSpriteAddresses[Slot] := Address;
+      var Count: Integer := 0;
+      for var i := 0 to 63 do
+        if (NextLine > FOam[i * 4]) and (NextLine <= Integer(FOam[i * 4]) + Height) then
         begin
-          Tile := FOam[i * 4 + 1];
-          Attributes := FOam[i * 4 + 2];
-          Row := NextLine - FOam[i * 4] - 1;
-          Break;
+          var Tile := FOam[i * 4 + 1];
+          var Attributes := FOam[i * 4 + 2];
+          var Row := NextLine - FOam[i * 4] - 1;
+          if (Attributes and $80) <> 0 then Row := Height - 1 - Row;
+          if Height = 16 then
+            Address := (UInt16(Tile and 1) shl 12) or (UInt16(Tile and $FE) shl 4) or
+              ((Row and 8) shl 1) or (Row and 7)
+          else
+            Address := (UInt16(FCtrl and $08) shl 9) or (UInt16(Tile) shl 4) or (Row and 7);
+          FMapperSpriteAddresses[Count] := Address;
+          Inc(Count);
+          if Count = 8 then Break;
         end;
-        Inc(Count);
-      end;
-    if (Attributes and $80) <> 0 then
-      Row := Height - 1 - Row;
-    if Height = 16 then
-      Address := (UInt16(Tile and 1) shl 12) or (UInt16(Tile and $FE) shl 4) or
-        ((Row and 8) shl 1) or (Row and 7)
-    else
-      Address := (UInt16(FCtrl and $08) shl 9) or (UInt16(Tile) shl 4) or (Row and 7);
-    Address := Address or ((Phase and 2) shl 2);
+      FMapperSpriteScanline := FScanline;
+      FMapperSpriteAddressValid := True;
+    end;
+    Address := FMapperSpriteAddresses[(FCycle - 256) div 8] or ((Phase and 2) shl 2);
   end;
   FMapper.ClockPpuAddress(Address, FPpuClock);
   if ((FCycle and 1) <> 0) and (FCycle <= 339) then
@@ -887,6 +904,7 @@ begin
   if RenderingEnabled and FOamEval.CorruptPending and
     ((FScanline < 240) or (FScanline = FPreRenderLine)) then
   begin
+    FMapperSpriteAddressValid := False;
     for var I := 0 to 7 do FOam[Integer(FOamEval.CorruptRow) * 8 + I] := FOam[I];
     FOamEval.Secondary[FOamEval.CorruptRow] := FOamEval.Secondary[0];
     FOamEval.CorruptPending := False;
@@ -1066,6 +1084,7 @@ end;
 
 procedure TPPU.CpuWrite(Address: UInt16; Value: UInt8);
 begin
+  FMapperSpriteAddressValid := False;
   RefreshOpenBus(Value, $FF);
   case Address and 7 of
     0:
@@ -1152,6 +1171,7 @@ end;
 
 procedure TPPU.WriteOamDma(Index: Integer; Value: UInt8);
 begin
+  FMapperSpriteAddressValid := False;
   RefreshOpenBus(Value, $FF);
   FOam[(FOamAddress + (Index and $FF)) and $FF] := Value;
 end;
@@ -1213,6 +1233,13 @@ begin
   var LocalX: Integer := WorldX mod 256;
   var LocalY: Integer := WorldY mod 240;
 
+  if FRenderingLine and FCacheBackground and (FBackgroundTileX = (WorldX shr 3)) then
+  begin
+    PaletteIndex := FBackgroundPalette;
+    var Shift := 7 - (LocalX and 7);
+    Exit((((FBackgroundHigh shr Shift) and 1) shl 1) or ((FBackgroundLow shr Shift) and 1));
+  end;
+
   var NameAddress: UInt16 := $2000 + UInt16(Table) * $0400 + UInt16((LocalY div 8) * 32 + (LocalX div 8));
   var TileIndex: UInt8 := PpuReadMemory(NameAddress);
   var AttributeAddress: UInt16 := $23C0 + UInt16(Table) * $0400 + UInt16((LocalY div 32) * 8 + (LocalX div 32));
@@ -1227,6 +1254,13 @@ begin
   var PatternBase: UInt16 := UInt16((RenderCtrl and $10) shr 4) shl 12;
   var Lo: UInt8 := PpuReadMemory(PatternBase + UInt16(TileIndex) * 16 + FineY);
   var Hi: UInt8 := PpuReadMemory(PatternBase + UInt16(TileIndex) * 16 + FineY + 8);
+  if FRenderingLine and FCacheBackground then
+  begin
+    FBackgroundTileX := WorldX shr 3;
+    FBackgroundLow := Lo;
+    FBackgroundHigh := Hi;
+    FBackgroundPalette := PaletteIndex;
+  end;
   var BitPosition: UInt8 := 7 - (LocalX and 7);
   Result := (((Hi shr BitPosition) and 1) shl 1) or ((Lo shr BitPosition) and 1);
 end;
@@ -1332,6 +1366,10 @@ begin
   FRenderMask := FMask;
   FRenderFineX := FFineX;
   FRenderingLine := True;
+  // CPU/register writes cannot interleave with this synchronous scanline.
+  // Keep per-pixel reads for boards with mapper latches or fetch-dependent data.
+  FCacheBackground := (FMapper <> nil) and FMapper.AllowsPpuReadCaching;
+  FBackgroundTileX := -1;
   var Y: Integer := FScanline;
   // OAM and control registers cannot change during this synchronous render.
   // Preserve the existing unlimited-sprite behavior (do not impose an 8 limit).
@@ -1370,6 +1408,7 @@ begin
         FDrawingFrame[X, Y] := NES_PALETTE[ColorIndex];
     end;
   finally
+    FCacheBackground := False;
     FRenderingLine := False;
     FRenderV := SavedV;
     FRenderCtrl := SavedCtrl;

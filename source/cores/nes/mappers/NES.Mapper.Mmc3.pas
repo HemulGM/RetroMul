@@ -17,6 +17,10 @@ type
     FBankSelect, FPrgRamControl, FIrqLatch, FIrqCounter: UInt8;
     FIrqReloadPending, FIrqEnabled, FIrqPending, FA12High: Boolean;
     FA12LowSince: UInt64;
+    FUseBankCache: Boolean;
+    FPrgOffsets: array[0..3] of Integer;
+    FChrOffsets: array[0..7] of Integer;
+    procedure UpdateBankOffsets;
     function GetChrOffset(Address: UInt16): Integer;
   public
     procedure SerializeState(State: TNesStateArchive); override;
@@ -28,12 +32,41 @@ type
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function PpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function GetMirrorMode: TMirrorMode; override;
+    function AllowsPpuReadCaching: Boolean; override;
     procedure ClockPpuAddress(Address: UInt16; PpuCycle: UInt64); override;
     function IrqPending: Boolean; override;
     procedure Reset; override;
   end;
 
 implementation
+
+procedure TMapperMmc3.UpdateBankOffsets;
+begin
+  if not FUseBankCache then Exit;
+  var Count := Length(FPrgRom) div $2000;
+  FPrgOffsets[0] := ((FBankRegisters[6] and $3F) mod Count) * $2000;
+  FPrgOffsets[1] := ((FBankRegisters[7] and $3F) mod Count) * $2000;
+  FPrgOffsets[2] := (Count - 2) * $2000;
+  FPrgOffsets[3] := (Count - 1) * $2000;
+  if (FBankSelect and $40) <> 0 then
+  begin
+    var Offset := FPrgOffsets[0];
+    FPrgOffsets[0] := FPrgOffsets[2];
+    FPrgOffsets[2] := Offset;
+  end;
+  Count := Length(FChrMemory) div $400;
+  for var Slot := 0 to 7 do
+  begin
+    var MappedSlot := Slot;
+    if (FBankSelect and $80) <> 0 then MappedSlot := Slot xor 4;
+    var Bank: Integer;
+    if MappedSlot < 4 then
+      Bank := (FBankRegisters[MappedSlot shr 1] and $FE) or (MappedSlot and 1)
+    else
+      Bank := FBankRegisters[MappedSlot - 2];
+    FChrOffsets[Slot] := (Bank mod Count) * $400;
+  end;
+end;
 
 procedure TMapperMmc3.SerializeState(State: TNesStateArchive);
 begin
@@ -55,6 +88,7 @@ begin
   State.Field(FIrqPending, SizeOf(FIrqPending));
   State.Field(FA12High, SizeOf(FA12High));
   State.Field(FA12LowSince, SizeOf(FA12LowSince));
+  if State.Loading then UpdateBankOffsets;
 end;
 
 function TMapperMmc3.GetSaveMemory: TByteArray;
@@ -81,6 +115,8 @@ begin
     SetLength(FChrMemory, $2000);
   FInitialMirrorMode := AMirrorMode;
   FFourScreenMirroring := AMirrorMode = TMirrorMode.FourScreen;
+  // Derived boards retain their own bank interpretation and original read path.
+  FUseBankCache := ClassType = TMapperMmc3;
   Reset;
 end;
 
@@ -102,6 +138,7 @@ begin
   FIrqPending := False;
   FA12High := False;
   FA12LowSince := 0;
+  UpdateBankOffsets;
 end;
 
 function TMapperMmc3.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
@@ -117,6 +154,11 @@ begin
   end
   else if Address >= $8000 then
   begin
+    if FUseBankCache then
+    begin
+      Value := FPrgRom[FPrgOffsets[(Address - $8000) shr 13] + (Address and $1FFF)];
+      Exit(True);
+    end;
     Count := Length(FPrgRom) div $2000;
     case (Address - $8000) shr 13 of
       0:
@@ -152,9 +194,15 @@ begin
   end;
   case Address and $E001 of
     $8000:
-      FBankSelect := Value;
+      begin
+        FBankSelect := Value;
+        UpdateBankOffsets;
+      end;
     $8001:
-      FBankRegisters[FBankSelect and 7] := Value;
+      begin
+        FBankRegisters[FBankSelect and 7] := Value;
+        UpdateBankOffsets;
+      end;
     $A000:
       if not FFourScreenMirroring then
         if (Value and 1) = 0 then
@@ -182,6 +230,8 @@ end;
 
 function TMapperMmc3.GetChrOffset(Address: UInt16): Integer;
 begin
+  if FUseBankCache then
+    Exit(FChrOffsets[Address shr 10] + (Address and $3FF));
   var Bank: Integer;
   if (FBankSelect and $80) <> 0 then
     Address := Address xor $1000;
@@ -217,6 +267,13 @@ end;
 function TMapperMmc3.GetMirrorMode: TMirrorMode;
 begin
   Result := FMirrorMode;
+end;
+
+function TMapperMmc3.AllowsPpuReadCaching: Boolean;
+begin
+  // CHR reads are passive; A12 IRQs use the separate timed address callbacks.
+  // Derived boards must explicitly opt in after checking their read side effects.
+  Result := ClassType = TMapperMmc3;
 end;
 
 procedure TMapperMmc3.ClockPpuAddress(Address: UInt16; PpuCycle: UInt64);

@@ -844,9 +844,9 @@ begin
           FLock.Leave;
         end;
         Inc(NextFrame, FramePeriod);
-        // Bound catch-up after debugging or an unusually slow frame.
+        // Discard stale deadlines without adding an idle frame when already late.
         if ClockNow - NextFrame > FramePeriod * 3 then
-          NextFrame := ClockNow + FramePeriod;
+          NextFrame := ClockNow;
       except
         on E: Exception do
         begin

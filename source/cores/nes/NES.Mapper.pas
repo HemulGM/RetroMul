@@ -107,6 +107,9 @@ type
     procedure ClockCpu; virtual;
     procedure ClockCpuWrite; virtual;
     procedure ClockPpuRead; virtual;
+    function HasPpuClockCallbacks: Boolean;
+    // Opt in only when repeated PPU reads/fetch context have no side effects.
+    function AllowsPpuReadCaching: Boolean; virtual;
     procedure ClockScanline(Line: Integer; Rendering: Boolean); virtual;
     procedure SetPpuFetchKind(Sprite: Boolean; X, Y: Integer); virtual;
     procedure SetPpuControl(Value: UInt8); virtual;
@@ -115,6 +118,25 @@ type
   end;
 
 implementation
+
+function TMapper.AllowsPpuReadCaching: Boolean;
+begin
+  Result := False;
+end;
+
+function TMapper.HasPpuClockCallbacks: Boolean;
+type
+  TAddressCallback = procedure(Address: UInt16; PpuCycle: UInt64) of object;
+  TReadCallback = procedure of object;
+var
+  AddressCallback: TAddressCallback;
+  ReadCallback: TReadCallback;
+begin
+  AddressCallback := ClockPpuAddress;
+  ReadCallback := ClockPpuRead;
+  Result := (TMethod(AddressCallback).Code <> @TMapper.ClockPpuAddress) or
+    (TMethod(ReadCallback).Code <> @TMapper.ClockPpuRead);
+end;
 
 procedure TMapper.SerializeState(State: TNesStateArchive);
 begin

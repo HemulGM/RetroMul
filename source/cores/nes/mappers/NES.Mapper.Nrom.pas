@@ -24,9 +24,16 @@ type
     function PpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function GetMirrorMode: TMirrorMode; override;
     procedure Reset; override;
+    function AllowsPpuReadCaching: Boolean; override;
   end;
 
 implementation
+
+function TMapperNrom.AllowsPpuReadCaching: Boolean;
+begin
+  // A derived board must explicitly opt in if it adds read/fetch behavior.
+  Result := ClassType = TMapperNrom;
+end;
 
 procedure TMapperNrom.SerializeState(State: TNesStateArchive);
 begin

@@ -36,10 +36,17 @@ type
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function PpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function GetMirrorMode: TMirrorMode; override;
+    function AllowsPpuReadCaching: Boolean; override;
     procedure Reset; override;
   end;
 
 implementation
+
+function TMapperMmc1.AllowsPpuReadCaching: Boolean;
+begin
+  // CHR mapping changes only on CPU writes, outside synchronous scanline rendering.
+  Result := ClassType = TMapperMmc1;
+end;
 
 procedure TMapperMmc1.SerializeState(State: TNesStateArchive);
 begin

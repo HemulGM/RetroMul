@@ -99,6 +99,9 @@ type
     FHp440Input: Double;
     FLp14Output: Double;
     FAntiAlias: TPCMLowPass;
+    FMixKey: Integer;
+    FMixValue: Double;
+    FMixValid: Boolean;
     FHp90Coefficient: Double;
     FHp440Coefficient: Double;
     FLp14Coefficient: Double;
@@ -179,6 +182,8 @@ end;
 
 procedure TApu.SerializeState(State: TNesStateArchive);
 begin
+  // The mixer cache is derived from channel state and never stored in snapshots.
+  FMixValid := False;
   State.Field(FRegion, SizeOf(FRegion));
   State.Field(FPulse1, SizeOf(FPulse1));
   State.Field(FPulse2, SizeOf(FPulse2));
@@ -685,6 +690,9 @@ begin
   var P2: Integer := PulseRawOutput(FPulse2, 0);
   var Tri: Integer := TriangleRawOutput;
   var Noi: Integer := NoiseRawOutput;
+  var Key := (P1 + P2) or (Tri shl 5) or (Noi shl 9) or (Integer(FDmc.OutputLevel) shl 13);
+  if FMixValid and (FMixKey = Key) then
+    Exit(FMixValue);
 
   if (P1 + P2) = 0 then
     PulseMix := 0
@@ -721,6 +729,9 @@ begin
     Result := 0;
   if Result > 1 then
     Result := 1;
+  FMixKey := Key;
+  FMixValue := Result;
+  FMixValid := True;
 end;
 
 procedure TApu.PushSample(Value: SmallInt);

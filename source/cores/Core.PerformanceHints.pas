@@ -3,6 +3,9 @@ unit Core.PerformanceHints;
 interface
 
 type
+  {$IFDEF ANDROID}
+  TEmulationCpuMask = array[0..15] of UInt64;
+  {$ENDIF}
   // Create, use and destroy on the worker being hinted. Other platforms are no-ops.
   TEmulationPerformanceHints = class
   private
@@ -10,12 +13,17 @@ type
     FManager, FSession: IInterface;
     FStart, FWorkTicks: Int64;
     FWorking: Boolean;
+    FOriginalCpuMask, FFastCpuMask: TEmulationCpuMask;
+    FAffinityPrepared, FAffinityAttempted, FAffinityApplied: Boolean;
+    FSlowSince: Int64;
     {$ENDIF}
     FName: string;
     FTargetNanos: Int64;
     {$IFDEF ANDROID}
     procedure Log(const Message: string);
     procedure Disable(const Reason: string);
+    procedure PrepareCpuAffinity;
+    procedure ObserveWork(WorkNanos: Int64);
     {$ENDIF}
     procedure SetTargetDurationNanos(Value: Int64);
   public
@@ -35,6 +43,7 @@ implementation
 uses
   System.SysUtils, System.Diagnostics,
   {$IFDEF ANDROID}
+  System.IOUtils, System.Classes,
   Androidapi.Helpers, Androidapi.JNIBridge, Androidapi.JNI.JavaTypes,
   Androidapi.JNI.Os, Androidapi.Log,
   {$ENDIF}
@@ -73,6 +82,11 @@ type
   end;
 
   TJEmulationProcess = class(TJavaGenericImport<JEmulationProcessClass, JEmulationProcess>);
+
+function AndroidGetAffinity(tid: Integer; size: NativeUInt; mask: Pointer): Integer; cdecl;
+  external 'libc.so' name 'sched_getaffinity';
+function AndroidSetAffinity(tid: Integer; size: NativeUInt; mask: Pointer): Integer; cdecl;
+  external 'libc.so' name 'sched_setaffinity';
 {$ENDIF}
 
 constructor TEmulationPerformanceHints.Create(TargetNanos: Int64; const Name: string);
@@ -116,6 +130,66 @@ begin
   Pause;
   FManager := nil; // Do not retry unsupported/failed APIs on every frame.
 end;
+
+procedure TEmulationPerformanceHints.PrepareCpuAffinity;
+begin
+  FAffinityPrepared := True;
+  FAffinityAttempted := True; // Unsupported discovery must not repeat per frame.
+  FillChar(FFastCpuMask, SizeOf(FFastCpuMask), 0);
+  if AndroidGetAffinity(0, SizeOf(FOriginalCpuMask), @FOriginalCpuMask) <> 0 then
+    Exit;
+  try
+    var BestCapacity := 0;
+    for var Cpu := 0 to High(FOriginalCpuMask) * 64 + 63 do
+    begin
+      var Bit := UInt64(1) shl (Cpu and 63);
+      if (FOriginalCpuMask[Cpu div 64] and Bit) = 0 then Continue;
+      var Path := Format('/sys/devices/system/cpu/cpu%d/cpu_capacity', [Cpu]);
+      var Capacity := 0;
+      if not TFile.Exists(Path) then Continue;
+      // sysfs advertises a page-sized file, but returns only one short line.
+      var Reader := TStreamReader.Create(Path);
+      try
+        TryStrToInt(Reader.ReadLine.Trim, Capacity);
+      finally
+        Reader.Free;
+      end;
+      if Capacity <= 0 then Continue;
+      if Capacity > BestCapacity then
+      begin
+        BestCapacity := Capacity;
+        FillChar(FFastCpuMask, SizeOf(FFastCpuMask), 0);
+      end;
+      if Capacity = BestCapacity then
+        FFastCpuMask[Cpu div 64] := FFastCpuMask[Cpu div 64] or Bit;
+    end;
+    // Homogeneous/unknown CPUs keep the scheduler's original placement.
+    FAffinityAttempted := (BestCapacity = 0) or
+      CompareMem(@FFastCpuMask, @FOriginalCpuMask, SizeOf(FFastCpuMask));
+  except
+    on E: Exception do Log('CPU capacity unavailable: ' + E.Message);
+  end;
+end;
+
+procedure TEmulationPerformanceHints.ObserveWork(WorkNanos: Int64);
+begin
+  if FAffinityAttempted then Exit;
+  // First let ADPF react. Ignore short startup spikes and normal frame jitter.
+  if WorkNanos <= FTargetNanos * 1.05 then
+  begin
+    FSlowSince := 0;
+    Exit;
+  end;
+  var Now := TStopwatch.GetTimeStamp;
+  if FSlowSince = 0 then FSlowSince := Now;
+  if Now - FSlowSince < TStopwatch.Frequency div 2 then Exit;
+  FAffinityAttempted := True;
+  FAffinityApplied := AndroidSetAffinity(0, SizeOf(FFastCpuMask), @FFastCpuMask) = 0;
+  if FAffinityApplied then
+    Log('frame budget missed: selected highest-capacity allowed CPUs')
+  else
+    Log('CPU affinity unavailable; retaining system placement');
+end;
 {$ENDIF}
 
 procedure TEmulationPerformanceHints.SetTargetDurationNanos(Value: Int64);
@@ -141,6 +215,16 @@ begin
   {$IFDEF ANDROID}
   FWorking := False;
   FWorkTicks := 0;
+  FSlowSince := 0;
+  if FAffinityApplied then
+  begin
+    if AndroidSetAffinity(0, SizeOf(FOriginalCpuMask), @FOriginalCpuMask) = 0 then
+      FAffinityApplied := False
+    else
+      Log('could not restore CPU affinity');
+  end;
+  // Keep the saved mask if restoring failed; do not overwrite it on resume.
+  if not FAffinityApplied then FAffinityPrepared := False;
   if FSession <> nil then
   try
     (FSession as JEmulationHintSession).close;
@@ -159,9 +243,10 @@ end;
 procedure TEmulationPerformanceHints.BeginWork;
 begin
   {$IFDEF ANDROID}
-  if (FManager = nil) or FWorking then
+  if FWorking then
     Exit;
-  if FSession = nil then
+  if not FAffinityPrepared then PrepareCpuAffinity;
+  if (FManager <> nil) and (FSession = nil) then
   try
     var Tids := TJavaArray<Integer>.Create(1);
     try
@@ -198,14 +283,16 @@ begin
   FWorking := False;
   if not CompletePeriod then
     Exit;
+  var WorkNanos := Max(Int64(1), Round(FWorkTicks * (1000000000.0 / TStopwatch.Frequency)));
+  FWorkTicks := 0;
+  if FSession <> nil then
   try
-    (FSession as JEmulationHintSession).reportActualWorkDuration(
-        Max(Int64(1), Round(FWorkTicks * (1000000000.0 / TStopwatch.Frequency))));
-    FWorkTicks := 0;
+    (FSession as JEmulationHintSession).reportActualWorkDuration(WorkNanos);
   except
     on E: Exception do
       Disable('work report failed: ' + E.Message);
   end;
+  ObserveWork(WorkNanos);
   {$ENDIF}
 end;
 

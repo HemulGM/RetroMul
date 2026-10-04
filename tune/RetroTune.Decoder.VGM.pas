@@ -5,7 +5,7 @@ interface
 uses
   System.SysUtils, RetroTune.Decoder, MD.Sound, NES.APU, GB.Sound, GB.GPU,
   GB.Timer, GB.InterruptManager, GB.Joypad, RetroTune.Decoder.GBS,
-  Core.AudioFilter;
+  Core.AudioFilter, PC.Sound.OPL, PC.Sound.OPL2, PC.Sound.OPL3, ZX.Sound.YM2149;
 
 type
   TVGMDataBank = record
@@ -32,6 +32,13 @@ type
     FEnded, FReady: Boolean;
     FPSG: TPSG;
     FFM: TFM;
+    FOPL: array[0..1, 0..1] of TOPLSound;
+    FOPLClocks: array[0..1] of Integer;
+    FOPLDual: array[0..1] of Boolean;
+    FYM: array[0..1] of TYM2149F;
+    FYMClock: Integer;
+    FYMDual, FYMSelectHigh: Boolean;
+    FYMStereo: Boolean;
     FNES: TApu;
     FMemory: TGBSMemory;
     FGB: TGBSound;
@@ -117,8 +124,8 @@ end;
 
 constructor TVGMDecoder.Create(const Data: TBytes);
 const
-  UnsupportedOffsets: array[0..35] of Integer =
-    ($10, $30, $38, $40, $44, $48, $4C, $50, $54, $58, $5C, $60, $64, $68, $6C, $70, $74,
+  UnsupportedOffsets: array[0..32] of Integer =
+    ($10, $30, $38, $40, $44, $48, $4C, $54, $58, $60, $64, $68, $6C, $70,
     $7C, $88, $8C, $90, $98, $9C, $A0, $A4, $A8, $AC, $B0, $B4, $B8, $BC, $C0, $C4, $C8, $CC, $D0);
   ClockOffsets: array[0..3] of Integer = ($C, $2C, $84, $80);
 begin
@@ -152,7 +159,25 @@ begin
       ((Version >= $151) and (Offset >= $38) and (Offset <= $74)) or
       ((Version >= $161) and (Offset >= $7C) and (Offset <= $B4)) or
       ((Version >= $171) and (Offset >= $B8))) and (HeaderClock(Offset) <> 0) then
-      raise ENotSupportedException.CreateFmt('VGM chip at header $%x is unsupported (OPL/AY and other missing cores)', [Offset]);
+      raise ENotSupportedException.CreateFmt('VGM chip at header $%x is unsupported', [Offset]);
+  if Version >= $151 then
+  begin
+    var RawClock := HeaderClock($74);
+    FYMClock := RawClock and $3FFFFFFF;
+    FYMDual := (RawClock and $40000000) <> 0;
+    if FYMClock <> 0 then
+    begin
+      RequireBytes(FData, $78, 2);
+      if (FStart <= $79) or (FData[$78] <> $10) or ((RawClock and $80000000) <> 0) then
+        raise ENotSupportedException.Create('Unsupported AY chip variant; YM2149 is supported');
+      if (FYMClock < 100000) or (FYMClock > 8000000) then
+        raise EArgumentException.Create('Invalid YM2149 clock');
+      if (FData[$79] and $60) <> 0 then
+        raise EArgumentException.Create('Invalid AY flags');
+      FYMSelectHigh := (FData[$79] and $10) = 0;
+      FYMStereo := (FData[$79] and $80) <> 0;
+    end;
+  end;
   for var J := 0 to 3 do
     if (J = 0) or ((J = 1) and (Version >= $110)) or ((J >= 2) and (Version >= $161)) then
     begin
@@ -162,6 +187,20 @@ begin
       if RawClock > 16000000 then
         raise EArgumentException.Create('Invalid VGM chip clock');
       FClocks[J] := RawClock;
+    end;
+  if Version >= $151 then
+    for var J := 0 to 1 do
+    begin
+      var Offset := $50;
+      if J = 1 then
+        Offset := $5C;
+      var RawClock := HeaderClock(Offset);
+      if (RawClock and $80000000) <> 0 then
+        raise ENotSupportedException.Create('Unsupported OPL chip variant');
+      FOPLDual[J] := (RawClock and $40000000) <> 0;
+      FOPLClocks[J] := RawClock and $3FFFFFFF;
+      if (FOPLClocks[J] <> 0) and ((FOPLClocks[J] < 1000000) or (FOPLClocks[J] > 32000000)) then
+        raise EArgumentException.Create('Invalid VGM OPL clock');
     end;
   FInfo.FormatName := 'VGM';
   if (Length(Data) > 1) and (Data[0] = $1F) and (Data[1] = $8B) then
@@ -187,6 +226,25 @@ begin
       end;
     end;
   end;
+  for var J := 0 to 1 do
+    if FOPLClocks[J] <> 0 then
+    begin
+      if FInfo.Details <> '' then
+        FInfo.Details := FInfo.Details + ' / ';
+      if FOPLDual[J] then
+        FInfo.Details := FInfo.Details + '2 x ';
+      if J = 0 then
+        FInfo.Details := FInfo.Details + 'YM3812 (OPL2)'
+      else
+        FInfo.Details := FInfo.Details + 'YMF262 (OPL3)';
+    end;
+  if FInfo.Details = '' then
+    if FYMClock <> 0 then
+      FInfo.Details := 'YM2149F';
+  if (FYMClock <> 0) and (FInfo.Details <> 'YM2149F') then
+    FInfo.Details := FInfo.Details + ' / YM2149F';
+  if FYMDual then
+    FInfo.Details := FInfo.Details + ' (dual YM2149F)';
   if FInfo.Details = '' then
     raise ENotSupportedException.Create('VGM has no supported audio chip');
   if (FClocks[0] <> 0) and (Version >= $110) then
@@ -225,8 +283,29 @@ begin
   FOffset := FStart;
   FWait60 := 735;
   FWait50 := 882;
+  var TotalFrames: Int64 := 0;
   while not FEnded do
+  begin
+    FWait := 0;
     ReadCommand(True);
+    Inc(TotalFrames, FWait);
+  end;
+  FInfo.TrackDurations := [TotalFrames / 44100.0];
+  if FYMClock <> 0 then
+    for var Chip := 0 to Ord(FYMDual) do
+    begin
+      FYM[Chip] := TYM2149F.Create(FYMClock, 44100, FYMSelectHigh);
+      if not FYMStereo then
+        for var Channel := 0 to 2 do
+          FYM[Chip].SetPan(Channel, 1, 1);
+    end;
+  for var J := 0 to 1 do
+    if FOPLClocks[J] <> 0 then
+      for var K := 0 to Ord(FOPLDual[J]) do
+        if J = 0 then
+          FOPL[J, K] := TOPL2.Create(FOPLClocks[J], 44100)
+        else
+          FOPL[J, K] := TOPL3.Create(FOPLClocks[J], 44100);
   if FClocks[2] <> 0 then
     FNES := TApu.Create;
   if FClocks[3] <> 0 then
@@ -243,6 +322,11 @@ end;
 
 destructor TVGMDecoder.Destroy;
 begin
+  for var Chip := 0 to 1 do
+    FYM[Chip].Free;
+  for var J := 0 to 1 do
+    for var K := 0 to 1 do
+      FOPL[J, K].Free;
   FNES.Free;
   FGB.Free;
   FMemory.Free;
@@ -290,7 +374,7 @@ begin
   case Command of
     $4F, $50:
       Size := 1;
-    $52, $53, $61, $B3, $B4:
+    $52, $53, $5A, $5E, $5F, $AA, $AE, $AF, $A0, $61, $B3, $B4:
       Size := 2;
     $64:
       Size := 3;
@@ -316,6 +400,15 @@ begin
   var P := FOffset;
   Inc(FOffset, Size);
   case Command of
+    $A0:
+      begin
+        var Chip := FData[P] shr 7;
+        var Reg := FData[P] and $7F;
+        if (FYMClock = 0) or ((Chip = 1) and not FYMDual) or (Reg > 15) then
+          raise EArgumentException.Create('Invalid VGM YM2149 write');
+        if not Validate then
+          FYM[Chip].WriteRegister(Reg, FData[P + 1]);
+      end;
     $4F:
       begin
         if FClocks[0] = 0 then
@@ -339,6 +432,18 @@ begin
           FMDoAddress(FFM, Command - $52, FData[P]);
           FMDoData(FFM, FData[P + 1]);
         end;
+      end;
+    $5A, $5E, $5F, $AA, $AE, $AF:
+      begin
+        var ChipIndex := Ord(not (Command in [$5A, $AA]));
+        var Instance := Ord(Command >= $A0);
+        if (FOPLClocks[ChipIndex] = 0) or ((Instance = 1) and not FOPLDual[ChipIndex]) then
+          raise EArgumentException.Create('VGM OPL write has no corresponding chip clock');
+        var RegisterID := Word(FData[P]);
+        if Command in [$5F, $AF] then
+          Inc(RegisterID, $100);
+        if not Validate then
+          FOPL[ChipIndex, Instance].WriteRegister(RegisterID, FData[P + 1]);
       end;
     $B3:
       begin
@@ -538,6 +643,13 @@ begin
   FillChar(FFMFiltered, SizeOf(FFMFiltered), 0);
   FillChar(FPSGFiltered, SizeOf(FPSGFiltered), 0);
   FNESPCM := 0;
+  for var J := 0 to 1 do
+    for var K := 0 to 1 do
+      if FOPL[J, K] <> nil then
+        FOPL[J, K].Reset;
+  for var Chip := 0 to 1 do
+    if FYM[Chip] <> nil then
+      FYM[Chip].Reset;
   if FNES <> nil then
   begin
     FNES.Reset;
@@ -647,8 +759,28 @@ begin
     FGB.UpdateSound(Cycles);
     FGB.FlushPCM;
   end;
-  Left := EnsureRange(Round(FDC[0].Process(FPSGFiltered[0] + FFMFiltered[0] + FNESPCM + FGBPCM[0])), -32768, 32767);
-  Right := EnsureRange(Round(FDC[1].Process(FPSGFiltered[1] + FFMFiltered[1] + FNESPCM + FGBPCM[1])), -32768, 32767);
+  var OPLLeft, OPLRight: Integer;
+  OPLLeft := 0;
+  OPLRight := 0;
+  for var Chip := 0 to 1 do
+    if FYM[Chip] <> nil then
+    begin
+      var L, R: SmallInt;
+      FYM[Chip].Sample(L, R);
+      Inc(OPLLeft, L);
+      Inc(OPLRight, R);
+    end;
+  for var J := 0 to 1 do
+    for var K := 0 to 1 do
+      if FOPL[J, K] <> nil then
+      begin
+        var L, R: SmallInt;
+        FOPL[J, K].Sample(L, R);
+        Inc(OPLLeft, L);
+        Inc(OPLRight, R);
+      end;
+  Left := EnsureRange(Round(FDC[0].Process(FPSGFiltered[0] + FFMFiltered[0] + FNESPCM + FGBPCM[0] + OPLLeft)), -32768, 32767);
+  Right := EnsureRange(Round(FDC[1].Process(FPSGFiltered[1] + FFMFiltered[1] + FNESPCM + FGBPCM[1] + OPLRight)), -32768, 32767);
 end;
 
 function TVGMDecoder.Render(var Samples: array of SmallInt; Frames: Integer): Integer;

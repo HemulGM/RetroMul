@@ -1,8 +1,14 @@
 ﻿program RetroMul;
 
 uses
+
   System.StartUpCopy,
   FMX.Forms,
+  ZX.Sound.YM2149 in '..\source\cores\zx\ZX.Sound.YM2149.pas',
+  PC.OPL.Nuked in '..\source\cores\pc\PC.OPL.Nuked.pas',
+  PC.Sound.OPL in '..\source\cores\pc\PC.Sound.OPL.pas',
+  PC.Sound.OPL2 in '..\source\cores\pc\PC.Sound.OPL2.pas',
+  PC.Sound.OPL3 in '..\source\cores\pc\PC.Sound.OPL3.pas',
   {$IFDEF ANDROID}
   FMX.Skia,
   {$ENDIF }

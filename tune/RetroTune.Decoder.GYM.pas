@@ -149,6 +149,8 @@ begin
   finally
     Output.Free;
   end;
+  FInfo.TrackDurations := FBase.GetInfo.TrackDurations;
+  FInfo.TrackDurations := FBase.GetInfo.TrackDurations;
   FInfo.FormatName := 'GYM';
   FInfo.Details := 'Mega Drive / YM2612 / SN76489';
   FInfo.TrackCount := 1;
@@ -180,4 +182,3 @@ initialization
   TTuneDecoders.RegisterFormat('.gym', 'Mega Drive GYM', CreateGYM);
 
 end.
-

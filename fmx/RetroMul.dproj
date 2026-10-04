@@ -1,4 +1,4 @@
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
         <ProjectGuid>{82132DF3-6773-48AA-904F-4792F7EFBB7C}</ProjectGuid>
         <ProjectVersion>20.4</ProjectVersion>
@@ -163,7 +163,7 @@
         <Icon_MainIcon>$(BDS)\bin\delphi_PROJECTICON.ico</Icon_MainIcon>
         <Icns_MainIcns>$(BDS)\bin\delphi_PROJECTICNS.icns</Icns_MainIcns>
         <SanitizedProjectName>RetroMul</SanitizedProjectName>
-        <DCC_UnitSearchPath>devices;..\source\cores;..\source\cores\snes;..\source\cores\md;..\source\cores\nes;..\source\cores\nes\mappers;..\source\cores\gb;..\source\cores\gbc;..\source\gamelist;..\source\PCM;DelphiWinUI3\Sources;DelphiWinUI3\DelphiWindowStyle;DelphiWinUI3\FMXWindowsDispatch;DelphiWinUI3\FMXWindowsHint;DelphiWinUI3\WindowsNotificationManager;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>..\source\cores\pc;devices;..\source\cores;..\source\cores\snes;..\source\cores\md;..\source\cores\nes;..\source\cores\nes\mappers;..\source\cores\gb;..\source\cores\gbc;..\source\gamelist;..\source\PCM;DelphiWinUI3\Sources;DelphiWinUI3\DelphiWindowStyle;DelphiWinUI3\FMXWindowsDispatch;DelphiWinUI3\FMXWindowsHint;DelphiWinUI3\WindowsNotificationManager;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Android)'!=''">
         <DCC_UsePackage>fmx;DbxCommonDriver;bindengine;IndyIPCommon;emsclient;IndyProtocols;dbxcds;FmxTeeUI;FireDACSqliteDriver;DbxClientDriver;soapmidas;dbexpress;inet;FireDACDBXDriver;CustomIPTransport;IndySystem;FireDACCommon;emsserverresource;bindcompdbx;rtl;DBXSqliteDriver;DataSnapFireDAC;FireDAC;xmlrtl;dsnap;DataSnapNativeClient;emshosting;FireDACCommonDriver;IndyIPClient;emsedge;bindcompfmx;fmxFireDAC;FMXAudioHGM;DataSnapCommon;fmxase;dbrtl;DBXInterBaseDriver;bindcomp;VLCPlayer;inetstn;IndyCore;RESTBackendComponents;RESTComponents;IndyIPServer;dsnapxml;DataSnapClient;DataSnapProviderClient;emsclientfiredac;FireDACDSDriver;tethering;CloudService;FMXTee;soaprtl;soapserver;FireDACIBDriver;$(DCC_UsePackage)</DCC_UsePackage>
@@ -422,6 +422,11 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="..\source\cores\zx\ZX.Sound.YM2149.pas"/>
+        <DCCReference Include="..\source\cores\pc\PC.OPL.Nuked.pas"/>
+        <DCCReference Include="..\source\cores\pc\PC.Sound.OPL.pas"/>
+        <DCCReference Include="..\source\cores\pc\PC.Sound.OPL2.pas"/>
+        <DCCReference Include="..\source\cores\pc\PC.Sound.OPL3.pas"/>
         <DCCReference Include="FMX.OpenDialog.pas"/>
         <DCCReference Include="..\source\cores\Core.Storage.pas"/>
         <DCCReference Include="..\source\cores\Core.RomFormat.pas"/>

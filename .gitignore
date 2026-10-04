@@ -36,3 +36,5 @@ __recovery/
 /codex-work/*
 /AGENTS.md
 /tune/test_data/*
+/tune/Linux64/*
+/tune/Win32/*

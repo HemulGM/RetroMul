@@ -31,7 +31,7 @@
     <ItemGroup Condition="'$(Platform)'=='iOSSimARM64'"/>
     <ItemGroup Condition="'$(Platform)'=='Win64x'"/>
     <ItemGroup Condition="'$(Platform)'=='Linux64'">
-        <DeployFile Include="..\codex-work\build\retrotune\Linux64\Debug\RetroTune" Condition="'$(Config)'=='Debug'">
+        <DeployFile Include="..\codex-work\build\retrotune\Linux64\Release\RetroTune" Condition="'$(Config)'=='Release'">
             <RemoteDir>RetroTune\</RemoteDir>
             <RemoteName>RetroTune</RemoteName>
             <DeployClass>ProjectOutput</DeployClass>

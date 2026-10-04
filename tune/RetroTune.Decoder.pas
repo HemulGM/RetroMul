@@ -10,6 +10,8 @@ type
     Title, Artist, CopyrightText, FormatName, Details: string;
     TrackCount, DefaultTrack, SampleRate, Channels: Integer;
     TrackNames: TArray<string>;
+    // Seconds per logical track; missing entries / negative values mean unknown.
+    TrackDurations: TArray<Double>;
   end;
 
   // Decoder methods run exclusively on the playback thread after creation.

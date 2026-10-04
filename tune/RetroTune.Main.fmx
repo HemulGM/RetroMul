@@ -140,9 +140,9 @@ object FormMain: TFormMain
       object PanelTransport: TPanel
         Align = Bottom
         Margins.Top = 12.000000000000000000
-        Position.Y = 564.000000000000000000
+        Position.Y = 512.000000000000000000
         Size.Width = 712.000000000000000000
-        Size.Height = 180.000000000000000000
+        Size.Height = 232.000000000000000000
         Size.PlatformDefault = False
         StyleLookup = 'panelstyle_fill'
         TabOrder = 3
@@ -167,10 +167,52 @@ object FormMain: TFormMain
           TabOrder = 0
           OnChange = TrackChange
         end
+        object LayoutTimeline: TLayout
+          Anchors = [akLeft, akTop, akRight]
+          Position.X = 20.000000000000000000
+          Position.Y = 92.000000000000000000
+          Size.Width = 672.000000000000000000
+          Size.Height = 48.000000000000000000
+          Size.PlatformDefault = False
+          object TrackBarPosition: TTrackBar
+            Align = Top
+            CanParentFocus = True
+            Enabled = False
+            Frequency = 1.000000000000000000
+            Max = 300.000000000000000000
+            Orientation = Horizontal
+            Size.Width = 672.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 0
+            Tracking = False
+            OnChange = PositionChange
+            OnTracking = PositionTracking
+          end
+          object LabelElapsed: TLabel
+            Position.Y = 28.000000000000000000
+            Size.Width = 100.000000000000000000
+            Size.Height = 20.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'labelstyle_caption'
+            Text = '00:00'
+          end
+          object LabelDuration: TLabel
+            Anchors = [akTop, akRight]
+            Position.X = 572.000000000000000000
+            Position.Y = 28.000000000000000000
+            Size.Width = 100.000000000000000000
+            Size.Height = 20.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'labelstyle_caption'
+            TextSettings.HorzAlign = Trailing
+            Text = '--:--'
+          end
+        end
         object LayoutPlayback: TLayout
           Anchors = [akLeft, akTop, akRight]
           Position.X = 20.000000000000000000
-          Position.Y = 104.000000000000000000
+          Position.Y = 156.000000000000000000
           Size.Width = 672.000000000000000000
           Size.Height = 56.000000000000000000
           Size.PlatformDefault = False
@@ -270,7 +312,7 @@ object FormMain: TFormMain
       end
       object LayoutFooter: TLayout
         Align = Bottom
-        Position.Y = 508.000000000000000000
+        Position.Y = 456.000000000000000000
         Size.Width = 712.000000000000000000
         Size.Height = 44.000000000000000000
         Size.PlatformDefault = False
@@ -287,7 +329,7 @@ object FormMain: TFormMain
       object PanelSpectrum: TPanel
         Align = Client
         Size.Width = 712.000000000000000000
-        Size.Height = 276.000000000000000000
+        Size.Height = 224.000000000000000000
         Size.PlatformDefault = False
         StyleLookup = 'panelstyle_fill'
         TabOrder = 2
@@ -314,11 +356,19 @@ object FormMain: TFormMain
             Items.Strings = (
               #1055#1086#1083#1086#1089#1099
               #1050#1088#1080#1074#1072#1103
-              #1057#1087#1077#1082#1090#1088#1086#1075#1088#1072#1084#1084#1072)
+              #1057#1087#1077#1082#1090#1088#1086#1075#1088#1072#1084#1084#1072
+              #1055#1086#1083#1086#1089#1099' '#1089' '#1087#1080#1082#1072#1084#1080
+              #1047#1077#1088#1082#1072#1083#1100#1085#1099#1081
+              #1056#1072#1076#1080#1072#1083#1100#1085#1099#1081
+              'LED-'#1072#1085#1072#1083#1080#1079#1072#1090#1086#1088
+              #1057#1090#1077#1088#1077#1086': '#1087#1086#1083#1086#1089#1099' L/R'
+              #1057#1090#1077#1088#1077#1086': '#1082#1088#1080#1074#1099#1077' L/R'
+              #1057#1090#1077#1088#1077#1086': '#1092#1072#1079#1072
+              #1057#1090#1077#1088#1077#1086': RMS '#1080' '#1087#1080#1082#1080)
             ItemIndex = 0
             ItemHeight = 36.000000000000000000
-            Position.X = 492.000000000000000000
-            Size.Width = 180.000000000000000000
+            Position.X = 452.000000000000000000
+            Size.Width = 220.000000000000000000
             Size.Height = 36.000000000000000000
             Size.PlatformDefault = False
             TabOrder = 0
@@ -331,7 +381,7 @@ object FormMain: TFormMain
           Margins.Right = 20.000000000000000000
           Margins.Bottom = 12.000000000000000000
           Position.X = 20.000000000000000000
-          Position.Y = 244.000000000000000000
+          Position.Y = 192.000000000000000000
           Size.Width = 672.000000000000000000
           Size.Height = 20.000000000000000000
           Size.PlatformDefault = False
@@ -361,7 +411,7 @@ object FormMain: TFormMain
           Margins.Right = 20.000000000000000000
           Margins.Bottom = 8.000000000000000000
           Size.Width = 672.000000000000000000
-          Size.Height = 172.000000000000000000
+          Size.Height = 120.000000000000000000
           Size.PlatformDefault = False
           OnPaint = SpectrumPaint
         end

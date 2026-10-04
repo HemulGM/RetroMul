@@ -19,8 +19,7 @@ implementation
 
 procedure RequireBytes(const Data: TBytes; Offset, Count: Integer);
 begin
-  if (Offset < 0) or (Count < 0) or (Offset > Length(Data)) or
-    (Count > Length(Data) - Offset) then
+  if (Offset < 0) or (Count < 0) or (Offset > Length(Data)) or (Count > Length(Data) - Offset) then
     raise EArgumentException.Create('Truncated music file');
 end;
 
@@ -47,8 +46,7 @@ end;
 
 procedure ValidateRender(Available, Frames, Channels: Integer);
 begin
-  if (Frames < 0) or (Frames > 4096) or (Channels < 1) or
-    (Frames > Available div Channels) then
+  if (Frames < 0) or (Frames > 4096) or (Channels < 1) or (Frames > Available div Channels) then
     raise EArgumentOutOfRangeException.Create('Invalid PCM frame count (maximum 4096)');
 end;
 

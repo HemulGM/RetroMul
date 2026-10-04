@@ -256,12 +256,21 @@ begin
   end;
   Wrapper.Info.DefaultTrack := 0;
   SetLength(Wrapper.Info.TrackNames, Length(Playlist));
+  SetLength(Wrapper.Info.TrackDurations, Length(Playlist));
   for var J := High(Playlist) downto 0 do
   begin
     if Playlist[J] >= Wrapper.Info.TrackCount then
       raise EArgumentException.Create('NSFe playlist references an invalid track');
     if Playlist[J] = DefaultTrack then
       Wrapper.Info.DefaultTrack := J;
+    Wrapper.Info.TrackDurations[J] := -1;
+    if (Playlist[J] < Length(Times)) and (Times[Playlist[J]] >= 0) then
+    begin
+      var Duration: Int64 := Times[Playlist[J]];
+      if (Playlist[J] < Length(Fades)) and (Fades[Playlist[J]] > 0) then
+        Inc(Duration, Fades[Playlist[J]]);
+      Wrapper.Info.TrackDurations[J] := Duration / 1000.0;
+    end;
     if Playlist[J] < Length(Labels) then
       Wrapper.Info.TrackNames[J] := Labels[Playlist[J]];
   end;

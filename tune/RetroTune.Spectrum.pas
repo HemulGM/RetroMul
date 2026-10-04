@@ -5,9 +5,20 @@ interface
 const
   TuneFFTSize = 1024;
   TuneSpectrumBands = 64;
+  TuneSpectrumModes = 11;
 
 type
   TTunePCMWindow = array[0..TuneFFTSize - 1] of Single;
+
+  TTuneStereoWindow = record
+    Left, Right: TTunePCMWindow;
+  end;
+
+  TTuneStereoLevels = record
+    // Linear full-scale amplitude; correlation -1..+1, zero for silence.
+    RMS, Peak: array[0..1] of Single;
+    Correlation: Single;
+  end;
 
   TTuneSpectrum = array[0..TuneSpectrumBands - 1] of Single;
 
@@ -15,10 +26,36 @@ type
 // This module has no UI/decoder dependencies and accepts any PCM sample rate.
 procedure AnalyzeSpectrum(const Samples: TTunePCMWindow; SampleRate: Integer; out Bands: TTuneSpectrum);
 
+procedure AnalyzeStereo(const Samples: TTuneStereoWindow; out Levels: TTuneStereoLevels);
+
 implementation
 
 uses
   System.Math;
+
+procedure AnalyzeStereo(const Samples: TTuneStereoWindow; out Levels: TTuneStereoLevels);
+var
+  L, R, SumL, SumR, Cross: Double;
+begin
+  Levels := Default(TTuneStereoLevels);
+  SumL := 0;
+  SumR := 0;
+  Cross := 0;
+  for var I := 0 to TuneFFTSize - 1 do
+  begin
+    L := Samples.Left[I];
+    R := Samples.Right[I];
+    SumL := SumL + L * L;
+    SumR := SumR + R * R;
+    Cross := Cross + L * R;
+    Levels.Peak[0] := Max(Levels.Peak[0], Abs(L));
+    Levels.Peak[1] := Max(Levels.Peak[1], Abs(R));
+  end;
+  Levels.RMS[0] := Sqrt(SumL / TuneFFTSize);
+  Levels.RMS[1] := Sqrt(SumR / TuneFFTSize);
+  if (SumL > 0) and (SumR > 0) then
+    Levels.Correlation := EnsureRange(Cross / Sqrt(SumL * SumR), -1.0, 1.0);
+end;
 
 procedure AnalyzeSpectrum(const Samples: TTunePCMWindow; SampleRate: Integer; out Bands: TTuneSpectrum);
 var

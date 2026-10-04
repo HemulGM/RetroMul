@@ -1,4 +1,4 @@
-﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
         <ProjectGuid>{82132DF3-6773-48AA-904F-4792F7EFBB7C}</ProjectGuid>
         <ProjectVersion>20.4</ProjectVersion>
@@ -431,6 +431,8 @@
         <DCCReference Include="devices\RM.TouchInput.Android.pas"/>
         <DCCReference Include="devices\NES.SuborKeyboard.pas"/>
         <DCCReference Include="devices\NES.FamicomKeyboard.pas"/>
+        <DCCReference Include="devices\NES.MiraclePiano.pas"/>
+        <DCCReference Include="..\source\cores\nes\NES.MiraclePianoDevice.pas"/>
         <DCCReference Include="..\source\cores\nes\NES.FamicomKeyboardDevice.pas"/>
         <DCCReference Include="..\source\cores\nes\NES.FamicomDataRecorder.pas"/>
         <DCCReference Include="devices\NES.PowerPad.pas"/>

@@ -24,6 +24,8 @@ type
     FNativeInput: TObject;
     FVisualKeys: TArray<TVisualKey>;
     FIndicators: TSuborIndicators;
+    FKeyOrigin: TPointF;
+    FKeyUnit, FKeyHeight, FKeyGap: Single;
     FIndicatorBounds: array[0..2] of TRectF;
     FPowerBounds: TRectF;
     FPowerContact, FPowerPressed: Boolean;
@@ -124,20 +126,20 @@ end;
 
 procedure TNesSuborKeyboard.AddKey(Key: TSuborKey; Row: Integer; Column, Span: Single);
 begin
-  var U := Width / 24;
-  var Gap := Max(1.5, U * 0.08);
-  var H := (Height - Gap * 7) / 6;
-  AddVisualKey(Key, RectF(Column * U + Gap, Row * (H + Gap) + Gap,
-      (Column + Span) * U - Gap, Row * (H + Gap) + H));
+  var U := FKeyUnit;
+  var Gap := FKeyGap;
+  var H := FKeyHeight;
+  AddVisualKey(Key, RectF(FKeyOrigin.X + Column * U + Gap, FKeyOrigin.Y + Row * (H + Gap) + Gap,
+      FKeyOrigin.X + (Column + Span) * U - Gap, FKeyOrigin.Y + Row * (H + Gap) + H));
 end;
 
 procedure TNesSuborKeyboard.AddTallKey(Key: TSuborKey; Row: Integer; Column, Span, Rows: Single);
 begin
-  var U := Width / 24;
-  var Gap := Max(1.5, U * 0.08);
-  var H := (Height - Gap * 7) / 6;
-  AddVisualKey(Key, RectF(Column * U + Gap, Row * (H + Gap) + Gap,
-      (Column + Span) * U - Gap, (Row + Rows) * (H + Gap) - Gap));
+  var U := FKeyUnit;
+  var Gap := FKeyGap;
+  var H := FKeyHeight;
+  AddVisualKey(Key, RectF(FKeyOrigin.X + Column * U + Gap, FKeyOrigin.Y + Row * (H + Gap) + Gap,
+      FKeyOrigin.X + (Column + Span) * U - Gap, FKeyOrigin.Y + (Row + Rows) * (H + Gap) - Gap));
 end;
 
 procedure TNesSuborKeyboard.AddVisualKey(Key: TSuborKey; const Bounds: TRectF);
@@ -151,14 +153,20 @@ end;
 procedure TNesSuborKeyboard.LayoutKeys;
 begin
   SetLength(FVisualKeys, 0);
-  var U := Width / 24;
-  var Gap := Max(1.5, U * 0.08);
-  var H := (Height - Gap * 7) / 6;
+  FKeyUnit := Max(0, Min(Width / 25, Height / 8));
+  FKeyGap := FKeyUnit * 0.08;
+  FKeyHeight := FKeyUnit * 1.05;
+  FKeyOrigin := PointF((Width - FKeyUnit * 25) / 2 + FKeyUnit * 0.5,
+    (Height - FKeyUnit * 8) / 2 + FKeyUnit * 0.8);
+  var U := FKeyUnit;
+  var Gap := FKeyGap;
+  var H := FKeyHeight;
   for var i := 0 to 2 do
-    FIndicatorBounds[i] := RectF((20 + i) * U + Gap, Gap, (21 + i) * U - Gap, H);
+    FIndicatorBounds[i] := RectF(FKeyOrigin.X + (20 + i) * U + Gap, FKeyOrigin.Y + Gap,
+      FKeyOrigin.X + (21 + i) * U - Gap, FKeyOrigin.Y + H);
   var Diameter := Max(0, Min(U - Gap * 2, H - Gap));
-  FPowerBounds := RectF(23.5 * U - Diameter / 2, (H + Gap - Diameter) / 2,
-    23.5 * U + Diameter / 2, (H + Gap + Diameter) / 2);
+  FPowerBounds := RectF(FKeyOrigin.X + 23.5 * U - Diameter / 2, FKeyOrigin.Y + (H + Gap - Diameter) / 2,
+    FKeyOrigin.X + 23.5 * U + Diameter / 2, FKeyOrigin.Y + (H + Gap + Diameter) / 2);
   // Original Subor geometry: main keyboard, navigation cluster, then numpad.
   AddKey(SkEsc, 0, 0, 1);
   AddKey(SkF1, 0, 2, 1);
@@ -618,61 +626,79 @@ end;
 
 procedure TNesSuborKeyboard.Paint;
 const
-  IndicatorCaptions: array[0..2] of string = ('Num' + sLineBreak + 'Lock', 'Caps', 'Power');
+  IndicatorCaptions: array[0..2] of string = ('Num Lock', 'Caps Lock', 'Power');
 begin
   inherited;
+  var U := FKeyUnit;
+  if U <= 0 then Exit;
+  var Opacity := AbsoluteOpacity;
+  if not AbsoluteEnabled then Opacity := Opacity * 0.5;
+  var X := FKeyOrigin.X - 0.5 * U;
+  var Y := FKeyOrigin.Y - 0.8 * U;
   Canvas.Fill.Kind := TBrushKind.Solid;
-  Canvas.Fill.Color := $FF151A24;
-  Canvas.FillRect(LocalRect, 0, 0, [], AbsoluteOpacity);
-  Canvas.Font.Family := 'sans-serif';
-  Canvas.Font.Size := Max(8, Height / 30);
+  Canvas.Stroke.Kind := TBrushKind.Solid;
+  Canvas.Fill.Color := $FFB2AC99;
+  Canvas.FillRect(RectF(X, Y + U * 0.1, X + U * 25, Y + U * 8), U * 0.2, U * 0.2, AllCorners, Opacity);
+  Canvas.Fill.Color := $FFE0D9C5;
+  Canvas.FillRect(RectF(X, Y, X + U * 25, Y + U * 7.85), U * 0.2, U * 0.2, AllCorners, Opacity);
+  Canvas.Font.Family := 'Arial';
   Canvas.Font.Style := [TFontStyle.fsBold];
+  Canvas.Font.Size := U * 0.32;
+  Canvas.Fill.Color := $FF755E3E;
+  Canvas.FillText(RectF(X + U * 0.65, Y + U * 0.08, X + U * 6, Y + U * 0.64),
+    'SUBOR  小霸王', False, Opacity, [], TTextAlign.Leading, TTextAlign.Center);
+  Canvas.Font.Size := U * 0.22;
+  Canvas.FillText(RectF(X + U * 17, Y + U * 0.08, X + U * 24.3, Y + U * 0.64),
+    'COMPUTER LEARNING SYSTEM', False, Opacity, [], TTextAlign.Trailing, TTextAlign.Center);
+  var Highlighted := HighlightedKeys;
   for var VisualKey in FVisualKeys do
   begin
     var Key := VisualKey.Key;
     var R := VisualKey.Bounds;
-    if Key in HighlightedKeys then
-      Canvas.Fill.Color := $FF5989B2
-    else
-      Canvas.Fill.Color := $FF303B4D;
-    Canvas.FillRect(R, 4, 4, AllCorners, AbsoluteOpacity);
-    Canvas.Stroke.Color := $FF080D15;
-    Canvas.Stroke.Thickness := 1;
-    Canvas.DrawRect(R, 4, 4, AllCorners, AbsoluteOpacity);
-    Canvas.Fill.Color := $FFF3F5FA;
-    Canvas.FillText(R, KeyCaption(Key), True, AbsoluteOpacity * Ord(Enabled), [], TTextAlign.Center, TTextAlign.Center);
+    var Pressed := Key in Highlighted;
+    var Functional := (R.Left >= FKeyOrigin.X + 16 * U) or
+      (R.Top < FKeyOrigin.Y + FKeyHeight) or
+      (R.Width > U * 1.4);
+    Canvas.Fill.Color := $FF8D8879;
+    Canvas.FillRect(R, U * 0.09, U * 0.09, AllCorners, Opacity);
+    R.Inflate(-U * 0.055, -U * 0.055);
+    if Pressed then R.Offset(0, U * 0.06)
+    else R.Bottom := R.Bottom - U * 0.07;
+    if Pressed then Canvas.Fill.Color := $FFD6B66F
+    else if Key = SkReset then Canvas.Fill.Color := $FFAA5545
+    else if Functional then Canvas.Fill.Color := $FFC8C7BB
+    else Canvas.Fill.Color := $FFF0EBD8;
+    Canvas.FillRect(R, U * 0.06, U * 0.06, AllCorners, Opacity);
+    Canvas.Stroke.Color := $FFF6F0DF;
+    Canvas.Stroke.Thickness := Max(0.4, U * 0.025);
+    Canvas.DrawLine(PointF(R.Left + U * 0.07, R.Top), PointF(R.Right - U * 0.07, R.Top), Opacity);
+    R.Inflate(-U * 0.04, -U * 0.03);
+    Canvas.Fill.Color := $FF333A39;
+    if Key = SkReset then Canvas.Fill.Color := $FFFFF4DD;
+    Canvas.Font.Style := [];
+    Canvas.Font.Size := U * 0.25;
+    Canvas.FillText(R, KeyCaption(Key), False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
   end;
-  for var i := 0 to 2 do
+  for var I := 0 to 2 do
   begin
-    var R := FIndicatorBounds[i];
-    var Lit := (i = 2) or ((i = 0) and FIndicators.NumLock) or
-      ((i = 1) and FIndicators.CapsLock);
-    Canvas.Fill.Color := $FF303B4D;
-    Canvas.FillRect(R, 3, 3, AllCorners, AbsoluteOpacity);
-    var LabelRect := R;
-    LabelRect.Bottom := R.Top + R.Height * 0.7;
-    Canvas.Fill.Color := $FFF3F5FA;
-    Canvas.FillText(LabelRect, IndicatorCaptions[i], True, AbsoluteOpacity, [],
-      TTextAlign.Center, TTextAlign.Center);
-    var Lamp := RectF(R.Left + R.Width * 0.25, R.Top + R.Height * 0.76,
-      R.Right - R.Width * 0.25, R.Top + R.Height * 0.9);
-    if Lit then
-      Canvas.Fill.Color := $FF70E080
-    else
-      Canvas.Fill.Color := $FF17281D;
-    Canvas.FillRect(Lamp, 2, 2, AllCorners, AbsoluteOpacity);
+    var R := FIndicatorBounds[I];
+    var Lit := (I = 2) or ((I = 0) and FIndicators.NumLock) or
+      ((I = 1) and FIndicators.CapsLock);
+    Canvas.Fill.Color := $FF333A39;
+    Canvas.Font.Size := U * 0.18;
+    Canvas.FillText(R, IndicatorCaptions[I], True, Opacity, [], TTextAlign.Center, TTextAlign.Leading);
+    var Lamp := RectF(R.Left + R.Width * 0.35, R.Top + R.Height * 0.67,
+      R.Right - R.Width * 0.35, R.Top + R.Height * 0.85);
+    if Lit then Canvas.Fill.Color := $FF5CAE44
+    else Canvas.Fill.Color := $FF535A39;
+    Canvas.FillRect(Lamp, U * 0.04, U * 0.04, AllCorners, Opacity);
   end;
-  if FPowerPressed then
-    Canvas.Fill.Color := $FF5989B2
-  else
-    Canvas.Fill.Color := $FF46546B;
-  Canvas.FillEllipse(FPowerBounds, AbsoluteOpacity);
-  Canvas.Stroke.Color := $FF080D15;
-  Canvas.Stroke.Thickness := 1;
-  Canvas.DrawEllipse(FPowerBounds, AbsoluteOpacity);
-  Canvas.Fill.Color := $FFF3F5FA;
-  Canvas.Font.Size := Max(8, FPowerBounds.Width * 0.65);
-  Canvas.FillText(FPowerBounds, '⏻', False, AbsoluteOpacity, [], TTextAlign.Center, TTextAlign.Center);
+  if FPowerPressed then Canvas.Fill.Color := $FFD6B66F
+  else Canvas.Fill.Color := $FFAA5545;
+  Canvas.FillEllipse(FPowerBounds, Opacity);
+  Canvas.Fill.Color := $FFFFF4DD;
+  Canvas.Font.Size := FPowerBounds.Width * 0.6;
+  Canvas.FillText(FPowerBounds, '⏻', False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
 end;
 
 procedure TNesSuborKeyboard.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Single);

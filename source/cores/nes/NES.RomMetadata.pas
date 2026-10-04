@@ -21,10 +21,20 @@ function IsLegacyFamicomKeyboardRom(const Sha1: string): Boolean;
 
 function IsLegacyDataRecorderRom(const Sha1: string): Boolean;
 
+function IsLegacyMiraclePianoRom(const Sha1: string): Boolean;
+
 implementation
 
 uses
   Core.RomHashes, System.Hash, System.SysUtils;
+
+function IsLegacyMiraclePianoRom(const Sha1: string): Boolean;
+begin
+  // Exact PRG+CHR identities: USA, France, Germany (puNES NES 2.0 DB).
+  Result := SameText(Sha1, '7bf2e5dad66ce253c25ec97cf27461c6475f044d') or
+    SameText(Sha1, 'acc9c9eb5defda865cb84bb6057d739ea4cfe5e0') or
+    SameText(Sha1, 'f3d84dcc9fdb48e3f638e4f3205384721c10f710');
+end;
 
 function IsLegacyMmc6Rom(const Sha1: string): Boolean;
 begin

@@ -5,7 +5,7 @@ interface
 uses
   System.Classes, System.IniFiles, Core.Storage, Core.Emulation, NES.Emulation,
   NES.Input, NES.Types, NES.Controller, NES.FamicomKeyboardDevice,
-  NES.FamicomDataRecorder;
+  NES.FamicomDataRecorder, NES.MiraclePianoDevice;
 
 type
   TNesZapperMask = NES.Types.TNesZapperMask;
@@ -22,6 +22,13 @@ type
     function GetPowerPadButtons: TPowerPadButtons;
     function Zapper: TZapper;
     function UsesPowerPad: Boolean;
+  end;
+
+  INesMiraclePianoCore = interface
+    ['{3F0B21F3-DC5E-455C-A816-4CF08C887E3A}']
+    function UsesMiraclePiano: Boolean;
+    procedure SetMiracleKeys(const Keys: TMiracleKeys);
+    function GetMiracleKeys: TMiracleKeys;
   end;
 
   INesTapeCore = interface
@@ -86,7 +93,7 @@ type
     procedure SetKeys4(const Value: TKeyMap);
   end;
 
-  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, INesPeripheralCore, INesTapeCore)
+  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore)
   private
     FThread: TNesEmulationThread;
     FGamepadInput: TEmulatorInput;
@@ -125,6 +132,9 @@ type
     procedure SetFamicomKeys(const Keys: TFamicomKeys);
     function GetFamicomKeys: TFamicomKeys;
     function UsesFamicomKeyboard: Boolean;
+    function UsesMiraclePiano: Boolean;
+    procedure SetMiracleKeys(const Keys: TMiracleKeys);
+    function GetMiracleKeys: TMiracleKeys;
     procedure SetPowerPadButtons(const Buttons: TPowerPadButtons);
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
@@ -142,6 +152,21 @@ uses
   Core.RomFormat, System.SysUtils, System.UITypes;
 
 { TNesCoreAdapter }
+
+function TNesCoreAdapter.UsesMiraclePiano: Boolean;
+begin
+  Result := FThread.UsesMiraclePiano;
+end;
+
+procedure TNesCoreAdapter.SetMiracleKeys(const Keys: TMiracleKeys);
+begin
+  FThread.SetMiracleKeys(Keys);
+end;
+
+function TNesCoreAdapter.GetMiracleKeys: TMiracleKeys;
+begin
+  Result := FThread.GetMiracleKeys;
+end;
 
 function TNesCoreAdapter.UsesDataRecorder: Boolean;
 begin
@@ -190,7 +215,7 @@ begin
   // Select port 2 before starting the worker. A light gun replaces the pad
   // and changes reads even when the trigger is not pressed.
   FThread.Console.Zapper.Enabled := FConfig.ZapperEnabled and
-    not FThread.Console.UsesPowerPad;
+    not FThread.Console.UsesPowerPad and not FThread.Console.UsesMiraclePiano;
 end;
 
 destructor TNesCoreAdapter.Destroy;

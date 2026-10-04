@@ -1,4 +1,4 @@
-unit RM.Gamepad;
+﻿unit RM.Gamepad;
 
 interface
 
@@ -7,7 +7,7 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, NES.Controller, Core.Emulation;
 
 type
-  TScreenGamepadLayout = (Nes, Sega, Snes);
+  TScreenGamepadLayout = (Nes, Sega, Snes, GameBoy, GameBoyColor);
 
   // Coordinates passed to PointerDown/Move are local logical FMX coordinates.
   // OnChange runs on the UI thread. The consumer owns the emulator connection.
@@ -28,6 +28,7 @@ type
     FLayout: TScreenGamepadLayout;
     FOnChange: TNotifyEvent;
     FBounds: array[TEmulatorButton] of TRectF;
+    FShell: TRectF;
     FDPad: TRectF;
     FActionArea: TRectF;
     FUnit: Single;
@@ -173,66 +174,69 @@ const
     (TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.Z,
     TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.C);
 var
-  U, CX, CY, AX, AY, BX, BY: Single;
+  U, OX, OY, CX, CY: Single;
+
+  function R(X, Y, W, H: Single): TRectF;
+  begin
+    Result := RectF(OX + X * U, OY + Y * U, OX + (X + W) * U, OY + (Y + H) * U);
+  end;
+
 begin
   for var Button := Low(TEmulatorButton) to High(TEmulatorButton) do
     FBounds[Button] := TRectF.Empty;
-  // Controls grow up to a comfortable tablet size; extra width separates hands.
-  U := Max(0.01, Min(1.5, Min(Width / 400, Height / 160)));
-  if FLayout = TScreenGamepadLayout.Sega then
-    U := Max(0.01, Min(1.5, Min(Width / 400, Height / 200)));
-  if FLayout = TScreenGamepadLayout.Sega then
-    U := Max(0.01, Min(1.5, Min(Width / 400, Height / 200)));
+  // One coordinate system for artwork and input, including wide tablet panels.
+  U := Max(0.001, Min(Width / 400, Height / 184));
+  OX := (Width - 400 * U) / 2;
+  OY := (Height - 184 * U) / 2;
   FUnit := U;
-  CX := 76 * U;
-  CY := Height * 0.43;
-  FDPad := RectF(CX - 60 * U, CY - 60 * U, CX + 60 * U, CY + 60 * U);
-  FBounds[TEmulatorButton.Up] := RectF(CX - 20 * U, CY - 58 * U, CX + 20 * U, CY - 18 * U);
-  FBounds[TEmulatorButton.Down] := RectF(CX - 20 * U, CY + 18 * U, CX + 20 * U, CY + 58 * U);
-  FBounds[TEmulatorButton.Left] := RectF(CX - 58 * U, CY - 20 * U, CX - 18 * U, CY + 20 * U);
-  FBounds[TEmulatorButton.Right] := RectF(CX + 18 * U, CY - 20 * U, CX + 58 * U, CY + 20 * U);
-  AX := Width - 45 * U;
-  AY := CY - 18 * U;
-  BX := AX - 66 * U;
-  BY := CY + 18 * U;
-  FBounds[TEmulatorButton.A] := RectF(AX - 27 * U, AY - 27 * U, AX + 27 * U, AY + 27 * U);
-  FBounds[TEmulatorButton.B] := RectF(BX - 27 * U, BY - 27 * U, BX + 27 * U, BY + 27 * U);
-  CY := Height - 34 * U;
-  FBounds[TEmulatorButton.Select] := RectF(Width / 2 - 58 * U, CY - 14 * U, Width / 2 - 8 * U, CY + 10 * U);
-  FBounds[TEmulatorButton.Start] := RectF(Width / 2 + 8 * U, CY - 14 * U, Width / 2 + 58 * U, CY + 10 * U);
-  if FLayout = TScreenGamepadLayout.Sega then
-  begin
-    // Two rows of three; leave a full gap between the cross and action area.
-    for var i := Low(SegaActions) to High(SegaActions) do
-    begin
-      AX := Width - (145 - (i mod 3) * 54) * U;
-      AY := Height * 0.43 + ((i div 3) * 54 - 27) * U;
-      FBounds[SegaActions[i]] := RectF(AX - 23 * U, AY - 23 * U, AX + 23 * U, AY + 23 * U);
-    end;
-    FBounds[TEmulatorButton.Mode] := FBounds[TEmulatorButton.Select];
-    FBounds[TEmulatorButton.Select] := TRectF.Empty;
-  end;
-  // Keep the initial action pressed while the finger crosses gaps between keys.
-  if FLayout = TScreenGamepadLayout.Snes then
-  begin
-    AX := Width - 90 * U;
-    AY := Height * 0.43;
-    FBounds[TEmulatorButton.X] := RectF(AX - 22 * U, AY - 64 * U, AX + 22 * U, AY - 20 * U);
-    FBounds[TEmulatorButton.B] := RectF(AX - 22 * U, AY + 20 * U, AX + 22 * U, AY + 64 * U);
-    FBounds[TEmulatorButton.Y] := RectF(AX - 64 * U, AY - 22 * U, AX - 20 * U, AY + 22 * U);
-    FBounds[TEmulatorButton.A] := RectF(AX + 20 * U, AY - 22 * U, AX + 64 * U, AY + 22 * U);
-    FBounds[TEmulatorButton.C] := RectF(Width / 2 - 58 * U, 5 * U, Width / 2 - 8 * U, 39 * U);
-    FBounds[TEmulatorButton.Z] := RectF(Width / 2 + 8 * U, 5 * U, Width / 2 + 58 * U, 39 * U);
+  FShell := R(6, 6, 388, 172);
+  CX := 78;
+  CY := 96;
+  FDPad := R(CX - 56, CY - 56, 112, 112);
+  FBounds[TEmulatorButton.Up] := R(CX - 18, CY - 52, 36, 34);
+  FBounds[TEmulatorButton.Down] := R(CX - 18, CY + 18, 36, 34);
+  FBounds[TEmulatorButton.Left] := R(CX - 52, CY - 18, 34, 36);
+  FBounds[TEmulatorButton.Right] := R(CX + 18, CY - 18, 34, 36);
+  FBounds[TEmulatorButton.B] := R(270, 92, 46, 46);
+  FBounds[TEmulatorButton.A] := R(330, 92, 46, 46);
+  FBounds[TEmulatorButton.Select] := R(151, 119, 44, 18);
+  FBounds[TEmulatorButton.Start] := R(207, 119, 44, 18);
+  case FLayout of
+    TScreenGamepadLayout.Sega:
+      begin
+        for var I := Low(SegaActions) to High(SegaActions) do
+          FBounds[SegaActions[I]] := R(252 + (I mod 3) * 43,
+            55 + (I div 3) * 46 - (I mod 3) * 7, 36, 36);
+        FBounds[TEmulatorButton.Start] := R(171, 79, 46, 18);
+        FBounds[TEmulatorButton.Mode] := R(184, 142, 36, 14);
+        FBounds[TEmulatorButton.Select] := TRectF.Empty;
+      end;
+    TScreenGamepadLayout.Snes:
+      begin
+        FBounds[TEmulatorButton.X] := R(291, 42, 38, 38);
+        FBounds[TEmulatorButton.B] := R(291, 116, 38, 38);
+        FBounds[TEmulatorButton.Y] := R(254, 79, 38, 38);
+        FBounds[TEmulatorButton.A] := R(328, 79, 38, 38);
+        FBounds[TEmulatorButton.C] := R(38, 8, 94, 19);
+        FBounds[TEmulatorButton.Z] := R(268, 8, 94, 19);
+        FBounds[TEmulatorButton.Select] := R(153, 102, 36, 17);
+        FBounds[TEmulatorButton.Start] := R(207, 102, 36, 17);
+      end;
+    TScreenGamepadLayout.GameBoy, TScreenGamepadLayout.GameBoyColor:
+      begin
+        FBounds[TEmulatorButton.B] := R(269, 100, 46, 46);
+        FBounds[TEmulatorButton.A] := R(327, 76, 46, 46);
+      end;
   end;
   FActionArea := TRectF.Empty;
   for var Button in (ActiveButtons * ActionButtons) do
   begin
-    var R := FBounds[Button];
+    var Bounds := FBounds[Button];
     if FActionArea.IsEmpty then
-      FActionArea := R
+      FActionArea := Bounds
     else
-      FActionArea := RectF(Min(FActionArea.Left, R.Left), Min(FActionArea.Top, R.Top),
-        Max(FActionArea.Right, R.Right), Max(FActionArea.Bottom, R.Bottom));
+      FActionArea := RectF(Min(FActionArea.Left, Bounds.Left), Min(FActionArea.Top, Bounds.Top),
+        Max(FActionArea.Right, Bounds.Right), Max(FActionArea.Bottom, Bounds.Bottom));
   end;
   FActionArea.Inflate(6 * FUnit, 6 * FUnit);
 end;
@@ -339,8 +343,17 @@ begin
       end;
     TRegion.Actions:
       for var Button in (ActiveButtons * ActionButtons) do
-        if Point.Distance(FBounds[Button].CenterPoint) <= FBounds[Button].Width / 2 + 6 * FUnit then
+      begin
+        var Bounds := FBounds[Button];
+        if (FLayout = TScreenGamepadLayout.Snes) and
+          (Button in [TEmulatorButton.C, TEmulatorButton.Z]) then
+        begin
+          Bounds.Inflate(4 * FUnit, 4 * FUnit);
+          if Bounds.Contains(Point) then Include(Result, Button);
+        end
+        else if Point.Distance(Bounds.CenterPoint) <= Bounds.Width / 2 + 6 * FUnit then
           Include(Result, Button);
+      end;
     TRegion.Menu:
       for var Button in (ActiveButtons * MenuButtons) do
       begin
@@ -505,108 +518,211 @@ end;
 procedure TScreenGamepad.Paint;
 const
   Labels: array[TEmulatorButton] of string = ('', '', '', '', 'A', 'B', 'SELECT', 'START', 'C', 'X', 'Y', 'Z', 'MODE');
+var
+  ShellColor, Ink, ButtonColor: TAlphaColor;
+  Opacity, OX, OY: Single;
+
+  function R(X, Y, W, H: Single): TRectF;
+  begin
+    Result := RectF(OX + X * FUnit, OY + Y * FUnit,
+      OX + (X + W) * FUnit, OY + (Y + H) * FUnit);
+  end;
+
+  procedure Box(const Bounds: TRectF; Color: TAlphaColor; Radius: Single);
+  begin
+    Canvas.Fill.Color := Color;
+    Canvas.FillRect(Bounds, Radius * FUnit, Radius * FUnit, AllCorners, Opacity);
+  end;
+
+  procedure Text(const Bounds: TRectF; const Caption: string; Color: TAlphaColor; Size: Single);
+  begin
+    Canvas.Fill.Color := Color;
+    Canvas.Font.Size := Size * FUnit;
+    Canvas.FillText(Bounds, Caption, False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
+  end;
+
 begin
   inherited;
+  if FUnit <= 0 then Exit;
   Canvas.Fill.Kind := TBrushKind.Solid;
-  Canvas.Fill.Color := $FF151A24;
-  Canvas.FillRect(LocalRect, 0, 0, [], AbsoluteOpacity);
   Canvas.Stroke.Kind := TBrushKind.Solid;
-  Canvas.Stroke.Color := $FF313A49;
-  Canvas.Stroke.Thickness := 1;
-  Canvas.DrawLine(PointF(16 * FUnit, 0.5), PointF(Width - 16 * FUnit, 0.5), AbsoluteOpacity);
-  var Opacity := AbsoluteOpacity;
-  if not Enabled then
-    Opacity := Opacity * 0.5;
-  // The cross center connects the four directional arms.
-  var Center := FDPad.CenterPoint;
-  Canvas.Fill.Color := $FF303B4D;
-  const CenterSize = 11;
-  Canvas.FillRect(RectF(Center.X - CenterSize * FUnit, Center.Y - CenterSize * FUnit,
-      Center.X + CenterSize * FUnit, Center.Y + CenterSize * FUnit), 6 * FUnit, 6 * FUnit, AllCorners, Opacity);
+  Canvas.Font.Family := 'Arial';
+  Canvas.Font.Style := [TFontStyle.fsBold];
+  Opacity := AbsoluteOpacity;
+  if not AbsoluteEnabled then Opacity := Opacity * 0.5;
+  OX := (Width - 400 * FUnit) / 2;
+  OY := (Height - 184 * FUnit) / 2;
+  ShellColor := $FFC9C8C3;
+  Ink := $FF313136;
+  case FLayout of
+    TScreenGamepadLayout.Sega: begin ShellColor := $FF242429; Ink := $FFD6D6D9; end;
+    TScreenGamepadLayout.Snes: ShellColor := $FFD7D6D2;
+    TScreenGamepadLayout.GameBoy: begin ShellColor := $FFD4D0BD; Ink := $FF303D78; end;
+    TScreenGamepadLayout.GameBoyColor: begin ShellColor := $FF50448A; Ink := $FFE7E5EE; end;
+  end;
+  var Body := TPathData.Create;
+  try
+    if FLayout in [TScreenGamepadLayout.Sega, TScreenGamepadLayout.Snes] then
+    begin
+      Body.MoveTo(PointF(84, 18));
+      Body.CurveTo(PointF(123, 18), PointF(130, 26), PointF(151, 26));
+      Body.LineTo(PointF(249, 26));
+      Body.CurveTo(PointF(270, 26), PointF(277, 18), PointF(316, 18));
+      Body.CurveTo(PointF(362, 18), PointF(394, 48), PointF(394, 98));
+      Body.CurveTo(PointF(394, 146), PointF(362, 178), PointF(316, 178));
+      Body.CurveTo(PointF(276, 178), PointF(261, 155), PointF(246, 154));
+      Body.LineTo(PointF(154, 154));
+      Body.CurveTo(PointF(139, 155), PointF(124, 178), PointF(84, 178));
+      Body.CurveTo(PointF(38, 178), PointF(6, 146), PointF(6, 98));
+      Body.CurveTo(PointF(6, 48), PointF(38, 18), PointF(84, 18));
+      Body.ClosePath;
+      Body.Scale(FUnit, FUnit);
+      Body.Translate(OX, OY);
+    end
+    else Body.AddRectangle(FShell, 10 * FUnit, 10 * FUnit, AllCorners);
+    Body.Translate(0, 3 * FUnit);
+    Canvas.Fill.Color := $FF161619;
+    Canvas.FillPath(Body, Opacity);
+    Body.Translate(0, -3 * FUnit);
+    Canvas.Fill.Color := ShellColor;
+    Canvas.FillPath(Body, Opacity);
+  finally Body.Free; end;
+  case FLayout of
+    TScreenGamepadLayout.Nes:
+      begin
+        Box(R(18, 35, 364, 132), $FF29292B, 4);
+        for var I := 0 to 3 do Box(R(140, 49 + I * 16, 112, 9), $FF787975, 2);
+        Box(R(145, 113, 110, 30), $FFB5B6AF, 3);
+        Text(R(263, 41, 115, 23), 'Nintendo', $FFE0433C, 17);
+      end;
+    TScreenGamepadLayout.Sega:
+      begin
+        Text(R(155, 32, 80, 22), 'SEGA', $FFDEE1E8, 19);
+        Text(R(146, 57, 100, 14), 'MEGA DRIVE', Ink, 8);
+      end;
+    TScreenGamepadLayout.Snes:
+      begin
+        Canvas.Fill.Color := $FFB2B1B8;
+        Canvas.FillEllipse(R(244, 31, 133, 133), Opacity);
+        Text(R(138, 42, 117, 16), 'SUPER NINTENDO', $FF595960, 9);
+        Text(R(139, 57, 114, 11), 'ENTERTAINMENT SYSTEM', $FF77777D, 6);
+      end;
+    TScreenGamepadLayout.GameBoy, TScreenGamepadLayout.GameBoyColor:
+      begin
+        Text(R(140, 32, 122, 25), 'Nintendo', Ink, 15);
+        if FLayout = TScreenGamepadLayout.GameBoy then
+          Text(R(133, 57, 136, 20), 'GAME BOY', Ink, 17)
+        else
+          Text(R(131, 57, 139, 20), 'GAME BOY COLOR', Ink, 13);
+        for var I := 0 to 4 do Box(R(309 + I * 13, 166, 7, 2), $FF777478, 1);
+      end;
+  end;
+  // The four arms meet the center to form the original solid plastic cross.
+  Canvas.Fill.Color := $FF19191C;
+  Canvas.FillEllipse(R(19, 37, 118, 118), Opacity * 0.18);
+  var Cross := TPathData.Create;
+  try
+    Cross.MoveTo(PointF(60, 44)); Cross.LineTo(PointF(96, 44));
+    Cross.LineTo(PointF(96, 78)); Cross.LineTo(PointF(130, 78));
+    Cross.LineTo(PointF(130, 114)); Cross.LineTo(PointF(96, 114));
+    Cross.LineTo(PointF(96, 148)); Cross.LineTo(PointF(60, 148));
+    Cross.LineTo(PointF(60, 114)); Cross.LineTo(PointF(26, 114));
+    Cross.LineTo(PointF(26, 78)); Cross.LineTo(PointF(60, 78));
+    Cross.ClosePath;
+    Cross.Scale(FUnit, FUnit); Cross.Translate(OX, OY);
+    Canvas.Fill.Color := $FF303034;
+    Canvas.FillPath(Cross, Opacity);
+    Canvas.Stroke.Color := $FF151518;
+    Canvas.Stroke.Thickness := 2 * FUnit;
+    Canvas.DrawPath(Cross, Opacity);
+  finally Cross.Free; end;
   for var Button in ActiveButtons do
   begin
-    var R := FBounds[Button];
+    var Bounds := FBounds[Button];
     var Level := FLevels[Button];
-    R.Inflate(-R.Width * 0.045 * Level, -R.Height * 0.045 * Level);
-    R.Offset(0, 2 * FUnit * Level);
-    var Shadow := R;
-    Shadow.Offset(0, 4 * FUnit * (1 - Level));
-    Canvas.Fill.Color := $FF080D15;
     var RoundButton := Button in ActionButtons;
+    if (FLayout = TScreenGamepadLayout.Snes) and
+      (Button in [TEmulatorButton.C, TEmulatorButton.Z]) then RoundButton := False;
+    var Face := Bounds;
+    Face.Inflate(-Face.Width * 0.035 * Level, -Face.Height * 0.035 * Level);
+    Face.Offset(0, 1.5 * FUnit * Level);
+    var Directional := Button in [TEmulatorButton.Up, TEmulatorButton.Down,
+      TEmulatorButton.Left, TEmulatorButton.Right];
+    if Button in MenuButtons then Face.Inflate(-3 * FUnit, -4 * FUnit);
+    var Bezel := Face;
+    Bezel.Inflate(3 * FUnit, 3 * FUnit);
+    Canvas.Fill.Color := $FF17171A;
+    if RoundButton then Canvas.FillEllipse(Bezel, Opacity)
+    else if not Directional then Box(Bezel, $FF17171A, 5);
+    ButtonColor := $FF343438;
     if RoundButton then
-      Canvas.FillEllipse(Shadow, Opacity)
-    else
-      Canvas.FillRect(Shadow, 7 * FUnit, 7 * FUnit, AllCorners, Opacity);
-    if Button in [TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.Z] then
-      Canvas.Fill.Color := MixColor($FF65758D, $FFA9C6E8, Level)
-    else if RoundButton then
-      Canvas.Fill.Color := MixColor($FFCB4660, $FFFF8A92, Level)
-    else
-      Canvas.Fill.Color := MixColor($FF303B4D, $FF5989B2, Level);
-    if RoundButton then
-      Canvas.FillEllipse(R, Opacity)
-    else
-      Canvas.FillRect(R, 7 * FUnit, 7 * FUnit, AllCorners, Opacity);
-    Canvas.Fill.Color := $FFF3F5FA;
-    Canvas.Font.Family := 'sans-serif';
-    Canvas.Font.Style := [TFontStyle.fsBold];
+      case FLayout of
+        TScreenGamepadLayout.Nes: ButtonColor := $FFC63130;
+        TScreenGamepadLayout.GameBoy: ButtonColor := $FF8C2351;
+        TScreenGamepadLayout.GameBoyColor: ButtonColor := $FF33343A;
+        TScreenGamepadLayout.Sega:
+          if Button in [TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.Z] then
+            ButtonColor := $FF85858A;
+        TScreenGamepadLayout.Snes:
+          case Button of
+            TEmulatorButton.A: ButtonColor := $FFBD343D;
+            TEmulatorButton.B: ButtonColor := $FFDAB739;
+            TEmulatorButton.X: ButtonColor := $FF345CB2;
+            TEmulatorButton.Y: ButtonColor := $FF33855A;
+          end;
+      end;
+    if (FLayout = TScreenGamepadLayout.Snes) and
+      (Button in [TEmulatorButton.C, TEmulatorButton.Z]) then ButtonColor := $FFA6A5AC;
+    Canvas.Fill.Color := MixColor(ButtonColor, $FFE1CA8B, Level * 0.65);
+    if RoundButton then Canvas.FillEllipse(Face, Opacity)
+    else if not Directional or (Level > 0) then
+      Canvas.FillRect(Face, 3 * FUnit, 3 * FUnit, AllCorners, Opacity);
+    Canvas.Stroke.Color := MixColor(ButtonColor, $FFFFFFFF, 0.22);
+    Canvas.Stroke.Thickness := Max(0.5, FUnit);
+    if RoundButton then Canvas.DrawEllipse(Face, Opacity)
+    else if not Directional then Canvas.DrawRect(Face, 3 * FUnit, 3 * FUnit, AllCorners, Opacity);
+    var Caption := Labels[Button];
+    if FLayout = TScreenGamepadLayout.Snes then
+      case Button of
+        TEmulatorButton.C: Caption := 'L';
+        TEmulatorButton.Z: Caption := 'R';
+      end;
     if RoundButton then
     begin
-      Canvas.Font.Size := 23 * FUnit;
-      var Caption := Labels[Button];
-      if FLayout = TScreenGamepadLayout.Snes then
-        case Button of
-          TEmulatorButton.C:
-            Caption := 'L';
-          TEmulatorButton.Z:
-            Caption := 'R';
-        end;
-      Canvas.FillText(R, Caption, False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
+      if FLayout in [TScreenGamepadLayout.Nes, TScreenGamepadLayout.GameBoy,
+        TScreenGamepadLayout.GameBoyColor] then
+      begin
+        var LabelBounds := Bounds;
+        LabelBounds.Top := Bounds.Bottom + 3 * FUnit;
+        LabelBounds.Bottom := LabelBounds.Top + 15 * FUnit;
+        var LabelInk := Ink;
+        if FLayout = TScreenGamepadLayout.Nes then LabelInk := $FFE0433C;
+        Text(LabelBounds, Caption, LabelInk, 12);
+      end
+      else Text(Face, Caption, $FFF5F3E9, 17);
     end
     else if Button in MenuButtons then
     begin
-      var Bar := R;
-      Bar.Inflate(-14 * FUnit, -10 * FUnit);
-      Canvas.FillRect(Bar, FUnit, FUnit, AllCorners, Opacity * 0.8);
-      Canvas.Font.Size := 9 * FUnit;
-      var LabelRect := FBounds[Button];
-      LabelRect.Top := LabelRect.Bottom + 6 * FUnit;
-      LabelRect.Bottom := LabelRect.Top + 13 * FUnit;
-      Canvas.FillText(LabelRect, Labels[Button], False, Opacity * 0.8, [], TTextAlign.Center, TTextAlign.Center);
+      var LabelBounds := Bounds;
+      LabelBounds.Top := Bounds.Bottom + 4 * FUnit;
+      LabelBounds.Bottom := LabelBounds.Top + 12 * FUnit;
+      var LabelInk := Ink;
+      if FLayout = TScreenGamepadLayout.Nes then LabelInk := $FFE0433C;
+      Text(LabelBounds, Caption, LabelInk, 8);
     end
+    else if Caption <> '' then Text(Face, Caption, $FF44434C, 10)
     else
     begin
-      var P: TPolygon;
-      SetLength(P, 3);
-      var C := R.CenterPoint;
-      var S := 6 * FUnit;
-      case Button of
-        TEmulatorButton.Up:
-          begin
-            P[0] := PointF(C.X, C.Y - S);
-            P[1] := PointF(C.X - S, C.Y + S);
-            P[2] := PointF(C.X + S, C.Y + S);
-          end;
-        TEmulatorButton.Down:
-          begin
-            P[0] := PointF(C.X, C.Y + S);
-            P[1] := PointF(C.X - S, C.Y - S);
-            P[2] := PointF(C.X + S, C.Y - S);
-          end;
-        TEmulatorButton.Left:
-          begin
-            P[0] := PointF(C.X - S, C.Y);
-            P[1] := PointF(C.X + S, C.Y - S);
-            P[2] := PointF(C.X + S, C.Y + S);
-          end;
-        TEmulatorButton.Right:
-          begin
-            P[0] := PointF(C.X + S, C.Y);
-            P[1] := PointF(C.X - S, C.Y - S);
-            P[2] := PointF(C.X - S, C.Y + S);
-          end;
-      end;
-      Canvas.FillPolygon(P, Opacity * 0.8);
+      // Raised ridges on the cross arms.
+      var C := Face.CenterPoint;
+      Canvas.Stroke.Color := $FF67676B;
+      for var I := -1 to 1 do
+        if Button in [TEmulatorButton.Up, TEmulatorButton.Down] then
+          Canvas.DrawLine(PointF(C.X - 7 * FUnit, C.Y + I * 4 * FUnit),
+            PointF(C.X + 7 * FUnit, C.Y + I * 4 * FUnit), Opacity)
+        else
+          Canvas.DrawLine(PointF(C.X + I * 4 * FUnit, C.Y - 7 * FUnit),
+            PointF(C.X + I * 4 * FUnit, C.Y + 7 * FUnit), Opacity);
     end;
   end;
 end;

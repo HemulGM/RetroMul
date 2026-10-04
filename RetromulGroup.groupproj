@@ -12,6 +12,9 @@
         <Projects Include="source\input\examples\FMXDemo\FMXInputDemo.dproj">
             <Dependencies/>
         </Projects>
+        <Projects Include="tune\RetroTune.dproj">
+            <Dependencies/>
+        </Projects>
     </ItemGroup>
     <ProjectExtensions>
         <Borland.Personality>Default.Personality.12</Borland.Personality>
@@ -47,14 +50,23 @@
     <Target Name="FMXInputDemo:Make">
         <MSBuild Projects="source\input\examples\FMXDemo\FMXInputDemo.dproj" Targets="Make"/>
     </Target>
+    <Target Name="RetroTune">
+        <MSBuild Projects="tune\RetroTune.dproj"/>
+    </Target>
+    <Target Name="RetroTune:Clean">
+        <MSBuild Projects="tune\RetroTune.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="RetroTune:Make">
+        <MSBuild Projects="tune\RetroTune.dproj" Targets="Make"/>
+    </Target>
     <Target Name="Build">
-        <CallTarget Targets="RetroMul;RetromulTerm;FMXInputDemo"/>
+        <CallTarget Targets="RetroMul;RetromulTerm;FMXInputDemo;RetroTune"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="RetroMul:Clean;RetromulTerm:Clean;FMXInputDemo:Clean"/>
+        <CallTarget Targets="RetroMul:Clean;RetromulTerm:Clean;FMXInputDemo:Clean;RetroTune:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="RetroMul:Make;RetromulTerm:Make;FMXInputDemo:Make"/>
+        <CallTarget Targets="RetroMul:Make;RetromulTerm:Make;FMXInputDemo:Make;RetroTune:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>

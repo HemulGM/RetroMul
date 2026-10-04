@@ -4,7 +4,7 @@ interface
 
 uses
   NES.State, NES.Types, NES.PPU, NES.Cartridge, NES.Controller, NES.APU,
-  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
+  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice;
 
 type
   TNesBus = class
@@ -21,6 +21,7 @@ type
     FFamicomKeyboard: TFamicomKeyboard;
     FDataRecorder: TFamicomDataRecorder;
     FZapper: TZapper;
+    FMiraclePiano: TMiraclePianoDevice;
     FFourScoreEnabled: Boolean;
     FControllerStrobe: Boolean;
     FControllerReadIndex: array[0..1] of Integer;
@@ -47,6 +48,7 @@ type
     function ReadDevice(Address: UInt16): UInt8;
   public
     property HasCoinAcceptor: Boolean read GetHasCoinAcceptor;
+    property MiraclePiano: TMiraclePianoDevice read FMiraclePiano write FMiraclePiano;
     property DataRecorder: TFamicomDataRecorder read FDataRecorder write FDataRecorder;
     procedure InsertCoin1;
     procedure InsertCoin2;
@@ -334,6 +336,8 @@ begin
       Exit((FApu.CpuReadStatus and $DF) or (FInternalDataBus and $20));
     $4016:
       begin
+        if (FMiraclePiano <> nil) and FMiraclePiano.Connected then
+          Exit(FMiraclePiano.Read or (FDataBus and $E0));
         Result := (ReadController(0) and $1F) or (FDataBus and $E0);
         if FDataRecorder <> nil then
           Result := Result or FDataRecorder.Read;
@@ -350,6 +354,8 @@ begin
       end;
     $4017:
       begin
+        if (FMiraclePiano <> nil) and FMiraclePiano.Connected then
+          FMiraclePiano.ReadOtherPort;
         // Zapper replaces port 2, including Power Pad/Four Score/keyboard.
         // Parallel inputs are live and independent of $4016 strobes.
         if (FZapper <> nil) and FZapper.Enabled then
@@ -410,6 +416,8 @@ begin
       end;
     $4016:
       begin
+        if (FMiraclePiano <> nil) and FMiraclePiano.Connected then
+          FMiraclePiano.Write(Value, FCpuCycle);
         if FTimedIo then
         begin
           FPendingStrobe := Value;

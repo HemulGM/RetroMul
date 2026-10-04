@@ -190,6 +190,7 @@ type
     FChannel4: TNoiseChannel;
 
     FAudio: TPCMAudio;
+    FOnPCM: TProc<TArray<SmallInt>, Integer>;
 
     FSoundTimer: Double;
     FSoundBufferIndex: Integer;
@@ -233,6 +234,7 @@ type
     procedure StartAudio;
     procedure UpdateSound(Cycle: Integer);
     procedure PlaySound;
+    procedure FlushPCM;
 
     property Channel1: TSquareWaveChannel read FChannel1;
     property Channel2: TSquareWaveChannel read FChannel2;
@@ -246,6 +248,8 @@ type
     property Volume: Single read FVolume write SetVolume;
 
     property Audio: TPCMAudio read FAudio;
+    // Optional host sink; used with EnableOutput=False by music decoders.
+    property OnPCM: TProc<TArray<SmallInt>, Integer> read FOnPCM write FOnPCM;
     procedure SerializeState(State: TStateArchive);
   end;
 
@@ -1354,8 +1358,20 @@ begin
 
   if Assigned(FAudio) then
     FAudio.Submit(FMixedBuffer, FSoundBufferIndex);
+  if Assigned(FOnPCM) then
+  begin
+    var Captured: TArray<SmallInt>;
+    SetLength(Captured, FSoundBufferIndex * GB_AUDIO_CHANNELS);
+    Move(FMixedBuffer[0], Captured[0], Length(Captured) * SizeOf(SmallInt));
+    FOnPCM(Captured, FSoundBufferIndex);
+  end;
 
   FSoundBufferIndex := 0;
+end;
+
+procedure TGBSound.FlushPCM;
+begin
+  FlushBuffer;
 end;
 
 procedure TGBSound.UpdateSound(Cycle: Integer);

@@ -1,4 +1,4 @@
-unit NES.PowerPad;
+﻿unit NES.PowerPad;
 
 interface
 
@@ -118,9 +118,9 @@ end;
 procedure TNesPowerPad.LayoutKeys;
 begin
   SetLength(FVisualKeys, 0);
-  var Cell := Max(0, Min(Width / 4, Height / 3));
-  var Left := (Width - Cell * 4) / 2;
-  var Top := (Height - Cell * 3) / 2;
+  var Cell := Max(0, Min(Width / 4.4, Height / 3.8));
+  var Left := (Width - Cell * 4.4) / 2 + Cell * 0.2;
+  var Top := (Height - Cell * 3.8) / 2 + Cell * 0.65;
   var Gap := Cell * 0.09;
   for var Button := 1 to 12 do
   begin
@@ -257,28 +257,49 @@ end;
 procedure TNesPowerPad.Paint;
 begin
   inherited;
+  var Cell := Max(0, Min(Width / 4.4, Height / 3.8));
+  if Cell <= 0 then Exit;
+  var X := (Width - Cell * 4.4) / 2;
+  var Y := (Height - Cell * 3.8) / 2;
+  var Opacity := AbsoluteOpacity;
+  if not AbsoluteEnabled then Opacity := Opacity * 0.5;
   Canvas.Fill.Kind := TBrushKind.Solid;
-  Canvas.Fill.Color := $FF151A24;
-  Canvas.FillRect(LocalRect, 0, 0, [], AbsoluteOpacity);
-  Canvas.Font.Family := 'sans-serif';
-  Canvas.Font.Size := Max(10, Min(Width / 4, Height / 3) * 0.3);
+  Canvas.Stroke.Kind := TBrushKind.Solid;
+  Canvas.Fill.Color := $FFE3E1D8;
+  var Mat := RectF(X, Y, X + Cell * 4.4, Y + Cell * 3.8);
+  Canvas.FillRect(Mat, Cell * 0.08, Cell * 0.08, AllCorners, Opacity);
+  Mat.Inflate(-Cell * 0.04, -Cell * 0.04);
+  Canvas.Stroke.Color := $FFB7B7B0;
+  Canvas.Stroke.Thickness := Max(0.5, Cell * 0.015);
+  Canvas.DrawRect(Mat, Cell * 0.05, Cell * 0.05, AllCorners, Opacity);
+  Canvas.Font.Family := 'Arial';
   Canvas.Font.Style := [TFontStyle.fsBold];
+  Canvas.Font.Size := Cell * 0.22;
+  Canvas.Fill.Color := $FF343536;
+  Canvas.FillText(RectF(X + Cell * 0.2, Y + Cell * 0.1, X + Cell * 3.1, Y + Cell * 0.38),
+    'POWER PAD', False, Opacity, [], TTextAlign.Leading, TTextAlign.Center);
+  Canvas.Font.Size := Cell * 0.12;
+  Canvas.FillText(RectF(X + Cell * 3.1, Y + Cell * 0.1, X + Cell * 4.2, Y + Cell * 0.38),
+    'SIDE B', False, Opacity, [], TTextAlign.Trailing, TTextAlign.Center);
+  Canvas.Font.Size := Cell * 0.08;
+  Canvas.FillText(RectF(X + Cell * 0.2, Y + Cell * 0.4, X + Cell * 4.2, Y + Cell * 0.57),
+    'Nintendo  •  DO NOT WEAR SHOES', False, Opacity, [], TTextAlign.Leading, TTextAlign.Center);
+  var Highlighted := HighlightedButtons;
   for var VisualKey in FVisualKeys do
   begin
-    var Key := VisualKey.Key;
     var R := VisualKey.Bounds;
-    if Key in HighlightedButtons then
-      Canvas.Fill.Color := $FFBA861C
-    else if Odd(Key) then
-      Canvas.Fill.Color := $FF286BAD
-    else
-      Canvas.Fill.Color := $FFC84C54;
-    Canvas.FillEllipse(R, AbsoluteOpacity);
-    Canvas.Stroke.Color := $FF080D15;
-    Canvas.Stroke.Thickness := 1;
-    Canvas.DrawEllipse(R, AbsoluteOpacity);
-    Canvas.Fill.Color := $FFF3F5FA;
-    Canvas.FillText(R, IntToStr(Key), True, AbsoluteOpacity * Ord(Enabled), [], TTextAlign.Center, TTextAlign.Center);
+    var Color: TAlphaColor := $FF267CB5;
+    if not Odd(VisualKey.Key) then Color := $FFCA444C;
+    Canvas.Stroke.Color := Color;
+    Canvas.Stroke.Thickness := Max(1, Cell * 0.025);
+    Canvas.DrawEllipse(R, Opacity);
+    R.Inflate(-Cell * 0.065, -Cell * 0.065);
+    if VisualKey.Key in Highlighted then Canvas.Fill.Color := $FFE4B849
+    else Canvas.Fill.Color := Color;
+    Canvas.FillEllipse(R, Opacity);
+    Canvas.Fill.Color := $FFEFEDE4;
+    Canvas.Font.Size := Cell * 0.31;
+    Canvas.FillText(R, IntToStr(VisualKey.Key), False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
   end;
 end;
 

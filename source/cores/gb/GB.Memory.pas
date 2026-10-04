@@ -71,10 +71,10 @@ type
 
     FMBC: TGBMBC;
     UseBIOS: Boolean;
-    procedure WriteByte(Address: Integer; Value: Byte);
+    procedure WriteByte(Address: Integer; Value: Byte); virtual;
     procedure WriteWord(Address: Integer; Value: Word);
 
-    function ReadByte(Address: Integer): Byte;
+    function ReadByte(Address: Integer): Byte; virtual;
     function ReadWord(Address: Integer): Word;
     function GetROMBank: Integer;
     function IsCGBMode: Boolean; virtual;
@@ -173,7 +173,7 @@ end;
 
 procedure TGBMemory.StepHardware(Clocks: Integer);
 begin
-  FMBC.Step(Clocks);
+  if FMBC <> nil then FMBC.Step(Clocks);
   if not FDMAActive and ((IOPort[$02] and $81) <> $81) then
     Exit;
 

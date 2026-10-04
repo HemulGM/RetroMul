@@ -317,6 +317,8 @@ begin
       FMetadata.DefaultExpansionDevice := $23;
     if IsLegacyDataRecorderRom(FRomIdentity) then
       FMetadata.DefaultExpansionDevice := $20;
+    if IsLegacyMiraclePianoRom(FRomIdentity) then
+      FMetadata.DefaultExpansionDevice := $19;
     if IsLegacyPowerPadRom(FRomIdentity) then
       FMetadata.DefaultExpansionDevice := 12;
       // Legacy iNES cannot declare the VS PPU model. This exact ROM uses RP2C04-0004.

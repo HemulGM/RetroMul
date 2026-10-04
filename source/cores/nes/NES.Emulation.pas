@@ -1,11 +1,11 @@
-unit NES.Emulation;
+﻿unit NES.Emulation;
 
 interface
 
 uses
   Core.Storage, System.Classes, System.SysUtils, System.SyncObjs, NES.Types,
   NES.Console, NES.Input, PCM.Audio, NES.AudioDiagnostics, NES.Controller,
-  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
+  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice;
 
 const
   NES_SAMPLE_RATE = 44100;
@@ -57,6 +57,8 @@ type
     FFramePending: Boolean;
     FUsesSuborKeyboard: Boolean;
     FUsesFamicomKeyboard: Boolean;
+    FUsesMiraclePiano: Boolean;
+    FMiracleKeys: TMiracleKeys;
     FStatus: TEmulationStatus;
     FRunFrameMs: Double;
     FPaused: Boolean;
@@ -77,6 +79,8 @@ type
     procedure SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2: TKeyMap); overload;
     procedure SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2, Keys3, Keys4: TKeyMap); overload;
     procedure SetSuborKeys(const Keys: TSuborKeys);
+    procedure SetMiracleKeys(const Keys: TMiracleKeys);
+    function GetMiracleKeys: TMiracleKeys;
     procedure SetFamicomKeys(const Keys: TFamicomKeys);
     function GetFamicomKeys: TFamicomKeys;
     procedure SetPowerPadButtons(const Buttons: TPowerPadButtons);
@@ -103,6 +107,7 @@ type
     property SnapshotDirectory: string read FSnapshotDirectory;
     property RunFrameMs: Double read FRunFrameMs;
     property UsesSuborKeyboard: Boolean read FUsesSuborKeyboard;
+    property UsesMiraclePiano: Boolean read FUsesMiraclePiano;
     property UsesFamicomKeyboard: Boolean read FUsesFamicomKeyboard;
     property IsPausd: Boolean read FPaused;
     property Console: TNesConsole read FConsole;
@@ -153,6 +158,7 @@ begin
   FConsole.LoadRom(Stream, RomName, RegionOverride);
   FUsesSuborKeyboard := FConsole.SuborKeyboard.Connected;
   FUsesFamicomKeyboard := FConsole.FamicomKeyboard.Connected;
+  FUsesMiraclePiano := FConsole.UsesMiraclePiano;
   FUsesDataRecorder := FConsole.DataRecorder.Connected;
   var SnapshotBase := SnapshotRoot;
   if SnapshotBase = '' then
@@ -410,6 +416,32 @@ begin
 
   FLock.Enter;
   try
+    if FUsesMiraclePiano then
+    begin
+      var PianoKey := TMiraclePianoDevice.HostKey(Code);
+      if PianoKey >= 0 then
+      begin
+        if Pressed then Include(FMiracleKeys, TMiracleKey(PianoKey))
+        else Exclude(FMiracleKeys, TMiracleKey(PianoKey));
+        Exit;
+      end;
+      // Piano notes own the letter keys. Menu controls stay accessible.
+      var MenuKey: TNesButton;
+      case Code of
+        vkReturn: MenuKey := TNesButton.Start;
+        vkTab: MenuKey := TNesButton.Select;
+        vkBack: MenuKey := TNesButton.B;
+        vkUp: MenuKey := TNesButton.Up;
+        vkDown: MenuKey := TNesButton.Down;
+        vkLeft: MenuKey := TNesButton.Left;
+        vkRight: MenuKey := TNesButton.Right;
+      else Exit;
+      end;
+      FInput.SetButton(INPUT_KEYBOARD, 1, MenuKey, Pressed);
+      if Code = vkReturn then
+        FInput.SetButton(INPUT_KEYBOARD, 1, TNesButton.A, Pressed);
+      Exit;
+    end;
     if FUsesSuborKeyboard then
       FConsole.SuborKeyboard.SetHostKey(Code, Pressed);
     if FUsesFamicomKeyboard then
@@ -443,6 +475,22 @@ begin
   finally
     FLock.Leave;
   end;
+end;
+
+procedure TNesEmulationThread.SetMiracleKeys(const Keys: TMiracleKeys);
+begin
+  FLock.Enter;
+  try
+    if FUsesMiraclePiano then FConsole.MiraclePiano.SetScreenKeys(Keys);
+  finally FLock.Leave; end;
+end;
+
+function TNesEmulationThread.GetMiracleKeys: TMiracleKeys;
+begin
+  FLock.Enter;
+  try
+    Result := FMiracleKeys + FConsole.MiraclePiano.GetPressedKeys;
+  finally FLock.Leave; end;
 end;
 
 procedure TNesEmulationThread.SetFamicomKeys(const Keys: TFamicomKeys);
@@ -481,6 +529,8 @@ begin
   FLock.Enter;
   try
     FInput.Clear;
+    FMiracleKeys := [];
+    FConsole.MiraclePiano.ClearInput;
     FScreenPowerPad := [];
     FConsole.SuborKeyboard.Clear;
     FConsole.FamicomKeyboard.Clear;
@@ -727,6 +777,7 @@ begin
             FPaused := False;
           Failed := False;
         end;
+        var PianoKeys: TMiracleKeys;
         var ResetRequested: Boolean;
         var PauseRequested: Boolean;
         var ResumeRequested: Boolean;
@@ -740,6 +791,12 @@ begin
           FResumeRequested := False;
           FInput.Apply(1, FConsole.Controller1);
           FInput.Apply(2, FConsole.Controller2);
+          if FUsesMiraclePiano then
+          begin
+            for var Button := Low(TNesButton) to High(TNesButton) do
+              FConsole.Controller2.SetButton(Button, FInput.IsPressed(1, Button) or FInput.IsPressed(2, Button));
+          end;
+          PianoKeys := FMiracleKeys + FConsole.MiraclePiano.GetPressedKeys;
           FInput.Apply(3, FConsole.Controller3);
           FInput.Apply(4, FConsole.Controller4);
           for var Button := Low(FPowerPad) to High(FPowerPad) do
@@ -822,6 +879,7 @@ begin
         finally
           FLock.Leave;
         end;
+        if FUsesMiraclePiano then FConsole.MiraclePiano.ApplyKeys(PianoKeys);
         var T1 := TStopwatch.GetTimeStamp;
         FConsole.RunFrame;
         var T2 := TStopwatch.GetTimeStamp;
@@ -831,6 +889,7 @@ begin
           Count := FConsole.Apu.PopSamples(Samples);
           if Count > 0 then
           begin
+            if FUsesMiraclePiano then FConsole.MiraclePiano.MixAudio(Samples, Count, NES_SAMPLE_RATE);
             for var I := 0 to Count - 1 do
               Samples[I] := Round(Samples[I] * FAudioVolume);
             FAudio.Submit(Samples, Count);

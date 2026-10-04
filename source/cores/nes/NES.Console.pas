@@ -5,7 +5,7 @@ interface
 uses
   Core.Storage, System.SysUtils, System.Classes, NES.State, NES.Types, NES.CPU,
   NES.PPU, NES.APU, NES.Bus, NES.Cartridge, NES.Controller,
-  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder;
+  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice;
 
 type
   TNesConsole = class
@@ -24,13 +24,15 @@ type
     FFamicomKeyboard: TFamicomKeyboard;
     FDataRecorder: TFamicomDataRecorder;
     FZapper: TZapper;
+    FMiraclePiano: TMiraclePianoDevice;
     FCpuCycles: UInt64;
     FPalPpuPhase: Integer;
     FRegion: TNesRegion;
     FConfiguredFourScore: Boolean;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 15);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 16);
     function GetRomIdentity: string;
+    function GetUsesMiraclePiano: Boolean;
     function GetUsesPowerPad: Boolean;
     function GetHasCoinAcceptor: Boolean;
   public
@@ -65,6 +67,8 @@ type
     property SuborKeyboard: TSuborKeyboard read FSuborKeyboard;
     property FamicomKeyboard: TFamicomKeyboard read FFamicomKeyboard;
     property DataRecorder: TFamicomDataRecorder read FDataRecorder;
+    property UsesMiraclePiano: Boolean read GetUsesMiraclePiano;
+    property MiraclePiano: TMiraclePianoDevice read FMiraclePiano;
     property Zapper: TZapper read FZapper;
   end;
 
@@ -74,7 +78,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 15;
+  SNAPSHOT_VERSION = 16;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -115,6 +119,11 @@ end;
 procedure TNesConsole.InsertCoin2;
 begin
   FBus.InsertCoin2;
+end;
+
+function TNesConsole.GetUsesMiraclePiano: Boolean;
+begin
+  Result := FMiraclePiano.Connected;
 end;
 
 function TNesConsole.GetUsesPowerPad: Boolean;
@@ -164,6 +173,10 @@ begin
       FDataRecorder.SerializeState(State)
     else if Loading then
       FDataRecorder.Reset(True);
+    if Version >= 16 then
+      FMiraclePiano.SerializeState(State)
+    else if Loading then
+      FMiraclePiano.Reset;
   finally
     State.Free;
   end;
@@ -297,6 +310,8 @@ begin
   FDataRecorder := TFamicomDataRecorder.Create;
   FDataRecorder.Storage := FStorage;
   FBus.DataRecorder := FDataRecorder;
+  FMiraclePiano := TMiraclePianoDevice.Create;
+  FBus.MiraclePiano := FMiraclePiano;
   FZapper := TZapper.Create;
   FBus.Zapper := FZapper;
   FConfiguredFourScore := FourScoreEnabled;
@@ -309,6 +324,7 @@ end;
 
 destructor TNesConsole.Destroy;
 begin
+  FMiraclePiano.Free;
   FZapper.Free;
   FSuborKeyboard.Free;
   FFamicomKeyboard.Free;
@@ -338,11 +354,13 @@ end;
 procedure TNesConsole.LoadRom(Stream: TStream; const RomName: string; RegionOverride: TRegionOverride);
 begin
   FCartridge.LoadFromStream(Stream, RomName);
+  FMiraclePiano.ClearInput;
+  FMiraclePiano.Connected := FCartridge.Metadata.DefaultExpansionDevice = $19;
   FDataRecorder.Reset;
   FDataRecorder.Connected := FCartridge.Metadata.DefaultExpansionDevice in [$20, $23];
   FController1.SwapStartSelect := FCartridge.MapperId = MAPPER_VS_SYSTEM;
   FController2.SwapStartSelect := FController1.SwapStartSelect;
-  FBus.FourScoreEnabled := FConfiguredFourScore and not UsesPowerPad;
+  FBus.FourScoreEnabled := FConfiguredFourScore and not UsesPowerPad and not UsesMiraclePiano;
   FController2.PowerPadEnabled := UsesPowerPad;
   FFamicomKeyboard.Clear;
   FFamicomKeyboard.Connected := FCartridge.Metadata.DefaultExpansionDevice = $23;
@@ -386,6 +404,7 @@ begin
   FPpu.ConnectMapper(FCartridge.Mapper);
   FApu.Reset;
   FBus.Reset;
+  FMiraclePiano.Reset;
   FDmcDmaCycles := 0;
   FCpu.Reset;
   FCpuCycles := 0;

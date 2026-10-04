@@ -16,6 +16,8 @@ uses
   RM.TouchInput.Android in 'devices\RM.TouchInput.Android.pas',
   NES.SuborKeyboard in 'devices\NES.SuborKeyboard.pas',
   NES.FamicomKeyboard in 'devices\NES.FamicomKeyboard.pas',
+  NES.MiraclePiano in 'devices\NES.MiraclePiano.pas',
+  NES.MiraclePianoDevice in '..\source\cores\nes\NES.MiraclePianoDevice.pas',
   NES.FamicomKeyboardDevice in '..\source\cores\nes\NES.FamicomKeyboardDevice.pas',
   NES.FamicomDataRecorder in '..\source\cores\nes\NES.FamicomDataRecorder.pas',
   NES.PowerPad in 'devices\NES.PowerPad.pas',

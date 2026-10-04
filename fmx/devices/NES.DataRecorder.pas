@@ -1,4 +1,4 @@
-unit NES.DataRecorder;
+﻿unit NES.DataRecorder;
 
 interface
 
@@ -57,6 +57,49 @@ implementation
 uses
   System.SysUtils, System.Math, FMX.Graphics;
 
+type
+  // Keep TButton click/capture/accessibility behavior while drawing mechanical keys.
+  TRecorderButton = class(TButton)
+  protected
+    procedure ApplyStyle; override;
+    procedure Paint; override;
+    procedure SetIsPressed(const Value: Boolean); override;
+  end;
+
+procedure TRecorderButton.ApplyStyle;
+begin
+  inherited;
+  if ResourceLink is TControl then TControl(ResourceLink).Visible := False;
+end;
+
+procedure TRecorderButton.SetIsPressed(const Value: Boolean);
+begin
+  inherited;
+  Repaint;
+end;
+
+procedure TRecorderButton.Paint;
+begin
+  var Opacity := AbsoluteOpacity;
+  if not AbsoluteEnabled then Opacity := Opacity * 0.45;
+  var R := LocalRect;
+  Canvas.Fill.Kind := TBrushKind.Solid;
+  Canvas.Fill.Color := $FF776A54;
+  Canvas.FillRect(R, 2, 2, AllCorners, Opacity);
+  R.Inflate(-1, -1);
+  if IsPressed then R.Top := R.Top + 2
+  else R.Bottom := R.Bottom - 2;
+  Canvas.Fill.Color := $FFE9E2CE;
+  if Tag = Ord(TapeRecord) then Canvas.Fill.Color := $FF934037;
+  Canvas.FillRect(R, 2, 2, AllCorners, Opacity);
+  Canvas.Font.Family := 'Arial';
+  Canvas.Font.Style := [TFontStyle.fsBold];
+  Canvas.Font.Size := Max(8, Min(12, Height * 0.45));
+  Canvas.Fill.Color := $FF41382E;
+  if Tag = Ord(TapeRecord) then Canvas.Fill.Color := $FFFFEFCE;
+  Canvas.FillText(R, Text, False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
+end;
+
 constructor TNesDataRecorder.Create(AOwner: TComponent);
 const
   Names: array[TTapeAction] of string = ('Play', 'Record', 'Stop', 'Rewind', 'Forward', 'ChooseFile', 'DefaultFile', 'SaveAs');
@@ -67,7 +110,8 @@ begin
   HitTest := False;
   for var Action := Low(TTapeAction) to High(TTapeAction) do
   begin
-    FButtons[Action] := TButton.Create(Self);
+    FButtons[Action] := TRecorderButton.Create(Self);
+    FButtons[Action].StyleLookup := 'buttonstyle';
     FButtons[Action].Name := 'Tape' + Names[Action];
     FButtons[Action].Parent := Self;
     FButtons[Action].Tag := Ord(Action);
@@ -212,34 +256,59 @@ procedure TNesDataRecorder.Paint;
       Canvas.Font.Style := [TFontStyle.fsBold]
     else
       Canvas.Font.Style := [];
-    Canvas.FillText(RectF(10, Y, Width - 10, Y + Height * 0.085), Value,
+    var TextRight := Width * 0.55;
+    if Width < 480 then TextRight := Width - 10;
+    Canvas.FillText(RectF(10, Y, TextRight, Y + Height * 0.085), Value,
       False, AbsoluteOpacity, [], TTextAlign.Leading, TTextAlign.Center);
   end;
 
 begin
   inherited;
   Canvas.Fill.Kind := TBrushKind.Solid;
-  Canvas.Fill.Color := $FF151A24;
-  Canvas.FillRect(LocalRect, 0, 0, [], AbsoluteOpacity);
+  Canvas.Fill.Color := $FFDACCA8;
+  Canvas.FillRect(LocalRect, 7, 7, AllCorners, AbsoluteOpacity);
+  Canvas.Stroke.Kind := TBrushKind.Solid;
+  Canvas.Stroke.Color := $FF8C7755;
+  Canvas.Stroke.Thickness := 1;
+  Canvas.DrawRect(LocalRect, 7, 7, AllCorners, AbsoluteOpacity);
+  // Smoked cassette window and twin reels of the Famicom data recorder.
+  var Window := RectF(Width * 0.59, Height * 0.04, Width - 10, Height * 0.37);
+  if Width < 480 then
+    Window := RectF(Width * 0.76, Height * 0.015, Width - 10, Height * 0.105);
+  Canvas.Fill.Color := $FF413B32;
+  Canvas.FillRect(Window, 4, 4, AllCorners, AbsoluteOpacity);
+  Canvas.Fill.Color := $FFB7AA87;
+  var ReelSize := Min(Window.Height * 0.64, Window.Width * 0.34);
+  for var I := 0 to 1 do
+  begin
+    var CX := Window.Left + Window.Width * (0.28 + I * 0.44);
+    var CY := Window.CenterPoint.Y;
+    var Reel := RectF(CX - ReelSize / 2, CY - ReelSize / 2, CX + ReelSize / 2, CY + ReelSize / 2);
+    Canvas.Fill.Color := $FFB7AA87;
+    Canvas.FillEllipse(Reel, AbsoluteOpacity);
+    Reel.Inflate(-ReelSize * 0.30, -ReelSize * 0.30);
+    Canvas.Fill.Color := $FF413B32;
+    Canvas.FillEllipse(Reel, AbsoluteOpacity);
+  end;
   Canvas.Font.Family := 'sans-serif';
   Canvas.Font.Size := Max(10, Min(13, Width / 28));
-  Text(StateText, Height * 0.025, $FFF3F5FA, True);
-  var Color: TAlphaColor := $FF9BA8B8;
+  Text(StateText, Height * 0.025, $FF41382E, True);
+  var Color: TAlphaColor := $FF75634D;
   if FProgress.Reading then
-    Color := $FF55C6E8
+    Color := $FF47744E
   else if FProgress.Writing then
-    Color := $FFFF9170;
+    Color := $FFA03932;
   Text(ActivityText, Height * 0.13, Color);
-  Text(CounterText, Height * 0.23, $FFF3F5FA);
-  Text(PositionText, Height * 0.33, $FFB5C2D2);
+  Text(CounterText, Height * 0.23, $FF41382E);
+  Text(PositionText, Height * 0.33, $FF75634D);
   var R := MapBounds;
-  Canvas.Fill.Color := $FF090E17;
+  Canvas.Fill.Color := $FF352F28;
   Canvas.FillRect(R, 3, 3, [], AbsoluteOpacity);
   Canvas.Stroke.Kind := TBrushKind.Solid;
   Canvas.Stroke.Thickness := 3;
-  Canvas.Stroke.Color := $FF55C6E8;
+  Canvas.Stroke.Color := $FF47744E;
   if FProgress.State = TapeRecording then
-    Canvas.Stroke.Color := $FFFF9170;
+    Canvas.Stroke.Color := $FFA03932;
   for var i := 0 to 255 do
     if FProgress.SignalMap[i] <> 0 then
       Canvas.DrawLine(PointF(R.Left + R.Width * i / 256, R.CenterPoint.Y),
@@ -247,11 +316,14 @@ begin
   if FProgress.TapeBytes > 0 then
   begin
     var X := R.Left + R.Width * Min(1.0, FProgress.PositionBytes / FProgress.TapeBytes);
-    Canvas.Stroke.Color := $FFF3F5FA;
+    Canvas.Stroke.Color := $FF41382E;
     Canvas.Stroke.Thickness := 2;
     Canvas.DrawLine(PointF(X, R.Top), PointF(X, R.Bottom), AbsoluteOpacity);
   end;
-  Text(FileText, Height * 0.57, $FFB5C2D2);
+  Canvas.Fill.Color := $FF75634D;
+  Canvas.Font.Style := [];
+  Canvas.FillText(RectF(10, Height * 0.57, Width - 10, Height * 0.655), FileText,
+    False, AbsoluteOpacity, [], TTextAlign.Leading, TTextAlign.Center);
 end;
 
 end.

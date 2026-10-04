@@ -372,11 +372,11 @@ object FormMain: TFormMain
     OnClick = LayoutClientClick
     OnDblClick = LayoutClientDblClick
     object RectangleBG: TRectangle
-      Align = Client
+      Align = Contents
       Fill.Color = claBlack
       HitTest = False
       Size.Width = 725.000000000000000000
-      Size.Height = 595.000000000000000000
+      Size.Height = 645.000000000000000000
       Size.PlatformDefault = False
       Stroke.Kind = None
     end

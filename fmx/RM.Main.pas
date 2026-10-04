@@ -8,7 +8,7 @@ uses
   NES.Controller, Core.Emulation, Core.EmulatorFactory, Core.Adapter.MD,
   Core.Adapter.SNES, WinUI3.Form, WinUI3.Style, FMX.Controls.Presentation,
   FMX.StdCtrls, FMX.Layouts, NES.SuborKeyboard, NES.PowerPad,
-  NES.FamicomKeyboard,
+  NES.FamicomKeyboard, NES.MiraclePiano,
   {$IFDEF ANDROID}
   Androidapi.Helpers, Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.App,
   Androidapi.JNI.Widget, Androidapi.JNI.Os, Androidapi.JNI.Media, FMX.Platform,
@@ -85,6 +85,7 @@ type
     FSystemId: string;
     FSuborKeyboard: TNesSuborKeyboard;
     FFamicomKeyboard: TNesFamicomKeyboard;
+    FMiraclePiano: TNesMiraclePiano;
     FPowerPad: TNesPowerPad;
     FDataRecorder: TNesDataRecorder;
     FGamepadInput: TEmulatorInput;
@@ -106,6 +107,7 @@ type
     FInBackground, FActivityPaused: Boolean;
     FSuborKeyboardTouchAttached: Boolean;
     FFamicomKeyboardTouchAttached: Boolean;
+    FMiraclePianoTouchAttached: Boolean;
     FPowerPadTouchAttached: Boolean;
     function ApplicationStateChanged(Sender: TObject; const AAppEvent: TApplicationEvent; const AContext: TObject): Boolean;
     procedure PollDocumentTransfer;
@@ -114,6 +116,7 @@ type
     procedure GamepadChanged(Sender: TObject);
     procedure SuborKeyboardChanged(Sender: TObject);
     procedure FamicomKeyboardChanged(Sender: TObject);
+    procedure MiraclePianoChanged(Sender: TObject);
     procedure ForwardKeyState(Code: Word; Pressed: Boolean);
     procedure SuborKeyboardPower(Sender: TObject);
     procedure PowerPadChanged(Sender: TObject);
@@ -167,7 +170,7 @@ uses
   {$IFDEF MSWINDOWS}
   Winapi.Windows,
   {$ENDIF}
-  HGM.FMX.Image;
+  HGM.FMX.Image, Core.Adapter.GBC;
 
 {$R *.fmx}
 
@@ -535,6 +538,7 @@ begin
   FGamepad.OnChange := GamepadChanged;
   FGamepad.Enabled := False;
   FGamepad.Visible := False;
+  FGamepad.Margins.Bottom := 100;
   FSuborKeyboard := TNesSuborKeyboard.Create(Self);
   FSuborKeyboard.Name := 'ScreenSuborKeyboard';
   FSuborKeyboard.Parent := LayoutClient;
@@ -551,6 +555,13 @@ begin
   FFamicomKeyboard.OnChange := FamicomKeyboardChanged;
   FFamicomKeyboard.Enabled := False;
   FFamicomKeyboard.Visible := False;
+  FMiraclePiano := TNesMiraclePiano.Create(Self);
+  FMiraclePiano.Name := 'ScreenMiraclePiano';
+  FMiraclePiano.Parent := LayoutClient;
+  FMiraclePiano.Align := TAlignLayout.Bottom;
+  FMiraclePiano.OnChange := MiraclePianoChanged;
+  FMiraclePiano.Enabled := False;
+  FMiraclePiano.Visible := False;
   FPowerPad := TNesPowerPad.Create(Self);
   FPowerPad.Name := 'ScreenPowerPad';
   FPowerPad.Parent := LayoutClient;
@@ -558,6 +569,7 @@ begin
   FPowerPad.OnChange := PowerPadChanged;
   FPowerPad.Enabled := False;
   FPowerPad.Visible := False;
+  FPowerPad.Margins.Bottom := 100;
   FDataRecorder := TNesDataRecorder.Create(Self);
   FDataRecorder.Name := 'ScreenDataRecorder';
   FDataRecorder.Parent := LayoutClient;
@@ -582,6 +594,7 @@ begin
     TimerUpdate.Enabled := False;
   FreeAndNil(FSuborKeyboard);
   FreeAndNil(FFamicomKeyboard);
+  FreeAndNil(FMiraclePiano);
   FreeAndNil(FPowerPad);
   FreeAndNil(FDataRecorder);
   FreeAndNil(FGamepad); // Detach the native listener before destroying the form.
@@ -602,7 +615,9 @@ end;
 procedure TFormMain.FormActivate(Sender: TObject);
 begin
   {$IFDEF ANDROID}
-  if FPowerPadTouchAttached then
+  if FMiraclePianoTouchAttached then
+    FMiraclePiano.AttachToForm(Self)
+  else if FPowerPadTouchAttached then
     FPowerPad.AttachToForm(Self)
   else if FSuborKeyboardTouchAttached then
     FSuborKeyboard.AttachToForm(Self)
@@ -695,6 +710,9 @@ end;
 
 procedure TFormMain.FormResize(Sender: TObject);
 begin
+  if FMiraclePiano <> nil then
+    FMiraclePiano.Height := TNesMiraclePiano.PreferredHeight(LayoutClient.Width,
+      ClientHeight - Padding.Top - Padding.Bottom - LayoutHead.Height);
   if FDataRecorder <> nil then
     FDataRecorder.Height := TNesDataRecorder.PreferredHeight(LayoutClient.Width,
       ClientHeight - Padding.Top - Padding.Bottom - LayoutHead.Height);
@@ -836,6 +854,20 @@ begin
   FEmulation.SetKeyState(Code, Pressed);
 end;
 
+procedure TFormMain.MiraclePianoChanged(Sender: TObject);
+const
+  Mapping: array[TNesButton] of TEmulatorButton = (TEmulatorButton.A,
+    TEmulatorButton.B, TEmulatorButton.Select, TEmulatorButton.Start,
+    TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right);
+begin
+  var Piano: INesMiraclePianoCore;
+  if not Supports(FEmulation, INesMiraclePianoCore, Piano) or not Piano.UsesMiraclePiano then Exit;
+  Piano.SetMiracleKeys(FMiraclePiano.Keys);
+  var Input := Default(TEmulatorInput);
+  for var Button in FMiraclePiano.Buttons do Include(Input.Buttons, Mapping[Button]);
+  FEmulation.SetGamepadInput(Input);
+end;
+
 procedure TFormMain.FamicomKeyboardChanged(Sender: TObject);
 begin
   var Peripheral: INesPeripheralCore;
@@ -893,16 +925,23 @@ begin
   var Peripheral: INesPeripheralCore;
   var FamicomKeyboardActive := Supports(FEmulation, INesPeripheralCore, Peripheral) and
     Peripheral.UsesFamicomKeyboard;
-  var KeyboardActive := SuborKeyboardActive or FamicomKeyboardActive;
+  var Piano: INesMiraclePianoCore;
+  var PianoActive := Supports(FEmulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano;
+  if FMiraclePiano <> nil then
+  begin
+    FMiraclePiano.Visible := PianoActive;
+    FMiraclePiano.Enabled := PianoActive and not FEmulationFaulted and not FOpeningRom;
+  end;
+  var KeyboardActive := SuborKeyboardActive or FamicomKeyboardActive or PianoActive;
   var PowerPadActive := Supports(FEmulation, INesPeripheralCore, Peripheral);
   if PowerPadActive then
     PowerPadActive := Peripheral.UsesPowerPad and not KeyboardActive;
   if FGamepad <> nil then
   begin
-    {$IFDEF ANDROID}
+    //{$IFDEF ANDROID}
     FGamepad.Visible := not KeyboardActive and not PowerPadActive;
     FGamepad.Enabled := (FEmulation <> nil) and not FEmulationFaulted and not FOpeningRom and not KeyboardActive and not PowerPadActive;
-    {$ENDIF}
+    //{$ENDIF}
   end;
   if FSuborKeyboard <> nil then
   begin
@@ -926,9 +965,12 @@ begin
   // The controls are mutually exclusive, so hand it to the currently visible control.
   if (FSuborKeyboardTouchAttached <> SuborKeyboardActive) or
     (FFamicomKeyboardTouchAttached <> FamicomKeyboardActive) or
-    (FPowerPadTouchAttached <> PowerPadActive) then
+    (FPowerPadTouchAttached <> PowerPadActive) or
+    (FMiraclePianoTouchAttached <> PianoActive) then
   begin
-    if FPowerPadTouchAttached then
+    if FMiraclePianoTouchAttached then
+      FMiraclePiano.AttachToForm(nil)
+    else if FPowerPadTouchAttached then
       FPowerPad.AttachToForm(nil)
     else if FSuborKeyboardTouchAttached then
       FSuborKeyboard.AttachToForm(nil)
@@ -936,7 +978,9 @@ begin
       FFamicomKeyboard.AttachToForm(nil)
     else
       FGamepad.AttachToForm(nil);
-    if PowerPadActive then
+    if PianoActive then
+      FMiraclePiano.AttachToForm(Self)
+    else if PowerPadActive then
       FPowerPad.AttachToForm(Self)
     else if SuborKeyboardActive then
       FSuborKeyboard.AttachToForm(Self)
@@ -947,7 +991,10 @@ begin
     FSuborKeyboardTouchAttached := SuborKeyboardActive;
     FFamicomKeyboardTouchAttached := FamicomKeyboardActive;
     FPowerPadTouchAttached := PowerPadActive;
+    FMiraclePianoTouchAttached := PianoActive;
   end;
+  if FMiraclePiano <> nil then
+    FMiraclePiano.Enabled := FMiraclePiano.Enabled and not FInBackground;
   var Paused := FInBackground or FOpeningRom or FUserPaused;
   if FPowerPad <> nil then
     FPowerPad.Enabled := FPowerPad.Enabled and not FInBackground;
@@ -1037,6 +1084,8 @@ begin
     FSuborKeyboard.ReleaseAll;
   if FFamicomKeyboard <> nil then
     FFamicomKeyboard.ReleaseAll;
+  if FMiraclePiano <> nil then
+    FMiraclePiano.ReleaseAll;
   if FPowerPad <> nil then
     FPowerPad.ReleaseAll;
   if FEmulation <> nil then
@@ -1120,8 +1169,10 @@ begin
   var Code: Word := Key;
   var SuborKeyboardActive := (FEmulation <> nil) and FEmulation.UsesSuborKeyboard;
   var Peripheral: INesPeripheralCore;
+  var Piano: INesMiraclePianoCore;
   var KeyboardActive := SuborKeyboardActive or
-    (Supports(FEmulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard);
+    (Supports(FEmulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard) or
+    (Supports(FEmulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano);
   var WasDown: Boolean := False;
   if Code <= High(FKeysDown) then
   begin
@@ -1251,9 +1302,13 @@ procedure TFormMain.UpdatePeripheralFeedback;
 var
   Peripheral: INesPeripheralCore;
   Tape: INesTapeCore;
+  Piano: INesMiraclePianoCore;
 begin
   if (FEmulation = nil) or FEmulationFaulted then
     Exit;
+  if (FMiraclePiano <> nil) and FMiraclePiano.Visible and FMiraclePiano.Enabled and
+    Supports(FEmulation, INesMiraclePianoCore, Piano) then
+    FMiraclePiano.CoreKeys := Piano.GetMiracleKeys;
   if (FDataRecorder <> nil) and Supports(FEmulation, INesTapeCore, Tape) and Tape.UsesDataRecorder then
     FDataRecorder.Progress := Tape.GetTapeProgress;
   if (FGamepad <> nil) and FGamepad.Visible and FGamepad.Enabled then
@@ -1361,6 +1416,8 @@ begin
     FSuborKeyboard.ReleaseAll;
   if FFamicomKeyboard <> nil then
     FFamicomKeyboard.ReleaseAll;
+  if FMiraclePiano <> nil then
+    FMiraclePiano.ReleaseAll;
   if FPowerPad <> nil then
     FPowerPad.ReleaseAll;
   TimerUpdate.Enabled := False;
@@ -1370,6 +1427,10 @@ begin
     FGamepad.Layout := TScreenGamepadLayout.Sega
   else if FEmulation.Config is TSnesConfig then
     FGamepad.Layout := TScreenGamepadLayout.Snes
+  else if FEmulation.Config is TGBCEmulatorConfig then
+    FGamepad.Layout := TScreenGamepadLayout.GameBoyColor
+  else if FEmulation.Config is TGBEmulatorConfig then
+    FGamepad.Layout := TScreenGamepadLayout.GameBoy
   else
     FGamepad.Layout := TScreenGamepadLayout.Nes;
                {

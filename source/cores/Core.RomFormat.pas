@@ -225,7 +225,13 @@ begin
     // signature; ExHiROM stores its header past 4 MiB.
     if (Result.System = TRomSystem.Unknown) and (Count = ROM_SIGNATURE_PROBE_SIZE) then
     begin
-      SetLength(Data, SNES_ROM_PROBE_SIZE);
+      // Preserve the complete image's size residue for copier-prefix
+      // detection when a large ROM is represented by a truncated probe.
+      var ProbeSize := SNES_ROM_PROBE_SIZE;
+      var Remaining := Stream.Size - Position;
+      if Remaining > ProbeSize then
+        Inc(ProbeSize, Integer((Remaining - ProbeSize) and $3FF));
+      SetLength(Data, ProbeSize);
       while Count < Length(Data) do
       begin
         var Read := Stream.Read(Data[Count], Length(Data) - Count);

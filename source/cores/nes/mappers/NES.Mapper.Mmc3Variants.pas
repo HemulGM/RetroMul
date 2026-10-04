@@ -31,7 +31,7 @@ var
   Banks: array[0..7] of UInt8;
 begin
   Move(FBankRegisters, Banks, SizeOf(Banks));
-  if (FBoard = 91) and (State.Version < 6) and not State.Loading then
+  if (FBoard = MAPPER_MMC3_91) and (State.Version < 6) and not State.Loading then
   begin
     FBankRegisters[0] := (Integer(Banks[0]) * 2) and $FF;
     FBankRegisters[1] := (Integer(Banks[1]) * 2) and $FF;
@@ -46,10 +46,10 @@ begin
     State.Field(FOuterChr, SizeOf(FOuterChr));
     State.Field(FExtraRam, SizeOf(FExtraRam));
   finally
-    if (FBoard = 91) and (State.Version < 6) and not State.Loading then
+    if (FBoard = MAPPER_MMC3_91) and (State.Version < 6) and not State.Loading then
       Move(Banks, FBankRegisters, SizeOf(Banks));
   end;
-  if (FBoard = 91) and (State.Version < 6) and State.Loading then
+  if (FBoard = MAPPER_MMC3_91) and (State.Version < 6) and State.Loading then
   begin
     Move(FBankRegisters, Banks, SizeOf(Banks));
     FBankRegisters[0] := Banks[0] shr 1;
@@ -74,28 +74,31 @@ end;
 
 procedure TMapperMmc3Variant.ClockPpuAddress(Address: UInt16; PpuCycle: UInt64);
 begin
-  if FBoard = 91 then Exit;
+  if FBoard = MAPPER_MMC3_91 then
+    Exit;
+
   var WasPending := FIrqPending;
   var CanTrigger := (FIrqCounter <> 0) or FIrqReloadPending;
   inherited;
   // Revision A does not repeatedly assert IRQ when reloading zero automatically.
-  if (FBoard = 12) and not CanTrigger then
+  if (FBoard = MAPPER_MMC3_12) and not CanTrigger then
     FIrqPending := WasPending;
 end;
 
 procedure TMapperMmc3Variant.ClockScanline(Scanline: Integer; RenderingEnabled: Boolean);
 begin
-  if FBoard <> 91 then
+  if FBoard <> MAPPER_MMC3_91 then
   begin
     inherited;
     Exit;
   end;
+
   // JY-016 asserts once after eight rendered scanlines, until acknowledged.
-  if RenderingEnabled and (Scanline >= 0) and (Scanline < 240) and
-    FIrqEnabled and (FIrqCounter < 8) then
+  if RenderingEnabled and (Scanline >= 0) and (Scanline < 240) and FIrqEnabled and (FIrqCounter < 8) then
   begin
     Inc(FIrqCounter);
-    if FIrqCounter = 8 then FIrqPending := True;
+    if FIrqCounter = 8 then
+      FIrqPending := True;
   end;
 end;
 
@@ -103,9 +106,9 @@ function TMapperMmc3Variant.ChrBank(Address: UInt16): Integer;
 begin
   // Mapper 91 has four full-width 2 KiB registers. Expanding them into
   // byte-sized MMC3 registers loses CHR A18 on 512 KiB cartridges.
-  if FBoard = 91 then
-    Exit((Integer(FBankRegisters[Address shr 11]) or ((FOuterChr and 1) shl 8)) * 2 +
-      ((Address shr 10) and 1));
+  if FBoard = MAPPER_MMC3_91 then
+    Exit((Integer(FBankRegisters[Address shr 11]) or ((FOuterChr and 1) shl 8)) * 2 + ((Address shr 10) and 1));
+
   var Original := Address;
   if (FBankSelect and $80) <> 0 then
     Address := Address xor $1000;
@@ -114,33 +117,40 @@ begin
     Result := (FBankRegisters[Slot shr 1] and $FE) or (Slot and 1)
   else
     Result := FBankRegisters[Slot - 2];
-  if FBoard = 12 then
-    if ((Original < $1000) and ((FOuterChr and 1) <> 0)) or
-      ((Original >= $1000) and ((FOuterChr and $10) <> 0)) then
+  if FBoard = MAPPER_MMC3_12 then
+    if ((Original < $1000) and ((FOuterChr and 1) <> 0)) or ((Original >= $1000) and ((FOuterChr and $10) <> 0)) then
       Result := Result or $100;
-  if (FBoard = 245) and FHasChrRam then
+  if (FBoard = MAPPER_MMC3_245) and FHasChrRam then
     Result := Address shr 10;
 end;
 
 function TMapperMmc3Variant.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
 begin
-  if FBoard = 91 then
+  if FBoard = MAPPER_MMC3_91 then
   begin
     Result := Address >= $8000;
-    if not Result then Exit;
+    if not Result then
+      Exit;
+
     var Bank: Integer;
     case (Address - $8000) shr 13 of
-      0: Bank := FBankRegisters[6];
-      1: Bank := FBankRegisters[7];
-      2: Bank := $0E;
-    else Bank := $0F;
+      0:
+        Bank := FBankRegisters[6];
+      1:
+        Bank := FBankRegisters[7];
+      2:
+        Bank := $0E;
+    else
+      Bank := $0F;
     end;
     Bank := Bank or ((FOuterChr and 6) shl 3);
     Value := FPrgRom[(Bank * $2000 + (Address and $1FFF)) mod Length(FPrgRom)];
     Exit;
   end;
-  if (FBoard <> 245) or (Address < $8000) then
+
+  if (FBoard <> MAPPER_MMC3_245) or (Address < $8000) then
     Exit(inherited CpuRead(Address, Value));
+
   var Outer := (FBankRegisters[0] and 2) shl 5;
   var Count := Length(FPrgRom) div $2000;
   var LastBank := Count - 1;
@@ -169,12 +179,13 @@ end;
 
 function TMapperMmc3Variant.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
-  if (FBoard = 12) and (Address >= $4020) and (Address < $6000) then
+  if (FBoard = MAPPER_MMC3_12) and (Address >= $4020) and (Address < $6000) then
   begin
     FOuterChr := Value;
     Exit(True);
   end;
-  if FBoard = 91 then
+
+  if FBoard = MAPPER_MMC3_91 then
   begin
     if (Address >= $8000) and (Address < $A000) then
     begin
@@ -185,7 +196,8 @@ begin
     if not Result then
       Exit;
     var RegisterAddress := Address and $7003;
-    if (Address < $7000) and ((Address and 7) >= 4) then Exit;
+    if (Address < $7000) and ((Address and 7) >= 4) then
+      Exit;
     case RegisterAddress of
       $6000..$6003:
         FBankRegisters[Address and 3] := Value;
@@ -205,7 +217,8 @@ begin
     end;
     Exit;
   end;
-  if (FBoard = 250) and (Address >= $8000) then
+
+  if (FBoard = MAPPER_MMC3_250) and (Address >= $8000) then
   begin
     Value := Address and $FF;
     Address := (Address and $E000) or ((Address shr 10) and 1);
@@ -218,8 +231,9 @@ begin
   Result := Address < $2000;
   if not Result then
     Exit;
+
   var Bank := ChrBank(Address);
-  if (FBoard = 119) and ((Bank and $40) <> 0) then
+  if (FBoard = MAPPER_TQROM) and ((Bank and $40) <> 0) then
     Value := FExtraRam[(Bank and 7) * $400 + (Address and $3FF)]
   else
     Value := FChrMemory[(Bank * $400 + (Address and $3FF)) mod Length(FChrMemory)];
@@ -230,12 +244,14 @@ begin
   Result := False;
   if Address >= $2000 then
     Exit;
+
   var Bank := ChrBank(Address);
-  if (FBoard = 119) and ((Bank and $40) <> 0) then
+  if (FBoard = MAPPER_TQROM) and ((Bank and $40) <> 0) then
   begin
     FExtraRam[(Bank and 7) * $400 + (Address and $3FF)] := Value;
     Exit(True);
   end;
+
   if FHasChrRam then
   begin
     FChrMemory[(Bank * $400 + (Address and $3FF)) mod Length(FChrMemory)] := Value;

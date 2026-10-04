@@ -13,6 +13,7 @@ uses
   Core.EmulatorFactory,
   Core.Storage,
   Core.RomFormat,
+  Core.RomHashes in '..\source\cores\Core.RomHashes.pas',
   Retromul.Terminal in 'Retromul.Terminal.pas';
 
 var

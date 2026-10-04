@@ -29,7 +29,7 @@ type
     FRegion: TNesRegion;
     FConfiguredFourScore: Boolean;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 14);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 15);
     function GetRomIdentity: string;
     function GetUsesPowerPad: Boolean;
     function GetHasCoinAcceptor: Boolean;
@@ -74,7 +74,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper;
 
 const
-  SNAPSHOT_VERSION = 14;
+  SNAPSHOT_VERSION = 15;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -421,6 +421,8 @@ begin
   end;
 
   FBus.ClockIo;
+  if FCartridge.Mapper <> nil then FApu.SetExpansionAudio(FCartridge.Mapper.ExpansionAudio)
+  else FApu.SetExpansionAudio(0);
   FApu.Clock;
   // The read phase is already committed when its clock begins; a disable
   // arriving on this phase prevents playback, but cannot recover that cycle.

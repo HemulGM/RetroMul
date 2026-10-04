@@ -154,6 +154,7 @@ begin
       Value := FPrgRom[(Bank * $2000 + (Address and $1FFF)) mod Length(FPrgRom)];
     Exit;
   end;
+
   if (Address >= $5C00) and (Address <= $5FFF) then
   begin
     if FExMode >= 2 then
@@ -162,6 +163,7 @@ begin
       Value := 0;
     Exit;
   end;
+
   case Address of
     $5010, $5015:
       Value := 0;
@@ -190,6 +192,7 @@ begin
       FPrgRam[(Bank * $2000 + (Address and $1FFF)) mod Length(FPrgRam)] := Value;
     Exit;
   end;
+
   if (Address >= $5C00) and (Address <= $5FFF) then
   begin
     if FExMode = 2 then
@@ -201,6 +204,7 @@ begin
         FExRam[Address and $3FF] := 0;
     Exit;
   end;
+
   case Address of
     $5000..$5015:
       ;
@@ -261,8 +265,10 @@ function TMapperMmc5.PatternOffset(Address: UInt16): Integer;
 begin
   if SplitActive then
     Exit(((Integer(FSplitBank) shl 12) + ((Address and $0FF8) or ((FPixelY + FSplitScroll) mod 240 and 7))) mod Length(FChrMemory));
+
   if (FExMode = 1) and FInFrame and not FSpriteFetch then
     Exit(((((FExRam[FExTile] and $3F) or (Integer(FChrUpper) shl 6)) shl 12) + (Address and $0FFF)) mod Length(FChrMemory));
+
   var UseB := FLargeSprites and ((FInFrame and not FSpriteFetch) or (not FInFrame and FLastChrB));
   var Slot := Address shr 10;
   var Span := 1 shl (3 - FChrMode);
@@ -282,11 +288,13 @@ begin
   Result := Address < $3F00;
   if not Result then
     Exit;
+
   if Address < $2000 then
   begin
     Value := FChrMemory[PatternOffset(Address)];
     Exit;
   end;
+
   var Offset := Address and $3FF;
   if SplitActive then
   begin
@@ -298,6 +306,7 @@ begin
       Value := ((FExRam[$3C0 + (Row div 32) * 8 + Column div 4] shr (((Row div 8) and 2) * 2 + (Column and 2))) and 3) * $55;
     Exit;
   end;
+
   if (FExMode = 1) and FInFrame and not FSpriteFetch then
     if Offset < $3C0 then
       FExTile := Offset
@@ -306,6 +315,7 @@ begin
       Value := (FExRam[FExTile] shr 6) * $55;
       Exit;
     end;
+
   case NameSource(Address) of
     0, 1:
       Value := FCiram[NameSource(Address) * $400 + Offset];
@@ -327,12 +337,14 @@ begin
   Result := Address < $3F00;
   if not Result then
     Exit;
+
   if Address < $2000 then
   begin
     if FHasChrRam then
       FChrMemory[PatternOffset(Address)] := Value;
     Exit;
   end;
+
   var Offset := Address and $3FF;
   case NameSource(Address) of
     0, 1:

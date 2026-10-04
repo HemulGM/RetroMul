@@ -53,6 +53,7 @@ procedure TMapperUxrom.SetSaveMemory(const Data: TByteArray);
 begin
   if Length(Data) <> SizeOf(FPrgRam) then
     raise ENesException.Create('Invalid cartridge save size');
+
   Move(Data[0], FPrgRam[0], Length(Data));
 end;
 

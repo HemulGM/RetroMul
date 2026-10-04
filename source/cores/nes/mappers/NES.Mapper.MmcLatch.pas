@@ -61,6 +61,7 @@ function TMapperMmcLatch.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
   if Address < $A000 then
     Exit(inherited CpuWrite(Address, Value));
+
   Result := True;
   case Address shr 12 of
     $A:
@@ -83,6 +84,7 @@ begin
   Result := inherited PpuRead(Address, Value);
   if not Result then
     Exit;
+
   // The triggering read still returns the old bank; the next read sees the latch.
   var Trigger := Address;
   if FMmc4 or (Address >= $1000) then
@@ -99,6 +101,7 @@ begin
   else
     Exit;
   end;
+
   UpdateChr;
 end;
 

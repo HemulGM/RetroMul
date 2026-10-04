@@ -13,6 +13,8 @@ type
   TMapperBandai = class(TMapperBanked)
   private
     FSmallEeprom: Boolean;
+    FBoard: Integer;
+    FExtra: TMapperBandai;
     FEeprom: array[0..255] of Byte;
     FPhase, FNextPhase: TEepromPhase;
     FBits, FShift, FEepromAddress: Integer;
@@ -27,7 +29,8 @@ type
     procedure SerializeState(State: TNesStateArchive); override;
     function GetSaveMemory: TByteArray; override;
     procedure SetSaveMemory(const Data: TByteArray); override;
-    constructor Create(SmallEeprom: Boolean; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+    constructor Create(SmallEeprom: Boolean; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; Board: Integer = MAPPER_BANDAI_FCG);
+    destructor Destroy; override;
     procedure Reset; override;
     procedure ClockCpu; override;
     function IrqPending: Boolean; override;
@@ -56,32 +59,69 @@ begin
   State.Field(FReload, SizeOf(FReload));
   State.Field(FEnabled, SizeOf(FEnabled));
   State.Field(FPending, SizeOf(FPending));
+  if FExtra <> nil then
+    FExtra.SerializeState(State);
 end;
 
 function TMapperBandai.GetSaveMemory: TByteArray;
 begin
+  if FBoard = MAPPER_BANDAI_LZ93D50 then
+    Exit(inherited GetSaveMemory);
+  if FBoard = MAPPER_BANDAI_DATACH then
+  begin
+    SetLength(Result, 384);
+    Move(FEeprom[0], Result[0], 256);
+    Move(FExtra.FEeprom[0], Result[256], 128);
+    Exit
+  end;
   SetLength(Result, (256 shr Ord(FSmallEeprom)));
   Move(FEeprom[0], Result[0], Length(Result));
 end;
 
 procedure TMapperBandai.SetSaveMemory(const Data: TByteArray);
 begin
+  if FBoard = MAPPER_BANDAI_LZ93D50 then
+  begin
+    inherited;
+    Exit
+  end;
+  if FBoard = MAPPER_BANDAI_DATACH then
+  begin
+    if Length(Data) <> 384 then
+      raise ENesException.Create('Invalid Datach EEPROM save size');
+
+    Move(Data[0], FEeprom[0], 256);
+    Move(Data[256], FExtra.FEeprom[0], 128);
+    Exit;
+  end;
   if Length(Data) <> (256 shr Ord(FSmallEeprom)) then
     raise ENesException.Create('Invalid cartridge save size');
+
   Move(Data[0], FEeprom[0], Length(Data));
 end;
 
-constructor TMapperBandai.Create(SmallEeprom: Boolean; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+constructor TMapperBandai.Create(SmallEeprom: Boolean; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; Board: Integer);
 begin
   inherited Create(Prg, Chr, HasChrRam, MirrorMode);
   FSmallEeprom := SmallEeprom;
+  FBoard := Board;
   FillChar(FEeprom, SizeOf(FEeprom), $FF);
+  if Board = MAPPER_BANDAI_DATACH then
+    FExtra := TMapperBandai.Create(True, Prg, Chr, HasChrRam, MirrorMode, 159);
   Reset;
+end;
+
+destructor TMapperBandai.Destroy;
+begin
+  FExtra.Free;
+  inherited
 end;
 
 procedure TMapperBandai.Reset;
 begin
   inherited;
+  if FExtra <> nil then
+    FExtra.Reset;
   FCounter := 0;
   FReload := 0;
   FEnabled := False;
@@ -97,12 +137,14 @@ begin
   FPrgRegister := 0;
   FillChar(FChrRegisters, SizeOf(FChrRegisters), 0);
   UpdatePrg;
+  if FBoard = MAPPER_BANDAI_LZ93D50 then
+    FRamEnabled := False;
 end;
 
 procedure TMapperBandai.UpdatePrg;
 begin
   var Outer := 0;
-  if Length(FPrgRom) >= $80000 then
+  if (FBoard = MAPPER_BANDAI_LZ93D50) or (Length(FPrgRom) >= $80000) then
     for var i := 0 to 7 do
       Outer := Outer or ((FChrRegisters[i] and 1) shl 4);
   Prg16(0, Outer or FPrgRegister);
@@ -216,9 +258,14 @@ end;
 
 function TMapperBandai.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
 begin
+  if FBoard = MAPPER_BANDAI_LZ93D50 then
+    Exit(inherited);
+
   if (Address >= $6000) and (Address < $8000) then
   begin
-    Value := Ord(FOutput) shl 4;
+    Value := (Ord(FOutput) shl 4) or (FCpuOpenBus and $E7);
+    if FExtra <> nil then
+      Value := (Ord(FOutput and FExtra.FOutput) shl 4) or (FCpuOpenBus and $E7);
     Exit(True);
   end;
   Result := inherited CpuRead(Address, Value);
@@ -226,16 +273,22 @@ end;
 
 function TMapperBandai.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
+  if (FBoard = MAPPER_BANDAI_LZ93D50) and (Address < $8000) then
+    Exit(inherited);
+
   Result := Address >= $6000;
-  if FSmallEeprom then
+  if FSmallEeprom or (FBoard = MAPPER_BANDAI_DATACH) then
     Result := Address >= $8000;
   if not Result then
     Exit;
+
   case Address and $0F of
     0..7:
       begin
         FChrRegisters[Address and 7] := Value;
-        if not FHasChrRam then
+        if (FExtra <> nil) and ((Address and 7) <= 3) then
+          FExtra.WriteSerial(((Value and 8) shl 2) or (Ord(FExtra.FData) shl 6));
+        if not FHasChrRam and (FBoard <> MAPPER_BANDAI_LZ93D50) and (FBoard <> MAPPER_BANDAI_DATACH) then
           Chr1(Address and 7, Value);
         UpdatePrg;
       end;
@@ -257,7 +310,14 @@ begin
     12:
       FReload := (FReload and $FF) or (Integer(Value) shl 8);
     13:
-      WriteSerial(Value);
+      if FBoard = MAPPER_BANDAI_LZ93D50 then
+        FRamEnabled := (Value and $20) <> 0
+      else
+      begin
+        WriteSerial(Value);
+        if FExtra <> nil then
+          FExtra.WriteSerial((Ord(FExtra.FClock) shl 5) or (Value and $40))
+      end;
   end;
 end;
 

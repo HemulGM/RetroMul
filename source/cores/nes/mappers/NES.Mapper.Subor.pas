@@ -80,6 +80,7 @@ function TMapperSubor.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
   if Address < $8000 then
     Exit(inherited CpuWrite(Address, Value));
+
   case Address shr 13 of
     4:
       FRegister1 := Value;

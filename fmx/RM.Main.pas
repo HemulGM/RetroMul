@@ -826,8 +826,7 @@ begin
   {$IFDEF MSWINDOWS}
   // Windows FMX reports generic Shift. HVC-007 has two separate contacts.
   var Peripheral: INesPeripheralCore;
-  if (Code = vkShift) and Supports(FEmulation, INesPeripheralCore, Peripheral) and
-    Peripheral.UsesFamicomKeyboard then
+  if (Code = vkShift) and Supports(FEmulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard then
   begin
     FEmulation.SetKeyState(vkLShift, Winapi.Windows.GetKeyState(vkLShift) < 0);
     FEmulation.SetKeyState(vkRShift, Winapi.Windows.GetKeyState(vkRShift) < 0);

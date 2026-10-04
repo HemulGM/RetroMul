@@ -55,6 +55,7 @@ procedure TMapperNrom.SetSaveMemory(const Data: TByteArray);
 begin
   if Length(Data) <> SizeOf(FPrgRam) then
     raise ENesException.Create('Invalid cartridge save size');
+
   Move(Data[0], FPrgRam[0], Length(Data));
 end;
 
@@ -98,6 +99,7 @@ begin
     FPrgRam[Address and $1FFF] := Value;
     Exit(True);
   end;
+
   Result := Address >= $8000;
 end;
 

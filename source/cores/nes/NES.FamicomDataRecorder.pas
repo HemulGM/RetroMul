@@ -6,8 +6,9 @@ uses
   Core.Storage, System.SysUtils, NES.State;
 
 type
-  TTapeAction = (TapePlay, TapeRecord, TapeStop, TapeRewind, TapeForward,
-    TapeSelectFile, TapeDefaultFile, TapeSaveAs);
+  TTapeAction = (
+    TapePlay, TapeRecord, TapeStop, TapeRewind,
+    TapeForward, TapeSelectFile, TapeDefaultFile, TapeSaveAs);
 
   TTapeState = (TapeStopped, TapePlaying, TapeRecording);
 
@@ -425,8 +426,10 @@ begin
 
     // UI-only counters do not affect snapshots or device behavior.
     ClearActivity;
-    if (FSampleCount < 0) or (Int64(FSampleCount) > Int64(Length(FData)) * 8) or
-      (FStartClock > FClock) or (FSampleClock > FClock) or
+    if (FSampleCount < 0) or
+      (Int64(FSampleCount) > Int64(Length(FData)) * 8) or
+      (FStartClock > FClock) or
+      (FSampleClock > FClock) or
       (FRecording and ((FPath = '') or FPlaying)) then
       raise EReadError.Create('Invalid tape state');
 

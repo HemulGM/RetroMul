@@ -37,6 +37,10 @@ type
     AutoJoyActive, AutoJoyDisabled, AutoJoyStrobe: Boolean;
     AutoJoyBit: array[0..1] of Byte;
     NMICounter: Byte;
+    IRQHCounter, IRQVCounter: Word;
+    IRQLevel, IRQSignal, HDMAInitPending, DMAStartDelay: Boolean;
+    IRQDelay: Byte;
+    HDMAInitPosition: Integer;
   end;
 
   TSnesConsole = class
@@ -47,6 +51,7 @@ type
     FSPC: TSnesSPC;
     FState: TSnesSystemState;
     FInDMA: Boolean;
+    FDMAClocks: Integer;
     function MasterRate: Integer;
     function LineCount: Integer;
     function LineClocks: Integer;
@@ -55,6 +60,13 @@ type
     procedure CPUWrite(Address: Cardinal; Value: Byte);
     procedure CPUClock(Clocks: Integer);
     procedure PollNMI;
+    procedure UpdateIRQLevel;
+    procedure ProcessIRQCounters;
+    procedure ProcessDMA;
+    procedure ProcessHDMADuringDMA(var Mask: Byte);
+    procedure DMAClock(Clocks: Integer);
+    function ReadHDMA(Address: Cardinal): Byte;
+    procedure UpdateHDMARegisters(Channel: Integer);
     procedure Advance(Clocks: Integer);
     procedure SyncSPC;
     procedure RunALU(IsRead: Boolean);
@@ -96,6 +108,7 @@ type
     property CPU: TSnesCPU read FCPU;
     property PPU: TSnesPPU read FPPU;
     property SPC: TSnesSPC read FSPC;
+    property State: TSnesSystemState read FState;
   end;
 
 implementation
@@ -177,6 +190,7 @@ begin
   FState.AutoJoyDisabled := True;
   FState.RefreshPosition := 538;
   FState.CPUSpeed := 6;
+  FState.HDMAInitPosition := 12;
   FCartridge.Reset;
   FPPU.Reset;
   FSPC.Reset;
@@ -338,22 +352,26 @@ end;
 
 function TSnesConsole.CPURead(Address: Cardinal): Byte;
 begin
-  PollNMI;
   FState.CPUSpeed := BusSpeed(Address);
+  ProcessDMA;
+  PollNMI;
   Advance(FState.CPUSpeed);
   Result := ReadByte(Address);
 end;
 
 procedure TSnesConsole.CPUWrite(Address: Cardinal; Value: Byte);
 begin
-  PollNMI;
   FState.CPUSpeed := BusSpeed(Address);
+  ProcessDMA;
+  PollNMI;
   Advance(FState.CPUSpeed);
   WriteByte(Address, Value);
 end;
 
 procedure TSnesConsole.CPUClock(Clocks: Integer);
 begin
+  FState.CPUSpeed := Clocks;
+  ProcessDMA;
   PollNMI;
   Advance(Clocks);
 end;
@@ -370,6 +388,130 @@ begin
   end;
 end;
 
+procedure TSnesConsole.UpdateIRQLevel;
+begin
+  var Mode := (FState.NMITIMEN shr 4) and 3;
+  if Mode = 0 then
+  begin
+    FState.IRQLevel := False;
+    Exit;
+  end;
+  var H := FState.IO[7] or ((FState.IO[8] and 1) shl 8);
+  var V := FState.IO[9] or ((FState.IO[10] and 1) shl 8);
+  var Level := (((Mode and 1) = 0) or (H = FState.IRQHCounter)) and
+    (((Mode and 2) = 0) or (V = FState.IRQVCounter));
+  if Level and not FState.IRQLevel then
+    if ((Mode and 1) <> 0) and (FState.HClock = 6) then
+      FState.IRQDelay := 3
+    else
+      FState.IRQDelay := 2;
+  FState.IRQLevel := Level;
+end;
+
+procedure TSnesConsole.ProcessIRQCounters;
+begin
+  // The S-CPU comparator circuit ticks at H=2,6,..., independently of PPU dots.
+  if FState.IRQDelay > 0 then
+  begin
+    Dec(FState.IRQDelay);
+    if FState.IRQDelay = 1 then
+      FState.IRQFlag := (FState.NMITIMEN and $30) <> 0
+    else if FState.IRQDelay = 0 then
+      FState.IRQSignal := FState.IRQFlag;
+  end;
+  if FState.HClock > 10 then
+    Inc(FState.IRQHCounter)
+  else if FState.HClock = 10 then
+    FState.IRQHCounter := 0
+  else if FState.HClock = 6 then
+  begin
+    FState.IRQHCounter := 0;
+    if FState.Line > 0 then
+      Inc(FState.IRQVCounter);
+    if (FState.Line = FPPU.Height + 1) and ((FState.NMITIMEN and $80) <> 0) then
+      FState.NMICounter := 1;
+  end
+  else if FState.HClock = 2 then
+  begin
+    Inc(FState.IRQHCounter);
+    if FState.Line = FPPU.Height + 1 then
+      FState.NMIFlag := True
+    else if FState.Line = 0 then
+    begin
+      FState.NMIFlag := False;
+      FState.IRQVCounter := 0;
+    end;
+  end;
+  UpdateIRQLevel;
+  FCPU.State.IRQ := FState.IRQSignal or FCartridge.CoprocessorIRQ;
+end;
+
+procedure TSnesConsole.ProcessDMA;
+begin
+  if FInDMA then
+    Exit;
+  if FState.DMAStartDelay then
+  begin
+    FState.DMAStartDelay := False;
+    Exit;
+  end;
+  if FState.HDMAPending then
+    RunHDMA
+  else if FState.HDMAInitPending then
+    BeginHDMA
+  else if FState.PendingDMA <> 0 then
+    RunDMA;
+end;
+
+procedure TSnesConsole.ProcessHDMADuringDMA(var Mask: Byte);
+begin
+  if FState.DMAStartDelay then
+  begin
+    FState.DMAStartDelay := False;
+    Exit;
+  end;
+  if not FState.HDMAPending and not FState.HDMAInitPending then
+    Exit;
+  var ActiveMask: Byte := 0;
+  for var H := 0 to 7 do
+    if ((FState.HDMAEnable and (1 shl H)) <> 0) and
+      (FState.HDMAInitPending or FState.HDMAActive[H]) then
+      ActiveMask := ActiveMask or (1 shl H);
+  if FState.HDMAPending then
+    RunHDMA
+  else
+    BeginHDMA;
+  Mask := Mask and not ActiveMask;
+end;
+
+procedure TSnesConsole.DMAClock(Clocks: Integer);
+begin
+  Inc(FDMAClocks, Clocks);
+  Advance(Clocks);
+end;
+
+function TSnesConsole.ReadHDMA(Address: Cardinal): Byte;
+begin
+  DMAClock(4);
+  if InvalidDMAAddress(Address) then
+    Result := FState.OpenBus
+  else
+    Result := ReadByte(Address);
+  DMAClock(4);
+end;
+
+procedure TSnesConsole.UpdateHDMARegisters(Channel: Integer);
+begin
+  FState.DMA[Channel, 8] := Byte(FState.HDMAAddress[Channel]);
+  FState.DMA[Channel, 9] := Byte(FState.HDMAAddress[Channel] shr 8);
+  FState.DMA[Channel, 10] := FState.HDMALines[Channel];
+  if (FState.DMA[Channel, 0] and $40) <> 0 then
+  begin
+    FState.DMA[Channel, 5] := Byte(FState.HDMAIndirect[Channel]);
+    FState.DMA[Channel, 6] := Byte(FState.HDMAIndirect[Channel] shr 8);
+  end;
+end;
+
 procedure TSnesConsole.Advance(Clocks: Integer);
 begin
   var Remaining := Clocks;
@@ -383,24 +525,34 @@ begin
     if FState.HClock = 1096 then
     begin
       FState.HBlank := True;
-      if (FState.Line > 0) and (FState.Line <= FPPU.Height) then
-        FPPU.RenderLine(FState.Line - 1, (FState.FrameNumber and 1) <> 0);
+      FPPU.RenderUntil(FState.HClock, FState.Line, (FState.FrameNumber and 1) <> 0);
     end;
 
     // HDMA also runs on the pre-render line0, preparing registers for visible line1.
     if (FState.HClock = 1104) and (FState.Line <= FPPU.Height) then
-      FState.HDMAPending := True;
+    begin
+      for var C := 0 to 7 do
+        if FState.HDMAActive[C] and ((FState.HDMAEnable and (1 shl C)) <> 0) then
+        begin
+          FState.HDMAPending := True;
+          FState.DMAStartDelay := True;
+          Break;
+        end;
+    end;
+    if (FState.Line = 0) and (FState.HClock = FState.HDMAInitPosition) then
+    begin
+      FState.HDMAInitPending := True;
+      FState.DMAStartDelay := True;
+    end;
     if FState.HClock >= LineClocks then
     begin
+      FPPU.EndScanline(FState.Line, (FState.FrameNumber and 1) <> 0);
       FState.HClock := 0;
       FState.HBlank := False;
       Inc(FState.Line);
       FState.RefreshPosition := 538 - (FState.Clock and 7);
       if FState.Line = FPPU.Height + 1 then
       begin
-        FState.NMIFlag := True;
-        if (FState.NMITIMEN and $80) <> 0 then
-          FState.NMICounter := 1;
         // Forced blank permits OAM DMA across the start of vblank without a reset.
         if (FPPU.State.Regs[0] and $80) = 0 then
           FPPU.State.OAMAddress := FPPU.State.OAMReload;
@@ -413,25 +565,14 @@ begin
       begin
         FState.Line := 0;
         Inc(FState.FrameNumber);
-        FState.NMIFlag := False;
         FPPU.State.Status := 0;
-        BeginHDMA;
+        FPPU.BeginFrame;
+        FState.HDMAInitPosition := 12 + (FState.Clock and 7);
       end;
     end;
     ProcessAutoJoy;
-    var IRQMode := (FState.NMITIMEN shr 4) and 3;
-    if IRQMode <> 0 then
-    begin
-      var H := (FState.IO[7] or ((FState.IO[8] and 1) shl 8)) * 4;
-      var V := FState.IO[9] or ((FState.IO[10] and 1) shl 8);
-      if (((IRQMode and 1) = 0) or (FState.HClock = H)) and
-        (((IRQMode and 2) = 0) or (FState.Line = V)) and
-        (((IRQMode and 1) <> 0) or (FState.HClock = 0)) then
-      begin
-        FState.IRQFlag := True;
-        FCPU.State.IRQ := True;
-      end;
-    end;
+    if (FState.HClock and 3) = 2 then
+      ProcessIRQCounters;
   end;
 end;
 
@@ -487,13 +628,18 @@ begin
         $4210:
           begin
             Result := 2 or (Ord(FState.NMIFlag) shl 7) or (FState.OpenBus and $70);
-            FState.NMIFlag := False;
+            if (FState.Line <> FPPU.Height + 1) or (FState.HClock >= 6) then
+              FState.NMIFlag := False;
           end;
         $4211:
           begin
             Result := (Ord(FState.IRQFlag) shl 7) or (FState.OpenBus and $7F);
-            FState.IRQFlag := False;
-            FCPU.State.IRQ := FCartridge.CoprocessorIRQ;
+            if FState.IRQDelay = 0 then
+            begin
+              FState.IRQFlag := False;
+              FState.IRQSignal := False;
+              FCPU.State.IRQ := FCartridge.CoprocessorIRQ;
+            end;
           end;
         $4212:
           begin
@@ -547,10 +693,11 @@ begin
       case A of
         $2100..$2133:
           begin
+            FPPU.RenderUntil(FState.HClock, FState.Line, (FState.FrameNumber and 1) <> 0);
             // An INIDISP write on the first vblank line resets OAM if blank was active.
             if (A = $2100) and (FState.Line = FPPU.Height + 1) and ((FPPU.State.Regs[0] and $80) <> 0) then
               FPPU.State.OAMAddress := FPPU.State.OAMReload;
-            FPPU.Write(Word(A), Value, FState.Line);
+            FPPU.Write(Word(A), Value, FState.Line, FState.HClock);
           end;
         $2140..$217F:
           begin
@@ -592,6 +739,7 @@ begin
                   if (Value and $30) = 0 then
                   begin
                     FState.IRQFlag := False;
+                    FState.IRQSignal := False;
                     FCPU.State.IRQ := FCartridge.CoprocessorIRQ;
                   end;
                 end;
@@ -602,14 +750,28 @@ begin
                 WriteALU(Word(A), Value);
               $420B:
                 if not FInDMA then
+                begin
                   FState.PendingDMA := Value;
+                  FState.DMAStartDelay := Value <> 0;
+                end;
               $420C:
                 FState.HDMAEnable := Value;
+              $4207..$420A:
+                UpdateIRQLevel;
             end;
           end;
         $4300..$437F:
           begin
             FState.DMA[(A shr 4) and 7, A and 15] := Value;
+            var C := (A shr 4) and 7;
+            case A and 15 of
+              5, 6:
+                FState.HDMAIndirect[C] := FState.DMA[C, 5] or (Word(FState.DMA[C, 6]) shl 8);
+              8, 9:
+                FState.HDMAAddress[C] := FState.DMA[C, 8] or (Word(FState.DMA[C, 9]) shl 8);
+              10:
+                FState.HDMALines[C] := Value;
+            end;
             FCartridge.Write(Address, Value);
           end;
       else
@@ -675,48 +837,40 @@ begin
   var Mask := FState.PendingDMA;
   FState.PendingDMA := 0;
   FInDMA := True;
+  FDMAClocks := 0;
   try
-    var Cycles := 8 - Integer(FState.Clock and 7);
-    Advance(Cycles);
-    Advance(8);
-    Inc(Cycles, 8);
+    DMAClock(8 - Integer(FState.Clock and 7));
+    DMAClock(8);
+    ProcessHDMADuringDMA(Mask);
     for var Channel := 0 to 7 do
       if (Mask and (1 shl Channel)) <> 0 then
       begin
-        Advance(8);
-        Inc(Cycles, 8);
-        var Address: Integer := FState.DMA[Channel, 2] or (Word(FState.DMA[Channel, 3]) shl 8);
-        var Bank := Cardinal(FState.DMA[Channel, 4]) shl 16;
-        var Count := Integer(FState.DMA[Channel, 5] or (Word(FState.DMA[Channel, 6]) shl 8));
-        if Count = 0 then
-          Count := 65536;
-        for var J := 0 to Count - 1 do
-        begin
-          Transfer(Channel, J, Bank or Word(Address));
-          Inc(Cycles, 8);
+        DMAClock(8);
+        ProcessHDMADuringDMA(Mask);
+        if (Mask and (1 shl Channel)) = 0 then
+          Continue;
+        var Index := 0;
+        var Count: Integer;
+        repeat
+          var Address := FState.DMA[Channel, 2] or (Word(FState.DMA[Channel, 3]) shl 8);
+          var Bank := Cardinal(FState.DMA[Channel, 4]) shl 16;
+          Transfer(Channel, Index, Bank or Address);
+          Inc(FDMAClocks, 8);
+          Inc(Index);
           if (FState.DMA[Channel, 0] and 8) = 0 then
             if (FState.DMA[Channel, 0] and $10) = 0 then
               Address := (Address + 1) and $FFFF
             else
               Address := (Address - 1) and $FFFF;
-          if FState.HDMAPending then
-          begin
-            var ActiveMask: Byte := 0;
-            for var H := 0 to 7 do
-              if FState.HDMAActive[H] and ((FState.HDMAEnable and (1 shl H)) <> 0) then
-                ActiveMask := ActiveMask or (1 shl H);
-            RunHDMA;
-            Mask := Mask and not ActiveMask;
-            if (Mask and (1 shl Channel)) = 0 then
-              Break;
-          end;
-        end;
-        FState.DMA[Channel, 2] := Byte(Address);
-        FState.DMA[Channel, 3] := Byte(Address shr 8);
-        FState.DMA[Channel, 5] := 0;
-        FState.DMA[Channel, 6] := 0;
+          FState.DMA[Channel, 2] := Byte(Address);
+          FState.DMA[Channel, 3] := Byte(Address shr 8);
+          Count := (Integer(FState.DMA[Channel, 5]) or (Integer(FState.DMA[Channel, 6]) shl 8)) - 1;
+          FState.DMA[Channel, 5] := Byte(Count and $FF);
+          FState.DMA[Channel, 6] := Byte((Count and $FFFF) shr 8);
+          ProcessHDMADuringDMA(Mask);
+        until ((Count and $FFFF) = 0) or ((Mask and (1 shl Channel)) = 0);
       end;
-    Advance(FState.CPUSpeed - (Cycles mod FState.CPUSpeed));
+    DMAClock(FState.CPUSpeed - (FDMAClocks mod FState.CPUSpeed));
   finally
     FInDMA := False;
   end;
@@ -724,66 +878,118 @@ end;
 
 procedure TSnesConsole.BeginHDMA;
 begin
+  FState.HDMAInitPending := False;
   for var C := 0 to 7 do
   begin
-    FState.HDMAAddress[C] := FState.DMA[C, 2] or (Word(FState.DMA[C, 3]) shl 8);
-    FState.HDMAActive[C] := (FState.HDMAEnable and (1 shl C)) <> 0;
-    FState.HDMALines[C] := 0;
-    FState.HDMATransfer[C] := True;
+    FState.HDMAActive[C] := True;
+    FState.HDMATransfer[C] := FState.HDMAEnable <> 0;
+  end;
+  if FState.HDMAEnable = 0 then
+    Exit;
+  var WasInDMA := FInDMA;
+  FInDMA := True;
+  if not WasInDMA then
+    FDMAClocks := 0;
+  try
+    if not WasInDMA then
+      DMAClock(8 - Integer(FState.Clock and 7));
+    DMAClock(8);
+    for var C := 0 to 7 do
+      if (FState.HDMAEnable and (1 shl C)) <> 0 then
+      begin
+        FState.HDMAAddress[C] := FState.DMA[C, 2] or (Word(FState.DMA[C, 3]) shl 8);
+        var Bank := Cardinal(FState.DMA[C, 4]) shl 16;
+        FState.HDMALines[C] := ReadHDMA(Bank or FState.HDMAAddress[C]);
+        FState.HDMAAddress[C] := Word((Integer(FState.HDMAAddress[C]) + 1) and $FFFF);
+        FState.HDMAActive[C] := FState.HDMALines[C] <> 0;
+        if (FState.DMA[C, 0] and $40) <> 0 then
+        begin
+          var Low := ReadHDMA(Bank or FState.HDMAAddress[C]);
+          FState.HDMAAddress[C] := Word((Integer(FState.HDMAAddress[C]) + 1) and $FFFF);
+          if FState.HDMAActive[C] then
+          begin
+            var High := ReadHDMA(Bank or FState.HDMAAddress[C]);
+            FState.HDMAAddress[C] := Word((Integer(FState.HDMAAddress[C]) + 1) and $FFFF);
+            FState.HDMAIndirect[C] := Low or (Word(High) shl 8);
+          end
+          else
+            FState.HDMAIndirect[C] := Word(Low) shl 8;
+        end;
+        UpdateHDMARegisters(C);
+      end;
+    if not WasInDMA then
+      DMAClock(FState.CPUSpeed - (FDMAClocks mod FState.CPUSpeed));
+  finally
+    FInDMA := WasInDMA;
   end;
 end;
 
 procedure TSnesConsole.RunHDMA;
 begin
-  var WasInDMA := FInDMA;
   FState.HDMAPending := False;
+  var Mask: Byte := 0;
+  for var C := 0 to 7 do
+    if FState.HDMAActive[C] and ((FState.HDMAEnable and (1 shl C)) <> 0) then
+      Mask := Mask or (1 shl C);
+  if Mask = 0 then
+    Exit;
+  var WasInDMA := FInDMA;
   FInDMA := True;
+  if not WasInDMA then
+    FDMAClocks := 0;
   try
+    if not WasInDMA then
+      DMAClock(8 - Integer(FState.Clock and 7));
+    DMAClock(8);
+    // All channels transfer before any channel reads the next table entry.
     for var C := 0 to 7 do
-    begin
-      if not FState.HDMAActive[C] or ((FState.HDMAEnable and (1 shl C)) = 0) then
-        Continue;
-
-      var TableBank := Cardinal(FState.DMA[C, 4]) shl 16;
-      if (FState.HDMALines[C] and $7F) = 0 then
-      begin
-        FState.HDMALines[C] := ReadByte(TableBank or FState.HDMAAddress[C]);
-        FState.HDMAAddress[C] := (Integer(FState.HDMAAddress[C]) + 1) and $FFFF;
-        Advance(8);
-        if FState.HDMALines[C] = 0 then
-        begin
-          FState.HDMAActive[C] := False;
-          Continue;
-        end;
-
-        FState.HDMATransfer[C] := True;
-        if (FState.DMA[C, 0] and $40) <> 0 then
-        begin
-          FState.HDMAIndirect[C] := ReadByte(TableBank or FState.HDMAAddress[C]);
-          FState.HDMAAddress[C] := (Integer(FState.HDMAAddress[C]) + 1) and $FFFF;
-          FState.HDMAIndirect[C] := FState.HDMAIndirect[C] or (Word(ReadByte(TableBank or FState.HDMAAddress[C])) shl 8);
-          FState.HDMAAddress[C] := (Integer(FState.HDMAAddress[C]) + 1) and $FFFF;
-          Advance(16);
-        end;
-      end;
-      if FState.HDMATransfer[C] then
+      if ((Mask and (1 shl C)) <> 0) and FState.HDMATransfer[C] then
         for var J := 0 to DMALength[FState.DMA[C, 0] and 7] - 1 do
+        begin
           if (FState.DMA[C, 0] and $40) <> 0 then
           begin
             Transfer(C, J, (Cardinal(FState.DMA[C, 7]) shl 16) or FState.HDMAIndirect[C]);
-            FState.HDMAIndirect[C] := (Integer(FState.HDMAIndirect[C]) + 1) and $FFFF;
+            FState.HDMAIndirect[C] := Word((Integer(FState.HDMAIndirect[C]) + 1) and $FFFF);
           end
           else
           begin
-            Transfer(C, J, TableBank or FState.HDMAAddress[C]);
-            FState.HDMAAddress[C] := (Integer(FState.HDMAAddress[C]) + 1) and $FFFF;
+            Transfer(C, J, (Cardinal(FState.DMA[C, 4]) shl 16) or FState.HDMAAddress[C]);
+            FState.HDMAAddress[C] := Word((Integer(FState.HDMAAddress[C]) + 1) and $FFFF);
           end;
-      FState.HDMATransfer[C] := (FState.HDMALines[C] and $80) <> 0;
-      Dec(FState.HDMALines[C]);
-      FState.DMA[C, 8] := Byte(FState.HDMAAddress[C]);
-      FState.DMA[C, 9] := FState.HDMAAddress[C] shr 8;
-      FState.DMA[C, 10] := FState.HDMALines[C];
-    end;
+          Inc(FDMAClocks, 8);
+        end;
+    for var C := 0 to 7 do
+      if (Mask and (1 shl C)) <> 0 then
+      begin
+        FState.HDMALines[C] := Byte((Integer(FState.HDMALines[C]) - 1) and $FF);
+        FState.HDMATransfer[C] := (FState.HDMALines[C] and $80) <> 0;
+        var Bank := Cardinal(FState.DMA[C, 4]) shl 16;
+        // This read occurs even when the counter is nonzero; its bus side effects matter.
+        var Counter := ReadHDMA(Bank or FState.HDMAAddress[C]);
+        if (FState.HDMALines[C] and $7F) = 0 then
+        begin
+          FState.HDMALines[C] := Counter;
+          FState.HDMAAddress[C] := Word((Integer(FState.HDMAAddress[C]) + 1) and $FFFF);
+          if (FState.DMA[C, 0] and $40) <> 0 then
+          begin
+            var Low := ReadHDMA(Bank or FState.HDMAAddress[C]);
+            FState.HDMAAddress[C] := Word((Integer(FState.HDMAAddress[C]) + 1) and $FFFF);
+            if (Counter = 0) and ((Integer(Mask) shr (C + 1)) = 0) then
+              FState.HDMAIndirect[C] := Word(Low) shl 8
+            else
+            begin
+              var High := ReadHDMA(Bank or FState.HDMAAddress[C]);
+              FState.HDMAAddress[C] := Word((Integer(FState.HDMAAddress[C]) + 1) and $FFFF);
+              FState.HDMAIndirect[C] := Low or (Word(High) shl 8);
+            end;
+          end;
+          FState.HDMAActive[C] := Counter <> 0;
+          FState.HDMATransfer[C] := True;
+        end;
+        UpdateHDMARegisters(C);
+      end;
+    if not WasInDMA then
+      DMAClock(FState.CPUSpeed - (FDMAClocks mod FState.CPUSpeed));
   finally
     FInDMA := WasInDMA;
   end;
@@ -795,12 +1001,8 @@ begin
   FSPC.BeginFrame;
   repeat
     FCartridge.SyncDSP(FState.Clock, MasterRate);
-    FCPU.State.IRQ := FState.IRQFlag or FCartridge.CoprocessorIRQ;
+    FCPU.State.IRQ := FState.IRQSignal or FCartridge.CoprocessorIRQ;
     FCPU.Step;
-    if FState.PendingDMA <> 0 then
-      RunDMA;
-    if FState.HDMAPending then
-      RunHDMA;
   until FState.FrameNumber <> Frame;
   SyncSPC;
   FCartridge.SyncDSP(FState.Clock, MasterRate, True);
@@ -882,6 +1084,9 @@ begin
   begin
     if (FState.Line < 0) or (FState.Line >= LineCount) or (FState.HClock < 0) or (FState.HClock >= 1364) then
       raise EReadError.Create('Invalid SNES snapshot timing');
+    if (FState.IRQDelay > 3) or (FState.CPUSpeed <= 0) or (FState.CPUSpeed > 12) or
+      (FState.HDMAInitPosition < 12) or (FState.HDMAInitPosition > 19) then
+      raise EReadError.Create('Invalid SNES snapshot bus state');
 
     FInDMA := False;
     MarkBatteryDirty;

@@ -13,11 +13,16 @@ type
     FCounter, FLatch, FCpuDivider, FDelay: Integer;
     FEnabled, FPending, FReload, FCycleMode, FForceClock, FA12High: Boolean;
     FA12LowSince: UInt64;
+    FNametableBoard: Boolean;
+    FNameBanks: array[0..3] of Byte;
+    FNameRam: array[0..$7FF] of Byte;
     procedure UpdateBanks;
     procedure TickIrq(Delay: Integer);
   public
     procedure SerializeState(State: TNesStateArchive); override;
-    constructor Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+    constructor Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; NametableBoard: Boolean = False);
+    function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
+    function PpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     procedure Reset; override;
     procedure ClockCpu; override;
     procedure ClockPpuAddress(Address: UInt16; PpuCycle: UInt64); override;
@@ -43,17 +48,24 @@ begin
   State.Field(FForceClock, SizeOf(FForceClock));
   State.Field(FA12High, SizeOf(FA12High));
   State.Field(FA12LowSince, SizeOf(FA12LowSince));
+  if FNametableBoard then
+  begin
+    State.Field(FNameBanks, SizeOf(FNameBanks));
+    State.Field(FNameRam, SizeOf(FNameRam))
+  end;
 end;
 
-constructor TMapperRambo.Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+constructor TMapperRambo.Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; NametableBoard: Boolean);
 begin
-  inherited;
+  inherited Create(Prg, Chr, HasChrRam, MirrorMode);
+  FNametableBoard := NametableBoard;
   Reset;
 end;
 
 procedure TMapperRambo.Reset;
 begin
   inherited;
+  FillChar(FNameBanks, SizeOf(FNameBanks), 0);
   FillChar(FRegisters, SizeOf(FRegisters), 0);
   FSelect := 0;
   FCounter := 0;
@@ -104,9 +116,30 @@ end;
 
 function TMapperRambo.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
+  if FNametableBoard then
+  begin
+    if (Address and $E001) = $A000 then
+      Exit(True);
+
+    if (Address and $E001) = $8001 then
+    begin
+      var R := FSelect and 7;
+      if (FSelect and $80) <> 0 then
+      begin
+        if (R >= 2) and (R <= 5) then
+          FNameBanks[R - 2] := Value shr 7
+      end
+      else if R < 2 then
+      begin
+        FNameBanks[R * 2] := Value shr 7;
+        FNameBanks[R * 2 + 1] := Value shr 7
+      end;
+    end;
+  end;
   Result := Address >= $8000;
   if not Result then
     Exit;
+
   case Address and $E001 of
     $8000:
       begin
@@ -179,8 +212,7 @@ begin
   var High := (Address and $1000) <> 0;
   if not High and FA12High then
     FA12LowSince := PpuCycle;
-  if High and not FA12High and not FCycleMode and (PpuCycle >= FA12LowSince) and
-    (PpuCycle - FA12LowSince >= 30) then
+  if High and not FA12High and not FCycleMode and (PpuCycle >= FA12LowSince) and (PpuCycle - FA12LowSince >= 30) then
     TickIrq(2);
   FA12High := High;
 end;
@@ -188,6 +220,28 @@ end;
 function TMapperRambo.IrqPending: Boolean;
 begin
   Result := FPending;
+end;
+
+function TMapperRambo.PpuRead(Address: UInt16; out Value: UInt8): Boolean;
+begin
+  if FNametableBoard and (Address >= $2000) and (Address < $3F00) then
+  begin
+    Value := FNameRam[FNameBanks[(Address shr 10) and 3] * $400 + (Address and $3FF)];
+    Exit(True)
+  end;
+
+  Result := inherited;
+end;
+
+function TMapperRambo.PpuWrite(Address: UInt16; Value: UInt8): Boolean;
+begin
+  if FNametableBoard and (Address >= $2000) and (Address < $3F00) then
+  begin
+    FNameRam[FNameBanks[(Address shr 10) and 3] * $400 + (Address and $3FF)] := Value;
+    Exit(True)
+  end;
+
+  Result := inherited;
 end;
 
 end.

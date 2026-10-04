@@ -60,7 +60,7 @@ begin
   FPending := False;
   FUseChrNametables := False;
   FillChar(FNametableBanks, SizeOf(FNametableBanks), 0);
-  if FBoard = 69 then
+  if FBoard = MAPPER_FME7 then
   begin
     Prg8(0, 0);
     Prg8(1, 1);
@@ -75,7 +75,7 @@ end;
 
 function TMapperSunsoft.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
 begin
-  if (FBoard = 69) and (Address >= $6000) and (Address < $8000) then
+  if (FBoard = MAPPER_FME7) and (Address >= $6000) and (Address < $8000) then
   begin
     if (FWorkBank and $40) = 0 then
       Value := FPrgRom[((FWorkBank and $3F) * $2000 + (Address and $1FFF)) mod Length(FPrgRom)]
@@ -85,6 +85,7 @@ begin
       Exit(False);
     Exit(True);
   end;
+
   Result := inherited CpuRead(Address, Value);
 end;
 
@@ -92,7 +93,7 @@ function TMapperSunsoft.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
   if Address < $8000 then
   begin
-    if (FBoard = 69) and (Address >= $6000) then
+    if (FBoard = MAPPER_FME7) and (Address >= $6000) then
     begin
       if (FWorkBank and $C0) = $C0 then
         FPrgRam[(FWorkBank and 3) * $2000 + (Address and $1FFF)] := Value;
@@ -100,8 +101,9 @@ begin
     end;
     Exit(inherited CpuWrite(Address, Value));
   end;
+
   Result := True;
-  if FBoard = 68 then
+  if FBoard = MAPPER_SUNSOFT4 then
     case Address shr 12 of
       8..$B:
         Chr2((Address shr 12) - 8, Value);
@@ -171,6 +173,7 @@ begin
     Value := FChrMemory[NameOffset(Address)];
     Exit(True);
   end;
+
   Result := inherited PpuRead(Address, Value);
 end;
 
@@ -182,6 +185,7 @@ begin
       FChrMemory[NameOffset(Address)] := Value;
     Exit(True);
   end;
+
   Result := inherited PpuWrite(Address, Value);
 end;
 

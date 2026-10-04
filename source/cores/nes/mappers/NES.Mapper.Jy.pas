@@ -215,8 +215,10 @@ begin
     end;
     Exit;
   end;
+
   if Address < $8000 then
     Exit(False);
+
   var Index := Address and 7;
   case Address and $F000 of
     $8000:
@@ -272,7 +274,7 @@ end;
 function TMapperJy.NameRamOffset(Address: UInt16): Integer;
 begin
   var Slot := ((Address and $0FFF) shr 10);
-  if (FBoard = 209) and ((FMode and $20) <> 0) then
+  if ((FBoard = MAPPER_JY_209) and ((FMode and $20) <> 0)) or (FBoard = MAPPER_JY_211) then
     Slot := FName[Slot] and 1
   else
     case FMirrorRegister of
@@ -293,14 +295,14 @@ begin
   if (Address >= $2000) and (Address < $3F00) then
   begin
     var Bank := FName[(Address and $0FFF) shr 10];
-    if (FBoard = 209) and ((FMode and $20) <> 0) and (((FMode and $40) <> 0) or ((Bank and $80) <> FNameSelect)) then
+    if (((FBoard = MAPPER_JY_209) and ((FMode and $20) <> 0)) or (FBoard = MAPPER_JY_211)) and (((FMode and $40) <> 0) or ((Bank and $80) <> FNameSelect)) then
       Value := FChrMemory[(Bank * $400 + (Address and $3FF)) mod Length(FChrMemory)]
     else
       Value := FCiram[NameRamOffset(Address)];
     Exit(True);
   end;
   Result := inherited PpuRead(Address, Value);
-  if Result and (FBoard = 209) then
+  if Result and (FBoard = MAPPER_JY_209) then
     if ((Address and $0FF8) = $0FD8) or ((Address and $0FF8) = $0FE8) then
     begin
       FLatches[Address shr 12] := (Address shr 4) and (((Address shr 10) and 4) or 2);

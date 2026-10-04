@@ -58,8 +58,8 @@ type
 implementation
 
 uses
-  NES.RomMetadata, NES.Mapper.Factory, Core.SavePaths, Core.RomFormat,
-  System.Hash,
+  Core.RomHashes, NES.RomMetadata, NES.Mapper.Factory, Core.SavePaths,
+  Core.RomFormat, System.Hash,
   {$IFDEF MSWINDOWS}
   Winapi.Windows,
   {$ENDIF}
@@ -320,7 +320,7 @@ begin
     if IsLegacyPowerPadRom(FRomIdentity) then
       FMetadata.DefaultExpansionDevice := 12;
       // Legacy iNES cannot declare the VS PPU model. This exact ROM uses RP2C04-0004.
-    if (FMapperId = MAPPER_VS_SYSTEM) and (FRomIdentity = '91fa719b4b05adbac0b9d507d2051ed361d1ded4') then
+    if (FMapperId = MAPPER_VS_SYSTEM) and (FRomIdentity = ROM_NES_VS_SUPER_MARIO_BROS_X_SHA1) then
       FMetadata.VsPpuType := 5;
   end;
 
@@ -334,10 +334,24 @@ begin
     if IsLegacyPalRom(PrgRom, ChrRom) then
       FMetadata.Timing := TRomTiming.PAL;
   end;
+  // UNROM512 uses header bit 3 without bit 0 for register-controlled
+  // single-screen mirroring; setting both bits selects four-screen RAM.
+  if (FMapperId = MAPPER_UNROM512) and ((Header.Flags6 and 9) = 8) then
+  begin
+    Mirror := TMirrorMode.Single0;
+    FMetadata.MirrorMode := Mirror
+  end;
   FMapper := CreateMapper(FMapperId, PrgRom, ChrRom, ChrRam, Mirror,
-    FMetadata.Format = TRomFormat.INes, FMetadata.Submapper);
+    FMetadata.Format = TRomFormat.INes, FMetadata.Submapper, FMetadata.HasBattery);
   if FMapper = nil then
     raise ENesException.CreateFmt('Unsupported mapper: %d', [FMapperId]);
+
+  if (FMapperId = MAPPER_GTROM) or
+    (FMapperId = MAPPER_SACHEN_9602) or
+    (FMapperId = MAPPER_RAINBOW) or
+    (FMapperId = MAPPER_BANDAI_DATACH) or
+    ((FMapperId = MAPPER_RACERMATE) and (FMetadata.Format = TRomFormat.INes)) then
+    FMetadata.HasBattery := True;
 
   // Trainer data initializes the cartridge's CPU RAM before battery activation.
   // A persisted save, when present, subsequently takes precedence.
@@ -358,7 +372,9 @@ begin
 
   var Memory := FMapper.GetSaveMemory;
   FSaveSize := Length(Memory);
-  if FMetadata.Format = TRomFormat.Nes20 then
+  if (FMetadata.Format = TRomFormat.Nes20) and (FMapperId <> MAPPER_NAMCO_163) and (FMapperId <> MAPPER_UNROM512) and
+    (FMapperId <> MAPPER_GTROM) and (FMapperId <> MAPPER_BANDAI_DATACH) and (FMapperId <> MAPPER_RACERMATE) and (FMapperId <> MAPPER_FK23C) and
+    (FMapperId <> MAPPER_SACHEN_9602) and (FMapperId <> MAPPER_RAINBOW) then
   begin
     if (FMetadata.ChrNvRamSize <> 0) or
       ((FMetadata.PrgRamSize <> 0) and (FMetadata.PrgNvRamSize <> 0)) or

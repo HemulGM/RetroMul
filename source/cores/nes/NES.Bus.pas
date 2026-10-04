@@ -321,6 +321,9 @@ end;
 
 function TNesBus.ReadDevice(Address: UInt16): UInt8;
 begin
+  if (Address = $4011) and (FCartridge <> nil) and (FCartridge.Mapper <> nil) then
+    if FCartridge.Mapper.CpuReadOpenBus(Address, FDataBus, Result) then
+      Exit;
   if Address < $2000 then
     Exit(FRam[Address and $07FF]);
   if Address < $4000 then
@@ -362,7 +365,7 @@ begin
   end;
 
   var Value: UInt8;
-  if (FCartridge <> nil) and (FCartridge.Mapper <> nil) and FCartridge.Mapper.CpuRead(Address, Value) then
+  if (FCartridge <> nil) and (FCartridge.Mapper <> nil) and FCartridge.Mapper.CpuReadOpenBus(Address, FDataBus, Value) then
     Exit(Value);
 
   Result := FDataBus;
@@ -377,11 +380,15 @@ begin
   if Address < $2000 then
   begin
     FRam[Address and $07FF] := Value;
+    if (FCartridge <> nil) and (FCartridge.Mapper <> nil) then
+      FCartridge.Mapper.CpuRamWrite(Address and $7FF, Value);
     Exit;
   end;
   if Address < $4000 then
   begin
     FPpu.CpuWrite($2000 or (Address and 7), Value);
+    if (FCartridge <> nil) and (FCartridge.Mapper <> nil) then
+      FCartridge.Mapper.CpuIoWrite($2000 or (Address and 7), Value);
     Exit;
   end;
 
@@ -423,7 +430,12 @@ begin
   end;
 
   if (FCartridge <> nil) and (FCartridge.Mapper <> nil) and FCartridge.Mapper.CpuWriteTimed(Address, Value, FCpuCycle) then
+  begin
+    var Dac: Byte;
+    if FCartridge.Mapper.ConsumeDacWrite(Dac) then
+      FApu.CpuWrite($4011, Dac);
     Exit;
+  end;
 end;
 
 function TNesBus.IsDmaActive: Boolean;

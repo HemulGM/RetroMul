@@ -81,7 +81,7 @@ implementation
 {$R 'SNES.Firmware.res' 'SNES.Firmware.rc'}
 
 uses
-  Core.RomFormat;
+  Core.RomHashes, Core.RomFormat;
 
 function SnesResourceFirmware(const Name: string): TBytes;
 begin
@@ -119,9 +119,9 @@ begin
 
   // Known standalone Datel BIOS dumps (PAR, Mk2 v1.1, Mk3), not game headers.
   Result :=
-    SameText(Hash, '26f0c679d7c5828167681e388c26d52eaa02ecf645aa7325eb118d30b19529c4') or
-    SameText(Hash, 'd91623d4b58dc07e93f777a3bc74251f6584a329efdccf4c2b2181ab6c01030d') or
-    SameText(Hash, '86425e9b1ef0809efc4107af1d91ef87eb1c91a2c12b35220038c3001ffbcf53');
+    SameText(Hash, ROM_SNES_PRO_ACTION_REPLAY_BIOS_SHA256) or
+    SameText(Hash, ROM_SNES_PRO_ACTION_REPLAY_MK2_V11_BIOS_SHA256) or
+    SameText(Hash, ROM_SNES_PRO_ACTION_REPLAY_MK3_BIOS_SHA256);
 end;
 
 function EmptySnesMetadata(const Data: TBytes; Offset: Integer): Boolean;
@@ -133,13 +133,28 @@ begin
   Result := True;
 end;
 
+function UnusableSnesMetadata(const Data: TBytes; Offset: Integer): Boolean;
+begin
+  if EmptySnesMetadata(Data, Offset) then
+    Exit(True);
+  // Early prototypes and PD programs can put executable code/graphics in
+  // this area. Do not interpret those bytes as a coprocessor or RAM size.
+  // A valid checksum pair or plausible mapping/ROM size keeps real headers.
+  var Mode := Data[Offset + $15] and $EF;
+  var Checksum := Data[Offset + $1E] or (Word(Data[Offset + $1F]) shl 8);
+  var Complement := Data[Offset + $1C] or (Word(Data[Offset + $1D]) shl 8);
+  Result := not (Mode in [$20, $21, $22, $23, $25]) and
+    (Data[Offset + $17] >= $10) and
+    not ((Checksum + Complement = $FFFF) and (Checksum <> 0) and (Complement <> 0));
+end;
+
 function SnesDSPFirmwareName(const Data: TBytes): string;
 begin
   Result := '';
   var Header: TSnesHeader;
   if not DetectSnesHeader(Data, Header) then
     Exit;
-  if EmptySnesMetadata(Data, Header.Offset) then
+  if UnusableSnesMetadata(Data, Header.Offset) then
     Exit;
   if IsActionReplayBIOS(Data, Header.CopierSize) then
     Exit;
@@ -203,6 +218,11 @@ begin
   Header.Score := -1;
   for var Base in SNES_ROM_HEADER_BASES do
   begin
+    // A 512-byte copier prefix leaves this residue even with DSP firmware
+    // appended. Full KiB images must not select a header inside game code.
+    if ((Base and ROM_COPIER_HEADER_SIZE) <> 0) and
+      ((Length(Data) and $3FF) <> ROM_COPIER_HEADER_SIZE) then
+      Continue;
     if Length(Data) < Base + $8000 then
       Continue;
 
@@ -227,9 +247,9 @@ begin
       Inc(Score, 8);
     var Op := Data[Base + (Reset and $7FFF)];
     case Op of
-      $18, $78, $4C, $5C, $20, $22, $9C:
+      $18, $78, $4C, $5C, $DC, $20, $22, $9C:
         Inc(Score, 8);
-      $C2, $E2, $A9, $A2, $A0:
+      $C2, $E2, $A9, $A2, $A0, $EA:
         Inc(Score, 4);
       $00, $FF, $CC:
         Dec(Score, 8);
@@ -272,7 +292,7 @@ begin
   if FActionReplay then
     FHeader.Mapping := LoROM;
   var Kind := FData[FHeader.Offset + $16];
-  var EmptyMetadata := EmptySnesMetadata(FData, FHeader.Offset);
+  var EmptyMetadata := UnusableSnesMetadata(FData, FHeader.Offset);
   if EmptyMetadata or FActionReplay then
     Kind := 0;
   var FirmwareName := SnesDSPFirmwareName(Data);

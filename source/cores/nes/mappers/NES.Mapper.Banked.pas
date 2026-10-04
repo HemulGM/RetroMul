@@ -64,6 +64,7 @@ procedure TMapperBanked.SetSaveMemory(const Data: TByteArray);
 begin
   if Length(Data) <> Length(FPrgRam) then
     raise ENesException.Create('Invalid cartridge save size');
+
   Move(Data[0], FPrgRam[0], Length(Data));
 end;
 

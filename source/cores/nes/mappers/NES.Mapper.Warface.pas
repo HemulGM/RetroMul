@@ -67,6 +67,7 @@ begin
   Result := (Address >= $6000) and (Address < $8000);
   if not Result then
     Exit;
+
   if (Address and 1) = 0 then
   begin
     Prg16(0, Value and 7);

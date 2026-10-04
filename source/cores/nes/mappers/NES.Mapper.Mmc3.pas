@@ -43,7 +43,8 @@ implementation
 
 procedure TMapperMmc3.UpdateBankOffsets;
 begin
-  if not FUseBankCache then Exit;
+  if not FUseBankCache then
+    Exit;
   var Count := Length(FPrgRom) div $2000;
   FPrgOffsets[0] := ((FBankRegisters[6] and $3F) mod Count) * $2000;
   FPrgOffsets[1] := ((FBankRegisters[7] and $3F) mod Count) * $2000;
@@ -59,7 +60,8 @@ begin
   for var Slot := 0 to 7 do
   begin
     var MappedSlot := Slot;
-    if (FBankSelect and $80) <> 0 then MappedSlot := Slot xor 4;
+    if (FBankSelect and $80) <> 0 then
+      MappedSlot := Slot xor 4;
     var Bank: Integer;
     if MappedSlot < 4 then
       Bank := (FBankRegisters[MappedSlot shr 1] and $FE) or (MappedSlot and 1)
@@ -89,7 +91,8 @@ begin
   State.Field(FIrqPending, SizeOf(FIrqPending));
   State.Field(FA12High, SizeOf(FA12High));
   State.Field(FA12LowSince, SizeOf(FA12LowSince));
-  if State.Loading then UpdateBankOffsets;
+  if State.Loading then
+    UpdateBankOffsets;
 end;
 
 function TMapperMmc3.GetSaveMemory: TByteArray;
@@ -97,26 +100,30 @@ begin
   if FIsMmc6 and (Length(FLegacySave) = $2000) then
   begin
     Result := Copy(FLegacySave);
-    for var Offset := 0 to 3 do Move(FPrgRam[0], Result[$1000 + Offset * $400], $400);
+    for var Offset := 0 to 3 do
+      Move(FPrgRam[0], Result[$1000 + Offset * $400], $400);
     Exit;
   end;
-  if FIsMmc6 then SetLength(Result, $400)
-  else SetLength(Result, SizeOf(FPrgRam));
+  if FIsMmc6 then
+    SetLength(Result, $400)
+  else
+    SetLength(Result, SizeOf(FPrgRam));
   Move(FPrgRam[0], Result[0], Length(Result));
 end;
 
 procedure TMapperMmc3.SetSaveMemory(const Data: TByteArray);
 begin
   // Accept legacy 8 KiB saves produced before HKROM was recognized.
-  if (Length(Data) <> SizeOf(FPrgRam)) and
-    not (FIsMmc6 and (Length(Data) = $400)) then
+  if (Length(Data) <> SizeOf(FPrgRam)) and not (FIsMmc6 and (Length(Data) = $400)) then
     raise ENesException.Create('Invalid cartridge save size');
+
   if FIsMmc6 and (Length(Data) = $2000) then
   begin
     FLegacySave := Copy(Data);
     Move(Data[$1000], FPrgRam[0], $400);
     Exit;
   end;
+
   Move(Data[0], FPrgRam[0], Length(Data));
 end;
 
@@ -140,7 +147,10 @@ end;
 procedure TMapperMmc3.Reset;
 begin
   FBankSelect := 0;
-  if FIsMmc6 then FPrgRamControl := 0 else FPrgRamControl := $80;
+  if FIsMmc6 then
+    FPrgRamControl := 0
+  else
+    FPrgRamControl := $80;
   FMirrorMode := FInitialMirrorMode;
   FBankRegisters[0] := 0;
   FBankRegisters[1] := 2;
@@ -171,14 +181,17 @@ begin
       if Result then
       begin
         var ReadBit := $20 shl ((Address and $200) shr 8);
-        if (FPrgRamControl and ReadBit) <> 0 then Value := FPrgRam[Address and $3FF]
-        else Value := 0;
+        if (FPrgRamControl and ReadBit) <> 0 then
+          Value := FPrgRam[Address and $3FF]
+        else
+          Value := 0;
       end;
     end
     else
     begin
       Result := (FPrgRamControl and $80) <> 0;
-      if Result then Value := FPrgRam[Address and $1FFF];
+      if Result then
+        Value := FPrgRam[Address and $1FFF];
     end;
   end
   else if Address >= $8000 then
@@ -215,6 +228,7 @@ begin
   Result := Address >= $6000;
   if not Result then
     Exit;
+
   if Address < $8000 then
   begin
     if FIsMmc6 then
@@ -227,11 +241,13 @@ begin
       FPrgRam[Address and $1FFF] := Value;
     Exit;
   end;
+
   case Address and $E001 of
     $8000:
       begin
         FBankSelect := Value;
-        if FIsMmc6 and ((Value and $20) = 0) then FPrgRamControl := 0;
+        if FIsMmc6 and ((Value and $20) = 0) then
+          FPrgRamControl := 0;
         UpdateBankOffsets;
       end;
     $8001:
@@ -269,6 +285,7 @@ function TMapperMmc3.GetChrOffset(Address: UInt16): Integer;
 begin
   if FUseBankCache then
     Exit(FChrOffsets[Address shr 10] + (Address and $3FF));
+
   var Bank: Integer;
   if (FBankSelect and $80) <> 0 then
     Address := Address xor $1000;

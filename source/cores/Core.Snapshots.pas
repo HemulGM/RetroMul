@@ -146,9 +146,9 @@ begin
   // MD v4 adds Z80 HALT, interrupt mode and EI delay.
   if PlatformCore = 'MD' then
     Result.Version := 4;
-  // SNES v7 adds the CPU-cycle NMI edge delay to the system state.
+  // SNES v8 persists IRQ counters, HDMA scheduling and the partial PPU pipeline.
   if PlatformCore = 'SNES' then
-    Result.Version := 7;
+    Result.Version := 8;
   var Core := AnsiString(PlatformCore);
   if (Length(Core) = 0) or (Length(Core) > 8) then
     raise EArgumentException.Create('Invalid snapshot platform');

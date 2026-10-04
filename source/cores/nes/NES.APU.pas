@@ -86,6 +86,7 @@ type
     FFrameIrqFlag: Boolean;
     FFrameIrqClearPending: Boolean;
     FSampleRate: Integer;
+    FExpansionAudio: Double;
     FSampleTimer: Double;
     FSampleStep: Double;
     FBuffer: array of SmallInt;
@@ -133,6 +134,7 @@ type
     procedure SetRegion(Value: TNesRegion);
     procedure Reset;
     procedure SetSampleRate(Value: Integer);
+    procedure SetExpansionAudio(Value: Double);
     procedure CpuWrite(Address: UInt16; Value: UInt8);
     function CpuReadStatus: UInt8;
     function IrqPending: Boolean;
@@ -161,6 +163,11 @@ type
   end;
 
 implementation
+
+procedure TApu.SetExpansionAudio(Value: Double);
+begin
+  FExpansionAudio := Value
+end;
 
 procedure TApu.SerializeDmaState(State: TNesStateArchive);
 begin
@@ -203,6 +210,10 @@ begin
   else if State.Loading then
     FFrameIrqClearPending := False;
   State.Field(FSampleRate, SizeOf(FSampleRate));
+  if State.Version >= 15 then
+    State.Field(FExpansionAudio, SizeOf(FExpansionAudio))
+  else if State.Loading then
+    FExpansionAudio := 0;
   State.Field(FSampleTimer, SizeOf(FSampleTimer));
   State.Field(FSampleStep, SizeOf(FSampleStep));
   if Length(FBuffer) > 0 then
@@ -302,6 +313,7 @@ begin
   FFrameIrqFlag := False;
   FFrameIrqClearPending := False;
   FSampleTimer := 0;
+  FExpansionAudio := 0;
   FWritePos := 0;
   FReadPos := 0;
   FCount := 0;
@@ -956,7 +968,7 @@ begin
 
   // An output-rate low-pass cannot remove frequencies that have already
   // folded into the audible band. Keep its history at the APU clock rate.
-  FLp14Output := FLp14Output + FLp14Coefficient * (FAntiAlias.Process(MixSample) - FLp14Output);
+  FLp14Output := FLp14Output + FLp14Coefficient * (FAntiAlias.Process(MixSample + FExpansionAudio) - FLp14Output);
   FSampleTimer := FSampleTimer + 1.0;
   while FSampleTimer >= FSampleStep do
   begin

@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.UITypes, Core.Snapshots;
+  System.SysUtils, System.Classes, System.UITypes, Core.Snapshots;
 
 type
   TSnesPPUState = packed record
@@ -24,14 +24,39 @@ type
     OddField: Boolean;
     PPU1Bus, PPU2Bus: Byte;
     Latched: Boolean;
+    InternalCGAddress: Word;
+  end;
+
+  TSnesSpritePixels = packed record
+    Color, Palette, Priority: array[0..255] of Byte;
+  end;
+
+  TSnesPPURenderState = packed record
+    Timed, FrameHires, FrameInterlace: Boolean;
+    DrawX, Line, EvalDot, FetchDot, EvalIndex, TimeIndex: Integer;
+    SpriteCount, TileCount, FetchIndex, FetchColumn: Integer;
+    SpriteIndexes: array[0..31] of Byte;
+    SpriteX, SpriteY, SpriteWidth, SpriteHeight: Integer;
+    SpriteTile, SpriteFlags: Byte;
+    Current, Next: TSnesSpritePixels;
   end;
 
   TSnesPPU = class
   private
     FFrame: TArray<TAlphaColor>;
+    FRender: TSnesPPURenderState;
     function VRAMIndex: Integer;
     procedure IncrementVRAM;
     function OAMIndex: Integer;
+    function AccessOAM(H, V: Integer): Integer;
+    function CanAccessVRAM(V: Integer): Boolean;
+    function CanAccessCGRAM(H, V: Integer): Boolean;
+    procedure UpdateVRAMBuffer(V: Integer);
+    procedure FetchSpritePosition(Index: Integer);
+    procedure UpdateSprites(H, V: Integer; Odd: Boolean);
+    procedure FetchSpriteTile(V: Integer; Odd: Boolean);
+    procedure RenderSpan(Y, FirstX, LastX: Integer; Odd: Boolean);
+    procedure UpdateOutputMode;
     function TilePixel(Base, Tile, BPP, X, Y: Integer): Integer;
     function MapEntry(Layer, Column, Row: Integer): Word;
     function OffsetEntry(Column: Integer; Vertical: Boolean): Word;
@@ -43,10 +68,13 @@ type
     State: TSnesPPUState;
     constructor Create;
     procedure Reset;
-    procedure Write(Address: Word; Value: Byte; V: Integer = 0);
+    procedure Write(Address: Word; Value: Byte; V: Integer = 0; H: Integer = 0);
     function Read(Address: Word; OpenBus: Byte; H, V: Integer; PAL, Odd: Boolean; LatchEnabled: Boolean = True): Byte;
     procedure LatchCounters(H, V: Integer);
     procedure RenderLine(Y: Integer; Odd: Boolean = False);
+    procedure RenderUntil(H, V: Integer; Odd: Boolean);
+    procedure EndScanline(V: Integer; Odd: Boolean);
+    procedure BeginFrame;
     function Width: Integer;
     function Height: Integer;
     function OutputHeight: Integer;
@@ -69,6 +97,8 @@ end;
 procedure TSnesPPU.Reset;
 begin
   State := Default(TSnesPPUState);
+  FRender := Default(TSnesPPURenderState);
+  FRender.FetchIndex := -1;
   State.Regs[0] := $80;
   for var i := 0 to High(FFrame) do
     FFrame[i] := $FF000000;
@@ -76,7 +106,8 @@ end;
 
 function TSnesPPU.Width: Integer;
 begin
-  if (State.Regs[5] and 7 in [5, 6]) or ((State.Regs[$33] and 8) <> 0) then
+  if (State.Regs[5] and 7 in [5, 6]) or ((State.Regs[$33] and 8) <> 0) or
+    (FRender.Timed and FRender.FrameHires) then
     Result := 512
   else
     Result := 256;
@@ -93,7 +124,7 @@ end;
 function TSnesPPU.OutputHeight: Integer;
 begin
   Result := Height;
-  if ((State.Regs[$33] and 1) <> 0) and ((State.Regs[5] and 7) in [5, 6]) then
+  if ((State.Regs[$33] and 1) <> 0) or (FRender.Timed and FRender.FrameInterlace) then
     Result := Result * 2;
 end;
 
@@ -125,8 +156,10 @@ begin
     Result := 512 + (Result and 31);
 end;
 
-procedure TSnesPPU.Write(Address: Word; Value: Byte; V: Integer);
+procedure TSnesPPU.Write(Address: Word; Value: Byte; V, H: Integer);
 begin
+  if H > 0 then
+    RenderUntil(H, V, State.OddField);
   var R := Address and $FF;
   if R > $33 then
     Exit;
@@ -140,17 +173,19 @@ begin
       end;
     $04:
       begin
-        var A := OAMIndex;
-        if A >= 512 then
-          State.OAM[A] := Value
-        else if (A and 1) <> 0 then
+        var A := AccessOAM(H, V);
+        if (A < 512) and ((A and 1) <> 0) then
         begin
           State.OAM[A - 1] := State.OAMLatch;
           State.OAM[A] := Value;
         end
-        else
+        else if (A < 512) or ((A and 1) = 0) then
           State.OAMLatch := Value;
-        State.OAMAddress := (Integer(State.OAMAddress) + 1) and $FFFF;
+        if ((State.Regs[0] and $80) = 0) and (V < Height + 1) then
+          A := $200 or ((A and $1F0) shr 4);
+        if A >= 512 then
+          State.OAM[$200 or (A and $1F)] := Value;
+        State.OAMAddress := (Integer(State.OAMAddress) + 1) and $3FF;
       end;
     $0D..$14:
       begin
@@ -175,12 +210,11 @@ begin
     $16, $17:
       begin
         State.VRAMAddress := State.Regs[$16] or (Word(State.Regs[$17]) shl 8);
-        var A := VRAMIndex;
-        State.VRAMBuffer := State.VRAM[A] or (Word(State.VRAM[(A + 1) and $FFFF]) shl 8);
+        UpdateVRAMBuffer(V);
       end;
     $18, $19:
       begin
-        if ((State.Regs[0] and $80) <> 0) or (V >= Height + 1) then
+        if CanAccessVRAM(V) then
           State.VRAM[(VRAMIndex + R - $18) and $FFFF] := Value;
         if ((R = $19) = ((State.Regs[$15] and $80) <> 0)) then
           IncrementVRAM;
@@ -203,8 +237,11 @@ begin
           State.CGLatch := Value
         else
         begin
-          State.CGRAM[(State.CGAddress - 1) and $1FF] := State.CGLatch;
-          State.CGRAM[State.CGAddress and $1FF] := Value and $7F;
+          var A := State.CGAddress and $1FE;
+          if not CanAccessCGRAM(H, V) then
+            A := State.InternalCGAddress shl 1;
+          State.CGRAM[A] := State.CGLatch;
+          State.CGRAM[A + 1] := Value and $7F;
         end;
         State.CGAddress := (State.CGAddress + 1) and $1FF;
       end;
@@ -218,10 +255,262 @@ begin
           State.FixedColor := (State.FixedColor and $03FF) or ((Value and 31) shl 10);
       end;
   end;
+  if (R = $05) or (R = $33) then
+    UpdateOutputMode;
+end;
+
+function TSnesPPU.CanAccessVRAM(V: Integer): Boolean;
+begin
+  Result := ((State.Regs[0] and $80) <> 0) or (V >= Height + 1);
+end;
+
+function TSnesPPU.CanAccessCGRAM(H, V: Integer): Boolean;
+begin
+  Result := CanAccessVRAM(V) or (V = 0) or (H < 88) or (H >= 1096);
+end;
+
+procedure TSnesPPU.UpdateVRAMBuffer(V: Integer);
+begin
+  if CanAccessVRAM(V) then
+  begin
+    var A := VRAMIndex;
+    State.VRAMBuffer := State.VRAM[A] or (Word(State.VRAM[(A + 1) and $FFFF]) shl 8);
+  end
+  else
+    State.VRAMBuffer := 0;
+end;
+
+function TSnesPPU.AccessOAM(H, V: Integer): Integer;
+begin
+  if CanAccessVRAM(V) then
+    Exit(OAMIndex);
+  // Like Mesen, use the evaluation/fetch sprite index during active display.
+  if H <= 1020 then
+    Result := FRender.EvalIndex shl 2
+  else
+    Result := FRender.TimeIndex shl 2;
+end;
+
+procedure TSnesPPU.FetchSpritePosition(Index: Integer);
+const
+  Widths: array[0..15] of Integer = (8, 8, 8, 16, 16, 32, 16, 16, 16, 32, 64, 32, 64, 64, 32, 32);
+  Heights: array[0..15] of Integer = (8, 8, 8, 16, 16, 32, 32, 32, 16, 32, 64, 32, 64, 64, 64, 32);
+begin
+  var High := State.OAM[512 + Index div 4] shr ((Index and 3) * 2);
+  var Mode := (State.Regs[1] shr 5) or ((High and 2) shl 2);
+  FRender.SpriteX := State.OAM[Index * 4] or ((High and 1) shl 8);
+  if FRender.SpriteX >= 256 then
+    Dec(FRender.SpriteX, 512);
+  FRender.SpriteY := State.OAM[Index * 4 + 1];
+  FRender.SpriteWidth := Widths[Mode];
+  FRender.SpriteHeight := Heights[Mode];
+end;
+
+procedure TSnesPPU.FetchSpriteTile(V: Integer; Odd: Boolean);
+begin
+  Inc(FRender.TileCount);
+  if FRender.TileCount > 34 then
+  begin
+    State.Status := State.Status or $80;
+    Exit;
+  end;
+  var Row := (V - FRender.SpriteY) and $FF;
+  if (State.Regs[$33] and 2) <> 0 then
+    Row := Row * 2 + Ord(Odd);
+  var Flags := FRender.SpriteFlags;
+  if (Flags and $80) <> 0 then
+    if Row < FRender.SpriteWidth then
+      Row := FRender.SpriteWidth - 1 - Row
+    else
+      Row := FRender.SpriteWidth * 3 - 1 - Row;
+  var Base := (State.Regs[1] and 7) shl 14;
+  if (Flags and 1) <> 0 then
+    Inc(Base, (((State.Regs[1] shr 3) and 3) + 1) shl 13);
+  for var Col := 0 to 7 do
+  begin
+    var X := FRender.SpriteX + FRender.FetchColumn * 8 + Col;
+    if (X < 0) or (X > 255) then
+      Continue;
+    var PX := FRender.FetchColumn * 8 + Col;
+    if (Flags and $40) <> 0 then
+      PX := FRender.SpriteWidth - 1 - PX;
+    var Tile := ((FRender.SpriteTile and $F0) + (Row div 8) * 16) and $F0;
+    Tile := Tile or ((FRender.SpriteTile + PX div 8) and 15);
+    var Pixel := TilePixel(Base, Tile, 4, PX and 7, Row and 7);
+    if Pixel <> 0 then
+    begin
+      FRender.Next.Color[X] := Pixel;
+      FRender.Next.Palette[X] := (Flags shr 1) and 7;
+      FRender.Next.Priority[X] := (Flags shr 4) and 3;
+    end;
+  end;
+end;
+
+procedure TSnesPPU.UpdateSprites(H, V: Integer; Odd: Boolean);
+begin
+  if V > Height then
+    Exit;
+  var Dot := H div 4;
+  if H > 1310 then
+    Dot := (H - 4) div 4
+  else if H > 1292 then
+    Dot := (H - 2) div 4;
+  while (FRender.EvalDot <= Dot) and (FRender.EvalDot <= 255) do
+  begin
+    if FRender.EvalDot = 0 then
+    begin
+      FRender.EvalIndex := 0;
+      if (State.Regs[3] and $80) <> 0 then
+        FRender.EvalIndex := (State.OAMAddress and $1FC) shr 2;
+    end;
+    if (State.Regs[0] and $80) = 0 then
+      if (FRender.EvalDot and 1) = 0 then
+        FetchSpritePosition(FRender.EvalIndex)
+      else
+      begin
+        var Height := FRender.SpriteHeight;
+        if (State.Regs[$33] and 2) <> 0 then
+          Height := Height div 2;
+        if (((V - FRender.SpriteY) and $FF) < Height) and
+          ((FRender.SpriteX = -256) or ((FRender.SpriteX < 256) and
+          (FRender.SpriteX + FRender.SpriteWidth > 0))) then
+          if FRender.SpriteCount < 32 then
+          begin
+            FRender.SpriteIndexes[FRender.SpriteCount] := FRender.EvalIndex;
+            Inc(FRender.SpriteCount);
+          end
+          else
+            State.Status := State.Status or $40;
+        FRender.EvalIndex := (FRender.EvalIndex + 1) and 127;
+      end;
+    Inc(FRender.EvalDot);
+  end;
+  while (Dot >= 270 + FRender.FetchDot) and (FRender.FetchDot < 70) do
+  begin
+    if FRender.FetchDot = 0 then
+    begin
+      FRender.FetchIndex := FRender.SpriteCount - 1;
+      FRender.FetchColumn := -1;
+      if FRender.FetchIndex >= 0 then
+        FRender.TimeIndex := FRender.SpriteIndexes[FRender.FetchIndex];
+    end;
+    if ((FRender.FetchDot and 1) = 0) and (FRender.FetchIndex >= 0) then
+    begin
+      // OAM attributes precede the two CHR words: first tile completes at dot 272.
+      if FRender.FetchDot >= 2 then
+      begin
+        if (State.Regs[0] and $80) = 0 then
+          FetchSpriteTile(V, Odd);
+        Dec(FRender.FetchColumn);
+        if FRender.FetchColumn < 0 then
+          Dec(FRender.FetchIndex);
+      end;
+      while FRender.FetchIndex >= 0 do
+      begin
+        if FRender.FetchColumn < 0 then
+        begin
+          FRender.TimeIndex := FRender.SpriteIndexes[FRender.FetchIndex];
+          FetchSpritePosition(FRender.TimeIndex);
+          FRender.SpriteTile := State.OAM[FRender.TimeIndex * 4 + 2];
+          FRender.SpriteFlags := State.OAM[FRender.TimeIndex * 4 + 3];
+          FRender.FetchColumn := FRender.SpriteWidth div 8 - 1;
+        end;
+        var X := FRender.SpriteX + FRender.FetchColumn * 8;
+        if ((X >= -7) and (X <= 255)) or (FRender.SpriteX = -256) then
+          Break;
+        // Fully clipped tiles do not consume the CHR fetch budget.
+        Dec(FRender.FetchColumn);
+        if FRender.FetchColumn < 0 then
+          Dec(FRender.FetchIndex);
+      end;
+      if (FRender.TileCount = 34) and (FRender.FetchIndex >= 0) and
+        ((State.Regs[0] and $80) = 0) then
+        State.Status := State.Status or $80;
+    end;
+    Inc(FRender.FetchDot);
+  end;
+end;
+
+procedure TSnesPPU.UpdateOutputMode;
+begin
+  if not FRender.Timed then
+    Exit;
+  if not FRender.FrameHires and (((State.Regs[5] and 7) in [5, 6]) or
+    ((State.Regs[$33] and 8) <> 0)) then
+  begin
+    // Keep the frame stride consistent if a raster effect enables hires mid-frame.
+    var LastY := FRender.Line - 1;
+    if FRender.FrameInterlace then
+      LastY := LastY * 2 + Ord(State.OddField);
+    for var Y := 0 to Min(LastY, OutputHeight - 1) do
+    begin
+      var Count := 256;
+      if Y = LastY then
+        Count := FRender.DrawX;
+      for var X := Count - 1 downto 0 do
+      begin
+        var Pixel := FFrame[Y * 512 + X];
+        FFrame[Y * 512 + X * 2] := Pixel;
+        FFrame[Y * 512 + X * 2 + 1] := Pixel;
+      end;
+    end;
+    FRender.FrameHires := True;
+  end;
+end;
+
+procedure TSnesPPU.RenderUntil(H, V: Integer; Odd: Boolean);
+begin
+  FRender.Timed := True;
+  FRender.Line := V;
+  State.OddField := Odd;
+  UpdateOutputMode;
+  UpdateSprites(H, V, Odd);
+  if (V <= 0) or (V > Height) or (H < 88) then
+    Exit;
+  var LastX := Min(H div 4 - 22, 255);
+  if LastX < FRender.DrawX then
+    Exit;
+  RenderSpan(V - 1, FRender.DrawX, LastX, Odd);
+  FRender.DrawX := LastX + 1;
+end;
+
+procedure TSnesPPU.EndScanline(V: Integer; Odd: Boolean);
+begin
+  RenderUntil(1364, V, Odd);
+  FRender.Current := FRender.Next;
+  FRender.Next := Default(TSnesSpritePixels);
+  FRender.DrawX := 0;
+  FRender.EvalDot := 0;
+  FRender.FetchDot := 0;
+  FRender.SpriteCount := 0;
+  FRender.TileCount := 0;
+  FRender.FetchIndex := -1;
+end;
+
+procedure TSnesPPU.BeginFrame;
+begin
+  FRender.FrameHires := ((State.Regs[5] and 7) in [5, 6]) or ((State.Regs[$33] and 8) <> 0);
+  FRender.FrameInterlace := (State.Regs[$33] and 1) <> 0;
+end;
+
+procedure TSnesPPU.RenderLine(Y: Integer; Odd: Boolean);
+begin
+  // Standalone rendering remains available to diagnostics without advancing the pipeline.
+  var Timed := FRender.Timed;
+  FRender.Timed := False;
+  try
+    RenderSpan(Y, 0, 255, Odd);
+  finally
+    FRender.Timed := Timed;
+  end;
 end;
 
 procedure TSnesPPU.LatchCounters(H, V: Integer);
 begin
+  if H > 1310 then
+    Dec(H, 4)
+  else if H > 1292 then
+    Dec(H, 2);
   State.HLatch := H div 4;
   State.VLatch := V;
   State.Latched := True;
@@ -229,6 +518,7 @@ end;
 
 function TSnesPPU.Read(Address: Word; OpenBus: Byte; H, V: Integer; PAL, Odd: Boolean; LatchEnabled: Boolean): Byte;
 begin
+  RenderUntil(H, V, Odd);
   Result := OpenBus;
   case Address of
     $2134..$2136:
@@ -238,8 +528,11 @@ begin
         LatchCounters(H, V);
     $2138:
       begin
-        Result := State.OAM[OAMIndex];
-        State.OAMAddress := (Integer(State.OAMAddress) + 1) and $FFFF;
+        var A := AccessOAM(H, V);
+        if A >= 512 then
+          A := $200 or (A and $1F);
+        Result := State.OAM[A];
+        State.OAMAddress := (Integer(State.OAMAddress) + 1) and $3FF;
       end;
     $2139, $213A:
       begin
@@ -249,14 +542,16 @@ begin
           Result := State.VRAMBuffer shr 8;
         if ((Address = $213A) = ((State.Regs[$15] and $80) <> 0)) then
         begin
-          var A := VRAMIndex;
-          State.VRAMBuffer := State.VRAM[A] or (Word(State.VRAM[(A + 1) and $FFFF]) shl 8);
+          UpdateVRAMBuffer(V);
           IncrementVRAM;
         end;
       end;
     $213B:
       begin
-        Result := State.CGRAM[State.CGAddress and $1FF];
+        var A := State.CGAddress and $1FE;
+        if not CanAccessCGRAM(H, V) then
+          A := State.InternalCGAddress shl 1;
+        Result := State.CGRAM[A or (State.CGAddress and 1)];
         if (State.CGAddress and 1) <> 0 then
           Result := (Result and $7F) or (State.PPU2Bus and $80);
         State.CGAddress := (State.CGAddress + 1) and $1FF;
@@ -300,6 +595,7 @@ end;
 
 function TSnesPPU.Palette(Index: Integer): Word;
 begin
+  State.InternalCGAddress := Index and $FF;
   Index := (Index and $FF) * 2;
   Result := State.CGRAM[Index] or (Word(State.CGRAM[Index + 1]) shl 8);
 end;
@@ -545,7 +841,7 @@ begin
   Result := $FF000000 or (Cardinal(R) shl 16) or (Cardinal(G) shl 8) or Cardinal(B);
 end;
 
-procedure TSnesPPU.RenderLine(Y: Integer; Odd: Boolean);
+procedure TSnesPPU.RenderSpan(Y, FirstX, LastX: Integer; Odd: Boolean);
 const
   ObjWidths: array[0..15] of Integer = (8, 8, 8, 16, 16, 32, 16, 16, 16, 32, 64, 32, 64, 64, 32, 32);
   ObjHeights: array[0..15] of Integer = (8, 8, 8, 16, 16, 32, 32, 32, 16, 32, 64, 32, 64, 64, 64, 32);
@@ -553,6 +849,7 @@ const
     (2, 4, 6, 8), (2, 4, 6, 8), (2, 4, 6, 8), (2, 4, 6, 8), (2, 3, 4, 6), (2, 4, 6, 7));
 var
   ObjColor, ObjPriority: array[0..255] of Integer;
+  ObjAddress: array[0..255] of Integer;
   ObjMath: array[0..255] of Boolean;
 begin
   if (Y < 0) or (Y >= Height) then
@@ -568,6 +865,7 @@ begin
   var First := 0;
   if (State.Regs[3] and $80) <> 0 then
     First := (State.OAMReload div 4) and 127;
+  if not FRender.Timed then
   for var J := 0 to 127 do
   begin
     var Obj := (First + J) and 127;
@@ -634,12 +932,25 @@ begin
         Continue;
 
       ObjColor[SX] := Palette(128 + ((Flags shr 1) and 7) * 16 + Pixel);
+      ObjAddress[SX] := 128 + ((Flags shr 1) and 7) * 16 + Pixel;
       ObjMath[SX] := (Flags and 8) <> 0;
       ObjPriority[SX] := SpritePrio[State.Regs[5] and 7, (Flags shr 4) and 3];
     end;
   end;
+  if FRender.Timed then
+    for var X := 0 to 255 do
+      if FRender.Current.Color[X] <> 0 then
+      begin
+        var Pal := FRender.Current.Palette[X];
+        ObjColor[X] := Palette(128 + Pal * 16 + FRender.Current.Color[X]);
+        ObjAddress[X] := 128 + Pal * 16 + FRender.Current.Color[X];
+        ObjPriority[X] := SpritePrio[State.Regs[5] and 7, FRender.Current.Priority[X]];
+        ObjMath[X] := Pal >= 4;
+      end;
   var W := Width;
-  for var X := 0 to W - 1 do
+  var Scale := W div 256;
+  var Hires := ((State.Regs[5] and 7) in [5, 6]) or ((State.Regs[$33] and 8) <> 0);
+  for var X := FirstX * Scale to (LastX + 1) * Scale - 1 do
   begin
     var ScreenX := X;
     if W = 512 then
@@ -653,6 +964,8 @@ begin
     end;
     var Main := Integer(Palette(0));
     var Sub := Integer(Palette(0));
+    var MainCG := 0;
+    var SubCG := 0;
     if (W = 256) and ((State.Regs[$30] and 2) = 0) then
       Sub := State.FixedColor;
     var MainPrio := 0;
@@ -661,6 +974,8 @@ begin
     var AllowMath := True;
     for var L := 3 downto 0 do
     begin
+      if ((State.Regs[$2C] or State.Regs[$2D]) and (1 shl L)) = 0 then
+        Continue;
       // BG fetches use the physical scanline (1..224); OBJ was evaluated on the
       // preceding line and therefore keeps the zero-based output Y above.
       var Priority: Integer;
@@ -669,6 +984,7 @@ begin
         not (((State.Regs[$2E] and (1 shl L)) <> 0) and Window(L, ScreenX)) then
       begin
         Main := Pixel;
+        MainCG := State.InternalCGAddress;
         MainPrio := Priority;
         MainLayer := L;
       end;
@@ -678,6 +994,7 @@ begin
         not (((State.Regs[$2F] and (1 shl L)) <> 0) and Window(L, ScreenX)) then
       begin
         Sub := Pixel;
+        SubCG := State.InternalCGAddress;
         SubPrio := Priority;
       end;
     end;
@@ -687,6 +1004,7 @@ begin
         not (((State.Regs[$2E] and 16) <> 0) and Window(4, ScreenX)) then
       begin
         Main := ObjColor[ScreenX];
+        MainCG := ObjAddress[ScreenX];
         MainLayer := 4;
         AllowMath := ObjMath[ScreenX];
       end;
@@ -694,6 +1012,7 @@ begin
         not (((State.Regs[$2F] and 16) <> 0) and Window(4, ScreenX)) then
       begin
         Sub := ObjColor[ScreenX];
+        SubCG := ObjAddress[ScreenX];
         SubPrio := ObjPriority[ScreenX];
       end;
     end;
@@ -725,8 +1044,13 @@ begin
       end;
       Main := Combined;
     end;
-    if (W = 512) and ((X and 1) = 0) then
+    if Hires and ((X and 1) = 0) then
+    begin
       Main := Sub;
+      State.InternalCGAddress := SubCG;
+    end
+    else
+      State.InternalCGAddress := MainCG;
     var Output := Color(Word(Main));
     if (State.Regs[0] and $80) <> 0 then
       Output := $FF000000;
@@ -737,7 +1061,15 @@ end;
 procedure TSnesPPU.SerializeState(Archive: TStateArchive);
 begin
   Archive.Field(State, SizeOf(State));
+  Archive.Field(FRender, SizeOf(FRender));
   Archive.Field(FFrame[0], Length(FFrame) * 4);
+  if Archive.Loading and ((FRender.DrawX < 0) or (FRender.DrawX > 256) or
+    (FRender.EvalDot < 0) or (FRender.EvalDot > 256) or
+    (FRender.FetchDot < 0) or (FRender.FetchDot > 70) or
+    (FRender.SpriteCount < 0) or (FRender.SpriteCount > 32) or
+    (FRender.EvalIndex < 0) or (FRender.EvalIndex > 127) or
+    (FRender.TimeIndex < 0) or (FRender.TimeIndex > 127)) then
+    raise EReadError.Create('Invalid SNES PPU pipeline snapshot');
 end;
 
 end.

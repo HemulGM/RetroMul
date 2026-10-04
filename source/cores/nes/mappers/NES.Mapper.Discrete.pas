@@ -48,7 +48,7 @@ begin
   inherited Create(Prg, Chr, HasChrRam, MirrorMode);
   FBoard := Board;
   FSubmapper := Submapper;
-  if (Board = 108) and (Submapper = 0) then
+  if (Board = MAPPER_FDS_CONVERSION_108) and (Submapper = 0) then
   begin
     if HasChrRam then
     begin
@@ -62,11 +62,11 @@ begin
     else
       FSubmapper := 4;
   end;
-  if Board = 31 then
+  if Board = MAPPER_NSF_CART then
     FRegisters[7] := $FF;
   // Legacy mapper-15 game hacks require writable CHR in all modes (NESdev).
-  FLegacyChrWrites := (Board = 15) and LegacyHeader;
-  if Board = 13 then
+  FLegacyChrWrites := (Board = MAPPER_MULTICART_15) and LegacyHeader;
+  if Board = MAPPER_CPROM then
   begin
     SetLength(FChrMemory, $4000);
     FHasChrRam := True;
@@ -77,7 +77,7 @@ end;
 procedure TMapperDiscrete.Reset;
 begin
   // Mapper 31's latches have power-on defaults but survive the reset button.
-  if FBoard = 31 then
+  if FBoard = MAPPER_NSF_CART then
   begin
     FRamEnabled := False;
     Exit;
@@ -91,70 +91,103 @@ begin
   FIrqPending := False;
   FChrWritable := True;
   case FBoard of
-    8, 13, 34, 41, 58, 61, 79, 87, 99, 101, 113, 133, 140, 144, 145, 148, 184, 212, 228, 240, 242:
+    MAPPER_FFE_F3XXX,        //
+    MAPPER_CPROM,            //
+    MAPPER_BNROM_NINA001,    //
+    MAPPER_CALTRON,          //
+    MAPPER_MULTICART_58,     //
+    MAPPER_MULTICART_61,     //
+    MAPPER_NINA03,           //
+    MAPPER_JALECO_87,        //
+    MAPPER_VS_SYSTEM,        //
+    MAPPER_JALECO_101,       //
+    MAPPER_NINA_113,         //
+    MAPPER_SACHEN_133,       //
+    MAPPER_JALECO_140,       //
+    MAPPER_AGCI,             //
+    MAPPER_SACHEN_145,       //
+    MAPPER_HES_148,          //
+    MAPPER_SUNSOFT1,         //
+    MAPPER_SUPER_HIK_212,    //
+    MAPPER_ACTION52,         //
+    MAPPER_DISCRETE_240,     //
+    MAPPER_WAIXING_242:
       Prg32(0);
-    202:
+    MAPPER_MULTICART_202:
       begin
         Prg16(0, 0);
         Prg16(1, 0);
       end;
-    204:
+    MAPPER_MULTICART_204:
       begin
         // The supplied 255-in-1 cart boots its menu from the last PRG bank.
         Prg16(0, 0);
         Prg16(1, -1);
       end;
-    213, 217:
+    MAPPER_MULTICART_213,    //
+    MAPPER_MULTICART_217:
       Prg32(0);
-    180:
+    MAPPER_REVERSE_UNROM:
       Prg16(1, 0);
-    200:
+    MAPPER_MULTICART_200:
       begin
         Prg16(0, 0);
         Prg16(1, 0);
       end;
-    108:
+    MAPPER_FDS_CONVERSION_108:
       begin
         Prg32(-1);
         if FSubmapper = 4 then
           FRegisters[0] := (Length(FPrgRom) div $2000) - 1;
       end;
-    42:
+    MAPPER_FDS_CONVERSION_42:
       Prg32(-1);
-    32, 88, 112, 154, 206:
+    MAPPER_IREM_G101,        //
+    MAPPER_NAMCO_118,        //
+    MAPPER_DISCRETE_112,     //
+    MAPPER_NAMCO_154,        //
+    MAPPER_DXROM:
       begin
         Prg8(0, 0);
         Prg8(1, 1);
       end;
-    232:
+    MAPPER_CAMERICA_QUATTRO:
       Prg16(1, 3);
   end;
-  if FBoard in [13, 41, 242] then
+  if FBoard in [MAPPER_CPROM, MAPPER_CALTRON, MAPPER_WAIXING_242] then
     Mirror(0);
-  if FBoard = 78 then
+  if FBoard = MAPPER_IREM_78 then
   begin
     if (FSubmapper = 3) or ((FSubmapper = 0) and (FInitialMirror = TMirrorMode.FourScreen)) then
       Mirror(1)
     else
       Mirror(2);
   end;
-  if FBoard = 184 then
+  if FBoard = MAPPER_SUNSOFT1 then
     Chr4(1, 4);
-  if FBoard = 75 then
+  if FBoard = MAPPER_VRC1 then
   begin
     Prg8(2, 0);
     Chr4(1, 0);
   end;
-  if FBoard = 15 then
+  if FBoard = MAPPER_MULTICART_15 then
     CpuWrite($8000, 0);
-  if FBoard in [88, 154, 206, 112] then
+  if FBoard in [MAPPER_NAMCO_118, MAPPER_NAMCO_154, MAPPER_DXROM, MAPPER_DISCRETE_112] then
     UpdateIndexedBanks;
-  FRamEnabled := FBoard in [8, 15, 32, 34, 73, 99, 112, 242];
+  FRamEnabled := FBoard in [
+      MAPPER_FFE_F3XXX,
+      MAPPER_MULTICART_15,
+      MAPPER_IREM_G101,
+      MAPPER_BNROM_NINA001,
+      MAPPER_VRC3,
+      MAPPER_VS_SYSTEM,
+      MAPPER_DISCRETE_112,
+      MAPPER_WAIXING_242];
 end;
 
 procedure TMapperDiscrete.UpdateIndexedBanks;
 begin
-  if FBoard = 112 then
+  if FBoard = MAPPER_DISCRETE_112 then
   begin
     Prg8(0, FRegisters[0]);
     Prg8(1, FRegisters[1]);
@@ -168,12 +201,12 @@ begin
     Prg8(0, FRegisters[6] and $3F);
     Prg8(1, FRegisters[7] and $3F);
     var Mask := $FF;
-    if FBoard in [88, 154] then
+    if FBoard in [MAPPER_NAMCO_118, MAPPER_NAMCO_154] then
       Mask := $3F;
     Chr2(0, (FRegisters[0] and Mask) shr 1);
     Chr2(1, (FRegisters[1] and Mask) shr 1);
     for var i := 4 to 7 do
-      if FBoard in [88, 154] then
+      if FBoard in [MAPPER_NAMCO_118, MAPPER_NAMCO_154] then
         Chr1(i, (FRegisters[i - 2] and $3F) or $40)
       else
         Chr1(i, FRegisters[i - 2]);
@@ -182,34 +215,37 @@ end;
 
 function TMapperDiscrete.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
 begin
-  if (FBoard = 42) and (Address >= $6000) and (Address < $8000) then
+  if (FBoard = MAPPER_FDS_CONVERSION_42) and (Address >= $6000) and (Address < $8000) then
   begin
     Value := FPrgRom[(Integer(FRegisters[0]) * $2000 + (Address and $1FFF)) mod Length(FPrgRom)];
     Exit(True);
   end;
-  if (FBoard = 108) and (Address >= $6000) and (Address < $8000) then
+
+  if (FBoard = MAPPER_FDS_CONVERSION_108) and (Address >= $6000) and (Address < $8000) then
   begin
     Value := FPrgRom[(Integer(FRegisters[0]) * $2000 + (Address and $1FFF)) mod Length(FPrgRom)];
     Exit(True);
   end;
-  if (FBoard = 212) and (Address >= $6000) and (Address < $8000) then
+
+  if (FBoard = MAPPER_SUPER_HIK_212) and (Address >= $6000) and (Address < $8000) then
   begin
     Value := 0;
     if (Address and $10) = 0 then
       Value := $80;
     Exit(True);
   end;
-  if (FBoard = 204) and (Address >= $8000) then
+
+  if (FBoard = MAPPER_MULTICART_204) and (Address >= $8000) then
   begin
     var RegisterAddress := (Integer(FRegisters[1]) shl 8) or FRegisters[0];
-    if ((RegisterAddress and $FF0F) = $F008) or
-       (((RegisterAddress and $FF0F) = $F004) and (Length(FPrgRom) <= $10000)) then
+    if ((RegisterAddress and $FF0F) = $F008) or (((RegisterAddress and $FF0F) = $F004) and (Length(FPrgRom) <= $10000)) then
     begin
       Value := 0;
       Exit(True);
     end;
   end;
-  if (FBoard = 31) and (Address >= $8000) then
+
+  if (FBoard = MAPPER_NSF_CART) and (Address >= $8000) then
   begin
     Value := FPrgRom[(Integer(FRegisters[(Address - $8000) shr 12]) * $1000 +
       (Address and $0FFF)) mod Length(FPrgRom)];
@@ -223,12 +259,12 @@ begin
   Result := inherited CpuWrite(Address, Value);
   var Bank: Integer;
   case FBoard of
-    18:
+    MAPPER_JALECO_SS88006:
       if Address >= $8000 then
       begin
         var RegisterAddress := Address and $F003;
         if ((RegisterAddress >= $8000) and (RegisterAddress <= $8003)) or
-           ((RegisterAddress >= $9000) and (RegisterAddress <= $9001)) then
+          ((RegisterAddress >= $9000) and (RegisterAddress <= $9001)) then
         begin
           var Index := ((RegisterAddress shr 12) - 8) * 2 + ((RegisterAddress and 2) shr 1);
           if (RegisterAddress and 1) = 0 then
@@ -277,7 +313,7 @@ begin
           end;
         Result := True;
       end;
-    73:
+    MAPPER_VRC3:
       if Address >= $8000 then
       begin
         case Address and $F000 of
@@ -302,7 +338,7 @@ begin
         end;
         Result := True;
       end;
-    42:
+    MAPPER_FDS_CONVERSION_42:
       if Address >= $8000 then
       begin
         case Address and $E003 of
@@ -325,7 +361,7 @@ begin
         end;
         Result := True;
       end;
-    41:
+    MAPPER_CALTRON:
       begin
         if (Address >= $6000) and (Address <= $67FF) then
         begin
@@ -342,7 +378,7 @@ begin
           Result := True;
         end;
       end;
-    58:
+    MAPPER_MULTICART_58:
       if Address >= $8000 then
       begin
         Bank := Address and 7;
@@ -357,7 +393,7 @@ begin
         Mirror((Address shr 7) and 1);
         Result := True;
       end;
-    61:
+    MAPPER_MULTICART_61:
       if Address >= $8000 then
       begin
         Bank := (Address and $0F) * 2;
@@ -379,7 +415,7 @@ begin
         Mirror((Address shr 7) and 1);
         Result := True;
       end;
-    78:
+    MAPPER_IREM_78:
       if Address >= $8000 then
       begin
         Value := Value and FPrgRom[PrgOffset(Address)];
@@ -391,14 +427,14 @@ begin
           Mirror(2 + ((Value shr 3) and 1));
         Result := True;
       end;
-    81:
+    MAPPER_NTDEC_N715021:
       if Address >= $8000 then
       begin
         Prg16(0, (Address shr 2) and 3);
         Chr8(Address and 3);
         Result := True;
       end;
-    93:
+    MAPPER_SUNSOFT_3R:
       if Address >= $8000 then
       begin
         Value := Value and FPrgRom[PrgOffset(Address)];
@@ -406,14 +442,14 @@ begin
         FChrWritable := (Value and 1) <> 0;
         Result := True;
       end;
-    94:
+    MAPPER_UN1ROM:
       if Address >= $8000 then
       begin
         Value := Value and FPrgRom[PrgOffset(Address)];
         Prg16(0, (Value shr 2) and 7);
         Result := True;
       end;
-    108:
+    MAPPER_FDS_CONVERSION_108:
       if Address >= $8000 then
       begin
         case FSubmapper of
@@ -433,7 +469,7 @@ begin
         end;
         Result := True;
       end;
-    148:
+    MAPPER_HES_148:
       if Address >= $8000 then
       begin
         Value := Value and FPrgRom[PrgOffset(Address)];
@@ -441,7 +477,7 @@ begin
         Chr8((Value and 7) or ((Value shr 3) and 8));
         Result := True;
       end;
-    200:
+    MAPPER_MULTICART_200:
       if Address >= $8000 then
       begin
         Bank := Address and $0F;
@@ -451,7 +487,7 @@ begin
         Mirror((Address shr 3) and 1);
         Result := True;
       end;
-    202:
+    MAPPER_MULTICART_202:
       if Address >= $8000 then
       begin
         Bank := (Address shr 1) and 7;
@@ -466,7 +502,7 @@ begin
         Mirror(Address and 1);
         Result := True;
       end;
-    204:
+    MAPPER_MULTICART_204:
       if Address >= $8000 then
       begin
         FRegisters[0] := Address and $FF;
@@ -485,7 +521,7 @@ begin
         Mirror((Address shr 4) and 1);
         Result := True;
       end;
-    212:
+    MAPPER_SUPER_HIK_212:
       if Address >= $8000 then
       begin
         Bank := Address and 7;
@@ -500,21 +536,21 @@ begin
         Mirror((Address shr 3) and 1);
         Result := True;
       end;
-    213:
+    MAPPER_MULTICART_213:
       if Address >= $8000 then
       begin
         Prg32((Address shr 1) and 3);
         Chr8((Address shr 3) and 7);
         Result := True;
       end;
-    217:
+    MAPPER_MULTICART_217:
       if Address >= $8000 then
       begin
         Prg32(Address shr 2);
         Chr8(Address);
         Result := True;
       end;
-    33:
+    MAPPER_TAITO_TC0190:
       if (Address >= $8000) and (Address < $C000) then
       begin
         case Address and $A003 of
@@ -523,56 +559,65 @@ begin
               Prg8(0, Value and $3F);
               Mirror((Value shr 6) and 1);
             end;
-          $8001: Prg8(1, Value and $3F);
-          $8002: Chr2(0, Value);
-          $8003: Chr2(1, Value);
-          $A000..$A003: Chr1(4 + (Address and 3), Value);
+          $8001:
+            Prg8(1, Value and $3F);
+          $8002:
+            Chr2(0, Value);
+          $8003:
+            Chr2(1, Value);
+          $A000..$A003:
+            Chr1(4 + (Address and 3), Value);
         end;
         Result := True;
       end;
-    75:
+    MAPPER_VRC1:
       if Address >= $8000 then
       begin
         case Address and $F000 of
-          $8000: Prg8(0, Value and $0F);
-          $A000: Prg8(1, Value and $0F);
-          $C000: Prg8(2, Value and $0F);
+          $8000:
+            Prg8(0, Value and $0F);
+          $A000:
+            Prg8(1, Value and $0F);
+          $C000:
+            Prg8(2, Value and $0F);
           $9000:
             begin
               if FInitialMirror <> TMirrorMode.FourScreen then
                 Mirror(Value and 1);
               FOuter := Value;
             end;
-          $E000: FRegisters[0] := Value and $0F;
-          $F000: FRegisters[1] := Value and $0F;
+          $E000:
+            FRegisters[0] := Value and $0F;
+          $F000:
+            FRegisters[1] := Value and $0F;
         end;
         Chr4(0, FRegisters[0] or ((FOuter and 2) shl 3));
         Chr4(1, FRegisters[1] or ((FOuter and 4) shl 2));
         Result := True;
       end;
-    31:
+    MAPPER_NSF_CART:
       if (Address and $F000) = $5000 then
       begin
         FRegisters[Address and 7] := Value;
         Result := True;
       end;
-    184:
+    MAPPER_SUNSOFT1:
       if (Address >= $6000) and (Address < $8000) then
       begin
         Chr4(0, Value and 7);
         Chr4(1, ((Value shr 4) and 3) or 4);
         Result := True;
       end;
-    101:
+    MAPPER_JALECO_101:
       if (Address >= $6000) and (Address < $8000) then
       begin
         Chr8(Value);
         Result := True;
       end;
-    133, 145:
+    MAPPER_SACHEN_133, MAPPER_SACHEN_145:
       if (Address and $E100) = $4100 then
       begin
-        if FBoard = 133 then
+        if FBoard = MAPPER_SACHEN_133 then
         begin
           // SA-72008 (72-pin): the 60-pin analog feedback board is not modeled.
           Prg32((Value shr 2) and 1);
@@ -582,7 +627,7 @@ begin
           Chr8(Value shr 7);
         Result := True;
       end;
-    8:
+    MAPPER_FFE_F3XXX:
       begin
         case Address of
           $42FE:
@@ -613,13 +658,13 @@ begin
         end;
         Result := Result or (Address >= $8000) or ((Address >= $42FE) and (Address <= $4503));
       end;
-    13:
+    MAPPER_CPROM:
       if Address >= $8000 then
       begin
         Chr4(1, Value and 3);
         Result := True;
       end;
-    15:
+    MAPPER_MULTICART_15:
       if Address >= $8000 then
       begin
         FChrWritable := FLegacyChrWrites or ((Address and 3) in [1, 2]);
@@ -646,7 +691,7 @@ begin
         end;
         Result := True;
       end;
-    32:
+    MAPPER_IREM_G101:
       if Address >= $8000 then
       begin
         case Address and $F000 of
@@ -668,7 +713,7 @@ begin
         Prg8(FSelect, FRegisters[0]);
         Result := True;
       end;
-    34:
+    MAPPER_BNROM_NINA001:
       if FHasChrRam then
       begin
         if Address >= $8000 then
@@ -686,17 +731,17 @@ begin
           $7FFF:
             Chr4(1, Value and $0F);
         end;
-    70, 152:
+    MAPPER_BANDAI_70, MAPPER_BANDAI_152:
       if Address >= $8000 then
       begin
         Value := Value and FPrgRom[PrgOffset(Address)];
         Prg16(0, (Value shr 4) and 7);
         Chr8(Value and $0F);
-        if FBoard = 152 then
+        if FBoard = MAPPER_BANDAI_152 then
           Mirror(2 + (Value shr 7));
         Result := True;
       end;
-    71:
+    MAPPER_CAMERICA:
       if Address >= $8000 then
       begin
         if (Address and $F000) = $9000 then
@@ -705,10 +750,10 @@ begin
           Prg16(0, Value and $0F);
         Result := True;
       end;
-    79, 113:
+    MAPPER_NINA03, MAPPER_NINA_113:
       if (Address and $E100) = $4100 then
       begin
-        if FBoard = 79 then
+        if FBoard = MAPPER_NINA03 then
         begin
           Prg32((Value shr 3) and 1);
           Chr8(Value and 7);
@@ -721,16 +766,16 @@ begin
         end;
         Result := True;
       end;
-    87:
+    MAPPER_JALECO_87:
       if (Address >= $6000) and (Address < $8000) then
       begin
         Chr8(((Value and 1) shl 1) or ((Value and 2) shr 1));
         Result := True;
       end;
-    88, 154, 206:
+    MAPPER_NAMCO_118, MAPPER_NAMCO_154, MAPPER_DXROM:
       if Address >= $8000 then
       begin
-        if FBoard = 154 then
+        if FBoard = MAPPER_NAMCO_154 then
           Mirror(2 + ((Value shr 6) and 1));
         if (Address and 1) = 0 then
           FSelect := Value and 7
@@ -739,7 +784,7 @@ begin
         UpdateIndexedBanks;
         Result := True;
       end;
-    99:
+    MAPPER_VS_SYSTEM:
       if Address = $4016 then
       begin
         Chr8((Value shr 2) and 1);
@@ -747,7 +792,7 @@ begin
           Prg8(0, Value and 4);
         Result := True;
       end;
-    112:
+    MAPPER_DISCRETE_112:
       if Address >= $8000 then
       begin
         case Address and $E001 of
@@ -764,7 +809,7 @@ begin
         Result := True;
       end;
     // Independently implemented from NESdev's JF-11/JF-14 register description.
-    140:
+      MAPPER_JALECO_140:
       if (Address >= $6000) and (Address < $8000) then
       begin
         Prg32((Value shr 4) and 3);
@@ -772,14 +817,14 @@ begin
         Result := True;
       end;
     // Inverted UxROM: bank zero stays at $8000, upper window is switchable.
-    180:
+      MAPPER_REVERSE_UNROM:
       if Address >= $8000 then
       begin
         Value := Value and FPrgRom[PrgOffset(Address)];
         Prg16(1, Value);
         Result := True;
       end;
-    144:
+    MAPPER_AGCI:
       if Address >= $8000 then
       begin
         var RomValue := FPrgRom[PrgOffset(Address)];
@@ -788,7 +833,7 @@ begin
         Chr8(Value shr 4);
         Result := True;
       end;
-    228:
+    MAPPER_ACTION52:
       if Address >= $8000 then
       begin
         var Chip := (Address shr 11) and 3;
@@ -806,7 +851,7 @@ begin
         Mirror((Address shr 13) and 1);
         Result := True;
       end;
-    232:
+    MAPPER_CAMERICA_QUATTRO:
       if Address >= $8000 then
       begin
         if Address < $C000 then
@@ -817,14 +862,14 @@ begin
         Prg16(1, (FOuter shl 2) or 3);
         Result := True;
       end;
-    240:
+    MAPPER_DISCRETE_240:
       if (Address >= $4020) and (Address < $6000) then
       begin
         Prg32(Value shr 4);
         Chr8(Value and $0F);
         Result := True;
       end;
-    242:
+    MAPPER_WAIXING_242:
       if Address >= $8000 then
       begin
         Prg32((Address shr 3) and $0F);
@@ -836,7 +881,7 @@ end;
 
 function TMapperDiscrete.PpuRead(Address: UInt16; out Value: UInt8): Boolean;
 begin
-  if (FBoard = 93) and (Address < $2000) and not FChrWritable then
+  if (FBoard = MAPPER_SUNSOFT_3R) and (Address < $2000) and not FChrWritable then
     Exit(False);
   Result := inherited;
 end;
@@ -850,7 +895,7 @@ end;
 
 procedure TMapperDiscrete.ClockCpu;
 begin
-  if FBoard = 73 then
+  if FBoard = MAPPER_VRC3 then
   begin
     if FIrqEnabled then
     begin
@@ -876,7 +921,7 @@ begin
     end;
     Exit;
   end;
-  if FBoard = 18 then
+  if FBoard = MAPPER_JALECO_SS88006 then
   begin
     if FIrqEnabled then
     begin
@@ -893,7 +938,7 @@ begin
     end;
     Exit;
   end;
-  if FBoard = 42 then
+  if FBoard = MAPPER_FDS_CONVERSION_42 then
   begin
     if FIrqEnabled then
     begin

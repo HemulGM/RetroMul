@@ -97,7 +97,7 @@ type
     procedure CopyX;
     procedure CopyY;
     function MirrorNameTableAddress(Address: UInt16): UInt16;
-    function PpuReadMemory(Address: UInt16): UInt8;
+    function PpuReadMemory(Address: UInt16; Rendering: Boolean = False): UInt8;
     procedure PpuWriteMemory(Address: UInt16; Value: UInt8);
     procedure SetVblank(Value: Boolean);
     procedure UpdateNmiState;
@@ -368,11 +368,11 @@ begin
   end;
 end;
 
-function TPPU.PpuReadMemory(Address: UInt16): UInt8;
+function TPPU.PpuReadMemory(Address: UInt16; Rendering: Boolean): UInt8;
 begin
   var Temp: UInt8;
   Address := Address and $3FFF;
-  if (Address < $3F00) and (FMapper <> nil) and FMapper.PpuRead(Address, Temp) then
+  if (Address < $3F00) and (FMapper <> nil) and FMapper.PpuReadContext(Address, Rendering, Temp) then
     Exit(Temp);
 
   if Address < $2000 then
@@ -622,7 +622,7 @@ begin
     // Palette RAM is internal; its read buffer comes from nametable RAM.
     if BusAddress >= $3F00 then
       Dec(BusAddress, $1000);
-    FPixel.DataBus := PpuReadMemory(BusAddress);
+    FPixel.DataBus := PpuReadMemory(BusAddress, Fetch and not ReadRequest);
     if ReadRequest then
       FDataBuffer := FPixel.DataBus;
     if Fetch and ((FCycle and 1) = 0) then
@@ -1299,9 +1299,9 @@ begin
   end;
 
   var NameAddress: UInt16 := $2000 + UInt16(Table) * $0400 + UInt16((LocalY div 8) * 32 + (LocalX div 8));
-  var TileIndex: UInt8 := PpuReadMemory(NameAddress);
+  var TileIndex: UInt8 := PpuReadMemory(NameAddress, True);
   var AttributeAddress: UInt16 := $23C0 + UInt16(Table) * $0400 + UInt16((LocalY div 32) * 8 + (LocalX div 32));
-  var AttributeByte: UInt8 := PpuReadMemory(AttributeAddress);
+  var AttributeByte: UInt8 := PpuReadMemory(AttributeAddress, True);
   if (LocalY and $10) <> 0 then
     AttributeByte := AttributeByte shr 4;
   if (LocalX and $10) <> 0 then
@@ -1310,8 +1310,8 @@ begin
 
   var FineY: UInt8 := LocalY and 7;
   var PatternBase: UInt16 := UInt16((RenderCtrl and $10) shr 4) shl 12;
-  var Lo: UInt8 := PpuReadMemory(PatternBase + UInt16(TileIndex) * 16 + FineY);
-  var Hi: UInt8 := PpuReadMemory(PatternBase + UInt16(TileIndex) * 16 + FineY + 8);
+  var Lo: UInt8 := PpuReadMemory(PatternBase + UInt16(TileIndex) * 16 + FineY, True);
+  var Hi: UInt8 := PpuReadMemory(PatternBase + UInt16(TileIndex) * 16 + FineY + 8, True);
   if FRenderingLine and FCacheBackground then
   begin
     FBackgroundTileX := WorldX shr 3;
@@ -1360,6 +1360,8 @@ begin
   for var Candidate := 0 to FLineSpriteCount - 1 do
   begin
     var i: Integer := FLineSprites[Candidate];
+    if FMapper <> nil then
+      FMapper.SetPpuSpriteIndex(i);
     SpriteY := FOam[i * 4 + 0];
     TileIndex := FOam[i * 4 + 1];
     Attributes := FOam[i * 4 + 2];
@@ -1390,8 +1392,8 @@ begin
       PatternBase := UInt16((FRenderCtrl and $08) shr 3) shl 12;
 
     Address := PatternBase + UInt16(TileIndex) * 16 + UInt16(Row and 7);
-    Lo := PpuReadMemory(Address);
-    Hi := PpuReadMemory(Address + 8);
+    Lo := PpuReadMemory(Address, True);
+    Hi := PpuReadMemory(Address + 8, True);
     BitPosition := 7 - Column;
 
     Result := (((Hi shr BitPosition) and 1) shl 1) or ((Lo shr BitPosition) and 1);

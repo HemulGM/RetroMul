@@ -259,6 +259,7 @@ begin
         end;
         Exit;
       end;
+
   Result := FRead(Address);
 end;
 

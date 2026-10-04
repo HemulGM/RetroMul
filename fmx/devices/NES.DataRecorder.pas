@@ -103,6 +103,7 @@ begin
     Exit;
   if (Action in [TapeRewind, TapeForward]) and ((FProgress.State = TapeRecording) or (FProgress.TapeBytes = 0)) then
     Exit;
+
   if (Action = TapeSelectFile) and (FileName = '') then
   begin
     if Assigned(FOnChooseFile) then
@@ -186,6 +187,7 @@ procedure TNesDataRecorder.LayoutButtons;
 begin
   if FButtons[TapePlay] = nil then
     Exit;
+
   var W := Max(1, (Width - 20 - 4 * 5) / 5);
   for var Action := TapePlay to TapeForward do
     FButtons[Action].SetBounds(10 + Ord(Action) * (W + 5), Height * 0.70, W, Height * 0.12);
@@ -238,10 +240,10 @@ begin
   Canvas.Stroke.Color := $FF55C6E8;
   if FProgress.State = TapeRecording then
     Canvas.Stroke.Color := $FFFF9170;
-  for var I := 0 to 255 do
-    if FProgress.SignalMap[I] <> 0 then
-      Canvas.DrawLine(PointF(R.Left + R.Width * I / 256, R.CenterPoint.Y),
-        PointF(R.Left + R.Width * (I + 1) / 256, R.CenterPoint.Y), AbsoluteOpacity);
+  for var i := 0 to 255 do
+    if FProgress.SignalMap[i] <> 0 then
+      Canvas.DrawLine(PointF(R.Left + R.Width * i / 256, R.CenterPoint.Y),
+        PointF(R.Left + R.Width * (i + 1) / 256, R.CenterPoint.Y), AbsoluteOpacity);
   if FProgress.TapeBytes > 0 then
   begin
     var X := R.Left + R.Width * Min(1.0, FProgress.PositionBytes / FProgress.TapeBytes);

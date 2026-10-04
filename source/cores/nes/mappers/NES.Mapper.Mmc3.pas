@@ -6,10 +6,11 @@ uses
   NES.State, NES.Types, NES.Mapper;
 
 type
-  // Standard MMC3B/C. MMC6 and mapper-4 submapper variants are not implemented.
+  // MMC3B/C and MMC6 (NES 2.0 mapper 4, submapper 1).
   TMapperMmc3 = class(TMapper)
   protected
     FPrgRom, FChrMemory: TByteArray;
+    FLegacySave: TByteArray;
     FPrgRam: array[0..$1FFF] of UInt8;
     FHasChrRam, FFourScreenMirroring: Boolean;
     FInitialMirrorMode, FMirrorMode: TMirrorMode;
@@ -17,7 +18,7 @@ type
     FBankSelect, FPrgRamControl, FIrqLatch, FIrqCounter: UInt8;
     FIrqReloadPending, FIrqEnabled, FIrqPending, FA12High: Boolean;
     FA12LowSince: UInt64;
-    FUseBankCache: Boolean;
+    FUseBankCache, FIsMmc6: Boolean;
     FPrgOffsets: array[0..3] of Integer;
     FChrOffsets: array[0..7] of Integer;
     procedure UpdateBankOffsets;
@@ -26,7 +27,7 @@ type
     procedure SerializeState(State: TNesStateArchive); override;
     function GetSaveMemory: TByteArray; override;
     procedure SetSaveMemory(const Data: TByteArray); override;
-    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode);
+    constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; AMmc6: Boolean = False);
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
@@ -93,18 +94,33 @@ end;
 
 function TMapperMmc3.GetSaveMemory: TByteArray;
 begin
-  SetLength(Result, SizeOf(FPrgRam));
+  if FIsMmc6 and (Length(FLegacySave) = $2000) then
+  begin
+    Result := Copy(FLegacySave);
+    for var Offset := 0 to 3 do Move(FPrgRam[0], Result[$1000 + Offset * $400], $400);
+    Exit;
+  end;
+  if FIsMmc6 then SetLength(Result, $400)
+  else SetLength(Result, SizeOf(FPrgRam));
   Move(FPrgRam[0], Result[0], Length(Result));
 end;
 
 procedure TMapperMmc3.SetSaveMemory(const Data: TByteArray);
 begin
-  if Length(Data) <> SizeOf(FPrgRam) then
+  // Accept legacy 8 KiB saves produced before HKROM was recognized.
+  if (Length(Data) <> SizeOf(FPrgRam)) and
+    not (FIsMmc6 and (Length(Data) = $400)) then
     raise ENesException.Create('Invalid cartridge save size');
+  if FIsMmc6 and (Length(Data) = $2000) then
+  begin
+    FLegacySave := Copy(Data);
+    Move(Data[$1000], FPrgRam[0], $400);
+    Exit;
+  end;
   Move(Data[0], FPrgRam[0], Length(Data));
 end;
 
-constructor TMapperMmc3.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode);
+constructor TMapperMmc3.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; AMmc6: Boolean);
 begin
   inherited Create;
   ValidateMemory(APrgRom, AChrData);
@@ -113,6 +129,7 @@ begin
   FHasChrRam := AHasChrRam;
   if Length(FChrMemory) = 0 then
     SetLength(FChrMemory, $2000);
+  FIsMmc6 := AMmc6;
   FInitialMirrorMode := AMirrorMode;
   FFourScreenMirroring := AMirrorMode = TMirrorMode.FourScreen;
   // Derived boards retain their own bank interpretation and original read path.
@@ -123,7 +140,7 @@ end;
 procedure TMapperMmc3.Reset;
 begin
   FBankSelect := 0;
-  FPrgRamControl := $80;
+  if FIsMmc6 then FPrgRamControl := 0 else FPrgRamControl := $80;
   FMirrorMode := FInitialMirrorMode;
   FBankRegisters[0] := 0;
   FBankRegisters[1] := 2;
@@ -148,9 +165,21 @@ begin
   Result := False;
   if (Address >= $6000) and (Address < $8000) then
   begin
-    Result := (FPrgRamControl and $80) <> 0;
-    if Result then
-      Value := FPrgRam[Address and $1FFF];
+    if FIsMmc6 then
+    begin
+      Result := (Address >= $7000) and ((FPrgRamControl and $A0) <> 0);
+      if Result then
+      begin
+        var ReadBit := $20 shl ((Address and $200) shr 8);
+        if (FPrgRamControl and ReadBit) <> 0 then Value := FPrgRam[Address and $3FF]
+        else Value := 0;
+      end;
+    end
+    else
+    begin
+      Result := (FPrgRamControl and $80) <> 0;
+      if Result then Value := FPrgRam[Address and $1FFF];
+    end;
   end
   else if Address >= $8000 then
   begin
@@ -188,7 +217,13 @@ begin
     Exit;
   if Address < $8000 then
   begin
-    if (FPrgRamControl and $C0) = $80 then
+    if FIsMmc6 then
+    begin
+      var EnableBits := $30 shl ((Address and $200) shr 8);
+      if (Address >= $7000) and ((FPrgRamControl and EnableBits) = EnableBits) then
+        FPrgRam[Address and $3FF] := Value;
+    end
+    else if (FPrgRamControl and $C0) = $80 then
       FPrgRam[Address and $1FFF] := Value;
     Exit;
   end;
@@ -196,6 +231,7 @@ begin
     $8000:
       begin
         FBankSelect := Value;
+        if FIsMmc6 and ((Value and $20) = 0) then FPrgRamControl := 0;
         UpdateBankOffsets;
       end;
     $8001:
@@ -210,7 +246,8 @@ begin
         else
           FMirrorMode := TMirrorMode.Horizontal;
     $A001:
-      FPrgRamControl := Value;
+      if not FIsMmc6 or ((FBankSelect and $20) <> 0) then
+        FPrgRamControl := Value;
     $C000:
       FIrqLatch := Value;
     $C001:

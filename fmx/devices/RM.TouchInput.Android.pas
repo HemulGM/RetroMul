@@ -3,13 +3,16 @@ unit RM.TouchInput.Android;
 interface
 
 {$IFDEF ANDROID}
+
 uses
   System.Types, FMX.Controls, FMX.Forms, Androidapi.JNIBridge,
   Androidapi.JNI.GraphicsContentViewText;
 
 type
   TPointerPositionEvent = procedure(Id: NativeInt; const Point: TPointF) of object;
+
   TPointerReleaseEvent = procedure(Id: NativeInt) of object;
+
   TPointerCancelEvent = procedure of object;
 
   // Own this hook for as long as the control is attached to the form.
@@ -24,9 +27,7 @@ type
     FCancel: TPointerCancelEvent;
     FResetOnDown: Boolean;
   public
-    constructor Create(Control: TControl; Form: TCommonCustomForm;
-      Down, Move: TPointerPositionEvent; Up: TPointerReleaseEvent;
-      Cancel: TPointerCancelEvent; ResetOnDown: Boolean = False);
+    constructor Create(Control: TControl; Form: TCommonCustomForm; Down, Move: TPointerPositionEvent; Up: TPointerReleaseEvent; Cancel: TPointerCancelEvent; ResetOnDown: Boolean = False);
     destructor Destroy; override;
     function onTouch(v: JView; event: JMotionEvent): Boolean; cdecl;
   end;
@@ -35,11 +36,11 @@ type
 implementation
 
 {$IFDEF ANDROID}
-uses FMX.Platform.Android;
 
-constructor TAndroidTouchInput.Create(Control: TControl; Form: TCommonCustomForm;
-  Down, Move: TPointerPositionEvent; Up: TPointerReleaseEvent;
-  Cancel: TPointerCancelEvent; ResetOnDown: Boolean);
+uses
+  FMX.Platform.Android;
+
+constructor TAndroidTouchInput.Create(Control: TControl; Form: TCommonCustomForm; Down, Move: TPointerPositionEvent; Up: TPointerReleaseEvent; Cancel: TPointerCancelEvent; ResetOnDown: Boolean);
 begin
   inherited Create;
   FControl := Control;
@@ -56,7 +57,8 @@ end;
 
 destructor TAndroidTouchInput.Destroy;
 begin
-  if FView <> nil then FView.setOnTouchListener(nil);
+  if FView <> nil then
+    FView.setOnTouchListener(nil);
   FControl := nil;
   FView := nil;
   FDown := nil;
@@ -71,7 +73,8 @@ begin
   // Keep FMX delivery to ordinary buttons and the rest of the form.
   // Device controls ignore synthesized mouse input on Android.
   Result := False;
-  if FControl = nil then Exit;
+  if FControl = nil then
+    Exit;
   var Action := event.getActionMasked;
   if FResetOnDown and (Action = TJMotionEvent.JavaClass.ACTION_DOWN) then
     FCancel; // A fresh gesture cannot inherit a lost pointer-up.
@@ -81,18 +84,22 @@ begin
     Exit;
   end;
   var ChangedIndex := event.getActionIndex;
-  for var I := 0 to event.getPointerCount - 1 do
+  for var i := 0 to event.getPointerCount - 1 do
   begin
-    var Id := event.getPointerId(I);
-    var Point := FControl.AbsoluteToLocal(PointF(event.getX(I) / FScale,
-      event.getY(I) / FScale));
-    if (I = ChangedIndex) and ((Action = TJMotionEvent.JavaClass.ACTION_UP) or
-      (Action = TJMotionEvent.JavaClass.ACTION_POINTER_UP)) then FUp(Id)
-    else if (I = ChangedIndex) and ((Action = TJMotionEvent.JavaClass.ACTION_DOWN) or
-      (Action = TJMotionEvent.JavaClass.ACTION_POINTER_DOWN)) then FDown(Id, Point)
-    else FMove(Id, Point);
+    var Id := event.getPointerId(i);
+    var Point := FControl.AbsoluteToLocal(PointF(event.getX(i) / FScale,
+        event.getY(i) / FScale));
+    if (i = ChangedIndex) and ((Action = TJMotionEvent.JavaClass.ACTION_UP) or
+      (Action = TJMotionEvent.JavaClass.ACTION_POINTER_UP)) then
+      FUp(Id)
+    else if (i = ChangedIndex) and ((Action = TJMotionEvent.JavaClass.ACTION_DOWN) or
+      (Action = TJMotionEvent.JavaClass.ACTION_POINTER_DOWN)) then
+      FDown(Id, Point)
+    else
+      FMove(Id, Point);
   end;
 end;
 {$ENDIF}
 
 end.
+

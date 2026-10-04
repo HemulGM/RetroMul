@@ -71,6 +71,8 @@ uses
     , RM.TouchInput.Android
   {$ENDIF};
 
+{ TNesFamicomKeyboard }
+
 procedure TNesFamicomKeyboard.AttachToForm(Form: TCommonCustomForm);
 begin
   ReleaseAll;
@@ -112,10 +114,10 @@ begin
   var X := (Width - U * 20.5) / 2 + U * 0.5;
   var Y := (Height - U * 7.5) / 2 + U * 0.75;
   var Gap := U * 0.045;
-  var I := Length(FVisualKeys);
-  SetLength(FVisualKeys, I + 1);
-  FVisualKeys[I].Key := Key;
-  FVisualKeys[I].Bounds := RectF(X + Column * U + Gap, Y + Row * U + Gap,
+  var i := Length(FVisualKeys);
+  SetLength(FVisualKeys, i + 1);
+  FVisualKeys[i].Key := Key;
+  FVisualKeys[i].Bounds := RectF(X + Column * U + Gap, Y + Row * U + Gap,
       X + (Column + Span) * U - Gap, Y + (Row + 1) * U - Gap);
 end;
 
@@ -131,18 +133,18 @@ const
     FkM, FkComma, FkDot, FkSlash, FkUnderscore);
 begin
   SetLength(FVisualKeys, 0);
-  for var I := 0 to 7 do
-    AddKey(TFamicomKey(Ord(FkF1) + I), 0, I * 2, 2);
-  for var I := 0 to High(NumberRow) do
-    AddKey(NumberRow[I], 1, I + 0.5, 1);
-  for var I := 0 to High(UpperRow) do
-    AddKey(UpperRow[I], 2, I, 1);
+  for var i := 0 to 7 do
+    AddKey(TFamicomKey(Ord(FkF1) + i), 0, i * 2, 2);
+  for var i := 0 to High(NumberRow) do
+    AddKey(NumberRow[i], 1, i + 0.5, 1);
+  for var i := 0 to High(UpperRow) do
+    AddKey(UpperRow[i], 2, i, 1);
   AddKey(FkReturn, 2, 13, 2);
-  for var I := 0 to High(HomeRow) do
-    AddKey(HomeRow[I], 3, I + 0.25, 1);
+  for var i := 0 to High(HomeRow) do
+    AddKey(HomeRow[i], 3, i + 0.25, 1);
   AddKey(FkLeftShift, 4, -0.25, 2);
-  for var I := 0 to High(LowerRow) do
-    AddKey(LowerRow[I], 4, I + 1.75, 1);
+  for var i := 0 to High(LowerRow) do
+    AddKey(LowerRow[i], 4, i + 1.75, 1);
   AddKey(FkRightShift, 4, 12.75, 2);
   AddKey(FkGrph, 5, 2.75, 1);
   AddKey(FkSpace, 5, 3.75, 8);
@@ -160,6 +162,7 @@ begin
   Result := FkNone;
   if not LocalRect.Contains(Point) then
     Exit;
+
   for var K in FVisualKeys do
     if K.Bounds.Contains(Point) then
       Exit(K.Key);
@@ -183,6 +186,7 @@ begin
   var NewKeys := Value - [FkNone];
   if NewKeys = FCoreKeys then
     Exit;
+
   FCoreKeys := NewKeys;
   Repaint;
 end;
@@ -195,6 +199,7 @@ begin
       Include(NewKeys, Key);
   if NewKeys = FKeys then
     Exit;
+
   FKeys := NewKeys;
   Repaint;
   if Assigned(FOnChange) then
@@ -205,6 +210,7 @@ procedure TNesFamicomKeyboard.PointerDown(Id: NativeInt; const Point: TPointF);
 begin
   if not AbsoluteEnabled or not ParentedVisible then
     Exit;
+
   // Retain blank contacts so sliding out and back into a key works.
   FContacts.AddOrSetValue(Id, KeyAt(Point));
   UpdateKeys;
@@ -217,8 +223,10 @@ begin
     ReleaseAll;
     Exit;
   end;
+
   if not FContacts.ContainsKey(Id) then
     Exit;
+
   FContacts.AddOrSetValue(Id, KeyAt(Point));
   UpdateKeys;
 end;
@@ -233,6 +241,7 @@ procedure TNesFamicomKeyboard.ReleaseAll;
 begin
   if FContacts = nil then
     Exit;
+
   FContacts.Clear;
   FCoreKeys := [];
   UpdateKeys;
@@ -271,15 +280,18 @@ end;
 
 function KeyCaption(Key: TFamicomKey): string;
 const
-  Kana: array[0..25] of string = ('サ', 'ト', 'ツ', 'ス', 'ク', 'セ', 'ソ', 'ハ',
+  Kana: array[0..25] of string = (
+    'サ', 'ト', 'ツ', 'ス', 'ク', 'セ', 'ソ', 'ハ',
     'プ', 'ヒ', 'フ', 'ヘ', 'ユ', 'ヤ', 'ペ', 'ポ', 'カ', 'ケ', 'シ', 'コ',
     'ピ', 'テ', 'キ', 'チ', 'パ', 'タ');
 begin
   // Latin and kana legends describe keycaps; the ROM handles text conversion.
   if Key in [FkA..FkZ] then
     Exit(Char(Ord('A') + Ord(Key) - Ord(FkA)) + sLineBreak + Kana[Ord(Key) - Ord(FkA)]);
+
   if Key in [FkF1..FkF8] then
     Exit('F' + IntToStr(Ord(Key) - Ord(FkF1) + 1));
+
   case Key of
     FkNum1:
       Result := '1 !' + sLineBreak + 'ア';
@@ -371,8 +383,7 @@ begin
   var Highlighted := HighlightedKeys;
   for var K in FVisualKeys do
   begin
-    var Red := K.Key in [FkF1..FkF8, FkReturn, FkLeftShift, FkRightShift,
-        FkSpace, FkUp, FkDown, FkLeft, FkRight];
+    var Red := K.Key in [FkF1..FkF8, FkReturn, FkLeftShift, FkRightShift, FkSpace, FkUp, FkDown, FkLeft, FkRight];
     if K.Key in Highlighted then
       Canvas.Fill.Color := $FFD4A647
     else if Red then

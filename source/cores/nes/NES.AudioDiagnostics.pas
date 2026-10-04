@@ -48,6 +48,7 @@ begin
     FStorage := TStorage.Default;
   if (AudioFormat.SampleRate <= 0) or (AudioFormat.Channels <> 1) or (AudioFormat.BlockFrames <= 0) then
     raise EArgumentException.Create('Audio diagnostics requires a mono PCM format with a positive sample rate and block size');
+
   FSampleRate := AudioFormat.SampleRate;
   FBlockFrames := AudioFormat.BlockFrames;
   SetLength(FFrames, AUDIO_DIAGNOSTIC_FRAMES);
@@ -86,6 +87,7 @@ procedure TAudioDiagnostics.Capture(Console: TNesConsole; Audio: TPCMAudio; cons
 begin
   if (Count < 0) or (Count > Length(Samples)) or (Count > FBlockFrames) then
     raise EArgumentOutOfRangeException.Create('Diagnostic audio block is too large');
+
   var Frame: ^TAudioDiagnosticFrame := @FFrames[FNext];
   Frame.Ticks := TStopwatch.GetTimeStamp;
   Frame.CpuCycle := Console.Apu.DebugCycle;
@@ -135,6 +137,7 @@ begin
   finally
     Info.Free;
   end;
+
   var Log := TStreamWriter.Create(FStorage.OpenWrite(Prefix + '.csv'), TEncoding.UTF8);
   Log.OwnStream;
   try

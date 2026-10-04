@@ -116,8 +116,7 @@ begin
   FControl := Value and 7;
   var NewBitPosition := FFrequencyBits[FControl and 3];
   var NewTimerBit := ((FDivider and (1 shl NewBitPosition)) <> 0) and ((FControl and 4) <> 0);
-  if OldTimerBit and not NewTimerBit and
-    (not FColorHardware or ((FControl and 4) <> 0)) then
+  if OldTimerBit and not NewTimerBit and (not FColorHardware or ((FControl and 4) <> 0)) then
     IncrementCounter;
   FPreviousBit := NewTimerBit;
 end;

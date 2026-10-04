@@ -521,6 +521,8 @@
         <DCCReference Include="..\source\cores\gb\GB.InterruptManager.pas"/>
         <DCCReference Include="..\source\cores\gb\GB.Joypad.pas"/>
         <DCCReference Include="..\source\cores\gb\GB.MBC.pas"/>
+        <DCCReference Include="..\source\cores\gb\GB.Camera.pas"/>
+        <DCCReference Include="RM.Camera.Bitmap.pas"/>
         <DCCReference Include="..\source\cores\gb\GB.Memory.pas"/>
         <DCCReference Include="..\source\cores\gb\GB.Palettes.pas"/>
         <DCCReference Include="..\source\cores\gb\GB.ROM.pas"/>

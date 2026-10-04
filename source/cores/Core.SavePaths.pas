@@ -34,6 +34,7 @@ begin
     Root := HomePath;
   if (Root = '') or not TPath.IsPathRooted(Root) then
     raise EInOutError.Create('Cannot determine an absolute save directory');
+
   Result := TPath.Combine(Root, 'RetroMul');
 end;
 

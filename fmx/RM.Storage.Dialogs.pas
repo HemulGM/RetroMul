@@ -16,6 +16,8 @@ implementation
 uses
   System.SysUtils, FMX.OpenDialog;
 
+{ TStoragePicker }
+
 procedure TStoragePicker.Select(Folder: Boolean; const Callback: TStorageSelectionCallback);
 begin
   var Dialog := TFMXOpenDialog.Create(nil);

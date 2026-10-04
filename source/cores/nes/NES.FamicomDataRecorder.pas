@@ -141,10 +141,8 @@ begin
     if Result.PositionBytes > Result.TapeBytes then
       Result.PositionBytes := Result.TapeBytes;
   end;
-  Result.Reading := FPlaying and (FReadAccesses > 0) and
-    (FClock - FLastReadClock < ACTIVITY_CLOCKS);
-  Result.Writing := FRecording and (FWriteAccesses > 0) and
-    (FClock - FLastWriteClock < ACTIVITY_CLOCKS);
+  Result.Reading := FPlaying and (FReadAccesses > 0) and (FClock - FLastReadClock < ACTIVITY_CLOCKS);
+  Result.Writing := FRecording and (FWriteAccesses > 0) and (FClock - FLastWriteClock < ACTIVITY_CLOCKS);
   if Result.TapeBytes > 0 then
     for var Chunk := 0 to Integer((Result.TapeBytes - 1) div 512) do
       if FSignalChunks[Chunk] <> 0 then
@@ -170,6 +168,7 @@ begin
   begin
     if FSampleCount div 8 >= MAX_TAPE_BYTES then
       raise EInvalidOperation.Create('Virtual tape is full');
+
     if FSampleCount div 8 >= Length(FData) then
       SetLength(FData, Length(FData) + 4096);
     if FSampleCount mod 8 = 0 then
@@ -186,6 +185,7 @@ procedure TFamicomDataRecorder.Write(Value: Byte);
 begin
   if not FConnected then
     Exit;
+
   FEnabled := (Value and 4) <> 0;
   if FRecording then
   begin
@@ -201,6 +201,7 @@ begin
   Result := 0;
   if not FConnected or not FPlaying then
     Exit;
+
   var Position := GetPlaybackPosition;
   if Position >= UInt64(Length(FData)) * 8 then
   begin
@@ -245,6 +246,7 @@ begin
     try
       if Input.Size > MAX_TAPE_BYTES then
         raise EReadError.Create('Virtual tape is too large');
+
       SetLength(Data, Input.Size);
       if Length(Data) > 0 then
         Input.ReadBuffer(Data[0], Length(Data));

@@ -35,6 +35,8 @@ implementation
 uses
   Core.RomFormat, GBC.EmulationThread;
 
+{ TGBCCoreAdapter }
+
 function TGBCCoreAdapter.ConfigPrefix: string;
 begin
   Result := ROM_SYSTEM_GBC;
@@ -47,7 +49,7 @@ end;
 
 function TGBCCoreAdapter.CreateWorker: TGBEmulationThread;
 begin
-  Result := TGBCEmulationThread.Create(FROMData, FConfig.AudioEnabled);
+  Result := TGBCEmulationThread.Create(FROMData, FConfig.AudioEnabled, FCameraSource);
 end;
 
 procedure TGBCCoreAdapter.CopyFrame(const Screen: TScreenArray; var Frame: TEmulatorFrame);

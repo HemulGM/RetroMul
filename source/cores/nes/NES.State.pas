@@ -48,6 +48,7 @@ begin
     FStream.ReadBuffer(StoredSize, SizeOf(StoredSize));
     if (StoredSize <> Size) or (Size > FStream.Size - FStream.Position) then
       raise EReadError.Create('Incompatible or truncated snapshot');
+
     if Size > 0 then
       FStream.ReadBuffer(Value, Size);
   end

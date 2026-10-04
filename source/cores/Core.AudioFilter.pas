@@ -28,6 +28,8 @@ implementation
 uses
   System.Math;
 
+{ TPCMLowPass }
+
 procedure TPCMLowPass.Configure(SampleRate, Cutoff: Double);
 begin
   var K := Tan(Pi * Min(Cutoff, SampleRate * 0.45) / SampleRate);

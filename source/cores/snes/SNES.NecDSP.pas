@@ -67,6 +67,7 @@ begin
   end;
   if Length(Firmware) <> ProgramSize + DataSize then
     raise EReadError.CreateFmt('NEC DSP firmware must contain %d bytes', [ProgramSize + DataSize]);
+
   SetLength(FProgram, ProgramSize div 3);
   SetLength(FData, DataSize div 2);
   FProgramMask := Length(FProgram) - 1;
@@ -409,12 +410,14 @@ function TSnesNecDSP.Read(Status: Boolean): Byte;
 begin
   if Status then
     Exit(State.SR shr 8);
+
   State.Waiting := False;
   if (State.SR and $400) <> 0 then
   begin
     State.SR := State.SR and not $8000;
     Exit(Byte(State.DR));
   end;
+
   if (State.SR and $1000) <> 0 then
   begin
     State.SR := State.SR and not $9000;
@@ -431,6 +434,7 @@ procedure TSnesNecDSP.Write(Status: Boolean; Value: Byte);
 begin
   if Status then
     Exit;
+
   State.Waiting := False;
   if (State.SR and $400) <> 0 then
   begin
@@ -478,6 +482,7 @@ procedure TSnesNecDSP.LoadBattery(const Data: TBytes);
 begin
   if not FExtended or (Length(Data) <> $1000) then
     raise EReadError.Create('ST01x RAM size mismatch');
+
   for var J := 0 to $7FF do
     State.RAM[J] := Data[J * 2] or (Word(Data[J * 2 + 1]) shl 8);
   FDirty := False;
@@ -488,6 +493,7 @@ begin
   Result := nil;
   if not FExtended then
     Exit;
+
   SetLength(Result, $1000);
   for var J := 0 to $7FF do
   begin
@@ -501,6 +507,7 @@ begin
   Archive.Field(State, SizeOf(State));
   if Archive.Loading and ((State.SP > FStackMask) or (State.Cycles < 0)) then
     raise EReadError.Create('Invalid NEC DSP snapshot state');
+
   if Archive.Loading and FExtended then
     FDirty := True;
 end;

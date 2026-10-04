@@ -65,7 +65,6 @@ function ArmMultiply(A, B, Accumulator: UInt64; LongResult, SignedResult: Boolea
 implementation
 
 type
-
   TArmWide = record
     Lo, Hi: UInt64;
   end;
@@ -232,6 +231,7 @@ begin
   inherited Create;
   if Length(Firmware) <> $28000 then
     raise EArgumentException.Create('ST018 firmware must contain 163840 bytes');
+
   FFirmware := Copy(Firmware);
   PowerOn(False);
 end;

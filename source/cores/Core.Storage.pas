@@ -140,6 +140,8 @@ begin
     raise EArgumentException.Create('Invalid storage name: ' + Value);
 end;
 
+{ TStorage }
+
 constructor TStorage.Create(const Root: string; const Picker: IStoragePicker);
 begin
   inherited Create;
@@ -153,6 +155,7 @@ begin
       FRoot := TPath.GetHomePath;
     if (FRoot = '') or not TPath.IsPathRooted(FRoot) then
       raise EInOutError.Create('Cannot determine storage directory');
+
     FRoot := TPath.Combine(FRoot, 'RetroMul');
   end;
   FRoot := ExpandFileName(FRoot);
@@ -273,8 +276,8 @@ begin
   begin
     var Items := TAndroidStorage.Enumerate(Location, Recursive);
     SetLength(Result, Length(Items));
-    for var I := 0 to High(Items) do
-      Result[I] := Items[I].Location;
+    for var i := 0 to High(Items) do
+      Result[i] := Items[i].Location;
     Exit;
   end;
   {$ENDIF}
@@ -293,8 +296,8 @@ begin
   begin
     var Items := TAndroidStorage.Enumerate(Location, False, True);
     SetLength(Result, Length(Items));
-    for var I := 0 to High(Items) do
-      Result[I] := Items[I].Location;
+    for var i := 0 to High(Items) do
+      Result[i] := Items[i].Location;
     Exit;
   end;
   {$ENDIF}
@@ -326,6 +329,7 @@ procedure TStorage.WriteAtomic(const Location: string; Stream: TStream);
 begin
   if Location.StartsWith('content://') then
     raise ENotSupportedException.Create('Document providers do not guarantee atomic replacement; use OpenWrite for document export');
+
   // Keep the temporary basename short even for nested snapshot staging files.
   var Temporary := TPath.Combine(ExtractFilePath(Location),
     TGUID.NewGuid.ToString.Replace('{', '').Replace('}', '').Replace('-', '') + '.tmp');
@@ -429,9 +433,9 @@ end;
 function TStorage.ScreenshotFile(const RomName: string): string;
 begin
   var Name := ChangeFileExt(ExtractFileName(RomName), '');
-  for var I := 1 to Length(Name) do
-    if (Ord(Name[I]) < 32) or CharInSet(Name[I], ['<', '>', ':', '"', '/', '\', '|', '?', '*']) then
-      Name[I] := '_';
+  for var i := 1 to Length(Name) do
+    if (Ord(Name[i]) < 32) or CharInSet(Name[i], ['<', '>', ':', '"', '/', '\', '|', '?', '*']) then
+      Name[i] := '_';
   if Name = '' then
     Name := 'Game';
   Result := TPath.Combine(TPath.Combine(FRoot, 'screenshots'), Copy(Name, 1, 80) + '_' +
@@ -442,6 +446,7 @@ function TStorage.TemporaryFile(const Extension: string): string;
 begin
   if (Pos('/', Extension) > 0) or (Pos('\', Extension) > 0) then
     raise EArgumentException.Create('Invalid temporary file extension');
+
   Result := TPath.Combine(TPath.Combine(FRoot, 'cache'), TGUID.NewGuid.ToString + Extension);
 end;
 
@@ -458,15 +463,17 @@ begin
     begin
       if Result <> '' then
         raise EInOutError.Create('Multiple saves for game ' + Identity);
+
       Result := Path;
     end;
   end;
   if Result <> '' then
     Exit;
+
   var Title := ChangeFileExt(ExtractFileName(RomName), '').Trim;
-  for var I := 1 to Length(Title) do
-    if (Ord(Title[I]) < 32) or CharInSet(Title[I], ['<', '>', ':', '"', '/', '\', '|', '?', '*']) then
-      Title[I] := '_';
+  for var i := 1 to Length(Title) do
+    if (Ord(Title[i]) < 32) or CharInSet(Title[i], ['<', '>', ':', '"', '/', '\', '|', '?', '*']) then
+      Title[i] := '_';
   Title := Copy(Title, 1, 80).Trim;
   if Title = '' then
     Title := 'Game';
@@ -528,9 +535,11 @@ function TStorage.Roms(const SystemId: string): TArray<TStorageFile>;
 begin
   if FRomFolder = '' then
     Exit(nil);
+
   var RomSystem := RomSystemFromId(LowerCase(SafeName(SystemId)));
   if RomSystem = TRomSystem.Unknown then
     Exit(nil);
+
   var FolderName := RomSystemFolder(RomSystem);
   var Extensions := RomExtensions(RomSystem);
   var Candidates: TArray<TStorageFile>;
@@ -554,6 +563,7 @@ begin
       begin
         if not MatchText(ExtractFileExt(Path), Extensions) then
           Continue;
+
         var Item := Describe(Path);
         Item.RelativePath := ExtractRelativePath(IncludeTrailingPathDelimiter(FRomFolder), Path);
         List.Add(Item);
@@ -568,9 +578,9 @@ begin
     for var Item in Candidates do
     begin
       // Listing never opens ROM streams. Header validation belongs to loading.
-      if (FCheckRomFileSize and (Item.Size > FMaxRomFileSize)) or
-        not MatchText(ExtractFileExt(Item.Name), Extensions) then
+      if (FCheckRomFileSize and (Item.Size > FMaxRomFileSize)) or not MatchText(ExtractFileExt(Item.Name), Extensions) then
         Continue;
+
       var Match := Item;
       Match.RelativePath := FolderName + '/' + Item.Name;
       Matches.Add(Match);
@@ -585,6 +595,7 @@ procedure TStorage.SelectRomFolder(const Callback: TStorageSelectionCallback);
 begin
   if FPicker = nil then
     raise ENotSupportedException.Create('No storage picker is configured');
+
   var Storage: IStorage := Self;
   FPicker.Select(True,
     procedure(const Selection: TStorageSelection)
@@ -606,7 +617,9 @@ procedure TStorage.SelectRom(const Callback: TStorageSelectionCallback);
 begin
   if FPicker = nil then
     raise ENotSupportedException.Create('No storage picker is configured');
+
   FPicker.Select(False, Callback);
 end;
 
 end.
+

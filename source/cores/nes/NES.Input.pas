@@ -102,6 +102,7 @@ begin
   for var Pair in FSources do
     if (Pair.Value[Player] and (1 shl Ord(Button))) <> 0 then
       Exit(True);
+
   Result := False;
 end;
 

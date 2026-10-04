@@ -91,6 +91,8 @@ begin
     end);
 end;
 
+{ TFMXOpenDialog }
+
 constructor TFMXOpenDialog.Create(AOwner: TComponent);
 begin
   inherited;
@@ -114,8 +116,10 @@ procedure TFMXOpenDialog.Select(AFolder: Boolean; const ACallback: TFMXSelection
 begin
   if TThread.CurrentThread.ThreadID <> MainThreadID then
     raise EInvalidOperation.Create('File selection must start on the main thread');
+
   if not Assigned(ACallback) then
     raise EArgumentNilException.Create('ACallback');
+
   if ActiveRequest <> nil then
   begin
     var Selection := Default(TFMXSelectionResult);
@@ -124,6 +128,7 @@ begin
     Deliver(ACallback, Selection);
     Exit;
   end;
+
   var Request: ISelectionRequest := TSelectionRequest.Create(Self, AFolder, ACallback);
   ActiveRequest := Request;
   TThread.ForceQueue(nil,
@@ -167,6 +172,7 @@ var
 begin
   if FCompleted then
     Exit;
+
   KeepAlive := Self;
   FCompleted := True;
   {$IFDEF ANDROID}
@@ -217,6 +223,7 @@ begin
     {$IFDEF IOS}
     raise ENotSupportedException.Create('iOS document selection is not implemented');
     {$ENDIF}
+
     var Dialog := TOpenDialog.Create(nil);
     try
       Dialog.Title := FTitle;
@@ -242,6 +249,7 @@ begin
           Selection.Locations := Files.ToStringArray;
           if Length(Selection.Locations) = 0 then
             raise EInvalidOperation.Create('The picker returned no selection');
+
           Selection.Status := TFMXSelectionStatus.Selected;
         end;
       finally
@@ -267,9 +275,11 @@ procedure TSelectionRequest.ActivityResult(const Sender: TObject; const Message:
 begin
   if FCompleted or not (Message is TMessageResultNotification) then
     Exit;
+
   var Notification := TMessageResultNotification(Message);
   if Notification.RequestCode <> FRequestCode then
     Exit;
+
   var Selection := Default(TFMXSelectionResult);
   Selection.Status := TFMXSelectionStatus.Cancelled;
   try
@@ -278,6 +288,7 @@ begin
       var Intent := Notification.Value;
       if Intent = nil then
         raise EInvalidOperation.Create('The picker returned no document');
+
       var Clip := Intent.getClipData;
       if not FFolder and (Clip <> nil) then
       begin
@@ -287,6 +298,7 @@ begin
           var Uri := Clip.getItemAt(I).getUri;
           if Uri = nil then
             raise EInvalidOperation.Create('The picker returned an invalid document');
+
           Selection.Locations[I] := JStringToString(Uri.toString);
         end;
       end
@@ -295,10 +307,12 @@ begin
         var Uri := Intent.getData;
         if Uri = nil then
           raise EInvalidOperation.Create('The picker returned no document');
+
         Selection.Locations := [JStringToString(Uri.toString)];
       end;
       if Length(Selection.Locations) = 0 then
         raise EInvalidOperation.Create('The picker returned no selection');
+
       // Preserve read access when the provider grants persistable permission.
       if (Intent.getFlags and TJIntent.JavaClass.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) <> 0 then
       begin

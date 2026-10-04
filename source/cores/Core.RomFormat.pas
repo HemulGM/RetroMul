@@ -95,6 +95,8 @@ implementation
 uses
   SNES.Cartridge;
 
+{ TRomFormatInfo }
+
 function TRomFormatInfo.SystemId: string;
 begin
   Result := RomSystemId(System);
@@ -105,6 +107,7 @@ begin
   for var System := TRomSystem.NES to TRomSystem.SNES do
     if SameText(SystemId, RomSystemId(System)) or SameText(SystemId, RomSystemFolder(System)) then
       Exit(System);
+
   Result := TRomSystem.Unknown;
 end;
 
@@ -164,19 +167,16 @@ begin
   Result := Default(TRomFormatInfo);
   if Signature(0, NES_ROM_SIGNATURE) then
     Result.System := TRomSystem.NES
-  else if (Length(Data) >= GB_ROM_HEADER_SIZE) and
-    CompareMem(@Data[GB_ROM_LOGO_OFFSET], @GB_ROM_LOGO[0], SizeOf(GB_ROM_LOGO)) then
+  else if (Length(Data) >= GB_ROM_HEADER_SIZE) and CompareMem(@Data[GB_ROM_LOGO_OFFSET], @GB_ROM_LOGO[0], SizeOf(GB_ROM_LOGO)) then
   begin
     if Data[GB_ROM_CGB_FLAG_OFFSET] in [$80, $C0] then
       Result.System := TRomSystem.GBC
     else
       Result.System := TRomSystem.GB;
   end
-  else if Signature(MD_ROM_HEADER_OFFSET, MD_ROM_SIGNATURE) or
-    Signature(MD_ROM_ALTERNATE_HEADER_OFFSET, MD_ROM_SIGNATURE) then
+  else if Signature(MD_ROM_HEADER_OFFSET, MD_ROM_SIGNATURE) or Signature(MD_ROM_ALTERNATE_HEADER_OFFSET, MD_ROM_SIGNATURE) then
     Result.System := TRomSystem.MD
-  else if Signature(MD_ROM_HEADER_OFFSET, MD_SWAPPED_ROM_SIGNATURE) or
-    Signature(MD_ROM_ALTERNATE_HEADER_OFFSET, MD_SWAPPED_ROM_SIGNATURE) then
+  else if Signature(MD_ROM_HEADER_OFFSET, MD_SWAPPED_ROM_SIGNATURE) or Signature(MD_ROM_ALTERNATE_HEADER_OFFSET, MD_SWAPPED_ROM_SIGNATURE) then
   begin
     Result.System := TRomSystem.MD;
     Result.Encoding := TRomEncoding.ByteSwapped;
@@ -206,6 +206,7 @@ function DetectRom(Stream: TStream): TRomFormatInfo;
 begin
   if Stream = nil then
     raise EArgumentNilException.Create('Stream');
+
   var Position := Stream.Position;
   try
     var Data: TBytes;
@@ -244,6 +245,7 @@ function ReadRomData(Stream: TStream): TBytes;
 begin
   if Stream = nil then
     raise EArgumentNilException.Create('Stream');
+
   var Buffer: array[0..65535] of Byte;
   var Memory := TMemoryStream.Create;
   try
@@ -254,6 +256,7 @@ begin
         Break;
       if Memory.Size + Count > ROM_MAX_SIZE then
         raise EReadError.Create('ROM exceeds 64 MiB');
+
       Memory.WriteBuffer(Buffer, Count);
     end;
     SetLength(Result, Memory.Size);
@@ -273,24 +276,24 @@ begin
   begin
     if Odd(Length(Result)) then
       raise EReadError.Create('Invalid byte-swapped ROM size');
-    for var I := 0 to Length(Result) div 2 - 1 do
+
+    for var i := 0 to Length(Result) div 2 - 1 do
     begin
-      Result[I * 2] := Data[I * 2 + 1];
-      Result[I * 2 + 1] := Data[I * 2];
+      Result[i * 2] := Data[i * 2 + 1];
+      Result[i * 2 + 1] := Data[i * 2];
     end;
   end
   else if Format.Encoding = TRomEncoding.SMD then
   begin
     if ((Length(Data) - ROM_COPIER_HEADER_SIZE) mod SMD_BLOCK_SIZE <> 0) then
       raise EReadError.Create('Invalid SMD size');
+
     SetLength(Result, Length(Data) - ROM_COPIER_HEADER_SIZE);
     for var Block := 0 to Length(Result) div SMD_BLOCK_SIZE - 1 do
-      for var I := 0 to SMD_HALF_BLOCK_SIZE - 1 do
+      for var i := 0 to SMD_HALF_BLOCK_SIZE - 1 do
       begin
-        Result[Block * SMD_BLOCK_SIZE + I * 2] :=
-          Data[ROM_COPIER_HEADER_SIZE + Block * SMD_BLOCK_SIZE + SMD_HALF_BLOCK_SIZE + I];
-        Result[Block * SMD_BLOCK_SIZE + I * 2 + 1] :=
-          Data[ROM_COPIER_HEADER_SIZE + Block * SMD_BLOCK_SIZE + I];
+        Result[Block * SMD_BLOCK_SIZE + i * 2] := Data[ROM_COPIER_HEADER_SIZE + Block * SMD_BLOCK_SIZE + SMD_HALF_BLOCK_SIZE + i];
+        Result[Block * SMD_BLOCK_SIZE + i * 2 + 1] := Data[ROM_COPIER_HEADER_SIZE + Block * SMD_BLOCK_SIZE + i];
       end;
   end;
 end;

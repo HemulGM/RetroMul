@@ -120,6 +120,7 @@ begin
     if Offset >= $8000 then
       Exit(1);
   end;
+
   if Bank >= $C0 then
     Exit(1);
   if (Length(BWRAM) > 0) and ((Bank in [$40..$4F]) or (SA and (Bank in [$50..$6F]))) then
@@ -153,6 +154,7 @@ procedure TSnesSA1.ControlIdle(PC: Word; Jump: Boolean);
 begin
   if MemoryType(PC, True) <> 1 then
     Exit;
+
   if Jump then
   begin
     Inc(State.Clock);
@@ -185,6 +187,7 @@ begin
     $FFEE:
       Exit(Param(7, 2));
   end;
+
   Result := CPURead(Address);
   Result := Result or (Word(CPURead(Word(Address + 1))) shl 8);
 end;
@@ -195,6 +198,7 @@ begin
   var Group: Integer;
   if Bank >= $C0 then
     Exit((Cardinal(State.Registers[$20 + ((Bank - $C0) shr 4)] and 7) shl 20) or (Address and $FFFFF));
+
   Group := (Bank shr 5) and 1;
   if Bank >= $80 then
     Inc(Group, 2);
@@ -214,8 +218,10 @@ begin
     Bitmap := True;
     Exit(Address - $600000);
   end;
+
   if (Bank in [$40..$5F]) then
     Exit(Address and $1FFFFF);
+
   if SA then
   begin
     Bitmap := (State.Registers[$25] and $80) <> 0;
@@ -239,6 +245,7 @@ begin
         Exit(0);
       Exit(IRAM[Offset and $7FF]);
     end;
+
     if (Offset >= $2200) and (Offset <= $23FF) then
       Exit(ReadRegister(Offset, OpenBus, SA));
   end;
@@ -246,10 +253,12 @@ begin
   begin
     if Length(BWRAM) = 0 then
       Exit(OpenBus);
+
     var Bitmap: Boolean;
     var A := BwAddress(Address, SA, Bitmap);
     if not SA and State.ConvertActive then
       Exit(CharConvert1(Address));
+
     var Shift, Mask: Cardinal;
     Shift := 0;
     Mask := $FF;
@@ -300,6 +309,7 @@ begin
       end;
       Exit;
     end;
+
     if (Offset >= $2200) and (Offset <= $23FF) then
     begin
       WriteRegister(Offset, Value, SA);
@@ -310,6 +320,7 @@ begin
   begin
     if Length(BWRAM) = 0 then
       Exit;
+
     var Bitmap: Boolean;
     var A := BwAddress(Address, SA, Bitmap);
     var Shift, Mask: Cardinal;
@@ -335,6 +346,7 @@ begin
     if ((State.Registers[$26] or State.Registers[$27]) and $80) = 0 then
       if (A and $3FFFF) < Cardinal(256 shl Area) then
         Exit;
+
     Value := (BWRAM[A] and not (Mask shl Shift)) or ((Value and Mask) shl Shift);
     if BWRAM[A] <> Value then
     begin
@@ -396,12 +408,14 @@ procedure TSnesSA1.Math;
 begin
   if State.MathStart = 0 then
     Exit;
+
   var Mode := State.Registers[$50] and 3;
   var Delay := 5;
   if (Mode and 2) <> 0 then
     Delay := 6;
   if State.Clock - State.MathStart < UInt64(Delay) then
     Exit;
+
   State.MathStart := 0;
   var A := SmallInt(Param($51, 2));
   var B := Word(Param($53, 2));
@@ -573,6 +587,7 @@ procedure TSnesSA1.WriteRegister(Address: Word; Value: Byte; SA: Boolean);
 begin
   if (Address < $2200) or (Address > $225B) then
     Exit;
+
   var Index := Address - $2200;
   if SA then
   begin
@@ -581,6 +596,7 @@ begin
   end
   else if not (Index in [0..8, $20..$24, $26, $28, $29, $31..$37]) then
     Exit;
+
   if Index in [$50..$54] then
     Math;
   var Previous := State.Registers[Index];
@@ -665,6 +681,7 @@ begin
       Result := (State.Registers[9] and $5F) or State.CpuRequest;
     Exit;
   end;
+
   case Address of
     $2301:
       Result := (State.Registers[0] and $F) or State.SaRequest;
@@ -749,6 +766,7 @@ begin
     Size := SizeOf(IRAM);
   if Length(Data) <> Size then
     raise EArgumentException.Create('SA1 battery size mismatch');
+
   if Length(BWRAM) > 0 then
     BWRAM := Copy(Data)
   else

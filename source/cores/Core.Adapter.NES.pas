@@ -141,6 +141,8 @@ implementation
 uses
   Core.RomFormat, System.SysUtils, System.UITypes;
 
+{ TNesCoreAdapter }
+
 function TNesCoreAdapter.UsesDataRecorder: Boolean;
 begin
   Result := FThread.UsesDataRecorder;
@@ -393,6 +395,7 @@ begin
     FError := Status.Error;
   if not Result then
     Exit;
+
   Frame.Width := 256;
   Frame.Height := 240;
   SetLength(Frame.Pixels, Frame.Width * Frame.Height);

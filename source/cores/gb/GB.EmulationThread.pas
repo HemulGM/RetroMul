@@ -5,7 +5,7 @@ interface
 uses
   Core.Storage, Core.Snapshots, System.Classes, System.SyncObjs,
   System.Generics.Collections, System.Diagnostics, GB.Joypad, GB.GPU, GB.ROM,
-  GB.MBC, GB.Memory, GB.Timer, GB.InterruptManager;
+  GB.MBC, GB.Memory, GB.Timer, GB.InterruptManager, GB.Camera;
 
 type
   TGBInputEvent = record
@@ -34,6 +34,8 @@ type
     FErrorMessage: string;
     FSoundVolume: Single;
     FPauseRequested: Boolean;
+    FCameraSource: IGBCameraFrameSource;
+    FHasCamera: Boolean;
     procedure ApplyInput;
     procedure SetSoundVolume(const Value: Single);
   protected
@@ -48,7 +50,7 @@ type
     procedure Execute; override;
   public
     constructor Create(const FileName: string; EnableAudio: Boolean = True); overload;
-    constructor Create(const ROMData: TArray<Byte>; EnableAudio: Boolean = True); overload;
+    constructor Create(const ROMData: TArray<Byte>; EnableAudio: Boolean = True; const CameraSource: IGBCameraFrameSource = nil); overload;
     destructor Destroy; override;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
@@ -64,6 +66,8 @@ type
     function TakeError: string;
     property SoundVolume: Single read FSoundVolume write SetSoundVolume;
     property PauseRequested: Boolean read FPauseRequested;
+    property HasCamera: Boolean read FHasCamera;
+    procedure SubmitCameraFrame(const Frame: TGBCameraFrame);
   end;
 
 implementation
@@ -114,12 +118,19 @@ begin
   FSavePath := FStorage.GameSave(LowerCase(CoreID), FileName, SnapshotIdentity(FROMData));
 end;
 
-constructor TGBEmulationThread.Create(const ROMData: TArray<Byte>; EnableAudio: Boolean);
+constructor TGBEmulationThread.Create(const ROMData: TArray<Byte>; EnableAudio: Boolean; const CameraSource: IGBCameraFrameSource);
 begin
   inherited Create(True);
   FreeOnTerminate := False;
   FStorage := TStorage.Default;
   FROMData := Copy(ROMData);
+  FHasCamera := (Length(FROMData) > $147) and (FROMData[$147] = $FC);
+  if FHasCamera then
+  begin
+    FCameraSource := CameraSource;
+    if FCameraSource = nil then
+      FCameraSource := TGBCameraFrameSource.Create;
+  end;
   FEnableAudio := EnableAudio;
   FSoundVolume := 0.5;
   FLock := TCriticalSection.Create;
@@ -138,6 +149,13 @@ begin
   FInputEvents.Free;
   FStopEvent.Free;
   FLock.Free;
+end;
+
+procedure TGBEmulationThread.SubmitCameraFrame(const Frame: TGBCameraFrame);
+begin
+  if not FHasCamera then
+    raise ENotSupportedException.Create('Cartridge has no camera');
+  FCameraSource.SubmitFrame(Frame);
 end;
 
 procedure TGBEmulationThread.SaveSnapshot(const Name: string);
@@ -183,6 +201,7 @@ begin
   try
     if (Key in FPressedKeys) = Pressed then
       Exit;
+
     if Pressed then
       Include(FPressedKeys, Key)
     else
@@ -240,8 +259,7 @@ begin
     Inc(FFramesSinceRateUpdate);
     if FFrameRateStopwatch.ElapsedMilliseconds >= 500 then
     begin
-      FFramesPerSecond := FFramesSinceRateUpdate * 1000.0 /
-        FFrameRateStopwatch.ElapsedMilliseconds;
+      FFramesPerSecond := FFramesSinceRateUpdate * 1000.0 / FFrameRateStopwatch.ElapsedMilliseconds;
       FFramesSinceRateUpdate := 0;
       FFrameRateStopwatch := TStopwatch.StartNew;
     end;
@@ -286,10 +304,10 @@ var
   BatteryArmed: Boolean;
 
   procedure SaveBattery(MBC: TGBMBC);
+
     procedure SaveChanged(const Path: string; const Data: TBytes; var Last: TBytes);
     begin
-      if (Length(Data) = Length(Last)) and
-        ((Length(Data) = 0) or CompareMem(@Data[0], @Last[0], Length(Data))) then
+      if (Length(Data) = Length(Last)) and ((Length(Data) = 0) or CompareMem(@Data[0], @Last[0], Length(Data))) then
         Exit;
       var Stream := TBytesStream.Create(Data);
       try
@@ -299,17 +317,21 @@ var
         Stream.Free;
       end;
     end;
+
   begin
     if not BatteryArmed then
       Exit;
+
     SaveChanged(FSavePath, MBC.SaveMemory, LastRAM);
     if MBC.HasTimer then
       SaveChanged(ChangeFileExt(FSavePath, '.rtc'), MBC.RTCData, LastRTC);
   end;
+
 begin
   BatteryArmed := False;
   if Terminated then
     Exit;
+
   var ROM: TGBROM := nil;
   var MBC: TGBMBC := nil;
   var GPU: TGBVideo := nil;
@@ -329,11 +351,12 @@ begin
       end;
       if Terminated then
         Exit;
+
       FFrameRateStopwatch := TStopwatch.StartNew;
       FFramesSinceRateUpdate := 0;
       FFramesPerSecond := 0;
       GPU := CreateVideo(ROM);
-      MBC := TGBMBC.Create(ROM);
+      MBC := TGBMBC.Create(ROM, nil, FCameraSource);
       if MBC.HasBattery and (FSavePath <> '') then
       begin
         if FStorage.Exists(FSavePath) then
@@ -351,8 +374,7 @@ begin
       Sound.Volume := FSoundVolume;
       CPU := TGBCPU.Create(Memory, GPU, Sound);
       CPU.SkipBIOS;
-      FrameHints := TEmulationPerformanceHints.Create(
-        Round(FrameCycles * 1000000000.0 / CPUClockFrequency), CoreID);
+      FrameHints := TEmulationPerformanceHints.Create(Round(FrameCycles * 1000000000.0 / CPUClockFrequency), CoreID);
       HintNextCycles := CPU.Cycles + FrameCycles;
       var Stopwatch := TStopwatch.StartNew;
       var StartCycles := CPU.Cycles;

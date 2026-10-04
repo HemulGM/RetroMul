@@ -374,6 +374,7 @@ begin
   Address := Address and $3FFF;
   if (Address < $3F00) and (FMapper <> nil) and FMapper.PpuRead(Address, Temp) then
     Exit(Temp);
+
   if Address < $2000 then
   begin
     Exit(0);
@@ -445,6 +446,7 @@ procedure TPPU.CaptureSplitState;
 begin
   if (FScanline < 0) or (FScanline >= 240) then
     Exit;
+
   if not FSplitActive then
   begin
     FSplitActive := True;
@@ -470,6 +472,7 @@ begin
       FNmiLine := False;
       Exit;
     end;
+
     FStatus := FStatus or $80;
     FNmiOccurred := True;
   end
@@ -492,14 +495,14 @@ begin
   end;
   if (FScanline >= 240) and (FScanline <> FPreRenderLine) then
     Exit;
+
   // Expose only timed PPU fetches; frame/debug reads must not clock IRQs.
   var Phase: Integer := FCycle and 7;
   var Address: UInt16 := $2000 or (FV and $0FFF);
   if ((FCycle >= 1) and (FCycle < 256)) or ((FCycle >= 320) and (FCycle < 336)) then
   begin
     if Phase >= 4 then
-      Address := (UInt16(FCtrl and $10) shl 8) or
-        (UInt16(FFetchTile) shl 4) or ((FV shr 12) and 7) or ((Phase and 2) shl 2);
+      Address := (UInt16(FCtrl and $10) shl 8) or (UInt16(FFetchTile) shl 4) or ((FV shr 12) and 7) or ((Phase and 2) shl 2);
   end
   else if (FCycle >= 256) and (FCycle < 320) and (Phase >= 4) then
   begin
@@ -533,8 +536,7 @@ begin
           if (Attributes and $80) <> 0 then
             Row := Height - 1 - Row;
           if Height = 16 then
-            Address := (UInt16(Tile and 1) shl 12) or (UInt16(Tile and $FE) shl 4) or
-              ((Row and 8) shl 1) or (Row and 7)
+            Address := (UInt16(Tile and 1) shl 12) or (UInt16(Tile and $FE) shl 4) or ((Row and 8) shl 1) or (Row and 7)
           else
             Address := (UInt16(FCtrl and $08) shl 9) or (UInt16(Tile) shl 4) or (Row and 7);
           FMapperSpriteAddresses[Count] := Address;
@@ -673,8 +675,7 @@ begin
       for var X := 0 to NES_WIDTH - 1 do
       begin
         var Color := FDrawingFrame[X, Y];
-        var Luma := (299 * Integer((Color shr 16) and $FF) +
-          587 * Integer((Color shr 8) and $FF) + 114 * Integer(Color and $FF)) div 1000;
+        var Luma := (299 * Integer((Color shr 16) and $FF) + 587 * Integer((Color shr 8) and $FF) + 114 * Integer(Color and $FF)) div 1000;
         FZapperMask[X, Y] := Ord(Luma >= LIGHT_THRESHOLD);
       end;
     end;
@@ -840,12 +841,10 @@ begin
     var X := FCycle - 1;
     var Background: UInt8 := 0;
     if ((FMask and $08) <> 0) and ((X >= 8) or ((FMask and 2) <> 0)) then
-      Background := ((FPixel.Low shr (15 - FFineX)) and 1) or
-        (((FPixel.High shr (15 - FFineX)) and 1) shl 1);
+      Background := ((FPixel.Low shr (15 - FFineX)) and 1) or (((FPixel.High shr (15 - FFineX)) and 1) shl 1);
     for var i := 0 to 7 do
     begin
-      var OutputSprite := ((FPixel.Counting and (1 shl i)) = 0) or
-        ((X = 0) and FPixel.DotSkipped);
+      var OutputSprite := ((FPixel.Counting and (1 shl i)) = 0) or ((X = 0) and FPixel.DotSkipped);
       if (FPixel.Counting and (1 shl i)) <> 0 then
       begin
         if FPixel.SpriteX[i] > 0 then
@@ -882,6 +881,7 @@ begin
   end;
   if not Rendering then
     Exit;
+
   if FCycle = 339 then
   begin
     FPixel.Counting := 0;
@@ -903,14 +903,14 @@ begin
       FPixel.AttrHigh := (FPixel.AttrHigh and $FF00) or (Ord((FPixel.Attribute and 2) <> 0) * $FF);
     end;
   end;
+
   if (FCycle >= 257) and (FCycle <= 320) then
   begin
     var i := (FCycle - 257) div 8;
     var Phase := (FCycle - 257) and 7;
     if Phase = 0 then
-    begin
       FPixel.SpriteZero[i] := (i = 0) and FOamEval.ZeroAdded;
-    end;
+
     case Phase of
       0:
         FPixel.SpriteY[i] := FOamEval.BufferValue;

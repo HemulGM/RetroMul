@@ -70,6 +70,7 @@ uses
   {$ENDIF}
   System.Math;
 
+{ TNesPowerPad }
 
 constructor TNesPowerPad.Create(AOwner: TComponent);
 begin
@@ -139,6 +140,7 @@ begin
   Result := 0;
   if not LocalRect.Contains(Point) then
     Exit;
+
   for var VisualKey in FVisualKeys do
     if VisualKey.Bounds.Contains(Point) and (Point.Distance(VisualKey.Bounds.CenterPoint) <= VisualKey.Bounds.Width / 2) then
       Exit(VisualKey.Key);
@@ -153,6 +155,7 @@ procedure TNesPowerPad.SetCoreButtons(const Value: TPowerPadButtons);
 begin
   if FCoreButtons = Value then
     Exit;
+
   FCoreButtons := Value;
   Repaint;
 end;
@@ -165,6 +168,7 @@ begin
       Include(NewKeys, Key);
   if NewKeys = FKeys then
     Exit;
+
   FKeys := NewKeys;
   Repaint;
   if Assigned(FOnChange) then
@@ -175,6 +179,7 @@ procedure TNesPowerPad.PointerDown(Id: NativeInt; const Point: TPointF);
 begin
   if not AbsoluteEnabled or not ParentedVisible then
     Exit;
+
   FContacts.Remove(Id);
   var Key := KeyAt(Point);
   if Key <> 0 then
@@ -189,12 +194,15 @@ begin
     ReleaseAll;
     Exit;
   end;
+
   var OldKey: Integer;
   if not FContacts.TryGetValue(Id, OldKey) then
     Exit;
+
   var Key := KeyAt(Point);
   if Key = OldKey then
     Exit;
+
   FContacts.AddOrSetValue(Id, Key);
   UpdateKeys;
 end;
@@ -209,6 +217,7 @@ procedure TNesPowerPad.ReleaseAll;
 begin
   if FContacts = nil then
     Exit;
+
   FContacts.Clear;
   FCoreButtons := [];
   UpdateKeys;

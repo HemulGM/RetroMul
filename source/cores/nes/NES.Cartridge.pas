@@ -91,10 +91,12 @@ function RomSize(LowByte, HighNibble: Byte; UnitSize: Integer): UInt64;
 begin
   if HighNibble <> $0F then
     Exit(UInt64(LowByte or (Integer(HighNibble) shl 8)) * UInt64(UnitSize));
+
   var Factor := UInt64((LowByte and 3) * 2 + 1);
   var Power := UInt64(1) shl (LowByte shr 2);
   if Power > High(UInt64) div Factor then
     raise ENesException.Create('ROM size overflows 64 bits');
+
   Result := Power * Factor;
 end;
 
@@ -102,6 +104,7 @@ function RamSize(Shift: Byte): UInt64;
 begin
   if Shift = 0 then
     Exit(0);
+
   Result := UInt64(64) shl Shift;
 end;
 
@@ -173,6 +176,7 @@ begin
   // NES 2.0 trailing data may contain miscellaneous ROMs, not a title.
   if Metadata.Format <> TRomFormat.INes then
     Exit;
+
   var Remaining := Stream.Size - Stream.Position;
   if Metadata.ConsoleType = 2 then
   begin
@@ -186,6 +190,7 @@ begin
   end;
   if (Remaining <> 127) and (Remaining <> 128) then
     Exit;
+
   var Data: TBytes;
   SetLength(Data, Integer(Remaining));
   ReadExact(Stream, Data[0], Length(Data));
@@ -196,6 +201,7 @@ begin
       EndOfText := True
     else if (Value < 32) or (Value > 126) or (EndOfText and (Value <> 32)) then
       Exit('');
+
     if not EndOfText then
       Result := Result + Char(Value);
   end;
@@ -271,9 +277,11 @@ begin
   end;
   if (FMetadata.PrgRomSize > Remaining) or (FMetadata.PrgRomSize > UInt64(High(Integer))) then
     raise ENesException.Create('Invalid PRG ROM size');
+
   Dec(Remaining, FMetadata.PrgRomSize);
   if (FMetadata.ChrRomSize > Remaining) or (FMetadata.ChrRomSize > UInt64(High(Integer))) then
     raise ENesException.Create('Invalid CHR ROM size');
+
   if HasTrainer then
   begin
     SetLength(Trainer, 512);
@@ -283,6 +291,7 @@ begin
   SetLength(PrgRom, Integer(FMetadata.PrgRomSize));
   if Length(PrgRom) = 0 then
     raise ENesException.Create('ROM has no PRG data');
+
   ReadExact(Stream, PrgRom[0], Length(PrgRom));
 
   SetLength(ChrRom, Integer(FMetadata.ChrRomSize));
@@ -298,6 +307,12 @@ begin
   if FMetadata.Format = TRomFormat.INes then
   begin
     FMetadata.HasBattery := FMetadata.HasBattery or IsLegacyBatteryRom(FRomIdentity);
+    if (FMapperId = MAPPER_MMC3) and IsLegacyMmc6Rom(FRomIdentity) then
+    begin
+      FMetadata.Submapper := 1;
+      FMetadata.PrgRamSize := 0;
+      FMetadata.PrgNvRamSize := $400;
+    end;
     if IsLegacyFamicomKeyboardRom(FRomIdentity) then
       FMetadata.DefaultExpansionDevice := $23;
     if IsLegacyDataRecorderRom(FRomIdentity) then
@@ -305,8 +320,7 @@ begin
     if IsLegacyPowerPadRom(FRomIdentity) then
       FMetadata.DefaultExpansionDevice := 12;
       // Legacy iNES cannot declare the VS PPU model. This exact ROM uses RP2C04-0004.
-    if (FMapperId = MAPPER_VS_SYSTEM) and
-      (FRomIdentity = '91fa719b4b05adbac0b9d507d2051ed361d1ded4') then
+    if (FMapperId = MAPPER_VS_SYSTEM) and (FRomIdentity = '91fa719b4b05adbac0b9d507d2051ed361d1ded4') then
       FMetadata.VsPpuType := 5;
   end;
 
@@ -327,8 +341,8 @@ begin
 
   // Trainer data initializes the cartridge's CPU RAM before battery activation.
   // A persisted save, when present, subsequently takes precedence.
-  for var I := 0 to Length(Trainer) - 1 do
-    FMapper.CpuWrite($7000 + I, Trainer[I]);
+  for var i := 0 to Length(Trainer) - 1 do
+    FMapper.CpuWrite($7000 + i, Trainer[i]);
 
   FValid := True;
 end;
@@ -341,6 +355,7 @@ begin
     Exit;
   if FSaveFileName <> '' then
     Exit;
+
   var Memory := FMapper.GetSaveMemory;
   FSaveSize := Length(Memory);
   if FMetadata.Format = TRomFormat.Nes20 then
@@ -349,18 +364,28 @@ begin
       ((FMetadata.PrgRamSize <> 0) and (FMetadata.PrgNvRamSize <> 0)) or
       (FMetadata.PrgNvRamSize > UInt64(FSaveSize)) then
       raise ENesException.Create('Unsupported NES 2.0 persistent memory layout');
+
     FSaveSize := Integer(FMetadata.PrgNvRamSize);
   end;
   // Some legacy headers set the battery bit on boards with no writable memory.
   if FSaveSize = 0 then
     Exit;
+
   var Path := FStorage.GamePath(DirectoryName, FRomFileName, FRomIdentity, '.sav');
   if FStorage.Exists(Path) then
   begin
     var Stream := FStorage.OpenRead(Path);
     try
+      // Preserve the older 8 KiB file layout when loading a legacy MMC6 save.
+      // RAM was previously stored at the MMC3 $7000 offset inside that file.
+      if (FMapperId = MAPPER_MMC3) and (FMetadata.Submapper = 1) and (FSaveSize = $400) and (Stream.Size = $2000) then
+      begin
+        FSaveSize := $2000;
+        SetLength(Memory, FSaveSize);
+      end;
       if Stream.Size <> FSaveSize then
         raise ENesException.CreateFmt('Invalid save size: %s (expected %d bytes)', [Path, FSaveSize]);
+
       ReadExact(Stream, Memory[0], FSaveSize);
     finally
       Stream.Free;
@@ -376,11 +401,14 @@ procedure TCartridge.SaveBattery;
 begin
   if (FSaveFileName = '') or not FValid then
     Exit;
+
   var Memory := FMapper.GetSaveMemory;
   if Length(Memory) < FSaveSize then
     raise ENesException.Create('Cartridge persistent memory size changed');
+
   if CompareMem(@Memory[0], @FLastSaveMemory[0], FSaveSize) then
     Exit;
+
   var Data: TBytes;
   SetLength(Data, FSaveSize);
   if FSaveSize > 0 then

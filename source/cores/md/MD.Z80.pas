@@ -234,6 +234,8 @@ const
   FLAG_BIT_HALF_CARRY = 4;
   FLAG_BIT_ZERO = 6;
   FLAG_BIT_SIGN = 7;
+
+const
   FLAG_MASK_CARRY = ( 1 shl FLAG_BIT_CARRY);
   FLAG_MASK_ADD_SUBTRACT = ( 1 shl FLAG_BIT_ADD_SUBTRACT);
   FLAG_MASK_PARITY_OVERFLOW = ( 1 shl FLAG_BIT_PARITY_OVERFLOW);
@@ -628,6 +630,7 @@ begin
       (Metadata.Operands[OtherOperand] = CLOWNZ80_OPERAND_IY_INDIRECT)
       then
       Continue;
+
     case Metadata.Operands[i] of
       CLOWNZ80_OPERAND_H:
         case RegisterMode of
@@ -711,7 +714,7 @@ end;
 function MemoryRead(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; Address: Cardinal): Cardinal;
 begin
   State.Cycles := Word(State.Cycles + 3);
-  Exit(Cardinal(Callbacks.ReadCallback(Callbacks.UserData, Address)));
+  Result := Cardinal(Callbacks.ReadCallback(Callbacks.UserData, Address));
 end;
 
 procedure MemoryWrite(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; Address: Cardinal; Data: Cardinal);
@@ -724,21 +727,20 @@ function InstructionMemoryRead(var State: TZ80State; var Callbacks: TZ80ReadAndW
 begin
   var Data: Cardinal := MemoryRead(State, Callbacks, State.ProgramCounter);
   State.ProgramCounter := (State.ProgramCounter + 1) and $FFFF;
-  Exit(Data);
+  Result := Data;
 end;
 
 function OpcodeFetch(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks): Cardinal;
 begin
   Inc(State.Cycles);
   State.R := Byte((State.R and $80) or ((State.R + 1) and $7F));
-  Exit(InstructionMemoryRead(State, Callbacks));
+  Result := InstructionMemoryRead(State, Callbacks);
 end;
 
 function MemoryRead16Bit(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; Address: Cardinal): Cardinal;
 begin
   var Value: Cardinal := MemoryRead(State, Callbacks, (Address));
-  Value := Value or (MemoryRead(State, Callbacks, (Add32(Address, 1) and $FFFF)) shl 8);
-  Exit(Value);
+  Result := Value or (MemoryRead(State, Callbacks, (Add32(Address, 1) and $FFFF)) shl 8);
 end;
 
 procedure MemoryWrite16Bit(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; Address: Cardinal; Value: Cardinal);
@@ -815,7 +817,7 @@ begin
   else
     Value := Cardinal(State.A);
   end;
-  Exit(Value);
+  Result := Value;
 end;
 
 procedure WriteOperand(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; var Instruction: TZ80Instruction; Operand: Integer; Value: Cardinal);
@@ -830,7 +832,7 @@ begin
     WriteOperand(State, Callbacks, Instruction, DoublePrefixOperand, Value);
 
   case Operand of
-    CLOWNZ80_OPERAND_NONE,           //
+    CLOWNZ80_OPERAND_NONE,            //
     CLOWNZ80_OPERAND_LITERAL_8_BIT,   //
     CLOWNZ80_OPERAND_LITERAL_16_BIT:
       ;
@@ -996,7 +998,7 @@ begin
   Value := Value xor (Value shr 4);
   Value := Value xor (Value shr 2);
   Value := Value xor (Value shr 1);
-  Exit(Ord((Value and 1) = 0));
+  Result := Ord((Value and 1) = 0);
 end;
 
 procedure ExecuteInstruction(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; var Instruction: TZ80Instruction);
@@ -1023,6 +1025,7 @@ begin
   var ALowScope216: Cardinal;
   var De: Cardinal;
   State.RegisterMode := Byte(CLOWNZ80_REGISTER_MODE_HL);
+
   case Instruction.Metadata.Opcode of
     CLOWNZ80_OPCODE_NOP:
       ;
@@ -1050,6 +1053,7 @@ begin
         repeat
           if not EvaluateCondition(State.F, Instruction.Metadata.Condition) then
             Break;
+
           State.ProgramCounter := RelativeAddress(State.ProgramCounter, Instruction.Literal);
           State.Cycles := Word(State.Cycles + 5);
         until True;
@@ -1346,6 +1350,7 @@ begin
           State.Cycles := Word(State.Cycles + 1);
           if not EvaluateCondition(State.F, Instruction.Metadata.Condition) then
             Break;
+
           State.ProgramCounter := Word(MemoryRead16Bit(State, Callbacks, State.StackPointer));
           State.StackPointer := Word(State.StackPointer + 2);
           State.StackPointer := Word(State.StackPointer and $FFFF);
@@ -1389,6 +1394,7 @@ begin
         repeat
           if not EvaluateCondition(State.F, Instruction.Metadata.Condition) then
             Break;
+
           var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
           State.ProgramCounter := Word(SourceValue);
         until True;
@@ -1453,6 +1459,7 @@ begin
         repeat
           if not EvaluateCondition(State.F, Instruction.Metadata.Condition) then
             Break;
+
           State.Cycles := Word(State.Cycles + 1);
           State.StackPointer := (State.StackPointer + $FFFF) and $FFFF;
           MemoryWrite(State, Callbacks, State.StackPointer, ArithmeticShiftRight(State.ProgramCounter, 8));
@@ -1730,7 +1737,7 @@ begin
       end;
     CLOWNZ80_OPCODE_IM:
       State.InterruptMode := Instruction.Metadata.EmbeddedLiteral;
-      CLOWNZ80_OPCODE_LD_I_A:
+    CLOWNZ80_OPCODE_LD_I_A:
       begin
         State.Cycles := Word(State.Cycles + 1);
         State.i := State.A;
@@ -2049,26 +2056,28 @@ begin
     if State.InterruptMode = 2 then
     begin
       State.ProgramCounter := Word(MemoryRead16Bit(State, Callbacks,
-        (Cardinal(State.i) shl 8) or $FF));
+          (Cardinal(State.i) shl 8) or $FF));
       State.Cycles := 19;
     end
     else
       State.ProgramCounter := $38;
     Exit(State.Cycles);
   end;
+
   if State.Halted then
   begin
     State.R := Byte((State.R and $80) or ((State.R + 1) and $7F));
     State.Cycles := 4;
     Exit(State.Cycles);
   end;
+
   DecodeInstruction(State, Callbacks, Instruction);
   ExecuteInstruction(State, Callbacks, Instruction);
   if (State.EIDelay > 0) and
     (Instruction.Metadata.Opcode <> CLOWNZ80_OPCODE_DD_PREFIX) and
     (Instruction.Metadata.Opcode <> CLOWNZ80_OPCODE_FD_PREFIX) then
     Dec(State.EIDelay);
-  Exit(Cardinal(State.Cycles));
+  Result := Cardinal(State.Cycles);
 end;
 
 end.

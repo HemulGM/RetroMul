@@ -329,6 +329,7 @@ begin
     end;
     State.Cache.Enabled := True;
   end;
+
   while State.Cache.Pos < 256 do
   begin
     var Addr := Address + Cardinal(State.Cache.Pos) * 2;
@@ -364,6 +365,7 @@ begin
     Stop;
     Exit;
   end;
+
   State.PB := State.P;
   if not ProcessCache(FTarget) and not State.Cache.Enabled then
     Stop;
@@ -789,19 +791,23 @@ begin
   Address := $7000 or (Address and $FFF);
   if Address <= $7BFF then
     Exit(DataRAM[Address and $FFF]);
+
   if (Address >= $7F60) and (Address <= $7F7F) then
     Exit(State.Vectors[Address and $1F]);
+
   if ((Address >= $7F80) and (Address <= $7FAF)) or ((Address >= $7FC0) and (Address <= $7FEF)) then
   begin
     Address := Address and $3F;
     Exit(Byte(State.Regs[Address div 3] shr ((Address mod 3) * 8)));
   end;
+
   if (Address >= $7F53) and (Address <= $7F5F) then
   begin
     var Busy := State.Cache.Enabled or State.Dma.Enabled or (State.Bus.DelayCycles > 0);
     Exit(Byte(State.Suspend.Enabled) or (Byte(State.IrqFlag) shl 1) or
       (Byte(Busy or not State.Stopped) shl 6) or (Byte(Busy) shl 7));
   end;
+
   case Address of
     $7F40..$7F42:
       Exit(Byte(State.Dma.Source shr ((Address - $7F40) * 8)));
@@ -842,23 +848,27 @@ begin
     DataRAM[Address and $FFF] := Value;
     Exit;
   end;
+
   if (Address >= $7F60) and (Address <= $7F7F) then
   begin
     State.Vectors[Address and $1F] := Value;
     Exit;
   end;
+
   if ((Address >= $7F80) and (Address <= $7FAF)) or ((Address >= $7FC0) and (Address <= $7FEF)) then
   begin
     Address := Address and $3F;
     SetByte(State.Regs[Address div 3], Address mod 3, Value);
     Exit;
   end;
+
   if (Address >= $7F55) and (Address <= $7F5C) then
   begin
     State.Suspend.Enabled := True;
     State.Suspend.Duration := (Address - $7F55) * 32;
     Exit;
   end;
+
   case Address of
     $7F40..$7F42:
       SetByte(State.Dma.Source, Address - $7F40, Value);

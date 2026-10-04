@@ -142,20 +142,20 @@ end;
 function TGBMemory.DMABlocksCPU(Address: Integer): Boolean;
 begin
   Result := False;
-  if not FDMAActive or ((Address >= $FF80) and (Address <= $FFFE)) or
-    (Address = $FF46) then
+  if not FDMAActive or ((Address >= $FF80) and (Address <= $FFFE)) or (Address = $FF46) then
     Exit;
   if not IsCGBMode then
     Exit(True);
+
   // CGB separates the cartridge and WRAM buses. OAM remains unavailable.
   Result := ((Address >= $FE00) and (Address < $FEA0)) or
     ((FDMASource < $8000) and ((Address < $8000) or
-      ((Address >= $A000) and (Address < $C000)))) or
+    ((Address >= $A000) and (Address < $C000)))) or
     (((FDMASource >= $A000) and (FDMASource < $C000)) and
-      ((Address < $8000) or ((Address >= $A000) and (Address < $C000)))) or
+    ((Address < $8000) or ((Address >= $A000) and (Address < $C000)))) or
     ((FDMASource >= $C000) and (Address >= $C000) and (Address < $FE00)) or
     (((FDMASource >= $8000) and (FDMASource < $A000)) and
-      (Address >= $8000) and (Address < $A000));
+    (Address >= $8000) and (Address < $A000));
 end;
 
 function TGBMemory.ReadDMASource(Address: Integer): Byte;
@@ -173,9 +173,11 @@ end;
 
 procedure TGBMemory.StepHardware(Clocks: Integer);
 begin
+  FMBC.Step(Clocks);
   if not FDMAActive and ((IOPort[$02] and $81) <> $81) then
     Exit;
-  for var I := 1 to Clocks do
+
+  for var i := 1 to Clocks do
   begin
     if FDMAActive then
     begin
@@ -326,9 +328,9 @@ function TGBMemory.ReadByte(Address: Integer): Byte;
 begin
   if DMABlocksCPU(Address) then
     Exit($FF);
-  if (Address >= $FF4D) and (Address <= $FF7F) and
-    ReadModelRegister(Address, Result) then
+  if (Address >= $FF4D) and (Address <= $FF7F) and ReadModelRegister(Address, Result) then
     Exit;
+
   Result := $00;
   if (Address <= $7fff) then
   begin
@@ -421,9 +423,9 @@ procedure TGBMemory.WriteByte(Address: Integer; Value: Byte);
 begin
   if DMABlocksCPU(Address) then
     Exit;
-  if (Address >= $FF4D) and (Address <= $FF7F) and
-    WriteModelRegister(Address, Value) then
+  if (Address >= $FF4D) and (Address <= $FF7F) and WriteModelRegister(Address, Value) then
     Exit;
+
   if (Address >= 0) and (Address <= $7FFF) then
   begin
     FMBC.MbcWrite(Address, Value);

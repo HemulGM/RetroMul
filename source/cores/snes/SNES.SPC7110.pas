@@ -270,11 +270,13 @@ begin
   end;
   if Time <= State.LastTime then
     Exit;
+
   if State.Regs[8] + (State.Regs[9] and 1) * 10 = 0 then
   begin
     State.LastTime := Time;
     Exit;
   end;
+
   if ((State.Regs[15] and 3) = 0) and ((State.Regs[13] and 1) = 0) then
   begin
     var Year := State.Regs[10] + State.Regs[11] * 10;
@@ -363,6 +365,7 @@ procedure TRtc4513.LoadBattery(const Data: TBytes);
 begin
   if Length(Data) <> 24 then
     raise EArgumentException.Create('SPC7110 RTC battery size mismatch');
+
   Move(Data[0], State.Regs, 16);
   State.LastTime := 0;
   for var J := 0 to 7 do
@@ -399,6 +402,7 @@ function TSnesSPC7110.ReadData(Address: Cardinal): Byte;
 begin
   if (Address >= FDataSize) or (Address >= Cardinal($100000) shl (State.DataSize and 3)) then
     Exit(0);
+
   Result := FRead($100000 + Address);
 end;
 
@@ -425,6 +429,7 @@ procedure TSnesSPC7110.BeginDecompression;
 begin
   if State.Mode = 3 then
     Exit;
+
   FDecoder.Initialize(State.Mode, State.Source);
   FDecoder.Decode;
   if (State.Flags and 2) <> 0 then
@@ -438,6 +443,7 @@ function TSnesSPC7110.ReadDecompressed: Byte;
 begin
   if (State.Status and $80) = 0 then
     Exit(0);
+
   var Bpp := FDecoder.State.Bpp;
   if State.Offset = 0 then
     for var J := 0 to 7 do
@@ -476,8 +482,10 @@ begin
       Exit($FFFFFFFF);
     Exit($100000 + (Cardinal(State.Banks[(Bank - $D0) shr 4]) * $100000 mod FDataSize) + (Address and $FFFFF));
   end;
+
   if (Bank >= $40) and (Bank <= $4F) then
     Exit($600000 + (Address and $FFFFF));
+
   Result := Address and $FFFFF;
 end;
 

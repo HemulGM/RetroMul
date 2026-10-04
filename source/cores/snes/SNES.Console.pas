@@ -882,6 +882,7 @@ begin
   begin
     if (FState.Line < 0) or (FState.Line >= LineCount) or (FState.HClock < 0) or (FState.HClock >= 1364) then
       raise EReadError.Create('Invalid SNES snapshot timing');
+
     FInDMA := False;
     MarkBatteryDirty;
   end;

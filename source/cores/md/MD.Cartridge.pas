@@ -50,6 +50,7 @@ begin
   var Format := DetectRom(Bytes);
   if Format.System <> TRomSystem.MD then
     raise EMDCartridge.Create('Unrecognized Mega Drive ROM header');
+
   Create(NormalizeRom(Bytes, Format), '');
 end;
 
@@ -57,6 +58,7 @@ constructor TMDCartridge.Create(const Data: TBytes; const Extension: string);
 begin
   inherited Create;
   FHeaderOffset := MD_ROM_HEADER_OFFSET;
+
   // Some collections label ordinary big-endian dumps as .smd. Trust the
   // cartridge signature before attempting the copier's interleaving format.
   if SameText(Extension, ROM_EXTENSION_SMD) and
@@ -67,14 +69,15 @@ begin
       ((Length(Data) - ROM_COPIER_HEADER_SIZE) mod SMD_BLOCK_SIZE <> 0) or
       (Length(Data) > MD_ROM_MAX_SIZE + ROM_COPIER_HEADER_SIZE) then
       raise EMDCartridge.Create('Invalid SMD size: expected a 512-byte header and 16 KiB blocks');
+
     SetLength(FData, Length(Data) - ROM_COPIER_HEADER_SIZE);
     for var Block := 0 to Length(FData) div SMD_BLOCK_SIZE - 1 do
     begin
       var Source := ROM_COPIER_HEADER_SIZE + Block * SMD_BLOCK_SIZE;
-      for var I := 0 to SMD_HALF_BLOCK_SIZE - 1 do
+      for var i := 0 to SMD_HALF_BLOCK_SIZE - 1 do
       begin
-        FData[Block * SMD_BLOCK_SIZE + I * 2] := Data[Source + SMD_HALF_BLOCK_SIZE + I];
-        FData[Block * SMD_BLOCK_SIZE + I * 2 + 1] := Data[Source + I];
+        FData[Block * SMD_BLOCK_SIZE + i * 2] := Data[Source + SMD_HALF_BLOCK_SIZE + i];
+        FData[Block * SMD_BLOCK_SIZE + i * 2 + 1] := Data[Source + i];
       end;
     end;
   end
@@ -84,6 +87,7 @@ begin
   if (Length(FData) < MD_ROM_HEADER_OFFSET + MD_ROM_HEADER_SIZE) or
     (Length(FData) > MD_ROM_MAX_SIZE) or Odd(Length(FData)) then
     raise EMDCartridge.Create('Invalid Mega Drive ROM size');
+
   if HeaderText(MD_ROM_HEADER_OFFSET, Length(MD_ROM_SIGNATURE)) <> string(MD_ROM_SIGNATURE) then
   begin
     // Some early diagnostics retain the first 128 vector entries and
@@ -91,6 +95,7 @@ begin
     if (Length(FData) < MD_ROM_ALTERNATE_HEADER_OFFSET + MD_ROM_HEADER_SIZE) or
       (HeaderText(MD_ROM_ALTERNATE_HEADER_OFFSET, Length(MD_ROM_SIGNATURE)) <> string(MD_ROM_SIGNATURE)) then
       raise EMDCartridge.Create('Mega Drive ROM has no SEGA header at $100 or $200');
+
     FHeaderOffset := MD_ROM_ALTERNATE_HEADER_OFFSET;
   end;
 
@@ -99,6 +104,7 @@ begin
     FTitle := HeaderText($120, 48);
   var RegionText := UpperCase(HeaderText($1F0, 16));
   var RegionMask: Integer;
+
   // Prefer NTSC for multiregion cartridges. Older headers use J/U/E,
   // newer headers use a hexadecimal region mask (Japan=1, USA=4, Europe=8).
   FRegion := TMDRegion.USA;
@@ -124,9 +130,9 @@ function TMDCartridge.HeaderText(Offset, Count: Integer): string;
 begin
   Inc(Offset, FHeaderOffset - $100);
   Result := '';
-  for var I := Offset to Offset + Count - 1 do
-    if (FData[I] >= 32) and (FData[I] < 127) then
-      Result := Result + Char(FData[I]);
+  for var i := Offset to Offset + Count - 1 do
+    if (FData[i] >= 32) and (FData[i] < 127) then
+      Result := Result + Char(FData[i]);
   Result := Trim(Result);
 end;
 

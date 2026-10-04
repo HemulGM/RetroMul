@@ -116,8 +116,10 @@ begin
   var Hasher := THashSHA2.Create;
   Hasher.Update(Data[CopierSize], Size);
   var Hash := Hasher.HashAsString;
+
   // Known standalone Datel BIOS dumps (PAR, Mk2 v1.1, Mk3), not game headers.
-  Result := SameText(Hash, '26f0c679d7c5828167681e388c26d52eaa02ecf645aa7325eb118d30b19529c4') or
+  Result :=
+    SameText(Hash, '26f0c679d7c5828167681e388c26d52eaa02ecf645aa7325eb118d30b19529c4') or
     SameText(Hash, 'd91623d4b58dc07e93f777a3bc74251f6584a329efdccf4c2b2181ab6c01030d') or
     SameText(Hash, '86425e9b1ef0809efc4107af1d91ef87eb1c91a2c12b35220038c3001ffbcf53');
 end;
@@ -340,6 +342,7 @@ begin
       FST018 := TSnesST018.Create(DSPFirmware);
       Exit;
     end;
+
     FDSPFrequency := 7600000;
     if FirmwareName = 'st010' then
       FDSPFrequency := 11000000
@@ -398,8 +401,7 @@ begin
     FST018.RunUntil(UInt64(MasterClock));
   if FCX4 <> nil then
   begin
-    FCX4Target := UInt64((MasterClock div MasterRate) * 20000000 +
-      (MasterClock mod MasterRate) * 20000000 div MasterRate);
+    FCX4Target := UInt64((MasterClock div MasterRate) * 20000000 + (MasterClock mod MasterRate) * 20000000 div MasterRate);
     // CX4 can assert IRQ while the CPU is running, so synchronize at each instruction/access.
     FCX4.RunUntil(FCX4Target);
   end;
@@ -422,6 +424,7 @@ function TSnesCartridge.ReadRawROM(Address: Cardinal): Byte;
 begin
   if Address = $FFFFFFFF then
     Exit(0);
+
   Result := FData[Mirror(Integer(Address))];
 end;
 
@@ -430,6 +433,7 @@ begin
   var Bank := Address shr 16;
   Offset := Address and $FFFF;
   Result := 0;
+
   if ((Bank and $7F) < $40) then
   begin
     if (Offset >= $3000) and (Offset <= $3FFF) then
@@ -442,6 +446,7 @@ begin
     if Offset >= $8000 then
       Exit(3);
   end;
+
   if Bank in [$70, $71, $F0, $F1] then
   begin
     Offset := Address and $1FFFF;
@@ -456,6 +461,7 @@ begin
   var Bank := (Address shr 16) and $FF;
   var Offset := Address and $FFFF;
   Result := Unmapped;
+
   if Offset >= $8000 then
     Exit(ROM);
   if ((Bank and $7F) < $40) and (Offset >= $6000) then
@@ -510,6 +516,7 @@ begin
     Status := (Offset and 1) <> 0;
     Exit;
   end;
+
   if FHeader.Mapping in [LoROM, ExLoROM] then
   begin
     Result := ((Bank >= $30) and (Bank <= $3F) and (Offset >= $8000)) or
@@ -582,6 +589,7 @@ begin
       Result := ((Bank shr 1) shl 13) or (Offset and $1FFF);
     Exit;
   end;
+
   if FSDD1 <> nil then
   begin
     if ((Bank and $7F) < $40) and (Offset >= $6000) and (Offset < $8000) then
@@ -590,6 +598,7 @@ begin
       Result := Offset and (Length(FSRAM) - 1);
     Exit;
   end;
+
   if FHeader.Mapping in [LoROM, ExLoROM] then
   begin
     if ((Bank and $7F) >= $70) and ((Bank and $7F) <= $7D) and (Offset < $8000) then
@@ -603,8 +612,7 @@ function TSnesCartridge.Read(Address: Cardinal; OpenBus: Byte): Byte;
 begin
   // No game is attached to a standalone BIOS. Control A temporarily exposes it.
   // The 80-BF BIOS mirror remains visible during the 00-3F game-ROM peek.
-  if FActionReplay and ((FReplayControl and $10) <> 0) and
-    ((Address shr 16) < $40) and ((Address and $FFFF) >= $8000) then
+  if FActionReplay and ((FReplayControl and $10) <> 0) and ((Address shr 16) < $40) and ((Address and $FFFF) >= $8000) then
     Exit($FF);
   if FSA1 <> nil then
     Exit(FSA1.Read(Address, OpenBus));

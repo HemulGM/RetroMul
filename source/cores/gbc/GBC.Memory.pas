@@ -140,6 +140,7 @@ begin
   FHDMASource := (IOPort[$51] shl 8) or (IOPort[$52] and $F0);
   FHDMADestination := $8000 or ((IOPort[$53] and $1F) shl 8) or (IOPort[$54] and $F0);
   FHDMARemainingBlocks := (Control and $7F) + 1;
+
   // HBlank does not exist with the LCD disabled.  On real CGB hardware a
   // request with bit 7 set in that state is therefore performed immediately
   // as a general transfer.  Leaving it pending makes the transfer overwrite
@@ -156,8 +157,9 @@ procedure TGBCMemory.ExecuteHDMABlock;
 begin
   if FHDMARemainingBlocks <= 0 then
     Exit;
-  for var I := 0 to $0F do
-    FColorGPU.WriteVRAM((FHDMADestination + I) and $1FFF, ReadDMASource((FHDMASource + I) and $FFFF));
+  for var i := 0 to $0F do
+    FColorGPU.WriteVRAM((FHDMADestination + i) and $1FFF, ReadDMASource((FHDMASource + i) and $FFFF));
+
   // A 16-byte CGB DMA block occupies the CPU bus for eight machine cycles
   // (32 normal-speed clock cycles).  Peripheral time still advances while
   // the CPU is paused, so the CPU consumes this after the current operation.

@@ -68,6 +68,7 @@ const
   MAPPER_AGCI = 144;
   MAPPER_BANDAI_152 = 152;
   MAPPER_NAMCO_154 = 154;
+  MAPPER_MMC1A = 155;
   MAPPER_BANDAI_159 = 159;
   MAPPER_SUBOR = 167;
   MAPPER_DXROM = 206;
@@ -182,6 +183,7 @@ class procedure TMapper.ValidateMemory(const PrgRom, ChrData: TByteArray);
 begin
   if (Length(PrgRom) = 0) or ((Length(PrgRom) mod $4000) <> 0) then
     raise ENesException.Create('PRG ROM must contain complete 16 KB banks');
+
   if (Length(ChrData) mod $2000) <> 0 then
     raise ENesException.Create('CHR data must contain complete 8 KB banks');
 end;

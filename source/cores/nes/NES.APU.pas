@@ -772,6 +772,7 @@ procedure TApu.CompleteDmcDma(Value: UInt8);
 begin
   if not DmcDmaRequested then
     Exit;
+
   FDmc.SampleBuffer := Value;
   FDmc.BufferEmpty := False;
   if FDmc.CurrentAddress = $FFFF then
@@ -788,8 +789,7 @@ begin
   end;
   // A one-byte fetch ending just before the output shifter reload produces
   // a spurious reload request, then the length gate cancels it one cycle later.
-  if (FDmc.SampleLength = 1) and ((FDmc.Control and $40) = 0) and
-    (FDmc.BitsRemaining = 1) and (FDmc.Timer < 2) then
+  if (FDmc.SampleLength = 1) and ((FDmc.Control and $40) = 0) and (FDmc.BitsRemaining = 1) and (FDmc.Timer < 2) then
   begin
     FDmc.Shift := FDmc.SampleBuffer;
     RestartDmc;
@@ -804,6 +804,7 @@ begin
     Dec(FDmc.Timer);
     Exit;
   end;
+
   FDmc.Timer := FDmc.TimerReload - 1;
   if not FDmc.Silence then
   begin

@@ -76,6 +76,8 @@ type
     Colors, ImportantColors: Cardinal;
   end;
 
+{ TStateArchive }
+
 constructor TStateArchive.Create(Stream: TStream; Loading: Boolean);
 begin
   inherited Create;
@@ -136,6 +138,11 @@ begin
   // GB/GBC v2 adds OAM DMA, serial, timer reload and MBC3 RTC state.
   if (PlatformCore = 'GB') or (PlatformCore = 'GBC') then
     Result.Version := 2;
+  // Camera v3 records the latched sensor frame for an in-flight capture.
+  // Leave snapshot compatibility unchanged for all other GB/GBC cartridges.
+  if ((PlatformCore = 'GB') or (PlatformCore = 'GBC')) and
+    (Length(ROM) > $147) and (ROM[$147] = $FC) then
+    Result.Version := 3;
   // MD v4 adds Z80 HALT, interrupt mode and EI delay.
   if PlatformCore = 'MD' then
     Result.Version := 4;
@@ -145,6 +152,7 @@ begin
   var Core := AnsiString(PlatformCore);
   if (Length(Core) = 0) or (Length(Core) > 8) then
     raise EArgumentException.Create('Invalid snapshot platform');
+
   Move(Core[1], Result.platform, Length(Core));
   var Hash := THashSHA2.Create;
   Hash.Update(ROM);
@@ -191,11 +199,13 @@ begin
       (Header.PayloadSize = 0) or (Header.PayloadSize > 64 * 1024 * 1024) or
       (Int64(Header.PayloadSize) <> Input.Size - Input.Position) then
       raise EReadError.Create('Snapshot is incompatible with this game or core');
+
     Payload.CopyFrom(Input, Header.PayloadSize);
     Payload.Position := 0;
     var Digest := THashSHA2.GetHashBytes(Payload);
     if not CompareMem(@Digest[0], @Header.Digest, 32) then
       raise EReadError.Create('Snapshot checksum mismatch');
+
     TransferStream(Backup, False, Transfer);
     try
       Payload.Position := 0;
@@ -241,6 +251,8 @@ begin
   end;
 end;
 
+{ TSnapshotQueue }
+
 constructor TSnapshotQueue.Create;
 begin
   inherited;
@@ -261,13 +273,16 @@ procedure TSnapshotQueue.Execute(Worker: TThread; const Name: string; Loading: B
 begin
   if (Name = '') or (Length(Name) > 80) then
     raise EArgumentException.Create('Invalid snapshot name');
+
   for var C in Name do
     if not CharInSet(C, ['a'..'z', 'A'..'Z', '0'..'9', '-', '_']) then
       raise EArgumentException.Create('Snapshot names use letters, digits, - and _');
+
   FCommandLock.Enter;
   try
     if (Worker = nil) or Worker.Suspended or Worker.Finished then
       raise EInvalidOpException.Create('Emulation worker is not running');
+
     FLock.Enter;
     try
       FDone.ResetEvent;
@@ -281,6 +296,7 @@ begin
     while FDone.WaitFor(50) <> wrSignaled do
       if Worker.Finished then
         raise EInvalidOpException.Create('Emulation stopped before completing the snapshot');
+
     FLock.Enter;
     try
       if FError <> '' then
@@ -299,6 +315,7 @@ begin
   try
     if not FPending then
       Exit;
+
     try
       Action(FName, FLoading);
     except

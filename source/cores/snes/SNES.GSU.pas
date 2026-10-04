@@ -177,6 +177,7 @@ begin
     Exit(FRead(Address and $1FFFFF));
   if (Bank in [$70, $71]) and (Length(RAM) > 0) then
     Exit(RAM[(Address and $1FFFF) mod Cardinal(Length(RAM))]);
+
   Result := 0;
 end;
 
@@ -330,6 +331,7 @@ procedure TSnesGSU.WritePixels(var Cache: TGsuPixelCache);
 begin
   if Cache.ValidBits = 0 then
     Exit;
+
   var Address := TileAddress(Cache.X, Cache.Y);
   for var Plane := 0 to Integer(State.PlotBpp) - 1 do
   begin
@@ -370,6 +372,7 @@ begin
     Mask := $F;
   if not State.PlotTransparent and ((C and Mask) = 0) then
     Exit;
+
   C := State.ColorReg;
   if State.PlotDither and (State.PlotBpp <> 8) then
   begin
@@ -809,6 +812,7 @@ begin
   Address := Address and $33FF;
   if Address < $3020 then
     Exit(Byte(State.R[(Address shr 1) and 15] shr ((Address and 1) * 8)));
+
   case Address of
     $3030:
       Exit((Ord(State.SFR.Zero) shl 1) or (Ord(State.SFR.Carry) shl 2) or (Ord(State.SFR.Sign) shl 3) or
@@ -833,6 +837,7 @@ begin
     $303F:
       Exit(State.CacheBase shr 8);
   end;
+
   if (Address >= $3100) and (Address <= $32FF) then
     Exit(FCache[(State.CacheBase + Address - $3100) and $1FF]);
   Result := 0;
@@ -843,6 +848,7 @@ begin
   Address := Address and $33FF;
   if State.SFR.Running and (Address <> $3030) and (Address <> $303A) then
     Exit;
+
   if Address < $3020 then
   begin
     if (Address and 1) = 0 then
@@ -864,6 +870,7 @@ begin
     end;
     Exit;
   end;
+
   case Address of
     $3030:
       begin
@@ -929,6 +936,7 @@ begin
   begin
     if (Address and 1) <> 0 then
       Exit(1);
+
     case Address and $E of
       4:
         Exit(4);
@@ -953,6 +961,7 @@ begin
     Exit(0);
   if Length(RAM) = 0 then
     Exit(OpenBus);
+
   Result := RAM[Address mod Cardinal(Length(RAM))];
 end;
 
@@ -979,6 +988,7 @@ procedure TSnesGSU.LoadBattery(const Data: TBytes);
 begin
   if Length(Data) <> Length(RAM) then
     raise EArgumentException.Create('GSU battery size mismatch');
+
   RAM := Copy(Data);
   FDirty := False;
 end;

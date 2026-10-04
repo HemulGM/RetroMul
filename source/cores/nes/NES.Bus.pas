@@ -81,14 +81,14 @@ uses
 
 function TNesBus.GetHasCoinAcceptor: Boolean;
 begin
-  Result := (FCartridge <> nil) and ((FCartridge.MapperId = MAPPER_VS_SYSTEM) or
-    (FCartridge.Metadata.ConsoleType = 1));
+  Result := (FCartridge <> nil) and ((FCartridge.MapperId = MAPPER_VS_SYSTEM) or (FCartridge.Metadata.ConsoleType = 1));
 end;
 
 procedure TNesBus.InsertCoin(Player: Integer);
 begin
   if not HasCoinAcceptor then
     Exit;
+
   if FCoinFrames[Player] = 0 then
     FCoinFrames[Player] := 8
   else if FPendingCoins[Player] < High(Integer) then
@@ -264,6 +264,7 @@ begin
     Result := (($10 shl Port) shr (23 - Index)) and 1
   else
     Exit(1);
+
   Inc(FControllerReadIndex[Port]);
 end;
 
@@ -294,6 +295,7 @@ begin
       Exit(FDataBus);
     Exit(DmaRead(Address));
   end;
+
   var RegisterAddress: UInt16 := $4000 or (Address and $1F);
   if RegisterAddress = $4015 then
   begin
@@ -362,6 +364,7 @@ begin
   var Value: UInt8;
   if (FCartridge <> nil) and (FCartridge.Mapper <> nil) and FCartridge.Mapper.CpuRead(Address, Value) then
     Exit(Value);
+
   Result := FDataBus;
 end;
 
@@ -499,6 +502,7 @@ begin
   // Inspecting RAM must not drive the emulated CPU data bus.
   if Address < $2000 then
     Exit(FRam[Address and $07FF]);
+
   Result := CpuRead(Address);
 end;
 

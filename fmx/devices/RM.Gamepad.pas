@@ -109,6 +109,8 @@ const
       TEmulatorButton.X,  TEmulatorButton.Y,  TEmulatorButton.Z];
   MenuButtons =[ TEmulatorButton.Select,  TEmulatorButton.Start,  TEmulatorButton.Mode];
 
+{ TNesGamepad }
+
 function TNesGamepad.GetNesButtons: TNesButtons;
 begin
   Result := [];
@@ -122,6 +124,7 @@ begin
   Result := inherited ButtonBounds(NesButtonMap[Button]);
 end;
 
+{ TScreenGamepad }
 
 constructor TScreenGamepad.Create(AOwner: TComponent);
 begin
@@ -200,12 +203,11 @@ begin
   if FLayout = TScreenGamepadLayout.Sega then
   begin
     // Two rows of three; leave a full gap between the cross and action area.
-    for var I := Low(SegaActions) to High(SegaActions) do
+    for var i := Low(SegaActions) to High(SegaActions) do
     begin
-      AX := Width - (145 - (I mod 3) * 54) * U;
-      AY := Height * 0.43 + ((I div 3) * 54 - 27) * U;
-      FBounds[SegaActions[I]] := RectF(AX - 23 * U, AY - 23 * U,
-          AX + 23 * U, AY + 23 * U);
+      AX := Width - (145 - (i mod 3) * 54) * U;
+      AY := Height * 0.43 + ((i div 3) * 54 - 27) * U;
+      FBounds[SegaActions[i]] := RectF(AX - 23 * U, AY - 23 * U, AX + 23 * U, AY + 23 * U);
     end;
     FBounds[TEmulatorButton.Mode] := FBounds[TEmulatorButton.Select];
     FBounds[TEmulatorButton.Select] := TRectF.Empty;
@@ -215,20 +217,22 @@ begin
   begin
     AX := Width - 90 * U;
     AY := Height * 0.43;
-    FBounds[TEmulatorButton.X] := RectF(AX - 22*U, AY - 64*U, AX + 22*U, AY - 20*U);
-    FBounds[TEmulatorButton.B] := RectF(AX - 22*U, AY + 20*U, AX + 22*U, AY + 64*U);
-    FBounds[TEmulatorButton.Y] := RectF(AX - 64*U, AY - 22*U, AX - 20*U, AY + 22*U);
-    FBounds[TEmulatorButton.A] := RectF(AX + 20*U, AY - 22*U, AX + 64*U, AY + 22*U);
-    FBounds[TEmulatorButton.C] := RectF(Width/2 - 58*U, 5*U, Width/2 - 8*U, 39*U);
-    FBounds[TEmulatorButton.Z] := RectF(Width/2 + 8*U, 5*U, Width/2 + 58*U, 39*U);
+    FBounds[TEmulatorButton.X] := RectF(AX - 22 * U, AY - 64 * U, AX + 22 * U, AY - 20 * U);
+    FBounds[TEmulatorButton.B] := RectF(AX - 22 * U, AY + 20 * U, AX + 22 * U, AY + 64 * U);
+    FBounds[TEmulatorButton.Y] := RectF(AX - 64 * U, AY - 22 * U, AX - 20 * U, AY + 22 * U);
+    FBounds[TEmulatorButton.A] := RectF(AX + 20 * U, AY - 22 * U, AX + 64 * U, AY + 22 * U);
+    FBounds[TEmulatorButton.C] := RectF(Width / 2 - 58 * U, 5 * U, Width / 2 - 8 * U, 39 * U);
+    FBounds[TEmulatorButton.Z] := RectF(Width / 2 + 8 * U, 5 * U, Width / 2 + 58 * U, 39 * U);
   end;
   FActionArea := TRectF.Empty;
   for var Button in (ActiveButtons * ActionButtons) do
   begin
     var R := FBounds[Button];
-    if FActionArea.IsEmpty then FActionArea := R
-    else FActionArea := RectF(Min(FActionArea.Left, R.Left), Min(FActionArea.Top, R.Top),
-      Max(FActionArea.Right, R.Right), Max(FActionArea.Bottom, R.Bottom));
+    if FActionArea.IsEmpty then
+      FActionArea := R
+    else
+      FActionArea := RectF(Min(FActionArea.Left, R.Left), Min(FActionArea.Top, R.Top),
+        Max(FActionArea.Right, R.Right), Max(FActionArea.Bottom, R.Bottom));
   end;
   FActionArea.Inflate(6 * FUnit, 6 * FUnit);
 end;
@@ -250,6 +254,7 @@ procedure TScreenGamepad.SetLayout(Value: TScreenGamepadLayout);
 begin
   if FLayout = Value then
     Exit;
+
   ReleaseAll;
   FLayout := Value;
   LayoutButtons;
@@ -310,6 +315,7 @@ begin
   Result := [];
   if not LocalRect.Contains(Point) then
     Exit;
+
   case Region of
     TRegion.DPad:
       begin
@@ -319,6 +325,7 @@ begin
         // A small center dead zone; diagonal sectors overlap adjacent directions.
         if Max(DX, DY) < 13 * FUnit then
           Exit;
+
         if DX >= DY * 0.42 then
           if Delta.X < 0 then
             Include(Result, TEmulatorButton.Left)
@@ -349,6 +356,7 @@ procedure TScreenGamepad.PointerDown(Id: NativeInt; const Point: TPointF);
 begin
   if not AbsoluteEnabled or not ParentedVisible then
     Exit;
+
   FContacts.Remove(Id);
   var Contact: TContact;
   Contact.Region := RegionAt(Point);
@@ -357,9 +365,11 @@ begin
     UpdateButtons;
     Exit;
   end;
+
   Contact.Buttons := ButtonsAt(Point, Contact.Region);
   Contact.HeldButtons := [];
-  if Contact.Region = TRegion.Actions then Contact.HeldButtons := Contact.Buttons;
+  if Contact.Region = TRegion.Actions then
+    Contact.HeldButtons := Contact.Buttons;
   FContacts.AddOrSetValue(Id, Contact);
   UpdateButtons;
 end;
@@ -371,9 +381,11 @@ begin
     ReleaseAll;
     Exit;
   end;
+
   var Contact: TContact;
   if not FContacts.TryGetValue(Id, Contact) then
     Exit;
+
   Contact.Buttons := ButtonsAt(Point, Contact.Region);
   if Contact.Region = TRegion.Actions then
   begin
@@ -399,6 +411,7 @@ procedure TScreenGamepad.ReleaseAll;
 begin
   if FContacts = nil then
     Exit;
+
   FContacts.Clear;
   FCoreButtons := [];
   UpdateButtons;
@@ -421,6 +434,7 @@ begin
     NewButtons := NewButtons - [TEmulatorButton.Up, TEmulatorButton.Down];
   if NewButtons = FButtons then
     Exit;
+
   FButtons := NewButtons;
   UpdateHighlight;
   if Assigned(FOnChange) then
@@ -436,6 +450,7 @@ procedure TScreenGamepad.SetCoreButtons(const Value: TEmulatorButtons);
 begin
   if FCoreButtons = Value then
     Exit;
+
   FCoreButtons := Value;
   UpdateHighlight;
 end;
@@ -489,8 +504,7 @@ end;
 
 procedure TScreenGamepad.Paint;
 const
-  Labels: array[TEmulatorButton] of string =
-    ('', '', '', '', 'A', 'B', 'SELECT', 'START', 'C', 'X', 'Y', 'Z', 'MODE');
+  Labels: array[TEmulatorButton] of string = ('', '', '', '', 'A', 'B', 'SELECT', 'START', 'C', 'X', 'Y', 'Z', 'MODE');
 begin
   inherited;
   Canvas.Fill.Kind := TBrushKind.Solid;
@@ -541,7 +555,12 @@ begin
       Canvas.Font.Size := 23 * FUnit;
       var Caption := Labels[Button];
       if FLayout = TScreenGamepadLayout.Snes then
-        case Button of TEmulatorButton.C: Caption := 'L'; TEmulatorButton.Z: Caption := 'R'; end;
+        case Button of
+          TEmulatorButton.C:
+            Caption := 'L';
+          TEmulatorButton.Z:
+            Caption := 'R';
+        end;
       Canvas.FillText(R, Caption, False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
     end
     else if Button in MenuButtons then

@@ -135,6 +135,7 @@ begin
       Result := CGBColor(FBGPaletteRAM, PaletteIndex, ColorIndex);
     Exit;
   end;
+
   if IsObject then
   begin
     if PaletteIndex = 0 then
@@ -150,15 +151,17 @@ end;
 procedure TGBCGPU.SetCGBMode(Value: Boolean);
 begin
   FCGBMode := Value;
-  if Value then
-    for var PaletteIndex := 0 to 7 do
-      for var ColorIndex := 0 to 3 do
-      begin
-        FBGPaletteRAM[PaletteIndex * 8 + ColorIndex * 2] := DefaultCGBColors[ColorIndex] and $FF;
-        FBGPaletteRAM[PaletteIndex * 8 + ColorIndex * 2 + 1] := DefaultCGBColors[ColorIndex] shr 8;
-        FOBJPaletteRAM[PaletteIndex * 8 + ColorIndex * 2] := DefaultCGBColors[ColorIndex] and $FF;
-        FOBJPaletteRAM[PaletteIndex * 8 + ColorIndex * 2 + 1] := DefaultCGBColors[ColorIndex] shr 8;
-      end;
+  if not Value then
+    Exit;
+
+  for var PaletteIndex := 0 to 7 do
+    for var ColorIndex := 0 to 3 do
+    begin
+      FBGPaletteRAM[PaletteIndex * 8 + ColorIndex * 2] := DefaultCGBColors[ColorIndex] and $FF;
+      FBGPaletteRAM[PaletteIndex * 8 + ColorIndex * 2 + 1] := DefaultCGBColors[ColorIndex] shr 8;
+      FOBJPaletteRAM[PaletteIndex * 8 + ColorIndex * 2] := DefaultCGBColors[ColorIndex] and $FF;
+      FOBJPaletteRAM[PaletteIndex * 8 + ColorIndex * 2 + 1] := DefaultCGBColors[ColorIndex] shr 8;
+    end;
 end;
 
 function TGBCGPU.ReadVRAM(Address: Integer): Byte;
@@ -400,8 +403,7 @@ begin
       TileX := 7 - TileX;
     if (Attribute and $40) <> 0 then
       TileY := 7 - TileY;
-    var ColorIndex: Integer := DisplayTilePixel((Attribute shr 3) and 1,
-      Tile, TileY, TileX);
+    var ColorIndex: Integer := DisplayTilePixel((Attribute shr 3) and 1, Tile, TileY, TileX);
     ScanlineRow[X] := ColorIndex;
     PriorityRow[X] := FCGBMode and ((Attribute and $80) <> 0);
     Screen[Line * 160 + X] := PixelColor(False, Attribute and 7, ColorIndex);
@@ -443,6 +445,7 @@ procedure TGBCGPU.RenderSprites(const ScanlineRow: TScanlineRow; const PriorityR
 begin
   var SpriteSize := GetSpriteHeight;
   var Count: Integer := 0;
+
   // OAM selection is limited to the first ten objects intersecting this line.
   var Selected: array[0..9] of Integer;
   for var i := 0 to 39 do
@@ -453,6 +456,7 @@ begin
       if Count = 10 then
         Break;
     end;
+
   // DMG chooses the lowest X coordinate first. CGB preserves OAM order.
   if not FCGBMode then
     for var i := 1 to Count - 1 do
@@ -489,12 +493,14 @@ begin
         Continue;
       if Claimed[X] then
         Continue;
+
       var SourceX := j;
       if Sprite.IsXFlip then
         SourceX := 7 - j;
       var ColorIndex := DisplayTilePixel(Sprite.VRAMBank, Tile, Row, SourceX);
       if ColorIndex = 0 then
         Continue;
+
       Claimed[X] := True;
       // CGB tile attributes can force every non-zero OBJ pixel behind a
       // non-zero background pixel. DMG has no per-tile priority bit.
@@ -552,6 +558,7 @@ begin
     end;
     if ModeClock < Duration then
       Break;
+
     Dec(ModeClock, Duration);
     case FCurrentMode of
       TGPUMode.OAMAccess:

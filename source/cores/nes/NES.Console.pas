@@ -246,13 +246,16 @@ begin
       (Header.PayloadSize > UInt32(64 * 1024 * 1024)) or
       (Int64(Header.PayloadSize) <> Input.Size - Input.Position) then
       raise ENesException.Create('Snapshot is incompatible with this game or region');
+
     if Header.PayloadSize = 0 then
       raise ENesException.Create('Empty snapshot');
+
     Payload.CopyFrom(Input, Header.PayloadSize);
     Payload.Position := 0;
     var Digest := THashSHA2.GetHashBytes(Payload);
     if not CompareMem(@Digest[0], @Header.Digest[0], SizeOf(Header.Digest)) then
       raise ENesException.Create('Snapshot checksum mismatch');
+
     SerializeState(Backup, False);
     try
       Payload.Position := 0;
@@ -357,8 +360,7 @@ begin
       end;
   end;
   FPpu.SetRegion(FRegion);
-  FPpu.UseVs2C04DPalette := (FCartridge.MapperId = MAPPER_VS_SYSTEM) and
-    (FCartridge.Metadata.VsPpuType = 5);
+  FPpu.UseVs2C04DPalette := (FCartridge.MapperId = MAPPER_VS_SYSTEM) and (FCartridge.Metadata.VsPpuType = 5);
   FApu.SetRegion(FRegion);
   FPpu.ConnectMapper(FCartridge.Mapper);
   Reset;
@@ -426,8 +428,7 @@ begin
     FDmcDmaCycles := 0;
   if FCartridge.Mapper <> nil then
     FCartridge.Mapper.ClockCpu;
-  FCpu.SetIrqLine(FApu.IrqPending or
-    ((FCartridge.Mapper <> nil) and FCartridge.Mapper.IrqPending));
+  FCpu.SetIrqLine(FApu.IrqPending or ((FCartridge.Mapper <> nil) and FCartridge.Mapper.IrqPending));
 
   var CanHalt: Boolean;
   var DmcHaltStarted := False;
@@ -491,6 +492,7 @@ procedure TNesConsole.CheckCpuState;
 begin
   if FCpu.Jammed then
     raise ENesException.CreateFmt('CPU halted: KIL/JAM %s at PC=%s; check ROM data and mapper', [IntToHex(FCpu.JamOpcode, 2), IntToHex(FCpu.JamPc, 4)]);
+
   if FCpu.UnknownOpcodeCount <> 0 then
     raise ENesException.CreateFmt('Unknown opcode %s at PC=%s', [IntToHex(FCpu.LastUnknownOpcode, 2), IntToHex(FCpu.LastUnknownPc, 4)]);
 end;
@@ -509,6 +511,7 @@ procedure TNesConsole.DebugWriteRam(Address: UInt16; Value: UInt8);
 begin
   if Address >= $0800 then
     raise EArgumentOutOfRangeException.Create('Diagnostic writes are limited to CPU RAM');
+
   FBus.CpuWrite(Address, Value);
 end;
 

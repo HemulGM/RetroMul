@@ -110,7 +110,8 @@ begin
   Result := C.ReadBus(Address * 2, Hi <> 0, Lo <> 0);
   Inc(C.FCPUBase, C.FBusTime - Start);
   C.FCPULastAccess := C.FBusTime;
-  if (C.FVDP.State.DMAActive <> 0) or (C.FBusTime <> Start) then Early := 1;
+  if (C.FVDP.State.DMAActive <> 0) or (C.FBusTime <> Start) then
+    Early := 1;
 end;
 
 procedure CPUWrite(User: Pointer; Address: Cardinal; Hi, Lo: Byte; Cycle: Cardinal; var Early: Byte; Value: Cardinal);
@@ -121,7 +122,8 @@ begin
   C.WriteBus(Address * 2, Word(Value), Hi <> 0, Lo <> 0);
   Inc(C.FCPUBase, C.FBusTime - Start);
   C.FCPULastAccess := C.FBusTime;
-  if (C.FVDP.State.DMAActive <> 0) or (C.FBusTime <> Start) then Early := 1;
+  if (C.FVDP.State.DMAActive <> 0) or (C.FBusTime <> Start) then
+    Early := 1;
 end;
 
 procedure CPUAck(User: Pointer);
@@ -173,10 +175,9 @@ end;
 procedure ScanlineRendered(User: Pointer; Line: Cardinal; const Pixels: array of Byte; PixelOffset: Integer; Left, Right, Width, Height: Cardinal);
 begin
   var C: TMDConsole := TMDConsole(User);
-  if (Width > 320) or (Height > 480) or (Line >= Height) or
-    (Left > Right) or (Right > Width) then
-    raise Exception.CreateFmt('Invalid Mega Drive video dimensions: %dx%d line=%d span=%d..%d',
-      [Width, Height, Line, Left, Right]);
+  if (Width > 320) or (Height > 480) or (Line >= Height) or (Left > Right) or (Right > Width) then
+    raise Exception.CreateFmt('Invalid Mega Drive video dimensions: %dx%d line=%d span=%d..%d', [Width, Height, Line, Left, Right]);
+
   C.FWidth := Width;
   C.FHeight := Height;
   // Window and scrolling planes can publish separate spans of the same line.
@@ -188,11 +189,15 @@ end;
 
 procedure TMDConsole.RenderRasterTo(Time: Int64);
 begin
-  if (FScanline < 0) or (FScanline >= 224 + 16 * Integer(FVDP.State.V30Enabled)) then Exit;
+  if (FScanline < 0) or (FScanline >= 224 + 16 * Integer(FVDP.State.V30Enabled)) then
+    Exit;
+
   var Width := 256 + 64 * Integer(FVDP.State.H40Enabled);
   var ClockPerPixel := 10 - 2 * Integer(FVDP.State.H40Enabled);
   var XEnd := EnsureRange((Time - (FFrameTime + Int64(FScanline) * 3420) - 860) div ClockPerPixel, Int64(0), Int64(Width));
-  if XEnd <= FRasterX then Exit;
+  if XEnd <= FRasterX then
+    Exit;
+
   if not FRasterReady then
   begin
     if FVDP.State.DoubleResolutionEnabled <> 0 then
@@ -200,14 +205,16 @@ begin
       VDPEndScanline(FVDP, FScanline * 2, ScanlineRendered, Self);
       VDPEndScanline(FVDP, FScanline * 2 + 1, ScanlineRendered, Self);
     end
-    else VDPEndScanline(FVDP, FScanline, ScanlineRendered, Self);
+    else
+      VDPEndScanline(FVDP, FScanline, ScanlineRendered, Self);
     FRasterReady := True;
   end;
   for var Field := 0 to Integer(FVDP.State.DoubleResolutionEnabled) do
     for var X := FRasterX to Integer(XEnd) - 1 do
     begin
       var Index := FRasterPixels[Field * 320 + X];
-      if FVDP.State.DisplayEnabled = 0 then Index := FVDP.State.BackgroundColour;
+      if FVDP.State.DisplayEnabled = 0 then
+        Index := FVDP.State.BackgroundColour;
       FFrame[(FScanline * (1 + Integer(FVDP.State.DoubleResolutionEnabled)) + Field) * 320 + X] := FPalette[Index];
     end;
   FRasterX := XEnd;
@@ -221,7 +228,9 @@ end;
 function DMARead(User: Pointer; Address, Cycle: Cardinal): Cardinal;
 begin
   // The VDP cannot recursively access its own 68k ports as a DMA source.
-  if (Address and $E700E0) = $C00000 then Exit($FFFF);
+  if (Address and $E700E0) = $C00000 then
+    Exit($FFFF);
+
   Result := TMDConsole(User).ReadWord(Address);
 end;
 
@@ -255,8 +264,7 @@ begin
   begin
     StartAddress := (Cardinal(FCartridge.ReadWord($1B4)) shl 16) or FCartridge.ReadWord($1B6);
     EndAddress := (Cardinal(FCartridge.ReadWord($1B8)) shl 16) or FCartridge.ReadWord($1BA);
-    if (StartAddress <= EndAddress) and (EndAddress < $400000) and
-      (EndAddress - StartAddress < $20000) then
+    if (StartAddress <= EndAddress) and (EndAddress < $400000) and (EndAddress - StartAddress < $20000) then
     begin
       FSRAMStart := StartAddress;
       FSRAMEnd := EndAddress;
@@ -425,8 +433,7 @@ end;
 
 function TMDConsole.SRAMIndex(Address: Cardinal; out Index: Cardinal): Boolean;
 begin
-  Result := FSRAMEnabled and (Length(FSRAM) <> 0) and (Address >= FSRAMStart) and
-    (Address <= FSRAMEnd);
+  Result := FSRAMEnabled and (Length(FSRAM) <> 0) and (Address >= FSRAMStart) and (Address <= FSRAMEnd);
   if Result then
   begin
     Result := ((Address - FSRAMStart) mod FSRAMStride) = 0;
@@ -635,8 +642,7 @@ begin
       4, 6:
         begin
           RenderRasterTo(FBusTime);
-          VDPWriteControl(FVDP, Value, ColourUpdated, Self, nil,
-            DMARead, Self, KDebug, Self, 0);
+          VDPWriteControl(FVDP, Value, ColourUpdated, Self, nil, DMARead, Self, KDebug, Self, 0);
           UpdateIRQ;
         end;
       16, 18, 20, 22:
@@ -735,11 +741,13 @@ begin
   var Cycles: Cardinal;
   if FInZ80 or (Target <= FZ80Time) then
     Exit;
+
   if FBusRequested or FZReset then
   begin
     FZ80Time := Target;
     Exit;
   end;
+
   FInZ80 := True;
   var SavedBus: Int64 := FBusTime;
   try
@@ -783,6 +791,7 @@ begin
     begin
       FPSGSamples[0] := 0;
       PSGUpdate(FPSG, FPSGSamples);
+
       // The ported FM core already divides its channels by 8; PSG does not.
       // Match ClownMDEmu's CLOWNMDEMU_PSG_VOLUME_DIVISOR at the mixing boundary.
       FFilteredPSG := FPSGFilter.Process(FPSGSamples[0] / 8.0);
@@ -818,6 +827,7 @@ begin
       FCPUTime := Max(FCPUTime, Next);
       Continue;
     end;
+
     FCPUBase := FCPUTime;
     var Cycles := Clown68000DoCycles(FCPU, FCPUCallbacks, (Target - FCPUTime + 6) div 7);
     FCPUTime := Max(FCPUBase + Cycles * 7, FCPULastAccess + 28);
@@ -882,6 +892,7 @@ procedure TMDConsole.LoadBattery(const Data: TBytes);
 begin
   if Length(Data) <> Length(FSRAM) then
     raise EMDCartridge.Create('Mega Drive SRAM file has an invalid size');
+
   FSRAM := Copy(Data);
   FSRAMDirty := False;
 end;
@@ -959,6 +970,7 @@ begin
   if (FWidth < 1) or (FWidth > 320) or (FHeight < 1) or (FHeight > 480) or
     (FAudioCount < 0) or (FAudioCount > Length(FAudio) div 2) then
     raise EReadError.Create('Invalid snapshot display or audio dimensions');
+
   if (FVDP.State.FIFOCount < 0) or (FVDP.State.FIFOCount > 4) or
     (FVDP.State.FIFOSlotsLeft < 0) or (FVDP.State.FIFOSlotsLeft > 2) or
     (FVDP.State.DMASlotsLeft < 0) or (FVDP.State.DMASlotsLeft > 2) or

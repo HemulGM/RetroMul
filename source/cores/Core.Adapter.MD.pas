@@ -67,8 +67,9 @@ uses
   System.IOUtils, System.UITypes, System.Hash, MD.Cartridge, Core.RomFormat;
 
 const
-  KeyNames: array[TMDButton] of string =
-    ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'C', 'Start', 'X', 'Y', 'Z', 'Mode');
+  KeyNames: array[TMDButton] of string = ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'C', 'Start', 'X', 'Y', 'Z', 'Mode');
+
+{ TMDConfig }
 
 constructor TMDConfig.Create(const FileName: string; const Storage: IStorage);
 const
@@ -99,6 +100,8 @@ begin
     Ini.WriteInteger('Keys2', KeyNames[Button], FKeys2[Button]);
   end;
 end;
+
+{ TMDCoreAdapter }
 
 constructor TMDCoreAdapter.Create(const FileName: string);
 begin
@@ -318,6 +321,7 @@ procedure TMDCoreAdapter.SaveSnapshot(const Name: string);
 begin
   if FThread = nil then
     raise EInvalidOpException.Create('Emulation worker is not running');
+
   FThread.SaveSnapshot(Name);
 end;
 
@@ -325,6 +329,7 @@ procedure TMDCoreAdapter.LoadSnapshot(const Name: string);
 begin
   if FThread = nil then
     raise EInvalidOpException.Create('Emulation worker is not running');
+
   FThread.LoadSnapshot(Name);
 end;
 

@@ -148,11 +148,17 @@ type
 const
   PSG_NOISE_TYPE_PERIODIC = 0;
   PSG_NOISE_TYPE_WHITE = PSG_NOISE_TYPE_PERIODIC + 1;
+
+const
   PSG_VOLUMES: array[0..15] of array[0..1] of SmallInt = (($1FFF, (-$1FFF)), ($196A, (-$196A)), ($1430, (-$1430)), ($1009, (-$1009)), ($0CBD, (-$0CBD)), ($0A1E, (-$0A1E)), ($0809, (-$0809)), ($0662, (-$0662)), ($0512, (-$0512)), ($0407, (-$0407)), ($0333, (-$0333)), ($028A, (-$028A)), ($0204, (-$0204)), ($019A, (-$019A)), ($0146, (-$0146)), ($0000, (-$0000)));
+
+const
   FM_OPERATOR_ENVELOPE_MODE_ATTACK = 0;
   FM_OPERATOR_ENVELOPE_MODE_DECAY = 1;
   FM_OPERATOR_ENVELOPE_MODE_SUSTAIN = 2;
   FM_OPERATOR_ENVELOPE_MODE_RELEASE = 3;
+
+const
   LOGARITHMIC_ATTENUATION_SINE_TABLE: array[0..255] of Word = ($859, $6C3, $607, $58B, $52E, $4E4, $4A6, $471, $443, $41A, $3F5, $3D3, $3B5, $398, $37E, $365, $34E, $339, $324, $311, $2FF,
     $2ED, $2DC, $2CD, $2BD, $2AF, $2A0, $293, $286, $279, $26D, $261, $256, $24B, $240, $236, $22C, $222, $218, $20F, $206, $1FD, $1F5, $1EC, $1E4, $1DC, $1D4, $1CD, $1C5, $1BE, $1B7,
     $1B0, $1A9, $1A2, $19B, $195, $18F, $188, $182, $17C, $177, $171, $16B, $166, $160, $15B, $155, $150, $14B, $146, $141, $13C, $137, $133, $12E, $129, $125, $121, $11C, $118, $114,
@@ -162,6 +168,8 @@ const
     $034, $033, $031, $030, $02F, $02E, $02D, $02B, $02A, $029, $028, $027, $026, $025, $024, $023, $022, $021, $020, $01F, $01E, $01D, $01C, $01B, $01A, $019, $018, $017, $017, $016,
     $015, $014, $014, $013, $012, $011, $011, $010, $00F, $00F, $00E, $00D, $00D, $00C, $00C, $00B, $00A, $00A, $009, $009, $008, $008, $007, $007, $007, $006, $006, $005, $005, $005,
     $004, $004, $004, $003, $003, $003, $002, $002, $002, $002, $001, $001, $001, $001, $001, $001, $001, $000, $000, $000, $000, $000, $000, $000, $000);
+
+const
   POWER_TABLE: array[0..255] of Word = ($7FA, $7F5, $7EF, $7EA, $7E4, $7DF, $7DA, $7D4, $7CF, $7C9, $7C4, $7BF, $7B9, $7B4, $7AE, $7A9, $7A4, $79F, $799, $794, $78F, $78A, $784, $77F, $77A,
     $775, $770, $76A, $765, $760, $75B, $756, $751, $74C, $747, $742, $73D, $738, $733, $72E, $729, $724, $71F, $71A, $715, $710, $70B, $706, $702, $6FD, $6F8, $6F3, $6EE, $6E9, $6E5,
     $6E0, $6DB, $6D6, $6D2, $6CD, $6C8, $6C4, $6BF, $6BA, $6B5, $6B1, $6AC, $6A8, $6A3, $69E, $69A, $695, $691, $68C, $688, $683, $67F, $67A, $676, $671, $66D, $668, $664, $65F, $65B,
@@ -268,12 +276,12 @@ implementation
 
 procedure PSGInitialise(var Psg: TPSG);
 begin
-  for var ItemIndex := 0 to High(Psg.State.Tones) do
+  for var i := 0 to High(Psg.State.Tones) do
   begin
-    Psg.State.Tones[ItemIndex].CountDown := 0;
-    Psg.State.Tones[ItemIndex].CountDownMaster := 0;
-    Psg.State.Tones[ItemIndex].Attenuation := $F;
-    Psg.State.Tones[ItemIndex].OutputBit := 0;
+    Psg.State.Tones[i].CountDown := 0;
+    Psg.State.Tones[i].CountDownMaster := 0;
+    Psg.State.Tones[i].Attenuation := $F;
+    Psg.State.Tones[i].OutputBit := 0;
   end;
   Psg.State.Noise.CountDown := 0;
   Psg.State.Noise.Attenuation := $F;
@@ -412,8 +420,7 @@ begin
     Step := Add32(Step, Detune);
   Step := Step and $1FFFF;
   Step := Mul32(Step, Phase.Multiplier);
-  Step := Cardinal(Step div 2);
-  Exit(Step);
+  Result := Cardinal(Step div 2);
 end;
 
 procedure FMPhaseInitialise(var Phase: TFMPhase);
@@ -447,8 +454,8 @@ end;
 
 function GetSSGEGCorrectedAttenuation(var State: TFMOperator; DisableInversion: Byte): Cardinal;
 begin
-  var Temp46: Integer := Ord(((DisableInversion = 0)) and (State.SSGEg.Enabled <> 0));
-  if (Temp46 <> 0) and (State.SSGEg.Invert <> State.SSGEg.Attack) then
+  var Value: Integer := Ord(((DisableInversion = 0)) and (State.SSGEg.Enabled <> 0));
+  if (Value <> 0) and (State.SSGEg.Invert <> State.SSGEg.Attack) then
     Exit(Cardinal(($200 - State.Attenuation) and $3FF))
   else
     Exit(Cardinal(State.Attenuation));
@@ -456,20 +463,22 @@ end;
 
 function CalculateRate(var State: TFMOperator): Cardinal;
 begin
-  var Temp47: Integer;
+  var Rate: Integer;
   if State.Rates[State.EnvelopeMode] = 0 then
     Exit(0);
+
   if $3F < Integer((State.Rates[State.EnvelopeMode] * 2) + ArithmeticShiftRight(State.Phase.KeyCode, State.KeyScale)) then
-    Temp47 := $3F
+    Rate := $3F
   else
-    Temp47 := (State.Rates[State.EnvelopeMode] * 2) + ArithmeticShiftRight(State.Phase.KeyCode, State.KeyScale);
-  Exit(Cardinal(Temp47));
+    Rate := (State.Rates[State.EnvelopeMode] * 2) + ArithmeticShiftRight(State.Phase.KeyCode, State.KeyScale);
+  Result := Cardinal(Rate);
 end;
 
 procedure EnterAttackMode(var State: TFMOperator);
 begin
   if State.KeyOn = 0 then
     Exit;
+
   State.EnvelopeMode := FM_OPERATOR_ENVELOPE_MODE_ATTACK;
   if CalculateRate(State) >= Cardinal($1F * 2) then
   begin
@@ -482,7 +491,7 @@ function InversePow2(Value: Cardinal): Cardinal;
 begin
   var Whole: Cardinal := Value shr 8;
   var Fraction: Cardinal := Value and $FF;
-  Exit(Cardinal(ArithmeticShiftRight(Integer(POWER_TABLE[Fraction] shl 2), Whole)));
+  Result := Cardinal(ArithmeticShiftRight(Integer(POWER_TABLE[Fraction] shl 2), Whole));
 end;
 
 procedure FMOperatorInitialise(var State: TFMOperator);
@@ -507,6 +516,7 @@ procedure FMOperatorSetKeyOn(var State: TFMOperator; KeyOn: Byte);
 begin
   if State.KeyOn = KeyOn then
     Exit;
+
   State.KeyOn := KeyOn;
   if KeyOn <> 0 then
   begin
@@ -554,16 +564,23 @@ end;
 
 function GetEnvelopeDelta(var State: TFMOperator): Cardinal;
 const
-  DELTAS: array[0..63] of array[0..7] of Cardinal = ((0, 0, 0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0, 0, 0), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 0, 1, 0,
-    1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1), (0, 1, 0, 1, 0, 1,
-    0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1,
-    1, 1, 1), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1,
-    0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0,
-    1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1), (0, 1,
-    0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0,
-    1, 1, 1, 1, 1, 1, 1), (1, 1, 1, 1, 1, 1, 1, 1), (1, 1, 1, 2, 1, 1, 1, 2), (1, 2, 1, 2, 1, 2, 1, 2), (1, 2, 2, 2, 1, 2, 2, 2), (2, 2, 2, 2, 2, 2, 2, 2), (2, 2, 2, 3, 2, 2, 2, 3),
-    (2, 3, 2, 3, 2, 3, 2, 3), (2, 3, 3, 3, 2, 3, 3, 3), (3, 3, 3, 3, 3, 3, 3, 3), (3, 3, 3, 4, 3, 3, 3, 4), (3, 4, 3, 4, 3, 4, 3, 4), (3, 4, 4, 4, 3, 4, 4, 4), (4, 4, 4, 4, 4, 4, 4,
-    4), (4, 4, 4, 4, 4, 4, 4, 4), (4, 4, 4, 4, 4, 4, 4, 4), (4, 4, 4, 4, 4, 4, 4, 4));
+  DELTAS: array[0..63] of array[0..7] of Cardinal = (
+    (0, 0, 0, 0, 0, 0, 0, 0), (0, 0, 0, 0, 0, 0, 0, 0), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 0, 1, 0, 1),
+    (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 0, 1, 1, 1),
+    (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1),
+    (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1),
+    (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1),
+    (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1),
+    (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1),
+    (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1),
+    (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1),
+    (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1),
+    (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1),
+    (0, 1, 0, 1, 0, 1, 0, 1), (0, 1, 0, 1, 1, 1, 0, 1), (0, 1, 1, 1, 0, 1, 1, 1), (0, 1, 1, 1, 1, 1, 1, 1),
+    (1, 1, 1, 1, 1, 1, 1, 1), (1, 1, 1, 2, 1, 1, 1, 2), (1, 2, 1, 2, 1, 2, 1, 2), (1, 2, 2, 2, 1, 2, 2, 2),
+    (2, 2, 2, 2, 2, 2, 2, 2), (2, 2, 2, 3, 2, 2, 2, 3), (2, 3, 2, 3, 2, 3, 2, 3), (2, 3, 3, 3, 2, 3, 3, 3),
+    (3, 3, 3, 3, 3, 3, 3, 3), (3, 3, 3, 4, 3, 3, 3, 4), (3, 4, 3, 4, 3, 4, 3, 4), (3, 4, 4, 4, 3, 4, 4, 4),
+    (4, 4, 4, 4, 4, 4, 4, 4), (4, 4, 4, 4, 4, 4, 4, 4), (4, 4, 4, 4, 4, 4, 4, 4), (4, 4, 4, 4, 4, 4, 4, 4));
 begin
   var Rate: Cardinal;
   Dec(State.CountDown);
@@ -573,19 +590,19 @@ begin
     State.CountDown := 3;
     var CycleCounter := State.CycleCounter;
     State.CycleCounter := (State.CycleCounter + 1) and $FFFF;
-    var Temp53: Integer;
+    var Value: Integer;
     if 11 > Cardinal(Rate div 4) then
-      Temp53 := 11
+      Value := 11
     else
-      Temp53 := Rate div 4;
-    if Integer(CycleCounter and ((1 shl (Sub32(Temp53, Rate div 4))) - 1)) = 0 then
+      Value := Rate div 4;
+    if Integer(CycleCounter and ((1 shl (Sub32(Value, Rate div 4))) - 1)) = 0 then
     begin
       var DeltaIndex := State.DeltaIndex;
       State.DeltaIndex := (State.DeltaIndex + 1) and $FFFF;
       Exit(Cardinal(DELTAS[Rate][(DeltaIndex mod Length(DELTAS[Rate]))]));
     end;
   end;
-  Exit(0);
+  Result := 0;
 end;
 
 procedure UpdateEnvelopeSSGEG(var State: TFMOperator);
@@ -611,18 +628,13 @@ end;
 
 procedure UpdateEnvelopeADSR(var State: TFMOperator);
 begin
-  var Temp59: Integer;
-  var Temp65: Integer;
-  var Temp66: Integer;
-  var Temp67: Integer;
-  var Temp68: Integer;
-  var Temp69: Integer;
   var Delta: Cardinal := GetEnvelopeDelta(State);
+  var SSGEg: Integer;
   if State.SSGEg.Enabled <> 0 then
-    Temp59 := $200
+    SSGEg := $200
   else
-    Temp59 := $3F0;
-  var EndEnvelope: Byte := Ord(State.Attenuation >= Temp59);
+    SSGEg := $3F0;
+  var EndEnvelope: Byte := Ord(State.Attenuation >= SSGEg);
   case State.EnvelopeMode of
     FM_OPERATOR_ENVELOPE_MODE_ATTACK:
       begin
@@ -647,24 +659,24 @@ begin
             State.EnvelopeMode := FM_OPERATOR_ENVELOPE_MODE_SUSTAIN;
             Break;
           end;
-          Temp65 := Ord((Delta <> 0) and ((EndEnvelope = 0)));
-          if Temp65 <> 0 then
+          if Ord((Delta <> 0) and ((EndEnvelope = 0))) <> 0 then
           begin
+            var Temp2: Integer;
             if State.SSGEg.Enabled <> 0 then
-              Temp66 := 2
+              Temp2 := 2
             else
-              Temp66 := 0;
-            State.Attenuation := Word(State.Attenuation + (1 shl (Add32(Sub32(Delta, 1), Temp66))));
+              Temp2 := 0;
+            State.Attenuation := Word(State.Attenuation + (1 shl (Add32(Sub32(Delta, 1), Temp2))));
             Assert(State.Attenuation <= $3FF);
           end;
-          Temp67 := Ord(EndEnvelope <> 0);
-          if Temp67 <> 0 then
+          var Temp1 := Ord(EndEnvelope <> 0);
+          if Temp1 <> 0 then
           begin
-            Temp69 := Ord((State.KeyOn <> 0) and (State.SSGEg.Hold <> 0));
-            Temp68 := Ord((Temp69 <> 0) and (State.SSGEg.Alternate <> State.SSGEg.Attack));
-            Temp67 := Ord((Temp68 = 0));
+            var Temp3 := Ord((State.KeyOn <> 0) and (State.SSGEg.Hold <> 0));
+            var Temp4 := Ord((Temp3 <> 0) and (State.SSGEg.Alternate <> State.SSGEg.Attack));
+            Temp1 := Ord((Temp4 = 0));
           end;
-          if Temp67 <> 0 then
+          if Temp1 <> 0 then
           begin
             State.EnvelopeMode := FM_OPERATOR_ENVELOPE_MODE_RELEASE;
             State.Attenuation := $3FF;
@@ -673,24 +685,24 @@ begin
       end;
     FM_OPERATOR_ENVELOPE_MODE_SUSTAIN, FM_OPERATOR_ENVELOPE_MODE_RELEASE:
       begin
-        Temp65 := Ord((Delta <> 0) and ((EndEnvelope = 0)));
-        if Temp65 <> 0 then
+        if Ord((Delta <> 0) and ((EndEnvelope = 0))) <> 0 then
         begin
+          var Temp1: Integer;
           if State.SSGEg.Enabled <> 0 then
-            Temp66 := 2
+            Temp1 := 2
           else
-            Temp66 := 0;
-          State.Attenuation := Word(State.Attenuation + (1 shl (Add32(Sub32(Delta, 1), Temp66))));
+            Temp1 := 0;
+          State.Attenuation := Word(State.Attenuation + (1 shl (Add32(Sub32(Delta, 1), Temp1))));
           Assert(State.Attenuation <= $3FF);
         end;
-        Temp67 := Ord(EndEnvelope <> 0);
-        if Temp67 <> 0 then
+        var Temp3 := Ord(EndEnvelope <> 0);
+        if Temp3 <> 0 then
         begin
-          Temp69 := Ord((State.KeyOn <> 0) and (State.SSGEg.Hold <> 0));
-          Temp68 := Ord((Temp69 <> 0) and (State.SSGEg.Alternate <> State.SSGEg.Attack));
-          Temp67 := Ord((Temp68 = 0));
+          var Temp4 := Ord((State.KeyOn <> 0) and (State.SSGEg.Hold <> 0));
+          var Temp5 := Ord((Temp4 <> 0) and (State.SSGEg.Alternate <> State.SSGEg.Attack));
+          Temp3 := Ord((Temp5 = 0));
         end;
-        if Temp67 <> 0 then
+        if Temp3 <> 0 then
         begin
           State.EnvelopeMode := FM_OPERATOR_ENVELOPE_MODE_RELEASE;
           State.Attenuation := $3FF;
@@ -701,7 +713,7 @@ end;
 
 function GetEnvelopeAttenuation(var State: TFMOperator; AmplitudeModulation: Cardinal; AmplitudeModulationShift: Cardinal): Cardinal;
 begin
-  var Temp71: Integer;
+  var Temp: Integer;
   var FinalAmplitudeModulation: Cardinal;
   if State.AmplitudeModulationOn <> 0 then
     FinalAmplitudeModulation := AmplitudeModulation shr AmplitudeModulationShift
@@ -709,22 +721,22 @@ begin
     FinalAmplitudeModulation := 0;
   var Attenuation: Cardinal := Add32(Add32(GetSSGEGCorrectedAttenuation(State, Ord((State.KeyOn = 0))), FinalAmplitudeModulation), State.TotalLevel);
   if $3FF < Attenuation then
-    Temp71 := $3FF
+    Temp := $3FF
   else
-    Temp71 := Attenuation;
-  Exit(Cardinal(Temp71));
+    Temp := Attenuation;
+  Result := Cardinal(Temp);
 end;
 
 function UpdateEnvelope(var State: TFMOperator; AmplitudeModulation: Cardinal; AmplitudeModulationShift: Cardinal): Cardinal;
 begin
   UpdateEnvelopeSSGEG(State);
   UpdateEnvelopeADSR(State);
-  Exit(GetEnvelopeAttenuation(State, AmplitudeModulation, AmplitudeModulationShift));
+  Result := GetEnvelopeAttenuation(State, AmplitudeModulation, AmplitudeModulationShift);
 end;
 
 function FMOperatorProcess(var State: TFMOperator; AmplitudeModulation: Cardinal; AmplitudeModulationShift: Cardinal; PhaseModulation: Cardinal): Cardinal;
 begin
-  var Temp72: Integer;
+  var Temp: Integer;
   State.Phase.Position := Add32(State.Phase.Position, State.Phase.Step);
   var Phase: Cardinal := State.Phase.Position shr 10;
   var Attenuation: Cardinal := UpdateEnvelope(State, AmplitudeModulation, AmplitudeModulationShift);
@@ -732,10 +744,10 @@ begin
   var PhaseIsInNegativeWave: Byte := Ord((ModulatedPhase and $200) <> 0);
   var PhaseIsInMirroredHalfOfWave: Byte := Ord((ModulatedPhase and $100) <> 0);
   if PhaseIsInMirroredHalfOfWave <> 0 then
-    Temp72 := $FF
+    Temp := $FF
   else
-    Temp72 := 0;
-  var QuarterPhase: Cardinal := (ModulatedPhase and $FF) xor Cardinal(Temp72);
+    Temp := 0;
+  var QuarterPhase: Cardinal := (ModulatedPhase and $FF) xor Cardinal(Temp);
   var PhaseAsAttenuation: Cardinal := LOGARITHMIC_ATTENUATION_SINE_TABLE[QuarterPhase];
   var CombinedAttenuation: Cardinal := Add32(PhaseAsAttenuation, Attenuation shl 2);
   var SampleAbsolute: Cardinal := InversePow2(CombinedAttenuation);
@@ -744,13 +756,13 @@ begin
     Sample := Sub32(0, SampleAbsolute)
   else
     Sample := SampleAbsolute;
-  Exit(Sample);
+  Result := Sample;
 end;
 
 function ComputeFeedbackDivisor(Value: Cardinal): Cardinal;
 begin
   Assert(Value <= 9);
-  Exit(Sub32(9, Value));
+  Result := Sub32(9, Value);
 end;
 
 procedure SetAmplitudeModulation(var State: TFMChannel; AmplitudeModulation: Cardinal);
@@ -760,15 +772,15 @@ end;
 
 procedure FMChannelInitialise(var State: TFMChannel);
 begin
-  for var ItemIndex := 0 to High(State.Operators) do
+  for var i := 0 to High(State.Operators) do
   begin
-    FMOperatorInitialise(State.Operators[ItemIndex]);
+    FMOperatorInitialise(State.Operators[i]);
   end;
   State.FeedbackDivisor := Byte(ComputeFeedbackDivisor(0));
   State.Algorithm := 0;
-  for var ItemIndex := 0 to High(State.Operator1PreviousSamples) do
+  for var i := 0 to High(State.Operator1PreviousSamples) do
   begin
-    State.Operator1PreviousSamples[ItemIndex] := 0;
+    State.Operator1PreviousSamples[i] := 0;
   end;
   SetAmplitudeModulation(State, 0);
   State.PhaseModulationSensitivity := 0;
@@ -776,9 +788,9 @@ end;
 
 procedure FMChannelSetFrequencies(var Channel: TFMChannel; Modulation: Cardinal; FNumberAndBlock: Cardinal);
 begin
-  for var ItemIndex := 0 to High(Channel.Operators) do
+  for var i := 0 to High(Channel.Operators) do
   begin
-    FMPhaseSetFrequency(Channel.Operators[ItemIndex].Phase, Modulation, Channel.PhaseModulationSensitivity, FNumberAndBlock);
+    FMPhaseSetFrequency(Channel.Operators[i].Phase, Modulation, Channel.PhaseModulationSensitivity, FNumberAndBlock);
   end;
 end;
 
@@ -790,9 +802,9 @@ end;
 
 procedure FMChannelSetPhaseModulationAndSensitivity(var Channel: TFMChannel; PhaseModulation: Cardinal; PhaseModulationSensitivity: Cardinal);
 begin
-  for var ItemIndex := 0 to High(Channel.Operators) do
+  for var i := 0 to High(Channel.Operators) do
   begin
-    FMPhaseSetModulationAndSensitivity(Channel.Operators[ItemIndex].Phase, PhaseModulation, PhaseModulationSensitivity);
+    FMPhaseSetModulationAndSensitivity(Channel.Operators[i].Phase, PhaseModulation, PhaseModulationSensitivity);
   end;
 end;
 
@@ -813,9 +825,11 @@ begin
   var Sum: Cardinal := Add32(A, B);
   if (((A and B) and not Sum) and $100) <> 0 then
     Exit(Cardinal(0 - $100));
+
   if (((not A and not B) and Sum) and $100) <> 0 then
     Exit($FF);
-  Exit(Sum);
+
+  Result := Sum;
 end;
 
 function FMChannelGetSample(var Channel: TFMChannel; AmplitudeModulation: Cardinal): Cardinal;
@@ -920,7 +934,7 @@ begin
   end;
   Channel.Operator1PreviousSamples[1] := Channel.Operator1PreviousSamples[0];
   Channel.Operator1PreviousSamples[0] := Word(Operator1Sample);
-  Exit(Sample);
+  Result := Sample;
 end;
 
 procedure FMLFOInitialise(var State: TFMLFO);
@@ -946,7 +960,7 @@ begin
       Exit(1);
     end;
   end;
-  Exit(0);
+  Result := 0;
 end;
 
 function FMLFOAdvance(var State: TFMLFO): Byte;
@@ -974,7 +988,7 @@ begin
       Exit(Ord(Cardinal(State.Counter mod PhaseModulationDivisor) = 0));
     end;
   end;
-  Exit(0);
+  Result := 0;
 end;
 
 function FMConvertTimerAValue(Value: Cardinal): Cardinal;
@@ -989,15 +1003,15 @@ end;
 
 procedure FMInitialise(var Fm: TFM);
 begin
-  for var ChannelIndex := Low(Fm.State.Channels) to High(Fm.State.Channels) do
+  for var i := Low(Fm.State.Channels) to High(Fm.State.Channels) do
   begin
-    FMChannelInitialise(Fm.State.Channels[ChannelIndex].State);
-    Fm.State.Channels[ChannelIndex].PanLeft := 1;
-    Fm.State.Channels[ChannelIndex].PanRight := 1;
+    FMChannelInitialise(Fm.State.Channels[i].State);
+    Fm.State.Channels[i].PanLeft := 1;
+    Fm.State.Channels[i].PanRight := 1;
   end;
-  for var ItemIndex := 0 to High(Fm.State.Channel3Metadata.Frequencies) do
+  for var i := 0 to High(Fm.State.Channel3Metadata.Frequencies) do
   begin
-    Fm.State.Channel3Metadata.Frequencies[ItemIndex] := 0;
+    Fm.State.Channel3Metadata.Frequencies[i] := 0;
   end;
   Fm.State.Channel3Metadata.PerOperatorFrequenciesEnabled := 0;
   Fm.State.Channel3Metadata.CsmModeEnabled := 0;
@@ -1257,7 +1271,7 @@ begin
   end
   else
     Sample := Integer(Sample + Offset);
-  Exit(Integer((Sample * (1 shl (16 - 9))) div 8));
+  Result := Integer((Sample * (1 shl (16 - 9))) div 8);
 end;
 
 function FMToNativeSigned(Value: Cardinal): Integer;
@@ -1278,6 +1292,7 @@ begin
   var DacSample: Integer := FMToNativeSigned(Fm.State.DacSample xor $100);
   if Odd(Length(SampleBuffer)) then
     raise EArgumentException.Create('FM output requires complete stereo frames');
+
   for var FrameIndex := 0 to Length(SampleBuffer) div 2 - 1 do
   begin
     var SampleIndex := FrameIndex * 2;
@@ -1347,7 +1362,7 @@ begin
     if Fm.State.BusyFlagCounter = 0 then
       Fm.State.Status := Byte(Fm.State.Status and (not $80));
   end;
-  Exit(Cardinal(Fm.State.Status));
+  Result := Cardinal(Fm.State.Status);
 end;
 
 end.

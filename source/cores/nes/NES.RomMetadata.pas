@@ -13,6 +13,8 @@ function ResolveLegacyMirror(Declared: TMirrorMode; const Prg, Chr: NES.Types.TB
 
 function IsLegacyBatteryRom(const Sha1: string): Boolean;
 
+function IsLegacyMmc6Rom(const Sha1: string): Boolean;
+
 function IsLegacyPowerPadRom(const Sha1: string): Boolean;
 
 function IsLegacyFamicomKeyboardRom(const Sha1: string): Boolean;
@@ -23,6 +25,14 @@ implementation
 
 uses
   System.Hash, System.SysUtils;
+
+function IsLegacyMmc6Rom(const Sha1: string): Boolean;
+begin
+  // Exact HKROM payloads; legacy iNES has no MMC6 submapper field.
+  Result :=
+    SameText(Sha1, '74c53fe9ac779f146c59ac01e701c9bf912b3c7b') or
+    SameText(Sha1, 'fcb1ef7398b842ebd28c3227852d7a132ce7b887');
+end;
 
 function IsLegacyDataRecorderRom(const Sha1: string): Boolean;
 const
@@ -73,7 +83,8 @@ function IsLegacyPowerPadRom(const Sha1: string): Boolean;
 begin
   // Exact legacy payloads, Power Pad side B. Super Team Games is also
   // identified as expansion device 12 in puNES misc/nes20db.xml.
-  Result := SameText(Sha1, '0380a74aad3771edf2b37c739c489832ebe6d06b') or
+  Result :=
+    SameText(Sha1, '0380a74aad3771edf2b37c739c489832ebe6d06b') or
     SameText(Sha1, 'e26f34a8a4c9419a8a90b0346fde019e8ab5aad2') or
     SameText(Sha1, 'ea660abbc1cdb74e85f932e38013e4fa5b9f6bb8');
 end;
@@ -81,7 +92,8 @@ end;
 function IsLegacyFamicomKeyboardRom(const Sha1: string): Boolean;
 begin
   // Family BASIC v1.0, v2.0, v2.1 and v3.0 payloads from puNES nes20db.xml.
-  Result := SameText(Sha1, '4e819c20f41e06059f4336e05b4cbad52551423b') or
+  Result :=
+    SameText(Sha1, '4e819c20f41e06059f4336e05b4cbad52551423b') or
     SameText(Sha1, '17720ae1afc6a3750384d6b082391c0c2f8a0699') or
     SameText(Sha1, '8e90d9a6a6090307a7e408d1c1704d09ba8f94fc') or
     SameText(Sha1, 'e232c621bfedbfc6b100677bfbfc50b910248282');
@@ -106,6 +118,7 @@ begin
   for var Identity in Identities do
     if SameText(Sha1, Identity) then
       Exit(True);
+
   Result := False;
 end;
 
@@ -126,6 +139,7 @@ begin
   Result := Declared;
   if Length(Prg) = 0 then
     Exit;
+
   var PayloadHash := THashSHA1.Create;
   PayloadHash.Update(Prg[0], Length(Prg));
   if Length(Chr) > 0 then
@@ -134,11 +148,14 @@ begin
   for var Entry in Horizontal do
     if SameText(Identity, Entry) then
       Exit(TMirrorMode.Horizontal);
+
   for var Entry in Vertical do
     if SameText(Identity, Entry) then
       Exit(TMirrorMode.Vertical);
+
   if (Declared <> TMirrorMode.Horizontal) or (Length(Prg) <> $20000) or (Length(Chr) <> 0) then
     Exit;
+
   var Hash := THashSHA1.Create;
   Hash.Update(Prg[0], Length(Prg));
 
@@ -158,7 +175,8 @@ begin
     Exit;
   var Hash := THashSHA1.Create;
   Hash.Update(Prg[0], Length(Prg));
-  Result := SameText(Hash.HashAsString, '7b0b8d19bd56aa255501852136828300ee2d2457') or
+  Result :=
+    SameText(Hash.HashAsString, '7b0b8d19bd56aa255501852136828300ee2d2457') or
     SameText(Hash.HashAsString, 'fcf9ff27f097892148eaec439ab79bc53164d751'); { Elite PAL }
 end;
 
@@ -170,6 +188,7 @@ begin
     Relevant := Relevant or (entry.Declared = Declared);
   if not Relevant or (Length(Prg) = 0) then
     Exit;
+
   var Hash := THashSHA1.Create;
   Hash.Update(Prg[0], Length(Prg));
   if Length(Chr) > 0 then

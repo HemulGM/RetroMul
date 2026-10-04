@@ -459,6 +459,7 @@ function TSnesSPC.Read(Address: Word): Byte;
 begin
   if (Address >= $FFC0) and ((State.Control and $80) <> 0) then
     Exit(IPL[Address - $FFC0]);
+
   case Address of
     $F0, $F1, $FA..$FC:
       Result := 0;
@@ -645,6 +646,7 @@ begin
     Clock(2);
     Exit;
   end;
+
   var Code := Fetch;
   O := Opcodes[Code].Op;
   Mode := Opcodes[Code].Mode;
@@ -1170,6 +1172,7 @@ begin
       Dec(State.TimerPrescale[T], Rate);
       if (State.Control and (1 shl T)) = 0 then
         Continue;
+
       Inc(State.TimerStage[T]);
       var Target := Integer(State.RAM[$FA + T]);
       if Target = 0 then
@@ -1251,6 +1254,7 @@ begin
     Voice.Envelope := Max(0, Voice.Envelope - 8);
     Exit;
   end;
+
   var Env := Voice.Envelope;
   var Rate := 31;
   var Sustain := State.DSP[Base + 6];
@@ -1333,6 +1337,7 @@ begin
       PreviousOutput := 0;
       Continue;
     end;
+
     var Offset := (Voice.Fraction shr 4) and $FF;
     var Sample := Integer(SmallInt(
         SAR(Gaussian[255 - Offset] * Voice.History[0], 11) +

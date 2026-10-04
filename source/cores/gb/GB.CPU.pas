@@ -1792,9 +1792,9 @@ procedure TGBCPU.ProcessInterrupts;
 begin
   var Interrupts: TGBInterruptArray := FMemory.InterruptManager.GetAllInterrupts;
   // The manager stores Joypad first and VBlank last.
-  for var I := High(Interrupts) downto 0 do
+  for var i := High(Interrupts) downto 0 do
   begin
-    var Interrupt := Interrupts[I];
+    var Interrupt := Interrupts[i];
     if not (Interrupt.IsRaised and Interrupt.IsEnabled) then
       Continue;
 
@@ -1802,7 +1802,7 @@ begin
     if not FMemory.InterruptManager.IsMasterEnabled then
       Exit;
 
-    FMemory.InterruptManager.ClearInterruptByIndex(I);
+    FMemory.InterruptManager.ClearInterruptByIndex(i);
     FMemory.InterruptManager.MasterDisable;
     FPendingInterruptEnable := 0;
     if FSuppressPCIncrement then

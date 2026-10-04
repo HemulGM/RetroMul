@@ -283,9 +283,9 @@ function TCPU6502.Read(Address: UInt16): UInt8;
 begin
   if FApplyLatchedReads then
   begin
-    if (FLatchedReadIndex >= FBusSequence.Count) or
-      (FBusSequence.Addresses[FLatchedReadIndex] <> Address) then
+    if (FLatchedReadIndex >= FBusSequence.Count) or (FBusSequence.Addresses[FLatchedReadIndex] <> Address) then
       raise ENesException.Create('CPU bus sequence does not match opcode reads');
+
     Result := FBusSequence.Values[FLatchedReadIndex];
     Inc(FLatchedReadIndex);
     Exit;
@@ -726,6 +726,7 @@ procedure TCPU6502.PollInterrupts;
 begin
   if not FPollRequested then
     Exit;
+
   FPollRequested := False;
   FNmiAfterInstruction := FNmiAfterInstruction or FPendingNmi;
   FIrqAfterInstruction := FIrqAfterInstruction or (FPendingIrq and not FPollInterruptDisable);
@@ -742,6 +743,7 @@ begin
     TotalCycles := (UInt64(TotalCycles) + 1) and $FFFFFFFF;
     Exit;
   end;
+
   var Opcode: UInt8;
   var ExecutedBrk: Boolean := False;
   if CyclesRemaining = 0 then
@@ -842,6 +844,7 @@ begin
       FWriteValues[i] := FWriteValues[i + 1];
     end;
   end;
+
   if CyclesRemaining > 0 then
     Dec(CyclesRemaining);
   if FBusSequence.Active then
@@ -906,8 +909,7 @@ begin
       Result := $0100 or Sp;
     if FInterruptSequenceActive and (CyclesRemaining <= 2) then
     begin
-      if (FInterruptKind = ikNmi) or
-        ((CyclesRemaining = 2) and FPendingNmi) then
+      if (FInterruptKind = ikNmi) or ((CyclesRemaining = 2) and FPendingNmi) then
         Result := $FFFA
       else
         Result := $FFFE;
@@ -916,6 +918,7 @@ begin
     end;
     Exit;
   end;
+
   var BusAddress: UInt16 := 0;
   with FBusSequence do
     case Mode of
@@ -1017,8 +1020,7 @@ begin
     Addresses[Count] := BusAddress;
     Values[Count] := Value;
     Inc(Count);
-    if ((Mode in [bmAbsolute, bmAbsoluteX, bmAbsoluteY]) and (Cycle = 3)) or
-      ((Mode = bmIndirectY) and (Cycle = 4)) then
+    if ((Mode in [bmAbsolute, bmAbsoluteX, bmAbsoluteY]) and (Cycle = 3)) or ((Mode = bmIndirectY) and (Cycle = 4)) then
     begin
       if Mode = bmIndirectY then
         Base := Values[1] or (UInt16(Value) shl 8)
@@ -1055,6 +1057,7 @@ begin
         $F0:
           Taken := (P and FLAG_ZERO) <> 0;
       end;
+
       if Taken then
       begin
         Base := (OpcodePc + 2) and $FFFF;
@@ -1080,13 +1083,17 @@ begin
   Pc := (Pc + 1) and $FFFF;
   var PageCrossed: Boolean := False;
   var Cycles: Integer := 2;
-  FIndexedDummyRead := Opcode in [$13, $1B, $1E, $1F, $33, $3B, $3E, $3F,
-      $53, $5B, $5E, $5F, $73, $7B, $7E, $7F, $91, $99, $9D,
-      $D3, $DB, $DE, $DF, $F3, $FB, $FE, $FF];
+  FIndexedDummyRead := Opcode in [
+      $13, $1B, $1E, $1F, $33, $3B, $3E, $3F, $53,
+      $5B, $5E, $5F, $73, $7B, $7E, $7F, $91, $99,
+      $9D, $D3, $DB, $DE, $DF, $F3, $FB, $FE, $FF];
+
   // Implied/accumulator instructions still read the byte following the opcode.
-  if Opcode in [$08, $0A, $18, $1A, $28, $2A, $38, $3A, $40, $48, $4A, $58, $5A,
-      $60, $68, $6A, $78, $7A, $88, $8A, $98, $9A, $A8, $AA, $B8, $BA, $C8, $CA,
-      $D8, $DA, $E8, $EA, $F8, $FA] then
+  if Opcode in [
+      $08, $0A, $18, $1A, $28, $2A, $38, $3A, $40,
+      $48, $4A, $58, $5A, $60, $68, $6A, $78, $7A,
+      $88, $8A, $98, $9A, $A8, $AA, $B8, $BA, $C8,
+      $CA, $D8, $DA, $E8, $EA, $F8, $FA] then
     Read(Pc);
   if Opcode in [$28, $40, $60, $68] then
     Read($0100 or Sp);

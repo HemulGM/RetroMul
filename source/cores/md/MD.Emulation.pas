@@ -3,8 +3,8 @@
 interface
 
 uses
-  Core.Storage, Core.RomFormat, Core.Snapshots, System.SysUtils, System.Classes, System.SyncObjs,
-  Core.Emulation, MD.Console;
+  Core.Storage, Core.RomFormat, Core.Snapshots, System.SysUtils, System.Classes,
+  System.SyncObjs, Core.Emulation, MD.Console;
 
 const
   MD_SAMPLE_RATE = 44100;
@@ -46,7 +46,8 @@ type
 implementation
 
 uses
-  Core.PerformanceHints, System.IOUtils, System.UITypes, System.Diagnostics, System.Math, PCM.Audio;
+  Core.PerformanceHints, System.IOUtils, System.UITypes, System.Diagnostics,
+  System.Math, PCM.Audio;
 
 { TMDWorker }
 
@@ -54,7 +55,8 @@ constructor TMDWorker.Create(const Data: TBytes; const SavePath: string; const S
 begin
   inherited Create(True);
   FStorage := Storage;
-  if FStorage = nil then FStorage := TStorage.Default;
+  if FStorage = nil then
+    FStorage := TStorage.Default;
   FreeOnTerminate := False;
   FSnapshots := TSnapshotQueue.Create;
   FLock := TCriticalSection.Create;
@@ -160,9 +162,11 @@ procedure TMDWorker.Execute;
   begin
     if (Console = nil) or not Console.BatteryDirty then
       Exit;
+
     var Data := Console.BatteryData;
     if Length(Data) = 0 then
       Exit;
+
     var Unchanged := Length(Data) = Length(LastBattery);
     if Unchanged then
       for var i := 0 to High(Data) do
@@ -171,8 +175,10 @@ procedure TMDWorker.Execute;
           Unchanged := False;
           Break;
         end;
+
     if Unchanged then
       Exit;
+
     var Stream := TBytesStream.Create(Data);
     try
       SaveStreamAtomically(Stream, FSavePath, FStorage);
@@ -198,8 +204,7 @@ begin
   try
     try
       Console := TMDConsole.Create(FData, ROM_EXTENSION_MD);
-      FrameHints := TEmulationPerformanceHints.Create(
-        Round(1000000000.0 / Console.FramesPerSecond), 'MD');
+      FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), 'MD');
       if FStorage.Exists(FSavePath) then
       begin
         LastBattery := FStorage.ReadBytes(FSavePath);

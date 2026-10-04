@@ -4,7 +4,7 @@ interface
 
 uses
   System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  GB.EmulationThread, GB.Joypad, GB.GPU;
+  GB.EmulationThread, GB.Joypad, GB.GPU, GB.Camera;
 
 type
   TGBKeyMap = record
@@ -39,9 +39,10 @@ type
     procedure SetScreenPalette(const Value: Integer);
   end;
 
-  TGBCoreAdapter = class(TInterfacedObject, IEmulationCore)
+  TGBCoreAdapter = class(TInterfacedObject, IEmulationCore, IGBCameraInput)
   protected
     FThread: TGBEmulationThread;
+    FCameraSource: IGBCameraFrameSource;
     FSnapshotDirectory: string;
     FSavePath: string;
     FStorage: IStorage;
@@ -82,6 +83,8 @@ type
     function TakeError: string;
     function GetConfig: IEmulatorConfig;
     function IsPaused: Boolean;
+    function GetHasCamera: Boolean;
+    procedure SubmitCameraFrame(const Frame: TGBCameraFrame);
   end;
 
 implementation
@@ -89,6 +92,19 @@ implementation
 uses
   Core.RomFormat, Core.Snapshots, Core.SavePaths, System.SysUtils, System.Math,
   System.UITypes, GB.Palettes, GB.ROM, GB.MBC;
+
+function TGBCoreAdapter.GetHasCamera: Boolean;
+begin
+  Result := FCameraSource <> nil;
+end;
+
+procedure TGBCoreAdapter.SubmitCameraFrame(const Frame: TGBCameraFrame);
+begin
+  if not GetHasCamera then
+    raise ENotSupportedException.Create('Cartridge has no camera');
+
+  FCameraSource.SubmitFrame(Frame);
+end;
 
 function TGBCoreAdapter.ConfigPrefix: string;
 begin
@@ -102,17 +118,17 @@ end;
 
 function TGBCoreAdapter.CreateWorker: TGBEmulationThread;
 begin
-  Result := TGBEmulationThread.Create(FROMData, FConfig.AudioEnabled);
+  Result := TGBEmulationThread.Create(FROMData, FConfig.AudioEnabled, FCameraSource);
 end;
 
 procedure TGBCoreAdapter.CopyFrame(const Screen: TScreenArray; var Frame: TEmulatorFrame);
 begin
-  for var I := 0 to High(Screen) do
+  for var i := 0 to High(Screen) do
   begin
-    var Shade := Screen[I];
+    var Shade := Screen[i];
     if (Shade < 0) or (Shade > 3) then
       Shade := 0;
-    Frame.Pixels[I] := ScreenPalettes[FConfig.ScreenPalette].Colors[Shade];
+    Frame.Pixels[i] := ScreenPalettes[FConfig.ScreenPalette].Colors[Shade];
   end;
 end;
 
@@ -151,6 +167,8 @@ end;
 
 procedure TGBCoreAdapter.CreateThread;
 begin
+  if (FCameraSource = nil) and (Length(FROMData) > $147) and (FROMData[$147] = $FC) then
+    FCameraSource := TGBCameraFrameSource.Create;
   FThread := CreateWorker;
   FThread.Storage := FStorage;
   FThread.SnapshotDirectory := FSnapshotDirectory;
@@ -168,8 +186,7 @@ end;
 function TGBCoreAdapter.GetInputState: TEmulatorInput;
 begin
   Result := Default(TEmulatorInput);
-  Result.Buttons := (FGamepadInput.Buttons + FKeyboardInput.Buttons) *
-    [TEmulatorButton.Up..TEmulatorButton.Start];
+  Result.Buttons := (FGamepadInput.Buttons + FKeyboardInput.Buttons) * [TEmulatorButton.Up..TEmulatorButton.Start];
 end;
 
 procedure TGBCoreAdapter.ApplyInput;
@@ -335,6 +352,7 @@ begin
   Result := FThread.TryGetFrame(Screen, FramesPerSecond);
   if not Result then
     Exit;
+
   Frame.Width := 160;
   Frame.Height := 144;
   SetLength(Frame.Pixels, Frame.Width * Frame.Height);
@@ -344,7 +362,7 @@ begin
   Frame.FramesPerSecond := FramesPerSecond;
 end;
 
-{ TGameBoyEmulatorConfig }
+{ TGBEmulatorConfig }
 
 constructor TGBEmulatorConfig.Create(const AFileName: string; const Storage: IStorage);
 begin

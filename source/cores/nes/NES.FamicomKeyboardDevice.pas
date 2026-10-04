@@ -75,6 +75,7 @@ begin
     Exit(TFamicomKey(Ord(FkNum0) + Integer(Code) - vk0));
   if (Code >= vkF1) and (Code <= vkF8) then
     Exit(TFamicomKey(Ord(FkF1) + Integer(Code) - vkF1));
+
   case Code of
     vkReturn:
       Result := FkReturn;
@@ -140,6 +141,7 @@ begin
   var Key := HostKey(Code);
   if Key = FkNone then
     Exit;
+
   if Pressed then
     Include(FHostKeys, Key)
   else
@@ -172,6 +174,7 @@ begin
   Result := 0;
   if FRow >= 9 then
     Exit;
+
   var Keys := GetPressedKeys;
   for var I := 0 to 3 do
     if Matrix[FRow, FColumn * 4 + I] in Keys then
@@ -182,6 +185,7 @@ procedure TFamicomKeyboard.Write(Value: UInt8);
 begin
   if not FConnected then
     Exit;
+
   var PreviousColumn := FColumn;
   FColumn := (Value shr 1) and 1;
   if (FColumn = 0) and (PreviousColumn = 1) then
@@ -195,6 +199,7 @@ function TFamicomKeyboard.Read: UInt8;
 begin
   if not FConnected or not FEnabled then
     Exit(0);
+
   Result := (not (ActiveKeys shl 1)) and $1E;
 end;
 

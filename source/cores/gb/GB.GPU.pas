@@ -312,8 +312,8 @@ end;
 constructor TGBGPU.Create(Callback: TDrawCallback);
 begin
   inherited Create(Callback, TGBInterruptManager.Instance);
-  for var I := 0 to 39 do
-    with SpriteList[I] do
+  for var i := 0 to 39 do
+    with SpriteList[i] do
     begin
       Y := -16; // Y-coordinate of top-left corner, (Value stored is Y-coordinate minus 16)
       X := -8;  // X-coordinate of top-left corner, (Value stored is X-coordinate minus 8)
@@ -341,13 +341,14 @@ begin
   var Tile: Integer := VRAM[MapOffset + LineOffset];
   if SignedTileData and (Tile < 128) then
     Tile := Tile + 256;
-  for var I := 0 to 159 do
+
+  for var i := 0 to 159 do
   begin
     var ColorIndex := TileSet[Tile][Y][X];
     Screen[CanvasOffset] := BackgroundPalette[ColorIndex];
 
     CanvasOffset := CanvasOffset + 1;
-    ScanlineRow[I] := ColorIndex;
+    ScanlineRow[i] := ColorIndex;
     X := X + 1;
     if X = 8 then
     begin
@@ -410,19 +411,20 @@ begin
   var Count: Integer := 0;
   // OAM selection is limited to the first ten objects intersecting this line.
   var Selected: array[0..9] of Integer;
-  for var I := 0 to 39 do
-    if (SpriteList[I].Y <= Line) and (SpriteList[I].Y + SpriteSize > Line) then
+  for var i := 0 to 39 do
+    if (SpriteList[i].Y <= Line) and (SpriteList[i].Y + SpriteSize > Line) then
     begin
-      Selected[Count] := I;
+      Selected[Count] := i;
       Inc(Count);
       if Count = 10 then
         Break;
     end;
+
   // DMG pixel priority: lower X first, then lower OAM index.
-  for var I := 1 to Count - 1 do
+  for var i := 1 to Count - 1 do
   begin
-    var Index := Selected[I];
-    var J := I - 1;
+    var Index := Selected[i];
+    var J := i - 1;
     while J >= 0 do
     begin
       if SpriteList[Selected[J]].X <= SpriteList[Index].X then
@@ -432,11 +434,12 @@ begin
     end;
     Selected[J + 1] := Index;
   end;
+
   var Claimed: array[0..159] of Boolean;
   FillChar(Claimed, SizeOf(Claimed), 0);
-  for var I := 0 to Count - 1 do
+  for var i := 0 to Count - 1 do
   begin
-    var Sprite := SpriteList[Selected[I]];
+    var Sprite := SpriteList[Selected[i]];
     var Row := Line - Sprite.Y;
     if Sprite.IsYFlip then
       Row := SpriteSize - 1 - Row;
@@ -469,6 +472,7 @@ procedure TGBGPU.Step(Cycle: Integer);
 begin
   if not FLCDEnabled then
     Exit;
+
   var Duration: Integer;
   Inc(ModeClock, Cycle);
   while True do
@@ -492,6 +496,7 @@ begin
     end;
     if ModeClock < Duration then
       Break;
+
     Dec(ModeClock, Duration);
     case FCurrentMode of
       TGPUMode.OAMAccess:
@@ -546,7 +551,7 @@ begin
   for var i := 0 to 7 do
   begin
     // find bit index for this pixel
-    var Sx: Integer := 1 shl (7 - I);
+    var Sx: Integer := 1 shl (7 - i);
     var Tmp1, Tmp2: Integer;
     if (VRAM[Address] and Sx) <> 0 then
       Tmp1 := 1
@@ -557,7 +562,7 @@ begin
     else
       Tmp2 := 0;
     var Value := Tmp1 or Tmp2;
-    TileSet[Tile][Y][I] := Value;
+    TileSet[Tile][Y][i] := Value;
   end;
 end;
 

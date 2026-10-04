@@ -67,8 +67,9 @@ uses
   System.IOUtils, System.UITypes, System.Hash, SNES.Cartridge, Core.RomFormat;
 
 const
-  KeyNames: array[TSnesButton] of string =
-    ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Select', 'Start', 'X', 'Y', 'L', 'R');
+  KeyNames: array[TSnesButton] of string = ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Select', 'Start', 'X', 'Y', 'L', 'R');
+
+{ TSnesConfig }
 
 constructor TSnesConfig.Create(const FileName: string; const Storage: IStorage);
 const
@@ -99,6 +100,8 @@ begin
     Ini.WriteInteger('Keys2', KeyNames[Button], FKeys2[Button]);
   end;
 end;
+
+{ TSnesCoreAdapter }
 
 constructor TSnesCoreAdapter.Create(const FileName: string);
 begin
@@ -169,6 +172,7 @@ procedure TSnesCoreAdapter.Start;
 begin
   if FThread <> nil then
     Exit;
+
   FThread := TSnesWorker.Create(FData, FSavePath, FStorage, FFirmware);
   FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplySettings;
@@ -179,6 +183,7 @@ procedure TSnesCoreAdapter.Stop;
 begin
   if FThread = nil then
     Exit;
+
   FThread.Terminate;
   FThread.WakeSetEvent;
   FThread.WaitFor;
@@ -323,6 +328,7 @@ procedure TSnesCoreAdapter.SaveSnapshot(const Name: string);
 begin
   if FThread = nil then
     raise EInvalidOpException.Create('Emulation worker is not running');
+
   FThread.SaveSnapshot(Name);
 end;
 
@@ -330,6 +336,7 @@ procedure TSnesCoreAdapter.LoadSnapshot(const Name: string);
 begin
   if FThread = nil then
     raise EInvalidOpException.Create('Emulation worker is not running');
+
   FThread.LoadSnapshot(Name);
 end;
 

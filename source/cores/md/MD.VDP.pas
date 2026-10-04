@@ -289,6 +289,7 @@ begin
           Exit(Base + Slot);
       Exit(Base + 3420 + H40[0]);
     end;
+
     for var Slot in H32 do
       if Slot > Position then
         Exit(Base + Slot);
@@ -299,8 +300,7 @@ begin
   if Vdp.State.H40Enabled <> 0 then
     Slots := 210;
   var Index := Position * Slots div 3420 + 1;
-  while (Index < Slots) and ((Index mod 32 = 0) or
-    ((Vdp.State.DisplayEnabled = 0) and (Index > 1) and (Index mod 32 = 1))) do
+  while (Index < Slots) and ((Index mod 32 = 0) or ((Vdp.State.DisplayEnabled = 0) and (Index > 1) and (Index mod 32 = 1))) do
     Inc(Index);
   Result := Base + (Int64(Index) * 3420 + Slots - 1) div Slots;
 end;
@@ -309,6 +309,7 @@ function VDPReadHV(const Vdp: TVDP): Word;
 begin
   if Vdp.State.HVCounterLatchEnabled <> 0 then
     Exit(Vdp.State.HVCounterLatched);
+
   var Lines := 262 + 51 * Integer(Vdp.Configuration.PAL);
   var V := Integer((Vdp.State.MasterTime div 3420) mod Lines);
   var Limit := 234;
@@ -343,10 +344,10 @@ procedure VDPAdvance(var Vdp: TVDP; Target: Int64; ColourCallback: TVDPColourUpd
 
   procedure RefillDMAFIFO;
   begin
-    while (Vdp.State.DMAActive <> 0) and (Vdp.State.Dma.Mode = VDP_DMA_MODE_MEMORY_TO_VRAM) and
-    (Vdp.State.FIFOCount < 4) do
+    while (Vdp.State.DMAActive <> 0) and (Vdp.State.Dma.Mode = VDP_DMA_MODE_MEMORY_TO_VRAM) and (Vdp.State.FIFOCount < 4) do
     begin
-      var Value := ReadCallback(UserData, (Cardinal(Vdp.State.Dma.SourceAddressHigh) shl 17) or
+      var Value := ReadCallback(UserData,
+        (Cardinal(Vdp.State.Dma.SourceAddressHigh) shl 17) or
         (Cardinal(Vdp.State.Dma.SourceAddressLow) shl 1), 0);
       UpdateFakeFIFO(Vdp.State, Value);
       Vdp.State.FIFOData[Vdp.State.FIFOCount] := Word(Value);
@@ -369,6 +370,7 @@ procedure VDPAdvance(var Vdp: TVDP; Target: Int64; ColourCallback: TVDPColourUpd
 begin
   if (Vdp.Configuration.TimedAccess = 0) or (Target < Vdp.State.MasterTime) then
     Exit;
+
   RefillDMAFIFO;
   while (Vdp.State.FIFOCount > 0) or (Vdp.State.DMAActive <> 0) do
   begin
@@ -376,6 +378,7 @@ begin
       Vdp.State.NextAccessSlot := VDPNextAccessSlot(Vdp, Vdp.State.MasterTime);
     if Vdp.State.NextAccessSlot > Target then
       Break;
+
     Vdp.State.MasterTime := Vdp.State.NextAccessSlot;
     if Vdp.State.FIFOCount > 0 then
     begin
@@ -390,10 +393,10 @@ begin
         WriteAndIncrement(Vdp, Vdp.State.FIFOData[0], ColourCallback, UserData);
         Vdp.State.Access := Access;
         Dec(Vdp.State.FIFOCount);
-        for var I := 0 to Vdp.State.FIFOCount - 1 do
+        for var i := 0 to Vdp.State.FIFOCount - 1 do
         begin
-          Vdp.State.FIFOData[I] := Vdp.State.FIFOData[I + 1];
-          Vdp.State.FIFOAccess[I] := Vdp.State.FIFOAccess[I + 1];
+          Vdp.State.FIFOData[i] := Vdp.State.FIFOData[i + 1];
+          Vdp.State.FIFOAccess[i] := Vdp.State.FIFOAccess[i + 1];
         end;
         RefillDMAFIFO;
       end;
@@ -498,7 +501,7 @@ begin
     Address := ((((Address and $1F802) shr 1) or ((Address and $400) shr 9)) or (Address and $3FC)) or ((Address and 1) shl 16)
   else
     Address := Address and $FFFF;
-  Exit(Address xor 1);
+  Result := Address xor 1;
 end;
 
 function ReadVRAM(const State: TVDPState; Address: Cardinal): Cardinal;
@@ -600,7 +603,7 @@ begin
     Assert(False);
   end;
   IncrementAccessAddressRegister(State);
-  Exit(Value);
+  Result := Value;
 end;
 
 procedure ConstantInitialise;
@@ -874,11 +877,13 @@ begin
   var SpritesRemaining: Cardinal := MaxSprites;
   if Vdp.State.SpriteRowCache.NeedsUpdating = 0 then
     Exit;
+
   Vdp.State.SpriteRowCache.NeedsUpdating := 0;
   for var ItemIndex := 0 to High(Vdp.State.SpriteRowCache.Rows) do
   begin
     Vdp.State.SpriteRowCache.Rows[ItemIndex].Total := 0;
   end;
+
   var SpriteIndex: Cardinal := 0;
   while True do
   begin
@@ -922,6 +927,7 @@ begin
     end;
     if CachedSprite.Link >= MaxSprites then
       Break;
+
     SpriteIndex := CachedSprite.Link;
     Temp111 := Ord(SpriteIndex <> 0);
     if Temp111 <> 0 then
@@ -991,6 +997,7 @@ begin
     begin
       if PixelLimit <= Mul32(Width, 8) then
         Exit;
+
       PixelLimit := Sub32(PixelLimit, Mul32(Width, 8));
     end
     else
@@ -1141,6 +1148,7 @@ begin
   var RightBoundaryPixels: Cardinal := Mul32(RightBoundary, 8 * 2);
   if LeftBoundary = RightBoundary then
     Exit;
+
   if Vdp.State.DisplayEnabled <> 0 then
   begin
     if Vdp.State.Debug.HideLayers = 0 then
@@ -1217,7 +1225,7 @@ begin
   Vdp.State.Access.WritePending := 0;
   if IsInReadMode(Vdp.State) <> 0 then
     Value := ReadAndIncrement(Vdp.State);
-  Exit(Value);
+  Result := Value;
 end;
 
 function VDPReadControl(var Vdp: TVDP): Cardinal;
@@ -1254,6 +1262,7 @@ begin
     begin
       if Vdp.State.FIFOCount >= 4 then
         raise Exception.Create('VDP FIFO overflow');
+
       Vdp.State.FIFOData[Vdp.State.FIFOCount] := Word(Value);
       Vdp.State.FIFOAccess[Vdp.State.FIFOCount] := Vdp.State.Access;
       Inc(Vdp.State.FIFOCount);
@@ -1483,6 +1492,7 @@ begin
             Character := Byte((Integer(Data) and ((1 shl 7) - 1)) - (Integer(Data) and (1 shl 7)));
             if (Character < $20) and (Character <> 0) then
               Break;
+
             Temp227 := Vdp.State.KdebugBufferIndex;
             Inc(Vdp.State.KdebugBufferIndex);
             Vdp.State.KdebugBuffer[Temp227] := Character;
@@ -1514,6 +1524,7 @@ begin
     end;
     Exit;
   end;
+
   if (IsDMAPending(Vdp.State) <> 0) and (Vdp.State.Dma.Mode <> VDP_DMA_MODE_FILL) then
   begin
     ClearDMAPending(Vdp.State);
@@ -1574,7 +1585,7 @@ begin
   TileMetadata.XFlip := Ord((PackedTileMetadata and $800) <> 0);
   TileMetadata.YFlip := Ord((PackedTileMetadata and $1000) <> 0);
   TileMetadata.Priority := Ord((PackedTileMetadata and $8000) <> 0);
-  Exit(TileMetadata);
+  Result := TileMetadata;
 end;
 
 function VDPGetCachedSprite(const State: TVDPState; SpriteIndex: Cardinal): TVDPCachedSprite;
@@ -1585,7 +1596,7 @@ begin
   CachedSprite.Link := Cardinal(SpriteBytes[2] and $7F);
   CachedSprite.Width := Cardinal((ArithmeticShiftRight(Integer(SpriteBytes[3]), 2) and 3) + 1);
   CachedSprite.Height := Cardinal((SpriteBytes[3] and 3) + 1);
-  Exit(CachedSprite);
+  Result := CachedSprite;
 end;
 
 end.

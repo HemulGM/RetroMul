@@ -233,6 +233,7 @@ begin
   var Key := HostKey(Code);
   if Key = SkNone then
     Exit;
+
   var PreviousKeys := GetPressedKeys;
   if Pressed then
     Include(FHostKeys, Key)
@@ -293,6 +294,7 @@ procedure TSuborKeyboard.Write(Value: UInt8);
 begin
   if not FConnected then
     Exit;
+
   var NewStrobe := (Value and 1) <> 0;
   // A falling strobe latches a new matrix scan, starting at row zero.  Without
   // this reset, a new query can resume in an old row and look like a held key.
@@ -315,6 +317,7 @@ begin
     Exit(0);
   if not FEnabled then
     Exit($1E);
+
   Result := (not (ActiveKeys shl 1)) and $1E;
 end;
 
@@ -341,6 +344,7 @@ begin
   Result := 0;
   if not FEnabled then
     Exit;
+
   Result := $08;
   if Assigned(FOnReadLight) then
     if FOnReadLight(Mask) then
@@ -400,6 +404,7 @@ procedure TController.SetPowerPadButton(Button: Integer; Pressed: Boolean);
 begin
   if (Button < 1) or (Button > 12) then
     Exit;
+
   var Mask := UInt16(1) shl (Button - 1);
   if Pressed then
     FPowerPadState := FPowerPadState or Mask

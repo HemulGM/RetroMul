@@ -1,4 +1,4 @@
-unit NES.SuborKeyboard;
+﻿unit NES.SuborKeyboard;
 
 interface
 
@@ -85,6 +85,7 @@ uses
   {$ENDIF}
   System.Math;
 
+{ TNesSuborKeyboard }
 
 constructor TNesSuborKeyboard.Create(AOwner: TComponent);
 begin
@@ -153,9 +154,8 @@ begin
   var U := Width / 24;
   var Gap := Max(1.5, U * 0.08);
   var H := (Height - Gap * 7) / 6;
-  for var I := 0 to 2 do
-    FIndicatorBounds[I] := RectF((20 + I) * U + Gap, Gap,
-        (21 + I) * U - Gap, H);
+  for var i := 0 to 2 do
+    FIndicatorBounds[i] := RectF((20 + i) * U + Gap, Gap, (21 + i) * U - Gap, H);
   var Diameter := Max(0, Min(U - Gap * 2, H - Gap));
   FPowerBounds := RectF(23.5 * U - Diameter / 2, (H + Gap - Diameter) / 2,
     23.5 * U + Diameter / 2, (H + Gap + Diameter) / 2);
@@ -268,6 +268,7 @@ begin
   Result := SkNone;
   if not LocalRect.Contains(Point) then
     Exit;
+
   for var VisualKey in FVisualKeys do
     if VisualKey.Bounds.Contains(Point) then
       Exit(VisualKey.Key);
@@ -292,6 +293,7 @@ procedure TNesSuborKeyboard.SetIndicators(const Value: TSuborIndicators);
 begin
   if (FIndicators.NumLock = Value.NumLock) and (FIndicators.CapsLock = Value.CapsLock) then
     Exit;
+
   FIndicators := Value;
   Repaint;
 end;
@@ -300,6 +302,7 @@ procedure TNesSuborKeyboard.SetCoreKeys(const Value: TSuborKeys);
 begin
   if FCoreKeys = Value then
     Exit;
+
   FCoreKeys := Value;
   Repaint;
 end;
@@ -312,6 +315,7 @@ begin
       Include(NewKeys, Key);
   if NewKeys = FKeys then
     Exit;
+
   FKeys := NewKeys;
   Repaint;
   if Assigned(FOnChange) then
@@ -322,6 +326,7 @@ procedure TNesSuborKeyboard.PointerDown(Id: NativeInt; const Point: TPointF);
 begin
   if not AbsoluteEnabled or not ParentedVisible then
     Exit;
+
   if FPowerBounds.Contains(Point) then
   begin
     if not FPowerContact then
@@ -333,6 +338,7 @@ begin
     end;
     Exit;
   end;
+
   FContacts.Remove(Id);
   var Key := KeyAt(Point);
   if Key <> SkNone then
@@ -348,18 +354,21 @@ begin
     ReleaseAll;
     Exit;
   end;
+
   if FPowerContact and (Id = FPowerPointer) then
   begin
     FPowerPressed := FPowerBounds.Contains(Point);
     Repaint;
     Exit;
   end;
+
   var OldKey: TSuborKey;
   if not FContacts.TryGetValue(Id, OldKey) then
     Exit;
   var Key := KeyAt(Point);
   if Key = OldKey then
     Exit;
+
   if Key = SkNone then
     FContacts.Remove(Id)
   else
@@ -380,6 +389,7 @@ begin
       FOnPower(Self);
     Exit;
   end;
+
   var Key: TSuborKey;
   var ResetPressed := FContacts.TryGetValue(Id, Key) and (Key = SkReset);
   FContacts.Remove(Id);
@@ -393,6 +403,7 @@ procedure TNesSuborKeyboard.ReleaseAll;
 begin
   if FContacts = nil then
     Exit;
+
   FContacts.Clear;
   FPowerContact := False;
   FPowerPressed := False;
@@ -631,17 +642,17 @@ begin
     Canvas.Fill.Color := $FFF3F5FA;
     Canvas.FillText(R, KeyCaption(Key), True, AbsoluteOpacity * Ord(Enabled), [], TTextAlign.Center, TTextAlign.Center);
   end;
-  for var I := 0 to 2 do
+  for var i := 0 to 2 do
   begin
-    var R := FIndicatorBounds[I];
-    var Lit := (I = 2) or ((I = 0) and FIndicators.NumLock) or
-      ((I = 1) and FIndicators.CapsLock);
+    var R := FIndicatorBounds[i];
+    var Lit := (i = 2) or ((i = 0) and FIndicators.NumLock) or
+      ((i = 1) and FIndicators.CapsLock);
     Canvas.Fill.Color := $FF303B4D;
     Canvas.FillRect(R, 3, 3, AllCorners, AbsoluteOpacity);
     var LabelRect := R;
     LabelRect.Bottom := R.Top + R.Height * 0.7;
     Canvas.Fill.Color := $FFF3F5FA;
-    Canvas.FillText(LabelRect, IndicatorCaptions[I], True, AbsoluteOpacity, [],
+    Canvas.FillText(LabelRect, IndicatorCaptions[i], True, AbsoluteOpacity, [],
       TTextAlign.Center, TTextAlign.Center);
     var Lamp := RectF(R.Left + R.Width * 0.25, R.Top + R.Height * 0.76,
       R.Right - R.Width * 0.25, R.Top + R.Height * 0.9);

@@ -62,6 +62,8 @@ type
     function Snapshot(out FileName, DisplayName, Error: string): Boolean;
   end;
 
+{ TRomImport }
+
 constructor TRomImport.Create(ForCassette: Boolean; const Storage: IStorage; const ExportSource: string);
 begin
   inherited Create;
@@ -207,6 +209,7 @@ procedure TAndroidDocumentTransfer.Import(const Uri: string; ForCassette: Boolea
 begin
   if FWaiting or FReady or (FJob <> nil) then
     raise EInvalidOperation.Create('A document transfer is already active');
+
   var Resolver := TAndroidHelper.Context.getContentResolver;
   var DocumentUri := TJnet_Uri.JavaClass.parse(StringToJString(Uri));
   var Job: IRomImport := TRomImport.Create(ForCassette, FStorage);
@@ -222,6 +225,7 @@ procedure TAndroidDocumentTransfer.Save(const SourceFile, SuggestedName: string)
 begin
   if FWaiting or FReady or (FJob <> nil) then
     raise EInvalidOperation.Create('A file picker is already open');
+
   FForCassette := True;
   FExportSource := SourceFile;
   var Intent := TJIntent.JavaClass.init(TJIntent.JavaClass.ACTION_CREATE_DOCUMENT);
@@ -243,17 +247,21 @@ procedure TAndroidDocumentTransfer.ActivityResult(const Sender: TObject; const M
 begin
   if not FWaiting or not (Message is TMessageResultNotification) then
     Exit;
+
   var Notification := TMessageResultNotification(Message);
   if Notification.RequestCode <> ROM_REQUEST_CODE then
     Exit;
+
   FWaiting := False;
   FReady := True;
   FError := '';
   if Notification.ResultCode <> TJActivity.JavaClass.RESULT_OK then
     Exit;
+
   try
     if (Notification.Value = nil) or (Notification.Value.getData = nil) then
       raise Exception.Create('No document was returned by the file picker');
+
     var Uri := Notification.Value.getData;
     var Resolver := TAndroidHelper.Context.getContentResolver;
     var Job: IRomImport := TRomImport.Create(FForCassette, FStorage, FExportSource);
@@ -280,6 +288,7 @@ begin
   Error := '';
   if FJob <> nil then
     Exit(FJob.Snapshot(FileName, DisplayName, Error));
+
   Result := FReady;
   if Result then
     Error := FError;

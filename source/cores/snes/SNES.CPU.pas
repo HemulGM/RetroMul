@@ -646,6 +646,7 @@ begin
     Idle;
     Exit;
   end;
+
   if State.NMI then
   begin
     State.NMI := False;
@@ -655,6 +656,7 @@ begin
       Interrupt($FFEA, True);
     Exit;
   end;
+
   if State.IRQ then
   begin
     State.Waiting := False;
@@ -667,11 +669,13 @@ begin
       Exit;
     end;
   end;
+
   if State.Waiting then
   begin
     Idle;
     Exit;
   end;
+
   var Code := Fetch;
   O := Opcodes[Code].Op;
   Mode := Opcodes[Code].Mode;

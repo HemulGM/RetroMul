@@ -3,8 +3,8 @@
 interface
 
 uses
-  Core.Storage, Core.RomFormat, Core.Snapshots, System.SysUtils, System.Classes, System.SyncObjs,
-  Core.Emulation, SNES.Console;
+  Core.Storage, Core.RomFormat, Core.Snapshots, System.SysUtils, System.Classes,
+  System.SyncObjs, Core.Emulation, SNES.Console;
 
 const
   SNES_SAMPLE_RATE = 32000;
@@ -163,9 +163,11 @@ procedure TSnesWorker.Execute;
   begin
     if (Console = nil) or not Console.BatteryDirty then
       Exit;
+
     var Data := Console.BatteryData;
     if Length(Data) = 0 then
       Exit;
+
     var Unchanged := Length(Data) = Length(LastBattery);
     if Unchanged then
       for var i := 0 to High(Data) do
@@ -176,6 +178,7 @@ procedure TSnesWorker.Execute;
         end;
     if Unchanged then
       Exit;
+
     var Stream := TBytesStream.Create(Data);
     try
       SaveStreamAtomically(Stream, FSavePath, FStorage);
@@ -199,8 +202,7 @@ begin
   try
     try
       Console := TSnesConsole.Create(FData, ROM_EXTENSION_SFC, FFirmware);
-      FrameHints := TEmulationPerformanceHints.Create(
-        Round(1000000000.0 / Console.FramesPerSecond), 'SNES');
+      FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), 'SNES');
       if FStorage.Exists(FSavePath) then
       begin
         LastBattery := FStorage.ReadBytes(FSavePath);
@@ -294,6 +296,7 @@ begin
           Deadline := Watch.Elapsed.TotalMilliseconds;
           Continue;
         end;
+
         WasPaused := False;
         FrameHints.TargetDurationNanos := Round(1000000000.0 / Console.FramesPerSecond);
         FrameHints.BeginWork;
@@ -301,6 +304,7 @@ begin
         Console.RunFrame;
         if Terminated then
           Break;
+
         Frame.Width := Console.Width;
         Frame.Height := Console.Height;
         Frame.FrameNumber := Console.FrameNumber;

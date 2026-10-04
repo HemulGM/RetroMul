@@ -209,9 +209,11 @@ begin
   // Restrict names to portable slot names; callers cannot escape the game folder.
   if (Name = '') or (Length(Name) > 80) then
     raise EArgumentException.Create('Invalid snapshot name');
+
   for var C in Name do
     if not CharInSet(C, ['a'..'z', 'A'..'Z', '0'..'9', '-', '_']) then
       raise EArgumentException.Create('Snapshot names use letters, digits, - and _');
+
   WorkerCommand(Name, Loading, False, TapeStop);
 end;
 
@@ -219,6 +221,7 @@ procedure TNesEmulationThread.TapeCommand(Action: TTapeAction; const FileName: s
 begin
   if not FUsesDataRecorder then
     raise ENesException.Create('No data recorder connected');
+
   WorkerCommand(FileName, False, True, Action);
 end;
 
@@ -248,6 +251,7 @@ begin
   try
     if Suspended or Terminated or Finished then
       raise ENesException.Create('Emulation worker is not running');
+
     FLock.Enter;
     try
       FSnapshotDone.ResetEvent;
@@ -264,6 +268,7 @@ begin
     while FSnapshotDone.WaitFor(50) <> wrSignaled do
       if Finished then
         raise ENesException.Create('Emulation stopped before completing the command');
+
     FLock.Enter;
     try
       if FSnapshotError <> '' then
@@ -287,6 +292,7 @@ begin
   try
     if not FSnapshotPending then
       Exit;
+
     Name := FSnapshotName;
     Loading := FSnapshotLoading;
     Tape := FSnapshotTape;
@@ -335,6 +341,7 @@ begin
           begin
             if Name = '' then
               raise ENesException.Create('A cassette filename is required');
+
             FConsole.DataRecorder.LoadTape(Name, True);
             FSelectedTapeFile := Name;
           end;
@@ -396,11 +403,11 @@ end;
 
 procedure TNesEmulationThread.SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2, Keys3, Keys4: TKeyMap);
 const
-  PadKeys: array[1..12] of UInt32 = (vk1, vk2, vk3, vk4, vk5, vk6,
-    vk7, vk8, vk9, vk0, vkMinus, vkEqual);
+  PadKeys: array[1..12] of UInt32 = (vk1, vk2, vk3, vk4, vk5, vk6, vk7, vk8, vk9, vk0, vkMinus, vkEqual);
 begin
   if Code = 0 then
     Exit;
+
   FLock.Enter;
   try
     if FUsesSuborKeyboard then
@@ -553,6 +560,7 @@ procedure TNesEmulationThread.RequestCoin(Player: Integer);
 begin
   if not FConsole.HasCoinAcceptor then
     Exit;
+
   FLock.Enter;
   try
     if FPendingCoins[Player] < High(Integer) then
@@ -652,6 +660,7 @@ procedure TNesEmulationThread.Execute;
 begin
   if Terminated then
     Exit;
+
   try
     FConsole.LoadBattery(FSaveDirectory);
     try
@@ -703,8 +712,7 @@ begin
   FPaused := False;
   var Failed := False;
   var NextSave := TStopwatch.GetTimeStamp + TStopwatch.Frequency * 5;
-  var FrameHints := TEmulationPerformanceHints.Create(
-    Round(1000000000.0 / FrameRate(FConsole.Region)), 'NES');
+  var FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / FrameRate(FConsole.Region)), 'NES');
   try
     while not Terminated do
     begin
@@ -785,14 +793,17 @@ begin
           FWake.WaitFor(INFINITE);
           Continue;
         end;
+
         var ClockNow := TStopwatch.GetTimeStamp;
         if ClockNow < NextFrame then
         begin
           FWake.WaitFor(Cardinal(Max(Int64(1), (NextFrame - ClockNow) * 1000 div TStopwatch.Frequency)));
           Continue;
         end;
+
         if Terminated then
           Break;
+
         FrameHints.TargetDurationNanos := Round(1000000000.0 / FrameRate(FConsole.Region));
         FrameHints.BeginWork;
         // Consume one request per slot per emulated frame. Pausing keeps requests.

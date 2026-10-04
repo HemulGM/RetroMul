@@ -1,4 +1,4 @@
-program RetroMul;
+﻿program RetroMul;
 
 uses
   System.StartUpCopy,
@@ -117,6 +117,8 @@ uses
   GB.InterruptManager in '..\source\cores\gb\GB.InterruptManager.pas',
   GB.Joypad in '..\source\cores\gb\GB.Joypad.pas',
   GB.MBC in '..\source\cores\gb\GB.MBC.pas',
+  GB.Camera in '..\source\cores\gb\GB.Camera.pas',
+  RM.Camera.Bitmap in 'RM.Camera.Bitmap.pas',
   GB.Memory in '..\source\cores\gb\GB.Memory.pas',
   GB.Palettes in '..\source\cores\gb\GB.Palettes.pas',
   GB.ROM in '..\source\cores\gb\GB.ROM.pas',

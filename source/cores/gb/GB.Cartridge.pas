@@ -9,8 +9,9 @@ uses
 
 type
   // Header-recognized families; recognition does not imply emulation support.
-  TMapperType = (Unknown, ROMOnly, MBC1, MBC2, MBC3, MBC5, MBC6, MBC7,
-    MMM01, PocketCamera, TAMA5, HuC1, HuC3);
+  TMapperType = (
+    Unknown, ROMOnly, MBC1, MBC2, MBC3, MBC5, MBC6,
+    MBC7, MMM01, PocketCamera, TAMA5, HuC1, HuC3);
 
   TCartridgeRegion = (Japanese, World, Unknown);
 
@@ -293,6 +294,7 @@ begin
   inherited Create;
   if Length(Data) < CartridgeHeaderSize then
     raise EGBInvalidROM.CreateFmt('ROM is too short: %d bytes; header requires %d.', [Length(Data), CartridgeHeaderSize]);
+
   FActualROMSize := Length(Data);
   FCGBFlag := Data[AddressCGBFlag];
   FSupportsCGB := (FCGBFlag and $80) <> 0;

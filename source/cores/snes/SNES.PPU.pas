@@ -70,8 +70,8 @@ procedure TSnesPPU.Reset;
 begin
   State := Default(TSnesPPUState);
   State.Regs[0] := $80;
-  for var I := 0 to High(FFrame) do
-    FFrame[I] := $FF000000;
+  for var i := 0 to High(FFrame) do
+    FFrame[i] := $FF000000;
 end;
 
 function TSnesPPU.Width: Integer;
@@ -130,6 +130,7 @@ begin
   var R := Address and $FF;
   if R > $33 then
     Exit;
+
   State.Regs[R] := Value;
   case R of
     $02, $03:
@@ -280,8 +281,7 @@ begin
       Result := State.Status or (State.PPU1Bus and $10) or 1;
     $213F:
       begin
-        Result := 3 or (Ord(PAL) shl 4) or (Ord(Odd) shl 7) or
-          (Ord(State.Latched) shl 6) or (State.PPU2Bus and $20);
+        Result := 3 or (Ord(PAL) shl 4) or (Ord(Odd) shl 7) or (Ord(State.Latched) shl 6) or (State.PPU2Bus and $20);
         if LatchEnabled then
           State.Latched := False;
         State.HToggle := False;
@@ -292,8 +292,7 @@ begin
     if ((Reg >= $2104) and (Reg <= $2106)) or ((Reg >= $2108) and (Reg <= $210A)) then
       Result := State.PPU1Bus;
   end;
-  if ((Address >= $2134) and (Address <= $2136)) or
-    ((Address >= $2138) and (Address <= $213A)) or (Address = $213E) then
+  if ((Address >= $2134) and (Address <= $2136)) or ((Address >= $2138) and (Address <= $213A)) or (Address = $213E) then
     State.PPU1Bus := Result;
   if (Address >= $213B) and (Address <= $213F) and (Address <> $213E) then
     State.PPU2Bus := Result;
@@ -376,6 +375,7 @@ begin
     BPP := 8;
   if BPP = 0 then
     Exit;
+
   var Mosaic := (State.Regs[6] shr 4) + 1;
   if (State.Regs[6] and (1 shl Layer)) <> 0 then
   begin
@@ -420,6 +420,7 @@ begin
     end;
     if Pixel = 0 then
       Exit;
+
     Result := Palette(Pixel);
     if (Layer = 0) and ((State.Regs[$30] and 1) <> 0) then
       Result := ((Pixel and 7) shl 2) or ((Pixel and $38) shl 4) or ((Pixel and $C0) shl 7);
@@ -480,6 +481,7 @@ begin
   var Pixel := TilePixel(Base, Tile and $3FF, BPP, PX and 7, PY and 7);
   if Pixel = 0 then
     Exit;
+
   Priority := LowPrio[Mode, Layer];
   if (Entry and $2000) <> 0 then
   begin
@@ -513,12 +515,14 @@ begin
   if (Settings and 4) <> 0 then
     W2 := not W2;
   Result := False;
+
   if (Settings and $A) = 2 then
     Exit(W1);
   if (Settings and $A) = 8 then
     Exit(W2);
   if (Settings and $A) <> $A then
     Exit;
+
   var Logic := State.Regs[$2A + Layer div 4] shr ((Layer mod 4) * 2) and 3;
   case Logic of
     0:
@@ -553,6 +557,7 @@ var
 begin
   if (Y < 0) or (Y >= Height) then
     Exit;
+
   State.OddField := Odd;
   var OutputY := Y;
   if OutputHeight > Height then
@@ -576,18 +581,21 @@ begin
       Dec(X, 512);
     if (X <> -256) and ((X + ObjWidth <= 0) or (X > 255)) then
       Continue;
+
     var Row := (Y - State.OAM[A + 1]) and $FF;
     var VisibleHeight := ObjHeight;
     if (State.Regs[$33] and 2) <> 0 then
       VisibleHeight := VisibleHeight div 2;
     if Row >= VisibleHeight then
       Continue;
+
     Inc(Count);
     if Count > 32 then
     begin
       State.Status := State.Status or $40;
       Break;
     end;
+
     if (State.Regs[$33] and 2) <> 0 then
       Row := Row * 2 + Ord(Odd);
     var Flags := State.OAM[A + 3];
@@ -604,6 +612,7 @@ begin
       var SX := X + Col;
       if (SX < 0) or (SX >= 256) then
         Continue;
+
       if (Col mod 8) = 0 then
         Inc(Tiles);
       if Tiles > 34 then
@@ -611,8 +620,10 @@ begin
         State.Status := State.Status or $80;
         Break;
       end;
+
       if ObjPriority[SX] <> 0 then
         Continue;
+
       var PX := Col;
       if (Flags and $40) <> 0 then
         PX := ObjWidth - 1 - Col;
@@ -621,6 +632,7 @@ begin
       var Pixel := TilePixel(Base, Tile, 4, PX and 7, Row and 7);
       if Pixel = 0 then
         Continue;
+
       ObjColor[SX] := Palette(128 + ((Flags shr 1) and 7) * 16 + Pixel);
       ObjMath[SX] := (Flags and 8) <> 0;
       ObjPriority[SX] := SpritePrio[State.Regs[5] and 7, (Flags shr 4) and 3];

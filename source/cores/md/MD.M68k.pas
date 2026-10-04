@@ -927,6 +927,7 @@ begin
     $F:
       Instruction := INSTRUCTION_UNIMPLEMENTED_2;
   end;
+
   // The 68000 must reject illegal size/addressing combinations before
   // consuming extension words or modifying registers. Later 68k models
   // accept some of these encodings, but the Mega Drive's CPU does not.
@@ -948,9 +949,7 @@ begin
         if OpCode.Raw shr 12 = 1 then
           Valid := Valid and (Mode <> 1) and (OpCode.SecondaryAddressMode <> 1);
       end;
-    INSTRUCTION_ORI, INSTRUCTION_ANDI, INSTRUCTION_SUBI, INSTRUCTION_ADDI,
-    INSTRUCTION_EORI, INSTRUCTION_CMPI, INSTRUCTION_NEGX, INSTRUCTION_CLR,
-    INSTRUCTION_NEG, INSTRUCTION_NOT, INSTRUCTION_TST:
+    INSTRUCTION_ORI, INSTRUCTION_ANDI, INSTRUCTION_SUBI, INSTRUCTION_ADDI, INSTRUCTION_EORI, INSTRUCTION_CMPI, INSTRUCTION_NEGX, INSTRUCTION_CLR, INSTRUCTION_NEG, INSTRUCTION_NOT, INSTRUCTION_TST:
       Valid := (Size <> 3) and DataAlterable;
     INSTRUCTION_ADDQ, INSTRUCTION_SUBQ:
       Valid := DataAlterable;
@@ -960,14 +959,9 @@ begin
       Valid := DataEA and not ((Mode = 7) and (Reg = 4));
     INSTRUCTION_BTST_DYNAMIC:
       Valid := DataEA;
-    INSTRUCTION_BCHG_STATIC, INSTRUCTION_BCHG_DYNAMIC,
-    INSTRUCTION_BCLR_STATIC, INSTRUCTION_BCLR_DYNAMIC,
-    INSTRUCTION_BSET_STATIC, INSTRUCTION_BSET_DYNAMIC,
-    INSTRUCTION_NBCD, INSTRUCTION_TAS, INSTRUCTION_SCC, INSTRUCTION_MOVE_FROM_SR:
+    INSTRUCTION_BCHG_STATIC, INSTRUCTION_BCHG_DYNAMIC, INSTRUCTION_BCLR_STATIC, INSTRUCTION_BCLR_DYNAMIC, INSTRUCTION_BSET_STATIC, INSTRUCTION_BSET_DYNAMIC, INSTRUCTION_NBCD, INSTRUCTION_TAS, INSTRUCTION_SCC, INSTRUCTION_MOVE_FROM_SR:
       Valid := DataAlterable;
-    INSTRUCTION_MOVE_TO_SR, INSTRUCTION_MOVE_TO_CCR,
-    INSTRUCTION_CHK, INSTRUCTION_MULS, INSTRUCTION_MULU,
-    INSTRUCTION_DIVS, INSTRUCTION_DIVU:
+    INSTRUCTION_MOVE_TO_SR, INSTRUCTION_MOVE_TO_CCR, INSTRUCTION_CHK, INSTRUCTION_MULS, INSTRUCTION_MULU, INSTRUCTION_DIVS, INSTRUCTION_DIVU:
       Valid := DataEA;
     INSTRUCTION_LEA, INSTRUCTION_PEA, INSTRUCTION_JMP, INSTRUCTION_JSR:
       Valid := ControlEA;
@@ -979,10 +973,15 @@ begin
     INSTRUCTION_MOVEQ:
       Valid := OpCode.Bit8 = 0;
     INSTRUCTION_OR, INSTRUCTION_AND:
-      if OpCode.Bit8 <> 0 then Valid := MemoryAlterable else Valid := DataEA;
+      if OpCode.Bit8 <> 0 then
+        Valid := MemoryAlterable
+      else
+        Valid := DataEA;
     INSTRUCTION_ADD, INSTRUCTION_SUB:
-      if OpCode.Bit8 <> 0 then Valid := MemoryAlterable
-      else Valid := EA and ((Size <> 0) or (Mode <> 1));
+      if OpCode.Bit8 <> 0 then
+        Valid := MemoryAlterable
+      else
+        Valid := EA and ((Size <> 0) or (Mode <> 1));
     INSTRUCTION_CMP:
       Valid := EA and ((Size <> 0) or (Mode <> 1));
     INSTRUCTION_ADDA, INSTRUCTION_SUBA, INSTRUCTION_CMPA:
@@ -992,12 +991,12 @@ begin
     INSTRUCTION_EXG:
       Valid := (OpCode.Raw and $F1F8 = $C140) or
         (OpCode.Raw and $F1F8 = $C148) or (OpCode.Raw and $F1F8 = $C188);
-    INSTRUCTION_ASD_MEMORY, INSTRUCTION_LSD_MEMORY,
-    INSTRUCTION_ROXD_MEMORY, INSTRUCTION_ROD_MEMORY:
+    INSTRUCTION_ASD_MEMORY, INSTRUCTION_LSD_MEMORY, INSTRUCTION_ROXD_MEMORY, INSTRUCTION_ROD_MEMORY:
       Valid := MemoryAlterable;
   end;
-  if not Valid then Instruction := INSTRUCTION_ILLEGAL;
-  Exit(Instruction);
+  if not Valid then
+    Instruction := INSTRUCTION_ILLEGAL;
+  Result := Instruction;
 end;
 
 function DecodeOpcode(var SplitOpcode: TSplitOpcode; OpCode: Cardinal): Integer;
@@ -1009,7 +1008,7 @@ begin
   SplitOpcode.PrimaryAddressMode := Integer((SplitOpcode.Raw shr 3) and 7);
   SplitOpcode.SecondaryAddressMode := Integer((SplitOpcode.Raw shr 6) and 7);
   SplitOpcode.SecondaryRegister := (SplitOpcode.Raw shr 9) and 7;
-  Exit(GetInstruction(SplitOpcode));
+  Result := GetInstruction(SplitOpcode);
 end;
 
 function ReadAddress(var Stuff: TInstructionContext; Address: Cardinal): Cardinal;
@@ -1054,14 +1053,14 @@ function ReadLongWord(var Stuff: TInstructionContext; Address: Cardinal): Cardin
 begin
   var Value: Cardinal := 0;
   Value := Value or (ReadWord(Stuff, (Address)) shl 16);
-  Exit(Value or ReadWord(Stuff, (Add32(Address, 2))));
+  Result := Value or ReadWord(Stuff, (Add32(Address, 2)));
 end;
 
 function ReadLongWordBackwards(var Stuff: TInstructionContext; Address: Cardinal): Cardinal;
 begin
   var Value: Cardinal := 0;
   Value := Value or ReadWord(Stuff, (Add32(Address, 2)));
-  Exit(Value or (ReadWord(Stuff, (Address)) shl 16));
+  Result := Value or (ReadWord(Stuff, (Address)) shl 16);
 end;
 
 procedure WriteByte(var Stuff: TInstructionContext; Address: Cardinal; Value: Cardinal);
@@ -1428,7 +1427,7 @@ begin
     DECODED_ADDRESS_MODE_TYPE_CONDITION_CODE_REGISTER:
       Value := Cardinal(State^.StatusRegister and $FF);
   end;
-  Exit(Value);
+  Result := Value;
 end;
 
 procedure SetValueUsingDecodedAddressMode(var Stuff: TInstructionContext; var DecodedAddressMode: TDecodedAddressMode; Value: Cardinal);
@@ -1544,7 +1543,7 @@ begin
       end;
   end;
   Assert(0 <> 0);
-  Exit(0);
+  Result := 0;
 end;
 
 procedure SingleOperandInstructionExecutionTimeWordOnly(var Stuff: TInstructionContext; RegisterWord: Cardinal; MemoryWord: Cardinal);
@@ -1627,24 +1626,16 @@ procedure LEAPEAInstructionExecutionTime(var Stuff: TInstructionContext);
 begin
   case Stuff.OpCode.PrimaryAddressMode of
     ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_DISPLACEMENT:
-      begin
-        Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
-      end;
+      Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
     ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_INDEX:
-      begin
-        Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 8);
-      end;
+      Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 8);
     ADDRESS_MODE_SPECIAL:
       begin
         case Stuff.OpCode.PrimaryRegister of
           ADDRESS_MODE_REGISTER_SPECIAL_ABSOLUTE_SHORT, ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_DISPLACEMENT:
-            begin
-              Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
-            end;
+            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
           ADDRESS_MODE_REGISTER_SPECIAL_ABSOLUTE_LONG, ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_INDEX:
-            begin
-              Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 8);
-            end;
+            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 8);
         end;
       end;
   end;
@@ -2372,28 +2363,18 @@ begin
   Stuff.CyclesLeftInInstruction := 8;
   case Stuff.OpCode.PrimaryAddressMode of
     ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_DISPLACEMENT:
-      begin
-        Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
-      end;
+      Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
     ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_INDEX:
-      begin
-        Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 6);
-      end;
+      Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 6);
     ADDRESS_MODE_SPECIAL:
       begin
         case Stuff.OpCode.PrimaryRegister of
           ADDRESS_MODE_REGISTER_SPECIAL_ABSOLUTE_SHORT, ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_DISPLACEMENT:
-            begin
-              Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
-            end;
+            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 2);
           ADDRESS_MODE_REGISTER_SPECIAL_ABSOLUTE_LONG:
-            begin
-              Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
-            end;
+            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
           ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_INDEX:
-            begin
-              Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 6);
-            end;
+            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 6);
         end;
       end;
   end;
@@ -2447,32 +2428,20 @@ begin
     Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
   case Stuff.OpCode.PrimaryAddressMode of
     ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_DISPLACEMENT:
-      begin
-        Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
-      end;
+      Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
     ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_INDEX:
-      begin
-        Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 6);
-      end;
+      Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 6);
     ADDRESS_MODE_SPECIAL:
       begin
         case Stuff.OpCode.PrimaryRegister of
           ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_DISPLACEMENT:
-            begin
-              Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
-            end;
+            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
           ADDRESS_MODE_REGISTER_SPECIAL_PROGRAM_COUNTER_WITH_INDEX:
-            begin
-              Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 6);
-            end;
+            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 6);
           ADDRESS_MODE_REGISTER_SPECIAL_ABSOLUTE_SHORT:
-            begin
-              Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
-            end;
+            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 4);
           ADDRESS_MODE_REGISTER_SPECIAL_ABSOLUTE_LONG:
-            begin
-              Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 8);
-            end;
+            Stuff.CyclesLeftInInstruction := Cardinal(Stuff.CyclesLeftInInstruction + 8);
         end;
       end;
   end;
@@ -2502,6 +2471,7 @@ begin
       WriteKind := MEMORY_WORD;
     end;
   end;
+
   var Bitfield: Cardinal := Stuff.SourceValue;
   for var ItemIndex := 0 to 8 - 1 do
   begin
@@ -2527,6 +2497,7 @@ begin
     end;
     Bitfield := Bitfield shr 1;
   end;
+
   for var ItemIndex := 0 to 8 - 1 do
   begin
     if (Bitfield and 1) <> 0 then
@@ -2551,6 +2522,7 @@ begin
     end;
     Bitfield := Bitfield shr 1;
   end;
+
   if (Stuff.OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_PREDECREMENT) or (Stuff.OpCode.PrimaryAddressMode = ADDRESS_MODE_ADDRESS_REGISTER_INDIRECT_WITH_POSTINCREMENT) then
     State^.AddressRegisters[Stuff.OpCode.PrimaryRegister] := MemoryAddress;
 end;
@@ -2674,7 +2646,7 @@ begin
     Value := Value and Sub32(Value, 1);
     Inc(TotalBitsSet);
   end;
-  Exit(TotalBitsSet);
+  Result := TotalBitsSet;
 end;
 
 procedure ActionDIVCommon(var Stuff: TInstructionContext; IsSigned: Boolean);
@@ -3238,6 +3210,7 @@ begin
   var Instruction: Integer;
   if StateRef^.Halted <> 0 then
     Exit(CyclesToDo);
+
   var Stuff: TInstructionContext := Default(TInstructionContext);
   Stuff.State := StateRef;
   Stuff.Callbacks := CallbacksRef;
@@ -3249,6 +3222,7 @@ begin
     Stuff.CyclesDone := Add32(Stuff.CyclesDone, Stuff.CyclesLeftInInstruction);
     if not ((Stuff.CyclesDone < CyclesToDo) and ((Stuff.TerminateEarly = 0))) then
       Break;
+
     try
       PendingInterrupt := Cardinal(StateRef^.PendingInterrupt);
       Stuff.CyclesLeftInInstruction := 4;
@@ -4271,7 +4245,8 @@ begin
             // Address errors while stacking an exception are handled by
             // Group0Exception (including a double-fault CPU halt).
             on Nested: ECPUException do
-              if Nested.Code <> 1 then raise;
+              if Nested.Code <> 1 then
+                raise;
           end;
         end;
         if StateRef^.Halted <> 0 then
@@ -4279,7 +4254,7 @@ begin
       end;
     end;
   end;
-  Exit(Stuff.CyclesDone);
+  Result := Stuff.CyclesDone;
 end;
 
 end.

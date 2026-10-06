@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  SNES.Console, SNES.Emulation;
+  Core.InputConfig, SNES.Console, SNES.Emulation;
 
 type
   TSnesKeyMap = array[TSnesButton] of UInt32;
@@ -21,7 +21,7 @@ type
     property Keys2: TSnesKeyMap read FKeys2;
   end;
 
-  TSnesCoreAdapter = class(TInterfacedObject, IEmulationCore)
+  TSnesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationAudioDiagnostics)
   private
     FThread: TSnesWorker;
     FData, FFirmware: TBytes;
@@ -31,7 +31,7 @@ type
     FConfig: IEmulatorConfig;
     FKeys, FKeys2: TSnesKeyMap;
     FKeyboard, FGamepad, FKeyboard2, FGamepad2: TSnesButtons;
-    FPaused: Boolean;
+    FPaused, FCropOverscan: Boolean;
     procedure ApplySettings;
   public
     constructor Create(const FileName: string); overload;
@@ -57,6 +57,7 @@ type
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
     function TakeError: string;
+    function TakeAudioError: string;
     function GetConfig: IEmulatorConfig;
     function IsPaused: Boolean;
   end;
@@ -157,7 +158,8 @@ end;
 
 destructor TSnesCoreAdapter.Destroy;
 begin
-  Stop;
+  // Explicit Stop reports persistence failures before the owner releases us.
+  FThread.Free;
   inherited;
 end;
 
@@ -175,6 +177,13 @@ begin
 
   FThread := TSnesWorker.Create(FData, FSavePath, FStorage, FFirmware);
   FThread.SnapshotDirectory := FSnapshotDirectory;
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_SNES);
+  var Ini := FStorage.ReadConfig(FStorage.ConfigFile(ROM_SYSTEM_SNES));
+  try
+    FCropOverscan := Ini.ReadBool('Video', 'CropOverscan', False);
+  finally
+    Ini.Free;
+  end;
   ApplySettings;
   FThread.Start;
 end;
@@ -184,9 +193,7 @@ begin
   if FThread = nil then
     Exit;
 
-  FThread.Terminate;
-  FThread.WakeSetEvent;
-  FThread.WaitFor;
+  FThread.StopAndSave;
   FError := FThread.TakeError;
   FreeAndNil(FThread);
 end;
@@ -276,6 +283,13 @@ function TSnesCoreAdapter.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
 begin
   ApplySettings;
   Result := (FThread <> nil) and FThread.TryGetFrame(Frame);
+  if Result and FCropOverscan and ((Frame.Height = 239) or (Frame.Height = 478)) then
+  begin
+    var Border := 7 * (1 + Ord(Frame.Height > 239));
+    var NewHeight := 224 * (1 + Ord(Frame.Height > 239));
+    Frame.Pixels := Copy(Frame.Pixels, Border * Frame.Width, NewHeight * Frame.Width);
+    Frame.Height := NewHeight;
+  end;
 end;
 
 function TSnesCoreAdapter.TakeError: string;
@@ -284,6 +298,13 @@ begin
   FError := '';
   if (Result = '') and (FThread <> nil) then
     Result := FThread.TakeError;
+end;
+
+function TSnesCoreAdapter.TakeAudioError: string;
+begin
+  Result := '';
+  if FThread <> nil then
+    Result := FThread.TakeAudioError;
 end;
 
 function TSnesCoreAdapter.GetConfig: IEmulatorConfig;

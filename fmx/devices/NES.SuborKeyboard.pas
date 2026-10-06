@@ -163,7 +163,7 @@ begin
   var H := FKeyHeight;
   for var i := 0 to 2 do
     FIndicatorBounds[i] := RectF(FKeyOrigin.X + (20 + i) * U + Gap, FKeyOrigin.Y + Gap,
-      FKeyOrigin.X + (21 + i) * U - Gap, FKeyOrigin.Y + H);
+        FKeyOrigin.X + (21 + i) * U - Gap, FKeyOrigin.Y + H);
   var Diameter := Max(0, Min(U - Gap * 2, H - Gap));
   FPowerBounds := RectF(FKeyOrigin.X + 23.5 * U - Diameter / 2, FKeyOrigin.Y + (H + Gap - Diameter) / 2,
     FKeyOrigin.X + 23.5 * U + Diameter / 2, FKeyOrigin.Y + (H + Gap + Diameter) / 2);
@@ -630,9 +630,11 @@ const
 begin
   inherited;
   var U := FKeyUnit;
-  if U <= 0 then Exit;
+  if U <= 0 then
+    Exit;
   var Opacity := AbsoluteOpacity;
-  if not AbsoluteEnabled then Opacity := Opacity * 0.5;
+  if not AbsoluteEnabled then
+    Opacity := Opacity * 0.5;
   var X := FKeyOrigin.X - 0.5 * U;
   var Y := FKeyOrigin.Y - 0.8 * U;
   Canvas.Fill.Kind := TBrushKind.Solid;
@@ -662,19 +664,26 @@ begin
     Canvas.Fill.Color := $FF8D8879;
     Canvas.FillRect(R, U * 0.09, U * 0.09, AllCorners, Opacity);
     R.Inflate(-U * 0.055, -U * 0.055);
-    if Pressed then R.Offset(0, U * 0.06)
-    else R.Bottom := R.Bottom - U * 0.07;
-    if Pressed then Canvas.Fill.Color := $FFD6B66F
-    else if Key = SkReset then Canvas.Fill.Color := $FFAA5545
-    else if Functional then Canvas.Fill.Color := $FFC8C7BB
-    else Canvas.Fill.Color := $FFF0EBD8;
+    if Pressed then
+      R.Offset(0, U * 0.06)
+    else
+      R.Bottom := R.Bottom - U * 0.07;
+    if Pressed then
+      Canvas.Fill.Color := $FFD6B66F
+    else if Key = SkReset then
+      Canvas.Fill.Color := $FFAA5545
+    else if Functional then
+      Canvas.Fill.Color := $FFC8C7BB
+    else
+      Canvas.Fill.Color := $FFF0EBD8;
     Canvas.FillRect(R, U * 0.06, U * 0.06, AllCorners, Opacity);
     Canvas.Stroke.Color := $FFF6F0DF;
     Canvas.Stroke.Thickness := Max(0.4, U * 0.025);
     Canvas.DrawLine(PointF(R.Left + U * 0.07, R.Top), PointF(R.Right - U * 0.07, R.Top), Opacity);
     R.Inflate(-U * 0.04, -U * 0.03);
     Canvas.Fill.Color := $FF333A39;
-    if Key = SkReset then Canvas.Fill.Color := $FFFFF4DD;
+    if Key = SkReset then
+      Canvas.Fill.Color := $FFFFF4DD;
     Canvas.Font.Style := [];
     Canvas.Font.Size := U * 0.25;
     Canvas.FillText(R, KeyCaption(Key), False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
@@ -689,12 +698,16 @@ begin
     Canvas.FillText(R, IndicatorCaptions[I], True, Opacity, [], TTextAlign.Center, TTextAlign.Leading);
     var Lamp := RectF(R.Left + R.Width * 0.35, R.Top + R.Height * 0.67,
       R.Right - R.Width * 0.35, R.Top + R.Height * 0.85);
-    if Lit then Canvas.Fill.Color := $FF5CAE44
-    else Canvas.Fill.Color := $FF535A39;
+    if Lit then
+      Canvas.Fill.Color := $FF5CAE44
+    else
+      Canvas.Fill.Color := $FF535A39;
     Canvas.FillRect(Lamp, U * 0.04, U * 0.04, AllCorners, Opacity);
   end;
-  if FPowerPressed then Canvas.Fill.Color := $FFD6B66F
-  else Canvas.Fill.Color := $FFAA5545;
+  if FPowerPressed then
+    Canvas.Fill.Color := $FFD6B66F
+  else
+    Canvas.Fill.Color := $FFAA5545;
   Canvas.FillEllipse(FPowerBounds, Opacity);
   Canvas.Fill.Color := $FFFFF4DD;
   Canvas.Font.Size := FPowerBounds.Width * 0.6;

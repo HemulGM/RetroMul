@@ -132,6 +132,33 @@ uses
   {$IFDEF MSWINDOWS} Winapi.Windows, {$ELSE} Posix.Stdio, Posix.Unistd, {$ENDIF}
   System.Types;
 
+function NativeStoragePath(const Location: string): string;
+begin
+  {$IFDEF MSWINDOWS}
+  Result := Location.Replace('/', '\');
+  if Result.StartsWith('\\?\') then
+    Exit;
+  Result := ExpandFileName(Result);
+  if Result.StartsWith('\\') then
+    Result := '\\?\UNC\' + Copy(Result, 3, MaxInt)
+  else
+    Result := '\\?\' + Result;
+  {$ELSE}
+  Result := Location;
+  {$ENDIF}
+end;
+
+function LogicalStoragePath(const Location: string): string;
+begin
+  Result := Location;
+  {$IFDEF MSWINDOWS}
+  if Result.StartsWith('\\?\UNC\', True) then
+    Result := '\\' + Copy(Result, 9, MaxInt)
+  else if Result.StartsWith('\\?\') then
+    Result := Copy(Result, 5, MaxInt);
+  {$ENDIF}
+end;
+
 function SafeName(const Value: string): string;
 begin
   Result := Value.Trim;
@@ -224,7 +251,7 @@ begin
   if Location.StartsWith('content://') then
     Exit(TAndroidStorage.OpenUri(Location));
   {$ENDIF}
-  Result := TFileStream.Create(Location, fmOpenRead or fmShareDenyWrite);
+  Result := TFileStream.Create(NativeStoragePath(Location), fmOpenRead or fmShareDenyWrite);
 end;
 
 function TStorage.OpenWrite(const Location: string): TStream;
@@ -234,7 +261,7 @@ begin
     Exit(TAndroidStorage.OpenWriteUri(Location));
   {$ENDIF}
   EnsureFolder(ExtractFilePath(ExpandFileName(Location)));
-  Result := TFileStream.Create(Location, fmCreate);
+  Result := TFileStream.Create(NativeStoragePath(Location), fmCreate);
 end;
 
 function TStorage.Exists(const Location: string): Boolean;
@@ -243,7 +270,7 @@ begin
   if Location.StartsWith('content://') then
     Exit(TAndroidStorage.Exists(Location));
   {$ENDIF}
-  Result := TFile.Exists(Location);
+  Result := TFile.Exists(NativeStoragePath(Location));
 end;
 
 function TStorage.ModifiedTime(const Location: string): TDateTime;
@@ -252,7 +279,7 @@ begin
   if Location.StartsWith('content://') then
     Exit(TAndroidStorage.ModifiedTime(Location));
   {$ENDIF}
-  Result := TFile.GetLastWriteTime(Location);
+  Result := TFile.GetLastWriteTime(NativeStoragePath(Location));
 end;
 
 function TStorage.FolderExists(const Location: string): Boolean;
@@ -261,12 +288,12 @@ begin
   if Location.StartsWith('content://') then
     Exit(TAndroidStorage.Exists(Location));
   {$ENDIF}
-  Result := TDirectory.Exists(Location);
+  Result := TDirectory.Exists(NativeStoragePath(Location));
 end;
 
 procedure TStorage.EnsureFolder(const Location: string);
 begin
-  TDirectory.CreateDirectory(Location);
+  TDirectory.CreateDirectory(NativeStoragePath(Location));
 end;
 
 function TStorage.Files(const Location: string; Recursive: Boolean): TArray<string>;
@@ -286,7 +313,9 @@ begin
   var Option := TSearchOption.soTopDirectoryOnly;
   if Recursive then
     Option := TSearchOption.soAllDirectories;
-  Result := TDirectory.GetFiles(Location, '*', Option);
+  Result := TDirectory.GetFiles(NativeStoragePath(Location), '*', Option);
+  for var i := 0 to High(Result) do
+    Result[i] := LogicalStoragePath(Result[i]);
 end;
 
 function TStorage.Folders(const Location: string): TArray<string>;
@@ -303,19 +332,21 @@ begin
   {$ENDIF}
   if not FolderExists(Location) then
     Exit(nil);
-  Result := TDirectory.GetDirectories(Location);
+  Result := TDirectory.GetDirectories(NativeStoragePath(Location));
+  for var i := 0 to High(Result) do
+    Result[i] := LogicalStoragePath(Result[i]);
 end;
 
 procedure TStorage.Delete(const Location: string);
 begin
   if Exists(Location) then
-    TFile.Delete(Location);
+    TFile.Delete(NativeStoragePath(Location));
 end;
 
 procedure TStorage.Replace(const Source, Target: string);
 begin
   {$IFDEF MSWINDOWS}
-  if not MoveFileEx(PChar(Source), PChar(Target), MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
+  if not MoveFileEx(PChar(NativeStoragePath(Source)), PChar(NativeStoragePath(Target)), MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
     RaiseLastOSError;
   {$ELSE}
   var Src := UTF8String(Source);
@@ -507,7 +538,9 @@ begin
         var Item := System.Default(TStorageSnapshot);
         Item.Name := ChangeFileExt(ExtractFileName(Path), '');
         Item.Location := Path;
-        Item.PreviewLocation := ChangeFileExt(Path, '.bmp');
+        Item.PreviewLocation := ChangeFileExt(Path, '.png');
+        if not Exists(Item.PreviewLocation) then
+          Item.PreviewLocation := ChangeFileExt(Path, '.bmp'); // Read legacy previews.
         if not Exists(Item.PreviewLocation) then
           Item.PreviewLocation := '';
         Item.Modified := ModifiedTime(Path);
@@ -528,7 +561,7 @@ begin
   Result := System.Default(TStorageFile);
   Result.Location := Location;
   Result.Name := ExtractFileName(Location);
-  Result.Size := TFile.GetSize(Location);
+  Result.Size := TFile.GetSize(NativeStoragePath(Location));
 end;
 
 function TStorage.Roms(const SystemId: string): TArray<TStorageFile>;

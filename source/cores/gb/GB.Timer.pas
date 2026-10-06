@@ -144,8 +144,44 @@ end;
 
 procedure TGBTimer.Step(StepCount: Integer);
 begin
-  for var i := 0 to StepCount - 1 do
-    Tick;
+  while StepCount > 0 do
+  begin
+    // Reload/IRQ and write races remain single-clock events. Between falling
+    // edges the divider can advance directly without invoking Tick per clock.
+    if FOverflow or FReloadCycle then
+    begin
+      Tick;
+      Dec(StepCount);
+      Continue;
+    end;
+    var Mask := 1 shl FFrequencyBits[FControl and 3];
+    var Enabled := (FControl and 4) <> 0;
+    var CurrentBit := Enabled and ((FDivider and Mask) <> 0);
+    // SetDivider and loaded states may leave a different remembered input.
+    if CurrentBit <> FPreviousBit then
+    begin
+      Tick;
+      Dec(StepCount);
+      Continue;
+    end;
+    var Skip := StepCount;
+    if Enabled then
+    begin
+      var UntilEdge := Mask * 2 - (FDivider and (Mask * 2 - 1));
+      if Skip >= UntilEdge then Skip := UntilEdge - 1;
+    end;
+    if Skip > 0 then
+    begin
+      FDivider := (Int64(FDivider) + Skip) and $FFFF;
+      FPreviousBit := Enabled and ((FDivider and Mask) <> 0);
+      Dec(StepCount, Skip);
+    end;
+    if StepCount > 0 then
+    begin
+      Tick;
+      Dec(StepCount);
+    end;
+  end;
 end;
 
 procedure TGBTimer.Tick;

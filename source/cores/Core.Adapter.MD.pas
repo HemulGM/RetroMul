@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  MD.Console, MD.Emulation;
+  Core.InputConfig, MD.Console, MD.Emulation;
 
 type
   TMDKeyMap = array[TMDButton] of UInt32;
@@ -21,7 +21,7 @@ type
     property Keys2: TMDKeyMap read FKeys2;
   end;
 
-  TMDCoreAdapter = class(TInterfacedObject, IEmulationCore)
+  TMDCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationAudioDiagnostics)
   private
     FThread: TMDWorker;
     FData: TBytes;
@@ -57,6 +57,7 @@ type
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
     function TakeError: string;
+    function TakeAudioError: string;
     function GetConfig: IEmulatorConfig;
     function IsPaused: Boolean;
   end;
@@ -145,7 +146,8 @@ end;
 
 destructor TMDCoreAdapter.Destroy;
 begin
-  Stop;
+  // Explicit Stop reports persistence failures before the owner releases us.
+  FThread.Free;
   inherited;
 end;
 
@@ -162,6 +164,7 @@ begin
     Exit;
   FThread := TMDWorker.Create(FData, FSavePath, FStorage);
   FThread.SnapshotDirectory := FSnapshotDirectory;
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_MD);
   ApplySettings;
   FThread.Start;
 end;
@@ -170,9 +173,7 @@ procedure TMDCoreAdapter.Stop;
 begin
   if FThread = nil then
     Exit;
-  FThread.Terminate;
-  FThread.WakeSetEvent;
-  FThread.WaitFor;
+  FThread.StopAndSave;
   FError := FThread.TakeError;
   FreeAndNil(FThread);
 end;
@@ -277,6 +278,13 @@ begin
   FError := '';
   if (Result = '') and (FThread <> nil) then
     Result := FThread.TakeError;
+end;
+
+function TMDCoreAdapter.TakeAudioError: string;
+begin
+  Result := '';
+  if FThread <> nil then
+    Result := FThread.TakeAudioError;
 end;
 
 function TMDCoreAdapter.GetConfig: IEmulatorConfig;

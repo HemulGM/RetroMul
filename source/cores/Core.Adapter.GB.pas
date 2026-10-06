@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.Classes, System.IniFiles, Core.Storage, Core.Emulation,
-  GB.EmulationThread, GB.Joypad, GB.GPU, GB.Camera;
+  System.Classes, System.IniFiles, Core.Storage, Core.InputConfig,
+  Core.Emulation, GB.EmulationThread, GB.Joypad, GB.GPU, GB.Camera;
 
 type
   TGBKeyMap = record
@@ -49,6 +49,7 @@ type
     FROMData: TArray<Byte>;
     FGamepadInput: TEmulatorInput;
     FKeyboardInput: TEmulatorInput;
+    FControllerEnabled: Boolean;
     FConfig: IGBEmulatorConfig;
     FFrameNumber: UInt64;
     procedure CreateThread;
@@ -151,6 +152,7 @@ begin
     FStorage := TStorage.Default;
   FConfig := CreateConfig(FStorage.ConfigFile(ConfigPrefix));
   FConfig.Load;
+  FControllerEnabled := LoadCoreInputPorts(FStorage, ConfigPrefix).Devices[0] <> 'none';
   var ROM := TGBROM.Create;
   try
     ROM.ReadROM(Stream);
@@ -174,6 +176,7 @@ begin
   FThread.SnapshotDirectory := FSnapshotDirectory;
   FThread.SavePath := FSavePath;
   FThread.SoundVolume := FConfig.AudioVolume;
+  FThread.ScreenPalette := FConfig.ScreenPalette;
 end;
 
 destructor TGBCoreAdapter.Destroy;
@@ -186,6 +189,8 @@ end;
 function TGBCoreAdapter.GetInputState: TEmulatorInput;
 begin
   Result := Default(TEmulatorInput);
+  if not FControllerEnabled then
+    Exit;
   Result.Buttons := (FGamepadInput.Buttons + FKeyboardInput.Buttons) * [TEmulatorButton.Up..TEmulatorButton.Start];
 end;
 
@@ -197,7 +202,7 @@ const
 begin
   for var Button := Low(ButtonKeys) to High(ButtonKeys) do
     FThread.SetKeyState(ButtonKeys[Button],
-      (Button in FGamepadInput.Buttons) or (Button in FKeyboardInput.Buttons));
+      FControllerEnabled and ((Button in FGamepadInput.Buttons) or (Button in FKeyboardInput.Buttons)));
 end;
 
 procedure TGBCoreAdapter.ClearInput;
@@ -268,6 +273,7 @@ end;
 
 procedure TGBCoreAdapter.SaveSnapshot(const Name: string);
 begin
+  FThread.ScreenPalette := FConfig.ScreenPalette;
   FThread.SaveSnapshot(Name);
 end;
 

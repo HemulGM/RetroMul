@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.UITypes, Core.Snapshots,
-  SNES.Cartridge, SNES.CPU, SNES.PPU, SNES.SPC;
+  Core.InputConfig, SNES.Cartridge, SNES.CPU, SNES.PPU, SNES.SPC;
 
 {$SCOPEDENUMS ON}
 
@@ -51,6 +51,7 @@ type
     FSPC: TSnesSPC;
     FState: TSnesSystemState;
     FInDMA: Boolean;
+    FDisconnectedPads: array[0..1] of Boolean;
     FDMAClocks: Integer;
     function MasterRate: Integer;
     function LineCount: Integer;
@@ -92,6 +93,7 @@ type
     procedure RunFrame;
     function ReadByte(Address: Cardinal): Byte;
     procedure WriteByte(Address: Cardinal; Value: Byte);
+    procedure ConfigureInputPorts(const Ports: TCoreInputPorts);
     procedure SetInput(const Buttons: TSnesButtons; const Buttons2: TSnesButtons = []);
     procedure LoadBattery(const Data: TBytes);
     procedure MarkBatteryDirty;
@@ -310,7 +312,9 @@ begin
       for var Pad := 0 to 1 do
         if (Step and 1) <> 0 then
         begin
-          if FState.JoyIndex[Pad] >= 16 then
+          if FDisconnectedPads[Pad] then
+            FState.AutoJoyBit[Pad] := 0
+          else if FState.JoyIndex[Pad] >= 16 then
             FState.AutoJoyBit[Pad] := 1
           else
             FState.AutoJoyBit[Pad] := (FState.JoyShift[Pad] shr (15 - FState.JoyIndex[Pad])) and 1;
@@ -617,7 +621,9 @@ begin
               FState.JoyShift[Pad] := FState.Joy[Pad];
               FState.JoyIndex[Pad] := 0;
             end;
-            if FState.JoyIndex[Pad] >= 16 then
+            if FDisconnectedPads[Pad] then
+              Result := 0
+            else if FState.JoyIndex[Pad] >= 16 then
               Result := 1
             else
               Result := (FState.JoyShift[Pad] shr (15 - FState.JoyIndex[Pad])) and 1;
@@ -1006,6 +1012,12 @@ begin
   until FState.FrameNumber <> Frame;
   SyncSPC;
   FCartridge.SyncDSP(FState.Clock, MasterRate, True);
+end;
+
+procedure TSnesConsole.ConfigureInputPorts(const Ports: TCoreInputPorts);
+begin
+  for var I := 0 to 1 do
+    FDisconnectedPads[I] := Ports.Devices[I] = 'none';
 end;
 
 procedure TSnesConsole.SetInput(const Buttons, Buttons2: TSnesButtons);

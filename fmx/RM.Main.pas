@@ -7,16 +7,17 @@ uses
   FMX.Types, FMX.Controls, FMX.Objects, FMX.Graphics, FMX.Dialogs, NES.Consts,
   NES.Controller, Core.Emulation, Core.EmulatorFactory, Core.Adapter.MD,
   Core.Adapter.SNES, WinUI3.Form, WinUI3.Style, FMX.Controls.Presentation,
-  FMX.StdCtrls, FMX.Layouts, NES.SuborKeyboard, NES.PowerPad,
+  FMX.StdCtrls, FMX.Layouts, FMX.Platform, NES.SuborKeyboard, NES.PowerPad,
   NES.FamicomKeyboard, NES.MiraclePiano,
   {$IFDEF ANDROID}
   Androidapi.Helpers, Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.App,
-  Androidapi.JNI.Widget, Androidapi.JNI.Os, Androidapi.JNI.Media, FMX.Platform,
+  Androidapi.JNI.Widget, Androidapi.JNI.Os, Androidapi.JNI.Media,
   FMX.ApplicationEvents, RM.DocumentTransfer.Android,
   {$ENDIF}
   Core.Storage, RM.Storage.Dialogs, FMX.OpenDialog, RM.Gamepad, FMX.ListBox,
   SCRP.GameList, FMX.Edit, FMX.SearchBox, NES.FamicomDataRecorder,
-  NES.DataRecorder;
+  NES.DataRecorder, RM.FrameUpload, RM.Settings, RM.Input, FMXInput,
+  Core.InputConfig;
 
 type
   TListBoxItemGame = class(TListBoxItem)
@@ -68,6 +69,7 @@ type
     procedure ButtonOpenClick(Sender: TObject);
     procedure FormSafeAreaChanged(Sender: TObject; const AInsets: TRectF);
     procedure FormCreate(Sender: TObject);
+    procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
     procedure ChangeSystem(Sender: TObject);
     procedure ListBoxGamesItemClick(const Sender: TCustomListBox; const Item: TListBoxItem);
     procedure LayoutClientClick(Sender: TObject);
@@ -81,6 +83,22 @@ type
     procedure ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
   private
     FEmulation: IEmulationCore;
+    FInput: TInputManager;
+    FInputPorts: TCoreInputPorts;
+    FInputSystemId: string;
+    FSettingsView: TSettingsView;
+    FSettingsLibraryWidth: Single;
+    FSettingsClientVisible, FSettingsWasPaused, FSettingsClosing: Boolean;
+    FSettingsLeftAlign: TAlignLayout;
+    FControlBottomInset: Integer;
+    FDispatchingInput, FSuppressInputUntilRelease: Boolean;
+    procedure SettingsClick(Sender: TObject);
+    procedure SettingsApplied(Sender: TObject);
+    procedure SettingsClose(Sender: TObject);
+    procedure PollHostInput;
+    procedure LoadHostInput(const SystemId: string);
+    procedure ApplyControlInset;
+  private
     FGamepad: TScreenGamepad;
     FSystemId: string;
     FSuborKeyboard: TNesSuborKeyboard;
@@ -117,6 +135,8 @@ type
     procedure SuborKeyboardChanged(Sender: TObject);
     procedure FamicomKeyboardChanged(Sender: TObject);
     procedure MiraclePianoChanged(Sender: TObject);
+    procedure UpdatePeripheralInput;
+    function CombinedGamepadInput: TEmulatorInput;
     procedure ForwardKeyState(Code: Word; Pressed: Boolean);
     procedure SuborKeyboardPower(Sender: TObject);
     procedure PowerPadChanged(Sender: TObject);
@@ -141,6 +161,9 @@ type
     procedure Stop;
   protected
     function CreateStorage: IStorage; virtual;
+    function CreateHostInput: TInputManager; virtual;
+    function HostInputHasFocus: Boolean; virtual;
+    procedure ReportAudioError(const MessageText: string); virtual;
     function CreateCore(const FileName: string): IEmulationCore; virtual;
     procedure DoOnSettingChange; override;
   public
@@ -260,6 +283,190 @@ end;
 
 { TFormMain }
 
+procedure TFormMain.ApplyControlInset;
+begin
+  if FGamepad <> nil then
+    FGamepad.Margins.Bottom := FControlBottomInset;
+  if FPowerPad <> nil then
+    FPowerPad.Margins.Bottom := FControlBottomInset;
+  if FSuborKeyboard <> nil then
+    FSuborKeyboard.Margins.Bottom := FControlBottomInset;
+  if FFamicomKeyboard <> nil then
+    FFamicomKeyboard.Margins.Bottom := FControlBottomInset;
+  if FMiraclePiano <> nil then
+    FMiraclePiano.Margins.Bottom := FControlBottomInset;
+end;
+
+procedure TFormMain.LoadHostInput(const SystemId: string);
+begin
+  FInputSystemId := SystemId;
+  FInputPorts := LoadCoreInputPorts(FStorage, SystemId);
+  var Ini := FStorage.ReadConfig(FStorage.ConfigFile(SystemId));
+  try
+    if FInput <> nil then
+    begin
+      LoadInputBindings(FInput, Ini, SystemId);
+      FilterInputBindings(FInput, Ini);
+    end;
+  finally
+    Ini.Free;
+  end;
+  FSuppressInputUntilRelease := True;
+end;
+
+procedure TFormMain.SettingsClick(Sender: TObject);
+begin
+  if (FSettingsView <> nil) or FOpeningRom then
+    Exit;
+  FSettingsWasPaused := (FEmulation <> nil) and FEmulation.IsPaused;
+  FormDeactivate(Self);
+  if FEmulation <> nil then
+    FEmulation.Pause;
+  FSettingsLibraryWidth := LayoutLeft.Width;
+  FSettingsClientVisible := LayoutClient.Visible;
+  FSettingsLeftAlign := LayoutLeft.Align;
+  FSettingsView := TSettingsView.CreateSettings(Self, FStorage, FInput);
+  FSettingsView.Parent := Self;
+  FSettingsView.Align := TAlignLayout.Client;
+  FSettingsView.OnApply := SettingsApplied;
+  FSettingsView.OnClose := SettingsClose;
+  Panel1.Visible := False;
+  ButtonSetRoot.Visible := False;
+  LayoutLeft.Align := TAlignLayout.Left;
+  LayoutLeft.Width := Layout2.Width;
+  LayoutClient.Visible := False;
+  FSettingsView.BringToFront;
+  SyncActivity;
+  {$IFDEF ANDROID}
+  FGamepad.AttachToForm(nil);
+  FPowerPad.AttachToForm(nil);
+  FSuborKeyboard.AttachToForm(nil);
+  FFamicomKeyboard.AttachToForm(nil);
+  FMiraclePiano.AttachToForm(nil);
+  {$ENDIF}
+end;
+
+procedure TFormMain.SettingsApplied(Sender: TObject);
+begin
+  Load;
+  // Keep the active core's hardware connections until the ROM is reopened.
+  // Input assignments can be refreshed independently on close.
+end;
+
+procedure TFormMain.SettingsClose(Sender: TObject);
+begin
+  if (FSettingsView = nil) or FSettingsClosing then
+    Exit;
+  FSettingsClosing := True;
+  FSettingsView.Visible := False;
+  // Release through the UI queue so the clicked button finishes its event first.
+  var Alive: TFunc<Boolean> := FCallbackAlive;
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if not Alive() then
+        Exit;
+      FreeAndNil(FSettingsView);
+      FSettingsClosing := False;
+      LayoutLeft.Align := FSettingsLeftAlign;
+      LayoutLeft.Width := FSettingsLibraryWidth;
+      Panel1.Visible := True;
+      LayoutClient.Visible := FSettingsClientVisible;
+      LoadSystem(FSystemId);
+      if FInput <> nil then
+      begin
+        var Ini := FStorage.ReadConfig(FStorage.ConfigFile(FInputSystemId));
+        try
+          LoadInputBindings(FInput, Ini, FInputSystemId);
+          FilterInputBindings(FInput, Ini);
+        finally
+          Ini.Free;
+        end;
+      end;
+      FSuppressInputUntilRelease := True;
+      if (FEmulation <> nil) and not FSettingsWasPaused and not FEmulationFaulted then
+        FEmulation.Resume;
+      SyncActivity;
+      {$IFDEF ANDROID}
+      FormActivate(Self);
+      {$ENDIF}
+      if LayoutClient.Visible then
+        LayoutClient.SetFocus;
+    end);
+end;
+
+procedure TFormMain.PollHostInput;
+begin
+  FInput.Enabled := HostInputHasFocus and not FOpeningRom;
+  FInput.Poll;
+  if not FInput.Enabled then
+    Exit;
+  if FSettingsView <> nil then
+  begin
+    FSettingsView.Poll;
+    Exit;
+  end;
+  if (Focused <> nil) and (Focused.GetObject is TCustomEdit) then
+  begin
+    if FEmulation <> nil then
+      FEmulation.ClearInput;
+    FSuppressInputUntilRelease := True;
+    FillChar(FKeysDown, SizeOf(FKeysDown), 0);
+    Exit;
+  end;
+  var Keys := ReadHostKeys(FInput);
+  if FSuppressInputUntilRelease then
+  begin
+    for var V in FInput.Values do
+      if (V.Kind in [TInputElementKind.Key, TInputElementKind.Button]) and (V.Value > 0.5) then
+        Exit;
+    FSuppressInputUntilRelease := False;
+  end;
+  var Shift: TShiftState := [];
+  if Keys[vkShift] then
+    Include(Shift, ssShift);
+  if Keys[vkControl] then
+    Include(Shift, ssCtrl);
+  if Keys[vkMenu] then
+    Include(Shift, ssAlt);
+  FDispatchingInput := True;
+  try
+    for var i := 1 to High(Keys) do
+      if Keys[i] <> FKeysDown[i] then
+      begin
+        var Code := Word(i);
+        var Ch: WideChar := #0;
+        if Keys[i] then
+          FormKeyDown(Self, Code, Ch, Shift)
+        else
+          FormKeyUp(Self, Code, Ch, Shift);
+      end;
+  finally
+    FDispatchingInput := False;
+  end;
+  if (FEmulation = nil) or FEmulation.IsPaused or FEmulationFaulted then
+    Exit;
+  var Input := CombinedGamepadInput;
+  if (ssCtrl in Shift) then
+    Input := Default(TEmulatorInput);
+  FEmulation.SetGamepadInput(Input);
+  UpdatePeripheralInput;
+  var Peripheral: INesPeripheralCore;
+  if Supports(FEmulation, INesPeripheralCore, Peripheral) then
+  begin
+    if Peripheral.Zapper.Enabled then
+    begin
+      var Mouse: IFMXMouseService;
+      if TPlatformServices.Current.SupportsPlatformService(IFMXMouseService, Mouse) then
+      begin
+        var Point := ImageCanvas.AbsoluteToLocal(ScreenToClient(Mouse.GetMousePos));
+        TryGetImagePixel(ImageCanvas, Point.X, Point.Y, FZapperPixel.X, FZapperPixel.Y);
+      end;
+      Peripheral.Zapper.TriggerPressed := FInput.IsPressed(ZapperTriggerAction);
+    end;
+  end;
+end;
+
 procedure TFormMain.ButtonCloseRomClick(Sender: TObject);
 begin
   MobileCloseRom;
@@ -338,9 +545,9 @@ begin
   if FEmulation <> nil then
   begin
     TimerUpdate.Enabled := False;
+    FEmulation.Stop;
     ImageCanvas.Bitmap := nil;
     ImageLogo.Visible := True;
-    FEmulation.Stop;
     FEmulation := nil;
   end;
   SyncActivity;
@@ -348,6 +555,8 @@ end;
 
 procedure TFormMain.ChangeSystem(Sender: TObject);
 begin
+  if FSettingsView <> nil then
+    SettingsClose(Self);
   var SystemId := '';
   if RadioButtonGB.IsChecked then
     SystemId := RadioButtonGB.TagString
@@ -369,6 +578,8 @@ procedure TFormMain.Load;
 begin
   var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
   try
+    FControlBottomInset := EnsureRange(Ini.ReadInteger('General', 'ControlBottomInset', 100), 0, 400);
+    ApplyControlInset;
     // Import the previously selected folder once.
     if FStorage.RomFolder = '' then
     begin
@@ -386,6 +597,7 @@ begin
   var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
   try
     Ini.WriteString('General', 'Path', FStorage.RomFolder);
+    Ini.WriteInteger('General', 'ControlBottomInset', FControlBottomInset);
     FStorage.WriteConfig(Ini);
   finally
     Ini.Free;
@@ -485,10 +697,25 @@ begin
   Result := TStorage.Create('', TStoragePicker.Create);
 end;
 
+function TFormMain.CreateHostInput: TInputManager;
+begin
+  {$IF Defined(MSWINDOWS) or (Defined(LINUX) and not Defined(ANDROID)) or (Defined(MACOS) and not Defined(IOS))}
+  Result := TInputManager.Create(CreateFMXInputBackend);
+  {$ELSE}
+  Result := nil;
+  {$ENDIF}
+end;
+
+function TFormMain.HostInputHasFocus: Boolean;
+begin
+  Result := Active;
+end;
+
 constructor TFormMain.Create(AOwner: TComponent);
 begin
   FormStyles := TFormStyles.Create(Application);
   inherited;
+  OnCloseQuery := FormCloseQuery;
   FStorage := CreateStorage;
   var Alive := True;
   FCallbackAlive :=
@@ -501,6 +728,30 @@ begin
     begin
       Alive := False;
     end;
+  {$IF Defined(MSWINDOWS) or Defined(LINUX) or (Defined(MACOS) and not Defined(IOS))}
+  {$IFNDEF ANDROID}
+  FInput := CreateHostInput;
+  {$ENDIF}
+  {$ENDIF}
+  var SettingsButton := TButton.Create(Self);
+  SettingsButton.Name := 'ButtonSettings';
+  SettingsButton.Parent := Layout2;
+  SettingsButton.Align := TAlignLayout.Bottom;
+  SettingsButton.Height := 64;
+  SettingsButton.Text := '⚙';
+  SettingsButton.Hint := 'Параметры';
+  SettingsButton.ShowHint := True;
+  SettingsButton.StyleLookup := 'buttonstyle_subtle';
+  SettingsButton.OnClick := SettingsClick;
+  var SettingsLabel := TLabel.Create(Self);
+  SettingsLabel.Parent := SettingsButton;
+  SettingsLabel.Align := TAlignLayout.Bottom;
+  SettingsLabel.Height := 18;
+  SettingsLabel.Text := 'Параметры';
+  SettingsLabel.HitTest := False;
+  SettingsLabel.TextSettings.HorzAlign := TTextAlign.Center;
+  SettingsLabel.StyledSettings := SettingsLabel.StyledSettings - [TStyledSetting.Size];
+  SettingsLabel.TextSettings.Font.Size := 10;
   FFileDialog := TFMXOpenDialog.Create(Self);
   FFileDialog.MultipleSelection := False;
   var ScreenshotButton := TButton.Create(Self);
@@ -584,6 +835,8 @@ begin
   ListBoxGames.Clear;
   Load;
   LoadSystem(ROM_SYSTEM_GB);
+  LoadHostInput(ROM_SYSTEM_GB);
+  SyncActivity;
 end;
 
 destructor TFormMain.Destroy;
@@ -592,6 +845,8 @@ begin
     FInvalidateCallbacks();
   if TimerUpdate <> nil then
     TimerUpdate.Enabled := False;
+  FreeAndNil(FSettingsView);
+  FreeAndNil(FInput);
   FreeAndNil(FSuborKeyboard);
   FreeAndNil(FFamicomKeyboard);
   FreeAndNil(FMiraclePiano);
@@ -614,6 +869,7 @@ end;
 
 procedure TFormMain.FormActivate(Sender: TObject);
 begin
+  FSuppressInputUntilRelease := True;
   {$IFDEF ANDROID}
   if FMiraclePianoTouchAttached then
     FMiraclePiano.AttachToForm(Self)
@@ -815,11 +1071,66 @@ procedure TFormMain.GamepadChanged(Sender: TObject);
 begin
   FGamepadInput.Buttons := FGamepad.Buttons;
   if FEmulation <> nil then
-    FEmulation.SetGamepadInput(FGamepadInput);
+    FEmulation.SetGamepadInput(CombinedGamepadInput);
+end;
+
+function TFormMain.CombinedGamepadInput: TEmulatorInput;
+const
+  Mapping: array[TNesButton] of TEmulatorButton = (TEmulatorButton.A,
+    TEmulatorButton.B, TEmulatorButton.Select, TEmulatorButton.Start,
+    TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right);
+begin
+  Result := FGamepadInput;
+  if FInput <> nil then
+  begin
+    var Host := ReadPadInput(FInput, FInputPorts);
+    Result.Buttons := Result.Buttons + Host.Buttons;
+    Result.Buttons2 := Host.Buttons2;
+    Result.Buttons3 := Host.Buttons3;
+    Result.Buttons4 := Host.Buttons4;
+  end;
+  if FInputPorts.Devices[0] = 'none' then
+    Result.Buttons := [];
+  var Piano: INesMiraclePianoCore;
+  if Supports(FEmulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano then
+  begin
+    for var Button in FMiraclePiano.Buttons do
+      Include(Result.Buttons, Mapping[Button]);
+    if FInput <> nil then
+      for var Button := Low(TNesButton) to High(TNesButton) do
+        if FInput.IsPressed(PadAction(0, Mapping[Button])) then
+          Include(Result.Buttons, Mapping[Button]);
+  end;
+end;
+
+procedure TFormMain.UpdatePeripheralInput;
+begin
+  var Peripheral: INesPeripheralCore;
+  if Supports(FEmulation, INesPeripheralCore, Peripheral) then
+  begin
+    if FEmulation.UsesSuborKeyboard then
+      Peripheral.SetSuborKeys(FSuborKeyboard.Keys + ReadSuborInput(FInput));
+    if Peripheral.UsesFamicomKeyboard then
+      Peripheral.SetFamicomKeys(FFamicomKeyboard.Keys + ReadFamicomInput(FInput));
+    if Peripheral.UsesPowerPad then
+    begin
+      var Buttons := FPowerPad.Buttons;
+      if FInput <> nil then
+        for var i := 0 to 11 do
+          if FInput.IsPressed(PowerPadAction + i) then
+            Include(Buttons, i + 1);
+      Peripheral.SetPowerPadButtons(Buttons);
+    end;
+  end;
+  var Piano: INesMiraclePianoCore;
+  if Supports(FEmulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano then
+    Piano.SetMiracleKeys(FMiraclePiano.Keys + ReadPianoInput(FInput));
 end;
 
 procedure TFormMain.ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
+  if (FInput <> nil) or (Button <> TMouseButton.mbLeft) then
+    Exit;
   var Peripheral: INesPeripheralCore;
   if Supports(FEmulation, INesPeripheralCore, Peripheral) then
   begin
@@ -830,6 +1141,8 @@ end;
 
 procedure TFormMain.ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
+  if (FInput <> nil) or (Button <> TMouseButton.mbLeft) then
+    Exit;
   var Peripheral: INesPeripheralCore;
   if Supports(FEmulation, INesPeripheralCore, Peripheral) then
   begin
@@ -844,7 +1157,7 @@ begin
   {$IFDEF MSWINDOWS}
   // Windows FMX reports generic Shift. HVC-007 has two separate contacts.
   var Peripheral: INesPeripheralCore;
-  if (Code = vkShift) and Supports(FEmulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard then
+  if (FInput = nil) and (Code = vkShift) and Supports(FEmulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard then
   begin
     FEmulation.SetKeyState(vkLShift, Winapi.Windows.GetKeyState(vkLShift) < 0);
     FEmulation.SetKeyState(vkRShift, Winapi.Windows.GetKeyState(vkRShift) < 0);
@@ -855,31 +1168,22 @@ begin
 end;
 
 procedure TFormMain.MiraclePianoChanged(Sender: TObject);
-const
-  Mapping: array[TNesButton] of TEmulatorButton = (TEmulatorButton.A,
-    TEmulatorButton.B, TEmulatorButton.Select, TEmulatorButton.Start,
-    TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right);
 begin
   var Piano: INesMiraclePianoCore;
-  if not Supports(FEmulation, INesMiraclePianoCore, Piano) or not Piano.UsesMiraclePiano then Exit;
-  Piano.SetMiracleKeys(FMiraclePiano.Keys);
-  var Input := Default(TEmulatorInput);
-  for var Button in FMiraclePiano.Buttons do Include(Input.Buttons, Mapping[Button]);
-  FEmulation.SetGamepadInput(Input);
+  if not Supports(FEmulation, INesMiraclePianoCore, Piano) or not Piano.UsesMiraclePiano then
+    Exit;
+  UpdatePeripheralInput;
+  FEmulation.SetGamepadInput(CombinedGamepadInput);
 end;
 
 procedure TFormMain.FamicomKeyboardChanged(Sender: TObject);
 begin
-  var Peripheral: INesPeripheralCore;
-  if Supports(FEmulation, INesPeripheralCore, Peripheral) then
-    Peripheral.SetFamicomKeys(FFamicomKeyboard.Keys);
+  UpdatePeripheralInput;
 end;
 
 procedure TFormMain.SuborKeyboardChanged(Sender: TObject);
 begin
-  var Peripheral: INesPeripheralCore;
-  if Supports(FEmulation, INesPeripheralCore, Peripheral) then
-    Peripheral.SetSuborKeys(FSuborKeyboard.Keys);
+  UpdatePeripheralInput;
 end;
 
 procedure TFormMain.SuborKeyboardPower(Sender: TObject);
@@ -896,9 +1200,7 @@ end;
 
 procedure TFormMain.PowerPadChanged(Sender: TObject);
 begin
-  var Peripheral: INesPeripheralCore;
-  if Supports(FEmulation, INesPeripheralCore, Peripheral) then
-    Peripheral.SetPowerPadButtons(FPowerPad.Buttons);
+  UpdatePeripheralInput;
 end;
 
 procedure TFormMain.SetStatus(const Text: string);
@@ -932,16 +1234,18 @@ begin
     FMiraclePiano.Visible := PianoActive;
     FMiraclePiano.Enabled := PianoActive and not FEmulationFaulted and not FOpeningRom;
   end;
+  {$IFDEF ANDROID}
   var KeyboardActive := SuborKeyboardActive or FamicomKeyboardActive or PianoActive;
   var PowerPadActive := Supports(FEmulation, INesPeripheralCore, Peripheral);
   if PowerPadActive then
     PowerPadActive := Peripheral.UsesPowerPad and not KeyboardActive;
+  {$ENDIF}
   if FGamepad <> nil then
   begin
-    //{$IFDEF ANDROID}
+    {$IFDEF ANDROID}
     FGamepad.Visible := not KeyboardActive and not PowerPadActive;
     FGamepad.Enabled := (FEmulation <> nil) and not FEmulationFaulted and not FOpeningRom and not KeyboardActive and not PowerPadActive;
-    //{$ENDIF}
+    {$ENDIF}
   end;
   if FSuborKeyboard <> nil then
   begin
@@ -956,8 +1260,10 @@ begin
 
   if FPowerPad <> nil then
   begin
+    {$IFDEF ANDROID}
     FPowerPad.Visible := PowerPadActive;
     FPowerPad.Enabled := PowerPadActive and not FEmulationFaulted and not FOpeningRom;
+    {$ENDIF}
   end;
 
   {$IFDEF ANDROID}
@@ -995,7 +1301,7 @@ begin
   end;
   if FMiraclePiano <> nil then
     FMiraclePiano.Enabled := FMiraclePiano.Enabled and not FInBackground;
-  var Paused := FInBackground or FOpeningRom or FUserPaused;
+  var Paused := FInBackground or FOpeningRom or FUserPaused or (FSettingsView <> nil);
   if FPowerPad <> nil then
     FPowerPad.Enabled := FPowerPad.Enabled and not FInBackground;
   if FGamepad <> nil then
@@ -1018,7 +1324,7 @@ begin
   end;
   TimerUpdate.Enabled := not FInBackground and (FOpeningRom or ((FEmulation <> nil) and not FEmulationFaulted));
   {$ELSE}
-  TimerUpdate.Enabled := (FEmulation <> nil) and not FEmulationFaulted;
+  TimerUpdate.Enabled := (FInput <> nil) or ((FEmulation <> nil) and not FEmulationFaulted);
   {$ENDIF}
 end;
 
@@ -1078,6 +1384,11 @@ procedure TFormMain.FormDeactivate(Sender: TObject);
 begin
   // Release keys whose key-up may be lost. Android lifecycle controls pausing.
   FillChar(FKeysDown, SizeOf(FKeysDown), 0);
+  FSuppressInputUntilRelease := True;
+  if FInput <> nil then
+    FInput.Enabled := False;
+  if FSettingsView <> nil then
+    FSettingsView.CancelCapture;
   if FGamepad <> nil then
     FGamepad.ReleaseAll;
   if FSuborKeyboard <> nil then
@@ -1158,6 +1469,17 @@ end;
 
 procedure TFormMain.FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
+  if FSettingsView <> nil then
+    Exit;
+  if (FInput <> nil) and not FDispatchingInput then
+  begin
+    if (FEmulation <> nil) and ((Focused = nil) or not (Focused.GetObject is TCustomEdit)) then
+    begin
+      Key := 0;
+      KeyChar := #0;
+    end;
+    Exit;
+  end;
   Key := HostKeyCode(Key, KeyChar);
   if Key in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
     Exit;
@@ -1233,7 +1555,7 @@ begin
     end;
   end;
   if KeyboardActive or not (ssCtrl in Shift) then
-    if FEmulation <> nil then
+    if (FEmulation <> nil) and (FInput = nil) then
       ForwardKeyState(Code, True);
   Key := 0;
   KeyChar := #0;
@@ -1241,6 +1563,17 @@ end;
 
 procedure TFormMain.FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
+  if FSettingsView <> nil then
+    Exit;
+  if (FInput <> nil) and not FDispatchingInput then
+  begin
+    if (FEmulation <> nil) and ((Focused = nil) or not (Focused.GetObject is TCustomEdit)) then
+    begin
+      Key := 0;
+      KeyChar := #0;
+    end;
+    Exit;
+  end;
   Key := HostKeyCode(Key, KeyChar);
   if Key in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
     Exit;
@@ -1252,7 +1585,7 @@ begin
   var Code: Word := Key;
   if Code <= High(FKeysDown) then
     FKeysDown[Code] := False;
-  if FEmulation <> nil then
+  if (FEmulation <> nil) and (FInput = nil) then
     ForwardKeyState(Code, False);
   Key := 0;
   KeyChar := #0;
@@ -1329,6 +1662,22 @@ end;
 
 procedure TFormMain.TimerUpdateTimer(Sender: TObject);
 begin
+  if FInput <> nil then
+  try
+    PollHostInput;
+  except
+    on E: Exception do
+    begin
+      FInput.Enabled := False;
+      TimerUpdate.Enabled := False;
+      if FEmulation <> nil then
+        FEmulation.ClearInput;
+      SetStatus('Ошибка ввода: ' + E.Message);
+      Exit;
+    end;
+  end;
+  if FSettingsView <> nil then
+    Exit;
   {$IFDEF ANDROID}
   PollDocumentTransfer;
   if FOpeningRom then
@@ -1423,6 +1772,16 @@ begin
   TimerUpdate.Enabled := False;
   FEmulation := nil; // Join before replacing the session.
   FEmulation := NewEmulation;
+  var InputSystem := ROM_SYSTEM_NES;
+  if FEmulation.Config is TMDConfig then
+    InputSystem := ROM_SYSTEM_MD
+  else if FEmulation.Config is TSnesConfig then
+    InputSystem := ROM_SYSTEM_SNES
+  else if FEmulation.Config is TGBCEmulatorConfig then
+    InputSystem := ROM_SYSTEM_GBC
+  else if FEmulation.Config is TGBEmulatorConfig then
+    InputSystem := ROM_SYSTEM_GB;
+  LoadHostInput(InputSystem);
   if FEmulation.Config is TMDConfig then
     FGamepad.Layout := TScreenGamepadLayout.Sega
   else if FEmulation.Config is TSnesConfig then
@@ -1576,12 +1935,40 @@ begin
   SelectDocument(False);
 end;
 
+procedure TFormMain.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
+begin
+  try
+    Stop;
+  except
+    on E: Exception do
+    begin
+      CanClose := False;
+      ShowMessage(E.Message);
+    end;
+  end;
+end;
+
+procedure TFormMain.ReportAudioError(const MessageText: string);
+begin
+  ShowMessage('Sound unavailable; the game will continue without audio.' + SLineBreak + MessageText);
+end;
+
 procedure TFormMain.UpdateFrame;
 begin
   if FEmulation = nil then
     Exit;
   var Frame: TEmulatorFrame;
   var NewFrame := FEmulation.TryGetFrame(Frame);
+  var AudioDiagnostics: IEmulationAudioDiagnostics;
+  if Supports(FEmulation, IEmulationAudioDiagnostics, AudioDiagnostics) then
+  begin
+    var AudioError := AudioDiagnostics.TakeAudioError;
+    if (AudioError <> '') and not FSoundErrorShown then
+    begin
+      FSoundErrorShown := True;
+      ReportAudioError(AudioError);
+    end;
+  end;
   var ErrorText := FEmulation.TakeError;
   if (ErrorText <> '') and not FEmulationFaulted then
   begin
@@ -1603,9 +1990,7 @@ begin
   var Data: TBitmapData;
   if ImageCanvas.Bitmap.Map(TMapAccess.Write, Data) then
   try
-    for var Y := 0 to Frame.Height - 1 do
-      for var X := 0 to Frame.Width - 1 do
-        Data.SetPixel(X, Y, Frame.Pixels[Y * Frame.Width + X]);
+    UploadFramePixels(Frame.Pixels, Frame.Width, Frame.Height, Data);
   finally
     ImageCanvas.Bitmap.Unmap(Data);
   end;

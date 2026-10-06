@@ -4,7 +4,7 @@ interface
 
 uses
   Core.Storage, System.SysUtils, System.Classes, NES.State, NES.Types, NES.CPU,
-  NES.PPU, NES.APU, NES.Bus, NES.Cartridge, NES.Controller,
+  NES.PPU, NES.APU, NES.Bus, NES.Cartridge, NES.Controller, Core.InputConfig,
   NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice;
 
 type
@@ -29,6 +29,7 @@ type
     FPalPpuPhase: Integer;
     FRegion: TNesRegion;
     FConfiguredFourScore: Boolean;
+    FPortsConfigured: Boolean;
     FDmcDmaCycles: Integer;
     procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 16);
     function GetRomIdentity: string;
@@ -40,6 +41,7 @@ type
     destructor Destroy; override;
     procedure LoadRom(const FileName: string; RegionOverride: TRegionOverride = TRegionOverride.Auto); overload;
     procedure LoadRom(Stream: TStream; const RomName: string; RegionOverride: TRegionOverride = TRegionOverride.Auto); overload;
+    procedure ConfigureInputPorts(const Ports: TCoreInputPorts);
     procedure LoadBattery(const DirectoryName: string);
     procedure SaveBattery;
     procedure SaveSnapshot(const FileName: string);
@@ -75,23 +77,13 @@ type
 implementation
 
 uses
-  System.Hash, System.IOUtils, NES.Mapper;
+  System.Hash, System.IOUtils, NES.Mapper, Core.Snapshots;
 
 const
   SNAPSHOT_VERSION = 16;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
-  TSnapshotBitmapHeader = packed record
-    Signature: UInt16;
-    FileSize, Reserved, PixelOffset, InfoSize: UInt32;
-    Width, Height: Int32;
-    Planes, Bits: UInt16;
-    Compression, ImageSize: UInt32;
-    XPels, YPels: Int32;
-    Colors, ImportantColors: UInt32;
-  end;
-
   TSnapshotHeader = packed record
     Magic: array[0..7] of AnsiChar;
     Version, PayloadSize: UInt32;
@@ -128,7 +120,10 @@ end;
 
 function TNesConsole.GetUsesPowerPad: Boolean;
 begin
-  Result := FCartridge.Metadata.DefaultExpansionDevice in [11, 12];
+  if FPortsConfigured then
+    Result := FController2.PowerPadEnabled
+  else
+    Result := FCartridge.Metadata.DefaultExpansionDevice in [11, 12];
 end;
 
 procedure TNesConsole.SerializeState(Stream: TStream; Loading: Boolean; Version: Integer);
@@ -207,27 +202,17 @@ begin
     var Id: TGUID;
     CreateGUID(Id);
     var Temporary := FileName + '.' + GUIDToString(Id) + '.tmp';
-    var PreviewName := ChangeFileExt(FileName, '.bmp');
-    var PreviewTemporary := Temporary + '.bmp';
+    var PreviewName := ChangeFileExt(FileName, '.png');
+    var PreviewTemporary := ChangeFileExt(Temporary, '.png');
     try
       FStorage.WriteAtomic(Temporary, Output);
-      Output.Clear;
-      var BitmapHeader := Default(TSnapshotBitmapHeader);
-      BitmapHeader.Signature := $4D42;
-      BitmapHeader.PixelOffset := SizeOf(BitmapHeader);
-      BitmapHeader.InfoSize := 40;
-      BitmapHeader.Width := 256;
-      BitmapHeader.Height := -240;
-      BitmapHeader.Planes := 1;
-      BitmapHeader.Bits := 32;
-      BitmapHeader.ImageSize := SizeOf(TFrameBuffer);
-      BitmapHeader.FileSize := BitmapHeader.PixelOffset + BitmapHeader.ImageSize;
-      Output.WriteBuffer(BitmapHeader, SizeOf(BitmapHeader));
       var Frame := FPpu.Frame;
+      var Preview: TArray<Cardinal>;
+      SetLength(Preview, 256 * 240);
       for var Y := 0 to 239 do
         for var X := 0 to 255 do
-          Output.WriteBuffer(Frame[X, Y], SizeOf(UInt32));
-      FStorage.WriteAtomic(PreviewTemporary, Output);
+          Preview[Y * 256 + X] := Frame[X, Y];
+      SaveSnapshotPreview(Temporary, 256, 240, 256, @Preview[0], FStorage);
       FStorage.Replace(PreviewTemporary, PreviewName);
       FStorage.Replace(Temporary, FileName);
     finally
@@ -341,6 +326,36 @@ begin
   inherited Destroy;
 end;
 
+procedure TNesConsole.ConfigureInputPorts(const Ports: TCoreInputPorts);
+begin
+  FBus.DisconnectedPads := 0;
+  for var I := 0 to 3 do
+    if Ports.Devices[I] = 'none' then
+      FBus.DisconnectedPads := FBus.DisconnectedPads or (1 shl I);
+  if Ports.Devices[0] <> 'auto' then
+    FMiraclePiano.Connected := Ports.Devices[0] = 'piano';
+  if Ports.Devices[1] <> 'auto' then
+  begin
+    FController2.PowerPadEnabled := Ports.Devices[1] = 'powerpad';
+    FZapper.Enabled := Ports.Devices[1] = 'zapper';
+  end;
+  if Ports.Expansion <> 'auto' then
+  begin
+    FSuborKeyboard.Connected := Ports.Expansion = 'subor';
+    FFamicomKeyboard.Connected := Ports.Expansion = 'famicom';
+    FDataRecorder.Connected := (Ports.Expansion = 'recorder') or FFamicomKeyboard.Connected;
+  end;
+  // The gun occupies port 2; Four Score and parallel port devices cannot share it.
+  if FZapper.Enabled then
+  begin
+    FController2.PowerPadEnabled := False;
+    FMiraclePiano.Connected := False;
+  end;
+  FBus.FourScoreEnabled := FConfiguredFourScore and not FController2.PowerPadEnabled
+    and not FMiraclePiano.Connected and not FZapper.Enabled;
+  FPortsConfigured := True;
+end;
+
 procedure TNesConsole.LoadRom(const FileName: string; RegionOverride: TRegionOverride);
 begin
   var Stream := FStorage.OpenRead(FileName);
@@ -353,6 +368,8 @@ end;
 
 procedure TNesConsole.LoadRom(Stream: TStream; const RomName: string; RegionOverride: TRegionOverride);
 begin
+  FPortsConfigured := False;
+  FBus.DisconnectedPads := 0;
   FCartridge.LoadFromStream(Stream, RomName);
   FMiraclePiano.ClearInput;
   FMiraclePiano.Connected := FCartridge.Metadata.DefaultExpansionDevice = $19;
@@ -423,7 +440,6 @@ begin
   else
     FDataRecorder.Clock(FCpuCycles * 12);
   end;
-  FBus.HaltedCpuAddress := FCpu.NextReadAddress;
   var CpuOdd: Boolean := (FBus.CpuCycle and 1) <> 0;
   FPpu.Clock;
   FPpu.Clock;
@@ -440,8 +456,10 @@ begin
   end;
 
   FBus.ClockIo;
-  if FCartridge.Mapper <> nil then FApu.SetExpansionAudio(FCartridge.Mapper.ExpansionAudio)
-  else FApu.SetExpansionAudio(0);
+  if FCartridge.Mapper <> nil then
+    FApu.SetExpansionAudio(FCartridge.Mapper.ExpansionAudio)
+  else
+    FApu.SetExpansionAudio(0);
   FApu.Clock;
   // The read phase is already committed when its clock begins; a disable
   // arriving on this phase prevents playback, but cannot recover that cycle.
@@ -451,22 +469,30 @@ begin
     FCartridge.Mapper.ClockCpu;
   FCpu.SetIrqLine(FApu.IrqPending or ((FCartridge.Mapper <> nil) and FCartridge.Mapper.IrqPending));
 
-  var CanHalt: Boolean;
   var DmcHaltStarted := False;
-  if FBus.IsDmaActive then
-    CanHalt := not FBus.DmaWritePending
-  else
-    CanHalt := not FCpu.NextCycleIsWrite;
-  if (FDmcDmaCycles = 0) and FApu.DmcDmaRequested and CanHalt then
+  if (FDmcDmaCycles = 0) and FApu.DmcDmaRequested then
   begin
-    DmcHaltStarted := True;
-    FCpu.NotifyDmaHalt;
-    // Halt + dummy + optional alignment + get. Get shares OAM's read phase.
-    if CpuOdd then
-      FDmcDmaCycles := 3
+    var CanHalt: Boolean;
+    if FBus.IsDmaActive then
+      CanHalt := not FBus.DmaWritePending
     else
-      FDmcDmaCycles := 4;
+      CanHalt := not FCpu.NextCycleIsWrite;
+    if CanHalt then
+    begin
+      DmcHaltStarted := True;
+      FCpu.NotifyDmaHalt;
+      // Halt + dummy + optional alignment + get. Get shares OAM's read phase.
+      if CpuOdd then
+        FDmcDmaCycles := 3
+      else
+        FDmcDmaCycles := 4;
+    end;
   end;
+  // This derived address is consumed only by DMA's internal I/O decoder.
+  // The CPU has not advanced since the start of this clock, so compute it
+  // only when a DMA transfer can actually read the bus.
+  if (FDmcDmaCycles > 0) or FBus.IsDmaActive then
+    FBus.HaltedCpuAddress := FCpu.NextReadAddress;
   if FDmcDmaCycles > 0 then
   begin
     Dec(FDmcDmaCycles);

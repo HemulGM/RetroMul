@@ -50,13 +50,7 @@ procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer
 implementation
 
 uses
-  System.Hash,
-  {$IFDEF MSWINDOWS}
-  Winapi.Windows,
-  {$ELSE}
-  Posix.Stdio,
-  {$ENDIF}
-  System.IOUtils;
+  System.Hash, System.ZLib;
 
 type
   THeader = packed record
@@ -64,16 +58,6 @@ type
     Version, PayloadSize: Cardinal;
     platform: array[0..7] of AnsiChar;
     ROMHash, Digest: array[0..31] of Byte;
-  end;
-
-  TBitmapHeader = packed record
-    Signature: Word;
-    FileSize, Reserved, PixelOffset, InfoSize: Cardinal;
-    Width, Height: Integer;
-    Planes, Bits: Word;
-    Compression, ImageSize: Cardinal;
-    XPels, YPels: Integer;
-    Colors, ImportantColors: Cardinal;
   end;
 
 { TStateArchive }
@@ -225,28 +209,94 @@ begin
 end;
 
 procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer; Pixels: Pointer; const Storage: IStorage);
-begin
-  var Stream := TMemoryStream.Create;
-  try
-    var Header := Default(TBitmapHeader);
-    Header.Signature := $4D42;
-    Header.PixelOffset := SizeOf(Header);
-    Header.InfoSize := 40;
-    Header.Width := Width;
-    Header.Height := -Height;
-    Header.Planes := 1;
-    Header.Bits := 32;
-    Header.ImageSize := Width * Height * 4;
-    Header.FileSize := Header.PixelOffset + Header.ImageSize;
-    Stream.WriteBuffer(Header, SizeOf(Header));
-    var Row := PByte(Pixels);
-    for var Y := 0 to Height - 1 do
+const
+  Signature: array[0..7] of Byte = ($89, $50, $4E, $47, $0D, $0A, $1A, $0A);
+var
+  Stream, Compressed: TMemoryStream;
+
+  procedure WriteUInt32(Value: Cardinal);
+  begin
+    var Bytes: array[0..3] of Byte;
+    Bytes[0] := Value shr 24;
+    Bytes[1] := (Value shr 16) and $FF;
+    Bytes[2] := (Value shr 8) and $FF;
+    Bytes[3] := Value and $FF;
+    Stream.WriteBuffer(Bytes, SizeOf(Bytes));
+  end;
+
+  procedure WriteChunk(const Kind: AnsiString; Data: Pointer; Size: Integer);
+
+    procedure UpdateCRC(var CRC: Cardinal; Buffer: Pointer; Count: Integer);
     begin
-      Stream.WriteBuffer(Row^, Width * 4);
-      Inc(Row, Stride * 4);
+      var P := PByte(Buffer);
+      for var i := 0 to Count - 1 do
+      begin
+        CRC := CRC xor P^;
+        for var Bit := 0 to 7 do
+          if (CRC and 1) <> 0 then
+            CRC := (CRC shr 1) xor $EDB88320
+          else
+            CRC := CRC shr 1;
+        Inc(P);
+      end;
     end;
-    SaveStreamAtomically(Stream, ChangeFileExt(Path, '.bmp'), Storage);
+
+  begin
+    WriteUInt32(Size);
+    Stream.WriteBuffer(Kind[1], 4);
+    if Size > 0 then
+      Stream.WriteBuffer(Data^, Size);
+    var CRC: Cardinal := $FFFFFFFF;
+    UpdateCRC(CRC, PAnsiChar(Kind), 4);
+    UpdateCRC(CRC, Data, Size);
+    WriteUInt32(CRC xor $FFFFFFFF);
+  end;
+
+begin
+  if (Pixels = nil) or (Width < 1) or (Height < 1) or
+    (Width > 2048) or (Height > 2048) or (Stride < Width) or
+    (Int64(Stride) * Height * 4 > MaxInt) then
+    raise EArgumentOutOfRangeException.Create('Invalid snapshot preview dimensions');
+  Stream := TMemoryStream.Create;
+  Compressed := TMemoryStream.Create;
+  try
+    Stream.WriteBuffer(Signature, SizeOf(Signature));
+    var Header: array[0..12] of Byte;
+    FillChar(Header, SizeOf(Header), 0);
+    Header[2] := (Width shr 8) and $FF;
+    Header[3] := Width and $FF;
+    Header[6] := (Height shr 8) and $FF;
+    Header[7] := Height and $FF;
+    Header[8] := 8; // Eight-bit RGB; emulator output is opaque ARGB.
+    Header[9] := 2;
+    WriteChunk('IHDR', @Header, SizeOf(Header));
+    var Row: TBytes;
+    SetLength(Row, 1 + Width * 3);
+    Row[0] := 0; // PNG filter None.
+    var Compressor := TZCompressionStream.Create(Compressed);
+    try
+      var Source := PCardinal(Pixels);
+      for var Y := 0 to Height - 1 do
+      begin
+        for var X := 0 to Width - 1 do
+        begin
+          var Color := Source^;
+          Inc(Source);
+          Row[1 + X * 3] := (Color shr 16) and $FF;
+          Row[2 + X * 3] := (Color shr 8) and $FF;
+          Row[3 + X * 3] := Color and $FF;
+        end;
+        Compressor.WriteBuffer(Row[0], Length(Row));
+        Inc(Source, Stride - Width);
+      end;
+    finally
+      Compressor.Free;
+    end;
+    WriteChunk('IDAT', Compressed.Memory, Compressed.Size);
+    WriteChunk('IEND', nil, 0);
+    SaveStreamAtomically(Stream, ChangeFileExt(Path, '.png'), Storage);
   finally
+    Compressed.Free;
     Stream.Free;
   end;
 end;

@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.Snapshots, System.Classes, System.SysUtils, System.UITypes, MD.Cartridge,
+  Core.InputConfig, Core.Snapshots, System.Classes, System.SysUtils, System.UITypes, MD.Cartridge,
   MD.M68k, MD.Z80, MD.VDP, MD.Sound, Core.AudioFilter;
 
 {$SCOPEDENUMS ON}
@@ -49,6 +49,7 @@ type
     FButtons: array[1..2] of TMDButtons;
     FStrobes: array[1..2] of Integer;
     FTH: array[1..2] of Boolean;
+    FPadDevices: array[1..2] of string;
     FSRAM: TBytes;
     FSRAMStart, FSRAMEnd, FSRAMStride: Cardinal;
     FSRAMEnabled, FSRAMReadOnly, FSRAMDirty: Boolean;
@@ -75,6 +76,7 @@ type
     destructor Destroy; override;
     procedure Reset;
     procedure RunFrame;
+    procedure ConfigureInputPorts(const Ports: TCoreInputPorts);
     procedure SetInput(const Buttons: TMDButtons; const Buttons2: TMDButtons = []);
     function ReadByte(Address: Cardinal): Byte;
     function ReadWord(Address: Cardinal): Word;
@@ -376,6 +378,12 @@ begin
   FButtons[2] := Buttons2;
 end;
 
+procedure TMDConsole.ConfigureInputPorts(const Ports: TCoreInputPorts);
+begin
+  FPadDevices[1] := Ports.Devices[0];
+  FPadDevices[2] := Ports.Devices[1];
+end;
+
 function TMDConsole.ReadPad(Port: Integer): Byte;
 
   function Released(Button: TMDButton; Bit: Integer): Byte;
@@ -387,7 +395,9 @@ function TMDConsole.ReadPad(Port: Integer): Byte;
   end;
 
 begin
-  if FBusTime >= FPadTimeout[Port] then
+  if FPadDevices[Port] = 'none' then
+    Exit(($7F and not FIO[Port + 3]) or (FIO[Port] and FIO[Port + 3]));
+  if (FPadDevices[Port] = 'pad3') or (FBusTime >= FPadTimeout[Port]) then
     FStrobes[Port] := 0;
   if FTH[Port] then
   begin

@@ -33,11 +33,13 @@ type
     FFramesSinceRateUpdate: Integer;
     FErrorMessage: string;
     FSoundVolume: Single;
+    FScreenPalette: Integer;
     FPauseRequested: Boolean;
     FCameraSource: IGBCameraFrameSource;
     FHasCamera: Boolean;
     procedure ApplyInput;
     procedure SetSoundVolume(const Value: Single);
+    procedure SetScreenPalette(const Value: Integer);
   protected
     procedure PublishFrame(const Screen: TScreenArray);
     function CoreID: string; virtual;
@@ -65,6 +67,7 @@ type
     function TryGetFrame(out Screen: TScreenArray; out FramesPerSecond: Double): Boolean;
     function TakeError: string;
     property SoundVolume: Single read FSoundVolume write SetSoundVolume;
+    property ScreenPalette: Integer write SetScreenPalette;
     property PauseRequested: Boolean read FPauseRequested;
     property HasCamera: Boolean read FHasCamera;
     procedure SubmitCameraFrame(const Frame: TGBCameraFrame);
@@ -73,7 +76,7 @@ type
 implementation
 
 uses
-  Core.PerformanceHints, System.SysUtils, System.IOUtils, GB.CPU, GB.Sound;
+  Core.PerformanceHints, System.SysUtils, System.IOUtils, System.Math, GB.CPU, GB.Sound, GB.Palettes;
 
 function TGBEmulationThread.CoreID: string;
 begin
@@ -220,6 +223,16 @@ begin
   FLock.Acquire;
   try
     FSoundVolume := Value;
+  finally
+    FLock.Release;
+  end;
+end;
+
+procedure TGBEmulationThread.SetScreenPalette(const Value: Integer);
+begin
+  FLock.Acquire;
+  try
+    FScreenPalette := EnsureRange(Value, 0, SCREEN_PALETTE_COUNT - 1);
   finally
     FLock.Release;
   end;
@@ -419,7 +432,23 @@ begin
             else
             begin
               SaveCoreSnapshot(Path, CoreID, FROMData, Transfer, FStorage);
-              SaveSnapshotPreview(Path, 160, 144, 160, @GPU.Screen[0], FStorage);
+              var Preview := GPU.Screen;
+              if CoreID = 'GB' then
+              begin
+                var Palette: Integer;
+                FLock.Acquire;
+                try
+                  Palette := FScreenPalette;
+                finally
+                  FLock.Release;
+                end;
+                for var i := 0 to High(Preview) do
+                begin
+                  var Color := ScreenPalettes[Palette].Colors[EnsureRange(Preview[i], 0, 3)];
+                  Move(Color, Preview[i], SizeOf(Color));
+                end;
+              end;
+              SaveSnapshotPreview(Path, 160, 144, 160, @Preview[0], FStorage);
             end;
             HintNextCycles := CPU.Cycles + FrameCycles;
             StartCycles := CPU.Cycles;

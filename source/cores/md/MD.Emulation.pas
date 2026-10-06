@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.Storage, Core.RomFormat, Core.Snapshots, System.SysUtils, System.Classes,
+  Core.InputConfig, Core.Storage, Core.RomFormat, Core.Snapshots, System.SysUtils, System.Classes,
   System.SyncObjs, Core.Emulation, MD.Console;
 
 const
@@ -26,7 +26,8 @@ type
     FVolume: Single;
     FFrame: TEmulatorFrame;
     FAvailable: Boolean;
-    FError: string;
+    FError, FAudioError, FFinalSaveError: string;
+    FPendingBattery: TBytes;
     procedure SetError(const Value: string);
   protected
     procedure Execute; override;
@@ -37,10 +38,14 @@ type
     procedure Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TMDButtons = []);
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
+  public
+    InputPorts: TCoreInputPorts; // Set before starting the worker.
     property SnapshotDirectory: string read FSnapshotDirectory write FSnapshotDirectory;
     procedure RequestReset;
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
     function TakeError: string;
+    function TakeAudioError: string;
+    procedure StopAndSave;
   end;
 
 implementation
@@ -136,6 +141,38 @@ begin
   end;
 end;
 
+function TMDWorker.TakeAudioError: string;
+begin
+  FLock.Acquire;
+  try
+    Result := FAudioError;
+    FAudioError := '';
+  finally
+    FLock.Release;
+  end;
+end;
+
+procedure TMDWorker.StopAndSave;
+begin
+  Terminate;
+  WakeSetEvent;
+  if Suspended then
+    Start;
+  WaitFor;
+  // Preserve failed SRAM until an explicit retry succeeds. No worker can mutate it now.
+  if Length(FPendingBattery) > 0 then
+  try
+    FStorage.WriteBytes(FSavePath, FPendingBattery);
+    FPendingBattery := nil;
+    FFinalSaveError := '';
+  except
+    on E: Exception do
+      raise EInOutError.Create('Mega Drive SRAM: ' + E.Message);
+  end;
+  if FFinalSaveError <> '' then
+    raise EInOutError.Create('Mega Drive SRAM: ' + FFinalSaveError);
+end;
+
 function TMDWorker.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
 begin
   FLock.Acquire;
@@ -181,7 +218,9 @@ procedure TMDWorker.Execute;
 
     var Stream := TBytesStream.Create(Data);
     try
+      FPendingBattery := Copy(Data);
       SaveStreamAtomically(Stream, FSavePath, FStorage);
+      FPendingBattery := nil;
       LastBattery := Data;
     finally
       Stream.Free;
@@ -197,13 +236,14 @@ begin
   var Deadline: Double;
   var WaitMS: Integer;
   var LastBattery: TBytes;
-  var LastAudioError: string;
+  var AudioFailed := False;
   var Console: TMDConsole := nil;
   var Audio: TPCMAudio := nil;
   var FrameHints: TEmulationPerformanceHints := nil;
   try
     try
       Console := TMDConsole.Create(FData, ROM_EXTENSION_MD);
+      Console.ConfigureInputPorts(InputPorts);
       FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), 'MD');
       if FStorage.Exists(FSavePath) then
       begin
@@ -312,8 +352,8 @@ begin
         Frame.Pixels := nil;
         SetLength(Frame.Pixels, Frame.Width * Frame.Height);
         for var Y := 0 to Frame.Height - 1 do
-          for var X := 0 to Frame.Width - 1 do
-            Frame.Pixels[Y * Frame.Width + X] := Console.Pixels[Y * 320 + X];
+          Move(Console.Pixels[Y * 320], Frame.Pixels[Y * Frame.Width],
+            Frame.Width * SizeOf(Frame.Pixels[0]));
         FLock.Acquire;
         try
           FFrame := Frame;
@@ -321,22 +361,35 @@ begin
         finally
           FLock.Release;
         end;
-        if Enabled then
-        begin
+        if Enabled and not AudioFailed then
+        try
           if Audio = nil then
             Audio := TPCMAudio.Create(Format);
           SetLength(Samples, Console.SampleFrames * 2);
           for var i := 0 to High(Samples) do
             Samples[i] := Round(Console.Samples[i] * Volume);
           Audio.Submit(Samples, Console.SampleFrames);
-          if (Audio.Error <> '') and (Audio.Error <> LastAudioError) then
+          if Audio.Error <> '' then
+            raise EInOutError.Create(Audio.Error);
+        except
+          on E: Exception do
           begin
-            LastAudioError := Audio.Error;
-            SetError('Mega Drive audio: ' + LastAudioError);
+            FLock.Acquire;
+            try
+              FAudioError := 'Mega Drive audio: ' + E.Message;
+            finally
+              FLock.Release;
+            end;
+            FreeAndNil(Audio);
+            AudioFailed := True;
           end;
         end
-        else if WasEnabled and (Audio <> nil) then
-          Audio.Clear;
+        else if not Enabled then
+        begin
+          if WasEnabled and (Audio <> nil) then
+            Audio.Clear;
+          AudioFailed := False; // A later explicit audio enable may retry the device.
+        end;
         FrameHints.EndWork;
         WasEnabled := Enabled;
         if Console.FrameNumber mod 120 = 0 then
@@ -358,7 +411,7 @@ begin
       SaveBattery(Console, LastBattery);
     except
       on E: Exception do
-        SetError('Mega Drive SRAM: ' + E.Message);
+        FFinalSaveError := E.Message; // StopAndSave reports this and retains pending data.
     end;
     Audio.Free;
     Console.Free;

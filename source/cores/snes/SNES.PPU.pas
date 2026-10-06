@@ -602,10 +602,18 @@ end;
 
 function TSnesPPU.TilePixel(Base, Tile, BPP, X, Y: Integer): Integer;
 begin
-  Result := 0;
   Base := Base + Tile * BPP * 8 + Y * 2;
-  for var Plane := 0 to BPP - 1 do
-    Result := Result or (((State.VRAM[(Base + (Plane div 2) * 16 + (Plane and 1)) and $FFFF] shr (7 - X)) and 1) shl Plane);
+  var Shift := 7 - X;
+  Result := ((State.VRAM[Base and $FFFF] shr Shift) and 1) or
+    (((State.VRAM[(Base + 1) and $FFFF] shr Shift) and 1) shl 1);
+  if BPP >= 4 then
+    Result := Result or (((State.VRAM[(Base + 16) and $FFFF] shr Shift) and 1) shl 2) or
+      (((State.VRAM[(Base + 17) and $FFFF] shr Shift) and 1) shl 3);
+  if BPP = 8 then
+    Result := Result or (((State.VRAM[(Base + 32) and $FFFF] shr Shift) and 1) shl 4) or
+      (((State.VRAM[(Base + 33) and $FFFF] shr Shift) and 1) shl 5) or
+      (((State.VRAM[(Base + 48) and $FFFF] shr Shift) and 1) shl 6) or
+      (((State.VRAM[(Base + 49) and $FFFF] shr Shift) and 1) shl 7);
 end;
 
 function TSnesPPU.MapEntry(Layer, Column, Row: Integer): Word;
@@ -866,77 +874,77 @@ begin
   if (State.Regs[3] and $80) <> 0 then
     First := (State.OAMReload div 4) and 127;
   if not FRender.Timed then
-  for var J := 0 to 127 do
-  begin
-    var Obj := (First + J) and 127;
-    var A := Obj * 4;
-    var High := State.OAM[512 + Obj div 4] shr ((Obj and 3) * 2);
-    var SizeIndex := (State.Regs[1] shr 5) or ((High and 2) shl 2);
-    var ObjWidth := ObjWidths[SizeIndex];
-    var ObjHeight := ObjHeights[SizeIndex];
-    var X: Integer := State.OAM[A] or ((High and 1) shl 8);
-    if X >= 256 then
-      Dec(X, 512);
-    if (X <> -256) and ((X + ObjWidth <= 0) or (X > 255)) then
-      Continue;
-
-    var Row := (Y - State.OAM[A + 1]) and $FF;
-    var VisibleHeight := ObjHeight;
-    if (State.Regs[$33] and 2) <> 0 then
-      VisibleHeight := VisibleHeight div 2;
-    if Row >= VisibleHeight then
-      Continue;
-
-    Inc(Count);
-    if Count > 32 then
+    for var J := 0 to 127 do
     begin
-      State.Status := State.Status or $40;
-      Break;
-    end;
-
-    if (State.Regs[$33] and 2) <> 0 then
-      Row := Row * 2 + Ord(Odd);
-    var Flags := State.OAM[A + 3];
-    if (Flags and $80) <> 0 then
-      if Row < ObjWidth then
-        Row := ObjWidth - 1 - Row
-      else
-        Row := ObjWidth * 3 - 1 - Row;
-    var Base := (State.Regs[1] and 7) shl 14;
-    if (Flags and 1) <> 0 then
-      Inc(Base, (((State.Regs[1] shr 3) and 3) + 1) shl 13);
-    for var Col := 0 to ObjWidth - 1 do
-    begin
-      var SX := X + Col;
-      if (SX < 0) or (SX >= 256) then
+      var Obj := (First + J) and 127;
+      var A := Obj * 4;
+      var High := State.OAM[512 + Obj div 4] shr ((Obj and 3) * 2);
+      var SizeIndex := (State.Regs[1] shr 5) or ((High and 2) shl 2);
+      var ObjWidth := ObjWidths[SizeIndex];
+      var ObjHeight := ObjHeights[SizeIndex];
+      var X: Integer := State.OAM[A] or ((High and 1) shl 8);
+      if X >= 256 then
+        Dec(X, 512);
+      if (X <> -256) and ((X + ObjWidth <= 0) or (X > 255)) then
         Continue;
 
-      if (Col mod 8) = 0 then
-        Inc(Tiles);
-      if Tiles > 34 then
+      var Row := (Y - State.OAM[A + 1]) and $FF;
+      var VisibleHeight := ObjHeight;
+      if (State.Regs[$33] and 2) <> 0 then
+        VisibleHeight := VisibleHeight div 2;
+      if Row >= VisibleHeight then
+        Continue;
+
+      Inc(Count);
+      if Count > 32 then
       begin
-        State.Status := State.Status or $80;
+        State.Status := State.Status or $40;
         Break;
       end;
 
-      if ObjPriority[SX] <> 0 then
-        Continue;
+      if (State.Regs[$33] and 2) <> 0 then
+        Row := Row * 2 + Ord(Odd);
+      var Flags := State.OAM[A + 3];
+      if (Flags and $80) <> 0 then
+        if Row < ObjWidth then
+          Row := ObjWidth - 1 - Row
+        else
+          Row := ObjWidth * 3 - 1 - Row;
+      var Base := (State.Regs[1] and 7) shl 14;
+      if (Flags and 1) <> 0 then
+        Inc(Base, (((State.Regs[1] shr 3) and 3) + 1) shl 13);
+      for var Col := 0 to ObjWidth - 1 do
+      begin
+        var SX := X + Col;
+        if (SX < 0) or (SX >= 256) then
+          Continue;
 
-      var PX := Col;
-      if (Flags and $40) <> 0 then
-        PX := ObjWidth - 1 - Col;
-      var Tile := ((State.OAM[A + 2] and $F0) + (Row div 8) * 16) and $F0;
-      Tile := Tile or ((State.OAM[A + 2] + PX div 8) and 15);
-      var Pixel := TilePixel(Base, Tile, 4, PX and 7, Row and 7);
-      if Pixel = 0 then
-        Continue;
+        if (Col mod 8) = 0 then
+          Inc(Tiles);
+        if Tiles > 34 then
+        begin
+          State.Status := State.Status or $80;
+          Break;
+        end;
 
-      ObjColor[SX] := Palette(128 + ((Flags shr 1) and 7) * 16 + Pixel);
-      ObjAddress[SX] := 128 + ((Flags shr 1) and 7) * 16 + Pixel;
-      ObjMath[SX] := (Flags and 8) <> 0;
-      ObjPriority[SX] := SpritePrio[State.Regs[5] and 7, (Flags shr 4) and 3];
+        if ObjPriority[SX] <> 0 then
+          Continue;
+
+        var PX := Col;
+        if (Flags and $40) <> 0 then
+          PX := ObjWidth - 1 - Col;
+        var Tile := ((State.OAM[A + 2] and $F0) + (Row div 8) * 16) and $F0;
+        Tile := Tile or ((State.OAM[A + 2] + PX div 8) and 15);
+        var Pixel := TilePixel(Base, Tile, 4, PX and 7, Row and 7);
+        if Pixel = 0 then
+          Continue;
+
+        ObjColor[SX] := Palette(128 + ((Flags shr 1) and 7) * 16 + Pixel);
+        ObjAddress[SX] := 128 + ((Flags shr 1) and 7) * 16 + Pixel;
+        ObjMath[SX] := (Flags and 8) <> 0;
+        ObjPriority[SX] := SpritePrio[State.Regs[5] and 7, (Flags shr 4) and 3];
+      end;
     end;
-  end;
   if FRender.Timed then
     for var X := 0 to 255 do
       if FRender.Current.Color[X] <> 0 then

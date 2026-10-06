@@ -2,7 +2,8 @@
 
 interface
 
-uses NES.State;
+uses
+  NES.State;
 
 const
   MIRACLE_FIRST_NOTE = 36;
@@ -19,6 +20,7 @@ const
 
 type
   TMiracleKey = 0..57;
+
   TMiracleKeys = set of TMiracleKey;
 
   // Controller port 1 transports MIDI, MSB first. A short OUT0 pulse
@@ -29,6 +31,7 @@ type
   private
     type
       TPortState = (Idle, Strobe, Receive, Transmit);
+
       TVoice = record
         Active, Held: Boolean;
         Channel, Note, Patch, Velocity: Byte;
@@ -81,7 +84,8 @@ type
 
 implementation
 
-uses System.Math, System.UITypes;
+uses
+  System.Math, System.UITypes;
 
 constructor TMiraclePianoDevice.Create;
 begin
@@ -116,7 +120,8 @@ end;
 procedure TMiraclePianoDevice.Enqueue(const Bytes: array of Byte);
 begin
   // Keep packets whole, even if an application stops polling the keyboard.
-  if Length(Bytes) > Length(FQueue) - FCount then Exit;
+  if Length(Bytes) > Length(FQueue) - FCount then
+    Exit;
   for var B in Bytes do
   begin
     FQueue[FHead] := B;
@@ -127,7 +132,8 @@ end;
 
 procedure TMiraclePianoDevice.Write(Value: Byte; Cycle: UInt64);
 begin
-  if not FConnected then Exit;
+  if not FConnected then
+    Exit;
   FOutputBit := Value and 1;
   case FState of
     Idle, Receive:
@@ -162,13 +168,16 @@ end;
 function TMiraclePianoDevice.Read: Byte;
 begin
   Result := 0;
-  if not FConnected then Exit;
+  if not FConnected then
+    Exit;
   if FState = Receive then
   begin
-    if FRxBits = 9 then Result := 1
+    if FRxBits = 9 then
+      Result := 1
     else if FRxBits > 0 then
       Result := 1 xor ((FRxByte shr (FRxBits - 1)) and 1);
-    if FRxBits > 0 then Dec(FRxBits);
+    if FRxBits > 0 then
+      Dec(FRxBits);
   end
   else if FState = Transmit then
   begin
@@ -190,17 +199,28 @@ end;
 
 procedure TMiraclePianoDevice.NoteOn(Channel, Note, Velocity: Byte);
 begin
-  if Velocity = 0 then begin NoteOff(Channel, Note); Exit; end;
+  if Velocity = 0 then
+  begin
+    NoteOff(Channel, Note);
+    Exit;
+  end;
   var Slot := -1;
   var Quietest := 0;
   for var I := 0 to High(FVoices) do
   begin
     if FVoices[I].Active and (FVoices[I].Channel = Channel) and
-      (FVoices[I].Note = Note) then begin Slot := I; Break; end;
-    if not FVoices[I].Active then Slot := I;
-    if FVoices[I].Level < FVoices[Quietest].Level then Quietest := I;
+      (FVoices[I].Note = Note) then
+    begin
+      Slot := I;
+      Break;
+    end;
+    if not FVoices[I].Active then
+      Slot := I;
+    if FVoices[I].Level < FVoices[Quietest].Level then
+      Quietest := I;
   end;
-  if Slot < 0 then Slot := Quietest;
+  if Slot < 0 then
+    Slot := Quietest;
   FVoices[Slot] := Default(TVoice);
   FVoices[Slot].Active := True;
   FVoices[Slot].Held := True;
@@ -234,9 +254,11 @@ end;
 procedure TMiraclePianoDevice.HandleSysEx;
 begin
   if (FSysExCount < 6) or (FSysEx[0] <> 0) or (FSysEx[1] <> 0) or
-    (FSysEx[2] <> $42) or (FSysEx[3] <> 1) then Exit;
+    (FSysEx[2] <> $42) or (FSysEx[3] <> 1) then
+    Exit;
   case FSysEx[4] of
-    $04: Enqueue([$F0, 0, 0, $42, 1, 5, 1, 0, $F7]);
+    $04:
+      Enqueue([$F0, 0, 0, $42, 1, 5, 1, 0, $F7]);
     $06:
       if FSysExCount = 9 then
       begin
@@ -264,7 +286,10 @@ begin
   end;
   if Value = $F0 then
   begin
-    FInSysEx := True; FSysExCount := 0; FStatus := 0; Exit;
+    FInSysEx := True;
+    FSysExCount := 0;
+    FStatus := 0;
+    Exit;
   end;
   if FInSysEx then
   begin
@@ -277,10 +302,13 @@ begin
     end
     else if Value < $80 then
     begin
-      if FSysExCount < Length(FSysEx) then FSysEx[FSysExCount] := Value;
-      if FSysExCount <= Length(FSysEx) then Inc(FSysExCount);
+      if FSysExCount < Length(FSysEx) then
+        FSysEx[FSysExCount] := Value;
+      if FSysExCount <= Length(FSysEx) then
+        Inc(FSysExCount);
     end
-    else FInSysEx := False;
+    else
+      FInSysEx := False;
     Exit;
   end;
   if Value >= $80 then
@@ -289,28 +317,38 @@ begin
     FDataCount := 0;
     Exit;
   end;
-  if (FStatus < $80) or (FStatus >= $F0) then Exit;
+  if (FStatus < $80) or (FStatus >= $F0) then
+    Exit;
   FData[FDataCount] := Value;
   Inc(FDataCount);
   var Kind := FStatus and $F0;
   var Needed := 2;
-  if Kind in [$C0, $D0] then Needed := 1;
-  if FDataCount < Needed then Exit;
+  if Kind in [$C0, $D0] then
+    Needed := 1;
+  if FDataCount < Needed then
+    Exit;
   FDataCount := 0;
   var Channel := FStatus and 7;
   case Kind of
     $80, $90:
       begin
-        if (FData[0] >= 60) and (Channel <> 1) then Channel := Channel or 8;
-        if (Kind = $80) or (FData[1] = 0) then NoteOff(Channel, FData[0])
-        else NoteOn(Channel, FData[0], FData[1]);
+        if (FData[0] >= 60) and (Channel <> 1) then
+          Channel := Channel or 8;
+        if (Kind = $80) or (FData[1] = 0) then
+          NoteOff(Channel, FData[0])
+        else
+          NoteOn(Channel, FData[0], FData[1]);
       end;
     $B0:
       case FData[0] of
-        7: FVolume := FData[1];
-        64: Sustain(Channel, FData[1] >= 64);
-        120, 123: AllNotesOff(Channel);
-        122: FLocalControl := FData[1] <> 0;
+        7:
+          FVolume := FData[1];
+        64:
+          Sustain(Channel, FData[1] >= 64);
+        120, 123:
+          AllNotesOff(Channel);
+        122:
+          FLocalControl := FData[1] <> 0;
       end;
     $C0:
       begin
@@ -321,9 +359,11 @@ begin
 end;
 
 procedure TMiraclePianoDevice.ApplyKeys(const Keys: TMiracleKeys);
-const Patches: array[0..5] of Byte = (0, 4, 6, 29, 2, 68);
+const
+  Patches: array[0..5] of Byte = (0, 4, 6, 29, 2, 68);
 begin
-  if not FConnected then Exit;
+  if not FConnected then
+    Exit;
   var Changed := (Keys - FAppliedKeys) + (FAppliedKeys - Keys);
   FAppliedKeys := Keys;
   for var Key in Changed do
@@ -333,28 +373,40 @@ begin
     begin
       var Note := Byte(MIRACLE_FIRST_NOTE + Key);
       var Velocity: Byte := 0;
-      if Down then Velocity := 100;
+      if Down then
+        Velocity := 100;
       Enqueue([$90, Note, Velocity]);
       if FLocalControl then
       begin
         var Channel: Byte := 0;
-        if Note >= 60 then Channel := 8;
-        if Down then NoteOn(Channel, Note, Velocity) else NoteOff(Channel, Note);
+        if Note >= 60 then
+          Channel := 8;
+        if Down then
+          NoteOn(Channel, Note, Velocity)
+        else
+          NoteOff(Channel, Note);
       end;
     end
     else if Key = MIRACLE_PEDAL then
     begin
       var Value: Byte := 0;
-      if Down then Value := 127;
+      if Down then
+        Value := 127;
       Enqueue([$B0, 64, Value]);
-      if FLocalControl then Sustain(0, Down);
+      if FLocalControl then
+        Sustain(0, Down);
     end
     else
     begin
       var Button: Byte;
-      if Key >= MIRACLE_PIANO then Button := Key - MIRACLE_PIANO
-      else if Key = MIRACLE_VOLUME_UP then Button := 6 else Button := 7;
-      if Down then Button := Button or 8;
+      if Key >= MIRACLE_PIANO then
+        Button := Key - MIRACLE_PIANO
+      else if Key = MIRACLE_VOLUME_UP then
+        Button := 6
+      else
+        Button := 7;
+      if Down then
+        Button := Button or 8;
       Enqueue([$F0, 0, 0, $42, 1, 1, Button, $F7]);
       if Down and FLocalControl then
         if Key >= MIRACLE_PIANO then
@@ -362,8 +414,10 @@ begin
           FPatches[0] := Patches[Key - MIRACLE_PIANO];
           FPatches[8] := FPatches[0];
         end
-        else if Key = MIRACLE_VOLUME_UP then FVolume := Min(127, FVolume + 13)
-        else FVolume := Max(0, FVolume - 13);
+        else if Key = MIRACLE_VOLUME_UP then
+          FVolume := Min(127, FVolume + 13)
+        else
+          FVolume := Max(0, FVolume - 13);
     end;
   end;
 end;
@@ -375,12 +429,17 @@ const
     vk5, vkT, vk6, vkY, vk7, vkU, vkI, vk9, vkO, vk0, vkP);
 begin
   for var I := 0 to High(Codes) do
-    if Code = Codes[I] then Exit(12 + I); // C3..E5, chromatic piano layout.
+    if Code = Codes[I] then
+      Exit(12 + I); // C3..E5, chromatic piano layout.
   case Code of
-    vkSpace: Exit(MIRACLE_PEDAL);
-    vkAdd: Exit(MIRACLE_VOLUME_UP);
-    vkSubtract: Exit(MIRACLE_VOLUME_DOWN);
-    vkF1..vkF6: Exit(MIRACLE_PIANO + Integer(Code) - vkF1);
+    vkSpace:
+      Exit(MIRACLE_PEDAL);
+    vkAdd:
+      Exit(MIRACLE_VOLUME_UP);
+    vkSubtract:
+      Exit(MIRACLE_VOLUME_DOWN);
+    vkF1..vkF6:
+      Exit(MIRACLE_PIANO + Integer(Code) - vkF1);
   end;
   Result := -1;
 end;
@@ -388,9 +447,12 @@ end;
 procedure TMiraclePianoDevice.SetHostKey(Code: UInt32; Pressed: Boolean);
 begin
   var Key := HostKey(Code);
-  if Key < 0 then Exit;
-  if Pressed then Include(FHostKeys, TMiracleKey(Key))
-  else Exclude(FHostKeys, TMiracleKey(Key));
+  if Key < 0 then
+    Exit;
+  if Pressed then
+    Include(FHostKeys, TMiracleKey(Key))
+  else
+    Exclude(FHostKeys, TMiracleKey(Key));
 end;
 
 procedure TMiraclePianoDevice.SetScreenKeys(const Keys: TMiracleKeys);
@@ -411,7 +473,8 @@ end;
 
 procedure TMiraclePianoDevice.MixAudio(var Samples: array of SmallInt; Count, SampleRate: Integer);
 begin
-  if not FConnected or (SampleRate <= 0) then Exit;
+  if not FConnected or (SampleRate <= 0) then
+    Exit;
   // Portable additive voices avoid a platform MIDI driver and its extra latency.
   var ReleaseFactor := Exp(-1 / (0.07 * SampleRate));
   var DecayFactor := Exp(-1 / (1.8 * SampleRate));
@@ -427,20 +490,27 @@ begin
         var P := FVoices[V].Phase;
         var Tone: Double;
         case FVoices[V].Patch of
-          4: Tone := (Sin(P) + 0.45 * Sin(2 * P) + 0.25 * Sin(3 * P)) / 1.7;
-          6, 7, 77..79: Tone := (Sin(P) + 0.5 * Sin(2 * P) + 0.3 * Sin(4 * P)) / 1.8;
-          29..31: Tone := (Sin(P) + 0.25 * Sin(3 * P)) / 1.25;
-          68..76, 80..95: Tone := (Sin(P) + 0.3 * Sin(2 * P)) / 1.3;
-        else Tone := (Sin(P) + 0.3 * Sin(2 * P) + 0.1 * Sin(3 * P)) / 1.4;
+          4:
+            Tone := (Sin(P) + 0.45 * Sin(2 * P) + 0.25 * Sin(3 * P)) / 1.7;
+          6, 7, 77..79:
+            Tone := (Sin(P) + 0.5 * Sin(2 * P) + 0.3 * Sin(4 * P)) / 1.8;
+          29..31:
+            Tone := (Sin(P) + 0.25 * Sin(3 * P)) / 1.25;
+          68..76, 80..95:
+            Tone := (Sin(P) + 0.3 * Sin(2 * P)) / 1.3;
+        else
+          Tone := (Sin(P) + 0.3 * Sin(2 * P) + 0.1 * Sin(3 * P)) / 1.4;
         end;
         Value := Value + Tone * FVoices[V].Level * FVoices[V].Velocity / 127;
         FVoices[V].Phase := P + Steps[V];
-        if FVoices[V].Phase >= 2 * Pi then FVoices[V].Phase := FVoices[V].Phase - 2 * Pi;
+        if FVoices[V].Phase >= 2 * Pi then
+          FVoices[V].Phase := FVoices[V].Phase - 2 * Pi;
         if not FVoices[V].Held and not FSustain[FVoices[V].Channel] then
           FVoices[V].Level := FVoices[V].Level * ReleaseFactor
         else if not (FVoices[V].Patch in [6, 7, 68..95]) then
           FVoices[V].Level := FVoices[V].Level * DecayFactor;
-        if FVoices[V].Level < 0.0001 then FVoices[V].Active := False;
+        if FVoices[V].Level < 0.0001 then
+          FVoices[V].Active := False;
       end;
     Samples[I] := EnsureRange(Round(Samples[I] + Value * 2200 * FVolume / 127), -32768, 32767);
   end;
@@ -485,3 +555,4 @@ begin
 end;
 
 end.
+

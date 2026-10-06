@@ -55,9 +55,12 @@ type
     FVBK: Byte;
     FBGPaletteIndex, FOBJPaletteIndex: Byte;
     FBGPaletteRAM, FOBJPaletteRAM: array[0..63] of Byte;
+    // Derived ARGB colors; rebuild after loading, never store in snapshots.
+    FBGColors, FOBJColors: array[0..31] of Integer;
     FColorIndexBuffer, FPaletteIndexBuffer: array[0..23039] of Byte;
     FObjectPixelBuffer: array[0..23039] of Boolean;
     FDisplayVRAM, FDisplayVRAMBank1: array[0..$2000 - 1] of Integer;
+    procedure RebuildPaletteColors;
     function CGBColor(const PaletteRAM: array of Byte; PaletteIndex, ColorIndex: Integer): Integer;
     function PixelColor(IsObject: Boolean; PaletteIndex, ColorIndex: Integer): Integer;
     function GetMode3Cycles: Integer;
@@ -119,6 +122,15 @@ begin
   Result := -$01000000 or (R shl 16) or (G shl 8) or B;
 end;
 
+procedure TGBCGPU.RebuildPaletteColors;
+begin
+  for var I := 0 to 31 do
+  begin
+    FBGColors[I] := CGBColor(FBGPaletteRAM, I shr 2, I and 3);
+    FOBJColors[I] := CGBColor(FOBJPaletteRAM, I shr 2, I and 3);
+  end;
+end;
+
 function TGBCGPU.PixelColor(IsObject: Boolean; PaletteIndex, ColorIndex: Integer): Integer;
 const
   DMGR: array[0..3] of Integer = ($E0, $88, $34, $08);
@@ -130,9 +142,9 @@ begin
   if FCGBMode then
   begin
     if IsObject then
-      Result := CGBColor(FOBJPaletteRAM, PaletteIndex, ColorIndex)
+      Result := FOBJColors[((PaletteIndex and 7) shl 2) or (ColorIndex and 3)]
     else
-      Result := CGBColor(FBGPaletteRAM, PaletteIndex, ColorIndex);
+      Result := FBGColors[((PaletteIndex and 7) shl 2) or (ColorIndex and 3)];
     Exit;
   end;
 
@@ -162,6 +174,7 @@ begin
       FOBJPaletteRAM[PaletteIndex * 8 + ColorIndex * 2] := DefaultCGBColors[ColorIndex] and $FF;
       FOBJPaletteRAM[PaletteIndex * 8 + ColorIndex * 2 + 1] := DefaultCGBColors[ColorIndex] shr 8;
     end;
+  RebuildPaletteColors;
 end;
 
 function TGBCGPU.ReadVRAM(Address: Integer): Byte;
@@ -200,14 +213,14 @@ function TGBCGPU.ReadCGBPalette(Address: Integer): Byte;
 begin
   case Address of
     $FF68:
-      Result := FBGPaletteIndex;
+      Result := FBGPaletteIndex or $40;
     $FF69:
       if CanAccessVRAM then
         Result := FBGPaletteRAM[FBGPaletteIndex and $3F]
       else
         Result := $FF;
     $FF6A:
-      Result := FOBJPaletteIndex;
+      Result := FOBJPaletteIndex or $40;
   else
     if CanAccessVRAM then
       Result := FOBJPaletteRAM[FOBJPaletteIndex and $3F]
@@ -224,7 +237,11 @@ begin
     $FF69:
       begin
         if CanAccessVRAM then
+        begin
           FBGPaletteRAM[FBGPaletteIndex and $3F] := Value;
+          var Index := (FBGPaletteIndex and $3F) shr 1;
+          FBGColors[Index] := CGBColor(FBGPaletteRAM, Index shr 2, Index and 3);
+        end;
         if (FBGPaletteIndex and $80) <> 0 then
           FBGPaletteIndex := $80 or ((FBGPaletteIndex + 1) and $3F);
       end;
@@ -233,7 +250,11 @@ begin
     $FF6B:
       begin
         if CanAccessVRAM then
+        begin
           FOBJPaletteRAM[FOBJPaletteIndex and $3F] := Value;
+          var Index := (FOBJPaletteIndex and $3F) shr 1;
+          FOBJColors[Index] := CGBColor(FOBJPaletteRAM, Index shr 2, Index and 3);
+        end;
         if (FOBJPaletteIndex and $80) <> 0 then
           FOBJPaletteIndex := $80 or ((FOBJPaletteIndex + 1) and $3F);
       end;
@@ -698,6 +719,8 @@ begin
   State.Field(SpritePalette, SizeOf(SpritePalette));
   State.Field(Palette, SizeOf(Palette));
   State.Field(SpriteList, SizeOf(SpriteList));
+  if State.Loading then
+    RebuildPaletteColors;
 end;
 
 end.

@@ -258,11 +258,13 @@ procedure TNesPowerPad.Paint;
 begin
   inherited;
   var Cell := Max(0, Min(Width / 4.4, Height / 3.8));
-  if Cell <= 0 then Exit;
+  if Cell <= 0 then
+    Exit;
   var X := (Width - Cell * 4.4) / 2;
   var Y := (Height - Cell * 3.8) / 2;
   var Opacity := AbsoluteOpacity;
-  if not AbsoluteEnabled then Opacity := Opacity * 0.5;
+  if not AbsoluteEnabled then
+    Opacity := Opacity * 0.5;
   Canvas.Fill.Kind := TBrushKind.Solid;
   Canvas.Stroke.Kind := TBrushKind.Solid;
   Canvas.Fill.Color := $FFE3E1D8;
@@ -289,13 +291,16 @@ begin
   begin
     var R := VisualKey.Bounds;
     var Color: TAlphaColor := $FF267CB5;
-    if not Odd(VisualKey.Key) then Color := $FFCA444C;
+    if not Odd(VisualKey.Key) then
+      Color := $FFCA444C;
     Canvas.Stroke.Color := Color;
     Canvas.Stroke.Thickness := Max(1, Cell * 0.025);
     Canvas.DrawEllipse(R, Opacity);
     R.Inflate(-Cell * 0.065, -Cell * 0.065);
-    if VisualKey.Key in Highlighted then Canvas.Fill.Color := $FFE4B849
-    else Canvas.Fill.Color := Color;
+    if VisualKey.Key in Highlighted then
+      Canvas.Fill.Color := $FFE4B849
+    else
+      Canvas.Fill.Color := Color;
     Canvas.FillEllipse(R, Opacity);
     Canvas.Fill.Color := $FFEFEDE4;
     Canvas.Font.Size := Cell * 0.31;

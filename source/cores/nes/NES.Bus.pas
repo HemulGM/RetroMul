@@ -23,6 +23,7 @@ type
     FZapper: TZapper;
     FMiraclePiano: TMiraclePianoDevice;
     FFourScoreEnabled: Boolean;
+    FDisconnectedPads: Byte;
     FControllerStrobe: Boolean;
     FControllerReadIndex: array[0..1] of Integer;
     FDmaActive: Boolean;
@@ -72,6 +73,7 @@ type
     property DmaWritePending: Boolean read FDmaHaveData;
     property HaltedCpuAddress: UInt16 read FHaltedCpuAddress write FHaltedCpuAddress;
     property TimedIo: Boolean read FTimedIo write FTimedIo;
+    property DisconnectedPads: Byte read FDisconnectedPads write FDisconnectedPads;
     property FourScoreEnabled: Boolean read FFourScoreEnabled write FFourScoreEnabled;
     property Zapper: TZapper read FZapper write FZapper;
   end;
@@ -247,17 +249,25 @@ begin
     Extra := FController4;
   end;
   if not FFourScoreEnabled then
+  begin
+    if (FDisconnectedPads and (1 shl Port)) <> 0 then
+      Exit(0);
     Exit(Primary.Read);
+  end;
   if FControllerStrobe then
+  begin
+    if (FDisconnectedPads and (1 shl Port)) <> 0 then
+      Exit(0);
     Exit(Primary.Read and 1);
+  end;
 
   var Index := FControllerReadIndex[Port];
   if Index < 8 then
-    Result := Primary.Read and 1
+    Result := (Primary.Read and 1) * Ord((FDisconnectedPads and (1 shl Port)) = 0)
   else if Index < 16 then
   begin
     if Extra <> nil then
-      Result := Extra.Read and 1
+      Result := (Extra.Read and 1) * Ord((FDisconnectedPads and (1 shl (Port + 2))) = 0)
     else
       Result := 0;
   end

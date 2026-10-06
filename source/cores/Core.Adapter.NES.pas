@@ -93,13 +93,13 @@ type
     procedure SetKeys4(const Value: TKeyMap);
   end;
 
-  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore)
+  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationAudioDiagnostics, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore)
   private
     FThread: TNesEmulationThread;
     FGamepadInput: TEmulatorInput;
     FConfig: INesEmulatorConfig;
     FFrameNumber: UInt64;
-    FError: string;
+    FError, FAudioError: string;
     procedure ApplyGamepadInput;
     function GetName: string;
     function GetSupportsSnapshots: Boolean;
@@ -140,6 +140,7 @@ type
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
     function TakeError: string;
+    function TakeAudioError: string;
     function GetConfig: IEmulatorConfig;
     function IsPaused: Boolean;
     function Zapper: TZapper;
@@ -211,11 +212,10 @@ begin
   FConfig := TNesEmulatorConfig.Create(ConfigPath, CoreStorage);
   FConfig.Load;
   FThread := TNesEmulationThread.Create(Stream, CoreStorage, RomName,
-    FConfig.FourScore, FConfig.Region, FConfig.AudioEnabled, FConfig.AudioVolume);
+    FConfig.FourScore, FConfig.Region, FConfig.AudioEnabled, FConfig.AudioVolume, '', '', ConfigPath);
   // Select port 2 before starting the worker. A light gun replaces the pad
   // and changes reads even when the trigger is not pressed.
-  FThread.Console.Zapper.Enabled := FConfig.ZapperEnabled and
-    not FThread.Console.UsesPowerPad and not FThread.Console.UsesMiraclePiano;
+  // Input ports are configured before the worker caches peripheral capabilities.
 end;
 
 destructor TNesCoreAdapter.Destroy;
@@ -276,27 +276,26 @@ begin
 end;
 
 procedure TNesCoreAdapter.ApplyGamepadInput;
+const
+  Mapping: array[TNesButton] of TEmulatorButton =
+    (TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Select, TEmulatorButton.Start,
+    TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right);
 var
+  Pads: array[0..3] of TEmulatorButtons;
   Buttons: TNesButtons;
 begin
-  Buttons := [];
-  if TEmulatorButton.A in FGamepadInput.Buttons then
-    Include(Buttons, TNesButton.A);
-  if TEmulatorButton.B in FGamepadInput.Buttons then
-    Include(Buttons, TNesButton.B);
-  if TEmulatorButton.Select in FGamepadInput.Buttons then
-    Include(Buttons, TNesButton.Select);
-  if TEmulatorButton.Start in FGamepadInput.Buttons then
-    Include(Buttons, TNesButton.Start);
-  if TEmulatorButton.Up in FGamepadInput.Buttons then
-    Include(Buttons, TNesButton.Up);
-  if TEmulatorButton.Down in FGamepadInput.Buttons then
-    Include(Buttons, TNesButton.Down);
-  if TEmulatorButton.Left in FGamepadInput.Buttons then
-    Include(Buttons, TNesButton.Left);
-  if TEmulatorButton.Right in FGamepadInput.Buttons then
-    Include(Buttons, TNesButton.Right);
-  FThread.SetButtons(INPUT_SCREEN_GAMEPAD, 1, Buttons);
+  Pads[0] := FGamepadInput.Buttons;
+  Pads[1] := FGamepadInput.Buttons2;
+  Pads[2] := FGamepadInput.Buttons3;
+  Pads[3] := FGamepadInput.Buttons4;
+  for var I := 0 to 3 do
+  begin
+    Buttons := [];
+    for var Button := Low(TNesButton) to High(TNesButton) do
+      if Mapping[Button] in Pads[I] then
+        Include(Buttons, Button);
+    FThread.SetButtons(INPUT_SCREEN_GAMEPAD, I + 1, Buttons);
+  end;
 end;
 
 procedure TNesCoreAdapter.ClearInput;
@@ -405,6 +404,12 @@ begin
   FError := '';
 end;
 
+function TNesCoreAdapter.TakeAudioError: string;
+begin
+  Result := FAudioError;
+  FAudioError := '';
+end;
+
 function TNesCoreAdapter.GetConfig: IEmulatorConfig;
 begin
   Result := FConfig;
@@ -416,6 +421,7 @@ var
   Status: TEmulationStatus;
 begin
   Result := FThread.TakeSnapshot(NesFrame, Status);
+  FAudioError := Status.AudioError;
   if Status.Error <> '' then
     FError := Status.Error;
   if not Result then
@@ -619,3 +625,4 @@ begin
 end;
 
 end.
+

@@ -3,9 +3,10 @@
 interface
 
 uses
-  Core.Storage, System.Classes, System.SysUtils, System.SyncObjs, NES.Types,
-  NES.Console, NES.Input, PCM.Audio, NES.AudioDiagnostics, NES.Controller,
-  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice;
+  Core.Storage, Core.RomFormat, System.Classes, System.SysUtils, System.SyncObjs,
+  NES.Types, NES.Console, NES.Input, PCM.Audio, NES.AudioDiagnostics,
+  NES.Controller, Core.InputConfig, NES.FamicomKeyboardDevice,
+  NES.FamicomDataRecorder, NES.MiraclePianoDevice;
 
 const
   NES_SAMPLE_RATE = 44100;
@@ -72,8 +73,8 @@ type
     procedure TerminatedSet; override;
   public
     // Validates the ROM before replacing the current session. Call Start once.
-    constructor Create(const FileName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = ''); overload;
-    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = ''); overload;
+    constructor Create(const FileName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = ''; const InputConfigFile: string = ''); overload;
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = ''; const InputConfigFile: string = ''); overload;
     destructor Destroy; override;
     procedure StopAndSave;
     procedure SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2: TKeyMap); overload;
@@ -119,19 +120,19 @@ uses
   System.Diagnostics, System.Math, System.IOUtils, System.UITypes, NES.Consts,
   Core.SavePaths, Core.PerformanceHints, PCM.Audio.Null;
 
-constructor TNesEmulationThread.Create(const FileName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride; AudioEnabled: Boolean; AudioVolume: Single; const SaveDirectory, SnapshotRoot: string);
+constructor TNesEmulationThread.Create(const FileName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride; AudioEnabled: Boolean; AudioVolume: Single; const SaveDirectory, SnapshotRoot, InputConfigFile: string);
 begin
   var Storage := TStorage.Default;
   var Stream := Storage.OpenRead(FileName);
   try
     Create(Stream, Storage, FileName, FourScoreEnabled, RegionOverride,
-      AudioEnabled, AudioVolume, SaveDirectory, SnapshotRoot);
+      AudioEnabled, AudioVolume, SaveDirectory, SnapshotRoot, InputConfigFile);
   finally
     Stream.Free;
   end;
 end;
 
-constructor TNesEmulationThread.Create(Stream: TStream; const Storage: IStorage; const RomName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride; AudioEnabled: Boolean; AudioVolume: Single; const SaveDirectory, SnapshotRoot: string);
+constructor TNesEmulationThread.Create(Stream: TStream; const Storage: IStorage; const RomName: string; FourScoreEnabled: Boolean; RegionOverride: TRegionOverride; AudioEnabled: Boolean; AudioVolume: Single; const SaveDirectory, SnapshotRoot, InputConfigFile: string);
 begin
   inherited Create(True);
   FStorage := Storage;
@@ -156,6 +157,19 @@ begin
     FSaveDirectory := FStorage.SaveRoot;
   FConsole := TNesConsole.Create(FourScoreEnabled, FStorage);
   FConsole.LoadRom(Stream, RomName, RegionOverride);
+  var ConfigPath := InputConfigFile;
+  if ConfigPath = '' then
+    ConfigPath := FStorage.ConfigFile(ROM_SYSTEM_NES);
+  // Preserve the legacy Zapper option when port 2 still follows automatic selection.
+  var PortIni := FStorage.ReadConfig(ConfigPath);
+  var Ports := ReadCoreInputPorts(PortIni);
+  try
+    if (Ports.Devices[1] = 'auto') and PortIni.ReadBool('Input', 'Zapper', False) then
+      Ports.Devices[1] := 'zapper';
+  finally
+    PortIni.Free;
+  end;
+  FConsole.ConfigureInputPorts(Ports);
   FUsesSuborKeyboard := FConsole.SuborKeyboard.Connected;
   FUsesFamicomKeyboard := FConsole.FamicomKeyboard.Connected;
   FUsesMiraclePiano := FConsole.UsesMiraclePiano;
@@ -166,7 +180,17 @@ begin
   FSnapshotDirectory := FStorage.GamePath(SnapshotBase, RomName, FConsole.RomIdentity, '');
   FTapeDirectory := FStorage.GamePath(FSaveDirectory, RomName, FConsole.RomIdentity, '');
   if FUsesDataRecorder then
-    FConsole.DataRecorder.LoadTape(TPath.Combine(FTapeDirectory, 'data.tape'), True);
+  begin
+    var Ini := FStorage.ReadConfig(ConfigPath);
+    try
+      var TapePath := Ini.ReadString('Ports', 'TapeFile', '');
+      if TapePath = '' then
+        TapePath := TPath.Combine(FTapeDirectory, 'data.tape');
+      FConsole.DataRecorder.LoadTape(TapePath, True);
+    finally
+      Ini.Free;
+    end;
+  end;
   FStatus.TapeProgress := FConsole.DataRecorder.GetProgress;
   FStatus.TapeProgress.DefaultFile := True;
   FStatus.Region := FConsole.Region;
@@ -421,21 +445,31 @@ begin
       var PianoKey := TMiraclePianoDevice.HostKey(Code);
       if PianoKey >= 0 then
       begin
-        if Pressed then Include(FMiracleKeys, TMiracleKey(PianoKey))
-        else Exclude(FMiracleKeys, TMiracleKey(PianoKey));
+        if Pressed then
+          Include(FMiracleKeys, TMiracleKey(PianoKey))
+        else
+          Exclude(FMiracleKeys, TMiracleKey(PianoKey));
         Exit;
       end;
       // Piano notes own the letter keys. Menu controls stay accessible.
       var MenuKey: TNesButton;
       case Code of
-        vkReturn: MenuKey := TNesButton.Start;
-        vkTab: MenuKey := TNesButton.Select;
-        vkBack: MenuKey := TNesButton.B;
-        vkUp: MenuKey := TNesButton.Up;
-        vkDown: MenuKey := TNesButton.Down;
-        vkLeft: MenuKey := TNesButton.Left;
-        vkRight: MenuKey := TNesButton.Right;
-      else Exit;
+        vkReturn:
+          MenuKey := TNesButton.Start;
+        vkTab:
+          MenuKey := TNesButton.Select;
+        vkBack:
+          MenuKey := TNesButton.B;
+        vkUp:
+          MenuKey := TNesButton.Up;
+        vkDown:
+          MenuKey := TNesButton.Down;
+        vkLeft:
+          MenuKey := TNesButton.Left;
+        vkRight:
+          MenuKey := TNesButton.Right;
+      else
+        Exit;
       end;
       FInput.SetButton(INPUT_KEYBOARD, 1, MenuKey, Pressed);
       if Code = vkReturn then
@@ -481,8 +515,11 @@ procedure TNesEmulationThread.SetMiracleKeys(const Keys: TMiracleKeys);
 begin
   FLock.Enter;
   try
-    if FUsesMiraclePiano then FConsole.MiraclePiano.SetScreenKeys(Keys);
-  finally FLock.Leave; end;
+    if FUsesMiraclePiano then
+      FConsole.MiraclePiano.SetScreenKeys(Keys);
+  finally
+    FLock.Leave;
+  end;
 end;
 
 function TNesEmulationThread.GetMiracleKeys: TMiracleKeys;
@@ -490,7 +527,9 @@ begin
   FLock.Enter;
   try
     Result := FMiracleKeys + FConsole.MiraclePiano.GetPressedKeys;
-  finally FLock.Leave; end;
+  finally
+    FLock.Leave;
+  end;
 end;
 
 procedure TNesEmulationThread.SetFamicomKeys(const Keys: TFamicomKeys);
@@ -879,7 +918,8 @@ begin
         finally
           FLock.Leave;
         end;
-        if FUsesMiraclePiano then FConsole.MiraclePiano.ApplyKeys(PianoKeys);
+        if FUsesMiraclePiano then
+          FConsole.MiraclePiano.ApplyKeys(PianoKeys);
         var T1 := TStopwatch.GetTimeStamp;
         FConsole.RunFrame;
         var T2 := TStopwatch.GetTimeStamp;
@@ -889,7 +929,8 @@ begin
           Count := FConsole.Apu.PopSamples(Samples);
           if Count > 0 then
           begin
-            if FUsesMiraclePiano then FConsole.MiraclePiano.MixAudio(Samples, Count, NES_SAMPLE_RATE);
+            if FUsesMiraclePiano then
+              FConsole.MiraclePiano.MixAudio(Samples, Count, NES_SAMPLE_RATE);
             for var I := 0 to Count - 1 do
               Samples[I] := Round(Samples[I] * FAudioVolume);
             FAudio.Submit(Samples, Count);

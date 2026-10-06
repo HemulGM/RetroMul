@@ -81,6 +81,9 @@ type
     FFetchTile: UInt8;
     FMapperHasPpuClock: Boolean;
     FCacheBackground: Boolean;
+    // Derived row data; valid only inside synchronous RenderScanline.
+    FSpriteRowCached: array[0..63] of Boolean;
+    FSpriteRowLow, FSpriteRowHigh: array[0..63] of UInt8;
     FBackgroundTileX: Integer;
     FBackgroundLow, FBackgroundHigh, FBackgroundPalette: UInt8;
     FMapperSpriteScanline: Integer;
@@ -89,6 +92,7 @@ type
     procedure ClockMapperAddress;
     procedure RefreshOpenBus(Value, Mask: UInt8);
     procedure ClockOam;
+    function AdvanceWaitingSprites(Offset: Integer): Boolean; inline;
     procedure ClockPixels;
     procedure ClockMemory;
     procedure IncrementX;
@@ -824,6 +828,22 @@ begin
   end;
 end;
 
+function TPPU.AdvanceWaitingSprites(Offset: Integer): Boolean;
+begin
+  var Counters: UInt32;
+  Move(FPixel.SpriteX[Offset], Counters, SizeOf(Counters));
+  var Bits := Counters and $FEFEFEFE;
+  // Each byte must be at least two: no output this dot, no counter expiry,
+  // and subtracting one from all four bytes cannot borrow across lanes.
+  Result := ((((Bits and $7F7F7F7F) + $7F7F7F7F) or Bits or $7F7F7F7F)
+    and $80808080) = $80808080;
+  if Result then
+  begin
+    Counters := Counters - $01010101;
+    Move(Counters, FPixel.SpriteX[Offset], SizeOf(Counters));
+  end;
+end;
+
 procedure TPPU.ClockPixels;
 begin
   if FPixel.HitPending then
@@ -839,10 +859,17 @@ begin
   if (FScanline < 240) and (FCycle >= 1) and (FCycle <= 256) then
   begin
     var X := FCycle - 1;
-    var Background: UInt8 := 0;
-    if ((FMask and $08) <> 0) and ((X >= 8) or ((FMask and 2) <> 0)) then
-      Background := ((FPixel.Low shr (15 - FFineX)) and 1) or (((FPixel.High shr (15 - FFineX)) and 1) shl 1);
-    for var i := 0 to 7 do
+    var FirstSprite := 0;
+    var LastSprite := 7;
+    // The skipped odd-frame dot makes waiting sprites output at X=0.
+    if not ((X = 0) and FPixel.DotSkipped) then
+    begin
+      if ((FPixel.Counting and $0F) = $0F) and AdvanceWaitingSprites(0) then
+        FirstSprite := 4;
+      if ((FPixel.Counting and $F0) = $F0) and AdvanceWaitingSprites(4) then
+        LastSprite := 3;
+    end;
+    for var i := FirstSprite to LastSprite do
     begin
       var OutputSprite := ((FPixel.Counting and (1 shl i)) = 0) or ((X = 0) and FPixel.DotSkipped);
       if (FPixel.Counting and (1 shl i)) <> 0 then
@@ -852,28 +879,42 @@ begin
         if FPixel.SpriteX[i] = 0 then
           FPixel.Counting := FPixel.Counting and not (1 shl i);
       end;
-      if OutputSprite and Rendering then
+      if OutputSprite and Rendering and
+        ((FPixel.SpriteLow[i] or FPixel.SpriteHigh[i]) <> 0) then
       begin
-        var SpritePixel: UInt8;
+        // All eight shifters still advance on every dot. Their pixel values
+        // are needed here only while a sprite-zero hit is still possible.
+        if FPixel.SpriteZero[i] and ((FStatus and $40) = 0) and
+          ((FMask and $18) = $18) and
+          ((X >= 8) or ((FMask and 2) <> 0)) and
+          ((X >= 8) or ((FMask and 4) <> 0)) and (X <> 255) then
+        begin
+          var Background := ((FPixel.Low shr (15 - FFineX)) and 1) or
+            (((FPixel.High shr (15 - FFineX)) and 1) shl 1);
+          if Background <> 0 then
+          begin
+            var SpritePixel: UInt8;
+            if (FPixel.SpriteAttr[i] and $40) <> 0 then
+              SpritePixel := (FPixel.SpriteLow[i] and 1) or ((FPixel.SpriteHigh[i] and 1) shl 1)
+            else
+              SpritePixel := ((FPixel.SpriteLow[i] shr 7) and 1) or ((FPixel.SpriteHigh[i] shr 6) and 2);
+            if SpritePixel <> 0 then
+            begin
+              FPixel.HitPending := True;
+              FSprite0HitX := X;
+              FSprite0HitY := FScanline;
+            end;
+          end;
+        end;
         if (FPixel.SpriteAttr[i] and $40) <> 0 then
         begin
-          SpritePixel := (FPixel.SpriteLow[i] and 1) or ((FPixel.SpriteHigh[i] and 1) shl 1);
           FPixel.SpriteLow[i] := FPixel.SpriteLow[i] shr 1;
           FPixel.SpriteHigh[i] := FPixel.SpriteHigh[i] shr 1;
         end
         else
         begin
-          SpritePixel := ((FPixel.SpriteLow[i] shr 7) and 1) or ((FPixel.SpriteHigh[i] shr 6) and 2);
           FPixel.SpriteLow[i] := (FPixel.SpriteLow[i] shl 1) and $FF;
           FPixel.SpriteHigh[i] := (FPixel.SpriteHigh[i] shl 1) and $FF;
-        end;
-        if (Background <> 0) and (SpritePixel <> 0) and FPixel.SpriteZero[i] and
-          ((FMask and $10) <> 0) and ((X >= 8) or ((FMask and 4) <> 0)) and
-          (X <> 255) and ((FStatus and $40) = 0) then
-        begin
-          FPixel.HitPending := True;
-          FSprite0HitX := X;
-          FSprite0HitY := FScanline;
         end;
       end;
     end;
@@ -1272,13 +1313,19 @@ begin
     Inc(ScrollX, 16);
   while ScrollX < 0 do
     Inc(ScrollX, 512);
+  var WorldX: Integer := (X + ScrollX) mod 512;
+  if FRenderingLine and FCacheBackground and (FBackgroundTileX = (WorldX shr 3)) then
+  begin
+    PaletteIndex := FBackgroundPalette;
+    var Shift := 7 - (WorldX and 7);
+    Exit((((FBackgroundHigh shr Shift) and 1) shl 1) or ((FBackgroundLow shr Shift) and 1));
+  end;
   var ScrollY: Integer := (((Integer(RenderV shr 5)) and $1F) shl 3) or ((RenderV shr 12) and 7);
   // PPUCTRL writes t's nametable bits, but PPUADDR and scrolling can change
   // them independently. Fetches must use the captured VRAM address, including
   // the nametable toggle from the two pre-render tile fetches above.
   var BaseNameTable: Integer := (RenderV shr 10) and 3;
 
-  var WorldX: Integer := (X + ScrollX) mod 512;
   var WorldY: Integer;
   if FRenderingLine then
     WorldY := ScrollY mod 480
@@ -1290,13 +1337,6 @@ begin
   var Table: Integer := (TableY shl 1) or TableX;
   var LocalX: Integer := WorldX mod 256;
   var LocalY: Integer := WorldY mod 240;
-
-  if FRenderingLine and FCacheBackground and (FBackgroundTileX = (WorldX shr 3)) then
-  begin
-    PaletteIndex := FBackgroundPalette;
-    var Shift := 7 - (LocalX and 7);
-    Exit((((FBackgroundHigh shr Shift) and 1) shl 1) or ((FBackgroundLow shr Shift) and 1));
-  end;
 
   var NameAddress: UInt16 := $2000 + UInt16(Table) * $0400 + UInt16((LocalY div 8) * 32 + (LocalX div 8));
   var TileIndex: UInt8 := PpuReadMemory(NameAddress, True);
@@ -1392,8 +1432,22 @@ begin
       PatternBase := UInt16((FRenderCtrl and $08) shr 3) shl 12;
 
     Address := PatternBase + UInt16(TileIndex) * 16 + UInt16(Row and 7);
-    Lo := PpuReadMemory(Address, True);
-    Hi := PpuReadMemory(Address + 8, True);
+    if FRenderingLine and FCacheBackground and FSpriteRowCached[i] then
+    begin
+      Lo := FSpriteRowLow[i];
+      Hi := FSpriteRowHigh[i];
+    end
+    else
+    begin
+      Lo := PpuReadMemory(Address, True);
+      Hi := PpuReadMemory(Address + 8, True);
+      if FRenderingLine and FCacheBackground then
+      begin
+        FSpriteRowCached[i] := True;
+        FSpriteRowLow[i] := Lo;
+        FSpriteRowHigh[i] := Hi;
+      end;
+    end;
     BitPosition := 7 - Column;
 
     Result := (((Hi shr BitPosition) and 1) shl 1) or ((Lo shr BitPosition) and 1);
@@ -1433,6 +1487,21 @@ begin
   // Keep per-pixel reads for boards with mapper latches or fetch-dependent data.
   FCacheBackground := (FMapper <> nil) and FMapper.AllowsPpuReadCaching;
   FBackgroundTileX := -1;
+  FillChar(FSpriteRowCached, SizeOf(FSpriteRowCached), 0);
+  // Palette reads have no mapper callbacks. Freeze the 32 ARGB entries for
+  // this synchronous line, preserving universal-color aliases and grayscale.
+  var Colors: array[0..31] of UInt32;
+  var ColorMask: UInt8 := $3F;
+  if (FRenderMask and 1) <> 0 then
+    ColorMask := $30;
+  for var i := 0 to 31 do
+  begin
+    var ColorIndex := PpuReadMemory($3F00 + i) and ColorMask;
+    if FUseVs2C04DPalette then
+      Colors[i] := NES_VS_2C04D_PALETTE[ColorIndex]
+    else
+      Colors[i] := NES_PALETTE[ColorIndex];
+  end;
   var Y: Integer := FScanline;
   // OAM and control registers cannot change during this synchronous render.
   // Preserve the existing unlimited-sprite behavior (do not impose an 8 limit).
@@ -1450,9 +1519,25 @@ begin
       end;
   end;
   try
+    var BackgroundPixelsLeft := 0;
     for var X := 0 to NES_WIDTH - 1 do
     begin
-      BgPixel := SampleBackgroundPixel(X, Y, BgPalette);
+      if BackgroundPixelsLeft > 0 then
+      begin
+        // Only passive boards enter this path. Their fetched pattern and
+        // palette remain fixed until the end of this eight-pixel tile.
+        var Shift := BackgroundPixelsLeft - 1;
+        BgPixel := (((FBackgroundHigh shr Shift) and 1) shl 1) or
+          ((FBackgroundLow shr Shift) and 1);
+        BgPalette := FBackgroundPalette;
+        Dec(BackgroundPixelsLeft);
+      end
+      else
+      begin
+        BgPixel := SampleBackgroundPixel(X, Y, BgPalette);
+        if FCacheBackground and (FBackgroundTileX >= 0) then
+          BackgroundPixelsLeft := 7 - ((X + FRenderFineX) and 7);
+      end;
       SprPixel := SampleSpritePixel(X, Y, SprPalette, PriorityBehindBg, SpriteZero);
       if (BgPixel = 0) and (SprPixel = 0) then
         FinalPaletteAddress := 0
@@ -1464,11 +1549,7 @@ begin
         FinalPaletteAddress := (BgPalette shl 2) or BgPixel
       else
         FinalPaletteAddress := (SprPalette shl 2) or SprPixel;
-      var ColorIndex := PpuReadMemory($3F00 + FinalPaletteAddress) and $3F;
-      if FUseVs2C04DPalette then
-        FDrawingFrame[X, Y] := NES_VS_2C04D_PALETTE[ColorIndex]
-      else
-        FDrawingFrame[X, Y] := NES_PALETTE[ColorIndex];
+      FDrawingFrame[X, Y] := Colors[FinalPaletteAddress];
     end;
   finally
     FCacheBackground := False;

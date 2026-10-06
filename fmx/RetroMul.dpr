@@ -29,6 +29,11 @@ uses
   NES.PowerPad in 'devices\NES.PowerPad.pas',
   NES.DataRecorder in 'devices\NES.DataRecorder.pas',
   RM.Main in 'RM.Main.pas' {FormMain},
+  RM.FrameUpload in 'RM.FrameUpload.pas',
+  RM.Input in 'RM.Input.pas',
+  RM.Settings in 'RM.Settings.pas',
+  Core.InputConfig in '..\source\cores\Core.InputConfig.pas',
+  FMXInput in '..\source\input\FMXInput.pas',
   {$IFDEF ANDROID}
   RM.DocumentTransfer.Android in 'RM.DocumentTransfer.Android.pas',
   Core.Storage.Android in '..\source\cores\Core.Storage.Android.pas',

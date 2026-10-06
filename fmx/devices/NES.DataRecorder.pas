@@ -69,7 +69,8 @@ type
 procedure TRecorderButton.ApplyStyle;
 begin
   inherited;
-  if ResourceLink is TControl then TControl(ResourceLink).Visible := False;
+  if ResourceLink is TControl then
+    TControl(ResourceLink).Visible := False;
 end;
 
 procedure TRecorderButton.SetIsPressed(const Value: Boolean);
@@ -81,22 +82,27 @@ end;
 procedure TRecorderButton.Paint;
 begin
   var Opacity := AbsoluteOpacity;
-  if not AbsoluteEnabled then Opacity := Opacity * 0.45;
+  if not AbsoluteEnabled then
+    Opacity := Opacity * 0.45;
   var R := LocalRect;
   Canvas.Fill.Kind := TBrushKind.Solid;
   Canvas.Fill.Color := $FF776A54;
   Canvas.FillRect(R, 2, 2, AllCorners, Opacity);
   R.Inflate(-1, -1);
-  if IsPressed then R.Top := R.Top + 2
-  else R.Bottom := R.Bottom - 2;
+  if IsPressed then
+    R.Top := R.Top + 2
+  else
+    R.Bottom := R.Bottom - 2;
   Canvas.Fill.Color := $FFE9E2CE;
-  if Tag = Ord(TapeRecord) then Canvas.Fill.Color := $FF934037;
+  if Tag = Ord(TapeRecord) then
+    Canvas.Fill.Color := $FF934037;
   Canvas.FillRect(R, 2, 2, AllCorners, Opacity);
   Canvas.Font.Family := 'Arial';
   Canvas.Font.Style := [TFontStyle.fsBold];
   Canvas.Font.Size := Max(8, Min(12, Height * 0.45));
   Canvas.Fill.Color := $FF41382E;
-  if Tag = Ord(TapeRecord) then Canvas.Fill.Color := $FFFFEFCE;
+  if Tag = Ord(TapeRecord) then
+    Canvas.Fill.Color := $FFFFEFCE;
   Canvas.FillText(R, Text, False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
 end;
 
@@ -257,7 +263,8 @@ procedure TNesDataRecorder.Paint;
     else
       Canvas.Font.Style := [];
     var TextRight := Width * 0.55;
-    if Width < 480 then TextRight := Width - 10;
+    if Width < 480 then
+      TextRight := Width - 10;
     Canvas.FillText(RectF(10, Y, TextRight, Y + Height * 0.085), Value,
       False, AbsoluteOpacity, [], TTextAlign.Leading, TTextAlign.Center);
   end;

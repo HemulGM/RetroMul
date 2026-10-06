@@ -3,8 +3,8 @@
 interface
 
 uses
-  Core.Storage, System.Classes, System.Types, System.SysUtils, FMX.Forms, FMX.Graphics,
-  FMX.Objects, System.Threading, System.Generics.Collections,
+  Core.Storage, System.Classes, System.Types, System.SysUtils, FMX.Forms,
+  FMX.Graphics, FMX.Objects, System.Threading, System.Generics.Collections,
   System.Net.HttpClient;
 
 type
@@ -216,17 +216,24 @@ begin
   Result := TBitmap.Create;
   try
     var Source := Storage;
-    if Source = nil then Source := TStorage.Default;
+    if Source = nil then
+      Source := TStorage.Default;
     var Stream := Source.OpenRead(FileName);
-    try Result.LoadFromStream(Stream); finally Stream.Free; end;
+    try
+      Result.LoadFromStream(Stream);
+    finally
+      Stream.Free;
+    end;
     if (AFitWidth > 0) and (AFitHeight > 0) then
     begin
       var Fit := TRectF.Create(0, 0, Result.Width, Result.Height);
       Fit.Fit(TRectF.Create(0, 0, AFitWidth, AFitHeight));
       var Width := Trunc(Fit.Width);
       var Height := Trunc(Fit.Height);
-      if Width < 1 then Width := 1;
-      if Height < 1 then Height := 1;
+      if Width < 1 then
+        Width := 1;
+      if Height < 1 then
+        Height := 1;
       var Thumbnail := Result.CreateThumbnail(Width, Height);
       Result.Free;
       Result := Thumbnail;

@@ -17,6 +17,7 @@ type
 
   TEmulatorInput = record
     Buttons: TEmulatorButtons;
+    Buttons3, Buttons4: TEmulatorButtons; // NES Four Score controllers.
     Buttons2: TEmulatorButtons; // Second controller; ignored by single-player cores.
   end;
 
@@ -75,6 +76,12 @@ type
     Pixels: TArray<TAlphaColor>;
     FrameNumber: UInt64;
     FramesPerSecond: Double;
+  end;
+
+  // Device warnings do not stop emulation; frontends may report them once.
+  IEmulationAudioDiagnostics = interface
+    ['{FB3848EA-CA1B-4D12-A7ED-1D31776921A6}']
+    function TakeAudioError: string;
   end;
 
   IEmulationCore = interface

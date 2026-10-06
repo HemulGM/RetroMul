@@ -1,6 +1,4 @@
-﻿// PT3 replay adapted from Volutar's C version of Bulba's player.
-// Copyright (c) 2023 Volutar, MIT; see LICENSE.PT3Player.
-unit RetroTune.PT3.Engine;
+﻿unit RetroTune.PT3.Engine;
 
 {$B-}
 

@@ -1,6 +1,4 @@
-﻿// YM2149F for RetroMul. DAC measurements and envelope model follow Ayumi
-// by Peter Sovietov (MIT), see LICENSE.Ayumi.
-unit ZX.Sound.YM2149;
+﻿unit ZX.Sound.YM2149;
 
 interface
 
@@ -8,6 +6,8 @@ uses
   System.SysUtils, Core.AudioFilter;
 
 type
+  TYM2149NativeTick = procedure(Rate: Double) of object;
+
   TYM2149Levels = array[0..2] of Byte;
 
   TYM2149PortRead = function(Port: Integer): Byte of object;
@@ -19,6 +19,9 @@ type
   private
     FRegisters: array[0..15] of Byte;
     FAddress: Byte;
+    FAYModel: Boolean;
+    FDACOverride: array[0..2] of Double;
+    FOnNativeTick: TYM2149NativeTick;
     FClock, FSampleRate, FDivider: Integer;
     FToneCounter: array[0..2] of Integer;
     FTone: array[0..2] of Boolean;
@@ -36,16 +39,21 @@ type
   public
     constructor Create(Clock: Integer = 1773400; SampleRate: Integer = 44100; SelectPinHigh: Boolean = True);
     procedure Reset;
+    procedure RetriggerTone(Channel: Integer);
     procedure WriteAddress(Value: Byte);
     procedure WriteData(Value: Byte);
     function ReadData: Byte;
     procedure WriteRegister(RegisterID, Value: Byte);
     function ReadRegister(RegisterID: Byte): Byte;
+    // Negative amplitude releases the sample DAC override.
+    procedure SetDACOverride(Channel: Integer; Amplitude: Double);
     procedure SetPan(Channel: Integer; Left, Right: Double);
     procedure Step(out Levels: TYM2149Levels);
     procedure GenerateNative(out Left, Right: Double);
     procedure Sample(out Left, Right: SmallInt);
     procedure Render(var PCM: array of SmallInt; Frames: Integer);
+    property AYModel: Boolean read FAYModel write FAYModel;
+    property OnNativeTick: TYM2149NativeTick read FOnNativeTick write FOnNativeTick;
     property Clock: Integer read FClock;
     property SampleRate: Integer read FSampleRate;
     property OnPortRead: TYM2149PortRead read FOnPortRead write FOnPortRead;
@@ -62,6 +70,22 @@ const
   EnvelopeModes: array[0..15, 0..1] of ShortInt =
     ((-1, 0), (-1, 0), (-1, 0), (-1, 0), (1, 0), (1, 0), (1, 0), (1, 0),
     (-1, -1), (-1, 0), (-1, 1), (-1, 2), (1, 1), (1, 2), (1, -1), (1, 0));
+  AYDAC: array[0..31] of Double = (0.0, 0.0,
+    0.00999465934234, 0.00999465934234,
+    0.0144502937362, 0.0144502937362,
+    0.0210574502174, 0.0210574502174,
+    0.0307011520562, 0.0307011520562,
+    0.0455481803616, 0.0455481803616,
+    0.0644998855573, 0.0644998855573,
+    0.107362478065, 0.107362478065,
+    0.126588845655, 0.126588845655,
+    0.20498970016, 0.20498970016,
+    0.292210269322, 0.292210269322,
+    0.372838941024, 0.372838941024,
+    0.492530708782, 0.492530708782,
+    0.635324635691, 0.635324635691,
+    0.805584802014, 0.805584802014,
+    1.0, 1.0);
   YMDAC: array[0..31] of Double = (
     0, 0, 0.00465400167849, 0.00772106507973, 0.0109559777218, 0.0139620050355,
     0.0169985503929, 0.0200198367285, 0.024368657969, 0.029694056611,
@@ -94,11 +118,21 @@ begin
   Reset;
 end;
 
+procedure TYM2149F.RetriggerTone(Channel: Integer);
+begin
+  if (Channel < 0) or (Channel > 2) then
+    raise EArgumentOutOfRangeException.Create('YM2149 tone channel');
+  // Fast Tracker's phase effect forces the next native tone transition.
+  FToneCounter[Channel] := $FFFE;
+end;
+
 procedure TYM2149F.Reset;
 begin
   FillChar(FRegisters, SizeOf(FRegisters), 0);
   FillChar(FToneCounter, SizeOf(FToneCounter), 0);
   FillChar(FTone, SizeOf(FTone), 0);
+  for var C := 0 to 2 do
+    FDACOverride[C] := -1;
   FAddress := 0;
   FNoise := 1;
   FNoiseCounter := 0;
@@ -173,6 +207,14 @@ begin
     Result := FRegisters[RegisterID];
 end;
 
+procedure TYM2149F.SetDACOverride(Channel: Integer; Amplitude: Double);
+begin
+  if (Channel < 0) or (Channel > 2) or IsNan(Amplitude) or IsInfinite(Amplitude) or
+    (Amplitude < -1) or (Amplitude > 1) then
+    raise EArgumentOutOfRangeException.Create('Invalid AY/YM sample DAC');
+  FDACOverride[Channel] := Amplitude;
+end;
+
 procedure TYM2149F.SetPan(Channel: Integer; Left, Right: Double);
 begin
   if (Channel < 0) or (Channel > 2) or IsNan(Left) or IsNan(Right) or IsInfinite(Left) or IsInfinite(Right) or
@@ -243,13 +285,20 @@ end;
 procedure TYM2149F.GenerateNative(out Left, Right: Double);
 begin
   var Levels: TYM2149Levels;
+  if Assigned(FOnNativeTick) then
+    FOnNativeTick(FClock / Double(FDivider));
   Step(Levels);
   Left := 0;
   Right := 0;
   for var J := 0 to 2 do
   begin
-    Left := Left + YMDAC[Levels[J]] * FPan[J, 0] / 3;
-    Right := Right + YMDAC[Levels[J]] * FPan[J, 1] / 3;
+    var Amplitude := YMDAC[Levels[J]];
+    if FAYModel then
+      Amplitude := AYDAC[Levels[J]];
+    if FDACOverride[J] >= 0 then
+      Amplitude := FDACOverride[J];
+    Left := Left + Amplitude * FPan[J, 0] / 3;
+    Right := Right + Amplitude * FPan[J, 1] / 3;
   end;
 end;
 

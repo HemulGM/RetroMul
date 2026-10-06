@@ -11,7 +11,7 @@ type
   TOPLSound = class
   private
     FChip: TOplChip;
-    FOPL3: Boolean;
+    FOPL3, FOPL1: Boolean;
     FClock, FSampleRate, FDivider: Integer;
     FAddress: array[0..1] of Word;
     FRegisters: array[0..511] of Byte;
@@ -24,7 +24,7 @@ type
     FFilter: array[0..1] of TPCMLowPass;
     procedure UpdateWaveforms;
   protected
-    constructor CreateChip(IsOPL3: Boolean; Clock, SampleRate: Integer);
+    constructor CreateChip(IsOPL3: Boolean; Clock, SampleRate: Integer; IsOPL1: Boolean = False);
   public
     procedure Reset;
     procedure WriteRegister(RegisterID: Word; Value: Byte);
@@ -40,12 +40,23 @@ type
     property IsOPL3: Boolean read FOPL3;
   end;
 
+  // YM3526: OPL synthesis with sine waveform only.
+  TOPL1 = class(TOPLSound)
+  public
+    constructor Create(Clock: Integer = 3579545; SampleRate: Integer = 44100);
+  end;
+
 implementation
 
 uses
   System.Math;
 
-constructor TOPLSound.CreateChip(IsOPL3: Boolean; Clock, SampleRate: Integer);
+constructor TOPL1.Create(Clock, SampleRate: Integer);
+begin
+  CreateChip(False, Clock, SampleRate, True);
+end;
+
+constructor TOPLSound.CreateChip(IsOPL3: Boolean; Clock, SampleRate: Integer; IsOPL1: Boolean);
 begin
   inherited Create;
   if (Clock < 1000000) or (Clock > 32000000) then
@@ -53,6 +64,7 @@ begin
   if (SampleRate < 8000) or (SampleRate > 192000) then
     raise EArgumentOutOfRangeException.Create('Invalid OPL sample rate');
   FOPL3 := IsOPL3;
+  FOPL1 := IsOPL1;
   FClock := Clock;
   FSampleRate := SampleRate;
   if IsOPL3 then
@@ -97,6 +109,14 @@ begin
     raise EArgumentOutOfRangeException.Create('Invalid OPL register');
   if not FOPL3 and (RegisterID > $FF) then
     Exit;
+  // YM3526 has no waveform-select enable or waveform registers.
+  if FOPL1 then
+  begin
+    if RegisterID = 1 then
+      Value := Value and $DF;
+    if (RegisterID >= $E0) and (RegisterID <= $F5) then
+      Value := 0;
+  end;
   FRegisters[RegisterID] := Value;
   case RegisterID of
     2, 3:

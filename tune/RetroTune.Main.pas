@@ -91,7 +91,8 @@ implementation
 uses
   System.IOUtils, System.Math, System.StrUtils, RetroTune.Decoder.NSF,
   RetroTune.Decoder.NSFe, RetroTune.Decoder.SPC, RetroTune.Decoder.GBS,
-  RetroTune.Decoder.VGM, RetroTune.Decoder.GYM, RetroTune.Decoder.PT3;
+  RetroTune.Decoder.VGM, RetroTune.Decoder.GYM, RetroTune.Decoder.PT3,
+  RetroTune.Decoder.ZXTrackers, RetroTune.Decoder.AYDumps, RetroTune.Decoder.Atari;
 
 {$R *.fmx}
 

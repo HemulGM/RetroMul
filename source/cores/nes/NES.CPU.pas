@@ -91,8 +91,6 @@ type
     function Izx: UInt16;
     function Izy(out PageCrossed: Boolean): UInt16;
     function Rel: Int16;
-    procedure Adc(Value: UInt8);
-    procedure Sbc(Value: UInt8);
     procedure Cmp(RegValue, Value: UInt8);
     procedure Bit(Value: UInt8);
     procedure OpSlo(Address: UInt16);
@@ -113,6 +111,9 @@ type
     procedure StartBusSequence(Opcode: UInt8);
     procedure ClockBusSequence;
     procedure ApplyBusSequence;
+  protected
+    procedure Adc(Value: UInt8); virtual;
+    procedure Sbc(Value: UInt8); virtual;
   public
     A: UInt8;
     X: UInt8;

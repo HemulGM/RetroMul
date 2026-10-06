@@ -4,6 +4,12 @@ uses
 
   System.StartUpCopy,
   FMX.Forms,
+  C64.CPU in '..\source\cores\c64\C64.CPU.pas',
+  C64.Sound.SID in '..\source\cores\c64\C64.Sound.SID.pas',
+  C64.AudioMachine in '..\source\cores\c64\C64.AudioMachine.pas',
+  Atari.Audio.ASAP in '..\source\cores\atari\Atari.Audio.ASAP.pas',
+  Atari.AudioMachine in '..\source\cores\atari\Atari.AudioMachine.pas',
+  ZX.AudioMachine in '..\source\cores\zx\ZX.AudioMachine.pas',
   ZX.Sound.YM2149 in '..\source\cores\zx\ZX.Sound.YM2149.pas',
   PC.OPL.Nuked in '..\source\cores\pc\PC.OPL.Nuked.pas',
   PC.Sound.OPL in '..\source\cores\pc\PC.Sound.OPL.pas',

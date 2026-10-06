@@ -29,12 +29,17 @@ type
     FInfo: TTuneInfo;
     FData: TBytes;
     FStart, FOffset, FEnd, FWait, FDACPosition, FWait60, FWait50: Integer;
+    FHeaderEnd: Integer;
+    FGain: Double;
+    FChipGains: array[0..40, 0..1] of Double;
+    FSecondClocks: array[0..40] of Cardinal;
+    FOPL2Stereo: Boolean;
     FEnded, FReady: Boolean;
     FPSG: TPSG;
     FFM: TFM;
-    FOPL: array[0..1, 0..1] of TOPLSound;
-    FOPLClocks: array[0..1] of Integer;
-    FOPLDual: array[0..1] of Boolean;
+    FOPL: array[0..2, 0..1] of TOPLSound;
+    FOPLClocks: array[0..2] of Integer;
+    FOPLDual: array[0..2] of Boolean;
     FYM: array[0..1] of TYM2149F;
     FYMClock: Integer;
     FYMDual, FYMSelectHigh: Boolean;
@@ -63,6 +68,7 @@ type
     procedure ReceiveGB(PCM: TArray<SmallInt>; Frames: Integer);
     procedure Sample(out Left, Right: SmallInt);
     function HeaderClock(Offset: Integer): Cardinal;
+    procedure ReadExtraHeader(Offset: Integer);
   public
     constructor Create(const Data: TBytes);
     destructor Destroy; override;
@@ -75,6 +81,9 @@ implementation
 
 uses
   System.Classes, System.ZLib, System.Math, NES.Types, RetroTune.Binary;
+
+const
+  OPLChipIDs: array[0..2] of Integer = ($09, $0C, $0A);
 
 function UnpackVGM(const Data: TBytes): TBytes;
 begin
@@ -118,15 +127,102 @@ end;
 function TVGMDecoder.HeaderClock(Offset: Integer): Cardinal;
 begin
   Result := 0;
-  if Offset + 4 <= FStart then
+  if Offset + 4 <= FHeaderEnd then
     Result := LE32(FData, Offset);
+end;
+
+procedure TVGMDecoder.ReadExtraHeader(Offset: Integer);
+var
+  ClockSeen: array[0..40] of Boolean;
+  VolumeSeen: array[0..40, 0..1] of Boolean;
+
+  function TableOffset(Field: Integer; EntrySize: Integer): Integer;
+  begin
+    Result := 0;
+    var RelativeOffset := LE32(FData, Field);
+    if RelativeOffset = 0 then
+      Exit;
+    if RelativeOffset >= Cardinal(FStart - Field) then
+      raise EArgumentException.Create('Invalid VGM extra table offset');
+    Result := Field + Integer(RelativeOffset);
+    if (Result < Offset + Integer(LE32(FData, Offset))) or
+      (Integer(FData[Result]) > (FStart - Result - 1) div EntrySize) then
+      raise EArgumentException.Create('Truncated VGM extra table');
+  end;
+
+begin
+  var Size := LE32(FData, Offset);
+  if (Size < 4) or (Size > Cardinal(FStart - Offset)) then
+    raise EArgumentException.Create('Invalid VGM extra header size');
+  FillChar(ClockSeen, SizeOf(ClockSeen), 0);
+  FillChar(VolumeSeen, SizeOf(VolumeSeen), 0);
+  if Size >= 8 then
+  begin
+    var P := TableOffset(Offset + 4, 5);
+    if P <> 0 then
+      for var Entry := 0 to Integer(FData[P]) - 1 do
+      begin
+        var Base := P + 1 + Entry * 5;
+        var Chip := Integer(FData[Base]);
+        if Chip > High(FSecondClocks) then
+          Continue;
+        if ClockSeen[Chip] then
+          Continue;
+        ClockSeen[Chip] := True;
+        var Active := ((Chip = $09) and FOPLDual[0]) or
+          ((Chip = $0C) and FOPLDual[1]) or ((Chip = $0A) and FOPLDual[2]) or ((Chip = $12) and FYMDual);
+        if not Active then
+          Continue;
+        var Clock := LE32(FData, Base + 1);
+        var Minimum := 1000000;
+        var Maximum := 32000000;
+        if Chip = $12 then
+        begin
+          Minimum := 100000;
+          Maximum := 8000000;
+        end;
+        if (Clock < Cardinal(Minimum)) or (Clock > Cardinal(Maximum)) then
+          raise EArgumentException.Create('Invalid VGM second-chip clock');
+        FSecondClocks[Chip] := Clock;
+      end;
+  end;
+  if Size >= 12 then
+  begin
+    var P := TableOffset(Offset + 8, 4);
+    if P <> 0 then
+      for var Entry := 0 to Integer(FData[P]) - 1 do
+      begin
+        var Base := P + 1 + Entry * 4;
+        var Chip := Integer(FData[Base]);
+        // Linked SSG volumes apply only to chip families not supported here.
+        if Chip > High(FChipGains) then
+          Continue;
+        var Instance := FData[Base + 1] and 1;
+        if VolumeSeen[Chip, Instance] then
+          Continue;
+        VolumeSeen[Chip, Instance] := True;
+        var Volume := LE16(FData, Base + 2);
+        if (Volume and $8000) <> 0 then
+          FChipGains[Chip, Instance] := FChipGains[Chip, Instance] * (Volume and $7FFF) / 256.0
+        else
+        begin
+          // Absolute volumes use the VGM nominal scale for each chip family.
+          var Nominal := 256;
+          if Chip = $00 then
+            Nominal := 128
+          else if Chip = $13 then
+            Nominal := 192;
+          FChipGains[Chip, Instance] := Volume / Nominal;
+        end;
+      end;
+  end;
 end;
 
 constructor TVGMDecoder.Create(const Data: TBytes);
 const
-  UnsupportedOffsets: array[0..32] of Integer =
-    ($10, $30, $38, $40, $44, $48, $4C, $54, $58, $60, $64, $68, $6C, $70,
-    $7C, $88, $8C, $90, $98, $9C, $A0, $A4, $A8, $AC, $B0, $B4, $B8, $BC, $C0, $C4, $C8, $CC, $D0);
+  UnsupportedOffsets: array[0..33] of Integer =
+    ($10, $30, $38, $40, $44, $48, $4C, $58, $60, $64, $68, $6C, $70,
+    $88, $8C, $90, $98, $9C, $A0, $A4, $A8, $AC, $B0, $B4, $B8, $C0, $C4, $C8, $CC, $D0, $D8, $DC, $E0, $E4);
   ClockOffsets: array[0..3] of Integer = ($C, $2C, $84, $80);
 begin
   inherited Create;
@@ -135,7 +231,7 @@ begin
   if TEncoding.ASCII.GetString(FData, 0, 4) <> 'Vgm ' then
     raise EArgumentException.Create('Invalid VGM signature');
   var Version := LE32(FData, 8);
-  if (Version < $100) or (Version > $171) then
+  if (Version < $100) or (Version > $172) then
     raise ENotSupportedException.CreateFmt('Unsupported VGM version $%x', [Version]);
   FStart := $40;
   if (Version >= $150) and (LE32(FData, $34) <> 0) then
@@ -153,12 +249,36 @@ begin
       raise EArgumentException.Create('Invalid VGM EOF offset');
     FEnd := Integer(LE32(FData, 4)) + 4;
   end;
+  FHeaderEnd := FStart;
+  var ExtraHeader := 0;
+  if (Version >= $170) and (HeaderClock($BC) <> 0) then
+  begin
+    var RelativeOffset := HeaderClock($BC);
+    if (RelativeOffset < 4) or (RelativeOffset > Cardinal(FStart - $BC - 4)) then
+      raise EArgumentException.Create('Invalid VGM extra header offset');
+    ExtraHeader := $BC + Integer(RelativeOffset);
+    FHeaderEnd := ExtraHeader;
+  end;
+  FGain := 1;
+  if (Version >= $150) and (FHeaderEnd > $7C) then
+  begin
+    var Modifier := Integer(FData[$7C]);
+    if Modifier = $C1 then
+      Modifier := -64
+    else if Modifier > $C1 then
+      Dec(Modifier, 256);
+    FGain := Power(2, Modifier / 32.0);
+  end;
+  for var Chip := 0 to High(FChipGains) do
+    for var Instance := 0 to 1 do
+      FChipGains[Chip, Instance] := 1;
   // In older versions some of these bytes are reserved, not chip clocks.
   for var Offset in UnsupportedOffsets do
     if ((Offset = $10) or ((Version >= $110) and (Offset = $30)) or
       ((Version >= $151) and (Offset >= $38) and (Offset <= $74)) or
       ((Version >= $161) and (Offset >= $7C) and (Offset <= $B4)) or
-      ((Version >= $171) and (Offset >= $B8))) and (HeaderClock(Offset) <> 0) then
+      ((Version >= $171) and (Offset >= $B8) and (Offset <= $E0)) or
+      ((Version >= $172) and (Offset = $E4))) and (HeaderClock(Offset) <> 0) then
       raise ENotSupportedException.CreateFmt('VGM chip at header $%x is unsupported', [Offset]);
   if Version >= $151 then
   begin
@@ -168,7 +288,7 @@ begin
     if FYMClock <> 0 then
     begin
       RequireBytes(FData, $78, 2);
-      if (FStart <= $79) or (FData[$78] <> $10) or ((RawClock and $80000000) <> 0) then
+      if (FHeaderEnd <= $79) or (FData[$78] <> $10) or ((RawClock and $80000000) <> 0) then
         raise ENotSupportedException.Create('Unsupported AY chip variant; YM2149 is supported');
       if (FYMClock < 100000) or (FYMClock > 8000000) then
         raise EArgumentException.Create('Invalid YM2149 clock');
@@ -189,19 +309,32 @@ begin
       FClocks[J] := RawClock;
     end;
   if Version >= $151 then
-    for var J := 0 to 1 do
+    for var J := 0 to 2 do
     begin
       var Offset := $50;
       if J = 1 then
         Offset := $5C;
+      if J = 2 then
+        Offset := $54;
       var RawClock := HeaderClock(Offset);
-      if (RawClock and $80000000) <> 0 then
+      if (J <> 0) and ((RawClock and $80000000) <> 0) then
         raise ENotSupportedException.Create('Unsupported OPL chip variant');
       FOPLDual[J] := (RawClock and $40000000) <> 0;
+      if J = 0 then
+        FOPL2Stereo := (RawClock and $80000000) <> 0;
       FOPLClocks[J] := RawClock and $3FFFFFFF;
       if (FOPLClocks[J] <> 0) and ((FOPLClocks[J] < 1000000) or (FOPLClocks[J] > 32000000)) then
         raise EArgumentException.Create('Invalid VGM OPL clock');
     end;
+  for var J := 0 to 2 do
+    if FOPLDual[J] then
+      for var K := 0 to 1 do
+        FChipGains[OPLChipIDs[J], K] := 0.5;
+  if FYMDual then
+    for var K := 0 to 1 do
+      FChipGains[$12, K] := 0.5;
+  if ExtraHeader <> 0 then
+    ReadExtraHeader(ExtraHeader);
   FInfo.FormatName := 'VGM';
   if (Length(Data) > 1) and (Data[0] = $1F) and (Data[1] = $8B) then
     FInfo.FormatName := 'VGZ';
@@ -226,7 +359,7 @@ begin
       end;
     end;
   end;
-  for var J := 0 to 1 do
+  for var J := 0 to 2 do
     if FOPLClocks[J] <> 0 then
     begin
       if FInfo.Details <> '' then
@@ -235,8 +368,10 @@ begin
         FInfo.Details := FInfo.Details + '2 x ';
       if J = 0 then
         FInfo.Details := FInfo.Details + 'YM3812 (OPL2)'
+      else if J = 1 then
+        FInfo.Details := FInfo.Details + 'YMF262 (OPL3)'
       else
-        FInfo.Details := FInfo.Details + 'YMF262 (OPL3)';
+        FInfo.Details := FInfo.Details + 'YM3526 (OPL)';
     end;
   if FInfo.Details = '' then
     if FYMClock <> 0 then
@@ -294,18 +429,29 @@ begin
   if FYMClock <> 0 then
     for var Chip := 0 to Ord(FYMDual) do
     begin
-      FYM[Chip] := TYM2149F.Create(FYMClock, 44100, FYMSelectHigh);
+      var Clock := FYMClock;
+      if (Chip = 1) and (FSecondClocks[$12] <> 0) then
+        Clock := FSecondClocks[$12];
+      FYM[Chip] := TYM2149F.Create(Clock, 44100, FYMSelectHigh);
       if not FYMStereo then
         for var Channel := 0 to 2 do
           FYM[Chip].SetPan(Channel, 1, 1);
     end;
-  for var J := 0 to 1 do
+  for var J := 0 to 2 do
     if FOPLClocks[J] <> 0 then
       for var K := 0 to Ord(FOPLDual[J]) do
+      begin
+        var Clock := FOPLClocks[J];
+        var ChipID := OPLChipIDs[J];
+        if (K = 1) and (FSecondClocks[ChipID] <> 0) then
+          Clock := FSecondClocks[ChipID];
         if J = 0 then
-          FOPL[J, K] := TOPL2.Create(FOPLClocks[J], 44100)
+          FOPL[J, K] := TOPL2.Create(Clock, 44100)
+        else if J = 1 then
+          FOPL[J, K] := TOPL3.Create(Clock, 44100)
         else
-          FOPL[J, K] := TOPL3.Create(FOPLClocks[J], 44100);
+          FOPL[J, K] := TOPL1.Create(Clock, 44100);
+      end;
   if FClocks[2] <> 0 then
     FNES := TApu.Create;
   if FClocks[3] <> 0 then
@@ -324,7 +470,7 @@ destructor TVGMDecoder.Destroy;
 begin
   for var Chip := 0 to 1 do
     FYM[Chip].Free;
-  for var J := 0 to 1 do
+  for var J := 0 to 2 do
     for var K := 0 to 1 do
       FOPL[J, K].Free;
   FNES.Free;
@@ -374,7 +520,7 @@ begin
   case Command of
     $4F, $50:
       Size := 1;
-    $52, $53, $5A, $5E, $5F, $AA, $AE, $AF, $A0, $61, $B3, $B4:
+    $52, $53, $5A, $5B, $5E, $5F, $AA, $AB, $AE, $AF, $A0, $61, $B3, $B4:
       Size := 2;
     $64:
       Size := 3;
@@ -433,9 +579,11 @@ begin
           FMDoData(FFM, FData[P + 1]);
         end;
       end;
-    $5A, $5E, $5F, $AA, $AE, $AF:
+    $5A, $5B, $5E, $5F, $AA, $AB, $AE, $AF:
       begin
         var ChipIndex := Ord(not (Command in [$5A, $AA]));
+        if Command in [$5B, $AB] then
+          ChipIndex := 2;
         var Instance := Ord(Command >= $A0);
         if (FOPLClocks[ChipIndex] = 0) or ((Instance = 1) and not FOPLDual[ChipIndex]) then
           raise EArgumentException.Create('VGM OPL write has no corresponding chip clock');
@@ -643,7 +791,7 @@ begin
   FillChar(FFMFiltered, SizeOf(FFMFiltered), 0);
   FillChar(FPSGFiltered, SizeOf(FPSGFiltered), 0);
   FNESPCM := 0;
-  for var J := 0 to 1 do
+  for var J := 0 to 2 do
     for var K := 0 to 1 do
       if FOPL[J, K] <> nil then
         FOPL[J, K].Reset;
@@ -759,7 +907,7 @@ begin
     FGB.UpdateSound(Cycles);
     FGB.FlushPCM;
   end;
-  var OPLLeft, OPLRight: Integer;
+  var OPLLeft, OPLRight: Double;
   OPLLeft := 0;
   OPLRight := 0;
   for var Chip := 0 to 1 do
@@ -767,20 +915,36 @@ begin
     begin
       var L, R: SmallInt;
       FYM[Chip].Sample(L, R);
-      Inc(OPLLeft, L);
-      Inc(OPLRight, R);
+      OPLLeft := OPLLeft + L * FChipGains[$12, Chip];
+      OPLRight := OPLRight + R * FChipGains[$12, Chip];
     end;
-  for var J := 0 to 1 do
+  for var J := 0 to 2 do
     for var K := 0 to 1 do
       if FOPL[J, K] <> nil then
       begin
         var L, R: SmallInt;
         FOPL[J, K].Sample(L, R);
-        Inc(OPLLeft, L);
-        Inc(OPLRight, R);
+        var ChipID := OPLChipIDs[J];
+        var Gain := FChipGains[ChipID, K];
+        if (J = 0) and FOPL2Stereo then
+        begin
+          if K = 0 then
+            OPLLeft := OPLLeft + L * Gain * 2
+          else
+            OPLRight := OPLRight + R * Gain * 2;
+        end
+        else
+        begin
+          OPLLeft := OPLLeft + L * Gain;
+          OPLRight := OPLRight + R * Gain;
+        end;
       end;
-  Left := EnsureRange(Round(FDC[0].Process(FPSGFiltered[0] + FFMFiltered[0] + FNESPCM + FGBPCM[0] + OPLLeft)), -32768, 32767);
-  Right := EnsureRange(Round(FDC[1].Process(FPSGFiltered[1] + FFMFiltered[1] + FNESPCM + FGBPCM[1] + OPLRight)), -32768, 32767);
+  Left := EnsureRange(Round(FDC[0].Process(FGain * (FPSGFiltered[0] * FChipGains[$00, 0] +
+        FFMFiltered[0] * FChipGains[$02, 0] + FNESPCM * FChipGains[$14, 0] +
+        FGBPCM[0] * FChipGains[$13, 0] + OPLLeft))), -32768, 32767);
+  Right := EnsureRange(Round(FDC[1].Process(FGain * (FPSGFiltered[1] * FChipGains[$00, 0] +
+        FFMFiltered[1] * FChipGains[$02, 0] + FNESPCM * FChipGains[$14, 0] +
+        FGBPCM[1] * FChipGains[$13, 0] + OPLRight))), -32768, 32767);
 end;
 
 function TVGMDecoder.Render(var Samples: array of SmallInt; Frames: Integer): Integer;

@@ -54,6 +54,8 @@ type
   TZ80ReadAndWriteCallbacks = record
     ReadCallback: TZ80ReadCallback;
     WriteCallback: TZ80WriteCallback;
+    PortReadCallback: TZ80ReadCallback;
+    PortWriteCallback: TZ80WriteCallback;
     UserData: Pointer;
   end;
 
@@ -513,6 +515,7 @@ end;
 
 procedure DecodeMiscInstructionMetadata(var Metadata: TZ80InstructionMetadata; Opcode: Byte);
 begin
+  Metadata.EmbeddedLiteral := Opcode;
   case Opcode of
     $40, $48, $50, $58, $60, $68, $78:
       Metadata.Opcode := CLOWNZ80_OPCODE_IN_REGISTER;
@@ -1417,7 +1420,19 @@ begin
         State.RegisterMode := Byte(CLOWNZ80_REGISTER_MODE_IY);
       end;
     CLOWNZ80_OPCODE_OUT, CLOWNZ80_OPCODE_IN:
-      ; // This core does not emulate Z80 I/O ports.
+      begin
+        var Port := (Cardinal(State.A) shl 8) or ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
+        if Instruction.Metadata.Opcode = CLOWNZ80_OPCODE_OUT then
+        begin
+          if Assigned(Callbacks.PortWriteCallback) then Callbacks.PortWriteCallback(Callbacks.UserData, Port, State.A);
+        end
+        else
+        begin
+          State.A := $FF;
+          if Assigned(Callbacks.PortReadCallback) then State.A := Callbacks.PortReadCallback(Callbacks.UserData, Port) and $FF;
+        end;
+        State.Cycles := Word(State.Cycles + 4);
+      end;
       CLOWNZ80_OPCODE_EX_SP_HL:
       begin
         State.Cycles := Word(State.Cycles + 3);
@@ -1676,7 +1691,26 @@ begin
         State.Cycles := Word(State.Cycles + Temp407);
       end;
     CLOWNZ80_OPCODE_IN_REGISTER, CLOWNZ80_OPCODE_IN_NO_REGISTER, CLOWNZ80_OPCODE_OUT_REGISTER, CLOWNZ80_OPCODE_OUT_NO_REGISTER:
-      ; // This core does not emulate Z80 I/O ports.
+      begin
+        var Port := (Cardinal(State.B) shl 8) or State.C;
+        var Reg := DECODE_REGISTERS[(Instruction.Metadata.EmbeddedLiteral shr 3) and 7];
+        if Instruction.Metadata.Opcode in [CLOWNZ80_OPCODE_OUT_REGISTER, CLOWNZ80_OPCODE_OUT_NO_REGISTER] then
+        begin
+          var Value: Cardinal := 0;
+          if Instruction.Metadata.Opcode = CLOWNZ80_OPCODE_OUT_REGISTER then Value := ReadOperand(State,Callbacks,Instruction,Reg);
+          if Assigned(Callbacks.PortWriteCallback) then Callbacks.PortWriteCallback(Callbacks.UserData,Port,Value);
+        end
+        else
+        begin
+          var Value: Cardinal := $FF;
+          if Assigned(Callbacks.PortReadCallback) then Value := Callbacks.PortReadCallback(Callbacks.UserData,Port) and $FF;
+          if Instruction.Metadata.Opcode = CLOWNZ80_OPCODE_IN_REGISTER then WriteOperand(State,Callbacks,Instruction,Reg,Value);
+          State.F := (State.F and FLAG_MASK_CARRY) or (Value and $A8);
+          if Value = 0 then State.F := State.F or FLAG_MASK_ZERO;
+          if ComputeParity(Value) <> 0 then State.F := State.F or FLAG_MASK_PARITY_OVERFLOW;
+        end;
+        State.Cycles := Word(State.Cycles + 4);
+      end;
       CLOWNZ80_OPCODE_SBC_HL:
       begin
         var SourceValue: Cardinal := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[0]);
@@ -1987,15 +2021,39 @@ begin
           State.ProgramCounter := (State.ProgramCounter + $FFFE) and $FFFF;
         end;
       end;
-    CLOWNZ80_OPCODE_INI,  //
-    CLOWNZ80_OPCODE_IND,  //
-    CLOWNZ80_OPCODE_INIR, //
-    CLOWNZ80_OPCODE_INDR, //
-    CLOWNZ80_OPCODE_OUTI, //
-    CLOWNZ80_OPCODE_OUTD, //
-    CLOWNZ80_OPCODE_OTIR, //
-    CLOWNZ80_OPCODE_OTDR: //
-      ;
+    CLOWNZ80_OPCODE_INI, CLOWNZ80_OPCODE_IND, CLOWNZ80_OPCODE_INIR, CLOWNZ80_OPCODE_INDR,
+    CLOWNZ80_OPCODE_OUTI, CLOWNZ80_OPCODE_OUTD, CLOWNZ80_OPCODE_OTIR, CLOWNZ80_OPCODE_OTDR:
+      begin
+        var Opcode := Instruction.Metadata.EmbeddedLiteral;
+        var Input := (Opcode and 1) = 0;
+        var Delta: Integer := 1; if (Opcode and 8) <> 0 then Delta := -1;
+        var Address := (Cardinal(State.H) shl 8) or State.L;
+        var Port := (Cardinal(State.B) shl 8) or State.C;
+        var Data: Cardinal := $FF;
+        if Input then
+        begin
+          if Assigned(Callbacks.PortReadCallback) then Data := Callbacks.PortReadCallback(Callbacks.UserData,Port) and 255;
+          MemoryWrite(State,Callbacks,Address,Data);
+        end else Data := MemoryRead(State,Callbacks,Address);
+        State.B := (Integer(State.B)+255) and 255;
+        Address := (Integer(Address)+65536+Delta) and $FFFF;
+        State.H := Address shr 8; State.L := Address and 255;
+        var Sum: Integer;
+        if Input then Sum := Integer(Data)+((Integer(State.C)+256+Delta) and 255)
+        else
+        begin
+          Sum := Integer(Data)+State.L;
+          if Assigned(Callbacks.PortWriteCallback) then Callbacks.PortWriteCallback(Callbacks.UserData,(Cardinal(State.B) shl 8) or State.C,Data);
+        end;
+        State.F := State.B and $A8;
+        if State.B = 0 then State.F := State.F or FLAG_MASK_ZERO;
+        if (Data and 128) <> 0 then State.F := State.F or FLAG_MASK_ADD_SUBTRACT;
+        if Sum > 255 then State.F := State.F or FLAG_MASK_HALF_CARRY or FLAG_MASK_CARRY;
+        if ComputeParity((Sum and 7) xor State.B) <> 0 then State.F := State.F or FLAG_MASK_PARITY_OVERFLOW;
+        Inc(State.Cycles,5);
+        if ((Opcode and $10) <> 0) and (State.B <> 0) then
+        begin Inc(State.Cycles,5); State.ProgramCounter := (Integer(State.ProgramCounter)+$FFFE) and $FFFF; end;
+      end;
   end;
 end;
 

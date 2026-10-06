@@ -893,7 +893,7 @@ begin
         var ClockNow := TStopwatch.GetTimeStamp;
         if ClockNow < NextFrame then
         begin
-          FWake.WaitFor(Cardinal(Max(Int64(1), (NextFrame - ClockNow) * 1000 div TStopwatch.Frequency)));
+          FrameHints.WaitUntil(FWake, NextFrame);
           Continue;
         end;
 

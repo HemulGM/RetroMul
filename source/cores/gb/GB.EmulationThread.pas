@@ -389,7 +389,7 @@ begin
       CPU.SkipBIOS;
       FrameHints := TEmulationPerformanceHints.Create(Round(FrameCycles * 1000000000.0 / CPUClockFrequency), CoreID);
       HintNextCycles := CPU.Cycles + FrameCycles;
-      var Stopwatch := TStopwatch.StartNew;
+      var PacingStart := TStopwatch.GetTimeStamp;
       var StartCycles := CPU.Cycles;
       var BatteryWatch := TStopwatch.StartNew;
       while not Terminated do
@@ -452,7 +452,7 @@ begin
             end;
             HintNextCycles := CPU.Cycles + FrameCycles;
             StartCycles := CPU.Cycles;
-            Stopwatch := TStopwatch.StartNew;
+            PacingStart := TStopwatch.GetTimeStamp;
           end);
         ApplyInput;
         FLock.Acquire;
@@ -470,7 +470,7 @@ begin
             end;
             HintNextCycles := CPU.Cycles + FrameCycles;
             StartCycles := CPU.Cycles;
-            Stopwatch := TStopwatch.StartNew;
+            PacingStart := TStopwatch.GetTimeStamp;
             Continue;
           end;
         finally
@@ -492,18 +492,18 @@ begin
         if HintComplete then
           Inc(HintNextCycles, FrameCycles);
 
-        var TargetMilliseconds := Int64((CPU.Cycles - StartCycles) * 1000 div CPUClockFrequency);
-        var WaitMilliseconds := TargetMilliseconds - Stopwatch.ElapsedMilliseconds;
-        if WaitMilliseconds > 0 then
+        var TargetTicks := Round((CPU.Cycles - StartCycles) * (TStopwatch.Frequency / CPUClockFrequency));
+        var Remaining := PacingStart + TargetTicks - TStopwatch.GetTimeStamp;
+        if Remaining > 0 then
         begin
-          if FStopEvent.WaitFor(Cardinal(WaitMilliseconds)) = wrSignaled then
+          if FrameHints.WaitUntil(FStopEvent, PacingStart + TargetTicks) then
             Break;
         end
-        else if WaitMilliseconds < -250 then
+        else if Remaining < -TStopwatch.Frequency div 4 then
         begin
           // Do not run a long catch-up burst after a debugger pause or system sleep.
           StartCycles := CPU.Cycles;
-          Stopwatch := TStopwatch.StartNew;
+          PacingStart := TStopwatch.GetTimeStamp;
         end;
       end;
     finally

@@ -1826,8 +1826,6 @@ begin
 
         Result := TZapper.ReadMask(Mask, FZapperPixel.X, FZapperPixel.Y);
       end;
-    // Port 2 is selected by the NES configuration before the worker starts.
-    // Attaching the light-sensor callback must not connect a gun to every ROM.
   end;
 
   FUserPaused := False;

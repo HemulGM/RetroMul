@@ -1174,10 +1174,16 @@ begin
       end;
     opJMP_AbsIdxXInd, opJSR_AbsIdxXInd:
       begin
-        Addr := FetchWord;
-        Idle;
         if O = opJSR_AbsIdxXInd then
-          PushWord(Word(State.PC - 1), False);
+        begin
+          Addr := Fetch;
+          // JSR pushes the return address before fetching the high operand byte.
+          PushWord(State.PC, False);
+          Addr := Addr or (Cardinal(Fetch) shl 8);
+        end
+        else
+          Addr := FetchWord;
+        Idle;
         Base := Cardinal(State.K) shl 16;
         State.PC := ReadBus(Base or Word(Addr + State.X));
         State.PC := State.PC or (Word(ReadBus(Base or Word(Addr + State.X + 1))) shl 8);
@@ -1250,7 +1256,10 @@ begin
         State.Waiting := True;
       end;
     opSTP:
-      State.Stopped := True;
+      begin
+        Idle;
+        State.Stopped := True;
+      end;
     opNOP, opWDM:
       ;
   end;

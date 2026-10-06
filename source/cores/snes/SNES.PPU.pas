@@ -38,6 +38,7 @@ type
     SpriteIndexes: array[0..31] of Byte;
     SpriteX, SpriteY, SpriteWidth, SpriteHeight: Integer;
     SpriteTile, SpriteFlags: Byte;
+    MosaicLine, MosaicCounter: Integer;
     Current, Next: TSnesSpritePixels;
   end;
 
@@ -57,6 +58,7 @@ type
     procedure FetchSpriteTile(V: Integer; Odd: Boolean);
     procedure RenderSpan(Y, FirstX, LastX: Integer; Odd: Boolean);
     procedure UpdateOutputMode;
+    procedure UpdateMosaic(V: Integer);
     function TilePixel(Base, Tile, BPP, X, Y: Integer): Integer;
     function MapEntry(Layer, Column, Row: Integer): Word;
     function OffsetEntry(Column: Integer; Vertical: Boolean): Word;
@@ -99,6 +101,7 @@ begin
   State := Default(TSnesPPUState);
   FRender := Default(TSnesPPURenderState);
   FRender.FetchIndex := -1;
+  FRender.MosaicLine := -1;
   State.Regs[0] := $80;
   for var i := 0 to High(FFrame) do
     FFrame[i] := $FF000000;
@@ -164,8 +167,13 @@ begin
   if R > $33 then
     Exit;
 
+  var OldMosaic := State.Regs[6] and 15;
+  if R = $06 then UpdateMosaic(V);
   State.Regs[R] := Value;
   case R of
+    $06:
+      if (OldMosaic = 0) and ((Value and 15) <> 0) then
+        FRender.MosaicCounter := (Value shr 4) + 2;
     $02, $03:
       begin
         State.OAMReload := ((Word(State.Regs[3] and 1) shl 8) or State.Regs[2]) shl 1;
@@ -458,8 +466,28 @@ begin
   end;
 end;
 
+procedure TSnesPPU.UpdateMosaic(V: Integer);
+begin
+  if V < FRender.MosaicLine then FRender.MosaicLine := -1;
+  while FRender.MosaicLine < V do
+  begin
+    Inc(FRender.MosaicLine);
+    var Enabled := (State.Regs[6] and 15) <> 0;
+    var Size := (State.Regs[6] shr 4) + 1;
+    if FRender.MosaicLine = 1 then
+      if Enabled then FRender.MosaicCounter := Size + 1 else FRender.MosaicCounter := 0;
+    if FRender.MosaicCounter > 0 then
+    begin
+      Dec(FRender.MosaicCounter);
+      if FRender.MosaicCounter = 0 then
+        if Enabled then FRender.MosaicCounter := Size;
+    end;
+  end;
+end;
+
 procedure TSnesPPU.RenderUntil(H, V: Integer; Odd: Boolean);
 begin
+  UpdateMosaic(V);
   FRender.Timed := True;
   FRender.Line := V;
   State.OddField := Odd;
@@ -489,6 +517,7 @@ end;
 
 procedure TSnesPPU.BeginFrame;
 begin
+  FRender.MosaicLine := -1;
   FRender.FrameHires := ((State.Regs[5] and 7) in [5, 6]) or ((State.Regs[$33] and 8) <> 0);
   FRender.FrameInterlace := (State.Regs[$33] and 1) <> 0;
 end;
@@ -576,7 +605,8 @@ begin
       Result := State.Status or (State.PPU1Bus and $10) or 1;
     $213F:
       begin
-        Result := 3 or (Ord(PAL) shl 4) or (Ord(Odd) shl 7) or (Ord(State.Latched) shl 6) or (State.PPU2Bus and $20);
+        Result := 3 or (Ord(PAL) shl 4) or (Ord(Odd) shl 7) or
+          (Ord(State.Latched or not LatchEnabled) shl 6) or (State.PPU2Bus and $20);
         if LatchEnabled then
           State.Latched := False;
         State.HToggle := False;
@@ -683,8 +713,16 @@ begin
   var Mosaic := (State.Regs[6] shr 4) + 1;
   if (State.Regs[6] and (1 shl Layer)) <> 0 then
   begin
-    X := X - X mod Mosaic;
-    Y := Y - (Y - 1) mod Mosaic;
+    // Hires mosaic counts low-resolution dots and takes the even (subscreen)
+    // pixel for both screens, including when the mosaic size is one.
+    if Mode in [5, 6] then
+      X := (X div 2 div Mosaic) * Mosaic * 2
+    else
+      X := X - X mod Mosaic;
+    if FRender.Timed then
+      Y := Y - (Mosaic - FRender.MosaicCounter)
+    else
+      Y := Y - (Y - 1) mod Mosaic;
   end;
   if (Mode in [5, 6]) and ((State.Regs[$33] and 1) <> 0) then
     Y := Y * 2 + Ord(State.OddField);
@@ -1078,6 +1116,9 @@ begin
     (FRender.EvalIndex < 0) or (FRender.EvalIndex > 127) or
     (FRender.TimeIndex < 0) or (FRender.TimeIndex > 127)) then
     raise EReadError.Create('Invalid SNES PPU pipeline snapshot');
+  if Archive.Loading and ((FRender.MosaicCounter < 0) or (FRender.MosaicCounter > 17) or
+    (FRender.MosaicLine < -1) or (FRender.MosaicLine > 312)) then
+    raise EReadError.Create('Invalid SNES PPU mosaic snapshot');
 end;
 
 end.

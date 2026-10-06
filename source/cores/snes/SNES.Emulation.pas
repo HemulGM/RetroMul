@@ -262,8 +262,7 @@ begin
       Format.Channels := 2;
       Format.BlockFrames := AUDIO_BLOCK_SAMPLES;
       Format.BlockCount := AUDIO_BLOCK_COUNT;
-      var Watch := TStopwatch.StartNew;
-      var Deadline: Double := 0;
+      var Deadline: Double := TStopwatch.GetTimeStamp;
       WasPaused := False;
       WasEnabled := False;
       while not Terminated do
@@ -306,7 +305,7 @@ begin
               SaveCoreSnapshot(Path, 'SNES', SnapshotData, Transfer, FStorage);
               SaveSnapshotPreview(Path, Console.Width, Console.Height, 512, @Console.Pixels[0], FStorage);
             end;
-            Deadline := Watch.Elapsed.TotalMilliseconds;
+            Deadline := TStopwatch.GetTimeStamp;
           end);
         var Inputs: TSnesPads;
         FLock.Acquire;
@@ -327,7 +326,7 @@ begin
           Console.Reset;
           if Audio <> nil then
             Audio.Clear;
-          Deadline := Watch.Elapsed.TotalMilliseconds;
+          Deadline := TStopwatch.GetTimeStamp;
         end;
         if Paused then
         begin
@@ -340,7 +339,7 @@ begin
           end;
           WasPaused := True;
           FWake.WaitFor(10);
-          Deadline := Watch.Elapsed.TotalMilliseconds;
+          Deadline := TStopwatch.GetTimeStamp;
           Continue;
         end;
 
@@ -403,12 +402,10 @@ begin
         WasEnabled := Enabled;
         if Console.FrameNumber mod 120 = 0 then
           SaveBattery(Console, LastBattery);
-        Deadline := Deadline + 1000 / Console.FramesPerSecond;
-        if Watch.Elapsed.TotalMilliseconds - Deadline > 100 then
-          Deadline := Watch.Elapsed.TotalMilliseconds;
-        var WaitMS := Floor(Deadline - Watch.Elapsed.TotalMilliseconds);
-        if WaitMS > 0 then
-          FWake.WaitFor(WaitMS);
+        Deadline := Deadline + TStopwatch.Frequency / Console.FramesPerSecond;
+        if TStopwatch.GetTimeStamp - Deadline > TStopwatch.Frequency div 10 then
+          Deadline := TStopwatch.GetTimeStamp;
+        FrameHints.WaitUntil(FWake, Round(Deadline));
       end;
     except
       on E: Exception do

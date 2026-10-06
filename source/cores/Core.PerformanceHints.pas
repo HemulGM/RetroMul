@@ -2,11 +2,14 @@
 
 interface
 
+uses
+  System.SyncObjs;
+
 type
   {$IFDEF ANDROID}
   TEmulationCpuMask = array[0..15] of UInt64;
   {$ENDIF}
-  // Create, use and destroy on the worker being hinted. Other platforms are no-ops.
+  // Create, use and destroy on the worker. Own the Windows timer resolution here.
 
   TEmulationPerformanceHints = class
   private
@@ -17,6 +20,10 @@ type
     FOriginalCpuMask, FFastCpuMask: TEmulationCpuMask;
     FAffinityPrepared, FAffinityAttempted, FAffinityApplied: Boolean;
     FSlowSince: Int64;
+    {$ENDIF}
+    {$IFDEF MSWINDOWS}
+    FTimer: NativeUInt;
+    FTimerPeriodActive: Boolean;
     {$ENDIF}
     FName: string;
     FTargetNanos: Int64;
@@ -30,6 +37,8 @@ type
   public
     constructor Create(TargetNanos: Int64; const Name: string);
     destructor Destroy; override;
+    // True means a command/stop woke the worker before the deadline.
+    function WaitUntil(Wake: TEvent; Deadline: Int64): Boolean;
     procedure BeginWork;
     // False accumulates a segment; True reports all segments since the last report.
     // End every segment before sleeping; this excludes limiter/paused time.
@@ -43,6 +52,9 @@ implementation
 
 uses
   System.SysUtils, System.Diagnostics,
+  {$IFDEF MSWINDOWS}
+  Winapi.Windows, Winapi.MMSystem,
+  {$ENDIF}
   {$IFDEF ANDROID}
   System.IOUtils, System.Classes, Androidapi.Helpers, Androidapi.JNIBridge,
   Androidapi.JNI.JavaTypes, Androidapi.JNI.Os, Androidapi.Log,
@@ -93,6 +105,14 @@ begin
   inherited Create;
   FName := Name;
   SetTargetDurationNanos(TargetNanos);
+  {$IFDEF MSWINDOWS}
+  // High-resolution waitable timers do not rely on message processing or the
+  // system clock tick. The flag is supported since Windows 10 version 1803.
+  FTimer := CreateWaitableTimerEx(nil, nil, $00000002 { HIGH_RESOLUTION },
+    $00100002 { SYNCHRONIZE or TIMER_MODIFY_STATE });
+  if FTimer = 0 then
+    FTimerPeriodActive := timeBeginPeriod(1) = TIMERR_NOERROR;
+  {$ENDIF}
   {$IFDEF ANDROID}
   try
     if TJBuild_VERSION.JavaClass.SDK_INT < 31 then
@@ -112,7 +132,46 @@ end;
 destructor TEmulationPerformanceHints.Destroy;
 begin
   Pause;
+  {$IFDEF MSWINDOWS}
+  if FTimer <> 0 then
+    CloseHandle(FTimer);
+  if FTimerPeriodActive then
+    timeEndPeriod(1);
+  {$ENDIF}
   inherited;
+end;
+
+function TEmulationPerformanceHints.WaitUntil(Wake: TEvent; Deadline: Int64): Boolean;
+begin
+  Result := False;
+  repeat
+    var Remaining := Deadline - TStopwatch.GetTimeStamp;
+    if Remaining <= 0 then
+      Exit;
+    {$IFDEF MSWINDOWS}
+    if FTimer <> 0 then
+    begin
+      var Due: TLargeInteger := -Max(Int64(1), Ceil(Remaining * (10000000.0 / TStopwatch.Frequency)));
+      if not SetWaitableTimer(FTimer, Due, 0, nil, nil, False) then
+        RaiseLastOSError;
+      var Handles: array[0..1] of THandle;
+      Handles[0] := Wake.Handle;
+      Handles[1] := FTimer;
+      case WaitForMultipleObjects(2, @Handles[0], False, INFINITE) of
+        WAIT_OBJECT_0: Exit(True);
+        WAIT_OBJECT_0 + 1: Continue;
+        else RaiseLastOSError;
+      end;
+    end;
+    {$ENDIF}
+    // Round up and recheck: frames must never start early. Commands still wake
+    // the worker immediately; neither sleeping nor pacing depends on UI messages.
+    var WaitMS := Cardinal(Max(Int64(1), Ceil(Remaining * (1000.0 / TStopwatch.Frequency))));
+    case Wake.WaitFor(WaitMS) of
+      wrSignaled: Exit(True);
+      wrError: raise EOSError.Create('Frame pacing wait failed');
+    end;
+  until False;
 end;
 
 {$IFDEF ANDROID}

@@ -232,9 +232,7 @@ begin
   var Volume: Single;
   var Frame: TEmulatorFrame;
   var Samples: TArray<SmallInt>;
-  var Watch: TStopwatch;
   var Deadline: Double;
-  var WaitMS: Integer;
   var LastBattery: TBytes;
   var AudioFailed := False;
   var Console: TMDConsole := nil;
@@ -255,8 +253,7 @@ begin
       Format.Channels := 2;
       Format.BlockFrames := AUDIO_BLOCK_SAMPLES;
       Format.BlockCount := AUDIO_BLOCK_COUNT;
-      Watch := TStopwatch.StartNew;
-      Deadline := 0;
+      Deadline := TStopwatch.GetTimeStamp;
       WasPaused := False;
       WasEnabled := False;
       while not Terminated do
@@ -299,7 +296,7 @@ begin
               SaveCoreSnapshot(Path, 'MD', FData, Transfer, FStorage);
               SaveSnapshotPreview(Path, Console.Width, Console.Height, 320, @Console.Pixels[0], FStorage);
             end;
-            Deadline := Watch.Elapsed.TotalMilliseconds;
+            Deadline := TStopwatch.GetTimeStamp;
           end);
         var Input, Input2: TMDButtons;
         FLock.Acquire;
@@ -321,7 +318,7 @@ begin
           Console.Reset;
           if Audio <> nil then
             Audio.Clear;
-          Deadline := Watch.Elapsed.TotalMilliseconds;
+          Deadline := TStopwatch.GetTimeStamp;
         end;
         if Paused then
         begin
@@ -334,7 +331,7 @@ begin
           end;
           WasPaused := True;
           FWake.WaitFor(10);
-          Deadline := Watch.Elapsed.TotalMilliseconds;
+          Deadline := TStopwatch.GetTimeStamp;
           Continue;
         end;
         WasPaused := False;
@@ -394,12 +391,10 @@ begin
         WasEnabled := Enabled;
         if Console.FrameNumber mod 120 = 0 then
           SaveBattery(Console, LastBattery);
-        Deadline := Deadline + 1000 / Console.FramesPerSecond;
-        if Watch.Elapsed.TotalMilliseconds - Deadline > 100 then
-          Deadline := Watch.Elapsed.TotalMilliseconds;
-        WaitMS := Floor(Deadline - Watch.Elapsed.TotalMilliseconds);
-        if WaitMS > 0 then
-          FWake.WaitFor(WaitMS);
+        Deadline := Deadline + TStopwatch.Frequency / Console.FramesPerSecond;
+        if TStopwatch.GetTimeStamp - Deadline > TStopwatch.Frequency div 10 then
+          Deadline := TStopwatch.GetTimeStamp;
+        FrameHints.WaitUntil(FWake, Round(Deadline));
       end;
     except
       on E: Exception do

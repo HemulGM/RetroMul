@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, Core.Snapshots;
+  System.SysUtils, System.Classes, Core.Snapshots;
 
 type
   TSpcVoice = packed record
@@ -14,14 +14,31 @@ type
     PreviousEnvelope: Integer;
     Active, Release: Boolean;
     Header: Byte;
+    BRROffset, KeyOnDelay: Integer;
+    ENVX: Byte;
   end;
 
   PSpcVoice = ^TSpcVoice;
+
+  TSpcBusCycle = procedure(Address, Value: Integer; Writing: Boolean) of object;
+
+  TSpcDSPPipeline = packed record
+    EveryOtherSample: Boolean;
+    NewKON, KON, KOFF, PMON, NON, EON, DIR, SRCN, ADSR: Byte;
+    BRRHeader, BRRByte, ENDX, ENVX, OUTX, ESA, EchoFlags: Byte;
+    DirectoryAddress, NextAddress, EchoAddress: Word;
+    Pitch, Output, Looped, EchoLength: Integer;
+    MainOutput, EchoOutput, EchoInput: array[0..1] of Integer;
+  end;
+
+  PSpcDSPPipeline = ^TSpcDSPPipeline;
 
   TSpcState = packed record
     RAM: array[0..65535] of Byte;
     DSP: array[0..127] of Byte;
     PortsIn, PortsOut: array[0..3] of Byte;
+    RAMRegisters: array[0..1] of Byte;
+    TimerTarget: array[0..2] of Byte;
     A, X, Y, SP, P, Control, DSPAddress: Byte;
     PC: Word;
     Cycles: Int64;
@@ -33,12 +50,17 @@ type
     NoiseCounter, EchoPosition, EchoHistoryPosition: Integer;
     DSPCounter: Integer;
     EchoHistory: array[0..7, 0..1] of SmallInt;
+    DSPPipeline: TSpcDSPPipeline;
   end;
 
   TSnesSPC = class
   private
     FSamples: TArray<SmallInt>;
     FSampleFrames: Integer;
+    FOnBusCycle: TSpcBusCycle;
+    function BusRead(Address: Word): Byte;
+    procedure BusWrite(Address: Word; V: Byte);
+    procedure Idle;
     function Fetch: Byte;
     function FetchWord: Word;
     function Direct(Offset: Integer): Word;
@@ -49,10 +71,12 @@ type
     procedure Flag(Mask: Byte; Value: Boolean);
     procedure Branch(Taken: Boolean; Offset: Integer; var Cycles: Integer);
     function ALU(Op, A, B: Integer): Byte;
-    procedure DecodeBlock(var Voice: TSpcVoice);
+    procedure DecodeBRR(var Voice: TSpcVoice);
     function CheckCounter(Rate: Integer): Boolean;
     procedure ProcessEnvelope(var Voice: TSpcVoice; Base: Integer);
-    procedure Mix;
+    procedure VoicePhase(Index, Phase: Integer);
+    procedure EchoPhase(Phase: Integer);
+    procedure DSPTick;
     procedure Clock(Cycles: Integer);
   public
     State: TSpcState;
@@ -66,6 +90,7 @@ type
     procedure SerializeState(Archive: TStateArchive);
     property Samples: TArray<SmallInt> read FSamples;
     property SampleFrames: Integer read FSampleFrames;
+    property OnBusCycle: TSpcBusCycle read FOnBusCycle write FOnBusCycle;
   end;
 
 implementation
@@ -447,6 +472,12 @@ begin
   State.Control := $80;
   State.DSP[$6C] := $E0;
   State.Noise := $4000;
+  State.DSPPipeline.EveryOtherSample := True;
+  for var J := 0 to 7 do
+  begin
+    State.Voices[J].BRROffset := 1;
+    State.Voices[J].Release := True;
+  end;
   FSampleFrames := 0;
 end;
 
@@ -469,6 +500,8 @@ begin
       Result := State.DSP[State.DSPAddress and $7F];
     $F4..$F7:
       Result := State.PortsIn[Address - $F4];
+    $F8, $F9:
+      Result := State.RAMRegisters[Address - $F8];
     $FD..$FF:
       begin
         Result := State.TimerOutput[Address - $FD] and 15;
@@ -513,33 +546,55 @@ begin
           State.DSP[R] := 0
         else
           State.DSP[R] := V;
-        if R = $4C then
-          for var J := 0 to 7 do
-            if (V and (1 shl J)) <> 0 then
-            begin
-              var Dir := (Word(State.DSP[$5D]) shl 8) + State.DSP[J * 16 + 4] * 4;
-              var Voice: PSpcVoice := @State.Voices[J];
-              Voice^ := Default(TSpcVoice);
-              Voice.Address := State.RAM[Word(Dir)] or (Word(State.RAM[Word(Dir + 1)]) shl 8);
-              Voice.LoopAddress := State.RAM[Word(Dir + 2)] or (Word(State.RAM[Word(Dir + 3)]) shl 8);
-              Voice.Active := True;
-              Voice.Position := 0;
-              DecodeBlock(Voice^);
-              State.DSP[$7C] := State.DSP[$7C] and not (1 shl J);
+        case R and 15 of
+          8:
+            State.DSPPipeline.ENVX := V;
+          9:
+            State.DSPPipeline.OUTX := V;
+          12:
+            case R of
+              $4C:
+                State.DSPPipeline.NewKON := V;
+              $7C:
+                State.DSPPipeline.ENDX := 0;
             end;
-        if R = $5C then
-          for var J := 0 to 7 do
-            if (V and (1 shl J)) <> 0 then
-              State.Voices[J].Release := True;
+        end;
       end;
     $F4..$F7:
       State.PortsOut[Address - $F4] := V;
+    $F8, $F9:
+      State.RAMRegisters[Address - $F8] := V;
+    $FA..$FC:
+      State.TimerTarget[Address - $FA] := V;
   end;
+end;
+
+function TSnesSPC.BusRead(Address: Word): Byte;
+begin
+  Clock(1);
+  Result := Read(Address);
+  if Assigned(FOnBusCycle) then
+    FOnBusCycle(Address, Result, False);
+end;
+
+procedure TSnesSPC.BusWrite(Address: Word; V: Byte);
+begin
+  Clock(1);
+  Write(Address, V);
+  if Assigned(FOnBusCycle) then
+    FOnBusCycle(Address, V, True);
+end;
+
+procedure TSnesSPC.Idle;
+begin
+  Clock(1);
+  if Assigned(FOnBusCycle) then
+    FOnBusCycle(-1, -1, False);
 end;
 
 function TSnesSPC.Fetch: Byte;
 begin
-  Result := Read(State.PC);
+  Result := BusRead(State.PC);
   State.PC := (Integer(State.PC) + 1) and $FFFF;
 end;
 
@@ -556,20 +611,20 @@ end;
 
 function TSnesSPC.DirectWord(Offset: Integer): Word;
 begin
-  Result := Read(Direct(Offset));
-  Result := Result or (Word(Read(Direct(Offset + 1))) shl 8);
+  Result := BusRead(Direct(Offset));
+  Result := Result or (Word(BusRead(Direct(Offset + 1))) shl 8);
 end;
 
 procedure TSnesSPC.Push(V: Byte);
 begin
-  Write($100 or State.SP, V);
+  BusWrite($100 or State.SP, V);
   State.SP := (Integer(State.SP) - 1) and $FF;
 end;
 
 function TSnesSPC.Pop: Byte;
 begin
   State.SP := (Integer(State.SP) + 1) and $FF;
-  Result := Read($100 or State.SP);
+  Result := BusRead($100 or State.SP);
 end;
 
 procedure TSnesSPC.Flag(Mask: Byte; Value: Boolean);
@@ -643,10 +698,12 @@ var
 begin
   if State.Halted then
   begin
-    Clock(2);
+    BusRead(State.PC);
+    Idle;
     Exit;
   end;
 
+  var StartCycle := State.Cycles;
   var Code := Fetch;
   O := Opcodes[Code].Op;
   Mode := Opcodes[Code].Mode;
@@ -666,36 +723,53 @@ begin
     amDirIdxX:
       begin
         Offset := Fetch;
+        Idle;
         Addr := Direct(Offset + State.X);
       end;
     amDirIdxY:
       begin
         Offset := Fetch;
+        Idle;
         Addr := Direct(Offset + State.Y);
       end;
     amAbs:
       Addr := FetchWord;
     amAbsIdxX:
-      Addr := Word(FetchWord + State.X);
+      begin
+        Addr := Word(FetchWord + State.X);
+        Idle;
+      end;
     amAbsIdxY:
-      Addr := Word(FetchWord + State.Y);
+      begin
+        Addr := Word(FetchWord + State.Y);
+        Idle;
+      end;
     amIndX:
-      Addr := Direct(State.X);
+      begin
+        BusRead(State.PC);
+        Addr := Direct(State.X);
+      end;
     amDirIdxXInd:
       begin
         Offset := Fetch;
+        Idle;
         Addr := DirectWord(Offset + State.X);
       end;
     amDirIndIdxY:
       begin
         Offset := Fetch;
+        if O <> opSTA then
+          Idle;
         Addr := Word(DirectWord(Offset) + State.Y);
+        if O = opSTA then
+          Idle;
       end;
     amAbsIdxXInd:
       begin
         Tmp := Word(FetchWord + State.X);
-        Addr := Read(Tmp);
-        Addr := Addr or (Word(Read(Word(Tmp + 1))) shl 8);
+        Idle;
+        Addr := BusRead(Tmp);
+        Addr := Addr or (Word(BusRead(Word(Tmp + 1))) shl 8);
       end;
     amImm:
       begin
@@ -713,6 +787,7 @@ begin
     amDirToDir:
       begin
         AddrB := Direct(Fetch);
+        V := BusRead(AddrB);
         Addr := Direct(Fetch);
       end;
     amDirImm:
@@ -723,10 +798,13 @@ begin
       end;
     amIndXToIndY:
       begin
+        BusRead(State.PC);
         Addr := Direct(State.X);
         AddrB := Direct(State.Y);
       end;
   end;
+  if (Mode = amNone) and (O <> opPCALL) then
+    BusRead(State.PC);
   case O of
     opOR, opAND, opEOR, opCMP, opADC, opSBC,   //
     opOR_Acc, opAND_Acc, opEOR_Acc, opCMP_Acc, //
@@ -739,28 +817,26 @@ begin
         if Acc then
         begin
           if not Immediate then
-            V := Read(Addr);
+            V := BusRead(Addr);
           R := State.A;
         end
         else
         begin
           if Mode = amIndXToIndY then
-            V := Read(AddrB)
-          else if not Immediate then
-            V := Read(AddrB);
-          R := Read(Addr);
+            V := BusRead(AddrB);
+          R := BusRead(Addr);
         end;
         R := ALU(Code shr 5, R, V);
         if (Code shr 5) <> 3 then
           if Acc then
             State.A := R
           else
-            Write(Addr, Byte(R));
+            BusWrite(Addr, Byte(R));
       end;
     opLDA, opLDA_Imm, opLDA_AutoIncX:
       begin
         if not Immediate then
-          V := Read(Addr);
+          V := BusRead(Addr);
         State.A := V;
         NZ(V);
         if O = opLDA_AutoIncX then
@@ -769,46 +845,65 @@ begin
     opLDX, opLDX_Imm:
       begin
         if not Immediate then
-          V := Read(Addr);
+          V := BusRead(Addr);
         State.X := V;
         NZ(V);
       end;
     opLDY, opLDY_Imm:
       begin
         if not Immediate then
-          V := Read(Addr);
+          V := BusRead(Addr);
         State.Y := V;
         NZ(V);
       end;
     opSTA, opSTA_AutoIncX:
       begin
-        Write(Addr, State.A);
+        if O = opSTA_AutoIncX then
+          Idle
+        else
+          BusRead(Addr);
+        BusWrite(Addr, State.A);
         if O = opSTA_AutoIncX then
           State.X := (Integer(State.X) + 1) and $FF;
       end;
     opSTX:
-      Write(Addr, State.X);
+      begin
+        BusRead(Addr);
+        BusWrite(Addr, State.X);
+      end;
     opSTY:
-      Write(Addr, State.Y);
+      begin
+        BusRead(Addr);
+        BusWrite(Addr, State.Y);
+      end;
     opMOV:
-      Write(Addr, Read(AddrB));
+      BusWrite(Addr, Byte(V));
     opMOV_Imm:
-      Write(Addr, Byte(V));
+      begin
+        BusRead(Addr);
+        BusWrite(Addr, Byte(V));
+      end;
     opLDW:
       begin
-        Tmp := DirectWord(Offset);
+        Tmp := BusRead(Addr);
+        Idle;
+        Tmp := Tmp or (Word(BusRead(Direct(Offset + 1))) shl 8);
         State.A := Byte(Tmp);
         State.Y := Tmp shr 8;
         NZ(Tmp, True);
       end;
     opSTW:
       begin
-        Write(Addr, State.A);
-        Write(Direct(Offset + 1), State.Y);
+        BusRead(Addr);
+        BusWrite(Addr, State.A);
+        BusWrite(Direct(Offset + 1), State.Y);
       end;
     opADDW, opSUBW, opCMPW:
       begin
-        V := DirectWord(Offset);
+        V := BusRead(Addr);
+        if O <> opCMPW then
+          Idle;
+        V := V or (Word(BusRead(Direct(Offset + 1))) shl 8);
         R := State.A or (Word(State.Y) shl 8);
         var Old := R;
         if O = opADDW then
@@ -839,7 +934,7 @@ begin
     opCPX, opCPX_Imm, opCPY, opCPY_Imm:
       begin
         if not Immediate then
-          V := Read(Addr);
+          V := BusRead(Addr);
         if O in [opCPX, opCPX_Imm] then
           R := State.X
         else
@@ -852,7 +947,7 @@ begin
         if Acc then
           V := State.A
         else
-          V := Read(Addr);
+          V := BusRead(Addr);
         R := V;
         var Carry := State.P and C;
         case O of
@@ -885,17 +980,18 @@ begin
         if Acc then
           State.A := Byte(R)
         else
-          Write(Addr, Byte(R));
+          BusWrite(Addr, Byte(R));
       end;
     opINCW, opDECW:
       begin
-        V := DirectWord(Offset);
+        V := BusRead(Addr);
         if O = opINCW then
           Inc(V)
         else
           Dec(V);
-        Write(Addr, Byte(V));
-        Write(Direct(Offset + 1), Byte(V shr 8));
+        BusWrite(Addr, Byte(V));
+        Inc(V, Integer(BusRead(Direct(Offset + 1))) shl 8);
+        BusWrite(Direct(Offset + 1), Byte(V shr 8));
         NZ(V, True);
       end;
     opINX:
@@ -919,30 +1015,33 @@ begin
         NZ(State.Y);
       end;
     opSET1:
-      Write(Addr, Read(Addr) or (1 shl Bit));
+      BusWrite(Addr, BusRead(Addr) or (1 shl Bit));
     opCLR1:
-      Write(Addr, Read(Addr) and not (1 shl Bit));
+      BusWrite(Addr, BusRead(Addr) and not (1 shl Bit));
     opBBS, opBBC:
       begin
-        Taken := (Read(Addr) and (1 shl Bit)) <> 0;
+        Taken := (BusRead(Addr) and (1 shl Bit)) <> 0;
+        Idle;
         Offset := Fetch;
         Branch(Taken = (O = opBBS), Offset, Cycles);
       end;
     opCBNE:
       begin
-        V := Read(Addr);
+        V := BusRead(Addr);
+        Idle;
         Offset := Fetch;
         Branch(V <> State.A, Offset, Cycles);
       end;
     opDBNZ:
       begin
-        V := Byte(Read(Addr) - 1);
-        Write(Addr, Byte(V));
+        V := Byte(BusRead(Addr) - 1);
+        BusWrite(Addr, Byte(V));
         Offset := Fetch;
         Branch(V <> 0, Offset, Cycles);
       end;
     opDBNZ_Y:
       begin
+        Idle;
         Offset := Fetch;
         State.Y := (Integer(State.Y) - 1) and $FF;
         Branch(State.Y <> 0, Offset, Cycles);
@@ -967,16 +1066,17 @@ begin
       State.PC := Word(State.PC + ShortInt(Offset));
     opTSET1, opTCLR1:
       begin
-        V := Read(Addr);
+        V := BusRead(Addr);
         NZ(State.A - V);
+        BusRead(Addr);
         if O = opTSET1 then
-          Write(Addr, V or State.A)
+          BusWrite(Addr, V or State.A)
         else
-          Write(Addr, V and not State.A);
+          BusWrite(Addr, V and not State.A);
       end;
     opOR1, opNOR1, opAND1, opNAND1, opEOR1, opLDC, opSTC, opNOT1:
       begin
-        V := Read(Addr);
+        V := BusRead(Addr);
         Taken := (V and (1 shl Bit)) <> 0;
         case O of
           opOR1:
@@ -993,14 +1093,15 @@ begin
             Flag(C, Taken);
           opSTC:
             begin
+              Idle;
               if (State.P and C) <> 0 then
                 V := V or (1 shl Bit)
               else
                 V := V and not (1 shl Bit);
-              Write(Addr, Byte(V));
+              BusWrite(Addr, Byte(V));
             end;
           opNOT1:
-            Write(Addr, V xor (1 shl Bit));
+            BusWrite(Addr, V xor (1 shl Bit));
         end;
       end;
     opTAX:
@@ -1039,13 +1140,25 @@ begin
     opPHY:
       Push(State.Y);
     opPLP:
-      State.P := Pop;
+      begin
+        Idle;
+        State.P := Pop;
+      end;
     opPLA:
-      State.A := Pop;
+      begin
+        Idle;
+        State.A := Pop;
+      end;
     opPLX:
-      State.X := Pop;
+      begin
+        Idle;
+        State.X := Pop;
+      end;
     opPLY:
-      State.Y := Pop;
+      begin
+        Idle;
+        State.Y := Pop;
+      end;
     opCLRP:
       Flag(PFlag, False);
     opSETP:
@@ -1068,18 +1181,21 @@ begin
       begin
         if O = opPCALL then
           Addr := $FF00 or Fetch;
-        if O = opTCALL then
-        begin
-          Tmp := $FFDE - Bit * 2;
-          Addr := Read(Tmp);
-          Addr := Addr or (Word(Read(Tmp + 1)) shl 8);
-        end;
+        Idle;
         Push(State.PC shr 8);
         Push(Byte(State.PC));
+        if O = opTCALL then
+        begin
+          Idle;
+          Tmp := $FFDE - Bit * 2;
+          Addr := BusRead(Tmp);
+          Addr := Addr or (Word(BusRead(Tmp + 1)) shl 8);
+        end;
         State.PC := Addr;
       end;
     opRTS, opRTI:
       begin
+        Idle;
         if O = opRTI then
           State.P := Pop;
         State.PC := Pop;
@@ -1091,8 +1207,9 @@ begin
         Push(Byte(State.PC));
         Push(State.P);
         State.P := (State.P or BFlag) and not I;
-        State.PC := Read($FFDE);
-        State.PC := State.PC or (Word(Read($FFDF)) shl 8);
+        Idle;
+        State.PC := BusRead($FFDE);
+        State.PC := State.PC or (Word(BusRead($FFDF)) shl 8);
       end;
     opMUL:
       begin
@@ -1155,7 +1272,10 @@ begin
     opNOP:
       ;
   end;
-  Clock(Cycles);
+  // Arithmetic is instruction based; every peripheral access above has its
+  // own bus clock, including reads preceding writes and internal idle clocks.
+  while State.Cycles - StartCycle < Cycles do
+    Idle;
 end;
 
 procedure TSnesSPC.Clock(Cycles: Integer);
@@ -1173,22 +1293,21 @@ begin
       if (State.Control and (1 shl T)) = 0 then
         Continue;
 
-      Inc(State.TimerStage[T]);
-      var Target := Integer(State.RAM[$FA + T]);
+      State.TimerStage[T] := (State.TimerStage[T] + 1) and $FF;
+      var Target := Integer(State.TimerTarget[T]);
       if Target = 0 then
         Target := 256;
-      if State.TimerStage[T] >= Target then
+      if State.TimerStage[T] = (Target and $FF) then
       begin
         State.TimerStage[T] := 0;
         State.TimerOutput[T] := (State.TimerOutput[T] + 1) and 15;
       end;
     end;
   end;
-  Inc(State.SampleClock, Cycles);
-  while State.SampleClock >= 32 do
+  for var J := 1 to Cycles do
   begin
-    Dec(State.SampleClock, 32);
-    Mix;
+    DSPTick;
+    State.SampleClock := (State.SampleClock + 1) and 31;
   end;
 end;
 
@@ -1198,16 +1317,15 @@ begin
     Step;
 end;
 
-procedure TSnesSPC.DecodeBlock(var Voice: TSpcVoice);
+procedure TSnesSPC.DecodeBRR(var Voice: TSpcVoice);
 begin
-  Voice.Header := State.RAM[Voice.Address];
+  Voice.Header := State.DSPPipeline.BRRHeader;
   var Shift := Voice.Header shr 4;
-  for var J := 0 to 15 do
+  var Data := (Integer(State.DSPPipeline.BRRByte) shl 8) or
+    State.RAM[Word(Voice.Address + Voice.BRROffset + 1)];
+  for var J := 0 to 3 do
   begin
-    var Data := State.RAM[Word(Voice.Address + 1 + J div 2)];
-    var S: Integer := Data and 15;
-    if (J and 1) = 0 then
-      S := Data shr 4;
+    var S: Integer := (Data shr (12 - J * 4)) and 15;
     if S >= 8 then
       Dec(S, 16);
     if Shift <= 12 then
@@ -1216,18 +1334,19 @@ begin
       S := -2048
     else
       S := 0;
-    var P1 := SAR(Voice.Prev1, 1);
-    var P2 := SAR(Voice.Prev2, 1);
+    var P1 := Integer(Voice.Block[(Voice.Position + 11) mod 12]);
+    var P2 := SAR(Voice.Block[(Voice.Position + 10) mod 12], 1);
     case Voice.Header and 12 of
       4:
-        Inc(S, P1 + SAR(-P1, 4));
+        Inc(S, SAR(P1, 1) + SAR(-P1, 5));
       8:
-        Inc(S, 2 * P1 + SAR(-3 * P1, 5) - P2 + SAR(P2, 4));
+        Inc(S, P1 + SAR(-3 * P1, 6) - P2 + SAR(P2, 4));
       12:
-        Inc(S, 2 * P1 + SAR(-13 * P1, 6) - P2 + SAR(3 * P2, 4));
+        Inc(S, P1 + SAR(-13 * P1, 7) - P2 + SAR(3 * P2, 4));
     end;
     S := SmallInt(EnsureRange(S, -32768, 32767) * 2);
-    Voice.Block[J] := S;
+    Voice.Block[Voice.Position] := S;
+    Voice.Position := (Voice.Position + 1) mod 12;
     Voice.Prev2 := Voice.Prev1;
     Voice.Prev1 := S;
   end;
@@ -1258,7 +1377,7 @@ begin
   var Env := Voice.Envelope;
   var Rate := 31;
   var Sustain := State.DSP[Base + 6];
-  var ADSR := State.DSP[Base + 5];
+  var ADSR := State.DSPPipeline.ADSR;
   var Gain := State.DSP[Base + 7];
   if (ADSR and $80) <> 0 then
     case Voice.EnvelopeMode of
@@ -1315,156 +1434,366 @@ begin
     Voice.Envelope := Env;
 end;
 
-procedure TSnesSPC.Mix;
+// S-DSP phases follow the documented voice/echo schedule, also used by the
+// ISC-licensed ares SFC DSP. All latches reside in serialized TSpcState.
+procedure TSnesSPC.VoicePhase(Index, Phase: Integer);
 begin
-  if State.DSPCounter = 0 then
-    State.DSPCounter := $77FF
-  else
-    Dec(State.DSPCounter);
-  var Left := 0;
-  var Right := 0;
-  var EchoLeft := 0;
-  var EchoRight := 0;
-  var PreviousOutput := 0;
-  for var J := 0 to 7 do
-  begin
-    var Voice: PSpcVoice := @State.Voices[J];
-    var Base := J * 16;
-    if not Voice.Active then
-    begin
-      State.DSP[Base + 8] := 0;
-      State.DSP[Base + 9] := 0;
-      PreviousOutput := 0;
-      Continue;
-    end;
-
-    var Offset := (Voice.Fraction shr 4) and $FF;
-    var Sample := Integer(SmallInt(
-        SAR(Gaussian[255 - Offset] * Voice.History[0], 11) +
-        SAR(Gaussian[511 - Offset] * Voice.History[1], 11) +
-        SAR(Gaussian[256 + Offset] * Voice.History[2], 11)));
-    Sample := EnsureRange(Sample + SAR(Gaussian[Offset] * Voice.History[3], 11), -32768, 32767) and not 1;
-    if (State.DSP[$3D] and (1 shl J)) <> 0 then
-      Sample := SmallInt(State.Noise shl 1);
-    Sample := SAR(Sample * Voice.Envelope, 11) and not 1;
-    State.DSP[Base + 8] := Voice.Envelope shr 4;
-    State.DSP[Base + 9] := Byte(SAR(Sample, 8));
-    if (State.DSP[$6C] and $80) <> 0 then
-    begin
-      Voice.Envelope := 0;
-      Voice.Release := True;
-    end;
-    ProcessEnvelope(Voice^, Base);
-    var VoiceLeft := SAR(Sample * ShortInt(State.DSP[Base]), 7);
-    var VoiceRight := SAR(Sample * ShortInt(State.DSP[Base + 1]), 7);
-    Left := EnsureRange(Left + VoiceLeft, -32768, 32767);
-    Right := EnsureRange(Right + VoiceRight, -32768, 32767);
-    if (State.DSP[$4D] and (1 shl J)) <> 0 then
-    begin
-      EchoLeft := EnsureRange(EchoLeft + VoiceLeft, -32768, 32767);
-      EchoRight := EnsureRange(EchoRight + VoiceRight, -32768, 32767);
-    end;
-    var Pitch := State.DSP[Base + 2] or ((State.DSP[Base + 3] and $3F) shl 8);
-    if (J > 0) and ((State.DSP[$2D] and (1 shl J)) <> 0) then
-      Pitch := EnsureRange(Pitch + SAR(SAR(PreviousOutput, 5) * Pitch, 10), 0, $7FFF);
-    PreviousOutput := Sample;
-    Inc(Voice.Fraction, Pitch);
-    while Voice.Fraction >= 4096 do
-    begin
-      Dec(Voice.Fraction, 4096);
-      Voice.History[0] := Voice.History[1];
-      Voice.History[1] := Voice.History[2];
-      Voice.History[2] := Voice.History[3];
-      Voice.History[3] := Voice.Block[Voice.Position];
-      Inc(Voice.Position);
-      if Voice.Position >= 16 then
+  var V: PSpcVoice := @State.Voices[Index];
+  var D: PSpcDSPPipeline := @State.DSPPipeline;
+  var Base := Index * 16;
+  var Mask := 1 shl Index;
+  case Phase of
+    1:
       begin
-        Voice.Position := 0;
-        if (Voice.Header and 1) <> 0 then
-        begin
-          State.DSP[$7C] := State.DSP[$7C] or (1 shl J);
-          if (Voice.Header and 2) <> 0 then
-            Voice.Address := Voice.LoopAddress
-          else
-          begin
-            Voice.Active := False;
-            Break;
-          end;
-        end
-        else
-          Voice.Address := (Integer(Voice.Address) + 9) and $FFFF;
-        DecodeBlock(Voice^);
+        D.DirectoryAddress := Word(Integer(D.DIR) * 256 + Integer(D.SRCN) * 4);
+        D.SRCN := State.DSP[Base + 4];
       end;
-    end;
+    2:
+      begin
+        var Address := D.DirectoryAddress;
+        if V.KeyOnDelay = 0 then
+          Address := Word(Address + 2);
+        D.NextAddress := State.RAM[Address] or (Word(State.RAM[Word(Address + 1)]) shl 8);
+        D.ADSR := State.DSP[Base + 5];
+        D.Pitch := State.DSP[Base + 2];
+      end;
+    3:
+      begin
+        VoicePhase(Index, 10);
+        VoicePhase(Index, 11);
+        VoicePhase(Index, 12);
+      end;
+    10:
+      D.Pitch := D.Pitch or ((State.DSP[Base + 3] and $3F) shl 8);
+    11:
+      begin
+        D.BRRByte := State.RAM[Word(V.Address + V.BRROffset)];
+        D.BRRHeader := State.RAM[V.Address];
+      end;
+    12:
+      begin
+        if (D.PMON and Mask) <> 0 then
+          Inc(D.Pitch, SAR(SAR(D.Output, 5) * D.Pitch, 10));
+        if V.KeyOnDelay > 0 then
+        begin
+          if V.KeyOnDelay = 5 then
+          begin
+            V.Address := D.NextAddress;
+            V.BRROffset := 1;
+            V.Position := 0;
+            D.BRRHeader := 0;
+          end;
+          V.Envelope := 0;
+          V.PreviousEnvelope := 0;
+          V.Fraction := 0;
+          Dec(V.KeyOnDelay);
+          if (V.KeyOnDelay and 3) <> 0 then
+            V.Fraction := $4000;
+          D.Pitch := 0;
+        end;
+        var Position := (V.Position + (V.Fraction shr 12)) mod 12;
+        for var J := 0 to 3 do
+          V.History[J] := V.Block[(Position + J) mod 12];
+        var Offset := (V.Fraction shr 4) and $FF;
+        var Sample := Integer(SmallInt(
+            SAR(Gaussian[255 - Offset] * V.History[0], 11) +
+            SAR(Gaussian[511 - Offset] * V.History[1], 11) +
+            SAR(Gaussian[256 + Offset] * V.History[2], 11)));
+        Sample := EnsureRange(Sample + SAR(Gaussian[Offset] * V.History[3], 11), -32768, 32767) and not 1;
+        if (D.NON and Mask) <> 0 then
+          Sample := SmallInt(State.Noise shl 1);
+        D.Output := SAR(Sample * V.Envelope, 11) and not 1;
+        V.ENVX := V.Envelope shr 4;
+        if ((State.DSP[$6C] and $80) <> 0) or ((D.BRRHeader and 3) = 1) then
+        begin
+          V.Envelope := 0;
+          V.Release := True;
+        end;
+        if D.EveryOtherSample then
+        begin
+          if (D.KOFF and Mask) <> 0 then
+            V.Release := True;
+          if (D.KON and Mask) <> 0 then
+          begin
+            V.KeyOnDelay := 5;
+            V.EnvelopeMode := 0;
+            V.Release := False;
+            V.Active := True;
+          end;
+        end;
+        if V.KeyOnDelay = 0 then
+          ProcessEnvelope(V^, Base);
+      end;
+    4:
+      begin
+        D.Looped := 0;
+        if V.Fraction >= $4000 then
+        begin
+          DecodeBRR(V^);
+          Inc(V.BRROffset, 2);
+          if V.BRROffset >= 9 then
+          begin
+            V.Address := Word(V.Address + 9);
+            if (D.BRRHeader and 1) <> 0 then
+            begin
+              V.Address := D.NextAddress;
+              D.Looped := Mask;
+            end;
+            V.BRROffset := 1;
+          end;
+        end;
+        V.Fraction := Min((V.Fraction and $3FFF) + D.Pitch, $7FFF);
+        var Amp := SAR(D.Output * ShortInt(State.DSP[Base]), 7);
+        D.MainOutput[0] := EnsureRange(D.MainOutput[0] + Amp, -32768, 32767);
+        if (D.EON and Mask) <> 0 then
+          D.EchoOutput[0] := EnsureRange(D.EchoOutput[0] + Amp, -32768, 32767);
+      end;
+    5:
+      begin
+        var Amp := SAR(D.Output * ShortInt(State.DSP[Base + 1]), 7);
+        D.MainOutput[1] := EnsureRange(D.MainOutput[1] + Amp, -32768, 32767);
+        if (D.EON and Mask) <> 0 then
+          D.EchoOutput[1] := EnsureRange(D.EchoOutput[1] + Amp, -32768, 32767);
+        D.ENDX := State.DSP[$7C] or D.Looped;
+        if V.KeyOnDelay = 5 then
+          D.ENDX := D.ENDX and not Mask;
+      end;
+    6:
+      D.OUTX := Byte(SAR(D.Output, 8));
+    7:
+      begin
+        State.DSP[$7C] := D.ENDX;
+        D.ENVX := V.ENVX;
+      end;
+    8:
+      State.DSP[Base + 9] := D.OUTX;
+    9:
+      State.DSP[Base + 8] := D.ENVX;
   end;
-  var NoiseRate := State.DSP[$6C] and 31;
-  if CheckCounter(NoiseRate) then
+end;
+
+procedure TSnesSPC.EchoPhase(Phase: Integer);
+
+  function FIR(Tap, Channel: Integer): Integer;
   begin
-    State.Noise := (State.Noise shr 1) or (((State.Noise xor (State.Noise shr 1)) and 1) shl 14);
+    var Position := (State.EchoHistoryPosition + Tap + 1) and 7;
+    Result := SAR(State.EchoHistory[Position, Channel] * ShortInt(State.DSP[$0F + Tap * 16]), 6);
   end;
-  var EchoAddress := Word((Word(State.DSP[$6D]) shl 8) + State.EchoPosition);
-  State.EchoHistoryPosition := (State.EchoHistoryPosition + 1) and 7;
-  State.EchoHistory[State.EchoHistoryPosition, 0] := SAR(SmallInt(State.RAM[EchoAddress] or (Word(State.RAM[Word(EchoAddress + 1)]) shl 8)), 1);
-  State.EchoHistory[State.EchoHistoryPosition, 1] := SAR(SmallInt(State.RAM[Word(EchoAddress + 2)] or (Word(State.RAM[Word(EchoAddress + 3)]) shl 8)), 1);
-  var FilteredLeft := 0;
-  var FilteredRight := 0;
-  for var Tap := 0 to 7 do
+
+  function Output(Channel: Integer): Integer;
   begin
-    var History := (State.EchoHistoryPosition + Tap + 1) and 7;
-    var Coefficient := ShortInt(State.DSP[$0F + Tap * 16]);
-    var TapLeft := SAR(State.EchoHistory[History, 0] * Coefficient, 6);
-    var TapRight := SAR(State.EchoHistory[History, 1] * Coefficient, 6);
-    if Tap = 7 then
+    var D: PSpcDSPPipeline := @State.DSPPipeline;
+    Result := EnsureRange(Integer(SmallInt(SAR(D.MainOutput[Channel] * ShortInt(State.DSP[$0C + Channel * 16]), 7))) +
+      Integer(SmallInt(SAR(D.EchoInput[Channel] * ShortInt(State.DSP[$2C + Channel * 16]), 7))), -32768, 32767);
+  end;
+
+  procedure WriteEcho(Channel: Integer);
+  begin
+    var D: PSpcDSPPipeline := @State.DSPPipeline;
+    if (D.EchoFlags and $20) = 0 then
     begin
-      FilteredLeft := SmallInt(FilteredLeft) + SmallInt(TapLeft);
-      FilteredRight := SmallInt(FilteredRight) + SmallInt(TapRight);
-    end
-    else
-    begin
-      Inc(FilteredLeft, TapLeft);
-      Inc(FilteredRight, TapRight);
+      var Address := Word(D.EchoAddress + Channel * 2);
+      State.RAM[Address] := Byte(D.EchoOutput[Channel]);
+      State.RAM[Word(Address + 1)] := Byte(SAR(D.EchoOutput[Channel], 8));
     end;
+    D.EchoOutput[Channel] := 0;
   end;
-  FilteredLeft := EnsureRange(FilteredLeft, -32768, 32767) and not 1;
-  FilteredRight := EnsureRange(FilteredRight, -32768, 32767) and not 1;
-  if (State.DSP[$6C] and $20) = 0 then
+
+begin
+  var D: PSpcDSPPipeline := @State.DSPPipeline;
+  case Phase of
+    22:
+      begin
+        State.EchoHistoryPosition := (State.EchoHistoryPosition + 1) and 7;
+        D.EchoAddress := Word(Integer(D.ESA) * 256 + State.EchoPosition);
+        State.EchoHistory[State.EchoHistoryPosition, 0] := SAR(SmallInt(State.RAM[D.EchoAddress] or
+              (Word(State.RAM[Word(D.EchoAddress + 1)]) shl 8)), 1);
+        for var Ch := 0 to 1 do
+          D.EchoInput[Ch] := FIR(0, Ch);
+      end;
+    23:
+      begin
+        for var Ch := 0 to 1 do
+          Inc(D.EchoInput[Ch], FIR(1, Ch) + FIR(2, Ch));
+        State.EchoHistory[State.EchoHistoryPosition, 1] := SAR(SmallInt(State.RAM[Word(D.EchoAddress + 2)] or
+              (Word(State.RAM[Word(D.EchoAddress + 3)]) shl 8)), 1);
+      end;
+    24:
+      for var Ch := 0 to 1 do
+        Inc(D.EchoInput[Ch], FIR(3, Ch) + FIR(4, Ch) + FIR(5, Ch));
+    25:
+      for var Ch := 0 to 1 do
+        D.EchoInput[Ch] := EnsureRange(Integer(SmallInt(D.EchoInput[Ch] + FIR(6, Ch))) +
+            Integer(SmallInt(FIR(7, Ch))), -32768, 32767) and not 1;
+    26:
+      begin
+        D.MainOutput[0] := Output(0);
+        for var Ch := 0 to 1 do
+          D.EchoOutput[Ch] := EnsureRange(D.EchoOutput[Ch] +
+              Integer(SmallInt(SAR(D.EchoInput[Ch] * ShortInt(State.DSP[$0D]), 7))), -32768, 32767) and not 1;
+      end;
+    27:
+      begin
+        var Left := D.MainOutput[0];
+        var Right := Output(1);
+        D.MainOutput[0] := 0;
+        D.MainOutput[1] := 0;
+        if (State.DSP[$6C] and $40) <> 0 then
+        begin
+          Left := 0;
+          Right := 0;
+        end;
+        if FSampleFrames * 2 + 1 < Length(FSamples) then
+        begin
+          FSamples[FSampleFrames * 2] := Left;
+          FSamples[FSampleFrames * 2 + 1] := Right;
+          Inc(FSampleFrames);
+        end;
+      end;
+    28:
+      D.EchoFlags := State.DSP[$6C];
+    29:
+      begin
+        D.ESA := State.DSP[$6D];
+        if State.EchoPosition = 0 then
+          D.EchoLength := (State.DSP[$7D] and 15) * $800;
+        Inc(State.EchoPosition, 4);
+        if State.EchoPosition >= D.EchoLength then
+          State.EchoPosition := 0;
+        WriteEcho(0);
+        D.EchoFlags := State.DSP[$6C];
+      end;
+    30:
+      WriteEcho(1);
+  end;
+end;
+
+procedure TSnesSPC.DSPTick;
+begin
+  var Phase := State.SampleClock;
+  // Three staggered voice operations run concurrently on most phases.
+  if Phase in [2, 5, 8, 11, 14] then
   begin
-    var Feedback := ShortInt(State.DSP[$0D]);
-    var OutLeft := EnsureRange(EchoLeft + SAR(FilteredLeft * Feedback, 7), -32768, 32767) and not 1;
-    var OutRight := EnsureRange(EchoRight + SAR(FilteredRight * Feedback, 7), -32768, 32767) and not 1;
-    State.RAM[EchoAddress] := Byte(OutLeft);
-    State.RAM[Word(EchoAddress + 1)] := Byte(OutLeft shr 8);
-    State.RAM[Word(EchoAddress + 2)] := Byte(OutRight);
-    State.RAM[Word(EchoAddress + 3)] := Byte(OutRight shr 8);
-  end;
-  Inc(State.EchoPosition, 4);
-  var EchoLength := (State.DSP[$7D] and 15) * $800;
-  if EchoLength = 0 then
-    EchoLength := 4;
-  if State.EchoPosition >= EchoLength then
-    State.EchoPosition := 0;
-  Left := SAR(EnsureRange(Left, -32768, 32767) * ShortInt(State.DSP[$0C]), 7);
-  Right := SAR(EnsureRange(Right, -32768, 32767) * ShortInt(State.DSP[$1C]), 7);
-  Inc(Left, SAR(FilteredLeft * ShortInt(State.DSP[$2C]), 7));
-  Inc(Right, SAR(FilteredRight * ShortInt(State.DSP[$3C]), 7));
-  if (State.DSP[$6C] and $40) <> 0 then
+    var V := (Phase - 2) div 3;
+    VoicePhase(V, 7);
+    VoicePhase(V + 3, 1);
+    VoicePhase(V + 1, 4);
+  end
+  else if Phase in [3, 6, 9, 12, 15, 18] then
   begin
-    Left := 0;
-    Right := 0;
-  end;
-  if FSampleFrames * 2 + 1 < Length(FSamples) then
+    var V := (Phase - 3) div 3;
+    VoicePhase(V, 8);
+    VoicePhase(V + 1, 5);
+    VoicePhase(V + 2, 2);
+  end
+  else if Phase in [4, 7, 10, 13, 16, 19] then
   begin
-    FSamples[FSampleFrames * 2] := EnsureRange(Left, -32768, 32767);
-    FSamples[FSampleFrames * 2 + 1] := EnsureRange(Right, -32768, 32767);
-    Inc(FSampleFrames);
-  end;
+    var V := (Phase - 4) div 3;
+    VoicePhase(V, 9);
+    VoicePhase(V + 1, 6);
+    VoicePhase(V + 2, 3);
+  end
+  else
+    case Phase of
+      0:
+        begin
+          VoicePhase(0, 5);
+          VoicePhase(1, 2);
+        end;
+      1:
+        begin
+          VoicePhase(0, 6);
+          VoicePhase(1, 3);
+        end;
+      17:
+        begin
+          VoicePhase(0, 1);
+          VoicePhase(5, 7);
+          VoicePhase(6, 4);
+        end;
+      20:
+        begin
+          VoicePhase(1, 1);
+          VoicePhase(6, 7);
+          VoicePhase(7, 4);
+        end;
+      21:
+        begin
+          VoicePhase(6, 8);
+          VoicePhase(7, 5);
+          VoicePhase(0, 2);
+        end;
+      22:
+        begin
+          VoicePhase(0, 10);
+          VoicePhase(6, 9);
+          VoicePhase(7, 6);
+        end;
+      23:
+        VoicePhase(7, 7);
+      24:
+        VoicePhase(7, 8);
+      25:
+        begin
+          VoicePhase(0, 11);
+          VoicePhase(7, 9);
+        end;
+      27:
+        State.DSPPipeline.PMON := State.DSP[$2D] and $FE;
+      28:
+        begin
+          State.DSPPipeline.NON := State.DSP[$3D];
+          State.DSPPipeline.EON := State.DSP[$4D];
+          State.DSPPipeline.DIR := State.DSP[$5D];
+        end;
+      29:
+        begin
+          State.DSPPipeline.EveryOtherSample := not State.DSPPipeline.EveryOtherSample;
+          if State.DSPPipeline.EveryOtherSample then
+            State.DSPPipeline.NewKON := State.DSPPipeline.NewKON and not State.DSPPipeline.KON;
+        end;
+      30:
+        begin
+          if State.DSPPipeline.EveryOtherSample then
+          begin
+            State.DSPPipeline.KON := State.DSPPipeline.NewKON;
+            State.DSPPipeline.KOFF := State.DSP[$5C];
+          end;
+          if State.DSPCounter = 0 then
+            State.DSPCounter := $77FF
+          else
+            Dec(State.DSPCounter);
+          if CheckCounter(State.DSP[$6C] and 31) then
+            State.Noise := (State.Noise shr 1) or (((State.Noise xor (State.Noise shr 1)) and 1) shl 14);
+          VoicePhase(0, 12);
+        end;
+      31:
+        begin
+          VoicePhase(0, 4);
+          VoicePhase(2, 1);
+        end;
+    end;
+  if Phase in [22..30] then
+    EchoPhase(Phase);
 end;
 
 procedure TSnesSPC.SerializeState(Archive: TStateArchive);
 begin
   Archive.Field(State, SizeOf(State));
   if Archive.Loading then
+  begin
+    if (State.SampleClock < 0) or (State.SampleClock > 31) or
+      (State.EchoHistoryPosition < 0) or (State.EchoHistoryPosition > 7) or
+      (State.DSPCounter < 0) or (State.DSPCounter > $77FF) then
+      raise EReadError.Create('Invalid SNES DSP phase snapshot');
+    for var J := 0 to 7 do
+      if (State.Voices[J].Position < 0) or (State.Voices[J].Position > 11) or
+        (State.Voices[J].Fraction < 0) or (State.Voices[J].Fraction > $7FFF) or
+        (State.Voices[J].KeyOnDelay < 0) or (State.Voices[J].KeyOnDelay > 5) or
+        (State.Voices[J].BRROffset < 0) or (State.Voices[J].BRROffset > 8) then
+        raise EReadError.Create('Invalid SNES DSP voice snapshot');
     FSampleFrames := 0;
+  end;
 end;
 
 end.

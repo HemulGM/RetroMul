@@ -7,7 +7,8 @@ uses
 
 type
   TCoreInputPorts = record
-    Devices: array[0..3] of string;
+    Devices: array[0..7] of string;
+    Multitap: array[0..1] of Boolean;
     Expansion: string;
   end;
 
@@ -19,8 +20,10 @@ implementation
 
 function ReadCoreInputPorts(Ini: TCustomIniFile): TCoreInputPorts;
 begin
-  for var I := 0 to 3 do
+  for var I := 0 to 7 do
     Result.Devices[I] := Ini.ReadString('Ports', 'Port' + IntToStr(I + 1), 'auto').ToLower;
+  for var I := 0 to 1 do
+    Result.Multitap[I] := Ini.ReadBool('Input', 'Multitap' + IntToStr(I + 1), False);
   Result.Expansion := Ini.ReadString('Ports', 'Expansion', 'auto').ToLower;
 end;
 

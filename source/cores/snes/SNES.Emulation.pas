@@ -21,7 +21,7 @@ type
     FData, FFirmware: TBytes;
     FSavePath: string;
     FStorage: IStorage;
-    FInput, FInput2: TSnesButtons;
+    FInputs: TSnesPads;
     FPause, FReset, FAudioEnabled: Boolean;
     FVolume: Single;
     FFrame: TEmulatorFrame;
@@ -36,6 +36,7 @@ type
     destructor Destroy; override;
     procedure WakeSetEvent;
     procedure Configure(const Input: TSnesButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TSnesButtons = []);
+    procedure ConfigurePads(const Inputs: TSnesPads; Paused, AudioEnabled: Boolean; Volume: Single);
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
   public
@@ -84,10 +85,17 @@ end;
 
 procedure TSnesWorker.Configure(const Input: TSnesButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TSnesButtons);
 begin
+  var Inputs := Default(TSnesPads);
+  Inputs[0] := Input;
+  Inputs[1] := Input2;
+  ConfigurePads(Inputs, Paused, AudioEnabled, Volume);
+end;
+
+procedure TSnesWorker.ConfigurePads(const Inputs: TSnesPads; Paused, AudioEnabled: Boolean; Volume: Single);
+begin
   FLock.Acquire;
   try
-    FInput := Input;
-    FInput2 := Input2;
+    FInputs := Inputs;
     FPause := Paused;
     FAudioEnabled := AudioEnabled;
     FVolume := Volume;
@@ -300,11 +308,10 @@ begin
             end;
             Deadline := Watch.Elapsed.TotalMilliseconds;
           end);
-        var Input, Input2: TSnesButtons;
+        var Inputs: TSnesPads;
         FLock.Acquire;
         try
-          Input := FInput;
-          Input2 := FInput2;
+          Inputs := FInputs;
           Paused := FPause;
           Enabled := FAudioEnabled;
           Volume := FVolume;
@@ -340,7 +347,7 @@ begin
         WasPaused := False;
         FrameHints.TargetDurationNanos := Round(1000000000.0 / Console.FramesPerSecond);
         FrameHints.BeginWork;
-        Console.SetInput(Input, Input2);
+        Console.SetInputs(Inputs);
         Console.RunFrame;
         if Terminated then
           Break;

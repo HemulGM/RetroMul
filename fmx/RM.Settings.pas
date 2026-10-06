@@ -47,7 +47,7 @@ type
     FVolumeValue: TLabel;
     FCaptureDeadline: UInt64;
     FCaptureButton: TButton;
-    FDeviceIds: array[0..4] of string;
+    FDeviceIds: array[0..7] of string;
     FOnApply, FOnClose: TNotifyEvent;
     FFolderEdit: TEdit;
     FAlive: TFunc<Boolean>;
@@ -803,8 +803,16 @@ begin
         4:
           Heading('Контроллеры Mega Drive · 3 или 6 кнопок');
         5:
-          Check('Обрезать overscan', 'Для режима 239 строк показывать центральные 224 строки; также для удвоенной высоты.',
-            'Video', 'CropOverscan', False);
+          begin
+            Check('Обрезать overscan', 'Для режима 239 строк показывать центральные 224 строки; также для удвоенной высоты.',
+              'Video', 'CropOverscan', False);
+            var Multitap2 := Check('Multitap · порт 2', 'Подключает геймпады игроков 2–5. Игра должна поддерживать Multitap.',
+              'Input', 'Multitap2', False);
+            Multitap2.OnSwitch := PortChange;
+            var Multitap1 := Check('Multitap · порт 1', 'Подключает геймпады игроков 1, 6, 7 и 8. Используется играми с поддержкой двух Multitap.',
+              'Input', 'Multitap1', False);
+            Multitap1.OnSwitch := PortChange;
+          end;
       end;
       if FInput <> nil then
       begin
@@ -828,6 +836,15 @@ begin
         begin
           BuildPort(2, 'Four Score · игрок 3');
           BuildPort(3, 'Four Score · игрок 4');
+        end;
+        if FPage = 5 then
+        begin
+          if FDrafts[FPage].ReadBool('Input', 'Multitap2', False) then
+            for var Port := 2 to 4 do
+              BuildPort(Port, 'Multitap · порт 2 · игрок ' + IntToStr(Port + 1));
+          if FDrafts[FPage].ReadBool('Input', 'Multitap1', False) then
+            for var Port := 5 to 7 do
+              BuildPort(Port, 'Multitap · порт 1 · игрок ' + IntToStr(Port + 1));
         end;
       end;
       if FPage = 3 then
@@ -909,7 +926,7 @@ begin
     Values[i + 1] := Devices[i].Id;
   end;
   var SourceKey := 'Source' + IntToStr(Port + 1);
-  if Port = 4 then
+  if (FPage = 3) and (Port = 4) then
     SourceKey := 'SourceExpansion';
   var SavedId := FDrafts[FPage].ReadString('Ports', SourceKey, '');
   var Found := SavedId = '';

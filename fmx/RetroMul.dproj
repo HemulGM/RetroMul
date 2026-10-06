@@ -444,14 +444,14 @@
         <DCCReference Include="..\source\cores\nes\NES.FamicomDataRecorder.pas"/>
         <DCCReference Include="devices\NES.PowerPad.pas"/>
         <DCCReference Include="devices\NES.DataRecorder.pas"/>
+        <DCCReference Include="RM.Main.pas">
+            <Form>FormMain</Form>
+        </DCCReference>
         <DCCReference Include="RM.FrameUpload.pas"/>
         <DCCReference Include="RM.Input.pas"/>
         <DCCReference Include="RM.Settings.pas"/>
         <DCCReference Include="..\source\cores\Core.InputConfig.pas"/>
         <DCCReference Include="..\source\input\FMXInput.pas"/>
-        <DCCReference Include="RM.Main.pas">
-            <Form>FormMain</Form>
-        </DCCReference>
         <DCCReference Include="RM.DocumentTransfer.Android.pas"/>
         <DCCReference Include="..\source\PCM\PCM.Audio.Android.AudioTrack.pas"/>
         <DCCReference Include="DelphiWinUI3\Fixes\D13\FMX.Platform.Win.pas"/>

@@ -1088,6 +1088,10 @@ begin
     Result.Buttons2 := Host.Buttons2;
     Result.Buttons3 := Host.Buttons3;
     Result.Buttons4 := Host.Buttons4;
+    Result.Buttons5 := Host.Buttons5;
+    Result.Buttons6 := Host.Buttons6;
+    Result.Buttons7 := Host.Buttons7;
+    Result.Buttons8 := Host.Buttons8;
   end;
   if FInputPorts.Devices[0] = 'none' then
     Result.Buttons := [];

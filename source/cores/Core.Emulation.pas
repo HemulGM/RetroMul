@@ -17,7 +17,8 @@ type
 
   TEmulatorInput = record
     Buttons: TEmulatorButtons;
-    Buttons3, Buttons4: TEmulatorButtons; // NES Four Score controllers.
+    Buttons3, Buttons4: TEmulatorButtons; // Additional adapter controllers.
+    Buttons5, Buttons6, Buttons7, Buttons8: TEmulatorButtons; // SNES Multitap.
     Buttons2: TEmulatorButtons; // Second controller; ignored by single-player cores.
   end;
 

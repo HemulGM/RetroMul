@@ -12,11 +12,16 @@ type
   TSnesConfig = class(TEmulatorConfigBase)
   private
     FKeys, FKeys2: TSnesKeyMap;
+    FExtraKeys: array[2..7] of TSnesKeyMap;
+    FMultitap1, FMultitap2: Boolean;
   protected
     procedure LoadCoreSettings(Ini: TCustomIniFile); override;
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
   public
     constructor Create(const FileName: string; const Storage: IStorage = nil);
+    function KeyMap(Port: Integer): TSnesKeyMap;
+    property Multitap1: Boolean read FMultitap1 write FMultitap1;
+    property Multitap2: Boolean read FMultitap2 write FMultitap2;
     property Keys: TSnesKeyMap read FKeys;
     property Keys2: TSnesKeyMap read FKeys2;
   end;
@@ -29,8 +34,8 @@ type
     FStorage: IStorage;
     FSavePath, FError: string;
     FConfig: IEmulatorConfig;
-    FKeys, FKeys2: TSnesKeyMap;
-    FKeyboard, FGamepad, FKeyboard2, FGamepad2: TSnesButtons;
+    FKeys: array[0..7] of TSnesKeyMap;
+    FKeyboards, FGamepads: TSnesPads;
     FPaused, FCropOverscan: Boolean;
     procedure ApplySettings;
   public
@@ -84,21 +89,40 @@ begin
   FKeys2 := Defaults2;
 end;
 
+function TSnesConfig.KeyMap(Port: Integer): TSnesKeyMap;
+begin
+  case Port of
+    0: Result := FKeys;
+    1: Result := FKeys2;
+    2..7: Result := FExtraKeys[Port];
+  else
+    raise EArgumentOutOfRangeException.Create('Controller port');
+  end;
+end;
+
 procedure TSnesConfig.LoadCoreSettings(Ini: TCustomIniFile);
 begin
+  FMultitap1 := Ini.ReadBool('Input', 'Multitap1', False);
+  FMultitap2 := Ini.ReadBool('Input', 'Multitap2', False);
   for var Button := Low(TSnesButton) to High(TSnesButton) do
   begin
     FKeys[Button] := ReadEmulatorKey(Ini, 'Keys', KeyNames[Button], FKeys[Button]);
     FKeys2[Button] := ReadEmulatorKey(Ini, 'Keys2', KeyNames[Button], FKeys2[Button]);
+    for var Port := 2 to 7 do
+      FExtraKeys[Port, Button] := ReadEmulatorKey(Ini, 'Keys' + IntToStr(Port + 1), KeyNames[Button], 0);
   end;
 end;
 
 procedure TSnesConfig.SaveCoreSettings(Ini: TCustomIniFile);
 begin
+  Ini.WriteBool('Input', 'Multitap1', FMultitap1);
+  Ini.WriteBool('Input', 'Multitap2', FMultitap2);
   for var Button := Low(TSnesButton) to High(TSnesButton) do
   begin
     Ini.WriteInteger('Keys', KeyNames[Button], FKeys[Button]);
     Ini.WriteInteger('Keys2', KeyNames[Button], FKeys2[Button]);
+    for var Port := 2 to 7 do
+      Ini.WriteInteger('Keys' + IntToStr(Port + 1), KeyNames[Button], FExtraKeys[Port, Button]);
   end;
 end;
 
@@ -146,8 +170,8 @@ begin
   finally
     Cart.Free;
   end;
-  FKeys := Config.Keys;
-  FKeys2 := Config.Keys2;
+  for var Port := 0 to 7 do
+    FKeys[Port] := Config.KeyMap(Port);
   Hash := THashSHA2.Create;
   Hash.Update(FData);
   if Length(FFirmware) > 0 then
@@ -166,8 +190,12 @@ end;
 procedure TSnesCoreAdapter.ApplySettings;
 begin
   if FThread <> nil then
-    FThread.Configure(FKeyboard + FGamepad, FPaused,
-      FConfig.AudioEnabled, FConfig.AudioVolume, FKeyboard2 + FGamepad2);
+  begin
+    var Inputs: TSnesPads;
+    for var Port := 0 to 7 do
+      Inputs[Port] := FKeyboards[Port] + FGamepads[Port];
+    FThread.ConfigurePads(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume);
+  end;
 end;
 
 procedure TSnesCoreAdapter.Start;
@@ -220,10 +248,8 @@ end;
 
 procedure TSnesCoreAdapter.ClearInput;
 begin
-  FKeyboard := [];
-  FGamepad := [];
-  FKeyboard2 := [];
-  FGamepad2 := [];
+  FKeyboards := Default(TSnesPads);
+  FGamepads := Default(TSnesPads);
   ApplySettings;
 end;
 
@@ -231,19 +257,15 @@ procedure TSnesCoreAdapter.SetKeyState(Code: UInt32; Pressed: Boolean);
 var
   Button: TSnesButton;
 begin
-  for Button := Low(TSnesButton) to High(TSnesButton) do
-  begin
-    if Code = FKeys[Button] then
-      if Pressed then
-        Include(FKeyboard, Button)
-      else
-        Exclude(FKeyboard, Button);
-    if Code = FKeys2[Button] then
-      if Pressed then
-        Include(FKeyboard2, Button)
-      else
-        Exclude(FKeyboard2, Button);
-  end;
+  if Code = 0 then
+    Exit;
+  for var Port := 0 to 7 do
+    for Button := Low(TSnesButton) to High(TSnesButton) do
+      if Code = FKeys[Port, Button] then
+        if Pressed then
+          Include(FKeyboards[Port], Button)
+        else
+          Exclude(FKeyboards[Port], Button);
   ApplySettings;
 end;
 
@@ -252,13 +274,22 @@ const
   Mapping: array[TSnesButton] of TEmulatorButton = (TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Select, TEmulatorButton.Start, TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.C, TEmulatorButton.Z);
 begin
   Result := Default(TEmulatorInput);
-  for var Button := Low(TSnesButton) to High(TSnesButton) do
+  var Pads: array[0..7] of TEmulatorButtons;
+  for var Port := 0 to 7 do
   begin
-    if Button in (FKeyboard + FGamepad) then
-      Include(Result.Buttons, Mapping[Button]);
-    if Button in (FKeyboard2 + FGamepad2) then
-      Include(Result.Buttons2, Mapping[Button]);
+    Pads[Port] := [];
+    for var Button := Low(TSnesButton) to High(TSnesButton) do
+      if Button in (FKeyboards[Port] + FGamepads[Port]) then
+        Include(Pads[Port], Mapping[Button]);
   end;
+  Result.Buttons := Pads[0];
+  Result.Buttons2 := Pads[1];
+  Result.Buttons3 := Pads[2];
+  Result.Buttons4 := Pads[3];
+  Result.Buttons5 := Pads[4];
+  Result.Buttons6 := Pads[5];
+  Result.Buttons7 := Pads[6];
+  Result.Buttons8 := Pads[7];
 end;
 
 procedure TSnesCoreAdapter.SetGamepadInput(const Input: TEmulatorInput);
@@ -267,14 +298,21 @@ const
 var
   Button: TEmulatorButton;
 begin
-  FGamepad := [];
-  FGamepad2 := [];
-  for Button := Low(TEmulatorButton) to High(TEmulatorButton) do
+  var Pads: array[0..7] of TEmulatorButtons;
+  Pads[0] := Input.Buttons;
+  Pads[1] := Input.Buttons2;
+  Pads[2] := Input.Buttons3;
+  Pads[3] := Input.Buttons4;
+  Pads[4] := Input.Buttons5;
+  Pads[5] := Input.Buttons6;
+  Pads[6] := Input.Buttons7;
+  Pads[7] := Input.Buttons8;
+  for var Port := 0 to 7 do
   begin
-    if (Button <> TEmulatorButton.Mode) and (Button in Input.Buttons) then
-      Include(FGamepad, Mapping[Button]);
-    if (Button <> TEmulatorButton.Mode) and (Button in Input.Buttons2) then
-      Include(FGamepad2, Mapping[Button]);
+    FGamepads[Port] := [];
+    for Button := Low(TEmulatorButton) to High(TEmulatorButton) do
+      if (Button <> TEmulatorButton.Mode) and (Button in Pads[Port]) then
+        Include(FGamepads[Port], Mapping[Button]);
   end;
   ApplySettings;
 end;

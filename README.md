@@ -167,6 +167,16 @@ the adapter signature. The game must support Four Score; the number of players
 is selected in the game itself. The Famicom protocol for four players has not yet been implemented.
 Protocol description: [NESdev](https://www.nesdev.org/wiki/Controller_detection#Four_Score).
 
+SNES settings offer a Multitap switch for each physical controller port.
+Enable port 2 for five controllers, or both ports for eight; the game must support
+the chosen configuration. Players 1 and 2 retain their existing bindings.
+The port-2 adapter supplies players 2–5; the port-1 adapter supplies players
+1, 6, 7 and 8. Assign the extra controllers and their input devices in SNES settings.
+Both adapters are disabled by default. Serial reads support both data lines,
+pair selection through `$4201`, adapter detection, and automatic joypad polling.
+SNES snapshots use version 9 to preserve all eight controller shift registers;
+older SNES snapshots are rejected. Battery saves are unaffected.
+
 Mapper 167 Subor educational-computer ROMs automatically connect the Subor
 Keyboard. The PC keyboard then supplies its 13-row matrix through `$4016/$4017`;
 letters, number row, arrows, editing keys, modifiers and F1–F12 are supported.

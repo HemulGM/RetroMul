@@ -13,6 +13,7 @@ const
   SuborAction = 256;
   FamicomAction = 384;
   PianoAction = 512;
+  ExtraPadAction = 1024; // Preserve the existing NES peripheral action IDs.
 
 type
   THostKeys = array[0..255] of Boolean;
@@ -110,7 +111,10 @@ end;
 
 function PadAction(Port: Integer; Button: TEmulatorButton): Integer;
 begin
-  Result := Port * 32 + Ord(Button);
+  if Port < 4 then
+    Result := Port * 32 + Ord(Button)
+  else
+    Result := ExtraPadAction + (Port - 4) * 32 + Ord(Button);
 end;
 
 function CoreButtons(const SystemId, Device: string): TEmulatorButtons;
@@ -225,7 +229,7 @@ const
   PowerKeys: array[0..11] of Word = (vk1, vk2, vk3, vk4, vk5, vk6, vk7, vk8,
     vk9, vk0, vkMinus, vkEqual);
 var
-  Keys: array[0..3, TEmulatorButton] of Word;
+  Keys: array[0..7, TEmulatorButton] of Word;
   Config: IEmulatorConfig;
 
   procedure AddKey(Action: Integer; Code: Word);
@@ -303,8 +307,11 @@ begin
     Config := C;
     for var B := Low(TSnesButton) to High(TSnesButton) do
     begin
-      Keys[0, SNESMapping[B]] := C.Keys[B];
-      Keys[1, SNESMapping[B]] := C.Keys2[B];
+      for var Port := 0 to 7 do
+      begin
+        var Map := C.KeyMap(Port);
+        Keys[Port, SNESMapping[B]] := Map[B];
+      end;
     end;
   end
   else
@@ -316,6 +323,8 @@ begin
   var Count := 2;
   if SystemId = 'nes' then
     Count := 4;
+  if SystemId = 'snes' then
+    Count := 8;
   if (SystemId = 'gb') or (SystemId = 'gbc') then
     Count := 1;
   for var Port := 0 to Count - 1 do
@@ -388,7 +397,7 @@ begin
   begin
     if not Ini.ReadBool('Ports', 'KeyboardEnabled', True) and
       (B.Kind = TInputElementKind.Key) and
-      ((B.Action >= SuborAction) or
+      (((B.Action >= SuborAction) and (B.Action < ExtraPadAction)) or
       ((Ini.ReadString('Ports', 'Port1', 'auto') = 'piano') and (B.Action < 32))) then
       Continue;
     var Port := B.Action div 32;
@@ -396,12 +405,14 @@ begin
       Port := 1;
     if (B.Action >= SuborAction) and (B.Action < PianoAction) then
       Port := 4;
-    if B.Action >= PianoAction then
+    if (B.Action >= PianoAction) and (B.Action < ExtraPadAction) then
       Port := 0;
+    if B.Action >= ExtraPadAction then
+      Port := 4 + (B.Action - ExtraPadAction) div 32;
     var Source := '';
-    if (Port >= 0) and (Port < 4) then
+    if (Port >= 0) and (Port < 8) then
       Source := Ini.ReadString('Ports', 'Source' + IntToStr(Port + 1), '');
-    if Port = 4 then
+    if (Port = 4) and (B.Action < ExtraPadAction) then
       Source := Ini.ReadString('Ports', 'SourceExpansion', '');
     if (Source = '') or (Source = B.DeviceId) then
       Input.AddBinding(B);
@@ -440,10 +451,10 @@ end;
 
 function ReadPadInput(Input: TInputManager; const Ports: TCoreInputPorts): TEmulatorInput;
 var
-  Pads: array[0..3] of TEmulatorButtons;
+  Pads: array[0..7] of TEmulatorButtons;
 begin
   Result := Default(TEmulatorInput);
-  for var P := 0 to 3 do
+  for var P := 0 to 7 do
   begin
     Pads[P] := [];
     if (Ports.Devices[P] = 'auto') or Ports.Devices[P].StartsWith('pad') then
@@ -455,6 +466,10 @@ begin
   Result.Buttons2 := Pads[1];
   Result.Buttons3 := Pads[2];
   Result.Buttons4 := Pads[3];
+  Result.Buttons5 := Pads[4];
+  Result.Buttons6 := Pads[5];
+  Result.Buttons7 := Pads[6];
+  Result.Buttons8 := Pads[7];
 end;
 
 end.

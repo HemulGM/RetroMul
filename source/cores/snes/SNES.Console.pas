@@ -12,6 +12,7 @@ type
   TSnesButton = (Up, Down, Left, Right, A, B, Select, Start, X, Y, L, R);
 
   TSnesButtons = set of TSnesButton;
+  TSnesPads = array[0..7] of TSnesButtons;
 
   TSnesSystemState = packed record
     RAM: array[0..$1FFFF] of Byte;
@@ -26,8 +27,8 @@ type
     WRAMAddress: Cardinal;
     OpenBus, NMITIMEN, PendingDMA, HDMAEnable: Byte;
     NMIFlag, IRQFlag, JoyStrobe, HBlank, HDMAPending: Boolean;
-    Joy, JoyShift: array[0..1] of Word;
-    JoyIndex: array[0..1] of Integer;
+    Joy, JoyShift: array[0..7] of Word;
+    JoyIndex: array[0..7] of Integer;
     MultiplyResult, DivideResult, Remainder: Word;
     AluShift: Cardinal;
     AluCycle: UInt64;
@@ -51,8 +52,11 @@ type
     FSPC: TSnesSPC;
     FState: TSnesSystemState;
     FInDMA: Boolean;
-    FDisconnectedPads: array[0..1] of Boolean;
+    FDisconnectedPads: array[0..7] of Boolean;
+    FMultitap: array[0..1] of Boolean;
     FDMAClocks: Integer;
+    procedure LatchJoy;
+    function ReadJoyPort(Port: Integer): Byte;
     function MasterRate: Integer;
     function LineCount: Integer;
     function LineClocks: Integer;
@@ -95,6 +99,7 @@ type
     procedure WriteByte(Address: Cardinal; Value: Byte);
     procedure ConfigureInputPorts(const Ports: TCoreInputPorts);
     procedure SetInput(const Buttons: TSnesButtons; const Buttons2: TSnesButtons = []);
+    procedure SetInputs(const Pads: TSnesPads);
     procedure LoadBattery(const Data: TBytes);
     procedure MarkBatteryDirty;
     function BatteryData: TBytes;
@@ -290,11 +295,7 @@ begin
       begin
         FState.AutoJoyStrobe := (FState.NMITIMEN and 1) <> 0;
         if FState.AutoJoyStrobe then
-          for var Pad := 0 to 1 do
-          begin
-            FState.JoyShift[Pad] := FState.Joy[Pad];
-            FState.JoyIndex[Pad] := 0;
-          end;
+          LatchJoy;
       end;
     1:
       begin
@@ -312,21 +313,17 @@ begin
       for var Pad := 0 to 1 do
         if (Step and 1) <> 0 then
         begin
-          if FDisconnectedPads[Pad] then
-            FState.AutoJoyBit[Pad] := 0
-          else if FState.JoyIndex[Pad] >= 16 then
-            FState.AutoJoyBit[Pad] := 1
-          else
-            FState.AutoJoyBit[Pad] := (FState.JoyShift[Pad] shr (15 - FState.JoyIndex[Pad])) and 1;
-          if not FState.JoyStrobe and (FState.JoyIndex[Pad] < 16) then
-            Inc(FState.JoyIndex[Pad]);
+          FState.AutoJoyBit[Pad] := ReadJoyPort(Pad);
         end
         else
-        begin
-          var V := Word((FState.IO[$18 + Pad * 2] or (Word(FState.IO[$19 + Pad * 2]) shl 8)) shl 1) or FState.AutoJoyBit[Pad];
-          FState.IO[$18 + Pad * 2] := Byte(V);
-          FState.IO[$19 + Pad * 2] := V shr 8;
-        end;
+          for var Lane := 0 to 1 do
+          begin
+            var Offset := $18 + Pad * 2 + Lane * 4;
+            var V := Word((FState.IO[Offset] or (Word(FState.IO[Offset + 1]) shl 8)) shl 1) or
+              ((FState.AutoJoyBit[Pad] shr Lane) and 1);
+            FState.IO[Offset] := Byte(V);
+            FState.IO[Offset + 1] := V shr 8;
+          end;
   end;
   if Step >= 34 then
   begin
@@ -615,21 +612,7 @@ begin
           end;
         $4016, $4017:
           begin
-            var Pad := A and 1;
-            if FState.JoyStrobe or FState.AutoJoyStrobe then
-            begin
-              FState.JoyShift[Pad] := FState.Joy[Pad];
-              FState.JoyIndex[Pad] := 0;
-            end;
-            if FDisconnectedPads[Pad] then
-              Result := 0
-            else if FState.JoyIndex[Pad] >= 16 then
-              Result := 1
-            else
-              Result := (FState.JoyShift[Pad] shr (15 - FState.JoyIndex[Pad])) and 1;
-            Result := Result or (FState.OpenBus and $FC);
-            if not FState.JoyStrobe and not FState.AutoJoyStrobe and (FState.JoyIndex[Pad] < 16) then
-              Inc(FState.JoyIndex[Pad]);
+            Result := ReadJoyPort(A and 1) or (FState.OpenBus and $FC);
           end;
         $4210:
           begin
@@ -725,11 +708,7 @@ begin
           begin
             var Strobe := (Value and 1) <> 0;
             if FState.JoyStrobe or Strobe then
-              for var Pad := 0 to 1 do
-              begin
-                FState.JoyShift[Pad] := FState.Joy[Pad];
-                FState.JoyIndex[Pad] := 0;
-              end;
+              LatchJoy;
             FState.JoyStrobe := Strobe;
           end;
         $4200..$420D:
@@ -1014,24 +993,75 @@ begin
   FCartridge.SyncDSP(FState.Clock, MasterRate, True);
 end;
 
+procedure TSnesConsole.LatchJoy;
+begin
+  for var Pad := 0 to 7 do
+  begin
+    FState.JoyShift[Pad] := FState.Joy[Pad];
+    FState.JoyIndex[Pad] := 0;
+  end;
+end;
+
+function TSnesConsole.ReadJoyPort(Port: Integer): Byte;
+const
+  // Keep players 1 and 2 on their original ports in every configuration.
+  Players: array[0..1, 0..3] of Integer = ((0, 5, 6, 7), (1, 2, 3, 4));
+begin
+  var Strobe := FState.JoyStrobe or FState.AutoJoyStrobe;
+  if Strobe then
+    LatchJoy;
+  if FMultitap[Port] and Strobe then
+    Exit(2); // Multitap identification: D1 high, D0 low.
+  Result := 0;
+  var First := 0;
+  var Lanes := 1;
+  if FMultitap[Port] then
+  begin
+    Lanes := 2;
+    if (FState.IO[1] and ($40 shl Port)) = 0 then
+      First := 2;
+  end;
+  for var Lane := 0 to Lanes - 1 do
+  begin
+    var Pad := Players[Port, First + Lane];
+    var BitValue: Byte := 0;
+    if not FDisconnectedPads[Pad] then
+      if FState.JoyIndex[Pad] >= 16 then
+        BitValue := 1
+      else
+        BitValue := (FState.JoyShift[Pad] shr (15 - FState.JoyIndex[Pad])) and 1;
+    Result := Result or (BitValue shl Lane);
+    if not Strobe and (FState.JoyIndex[Pad] < 16) then
+      Inc(FState.JoyIndex[Pad]);
+  end;
+end;
+
 procedure TSnesConsole.ConfigureInputPorts(const Ports: TCoreInputPorts);
 begin
-  for var I := 0 to 1 do
+  for var I := 0 to 7 do
     FDisconnectedPads[I] := Ports.Devices[I] = 'none';
+  for var I := 0 to 1 do
+    FMultitap[I] := Ports.Multitap[I];
 end;
 
 procedure TSnesConsole.SetInput(const Buttons, Buttons2: TSnesButtons);
+begin
+  var Pads := Default(TSnesPads);
+  Pads[0] := Buttons;
+  Pads[1] := Buttons2;
+  SetInputs(Pads);
+end;
+
+procedure TSnesConsole.SetInputs(const Pads: TSnesPads);
 const
   Bits: array[TSnesButton] of Word = ($0800, $0400, $0200, $0100, $0080, $8000, $2000, $1000, $0040, $4000, $0020, $0010);
 begin
-  FState.Joy[0] := 0;
-  FState.Joy[1] := 0;
-  for var B := Low(TSnesButton) to High(TSnesButton) do
+  for var Pad := 0 to 7 do
   begin
-    if B in Buttons then
-      FState.Joy[0] := FState.Joy[0] or Bits[B];
-    if B in Buttons2 then
-      FState.Joy[1] := FState.Joy[1] or Bits[B];
+    FState.Joy[Pad] := 0;
+    for var B := Low(TSnesButton) to High(TSnesButton) do
+      if B in Pads[Pad] then
+        FState.Joy[Pad] := FState.Joy[Pad] or Bits[B];
   end;
 end;
 

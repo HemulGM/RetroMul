@@ -130,9 +130,9 @@ begin
   // MD v4 adds Z80 HALT, interrupt mode and EI delay.
   if PlatformCore = 'MD' then
     Result.Version := 4;
-  // SNES v8 persists IRQ counters, HDMA scheduling and the partial PPU pipeline.
+  // SNES v9 also persists all eight Multitap controller shift registers.
   if PlatformCore = 'SNES' then
-    Result.Version := 8;
+    Result.Version := 9;
   var Core := AnsiString(PlatformCore);
   if (Length(Core) = 0) or (Length(Core) > 8) then
     raise EArgumentException.Create('Invalid snapshot platform');

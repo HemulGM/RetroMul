@@ -158,9 +158,12 @@ begin
       Handles[0] := Wake.Handle;
       Handles[1] := FTimer;
       case WaitForMultipleObjects(2, @Handles[0], False, INFINITE) of
-        WAIT_OBJECT_0: Exit(True);
-        WAIT_OBJECT_0 + 1: Continue;
-        else RaiseLastOSError;
+        WAIT_OBJECT_0:
+          Exit(True);
+        WAIT_OBJECT_0 + 1:
+          Continue;
+      else
+        RaiseLastOSError;
       end;
     end;
     {$ENDIF}
@@ -168,8 +171,10 @@ begin
     // the worker immediately; neither sleeping nor pacing depends on UI messages.
     var WaitMS := Cardinal(Max(Int64(1), Ceil(Remaining * (1000.0 / TStopwatch.Frequency))));
     case Wake.WaitFor(WaitMS) of
-      wrSignaled: Exit(True);
-      wrError: raise EOSError.Create('Frame pacing wait failed');
+      wrSignaled:
+        Exit(True);
+      wrError:
+        raise EOSError.Create('Frame pacing wait failed');
     end;
   until False;
 end;

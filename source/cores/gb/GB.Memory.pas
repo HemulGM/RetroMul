@@ -173,7 +173,8 @@ end;
 
 procedure TGBMemory.StepHardware(Clocks: Integer);
 begin
-  if FMBC <> nil then FMBC.Step(Clocks);
+  if FMBC <> nil then
+    FMBC.Step(Clocks);
   if not FDMAActive and ((IOPort[$02] and $81) <> $81) then
     Exit;
 

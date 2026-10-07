@@ -6,11 +6,19 @@ uses
   System.SysUtils, System.Types, System.UITypes, System.Classes, System.Variants,
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, FMX.StdCtrls,
   FMX.Filter.Effects, FMX.ListBox, FMX.Controls.Presentation, RetroTune.Decoder,
-  RetroTune.Player, RetroTune.Spectrum, FMX.Layouts, FMX.Objects;
+  RetroTune.Player, RetroTune.Spectrum, RetroTune.Export.WAV, FMX.Layouts,
+  FMX.Objects, RetroTune.InfoForm, RetroTune.FormatsForm;
 
 type
   TFormMain = class(TForm)
+    Lang: TLang;
     ButtonOpen: TButton;
+    ButtonExport: TButton;
+    ButtonCloseExport: TButton;
+    SaveDialog: TSaveDialog;
+    LayoutExport: TLayout;
+    LabelExport: TLabel;
+    ProgressExport: TProgressBar;
     ButtonPlay: TButton;
     ButtonStop: TButton;
     ButtonPrevious: TButton;
@@ -52,10 +60,16 @@ type
     LabelHighFrequency: TLabel;
     ComboSpectrum: TComboBox;
     SpectrumPaintBox: TPaintBox;
+    ButtonInfo: TButton;
+    ButtonFormats: TButton;
     procedure SpectrumChange(Sender: TObject);
     procedure SpectrumPaint(Sender: TObject; Canvas: TCanvas);
     procedure FormCreate(Sender: TObject);
     procedure OpenClick(Sender: TObject);
+    procedure ExportClick(Sender: TObject);
+    procedure CloseExportClick(Sender: TObject);
+    procedure InfoClick(Sender: TObject);
+    procedure FormatsClick(Sender: TObject);
     procedure PlayClick(Sender: TObject);
     procedure StopClick(Sender: TObject);
     procedure PreviousClick(Sender: TObject);
@@ -67,6 +81,11 @@ type
     procedure PositionTracking(Sender: TObject);
   private
     FPlayer: TTunePlayer;
+    FExport: TTuneWavExport;
+    FInfoWindow: TTuneInfoForm;
+    FFormatsWindow: TTuneFormatsForm;
+    FSourceData: TBytes;
+    FSourcePath: string;
     FInfo: TTuneInfo;
     FUpdating: Boolean;
     FBands: TTuneSpectrum;
@@ -79,6 +98,7 @@ type
     procedure UpdateSpectrum;
     procedure ResetSpectrum;
     procedure LoadTune(const Path: string);
+    procedure UpdateExport;
   public
     destructor Destroy; override;
   end;
@@ -86,21 +106,62 @@ type
 var
   FormMain: TFormMain;
 
+function TuneLanguageForLocale(const LocaleID: string): string;
+
 implementation
 
 uses
-  System.IOUtils, System.Math, System.StrUtils, RetroTune.Decoder.NSF,
-  RetroTune.Decoder.NSFe, RetroTune.Decoder.SPC, RetroTune.Decoder.GBS,
-  RetroTune.Decoder.VGM, RetroTune.Decoder.GYM, RetroTune.Decoder.PT3,
-  RetroTune.Decoder.ZXTrackers, RetroTune.Decoder.AYDumps, RetroTune.Decoder.Atari;
+  System.IOUtils, System.Math, System.StrUtils, FMX.DialogService.Sync, FMX.Platform,
+  RetroTune.Decoder.TIA, RetroTune.Decoder.KSS, RetroTune.Decoder.HES, RetroTune.Decoder.AHX, RetroTune.Decoder.DSF, RetroTune.Decoder.TRDOS,
+  RetroTune.Decoder.NSF, RetroTune.Decoder.NSFe, RetroTune.Decoder.SPC,
+  RetroTune.Decoder.GBS, RetroTune.Decoder.VGM, RetroTune.Decoder.GYM,
+  RetroTune.Decoder.PT3, RetroTune.Decoder.ZXTrackers, RetroTune.Decoder.AYDumps,
+  RetroTune.Decoder.Atari, RetroTune.Decoder.TurboFM,
+  RetroTune.Decoder.Containers, RetroTune.Decoder.Digital, RetroTune.Decoder.SAA,
+  RetroTune.Decoder.WAV;
 
 {$R *.fmx}
 
-procedure TFormMain.FormCreate(Sender: TObject);
+function PlaybackTime(Seconds: Double): string; forward;
+
+function TuneLanguageForLocale(const LocaleID: string): string;
 begin
+  var ID := LowerCase(Trim(LocaleID));
+  if (ID = 'ru') or ID.StartsWith('ru-') or ID.StartsWith('ru_') or
+    ID.StartsWith('ru.') or ID.StartsWith('ru@') then
+    Result := 'ru'
+  else
+    Result := 'en';
+end;
+
+procedure TFormMain.FormCreate(Sender: TObject);
+var
+  Locale: IFMXLocaleService;
+  LanguageID: string;
+begin
+  LanguageID := 'en';
+  if TPlatformServices.Current.SupportsPlatformService(IFMXLocaleService, Locale) then
+    LanguageID := TuneLanguageForLocale(Locale.GetCurrentLangID);
+  Lang.Lang := LanguageID;
+  // Translate form text immediately, before the first paint or status update.
+  for var I := 0 to ComponentCount - 1 do
+  begin
+    if (Components[I] is TTextControl) and TTextControl(Components[I]).AutoTranslate then
+      TTextControl(Components[I]).Text := Translate(TTextControl(Components[I]).Text);
+    if (Components[I] is TStyledControl) and TStyledControl(Components[I]).AutoTranslate then
+      TStyledControl(Components[I]).Hint := Translate(TStyledControl(Components[I]).Hint);
+  end;
+  for var I := 0 to ComboSpectrum.Items.Count - 1 do
+    ComboSpectrum.Items[I] := Translate(ComboSpectrum.Items[I]);
+  LabelTitle.Text := Translate('Choose music');
+  LabelArtist.Text := Translate('Open a file to start listening');
+  LabelDetails.Text := Translate('Game music · RetroTune');
+  OpenDialog.Title := Translate('Open music file');
+  SaveDialog.Title := Translate('Export WAV');
   FHistory := TBitmap.Create(TuneSpectrumBands, 128);
   ResetSpectrum;
-  OpenDialog.Filter := TTuneDecoders.DialogFilter;
+  OpenDialog.Filter := TTuneDecoders.DialogFilter.Replace('Supported formats|',
+    Translate('Supported formats') + '|');
   TimerTick(nil);
   PlaybackTimer.Enabled := True;
   if (ParamCount > 0) and TFile.Exists(ParamStr(1)) then
@@ -111,6 +172,9 @@ destructor TFormMain.Destroy;
 begin
   if PlaybackTimer <> nil then
     PlaybackTimer.Enabled := False;
+  FExport.Free;
+  FInfoWindow.Free;
+  FFormatsWindow.Free;
   FPlayer.Free;
   FHistory.Free;
   inherited;
@@ -120,17 +184,23 @@ procedure TFormMain.LoadTune(const Path: string);
 var
   Decoder: ITuneDecoder;
   Info: TTuneInfo;
+  Data: TBytes;
   I: Integer;
 begin
   try
-    Decoder := TTuneDecoders.Open(Path);
+    Data := TTuneDecoders.ReadData(Path);
+    Decoder := TTuneDecoders.OpenData(Data, ExtractFileExt(Path));
     Info := Decoder.GetInfo;
     // Parse first, so an invalid file leaves the currently loaded tune intact.
     FreeAndNil(FPlayer);
     FPlayer := TTunePlayer.Create(Decoder);
     FInfo := Info;
+    FSourceData := Data;
+    FSourcePath := ExpandFileName(Path);
+    if FInfoWindow <> nil then
+      FInfoWindow.SetInfo(FSourcePath, Length(FSourceData), FInfo);
     ResetSpectrum;
-    LabelHighFrequency.Text := Format('%g кГц', [Min(20000.0, FInfo.SampleRate / 2.0) / 1000]);
+    LabelHighFrequency.Text := Format(Translate('%g kHz'), [Min(20000.0, FInfo.SampleRate / 2.0) / 1000]);
     Caption := 'RetroTune - ' + ExtractFileName(Path);
     if FInfo.Title <> '' then
       LabelTitle.Text := FInfo.Title
@@ -138,7 +208,7 @@ begin
       LabelTitle.Text := TPath.GetFileNameWithoutExtension(Path);
     LabelArtist.Text := FInfo.Artist;
     LabelCopyright.Text := FInfo.CopyrightText;
-    LabelDetails.Text := Format('%s / %s / %d Гц / %d канал(ов)',
+    LabelDetails.Text := Format(Translate('%s / %s / %d Hz / %d channel(s)'),
       [FInfo.FormatName, FInfo.Details, FInfo.SampleRate, FInfo.Channels]);
     FUpdating := True;
     try
@@ -147,7 +217,9 @@ begin
         if (I - 1 < Length(Info.TrackNames)) and (Info.TrackNames[I - 1] <> '') then
           ComboTracks.Items.Add(Format('%d. %s', [I, Info.TrackNames[I - 1]]))
         else
-          ComboTracks.Items.Add(Format('Композиция %d', [I]));
+          ComboTracks.Items.Add(Format(Translate('Track %d'), [I]));
+      for I := 0 to ComboTracks.Items.Count - 1 do
+        ComboTracks.ListItems[I].AutoTranslate := False;
       ComboTracks.ItemIndex := FInfo.DefaultTrack;
     finally
       FUpdating := False;
@@ -157,14 +229,152 @@ begin
     TimerTick(nil);
   except
     on E: Exception do
-      ShowMessage('Не удалось открыть файл: ' + E.Message);
+      ShowMessage(Translate('Could not open the file: ') + Translate(E.Message));
   end;
 end;
 
 procedure TFormMain.OpenClick(Sender: TObject);
 begin
-  if OpenDialog.Execute then
-    LoadTune(OpenDialog.FileName);
+  try
+    if OpenDialog.Execute then
+      LoadTune(OpenDialog.FileName);
+  except
+    on E: Exception do
+      ShowMessage(Translate(E.Message));
+  end;
+end;
+
+procedure TFormMain.ExportClick(Sender: TObject);
+var
+  Track: Integer;
+  Seconds: Double;
+  Values: TArray<string>;
+  Prompt, Name: string;
+begin
+  if FExport <> nil then
+  begin
+    FExport.Cancel;
+    ButtonExport.Enabled := False;
+    LabelExport.Text := Translate('Cancelling export…');
+    Exit;
+  end;
+  if FPlayer = nil then
+    Exit;
+  try
+    Track := FPlayer.Status.Track;
+    Seconds := FPlayer.Status.DurationSeconds;
+    if Seconds > 0 then
+      Prompt := Translate('Maximum duration in seconds (default: the whole track):')
+    else
+    begin
+      Seconds := 180;
+      Prompt := Translate('Duration in seconds (length unknown; default: 180):');
+    end;
+    Values := [FloatToStr(Seconds)];
+    if not TDialogServiceSync.InputQuery(Format(Translate('Export WAV · track %d'), [Track + 1]),
+      [Prompt], Values) then
+      Exit;
+    if not TryStrToFloat(Values[0], Seconds) then
+      if not TryStrToFloat(Values[0].Replace(',', '.'), Seconds, TFormatSettings.Invariant) then
+        raise EArgumentException.Create(Translate('Enter a duration in seconds'));
+    if IsNan(Seconds) or IsInfinite(Seconds) or (Seconds <= 0) or (Seconds > 86400) then
+      raise EArgumentOutOfRangeException.Create(Translate('Duration must be greater than 0 and no more than 86400 seconds'));
+    Name := TPath.GetFileNameWithoutExtension(FSourcePath);
+    if FInfo.TrackCount > 1 then
+      Name := Name + Format(' - %.2d', [Track + 1]);
+    SaveDialog.FileName := Name + '.wav';
+    if SaveDialog.InitialDir = '' then
+      SaveDialog.InitialDir := ExtractFilePath(FSourcePath);
+    if not SaveDialog.Execute then
+      Exit;
+    if not SameText(ExtractFileExt(SaveDialog.FileName), '.wav') then
+      raise EArgumentException.Create(Translate('Specify a filename with the .wav extension'));
+    if SameFileName(ExpandFileName(SaveDialog.FileName), FSourcePath) then
+      raise EArgumentException.Create(Translate('Choose another filename to preserve the source file'));
+    FExport := TTuneWavExport.Create(FSourceData, ExtractFileExt(FSourcePath),
+      SaveDialog.FileName, Track, Seconds);
+    LayoutExport.Visible := True;
+    LabelExport.Hint := ExpandFileName(SaveDialog.FileName);
+    ProgressExport.Value := 0;
+    UpdateExport;
+  except
+    on E: Exception do
+      ShowMessage(Translate('Could not export WAV: ') + Translate(E.Message));
+  end;
+end;
+
+procedure TFormMain.InfoClick(Sender: TObject);
+begin
+  if FPlayer = nil then
+    Exit;
+  if FInfoWindow = nil then
+  begin
+    FInfoWindow := TTuneInfoForm.Create(Self);
+    FInfoWindow.StyleBook := StyleBookWinUI3;
+  end;
+  FInfoWindow.SetInfo(FSourcePath, Length(FSourceData), FInfo);
+  FInfoWindow.Show;
+  FInfoWindow.BringToFront;
+end;
+
+procedure TFormMain.FormatsClick(Sender: TObject);
+begin
+  if FFormatsWindow = nil then
+  begin
+    FFormatsWindow := TTuneFormatsForm.Create(Self);
+    FFormatsWindow.StyleBook := StyleBookWinUI3;
+  end;
+  FFormatsWindow.Show;
+  FFormatsWindow.BringToFront;
+end;
+
+procedure TFormMain.CloseExportClick(Sender: TObject);
+begin
+  if FExport = nil then
+    LayoutExport.Visible := False;
+end;
+
+procedure TFormMain.UpdateExport;
+var
+  State: TTuneExportStatus;
+begin
+  ButtonOpen.Enabled := FExport = nil;
+  ButtonCloseExport.Enabled := FExport = nil;
+  ButtonExport.Enabled := (FPlayer <> nil) or (FExport <> nil);
+  if FExport = nil then
+  begin
+    ButtonExport.Text := Translate('Export WAV…');
+    Exit;
+  end;
+  State := FExport.Status;
+  ButtonExport.Text := Translate('Cancel export');
+  if State.TotalFrames > 0 then
+    ProgressExport.Value := 100.0 * State.Frames / State.TotalFrames;
+  if State.State = TTuneExportState.Rendering then
+  begin
+    LabelExport.Text := Format(Translate('Exporting WAV: %.0f%%'), [ProgressExport.Value]);
+    Exit;
+  end;
+  FreeAndNil(FExport);
+  ButtonCloseExport.Enabled := True;
+  ButtonExport.Text := Translate('Export WAV…');
+  ButtonExport.Enabled := FPlayer <> nil;
+  ButtonOpen.Enabled := True;
+  case State.State of
+    TTuneExportState.Completed:
+      begin
+        ProgressExport.Value := 100;
+        LabelExport.Text := Format(Translate('WAV saved: %s · %s'),
+          [ExtractFileName(State.Path), PlaybackTime(State.Frames / Max(1, State.SampleRate))]);
+      end;
+    TTuneExportState.Cancelled:
+      LabelExport.Text := Translate('WAV export cancelled');
+    TTuneExportState.Failed:
+      begin
+        LabelExport.Text := Translate('WAV export failed');
+        ShowMessage(Translate('Could not export WAV: ') + Translate(State.Error));
+      end;
+  end;
 end;
 
 procedure TFormMain.PlayClick(Sender: TObject);
@@ -211,7 +421,7 @@ procedure TFormMain.VolumeChange(Sender: TObject);
 begin
   if csLoading in ComponentState then
     Exit;
-  LabelVolume.Text := Format('Громкость: %d%%', [Round(TrackBarVolume.Value)]);
+  LabelVolume.Text := Format(Translate('Volume: %d%%'), [Round(TrackBarVolume.Value)]);
   if FPlayer <> nil then
     FPlayer.SetVolume(Round(TrackBarVolume.Value));
 end;
@@ -243,12 +453,14 @@ end;
 procedure TFormMain.TimerTick(Sender: TObject);
 const
   StateText: array[TTunePlayerState] of string =
-    ('Остановлено', 'Воспроизведение', 'Пауза', 'Композиция завершена');
+    ('Stopped', 'Playing', 'Pause', 'Track ended');
 var
   State: TTunePlayerStatus;
   Seconds: Integer;
 begin
+  UpdateExport;
   ComboTracks.Enabled := FPlayer <> nil;
+  ButtonInfo.Enabled := FPlayer <> nil;
   TrackBarPosition.Enabled := FPlayer <> nil;
   ButtonPlay.Enabled := FPlayer <> nil;
   ButtonStop.Enabled := FPlayer <> nil;
@@ -287,19 +499,19 @@ begin
   else
     LabelDuration.Text := '--:--';
   if State.State = TTunePlayerState.Playing then
-    ButtonPlay.Text := 'Пауза'
+    ButtonPlay.Text := Translate('Pause')
   else if State.State = TTunePlayerState.Paused then
-    ButtonPlay.Text := 'Продолжить'
+    ButtonPlay.Text := Translate('Resume')
   else
-    ButtonPlay.Text := 'Воспроизвести';
+    ButtonPlay.Text := Translate('Play');
   Seconds := Trunc(State.Seconds);
   if State.Seeking then
-    LabelStatus.Text := 'Перемотка…'
+    LabelStatus.Text := Translate('Seeking…')
   else if State.Error <> '' then
-    LabelStatus.Text := 'Ошибка: ' + State.Error
+    LabelStatus.Text := Translate('Error: ') + Translate(State.Error)
   else
     LabelStatus.Text := Format('%s · %d / %d · %.2d:%.2d',
-      [StateText[State.State], State.Track + 1, FInfo.TrackCount, Seconds div 60, Seconds mod 60]);
+      [Translate(StateText[State.State]), State.Track + 1, FInfo.TrackCount, Seconds div 60, Seconds mod 60]);
 end;
 
 procedure TFormMain.ResetSpectrum;
@@ -463,7 +675,7 @@ begin
               X + Step * 0.9, Y), 0, 0, AllCorners, 1);
         end;
         Text(RectF(4, Channel * H / 2, 90, Channel * H / 2 + 14),
-          IfThen(Channel = 0, 'L · левый', 'R · правый'), ChannelColor(Channel));
+          IfThen(Channel = 0, Translate('L · left'), Translate('R · right')), ChannelColor(Channel));
       end;
       Canvas.Stroke.Color := $4088CDEE;
       Canvas.DrawLine(PointF(0, H / 2), PointF(W, H / 2), 1);
@@ -494,8 +706,8 @@ begin
       finally
         Curve.Free;
       end;
-      Text(RectF(4, 0, 110, 16), 'L · левый', ChannelColor(0));
-      Text(RectF(110, 0, 220, 16), 'R · правый', ChannelColor(1));
+      Text(RectF(4, 0, 110, 16), Translate('L · left'), ChannelColor(0));
+      Text(RectF(110, 0, 220, 16), Translate('R · right'), ChannelColor(1));
       Exit;
     end;
     if ComboSpectrum.ItemIndex = 9 then
@@ -531,7 +743,7 @@ begin
       finally
         Curve.Free;
       end;
-      Text(RectF(W * 0.58, 0, W, H * 0.25), Format('Корреляция: %.2f', [FStereoLevels.Correlation]), $FFD6E5F5);
+      Text(RectF(W * 0.58, 0, W, H * 0.25), Format(Translate('Correlation: %.2f'), [FStereoLevels.Correlation]), $FFD6E5F5);
       X := W * 0.58;
       Reach := W * 0.39;
       Y := H * 0.4;
@@ -543,7 +755,7 @@ begin
       Text(RectF(X, H * 0.45, X + 20, H * 0.65), '-1', $FF88A5BD);
       Text(RectF(X + Reach * 0.5 - 3, H * 0.45, X + Reach * 0.5 + 15, H * 0.65), '0', $FF88A5BD);
       Text(RectF(X + Reach - 15, H * 0.45, X + Reach, H * 0.65), '+1', $FF88A5BD);
-      Text(RectF(X, H * 0.68, W, H), 'Моно ↑  ·  противофаза ↔', $FF88A5BD);
+      Text(RectF(X, H * 0.68, W, H), Translate('Mono ↑  ·  antiphase ↔'), $FF88A5BD);
       Exit;
     end;
     if ComboSpectrum.ItemIndex = 10 then
@@ -561,7 +773,7 @@ begin
         Canvas.Stroke.Color := $FFFFC45C;
         Canvas.Stroke.Thickness := 2;
         Canvas.DrawLine(PointF(Level, Y), PointF(Level, Y + H * 0.16), 1);
-        Text(RectF(X, Channel * H / 2, W, Y), Format('%s   RMS %.1f dBFS   ·   пик %.1f dBFS',
+        Text(RectF(X, Channel * H / 2, W, Y), Format(Translate('%s   RMS %.1f dBFS   ·   peak %.1f dBFS'),
             [IfThen(Channel = 0, 'L', 'R'), 20 * Log10(Max(FStereoLevels.RMS[Channel], 0.000001)),
               20 * Log10(Max(FStereoLevels.Peak[Channel], 0.000001))]), ChannelColor(Channel));
       end;

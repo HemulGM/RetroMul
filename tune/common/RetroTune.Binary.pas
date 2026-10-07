@@ -41,7 +41,20 @@ begin
   var N := 0;
   while (N < Count) and (Data[Offset + N] <> 0) do
     Inc(N);
-  Result := TEncoding.UTF8.GetString(Data, Offset, N).Trim;
+  try
+    Result := TEncoding.UTF8.GetString(Data, Offset, N).Trim;
+  except
+    on E: EEncodingError do
+    begin
+      // Legacy tracker titles can use an eight-bit Cyrillic code page.
+      var Legacy := TEncoding.GetEncoding(1251);
+      try
+        Result := Legacy.GetString(Data, Offset, N).Trim;
+      finally
+        Legacy.Free;
+      end;
+    end;
+  end;
 end;
 
 procedure ValidateRender(Available, Frames, Channels: Integer);

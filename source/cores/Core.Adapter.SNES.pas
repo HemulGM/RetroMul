@@ -92,9 +92,12 @@ end;
 function TSnesConfig.KeyMap(Port: Integer): TSnesKeyMap;
 begin
   case Port of
-    0: Result := FKeys;
-    1: Result := FKeys2;
-    2..7: Result := FExtraKeys[Port];
+    0:
+      Result := FKeys;
+    1:
+      Result := FKeys2;
+    2..7:
+      Result := FExtraKeys[Port];
   else
     raise EArgumentOutOfRangeException.Create('Controller port');
   end;

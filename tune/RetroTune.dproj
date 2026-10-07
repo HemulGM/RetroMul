@@ -5,7 +5,7 @@
         <FrameworkType>FMX</FrameworkType>
         <Base>True</Base>
         <Config Condition="'$(Config)'==''">Debug</Config>
-        <Platform Condition="'$(Platform)'==''">Win32</Platform>
+        <Platform Condition="'$(Platform)'==''">Win64</Platform>
         <TargetedPlatforms>2790547</TargetedPlatforms>
         <AppType>Application</AppType>
         <MainSource>RetroTune.dpr</MainSource>
@@ -119,7 +119,7 @@
     <PropertyGroup Condition="'$(Base)'!=''">
         <DCC_DcuOutput>$(Platform)\$(Config)_DCU</DCC_DcuOutput>
         <DCC_ExeOutput>$(Platform)\$(Config)</DCC_ExeOutput>
-        <DCC_UnitSearchPath>..\source\cores\atari;..\source\cores\c64;..\source\cores\zx;..\source\cores\pc;..\source\cores;..\source\cores\nes;..\source\cores\nes\mappers;..\source\cores\gb;..\source\cores\gbc;..\source\cores\md;..\source\cores\snes;..\source\pcm;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>common;decoders;trackers;chips;playback;export;ui;..\source\cores\atari;..\source\cores\c64;..\source\cores\zx;..\source\cores\pc;..\source\cores;..\source\cores\nes;..\source\cores\nes\mappers;..\source\cores\gb;..\source\cores\gbc;..\source\cores\md;..\source\cores\snes;..\source\pcm;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <DCC_E>false</DCC_E>
         <DCC_N>false</DCC_N>
         <DCC_S>false</DCC_S>
@@ -360,11 +360,6 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
-        <DCCReference Include="RetroTune.Compression.LH5.pas"/>
-        <DCCReference Include="RetroTune.Decoder.AYDumps.pas"/>
-        <DCCReference Include="RetroTune.Decoder.Atari.pas"/>
-        <DCCReference Include="..\source\cores\atari\Atari.Audio.ASAP.pas"/>
-        <DCCReference Include="..\source\cores\atari\Atari.AudioMachine.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.CPU.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.Sound.SID.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.AudioMachine.pas"/>
@@ -374,27 +369,50 @@
         <DCCReference Include="..\source\cores\pc\PC.Sound.OPL.pas"/>
         <DCCReference Include="..\source\cores\pc\PC.Sound.OPL2.pas"/>
         <DCCReference Include="..\source\cores\pc\PC.Sound.OPL3.pas"/>
-        <DCCReference Include="RetroTune.Main.pas">
+        <DCCReference Include="ui\RetroTune.Main.pas">
             <Form>FormMain</Form>
             <FormType>fmx</FormType>
         </DCCReference>
-        <DCCReference Include="RetroTune.Decoder.pas"/>
-        <DCCReference Include="RetroTune.Decoder.NSF.pas"/>
-        <DCCReference Include="RetroTune.Decoder.NSFe.pas"/>
-        <DCCReference Include="RetroTune.Decoder.SPC.pas"/>
-        <DCCReference Include="RetroTune.Decoder.GBS.pas"/>
-        <DCCReference Include="RetroTune.Decoder.VGM.pas"/>
-        <DCCReference Include="RetroTune.PT3.Engine.pas"/>
-        <DCCReference Include="RetroTune.ZXTracker.Engine.pas"/>
-        <DCCReference Include="RetroTune.Decoder.ZXTrackers.pas"/>
-        <DCCReference Include="RetroTune.Decoder.AY.pas"/>
-        <DCCReference Include="RetroTune.Decoder.SID.pas"/>
-        <DCCReference Include="RetroTune.Decoder.PT3.pas"/>
-        <DCCReference Include="RetroTune.Decoder.GYM.pas"/>
-        <DCCReference Include="RetroTune.Binary.pas"/>
-        <DCCReference Include="RetroTune.Player.pas"/>
-        <DCCReference Include="RetroTune.Chip.FDS.pas"/>
-        <DCCReference Include="RetroTune.Spectrum.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.NSF.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.NSFe.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.SPC.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.GBS.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.VGM.pas"/>
+        <DCCReference Include="trackers\RetroTune.PT3.Engine.pas"/>
+        <DCCReference Include="trackers\RetroTune.ZXTracker.Engine.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.ZXTrackers.pas"/>
+        <DCCReference Include="common\RetroTune.Compression.LH5.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.AYDumps.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.Atari.pas"/>
+        <DCCReference Include="..\source\cores\atari\Atari.Audio.ASAP.pas"/>
+        <DCCReference Include="..\source\cores\atari\Atari.Audio.MPT.pas"/>
+        <DCCReference Include="..\source\cores\atari\Atari.AudioMachine.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.AY.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.SID.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.PT3.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.GYM.pas"/>
+        <DCCReference Include="trackers\RetroTune.TFM.Stream.pas"/>
+        <DCCReference Include="trackers\RetroTune.TFM.MusicMaker.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.TurboFM.pas"/>
+        <DCCReference Include="trackers\RetroTune.VortexText.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.Containers.pas"/>
+        <DCCReference Include="..\source\cores\zx\ZX.Sound.YM2203.pas"/>
+        <DCCReference Include="trackers\RetroTune.Digital.Module.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.Digital.pas"/>
+        <DCCReference Include="trackers\RetroTune.ETracker.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.SAA.pas"/>
+        <DCCReference Include="..\source\cores\zx\ZX.Sound.DAC.pas"/>
+        <DCCReference Include="..\source\cores\sam\SAM.Sound.SAA1099.pas"/>
+        <DCCReference Include="common\RetroTune.Binary.pas"/>
+        <DCCReference Include="playback\RetroTune.Player.pas"/>
+        <DCCReference Include="export\RetroTune.Export.WAV.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.WAV.pas"/>
+        <DCCReference Include="ui\RetroTune.InfoForm.pas"/>
+        <DCCReference Include="ui\RetroTune.ReferenceForm.pas"/>
+        <DCCReference Include="ui\RetroTune.FormatsForm.pas"/>
+        <DCCReference Include="chips\RetroTune.Chip.FDS.pas"/>
+        <DCCReference Include="playback\RetroTune.Spectrum.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
@@ -406,6 +424,27 @@
             <Key>Cfg_2</Key>
             <CfgParent>Base</CfgParent>
         </BuildConfiguration>
+        <DCCReference Include="..\source\cores\a2600\A2600.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\a2600\A2600.Sound.TIA.pas"/>
+        <DCCReference Include="..\source\cores\amiga\Amiga.AHX.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.CPU.ARM7.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.DSP.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.Sound.OPLL.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.Sound.SCC.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.CPU.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.Sound.HuC6280.pas"/>
+        <DCCReference Include="..\source\cores\sms\SMS.Sound.SN76489.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.TIA.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.KSS.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.HES.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.AHX.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.DSF.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.TRDOS.pas"/>
+        <DCCReference Include="trackers\RetroTune.TIATracker.pas"/>
     </ItemGroup>
     <ProjectExtensions>
         <Borland.Personality>Delphi.Personality.12</Borland.Personality>

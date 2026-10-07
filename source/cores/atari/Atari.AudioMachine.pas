@@ -15,7 +15,8 @@ type
     procedure ParseSAP(const Data: TBytes);
     procedure LoadBlocks(const Data: TBytes; P: Integer);
   public
-    constructor Create(const Data: TBytes; RMT: Boolean);
+    constructor Create(const Data: TBytes; RMT: Boolean); overload;
+    constructor Create(const Data: TBytes; const Kind: string; const Samples: TBytes = nil; Is15kHz: Boolean = True); overload;
     destructor Destroy; override;
     function Info: TASAPInfo;
     procedure Start(Track, DurationMS: Integer);
@@ -23,6 +24,9 @@ type
   end;
 
 implementation
+
+uses
+  Atari.Audio.MPT;
 
 const
   RMT4Player: array[0..2006] of Byte = (255, 255, 144, 3, 96, 11, 128, 0, 128, 32, 128, 64, 0, 192, 128, 128,
@@ -436,6 +440,14 @@ end;
 
 constructor TAtariAudioMachine.Create(const Data: TBytes; RMT: Boolean);
 begin
+  if RMT then
+    Create(Data, 'RMT')
+  else
+    Create(Data, 'SAP');
+end;
+
+constructor TAtariAudioMachine.Create(const Data: TBytes; const Kind: string; const Samples: TBytes; Is15kHz: Boolean);
+begin
   inherited Create;
   FState := TASAP.Create;
   ASAP_Construct(FState);
@@ -451,7 +463,11 @@ begin
   for var I := 0 to 31 do
     M.durations[I] := -1;
   try
-    if RMT then
+    if Kind = 'D15' then
+      LoadMPTSamples(FState, Data)
+    else if Kind = 'MD1' then
+      LoadMD1(FState, Data, Samples, Is15kHz)
+    else if Kind = 'RMT' then
     begin
       if not ASAPInfo_ParseRmt(M, Data, Length(Data)) then
         raise EArgumentException.Create('Invalid RMT module');

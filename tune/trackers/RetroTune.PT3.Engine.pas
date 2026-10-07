@@ -1,7 +1,5 @@
 ﻿unit RetroTune.PT3.Engine;
 
-{$B-}
-
 interface
 
 uses

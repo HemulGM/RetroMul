@@ -1,7 +1,5 @@
 ﻿unit PC.OPL.Nuked;
 
-{$B-}
-
 interface
 
 uses

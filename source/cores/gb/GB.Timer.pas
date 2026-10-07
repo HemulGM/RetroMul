@@ -168,7 +168,8 @@ begin
     if Enabled then
     begin
       var UntilEdge := Mask * 2 - (FDivider and (Mask * 2 - 1));
-      if Skip >= UntilEdge then Skip := UntilEdge - 1;
+      if Skip >= UntilEdge then
+        Skip := UntilEdge - 1;
     end;
     if Skip > 0 then
     begin

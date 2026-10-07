@@ -33,6 +33,7 @@ type
     procedure StartEffect(Code, Prediv, Timer: Integer);
     procedure StartDrum(Channel, Index: Integer; Frequency: Double);
     procedure EffectsTick(NativeRate: Double);
+    procedure ParseDebugAY(const Data: TBytes);
     procedure ParsePSG(const Data: TBytes);
     procedure ParseYM(Data: TBytes);
     procedure ParseVTX(const Data: TBytes);
@@ -1510,6 +1511,69 @@ begin
         Frames[I][R] := Data[Offset + I * Registers + R];
 end;
 
+procedure TAYDump.ParseDebugAY(const Data: TBytes);
+const
+  Header = '000102030405060708090a0b0c0d';
+var
+  At, Used: Integer;
+  State: TAYFrame;
+
+  function HexDigit(Value: Byte): Integer;
+  begin
+    case Value of
+      Ord('0')..Ord('9'):
+        Result := Value - Ord('0');
+      Ord('A')..Ord('F'):
+        Result := Value - Ord('A') + 10;
+      Ord('a')..Ord('f'):
+        Result := Value - Ord('a') + 10;
+    else
+      raise EArgumentException.Create('Invalid DebugAY hexadecimal register');
+    end;
+  end;
+
+  function ReadLine: TBytes;
+  begin
+    var Start := At;
+    while (At < Length(Data)) and not (Data[At] in [10, 13]) do
+      Inc(At);
+    Result := Copy(Data, Start, At - Start);
+    if (At < Length(Data)) and (Data[At] = 13) then
+      Inc(At);
+    if (At < Length(Data)) and (Data[At] = 10) then
+      Inc(At);
+  end;
+
+begin
+  At := 0;
+  if (Length(Data) >= 3) and (Data[0] = $EF) and (Data[1] = $BB) and (Data[2] = $BF) then
+    At := 3;
+  var Line := ReadLine;
+  if not SameText(TEncoding.ASCII.GetString(Line), Header) then
+    raise EArgumentException.Create('Invalid DebugAY register header');
+  State := Default(TAYFrame);
+  SetLength(Frames, 90000);
+  Used := 0;
+  while At < Length(Data) do
+  begin
+    Line := ReadLine;
+    State[13] := $FF; // Omitted shape writes must not restart the envelope.
+    if not ((Length(Line) = 1) and (Line[0] = Ord('='))) then
+    begin
+      if Length(Line) <> 28 then
+        raise EArgumentException.Create('DebugAY frame must contain 14 register columns');
+      for var R := 0 to 13 do
+        if (Line[R * 2] <> Ord(' ')) or (Line[R * 2 + 1] <> Ord(' ')) then
+          State[R] := HexDigit(Line[R * 2]) * 16 + HexDigit(Line[R * 2 + 1]);
+    end;
+    if Used = Length(Frames) then
+      raise EArgumentException.Create('DebugAY exceeds 90000 frames');
+    Frames[Used] := State;
+    Inc(Used);
+  end;
+  SetLength(Frames, Used);
+end;
+
 procedure TAYDump.ParsePSG(const Data: TBytes);
 begin
   RequireBytes(Data, 0, 16);
@@ -1783,7 +1847,9 @@ begin
   Pan := 1;
   AYModel := Name <> 'YM';
   Info.FormatName := Name;
-  if Name = 'PSG' then
+  if Name = 'DebugAY' then
+    ParseDebugAY(Data)
+  else if Name = 'PSG' then
     ParsePSG(Data)
   else if Name = 'YM' then
     ParseYM(Data)
@@ -2017,7 +2083,13 @@ begin
   Result := TAYDump.Create(Data, 'AYC');
 end;
 
+function DebugAY(const Data: TBytes): ITuneDecoder;
+begin
+  Result := TAYDump.Create(Data, 'DebugAY');
+end;
+
 initialization
+  TTuneDecoders.RegisterFormat('.debugay', 'AY text register dump', DebugAY);
   TTuneDecoders.RegisterFormat('.psg', 'AY register log', PSG);
   TTuneDecoders.RegisterFormat('.ym', 'ST Sound YM', YM);
   TTuneDecoders.RegisterFormat('.vtx', 'VTX AY/YM', VTX);

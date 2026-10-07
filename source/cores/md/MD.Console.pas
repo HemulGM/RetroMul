@@ -3,8 +3,9 @@
 interface
 
 uses
-  Core.InputConfig, Core.Snapshots, System.Classes, System.SysUtils, System.UITypes, MD.Cartridge,
-  MD.M68k, MD.Z80, MD.VDP, MD.Sound, Core.AudioFilter;
+  Core.InputConfig, Core.Snapshots, System.Classes, System.SysUtils,
+  System.UITypes, MD.Cartridge, MD.M68k, MD.Z80, MD.VDP, MD.Sound,
+  Core.AudioFilter;
 
 {$SCOPEDENUMS ON}
 

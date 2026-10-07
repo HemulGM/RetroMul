@@ -2171,6 +2171,8 @@ var
                 else
                   delta_ton := S16(Current_Ton_Sliding div 16);
                 delta_ton := S16(delta_ton shl 4);
+                if S8(Index[Address_In_Pattern]) = 0 then
+                  raise EArgumentException.Create('ASC pitch slide has zero duration');
                 Substruction_for_Ton_Sliding :=
                   S16(-delta_ton div S8(Index[Address_In_Pattern]));
                 Current_Ton_Sliding :=
@@ -2189,6 +2191,8 @@ var
                 else
                   delta_ton := S16(Current_Ton_Sliding div 16);
                 delta_ton := S16(delta_ton shl 4);
+                if S8(Index[Address_In_Pattern]) = 0 then
+                  raise EArgumentException.Create('ASC pitch slide has zero duration');
                 Substruction_for_Ton_Sliding :=
                   S16(-delta_ton div S8(Index[Address_In_Pattern]));
                 Current_Ton_Sliding :=

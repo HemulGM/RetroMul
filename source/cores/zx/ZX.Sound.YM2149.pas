@@ -39,6 +39,7 @@ type
   public
     constructor Create(Clock: Integer = 1773400; SampleRate: Integer = 44100; SelectPinHigh: Boolean = True);
     procedure Reset;
+    procedure SetClock(Value: Integer);
     procedure RetriggerTone(Channel: Integer);
     procedure WriteAddress(Value: Byte);
     procedure WriteData(Value: Byte);
@@ -116,6 +117,15 @@ begin
     FDC[J].Configure(SampleRate, 20);
   end;
   Reset;
+end;
+
+procedure TYM2149F.SetClock(Value: Integer);
+begin
+  if (Value < 100000) or (Value > 8000000) then
+    raise EArgumentOutOfRangeException.Create('Invalid YM2149 clock');
+  FClock := Value;
+  for var J := 0 to 1 do
+    FFilter[J].Configure(FClock / FDivider, Min(14000, FSampleRate * 0.4));
 end;
 
 procedure TYM2149F.RetriggerTone(Channel: Integer);

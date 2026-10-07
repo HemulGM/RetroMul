@@ -224,31 +224,30 @@ var
     Stream.WriteBuffer(Bytes, SizeOf(Bytes));
   end;
 
-  procedure WriteChunk(const Kind: AnsiString; Data: Pointer; Size: Integer);
+  procedure WriteChunk(const Kind: AnsiString; const Data: TBytes);
+  var
+    CRC: Cardinal;
 
-    procedure UpdateCRC(var CRC: Cardinal; Buffer: Pointer; Count: Integer);
+    procedure UpdateCRC(Value: Byte);
     begin
-      var P := PByte(Buffer);
-      for var i := 0 to Count - 1 do
-      begin
-        CRC := CRC xor P^;
-        for var Bit := 0 to 7 do
-          if (CRC and 1) <> 0 then
-            CRC := (CRC shr 1) xor $EDB88320
-          else
-            CRC := CRC shr 1;
-        Inc(P);
-      end;
+      CRC := CRC xor Value;
+      for var Bit := 0 to 7 do
+        if (CRC and 1) <> 0 then
+          CRC := (CRC shr 1) xor $EDB88320
+        else
+          CRC := CRC shr 1;
     end;
 
   begin
-    WriteUInt32(Size);
+    WriteUInt32(Length(Data));
     Stream.WriteBuffer(Kind[1], 4);
-    if Size > 0 then
-      Stream.WriteBuffer(Data^, Size);
-    var CRC: Cardinal := $FFFFFFFF;
-    UpdateCRC(CRC, PAnsiChar(Kind), 4);
-    UpdateCRC(CRC, Data, Size);
+    if Length(Data) > 0 then
+      Stream.WriteBuffer(Data[0], Length(Data));
+    CRC := $FFFFFFFF;
+    for var I := 1 to 4 do
+      UpdateCRC(Ord(Kind[I]));
+    for var Value in Data do
+      UpdateCRC(Value);
     WriteUInt32(CRC xor $FFFFFFFF);
   end;
 
@@ -261,39 +260,45 @@ begin
   Compressed := TMemoryStream.Create;
   try
     Stream.WriteBuffer(Signature, SizeOf(Signature));
-    var Header: array[0..12] of Byte;
-    FillChar(Header, SizeOf(Header), 0);
+    var Header: TBytes;
+    SetLength(Header, 13);
     Header[2] := (Width shr 8) and $FF;
     Header[3] := Width and $FF;
     Header[6] := (Height shr 8) and $FF;
     Header[7] := Height and $FF;
     Header[8] := 8; // Eight-bit RGB; emulator output is opaque ARGB.
     Header[9] := 2;
-    WriteChunk('IHDR', @Header, SizeOf(Header));
+    WriteChunk('IHDR', Header);
     var Row: TBytes;
     SetLength(Row, 1 + Width * 3);
     Row[0] := 0; // PNG filter None.
     var Compressor := TZCompressionStream.Create(Compressed);
     try
-      var Source := PCardinal(Pixels);
+      // Copy the host framebuffer once; all traversal uses checked array indices.
+      var Source: TArray<Cardinal>;
+      SetLength(Source, (Height - 1) * Stride + Width);
+      Move(Pixels^, Source[0], Length(Source) * SizeOf(Cardinal));
       for var Y := 0 to Height - 1 do
       begin
         for var X := 0 to Width - 1 do
         begin
-          var Color := Source^;
-          Inc(Source);
+          var Color := Source[Y * Stride + X];
           Row[1 + X * 3] := (Color shr 16) and $FF;
           Row[2 + X * 3] := (Color shr 8) and $FF;
           Row[3 + X * 3] := Color and $FF;
         end;
         Compressor.WriteBuffer(Row[0], Length(Row));
-        Inc(Source, Stride - Width);
       end;
     finally
       Compressor.Free;
     end;
-    WriteChunk('IDAT', Compressed.Memory, Compressed.Size);
-    WriteChunk('IEND', nil, 0);
+    var Payload: TBytes;
+    SetLength(Payload, Compressed.Size);
+    Compressed.Position := 0;
+    if Length(Payload) > 0 then
+      Compressed.ReadBuffer(Payload[0], Length(Payload));
+    WriteChunk('IDAT', Payload);
+    WriteChunk('IEND', nil);
     SaveStreamAtomically(Stream, ChangeFileExt(Path, '.png'), Storage);
   finally
     Compressed.Free;

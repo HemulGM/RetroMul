@@ -38,3 +38,4 @@ __recovery/
 /tune/test_data/*
 /tune/Linux64/*
 /tune/Win32/*
+*.rsm

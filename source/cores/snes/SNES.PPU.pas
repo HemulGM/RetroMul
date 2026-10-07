@@ -168,7 +168,8 @@ begin
     Exit;
 
   var OldMosaic := State.Regs[6] and 15;
-  if R = $06 then UpdateMosaic(V);
+  if R = $06 then
+    UpdateMosaic(V);
   State.Regs[R] := Value;
   case R of
     $06:
@@ -468,19 +469,24 @@ end;
 
 procedure TSnesPPU.UpdateMosaic(V: Integer);
 begin
-  if V < FRender.MosaicLine then FRender.MosaicLine := -1;
+  if V < FRender.MosaicLine then
+    FRender.MosaicLine := -1;
   while FRender.MosaicLine < V do
   begin
     Inc(FRender.MosaicLine);
     var Enabled := (State.Regs[6] and 15) <> 0;
     var Size := (State.Regs[6] shr 4) + 1;
     if FRender.MosaicLine = 1 then
-      if Enabled then FRender.MosaicCounter := Size + 1 else FRender.MosaicCounter := 0;
+      if Enabled then
+        FRender.MosaicCounter := Size + 1
+      else
+        FRender.MosaicCounter := 0;
     if FRender.MosaicCounter > 0 then
     begin
       Dec(FRender.MosaicCounter);
       if FRender.MosaicCounter = 0 then
-        if Enabled then FRender.MosaicCounter := Size;
+        if Enabled then
+          FRender.MosaicCounter := Size;
     end;
   end;
 end;

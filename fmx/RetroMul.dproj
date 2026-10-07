@@ -425,12 +425,16 @@
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
         <DCCReference Include="..\source\cores\atari\Atari.Audio.ASAP.pas"/>
+        <DCCReference Include="..\source\cores\atari\Atari.Audio.MPT.pas"/>
         <DCCReference Include="..\source\cores\atari\Atari.AudioMachine.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.CPU.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.Sound.SID.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.AudioMachine.pas"/>
         <DCCReference Include="..\source\cores\zx\ZX.AudioMachine.pas"/>
         <DCCReference Include="..\source\cores\zx\ZX.Sound.YM2149.pas"/>
+        <DCCReference Include="..\source\cores\zx\ZX.Sound.YM2203.pas"/>
+        <DCCReference Include="..\source\cores\zx\ZX.Sound.DAC.pas"/>
+        <DCCReference Include="..\source\cores\sam\SAM.Sound.SAA1099.pas"/>
         <DCCReference Include="..\source\cores\pc\PC.OPL.Nuked.pas"/>
         <DCCReference Include="..\source\cores\pc\PC.Sound.OPL.pas"/>
         <DCCReference Include="..\source\cores\pc\PC.Sound.OPL2.pas"/>
@@ -598,6 +602,20 @@
             <Key>Cfg_3</Key>
             <CfgParent>Cfg_2</CfgParent>
         </BuildConfiguration>
+        <DCCReference Include="..\source\cores\a2600\A2600.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\a2600\A2600.Sound.TIA.pas"/>
+        <DCCReference Include="..\source\cores\amiga\Amiga.AHX.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.CPU.ARM7.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.DSP.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.Sound.OPLL.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.Sound.SCC.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.CPU.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.Sound.HuC6280.pas"/>
+        <DCCReference Include="..\source\cores\sms\SMS.Sound.SN76489.pas"/>
     </ItemGroup>
     <ProjectExtensions>
         <Borland.Personality>Delphi.Personality.12</Borland.Personality>

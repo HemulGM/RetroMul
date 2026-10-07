@@ -76,7 +76,8 @@ type
 implementation
 
 uses
-  Core.PerformanceHints, System.SysUtils, System.IOUtils, System.Math, GB.CPU, GB.Sound, GB.Palettes;
+  Core.PerformanceHints, System.SysUtils, System.IOUtils, System.Math, GB.CPU,
+  GB.Sound, GB.Palettes;
 
 function TGBEmulationThread.CoreID: string;
 begin

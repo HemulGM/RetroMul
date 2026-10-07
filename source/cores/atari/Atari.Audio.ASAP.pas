@@ -1,7 +1,5 @@
 ﻿unit Atari.Audio.ASAP;
 
-{$B-}
-
 interface
 
 uses
@@ -139,6 +137,8 @@ type
     silenceCyclesCounter: Integer;
     gtiaOrCovoxPlayedThisFrame: Boolean;
     currentSampleRate: Integer;
+    mptSamplesPage, mptSamplesCurrentAddress: Integer;
+    mptSamples15kHz, mptSamplesSecondNibble: Boolean;
     constructor Create;
     destructor Destroy; override;
   end;
@@ -164,6 +164,8 @@ const
   ASAPModuleType_TMC = 11;
   ASAPModuleType_TM2 = 12;
   ASAPModuleType_FC = 13;
+  ASAPModuleType_MD1 = 14;
+  ASAPModuleType_D15 = 15;
   Pokey_COMPRESSED_SUMS: array[0..60] of SmallInt = (0, 35, 73, 111, 149, 189, 228, 266, 304, 342, 379, 415, 450, 484, 516, 546, 575, 602, 628, 652, 674, 695, 715, 733, 750, 766, 782, 796, 809, 822, 834, 846, 856, 867, 876, 886, 894, 903, 911, 918, 926, 933, 939, 946, 952, 958, 963, 969, 974, 979, 984, 988, 993, 997, 1001, 1005, 1009, 1013, 1016, 1019, 1023);
 
 procedure ASAPInfo_AddSong(ctx: TASAPInfo; playerCalls: Integer);
@@ -1052,8 +1054,10 @@ begin
       begin
         ASAP_Call6502(ctx, S32(Int64(player) + 6));
       end;
-    ASAPModuleType_SAP_D:
+    ASAPModuleType_SAP_D, ASAPModuleType_MD1:
       begin
+        if ctx.moduleInfo.kind = ASAPModuleType_MD1 then
+          Inc(player, 3);
         if (player >= 0) then
         begin
           Cpu6502_PushPc(ctx.cpu);
@@ -1091,6 +1095,25 @@ begin
     ASAPModuleType_MPT, ASAPModuleType_RMT, ASAPModuleType_TM2, ASAPModuleType_FC:
       begin
         ASAP_Call6502(ctx, S32(Int64(player) + 3));
+      end;
+    ASAPModuleType_D15:
+      begin
+        if (ctx.cpu.cycle >= 1254) and
+          (ctx.mptSamplesCurrentAddress div 256 < ctx.cpu.memory[ctx.moduleInfo.music + 16 + ctx.currentSong]) then
+        begin
+          var Value := Integer(ctx.cpu.memory[ctx.mptSamplesCurrentAddress]);
+          if ctx.mptSamplesSecondNibble then
+          begin
+            Inc(ctx.mptSamplesCurrentAddress);
+            ctx.mptSamplesSecondNibble := False;
+          end
+          else
+          begin
+            Value := Value shr 4;
+            ctx.mptSamplesSecondNibble := True;
+          end;
+          PokeyPair_Poke(ctx.pokeys, $D201, (Value and 15) or $F0, ctx.cpu.cycle);
+        end;
       end;
     ASAPModuleType_TMC:
       begin
@@ -1452,16 +1475,33 @@ begin
           Exit(False);
         end;
       end;
-    ASAPModuleType_MPT:
+    ASAPModuleType_MPT, ASAPModuleType_MD1:
       begin
         if not (ASAP_Do6502Init(ctx, player, 0, Sar32(music, 8), music)) then
         begin
           Exit(False);
         end;
+        if ctx.moduleInfo.kind = ASAPModuleType_MD1 then
+          if not ASAP_Do6502Init(ctx, player, 3, ctx.mptSamplesPage - 1, 224) then
+            Exit(False);
         if not (ASAP_Do6502Init(ctx, player, 2, ctx.moduleInfo.songPos[song], 0)) then
         begin
           Exit(False);
         end;
+        if ctx.moduleInfo.kind = ASAPModuleType_MD1 then
+        begin
+          ctx.cpu.pc := player;
+          ctx.cpu.a := 5;
+          ctx.cpu.x := Ord(ctx.mptSamples15kHz);
+          ctx.cpu.s := 255;
+        end;
+      end;
+    ASAPModuleType_D15:
+      begin
+        ctx.mptSamplesCurrentAddress := Integer(ctx.cpu.memory[music + song]) * 256;
+        ctx.mptSamplesSecondNibble := False;
+        ctx.cpu.memory[$D200] := $D2;
+        ctx.cpu.pc := $D200;
       end;
     ASAPModuleType_RMT:
       begin

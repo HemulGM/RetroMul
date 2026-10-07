@@ -3,8 +3,8 @@
 interface
 
 uses
-  Core.InputConfig, Core.Storage, Core.RomFormat, Core.Snapshots, System.SysUtils, System.Classes,
-  System.SyncObjs, Core.Emulation, MD.Console;
+  Core.InputConfig, Core.Storage, Core.RomFormat, Core.Snapshots,
+  System.SysUtils, System.Classes, System.SyncObjs, Core.Emulation, MD.Console;
 
 const
   MD_SAMPLE_RATE = 44100;

@@ -6,6 +6,7 @@ uses
   A2600.AudioMachine in '..\source\cores\a2600\A2600.AudioMachine.pas',
   A2600.Sound.TIA in '..\source\cores\a2600\A2600.Sound.TIA.pas',
   Amiga.AHX in '..\source\cores\amiga\Amiga.AHX.pas',
+  Amiga.ProTracker in '..\source\cores\amiga\Amiga.ProTracker.pas',
   DC.AudioMachine in '..\source\cores\dc\DC.AudioMachine.pas',
   DC.CPU.ARM7 in '..\source\cores\dc\DC.CPU.ARM7.pas',
   DC.Sound.AICA.DSP in '..\source\cores\dc\DC.Sound.AICA.DSP.pas',

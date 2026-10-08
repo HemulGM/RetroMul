@@ -360,6 +360,28 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="..\source\cores\a2600\A2600.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\a2600\A2600.Sound.TIA.pas"/>
+        <DCCReference Include="..\source\cores\amiga\Amiga.AHX.pas"/>
+        <DCCReference Include="..\source\cores\amiga\Amiga.ProTracker.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.CPU.ARM7.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.DSP.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.Sound.OPLL.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.Sound.SCC.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.CPU.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.Sound.HuC6280.pas"/>
+        <DCCReference Include="..\source\cores\sms\SMS.Sound.SN76489.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.TIA.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.KSS.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.HES.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.AHX.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.DSF.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.TRDOS.pas"/>
+        <DCCReference Include="trackers\RetroTune.TIATracker.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.CPU.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.Sound.SID.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.AudioMachine.pas"/>
@@ -392,6 +414,12 @@
         <DCCReference Include="decoders\RetroTune.Decoder.SID.pas"/>
         <DCCReference Include="decoders\RetroTune.Decoder.PT3.pas"/>
         <DCCReference Include="decoders\RetroTune.Decoder.GYM.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.OPLDumps.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.XGM.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.ProTracker.pas"/>
+        <DCCReference Include="decoders\RetroTune.Decoder.MIDI.pas"/>
+        <DCCReference Include="chips\RetroTune.SoundFont.pas"/>
+        <DCCReference Include="common\RetroTune.SoundFontCatalog.pas"/>
         <DCCReference Include="trackers\RetroTune.TFM.Stream.pas"/>
         <DCCReference Include="trackers\RetroTune.TFM.MusicMaker.pas"/>
         <DCCReference Include="decoders\RetroTune.Decoder.TurboFM.pas"/>
@@ -424,27 +452,6 @@
             <Key>Cfg_2</Key>
             <CfgParent>Base</CfgParent>
         </BuildConfiguration>
-        <DCCReference Include="..\source\cores\a2600\A2600.AudioMachine.pas"/>
-        <DCCReference Include="..\source\cores\a2600\A2600.Sound.TIA.pas"/>
-        <DCCReference Include="..\source\cores\amiga\Amiga.AHX.pas"/>
-        <DCCReference Include="..\source\cores\dc\DC.AudioMachine.pas"/>
-        <DCCReference Include="..\source\cores\dc\DC.CPU.ARM7.pas"/>
-        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.DSP.pas"/>
-        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.pas"/>
-        <DCCReference Include="..\source\cores\msx\MSX.AudioMachine.pas"/>
-        <DCCReference Include="..\source\cores\msx\MSX.Sound.OPLL.pas"/>
-        <DCCReference Include="..\source\cores\msx\MSX.Sound.SCC.pas"/>
-        <DCCReference Include="..\source\cores\pce\PCE.AudioMachine.pas"/>
-        <DCCReference Include="..\source\cores\pce\PCE.CPU.pas"/>
-        <DCCReference Include="..\source\cores\pce\PCE.Sound.HuC6280.pas"/>
-        <DCCReference Include="..\source\cores\sms\SMS.Sound.SN76489.pas"/>
-        <DCCReference Include="decoders\RetroTune.Decoder.TIA.pas"/>
-        <DCCReference Include="decoders\RetroTune.Decoder.KSS.pas"/>
-        <DCCReference Include="decoders\RetroTune.Decoder.HES.pas"/>
-        <DCCReference Include="decoders\RetroTune.Decoder.AHX.pas"/>
-        <DCCReference Include="decoders\RetroTune.Decoder.DSF.pas"/>
-        <DCCReference Include="decoders\RetroTune.Decoder.TRDOS.pas"/>
-        <DCCReference Include="trackers\RetroTune.TIATracker.pas"/>
     </ItemGroup>
     <ProjectExtensions>
         <Borland.Personality>Delphi.Personality.12</Borland.Personality>
@@ -1468,4 +1475,11 @@
     <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
     <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')"/>
     <Import Project="$(MSBuildProjectName).deployproj" Condition="Exists('$(MSBuildProjectName).deployproj')"/>
+    <Target Name="CopyMidiSoundFonts" AfterTargets="Build" Condition="'$(Platform)' == 'Win32' Or '$(Platform)' == 'Win64' Or '$(Platform)' == 'Win64x'">
+        <PropertyGroup>
+            <MidiSoundFontOutput Condition="'$(DCC_ExeOutput)' == ''">$(MSBuildProjectDirectory)\sf2</MidiSoundFontOutput>
+            <MidiSoundFontOutput Condition="'$(DCC_ExeOutput)' != ''">$(DCC_ExeOutput)\sf2</MidiSoundFontOutput>
+        </PropertyGroup>
+        <Exec WorkingDirectory="$(MSBuildProjectDirectory)" Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\soundfonts\PrepareSoundFonts.ps1&quot; -DestinationDirectory &quot;$(MidiSoundFontOutput)&quot;"/>
+    </Target>
 </Project>

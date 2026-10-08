@@ -1,4 +1,4 @@
-﻿object FormMain: TFormMain
+object FormMain: TFormMain
   Left = 0
   Top = 0
   Caption = 'RetroTune'
@@ -58,7 +58,7 @@
           Size.Height = 40.000000000000000000
           Size.PlatformDefault = False
           TabOrder = 1
-          Text = 'Export WAV…'
+          Text = 'Export WAV'#8230
           OnClick = ExportClick
         end
         object ButtonOpen: TButton
@@ -69,7 +69,7 @@
           Size.Height = 40.000000000000000000
           Size.PlatformDefault = False
           TabOrder = 0
-          Text = 'Open file…'
+          Text = 'Open file'#8230
           OnClick = OpenClick
         end
       end
@@ -103,7 +103,7 @@
             TextSettings.Font.Family = 'Segoe UI Symbol'
             TextSettings.Font.Size = 48.000000000000000000
             TextSettings.HorzAlign = Center
-            Text = '♫'
+            Text = #9835
           end
         end
         object LayoutMetadata: TLayout
@@ -115,8 +115,8 @@
           Size.Height = 112.000000000000000000
           Size.PlatformDefault = False
           object LabelTitle: TLabel
-            AutoTranslate = False
             Anchors = [akLeft, akTop, akRight]
+            AutoTranslate = False
             Size.Width = 504.000000000000000000
             Size.Height = 32.000000000000000000
             Size.PlatformDefault = False
@@ -124,8 +124,8 @@
             Text = 'Choose music'
           end
           object LabelArtist: TLabel
-            AutoTranslate = False
             Anchors = [akLeft, akTop, akRight]
+            AutoTranslate = False
             Position.X = 4.000000000000000000
             Position.Y = 40.000000000000000000
             Size.Width = 544.000000000000000000
@@ -134,8 +134,8 @@
             Text = 'Open a file to start listening'
           end
           object LabelCopyright: TLabel
-            AutoTranslate = False
             Anchors = [akLeft, akTop, akRight]
+            AutoTranslate = False
             Position.Y = 65.000000000000000000
             Size.Width = 544.000000000000000000
             Size.Height = 20.000000000000000000
@@ -143,14 +143,14 @@
             StyleLookup = 'labelstyle_caption'
           end
           object LabelDetails: TLabel
-            AutoTranslate = False
             Anchors = [akLeft, akTop, akRight]
+            AutoTranslate = False
             Position.Y = 91.000000000000000000
             Size.Width = 544.000000000000000000
             Size.Height = 20.000000000000000000
             Size.PlatformDefault = False
             StyleLookup = 'labelstyle_caption'
-            Text = 'Game music · RetroTune'
+            Text = 'Game music '#183' RetroTune'
           end
           object ButtonInfo: TButton
             Anchors = [akTop, akRight]
@@ -256,7 +256,7 @@
             Size.PlatformDefault = False
             StyleLookup = 'rewindtoolbuttonbordered'
             TabOrder = 0
-            Text = ''
+            Text = #59538
             TextSettings.Font.Family = 'Segoe MDL2 Assets'
             TextSettings.Font.Size = 16.000000000000000000
             ParentShowHint = False
@@ -286,7 +286,7 @@
             Size.PlatformDefault = False
             StyleLookup = 'forwardtoolbuttonbordered'
             TabOrder = 2
-            Text = ''
+            Text = #59539
             TextSettings.Font.Family = 'Segoe MDL2 Assets'
             TextSettings.Font.Size = 16.000000000000000000
             ParentShowHint = False
@@ -304,7 +304,7 @@
             Size.PlatformDefault = False
             StyleLookup = 'stoptoolbuttonbordered'
             TabOrder = 3
-            Text = ''
+            Text = #59162
             TextSettings.Font.Family = 'Segoe MDL2 Assets'
             TextSettings.Font.Size = 16.000000000000000000
             ParentShowHint = False
@@ -348,21 +348,23 @@
         Size.PlatformDefault = False
         object ButtonFormats: TButton
           Align = Right
+          Hint = 'Supported formats reference'
           Margins.Left = 12.000000000000000000
           Margins.Top = 6.000000000000000000
           Margins.Bottom = 6.000000000000000000
+          Position.X = 576.000000000000000000
+          Position.Y = 6.000000000000000000
           Size.Width = 136.000000000000000000
           Size.Height = 32.000000000000000000
           Size.PlatformDefault = False
           TabOrder = 0
           Text = 'Formats'
-          Hint = 'Supported formats reference'
           OnClick = FormatsClick
         end
         object LabelStatus: TLabel
           Align = Client
           Margins.Top = 10.000000000000000000
-          Size.Width = 712.000000000000000000
+          Size.Width = 564.000000000000000000
           Size.Height = 34.000000000000000000
           Size.PlatformDefault = False
           StyleLookup = 'labelstyle_caption'
@@ -384,7 +386,7 @@
           Size.Height = 28.000000000000000000
           Size.PlatformDefault = False
           TabOrder = 0
-          Text = '×'
+          Text = #215
           OnClick = CloseExportClick
         end
         object LabelExport: TLabel
@@ -500,8 +502,9 @@
     end
   end
   object Lang: TLang
-    AutoSelect = True
-    Lang = 'en'
+    Lang = 'ru'
+    Left = 544
+    Top = 8
     ResourcesBin = {
       890900004D007500730069006300200074006800610074002000730074006100
       7200740065006400200069007400200061006C006C000D000A00450078007000
@@ -39557,7 +39560,7 @@
           B3FE3F0754726967676572060E4973507265737365643D747275650E54726967
           676572496E7665727365060F4973507265737365643D66616C73650000000000}
       end>
-    Left = 372
-    Top = 186
+    Left = 492
+    Top = 10
   end
 end

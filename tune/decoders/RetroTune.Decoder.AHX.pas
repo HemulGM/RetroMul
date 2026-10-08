@@ -25,11 +25,13 @@ begin
   inherited Create;
   FMachine := TAHX.Create(Data);
   FInfo.FormatName := 'AHX';
+  if FMachine.IsHVL then
+    FInfo.FormatName := 'HVL';
   FInfo.TrackCount := FMachine.TrackCount;
   FInfo.Title := FMachine.Title;
   FInfo.SampleRate := 44100;
   FInfo.Channels := 2;
-  FInfo.Details := 'AHX / Amiga Paula / four synthesized voices';
+  FInfo.Details := Format('%s / Amiga / %d synthesized voices', [FInfo.FormatName, FMachine.ChannelCount]);
   SetLength(FInfo.TrackDurations, FInfo.TrackCount);
   for var I := 0 to FInfo.TrackCount - 1 do
     FInfo.TrackDurations[I] := FMachine.FrameCount(I) / 44100;
@@ -73,6 +75,7 @@ end;
 
 initialization
   TTuneDecoders.RegisterFormat('.ahx', 'Amiga AHX', OpenAHX);
+  TTuneDecoders.RegisterFormat('.hvl', 'HivelyTracker', OpenAHX);
 
 end.
 

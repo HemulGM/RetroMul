@@ -39,3 +39,5 @@ __recovery/
 /tune/Linux64/*
 /tune/Win32/*
 *.rsm
+/tune/soundfonts/*
+/tune/Win64/*

@@ -47,6 +47,7 @@ type
     procedure Stop;
     procedure SelectTrack(Index: Integer);
     procedure Seek(Seconds: Double);
+    procedure RestorePlayback(const Previous: TTunePlayerStatus);
     procedure SetVolume(Percent: Integer);
     function Status: TTunePlayerStatus;
     procedure GetVisualization(out Samples: TTunePCMWindow; out SampleRate: Integer);
@@ -158,6 +159,33 @@ begin
     Inc(FGeneration);
     if FStatus.State = TTunePlayerState.Finished then
       FStatus.State := TTunePlayerState.Stopped;
+  finally
+    FLock.Release;
+  end;
+  FWake.SetEvent;
+end;
+
+procedure TTunePlayer.RestorePlayback(const Previous: TTunePlayerStatus);
+begin
+  if (Previous.Track < 0) or (Previous.Track >= FInfo.TrackCount) then
+    raise EArgumentOutOfRangeException.Create('Invalid track');
+  if IsNan(Previous.Seconds) or IsInfinite(Previous.Seconds) or
+    (Previous.Seconds < 0) or (Previous.Seconds > 86400) then
+    raise EArgumentOutOfRangeException.Create('Invalid playback position');
+  // Restore all commands together, before the worker can play the new decoder.
+  FLock.Acquire;
+  try
+    FStatus.Track := Previous.Track;
+    SetTrackDuration;
+    FSeekSeconds := Previous.Seconds;
+    if FStatus.DurationSeconds >= 0 then
+      FSeekSeconds := Min(FSeekSeconds, FStatus.DurationSeconds);
+    FStatus.Seconds := FSeekSeconds;
+    FStatus.State := Previous.State;
+    FStatus.Seeking := Previous.State <> TTunePlayerState.Stopped;
+    FStatus.Error := '';
+    ClearVisualization;
+    Inc(FGeneration);
   finally
     FLock.Release;
   end;
@@ -303,14 +331,16 @@ end;
 
 procedure TTunePlayer.Execute;
 const
-  BlockFrames = 512;
+  BlockFrames = 1024;
+  BufferedSeconds = 0.12;
+  MaxQueueBlocks = 8;
 var
   Audio: TPCMAudio;
   AudioFormat: TPCMAudioFormat;
   Samples: TArray<SmallInt>;
   Current: TTunePlayerStatus;
   Generation, AppliedGeneration: UInt64;
-  Volume, Count, I, Channel, Sum: Integer;
+  Volume, Count, I, Channel, Sum, QueueLimit: Integer;
   HaveGeneration, WasPlaying, AtEnd: Boolean;
   Target, Actual: Double;
 begin
@@ -319,7 +349,11 @@ begin
     AudioFormat.SampleRate := FInfo.SampleRate;
     AudioFormat.Channels := FInfo.Channels;
     AudioFormat.BlockFrames := BlockFrames;
-    AudioFormat.BlockCount := 8;
+    AudioFormat.BlockCount := MaxQueueBlocks;
+    // Keep enough PCM queued to survive short scheduler/UI/driver stalls.
+    // Use the sample rate so lower-rate formats do not gain excessive latency.
+    QueueLimit := EnsureRange(Ceil(FInfo.SampleRate * BufferedSeconds / BlockFrames),
+      2, MaxQueueBlocks - 1);
     SetLength(Samples, BlockFrames * FInfo.Channels);
     HaveGeneration := False;
     WasPlaying := False;
@@ -398,7 +432,7 @@ begin
           Continue;
         end;
         // Queue length paces emulation; do not render music against wall time.
-        if Audio.QueueState.QueuedBlocks >= 4 then
+        if Audio.QueueState.QueuedBlocks >= QueueLimit then
         begin
           FWake.WaitFor(5);
           Continue;

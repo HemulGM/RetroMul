@@ -605,6 +605,7 @@
         <DCCReference Include="..\source\cores\a2600\A2600.AudioMachine.pas"/>
         <DCCReference Include="..\source\cores\a2600\A2600.Sound.TIA.pas"/>
         <DCCReference Include="..\source\cores\amiga\Amiga.AHX.pas"/>
+        <DCCReference Include="..\source\cores\amiga\Amiga.ProTracker.pas"/>
         <DCCReference Include="..\source\cores\dc\DC.AudioMachine.pas"/>
         <DCCReference Include="..\source\cores\dc\DC.CPU.ARM7.pas"/>
         <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.DSP.pas"/>

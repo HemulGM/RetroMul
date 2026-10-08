@@ -100,6 +100,7 @@ Adapted-component licenses: MIT emu2413 (`msx/LICENSE.emu2413.txt`), BSD-3-Claus
 
 # D15, MD1, SNG, and DebugAY
 
+
 `.md1` is Atari Music ProTracker with one digital-sample channel. The player automatically reads an adjacent file with the same basename and `.d15` extension, falling back to `.d8`. A missing sample bank rejects the file with an explanatory error. Both parts are retained in one memory snapshot: seeking, replay, and WAV export are independent of later file changes. The Pascal core and embedded MPT routine are in `source/cores/atari/Atari.Audio.MPT.pas`, registered in RetroMul and RetroTune. MPT support is based on ASAP and distributed under GPL-2.0-or-later along with the embedded 6502 routine; the license text is adjacent.
 
 `.d15` is a standalone MPT 4-bit sample bank rather than a complete tune. Each sample is available as a separate track. POKEY playback accounts for nibble order and the Atari vertical-blank pause. MD1 contains notes, instruments, tempo, and positions, which play together with the digital samples. Multiple song positions and module/bank relocation when overlapping the embedded player's memory are supported.
@@ -113,3 +114,50 @@ Adapted-component licenses: MIT emu2413 (`msx/LICENSE.emu2413.txt`), BSD-3-Claus
 Format descriptions: [ASAP](https://asap.sourceforge.net/formats.html), [DebugAY dumper](https://github.com/vitamin-caig/zxtune/blob/develop/src/devices/aym/dumper/debug.cpp), [SCPlayer E-Tracker detection](https://github.com/Deltafire/SCPlayer/blob/master/src/SCPlayer.cpp).
 
 `LegacyTailLifecycleTests` separately checks actual seeking for all four formats and an independent WAV-export thread with exact PCM, MD1 loading without a bank and its explanatory error, export after deleting both source files, and permitted D15 trailing padding. All checks run with Q+/R+ on Win32 and Win64.
+
+# IMF, DRO, HVL, XGM, and MOD
+
+
+| Format | Extensions | Supported variants |
+| --- | --- | --- |
+| AdLib IMF | `.imf` | Type 0 and type 1 register streams, OPL2 |
+| DOSBox RAW OPL | `.dro` | Versions 1.0 and 2.0, single/dual OPL2 and OPL3, including original v1 unescaped initialization writes |
+| HivelyTracker | `.hvl` | HVL 0/1, 4–16 voices, stereo, dual effects, ring modulation, and instrument performance lists |
+| Mega Drive XGM | `.xgm`, `.xgm2`, `.xgc` | XGM1 and XGM2, PAL/NTSC, YM2612, PSG, PCM, multiple tracks, packed XGM2, and compiled XGM2 without the file signature |
+| ProTracker / SoundTracker | `.mod` | 15/31 samples, standard four-channel signatures and numeric 1–32 channel signatures, sample loops, finetune, and tracker effects |
+
+All formats use Pascal engines and the existing audio chips, without external DLLs. They are registered in RetroTune's format list and open dialog and support reset, seeking, known duration, and WAV export. Playback stops after one traversal of the song; MOD pattern loops execute their prescribed repeats. The ProTracker core is also included in RetroMul; HVL extends the shared AHX engine.
+
+IMF has no timer-frequency field: playback currently uses 700 Hz. Files made for 280 or 560 Hz require a future frequency selector. DRO v0 and compressed/encoded DRO v2 streams are unsupported. MOD is a family of incompatible layouts: exotic signatures such as FEST, FA06, FLT8, CD81, and OKTA and packed modules are outside this implementation. MOD playback is not claimed to be bit-exact to Amiga hardware. `.xgc` support covers compiled XGM2; XGM1 compiled driver blobs and `.xgz` are not registered here.
+
+Format and command references: [SGDK XGM](https://github.com/Stephane-D/SGDK/blob/master/bin/xgm.txt), [SGDK XGM2](https://github.com/Stephane-D/SGDK/blob/master/bin/xgm2.txt), [libvgm DRO player](https://github.com/ValleyBell/libvgm/blob/master/player/droplayer.cpp), [HivelyTracker](https://github.com/pete-gordon/hivelytracker), and [ProTracker clone](https://github.com/8bitbubsy/pt2-clone). HivelyTracker and the ProTracker finetune table carry adjacent BSD-3-Clause license notices in `source/cores/amiga`.
+
+Checks: `codex-work/tools/CheckNewFormats.ps1 -Platform Win32` or `Win64`, with range and overflow checking; logs are in `codex-work/build/new-formats`. Synthetic fixtures and real HVL/MOD songs cover full playback, duration, reset, independence from render-block size, actual player seeking, and independent WAV export. Tests also cover 2816 malformed/truncated inputs, OPL stream equivalence, MOD pattern-loop duration, 4/8/16-channel HVL ring modulation, and SGDK-generated single/multitrack plain and packed XGM2 files. The synthetic XGM tone matches its equivalent VGM stream and SGDK conversions byte-for-byte. `CompareHVLReference.py` compares the first 20 seconds of ten real HVL songs with an independent C HivelyTracker build; all samples match exactly. Existing AHX lifecycle checks and both application builds pass on Win32 and Win64.
+
+# MIDI / General MIDI
+
+RetroTune registers `.mid`, `.midi`, `.rmi` (RIFF/RMID), and `.kar` (karaoke audio). SMF 0 and 1 merge all source tracks into one song; SMF 2 exposes each source track as a separate song. The Pascal parser supports four-byte variable-length quantities, running status across delta times and meta events, simultaneous events, tempo changes, PPQN, SMPTE 24/25/30 and 29.97 drop-frame timing, title and copyright metadata, and GM/GM2/GS/XG reset messages. Track chunks bound parsing; legacy complete chunks without End-of-Track and exporter footers are accepted. Incomplete events and corrupt headers/chunk lengths are rejected.
+
+Playback uses the shared `RetroTune.SoundFont` PCM synthesizer with the supplied GeneralUser GS bank by S. Christian Collins. Its own license and source/hash information are in `tune/soundfonts`. All three standard banks and their license notices are placed in the `sf2` directory beside the executable during builds. No platform MIDI service or external synthesis DLL is required. The default bank loads from that directory; the SoundFont button can also select an external SF2 file. The path is retained in `RetroTune.ini` in the user's home directory. Selecting another bank rebuilds the loaded MIDI from its in-memory file snapshot and restores its selected track, position and playback state; existing decoder instances retain their original immutable bank. Bank selection is disabled during WAV export.
+
+The synthesizer handles preset/instrument global and local zones, key/velocity layers, signed PCM16 samples, fractional playback with interpolation, sample loops, root keys and tuning, amplitude and modulation envelopes, modulation/vibrato LFOs, a resonant low-pass filter, stereo panning, exclusive percussion groups, and up to 256 sample voices. MIDI notes, note-on velocity zero, program/bank selection with GM fallback, volume, expression, pan, modulation, sustain, pitch bend, RPN pitch range/tuning, and all-notes/all-sounds/reset-controller messages are supported. Reset, seeking, visualization and WAV export use the normal PCM player.
+
+Limits: 16 MiB MIDI input, 256 source tracks, two million events per sequence, 24 hours per song, and 256 MiB SF2 input. Reported duration includes a fixed two-second release tail, after which playback/export ends. Compressed SF3, ROM samples, arbitrary SF2 modulator tables, chorus/reverb, polyphonic/channel pressure and vendor-specific GS/XG effect commands are not implemented. Karaoke lyrics are skipped. SoundFont rendering is not claimed to be bit-exact to FluidSynth or hardware.
+
+Checks: `codex-work/tools/CheckMIDI.ps1 -Platform Win32` or `Win64`; logs are in `codex-work/build/midi`. Independent synthetic fixtures verify tempo maps, format 2, all four SMPTE modes, RMID equivalence, a known SoundFont sample frequency, sustain, stereo, full EOF, reset, PCM independence from buffer size, actual player seeking, and sample-exact WAV output. All 128 GM programs and 47 standard percussion keys produce audio. Tests also exercise 512 malformed/mutated SF2 files and more than 1100 truncated/random MIDI inputs with range/overflow checking. The repository's MIDI collection provides 6027 successful parses and initial renders, including longer prefixes for selected files; 51 corrupt or over-limit inputs are rejected safely. `VerifyMidiTimings.py` compares 6005 song lengths against independent mido output to within one PCM frame; 22 files with invalid non-audio metadata are skipped by mido. `CheckMidiForm.ps1` verifies MIDI loading, controls and form rendering for Win32/Win64.
+
+References: [MIDI Association SMF specification](https://midi.org/standard-midi-files), [SoundFont 2.04 specification](https://www.synthfont.com/sfspec24.pdf), and [GeneralUser GS](https://github.com/mrbumpy409/GeneralUser-GS). TinySoundFont and mido are used only as independent research/test references and are not linked into RetroTune.
+
+## Standard SoundFont selection
+
+The SoundFont button opens a menu with three supplied banks: GeneralUser GS, TimGM6mb, and FluidR3 GM. The current choice is checked; Custom SF2 remains available. Standard bank IDs persist across launches and resolve to files in the executable's `sf2` directory, while custom banks retain their selected file path. Menu availability checks the corresponding SF2 files. Selection remains disabled during WAV export and reloads a loaded MIDI from its input snapshot while retaining its track, position and playing/paused/stopped/finished state.
+
+FluidR3 is supplied in two lossless package parts to keep individual repository files below 100 MiB; the build restores it as `sf2/FluidR3_GM.sf2`. The application reads plain SF2 files at runtime; no SoundFont resources or packed archives are linked into the executable. Exact sources, hashes, licenses and package format are documented in `tune/soundfonts/README.md`.
+
+`CheckStandardSoundFonts.ps1` verifies all three banks on Win32/Win64: audible and distinct PCM, the selected-bank path, sample-exact WAV export, PCM equivalence of packed and original FluidR3, and preservation of the active bank after an invalid selection. The form checks also verify the three enabled menu items, custom-file action, and a single active-bank checkmark.
+
+## Live audio buffering
+
+The PCM player queues about 120–140 ms of audio at standard sample rates (1024-frame blocks; queue depth derives from sample rate). This replaces the previous 46 ms reserve at 44.1 kHz, which could drain during brief scheduler or driver delays even when MIDI synthesis was faster than real time. The decoder PCM and WAV export are unchanged.
+
+The MIDI audio audit wraps the real Windows backend and runs the FMX form with HOOKSG.MID, measuring empty queues and dropped frames under injected 75 ms delivery delays. Before the change it reproduced 10 underruns in 10 seconds. Source and logs are in `codex-work/tests/retrotune/audio-audit` and `codex-work/build/midi-crackle`.

@@ -7,7 +7,8 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, FMX.StdCtrls,
   FMX.Filter.Effects, FMX.ListBox, FMX.Controls.Presentation, RetroTune.Decoder,
   RetroTune.Player, RetroTune.Spectrum, RetroTune.Export.WAV, FMX.Layouts,
-  FMX.Objects, RetroTune.InfoForm, RetroTune.FormatsForm;
+  FMX.Objects, RetroTune.InfoForm, RetroTune.FormatsForm, FMX.Menus,
+  RetroTune.SoundFontCatalog;
 
 type
   TFormMain = class(TForm)
@@ -80,6 +81,9 @@ type
     procedure PositionChange(Sender: TObject);
     procedure PositionTracking(Sender: TObject);
   private
+    FSoundFontButton: TButton;
+    FSoundFontMenu: TPopupMenu;
+    FStandardSoundFonts: TArray<TStandardSoundFont>;
     FPlayer: TTunePlayer;
     FExport: TTuneWavExport;
     FInfoWindow: TTuneInfoForm;
@@ -95,9 +99,14 @@ type
     FPeaks: TTuneSpectrum;
     FPeakHold: array[0..TuneSpectrumBands - 1] of Integer;
     FHistory: TBitmap;
+    procedure SoundFontClick(Sender: TObject);
+    procedure SoundFontChoice(Sender: TObject);
+    procedure CustomSoundFontClick(Sender: TObject);
+    procedure ApplySoundFont(const Path: string);
+    procedure UpdateSoundFontMenu;
     procedure UpdateSpectrum;
     procedure ResetSpectrum;
-    procedure LoadTune(const Path: string);
+    procedure LoadTune(const Path: string; UseSnapshot: Boolean = False);
     procedure UpdateExport;
   public
     destructor Destroy; override;
@@ -111,14 +120,17 @@ function TuneLanguageForLocale(const LocaleID: string): string;
 implementation
 
 uses
-  System.IOUtils, System.Math, System.StrUtils, FMX.DialogService.Sync, FMX.Platform,
-  RetroTune.Decoder.TIA, RetroTune.Decoder.KSS, RetroTune.Decoder.HES, RetroTune.Decoder.AHX, RetroTune.Decoder.DSF, RetroTune.Decoder.TRDOS,
-  RetroTune.Decoder.NSF, RetroTune.Decoder.NSFe, RetroTune.Decoder.SPC,
-  RetroTune.Decoder.GBS, RetroTune.Decoder.VGM, RetroTune.Decoder.GYM,
-  RetroTune.Decoder.PT3, RetroTune.Decoder.ZXTrackers, RetroTune.Decoder.AYDumps,
+  System.IOUtils, System.Math, System.StrUtils, FMX.DialogService.Sync,
+  FMX.Platform, RetroTune.Decoder.TIA, RetroTune.Decoder.KSS,
+  RetroTune.Decoder.HES, RetroTune.Decoder.AHX, RetroTune.Decoder.DSF,
+  RetroTune.Decoder.TRDOS, RetroTune.Decoder.NSF, RetroTune.Decoder.NSFe,
+  RetroTune.Decoder.SPC, RetroTune.Decoder.GBS, RetroTune.Decoder.VGM,
+  RetroTune.Decoder.GYM, RetroTune.Decoder.OPLDumps, RetroTune.Decoder.XGM,
+  RetroTune.Decoder.ProTracker, RetroTune.Decoder.PT3,
+  RetroTune.Decoder.ZXTrackers, RetroTune.Decoder.AYDumps,
   RetroTune.Decoder.Atari, RetroTune.Decoder.TurboFM,
   RetroTune.Decoder.Containers, RetroTune.Decoder.Digital, RetroTune.Decoder.SAA,
-  RetroTune.Decoder.WAV;
+  RetroTune.Decoder.WAV, RetroTune.Decoder.MIDI, System.IniFiles;
 
 {$R *.fmx}
 
@@ -160,6 +172,67 @@ begin
   SaveDialog.Title := Translate('Export WAV');
   FHistory := TBitmap.Create(TuneSpectrumBands, 128);
   ResetSpectrum;
+  FSoundFontButton := TButton.Create(Self);
+  FSoundFontButton.Name := 'ButtonSoundFont';
+  FSoundFontButton.Parent := LayoutFooter;
+  FSoundFontButton.Align := TAlignLayout.Right;
+  FSoundFontButton.Width := 120;
+  FSoundFontButton.Margins.Left := 12;
+  FSoundFontButton.Margins.Top := 6;
+  FSoundFontButton.Margins.Bottom := 6;
+  FSoundFontButton.Text := 'SoundFont';
+  FSoundFontButton.Hint := 'MIDI SoundFont (.sf2)';
+  FSoundFontButton.OnClick := SoundFontClick;
+  FSoundFontMenu := TPopupMenu.Create(Self);
+  FSoundFontMenu.Parent := Self;
+  FSoundFontMenu.Name := 'MenuSoundFonts';
+  FStandardSoundFonts := StandardSoundFonts(ExtractFilePath(ParamStr(0)));
+  for var Index := 0 to High(FStandardSoundFonts) do
+  begin
+    var Item := TMenuItem.Create(Self);
+    Item.Enabled := True;
+    Item.Name := 'SoundFontPreset' + Index.ToString;
+    Item.Text := FStandardSoundFonts[Index].Name;
+    Item.AutoTranslate := False;
+    Item.Tag := Index;
+    Item.RadioItem := True;
+    Item.AutoCheck := False;
+    Item.OnClick := SoundFontChoice;
+    FSoundFontMenu.AddObject(Item);
+  end;
+  var Separator := TMenuItem.Create(Self);
+  Separator.Text := '-';
+  FSoundFontMenu.AddObject(Separator);
+  var CustomItem := TMenuItem.Create(Self);
+  CustomItem.Name := 'SoundFontCustom';
+  if Lang.Lang = 'ru' then
+    CustomItem.Text := 'Свой SF2…'
+  else
+    CustomItem.Text := 'Custom SF2…';
+  CustomItem.AutoTranslate := False;
+  CustomItem.OnClick := CustomSoundFontClick;
+  FSoundFontMenu.AddObject(CustomItem);
+  var Settings := TIniFile.Create(TPath.Combine(TPath.GetHomePath, 'RetroTune.ini'));
+  try
+    var BankPath := Settings.ReadString('MIDI', 'SoundFont', '');
+    var PresetID := Settings.ReadString('MIDI', 'SoundFontPreset', '');
+    for var Font in FStandardSoundFonts do
+      if Font.ID = PresetID then
+      begin
+        BankPath := Font.Path;
+        Break;
+      end;
+    if BankPath <> '' then
+    try
+      SetMidiSoundFont(BankPath);
+    except
+      on E: Exception do
+        LabelStatus.Text := E.Message;
+    end;
+  finally
+    Settings.Free;
+  end;
+  UpdateSoundFontMenu;
   OpenDialog.Filter := TTuneDecoders.DialogFilter.Replace('Supported formats|',
     Translate('Supported formats') + '|');
   TimerTick(nil);
@@ -180,18 +253,26 @@ begin
   inherited;
 end;
 
-procedure TFormMain.LoadTune(const Path: string);
+procedure TFormMain.LoadTune(const Path: string; UseSnapshot: Boolean);
 var
   Decoder: ITuneDecoder;
   Info: TTuneInfo;
   Data: TBytes;
   I: Integer;
+  PreviousPlayback: TTunePlayerStatus;
+  RestorePosition: Boolean;
 begin
   try
-    Data := TTuneDecoders.ReadData(Path);
+    RestorePosition := UseSnapshot and (FPlayer <> nil);
+    if UseSnapshot then
+      Data := Copy(FSourceData)
+    else
+      Data := TTuneDecoders.ReadData(Path);
     Decoder := TTuneDecoders.OpenData(Data, ExtractFileExt(Path));
     Info := Decoder.GetInfo;
     // Parse first, so an invalid file leaves the currently loaded tune intact.
+    if RestorePosition then
+      PreviousPlayback := FPlayer.Status;
     FreeAndNil(FPlayer);
     FPlayer := TTunePlayer.Create(Decoder);
     FInfo := Info;
@@ -220,16 +301,101 @@ begin
           ComboTracks.Items.Add(Format(Translate('Track %d'), [I]));
       for I := 0 to ComboTracks.Items.Count - 1 do
         ComboTracks.ListItems[I].AutoTranslate := False;
-      ComboTracks.ItemIndex := FInfo.DefaultTrack;
+      if RestorePosition then
+        ComboTracks.ItemIndex := PreviousPlayback.Track
+      else
+        ComboTracks.ItemIndex := FInfo.DefaultTrack;
     finally
       FUpdating := False;
     end;
     FPlayer.SetVolume(Round(TrackBarVolume.Value));
-    FPlayer.Play;
+    if RestorePosition then
+      FPlayer.RestorePlayback(PreviousPlayback)
+    else
+      FPlayer.Play;
     TimerTick(nil);
   except
     on E: Exception do
       ShowMessage(Translate('Could not open the file: ') + Translate(E.Message));
+  end;
+end;
+
+procedure TFormMain.UpdateSoundFontMenu;
+begin
+  var ActivePath := MidiSoundFontPath;
+  var StandardSelected := False;
+  for var Index := 0 to High(FStandardSoundFonts) do
+  begin
+    var Item := TMenuItem(FindComponent('SoundFontPreset' + Index.ToString));
+    Item.Enabled := StandardSoundFontAvailable(FStandardSoundFonts[Index].Path);
+    Item.IsChecked := SameFileName(ActivePath, FStandardSoundFonts[Index].Path) or
+      ((ActivePath = '') and not StandardSelected and Item.Enabled);
+    StandardSelected := StandardSelected or Item.IsChecked;
+  end;
+  TMenuItem(FindComponent('SoundFontCustom')).IsChecked := (ActivePath <> '') and not StandardSelected;
+  FSoundFontButton.Hint := MidiSoundFontName;
+end;
+
+procedure TFormMain.SoundFontClick(Sender: TObject);
+begin
+  if FExport <> nil then
+    Exit;
+  UpdateSoundFontMenu;
+  var Point := FSoundFontButton.LocalToScreen(PointF(0, FSoundFontButton.Height));
+  FSoundFontMenu.Popup(Point.X, Point.Y);
+end;
+
+procedure TFormMain.ApplySoundFont(const Path: string);
+begin
+  if FExport <> nil then
+    Exit;
+  var PreviousCursor := Cursor;
+  Cursor := crHourGlass;
+  try
+    SetMidiSoundFont(Path);
+    UpdateSoundFontMenu;
+    if SameText(FInfo.FormatName, 'MIDI') then
+      LoadTune(FSourcePath, True);
+    var Settings := TIniFile.Create(TPath.Combine(TPath.GetHomePath, 'RetroTune.ini'));
+    try
+      var PresetID := '';
+      for var Font in FStandardSoundFonts do
+        if SameText(MidiSoundFontPath, Font.Path) then
+        begin
+          PresetID := Font.ID;
+          Break;
+        end;
+      Settings.WriteString('MIDI', 'SoundFont', MidiSoundFontPath);
+      Settings.WriteString('MIDI', 'SoundFontPreset', PresetID);
+    finally
+      Settings.Free;
+    end;
+  except
+    on E: Exception do
+      ShowMessage(E.Message);
+  end;
+  Cursor := PreviousCursor;
+end;
+
+procedure TFormMain.SoundFontChoice(Sender: TObject);
+begin
+  var Index := TMenuItem(Sender).Tag;
+  if (Index < 0) or (Index >= Length(FStandardSoundFonts)) then
+    Exit;
+  ApplySoundFont(FStandardSoundFonts[Index].Path);
+end;
+
+procedure TFormMain.CustomSoundFontClick(Sender: TObject);
+begin
+  if FExport <> nil then
+    Exit;
+  var Dialog := TOpenDialog.Create(nil);
+  try
+    Dialog.Filter := 'SoundFont2|*.sf2';
+    if Dialog.Execute then
+      ApplySoundFont(Dialog.FileName);
+  finally
+    Dialog.Free;
   end;
 end;
 
@@ -338,6 +504,7 @@ procedure TFormMain.UpdateExport;
 var
   State: TTuneExportStatus;
 begin
+  FSoundFontButton.Enabled := FExport = nil;
   ButtonOpen.Enabled := FExport = nil;
   ButtonCloseExport.Enabled := FExport = nil;
   ButtonExport.Enabled := (FPlayer <> nil) or (FExport <> nil);

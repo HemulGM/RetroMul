@@ -23,11 +23,11 @@ type
   end;
 
   TAHXStep = record
-    Note, Instrument, FX, Param: Integer;
+    Note, Instrument, FX, Param, FXb, Paramb: Integer;
   end;
 
   TAHXPosition = record
-    Track, Transpose: array[0..3] of Integer;
+    Track, Transpose: array[0..15] of Integer;
   end;
 
   TAHXVoice = record
@@ -39,11 +39,12 @@ type
     HardCut, HardRelease, HardReleaseFrames, CutOn, CutWait, DelayOn, DelayWait: Integer;
     PerfCurrent, PerfSpeed, PerfWait, SquarePos, SquareOn, SquareInit, SquareWait, SquareSign, SquareIn, IgnoreSquare: Integer;
     SquareLower, SquareUpper, FilterOn, FilterInit, FilterWait, FilterSign, FilterIn, FilterPos, IgnoreFilter: Integer;
-    FilterLower, FilterUpper, FilterSpeed, Pan: Integer;
+    FilterLower, FilterUpper, FilterSpeed, Pan, SetPan, OverrideTranspose: Integer;
+    RingNote, RingWave, RingFixed, RingPhase, RingDelta: Integer;
     NoiseRandom: Cardinal;
     Phase, Delta: Integer;
     Buffer: array[0..639] of ShortInt;
-    NewWave, PlantPeriod: Boolean;
+    NewWave, PlantPeriod, RingPlantPeriod: Boolean;
   end;
 
   TAHX = class
@@ -57,8 +58,10 @@ type
     FInstruments: TArray<TAHXInstrument>;
     FSubsongs: TArray<Integer>;
     FTracks: array[0..255, 0..63] of TAHXStep;
-    FVoices: array[0..3] of TAHXVoice;
+    FVoices: array[0..15] of TAHXVoice;
     FTitle: string;
+    FHVL: Boolean;
+    FChannels, FVersion, FGain, FPanLeft, FPanRight: Integer;
     FLength, FRestart, FSpeed, FPosition, FRow, FTempo, FWait, FJump, FJumpRow, FSamplesLeft: Integer;
     FNewPosition, FPatternBreak, FEnded: Boolean;
     procedure ProcessStep(Channel: Integer);
@@ -73,6 +76,8 @@ type
     function Sample(out Left, Right: SmallInt): Boolean;
     function Title: string;
     function TrackCount: Integer;
+    function ChannelCount: Integer;
+    function IsHVL: Boolean;
   end;
 
 implementation
@@ -81,6 +86,8 @@ uses
   System.Math;
 
 const
+  HVLPanLeft: array[0..4] of Integer = (128, 96, 64, 32, 0);
+  HVLPanRight: array[0..4] of Integer = (128, 160, 193, 225, 255);
   WaveBlock = 6520;
   TriangleBase = 202120;
   SawBase = 202372;
@@ -558,6 +565,13 @@ begin
   end;
 end;
 
+function Sar64(Value: Int64; Bits: Integer): Int64;
+begin
+  Result := Value div (Int64(1) shl Bits);
+  if (Value < 0) and (Value mod (Int64(1) shl Bits) <> 0) then
+    Dec(Result);
+end;
+
 constructor TAHX.Create(const Data: TBytes);
 var
   Pos: Integer;
@@ -578,8 +592,27 @@ var
 
 begin
   inherited Create;
-  if (Length(Data) < 14) or (TEncoding.ASCII.GetString(Data, 0, 3) <> 'THX') or (Data[3] > 1) then
+  if Length(Data) < 14 then
+    raise EArgumentException.Create('Truncated AHX/HVL');
+  FHVL := TEncoding.ASCII.GetString(Data, 0, 3) = 'HVL';
+  if ((not FHVL) and (TEncoding.ASCII.GetString(Data, 0, 3) <> 'THX')) or (Data[3] > 1) then
     raise EArgumentException.Create('Invalid AHX header');
+  FChannels := 4;
+  FGain := 194;
+  FPanLeft := 64;
+  FPanRight := 193;
+  FVersion := Data[3];
+  if FHVL then
+  begin
+    if Length(Data) < 16 then
+      raise EArgumentException.Create('Truncated HVL');
+    FChannels := (Data[8] shr 2) + 4;
+    if (FChannels > 16) or (Data[15] > 4) then
+      raise EArgumentException.Create('Invalid HVL channel count/stereo');
+    FGain := Integer(Data[14]) * 256 div 100;
+    FPanLeft := HVLPanLeft[Data[15]];
+    FPanRight := HVLPanRight[Data[15]];
+  end;
   var NumPos := (Integer(Data[6] and 15) * 256) + Data[7];
   FLength := Data[10];
   var NumTracks := Data[11];
@@ -588,6 +621,8 @@ begin
     raise EArgumentException.Create('Invalid AHX dimensions');
   FSpeed := ((Data[6] shr 5) and 3) + 1;
   FRestart := Integer(Data[8]) * 256 + Data[9];
+  if FHVL then
+    FRestart := Integer(Data[8] and 3) * 256 + Data[9];
   if FRestart >= NumPos then
     FRestart := NumPos - 1;
   var TextPos := Integer(Data[4]) * 256 + Data[5];
@@ -598,6 +633,8 @@ begin
     Inc(EndPos);
   FTitle := TEncoding.ASCII.GetString(Data, TextPos, EndPos - TextPos);
   Pos := 14;
+  if FHVL then
+    Pos := 16;
   SetLength(FSubsongs, Integer(Data[13]) + 1);
   FSubsongs[0] := 0;
   for var I := 1 to High(FSubsongs) do
@@ -608,7 +645,7 @@ begin
   end;
   SetLength(FPositions, NumPos);
   for var I := 0 to NumPos - 1 do
-    for var C := 0 to 3 do
+    for var C := 0 to FChannels - 1 do
     begin
       var T := B;
       if T > NumTracks then
@@ -626,14 +663,30 @@ begin
       Continue;
     for var Row := 0 to FLength - 1 do
     begin
+      var S := Default(TAHXStep);
       var B0 := B;
-      var B1 := B;
-      var B2 := B;
-      var S: TAHXStep;
-      S.Note := (B0 shr 2) and 63;
-      S.Instrument := ((B0 and 3) shl 4) or (B1 shr 4);
-      S.FX := B1 and 15;
-      S.Param := B2;
+      if FHVL then
+      begin
+        if B0 <> $3F then
+        begin
+          S.Note := B0;
+          S.Instrument := B;
+          var Effects := B;
+          S.FX := Effects shr 4;
+          S.FXb := Effects and 15;
+          S.Param := B;
+          S.Paramb := B;
+        end;
+      end
+      else
+      begin
+        var B1 := B;
+        var B2 := B;
+        S.Note := (B0 shr 2) and 63;
+        S.Instrument := ((B0 and 3) shl 4) or (B1 shr 4);
+        S.FX := B1 and 15;
+        S.Param := B2;
+      end;
       if (S.Note > 60) or (S.Instrument > NumIns) then
         raise EArgumentException.Create('Invalid AHX note/instrument');
       FTracks[T, Row] := S;
@@ -677,22 +730,35 @@ begin
     begin
       var B0 := B;
       var B1 := B;
-      var P: TAHXPerf;
-      P.Wave := ((B0 shl 1) and 6) or (B1 shr 7);
-      P.FixedNote := (B1 shr 6) and 1;
-      P.Note := B1 and 63;
+      var P := Default(TAHXPerf);
+      if FHVL then
+      begin
+        var B2 := B;
+        P.Wave := B1 and 7;
+        P.FixedNote := (B2 shr 6) and 1;
+        P.Note := B2 and 63;
+        P.FX[0] := B0 and 15;
+        P.FX[1] := (B1 shr 3) and 15;
+      end
+      else
+      begin
+        P.Wave := ((B0 shl 1) and 6) or (B1 shr 7);
+        P.FixedNote := (B1 shr 6) and 1;
+        P.Note := B1 and 63;
+        P.FX[0] := (B0 shr 2) and 7;
+        P.FX[1] := (B0 shr 5) and 7;
+        for var K := 0 to 1 do
+          if P.FX[K] = 6 then
+            P.FX[K] := 12
+          else if P.FX[K] = 7 then
+            P.FX[K] := 15;
+      end;
       if (P.Wave > 4) or (P.Note > 60) then
-        raise EArgumentException.Create('Invalid AHX performance entry');
-      P.FX[0] := (B0 shr 2) and 7;
-      P.FX[1] := (B0 shr 5) and 7;
+        raise EArgumentException.Create('Invalid AHX/HVL performance entry');
       for var K := 0 to 1 do
       begin
-        if P.FX[K] = 6 then
-          P.FX[K] := 12
-        else if P.FX[K] = 7 then
-          P.FX[K] := 15;
         P.Param[K] := B;
-        if (Data[3] = 0) and (P.FX[K] = 4) and (P.Param[K] and $F0 <> 0) then
+        if (not FHVL) and (Data[3] = 0) and (P.FX[K] = 4) and (P.Param[K] and $F0 <> 0) then
           P.Param[K] := P.Param[K] and 15;
       end;
       V.Perf[J] := P;
@@ -709,6 +775,16 @@ begin
   Result := FTitle;
 end;
 
+function TAHX.ChannelCount: Integer;
+begin
+  Result := FChannels;
+end;
+
+function TAHX.IsHVL: Boolean;
+begin
+  Result := FHVL;
+end;
+
 function TAHX.TrackCount: Integer;
 begin
   Result := Length(FSubsongs);
@@ -719,15 +795,17 @@ begin
   if (Subsong < 0) or (Subsong >= Length(FSubsongs)) then
     raise EArgumentOutOfRangeException.Create('AHX subsong');
   FillChar(FVoices, SizeOf(FVoices), 0);
-  for var C := 0 to 3 do
+  for var C := 0 to FChannels - 1 do
   begin
     FVoices[C].MasterVolume := 64;
     FVoices[C].PerfVolume := 64;
     FVoices[C].NoiseRandom := $280;
     FVoices[C].Delta := 1;
-    FVoices[C].Pan := 64;
-    if C in [1, 2] then
-      FVoices[C].Pan := 193;
+    FVoices[C].Pan := FPanLeft;
+    if C mod 4 in [1, 2] then
+      FVoices[C].Pan := FPanRight;
+    FVoices[C].SetPan := FVoices[C].Pan;
+    FVoices[C].OverrideTranspose := 1000;
   end;
   FPosition := FSubsongs[Subsong];
   FRow := 0;
@@ -757,64 +835,189 @@ begin
 end;
 
 procedure TAHX.ProcessStep(Channel: Integer);
-begin
-  var V := FVoices[Channel];
-  V.VolumeUp := 0;
-  V.VolumeDown := 0;
-  var S := FTracks[FPositions[FPosition].Track[Channel], FRow];
-  var Note := S.Note;
-  if (S.FX = 14) and (S.Param and $F0 = $D0) then
+var
+  V: TAHXVoice;
+  S, Step: TAHXStep;
+  Note: Integer;
+
+  procedure Phase1;
   begin
-    if V.DelayOn <> 0 then
-      V.DelayOn := 0
-    else if (S.Param and 15 < FTempo) and (S.Param and 15 <> 0) then
-    begin
-      V.DelayWait := S.Param and 15;
-      V.DelayOn := 1;
-      FVoices[Channel] := V;
-      Exit;
+    case S.FX of
+      0:
+        if (S.Param and 15 > 0) and (S.Param and 15 <= 9) then
+          FJump := S.Param and 15;
+      7:
+        if FHVL then
+        begin
+          V.Pan := (S.Param + 128) and 255;
+          V.SetPan := V.Pan;
+        end;
+      5, 10:
+        begin
+          V.VolumeDown := S.Param and 15;
+          V.VolumeUp := S.Param shr 4;
+        end;
+      11:
+        begin
+          FJump := FJump * 100 + (S.Param and 15) + (S.Param shr 4) * 10;
+          FPatternBreak := True;
+          if FJump <= FPosition then
+            FEnded := True;
+        end;
+      13:
+        begin
+          FJump := FPosition + 1;
+          FJumpRow := (S.Param and 15) + (S.Param shr 4) * 10;
+          if FJumpRow >= FLength then
+            FJumpRow := 0;
+          FPatternBreak := True;
+        end;
+      14:
+        if (S.Param shr 4 = 12) and (S.Param and 15 < FTempo) and (S.Param and 15 <> 0) then
+        begin
+          V.CutWait := S.Param and 15;
+          V.CutOn := 1;
+          V.HardRelease := 0;
+        end;
+      15:
+        begin
+          FTempo := S.Param;
+          if FTempo = 0 then
+            FEnded := True;
+        end;
     end;
   end;
-  case S.FX of
-    0:
-      if (S.Param and 15 > 0) and (S.Param and 15 <= 9) then
-        FJump := S.Param and 15;
-    5, 10:
+
+  procedure Phase2;
+  begin
+    if S.FX = 9 then
+    begin
+      V.SquarePos := S.Param shr (5 - V.WaveLength);
+      V.IgnoreSquare := 1;
+    end;
+    if S.FX in [3, 5] then
+    begin
+      if (S.FX = 3) and (S.Param <> 0) then
+        V.SlideSpeed := S.Param;
+      if Note <> 0 then
       begin
-        V.VolumeDown := S.Param and 15;
-        V.VolumeUp := S.Param shr 4;
+        var Diff := Periods[V.TrackNote] - Periods[Note];
+        if Diff + V.SlidePeriod <> 0 then
+          V.SlideLimit := -Diff;
       end;
-    11:
-      begin
-        FJump := FJump * 100 + (S.Param and 15) + (S.Param shr 4) * 10;
-        FPatternBreak := True;
-        if FJump <= FPosition then
-          FEnded := True;
-      end;
-    13:
-      begin
-        FJump := FPosition + 1;
-        FJumpRow := (S.Param and 15) + (S.Param shr 4) * 10;
-        if FJumpRow >= FLength then
-          FJumpRow := 0;
-        FPatternBreak := True;
-      end;
-    14:
-      if (S.Param shr 4 = 12) and (S.Param and 15 < FTempo) and (S.Param and 15 <> 0) then
-      begin
-        V.CutWait := S.Param and 15;
-        V.CutOn := 1;
-        V.HardRelease := 0;
-      end;
-    15:
-      begin
-        FTempo := S.Param;
-        if FTempo = 0 then
-          FEnded := True;
-      end;
+      V.SlideOn := 1;
+      V.SlideLimited := 1;
+      Note := 0;
+    end;
   end;
+
+  procedure Phase3;
+  begin
+    case S.FX of
+      1:
+        begin
+          V.SlideSpeed := -S.Param;
+          V.SlideOn := 1;
+          V.SlideLimited := 0;
+        end;
+      2:
+        begin
+          V.SlideSpeed := S.Param;
+          V.SlideOn := 1;
+          V.SlideLimited := 0;
+        end;
+      4:
+        if (S.Param > 0) and (S.Param < 64) then
+          V.IgnoreFilter := S.Param
+        else if (S.Param > 64) and (S.Param < 128) then
+          V.FilterPos := S.Param - 64;
+      12:
+        if S.Param <= 64 then
+          V.Volume := S.Param
+        else if (S.Param >= 80) and (S.Param <= 144) then
+        begin
+          for var C := 0 to FChannels - 1 do
+            FVoices[C].MasterVolume := S.Param - 80;
+          V.MasterVolume := S.Param - 80;
+        end
+        else if (S.Param >= 160) and (S.Param <= 224) then
+          V.MasterVolume := S.Param - 160;
+      14:
+        case S.Param shr 4 of
+          1:
+            begin
+              Dec(V.SlidePeriod, S.Param and 15);
+              V.PlantPeriod := True;
+            end;
+          2:
+            begin
+              Inc(V.SlidePeriod, S.Param and 15);
+              V.PlantPeriod := True;
+            end;
+          15:
+            if FHVL and (FVersion >= 1) and (S.Param and 15 = 1) then
+              V.OverrideTranspose := V.Transpose;
+          4:
+            V.VibratoDepth := S.Param and 15;
+          10:
+            V.Volume := Min(64, V.Volume + (S.Param and 15));
+          11:
+            V.Volume := Max(0, V.Volume - (S.Param and 15));
+        end;
+    end;
+  end;
+
+begin
+  V := FVoices[Channel];
+  V.VolumeUp := 0;
+  V.VolumeDown := 0;
+  Step := FTracks[FPositions[FPosition].Track[Channel], FRow];
+  S := Step;
+  Note := Step.Note;
+  for var K := 0 to Ord(FHVL) do
+  begin
+    var FX := Step.FX;
+    var Param := Step.Param;
+    if K = 1 then
+    begin
+      FX := Step.FXb;
+      Param := Step.Paramb;
+    end;
+    if (FX = 14) and (Param and $F0 = $D0) then
+    begin
+      if V.DelayOn <> 0 then
+      begin
+        V.DelayOn := 0;
+        Break;
+      end
+      else if (Param and 15 < FTempo) and (Param and 15 <> 0) then
+      begin
+        V.DelayWait := Param and 15;
+        V.DelayOn := 1;
+        FVoices[Channel] := V;
+        Exit;
+      end;
+    end;
+  end;
+  if Note <> 0 then
+    V.OverrideTranspose := 1000;
+  Phase1;
+  if FHVL then
+  begin
+    S.FX := Step.FXb;
+    S.Param := Step.Paramb;
+    Phase1;
+  end;
+  S := Step;
   if S.Instrument <> 0 then
   begin
+    if FHVL then
+    begin
+      V.Pan := V.SetPan;
+      V.RingNote := 0;
+      V.RingPhase := 0;
+      V.RingPlantPeriod := False;
+    end;
     var I := FInstruments[S.Instrument];
     V.Instrument := S.Instrument;
     V.SlideSpeed := 0;
@@ -864,78 +1067,25 @@ begin
     V.PerfSpeed := I.PerfSpeed;
   end;
   V.SlideOn := 0;
-  if S.FX = 9 then
+  Phase2;
+  if FHVL then
   begin
-    V.SquarePos := S.Param shr (5 - V.WaveLength);
-    V.IgnoreSquare := 1;
-  end;
-  if S.FX in [3, 5] then
-  begin
-    if (S.FX = 3) and (S.Param <> 0) then
-      V.SlideSpeed := S.Param;
-    if Note <> 0 then
-    begin
-      var Diff := Periods[V.TrackNote] - Periods[Note];
-      if Diff + V.SlidePeriod <> 0 then
-        V.SlideLimit := -Diff;
-    end;
-    V.SlideOn := 1;
-    V.SlideLimited := 1;
-    Note := 0;
+    S.FX := Step.FXb;
+    S.Param := Step.Paramb;
+    Phase2;
   end;
   if Note <> 0 then
   begin
     V.TrackNote := Note;
     V.PlantPeriod := True;
   end;
-  case S.FX of
-    1:
-      begin
-        V.SlideSpeed := -S.Param;
-        V.SlideOn := 1;
-        V.SlideLimited := 0;
-      end;
-    2:
-      begin
-        V.SlideSpeed := S.Param;
-        V.SlideOn := 1;
-        V.SlideLimited := 0;
-      end;
-    4:
-      if (S.Param > 0) and (S.Param < 64) then
-        V.IgnoreFilter := S.Param
-      else if (S.Param > 64) and (S.Param < 128) then
-        V.FilterPos := S.Param - 64;
-    12:
-      if S.Param <= 64 then
-        V.Volume := S.Param
-      else if (S.Param >= 80) and (S.Param <= 144) then
-      begin
-        for var C := 0 to 3 do
-          FVoices[C].MasterVolume := S.Param - 80;
-        V.MasterVolume := S.Param - 80;
-      end
-      else if (S.Param >= 160) and (S.Param <= 224) then
-        V.MasterVolume := S.Param - 160;
-    14:
-      case S.Param shr 4 of
-        1:
-          begin
-            Dec(V.SlidePeriod, S.Param and 15);
-            V.PlantPeriod := True;
-          end;
-        2:
-          begin
-            Inc(V.SlidePeriod, S.Param and 15);
-            V.PlantPeriod := True;
-          end;
-        4:
-          V.VibratoDepth := S.Param and 15;
-        10:
-          V.Volume := Min(64, V.Volume + (S.Param and 15));
-        11:
-          V.Volume := Max(0, V.Volume - (S.Param and 15));
-      end;
+  S := Step;
+  Phase3;
+  if FHVL then
+  begin
+    S.FX := Step.FXb;
+    S.Param := Step.Paramb;
+    Phase3;
   end;
   FVoices[Channel] := V;
 end;
@@ -989,6 +1139,26 @@ begin
             V.FilterSign := -1;
         end;
       end;
+    7, 8:
+      if FHVL then
+      begin
+        V.RingWave := FX - 7;
+        V.RingNote := 0;
+        if (Param >= 1) and (Param <= 60) then
+        begin
+          V.RingNote := Param;
+          V.RingFixed := 1;
+        end
+        else if (Param >= 129) and (Param <= 188) then
+        begin
+          V.RingNote := Param - 128;
+          V.RingFixed := 0;
+        end;
+        V.RingPlantPeriod := V.RingNote <> 0;
+      end;
+    9:
+      if FHVL then
+        V.Pan := (Param + 128) and 255;
     5:
       V.PerfCurrent := Param;
     12:
@@ -1258,9 +1428,26 @@ begin
         V.Buffer[K] := FWaves[Base + K mod N];
     end;
   end;
+  var Transpose := V.Transpose;
+  if FHVL and (V.OverrideTranspose <> 1000) then
+    Transpose := V.OverrideTranspose;
+  if (V.RingNote <> 0) and V.RingPlantPeriod then
+  begin
+    var RingNote := V.RingNote;
+    if V.RingFixed = 0 then
+      Inc(RingNote, Transpose + V.TrackNote - 1);
+    var RingPeriod := Periods[EnsureRange(RingNote, 0, 60)];
+    if V.RingFixed = 0 then
+      Inc(RingPeriod, V.SlidePeriod);
+    Inc(RingPeriod, V.PerfSlidePeriod + V.VibratoPeriod);
+    RingPeriod := EnsureRange(RingPeriod, $71, $D60);
+    var RingFreq: Single := 3546895.0 * 65536 / RingPeriod;
+    V.RingDelta := Max(1, Trunc(RingFreq / 44100.0));
+    V.RingPlantPeriod := False;
+  end;
   var Note := V.InstrNote;
   if V.FixedNote = 0 then
-    Inc(Note, V.Transpose + V.TrackNote - 1);
+    Inc(Note, Transpose + V.TrackNote - 1);
   V.AudioPeriod := Periods[EnsureRange(Note, 0, 60)];
   if V.FixedNote = 0 then
     Inc(V.AudioPeriod, V.SlidePeriod);
@@ -1283,7 +1470,7 @@ begin
     if FNewPosition then
     begin
       var Next := (FPosition + 1) mod Length(FPositions);
-      for var C := 0 to 3 do
+      for var C := 0 to FChannels - 1 do
       begin
         FVoices[C].Track := FPositions[FPosition].Track[C];
         FVoices[C].NextTrack := FPositions[Next].Track[C];
@@ -1291,11 +1478,11 @@ begin
       end;
       FNewPosition := False;
     end;
-    for var C := 0 to 3 do
+    for var C := 0 to FChannels - 1 do
       ProcessStep(C);
     FWait := Max(1, FTempo);
   end;
-  for var C := 0 to 3 do
+  for var C := 0 to FChannels - 1 do
     ProcessVoice(C);
   Dec(FWait);
   if FWait = 0 then
@@ -1339,15 +1526,30 @@ begin
   end;
   var L := 0;
   var R := 0;
-  for var C := 0 to 3 do
+  for var C := 0 to FChannels - 1 do
   begin
-    var V := Integer(FVoices[C].Buffer[FVoices[C].Phase shr 16]) * FVoices[C].AudioVolume;
-    Inc(L, Sar(V * FPanL[FVoices[C].Pan], 7));
+    var Wave := Integer(FVoices[C].Buffer[FVoices[C].Phase shr 16]);
+    if FVoices[C].RingNote <> 0 then
+    begin
+      var Base := TriangleBase;
+      if FVoices[C].RingWave = 1 then
+        Base := SawBase;
+      var N := 4 shl FVoices[C].WaveLength;
+      var RingSample := Integer(FWaves[Base + Offsets[FVoices[C].WaveLength] + (FVoices[C].RingPhase shr 16) mod N]);
+      Wave := Sar(Wave * RingSample, 7);
+      FVoices[C].RingPhase := (FVoices[C].RingPhase + FVoices[C].RingDelta) mod (640 * 65536);
+    end;
+    var V := Wave * FVoices[C].AudioVolume;
+    var PanL := FPanL[FVoices[C].Pan];
+    // HivelyTracker's single-precision pi literal yields 254 at hard left.
+    if FHVL and (FVoices[C].Pan = 0) then
+      PanL := 254;
+    Inc(L, Sar(V * PanL, 7));
     Inc(R, Sar(V * FPanR[FVoices[C].Pan], 7));
     FVoices[C].Phase := (FVoices[C].Phase + FVoices[C].Delta) mod (640 * 65536);
   end;
-  Left := EnsureRange(Sar(L * 194, 8), -32768, 32767);
-  Right := EnsureRange(Sar(R * 194, 8), -32768, 32767);
+  Left := EnsureRange(Sar64(Int64(L) * FGain, 8), -32768, 32767);
+  Right := EnsureRange(Sar64(Int64(R) * FGain, 8), -32768, 32767);
   Dec(FSamplesLeft);
   Result := True;
 end;

@@ -39,7 +39,7 @@ type
     procedure SetScreenPalette(const Value: Integer);
   end;
 
-  TGBCoreAdapter = class(TInterfacedObject, IEmulationCore, IGBCameraInput)
+  TGBCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationSnapshotLocation, IGBCameraInput)
   protected
     FThread: TGBEmulationThread;
     FCameraSource: IGBCameraFrameSource;
@@ -78,6 +78,7 @@ type
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
     function GetInputState: TEmulatorInput;
+    function GetSnapshotDirectory: string;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -269,6 +270,11 @@ end;
 procedure TGBCoreAdapter.Resume;
 begin
   FThread.RequestResume;
+end;
+
+function TGBCoreAdapter.GetSnapshotDirectory: string;
+begin
+  Result := FSnapshotDirectory;
 end;
 
 procedure TGBCoreAdapter.SaveSnapshot(const Name: string);

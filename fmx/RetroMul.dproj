@@ -475,6 +475,8 @@
         <DCCReference Include="RM.FrameUpload.pas"/>
         <DCCReference Include="RM.Input.pas"/>
         <DCCReference Include="RM.Settings.pas"/>
+        <DCCReference Include="RM.LibraryView.pas"/>
+        <DCCReference Include="RM.ControlsHelp.pas"/>
         <DCCReference Include="..\source\cores\Core.InputConfig.pas"/>
         <DCCReference Include="..\source\input\FMXInput.pas"/>
         <DCCReference Include="RM.DocumentTransfer.Android.pas"/>

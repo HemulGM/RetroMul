@@ -81,6 +81,8 @@ type
     procedure PositionChange(Sender: TObject);
     procedure PositionTracking(Sender: TObject);
   private
+    FContentScroll: TVertScrollBox;
+    FUpdatingLayout: Boolean;
     FSoundFontButton: TButton;
     FSoundFontMenu: TPopupMenu;
     FStandardSoundFonts: TArray<TStandardSoundFont>;
@@ -99,6 +101,11 @@ type
     FPeaks: TTuneSpectrum;
     FPeakHold: array[0..TuneSpectrumBands - 1] of Integer;
     FHistory: TBitmap;
+    procedure UpdatePlayButton;
+    procedure UpdateLayout(Sender: TObject);
+    {$IF CompilerVersion >= 37.0}
+    procedure SafeAreaChanged(Sender: TObject; const Insets: TRectF);
+    {$ENDIF}
     procedure SoundFontClick(Sender: TObject);
     procedure SoundFontChoice(Sender: TObject);
     procedure CustomSoundFontClick(Sender: TObject);
@@ -108,6 +115,7 @@ type
     procedure ResetSpectrum;
     procedure LoadTune(const Path: string; UseSnapshot: Boolean = False);
     procedure UpdateExport;
+    procedure StartExport(Track: Integer; const Duration: string);
   public
     destructor Destroy; override;
   end;
@@ -120,8 +128,8 @@ function TuneLanguageForLocale(const LocaleID: string): string;
 implementation
 
 uses
-  System.IOUtils, System.Math, System.StrUtils, FMX.DialogService.Sync,
-  FMX.Platform, RetroTune.Decoder.TIA, RetroTune.Decoder.KSS,
+  System.IOUtils, System.Math, System.StrUtils, FMX.DialogService,
+  FMX.Platform, FMX.BehaviorManager, RetroTune.Decoder.TIA, RetroTune.Decoder.KSS,
   RetroTune.Decoder.HES, RetroTune.Decoder.AHX, RetroTune.Decoder.DSF,
   RetroTune.Decoder.TRDOS, RetroTune.Decoder.NSF, RetroTune.Decoder.NSFe,
   RetroTune.Decoder.SPC, RetroTune.Decoder.GBS, RetroTune.Decoder.VGM,
@@ -233,6 +241,36 @@ begin
     Settings.Free;
   end;
   UpdateSoundFontMenu;
+  FContentScroll := TVertScrollBox.Create(Self);
+  FContentScroll.Name := 'ScrollPlayer';
+  FContentScroll.Parent := PanelBackground;
+  FContentScroll.Align := TAlignLayout.Client;
+  FContentScroll.ScrollAnimation := TBehaviorBoolean.True;
+  LayoutContent.Parent := FContentScroll;
+  LayoutContent.Align := TAlignLayout.Top;
+  LayoutContent.OnResize := UpdateLayout;
+  FContentScroll.OnResize := UpdateLayout;
+  OnResize := UpdateLayout;
+  {$IF CompilerVersion >= 37.0}
+  OnSafeAreaChanged := SafeAreaChanged;
+  {$ENDIF}
+  {$IFDEF MOBILE}
+  Constraints.MinWidth := 0;
+  Constraints.MinHeight := 0;
+  {$ENDIF}
+  // Windows icon fonts are not available on Android and iOS.
+  {$IFDEF MOBILE}
+  for var Button in TArray<TButton>.Create(ButtonPrevious, ButtonNext, ButtonStop) do
+  begin
+    Button.TextSettings.Font.Family := '';
+    Button.TextSettings.Font.Size := 20;
+  end;
+  ButtonPrevious.Text := '⏮';
+  ButtonNext.Text := '⏭';
+  ButtonStop.Text := '■';
+  LabelMusicIcon.TextSettings.Font.Family := '';
+  {$ENDIF}
+  UpdateLayout(nil);
   OpenDialog.Filter := TTuneDecoders.DialogFilter.Replace('Supported formats|',
     Translate('Supported formats') + '|');
   TimerTick(nil);
@@ -241,8 +279,207 @@ begin
     LoadTune(ParamStr(1));
 end;
 
+procedure TFormMain.UpdateLayout(Sender: TObject);
+var
+  Compact: Boolean;
+  W, Inset, InnerWidth, Y, SpectrumHeight, PlaybackWidth, PlayWidth: Single;
+
+  procedure Place(Control: TControl; X, Y, Width, Height: Single);
+  begin
+    Control.Align := TAlignLayout.None;
+    Control.Anchors := [TAnchorKind.akLeft, TAnchorKind.akTop];
+    Control.Margins.Rect := TRectF.Empty;
+    Control.SetBounds(X, Y, Max(0, Width), Height);
+  end;
+
+begin
+  if FUpdatingLayout or (FContentScroll = nil) then
+    Exit;
+  FUpdatingLayout := True;
+  try
+    Compact := FContentScroll.Width < 700;
+    if Compact then Inset := 12 else Inset := 24;
+    LayoutContent.Margins.Rect := RectF(Inset, Inset, Inset, Inset);
+    W := LayoutContent.Width;
+    if W <= 0 then Exit;
+    if Compact then
+    begin
+      Place(LayoutHeader, 0, 0, W, 112);
+      Place(LabelBrand, 0, 0, W, 32);
+      Place(LabelTagline, 0, 36, W, 20);
+      Place(ButtonOpen, 0, 68, (W - 8) / 2, 44);
+      Place(ButtonExport, (W + 8) / 2, 68, (W - 8) / 2, 44);
+    end
+    else
+    begin
+      Place(LayoutHeader, 0, 0, W, 56);
+      Place(LabelBrand, 0, 0, W - 344, 32);
+      Place(LabelTagline, 0, 36, W - 344, 20);
+      Place(ButtonExport, W - 332, 8, 160, 44);
+      Place(ButtonOpen, W - 160, 8, 160, 44);
+    end;
+    Y := LayoutHeader.Height + 16;
+    PanelArtwork.Visible := not Compact;
+    if Compact then
+    begin
+      Place(PanelNowPlaying, 0, Y, W, 184);
+      Place(LayoutMetadata, 12, 12, W - 24, 160);
+    end
+    else
+    begin
+      Place(PanelNowPlaying, 0, Y, W, 144);
+      Place(PanelArtwork, 16, 16, 112, 112);
+      Place(LayoutMetadata, 148, 16, W - 168, 112);
+    end;
+    InnerWidth := LayoutMetadata.Width;
+    LabelTitle.TextSettings.WordWrap := Compact;
+    LabelTitle.TextSettings.Trimming := TTextTrimming.Character;
+    LabelArtist.TextSettings.Trimming := TTextTrimming.Character;
+    LabelCopyright.TextSettings.Trimming := TTextTrimming.Character;
+    LabelDetails.TextSettings.Trimming := TTextTrimming.Character;
+    if Compact then
+    begin
+      Place(LabelTitle, 0, 0, InnerWidth - 52, 56);
+      Place(LabelArtist, 0, 64, InnerWidth, 40);
+      Place(LabelCopyright, 0, 108, InnerWidth, 20);
+      Place(LabelDetails, 0, 136, InnerWidth, 24);
+    end
+    else
+    begin
+      Place(LabelTitle, 0, 0, InnerWidth - 52, 32);
+      Place(LabelArtist, 0, 40, InnerWidth, 24);
+      Place(LabelCopyright, 0, 65, InnerWidth, 20);
+      Place(LabelDetails, 0, 91, InnerWidth, 20);
+    end;
+    Place(ButtonInfo, InnerWidth - 44, 0, 44, 44);
+    Y := Y + PanelNowPlaying.Height + 12;
+
+    // Keep playback ahead of the visualizer on a phone.
+    if Compact then
+      Place(PanelTransport, 0, Y, W, 308)
+    else
+      Place(PanelTransport, 0, 0, W, 244);
+    InnerWidth := W - 32;
+    Place(LabelTrack, 16, 12, InnerWidth, 20);
+    Place(ComboTracks, 16, 40, InnerWidth, 44);
+    ComboTracks.ItemHeight := 44;
+    Place(LayoutTimeline, 16, 96, InnerWidth, 64);
+    Place(TrackBarPosition, 0, 0, InnerWidth, 44);
+    Place(LabelElapsed, 0, 44, 100, 20);
+    Place(LabelDuration, InnerWidth - 100, 44, 100, 20);
+    if Compact then
+      Place(LayoutPlayback, 16, 172, InnerWidth, 120)
+    else
+      Place(LayoutPlayback, 16, 172, InnerWidth, 56);
+    if Compact then PlaybackWidth := InnerWidth
+    else PlaybackWidth := 336;
+    PlayWidth := PlaybackWidth - 3 * 44 - 3 * 8;
+    Place(ButtonPrevious, 0, 0, 44, 44);
+    Place(ButtonPlay, 52, 0, PlayWidth, 44);
+    Place(ButtonNext, 60 + PlayWidth, 0, 44, 44);
+    Place(ButtonStop, 112 + PlayWidth, 0, 44, 44);
+    if Compact then
+      Place(LayoutVolume, 0, 56, InnerWidth, 64)
+    else
+      Place(LayoutVolume, 360, 0, InnerWidth - 360, 56);
+    Place(LabelVolume, 0, 0, LayoutVolume.Width, 20);
+    Place(TrackBarVolume, 0, 20, LayoutVolume.Width, 44);
+    if Compact then Y := Y + PanelTransport.Height + 12;
+
+    if Compact then SpectrumHeight := 232
+    else
+    begin
+      SpectrumHeight := Max(196, FContentScroll.Height - 2 * Inset - Y - 244 - 44 - 24);
+      if LayoutExport.Visible then SpectrumHeight := Max(196, SpectrumHeight - 76);
+    end;
+    Place(PanelSpectrum, 0, Y, W, SpectrumHeight);
+    Place(LayoutSpectrumHeader, 16, 12, InnerWidth, 44);
+    if Compact then
+    begin
+      LayoutSpectrumHeader.Height := 76;
+      Place(LabelSpectrum, 0, 0, InnerWidth, 24);
+      Place(ComboSpectrum, 0, 32, InnerWidth, 44);
+    end
+    else
+    begin
+      Place(LabelSpectrum, 0, 0, InnerWidth - 232, 44);
+      Place(ComboSpectrum, InnerWidth - 220, 0, 220, 44);
+    end;
+    ComboSpectrum.ItemHeight := 44;
+    var SpectrumTop := 12 + LayoutSpectrumHeader.Height + 12;
+    Place(SpectrumPaintBox, 16, SpectrumTop, InnerWidth, SpectrumHeight - SpectrumTop - 40);
+    Place(LayoutFrequency, 16, SpectrumHeight - 28, InnerWidth, 20);
+    Place(LabelLowFrequency, 0, 0, 80, 20);
+    Place(LabelHighFrequency, InnerWidth - 100, 0, 100, 20);
+    Y := Y + SpectrumHeight + 12;
+    if not Compact then
+    begin
+      PanelTransport.Position.Y := Y;
+      Y := Y + PanelTransport.Height + 12;
+    end;
+    if LayoutExport.Visible then
+    begin
+      Place(LayoutExport, 0, Y, W, 64);
+      Place(LabelExport, 0, 0, W - 52, 44);
+      LabelExport.TextSettings.Trimming := TTextTrimming.Character;
+      Place(ButtonCloseExport, W - 44, 0, 44, 44);
+      Place(ProgressExport, 0, 52, W, 8);
+      Y := Y + 76;
+    end;
+    if Compact then
+    begin
+      Place(LayoutFooter, 0, Y, W, 84);
+      Place(LabelStatus, 0, 0, W, 32);
+      Place(ButtonFormats, 0, 40, (W - 8) / 2, 44);
+      Place(FSoundFontButton, (W + 8) / 2, 40, (W - 8) / 2, 44);
+    end
+    else
+    begin
+      Place(LayoutFooter, 0, Y, W, 44);
+      Place(LabelStatus, 0, 0, W - 280, 44);
+      Place(FSoundFontButton, W - 268, 0, 120, 44);
+      Place(ButtonFormats, W - 136, 0, 136, 44);
+    end;
+    LabelStatus.TextSettings.Trimming := TTextTrimming.Character;
+    LayoutContent.Height := Y + LayoutFooter.Height;
+    UpdatePlayButton;
+    FContentScroll.InvalidateContentSize;
+    FContentScroll.RealignContent;
+  finally
+    FUpdatingLayout := False;
+  end;
+  // Showing a scrollbar can reduce the viewport during the realignment.
+  if not SameValue(W, LayoutContent.Width, 0.5) then
+    UpdateLayout(nil);
+end;
+
+procedure TFormMain.UpdatePlayButton;
+begin
+  var Playing := (FPlayer <> nil) and (FPlayer.Status.State = TTunePlayerState.Playing);
+  var Paused := (FPlayer <> nil) and (FPlayer.Status.State = TTunePlayerState.Paused);
+  if Playing then ButtonPlay.Hint := Translate('Pause')
+  else if Paused then ButtonPlay.Hint := Translate('Resume')
+  else ButtonPlay.Hint := Translate('Play');
+  ButtonPlay.AutoTranslate := False;
+  if ButtonPlay.Width < 160 then
+  begin
+    if Playing then ButtonPlay.Text := 'Ⅱ' else ButtonPlay.Text := '▶';
+  end
+  else
+    ButtonPlay.Text := ButtonPlay.Hint;
+end;
+
+{$IF CompilerVersion >= 37.0}
+procedure TFormMain.SafeAreaChanged(Sender: TObject; const Insets: TRectF);
+begin
+  PanelBackground.Padding.Rect := Insets;
+  UpdateLayout(nil);
+end;
+{$ENDIF}
+
 destructor TFormMain.Destroy;
 begin
+  FUpdatingLayout := True;
   if PlaybackTimer <> nil then
     PlaybackTimer.Enabled := False;
   FExport.Free;
@@ -414,8 +651,7 @@ procedure TFormMain.ExportClick(Sender: TObject);
 var
   Track: Integer;
   Seconds: Double;
-  Values: TArray<string>;
-  Prompt, Name: string;
+  Prompt: string;
 begin
   if FExport <> nil then
   begin
@@ -436,12 +672,29 @@ begin
       Seconds := 180;
       Prompt := Translate('Duration in seconds (length unknown; default: 180):');
     end;
-    Values := [FloatToStr(Seconds)];
-    if not TDialogServiceSync.InputQuery(Format(Translate('Export WAV · track %d'), [Track + 1]),
-      [Prompt], Values) then
-      Exit;
-    if not TryStrToFloat(Values[0], Seconds) then
-      if not TryStrToFloat(Values[0].Replace(',', '.'), Seconds, TFormatSettings.Invariant) then
+    // The platform service uses an asynchronous dialog on Android and iOS.
+    TDialogService.InputQuery(Format(Translate('Export WAV · track %d'), [Track + 1]),
+      [Prompt], [FloatToStr(Seconds)],
+      procedure(const Result: TModalResult; const Values: array of string)
+      begin
+        if (Result = mrOk) and (Length(Values) > 0) then
+          StartExport(Track, Values[0]);
+      end);
+  except
+    on E: Exception do
+      ShowMessage(Translate('Could not export WAV: ') + Translate(E.Message));
+  end;
+end;
+
+procedure TFormMain.StartExport(Track: Integer; const Duration: string);
+var
+  Seconds: Double;
+  Name: string;
+begin
+  if (FPlayer = nil) or (FExport <> nil) then Exit;
+  try
+    if not TryStrToFloat(Duration, Seconds) then
+      if not TryStrToFloat(Duration.Replace(',', '.'), Seconds, TFormatSettings.Invariant) then
         raise EArgumentException.Create(Translate('Enter a duration in seconds'));
     if IsNan(Seconds) or IsInfinite(Seconds) or (Seconds <= 0) or (Seconds > 86400) then
       raise EArgumentOutOfRangeException.Create(Translate('Duration must be greater than 0 and no more than 86400 seconds'));
@@ -460,6 +713,7 @@ begin
     FExport := TTuneWavExport.Create(FSourceData, ExtractFileExt(FSourcePath),
       SaveDialog.FileName, Track, Seconds);
     LayoutExport.Visible := True;
+    UpdateLayout(nil);
     LabelExport.Hint := ExpandFileName(SaveDialog.FileName);
     ProgressExport.Value := 0;
     UpdateExport;
@@ -497,7 +751,10 @@ end;
 procedure TFormMain.CloseExportClick(Sender: TObject);
 begin
   if FExport = nil then
+  begin
     LayoutExport.Visible := False;
+    UpdateLayout(nil);
+  end;
 end;
 
 procedure TFormMain.UpdateExport;
@@ -665,12 +922,7 @@ begin
     LabelDuration.Text := PlaybackTime(State.DurationSeconds)
   else
     LabelDuration.Text := '--:--';
-  if State.State = TTunePlayerState.Playing then
-    ButtonPlay.Text := Translate('Pause')
-  else if State.State = TTunePlayerState.Paused then
-    ButtonPlay.Text := Translate('Resume')
-  else
-    ButtonPlay.Text := Translate('Play');
+  UpdatePlayButton;
   Seconds := Trunc(State.Seconds);
   if State.Seeking then
     LabelStatus.Text := Translate('Seeking…')

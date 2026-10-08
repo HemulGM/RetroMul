@@ -2,19 +2,18 @@ object FormMain: TFormMain
   Left = 0
   Top = 0
   Caption = 'RetroMul'
-  ClientHeight = 645
-  ClientWidth = 1075
-  Fill.Color = claBlack
-  Fill.Kind = Solid
+  ClientHeight = 769
+  ClientWidth = 1143
   Position = ScreenCenter
   SystemStatusBar.BackgroundColor = claBlack
   SystemStatusBar.Visibility = VisibleAndOverlap
   StyleBook = FormStyles.StyleBookWinUI3
+  Constraints.MinHeight = 500.000000000000000000
+  Constraints.MinWidth = 400.000000000000000000
   FormFactor.Width = 320
   FormFactor.Height = 480
   FormFactor.Devices = [Desktop, iPhone, iPad]
   OnActivate = FormActivate
-  OnCreate = FormCreate
   OnDeactivate = FormDeactivate
   OnKeyDown = FormKeyDown
   OnKeyUp = FormKeyUp
@@ -29,359 +28,11 @@ object FormMain: TFormMain
     Left = 64
     Top = 80
   end
-  object LayoutLeft: TLayout
-    Align = Left
-    Size.Width = 350.000000000000000000
-    Size.Height = 645.000000000000000000
-    Size.PlatformDefault = False
-    TabOrder = 1
-    object Panel1: TPanel
-      Align = Client
-      Size.Width = 286.000000000000000000
-      Size.Height = 645.000000000000000000
-      Size.PlatformDefault = False
-      TabOrder = 0
-      object ListBoxGames: TListBox
-        Align = Client
-        Size.Width = 286.000000000000000000
-        Size.Height = 594.000000000000000000
-        Size.PlatformDefault = False
-        TabOrder = 1
-        ScrollAnimation = True
-        DisableFocusEffect = True
-        ItemHeight = 70.000000000000000000
-        DefaultItemStyles.ItemStyle = 'listboxitemstyle_game'
-        DefaultItemStyles.GroupHeaderStyle = ''
-        DefaultItemStyles.GroupFooterStyle = ''
-        OnItemClick = ListBoxGamesItemClick
-        Viewport.Width = 286.000000000000000000
-        Viewport.Height = 558.000000000000000000
-        object ListBoxItem1: TListBoxItem
-          Size.Width = 286.000000000000000000
-          Size.Height = 70.000000000000000000
-          Size.PlatformDefault = False
-          TabOrder = 0
-          Text = 'ListBoxItem1'
-        end
-        object SearchBoxGame: TSearchBox
-          Touch.InteractiveGestures = [LongTap, DoubleTap]
-          Align = Top
-          TabOrder = 0
-          Size.Width = 286.000000000000000000
-          Size.Height = 36.000000000000000000
-          Size.PlatformDefault = False
-          TextPrompt = 'Search game'
-        end
-      end
-      object Layout1: TLayout
-        Align = Bottom
-        Padding.Left = 9.000000000000000000
-        Padding.Top = 9.000000000000000000
-        Padding.Right = 9.000000000000000000
-        Padding.Bottom = 9.000000000000000000
-        Position.Y = 595.000000000000000000
-        Size.Width = 286.000000000000000000
-        Size.Height = 50.000000000000000000
-        Size.PlatformDefault = False
-        TabOrder = 0
-        object ButtonOpen: TButton
-          Align = Left
-          CanFocus = False
-          Hint = 'Open ROM'
-          Position.X = 9.000000000000000000
-          Position.Y = 9.000000000000000000
-          Size.Width = 32.000000000000000000
-          Size.Height = 32.000000000000000000
-          Size.PlatformDefault = False
-          StyleLookup = 'buttonstyle_subtle_icon'
-          TabOrder = 2
-          Text = 'Open'
-          OnClick = ButtonOpenClick
-          object PathLabel3: TPathLabel
-            Align = Center
-            Data.Path = {
-              4100000000000000000080400000A04102000000CDCC5C400000A04102000000
-              66AD3E40466F9E4102000000CBA12540D34D9B410200000030960C40602C9841
-              02000000ED0A0040C46794410200000000000040000090410100000000000040
-              0000C04002000000000000406766AE4002000000448B0C40B3569F4002000000
-              CBA12540E6D092400200000052B83E40194B864002000000B9D75C4077058040
-              02000000000080400000804001000000CDCC1241000080400200000011111741
-              0000804002000000D1221B419A998140020000000C021F41CDCC844002000000
-              47E122410000884002000000FF46264189888C40020000003333294167669240
-              01000000000040410000C040010000000000A8410000C040020000004444AA41
-              0000C04002000000022BAC416F12C3400200000039B4AD414C37C94002000000
-              703DAF41295CCF40020000005D01B04165F4D640020000000000B0410000E040
-              02000000A3FEAF419B0BE94002000000073AAF4192A6F040020000002DB2AD41
-              E5D0F64002000000532AAC4138FBFC40020000004444AA417605004102000000
-              0000A84100000041010000003333FB4000000041020000002222DA4000000041
-              020000005555BD403333054102000000CCCCA4409A990F410200000043448C40
-              01001A4102000000FDFF7F403433274102000000000080403333374101000000
-              0000804000009041010000003333BF40CDCC3641020000007777C340DEDD2F41
-              02000000B256CB4005562A4102000000E5D0D6404035264102000000184BE240
-              7B1422410200000065F4EE40BB02204102000000CDCCFC400000204101000000
-              6666A6410000204102000000DDDDAB410000204102000000022BB04104562441
-              02000000D34DB3410C022D4102000000A470B64114AE354102000000A245B741
-              CC133F4102000000CDCCB54133334941010000006766A7419A99944102000000
-              5655A6411111984102000000365EA441ADD59A41020000000781A1416DE79C41
-              02000000D8A39E412DF99E4102000000D6789B415E01A0410200000000009841
-              0000A04103000000000080400000A041}
-            Size.Width = 16.000000000000000000
-            Size.Height = 16.000000000000000000
-            Size.PlatformDefault = False
-            WrapMode = Fit
-          end
-        end
-        object ButtonStop: TButton
-          Align = Right
-          CanFocus = False
-          Hint = 'Close ROM'
-          Margins.Left = 6.000000000000000000
-          Position.X = 245.000000000000000000
-          Position.Y = 9.000000000000000000
-          Size.Width = 32.000000000000000000
-          Size.Height = 32.000000000000000000
-          Size.PlatformDefault = False
-          StyleLookup = 'buttonstyle_subtle_icon'
-          TabOrder = 1
-          OnClick = ButtonStopClick
-          object PathLabel1: TPathLabel
-            Align = Center
-            Data.Path = {
-              37000000000000000000C0400000884101000000000090410000884102000000
-              444492410000884102000000022B94419CC488410200000039B49541D34D8A41
-              02000000703D97410AD78B41020000005D01984119BD8D410200000000009841
-              0000904102000000A3FE9741E742924102000000073A9741A429944102000000
-              2DB2954139B4954102000000532A9441CE3E97410200000044449241BB029841
-              020000000000904100009841010000000000C0400000984102000000EFEEB640
-              0000984102000000B356AF40643B9741020000004C37A9402DB2954102000000
-              E517A340F6289441020000007705A040E7429241020000000000A04000009041
-              0200000089FA9F4019BD8D4102000000F80CA3400AD78B41020000004C37A940
-              D34D8A4102000000A061AF409CC4884102000000DCF9B6400000884102000000
-              0000C04000008841000000000000CC403333574101000000CDCC32410000C840
-              02000000666634413333C34002000000045636413C98BF4002000000A69B3841
-              1B2FBD400200000048E13A41FAC5BA400200000011583D412494B94002000000
-              000040419A99B94002000000EFA74241109FB9400200000016204541A1D3BA40
-              02000000736847414C37BD4002000000D0B04941F79ABF4002000000119F4B41
-              3333C3400200000034334D410000C8400100000000008D413333574102000000
-              DEDD8E4188885C410200000000008F41000062410200000066668D4199996741
-              02000000CCCC8B4132336D410200000066668941FFFF6F410200000033338641
-              FFFF6F41010000003233E740FFFF6F41020000006566DA40FFFF6F4102000000
-              CCCCD04032336D41020000006566CA409999674102000000FEFFC34000006241
-              020000008788C44088885C4102000000FFFFCB4033335741}
-            Size.Width = 16.000000000000000000
-            Size.Height = 16.000000000000000000
-            Size.PlatformDefault = False
-            WrapMode = Fit
-          end
-        end
-        object ButtonPalette: TButton
-          Align = Right
-          CanFocus = False
-          Hint = 'GameBoy Palette (GB)'
-          Margins.Left = 6.000000000000000000
-          Position.X = 207.000000000000000000
-          Position.Y = 9.000000000000000000
-          Size.Width = 32.000000000000000000
-          Size.Height = 32.000000000000000000
-          Size.PlatformDefault = False
-          StyleLookup = 'buttonstyle_subtle_icon'
-          TabOrder = 0
-          Text = 'Open'
-          OnClick = ButtonPaletteClick
-          object PathLabel2: TPathLabel
-            Align = Center
-            Data.Path = {
-              A200000000000000000040410000B0410200000022222A410000B04102000000
-              777715410FE6AD4102000000000002412DB2A941020000001111DD404B7EA541
-              020000006F12BB408FC29F410200000018049E40FA7E984102000000C1F58040
-              653B914102000000A50D5440BCBB884102000000966E324000007E4102000000
-              87CF104088886A410200000000000040DDDD5541020000000000004000004041
-              0200000000000040DEDD29410200000010581140111115410200000031083440
-              9A9901410200000052B856404544DC4002000000A0D382406766BA4002000000
-              7F6AA0409A999D40020000005E01BE40CDCC8040020000008988E040BB025440
-              0200000000000441986E324002000000BCBB174175DA104002000000CDCC2C41
-              ED0A004002000000333343410000004002000000888858410000004002000000
-              ABAA6C4166AD0E40020000009A997F4131082C400200000044448941FC624940
-              020000006991914185EB7140020000003AB49841E5D09240020000000BD79F41
-              08ACAC4002000000B681A541B256CB40020000003AB4A941E5D0EE4002000000
-              BEE6AD418C250941020000000000B041FF461C41020000000000B041CDCC3041
-              020000000000B04178774F41020000005555AB41AF006741020000000000A241
-              7368774102000000ABAA98411BE883410200000055558D415D01884102000000
-              000080410000884101000000666662410000884102000000FFFF5F4100008841
-              0200000003565E41555588410200000072685D410000894102000000E17A5C41
-              ABAA894102000000BA025C4166668A4102000000FFFF5B4133338B4102000000
-              FFFF5B41CCCC8C4102000000FFFF5D41F1198F4102000000FFFF6141A01A9241
-              02000000FFFF65414F1B954102000000FFFF6741E789984102000000FFFF6741
-              67669C4102000000FFFF67411211A34102000000035664410100A84102000000
-              0B025D413433AB410200000013AE55416766AE4102000000BA024C410100B041
-              02000000000040410000B041000000006666F24033334941020000007777FB40
-              AAAA44410200000000000041EFEE3E4102000000000000410000384102000000
-              0000004111113141020000007777FB4056552B41020000006666F240CDCC2641
-              020000005555E9404444224102000000DDDDDD4000002041020000000000D040
-              00002041020000002322C2400000204102000000ABAAB6404444224102000000
-              9A99AD40CDCC2641020000008988A44056552B41020000000000A04011113141
-              020000000000A04000003841020000000000A040EFEE3E41020000008988A440
-              AAAA4441020000009A99AD403333494102000000ABAAB640BCBB4D4102000000
-              2322C24000005041020000000000D0400000504102000000DDDDDD4000005041
-              020000005555E940BCBB4D41020000006666F240333349410000000033332941
-              3333094102000000BCBB2D41AAAA04410200000000003041DDDDFD4002000000
-              000030410000F04002000000000030412322E24002000000BCBB2D41ABAAD640
-              02000000333329419A99CD4002000000AAAA24418988C44002000000EFEE1E41
-              0000C04002000000000018410000C04002000000111111410000C04002000000
-              56550B418988C44002000000CDCC06419A99CD400200000044440241ABAAD640
-              02000000000000412322E24002000000000000410000F0400200000000000041
-              DDDDFD400200000044440241AAAA044102000000CDCC06413333094102000000
-              56550B41BCBB0D41020000001111114100001041020000000000184100001041
-              02000000EFEE1E410000104102000000AAAA2441BCBB0D410200000033332941
-              3333094100000000333379413333094102000000BCBB7D41AAAA044102000000
-              00008041DDDDFD4002000000000080410000F04002000000000080412322E240
-              02000000BCBB7D41ABAAD64002000000333379419A99CD4002000000AAAA7441
-              8988C44002000000EFEE6E410000C04002000000000068410000C04002000000
-              111161410000C0400200000056555B418988C44002000000CDCC56419A99CD40
-              0200000044445241ABAAD64002000000000050412322E2400200000000005041
-              0000F0400200000000005041DDDDFD400200000044445241AAAA044102000000
-              CDCC5641333309410200000056555B41BCBB0D41020000001111614100001041
-              02000000000068410000104102000000EFEE6E410000104102000000AAAA7441
-              BCBB0D41020000003333794133330941000000009A9994413333494102000000
-              DEDD9641AAAA44410200000000009841EFEE3E41020000000000984100003841
-              02000000000098411111314102000000DEDD964156552B41020000009A999441
-              CDCC26410200000056559241444422410200000078778F410000204102000000
-              00008C410000204102000000888888410000204102000000AAAA854144442241
-              0200000066668341CDCC2641020000002222814156552B410200000000008041
-              111131410200000000008041000038410200000000008041EFEE3E4102000000
-              22228141AAAA444102000000666683413333494102000000AAAA8541BCBB4D41
-              0200000088888841000050410200000000008C41000050410200000078778F41
-              000050410200000056559241BCBB4D41020000009A99944133334941}
-            Size.Width = 16.000000000000000000
-            Size.Height = 16.000000000000000000
-            Size.PlatformDefault = False
-            WrapMode = Fit
-          end
-        end
-      end
-      object Panel2: TPanel
-        Align = Bottom
-        Position.Y = 594.000000000000000000
-        Size.Width = 286.000000000000000000
-        Size.Height = 1.000000000000000000
-        Size.PlatformDefault = False
-        StyleLookup = 'panelstyle_divider'
-        TabOrder = 2
-      end
-      object ButtonSetRoot: TButton
-        Align = Center
-        Size.Width = 202.000000000000000000
-        Size.Height = 32.000000000000000000
-        Size.PlatformDefault = False
-        StyleLookup = 'buttonstyle_accent'
-        TabOrder = 3
-        Text = 'Select ROMs folder...'
-        OnClick = ButtonSetRootClick
-      end
-    end
-    object Layout2: TLayout
-      Align = MostLeft
-      Size.Width = 64.000000000000000000
-      Size.Height = 645.000000000000000000
-      Size.PlatformDefault = False
-      TabOrder = 1
-      object RadioButtonGB: TRadioButton
-        Align = Top
-        GroupName = 'system'
-        Hint = 'Game Boy'
-        IsChecked = True
-        Size.Width = 64.000000000000000000
-        Size.Height = 58.000000000000000000
-        Size.PlatformDefault = False
-        StyleLookup = 'radiobuttonstyle_subtle_menu'
-        TabOrder = 3
-        Text = 'GB'
-        TextSettings.HorzAlign = Center
-        TextSettings.Trimming = Character
-        OnChange = ChangeSystem
-      end
-      object RadioButtonGBC: TRadioButton
-        Align = Top
-        GroupName = 'system'
-        Hint = 'Game Boy Color'
-        Position.Y = 58.000000000000000000
-        Size.Width = 64.000000000000000000
-        Size.Height = 58.000000000000000000
-        Size.PlatformDefault = False
-        StyleLookup = 'radiobuttonstyle_subtle_menu'
-        TabOrder = 2
-        Text = 'GBC'
-        TextSettings.HorzAlign = Center
-        TextSettings.Trimming = Character
-        OnChange = ChangeSystem
-      end
-      object RadioButtonNES: TRadioButton
-        Align = Top
-        GroupName = 'system'
-        Hint = 'NES Famicom'
-        Position.Y = 116.000000000000000000
-        Size.Width = 64.000000000000000000
-        Size.Height = 58.000000000000000000
-        Size.PlatformDefault = False
-        StyleLookup = 'radiobuttonstyle_subtle_menu'
-        TabOrder = 1
-        Text = 'NES'
-        TextSettings.HorzAlign = Center
-        TextSettings.Trimming = Character
-        OnChange = ChangeSystem
-      end
-      object RadioButtonSNES: TRadioButton
-        Align = Top
-        GroupName = 'system'
-        Hint = 'Super Nintendo (SNES)'
-        Position.Y = 232.000000000000000000
-        Size.Width = 64.000000000000000000
-        Size.Height = 58.000000000000000000
-        Size.PlatformDefault = False
-        StyleLookup = 'radiobuttonstyle_subtle_menu'
-        TabOrder = 4
-        Text = 'SNES'
-        TextSettings.HorzAlign = Center
-        TextSettings.Trimming = Character
-        OnChange = ChangeSystem
-      end
-      object RadioButtonNeoGeo: TRadioButton
-        Align = Top
-        GroupName = 'system'
-        Hint = 'SNK Neo Geo MVS'
-        Position.Y = 290.000000000000000000
-        Size.Width = 64.000000000000000000
-        Size.Height = 58.000000000000000000
-        Size.PlatformDefault = False
-        StyleLookup = 'radiobuttonstyle_subtle_menu'
-        TabOrder = 5
-        Text = 'NEO'
-        TextSettings.HorzAlign = Center
-        TextSettings.Trimming = Character
-        OnChange = ChangeSystem
-      end
-      object RadioButtonMD: TRadioButton
-        Align = Top
-        GroupName = 'system'
-        Hint = 'SEGA Mega Drive (Genesis)'
-        Position.Y = 174.000000000000000000
-        Size.Width = 64.000000000000000000
-        Size.Height = 58.000000000000000000
-        Size.PlatformDefault = False
-        StyleLookup = 'radiobuttonstyle_subtle_menu'
-        TabOrder = 0
-        Text = 'MD'
-        TextSettings.HorzAlign = Center
-        TextSettings.Trimming = Character
-        OnChange = ChangeSystem
-      end
-    end
-  end
   object LayoutClient: TLayout
     Align = Client
     HitTest = True
-    Size.Width = 725.000000000000000000
-    Size.Height = 645.000000000000000000
+    Size.Width = 1095.000000000000000000
+    Size.Height = 769.000000000000000000
     Size.PlatformDefault = False
     TabOrder = 2
     OnClick = LayoutClientClick
@@ -390,8 +41,8 @@ object FormMain: TFormMain
       Align = Contents
       Fill.Color = claBlack
       HitTest = False
-      Size.Width = 725.000000000000000000
-      Size.Height = 645.000000000000000000
+      Size.Width = 1095.000000000000000000
+      Size.Height = 769.000000000000000000
       Size.PlatformDefault = False
       Stroke.Kind = None
     end
@@ -401,8 +52,8 @@ object FormMain: TFormMain
         end>
       Align = Client
       HitTest = False
-      Size.Width = 725.000000000000000000
-      Size.Height = 595.000000000000000000
+      Size.Width = 1095.000000000000000000
+      Size.Height = 719.000000000000000000
       Size.PlatformDefault = False
       OnMouseDown = ImageCanvasMouseDown
       OnMouseUp = ImageCanvasMouseUp
@@ -28453,8 +28104,8 @@ object FormMain: TFormMain
         Margins.Top = 10.000000000000000000
         Margins.Right = 10.000000000000000000
         Margins.Bottom = 10.000000000000000000
-        Size.Width = 705.000000000000000000
-        Size.Height = 575.000000000000000000
+        Size.Width = 1075.000000000000000000
+        Size.Height = 699.000000000000000000
         Size.PlatformDefault = False
       end
       object LabelPaused: TLabel
@@ -28462,14 +28113,14 @@ object FormMain: TFormMain
         AutoSize = True
         StyledSettings = [FontColor]
         Opacity = 0.800000011920929000
-        Size.Width = 223.000000000000000000
+        Size.Width = 201.000000000000000000
         Size.Height = 73.000000000000000000
         Size.PlatformDefault = False
         TextSettings.Font.Family = 'Roboto'
         TextSettings.Font.Size = 60.000000000000000000
         TextSettings.Font.StyleExt = {00070000000000000004000000}
         TextSettings.WordWrap = False
-        Text = 'PAUSED'
+        Text = 'Paused'
         Visible = False
         TabOrder = 1
       end
@@ -28480,14 +28131,14 @@ object FormMain: TFormMain
       Padding.Top = 9.000000000000000000
       Padding.Right = 9.000000000000000000
       Padding.Bottom = 9.000000000000000000
-      Size.Width = 725.000000000000000000
+      Size.Width = 1095.000000000000000000
       Size.Height = 50.000000000000000000
       Size.PlatformDefault = False
       TabOrder = 2
       object LabelStatus: TLabel
         Align = Client
         StyledSettings = [Family, Size, Style]
-        Size.Width = 665.000000000000000000
+        Size.Width = 1035.000000000000000000
         Size.Height = 32.000000000000000000
         Size.PlatformDefault = False
         TextSettings.FontColor = claWhite
@@ -28520,5 +28171,12 @@ object FormMain: TFormMain
     Position.Y = 196.000000000000000000
     Visible = False
     WrapMode = Center
+  end
+  object LayoutLeft: TLayout
+    Align = Left
+    Size.Width = 48.000000000000000000
+    Size.Height = 769.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 1
   end
 end

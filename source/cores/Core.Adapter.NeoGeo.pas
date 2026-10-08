@@ -21,7 +21,7 @@ type
     property Keys2: TNeoGeoKeyMap read FKeys2;
   end;
 
-  TNeoGeoCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationAudioDiagnostics)
+  TNeoGeoCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationSnapshotLocation, IEmulationAudioDiagnostics)
   private
     FThread: TNeoGeoWorker;
     FCartridge: TNeoGeoCartridge;
@@ -50,6 +50,7 @@ type
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
     function GetInputState: TEmulatorInput;
+    function GetSnapshotDirectory: string;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -310,6 +311,11 @@ end;
 function TNeoGeoCoreAdapter.GetName: string;
 begin
   Result := 'SNK Neo Geo MVS';
+end;
+
+function TNeoGeoCoreAdapter.GetSnapshotDirectory: string;
+begin
+  Result := FSnapshotDirectory;
 end;
 
 function TNeoGeoCoreAdapter.GetSupportsSnapshots: Boolean;

@@ -50,7 +50,7 @@ implementation
 
 uses
   Core.Adapter.GB, Core.Adapter.NES, Core.Adapter.MD, Core.Adapter.SNES, Core.Adapter.NeoGeo,
-  GB.Joypad, NES.Input, NES.Types, MD.Console, SNES.Console, System.Math;
+  GB.Joypad, NES.Input, NES.Types, MD.Console, SNES.Console, System.Math, FMX.Types;
 
 function HidToHostKey(Code: Integer): Word;
 const
@@ -360,7 +360,7 @@ end;
 
 function BindingCaption(Input: TInputManager; Action: Integer): string;
 begin
-  Result := 'Не назначено';
+  Result := Translate('Unassigned');
   if Input = nil then
     Exit;
   for var B in Input.Bindings do
@@ -369,10 +369,10 @@ begin
       if B.Kind = TInputElementKind.Key then
         Exit(InputKeyName(B.Code));
       if B.DeviceId = SystemMouseId then
-        Exit(MouseElementName(B.Kind, B.Code));
-      Result := Format('%s %d', ['Кнопка', B.Code + 1]);
+        Exit(Translate(MouseElementName(B.Kind, B.Code)));
+      Result := Format('%s %d', [Translate('Button'), B.Code + 1]);
       if B.Kind = TInputElementKind.Axis then
-        Result := Format('Ось %d (%d)', [B.Code, B.Direction]);
+        Result := Format(Translate('Axis %d (%d)'), [B.Code, B.Direction]);
       if B.Kind = TInputElementKind.Hat then
         Result := Format('D-pad %d', [B.Direction]);
       for var D in Input.Devices do

@@ -21,7 +21,7 @@ type
     property Keys2: TMDKeyMap read FKeys2;
   end;
 
-  TMDCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationAudioDiagnostics)
+  TMDCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationSnapshotLocation, IEmulationAudioDiagnostics)
   private
     FThread: TMDWorker;
     FData: TBytes;
@@ -53,6 +53,7 @@ type
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
     function GetInputState: TEmulatorInput;
+    function GetSnapshotDirectory: string;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -323,6 +324,11 @@ end;
 function TMDCoreAdapter.IsPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TMDCoreAdapter.GetSnapshotDirectory: string;
+begin
+  Result := FSnapshotDirectory;
 end;
 
 procedure TMDCoreAdapter.SaveSnapshot(const Name: string);

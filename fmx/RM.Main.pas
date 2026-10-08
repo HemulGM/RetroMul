@@ -3,6 +3,9 @@
 interface
 
 uses
+  {$IFDEF MSWINDOWS}
+  Winapi.Windows,
+  {$ENDIF}
   System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Forms,
   FMX.Types, FMX.Controls, FMX.Objects, FMX.Graphics, FMX.Dialogs, NES.Consts,
   NES.Controller, Core.Emulation, Core.EmulatorFactory, Core.Adapter.MD,
@@ -17,7 +20,7 @@ uses
   Core.Storage, RM.Storage.Dialogs, FMX.OpenDialog, RM.Gamepad, FMX.ListBox,
   SCRP.GameList, FMX.Edit, FMX.SearchBox, NES.FamicomDataRecorder,
   NES.DataRecorder, RM.FrameUpload, RM.Settings, RM.Input, FMXInput,
-  Core.InputConfig;
+  Core.InputConfig, RM.LibraryView, RM.ControlsHelp;
 
 type
   TListBoxItemGame = class(TListBoxItem)
@@ -32,34 +35,14 @@ type
   TFormMain = class(TWinUIForm)
     ImageCanvas: TImage;
     TimerUpdate: TTimer;
-    LayoutHead: TLayout;
-    LabelStatus: TLabel;
     ImageLogo: TImage;
     RectangleBG: TRectangle;
-    LayoutLeft: TLayout;
     LayoutClient: TLayout;
     LabelPaused: TLabel;
-    Panel1: TPanel;
-    Layout2: TLayout;
-    ListBoxGames: TListBox;
-    ListBoxItem1: TListBoxItem;
-    RadioButtonGB: TRadioButton;
-    RadioButtonGBC: TRadioButton;
-    RadioButtonNES: TRadioButton;
-    RadioButtonMD: TRadioButton;
-    RadioButtonNeoGeo: TRadioButton;
-    RadioButtonSNES: TRadioButton;
     ImageNoBox: TImage;
-    Layout1: TLayout;
-    ButtonOpen: TButton;
-    SearchBoxGame: TSearchBox;
-    ButtonStop: TButton;
-    ButtonPalette: TButton;
-    PathLabel1: TPathLabel;
-    PathLabel2: TPathLabel;
-    PathLabel3: TPathLabel;
-    Panel2: TPanel;
-    ButtonSetRoot: TButton;
+    LayoutLeft: TLayout;
+    LayoutHead: TLayout;
+    LabelStatus: TLabel;
     ButtonCloseRom: TButton;
     procedure FormActivate(Sender: TObject);
     procedure FormResize(Sender: TObject);
@@ -69,19 +52,45 @@ type
     procedure TimerUpdateTimer(Sender: TObject);
     procedure ButtonOpenClick(Sender: TObject);
     procedure FormSafeAreaChanged(Sender: TObject; const AInsets: TRectF);
-    procedure FormCreate(Sender: TObject);
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
-    procedure ChangeSystem(Sender: TObject);
     procedure ListBoxGamesItemClick(const Sender: TCustomListBox; const Item: TListBoxItem);
     procedure LayoutClientClick(Sender: TObject);
     procedure ButtonStopClick(Sender: TObject);
     procedure ButtonPaletteClick(Sender: TObject);
     procedure LayoutClientDblClick(Sender: TObject);
-    procedure ButtonSetRootClick(Sender: TObject);
     procedure FormSaveState(Sender: TObject);
     procedure ButtonCloseRomClick(Sender: TObject);
     procedure ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
     procedure ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
+  private
+    FLibrary: TLibraryView;
+    FSettingsLibraryVisible, FViewingLibrary, FPauseOnFocusLoss, FStartFullscreen, FAutoPaused: Boolean;
+    FLibraryBackTool, FScreenshotTool: TButton;
+    FGameTools: array[0..4] of TButton;
+    FHelpTool, FCoinTool: TButton;
+    FGamePlatform, FGameFPS, FGameAudio: TLabel;
+    FGameStatus: TPanel;
+    FHelp: TControlsHelpView;
+    FHelpWasPaused, FHelpClosing, FHelpFullScreen: Boolean;
+    FFullScreenPadding: TRectF;
+    {$IFDEF MSWINDOWS}
+    FFullScreenBorderStyle: TFmxFormBorderStyle;
+    FFullScreenWindowState: TWindowState;
+    FFullScreenPlacement: TWindowPlacement;
+    {$ENDIF}
+    procedure ControlsHelpClick(Sender: TObject);
+    procedure ControlsHelpClose(Sender: TObject);
+    procedure ControlsHelpSettings(Sender: TObject);
+    procedure CloseControlsHelp(OpenSettings: Boolean = False);
+    procedure UpdateGameChrome;
+    procedure UpdatePauseOverlay;
+    procedure LibraryPlay(Sender: TObject);
+    procedure LibraryBack(Sender: TObject);
+    procedure PauseClick(Sender: TObject);
+    procedure InsertCoinClick(Sender: TObject);
+    procedure SaveStateClick(Sender: TObject);
+    procedure LoadStateClick(Sender: TObject);
+    procedure FullscreenClick(Sender: TObject);
   private
     FEmulation: IEmulationCore;
     FInput: TInputManager;
@@ -101,7 +110,6 @@ type
     procedure ApplyControlInset;
   private
     FGamepad: TScreenGamepad;
-    FSystemId: string;
     FSuborKeyboard: TNesSuborKeyboard;
     FFamicomKeyboard: TNesFamicomKeyboard;
     FMiraclePiano: TNesMiraclePiano;
@@ -151,16 +159,16 @@ type
     procedure SelectDocument(ForCassette: Boolean);
     procedure FinishFileSelection;
     procedure StopOnError;
-    procedure UpdateFrame;
+    function UpdateFrame: Boolean;
+    procedure LoadSnapshotPreview(const Name: string);
     procedure SwitchPause;
-    procedure LoadSystem(const SystemId: string);
-    procedure FillGameItem(Item: TListBoxItem; Game: TGame; const Root: string);
     procedure SwitchFullScreen;
     procedure Load;
     procedure Save;
     procedure MobileCloseRom;
     procedure Stop;
   protected
+    function DetectSystemLanguage: string; virtual;
     function CreateStorage: IStorage; virtual;
     function CreateHostInput: TInputManager; virtual;
     function HostInputHasFocus: Boolean; virtual;
@@ -170,7 +178,7 @@ type
   public
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
-    procedure LoadRom(const FileName: string; const DisplayName: string = '');
+    procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False);
     procedure SelectTapeFile(const FileName: string);
     function SaveScreenshot: string;
     constructor Create(AOwner: TComponent); override;
@@ -189,10 +197,10 @@ implementation
 
 uses
   System.IOUtils, System.Math, FMX.Ani, System.IniFiles, System.Messaging,
-  RM.Styles, Core.Adapter.GB, GB.Palettes, Core.Adapter.NES, Core.SavePaths,
-  Core.RomFormat,
+  FMX.DialogService, RM.Styles, Core.Adapter.GB, GB.Palettes, Core.Adapter.NES,
+  Core.SavePaths, Core.RomFormat,
   {$IFDEF MSWINDOWS}
-  Winapi.Windows,
+  FMX.Platform.Win,
   {$ENDIF}
   HGM.FMX.Image, Core.Adapter.GBC;
 
@@ -317,9 +325,21 @@ end;
 
 procedure TFormMain.SettingsClick(Sender: TObject);
 begin
+  if FHelp <> nil then
+  begin
+    CloseControlsHelp(True);
+    Exit;
+  end;
+  if FullScreen then
+    SwitchFullScreen;
   if (FSettingsView <> nil) or FOpeningRom then
     Exit;
+  FSettingsLibraryVisible := (FLibrary <> nil) and FLibrary.Visible;
+  if FLibrary <> nil then
+    FLibrary.Visible := False;
   FSettingsWasPaused := (FEmulation <> nil) and FEmulation.IsPaused;
+  if FLibrary <> nil then
+    FSettingsWasPaused := FViewingLibrary or FUserPaused or FAutoPaused;
   FormDeactivate(Self);
   if FEmulation <> nil then
     FEmulation.Pause;
@@ -331,10 +351,8 @@ begin
   FSettingsView.Align := TAlignLayout.Client;
   FSettingsView.OnApply := SettingsApplied;
   FSettingsView.OnClose := SettingsClose;
-  Panel1.Visible := False;
-  ButtonSetRoot.Visible := False;
-  LayoutLeft.Align := TAlignLayout.Left;
-  LayoutLeft.Width := Layout2.Width;
+  if FLibrary <> nil then
+    LayoutLeft.Visible := False;
   LayoutClient.Visible := False;
   FSettingsView.BringToFront;
   SyncActivity;
@@ -350,6 +368,11 @@ end;
 procedure TFormMain.SettingsApplied(Sender: TObject);
 begin
   Load;
+  if FLibrary <> nil then
+  begin
+    FLibrary.ApplyPreferences;
+    FLibrary.Reload;
+  end;
   // Keep the active core's hardware connections until the ROM is reopened.
   // Input assignments can be refreshed independently on close.
 end;
@@ -371,9 +394,10 @@ begin
       FSettingsClosing := False;
       LayoutLeft.Align := FSettingsLeftAlign;
       LayoutLeft.Width := FSettingsLibraryWidth;
-      Panel1.Visible := True;
+      if FLibrary <> nil then
+        FLibrary.Visible := FSettingsLibraryVisible;
       LayoutClient.Visible := FSettingsClientVisible;
-      LoadSystem(FSystemId);
+      //LoadSystem(FSystemId);
       if FInput <> nil then
       begin
         var Ini := FStorage.ReadConfig(FStorage.ConfigFile(FInputSystemId));
@@ -407,6 +431,8 @@ begin
     FSettingsView.Poll;
     Exit;
   end;
+  if FViewingLibrary then
+    Exit;
   if (Focused <> nil) and (Focused.GetObject is TCustomEdit) then
   begin
     if FEmulation <> nil then
@@ -445,7 +471,7 @@ begin
   finally
     FDispatchingInput := False;
   end;
-  if (FEmulation = nil) or FEmulation.IsPaused or FEmulationFaulted then
+  if (FHelp <> nil) or (FEmulation = nil) or FEmulation.IsPaused or FEmulationFaulted then
     Exit;
   var Input := CombinedGamepadInput;
   if (ssCtrl in Shift) then
@@ -505,36 +531,6 @@ begin
   end;
 end;
 
-procedure TFormMain.ButtonSetRootClick(Sender: TObject);
-begin
-  if FOpeningRom then
-    Exit;
-  FOpeningRom := True;
-  ButtonOpen.Enabled := False;
-  FormDeactivate(Self);
-  SyncActivity;
-  var IsAlive: TFunc<Boolean> := FCallbackAlive;
-  FStorage.SelectRomFolder(
-    procedure(const Selection: TStorageSelection)
-    begin
-      if not IsAlive() then
-        Exit;
-      try
-        try
-          if Selection.Error <> '' then
-            raise Exception.Create(Selection.Error);
-          if not Selection.Cancelled then
-            LoadSystem(FSystemId);
-        except
-          on E: Exception do
-            ShowMessage(E.Message);
-        end;
-      finally
-        FinishFileSelection;
-      end;
-    end);
-end;
-
 procedure TFormMain.ButtonStopClick(Sender: TObject);
 begin
   Stop;
@@ -551,38 +547,49 @@ begin
     ImageLogo.Visible := True;
     FEmulation := nil;
   end;
+  if FLibrary <> nil then
+    LibraryBack(Self);
   SyncActivity;
 end;
 
-procedure TFormMain.ChangeSystem(Sender: TObject);
+function TFormMain.DetectSystemLanguage: string;
 begin
-  if FSettingsView <> nil then
-    SettingsClose(Self);
-  var SystemId := '';
-  if RadioButtonGB.IsChecked then
-    SystemId := RadioButtonGB.TagString
-  else if RadioButtonGBC.IsChecked then
-    SystemId := RadioButtonGBC.TagString
-  else if RadioButtonNES.IsChecked then
-    SystemId := RadioButtonNES.TagString
-  else if RadioButtonMD.IsChecked then
-    SystemId := RadioButtonMD.TagString
-  else if RadioButtonSNES.IsChecked then
-    SystemId := RadioButtonSNES.TagString
-  else if RadioButtonNeoGeo.IsChecked then
-    SystemId := RadioButtonNeoGeo.TagString;
-
-  if FSystemId = SystemId then
-    Exit;
-  LoadSystem(SystemId);
+  Result := 'en';
+  var Locale: IFMXLocaleService;
+  if TPlatformServices.Current.SupportsPlatformService(IFMXLocaleService, Locale) then
+    Result := Locale.GetCurrentLangID;
 end;
 
 procedure TFormMain.Load;
 begin
   var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
   try
+    var PreviousLanguage := FormStyles.Lang.Lang;
+    var FirstLaunch := not Ini.ValueExists('General', 'Language');
+    var Language := Ini.ReadString('General', 'Language', 'en');
+    if FirstLaunch then
+      Language := DetectSystemLanguage;
+    FormStyles.SetLanguage(Language);
+    if FirstLaunch then
+    begin
+      Ini.WriteString('General', 'Language', FormStyles.Lang.Lang);
+      FStorage.WriteConfig(Ini);
+    end;
+    if PreviousLanguage <> FormStyles.Lang.Lang then
+    begin
+      FormStyles.RelocalizeUI(LayoutLeft, PreviousLanguage);
+      FormStyles.RelocalizeUI(LayoutClient, PreviousLanguage);
+      if FLibrary <> nil then
+        FLibrary.ApplyLanguage(PreviousLanguage);
+      if FSettingsView <> nil then
+        FSettingsView.ApplyLanguage(PreviousLanguage);
+      if FEmulation = nil then
+        SetStatus(Translate('Open ROM'));
+    end;
     FControlBottomInset := EnsureRange(Ini.ReadInteger('General', 'ControlBottomInset', 100), 0, 400);
     ApplyControlInset;
+    FPauseOnFocusLoss := Ini.ReadBool('General', 'PauseOnFocusLoss', True);
+    FStartFullscreen := Ini.ReadBool('General', 'StartFullscreen', False);
     // Import the previously selected folder once.
     if FStorage.RomFolder = '' then
     begin
@@ -605,94 +612,6 @@ begin
   finally
     Ini.Free;
   end;
-end;
-
-procedure TFormMain.LoadSystem(const SystemId: string);
-begin
-  FSystemId := SystemId;
-  LayoutLeft.Enabled := False;
-  ListBoxGames.Visible := False;
-  ListBoxGames.BeginUpdate;
-  try
-    ListBoxGames.Clear;
-    try
-      var Folder := TPath.Combine(FStorage.RomFolder, SystemId);
-      var Metadata := TGameList.Create;
-      try
-        var XMLPath := TPath.Combine(Folder, 'gamelist.xml');
-        if not FStorage.RomFolder.StartsWith('content://') and FStorage.Exists(XMLPath) then
-        begin
-          var Input := FStorage.OpenRead(XMLPath);
-          try
-            Metadata.LoadFromStream(Input);
-          finally
-            Input.Free;
-          end;
-        end;
-        ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle';
-        ListBoxGames.ItemHeight := 32;
-        if Metadata.Games.Count > 0 then
-        begin
-          ListBoxGames.DefaultItemStyles.ItemStyle := 'listboxitemstyle_game';
-          ListBoxGames.ItemHeight := 70;
-        end;
-        for var FileInfo in FStorage.Roms(SystemId) do
-        begin
-          var Game := TGame.Create;
-          try
-            Game.Path := FileInfo.Location;
-            Game.Name := TPath.GetFileNameWithoutExtension(FileInfo.Name);
-            var DisplayGame := Game;
-            for var Entry in Metadata.Games do
-              if SameFileName(ExpandFileName(Entry.GetPhysicalPath(Folder, Entry.Path)),
-                ExpandFileName(FileInfo.Location)) then
-              begin
-                DisplayGame := Entry;
-                Break;
-              end;
-            var Item := TListBoxItemGame.Create(ListBoxGames);
-            Item.RomFile := FileInfo;
-            Item.Storage := FStorage;
-            ListBoxGames.AddObject(Item);
-            FillGameItem(Item, DisplayGame, Folder);
-          finally
-            Game.Free;
-          end;
-        end;
-      finally
-        Metadata.Free;
-      end;
-    except
-      on E: Exception do
-      begin
-        ListBoxGames.Clear;
-        SetStatus('Cannot load game list: ' + E.Message);
-      end;
-    end;
-  finally
-    ListBoxGames.EndUpdate;
-    LayoutLeft.Enabled := True;
-    ButtonSetRoot.Visible := ListBoxGames.Count <= 0;
-    ListBoxGames.Visible := True;
-  end;
-end;
-
-procedure TFormMain.FillGameItem(Item: TListBoxItem; Game: TGame; const Root: string);
-begin
-  var GameName: string := '';
-  GameName := Game.Name;
-
-  if Item.ItemData.Bitmap.IsEmpty then
-    Item.ItemData.Bitmap := ImageNoBox.Bitmap;
-
-  Item.ItemData.Detail := Game.Genre;
-  Item.StylesData['info'] := Game.Developer;
-  Item.StylesData['rating'] := Game.Rating;
-  Item.StylesData['warn.Visible'] := False;
-  Item.StylesData['favorite.Visible'] := Game.Favorite;
-  Item.StylesData['box'] := Game.GetPhysicalPath(Root, Game.Box);
-  Item.Text := GameName;
-  Item.TagString := Game.GetPhysicalPath(Root, Game.Path);
 end;
 
 function TFormMain.CreateStorage: IStorage;
@@ -736,34 +655,16 @@ begin
   FInput := CreateHostInput;
   {$ENDIF}
   {$ENDIF}
-  var SettingsButton := TButton.Create(Self);
-  SettingsButton.Name := 'ButtonSettings';
-  SettingsButton.Parent := Layout2;
-  SettingsButton.Align := TAlignLayout.Bottom;
-  SettingsButton.Height := 64;
-  SettingsButton.Text := '⚙';
-  SettingsButton.Hint := 'Параметры';
-  SettingsButton.ShowHint := True;
-  SettingsButton.StyleLookup := 'buttonstyle_subtle';
-  SettingsButton.OnClick := SettingsClick;
-  var SettingsLabel := TLabel.Create(Self);
-  SettingsLabel.Parent := SettingsButton;
-  SettingsLabel.Align := TAlignLayout.Bottom;
-  SettingsLabel.Height := 18;
-  SettingsLabel.Text := 'Параметры';
-  SettingsLabel.HitTest := False;
-  SettingsLabel.TextSettings.HorzAlign := TTextAlign.Center;
-  SettingsLabel.StyledSettings := SettingsLabel.StyledSettings - [TStyledSetting.Size];
-  SettingsLabel.TextSettings.Font.Size := 10;
   FFileDialog := TFMXOpenDialog.Create(Self);
   FFileDialog.MultipleSelection := False;
   var ScreenshotButton := TButton.Create(Self);
+  FScreenshotTool := ScreenshotButton;
   ScreenshotButton.Name := 'ButtonScreenshot';
   ScreenshotButton.Parent := LayoutHead;
   ScreenshotButton.Align := TAlignLayout.Right;
   ScreenshotButton.Width := 60;
   ScreenshotButton.Text := 'PNG';
-  ScreenshotButton.Hint := 'Screenshot (F8)';
+  ScreenshotButton.Hint := Translate('Screenshot (F8)');
   ScreenshotButton.OnClick := ScreenshotClick;
   LayoutClient.CanFocus := True;
   LayoutClient.OnKeyDown := FormKeyDown;
@@ -835,10 +736,114 @@ begin
   FDataRecorder.Enabled := False;
   FormResize(Self);
   TimerUpdate.Interval := 8;
-  ListBoxGames.Clear;
   Load;
-  LoadSystem(ROM_SYSTEM_GB);
   LoadHostInput(ROM_SYSTEM_GB);
+  {$IFNDEF ANDROID}
+  FLibrary := TLibraryView.CreateLibrary(Self, FStorage);
+  FLibrary.Parent := Self;
+  FLibrary.Align := TAlignLayout.Client;
+  FLibrary.OnPlay := LibraryPlay;
+  FLibrary.OnSettings := SettingsClick;
+  FLibrary.OnOpen := ButtonOpenClick;
+  LayoutLeft.Visible := False;
+  LayoutClient.Visible := False;
+  FViewingLibrary := True;
+  var BackButton := TButton.Create(Self);
+  BackButton.Name := 'ButtonLibrary';
+  BackButton.Parent := LayoutHead;
+  BackButton.Align := TAlignLayout.Left;
+  BackButton.Width := 140;
+  BackButton.Text := Translate('← Library');
+  BackButton.OnClick := LibraryBack;
+  FLibraryBackTool := BackButton;
+  ButtonCloseRom.Visible := False;
+  LabelStatus.Align := TAlignLayout.None;
+  for var I := 0 to High(FGameTools) do
+  begin
+    FGameTools[I] := TButton.Create(Self);
+    FGameTools[I].Parent := LayoutHead;
+    FGameTools[I].Align := TAlignLayout.None;
+    FGameTools[I].Width := 104;
+  end;
+  FGameTools[0].Name := 'GamePause';
+  FGameTools[0].OnClick := PauseClick;
+  FGameTools[1].Name := 'GameSave';
+  FGameTools[2].Name := 'GameLoad';
+  FGameTools[3].Name := 'GameFullscreen';
+  FGameTools[1].OnClick := SaveStateClick;
+  FGameTools[2].OnClick := LoadStateClick;
+  FGameTools[3].OnClick := FullscreenClick;
+  FGameTools[4].Name := 'GameSettings';
+  FGameTools[4].OnClick := SettingsClick;
+  FGameTools[1].Hint := Translate('Quick save · Quick slot');
+  FGameTools[2].Hint := Translate('Load quick save · Quick slot');
+  GameplayButton(FLibraryBackTool, Translate('Library'), 'M24,13 L2,13 M10,5 L2,13 L10,21', Translate('Back to library'));
+  GameplayButton(FGameTools[0], Translate('Pause'), IconPause, Translate('Pause / resume · P'));
+  GameplayButton(FGameTools[1], Translate('Save'), IconSave, Translate('Quick save · F5'));
+  GameplayButton(FGameTools[2], Translate('Load'), IconLoad, Translate('Quick load · F6'));
+  GameplayButton(FScreenshotTool, Translate('Screenshot'), IconCamera, Translate('Take screenshot · F8'));
+  GameplayButton(FGameTools[3], '', IconFullScreen, Translate('Full screen · F11'));
+  GameplayButton(FGameTools[4], '', IconGear, Translate('Settings'));
+  FCoinTool := TButton.Create(Self);
+  FCoinTool.Parent := LayoutHead;
+  FCoinTool.Name := 'GameInsertCoin';
+  GameplayButton(FCoinTool, Translate('Insert coin'), IconCoin, Translate('Insert coin · F9'));
+  FCoinTool.Visible := False;
+  FCoinTool.OnClick := InsertCoinClick;
+  FHelpTool := TButton.Create(Self);
+  FHelpTool.Parent := LayoutHead;
+  FHelpTool.Name := 'GameControlsHelp';
+  GameplayButton(FHelpTool, 'F1', IconPad, Translate('Controls and shortcuts · F1'));
+  FHelpTool.OnClick := ControlsHelpClick;
+  var HelpBorder := TRectangle.Create(FHelpTool);
+  HelpBorder.Parent := FHelpTool;
+  HelpBorder.Align := TAlignLayout.Contents;
+  HelpBorder.Fill.Kind := TBrushKind.None;
+  HelpBorder.Stroke.Color := $FFFFB43B;
+  HelpBorder.XRadius := 8;
+  HelpBorder.YRadius := 8;
+  HelpBorder.HitTest := False;
+  LabelStatus.StyledSettings := [];
+  LabelStatus.TextSettings.Font.Family := 'Segoe UI';
+  LabelStatus.TextSettings.Font.Size := 17;
+  LabelStatus.TextSettings.Font.Style := [TFontStyle.fsBold];
+  LabelStatus.TextSettings.FontColor := $FFE8ECF1;
+  LabelStatus.TextSettings.Trimming := TTextTrimming.Character;
+  FGamePlatform := GameplayLabel(Self, LayoutHead, '', 12);
+  FGamePlatform.Opacity := 0.6;
+  FGameStatus := TPanel.Create(Self);
+  FGameStatus.Parent := LayoutClient;
+  FGameStatus.Name := 'GameStatus';
+  FGameStatus.Align := TAlignLayout.Bottom;
+  FGameStatus.Height := 30;
+  FGameStatus.StyleLookup := 'retromul_sidebar';
+  var Dot := TCircle.Create(Self);
+  Dot.Parent := FGameStatus;
+  Dot.SetBounds(14, 11, 8, 8);
+  Dot.Fill.Color := $FF7ED94C;
+  Dot.Stroke.Kind := TBrushKind.None;
+  Dot.HitTest := False;
+  FGameFPS := GameplayLabel(Self, FGameStatus, '', 12);
+  FGameFPS.Align := TAlignLayout.Client;
+  FGameFPS.Margins.Left := 32;
+  FGameAudio := GameplayLabel(Self, FGameStatus, '', 12);
+  FGameAudio.Align := TAlignLayout.Right;
+  FGameAudio.AutoSize := True;
+  FGameAudio.Margins.Left := 24;
+  FGameAudio.Margins.Right := 12;
+  FGameAudio.TextSettings.HorzAlign := TTextAlign.Trailing;
+  InterfaceIcon(FGameAudio, IconSpeaker, -24, 7, 16);
+  LabelPaused.Text := Translate('Paused');
+  LabelPaused.TextSettings.Font.Size := 28;
+  LayoutHead.OnResize := FormResize;
+  var ToolbarBackground := TPanel.Create(Self);
+  ToolbarBackground.Parent := LayoutHead;
+  ToolbarBackground.Align := TAlignLayout.Contents;
+  ToolbarBackground.StyleLookup := 'retromul_sidebar';
+  ToolbarBackground.HitTest := False;
+  ToolbarBackground.SendToBack;
+  FormResize(Self);
+  {$ENDIF}
   SyncActivity;
 end;
 
@@ -849,6 +854,8 @@ begin
   if TimerUpdate <> nil then
     TimerUpdate.Enabled := False;
   FreeAndNil(FSettingsView);
+  FreeAndNil(FHelp);
+  FreeAndNil(FLibrary);
   FreeAndNil(FInput);
   FreeAndNil(FSuborKeyboard);
   FreeAndNil(FFamicomKeyboard);
@@ -872,6 +879,12 @@ end;
 
 procedure TFormMain.FormActivate(Sender: TObject);
 begin
+  if FAutoPaused and not FUserPaused and not FViewingLibrary and (FSettingsView = nil) and (FHelp = nil) then
+  begin
+    FAutoPaused := False;
+    if (FEmulation <> nil) and not FEmulationFaulted then
+      FEmulation.Resume;
+  end;
   FSuppressInputUntilRelease := True;
   {$IFDEF ANDROID}
   if FMiraclePianoTouchAttached then
@@ -888,189 +901,81 @@ begin
   SyncActivity;
 end;
 
-procedure TFormMain.FormCreate(Sender: TObject);
-begin
-  RadioButtonNeoGeo.TagString := ROM_SYSTEM_NEOGEO;
-  RadioButtonNeoGeo.StylesData['path.Data.Data'] := 'M13.8120002746582,35.951000213623 C7.50200033187866,35.951000213623 2.09899997711182,28.1060009002686 3.82600021362305,22.0359992980957 C5.55300045013428,15.9659976959229 11.4860000610352,12.0489988327026 ' +
-    '24,12.0489988327026 C36.5139999389648,12.0489988327026 42.4469985961914,15.9659986495972 44.173999786377,22.0359992980957 C45.9010009765625,28.1059989929199 40.5,35.9500007629395 34.1879997253418,35.9500007629395 ' +
-    'C29.9179992675781,35.9500007629395 31.2519989013672,34.9589996337891 24,34.9589996337891 C16.7480010986328,34.9589996337891 18.0820007324219,35.9500007629395 13.8120002746582,35.9500007629395 Z M17.1410007476807,' +
-    '21.0249996185303 C17.1410007476807,23.1921653747559 15.384165763855,24.9489994049072 13.2170000076294,24.9489994049072 C11.0498342514038,24.9489994049072 9.29300022125244,23.1921653747559 9.29300022125244,' +
-    '21.0249996185303 C9.29300022125244,18.8578338623047 11.0498342514038,17.1009998321533 13.2170000076294,17.1009998321533 C15.384165763855,17.1009998321533 17.1410007476807,18.8578338623047 17.1410007476807,' +
-    '21.0249996185303 Z M15.293999671936,21.0249996185303 C15.293999671936,22.1720943450928 14.3640956878662,23.1019992828369 13.2170000076294,23.1019992828369 C12.0699043273926,23.1019992828369 11.1400003433228,' +
-    '22.1720943450928 11.1400003433228,21.0249996185303 C11.1400003433228,19.8779048919678 12.0699043273926,18.9479999542236 13.2170000076294,18.9479999542236 C14.3640956878662,18.9479999542236 15.293999671936,' +
-    '19.8779048919678 15.293999671936,21.0249996185303 Z M25.7089996337891,20.7080001831055 C25.7089996337891,21.497766494751 25.0687656402588,22.1380004882813 24.2789993286133,22.1380004882813 C23.4892330169678,' +
-    '22.1380004882813 22.8489990234375,21.497766494751 22.8489990234375,20.7080001831055 C22.8489990234375,19.91823387146 23.4892330169678,19.2779998779297 24.2789993286133,19.2779998779297 C25.0687656402588,' +
-    '19.2779998779297 25.7089996337891,19.91823387146 25.7089996337891,20.7080001831055 Z M30.1560001373291,14.2959995269775 C30.1560001373291,14.7102127075195 29.8202133178711,15.0459995269775 29.4060001373291,' +
-    '15.0459995269775 C28.9917869567871,15.0459995269775 28.6560001373291,14.7102127075195 28.6560001373291,14.2959995269775 C28.6560001373291,13.8817863464355 28.9917869567871,13.5459995269775 29.4060001373291,' +
-    '13.5459995269775 C29.8202133178711,13.5459995269775 30.1560001373291,13.8817863464355 30.1560001373291,14.2959995269775 Z M30.1200008392334,18.3090000152588 C30.1200008392334,19.0987663269043 29.4797668457031,' +
-    '19.7390003204346 28.6900005340576,19.7390003204346 C27.9002342224121,19.7390003204346 27.2600002288818,19.0987663269043 27.2600002288818,18.3090000152588 C27.2600002288818,17.5192337036133 27.9002342224121,' +
-    '16.878999710083 28.6900005340576,16.878999710083 C29.4797668457031,16.878999710083 30.1200008392334,17.5192337036133 30.1200008392334,18.3090000152588 Z M34.9960021972656,17.7399997711182 C34.9960021972656,' +
-    '18.5297660827637 34.355770111084,19.1700000762939 33.5660018920898,19.1700000762939 C32.7762336730957,19.1700000762939 32.1360015869141,18.5297660827637 32.1360015869141,17.7399997711182 C32.1360015869141,' +
-    '16.9502334594727 32.7762336730957,16.3099994659424 33.5660018920898,16.3099994659424 C34.355770111084,16.3099994659424 34.9960021972656,16.9502334594727 34.9960021972656,17.7399997711182 Z M39.6440010070801,' +
-    '18.4200000762939 C39.6440010070801,19.2097663879395 39.0037689208984,19.8500003814697 38.2140007019043,19.8500003814697 C37.4242324829102,19.8500003814697 36.7840003967285,19.2097663879395 36.7840003967285,' +
-    '18.4200000762939 C36.7840003967285,17.6302337646484 37.4242324829102,16.9899997711182 38.2140007019043,16.9899997711182 C39.0037689208984,16.9899997711182 39.6440010070801,17.6302337646484 39.6440010070801,' +
-    '18.4200000762939 Z M22.2159996032715,34.992000579834 C22.8104496002197,34.9718551635742 23.4051876068115,34.9611930847168 23.9999809265137,34.9599990844727 C31.2519798278809,34.9599990844727 29.9179801940918,' +
-    '35.951000213623 34.1879806518555,35.951000213623 C39.8879814147949,35.951000213623 44.8449783325195,29.5510005950928 44.4789810180664,23.8390007019043 C31.5089797973633,20.7190017700195 22.2159805297852,' +
-    '23.9990005493164 22.2159805297852,34.992000579834 Z M25.7439994812012,16.6949996948242 C25.7439994812012,17.1092128753662 25.4082126617432,17.4449996948242 24.9939994812012,17.4449996948242 C24.5797863006592,' +
-    '17.4449996948242 24.2439994812012,17.1092128753662 24.2439994812012,16.6949996948242 C24.2439994812012,16.2807865142822 24.5797863006592,15.9449996948242 24.9939994812012,15.9449996948242 C25.4082126617432,' +
-    '15.9449996948242 25.7439994812012,16.2807865142822 25.7439994812012,16.6949996948242 Z ';
-
-  RadioButtonGB.TagString := ROM_SYSTEM_GB;
-  RadioButtonGB.StylesData['path.Data.Data'] := 'M17,2 L7,2 C6.00543832778931,2 5.05161094665527,2.39508819580078 4.34834957122803,3.09834957122803 C3.6450879573822,3.80161118507385 3.25,4.75543832778931 3.25,5.75000047683716 L3.25,18.25 C3.25,19.2445621490479 ' +
-    '3.6450879573822,20.1983871459961 4.34834957122803,20.9016494750977 C5.05161094665527,21.6049098968506 6.00543832778931,22 7,22 L17,22 C19.0687866210938,21.9945049285889 20.7445049285889,20.3187866210938 ' +
-    '20.75,18.25 L20.75,5.75 C20.7445125579834,3.681227684021 19.0688018798828,2.00550317764282 17.0000152587891,2 M10.2500152587891,16.6000003814697 L9.25001525878906,16.6000003814697 L9.25001525878906,17.6000003814697 ' +
-    'C9.25001525878906,17.8679504394531 9.10706615447998,18.1155452728271 8.87501525878906,18.2495193481445 C8.64296436309814,18.3834934234619 8.35706615447998,18.3834934234619 8.12501525878906,18.2495193481445 ' +
-    'C7.89296436309814,18.1155452728271 7.75001525878906,17.8679504394531 7.75001525878906,17.6000003814697 L7.75001525878906,16.6000003814697 L6.75001525878906,16.6000003814697 C6.48206615447998,16.6000003814697 ' +
-    '6.2344708442688,16.4570503234863 6.10049629211426,16.2250003814697 C5.96652173995972,15.9929494857788 5.96652173995972,15.7070512771606 6.10049629211426,15.4750003814697 C6.2344708442688,15.2429494857788 ' +
-    '6.48206615447998,15.1000003814697 6.75001525878906,15.1000003814697 L7.75001525878906,15.1000003814697 L7.75001525878906,14.1000003814697 C7.75001525878906,13.8320512771606 7.89296436309814,13.5844564437866 ' +
-    '8.12501525878906,13.4504814147949 C8.35706615447998,13.3165073394775 8.64296436309814,13.3165073394775 8.87501525878906,13.4504814147949 C9.10706615447998,13.5844564437866 9.25001525878906,13.8320512771606 ' +
-    '9.25001525878906,14.1000003814697 L9.25001525878906,15.1000003814697 L10.2500152587891,15.1000003814697 C10.5179643630981,15.1000003814697 10.7655591964722,15.2429494857788 10.8995342254639,15.4750003814697 ' +
-    'C11.0335092544556,15.7070512771606 11.0335092544556,15.9929494857788 10.8995342254639,16.2250003814697 C10.7655591964722,16.4570503234863 10.5179643630981,16.6000003814697 10.2500152587891,16.6000003814697 ' +
-    'M14,19.75 L12,19.75 C11.7320508956909,19.75 11.4844560623169,19.6070499420166 11.3504810333252,19.375 C11.2165060043335,19.1429500579834 11.2165060043335,18.8570499420166 11.3504810333252,18.625 C11.4844560623169,' +
-    '18.3929500579834 11.7320508956909,18.25 12,18.25 L14,18.25 C14.2679491043091,18.25 14.5155439376831,18.3929500579834 14.6495189666748,18.625 C14.7834939956665,18.8570499420166 14.7834939956665,19.1429500579834 ' +
-    '14.6495189666748,19.375 C14.5155439376831,19.6070499420166 14.2679491043091,19.75 14,19.75 M15.8800001144409,16.5 C15.8800001144409,16.7679500579834 15.7370510101318,17.0155448913574 15.5050001144409,17.1495189666748 ' +
-    'C15.27294921875,17.2834930419922 14.9870510101318,17.2834930419922 14.7550001144409,17.1495189666748 C14.52294921875,17.0155448913574 14.3800001144409,16.7679500579834 14.3800001144409,16.5 L14.3800001144409,' +
-    '16.1000003814697 C14.3800001144409,15.8320512771606 14.52294921875,15.5844564437866 14.7550001144409,15.4504814147949 C14.9870510101318,15.3165073394775 15.27294921875,15.3165073394775 15.5050001144409,' +
-    '15.4504814147949 C15.7370510101318,15.5844564437866 15.8800001144409,15.8320512771606 15.8800001144409,16.1000003814697 Z M17.6499996185303,14.5 C17.6499996185303,14.7679491043091 17.5070495605469,15.0155439376831 ' +
-    '17.2749996185303,15.1495189666748 C17.0429496765137,15.2834939956665 16.7570495605469,15.2834939956665 16.5249996185303,15.1495189666748 C16.2929496765137,15.0155439376831 16.1499996185303,14.7679491043091 ' +
-    '16.1499996185303,14.5 L16.1499996185303,14.1000003814697 C16.1499996185303,13.8320512771606 16.2929496765137,13.5844564437866 16.5249996185303,13.4504814147949 C16.7570495605469,13.3165073394775 17.0429496765137,' +
-    '13.3165073394775 17.2749996185303,13.4504814147949 C17.5070495605469,13.5844564437866 17.6499996185303,13.8320512771606 17.6499996185303,14.1000003814697 Z M18.25,10.0300006866455 C18.201473236084,10.9517374038696 ' +
-    '17.4223861694336,11.6640472412109 16.5,11.6300010681152 L7.5,11.6300010681152 C6.57559823989868,11.6695623397827 5.793212890625,10.9542379379272 5.75,10.0299997329712 L5.75,5.73999977111816 C5.76818323135376,' +
-    '5.29430103302002 5.96287298202515,4.87413167953491 6.2911491394043,4.57211780548096 C6.61942529678345,4.270103931427 7.05433464050293,4.11104297637939 7.50000047683716,4.13000011444092 L16.5,4.13000011444092 ' +
-    'C17.4260921478271,4.09608936309814 18.2067527770996,4.81429624557495 18.25,5.73999977111816 Z ';
-
-  RadioButtonGBC.TagString := ROM_SYSTEM_GBC;
-  RadioButtonGBC.StylesData['path.Data.Data'] := 'M17,2 L7,2 C6.00543832778931,2 5.05161094665527,2.39508819580078 4.34834957122803,3.09834957122803 C3.6450879573822,3.80161118507385 3.25,4.75543832778931 3.25,5.75000047683716 L3.25,18.25 C3.25,19.2445621490479 ' +
-    '3.6450879573822,20.1983871459961 4.34834957122803,20.9016494750977 C5.05161094665527,21.6049098968506 6.00543832778931,22 7,22 L17,22 C19.0687866210938,21.9945049285889 20.7445049285889,20.3187866210938 ' +
-    '20.75,18.25 L20.75,5.75 C20.7445125579834,3.681227684021 19.0688018798828,2.00550317764282 17.0000152587891,2 M10.2500152587891,16.6000003814697 L9.25001525878906,16.6000003814697 L9.25001525878906,17.6000003814697 ' +
-    'C9.25001525878906,17.8679504394531 9.10706615447998,18.1155452728271 8.87501525878906,18.2495193481445 C8.64296436309814,18.3834934234619 8.35706615447998,18.3834934234619 8.12501525878906,18.2495193481445 ' +
-    'C7.89296436309814,18.1155452728271 7.75001525878906,17.8679504394531 7.75001525878906,17.6000003814697 L7.75001525878906,16.6000003814697 L6.75001525878906,16.6000003814697 C6.48206615447998,16.6000003814697 ' +
-    '6.2344708442688,16.4570503234863 6.10049629211426,16.2250003814697 C5.96652173995972,15.9929494857788 5.96652173995972,15.7070512771606 6.10049629211426,15.4750003814697 C6.2344708442688,15.2429494857788 ' +
-    '6.48206615447998,15.1000003814697 6.75001525878906,15.1000003814697 L7.75001525878906,15.1000003814697 L7.75001525878906,14.1000003814697 C7.75001525878906,13.8320512771606 7.89296436309814,13.5844564437866 ' +
-    '8.12501525878906,13.4504814147949 C8.35706615447998,13.3165073394775 8.64296436309814,13.3165073394775 8.87501525878906,13.4504814147949 C9.10706615447998,13.5844564437866 9.25001525878906,13.8320512771606 ' +
-    '9.25001525878906,14.1000003814697 L9.25001525878906,15.1000003814697 L10.2500152587891,15.1000003814697 C10.5179643630981,15.1000003814697 10.7655591964722,15.2429494857788 10.8995342254639,15.4750003814697 ' +
-    'C11.0335092544556,15.7070512771606 11.0335092544556,15.9929494857788 10.8995342254639,16.2250003814697 C10.7655591964722,16.4570503234863 10.5179643630981,16.6000003814697 10.2500152587891,16.6000003814697 ' +
-    'M14,19.75 L12,19.75 C11.7320508956909,19.75 11.4844560623169,19.6070499420166 11.3504810333252,19.375 C11.2165060043335,19.1429500579834 11.2165060043335,18.8570499420166 11.3504810333252,18.625 C11.4844560623169,' +
-    '18.3929500579834 11.7320508956909,18.25 12,18.25 L14,18.25 C14.2679491043091,18.25 14.5155439376831,18.3929500579834 14.6495189666748,18.625 C14.7834939956665,18.8570499420166 14.7834939956665,19.1429500579834 ' +
-    '14.6495189666748,19.375 C14.5155439376831,19.6070499420166 14.2679491043091,19.75 14,19.75 M15.8800001144409,16.5 C15.8800001144409,16.7679500579834 15.7370510101318,17.0155448913574 15.5050001144409,17.1495189666748 ' +
-    'C15.27294921875,17.2834930419922 14.9870510101318,17.2834930419922 14.7550001144409,17.1495189666748 C14.52294921875,17.0155448913574 14.3800001144409,16.7679500579834 14.3800001144409,16.5 L14.3800001144409,' +
-    '16.1000003814697 C14.3800001144409,15.8320512771606 14.52294921875,15.5844564437866 14.7550001144409,15.4504814147949 C14.9870510101318,15.3165073394775 15.27294921875,15.3165073394775 15.5050001144409,' +
-    '15.4504814147949 C15.7370510101318,15.5844564437866 15.8800001144409,15.8320512771606 15.8800001144409,16.1000003814697 Z M17.6499996185303,14.5 C17.6499996185303,14.7679491043091 17.5070495605469,15.0155439376831 ' +
-    '17.2749996185303,15.1495189666748 C17.0429496765137,15.2834939956665 16.7570495605469,15.2834939956665 16.5249996185303,15.1495189666748 C16.2929496765137,15.0155439376831 16.1499996185303,14.7679491043091 ' +
-    '16.1499996185303,14.5 L16.1499996185303,14.1000003814697 C16.1499996185303,13.8320512771606 16.2929496765137,13.5844564437866 16.5249996185303,13.4504814147949 C16.7570495605469,13.3165073394775 17.0429496765137,' +
-    '13.3165073394775 17.2749996185303,13.4504814147949 C17.5070495605469,13.5844564437866 17.6499996185303,13.8320512771606 17.6499996185303,14.1000003814697 Z M18.25,10.0300006866455 C18.201473236084,10.9517374038696 ' +
-    '17.4223861694336,11.6640472412109 16.5,11.6300010681152 L7.5,11.6300010681152 C6.57559823989868,11.6695623397827 5.793212890625,10.9542379379272 5.75,10.0299997329712 L5.75,5.73999977111816 C5.76818323135376,' +
-    '5.29430103302002 5.96287298202515,4.87413167953491 6.2911491394043,4.57211780548096 C6.61942529678345,4.270103931427 7.05433464050293,4.11104297637939 7.50000047683716,4.13000011444092 L16.5,4.13000011444092 ' +
-    'C17.4260921478271,4.09608936309814 18.2067527770996,4.81429624557495 18.25,5.73999977111816 Z ';
-
-  RadioButtonNES.TagString := ROM_SYSTEM_NES;
-  RadioButtonNES.StylesData['path.Data.Data'] := 'M21,6 L3,6 C2.46956706047058,6 1.96085917949677,6.21071338653564 1.58578646183014,6.58578634262085 C1.21071362495422,6.96085929870605 0.999999940395355,7.469566822052 1,8 L1,16 C0.999999940395355,16.5304336547852 ' +
-    '1.21071362495422,17.0391407012939 1.58578646183014,17.414213180542 C1.96085917949677,17.78928565979 2.46956706047058,18 3,18 L21,18 C21.5304336547852,18 22.0391407012939,17.78928565979 22.414213180542,' +
-    '17.414213180542 C22.78928565979,17.0391407012939 23,16.5304336547852 23,16 L23,8 C23,7.469566822052 22.78928565979,6.96085929870605 22.414213180542,6.58578634262085 C22.0391407012939,6.21071338653564 21.5304336547852,' +
-    '6 21,6 M11,13 L8,13 L8,16 L6,16 L6,13 L3,13 L3,11 L6,11 L6,8 L8,8 L8,11 L11,11 M15.5,15 C15.1021757125854,15 14.7206439971924,14.8419647216797 14.4393396377563,14.5606603622437 C14.1580352783203,14.2793560028076 ' +
-    '14,13.8978252410889 14,13.5 C14,13.1021747589111 14.1580352783203,12.7206439971924 14.4393396377563,12.4393396377563 C14.7206439971924,12.1580352783203 15.1021757125854,12 15.5,12 C15.8978242874146,12 ' +
-    '16.279354095459,12.1580352783203 16.5606594085693,12.4393396377563 C16.8419647216797,12.7206439971924 17,13.1021757125854 17,13.5 C17,13.8978242874146 16.8419647216797,14.2793560028076 16.5606594085693,' +
-    '14.5606603622437 C16.279354095459,14.8419647216797 15.8978242874146,15 15.5,15 M19.5,12 C19.1021747589111,12 18.720645904541,11.8419647216797 18.4393405914307,11.5606603622437 C18.1580352783203,11.2793560028076 ' +
-    '18,10.8978252410889 18,10.5 C18,10.1021747589111 18.1580352783203,9.72064399719238 18.4393405914307,9.43933963775635 C18.720645904541,9.15803527832031 19.1021747589111,9 19.5,9 C19.8978252410889,9 20.279354095459,' +
-    '9.15803527832031 20.5606594085693,9.43933963775635 C20.8419647216797,9.72064399719238 21,10.1021757125854 21,10.5 C21,10.8978242874146 20.8419647216797,11.2793560028076 20.5606594085693,11.5606603622437 ' +
-    'C20.279354095459,11.8419647216797 19.8978252410889,12 19.5,12 ';
-
-  RadioButtonSNES.TagString := ROM_SYSTEM_SNES;
-  RadioButtonSNES.StylesData['path.Data.Data'] :=
-    'M7,6 L17,6 C21,6 23,8 23,12 C23,16 20,19 17,18 L13,16 L11,16 ' +
-    'L7,18 C3,19 1,16 1,12 C1,8 3,6 7,6 Z M6,9 L6,11 L4,11 L4,13 ' +
-    'L6,13 L6,15 L8,15 L8,13 L10,13 L10,11 L8,11 L8,9 Z ' +
-    'M16,9 L18,11 L16,13 L14,11 Z M19,12 L21,14 L19,16 L17,14 Z';
-
-  RadioButtonMD.TagString := ROM_FOLDER_MD;
-  RadioButtonMD.StylesData['path.Data.Data'] := 'M10.0769996643066,10.9820003509521 L10.3039999008179,10.9820003509521 L10.3039999008179,11.0570001602173 L10.0260000228882,11.0570001602173 L10.0260000228882,10.7840003967285 L10.4139995574951,10.7840003967285 ' +
-    'L10.5939998626709,10.66100025177 L9.98799991607666,10.66100025177 L9.80200004577637,10.7870006561279 L9.80200004577637,11.1800003051758 L10.3559999465942,11.1800003051758 L10.5270004272461,11.0640001296997 ' +
-    'L10.5270004272461,10.8590002059937 L10.2580003738403,10.8590002059937 Z M11.8639993667603,10.8130006790161 L11.5899991989136,10.66100025177 L11.3629989624023,10.66100025177 L11.3629989624023,11.1800003051758 ' +
-    'L11.5859985351563,11.1800003051758 L11.5859985351563,10.8340005874634 L11.8639984130859,11.0070009231567 L11.8639984130859,11.1800012588501 L12.0879983901978,11.1800012588501 L12.0879983901978,10.6610012054443 ' +
-    'L11.8639984130859,10.6610012054443 Z M11.1309995651245,10.7840003967285 L11.3129997253418,10.66100025177 L10.7799997329712,10.66100025177 L10.585000038147,10.7810001373291 L10.585000038147,11.1800003051758 ' +
-    'L11.1269998550415,11.1800003051758 L11.3099994659424,11.0570001602173 L10.8089990615845,11.0570001602173 L10.8089990615845,10.9820003509521 L11.0229988098145,10.9820003509521 L11.2049989700317,10.8590002059937 ' +
-    'L10.8089990615845,10.8590002059937 L10.8089990615845,10.7840003967285 Z M12.3739995956421,11.0570001602173 L12.3739995956421,10.9820003509521 L12.5879993438721,10.9820003509521 L12.7709989547729,10.8590002059937 ' +
-    'L12.3739986419678,10.8590002059937 L12.3739986419678,10.7840003967285 L12.6969985961914,10.7840003967285 L12.8779983520508,10.66100025177 L12.3449983596802,10.66100025177 L12.1509981155396,10.7810001373291 ' +
-    'L12.1509981155396,11.1800003051758 L12.6929979324341,11.1800003051758 L12.875997543335,11.0570001602173 Z M14.5109996795654,10.7840003967285 L14.6929998397827,10.66100025177 L14.1440000534058,10.66100025177 ' +
-    'L13.960000038147,10.7870006561279 L13.960000038147,10.9820003509521 L14.4580001831055,10.9820003509521 L14.4580001831055,11.0570001602173 L14.1360006332397,11.0570001602173 L13.9540004730225,11.1800003051758 ' +
-    'L14.5040006637573,11.1800003051758 L14.6820011138916,11.0590000152588 L14.6820011138916,10.8590002059937 L14.1840009689331,10.8590002059937 L14.1840009689331,10.7840003967285 Z M13.6499996185303,10.66100025177 ' +
-    'L13.8739995956421,10.66100025177 L13.8739995956421,11.1789999008179 L13.6499996185303,11.1789999008179 Z M13.4099998474121,10.7840003967285 L13.5920000076294,10.66100025177 L13.0419998168945,10.66100025177 ' +
-    'L12.8590002059937,10.7870006561279 L12.8590002059937,10.9820003509521 L13.3570003509521,10.9820003509521 L13.3570003509521,11.0570001602173 L13.0350008010864,11.0570001602173 L12.8530006408691,11.1800003051758 ' +
-    'L13.4020004272461,11.1800003051758 L13.581000328064,11.0590000152588 L13.581000328064,10.8590002059937 L13.0820007324219,10.8590002059937 L13.0820007324219,10.7840003967285 Z M21.2869987487793,11.1870002746582 ' +
-    'C19.886999130249,9.14400005340576 16.3469982147217,7.80600023269653 12.644998550415,7.66400051116943 L12.6309986114502,7.62700033187866 C12.4309988021851,7.22700023651123 13.5449981689453,6.69500017166138 ' +
-    '13.7439985275269,6.38100051879883 C14.0287218093872,5.95176649093628 14.0893898010254,5.41170835494995 13.9069986343384,4.93000030517578 C13.7189989089966,4.42000007629395 12.899998664856,4.64000034332275 ' +
-    '13.0899982452393,5.15700054168701 C13.3849983215332,5.95800065994263 12.5609979629517,6.22900056838989 12.0969982147217,6.69400024414063 C11.8460340499878,6.94583988189697 11.7282285690308,7.30110740661621 ' +
-    '11.778998374939,7.65300035476685 C7.92799854278564,7.70500040054321 4.16499853134155,9.06500053405762 2.71399879455566,11.1870002746582 C1.23399877548218,13.3520002365112 2.29699873924255,16.609001159668 ' +
-    '3.70799875259399,18.0750007629395 C5.11899852752686,19.5410003662109 6.7579984664917,20.0530014038086 7.6159987449646,17.9530010223389 C8.36699867248535,16.1110000610352 11.7919988632202,16.0330009460449 ' +
-    '11.9999980926514,16.0300006866455 C12.2079973220825,16.0270004272461 15.6329975128174,16.1110000610352 16.3849983215332,17.9530010223389 C17.2429981231689,20.0590019226074 18.8849983215332,19.5440006256104 ' +
-    '20.2929992675781,18.0770015716553 C21.701000213623,16.6100025177002 22.7669982910156,13.3530015945435 21.2869987487793,11.1870021820068 M15.3859987258911,10.1140022277832 L16.9779987335205,9.40600204467773 ' +
-    'C17.0810775756836,9.36058235168457 17.2005596160889,9.37361717224121 17.2914180755615,9.4401969909668 C17.3822765350342,9.50677680969238 17.4307041168213,9.61678028106689 17.4184474945068,9.72875308990479 ' +
-    'C17.4061908721924,9.84072589874268 17.3351154327393,9.93764877319336 17.232006072998,9.98299789428711 L15.6370058059692,10.6909980773926 C15.4768304824829,10.7646837234497 15.2872295379639,10.6949243545532 ' +
-    '15.2130060195923,10.5349979400635 C15.1778402328491,10.4567680358887 15.1778402328491,10.3672275543213 15.2130060195923,10.2889976501465 C15.2438678741455,10.2108755111694 15.3042087554932,10.1480207443237 ' +
-    '15.3810062408447,10.1139974594116 Z M6.38599872589111,16.1340026855469 C5.05556488037109,16.1449451446533 3.85007357597351,15.3518257141113 3.33352565765381,14.1257123947144 C2.81697797775269,12.8996000289917 ' +
-    '3.09152007102966,11.4829587936401 4.02870559692383,10.5385770797729 C4.96589136123657,9.59419536590576 6.3803915977478,9.30882453918457 7.61041975021362,9.81597995758057 C8.84044742584229,10.3231344223022 ' +
-    '9.6427640914917,11.5225229263306 9.64199829101563,12.8530015945435 C9.6447868347168,14.6591386795044 8.18519020080566,16.1268177032471 6.37903165817261,16.1340007781982 Z M9.82499885559082,11.334002494812 ' +
-    'L9.48199844360352,11.1340026855469 L9.48199844360352,10.6890029907227 L9.80399799346924,10.5010032653809 L11.3879976272583,10.5010032653809 L11.6749973297119,10.0890035629272 L12.8289976119995,10.0890035629272 ' +
-    'L13.1179971694946,10.5010032653809 L14.7259969711304,10.5010032653809 L15.0499973297119,10.6900033950806 L15.0499973297119,11.1300029754639 L14.7069969177246,11.330002784729 Z M20.1659984588623,13.753002166748 ' +
-    'C19.4279975891113,14.0200023651123 18.1349983215332,14.6480026245117 18.121997833252,14.6530017852783 C18.0309982299805,14.6920013427734 17.7439975738525,14.8530015945435 17.4119987487793,15.048002243042 ' +
-    'C17.0359992980957,15.2630023956299 16.5679988861084,15.5320024490356 16.2249984741211,15.709002494812 C16.0065135955811,15.8141279220581 15.7664155960083,15.8665313720703 15.523998260498,15.8620023727417 ' +
-    'C14.5134525299072,15.8751525878906 13.6773157119751,15.0789813995361 13.6409969329834,14.0690031051636 C13.4769973754883,12.3810033798218 16.391996383667,10.947003364563 16.5159969329834,10.8870029449463 ' +
-    'C18.4849967956543,9.99700260162354 19.9359970092773,10.0410032272339 20.7759971618652,11.0000028610229 C21.1989212036133,11.4062938690186 21.3809757232666,12.0027961730957 21.2569980621338,12.576003074646 ' +
-    'C21.0994396209717,13.1185159683228 20.6950225830078,13.5548124313354 20.1659984588623,13.7530031204224 M17.6299991607666,12.1090030670166 C17.3240928649902,12.1069774627686 17.0471973419189,12.2897462844849 ' +
-    '16.9288196563721,12.5718269348145 C16.8104419708252,12.853907585144 16.8739776611328,13.1795425415039 17.0897159576416,13.3964309692383 C17.3054542541504,13.6133193969727 17.630744934082,13.6785888671875 ' +
-    '17.9134521484375,13.5617122650146 C18.196159362793,13.4448356628418 18.3803977966309,13.1689167022705 18.3799991607666,12.8630037307739 C18.3810653686523,12.6634035110474 18.3025188446045,12.4716081619263 ' +
-    '18.161750793457,12.3300886154175 C18.0209827423096,12.1885690689087 17.829610824585,12.1090021133423 17.6300029754639,12.1090040206909 M18.97900390625,10.4590044021606 C18.1540203094482,10.5005197525024 ' +
-    '17.346492767334,10.7119340896606 16.6070022583008,11.080005645752 C16.5800018310547,11.0930051803589 13.7060022354126,12.5080051422119 13.8530025482178,14.0480060577393 C13.885461807251,14.9463510513306 ' +
-    '14.6271057128906,15.6556329727173 15.5260038375854,15.648006439209 C15.7335920333862,15.6517934799194 15.9392557144165,15.6076498031616 16.1270046234131,15.519006729126 C16.4660053253174,15.3440065383911 ' +
-    '16.9270038604736,15.0760068893433 17.3060054779053,14.8620071411133 C17.6580047607422,14.6620073318481 17.9360046386719,14.5000076293945 18.0340061187744,14.462007522583 C18.0420055389404,14.4570074081421 ' +
-    '19.345006942749,13.8240070343018 20.0930061340332,13.5530071258545 C20.556957244873,13.3810710906982 20.912712097168,13.0004873275757 21.0530052185059,12.5260066986084 C21.1513633728027,12.0210990905762 ' +
-    '20.9876804351807,11.5007009506226 20.6180038452148,11.1430063247681 C20.2013607025146,10.6815013885498 19.6001091003418,10.4305820465088 18.97900390625,10.4590072631836 M15.6870040893555,14.9010066986084 ' +
-    'C15.2949476242065,14.9034366607666 14.9401416778564,14.6691389083862 14.7884216308594,14.3076210021973 C14.6367015838623,13.9461030960083 14.7180309295654,13.5287685394287 14.9943990707397,13.2506771087646 ' +
-    'C15.2707672119141,12.9725856781006 15.6875867843628,12.8886623382568 16.0500411987305,13.0381317138672 C16.4124946594238,13.1876010894775 16.6489963531494,13.5409421920776 16.6490039825439,13.9330062866211 ' +
-    'C16.6497993469238,14.1889476776123 16.5488929748535,14.4347143173218 16.368480682373,14.6162490844727 C16.1880683898926,14.7977838516235 15.9429321289063,14.9002141952515 15.6869974136353,14.9010066986084 ' +
-    'M17.629997253418,13.8310070037842 C17.2379417419434,13.8334369659424 16.8831348419189,13.599139213562 16.7314147949219,13.237621307373 C16.5796947479248,12.8761034011841 16.6610260009766,12.4587688446045 ' +
-    '16.9373931884766,12.1806774139404 C17.2137603759766,11.9025859832764 17.6305809020996,11.8186626434326 17.993034362793,11.968132019043 C18.3554878234863,12.1176013946533 18.5919895172119,12.4709424972534 ' +
-    '18.5919971466064,12.8630065917969 C18.5927925109863,13.1189479827881 18.491886138916,13.3647146224976 18.3114738464355,13.5462493896484 C18.1310615539551,13.7277841567993 17.8859252929688,13.8302145004272 ' +
-    '17.6299915313721,13.8310070037842 M19.6659908294678,12.9460067749023 C19.2737560272217,12.9488430023193 18.9185810089111,12.714695930481 18.7666034698486,12.3530893325806 C18.6146259307861,11.9914827346802 ' +
-    '18.6958904266357,11.5739068984985 18.9723854064941,11.2956857681274 C19.2488803863525,11.0174646377563 19.6659412384033,10.9336032867432 20.0284862518311,11.083327293396 C20.3910312652588,11.2330513000488 ' +
-    '20.6273860931396,11.5867614746094 20.6269912719727,11.9790067672729 C20.6280937194824,12.5111932754517 20.1981544494629,12.9438076019287 19.6659812927246,12.9460067749023 M5.91499996185303,14.5530004501343 ' +
-    'L5.91499996185303,13.3030004501343 L4.68599987030029,13.3150005340576 C4.85151767730713,13.9138841629028 5.31733989715576,14.3831176757813 5.91499996185303,14.5530004501343 M19.6660003662109,11.2240009307861 ' +
-    'C19.3600978851318,11.2215700149536 19.0829601287842,11.4039707183838 18.9642086029053,11.6858940124512 C18.8454570770264,11.9678173065186 18.908561706543,12.2935342788696 19.1240100860596,12.5107088088989 ' +
-    'C19.3394584655762,12.7278833389282 19.6646633148193,12.7935857772827 19.9475250244141,12.6770858764648 C20.2303867340088,12.5605869293213 20.4149913787842,12.2849140167236 20.4150009155273,11.9790010452271 ' +
-    'C20.4161109924316,11.5639114379883 20.0810928344727,11.2262058258057 19.6660041809082,11.2240009307861 M15.6870040893555,13.1790008544922 C15.3811855316162,13.1773805618286 15.1045961380005,13.360408782959 ' +
-    '14.986533164978,13.642523765564 C14.8684701919556,13.9246387481689 14.9322566986084,14.2501106262207 15.1480751037598,14.4667911529541 C15.3638935089111,14.6834716796875 15.6891088485718,14.7485551834106 ' +
-    '15.9716920852661,14.6316184997559 C16.2542762756348,14.5146818161011 16.438404083252,14.2388229370117 16.4380035400391,13.9330005645752 C16.4385585784912,13.5175247192383 16.1024875640869,13.1801061630249 ' +
-    '15.6870079040527,13.1790008544922 M15.5490083694458,10.4970006942749 L17.1380081176758,9.78800106048584 C17.1930923461914,9.76573657989502 17.2205410003662,9.70375347137451 17.200008392334,9.64800071716309 ' +
-    'C17.1823596954346,9.60940742492676 17.1422710418701,9.58615684509277 17.1000080108643,9.59000110626221 C17.0830917358398,9.58913040161133 17.0662307739258,9.59257125854492 17.0510082244873,9.60000133514404 ' +
-    'L15.4580078125,10.3080015182495 C15.4300775527954,10.3203477859497 15.4079055786133,10.3428773880005 15.3960075378418,10.3710012435913 C15.3854494094849,10.3959293365479 15.3854494094849,10.4240732192993 ' +
-    '15.3960075378418,10.4490013122559 C15.4092197418213,10.4763450622559 15.4331483840942,10.4970092773438 15.4621238708496,10.5060997009277 C15.491099357605,10.5151901245117 15.5225439071655,10.5118970870972 ' +
-    '15.5490074157715,10.4970016479492 M6.84400749206543,11.1470012664795 L6.84400749206543,12.3980016708374 L8.07300758361816,12.3850021362305 C7.90748977661133,11.7861185073853 7.4416675567627,11.3168840408325 ' +
-    '6.84400749206543,11.1470012664795 M6.83000755310059,12.5970010757446 C6.71955060958862,12.5970010757446 6.63000774383545,12.5074577331543 6.63000774383545,12.3970012664795 L6.63000774383545,11.1030015945435 ' +
-    'C6.46425199508667,11.0783576965332 6.29576349258423,11.0783576965332 6.13000774383545,11.1030015945435 L6.13000774383545,12.4030017852783 C6.13000774383545,12.5134582519531 6.04046535491943,12.6030015945435 ' +
-    '5.93000841140747,12.6030015945435 L4.64200019836426,12.6030015945435 C4.61788988113403,12.7718114852905 4.61789035797119,12.9431915283203 4.64200019836426,13.1120014190674 L5.92899990081787,13.1120014190674 ' +
-    'C6.03945684432983,13.1120014190674 6.12899971008301,13.2015447616577 6.12899971008301,13.3120012283325 L6.12899971008301,14.6120014190674 C6.29485511779785,14.6352624893188 6.46314477920532,14.6352624893188 ' +
-    '6.62900018692017,14.6120014190674 L6.62900018692017,13.3050012588501 C6.62900018692017,13.1945447921753 6.71854257583618,13.105001449585 6.82899951934814,13.105001449585 L8.11699962615967,13.105001449585 ' +
-    'C8.14110946655273,12.9361925125122 8.14110946655273,12.7648124694824 8.11699962615967,12.5960025787354 Z M5.91500759124756,11.1470012664795 C5.31759738922119,11.3166999816895 4.85182666778564,11.7855014801025 ' +
-    '4.68600749969482,12.3840007781982 L5.91500759124756,12.3840007781982 Z M6.37900733947754,9.78100109100342 C5.13579034805298,9.77330684661865 4.01066732406616,10.5161743164063 3.52938151359558,11.6624774932861 ' +
-    'C3.04809546470642,12.808780670166 3.30567455291748,14.1321887969971 4.18175840377808,15.0143022537231 C5.05784225463867,15.8964157104492 6.37945175170898,16.1630668640137 7.52902936935425,15.6896553039551 ' +
-    'C8.67860698699951,15.2162437438965 9.42917442321777,14.0962419509888 9.43000793457031,12.8530015945435 C9.43445205688477,11.1627740859985 8.06928539276123,9.78818416595459 6.37903738021851,9.78100204467773 ' +
-    'M3.81303739547729,13.0530023574829 L3.33003735542297,12.8530025482178 L3.81303739547729,12.6470022201538 Z M6.37903738021851,9.78300285339355 L6.58403730392456,10.2680025100708 L6.1750373840332,10.2680025100708 ' +
-    'Z M6.37903738021851,15.9200029373169 L6.17903757095337,15.4340028762817 L6.58803749084473,15.4340028762817 Z M8.33703708648682,13.1060028076172 L8.31303691864014,13.2320032119751 L8.29603672027588,13.3190031051636 ' +
-    'L8.28603649139404,13.3190031051636 C8.11624336242676,14.0354280471802 7.55927085876465,14.5962629318237 6.84403705596924,14.7710027694702 L6.84403705596924,14.7770023345947 L6.76003694534302,14.794002532959 ' +
-    'L6.63403701782227,14.8190021514893 L6.63403701782227,14.8130025863647 C6.55016946792603,14.8243494033813 6.4656662940979,14.830361366272 6.38103723526001,14.8310022354126 C6.29674243927002,14.8303194046021 ' +
-    '6.21257448196411,14.8243074417114 6.12903785705566,14.8130025863647 L6.12903785705566,14.8190021514893 L6.00303792953491,14.794002532959 L5.92003774642944,14.7770023345947 L5.92003774642944,14.7710027694702 ' +
-    'C5.20441770553589,14.5965909957886 4.64699649810791,14.0356941223145 4.47703742980957,13.3190031051636 L4.46503734588623,13.3190031051636 L4.44903755187988,13.2320032119751 L4.42403745651245,13.1060028076172 ' +
-    'L4.43003749847412,13.1060028076172 C4.4059271812439,12.9371938705444 4.40592765808105,12.7658138275146 4.43003749847412,12.5970039367676 L4.42403745651245,12.5970039367676 L4.44903755187988,12.4700040817261 ' +
-    'L4.46503734588623,12.3840036392212 L4.47203731536865,12.3840036392212 C4.64199638366699,11.6673126220703 5.19941759109497,11.1064157485962 5.91503763198853,10.9320039749146 L5.91503763198853,10.9250040054321 ' +
-    'L6,10.9079999923706 L6.1269998550415,10.8839998245239 L6.1269998550415,10.8899993896484 C6.29301023483276,10.8690843582153 6.46098947525024,10.8690843582153 6.6269998550415,10.8899993896484 L6.6269998550415,' +
-    '10.8839998245239 L6.75299978256226,10.9079999923706 L6.83899974822998,10.9250001907349 L6.83899974822998,10.9320001602173 C7.5565505027771,11.1047668457031 8.11621284484863,11.6659746170044 8.28699970245361,' +
-    '12.3839998245239 L8.29299926757813,12.3839998245239 L8.30999946594238,12.4700002670288 L8.33399963378906,12.5970001220703 L8.32800006866455,12.5970001220703 C8.35354423522949,12.7657051086426 8.35354423522949,' +
-    '12.9372940063477 8.32800006866455,13.1059989929199 Z M8.94903755187988,12.6450023651123 L9.43103790283203,12.8510026931763 L8.94903755187988,13.0570030212402 Z M6.84203720092773,14.5530023574829 C7.43983268737793,' +
-    '14.3836040496826 7.90603351593018,13.9147500991821 8.07203674316406,13.3160028457642 L6.82999992370605,13.3160028457642 Z ';
-end;
-
 procedure TFormMain.FormResize(Sender: TObject);
 begin
+  if csDestroying in ComponentState then
+    Exit;
+  if (FLibraryBackTool <> nil) and (FHelpTool <> nil) then
+  begin
+    var HasCoin := (FCoinTool <> nil) and FCoinTool.Visible;
+    var Narrow := LayoutHead.Width < IfThen(HasCoin, 1386, 1186);
+    var Compact := LayoutHead.Width < IfThen(HasCoin, 740, 660);
+    var Y := IfThen(Narrow, 56, 8);
+    var Actions: TArray<TButton> := [FGameTools[0], FGameTools[1], FGameTools[2], FScreenshotTool,
+        FGameTools[3], FGameTools[4], FHelpTool];
+    var Widths: TArray<Single> := [130, 132, 132, 112, 44, 44, 88];
+    if HasCoin then
+    begin
+      Actions := [FGameTools[0], FCoinTool, FGameTools[1], FGameTools[2], FScreenshotTool,
+          FGameTools[3], FGameTools[4], FHelpTool];
+      Widths := [130, 188, 132, 132, 112, 44, 44, 88];
+    end;
+    var Total: Single := (Length(Actions) - 1) * 8;
+    for var W in Widths do
+      Total := Total + W;
+    var X := LayoutHead.Width - Total - 12;
+    if Narrow then
+      X := 8;
+    LayoutHead.Height := IfThen(Narrow, 104, 64);
+    FLibraryBackTool.Align := TAlignLayout.None;
+    FLibraryBackTool.SetBounds(8, 8, 156, 40);
+    var TitleWidth := Max(0, IfThen(Narrow, LayoutHead.Width - 188, X - 192));
+    LabelStatus.SetBounds(184, 5, TitleWidth, 30);
+    FGamePlatform.SetBounds(184, 33, TitleWidth, 22);
+    FScreenshotTool.Align := TAlignLayout.None;
+    for var I := 0 to High(Actions) do
+    begin
+      var W := Widths[I];
+      if Narrow then
+      begin
+        W := (LayoutHead.Width - 16 - (Length(Actions) - 1) * 6) / Length(Actions);
+        if I = 0 then
+          W := Max(32, W) + 26
+        else
+          W := Max(32, W - 26 / (Length(Actions) - 1));
+      end;
+      Actions[I].SetBounds(X, Y, W, 40);
+      X := X + W + IfThen(Narrow, 6, 8);
+    end;
+    if (FEmulation <> nil) and (FUserPaused or FAutoPaused) then
+      FGameTools[0].Text := Translate('Resume')
+    else
+      FGameTools[0].Text := Translate('Pause');
+    FGameTools[1].Text := Translate('Save');
+    FGameTools[2].Text := Translate('Load');
+    FScreenshotTool.Text := Translate('Screenshot');
+    if HasCoin then
+      FCoinTool.Text := Translate('Insert coin');
+    FGameTools[3].Text := '';
+    FGameTools[4].Text := '';
+    for var I := 0 to High(Actions) do
+    begin
+      if (Compact and (Actions[I] <> FHelpTool)) or
+        ((Actions[I] = FCoinTool) and (Actions[I].Width < 180)) then
+        Actions[I].Text := '';
+      for var Child in Actions[I].Children do
+        if Child is FMX.Objects.TPath then
+        begin
+          var Icon := FMX.Objects.TPath(Child);
+          if I = 0 then
+            if (FEmulation <> nil) and (FUserPaused or FAutoPaused) then
+              Icon.Data.Data := IconPlay
+            else
+              Icon.Data.Data := IconPause;
+          Icon.Position.X := IfThen(Actions[I].Text = '', (Actions[I].Width - 20) / 2, 12);
+        end;
+    end;
+  end;
   if FMiraclePiano <> nil then
     FMiraclePiano.Height := TNesMiraclePiano.PreferredHeight(LayoutClient.Width,
       ClientHeight - Padding.Top - Padding.Bottom - LayoutHead.Height);
@@ -1108,7 +1013,7 @@ begin
     FDataRecorder.Progress := Tape.GetTapeProgress;
   except
     on E: Exception do
-      ShowMessage('Cassette: ' + E.Message);
+      ShowMessage(Translate('Cassette: ') + E.Message);
   end;
 end;
 
@@ -1116,7 +1021,7 @@ procedure TFormMain.SelectTapeFile(const FileName: string);
 begin
   var Tape: INesTapeCore;
   if not Supports(FEmulation, INesTapeCore, Tape) or not Tape.UsesDataRecorder then
-    raise EInvalidOperation.Create('No data recorder connected');
+    raise EInvalidOperation.Create(Translate('No data recorder connected'));
   Tape.TapeCommand(TapeSelectFile, FileName);
   FDataRecorder.Progress := Tape.GetTapeProgress;
 end;
@@ -1146,14 +1051,14 @@ begin
     on E: Exception do
     begin
       FStorage.Delete(Path);
-      ShowMessage('Cassette: ' + E.Message);
+      ShowMessage(Translate('Cassette: ') + E.Message);
     end;
   end;
   {$ELSE}
   var Dialog := TSaveDialog.Create(Self);
   try
-    Dialog.Title := 'Save cassette as';
-    Dialog.Filter := 'Cassette (*.tape)|*.tape';
+    Dialog.Title := Translate('Save cassette as');
+    Dialog.Filter := Translate('Cassette (*.tape)|*.tape');
     Dialog.DefaultExt := 'tape';
     Dialog.Options := [TOpenOption.ofPathMustExist, TOpenOption.ofOverwritePrompt];
     Dialog.FileName := Tape.GetTapeProgress.FileName;
@@ -1163,7 +1068,7 @@ begin
       FDataRecorder.Progress := Tape.GetTapeProgress;
     except
       on E: Exception do
-        ShowMessage('Cassette: ' + E.Message);
+        ShowMessage(Translate('Cassette: ') + E.Message);
     end;
   finally
     Dialog.Free;
@@ -1314,16 +1219,32 @@ end;
 
 procedure TFormMain.SetStatus(const Text: string);
 begin
-  Caption := AppName + ' - ' + Text;
+  Caption := AppName;
   {$IFDEF ANDROID}
-  LabelStatus.Text := Caption;
+  LabelStatus.Text := Text;
   {$ELSE}
-  LayoutHead.Visible := False;
+  LabelStatus.Text := Text;
+  if FEmulation <> nil then
+    LabelStatus.Text := FRomDisplayName;
+  UpdateGameChrome;
+  if FLibrary <> nil then
+    FormResize(Self);
   {$ENDIF}
 end;
 
 procedure TFormMain.SyncActivity;
 begin
+  if FGameTools[0] <> nil then
+  begin
+    FGameTools[0].Enabled := (FEmulation <> nil) and not FEmulationFaulted and not FOpeningRom;
+    if (FEmulation <> nil) and (FUserPaused or FAutoPaused) then
+      FGameTools[0].Text := Translate('Resume')
+    else
+      FGameTools[0].Text := Translate('Pause');
+    FGameTools[1].Enabled := (FEmulation <> nil) and FEmulation.SupportsSnapshots and not FOpeningRom;
+    FGameTools[2].Enabled := FGameTools[1].Enabled;
+    FGameTools[4].Enabled := not FOpeningRom;
+  end;
   var Tape: INesTapeCore;
   if FDataRecorder <> nil then
   begin
@@ -1410,7 +1331,7 @@ begin
   end;
   if FMiraclePiano <> nil then
     FMiraclePiano.Enabled := FMiraclePiano.Enabled and not FInBackground;
-  var Paused := FInBackground or FOpeningRom or FUserPaused or (FSettingsView <> nil);
+  var Paused := FInBackground or FOpeningRom or FUserPaused or (FSettingsView <> nil) or (FHelp <> nil);
   if FPowerPad <> nil then
     FPowerPad.Enabled := FPowerPad.Enabled and not FInBackground;
   if FGamepad <> nil then
@@ -1435,6 +1356,7 @@ begin
   {$ELSE}
   TimerUpdate.Enabled := (FInput <> nil) or ((FEmulation <> nil) and not FEmulationFaulted);
   {$ENDIF}
+  UpdateGameChrome;
 end;
 
 {$IFDEF ANDROID}
@@ -1491,6 +1413,14 @@ end;
 
 procedure TFormMain.FormDeactivate(Sender: TObject);
 begin
+  {$IFNDEF ANDROID}
+  if FPauseOnFocusLoss and not HostInputHasFocus and not FViewingLibrary and
+    (FSettingsView = nil) and (FEmulation <> nil) and not FEmulation.IsPaused then
+  begin
+    FAutoPaused := True;
+    FEmulation.Pause;
+  end;
+  {$ENDIF}
   // Release keys whose key-up may be lost. Android lifecycle controls pausing.
   FillChar(FKeysDown, SizeOf(FKeysDown), 0);
   FSuppressInputUntilRelease := True;
@@ -1518,7 +1448,7 @@ begin
   if FEmulation = nil then
     Exit;
   try
-    SetStatus('Screenshot: ' + SaveScreenshot);
+    SetStatus(Translate('Screenshot: ') + SaveScreenshot);
   except
     on E: Exception do
       SetStatus(E.Message);
@@ -1528,7 +1458,7 @@ end;
 function TFormMain.SaveScreenshot: string;
 begin
   if FEmulation = nil then
-    raise EInvalidOperation.Create('No game loaded');
+    raise EInvalidOperation.Create(Translate('No game loaded'));
   Result := FStorage.ScreenshotFile(FRomDisplayName);
   var Stream := TMemoryStream.Create;
   try
@@ -1542,28 +1472,250 @@ end;
 procedure TFormMain.SaveSnapshot(const Name: string);
 begin
   if FEmulation = nil then
-    raise Exception.Create('No game loaded');
+    raise Exception.Create(Translate('No game loaded'));
   if not FEmulation.SupportsSnapshots then
-    raise ENotSupportedException.Create('Snapshots are not implemented by this core');
+    raise ENotSupportedException.Create(Translate('Snapshots are not implemented by this core'));
   FEmulation.SaveSnapshot(Name);
+  if FLibrary <> nil then
+    FLibrary.RefreshSnapshots;
 end;
 
 procedure TFormMain.LoadSnapshot(const Name: string);
 begin
   if FEmulation = nil then
-    raise Exception.Create('No game loaded');
+    raise Exception.Create(Translate('No game loaded'));
   if not FEmulation.SupportsSnapshots then
-    raise ENotSupportedException.Create('Snapshots are not implemented by this core');
+    raise ENotSupportedException.Create(Translate('Snapshots are not implemented by this core'));
   FEmulation.LoadSnapshot(Name);
   FEmulationFaulted := False;
   SyncActivity;
-  UpdateFrame;
+  if not UpdateFrame then
+    LoadSnapshotPreview(Name);
+end;
+
+procedure TFormMain.InsertCoinClick(Sender: TObject);
+begin
+  if (FEmulation = nil) or FEmulationFaulted or FOpeningRom or FViewingLibrary or
+    (FSettingsView <> nil) or (FHelp <> nil) or not FEmulation.HasCoinAcceptor then
+    Exit;
+  FEmulation.InsertCoin1;
+end;
+
+procedure TFormMain.UpdatePauseOverlay;
+begin
+  var Paused := (FEmulation <> nil) and (FUserPaused or FAutoPaused or FEmulation.IsPaused);
+  ImageCanvas.Opacity := IfThen(Paused, 0.5, 1);
+  LabelPaused.Visible := Paused and not FViewingLibrary and (FHelp = nil) and (FSettingsView = nil);
+  if LabelPaused.Visible then
+    LabelPaused.BringToFront;
+end;
+
+procedure TFormMain.UpdateGameChrome;
+begin
+  if csDestroying in ComponentState then
+    Exit;
+  if FGamePlatform <> nil then
+  begin
+    FGamePlatform.Text := LibrarySystemName(FInputSystemId);
+    if FEmulation <> nil then
+      FGamePlatform.Text := FEmulation.Name;
+  end;
+  if FGameStatus <> nil then
+  begin
+    FGameStatus.Visible := not FullScreen;
+    if FEmulation <> nil then
+      if FEmulation.Config.AudioEnabled and (FEmulation.Config.AudioVolume > 0) and not FSoundErrorShown then
+        FGameAudio.Text := Translate('Audio on')
+      else
+        FGameAudio.Text := Translate('Audio off');
+  end;
+  {$IFNDEF ANDROID}
+  LayoutHead.Visible := (FLibrary <> nil) and not FullScreen;
+  {$ENDIF}
+  if FCoinTool <> nil then
+  begin
+    var WasVisible := FCoinTool.Visible;
+    FCoinTool.Visible := (FEmulation <> nil) and FEmulation.HasCoinAcceptor;
+    FCoinTool.Enabled := FCoinTool.Visible and not FEmulationFaulted and not FOpeningRom and
+      not FViewingLibrary and (FSettingsView = nil) and (FHelp = nil);
+    if WasVisible <> FCoinTool.Visible then
+      FormResize(Self);
+  end;
+  if FHelpTool <> nil then
+  begin
+    FHelpTool.Enabled := (FEmulation <> nil) and not FOpeningRom and not FHelpClosing;
+    if FHelp <> nil then
+      FHelpTool.StyleLookup := 'buttonstyle_accent'
+    else
+      FHelpTool.StyleLookup := 'buttonstyle';
+    var Color: TAlphaColor := $FFFFB43B;
+    if FHelp <> nil then
+      Color := $FF1B2026;
+    FHelpTool.TextSettings.FontColor := Color;
+    for var Child in FHelpTool.Children do
+      if Child is FMX.Objects.TPath then
+        FMX.Objects.TPath(Child).Stroke.Color := Color;
+  end;
+  {$IFNDEF ANDROID}
+  if FullScreen then
+  begin
+    // SyncActivity and frame/status updates can make controls visible again.
+    // Hide game chrome while retaining the pause overlay.
+    for var Child in LayoutClient.Children do
+      if (Child is TControl) and (Child <> ImageCanvas) and (Child <> RectangleBG) and (Child <> LabelPaused) then
+        TControl(Child).Visible := False;
+    ImageLogo.Visible := False;
+  end;
+  {$ENDIF}
+  UpdatePauseOverlay;
+end;
+
+procedure TFormMain.ControlsHelpClick(Sender: TObject);
+begin
+  if FHelp <> nil then
+  begin
+    ControlsHelpClose(Self);
+    Exit;
+  end;
+  if (FEmulation = nil) or FViewingLibrary or (FSettingsView <> nil) or FOpeningRom or FHelpClosing then
+    Exit;
+  FHelpWasPaused := FEmulation.IsPaused or FUserPaused or FAutoPaused;
+  FHelpFullScreen := FullScreen;
+  if FullScreen then
+    SwitchFullScreen;
+  FormDeactivate(Self);
+  FEmulation.Pause;
+  var Players := 2;
+  if FInputSystemId = 'gb' then
+    Players := 1;
+  if FInputSystemId = 'gbc' then
+    Players := 1;
+  if FInputSystemId = 'snes' then
+    if FInputPorts.Multitap[1] then
+      Players := 8
+    else if FInputPorts.Multitap[0] then
+      Players := 5;
+  if FInputSystemId = 'nes' then
+  begin
+    var Config: INesEmulatorConfig;
+    if Supports(FEmulation.Config, INesEmulatorConfig, Config) and Config.FourScore then
+      Players := 4;
+  end;
+  var Peripheral: INesPeripheralCore;
+  var Piano: INesMiraclePianoCore;
+  var KeyboardPeripheral := FEmulation.UsesSuborKeyboard or
+    (Supports(FEmulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard) or
+    (Supports(FEmulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano);
+  try
+    FHelp := TControlsHelpView.CreateHelp(Self, FInput, FInputSystemId, FInputPorts, Players, KeyboardPeripheral, FStorage, FEmulation.HasCoinAcceptor);
+    FHelp.Parent := Self;
+    FHelp.Align := TAlignLayout.Contents;
+    FHelp.OnClose := ControlsHelpClose;
+    FHelp.OnSettings := ControlsHelpSettings;
+    FHelp.BringToFront;
+  except
+    FreeAndNil(FHelp);
+    if not FHelpWasPaused then
+      FEmulation.Resume;
+    if FHelpFullScreen then
+      SwitchFullScreen;
+    raise;
+  end;
+  FKeysDown[vkF1] := True;
+  SyncActivity;
+end;
+
+procedure TFormMain.ControlsHelpClose(Sender: TObject);
+begin
+  CloseControlsHelp;
+end;
+
+procedure TFormMain.ControlsHelpSettings(Sender: TObject);
+begin
+  CloseControlsHelp(True);
+end;
+
+procedure TFormMain.CloseControlsHelp(OpenSettings: Boolean);
+begin
+  if (FHelp = nil) or FHelpClosing then
+    Exit;
+  FHelpClosing := True;
+  var Alive: TFunc<Boolean> := FCallbackAlive;
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if not Alive() then
+        Exit;
+      FreeAndNil(FHelp);
+      FHelpClosing := False;
+      if (FEmulation <> nil) and not FHelpWasPaused and not FUserPaused and not FAutoPaused and
+        not FEmulationFaulted and HostInputHasFocus then
+        FEmulation.Resume;
+      FSuppressInputUntilRelease := True;
+      FillChar(FKeysDown, SizeOf(FKeysDown), 0);
+      if OpenSettings then
+      begin
+        SettingsClick(Self);
+        if FSettingsView <> nil then
+        begin
+          for var I := Low(SettingsCoreIds) to High(SettingsCoreIds) do
+            if SettingsCoreIds[I] = FInputSystemId then
+              FSettingsView.SelectCore(I);
+          FSettingsView.SelectCategory(3);
+        end;
+      end
+      else
+      begin
+        if FHelpFullScreen and (FEmulation <> nil) and not FViewingLibrary then
+          SwitchFullScreen;
+        FormActivate(Self);
+        LayoutClient.SetFocus;
+      end;
+      SyncActivity;
+    end);
 end;
 
 procedure TFormMain.SwitchFullScreen;
 begin
+  if (FEmulation = nil) or FViewingLibrary or (FSettingsView <> nil) or (FHelp <> nil) then
+    Exit;
+  {$IFNDEF ANDROID}
+  if not FullScreen then
+    FFullScreenPadding := Padding.Rect;
+  {$ENDIF}
+  {$IFDEF MSWINDOWS}
+  if not FullScreen then
+  begin
+    FFullScreenBorderStyle := BorderStyle;
+    FFullScreenWindowState := WindowState;
+    FFullScreenPlacement := Default(TWindowPlacement);
+    FFullScreenPlacement.length := SizeOf(FFullScreenPlacement);
+    if not GetWindowPlacement(WindowHandleToPlatform(Handle).Wnd, @FFullScreenPlacement) then
+      FFullScreenPlacement.length := 0;
+  end;
+  {$ENDIF}
   FullScreen := not FullScreen;
-  LayoutLeft.Visible := not FullScreen;
+  {$IFDEF MSWINDOWS}
+  if not FullScreen then
+  begin
+    // FMX skips restoring the frame when the first fullscreen entry is from
+    // a maximized window, because its saved normal size is still empty.
+    BorderStyle := FFullScreenBorderStyle;
+    WindowState := FFullScreenWindowState;
+    // Restoring BorderStyle recreates the HWND. Preserve its normal restore
+    // rectangle too, including when fullscreen was entered while maximized.
+    if FFullScreenPlacement.length <> 0 then
+      SetWindowPlacement(WindowHandleToPlatform(Handle).Wnd, @FFullScreenPlacement);
+    UpdateSystemBackdropType;
+  end;
+  {$ENDIF}
+  {$IFNDEF ANDROID}
+  if FullScreen then
+    Padding.Rect := TRectF.Empty
+  else
+    Padding.Rect := FFullScreenPadding;
+  {$ENDIF}
+  LayoutLeft.Visible := (FLibrary = nil) and not FullScreen;
   {$IFDEF ANDROID}
   LayoutClient.Visible := FullScreen;
   {$ENDIF}
@@ -1574,11 +1726,14 @@ begin
   end
   else
     LayoutClient.Cursor := crDefault;
+  SyncActivity;
+  FSuppressInputUntilRelease := True;
+  FKeysDown[vkF11] := True;
 end;
 
 procedure TFormMain.FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
-  if FSettingsView <> nil then
+  if (FSettingsView <> nil) or FViewingLibrary then
     Exit;
   if (FInput <> nil) and not FDispatchingInput then
   begin
@@ -1612,7 +1767,22 @@ begin
   end;
   if not WasDown then
   begin
-    if (Code = vkEscape) and not KeyboardActive then
+    if FHelp <> nil then
+    begin
+      if Code in [vkEscape, vkF1] then
+        ControlsHelpClose(Self);
+      Key := 0;
+      KeyChar := #0;
+      Exit;
+    end
+    else if Code = vkF1 then
+    begin
+      ControlsHelpClick(Self);
+      Key := 0;
+      KeyChar := #0;
+      Exit;
+    end
+    else if (Code = vkEscape) and (FullScreen or not KeyboardActive) then
     begin
       if FullScreen then
         SwitchFullScreen
@@ -1641,10 +1811,12 @@ begin
     end
     else if (Code = vkP) and not KeyboardActive then
       SwitchPause
+    else if (Code = vkF9) and not KeyboardActive then
+      InsertCoinClick(Self)
     else if (Code = vkF8) and (FEmulation <> nil) and not KeyboardActive then
     begin
       try
-        SetStatus('Screenshot: ' + SaveScreenshot);
+        SetStatus(Translate('Screenshot: ') + SaveScreenshot);
       except
         on E: Exception do
           ShowMessage(E.Message);
@@ -1659,11 +1831,11 @@ begin
           LoadSnapshot('quick');
       except
         on E: Exception do
-          ShowMessage('Snapshot: ' + E.Message);
+          ShowMessage(Translate('Snapshot: ') + E.Message);
       end;
     end;
   end;
-  if KeyboardActive or not (ssCtrl in Shift) then
+  if (FHelp = nil) and (KeyboardActive or not (ssCtrl in Shift)) then
     if (FEmulation <> nil) and (FInput = nil) then
       ForwardKeyState(Code, True);
   Key := 0;
@@ -1672,7 +1844,7 @@ end;
 
 procedure TFormMain.FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
-  if FSettingsView <> nil then
+  if (FSettingsView <> nil) or FViewingLibrary then
     Exit;
   if (FInput <> nil) and not FDispatchingInput then
   begin
@@ -1694,7 +1866,7 @@ begin
   var Code: Word := Key;
   if Code <= High(FKeysDown) then
     FKeysDown[Code] := False;
-  if (FEmulation <> nil) and (FInput = nil) then
+  if (FHelp = nil) and (FEmulation <> nil) and (FInput = nil) then
     ForwardKeyState(Code, False);
   Key := 0;
   KeyChar := #0;
@@ -1705,6 +1877,7 @@ begin
   if (FEmulation = nil) or FEmulationFaulted then
     Exit;
 
+  FAutoPaused := False;
   FUserPaused := not FUserPaused;
   if FUserPaused then
   begin
@@ -1781,7 +1954,7 @@ begin
       TimerUpdate.Enabled := False;
       if FEmulation <> nil then
         FEmulation.ClearInput;
-      SetStatus('Ошибка ввода: ' + E.Message);
+      SetStatus(Translate('Input error: ') + E.Message);
       Exit;
     end;
   end;
@@ -1794,16 +1967,7 @@ begin
   {$ENDIF}
   if FEmulationFaulted or not TimerUpdate.Enabled or (FEmulation = nil) then
     Exit;
-  if FEmulation.IsPaused then
-  begin
-    ImageCanvas.Opacity := 0.5;
-    LabelPaused.Visible := True;
-  end
-  else
-  begin
-    ImageCanvas.Opacity := 1;
-    LabelPaused.Visible := False;
-  end;
+  UpdatePauseOverlay;
   try
     UpdatePeripheralFeedback;
     UpdateFrame;
@@ -1820,7 +1984,7 @@ begin
   if FEmulation <> nil then
     FEmulation.Pause;
   FormDeactivate(Self);
-  SetStatus('Stopped after error - ' + FRomDisplayName);
+  SetStatus(Translate('Stopped after error - ') + FRomDisplayName);
   SyncActivity;
 end;
 
@@ -1855,7 +2019,75 @@ begin
   end;
 end;
 
-procedure TFormMain.LoadRom(const FileName: string; const DisplayName: string);
+procedure TFormMain.LibraryPlay(Sender: TObject);
+begin
+  if (FLibrary.Selected = nil) or FOpeningRom then
+    Exit;
+  var Game := FLibrary.Selected;
+  var Snapshot := FLibrary.SnapshotName;
+  try
+    LoadRom(Game.FileInfo.Location, Game.Title, Snapshot <> '');
+    if Snapshot <> '' then
+      LoadSnapshot(Snapshot);
+  except
+    on E: Exception do
+      TDialogService.ShowMessage(Translate('Unable to open game: ') + E.Message);
+  end;
+end;
+
+procedure TFormMain.LibraryBack(Sender: TObject);
+begin
+  if FLibrary = nil then
+    Exit;
+  FormDeactivate(Self);
+  if FEmulation <> nil then
+    FEmulation.Pause;
+  if FullScreen then
+    SwitchFullScreen;
+  LayoutLeft.Visible := False;
+  LayoutClient.Visible := False;
+  FLibrary.Visible := True;
+  FLibrary.RefreshSnapshots;
+  FLibrary.BringToFront;
+  FViewingLibrary := True;
+  UpdateGameChrome;
+end;
+
+procedure TFormMain.PauseClick(Sender: TObject);
+begin
+  SwitchPause;
+end;
+
+procedure TFormMain.SaveStateClick(Sender: TObject);
+begin
+  if (FEmulation = nil) or not FEmulation.SupportsSnapshots then
+    Exit;
+  try
+    SaveSnapshot('Quick');
+  except
+    on E: Exception do
+      TDialogService.ShowMessage(E.Message);
+  end;
+end;
+
+procedure TFormMain.LoadStateClick(Sender: TObject);
+begin
+  if (FEmulation = nil) or not FEmulation.SupportsSnapshots then
+    Exit;
+  try
+    LoadSnapshot('Quick');
+  except
+    on E: Exception do
+      TDialogService.ShowMessage(E.Message);
+  end;
+end;
+
+procedure TFormMain.FullscreenClick(Sender: TObject);
+begin
+  SwitchFullScreen;
+end;
+
+procedure TFormMain.LoadRom(const FileName: string; const DisplayName: string; StartPaused: Boolean);
 begin
   ImageLogo.Visible := False;
   // Construct first: an invalid ROM leaves the current worker running.
@@ -1937,7 +2169,8 @@ begin
       end;
   end;
 
-  FUserPaused := False;
+  FUserPaused := StartPaused;
+  FAutoPaused := False;
   ImageCanvas.DisableInterpolation := SameText(FEmulation.Config.Filter, 'nearest');
   FillChar(FKeysDown, SizeOf(FKeysDown), 0);
   FRomDisplayName := DisplayName;
@@ -1947,11 +2180,28 @@ begin
   try
     ImageCanvas.Bitmap.Clear(TAlphaColors.Black);
     FEmulationFaulted := False;
+    if FUserPaused then
+      FEmulation.Pause;
     {$IFDEF ANDROID}
     if FActivityPaused then
       FEmulation.Pause;
     {$ENDIF}
     FEmulation.Start;
+    if FLibrary <> nil then
+    begin
+      var Info: IEmulationSnapshotLocation;
+      var Directory := '';
+      if Supports(FEmulation, IEmulationSnapshotLocation, Info) then
+        Directory := Info.GetSnapshotDirectory;
+      FLibrary.RecordSession(FileName, Directory);
+      FLibrary.Visible := False;
+      LayoutClient.Visible := True;
+      LayoutLeft.Visible := False;
+      FViewingLibrary := False;
+      LayoutClient.SetFocus;
+      if FStartFullscreen and not FullScreen then
+        SwitchFullScreen;
+    end;
     SyncActivity;
     SetStatus(FEmulation.Name + ' - ' + FRomDisplayName);
   except
@@ -1970,7 +2220,6 @@ begin
   FChoosingTape := False;
   {$ENDIF}
   FOpeningRom := False;
-  ButtonOpen.Enabled := True;
   FormActivate(Self);
 end;
 
@@ -1979,7 +2228,6 @@ begin
   if FOpeningRom then
     Exit;
   FOpeningRom := True;
-  ButtonOpen.Enabled := False;
   FormDeactivate(Self);
   SyncActivity;
   var IsAlive: TFunc<Boolean> := FCallbackAlive;
@@ -2021,8 +2269,8 @@ begin
   begin
     FFileDialog.InitialDirectory := '';
     FFileDialog.FileMustExist := False;
-    FFileDialog.Title := 'Choose a cassette file';
-    FFileDialog.Filter := 'Cassette (*.tape)|*.tape|All files|*.*';
+    FFileDialog.Title := Translate('Choose a cassette file');
+    FFileDialog.Filter := Translate('Cassette (*.tape)|*.tape|All files|*.*');
     FFileDialog.SelectFiles(
       procedure(const Selection: TFMXSelectionResult)
       begin
@@ -2061,11 +2309,48 @@ end;
 
 procedure TFormMain.ReportAudioError(const MessageText: string);
 begin
-  ShowMessage('Sound unavailable; the game will continue without audio.' + SLineBreak + MessageText);
+  ShowMessage(Translate('Sound unavailable; the game will continue without audio.') + SLineBreak + MessageText);
 end;
 
-procedure TFormMain.UpdateFrame;
+procedure TFormMain.LoadSnapshotPreview(const Name: string);
 begin
+  var Location: IEmulationSnapshotLocation;
+  if not Supports(FEmulation, IEmulationSnapshotLocation, Location) then
+    Exit;
+  var Directory := Location.GetSnapshotDirectory;
+  if Directory = '' then
+    Exit;
+  var Bitmap := FMX.Graphics.TBitmap.Create;
+  try
+    for var Extension in ['.png', '.bmp'] do
+    try
+      var Path := TPath.Combine(Directory, Name + Extension);
+      if not FStorage.Exists(Path) then
+        Continue;
+      var Stream := FStorage.OpenRead(Path);
+      try
+        Bitmap.LoadFromStream(Stream);
+      finally
+        Stream.Free;
+      end;
+      if Bitmap.IsEmpty then
+        Continue;
+      ImageCanvas.Bitmap.Assign(Bitmap);
+      ImageCanvas.Repaint;
+      Exit;
+    except
+      // Optional artwork must not prevent a valid game state from loading.
+      on E: Exception do
+        Continue;
+    end;
+  finally
+    Bitmap.Free;
+  end;
+end;
+
+function TFormMain.UpdateFrame: Boolean;
+begin
+  Result := False;
   if FEmulation = nil then
     Exit;
   var Frame: TEmulatorFrame;
@@ -2088,6 +2373,9 @@ begin
   end;
   if not FEmulationFaulted and NewFrame then
   begin
+    if FGameFPS <> nil then
+      FGameFPS.Text := Format('%.1f FPS   ·   %s   ·   %d × %d',
+        [Frame.FramesPerSecond, UpperCase(FInputSystemId), Frame.Width, Frame.Height]);
     var NewCaption := Format('%s - %.1f FPS', [FEmulation.Name, Frame.FramesPerSecond]);
     if Caption <> NewCaption then
       SetStatus(NewCaption);
@@ -2102,6 +2390,7 @@ begin
   if ImageCanvas.Bitmap.Map(TMapAccess.Write, Data) then
   try
     UploadFramePixels(Frame.Pixels, Frame.Width, Frame.Height, Data);
+    Result := True;
   finally
     ImageCanvas.Bitmap.Unmap(Data);
   end;
@@ -2110,38 +2399,14 @@ end;
 
 procedure TFormMain.DoOnSettingChange;
 begin
-  //FF2C4361 - FF0B1E39
-  var OverAccentColor := SystemAccentColor;
-
-  // Set stylebook and color for theme
-  if IsDark then
-  begin
-    // Set accent color for stylebook
-    ChangeStyleBookColor(FormStyles.StyleBookWinUI3, OverAccentColor);
-    StyleBook := FormStyles.StyleBookWinUI3;
-  end
-  else
-  begin
-    // Set accent color for stylebook
-    ChangeStyleBookColor(FormStyles.StyleBookWinUI3Light, OverAccentColor);
-    StyleBook := FormStyles.StyleBookWinUI3Light;
-  end;
+  StyleBook := FormStyles.StyleBookWinUI3;
 
   inherited;
 
+  //UpdateSystemBackdropType;
   SystemBackdropType := TWindowBackdropType.Disable;
-  Fill.Kind := TBrushKind.None;
-
-  UpdateSystemBackdropType;
-               {
-  if RadioButtonSetBGGradient.IsChecked then
-  begin
-    Fill.Kind := TBrushKind.Gradient;
-    //Fill.Gradient.Color := $FF2C4361;
-    //Fill.Gradient.Color1 := $FF0B1E39;
-    Fill.Gradient.Color := ComboColorBoxSetBGColor1.Color;
-    Fill.Gradient.Color1 := ComboColorBoxSetBGColor2.Color;
-  end;    }
+  Fill.Color := $FF181C21;
+  Fill.Kind := TBrushKind.Solid;
 
   TMessageManager.DefaultManager.SendMessage(Self, TStyleChangedMessage.Create(StyleBook, Self), True);
   TMessageManager.DefaultManager.SendMessage(Self, TInternalSettingChangedMessage.Create(StyleBook, Self), True);

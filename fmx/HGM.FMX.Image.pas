@@ -4,11 +4,12 @@ interface
 
 uses
   Core.Storage, System.Classes, System.Types, System.SysUtils, FMX.Forms,
-  FMX.Graphics, FMX.Objects, System.Threading, System.Generics.Collections,
-  System.Net.HttpClient;
+  FMX.Graphics, FMX.Objects, FMX.Surfaces, System.Threading,
+  System.Generics.Collections, System.Net.HttpClient;
 
 type
   TCallbackObject = record
+    RequestId: Int64;
     Owner: TComponent;
     Bitmap: TBitmap;
     Url: string;
@@ -30,20 +31,22 @@ type
       FClient: THTTPClient;
       FCachePath: string;
       FCacheExpire: Double;
+      FNextRequestId: Int64;
   private
     class function UrlToCacheName(const Url: string): string;
     class procedure AddCallback(Callback: TCallbackObject);
-    class procedure Ready(const Url: string; Bitmap: TBitmap);
+    class function IsPending(RequestId: Int64): Boolean; static;
+    class procedure Ready(RequestId: Int64; Surface: TBitmapSurface);
     class function Get(const URL: string): TMemoryStream; static;
-    class function GetBitmap(const URL: string): TBitmap; static;
+    class function GetBitmap(const URL: string): TBitmapSurface; static;
     class function GetClient: THTTPClient; static;
     class procedure SetCachePath(const Value: string); static;
-    class function FindCached(const Url: string; out Bitmap: TBitmap): Boolean; static;
-    class procedure AddCache(const Url: string; Bitmap: TBitmap);
-    class procedure AddCacheFileName(const FileName: string; Bitmap: TBitmap);
-    class function FindCachedFileName(const FileName: string; out Bitmap: TBitmap): Boolean; static;
+    class function FindCached(const Url: string; out Bitmap: TBitmapSurface): Boolean; static;
+    class procedure AddCache(const Url: string; Bitmap: TBitmapSurface);
+    class procedure AddCacheFileName(const FileName: string; Bitmap: TBitmapSurface);
+    class function FindCachedFileName(const FileName: string; out Bitmap: TBitmapSurface): Boolean; static;
     class procedure SetCacheExpire(const Value: Double); static;
-    class function GetBitmapFromFile(const FileName: string; const AFitWidth, AFitHeight: Single; const Storage: IStorage = nil): TBitmap; static;
+    class function GetBitmapFromFile(const FileName: string; const AFitWidth, AFitHeight: Single; const Storage: IStorage = nil): TBitmapSurface; static;
   public
     class procedure RemoveCallback(const AOwner: TComponent);
     class procedure CancelAll;
@@ -68,7 +71,8 @@ type
 implementation
 
 uses
-  FMX.Surfaces, FMX.Types, FMX.Consts, System.Hash, System.IOUtils;
+  FMX.Types, FMX.Consts, System.Hash, System.IOUtils, System.SyncObjs,
+  System.Math;
 
 { TBitmapHelper }
 
@@ -76,6 +80,19 @@ class procedure TBitmapHelper.AddCallback(Callback: TCallbackObject);
 begin
   Callback.Owner.FreeNotification(FObjectOwner);
   FCallbackList.Add(Callback);
+end;
+
+class function TBitmapHelper.IsPending(RequestId: Int64): Boolean;
+begin
+  Result := False;
+  var List := FCallbackList.LockList;
+  try
+    for var Item in List do
+      if Item.RequestId = RequestId then
+        Exit(True);
+  finally
+    FCallbackList.UnlockList;
+  end;
 end;
 
 class procedure TBitmapHelper.CancelAll;
@@ -116,27 +133,35 @@ procedure TBitmapHelper.LoadFromFileAsync(AOwner: TComponent; const FileName: st
 begin
   if AOwner = nil then
     raise Exception.Create('You must specify an owner (responsible) who will ensure that the Bitmap is not destroyed before the owner');
-  var RequestKey := FileName + #0 + AFitWidth.ToString + #0 + AFitHeight.ToString;
+  var RequestId := TInterlocked.Increment(FNextRequestId);
   var Callback: TCallbackObject;
+  Callback.RequestId := RequestId;
   Callback.Owner := AOwner;
   Callback.Bitmap := Self;
-  Callback.Url := RequestKey;
+  Callback.Url := FileName;
   Callback.OnDone := OnDone;
   Callback.Task := TTask.Create(
     procedure
     begin
       try
+        if not IsPending(RequestId) then
+          Exit;
         var Mem := GetBitmapFromFile(FileName, AFitWidth, AFitHeight, Storage);
+        if not IsPending(RequestId) then
+        begin
+          Mem.Free;
+          Exit;
+        end;
         TThread.ForceQueue(nil,
           procedure
           begin
-            Ready(RequestKey, Mem);
+            Ready(RequestId, Mem);
           end);
       except
         TThread.ForceQueue(nil,
           procedure
           begin
-            Ready(RequestKey, nil);
+            Ready(RequestId, nil);
           end);
       end;
     end, Pool);
@@ -189,14 +214,15 @@ begin
   end;
 end;
 
-class function TBitmapHelper.GetBitmap(const URL: string): TBitmap;
+class function TBitmapHelper.GetBitmap(const URL: string): TBitmapSurface;
 begin
-  Result := TBitmap.Create;
+  Result := TBitmapSurface.Create;
   try
     var Mem := Get(URL);
     if Assigned(Mem) then
     try
-      Result.LoadFromStream(Mem);
+      if not TBitmapCodecManager.LoadFromStream(Mem, Result) then
+        raise Exception.Create('Unable to decode image: ' + URL);
     finally
       Mem.Free;
     end
@@ -211,16 +237,20 @@ begin
   end;
 end;
 
-class function TBitmapHelper.GetBitmapFromFile(const FileName: string; const AFitWidth, AFitHeight: Single; const Storage: IStorage): TBitmap;
+class function TBitmapHelper.GetBitmapFromFile(const FileName: string; const AFitWidth, AFitHeight: Single; const Storage: IStorage): TBitmapSurface;
 begin
-  Result := TBitmap.Create;
+  // Workers decode and resize CPU pixels only. TBitmap handles and Canvas use
+  // the shared FMX message manager and must be created/destroyed on the UI thread.
+  Result := TBitmapSurface.Create;
   try
     var Source := Storage;
     if Source = nil then
       Source := TStorage.Default;
     var Stream := Source.OpenRead(FileName);
     try
-      Result.LoadFromStream(Stream);
+      if not TBitmapCodecManager.LoadFromStream(Stream, Result) or
+        (Result.Width < 1) or (Result.Height < 1) then
+        raise Exception.Create('Unable to decode image: ' + FileName);
     finally
       Stream.Free;
     end;
@@ -234,7 +264,22 @@ begin
         Width := 1;
       if Height < 1 then
         Height := 1;
-      var Thumbnail := Result.CreateThumbnail(Width, Height);
+      var Thumbnail := TBitmapSurface.Create;
+      try
+        if (Width = 1) or (Height = 1) or (Result.Width = 1) or (Result.Height = 1) then
+        begin
+          Thumbnail.SetSize(Width, Height, Result.PixelFormat);
+          for var Y := 0 to Height - 1 do
+            for var X := 0 to Width - 1 do
+              Thumbnail.Pixels[X, Y] := Result.Pixels[Min(Result.Width - 1, X * Result.Width div Width),
+                  Min(Result.Height - 1, Y * Result.Height div Height)];
+        end
+        else
+          Thumbnail.StretchFrom(Result, Width, Height);
+      except
+        Thumbnail.Free;
+        raise;
+      end;
       Result.Free;
       Result := Thumbnail;
     end;
@@ -254,7 +299,7 @@ begin
   Result := FClient;
 end;
 
-class function TBitmapHelper.FindCached(const Url: string; out Bitmap: TBitmap): Boolean;
+class function TBitmapHelper.FindCached(const Url: string; out Bitmap: TBitmapSurface): Boolean;
 begin
   Result := False;
   Bitmap := nil;
@@ -284,7 +329,7 @@ begin
   end;
 end;
 
-class function TBitmapHelper.FindCachedFileName(const FileName: string; out Bitmap: TBitmap): Boolean;
+class function TBitmapHelper.FindCachedFileName(const FileName: string; out Bitmap: TBitmapSurface): Boolean;
 begin
   Result := False;
   Bitmap := nil;
@@ -300,7 +345,7 @@ begin
   end;
 end;
 
-class procedure TBitmapHelper.AddCacheFileName(const FileName: string; Bitmap: TBitmap);
+class procedure TBitmapHelper.AddCacheFileName(const FileName: string; Bitmap: TBitmapSurface);
 begin
   var FilePath := TPath.Combine(FCachePath, FileName);
   try
@@ -309,13 +354,22 @@ begin
     Exit;
   end;
   try
-    Bitmap.SaveToFile(FilePath, '.png');
+    var Stream := TMemoryStream.Create;
+    try
+      if TBitmapCodecManager.SaveToStream(Stream, Bitmap, '.png') then
+      begin
+        Stream.Position := 0;
+        TStorage.Default.WriteAtomic(FilePath, Stream);
+      end;
+    finally
+      Stream.Free;
+    end;
   except
     //
   end;
 end;
 
-class procedure TBitmapHelper.AddCache(const Url: string; Bitmap: TBitmap);
+class procedure TBitmapHelper.AddCache(const Url: string; Bitmap: TBitmapSurface);
 begin
   var FileName := TPath.Combine(FCachePath, UrlToCacheName(Url));
   try
@@ -324,7 +378,16 @@ begin
     Exit;
   end;
   try
-    Bitmap.SaveToFile(FileName, '.png');
+    var Stream := TMemoryStream.Create;
+    try
+      if TBitmapCodecManager.SaveToStream(Stream, Bitmap, '.png') then
+      begin
+        Stream.Position := 0;
+        TStorage.Default.WriteAtomic(FileName, Stream);
+      end;
+    finally
+      Stream.Free;
+    end;
   except
     //
   end;
@@ -340,7 +403,9 @@ begin
   end;
   if AOwner = nil then
     raise Exception.Create('You must specify an owner (responsible) who will ensure that the Bitmap is not destroyed before the owner');
+  var RequestId := TInterlocked.Increment(FNextRequestId);
   var Callback: TCallbackObject;
+  Callback.RequestId := RequestId;
   Callback.Owner := AOwner;
   Callback.Bitmap := Self;
   Callback.Url := Url;
@@ -349,23 +414,30 @@ begin
     procedure
     begin
       try
-        var Mem: TBitmap;
+        if not IsPending(RequestId) then
+          Exit;
+        var Mem: TBitmapSurface;
         if not FindCached(Url, Mem) then
         begin
           Mem := GetBitmap(Url);
           if Cache and Assigned(Mem) then
             AddCache(Url, Mem);
         end;
+        if not IsPending(RequestId) then
+        begin
+          Mem.Free;
+          Exit;
+        end;
         TThread.ForceQueue(nil,
           procedure
           begin
-            Ready(Url, Mem);
+            Ready(RequestId, Mem);
           end);
       except
         TThread.ForceQueue(nil,
           procedure
           begin
-            Ready(Url, nil);
+            Ready(RequestId, nil);
           end);
       end;
     end, Pool);
@@ -375,7 +447,7 @@ end;
 
 procedure TBitmapHelper.LoadFromUrlAsyncCF(AOwner: TComponent; const Url, CachedFileName: string; OnDone: TProc<Boolean>);
 begin
-  var Stream: TBitmap;
+  var Stream: TBitmapSurface;
   if FindCachedFileName(CachedFileName, Stream) then
   try
     try
@@ -392,7 +464,9 @@ begin
   end;
   if AOwner = nil then
     raise Exception.Create('You must specify an owner (responsible) who will ensure that the Bitmap is not destroyed before the owner');
+  var RequestId := TInterlocked.Increment(FNextRequestId);
   var Callback: TCallbackObject;
+  Callback.RequestId := RequestId;
   Callback.Owner := AOwner;
   Callback.Bitmap := Self;
   Callback.Url := Url;
@@ -401,19 +475,26 @@ begin
     procedure
     begin
       try
+        if not IsPending(RequestId) then
+          Exit;
         var Mem := GetBitmap(Url);
         if Assigned(Mem) then
           AddCacheFileName(CachedFileName, Mem);
+        if not IsPending(RequestId) then
+        begin
+          Mem.Free;
+          Exit;
+        end;
         TThread.ForceQueue(nil,
           procedure
           begin
-            Ready(Url, Mem);
+            Ready(RequestId, Mem);
           end);
       except
         TThread.ForceQueue(nil,
           procedure
           begin
-            Ready(Url, nil);
+            Ready(RequestId, nil);
           end);
       end;
     end, Pool);
@@ -429,7 +510,7 @@ begin
       OnDone(False);
     Exit;
   end;
-  var Stream: TBitmap;
+  var Stream: TBitmapSurface;
   if FindCached(Url, Stream) then
   try
     //Stream.Position := 0;
@@ -449,37 +530,42 @@ begin
   LoadFromUrlAsync(AOwner, Url, Cache, OnDone);
 end;
 
-class procedure TBitmapHelper.Ready(const Url: string; Bitmap: TBitmap);
+class procedure TBitmapHelper.Ready(RequestId: Int64; Surface: TBitmapSurface);
 begin
   try
+    var Found := False;
+    var Item: TCallbackObject;
     var List := FCallbackList.LockList;
     try
       for var i := List.Count - 1 downto 0 do
       begin
-        var Item := List[i];
-        if Item.Url <> Url then
+        if List[i].RequestId <> RequestId then
           Continue;
-        var Success: Boolean := False;
-        try
-          if Assigned(Bitmap) then
-          try
-            //Stream.Position := 0;
-            //Item.Bitmap.LoadFromStream(Stream);
-            Item.Bitmap.Assign(Bitmap);
-            Success := True;
-          except
-            Success := False;
-          end;
-        finally
-          Item.Done(Success);
-        end;
+        Item := List[i];
+        Found := True;
+        // Remove before Assign/OnDone: either can trigger another request or
+        // destroy owners. Never iterate a list while delivering notifications.
         List.Delete(i);
+        Break;
       end;
     finally
       FCallbackList.UnlockList;
     end;
+    if not Found then
+      Exit; // Cancelled or destroyed owner; discard stale pixels.
+    var Success := False;
+    try
+      if Surface <> nil then
+      begin
+        Item.Bitmap.Assign(Surface);
+        Success := True;
+      end;
+    except
+      Success := False;
+    end;
+    Item.Done(Success);
   finally
-    Bitmap.Free;
+    Surface.Free;
   end;
 end;
 

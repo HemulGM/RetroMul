@@ -57,6 +57,8 @@ uses
   RM.FrameUpload in 'RM.FrameUpload.pas',
   RM.Input in 'RM.Input.pas',
   RM.Settings in 'RM.Settings.pas',
+  RM.LibraryView in 'RM.LibraryView.pas',
+  RM.ControlsHelp in 'RM.ControlsHelp.pas',
   Core.InputConfig in '..\source\cores\Core.InputConfig.pas',
   FMXInput in '..\source\input\FMXInput.pas',
   {$IFDEF ANDROID}

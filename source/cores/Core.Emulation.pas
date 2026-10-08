@@ -85,6 +85,11 @@ type
     function TakeAudioError: string;
   end;
 
+  IEmulationSnapshotLocation = interface
+    ['{E6C77DB0-6B7D-43F9-9C16-C9985DA992E9}']
+    function GetSnapshotDirectory: string;
+  end;
+
   IEmulationCore = interface
     ['{757D169F-CE44-4B9F-AE15-9D81C6948D0A}']
     function GetName: string;

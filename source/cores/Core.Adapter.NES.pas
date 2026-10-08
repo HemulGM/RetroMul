@@ -93,7 +93,7 @@ type
     procedure SetKeys4(const Value: TKeyMap);
   end;
 
-  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationAudioDiagnostics, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore)
+  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore)
   private
     FThread: TNesEmulationThread;
     FGamepadInput: TEmulatorInput;
@@ -136,6 +136,7 @@ type
     procedure SetMiracleKeys(const Keys: TMiracleKeys);
     function GetMiracleKeys: TMiracleKeys;
     procedure SetPowerPadButtons(const Buttons: TPowerPadButtons);
+    function GetSnapshotDirectory: string;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -359,6 +360,11 @@ end;
 procedure TNesCoreAdapter.Resume;
 begin
   FThread.RequestResume;
+end;
+
+function TNesCoreAdapter.GetSnapshotDirectory: string;
+begin
+  Result := FThread.SnapshotDirectory;
 end;
 
 procedure TNesCoreAdapter.SaveSnapshot(const Name: string);

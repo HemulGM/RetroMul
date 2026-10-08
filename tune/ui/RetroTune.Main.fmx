@@ -1,15 +1,15 @@
-object FormMain: TFormMain
+﻿object FormMain: TFormMain
   Left = 0
   Top = 0
   Caption = 'RetroTune'
   ClientHeight = 784
   ClientWidth = 760
   StyleBook = StyleBookWinUI3
-  Constraints.MinHeight = 740.000000000000000000
-  Constraints.MinWidth = 760.000000000000000000
+  Constraints.MinHeight = 240.000000000000000000
+  Constraints.MinWidth = 320.000000000000000000
   FormFactor.Width = 820
   FormFactor.Height = 740
-  FormFactor.Devices = [Desktop]
+  FormFactor.Devices = [Desktop, iPhone, iPad]
   OnCreate = FormCreate
   DesignerMasterStyle = 0
   object PanelBackground: TPanel

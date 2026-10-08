@@ -109,7 +109,7 @@ end;
 constructor TNesDataRecorder.Create(AOwner: TComponent);
 const
   Names: array[TTapeAction] of string = ('Play', 'Record', 'Stop', 'Rewind', 'Forward', 'ChooseFile', 'DefaultFile', 'SaveAs');
-  Captions: array[TTapeAction] of string = ('Play', 'Record', 'Stop', '<<', '>>', 'Choose file...', 'ROM cassette', 'Save as...');
+  Captions: array[TTapeAction] of string = ('Play cassette', 'Record', 'Stop', '<<', '>>', 'Choose file...', 'ROM cassette', 'Save as...');
 begin
   inherited;
   SetSize(480, 212);
@@ -121,12 +121,12 @@ begin
     FButtons[Action].Name := 'Tape' + Names[Action];
     FButtons[Action].Parent := Self;
     FButtons[Action].Tag := Ord(Action);
-    FButtons[Action].Text := Captions[Action];
+    FButtons[Action].Text := Translate(Captions[Action]);
     FButtons[Action].CanFocus := False;
     FButtons[Action].OnClick := ButtonClick;
   end;
-  FButtons[TapeRewind].Hint := 'Rewind 5% of the cassette';
-  FButtons[TapeForward].Hint := 'Advance 5% of the cassette';
+  FButtons[TapeRewind].Hint := Translate('Rewind 5% of the cassette');
+  FButtons[TapeForward].Hint := Translate('Advance 5% of the cassette');
   LayoutButtons;
 end;
 
@@ -181,28 +181,28 @@ function TNesDataRecorder.GetStateText: string;
 begin
   case FProgress.State of
     TapePlaying:
-      Result := 'Data Recorder - playing';
+      Result := Translate('Data Recorder - playing');
     TapeRecording:
-      Result := 'Data Recorder - recording';
+      Result := Translate('Data Recorder - recording');
   else
-    Result := 'Data Recorder - stopped';
+    Result := Translate('Data Recorder - stopped');
   end;
 end;
 
 function TNesDataRecorder.GetActivityText: string;
 begin
   if FProgress.Reading then
-    Result := 'Game is reading'
+    Result := Translate('Game is reading')
   else if FProgress.Writing then
-    Result := 'Game is writing'
+    Result := Translate('Game is writing')
   else
-    Result := 'Waiting for game';
+    Result := Translate('Waiting for game');
   Result := Result + Format('  |  I/O: R %d / W %d', [FProgress.ReadAccesses, FProgress.WriteAccesses]);
 end;
 
 function TNesDataRecorder.GetCounterText: string;
 begin
-  Result := Format('READ %d B [$%s]   WRITE %d B [$%s]', [
+  Result := Format(Translate('READ %d B [$%s]   WRITE %d B [$%s]'), [
       FProgress.ReadBytes, IntToHex(FProgress.LastReadByte, 2),
       FProgress.WrittenBytes, IntToHex(FProgress.LastWrittenByte, 2)]);
 end;
@@ -210,11 +210,11 @@ end;
 function TNesDataRecorder.GetPositionText: string;
 begin
   if FProgress.State = TapeRecording then
-    Result := Format('Tape signal: %d bytes recorded', [FProgress.WrittenBytes])
+    Result := Format(Translate('Tape signal: %d bytes recorded'), [FProgress.WrittenBytes])
   else if FProgress.TapeBytes = 0 then
-    Result := 'Empty cassette'
+    Result := Translate('Empty cassette')
   else
-    Result := Format('Position: %d / %d B (%.1f%%)', [
+    Result := Format(Translate('Position: %d / %d B (%.1f%%)'), [
         FProgress.PositionBytes, FProgress.TapeBytes,
         FProgress.PositionBytes * 100.0 / FProgress.TapeBytes]);
 end;
@@ -222,9 +222,9 @@ end;
 function TNesDataRecorder.GetFileText: string;
 begin
   if FProgress.DefaultFile then
-    Result := 'ROM cassette: '
+    Result := Translate('ROM cassette: ')
   else
-    Result := 'Selected: ';
+    Result := Translate('Selected: ');
   Result := Result + ExtractFileName(FProgress.FileName);
 end;
 

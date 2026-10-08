@@ -8,13 +8,14 @@ uses
 function CreateEmulationCore(const FileName: string): IEmulationCore; overload;
 
 // The caller owns Stream. Construction copies and validates its remaining bytes.
+// RomName must retain the source location: split Neo Geo sets resolve sibling ZIPs.
 function CreateEmulationCore(Stream: TStream; const Storage: IStorage; const RomName: string = ''): IEmulationCore; overload;
 
 implementation
 
 uses
   Core.RomFormat, Core.Adapter.NES, Core.Adapter.GB, Core.Adapter.GBC,
-  Core.Adapter.MD, Core.Adapter.SNES;
+  Core.Adapter.MD, Core.Adapter.SNES, Core.Adapter.NeoGeo, NeoGeo.Cartridge;
 
 function CreateEmulationCore(const FileName: string): IEmulationCore;
 begin
@@ -29,15 +30,19 @@ end;
 
 function CreateEmulationCore(Stream: TStream; const Storage: IStorage; const RomName: string): IEmulationCore;
 begin
-  var Data := ReadRomData(Stream);
+  var Data := ReadNeoGeoData(Stream);
   var Format := DetectRom(Data);
+  if (Format.System <> TRomSystem.NeoGeo) and (Length(Data) > ROM_MAX_SIZE) then
+    raise EReadError.Create('ROM exceeds 64 MiB');
   if Format.System = TRomSystem.Unknown then
-    raise EReadError.Create('Unrecognized ROM header (NES, Game Boy, Game Boy Color, Mega Drive or SNES expected)');
+    raise EReadError.Create('Unrecognized ROM header (NES, Game Boy, Game Boy Color, Mega Drive, SNES or Neo Geo expected)');
 
   Data := NormalizeRom(Data, Format);
   var Input := TBytesStream.Create(Data);
   try
     case Format.System of
+      TRomSystem.NeoGeo:
+        Result := TNeoGeoCoreAdapter.Create(Input, Storage, RomName);
       TRomSystem.NES:
         Result := TNesCoreAdapter.Create(Input, Storage, RomName);
       TRomSystem.GB:

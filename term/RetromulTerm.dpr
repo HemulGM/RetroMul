@@ -43,7 +43,7 @@ begin
   var NewEmulation: IEmulationCore;
   var Storage := TStorage.Default;
   var Stream := Storage.OpenRead(FileName);
-  try NewEmulation := CreateEmulationCore(Stream, Storage, DisplayName);
+  try NewEmulation := CreateEmulationCore(Stream, Storage, FileName);
   finally Stream.Free; end;
   try
     if FEmulation <> nil then

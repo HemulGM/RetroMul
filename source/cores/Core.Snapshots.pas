@@ -127,9 +127,9 @@ begin
   if ((PlatformCore = 'GB') or (PlatformCore = 'GBC')) and
     (Length(ROM) > $147) and (ROM[$147] = $FC) then
     Result.Version := 3;
-  // MD v4 adds Z80 HALT, interrupt mode and EI delay.
+  // MD v5 adds Z80 IFF2 and the pending NMI latch.
   if PlatformCore = 'MD' then
-    Result.Version := 4;
+    Result.Version := 5;
   // SNES v10 adds the S-DSP phase latches, SPC MMIO latches and PPU mosaic counter.
   if PlatformCore = 'SNES' then
     Result.Version := 10;

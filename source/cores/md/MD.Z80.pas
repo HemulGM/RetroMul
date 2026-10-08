@@ -45,6 +45,7 @@ type
     InterruptPending: Byte;
     Halted: Boolean;
     InterruptMode, EIDelay: Byte;
+    IFF2, NMIPending: Byte;
   end;
 
   TZ80ReadCallback = function(UserData: Pointer; Address: Cardinal): Cardinal;
@@ -73,6 +74,8 @@ procedure Z80StateInitialise(var State: TZ80State);
 procedure Z80Reset(var State: TZ80State);
 
 procedure Z80Interrupt(var State: TZ80State; AssertInterrupt: Byte);
+
+procedure Z80NonMaskableInterrupt(var State: TZ80State);
 
 function Z80DoInstruction(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks): Cardinal;
 
@@ -1362,8 +1365,9 @@ begin
     CLOWNZ80_OPCODE_RET_UNCONDITIONAL, CLOWNZ80_OPCODE_RETN, CLOWNZ80_OPCODE_RETI:
       begin
         State.ProgramCounter := Word(MemoryRead16Bit(State, Callbacks, State.StackPointer));
-        State.StackPointer := Word(State.StackPointer + 2);
-        State.StackPointer := Word(State.StackPointer and $FFFF);
+        State.StackPointer := Word((Cardinal(State.StackPointer) + 2) and $FFFF);
+        if Instruction.Metadata.Opcode <> CLOWNZ80_OPCODE_RET_UNCONDITIONAL then
+          State.InterruptsEnabled := State.IFF2;
       end;
     CLOWNZ80_OPCODE_EXX:
       begin
@@ -1455,11 +1459,13 @@ begin
     CLOWNZ80_OPCODE_DI:
       begin
         State.InterruptsEnabled := 0;
+        State.IFF2 := 0;
         State.EIDelay := 0;
       end;
     CLOWNZ80_OPCODE_EI:
       begin
         State.InterruptsEnabled := 1;
+        State.IFF2 := 1;
         State.EIDelay := 2;
       end;
     CLOWNZ80_OPCODE_PUSH:
@@ -1797,6 +1803,9 @@ begin
         State.F := Byte(State.F or (ArithmeticShiftRight(State.A, (7 - FLAG_BIT_SIGN)) and FLAG_MASK_SIGN));
         if State.A = 0 then
           State.F := Byte(State.F or FLAG_MASK_ZERO);
+        State.F := State.F or (State.A and $28);
+        if State.IFF2 <> 0 then
+          State.F := State.F or FLAG_MASK_PARITY_OVERFLOW;
       end;
     CLOWNZ80_OPCODE_LD_A_R:
       begin
@@ -1806,6 +1815,9 @@ begin
         State.F := Byte(State.F or (ArithmeticShiftRight(State.A, (7 - FLAG_BIT_SIGN)) and FLAG_MASK_SIGN));
         if State.A = 0 then
           State.F := Byte(State.F or FLAG_MASK_ZERO);
+        State.F := State.F or (State.A and $28);
+        if State.IFF2 <> 0 then
+          State.F := State.F or FLAG_MASK_PARITY_OVERFLOW;
       end;
     CLOWNZ80_OPCODE_RRD:
       begin
@@ -2108,6 +2120,8 @@ begin
   State.Halted := False;
   State.InterruptMode := 0;
   State.EIDelay := 0;
+  State.IFF2 := 0;
+  State.NMIPending := 0;
 end;
 
 procedure Z80Interrupt(var State: TZ80State; AssertInterrupt: Byte);
@@ -2115,16 +2129,37 @@ begin
   State.InterruptPending := AssertInterrupt;
 end;
 
+procedure Z80NonMaskableInterrupt(var State: TZ80State);
+begin
+  State.NMIPending := 1;
+end;
+
 function Z80DoInstruction(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks): Cardinal;
 begin
   var Instruction: TZ80Instruction;
   State.Cycles := 0;
+  if (State.NMIPending <> 0) and (State.RegisterMode = CLOWNZ80_REGISTER_MODE_HL) then
+  begin
+    State.NMIPending := 0;
+    // IFF2 retains the maskable-interrupt state, including through nested NMIs.
+    State.InterruptsEnabled := 0;
+    State.Halted := False;
+    State.R := Byte((State.R and $80) or ((Integer(State.R) + 1) and $7F));
+    State.StackPointer := Word((Cardinal(State.StackPointer) + $FFFF) and $FFFF);
+    Callbacks.WriteCallback(Callbacks.UserData, State.StackPointer, State.ProgramCounter shr 8);
+    State.StackPointer := Word((Cardinal(State.StackPointer) + $FFFF) and $FFFF);
+    Callbacks.WriteCallback(Callbacks.UserData, State.StackPointer, State.ProgramCounter and $FF);
+    State.ProgramCounter := $66;
+    State.Cycles := 11;
+    Exit(State.Cycles);
+  end;
   // Interrupts are accepted at instruction boundaries, never between DD/FD and
   // the following opcode. EI defers acceptance until one full instruction ends.
   if (State.InterruptPending <> 0) and (State.InterruptsEnabled <> 0) and
     (State.EIDelay = 0) and (State.RegisterMode = CLOWNZ80_REGISTER_MODE_HL) then
   begin
     State.InterruptsEnabled := 0;
+    State.IFF2 := 0;
     State.Halted := False;
     State.R := Byte((State.R and $80) or ((State.R + 1) and $7F));
     State.Cycles := 13;

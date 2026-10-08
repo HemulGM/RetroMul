@@ -7,7 +7,7 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, NES.Controller, Core.Emulation;
 
 type
-  TScreenGamepadLayout = (Nes, Sega, Snes, GameBoy, GameBoyColor);
+  TScreenGamepadLayout = (Nes, Sega, Snes, GameBoy, GameBoyColor, NeoGeo);
 
   // Coordinates passed to PointerDown/Move are local logical FMX coordinates.
   // OnChange runs on the UI thread. The consumer owns the emulator connection.
@@ -226,6 +226,13 @@ begin
         FBounds[TEmulatorButton.Select] := R(153, 102, 36, 17);
         FBounds[TEmulatorButton.Start] := R(207, 102, 36, 17);
       end;
+    TScreenGamepadLayout.NeoGeo:
+      begin
+        FBounds[TEmulatorButton.A] := R(250, 99, 34, 34);
+        FBounds[TEmulatorButton.B] := R(288, 82, 34, 34);
+        FBounds[TEmulatorButton.C] := R(326, 75, 34, 34);
+        FBounds[TEmulatorButton.X] := R(364, 87, 34, 34);
+      end;
     TScreenGamepadLayout.GameBoy, TScreenGamepadLayout.GameBoyColor:
       begin
         FBounds[TEmulatorButton.B] := R(269, 100, 46, 46);
@@ -256,6 +263,8 @@ begin
     Include(Result, TEmulatorButton.Select);
   if FLayout = TScreenGamepadLayout.Snes then
     Result := Result + [TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.C, TEmulatorButton.Z];
+  if FLayout = TScreenGamepadLayout.NeoGeo then
+    Result := Result + [TEmulatorButton.C, TEmulatorButton.X];
   Result := Result * FButtonMask;
 end;
 
@@ -581,6 +590,8 @@ begin
         ShellColor := $FF242429;
         Ink := $FFD6D6D9;
       end;
+    TScreenGamepadLayout.NeoGeo:
+      begin ShellColor := $FF222226; Ink := $FFEDEDDD; end;
     TScreenGamepadLayout.Snes:
       ShellColor := $FFD7D6D2;
     TScreenGamepadLayout.GameBoy:
@@ -632,6 +643,11 @@ begin
           Box(R(140, 49 + I * 16, 112, 9), $FF787975, 2);
         Box(R(145, 113, 110, 30), $FFB5B6AF, 3);
         Text(R(263, 41, 115, 23), 'Nintendo', $FFE0433C, 17);
+      end;
+    TScreenGamepadLayout.NeoGeo:
+      begin
+        Text(R(144, 31, 112, 24), 'NEO GEO', Ink, 17);
+        Text(R(151, 56, 100, 15), 'SNK', $FFE2BF34, 10);
       end;
     TScreenGamepadLayout.Sega:
       begin
@@ -729,6 +745,13 @@ begin
             TEmulatorButton.Y:
               ButtonColor := $FF33855A;
           end;
+        TScreenGamepadLayout.NeoGeo:
+          case Button of
+            TEmulatorButton.A: ButtonColor := $FFCE3438;
+            TEmulatorButton.B: ButtonColor := $FFE2BF34;
+            TEmulatorButton.C: ButtonColor := $FF3BA55F;
+            TEmulatorButton.X: ButtonColor := $FF3E73CB;
+          end;
       end;
     if (FLayout = TScreenGamepadLayout.Snes) and
       (Button in [TEmulatorButton.C, TEmulatorButton.Z]) then
@@ -745,6 +768,10 @@ begin
     else if not Directional then
       Canvas.DrawRect(Face, 3 * FUnit, 3 * FUnit, AllCorners, Opacity);
     var Caption := Labels[Button];
+    if (FLayout = TScreenGamepadLayout.NeoGeo) and (Button = TEmulatorButton.Select) then
+      Caption := 'COIN';
+    if (FLayout = TScreenGamepadLayout.NeoGeo) and (Button = TEmulatorButton.X) then
+      Caption := 'D';
     if FLayout = TScreenGamepadLayout.Snes then
       case Button of
         TEmulatorButton.C:

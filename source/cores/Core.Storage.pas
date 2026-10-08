@@ -610,8 +610,14 @@ begin
   try
     for var Item in Candidates do
     begin
+      if (RomSystem = TRomSystem.NeoGeo) and (SameText(Item.Name, 'neogeo.zip') or SameText(Item.Name, 'gg-bios.zip') or
+        SameText(Item.Name, 'neocd.zip')) then
+        Continue;
       // Listing never opens ROM streams. Header validation belongs to loading.
-      if (FCheckRomFileSize and (Item.Size > FMaxRomFileSize)) or not MatchText(ExtractFileExt(Item.Name), Extensions) then
+      var MaxSize := FMaxRomFileSize;
+      if (RomSystem = TRomSystem.NeoGeo) and (MaxSize = ROM_MAX_SIZE) then
+        MaxSize := 256 * 1024 * 1024;
+      if (FCheckRomFileSize and (Item.Size > MaxSize)) or not MatchText(ExtractFileExt(Item.Name), Extensions) then
         Continue;
 
       var Match := Item;

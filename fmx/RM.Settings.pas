@@ -32,7 +32,7 @@ type
     FStorage: IStorage;
     FPicker: TSettingsLocationPicker;
     FInput: TInputManager; // Shared with the frontend; ownership stays with the form.
-    FDrafts: array[0..5] of TMemIniFile;
+    FDrafts: array[0..6] of TMemIniFile;
     FFields: TObjectList<TSettingsField>;
     FDevices: TObjectList<TSettingsDevice>;
     FNavigation: TListBox;
@@ -102,9 +102,9 @@ type
   end;
 
 const
-  SettingsCoreIds: array[1..5] of string = ('gb', 'gbc', 'nes', 'md', 'snes');
-  SettingsPageNames: array[0..5] of string = ('Основные', 'Game Boy', 'Game Boy Color',
-    'NES / Famicom', 'Mega Drive', 'Super Nintendo');
+  SettingsCoreIds: array[1..6] of string = ('gb', 'gbc', 'nes', 'md', 'snes', 'neogeo');
+  SettingsPageNames: array[0..6] of string = ('Основные', 'Game Boy', 'Game Boy Color',
+    'NES / Famicom', 'Mega Drive', 'Super Nintendo', 'Neo Geo');
 
 implementation
 
@@ -377,7 +377,7 @@ begin
     end;
   FDrafts[0] := FStorage.ReadConfig(FStorage.ConfigFile('config'));
   FDrafts[0].WriteString('General', 'Path', FStorage.RomFolder);
-  for var i := 1 to 5 do
+  for var i := 1 to High(SettingsCoreIds) do
     FDrafts[i] := FStorage.ReadConfig(FStorage.ConfigFile(SettingsCoreIds[i]));
   FNavigation := TListBox.Create(Self);
   FNavigation.Parent := Self;
@@ -740,7 +740,7 @@ begin
     if FPage = 0 then
     begin
       Heading('Библиотека игр');
-      FFolderEdit := PathEdit('Папка с ROM', 'Корневая папка с подпапками gb, gbc, nes, megadrive и snes.',
+      FFolderEdit := PathEdit('Папка с ROM', 'Корневая папка с подпапками gb, gbc, nes, megadrive, snes и neogeo.',
         'General', 'Path', FStorage.RomFolder, True);
       Heading('Виртуальные контролы');
       Number('Отступ снизу', 'Расстояние от виртуальных кнопок до нижнего края экрана. Безопасная область учитывается автоматически.',
@@ -1044,6 +1044,8 @@ begin
         Pad.Layout := TScreenGamepadLayout.Sega;
       5:
         Pad.Layout := TScreenGamepadLayout.Snes;
+      6:
+        Pad.Layout := TScreenGamepadLayout.NeoGeo;
     end;
     Pad.ButtonMask := CoreButtons(SettingsCoreIds[FPage], Device);
     Pad.OnChange := VirtualDeviceChange;

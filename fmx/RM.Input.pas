@@ -49,7 +49,7 @@ function ReadPianoInput(Input: TInputManager): TMiracleKeys;
 implementation
 
 uses
-  Core.Adapter.GB, Core.Adapter.NES, Core.Adapter.MD, Core.Adapter.SNES,
+  Core.Adapter.GB, Core.Adapter.NES, Core.Adapter.MD, Core.Adapter.SNES, Core.Adapter.NeoGeo,
   GB.Joypad, NES.Input, NES.Types, MD.Console, SNES.Console, System.Math;
 
 function HidToHostKey(Code: Integer): Word;
@@ -134,6 +134,8 @@ begin
   else
   begin
     Include(Result, TEmulatorButton.Select);
+    if SystemId = 'neogeo' then
+      Result := Result + [TEmulatorButton.C, TEmulatorButton.X];
     if SystemId = 'snes' then
       Result := Result + [TEmulatorButton.X, TEmulatorButton.Y,
           TEmulatorButton.C, TEmulatorButton.Z];
@@ -146,6 +148,7 @@ const
     ('↑', '↓', '←', '→', 'A', 'B', 'Select', 'Start', 'C', 'X', 'Y', 'Z', 'Mode');
 begin
   Result := Names[Button];
+  if (SystemId = 'neogeo') and (Button = TEmulatorButton.X) then Result := 'D';
   if SystemId = 'snes' then
     case Button of
       TEmulatorButton.C:
@@ -301,6 +304,13 @@ begin
       Keys[1, MDMapping[B]] := C.Keys2[B];
     end;
   end
+  else if SystemId = 'neogeo' then
+  begin
+    var C := TNeoGeoConfig.Create('');
+    Config := C;
+    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
+    begin Keys[0, B] := C.Keys[B]; Keys[1, B] := C.Keys2[B]; end;
+  end
   else if SystemId = 'snes' then
   begin
     var C := TSnesConfig.Create('');
@@ -332,7 +342,7 @@ begin
       if B in CoreButtons(SystemId, 'auto') then
       begin
         var Section := 'Controls';
-        if (SystemId = 'md') or (SystemId = 'snes') then
+        if (SystemId = 'md') or (SystemId = 'snes') or (SystemId = 'neogeo') then
           Section := 'Keys';
         if Port > 0 then
           Section := Section + IntToStr(Port + 1);

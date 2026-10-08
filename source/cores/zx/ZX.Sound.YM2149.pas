@@ -6,6 +6,8 @@ uses
   System.SysUtils, Core.AudioFilter;
 
 type
+  TYM2149StateField = procedure(var Value; Size: Integer) of object;
+
   TYM2149NativeTick = procedure(Rate: Double) of object;
 
   TYM2149Levels = array[0..2] of Byte;
@@ -53,6 +55,7 @@ type
     procedure GenerateNative(out Left, Right: Double);
     procedure Sample(out Left, Right: SmallInt);
     procedure Render(var PCM: array of SmallInt; Frames: Integer);
+    procedure SerializeState(const Field: TYM2149StateField);
     property AYModel: Boolean read FAYModel write FAYModel;
     property OnNativeTick: TYM2149NativeTick read FOnNativeTick write FOnNativeTick;
     property Clock: Integer read FClock;
@@ -333,6 +336,29 @@ begin
     raise EArgumentOutOfRangeException.Create('Invalid YM2149 buffer');
   for var J := 0 to Frames - 1 do
     Sample(PCM[J * 2], PCM[J * 2 + 1]);
+end;
+
+procedure TYM2149F.SerializeState(const Field: TYM2149StateField);
+begin
+  Field(FRegisters, SizeOf(FRegisters));
+  Field(FAddress, SizeOf(FAddress));
+  Field(FAYModel, SizeOf(FAYModel));
+  Field(FDACOverride, SizeOf(FDACOverride));
+  Field(FClock, SizeOf(FClock));
+  Field(FSampleRate, SizeOf(FSampleRate));
+  Field(FDivider, SizeOf(FDivider));
+  Field(FToneCounter, SizeOf(FToneCounter));
+  Field(FTone, SizeOf(FTone));
+  Field(FNoiseCounter, SizeOf(FNoiseCounter));
+  Field(FEnvelopeCounter, SizeOf(FEnvelopeCounter));
+  Field(FEnvelope, SizeOf(FEnvelope));
+  Field(FSegment, SizeOf(FSegment));
+  Field(FNoise, SizeOf(FNoise));
+  Field(FPan, SizeOf(FPan));
+  Field(FPhase, SizeOf(FPhase));
+  Field(FFilter, SizeOf(FFilter));
+  Field(FDC, SizeOf(FDC));
+  Field(FFiltered, SizeOf(FFiltered));
 end;
 
 end.

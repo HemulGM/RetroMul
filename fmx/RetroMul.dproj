@@ -163,7 +163,7 @@
         <Icon_MainIcon>$(BDS)\bin\delphi_PROJECTICON.ico</Icon_MainIcon>
         <Icns_MainIcns>$(BDS)\bin\delphi_PROJECTICNS.icns</Icns_MainIcns>
         <SanitizedProjectName>RetroMul</SanitizedProjectName>
-        <DCC_UnitSearchPath>..\source\cores\atari;..\source\cores\c64;..\source\cores\zx;..\source\input;..\source\cores\pc;devices;..\source\cores;..\source\cores\snes;..\source\cores\md;..\source\cores\nes;..\source\cores\nes\mappers;..\source\cores\gb;..\source\cores\gbc;..\source\gamelist;..\source\PCM;DelphiWinUI3\Sources;DelphiWinUI3\DelphiWindowStyle;DelphiWinUI3\FMXWindowsDispatch;DelphiWinUI3\FMXWindowsHint;DelphiWinUI3\WindowsNotificationManager;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>..\source\cores\neogeo;..\source\cores\atari;..\source\cores\c64;..\source\cores\zx;..\source\input;..\source\cores\pc;devices;..\source\cores;..\source\cores\snes;..\source\cores\md;..\source\cores\nes;..\source\cores\nes\mappers;..\source\cores\gb;..\source\cores\gbc;..\source\gamelist;..\source\PCM;DelphiWinUI3\Sources;DelphiWinUI3\DelphiWindowStyle;DelphiWinUI3\FMXWindowsDispatch;DelphiWinUI3\FMXWindowsHint;DelphiWinUI3\WindowsNotificationManager;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Android)'!=''">
         <DCC_UsePackage>fmx;DbxCommonDriver;bindengine;IndyIPCommon;emsclient;IndyProtocols;dbxcds;FmxTeeUI;FireDACSqliteDriver;DbxClientDriver;soapmidas;dbexpress;inet;FireDACDBXDriver;CustomIPTransport;IndySystem;FireDACCommon;emsserverresource;bindcompdbx;rtl;DBXSqliteDriver;DataSnapFireDAC;FireDAC;xmlrtl;dsnap;DataSnapNativeClient;emshosting;FireDACCommonDriver;IndyIPClient;emsedge;bindcompfmx;fmxFireDAC;FMXAudioHGM;DataSnapCommon;fmxase;dbrtl;DBXInterBaseDriver;bindcomp;VLCPlayer;inetstn;IndyCore;RESTBackendComponents;RESTComponents;IndyIPServer;dsnapxml;DataSnapClient;DataSnapProviderClient;emsclientfiredac;FireDACDSDriver;tethering;CloudService;FMXTee;soaprtl;soapserver;FireDACIBDriver;$(DCC_UsePackage)</DCC_UsePackage>
@@ -424,12 +424,27 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
-        <DCCReference Include="..\source\cores\atari\Atari.Audio.ASAP.pas"/>
-        <DCCReference Include="..\source\cores\atari\Atari.Audio.MPT.pas"/>
-        <DCCReference Include="..\source\cores\atari\Atari.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\a2600\A2600.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\a2600\A2600.Sound.TIA.pas"/>
+        <DCCReference Include="..\source\cores\amiga\Amiga.AHX.pas"/>
+        <DCCReference Include="..\source\cores\amiga\Amiga.ProTracker.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.CPU.ARM7.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.DSP.pas"/>
+        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.Sound.OPLL.pas"/>
+        <DCCReference Include="..\source\cores\msx\MSX.Sound.SCC.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.CPU.pas"/>
+        <DCCReference Include="..\source\cores\pce\PCE.Sound.HuC6280.pas"/>
+        <DCCReference Include="..\source\cores\sms\SMS.Sound.SN76489.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.CPU.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.Sound.SID.pas"/>
         <DCCReference Include="..\source\cores\c64\C64.AudioMachine.pas"/>
+        <DCCReference Include="..\source\cores\atari\Atari.Audio.ASAP.pas"/>
+        <DCCReference Include="..\source\cores\atari\Atari.Audio.MPT.pas"/>
+        <DCCReference Include="..\source\cores\atari\Atari.AudioMachine.pas"/>
         <DCCReference Include="..\source\cores\zx\ZX.AudioMachine.pas"/>
         <DCCReference Include="..\source\cores\zx\ZX.Sound.YM2149.pas"/>
         <DCCReference Include="..\source\cores\zx\ZX.Sound.YM2203.pas"/>
@@ -480,6 +495,16 @@
         <DCCReference Include="..\source\cores\Core.Adapter.NES.pas"/>
         <DCCReference Include="..\source\cores\Core.Adapter.GB.pas"/>
         <DCCReference Include="..\source\cores\Core.Adapter.GBC.pas"/>
+        <DCCReference Include="..\source\cores\Core.Adapter.NeoGeo.pas"/>
+        <DCCReference Include="..\source\cores\neogeo\NeoGeo.Cartridge.pas"/>
+        <DCCReference Include="..\source\cores\neogeo\NeoGeo.Protection.pas"/>
+        <DCCReference Include="..\source\cores\neogeo\NeoGeo.Bootleg.pas"/>
+        <DCCReference Include="..\source\cores\neogeo\NeoGeo.PCB.pas"/>
+        <DCCReference Include="..\source\cores\neogeo\NeoGeo.RomSets.pas"/>
+        <DCCReference Include="..\source\cores\neogeo\NeoGeo.Video.pas"/>
+        <DCCReference Include="..\source\cores\neogeo\NeoGeo.Sound.pas"/>
+        <DCCReference Include="..\source\cores\neogeo\NeoGeo.Console.pas"/>
+        <DCCReference Include="..\source\cores\neogeo\NeoGeo.Emulation.pas"/>
         <DCCReference Include="..\source\cores\Core.Adapter.MD.pas"/>
         <DCCReference Include="..\source\cores\Core.Adapter.SNES.pas"/>
         <DCCReference Include="..\source\cores\snes\SNES.Cartridge.pas"/>
@@ -602,21 +627,6 @@
             <Key>Cfg_3</Key>
             <CfgParent>Cfg_2</CfgParent>
         </BuildConfiguration>
-        <DCCReference Include="..\source\cores\a2600\A2600.AudioMachine.pas"/>
-        <DCCReference Include="..\source\cores\a2600\A2600.Sound.TIA.pas"/>
-        <DCCReference Include="..\source\cores\amiga\Amiga.AHX.pas"/>
-        <DCCReference Include="..\source\cores\amiga\Amiga.ProTracker.pas"/>
-        <DCCReference Include="..\source\cores\dc\DC.AudioMachine.pas"/>
-        <DCCReference Include="..\source\cores\dc\DC.CPU.ARM7.pas"/>
-        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.DSP.pas"/>
-        <DCCReference Include="..\source\cores\dc\DC.Sound.AICA.pas"/>
-        <DCCReference Include="..\source\cores\msx\MSX.AudioMachine.pas"/>
-        <DCCReference Include="..\source\cores\msx\MSX.Sound.OPLL.pas"/>
-        <DCCReference Include="..\source\cores\msx\MSX.Sound.SCC.pas"/>
-        <DCCReference Include="..\source\cores\pce\PCE.AudioMachine.pas"/>
-        <DCCReference Include="..\source\cores\pce\PCE.CPU.pas"/>
-        <DCCReference Include="..\source\cores\pce\PCE.Sound.HuC6280.pas"/>
-        <DCCReference Include="..\source\cores\sms\SMS.Sound.SN76489.pas"/>
     </ItemGroup>
     <ProjectExtensions>
         <Borland.Personality>Delphi.Personality.12</Borland.Personality>

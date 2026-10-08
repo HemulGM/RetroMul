@@ -11,6 +11,7 @@ const
   ROM_SYSTEM_GBC = 'gbc';
   ROM_SYSTEM_MD = 'md';
   ROM_SYSTEM_SNES = 'snes';
+  ROM_SYSTEM_NEOGEO = 'neogeo';
   ROM_FOLDER_MD = 'megadrive';
 
 const
@@ -64,7 +65,7 @@ const
     $408000, $408000 + ROM_COPIER_HEADER_SIZE);
 
 type
-  TRomSystem = (Unknown, NES, GB, GBC, MD, SNES);
+  TRomSystem = (Unknown, NES, GB, GBC, MD, SNES, NeoGeo);
 
   TRomEncoding = (Native, SMD, ByteSwapped, SnesCopier);
 
@@ -104,7 +105,7 @@ end;
 
 function RomSystemFromId(const SystemId: string): TRomSystem;
 begin
-  for var System := TRomSystem.NES to TRomSystem.SNES do
+  for var System := TRomSystem.NES to TRomSystem.NeoGeo do
     if SameText(SystemId, RomSystemId(System)) or SameText(SystemId, RomSystemFolder(System)) then
       Exit(System);
 
@@ -132,6 +133,8 @@ begin
       Result := [ROM_EXTENSION_SMD, ROM_EXTENSION_BIN, ROM_EXTENSION_GEN, ROM_EXTENSION_MD];
     TRomSystem.SNES:
       Result := [ROM_EXTENSION_SFC, ROM_EXTENSION_SMC, ROM_EXTENSION_SWC, ROM_EXTENSION_FIG];
+    TRomSystem.NeoGeo:
+      Result := ['.zip', '.neo'];
   else
     Result := nil;
   end;
@@ -150,6 +153,8 @@ begin
       Result := ROM_SYSTEM_MD;
     TRomSystem.SNES:
       Result := ROM_SYSTEM_SNES;
+    TRomSystem.NeoGeo:
+      Result := ROM_SYSTEM_NEOGEO;
   else
     Result := '';
   end;
@@ -165,7 +170,9 @@ function DetectRom(const Data: TBytes): TRomFormatInfo;
 
 begin
   Result := Default(TRomFormatInfo);
-  if Signature(0, NES_ROM_SIGNATURE) then
+  if Signature(0, 'NEO' + #1) or Signature(0, 'PK' + #3 + #4) then
+    Result.System := TRomSystem.NeoGeo
+  else if Signature(0, NES_ROM_SIGNATURE) then
     Result.System := TRomSystem.NES
   else if (Length(Data) >= GB_ROM_HEADER_SIZE) and CompareMem(@Data[GB_ROM_LOGO_OFFSET], @GB_ROM_LOGO[0], SizeOf(GB_ROM_LOGO)) then
   begin

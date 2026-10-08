@@ -1,0 +1,4 @@
+NG_MVS_BIOS RCDATA "firmware/sp-s2.sp1"
+NG_FIX_BIOS RCDATA "firmware/sfix.sfix"
+NG_AUDIO_BIOS RCDATA "firmware/sm1.sm1"
+NG_ZOOM RCDATA "firmware/000-lo.lo"

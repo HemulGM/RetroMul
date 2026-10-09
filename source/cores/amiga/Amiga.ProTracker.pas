@@ -100,7 +100,8 @@ const
     193, 183, 172, 163, 154, 145, 137, 129, 122, 115, 0, 862, 814, 768, 725, 684,
     646, 610, 575, 543, 513, 484, 457, 431, 407, 384, 363, 342, 323, 305, 288, 272,
     256, 242, 228, 216, 203, 192, 181, 171, 161, 152, 144, 136, 128, 121, 114, 0);
-  Sine: array[0..31] of Integer = (0, 24, 49, 74, 97, 120, 141, 161, 180, 197, 212, 224, 235, 244, 250, 253,
+  Sine: array[0..31] of Integer = (
+    0, 24, 49, 74, 97, 120, 141, 161, 180, 197, 212, 224, 235, 244, 250, 253,
     255, 253, 250, 244, 235, 224, 212, 197, 180, 161, 141, 120, 97, 74, 49, 24);
   Funk: array[0..15] of Integer = (0, 5, 6, 7, 8, 10, 11, 13, 16, 19, 22, 26, 32, 43, 64, 128);
 
@@ -153,33 +154,37 @@ begin
     end
     else if (Signature = 'FLT8') or (Signature = 'CD81') or (Signature = 'OKTA') then
       raise EArgumentException.Create('Unsupported MOD layout');
+
     if Instruments = 31 then
       Header := 1084;
   end;
   if (FChannels < 1) or (FChannels > 32) then
     raise EArgumentException.Create('Invalid MOD channel count');
+
   var SongOffset := 20 + Instruments * 30;
   var SongLength := Integer(Data[SongOffset]);
   if (SongLength < 1) or (SongLength > 128) then
     raise EArgumentException.Create('Invalid MOD order count');
+
   SetLength(FOrders, SongLength);
   var Patterns := 0;
-  for var I := 0 to 127 do
+  for var i := 0 to 127 do
   begin
-    var Pattern := Integer(Data[SongOffset + 2 + I]);
-    if I < SongLength then
+    var Pattern := Integer(Data[SongOffset + 2 + i]);
+    if i < SongLength then
     begin
       if Pattern > 127 then
         raise EArgumentException.Create('Invalid MOD pattern');
-      FOrders[I] := Pattern;
+
+      FOrders[i] := Pattern;
       Patterns := Max(Patterns, Pattern + 1);
     end;
   end;
   Require(Header, Patterns * 64 * FChannels * 4);
   SetLength(FNotes, Patterns * 64 * FChannels);
-  for var I := 0 to High(FNotes) do
+  for var i := 0 to High(FNotes) do
   begin
-    var P := Header + I * 4;
+    var P := Header + i * 4;
     var N: TMODNote;
     N.Instrument := (Data[P] and $F0) or (Data[P + 2] shr 4);
     N.Period := ((Integer(Data[P]) and 15) shl 8) or Data[P + 1];
@@ -187,36 +192,39 @@ begin
     N.Param := Data[P + 3];
     if (N.Instrument > Instruments) or ((N.Period <> 0) and (N.Period < 28)) then
       raise EArgumentException.Create('Invalid MOD note/instrument');
-    FNotes[I] := N;
+
+    FNotes[i] := N;
   end;
   var Offset := Header + Length(FNotes) * 4;
   SetLength(FSamples, Instruments + 1);
-  for var I := 1 to Instruments do
+  for var i := 1 to Instruments do
   begin
-    var P := 20 + (I - 1) * 30;
+    var P := 20 + (i - 1) * 30;
     var Size := BE16(P + 22) * 2;
-    FSamples[I].Name := Text(P, 22);
-    FSamples[I].Finetune := Data[P + 24] and 15;
-    FSamples[I].Volume := Data[P + 25];
-    if (Data[P + 24] > 15) or (FSamples[I].Volume > 64) then
+    FSamples[i].Name := Text(P, 22);
+    FSamples[i].Finetune := Data[P + 24] and 15;
+    FSamples[i].Volume := Data[P + 25];
+    if (Data[P + 24] > 15) or (FSamples[i].Volume > 64) then
       raise EArgumentException.Create('Invalid MOD sample parameters');
-    FSamples[I].LoopStart := BE16(P + 26) * 2;
-    FSamples[I].LoopLength := BE16(P + 28) * 2;
-    if FSamples[I].LoopLength <= 2 then
+
+    FSamples[i].LoopStart := BE16(P + 26) * 2;
+    FSamples[i].LoopLength := BE16(P + 28) * 2;
+    if FSamples[i].LoopLength <= 2 then
     begin
-      FSamples[I].LoopStart := 0;
-      FSamples[I].LoopLength := 0;
+      FSamples[i].LoopStart := 0;
+      FSamples[i].LoopLength := 0;
     end
-    else if (FSamples[I].LoopStart > Size) or (FSamples[I].LoopLength > Size - FSamples[I].LoopStart) then
+    else if (FSamples[i].LoopStart > Size) or (FSamples[i].LoopLength > Size - FSamples[i].LoopStart) then
       raise EArgumentException.Create('Invalid MOD sample loop');
+
     Require(Offset, Size);
-    SetLength(FSamples[I].Original, Size);
+    SetLength(FSamples[i].Original, Size);
     for var J := 0 to Size - 1 do
     begin
       var V := Integer(Data[Offset + J]);
       if V >= 128 then
         Dec(V, 256);
-      FSamples[I].Original[J] := V;
+      FSamples[i].Original[J] := V;
     end;
     Inc(Offset, Size);
   end;
@@ -232,8 +240,8 @@ end;
 
 procedure TMOD.Reset;
 begin
-  for var I := 0 to High(FSamples) do
-    FSamples[I].Data := Copy(FSamples[I].Original);
+  for var i := 0 to High(FSamples) do
+    FSamples[i].Data := Copy(FSamples[i].Original);
   for var C := 0 to FChannels - 1 do
   begin
     FVoices[C] := Default(TMODVoice);
@@ -299,6 +307,7 @@ begin
     FEnded := True;
     Exit;
   end;
+
   var Key := Format('%d:%d:%d:%d', [FOrder, FRow, FSpeed, FBPM]);
   for var V in FVoices do
     Key := Key + Format(':%d:%d', [V.LoopRow, V.LoopCount]);
@@ -307,6 +316,7 @@ begin
     FEnded := True;
     Exit;
   end;
+
   FVisited.Add(Key, True);
   FNextOrder := -1;
   FNextRow := 0;
@@ -585,12 +595,16 @@ begin
   Result := False;
   if FEnded then
     Exit;
+
   if FTicks >= 900000 then
     raise EArgumentException.Create('MOD exceeds 900,000 ticks');
+
   if FTick = 0 then
     BeginRow;
+
   if FEnded then
     Exit;
+
   for var C := 0 to FChannels - 1 do
     Effects(C, FTick mod FSpeed);
   FSampleFraction := FSampleFraction + 44100 * 2.5 / FBPM;
@@ -633,6 +647,7 @@ begin
   Result := False;
   if (FSamplesLeft = 0) and not NextTick then
     Exit;
+
   var L := 0.0;
   var R := 0.0;
   for var C := 0 to FChannels - 1 do

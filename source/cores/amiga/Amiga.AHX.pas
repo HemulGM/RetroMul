@@ -94,7 +94,8 @@ const
   SquareBase = 202624;
   NoiseBase = 206720;
   Offsets: array[0..5] of Integer = (0, 4, 12, 28, 60, 124);
-  Periods: array[0..60] of Integer = ($0000, $0D60, $0CA0, $0BE8, $0B40, $0A98, $0A00, $0970,
+  Periods: array[0..60] of Integer = (
+    $0000, $0D60, $0CA0, $0BE8, $0B40, $0A98, $0A00, $0970,
     $08E8, $0868, $07F0, $0780, $0714, $06B0, $0650, $05F4,
     $05A0, $054C, $0500, $04B8, $0474, $0434, $03F8, $03C0,
     $038A, $0358, $0328, $02FA, $02D0, $02A6, $0280, $025C,
@@ -102,11 +103,13 @@ const
     $0168, $0153, $0140, $012E, $011D, $010D, $00FE, $00F0,
     $00E2, $00D6, $00CA, $00BE, $00B4, $00AA, $00A0, $0097,
     $008F, $0087, $007F, $0078, $0071);
-  Vibrato: array[0..63] of Integer = (0, 24, 49, 74, 97, 120, 141, 161, 180, 197, 212, 224, 235, 244, 250, 253,
+  Vibrato: array[0..63] of Integer = (
+    0, 24, 49, 74, 97, 120, 141, 161, 180, 197, 212, 224, 235, 244, 250, 253,
     255, 253, 250, 244, 235, 224, 212, 197, 180, 161, 141, 120, 97, 74, 49, 24,
     0, -24, -49, -74, -97, -120, -141, -161, -180, -197, -212, -224, -235, -244, -250, -253,
     -255, -253, -250, -244, -235, -224, -212, -197, -180, -161, -141, -120, -97, -74, -49, -24);
-  FilterInitial: array[0..2789] of Integer = (-1161, -4413, -7161, -13094, 635, 13255, 2189, 6401,
+  FilterInitial: array[0..2789] of Integer = (
+    -1161, -4413, -7161, -13094, 635, 13255, 2189, 6401,
     9041, 16130, 13460, 5360, 6349, 12699, 19049, 25398,
     30464, 32512, 32512, 32515, 31625, 29756, 27158, 24060,
     20667, 17156, 13970, 11375, 9263, 7543, 6142, 5002,
@@ -456,7 +459,7 @@ const
     32512, 32512, 32512, 32512, 32512, 32512, 32512, 32512,
     32512, 32512, 32512, 32512, 32512, 4835);
 
-function Sar(V, B: Integer): Integer;
+function Sar(V, B: Integer): Integer; inline;
 begin
   if V >= 0 then
     Result := V shr B
@@ -464,7 +467,7 @@ begin
     Result := -((-Int64(V) + (Int64(1) shl B) - 1) shr B);
 end;
 
-function ClipFilter(V: Integer): Integer;
+function ClipFilter(V: Integer): Integer; inline;
 begin
   Result := V;
   if Sar(V, 16) > 127 then
@@ -475,10 +478,10 @@ end;
 
 class constructor TAHX.Create;
 begin
-  for var I := 0 to 255 do
+  for var i := 0 to 255 do
   begin
-    FPanL[I] := Trunc(Cos((Pi / 2) * I / 256) * 255);
-    FPanR[I] := Trunc(Sin((Pi / 2) * I / 256) * 255);
+    FPanL[i] := Trunc(Cos((Pi / 2) * i / 256) * 255);
+    FPanR[i] := Trunc(Sin((Pi / 2) * i / 256) * 255);
   end;
   FPanL[255] := 0;
   FPanR[0] := 0;
@@ -487,31 +490,31 @@ begin
     var N := 4 shl W;
     var Add := 256 div (N - 1);
     var Quarter := N div 4;
-    for var I := 0 to N - 1 do
-      FWaves[SawBase + Offsets[W] + I] := -128 + I * Add;
-    for var I := 0 to Quarter - 1 do
-      FWaves[TriangleBase + Offsets[W] + I] := I * (128 div Quarter);
+    for var i := 0 to N - 1 do
+      FWaves[SawBase + Offsets[W] + i] := -128 + i * Add;
+    for var i := 0 to Quarter - 1 do
+      FWaves[TriangleBase + Offsets[W] + i] := i * (128 div Quarter);
     FWaves[TriangleBase + Offsets[W] + Quarter] := 127;
-    for var I := 1 to Quarter - 1 do
-      FWaves[TriangleBase + Offsets[W] + Quarter + I] := 128 - I * (128 div Quarter);
-    for var I := 0 to N div 2 - 1 do
+    for var i := 1 to Quarter - 1 do
+      FWaves[TriangleBase + Offsets[W] + Quarter + i] := 128 - i * (128 div Quarter);
+    for var i := 0 to N div 2 - 1 do
     begin
-      var V := Integer(FWaves[TriangleBase + Offsets[W] + I]);
+      var V := Integer(FWaves[TriangleBase + Offsets[W] + i]);
       if V = 127 then
         V := -128
       else
         V := -V;
-      FWaves[TriangleBase + Offsets[W] + N div 2 + I] := V;
+      FWaves[TriangleBase + Offsets[W] + N div 2 + i] := V;
     end;
   end;
   for var Duty := 1 to 32 do
-    for var I := 0 to 127 do
-      if I < (64 - Duty) * 2 then
-        FWaves[SquareBase + (Duty - 1) * 128 + I] := -128
+    for var i := 0 to 127 do
+      if i < (64 - Duty) * 2 then
+        FWaves[SquareBase + (Duty - 1) * 128 + i] := -128
       else
-        FWaves[SquareBase + (Duty - 1) * 128 + I] := 127;
+        FWaves[SquareBase + (Duty - 1) * 128 + i] := 127;
   var Random: Cardinal := $41595321;
-  for var I := 0 to 1919 do
+  for var i := 0 to 1919 do
   begin
     var V := Integer(Random and 255);
     if V > 127 then
@@ -522,7 +525,7 @@ begin
       if Random and $8000 <> 0 then
         V := -128;
     end;
-    FWaves[NoiseBase + I] := V;
+    FWaves[NoiseBase + i] := V;
     Random := (Random shr 5) or (Random shl 27);
     Random := (Random and $FFFFFF00) or ((Random and 255) xor $9A);
     var BX := Random and $FFFF;
@@ -550,13 +553,13 @@ begin
       var Mid := FilterInitial[Init] * 256;
       var Low := FilterInitial[1395 + Init] * 256;
       Inc(Init);
-      for var I := 0 to N - 1 do
+      for var i := 0 to N - 1 do
       begin
-        var High := ClipFilter(Integer(FWaves[Src + I]) * 65536 - Mid - Low);
+        var High := ClipFilter(Integer(FWaves[Src + i]) * 65536 - Mid - Low);
         Mid := ClipFilter(Mid + Sar(High, 8) * Freq);
         Low := ClipFilter(Low + Sar(Mid, 8) * Freq);
-        FWaves[Dst + I] := Sar(Low, 16);
-        FWaves[HighDst + I] := Sar(High, 16);
+        FWaves[Dst + i] := Sar(Low, 16);
+        FWaves[HighDst + i] := Sar(High, 16);
       end;
       Inc(Src, N);
       Inc(Dst, N);
@@ -580,6 +583,7 @@ var
   begin
     if Pos >= Length(Data) then
       raise EArgumentException.Create('Truncated AHX');
+
     Result := Data[Pos];
     Inc(Pos);
   end;
@@ -594,9 +598,11 @@ begin
   inherited Create;
   if Length(Data) < 14 then
     raise EArgumentException.Create('Truncated AHX/HVL');
+
   FHVL := TEncoding.ASCII.GetString(Data, 0, 3) = 'HVL';
   if ((not FHVL) and (TEncoding.ASCII.GetString(Data, 0, 3) <> 'THX')) or (Data[3] > 1) then
     raise EArgumentException.Create('Invalid AHX header');
+
   FChannels := 4;
   FGain := 194;
   FPanLeft := 64;
@@ -606,9 +612,11 @@ begin
   begin
     if Length(Data) < 16 then
       raise EArgumentException.Create('Truncated HVL');
+
     FChannels := (Data[8] shr 2) + 4;
     if (FChannels > 16) or (Data[15] > 4) then
       raise EArgumentException.Create('Invalid HVL channel count/stereo');
+
     FGain := Integer(Data[14]) * 256 div 100;
     FPanLeft := HVLPanLeft[Data[15]];
     FPanRight := HVLPanRight[Data[15]];
@@ -619,6 +627,7 @@ begin
   var NumIns := Data[12];
   if (NumPos < 1) or (NumPos > 1000) or (FLength < 1) or (FLength > 64) or (NumIns > 64) then
     raise EArgumentException.Create('Invalid AHX dimensions');
+
   FSpeed := ((Data[6] shr 5) and 3) + 1;
   FRestart := Integer(Data[8]) * 256 + Data[9];
   if FHVL then
@@ -628,6 +637,7 @@ begin
   var TextPos := Integer(Data[4]) * 256 + Data[5];
   if (TextPos < 14) or (TextPos >= Length(Data)) then
     raise EArgumentException.Create('Invalid AHX title offset');
+
   var EndPos := TextPos;
   while (EndPos < Length(Data)) and (Data[EndPos] <> 0) do
     Inc(EndPos);
@@ -637,30 +647,32 @@ begin
     Pos := 16;
   SetLength(FSubsongs, Integer(Data[13]) + 1);
   FSubsongs[0] := 0;
-  for var I := 1 to High(FSubsongs) do
+  for var i := 1 to High(FSubsongs) do
   begin
-    FSubsongs[I] := BEWord;
-    if FSubsongs[I] >= NumPos then
+    FSubsongs[i] := BEWord;
+    if FSubsongs[i] >= NumPos then
       raise EArgumentException.Create('Invalid AHX subsong');
   end;
   SetLength(FPositions, NumPos);
-  for var I := 0 to NumPos - 1 do
+  for var i := 0 to NumPos - 1 do
     for var C := 0 to FChannels - 1 do
     begin
       var T := B;
       if T > NumTracks then
         raise EArgumentException.Create('AHX position track');
-      FPositions[I].Track[C] := T;
+
+      FPositions[i].Track[C] := T;
       var V := B;
       if V >= 128 then
         Dec(V, 256);
-      FPositions[I].Transpose[C] := V;
+      FPositions[i].Transpose[C] := V;
     end;
   FillChar(FTracks, SizeOf(FTracks), 0);
   for var T := 0 to NumTracks do
   begin
     if (T = 0) and (Data[6] and $80 <> 0) then
       Continue;
+
     for var Row := 0 to FLength - 1 do
     begin
       var S := Default(TAHXStep);
@@ -689,11 +701,12 @@ begin
       end;
       if (S.Note > 60) or (S.Instrument > NumIns) then
         raise EArgumentException.Create('Invalid AHX note/instrument');
+
       FTracks[T, Row] := S;
     end;
   end;
   SetLength(FInstruments, NumIns + 1);
-  for var I := 1 to NumIns do
+  for var i := 1 to NumIns do
   begin
     var H: array[0..21] of Integer;
     for var J := 0 to 21 do
@@ -704,11 +717,13 @@ begin
     V.WaveLength := H[1] and 7;
     if (V.Volume > 64) or (V.WaveLength > 5) then
       raise EArgumentException.Create('AHX instrument parameters');
+
     V.FilterSpeed := ((H[1] shr 3) and 31) or ((H[12] shr 2) and 32);
     V.FilterLower := H[12] and 127;
     V.FilterUpper := H[19] and 63;
     if (V.FilterLower > 63) or (H[3] > 64) or (H[5] > 64) or (H[8] > 64) or (H[16] > 64) or (H[17] > 64) then
       raise EArgumentException.Create('AHX envelope/filter');
+
     V.Envelope.AFrames := H[2];
     V.Envelope.AVolume := H[3];
     V.Envelope.DFrames := H[4];
@@ -755,6 +770,7 @@ begin
       end;
       if (P.Wave > 4) or (P.Note > 60) then
         raise EArgumentException.Create('Invalid AHX/HVL performance entry');
+
       for var K := 0 to 1 do
       begin
         P.Param[K] := B;
@@ -763,10 +779,11 @@ begin
       end;
       V.Perf[J] := P;
     end;
-    FInstruments[I] := V;
+    FInstruments[i] := V;
   end;
   if Pos > TextPos then
     raise EArgumentException.Create('AHX instrument/title overlap');
+
   Reset(0);
 end;
 
@@ -794,6 +811,7 @@ procedure TAHX.Reset(Subsong: Integer);
 begin
   if (Subsong < 0) or (Subsong >= Length(FSubsongs)) then
     raise EArgumentOutOfRangeException.Create('AHX subsong');
+
   FillChar(FVoices, SizeOf(FVoices), 0);
   for var C := 0 to FChannels - 1 do
   begin
@@ -827,6 +845,7 @@ begin
   begin
     if Ticks >= 90000 then
       raise EArgumentException.Create('AHX exceeds 90,000 ticks');
+
     Tick;
     Inc(Ticks);
   end;
@@ -1018,7 +1037,7 @@ begin
       V.RingPhase := 0;
       V.RingPlantPeriod := False;
     end;
-    var I := FInstruments[S.Instrument];
+    var i := FInstruments[S.Instrument];
     V.Instrument := S.Instrument;
     V.SlideSpeed := 0;
     V.SlidePeriod := 0;
@@ -1026,45 +1045,45 @@ begin
     V.PerfVolume := 64;
     V.ADSRVolume := 0;
     V.Phase := 0;
-    V.ADSR := I.Envelope;
+    V.ADSR := i.Envelope;
     if V.ADSR.AFrames <> 0 then
-      V.ADSR.AVolume := I.Envelope.AVolume * 256 div V.ADSR.AFrames
+      V.ADSR.AVolume := i.Envelope.AVolume * 256 div V.ADSR.AFrames
     else
-      V.ADSR.AVolume := I.Envelope.AVolume * 256;
+      V.ADSR.AVolume := i.Envelope.AVolume * 256;
     if V.ADSR.DFrames <> 0 then
-      V.ADSR.DVolume := (I.Envelope.DVolume - I.Envelope.AVolume) * 256 div V.ADSR.DFrames
+      V.ADSR.DVolume := (i.Envelope.DVolume - i.Envelope.AVolume) * 256 div V.ADSR.DFrames
     else
-      V.ADSR.DVolume := I.Envelope.DVolume * 256;
+      V.ADSR.DVolume := i.Envelope.DVolume * 256;
     if V.ADSR.RFrames <> 0 then
-      V.ADSR.RVolume := (I.Envelope.RVolume - I.Envelope.DVolume) * 256 div V.ADSR.RFrames
+      V.ADSR.RVolume := (i.Envelope.RVolume - i.Envelope.DVolume) * 256 div V.ADSR.RFrames
     else
-      V.ADSR.RVolume := I.Envelope.RVolume * 256;
-    V.WaveLength := I.WaveLength;
-    V.Volume := I.Volume;
+      V.ADSR.RVolume := i.Envelope.RVolume * 256;
+    V.WaveLength := i.WaveLength;
+    V.Volume := i.Volume;
     V.VibratoCurrent := 0;
-    V.VibratoDelay := I.VibratoDelay;
-    V.VibratoDepth := I.VibratoDepth;
-    V.VibratoSpeed := I.VibratoSpeed;
+    V.VibratoDelay := i.VibratoDelay;
+    V.VibratoDepth := i.VibratoDepth;
+    V.VibratoSpeed := i.VibratoSpeed;
     V.VibratoPeriod := 0;
-    V.HardRelease := I.HardRelease;
-    V.HardCut := I.HardCut;
+    V.HardRelease := i.HardRelease;
+    V.HardCut := i.HardCut;
     V.IgnoreSquare := 0;
     V.SquareIn := 0;
     V.SquareWait := 0;
     V.SquareOn := 0;
-    V.SquareLower := Min(I.SquareLower, I.SquareUpper) shr (5 - V.WaveLength);
-    V.SquareUpper := Max(I.SquareLower, I.SquareUpper) shr (5 - V.WaveLength);
+    V.SquareLower := Min(i.SquareLower, i.SquareUpper) shr (5 - V.WaveLength);
+    V.SquareUpper := Max(i.SquareLower, i.SquareUpper) shr (5 - V.WaveLength);
     V.IgnoreFilter := 0;
     V.FilterWait := 0;
     V.FilterOn := 0;
     V.FilterIn := 0;
-    V.FilterSpeed := I.FilterSpeed;
-    V.FilterLower := Min(I.FilterLower, I.FilterUpper);
-    V.FilterUpper := Max(I.FilterLower, I.FilterUpper);
+    V.FilterSpeed := i.FilterSpeed;
+    V.FilterLower := Min(i.FilterLower, i.FilterUpper);
+    V.FilterUpper := Max(i.FilterLower, i.FilterUpper);
     V.FilterPos := 32;
     V.PerfWait := 0;
     V.PerfCurrent := 0;
-    V.PerfSpeed := I.PerfSpeed;
+    V.PerfSpeed := i.PerfSpeed;
   end;
   V.SlideOn := 0;
   Phase2;
@@ -1189,7 +1208,7 @@ begin
     else
       Dec(V.DelayWait);
   end;
-  var I := FInstruments[V.Instrument];
+  var i := FInstruments[V.Instrument];
   if V.HardCut <> 0 then
   begin
     var Next := FTracks[V.NextTrack, 0].Instrument;
@@ -1214,7 +1233,7 @@ begin
         V.ADSR.RFrames := V.HardReleaseFrames;
         V.ADSR.RVolume := 0;
         if V.ADSR.RFrames > 0 then
-          V.ADSR.RVolume := -(V.ADSRVolume - I.Envelope.RVolume * 256) div V.ADSR.RFrames;
+          V.ADSR.RVolume := -(V.ADSRVolume - i.Envelope.RVolume * 256) div V.ADSR.RFrames;
         V.ADSR.AFrames := 0;
         V.ADSR.DFrames := 0;
         V.ADSR.SFrames := 0;
@@ -1229,14 +1248,14 @@ begin
     Inc(V.ADSRVolume, V.ADSR.AVolume);
     Dec(V.ADSR.AFrames);
     if V.ADSR.AFrames <= 0 then
-      V.ADSRVolume := I.Envelope.AVolume * 256;
+      V.ADSRVolume := i.Envelope.AVolume * 256;
   end
   else if V.ADSR.DFrames <> 0 then
   begin
     Inc(V.ADSRVolume, V.ADSR.DVolume);
     Dec(V.ADSR.DFrames);
     if V.ADSR.DFrames <= 0 then
-      V.ADSRVolume := I.Envelope.DVolume * 256;
+      V.ADSRVolume := i.Envelope.DVolume * 256;
   end
   else if V.ADSR.SFrames <> 0 then
     Dec(V.ADSR.SFrames)
@@ -1245,7 +1264,7 @@ begin
     Inc(V.ADSRVolume, V.ADSR.RVolume);
     Dec(V.ADSR.RFrames);
     if V.ADSR.RFrames <= 0 then
-      V.ADSRVolume := I.Envelope.RVolume * 256;
+      V.ADSRVolume := i.Envelope.RVolume * 256;
   end;
   V.Volume := EnsureRange(V.Volume + V.VolumeUp - V.VolumeDown, 0, 64);
   if V.SlideOn <> 0 then
@@ -1282,7 +1301,7 @@ begin
       Dec(V.VibratoDelay);
   if V.Instrument <> 0 then
   begin
-    if V.PerfCurrent < Length(I.Perf) then
+    if V.PerfCurrent < Length(i.Perf) then
     begin
       var Overflow := V.PerfWait = 128;
       Dec(V.PerfWait);
@@ -1291,7 +1310,7 @@ begin
         Dec(SignedWait, 256);
       if Overflow or (SignedWait <= 0) then
       begin
-        var Entry := I.Perf[V.PerfCurrent];
+        var Entry := i.Perf[V.PerfCurrent];
         Inc(V.PerfCurrent);
         V.PerfWait := V.PerfSpeed;
         if Entry.Wave <> 0 then
@@ -1348,7 +1367,7 @@ begin
         else
           V.SquareSign := -V.SquareSign;
       Inc(V.SquarePos, V.SquareSign);
-      V.SquareWait := I.SquareSpeed;
+      V.SquareWait := i.SquareSpeed;
     end;
   end;
   if V.FilterOn <> 0 then
@@ -1524,6 +1543,7 @@ begin
     Tick;
     FSamplesLeft := 44100 div (50 * FSpeed);
   end;
+
   var L := 0;
   var R := 0;
   for var C := 0 to FChannels - 1 do

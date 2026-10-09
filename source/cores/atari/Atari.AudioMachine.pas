@@ -29,7 +29,8 @@ uses
   Atari.Audio.MPT;
 
 const
-  RMT4Player: array[0..2006] of Byte = (255, 255, 144, 3, 96, 11, 128, 0, 128, 32, 128, 64, 0, 192, 128, 128,
+  RMT4Player: array[0..2006] of Byte = (
+    255, 255, 144, 3, 96, 11, 128, 0, 128, 32, 128, 64, 0, 192, 128, 128,
     128, 160, 0, 192, 64, 192, 0, 1, 5, 11, 21, 0, 1, 255, 255, 1,
     1, 0, 255, 255, 0, 1, 1, 1, 0, 255, 255, 255, 255, 0, 1, 1,
     0, 0, 0, 0, 0, 0, 242, 51, 150, 226, 56, 140, 0, 106, 232, 106,
@@ -157,7 +158,8 @@ const
     142, 7, 210, 140, 8, 210, 96);
 
 const
-  RMT8Player: array[0..2274] of Byte = (255, 255, 144, 3, 108, 12, 128, 0, 128, 32, 128, 64, 0, 192, 128, 128,
+  RMT8Player: array[0..2274] of Byte = (
+    255, 255, 144, 3, 108, 12, 128, 0, 128, 32, 128, 64, 0, 192, 128, 128,
     128, 160, 0, 192, 64, 192, 0, 1, 5, 11, 21, 0, 1, 255, 255, 1,
     1, 0, 255, 255, 0, 1, 1, 1, 0, 255, 255, 255, 255, 0, 1, 1,
     0, 0, 0, 0, 0, 0, 242, 51, 150, 226, 56, 140, 0, 106, 232, 106,
@@ -305,6 +307,7 @@ function TAtariAudioMachine.WordAt(const Data: TBytes; P: Integer): Integer;
 begin
   if (P < 0) or (P > Length(Data) - 2) then
     raise EArgumentException.Create('Truncated Atari word');
+
   Result := Integer(Data[P]) + Integer(Data[P + 1]) * 256;
 end;
 
@@ -320,8 +323,9 @@ begin
     var Size := Last - Start + 1;
     if (Size < 1) or (Size > Length(Data) - P) then
       raise EArgumentException.Create('Invalid Atari load block');
-    for var I := 0 to Size - 1 do
-      FState.cpu.memory[Start + I] := Data[P + I];
+
+    for var i := 0 to Size - 1 do
+      FState.cpu.memory[Start + i] := Data[P + i];
     Inc(P, Size);
   end;
 end;
@@ -333,9 +337,11 @@ begin
     Inc(EndHeader);
   if (EndHeader > 32768) or (EndHeader > Length(Data) - 6) or (Data[EndHeader + 1] <> $FF) then
     raise EArgumentException.Create('Invalid SAP header');
+
   var Lines := TEncoding.UTF8.GetString(Data, 0, EndHeader).Replace(#13, '').Split([#10]);
   if (Length(Lines) = 0) or (Lines[0] <> 'SAP') then
     raise EArgumentException.Create('Invalid SAP signature');
+
   var TypeName := '';
   var TimeIndex := 0;
   var M := FState.moduleInfo;
@@ -383,6 +389,7 @@ begin
     begin
       if TimeIndex >= 32 then
         raise EArgumentException.Create('Too many SAP TIME tags');
+
       if Value.EndsWith(' LOOP') then
       begin
         M.loops[TimeIndex] := True;
@@ -391,6 +398,7 @@ begin
       var Parts := Value.Split([':', '.']);
       if (Length(Parts) < 2) or (Length(Parts) > 3) then
         raise EArgumentException.Create('Invalid SAP duration');
+
       var Minutes := StrToInt(Parts[0]);
       var Seconds := StrToInt(Parts[1]);
       var Millis := 0;
@@ -398,10 +406,12 @@ begin
       begin
         if (Length(Parts[2]) < 1) or (Length(Parts[2]) > 3) then
           raise EArgumentException.Create('Invalid SAP milliseconds');
+
         Millis := StrToInt((Parts[2] + '000').Substring(0, 3));
       end;
       if (Minutes < 0) or (Minutes > 240) or (Seconds < 0) or (Seconds > 59) or (Millis < 0) or (Millis > 999) then
         raise EArgumentException.Create('Invalid SAP time');
+
       M.durations[TimeIndex] := Minutes * 60000 + Seconds * 1000 + Millis;
       Inc(TimeIndex);
     end;
@@ -420,20 +430,26 @@ begin
   end
   else
     raise ENotSupportedException.Create('Unsupported SAP TYPE ' + TypeName);
+
   if M.fastplay < 0 then
     if M.ntsc then
       M.fastplay := 262
     else
       M.fastplay := 312;
-  if (M.songs < 1) or (M.songs > 32) or (M.defaultSong < 0) or (M.defaultSong >= M.songs) or
-    (M.fastplay < 1) or (M.fastplay > 32767) or (M.init > 65535) or (M.player > 65535) or (M.music > 65535) then
+
+  if (M.songs < 1) or (M.songs > 32) or (M.defaultSong < 0) or
+    (M.defaultSong >= M.songs) or (M.fastplay < 1) or (M.fastplay > 32767) or
+    (M.init > 65535) or (M.player > 65535) or (M.music > 65535) then
     raise EArgumentException.Create('Invalid SAP addresses/rate');
+
   if ((TypeName = 'B') and ((M.init < 0) or (M.player < 0))) or
     ((TypeName = 'C') and ((M.music < 0) or (M.player < 0))) or
     (((TypeName = 'D') or (TypeName = 'S')) and (M.init < 0)) then
     raise EArgumentException.Create('Missing SAP entry point');
+
   if (M.covoxAddr <> -1) and (M.covoxAddr <> $D600) then
     raise ENotSupportedException.Create('Unsupported SAP COVOX address');
+
   M.headerLen := EndHeader;
   LoadBlocks(Data, EndHeader);
 end;
@@ -460,8 +476,8 @@ begin
   M.init := -1;
   M.player := -1;
   M.covoxAddr := -1;
-  for var I := 0 to 31 do
-    M.durations[I] := -1;
+  for var i := 0 to 31 do
+    M.durations[i] := -1;
   try
     if Kind = 'D15' then
       LoadMPTSamples(FState, Data)
@@ -471,25 +487,28 @@ begin
     begin
       if not ASAPInfo_ParseRmt(M, Data, Length(Data)) then
         raise EArgumentException.Create('Invalid RMT module');
+
       var Player: TBytes;
       if M.channels = 1 then
       begin
         SetLength(Player, Length(RMT4Player));
-        for var I := 0 to High(RMT4Player) do
-          Player[I] := RMT4Player[I];
+        for var i := 0 to High(RMT4Player) do
+          Player[i] := RMT4Player[i];
       end
       else
       begin
         SetLength(Player, Length(RMT8Player));
-        for var I := 0 to High(RMT8Player) do
-          Player[I] := RMT8Player[I];
+        for var i := 0 to High(RMT8Player) do
+          Player[i] := RMT8Player[i];
       end;
+
       if M.music <= WordAt(Player, 4) then
         raise EArgumentException.Create('RMT overlaps embedded player');
       if (M.music < 0) or (Length(Data) - 6 > 65536 - M.music) then
         raise EArgumentException.Create('Invalid RMT load address');
-      for var I := 6 to High(Data) do
-        FState.cpu.memory[M.music + I - 6] := Data[I];
+
+      for var i := 6 to High(Data) do
+        FState.cpu.memory[M.music + i - 6] := Data[i];
       LoadBlocks(Player, 0);
     end
     else
@@ -518,9 +537,10 @@ procedure TAtariAudioMachine.Start(Track, DurationMS: Integer);
 begin
   if DurationMS < 0 then
     raise EArgumentException.Create('Invalid Atari duration');
+
   FRemainingFrames := Int64(DurationMS) * 44100 div 1000;
-  for var I := 0 to High(FImage) do
-    FState.cpu.memory[I] := FImage[I];
+  for var i := 0 to High(FImage) do
+    FState.cpu.memory[i] := FImage[i];
   FState.pokeys.basePokey.sumDACOutputs := 0;
   FState.pokeys.extraPokey.sumDACOutputs := 0;
   if not ASAP_PlaySong(FState, Track, DurationMS) then
@@ -531,10 +551,12 @@ function TAtariAudioMachine.Generate(var Bytes: TBytes; Frames: Integer): Intege
 begin
   if (Frames < 0) or (Frames > Length(Bytes) div (Info.channels * 2)) then
     raise EArgumentException.Create('Invalid Atari PCM buffer');
+
   if Frames > FRemainingFrames then
     Frames := Integer(FRemainingFrames);
   if Frames = 0 then
     Exit(0);
+
   Result := ASAP_Generate(FState, Bytes, Frames * Info.channels * 2, ASAPSampleFormat_S16_L_E) div (Info.channels * 2);
   Dec(FRemainingFrames, Result);
 end;

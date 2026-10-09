@@ -166,7 +166,10 @@ const
   ASAPModuleType_FC = 13;
   ASAPModuleType_MD1 = 14;
   ASAPModuleType_D15 = 15;
-  Pokey_COMPRESSED_SUMS: array[0..60] of SmallInt = (0, 35, 73, 111, 149, 189, 228, 266, 304, 342, 379, 415, 450, 484, 516, 546, 575, 602, 628, 652, 674, 695, 715, 733, 750, 766, 782, 796, 809, 822, 834, 846, 856, 867, 876, 886, 894, 903, 911, 918, 926, 933, 939, 946, 952, 958, 963, 969, 974, 979, 984, 988, 993, 997, 1001, 1005, 1009, 1013, 1016, 1019, 1023);
+  Pokey_COMPRESSED_SUMS: array[0..60] of SmallInt = (
+    0, 35, 73, 111, 149, 189, 228, 266, 304, 342, 379, 415, 450, 484, 516, 546, 575, 602, 628, 652,
+    674, 695, 715, 733, 750, 766, 782, 796, 809, 822, 834, 846, 856, 867, 876, 886, 894, 903, 911,
+    918, 926, 933, 939, 946, 952, 958, 963, 969, 974, 979, 984, 988, 993, 997, 1001, 1005, 1009, 1013, 1016, 1019, 1023);
 
 procedure ASAPInfo_AddSong(ctx: TASAPInfo; playerCalls: Integer);
 
@@ -608,6 +611,7 @@ begin
   begin
     Exit(S32((playerCalls div perFrame)));
   end;
+
   volumeSlide := S32(128);
   silentLoop := False;
   while True do
@@ -616,9 +620,8 @@ begin
     if (index >= indexEnd) then
     begin
       if silentLoop then
-      begin
         Break;
-      end;
+
       silentLoop := True;
       index := S32(indexLoop);
     end;
@@ -640,11 +643,10 @@ begin
       volumeSlide := S32(Int64(volumeSlide) + 256);
       volume := S32(volume - 1);
       if (volume <= volumeMin) then
-      begin
         Break;
-      end;
     end;
   end;
+
   Exit(S32((playerCalls div perFrame)));
 end;
 
@@ -676,33 +678,28 @@ var
   infoLen: Integer;
 begin
   if (((module[0] <> 255) or (module[1] <> 255)) and ((module[0] <> 0) or (module[1] <> 0))) then
-  begin
     Exit(False);
-  end;
+
   ctx.music := S32(ASAPInfo_GetWord(module, 2));
   musicLastByte := S32(ASAPInfo_GetWord(module, 4));
   if ((ctx.music <= 55295) and (musicLastByte >= 53248)) then
-  begin
     Exit(False);
-  end;
+
   blockLen := S32(Int64(S32(Int64(musicLastByte) + 1)) - ctx.music);
   if (S32(Int64(6) + blockLen) <> moduleLen) then
   begin
     if ((ctx.kind <> ASAPModuleType_RMT) or (S32(Int64(11) + blockLen) > moduleLen)) then
-    begin
       Exit(False);
-    end;
+
     infoAddr := S32(ASAPInfo_GetWord(module, S32(Int64(6) + blockLen)));
     if (infoAddr <> S32(Int64(ctx.music) + blockLen)) then
-    begin
       Exit(False);
-    end;
+
     infoLen := S32(Int64(S32(Int64(ASAPInfo_GetWord(module, S32(Int64(8) + blockLen))) + 1)) - infoAddr);
     if (S32(Int64(S32(Int64(10) + blockLen)) + infoLen) <> moduleLen) then
-    begin
       Exit(False);
-    end;
   end;
+
   Exit(True);
 end;
 
@@ -720,9 +717,8 @@ var
   conditionValue5: Integer;
 begin
   if not (ASAPInfo_ValidateRmt(module, moduleLen)) then
-  begin
     Exit(False);
-  end;
+
   case module[9] of
     52:
       begin
@@ -734,20 +730,16 @@ begin
         posShift := S32(3);
       end;
   else
-    begin
-      Exit(False);
-    end;
+    Exit(False);
   end;
   perFrame := S32(module[12]);
   if ((perFrame < 1) or (perFrame > 4)) then
-  begin
     Exit(False);
-  end;
+
   ctx.kind := S32(ASAPModuleType_RMT);
   if not (ASAPInfo_ParseModule(ctx, module, moduleLen)) then
-  begin
     Exit(False);
-  end;
+
   blockLen := S32(Int64(S32(Int64(ASAPInfo_GetWord(module, 4)) + 1)) - ctx.music);
   songLen := S32(Int64(S32(Int64(ASAPInfo_GetWord(module, 4)) + 1)) - ASAPInfo_GetWord(module, 20));
   if (((posShift = 3) and ((songLen and 4) <> 0)) and (module[S32(Int64(S32(Int64(6) + blockLen)) - 4)] = 254)) then
@@ -756,9 +748,8 @@ begin
   end;
   songLen := S32(Sar32(songLen, posShift));
   if (songLen >= 256) then
-  begin
     Exit(False);
-  end;
+
   SetLength(globalSeen, 256);
   globalSeen[0] := False;
   ctx.songs := S32(0);
@@ -775,18 +766,16 @@ begin
   ctx.fastplay := S32((312 div perFrame));
   ctx.player := S32(1536);
   if (ctx.songs = 0) then
-  begin
     Exit(False);
-  end;
+
   SetLength(title, 127);
   titleLen := S32(0);
   while ((titleLen < 127) and (S32(Int64(S32(Int64(10) + blockLen)) + titleLen) < moduleLen)) do
   begin
     c := S32(module[S32(Int64(S32(Int64(10) + blockLen)) + titleLen)]);
     if (c = 0) then
-    begin
       Break;
-    end;
+
     if ASAPInfo_IsValidChar(c) then
     begin
       conditionValue5 := c;
@@ -799,6 +788,7 @@ begin
     titleLen := S32(titleLen + 1);
   end;
   ctx.title := BytesText(title, titleLen);
+
   Exit(True);
 end;
 
@@ -859,6 +849,7 @@ begin
     CheckRmtWorkLimit(parseSteps);
     if not ((pos < songLen)) then
       Break;
+
     if (seen[pos] <> 0) then
     begin
       if (seen[pos] <> 1) then
@@ -874,12 +865,14 @@ begin
       pos := S32(module[S32(Int64(S32(Int64(songOffset) + S32((Int64(pos) shl (posShift and 31))))) + 1)]);
       Continue;
     end;
+
     ch := S32(0);
     while True do
     begin
       CheckRmtWorkLimit(parseSteps);
       if not ((ch < S32((Int64(1) shl (posShift and 31))))) then
         Break;
+
       p := S32(module[S32(Int64(S32(Int64(songOffset) + S32((Int64(pos) shl (posShift and 31))))) + ch)]);
       if (p = 255) then
       begin
@@ -890,9 +883,8 @@ begin
         patternBegin[ch] := S32(Int64(S32(Int64(module[S32(Int64(patternLoOffset) + p)]) + S32((Int64(module[S32(Int64(patternHiOffset) + p)]) shl (8 and 31))))) - addrToOffset);
         patternOffset[ch] := S32(patternBegin[ch]);
         if (patternOffset[ch] < 0) then
-        begin
           Exit;
-        end;
+
         blankRows[ch] := S32(0);
       end;
       ch := S32(ch + 1);
@@ -903,6 +895,7 @@ begin
       CheckRmtWorkLimit(parseSteps);
       if not ((i < songLen)) then
         Break;
+
       if (seen[i] = 1) then
       begin
         seen[i] := U8(2);
@@ -916,6 +909,7 @@ begin
       patternRows := S32(patternRows - 1);
       if not ((patternRows >= 0)) then
         Break;
+
       ch := S32(0);
       while True do
       begin
@@ -3717,3 +3711,4 @@ begin
 end;
 
 end.
+

@@ -20,7 +20,7 @@ uses
   Core.Storage, RM.Storage.Dialogs, FMX.OpenDialog, RM.Gamepad, FMX.ListBox,
   SCRP.GameList, FMX.Edit, FMX.SearchBox, NES.FamicomDataRecorder,
   NES.DataRecorder, RM.FrameUpload, RM.Settings, RM.Input, FMXInput,
-  Core.InputConfig, RM.LibraryView, RM.ControlsHelp;
+  Core.InputConfig, RM.LibraryView, RM.ControlsHelp, FMX.Menus;
 
 type
   TListBoxItemGame = class(TListBoxItem)
@@ -67,6 +67,20 @@ type
     FSettingsLibraryVisible, FViewingLibrary, FPauseOnFocusLoss, FStartFullscreen, FAutoPaused: Boolean;
     FLibraryBackTool, FScreenshotTool: TButton;
     FGameTools: array[0..4] of TButton;
+    FScreenshotMenu, FSaveMenu, FLoadMenu: TPopupMenu;
+    procedure PrepareGameplayMenu(Sender: TObject);
+    procedure OpenScreenshotFolderClick(Sender: TObject);
+    procedure SaveSnapshotAsClick(Sender: TObject);
+    procedure OpenSnapshotClick(Sender: TObject);
+    procedure RecentSnapshotClick(Sender: TObject);
+    function GameSnapshotDirectory: string;
+  private
+    FAutosaveOnExit, FAutosavePeriodic: Boolean;
+    FAutosaveMinutes: Integer;
+    FAutosaveLastTick: UInt64;
+    procedure AutosaveOnExit;
+    procedure PollAutosave;
+  private
     FHelpTool, FCoinTool: TButton;
     FGamePlatform, FGameFPS, FGameAudio: TLabel;
     FGameStatus: TPanel;
@@ -77,6 +91,9 @@ type
     FFullScreenBorderStyle: TFmxFormBorderStyle;
     FFullScreenWindowState: TWindowState;
     FFullScreenPlacement: TWindowPlacement;
+    FWindowStateRestored, FWindowStateSaved: Boolean;
+    procedure RestoreWindowState;
+    procedure SaveWindowState;
     {$ENDIF}
     procedure ControlsHelpClick(Sender: TObject);
     procedure ControlsHelpClose(Sender: TObject);
@@ -169,12 +186,18 @@ type
     procedure Stop;
   protected
     function DetectSystemLanguage: string; virtual;
+    function AutosaveClock: UInt64; virtual;
     function CreateStorage: IStorage; virtual;
     function CreateHostInput: TInputManager; virtual;
     function HostInputHasFocus: Boolean; virtual;
     procedure ReportAudioError(const MessageText: string); virtual;
     function CreateCore(const FileName: string): IEmulationCore; virtual;
+    function ExecuteSnapshotDialog(Dialog: TOpenDialog): Boolean; virtual;
+    procedure OpenDirectory(const Directory: string); virtual;
     procedure DoOnSettingChange; override;
+    {$IFDEF MSWINDOWS}
+    procedure DoShow; override;
+    {$ENDIF}
   public
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
@@ -200,11 +223,78 @@ uses
   FMX.DialogService, RM.Styles, Core.Adapter.GB, GB.Palettes, Core.Adapter.NES,
   Core.SavePaths, Core.RomFormat,
   {$IFDEF MSWINDOWS}
-  FMX.Platform.Win,
+  FMX.Platform.Win, Winapi.MultiMon, Winapi.ShellAPI,
   {$ENDIF}
-  HGM.FMX.Image, Core.Adapter.GBC;
+  {$IF Defined(MACOS) and not Defined(IOS)}
+  Macapi.AppKit, Macapi.Helpers,
+  {$ENDIF}
+  {$IF Defined(LINUX) and not Defined(ANDROID)}
+  Posix.Stdlib,
+  {$ENDIF}
+  System.Generics.Collections, System.Generics.Defaults, HGM.FMX.Image,
+  Core.Adapter.GBC, RM.Icons;
 
 {$R *.fmx}
+
+type
+  TToolbarSplitButton = class(TButton)
+  private
+    FArrow: TSpeedButton;
+    procedure ArrowClick(Sender: TObject);
+  protected
+    procedure ApplyStyle; override;
+    procedure Resize; override;
+  public
+    constructor Create(AOwner: TComponent); override;
+  end;
+
+constructor TToolbarSplitButton.Create(AOwner: TComponent);
+begin
+  inherited;
+  FArrow := TSpeedButton.Create(Self);
+  FArrow.Parent := Self;
+  FArrow.Name := 'MenuArrow';
+  FArrow.StyleLookup := 'transparentbuttonstyle';
+  FArrow.CanFocus := False;
+  AddButtonIcon(FArrow, IconChevronDown, 12);
+  FArrow.Hint := Translate('More actions');
+  FArrow.ShowHint := True;
+  FArrow.OnClick := ArrowClick;
+  var Divider := TRectangle.Create(FArrow);
+  Divider.Parent := FArrow;
+  Divider.Align := TAlignLayout.Left;
+  Divider.Width := 1;
+  Divider.Margins.Top := 9;
+  Divider.Margins.Bottom := 9;
+  Divider.Fill.Color := $406C7485;
+  Divider.Stroke.Kind := TBrushKind.None;
+  Divider.HitTest := False;
+  Resize;
+end;
+
+procedure TToolbarSplitButton.ApplyStyle;
+begin
+  inherited;
+  StylesData['text.Margins.Right'] := 32;
+end;
+
+procedure TToolbarSplitButton.Resize;
+begin
+  inherited;
+  if FArrow <> nil then
+  begin
+    FArrow.SetBounds(Max(0, Width - 26), 0, 26, Height);
+    FArrow.Hint := Translate('More actions');
+  end;
+end;
+
+procedure TToolbarSplitButton.ArrowClick(Sender: TObject);
+begin
+  if not Enabled or (PopupMenu = nil) then
+    Exit;
+  var Point := LocalToScreen(TPointF.Create(0, Height));
+  PopupMenu.Popup(Point.X, Point.Y);
+end;
 
 function HostKeyCode(Key: Word; KeyChar: WideChar): Word;
 begin
@@ -541,6 +631,7 @@ begin
   FormDeactivate(Self);
   if FEmulation <> nil then
   begin
+    AutosaveOnExit;
     TimerUpdate.Enabled := False;
     FEmulation.Stop;
     ImageCanvas.Bitmap := nil;
@@ -590,13 +681,11 @@ begin
     ApplyControlInset;
     FPauseOnFocusLoss := Ini.ReadBool('General', 'PauseOnFocusLoss', True);
     FStartFullscreen := Ini.ReadBool('General', 'StartFullscreen', False);
-    // Import the previously selected folder once.
-    if FStorage.RomFolder = '' then
-    begin
-      var LegacyFolder := Ini.ReadString('General', 'Path', '');
-      if LegacyFolder <> '' then
-        FStorage.RomFolder := LegacyFolder;
-    end;
+    FAutosaveOnExit := Ini.ReadBool('General', 'AutosaveOnExit', True);
+    FAutosavePeriodic := Ini.ReadBool('General', 'AutosavePeriodic', False);
+    FAutosaveMinutes := EnsureRange(Ini.ReadInteger('General', 'AutosaveMinutes',
+      AUTOSAVE_DEFAULT_MINUTES), 1, AUTOSAVE_MAX_MINUTES);
+    FAutosaveLastTick := AutosaveClock;
   finally
     Ini.Free;
   end;
@@ -613,6 +702,100 @@ begin
     Ini.Free;
   end;
 end;
+
+{$IFDEF MSWINDOWS}
+procedure TFormMain.DoShow;
+begin
+  // Apply once, after FMX has positioned and created the native window.
+  if not FWindowStateRestored then
+  begin
+    FWindowStateRestored := True;
+    RestoreWindowState;
+  end;
+  inherited;
+end;
+
+procedure TFormMain.RestoreWindowState;
+begin
+  var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
+  try
+    if not (Ini.ValueExists('Window', 'Left') and Ini.ValueExists('Window', 'Top') and
+      Ini.ValueExists('Window', 'Width') and Ini.ValueExists('Window', 'Height')) then
+      Exit;
+    var X := Ini.ReadInteger('Window', 'Left', 0);
+    var Y := Ini.ReadInteger('Window', 'Top', 0);
+    var W := Ini.ReadInteger('Window', 'Width', 0);
+    var H := Ini.ReadInteger('Window', 'Height', 0);
+    // Ignore incomplete/corrupt geometry, including values that would overflow.
+    if (W <= 0) or (H <= 0) or (W > 1000000) or (H > 1000000) or
+      (Abs(Int64(X)) > 1000000) or (Abs(Int64(Y)) > 1000000) then
+      Exit;
+    var Bounds := TRect.Create(X, Y, X + W, Y + H);
+    var Monitor := Default(TMonitorInfo);
+    Monitor.cbSize := SizeOf(Monitor);
+    if not GetMonitorInfo(MonitorFromRect(@Bounds, MONITOR_DEFAULTTONEAREST), @Monitor) then
+      Exit;
+    var Wnd := WindowHandleToPlatform(Handle).Wnd;
+    var Scale := GetDpiForWindow(Wnd) / 96;
+    if Scale <= 0 then
+      Scale := 1;
+    W := Min(Max(W, Round(Constraints.MinWidth * Scale)), Monitor.rcWork.Width);
+    H := Min(Max(H, Round(Constraints.MinHeight * Scale)), Monitor.rcWork.Height);
+    X := EnsureRange(X, Monitor.rcWork.Left, Monitor.rcWork.Right - W);
+    Y := EnsureRange(Y, Monitor.rcWork.Top, Monitor.rcWork.Bottom - H);
+    Bounds := TRect.Create(X, Y, X + W, Y + H);
+    // WINDOWPLACEMENT uses workspace coordinates, not screen coordinates.
+    OffsetRect(Bounds, Monitor.rcMonitor.Left - Monitor.rcWork.Left,
+      Monitor.rcMonitor.Top - Monitor.rcWork.Top);
+    var Placement := Default(TWindowPlacement);
+    Placement.length := SizeOf(Placement);
+    Placement.rcNormalPosition := Bounds;
+    if Ini.ReadBool('Window', 'Maximized', False) then
+      Placement.showCmd := SW_SHOWMAXIMIZED
+    else
+      Placement.showCmd := SW_SHOWNORMAL;
+    Position := TFormPosition.Designed;
+    SetWindowPlacement(Wnd, @Placement);
+  finally
+    Ini.Free;
+  end;
+end;
+
+procedure TFormMain.SaveWindowState;
+begin
+  if not FWindowStateRestored or (FStorage = nil) then
+    Exit;
+  var Placement := Default(TWindowPlacement);
+  Placement.length := SizeOf(Placement);
+  // Fullscreen is temporary gameplay UI: preserve its original window placement.
+  if FullScreen and (FFullScreenPlacement.length <> 0) then
+    Placement := FFullScreenPlacement
+  else if not GetWindowPlacement(WindowHandleToPlatform(Handle).Wnd, @Placement) then
+    Exit;
+  var Bounds := Placement.rcNormalPosition;
+  if (Bounds.Width <= 0) or (Bounds.Height <= 0) then
+    Exit;
+  var Monitor := Default(TMonitorInfo);
+  Monitor.cbSize := SizeOf(Monitor);
+  if GetMonitorInfo(MonitorFromRect(@Bounds, MONITOR_DEFAULTTONEAREST), @Monitor) then
+    OffsetRect(Bounds, Monitor.rcWork.Left - Monitor.rcMonitor.Left,
+      Monitor.rcWork.Top - Monitor.rcMonitor.Top);
+  var Maximized := (Placement.showCmd = SW_SHOWMAXIMIZED) or
+    ((Placement.showCmd = SW_SHOWMINIMIZED) and ((Placement.flags and WPF_RESTORETOMAXIMIZED) <> 0));
+  var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
+  try
+    Ini.WriteInteger('Window', 'Left', Bounds.Left);
+    Ini.WriteInteger('Window', 'Top', Bounds.Top);
+    Ini.WriteInteger('Window', 'Width', Bounds.Width);
+    Ini.WriteInteger('Window', 'Height', Bounds.Height);
+    Ini.WriteBool('Window', 'Maximized', Maximized);
+    FStorage.WriteConfig(Ini);
+    FWindowStateSaved := True;
+  finally
+    Ini.Free;
+  end;
+end;
+{$ENDIF}
 
 function TFormMain.CreateStorage: IStorage;
 begin
@@ -657,14 +840,25 @@ begin
   {$ENDIF}
   FFileDialog := TFMXOpenDialog.Create(Self);
   FFileDialog.MultipleSelection := False;
+  {$IFDEF ANDROID}
   var ScreenshotButton := TButton.Create(Self);
+  {$ELSE}
+  var ScreenshotButton := TToolbarSplitButton.Create(Self);
+  {$ENDIF}
   FScreenshotTool := ScreenshotButton;
   ScreenshotButton.Name := 'ButtonScreenshot';
   ScreenshotButton.Parent := LayoutHead;
   ScreenshotButton.Align := TAlignLayout.Right;
   ScreenshotButton.Width := 60;
-  ScreenshotButton.Text := 'PNG';
+  ScreenshotButton.Text := '';
+  {$IFDEF ANDROID}
+  AddButtonIcon(ScreenshotButton, IconCamera, 20);
+  {$ENDIF}
+  ButtonCloseRom.StyleLookup := 'buttonstyle';
+  ButtonCloseRom.Hint := Translate('Close game');
+  AddButtonIcon(ButtonCloseRom, IconBack, 20);
   ScreenshotButton.Hint := Translate('Screenshot (F8)');
+  ScreenshotButton.ShowHint := True;
   ScreenshotButton.OnClick := ScreenshotClick;
   LayoutClient.CanFocus := True;
   LayoutClient.OnKeyDown := FormKeyDown;
@@ -753,17 +947,20 @@ begin
   BackButton.Parent := LayoutHead;
   BackButton.Align := TAlignLayout.Left;
   BackButton.Width := 140;
-  BackButton.Text := Translate('← Library');
+  BackButton.Text := Translate('Library');
   BackButton.OnClick := LibraryBack;
   FLibraryBackTool := BackButton;
   ButtonCloseRom.Visible := False;
   LabelStatus.Align := TAlignLayout.None;
-  for var I := 0 to High(FGameTools) do
+  for var i := 0 to High(FGameTools) do
   begin
-    FGameTools[I] := TButton.Create(Self);
-    FGameTools[I].Parent := LayoutHead;
-    FGameTools[I].Align := TAlignLayout.None;
-    FGameTools[I].Width := 104;
+    if i in [1, 2] then
+      FGameTools[i] := TToolbarSplitButton.Create(Self)
+    else
+      FGameTools[i] := TButton.Create(Self);
+    FGameTools[i].Parent := LayoutHead;
+    FGameTools[i].Align := TAlignLayout.None;
+    FGameTools[i].Width := 104;
   end;
   FGameTools[0].Name := 'GamePause';
   FGameTools[0].OnClick := PauseClick;
@@ -777,11 +974,27 @@ begin
   FGameTools[4].OnClick := SettingsClick;
   FGameTools[1].Hint := Translate('Quick save · Quick slot');
   FGameTools[2].Hint := Translate('Load quick save · Quick slot');
-  GameplayButton(FLibraryBackTool, Translate('Library'), 'M24,13 L2,13 M10,5 L2,13 L10,21', Translate('Back to library'));
+  GameplayButton(FLibraryBackTool, Translate('Library'), IconBack, Translate('Back to library'));
   GameplayButton(FGameTools[0], Translate('Pause'), IconPause, Translate('Pause / resume · P'));
   GameplayButton(FGameTools[1], Translate('Save'), IconSave, Translate('Quick save · F5'));
   GameplayButton(FGameTools[2], Translate('Load'), IconLoad, Translate('Quick load · F6'));
   GameplayButton(FScreenshotTool, Translate('Screenshot'), IconCamera, Translate('Take screenshot · F8'));
+  for var Button in [FGameTools[1], FGameTools[2], FScreenshotTool] do
+    Button.StylesData['text.Margins.Right'] := 32;
+  FScreenshotMenu := TPopupMenu.Create(Self);
+  FScreenshotMenu.Name := 'ScreenshotMenu';
+  FScreenshotMenu.Parent := Self;
+  FSaveMenu := TPopupMenu.Create(Self);
+  FSaveMenu.Name := 'SaveSnapshotMenu';
+  FSaveMenu.Parent := Self;
+  FLoadMenu := TPopupMenu.Create(Self);
+  FLoadMenu.Name := 'LoadSnapshotMenu';
+  FLoadMenu.Parent := Self;
+  for var Menu in [FScreenshotMenu, FSaveMenu, FLoadMenu] do
+    Menu.OnPopup := PrepareGameplayMenu;
+  FScreenshotTool.PopupMenu := FScreenshotMenu;
+  FGameTools[1].PopupMenu := FSaveMenu;
+  FGameTools[2].PopupMenu := FLoadMenu;
   GameplayButton(FGameTools[3], '', IconFullScreen, Translate('Full screen · F11'));
   GameplayButton(FGameTools[4], '', IconGear, Translate('Settings'));
   FCoinTool := TButton.Create(Self);
@@ -849,10 +1062,23 @@ end;
 
 destructor TFormMain.Destroy;
 begin
+  {$IFDEF MSWINDOWS}
+  if FWindowStateRestored and not FWindowStateSaved then
+  try
+    SaveWindowState;
+  except
+    Application.HandleException(Self);
+  end;
+  {$ENDIF}
   if Assigned(FInvalidateCallbacks) then
     FInvalidateCallbacks();
   if TimerUpdate <> nil then
     TimerUpdate.Enabled := False;
+  try
+    AutosaveOnExit;
+  except
+    Application.HandleException(Self);
+  end;
   FreeAndNil(FSettingsView);
   FreeAndNil(FHelp);
   FreeAndNil(FLibrary);
@@ -908,17 +1134,33 @@ begin
   if (FLibraryBackTool <> nil) and (FHelpTool <> nil) then
   begin
     var HasCoin := (FCoinTool <> nil) and FCoinTool.Visible;
-    var Narrow := LayoutHead.Width < IfThen(HasCoin, 1386, 1186);
+    var Narrow := LayoutHead.Width < IfThen(HasCoin, 1482, 1282);
     var Compact := LayoutHead.Width < IfThen(HasCoin, 740, 660);
     var Y := IfThen(Narrow, 56, 8);
     var Actions: TArray<TButton> := [FGameTools[0], FGameTools[1], FGameTools[2], FScreenshotTool,
         FGameTools[3], FGameTools[4], FHelpTool];
-    var Widths: TArray<Single> := [130, 132, 132, 112, 44, 44, 88];
+    var Widths: TArray<Single> := [130, 164, 164, 144, 44, 44, 88];
     if HasCoin then
     begin
       Actions := [FGameTools[0], FCoinTool, FGameTools[1], FGameTools[2], FScreenshotTool,
           FGameTools[3], FGameTools[4], FHelpTool];
-      Widths := [130, 188, 132, 132, 112, 44, 44, 88];
+      Widths := [130, 188, 164, 164, 144, 44, 44, 88];
+    end;
+    if Narrow and Compact then
+    begin
+      var Minimum: Single := 0;
+      for var i := 0 to High(Actions) do
+      begin
+        Widths[i] := 32;
+        if Actions[i] is TToolbarSplitButton then
+          Widths[i] := 48;
+        if i = 0 then
+          Widths[i] := 58;
+        Minimum := Minimum + Widths[i];
+      end;
+      var Extra := Max(0, (LayoutHead.Width - 16 - (Length(Actions) - 1) * 6 - Minimum) / Length(Actions));
+      for var i := 0 to High(Widths) do
+        Widths[i] := Widths[i] + Extra;
     end;
     var Total: Single := (Length(Actions) - 1) * 8;
     for var W in Widths do
@@ -933,18 +1175,18 @@ begin
     LabelStatus.SetBounds(184, 5, TitleWidth, 30);
     FGamePlatform.SetBounds(184, 33, TitleWidth, 22);
     FScreenshotTool.Align := TAlignLayout.None;
-    for var I := 0 to High(Actions) do
+    for var i := 0 to High(Actions) do
     begin
-      var W := Widths[I];
-      if Narrow then
+      var W := Widths[i];
+      if Narrow and not Compact then
       begin
         W := (LayoutHead.Width - 16 - (Length(Actions) - 1) * 6) / Length(Actions);
-        if I = 0 then
+        if i = 0 then
           W := Max(32, W) + 26
         else
           W := Max(32, W - 26 / (Length(Actions) - 1));
       end;
-      Actions[I].SetBounds(X, Y, W, 40);
+      Actions[i].SetBounds(X, Y, W, 40);
       X := X + W + IfThen(Narrow, 6, 8);
     end;
     if (FEmulation <> nil) and (FUserPaused or FAutoPaused) then
@@ -958,21 +1200,24 @@ begin
       FCoinTool.Text := Translate('Insert coin');
     FGameTools[3].Text := '';
     FGameTools[4].Text := '';
-    for var I := 0 to High(Actions) do
+    for var i := 0 to High(Actions) do
     begin
-      if (Compact and (Actions[I] <> FHelpTool)) or
-        ((Actions[I] = FCoinTool) and (Actions[I].Width < 180)) then
-        Actions[I].Text := '';
-      for var Child in Actions[I].Children do
+      if (Compact and (Actions[i] <> FHelpTool)) or
+        ((Actions[i] = FCoinTool) and (Actions[i].Width < 180)) then
+        Actions[i].Text := '';
+      for var Child in Actions[i].Children do
         if Child is FMX.Objects.TPath then
         begin
           var Icon := FMX.Objects.TPath(Child);
-          if I = 0 then
+          if i = 0 then
             if (FEmulation <> nil) and (FUserPaused or FAutoPaused) then
               Icon.Data.Data := IconPlay
             else
               Icon.Data.Data := IconPause;
-          Icon.Position.X := IfThen(Actions[I].Text = '', (Actions[I].Width - 20) / 2, 12);
+          var IconWidth := Actions[i].Width;
+          if Actions[i] is TToolbarSplitButton then
+            IconWidth := IconWidth - 26;
+          Icon.Position.X := IfThen(Actions[i].Text = '', (IconWidth - 20) / 2, 12);
         end;
     end;
   end;
@@ -1245,6 +1490,8 @@ begin
     FGameTools[2].Enabled := FGameTools[1].Enabled;
     FGameTools[4].Enabled := not FOpeningRom;
   end;
+  if FScreenshotTool <> nil then
+    FScreenshotTool.Enabled := (FEmulation <> nil) and not FOpeningRom;
   var Tape: INesTapeCore;
   if FDataRecorder <> nil then
   begin
@@ -1371,6 +1618,13 @@ begin
     Exit(False);
   end;
   SyncActivity;
+  // Mobile systems may terminate a background app without closing its form.
+  if AAppEvent = TApplicationEvent.EnteredBackground then
+  try
+    AutosaveOnExit;
+  except
+    Application.HandleException(Self);
+  end;
   Result := False;
 end;
 
@@ -1586,16 +1840,16 @@ begin
   FormDeactivate(Self);
   FEmulation.Pause;
   var Players := 2;
-  if FInputSystemId = 'gb' then
+  if FInputSystemId = ROM_SYSTEM_GB then
     Players := 1;
-  if FInputSystemId = 'gbc' then
+  if FInputSystemId = ROM_SYSTEM_GBC then
     Players := 1;
-  if FInputSystemId = 'snes' then
+  if FInputSystemId = ROM_SYSTEM_SNES then
     if FInputPorts.Multitap[1] then
       Players := 8
     else if FInputPorts.Multitap[0] then
       Players := 5;
-  if FInputSystemId = 'nes' then
+  if FInputSystemId = ROM_SYSTEM_NES then
   begin
     var Config: INesEmulatorConfig;
     if Supports(FEmulation.Config, INesEmulatorConfig, Config) and Config.FourScore then
@@ -1658,9 +1912,9 @@ begin
         SettingsClick(Self);
         if FSettingsView <> nil then
         begin
-          for var I := Low(SettingsCoreIds) to High(SettingsCoreIds) do
-            if SettingsCoreIds[I] = FInputSystemId then
-              FSettingsView.SelectCore(I);
+          for var i := Low(SettingsCoreIds) to High(SettingsCoreIds) do
+            if SettingsCoreIds[i] = FInputSystemId then
+              FSettingsView.SelectCore(i);
           FSettingsView.SelectCategory(3);
         end;
       end
@@ -1942,6 +2196,38 @@ begin
   end;
 end;
 
+function TFormMain.AutosaveClock: UInt64;
+begin
+  Result := TThread.GetTickCount64;
+end;
+
+procedure TFormMain.AutosaveOnExit;
+begin
+  if FAutosaveOnExit and (FEmulation <> nil) and
+    not FEmulationFaulted and FEmulation.SupportsSnapshots then
+    SaveSnapshot(SNAPSHOT_AUTOSAVE);
+end;
+
+procedure TFormMain.PollAutosave;
+begin
+  if not FAutosavePeriodic or (FEmulation = nil) or FEmulationFaulted or
+    FOpeningRom or FViewingLibrary or (FSettingsView <> nil) or (FHelp <> nil) or
+    FEmulation.IsPaused or not FEmulation.SupportsSnapshots then
+    Exit;
+  var Tick := AutosaveClock;
+  if (Tick < FAutosaveLastTick) or
+    (Tick - FAutosaveLastTick < UInt64(FAutosaveMinutes) * 60000) then
+    Exit;
+  // Retry on the next interval, rather than on every display update after an error.
+  FAutosaveLastTick := Tick;
+  try
+    SaveSnapshot(SNAPSHOT_AUTOSAVE);
+  except
+    on E: Exception do
+      TDialogService.ShowMessage(Translate('Autosave failed: ') + E.Message);
+  end;
+end;
+
 procedure TFormMain.TimerUpdateTimer(Sender: TObject);
 begin
   if FInput <> nil then
@@ -1971,6 +2257,7 @@ begin
   try
     UpdatePeripheralFeedback;
     UpdateFrame;
+    PollAutosave;
   except
     StopOnError;
     raise;
@@ -2041,7 +2328,11 @@ begin
     Exit;
   FormDeactivate(Self);
   if FEmulation <> nil then
+  begin
     FEmulation.Pause;
+    if not FViewingLibrary then
+      AutosaveOnExit;
+  end;
   if FullScreen then
     SwitchFullScreen;
   LayoutLeft.Visible := False;
@@ -2056,6 +2347,184 @@ end;
 procedure TFormMain.PauseClick(Sender: TObject);
 begin
   SwitchPause;
+end;
+
+function TFormMain.GameSnapshotDirectory: string;
+begin
+  Result := '';
+  var Location: IEmulationSnapshotLocation;
+  if (FEmulation <> nil) and Supports(FEmulation, IEmulationSnapshotLocation, Location) then
+    Result := Location.GetSnapshotDirectory;
+end;
+
+procedure TFormMain.PrepareGameplayMenu(Sender: TObject);
+
+  procedure AddItem(const Caption: string; Click: TNotifyEvent; const Path: string = '');
+  begin
+    var Item := TMenuItem.Create(TPopupMenu(Sender));
+    Item.Text := Caption;
+    Item.TagString := Path;
+    Item.OnClick := Click;
+    TPopupMenu(Sender).AddObject(Item);
+  end;
+
+begin
+  var Menu := TPopupMenu(Sender);
+  Menu.Clear;
+  try
+    if Menu = FScreenshotMenu then
+      AddItem(Translate('Open screenshot folder'), OpenScreenshotFolderClick)
+    else if Menu = FSaveMenu then
+      AddItem(Translate('Save as...'), SaveSnapshotAsClick)
+    else if Menu = FLoadMenu then
+    begin
+      var Directory := GameSnapshotDirectory;
+      var Saves := TList<TStorageSnapshot>.Create;
+      try
+        if Directory <> '' then
+          for var Path in FStorage.Files(Directory) do
+            if SameText(ExtractFileExt(Path), SNAPSHOT_EXTENSION) then
+            begin
+              var Save := Default(TStorageSnapshot);
+              Save.Location := Path;
+              Save.Name := ChangeFileExt(ExtractFileName(Path), '');
+              Save.Modified := FStorage.ModifiedTime(Path);
+              Saves.Add(Save);
+            end;
+        Saves.Sort(TComparer<TStorageSnapshot>.Construct(
+          function(const A, B: TStorageSnapshot): Integer
+          begin
+            Result := CompareValue(B.Modified, A.Modified);
+            if Result = 0 then
+              Result := CompareText(A.Location, B.Location);
+          end));
+        for var i := 0 to Min(8, Saves.Count) - 1 do
+          AddItem(Saves[i].Name.Replace('&', '&&'), RecentSnapshotClick, Saves[i].Location);
+        if Saves.Count > 0 then
+          AddItem('-', nil);
+      finally
+        Saves.Free;
+      end;
+      AddItem(Translate('Open snapshot...'), OpenSnapshotClick);
+    end;
+  except
+    on E: Exception do
+      SetStatus(E.Message);
+  end;
+end;
+
+procedure TFormMain.OpenDirectory(const Directory: string);
+begin
+  {$IFDEF MSWINDOWS}
+  if NativeInt(ShellExecute(0, 'open', PChar(Directory), nil, nil, SW_SHOWNORMAL)) > 32 then
+    Exit;
+  {$ENDIF}
+  {$IF Defined(MACOS) and not Defined(IOS)}
+  if TNSWorkspace.OCClass.sharedWorkspace.openFile(StrToNSStr(Directory)) then
+    Exit;
+  {$ENDIF}
+  {$IF Defined(LINUX) and not Defined(ANDROID)}
+  var Quoted := #39 + Directory.Replace(#39, #39 + '"' + #39 + '"' + #39) + #39;
+  if Posix.Stdlib.system(PAnsiChar(UTF8String('xdg-open ' + Quoted))) = 0 then
+    Exit;
+  {$ENDIF}
+  raise EInOutError.Create(Translate('Cannot open screenshot folder'));
+end;
+
+procedure TFormMain.OpenScreenshotFolderClick(Sender: TObject);
+begin
+  try
+    var Directory := TPath.Combine(FStorage.Root, 'screenshots');
+    FStorage.EnsureFolder(Directory);
+    OpenDirectory(Directory);
+  except
+    on E: Exception do
+      TDialogService.ShowMessage(E.Message);
+  end;
+end;
+
+function TFormMain.ExecuteSnapshotDialog(Dialog: TOpenDialog): Boolean;
+begin
+  Result := Dialog.Execute;
+end;
+
+procedure TFormMain.SaveSnapshotAsClick(Sender: TObject);
+begin
+  if (FEmulation = nil) or not FEmulation.SupportsSnapshots or FOpeningRom then
+    Exit;
+  var Directory := GameSnapshotDirectory;
+  if Directory = '' then
+    Exit;
+  var Dialog := TSaveDialog.Create(Self);
+  FormDeactivate(Self);
+  FOpeningRom := True;
+  SyncActivity;
+  try
+    try
+      FStorage.EnsureFolder(Directory);
+      Dialog.Title := Translate('Save as...');
+      Dialog.Filter := Translate('Snapshots (*.snapshot)|*.snapshot');
+      Dialog.DefaultExt := 'snapshot';
+      Dialog.InitialDir := Directory;
+      Dialog.FileName := FormatDateTime('yyyy-mm-dd_hh-nn-ss-zzz', Now) + SNAPSHOT_EXTENSION;
+      Dialog.Options := [TOpenOption.ofPathMustExist, TOpenOption.ofOverwritePrompt];
+      if ExecuteSnapshotDialog(Dialog) then
+        SaveSnapshot(TPath.GetFullPath(Dialog.FileName));
+    except
+      on E: Exception do
+        TDialogService.ShowMessage(E.Message);
+    end;
+  finally
+    Dialog.Free;
+    FOpeningRom := False;
+    FormActivate(Self);
+    SyncActivity;
+  end;
+end;
+
+procedure TFormMain.OpenSnapshotClick(Sender: TObject);
+begin
+  if (FEmulation = nil) or not FEmulation.SupportsSnapshots or FOpeningRom then
+    Exit;
+  var Directory := GameSnapshotDirectory;
+  if Directory = '' then
+    Exit;
+  var Dialog := TOpenDialog.Create(Self);
+  FormDeactivate(Self);
+  FOpeningRom := True;
+  SyncActivity;
+  try
+    try
+      FStorage.EnsureFolder(Directory);
+      Dialog.Title := Translate('Open snapshot...');
+      Dialog.Filter := Translate('Snapshots (*.snapshot)|*.snapshot');
+      Dialog.DefaultExt := 'snapshot';
+      Dialog.InitialDir := Directory;
+      Dialog.Options := [TOpenOption.ofPathMustExist, TOpenOption.ofFileMustExist];
+      if ExecuteSnapshotDialog(Dialog) then
+        LoadSnapshot(TPath.GetFullPath(Dialog.FileName));
+    except
+      on E: Exception do
+        TDialogService.ShowMessage(E.Message);
+    end;
+  finally
+    Dialog.Free;
+    FOpeningRom := False;
+    FormActivate(Self);
+    SyncActivity;
+  end;
+end;
+
+procedure TFormMain.RecentSnapshotClick(Sender: TObject);
+begin
+  if (FEmulation = nil) or not FEmulation.SupportsSnapshots or FOpeningRom then
+    Exit;
+  try
+    LoadSnapshot(TMenuItem(Sender).TagString);
+  except
+    on E: Exception do
+      TDialogService.ShowMessage(E.Message);
+  end;
 end;
 
 procedure TFormMain.SaveStateClick(Sender: TObject);
@@ -2095,7 +2564,10 @@ begin
   NewEmulation := CreateCore(FileName);
   try
     if FEmulation <> nil then
+    begin
+      AutosaveOnExit;
       FEmulation.Stop;
+    end;
   except
     NewEmulation := nil;
     raise;
@@ -2187,6 +2659,7 @@ begin
       FEmulation.Pause;
     {$ENDIF}
     FEmulation.Start;
+    FAutosaveLastTick := AutosaveClock;
     if FLibrary <> nil then
     begin
       var Info: IEmulationSnapshotLocation;
@@ -2297,11 +2770,17 @@ end;
 procedure TFormMain.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
 begin
   try
+    {$IFDEF MSWINDOWS}
+    SaveWindowState;
+    {$ENDIF}
     Stop;
   except
     on E: Exception do
     begin
       CanClose := False;
+      {$IFDEF MSWINDOWS}
+      FWindowStateSaved := False;
+      {$ENDIF}
       ShowMessage(E.Message);
     end;
   end;
@@ -2324,7 +2803,7 @@ begin
   try
     for var Extension in ['.png', '.bmp'] do
     try
-      var Path := TPath.Combine(Directory, Name + Extension);
+      var Path := ChangeFileExt(ResolveSnapshotPath(Directory, Name), Extension);
       if not FStorage.Exists(Path) then
         Continue;
       var Stream := FStorage.OpenRead(Path);

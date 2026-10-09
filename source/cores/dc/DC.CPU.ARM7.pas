@@ -33,9 +33,9 @@ type
     function Step(FIQ: Boolean): Integer;
   end;
 
-function ARMAdd(A, B: Cardinal): Cardinal;
+function ARMAdd(A, B: Cardinal): Cardinal; inline;
 
-function ARMSub(A, B: Cardinal): Cardinal;
+function ARMSub(A, B: Cardinal): Cardinal; inline;
 
 implementation
 
@@ -49,7 +49,7 @@ begin
   Result := Cardinal((UInt64(A) + UInt64($100000000) - B) and $FFFFFFFF);
 end;
 
-function Rotate(V: Cardinal; Count: Integer): Cardinal;
+function Rotate(V: Cardinal; Count: Integer): Cardinal; inline;
 begin
   Count := Count and 31;
   if Count = 0 then
@@ -58,7 +58,7 @@ begin
     Result := (V shr Count) or (V shl (32 - Count));
 end;
 
-function Bank(Mode: Integer): Integer;
+function Bank(Mode: Integer): Integer; inline;
 begin
   case Mode and 31 of
     $11:
@@ -169,6 +169,7 @@ begin
   Result := Value;
   if (Count = 0) and not Immediate then
     Exit;
+
   case Kind of
     0:
       begin
@@ -273,6 +274,7 @@ begin
     ExceptionEntry($11, $1C);
     Exit(4);
   end;
+
   var PC := R[15];
   var Op := FRead(PC, 4);
   if not Condition(Op shr 28) then
@@ -280,6 +282,7 @@ begin
     R[15] := ARMAdd(PC, 4);
     Exit;
   end;
+
   var Next := ARMAdd(PC, 4);
   var RD := Integer((Op shr 12) and 15);
   var RN := Integer((Op shr 16) and 15);
@@ -290,12 +293,14 @@ begin
     ExceptionEntry($13, 8);
     Exit(4);
   end;
+
   if Op and $0FFFFFF0 = $012FFF10 then
   begin
     Next := Reg(Op and 15) and $FFFFFFFC;
     R[15] := Next;
     Exit(4);
   end;
+
   if Op and $0E000000 = $0A000000 then
   begin
     if Op and $01000000 <> 0 then
@@ -315,6 +320,7 @@ begin
         Inc(Count);
     if Count = 0 then
       raise EArgumentException.Create('ARM empty register list');
+
     var Base := Reg(RN);
     var Address := Base;
     var Up := Op and $00800000 <> 0;
@@ -593,6 +599,7 @@ begin
   end
   else
     raise EArgumentException.CreateFmt('Unsupported ARM instruction %.8x at %.8x', [Op, PC]);
+
   R[15] := Next;
 end;
 

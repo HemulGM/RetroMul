@@ -3,9 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, System.UITypes, FMXInput,
-  Core.Emulation, Core.InputConfig, NES.Controller, NES.FamicomKeyboardDevice,
-  NES.MiraclePianoDevice;
+  Core.RomFormat, System.SysUtils, System.Classes, System.IniFiles,
+  System.UITypes, FMXInput, Core.Emulation, Core.InputConfig, NES.Controller,
+  NES.FamicomKeyboardDevice, NES.MiraclePianoDevice;
 
 const
   PowerPadAction = 128;
@@ -49,8 +49,9 @@ function ReadPianoInput(Input: TInputManager): TMiracleKeys;
 implementation
 
 uses
-  Core.Adapter.GB, Core.Adapter.NES, Core.Adapter.MD, Core.Adapter.SNES, Core.Adapter.NeoGeo,
-  GB.Joypad, NES.Input, NES.Types, MD.Console, SNES.Console, System.Math, FMX.Types;
+  Core.Adapter.GB, Core.Adapter.NES, Core.Adapter.MD, Core.Adapter.SNES,
+  Core.Adapter.NeoGeo, GB.Joypad, NES.Input, NES.Types, MD.Console, SNES.Console,
+  System.Math, FMX.Types;
 
 function HidToHostKey(Code: Integer): Word;
 const
@@ -124,7 +125,7 @@ begin
     Exit;
   Result := [TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left,
       TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Start];
-  if SystemId = 'md' then
+  if SystemId = ROM_SYSTEM_MD then
   begin
     Include(Result, TEmulatorButton.C);
     if Device <> 'pad3' then
@@ -134,9 +135,9 @@ begin
   else
   begin
     Include(Result, TEmulatorButton.Select);
-    if SystemId = 'neogeo' then
+    if SystemId = ROM_SYSTEM_NEOGEO then
       Result := Result + [TEmulatorButton.C, TEmulatorButton.X];
-    if SystemId = 'snes' then
+    if SystemId = ROM_SYSTEM_SNES then
       Result := Result + [TEmulatorButton.X, TEmulatorButton.Y,
           TEmulatorButton.C, TEmulatorButton.Z];
   end;
@@ -148,8 +149,9 @@ const
     ('↑', '↓', '←', '→', 'A', 'B', 'Select', 'Start', 'C', 'X', 'Y', 'Z', 'Mode');
 begin
   Result := Names[Button];
-  if (SystemId = 'neogeo') and (Button = TEmulatorButton.X) then Result := 'D';
-  if SystemId = 'snes' then
+  if (SystemId = ROM_SYSTEM_NEOGEO) and (Button = TEmulatorButton.X) then
+    Result := 'D';
+  if SystemId = ROM_SYSTEM_SNES then
     case Button of
       TEmulatorButton.C:
         Result := 'L';
@@ -279,13 +281,13 @@ begin
     finally
       Stream.Free;
     end;
-    if SystemId = 'nes' then
+    if SystemId = ROM_SYSTEM_NES then
       EnsurePeripheralBindings(Input, Ini);
     Exit;
   end;
   FillChar(Keys, SizeOf(Keys), 0);
   // Import the existing core keyboard maps once; all later assignments use FMXInput.
-  if SystemId = 'nes' then
+  if SystemId = ROM_SYSTEM_NES then
   begin
     var C := TNesEmulatorConfig.Create('');
     Config := C;
@@ -294,7 +296,7 @@ begin
     CopyNES(2, C.GetKeys3);
     CopyNES(3, C.GetKeys4);
   end
-  else if SystemId = 'md' then
+  else if SystemId = ROM_SYSTEM_MD then
   begin
     var C := TMDConfig.Create('');
     Config := C;
@@ -304,14 +306,17 @@ begin
       Keys[1, MDMapping[B]] := C.Keys2[B];
     end;
   end
-  else if SystemId = 'neogeo' then
+  else if SystemId = ROM_SYSTEM_NEOGEO then
   begin
     var C := TNeoGeoConfig.Create('');
     Config := C;
     for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-    begin Keys[0, B] := C.Keys[B]; Keys[1, B] := C.Keys2[B]; end;
+    begin
+      Keys[0, B] := C.Keys[B];
+      Keys[1, B] := C.Keys2[B];
+    end;
   end
-  else if SystemId = 'snes' then
+  else if SystemId = ROM_SYSTEM_SNES then
   begin
     var C := TSnesConfig.Create('');
     Config := C;
@@ -331,18 +336,18 @@ begin
     CopyGB(C.GetKeys);
   end;
   var Count := 2;
-  if SystemId = 'nes' then
+  if SystemId = ROM_SYSTEM_NES then
     Count := 4;
-  if SystemId = 'snes' then
+  if SystemId = ROM_SYSTEM_SNES then
     Count := 8;
-  if (SystemId = 'gb') or (SystemId = 'gbc') then
+  if (SystemId = ROM_SYSTEM_GB) or (SystemId = ROM_SYSTEM_GBC) then
     Count := 1;
   for var Port := 0 to Count - 1 do
     for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
       if B in CoreButtons(SystemId, 'auto') then
       begin
         var Section := 'Controls';
-        if (SystemId = 'md') or (SystemId = 'snes') or (SystemId = 'neogeo') then
+        if (SystemId = ROM_SYSTEM_MD) or (SystemId = ROM_SYSTEM_SNES) or (SystemId = ROM_SYSTEM_NEOGEO) then
           Section := 'Keys';
         if Port > 0 then
           Section := Section + IntToStr(Port + 1);
@@ -354,7 +359,7 @@ begin
     AddKey(PowerPadAction + i, PowerKeys[i]);
   Input.AddBinding(TInputBinding.Create(ZapperTriggerAction,
       TInputValue.Create(SystemMouseId, TInputElementKind.Button, MouseLeft, 1)));
-  if SystemId = 'nes' then
+  if SystemId = ROM_SYSTEM_NES then
     EnsurePeripheralBindings(Input, Ini);
 end;
 

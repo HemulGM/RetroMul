@@ -35,24 +35,24 @@ type
   TCartridgeIssues = set of TCartridgeIssue;
 
 const
-  AddressRAMSize: Integer = $0149;
-  AddressTitleStart: Integer = $134;
-  AddressTitleEnd: Integer = $143;
-  AddressLocale: Integer = $14A;
-  AddressROMSize: Integer = $148;
-  AddressCartType: Integer = $0147;
+  AddressRAMSize: Integer = GB_ROM_RAM_SIZE_OFFSET;
+  AddressTitleStart: Integer = GB_ROM_TITLE_OFFSET;
+  AddressTitleEnd: Integer = GB_ROM_CGB_FLAG_OFFSET;
+  AddressLocale: Integer = GB_ROM_DESTINATION_OFFSET;
+  AddressROMSize: Integer = GB_ROM_SIZE_OFFSET;
+  AddressCartType: Integer = GB_ROM_CARTRIDGE_TYPE_OFFSET;
   AddressLogoStart: Integer = GB_ROM_LOGO_OFFSET;
-  AddressLogoEnd: Integer = $0133;
-  AddressHeaderChecksumExpected: Integer = $014D;
-  AddressHeaderChecksumCalculatedStart: Integer = $0134;
-  AddressHeaderChecksumCalculatedEnd: Integer = $014C;
+  AddressLogoEnd: Integer = GB_ROM_TITLE_OFFSET - 1;
+  AddressHeaderChecksumExpected: Integer = GB_ROM_HEADER_CHECKSUM_OFFSET;
+  AddressHeaderChecksumCalculatedStart: Integer = GB_ROM_TITLE_OFFSET;
+  AddressHeaderChecksumCalculatedEnd: Integer = GB_ROM_HEADER_CHECKSUM_OFFSET - 1;
   CartridgeHeaderSize = GB_ROM_HEADER_SIZE;
   AddressCGBFlag = GB_ROM_CGB_FLAG_OFFSET;
-  AddressNewLicensee = $144;
-  AddressSGBFlag = $146;
-  AddressOldLicensee = $14B;
-  AddressVersion = $14C;
-  AddressGlobalChecksum = $14E;
+  AddressNewLicensee = GB_ROM_NEW_LICENSEE_OFFSET;
+  AddressSGBFlag = GB_ROM_SGB_FLAG_OFFSET;
+  AddressOldLicensee = GB_ROM_OLD_LICENSEE_OFFSET;
+  AddressVersion = GB_ROM_VERSION_OFFSET;
+  AddressGlobalChecksum = GB_ROM_GLOBAL_CHECKSUM_OFFSET;
 
 type
   TGBCartridge = class
@@ -297,28 +297,28 @@ begin
 
   FActualROMSize := Length(Data);
   FCGBFlag := Data[AddressCGBFlag];
-  FSupportsCGB := (FCGBFlag and $80) <> 0;
-  FCGBOnly := (FCGBFlag and $C0) = $C0;
+  FSupportsCGB := (FCGBFlag and GB_ROM_CGB_SUPPORTED_FLAG) <> 0;
+  FCGBOnly := (FCGBFlag and GB_ROM_CGB_ONLY_FLAG) = GB_ROM_CGB_ONLY_FLAG;
   if FSupportsCGB then
   begin
-    FTitle := HeaderText(Data, AddressTitleStart, 15);
-    FShortTitle := HeaderText(Data, AddressTitleStart, 11);
-    FManufacturerCode := HeaderText(Data, $13F, 4);
+    FTitle := HeaderText(Data, AddressTitleStart, GB_ROM_CGB_TITLE_SIZE);
+    FShortTitle := HeaderText(Data, AddressTitleStart, GB_ROM_CGB_SHORT_TITLE_SIZE);
+    FManufacturerCode := HeaderText(Data, GB_ROM_MANUFACTURER_OFFSET, GB_ROM_MANUFACTURER_SIZE);
   end
   else
   begin
-    FTitle := HeaderText(Data, AddressTitleStart, 16);
+    FTitle := HeaderText(Data, AddressTitleStart, GB_ROM_TITLE_SIZE);
     FShortTitle := FTitle;
   end;
   FOldLicenseeCode := Data[AddressOldLicensee];
-  FNewLicenseeCode := HeaderText(Data, AddressNewLicensee, 2);
-  FUsesNewLicenseeCode := FOldLicenseeCode = $33;
+  FNewLicenseeCode := HeaderText(Data, AddressNewLicensee, GB_ROM_NEW_LICENSEE_SIZE);
+  FUsesNewLicenseeCode := FOldLicenseeCode = GB_ROM_NEW_LICENSEE_FLAG;
   if FUsesNewLicenseeCode then
     FLicenseeCode := FNewLicenseeCode
   else
     FLicenseeCode := IntToHex(FOldLicenseeCode, 2);
   FSGBFlag := Data[AddressSGBFlag];
-  FSupportsSGB := (FSGBFlag = $03) and FUsesNewLicenseeCode;
+  FSupportsSGB := (FSGBFlag = GB_ROM_SGB_SUPPORTED_FLAG) and FUsesNewLicenseeCode;
   FVersion := Data[AddressVersion];
   FDestinationCode := Data[AddressLocale];
   case FDestinationCode of
@@ -350,7 +350,7 @@ begin
   FROMSizeBytes := -1;
   if FROMBanks > 0 then
   begin
-    FROMSizeBytes := FROMBanks * $4000;
+    FROMSizeBytes := FROMBanks * GB_ROM_BANK_SIZE;
     if FROMSizeBytes <> FActualROMSize then
       Include(FIssues, TCartridgeIssue.ROMSizeMismatch);
   end;

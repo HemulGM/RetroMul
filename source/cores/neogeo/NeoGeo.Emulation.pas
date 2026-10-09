@@ -55,7 +55,7 @@ type
 implementation
 
 uses
-  Core.PerformanceHints, System.IOUtils, System.UITypes, System.Diagnostics,
+  Core.SavePaths, Core.PerformanceHints, System.IOUtils, System.UITypes, System.Diagnostics,
   System.Math, PCM.Audio;
 
 { TNeoGeoWorker }
@@ -247,7 +247,7 @@ begin
     try
       Console := TNeoGeoConsole.Create(FCartridge);
       Console.ConfigureInputPorts(InputPorts);
-      FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), 'NEOGEO');
+      FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), ROM_CORE_ID_NEOGEO);
       if FStorage.Exists(FSavePath) then
       begin
         LastBattery := FStorage.ReadBytes(FSavePath);
@@ -267,7 +267,7 @@ begin
           procedure(const Name: string; Loading: Boolean)
           begin
             FrameHints.Pause;
-            var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
+            var Path := ResolveSnapshotPath(FSnapshotDirectory, Name);
             var Transfer: TStateTransfer :=
               procedure(State: TStateArchive)
               begin
@@ -275,7 +275,7 @@ begin
               end;
             if Loading then
             begin
-              LoadCoreSnapshot(Path, 'NEOGEO', FData, Transfer, FStorage);
+              LoadCoreSnapshot(Path, ROM_CORE_ID_NEOGEO, FData, Transfer, FStorage);
               Console.MarkBatteryDirty;
               if Audio <> nil then
                 Audio.Clear;
@@ -298,7 +298,7 @@ begin
             end
             else
             begin
-              SaveCoreSnapshot(Path, 'NEOGEO', FData, Transfer, FStorage);
+              SaveCoreSnapshot(Path, ROM_CORE_ID_NEOGEO, FData, Transfer, FStorage);
               SaveSnapshotPreview(Path, Console.Width, Console.Height, 320, @Console.Video.Pixels[0], FStorage);
             end;
             Deadline := TStopwatch.GetTimeStamp;

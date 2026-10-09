@@ -398,6 +398,7 @@ function TMDConsole.ReadPad(Port: Integer): Byte;
 begin
   if FPadDevices[Port] = 'none' then
     Exit(($7F and not FIO[Port + 3]) or (FIO[Port] and FIO[Port + 3]));
+
   if (FPadDevices[Port] = 'pad3') or (FBusTime >= FPadTimeout[Port]) then
     FStrobes[Port] := 0;
   if FTH[Port] then
@@ -978,6 +979,7 @@ begin
   State.Field(FRasterX, SizeOf(FRasterX));
   State.Field(FRasterReady, SizeOf(FRasterReady));
   State.Field(FRasterPixels, SizeOf(FRasterPixels));
+
   if (FWidth < 1) or (FWidth > 320) or (FHeight < 1) or (FHeight > 480) or
     (FAudioCount < 0) or (FAudioCount > Length(FAudio) div 2) then
     raise EReadError.Create('Invalid snapshot display or audio dimensions');

@@ -61,15 +61,18 @@ uses
   System.Math;
 
 const
-  AttackTimes: array[0..63] of Double = (100000, 100000, 8100.0, 6900.0, 6000.0, 4800.0, 4000.0, 3400.0, 3000.0, 2400.0, 2000.0, 1700.0, 1500.0,
+  AttackTimes: array[0..63] of Double = (
+    100000, 100000, 8100.0, 6900.0, 6000.0, 4800.0, 4000.0, 3400.0, 3000.0, 2400.0, 2000.0, 1700.0, 1500.0,
     1200.0, 1000.0, 860.0, 760.0, 600.0, 500.0, 430.0, 380.0, 300.0, 250.0, 220.0, 190.0, 150.0, 130.0, 110.0, 95.0,
     76.0, 63.0, 55.0, 47.0, 38.0, 31.0, 27.0, 24.0, 19.0, 15.0, 13.0, 12.0, 9.4, 7.9, 6.8, 6.0, 4.7, 3.8, 3.4, 3.0, 2.4,
     2.0, 1.8, 1.6, 1.3, 1.1, 0.93, 0.85, 0.65, 0.53, 0.44, 0.40, 0.35, 0.0, 0.0);
-  DecayTimes: array[0..63] of Double = (100000, 100000, 118200.0, 101300.0, 88600.0, 70900.0, 59100.0, 50700.0, 44300.0, 35500.0, 29600.0, 25300.0, 22200.0, 17700.0,
+  DecayTimes: array[0..63] of Double = (
+    100000, 100000, 118200.0, 101300.0, 88600.0, 70900.0, 59100.0, 50700.0, 44300.0, 35500.0, 29600.0, 25300.0, 22200.0, 17700.0,
     14800.0, 12700.0, 11100.0, 8900.0, 7400.0, 6300.0, 5500.0, 4400.0, 3700.0, 3200.0, 2800.0, 2200.0, 1800.0, 1600.0, 1400.0, 1100.0,
     920.0, 790.0, 690.0, 550.0, 460.0, 390.0, 340.0, 270.0, 230.0, 200.0, 170.0, 140.0, 110.0, 98.0, 85.0, 68.0, 57.0, 49.0, 43.0, 34.0,
     28.0, 25.0, 22.0, 18.0, 14.0, 12.0, 11.0, 8.5, 7.1, 6.1, 5.4, 4.3, 3.6, 3.1);
-  LFOFrequency: array[0..31] of Double = (0.17, 0.19, 0.23, 0.27, 0.34, 0.39, 0.45, 0.55, 0.68, 0.78, 0.92, 1.10, 1.39, 1.60, 1.87, 2.27,
+  LFOFrequency: array[0..31] of Double = (
+    0.17, 0.19, 0.23, 0.27, 0.34, 0.39, 0.45, 0.55, 0.68, 0.78, 0.92, 1.10, 1.39, 1.60, 1.87, 2.27,
     2.87, 3.31, 3.92, 4.79, 6.15, 7.18, 8.60, 10.8, 14.4, 17.2, 21.5, 28.7, 43.1, 57.4, 86.1, 172.3);
   PitchDepth: array[0..7] of Double = (0, 7, 13.5, 27, 55, 112, 230, 494);
   AmpDepth: array[0..7] of Double = (0, 0.4, 0.8, 1.5, 3, 6, 12, 24);
@@ -78,15 +81,15 @@ const
 
 class constructor TAICA.Create;
 begin
-  for var I := 0 to 1023 do
-    FEnvelope[I] := Power(10, 3 * (I - 1023) / (32.0 * 20));
-  for var I := 2 to 63 do
+  for var i := 0 to 1023 do
+    FEnvelope[i] := Power(10, 3 * (i - 1023) / (32.0 * 20));
+  for var i := 2 to 63 do
   begin
-    if AttackTimes[I] = 0 then
-      FAttack[I] := 1024 * 65536
+    if AttackTimes[i] = 0 then
+      FAttack[i] := 1024 * 65536
     else
-      FAttack[I] := Trunc((1023 * 1000.0 * 65536) / (44100 * AttackTimes[I]));
-    FDecay[I] := Trunc((1023 * 1000.0 * 65536) / (44100 * DecayTimes[I]));
+      FAttack[i] := Trunc((1023 * 1000.0 * 65536) / (44100 * AttackTimes[i]));
+    FDecay[i] := Trunc((1023 * 1000.0 * 65536) / (44100 * DecayTimes[i]));
   end;
 end;
 
@@ -95,8 +98,8 @@ begin
   inherited Create;
   FRead := Read;
   FDSP := TAICADSP.Create(Read, Write);
-  for var I := 0 to 1 do
-    FDC[I].Configure(44100, 20);
+  for var i := 0 to 1 do
+    FDC[i].Configure(44100, 20);
   Reset;
 end;
 
@@ -118,13 +121,13 @@ begin
   PutWord($28A8, $18);
   PutWord($28AC, $50);
   PutWord($28B0, 8);
-  for var I := 0 to 63 do
+  for var i := 0 to 63 do
   begin
-    FVoices[I].EGState := 3;
-    FVoices[I].LoopEnded := True;
+    FVoices[i].EGState := 3;
+    FVoices[i].LoopEnded := True;
   end;
-  for var I := 0 to 1 do
-    FDC[I].Reset;
+  for var i := 0 to 1 do
+    FDC[i].Reset;
 end;
 
 function TAICA.WordAt(Address: Integer): Integer;
@@ -145,6 +148,7 @@ begin
   Address := Address and $7FFF;
   if Address >= $4000 then
     Exit(FDSP.ReadRegister(Address));
+
   var Base := Address and $7FFE;
   var Value := WordAt(Base);
   var Selected := (WordAt($280C) shr 8) and 63;
@@ -182,14 +186,14 @@ begin
     if Offset = 1 then
       if WordAt(C * 128) and $8000 <> 0 then
       begin
-        for var I := 0 to 63 do
-          if WordAt(I * 128) and $4000 <> 0 then
+        for var i := 0 to 63 do
+          if WordAt(i * 128) and $4000 <> 0 then
           begin
-            if not FVoices[I].Active or (FVoices[I].EGState = 3) then
-              KeyOn(I);
+            if not FVoices[i].Active or (FVoices[i].EGState = 3) then
+              KeyOn(i);
           end
           else
-            FVoices[I].EGState := 3;
+            FVoices[i].EGState := 3;
         PutWord(C * 128, WordAt(C * 128) and $7FFF);
       end;
     if Offset in [$14, $15] then
@@ -239,13 +243,13 @@ begin
   Rates[1] := (E1 shr 6) and 31;
   Rates[2] := (E1 shr 11) and 31;
   Rates[3] := WordAt(Base + $14) and 31;
-  for var I := 0 to 3 do
+  for var i := 0 to 3 do
   begin
-    var R := EnsureRange(Rate + Rates[I] * 2, 0, 63);
-    if I = 0 then
-      V.Rates[I] := FAttack[R]
+    var R := EnsureRange(Rate + Rates[i] * 2, 0, 63);
+    if i = 0 then
+      V.Rates[i] := FAttack[R]
     else
-      V.Rates[I] := FDecay[R];
+      V.Rates[i] := FDecay[R];
   end;
   FVoices[Channel] := V;
 end;
@@ -419,9 +423,9 @@ begin
   end;
   var TL := Filter shr 8;
   var DB := 0.0;
-  for var I := 0 to 7 do
-    if TL and (1 shl I) <> 0 then
-      DB := DB + Att[I];
+  for var i := 0 to 7 do
+    if TL and (1 shl i) <> 0 then
+      DB := DB + Att[i];
   Result := Result * Power(10, -DB / 20);
 end;
 
@@ -430,6 +434,7 @@ begin
   Result := 0;
   if Level = 0 then
     Exit;
+
   Result := Power(10, (Level - 15) * 3 / 20.0);
   if ((Side = 0) and (Pan < 16)) or ((Side = 1) and (Pan >= 16)) then
   begin
@@ -443,25 +448,25 @@ end;
 procedure TAICA.Timers;
 begin
   var Pending := WordAt($28A0);
-  for var I := 0 to 2 do
+  for var i := 0 to 2 do
   begin
-    var Base := $2890 + I * 4;
+    var Base := $2890 + i * 4;
     var Prescale := (WordAt(Base) shr 8) and 7;
-    Inc(FTimers[I], 256 shr Prescale);
-    if FTimers[I] >= 65536 then
+    Inc(FTimers[i], 256 shr Prescale);
+    if FTimers[i] >= 65536 then
     begin
-      FTimers[I] := FTimers[I] and $FFFF;
-      Pending := Pending or (1 shl (6 + I));
+      FTimers[i] := FTimers[i] and $FFFF;
+      Pending := Pending or (1 shl (6 + i));
     end;
-    PutWord(Base, (WordAt(Base) and $FF00) or (FTimers[I] shr 8));
+    PutWord(Base, (WordAt(Base) and $FF00) or (FTimers[i] shr 8));
   end;
   PutWord($28A0, Pending);
   Pending := Pending and WordAt($289C);
   if FIRQ = 0 then
-    for var I := 10 downto 0 do
-      if Pending and (1 shl I) <> 0 then
+    for var i := 10 downto 0 do
+      if Pending and (1 shl i) <> 0 then
       begin
-        var Bit := 1 shl Min(7, I);
+        var Bit := 1 shl Min(7, i);
         FIRQ := Ord(WordAt($28A8) and Bit <> 0) + 2 * Ord(WordAt($28AC) and Bit <> 0) + 4 * Ord(WordAt($28B0) and Bit <> 0);
         Break;
       end;

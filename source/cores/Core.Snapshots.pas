@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.Storage, System.SysUtils, System.Classes, System.SyncObjs;
+  Core.RomFormat, Core.Storage, System.SysUtils, System.Classes, System.SyncObjs;
 
 type
   // Persist fields, never object references, callbacks or host audio handles.
@@ -50,7 +50,7 @@ procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer
 implementation
 
 uses
-  System.Hash, System.ZLib;
+  Core.SavePaths, System.Hash, System.ZLib;
 
 type
   THeader = packed record
@@ -120,18 +120,18 @@ begin
   Move(Magic[1], Result.Magic, 8);
   Result.Version := 1;
   // GB/GBC v2 adds OAM DMA, serial, timer reload and MBC3 RTC state.
-  if (PlatformCore = 'GB') or (PlatformCore = 'GBC') then
+  if (PlatformCore = ROM_CORE_ID_GB) or (PlatformCore = ROM_CORE_ID_GBC) then
     Result.Version := 2;
   // Camera v3 records the latched sensor frame for an in-flight capture.
   // Leave snapshot compatibility unchanged for all other GB/GBC cartridges.
-  if ((PlatformCore = 'GB') or (PlatformCore = 'GBC')) and
-    (Length(ROM) > $147) and (ROM[$147] = $FC) then
+  if ((PlatformCore = ROM_CORE_ID_GB) or (PlatformCore = ROM_CORE_ID_GBC)) and
+    (Length(ROM) > GB_ROM_CARTRIDGE_TYPE_OFFSET) and (ROM[GB_ROM_CARTRIDGE_TYPE_OFFSET] = $FC) then
     Result.Version := 3;
   // MD v5 adds Z80 IFF2 and the pending NMI latch.
-  if PlatformCore = 'MD' then
+  if PlatformCore = ROM_CORE_ID_MD then
     Result.Version := 5;
   // SNES v10 adds the S-DSP phase latches, SPC MMIO latches and PPU mosaic counter.
-  if PlatformCore = 'SNES' then
+  if PlatformCore = ROM_CORE_ID_SNES then
     Result.Version := 10;
   var Core := AnsiString(PlatformCore);
   if (Length(Core) = 0) or (Length(Core) > 8) then
@@ -326,12 +326,7 @@ end;
 
 procedure TSnapshotQueue.Execute(Worker: TThread; const Name: string; Loading: Boolean);
 begin
-  if (Name = '') or (Length(Name) > 80) then
-    raise EArgumentException.Create('Invalid snapshot name');
-
-  for var C in Name do
-    if not CharInSet(C, ['a'..'z', 'A'..'Z', '0'..'9', '-', '_']) then
-      raise EArgumentException.Create('Snapshot names use letters, digits, - and _');
+  ValidateSnapshotName(Name);
 
   FCommandLock.Enter;
   try

@@ -473,6 +473,8 @@
             <Form>FormMain</Form>
         </DCCReference>
         <DCCReference Include="RM.FrameUpload.pas"/>
+        <DCCReference Include="RM.Icons.pas"/>
+        <DCCReference Include="RM.SearchEdit.pas"/>
         <DCCReference Include="RM.Input.pas"/>
         <DCCReference Include="RM.Settings.pas"/>
         <DCCReference Include="RM.LibraryView.pas"/>

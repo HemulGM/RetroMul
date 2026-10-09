@@ -3,27 +3,27 @@
 interface
 
 uses
-  GB.Cartridge;
+  Core.RomFormat, GB.Cartridge;
 
 const
-  AddressRAMSize: Integer = $0149;
-  AddressTitleStart: Integer = $134;
-  AddressTitleEnd: Integer = $143;
-  AddressLocale: Integer = $14A;
-  AddressROMSize: Integer = $148;
-  AddressCartType: Integer = $0147;
-  AddressLogoStart: Integer = $104;
-  AddressLogoEnd: Integer = $0133;
-  AddressHeaderChecksumExpected: Integer = $014D;
-  AddressHeaderChecksumCalculatedStart: Integer = $0134;
-  AddressHeaderChecksumCalculatedEnd: Integer = $014C;
-  CartridgeHeaderSize = $150;
-  AddressCGBFlag = $143;
-  AddressNewLicensee = $144;
-  AddressSGBFlag = $146;
-  AddressOldLicensee = $14B;
-  AddressVersion = $14C;
-  AddressGlobalChecksum = $14E;
+  AddressRAMSize: Integer = GB_ROM_RAM_SIZE_OFFSET;
+  AddressTitleStart: Integer = GB_ROM_TITLE_OFFSET;
+  AddressTitleEnd: Integer = GB_ROM_CGB_FLAG_OFFSET;
+  AddressLocale: Integer = GB_ROM_DESTINATION_OFFSET;
+  AddressROMSize: Integer = GB_ROM_SIZE_OFFSET;
+  AddressCartType: Integer = GB_ROM_CARTRIDGE_TYPE_OFFSET;
+  AddressLogoStart: Integer = GB_ROM_LOGO_OFFSET;
+  AddressLogoEnd: Integer = GB_ROM_TITLE_OFFSET - 1;
+  AddressHeaderChecksumExpected: Integer = GB_ROM_HEADER_CHECKSUM_OFFSET;
+  AddressHeaderChecksumCalculatedStart: Integer = GB_ROM_TITLE_OFFSET;
+  AddressHeaderChecksumCalculatedEnd: Integer = GB_ROM_HEADER_CHECKSUM_OFFSET - 1;
+  CartridgeHeaderSize = GB_ROM_HEADER_SIZE;
+  AddressCGBFlag = GB_ROM_CGB_FLAG_OFFSET;
+  AddressNewLicensee = GB_ROM_NEW_LICENSEE_OFFSET;
+  AddressSGBFlag = GB_ROM_SGB_FLAG_OFFSET;
+  AddressOldLicensee = GB_ROM_OLD_LICENSEE_OFFSET;
+  AddressVersion = GB_ROM_VERSION_OFFSET;
+  AddressGlobalChecksum = GB_ROM_GLOBAL_CHECKSUM_OFFSET;
 
 type
   TMapperType = GB.Cartridge.TMapperType;

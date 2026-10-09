@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.Storage, Core.Snapshots, System.Classes, System.SyncObjs,
+  Core.RomFormat, Core.Storage, Core.Snapshots, System.Classes, System.SyncObjs,
   System.Generics.Collections, System.Diagnostics, GB.Joypad, GB.GPU, GB.ROM,
   GB.MBC, GB.Memory, GB.Timer, GB.InterruptManager, GB.Camera;
 
@@ -76,12 +76,12 @@ type
 implementation
 
 uses
-  Core.PerformanceHints, System.SysUtils, System.IOUtils, System.Math, GB.CPU,
+  Core.SavePaths, Core.PerformanceHints, System.SysUtils, System.IOUtils, System.Math, GB.CPU,
   GB.Sound, GB.Palettes;
 
 function TGBEmulationThread.CoreID: string;
 begin
-  Result := 'GB';
+  Result := ROM_CORE_ID_GB;
 end;
 
 function TGBEmulationThread.CreateVideo(ROM: TGBROM): TGBVideo;
@@ -399,7 +399,7 @@ begin
           procedure(const Name: string; Loading: Boolean)
           begin
             FrameHints.Pause;
-            var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
+            var Path := ResolveSnapshotPath(FSnapshotDirectory, Name);
             var Transfer: TStateTransfer :=
               procedure(State: TStateArchive)
               begin
@@ -434,7 +434,7 @@ begin
             begin
               SaveCoreSnapshot(Path, CoreID, FROMData, Transfer, FStorage);
               var Preview := GPU.Screen;
-              if CoreID = 'GB' then
+              if CoreID = ROM_CORE_ID_GB then
               begin
                 var Palette: Integer;
                 FLock.Acquire;

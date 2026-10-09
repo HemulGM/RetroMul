@@ -36,6 +36,7 @@ begin
   inherited Create;
   if (Clock < 1000000) or (Clock > 1300000) then
     raise EArgumentOutOfRangeException.Create('TIA clock');
+
   FClock := Clock;
   for var C := 0 to 1 do
     FDC[C].Configure(44100, 20);
@@ -57,6 +58,7 @@ procedure TTIASound.WriteRegister(Index, Value: Byte);
 begin
   if (Index < $15) or (Index > $1A) then
     raise EArgumentOutOfRangeException.Create('TIA audio register');
+
   var C := (Index - $15) mod 2;
   case (Index - $15) div 2 of
     0:
@@ -72,6 +74,7 @@ function TTIASound.ReadRegister(Index: Byte): Byte;
 begin
   if (Index < $15) or (Index > $1A) then
     raise EArgumentOutOfRangeException.Create('TIA audio register');
+
   var C := (Index - $15) mod 2;
   case (Index - $15) div 2 of
     0:

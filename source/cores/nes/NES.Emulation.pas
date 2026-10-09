@@ -236,13 +236,7 @@ end;
 
 procedure TNesEmulationThread.SnapshotCommand(const Name: string; Loading: Boolean);
 begin
-  // Restrict names to portable slot names; callers cannot escape the game folder.
-  if (Name = '') or (Length(Name) > 80) then
-    raise EArgumentException.Create('Invalid snapshot name');
-
-  for var C in Name do
-    if not CharInSet(C, ['a'..'z', 'A'..'Z', '0'..'9', '-', '_']) then
-      raise EArgumentException.Create('Snapshot names use letters, digits, - and _');
+  ValidateSnapshotName(Name);
 
   WorkerCommand(Name, Loading, False, TapeStop);
 end;
@@ -384,7 +378,7 @@ begin
     end
     else
     begin
-      var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
+      var Path := ResolveSnapshotPath(FSnapshotDirectory, Name);
       if Loading then
       begin
         FConsole.LoadSnapshot(Path);
@@ -801,7 +795,7 @@ begin
   FPaused := False;
   var Failed := False;
   var NextSave := TStopwatch.GetTimeStamp + TStopwatch.Frequency * 5;
-  var FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / FrameRate(FConsole.Region)), 'NES');
+  var FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / FrameRate(FConsole.Region)), ROM_CORE_ID_NES);
   try
     while not Terminated do
     begin

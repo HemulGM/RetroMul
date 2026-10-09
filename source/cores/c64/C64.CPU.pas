@@ -15,8 +15,8 @@ type
   end;
 
 implementation
+
 // Decimal behavior follows the py65 NMOS reference (BSD-3-Clause).
-// See LICENSE.py65.txt; exhaustive reference checks live under codex-work.
 
 procedure TCPU6510.Adc(Value: UInt8);
 var
@@ -57,6 +57,7 @@ begin
     inherited Sbc(Value);
     Exit;
   end;
+
   Previous := A;
   AdjustLow := 0;
   AdjustHigh := 0;

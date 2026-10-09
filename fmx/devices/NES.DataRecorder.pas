@@ -55,7 +55,7 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Math, FMX.Graphics;
+  System.SysUtils, System.Math, FMX.Graphics, RM.Icons;
 
 type
   // Keep TButton click/capture/accessibility behavior while drawing mechanical keys.
@@ -109,7 +109,7 @@ end;
 constructor TNesDataRecorder.Create(AOwner: TComponent);
 const
   Names: array[TTapeAction] of string = ('Play', 'Record', 'Stop', 'Rewind', 'Forward', 'ChooseFile', 'DefaultFile', 'SaveAs');
-  Captions: array[TTapeAction] of string = ('Play cassette', 'Record', 'Stop', '<<', '>>', 'Choose file...', 'ROM cassette', 'Save as...');
+  Captions: array[TTapeAction] of string = ('Play cassette', 'Record', 'Stop', 'Rewind', 'Forward', 'Choose file...', 'ROM cassette', 'Save as...');
 begin
   inherited;
   SetSize(480, 212);
@@ -127,6 +127,8 @@ begin
   end;
   FButtons[TapeRewind].Hint := Translate('Rewind 5% of the cassette');
   FButtons[TapeForward].Hint := Translate('Advance 5% of the cassette');
+  AddButtonIcon(FButtons[TapeRewind], IconRewind, 16, $FF41382E);
+  AddButtonIcon(FButtons[TapeForward], IconForward, 16, $FF41382E);
   LayoutButtons;
 end;
 

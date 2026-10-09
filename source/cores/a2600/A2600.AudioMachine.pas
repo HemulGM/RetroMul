@@ -32,6 +32,7 @@ begin
   inherited Create;
   if (Length(ROM) <> 2048) and (Length(ROM) <> 4096) and (Length(ROM) <> 8192) and (Length(ROM) <> 16384) then
     raise EArgumentException.Create('A26 supports 2K/4K/F8/F6 cartridges');
+
   FROM := Copy(ROM);
   FClock := 1193191.666666667;
   if PAL then
@@ -77,12 +78,15 @@ begin
       FBank := A - $1FF6;
     if Length(FROM) = 2048 then
       Exit(FROM[A and $7FF]);
+
     Exit(FROM[FBank * 4096 + (A and $FFF)]);
   end;
   if A and $80 = 0 then
     Exit(0);
+
   if A and $200 = 0 then
     Exit(FRAM[A and $7F]);
+
   case A and $1F of
     4:
       Result := FTimer;
@@ -104,6 +108,7 @@ begin
     Read(Address);
     Exit;
   end;
+
   if A and $80 = 0 then
   begin
     A := A and $3F;
@@ -140,6 +145,7 @@ begin
     FCPU.Clock;
   if FCPU.Jammed then
     raise EArgumentException.Create('Atari cartridge CPU stopped');
+
   Inc(FCycles);
   if FCycles = 76 then
     FCycles := 0;

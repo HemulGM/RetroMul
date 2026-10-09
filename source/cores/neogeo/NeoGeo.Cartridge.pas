@@ -3,10 +3,10 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Storage;
+  Core.RomFormat, System.SysUtils, System.Classes, Core.Storage;
 
 const
-  NG_MAX_CONTAINER = 256 * 1024 * 1024;
+  NG_MAX_CONTAINER = NEOGEO_ROM_MAX_CONTAINER_SIZE;
 
 type
   TNeoGeoCartridge = class
@@ -74,11 +74,11 @@ procedure SwapWords(var Data: TBytes);
 begin
   if Odd(Length(Data)) then
     raise EReadError.Create('Odd Neo Geo 68000 ROM size');
-  for var I := 0 to Length(Data) div 2 - 1 do
+  for var i := 0 to Length(Data) div 2 - 1 do
   begin
-    var B := Data[I * 2];
-    Data[I * 2] := Data[I * 2 + 1];
-    Data[I * 2 + 1] := B;
+    var B := Data[i * 2];
+    Data[i * 2] := Data[i * 2 + 1];
+    Data[i * 2 + 1] := B;
   end;
 end;
 
@@ -90,8 +90,8 @@ begin
   FixedBIOS := ResourceBytes('NG_FIX_BIOS');
   AudioBIOS := ResourceBytes('NG_AUDIO_BIOS');
   ZoomROM := ResourceBytes('NG_ZOOM');
-  if (Length(Data) >= 4) and (Data[0] = Ord('N')) and
-    (Data[1] = Ord('E')) and (Data[2] = Ord('O')) then
+  if (Length(Data) >= Length(NEOGEO_ROM_SIGNATURE)) and
+    CompareMem(@Data[0], PAnsiChar(NEOGEO_ROM_SIGNATURE), NEOGEO_ROM_MAGIC_SIZE) then
     LoadNeo(Data)
   else
     LoadZip(Data, Storage, Location);
@@ -110,18 +110,19 @@ procedure TNeoGeoCartridge.LoadNeo(const Data: TBytes);
   end;
 
 begin
-  if (Length(Data) < $1000) or (Data[3] <> 1) then
+  if (Length(Data) < NEOGEO_ROM_HEADER_SIZE) or
+    (Data[NEOGEO_ROM_MAGIC_SIZE] <> Ord(NEOGEO_ROM_SIGNATURE[NEOGEO_ROM_MAGIC_SIZE + 1])) then
     raise EReadError.Create('Unsupported or truncated NeoSD NEO header');
-  var Sizes: array[0..4] of Integer;
-  var Total: Int64 := $1000;
-  for var I := 0 to 4 do
+  var Sizes: array[0..NEOGEO_ROM_REGION_COUNT - 1] of Integer;
+  var Total: Int64 := NEOGEO_ROM_HEADER_SIZE;
+  for var i := 0 to High(Sizes) do
   begin
-    Sizes[I] := SizeAt(4 + I * 4);
-    Inc(Total, Sizes[I]);
+    Sizes[i] := SizeAt(NEOGEO_ROM_REGION_SIZES_OFFSET + i * SizeOf(Cardinal));
+    Inc(Total, Sizes[i]);
   end;
   if Total <> Length(Data) then
     raise EReadError.Create('NeoSD region sizes do not match the file');
-  var Offset := $1000;
+  var Offset := NEOGEO_ROM_HEADER_SIZE;
   ProgramROM := Copy(Data, Offset, Sizes[0]);
   Inc(Offset, Sizes[0]);
   FixedROM := Copy(Data, Offset, Sizes[1]);
@@ -133,10 +134,9 @@ begin
   SamplesB := SamplesA;
   SpriteROM := Copy(Data, Offset, Sizes[4]);
   // NeoSD stores P in chip order; accept already normalized homebrew images too.
-  if (Length(ProgramROM) > $106) and (ProgramROM[$100] = Ord('E')) and
-    (ProgramROM[$101] = Ord('N')) then
+  if (Length(ProgramROM) > $106) and (ProgramROM[$100] = Ord('E')) and (ProgramROM[$101] = Ord('N')) then
     SwapWords(ProgramROM);
-  SetName := TEncoding.ASCII.GetString(Data, $30, 33).Trim([#0, ' ']);
+  SetName := TEncoding.ASCII.GetString(Data, NEOGEO_ROM_NAME_OFFSET, NEOGEO_ROM_NAME_SIZE).Trim([#0, ' ']);
 end;
 
 procedure TNeoGeoCartridge.LoadZip(const Data: TBytes; const Storage: IStorage; const Location: string);
@@ -151,9 +151,9 @@ var
     Result := -1;
     if Zip = nil then
       Exit;
-    for var I := 0 to Zip.FileCount - 1 do
-      if SameText(ExtractFileName(Zip.FileNames[I]), Name) then
-        Exit(I);
+    for var i := 0 to Zip.FileCount - 1 do
+      if SameText(ExtractFileName(Zip.FileNames[i]), Name) then
+        Exit(i);
   end;
 
   function ReadEntry(Zip: TZipFile; Index: Integer): TBytes;
@@ -180,11 +180,11 @@ var
       Candidates := Candidates + Ancestors;
       for var Candidate in Candidates do
         if Candidate <> nil then
-          for var I := 0 to Candidate.FileCount - 1 do
-            if SameText(IntToHex(Candidate.FileInfo[I].CRC32, 8), CRC) then
+          for var i := 0 to Candidate.FileCount - 1 do
+            if SameText(IntToHex(Candidate.FileInfo[i].CRC32, 8), CRC) then
             begin
               Zip := Candidate;
-              Index := I;
+              Index := i;
               Break;
             end;
     end;
@@ -192,6 +192,7 @@ var
       raise EReadError.Create('Missing Neo Geo ROM: ' + Name);
     if not SameText(IntToHex(Zip.FileInfo[Index].CRC32, 8), CRC) then
       raise EReadError.Create('Incorrect Neo Geo ROM CRC: ' + Name);
+
     Result := ReadEntry(Zip, Index);
   end;
 
@@ -199,9 +200,10 @@ var
   begin
     if (Storage = nil) or (Location = '') or Location.StartsWith('content://') then
       Exit;
-    var Path := TPath.Combine(ExtractFilePath(Location.Replace('/', PathDelim)), Name + '.zip');
+    var Path := TPath.Combine(ExtractFilePath(Location.Replace('/', PathDelim)), Name + ROM_EXTENSION_ZIP);
     if not Storage.Exists(Path) then
       Exit;
+
     Stream := Storage.OpenRead(Path);
     Zip := TZipFile.Create;
     Zip.Open(Stream, zmRead);
@@ -212,9 +214,11 @@ var
     var Index := FindFile(Firmware, Name);
     if Index < 0 then
       Exit;
+
     var Bytes := ReadEntry(Firmware, Index);
     if Length(Bytes) <> $20000 then
       raise EReadError.Create('Incorrect system ROM size: ' + Name);
+
     if Swapped then
       SwapWords(Bytes);
     Target := Bytes;
@@ -224,12 +228,14 @@ var
   begin
     if (Size < 0) or (Size > 128 * 1024 * 1024) then
       raise EReadError.Create('Invalid Neo Geo region size');
+
     SetLength(Target, Size);
     for var Row in Rows do
     begin
       var F := Row.Split([',']);
       if (Length(F) <> 7) or (F[0] <> Name) then
         Continue;
+
       var Bytes := Chip(F[1], F[6]);
       var Dest := StrToInt(F[2]);
       var Count := StrToInt(F[3]);
@@ -237,6 +243,7 @@ var
       var Step := 1;
       if F[5] = 'I' then
         Step := 2;
+
       var WordInterleave := (F[5] = 'D') or (F[5] = 'U');
       if (Source < 0) or (Count <= 0) or (Int64(Source) + Count > Length(Bytes)) or
         (Dest < 0) or (Int64(Dest) + Int64(Count - 1) * Step >= Size) then
@@ -245,14 +252,15 @@ var
         raise EReadError.Create('Truncated interleaved Neo Geo program');
       if ((F[5] = 'W') or WordInterleave) and (Odd(Count) or Odd(Source)) then
         raise EReadError.Create('Invalid word-swapped ROM');
-      for var I := 0 to Count - 1 do
+
+      for var i := 0 to Count - 1 do
       begin
-        var Input := I;
+        var Input := i;
         if (F[5] = 'W') or (F[5] = 'D') then
-          Input := I xor 1;
-        var Output := Dest + I * Step;
+          Input := i xor 1;
+        var Output := Dest + i * Step;
         if WordInterleave then
-          Output := Dest + (I div 2) * 4 + (I and 1);
+          Output := Dest + (i div 2) * 4 + (i and 1);
         Target[Output] := Bytes[Source + Input];
       end;
     end;
@@ -272,8 +280,8 @@ begin
     SetName := ChangeFileExt(ExtractFileName(Location.Replace('/', PathDelim)), '').ToLower;
     var CRCs: TArray<string>;
     SetLength(CRCs, Archive.FileCount);
-    for var I := 0 to Archive.FileCount - 1 do
-      CRCs[I] := IntToHex(Archive.FileInfo[I].CRC32, 8);
+    for var i := 0 to Archive.FileCount - 1 do
+      CRCs[i] := IntToHex(Archive.FileInfo[i].CRC32, 8);
     var Description := SelectNeoGeoSet(SetName, CRCs);
     if Description = '' then
     begin
@@ -282,10 +290,12 @@ begin
     end;
     if Description = '' then
       raise EReadError.Create('Unknown Neo Geo ZIP ROM set; use a named MAME set or an unencrypted .neo image');
+
     var Parts := Description.Split(['|']);
     if Parts[2] <> '1' then
       raise ENotSupportedException.Create('Neo Geo cartridge protection or special hardware is not implemented: ' + SetName);
-    if Parts[1] <> 'neogeo' then
+
+    if Parts[1] <> ROM_SYSTEM_NEOGEO then
       OpenSibling(Parts[1], Parent, ParentStream);
     var ParentName := Parts[1];
     for var Depth := 0 to 7 do
@@ -293,9 +303,11 @@ begin
       var ParentDescription := NeoGeoSet(ParentName);
       if ParentDescription = '' then
         Break;
+
       var ParentParts := ParentDescription.Split(['|']);
-      if (ParentParts[1] = 'neogeo') or (ParentParts[1] = ParentName) then
+      if (ParentParts[1] = ROM_SYSTEM_NEOGEO) or (ParentParts[1] = ParentName) then
         Break;
+
       ParentName := ParentParts[1];
       var Zip: TZipFile := nil;
       var Stream: TStream := nil;
@@ -303,6 +315,7 @@ begin
         OpenSibling(ParentName, Zip, Stream);
         if Zip = nil then
           Break;
+
         Ancestors := Ancestors + [Zip];
         AncestorStreams := AncestorStreams + [Stream];
       except
@@ -313,11 +326,11 @@ begin
     end;
     for var Zip in TArray<TZipFile>.Create(Parent) + Ancestors do
       if Zip <> nil then
-        for var I := 0 to Zip.FileCount - 1 do
-          CRCs := CRCs + [IntToHex(Zip.FileInfo[I].CRC32, 8)];
+        for var i := 0 to Zip.FileCount - 1 do
+          CRCs := CRCs + [IntToHex(Zip.FileInfo[i].CRC32, 8)];
     Description := SelectNeoGeoSet(SetName, CRCs);
     Parts := Description.Split(['|']);
-    OpenSibling('neogeo', Firmware, FirmwareStream);
+    OpenSibling(ROM_SYSTEM_NEOGEO, Firmware, FirmwareStream);
     OverrideFirmware('sp-s2.sp1', BIOS, True);
     OverrideFirmware('sfix.sfix', FixedBIOS, False);
     OverrideFirmware('sm1.sm1', AudioBIOS, False);
@@ -376,8 +389,9 @@ begin
     var Key := -1;
     var CMC50 := False;
     var ExtractFixed := True;
-    var IsBootleg := (Machine = 'svcboot') or (Machine = 'svcplus') or
-      (Machine = 'svcplusa') or (Machine = 'svcsplus') or (Machine = 'garoubl') or (Machine = 'cthd2k3') or
+    var IsBootleg :=
+      (Machine = 'svcboot') or (Machine = 'svcplus') or (Machine = 'cthd2k3') or
+      (Machine = 'svcplusa') or (Machine = 'svcsplus') or (Machine = 'garoubl') or
       (Machine = 'ct2k3sp') or (Machine = 'ct2k3sa') or (Machine = 'kf10thep') or
       (Machine = 'kf2k5uni') or (Machine = 'kof10th') or (Machine = 'kof2002b') or
       (Machine = 'kf2k2mp') or (Machine = 'kof2km2') or (Machine = 'kf2k2mp2') or
@@ -385,6 +399,7 @@ begin
       (Machine = 'kof2k4se') or (Machine = 'kog') or (Machine = 'lans2004') or
       (Machine = 'samsho5b') or (Machine = 'ms5plus') or (Machine = 'mslug3b6') or
       (Machine = 'matrimbl');
+
     if IsBootleg then
     begin
       DecryptBootleg(ProgramROM, FixedROM, AudioROM, SamplesA, SpriteROM, Machine, Parts[11] = '1');
@@ -544,8 +559,8 @@ begin
     begin
       DecryptPCBFixed(SpriteROM, FixedROM, KOFPCB);
       if KOFPCB then
-        for var I := 0 to High(AudioROM) do
-          AudioROM[I] := Byte(BootlegBits(AudioROM[I], [5, 6, 1, 4, 3, 0, 7, 2]));
+        for var i := 0 to High(AudioROM) do
+          AudioROM[i] := Byte(BootlegBits(AudioROM[i], [5, 6, 1, 4, 3, 0, 7, 2]));
     end;
     if Decrypted.Contains('P') then
       ProgramROM := OriginalP;

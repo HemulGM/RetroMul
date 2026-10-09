@@ -176,18 +176,18 @@ begin
   Need((Length(Data) >= 288) and (Length(Data) <= 12320), 'invalid sample bank size');
   var Last := -1;
   Result := 0;
-  for var I := 0 to 15 do
+  for var i := 0 to 15 do
   begin
-    var Start := Integer(Data[I]);
-    var Finish := Integer(Data[16 + I]);
+    var Start := Integer(Data[i]);
+    var Finish := Integer(Data[16 + i]);
     if Start = 0 then
     begin
-      for var J := I to 15 do
-        Need((Data[J] = 0) and (Data[16 + J] = 0), 'invalid unused sample');
+      for var j := i to 15 do
+        Need((Data[j] = 0) and (Data[16 + j] = 0), 'invalid unused sample');
       Break;
     end;
     Need((Start > 0) and (Finish > Start), 'sample page range');
-    Need((I = 0) or (Start = Last), 'noncontiguous sample bank');
+    Need((i = 0) or (Start = Last), 'noncontiguous sample bank');
     Last := Finish;
     Inc(Result);
   end;
@@ -204,14 +204,14 @@ begin
   M.fastplay := 1;
   M.songs := 0;
   Need((M.music >= 0) and (Length(Data) <= 65536 - M.music), 'sample load address');
-  for var I := 0 to Count - 1 do
+  for var i := 0 to Count - 1 do
   begin
-    var Nibbles := (Integer(Data[16 + I]) - Integer(Data[I])) * 512;
+    var Nibbles := (Integer(Data[16 + i]) - Integer(Data[i])) * 512;
     // Sampling pauses during the first eleven scanlines of each video frame.
     ASAPInfo_AddSong(M, Nibbles + Nibbles div 301 * 11);
   end;
-  for var I := 0 to High(Data) do
-    State.cpu.memory[M.music + I] := Data[I];
+  for var i := 0 to High(Data) do
+    State.cpu.memory[M.music + i] := Data[i];
 end;
 
 procedure ParseSong(M: TASAPInfo; const Data: TBytes; var GlobalSeen: TArray<Boolean>; SongLength, StartPosition: Integer);
@@ -233,6 +233,7 @@ begin
       M.loops[M.songs] := Seen[Position] = 2;
       Break;
     end;
+
     Seen[Position] := 1;
     GlobalSeen[Position] := True;
     if ByteAt(Data, 464 + Position * 2) = 255 then
@@ -240,6 +241,7 @@ begin
       Position := ByteAt(Data, 465 + Position * 2);
       Continue;
     end;
+
     var Stop := False;
     for var C := 3 downto 0 do
     begin
@@ -250,6 +252,7 @@ begin
         Stop := True;
         Break;
       end;
+
       var Address := WordAt(Data, 70 + Index * 2);
       Pattern[C] := 0;
       if Address <> 0 then
@@ -258,9 +261,10 @@ begin
     end;
     if Stop then
       Break;
-    for var I := 0 to SongLength - 1 do
-      if Seen[I] = 1 then
-        Seen[I] := 2;
+
+    for var i := 0 to SongLength - 1 do
+      if Seen[i] = 1 then
+        Seen[i] := 2;
     var Rows := ByteAt(Data, 462);
     while Rows > 0 do
     begin
@@ -269,9 +273,11 @@ begin
       begin
         if Pattern[C] = 0 then
           Continue;
+
         Dec(Remaining[C]);
         if Remaining[C] >= 0 then
           Continue;
+
         while True do
         begin
           Inc(Commands);
@@ -280,6 +286,7 @@ begin
           Inc(Pattern[C]);
           if (V < 64) or (V = 254) then
             Break;
+
           if (V >= 128) and (V < 192) then
             Blanks[C] := V - 128
           else if (V >= 208) and (V < 224) then
@@ -318,13 +325,14 @@ begin
   var Seen: TArray<Boolean>;
   SetLength(Seen, SongLength);
   M.songs := 0;
-  for var I := 0 to SongLength - 1 do
-    if not Seen[I] then
+  for var i := 0 to SongLength - 1 do
+    if not Seen[i] then
     begin
       if M.songs = 32 then
         Break;
-      M.songPos[M.songs] := I;
-      ParseSong(M, Module, Seen, SongLength, I);
+
+      M.songPos[M.songs] := i;
+      ParseSong(M, Module, Seen, SongLength, i);
     end;
   Need(M.songs > 0, 'no playable song');
   ValidateSamples(Samples);
@@ -335,18 +343,18 @@ begin
   var MusicLast := Music + Length(Module) - 7;
   Need(MusicLast < $D000, 'module overlaps Atari hardware');
   var Adjust := Music - M.music;
-  for var I := 6 to High(Module) do
-    State.cpu.memory[Music + I - 6] := Module[I];
-  for var I := 0 to 95 do
+  for var i := 6 to High(Module) do
+    State.cpu.memory[Music + i - 6] := Module[i];
+  for var i := 0 to 95 do
   begin
-    var Address := WordAt(Module, 6 + I * 2);
+    var Address := WordAt(Module, 6 + i * 2);
     if (Address <> 0) and (Address <> 65535) then
     begin
       Need((Address >= M.music) and (Address <= WordAt(Module, 4)), 'instrument/pattern address');
       Inc(Address, Adjust);
     end;
-    State.cpu.memory[Music + I * 2] := Address and 255;
-    State.cpu.memory[Music + I * 2 + 1] := Address shr 8;
+    State.cpu.memory[Music + i * 2] := Address and 255;
+    State.cpu.memory[Music + i * 2 + 1] := Address shr 8;
   end;
   for var C := 0 to 3 do
   begin
@@ -363,12 +371,12 @@ begin
     if $FE0 + Length(Bank) <= Music then
       FirstPage := 16;
     var PageAdjust := FirstPage - Integer(Bank[0]);
-    for var I := 0 to 31 do
-      if Bank[I] <> 0 then
+    for var i := 0 to 31 do
+      if Bank[i] <> 0 then
       begin
-        var Page := Integer(Bank[I]) + PageAdjust;
+        var Page := Integer(Bank[i]) + PageAdjust;
         Need((Page > 0) and (Page <= 255), 'sample relocation range');
-        Bank[I] := Page;
+        Bank[i] := Page;
       end;
     BankStart := Integer(Bank[0]) * 256 - 32;
   end;
@@ -376,11 +384,11 @@ begin
     ((MusicLast < BankStart) or (Music >= BankStart + Length(Bank))), 'sample bank overlaps module/hardware');
   State.mptSamplesPage := Bank[0];
   State.mptSamples15kHz := Is15kHz;
-  for var I := 0 to High(Bank) do
-    State.cpu.memory[BankStart + I] := Bank[I];
+  for var i := 0 to High(Bank) do
+    State.cpu.memory[BankStart + i] := Bank[i];
   var PlayerStart := Integer(MPTPlayer[2]) + Integer(MPTPlayer[3]) * 256;
-  for var I := 6 to High(MPTPlayer) do
-    State.cpu.memory[PlayerStart + I - 6] := MPTPlayer[I];
+  for var i := 6 to High(MPTPlayer) do
+    State.cpu.memory[PlayerStart + i - 6] := MPTPlayer[i];
   M.player := PlayerStart;
 end;
 

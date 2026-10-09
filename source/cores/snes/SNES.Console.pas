@@ -12,6 +12,7 @@ type
   TSnesButton = (Up, Down, Left, Right, A, B, Select, Start, X, Y, L, R);
 
   TSnesButtons = set of TSnesButton;
+
   TSnesPads = array[0..7] of TSnesButtons;
 
   TSnesSystemState = packed record

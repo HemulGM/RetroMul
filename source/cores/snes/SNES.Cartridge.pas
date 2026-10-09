@@ -127,7 +127,7 @@ end;
 function EmptySnesMetadata(const Data: TBytes; Offset: Integer): Boolean;
 begin
   // Some early homebrew leaves the metadata erased but supplies valid vectors.
-  for var J := 0 to $1F do
+  for var J := 0 to SNES_ROM_METADATA_SIZE - 1 do
     if Data[Offset + J] <> $FF then
       Exit(False);
   Result := True;
@@ -140,11 +140,11 @@ begin
   // Early prototypes and PD programs can put executable code/graphics in
   // this area. Do not interpret those bytes as a coprocessor or RAM size.
   // A valid checksum pair or plausible mapping/ROM size keeps real headers.
-  var Mode := Data[Offset + $15] and $EF;
-  var Checksum := Data[Offset + $1E] or (Word(Data[Offset + $1F]) shl 8);
-  var Complement := Data[Offset + $1C] or (Word(Data[Offset + $1D]) shl 8);
+  var Mode := Data[Offset + SNES_ROM_MAP_MODE_OFFSET] and $EF;
+  var Checksum := Data[Offset + SNES_ROM_CHECKSUM_OFFSET] or (Word(Data[Offset + SNES_ROM_CHECKSUM_OFFSET + 1]) shl 8);
+  var Complement := Data[Offset + SNES_ROM_CHECKSUM_COMPLEMENT_OFFSET] or (Word(Data[Offset + SNES_ROM_CHECKSUM_COMPLEMENT_OFFSET + 1]) shl 8);
   Result := not (Mode in [$20, $21, $22, $23, $25]) and
-    (Data[Offset + $17] >= $10) and
+    (Data[Offset + SNES_ROM_SIZE_OFFSET] >= $10) and
     not ((Checksum + Complement = $FFFF) and (Checksum <> 0) and (Complement <> 0));
 end;
 
@@ -159,12 +159,12 @@ begin
   if IsActionReplayBIOS(Data, Header.CopierSize) then
     Exit;
 
-  var Title := TEncoding.ASCII.GetString(Data, Header.Offset, 21).Trim;
-  var Kind := Data[Header.Offset + $16];
-  if ((Kind and $F) >= 3) and ((Kind shr 4) = $F) and (Data[Header.Offset - 1] = 2) then
+  var Title := TEncoding.ASCII.GetString(Data, Header.Offset, SNES_ROM_TITLE_SIZE).Trim;
+  var Kind := Data[Header.Offset + SNES_ROM_CARTRIDGE_TYPE_OFFSET];
+  if ((Kind and $F) >= 3) and ((Kind shr 4) = $F) and (Data[Header.Offset + SNES_ROM_COPROCESSOR_SUBTYPE_OFFSET] = 2) then
     Exit('st018');
 
-  if ((Kind and $F) >= 3) and ((Kind shr 4) = $F) and (Data[Header.Offset - 1] = 1) then
+  if ((Kind and $F) >= 3) and ((Kind shr 4) = $F) and (Data[Header.Offset + SNES_ROM_COPROCESSOR_SUBTYPE_OFFSET] = 1) then
   begin
     if Title = '2DAN MORITA SHOUGI' then
       Result := 'st011'
@@ -221,28 +221,28 @@ begin
     // A 512-byte copier prefix leaves this residue even with DSP firmware
     // appended. Full KiB images must not select a header inside game code.
     if ((Base and ROM_COPIER_HEADER_SIZE) <> 0) and
-      ((Length(Data) and $3FF) <> ROM_COPIER_HEADER_SIZE) then
+      ((Length(Data) and ROM_COPIER_ALIGNMENT_MASK) <> ROM_COPIER_HEADER_SIZE) then
       Continue;
-    if Length(Data) < Base + $8000 then
+    if Length(Data) < Base + SNES_ROM_BANK_SIZE then
       Continue;
 
-    var H := Base + $7FC0;
-    var Reset := Data[H + $3C] or (Word(Data[H + $3D]) shl 8);
+    var H := Base + SNES_ROM_HEADER_OFFSET;
+    var Reset := Data[H + SNES_ROM_RESET_VECTOR_OFFSET] or (Word(Data[H + SNES_ROM_RESET_VECTOR_OFFSET + 1]) shl 8);
     if Reset < $8000 then
       Continue;
 
-    var Mode := Data[H + $15] and $EF;
+    var Mode := Data[H + SNES_ROM_MAP_MODE_OFFSET] and $EF;
     var Score := 0;
-    if ((Mode in [$20, $22]) and ((Base and $8000) = 0)) or ((Mode in [$21, $25]) and ((Base and $8000) <> 0)) then
+    if ((Mode in [$20, $22]) and ((Base and SNES_ROM_BANK_SIZE) = 0)) or ((Mode in [$21, $25]) and ((Base and SNES_ROM_BANK_SIZE) <> 0)) then
       Inc(Score, 2);
-    if Data[H + $16] < 8 then
+    if Data[H + SNES_ROM_CARTRIDGE_TYPE_OFFSET] < 8 then
       Inc(Score);
-    if Data[H + $17] < $10 then
+    if Data[H + SNES_ROM_SIZE_OFFSET] < $10 then
       Inc(Score);
-    if Data[H + $18] < 8 then
+    if Data[H + SNES_ROM_RAM_SIZE_OFFSET] < 8 then
       Inc(Score);
-    var Checksum := Data[H + $1E] or (Word(Data[H + $1F]) shl 8);
-    var Complement := Data[H + $1C] or (Word(Data[H + $1D]) shl 8);
+    var Checksum := Data[H + SNES_ROM_CHECKSUM_OFFSET] or (Word(Data[H + SNES_ROM_CHECKSUM_OFFSET + 1]) shl 8);
+    var Complement := Data[H + SNES_ROM_CHECKSUM_COMPLEMENT_OFFSET] or (Word(Data[H + SNES_ROM_CHECKSUM_COMPLEMENT_OFFSET + 1]) shl 8);
     if (Checksum + Complement = $FFFF) and (Checksum <> 0) and (Complement <> 0) then
       Inc(Score, 8);
     var Op := Data[Base + (Reset and $7FFF)];
@@ -264,18 +264,18 @@ begin
     Header.Score := Score;
     Header.Offset := H;
     Header.CopierSize := Base and ROM_COPIER_HEADER_SIZE;
-    if (Base and $8000) = 0 then
-      if (Base and $400000) = 0 then
+    if (Base and SNES_ROM_BANK_SIZE) = 0 then
+      if (Base and SNES_ROM_EXTENDED_BASE) = 0 then
         Header.Mapping := LoROM
       else
         Header.Mapping := ExLoROM
-    else if (Base and $400000) = 0 then
+    else if (Base and SNES_ROM_EXTENDED_BASE) = 0 then
       Header.Mapping := HiROM
     else
       Header.Mapping := ExHiROM;
     if Mode = $25 then
       Header.Mapping := ExHiROM;
-    Header.PAL := Data[H + $19] in [2..12];
+    Header.PAL := Data[H + SNES_ROM_REGION_OFFSET] in [2..12];
   end;
   Result := Header.Score >= 8;
 end;
@@ -291,17 +291,17 @@ begin
   FActionReplay := IsActionReplayBIOS(FData, 0);
   if FActionReplay then
     FHeader.Mapping := LoROM;
-  var Kind := FData[FHeader.Offset + $16];
+  var Kind := FData[FHeader.Offset + SNES_ROM_CARTRIDGE_TYPE_OFFSET];
   var EmptyMetadata := UnusableSnesMetadata(FData, FHeader.Offset);
   if EmptyMetadata or FActionReplay then
     Kind := 0;
   var FirmwareName := SnesDSPFirmwareName(Data);
   FST := (FirmwareName = 'st010') or (FirmwareName = 'st011');
   FObc1 := Kind = $25;
-  var HasCX4 := ((Kind and $F) >= 3) and ((Kind shr 4) = $F) and (FData[FHeader.Offset - 1] = $10);
+  var HasCX4 := ((Kind and $F) >= 3) and ((Kind shr 4) = $F) and (FData[FHeader.Offset + SNES_ROM_COPROCESSOR_SUBTYPE_OFFSET] = $10);
   var HasSA1 := ((Kind and $F) >= 3) and ((Kind shr 4) = 3);
   var HasGSU := Kind in [$13, $14, $15, $1A];
-  var HasSPC := ((Kind and $F) >= 3) and ((Kind shr 4) = $F) and (FData[FHeader.Offset - 1] = 0);
+  var HasSPC := ((Kind and $F) >= 3) and ((Kind shr 4) = $F) and (FData[FHeader.Offset + SNES_ROM_COPROCESSOR_SUBTYPE_OFFSET] = 0);
   if HasCX4 then
     FHeader.Mapping := LoROM;
   // Types with low nibble 0-2 have no coprocessor, even with a nonzero family nibble.
@@ -309,7 +309,7 @@ begin
     ((Kind and $F) >= 3) and not (Kind in [3, 5, $25, $43, $45]) then
     raise ENotSupportedException.CreateFmt('SNES cartridge coprocessor $%.2x is not ported yet', [Kind]);
 
-  var Size := FData[FHeader.Offset + $18] and $F;
+  var Size := FData[FHeader.Offset + SNES_ROM_RAM_SIZE_OFFSET] and $F;
   if EmptyMetadata then
     Size := 0;
   if FActionReplay then
@@ -332,8 +332,8 @@ begin
   if HasGSU then
   begin
     var RamSize := $10000;
-    if (FData[FHeader.Offset + $1A] = $33) and (FData[FHeader.Offset - 3] in [1..7]) then
-      RamSize := 1024 shl FData[FHeader.Offset - 3];
+    if (FData[FHeader.Offset + SNES_ROM_LICENSEE_OFFSET] = $33) and (FData[FHeader.Offset + SNES_ROM_EXPANSION_RAM_SIZE_OFFSET] in [1..7]) then
+      RamSize := 1024 shl FData[FHeader.Offset + SNES_ROM_EXPANSION_RAM_SIZE_OFFSET];
     FGSU := TSnesGSU.Create(ReadRawROM, RamSize);
   end;
   if HasSPC then

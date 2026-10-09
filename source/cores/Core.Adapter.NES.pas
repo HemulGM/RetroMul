@@ -307,7 +307,7 @@ end;
 
 function TNesCoreAdapter.GetName: string;
 begin
-  Result := 'NES';
+  Result := ROM_CORE_ID_NES;
 end;
 
 function TNesCoreAdapter.GetSupportsSnapshots: Boolean;

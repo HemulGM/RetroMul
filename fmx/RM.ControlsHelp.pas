@@ -3,19 +3,9 @@
 interface
 
 uses
-  System.Classes, System.Types, System.UITypes, FMX.Types, FMX.Controls,
+  Core.RomFormat, System.Classes, System.Types, System.UITypes, FMX.Types, FMX.Controls,
   FMX.Layouts, FMX.Objects, FMX.StdCtrls, FMXInput, Core.InputConfig,
   Core.Storage;
-
-const
-  IconCoin = 'M14,1 C31,1 31,27 14,27 C-3,27 -3,1 14,1 Z M14,5 C25,5 25,23 14,23 C3,23 3,5 14,5 Z M14,9 L14,19';
-  IconPause = 'M4,2 L4,24 M16,2 L16,24';
-  IconPlay = 'M4,2 L23,13 L4,24 Z';
-  IconSave = 'M2,2 L21,2 L26,7 L26,26 L2,26 Z M7,2 L7,11 L19,11 L19,2 M7,26 L7,17 L21,17 L21,26';
-  IconLoad = 'M1,7 L10,7 L13,10 L26,10 L26,26 L1,26 Z M14,1 L14,17 M9,12 L14,17 L19,12';
-  IconCamera = 'M1,7 L7,7 L10,2 L19,2 L22,7 L28,7 L28,25 L1,25 Z M14,10 C23,10 23,22 14,22 C5,22 5,10 14,10 Z';
-  IconFullScreen = 'M1,9 L1,1 L9,1 M19,1 L27,1 L27,9 M27,19 L27,27 L19,27 M9,27 L1,27 L1,19';
-  IconSpeaker = 'M1,10 L7,10 L15,3 L15,25 L7,18 L1,18 Z M20,8 C27,11 27,17 20,20 M24,3 C36,8 36,20 24,25';
 
 function GameplayLabel(Owner: TComponent; Parent: TFmxObject; const Text: string; Size: Single): TLabel;
 
@@ -60,7 +50,7 @@ implementation
 uses
   System.SysUtils, System.Math, System.Generics.Collections, FMX.Graphics,
   FMX.BehaviorManager, RM.LibraryView, RM.Settings, RM.Input, RM.Gamepad,
-  Core.Emulation;
+  Core.Emulation, RM.Icons;
 
 type
   THelpInputBackend = class(TInputBackend)
@@ -101,6 +91,8 @@ begin
   Button.TextSettings.Font.Family := 'Segoe UI';
   Button.TextSettings.Font.Size := 13;
   Button.TextSettings.FontColor := $FFE8ECF1;
+  Button.TextSettings.Trimming := TTextTrimming.Character;
+  Button.TextSettings.WordWrap := False;
   Button.StyleLookup := 'buttonstyle';
   if Icon <> '' then
   begin
@@ -116,7 +108,7 @@ const
     'Take screenshot', 'Pause / resume', 'Full screen', 'Restart game', 'Open ROM', 'Exit full screen');
   Keys: array[0..8] of string = ('F1', 'F5', 'F6', 'F8', 'P', 'F11', 'R', 'Ctrl + O', 'Esc');
   Icons: array[0..8] of string = (IconPad, IconSave, IconLoad, IconCamera, IconPause,
-    IconFullScreen, 'M1,10 C1,0 23,0 23,10 M23,10 L23,2 M23,10 L15,10 M23,16 C23,26 1,26 1,16', IconFolder, IconFullScreen);
+    IconFullScreen, IconRestart, IconFolder, IconFullScreen);
 begin
   inherited Create(AOwner);
   Name := 'ControlsHelp';
@@ -185,15 +177,15 @@ begin
   Title.TextSettings.Font.Style := [TFontStyle.fsBold];
   FPlayerTabs := TLayout.Create(Self);
   FPlayerTabs.Parent := FLeft;
-  for var I := 0 to FPlayers - 1 do
+  for var i := 0 to FPlayers - 1 do
   begin
     var B := TButton.Create(Self);
     B.Parent := FPlayerTabs;
-    B.Text := Translate('Player ') + IntToStr(I + 1);
-    B.Tag := I;
+    B.Text := Translate('Player ') + IntToStr(i + 1);
+    B.Tag := i;
     B.CanFocus := False;
     B.OnClick := PlayerClick;
-    FPlayerButtons[I] := B;
+    FPlayerButtons[i] := B;
   end;
   FDevice := GameplayLabel(Self, FLeft, '', 12);
   FDevice.Opacity := 0.65;
@@ -213,13 +205,13 @@ begin
   Title.Opacity := 0.65;
   FFunctions := TLayout.Create(Self);
   FFunctions.Parent := FRight;
-  for var I := 0 to High(Names) do
+  for var i := 0 to High(Names) do
   begin
-    AssignmentRow(FFunctions, Translate(Names[I]), Keys[I], I * 44);
+    AssignmentRow(FFunctions, Translate(Names[i]), Keys[i], i * 44);
     var Row := TLayout(FFunctions.Children[FFunctions.ChildrenCount - 1]);
-    InterfaceIcon(Row, Icons[I], 0, 10, 20);
+    InterfaceIcon(Row, Icons[i], 0, 10, 20);
     TLabel(Row.Children[0]).Margins.Left := 34;
-    if KeyboardPeripheral and (I in [1, 2, 3, 4, 6, 7]) then
+    if KeyboardPeripheral and (i in [1, 2, 3, 4, 6, 7]) then
       Row.Opacity := 0.4;
   end;
   FFunctions.Height := Length(Names) * 44;
@@ -322,11 +314,11 @@ begin
   FDiagram.DeleteChildren;
   FAssignments.DeleteChildren;
   FAssignments.Height := 0;
-  for var I := 0 to FPlayers - 1 do
-    if I = FPlayer then
-      FPlayerButtons[I].StyleLookup := 'buttonstyle_accent'
+  for var i := 0 to FPlayers - 1 do
+    if i = FPlayer then
+      FPlayerButtons[i].StyleLookup := 'buttonstyle_accent'
     else
-      FPlayerButtons[I].StyleLookup := 'buttonstyle';
+      FPlayerButtons[i].StyleLookup := 'buttonstyle';
   var Buttons := CoreButtons(FSystemId, FPorts.Devices[FPlayer]);
   var Devices := TStringList.Create;
   try
@@ -363,15 +355,15 @@ begin
   begin
     var Pad := TScreenGamepad.Create(FDiagram);
     Pad.HitTest := False;
-    if FSystemId = 'snes' then
+    if FSystemId = ROM_SYSTEM_SNES then
       Pad.Layout := TScreenGamepadLayout.Snes
-    else if FSystemId = 'md' then
+    else if FSystemId = ROM_SYSTEM_MD then
       Pad.Layout := TScreenGamepadLayout.Sega
-    else if FSystemId = 'gb' then
+    else if FSystemId = ROM_SYSTEM_GB then
       Pad.Layout := TScreenGamepadLayout.GameBoy
-    else if FSystemId = 'gbc' then
+    else if FSystemId = ROM_SYSTEM_GBC then
       Pad.Layout := TScreenGamepadLayout.GameBoyColor
-    else if FSystemId = 'neogeo' then
+    else if FSystemId = ROM_SYSTEM_NEOGEO then
       Pad.Layout := TScreenGamepadLayout.NeoGeo;
     Pad.ButtonMask := Buttons;
     var Diagram := TDeviceCallouts.Create(FDiagram);
@@ -426,8 +418,8 @@ begin
     var TabColumns := Max(1, Trunc(ColumnW / 108));
     var TabsRows := Ceil(FPlayers / TabColumns);
     FPlayerTabs.SetBounds(0, 38, ColumnW, TabsRows * 38);
-    for var I := 0 to FPlayers - 1 do
-      FPlayerButtons[I].SetBounds((I mod TabColumns) * 108, (I div TabColumns) * 38, 100, 32);
+    for var i := 0 to FPlayers - 1 do
+      FPlayerButtons[i].SetBounds((i mod TabColumns) * 108, (i div TabColumns) * 38, 100, 32);
     FDevice.SetBounds(0, 40 + TabsRows * 38, ColumnW, 24);
     FDiagram.SetBounds(0, 74 + TabsRows * 38, ColumnW, 180);
     var AssignmentColumns := 1;
@@ -435,12 +427,12 @@ begin
       AssignmentColumns := 2;
     var Rows := Ceil(FAssignments.ChildrenCount / AssignmentColumns);
     FAssignments.SetBounds(0, 266 + TabsRows * 38, ColumnW, Rows * 34);
-    for var I := 0 to FAssignments.ChildrenCount - 1 do
+    for var i := 0 to FAssignments.ChildrenCount - 1 do
     begin
-      var Row := TControl(FAssignments.Children[I]);
+      var Row := TControl(FAssignments.Children[i]);
       Row.Align := TAlignLayout.None;
-      Row.SetBounds((I div Max(1, Rows)) * ColumnW / AssignmentColumns,
-        (I mod Max(1, Rows)) * 34, ColumnW / AssignmentColumns - 10, 34);
+      Row.SetBounds((i div Max(1, Rows)) * ColumnW / AssignmentColumns,
+        (i mod Max(1, Rows)) * 34, ColumnW / AssignmentColumns - 10, 34);
       TControl(Row.Children[0]).Width := 40;
     end;
     var LeftH := 270 + TabsRows * 38 + FAssignments.Height;

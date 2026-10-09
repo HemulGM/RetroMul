@@ -55,6 +55,8 @@ uses
   NES.DataRecorder in 'devices\NES.DataRecorder.pas',
   RM.Main in 'RM.Main.pas' {FormMain},
   RM.FrameUpload in 'RM.FrameUpload.pas',
+  RM.Icons in 'RM.Icons.pas',
+  RM.SearchEdit in 'RM.SearchEdit.pas',
   RM.Input in 'RM.Input.pas',
   RM.Settings in 'RM.Settings.pas',
   RM.LibraryView in 'RM.LibraryView.pas',

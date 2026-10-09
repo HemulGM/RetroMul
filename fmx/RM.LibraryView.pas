@@ -72,6 +72,7 @@ type
     procedure BuildCards;
     procedure UpdateInspector;
     procedure UpdateContinue;
+    procedure SelectContinueGame;
     procedure ArrangeContinuePreview;
     procedure LoadContinueGamePreview;
     procedure ArrangeCards;
@@ -101,24 +102,15 @@ function LibrarySystemName(const Id: string): string;
 
 function InterfaceIcon(Parent: TControl; const Data: string; X, Y, Size: Single; Color: TAlphaColor = $FFB9C2CC): TPath;
 
-const
-  IconPad = 'M10,6 L24,6 C28,6 30,8 31,13 L34,26 C35,30 31,32 28,29 L23,24 L11,24 L6,29 C3,32 0,30 1,26 L4,13 C5,8 6,6 10,6 Z M9,12 L9,21 M5,16 L13,16 M24,13 L24,15 M28,18 L28,20';
-  IconLibrary = 'M2,2 L10,2 L10,10 L2,10 Z M16,2 L24,2 L24,10 L16,10 Z M2,16 L10,16 L10,24 L2,24 Z M16,16 L24,16 L24,24 L16,24 Z';
-  IconClock = 'M13,1 C29,1 29,25 13,25 C-3,25 -3,1 13,1 Z M13,6 L13,13 L19,16';
-  IconHeart = 'M13,23 L3,13 C-5,3 8,-2 13,7 C18,-2 31,3 23,13 Z';
-  IconFolder = 'M1,6 L10,6 L13,9 L25,9 L25,25 L1,25 Z';
-  IconGear = 'M10,1 L16,1 L17,5 L21,7 L25,6 L28,11 L25,14 L25,18 L28,21 L25,26 L21,25 L17,27 L16,31 L10,31 L9,27 L5,25 L1,26 L-2,21 L1,18 L1,14 L-2,11 L1,6 L5,7 L9,5 Z M13,10 C21,10 21,22 13,22 C5,22 5,10 13,10 Z';
-  IconDisplay = 'M1,1 L25,1 L25,18 L1,18 Z M13,18 L13,24 M6,24 L20,24';
-
 implementation
 
 uses
   System.IOUtils, System.Math, System.Hash, System.Generics.Defaults,
   FMX.Graphics, FMX.BehaviorManager, SCRP.GameList, HGM.FMX.Image,
-  Core.RomFormat, RM.Styles;
+  Core.RomFormat, Core.SavePaths, RM.Icons, RM.SearchEdit, RM.Styles;
 
 const
-  SystemIds: array[0..6] of string = ('', 'nes', 'snes', 'gb', 'gbc', 'md', 'neogeo');
+  SystemIds: array[0..6] of string = ('', ROM_SYSTEM_NES, ROM_SYSTEM_SNES, ROM_SYSTEM_GB, ROM_SYSTEM_GBC, ROM_SYSTEM_MD, ROM_SYSTEM_NEOGEO);
   SystemNames: array[0..6] of string = ('All', 'NES', 'SNES', 'GB', 'GBC', 'Mega Drive', 'Neo Geo');
 
 function LibrarySystemName(const Id: string): string;
@@ -141,15 +133,7 @@ end;
 
 function InterfaceIcon(Parent: TControl; const Data: string; X, Y, Size: Single; Color: TAlphaColor): FMX.Objects.TPath;
 begin
-  Result := FMX.Objects.TPath.Create(Parent);
-  Result.Parent := Parent;
-  Result.Data.Data := Data;
-  Result.WrapMode := TPathWrapMode.Fit;
-  Result.Fill.Kind := TBrushKind.None;
-  Result.Stroke.Color := Color;
-  Result.Stroke.Thickness := 1.6;
-  Result.HitTest := False;
-  Result.SetBounds(X, Y, Size, Size);
+  Result := CreatePathIcon(Parent, Data, X, Y, Size, Color);
 end;
 
 function TLibraryGame.Key: string;
@@ -167,6 +151,7 @@ begin
   Result.TextSettings.Font.Size := Size;
   Result.TextSettings.FontColor := $FFE8ECF1;
   Result.TextSettings.Trimming := TTextTrimming.Character;
+  Result.TextSettings.WordWrap := False;
   Result.HitTest := False;
 end;
 
@@ -175,6 +160,9 @@ begin
   Result := TButton.Create(Owner);
   Result.Parent := Parent;
   Result.Text := Translate(Text);
+  Result.StyledSettings := Result.StyledSettings - [TStyledSetting.Other];
+  Result.TextSettings.Trimming := TTextTrimming.Character;
+  Result.TextSettings.WordWrap := False;
   Result.Height := 42;
   Result.OnClick := Click;
 end;
@@ -333,16 +321,22 @@ begin
   Heading.Align := TAlignLayout.Top;
   Heading.Height := 42;
   Heading.TextSettings.Font.Style := [TFontStyle.fsBold];
-  FListButton := ActionButton(Self, FHeader, '≡', ViewClick);
+  FListButton := ActionButton(Self, FHeader, '', ViewClick);
+  FListButton.Name := 'LibraryListView';
+  FListButton.Hint := Translate('List');
+  AddButtonIcon(FListButton, IconViewList, 18);
   FListButton.Align := TAlignLayout.Right;
   FListButton.Width := 42;
   FListButton.Tag := 1;
   FListButton.Margins.Rect := RectF(0, 8, 0, 8);
-  FGridButton := ActionButton(Self, FHeader, '▦', ViewClick);
+  FGridButton := ActionButton(Self, FHeader, '', ViewClick);
+  FGridButton.Name := 'LibraryGridView';
+  FGridButton.Hint := Translate('Covers');
+  AddButtonIcon(FGridButton, IconViewGrid, 18);
   FGridButton.Align := TAlignLayout.Right;
   FGridButton.Width := 42;
   FGridButton.Margins.Rect := RectF(8, 8, 0, 8);
-  FSearch := TEdit.Create(Self);
+  FSearch := TSearchEdit.Create(Self);
   FSearch.Name := 'LibrarySearch';
   FSearch.Parent := FHeader;
   FSearch.Align := TAlignLayout.Client;
@@ -500,8 +494,6 @@ begin
           end;
           Item.Favorite := FState.ReadBool('Favorites', Item.Key, Item.Favorite);
           Item.LastPlayed := FState.ReadFloat('Recent', Item.Key, 0);
-          if (Item.LastPlayed > 0) and ((FRecent = nil) or (Item.LastPlayed > FRecent.LastPlayed)) then
-            FRecent := Item;
         end;
       finally
         Lookup.Free;
@@ -649,6 +641,7 @@ procedure TLibraryView.ArrangeCards;
 begin
   if FBuilding or FArranging or (FGrid = nil) then
     Exit;
+
   FArranging := True;
   try
     var Available := Max(140, FScroll.Width - 16);
@@ -693,6 +686,7 @@ procedure TLibraryView.Resize;
 begin
   if FBuilding or FLayouting or (FBody = nil) then
     Exit;
+
   FLayouting := True;
   try
     inherited;
@@ -767,13 +761,15 @@ begin
   Result := nil;
   if Game = nil then
     Exit;
+
   var Directory := FState.ReadString('Snapshots', Game.Key, '');
   if Directory = '' then
     Exit;
+
   var Items := TList<TStorageSnapshot>.Create;
   try
     for var Location in FStorage.Files(Directory) do
-      if SameText(ExtractFileExt(Location), '.snapshot') then
+      if SameText(ExtractFileExt(Location), SNAPSHOT_EXTENSION) then
       begin
         var Item := Default(TStorageSnapshot);
         Item.Name := ChangeFileExt(ExtractFileName(Location), '');
@@ -788,6 +784,8 @@ begin
       function(const A, B: TStorageSnapshot): Integer
       begin
         Result := CompareValue(B.Modified, A.Modified);
+        if Result = 0 then
+          Result := CompareText(A.Location, B.Location);
       end));
     Result := Items.ToArray;
   finally
@@ -835,7 +833,7 @@ begin
     if i < Length(Saves) then
     begin
       FSaveButtons[i].Text := Saves[i].Name + sLineBreak + FormatDateTime('dd.mm.yyyy hh:nn', Saves[i].Modified);
-      FSaveButtons[i].TagString := Saves[i].Name;
+      FSaveButtons[i].TagString := Saves[i].Location;
       LoadImage(FSaveImages[i], Saves[i].PreviewLocation);
     end;
   end;
@@ -909,11 +907,12 @@ procedure TLibraryView.ResumeClick(Sender: TObject);
 begin
   if FRecent = nil then
     Exit;
+
   FSelected := FRecent;
   var Saves := Snapshots(FRecent);
   FSnapshotName := '';
   if Length(Saves) > 0 then
-    FSnapshotName := Saves[0].Name;
+    FSnapshotName := Saves[0].Location;
   if Assigned(FOnPlay) then
     FOnPlay(Self);
 end;
@@ -934,6 +933,7 @@ procedure TLibraryView.FavoriteClick(Sender: TObject);
 begin
   if FSelected = nil then
     Exit;
+
   FSelected.Favorite := not FSelected.Favorite;
   FState.WriteBool('Favorites', FSelected.Key, FSelected.Favorite);
   SaveState;
@@ -973,7 +973,6 @@ begin
       if SnapshotDirectory <> '' then
         FState.WriteString('Snapshots', Game.Key, SnapshotDirectory);
       SaveState;
-      FRecent := Game;
       RefreshSnapshots;
       Break;
     end;
@@ -992,14 +991,40 @@ begin
   FContinueCover.SetBounds(Bounds.Left, Bounds.Top, Bounds.Width, Bounds.Height);
 end;
 
+procedure TLibraryView.SelectContinueGame;
+begin
+  FRecent := nil;
+  var Latest: TDateTime := 0;
+  var HasSnapshot := False;
+  for var Game in FGames do
+  begin
+    var Saves := Snapshots(Game);
+    if Length(Saves) > 0 then
+    begin
+      if not HasSnapshot or (Saves[0].Modified > Latest) or
+        ((Saves[0].Modified = Latest) and (Game.LastPlayed > FRecent.LastPlayed)) then
+      begin
+        FRecent := Game;
+        Latest := Saves[0].Modified;
+      end;
+      HasSnapshot := True;
+    end
+    else if not HasSnapshot and (Game.LastPlayed > 0) and
+      ((FRecent = nil) or (Game.LastPlayed > FRecent.LastPlayed)) then
+      FRecent := Game;
+  end;
+end;
+
 procedure TLibraryView.UpdateContinue;
 begin
+  SelectContinueGame;
   var Bitmap := FContinueCover.Fill.Bitmap.Bitmap;
   Bitmap.RemoveCallback(FContinueCover);
   FContinueGamePreview.Bitmap.RemoveCallback(FContinueGamePreview);
   FContinue.Visible := FRecent <> nil;
   if FRecent = nil then
     Exit;
+
   FContinueTitle.Text := FRecent.Title;
   FContinuePlatform.Text := LibrarySystemName(FRecent.SystemId);
   if FRecent.Genre <> '' then

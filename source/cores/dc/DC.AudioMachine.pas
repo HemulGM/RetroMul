@@ -30,6 +30,7 @@ begin
   inherited Create;
   if Length(Image) > $800000 then
     raise EArgumentException.Create('DSF image exceeds 8 MiB');
+
   FImage := Copy(Image);
   SetLength(FRAM, $800000);
   FAICA := TAICA.Create(SoundRead, SoundWrite);
@@ -46,10 +47,10 @@ end;
 
 procedure TDSFAudio.Reset;
 begin
-  for var I := 0 to High(FRAM) do
-    FRAM[I] := 0;
-  for var I := 0 to High(FImage) do
-    FRAM[I] := FImage[I];
+  for var i := 0 to High(FRAM) do
+    FRAM[i] := 0;
+  for var i := 0 to High(FImage) do
+    FRAM[i] := FImage[i];
   FCPU.Reset;
   FAICA.Reset;
   FDebt := 0;
@@ -74,9 +75,9 @@ begin
     Address := Address and $FFFFFFFC;
   end;
   Result := 0;
-  for var I := 0 to Size - 1 do
+  for var i := 0 to Size - 1 do
   begin
-    var A := ARMAdd(Address, I) and $FFFFFF;
+    var A := ARMAdd(Address, i) and $FFFFFF;
     var V: Byte;
     if A < $800000 then
       V := FRAM[A]
@@ -84,7 +85,7 @@ begin
       V := FAICA.ReadRegister(A - $800000)
     else
       V := $FF;
-    Result := Result or (Cardinal(V) shl (I * 8));
+    Result := Result or (Cardinal(V) shl (i * 8));
   end;
   if Rotate <> 0 then
     Result := (Result shr Rotate) or (Result shl (32 - Rotate));
@@ -94,10 +95,10 @@ procedure TDSFAudio.Write(Address, Value: Cardinal; Size: Integer);
 begin
   if Size = 4 then
     Address := Address and $FFFFFFFC;
-  for var I := 0 to Size - 1 do
+  for var i := 0 to Size - 1 do
   begin
-    var A := ARMAdd(Address, I) and $FFFFFF;
-    var V: Byte := (Value shr (I * 8)) and 255;
+    var A := ARMAdd(Address, i) and $FFFFFF;
+    var V: Byte := (Value shr (i * 8)) and 255;
     if A < $800000 then
       FRAM[A] := V
     else if A < $808000 then

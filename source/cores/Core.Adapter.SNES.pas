@@ -258,13 +258,11 @@ begin
 end;
 
 procedure TSnesCoreAdapter.SetKeyState(Code: UInt32; Pressed: Boolean);
-var
-  Button: TSnesButton;
 begin
   if Code = 0 then
     Exit;
   for var Port := 0 to 7 do
-    for Button := Low(TSnesButton) to High(TSnesButton) do
+    for var Button := Low(TSnesButton) to High(TSnesButton) do
       if Code = FKeys[Port, Button] then
         if Pressed then
           Include(FKeyboards[Port], Button)

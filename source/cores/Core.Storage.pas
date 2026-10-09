@@ -187,9 +187,9 @@ begin
   end;
   FRoot := ExpandFileName(FRoot);
   FPicker := Picker;
-  var Ini := ReadConfig(ConfigFile('storage'));
+  var Ini := ReadConfig(ConfigFile('config'));
   try
-    FRomFolder := Ini.ReadString('ROMs', 'Folder', '');
+    FRomFolder := Ini.ReadString('General', 'Path', '');
   finally
     Ini.Free;
   end;
@@ -235,9 +235,9 @@ end;
 
 procedure TStorage.SetRomFolder(const Value: string);
 begin
-  var Ini := ReadConfig(ConfigFile('storage'));
+  var Ini := ReadConfig(ConfigFile('config'));
   try
-    Ini.WriteString('ROMs', 'Folder', Value);
+    Ini.WriteString('General', 'Path', Value);
     WriteConfig(Ini);
     FRomFolder := Value;
   finally

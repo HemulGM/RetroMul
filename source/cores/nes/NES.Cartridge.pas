@@ -70,7 +70,7 @@ uses
 
 type
   TInesHeader = packed record
-    Magic: array[0..3] of AnsiChar;
+    Magic: array[0..NES_ROM_SIGNATURE_SIZE - 1] of AnsiChar;
     PrgRomChunks: UInt8;
     ChrRomChunks: UInt8;
     Flags6: UInt8;
@@ -78,7 +78,7 @@ type
     PrgRamSize: UInt8;
     Flags9: UInt8;
     Flags10: UInt8;
-    Zero: array[0..4] of UInt8;
+    Zero: array[0..NES_ROM_HEADER_SIZE - NES_ROM_SIGNATURE_SIZE - 8] of UInt8;
   end;
 
 procedure ReadExact(Stream: TStream; var Buffer; Count: Integer);
@@ -121,15 +121,15 @@ begin
   else
     Result.MirrorMode := TMirrorMode.Horizontal;
   Result.MapperId := (Header.Flags7 and $F0) or (Header.Flags6 shr 4);
-  Result.PrgRomSize := UInt64(Header.PrgRomChunks) * $4000;
-  Result.ChrRomSize := UInt64(Header.ChrRomChunks) * $2000;
+  Result.PrgRomSize := UInt64(Header.PrgRomChunks) * NES_ROM_PRG_BANK_SIZE;
+  Result.ChrRomSize := UInt64(Header.ChrRomChunks) * NES_ROM_CHR_BANK_SIZE;
   if (Header.Flags7 and $0C) = $08 then
   begin
     Result.Format := TRomFormat.Nes20;
     Result.MapperId := Result.MapperId or ((Header.PrgRamSize and $0F) shl 8);
     Result.Submapper := Header.PrgRamSize shr 4;
-    Result.PrgRomSize := RomSize(Header.PrgRomChunks, Header.Flags9 and $0F, $4000);
-    Result.ChrRomSize := RomSize(Header.ChrRomChunks, Header.Flags9 shr 4, $2000);
+    Result.PrgRomSize := RomSize(Header.PrgRomChunks, Header.Flags9 and $0F, NES_ROM_PRG_BANK_SIZE);
+    Result.ChrRomSize := RomSize(Header.ChrRomChunks, Header.Flags9 shr 4, NES_ROM_CHR_BANK_SIZE);
     Result.PrgRamSize := RamSize(Header.Flags10 and $0F);
     Result.PrgNvRamSize := RamSize(Header.Flags10 shr 4);
     Result.ChrRamSize := RamSize(Header.Zero[0] and $0F);
@@ -150,7 +150,7 @@ begin
   begin
     Result.LegacyHeaderDirty := (Header.Zero[1] or Header.Zero[2] or Header.Zero[3] or Header.Zero[4]) <> 0;
     if Result.ChrRomSize = 0 then
-      Result.ChrRamSize := $2000;
+      Result.ChrRamSize := NES_ROM_CHR_BANK_SIZE;
     if Result.LegacyHeaderDirty then
       Result.MapperId := Header.Flags6 shr 4
     else
@@ -158,9 +158,9 @@ begin
       Result.ConsoleType := Header.Flags7 and 3;
       Result.Timing := TRomTiming(1 + (Header.Flags9 and 1));
       // iNES zero means an inferred 8 KiB, not an explicit absence of RAM.
-      Result.PrgRamSize := UInt64(Header.PrgRamSize) * $2000;
+      Result.PrgRamSize := UInt64(Header.PrgRamSize) * NES_ROM_RAM_BANK_SIZE;
       if Result.PrgRamSize = 0 then
-        Result.PrgRamSize := $2000;
+        Result.PrgRamSize := NES_ROM_RAM_BANK_SIZE;
       if Result.HasBattery then
       begin
         Result.PrgNvRamSize := Result.PrgRamSize;
@@ -271,9 +271,9 @@ begin
   var Remaining := UInt64(Stream.Size - Stream.Position);
   if HasTrainer then
   begin
-    if Remaining < 512 then
+    if Remaining < NES_ROM_TRAINER_SIZE then
       raise ENesException.Create('Unexpected end of file');
-    Dec(Remaining, 512);
+    Dec(Remaining, NES_ROM_TRAINER_SIZE);
   end;
   if (FMetadata.PrgRomSize > Remaining) or (FMetadata.PrgRomSize > UInt64(High(Integer))) then
     raise ENesException.Create('Invalid PRG ROM size');
@@ -284,8 +284,8 @@ begin
 
   if HasTrainer then
   begin
-    SetLength(Trainer, 512);
-    ReadExact(Stream, Trainer[0], 512);
+    SetLength(Trainer, NES_ROM_TRAINER_SIZE);
+    ReadExact(Stream, Trainer[0], NES_ROM_TRAINER_SIZE);
   end;
 
   SetLength(PrgRom, Integer(FMetadata.PrgRomSize));

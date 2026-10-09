@@ -52,7 +52,7 @@ type
 implementation
 
 uses
-  Core.PerformanceHints, System.IOUtils, System.UITypes, System.Diagnostics,
+  Core.SavePaths, Core.PerformanceHints, System.IOUtils, System.UITypes, System.Diagnostics,
   System.Math, PCM.Audio;
 
 { TSnesWorker }
@@ -250,7 +250,7 @@ begin
     try
       Console := TSnesConsole.Create(FData, ROM_EXTENSION_SFC, FFirmware);
       Console.ConfigureInputPorts(InputPorts);
-      FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), 'SNES');
+      FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), ROM_CORE_ID_SNES);
       if FStorage.Exists(FSavePath) then
       begin
         LastBattery := FStorage.ReadBytes(FSavePath);
@@ -271,7 +271,7 @@ begin
           procedure(const Name: string; Loading: Boolean)
           begin
             FrameHints.Pause;
-            var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
+            var Path := ResolveSnapshotPath(FSnapshotDirectory, Name);
             var Transfer: TStateTransfer :=
               procedure(State: TStateArchive)
               begin
@@ -279,7 +279,7 @@ begin
               end;
             if Loading then
             begin
-              LoadCoreSnapshot(Path, 'SNES', SnapshotData, Transfer, FStorage);
+              LoadCoreSnapshot(Path, ROM_CORE_ID_SNES, SnapshotData, Transfer, FStorage);
               Console.MarkBatteryDirty;
               if Audio <> nil then
                 Audio.Clear;
@@ -302,7 +302,7 @@ begin
             end
             else
             begin
-              SaveCoreSnapshot(Path, 'SNES', SnapshotData, Transfer, FStorage);
+              SaveCoreSnapshot(Path, ROM_CORE_ID_SNES, SnapshotData, Transfer, FStorage);
               SaveSnapshotPreview(Path, Console.Width, Console.Height, 512, @Console.Pixels[0], FStorage);
             end;
             Deadline := TStopwatch.GetTimeStamp;

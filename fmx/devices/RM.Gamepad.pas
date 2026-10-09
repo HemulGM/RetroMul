@@ -111,7 +111,7 @@ uses
   {$IFDEF ANDROID}
   RM.TouchInput.Android,
   {$ENDIF}
-  FMX.Graphics;
+  FMX.Graphics, RM.Icons;
 
 const
   NesButtonMap: array[TNesButton] of TEmulatorButton =
@@ -761,10 +761,7 @@ var
   begin
     var Path := TPathData.Create;
     try
-      Path.MoveTo(PointF(0, -4));
-      Path.LineTo(PointF(3, 3));
-      Path.LineTo(PointF(-3, 3));
-      Path.ClosePath;
+      Path.Data := IconArrowUp;
       Path.ApplyMatrix(TMatrix.CreateRotation(DegToRad(Angle)));
       Path.Translate(X, Y);
       Path.Scale(FUnit, FUnit);

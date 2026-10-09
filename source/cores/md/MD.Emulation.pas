@@ -51,7 +51,7 @@ type
 implementation
 
 uses
-  Core.PerformanceHints, System.IOUtils, System.UITypes, System.Diagnostics,
+  Core.SavePaths, Core.PerformanceHints, System.IOUtils, System.UITypes, System.Diagnostics,
   System.Math, PCM.Audio;
 
 { TMDWorker }
@@ -242,7 +242,7 @@ begin
     try
       Console := TMDConsole.Create(FData, ROM_EXTENSION_MD);
       Console.ConfigureInputPorts(InputPorts);
-      FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), 'MD');
+      FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), ROM_CORE_ID_MD);
       if FStorage.Exists(FSavePath) then
       begin
         LastBattery := FStorage.ReadBytes(FSavePath);
@@ -262,7 +262,7 @@ begin
           procedure(const Name: string; Loading: Boolean)
           begin
             FrameHints.Pause;
-            var Path := TPath.Combine(FSnapshotDirectory, Name + '.snapshot');
+            var Path := ResolveSnapshotPath(FSnapshotDirectory, Name);
             var Transfer: TStateTransfer :=
               procedure(State: TStateArchive)
               begin
@@ -270,7 +270,7 @@ begin
               end;
             if Loading then
             begin
-              LoadCoreSnapshot(Path, 'MD', FData, Transfer, FStorage);
+              LoadCoreSnapshot(Path, ROM_CORE_ID_MD, FData, Transfer, FStorage);
               Console.MarkBatteryDirty;
               if Audio <> nil then
                 Audio.Clear;
@@ -293,7 +293,7 @@ begin
             end
             else
             begin
-              SaveCoreSnapshot(Path, 'MD', FData, Transfer, FStorage);
+              SaveCoreSnapshot(Path, ROM_CORE_ID_MD, FData, Transfer, FStorage);
               SaveSnapshotPreview(Path, Console.Width, Console.Height, 320, @Console.Pixels[0], FStorage);
             end;
             Deadline := TStopwatch.GetTimeStamp;

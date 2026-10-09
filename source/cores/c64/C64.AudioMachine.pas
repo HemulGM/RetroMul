@@ -76,6 +76,7 @@ const
 begin
   if Address = 1 then
     Exit(PortValue);
+
   if (PortValue and 2) <> 0 then
   begin
     if (Address >= $EA31) and (Address <= $EA36) then
@@ -83,13 +84,16 @@ begin
     if Address = $EA81 then
       Exit($40);
   end;
+
   if IOEnabled and (Address >= $D000) and (Address <= $DFFF) then
   begin
     for var I := FChipCount - 1 downto 1 do
       if (Address >= FBases[I]) and (Integer(Address) < Integer(FBases[I]) + 32) then
         Exit(FChips[I].ReadRegister(Address - FBases[I]));
+
     if (Address >= $D400) and (Address < $D800) then
       Exit(FChips[0].ReadRegister(Address and 31));
+
     if Address = $D012 then
     begin
       if FClock = 985248 then
@@ -97,12 +101,14 @@ begin
       else
         Exit((FCycle div 65) and 255);
     end;
+
     if Address = $DC0D then
     begin
       Result := FIO[$C0D];
       FIO[$C0D] := 0;
       Exit;
     end;
+
     Exit(FIO[Address and $FFF]);
   end;
   Result := RAM[Address];
@@ -118,11 +124,13 @@ begin
         FChips[I].WriteRegister(Address - FBases[I], Value);
         Exit;
       end;
+
     if (Address >= $D400) and (Address < $D800) then
     begin
       FChips[0].WriteRegister(Address and 31, Value);
       Exit;
     end;
+
     FIO[Address and $FFF] := Value;
     if FCIA and ((Address = $DC05) or (Address = $DC0E)) then
     begin
@@ -216,9 +224,11 @@ begin
   begin
     if FCPU.Jammed then
       raise EArgumentException.Create('SID player halted the CPU');
+
     Dec(FBudget);
     if FBudget <= 0 then
       raise ENotSupportedException.Create('SID routine exceeded the execution budget (ROM-dependent player?)');
+
     FCPU.Clock;
     if (FCPU.Pc = $FFFF) and (FCPU.CyclesRemaining = 0) then
       FActive := False;
@@ -238,6 +248,7 @@ begin
       Inc(FUntilPlay, FPeriod);
       if FActive then
         raise ENotSupportedException.Create('SID play routine did not finish before the next frame');
+
       FIO[$019] := $81;
       FIO[$C0D] := $81;
       if FIRQCall then

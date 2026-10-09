@@ -50,6 +50,7 @@ begin
   inherited Create;
   if (Clock < 500000) or (Clock > 2000000) or (SampleRate < 8000) or (SampleRate > 192000) then
     raise EArgumentOutOfRangeException.Create('Invalid SID clock/sample rate');
+
   FModel := Model;
   FClock := Clock;
   FSampleRate := SampleRate;
@@ -85,6 +86,7 @@ begin
   FBus := Value;
   if RegisterID > 24 then
     Exit;
+
   var Old := FRegisters[RegisterID];
   FRegisters[RegisterID] := Value;
   if (RegisterID < 21) and (RegisterID mod 7 = 4) then
@@ -239,6 +241,7 @@ begin
   Result := $FFF;
   if (Control and $F0) = 0 then
     Exit(0);
+
   if (Control and $10) <> 0 then
   begin
     var Invert := (Phase and $800000) <> 0;

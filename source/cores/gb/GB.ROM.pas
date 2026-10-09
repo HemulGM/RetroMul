@@ -96,8 +96,8 @@ begin
     raise EArgumentNilException.Create('ROM stream must not be nil.');
   var Data := ReadRomData(Stream);
   var DataSize: Int64 := Length(Data);
-  if (DataSize < $8000) or (DataSize > 8 * 1024 * 1024) or
-    (DataSize mod $4000 <> 0) then
+  if (DataSize < GB_ROM_MIN_SIZE) or (DataSize > GB_ROM_MAX_SIZE) or
+    (DataSize mod GB_ROM_BANK_SIZE <> 0) then
     raise EGBInvalidROM.CreateFmt('Invalid ROM length: %d bytes.', [DataSize]);
   var ParsedCartridge: TGBCartridge := TGBCartridge.Create(Data);
   // Commit only after the whole stream and header have been read successfully.

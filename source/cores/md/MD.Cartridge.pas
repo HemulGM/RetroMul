@@ -99,10 +99,10 @@ begin
     FHeaderOffset := MD_ROM_ALTERNATE_HEADER_OFFSET;
   end;
 
-  FTitle := HeaderText($150, 48);
+  FTitle := HeaderText(MD_ROM_OVERSEAS_TITLE_OFFSET, MD_ROM_TITLE_SIZE);
   if FTitle = '' then
-    FTitle := HeaderText($120, 48);
-  var RegionText := UpperCase(HeaderText($1F0, 16));
+    FTitle := HeaderText(MD_ROM_DOMESTIC_TITLE_OFFSET, MD_ROM_TITLE_SIZE);
+  var RegionText := UpperCase(HeaderText(MD_ROM_REGION_OFFSET, MD_ROM_REGION_SIZE));
   var RegionMask: Integer;
 
   // Prefer NTSC for multiregion cartridges. Older headers use J/U/E,
@@ -128,7 +128,7 @@ end;
 
 function TMDCartridge.HeaderText(Offset, Count: Integer): string;
 begin
-  Inc(Offset, FHeaderOffset - $100);
+  Inc(Offset, FHeaderOffset - MD_ROM_HEADER_OFFSET);
   Result := '';
   for var i := Offset to Offset + Count - 1 do
     if (FData[i] >= 32) and (FData[i] < 127) then

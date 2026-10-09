@@ -3,8 +3,8 @@
 interface
 
 uses
-  GB.EmulationThread, GB.GPU, GB.ROM, GB.MBC, GB.Memory, GB.Joypad, GB.Timer,
-  GB.InterruptManager;
+  Core.RomFormat, GB.EmulationThread, GB.GPU, GB.ROM, GB.MBC, GB.Memory,
+  GB.Joypad, GB.Timer, GB.InterruptManager;
 
 type
   TGBInputEvent = GB.EmulationThread.TGBInputEvent;
@@ -27,7 +27,7 @@ uses
 
 function TGBCEmulationThread.CoreID: string;
 begin
-  Result := 'GBC';
+  Result := ROM_CORE_ID_GBC;
 end;
 
 function TGBCEmulationThread.CreateVideo(ROM: TGBROM): TGBVideo;

@@ -34,31 +34,59 @@ type
     FContinueNoPreview: TLabel;
     FContinueCaption, FContinuePlatform, FContinueLastPlayed, FContinueSave: TLabel;
   private
+    {$REGION 'Library data and selection'}
     FStorage: IStorage;
     FGames: TObjectList<TLibraryGame>;
     FState: TMemIniFile;
+    FSelected, FRecent: TLibraryGame;
+    FSystemFilter: string;
+    FMode, FLimit: Integer;
+    FSnapshotName: string;
+    {$ENDREGION}
+    {$REGION 'Runtime controls'}
     FBody, FHeader, FFilters, FContinue: TLayout;
     FSearch: TEdit;
     FPlay, FFavorite, FMore, FGridButton, FListButton, FResume: TButton;
     FSaveButtons: array[0..2] of TButton;
     FSaveImages: array[0..2] of TImage;
     FPlatformButtons: array[0..6] of TButton;
+    FSidebarPlatformBorders: array[1..6] of TRectangle;
     FNavButtons: array[0..2] of TButton;
     FNavIcons: array[0..2] of TPath;
     FContinueCover: TRectangle;
     FContinueGamePreview: TImage;
     FCards: TList<TLibraryCard>;
-    FSelected, FRecent: TLibraryGame;
-    FSystemFilter: string;
-    FMode, FLimit: Integer;
+    {$ENDREGION}
+    {$REGION 'Layout and view preferences'}
     FListMode, FBuilding, FArranging, FLayouting, FShowPlatform: Boolean;
     FCardWidth: Integer;
-    FSnapshotName: string;
+    {$ENDREGION}
+    {$REGION 'View events'}
     FOnPlay, FOnSettings, FOnOpen: TNotifyEvent;
-    procedure OpenClick(Sender: TObject);
-    procedure SettingsClick(Sender: TObject);
+    {$ENDREGION}
+    {$REGION 'Library data and preferences'}
+    procedure SaveState;
+    function Matches(Game: TLibraryGame): Boolean;
+    function GetSelected: TLibraryGame;
+    function Snapshots(Game: TLibraryGame): TArray<TStorageSnapshot>;
+    procedure LoadImage(Image: TImage; const Location: string);
+    {$ENDREGION}
+    {$REGION 'Cards and layout'}
+    procedure BuildCards;
+    procedure ArrangeCards;
     procedure GridResize(Sender: TObject);
     procedure BodyResize(Sender: TObject);
+    {$ENDREGION}
+    {$REGION 'Selected game and continue panel'}
+    procedure UpdateInspector;
+    procedure SelectContinueGame;
+    procedure UpdateContinue;
+    procedure LoadContinueGamePreview;
+    procedure ArrangeContinuePreview;
+    {$ENDREGION}
+    {$REGION 'View events'}
+    procedure OpenClick(Sender: TObject);
+    procedure SettingsClick(Sender: TObject);
     procedure FilterClick(Sender: TObject);
     procedure ModeClick(Sender: TObject);
     procedure SearchChange(Sender: TObject);
@@ -69,18 +97,7 @@ type
     procedure FavoriteClick(Sender: TObject);
     procedure ViewClick(Sender: TObject);
     procedure MoreClick(Sender: TObject);
-    procedure BuildCards;
-    procedure UpdateInspector;
-    procedure UpdateContinue;
-    procedure SelectContinueGame;
-    procedure ArrangeContinuePreview;
-    procedure LoadContinueGamePreview;
-    procedure ArrangeCards;
-    procedure SaveState;
-    function Matches(Game: TLibraryGame): Boolean;
-    function GetSelected: TLibraryGame;
-    function Snapshots(Game: TLibraryGame): TArray<TStorageSnapshot>;
-    procedure LoadImage(Image: TImage; const Location: string);
+    {$ENDREGION}
   protected
     procedure Resize; override;
   public
@@ -99,8 +116,6 @@ type
   end;
 
 function LibrarySystemName(const Id: string): string;
-
-function InterfaceIcon(Parent: TControl; const Data: string; X, Y, Size: Single; Color: TAlphaColor = $FFB9C2CC): TPath;
 
 implementation
 
@@ -131,11 +146,6 @@ begin
     Result := Translate('yesterday, ') + FormatDateTime('hh:nn', Value)
   else
     Result := FormatDateTime('dd.mm.yyyy hh:nn', Value);
-end;
-
-function InterfaceIcon(Parent: TControl; const Data: string; X, Y, Size: Single; Color: TAlphaColor): FMX.Objects.TPath;
-begin
-  Result := CreatePathIcon(Parent, Data, X, Y, Size, Color);
 end;
 
 function TLibraryGame.Key: string;
@@ -169,6 +179,7 @@ begin
   Result.OnClick := Click;
 end;
 
+{$REGION 'Initialization and lifetime'}
 constructor TLibraryView.CreateLibrary(AOwner: TComponent; const Storage: IStorage);
 begin
   FBuilding := True;
@@ -235,6 +246,17 @@ begin
       TButton(Child).OnClick := FilterClick;
       TButton(Child).TextSettings.HorzAlign := TTextAlign.Leading;
       TButton(Child).StylesData['text.Margins.Left'] := 48;
+      var Border := TRectangle.Create(Child);
+      FSidebarPlatformBorders[TButton(Child).Tag] := Border;
+      Border.Parent := Child;
+      Border.Align := TAlignLayout.Contents;
+      Border.Fill.Kind := TBrushKind.None;
+      Border.Stroke.Color := $FFFFB344;
+      Border.Stroke.Thickness := 2;
+      Border.XRadius := 6;
+      Border.YRadius := 6;
+      Border.HitTest := False;
+      Border.Visible := False;
     end;
   for var Name in ['LibraryOpenRom', 'Settings'] do
   begin
@@ -275,19 +297,9 @@ begin
   FState.Free;
   inherited;
 end;
+{$ENDREGION}
 
-procedure TLibraryView.LoadImage(Image: TImage; const Location: string);
-begin
-  Image.Bitmap.RemoveCallback(Image);
-  Image.Bitmap := nil;
-  try
-    if (Location <> '') and FStorage.Exists(Location) then
-      Image.Bitmap.LoadFromFileAsync(Image, Location, 320, 400, nil, FStorage);
-  except
-    Image.Bitmap := nil;
-  end;
-end;
-
+{$REGION 'Library data and preferences'}
 procedure TLibraryView.Reload;
 begin
   FBuilding := True;
@@ -376,13 +388,6 @@ begin
     BuildCards;
 end;
 
-function TLibraryView.Matches(Game: TLibraryGame): Boolean;
-begin
-  Result := ((FSystemFilter = '') or (Game.SystemId = FSystemFilter)) and
-    ((FMode <> 1) or (Game.LastPlayed > 0)) and ((FMode <> 2) or Game.Favorite) and
-    ((FSearch.Text = '') or Game.Title.ToLower.Contains(FSearch.Text.ToLower));
-end;
-
 procedure TLibraryView.ApplyLanguage(const PreviousLanguage: string);
 begin
   FormStyles.RelocalizeUI(Self, PreviousLanguage);
@@ -392,6 +397,96 @@ begin
   UpdateContinue;
 end;
 
+procedure TLibraryView.RecordSession(const FileName, SnapshotDirectory: string);
+begin
+  for var Game in FGames do
+    if SameText(Game.FileInfo.Location, FileName) then
+    begin
+      Game.LastPlayed := Now;
+      FState.WriteFloat('Recent', Game.Key, Game.LastPlayed);
+      if SnapshotDirectory <> '' then
+        FState.WriteString('Snapshots', Game.Key, SnapshotDirectory);
+      SaveState;
+      RefreshSnapshots;
+      Break;
+    end;
+end;
+
+procedure TLibraryView.SaveState;
+begin
+  FStorage.WriteConfig(FState);
+end;
+
+function TLibraryView.Matches(Game: TLibraryGame): Boolean;
+begin
+  Result := ((FSystemFilter = '') or (Game.SystemId = FSystemFilter)) and
+    ((FMode <> 1) or (Game.LastPlayed > 0)) and ((FMode <> 2) or Game.Favorite) and
+    ((FSearch.Text = '') or Game.Title.ToLower.Contains(FSearch.Text.ToLower));
+end;
+
+function TLibraryView.GetSelected: TLibraryGame;
+begin
+  Result := FSelected;
+end;
+
+function TLibraryView.Snapshots(Game: TLibraryGame): TArray<TStorageSnapshot>;
+begin
+  Result := nil;
+  if Game = nil then
+    Exit;
+
+  var Directory := FState.ReadString('Snapshots', Game.Key, '');
+  if Directory = '' then
+    Exit;
+
+  var Items := TList<TStorageSnapshot>.Create;
+  try
+    for var Location in FStorage.Files(Directory) do
+      if SameText(ExtractFileExt(Location), SNAPSHOT_EXTENSION) then
+      begin
+        var Item := Default(TStorageSnapshot);
+        Item.Name := ChangeFileExt(ExtractFileName(Location), '');
+        Item.Location := Location;
+        Item.Modified := FStorage.ModifiedTime(Location);
+        Item.PreviewLocation := ChangeFileExt(Location, '.png');
+        if not FStorage.Exists(Item.PreviewLocation) then
+          Item.PreviewLocation := ChangeFileExt(Location, '.bmp');
+        Items.Add(Item);
+      end;
+    Items.Sort(TComparer<TStorageSnapshot>.Construct(
+      function(const A, B: TStorageSnapshot): Integer
+      begin
+        Result := CompareValue(B.Modified, A.Modified);
+        if Result = 0 then
+          Result := CompareText(A.Location, B.Location);
+      end));
+    Result := Items.ToArray;
+  finally
+    Items.Free;
+  end;
+end;
+
+procedure TLibraryView.LoadImage(Image: TImage; const Location: string);
+begin
+  Image.Bitmap.RemoveCallback(Image);
+  Image.Bitmap := nil;
+  try
+    if (Location <> '') and FStorage.Exists(Location) then
+      Image.Bitmap.LoadFromFileAsync(Image, Location, 320, 400, nil, FStorage);
+  except
+    Image.Bitmap := nil;
+  end;
+end;
+
+procedure TLibraryView.RefreshSnapshots;
+begin
+  UpdateInspector;
+  UpdateContinue;
+  Resize;
+end;
+{$ENDREGION}
+
+{$REGION 'Cards and layout'}
 procedure TLibraryView.BuildCards;
 begin
   if FBuilding or (FGrid = nil) then
@@ -483,6 +578,8 @@ begin
       FPlatformButtons[i].StyleLookup := 'buttonstyle_accent'
     else
       FPlatformButtons[i].StyleLookup := 'buttonstyle';
+  for var I := Low(FSidebarPlatformBorders) to High(FSidebarPlatformBorders) do
+    FSidebarPlatformBorders[I].Visible := FSystemFilter = SystemIds[I];
   Resize;
   UpdateInspector;
 end;
@@ -606,43 +703,18 @@ begin
   end;
 end;
 
-function TLibraryView.Snapshots(Game: TLibraryGame): TArray<TStorageSnapshot>;
+procedure TLibraryView.GridResize(Sender: TObject);
 begin
-  Result := nil;
-  if Game = nil then
-    Exit;
-
-  var Directory := FState.ReadString('Snapshots', Game.Key, '');
-  if Directory = '' then
-    Exit;
-
-  var Items := TList<TStorageSnapshot>.Create;
-  try
-    for var Location in FStorage.Files(Directory) do
-      if SameText(ExtractFileExt(Location), SNAPSHOT_EXTENSION) then
-      begin
-        var Item := Default(TStorageSnapshot);
-        Item.Name := ChangeFileExt(ExtractFileName(Location), '');
-        Item.Location := Location;
-        Item.Modified := FStorage.ModifiedTime(Location);
-        Item.PreviewLocation := ChangeFileExt(Location, '.png');
-        if not FStorage.Exists(Item.PreviewLocation) then
-          Item.PreviewLocation := ChangeFileExt(Location, '.bmp');
-        Items.Add(Item);
-      end;
-    Items.Sort(TComparer<TStorageSnapshot>.Construct(
-      function(const A, B: TStorageSnapshot): Integer
-      begin
-        Result := CompareValue(B.Modified, A.Modified);
-        if Result = 0 then
-          Result := CompareText(A.Location, B.Location);
-      end));
-    Result := Items.ToArray;
-  finally
-    Items.Free;
-  end;
+  ArrangeCards;
 end;
 
+procedure TLibraryView.BodyResize(Sender: TObject);
+begin
+  Resize;
+end;
+{$ENDREGION}
+
+{$REGION 'Selected game and continue panel'}
 procedure TLibraryView.UpdateInspector;
 begin
   FPlay.Enabled := FSelected <> nil;
@@ -687,155 +759,6 @@ begin
       LoadImage(FSaveImages[i], Saves[i].PreviewLocation);
     end;
   end;
-end;
-
-function TLibraryView.GetSelected: TLibraryGame;
-begin
-  Result := FSelected;
-end;
-
-procedure TLibraryView.OpenClick(Sender: TObject);
-begin
-  if Assigned(FOnOpen) then
-    FOnOpen(Self);
-end;
-
-procedure TLibraryView.SettingsClick(Sender: TObject);
-begin
-  if Assigned(FOnSettings) then
-    FOnSettings(Self);
-end;
-
-procedure TLibraryView.GridResize(Sender: TObject);
-begin
-  ArrangeCards;
-end;
-
-procedure TLibraryView.BodyResize(Sender: TObject);
-begin
-  Resize;
-end;
-
-procedure TLibraryView.FilterClick(Sender: TObject);
-begin
-  FSystemFilter := SystemIds[TButton(Sender).Tag];
-  FLimit := 48;
-  BuildCards;
-end;
-
-procedure TLibraryView.ModeClick(Sender: TObject);
-begin
-  FMode := TButton(Sender).Tag;
-  FLimit := 48;
-  BuildCards;
-end;
-
-procedure TLibraryView.SearchChange(Sender: TObject);
-begin
-  FLimit := 48;
-  BuildCards;
-end;
-
-procedure TLibraryView.CardClick(Sender: TObject);
-begin
-  FSelected := TLibraryGame(TPanel(Sender).TagObject);
-  for var Card in FCards do
-    Card.Selection.Visible := Card.TagObject = FSelected;
-  UpdateInspector;
-  if not FInspector.Visible then
-    PlayClick(Self);
-end;
-
-procedure TLibraryView.PlayClick(Sender: TObject);
-begin
-  FSnapshotName := '';
-  if (FSelected <> nil) and Assigned(FOnPlay) then
-    FOnPlay(Self);
-end;
-
-procedure TLibraryView.ResumeClick(Sender: TObject);
-begin
-  if FRecent = nil then
-    Exit;
-
-  FSelected := FRecent;
-  var Saves := Snapshots(FRecent);
-  FSnapshotName := '';
-  if Length(Saves) > 0 then
-    FSnapshotName := Saves[0].Location;
-  if Assigned(FOnPlay) then
-    FOnPlay(Self);
-end;
-
-procedure TLibraryView.SaveClick(Sender: TObject);
-begin
-  FSnapshotName := TButton(Sender).TagString;
-  if Assigned(FOnPlay) then
-    FOnPlay(Self);
-end;
-
-procedure TLibraryView.SaveState;
-begin
-  FStorage.WriteConfig(FState);
-end;
-
-procedure TLibraryView.FavoriteClick(Sender: TObject);
-begin
-  if FSelected = nil then
-    Exit;
-
-  FSelected.Favorite := not FSelected.Favorite;
-  FState.WriteBool('Favorites', FSelected.Key, FSelected.Favorite);
-  SaveState;
-  // The favorite action lives in the inspector, which survives card rebuilds.
-  BuildCards;
-end;
-
-procedure TLibraryView.ViewClick(Sender: TObject);
-begin
-  FListMode := TButton(Sender).Tag = 1;
-  var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
-  try
-    if FListMode then
-      Ini.WriteString('Library', 'View', 'list')
-    else
-      Ini.WriteString('Library', 'View', 'grid');
-    FStorage.WriteConfig(Ini);
-  finally
-    Ini.Free;
-  end;
-  ArrangeCards;
-end;
-
-procedure TLibraryView.MoreClick(Sender: TObject);
-begin
-  Inc(FLimit, 48);
-  BuildCards;
-end;
-
-procedure TLibraryView.RecordSession(const FileName, SnapshotDirectory: string);
-begin
-  for var Game in FGames do
-    if SameText(Game.FileInfo.Location, FileName) then
-    begin
-      Game.LastPlayed := Now;
-      FState.WriteFloat('Recent', Game.Key, Game.LastPlayed);
-      if SnapshotDirectory <> '' then
-        FState.WriteString('Snapshots', Game.Key, SnapshotDirectory);
-      SaveState;
-      RefreshSnapshots;
-      Break;
-    end;
-end;
-
-procedure TLibraryView.ArrangeContinuePreview;
-begin
-  var Bitmap := FContinueCover.Fill.Bitmap.Bitmap;
-  if not Bitmap.IsEmpty then
-    FContinuePreview.Width := FContinuePreview.Height * Bitmap.Width / Bitmap.Height
-  else
-    FContinuePreview.Width := 176;
-  FContinueCover.SetBounds(0, 0, FContinuePreview.Width, FContinuePreview.Height);
 end;
 
 procedure TLibraryView.SelectContinueGame;
@@ -929,12 +852,122 @@ begin
   LoadImage(FContinueGamePreview, FRecent.Cover);
 end;
 
-procedure TLibraryView.RefreshSnapshots;
+procedure TLibraryView.ArrangeContinuePreview;
 begin
-  UpdateInspector;
-  UpdateContinue;
-  Resize;
+  var Bitmap := FContinueCover.Fill.Bitmap.Bitmap;
+  if not Bitmap.IsEmpty then
+    FContinuePreview.Width := FContinuePreview.Height * Bitmap.Width / Bitmap.Height
+  else
+    FContinuePreview.Width := 176;
+  FContinueCover.SetBounds(0, 0, FContinuePreview.Width, FContinuePreview.Height);
 end;
+{$ENDREGION}
+
+{$REGION 'View events'}
+procedure TLibraryView.OpenClick(Sender: TObject);
+begin
+  if Assigned(FOnOpen) then
+    FOnOpen(Self);
+end;
+
+procedure TLibraryView.SettingsClick(Sender: TObject);
+begin
+  if Assigned(FOnSettings) then
+    FOnSettings(Self);
+end;
+
+procedure TLibraryView.FilterClick(Sender: TObject);
+begin
+  FSystemFilter := SystemIds[TButton(Sender).Tag];
+  FLimit := 48;
+  BuildCards;
+end;
+
+procedure TLibraryView.ModeClick(Sender: TObject);
+begin
+  FMode := TButton(Sender).Tag;
+  FLimit := 48;
+  BuildCards;
+end;
+
+procedure TLibraryView.SearchChange(Sender: TObject);
+begin
+  FLimit := 48;
+  BuildCards;
+end;
+
+procedure TLibraryView.CardClick(Sender: TObject);
+begin
+  FSelected := TLibraryGame(TPanel(Sender).TagObject);
+  for var Card in FCards do
+    Card.Selection.Visible := Card.TagObject = FSelected;
+  UpdateInspector;
+  if not FInspector.Visible then
+    PlayClick(Self);
+end;
+
+procedure TLibraryView.PlayClick(Sender: TObject);
+begin
+  FSnapshotName := '';
+  if (FSelected <> nil) and Assigned(FOnPlay) then
+    FOnPlay(Self);
+end;
+
+procedure TLibraryView.ResumeClick(Sender: TObject);
+begin
+  if FRecent = nil then
+    Exit;
+
+  FSelected := FRecent;
+  var Saves := Snapshots(FRecent);
+  FSnapshotName := '';
+  if Length(Saves) > 0 then
+    FSnapshotName := Saves[0].Location;
+  if Assigned(FOnPlay) then
+    FOnPlay(Self);
+end;
+
+procedure TLibraryView.SaveClick(Sender: TObject);
+begin
+  FSnapshotName := TButton(Sender).TagString;
+  if Assigned(FOnPlay) then
+    FOnPlay(Self);
+end;
+
+procedure TLibraryView.FavoriteClick(Sender: TObject);
+begin
+  if FSelected = nil then
+    Exit;
+
+  FSelected.Favorite := not FSelected.Favorite;
+  FState.WriteBool('Favorites', FSelected.Key, FSelected.Favorite);
+  SaveState;
+  // The favorite action lives in the inspector, which survives card rebuilds.
+  BuildCards;
+end;
+
+procedure TLibraryView.ViewClick(Sender: TObject);
+begin
+  FListMode := TButton(Sender).Tag = 1;
+  var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
+  try
+    if FListMode then
+      Ini.WriteString('Library', 'View', 'list')
+    else
+      Ini.WriteString('Library', 'View', 'grid');
+    FStorage.WriteConfig(Ini);
+  finally
+    Ini.Free;
+  end;
+  ArrangeCards;
+end;
+
+procedure TLibraryView.MoreClick(Sender: TObject);
+begin
+  Inc(FLimit, 48);
+  BuildCards;
+end;
+{$ENDREGION}
 
 end.
 

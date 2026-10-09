@@ -134,6 +134,7 @@ uses
   NES.Mapper.MmcLatch in '..\source\cores\nes\mappers\NES.Mapper.MmcLatch.pas',
   NES.Mapper.Mmc3Variants in '..\source\cores\nes\mappers\NES.Mapper.Mmc3Variants.pas',
   NES.Mapper.Vrc in '..\source\cores\nes\mappers\NES.Mapper.Vrc.pas',
+  NES.Mapper.Vrc5 in '..\source\cores\nes\mappers\NES.Mapper.Vrc5.pas',
   NES.Mapper.Sunsoft in '..\source\cores\nes\mappers\NES.Mapper.Sunsoft.pas',
   NES.Mapper.Rambo in '..\source\cores\nes\mappers\NES.Mapper.Rambo.pas',
   NES.Mapper.Cony in '..\source\cores\nes\mappers\NES.Mapper.Cony.pas',

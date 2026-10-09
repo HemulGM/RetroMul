@@ -294,6 +294,7 @@ const
   MAPPER_LH10 = 522;
   MAPPER_T230 = 529;
   MAPPER_AX5705 = 530;
+  MAPPER_KONAMI_QTA = 547;
   MAPPER_TAITO_X1017_552 = 552;
   MAPPER_RAINBOW = 682;
   MAPPER_WARFACE = 3914;
@@ -305,6 +306,7 @@ type
   protected
     FCpuOpenBus: Byte;
     FPpuRenderingRead: Boolean;
+    FPpuSpriteFetch: Boolean;
     class procedure ValidateMemory(const PrgRom, ChrData: TByteArray); static;
   public
     procedure SerializeState(State: TNesStateArchive); virtual;
@@ -316,7 +318,7 @@ type
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; virtual; abstract;
     function CpuWriteTimed(Address: UInt16; Value: UInt8; CpuCycle: UInt64): Boolean; virtual;
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; virtual; abstract;
-    function PpuReadContext(Address: UInt16; Rendering: Boolean; out Value: UInt8): Boolean;
+    function PpuReadContext(Address: UInt16; Rendering: Boolean; out Value: UInt8; Sprite: Boolean = False): Boolean;
     function PpuWrite(Address: UInt16; Value: UInt8): Boolean; virtual; abstract;
     function GetMirrorMode: TMirrorMode; virtual; abstract;
     procedure ClockPpuAddress(Address: UInt16; PpuCycle: UInt64); virtual;
@@ -340,13 +342,15 @@ type
 
 implementation
 
-function TMapper.PpuReadContext(Address: UInt16; Rendering: Boolean; out Value: UInt8): Boolean;
+function TMapper.PpuReadContext(Address: UInt16; Rendering: Boolean; out Value: UInt8; Sprite: Boolean): Boolean;
 begin
   FPpuRenderingRead := Rendering;
+  FPpuSpriteFetch := Sprite;
   try
     Result := PpuRead(Address, Value)
   finally
-    FPpuRenderingRead := False
+    FPpuRenderingRead := False;
+    FPpuSpriteFetch := False
   end;
 end;
 

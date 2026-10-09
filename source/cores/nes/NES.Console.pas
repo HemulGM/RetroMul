@@ -31,7 +31,7 @@ type
     FConfiguredFourScore: Boolean;
     FPortsConfigured: Boolean;
     FDmcDmaCycles: Integer;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 17);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 18);
     function GetRomIdentity: string;
     function GetUsesMiraclePiano: Boolean;
     function GetUsesPowerPad: Boolean;
@@ -80,7 +80,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper, Core.Snapshots;
 
 const
-  SNAPSHOT_VERSION = 17;
+  SNAPSHOT_VERSION = 18;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type

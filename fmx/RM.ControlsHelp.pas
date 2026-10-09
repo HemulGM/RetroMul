@@ -7,10 +7,6 @@ uses
   FMX.Controls, FMX.Forms, FMX.Layouts, FMX.Objects, FMX.StdCtrls, FMXInput,
   Core.InputConfig, Core.Storage, FMX.Controls.Presentation;
 
-function GameplayLabel(Owner: TComponent; Parent: TFmxObject; const Text: string; Size: Single): TLabel;
-
-procedure GameplayButton(Button: TButton; const Text, Icon, Hint: string);
-
 type
   TControlsHelpView = class(TFrame)
     FSurface: TRectangle;
@@ -21,6 +17,7 @@ type
     FPlayerTabs, FDiagram, FAssignments, FFunctions: TLayout;
     FDivider: TRectangle;
   private
+    {$REGION 'View state'}
     FInput: TInputManager;
     FOwnsInput: Boolean;
     FSystemId: string;
@@ -29,12 +26,17 @@ type
     FPlayerButtons: array[0..7] of TButton;
     FOnClose, FOnSettings: TNotifyEvent;
     FArranging: Boolean;
-    procedure PlayerClick(Sender: TObject);
-    procedure CloseClick(Sender: TObject);
-    procedure SettingsClick(Sender: TObject);
+    {$ENDREGION}
+    {$REGION 'Player diagram and assignments'}
     procedure BuildPlayer;
     function Assignments(Action: Integer): string;
     procedure AssignmentRow(Parent: TLayout; const Caption, Keys: string; Y: Single; Action: Integer = -1);
+    {$ENDREGION}
+    {$REGION 'View events'}
+    procedure PlayerClick(Sender: TObject);
+    procedure CloseClick(Sender: TObject);
+    procedure SettingsClick(Sender: TObject);
+    {$ENDREGION}
   protected
     procedure Resize; override;
   public
@@ -83,27 +85,7 @@ begin
   Result.HitTest := False;
 end;
 
-procedure GameplayButton(Button: TButton; const Text, Icon, Hint: string);
-begin
-  Button.Text := Text;
-  Button.Hint := Hint;
-  Button.ShowHint := True;
-  Button.CanFocus := False;
-  Button.StyledSettings := [];
-  Button.TextSettings.Font.Family := 'Segoe UI';
-  Button.TextSettings.Font.Size := 13;
-  Button.TextSettings.FontColor := $FFE8ECF1;
-  Button.TextSettings.Trimming := TTextTrimming.Character;
-  Button.TextSettings.WordWrap := False;
-  Button.StyleLookup := 'buttonstyle';
-  if Icon <> '' then
-  begin
-    InterfaceIcon(Button, Icon, 12, 10, 20);
-    Button.StylesData['text.Margins.Left'] := 36;
-    Button.StylesData['text.Margins.Right'] := 10;
-  end;
-end;
-
+{$REGION 'Initialization and lifetime'}
 constructor TControlsHelpView.CreateHelp(AOwner: TComponent; Input: TInputManager; const SystemId: string; const Ports: TCoreInputPorts; Players: Integer; KeyboardPeripheral: Boolean; const Storage: IStorage; HasCoinAcceptor: Boolean);
 begin
   inherited Create(AOwner);
@@ -151,6 +133,92 @@ begin
   end;
   FFunctions.Height := (9 + Ord(HasCoinAcceptor)) * 44;
   BuildPlayer;
+end;
+
+destructor TControlsHelpView.Destroy;
+begin
+  if FOwnsInput then
+    FInput.Free;
+  inherited;
+end;
+{$ENDREGION}
+
+{$REGION 'Player diagram and assignments'}
+procedure TControlsHelpView.BuildPlayer;
+begin
+  FDiagram.DeleteChildren;
+  FAssignments.DeleteChildren;
+  FAssignments.Height := 0;
+  for var i := 0 to FPlayers - 1 do
+    if i = FPlayer then
+      FPlayerButtons[i].StyleLookup := 'buttonstyle_accent'
+    else
+      FPlayerButtons[i].StyleLookup := 'buttonstyle';
+  var Buttons := CoreButtons(FSystemId, FPorts.Devices[FPlayer]);
+  var Devices := TStringList.Create;
+  try
+    if FInput <> nil then
+      for var B in FInput.Bindings do
+        if ((FPlayer < 4) and (B.Action >= FPlayer * 32) and (B.Action <= FPlayer * 32 + Ord(High(TEmulatorButton)))) or
+          ((FPlayer >= 4) and (B.Action >= ExtraPadAction + (FPlayer - 4) * 32) and
+          (B.Action <= ExtraPadAction + (FPlayer - 4) * 32 + Ord(High(TEmulatorButton)))) then
+        begin
+          var Name := B.DeviceId;
+          if B.DeviceId = SystemKeyboardId then
+            Name := Translate('Keyboard')
+          else
+            for var D in FInput.Devices do
+              if D.Id = B.DeviceId then
+              begin
+                Name := D.Name;
+                Break;
+              end;
+          if Devices.IndexOf(Name) < 0 then
+            Devices.Add(Name);
+        end;
+    FDevice.Text := Devices.DelimitedText.Replace('"', '').Replace(',', ' · ');
+  finally
+    Devices.Free;
+  end;
+  if Buttons = [] then
+  begin
+    var L := GameplayLabel(Self, FDiagram, Translate('No controller is connected to this port. Choose a device in the controls settings.'), 14);
+    L.Align := TAlignLayout.Client;
+    L.TextSettings.WordWrap := True;
+  end
+  else
+  begin
+    var Pad := TScreenGamepad.Create(FDiagram);
+    Pad.HitTest := False;
+    if FSystemId = ROM_SYSTEM_SNES then
+      Pad.Layout := TScreenGamepadLayout.Snes
+    else if FSystemId = ROM_SYSTEM_MD then
+      Pad.Layout := TScreenGamepadLayout.Sega
+    else if FSystemId = ROM_SYSTEM_GB then
+      Pad.Layout := TScreenGamepadLayout.GameBoy
+    else if FSystemId = ROM_SYSTEM_GBC then
+      Pad.Layout := TScreenGamepadLayout.GameBoyColor
+    else if FSystemId = ROM_SYSTEM_NEOGEO then
+      Pad.Layout := TScreenGamepadLayout.NeoGeo;
+    Pad.ButtonMask := Buttons;
+    var Diagram := TDeviceCallouts.Create(FDiagram);
+    Diagram.Parent := FDiagram;
+    Diagram.Align := TAlignLayout.Client;
+    Diagram.Configure(Pad, FInput, FSystemId, FPlayer, nil);
+    // This diagram is a reference; it cannot capture or forward controller input.
+    Diagram.HitTest := False;
+    for var Child in Diagram.Children do
+      if Child is TControl then
+        TControl(Child).HitTest := False;
+    var Y: Single := 0;
+    for var B in Buttons do
+    begin
+      AssignmentRow(FAssignments, CoreButtonName(FSystemId, B), Assignments(PadAction(FPlayer, B)), Y, PadAction(FPlayer, B));
+      Y := Y + 34;
+    end;
+    FAssignments.Height := Y;
+  end;
+  Resize;
 end;
 
 function TControlsHelpView.Assignments(Action: Integer): string;
@@ -233,84 +301,9 @@ begin
   L.ShowHint := True;
   L.HitTest := True;
 end;
+{$ENDREGION}
 
-procedure TControlsHelpView.BuildPlayer;
-begin
-  FDiagram.DeleteChildren;
-  FAssignments.DeleteChildren;
-  FAssignments.Height := 0;
-  for var i := 0 to FPlayers - 1 do
-    if i = FPlayer then
-      FPlayerButtons[i].StyleLookup := 'buttonstyle_accent'
-    else
-      FPlayerButtons[i].StyleLookup := 'buttonstyle';
-  var Buttons := CoreButtons(FSystemId, FPorts.Devices[FPlayer]);
-  var Devices := TStringList.Create;
-  try
-    if FInput <> nil then
-      for var B in FInput.Bindings do
-        if ((FPlayer < 4) and (B.Action >= FPlayer * 32) and (B.Action <= FPlayer * 32 + Ord(High(TEmulatorButton)))) or
-          ((FPlayer >= 4) and (B.Action >= ExtraPadAction + (FPlayer - 4) * 32) and
-          (B.Action <= ExtraPadAction + (FPlayer - 4) * 32 + Ord(High(TEmulatorButton)))) then
-        begin
-          var Name := B.DeviceId;
-          if B.DeviceId = SystemKeyboardId then
-            Name := Translate('Keyboard')
-          else
-            for var D in FInput.Devices do
-              if D.Id = B.DeviceId then
-              begin
-                Name := D.Name;
-                Break;
-              end;
-          if Devices.IndexOf(Name) < 0 then
-            Devices.Add(Name);
-        end;
-    FDevice.Text := Devices.DelimitedText.Replace('"', '').Replace(',', ' · ');
-  finally
-    Devices.Free;
-  end;
-  if Buttons = [] then
-  begin
-    var L := GameplayLabel(Self, FDiagram, Translate('No controller is connected to this port. Choose a device in the controls settings.'), 14);
-    L.Align := TAlignLayout.Client;
-    L.TextSettings.WordWrap := True;
-  end
-  else
-  begin
-    var Pad := TScreenGamepad.Create(FDiagram);
-    Pad.HitTest := False;
-    if FSystemId = ROM_SYSTEM_SNES then
-      Pad.Layout := TScreenGamepadLayout.Snes
-    else if FSystemId = ROM_SYSTEM_MD then
-      Pad.Layout := TScreenGamepadLayout.Sega
-    else if FSystemId = ROM_SYSTEM_GB then
-      Pad.Layout := TScreenGamepadLayout.GameBoy
-    else if FSystemId = ROM_SYSTEM_GBC then
-      Pad.Layout := TScreenGamepadLayout.GameBoyColor
-    else if FSystemId = ROM_SYSTEM_NEOGEO then
-      Pad.Layout := TScreenGamepadLayout.NeoGeo;
-    Pad.ButtonMask := Buttons;
-    var Diagram := TDeviceCallouts.Create(FDiagram);
-    Diagram.Parent := FDiagram;
-    Diagram.Align := TAlignLayout.Client;
-    Diagram.Configure(Pad, FInput, FSystemId, FPlayer, nil);
-    // This diagram is a reference; it cannot capture or forward controller input.
-    Diagram.HitTest := False;
-    for var Child in Diagram.Children do
-      if Child is TControl then
-        TControl(Child).HitTest := False;
-    var Y: Single := 0;
-    for var B in Buttons do
-    begin
-      AssignmentRow(FAssignments, CoreButtonName(FSystemId, B), Assignments(PadAction(FPlayer, B)), Y, PadAction(FPlayer, B));
-      Y := Y + 34;
-    end;
-    FAssignments.Height := Y;
-  end;
-  Resize;
-end;
-
+{$REGION 'Layout'}
 procedure TControlsHelpView.Resize;
 begin
   inherited;
@@ -376,7 +369,9 @@ begin
     FArranging := False;
   end;
 end;
+{$ENDREGION}
 
+{$REGION 'View events'}
 procedure TControlsHelpView.PlayerClick(Sender: TObject);
 begin
   FPlayer := TButton(Sender).Tag;
@@ -394,13 +389,7 @@ begin
   if Assigned(FOnSettings) then
     FOnSettings(Self);
 end;
-
-destructor TControlsHelpView.Destroy;
-begin
-  if FOwnsInput then
-    FInput.Free;
-  inherited;
-end;
+{$ENDREGION}
 
 end.
 

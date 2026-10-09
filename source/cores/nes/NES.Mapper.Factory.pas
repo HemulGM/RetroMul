@@ -18,11 +18,13 @@ uses
   NES.Mapper.Warface, NES.Mapper.ExtendedDiscrete, NES.Mapper.ExtendedIrq,
   NES.Mapper.ExtendedMmc3, NES.Mapper.Multicart, NES.Mapper.Sachen,
   NES.Mapper.ExtendedMemory, NES.Mapper.Flash, NES.Mapper.Namco,
-  NES.Mapper.VrcAudio, NES.Mapper.Drip, NES.Mapper.Rainbow;
+  NES.Mapper.VrcAudio, NES.Mapper.Drip, NES.Mapper.Rainbow, NES.Mapper.Vrc5;
 
 function CreateMapper(MapperId: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; LegacyHeader: Boolean; Submapper: Integer; Battery: Boolean): TMapper;
 begin
   case MapperId of
+    MAPPER_KONAMI_QTA:
+      Result := TMapperVrc5.Create(Prg, Chr);
     MAPPER_RAINBOW:
       Result := TMapperRainbow.Create(Prg, Chr, HasChrRam, MirrorMode);
     MAPPER_DRIP_GAME:
@@ -45,11 +47,12 @@ begin
     MAPPER_UNROM512,           //
     MAPPER_GTROM:
       Result := TMapperFlash.Create(MapperId, Prg, Chr, MirrorMode, Submapper, Battery);
+    MAPPER_WAIXING164:
+      Result := TMapperExtendedMemory.Create(MapperId, Prg, Chr, HasChrRam, MirrorMode, LegacyHeader and Battery);
     MAPPER_ACTION53,           //
     MAPPER_FDS_CONVERSION_103, //
     MAPPER_WAIXING162,         //
     MAPPER_NANJING,            //
-    MAPPER_WAIXING164,         //
     MAPPER_RACERMATE,          //
     MAPPER_SPECIAL_174,        //
     MAPPER_KAISER7022,         //

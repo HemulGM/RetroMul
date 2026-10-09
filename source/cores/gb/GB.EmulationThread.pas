@@ -27,7 +27,7 @@ type
     FInputEvents: TQueue<TGBInputEvent>;
     FPressedKeys: set of TGBKey;
     FFrame: TScreenArray;
-    FFrameAvailable: Boolean;
+    FFrameAvailable, FHasFrame: Boolean;
     FFramesPerSecond: Double;
     FFrameRateStopwatch: TStopwatch;
     FFramesSinceRateUpdate: Integer;
@@ -233,7 +233,13 @@ procedure TGBEmulationThread.SetScreenPalette(const Value: Integer);
 begin
   FLock.Acquire;
   try
-    FScreenPalette := EnsureRange(Value, 0, SCREEN_PALETTE_COUNT - 1);
+    var Palette := EnsureRange(Value, 0, SCREEN_PALETTE_COUNT - 1);
+    if FScreenPalette <> Palette then
+    begin
+      FScreenPalette := Palette;
+      if FHasFrame then
+        FFrameAvailable := True;
+    end;
   finally
     FLock.Release;
   end;
@@ -269,6 +275,7 @@ begin
   try
     // Copy GPU memory; a slow UI simply skips older frames instead of accumulating them.
     FFrame := Screen;
+    FHasFrame := True;
     FFrameAvailable := True;
     Inc(FFramesSinceRateUpdate);
     if FFrameRateStopwatch.ElapsedMilliseconds >= 500 then

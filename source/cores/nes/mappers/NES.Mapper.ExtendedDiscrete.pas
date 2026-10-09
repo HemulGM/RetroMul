@@ -58,7 +58,9 @@ end;
 procedure TMapperExtendedDiscrete.Reset;
 begin
   inherited;
-  FillChar(FRegs, SizeOf(FRegs), 0);
+  // Mapper 171 retains its CHR registers on a console reset.
+  if (FBoard <> MAPPER_KAISER7058) or not FStarted then
+    FillChar(FRegs, SizeOf(FRegs), 0);
   FRamEnabled := FBoard = MAPPER_SEALIE_COMPUTING;
   if FBoard = MAPPER_EDU2000 then
     FRamEnabled := True;
@@ -88,6 +90,12 @@ begin
       begin
         Prg32(0);
         FMirror := TMirrorMode.FourScreen
+      end;
+    MAPPER_KAISER7058:
+      begin
+        Prg32(0);
+        Chr4(0, FRegs[0]);
+        Chr4(1, FRegs[1])
       end;
     MAPPER_OEKA_KIDS:
       begin
@@ -559,8 +567,11 @@ begin
         end;
       end;
     MAPPER_KAISER7058:
-      if Address >= $F000 then
-        Chr4((Address shr 7) and 1, Value);
+      begin
+        // CPU A0 selects the independent 4 KiB CHR window throughout $8000-$FFFF.
+        FRegs[Address and 1] := Value;
+        Chr4(Address and 1, Value)
+      end;
     MAPPER_HENGGEDIANZI177:
       begin
         Prg32(Value);

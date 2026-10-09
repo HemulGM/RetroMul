@@ -361,6 +361,8 @@ var
   Screen: TScreenArray;
   FramesPerSecond: Double;
 begin
+  // Palette changes also republish the last frame while the worker is paused.
+  FThread.ScreenPalette := FConfig.ScreenPalette;
   Result := FThread.TryGetFrame(Screen, FramesPerSecond);
   if not Result then
     Exit;

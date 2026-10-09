@@ -6,16 +6,25 @@ uses
   NES.State, NES.Types, NES.Mapper, NES.Mapper.Banked;
 
 type
+  T93C66Phase = (Start, Command, ReadData, WriteData, Done);
+
   TMapperExtendedMemory = class(TMapperBanked)
   private
     FBoard, FSelect, FMode, FCounter: Integer;
     FRegs: array[0..15] of Integer;
     FPending, FLocked: Boolean;
     FNameRam: array[0..$7FF] of Byte;
+    FHasEeprom, FEepromClock, FEepromOutput, FEepromWriteEnabled: Boolean;
+    FEeprom: array[0..511] of Byte;
+    FEepromPhase: T93C66Phase;
+    FEepromBits, FEepromShift, FEepromAddress, FEepromOpcode: Integer;
+    procedure ResetEepromBus;
+    procedure WriteEeprom(Value: Byte);
     procedure UpdateOuter;
     function SmallPrgRead(Address: UInt16; out Value: Byte): Boolean;
   public
-    constructor Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+    constructor Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; Eeprom: Boolean = False);
+    procedure Configure93C66(PrgRamSize: Integer);
     procedure Reset; override;
     procedure SerializeState(State: TNesStateArchive); override;
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
@@ -32,10 +41,12 @@ type
 
 implementation
 
-constructor TMapperExtendedMemory.Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+constructor TMapperExtendedMemory.Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; Eeprom: Boolean);
 begin
   inherited Create(Prg, Chr, HasChrRam, MirrorMode);
   FBoard := Board;
+  if Eeprom then
+    Configure93C66($2000);
   if Board = MAPPER_FDS_CONVERSION_103 then
     SetLength(FPrgRam, $4000);
   if Board = MAPPER_RACERMATE then
@@ -46,9 +57,118 @@ begin
   Reset;
 end;
 
+procedure TMapperExtendedMemory.Configure93C66(PrgRamSize: Integer);
+begin
+  if (FBoard <> MAPPER_WAIXING164) or (PrgRamSize < 0) or (PrgRamSize > $2000) then
+    raise ENesException.Create('Unsupported mapper 164 RAM layout');
+
+  FHasEeprom := True;
+  SetLength(FPrgRam, PrgRamSize);
+  FillChar(FEeprom, SizeOf(FEeprom), $FF);
+  FEepromWriteEnabled := False;
+  ResetEepromBus;
+end;
+
+procedure TMapperExtendedMemory.ResetEepromBus;
+begin
+  FEepromPhase := T93C66Phase.Start;
+  FEepromClock := False;
+  FEepromOutput := True;
+  FEepromBits := 0;
+  FEepromShift := 0;
+  FEepromAddress := 0;
+  FEepromOpcode := 0;
+end;
+
+procedure TMapperExtendedMemory.WriteEeprom(Value: Byte);
+begin
+  // 93C66, ORG=0: start bit, two opcode bits, nine address bits,
+  // then eight data bits, all MSB first. $5200 drives CS/CLK/DI.
+  var Clock := (Value and $04) <> 0;
+  if (Value and $10) = 0 then
+    ResetEepromBus
+  else if Clock and not FEepromClock then
+    case FEepromPhase of
+      T93C66Phase.Start:
+        if (Value and 1) <> 0 then
+        begin
+          FEepromPhase := T93C66Phase.Command;
+          FEepromBits := 0;
+          FEepromShift := 0;
+        end;
+      T93C66Phase.Command:
+        begin
+          FEepromShift := (FEepromShift shl 1) or (Value and 1);
+          Inc(FEepromBits);
+          if FEepromBits = 11 then
+          begin
+            FEepromOpcode := FEepromShift shr 9;
+            FEepromAddress := FEepromShift and $1FF;
+            FEepromBits := 0;
+            FEepromShift := 0;
+            FEepromPhase := T93C66Phase.Done;
+            case FEepromOpcode of
+              0:
+                case FEepromAddress shr 7 of
+                  0:
+                    FEepromWriteEnabled := False; // EWDS
+                    1:
+                    FEepromPhase := T93C66Phase.WriteData; // WRAL
+                    2:
+                    if FEepromWriteEnabled then
+                      FillChar(FEeprom, SizeOf(FEeprom), $FF); // ERAL
+                      3:
+                    FEepromWriteEnabled := True; // EWEN
+                end;
+              1:
+                FEepromPhase := T93C66Phase.WriteData;
+              2:
+                begin
+                  FEepromPhase := T93C66Phase.ReadData;
+                  FEepromOutput := False; // Dummy zero precedes the first byte.
+                end;
+              3:
+                if FEepromWriteEnabled then
+                  FEeprom[FEepromAddress] := $FF;
+            end;
+          end;
+        end;
+      T93C66Phase.ReadData:
+        begin
+          FEepromOutput := (FEeprom[FEepromAddress] and ($80 shr FEepromBits)) <> 0;
+          Inc(FEepromBits);
+          if FEepromBits = 8 then
+          begin
+            FEepromBits := 0;
+            FEepromAddress := (FEepromAddress + 1) and $1FF;
+          end;
+        end;
+      T93C66Phase.WriteData:
+        begin
+          FEepromShift := (FEepromShift shl 1) or (Value and 1);
+          Inc(FEepromBits);
+          if FEepromBits = 8 then
+          begin
+            if FEepromWriteEnabled then
+              if FEepromOpcode = 0 then
+                FillChar(FEeprom, SizeOf(FEeprom), Byte(FEepromShift))
+              else
+                FEeprom[FEepromAddress] := Byte(FEepromShift);
+            // Programming completes immediately; DO reports ready. A new
+            // instruction requires CS to fall before its start bit.
+            FEepromOutput := True;
+            FEepromPhase := T93C66Phase.Done;
+          end;
+        end;
+    end;
+  FEepromClock := Clock;
+end;
+
 procedure TMapperExtendedMemory.Reset;
 begin
   inherited;
+  if FHasEeprom then
+    ResetEepromBus;
   FillChar(FRegs, SizeOf(FRegs), 0);
   FSelect := 0;
   FMode := 0;
@@ -177,6 +297,29 @@ begin
   State.Field(FPending, SizeOf(FPending));
   State.Field(FLocked, SizeOf(FLocked));
   State.Field(FNameRam, SizeOf(FNameRam));
+  if FBoard = MAPPER_WAIXING164 then
+    if State.Version >= 18 then
+    begin
+      var HasEeprom := FHasEeprom;
+      State.Field(HasEeprom, SizeOf(HasEeprom));
+      if HasEeprom <> FHasEeprom then
+        raise ENesException.Create('Snapshot belongs to a different mapper 164 memory layout');
+
+      if FHasEeprom then
+      begin
+        State.Field(FEeprom, SizeOf(FEeprom));
+        State.Field(FEepromClock, SizeOf(FEepromClock));
+        State.Field(FEepromOutput, SizeOf(FEepromOutput));
+        State.Field(FEepromWriteEnabled, SizeOf(FEepromWriteEnabled));
+        State.Field(FEepromPhase, SizeOf(FEepromPhase));
+        State.Field(FEepromBits, SizeOf(FEepromBits));
+        State.Field(FEepromShift, SizeOf(FEepromShift));
+        State.Field(FEepromAddress, SizeOf(FEepromAddress));
+        State.Field(FEepromOpcode, SizeOf(FEepromOpcode));
+      end;
+    end
+    else if FHasEeprom then
+      raise ENesException.Create('Snapshot predates mapper 164 EEPROM support');
 end;
 
 function TMapperExtendedMemory.SmallPrgRead(Address: UInt16; out Value: Byte): Boolean;
@@ -249,6 +392,22 @@ end;
 
 function TMapperExtendedMemory.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
 begin
+  if FHasEeprom then
+  begin
+    if (Address and $FC00) = $5400 then
+    begin
+      Value := Ord(not FEepromOutput) shl 2; // Inverted DO at $5400-$57FF.
+      Exit(True);
+    end;
+
+    if (Address >= $6000) and (Address < $8000) then
+    begin
+      if Length(FPrgRam) = 0 then
+        Exit(False);
+      Value := FPrgRam[(Address - $6000) mod Length(FPrgRam)];
+      Exit(True);
+    end;
+  end;
   if (FBoard = MAPPER_NANJING) and (Address >= $5000) and (Address < $6000) then
   begin
     case Address and $7700 of
@@ -311,6 +470,22 @@ var
   Slot, Shift, Bank: Integer;
   Bus: Byte;
 begin
+  if FHasEeprom then
+  begin
+    if (Address and $FF00) = $5200 then
+    begin
+      WriteEeprom(Value);
+      Exit(True);
+    end;
+
+    if (Address >= $6000) and (Address < $8000) then
+    begin
+      if Length(FPrgRam) = 0 then
+        Exit(False);
+      FPrgRam[(Address - $6000) mod Length(FPrgRam)] := Value;
+      Exit(True);
+    end;
+  end;
   Result := True;
   case FBoard of
     MAPPER_ACTION53:
@@ -677,7 +852,12 @@ end;
 
 function TMapperExtendedMemory.GetSaveMemory: TByteArray;
 begin
-  if FBoard = MAPPER_RACERMATE then
+  if FHasEeprom then
+  begin
+    SetLength(Result, SizeOf(FEeprom));
+    Move(FEeprom[0], Result[0], Length(Result));
+  end
+  else if FBoard = MAPPER_RACERMATE then
     Result := Copy(FChrMemory, $8000, $8000)
   else
     Result := inherited GetSaveMemory;
@@ -685,7 +865,14 @@ end;
 
 procedure TMapperExtendedMemory.SetSaveMemory(const Data: TByteArray);
 begin
-  if FBoard = MAPPER_RACERMATE then
+  if FHasEeprom then
+  begin
+    if Length(Data) <> SizeOf(FEeprom) then
+      raise ENesException.Create('Invalid mapper 164 EEPROM save size');
+
+    Move(Data[0], FEeprom[0], SizeOf(FEeprom));
+  end
+  else if FBoard = MAPPER_RACERMATE then
   begin
     if Length(Data) <> $8000 then
       raise ENesException.Create('Invalid Racermate save size');

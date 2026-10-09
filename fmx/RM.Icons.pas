@@ -38,6 +38,8 @@ function CreatePathIcon(Parent: TControl; const Data: string; X, Y, Size: Single
 
 function AddButtonIcon(Button: TCustomButton; const Data: string; Size: Single = 16; Color: TAlphaColor = $FFE8ECF1): TPath;
 
+procedure GameplayButton(Button: TButton; const Text, Icon, Hint: string);
+
 implementation
 
 function CreatePathIcon(Parent: TControl; const Data: string; X, Y, Size: Single; Color: TAlphaColor): TPath;
@@ -60,6 +62,27 @@ begin
   Result.Name := 'ButtonIcon';
   Result.Align := TAlignLayout.Center;
   Button.ShowHint := Button.Hint <> '';
+end;
+
+procedure GameplayButton(Button: TButton; const Text, Icon, Hint: string);
+begin
+  Button.Text := Text;
+  Button.Hint := Hint;
+  Button.ShowHint := True;
+  Button.CanFocus := False;
+  Button.StyledSettings := [];
+  Button.TextSettings.Font.Family := 'Segoe UI';
+  Button.TextSettings.Font.Size := 13;
+  Button.TextSettings.FontColor := $FFE8ECF1;
+  Button.TextSettings.Trimming := TTextTrimming.Character;
+  Button.TextSettings.WordWrap := False;
+  Button.StyleLookup := 'buttonstyle';
+  if Icon <> '' then
+  begin
+    CreatePathIcon(Button, Icon, 12, 10, 20);
+    Button.StylesData['text.Margins.Left'] := 36;
+    Button.StylesData['text.Margins.Right'] := 10;
+  end;
 end;
 
 end.

@@ -101,7 +101,7 @@ type
     procedure CopyX;
     procedure CopyY;
     function MirrorNameTableAddress(Address: UInt16): UInt16;
-    function PpuReadMemory(Address: UInt16; Rendering: Boolean = False): UInt8;
+    function PpuReadMemory(Address: UInt16; Rendering: Boolean = False; Sprite: Boolean = False): UInt8;
     procedure PpuWriteMemory(Address: UInt16; Value: UInt8);
     procedure SetVblank(Value: Boolean);
     procedure UpdateNmiState;
@@ -372,11 +372,11 @@ begin
   end;
 end;
 
-function TPPU.PpuReadMemory(Address: UInt16; Rendering: Boolean): UInt8;
+function TPPU.PpuReadMemory(Address: UInt16; Rendering: Boolean; Sprite: Boolean): UInt8;
 begin
   var Temp: UInt8;
   Address := Address and $3FFF;
-  if (Address < $3F00) and (FMapper <> nil) and FMapper.PpuReadContext(Address, Rendering, Temp) then
+  if (Address < $3F00) and (FMapper <> nil) and FMapper.PpuReadContext(Address, Rendering, Temp, Sprite) then
     Exit(Temp);
 
   if Address < $2000 then
@@ -626,7 +626,7 @@ begin
     // Palette RAM is internal; its read buffer comes from nametable RAM.
     if BusAddress >= $3F00 then
       Dec(BusAddress, $1000);
-    FPixel.DataBus := PpuReadMemory(BusAddress, Fetch and not ReadRequest);
+    FPixel.DataBus := PpuReadMemory(BusAddress, Fetch and not ReadRequest, not Background);
     if ReadRequest then
       FDataBuffer := FPixel.DataBus;
     if Fetch and ((FCycle and 1) = 0) then
@@ -1439,8 +1439,8 @@ begin
     end
     else
     begin
-      Lo := PpuReadMemory(Address, True);
-      Hi := PpuReadMemory(Address + 8, True);
+      Lo := PpuReadMemory(Address, True, True);
+      Hi := PpuReadMemory(Address + 8, True, True);
       if FRenderingLine and FCacheBackground then
       begin
         FSpriteRowCached[i] := True;

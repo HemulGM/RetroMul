@@ -4,8 +4,8 @@
         <ProjectVersion>20.4</ProjectVersion>
         <FrameworkType>FMX</FrameworkType>
         <Base>True</Base>
-        <Config Condition="'$(Config)'==''">Release</Config>
-        <Platform Condition="'$(Platform)'==''">Win64</Platform>
+        <Config Condition="'$(Config)'==''">Debug</Config>
+        <Platform Condition="'$(Platform)'==''">Win32</Platform>
         <TargetedPlatforms>2790547</TargetedPlatforms>
         <AppType>Application</AppType>
         <MainSource>RetroMul.dpr</MainSource>
@@ -551,6 +551,7 @@
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.MmcLatch.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Mmc3Variants.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Vrc.pas"/>
+        <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Vrc5.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Sunsoft.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Rambo.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Cony.pas"/>

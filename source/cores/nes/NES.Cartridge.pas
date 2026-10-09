@@ -59,6 +59,7 @@ implementation
 
 uses
   Core.RomHashes, NES.RomMetadata, NES.Mapper.Factory, Core.SavePaths,
+  NES.Mapper.ExtendedMemory,
   Core.RomFormat, System.Hash,
   {$IFDEF MSWINDOWS}
   Winapi.Windows,
@@ -348,6 +349,16 @@ begin
   if FMapper = nil then
     raise ENesException.CreateFmt('Unsupported mapper: %d', [FMapperId]);
 
+  // Mapper 164 saves to a serial 93C66, independently of its volatile CPU RAM.
+  if (FMapperId = MAPPER_WAIXING164) and (FMetadata.Format = TRomFormat.Nes20) and
+    (FMetadata.PrgNvRamSize = 512) then
+  begin
+    if (FMetadata.PrgRamSize > $2000) or (FMetadata.ChrNvRamSize <> 0) then
+      raise ENesException.Create('Unsupported mapper 164 RAM layout');
+    TMapperExtendedMemory(FMapper).Configure93C66(Integer(FMetadata.PrgRamSize));
+    FMetadata.HasBattery := True;
+  end;
+
   if (FMapperId = MAPPER_GTROM) or
     (FMapperId = MAPPER_SACHEN_9602) or
     (FMapperId = MAPPER_RAINBOW) or
@@ -374,12 +385,17 @@ begin
 
   var Memory := FMapper.GetSaveMemory;
   FSaveSize := Length(Memory);
+  if (FMetadata.Format = TRomFormat.Nes20) and (FMapperId = MAPPER_WAIXING164) and
+    (FSaveSize = 512) and (FMetadata.PrgNvRamSize <> 512) then
+    raise ENesException.Create('Unsupported mapper 164 EEPROM size');
   if (FMetadata.Format = TRomFormat.Nes20) and (FMapperId <> MAPPER_NAMCO_163) and (FMapperId <> MAPPER_UNROM512) and
     (FMapperId <> MAPPER_GTROM) and (FMapperId <> MAPPER_BANDAI_DATACH) and (FMapperId <> MAPPER_RACERMATE) and (FMapperId <> MAPPER_FK23C) and
-    (FMapperId <> MAPPER_SACHEN_9602) and (FMapperId <> MAPPER_RAINBOW) then
+    (FMapperId <> MAPPER_SACHEN_9602) and (FMapperId <> MAPPER_RAINBOW) and
+    (FMapperId <> MAPPER_KONAMI_QTA) then
   begin
     if (FMetadata.ChrNvRamSize <> 0) or
-      ((FMetadata.PrgRamSize <> 0) and (FMetadata.PrgNvRamSize <> 0)) or
+      ((FMetadata.PrgRamSize <> 0) and (FMetadata.PrgNvRamSize <> 0) and
+        not ((FMapperId = MAPPER_WAIXING164) and (FMetadata.PrgNvRamSize = 512) and (FSaveSize = 512))) or
       (FMetadata.PrgNvRamSize > UInt64(FSaveSize)) then
       raise ENesException.Create('Unsupported NES 2.0 persistent memory layout');
 

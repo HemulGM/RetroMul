@@ -3,30 +3,30 @@
 interface
 
 uses
-  Core.RomFormat, System.Classes, System.Types, System.UITypes, FMX.Types, FMX.Controls,
-  FMX.Layouts, FMX.Objects, FMX.StdCtrls, FMXInput, Core.InputConfig,
-  Core.Storage;
+  Core.RomFormat, System.Classes, System.Types, System.UITypes, FMX.Types,
+  FMX.Controls, FMX.Forms, FMX.Layouts, FMX.Objects, FMX.StdCtrls, FMXInput,
+  Core.InputConfig, Core.Storage, FMX.Controls.Presentation;
 
 function GameplayLabel(Owner: TComponent; Parent: TFmxObject; const Text: string; Size: Single): TLabel;
 
 procedure GameplayButton(Button: TButton; const Text, Icon, Hint: string);
 
 type
-  TControlsHelpView = class(TLayout)
+  TControlsHelpView = class(TFrame)
+    FSurface: TRectangle;
+    FHeader, FFooter, FContent, FLeft, FRight: TLayout;
+    FScroll: TVertScrollBox;
+    FTitle, FSubtitle, FNote, FDevice: TLabel;
+    FSettings, FFooterClose: TButton;
+    FPlayerTabs, FDiagram, FAssignments, FFunctions: TLayout;
+    FDivider: TRectangle;
   private
     FInput: TInputManager;
     FOwnsInput: Boolean;
     FSystemId: string;
     FPorts: TCoreInputPorts;
     FPlayer, FPlayers: Integer;
-    FSurface: TRectangle;
-    FHeader, FFooter, FContent, FLeft, FRight: TLayout;
-    FScroll: TVertScrollBox;
-    FTitle, FSubtitle, FNote, FDevice: TLabel;
-    FSettings, FFooterClose: TButton;
     FPlayerButtons: array[0..7] of TButton;
-    FPlayerTabs, FDiagram, FAssignments, FFunctions: TLayout;
-    FDivider: TRectangle;
     FOnClose, FOnSettings: TNotifyEvent;
     FArranging: Boolean;
     procedure PlayerClick(Sender: TObject);
@@ -50,7 +50,9 @@ implementation
 uses
   System.SysUtils, System.Math, System.Generics.Collections, FMX.Graphics,
   FMX.BehaviorManager, RM.LibraryView, RM.Settings, RM.Input, RM.Gamepad,
-  Core.Emulation, RM.Icons;
+  Core.Emulation, RM.Icons, RM.Styles;
+
+{$R *.fmx}
 
 type
   THelpInputBackend = class(TInputBackend)
@@ -103,12 +105,6 @@ begin
 end;
 
 constructor TControlsHelpView.CreateHelp(AOwner: TComponent; Input: TInputManager; const SystemId: string; const Ports: TCoreInputPorts; Players: Integer; KeyboardPeripheral: Boolean; const Storage: IStorage; HasCoinAcceptor: Boolean);
-const
-  Names: array[0..8] of string = ('Show controls help', 'Save state', 'Load state',
-    'Take screenshot', 'Pause / resume', 'Full screen', 'Restart game', 'Open ROM', 'Exit full screen');
-  Keys: array[0..8] of string = ('F1', 'F5', 'F6', 'F8', 'P', 'F11', 'R', 'Ctrl + O', 'Esc');
-  Icons: array[0..8] of string = (IconPad, IconSave, IconLoad, IconCamera, IconPause,
-    IconFullScreen, IconRestart, IconFolder, IconFullScreen);
 begin
   inherited Create(AOwner);
   Name := 'ControlsHelp';
@@ -128,103 +124,32 @@ begin
   FSystemId := SystemId;
   FPorts := Ports;
   FPlayers := EnsureRange(Players, 1, 8);
-  var Shade := TRectangle.Create(Self);
-  Shade.Parent := Self;
-  Shade.Align := TAlignLayout.Contents;
-  Shade.Fill.Color := $A0000000;
-  Shade.Stroke.Kind := TBrushKind.None;
-  FSurface := TRectangle.Create(Self);
-  FSurface.Parent := Self;
-  FSurface.Fill.Color := $FF23292F;
-  FSurface.Stroke.Color := $FF47515D;
-  FSurface.XRadius := 10;
-  FSurface.YRadius := 10;
-  FHeader := TLayout.Create(Self);
-  FHeader.Parent := FSurface;
-  InterfaceIcon(FHeader, IconPad, 0, 8, 40, $FFFFB43B);
-  FTitle := GameplayLabel(Self, FHeader, Translate('Controls and shortcuts'), 25);
-  FTitle.TextSettings.Font.Style := [TFontStyle.fsBold];
-  FSubtitle := GameplayLabel(Self, FHeader, Translate('Current bindings · ') + LibrarySystemName(SystemId) + Translate(' · game paused'), 13);
-  FSubtitle.Opacity := 0.65;
-  FFooter := TLayout.Create(Self);
-  FFooter.Parent := FSurface;
-  FNote := GameplayLabel(Self, FFooter, Translate('Change bindings in the controls settings.'), 12);
+  FormStyles.RelocalizeUI(Self, 'en');
+  FSubtitle.Text := Translate('Current bindings · ') + LibrarySystemName(SystemId) + Translate(' · game paused');
   if KeyboardPeripheral then
     FNote.Text := Translate('Letter shortcuts, F5, F6 and F8 are unavailable with keyboard peripherals.');
   if KeyboardPeripheral and HasCoinAcceptor then
     FNote.Text := Translate('Letter shortcuts, F5, F6, F8 and F9 are unavailable with keyboard peripherals.');
-  FNote.Opacity := 0.6;
-  FSettings := TButton.Create(Self);
-  FSettings.Parent := FFooter;
-  GameplayButton(FSettings, Translate('Configure controls'), IconGear, Translate('Open controls settings'));
   FSettings.OnClick := SettingsClick;
-  var Close := TButton.Create(Self);
-  Close.Parent := FFooter;
-  FFooterClose := Close;
-  GameplayButton(Close, Translate('Close   Esc'), '', Translate('Close · Esc / F1'));
-  Close.OnClick := CloseClick;
-  FScroll := TVertScrollBox.Create(Self);
-  FScroll.Parent := FSurface;
-  FScroll.ScrollAnimation := TBehaviorBoolean.True;
-  FContent := TLayout.Create(Self);
-  FContent.Parent := FScroll;
-  FLeft := TLayout.Create(Self);
-  FLeft.Parent := FContent;
-  FRight := TLayout.Create(Self);
-  FRight.Parent := FContent;
-  var Title := GameplayLabel(Self, FLeft, Translate('Game controller'), 20);
-  Title.SetBounds(0, 0, 460, 30);
-  Title.TextSettings.Font.Style := [TFontStyle.fsBold];
-  FPlayerTabs := TLayout.Create(Self);
-  FPlayerTabs.Parent := FLeft;
-  for var i := 0 to FPlayers - 1 do
+  FSettings.StylesData['text.Margins.Left'] := 36;
+  FSettings.StylesData['text.Margins.Right'] := 10;
+  FFooterClose.OnClick := CloseClick;
+  for var I := 0 to High(FPlayerButtons) do
   begin
-    var B := TButton.Create(Self);
-    B.Parent := FPlayerTabs;
-    B.Text := Translate('Player ') + IntToStr(i + 1);
-    B.Tag := i;
-    B.CanFocus := False;
-    B.OnClick := PlayerClick;
-    FPlayerButtons[i] := B;
+    FPlayerButtons[I] := FindComponent('Player' + IntToStr(I + 1)) as TButton;
+    FPlayerButtons[I].Text := Translate('Player ') + IntToStr(I + 1);
+    FPlayerButtons[I].Visible := I < FPlayers;
+    FPlayerButtons[I].OnClick := PlayerClick;
   end;
-  FDevice := GameplayLabel(Self, FLeft, '', 12);
-  FDevice.Opacity := 0.65;
-  FDiagram := TLayout.Create(Self);
-  FDiagram.Parent := FLeft;
-  FAssignments := TLayout.Create(Self);
-  FAssignments.Parent := FLeft;
-  FDivider := TRectangle.Create(Self);
-  FDivider.Parent := FContent;
-  FDivider.Fill.Color := $FF404A55;
-  FDivider.Stroke.Kind := TBrushKind.None;
-  Title := GameplayLabel(Self, FRight, Translate('RetroMul functions'), 20);
-  Title.SetBounds(0, 0, 380, 30);
-  Title.TextSettings.Font.Style := [TFontStyle.fsBold];
-  Title := GameplayLabel(Self, FRight, Translate('Emulator shortcuts'), 13);
-  Title.SetBounds(0, 30, 380, 24);
-  Title.Opacity := 0.65;
-  FFunctions := TLayout.Create(Self);
-  FFunctions.Parent := FRight;
-  for var i := 0 to High(Names) do
+  for var I := 0 to 9 do
   begin
-    AssignmentRow(FFunctions, Translate(Names[i]), Keys[i], i * 44);
-    var Row := TLayout(FFunctions.Children[FFunctions.ChildrenCount - 1]);
-    InterfaceIcon(Row, Icons[i], 0, 10, 20);
-    TLabel(Row.Children[0]).Margins.Left := 34;
-    if KeyboardPeripheral and (i in [1, 2, 3, 4, 6, 7]) then
+    var Row := FindComponent('Function' + IntToStr(I)) as TLayout;
+    if KeyboardPeripheral and (I in [1, 2, 3, 4, 6, 7, 9]) then
       Row.Opacity := 0.4;
+    if I = 9 then
+      Row.Visible := HasCoinAcceptor;
   end;
-  FFunctions.Height := Length(Names) * 44;
-  if HasCoinAcceptor then
-  begin
-    AssignmentRow(FFunctions, Translate('Insert coin'), 'F9', FFunctions.Height);
-    var Row := TLayout(FFunctions.Children[FFunctions.ChildrenCount - 1]);
-    InterfaceIcon(Row, IconCoin, 0, 10, 20);
-    TLabel(Row.Children[0]).Margins.Left := 34;
-    if KeyboardPeripheral then
-      Row.Opacity := 0.4;
-    FFunctions.Height := FFunctions.Height + 44;
-  end;
+  FFunctions.Height := (9 + Ord(HasCoinAcceptor)) * 44;
   BuildPlayer;
 end;
 
@@ -389,7 +314,7 @@ end;
 procedure TControlsHelpView.Resize;
 begin
   inherited;
-  if FArranging or (FSurface = nil) or (FFunctions = nil) or (csDestroying in ComponentState) then
+  if (csLoading in ComponentState) or FArranging or (FSurface = nil) or (FFunctions = nil) or (csDestroying in ComponentState) then
     Exit;
   FArranging := True;
   try

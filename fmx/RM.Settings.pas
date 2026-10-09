@@ -3,11 +3,11 @@
 interface
 
 uses
-  Core.RomFormat, System.SysUtils, System.Classes, System.IniFiles,
-  System.Generics.Collections, System.Types, System.UITypes, FMX.Types,
-  FMX.Controls, FMX.Layouts, FMX.StdCtrls, FMX.Text, FMX.Edit, FMX.EditBox,
-  FMX.SpinBox, FMX.ListBox, FMX.Controls.Presentation, Core.Storage,
-  Core.Emulation, FMXInput;
+  Core.RomFormat, System.IOUtils, System.SysUtils, System.Classes,
+  System.IniFiles, System.Generics.Collections, System.Types, System.UITypes,
+  FMX.Forms, FMX.Types, FMX.Controls, FMX.Layouts, FMX.StdCtrls, FMX.Text,
+  FMX.Edit, FMX.EditBox, FMX.SpinBox, FMX.ListBox, FMX.Controls.Presentation,
+  Core.Storage, Core.Emulation, FMXInput, FMX.Objects;
 
 type
   TDeviceCallouts = class;
@@ -61,31 +61,32 @@ type
     Device: string;
   end;
 
-  TSettingsView = class(TPanel)
+  TSettingsView = class(TFrame)
+    FSidebar: TPanel;
+    FCoreTabs: TLayout;
+    FReset: TButton;
+    FRefresh: TButton;
+    FNavigation: TListBox;
+    FBody, FContent, FHeader, FFooter: TLayout;
+    FScroll: TVertScrollBox;
+    FTitle, FStatus: TLabel;
+    FApply, FBack, FCancelCapture: TButton;
+    FComponentStore: TLayout;
   private
+    FSearch: TEdit;
+    FPagePicker: TComboBox;
     FStorage: IStorage;
     FPicker: TSettingsLocationPicker;
     FInput: TInputManager; // Shared with the frontend; ownership stays with the form.
     FDrafts: array[0..6] of TMemIniFile;
     FFields: TObjectList<TSettingsField>;
     FDevices: TObjectList<TSettingsDevice>;
-    FSidebar: TPanel;
     FGroup: TPanel;
     FCategory, FCorePage, FPlayer: Integer;
-    FCoreTabs: TLayout;
     FCoreButtons: array[1..6] of TButton;
-    FSearch: TEdit;
-    FReset: TButton;
     FPreview: TControl;
     FPreviewGroup: TPanel;
-    FRefresh: TButton;
-    FNavigation: TListBox;
     FCategoryIcons: array[0..4] of TControl;
-    FPagePicker: TComboBox;
-    FBody, FContent, FHeader, FFooter: TLayout;
-    FScroll: TVertScrollBox;
-    FTitle, FStatus: TLabel;
-    FApply, FBack, FCancelCapture: TButton;
     FPage, FCaptureAction: Integer;
     FHeight: Single;
     FBuilding, FRebuildPending, FArranging: Boolean;
@@ -99,13 +100,13 @@ type
     FAlive: TFunc<Boolean>;
     FInvalidate: TProc;
     procedure AutosaveToggle(Sender: TObject);
-    function Row(const Caption, Description: string): TPanel;
+    function Row(const Name: string): TPanel;
     function Field(Control: TControl; const Section, Key: string): TSettingsField;
-    function Combo(const Caption, Description, Section, Key: string; const Labels, Values: array of string; const Default: string): TComboBox;
-    function Check(const Caption, Description, Section, Key: string; Default: Boolean): TSwitch;
-    function Number(const Caption, Description, Section, Key: string; Default, Max: Integer): TSpinBox;
-    function EditText(const Caption, Description, Section, Key, Default: string): TEdit;
-    procedure Heading(const Caption: string);
+    function Combo(const Name, Section, Key: string; const Labels, Values: array of string; const Default: string): TComboBox;
+    function Check(const Name, Section, Key: string; Default: Boolean): TSwitch;
+    function Number(const Name, Section, Key: string; Default, Max: Integer): TSpinBox;
+    function EditText(const Name, Section, Key, Default: string): TEdit;
+    procedure Heading(const Name: string);
     procedure SearchChange(Sender: TObject);
     procedure CoreClick(Sender: TObject);
     procedure ResetClick(Sender: TObject);
@@ -121,7 +122,7 @@ type
     procedure ClearBindingClick(Sender: TObject);
     procedure CancelCaptureClick(Sender: TObject);
     procedure PathClick(Sender: TObject);
-    function PathEdit(const Caption, Description, Section, Key, Default: string; Folder: Boolean): TEdit;
+    function PathEdit(const Name, Section, Key, Default: string; Folder: Boolean): TEdit;
     procedure VolumeChange(Sender: TObject);
     procedure ContentResize(Sender: TObject);
     procedure ComboResize(Sender: TObject);
@@ -173,11 +174,13 @@ const
 implementation
 
 uses
-  System.Math, System.IOUtils, System.TypInfo, RM.Input, GB.Palettes,
-  FMX.OpenDialog, RM.Gamepad, NES.PowerPad, NES.SuborKeyboard,
-  NES.FamicomKeyboard, NES.MiraclePiano, NES.Controller, NES.MiraclePianoDevice,
-  FMX.BehaviorManager, FMX.Graphics, FMX.SpinBox.Style, FMX.Presentation.Style,
-  FMX.Presentation.Factory, FMX.Objects, RM.LibraryView, RM.Icons, RM.SearchEdit, RM.Styles;
+  System.Math, System.TypInfo, RM.Input, GB.Palettes, FMX.OpenDialog, RM.Gamepad,
+  NES.PowerPad, NES.SuborKeyboard, NES.FamicomKeyboard, NES.MiraclePiano,
+  NES.Controller, NES.MiraclePianoDevice, FMX.BehaviorManager, FMX.Graphics,
+  FMX.SpinBox.Style, FMX.Presentation.Style, FMX.Presentation.Factory,
+  RM.LibraryView, RM.Icons, RM.SearchEdit, RM.Styles;
+
+{$R *.fmx}
 
 type
   TSettingsPreview = class(TControl)
@@ -185,6 +188,11 @@ type
     PaletteIndex: Integer;
   protected
     procedure Paint; override;
+  published
+    property Align;
+    property Margins;
+    property Position;
+    property Size;
   end;
 
   TSettingsComboBox = class(TComboBox)
@@ -526,9 +534,26 @@ begin
 end;
 
 constructor TSettingsView.CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager);
+type
+  TRuntimeControlClass = class of TControl;
+
+  procedure ReplaceRuntime(const Name: string; Kind: TRuntimeControlClass);
+  begin
+    // FMX stores ordinary layout slots so the designer needs no custom package.
+    var Slot := FindComponent(Name + 'Slot') as TLayout;
+    var Control := Kind.Create(Self);
+    Control.Name := Name;
+    Control.SetBounds(Slot.Position.X, Slot.Position.Y, Slot.Width, Slot.Height);
+    Control.Margins.Assign(Slot.Margins);
+    Control.Align := Slot.Align;
+    Control.Parent := Slot.Parent;
+    Control.Index := Slot.Index;
+    Slot.Free;
+  end;
+
 begin
+  FBuilding := True;
   inherited Create(AOwner);
-  StyleLookup := 'retromul_settings';
   FCorePage := 1;
   FStorage := Storage;
   FInput := Input;
@@ -549,156 +574,261 @@ begin
   FDrafts[0].WriteString('General', 'Path', FStorage.RomFolder);
   for var i := 1 to High(SettingsCoreIds) do
     FDrafts[i] := FStorage.ReadConfig(FStorage.ConfigFile(SettingsCoreIds[i]));
-  FSidebar := TPanel.Create(Self);
-  FSidebar.Parent := Self;
-  FSidebar.Align := TAlignLayout.Left;
-  FSidebar.Width := 264;
-  FSidebar.StyleLookup := 'retromul_sidebar';
-  var Brand := SettingsLabel(Self);
-  Brand.Parent := FSidebar;
-  Brand.Align := TAlignLayout.Top;
-  Brand.Height := 76;
-  Brand.Margins.Left := 64;
-  Brand.Text := 'RetroMul';
-  Brand.StyledSettings := Brand.StyledSettings - [TStyledSetting.Size, TStyledSetting.Style];
-  Brand.TextSettings.Font.Size := 23;
-  Brand.TextSettings.Font.Style := [TFontStyle.fsBold];
-  InterfaceIcon(FSidebar, IconPad, 24, 26, 30, $FFFFB344);
-  var Back := SettingsButton(Self);
-  Back.Parent := FSidebar;
-  Back.Align := TAlignLayout.Top;
-  Back.Margins.Rect := TRectF.Create(12, 0, 12, 24);
-  Back.Height := 42;
-  Back.Text := Translate('Back to library');
-  CreatePathIcon(Back, IconBack, 16, 11, 20, $FFE8ECF1);
-  Back.StylesData['text.Margins.Left'] := 36;
-  Back.StylesData['text.Margins.Right'] := 10;
-  Back.StyleLookup := 'buttonstyle_subtle';
-  Back.OnClick := BackClick;
-  FNavigation := TListBox.Create(Self);
-  FNavigation.Name := 'SettingsNavigation';
-  FNavigation.Parent := FSidebar;
-  FNavigation.Align := TAlignLayout.Client;
-  FNavigation.Width := 204;
-  FNavigation.Margins.Rect := TRectF.Create(12, 24, 12, 12);
-  FNavigation.ShowScrollBars := False;
-  FNavigation.ScrollAnimation := TBehaviorBoolean.True;
-  FNavigation.ItemHeight := 52;
-  for var Index := 0 to High(SettingsCategoryNames) do
+  ReplaceRuntime('SettingsSearch', TSearchEdit);
+  (TSearchEdit(FindComponent('SettingsSearch'))).TextPrompt := Translate('Search this section');
+  ReplaceRuntime('SettingsPagePicker', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('SettingsPagePicker'))).Items.Add(Translate('General'));
+  (TSettingsComboBox(FindComponent('SettingsPagePicker'))).Items.Add(Translate('Library'));
+  (TSettingsComboBox(FindComponent('SettingsPagePicker'))).Items.Add(Translate('Video and audio'));
+  (TSettingsComboBox(FindComponent('SettingsPagePicker'))).Items.Add(Translate('Controls'));
+  (TSettingsComboBox(FindComponent('SettingsPagePicker'))).Items.Add(Translate('Peripherals'));
+  (TSettingsComboBox(FindComponent('SettingsPagePicker'))).ItemIndex := FCategory;
+  ReplaceRuntime('RowLanguageEditor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowLanguageEditor'))).Items.Add(Translate('English'));
+  (TSettingsComboBox(FindComponent('RowLanguageEditor'))).Items.Add(Translate('Русский'));
+  (TSettingsComboBox(FindComponent('RowLanguageEditor'))).Items.Add(Translate('Português'));
+  ReplaceRuntime('AutosaveMinutes', TSettingsSpinBox);
+  (TSettingsSpinBox(FindComponent('AutosaveMinutes'))).Min := 1;
+  (TSettingsSpinBox(FindComponent('AutosaveMinutes'))).Max := 1440;
+  (TSettingsSpinBox(FindComponent('AutosaveMinutes'))).ValueType := TNumValueType.Integer;
+  ReplaceRuntime('RowBottominsetEditor', TSettingsSpinBox);
+  (TSettingsSpinBox(FindComponent('RowBottominsetEditor'))).Min := 0;
+  (TSettingsSpinBox(FindComponent('RowBottominsetEditor'))).ValueType := TNumValueType.Integer;
+  (TSettingsSpinBox(FindComponent('RowBottominsetEditor'))).Max := 400;
+  ReplaceRuntime('RowLibraryviewEditor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowLibraryviewEditor'))).Items.Add(Translate('Covers'));
+  (TSettingsComboBox(FindComponent('RowLibraryviewEditor'))).Items.Add(Translate('List'));
+  ReplaceRuntime('RowCardsizeEditor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowCardsizeEditor'))).Items.Add(Translate('Compact'));
+  (TSettingsComboBox(FindComponent('RowCardsizeEditor'))).Items.Add(Translate('Normal'));
+  (TSettingsComboBox(FindComponent('RowCardsizeEditor'))).Items.Add(Translate('Large'));
+  ReplaceRuntime('RowImagescalingEditor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowImagescalingEditor'))).Items.Add(Translate('Nearest neighbor'));
+  (TSettingsComboBox(FindComponent('RowImagescalingEditor'))).Items.Add(Translate('Smoothing'));
+  ReplaceRuntime('RowGameBoypaletteEditor', TSettingsComboBox);
+  ReplaceRuntime('PalettePreview', TSettingsPreview);
+  ReplaceRuntime('RowNESregionEditor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowNESregionEditor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowNESregionEditor'))).Items.Add(Translate('NTSC'));
+  (TSettingsComboBox(FindComponent('RowNESregionEditor'))).Items.Add(Translate('PAL'));
+  ReplaceRuntime('VolumeTrack', TSettingsTrackBar);
+  (TSettingsTrackBar(FindComponent('VolumeTrack'))).Min := 0;
+  (TSettingsTrackBar(FindComponent('VolumeTrack'))).Max := 100;
+  (TSettingsTrackBar(FindComponent('VolumeTrack'))).Value := 50;
+  ReplaceRuntime('RowPlayerEditor', TSettingsComboBox);
+  ReplaceRuntime('RowConnecteddeviceEditor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddeviceEditor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddeviceEditor'))).Items.Add(Translate('None'));
+  (TSettingsComboBox(FindComponent('RowConnecteddeviceEditor'))).Items.Add(Translate('Subor keyboard'));
+  (TSettingsComboBox(FindComponent('RowConnecteddeviceEditor'))).Items.Add(Translate('Famicom keyboard'));
+  (TSettingsComboBox(FindComponent('RowConnecteddeviceEditor'))).Items.Add(Translate('Data Recorder'));
+  ReplaceRuntime('RowControllerPort1Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowControllerPort1Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowControllerPort1Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowControllerPort2Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowControllerPort2Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowControllerPort2Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowControllerPort3Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowControllerPort3Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowControllerPort3Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowControllerPort4Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowControllerPort4Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowControllerPort4Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowControllerPort5Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowControllerPort5Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowControllerPort5Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowControllerPort6Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowControllerPort6Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowControllerPort6Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowControllerPort7Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowControllerPort7Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowControllerPort7Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowControllerPort8Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowControllerPort8Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowControllerPort8Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice2Port1Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port1Editor'))).Items.Add(Translate('Gamepad · 6 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port1Editor'))).Items.Add(Translate('Gamepad · 3 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port1Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice2Port2Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port2Editor'))).Items.Add(Translate('Gamepad · 6 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port2Editor'))).Items.Add(Translate('Gamepad · 3 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port2Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice2Port3Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port3Editor'))).Items.Add(Translate('Gamepad · 6 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port3Editor'))).Items.Add(Translate('Gamepad · 3 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port3Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice2Port4Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port4Editor'))).Items.Add(Translate('Gamepad · 6 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port4Editor'))).Items.Add(Translate('Gamepad · 3 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port4Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice2Port5Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port5Editor'))).Items.Add(Translate('Gamepad · 6 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port5Editor'))).Items.Add(Translate('Gamepad · 3 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port5Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice2Port6Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port6Editor'))).Items.Add(Translate('Gamepad · 6 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port6Editor'))).Items.Add(Translate('Gamepad · 3 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port6Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice2Port7Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port7Editor'))).Items.Add(Translate('Gamepad · 6 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port7Editor'))).Items.Add(Translate('Gamepad · 3 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port7Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice2Port8Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port8Editor'))).Items.Add(Translate('Gamepad · 6 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port8Editor'))).Items.Add(Translate('Gamepad · 3 buttons'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice2Port8Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice10Port1Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port1Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port1Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port1Editor'))).Items.Add(Translate('Miracle Piano'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port1Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice10Port2Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port2Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port2Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port2Editor'))).Items.Add(Translate('Miracle Piano'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port2Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice10Port3Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port3Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port3Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port3Editor'))).Items.Add(Translate('Miracle Piano'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port3Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice10Port4Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port4Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port4Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port4Editor'))).Items.Add(Translate('Miracle Piano'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port4Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice10Port5Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port5Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port5Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port5Editor'))).Items.Add(Translate('Miracle Piano'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port5Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice10Port6Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port6Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port6Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port6Editor'))).Items.Add(Translate('Miracle Piano'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port6Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice10Port7Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port7Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port7Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port7Editor'))).Items.Add(Translate('Miracle Piano'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port7Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice10Port8Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port8Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port8Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port8Editor'))).Items.Add(Translate('Miracle Piano'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice10Port8Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice18Port1Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port1Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port1Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port1Editor'))).Items.Add(Translate('Zapper'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port1Editor'))).Items.Add(Translate('Power Pad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port1Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice18Port2Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port2Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port2Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port2Editor'))).Items.Add(Translate('Zapper'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port2Editor'))).Items.Add(Translate('Power Pad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port2Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice18Port3Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port3Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port3Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port3Editor'))).Items.Add(Translate('Zapper'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port3Editor'))).Items.Add(Translate('Power Pad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port3Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice18Port4Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port4Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port4Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port4Editor'))).Items.Add(Translate('Zapper'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port4Editor'))).Items.Add(Translate('Power Pad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port4Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice18Port5Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port5Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port5Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port5Editor'))).Items.Add(Translate('Zapper'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port5Editor'))).Items.Add(Translate('Power Pad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port5Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice18Port6Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port6Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port6Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port6Editor'))).Items.Add(Translate('Zapper'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port6Editor'))).Items.Add(Translate('Power Pad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port6Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice18Port7Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port7Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port7Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port7Editor'))).Items.Add(Translate('Zapper'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port7Editor'))).Items.Add(Translate('Power Pad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port7Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice18Port8Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port8Editor'))).Items.Add(Translate('Automatic'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port8Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port8Editor'))).Items.Add(Translate('Zapper'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port8Editor'))).Items.Add(Translate('Power Pad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice18Port8Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice26Port1Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port1Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port1Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice26Port2Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port2Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port2Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice26Port3Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port3Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port3Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice26Port4Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port4Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port4Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice26Port5Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port5Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port5Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice26Port6Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port6Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port6Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice26Port7Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port7Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port7Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowConnecteddevice26Port8Editor', TSettingsComboBox);
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port8Editor'))).Items.Add(Translate('Gamepad'));
+  (TSettingsComboBox(FindComponent('RowConnecteddevice26Port8Editor'))).Items.Add(Translate('None'));
+  ReplaceRuntime('RowInputsource0Editor', TSettingsComboBox);
+  ReplaceRuntime('RowInputsource1Editor', TSettingsComboBox);
+  ReplaceRuntime('RowInputsource2Editor', TSettingsComboBox);
+  ReplaceRuntime('RowInputsource3Editor', TSettingsComboBox);
+  ReplaceRuntime('RowInputsource4Editor', TSettingsComboBox);
+  ReplaceRuntime('RowInputsource5Editor', TSettingsComboBox);
+  ReplaceRuntime('RowInputsource6Editor', TSettingsComboBox);
+  ReplaceRuntime('RowInputsource7Editor', TSettingsComboBox);
+  FSearch := FindComponent('SettingsSearch') as TEdit;
+  FPagePicker := FindComponent('SettingsPagePicker') as TComboBox;
+  FormStyles.RelocalizeUI(Self, 'en');
+  FComponentStore.Parent := nil;
+  (FindComponent('SidebarBack') as TButton).OnClick := BackClick;
+  (FindComponent('SidebarBack') as TButton).StylesData['text.Margins.Left'] := 36;
+  (FindComponent('SidebarBack') as TButton).StylesData['text.Margins.Right'] := 10;
+  for var I := 0 to High(FCategoryIcons) do
   begin
-    var Item := TListBoxItem.Create(Self);
-    Item.Parent := FNavigation;
-    Item.Text := Translate(SettingsCategoryNames[Index]);
-    Item.StyleLookup := 'listboxitemstyle';
-    Item.StyledSettings := Item.StyledSettings - [TStyledSetting.Size, TStyledSetting.Other];
-    Item.TextSettings.Trimming := TTextTrimming.Character;
-    Item.TextSettings.WordWrap := False;
-    Item.TextSettings.Font.Size := 15;
-    Item.StylesData['text.Margins.Left'] := 48;
-    var Icon := IconGear;
-    case Index of
-      1:
-        Icon := IconLibrary;
-      2:
-        Icon := IconDisplay;
-      3, 4:
-        Icon := IconPad;
-    end;
-    FCategoryIcons[Index] := InterfaceIcon(Item, Icon, 12, 14, 24);
+    FCategoryIcons[I] := FindComponent('CategoryIcon' + IntToStr(I)) as TControl;
+    FNavigation.ListItems[I].StyledSettings := FNavigation.ListItems[I].StyledSettings + [TStyledSetting.Other];
+    FNavigation.ListItems[I].TextSettings.HorzAlign := TTextAlign.Leading;
+    FNavigation.ListItems[I].StylesData['text.Margins.Left'] := 48;
   end;
-  FNavigation.ItemIndex := 0;
   FNavigation.OnChange := NavigationChange;
-  FBody := TLayout.Create(Self);
-  FBody.Parent := Self;
-  FBody.Align := TAlignLayout.Client;
-  FBody.Padding.Rect := TRectF.Create(24, 16, 24, 16);
-  FHeader := TLayout.Create(Self);
-  FHeader.Parent := FBody;
-  FHeader.Align := TAlignLayout.Top;
-  FHeader.Height := 100;
-  FTitle := SettingsLabel(Self);
-  FTitle.Parent := FHeader;
-  FTitle.Align := TAlignLayout.Top;
-  FTitle.Height := 44;
-  FTitle.StyledSettings := FTitle.StyledSettings - [TStyledSetting.Size];
-  FTitle.TextSettings.Font.Size := 30;
-  FSearch := TSearchEdit.Create(Self);
-  FSearch.Parent := FHeader;
-  FSearch.Name := 'SettingsSearch';
-  FSearch.SetBounds(560, 0, 260, 32);
-  FSearch.TextPrompt := Translate('Search this section');
   FSearch.OnChangeTracking := SearchChange;
   FSearch.OnResize := EditorResize;
-  FCoreTabs := TLayout.Create(Self);
-  FCoreTabs.Parent := FHeader;
-  FCoreTabs.Align := TAlignLayout.Bottom;
-  FCoreTabs.Height := 40;
-  for var i := 1 to 6 do
+  for var I := 1 to 6 do
   begin
-    FCoreButtons[i] := SettingsButton(Self);
-    FCoreButtons[i].Parent := FCoreTabs;
-    FCoreButtons[i].Text := SettingsPageNames[i];
-    FCoreButtons[i].Tag := i;
-    FCoreButtons[i].OnClick := CoreClick;
+    FCoreButtons[I] := FindComponent('Core' + IntToStr(I)) as TButton;
+    FCoreButtons[I].OnClick := CoreClick;
   end;
-  FPagePicker := TSettingsComboBox.Create(Self);
-  FPagePicker.Parent := FHeader;
-  FPagePicker.Align := TAlignLayout.Bottom;
-  FPagePicker.Height := 32;
   FPagePicker.OnResize := ComboResize;
   ComboResize(FPagePicker);
-  for var Name in SettingsCategoryNames do
-    FPagePicker.Items.Add(Translate(Name));
-  FPagePicker.ItemIndex := 0;
   FPagePicker.OnChange := PagePickerChange;
-  FFooter := TLayout.Create(Self);
-  FFooter.Parent := FBody;
-  FFooter.Align := TAlignLayout.Bottom;
-  FFooter.Height := 96;
-  FStatus := SettingsLabel(Self);
-  FStatus.Parent := FFooter;
-  FStatus.Align := TAlignLayout.Top;
-  FStatus.Height := 48;
-  FStatus.TextSettings.WordWrap := True;
-  FApply := SettingsButton(Self);
-  FApply.Parent := FFooter;
-  FApply.Position.Y := 56;
-  FApply.Width := 132;
-  FApply.Height := 32;
-  FApply.Text := Translate('Apply');
-  FApply.StyleLookup := 'buttonstyle_accent';
   FApply.OnClick := ApplyClick;
-  FBack := SettingsButton(Self);
-  FBack.Parent := FFooter;
-  FBack.Position.Point := TPointF.Create(144, 56);
-  FBack.Width := 132;
-  FBack.Height := 32;
-  FBack.Text := Translate('Cancel');
   FBack.OnClick := BackClick;
-  FReset := SettingsButton(Self);
-  FReset.Parent := FFooter;
-  FReset.Text := Translate('Reset section');
-  FReset.Width := 160;
-  FReset.Height := 40;
   FReset.OnClick := ResetClick;
-  FRefresh := SettingsButton(Self);
-  FRefresh.Parent := FFooter;
-  FRefresh.Text := Translate('Refresh devices');
   FRefresh.OnClick := RefreshDevicesClick;
   FRefresh.Enabled := FInput <> nil;
-  FCancelCapture := SettingsButton(Self);
-  FCancelCapture.Parent := FFooter;
-  FCancelCapture.Position.Point := TPointF.Create(288, 56);
-  FCancelCapture.Width := 132;
-  FCancelCapture.Height := 32;
-  FCancelCapture.Text := Translate('Cancel input');
   FCancelCapture.OnClick := CancelCaptureClick;
-  FCancelCapture.Visible := False;
-  FScroll := TVertScrollBox.Create(Self);
-  FScroll.Parent := FBody;
-  FScroll.Align := TAlignLayout.Client;
-  FScroll.ShowScrollBars := True;
-  FScroll.ScrollAnimation := TBehaviorBoolean.True;
   FScroll.OnResize := ContentResize;
   BuildPage;
 end;
@@ -718,7 +848,7 @@ end;
 
 procedure TSettingsView.Resize;
 begin
-  if FBuilding or (csDestroying in ComponentState) then
+  if (csLoading in ComponentState) or FBuilding or (csDestroying in ComponentState) then
     Exit;
 
   inherited;
@@ -838,7 +968,7 @@ begin
     var Index := 0;
     Y := 132;
     for var i := 0 to Group.ChildrenCount - 1 do
-      if (Group.Children[i] is TControl) and (Group.Children[i].Owner = FContent) then
+      if (Group.Children[i] is TControl) and (Group.Children[i].Owner = Self) then
       begin
         var C := TControl(Group.Children[i]);
         if C is TPanel then
@@ -857,7 +987,7 @@ begin
             Text.SetBounds(0, 0, P.Width, 24);
             TControl(Text.Children[1]).Visible := False;
             for var J := 0 to P.ChildrenCount - 1 do
-              if (P.Children[J] is TControl) and (P.Children[J].Owner = FContent) then
+              if (P.Children[J] is TControl) and (P.Children[J].Owner = Self) and (P.Children[J] <> TLabel(P.TagObject).Parent) then
               begin
                 var Editor := TControl(P.Children[J]);
                 Editor.Align := TAlignLayout.None;
@@ -886,7 +1016,7 @@ begin
     Exit;
   end;
   for var i := 0 to Group.ChildrenCount - 1 do
-    if (Group.Children[i] is TControl) and (Group.Children[i].Owner = FContent) then
+    if (Group.Children[i] is TControl) and (Group.Children[i].Owner = Self) then
     begin
       var C := TControl(Group.Children[i]);
       C.Width := Max(0, Group.Width - 32);
@@ -944,7 +1074,7 @@ begin
   var TextWidth := Max(0, P.Width - 32);
   // Explicit bounds keep editors centered without stretching them vertically.
   for var i := 0 to P.ChildrenCount - 1 do
-    if (P.Children[i] is TControl) and (P.Children[i].Owner = FContent) then
+    if (P.Children[i] is TControl) and (P.Children[i].Owner = Self) and (P.Children[i] <> TLabel(P.TagObject).Parent) then
     begin
       var C := TControl(P.Children[i]);
       var W: Single := 220;
@@ -967,45 +1097,27 @@ begin
   Text.SetBounds(16, 12, TextWidth, IfThen(Narrow, 70, 48));
 end;
 
-function TSettingsView.Row(const Caption, Description: string): TPanel;
+function TSettingsView.Row(const Name: string): TPanel;
 begin
-  Result := TPanel.Create(FContent);
+  Result := FindComponent(Name) as TPanel;
   Result.Parent := FGroup;
-  Result.Align := TAlignLayout.None;
-  Result.Height := 72;
-  Result.TagString := Caption + ' ' + Description;
+  Result.Visible := True;
+  Result.TagObject := FindComponent(Name + 'Title');
+  Result.TagString := TLabel(Result.TagObject).Text + ' ' +
+    (FindComponent(Name + 'Detail') as TLabel).Text;
   Result.Width := FScroll.Width - 16;
-  Result.Padding.Rect := TRectF.Create(16, 12, 16, 12);
-  Result.StyleLookup := 'retromul_row';
   Result.OnResize := RowResize;
   FHeight := FHeight + Result.Height + 8;
-  var Text := TLayout.Create(Result);
-  Text.Parent := Result;
-  Text.Align := TAlignLayout.Client;
-  Text.Margins.Right := 16;
-  var Title := SettingsLabel(Text);
-  Title.Parent := Text;
-  Title.Align := TAlignLayout.Top;
-  Title.Height := 24;
-  Title.Text := Caption;
-  Title.StyledSettings := Title.StyledSettings - [TStyledSetting.Size];
-  Title.TextSettings.Font.Size := 15;
-  Result.TagObject := Title;
-  var Detail := SettingsLabel(Text);
-  Detail.Parent := Text;
-  Detail.Align := TAlignLayout.Client;
-  Detail.Text := Description;
-  Detail.StyledSettings := Detail.StyledSettings - [TStyledSetting.Size];
-  Detail.TextSettings.Font.Size := 14;
-  Detail.Opacity := 0.72;
-  Detail.TextSettings.WordWrap := True;
 end;
 
 function TSettingsView.Field(Control: TControl; const Section, Key: string): TSettingsField;
 begin
   Result := TSettingsField.Create;
   Result.Control := Control;
-  Result.Row := TPanel(Control.Parent);
+  var Parent := Control.Parent;
+  while (Parent <> nil) and not (Parent is TPanel) do
+    Parent := Parent.Parent;
+  Result.Row := Parent as TPanel;
   Result.Section := Section;
   Result.Key := Key;
   FFields.Add(Result);
@@ -1014,10 +1126,17 @@ begin
   Control.SetBounds(16, 20, 220, 32);
 end;
 
-function TSettingsView.Combo(const Caption, Description, Section, Key: string; const Labels, Values: array of string; const Default: string): TComboBox;
+function TSettingsView.Combo(const Name, Section, Key: string; const Labels, Values: array of string; const Default: string): TComboBox;
 begin
-  Result := TSettingsComboBox.Create(FContent);
-  Result.Parent := Row(Caption, Description);
+  Row(Name);
+  Result := FindComponent(Name + 'Editor') as TSettingsComboBox;
+  Result.OnChange := nil;
+  if Length(Labels) > 0 then
+  begin
+    Result.Items.Clear;
+    for var Caption in Labels do
+      Result.Items.Add(Caption);
+  end;
   var F := Field(Result, Section, Key);
   F.DefaultValue := Default;
   Result.OnResize := ComboResize;
@@ -1025,9 +1144,8 @@ begin
   SetLength(F.Values, Length(Values));
   var Current := FDrafts[FPage].ReadString(Section, Key, Default);
   var Selected := 0;
-  for var i := 0 to High(Labels) do
+  for var i := 0 to Result.Items.Count - 1 do
   begin
-    Result.Items.Add(Labels[i]);
     F.Values[i] := Values[i];
     if SameText(Current, Values[i]) then
       Selected := i;
@@ -1035,19 +1153,25 @@ begin
   Result.ItemIndex := Selected;
 end;
 
-function TSettingsView.Check(const Caption, Description, Section, Key: string; Default: Boolean): TSwitch;
+function TSettingsView.Check(const Name, Section, Key: string; Default: Boolean): TSwitch;
 begin
-  Result := TSwitch.Create(FContent);
-  Result.Parent := Row(Caption, Description);
+  Row(Name);
+  if Name = 'RowAutosaveonexit' then
+    Result := FindComponent('AutosaveOnExit') as TSwitch
+  else if Name = 'RowAutosaveeveryNminutes' then
+    Result := FindComponent('AutosavePeriodic') as TSwitch
+  else
+    Result := FindComponent(Name + 'Editor') as TSwitch;
+  Result.OnSwitch := nil;
   Field(Result, Section, Key).DefaultValue := IntToStr(Ord(Default));
   Result.Width := 64;
   Result.IsChecked := FDrafts[FPage].ReadBool(Section, Key, Default);
 end;
 
-function TSettingsView.Number(const Caption, Description, Section, Key: string; Default, Max: Integer): TSpinBox;
+function TSettingsView.Number(const Name, Section, Key: string; Default, Max: Integer): TSpinBox;
 begin
-  Result := TSettingsSpinBox.Create(FContent);
-  Result.Parent := Row(Caption, Description);
+  Row(Name);
+  Result := FindComponent(Name + 'Editor') as TSettingsSpinBox;
   Field(Result, Section, Key).DefaultValue := IntToStr(Default);
   Result.Min := 0;
   Result.Max := Max;
@@ -1055,25 +1179,21 @@ begin
   Result.Value := EnsureRange(FDrafts[FPage].ReadInteger(Section, Key, Default), 0, Max);
 end;
 
-function TSettingsView.EditText(const Caption, Description, Section, Key, Default: string): TEdit;
+function TSettingsView.EditText(const Name, Section, Key, Default: string): TEdit;
 begin
-  Result := TEdit.Create(FContent);
-  Result.Parent := Row(Caption, Description);
+  Row(Name);
+  Result := FindComponent(Name + 'Editor') as TEdit;
   Field(Result, Section, Key).DefaultValue := Default;
   Result.Text := FDrafts[FPage].ReadString(Section, Key, Default);
 end;
 
-function TSettingsView.PathEdit(const Caption, Description, Section, Key, Default: string; Folder: Boolean): TEdit;
+function TSettingsView.PathEdit(const Name, Section, Key, Default: string; Folder: Boolean): TEdit;
 begin
-  Result := EditText(Caption, Description, Section, Key, Default);
+  Result := EditText(Name, Section, Key, Default);
   {$IFDEF ANDROID}
   Result.ReadOnly := True;
   {$ENDIF}
-  var Browse := TEditButton.Create(Result);
-  Browse.Parent := Result;
-  Browse.Hint := Translate('Browse');
-  AddButtonIcon(Browse, IconMore, 16);
-  Browse.Width := 32;
+  var Browse := FindComponent(Name + 'Browse') as TEditButton;
   Browse.Hint := Translate('Choose file');
   if Folder then
     Browse.Hint := Translate('Choose folder');
@@ -1088,20 +1208,13 @@ begin
     FVolumeValue.Text := IntToStr(Round(TTrackBar(Sender).Value)) + '%';
 end;
 
-procedure TSettingsView.Heading(const Caption: string);
+procedure TSettingsView.Heading(const Name: string);
 begin
-  FGroup := TPanel.Create(FContent);
+  FGroup := FindComponent(Name) as TPanel;
   FGroup.Parent := FContent;
-  FGroup.StyleLookup := 'retromul_card';
+  FGroup.Visible := True;
   FGroup.Width := FScroll.Width - 16;
-  FGroup.TagString := Caption;
-  var L := SettingsLabel(FContent);
-  L.Parent := FGroup;
-  L.Height := 36;
-  L.Text := Caption;
-  L.StyledSettings := L.StyledSettings - [TStyledSetting.Size, TStyledSetting.Style];
-  L.TextSettings.Font.Size := 20;
-  L.TextSettings.Font.Style := [TFontStyle.fsBold];
+  FGroup.TagString := (FindComponent(Name + 'Title') as TLabel).Text;
 end;
 
 procedure TSettingsView.AutosaveToggle(Sender: TObject);
@@ -1147,69 +1260,60 @@ begin
     FPreviewGroup := nil;
     FDevices.Clear;
     FFields.Clear;
-    FreeAndNil(FContent);
-    FContent := TLayout.Create(Self);
-    FContent.Parent := FScroll;
+    // Keep resource cards; release only styles and data-dependent device views.
+    for var I := 0 to ComponentCount - 1 do
+      if (Components[I] is TPanel) and
+        (string(Components[I].Name).StartsWith('Row') or string(Components[I].Name).StartsWith('Group')) then
+      begin
+        var Card := TPanel(Components[I]);
+        while Card.ComponentCount > 0 do
+          Card.Components[0].Free;
+        Card.Parent := FComponentStore;
+        Card.Visible := True;
+        Card.OnResize := nil;
+      end;
     FContent.Width := Min(1240, Max(0, FScroll.Width - 16));
     FGroup := nil;
     FHeight := 0;
     FStatus.Text := Translate('Click Apply to save changes.');
     if FCategory = 0 then
     begin
-      Heading(Translate('Appearance'));
-      Combo(Translate('Language'), Translate('Detected on first launch. Your selection is saved.'),
-        'General', 'Language', ['English', 'Русский', 'Português'], ['en', 'ru', 'pt'], 'en');
-      var Theme := Row(Translate('Theme'), Translate('RetroMul dark theme with an amber accent.'));
-      var Value := SettingsLabel(FContent);
-      Value.Parent := Theme;
-      Value.Align := TAlignLayout.Right;
-      Value.Width := 220;
-      Value.Text := Translate('Dark · RetroMul');
-      Heading(Translate('During gameplay'));
-      Check(Translate('Pause when focus is lost'), Translate('When switching to another application.'), 'General', 'PauseOnFocusLoss', True);
-      Check(Translate('Start in full screen'), Translate('Open games in full screen.'), 'General', 'StartFullscreen', False);
-      Heading(Translate('Autosave'));
-      var ExitSave := Check(Translate('Autosave on exit'), Translate('Save when closing a game or the application.'),
-        'General', 'AutosaveOnExit', True);
+      Heading('GroupAppearance');
+      Combo('RowLanguage', 'General', 'Language', [], ['en', 'ru', 'pt'], 'en');
+      Row('RowTheme');
+
+      Heading('GroupDuringgameplay');
+      Check('RowPausewhenfocusislost', 'General', 'PauseOnFocusLoss', True);
+      Check('RowStartinfullscreen', 'General', 'StartFullscreen', False);
+      Heading('GroupAutosave');
+      var ExitSave := Check('RowAutosaveonexit', 'General', 'AutosaveOnExit', True);
       ExitSave.Name := 'AutosaveOnExit';
-      var Periodic := Check(Translate('Autosave every N minutes'), Translate('Overwrite the autosave slot at the selected interval.'),
-        'General', 'AutosavePeriodic', False);
+      var Periodic := Check('RowAutosaveeveryNminutes', 'General', 'AutosavePeriodic', False);
       Periodic.Name := 'AutosavePeriodic';
-      FAutosaveMinutes := TSettingsSpinBox.Create(FContent);
-      FAutosaveMinutes.Parent := Periodic.Parent;
+      FAutosaveMinutes := FindComponent('AutosaveMinutes') as TSettingsSpinBox;
       FAutosaveMinutes.Name := 'AutosaveMinutes';
       Field(FAutosaveMinutes, 'General', 'AutosaveMinutes').DefaultValue := IntToStr(AUTOSAVE_DEFAULT_MINUTES);
       FAutosaveMinutes.Min := 1;
       FAutosaveMinutes.Max := AUTOSAVE_MAX_MINUTES;
       FAutosaveMinutes.ValueType := TNumValueType.Integer;
       FAutosaveMinutes.Value := EnsureRange(FDrafts[0].ReadInteger('General', 'AutosaveMinutes',
-        AUTOSAVE_DEFAULT_MINUTES), 1, AUTOSAVE_MAX_MINUTES);
-      var IntervalEditor := TLayout.Create(FContent);
-      IntervalEditor.Parent := Periodic.Parent;
-      Periodic.Parent := IntervalEditor;
+          AUTOSAVE_DEFAULT_MINUTES), 1, AUTOSAVE_MAX_MINUTES);
       Periodic.Align := TAlignLayout.Right;
-      Periodic.Width := 64;
-      FAutosaveMinutes.Parent := IntervalEditor;
       FAutosaveMinutes.Align := TAlignLayout.Client;
-      FAutosaveMinutes.Margins.Right := 12;
       FAutosaveMinutes.Enabled := Periodic.IsChecked;
       Periodic.OnSwitch := AutosaveToggle;
-      Heading(Translate('On-screen buttons'));
-      Number(Translate('Bottom inset'), Translate('Distance from the bottom edge. The safe area is included automatically.'),
-        'General', 'ControlBottomInset', 100, 400);
+      Heading('GroupOnscreenbuttons');
+      Number('RowBottominset', 'General', 'ControlBottomInset', 100, 400);
     end
     else if FCategory = 1 then
     begin
-      Heading(Translate('Game library'));
-      FFolderEdit := PathEdit(Translate('ROM folder'), Translate('Subfolders: nes, snes, gb, gbc, megadrive, neogeo.'),
-        'General', 'Path', FStorage.RomFolder, True);
-      Combo(Translate('Library view'), Translate('Cover grid or compact list.'), 'Library', 'View',
-        [Translate('Covers'), Translate('List')], ['grid', 'list'], 'grid');
-      Combo(Translate('Card size'), Translate('The number of covers per row adapts to the window.'), 'Library', 'CardWidth',
-        [Translate('Compact'), Translate('Normal'), Translate('Large')], ['140', '170', '220'], '170');
-      Check(Translate('Show platform on cards'), Translate('Console name below each game cover.'), 'Library', 'ShowPlatform', True);
-      Heading(Translate('Metadata'));
-      Row(Translate('Covers and descriptions'), Translate('Loaded from gamelist.xml next to the ROMs. Favorites are stored separately and do not change the XML.'));
+      Heading('GroupGamelibrary');
+      FFolderEdit := PathEdit('RowROMfolder', 'General', 'Path', FStorage.RomFolder, True);
+      Combo('RowLibraryview', 'Library', 'View', [], ['grid', 'list'], 'grid');
+      Combo('RowCardsize', 'Library', 'CardWidth', [], ['140', '170', '220'], '170');
+      Check('RowShowplatformoncards', 'Library', 'ShowPlatform', True);
+      Heading('GroupMetadata');
+      Row('RowCoversanddescriptions');
     end
     else
     begin
@@ -1217,9 +1321,8 @@ begin
         LoadInputBindings(FInput, FDrafts[FPage], SettingsCoreIds[FPage]);
       if FCategory = 2 then
       begin
-        Heading(Translate('Video'));
-        Combo(Translate('Image scaling'), Translate('Nearest neighbor preserves sharp pixels; smoothing softens the image.'),
-          'Video', 'Filter', [Translate('Nearest neighbor'), Translate('Smoothing')], ['nearest', 'linear'], 'nearest');
+        Heading('GroupVideo');
+        Combo('RowImagescaling', 'Video', 'Filter', [], ['nearest', 'linear'], 'nearest');
         if FPage = 1 then
         begin
           var Labels, Values: TArray<string>;
@@ -1230,58 +1333,46 @@ begin
             Labels[i] := ScreenPalettes[i].Name;
             Values[i] := IntToStr(i);
           end;
-          var Palette := Combo(Translate('Game Boy palette'), Translate('Colors of the monochrome display.'), 'Video', 'Palette', Labels, Values, '0');
+          var Palette := Combo('RowGameBoypalette', 'Video', 'Palette', Labels, Values, '0');
           Palette.OnChange := PreviewChange;
-          Heading(Translate('Preview'));
+          Heading('GroupPreview');
           FPreviewGroup := FGroup;
-          var PreviewRow := Row('160 × 144', Translate('Example using the selected palette.'));
+          var PreviewRow := Row('Row160144');
           PreviewRow.Tag := 1;
           PreviewRow.Padding.Rect := TRectF.Empty;
           PreviewRow.Height := 350;
           TLayout(TLabel(PreviewRow.TagObject).Parent).Visible := False;
-          var Preview := TSettingsPreview.Create(PreviewRow);
-          FPreview := Preview;
-          Preview.Parent := PreviewRow;
+          var Preview := FindComponent('PalettePreview') as TSettingsPreview;
+          // Restore the original aspect ratio before the fit alignment recalculates.
+          Preview.Align := TAlignLayout.None;
           Preview.SetBounds(0, 0, 320, 288);
           Preview.Align := TAlignLayout.Fit;
-          Preview.Margins.Rect := TRectF.Create(0, 10, 0, 10);
+          FPreview := Preview;
           Preview.PaletteIndex := Palette.ItemIndex;
         end;
         if FPage = 2 then
-          Check(Translate('LCD colors'), Translate('Approximate Game Boy Color color reproduction.'), 'Video', 'ColorCorrection', False);
+          Check('RowLCDcolors', 'Video', 'ColorCorrection', False);
         if FPage = 3 then
-          Combo(Translate('NES region'), Translate('Frame rate and timing based on the ROM.'), 'Video', 'Region',
-            [Translate('Automatic'), 'NTSC', 'PAL'], ['Auto', 'NTSC', 'PAL'], 'Auto');
+          Combo('RowNESregion', 'Video', 'Region', [], ['Auto', 'NTSC', 'PAL'], 'Auto');
         if FPage = 5 then
-          Check(Translate('Crop overscan'), Translate('Show the central 224 lines instead of 239.'), 'Video', 'CropOverscan', False);
-        Heading(Translate('Audio'));
-        Check(Translate('Audio'), Translate('Audio playback for the selected platform.'), 'Audio', 'Enabled', True);
-        var Volume := TSettingsTrackBar.Create(FContent);
-        Volume.Parent := Row(Translate('Volume'), Translate('Audio level for the selected platform.'));
-        Field(Volume, 'Audio', 'Volume').DefaultValue := '0.5';
-        var Editor := TLayout.Create(FContent);
-        Editor.Parent := Volume.Parent;
-        Editor.Align := TAlignLayout.None;
-        Editor.Width := 268;
-        Editor.Height := 32;
-        Volume.Parent := Editor;
+          Check('RowCropoverscan', 'Video', 'CropOverscan', False);
+        Heading('GroupAudio');
+        Check('RowAudio', 'Audio', 'Enabled', True);
+        var VolumeRow := Row('RowVolume');
+        var Volume := FindComponent('VolumeTrack') as TSettingsTrackBar;
+        Volume.OnChange := nil;
+        var VolumeField := Field(Volume, 'Audio', 'Volume');
+        VolumeField.Row := VolumeRow;
+        VolumeField.DefaultValue := '0.5';
         Volume.Align := TAlignLayout.Client;
-        Volume.Margins.Rect := TRectF.Empty;
-        FVolumeValue := SettingsLabel(Editor);
-        FVolumeValue.Parent := Editor;
-        FVolumeValue.Align := TAlignLayout.Right;
-        FVolumeValue.Width := 52;
-        FVolumeValue.Margins.Left := 8;
-        FVolumeValue.TextSettings.HorzAlign := TTextAlign.Trailing;
-        Volume.Min := 0;
-        Volume.Max := 100;
+        FVolumeValue := FindComponent('VolumeValue') as TLabel;
         Volume.Value := EnsureRange(FDrafts[FPage].ReadFloat('Audio', 'Volume', 0.5), 0, 1) * 100;
         Volume.OnChange := VolumeChange;
         VolumeChange(Volume);
       end
       else if FCategory = 3 then
       begin
-        Heading(Translate('Controller'));
+        Heading('GroupController');
         var Count := 2;
         if FPage <= 2 then
           Count := 1;
@@ -1292,8 +1383,10 @@ begin
         if (FPage = 5) and FDrafts[FPage].ReadBool('Input', 'Multitap1', False) then
           Count := 8;
         FPlayer := EnsureRange(FPlayer, 0, Count - 1);
-        var Player := TSettingsComboBox.Create(FContent);
-        Player.Parent := Row(Translate('Player'), Translate('Bindings are saved separately for each player.'));
+        Row('RowPlayer');
+        var Player := FindComponent('RowPlayerEditor') as TSettingsComboBox;
+        Player.OnChange := nil;
+        Player.Items.Clear;
         Player.Align := TAlignLayout.None;
         Player.SetBounds(16, 20, 220, 32);
         for var i := 1 to Count do
@@ -1308,17 +1401,16 @@ begin
       begin
         if FPage = 3 then
         begin
-          Heading(Translate('Additional players'));
-          var FourScore := Check('Four Score', Translate('Extra controllers for players 3 and 4; incompatible with Zapper, Power Pad and Miracle Piano.'),
-            'Input', 'FourScore', False);
+          Heading('GroupAdditionalplayers');
+          var FourScore := Check('RowFourScore', 'Input', 'FourScore', False);
           FourScore.OnSwitch := PortChange;
         end;
         if FPage = 5 then
         begin
-          Heading(Translate('Additional players'));
-          var Multi := Check(Translate('Multitap · port 2'), Translate('Controllers for players 2–5.'), 'Input', 'Multitap2', False);
+          Heading('GroupAdditionalplayers');
+          var Multi := Check('RowMultitapport2', 'Input', 'Multitap2', False);
           Multi.OnSwitch := PortChange;
-          Multi := Check(Translate('Multitap · port 1'), Translate('Players 1, 6, 7 and 8.'), 'Input', 'Multitap1', False);
+          Multi := Check('RowMultitapport1', 'Input', 'Multitap1', False);
           Multi.OnSwitch := PortChange;
         end;
         BuildPort(0, Translate('Port 1'));
@@ -1326,20 +1418,17 @@ begin
           BuildPort(1, Translate('Port 2'));
         if FPage = 3 then
         begin
-          Heading(Translate('Famicom expansion port'));
-          var Expansion := Combo(Translate('Connected device'), Translate('Automatic uses the ROM metadata.'), 'Ports', 'Expansion',
-            [Translate('Automatic'), Translate('None'), Translate('Subor keyboard'), Translate('Famicom keyboard'), 'Data Recorder'],
-            ['auto', 'none', 'subor', 'famicom', 'recorder'], 'auto');
+          Heading('GroupFamicomexpansionport');
+          var Expansion := Combo('RowConnecteddevice', 'Ports', 'Expansion', [], ['auto', 'none', 'subor', 'famicom', 'recorder'], 'auto');
           Expansion.OnChange := PortChange;
           var Device := FDrafts[FPage].ReadString('Ports', 'Expansion', 'auto');
           if (Device = 'subor') or (Device = 'famicom') then
           begin
-            Check(Translate('Physical keyboard'), Translate('An on-screen keyboard is available during gameplay.'), 'Ports', 'KeyboardEnabled', True);
+            Check('RowPhysicalkeyboard', 'Ports', 'KeyboardEnabled', True);
             BuildBindings(4, Device);
           end;
           if (Device = 'recorder') or (Device = 'famicom') then
-            PathEdit(Translate('Initial cassette'),
-              Translate('Leave blank to use the current game''s cassette.'), 'Ports', 'TapeFile', '', False);
+            PathEdit('RowInitialcassette', 'Ports', 'TapeFile', '', False);
         end;
       end;
       FStatus.Text := Translate('Settings are saved separately for each platform. Core options apply when you next open a ROM.');
@@ -1360,26 +1449,20 @@ end;
 procedure TSettingsView.BuildPort(Port: Integer; const Caption: string);
 begin
   if FCategory <> 3 then
-    Heading(Caption);
+    Heading('GroupPort' + IntToStr(Port + 1));
   var Key := 'Port' + IntToStr(Port + 1);
   var Device := FDrafts[FPage].ReadString('Ports', Key, 'auto');
   var C: TComboBox;
   if FPage <= 2 then
-    C := Combo(Translate('Controller'), Translate('Use the console''s built-in buttons.'), 'Ports', Key,
-      [Translate('Gamepad'), Translate('None')], ['pad', 'none'], 'pad')
+    C := Combo('RowControllerPort' + IntToStr(Port + 1), 'Ports', Key, [], ['pad', 'none'], 'pad')
   else if FPage = 4 then
-    C := Combo(Translate('Connected device'), Translate('Controller protocol for this port.'), 'Ports', Key,
-      [Translate('Gamepad · 6 buttons'), Translate('Gamepad · 3 buttons'), Translate('None')], ['pad6', 'pad3', 'none'], 'pad6')
+    C := Combo('RowConnecteddevice2Port' + IntToStr(Port + 1), 'Ports', Key, [], ['pad6', 'pad3', 'none'], 'pad6')
   else if (FPage = 3) and (Port = 0) then
-    C := Combo(Translate('Connected device'), Translate('Automatic keeps the device selected by the ROM.'), 'Ports', Key,
-      [Translate('Automatic'), Translate('Gamepad'), 'Miracle Piano', Translate('None')], ['auto', 'pad', 'piano', 'none'], 'auto')
+    C := Combo('RowConnecteddevice10Port' + IntToStr(Port + 1), 'Ports', Key, [], ['auto', 'pad', 'piano', 'none'], 'auto')
   else if (FPage = 3) and (Port = 1) then
-    C := Combo(Translate('Connected device'), Translate('Zapper and Power Pad use the second port.'), 'Ports', Key,
-      [Translate('Automatic'), Translate('Gamepad'), 'Zapper', 'Power Pad', Translate('None')],
-      ['auto', 'pad', 'zapper', 'powerpad', 'none'], 'auto')
+    C := Combo('RowConnecteddevice18Port' + IntToStr(Port + 1), 'Ports', Key, [], ['auto', 'pad', 'zapper', 'powerpad', 'none'], 'auto')
   else
-    C := Combo(Translate('Connected device'), Translate('Controller connected to this port.'), 'Ports', Key,
-      [Translate('Gamepad'), Translate('None')], ['pad', 'none'], 'pad');
+    C := Combo('RowConnecteddevice26Port' + IntToStr(Port + 1), 'Ports', Key, [], ['pad', 'none'], 'pad');
   // Normalize absent legacy values to the device displayed by the selector.
   for var F in FFields do
     if F.Control = C then
@@ -1426,16 +1509,14 @@ begin
     Labels[N] := Translate('Disconnected device');
     Values[N] := SavedId;
   end;
-  var Source := Combo(Translate('Input source'), Translate('Choose a device, then assign its buttons, axes or D-pad.'),
-    'Ports', SourceKey, Labels, Values, '');
+  var Source := Combo('RowInputsource' + IntToStr(Port), 'Ports', SourceKey, Labels, Values, '');
   FDeviceIds[Port] := SavedId;
   Source.Tag := Port;
   Source.OnChange := DeviceChange;
   Source.Enabled := FInput <> nil;
   if (Device = 'piano') then
   begin
-    Check(Translate('Physical keyboard'), Translate('Notes Z–M and Q–P; Space is the pedal. An on-screen piano is also available.'),
-      'Ports', 'KeyboardEnabled', True);
+    Check('RowPhysicalkeyboard2' + IntToStr(Port), 'Ports', 'KeyboardEnabled', True);
   end;
   if Device = 'zapper' then
     AddBinding(Translate('Zapper trigger'), ZapperTriggerAction, Port)
@@ -1445,31 +1526,15 @@ end;
 
 function TSettingsView.AddBinding(const Caption: string; Action, Port: Integer): TButton;
 begin
-  var P := Row(Caption, Translate('Click Assign, then press a button or direction on the device.'));
-  var Editors := TLayout.Create(FContent);
-  Editors.Parent := P;
-  Editors.Align := TAlignLayout.Right;
-  Editors.Width := 268;
-  Editors.Height := 32;
-  Editors.Margins.Top := 16;
-  Editors.Margins.Bottom := 16;
-  var B := SettingsButton(Editors);
-  B.Parent := Editors;
-  B.Align := TAlignLayout.Client;
+  var P := Row('RowBinding' + IntToStr(Port));
+  var B := FindComponent('BindingEditorsCapture' + IntToStr(Port)) as TButton;
   B.Text := Translate('Assign · ') + BindingCaption(FInput, Action);
   B.Tag := Action;
   B.TagString := IntToStr(Port);
   B.TagObject := P.TagObject;
   B.OnClick := CaptureClick;
   B.Enabled := FInput <> nil;
-  var Clear := SettingsButton(Editors);
-  Clear.Parent := Editors;
-  Clear.Align := TAlignLayout.Right;
-  Clear.Width := 36;
-  Clear.Margins.Left := 8;
-  AddButtonIcon(Clear, IconClose, 14);
-  Clear.Hint := Translate('Remove binding');
-  Clear.ShowHint := True;
+  var Clear := FindComponent('BindingEditorsClear' + IntToStr(Port)) as TButton;
   Clear.Tag := Action;
   Clear.OnClick := ClearBindingClick;
   Clear.Enabled := FInput <> nil;
@@ -1478,12 +1543,12 @@ end;
 
 procedure TSettingsView.BuildDevice(Port: Integer; const Device: string);
 begin
-  Heading(Translate('Bindings'));
+  Heading('GroupBindings' + IntToStr(Port));
   var D := TSettingsDevice.Create;
   FDevices.Add(D);
   D.Port := Port;
   D.Device := Device;
-  var P := Row(Translate('Button bindings'), Translate('Select a button on the diagram, then press a key or controller button.'));
+  var P := Row('RowButtonbindings' + IntToStr(Port));
   P.Tag := 1;
   P.Height := 340;
   var Text := TLayout(TLabel(P.TagObject).Parent);
@@ -1546,18 +1611,12 @@ begin
   var Preview := D.Control;
   if D.Diagram <> nil then
     Preview := D.Diagram;
+  (FindComponent('PadAssignments' + IntToStr(Port)) as TControl).Visible := False;
   if D.Control is TScreenGamepad then
   begin
-    D.Assignments := TVertScrollBox.Create(P);
-    D.Assignments.ScrollAnimation := TBehaviorBoolean.True;
-    D.Assignments.Parent := P;
-    D.Assignments.Align := TAlignLayout.Right;
-    D.Assignments.Width := 300;
-    D.Assignments.Margins.Left := 20;
-    D.Assignments.ShowScrollBars := True;
-    D.AssignmentList := TLayout.Create(P);
-    D.AssignmentList.Parent := D.Assignments;
-    D.AssignmentList.Width := 284;
+    D.Assignments := FindComponent('PadAssignments' + IntToStr(Port)) as TVertScrollBox;
+    D.Assignments.Visible := True;
+    D.AssignmentList := FindComponent('PadAssignmentList' + IntToStr(Port)) as TLayout;
     var Y: Single := 8;
     for var B in TScreenGamepad(D.Control).ButtonMask do
     begin
@@ -1580,23 +1639,10 @@ begin
   Preview.Margins.Bottom := 8;
   D.Control.Tag := Port;
   // Keep the editor inside this card. No button is selected until the user clicks.
-  var Footer := TLayout.Create(P);
-  Footer.Parent := P;
-  Footer.Align := TAlignLayout.Bottom;
-  Footer.Height := 60;
-  D.Caption := SettingsLabel(Footer);
-  D.Caption.Parent := Footer;
-  D.Caption.Align := TAlignLayout.Top;
-  D.Caption.Height := 24;
+  var Footer := FindComponent('BindingFooter' + IntToStr(Port)) as TLayout;
+  D.Caption := FindComponent('BindingCaption' + IntToStr(Port)) as TLabel;
   D.Caption.Text := '';
-  var Editors := TLayout.Create(Footer);
-  Editors.Parent := Footer;
-  Editors.Align := TAlignLayout.Bottom;
-  Editors.Height := 32;
-  D.Capture := SettingsButton(Editors);
-  D.Capture.Parent := Editors;
-  D.Capture.Align := TAlignLayout.Client;
-  D.Capture.Width := 220;
+  D.Capture := FindComponent('PadEditorsCapture' + IntToStr(Port)) as TButton;
   D.Capture.Text := Translate('Assign');
   D.Capture.Tag := -1;
   D.Capture.TagString := IntToStr(Port);
@@ -1604,14 +1650,7 @@ begin
   D.Capture.OnClick := CaptureClick;
   D.Capture.Enabled := FInput <> nil;
   D.Capture.Visible := False;
-  D.Clear := SettingsButton(Editors);
-  D.Clear.Parent := Editors;
-  D.Clear.Align := TAlignLayout.Right;
-  D.Clear.Width := 36;
-  D.Clear.Margins.Left := 8;
-  AddButtonIcon(D.Clear, IconClose, 14);
-  D.Clear.Hint := Translate('Remove binding');
-  D.Clear.ShowHint := True;
+  D.Clear := FindComponent('PadEditorsClear' + IntToStr(Port)) as TButton;
   D.Clear.Tag := -1;
   D.Clear.OnClick := ClearBindingClick;
   D.Clear.Enabled := FInput <> nil;
@@ -2123,6 +2162,7 @@ begin
   FBuilding := True;
   try
     FormStyles.RelocalizeUI(Self, PreviousLanguage);
+    FormStyles.RelocalizeUI(FComponentStore, PreviousLanguage);
   finally
     FBuilding := False;
   end;

@@ -58,9 +58,9 @@ uses
   RM.Icons in 'RM.Icons.pas',
   RM.SearchEdit in 'RM.SearchEdit.pas',
   RM.Input in 'RM.Input.pas',
-  RM.Settings in 'RM.Settings.pas',
-  RM.LibraryView in 'RM.LibraryView.pas',
-  RM.ControlsHelp in 'RM.ControlsHelp.pas',
+  RM.Settings in 'RM.Settings.pas' {SettingsView: TFrame},
+  RM.LibraryView in 'RM.LibraryView.pas' {LibraryView: TFrame},
+  RM.ControlsHelp in 'RM.ControlsHelp.pas' {ControlsHelp: TFrame},
   Core.InputConfig in '..\source\cores\Core.InputConfig.pas',
   FMXInput in '..\source\input\FMXInput.pas',
   {$IFDEF ANDROID}

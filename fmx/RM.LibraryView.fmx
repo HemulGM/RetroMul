@@ -1,0 +1,1066 @@
+object LibraryView: TLibraryView
+  Size.Width = 1224.000000000000000000
+  Size.Height = 818.000000000000000000
+  Size.PlatformDefault = False
+  object LibraryBackground: TPanel
+    Align = Contents
+    HitTest = False
+    Size.Width = 1224.000000000000000000
+    Size.Height = 818.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'retromul_settings'
+    TabOrder = 0
+  end
+  object FSidebar: TPanel
+    Align = Left
+    Size.Width = 264.000000000000000000
+    Size.Height = 818.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'retromul_sidebar'
+    TabOrder = 1
+    object Brand: TLabel
+      StyledSettings = []
+      Position.X = 64.000000000000000000
+      Position.Y = 12.000000000000000000
+      Size.Width = 154.000000000000000000
+      Size.Height = 52.000000000000000000
+      Size.PlatformDefault = False
+      TextSettings.Font.Size = 23.000000000000000000
+      TextSettings.Font.StyleExt = {00070000000000000004000000}
+      TextSettings.FontColor = xFFE8ECF1
+      TextSettings.WordWrap = False
+      Text = 'RetroMul'
+      TabOrder = 0
+    end
+    object LibraryDecoration1: TPath
+      Data.Path = {
+        1C00000000000000000020410000C040010000000000C0410000C04002000000
+        0000E0410000C040020000000000F04100000041020000000000F84100005041
+        01000000000008420000D0410200000000000C420000F041020000000000F841
+        00000042020000000000E0410000E841010000000000B8410000C04101000000
+        000030410000C041010000000000C0400000E841020000000000404000000042
+        02000000000000000000F041020000000000803F0000D0410100000000008040
+        00005041020000000000A04000000041020000000000C0400000C04002000000
+        000020410000C04003000000000020410000C040000000000000104100004041
+        01000000000010410000A841000000000000A040000080410100000000005041
+        00008041000000000000C04100005041010000000000C0410000704100000000
+        0000E04100009041010000000000E0410000A041}
+      Fill.Kind = None
+      HitTest = False
+      Position.X = 24.000000000000000000
+      Position.Y = 26.000000000000000000
+      Size.Width = 30.000000000000000000
+      Size.Height = 30.000000000000000000
+      Size.PlatformDefault = False
+      Stroke.Color = xFFFFB344
+      Stroke.Thickness = 1.600000023841858000
+      WrapMode = Fit
+    end
+    object Nav: TLayout
+      Position.X = 12.000000000000000000
+      Position.Y = 88.000000000000000000
+      Size.Width = 240.000000000000000000
+      Size.Height = 162.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 1
+      object Nav0: TButton
+        StyledSettings = [Family, Style, FontColor]
+        Size.Width = 240.000000000000000000
+        Size.Height = 46.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 0
+        Text = 'Library'
+        TextSettings.Font.Size = 15.000000000000000000
+        TextSettings.Trimming = Character
+        object NavIcon0: TPath
+          Data.Path = {
+            1400000000000000000000400000004001000000000020410000004001000000
+            0000204100002041010000000000004000002041030000000000004000000040
+            000000000000804100000040010000000000C04100000040010000000000C041
+            0000204101000000000080410000204103000000000080410000004000000000
+            000000400000804101000000000020410000804101000000000020410000C041
+            01000000000000400000C0410300000000000040000080410000000000008041
+            00008041010000000000C04100008041010000000000C0410000C04101000000
+            000080410000C041030000000000804100008041}
+          Fill.Kind = None
+          HitTest = False
+          Position.X = 16.000000000000000000
+          Position.Y = 13.000000000000000000
+          Size.Width = 22.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFB9C2CC
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+      object Nav1: TButton
+        Tag = 1
+        StyledSettings = [Family, Style, FontColor]
+        Position.Y = 54.000000000000000000
+        Size.Width = 240.000000000000000000
+        Size.Height = 46.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 1
+        Text = 'Recent'
+        TextSettings.Font.Size = 15.000000000000000000
+        TextSettings.Trimming = Character
+        object NavIcon1: TPath
+          Data.Path = {
+            0B00000000000000000050410000803F020000000000E8410000803F02000000
+            0000E8410000C84102000000000050410000C84102000000000040C00000C841
+            02000000000040C00000803F02000000000050410000803F0300000000005041
+            0000803F00000000000050410000C04001000000000050410000504101000000
+            0000984100008041}
+          Fill.Kind = None
+          HitTest = False
+          Position.X = 16.000000000000000000
+          Position.Y = 13.000000000000000000
+          Size.Width = 22.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFB9C2CC
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+      object Nav2: TButton
+        Tag = 2
+        StyledSettings = [Family, Style, FontColor]
+        Position.Y = 108.000000000000000000
+        Size.Width = 240.000000000000000000
+        Size.Height = 46.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 2
+        Text = 'Favorites'
+        TextSettings.Font.Size = 15.000000000000000000
+        TextSettings.Trimming = Character
+        object NavIcon2: TPath
+          Data.Path = {
+            0900000000000000000050410000B84101000000000040400000504102000000
+            0000A0C0000040400200000000000041000000C002000000000050410000E040
+            0200000000009041000000C0020000000000F84100004040020000000000B841
+            0000504103000000000050410000B841}
+          Fill.Kind = None
+          HitTest = False
+          Position.X = 16.000000000000000000
+          Position.Y = 13.000000000000000000
+          Size.Width = 22.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFB9C2CC
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+    end
+    object Platforms: TLayout
+      Position.X = 12.000000000000000000
+      Position.Y = 272.000000000000000000
+      Size.Width = 240.000000000000000000
+      Size.Height = 338.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 2
+      object PL: TLabel
+        StyledSettings = []
+        Opacity = 0.600000023841857900
+        Position.X = 8.000000000000000000
+        Size.Width = 184.000000000000000000
+        Size.Height = 30.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 13.000000000000000000
+        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.WordWrap = False
+        Text = 'Platforms'
+        TabOrder = 0
+      end
+      object SidebarNES: TButton
+        Tag = 1
+        StyledSettings = [Family, Style, FontColor]
+        Position.Y = 34.000000000000000000
+        Size.Width = 240.000000000000000000
+        Size.Height = 42.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'buttonstyle_subtle'
+        TabOrder = 1
+        Text = 'NES'
+        TextSettings.Font.Size = 14.000000000000000000
+        TextSettings.Trimming = Character
+        object LibraryDecoration2: TPath
+          Data.Path = {
+            1C00000000000000000020410000C040010000000000C0410000C04002000000
+            0000E0410000C040020000000000F04100000041020000000000F84100005041
+            01000000000008420000D0410200000000000C420000F041020000000000F841
+            00000042020000000000E0410000E841010000000000B8410000C04101000000
+            000030410000C041010000000000C0400000E841020000000000404000000042
+            02000000000000000000F041020000000000803F0000D0410100000000008040
+            00005041020000000000A04000000041020000000000C0400000C04002000000
+            000020410000C04003000000000020410000C040000000000000104100004041
+            01000000000010410000A841000000000000A040000080410100000000005041
+            00008041000000000000C04100005041010000000000C0410000704100000000
+            0000E04100009041010000000000E0410000A041}
+          Fill.Kind = None
+          HitTest = False
+          Position.X = 16.000000000000000000
+          Position.Y = 11.000000000000000000
+          Size.Width = 22.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFB9C2CC
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+      object SidebarSNES: TButton
+        Tag = 2
+        StyledSettings = [Family, Style, FontColor]
+        Position.Y = 81.000000000000000000
+        Size.Width = 240.000000000000000000
+        Size.Height = 42.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'buttonstyle_subtle'
+        TabOrder = 2
+        Text = 'SNES'
+        TextSettings.Font.Size = 14.000000000000000000
+        TextSettings.Trimming = Character
+        object LibraryDecoration3: TPath
+          Data.Path = {
+            1C00000000000000000020410000C040010000000000C0410000C04002000000
+            0000E0410000C040020000000000F04100000041020000000000F84100005041
+            01000000000008420000D0410200000000000C420000F041020000000000F841
+            00000042020000000000E0410000E841010000000000B8410000C04101000000
+            000030410000C041010000000000C0400000E841020000000000404000000042
+            02000000000000000000F041020000000000803F0000D0410100000000008040
+            00005041020000000000A04000000041020000000000C0400000C04002000000
+            000020410000C04003000000000020410000C040000000000000104100004041
+            01000000000010410000A841000000000000A040000080410100000000005041
+            00008041000000000000C04100005041010000000000C0410000704100000000
+            0000E04100009041010000000000E0410000A041}
+          Fill.Kind = None
+          HitTest = False
+          Position.X = 16.000000000000000000
+          Position.Y = 11.000000000000000000
+          Size.Width = 22.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFB9C2CC
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+      object SidebarGB: TButton
+        Tag = 3
+        StyledSettings = [Family, Style, FontColor]
+        Position.Y = 128.000000000000000000
+        Size.Width = 240.000000000000000000
+        Size.Height = 42.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'buttonstyle_subtle'
+        TabOrder = 3
+        Text = 'GB'
+        TextSettings.Font.Size = 14.000000000000000000
+        TextSettings.Trimming = Character
+        object LibraryDecoration4: TPath
+          Data.Path = {
+            1C00000000000000000020410000C040010000000000C0410000C04002000000
+            0000E0410000C040020000000000F04100000041020000000000F84100005041
+            01000000000008420000D0410200000000000C420000F041020000000000F841
+            00000042020000000000E0410000E841010000000000B8410000C04101000000
+            000030410000C041010000000000C0400000E841020000000000404000000042
+            02000000000000000000F041020000000000803F0000D0410100000000008040
+            00005041020000000000A04000000041020000000000C0400000C04002000000
+            000020410000C04003000000000020410000C040000000000000104100004041
+            01000000000010410000A841000000000000A040000080410100000000005041
+            00008041000000000000C04100005041010000000000C0410000704100000000
+            0000E04100009041010000000000E0410000A041}
+          Fill.Kind = None
+          HitTest = False
+          Position.X = 16.000000000000000000
+          Position.Y = 11.000000000000000000
+          Size.Width = 22.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFB9C2CC
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+      object SidebarGBC: TButton
+        Tag = 4
+        StyledSettings = [Family, Style, FontColor]
+        Position.Y = 175.000000000000000000
+        Size.Width = 240.000000000000000000
+        Size.Height = 42.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'buttonstyle_subtle'
+        TabOrder = 4
+        Text = 'GBC'
+        TextSettings.Font.Size = 14.000000000000000000
+        TextSettings.Trimming = Character
+        object LibraryDecoration5: TPath
+          Data.Path = {
+            1C00000000000000000020410000C040010000000000C0410000C04002000000
+            0000E0410000C040020000000000F04100000041020000000000F84100005041
+            01000000000008420000D0410200000000000C420000F041020000000000F841
+            00000042020000000000E0410000E841010000000000B8410000C04101000000
+            000030410000C041010000000000C0400000E841020000000000404000000042
+            02000000000000000000F041020000000000803F0000D0410100000000008040
+            00005041020000000000A04000000041020000000000C0400000C04002000000
+            000020410000C04003000000000020410000C040000000000000104100004041
+            01000000000010410000A841000000000000A040000080410100000000005041
+            00008041000000000000C04100005041010000000000C0410000704100000000
+            0000E04100009041010000000000E0410000A041}
+          Fill.Kind = None
+          HitTest = False
+          Position.X = 16.000000000000000000
+          Position.Y = 11.000000000000000000
+          Size.Width = 22.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFB9C2CC
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+      object SidebarMD: TButton
+        Tag = 5
+        StyledSettings = [Family, Style, FontColor]
+        Position.Y = 222.000000000000000000
+        Size.Width = 240.000000000000000000
+        Size.Height = 42.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'buttonstyle_subtle'
+        TabOrder = 5
+        Text = 'Mega Drive'
+        TextSettings.Font.Size = 14.000000000000000000
+        TextSettings.Trimming = Character
+        object LibraryDecoration6: TPath
+          Data.Path = {
+            1C00000000000000000020410000C040010000000000C0410000C04002000000
+            0000E0410000C040020000000000F04100000041020000000000F84100005041
+            01000000000008420000D0410200000000000C420000F041020000000000F841
+            00000042020000000000E0410000E841010000000000B8410000C04101000000
+            000030410000C041010000000000C0400000E841020000000000404000000042
+            02000000000000000000F041020000000000803F0000D0410100000000008040
+            00005041020000000000A04000000041020000000000C0400000C04002000000
+            000020410000C04003000000000020410000C040000000000000104100004041
+            01000000000010410000A841000000000000A040000080410100000000005041
+            00008041000000000000C04100005041010000000000C0410000704100000000
+            0000E04100009041010000000000E0410000A041}
+          Fill.Kind = None
+          HitTest = False
+          Position.X = 16.000000000000000000
+          Position.Y = 11.000000000000000000
+          Size.Width = 22.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFB9C2CC
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+      object SidebarNeoGeo: TButton
+        Tag = 6
+        StyledSettings = [Family, Style, FontColor]
+        Position.Y = 269.000000000000000000
+        Size.Width = 240.000000000000000000
+        Size.Height = 42.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'buttonstyle_subtle'
+        TabOrder = 6
+        Text = 'Neo Geo'
+        TextSettings.Font.Size = 14.000000000000000000
+        TextSettings.Trimming = Character
+        object LibraryDecoration7: TPath
+          Data.Path = {
+            1C00000000000000000020410000C040010000000000C0410000C04002000000
+            0000E0410000C040020000000000F04100000041020000000000F84100005041
+            01000000000008420000D0410200000000000C420000F041020000000000F841
+            00000042020000000000E0410000E841010000000000B8410000C04101000000
+            000030410000C041010000000000C0400000E841020000000000404000000042
+            02000000000000000000F041020000000000803F0000D0410100000000008040
+            00005041020000000000A04000000041020000000000C0400000C04002000000
+            000020410000C04003000000000020410000C040000000000000104100004041
+            01000000000010410000A841000000000000A040000080410100000000005041
+            00008041000000000000C04100005041010000000000C0410000704100000000
+            0000E04100009041010000000000E0410000A041}
+          Fill.Kind = None
+          HitTest = False
+          Position.X = 16.000000000000000000
+          Position.Y = 11.000000000000000000
+          Size.Width = 22.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFB9C2CC
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+    end
+    object Bottom: TLayout
+      Align = Bottom
+      Padding.Left = 12.000000000000000000
+      Padding.Top = 12.000000000000000000
+      Padding.Right = 12.000000000000000000
+      Padding.Bottom = 12.000000000000000000
+      Position.Y = 700.000000000000000000
+      Size.Width = 264.000000000000000000
+      Size.Height = 118.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 4
+      object LibraryOpenRom: TButton
+        Align = Top
+        Position.X = 12.000000000000000000
+        Position.Y = 12.000000000000000000
+        Size.Width = 240.000000000000000000
+        Size.Height = 42.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 0
+        Text = 'Open ROM'
+        TextSettings.Trimming = Character
+        object LibraryDecoration8: TPath
+          Data.Path = {
+            07000000000000000000803F0000C04001000000000020410000C04001000000
+            0000504100001041010000000000C84100001041010000000000C8410000C841
+            010000000000803F0000C841030000000000803F0000C040}
+          Fill.Kind = None
+          HitTest = False
+          Position.X = 16.000000000000000000
+          Position.Y = 10.000000000000000000
+          Size.Width = 22.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFB9C2CC
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+      object Settings: TButton
+        Align = Bottom
+        Position.X = 12.000000000000000000
+        Position.Y = 64.000000000000000000
+        Size.Width = 240.000000000000000000
+        Size.Height = 42.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 1
+        Text = 'Settings'
+        TextSettings.Trimming = Character
+        object LibraryDecoration9: TPath
+          Data.Path = {
+            2100000000000000000020410000803F01000000000080410000803F01000000
+            000088410000A040010000000000A8410000E040010000000000C8410000C040
+            010000000000E04100003041010000000000C84100006041010000000000C841
+            00009041010000000000E0410000A841010000000000C8410000D04101000000
+            0000A8410000C84101000000000088410000D84101000000000080410000F841
+            01000000000020410000F84101000000000010410000D841010000000000A040
+            0000C841010000000000803F0000D04101000000000000C00000A84101000000
+            0000803F00009041010000000000803F0000604101000000000000C000003041
+            010000000000803F0000C040010000000000A0400000E0400100000000001041
+            0000A04003000000000020410000803F00000000000050410000204102000000
+            0000A84100002041020000000000A8410000B04102000000000050410000B041
+            020000000000A0400000B041020000000000A040000020410200000000005041
+            00002041030000000000504100002041}
+          Fill.Kind = None
+          HitTest = False
+          Position.X = 16.000000000000000000
+          Position.Y = 10.000000000000000000
+          Size.Width = 22.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFB9C2CC
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+    end
+  end
+  object FInspector: TPanel
+    Align = Right
+    Padding.Left = 20.000000000000000000
+    Padding.Top = 24.000000000000000000
+    Padding.Right = 20.000000000000000000
+    Padding.Bottom = 20.000000000000000000
+    Position.X = 932.000000000000000000
+    Size.Width = 292.000000000000000000
+    Size.Height = 818.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'retromul_sidebar'
+    TabOrder = 2
+    object DetailScroll: TVertScrollBox
+      Align = Client
+      Margins.Right = -8.000000000000000000
+      Size.Width = 260.000000000000000000
+      Size.Height = 774.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 0
+      ScrollAnimation = True
+      Viewport.Width = 244.000000000000000000
+      Viewport.Height = 774.000000000000000000
+      object FCover: TImage
+        MultiResBitmap = <
+          item
+          end>
+        Size.Width = 248.000000000000000000
+        Size.Height = 272.000000000000000000
+        Size.PlatformDefault = False
+      end
+      object FTitle: TLabel
+        StyledSettings = []
+        Position.Y = 282.000000000000000000
+        Size.Width = 248.000000000000000000
+        Size.Height = 64.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 23.000000000000000000
+        TextSettings.Font.StyleExt = {00070000000000000004000000}
+        TextSettings.FontColor = xFFE8ECF1
+        Text = 'Select a game'
+        TabOrder = 1
+      end
+      object FDetails: TLabel
+        StyledSettings = []
+        Opacity = 0.649999976158142100
+        Position.Y = 348.000000000000000000
+        Size.Width = 248.000000000000000000
+        Size.Height = 50.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 13.000000000000000000
+        TextSettings.FontColor = xFFE8ECF1
+        Text = 'FDetails'
+        TabOrder = 2
+      end
+      object FPlay: TButton
+        Position.Y = 406.000000000000000000
+        Size.Width = 248.000000000000000000
+        Size.Height = 44.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'buttonstyle_accent'
+        TabOrder = 3
+        Text = 'Play'
+        TextSettings.Trimming = Character
+      end
+      object FFavorite: TButton
+        Position.Y = 460.000000000000000000
+        Size.Width = 248.000000000000000000
+        Size.Height = 40.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 4
+        Text = 'Add to favorites'
+        TextSettings.Trimming = Character
+      end
+      object FDescription: TLabel
+        StyledSettings = []
+        Opacity = 0.699999988079071000
+        Position.Y = 516.000000000000000000
+        Size.Width = 248.000000000000000000
+        Size.Height = 92.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 13.000000000000000000
+        TextSettings.FontColor = xFFE8ECF1
+        Text = 'FDescription'
+        TabOrder = 5
+      end
+      object FGameInfo: TLabel
+        StyledSettings = []
+        Opacity = 0.699999988079071000
+        Position.Y = 610.000000000000000000
+        Size.Width = 248.000000000000000000
+        Size.Height = 48.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 13.000000000000000000
+        TextSettings.FontColor = xFFE8ECF1
+        Text = 'FGameInfo'
+        TabOrder = 6
+      end
+      object SL: TLabel
+        StyledSettings = []
+        Position.Y = 670.000000000000000000
+        Size.Width = 248.000000000000000000
+        Size.Height = 32.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 19.000000000000000000
+        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.WordWrap = False
+        Text = 'Save states'
+        TabOrder = 7
+      end
+      object FSavesEmpty: TLabel
+        StyledSettings = []
+        Opacity = 0.600000023841857900
+        Position.Y = 710.000000000000000000
+        Size.Width = 248.000000000000000000
+        Size.Height = 54.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 13.000000000000000000
+        TextSettings.FontColor = xFFE8ECF1
+        Text = 'FSavesEmpty'
+        TabOrder = 8
+      end
+      object SavePreview0: TImage
+        MultiResBitmap = <
+          item
+          end>
+        Position.Y = 710.000000000000000000
+        Size.Width = 76.000000000000000000
+        Size.Height = 64.000000000000000000
+        Size.PlatformDefault = False
+      end
+      object SaveButton0: TButton
+        Position.X = 84.000000000000000000
+        Position.Y = 710.000000000000000000
+        Size.Width = 164.000000000000000000
+        Size.Height = 64.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 10
+        Text = 'No save state'
+        TextSettings.Trimming = Character
+        Visible = False
+      end
+      object SavePreview1: TImage
+        MultiResBitmap = <
+          item
+          end>
+        Position.Y = 794.000000000000000000
+        Size.Width = 76.000000000000000000
+        Size.Height = 64.000000000000000000
+        Size.PlatformDefault = False
+      end
+      object SaveButton1: TButton
+        Position.X = 84.000000000000000000
+        Position.Y = 794.000000000000000000
+        Size.Width = 164.000000000000000000
+        Size.Height = 64.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 12
+        Text = 'No save state'
+        TextSettings.Trimming = Character
+        Visible = False
+      end
+      object SavePreview2: TImage
+        MultiResBitmap = <
+          item
+          end>
+        Position.Y = 878.000000000000000000
+        Size.Width = 76.000000000000000000
+        Size.Height = 64.000000000000000000
+        Size.PlatformDefault = False
+      end
+      object SaveButton2: TButton
+        Position.X = 84.000000000000000000
+        Position.Y = 878.000000000000000000
+        Size.Width = 164.000000000000000000
+        Size.Height = 64.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 14
+        Text = 'No save state'
+        TextSettings.Trimming = Character
+        Visible = False
+      end
+    end
+  end
+  object FBody: TLayout
+    Align = Client
+    Padding.Left = 24.000000000000000000
+    Padding.Top = 22.000000000000000000
+    Padding.Right = 24.000000000000000000
+    Padding.Bottom = 18.000000000000000000
+    Size.Width = 668.000000000000000000
+    Size.Height = 818.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 3
+    object FHeader: TLayout
+      Position.X = 24.000000000000000000
+      Position.Y = 22.000000000000000000
+      Size.Width = 620.000000000000000000
+      Size.Height = 92.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 0
+      object Heading: TLabel
+        Align = Top
+        StyledSettings = []
+        Size.Width = 620.000000000000000000
+        Size.Height = 42.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 30.000000000000000000
+        TextSettings.Font.StyleExt = {00070000000000000004000000}
+        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.WordWrap = False
+        Text = 'Library'
+        TabOrder = 0
+      end
+      object LibraryListView: TButton
+        Tag = 1
+        Align = Right
+        Hint = 'List'
+        Margins.Top = 8.000000000000000000
+        Margins.Bottom = 8.000000000000000000
+        Position.X = 528.000000000000000000
+        Position.Y = 50.000000000000000000
+        Size.Width = 42.000000000000000000
+        Size.Height = 34.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 1
+        TextSettings.Trimming = Character
+        ParentShowHint = False
+        ShowHint = True
+        object LibraryDecoration10: TPath
+          Align = Center
+          Data.Path = {
+            06000000000000000000004000008040010000000000B0410000804000000000
+            0000004000004041010000000000B0410000404100000000000000400000A041
+            010000000000B0410000A041}
+          Fill.Kind = None
+          HitTest = False
+          Size.Width = 18.000000000000000000
+          Size.Height = 18.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFE8ECF1
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+      object LibraryGridView: TButton
+        Align = Right
+        Hint = 'Covers'
+        Margins.Left = 8.000000000000000000
+        Margins.Top = 8.000000000000000000
+        Margins.Bottom = 8.000000000000000000
+        Position.X = 578.000000000000000000
+        Position.Y = 50.000000000000000000
+        Size.Width = 42.000000000000000000
+        Size.Height = 34.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 2
+        TextSettings.Trimming = Character
+        ParentShowHint = False
+        ShowHint = True
+        object LibraryDecoration11: TPath
+          Align = Center
+          Data.Path = {
+            1400000000000000000000400000004001000000000020410000004001000000
+            0000204100002041010000000000004000002041030000000000004000000040
+            000000000000604100000040010000000000B04100000040010000000000B041
+            0000204101000000000060410000204103000000000060410000004000000000
+            000000400000604101000000000020410000604101000000000020410000B041
+            01000000000000400000B0410300000000000040000060410000000000006041
+            00006041010000000000B04100006041010000000000B0410000B04101000000
+            000060410000B041030000000000604100006041}
+          Fill.Kind = None
+          HitTest = False
+          Size.Width = 18.000000000000000000
+          Size.Height = 18.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Color = xFFE8ECF1
+          Stroke.Thickness = 1.600000023841858000
+          WrapMode = Fit
+        end
+      end
+      object SearchHost: TLayout
+        Align = Client
+        Margins.Right = 12.000000000000000000
+        Size.Width = 516.000000000000000000
+        Size.Height = 50.000000000000000000
+        Size.PlatformDefault = False
+      end
+    end
+    object FCompactActions: TLayout
+      Position.Y = 92.000000000000000000
+      Size.Width = 50.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      Visible = False
+      TabOrder = 1
+      object CompactOpen: TButton
+        Size.Width = 136.000000000000000000
+        Size.Height = 36.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 0
+        Text = 'Open ROM'
+        TextSettings.Trimming = Character
+      end
+      object CompactSettings: TButton
+        Position.X = 144.000000000000000000
+        Size.Width = 136.000000000000000000
+        Size.Height = 36.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 1
+        Text = 'Settings'
+        TextSettings.Trimming = Character
+      end
+    end
+    object LibraryContinue: TLayout
+      Margins.Top = 8.000000000000000000
+      Margins.Bottom = 14.000000000000000000
+      Position.X = 24.000000000000000000
+      Position.Y = 118.000000000000000000
+      Size.Width = 620.000000000000000000
+      Size.Height = 154.000000000000000000
+      Size.PlatformDefault = False
+      Visible = False
+      TabOrder = 2
+      object ContinueBG: TPanel
+        Align = Contents
+        Size.Width = 620.000000000000000000
+        Size.Height = 154.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'retromul_card'
+        TabOrder = 0
+      end
+      object FContinuePreview: TLayout
+        Position.X = 12.000000000000000000
+        Position.Y = 12.000000000000000000
+        Size.Width = 176.000000000000000000
+        Size.Height = 130.000000000000000000
+        Size.PlatformDefault = False
+        Visible = False
+        TabOrder = 1
+        object LibraryResumePreview: TRectangle
+          Fill.Color = xFF181C21
+          HitTest = False
+          Size.Width = 176.000000000000000000
+          Size.Height = 130.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Kind = None
+          XRadius = 10.000000000000000000
+          YRadius = 10.000000000000000000
+        end
+        object LibraryResumeGamePreview: TImage
+          MultiResBitmap = <
+            item
+            end>
+          Align = Contents
+          HitTest = False
+          Size.Width = 176.000000000000000000
+          Size.Height = 130.000000000000000000
+          Size.PlatformDefault = False
+        end
+        object FContinueNoPreview: TLabel
+          Align = Contents
+          StyledSettings = []
+          Opacity = 0.500000000000000000
+          Size.Width = 176.000000000000000000
+          Size.Height = 130.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.HorzAlign = Center
+          Text = 'No save-state screenshot'
+          TabOrder = 2
+        end
+      end
+      object FContinueCaption: TLabel
+        StyledSettings = []
+        Opacity = 0.600000023841857900
+        Position.X = 20.000000000000000000
+        Position.Y = 16.000000000000000000
+        Size.Width = 416.000000000000000000
+        Size.Height = 18.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 13.000000000000000000
+        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.WordWrap = False
+        Text = 'Continue playing'
+        TabOrder = 2
+      end
+      object FContinueTitle: TLabel
+        StyledSettings = []
+        Position.X = 20.000000000000000000
+        Position.Y = 38.000000000000000000
+        Size.Width = 416.000000000000000000
+        Size.Height = 32.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 24.000000000000000000
+        TextSettings.Font.StyleExt = {00070000000000000004000000}
+        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.WordWrap = False
+        Text = 'FContinueTitle'
+        TabOrder = 3
+      end
+      object FContinuePlatform: TLabel
+        StyledSettings = []
+        Opacity = 0.699999988079071000
+        Position.X = 20.000000000000000000
+        Position.Y = 74.000000000000000000
+        Size.Width = 416.000000000000000000
+        Size.Height = 18.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 13.000000000000000000
+        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.WordWrap = False
+        Text = 'FContinuePlatform'
+        TabOrder = 4
+      end
+      object FContinueLastPlayed: TLabel
+        StyledSettings = []
+        Opacity = 0.600000023841857900
+        Position.X = 20.000000000000000000
+        Position.Y = 94.000000000000000000
+        Size.Width = 416.000000000000000000
+        Size.Height = 18.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.WordWrap = False
+        Text = 'FContinueLastPlayed'
+        TabOrder = 5
+      end
+      object FContinueSave: TLabel
+        StyledSettings = []
+        Opacity = 0.600000023841857900
+        Position.X = 20.000000000000000000
+        Position.Y = 114.000000000000000000
+        Size.Width = 416.000000000000000000
+        Size.Height = 18.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.WordWrap = False
+        Text = 'FContinueSave'
+        TabOrder = 6
+      end
+      object LibraryResume: TButton
+        Position.X = 458.000000000000000000
+        Position.Y = 96.000000000000000000
+        Size.Width = 144.000000000000000000
+        Size.Height = 40.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'buttonstyle_accent'
+        TabOrder = 7
+        Text = 'Resume'
+        TextSettings.Trimming = Character
+      end
+    end
+    object FFilters: TLayout
+      Position.X = 24.000000000000000000
+      Position.Y = 118.000000000000000000
+      Size.Width = 620.000000000000000000
+      Size.Height = 46.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 3
+      object Filter0: TButton
+        Position.Y = 4.000000000000000000
+        Size.Width = 56.000000000000000000
+        Size.Height = 34.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 0
+        Text = 'All'
+        TextSettings.Trimming = Character
+      end
+      object Filter1: TButton
+        Tag = 1
+        Position.X = 63.000000000000000000
+        Position.Y = 4.000000000000000000
+        Size.Width = 56.000000000000000000
+        Size.Height = 34.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 1
+        Text = 'NES'
+        TextSettings.Trimming = Character
+      end
+      object Filter2: TButton
+        Tag = 2
+        Position.X = 126.000000000000000000
+        Position.Y = 4.000000000000000000
+        Size.Width = 56.000000000000000000
+        Size.Height = 34.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 2
+        Text = 'SNES'
+        TextSettings.Trimming = Character
+      end
+      object Filter3: TButton
+        Tag = 3
+        Position.X = 189.000000000000000000
+        Position.Y = 4.000000000000000000
+        Size.Width = 56.000000000000000000
+        Size.Height = 34.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 3
+        Text = 'GB'
+        TextSettings.Trimming = Character
+      end
+      object Filter4: TButton
+        Tag = 4
+        Position.X = 252.000000000000000000
+        Position.Y = 4.000000000000000000
+        Size.Width = 56.000000000000000000
+        Size.Height = 34.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 4
+        Text = 'GBC'
+        TextSettings.Trimming = Character
+      end
+      object Filter5: TButton
+        Tag = 5
+        Position.X = 315.000000000000000000
+        Position.Y = 4.000000000000000000
+        Size.Width = 102.000000000000000000
+        Size.Height = 34.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 5
+        Text = 'Mega Drive'
+        TextSettings.Trimming = Character
+      end
+      object Filter6: TButton
+        Tag = 6
+        Position.X = 424.000000000000000000
+        Position.Y = 4.000000000000000000
+        Size.Width = 102.000000000000000000
+        Size.Height = 34.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 6
+        Text = 'Neo Geo'
+        TextSettings.Trimming = Character
+      end
+    end
+    object FCount: TLabel
+      StyledSettings = []
+      Opacity = 0.550000011920929000
+      Position.X = 24.000000000000000000
+      Position.Y = 164.000000000000000000
+      Size.Width = 620.000000000000000000
+      Size.Height = 28.000000000000000000
+      Size.PlatformDefault = False
+      TextSettings.FontColor = xFFE8ECF1
+      TextSettings.WordWrap = False
+      Text = '0 games'
+      TabOrder = 4
+    end
+    object FScroll: TVertScrollBox
+      Position.X = 24.000000000000000000
+      Position.Y = 192.000000000000000000
+      Size.Width = 620.000000000000000000
+      Size.Height = 608.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 5
+      ScrollAnimation = True
+      Viewport.Width = 620.000000000000000000
+      Viewport.Height = 608.000000000000000000
+      object FGrid: TLayout
+        Size.Width = 604.000000000000000000
+        Size.Height = 180.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 0
+        object FEmpty: TLabel
+          StyledSettings = []
+          Position.X = 16.000000000000000000
+          Position.Y = 28.000000000000000000
+          Size.Width = 572.000000000000000000
+          Size.Height = 132.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.Font.Size = 18.000000000000000000
+          TextSettings.FontColor = xFFE8ECF1
+          Text = 'No games found.'
+          TabOrder = 0
+        end
+        object FMore: TButton
+          Position.X = 212.000000000000000000
+          Position.Y = 184.000000000000000000
+          Size.Width = 180.000000000000000000
+          Size.Height = 42.000000000000000000
+          Size.PlatformDefault = False
+          TabOrder = 1
+          Text = 'Show more'
+          TextSettings.Trimming = Character
+          Visible = False
+        end
+      end
+    end
+  end
+end

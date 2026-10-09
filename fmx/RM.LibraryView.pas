@@ -5,7 +5,7 @@ interface
 uses
   System.SysUtils, System.Classes, System.Types, System.UITypes,
   System.Generics.Collections, System.IniFiles, FMX.Types, FMX.Controls,
-  FMX.Layouts, FMX.StdCtrls, FMX.Edit, FMX.Objects, Core.Storage;
+  FMX.Forms, FMX.Layouts, FMX.StdCtrls, FMX.Edit, FMX.Objects, Core.Storage, FMX.Controls.Presentation;
 
 type
   TLibraryGame = class
@@ -23,30 +23,30 @@ type
     Selection: TRectangle;
   end;
 
-  TLibraryView = class(TPanel)
+  TLibraryView = class(TFrame)
+    FSidebar, FInspector: TPanel;
+    FCompactActions: TLayout;
+    FScroll: TVertScrollBox;
+    FGrid: TLayout;
+    FTitle, FCount, FDetails, FDescription, FGameInfo, FSavesEmpty, FEmpty, FContinueTitle: TLabel;
+    FCover: TImage;
+    FContinuePreview: TLayout;
+    FContinueNoPreview: TLabel;
+    FContinueCaption, FContinuePlatform, FContinueLastPlayed, FContinueSave: TLabel;
   private
     FStorage: IStorage;
     FGames: TObjectList<TLibraryGame>;
     FState: TMemIniFile;
-    FSidebar, FInspector: TPanel;
     FBody, FHeader, FFilters, FContinue: TLayout;
-    FCompactActions: TLayout;
-    FScroll: TVertScrollBox;
-    FGrid: TLayout;
     FSearch: TEdit;
-    FTitle, FCount, FDetails, FDescription, FGameInfo, FSavesEmpty, FEmpty, FContinueTitle: TLabel;
-    FCover: TImage;
     FPlay, FFavorite, FMore, FGridButton, FListButton, FResume: TButton;
     FSaveButtons: array[0..2] of TButton;
     FSaveImages: array[0..2] of TImage;
     FPlatformButtons: array[0..6] of TButton;
     FNavButtons: array[0..2] of TButton;
     FNavIcons: array[0..2] of TPath;
-    FContinuePreview: TLayout;
     FContinueCover: TRectangle;
     FContinueGamePreview: TImage;
-    FContinueNoPreview: TLabel;
-    FContinueCaption, FContinuePlatform, FContinueLastPlayed, FContinueSave: TLabel;
     FCards: TList<TLibraryCard>;
     FSelected, FRecent: TLibraryGame;
     FSystemFilter: string;
@@ -103,6 +103,8 @@ function LibrarySystemName(const Id: string): string;
 function InterfaceIcon(Parent: TControl; const Data: string; X, Y, Size: Single; Color: TAlphaColor = $FFB9C2CC): TPath;
 
 implementation
+
+{$R *.fmx}
 
 uses
   System.IOUtils, System.Math, System.Hash, System.Generics.Defaults,
@@ -169,249 +171,97 @@ end;
 
 constructor TLibraryView.CreateLibrary(AOwner: TComponent; const Storage: IStorage);
 begin
-  inherited Create(AOwner);
   FBuilding := True;
-  StyleLookup := 'retromul_settings';
+  inherited Create(AOwner);
   FStorage := Storage;
   FGames := TObjectList<TLibraryGame>.Create;
   FCards := TList<TLibraryCard>.Create;
   FState := FStorage.ReadConfig(FStorage.ConfigFile('library'));
   FLimit := 48;
-  FSidebar := TPanel.Create(Self);
-  FSidebar.Parent := Self;
-  FSidebar.Align := TAlignLayout.Left;
-  FSidebar.Width := 264;
-  FSidebar.StyleLookup := 'retromul_sidebar';
-  var Brand := TextLabel(Self, FSidebar, 'RetroMul', 26);
-  Brand.SetBounds(64, 22, 154, 40);
-  Brand.TextSettings.Font.Size := 23;
-  InterfaceIcon(FSidebar, IconPad, 24, 26, 30, $FFFFB344);
-  Brand.TextSettings.Font.Style := [TFontStyle.fsBold];
-  var Nav := TLayout.Create(Self);
-  Nav.Parent := FSidebar;
-  Nav.SetBounds(12, 88, 240, 162);
-  for var i := 0 to 2 do
+  FSidebar := FindComponent('FSidebar') as TPanel;
+  FInspector := FindComponent('FInspector') as TPanel;
+  FBody := FindComponent('FBody') as TLayout;
+  FHeader := FindComponent('FHeader') as TLayout;
+  FFilters := FindComponent('FFilters') as TLayout;
+  FContinue := FindComponent('LibraryContinue') as TLayout;
+  FCompactActions := FindComponent('FCompactActions') as TLayout;
+  FScroll := FindComponent('FScroll') as TVertScrollBox;
+  FGrid := FindComponent('FGrid') as TLayout;
+  FTitle := FindComponent('FTitle') as TLabel;
+  FCount := FindComponent('FCount') as TLabel;
+  FDetails := FindComponent('FDetails') as TLabel;
+  FDescription := FindComponent('FDescription') as TLabel;
+  FGameInfo := FindComponent('FGameInfo') as TLabel;
+  FSavesEmpty := FindComponent('FSavesEmpty') as TLabel;
+  FEmpty := FindComponent('FEmpty') as TLabel;
+  FContinueTitle := FindComponent('FContinueTitle') as TLabel;
+  FCover := FindComponent('FCover') as TImage;
+  FPlay := FindComponent('FPlay') as TButton;
+  FFavorite := FindComponent('FFavorite') as TButton;
+  FMore := FindComponent('FMore') as TButton;
+  FGridButton := FindComponent('LibraryGridView') as TButton;
+  FListButton := FindComponent('LibraryListView') as TButton;
+  FResume := FindComponent('LibraryResume') as TButton;
+  FContinuePreview := FindComponent('FContinuePreview') as TLayout;
+  FContinueCover := FindComponent('LibraryResumePreview') as TRectangle;
+  FContinueCover.Fill.Bitmap.WrapMode := TWrapMode.TileStretch;
+  FContinueGamePreview := FindComponent('LibraryResumeGamePreview') as TImage;
+  FContinueNoPreview := FindComponent('FContinueNoPreview') as TLabel;
+  FContinueCaption := FindComponent('FContinueCaption') as TLabel;
+  FContinuePlatform := FindComponent('FContinuePlatform') as TLabel;
+  FContinueLastPlayed := FindComponent('FContinueLastPlayed') as TLabel;
+  FContinueSave := FindComponent('FContinueSave') as TLabel;
+
+  for var I := 0 to 2 do
   begin
-    var Name := Translate('Library');
-    if i = 1 then
-      Name := Translate('Recent');
-    if i = 2 then
-      Name := Translate('Favorites');
-    FNavButtons[i] := ActionButton(Self, Nav, Name, ModeClick);
-    FNavButtons[i].SetBounds(0, i * 54, 240, 46);
-    FNavButtons[i].StyledSettings := FNavButtons[i].StyledSettings - [TStyledSetting.Size, TStyledSetting.Other];
-    FNavButtons[i].TextSettings.Font.Size := 15;
-    FNavButtons[i].Tag := i;
-    FNavButtons[i].TextSettings.HorzAlign := TTextAlign.Leading;
-    FNavButtons[i].StylesData['text.Margins.Left'] := 48;
-    var Icon := IconLibrary;
-    if i = 1 then
-      Icon := IconClock;
-    if i = 2 then
-      Icon := IconHeart;
-    FNavIcons[i] := InterfaceIcon(FNavButtons[i], Icon, 16, 13, 22);
+    FNavButtons[I] := FindComponent('Nav' + IntToStr(I)) as TButton;
+    FNavButtons[I].OnClick := ModeClick;
+    FNavButtons[I].TextSettings.HorzAlign := TTextAlign.Leading;
+    FNavButtons[I].StylesData['text.Margins.Left'] := 48;
+    FNavIcons[I] := FindComponent('NavIcon' + IntToStr(I)) as FMX.Objects.TPath;
+    FSaveImages[I] := FindComponent('SavePreview' + IntToStr(I)) as TImage;
+    FSaveButtons[I] := FindComponent('SaveButton' + IntToStr(I)) as TButton;
+    FSaveButtons[I].OnClick := SaveClick;
   end;
-  var Platforms := TLayout.Create(Self);
-  Platforms.Parent := FSidebar;
-  Platforms.SetBounds(12, 272, 240, 338);
-  var PL := TextLabel(Self, Platforms, Translate('Platforms'), 13);
-  PL.SetBounds(8, 0, 184, 30);
-  PL.Opacity := 0.6;
-  for var i := 1 to High(SystemIds) do
+  for var I := 0 to 6 do
   begin
-    var B := ActionButton(Self, Platforms, SystemNames[i], FilterClick);
-    B.SetBounds(0, 34 + (i - 1) * 47, 240, 42);
-    B.StyleLookup := 'buttonstyle_subtle';
-    B.StyledSettings := B.StyledSettings - [TStyledSetting.Size, TStyledSetting.Other];
-    B.TextSettings.Font.Size := 14;
-    B.TagString := SystemIds[i];
-    B.TextSettings.HorzAlign := TTextAlign.Leading;
-    B.StylesData['text.Margins.Left'] := 48;
-    InterfaceIcon(B, IconPad, 16, 11, 22);
+    FPlatformButtons[I] := FindComponent('Filter' + IntToStr(I)) as TButton;
+    FPlatformButtons[I].OnClick := FilterClick;
   end;
-  var Bottom := TLayout.Create(Self);
-  Bottom.Parent := FSidebar;
-  Bottom.Align := TAlignLayout.Bottom;
-  Bottom.Height := 118;
-  Bottom.Padding.Rect := TRectF.Create(12, 12, 12, 12);
-  var Open := ActionButton(Self, Bottom, Translate('Open ROM'), nil);
-  Open.Name := 'LibraryOpenRom';
-  Open.Align := TAlignLayout.Top;
-  Open.OnClick := OpenClick;
-  Open.StyledSettings := Open.StyledSettings - [TStyledSetting.Other];
-  Open.TextSettings.HorzAlign := TTextAlign.Leading;
-  Open.StylesData['text.Margins.Left'] := 48;
-  InterfaceIcon(Open, IconFolder, 16, 10, 22);
-  var Settings := ActionButton(Self, Bottom, Translate('Settings'), nil);
-  Settings.Align := TAlignLayout.Bottom;
-  Settings.OnClick := SettingsClick;
-  Settings.StyledSettings := Settings.StyledSettings - [TStyledSetting.Other];
-  Settings.TextSettings.HorzAlign := TTextAlign.Leading;
-  Settings.StylesData['text.Margins.Left'] := 48;
-  InterfaceIcon(Settings, IconGear, 16, 10, 22);
-  FInspector := TPanel.Create(Self);
-  FInspector.Parent := Self;
-  FInspector.Align := TAlignLayout.Right;
-  FInspector.Width := 292;
-  FInspector.Padding.Rect := TRectF.Create(20, 24, 20, 20);
-  FInspector.StyleLookup := 'retromul_sidebar';
-  var DetailScroll := TVertScrollBox.Create(Self);
-  DetailScroll.ScrollAnimation := TBehaviorBoolean.True;
-  DetailScroll.Parent := FInspector;
-  DetailScroll.Align := TAlignLayout.Client;
-  FCover := TImage.Create(Self);
-  FCover.Parent := DetailScroll;
-  FCover.SetBounds(0, 0, 248, 272);
-  FCover.WrapMode := TImageWrapMode.Fit;
-  FTitle := TextLabel(Self, DetailScroll, Translate('Select a game'), 23);
-  FTitle.SetBounds(0, 282, 248, 64);
-  FTitle.TextSettings.WordWrap := True;
-  FTitle.TextSettings.Font.Style := [TFontStyle.fsBold];
-  FDetails := TextLabel(Self, DetailScroll, '', 13);
-  FDetails.SetBounds(0, 348, 248, 50);
-  FDetails.TextSettings.WordWrap := True;
-  FDetails.Opacity := 0.65;
-  FPlay := ActionButton(Self, DetailScroll, Translate('Play'), PlayClick);
-  FPlay.SetBounds(0, 406, 248, 44);
-  FPlay.StyleLookup := 'buttonstyle_accent';
-  FFavorite := ActionButton(Self, DetailScroll, Translate('Add to favorites'), FavoriteClick);
-  FFavorite.SetBounds(0, 460, 248, 40);
-  FDescription := TextLabel(Self, DetailScroll, '', 13);
-  FDescription.SetBounds(0, 516, 248, 92);
-  FDescription.TextSettings.WordWrap := True;
-  FDescription.Opacity := 0.7;
-  FGameInfo := TextLabel(Self, DetailScroll, '', 13);
-  FGameInfo.SetBounds(0, 610, 248, 48);
-  FGameInfo.TextSettings.WordWrap := True;
-  FGameInfo.Opacity := 0.7;
-  var SL := TextLabel(Self, DetailScroll, Translate('Save states'), 19);
-  SL.SetBounds(0, 670, 248, 32);
-  FSavesEmpty := TextLabel(Self, DetailScroll, '', 13);
-  FSavesEmpty.SetBounds(0, 710, 248, 54);
-  FSavesEmpty.TextSettings.WordWrap := True;
-  FSavesEmpty.Opacity := 0.6;
-  for var i := 0 to 2 do
+  var Platforms := FindComponent('Platforms') as TLayout;
+  for var Child in Platforms.Children do
+    if Child is TButton then
+    begin
+      TButton(Child).OnClick := FilterClick;
+      TButton(Child).TextSettings.HorzAlign := TTextAlign.Leading;
+      TButton(Child).StylesData['text.Margins.Left'] := 48;
+    end;
+  for var Name in ['LibraryOpenRom', 'Settings'] do
   begin
-    FSaveImages[i] := TImage.Create(Self);
-    FSaveImages[i].Parent := DetailScroll;
-    FSaveImages[i].SetBounds(0, 710 + i * 84, 76, 64);
-    FSaveButtons[i] := ActionButton(Self, DetailScroll, Translate('No save state'), SaveClick);
-    FSaveButtons[i].SetBounds(84, 710 + i * 84, 164, 64);
-    FSaveButtons[i].Visible := False;
+    var Button := FindComponent(Name) as TButton;
+    Button.TextSettings.HorzAlign := TTextAlign.Leading;
+    Button.StylesData['text.Margins.Left'] := 48;
   end;
-  FBody := TLayout.Create(Self);
-  FBody.Parent := Self;
-  FBody.Align := TAlignLayout.Client;
-  FBody.Padding.Rect := TRectF.Create(24, 22, 24, 18);
-  FBody.OnResize := BodyResize;
-  FHeader := TLayout.Create(Self);
-  FHeader.Parent := FBody;
-  FHeader.Align := TAlignLayout.None;
-  FHeader.Height := 92;
-  FCompactActions := TLayout.Create(Self);
-  FCompactActions.Parent := FBody;
-  FCompactActions.Align := TAlignLayout.None;
-  FCompactActions.Position.Y := 92;
-  FCompactActions.Height := 48;
-  var CompactOpen := ActionButton(Self, FCompactActions, Translate('Open ROM'), OpenClick);
-  CompactOpen.SetBounds(0, 0, 136, 36);
-  var CompactSettings := ActionButton(Self, FCompactActions, Translate('Settings'), SettingsClick);
-  CompactSettings.SetBounds(144, 0, 136, 36);
-  var Heading := TextLabel(Self, FHeader, Translate('Library'), 30);
-  Heading.Align := TAlignLayout.Top;
-  Heading.Height := 42;
-  Heading.TextSettings.Font.Style := [TFontStyle.fsBold];
-  FListButton := ActionButton(Self, FHeader, '', ViewClick);
-  FListButton.Name := 'LibraryListView';
-  FListButton.Hint := Translate('List');
-  AddButtonIcon(FListButton, IconViewList, 18);
-  FListButton.Align := TAlignLayout.Right;
-  FListButton.Width := 42;
-  FListButton.Tag := 1;
-  FListButton.Margins.Rect := RectF(0, 8, 0, 8);
-  FGridButton := ActionButton(Self, FHeader, '', ViewClick);
-  FGridButton.Name := 'LibraryGridView';
-  FGridButton.Hint := Translate('Covers');
-  AddButtonIcon(FGridButton, IconViewGrid, 18);
-  FGridButton.Align := TAlignLayout.Right;
-  FGridButton.Width := 42;
-  FGridButton.Margins.Rect := RectF(8, 8, 0, 8);
+  var SearchHost := FindComponent('SearchHost') as TLayout;
   FSearch := TSearchEdit.Create(Self);
   FSearch.Name := 'LibrarySearch';
-  FSearch.Parent := FHeader;
+  FSearch.Parent := SearchHost;
   FSearch.Align := TAlignLayout.Client;
-  FSearch.Margins.Right := 12;
   FSearch.TextPrompt := Translate('Search games');
   FSearch.OnChangeTracking := SearchChange;
-  FContinue := TLayout.Create(Self);
-  FContinue.Name := 'LibraryContinue';
-  FContinue.Parent := FBody;
-  FContinue.Align := TAlignLayout.None;
-  FContinue.Height := 102;
-  FContinue.Margins.Rect := TRectF.Create(0, 8, 0, 14);
-  var ContinueBG := TPanel.Create(Self);
-  ContinueBG.Parent := FContinue;
-  ContinueBG.Align := TAlignLayout.Contents;
-  ContinueBG.StyleLookup := 'retromul_card';
-  FContinuePreview := TLayout.Create(Self);
-  FContinuePreview.Parent := FContinue;
-  FContinueCover := TRectangle.Create(Self);
-  FContinueCover.Name := 'LibraryResumePreview';
-  FContinueCover.Parent := FContinuePreview;
-  FContinueCover.HitTest := False;
-  FContinueCover.Stroke.Kind := TBrushKind.None;
-  FContinueCover.Fill.Color := $FF181C21;
-  FContinueCover.Fill.Bitmap.WrapMode := TWrapMode.TileStretch;
-  FContinueCover.XRadius := 10;
-  FContinueCover.YRadius := 10;
-  FContinueGamePreview := TImage.Create(Self);
-  FContinueGamePreview.Name := 'LibraryResumeGamePreview';
-  FContinueGamePreview.Parent := FContinuePreview;
-  FContinueGamePreview.Align := TAlignLayout.Contents;
-  FContinueGamePreview.WrapMode := TImageWrapMode.Fit;
-  FContinueGamePreview.HitTest := False;
-  FContinueNoPreview := TextLabel(Self, FContinuePreview, Translate('No save-state screenshot'), 12);
-  FContinueNoPreview.Align := TAlignLayout.Contents;
-  FContinueNoPreview.TextSettings.HorzAlign := TTextAlign.Center;
-  FContinueNoPreview.TextSettings.WordWrap := True;
-  FContinueNoPreview.Opacity := 0.5;
-  FContinueCaption := TextLabel(Self, FContinue, Translate('Continue playing'), 13);
-  FContinueCaption.Opacity := 0.6;
-  FContinueTitle := TextLabel(Self, FContinue, '', 24);
-  FContinueTitle.TextSettings.Font.Style := [TFontStyle.fsBold];
-  FContinuePlatform := TextLabel(Self, FContinue, '', 13);
-  FContinuePlatform.Opacity := 0.7;
-  FContinueLastPlayed := TextLabel(Self, FContinue, '', 12);
-  FContinueLastPlayed.Opacity := 0.6;
-  FContinueSave := TextLabel(Self, FContinue, '', 12);
-  FContinueSave.Opacity := 0.6;
-  FResume := ActionButton(Self, FContinue, Translate('Resume'), ResumeClick);
-  FResume.Name := 'LibraryResume';
-  FResume.StyleLookup := 'buttonstyle_accent';
-  FFilters := TLayout.Create(Self);
-  FFilters.Parent := FBody;
-  FFilters.Align := TAlignLayout.None;
-  FFilters.Height := 46;
-  for var i := 0 to High(SystemIds) do
-  begin
-    FPlatformButtons[i] := ActionButton(Self, FFilters, SystemNames[i], FilterClick);
-    FPlatformButtons[i].TagString := SystemIds[i];
-    FPlatformButtons[i].Height := 34;
-  end;
-  FCount := TextLabel(Self, FBody, '', 12);
-  FCount.Align := TAlignLayout.None;
-  FCount.Height := 28;
-  FCount.Opacity := 0.55;
-  FScroll := TVertScrollBox.Create(Self);
-  FScroll.Parent := FBody;
-  FScroll.Align := TAlignLayout.None;
-  FScroll.ScrollAnimation := TBehaviorBoolean.True;
-  FGrid := TLayout.Create(Self);
-  FGrid.Parent := FScroll;
+  (FindComponent('LibraryOpenRom') as TButton).OnClick := OpenClick;
+  (FindComponent('Settings') as TButton).OnClick := SettingsClick;
+  (FindComponent('CompactOpen') as TButton).OnClick := OpenClick;
+  (FindComponent('CompactSettings') as TButton).OnClick := SettingsClick;
+  FormStyles.RelocalizeUI(Self, 'en');
+  FPlay.OnClick := PlayClick;
+  FFavorite.OnClick := FavoriteClick;
+  FResume.OnClick := ResumeClick;
+  FListButton.OnClick := ViewClick;
+  FGridButton.OnClick := ViewClick;
+  FMore.OnClick := MoreClick;
+  FBody.OnResize := BodyResize;
   FGrid.OnResize := GridResize;
-  FEmpty := TextLabel(Self, FGrid, '', 18);
-  FEmpty.TextSettings.WordWrap := True;
-  FMore := ActionButton(Self, FGrid, Translate('Show more'), MoreClick);
   FBuilding := False;
   ApplyPreferences;
   Reload;
@@ -684,7 +534,7 @@ end;
 
 procedure TLibraryView.Resize;
 begin
-  if FBuilding or FLayouting or (FBody = nil) then
+  if (csLoading in ComponentState) or FBuilding or FLayouting or (FBody = nil) then
     Exit;
 
   FLayouting := True;
@@ -714,7 +564,7 @@ begin
         var PreviewWidth: Single := 176;
         FContinuePreview.SetBounds(12, 12, PreviewWidth, Height - 24);
         ArrangeContinuePreview;
-        TextX := 12 + PreviewWidth + 24;
+        TextX := 12 + FContinuePreview.Width + 24;
       end;
       var ButtonWidth := Min(144, ContentWidth - 40);
       var TextWidth := ContentWidth - TextX - 20;
@@ -868,7 +718,7 @@ end;
 
 procedure TLibraryView.FilterClick(Sender: TObject);
 begin
-  FSystemFilter := TButton(Sender).TagString;
+  FSystemFilter := SystemIds[TButton(Sender).Tag];
   FLimit := 48;
   BuildCards;
 end;
@@ -980,15 +830,12 @@ end;
 
 procedure TLibraryView.ArrangeContinuePreview;
 begin
-  var Bounds := FContinuePreview.LocalRect;
   var Bitmap := FContinueCover.Fill.Bitmap.Bitmap;
   if not Bitmap.IsEmpty then
-  begin
-    var Fit := TRectF.Create(0, 0, Bitmap.Width, Bitmap.Height);
-    Fit.Fit(Bounds);
-    Bounds := Fit;
-  end;
-  FContinueCover.SetBounds(Bounds.Left, Bounds.Top, Bounds.Width, Bounds.Height);
+    FContinuePreview.Width := FContinuePreview.Height * Bitmap.Width / Bitmap.Height
+  else
+    FContinuePreview.Width := 176;
+  FContinueCover.SetBounds(0, 0, FContinuePreview.Width, FContinuePreview.Height);
 end;
 
 procedure TLibraryView.SelectContinueGame;
@@ -1064,7 +911,7 @@ begin
         begin
           FContinueCover.Fill.Kind := TBrushKind.Bitmap;
           FContinueNoPreview.Visible := False;
-          ArrangeContinuePreview;
+          Resize;
         end
         else
           LoadContinueGamePreview;

@@ -4,8 +4,8 @@
         <ProjectVersion>20.4</ProjectVersion>
         <FrameworkType>FMX</FrameworkType>
         <Base>True</Base>
-        <Config Condition="'$(Config)'==''">Debug</Config>
-        <Platform Condition="'$(Platform)'==''">Win32</Platform>
+        <Config Condition="'$(Config)'==''">Release</Config>
+        <Platform Condition="'$(Platform)'==''">Win64</Platform>
         <TargetedPlatforms>2790547</TargetedPlatforms>
         <AppType>Application</AppType>
         <MainSource>RetroMul.dpr</MainSource>
@@ -476,9 +476,21 @@
         <DCCReference Include="RM.Icons.pas"/>
         <DCCReference Include="RM.SearchEdit.pas"/>
         <DCCReference Include="RM.Input.pas"/>
-        <DCCReference Include="RM.Settings.pas"/>
-        <DCCReference Include="RM.LibraryView.pas"/>
-        <DCCReference Include="RM.ControlsHelp.pas"/>
+        <DCCReference Include="RM.Settings.pas">
+            <Form>SettingsView</Form>
+            <FormType>fmx</FormType>
+            <DesignClass>TFrame</DesignClass>
+        </DCCReference>
+        <DCCReference Include="RM.LibraryView.pas">
+            <Form>LibraryView</Form>
+            <FormType>fmx</FormType>
+            <DesignClass>TFrame</DesignClass>
+        </DCCReference>
+        <DCCReference Include="RM.ControlsHelp.pas">
+            <Form>ControlsHelp</Form>
+            <FormType>fmx</FormType>
+            <DesignClass>TFrame</DesignClass>
+        </DCCReference>
         <DCCReference Include="..\source\cores\Core.InputConfig.pas"/>
         <DCCReference Include="..\source\input\FMXInput.pas"/>
         <DCCReference Include="RM.DocumentTransfer.Android.pas"/>

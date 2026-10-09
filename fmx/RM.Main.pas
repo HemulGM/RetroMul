@@ -7,11 +7,12 @@ uses
   Winapi.Windows,
   {$ENDIF}
   System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Forms,
-  FMX.Types, FMX.Controls, FMX.Objects, FMX.Graphics, FMX.Dialogs, NES.Consts,
-  NES.Controller, Core.Emulation, Core.EmulatorFactory, Core.Adapter.MD,
-  Core.Adapter.SNES, Core.Adapter.NeoGeo, WinUI3.Form, WinUI3.Style,
-  FMX.Controls.Presentation, FMX.StdCtrls, FMX.Layouts, FMX.Platform,
-  NES.SuborKeyboard, NES.PowerPad, NES.FamicomKeyboard, NES.MiraclePiano,
+  FMX.TabControl, FMX.Types, FMX.Controls, FMX.Objects, FMX.Graphics,
+  FMX.Dialogs, NES.Consts, NES.Controller, Core.Emulation, Core.EmulatorFactory,
+  Core.Adapter.MD, Core.Adapter.SNES, Core.Adapter.NeoGeo, WinUI3.Form,
+  WinUI3.Style, FMX.Controls.Presentation, FMX.StdCtrls, FMX.Layouts,
+  FMX.Platform, NES.SuborKeyboard, NES.PowerPad, NES.FamicomKeyboard,
+  NES.MiraclePiano,
   {$IFDEF ANDROID}
   Androidapi.Helpers, Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.App,
   Androidapi.JNI.Widget, Androidapi.JNI.Os, Androidapi.JNI.Media,
@@ -33,6 +34,22 @@ type
   end;
 
   TFormMain = class(TWinUIForm)
+    AndroidScreenshot: TButton;
+    ScreenshotMenu, SaveSnapshotMenu, LoadSnapshotMenu: TPopupMenu;
+    ScreenTabs: TTabControl;
+    LibraryScreen: TTabItem;
+    GameScreen: TTabItem;
+    SettingsScreen: TTabItem;
+    ButtonLibrary: TButton;
+    GamePause: TButton;
+    GameFullscreen: TButton;
+    GameSettings: TButton;
+    GameInsertCoin: TButton;
+    GameControlsHelp: TButton;
+    GameStatus: TPanel;
+    GamePlatform: TLabel;
+    GameFPS: TLabel;
+    GameAudio: TLabel;
     ImageCanvas: TImage;
     TimerUpdate: TTimer;
     ImageLogo: TImage;
@@ -40,7 +57,6 @@ type
     LayoutClient: TLayout;
     LabelPaused: TLabel;
     ImageNoBox: TImage;
-    LayoutLeft: TLayout;
     LayoutHead: TLayout;
     LabelStatus: TLabel;
     ButtonCloseRom: TButton;
@@ -114,9 +130,7 @@ type
     FInputPorts: TCoreInputPorts;
     FInputSystemId: string;
     FSettingsView: TSettingsView;
-    FSettingsLibraryWidth: Single;
     FSettingsClientVisible, FSettingsWasPaused, FSettingsClosing: Boolean;
-    FSettingsLeftAlign: TAlignLayout;
     FControlBottomInset: Integer;
     FDispatchingInput, FSuppressInputUntilRelease: Boolean;
     procedure SettingsClick(Sender: TObject);
@@ -173,7 +187,8 @@ type
     procedure SetStatus(const Text: string);
     procedure SyncActivity;
     procedure OpenRom;
-    procedure SelectDocument(ForCassette: Boolean);
+    procedure SelectDocument(ForCassette: Boolean; const FileName: string = '');
+    function CanAcceptRomDrop(const Data: TDragObject): Boolean;
     procedure FinishFileSelection;
     procedure StopOnError;
     function UpdateFrame: Boolean;
@@ -199,6 +214,8 @@ type
     procedure DoShow; override;
     {$ENDIF}
   public
+    procedure DragOver(const Data: TDragObject; const Point: TPointF; var Operation: TDragOperation); override;
+    procedure DragDrop(const Data: TDragObject; const Point: TPointF); override;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False);
@@ -433,16 +450,13 @@ begin
   FormDeactivate(Self);
   if FEmulation <> nil then
     FEmulation.Pause;
-  FSettingsLibraryWidth := LayoutLeft.Width;
   FSettingsClientVisible := LayoutClient.Visible;
-  FSettingsLeftAlign := LayoutLeft.Align;
   FSettingsView := TSettingsView.CreateSettings(Self, FStorage, FInput);
-  FSettingsView.Parent := Self;
+  FSettingsView.Parent := SettingsScreen;
+  ScreenTabs.ActiveTab := SettingsScreen;
   FSettingsView.Align := TAlignLayout.Client;
   FSettingsView.OnApply := SettingsApplied;
   FSettingsView.OnClose := SettingsClose;
-  if FLibrary <> nil then
-    LayoutLeft.Visible := False;
   LayoutClient.Visible := False;
   FSettingsView.BringToFront;
   SyncActivity;
@@ -482,8 +496,10 @@ begin
         Exit;
       FreeAndNil(FSettingsView);
       FSettingsClosing := False;
-      LayoutLeft.Align := FSettingsLeftAlign;
-      LayoutLeft.Width := FSettingsLibraryWidth;
+      if FSettingsLibraryVisible then
+        ScreenTabs.ActiveTab := LibraryScreen
+      else
+        ScreenTabs.ActiveTab := GameScreen;
       if FLibrary <> nil then
         FLibrary.Visible := FSettingsLibraryVisible;
       LayoutClient.Visible := FSettingsClientVisible;
@@ -668,7 +684,6 @@ begin
     end;
     if PreviousLanguage <> FormStyles.Lang.Lang then
     begin
-      FormStyles.RelocalizeUI(LayoutLeft, PreviousLanguage);
       FormStyles.RelocalizeUI(LayoutClient, PreviousLanguage);
       if FLibrary <> nil then
         FLibrary.ApplyLanguage(PreviousLanguage);
@@ -684,7 +699,7 @@ begin
     FAutosaveOnExit := Ini.ReadBool('General', 'AutosaveOnExit', True);
     FAutosavePeriodic := Ini.ReadBool('General', 'AutosavePeriodic', False);
     FAutosaveMinutes := EnsureRange(Ini.ReadInteger('General', 'AutosaveMinutes',
-      AUTOSAVE_DEFAULT_MINUTES), 1, AUTOSAVE_MAX_MINUTES);
+        AUTOSAVE_DEFAULT_MINUTES), 1, AUTOSAVE_MAX_MINUTES);
     FAutosaveLastTick := AutosaveClock;
   finally
     Ini.Free;
@@ -820,6 +835,8 @@ constructor TFormMain.Create(AOwner: TComponent);
 begin
   FormStyles := TFormStyles.Create(Application);
   inherited;
+  // Screen changes are controlled by application state, not swipe gestures.
+  ScreenTabs.AniCalculations.TouchTracking := [];
   OnCloseQuery := FormCloseQuery;
   FStorage := CreateStorage;
   var Alive := True;
@@ -840,23 +857,22 @@ begin
   {$ENDIF}
   FFileDialog := TFMXOpenDialog.Create(Self);
   FFileDialog.MultipleSelection := False;
+  // Split buttons and hardware views have no installed design-time components.
   {$IFDEF ANDROID}
-  var ScreenshotButton := TButton.Create(Self);
+  var ScreenshotButton := AndroidScreenshot;
+  ScreenshotButton.Visible := True;
   {$ELSE}
   var ScreenshotButton := TToolbarSplitButton.Create(Self);
   {$ENDIF}
   FScreenshotTool := ScreenshotButton;
+  {$IFNDEF ANDROID}
   ScreenshotButton.Name := 'ButtonScreenshot';
+  {$ENDIF}
   ScreenshotButton.Parent := LayoutHead;
   ScreenshotButton.Align := TAlignLayout.Right;
   ScreenshotButton.Width := 60;
   ScreenshotButton.Text := '';
-  {$IFDEF ANDROID}
-  AddButtonIcon(ScreenshotButton, IconCamera, 20);
-  {$ENDIF}
-  ButtonCloseRom.StyleLookup := 'buttonstyle';
   ButtonCloseRom.Hint := Translate('Close game');
-  AddButtonIcon(ButtonCloseRom, IconBack, 20);
   ScreenshotButton.Hint := Translate('Screenshot (F8)');
   ScreenshotButton.ShowHint := True;
   ScreenshotButton.OnClick := ScreenshotClick;
@@ -872,8 +888,18 @@ begin
   FTransfer := TAndroidDocumentTransfer.Create(FStorage);
   FAppEvents := TApplicationEvents.Create(Self);
   FAppEvents.OnStateChanged := ApplicationStateChanged;
+  for var Tool in [ButtonLibrary, GamePause, GameFullscreen, GameSettings, GameInsertCoin, GameControlsHelp] do
+    Tool.Visible := False;
+  GameStatus.Visible := False;
+  GamePlatform.Visible := False;
+  (FindComponent('ToolbarBackground') as TControl).Visible := False;
+  LabelPaused.TextSettings.Font.Size := 60;
+  LabelStatus.Align := TAlignLayout.Client;
+  LabelStatus.StyledSettings := [TStyledSetting.Family, TStyledSetting.Size,
+      TStyledSetting.Style];
+  LabelStatus.TextSettings.FontColor := TAlphaColors.White;
   LayoutClient.Visible := False;
-  LayoutLeft.Align := TAlignLayout.Client;
+  ScreenTabs.ActiveTab := GameScreen;
   {$ENDIF}
   Fill.Color := TAlphaColors.Black;
   ImageCanvas.WrapMode := TImageWrapMode.Fit;
@@ -934,127 +960,62 @@ begin
   LoadHostInput(ROM_SYSTEM_GB);
   {$IFNDEF ANDROID}
   FLibrary := TLibraryView.CreateLibrary(Self, FStorage);
-  FLibrary.Parent := Self;
+  FLibrary.Parent := LibraryScreen;
   FLibrary.Align := TAlignLayout.Client;
   FLibrary.OnPlay := LibraryPlay;
   FLibrary.OnSettings := SettingsClick;
   FLibrary.OnOpen := ButtonOpenClick;
-  LayoutLeft.Visible := False;
   LayoutClient.Visible := False;
   FViewingLibrary := True;
-  var BackButton := TButton.Create(Self);
-  BackButton.Name := 'ButtonLibrary';
-  BackButton.Parent := LayoutHead;
-  BackButton.Align := TAlignLayout.Left;
-  BackButton.Width := 140;
-  BackButton.Text := Translate('Library');
-  BackButton.OnClick := LibraryBack;
-  FLibraryBackTool := BackButton;
+  ScreenTabs.ActiveTab := LibraryScreen;
+  FLibraryBackTool := ButtonLibrary;
+  FLibraryBackTool.OnClick := LibraryBack;
   ButtonCloseRom.Visible := False;
-  LabelStatus.Align := TAlignLayout.None;
-  for var i := 0 to High(FGameTools) do
-  begin
-    if i in [1, 2] then
-      FGameTools[i] := TToolbarSplitButton.Create(Self)
-    else
-      FGameTools[i] := TButton.Create(Self);
-    FGameTools[i].Parent := LayoutHead;
-    FGameTools[i].Align := TAlignLayout.None;
-    FGameTools[i].Width := 104;
-  end;
-  FGameTools[0].Name := 'GamePause';
-  FGameTools[0].OnClick := PauseClick;
+  FGameTools[0] := GamePause;
+  FGameTools[1] := TToolbarSplitButton.Create(Self);
   FGameTools[1].Name := 'GameSave';
+  FGameTools[2] := TToolbarSplitButton.Create(Self);
   FGameTools[2].Name := 'GameLoad';
-  FGameTools[3].Name := 'GameFullscreen';
+  FGameTools[3] := GameFullscreen;
+  FGameTools[4] := GameSettings;
+  for var I := 1 to 2 do
+  begin
+    FGameTools[I].Parent := LayoutHead;
+    FGameTools[I].Width := 104;
+  end;
+  FGameTools[0].OnClick := PauseClick;
   FGameTools[1].OnClick := SaveStateClick;
   FGameTools[2].OnClick := LoadStateClick;
   FGameTools[3].OnClick := FullscreenClick;
-  FGameTools[4].Name := 'GameSettings';
   FGameTools[4].OnClick := SettingsClick;
-  FGameTools[1].Hint := Translate('Quick save · Quick slot');
-  FGameTools[2].Hint := Translate('Load quick save · Quick slot');
-  GameplayButton(FLibraryBackTool, Translate('Library'), IconBack, Translate('Back to library'));
-  GameplayButton(FGameTools[0], Translate('Pause'), IconPause, Translate('Pause / resume · P'));
   GameplayButton(FGameTools[1], Translate('Save'), IconSave, Translate('Quick save · F5'));
   GameplayButton(FGameTools[2], Translate('Load'), IconLoad, Translate('Quick load · F6'));
   GameplayButton(FScreenshotTool, Translate('Screenshot'), IconCamera, Translate('Take screenshot · F8'));
   for var Button in [FGameTools[1], FGameTools[2], FScreenshotTool] do
     Button.StylesData['text.Margins.Right'] := 32;
-  FScreenshotMenu := TPopupMenu.Create(Self);
-  FScreenshotMenu.Name := 'ScreenshotMenu';
-  FScreenshotMenu.Parent := Self;
-  FSaveMenu := TPopupMenu.Create(Self);
-  FSaveMenu.Name := 'SaveSnapshotMenu';
-  FSaveMenu.Parent := Self;
-  FLoadMenu := TPopupMenu.Create(Self);
-  FLoadMenu.Name := 'LoadSnapshotMenu';
-  FLoadMenu.Parent := Self;
+  FScreenshotMenu := ScreenshotMenu;
+  FSaveMenu := SaveSnapshotMenu;
+  FLoadMenu := LoadSnapshotMenu;
   for var Menu in [FScreenshotMenu, FSaveMenu, FLoadMenu] do
     Menu.OnPopup := PrepareGameplayMenu;
   FScreenshotTool.PopupMenu := FScreenshotMenu;
   FGameTools[1].PopupMenu := FSaveMenu;
   FGameTools[2].PopupMenu := FLoadMenu;
-  GameplayButton(FGameTools[3], '', IconFullScreen, Translate('Full screen · F11'));
-  GameplayButton(FGameTools[4], '', IconGear, Translate('Settings'));
-  FCoinTool := TButton.Create(Self);
-  FCoinTool.Parent := LayoutHead;
-  FCoinTool.Name := 'GameInsertCoin';
-  GameplayButton(FCoinTool, Translate('Insert coin'), IconCoin, Translate('Insert coin · F9'));
-  FCoinTool.Visible := False;
+  FCoinTool := GameInsertCoin;
   FCoinTool.OnClick := InsertCoinClick;
-  FHelpTool := TButton.Create(Self);
-  FHelpTool.Parent := LayoutHead;
-  FHelpTool.Name := 'GameControlsHelp';
-  GameplayButton(FHelpTool, 'F1', IconPad, Translate('Controls and shortcuts · F1'));
+  FHelpTool := GameControlsHelp;
   FHelpTool.OnClick := ControlsHelpClick;
-  var HelpBorder := TRectangle.Create(FHelpTool);
-  HelpBorder.Parent := FHelpTool;
-  HelpBorder.Align := TAlignLayout.Contents;
-  HelpBorder.Fill.Kind := TBrushKind.None;
-  HelpBorder.Stroke.Color := $FFFFB43B;
-  HelpBorder.XRadius := 8;
-  HelpBorder.YRadius := 8;
-  HelpBorder.HitTest := False;
-  LabelStatus.StyledSettings := [];
-  LabelStatus.TextSettings.Font.Family := 'Segoe UI';
-  LabelStatus.TextSettings.Font.Size := 17;
-  LabelStatus.TextSettings.Font.Style := [TFontStyle.fsBold];
-  LabelStatus.TextSettings.FontColor := $FFE8ECF1;
-  LabelStatus.TextSettings.Trimming := TTextTrimming.Character;
-  FGamePlatform := GameplayLabel(Self, LayoutHead, '', 12);
-  FGamePlatform.Opacity := 0.6;
-  FGameStatus := TPanel.Create(Self);
-  FGameStatus.Parent := LayoutClient;
-  FGameStatus.Name := 'GameStatus';
-  FGameStatus.Align := TAlignLayout.Bottom;
-  FGameStatus.Height := 30;
-  FGameStatus.StyleLookup := 'retromul_sidebar';
-  var Dot := TCircle.Create(Self);
-  Dot.Parent := FGameStatus;
-  Dot.SetBounds(14, 11, 8, 8);
-  Dot.Fill.Color := $FF7ED94C;
-  Dot.Stroke.Kind := TBrushKind.None;
-  Dot.HitTest := False;
-  FGameFPS := GameplayLabel(Self, FGameStatus, '', 12);
-  FGameFPS.Align := TAlignLayout.Client;
-  FGameFPS.Margins.Left := 32;
-  FGameAudio := GameplayLabel(Self, FGameStatus, '', 12);
-  FGameAudio.Align := TAlignLayout.Right;
-  FGameAudio.AutoSize := True;
-  FGameAudio.Margins.Left := 24;
-  FGameAudio.Margins.Right := 12;
-  FGameAudio.TextSettings.HorzAlign := TTextAlign.Trailing;
-  InterfaceIcon(FGameAudio, IconSpeaker, -24, 7, 16);
-  LabelPaused.Text := Translate('Paused');
-  LabelPaused.TextSettings.Font.Size := 28;
+  FGamePlatform := GamePlatform;
+  FGameStatus := GameStatus;
+  FGameFPS := GameFPS;
+  FGameAudio := GameAudio;
+  for var Tool in [ButtonLibrary, GamePause, GameFullscreen, GameSettings, GameInsertCoin, GameControlsHelp] do
+  begin
+    Tool.StylesData['text.Margins.Left'] := 36;
+    Tool.StylesData['text.Margins.Right'] := 10;
+  end;
+  FormStyles.RelocalizeUI(GameScreen, 'en');
   LayoutHead.OnResize := FormResize;
-  var ToolbarBackground := TPanel.Create(Self);
-  ToolbarBackground.Parent := LayoutHead;
-  ToolbarBackground.Align := TAlignLayout.Contents;
-  ToolbarBackground.StyleLookup := 'retromul_sidebar';
-  ToolbarBackground.HitTest := False;
-  ToolbarBackground.SendToBack;
   FormResize(Self);
   {$ENDIF}
   SyncActivity;
@@ -1969,7 +1930,6 @@ begin
   else
     Padding.Rect := FFullScreenPadding;
   {$ENDIF}
-  LayoutLeft.Visible := (FLibrary = nil) and not FullScreen;
   {$IFDEF ANDROID}
   LayoutClient.Visible := FullScreen;
   {$ENDIF}
@@ -2335,8 +2295,8 @@ begin
   end;
   if FullScreen then
     SwitchFullScreen;
-  LayoutLeft.Visible := False;
   LayoutClient.Visible := False;
+  ScreenTabs.ActiveTab := LibraryScreen;
   FLibrary.Visible := True;
   FLibrary.RefreshSnapshots;
   FLibrary.BringToFront;
@@ -2668,8 +2628,8 @@ begin
         Directory := Info.GetSnapshotDirectory;
       FLibrary.RecordSession(FileName, Directory);
       FLibrary.Visible := False;
+      ScreenTabs.ActiveTab := GameScreen;
       LayoutClient.Visible := True;
-      LayoutLeft.Visible := False;
       FViewingLibrary := False;
       LayoutClient.SetFocus;
       if FStartFullscreen and not FullScreen then
@@ -2696,10 +2656,12 @@ begin
   FormActivate(Self);
 end;
 
-procedure TFormMain.SelectDocument(ForCassette: Boolean);
+procedure TFormMain.SelectDocument(ForCassette: Boolean; const FileName: string);
 begin
   if FOpeningRom then
     Exit;
+  if not ForCassette and (FHelp <> nil) then
+    CloseControlsHelp;
   FOpeningRom := True;
   FormDeactivate(Self);
   SyncActivity;
@@ -2738,7 +2700,13 @@ begin
           FinishFileSelection;
       end;
     end;
-  if ForCassette then
+  if FileName <> '' then
+  begin
+    var Selection := Default(TStorageSelection);
+    Selection.Location := FileName;
+    Completion(Selection);
+  end
+  else if ForCassette then
   begin
     FFileDialog.InitialDirectory := '';
     FFileDialog.FileMustExist := False;
@@ -2759,6 +2727,50 @@ begin
   begin
     ImageLogo.Visible := False;
     FStorage.SelectRom(Completion);
+  end;
+end;
+
+function TFormMain.CanAcceptRomDrop(const Data: TDragObject): Boolean;
+begin
+  Result := not (csDestroying in ComponentState) and not FOpeningRom and
+    not FHelpClosing and (FSettingsView = nil) and
+    (ScreenTabs.ActiveTab <> SettingsScreen) and (Length(Data.Files) = 1);
+  if Result then
+    // Like the file picker, accept renamed ROMs and validate their contents on load.
+    Result := TFile.Exists(Data.Files[0]);
+end;
+
+procedure TFormMain.DragOver(const Data: TDragObject; const Point: TPointF;
+  var Operation: TDragOperation);
+begin
+  if Length(Data.Files) = 0 then
+  begin
+    inherited;
+    Exit;
+  end;
+  // Handle file drags at form level so child controls cannot consume the ROM.
+  Operation := TDragOperation.None;
+  if CanAcceptRomDrop(Data) then
+    Operation := TDragOperation.Copy;
+end;
+
+procedure TFormMain.DragDrop(const Data: TDragObject; const Point: TPointF);
+begin
+  if Length(Data.Files) = 0 then
+  begin
+    inherited;
+    Exit;
+  end;
+  if not CanAcceptRomDrop(Data) then
+    Exit;
+  try
+    SelectDocument(False, Data.Files[0]);
+  except
+    on E: Exception do
+    begin
+      FinishFileSelection;
+      ShowMessage(E.Message);
+    end;
   end;
 end;
 

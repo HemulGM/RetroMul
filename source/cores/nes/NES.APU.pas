@@ -76,6 +76,7 @@ type
     FDmcDmaDelay: Integer;
     FDmcDisableDelay: Integer;
     FDmcAbortRequested: Boolean;
+    FDmcReloaded: Boolean;
     FCycle: UInt32;
     FFrameCounter: UInt32;
     FFrameMode5: Boolean;
@@ -171,6 +172,10 @@ end;
 
 procedure TApu.SerializeDmaState(State: TNesStateArchive);
 begin
+  if State.Version >= 17 then
+    State.Field(FDmcReloaded, SizeOf(FDmcReloaded))
+  else if State.Loading then
+    FDmcReloaded := False;
   if State.Version >= 8 then
     State.Field(FDmcDmaDelay, SizeOf(FDmcDmaDelay))
   else if State.Loading then
@@ -297,6 +302,7 @@ begin
   FDmc.SampleLength := 1;
   FDmc.TimerReload := DMC_PERIOD_TABLE[FRegion, 0];
   FDmc.Timer := FDmc.TimerReload - 1;
+  FDmcReloaded := False;
   FDmc.BitsRemaining := 8;
   FDmc.BufferEmpty := True;
   FDmc.Silence := True;
@@ -593,6 +599,10 @@ begin
       begin
         FDmc.Control := Value;
         FDmc.TimerReload := DMC_PERIOD_TABLE[FRegion, Value and $0F];
+        // APU clocks before CPU writes. A write on the reload clock supplies
+        // the new period to that reload; later writes leave the timer running.
+        if FDmcReloaded then
+          FDmc.Timer := FDmc.TimerReload - 1;
         if (Value and $80) = 0 then
           FDmc.IrqFlag := False;
       end;
@@ -811,6 +821,7 @@ end;
 
 procedure TApu.ClockDmc;
 begin
+  FDmcReloaded := False;
   if FDmc.Timer > 0 then
   begin
     Dec(FDmc.Timer);
@@ -818,6 +829,7 @@ begin
   end;
 
   FDmc.Timer := FDmc.TimerReload - 1;
+  FDmcReloaded := True;
   if not FDmc.Silence then
   begin
     if (FDmc.Shift and 1) <> 0 then

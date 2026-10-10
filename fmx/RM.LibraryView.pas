@@ -5,7 +5,8 @@ interface
 uses
   System.SysUtils, System.Classes, System.Types, System.UITypes,
   System.Generics.Collections, System.IniFiles, FMX.Types, FMX.Controls,
-  FMX.Forms, FMX.Layouts, FMX.StdCtrls, FMX.Edit, FMX.Objects, Core.Storage, FMX.Controls.Presentation;
+  FMX.Forms, FMX.Layouts, FMX.StdCtrls, FMX.Edit, FMX.Objects, Core.Storage,
+  FMX.Controls.Presentation;
 
 type
   TLibraryGame = class
@@ -300,6 +301,7 @@ end;
 {$ENDREGION}
 
 {$REGION 'Library data and preferences'}
+
 procedure TLibraryView.Reload;
 begin
   FBuilding := True;
@@ -487,6 +489,7 @@ end;
 {$ENDREGION}
 
 {$REGION 'Cards and layout'}
+
 procedure TLibraryView.BuildCards;
 begin
   if FBuilding or (FGrid = nil) then
@@ -715,6 +718,7 @@ end;
 {$ENDREGION}
 
 {$REGION 'Selected game and continue panel'}
+
 procedure TLibraryView.UpdateInspector;
 begin
   FPlay.Enabled := FSelected <> nil;
@@ -864,6 +868,7 @@ end;
 {$ENDREGION}
 
 {$REGION 'View events'}
+
 procedure TLibraryView.OpenClick(Sender: TObject);
 begin
   if Assigned(FOnOpen) then

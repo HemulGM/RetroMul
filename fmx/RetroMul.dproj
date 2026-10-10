@@ -570,6 +570,7 @@
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Namco.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Rainbow.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Sachen.pas"/>
+        <DCCReference Include="..\source\cores\nes\NES.Audio.Vrc7.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.VrcAudio.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Mmc1.pas"/>
         <DCCReference Include="..\source\cores\nes\mappers\NES.Mapper.Mmc3.pas"/>

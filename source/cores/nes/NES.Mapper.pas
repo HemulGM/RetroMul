@@ -322,6 +322,7 @@ type
     function PpuWrite(Address: UInt16; Value: UInt8): Boolean; virtual; abstract;
     function GetMirrorMode: TMirrorMode; virtual; abstract;
     procedure ClockPpuAddress(Address: UInt16; PpuCycle: UInt64); virtual;
+    procedure SetRegion(Region: TNesRegion); virtual;
     procedure ClockCpu; virtual;
     procedure ClockCpuWrite; virtual;
     procedure ClockPpuRead; virtual;
@@ -416,6 +417,10 @@ procedure TMapper.SetSaveMemory(const Data: TByteArray);
 begin
   if Length(Data) <> 0 then
     raise ENesException.Create('This mapper has no persistent memory');
+end;
+
+procedure TMapper.SetRegion(Region: TNesRegion);
+begin
 end;
 
 procedure TMapper.ClockCpu;

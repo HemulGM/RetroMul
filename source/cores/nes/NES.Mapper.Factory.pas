@@ -32,7 +32,7 @@ begin
     MAPPER_VRC6A,             //
     MAPPER_VRC6B,             //
     MAPPER_VRC7:
-      Result := TMapperVrcAudio.Create(MapperId, Prg, Chr, HasChrRam, MirrorMode);
+      Result := TMapperVrcAudio.Create(MapperId, Prg, Chr, HasChrRam, MirrorMode, Submapper);
     MAPPER_NAMCO_163,         //
     MAPPER_NAMCO_175_340:
       Result := TMapperNamco.Create(MapperId, Prg, Chr, HasChrRam, MirrorMode, Submapper, LegacyHeader);

@@ -153,6 +153,7 @@ uses
   NES.Mapper.Namco in '..\source\cores\nes\mappers\NES.Mapper.Namco.pas',
   NES.Mapper.Rainbow in '..\source\cores\nes\mappers\NES.Mapper.Rainbow.pas',
   NES.Mapper.Sachen in '..\source\cores\nes\mappers\NES.Mapper.Sachen.pas',
+  NES.Audio.Vrc7 in '..\source\cores\nes\NES.Audio.Vrc7.pas',
   NES.Mapper.VrcAudio in '..\source\cores\nes\mappers\NES.Mapper.VrcAudio.pas',
   NES.Mapper.Mmc1 in '..\source\cores\nes\mappers\NES.Mapper.Mmc1.pas',
   NES.Mapper.Mmc3 in '..\source\cores\nes\mappers\NES.Mapper.Mmc3.pas',

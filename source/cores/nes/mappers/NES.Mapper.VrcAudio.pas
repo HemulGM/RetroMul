@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Math, NES.State, NES.Types, NES.Mapper, NES.Mapper.Vrc;
+  NES.Audio.Vrc7, NES.Consts, NES.State, NES.Types, NES.Mapper, NES.Mapper.Vrc;
 
 type
   TMapperVrcAudio = class(TMapperVrc)
@@ -15,18 +15,18 @@ type
     FAudioRegs: array[0..2, 0..2] of Byte;
     FTimers, FSteps, FOutputs: array[0..2] of Integer;
     FAccumulator, FAudioControl: Integer;
-    FFmAddress, FFmDivider: Integer;
-    FFmRegs: array[0..$3F] of Byte;
-    FFmPhase, FFmEnvelope, FFmFeedback: array[0..11] of Double;
-    FFmStage: array[0..11] of Integer;
-    FFmOutput: Double;
+    FFmAddress: Byte;
+    FFmClock, FFmCpuHz: Integer;
+    FFm: TVrc7Fm;
+    FFmOutput: SmallInt;
     procedure UpdatePpu;
     procedure WriteIrq(Reg: Integer; Value: Byte);
     procedure ClockPulseAudio;
     procedure ClockFm;
   public
-    constructor Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+    constructor Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; Submapper: Integer = 0);
     procedure Reset; override;
+    procedure SetRegion(Region: TNesRegion); override;
     procedure SerializeState(State: TNesStateArchive); override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
@@ -37,12 +37,10 @@ type
 
 implementation
 
-// VRC7 uses a six-channel, two-operator FM model. Its envelopes are currently
-// approximate; hardware LFO and key scaling remain to be implemented.
-
-constructor TMapperVrcAudio.Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+constructor TMapperVrcAudio.Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; Submapper: Integer);
 begin
-  inherited Create(Board, Prg, Chr, HasChrRam, MirrorMode);
+  inherited Create(Board, Prg, Chr, HasChrRam, MirrorMode, Submapper);
+  FFmCpuHz := NES_CPU_HZ;
   Reset
 end;
 
@@ -53,17 +51,13 @@ begin
   FAudioControl := 0;
   FAccumulator := 0;
   FFmAddress := 0;
-  FFmDivider := 0;
+  FFmClock := 0;
   FFmOutput := 0;
   FillChar(FChrRegs, SizeOf(FChrRegs), 0);
   FillChar(FAudioRegs, SizeOf(FAudioRegs), 0);
   FillChar(FOutputs, SizeOf(FOutputs), 0);
   FillChar(FSteps, SizeOf(FSteps), 0);
-  FillChar(FFmRegs, SizeOf(FFmRegs), 0);
-  FillChar(FFmPhase, SizeOf(FFmPhase), 0);
-  FillChar(FFmEnvelope, SizeOf(FFmEnvelope), 0);
-  FillChar(FFmStage, SizeOf(FFmStage), 0);
-  FillChar(FFmFeedback, SizeOf(FFmFeedback), 0);
+  FFm.Reset;
   for var i := 0 to 2 do
     FTimers[i] := 1;
   if FBoard = MAPPER_VRC7 then
@@ -79,6 +73,8 @@ end;
 
 procedure TMapperVrcAudio.SerializeState(State: TNesStateArchive);
 begin
+  if (FBoard = MAPPER_VRC7) and (State.Version < 19) then
+    raise ENesException.Create('VRC7 snapshots require version 19 or later');
   inherited;
   State.Field(FMode, SizeOf(FMode));
   State.Field(FChrRegs, SizeOf(FChrRegs));
@@ -90,14 +86,35 @@ begin
   State.Field(FOutputs, SizeOf(FOutputs));
   State.Field(FAccumulator, SizeOf(FAccumulator));
   State.Field(FAudioControl, SizeOf(FAudioControl));
-  State.Field(FFmAddress, SizeOf(FFmAddress));
-  State.Field(FFmDivider, SizeOf(FFmDivider));
-  State.Field(FFmRegs, SizeOf(FFmRegs));
-  State.Field(FFmPhase, SizeOf(FFmPhase));
-  State.Field(FFmEnvelope, SizeOf(FFmEnvelope));
-  State.Field(FFmStage, SizeOf(FFmStage));
-  State.Field(FFmFeedback, SizeOf(FFmFeedback));
-  State.Field(FFmOutput, SizeOf(FFmOutput));
+  if State.Version < 19 then
+  begin
+    // Preserve the old VRC6 snapshot layout. An approximate FM state cannot
+    // reconstruct the new VRC7 envelope/phase state without losing continuity.
+    var LegacyInt: Integer := 0;
+    var LegacyRegs: array[0..$3F] of Byte;
+    var LegacySlots: array[0..11] of Double;
+    var LegacyStages: array[0..11] of Integer;
+    var LegacyOutput: Double := 0;
+    FillChar(LegacyRegs, SizeOf(LegacyRegs), 0);
+    FillChar(LegacySlots, SizeOf(LegacySlots), 0);
+    FillChar(LegacyStages, SizeOf(LegacyStages), 0);
+    State.Field(LegacyInt, SizeOf(LegacyInt));
+    State.Field(LegacyInt, SizeOf(LegacyInt));
+    State.Field(LegacyRegs, SizeOf(LegacyRegs));
+    State.Field(LegacySlots, SizeOf(LegacySlots));
+    State.Field(LegacySlots, SizeOf(LegacySlots));
+    State.Field(LegacyStages, SizeOf(LegacyStages));
+    State.Field(LegacySlots, SizeOf(LegacySlots));
+    State.Field(LegacyOutput, SizeOf(LegacyOutput));
+  end
+  else if FBoard = MAPPER_VRC7 then
+  begin
+    State.Field(FFmAddress, SizeOf(FFmAddress));
+    State.Field(FFmClock, SizeOf(FFmClock));
+    State.Field(FFmCpuHz, SizeOf(FFmCpuHz));
+    State.Field(FFmOutput, SizeOf(FFmOutput));
+    FFm.SerializeState(State);
+  end;
 end;
 
 procedure TMapperVrcAudio.UpdatePpu;
@@ -174,49 +191,37 @@ begin
 
   if FBoard = MAPPER_VRC7 then
   begin
-    if ((Address and $10) <> 0) and ((Address and $F010) <> $9010) then
-      Address := (Address or 8) and $FFEF;
-    case Address and $F038 of
-      $8000:
-        Prg8(0, Value and $3F);
-      $8008:
-        Prg8(1, Value and $3F);
-      $9000:
-        Prg8(2, Value and $3F);
-      $9010:
-        FFmAddress := Value and $3F;
-      $9030:
-        begin
-          var Old := FFmRegs[FFmAddress];
-          FFmRegs[FFmAddress] := Value;
-          if (FFmAddress >= $20) and (FFmAddress <= $25) and ((Old xor Value) and $10 <> 0) then
-          begin
-            var Ch := FFmAddress - $20;
-            for var Op := Ch * 2 to Ch * 2 + 1 do
-              if (Value and $10) <> 0 then
-              begin
-                FFmStage[Op] := 1;
-                FFmPhase[Op] := 0;
-                FFmEnvelope[Op] := 0
-              end
-              else
-                FFmStage[Op] := 4;
-          end;
-        end;
-      $A000, $A008, $B000, $B008, $C000, $C008, $D000, $D008:
-        Chr1(((Address shr 12) - 10) * 2 + ((Address shr 3) and 1), Value);
+    // Decode the physical An pin, not all address bits. Submapper 0 accepts
+    // both board wirings; submapper 1 uses A3, submapper 2 uses A4.
+    var SelectMask := $18;
+    if FSubmapper = 1 then SelectMask := $08
+    else if FSubmapper = 2 then SelectMask := $10;
+    var Select := Ord((Address and SelectMask) <> 0);
+    case (Address and $F000) or (Select shl 3) of
+      $8000: Prg8(0, Value and $3F);
+      $8008: Prg8(1, Value and $3F);
+      $9000: Prg8(2, Value and $3F);
+      $9008:
+        if ((FMode and $40) = 0) and (FSubmapper <> 1) then
+          if (Address and $20) = 0 then FFmAddress := Value
+          else FFm.WriteRegister(FFmAddress, Value);
+      $A000,$A008,$B000,$B008,$C000,$C008,$D000,$D008:
+        Chr1(((Address shr 12) - 10) * 2 + Select, Value);
       $E000:
         begin
+          if (Value and $40) <> 0 then
+          begin
+            FFm.Reset(True); // Audio reset does not reset the vibrato LFO.
+            FFmAddress := 0;
+            FFmOutput := 0;
+          end;
           FMode := Value;
           Mirror(Value and 3);
-          FRamEnabled := (Value and $80) <> 0
+          FRamEnabled := (Value and $80) <> 0;
         end;
-      $E008:
-        WriteIrq(0, Value);
-      $F000:
-        WriteIrq(1, Value);
-      $F008:
-        WriteIrq(2, Value);
+      $E008: WriteIrq(0, Value);
+      $F000: WriteIrq(1, Value);
+      $F008: WriteIrq(2, Value);
     end;
     Exit(True);
   end;
@@ -326,99 +331,26 @@ begin
   end;
 end;
 
+procedure TMapperVrcAudio.SetRegion(Region: TNesRegion);
+begin
+  FFmCpuHz := CpuFrequency(Region);
+end;
+
 procedure TMapperVrcAudio.ClockFm;
 const
-  Instruments: array[1..15, 0..7] of Byte = (
-    ($03, $21, $05, $06, $E8, $81, $42, $27),
-    ($13, $41, $14, $0D, $D8, $F6, $23, $12),
-    ($11, $11, $08, $08, $FA, $B2, $20, $12),
-    ($31, $61, $0C, $07, $A8, $64, $61, $27),
-    ($32, $21, $1E, $06, $E1, $76, $01, $28),
-    ($02, $01, $06, $00, $A3, $E2, $F4, $F4),
-    ($21, $61, $1D, $07, $82, $81, $11, $07),
-    ($23, $21, $22, $17, $A2, $72, $01, $17),
-    ($35, $11, $25, $00, $40, $73, $72, $01),
-    ($B5, $01, $0F, $0F, $A8, $A5, $51, $02),
-    ($17, $C1, $24, $07, $F8, $F8, $22, $12),
-    ($71, $23, $11, $06, $65, $74, $18, $16),
-    ($01, $02, $D3, $05, $C9, $95, $03, $02),
-    ($61, $63, $0C, $00, $94, $C0, $33, $F6),
-    ($21, $72, $0D, $00, $C1, $D5, $56, $06));
-  Multipliers: array[0..15] of Double = (0.5, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 12, 12, 15, 15);
+  FM_CLOCK = 3579545; // External oscillator; independent of the console region.
 begin
-  Inc(FFmDivider);
-  if FFmDivider < 36 then
-    Exit;
-
-  FFmDivider := 0;
-  FFmOutput := 0;
+  if FSubmapper = 1 then Exit; // VRC7b board has no audio oscillator.
+  Inc(FFmClock, FM_CLOCK);
+  if FFmClock < FFmCpuHz * 72 then Exit;
+  Dec(FFmClock, FFmCpuHz * 72);
   if (FMode and $40) <> 0 then
-    Exit;
-
-  for var Ch := 0 to 5 do
   begin
-    var Patch: array[0..7] of Byte;
-    var Instrument := FFmRegs[$30 + Ch] shr 4;
-    if Instrument = 0 then
-      Move(FFmRegs[0], Patch[0], 8)
-    else
-      Move(Instruments[Instrument, 0], Patch[0], 8);
-    var Frequency := (FFmRegs[$10 + Ch] or ((FFmRegs[$20 + Ch] and 1) shl 8)) * Power(2, (FFmRegs[$20 + Ch] shr 1) and 7) * (49715.909 / 524288.0);
-    var Modulator := 0.0;
-    for var Op := 0 to 1 do
-    begin
-      var Index := Ch * 2 + Op;
-      var Sustain := Power(10, -(Patch[6 + Op] shr 4) * 3 / 20.0);
-      var Attack := Patch[4 + Op] shr 4;
-      var Decay := Patch[4 + Op] and 15;
-      var Release := Patch[6 + Op] and 15;
-      if (FFmRegs[$20 + Ch] and $20) <> 0 then
-        Release := 5;
-      case FFmStage[Index] of
-        1:
-          if Attack > 0 then
-          begin
-            FFmEnvelope[Index] := FFmEnvelope[Index] + (1 - FFmEnvelope[Index]) * Power(2, Attack - 15) * 0.5;
-            if FFmEnvelope[Index] >= 0.999 then
-              FFmStage[Index] := 2
-          end;
-        2:
-          begin
-            FFmEnvelope[Index] := Max(Sustain, FFmEnvelope[Index] - Power(2, Decay - 15) * 0.002);
-            if FFmEnvelope[Index] <= Sustain then
-              FFmStage[Index] := 3
-          end;
-        3:
-          if (Patch[Op] and $20) = 0 then
-            FFmEnvelope[Index] := Max(0, FFmEnvelope[Index] - Power(2, Release - 15) * 0.002);
-        4:
-          FFmEnvelope[Index] := Max(0, FFmEnvelope[Index] - Power(2, Release - 15) * 0.002);
-      end;
-      FFmPhase[Index] := FFmPhase[Index] + Frequency * Multipliers[Patch[Op] and 15] * (2 * Pi * 36 / 1789772.5);
-      FFmPhase[Index] := FFmPhase[Index] - Floor(FFmPhase[Index] / (2 * Pi)) * 2 * Pi;
-      var Level: Double;
-      if Op = 0 then
-        Level := Power(10, -(Patch[2] and $3F) * 0.75 / 20.0)
-      else
-        Level := Power(10, -(FFmRegs[$30 + Ch] and 15) * 3 / 20.0);
-      var Phase := FFmPhase[Index];
-      if Op = 0 then
-        Phase := Phase + FFmFeedback[Index] * ((Patch[3] and 7) / 4.0)
-      else
-        Phase := Phase + Modulator * 4;
-      var Sample := Sin(Phase);
-      if (Patch[3] and ($8 shl Op)) <> 0 then
-        Sample := Max(0, Sample);
-      Sample := Sample * FFmEnvelope[Index] * Level;
-      if Op = 0 then
-      begin
-        Modulator := Sample;
-        FFmFeedback[Index] := Sample
-      end
-      else
-        FFmOutput := FFmOutput + Sample / 24;
-    end;
-  end;
+    FFm.ClockReset;
+    FFmOutput := 0;
+  end
+  else
+    FFmOutput := FFm.Sample;
 end;
 
 procedure TMapperVrcAudio.ClockCpu;
@@ -433,7 +365,9 @@ end;
 function TMapperVrcAudio.ExpansionAudio: Double;
 begin
   if FBoard = MAPPER_VRC7 then
-    Result := FFmOutput
+    // emu2413 output against the unit-scale nonlinear NES APU mixer.
+    // Mesen uses the same ratio with its APU output scaled by 5000.
+    Result := FFmOutput / 5000.0
   else
     Result := (FOutputs[0] + FOutputs[1] + FOutputs[2]) / 240.0;
 end;

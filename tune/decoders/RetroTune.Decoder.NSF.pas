@@ -154,6 +154,7 @@ begin
   if (Chips and 2) <> 0 then
   begin
     FVRC7 := TMapperVrcAudio.Create(MAPPER_VRC7, Dummy, nil, True, TMirrorMode.Horizontal);
+    FVRC7.SetRegion(FRegion);
     FInfo.Details := FInfo.Details + ' / VRC7';
   end;
   if (Chips and $10) <> 0 then
@@ -328,7 +329,7 @@ begin
     ((Address >= $A000) and (Address <= $A002)) or
     ((Address >= $B000) and (Address <= $B002))) then
     FVRC6.CpuWrite(Address, Value);
-  if (FVRC7 <> nil) and ((Address = $9010) or (Address = $9030)) then
+  if (FVRC7 <> nil) and ((Address = $9010) or (Address = $9030) or (Address = $E000)) then
     FVRC7.CpuWrite(Address, Value);
   if FNamco <> nil then
     if (Address >= $4800) and (Address <= $4FFF) then

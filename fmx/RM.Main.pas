@@ -16,7 +16,10 @@ uses
   {$IFDEF ANDROID}
   Androidapi.Helpers, Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.App,
   Androidapi.JNI.Widget, Androidapi.JNI.Os, Androidapi.JNI.Media,
-  FMX.ApplicationEvents, RM.DocumentTransfer.Android,
+  RM.DocumentTransfer.Android,
+  {$ENDIF}
+  {$IF Defined(ANDROID) or Defined(IOS)}
+  FMX.ApplicationEvents,
   {$ENDIF}
   Core.Storage, RM.Storage.Dialogs, FMX.OpenDialog, RM.Gamepad, FMX.Edit,
   NES.FamicomDataRecorder, NES.DataRecorder, RM.FrameUpload, RM.Settings,
@@ -132,12 +135,14 @@ type
     FWindowStateRestored, FWindowStateSaved: Boolean;
     {$ENDIF}
     {$ENDREGION}
-    {$REGION 'Android state'}
+    {$REGION 'Mobile state'}
+    {$IF Defined(ANDROID) or Defined(IOS)}
+    FAppEvents: TApplicationEvents;
+    FInBackground, FActivityPaused: Boolean;
+    {$ENDIF}
     {$IFDEF ANDROID}
     FTransfer: TAndroidDocumentTransfer;
     FChoosingTape: Boolean;
-    FAppEvents: TApplicationEvents;
-    FInBackground, FActivityPaused: Boolean;
     FSuborKeyboardTouchAttached: Boolean;
     FFamicomKeyboardTouchAttached: Boolean;
     FMiraclePianoTouchAttached: Boolean;
@@ -148,7 +153,10 @@ type
     procedure InitializeLibrary;
     procedure InitializeScreenshotTool;
     procedure InitializePeripherals;
-    {$IFNDEF ANDROID}
+    {$IF Defined(ANDROID) or Defined(IOS)}
+    procedure InitializeMobileViews;
+    {$ENDIF}
+    {$IF not Defined(ANDROID) and not Defined(IOS)}
     procedure InitializeDesktopViews;
     {$ENDIF}
     {$IFDEF ANDROID}
@@ -236,9 +244,11 @@ type
     procedure ChooseTapeFile(Sender: TObject);
     procedure SaveTapeAs(Sender: TObject);
     {$ENDREGION}
-    {$REGION 'Android lifecycle'}
-    {$IFDEF ANDROID}
+    {$REGION 'Mobile lifecycle'}
+    {$IF Defined(ANDROID) or Defined(IOS)}
     function ApplicationStateChanged(Sender: TObject; const AAppEvent: TApplicationEvent; const AContext: TObject): Boolean;
+    {$ENDIF}
+    {$IFDEF ANDROID}
     procedure PollDocumentTransfer;
     {$ENDIF}
     {$ENDREGION}
@@ -462,7 +472,7 @@ begin
       Alive := False;
     end;
   {$IF Defined(MSWINDOWS) or Defined(LINUX) or (Defined(MACOS) and not Defined(IOS))}
-  {$IFNDEF ANDROID}
+  {$IF not Defined(ANDROID) and not Defined(IOS)}
   FInput := CreateHostInput;
   {$ENDIF}
   {$ENDIF}
@@ -478,6 +488,9 @@ begin
   {$IFDEF ANDROID}
   InitializeAndroidServices;
   {$ENDIF}
+  {$IF Defined(ANDROID) or Defined(IOS)}
+  InitializeMobileViews;
+  {$ENDIF}
   Fill.Color := TAlphaColors.Black;
   ImageCanvas.WrapMode := TImageWrapMode.Fit;
   ImageCanvas.DisableInterpolation := True;
@@ -489,7 +502,7 @@ begin
   Load;
   LoadHostInput(ROM_SYSTEM_GB);
   InitializeLibrary;
-  {$IFNDEF ANDROID}
+  {$IF not Defined(ANDROID) and not Defined(IOS)}
   InitializeDesktopViews;
   {$ENDIF}
   SyncActivity;
@@ -498,14 +511,14 @@ end;
 procedure TFormMain.InitializeScreenshotTool;
 begin
   // Split buttons and hardware views have no installed design-time components.
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   var ScreenshotButton := AndroidScreenshot;
   ScreenshotButton.Visible := True;
   {$ELSE}
   var ScreenshotButton := TToolbarSplitButton.Create(Self);
   {$ENDIF}
   FScreenshotTool := ScreenshotButton;
-  {$IFNDEF ANDROID}
+  {$IF not Defined(ANDROID) and not Defined(IOS)}
   ScreenshotButton.Name := 'ButtonScreenshot';
   {$ENDIF}
   ScreenshotButton.Parent := LayoutHead;
@@ -583,7 +596,7 @@ begin
   ScreenTabs.ActiveTab := LibraryScreen;
 end;
 
-{$IFNDEF ANDROID}
+{$IF not Defined(ANDROID) and not Defined(IOS)}
 procedure TFormMain.InitializeDesktopViews;
 begin
   FLibraryBackTool := ButtonLibrary;
@@ -645,10 +658,24 @@ begin
   // Hardware volume keys control game audio, including before a ROM is loaded.
   TAndroidHelper.Activity.setVolumeControlStream(TJAudioManager.JavaClass.STREAM_MUSIC);
   FTransfer := TAndroidDocumentTransfer.Create(FStorage);
+end;
+{$ENDIF}
+
+{$IF Defined(ANDROID) or Defined(IOS)}
+procedure TFormMain.InitializeMobileViews;
+begin
   FAppEvents := TApplicationEvents.Create(Self);
   FAppEvents.OnStateChanged := ApplicationStateChanged;
-  for var Tool in [ButtonLibrary, GamePause, GameFullscreen, GameSettings, GameInsertCoin, GameControlsHelp] do
+  for var Tool in [ButtonLibrary, GameFullscreen, GameSettings, GameInsertCoin, GameControlsHelp] do
     Tool.Visible := False;
+  GamePause.Visible := True;
+  GamePause.Text := '';
+  GamePause.OnClick := PauseClick;
+  GamePause.Align := TAlignLayout.Right;
+  GamePause.Width := 60;
+  for var Child in GamePause.Children do
+    if Child is FMX.Objects.TPath then
+      FMX.Objects.TPath(Child).Align := TAlignLayout.Center;
   GameStatus.Visible := False;
   GamePlatform.Visible := False;
   (FindComponent('ToolbarBackground') as TControl).Visible := False;
@@ -659,6 +686,7 @@ begin
   LabelStatus.TextSettings.FontColor := TAlphaColors.White;
   LayoutClient.Visible := False;
   ScreenTabs.ActiveTab := GameScreen;
+  LayoutHead.OnResize := FormResize;
 end;
 {$ENDIF}
 
@@ -691,8 +719,10 @@ begin
   FreeAndNil(FPowerPad);
   FreeAndNil(FDataRecorder);
   FreeAndNil(FGamepad); // Detach the native listener before destroying the form.
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   FreeAndNil(FAppEvents);
+  {$ENDIF}
+  {$IFDEF ANDROID}
   FreeAndNil(FTransfer);
   {$ENDIF}
   if FEmulation <> nil then
@@ -906,6 +936,20 @@ begin
   if csDestroying in ComponentState then
     Exit;
 
+  {$IF Defined(ANDROID) or Defined(IOS)}
+  if FScreenshotTool <> nil then
+  begin
+    FScreenshotTool.Align := TAlignLayout.None;
+    GamePause.Align := TAlignLayout.None;
+    var ToolY := LayoutHead.Padding.Top;
+    var ToolHeight := Max(0, LayoutHead.Height - ToolY - LayoutHead.Padding.Bottom);
+    var ToolX := LayoutHead.Width - LayoutHead.Padding.Right - FScreenshotTool.Width;
+    FScreenshotTool.SetBounds(ToolX, ToolY, 60, ToolHeight);
+    GamePause.SetBounds(ToolX - 68, ToolY, 60, ToolHeight);
+    LabelStatus.Align := TAlignLayout.None;
+    LabelStatus.SetBounds(55, ToolY, Max(0, ToolX - 68 - 63), ToolHeight);
+  end;
+  {$ENDIF}
   if (FLibraryBackTool <> nil) and (FHelpTool <> nil) then
   begin
     var HasCoin := (FCoinTool <> nil) and FCoinTool.Visible;
@@ -1075,7 +1119,7 @@ end;
 
 procedure TFormMain.FormDeactivate(Sender: TObject);
 begin
-  {$IFNDEF ANDROID}
+  {$IF not Defined(ANDROID) and not Defined(IOS)}
   if FPauseOnFocusLoss and not HostInputHasFocus and not FViewingLibrary and
     (FSettingsView = nil) and (FEmulation <> nil) and not FEmulation.IsPaused then
   begin
@@ -1083,7 +1127,7 @@ begin
     FEmulation.Pause;
   end;
   {$ENDIF}
-  // Release keys whose key-up may be lost. Android lifecycle controls pausing.
+  // Release keys whose key-up may be lost. Mobile lifecycle controls pausing.
   FillChar(FKeysDown, SizeOf(FKeysDown), 0);
   FSuppressInputUntilRelease := True;
   if FInput <> nil then
@@ -1113,7 +1157,7 @@ end;
 procedure TFormMain.SetStatus(const Text: string);
 begin
   Caption := AppName;
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   LabelStatus.Text := Text;
   {$ELSE}
   LabelStatus.Text := Text;
@@ -1127,6 +1171,35 @@ end;
 
 procedure TFormMain.SyncActivity;
 begin
+  {$IF Defined(ANDROID) or Defined(IOS)}
+  GamePause.Enabled := (FEmulation <> nil) and not FEmulationFaulted and not FOpeningRom;
+  var UserPaused := (FEmulation <> nil) and (FUserPaused or FAutoPaused);
+  if UserPaused then
+  begin
+    GamePause.Hint := Translate('Resume');
+    GamePause.StyleLookup := 'buttonstyle_accent';
+  end
+  else
+  begin
+    GamePause.Hint := Translate('Pause');
+    GamePause.StyleLookup := 'buttonstyle';
+  end;
+  for var Child in GamePause.Children do
+    if Child is FMX.Objects.TPath then
+    begin
+      var Icon := FMX.Objects.TPath(Child);
+      if UserPaused then
+      begin
+        Icon.Data.Data := IconPlay;
+        Icon.Stroke.Color := $FF1B2026;
+      end
+      else
+      begin
+        Icon.Data.Data := IconPause;
+        Icon.Stroke.Color := $FFE8ECF1;
+      end;
+    end;
+  {$ENDIF}
   if FGameTools[0] <> nil then
   begin
     FGameTools[0].Enabled := (FEmulation <> nil) and not FEmulationFaulted and not FOpeningRom;
@@ -1158,7 +1231,7 @@ begin
     FMiraclePiano.Visible := PianoActive;
     FMiraclePiano.Enabled := PianoActive and not FEmulationFaulted and not FOpeningRom;
   end;
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   var KeyboardActive := SuborKeyboardActive or FamicomKeyboardActive or PianoActive;
   var PowerPadActive := Supports(FEmulation, INesPeripheralCore, Peripheral);
   if PowerPadActive then
@@ -1180,12 +1253,13 @@ begin
     FFamicomKeyboard.Enabled := FamicomKeyboardActive and not FEmulationFaulted and not FOpeningRom;
   end;
 
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   if FPowerPad <> nil then
   begin
     FPowerPad.Visible := PowerPadActive;
     FPowerPad.Enabled := PowerPadActive and not FEmulationFaulted and not FOpeningRom;
   end;
+  {$IFDEF ANDROID}
   // The Android view accepts one native touch listener.
   // The controls are mutually exclusive, so hand it to the currently visible control.
   if (FSuborKeyboardTouchAttached <> SuborKeyboardActive) or
@@ -1218,6 +1292,7 @@ begin
     FPowerPadTouchAttached := PowerPadActive;
     FMiraclePianoTouchAttached := PianoActive;
   end;
+  {$ENDIF}
   if FMiraclePiano <> nil then
     FMiraclePiano.Enabled := FMiraclePiano.Enabled and not FInBackground;
   var Paused := FInBackground or FOpeningRom or FViewingLibrary or FUserPaused or (FSettingsView <> nil) or (FHelp <> nil);
@@ -1521,7 +1596,7 @@ begin
     FEmulationFaulted := False;
     if FUserPaused then
       FEmulation.Pause;
-    {$IFDEF ANDROID}
+    {$IF Defined(ANDROID) or Defined(IOS)}
     if FActivityPaused then
       FEmulation.Pause;
     {$ENDIF}
@@ -1548,7 +1623,7 @@ begin
     StopOnError;
     raise;
   end;
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   if not FullScreen then
     SwitchFullScreen;
   {$ENDIF}
@@ -1562,7 +1637,7 @@ end;
 
 procedure TFormMain.Stop;
 begin
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   if FullScreen then
     SwitchFullScreen;
   {$ENDIF}
@@ -1615,6 +1690,8 @@ begin
     Exit;
   {$IFDEF ANDROID}
   PollDocumentTransfer;
+  {$ENDIF}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   if FOpeningRom then
     Exit;
   {$ENDIF}
@@ -1777,12 +1854,12 @@ begin
   end
   else
   begin
-    {$IFNDEF ANDROID}
+    {$IF not Defined(ANDROID) and not Defined(IOS)}
     FEmulation.Resume;
     {$ENDIF}
   end;
   SyncActivity;
-  // SyncActivity can release input again when Android changes pause state.
+  // SyncActivity can release input again when the mobile pause state changes.
   FKeysDown[vkP] := True;
 end;
 
@@ -1804,7 +1881,7 @@ procedure TFormMain.SwitchFullScreen;
 begin
   if (FEmulation = nil) or FViewingLibrary or (FSettingsView <> nil) or (FHelp <> nil) then
     Exit;
-  {$IFNDEF ANDROID}
+  {$IF not Defined(ANDROID) and not Defined(IOS)}
   if not FullScreen then
     FFullScreenPadding := Padding.Rect;
   {$ENDIF}
@@ -1834,13 +1911,13 @@ begin
     UpdateSystemBackdropType;
   end;
   {$ENDIF}
-  {$IFNDEF ANDROID}
+  {$IF not Defined(ANDROID) and not Defined(IOS)}
   if FullScreen then
     Padding.Rect := TRectF.Empty
   else
     Padding.Rect := FFullScreenPadding;
   {$ENDIF}
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   // The game tab owns its toolbar as well as the canvas.
   LayoutClient.Visible := True;
   {$ENDIF}
@@ -1875,7 +1952,7 @@ begin
       else
         FGameAudio.Text := Translate('Audio off');
   end;
-  {$IFNDEF ANDROID}
+  {$IF not Defined(ANDROID) and not Defined(IOS)}
   LayoutHead.Visible := (FLibrary <> nil) and not FullScreen;
   {$ENDIF}
   if FCoinTool <> nil then
@@ -1902,7 +1979,7 @@ begin
       if Child is FMX.Objects.TPath then
         FMX.Objects.TPath(Child).Stroke.Color := Color;
   end;
-  {$IFNDEF ANDROID}
+  {$IF not Defined(ANDROID) and not Defined(IOS)}
   if FullScreen then
   begin
     // SyncActivity and frame/status updates can make controls visible again.
@@ -1931,7 +2008,7 @@ end;
 
 procedure TFormMain.LayoutClientDblClick(Sender: TObject);
 begin
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   Exit;
   {$ENDIF}
   SwitchFullScreen;
@@ -2050,7 +2127,7 @@ begin
       if (FEmulation <> nil) and not FSettingsWasPaused and not FEmulationFaulted then
         FEmulation.Resume;
       SyncActivity;
-      {$IFDEF ANDROID}
+      {$IF Defined(ANDROID) or Defined(IOS)}
       FormActivate(Self);
       {$ENDIF}
       if LayoutClient.Visible then
@@ -2618,7 +2695,7 @@ begin
         FEmulation.Reset;
         FUserPaused := False;
         FEmulationFaulted := False;
-        {$IFDEF ANDROID}
+        {$IF Defined(ANDROID) or Defined(IOS)}
         if FActivityPaused then
           FEmulation.Pause;
         {$ENDIF}
@@ -2954,8 +3031,8 @@ begin
 end;
 {$ENDREGION}
 
-{$REGION 'Android lifecycle'}
-{$IFDEF ANDROID}
+{$REGION 'Mobile lifecycle'}
+{$IF Defined(ANDROID) or Defined(IOS)}
 
 function TFormMain.ApplicationStateChanged(Sender: TObject; const AAppEvent: TApplicationEvent; const AContext: TObject): Boolean;
 begin
@@ -2977,7 +3054,9 @@ begin
   end;
   Result := False;
 end;
+{$ENDIF}
 
+{$IFDEF ANDROID}
 procedure TFormMain.PollDocumentTransfer;
 begin
   if not FOpeningRom then

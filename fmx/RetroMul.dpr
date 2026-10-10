@@ -34,7 +34,7 @@ uses
   PC.Sound.OPL in '..\source\cores\pc\PC.Sound.OPL.pas',
   PC.Sound.OPL2 in '..\source\cores\pc\PC.Sound.OPL2.pas',
   PC.Sound.OPL3 in '..\source\cores\pc\PC.Sound.OPL3.pas',
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   FMX.Skia,
   {$ENDIF }
   FMX.Dialogs,
@@ -215,7 +215,7 @@ uses
 {$R *.res}
 
 begin
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   GlobalUseSkia := True;
   {$ENDIF}
   Application.Initialize;

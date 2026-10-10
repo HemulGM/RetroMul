@@ -717,27 +717,30 @@ end;
 procedure TNesSuborKeyboard.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
   inherited;
-  {$IFNDEF ANDROID}
-  if Button = TMouseButton.mbLeft then
-    PointerDown(-1, PointF(X, Y));
-  {$ENDIF}
+  if FNativeInput = nil then
+  begin
+    if Button = TMouseButton.mbLeft then
+      PointerDown(-1, PointF(X, Y));
+  end;
 end;
 
 procedure TNesSuborKeyboard.MouseMove(Shift: TShiftState; X, Y: Single);
 begin
   inherited;
-  {$IFNDEF ANDROID}
-  PointerMove(-1, PointF(X, Y));
-  {$ENDIF}
+  if FNativeInput = nil then
+  begin
+    PointerMove(-1, PointF(X, Y));
+  end;
 end;
 
 procedure TNesSuborKeyboard.MouseUp(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
   inherited;
-  {$IFNDEF ANDROID}
-  if Button = TMouseButton.mbLeft then
-    PointerUp(-1);
-  {$ENDIF}
+  if FNativeInput = nil then
+  begin
+    if Button = TMouseButton.mbLeft then
+      PointerUp(-1);
+  end;
 end;
 
 end.

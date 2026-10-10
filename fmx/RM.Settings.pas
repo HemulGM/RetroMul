@@ -1045,7 +1045,7 @@ end;
 function TSettingsView.PathEdit(const Name, Section, Key, Default: string; Folder: Boolean): TEdit;
 begin
   Result := EditText(Name, Section, Key, Default);
-  {$IFDEF ANDROID}
+  {$IF Defined(ANDROID) or Defined(IOS)}
   Result.ReadOnly := True;
   {$ENDIF}
   var Browse := FindComponent(Name + 'Browse') as TEditButton;
@@ -2002,7 +2002,7 @@ begin
     StorePage;
     var Folder := FDrafts[0].ReadString('General', 'Path', '').Trim;
 
-    {$IFNDEF ANDROID}
+    {$IF not Defined(ANDROID) and not Defined(IOS)}
     if (Folder <> '') and not TDirectory.Exists(Folder) then
       raise Exception.Create(Translate('ROM folder not found. Choose an existing folder.'));
     {$ENDIF}

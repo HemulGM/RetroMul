@@ -134,9 +134,55 @@ implementation
 {$R *.fmx}
 
 uses
-  System.IOUtils, System.Math, System.Hash, System.Generics.Defaults,
+  System.IOUtils, System.Math, System.Math.Vectors, System.Hash, System.Generics.Defaults,
   FMX.Graphics, FMX.BehaviorManager, SCRP.GameList, HGM.FMX.Image,
   Core.RomFormat, Core.SavePaths, RM.Icons, RM.SearchEdit, RM.Styles;
+
+{$IF Defined(ANDROID) or Defined(IOS)}
+type
+  TLibraryScrollBox = class(TVertScrollBox)
+  private
+    FInputTransform: TMatrix;
+    FStableInput: Boolean;
+    function InputPoint(const X, Y: Single): TPointF;
+  protected
+    procedure AniMouseDown(const Touch: Boolean; const X, Y: Single); override;
+    procedure AniMouseMove(const Touch: Boolean; const X, Y: Single); override;
+    procedure AniMouseUp(const Touch: Boolean; const X, Y: Single); override;
+  end;
+
+function TLibraryScrollBox.InputPoint(const X, Y: Single): TPointF;
+begin
+  Result := TPointF.Create(X, Y);
+  if FStableInput and (ContentLayout <> nil) then
+    Result := ContentLayout.LocalToAbsolute(Result) * FInputTransform;
+end;
+
+procedure TLibraryScrollBox.AniMouseDown(const Touch: Boolean; const X, Y: Single);
+begin
+  if not AniCalculations.Down then
+  begin
+    FStableInput := Touch and (ContentLayout <> nil);
+    if FStableInput then
+      FInputTransform := ContentLayout.InvertAbsoluteMatrix;
+  end;
+  inherited;
+end;
+
+procedure TLibraryScrollBox.AniMouseMove(const Touch: Boolean; const X, Y: Single);
+begin
+  // FMX supplies viewport-local points. Keep the gesture's initial coordinates
+  // while collapsing the header moves and enlarges the viewport under the finger.
+  var P := InputPoint(X, Y);
+  inherited AniMouseMove(Touch, P.X, P.Y);
+end;
+
+procedure TLibraryScrollBox.AniMouseUp(const Touch: Boolean; const X, Y: Single);
+begin
+  var P := InputPoint(X, Y);
+  inherited AniMouseUp(Touch, P.X, P.Y);
+end;
+{$ENDIF}
 
 const
   SystemIds: array[0..6] of string = ('', ROM_SYSTEM_NES, ROM_SYSTEM_SNES, ROM_SYSTEM_GB, ROM_SYSTEM_GBC, ROM_SYSTEM_MD, ROM_SYSTEM_NEOGEO);
@@ -210,6 +256,19 @@ begin
   FCompactActions := FindComponent('FCompactActions') as TLayout;
   FScroll := FindComponent('FScroll') as TVertScrollBox;
   FGrid := FindComponent('FGrid') as TLayout;
+  {$IF Defined(ANDROID) or Defined(IOS)}
+  // Retain the standard control in the designer; use stable gesture coordinates at runtime.
+  var Scroll := TLibraryScrollBox.Create(Self);
+  Scroll.SetBounds(FScroll.Position.X, FScroll.Position.Y, FScroll.Width, FScroll.Height);
+  Scroll.ScrollAnimation := FScroll.ScrollAnimation;
+  Scroll.StyleLookup := FScroll.StyleLookup;
+  Scroll.Parent := FScroll.Parent;
+  Scroll.TabOrder := FScroll.TabOrder;
+  FGrid.Parent := Scroll;
+  FScroll.Free;
+  FScroll := Scroll;
+  FScroll.Name := 'FScroll';
+  {$ENDIF}
   FTitle := FindComponent('FTitle') as TLabel;
   FCount := FindComponent('FCount') as TLabel;
   FDetails := FindComponent('FDetails') as TLabel;
@@ -632,7 +691,7 @@ begin
     for var i := 0 to FCards.Count - 1 do
     begin
       var Card := FCards[i];
-      Card.SetBounds((i mod Columns) * (W + 14), FContinueCollapse + (i div Columns) * (H + 14), W, H);
+      Card.SetBounds((i mod Columns) * (W + 14), (i div Columns) * (H + 14), W, H);
       var Image := Card.Cover;
       var Title := Card.Title;
       var platform := Card.platform;
@@ -649,9 +708,9 @@ begin
         platform.SetBounds(12, H - 32, W - 24, 22);
       end;
     end;
-    var Y := FContinueCollapse + Ceil(FCards.Count / Columns) * (H + 14);
+    var Y := Ceil(FCards.Count / Columns) * (H + 14);
     FMore.SetBounds(Max(0, (Available - 180) / 2), Y + 4, 180, 42);
-    FEmpty.SetBounds(16, FContinueCollapse + 28, Available - 32, 132);
+    FEmpty.SetBounds(16, 28, Available - 32, 132);
     FGrid.Height := Max(180, Y + IfThen(FMore.Visible, 64, 0));
   finally
     FArranging := False;
@@ -742,6 +801,7 @@ begin
     // Add the consumed header distance to the content before growing its viewport.
     // This keeps the scroll range and card motion continuous during the collapse.
     FScroll.Width := ContentWidth;
+    FGrid.Position.Y := FContinueCollapse;
     ArrangeCards;
     FScroll.SetBounds(24, Y, ContentWidth, Max(0, FBody.Height - Y - 18));
   finally
@@ -766,8 +826,24 @@ begin
   if FBuilding or FLayouting or not FContinue.Visible then
     Exit;
   var Collapse := EnsureRange(NewPosition.Y, 0, FContinueExtent);
-  if not SameValue(Collapse, FContinueCollapse, 0.1) then
-    Resize;
+  if SameValue(Collapse, FContinueCollapse, 0.1) then
+    Exit;
+  FLayouting := True;
+  try
+    FContinueCollapse := Collapse;
+    var Height := FContinueExtent - 16;
+    FContinue.Height := Max(0, Min(Height, FContinueExtent - Collapse));
+    FContinue.Opacity := 1 - Collapse / FContinueExtent;
+    FContinue.Enabled := Collapse < Height;
+    FFilters.Position.Y := FContinue.Position.Y + FContinueExtent - Collapse;
+    FCount.Position.Y := FFilters.Position.Y + FFilters.Height;
+    // Move the grid as one unit, keeping every card and its content size unchanged.
+    FGrid.Position.Y := Collapse;
+    var Y := FCount.Position.Y + FCount.Height;
+    FScroll.SetBounds(24, Y, FScroll.Width, Max(0, FBody.Height - Y - 18));
+  finally
+    FLayouting := False;
+  end;
 end;
 {$ENDIF}
 {$ENDREGION}

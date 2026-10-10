@@ -18,6 +18,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $projectDirectory = Join-Path $PSScriptRoot 'fmx'
 $projectFile = Join-Path $projectDirectory 'RetroMul.dproj'
+$projectName = [IO.Path]::GetFileNameWithoutExtension($projectFile)
 $releaseDirectory = Join-Path $PSScriptRoot 'releases'
 
 # Prefer the active installation; otherwise discover Delphi on PATH or in the registry.
@@ -74,7 +75,9 @@ foreach ($prefix in ($Platforms | Select-Object -Unique)) {
     # Delete only the expected previous binary so it cannot pass as a fresh build.
     if (Test-Path -LiteralPath $binaryPath) { Remove-Item -LiteralPath $binaryPath -Force }
     $target = if ($isAndroid) { '/t:Build;Deploy' } else { '/t:Build' }
-    $arguments = @($projectFile, '/nologo', '/v:minimal', $target, '/p:Config=Release', "/p:Platform=$platform",
+    # Artwork paths in the .dproj use ProjectName before Delphi targets define it.
+    # Set it as a global property so it is available during project evaluation.
+    $arguments = @($projectFile, '/nologo', '/v:minimal', $target, "/p:ProjectName=$projectName", '/p:Config=Release', "/p:Platform=$platform",
         '/p:DCC_Optimize=true', '/p:DCC_DebugDCUs=false', '/p:DCC_DebugInformation=0', '/p:DCC_LocalDebugSymbols=false')
     if ($isAndroid) {
         # Debug is RAD Studio's APK packaging mode; Config=Release still controls

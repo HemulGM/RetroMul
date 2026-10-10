@@ -2528,7 +2528,7 @@ begin
   {$ENDIF}
   {$IF Defined(LINUX) and not Defined(ANDROID)}
   var Quoted := #39 + Directory.Replace(#39, #39 + '"' + #39 + '"' + #39) + #39;
-  if Posix.Stdlib.system(PAnsiChar(UTF8String('xdg-open ' + Quoted))) = 0 then
+  if Posix.Stdlib._system(PAnsiChar(UTF8String('xdg-open ' + Quoted))) = 0 then
     Exit;
   {$ENDIF}
   raise EInOutError.Create(Translate('Cannot open screenshot folder'));

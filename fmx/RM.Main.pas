@@ -145,6 +145,7 @@ type
     {$ENDIF}
     {$ENDREGION}
     {$REGION 'Initialization and lifetime'}
+    procedure InitializeLibrary;
     procedure InitializeScreenshotTool;
     procedure InitializePeripherals;
     {$IFNDEF ANDROID}
@@ -487,6 +488,7 @@ begin
   TimerUpdate.Interval := 8;
   Load;
   LoadHostInput(ROM_SYSTEM_GB);
+  InitializeLibrary;
   {$IFNDEF ANDROID}
   InitializeDesktopViews;
   {$ENDIF}
@@ -568,8 +570,7 @@ begin
   FDataRecorder.Enabled := False;
 end;
 
-{$IFNDEF ANDROID}
-procedure TFormMain.InitializeDesktopViews;
+procedure TFormMain.InitializeLibrary;
 begin
   FLibrary := TLibraryView.CreateLibrary(Self, FStorage);
   FLibrary.Parent := LibraryScreen;
@@ -580,6 +581,11 @@ begin
   LayoutClient.Visible := False;
   FViewingLibrary := True;
   ScreenTabs.ActiveTab := LibraryScreen;
+end;
+
+{$IFNDEF ANDROID}
+procedure TFormMain.InitializeDesktopViews;
+begin
   FLibraryBackTool := ButtonLibrary;
   FLibraryBackTool.OnClick := LibraryBack;
   ButtonCloseRom.Visible := False;
@@ -1214,7 +1220,7 @@ begin
   end;
   if FMiraclePiano <> nil then
     FMiraclePiano.Enabled := FMiraclePiano.Enabled and not FInBackground;
-  var Paused := FInBackground or FOpeningRom or FUserPaused or (FSettingsView <> nil) or (FHelp <> nil);
+  var Paused := FInBackground or FOpeningRom or FViewingLibrary or FUserPaused or (FSettingsView <> nil) or (FHelp <> nil);
   if FPowerPad <> nil then
     FPowerPad.Enabled := FPowerPad.Enabled and not FInBackground;
   if FGamepad <> nil then
@@ -1543,7 +1549,8 @@ begin
     raise;
   end;
   {$IFDEF ANDROID}
-  SwitchFullscreen;
+  if not FullScreen then
+    SwitchFullScreen;
   {$ENDIF}
 end;
 
@@ -1555,6 +1562,10 @@ end;
 
 procedure TFormMain.Stop;
 begin
+  {$IFDEF ANDROID}
+  if FullScreen then
+    SwitchFullScreen;
+  {$ENDIF}
   FormDeactivate(Self);
   if FEmulation <> nil then
   begin
@@ -1744,7 +1755,7 @@ begin
   FLibrary.RefreshSnapshots;
   FLibrary.BringToFront;
   FViewingLibrary := True;
-  UpdateGameChrome;
+  SyncActivity;
 end;
 
 procedure TFormMain.PauseClick(Sender: TObject);
@@ -1830,7 +1841,8 @@ begin
     Padding.Rect := FFullScreenPadding;
   {$ENDIF}
   {$IFDEF ANDROID}
-  LayoutClient.Visible := FullScreen;
+  // The game tab owns its toolbar as well as the canvas.
+  LayoutClient.Visible := True;
   {$ENDIF}
   if FullScreen then
   begin
@@ -2652,6 +2664,22 @@ end;
 
 procedure TFormMain.FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
+  {$IFDEF ANDROID}
+  if Key = vkHardwareBack then
+  begin
+    if FHelp <> nil then
+      ControlsHelpClose(Self)
+    else if FSettingsView <> nil then
+      SettingsClose(Self)
+    else if not FViewingLibrary then
+      LibraryBack(Self)
+    else
+      Exit;
+    Key := 0;
+    KeyChar := #0;
+    Exit;
+  end;
+  {$ENDIF}
   if (FSettingsView <> nil) or FViewingLibrary then
     Exit;
   if (FInput <> nil) and not FDispatchingInput then

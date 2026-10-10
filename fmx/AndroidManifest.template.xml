@@ -20,8 +20,10 @@
 <%queries-child-elements%>
     </queries>
 
+    <!-- FireMonkey receives Back through key events; keep them enabled on API 36. -->
     <application
         android:appCategory="game"
+        android:enableOnBackInvokedCallback="false"
         android:debuggable="%debuggable%"
         android:hardwareAccelerated="%hardwareAccelerated%"
         android:icon="%icon%"

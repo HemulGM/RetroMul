@@ -638,7 +638,6 @@ type
     Slot.Free;
   end;
 
-
   function ReplaceCombo(const Name: string; const Captions: array of string): TSettingsComboBox;
   begin
     ReplaceRuntime(Name, TSettingsComboBox);
@@ -702,6 +701,7 @@ end;
 {$ENDREGION}
 
 {$REGION 'Page construction and draft settings'}
+
 procedure TSettingsView.BuildPage(PreserveScroll: Boolean);
 begin
   var Position := FScroll.ViewportPosition;
@@ -1059,6 +1059,7 @@ end;
 {$ENDREGION}
 
 {$REGION 'Layout'}
+
 procedure TSettingsView.Resize;
 begin
   if (csLoading in ComponentState) or FBuilding or (csDestroying in ComponentState) then
@@ -1348,6 +1349,7 @@ end;
 {$ENDREGION}
 
 {$REGION 'Navigation and search'}
+
 procedure TSettingsView.SelectCategory(Index: Integer);
 begin
   if FBuilding or (Index < 0) or (Index > High(SettingsCategoryNames)) or (Index = FCategory) then
@@ -1445,6 +1447,7 @@ end;
 {$ENDREGION}
 
 {$REGION 'Devices and bindings'}
+
 procedure TSettingsView.BuildPort(Port: Integer; const Caption: string);
 begin
   if FCategory <> 3 then
@@ -1807,6 +1810,7 @@ end;
 {$ENDREGION}
 
 {$REGION 'Input capture'}
+
 procedure TSettingsView.CaptureClick(Sender: TObject);
 begin
   if (FInput = nil) or (TButton(Sender).Tag < 0) then
@@ -1879,6 +1883,7 @@ end;
 {$ENDREGION}
 
 {$REGION 'Settings events and file selection'}
+
 procedure TSettingsView.VolumeChange(Sender: TObject);
 begin
   if FVolumeValue <> nil then

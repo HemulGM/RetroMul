@@ -18,7 +18,7 @@ object SettingsView: TSettingsView
     StyleLookup = 'retromul_sidebar'
     object Brand: TLabel
       Align = Top
-      StyledSettings = [Family, FontColor]
+      StyledSettings = [Family]
       Margins.Left = 64.000000000000000000
       Position.X = 64.000000000000000000
       Size.Width = 200.000000000000000000
@@ -26,6 +26,7 @@ object SettingsView: TSettingsView
       Size.PlatformDefault = False
       TextSettings.Font.Size = 23.000000000000000000
       TextSettings.Font.StyleExt = {00070000000000000004000000}
+      TextSettings.FontColor = claWhite
       TextSettings.WordWrap = False
       Text = 'RetroMul'
     end
@@ -250,25 +251,70 @@ object SettingsView: TSettingsView
         Text = 'Peripherals'
         object CategoryIcon4: TPath
           Data.Path = {
-            1C00000000000000000020410000C040010000000000C0410000C04002000000
-            0000E0410000C040020000000000F04100000041020000000000F84100005041
-            01000000000008420000D0410200000000000C420000F041020000000000F841
-            00000042020000000000E0410000E841010000000000B8410000C04101000000
-            000030410000C041010000000000C0400000E841020000000000404000000042
-            02000000000000000000F041020000000000803F0000D0410100000000008040
-            00005041020000000000A04000000041020000000000C0400000C04002000000
-            000020410000C04003000000000020410000C040000000000000104100004041
-            01000000000010410000A841000000000000A040000080410100000000005041
-            00008041000000000000C04100005041010000000000C0410000704100000000
-            0000E04100009041010000000000E0410000A041}
-          Fill.Kind = None
+            95000000000000000040B942008019420100000000C0B2420080044201000000
+            3974B1420080044202000000A330B042295C0042020000003974AE42FA7EFB41
+            02000000F753AD420000F74102000000B533AC420681F24102000000A55BAB42
+            FCA9F54102000000F7D3AA420000F74102000000F793A842F0A7FC4102000000
+            B533A1420080044202000000B533A1420080044202000000B533A14200800442
+            02000000F77E2E4200800442020000007ABF2C420080044201000000F9A92A42
+            7DBF004201000000F9A92742FED402420100000078942642FCA9004201000000
+            00002442FE5402420100000000002342FCA90042010000007FEA1F42FCA90242
+            010000007FEA1E427DBF004201000000FED41B42FED4024201000000FED41A42
+            FCA9004201000000FED417427DBF0242010000007DBF1642FCA9004201000000
+            7DBF13427DBF0242010000007DBF12427B940042010000007DBF0F427DBF0242
+            01000000FA7E0E42FCA9004201000000FCA90B427DBF024201000000FE540A42
+            FE540042010000007D3F07427DBF024201000000FAFE0042FA7EFE4101000000
+            0681A841FA7EFE41020000000681A841FA7EFE410200000062109A41EA26F141
+            0200000000009441FA7EF1410200000031088F41A8C6F14102000000FA7E8441
+            0000FE4102000000FA7E84410000FE4101000000FA7E81410000FE4101000000
+            000050418340084202000000000050418340084202000000F4FD3E4183400842
+            02000000F4FD32418340084202000000F4FD26418340084202000000E8FB2341
+            83400A4202000000E8FB234183400A4202000000E8FB234183400A4202000000
+            DCF9164183C0134202000000DCF9164183C0154202000000DCF9164183C01742
+            02000000E8FB2D4106811F4202000000DCF938410601234202000000D0F74341
+            0681264202000000DCF946418941274202000000DCF946418941274201000000
+            DCF966418941274202000000E8FB6F410C022B4202000000E8FB75410C822A42
+            02000000E8FB75410C822A4202000000E8FB75410C822A4202000000F4FDA441
+            0C02284202000000F4FDA2418FC23E4202000000F4FDA0411283554202000000
+            0000864100004C42020000000000424183C06D42020000000000F04083C08742
+            020000000000084142608F42020000000000084142608F420200000000000841
+            84809242020000000C025B414260914202000000000072418400914202000000
+            FA7E8441C6A090420200000023DBBD4142608C420200000023DBBD4142608C42
+            0200000023DBBD4142608C42020000000000C64100808C42020000000000C041
+            00008A42020000000000BA4100808742020000000681C2410080844202000000
+            0681C241008084420100000083C0024200004D42010000008340144200004D42
+            0200000083C0164200004D420200000006011E42834052420200000083401A42
+            0000484202000000008016427DBF3D4202000000834019420080344202000000
+            83401942008034420200000083401942008034420200000006816C4200802D42
+            020000000681744200002D420200000006817C4200802C420200000089417C42
+            7DBF29420200000089417C427DBF294201000000000080420000224201000000
+            4260B142000022420100000084C0B24200801D420200000084C0B24200801D42
+            020000008440B64200801D4202000000C6A0B84200801D42020000000801BB42
+            00801D42020000000040B94200801942020000000040B9420080194203000000
+            0040B942008019420000000000008141B072164202000000560E7741B0721642
+            0200000040356E41643B14420200000040356E41008011420200000040356E41
+            9CC40E42020000006F127741508D0C420200000000008141508D0C4202000000
+            C8768641508D0C420200000060E58A419CC40E420200000060E58A4100801142
+            0200000060E58A41643B144202000000D5788641B07216420200000000008141
+            B07216420300000000008141B072164200000000F2D2084266661B4202000000
+            8816064266661B420200000042E003421A2F19420200000042E00342B6731642
+            0200000042E0034252B81342020000008E1706420681114202000000F2D20842
+            0681114202000000568E0B420681114202000000A2C50D4252B8134202000000
+            A2C50D42B673164202000000A2C50D421A2F1942020000005C8F0B4266661B42
+            02000000F2D2084266661B4203000000F2D2084266661B42000000000C827042
+            73E8224202000000A2C56D4273E82242020000005C8F6B4227B1204202000000
+            5C8F6B42C3F51D42020000005C8F6B425F3A1B4202000000A8C66D4213031942
+            020000000C8270421303194202000000703D73421303194202000000BC747542
+            5F3A1B4202000000BC747542C3F51D4202000000BC74754227B1204202000000
+            773E734273E82242020000000C82704273E82242030000000C82704273E82242}
+          Fill.Color = xFFB9C2CC
           HitTest = False
           Position.X = 12.000000000000000000
           Position.Y = 14.000000000000000000
           Size.Width = 24.000000000000000000
           Size.Height = 24.000000000000000000
           Size.PlatformDefault = False
-          Stroke.Color = xFFB9C2CC
+          Stroke.Kind = None
           Stroke.Thickness = 1.600000023841858000
           WrapMode = Fit
         end
@@ -293,11 +339,12 @@ object SettingsView: TSettingsView
       Size.PlatformDefault = False
       object FTitle: TLabel
         Align = Top
-        StyledSettings = [Family, Style, FontColor]
+        StyledSettings = [Family, Style]
         Size.Width = 916.000000000000000000
         Size.Height = 44.000000000000000000
         Size.PlatformDefault = False
         TextSettings.Font.Size = 30.000000000000000000
+        TextSettings.FontColor = claWhite
         TextSettings.WordWrap = False
         Text = 'General settings'
       end
@@ -467,7 +514,7 @@ object SettingsView: TSettingsView
           Size.PlatformDefault = False
           StyleLookup = 'retromul_card'
           object GroupAppearanceTitle: TLabel
-            StyledSettings = [Family, FontColor]
+            StyledSettings = [Family]
             Position.X = 16.000000000000000000
             Position.Y = 14.000000000000000000
             Size.Width = 868.000000000000000000
@@ -475,6 +522,7 @@ object SettingsView: TSettingsView
             Size.PlatformDefault = False
             TextSettings.Font.Size = 20.000000000000000000
             TextSettings.Font.StyleExt = {00070000000000000004000000}
+            TextSettings.FontColor = claWhite
             TextSettings.WordWrap = False
             Text = 'Appearance'
           end
@@ -497,22 +545,24 @@ object SettingsView: TSettingsView
               Size.PlatformDefault = False
               object RowLanguageTitle: TLabel
                 Align = Top
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Size.Width = 600.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 15.000000000000000000
+                TextSettings.FontColor = claWhite
                 TextSettings.WordWrap = False
                 Text = 'Language'
               end
               object RowLanguageDetail: TLabel
                 Align = Client
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Opacity = 0.720000028610229500
                 Size.Width = 600.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 14.000000000000000000
+                TextSettings.FontColor = claWhite
                 Text = 'Detected on first launch. Your selection is saved.'
               end
             end
@@ -543,31 +593,35 @@ object SettingsView: TSettingsView
               Size.PlatformDefault = False
               object RowThemeTitle: TLabel
                 Align = Top
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Size.Width = 600.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 15.000000000000000000
+                TextSettings.FontColor = claWhite
                 TextSettings.WordWrap = False
                 Text = 'Theme'
               end
               object RowThemeDetail: TLabel
                 Align = Client
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Opacity = 0.720000028610229500
                 Size.Width = 600.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 14.000000000000000000
+                TextSettings.FontColor = claWhite
                 Text = 'RetroMul dark theme with an amber accent.'
               end
             end
             object RowThemeEditor: TLabel
+              StyledSettings = [Family, Size, Style]
               Position.X = 632.000000000000000000
               Position.Y = 20.000000000000000000
               Size.Width = 220.000000000000000000
               Size.Height = 32.000000000000000000
               Size.PlatformDefault = False
+              TextSettings.FontColor = claWhite
               TextSettings.WordWrap = False
               Text = 'Dark '#183' RetroMul'
             end
@@ -580,7 +634,7 @@ object SettingsView: TSettingsView
           Size.PlatformDefault = False
           StyleLookup = 'retromul_card'
           object GroupDuringgameplayTitle: TLabel
-            StyledSettings = [Family, FontColor]
+            StyledSettings = [Family]
             Position.X = 16.000000000000000000
             Position.Y = 14.000000000000000000
             Size.Width = 868.000000000000000000
@@ -588,6 +642,7 @@ object SettingsView: TSettingsView
             Size.PlatformDefault = False
             TextSettings.Font.Size = 20.000000000000000000
             TextSettings.Font.StyleExt = {00070000000000000004000000}
+            TextSettings.FontColor = claWhite
             TextSettings.WordWrap = False
             Text = 'During gameplay'
           end
@@ -610,22 +665,24 @@ object SettingsView: TSettingsView
               Size.PlatformDefault = False
               object RowPausewhenfocusislostTitle: TLabel
                 Align = Top
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Size.Width = 756.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 15.000000000000000000
+                TextSettings.FontColor = claWhite
                 TextSettings.WordWrap = False
                 Text = 'Pause when focus is lost'
               end
               object RowPausewhenfocusislostDetail: TLabel
                 Align = Client
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Opacity = 0.720000028610229500
                 Size.Width = 756.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 14.000000000000000000
+                TextSettings.FontColor = claWhite
                 Text = 'When switching to another application.'
               end
             end
@@ -657,22 +714,24 @@ object SettingsView: TSettingsView
               Size.PlatformDefault = False
               object RowStartinfullscreenTitle: TLabel
                 Align = Top
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Size.Width = 756.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 15.000000000000000000
+                TextSettings.FontColor = claWhite
                 TextSettings.WordWrap = False
                 Text = 'Start in full screen'
               end
               object RowStartinfullscreenDetail: TLabel
                 Align = Client
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Opacity = 0.720000028610229500
                 Size.Width = 756.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 14.000000000000000000
+                TextSettings.FontColor = claWhite
                 Text = 'Open games in full screen.'
               end
             end
@@ -693,7 +752,7 @@ object SettingsView: TSettingsView
           Size.PlatformDefault = False
           StyleLookup = 'retromul_card'
           object GroupAutosaveTitle: TLabel
-            StyledSettings = [Family, FontColor]
+            StyledSettings = [Family]
             Position.X = 16.000000000000000000
             Position.Y = 14.000000000000000000
             Size.Width = 868.000000000000000000
@@ -701,6 +760,7 @@ object SettingsView: TSettingsView
             Size.PlatformDefault = False
             TextSettings.Font.Size = 20.000000000000000000
             TextSettings.Font.StyleExt = {00070000000000000004000000}
+            TextSettings.FontColor = claWhite
             TextSettings.WordWrap = False
             Text = 'Autosave'
           end
@@ -723,22 +783,24 @@ object SettingsView: TSettingsView
               Size.PlatformDefault = False
               object RowAutosaveonexitTitle: TLabel
                 Align = Top
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Size.Width = 756.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 15.000000000000000000
+                TextSettings.FontColor = claWhite
                 TextSettings.WordWrap = False
                 Text = 'Autosave on exit'
               end
               object RowAutosaveonexitDetail: TLabel
                 Align = Client
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Opacity = 0.720000028610229500
                 Size.Width = 756.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 14.000000000000000000
+                TextSettings.FontColor = claWhite
                 Text = 'Save when closing a game or the application.'
               end
             end
@@ -770,22 +832,24 @@ object SettingsView: TSettingsView
               Size.PlatformDefault = False
               object RowAutosaveeveryNminutesTitle: TLabel
                 Align = Top
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Size.Width = 552.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 15.000000000000000000
+                TextSettings.FontColor = claWhite
                 TextSettings.WordWrap = False
                 Text = 'Autosave every N minutes'
               end
               object RowAutosaveeveryNminutesDetail: TLabel
                 Align = Client
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Opacity = 0.720000028610229500
                 Size.Width = 552.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 14.000000000000000000
+                TextSettings.FontColor = claWhite
                 Text = 'Overwrite the autosave slot at the selected interval.'
               end
             end
@@ -820,7 +884,7 @@ object SettingsView: TSettingsView
           Size.PlatformDefault = False
           StyleLookup = 'retromul_card'
           object GroupOnscreenbuttonsTitle: TLabel
-            StyledSettings = [Family, FontColor]
+            StyledSettings = [Family]
             Position.X = 16.000000000000000000
             Position.Y = 14.000000000000000000
             Size.Width = 868.000000000000000000
@@ -828,6 +892,7 @@ object SettingsView: TSettingsView
             Size.PlatformDefault = False
             TextSettings.Font.Size = 20.000000000000000000
             TextSettings.Font.StyleExt = {00070000000000000004000000}
+            TextSettings.FontColor = claWhite
             TextSettings.WordWrap = False
             Text = 'On-screen buttons'
           end
@@ -850,22 +915,24 @@ object SettingsView: TSettingsView
               Size.PlatformDefault = False
               object RowBottominsetTitle: TLabel
                 Align = Top
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Size.Width = 600.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 15.000000000000000000
+                TextSettings.FontColor = claWhite
                 TextSettings.WordWrap = False
                 Text = 'Bottom inset'
               end
               object RowBottominsetDetail: TLabel
                 Align = Client
-                StyledSettings = [Family, Style, FontColor]
+                StyledSettings = [Family, Style]
                 Opacity = 0.720000028610229500
                 Size.Width = 600.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
                 TextSettings.Font.Size = 14.000000000000000000
+                TextSettings.FontColor = claWhite
                 Text = 
                   'Distance from the bottom edge. The safe area is included automat' +
                   'ically.'

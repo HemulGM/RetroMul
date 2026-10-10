@@ -34,6 +34,7 @@ type
     FContinuePreview: TLayout;
     FContinueNoPreview: TLabel;
     FContinueCaption, FContinuePlatform, FContinueLastPlayed, FContinueSave: TLabel;
+    Path1: TPath;
   private
     {$REGION 'Library data and selection'}
     FStorage: IStorage;
@@ -54,6 +55,7 @@ type
     FSidebarPlatformBorders: array[1..6] of TRectangle;
     FNavButtons: array[0..2] of TButton;
     FNavIcons: array[0..2] of TPath;
+    FGridIcon, FListIcon: TPath;
     FContinueCover: TRectangle;
     FContinueGamePreview: TImage;
     FCards: TList<TLibraryCard>;
@@ -61,6 +63,7 @@ type
     {$REGION 'Layout and view preferences'}
     FListMode, FBuilding, FArranging, FLayouting, FShowPlatform: Boolean;
     FCardWidth: Integer;
+    FContinueCollapse, FContinueExtent: Single;
     {$ENDREGION}
     {$REGION 'View events'}
     FOnPlay, FOnSettings, FOnOpen: TNotifyEvent;
@@ -75,8 +78,13 @@ type
     {$REGION 'Cards and layout'}
     procedure BuildCards;
     procedure ArrangeCards;
+    procedure UpdateViewIcons;
     procedure GridResize(Sender: TObject);
     procedure BodyResize(Sender: TObject);
+    {$IF Defined(ANDROID) or Defined(IOS)}
+    procedure ScrollViewportChanged(Sender: TObject; const OldPosition, NewPosition: TPointF;
+      const ContentSizeChanged: Boolean);
+    {$ENDIF}
     {$ENDREGION}
     {$REGION 'Selected game and continue panel'}
     procedure UpdateInspector;
@@ -92,6 +100,9 @@ type
     procedure ModeClick(Sender: TObject);
     procedure SearchChange(Sender: TObject);
     procedure CardClick(Sender: TObject);
+    {$IF Defined(ANDROID) or Defined(IOS)}
+    procedure CardTap(Sender: TObject; const Point: TPointF);
+    {$ENDIF}
     procedure PlayClick(Sender: TObject);
     procedure ResumeClick(Sender: TObject);
     procedure SaveClick(Sender: TObject);
@@ -213,6 +224,8 @@ begin
   FMore := FindComponent('FMore') as TButton;
   FGridButton := FindComponent('LibraryGridView') as TButton;
   FListButton := FindComponent('LibraryListView') as TButton;
+  FGridIcon := FindComponent('LibraryDecoration11') as FMX.Objects.TPath;
+  FListIcon := FindComponent('LibraryDecoration10') as FMX.Objects.TPath;
   FResume := FindComponent('LibraryResume') as TButton;
   FContinuePreview := FindComponent('FContinuePreview') as TLayout;
   FContinueCover := FindComponent('LibraryResumePreview') as TRectangle;
@@ -285,6 +298,10 @@ begin
   FMore.OnClick := MoreClick;
   FBody.OnResize := BodyResize;
   FGrid.OnResize := GridResize;
+  {$IF Defined(ANDROID) or Defined(IOS)}
+  FContinue.ClipChildren := True;
+  FScroll.OnViewportPositionChange := ScrollViewportChanged;
+  {$ENDIF}
   FBuilding := False;
   ApplyPreferences;
   Reload;
@@ -386,6 +403,7 @@ begin
   finally
     Ini.Free;
   end;
+  UpdateViewIcons;
   if FCards <> nil then
     BuildCards;
 end;
@@ -525,7 +543,11 @@ begin
         Card.Parent := FGrid;
         Card.StyleLookup := 'retromul_card';
         Card.TagObject := Game;
+        {$IF Defined(ANDROID) or Defined(IOS)}
+        Card.OnTap := CardTap;
+        {$ELSE}
         Card.OnClick := CardClick;
+        {$ENDIF}
         FCards.Add(Card);
         var Cover := TImage.Create(Card);
         Card.Cover := Cover;
@@ -597,6 +619,10 @@ begin
     var Available := Max(140, FScroll.Width - 16);
     FGrid.Width := Available;
     var Columns := Max(1, Floor((Available + 14) / (FCardWidth + 14)));
+    {$IF Defined(ANDROID) or Defined(IOS)}
+    // Mobile grid cards must fit at least two across, even at the largest setting.
+    Columns := Max(2, Columns);
+    {$ENDIF}
     if FListMode then
       Columns := 1;
     var W := (Available - (Columns - 1) * 14) / Columns;
@@ -606,7 +632,7 @@ begin
     for var i := 0 to FCards.Count - 1 do
     begin
       var Card := FCards[i];
-      Card.SetBounds((i mod Columns) * (W + 14), (i div Columns) * (H + 14), W, H);
+      Card.SetBounds((i mod Columns) * (W + 14), FContinueCollapse + (i div Columns) * (H + 14), W, H);
       var Image := Card.Cover;
       var Title := Card.Title;
       var platform := Card.platform;
@@ -623,9 +649,9 @@ begin
         platform.SetBounds(12, H - 32, W - 24, 22);
       end;
     end;
-    var Y := Ceil(FCards.Count / Columns) * (H + 14);
+    var Y := FContinueCollapse + Ceil(FCards.Count / Columns) * (H + 14);
     FMore.SetBounds(Max(0, (Available - 180) / 2), Y + 4, 180, 42);
-    FEmpty.SetBounds(16, 28, Available - 32, 132);
+    FEmpty.SetBounds(16, FContinueCollapse + 28, Available - 32, 132);
     FGrid.Height := Max(180, Y + IfThen(FMore.Visible, 64, 0));
   finally
     FArranging := False;
@@ -653,11 +679,25 @@ begin
       Y := Y + 48;
     end;
     FContinuePreview.Visible := ContentWidth >= 720;
+    FContinueCollapse := 0;
+    FContinueExtent := 0;
     if FContinue.Visible then
     begin
       var Stacked := ContentWidth < 520;
       var Height := IfThen(Stacked, 208, 154);
-      FContinue.SetBounds(24, Y, ContentWidth, Height);
+      FContinueExtent := Height + 16;
+      {$IF Defined(ANDROID) or Defined(IOS)}
+      // Reserve the wrapped filters, count, and a usable list viewport on short screens.
+      if FBody.Height - Y - FContinueExtent < 88 + 28 + 18 + 92 then
+        FContinueExtent := 0;
+      FContinueCollapse := EnsureRange(FScroll.ViewportPosition.Y, 0, FContinueExtent);
+      if FContinueExtent = 0 then
+        FContinue.Opacity := 0
+      else
+        FContinue.Opacity := 1 - FContinueCollapse / FContinueExtent;
+      FContinue.Enabled := (FContinueExtent > 0) and (FContinueCollapse < Height);
+      {$ENDIF}
+      FContinue.SetBounds(24, Y, ContentWidth, Max(0, Min(Height, FContinueExtent - FContinueCollapse)));
       var TextX: Single := 20;
       if FContinuePreview.Visible then
       begin
@@ -676,7 +716,7 @@ begin
       FContinueLastPlayed.SetBounds(TextX, 94, TextWidth, 18);
       FContinueSave.SetBounds(TextX, 114, TextWidth, 18);
       FResume.SetBounds(ContentWidth - ButtonWidth - 18, Height - 58, ButtonWidth, 40);
-      Y := Y + Height + 16;
+      Y := Y + FContinueExtent - FContinueCollapse;
     end;
     FFilters.SetBounds(24, Y, ContentWidth, 46);
     var X: Single := 0;
@@ -699,8 +739,11 @@ begin
     Y := Y + FFilters.Height;
     FCount.SetBounds(24, Y, ContentWidth, 28);
     Y := Y + 28;
-    FScroll.SetBounds(24, Y, ContentWidth, Max(0, FBody.Height - Y - 18));
+    // Add the consumed header distance to the content before growing its viewport.
+    // This keeps the scroll range and card motion continuous during the collapse.
+    FScroll.Width := ContentWidth;
     ArrangeCards;
+    FScroll.SetBounds(24, Y, ContentWidth, Max(0, FBody.Height - Y - 18));
   finally
     FLayouting := False;
   end;
@@ -715,6 +758,18 @@ procedure TLibraryView.BodyResize(Sender: TObject);
 begin
   Resize;
 end;
+
+{$IF Defined(ANDROID) or Defined(IOS)}
+procedure TLibraryView.ScrollViewportChanged(Sender: TObject; const OldPosition, NewPosition: TPointF;
+  const ContentSizeChanged: Boolean);
+begin
+  if FBuilding or FLayouting or not FContinue.Visible then
+    Exit;
+  var Collapse := EnsureRange(NewPosition.Y, 0, FContinueExtent);
+  if not SameValue(Collapse, FContinueCollapse, 0.1) then
+    Resize;
+end;
+{$ENDIF}
 {$ENDREGION}
 
 {$REGION 'Selected game and continue panel'}
@@ -911,6 +966,13 @@ begin
     PlayClick(Self);
 end;
 
+{$IF Defined(ANDROID) or Defined(IOS)}
+procedure TLibraryView.CardTap(Sender: TObject; const Point: TPointF);
+begin
+  CardClick(Sender);
+end;
+{$ENDIF}
+
 procedure TLibraryView.PlayClick(Sender: TObject);
 begin
   FSnapshotName := '';
@@ -951,9 +1013,24 @@ begin
   BuildCards;
 end;
 
+procedure TLibraryView.UpdateViewIcons;
+begin
+  if FListMode then
+  begin
+    FListIcon.Stroke.Color := $FFFFB344;
+    FGridIcon.Stroke.Color := $FFE8ECF1;
+  end
+  else
+  begin
+    FListIcon.Stroke.Color := $FFE8ECF1;
+    FGridIcon.Stroke.Color := $FFFFB344;
+  end;
+end;
+
 procedure TLibraryView.ViewClick(Sender: TObject);
 begin
   FListMode := TButton(Sender).Tag = 1;
+  UpdateViewIcons;
   var Ini := FStorage.ReadConfig(FStorage.ConfigFile('config'));
   try
     if FListMode then

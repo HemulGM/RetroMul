@@ -1,6 +1,6 @@
 # RetroMul
 
-![RetroMul](https://github.com/HemulGM/RetroMul/blob/main/screen/screen1.png?raw=true)
+![RetroMul](https://github.com/HemulGM/RetroMul/blob/main/screen/screen0.png?raw=true)
 
 RetroMul is a multi-system retro game emulator with a FireMonkey interface. It runs games for NES, Game Boy, Game Boy Color, SEGA Mega Drive / Genesis, and Super Nintendo.
 

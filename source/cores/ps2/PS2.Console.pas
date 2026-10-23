@@ -9,7 +9,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.IOUtils, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.CPU,
-  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO;
+  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE;
 
 type
   TPS2ConsoleConfig = record
@@ -50,6 +50,7 @@ type
     procedure LoadExec(const Path: string; const Args: TArray<string>);
     procedure IOPReset(const Args: string);
     procedure BootIOP;
+    function StartModule(const Path: string; const Args: TBytes; out ModuleId: Integer): Boolean;
     function GetHalted: Boolean;
   public
     Scheduler: TPS2Scheduler;
@@ -60,9 +61,16 @@ type
     DMAC: TPS2DMAC;
     SIF: TPS2SIF;
     GS: TPS2GS;
+    GIF: TPS2GIF;
+    GIFPort: TPS2GIFPort;
     Kernel: TPS2Kernel;
     IOMan: TPS2IOMan;
     FileIO: TPS2FileIOServer;
+    IOPHeap: TPS2IOPAllocator;
+    HeapServer: TPS2IOPHeapServer;
+    LoadFile: TPS2LoadFileServer;
+    // Modules the EE asked the IOP to load (diagnostics).
+    ModuleLog: TStringList;
     constructor Create(const Config: TPS2ConsoleConfig);
     destructor Destroy; override;
     procedure Reset;
@@ -130,6 +138,10 @@ begin
   GS := TPS2GS.Create;
   GS.OnInterrupt := GSInterrupt;
   Bus.GS := GS;
+  GIF := TPS2GIF.Create(GS);
+  Bus.GIF := GIF;
+  GIFPort := TPS2GIFPort.Create(GIF);
+  DMAC.Ports[DMAGIF] := GIFPort;
   Kernel := TPS2Kernel.Create(CPU, Bus, Scheduler);
   Kernel.OnTTY := TTYWrite;
   Kernel.OnLoadExec := LoadExec;
@@ -137,15 +149,27 @@ begin
   IOMan := TPS2IOMan.Create(FHostFS);
   IOMan.OnTTY := IOPTTY;
   FileIO := TPS2FileIOServer.Create(IOMan);
+  IOPHeap := TPS2IOPAllocator.Create($00080000, $001F0000);
+  HeapServer := TPS2IOPHeapServer.Create(IOPHeap, IOMan);
+  ModuleLog := TStringList.Create;
+  LoadFile := TPS2LoadFileServer.Create(IOMan);
+  LoadFile.OnModule := StartModule;
+  LoadFile.Log := ModuleLog;
   Reset;
 end;
 
 destructor TPS2Console.Destroy;
 begin
   FileIO.Free;
+  LoadFile.Free;
+  HeapServer.Free;
+  IOPHeap.Free;
+  ModuleLog.Free;
   IOMan.Free;
   FHostFS.Free;
   Kernel.Free;
+  GIFPort.Free;
+  GIF.Free;
   GS.Free;
   SIF.Free;
   DMAC.Free;
@@ -220,6 +244,7 @@ begin
   SIF.Reset;
   GS.Reset;
   GS.Interlaced := True;
+  GIF.Reset;
   Kernel.Reset;
   IOMan.Reset;
   SetVideo(FConfig.PAL);
@@ -235,7 +260,17 @@ procedure TPS2Console.BootIOP;
 begin
   SIF.RemoveServers;
   SIF.AddServer(FileIO);
+  SIF.AddServer(HeapServer);
+  SIF.AddServer(LoadFile);
+  IOPHeap.Reset;
   SIF.IOPBooted;
+end;
+
+function TPS2Console.StartModule(const Path: string; const Args: TBytes; out ModuleId: Integer): Boolean;
+begin
+  // The high-level IOP provides the system modules; others are not run yet.
+  ModuleId := ModuleLog.Count + 1;
+  Result := True;
 end;
 
 procedure TPS2Console.IOPReset(const Args: string);
@@ -364,8 +399,10 @@ begin
   DMAC.SerializeState(State);
   SIF.SerializeState(State);
   GS.SerializeState(State);
+  GIF.SerializeState(State);
   Kernel.SerializeState(State);
   IOMan.SerializeState(State);
+  IOPHeap.SerializeState(State);
   State.Field(FFieldStart, SizeOf(FFieldStart));
   State.Field(FFrameCount, SizeOf(FFrameCount));
   State.Field(FInVBlank, SizeOf(FInVBlank));

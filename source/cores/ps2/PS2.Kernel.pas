@@ -104,6 +104,7 @@ type
     FInCustom: Boolean;
     FVSyncFlag1, FVSyncFlag2: Cardinal;
     FSifDmaId: Cardinal;
+    FHeapEnd: Cardinal;
     FIdle: Boolean;
     FExited: Boolean;
     FExitCode: Integer;
@@ -628,7 +629,7 @@ begin
   begin
     var C := FCalls[0];
     FCalls.Delete(0);
-    if (C.Kind = 0) and (Integer(C.A0) = FSkipCause) then
+    if (C.Kind <= 1) and (Integer(C.A0) + C.Kind * 64 = FSkipCause) then
       Continue;
     FCallKind := C.Kind;
     FCPU.S.GPR[4].Lo := C.A0;
@@ -702,8 +703,8 @@ begin
       Interrupt;
     KernelTrapHandlerReturn:
       begin
-        if (FCallKind = 0) and (Integer(Cardinal(FCPU.S.GPR[2].Lo)) < 0) then
-          FSkipCause := FCallCause;
+        if (FCallKind <= 1) and (Integer(Cardinal(FCPU.S.GPR[2].Lo)) < 0) then
+          FSkipCause := FCallCause + FCallKind * 64;
         if FInInterrupt then
           StartNextCall
         else
@@ -1290,6 +1291,7 @@ begin
             FThreads[FCurrent].State := TPS2ThreadState.Free
           else
             FThreads[FCurrent].State := TPS2ThreadState.Dormant;
+          FThreads[FCurrent].Priority := FThreads[FCurrent].InitPriority;
           FCurrent := -1;
         end;
         Reschedule;
@@ -1305,6 +1307,7 @@ begin
         else
         begin
           FThreads[Id].State := TPS2ThreadState.Dormant;
+          FThreads[Id].Priority := FThreads[Id].InitPriority;
           FThreads[Id].WaitKind := 0;
           Ret(Id);
         end;
@@ -1431,12 +1434,15 @@ begin
     $37, $38: // SuspendThread
       begin
         var Id := Integer(Arg(0));
-        if (Id <= 0) or (Id >= KernelMaxThreads) or (Id = FCurrent) then
+        if (Id = 0) and not FInInterrupt then
+          Id := FCurrent;
+        if (Id <= 0) or (Id >= KernelMaxThreads) then
           Ret(-1)
         else
           case FThreads[Id].State of
             TPS2ThreadState.Ready:
               begin
+                // The current thread keeps running until it next waits.
                 FThreads[Id].State := TPS2ThreadState.Suspended;
                 Ret(Id);
               end;
@@ -1479,13 +1485,11 @@ begin
         var Top := Add32(Start, Size);
         if (Size = $FFFFFFFF) and (FCurrent > 0) then
           Top := FThreads[FCurrent].Stack;
+        FHeapEnd := Top;
         Ret(Integer(Top));
       end;
     $3E: // EndOfHeap
-      if FCurrent > 0 then
-        Ret(Integer(FThreads[FCurrent].Stack))
-      else
-        Ret(0);
+      Ret(Integer(FHeapEnd));
     $40: CreateSema;
     $41, $49: // DeleteSema
       begin
@@ -1692,6 +1696,7 @@ begin
   State.Field(FVSyncFlag1, SizeOf(FVSyncFlag1));
   State.Field(FVSyncFlag2, SizeOf(FVSyncFlag2));
   State.Field(FSifDmaId, SizeOf(FSifDmaId));
+  State.Field(FHeapEnd, SizeOf(FHeapEnd));
   State.Field(FIdle, SizeOf(FIdle));
   State.Field(FExited, SizeOf(FExited));
   State.Field(FExitCode, SizeOf(FExitCode));

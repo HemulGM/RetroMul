@@ -286,7 +286,11 @@ begin
               Run(N);
             end;
           end;
-        $10: Ch[N].MADR := Value and $FFFFFFF0;
+        $10:
+          if N >= DMAFromSPR then
+            Ch[N].MADR := Value and $7FFFFFF0
+          else
+            Ch[N].MADR := Value and $FFFFFFF0;
         $20: Ch[N].QWC := Value and $FFFF;
         $30: Ch[N].TADR := Value and $FFFFFFF0;
         $40: Ch[N].ASR0 := Value and $FFFFFFF0;
@@ -528,7 +532,7 @@ begin
         Ch[N].QWC := Ch[N].QWC - 1;
         Inc(Moved[N]);
       end;
-      if (Mode = 2) and (Ch[N].QWC > 0) then
+      if Mode = 2 then
         Ch[N].MADR := Ch[N].MADR + Cardinal(Skip) * 16;
     end;
   until (Mode <> 1) or Ch[N].TagEnd;

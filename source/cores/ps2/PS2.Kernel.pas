@@ -99,6 +99,7 @@ type
     FCallKind, FCallCause: Integer;
     FSkipCause: Integer;
     FCustomReturn: Cardinal;
+    FCustomRA: UInt64;
     FCustomStatus: Cardinal;
     FInCustom: Boolean;
     FVSyncFlag1, FVSyncFlag2: Cardinal;
@@ -184,6 +185,9 @@ type
     property OnCrtChange: TProc read FOnCrtChange write FOnCrtChange;
     // Syscalls not handled (diagnostics).
     property UnknownCalls: TStringList read FUnknown;
+  public
+    // Diagnostics: every syscall and trap when assigned.
+    Trace: TStringList;
   end;
 
 implementation
@@ -690,6 +694,9 @@ end;
 
 procedure TPS2Kernel.Trap(CPU: TEECPU; Index: Cardinal);
 begin
+  if Trace <> nil then
+    Trace.Add(Format('%d trap %d pc=%.8x epc=%.8x thread=%d', [FScheduler.Now, Index, FCPU.S.PC, FCPU.S.COP0[C0EPC],
+      FCurrent]));
   case Index of
     KernelTrapInterrupt:
       Interrupt;
@@ -705,6 +712,7 @@ begin
     KernelTrapCustomReturn:
       begin
         FCPU.S.PC := FCustomReturn;
+        FCPU.S.GPR[31].Lo := FCustomRA;
         FCPU.S.COP0[C0Status] := FCustomStatus;
         FInCustom := False;
       end;
@@ -1151,6 +1159,7 @@ end;
 procedure TPS2Kernel.CallCustom(Index: Cardinal);
 begin
   FCustomReturn := FCPU.S.PC;
+  FCustomRA := FCPU.S.GPR[31].Lo;
   FCustomStatus := FCPU.S.COP0[C0Status];
   FInCustom := True;
   FCPU.S.GPR[31].Lo := SX32(KernelCustomReturn);
@@ -1168,6 +1177,9 @@ procedure TPS2Kernel.Syscall(CPU: TEECPU);
 begin
   var Code := Integer(Cardinal(FCPU.S.GPR[3].Lo));
   var Index := Cardinal(Abs(Code)) and $FF;
+  if Trace <> nil then
+    Trace.Add(Format('%d syscall %x a0=%x a1=%x a2=%x pc=%.8x thread=%d custom=%x', [FScheduler.Now, Code, Arg(0),
+      Arg(1), Arg(2), FCPU.S.PC, FCurrent, FCustom[Index]]));
   if (FCustom[Index] <> 0) and not FInCustom then
   begin
     CallCustom(Index);
@@ -1674,6 +1686,7 @@ begin
   State.Field(FCallCause, SizeOf(FCallCause));
   State.Field(FSkipCause, SizeOf(FSkipCause));
   State.Field(FCustomReturn, SizeOf(FCustomReturn));
+  State.Field(FCustomRA, SizeOf(FCustomRA));
   State.Field(FCustomStatus, SizeOf(FCustomStatus));
   State.Field(FInCustom, SizeOf(FInCustom));
   State.Field(FVSyncFlag1, SizeOf(FVSyncFlag1));

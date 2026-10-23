@@ -205,6 +205,7 @@ type
       IFSlot = 1;
       IFBranch = 2;
       IFEnd = 4;
+      IFLikely = 8;
   private
     FBus: TEEBus;
     FCop2: TEECop2;
@@ -260,6 +261,7 @@ type
     function Store128(I: PEEInst; A: Cardinal; const V: TPS2Reg128): Boolean;
     function Translate(I: PEEInst; A: Cardinal; Writing: Boolean; out Phys: Cardinal): Boolean;
     function FPUResult(D: Double; Overflow, Underflow: Cardinal): Cardinal;
+    function FAdd(A, B: Cardinal): Cardinal;
     function MultiplyAdd(I: PEEInst; Op: Cardinal): Boolean;
   public
     // Operation handlers (TEEHandler); True stops the block.
@@ -432,29 +434,92 @@ type
 // Guest float helpers shared with VU code: inputs with exponent 0 read as
 // signed zero and with exponent 255 as the largest finite value.
 function EEFloatIn(V: Cardinal): Double; inline;
+function PS2FloatAdd(A, B: Cardinal; out Flags: Cardinal): Cardinal;
 
 implementation
 
-const
-  FloatMax = 3.4028234663852886e38;
-  FloatMinNormal = 1.1754943508222875e-38;
-
+// PS2 floats have no infinity or NaN: exponent 255 is an ordinary binade
+// (the largest value is 7FFFFFFFh) and exponent 0 is zero. A double holds
+// every such value exactly.
 function EEFloatIn(V: Cardinal): Double;
+var
+  B: UInt64;
 begin
-  case (V shr 23) and $FF of
-    0:
-      if (V and $80000000) <> 0 then
-        Result := -0.0
-      else
-        Result := 0.0;
-    255:
-      begin
-        var U: Cardinal := (V and $80000000) or $7F7FFFFF;
-        Result := PSingle(@U)^;
-      end;
+  var E := (V shr 23) and $FF;
+  if E = 0 then
+    B := UInt64(V and $80000000) shl 32
   else
-    Result := PSingle(@V)^;
+    B := (UInt64(V and $80000000) shl 32) or (UInt64(E + (1023 - 127)) shl 52) or (UInt64(V and $7FFFFF) shl 29);
+  Result := PDouble(@B)^;
+end;
+
+// The FPU/VU adder aligns the smaller operand with a single guard bit and
+// drops whatever is shifted out before adding; the sum is then truncated.
+// Flags: 1 overflow, 2 underflow.
+function PS2FloatAdd(A, B: Cardinal; out Flags: Cardinal): Cardinal;
+begin
+  Flags := 0;
+  var EA := Integer((A shr 23) and $FF);
+  var EB := Integer((B shr 23) and $FF);
+  if EA = 0 then
+  begin
+    if EB = 0 then
+      Exit(A and B and $80000000);
+    Exit(B);
   end;
+  if EB = 0 then
+    Exit(A);
+  if (B and $7FFFFFFF) > (A and $7FFFFFFF) then
+  begin
+    var T := A;
+    A := B;
+    B := T;
+    var TE := EA;
+    EA := EB;
+    EB := TE;
+  end;
+  var Sign := A and $80000000;
+  var MA := ((A and $7FFFFF) or $800000) shl 3;
+  var MB := ((B and $7FFFFF) or $800000) shl 3;
+  var Align := EA - EB;
+  if Align > 0 then
+  begin
+    if Align < 32 then
+      MB := (MB shr Align) and not Cardinal(3)
+    else
+      MB := 0;
+  end;
+  if ((A xor B) and $80000000) <> 0 then
+  begin
+    MA := MA - MB;
+    if MA = 0 then
+      Exit(0);
+    while MA < ($800000 shl 3) do
+    begin
+      MA := MA shl 1;
+      Dec(EA);
+    end;
+  end
+  else
+  begin
+    MA := MA + MB;
+    if (MA and ($800000 shl 4)) <> 0 then
+    begin
+      MA := MA shr 1;
+      Inc(EA);
+    end;
+  end;
+  if EA > 255 then
+  begin
+    Flags := 1;
+    Exit(Sign or $7FFFFFFF);
+  end;
+  if EA <= 0 then
+  begin
+    Flags := 2;
+    Exit(Sign);
+  end;
+  Result := Sign or (Cardinal(EA) shl 23) or ((MA shr 3) and $7FFFFF);
 end;
 
 function Sar32(V: Cardinal; N: Integer): Cardinal; inline;
@@ -2237,28 +2302,37 @@ end;
 
 { COP1: S = fs, T = ft (or the GPR rt for transfers), D = fd. }
 
+// D was computed with the host rounding toward zero; the 24-bit result
+// truncates its 53-bit mantissa, which composes to the same truncation.
 function TEECPU.FPUResult(D: Double; Overflow, Underflow: Cardinal): Cardinal;
 begin
-  var A := Abs(D);
-  if A > FloatMax then
+  var B := PUInt64(@D)^;
+  var Sign := Cardinal(B shr 32) and $80000000;
+  if (B and $7FFFFFFFFFFFFFFF) = 0 then
+    Exit(Sign);
+  var E := Integer((B shr 52) and $7FF) - (1023 - 127);
+  if E > 255 then
   begin
-    Result := $7F7FFFFF;
-    if D < 0 then
-      Result := $FF7FFFFF;
     S.FCR31 := S.FCR31 or Overflow;
-  end
-  else if (A < FloatMinNormal) and (A <> 0) then
-  begin
-    Result := 0;
-    if D < 0 then
-      Result := $80000000;
-    S.FCR31 := S.FCR31 or Underflow;
-  end
-  else
-  begin
-    var F: Single := D;
-    Result := PCardinal(@F)^;
+    Exit(Sign or $7FFFFFFF);
   end;
+  if E <= 0 then
+  begin
+    S.FCR31 := S.FCR31 or Underflow;
+    Exit(Sign);
+  end;
+  Result := Sign or (Cardinal(E) shl 23) or (Cardinal(B shr 29) and $7FFFFF);
+end;
+
+function TEECPU.FAdd(A, B: Cardinal): Cardinal;
+var
+  Flags: Cardinal;
+begin
+  Result := PS2FloatAdd(A, B, Flags);
+  if (Flags and 1) <> 0 then
+    S.FCR31 := S.FCR31 or FCROverflow or FCRStickyOverflow
+  else if (Flags and 2) <> 0 then
+    S.FCR31 := S.FCR31 or FCRUnderflow or FCRStickyUnderflow;
 end;
 
 function TEECPU.OpMFC1(I: PEEInst): Boolean;
@@ -2275,18 +2349,17 @@ end;
 
 function TEECPU.OpCFC1(I: PEEInst): Boolean;
 begin
-  if I.S = 31 then
+  // FCR0 answers for 0..15, FCR31 for 16..31.
+  if I.S >= 16 then
     S.GPR[I.T].Lo := SX32(S.FCR31)
-  else if I.S = 0 then
-    S.GPR[I.T].Lo := $2E30
   else
-    S.GPR[I.T].Lo := 0;
+    S.GPR[I.T].Lo := $2E30;
   Result := False;
 end;
 
 function TEECPU.OpCTC1(I: PEEInst): Boolean;
 begin
-  if I.S = 31 then
+  if I.S >= 16 then
     S.FCR31 := (Cardinal(S.GPR[I.T].Lo) and $0083C078) or $01000001;
   Result := False;
 end;
@@ -2317,7 +2390,7 @@ const
 function TEECPU.OpFADD(I: PEEInst): Boolean;
 begin
   S.FCR31 := S.FCR31 and not Cardinal(FlagsOU);
-  S.FPR[I.D] := FPUResult(EEFloatIn(S.FPR[I.S]) + EEFloatIn(S.FPR[I.T]), SetO, SetU);
+  S.FPR[I.D] := FAdd(S.FPR[I.S], S.FPR[I.T]);
   Result := False;
 end;
 
@@ -2346,12 +2419,11 @@ function TEECPU.MultiplyAdd(I: PEEInst; Op: Cardinal): Boolean;
 begin
   S.FCR31 := S.FCR31 and not Cardinal(FlagsOU);
   var P := FPUResult(EEFloatIn(S.FPR[I.S]) * EEFloatIn(S.FPR[I.T]), SetO, SetU);
-  var Acc := EEFloatIn(S.ACC);
   var R: Cardinal;
   if (Op and 1) = 0 then
-    R := FPUResult(Acc + EEFloatIn(P), SetO, SetU)
+    R := FAdd(S.ACC, P)
   else
-    R := FPUResult(Acc - EEFloatIn(P), SetO, SetU);
+    R := FAdd(S.ACC, P xor $80000000);
   if (Op and 2) <> 0 then
     S.ACC := R
   else
@@ -2378,7 +2450,7 @@ begin
     $01:
       begin
         S.FCR31 := S.FCR31 and not Cardinal(FlagsOU);
-        S.FPR[I.D] := FPUResult(EEFloatIn(Fs) - EEFloatIn(Ft), SetO, SetU);
+        S.FPR[I.D] := FAdd(Fs, Ft xor $80000000);
       end;
     $02: Exit(OpFMUL(I));
     $03:
@@ -2390,7 +2462,7 @@ begin
             S.FCR31 := S.FCR31 or FCRInvalid or FCRStickyInvalid
           else
             S.FCR31 := S.FCR31 or FCRDivide or FCRStickyDivide;
-          S.FPR[I.D] := ((Fs xor Ft) and $80000000) or $7F7FFFFF;
+          S.FPR[I.D] := ((Fs xor Ft) and $80000000) or $7FFFFFFF;
         end
         else
           S.FPR[I.D] := FPUResult(EEFloatIn(Fs) / EEFloatIn(Ft), 0, 0);
@@ -2424,7 +2496,7 @@ begin
         if (Ft and $7F800000) = 0 then
         begin
           S.FCR31 := S.FCR31 or FCRDivide or FCRStickyDivide;
-          S.FPR[I.D] := ((Fs xor Ft) and $80000000) or $7F7FFFFF;
+          S.FPR[I.D] := (Fs and $80000000) or $7FFFFFFF;
         end
         else
         begin
@@ -2437,12 +2509,12 @@ begin
     $18:
       begin
         S.FCR31 := S.FCR31 and not Cardinal(FlagsOU);
-        S.ACC := FPUResult(EEFloatIn(Fs) + EEFloatIn(Ft), SetO, SetU);
+        S.ACC := FAdd(Fs, Ft);
       end;
     $19:
       begin
         S.FCR31 := S.FCR31 and not Cardinal(FlagsOU);
-        S.ACC := FPUResult(EEFloatIn(Fs) - EEFloatIn(Ft), SetO, SetU);
+        S.ACC := FAdd(Fs, Ft xor $80000000);
       end;
     $1A:
       begin
@@ -3054,10 +3126,10 @@ begin
           S.LO.UW[2] := Sub32(Cardinal(P[5]), Cardinal(P[4]));
           S.HI.UW[2] := Sub32(Cardinal(P[7]), Cardinal(P[6]));
         end;
-        S.LO.UW[1] := Cardinal(-P[1]);
-        S.HI.UW[1] := Cardinal(-P[3]);
-        S.LO.UW[3] := Cardinal(-P[5]);
-        S.HI.UW[3] := Cardinal(-P[7]);
+        S.LO.UW[1] := not Cardinal(P[1]);
+        S.HI.UW[1] := not Cardinal(P[3]);
+        S.LO.UW[3] := not Cardinal(P[5]);
+        S.HI.UW[3] := not Cardinal(P[7]);
         if I.Sa = 17 then
         begin
           S.LO.UW[1] := Cardinal(P[1]);
@@ -3132,7 +3204,7 @@ begin
               S.LO.UW[K] := 1
             else
               S.LO.UW[K] := $FFFFFFFF;
-            S.HI.UW[K] := Cardinal(Integer(SmallInt(Word(N))));
+            S.HI.UW[K] := Cardinal(N);
           end
           else if (N = Low(Integer)) and (D = -1) then
           begin
@@ -3142,7 +3214,7 @@ begin
           else
           begin
             S.LO.UW[K] := Cardinal(N div D);
-            S.HI.UW[K] := Cardinal(Integer(SmallInt(Word(N mod D))));
+            S.HI.UW[K] := Cardinal(N mod D);
           end;
         end;
         Exit(False);
@@ -3636,7 +3708,19 @@ begin
     I.D := Dest(Rd);
   I.Handler := H;
   if Result then
+  begin
     I.Flags := I.Flags or IFBranch;
+    case Op shr 26 of
+      $14..$17:
+        I.Flags := I.Flags or IFLikely;
+      $01:
+        if (Rt and 2) <> 0 then
+          I.Flags := I.Flags or IFLikely;
+      $10..$12:
+        if (Op and $20000) <> 0 then
+          I.Flags := I.Flags or IFLikely;
+    end;
+  end;
 end;
 
 { Blocks }
@@ -3746,6 +3830,10 @@ begin
     Code[Count] := Op;
     Inc(Count);
     Inc(Address, 4);
+    // A non-likely branch in a delay slot takes the next instruction as its
+    // own delay slot, then the last taken branch wins (R5900 behavior).
+    if Slot and Branch and ((Insts[Count - 1].Flags and IFLikely) = 0) and (Count < MaxBlockInsts) then
+      Continue;
     if Slot or ((Insts[Count - 1].Flags and IFEnd) <> 0) then
       Break;
     Slot := Branch;

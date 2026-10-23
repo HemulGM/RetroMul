@@ -8,25 +8,17 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IOUtils, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.CPU,
-  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE;
+  System.SysUtils, System.Classes, System.IOUtils, System.Generics.Collections, Core.Snapshots, Core.DVD.Image, PS2.Types, PS2.Scheduler, PS2.EE.CPU,
+  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.VU;
 
 type
   TPS2ConsoleConfig = record
     PAL: Boolean;
     // Directory for host: paths (homebrew).
     HostDirectory: string;
-  end;
-
-  // host: files from a directory on the host.
-  TPS2HostFileSystem = class(TPS2FileSystem)
-  private
-    FRoot: string;
-  public
-    constructor Create(const Root: string);
-    function ReadFile(const Device, Path: string): TBytes; override;
-    function FileSize(const Device, Path: string): Int64; override;
-    property Root: string read FRoot write FRoot;
+    // The disc (owned by the caller) or nil.
+    Disc: TDVDImage;
+    Region: TPS2Region;
   end;
 
   TPS2Console = class
@@ -37,7 +29,8 @@ type
     FFieldStart: Int64;
     FFrameCount: Int64;
     FInVBlank: Boolean;
-    FHostFS: TPS2HostFileSystem;
+    FDiscFS: TPS2DiscFileSystem;
+    FCDVD: TObjectList<TPS2CDVDServer>;
     FProgram: TBytes;
     FProgramName: string;
     FIdleCycles: Int64;
@@ -50,13 +43,16 @@ type
     procedure LoadExec(const Path: string; const Args: TArray<string>);
     procedure IOPReset(const Args: string);
     procedure BootIOP;
+    procedure StartVU1(Address: Cardinal);
+    procedure VU1Kick(Address: Cardinal);
     function StartModule(const Path: string; const Args: TBytes; out ModuleId: Integer): Boolean;
     function GetHalted: Boolean;
   public
     Scheduler: TPS2Scheduler;
     Bus: TPS2EEBus;
     CPU: TEECPU;
-    Cop2: TEECop2;
+    VU0: TPS2VU0;
+    VU1: TPS2VU1;
     Timers: TPS2Timers;
     DMAC: TPS2DMAC;
     SIF: TPS2SIF;
@@ -76,6 +72,9 @@ type
     procedure Reset;
     // A homebrew ELF (EE executable): loaded and started by the HLE kernel.
     procedure LoadProgram(const Data: TBytes; const Name: string);
+    // Boots the disc: BOOT2 from SYSTEM.CNF (False without a PS2 disc).
+    function BootDisc: Boolean;
+    property DiscFS: TPS2DiscFileSystem read FDiscFS;
     procedure RunFrame;
     function TakeTTY: string;
     procedure SerializeState(State: TStateArchive);
@@ -86,34 +85,6 @@ type
 
 implementation
 
-{ TPS2HostFileSystem }
-
-constructor TPS2HostFileSystem.Create(const Root: string);
-begin
-  inherited Create;
-  FRoot := Root;
-end;
-
-function TPS2HostFileSystem.ReadFile(const Device, Path: string): TBytes;
-begin
-  Result := nil;
-  if Device <> 'host' then
-    Exit;
-  var Full := TPath.Combine(FRoot, Path.Replace('/', PathDelim));
-  if TFile.Exists(Full) then
-    Result := TFile.ReadAllBytes(Full);
-end;
-
-function TPS2HostFileSystem.FileSize(const Device, Path: string): Int64;
-begin
-  Result := -1;
-  if Device <> 'host' then
-    Exit;
-  var Full := TPath.Combine(FRoot, Path.Replace('/', PathDelim));
-  if TFile.Exists(Full) then
-    Result := TFile.GetSize(Full);
-end;
-
 { TPS2Console }
 
 constructor TPS2Console.Create(const Config: TPS2ConsoleConfig);
@@ -123,8 +94,12 @@ begin
   FTTY := TStringBuilder.Create;
   Scheduler := TPS2Scheduler.Create;
   Bus := TPS2EEBus.Create(Scheduler);
-  Cop2 := TEECop2.Create;
-  CPU := TEECPU.Create(Bus, Cop2, @Scheduler.Now, @Scheduler.Deadline);
+  VU0 := TPS2VU0.Create(Bus.VU0Code, Bus.VU0Data);
+  VU1 := TPS2VU1.Create(Bus.VU1Code, Bus.VU1Data);
+  VU0.VU1 := VU1.Core;
+  VU0.OnStartVU1 := StartVU1;
+  VU1.Core.OnKick := VU1Kick;
+  CPU := TEECPU.Create(Bus, VU0, @Scheduler.Now, @Scheduler.Deadline);
   Bus.CPU := CPU;
   Bus.OnTTY := TTYWrite;
   Timers := TPS2Timers.Create(Scheduler, Bus.RaiseIRQ);
@@ -145,8 +120,15 @@ begin
   Kernel := TPS2Kernel.Create(CPU, Bus, Scheduler);
   Kernel.OnTTY := TTYWrite;
   Kernel.OnLoadExec := LoadExec;
-  FHostFS := TPS2HostFileSystem.Create(Config.HostDirectory);
-  IOMan := TPS2IOMan.Create(FHostFS);
+  FDiscFS := TPS2DiscFileSystem.Create(Config.Disc, Config.HostDirectory, Config.Region);
+  IOMan := TPS2IOMan.Create(FDiscFS);
+  FCDVD := TObjectList<TPS2CDVDServer>.Create(True);
+  for var SID in PS2CDVDServerSIDs do
+  begin
+    var S := TPS2CDVDServer.Create(SID, FDiscFS);
+    S.Log := nil;
+    FCDVD.Add(S);
+  end;
   IOMan.OnTTY := IOPTTY;
   FileIO := TPS2FileIOServer.Create(IOMan);
   IOPHeap := TPS2IOPAllocator.Create($00080000, $001F0000);
@@ -166,7 +148,8 @@ begin
   IOPHeap.Free;
   ModuleLog.Free;
   IOMan.Free;
-  FHostFS.Free;
+  FCDVD.Free;
+  FDiscFS.Free;
   Kernel.Free;
   GIFPort.Free;
   GIF.Free;
@@ -175,7 +158,8 @@ begin
   DMAC.Free;
   Timers.Free;
   CPU.Free;
-  Cop2.Free;
+  VU1.Free;
+  VU0.Free;
   Bus.Free;
   Scheduler.Free;
   FTTY.Free;
@@ -238,6 +222,7 @@ begin
   Scheduler.Reset;
   Bus.Reset;
   CPU.Reset;
+  VU1.Reset;
   Timers.Reset;
   DMAC.Reset;
   DMAC.CTRL := 1;
@@ -262,6 +247,8 @@ begin
   SIF.AddServer(FileIO);
   SIF.AddServer(HeapServer);
   SIF.AddServer(LoadFile);
+  for var S in FCDVD do
+    SIF.AddServer(S);
   IOPHeap.Reset;
   SIF.IOPBooted;
 end;
@@ -273,12 +260,26 @@ begin
   Result := True;
 end;
 
+procedure TPS2Console.StartVU1(Address: Cardinal);
+begin
+  VU1.Core.Start(Address * 8);
+  VU1.Core.Run(4000000);
+end;
+
+procedure TPS2Console.VU1Kick(Address: Cardinal);
+begin
+  GIF.Kick(Bus.VU1Data, Address, $3FFF);
+end;
+
 procedure TPS2Console.IOPReset(const Args: string);
 begin
-  // The IOP restarts: modules and servers again, then the boot flags.
+  // The IOP restarts with the modules of the reset string; it answers again
+  // (servers, boot flags) once it has booted.
   SIF.RemoveServers;
   SIF.EERecvAddr := 0;
-  BootIOP;
+  SIF.SMCOM := 0;
+  ModuleLog.Add('IOP reset: ' + Args);
+  Scheduler.Schedule(TPS2Event.IOPSync, Scheduler.Now + PS2EEClock div 100);
 end;
 
 procedure TPS2Console.LoadProgram(const Data: TBytes; const Name: string);
@@ -306,6 +307,17 @@ begin
   finally
     ELF.Free;
   end;
+end;
+
+function TPS2Console.BootDisc: Boolean;
+begin
+  var Info: TPS2DiscInfo;
+  if (FConfig.Disc = nil) or not ReadPS2DiscInfo(FConfig.Disc, Info) then
+    Exit(False);
+  if Info.VMode = 'PAL' then
+    SetVideo(True);
+  LoadExec(Info.Boot2, nil);
+  Result := FProgram <> nil;
 end;
 
 procedure TPS2Console.LoadExec(const Path: string; const Args: TArray<string>);
@@ -350,6 +362,7 @@ begin
     TPS2Event.SIF: SIF.Deliver;
     TPS2Event.Alarm: Kernel.AlarmEvent;
     TPS2Event.Compare: CPU.CompareReached;
+    TPS2Event.IOPSync: BootIOP;
   end;
 end;
 
@@ -395,6 +408,7 @@ begin
   Scheduler.SerializeState(State);
   Bus.SerializeState(State);
   CPU.SerializeState(State);
+  VU1.SerializeState(State);
   Timers.SerializeState(State);
   DMAC.SerializeState(State);
   SIF.SerializeState(State);

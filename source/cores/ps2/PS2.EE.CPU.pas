@@ -435,6 +435,8 @@ type
 // signed zero and with exponent 255 as the largest finite value.
 function EEFloatIn(V: Cardinal): Double; inline;
 function PS2FloatAdd(A, B: Cardinal; out Flags: Cardinal): Cardinal;
+// Orders PS2 floats like the MAX/MIN instructions do.
+function PS2FloatKey(V: Cardinal): Integer; inline;
 
 implementation
 
@@ -2407,7 +2409,7 @@ begin
   Result := False;
 end;
 
-function FloatKey(V: Cardinal): Integer; inline;
+function PS2FloatKey(V: Cardinal): Integer;
 begin
   if (V and $80000000) <> 0 then
     Result := -Integer(V and $7FFFFFFF) - 1
@@ -2539,7 +2541,7 @@ begin
       end;
     $28:
       begin
-        if FloatKey(Fs) >= FloatKey(Ft) then
+        if PS2FloatKey(Fs) >= PS2FloatKey(Ft) then
           S.FPR[I.D] := Fs
         else
           S.FPR[I.D] := Ft;
@@ -2547,7 +2549,7 @@ begin
       end;
     $29:
       begin
-        if FloatKey(Fs) <= FloatKey(Ft) then
+        if PS2FloatKey(Fs) <= PS2FloatKey(Ft) then
           S.FPR[I.D] := Fs
         else
           S.FPR[I.D] := Ft;

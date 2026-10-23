@@ -37,11 +37,15 @@ type
     // Set while PATH3 is masked by VIF1 MSKPATH3.
     MaskedPath3: Boolean;
     constructor Create(GS: TPS2GS);
+    property GS: TPS2GS read FGS;
     procedure Reset;
     // Feeds quadwords to a path; returns how many were taken (PATH3 stops
     // at the end of a packet while it is masked).
     function Transfer(PathIndex: Integer; Data: PByte; Count: Integer): Integer;
     function PathIdle(PathIndex: Integer): Boolean;
+    // XGKICK: GIF packets from VU1 data memory at Address until one ends
+    // with EOP.
+    procedure Kick(Memory: PByte; Address, Mask: Cardinal);
     function Read(Address: Cardinal; Size: Integer): UInt64; override;
     procedure Write(Address: Cardinal; Value: UInt64; Size: Integer); override;
     procedure WriteFIFO(Address: Cardinal; const Value: TPS2Reg128); override;
@@ -52,9 +56,11 @@ type
   TPS2GIFPort = class(TPS2DMAPort)
   private
     FGIF: TPS2GIF;
+    FPixels: Int64;
   public
     constructor Create(GIF: TPS2GIF);
     function Push(Channel: Integer; Data: PByte; Count: Integer): Integer; override;
+    function TakeBusyCycles: Int64; override;
   end;
 
 implementation
@@ -196,6 +202,19 @@ begin
   end;
 end;
 
+procedure TPS2GIF.Kick(Memory: PByte; Address, Mask: Cardinal);
+begin
+  // At most the whole memory; stops after the packet with EOP is done.
+  for var K := 0 to Integer((Mask + 1) div 16) - 1 do
+  begin
+    var Q := PPS2Reg128(Memory + (Address and Mask))^;
+    Transfer(1, @Q, 1);
+    Address := Address + 16;
+    if not Path[1].Active and Path[1].EOP then
+      Break;
+  end;
+end;
+
 function TPS2GIF.Read(Address: Cardinal; Size: Integer): UInt64;
 begin
   case Address and $FF0 of
@@ -265,6 +284,14 @@ end;
 function TPS2GIFPort.Push(Channel: Integer; Data: PByte; Count: Integer): Integer;
 begin
   Result := FGIF.Transfer(3, Data, Count);
+end;
+
+function TPS2GIFPort.TakeBusyCycles: Int64;
+begin
+  // About four pixels per EE cycle (the GS fills 8..16 per 147 MHz clock).
+  var Pixels := FGIF.GS.Raster.PixelsDrawn;
+  Result := (Pixels - FPixels) div 4;
+  FPixels := Pixels;
 end;
 
 end.

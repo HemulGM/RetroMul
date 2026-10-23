@@ -31,6 +31,8 @@ const
   KernelCustomReturn = $80001020;
   KernelIdle = $80001030;
   KernelInterruptStack = $80030000;
+  // The syscall table SetSyscall fills (games search kernel memory for it).
+  KernelSyscallTable = $00010000;
   KernelMaxThreads = 256;
   KernelMaxSemas = 256;
 
@@ -88,7 +90,6 @@ type
     FIntc, FDmac: array[0..127] of TPS2Handler;
     FIntcOrder, FDmacOrder: TList<Integer>;
     FAlarms: array[0..63] of TPS2Alarm;
-    FCustom: array[0..255] of Cardinal;
     FSysRegs: array[0..31] of Cardinal;
     FCurrent: Integer;
     FSeq: Int64;
@@ -157,6 +158,7 @@ type
     procedure SetAlarm;
     procedure SifSetDma;
     procedure CallCustom(Index: Cardinal);
+    function Custom(Index: Cardinal): Cardinal; inline;
     procedure Unknown(Code: Integer);
   public
     constructor Create(CPU: TEECPU; Bus: TPS2EEBus; Scheduler: TPS2Scheduler);
@@ -285,7 +287,6 @@ begin
   FillChar(FIntc, SizeOf(FIntc), 0);
   FillChar(FDmac, SizeOf(FDmac), 0);
   FillChar(FAlarms, SizeOf(FAlarms), 0);
-  FillChar(FCustom, SizeOf(FCustom), 0);
   FillChar(FSysRegs, SizeOf(FSysRegs), 0);
   FIntcOrder.Clear;
   FDmacOrder.Clear;
@@ -1157,6 +1158,11 @@ begin
   Ret(Integer(FSifDmaId));
 end;
 
+function TPS2Kernel.Custom(Index: Cardinal): Cardinal;
+begin
+  Result := PCardinal(FBus.RAM + KernelSyscallTable + (Index and $FF) * 4)^;
+end;
+
 procedure TPS2Kernel.CallCustom(Index: Cardinal);
 begin
   FCustomReturn := FCPU.S.PC;
@@ -1164,7 +1170,7 @@ begin
   FCustomStatus := FCPU.S.COP0[C0Status];
   FInCustom := True;
   FCPU.S.GPR[31].Lo := SX32(KernelCustomReturn);
-  FCPU.S.PC := FCustom[Index];
+  FCPU.S.PC := Custom(Index);
   FCPU.S.COP0[C0Status] := FCustomStatus or EESREXL;
 end;
 
@@ -1180,8 +1186,8 @@ begin
   var Index := Cardinal(Abs(Code)) and $FF;
   if Trace <> nil then
     Trace.Add(Format('%d syscall %x a0=%x a1=%x a2=%x pc=%.8x thread=%d custom=%x', [FScheduler.Now, Code, Arg(0),
-      Arg(1), Arg(2), FCPU.S.PC, FCurrent, FCustom[Index]]));
-  if (FCustom[Index] <> 0) and not FInCustom then
+      Arg(1), Arg(2), FCPU.S.PC, FCurrent, Custom(Index)]));
+  if (Custom(Index) <> 0) and not FInCustom then
   begin
     CallCustom(Index);
     Exit;
@@ -1571,7 +1577,20 @@ begin
       end;
     $74: // SetSyscall(index, address)
       begin
-        FCustom[Arg(0) and $FF] := Arg(1);
+        var N := Arg(0);
+        if N < $100 then
+          PCardinal(FBus.RAM + KernelSyscallTable + N * 4)^ := Arg(1)
+        else if N = $12C then
+        begin
+          // Out of range: lands on the INTC handler of timer 3.
+          var Saved := FCPU.S.GPR[4].Lo;
+          FCPU.S.GPR[4].Lo := 12;
+          FCPU.S.GPR[6].Lo := 0;
+          FCPU.S.GPR[7].Lo := 0;
+          AddHandler(0);
+          FCPU.S.GPR[4].Lo := Saved;
+          EnableIntc(12, True);
+        end;
         Ret(0);
       end;
     $75: // _print
@@ -1660,7 +1679,6 @@ begin
   IntList(FIntcOrder);
   IntList(FDmacOrder);
   State.Field(FAlarms, SizeOf(FAlarms));
-  State.Field(FCustom, SizeOf(FCustom));
   State.Field(FSysRegs, SizeOf(FSysRegs));
   State.Field(FCurrent, SizeOf(FCurrent));
   State.Field(FSeq, SizeOf(FSeq));

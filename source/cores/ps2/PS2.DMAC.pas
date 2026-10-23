@@ -12,7 +12,7 @@
 interface
 
 uses
-  System.SysUtils, Core.Snapshots, PS2.Types, PS2.Scheduler;
+  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.Scheduler;
 
 const
   DMAVIF0 = 0;
@@ -42,6 +42,9 @@ type
     // The DMA tag of a chain transfer (before its data), for ports that
     // look at it (VIF with TTE, SIF1).
     procedure Tag(Channel: Integer; const Tag: TPS2Reg128); virtual;
+    // EE cycles the device spent on the data taken since the last call
+    // (the channel ends no earlier).
+    function TakeBusyCycles: Int64; virtual;
   end;
 
   TPS2DMAChannel = record
@@ -117,6 +120,11 @@ end;
 
 procedure TPS2DMAPort.Tag(Channel: Integer; const Tag: TPS2Reg128);
 begin
+end;
+
+function TPS2DMAPort.TakeBusyCycles: Int64;
+begin
+  Result := 0;
 end;
 
 { TPS2DMAC }
@@ -563,7 +571,10 @@ begin
     if not ReadTag(N) then
       Break;
   until False;
-  Finish(N, Int64(Moved[N]) * CyclesPerQuad + 8);
+  var Busy: Int64 := 0;
+  if Ports[N] <> nil then
+    Busy := Ports[N].TakeBusyCycles;
+  Finish(N, Max(Int64(Moved[N]) * CyclesPerQuad, Busy) + 8);
 end;
 
 function TPS2DMAC.SIF0Ready: Boolean;

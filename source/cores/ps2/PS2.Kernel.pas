@@ -192,6 +192,8 @@ type
   public
     // Diagnostics: every syscall and trap when assigned.
     Trace: TStringList;
+    // Diagnostics: the RAM word shown in syscall trace lines.
+    WatchAddress: Cardinal;
   end;
 
 implementation
@@ -551,6 +553,9 @@ procedure TPS2Kernel.Interrupt;
 begin
   // Entered at the interrupt vector: EPC holds the interrupted PC.
   FCPU.S.PC := FCPU.S.COP0[C0EPC];
+  if Trace <> nil then
+    Trace.Add(Format('%d interrupt epc=%.8x cause=%x thread=%d ra=%.8x', [FScheduler.Now, FCPU.S.PC, FCPU.S.COP0[C0Cause],
+      FCurrent, Cardinal(FCPU.S.GPR[31].Lo)]));
   SaveContext(FIntContext);
   FIntStatus := FCPU.S.COP0[C0Status];
   FInInterrupt := True;
@@ -657,6 +662,8 @@ procedure TPS2Kernel.FinishInterrupt;
 begin
   FInInterrupt := False;
   LoadContext(FIntContext);
+  if Trace <> nil then
+    Trace.Add(Format('%d interrupt return pc=%.8x ra=%.8x', [FScheduler.Now, FCPU.S.PC, Cardinal(FCPU.S.GPR[31].Lo)]));
   FCPU.S.COP0[C0Status] := FIntStatus and not Cardinal(EESREXL);
   if FNeedSchedule or (FCurrent < 0) then
   begin
@@ -678,8 +685,13 @@ end;
 procedure TPS2Kernel.Exception;
 begin
   var Code := (FCPU.S.COP0[C0Cause] shr 2) and $1F;
-  var Text := Format('EE exception %d at %.8x (bad address %.8x, thread %d)'#10,
-    [Code, FCPU.S.COP0[C0EPC], FCPU.S.COP0[C0BadVAddr], FCurrent]);
+  var Text := Format('EE exception %d at %.8x (bad address %.8x, thread %d) ra=%.8x sp=%.8x v0=%.8x a0=%.8x a1=%.8x'#10,
+    [Code, FCPU.S.COP0[C0EPC], FCPU.S.COP0[C0BadVAddr], FCurrent, Cardinal(FCPU.S.GPR[31].Lo), Cardinal(FCPU.S.GPR[29].Lo),
+    Cardinal(FCPU.S.GPR[2].Lo), Cardinal(FCPU.S.GPR[4].Lo), Cardinal(FCPU.S.GPR[5].Lo)]);
+  Text := Text + '  last blocks:';
+  for var K := 16 downto 1 do
+    Text := Text + Format(' %.8x', [FCPU.PCHistory[(FCPU.PCHistoryPos - K) and 15]]);
+  Text := Text + #10;
   if Assigned(FOnTTY) then
     FOnTTY(Text);
   FUnknown.Add(Format('exception %d', [Code]));
@@ -737,14 +749,18 @@ end;
 
 procedure TPS2Kernel.VBlankStart(OddField: Boolean);
 begin
+  // SetVSyncFlag is one-shot: libgraph's sceGsSyncV passes flags on its
+  // stack and returns once the first one is set.
   if FVSyncFlag1 <> 0 then
   begin
     WriteU32(FVSyncFlag1, 1);
     if FVSyncFlag2 <> 0 then
     begin
-      var V: UInt64 := Ord(OddField) shl 13;
+      var V: UInt64 := (FBus.Read($12001000, 8) and not UInt64(1 shl 13)) or (UInt64(Ord(OddField)) shl 13);
       FCPU.WriteVirtual(FVSyncFlag2, 8, V);
     end;
+    FVSyncFlag1 := 0;
+    FVSyncFlag2 := 0;
   end;
 end;
 
@@ -1191,8 +1207,9 @@ begin
   var Code := Integer(Cardinal(FCPU.S.GPR[3].Lo));
   var Index := Cardinal(Abs(Code)) and $FF;
   if Trace <> nil then
-    Trace.Add(Format('%d syscall %x a0=%x a1=%x a2=%x pc=%.8x ra=%.8x thread=%d custom=%x', [FScheduler.Now, Code,
-      Arg(0), Arg(1), Arg(2), FCPU.S.PC, Cardinal(FCPU.S.GPR[31].Lo), FCurrent, Custom(Index)]));
+    Trace.Add(Format('%d syscall %x a0=%x a1=%x a2=%x pc=%.8x ra=%.8x thread=%d custom=%x w=%.8x', [FScheduler.Now, Code,
+      Arg(0), Arg(1), Arg(2), FCPU.S.PC, Cardinal(FCPU.S.GPR[31].Lo), FCurrent, Custom(Index),
+      PCardinal(FBus.RAM + (WatchAddress and PS2RAMMask and not Cardinal(3)))^]));
   if (Custom(Index) <> 0) and not FInCustom then
   begin
     CallCustom(Index);

@@ -12,7 +12,7 @@
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.Scheduler;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots, PS2.Types, PS2.Scheduler;
 
 const
   DMAVIF0 = 0;
@@ -81,6 +81,9 @@ type
     Ports: array[0..9] of TPS2DMAPort;
     // Quadwords moved since the channel started (for bus time).
     Moved: array[0..9] of Integer;
+    // Diagnostics: writes to RAM covering WatchAddress go to WatchLog.
+    WatchAddress: Cardinal;
+    WatchLog: TStrings;
     constructor Create(Scheduler: TPS2Scheduler; RAM, Scratch: PByte; RAMGen: PCardinal);
     procedure Reset;
     function Read(Address: Cardinal): Cardinal;
@@ -95,6 +98,8 @@ type
     function SIF0Ready: Boolean;
     procedure SIF0Write(Dest: Cardinal; Data: PByte; Size: Integer; IRQ: Boolean);
     procedure SetChannelInterrupt(N: Integer);
+    // RAM written outside the CPU and DMA (high-level IOP services).
+    procedure MarkWritten(Address, Size: Cardinal);
     function CPCond0: Boolean;
     procedure SerializeState(State: TStateArchive);
     property OnInterrupt: TProc<Boolean> read FOnInterrupt write FOnInterrupt;
@@ -177,6 +182,12 @@ begin
   UpdateInterrupt;
 end;
 
+procedure TPS2DMAC.MarkWritten(Address, Size: Cardinal);
+begin
+  if Size > 0 then
+    MarkRAM(Address and $01FFFFFF, Size);
+end;
+
 function TPS2DMAC.CPCond0: Boolean;
 begin
   Result := ((PCR and $3FF) and not STAT and $3FF) = 0;
@@ -199,6 +210,8 @@ begin
   if (Address and $80000000) <> 0 then
     Exit;
   Address := Address and $01FFFFFF;
+  if (WatchLog <> nil) and (WatchAddress >= Address) and (WatchAddress < Address + Size) then
+    WatchLog.Add(Format('%d dmac write %.8x size %x (ch3 %x ch5 %x)', [FScheduler.Now, Address, Size, Ch[3].CHCR, Ch[5].CHCR]));
   var First := Address shr 12;
   var Last := (Address + Size - 1) shr 12;
   if Last > 8191 then

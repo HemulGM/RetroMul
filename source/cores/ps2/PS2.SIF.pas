@@ -148,6 +148,8 @@ type
     procedure SendRawCommand(Packet: TBytes);
     procedure SerializeState(State: TStateArchive);
     property EERAM: PByte read FEERAM;
+    // EE RAM written by a high-level IOP service (code caches, diagnostics).
+    procedure MarkEE(Address, Size: Cardinal);
     property IOPRAM: PByte read FIOPRAM;
     property OnReset: TPS2SIFReset read FOnReset write FOnReset;
     property OnGuestCommand: TPS2SIFGuestCommand read FOnGuestCommand write FOnGuestCommand;
@@ -659,6 +661,12 @@ begin
     end;
   for var S in FServers do
     S.SerializeState(State);
+end;
+
+procedure TPS2SIF.MarkEE(Address, Size: Cardinal);
+begin
+  if FDMAC <> nil then
+    FDMAC.MarkWritten(Address, Size);
 end;
 
 end.

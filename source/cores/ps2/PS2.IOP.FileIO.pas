@@ -301,6 +301,7 @@ begin
   if A + Cardinal(N) > PS2RAMSize then
     N := Integer(PS2RAMSize - A);
   Move(Data[0], (FSIF.EERAM + A)^, N);
+  FSIF.MarkEE(A, Cardinal(N));
 end;
 
 function ArgString(Args: PByte; Offset, Max: Integer): string;

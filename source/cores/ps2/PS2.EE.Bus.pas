@@ -154,6 +154,8 @@ begin
   if Size = 0 then
     Exit;
   Address := Address and PS2RAMMask;
+  if (DMAC <> nil) and (DMAC.WatchLog <> nil) and (DMAC.WatchAddress >= Address) and (DMAC.WatchAddress < Address + Size) then
+    DMAC.WatchLog.Add(Format('%d bus write %.8x size %x', [FScheduler.Now, Address, Size]));
   var Last := (Address + Size - 1) shr 12;
   if Last > High(FRAMGen) then
     Last := High(FRAMGen);

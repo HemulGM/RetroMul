@@ -19,7 +19,7 @@
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots, PS2.Types;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots, PS2.Types;
 
 const
   EEExcInterrupt = 0;
@@ -400,6 +400,13 @@ type
     SlowPC: Cardinal;
     ExceptionCount: Int64;
     LastExceptionPC, LastExceptionCode: Cardinal;
+    // The last block starts (diagnostics).
+    PCHistory: array[0..15] of Cardinal;
+    PCHistoryPos: Integer;
+    // Diagnostics: a RAM word checked at every block start; changes go to WatchLog.
+    WatchPtr: PCardinal;
+    WatchLast: Cardinal;
+    WatchLog: TStrings;
     constructor Create(Bus: TEEBus; Cop2: TEECop2; NowCounter, DeadlineCounter: PInt64);
     destructor Destroy; override;
     procedure Reset;
@@ -3954,6 +3961,15 @@ begin
         Prev := nil;
       end;
     var PC := S.PC;
+    if (WatchPtr <> nil) and (WatchPtr^ <> WatchLast) then
+    begin
+      if WatchLog.Count < 100000 then
+        WatchLog.Add(Format('%d at block %.8x after %.8x: %.8x -> %.8x', [Now^, PC, PCHistory[(PCHistoryPos - 1) and 15],
+          WatchLast, WatchPtr^]));
+      WatchLast := WatchPtr^;
+    end;
+    PCHistory[PCHistoryPos and 15] := PC;
+    Inc(PCHistoryPos);
     B := nil;
     if Prev <> nil then
     begin

@@ -216,7 +216,10 @@ begin
   if A + Cardinal(Count) > PS2RAMSize then
     Count := Integer(PS2RAMSize - A);
   if Count > 0 then
+  begin
     Move(Data^, (FSIF.EERAM + A)^, Count);
+    FSIF.MarkEE(A, Cardinal(Count));
+  end;
 end;
 
 procedure TPS2CDVDServer.ReadSectors(LBA: Int64; Count: Integer; Dest: Cardinal; ToIOP: Boolean);

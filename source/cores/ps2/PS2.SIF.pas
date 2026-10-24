@@ -515,6 +515,8 @@ begin
     SetLength(Packet, 16);
   var Len := Length(Packet);
   PCardinal(@Packet[0])^ := (PCardinal(@Packet[0])^ and not $FF) or (Cardinal(Len) and $FF);
+  if Log <> nil then
+    Log.Add(Format('sif to ee cid %.8x opt %.8x size %d', [PCardinal(@Packet[8])^, PCardinal(@Packet[12])^, Len]));
   var C: TPS2SIFChunk;
   C.Dest := EERecvAddr;
   C.Data := Packet;

@@ -56,6 +56,13 @@ type
     Words: Int64;
     // Micro programs started, and those still running after the step limit.
     Starts, Unfinished: Int64;
+    // Diagnostics: where the last program that did not end started and was.
+    LastUnfinishedStart, LastUnfinishedPC: Cardinal;
+    LastUnfinishedVI: array[0..15] of Cardinal;
+    // Diagnostics: with CaptureUnfinished, the code, data and VI registers
+    // the first program that did not end started with.
+    CaptureUnfinished: Boolean;
+    UnfinishedCapture: TBytes;
     constructor Create(Index: Integer; VU: TPS2VUCore; GIF: TPS2GIF; Code, Data: PByte; CodeSize, DataSize: Cardinal);
     procedure Reset;
     // Feeds 32-bit words; returns how many were taken (fewer: stalled on IRQ).
@@ -122,8 +129,37 @@ begin
   end;
   FVU.Start(Address);
   Inc(Starts);
+  var Before: TBytes := nil;
+  if CaptureUnfinished and (UnfinishedCapture = nil) then
+  begin
+    // Code, data and VI as the program starts.
+    SetLength(Before, $8000 + 32 * 4);
+    Move(FVU.Code^, Before[0], $4000);
+    Move(FVU.Data^, Before[$4000], $4000);
+    for var K := 0 to 31 do
+      PCardinal(@Before[$8000 + K * 4])^ := FVU.VI[K];
+    if FVU.RunTrace = nil then
+      SetLength(FVU.RunTrace, 40000 * 16);
+    FVU.RunTraceCount := 0;
+  end;
   if not FVU.Run(4000000) then
+  begin
+    if Before <> nil then
+    begin
+      // Then the trace of the run's first pairs.
+      var At := Length(Before);
+      SetLength(Before, At + FVU.RunTraceCount * 32);
+      if FVU.RunTraceCount > 0 then
+        Move(FVU.RunTrace[0], Before[At], FVU.RunTraceCount * 32);
+      UnfinishedCapture := Before;
+      FVU.RunTrace := nil;
+    end;
     Inc(Unfinished);
+    LastUnfinishedStart := Address;
+    LastUnfinishedPC := FVU.S.TPC;
+    for var K := 0 to 15 do
+      LastUnfinishedVI[K] := FVU.VI[K];
+  end;
 end;
 
 procedure TPS2VIF.FinishCommand;

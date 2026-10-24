@@ -86,6 +86,12 @@ type
     S: TPS2VUState;
     // Micro instructions executed (diagnostics).
     Executed: Int64;
+    // Diagnostics: the last pairs of a run that hit its limit.
+    LoopTrace: array[0..63] of Cardinal;
+    // Diagnostics: when assigned, the PC and VI1-15 before each of the first
+    // pairs of the current run (16 words per pair).
+    RunTrace: TArray<Word>;
+    RunTraceCount: Integer;
     constructor Create(Index: Integer; VF: PPS2VFArray; VI: PPS2VIArray; Code, Data: PByte;
       CodeSize, DataSize: Cardinal);
     procedure Reset;
@@ -1132,6 +1138,13 @@ begin
         S.P := S.PendingP;
         S.PDelay := 0;
       end;
+    if (RunTrace <> nil) and ((RunTraceCount + 1) * 16 <= Length(RunTrace)) then
+    begin
+      RunTrace[RunTraceCount * 16] := Word(PC);
+      for var K := 1 to 15 do
+        RunTrace[RunTraceCount * 16 + K] := Word(FVI[K]);
+      Inc(RunTraceCount);
+    end;
     FUpperReg := -1;
     FLowerReg := -1;
     Upper(UpperOp, True);
@@ -1161,6 +1174,8 @@ begin
     Inc(Executed);
     Inc(S.Cycles);
     Inc(Count);
+    if Count > MaxPairs - Length(LoopTrace) then
+      LoopTrace[Count - (MaxPairs - Length(LoopTrace)) - 1] := PC;
     S.TPC := (PC + 8) and FCodeMask;
     if Branching then
       S.TPC := Target;

@@ -277,7 +277,12 @@ begin
   Result := 0;
   case Fn of
     4:
-      Result := K.Allocator.AllocateMode(K.Arg(0), K.Arg(1), K.Arg(2));
+      begin
+        Result := K.Allocator.AllocateMode(K.Arg(0), K.Arg(1), K.Arg(2));
+        if K.Log <> nil then
+          K.Warn(Format('AllocSysMemory(%d, %x, %x) -> %x (largest free %x)', [K.Arg(0), K.Arg(1), K.Arg(2), Result,
+            K.Allocator.LargestFree]));
+      end;
     5:
       K.Allocator.Release(K.Arg(0));
     6: Result := PS2IOPRAMSize;

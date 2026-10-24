@@ -8,8 +8,8 @@
 // kernel memory (8000_0000h..8007_FFFFh); register contexts are saved here.
 // With no ready thread the CPU idles in a kernel loop that lets the console
 // skip to the next event.
-// References: Play! PS2OS (BSD-2, design and structures), ps2sdk kernel.h and
-// syscallnr.h (interfaces), ps2tek.
+// References: ps2tek (BIOS EE syscalls and patches), ps2sdk kernel.h,
+// syscallnr.h and deci2.c (interfaces, structures); ps2autotests.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 
 interface
@@ -194,6 +194,9 @@ type
     Trace: TStringList;
     // Diagnostics: the RAM word shown in syscall trace lines.
     WatchAddress: Cardinal;
+    // Diagnostics: syscalls by number, Deci2Call by function.
+    SyscallCounts: array[0..255] of Int64;
+    Deci2Counts: array[0..16] of Int64;
   end;
 
 implementation
@@ -749,8 +752,9 @@ end;
 
 procedure TPS2Kernel.VBlankStart(OddField: Boolean);
 begin
-  // SetVSyncFlag is one-shot: libgraph's sceGsSyncV passes flags on its
-  // stack and returns once the first one is set.
+  // SetVSyncFlag: the flag becomes 1 and, with a second pointer, that gets
+  // GS CSR. Once only: libgraph's sceGsSyncV passes pointers to its stack
+  // and returns as soon as the flag is set.
   if FVSyncFlag1 <> 0 then
   begin
     WriteU32(FVSyncFlag1, 1);
@@ -895,13 +899,14 @@ end;
 
 procedure TPS2Kernel.SetupThread;
 begin
-  // SetupThread(gp, stack, stack_size, args, root)
+  // SetupThread(gp, stack, stack_size, args, root): the stack ends at
+  // stack + size, or at the end of RAM for stack -1; returns its top.
   var Stack := Arg(1);
   var Size := Arg(2);
   var ArgsAddr := Arg(3);
   var Top: Cardinal;
   if Stack = $FFFFFFFF then
-    Top := PS2RAMSize - $1000
+    Top := PS2RAMSize
   else
     Top := Stack + Size;
   if FCurrent > 0 then
@@ -1206,6 +1211,9 @@ procedure TPS2Kernel.Syscall(CPU: TEECPU);
 begin
   var Code := Integer(Cardinal(FCPU.S.GPR[3].Lo));
   var Index := Cardinal(Abs(Code)) and $FF;
+  Inc(SyscallCounts[Index]);
+  if (Index = $7C) and (Arg(0) <= 16) then
+    Inc(Deci2Counts[Arg(0)]);
   if Trace <> nil then
     Trace.Add(Format('%d syscall %x a0=%x a1=%x a2=%x pc=%.8x ra=%.8x thread=%d custom=%x w=%.8x', [FScheduler.Now, Code,
       Arg(0), Arg(1), Arg(2), FCPU.S.PC, Cardinal(FCPU.S.GPR[31].Lo), FCurrent, Custom(Index),
@@ -1649,7 +1657,13 @@ begin
         else
           Ret(Integer(FBus.SIF.ReadRegister(Reg)));
       end;
-    $7C: // Deci2Call(function, param): handlers keep a buffer {?, status0, ?, status1, data}
+    $7C:
+      // Deci2Call(function, args) (ps2sdk deci2.c): open, close, request
+      // send, poll, kputs. There is no DECI2 host: for a TTY client (area
+      // {socket, bytes left, ?, busy, data} given at open) the kernel takes
+      // the text (12-byte header with the 16-bit length, then the bytes) and
+      // settles 'bytes left' and 'busy' as the client's handler would on
+      // DECI2_WRITE and DECI2_WRITE_DONE.
       begin
         var P := Arg(1);
         case Arg(0) of
@@ -1682,7 +1696,7 @@ begin
                 var Data := ReadU32(Buffer + 16);
                 if Data <> 0 then
                 begin
-                  var Size := Integer(ReadU32(Data));
+                  var Size := Integer(ReadU32(Data) and $FFFF);
                   if (Size >= 12) and (Size < 65536) and Assigned(FOnTTY) then
                   begin
                     var B: TBytes;

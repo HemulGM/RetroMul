@@ -47,6 +47,7 @@ type
     procedure StartVU1(Address: Cardinal);
     function ImageVersion(const ResetArgs: string): Integer;
     procedure VU1Kick(Address: Cardinal);
+    procedure NoteModuleVersion(const Path: string; const Image: TBytes);
     function StartModule(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes): Integer;
     procedure ModuleDone(const Token: TBytes; ModuleId, Result: Integer);
     function GetHalted: Boolean;
@@ -191,8 +192,13 @@ begin
   LoadFile.Log := ModuleLog;
   PadMan := TPS2PadMan.Create(Bus.RAM);
   MemoryCards := TPS2MCServer.Create(Bus.RAM);
+  MemoryCards.Clock := @Scheduler.Now;
   IOP := TPS2IOPKernel.Create(Scheduler, SIF, IOPHeap, IOMan, FDiscFS, Bus.RAM, Bus.IOPRAM);
   IOP.OnTTY := IOPTTY;
+  IOP.OnHighLevelModule := procedure(Name: string; Image: TBytes)
+    begin
+      NoteModuleVersion(Name, Image);
+    end;
   IOP.OnModuleDone := ModuleDone;
   IOP.OnMarkEE := Bus.MarkRAM;
   IOP.Hardware.SIO2.PadSource := PadMan;
@@ -347,10 +353,38 @@ begin
   SIF.AddServer(MemoryCards);
 end;
 
+// The pad and memory card managers report the version of the module the
+// game loads (libpad and libmc ask for it).
+procedure TPS2Console.NoteModuleVersion(const Path: string; const Image: TBytes);
+begin
+  var Device, P: string;
+  TPS2IOMan.SplitPath(Path, Device, P);
+  var Base := ExtractFileName(P.Replace('/', '\')).ToUpper;
+  if Base.EndsWith('.IRX') then
+    Base := Base.Substring(0, Length(Base) - 4);
+  if (Base <> 'PADMAN') and (Base <> 'XPADMAN') and (Base <> 'MCSERV') and (Base <> 'XMCSERV') and
+    (Base <> 'MCMAN') and (Base <> 'XMCMAN') then
+    Exit;
+  var Data := Image;
+  if Data = nil then
+    Data := FDiscFS.ReadFile(Device, P);
+  var Info: TIRXInfo;
+  if (Data = nil) or not ParseIRX(Data, Info) then
+    Exit;
+  if Base.EndsWith('PADMAN') then
+    PadMan.Version := Info.Version
+  else if Base.EndsWith('MCSERV') then
+    MemoryCards.ServVersion := Info.Version
+  else
+    MemoryCards.ManVersion := Info.Version;
+end;
+
 function TPS2Console.StartModule(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes): Integer;
 begin
   // The high-level IOP provides the system modules; game modules run as IOP
   // code and answer once their start routine returned.
+  if Path <> '' then
+    NoteModuleVersion(Path, Image);
   var Data := Image;
   if (Data = nil) and (Path <> '') and not IOP.IsHLEModule(Path, '') then
   begin

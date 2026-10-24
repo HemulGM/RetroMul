@@ -17,7 +17,7 @@ Most commercial games do not reach gameplay yet; there is no sound output.
 | `PS2.IPU` | IPU MPEG decoder (BDEC/IDEC/VDEC/FDEC/CSC/PACK, FIFOs on DMA channels 3/4) |
 | `PS2.Kernel`, `PS2.ELF` | High-level EE kernel (threads, semaphores, interrupts, alarms, SIF DMA, syscall table) and ELF loading |
 | `PS2.IOP.FileIO`, `PS2.IOP.CDVD`, `PS2.IOP.HLE` | FILEIO, CDVD and LOADFILE/IOP heap RPC servers, ISO 9660 access |
-| `PS2.IOP.Pad`, `PS2.IOP.MemoryCard` | PADMAN (DualShock 2 data in libpad's areas) and MCSERV (file-level memory cards) |
+| `PS2.IOP.Pad`, `PS2.IOP.SIO2`, `PS2.IOP.MemoryCard` | DualShock 2 protocol, PADMAN/XPADMAN (pad data in libpad's areas), SIO2 for IOP pad drivers, MCSERV/XMCSERV (file-level memory cards) |
 | `PS2.IOP.CPU`, `PS2.IOP.Hardware` | IOP R3000A interpreter and the IOP register file (root counters, SPU2 registers and RAM, IOP DMA 4/7) |
 | `PS2.IOP.Loader`, `PS2.IOP.Kernel`, `PS2.IOP.Libs` | IRX loading and linking, the high-level IOP kernel and the system libraries IOP modules import |
 | `PS2.Console` | Wiring, field timing (NTSC/PAL), the run loop and snapshots |
@@ -49,15 +49,16 @@ DVD CHD, CD images through the CD layer). The front end lives in
 
 ## References and licences
 
-- Play! (BSD-2-Clause, Jean-Philip Desjardins): structure of the high-level
-  IOP (PADMAN/MCSERV data layouts, IRX relocation rules, SIF RPC flow) was
-  rewritten in Delphi with attribution in the unit headers.
+- No code from other emulators. References: ps2tek (hardware, BIOS syscalls,
+  SIO2, controller protocol); ps2sdk (AFL 2.0) headers and its open
+  reimplementations of the IOP modules (padman, mcman, mcserv, cdvdfsv,
+  cdvdstm, loadcore, loadfile, threadman, sifcmd, sio2man...) for RPC
+  protocols, data layouts, result codes and relocation rules.
 - `PS2.IPU` is written from ISO/IEC 13818-2 (syntax, Annex B tables, inverse
   quantisation, IDCT), ITU-R BT.601 (colour conversion), the IPU description in
-  ps2tek and the way ps2sdk's libmpeg drives the unit; no emulator code. It is
-  checked against ffmpeg (`codex-work/tests/iputest.ps1`).
-- ps2sdk (AFL 2.0): export tables, structure layouts and function numbers
-  (interfaces only); ps2autotests for testing.
+  ps2tek and the way ps2sdk's libmpeg drives the unit. It is checked against
+  ffmpeg (`codex-work/tests/iputest.ps1`).
+- ps2autotests for testing.
 - PCSX2, DobieStation and similar GPL projects were used only as
   documentation of hardware behaviour; no code was taken from them.
 - No Sony SDK or firmware code is included. BIOS images are never part of the

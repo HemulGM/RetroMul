@@ -8,8 +8,9 @@
 // export tables; system libraries become HLE traps) and the module side of
 // SIF RPC (registered servers, request queues, sceSifRpcLoop) and SIF
 // commands. The library calls themselves are in PS2.IOP.Libs.
-// Behaviour follows Play! (BSD-2: IopBios, Iop_Thbase, Iop_SifCmd...) and
-// the ps2sdk interfaces (AFL 2.0); no Sony code.
+// Behaviour follows the ps2sdk interfaces and its reimplementations of the
+// IOP kernel modules (threadman, loadcore, modload, sifcmd; AFL 2.0); no
+// Sony code.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 
 interface
@@ -234,6 +235,9 @@ type
     DmaId: Cardinal;
     Log: TStrings;
     OnTTY: TProc<string>;
+    // A system module the high-level IOP provides was loaded: its path or
+    // name and its image (nil when loaded by path).
+    OnHighLevelModule: TProc<string, TBytes>;
     OnModuleDone: TPS2IOPModuleDone;
     OnMarkEE: TPS2IOPMarkEE;
     constructor Create(Scheduler: TPS2Scheduler; ASIF: TPS2SIF; AAllocator: TPS2IOPAllocator; AIOMan: TPS2IOMan;

@@ -2,10 +2,11 @@
 
 // IOP module images (IRX): the .iopmod header (name, version, entry, gp,
 // section sizes), loading the single loadable segment at a base address and
-// applying its REL relocations (types 2/4/5/6 and the IRX v2 forms), and the
-// import/export table formats loadcore links (magic 41E00000h/41C00000h,
-// 8-character library name, stubs 'jr ra; addiu $0, $0, n').
-// After Play! (BSD-2, IopBios::RelocateElf) and the ps2sdk loadcore format.
+// applying its REL relocations, and the import/export table formats loadcore
+// links (magic 41E00000h/41C00000h, 8-character library name, stubs
+// 'jr ra; addiu $0, $0, n').
+// References: MIPS ELF relocation types; ps2sdk loadcore (AFL 2.0) for the
+// .iopmod header and the IRX relocation rules (R_MIPSSCE_MHI16/ADDEND).
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 
 interface
@@ -114,13 +115,32 @@ begin
   Result := Info.MemorySize > 0;
 end;
 
+// The relocations (SHT_REL sections) of an image loaded at Base, as loadcore
+// applies them: R_MIPS_16, R_MIPS_32, R_MIPS_26; R_MIPS_HI16 takes its low
+// half from the instruction of the next record (its R_MIPS_LO16), which
+// relocates on its own; R_MIPSSCE_MHI16 sets a chain of HI16 instructions
+// (each one's immediate is the word distance to the next, 0 ends) from the
+// address in the offset field of the following R_MIPSSCE_ADDEND record.
 procedure LoadIRX(const Data: TBytes; const Info: TIRXInfo; RAM: PByte; Base: Cardinal);
+
+  function At(Offset: Int64): PCardinal;
+  begin
+    if (Offset < 0) or (Offset + 4 > Info.MemorySize) then
+      Exit(nil);
+    Result := PCardinal(RAM + ((Base + Cardinal(Offset)) and PS2IOPRAMMask));
+  end;
+
+  // The high half of an address, rounded for a sign-extended low half.
+  function High16(Address: Cardinal): Cardinal;
+  begin
+    Result := (((Address shr 15) + 1) shr 1) and $FFFF;
+  end;
+
 begin
   Base := Base and PS2IOPRAMMask;
   FillChar((RAM + Base)^, Info.MemorySize, 0);
   if Info.FileSize > 0 then
     Move(Data[Info.FileOffset], (RAM + Base)^, Info.FileSize);
-  var Size := Integer(Info.FileSize);
   var ShOff := U32(Data, 32);
   var ShSize := U16(Data, 46);
   var ShNum := U16(Data, 48);
@@ -130,79 +150,57 @@ begin
     if U32(Data, S + 4) <> 9 then
       Continue;
     var RelOff := Int64(U32(Data, S + 16));
-    var Count := Integer(U32(Data, S + 20) div 8);
-    var LastHi := -1;
-    var HiWord: Cardinal := 0;
+    var EntSize := Int64(U32(Data, S + 36));
+    if EntSize = 0 then
+      EntSize := 8;
+    var Count := Integer(Int64(U32(Data, S + 20)) div EntSize);
     var R := 0;
     while R < Count do
     begin
-      var Rec := RelOff + Int64(R) * 8;
-      var Offset := Integer(U32(Data, Rec));
-      var RType := U32(Data, Rec + 4) and $FF;
-      if (Offset >= 0) and (Offset + 4 <= Size) then
-      begin
-        var P := PCardinal(RAM + Base + Cardinal(Offset));
-        var W := P^;
-        case RType of
-          2:
-            P^ := Add32(W, Base);
-          4:
-            P^ := (W and $FC000000) or (Add32(W and $3FFFFFF, Base shr 2) and $3FFFFFF);
-          5:
-            if Info.Version2 then
+      var Rec := RelOff + Int64(R) * EntSize;
+      var Offset := Int64(U32(Data, Rec));
+      var NextOffset := Int64(U32(Data, Rec + EntSize));
+      var P := At(Offset);
+      case U32(Data, Rec + 4) and $FF of
+        1:
+          if P <> nil then
+            P^ := (P^ and $FFFF0000) or (Add32(Base, SX16To32(P^ and $FFFF)) and $FFFF);
+        2:
+          if P <> nil then
+            P^ := Add32(P^, Base);
+        4:
+          if P <> nil then
+          begin
+            var Target := Add32(Base, (Cardinal(Offset) and $F0000000) or ((P^ and $3FFFFFF) shl 2));
+            P^ := (P^ and $FC000000) or ((Target shr 2) and $3FFFFFF);
+          end;
+        5:
+          begin
+            var Low := At(NextOffset);
+            if (P <> nil) and (Low <> nil) and (R + 1 < Count) then
+              P^ := (P^ and $FFFF0000) or High16(Add32(Add32(Base, SX16To32(Low^ and $FFFF)), P^ shl 16));
+          end;
+        6:
+          if P <> nil then
+            P^ := (P^ and $FFFF0000) or (Add32(Base, P^) and $FFFF);
+        250:
+          if R + 1 < Count then
+          begin
+            var Value := High16(Add32(Base, Cardinal(NextOffset)));
+            var Pos := Offset;
+            for var Guard := 0 to $FFFF do
             begin
-              var NextOffset := Integer(U32(Data, Rec + 8));
-              if (R + 1 < Count) and (NextOffset >= 0) and (NextOffset + 4 <= Size) then
-              begin
-                var NextW := PCardinal(RAM + Base + Cardinal(NextOffset))^;
-                var V := Add32(Add32(SX16To32(NextW and $FFFF), W shl 16), Base);
-                if (V and $8000) <> 0 then
-                  V := Add32(V, $10000);
-                P^ := (W and $FFFF0000) or (V shr 16);
-              end;
-            end
-            else
-            begin
-              LastHi := Offset;
-              HiWord := W;
+              var HP := At(Pos);
+              if HP = nil then
+                Break;
+              var Step := Int64(SmallInt(HP^ and $FFFF)) * 4;
+              HP^ := (HP^ and $FFFF0000) or Value;
+              if Step = 0 then
+                Break;
+              Inc(Pos, Step);
             end;
-          6:
-            if Info.Version2 or (LastHi < 0) then
-            begin
-              var V := Add32(SX16To32(W and $FFFF), Base);
-              P^ := (W and $FFFF0000) or (V and $FFFF);
-            end
-            else
-            begin
-              var V := Add32(Add32(SX16To32(W and $FFFF), HiWord shl 16), Base);
-              P^ := (W and $FFFF0000) or (V and $FFFF);
-              var HP := PCardinal(RAM + Base + Cardinal(LastHi));
-              if (V and $8000) <> 0 then
-                V := Add32(V, $10000);
-              HP^ := (HP^ and $FFFF0000) or (V shr 16);
-              LastHi := -1;
-            end;
-          250:
-            // R_MIPSSCE_MHI16 with its addend record: a chain of HI16s.
-            if R + 1 < Count then
-            begin
-              var V := Add32(U32(Data, Rec + 8), Base);
-              if (V and $8000) <> 0 then
-                V := Add32(V, $10000);
-              V := V shr 16;
-              var At := Offset;
-              while (At >= 0) and (At + 4 <= Size) do
-              begin
-                var HP := PCardinal(RAM + Base + Cardinal(At));
-                var Step := Integer(SmallInt(HP^ and $FFFF)) * 4;
-                HP^ := (HP^ and $FFFF0000) or V;
-                if Step = 0 then
-                  Break;
-                Inc(At, Step);
-              end;
-              Inc(R);
-            end;
-        end;
+            Inc(R);
+          end;
       end;
       Inc(R);
     end;

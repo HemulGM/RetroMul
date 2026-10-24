@@ -5,8 +5,8 @@
 // 80000006h: load modules and EE ELF images) and the IOP memory allocator
 // they share with the IOP kernel (sysmem). Modules known to the high-level
 // IOP register their servers through OnModule; others are reported.
-// References: ps2sdk iopheap/loadfile structures (AFL 2.0, interfaces only),
-// Play! Iop_Loadcore/Iop_SifMan (BSD-2).
+// References: ps2sdk iopheap, loadfile and sysmem (AFL 2.0; packet layouts,
+// function numbers, results).
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 
 interface
@@ -30,6 +30,9 @@ type
     destructor Destroy; override;
     procedure Reset;
     function Allocate(Size: Cardinal; Fixed: Cardinal = 0): Cardinal;
+    // sysmem's AllocSysMemory: mode 0 lowest free block, 1 highest, 2 at
+    // Address; 0 when there is no room.
+    function AllocateMode(Mode, Size, Address: Cardinal): Cardinal;
     function Release(Address: Cardinal): Boolean;
     // The size of the block at Address (0 when none starts there).
     function BlockSize(Address: Cardinal): Cardinal;
@@ -76,6 +79,11 @@ type
 function CString(P: PByte; Max: Integer): string;
 
 implementation
+
+const
+  // IOP kernel errors.
+  KErrUnknownModule = -202;
+  KErrFile = -204;
 
 function CString(P: PByte; Max: Integer): string;
 begin
@@ -144,6 +152,35 @@ begin
     Inc(Index);
   FBlocks.Insert(Index, N);
   Result := Candidate;
+end;
+
+function TPS2IOPAllocator.AllocateMode(Mode, Size, Address: Cardinal): Cardinal;
+begin
+  case Mode of
+    1:
+      begin
+        Size := (Size + 255) and not Cardinal(255);
+        if Size = 0 then
+          Size := 256;
+        // The highest gap that fits (blocks are sorted by address).
+        var Top := FLimit;
+        for var K := FBlocks.Count downto 0 do
+        begin
+          var Bottom := FBase;
+          if K > 0 then
+            Bottom := FBlocks[K - 1].Address + FBlocks[K - 1].Size;
+          if (Top >= Bottom) and (Top - Bottom >= Size) then
+            Exit(Allocate(Size, (Top - Size) and not Cardinal(255)));
+          if K > 0 then
+            Top := FBlocks[K - 1].Address;
+        end;
+        Result := 0;
+      end;
+    2:
+      Result := Allocate(Size, Address);
+  else
+    Result := Allocate(Size);
+  end;
 end;
 
 function TPS2IOPAllocator.Release(Address: Cardinal): Boolean;
@@ -249,13 +286,11 @@ begin
         end;
         Result := IntBytes(0);
       end;
-    // AllocSysMemory(size, mode, address); memory size; largest and total
-    // free (after Play!'s Iop_Sysmem).
+    // The sysmem calls of newer EE libraries: allocate
+    // (size, mode, address), then memory size, largest and total free.
     4:
-      if PCardinal(Args + 4)^ = 2 then
-        Result := IntBytes(Integer(FAllocator.Allocate(PCardinal(Args)^, PCardinal(Args + 8)^)))
-      else
-        Result := IntBytes(Integer(FAllocator.Allocate(PCardinal(Args)^)));
+      Result := IntBytes(Integer(FAllocator.AllocateMode(PCardinal(Args + 4)^, PCardinal(Args)^,
+        PCardinal(Args + 8)^)));
     5: Result := IntBytes(PS2IOPRAMSize);
     6: Result := IntBytes(Integer(FAllocator.LargestFree));
     7: Result := IntBytes(Integer(FAllocator.FreeTotal));
@@ -354,24 +389,52 @@ begin
       end;
     1, 5:
       begin
-        // _lf_elf_load_arg: epc 0, gp 4, path 8, secname 260.
+        // _lf_elf_load_arg: epc 0, gp 4, path 8, secname 260. The reply is
+        // entry, gp, 0; a failure is entry 0 with the error in the fourth
+        // word.
         var Path := CString(Args + 8, 252);
         var Entry, GP: Cardinal;
+        SetLength(Result, 16);
+        FillChar(Result[0], 16, 0);
         if LoadELF(Path, Entry, GP) then
         begin
           PCardinal(@Result[0])^ := Entry;
           PCardinal(@Result[4])^ := GP;
         end
         else
-          PInteger(@Result[0])^ := -1;
-        SetLength(Result, 8);
+          PInteger(@Result[12])^ := KErrFile;
+      end;
+    2, 3:
+      begin
+        // Set or get a byte, halfword or word of IOP memory (address, type,
+        // value); get answers with the value.
+        var A := PCardinal(Args)^ and PS2IOPRAMMask;
+        var Kind := PCardinal(Args + 4)^;
+        var P := FSIF.IOPRAM + A;
+        PInteger(@Result[0])^ := 0;
+        if (Kind <= 2) and (A + (Cardinal(1) shl Kind) <= PS2IOPRAMSize) then
+          if Fn = 2 then
+            case Kind of
+              0: P^ := Args[8];
+              1: PWord(P)^ := PWord(Args + 8)^;
+              2: PCardinal(P)^ := PCardinal(Args + 8)^;
+            end
+          else
+            case Kind of
+              0: PCardinal(@Result[0])^ := P^;
+              1: PCardinal(@Result[0])^ := PWord(P)^;
+              2: PCardinal(@Result[0])^ := PCardinal(P)^;
+            end;
       end;
     7, 8:
+      // Stop, unload: done.
       PInteger(@Result[0])^ := 0;
-    9:
-      PInteger(@Result[0])^ := -200;
+    9, 10:
+      // Search by name or address: the high-level modules are not listed.
+      PInteger(@Result[0])^ := KErrUnknownModule;
     $FF:
-      // Version query: '....' (2020/2000 for those module versions).
+      // Version: four ASCII characters; every EE library version accepts
+      // '....'.
       Result := TEncoding.ANSI.GetBytes('....');
   else
     PInteger(@Result[0])^ := -1;

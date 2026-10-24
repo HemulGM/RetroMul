@@ -6,8 +6,11 @@
 // command protocol (sifcmd/sifrpc) for the high-level IOP: system commands,
 // RPC bind/call/other-data and the RPC servers (TPS2RPCServer).
 // The EE libraries (sifcmd/sifrpc in libkernel) run unchanged on the EE.
-// References: ps2sdk sifcmd/sifrpc (AFL 2.0, interfaces only), Play!
-// (BSD-2, Iop_SifMan / SIF), ps2tek.
+// A call whose client waits (no end function) gets its reply written over
+// the client's packet with no interrupt; other replies are RPC end
+// commands.
+// References: ps2sdk sifcmd/sifrpc (AFL 2.0; packet layouts and the IOP
+// side's replies), ps2tek.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 
 interface

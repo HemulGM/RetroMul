@@ -3,8 +3,8 @@
 // High-level IOP file services: the ioman device table (tty, host, cdrom0,
 // rom0, mc0 through TPS2FileSystem) and the FILEIO RPC server (SID
 // 80000001h, the version 1000/2xxx protocol the EE libraries use).
-// References: ps2sdk fileio-common.h (AFL 2.0, structures), Play!
-// Iop_FileIo (BSD-2).
+// References: ps2sdk fileio-common.h (AFL 2.0; structures of the 1000
+// protocol).
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 
 interface
@@ -55,12 +55,14 @@ type
   TPS2FileIOServer = class(TPS2RPCServer)
   private
     FIOMan: TPS2IOMan;
-    FResultPtr: array[0..1] of Cardinal;
+    // EE buffer for result records (2200 protocol).
+    FRecordAddress: Cardinal;
     procedure WriteEE(Address: Cardinal; const Data: TBytes);
-    function Call2200(Fn: Cardinal; Args: PByte; Size: Integer): TBytes;
+    function ReadEE(Address: Cardinal; Count: Integer): TBytes;
+    function CallRecord(Fn: Cardinal; Args: PByte; Size: Integer): TBytes;
   public
     // FILEIO module version of the IOP image (1000, 2100, 2200...): from
-    // 2200 on, results come back in a SIF command (80000011h).
+    // 2200 on, results come back as records (see CallRecord).
     Version: Integer;
     constructor Create(IOMan: TPS2IOMan);
     procedure Reset; override;
@@ -141,8 +143,6 @@ begin
     Path := Path.Substring(0, Semi);
   if (Device = 'cdrom') or (Device = 'cdrom1') then
     Device := 'cdrom0';
-  if Device = 'mc1' then
-    Device := 'mc1';
 end;
 
 function TPS2IOMan.Open(const Name: string; Mode: Integer): Integer;
@@ -285,6 +285,24 @@ end;
 
 { TPS2FileIOServer }
 
+const
+  FnOpen = 0;
+  FnClose = 1;
+  FnRead = 2;
+  FnWrite = 3;
+  FnSeek = 4;
+  FnDOpen = 9;
+  FnGetStat = 12;
+  FnSeek64 = 22;
+  FnInit = $FF;
+  // Errors (negative errno).
+  ErrNoEntry = -2;
+  ErrNoDevice = -19;
+  // Result record command (2200 protocol).
+  CmdResult = $80000011;
+  // io_stat_t mode of a regular file.
+  StatFile = $2000;
+
 constructor TPS2FileIOServer.Create(IOMan: TPS2IOMan);
 begin
   inherited Create($80000001);
@@ -304,10 +322,20 @@ begin
   FSIF.MarkEE(A, Cardinal(N));
 end;
 
-function ArgString(Args: PByte; Offset, Max: Integer): string;
+function TPS2FileIOServer.ReadEE(Address: Cardinal; Count: Integer): TBytes;
+begin
+  Result := nil;
+  var A := Address and PS2RAMMask;
+  if (Count <= 0) or (A + Cardinal(Count) > PS2RAMSize) then
+    Exit;
+  SetLength(Result, Count);
+  Move((FSIF.EERAM + A)^, Result[0], Count);
+end;
+
+function ArgString(Args: PByte; Size, Offset, Max: Integer): string;
 begin
   var B: TBytes;
-  for var K := 0 to Max - 1 do
+  for var K := 0 to Min(Max, Size - Offset) - 1 do
   begin
     var C := Args[Offset + K];
     if C = 0 then
@@ -317,167 +345,176 @@ begin
   Result := TEncoding.ANSI.GetString(B);
 end;
 
-function ArgU32(Args: PByte; Offset: Integer): Cardinal;
+function ArgU32(Args: PByte; Size, Offset: Integer): Cardinal;
 begin
+  if Offset + 4 > Size then
+    Exit(0);
   Result := PCardinal(Args + Offset)^;
+end;
+
+// io_stat_t: mode, attribute, size, three times, high size word.
+function StatRecord(Size: Int64): TBytes;
+begin
+  SetLength(Result, 64);
+  FillChar(Result[0], 64, 0);
+  PCardinal(@Result[0])^ := StatFile;
+  PCardinal(@Result[8])^ := Cardinal(Size);
+  PCardinal(@Result[36])^ := Cardinal(Size shr 32);
 end;
 
 procedure TPS2FileIOServer.Reset;
 begin
-  FResultPtr[0] := 0;
-  FResultPtr[1] := 0;
+  FRecordAddress := 0;
 end;
 
 procedure TPS2FileIOServer.SerializeState(State: TStateArchive);
 begin
   State.Field(Version, SizeOf(Version));
-  State.Field(FResultPtr, SizeOf(FResultPtr));
+  State.Field(FRecordAddress, SizeOf(FRecordAddress));
 end;
 
-// FILEIO 2200: every request starts with (semaphore, result pointer, result
-// size); the reply record (header, result, three words) goes to the EE
-// buffer named at init, then command 80000011h wakes the caller.
-function TPS2FileIOServer.Call2200(Fn: Cardinal; Args: PByte; Size: Integer): TBytes;
+// FILEIO 2200 and later:
+// a request is (semaphore, result address, result size) and the function's
+// own words from +0Ch; the RPC reply is only a nonzero word. The answer is a
+// record put in the EE buffer named by function FFh and announced by SIF
+// command 80000011h: the semaphore, the function, the result address and
+// size, the result from +10h; read leaves the unaligned head and tail at
+// +14h empty, getstat puts the stat address at +14h and the stat at +18h.
+// The EE copies the result to its address and signals the semaphore.
+// Requests: open (flags +0Ch, mode +10h, name +14h), close (fd +0Ch), read
+// (fd, buffer, size), write (fd, buffer, size, head count +18h, head bytes
+// +1Ch), lseek (fd, offset, whence), getstat (stat address, name +10h),
+// lseek64 (fd, 64-bit offset +10h, whence +18h; 64-bit result).
+function TPS2FileIOServer.CallRecord(Fn: Cardinal; Args: PByte; Size: Integer): TBytes;
 var
-  Reply: TBytes;
+  Rec: TBytes;
 begin
-  SetLength(Reply, 32);
-  FillChar(Reply[0], 32, 0);
-  PCardinal(@Reply[0])^ := ArgU32(Args, 0);
-  PCardinal(@Reply[4])^ := Fn;
-  PCardinal(@Reply[8])^ := ArgU32(Args, 4);
-  PCardinal(@Reply[12])^ := ArgU32(Args, 8);
-  var R: Int64 := -1;
+  SetLength(Rec, 32);
+  FillChar(Rec[0], 32, 0);
+  PCardinal(@Rec[0])^ := ArgU32(Args, Size, 0);
+  PCardinal(@Rec[4])^ := Fn;
+  PCardinal(@Rec[8])^ := ArgU32(Args, Size, 4);
+  PCardinal(@Rec[12])^ := ArgU32(Args, Size, 8);
+  var Fd := Integer(ArgU32(Args, Size, 12));
+  var R: Int64 := ErrNoDevice;
   case Fn of
-    0: R := FIOMan.Open(ArgString(Args, 20, 256), Integer(ArgU32(Args, 12)));
-    1: R := FIOMan.Close(Integer(ArgU32(Args, 12)));
-    2:
+    FnOpen:
+      R := FIOMan.Open(ArgString(Args, Size, 20, 1024), Integer(ArgU32(Args, Size, 12)));
+    FnClose:
+      R := FIOMan.Close(Fd);
+    FnRead:
       begin
         var Data: TBytes;
-        R := FIOMan.Read(Integer(ArgU32(Args, 12)), Integer(ArgU32(Args, 20)), Data);
-        WriteEE(ArgU32(Args, 16), Data);
+        R := FIOMan.Read(Fd, Integer(ArgU32(Args, Size, 20)), Data);
+        WriteEE(ArgU32(Args, Size, 16), Data);
       end;
-    3:
+    FnWrite:
+      R := FIOMan.Write(Fd, ReadEE(ArgU32(Args, Size, 16), Integer(ArgU32(Args, Size, 20))));
+    FnSeek:
+      R := FIOMan.Seek(Fd, Integer(ArgU32(Args, Size, 16)), Integer(ArgU32(Args, Size, 20)));
+    FnSeek64:
+      if Size >= 28 then
       begin
-        var Count := Integer(ArgU32(Args, 20));
-        var Data: TBytes;
-        SetLength(Data, Max(Count, 0));
-        var A := ArgU32(Args, 16) and PS2RAMMask;
-        if (Count > 0) and (A + Cardinal(Count) <= PS2RAMSize) then
-          Move((FSIF.EERAM + A)^, Data[0], Count);
-        R := FIOMan.Write(Integer(ArgU32(Args, 12)), Data);
+        R := FIOMan.Seek(Fd, PInt64(Args + 16)^, Integer(ArgU32(Args, Size, 24)));
+        PInt64(@Rec[16])^ := R;
       end;
-    4: R := FIOMan.Seek(Integer(ArgU32(Args, 12)), Integer(ArgU32(Args, 16)), Integer(ArgU32(Args, 20)));
-    12:
+    FnGetStat:
       begin
-        var Sz: Int64;
-        R := FIOMan.GetStat(ArgString(Args, 16, 256), Sz);
-        SetLength(Reply, 24 + 64);
-        PCardinal(@Reply[20])^ := ArgU32(Args, 12);
+        var FileSize: Int64;
+        R := FIOMan.GetStat(ArgString(Args, Size, 16, 1024), FileSize);
+        SetLength(Rec, 24 + 64);
+        FillChar(Rec[16], Length(Rec) - 16, 0);
+        PCardinal(@Rec[20])^ := ArgU32(Args, Size, 12);
         if R = 0 then
         begin
-          PCardinal(@Reply[24])^ := $2000;
-          PCardinal(@Reply[32])^ := Cardinal(Sz);
-          PCardinal(@Reply[60])^ := Cardinal(Sz shr 32);
-          var St: TBytes := Copy(Reply, 24, 40);
-          WriteEE(ArgU32(Args, 12), St);
+          var St := StatRecord(FileSize);
+          Move(St[0], Rec[24], 64);
+          WriteEE(ArgU32(Args, Size, 12), St);
         end;
       end;
-    22:
-      begin
-        R := FIOMan.Seek(Integer(ArgU32(Args, 12)), PInt64(Args + 16)^, Integer(ArgU32(Args, 24)));
-        PInt64(@Reply[16])^ := R;
-        R := Cardinal(R);
-      end;
-    9: R := -2;
-    18, 19, 20, 21, 23, 26: R := 0;
+    FnDOpen:
+      R := ErrNoEntry;
+  else
+    // Directories, devices and the rest: nothing to do.
+    R := 0;
   end;
-  if Fn <> 22 then
-    PInteger(@Reply[16])^ := Integer(R);
-  if FResultPtr[0] <> 0 then
-    FSIF.SendData(FResultPtr[0], Reply);
+  if Fn <> FnSeek64 then
+    PInteger(@Rec[16])^ := Integer(R);
+  if FRecordAddress <> 0 then
+    FSIF.SendData(FRecordAddress, Rec);
   var Cmd: TBytes;
   SetLength(Cmd, 16);
-  FSIF.SendCommand($80000011, Cmd);
+  FillChar(Cmd[0], 16, 0);
+  FSIF.SendCommand(CmdResult, Cmd);
   Result := IntBytes(1);
 end;
 
+// Function FFh starts the service (from 2200 on its word is the address for
+// result records); the reply is the version in ASCII. Up to version 2100
+// each call answers in its RPC reply with the argument blocks of ps2sdk's
+// fileio: open (mode, name), close (fd), read (fd, buffer, size, address of
+// the unaligned head/tail record, left empty), write (fd, buffer, size,
+// unaligned count, unaligned bytes), lseek (fd, offset, whence), getstat
+// (stat address, name).
 function TPS2FileIOServer.Call(Fn: Cardinal; Args: PByte; Size: Integer; ReplySize: Integer): TBytes;
 begin
-  if Fn = 255 then
+  if Fn = FnInit then
   begin
     if Version >= 2200 then
-    begin
-      FResultPtr[0] := ArgU32(Args, 0);
-      FResultPtr[1] := ArgU32(Args, 4);
-    end;
+      FRecordAddress := ArgU32(Args, Size, 0);
     Result := TEncoding.ANSI.GetBytes(IntToStr(Version) + '....');
     Exit;
   end;
   if Version >= 2200 then
-    Exit(Call2200(Fn, Args, Size));
+    Exit(CallRecord(Fn, Args, Size));
   case Fn of
-    0: // open {mode, name[256]}
-      Result := IntBytes(FIOMan.Open(ArgString(Args, 4, 256), Integer(ArgU32(Args, 0))));
-    1: // close {fd}
-      Result := IntBytes(FIOMan.Close(Integer(ArgU32(Args, 0))));
-    2: // read {fd, ptr, size, read_data}
+    FnOpen:
+      Result := IntBytes(FIOMan.Open(ArgString(Args, Size, 4, 256), Integer(ArgU32(Args, Size, 0))));
+    FnClose:
+      Result := IntBytes(FIOMan.Close(Integer(ArgU32(Args, Size, 0))));
+    FnRead:
       begin
         var Data: TBytes;
-        var N := FIOMan.Read(Integer(ArgU32(Args, 0)), Integer(ArgU32(Args, 8)), Data);
-        WriteEE(ArgU32(Args, 4), Data);
-        // The EE copies nothing from read_data.
-        var RD := ArgU32(Args, 12);
-        if RD <> 0 then
+        var N := FIOMan.Read(Integer(ArgU32(Args, Size, 0)), Integer(ArgU32(Args, Size, 8)), Data);
+        WriteEE(ArgU32(Args, Size, 4), Data);
+        var Tail := ArgU32(Args, Size, 12);
+        if Tail <> 0 then
         begin
           var Z: TBytes;
           SetLength(Z, 16);
-          WriteEE(RD, Z);
+          FillChar(Z[0], 16, 0);
+          WriteEE(Tail, Z);
         end;
         Result := IntBytes(N);
       end;
-    3: // write {fd, ptr, size, mis, aligned[16]}
+    FnWrite:
       begin
-        var Fd := Integer(ArgU32(Args, 0));
-        var Ptr := ArgU32(Args, 4);
-        var Count := Integer(ArgU32(Args, 8));
-        var Mis := Integer(ArgU32(Args, 12));
-        if Count < 0 then
-          Count := 0;
-        if Mis > 16 then
-          Mis := 16;
-        if Mis > Count then
-          Mis := Count;
+        var Count := Max(Integer(ArgU32(Args, Size, 8)), 0);
+        var Mis := EnsureRange(Integer(ArgU32(Args, Size, 12)), 0, Min(16, Count));
         var Data: TBytes;
         SetLength(Data, Count);
         if Mis > 0 then
           Move(Args[16], Data[0], Mis);
-        var A := (Ptr + Cardinal(Mis)) and PS2RAMMask;
-        if (Count - Mis > 0) and (A + Cardinal(Count - Mis) <= PS2RAMSize) then
-          Move((FSIF.EERAM + A)^, Data[Mis], Count - Mis);
-        Result := IntBytes(FIOMan.Write(Fd, Data));
+        var Rest := ReadEE(ArgU32(Args, Size, 4) + Cardinal(Mis), Count - Mis);
+        if Length(Rest) > 0 then
+          Move(Rest[0], Data[Mis], Length(Rest));
+        Result := IntBytes(FIOMan.Write(Integer(ArgU32(Args, Size, 0)), Data));
       end;
-    4: // lseek {fd, offset, whence}
-      Result := IntBytes(Integer(FIOMan.Seek(Integer(ArgU32(Args, 0)), Integer(ArgU32(Args, 4)),
-        Integer(ArgU32(Args, 8)))));
-    12: // getstat {buf, name[256]}
+    FnSeek:
+      Result := IntBytes(Integer(FIOMan.Seek(Integer(ArgU32(Args, Size, 0)), Integer(ArgU32(Args, Size, 4)),
+        Integer(ArgU32(Args, Size, 8)))));
+    FnGetStat:
       begin
-        var Sz: Int64;
-        var R := FIOMan.GetStat(ArgString(Args, 4, 256), Sz);
+        var FileSize: Int64;
+        var R := FIOMan.GetStat(ArgString(Args, Size, 4, 256), FileSize);
         if R = 0 then
-        begin
-          // io_stat_t: mode, attr, size, ctime[8], atime[8], mtime[8], hisize.
-          var St: TBytes;
-          SetLength(St, 40);
-          PCardinal(@St[0])^ := $2000;
-          PCardinal(@St[8])^ := Cardinal(Sz);
-          PCardinal(@St[36])^ := Cardinal(Sz shr 32);
-          WriteEE(ArgU32(Args, 0), St);
-        end;
+          WriteEE(ArgU32(Args, Size, 0), StatRecord(FileSize));
         Result := IntBytes(R);
       end;
+    FnDOpen:
+      Result := IntBytes(ErrNoEntry);
   else
-    Result := IntBytes(-1);
+    Result := IntBytes(ErrNoDevice);
   end;
 end;
 

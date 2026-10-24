@@ -4,8 +4,10 @@
 // loadcore, intrman, thbase/thevent/thsemap/thmsgbx/thfpool/thvpool,
 // sysclib, stdio, sifman, sifcmd, timrman, vblank, dmacman, cdvdman,
 // ioman/iomanx, modload and heaplib. Function numbers are the export
-// indices of the ps2sdk export tables (AFL 2.0, interfaces only); behaviour
-// after Play! (BSD-2). Unknown functions return 0 and are logged once.
+// indices of the ps2sdk export tables; structures, error codes and behaviour
+// follow the ps2sdk headers and its reimplementations of these modules
+// (threadman, intrman, sysmem, timrman, vblank...; AFL 2.0). Unknown
+// functions return 0 and are logged once.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 
 interface
@@ -59,7 +61,11 @@ const
   KESemaZero = -419;
   KESemaOvf = -420;
   KEEvfCond = -421;
+  KEEvfMulti = -422;
+  KEEvfIlpat = -423;
   KEMboxNoMsg = -424;
+  // Event flag attribute: more than one thread may wait.
+  EventMulti = $2;
   KEUnknownModule = -202;
 
 function IOPLibraryIndex(const Name: string): Integer;
@@ -270,10 +276,7 @@ begin
   Result := 0;
   case Fn of
     4:
-      if K.Arg(0) = 2 then
-        Result := K.Allocator.Allocate(K.Arg(1), K.Arg(2))
-      else
-        Result := K.Allocator.Allocate(K.Arg(1));
+      Result := K.Allocator.AllocateMode(K.Arg(0), K.Arg(1), K.Arg(2));
     5:
       K.Allocator.Release(K.Arg(0));
     6: Result := PS2IOPRAMSize;
@@ -558,6 +561,14 @@ begin
       begin
         var Want := K.Arg(1);
         var Mode := K.Arg(2);
+        if Want = 0 then
+          Exit(Cardinal(KEEvfIlpat));
+        // A second waiter needs the multiple-wait attribute.
+        if (Fn = 10) and ((K.Events[Id].Attr and EventMulti) = 0) then
+          for var T := 1 to IOPMaxThreads do
+            if K.Threads[T].Used and (K.Threads[T].State = ThWaiting) and (K.Threads[T].Wait = WaitEvent) and
+              (K.Threads[T].WaitId = Id) then
+              Exit(Cardinal(KEEvfMulti));
         if K.EventMatches(K.Events[Id].Bits, Want, Mode) then
         begin
           if K.Arg(3) <> 0 then
@@ -613,6 +624,15 @@ begin
       end;
     6, 7:
       begin
+        // A waiting thread takes the signal; else the count goes up to its
+        // maximum.
+        var Waiting := False;
+        for var T := 1 to IOPMaxThreads do
+          if K.Threads[T].Used and (K.Threads[T].State = ThWaiting) and (K.Threads[T].Wait = WaitSema) and
+            (K.Threads[T].WaitId = Id) then
+            Waiting := True;
+        if not Waiting and (K.Semas[Id].Count >= K.Semas[Id].Max) then
+          Exit(Cardinal(KESemaOvf));
         Inc(K.Semas[Id].Count);
         K.CheckSemaWaiters(Id);
       end;
@@ -1404,6 +1424,8 @@ begin
         var Path := K.ReadString(K.Arg(0), 256);
         if K.IsHLEModule(Path, '') then
         begin
+          if Assigned(K.OnHighLevelModule) then
+            K.OnHighLevelModule(Path, nil);
           if (Fn = 7) and (K.Arg(3) <> 0) then
             K.W32(K.Arg(3), 0);
           Exit(1000);
@@ -1455,6 +1477,8 @@ begin
         if ParseIRX(Data, Info) and K.IsHLEModule('', Info.Name) then
         begin
           K.Warn('module ' + Info.Name + ' is high level');
+          if Assigned(K.OnHighLevelModule) then
+            K.OnHighLevelModule(Info.Name, Data);
           Exit(1000);
         end;
         Result := Cardinal(ModloadLoad(K, '', Data));

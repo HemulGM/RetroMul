@@ -64,6 +64,7 @@ type
     procedure SetCoreTSA(Core: Integer; Value: Cardinal);
     procedure StartDMA(Channel: Integer);
     procedure StartSIO2DMA(Base: Cardinal; ToDevice: Boolean);
+    procedure FinishSIO2DMA(Base: Cardinal; ToDevice: Boolean);
     procedure SIO2Interrupt;
     procedure ScheduleNext;
     function ReadSPU2(Offset: Cardinal): Cardinal;
@@ -111,8 +112,12 @@ begin
   RAM := IOPRAM;
   IOPCycles := Cycles;
   SetLength(SPU2RAM, PS2SPU2RAMSize);
-  SIO2 := TPS2SIO2.Create;
+  SIO2 := TPS2SIO2.Create(IOPRAM);
   SIO2.OnInterrupt := SIO2Interrupt;
+  SIO2.OnOutDMADone := procedure
+    begin
+      FinishSIO2DMA(DMACh12, False);
+    end;
   Reset;
 end;
 
@@ -128,18 +133,30 @@ begin
     OnInterrupt(IOPIntSIO2);
 end;
 
-// SIO2 DMA: blocks of BCR.size words, BCR.count blocks, done at once.
+// SIO2 DMA: blocks of BCR.size words, BCR.count blocks. Channel 11 hands
+// them over at once; channel 12 ends when the SIO2 has delivered them.
 procedure TPS2IOPHardware.StartSIO2DMA(Base: Cardinal; ToDevice: Boolean);
 begin
   var MADR := IO32(Base) and PS2IOPRAMMask;
   var BCR := IO32(Base + 4);
   var BlockSize := Integer(BCR and $FFFF) * 4;
   var Blocks := Integer(BCR shr 16);
-  if MADR + Cardinal(BlockSize * Blocks) <= PS2IOPRAMSize then
-    if ToDevice then
-      SIO2.DMAIn(RAM + MADR, BlockSize, Blocks)
-    else
-      SIO2.DMAOut(RAM + MADR, BlockSize, Blocks);
+  if ToDevice then
+  begin
+    if MADR + Cardinal(BlockSize * Blocks) <= PS2IOPRAMSize then
+      SIO2.DMAIn(RAM + MADR, BlockSize, Blocks);
+    FinishSIO2DMA(Base, True);
+  end
+  else
+    SIO2.StartOutDMA(MADR, BlockSize, Blocks);
+end;
+
+procedure TPS2IOPHardware.FinishSIO2DMA(Base: Cardinal; ToDevice: Boolean);
+begin
+  var MADR := IO32(Base) and PS2IOPRAMMask;
+  var BCR := IO32(Base + 4);
+  var BlockSize := Integer(BCR and $FFFF) * 4;
+  var Blocks := Integer(BCR shr 16);
   SetIO32(Base, MADR + Cardinal(BlockSize * Blocks));
   SetIO32(Base + 4, BCR and $FFFF);
   SetIO32(Base + 8, IO32(Base + 8) and not $01000000);

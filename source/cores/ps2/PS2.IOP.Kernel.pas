@@ -1425,26 +1425,27 @@ end;
 
 function TPS2IOPKernel.ImageAt(Address: Cardinal): TBytes;
 begin
-  var Size: Cardinal := 52;
-  var PhOff := R32(Address + 28);
+  Address := Address and PS2IOPRAMMask;
+  var Size: Int64 := 52;
+  var PhOff := Int64(R32(Address + 28));
   var PhNum := R16(Address + 44);
   var PhSize := R16(Address + 42);
   for var I := 0 to Integer(PhNum) - 1 do
   begin
-    var P := Address + PhOff + Cardinal(I) * PhSize;
-    Size := Max(Size, R32(P + 4) + R32(P + 16));
+    var P := Cardinal((Address + PhOff + Int64(I) * PhSize) and PS2IOPRAMMask);
+    Size := Max(Size, Int64(R32(P + 4)) + R32(P + 16));
   end;
-  var ShOff := R32(Address + 32);
+  var ShOff := Int64(R32(Address + 32));
   var ShNum := R16(Address + 48);
   var ShSize := R16(Address + 46);
-  Size := Max(Size, ShOff + Cardinal(ShNum) * ShSize);
+  Size := Max(Size, ShOff + Int64(ShNum) * ShSize);
   for var I := 0 to Integer(ShNum) - 1 do
   begin
-    var S := Address + ShOff + Cardinal(I) * ShSize;
+    var S := Cardinal((Address + ShOff + Int64(I) * ShSize) and PS2IOPRAMMask);
     if R32(S + 4) <> 8 then
-      Size := Max(Size, R32(S + 16) + R32(S + 20));
+      Size := Max(Size, Int64(R32(S + 16)) + R32(S + 20));
   end;
-  Size := Min(Size, Cardinal($100000));
+  Size := Min(Size, Int64(PS2IOPRAMSize - Address));
   SetLength(Result, Size);
   for var I := 0 to Integer(Size) - 1 do
     Result[I] := R8(Address + Cardinal(I));

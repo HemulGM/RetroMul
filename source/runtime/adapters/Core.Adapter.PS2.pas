@@ -80,6 +80,7 @@ type
     FRegion: TPS2Region;
     FPAL: Boolean;
     FSnapshotDirectory, FError: string;
+    FCardFiles: array[0..1] of string;
     FInputs: TPS2PadInputs;
     FPause, FReset, FAvailable: Boolean;
     FFrame: TEmulatorFrame;
@@ -92,11 +93,14 @@ type
     procedure Boot;
     procedure TransferSnapshot(const Name: string; Loading: Boolean);
     procedure Publish(Console: TPS2Console);
+    procedure LoadCards;
+    procedure SaveCards;
   protected
     procedure Execute; override;
   public
     constructor Create(const ProgramData, Identity: TBytes; const ProgramName: string; Disc: TDVDImage;
-      Region: TPS2Region; PAL: Boolean; const Storage: IStorage; const SnapshotDirectory: string);
+      Region: TPS2Region; PAL: Boolean; const Storage: IStorage; const SnapshotDirectory, CardFile1,
+      CardFile2: string);
     destructor Destroy; override;
     procedure Configure(const Inputs: TPS2PadInputs; Paused: Boolean);
     procedure RequestReset;
@@ -122,6 +126,7 @@ type
     FControllers: array[0..1] of TPS2Pad;
     FPaused: Boolean;
     FSnapshotDirectory, FError: string;
+    FCardFiles: array[0..1] of string;
     procedure Configure;
   public
     // Disc images are opened from the stream and RomName (owned); otherwise
@@ -286,7 +291,7 @@ end;
 { TPS2Worker }
 
 constructor TPS2Worker.Create(const ProgramData, Identity: TBytes; const ProgramName: string; Disc: TDVDImage;
-  Region: TPS2Region; PAL: Boolean; const Storage: IStorage; const SnapshotDirectory: string);
+  Region: TPS2Region; PAL: Boolean; const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string);
 begin
   inherited Create(True);
   FreeOnTerminate := False;
@@ -298,6 +303,8 @@ begin
   FPAL := PAL;
   FStorage := Storage;
   FSnapshotDirectory := SnapshotDirectory;
+  FCardFiles[0] := CardFile1;
+  FCardFiles[1] := CardFile2;
   FLock := TCriticalSection.Create;
   FWake := TEvent.Create(nil, False, False, '');
   FSnapshots := TSnapshotQueue.Create;
@@ -438,6 +445,29 @@ begin
   end;
 end;
 
+// Memory cards (file level) live in one file per card; a card file is
+// written only once a game changed the card.
+procedure TPS2Worker.LoadCards;
+begin
+  for var Port := 0 to 1 do
+    if (FCardFiles[Port] <> '') and FStorage.Exists(FCardFiles[Port]) then
+      FConsole.MemoryCards.Cards[Port].Load(FStorage.ReadBytes(FCardFiles[Port]));
+end;
+
+procedure TPS2Worker.SaveCards;
+begin
+  if FConsole = nil then
+    Exit;
+  for var Port := 0 to 1 do
+  begin
+    var Card := FConsole.MemoryCards.Cards[Port];
+    if not Card.Dirty or (FCardFiles[Port] = '') then
+      Continue;
+    FStorage.WriteBytes(FCardFiles[Port], Card.Image);
+    Card.Dirty := False;
+  end;
+end;
+
 procedure TPS2Worker.Boot;
 begin
   if FDisc <> nil then
@@ -490,6 +520,7 @@ begin
       if FDisc = nil then
         Config.HostDirectory := ExtractFilePath(FProgramName);
       FConsole := TPS2Console.Create(Config);
+      LoadCards;
       Boot;
       Restart;
       while not Terminated do
@@ -518,12 +549,15 @@ begin
         end;
         if ResetRequested then
         begin
+          SaveCards;
           FConsole.Reset;
           Boot;
           Restart;
         end;
         if Paused then
         begin
+          if not WasPaused then
+            SaveCards;
           WasPaused := True;
           FWake.WaitFor(10);
           Restart;
@@ -551,6 +585,12 @@ begin
     except
       on E: Exception do
         ReportError('PS2: ' + E.Message);
+    end;
+    try
+      SaveCards;
+    except
+      on E: Exception do
+        ReportError('PS2 memory card: ' + E.Message);
     end;
   finally
     FreeAndNil(FConsole);
@@ -686,6 +726,8 @@ begin
     FPAL := False;
   var Identity := SnapshotIdentity(FIdentity);
   FSnapshotDirectory := FStorage.GameSnapshots(ROM_SYSTEM_PS2, RomName, Identity);
+  FCardFiles[0] := FStorage.GameSave(ROM_SYSTEM_PS2, RomName, Identity);
+  FCardFiles[1] := FStorage.GameSave(ROM_SYSTEM_PS2, RomName, Identity + '-2');
 end;
 
 destructor TPS2CoreAdapter.Destroy;
@@ -746,7 +788,8 @@ procedure TPS2CoreAdapter.Start;
 begin
   if FWorker <> nil then
     Exit;
-  FWorker := TPS2Worker.Create(FProgram, FIdentity, FProgramName, FDisc, FRegion, FPAL, FStorage, FSnapshotDirectory);
+  FWorker := TPS2Worker.Create(FProgram, FIdentity, FProgramName, FDisc, FRegion, FPAL, FStorage, FSnapshotDirectory,
+    FCardFiles[0], FCardFiles[1]);
   Configure;
   FWorker.Start;
 end;

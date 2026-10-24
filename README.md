@@ -14,6 +14,7 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 | Game & Watch | `.gw`, `.mgw`, catalogued MAME `.zip` sets with SVG screens |
 | Game Boy Advance | `.gba` |
 | Nintendo 64 (experimental) | `.z64`, `.n64`, `.v64` |
+| PlayStation 2 (experimental) | `.iso`, `.mds`/`.mdf`, DVD `.chd`, `.elf` (homebrew) |
 | SEGA Mega Drive / Genesis | `.md`, `.bin`, `.gen`, `.smd` |
 | SEGA SG-1000 | `.sg` (legacy `.sms` images in `sg1000/`) |
 | SEGA SC-3000 | `.sc` |
@@ -51,6 +52,8 @@ ZX Spectrum includes built-in 48K/128K ROMs, a touch keyboard, Kempston plus QAO
 beeper and AY audio, and automatic cassette loading. TAP/TZX play at original tape speed.
 Snapshots load immediately. TRD/SCL auto-select Pentagon 128K and boot through native Beta 128 / TR-DOS; disk writes use separate save overlays. PAL Timex TC2048/TC2068, Scorpion ZS-256 and Profi+ 512K/1024K are selectable in settings; DCK boots Timex cartridges; PRO boots native Profi CP/M disks. Microdigital TK90X/TK95 adds MC16845 60/50 Hz timing and embedded Portuguese/Spanish ROMs. ZX settings include 30 ready configurations and live conflict notifications. Didaktik Gama 1987/1988/1989 adds native 80K paging, on-board 8255 and embedded ROMs. Byte 48K and Byte-01 128K/KVU are selectable with embedded ROM/PROM images, native video/VI53 sound and 800K KDI CP/M boot. Optional Pentagon 512K/1024K models are available in settings; 1024K includes software-controlled turbo, 16C/512/384 video and persistent Gluk CMOS. See [ZX Spectrum support and accuracy limits](source/cores/zx/README.md).
 
+PlayStation 2 support is experimental and runs without a BIOS: the EE kernel, the IOP system modules, pads and file-level memory cards are high level, while the games' own IOP modules (sound drivers) run on an emulated IOP. There is no sound output or BIOS boot yet, and most games do not reach gameplay. See [PlayStation 2 core](source/cores/ps2/README.md).
+
 ## Getting started
 
 Open a ROM directly, or select the library root folder in Settings. The library uses these system subdirectories:
@@ -63,6 +66,7 @@ ROMS/
   gw/
   gba/
   n64/
+  ps2/
   megadrive/
   sg1000/
   sc3000/

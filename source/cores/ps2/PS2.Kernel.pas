@@ -635,6 +635,8 @@ begin
     if (C.Kind <= 1) and (Integer(C.A0) + C.Kind * 64 = FSkipCause) then
       Continue;
     FCallKind := C.Kind;
+    if Trace <> nil then
+      Trace.Add(Format('%d call kind %d %.8x a0=%x', [FScheduler.Now, C.Kind, C.Address, C.A0]));
     FCPU.S.GPR[4].Lo := C.A0;
     FCPU.S.GPR[5].Lo := C.A1;
     FCPU.S.GPR[6].Lo := C.A2;

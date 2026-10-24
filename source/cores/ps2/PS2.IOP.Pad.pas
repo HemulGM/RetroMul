@@ -34,6 +34,9 @@ type
     FLayout: TPS2PadLayout;
     FArea: array[0..1] of Cardinal;
     FMode: array[0..1] of Byte;
+    // Frame counters: each field the older of the two structures gets
+    // the new data and the next frame number.
+    FFrame: array[0..1] of Cardinal;
     function StructAddress(Port, Index: Integer): Cardinal;
     function DataAddress(Port, Index: Integer): Cardinal;
     procedure InitStruct(Port, Index: Integer);
@@ -62,6 +65,15 @@ const
   // square, L1, R1, L2, R2 (pad bits).
   PressureBits: array[0..11] of Word = ($0020, $0080, $0010, $0040, $1000, $2000, $4000, $8000, $0400, $0800,
     $0100, $0200);
+
+// The pad's id byte: mode in the high nibble, data halfwords in the low.
+function ModeByte(Mode: Byte): Byte;
+begin
+  if Mode = ModeDualShock then
+    Result := $73
+  else
+    Result := $41;
+end;
 
 type
   TPS2PadArgs = array[0..7] of Cardinal;
@@ -161,13 +173,10 @@ begin
     S[$70] := 6;
     S[$71] := 0;
     S[$72] := 1;
-    if Index = 1 then
-    begin
-      S[$65] := ModeDualShock shl 4;
-      S[$69] := 0;
-      PWord(S + $50)^ := ModeDualShock;
-      S[$68] := 4;
-    end;
+    S[$65] := ModeDualShock shl 4;
+    S[$69] := 0;
+    PWord(S + $50)^ := ModeDualShock;
+    S[$68] := 4;
   end
   else
   begin
@@ -179,22 +188,27 @@ begin
   end;
   for var K := 4 to 7 do
     D[K] := $7F;
-  if Index = 1 then
-  begin
-    D[0] := 0;
-    D[1] := FMode[Port] shl 4;
-  end;
+  D[0] := 0;
+  D[1] := ModeByte(FMode[Port]);
 end;
 
 procedure TPS2PadMan.WriteData(Port: Integer);
 begin
   if FArea[Port] = 0 then
     Exit;
-  var D := FEERAM + DataAddress(Port, 1);
+  FFrame[Port] := FFrame[Port] + 1;
+  var Index := Integer(FFrame[Port] and 1);
+  InitStruct(Port, Index);
+  var S := FEERAM + StructAddress(Port, Index);
+  if FLayout = TPS2PadLayout.Extended then
+    PCardinal(S + $58)^ := FFrame[Port]
+  else
+    PCardinal(S)^ := FFrame[Port];
+  var D := FEERAM + DataAddress(Port, Index);
   var Pad := Pads[Port];
   var Bits := not Pad.Buttons;
   D[0] := 0;
-  D[1] := FMode[Port] shl 4;
+  D[1] := ModeByte(FMode[Port]);
   D[2] := Byte(Bits);
   D[3] := Byte(Bits shr 8);
   for var K := 0 to 3 do
@@ -204,11 +218,6 @@ begin
       D[8 + K] := $FF
     else
       D[8 + K] := 0;
-  var S := FEERAM + StructAddress(Port, 1);
-  if FLayout = TPS2PadLayout.Extended then
-    S[$71] := 0
-  else
-    S[5] := 0;
 end;
 
 function TPS2PadMan.Invoke(Args: PByte; Size, ReplySize: Integer): TBytes;
@@ -223,20 +232,23 @@ begin
   case Method of
     $00000001, $80000100:
       begin
-        // Open(port, slot, ..., pad area)
-        if A[1] < 2 then
+        // Open(port, slot, ..., pad area). Only slot 0 has a pad (no
+        // multitap); other slots keep their areas untouched (disconnected).
+        if (A[1] < 2) and (A[2] = 0) then
         begin
           FArea[Port] := A[4] and PS2RAMMask;
           FLayout := DetectLayout(FArea[Port]);
           InitStruct(Port, 0);
           InitStruct(Port, 1);
+          FFrame[Port] := 1;
           WriteData(Port);
         end;
         PCardinal(@Result[12])^ := 1;
       end;
-    $80000105:
+    $80000105, $00000006:
       begin
         // SetMainMode(port, slot, mode, lock)
+        PCardinal(@Result[20])^ := 1;
         if A[1] < 2 then
         begin
           if A[3] <> 0 then
@@ -247,14 +259,44 @@ begin
         end;
         PCardinal(@Result[12])^ := 1;
       end;
-    $8000010D:
+    $8000010D, $0000000E:
       begin
-        if A[1] < 2 then
+        if (A[1] < 2) and (A[2] = 0) then
           FArea[Port] := 0;
         PCardinal(@Result[12])^ := 1;
       end;
-    $00000008:
+    $8000010B, $0000000C:
+      // Ports, then slots per port (no multitap).
+      PCardinal(@Result[12])^ := 2;
+    $8000010C, $0000000D:
+      PCardinal(@Result[12])^ := 1;
+    $80000108, $00000009:
+      // Button mask: digital buttons and pressure bytes.
+      PCardinal(@Result[12])^ := $3FFFF;
+    $80000109, $0000000A:
+      PCardinal(@Result[16])^ := 1;
+    $80000104:
+      begin
+        // InfoMode(port, slot, info, index): current id, extended id,
+        // offset, mode table.
+        var V: Integer := 0;
+        case A[3] of
+          1, 2: V := FMode[Port];
+          3: V := Ord(FMode[Port] = ModeDualShock);
+          4:
+            if Integer(A[4]) = -1 then
+              V := 2
+            else if A[4] = 0 then
+              V := ModeDigital
+            else if A[4] = 1 then
+              V := ModeDualShock;
+        end;
+        PInteger(@Result[20])^ := V;
+      end;
+    $80000102, $80000106, $80000107, $00000007, $00000008, $0000000B, $8000010A:
       PCardinal(@Result[20])^ := 1;
+    $0000000F, $8000010E:
+      PCardinal(@Result[12])^ := 1;
     $00000010:
       PCardinal(@Result[12])^ := 1;
     $00000012:
@@ -273,6 +315,7 @@ begin
   State.Field(FLayout, SizeOf(FLayout));
   State.Field(FArea, SizeOf(FArea));
   State.Field(FMode, SizeOf(FMode));
+  State.Field(FFrame, SizeOf(FFrame));
 end;
 
 end.

@@ -43,6 +43,7 @@ type
     procedure LoadExec(const Path: string; const Args: TArray<string>);
     procedure IOPReset(const Args: string);
     procedure BootIOP;
+    procedure AddIOPServers;
     procedure StartVU1(Address: Cardinal);
     function ImageVersion(const ResetArgs: string): Integer;
     procedure VU1Kick(Address: Cardinal);
@@ -290,20 +291,26 @@ end;
 
 procedure TPS2Console.BootIOP;
 begin
-  SIF.RemoveServers;
   FileIO.Reset;
+  IOP.Reset;
+  PadMan.Reset;
+  MemoryCards.Reset;
+  IOPHeap.Reset;
+  AddIOPServers;
+  SIF.IOPBooted;
+end;
+
+// The high-level servers in their fixed order (snapshots rely on it).
+procedure TPS2Console.AddIOPServers;
+begin
+  SIF.RemoveServers;
   SIF.AddServer(FileIO);
   SIF.AddServer(HeapServer);
   SIF.AddServer(LoadFile);
   for var S in FCDVD do
     SIF.AddServer(S);
-  IOP.Reset;
-  PadMan.Reset;
   PadMan.AddServers(SIF);
-  MemoryCards.Reset;
   SIF.AddServer(MemoryCards);
-  IOPHeap.Reset;
-  SIF.IOPBooted;
 end;
 
 function TPS2Console.StartModule(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes): Integer;
@@ -547,7 +554,7 @@ begin
   State.Field(Booted, SizeOf(Booted));
   if State.Loading then
     if Booted then
-      BootIOP
+      AddIOPServers
     else
       SIF.RemoveServers;
   SIF.SerializeState(State);

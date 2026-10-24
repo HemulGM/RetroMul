@@ -500,13 +500,21 @@ begin
             TransferSnapshot(Name, Loading);
           end);
         var Paused, ResetRequested: Boolean;
+        var Inputs: TPS2PadInputs;
         FLock.Acquire;
         try
           Paused := FPause;
           ResetRequested := FReset;
           FReset := False;
+          Inputs := FInputs;
         finally
           FLock.Release;
+        end;
+        for var Port := 0 to 1 do
+        begin
+          FConsole.PadMan.Pads[Port].Buttons := Inputs[Port].Buttons;
+          for var K := 0 to 3 do
+            FConsole.PadMan.Pads[Port].Axes[K] := Inputs[Port].Axes[K];
         end;
         if ResetRequested then
         begin

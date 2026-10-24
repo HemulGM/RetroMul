@@ -73,6 +73,8 @@ type
     procedure Finish(N: Integer; Cycles: Int64);
     procedure RunSPR(N: Integer);
     procedure ScheduleNext;
+    function Drain: Integer;
+    function Ring(Address: Cardinal): Cardinal; inline;
   public
     Ch: array[0..9] of TPS2DMAChannel;
     CTRL, STAT, PCR, SQWC, RBSR, RBOR, STADR, ENABLE: Cardinal;
@@ -309,6 +311,22 @@ begin
     end;
 end;
 
+// The MFIFO drain channel (D_CTRL.MFD): VIF1, GIF or -1.
+function TPS2DMAC.Drain: Integer;
+begin
+  case (CTRL shr 2) and 3 of
+    2: Result := DMAVIF1;
+    3: Result := DMAGIF;
+  else
+    Result := -1;
+  end;
+end;
+
+function TPS2DMAC.Ring(Address: Cardinal): Cardinal;
+begin
+  Result := (Address and RBSR) or RBOR;
+end;
+
 procedure TPS2DMAC.Finish(N: Integer; Cycles: Int64);
 begin
   Ch[N].Finishing := True;
@@ -394,6 +412,9 @@ end;
 // Reads the next source-chain tag; False when the chain has ended.
 function TPS2DMAC.ReadTag(N: Integer): Boolean;
 begin
+  var MFIFO := N = Drain;
+  if MFIFO then
+    Ch[N].TADR := Ring(Ch[N].TADR);
   var Valid: Boolean;
   var P := Memory(Ch[N].TADR, Valid);
   if not Valid then
@@ -467,6 +488,13 @@ begin
         Ch[N].TagEnd := True;
       end;
   end;
+  if MFIFO then
+  begin
+    // Data following the tag lives in the ring too.
+    if Id in [1, 2, 7] then
+      Ch[N].MADR := Ring(Ch[N].MADR);
+    Ch[N].TADR := Ring(Ch[N].TADR);
+  end;
   if ((Lo and $80000000) <> 0) and ((Ch[N].CHCR and CHCRTIE) <> 0) then
     Ch[N].TagEnd := True;
   if (Ports[N] <> nil) and ((Ch[N].CHCR and CHCRTTE) <> 0) then
@@ -536,6 +564,8 @@ begin
           end;
         end;
         Ch[N].MADR := Ch[N].MADR + 16;
+        if (N = DMAFromSPR) and (Drain >= 0) then
+          Ch[N].MADR := Ring(Ch[N].MADR);
         Ch[N].SADR := (Ch[N].SADR + 16) and $3FF0;
         Ch[N].QWC := Ch[N].QWC - 1;
         Inc(Moved[N]);
@@ -545,6 +575,10 @@ begin
     end;
   until (Mode <> 1) or Ch[N].TagEnd;
   Finish(N, Int64(Moved[N]) * CyclesPerQuad + 8);
+  // New data in the MFIFO ring: a drain channel waiting on it goes on.
+  var D := Drain;
+  if (N = DMAFromSPR) and (D >= 0) then
+    Resume(D);
 end;
 
 procedure TPS2DMAC.Run(N: Integer);
@@ -568,6 +602,17 @@ begin
       Break;
     if Ch[N].TagEnd then
       Break;
+    // MFIFO: the drain waits while the ring is empty.
+    if (N = Drain) and (Ring(Ch[N].TADR) = Ring(Ch[DMAFromSPR].MADR)) then
+    begin
+      Ch[N].TADR := Ring(Ch[N].TADR);
+      if (STAT and $4000) = 0 then
+      begin
+        STAT := STAT or $4000;
+        UpdateInterrupt;
+      end;
+      Exit;
+    end;
     if not ReadTag(N) then
       Break;
   until False;

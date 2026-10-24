@@ -9,7 +9,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.IOUtils, System.Generics.Collections, Core.Snapshots, Core.DVD.Image, PS2.Types, PS2.Scheduler, PS2.EE.CPU,
-  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.VU, PS2.VIF;
+  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.IOP.Pad, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.VU, PS2.VIF;
 
 type
   TPS2ConsoleConfig = record
@@ -46,7 +46,8 @@ type
     procedure StartVU1(Address: Cardinal);
     function ImageVersion(const ResetArgs: string): Integer;
     procedure VU1Kick(Address: Cardinal);
-    function StartModule(const Path: string; const Args: TBytes; out ModuleId: Integer): Boolean;
+    function StartModule(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes): Integer;
+    procedure ModuleDone(const Token: TBytes; ModuleId, Result: Integer);
     function GetHalted: Boolean;
   public
     Scheduler: TPS2Scheduler;
@@ -68,6 +69,11 @@ type
     IOPHeap: TPS2IOPAllocator;
     HeapServer: TPS2IOPHeapServer;
     LoadFile: TPS2LoadFileServer;
+    PadMan: TPS2PadMan;
+    MemoryCards: TPS2MCServer;
+    IOP: TPS2IOPKernel;
+    // Run game IOP modules as IOP code (False: report them loaded only).
+    RunIOPModules: Boolean;
     // Modules the EE asked the IOP to load (diagnostics).
     ModuleLog: TStringList;
     constructor Create(const Config: TPS2ConsoleConfig);
@@ -87,6 +93,13 @@ type
   end;
 
 implementation
+
+uses
+  PS2.IOP.Loader;
+
+const
+  // EE cycles per IOP slice while IOP code has work.
+  IOPSlice = 4096;
 
 { TPS2Console }
 
@@ -151,6 +164,16 @@ begin
   LoadFile := TPS2LoadFileServer.Create(IOMan);
   LoadFile.OnModule := StartModule;
   LoadFile.Log := ModuleLog;
+  PadMan := TPS2PadMan.Create(Bus.RAM);
+  MemoryCards := TPS2MCServer.Create(Bus.RAM);
+  IOP := TPS2IOPKernel.Create(Scheduler, SIF, IOPHeap, IOMan, FDiscFS, Bus.RAM, Bus.IOPRAM);
+  IOP.OnTTY := IOPTTY;
+  IOP.OnModuleDone := ModuleDone;
+  IOP.OnMarkEE := Bus.MarkRAM;
+  SIF.OnGuestBind := IOP.GuestBind;
+  SIF.OnGuestCommand := IOP.GuestCommand;
+  LoadFile.ImageReader := IOP.ImageAt;
+  RunIOPModules := True;
   Reset;
 end;
 
@@ -158,6 +181,9 @@ destructor TPS2Console.Destroy;
 begin
   FileIO.Free;
   LoadFile.Free;
+  PadMan.Free;
+  MemoryCards.Free;
+  IOP.Free;
   HeapServer.Free;
   IOPHeap.Free;
   ModuleLog.Free;
@@ -258,6 +284,7 @@ begin
   FInVBlank := False;
   FIdleCycles := 0;
   Scheduler.Schedule(TPS2Event.VBlankStart, FVisibleCycles);
+  IOP.CPU.Cycles := 0;
   BootIOP;
 end;
 
@@ -270,15 +297,47 @@ begin
   SIF.AddServer(LoadFile);
   for var S in FCDVD do
     SIF.AddServer(S);
+  IOP.Reset;
+  PadMan.Reset;
+  PadMan.AddServers(SIF);
+  MemoryCards.Reset;
+  SIF.AddServer(MemoryCards);
   IOPHeap.Reset;
   SIF.IOPBooted;
 end;
 
-function TPS2Console.StartModule(const Path: string; const Args: TBytes; out ModuleId: Integer): Boolean;
+function TPS2Console.StartModule(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes): Integer;
 begin
-  // The high-level IOP provides the system modules; others are not run yet.
-  ModuleId := ModuleLog.Count + 1;
-  Result := True;
+  // The high-level IOP provides the system modules; game modules run as IOP
+  // code and answer once their start routine returned.
+  var Data := Image;
+  if (Data = nil) and (Path <> '') and not IOP.IsHLEModule(Path, '') then
+  begin
+    var Device, P: string;
+    TPS2IOMan.SplitPath(Path, Device, P);
+    if not SameText(Device, 'rom0') then
+      Data := FDiscFS.ReadFile(Device, P);
+  end;
+  if not RunIOPModules or (Data = nil) then
+    Exit(1000 + ModuleLog.Count);
+  var Info: TIRXInfo;
+  if not ParseIRX(Data, Info) then
+    Exit(-201);
+  if IOP.IsHLEModule(Path, Info.Name) then
+    Exit(1000 + ModuleLog.Count);
+  var Index := IOP.LoadModule(Data, Path);
+  if Index <= 0 then
+    Exit(Index);
+  var Name := Path;
+  if Name = '' then
+    Name := Info.Name;
+  IOP.StartModule(Index, Name, Args, Server.DeferCall, 0, 0);
+  Result := Index;
+end;
+
+procedure TPS2Console.ModuleDone(const Token: TBytes; ModuleId, Result: Integer);
+begin
+  LoadFile.FinishModule(Token, ModuleId, Result);
 end;
 
 procedure TPS2Console.StartVU1(Address: Cardinal);
@@ -408,6 +467,8 @@ begin
         FInVBlank := True;
         Bus.RaiseIRQ(2);
         GS.VBlank;
+        PadMan.Update;
+        IOP.VBlank(True);
         Kernel.VBlankStart(GS.OddField);
         Scheduler.Schedule(TPS2Event.VBlankEnd, FFieldStart + FFieldCycles);
       end;
@@ -415,6 +476,7 @@ begin
       begin
         FInVBlank := False;
         Bus.RaiseIRQ(3);
+        IOP.VBlank(False);
         FFieldStart := FFieldStart + FFieldCycles;
         Scheduler.Schedule(TPS2Event.VBlankStart, FFieldStart + FVisibleCycles);
       end;
@@ -427,6 +489,8 @@ begin
     TPS2Event.Alarm: Kernel.AlarmEvent;
     TPS2Event.Compare: CPU.CompareReached;
     TPS2Event.IOPSync: BootIOP;
+    TPS2Event.IOPTimers: IOP.TimerEvent;
+    TPS2Event.IOPDMA: IOP.Hardware.Event;
   end;
 end;
 
@@ -447,6 +511,10 @@ begin
       end;
     end;
     Scheduler.Deadline := Scheduler.NextDue;
+    // IOP code runs in slices behind the EE.
+    var IOPActive := IOP.Active;
+    if IOPActive and (Scheduler.Deadline > Scheduler.Now + IOPSlice) then
+      Scheduler.Deadline := Scheduler.Now + IOPSlice;
     if Kernel.Exited then
     begin
       Scheduler.Now := Scheduler.Deadline;
@@ -458,9 +526,11 @@ begin
       Inc(FIdleCycles, Scheduler.Deadline - Scheduler.Now);
       Scheduler.Now := Scheduler.Deadline;
       Kernel.Idle := False;
+      IOP.Run(Scheduler.Now);
       Continue;
     end;
     CPU.Run;
+    IOP.Run(Scheduler.Now);
   end;
 end;
 
@@ -472,6 +542,14 @@ begin
   VU1.SerializeState(State);
   Timers.SerializeState(State);
   DMAC.SerializeState(State);
+  // The IOP's server list (booted or between a reset and its boot).
+  var Booted := SIF.ServerCount > 0;
+  State.Field(Booted, SizeOf(Booted));
+  if State.Loading then
+    if Booted then
+      BootIOP
+    else
+      SIF.RemoveServers;
   SIF.SerializeState(State);
   GS.SerializeState(State);
   GIF.SerializeState(State);
@@ -480,6 +558,9 @@ begin
   Kernel.SerializeState(State);
   IOMan.SerializeState(State);
   IOPHeap.SerializeState(State);
+  PadMan.SerializeState(State);
+  IOP.SerializeState(State);
+  MemoryCards.SerializeCards(State);
   State.Field(FFieldStart, SizeOf(FFieldStart));
   State.Field(FFrameCount, SizeOf(FFrameCount));
   State.Field(FInVBlank, SizeOf(FInVBlank));

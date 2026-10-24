@@ -323,6 +323,14 @@
         <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.FileIO.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.HLE.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.CDVD.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Pad.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.MemoryCard.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.CPU.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Hardware.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Loader.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Kernel.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Libs.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VIF.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.Console.pas"/>
         <DCCReference Include="..\..\source\media\dvd\Core.DVD.Image.pas"/>
         <DCCReference Include="..\..\source\runtime\adapters\Core.PS2.Playback.pas"/>

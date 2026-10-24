@@ -35,7 +35,9 @@ const
   SIFIOPCmdBuffer = $00010000;
   SIFIOPServerData = $00010100;
   SIFIOPServerBuffers = $00012000;
-  SIFIOPServerBufferSize = $4000;
+  SIFIOPServerBufferSize = $2000;
+  // Servers beyond this share the last buffers (below the IOP heap).
+  SIFIOPServerBufferCount = 30;
 
 type
   TPS2SIF = class;
@@ -47,13 +49,21 @@ type
   private
     FSID: Cardinal;
     FIndex: Integer;
+    FPacket: TBytes;
+    FDeferred: Boolean;
   protected
     FSIF: TPS2SIF;
+    // From Call: no reply now; Complete answers later with the returned
+    // token (the call packet).
+    function Defer: TBytes;
   public
+    // Reply latency in EE cycles (0: the SIF default).
+    Latency: Int64;
     constructor Create(SID: Cardinal);
     function Call(Fn: Cardinal; Args: PByte; Size: Integer; ReplySize: Integer): TBytes; virtual; abstract;
     procedure Reset; virtual;
     procedure SerializeState(State: TStateArchive); virtual;
+    procedure Complete(const Token, Reply: TBytes);
     property SID: Cardinal read FSID;
   end;
 
@@ -67,11 +77,16 @@ type
     Dest: Cardinal;
     Data: TBytes;
     IRQ: Boolean;
+    // Not delivered before this EE cycle.
+    Due: Int64;
   end;
 
   // RPC bind or call for a server that is not high-level (an IOP module's,
   // through the IOP side): Kind is the command id, Packet the EE packet.
   TPS2SIFGuestCommand = procedure(Kind: Cardinal; const Packet: TBytes) of object;
+  // A bind for a SID no high-level server has: True when the IOP side
+  // answered (with a server or 'not yet').
+  TPS2SIFGuestBind = function(const Packet: TBytes): Boolean of object;
   TPS2SIFReset = procedure(const Args: string) of object;
 
   TPS2SIF = class
@@ -84,6 +99,8 @@ type
     FStubs: TObjectList<TPS2RPCServer>;
     FOnReset: TPS2SIFReset;
     FOnGuestCommand: TPS2SIFGuestCommand;
+    FOnGuestBind: TPS2SIFGuestBind;
+    function ServerBuffer(Index: Integer): Cardinal;
     procedure Command(Address: Cardinal);
     procedure Bind(const P: TBytes);
     procedure Call(const P: TBytes);
@@ -107,6 +124,7 @@ type
     procedure IOPBooted;
     procedure AddServer(Server: TPS2RPCServer);
     procedure RemoveServers;
+    function ServerCount: Integer;
     // EE-side registers (SifSetReg/SifGetReg and MMIO 1000F2x0h).
     function ReadRegister(Index: Cardinal): Cardinal;
     procedure WriteRegister(Index, Value: Cardinal);
@@ -115,14 +133,25 @@ type
     procedure EEToIOP(Src, Dest: Cardinal; Size: Integer; Attr: Cardinal);
     // IOP-to-EE: data chunks then a command packet for the EE's buffer.
     procedure SendData(Dest: Cardinal; const Data: TBytes);
-    procedure SendCommand(Cid: Cardinal; Packet: TBytes; NoIRQ: Boolean = False; Dest: Cardinal = 0);
+    procedure SendCommand(Cid: Cardinal; Packet: TBytes; NoIRQ: Boolean = False; Dest: Cardinal = 0;
+      Delay: Int64 = 0);
     // Delivers queued packets while DMAC channel 5 is armed.
     procedure Deliver;
+    // Answers an RPC call packet: Reply (up to the EE's receive size) then
+    // the end command.
+    procedure ReplyCall(const P: TBytes; const Reply: TBytes; Delay: Int64 = 0);
+    // Answers a bind packet with the server's IOP addresses (0: not there).
+    procedure ReplyBind(const P: TBytes; SD, Buff, CBuff: Cardinal);
+    // Drops the made-up server for SID (a module now provides it).
+    procedure RemoveStub(SID: Cardinal);
+    // A command packet built by the IOP side (header kept but psize).
+    procedure SendRawCommand(Packet: TBytes);
     procedure SerializeState(State: TStateArchive);
     property EERAM: PByte read FEERAM;
     property IOPRAM: PByte read FIOPRAM;
     property OnReset: TPS2SIFReset read FOnReset write FOnReset;
     property OnGuestCommand: TPS2SIFGuestCommand read FOnGuestCommand write FOnGuestCommand;
+    property OnGuestBind: TPS2SIFGuestBind read FOnGuestBind write FOnGuestBind;
   end;
 
 function PacketU32(const P: TBytes; Offset: Integer): Cardinal; inline;
@@ -154,6 +183,18 @@ end;
 
 procedure TPS2RPCServer.Reset;
 begin
+end;
+
+function TPS2RPCServer.Defer: TBytes;
+begin
+  FDeferred := True;
+  Result := Copy(FPacket);
+end;
+
+procedure TPS2RPCServer.Complete(const Token, Reply: TBytes);
+begin
+  if FSIF <> nil then
+    FSIF.ReplyCall(Token, Reply, Latency);
 end;
 
 procedure TPS2RPCServer.SerializeState(State: TStateArchive);
@@ -224,6 +265,29 @@ begin
   FStubs.Clear;
 end;
 
+function TPS2SIF.ServerBuffer(Index: Integer): Cardinal;
+begin
+  if Index >= SIFIOPServerBufferCount then
+    Index := SIFIOPServerBufferCount - 1 - (Index mod 4);
+  Result := SIFIOPServerBuffers + Cardinal(Index) * SIFIOPServerBufferSize;
+end;
+
+procedure TPS2SIF.RemoveStub(SID: Cardinal);
+begin
+  for var K := FStubs.Count - 1 downto 0 do
+    if FStubs[K].SID = SID then
+    begin
+      // Keep the indices of later servers: the stub stays as a placeholder
+      // with an unused SID.
+      FStubs[K].FSID := 0;
+    end;
+end;
+
+function TPS2SIF.ServerCount: Integer;
+begin
+  Result := FServers.Count;
+end;
+
 function TPS2SIF.FindServer(SID: Cardinal): TPS2RPCServer;
 begin
   for var S in FServers do
@@ -287,10 +351,11 @@ begin
   C.Dest := Dest;
   C.Data := Data;
   C.IRQ := False;
+  C.Due := 0;
   FQueue.Add(C);
 end;
 
-procedure TPS2SIF.SendCommand(Cid: Cardinal; Packet: TBytes; NoIRQ: Boolean; Dest: Cardinal);
+procedure TPS2SIF.SendCommand(Cid: Cardinal; Packet: TBytes; NoIRQ: Boolean; Dest: Cardinal; Delay: Int64);
 begin
   if Length(Packet) < 16 then
     SetLength(Packet, 16);
@@ -304,9 +369,10 @@ begin
   C.Dest := Dest;
   C.Data := Packet;
   C.IRQ := not NoIRQ;
+  C.Due := FScheduler.Now + Max(ReplyDelay, Delay);
   FQueue.Add(C);
   if not FScheduler.Pending(TPS2Event.SIF) then
-    FScheduler.Schedule(TPS2Event.SIF, FScheduler.Now + ReplyDelay);
+    FScheduler.Schedule(TPS2Event.SIF, C.Due);
 end;
 
 procedure TPS2SIF.Deliver;
@@ -314,6 +380,11 @@ begin
   while FQueue.Count > 0 do
   begin
     var C := FQueue[0];
+    if C.Due > FScheduler.Now then
+    begin
+      FScheduler.Schedule(TPS2Event.SIF, C.Due);
+      Exit;
+    end;
     if C.IRQ and not FDMAC.SIF0Ready then
       Exit;
     FQueue.Delete(0);
@@ -327,7 +398,7 @@ begin
       Break;
   end;
   if FQueue.Count > 0 then
-    FScheduler.Schedule(TPS2Event.SIF, FScheduler.Now + ReplyDelay div 4);
+    FScheduler.Schedule(TPS2Event.SIF, Max(FScheduler.Now + ReplyDelay div 4, FQueue[0].Due));
 end;
 
 procedure TPS2SIF.Command(Address: Cardinal);
@@ -341,8 +412,8 @@ begin
   SetLength(P, Size);
   Move((FIOPRAM + Address)^, P[0], Size);
   var Cid := PacketU32(P, 8);
-  if Log <> nil then
-    Log.Add(Format('sif cmd %.8x sid/fn %.8x/%.8x', [Cid, PacketU32(P, 32), PacketU32(P, 32)]));
+  if (Log <> nil) and (Cid <> SIFCmdRPCCall) then
+    Log.Add(Format('sif cmd %.8x %.8x', [Cid, PacketU32(P, 32)]));
   case Cid of
     SIFCmdChangeSAddr:
       EERecvAddr := PacketU32(P, 16);
@@ -393,11 +464,8 @@ begin
   // SifRpcBindPkt: rec_id 16, pkt_addr 20, rpc_id 24, cd 28, sid 32.
   var SID := PacketU32(P, 32);
   var Server := FindServer(SID);
-  if (Server = nil) and Assigned(FOnGuestCommand) then
-  begin
-    FOnGuestCommand(SIFCmdRPCBind, P);
+  if (Server = nil) and Assigned(FOnGuestBind) and FOnGuestBind(P) then
     Exit;
-  end;
   if (Server = nil) and StubUnknownServers then
   begin
     // No module provides it: an empty server keeps the EE going.
@@ -407,6 +475,14 @@ begin
     if Log <> nil then
       Log.Add(Format('sif stub server %.8x', [SID]));
   end;
+  if Server <> nil then
+    ReplyBind(P, SIFIOPServerData + Cardinal(Server.FIndex) * $40, ServerBuffer(Server.FIndex), 0)
+  else
+    ReplyBind(P, 0, 0, 0);
+end;
+
+procedure TPS2SIF.ReplyBind(const P: TBytes; SD, Buff, CBuff: Cardinal);
+begin
   var R: TBytes;
   SetLength(R, 64);
   SetPacketU32(R, 16, 0);
@@ -414,13 +490,26 @@ begin
   SetPacketU32(R, 24, PacketU32(P, 24));
   SetPacketU32(R, 28, PacketU32(P, 28));
   SetPacketU32(R, 32, SIFCmdRPCBind);
-  if Server <> nil then
-  begin
-    SetPacketU32(R, 36, SIFIOPServerData + Cardinal(Server.FIndex) * $40);
-    SetPacketU32(R, 40, SIFIOPServerBuffers + Cardinal(Server.FIndex) * SIFIOPServerBufferSize);
-    SetPacketU32(R, 44, 0);
-  end;
+  SetPacketU32(R, 36, SD);
+  SetPacketU32(R, 40, Buff);
+  SetPacketU32(R, 44, CBuff);
   SendCommand(SIFCmdRPCEnd, R);
+end;
+
+procedure TPS2SIF.SendRawCommand(Packet: TBytes);
+begin
+  if Length(Packet) < 16 then
+    SetLength(Packet, 16);
+  var Len := Length(Packet);
+  PCardinal(@Packet[0])^ := (PCardinal(@Packet[0])^ and not $FF) or (Cardinal(Len) and $FF);
+  var C: TPS2SIFChunk;
+  C.Dest := EERecvAddr;
+  C.Data := Packet;
+  C.IRQ := True;
+  C.Due := FScheduler.Now + ReplyDelay;
+  FQueue.Add(C);
+  if not FScheduler.Pending(TPS2Event.SIF) then
+    FScheduler.Schedule(TPS2Event.SIF, C.Due);
 end;
 
 procedure TPS2SIF.Call(const P: TBytes);
@@ -436,10 +525,23 @@ begin
     Exit;
   end;
   var Server := FServers[Index];
-  var Buffer := SIFIOPServerBuffers + Cardinal(Index) * SIFIOPServerBufferSize;
+  if Log <> nil then
+    Log.Add(Format('sif call %.8x fn %x size %d/%d', [Server.SID, PacketU32(P, 32), PacketU32(P, 36),
+      PacketU32(P, 44)]));
+  var Buffer := ServerBuffer(Index);
+  Server.FPacket := P;
+  Server.FDeferred := False;
+  var Reply := Server.Call(PacketU32(P, 32), FIOPRAM + Buffer, Integer(PacketU32(P, 36)),
+    Integer(PacketU32(P, 44)));
+  Server.FPacket := nil;
+  if not Server.FDeferred then
+    ReplyCall(P, Reply, Server.Latency);
+end;
+
+procedure TPS2SIF.ReplyCall(const P: TBytes; const Reply: TBytes; Delay: Int64);
+begin
   var RecvBuf := PacketU32(P, 40);
   var RecvSize := Integer(PacketU32(P, 44));
-  var Reply := Server.Call(PacketU32(P, 32), FIOPRAM + Buffer, Integer(PacketU32(P, 36)), RecvSize);
   if (RecvSize > 0) and (RecvBuf <> 0) then
   begin
     var Data := Copy(Reply, 0, RecvSize);
@@ -456,12 +558,12 @@ begin
   begin
     SetPacketU32(R, 16, PacketU32(P, 16));
     SetPacketU32(R, 24, PacketU32(P, 24));
-    SendCommand(SIFCmdRPCEnd, R);
+    SendCommand(SIFCmdRPCEnd, R, False, 0, Delay);
   end
   else
   begin
     // No end function: the reply frees the EE packet in place.
-    SendCommand(SIFCmdRPCEnd, R, True, PacketU32(P, 20));
+    SendCommand(SIFCmdRPCEnd, R, True, PacketU32(P, 20), Delay);
   end;
 end;
 
@@ -506,6 +608,7 @@ begin
       var Len: Integer;
       State.Field(C.Dest, SizeOf(C.Dest));
       State.Field(C.IRQ, SizeOf(C.IRQ));
+      State.Field(C.Due, SizeOf(C.Due));
       State.Field(Len, SizeOf(Len));
       if (Len < 0) or (Len > $1000000) then
         raise EReadError.Create('PS2 snapshot SIF queue');
@@ -520,12 +623,39 @@ begin
     begin
       var Dest := C.Dest;
       var IRQ := C.IRQ;
+      var Due := C.Due;
       var Len := Length(C.Data);
       State.Field(Dest, SizeOf(Dest));
       State.Field(IRQ, SizeOf(IRQ));
+      State.Field(Due, SizeOf(Due));
       State.Field(Len, SizeOf(Len));
       if Len > 0 then
         State.Field(C.Data[0], Len);
+    end;
+  // Servers made up for unknown SIDs, in binding order.
+  var StubCount := FStubs.Count;
+  State.Field(StubCount, SizeOf(StubCount));
+  if State.Loading then
+  begin
+    if (StubCount < 0) or (StubCount > 1024) then
+      raise EReadError.Create('PS2 snapshot SIF servers');
+    for var S in FStubs do
+      FServers.Remove(S);
+    FStubs.Clear;
+    for var K := 0 to StubCount - 1 do
+    begin
+      var SID: Cardinal;
+      State.Field(SID, SizeOf(SID));
+      var Server := TPS2StubServer.Create(SID);
+      FStubs.Add(Server);
+      AddServer(Server);
+    end;
+  end
+  else
+    for var S in FStubs do
+    begin
+      var SID := S.SID;
+      State.Field(SID, SizeOf(SID));
     end;
   for var S in FServers do
     S.SerializeState(State);

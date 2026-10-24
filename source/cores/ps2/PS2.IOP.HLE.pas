@@ -31,14 +31,20 @@ type
     procedure Reset;
     function Allocate(Size: Cardinal; Fixed: Cardinal = 0): Cardinal;
     function Release(Address: Cardinal): Boolean;
+    // The size of the block at Address (0 when none starts there).
+    function BlockSize(Address: Cardinal): Cardinal;
     function FreeTotal: Cardinal;
     function LargestFree: Cardinal;
     procedure SerializeState(State: TStateArchive);
   end;
 
-  // Name (as in the module's IRX header or the path) and arguments; returns
-  // True when the high-level IOP provides it.
-  TPS2ModuleLoad = function(const Path: string; const Args: TBytes; out ModuleId: Integer): Boolean of object;
+  TPS2LoadFileServer = class;
+
+  // A module to load: Path (or '' for an image in IOP memory), its image
+  // (nil: read by path) and arguments. Returns the module id, or an error;
+  // a module started as IOP code answers later (Server.DeferCall, then
+  // Server.FinishModule).
+  TPS2ModuleLoad = function(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes): Integer of object;
 
   TPS2IOPHeapServer = class(TPS2RPCServer)
   private
@@ -53,13 +59,18 @@ type
   private
     FIOMan: TPS2IOMan;
     FOnModule: TPS2ModuleLoad;
+    FImageReader: TFunc<Cardinal, TBytes>;
     FLog: TStrings;
     function LoadELF(const Path: string; out Entry, GP: Cardinal): Boolean;
   public
     constructor Create(IOMan: TPS2IOMan);
     function Call(Fn: Cardinal; Args: PByte; Size: Integer; ReplySize: Integer): TBytes; override;
+    function DeferCall: TBytes;
+    procedure FinishModule(const Token: TBytes; ModuleId, ModuleResult: Integer);
     property OnModule: TPS2ModuleLoad read FOnModule write FOnModule;
     property Log: TStrings read FLog write FLog;
+    // Reads a module image from IOP memory (buffer loads).
+    property ImageReader: TFunc<Cardinal, TBytes> read FImageReader write FImageReader;
   end;
 
 function CString(P: PByte; Max: Integer): string;
@@ -144,6 +155,14 @@ begin
       Exit(True);
     end;
   Result := False;
+end;
+
+function TPS2IOPAllocator.BlockSize(Address: Cardinal): Cardinal;
+begin
+  for var B in FBlocks do
+    if B.Address = Address then
+      Exit(B.Size);
+  Result := 0;
 end;
 
 function TPS2IOPAllocator.FreeTotal: Cardinal;
@@ -272,27 +291,51 @@ begin
   Result := True;
 end;
 
+function TPS2LoadFileServer.DeferCall: TBytes;
+begin
+  Result := Defer;
+end;
+
+procedure TPS2LoadFileServer.FinishModule(const Token: TBytes; ModuleId, ModuleResult: Integer);
+begin
+  var R: TBytes;
+  SetLength(R, 8);
+  PInteger(@R[0])^ := ModuleId;
+  PInteger(@R[4])^ := ModuleResult;
+  if FLog <> nil then
+    FLog.Add(Format('module %d started: %d', [ModuleId, ModuleResult]));
+  Complete(Token, R);
+end;
+
 function TPS2LoadFileServer.Call(Fn: Cardinal; Args: PByte; Size: Integer; ReplySize: Integer): TBytes;
 begin
   SetLength(Result, 8);
   case Fn of
     0, 4, 6:
       begin
-        // _lf_module_load_arg: arg_len 0, modres 4, path 8, args 260.
+        // _lf_module_load_arg: arg_len 0, modres 4, path 8, args 260;
+        // buffer loads: IOP address 0, arg_len 4, args 260.
         var ArgLen := Integer(PCardinal(Args)^);
         var Path := CString(Args + 8, 252);
+        var Image: TBytes := nil;
+        if Fn = 6 then
+        begin
+          ArgLen := Integer(PCardinal(Args + 4)^);
+          Path := '';
+          if Assigned(FImageReader) then
+            Image := FImageReader(PCardinal(Args)^);
+        end;
         var ModArgs: TBytes;
         if (ArgLen > 0) and (ArgLen <= 252) then
         begin
           SetLength(ModArgs, ArgLen);
           Move((Args + 260)^, ModArgs[0], ArgLen);
         end;
-        var Id: Integer;
-        var Known := Assigned(FOnModule) and FOnModule(Path, ModArgs, Id);
+        var Id := -200;
+        if Assigned(FOnModule) then
+          Id := FOnModule(Self, Path, Image, ModArgs);
         if FLog <> nil then
-          FLog.Add(Format('load module %s: %s', [Path, BoolToStr(Known, True)]));
-        if not Known then
-          Id := -200;
+          FLog.Add(Format('load module %s: %d', [Path, Id]));
         PInteger(@Result[0])^ := Id;
         PInteger(@Result[4])^ := 0;
       end;

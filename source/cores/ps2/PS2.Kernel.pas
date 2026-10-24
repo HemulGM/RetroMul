@@ -801,7 +801,7 @@ begin
     Ret(-1);
     Exit;
   end;
-  var H: TPS2Handler;
+  var H := Default(TPS2Handler);
   H.Used := True;
   H.Cause := Cause;
   H.Address := Address;

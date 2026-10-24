@@ -38,6 +38,9 @@ type
     BranchPending, EndPending: Boolean;
     BranchTarget: Cardinal;
     Cycles: Int64;
+    // Clip flag after each of the last four pairs: FC* instructions see the
+    // flag of four pairs ago (CLIP results land with the FMAC latency).
+    ClipHist: array[0..3] of Cardinal;
   end;
 
   TPS2VUCore = class
@@ -48,6 +51,8 @@ type
     FCode, FData: PByte;
     FCodeMask, FDataMask: Cardinal;
     FOnKick: TPS2VUKick;
+    // The clip flag the current pair's FC* instructions see.
+    FClipVisible: Cardinal;
     // Results of the current pair (written after both halves ran).
     FUpperReg, FLowerReg: Integer;
     FUpperValue, FLowerValue: TPS2Reg128;
@@ -517,10 +522,16 @@ begin
         else
           FVI[It and 15] := Word(Integer(FVI[Is_ and 15]) - Integer(Imm));
       end;
-    $10: FVI[1] := Ord((S.Clip and $FFFFFF) = (Op and $FFFFFF));
-    $11: S.Clip := Op and $FFFFFF;
-    $12: FVI[1] := Ord((S.Clip and Op and $FFFFFF) <> 0);
-    $13: FVI[1] := Ord(((S.Clip or Op) and $FFFFFF) = $FFFFFF);
+    $10: FVI[1] := Ord((FClipVisible and $FFFFFF) = (Op and $FFFFFF));
+    $11:
+      begin
+        S.Clip := Op and $FFFFFF;
+        for var K := 0 to 3 do
+          S.ClipHist[K] := S.Clip;
+        FClipVisible := S.Clip;
+      end;
+    $12: FVI[1] := Ord((FClipVisible and Op and $FFFFFF) <> 0);
+    $13: FVI[1] := Ord(((FClipVisible or Op) and $FFFFFF) = $FFFFFF);
     $14: if (It and 15) <> 0 then FVI[It and 15] := Ord((S.Status and $FFF) = (((Op shr 10) and $800) or (Op and $7FF)));
     $15: S.Status := (S.Status and $3F) or ((((Op shr 10) and $800) or (Op and $7FF)) and $FC0);
     $16: if (It and 15) <> 0 then FVI[It and 15] := S.Status and (((Op shr 10) and $800) or (Op and $7FF));
@@ -528,7 +539,7 @@ begin
     $18: if (It and 15) <> 0 then FVI[It and 15] := Ord((S.MAC and $FFFF) = (FVI[Is_ and 15] and $FFFF));
     $1A: if (It and 15) <> 0 then FVI[It and 15] := S.MAC and FVI[Is_ and 15] and $FFFF;
     $1B: if (It and 15) <> 0 then FVI[It and 15] := (S.MAC or FVI[Is_ and 15]) and $FFFF;
-    $1C: FVI[1] := S.Clip and $FFF;
+    $1C: if (It and 15) <> 0 then FVI[It and 15] := FClipVisible and $FFF;
     $20, $21, $28, $29, $2C, $2D, $2E, $2F:
       begin
         var Take: Boolean;
@@ -843,6 +854,8 @@ begin
   S.Running := True;
   S.BranchPending := False;
   S.EndPending := False;
+  for var K := 0 to 3 do
+    S.ClipHist[K] := S.Clip;
 end;
 
 function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
@@ -851,6 +864,7 @@ begin
   while S.Running and (Count < MaxPairs) do
   begin
     var PC := S.TPC and FCodeMask;
+    FClipVisible := S.ClipHist[S.Cycles and 3];
     var LowerOp := PCardinal(FCode + PC)^;
     var UpperOp := PCardinal(FCode + PC + 4)^;
     var Branching := S.BranchPending;
@@ -888,6 +902,7 @@ begin
     end
     else if FUpperReg >= 0 then
       CommitVF(FUpperReg, FUpperValue, FUpperMask);
+    S.ClipHist[S.Cycles and 3] := S.Clip;
     Inc(Executed);
     Inc(S.Cycles);
     Inc(Count);

@@ -54,6 +54,8 @@ type
     S: TPS2VIFState;
     // Words processed (diagnostics).
     Words: Int64;
+    // Micro programs started, and those still running after the step limit.
+    Starts, Unfinished: Int64;
     constructor Create(Index: Integer; VU: TPS2VUCore; GIF: TPS2GIF; Code, Data: PByte; CodeSize, DataSize: Cardinal);
     procedure Reset;
     // Feeds 32-bit words; returns how many were taken (fewer: stalled on IRQ).
@@ -119,7 +121,9 @@ begin
     FVU.VI[27] := S.ITOP;
   end;
   FVU.Start(Address);
-  FVU.Run(4000000);
+  Inc(Starts);
+  if not FVU.Run(4000000) then
+    Inc(Unfinished);
 end;
 
 procedure TPS2VIF.FinishCommand;

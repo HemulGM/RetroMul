@@ -921,6 +921,39 @@ begin
   end;
 end;
 
+// Narrows [KL, KR] (steps from the row start) to where E + Step * K >= 0;
+// False when no step qualifies.
+function EdgeSpan(E, Step: Int64; var KL, KR: Int64): Boolean;
+begin
+  Result := True;
+  if Step > 0 then
+  begin
+    // K >= ceil(-E / Step)
+    var N := -E;
+    var K: Int64;
+    if N <= 0 then
+      K := -((-N) div Step)
+    else
+      K := (N + Step - 1) div Step;
+    if K > KL then
+      KL := K;
+  end
+  else if Step < 0 then
+  begin
+    // K <= floor(E / -Step)
+    var D := -Step;
+    var K: Int64;
+    if E >= 0 then
+      K := E div D
+    else
+      K := -((-E + D - 1) div D);
+    if K < KR then
+      KR := K;
+  end
+  else if E < 0 then
+    Result := False;
+end;
+
 procedure TPS2GSRaster.DrawTriangle(const V0, V1, V2: TPS2GSVertex);
 begin
   Inc(FPrimitives);
@@ -988,8 +1021,18 @@ begin
     var E0 := A0 * (PX - X1) + B0 * (PY - Y1);
     var E1 := A1 * (PX - X2) + B1 * (PY - Y2);
     var E2 := A2 * (PX - X0) + B2 * (PY - Y0);
+    // The covered span of the row from the edge equations (no scan over the
+    // whole bounding box for thin or mostly clipped triangles).
+    var KL: Int64 := 0;
+    var KR: Int64 := MaxX - MinX;
+    if not EdgeSpan(E0 + Bias0, A0 * 16, KL, KR) or not EdgeSpan(E1 + Bias1, A1 * 16, KL, KR) or
+      not EdgeSpan(E2 + Bias2, A2 * 16, KL, KR) or (KL > KR) then
+      Continue;
+    Inc(E0, A0 * 16 * KL);
+    Inc(E1, A1 * 16 * KL);
+    Inc(E2, A2 * 16 * KL);
     var Started := False;
-    for var X := MinX to MaxX do
+    for var X := MinX + Integer(KL) to MinX + Integer(KR) do
     begin
       if (E0 + Bias0 >= 0) and (E1 + Bias1 >= 0) and (E2 + Bias2 >= 0) then
       begin

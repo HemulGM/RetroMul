@@ -41,6 +41,9 @@ type
     constructor Create(FS: TPS2FileSystem);
     procedure Reset;
     class procedure SplitPath(const Name: string; out Device, Path: string); static;
+    // Devices of the expansion bay (HDD, its file system, network): nothing
+    // is there, ioman finds no such device.
+    class function IsAbsentDevice(const Name: string): Boolean; static;
     function Open(const Name: string; Mode: Integer): Integer;
     function Close(Fd: Integer): Integer;
     function Read(Fd: Integer; Count: Integer; out Data: TBytes): Integer;
@@ -64,6 +67,8 @@ type
     // FILEIO module version of the IOP image (1000, 2100, 2200...): from
     // 2200 on, results come back as records (see CallRecord).
     Version: Integer;
+    // Diagnostics: calls with their first string argument and result.
+    Log: TStrings;
     constructor Create(IOMan: TPS2IOMan);
     procedure Reset; override;
     function Call(Fn: Cardinal; Args: PByte; Size: Integer; ReplySize: Integer): TBytes; override;
@@ -145,8 +150,21 @@ begin
     Device := 'cdrom0';
 end;
 
+class function TPS2IOMan.IsAbsentDevice(const Name: string): Boolean;
+begin
+  var Colon := Name.IndexOf(':');
+  if Colon < 0 then
+    Exit(False);
+  var Device := Name.Substring(0, Colon).ToLower;
+  while (Device <> '') and CharInSet(Device[Length(Device)], ['0'..'9']) do
+    Delete(Device, Length(Device), 1);
+  Result := (Device = 'hdd') or (Device = 'pfs') or (Device = 'dev9x') or (Device = 'smap') or (Device = 'xhdd');
+end;
+
 function TPS2IOMan.Open(const Name: string; Mode: Integer): Integer;
 begin
+  if IsAbsentDevice(Name) then
+    Exit(-19);
   var Device, Path: string;
   SplitPath(Name, Device, Path);
   if (Device = 'tty') or (Device = 'tty0') then
@@ -242,9 +260,11 @@ end;
 
 function TPS2IOMan.GetStat(const Name: string; out Size: Int64): Integer;
 begin
+  Size := -1;
+  if IsAbsentDevice(Name) then
+    Exit(-19);
   var Device, Path: string;
   SplitPath(Name, Device, Path);
-  Size := -1;
   if FFS <> nil then
     Size := FFS.FileSize(Device, Path);
   if Size < 0 then
@@ -435,11 +455,19 @@ begin
     FnDOpen:
       R := ErrNoEntry;
   else
-    // Directories, devices and the rest: nothing to do.
-    R := 0;
+    // Directories, devices and the rest (mount, devctl, format...): nothing
+    // to do, unless the device named first is not there.
+    if TPS2IOMan.IsAbsentDevice(ArgString(Args, Size, 12, 1024)) or
+      TPS2IOMan.IsAbsentDevice(ArgString(Args, Size, 16, 1024)) then
+      R := ErrNoDevice
+    else
+      R := 0;
   end;
   if Fn <> FnSeek64 then
     PInteger(@Rec[16])^ := Integer(R);
+  if Log <> nil then
+    Log.Add(Format('fileio %d "%s" "%s" -> %d', [Fn, ArgString(Args, Size, 12, 1024), ArgString(Args, Size, 20, 1024),
+      R]));
   if FRecordAddress <> 0 then
     FSIF.SendData(FRecordAddress, Rec);
   var Cmd: TBytes;
@@ -467,6 +495,8 @@ begin
   end;
   if Version >= 2200 then
     Exit(CallRecord(Fn, Args, Size));
+  if Log <> nil then
+    Log.Add(Format('fileio %d "%s" size %d', [Fn, ArgString(Args, Size, 4, 256), Size]));
   case Fn of
     FnOpen:
       Result := IntBytes(FIOMan.Open(ArgString(Args, Size, 4, 256), Integer(ArgU32(Args, Size, 0))));

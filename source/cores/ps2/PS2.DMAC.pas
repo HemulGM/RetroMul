@@ -307,8 +307,10 @@ begin
             end;
             if Was and ((Value and CHCRSTR) = 0) then
             begin
-              // Stopping a channel.
-              Ch[N].CHCR := Value;
+              // Stopping a channel: as STR is the only bit that may change
+              // while it runs, the mode, direction and tag stay (software
+              // that saves CHCR and later sets STR again resumes the chain).
+              Ch[N].CHCR := Ch[N].CHCR and not Cardinal(CHCRSTR);
               Ch[N].Finishing := False;
               Exit;
             end;

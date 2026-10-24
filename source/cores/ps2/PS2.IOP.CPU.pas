@@ -108,6 +108,14 @@ begin
     Result := -1;
 end;
 
+// SRA/SRAV: the sign bit fills in (Delphi's shr is a logical shift).
+function Sar32(V: Cardinal; N: Integer): Cardinal; inline;
+begin
+  Result := V shr N;
+  if Integer(V) < 0 then
+    Result := Result or not (Cardinal($FFFFFFFF) shr N);
+end;
+
 { TIOPCPU }
 
 constructor TIOPCPU.Create(RAM: PByte);
@@ -278,10 +286,10 @@ begin
   case Op and 63 of
     $00: SetR(Rd, R[Rt] shl Sa);
     $02: SetR(Rd, R[Rt] shr Sa);
-    $03: SetR(Rd, Cardinal(Integer(R[Rt]) shr Sa));
+    $03: SetR(Rd, Sar32(R[Rt], Sa));
     $04: SetR(Rd, R[Rt] shl (R[Rs] and 31));
     $06: SetR(Rd, R[Rt] shr (R[Rs] and 31));
-    $07: SetR(Rd, Cardinal(Integer(R[Rt]) shr (R[Rs] and 31)));
+    $07: SetR(Rd, Sar32(R[Rt], R[Rs] and 31));
     $08: Jump(R[Rs]);
     $09:
       begin

@@ -172,6 +172,16 @@ type
 
 implementation
 
+// Arithmetic shift right (rounds toward minus infinity); Delphi's shr is a
+// logical shift, wrong for negative values.
+function Sar(V: Int64; N: Integer): Int64; inline;
+begin
+  if V >= 0 then
+    Result := V shr N
+  else
+    Result := not ((not V) shr N);
+end;
+
 // A texel coordinate in 1/16 texels, clamped (degenerate S/T/Q give huge or NaN values).
 function TexCoord(D: Double): Integer;
 begin
@@ -242,7 +252,7 @@ end;
 procedure TPS2GSRaster.WriteRegister(Index: Integer; Value: UInt64);
 begin
   Index := Index and $7F;
-  if (PrimLog <> nil) and (PrimLog.Count < 200000) and (Index in [6, 7, $14, $15, $16, $17, $3B, $4C, $4D]) then
+  if (PrimLog <> nil) and (PrimLog.Count < 200000) and (Index in [6, 7, $14, $15, $16, $17, $3B, $42, $43, $47, $48, $4C, $4D, $4E, $4F]) then
     PrimLog.Add(Format('reg %.2x = %.16x', [Index, Value]));
   Regs[Index] := Value;
   case Index of
@@ -583,12 +593,12 @@ begin
   var H := 1 shl FD.TH;
   if not FD.Linear then
   begin
-    var TU := ClampCoord(U shr 4, W, FD.WMS, FD.MINU, FD.MAXU);
-    var TV := ClampCoord(V shr 4, H, FD.WMT, FD.MINV, FD.MAXV);
+    var TU := ClampCoord(Sar(U, 4), W, FD.WMS, FD.MINU, FD.MAXU);
+    var TV := ClampCoord(Sar(V, 4), H, FD.WMT, FD.MINV, FD.MAXV);
     Exit(TexelAt(TU, TV));
   end;
-  var U0 := (U - 8) shr 4;
-  var V0 := (V - 8) shr 4;
+  var U0 := Integer(Sar(U - 8, 4));
+  var V0 := Integer(Sar(V - 8, 4));
   var FU := (U - 8) and 15;
   var FV := (V - 8) and 15;
   var A := TexelAt(ClampCoord(U0, W, FD.WMS, FD.MINU, FD.MAXU), ClampCoord(V0, H, FD.WMT, FD.MINV, FD.MAXV));
@@ -763,9 +773,9 @@ begin
     else
       CC := FD.BlendFix;
     end;
-    R := (((CA[0] - CB[0]) * CC) shr 7) + CD[0];
-    G := (((CA[1] - CB[1]) * CC) shr 7) + CD[1];
-    B := (((CA[2] - CB[2]) * CC) shr 7) + CD[2];
+    R := Integer(Sar((CA[0] - CB[0]) * CC, 7)) + CD[0];
+    G := Integer(Sar((CA[1] - CB[1]) * CC, 7)) + CD[1];
+    B := Integer(Sar((CA[2] - CB[2]) * CC, 7)) + CD[2];
   end;
   if FD.ColClamp then
   begin
@@ -811,7 +821,7 @@ begin
     U := TexCoord(V.S / Q * (1 shl FD.TW) * 16);
     TV := TexCoord(V.T / Q * (1 shl FD.TH) * 16);
   end;
-  Pixel((V.X + 8) shr 4, (V.Y + 8) shr 4, V.Z, V.R, V.G, V.B, V.A, V.F, U, TV);
+  Pixel(Integer(Sar(V.X + 8, 4)), Integer(Sar(V.Y + 8, 4)), V.Z, V.R, V.G, V.B, V.A, V.F, U, TV);
 end;
 
 procedure TPS2GSRaster.DrawLine(const V0, V1: TPS2GSVertex);
@@ -873,10 +883,10 @@ begin
   var X1 := V1.X;
   var Y0 := V0.Y;
   var Y1 := V1.Y;
-  var PX0 := (Min(X0, X1) + 15) shr 4;
-  var PX1 := (Max(X0, X1) + 15) shr 4;
-  var PY0 := (Min(Y0, Y1) + 15) shr 4;
-  var PY1 := (Max(Y0, Y1) + 15) shr 4;
+  var PX0 := Integer(Sar(Min(X0, X1) + 15, 4));
+  var PX1 := Integer(Sar(Max(X0, X1) + 15, 4));
+  var PY0 := Integer(Sar(Min(Y0, Y1) + 15, 4));
+  var PY1 := Integer(Sar(Max(Y0, Y1) + 15, 4));
   if PX0 < FD.SX0 then PX0 := FD.SX0;
   if PY0 < FD.SY0 then PY0 := FD.SY0;
   if PX1 > FD.SX1 + 1 then PX1 := FD.SX1 + 1;
@@ -973,10 +983,10 @@ begin
   if Area = 0 then
     Exit;
   // Bounding box in pixels (sample points at integer pixel coordinates).
-  var MinX := (Min(X0, Min(X1, X2)) + 15) shr 4;
-  var MaxX := Max(X0, Max(X1, X2)) shr 4;
-  var MinY := (Min(Y0, Min(Y1, Y2)) + 15) shr 4;
-  var MaxY := Max(Y0, Max(Y1, Y2)) shr 4;
+  var MinX := Sar(Min(X0, Min(X1, X2)) + 15, 4);
+  var MaxX := Sar(Max(X0, Max(X1, X2)), 4);
+  var MinY := Sar(Min(Y0, Min(Y1, Y2)) + 15, 4);
+  var MaxY := Sar(Max(Y0, Max(Y1, Y2)), 4);
   if MinX < FD.SX0 then MinX := FD.SX0;
   if MinY < FD.SY0 then MinY := FD.SY0;
   if MaxX > FD.SX1 then MaxX := FD.SX1;

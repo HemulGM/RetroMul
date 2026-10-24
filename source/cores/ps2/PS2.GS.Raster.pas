@@ -108,7 +108,7 @@ type
   TPS2GSRaster = class
   private
     FMemory: TPS2GSMemory;
-    FOnSignal: TProc;
+    FOnSignal, FOnFinish: TProc;
     FSignal, FFinish: Boolean;
     FQueue: array[0..2] of TPS2GSVertex;
     FQueueCount: Integer;
@@ -156,11 +156,15 @@ type
     function ReadImage(out Data: TPS2Reg128): Boolean;
     procedure ClearSignal;
     procedure ClearFinish;
+    // The FINISH event reaches CSR (after the drawing time, see OnFinish).
+    procedure SetFinish;
     procedure SerializeState(State: TStateArchive);
     property Memory: TPS2GSMemory read FMemory;
     property SignalPending: Boolean read FSignal;
     property FinishPending: Boolean read FFinish;
     property OnSignal: TProc read FOnSignal write FOnSignal;
+    // When assigned, a FINISH write calls it instead of raising the event now.
+    property OnFinish: TProc read FOnFinish write FOnFinish;
     property Primitives: Int64 read FPrimitives;
     property PixelsDrawn: Int64 read FPixels;
     property PixelsTransferred: Int64 read FXferPixels;
@@ -216,6 +220,13 @@ end;
 procedure TPS2GSRaster.ClearSignal;
 begin
   FSignal := False;
+end;
+
+procedure TPS2GSRaster.SetFinish;
+begin
+  FFinish := True;
+  if Assigned(FOnSignal) then
+    FOnSignal();
 end;
 
 procedure TPS2GSRaster.ClearFinish;
@@ -301,11 +312,10 @@ begin
           FOnSignal();
       end;
     GSRegFINISH:
-      begin
-        FFinish := True;
-        if Assigned(FOnSignal) then
-          FOnSignal();
-      end;
+      if Assigned(FOnFinish) then
+        FOnFinish()
+      else
+        SetFinish;
     GSRegLABEL:
       begin
         var Mask := (Value shr 32) shl 32;

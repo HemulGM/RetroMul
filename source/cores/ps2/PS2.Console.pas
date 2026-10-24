@@ -105,6 +105,8 @@ uses
 const
   // EE cycles per IOP slice while IOP code has work.
   IOPSlice = 4096;
+  // EE cycles from a FINISH register write to CSR.FINISH.
+  GSFinishDelay = 8192;
 
 { TPS2Console }
 
@@ -134,6 +136,14 @@ begin
   Bus.SIF := SIF;
   GS := TPS2GS.Create;
   GS.OnInterrupt := GSInterrupt;
+  // FINISH shows in CSR once the GS has drawn the packet (programs clear CSR
+  // events right after starting a transfer and then wait for FINISH).
+  GS.Raster.OnFinish :=
+    procedure
+    begin
+      if not Scheduler.Pending(TPS2Event.GSSignal) then
+        Scheduler.Schedule(TPS2Event.GSSignal, Scheduler.Now + GSFinishDelay);
+    end;
   Bus.GS := GS;
   GIF := TPS2GIF.Create(GS);
   Bus.GIF := GIF;
@@ -519,6 +529,7 @@ begin
     TPS2Event.Timer3: Timers.Event(3);
     TPS2Event.DMAC: DMAC.Event;
     TPS2Event.IPU: IPU.Event;
+    TPS2Event.GSSignal: GS.Raster.SetFinish;
     TPS2Event.SIF: SIF.Deliver;
     TPS2Event.Alarm: Kernel.AlarmEvent;
     TPS2Event.Compare: CPU.CompareReached;

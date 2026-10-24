@@ -176,7 +176,7 @@ begin
           FRaster.ClearSignal;
         if (Value and 2) <> 0 then
           FRaster.ClearFinish;
-        CSR := CSR and not (Value and $1C);
+        CSR := CSR and not (Value and $1F);
         if (Value and $200) <> 0 then
         begin
           FRaster.ClearSignal;

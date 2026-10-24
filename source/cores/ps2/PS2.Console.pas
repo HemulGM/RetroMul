@@ -294,6 +294,7 @@ begin
   end;
   Timers.SetLineCycles(FLineCycles);
   Kernel.SetLineCycles(FLineCycles);
+  IOP.LineCycles := FLineCycles;
 end;
 
 procedure TPS2Console.Reset;

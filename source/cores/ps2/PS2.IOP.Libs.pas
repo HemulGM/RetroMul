@@ -1094,7 +1094,7 @@ begin
         K.Timers[Id].Used := False;
     10:
       if Valid then
-        Result := Cardinal((K.CPU.Cycles div Max(K.Timers[Id].Prescale, 1)) and $FFFFFFFF);
+        Result := Cardinal((K.CPU.Cycles * 8 div K.TimerCycles(Id, 1)) and $FFFFFFFF);
     11:
       if Valid then
         K.Timers[Id].Compare := K.Arg(1);
@@ -1111,17 +1111,21 @@ begin
         K.Timers[Id].Handler := K.Arg(2);
         K.Timers[Id].Arg := K.Arg(3);
         K.Timers[Id].Running := K.Arg(2) <> 0;
-        K.Timers[Id].Next := K.CPU.Cycles * 8 + Int64(Max(K.Arg(1), 1)) * K.Timers[Id].Prescale * 8;
+        K.Timers[Id].Next := K.CPU.Cycles * 8 + K.TimerCycles(Id, Max(K.Arg(1), 1));
         K.ScheduleTimers;
       end;
     22:
+      // SetupHardTimer(timid, source, mode, prescale).
       if Valid then
+      begin
+        K.Timers[Id].Source := K.Arg(1);
         K.Timers[Id].Prescale := Max(K.Arg(3), 1);
+      end;
     23:
       if Valid then
       begin
         K.Timers[Id].Running := True;
-        K.Timers[Id].Next := K.CPU.Cycles * 8 + Int64(Max(K.Timers[Id].Compare, 1)) * K.Timers[Id].Prescale * 8;
+        K.Timers[Id].Next := K.CPU.Cycles * 8 + K.TimerCycles(Id, Max(K.Timers[Id].Compare, 1));
         K.ScheduleTimers;
       end;
     24:

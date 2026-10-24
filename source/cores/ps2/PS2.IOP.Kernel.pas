@@ -234,6 +234,8 @@ type
     CdStreamLBA: Int64;
     DmaId: Cardinal;
     Log: TStrings;
+    // EE cycles per video line (the HLINE timer source).
+    LineCycles: Int64;
     // Diagnostics: library calls by (library shl 16) or function when
     // assigned; interrupt-context calls started, by kind; interrupts
     // raised, by line.
@@ -256,6 +258,9 @@ type
     function Active: Boolean;
     procedure TimerEvent;
     procedure ScheduleTimers;
+    // EE cycles for Ticks counts of hardware timer K (its source and
+    // prescale: SYSCLOCK 36.864 MHz, PIXEL 13.5 MHz, HLINE one video line).
+    function TimerCycles(K: Integer; Ticks: Int64): Int64;
     procedure VBlank(Start: Boolean);
     procedure RaiseInterrupt(Line: Integer);
     // Threads.
@@ -720,6 +725,21 @@ begin
         end;
         ScheduleTimers;
       end;
+    CallTimer:
+      // timrman: a handler returning 0 stops the timer, anything else is
+      // the next compare value.
+      if (C.Tag <= High(Timers)) and Timers[C.Tag].Used then
+      begin
+        if Value = 0 then
+          Timers[C.Tag].Running := False
+        else if Value <> Timers[C.Tag].Compare then
+        begin
+          Timers[C.Tag].Next := Timers[C.Tag].Next - TimerCycles(C.Tag, Max(Timers[C.Tag].Compare, 1)) +
+            TimerCycles(C.Tag, Value);
+          Timers[C.Tag].Compare := Value;
+        end;
+        ScheduleTimers;
+      end;
   end;
 end;
 
@@ -901,6 +921,25 @@ begin
     FScheduler.Schedule(TPS2Event.IOPTimers, Next);
 end;
 
+function TPS2IOPKernel.TimerCycles(K: Integer; Ticks: Int64): Int64;
+const
+  SourceSysClock = 1;
+  SourcePixel = 2;
+  SourceHLine = 4;
+begin
+  var T := Ticks * Max(Timers[K].Prescale, 1);
+  if (Timers[K].Source and SourceSysClock) <> 0 then
+    Result := T * 8
+  else if ((Timers[K].Source and SourceHLine) <> 0) and (LineCycles > 0) then
+    Result := T * LineCycles
+  else if (Timers[K].Source and SourcePixel) <> 0 then
+    Result := T * PS2EEClock div 13500000
+  else
+    Result := T * 8;
+  if Result < 1 then
+    Result := 1;
+end;
+
 procedure TPS2IOPKernel.TimerEvent;
 begin
   var Now := FScheduler.Now;
@@ -918,7 +957,7 @@ begin
   for var K := 0 to High(Timers) do
     if Timers[K].Used and Timers[K].Running and (Timers[K].Handler <> 0) and (Timers[K].Next <= Now) then
     begin
-      Timers[K].Next := Now + Int64(Max(Timers[K].Compare, 1)) * Max(Timers[K].Prescale, 1) * 8;
+      Timers[K].Next := Now + TimerCycles(K, Max(Timers[K].Compare, 1));
       QueueCall(CallTimer, Timers[K].Handler, Timers[K].Arg, 0, 0, 0, Cardinal(K));
     end;
   if (CdDoneAt > 0) and (CdDoneAt <= Now) then

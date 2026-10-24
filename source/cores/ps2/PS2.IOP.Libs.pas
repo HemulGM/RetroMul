@@ -1306,6 +1306,9 @@ begin
         K.CdCallback := K.Arg(0);
       end;
     44: Result := 0;
+    // sceCdSC/sceCdRC: secret commands; a retail console answers 0 (God of
+    // War II's check module treats 1 as an unsupported unit).
+    50, 51: Result := 0;
     56: Result := 1;
     57:
       begin

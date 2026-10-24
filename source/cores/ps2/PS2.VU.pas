@@ -44,6 +44,11 @@ type
     ClipQValue: array[0..3] of Cardinal;
     ClipQReady: array[0..3] of Int64;
     ClipQCount: Integer;
+    // MAC and status flags as FM*/FS* instructions see them, the same way.
+    MACBase, StatusBase: Cardinal;
+    FlagQMAC, FlagQStatus: array[0..3] of Cardinal;
+    FlagQReady: array[0..3] of Int64;
+    FlagQCount: Integer;
   end;
 
   TPS2VUCore = class
@@ -67,6 +72,7 @@ type
     function HazardStall(UpperOp, LowerOp: Cardinal): Integer;
     procedure NoteWrites(UpperOp, LowerOp: Cardinal);
     procedure AdvanceCycles(N: Integer);
+    function UpperSetsFlags(Op: Cardinal): Boolean;
     procedure SetFlags(const R: TPS2Reg128; Dest: Cardinal; Flags: Cardinal);
     function FAdd(A, B: Cardinal; var Flags: Cardinal): Cardinal; inline;
     function FMul(A, B: Cardinal; var Flags: Cardinal): Cardinal;
@@ -550,13 +556,20 @@ begin
       end;
     $12: FVI[1] := Ord((FClipVisible and Op and $FFFFFF) <> 0);
     $13: FVI[1] := Ord(((FClipVisible or Op) and $FFFFFF) = $FFFFFF);
-    $14: if (It and 15) <> 0 then FVI[It and 15] := Ord((S.Status and $FFF) = (((Op shr 10) and $800) or (Op and $7FF)));
-    $15: S.Status := (S.Status and $3F) or ((((Op shr 10) and $800) or (Op and $7FF)) and $FC0);
-    $16: if (It and 15) <> 0 then FVI[It and 15] := S.Status and (((Op shr 10) and $800) or (Op and $7FF));
-    $17: if (It and 15) <> 0 then FVI[It and 15] := (S.Status or (((Op shr 10) and $800) or (Op and $7FF))) and $FFF;
-    $18: if (It and 15) <> 0 then FVI[It and 15] := Ord((S.MAC and $FFFF) = (FVI[Is_ and 15] and $FFFF));
-    $1A: if (It and 15) <> 0 then FVI[It and 15] := S.MAC and FVI[Is_ and 15] and $FFFF;
-    $1B: if (It and 15) <> 0 then FVI[It and 15] := (S.MAC or FVI[Is_ and 15]) and $FFFF;
+    $14: if (It and 15) <> 0 then FVI[It and 15] := Ord((S.StatusBase and $FFF) = (((Op shr 10) and $800) or (Op and $7FF)));
+    $15:
+      begin
+        var Sticky := (((Op shr 10) and $800) or (Op and $7FF)) and $FC0;
+        S.Status := (S.Status and $3F) or Sticky;
+        S.StatusBase := (S.StatusBase and $3F) or Sticky;
+        for var K := 0 to S.FlagQCount - 1 do
+          S.FlagQStatus[K] := (S.FlagQStatus[K] and $3F) or Sticky;
+      end;
+    $16: if (It and 15) <> 0 then FVI[It and 15] := S.StatusBase and (((Op shr 10) and $800) or (Op and $7FF));
+    $17: if (It and 15) <> 0 then FVI[It and 15] := (S.StatusBase or (((Op shr 10) and $800) or (Op and $7FF))) and $FFF;
+    $18: if (It and 15) <> 0 then FVI[It and 15] := Ord((S.MACBase and $FFFF) = (FVI[Is_ and 15] and $FFFF));
+    $1A: if (It and 15) <> 0 then FVI[It and 15] := S.MACBase and FVI[Is_ and 15] and $FFFF;
+    $1B: if (It and 15) <> 0 then FVI[It and 15] := (S.MACBase or FVI[Is_ and 15]) and $FFFF;
     $1C: if (It and 15) <> 0 then FVI[It and 15] := FClipVisible and $FFF;
     $20, $21, $28, $29, $2C, $2D, $2E, $2F:
       begin
@@ -1003,6 +1016,20 @@ begin
   end;
 end;
 
+// FMAC ops that update the MAC and status flags (not MAX/MINI, ITOF/FTOI,
+// ABS, CLIP, NOP).
+function TPS2VUCore.UpperSetsFlags(Op: Cardinal): Boolean;
+begin
+  var F := Integer(Op and $3F);
+  if F >= $3C then
+  begin
+    var X := (Integer((Op shr 6) and 31) shl 2) or (F and 3);
+    Result := not (X in [$10..$17, $1D, $1F, $2B, $2F]);
+  end
+  else
+    Result := (F <= $2F) and not (F in [$10..$17, $1D, $1F, $2B, $2F]);
+end;
+
 procedure TPS2VUCore.AdvanceCycles(N: Integer);
 begin
   Inc(S.Cycles, N);
@@ -1034,6 +1061,9 @@ begin
   S.EndPending := False;
   S.ClipBase := S.Clip;
   S.ClipQCount := 0;
+  S.MACBase := S.MAC;
+  S.StatusBase := S.Status;
+  S.FlagQCount := 0;
   FillChar(FReady, SizeOf(FReady), 0);
 end;
 
@@ -1061,6 +1091,18 @@ begin
       Dec(S.ClipQCount);
     end;
     FClipVisible := S.ClipBase;
+    while (S.FlagQCount > 0) and (S.FlagQReady[0] <= S.Cycles) do
+    begin
+      S.MACBase := S.FlagQMAC[0];
+      S.StatusBase := S.FlagQStatus[0];
+      for var K := 1 to S.FlagQCount - 1 do
+      begin
+        S.FlagQMAC[K - 1] := S.FlagQMAC[K];
+        S.FlagQStatus[K - 1] := S.FlagQStatus[K];
+        S.FlagQReady[K - 1] := S.FlagQReady[K];
+      end;
+      Dec(S.FlagQCount);
+    end;
     var Branching := S.BranchPending;
     var Target := S.BranchTarget;
     var Ending := S.EndPending;
@@ -1109,6 +1151,13 @@ begin
     else if FUpperReg >= 0 then
       CommitVF(FUpperReg, FUpperValue, FUpperMask);
     NoteWrites(UpperOp, LowerOp);
+    if UpperSetsFlags(UpperOp) and (S.FlagQCount < 4) then
+    begin
+      S.FlagQMAC[S.FlagQCount] := S.MAC;
+      S.FlagQStatus[S.FlagQCount] := S.Status;
+      S.FlagQReady[S.FlagQCount] := S.Cycles + 4;
+      Inc(S.FlagQCount);
+    end;
     Inc(Executed);
     Inc(S.Cycles);
     Inc(Count);

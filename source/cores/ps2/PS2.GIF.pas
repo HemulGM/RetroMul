@@ -226,7 +226,9 @@ begin
       begin
         // STAT: M3R, M3P, IMT, OPH and APATH while a path is active.
         Result := (MODE and 1) or (Cardinal(Ord(MaskedPath3)) shl 1) or (MODE and 4);
-        for var K := 1 to 3 do
+        // PATH1 (XGKICK) runs to completion at once: never reported busy (an
+        // unterminated VU packet left it 'active' and sceGsSyncPath timed out).
+        for var K := 2 to 3 do
           if Path[K].Active then
           begin
             Result := Result or $200 or (Cardinal(K) shl 10);

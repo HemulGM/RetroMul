@@ -792,8 +792,8 @@ begin
     var Q := V.Q;
     if Q = 0 then
       Q := 1;
-    U := Round(V.S / Q * (1 shl FD.TW) * 16);
-    TV := Round(V.T / Q * (1 shl FD.TH) * 16);
+    U := TexCoord(V.S / Q * (1 shl FD.TW) * 16);
+    TV := TexCoord(V.T / Q * (1 shl FD.TH) * 16);
   end;
   Pixel((V.X + 8) shr 4, (V.Y + 8) shr 4, V.Z, V.R, V.G, V.B, V.A, V.F, U, TV);
 end;
@@ -804,13 +804,16 @@ begin
   var DX := V1.X - V0.X;
   var DY := V1.Y - V0.Y;
   var Steps := Max(Abs(DX), Abs(DY)) shr 4;
+  // Lines longer than the 2048x2048 drawing space come from garbage vertices.
+  if Steps > 4096 then
+    Exit;
   if Steps = 0 then
     Steps := 1;
   for var K := 0 to Steps do
   begin
     var T := K / Steps;
-    var X := (V0.X + Round(DX * T) + 8) shr 4;
-    var Y := (V0.Y + Round(DY * T) + 8) shr 4;
+    var X := Integer(EnsureRange((Int64(V0.X) + Round(DX * T) + 8) div 16, -1, 4096));
+    var Y := Integer(EnsureRange((Int64(V0.Y) + Round(DY * T) + 8) div 16, -1, 4096));
     var R := V1.R;
     var G := V1.G;
     var B := V1.B;
@@ -822,7 +825,7 @@ begin
       B := V0.B + Round((V1.B - V0.B) * T);
       A := V0.A + Round((V1.A - V0.A) * T);
     end;
-    var Z := Cardinal(Round(V0.Z + (Double(V1.Z) - V0.Z) * T));
+    var Z := Cardinal(EnsureRange(Round(V0.Z + (Double(V1.Z) - V0.Z) * T), 0, Int64($FFFFFFFF)));
     var F := V0.F + Round((V1.F - V0.F) * T);
     var U := V0.U + Round((V1.U - V0.U) * T);
     var TV := V0.V + Round((V1.V - V0.V) * T);
@@ -833,10 +836,11 @@ begin
       var Q := V0.Q + (V1.Q - V0.Q) * T;
       if Q = 0 then
         Q := 1;
-      U := Round(S / Q * (1 shl FD.TW) * 16);
-      TV := Round(TT / Q * (1 shl FD.TH) * 16);
+      U := TexCoord(S / Q * (1 shl FD.TW) * 16);
+      TV := TexCoord(TT / Q * (1 shl FD.TH) * 16);
     end;
-    Pixel(X, Y, Z, R, G, B, A, F, U, TV);
+    Pixel(X, Y, Z, EnsureRange(R, 0, 255), EnsureRange(G, 0, 255), EnsureRange(B, 0, 255), EnsureRange(A, 0, 255),
+      EnsureRange(F, 0, 255), U, TV);
   end;
 end;
 

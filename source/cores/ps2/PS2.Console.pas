@@ -162,7 +162,9 @@ begin
   end;
   IOMan.OnTTY := IOPTTY;
   FileIO := TPS2FileIOServer.Create(IOMan);
-  IOPHeap := TPS2IOPAllocator.Create($00080000, $001F0000);
+  // IOP memory above the high-level kernel area and the SIF server buffers
+  // (below 4E000h), up to the end of the 2 MiB.
+  IOPHeap := TPS2IOPAllocator.Create($00050000, $00200000);
   HeapServer := TPS2IOPHeapServer.Create(IOPHeap, IOMan);
   ModuleLog := TStringList.Create;
   LoadFile := TPS2LoadFileServer.Create(IOMan);

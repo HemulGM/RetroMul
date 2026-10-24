@@ -181,7 +181,8 @@ type
     FMaybeReady: Boolean;
     FCmdSlot: Integer;
     FWarned: TDictionary<Cardinal, Boolean>;
-    FBindRetries: TDictionary<Cardinal, Integer>;
+    // First bind attempt (EE cycles) per SID nothing has registered.
+    FBindRetries: TDictionary<Cardinal, Int64>;
     procedure Trap(Code: Cardinal);
     procedure KernelReturn(Kind: Integer);
     procedure CPUException(Code: Integer; PC: Cardinal);
@@ -344,7 +345,7 @@ begin
   Calls := TList<TIOPCall>.Create;
   PendingImports := TList<Cardinal>.Create;
   FWarned := TDictionary<Cardinal, Boolean>.Create;
-  FBindRetries := TDictionary<Cardinal, Integer>.Create;
+  FBindRetries := TDictionary<Cardinal, Int64>.Create;
   Reset;
 end;
 
@@ -1356,13 +1357,20 @@ begin
       SIF.ReplyBind(P, Servers[K].SD, Servers[K].Buff, Servers[K].CBuff);
       Exit(True);
     end;
-  // Modules still starting may register it soon: 'not yet' makes the EE
-  // bind again.
-  var Tries := 0;
-  FBindRetries.TryGetValue(SID, Tries);
-  if Active and (Tries < 5000) then
+  // Game modules may register it later (threads that start on demand):
+  // 'not yet' makes the EE bind again, for up to two seconds.
+  var First: Int64;
+  if not FBindRetries.TryGetValue(SID, First) then
   begin
-    FBindRetries.AddOrSetValue(SID, Tries + 1);
+    First := FScheduler.Now;
+    FBindRetries.Add(SID, First);
+  end;
+  var GuestModules := False;
+  for var K := 1 to High(Modules) do
+    if Modules[K].Used then
+      GuestModules := True;
+  if (Active or GuestModules) and (FScheduler.Now - First < 2 * Int64(PS2EEClock)) then
+  begin
     SIF.ReplyBind(P, 0, 0, 0);
     Exit(True);
   end;

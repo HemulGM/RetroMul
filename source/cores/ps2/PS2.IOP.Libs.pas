@@ -358,6 +358,9 @@ begin
         var P := K.Arg(0);
         Result := Cardinal(K.CreateThread(K.R32(P), K.R32(P + 8), K.R32(P + 16), K.R32(P + 12), K.R32(P + 4),
           K.CPU.R[IOPRegGP]));
+        if K.Log <> nil then
+          K.Warn(Format('CreateThread entry %.6x prio %d stack %x -> %d', [K.R32(P + 8), K.R32(P + 16), K.R32(P + 12),
+            Integer(Result)]));
       end;
     5:
       if ValidThread(K, Id) and (Id <> K.CurrentThread) then
@@ -376,6 +379,8 @@ begin
     8, 9:
       begin
         var T := K.CurrentThread;
+        if (K.Log <> nil) and (T > 0) then
+          K.Warn(Format('ExitThread %d (entry %.6x)', [T, K.Threads[T].Entry]));
         if T > 0 then
         begin
           K.Threads[T].State := ThDormant;
@@ -1233,6 +1238,8 @@ begin
           else if K.R8(K.Arg(3) + 2) = 2 then
             Size := 2340;
         CdReadSectors(K, K.Arg(0), Count, K.Arg(2), Size);
+        if K.Log <> nil then
+          K.Warn(Format('sceCdRead %d x%d -> %.6x', [K.Arg(0), Count, K.Arg(2)]));
         K.CdLastCommand := 1;
         K.CdDoneAt := K.CPU.Cycles * 8 + Max(Int64(Count) * (PS2EEClock div 1800), 20000);
         K.ScheduleTimers;

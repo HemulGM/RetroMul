@@ -434,7 +434,7 @@ end;
 
 function TPS2VUCore.DataAddress(Base: Cardinal): PPS2Reg128;
 begin
-  Result := PPS2Reg128(FData + ((Base * 16) and FDataMask));
+  Result := PPS2Reg128(FData + ((Base shl 4) and FDataMask));
 end;
 
 function SignExt11(V: Cardinal): Integer; inline;

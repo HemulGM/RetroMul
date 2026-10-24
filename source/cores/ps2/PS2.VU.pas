@@ -38,9 +38,12 @@ type
     BranchPending, EndPending: Boolean;
     BranchTarget: Cardinal;
     Cycles: Int64;
-    // Clip flag after each of the last four pairs: FC* instructions see the
-    // flag of four pairs ago (CLIP results land with the FMAC latency).
-    ClipHist: array[0..3] of Cardinal;
+    // Clip flag as FC* instructions see it: CLIP results land four cycles
+    // after issue (FMAC latency); queued until then.
+    ClipBase: Cardinal;
+    ClipQValue: array[0..3] of Cardinal;
+    ClipQReady: array[0..3] of Int64;
+    ClipQCount: Integer;
   end;
 
   TPS2VUCore = class
@@ -53,10 +56,17 @@ type
     FOnKick: TPS2VUKick;
     // The clip flag the current pair's FC* instructions see.
     FClipVisible: Cardinal;
+    // Cycle from which each VF register (32: ACC) holds its pending result.
+    FReady: array[0..32] of Int64;
     // Results of the current pair (written after both halves ran).
     FUpperReg, FLowerReg: Integer;
     FUpperValue, FLowerValue: TPS2Reg128;
     FUpperMask, FLowerMask: Cardinal;
+    procedure UpperRegs(Op: Cardinal; out Dest, S1, S2: Integer; out ReadsAcc: Boolean);
+    procedure LowerRegs(Op: Cardinal; out Dest, S1, S2: Integer);
+    function HazardStall(UpperOp, LowerOp: Cardinal): Integer;
+    procedure NoteWrites(UpperOp, LowerOp: Cardinal);
+    procedure AdvanceCycles(N: Integer);
     procedure SetFlags(const R: TPS2Reg128; Dest: Cardinal; Flags: Cardinal);
     function FAdd(A, B: Cardinal; var Flags: Cardinal): Cardinal; inline;
     function FMul(A, B: Cardinal; var Flags: Cardinal): Cardinal;
@@ -331,6 +341,14 @@ begin
               C := C or (Cardinal(2) shl (K * 2));
           end;
           S.Clip := ((S.Clip shl 6) or C) and $FFFFFF;
+          if Micro and (S.ClipQCount < 4) then
+          begin
+            S.ClipQValue[S.ClipQCount] := S.Clip;
+            S.ClipQReady[S.ClipQCount] := S.Cycles + 4;
+            Inc(S.ClipQCount);
+          end
+          else if not Micro then
+            S.ClipBase := S.Clip;
           Exit;
         end;
       $20: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], S.Q, Flags);
@@ -526,8 +544,8 @@ begin
     $11:
       begin
         S.Clip := Op and $FFFFFF;
-        for var K := 0 to 3 do
-          S.ClipHist[K] := S.Clip;
+        S.ClipBase := S.Clip;
+        S.ClipQCount := 0;
         FClipVisible := S.Clip;
       end;
     $12: FVI[1] := Ord((FClipVisible and Op and $FFFFFF) <> 0);
@@ -636,6 +654,13 @@ begin
       end;
     $38, $39, $3A: // DIV, SQRT, RSQRT -> Q
       begin
+        // The divider takes one operation at a time: a new one waits for
+        // the previous result.
+        if S.QDelay > 0 then
+        begin
+          S.Q := S.PendingQ;
+          S.QDelay := 0;
+        end;
         var A := FVF[Fs].UW[Fsf];
         var B := FVF[Ft].UW[Ftf];
         var R: Cardinal;
@@ -848,14 +873,168 @@ begin
     CommitVF(FUpperReg, FUpperValue, FUpperMask);
 end;
 
+{ Pipeline timing }
+
+// The VF registers an upper op reads and writes (-1: none; 32: ACC).
+procedure TPS2VUCore.UpperRegs(Op: Cardinal; out Dest, S1, S2: Integer; out ReadsAcc: Boolean);
+begin
+  var Fs := Integer((Op shr 11) and 31);
+  var Ft := Integer((Op shr 16) and 31);
+  var Fd := Integer((Op shr 6) and 31);
+  Dest := -1;
+  S1 := -1;
+  S2 := -1;
+  ReadsAcc := False;
+  var F := Integer(Op and $3F);
+  if F >= $3C then
+  begin
+    var X := (Integer((Op shr 6) and 31) shl 2) or (F and 3);
+    case X of
+      $00..$0F, $18..$1B, $28..$2E:
+        begin
+          S1 := Fs;
+          S2 := Ft;
+          Dest := 32;
+          ReadsAcc := (X in [$08..$0F, $29, $2D]);
+        end;
+      $10..$17, $1D:
+        begin
+          S1 := Fs;
+          Dest := Ft;
+        end;
+      $1C, $1E, $20..$27:
+        begin
+          S1 := Fs;
+          Dest := 32;
+          ReadsAcc := X in [$21, $23, $25, $27];
+        end;
+      $1F:
+        begin
+          S1 := Fs;
+          S2 := Ft;
+        end;
+    end;
+    Exit;
+  end;
+  case F of
+    $00..$1B, $28..$2F:
+      begin
+        S1 := Fs;
+        S2 := Ft;
+        Dest := Fd;
+        ReadsAcc := (F in [$08..$0F, $29, $2D, $2E]);
+      end;
+    $1C..$27:
+      begin
+        S1 := Fs;
+        Dest := Fd;
+        ReadsAcc := F in [$21, $23, $25, $27];
+      end;
+  end;
+end;
+
+// The VF registers a lower op reads and writes (-1: none).
+procedure TPS2VUCore.LowerRegs(Op: Cardinal; out Dest, S1, S2: Integer);
+begin
+  var Fs := Integer((Op shr 11) and 31);
+  var Ft := Integer((Op shr 16) and 31);
+  Dest := -1;
+  S1 := -1;
+  S2 := -1;
+  case Op shr 25 of
+    $00: Dest := Ft;
+    $01: S1 := Fs;
+    $40:
+      if (Op and $3F) >= $3C then
+        case (Integer((Op shr 6) and 31) shl 2) or Integer(Op and 3) of
+          $30, $31:
+            begin
+              S1 := Fs;
+              Dest := Ft;
+            end;
+          $34, $36, $3D, $64: Dest := Ft;
+          $35, $37, $3C, $70..$7E: S1 := Fs;
+          $38, $3A:
+            begin
+              S1 := Fs;
+              S2 := Ft;
+            end;
+          $39: S1 := Ft;
+        end;
+  end;
+end;
+
+// Cycles the pair waits for its source registers.
+function TPS2VUCore.HazardStall(UpperOp, LowerOp: Cardinal): Integer;
+var
+  Dest, S1, S2, L1, L2: Integer;
+  Acc: Boolean;
+begin
+  UpperRegs(UpperOp, Dest, S1, S2, Acc);
+  L1 := -1;
+  L2 := -1;
+  if (UpperOp and $80000000) = 0 then
+    LowerRegs(LowerOp, Dest, L1, L2);
+  var Need: Int64 := 0;
+  for var R in [S1, S2, L1, L2] do
+    if (R > 0) and (FReady[R] > Need) then
+      Need := FReady[R];
+  if Acc and (FReady[32] > Need) then
+    Need := FReady[32];
+  Result := 0;
+  if Need > S.Cycles then
+    Result := Integer(Need - S.Cycles);
+end;
+
+// The pair's results are ready four cycles after issue.
+procedure TPS2VUCore.NoteWrites(UpperOp, LowerOp: Cardinal);
+var
+  Dest, S1, S2: Integer;
+  Acc: Boolean;
+begin
+  UpperRegs(UpperOp, Dest, S1, S2, Acc);
+  if Dest > 0 then
+    FReady[Dest] := S.Cycles + 4;
+  if (UpperOp and $80000000) = 0 then
+  begin
+    LowerRegs(LowerOp, Dest, S1, S2);
+    if Dest > 0 then
+      FReady[Dest] := S.Cycles + 4;
+  end;
+end;
+
+procedure TPS2VUCore.AdvanceCycles(N: Integer);
+begin
+  Inc(S.Cycles, N);
+  if S.QDelay > 0 then
+  begin
+    Dec(S.QDelay, N);
+    if S.QDelay <= 0 then
+    begin
+      S.QDelay := 0;
+      S.Q := S.PendingQ;
+    end;
+  end;
+  if S.PDelay > 0 then
+  begin
+    Dec(S.PDelay, N);
+    if S.PDelay <= 0 then
+    begin
+      S.PDelay := 0;
+      S.P := S.PendingP;
+    end;
+  end;
+end;
+
 procedure TPS2VUCore.Start(Address: Cardinal);
 begin
   S.TPC := Address and FCodeMask;
   S.Running := True;
   S.BranchPending := False;
   S.EndPending := False;
-  for var K := 0 to 3 do
-    S.ClipHist[K] := S.Clip;
+  S.ClipBase := S.Clip;
+  S.ClipQCount := 0;
+  FillChar(FReady, SizeOf(FReady), 0);
 end;
 
 function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
@@ -864,9 +1043,24 @@ begin
   while S.Running and (Count < MaxPairs) do
   begin
     var PC := S.TPC and FCodeMask;
-    FClipVisible := S.ClipHist[S.Cycles and 3];
     var LowerOp := PCardinal(FCode + PC)^;
     var UpperOp := PCardinal(FCode + PC + 4)^;
+    // Registers still in the FMAC pipeline stall the pair; Q/P and the
+    // clip flag move on meanwhile.
+    var Stall := HazardStall(UpperOp, LowerOp);
+    if Stall > 0 then
+      AdvanceCycles(Stall);
+    while (S.ClipQCount > 0) and (S.ClipQReady[0] <= S.Cycles) do
+    begin
+      S.ClipBase := S.ClipQValue[0];
+      for var K := 1 to S.ClipQCount - 1 do
+      begin
+        S.ClipQValue[K - 1] := S.ClipQValue[K];
+        S.ClipQReady[K - 1] := S.ClipQReady[K];
+      end;
+      Dec(S.ClipQCount);
+    end;
+    FClipVisible := S.ClipBase;
     var Branching := S.BranchPending;
     var Target := S.BranchTarget;
     var Ending := S.EndPending;
@@ -884,6 +1078,18 @@ begin
       if S.PDelay = 0 then
         S.P := S.PendingP;
     end;
+    // WAITQ/WAITP stall the whole pair: its upper op sees the new Q/P.
+    if (UpperOp and $80000000) = 0 then
+      if ((LowerOp and $FE0007FF) = $800003BF) and (S.QDelay > 0) then
+      begin
+        S.Q := S.PendingQ;
+        S.QDelay := 0;
+      end
+      else if ((LowerOp and $FE0007FF) = $800007BF) and (S.PDelay > 0) then
+      begin
+        S.P := S.PendingP;
+        S.PDelay := 0;
+      end;
     FUpperReg := -1;
     FLowerReg := -1;
     Upper(UpperOp, True);
@@ -902,7 +1108,7 @@ begin
     end
     else if FUpperReg >= 0 then
       CommitVF(FUpperReg, FUpperValue, FUpperMask);
-    S.ClipHist[S.Cycles and 3] := S.Clip;
+    NoteWrites(UpperOp, LowerOp);
     Inc(Executed);
     Inc(S.Cycles);
     Inc(Count);

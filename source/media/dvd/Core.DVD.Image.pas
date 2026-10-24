@@ -38,7 +38,7 @@ type
     property Identity: TBytes read FIdentity;
   end;
 
-  // Plain sector data in a stream: 2048-byte ISO, or 2352-byte raw sectors.
+  // Plain sector data in a stream: 2048-byte ISO, or raw CD sectors (2352, or 2448 with subchannels).
   TDVDStreamImage = class(TDVDImage)
   private
     FStream: TStream;
@@ -52,6 +52,7 @@ type
     destructor Destroy; override;
     function SectorCount: Int64; override;
     procedure ReadSectors(LBA: Int64; Count: Integer; Dest: PByte); override;
+    function IsDVD: Boolean; override;
   end;
 
   TDVDCDImage = class(TDVDImage)
@@ -172,13 +173,13 @@ begin
   FOffset := Offset;
   FSectorSize := SectorSize;
   FDataOffset := 0;
-  if SectorSize = 2352 then
+  if (SectorSize = 2352) or (SectorSize = 2448) then
     FDataOffset := 16;
   if Count < 0 then
     Count := (Stream.Size - Offset) div SectorSize;
   FCount := Count;
   // Raw images: Mode 2 sectors have an 8-byte subheader before the data.
-  if (SectorSize = 2352) and (FCount > 16) then
+  if (FDataOffset = 16) and (FCount > 16) then
   begin
     var Header: array[0..15] of Byte;
     FStream.Position := FOffset + 16 * Int64(SectorSize);
@@ -194,6 +195,11 @@ destructor TDVDStreamImage.Destroy;
 begin
   FStream.Free;
   inherited;
+end;
+
+function TDVDStreamImage.IsDVD: Boolean;
+begin
+  Result := FDataOffset = 0;
 end;
 
 function TDVDStreamImage.SectorCount: Int64;
@@ -320,8 +326,8 @@ begin
   Stream.Position := 0;
 end;
 
-// Alcohol 120% descriptor of a DVD: the first track's data offset in the MDF
-// (2048-byte sectors). CD descriptors are left to TCDDisc.
+// Alcohol 120% descriptor: the first data track's offset in the MDF. DVDs use
+// 2048-byte sectors; CDs (PS2 CD games) raw 2352/2448-byte sectors.
 function OpenMDS(Stream: TStream; const Storage: IStorage; const Location: string): TDVDImage;
 var
   Data: TBytes;
@@ -335,9 +341,7 @@ begin
   end;
   if (Length(Data) < $58) or (TEncoding.ASCII.GetString(Data, 0, 16) <> 'MEDIA DESCRIPTOR') then
     raise EDVDImage.Create('Not an Alcohol 120% descriptor');
-  var Medium := PWord(@Data[$12])^;
-  if Medium < $10 then
-    raise EDVDImage.Create('CD descriptor');
+  var CD := PWord(@Data[$12])^ < $10;
   var Sessions := PCardinal(@Data[$50])^;
   if Int64(Sessions) + $18 > Length(Data) then
     raise EDVDImage.Create('Invalid MDS sessions');
@@ -357,16 +361,17 @@ begin
     SectorSize := PWord(@Data[T + $10])^;
     Offset := PInt64(@Data[T + $28])^;
     // DVD descriptors keep the track length where CD ones point at extras.
-    Length_ := PCardinal(@Data[T + $0C])^;
+    if not CD then
+      Length_ := PCardinal(@Data[T + $0C])^;
     Break;
   end;
-  if (Offset < 0) or (SectorSize <> DVDSectorSize) then
+  if (Offset < 0) or ((SectorSize <> DVDSectorSize) and not (CD and ((SectorSize = 2352) or (SectorSize = 2448)))) then
     raise EDVDImage.Create('Unsupported MDS track layout');
   var MDF := ChangeFileExt(Location, '.mdf');
   if not Storage.Exists(MDF) then
     MDF := ChangeFileExt(Location, '.MDF');
   var DataStream := Storage.OpenRead(MDF);
-  if (Length_ <= 0) or (Offset + Length_ * DVDSectorSize > DataStream.Size) then
+  if (Length_ <= 0) or (Offset + Length_ * SectorSize > DataStream.Size) then
     Length_ := -1;
   Result := TDVDStreamImage.Create(DataStream, Offset, SectorSize, Length_);
 end;

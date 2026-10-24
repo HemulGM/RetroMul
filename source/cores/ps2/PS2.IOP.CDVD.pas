@@ -58,6 +58,8 @@ type
     // Sectors read (diagnostics, not serialized).
     SectorsRead: Int64;
     Log: TStrings;
+    // EE cycles since power-on for the real-time clock (nil: a fixed time).
+    Clock: PInt64;
     constructor Create(SID: Cardinal; FS: TPS2DiscFileSystem);
     function Call(Fn: Cardinal; Args: PByte; Size: Integer; ReplySize: Integer): TBytes; override;
     procedure SerializeState(State: TStateArchive); override;
@@ -68,6 +70,11 @@ const
     $8000059C);
 
 implementation
+
+function ToBCD(V: Int64): Byte;
+begin
+  Result := Byte((((V div 10) mod 10) shl 4) or (V mod 10));
+end;
 
 { TPS2DiscFileSystem }
 
@@ -293,12 +300,17 @@ begin
       case Fn of
         $01: // ReadClock: status then the clock (seconds..year in BCD)
           begin
+            // 2004-01-01 12:00:00 plus the emulated time, so that games
+            // waiting for the clock to move see it move.
+            var Secs: Int64 := 12 * 3600;
+            if Clock <> nil then
+              Inc(Secs, Clock^ div PS2EEClock);
             SetLength(Result, 16);
             Result[0] := 1;
-            Result[5] := $00;
-            Result[6] := $00;
-            Result[7] := $12;
-            Result[9] := $01;
+            Result[5] := ToBCD(Secs mod 60);
+            Result[6] := ToBCD((Secs div 60) mod 60);
+            Result[7] := ToBCD((Secs div 3600) mod 24);
+            Result[9] := ToBCD(1 + (Secs div 86400) mod 31);
             Result[10] := $01;
             Result[11] := $04;
           end;

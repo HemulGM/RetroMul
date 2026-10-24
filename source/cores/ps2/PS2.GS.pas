@@ -257,8 +257,9 @@ begin
     W := 1024;
   if H > 1024 then
     H := 1024;
-  // Frame mode in interlace reads every other line of a full frame.
-  var FrameMode := Interlaced and ((SMODE2 and 2) <> 0);
+  // Frame mode in interlace (SMODE2 INT and FFMD) reads every other line of a
+  // full frame; without INT the lines are progressive.
+  var FrameMode := Interlaced and ((SMODE2 and 3) = 3);
   if FrameMode then
     H := H div 2;
   SetLength(Pixels, W * H);

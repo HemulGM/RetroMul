@@ -166,6 +166,7 @@ begin
   begin
     var S := TPS2CDVDServer.Create(SID, FDiscFS);
     S.Log := nil;
+    S.Clock := @Scheduler.Now;
     FCDVD.Add(S);
   end;
   IOMan.OnTTY := IOPTTY;

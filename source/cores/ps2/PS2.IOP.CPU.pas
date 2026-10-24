@@ -42,6 +42,9 @@ type
   TIOPContext = record
     R: TIOPRegs;
     HI, LO, PC: Cardinal;
+    // The instruction after PC (a pending branch target when PC is a delay
+    // slot); 0 means PC + 4.
+    NextPC: Cardinal;
   end;
 
   TIOPCPU = class
@@ -160,6 +163,7 @@ begin
   C.HI := HI;
   C.LO := LO;
   C.PC := PC;
+  C.NextPC := NextPC;
 end;
 
 procedure TIOPCPU.LoadContext(const C: TIOPContext);
@@ -169,6 +173,8 @@ begin
   HI := C.HI;
   LO := C.LO;
   SetPC(C.PC);
+  if C.NextPC <> 0 then
+    NextPC := C.NextPC;
 end;
 
 function TIOPCPU.Read32(Address: Cardinal): Cardinal;

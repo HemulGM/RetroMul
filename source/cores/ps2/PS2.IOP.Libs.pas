@@ -22,7 +22,7 @@ function IOPFormat(K: TPS2IOPKernel; FormatAddress: Cardinal; NextArg: TFunc<Car
 implementation
 
 uses
-  PS2.IOP.CPU, PS2.IOP.FileIO, PS2.IOP.Hardware, PS2.SIF, Core.DVD.Image;
+  PS2.IOP.CPU, PS2.IOP.FileIO, PS2.IOP.Hardware, PS2.IOP.Loader, PS2.SIF, Core.DVD.Image;
 
 const
   LibNames: array[0..24] of string = ('sysmem', 'loadcore', 'intrman', 'thbase', 'thevent', 'thsemap', 'thmsgbx',
@@ -937,14 +937,17 @@ function SifmanCall(K: TPS2IOPKernel; Fn: Integer): Cardinal;
 begin
   Result := 0;
   case Fn of
-    7:
+    7, 32:
       begin
-        // SifDmaTransfer_t: src (IOP), dest (EE), size, attr.
+        // SifDmaTransfer_t: src (IOP), dest (EE), size, attr; 32 also
+        // calls func(data) once the transfer is done.
         for var I := 0 to Integer(K.Arg(1)) - 1 do
         begin
           var D := K.Arg(0) + Cardinal(I) * 16;
           K.CopyToEE(K.R32(D), K.R32(D + 4), Integer(K.R32(D + 8)));
         end;
+        if (Fn = 32) and (K.Arg(2) <> 0) then
+          K.QueueCall(CallIntr, K.Arg(2), K.Arg(3), 0, 0, 0, 0);
         Result := K.DmaId;
         K.DmaId := Max(K.DmaId + 1, 1);
       end;
@@ -1414,6 +1417,13 @@ begin
     8:
       begin
         var Id := Integer(K.Arg(0));
+        if Id >= 1000 then
+        begin
+          // A system module the high-level IOP provides.
+          if K.Arg(4) <> 0 then
+            K.W32(K.Arg(4), 0);
+          Exit(Cardinal(Id));
+        end;
         if (Id >= 1) and (Id <= High(K.Modules)) and K.Modules[Id].Used and not K.Modules[Id].Started then
         begin
           var Args: TBytes;
@@ -1430,6 +1440,12 @@ begin
     9, 10:
       begin
         var Data := K.ImageAt(K.Arg(0));
+        var Info: TIRXInfo;
+        if ParseIRX(Data, Info) and K.IsHLEModule('', Info.Name) then
+        begin
+          K.Warn('module ' + Info.Name + ' is high level');
+          Exit(1000);
+        end;
         Result := Cardinal(ModloadLoad(K, '', Data));
       end;
     22:

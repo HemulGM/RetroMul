@@ -11,7 +11,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, Core.Snapshots, PS2.Types, PS2.Scheduler;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.IOP.SIO2;
 
 const
   // IOP interrupt lines (intrman numbering): INTC bits, then 32 + DMA
@@ -23,6 +23,9 @@ const
   IOPIntEVBlank = 11;
   IOPIntDMASPU0 = 36;
   IOPIntDMASPU1 = 40;
+  IOPIntSIO2 = 17;
+  IOPIntDMASIO2In = 44;
+  IOPIntDMASIO2Out = 45;
   PS2SPU2RAMSize = $200000;
 
 type
@@ -42,6 +45,8 @@ type
     function CoreTSA(Core: Integer): Cardinal;
     procedure SetCoreTSA(Core: Integer; Value: Cardinal);
     procedure StartDMA(Channel: Integer);
+    procedure StartSIO2DMA(Base: Cardinal; ToDevice: Boolean);
+    procedure SIO2Interrupt;
     procedure ScheduleNext;
     function ReadSPU2(Offset: Cardinal): Cardinal;
     procedure WriteSPU2(Offset, Value: Cardinal);
@@ -51,8 +56,10 @@ type
     // IOP cycles (for the root counters).
     IOPCycles: PInt64;
     OnInterrupt: TPS2IOPInterrupt;
+    SIO2: TPS2SIO2;
     Log: TStrings;
     constructor Create(Scheduler: TPS2Scheduler; IOPRAM: PByte; Cycles: PInt64);
+    destructor Destroy; override;
     procedure Reset;
     function Read(Address: Cardinal; Size: Integer): Cardinal;
     procedure Write(Address, Value: Cardinal; Size: Integer);
@@ -67,6 +74,8 @@ const
   // Offsets from 1F801000h.
   DMACh4 = $0C0;
   DMACh7 = $500;
+  DMACh11 = $540;
+  DMACh12 = $550;
   SPUAttr = $19A;
   SPUTSAHi = $1A8;
   SPUTSALo = $1AA;
@@ -81,7 +90,43 @@ begin
   RAM := IOPRAM;
   IOPCycles := Cycles;
   SetLength(SPU2RAM, PS2SPU2RAMSize);
+  SIO2 := TPS2SIO2.Create;
+  SIO2.OnInterrupt := SIO2Interrupt;
   Reset;
+end;
+
+destructor TPS2IOPHardware.Destroy;
+begin
+  SIO2.Free;
+  inherited;
+end;
+
+procedure TPS2IOPHardware.SIO2Interrupt;
+begin
+  if Assigned(OnInterrupt) then
+    OnInterrupt(IOPIntSIO2);
+end;
+
+// SIO2 DMA: blocks of BCR.size words, BCR.count blocks, done at once.
+procedure TPS2IOPHardware.StartSIO2DMA(Base: Cardinal; ToDevice: Boolean);
+begin
+  var MADR := IO32(Base) and PS2IOPRAMMask;
+  var BCR := IO32(Base + 4);
+  var BlockSize := Integer(BCR and $FFFF) * 4;
+  var Blocks := Integer(BCR shr 16);
+  if MADR + Cardinal(BlockSize * Blocks) <= PS2IOPRAMSize then
+    if ToDevice then
+      SIO2.DMAIn(RAM + MADR, BlockSize, Blocks)
+    else
+      SIO2.DMAOut(RAM + MADR, BlockSize, Blocks);
+  SetIO32(Base, MADR + Cardinal(BlockSize * Blocks));
+  SetIO32(Base + 4, BCR and $FFFF);
+  SetIO32(Base + 8, IO32(Base + 8) and not $01000000);
+  if Assigned(OnInterrupt) then
+    if ToDevice then
+      OnInterrupt(IOPIntDMASIO2In)
+    else
+      OnInterrupt(IOPIntDMASIO2Out);
 end;
 
 procedure TPS2IOPHardware.Reset;
@@ -96,6 +141,7 @@ begin
   FStatX[0] := 0;
   FStatX[1] := 0;
   FScheduler.Cancel(TPS2Event.IOPDMA);
+  SIO2.Reset;
 end;
 
 function TPS2IOPHardware.IO32(Offset: Cardinal): Cardinal;
@@ -229,6 +275,8 @@ end;
 
 function TPS2IOPHardware.Read(Address: Cardinal; Size: Integer): Cardinal;
 begin
+  if (Address >= $1F808200) and (Address < $1F808280) then
+    Exit(SIO2.Read(Address));
   if (Address >= $1F900000) and (Address < $1F910000) then
   begin
     Result := ReadSPU2(Address and $FFFF);
@@ -261,6 +309,11 @@ end;
 
 procedure TPS2IOPHardware.Write(Address, Value: Cardinal; Size: Integer);
 begin
+  if (Address >= $1F808200) and (Address < $1F808280) then
+  begin
+    SIO2.Write(Address, Value);
+    Exit;
+  end;
   if (Log <> nil) and (Log.Count < 4000) and ((Address and $FFFFF000) <> $1F900000) then
     Log.Add(Format('iop w %.8x %.8x/%d', [Address, Value, Size]));
   if (Address >= $1F900000) and (Address < $1F910000) then
@@ -282,7 +335,11 @@ begin
     if ((O and $3FFC) = DMACh4 + 8) and ((IO32(DMACh4 + 8) and $01000000) <> 0) then
       StartDMA(4)
     else if ((O and $3FFC) = DMACh7 + 8) and ((IO32(DMACh7 + 8) and $01000000) <> 0) then
-      StartDMA(7);
+      StartDMA(7)
+    else if ((O and $3FFC) = DMACh11 + 8) and ((IO32(DMACh11 + 8) and $01000000) <> 0) then
+      StartSIO2DMA(DMACh11, True)
+    else if ((O and $3FFC) = DMACh12 + 8) and ((IO32(DMACh12 + 8) and $01000000) <> 0) then
+      StartSIO2DMA(DMACh12, False);
   end;
 end;
 
@@ -294,6 +351,7 @@ begin
   State.Field(FPendingLine, SizeOf(FPendingLine));
   State.Field(FStatX, SizeOf(FStatX));
   State.Field(SPU2RAM[0], Length(SPU2RAM));
+  SIO2.SerializeState(State);
 end;
 
 end.

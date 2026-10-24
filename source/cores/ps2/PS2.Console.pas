@@ -171,6 +171,7 @@ begin
   IOP.OnTTY := IOPTTY;
   IOP.OnModuleDone := ModuleDone;
   IOP.OnMarkEE := Bus.MarkRAM;
+  IOP.Hardware.SIO2.PadSource := PadMan;
   SIF.OnGuestBind := IOP.GuestBind;
   SIF.OnGuestCommand := IOP.GuestCommand;
   LoadFile.ImageReader := IOP.ImageAt;
@@ -278,6 +279,12 @@ begin
   VIF0.Reset;
   VIF1.Reset;
   Kernel.Reset;
+  // OSD configuration (GetOsdConfigParam): Japanese on Japanese consoles,
+  // English elsewhere (language bits 16-20, 'English' flag bit 4).
+  if FConfig.Region = TPS2Region.Japan then
+    Kernel.OsdConfig := 0
+  else
+    Kernel.OsdConfig := (1 shl 16) or (1 shl 4);
   IOMan.Reset;
   SetVideo(FConfig.PAL);
   FFrameCount := 0;

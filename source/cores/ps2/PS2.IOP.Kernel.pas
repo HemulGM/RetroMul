@@ -177,6 +177,8 @@ type
   private
     FScheduler: TPS2Scheduler;
     FReadySeq: Int64;
+    // A thread may be ready (cleared when a scan finds none).
+    FMaybeReady: Boolean;
     FCmdSlot: Integer;
     FWarned: TDictionary<Cardinal, Boolean>;
     FBindRetries: TDictionary<Cardinal, Integer>;
@@ -500,11 +502,7 @@ end;
 
 function TPS2IOPKernel.Active: Boolean;
 begin
-  Result := (Current >= 0) or ((Calls.Count > 0) and not InCall);
-  if not Result then
-    for var K := 1 to IOPMaxThreads do
-      if Threads[K].Used and (Threads[K].State = ThReady) then
-        Exit(True);
+  Result := (Current >= 0) or ((Calls.Count > 0) and not InCall) or FMaybeReady;
 end;
 
 procedure TPS2IOPKernel.Run(Target: Int64);
@@ -512,9 +510,14 @@ begin
   var IOPTarget := Target div 8;
   if CPU.Cycles >= IOPTarget then
     Exit;
+  if (Current < 0) and (Calls.Count = 0) and not FMaybeReady then
+  begin
+    CPU.Cycles := IOPTarget;
+    Exit;
+  end;
   DispatchCalls;
-  if Current < 0 then
-    Reschedule;
+  // Threads woken by timers, VBlank or the CD preempt the running one.
+  Reschedule;
   while CPU.Cycles < IOPTarget do
   begin
     if Current < 0 then
@@ -561,6 +564,7 @@ begin
   var T: PIOPThread := @Threads[Id];
   T.Ctx := Default(TIOPContext);
   T.Ctx.PC := T.Entry;
+  T.Ctx.NextPC := 0;
   T.Ctx.R[IOPRegA0] := A0;
   T.Ctx.R[IOPRegA1] := A1;
   T.Ctx.R[IOPRegGP] := T.GP;
@@ -578,6 +582,7 @@ procedure TPS2IOPKernel.MakeReady(Id: Integer);
 begin
   Threads[Id].State := ThReady;
   Threads[Id].Wait := WaitNone;
+  FMaybeReady := True;
   Inc(FReadySeq);
   Threads[Id].ReadySeq := FReadySeq;
 end;
@@ -622,6 +627,8 @@ begin
       if (Best < 0) or (Threads[K].Priority < Threads[Best].Priority) or
         ((Threads[K].Priority = Threads[Best].Priority) and (Threads[K].ReadySeq < Threads[Best].ReadySeq)) then
         Best := K;
+  if Best < 0 then
+    FMaybeReady := False;
   // The running thread keeps the CPU against equal priorities.
   if (Current > 0) and (Best > 0) and (Best <> Current) and Threads[Current].Used and
     (Threads[Current].State = ThReady) and (Threads[Current].Priority <= Threads[Best].Priority) then
@@ -981,14 +988,15 @@ end;
 
 function TPS2IOPKernel.IsHLEModule(const Path, Name: string): Boolean;
 const
-  Files: array[0..47] of string = ('SIO2MAN', 'PADMAN', 'XSIO2MAN', 'XPADMAN', 'MTAPMAN', 'XMTAPMAN', 'MCMAN',
-    'MCSERV', 'XMCMAN', 'XMCSERV', 'MCMANO', 'CDVDMAN', 'CDVDFSV', 'FILEIO', 'IOMAN', 'IOMANX', 'DEV9', 'ATAD',
-    'HDD', 'PFS', 'USBD', 'SMAP', 'INET', 'INETCTL', 'NETCNF', 'NETCNFIF', 'PPP', 'PPPOE', 'SECRMAN', 'SECRSIF',
-    'EESYNC', 'DBCMAN', 'SIO2D', 'DS2O', 'DS1O', 'DS2U', 'RMMAN', 'RMMAN2', 'SYSCLIB', 'LOADCORE', 'SIFMAN',
-    'SIFCMD', 'INTRMAN', 'SYSMEM', 'MODLOAD', 'TIMEMANI', 'USBHDFSD', 'CLEARSPU');
-  Names: array[0..15] of string = ('sio2man', 'padman', 'mcman', 'mcserv', 'cdvd_ee_driver', 'cdvd_driver',
-    'IO/File_Manager', 'FILEIO_service', 'dev9', 'atad_driver', 'hdd_driver', 'pfs_driver', 'mtapman',
-    'dbcman', 'Smap_driver', 'USB_driver');
+  // Pad drivers built on SIO2 (SIO2MAN, DBCMAN, SIO2D, DS2U_D, MTAPMAN) run
+  // as IOP code against the emulated SIO2; PADMAN stays high level.
+  Files: array[0..40] of string = ('PADMAN', 'XPADMAN', 'MCMAN', 'MCSERV', 'XMCMAN', 'XMCSERV', 'MCMANO', 'CDVDMAN',
+    'CDVDFSV', 'FILEIO', 'IOMAN', 'IOMANX', 'DEV9', 'ATAD', 'HDD', 'PFS', 'USBD', 'SMAP', 'INET', 'INETCTL',
+    'NETCNF', 'NETCNFIF', 'PPP', 'PPPOE', 'SECRMAN', 'SECRSIF', 'EESYNC', 'RMMAN', 'RMMAN2', 'SYSCLIB', 'LOADCORE',
+    'SIFMAN', 'SIFCMD', 'INTRMAN', 'SYSMEM', 'MODLOAD', 'TIMEMANI', 'USBHDFSD', 'CLEARSPU', 'XSIO2MAN', 'XMTAPMAN');
+  Names: array[0..12] of string = ('padman', 'mcman', 'mcserv', 'cdvd_ee_driver', 'cdvd_driver',
+    'IO/File_Manager', 'FILEIO_service', 'dev9', 'atad_driver', 'hdd_driver', 'pfs_driver', 'Smap_driver',
+    'USB_driver');
 begin
   var Base := ExtractFileName(Path.Replace('/', '\')).ToUpper;
   var Semi := Base.IndexOf(';');
@@ -1297,6 +1305,7 @@ begin
   else
   begin
     T.Ctx.PC := S.Func;
+    T.Ctx.NextPC := 0;
     T.Ctx.R[IOPRegA0] := Fn;
     T.Ctx.R[IOPRegA1] := S.Buff;
     T.Ctx.R[IOPRegA2] := Size;
@@ -1374,6 +1383,8 @@ begin
       SIF.ReplyCall(P, nil);
       Exit;
     end;
+    if Log <> nil then
+      Warn(Format('guest call %.8x fn %x', [Servers[Index].SID, PacketU32(P, 32)]));
     var Req: TIOPRequest;
     Req.Server := Index;
     Req.Busy := False;
@@ -1510,6 +1521,8 @@ begin
   State.Field(DmaId, SizeOf(DmaId));
   State.Field(FReadySeq, SizeOf(FReadySeq));
   State.Field(FCmdSlot, SizeOf(FCmdSlot));
+  if State.Loading then
+    FMaybeReady := True;
 end;
 
 end.

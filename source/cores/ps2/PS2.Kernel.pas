@@ -106,6 +106,7 @@ type
     FVSyncFlag1, FVSyncFlag2: Cardinal;
     FSifDmaId: Cardinal;
     FHeapEnd: Cardinal;
+    FDeci2: array[0..31] of Cardinal;
     FIdle: Boolean;
     FExited: Boolean;
     FExitCode: Integer;
@@ -288,6 +289,7 @@ begin
   FillChar(FDmac, SizeOf(FDmac), 0);
   FillChar(FAlarms, SizeOf(FAlarms), 0);
   FillChar(FSysRegs, SizeOf(FSysRegs), 0);
+  FillChar(FDeci2, SizeOf(FDeci2), 0);
   FIntcOrder.Clear;
   FDmacOrder.Clear;
   FCalls.Clear;
@@ -1185,8 +1187,8 @@ begin
   var Code := Integer(Cardinal(FCPU.S.GPR[3].Lo));
   var Index := Cardinal(Abs(Code)) and $FF;
   if Trace <> nil then
-    Trace.Add(Format('%d syscall %x a0=%x a1=%x a2=%x pc=%.8x thread=%d custom=%x', [FScheduler.Now, Code, Arg(0),
-      Arg(1), Arg(2), FCPU.S.PC, FCurrent, Custom(Index)]));
+    Trace.Add(Format('%d syscall %x a0=%x a1=%x a2=%x pc=%.8x ra=%.8x thread=%d custom=%x', [FScheduler.Now, Code,
+      Arg(0), Arg(1), Arg(2), FCPU.S.PC, Cardinal(FCPU.S.GPR[31].Lo), FCurrent, Custom(Index)]));
   if (Custom(Index) <> 0) and not FInCustom then
   begin
     CallCustom(Index);
@@ -1626,14 +1628,75 @@ begin
         else
           Ret(Integer(FBus.SIF.ReadRegister(Reg)));
       end;
-    $7C: // Deci2Call
+    $7C: // Deci2Call(function, param): handlers keep a buffer {?, status0, ?, status1, data}
       begin
-        if Arg(0) = $10 then
-        begin
-          if Assigned(FOnTTY) then
-            FOnTTY(ReadString(ReadU32(Arg(1))));
+        var P := Arg(1);
+        case Arg(0) of
+          1: // Open {device, buffer}
+            begin
+              var Id := -1;
+              for var K := 0 to High(FDeci2) do
+                if FDeci2[K] = 0 then
+                begin
+                  Id := K;
+                  Break;
+                end;
+              if Id >= 0 then
+                FDeci2[Id] := ReadU32(P + 4);
+              Ret(Id);
+            end;
+          2: // Close
+            begin
+              var Id := Integer(ReadU32(P));
+              if (Id >= 0) and (Id <= High(FDeci2)) then
+                FDeci2[Id] := 0;
+              Ret(1);
+            end;
+          3: // ReqSend: the data block {size, ?, ?, bytes}
+            begin
+              var Id := Integer(ReadU32(P));
+              if (Id >= 0) and (Id <= High(FDeci2)) and (FDeci2[Id] <> 0) then
+              begin
+                var Buffer := FDeci2[Id];
+                var Data := ReadU32(Buffer + 16);
+                if Data <> 0 then
+                begin
+                  var Size := Integer(ReadU32(Data));
+                  if (Size >= 12) and (Size < 65536) and Assigned(FOnTTY) then
+                  begin
+                    var B: TBytes;
+                    SetLength(B, Size - 12);
+                    for var K := 0 to Size - 13 do
+                    begin
+                      var V: UInt64;
+                      FCPU.ReadVirtual(Data + 12 + Cardinal(K), 1, V);
+                      B[K] := Byte(V);
+                    end;
+                    FOnTTY(TEncoding.ANSI.GetString(B));
+                  end;
+                  WriteU32(Buffer + 4, 0);
+                end
+                else
+                  WriteU32(Buffer + 4, Cardinal(-1));
+              end;
+              Ret(1);
+            end;
+          4: // Poll
+            begin
+              var Id := Integer(ReadU32(P));
+              if (Id >= 0) and (Id <= High(FDeci2)) and (FDeci2[Id] <> 0) then
+                WriteU32(FDeci2[Id] + 12, 0);
+              Ret(1);
+            end;
+          $10: // kputs
+            begin
+              if Assigned(FOnTTY) then
+                FOnTTY(ReadString(ReadU32(P)));
+              Ret(0);
+            end;
+        else
+          Ret(0);
         end;
-        Ret(0);
       end;
     $7D: Ret(0); // PSMode
     $7E: Ret(0); // MachineType
@@ -1715,6 +1778,7 @@ begin
   State.Field(FVSyncFlag2, SizeOf(FVSyncFlag2));
   State.Field(FSifDmaId, SizeOf(FSifDmaId));
   State.Field(FHeapEnd, SizeOf(FHeapEnd));
+  State.Field(FDeci2, SizeOf(FDeci2));
   State.Field(FIdle, SizeOf(FIdle));
   State.Field(FExited, SizeOf(FExited));
   State.Field(FExitCode, SizeOf(FExitCode));

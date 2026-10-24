@@ -469,7 +469,7 @@ begin
   end;
   if ((Lo and $80000000) <> 0) and ((Ch[N].CHCR and CHCRTIE) <> 0) then
     Ch[N].TagEnd := True;
-  if Ports[N] <> nil then
+  if (Ports[N] <> nil) and ((Ch[N].CHCR and CHCRTTE) <> 0) then
     Ports[N].Tag(N, T);
   Result := True;
 end;

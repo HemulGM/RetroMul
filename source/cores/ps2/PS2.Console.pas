@@ -9,7 +9,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.IOUtils, System.Generics.Collections, Core.Snapshots, Core.DVD.Image, PS2.Types, PS2.Scheduler, PS2.EE.CPU,
-  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.VU;
+  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.VU, PS2.VIF;
 
 type
   TPS2ConsoleConfig = record
@@ -44,6 +44,7 @@ type
     procedure IOPReset(const Args: string);
     procedure BootIOP;
     procedure StartVU1(Address: Cardinal);
+    function ImageVersion(const ResetArgs: string): Integer;
     procedure VU1Kick(Address: Cardinal);
     function StartModule(const Path: string; const Args: TBytes; out ModuleId: Integer): Boolean;
     function GetHalted: Boolean;
@@ -59,6 +60,8 @@ type
     GS: TPS2GS;
     GIF: TPS2GIF;
     GIFPort: TPS2GIFPort;
+    VIF0, VIF1: TPS2VIF;
+    VIF0Port, VIF1Port: TPS2VIFPort;
     Kernel: TPS2Kernel;
     IOMan: TPS2IOMan;
     FileIO: TPS2FileIOServer;
@@ -109,6 +112,7 @@ begin
   Bus.DMAC := DMAC;
   SIF := TPS2SIF.Create(Scheduler, DMAC, Bus.RAM, Bus.IOPRAM);
   SIF.OnReset := IOPReset;
+  SIF.StubUnknownServers := True;
   Bus.SIF := SIF;
   GS := TPS2GS.Create;
   GS.OnInterrupt := GSInterrupt;
@@ -117,6 +121,16 @@ begin
   Bus.GIF := GIF;
   GIFPort := TPS2GIFPort.Create(GIF);
   DMAC.Ports[DMAGIF] := GIFPort;
+  VIF0 := TPS2VIF.Create(0, VU0.Core, nil, Bus.VU0Code, Bus.VU0Data, $1000, $1000);
+  VIF1 := TPS2VIF.Create(1, VU1.Core, GIF, Bus.VU1Code, Bus.VU1Data, $4000, $4000);
+  VIF0.OnInterrupt := procedure begin Bus.RaiseIRQ(4); end;
+  VIF1.OnInterrupt := procedure begin Bus.RaiseIRQ(5); end;
+  Bus.VIF0 := VIF0;
+  Bus.VIF1 := VIF1;
+  VIF0Port := TPS2VIFPort.Create(VIF0);
+  VIF1Port := TPS2VIFPort.Create(VIF1);
+  DMAC.Ports[DMAVIF0] := VIF0Port;
+  DMAC.Ports[DMAVIF1] := VIF1Port;
   Kernel := TPS2Kernel.Create(CPU, Bus, Scheduler);
   Kernel.OnTTY := TTYWrite;
   Kernel.OnLoadExec := LoadExec;
@@ -152,6 +166,10 @@ begin
   FDiscFS.Free;
   Kernel.Free;
   GIFPort.Free;
+  VIF0Port.Free;
+  VIF1Port.Free;
+  VIF0.Free;
+  VIF1.Free;
   GIF.Free;
   GS.Free;
   SIF.Free;
@@ -230,6 +248,8 @@ begin
   GS.Reset;
   GS.Interlaced := True;
   GIF.Reset;
+  VIF0.Reset;
+  VIF1.Reset;
   Kernel.Reset;
   IOMan.Reset;
   SetVideo(FConfig.PAL);
@@ -244,6 +264,7 @@ end;
 procedure TPS2Console.BootIOP;
 begin
   SIF.RemoveServers;
+  FileIO.Reset;
   SIF.AddServer(FileIO);
   SIF.AddServer(HeapServer);
   SIF.AddServer(LoadFile);
@@ -271,6 +292,48 @@ begin
   GIF.Kick(Bus.VU1Data, Address, $3FFF);
 end;
 
+// The IOP module set an IOP reset loads (IOPRP/DNAS image): its FILEIO
+// version string, else the number in the image's name.
+function TPS2Console.ImageVersion(const ResetArgs: string): Integer;
+begin
+  Result := 1000;
+  var Parts := ResetArgs.Split([' '], TStringSplitOptions.ExcludeEmpty);
+  if Length(Parts) < 2 then
+    Exit;
+  var Device, Path: string;
+  TPS2IOMan.SplitPath(Parts[1], Device, Path);
+  var Data := FDiscFS.ReadFile(Device, Path);
+  if Data <> nil then
+  begin
+    var Text := TEncoding.ANSI.GetString(Data);
+    var P := Text.IndexOf('PsIIfileio  ');
+    if P >= 0 then
+    begin
+      var V := StrToIntDef(Text.Substring(P + 12, 4), 0);
+      if V >= 1000 then
+        Exit(V);
+    end;
+  end;
+  var Name := ExtractFileName(Path.Replace('/', '\')).ToUpper;
+  for var Prefix in ['IOPRP', 'DNAS'] do
+    if Name.StartsWith(Prefix) then
+    begin
+      var Digits := '';
+      for var Ch in Name.Substring(Length(Prefix)) do
+        if CharInSet(Ch, ['0'..'9']) then
+          Digits := Digits + Ch
+        else
+          Break;
+      var V := StrToIntDef(Digits, 0);
+      if V > 0 then
+      begin
+        if V < 100 then
+          Exit(V * 100);
+        Exit(V * 10);
+      end;
+    end;
+end;
+
 procedure TPS2Console.IOPReset(const Args: string);
 begin
   // The IOP restarts with the modules of the reset string; it answers again
@@ -279,6 +342,7 @@ begin
   SIF.EERecvAddr := 0;
   SIF.SMCOM := 0;
   ModuleLog.Add('IOP reset: ' + Args);
+  FileIO.Version := ImageVersion(Args);
   Scheduler.Schedule(TPS2Event.IOPSync, Scheduler.Now + PS2EEClock div 100);
 end;
 
@@ -411,6 +475,8 @@ begin
   SIF.SerializeState(State);
   GS.SerializeState(State);
   GIF.SerializeState(State);
+  VIF0.SerializeState(State);
+  VIF1.SerializeState(State);
   Kernel.SerializeState(State);
   IOMan.SerializeState(State);
   IOPHeap.SerializeState(State);

@@ -393,7 +393,8 @@ type
     // Advanced by executed instructions; the run loop stops at Deadline^.
     Now, Deadline: PInt64;
     InstructionsExecuted: Int64;
-    // Diagnostics (not serialized).
+    // Diagnostics (not serialized): the instruction of the last MMIO access.
+    SlowPC: Cardinal;
     ExceptionCount: Int64;
     LastExceptionPC, LastExceptionCode: Cardinal;
     constructor Create(Bus: TEEBus; Cop2: TEECop2; NowCounter, DeadlineCounter: PInt64);
@@ -1007,6 +1008,7 @@ begin
   var Phys: Cardinal;
   if Translate(I, A, False, Phys) then
     Exit(True);
+  SlowPC := I.Addr;
   V := FBus.Read(Phys, Size);
   Result := False;
 end;
@@ -1206,6 +1208,8 @@ begin
   else
     S.PC := I.Addr + 4;
   FOnSyscall(Self);
+  // The kernel may have changed Status (thread switch, interrupt return).
+  UpdateInterrupts;
   FStop := StopPC;
   Result := True;
 end;
@@ -1216,6 +1220,7 @@ begin
     Exit(Raise_(I, EEExcReserved));
   S.PC := I.Addr + 4;
   FOnTrap(Self, I.Op and $03FFFFFF);
+  UpdateInterrupts;
   FStop := StopPC;
   Result := True;
 end;
@@ -3925,6 +3930,8 @@ var
   Gen: Cardinal;
 begin
   // Kept apart from Run's exception frame so its variables stay in registers.
+  FExitRequest := False;
+  UpdateInterrupts;
   FExitRequest := False;
   Prev := nil;
   Gen := FBlockGen;

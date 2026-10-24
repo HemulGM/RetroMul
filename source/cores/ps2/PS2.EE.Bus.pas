@@ -10,7 +10,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.CPU, PS2.Timers, PS2.DMAC,
+  System.SysUtils, System.Classes, System.Generics.Collections, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.CPU, PS2.Timers, PS2.DMAC,
   PS2.SIF;
 
 type
@@ -48,6 +48,9 @@ type
     SIF: TPS2SIF;
     GS, GIF, VIF0, VIF1, IPU: TPS2Device;
     MMIOReads, MMIOWrites: Int64;
+    // Diagnostics: accesses per address when assigned (reads; writes with bit 0 set).
+    MMIOCounts: TDictionary<Cardinal, Int64>;
+    LastReadPC: TDictionary<Cardinal, Cardinal>;
     constructor Create(Scheduler: TPS2Scheduler);
     destructor Destroy; override;
     procedure Reset;
@@ -240,6 +243,13 @@ end;
 function TPS2EEBus.Read(Address: Cardinal; Size: Integer): UInt64;
 begin
   Inc(MMIOReads);
+  if MMIOCounts <> nil then
+  begin
+    var N: Int64;
+    MMIOCounts.TryGetValue(Address, N);
+    MMIOCounts.AddOrSetValue(Address, N + 1);
+    LastReadPC.AddOrSetValue(Address, CPU.SlowPC);
+  end;
   case Address of
     $10000000..$10001FFF:
       Exit(Timers.Read(Address));
@@ -284,6 +294,12 @@ end;
 procedure TPS2EEBus.Write(Address: Cardinal; Value: UInt64; Size: Integer);
 begin
   Inc(MMIOWrites);
+  if MMIOCounts <> nil then
+  begin
+    var N: Int64;
+    MMIOCounts.TryGetValue(Address or 1, N);
+    MMIOCounts.AddOrSetValue(Address or 1, N + 1);
+  end;
   case Address of
     $10000000..$10001FFF:
       begin

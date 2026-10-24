@@ -315,7 +315,8 @@ begin
     9:
       PInteger(@Result[0])^ := -200;
     $FF:
-      Result := TEncoding.ANSI.GetBytes('0103');
+      // Version query: '....' (2020/2000 for those module versions).
+      Result := TEncoding.ANSI.GetBytes('....');
   else
     PInteger(@Result[0])^ := -1;
   end;

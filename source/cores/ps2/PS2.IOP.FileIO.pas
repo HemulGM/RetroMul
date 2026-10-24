@@ -10,7 +10,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections, Core.Snapshots, PS2.Types, PS2.SIF;
+  System.SysUtils, System.Classes, System.Math, System.Generics.Collections, Core.Snapshots, PS2.Types, PS2.SIF;
 
 type
   // A file source for a device prefix ('host', 'cdrom0', 'rom0'...).
@@ -55,10 +55,17 @@ type
   TPS2FileIOServer = class(TPS2RPCServer)
   private
     FIOMan: TPS2IOMan;
+    FResultPtr: array[0..1] of Cardinal;
     procedure WriteEE(Address: Cardinal; const Data: TBytes);
+    function Call2200(Fn: Cardinal; Args: PByte; Size: Integer): TBytes;
   public
+    // FILEIO module version of the IOP image (1000, 2100, 2200...): from
+    // 2200 on, results come back in a SIF command (80000011h).
+    Version: Integer;
     constructor Create(IOMan: TPS2IOMan);
+    procedure Reset; override;
     function Call(Fn: Cardinal; Args: PByte; Size: Integer; ReplySize: Integer): TBytes; override;
+    procedure SerializeState(State: TStateArchive); override;
   end;
 
 function IntBytes(Value: Integer): TBytes;
@@ -282,6 +289,7 @@ constructor TPS2FileIOServer.Create(IOMan: TPS2IOMan);
 begin
   inherited Create($80000001);
   FIOMan := IOMan;
+  Version := 1000;
 end;
 
 procedure TPS2FileIOServer.WriteEE(Address: Cardinal; const Data: TBytes);
@@ -313,8 +321,100 @@ begin
   Result := PCardinal(Args + Offset)^;
 end;
 
+procedure TPS2FileIOServer.Reset;
+begin
+  FResultPtr[0] := 0;
+  FResultPtr[1] := 0;
+end;
+
+procedure TPS2FileIOServer.SerializeState(State: TStateArchive);
+begin
+  State.Field(Version, SizeOf(Version));
+  State.Field(FResultPtr, SizeOf(FResultPtr));
+end;
+
+// FILEIO 2200: every request starts with (semaphore, result pointer, result
+// size); the reply record (header, result, three words) goes to the EE
+// buffer named at init, then command 80000011h wakes the caller.
+function TPS2FileIOServer.Call2200(Fn: Cardinal; Args: PByte; Size: Integer): TBytes;
+var
+  Reply: TBytes;
+begin
+  SetLength(Reply, 32);
+  FillChar(Reply[0], 32, 0);
+  PCardinal(@Reply[0])^ := ArgU32(Args, 0);
+  PCardinal(@Reply[4])^ := Fn;
+  PCardinal(@Reply[8])^ := ArgU32(Args, 4);
+  PCardinal(@Reply[12])^ := ArgU32(Args, 8);
+  var R: Int64 := -1;
+  case Fn of
+    0: R := FIOMan.Open(ArgString(Args, 20, 256), Integer(ArgU32(Args, 12)));
+    1: R := FIOMan.Close(Integer(ArgU32(Args, 12)));
+    2:
+      begin
+        var Data: TBytes;
+        R := FIOMan.Read(Integer(ArgU32(Args, 12)), Integer(ArgU32(Args, 20)), Data);
+        WriteEE(ArgU32(Args, 16), Data);
+      end;
+    3:
+      begin
+        var Count := Integer(ArgU32(Args, 20));
+        var Data: TBytes;
+        SetLength(Data, Max(Count, 0));
+        var A := ArgU32(Args, 16) and PS2RAMMask;
+        if (Count > 0) and (A + Cardinal(Count) <= PS2RAMSize) then
+          Move((FSIF.EERAM + A)^, Data[0], Count);
+        R := FIOMan.Write(Integer(ArgU32(Args, 12)), Data);
+      end;
+    4: R := FIOMan.Seek(Integer(ArgU32(Args, 12)), Integer(ArgU32(Args, 16)), Integer(ArgU32(Args, 20)));
+    12:
+      begin
+        var Sz: Int64;
+        R := FIOMan.GetStat(ArgString(Args, 16, 256), Sz);
+        SetLength(Reply, 24 + 64);
+        PCardinal(@Reply[20])^ := ArgU32(Args, 12);
+        if R = 0 then
+        begin
+          PCardinal(@Reply[24])^ := $2000;
+          PCardinal(@Reply[32])^ := Cardinal(Sz);
+          PCardinal(@Reply[60])^ := Cardinal(Sz shr 32);
+          var St: TBytes := Copy(Reply, 24, 40);
+          WriteEE(ArgU32(Args, 12), St);
+        end;
+      end;
+    22:
+      begin
+        R := FIOMan.Seek(Integer(ArgU32(Args, 12)), PInt64(Args + 16)^, Integer(ArgU32(Args, 24)));
+        PInt64(@Reply[16])^ := R;
+        R := Cardinal(R);
+      end;
+    9: R := -2;
+    18, 19, 20, 21, 23, 26: R := 0;
+  end;
+  if Fn <> 22 then
+    PInteger(@Reply[16])^ := Integer(R);
+  if FResultPtr[0] <> 0 then
+    FSIF.SendData(FResultPtr[0], Reply);
+  var Cmd: TBytes;
+  SetLength(Cmd, 16);
+  FSIF.SendCommand($80000011, Cmd);
+  Result := IntBytes(1);
+end;
+
 function TPS2FileIOServer.Call(Fn: Cardinal; Args: PByte; Size: Integer; ReplySize: Integer): TBytes;
 begin
+  if Fn = 255 then
+  begin
+    if Version >= 2200 then
+    begin
+      FResultPtr[0] := ArgU32(Args, 0);
+      FResultPtr[1] := ArgU32(Args, 4);
+    end;
+    Result := TEncoding.ANSI.GetBytes(IntToStr(Version) + '....');
+    Exit;
+  end;
+  if Version >= 2200 then
+    Exit(Call2200(Fn, Args, Size));
   case Fn of
     0: // open {mode, name[256]}
       Result := IntBytes(FIOMan.Open(ArgString(Args, 4, 256), Integer(ArgU32(Args, 0))));
@@ -375,8 +475,6 @@ begin
         end;
         Result := IntBytes(R);
       end;
-    255:
-      Result := TEncoding.ANSI.GetBytes('1000....');
   else
     Result := IntBytes(-1);
   end;

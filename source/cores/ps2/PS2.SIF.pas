@@ -13,7 +13,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections, Core.Snapshots, PS2.Types, PS2.Scheduler,
+  System.SysUtils, System.Classes, System.Math, System.Generics.Collections, Core.Snapshots, PS2.Types, PS2.Scheduler,
   PS2.DMAC;
 
 const
@@ -57,6 +57,12 @@ type
     property SID: Cardinal read FSID;
   end;
 
+  // Answers every call with zeros (modules the high-level IOP lacks).
+  TPS2StubServer = class(TPS2RPCServer)
+  public
+    function Call(Fn: Cardinal; Args: PByte; Size: Integer; ReplySize: Integer): TBytes; override;
+  end;
+
   TPS2SIFChunk = record
     Dest: Cardinal;
     Data: TBytes;
@@ -75,6 +81,7 @@ type
     FEERAM, FIOPRAM: PByte;
     FQueue: TList<TPS2SIFChunk>;
     FServers: TObjectList<TPS2RPCServer>;
+    FStubs: TObjectList<TPS2RPCServer>;
     FOnReset: TPS2SIFReset;
     FOnGuestCommand: TPS2SIFGuestCommand;
     procedure Command(Address: Cardinal);
@@ -89,6 +96,10 @@ type
     EERecvAddr: Cardinal;
     // Latency of an IOP reply in EE cycles.
     ReplyDelay: Int64;
+    // Diagnostics: commands, binds and calls when assigned.
+    Log: TStrings;
+    // Unknown SIDs get empty servers (until IOP modules run).
+    StubUnknownServers: Boolean;
     constructor Create(Scheduler: TPS2Scheduler; DMAC: TPS2DMAC; EERAM, IOPRAM: PByte);
     destructor Destroy; override;
     procedure Reset;
@@ -149,6 +160,14 @@ procedure TPS2RPCServer.SerializeState(State: TStateArchive);
 begin
 end;
 
+{ TPS2StubServer }
+
+function TPS2StubServer.Call(Fn: Cardinal; Args: PByte; Size: Integer; ReplySize: Integer): TBytes;
+begin
+  SetLength(Result, Max(ReplySize, 4));
+  FillChar(Result[0], Length(Result), 0);
+end;
+
 { TPS2SIF }
 
 constructor TPS2SIF.Create(Scheduler: TPS2Scheduler; DMAC: TPS2DMAC; EERAM, IOPRAM: PByte);
@@ -160,6 +179,7 @@ begin
   FIOPRAM := IOPRAM;
   FQueue := TList<TPS2SIFChunk>.Create;
   FServers := TObjectList<TPS2RPCServer>.Create(False);
+  FStubs := TObjectList<TPS2RPCServer>.Create(True);
   ReplyDelay := 3000;
   Reset;
 end;
@@ -168,6 +188,7 @@ destructor TPS2SIF.Destroy;
 begin
   FQueue.Free;
   FServers.Free;
+  FStubs.Free;
   inherited;
 end;
 
@@ -200,6 +221,7 @@ end;
 procedure TPS2SIF.RemoveServers;
 begin
   FServers.Clear;
+  FStubs.Clear;
 end;
 
 function TPS2SIF.FindServer(SID: Cardinal): TPS2RPCServer;
@@ -319,6 +341,8 @@ begin
   SetLength(P, Size);
   Move((FIOPRAM + Address)^, P[0], Size);
   var Cid := PacketU32(P, 8);
+  if Log <> nil then
+    Log.Add(Format('sif cmd %.8x sid/fn %.8x/%.8x', [Cid, PacketU32(P, 32), PacketU32(P, 32)]));
   case Cid of
     SIFCmdChangeSAddr:
       EERecvAddr := PacketU32(P, 16);
@@ -373,6 +397,15 @@ begin
   begin
     FOnGuestCommand(SIFCmdRPCBind, P);
     Exit;
+  end;
+  if (Server = nil) and StubUnknownServers then
+  begin
+    // No module provides it: an empty server keeps the EE going.
+    Server := TPS2StubServer.Create(SID);
+    FStubs.Add(Server);
+    AddServer(Server);
+    if Log <> nil then
+      Log.Add(Format('sif stub server %.8x', [SID]));
   end;
   var R: TBytes;
   SetLength(R, 64);

@@ -1275,7 +1275,14 @@ begin
         K.ScheduleTimers;
       end;
     8: Result := 0;
-    10, 87: Result := CdSearch(K, K.Arg(0), K.Arg(1));
+    // sceCdSearchFile, sceCdLayerSearchFile (the layer does not matter for
+    // an image that holds both layers).
+    10, 84:
+      begin
+        if (Fn = 84) and (K.Arg(2) <> 0) then
+          K.Warn(Format('cdvd layer %d search %s', [K.Arg(2), K.ReadString(K.Arg(1), 256)]));
+        Result := CdSearch(K, K.Arg(0), K.Arg(1));
+      end;
     11:
       if (K.Arg(0) and 1) <> 0 then
         Result := Ord(Busy)
@@ -1362,12 +1369,16 @@ begin
     79, 80:
       if K.Arg(0) <> 0 then
         K.W32(K.Arg(0), 0);
-    86:
+    // sceCdReadDvdDualInfo(on_dual, layer1_start).
+    83:
       begin
+        var Break_: Int64 := 0;
+        if (K.DiscFS <> nil) and (K.DiscFS.Image <> nil) then
+          Break_ := K.DiscFS.Image.LayerBreak;
         if K.Arg(0) <> 0 then
-          K.W32(K.Arg(0), 0);
+          K.W32(K.Arg(0), Ord(Break_ > 0));
         if K.Arg(1) <> 0 then
-          K.W32(K.Arg(1), 0);
+          K.W32(K.Arg(1), Cardinal(Break_));
       end;
   end;
 end;

@@ -315,7 +315,12 @@ begin
     Clean := Clean.Substring(0, Semi);
   var Found := (FFS.ISO <> nil) and FFS.ISO.Find(Clean, E) and not E.Directory;
   if Log <> nil then
-    Log.Add(Format('cdvd search %s: %s', [Path, BoolToStr(Found, True)]));
+  begin
+    var Layer := 0;
+    if Size >= $12C then
+      Layer := PInteger(Args + $128)^;
+    Log.Add(Format('cdvd search %s layer %d: %s', [Path, Layer, BoolToStr(Found, True)]));
+  end;
   if not Found then
     Exit(0);
   FillChar(Info, SizeOf(Info), 0);

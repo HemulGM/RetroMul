@@ -63,6 +63,13 @@ type
     // the first program that did not end started with.
     CaptureUnfinished: Boolean;
     UnfinishedCapture: TBytes;
+    // Diagnostics (with CaptureUnfinished): the last command words with
+    // TOPS and the UNPACK address they started at; UnfinishedCommands is
+    // the ring at the first program that did not end (oldest first).
+    // Data words are in the ring too (second entry EEEEEEEEh).
+    CommandRing: array[0..2047] of array[0..2] of Cardinal;
+    CommandRingPos: Integer;
+    UnfinishedCommands: TArray<Cardinal>;
     constructor Create(Index: Integer; VU: TPS2VUCore; GIF: TPS2GIF; Code, Data: PByte; CodeSize, DataSize: Cardinal);
     procedure Reset;
     // Feeds 32-bit words; returns how many were taken (fewer: stalled on IRQ).
@@ -152,6 +159,10 @@ begin
       if FVU.RunTraceCount > 0 then
         Move(FVU.RunTrace[0], Before[At], FVU.RunTraceCount * 32);
       UnfinishedCapture := Before;
+      SetLength(UnfinishedCommands, Length(CommandRing) * 3);
+      for var K := 0 to High(CommandRing) do
+        for var J := 0 to 2 do
+          UnfinishedCommands[K * 3 + J] := CommandRing[(CommandRingPos + K) and High(CommandRing)][J];
       FVU.RunTrace := nil;
     end;
     Inc(Unfinished);
@@ -205,6 +216,13 @@ end;
 
 procedure TPS2VIF.StartCommand(W: Cardinal);
 begin
+  if CaptureUnfinished then
+  begin
+    CommandRing[CommandRingPos and High(CommandRing)][0] := W;
+    CommandRing[CommandRingPos and High(CommandRing)][1] := S.TOPS or (S.MODE shl 12);
+    CommandRing[CommandRingPos and High(CommandRing)][2] := $FFFFFFFF;
+    Inc(CommandRingPos);
+  end;
   S.CODE := W;
   var Cmd := (W shr 24) and $7F;
   var Imm := W and $FFFF;
@@ -263,6 +281,8 @@ begin
         if (FIndex = 1) and ((Imm and $8000) <> 0) then
           Inc(Addr, Integer(S.TOPS));
         S.UnpackAddr := Addr;
+        if CaptureUnfinished then
+          CommandRing[(CommandRingPos - 1) and High(CommandRing)][2] := Cardinal(Addr);
         S.UnpackCount := 0;
         S.CycleIndex := 0;
         S.CycleWritten := 0;
@@ -402,7 +422,10 @@ begin
           V.UW[K] := E[K];
       end;
     end;
-    if VL <> 0 then
+    // A 64-bit vector (V4-16) takes all the bits: shifts by 64 do nothing.
+    if VecBits >= 64 then
+      S.UnpackBits := 0
+    else if VL <> 0 then
       S.UnpackBits := S.UnpackBits shr VecBits;
     Dec(S.UnpackBitCount, VecBits);
     WriteVector(V);
@@ -430,6 +453,13 @@ begin
     begin
       StartCommand(W);
       Continue;
+    end;
+    if CaptureUnfinished then
+    begin
+      CommandRing[CommandRingPos and High(CommandRing)][0] := W;
+      CommandRing[CommandRingPos and High(CommandRing)][1] := $EEEEEEEE;
+      CommandRing[CommandRingPos and High(CommandRing)][2] := 0;
+      Inc(CommandRingPos);
     end;
     case S.Command of
       $20: S.MASK := W;

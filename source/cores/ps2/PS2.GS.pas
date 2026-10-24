@@ -257,17 +257,16 @@ begin
     W := 1024;
   if H > 1024 then
     H := 1024;
-  // Frame mode in interlace (SMODE2 INT and FFMD) reads every other line of a
-  // full frame; without INT the lines are progressive.
-  var FrameMode := Interlaced and ((SMODE2 and 3) = 3);
-  if FrameMode then
+  // Interlaced frame mode (SMODE2 INT and FFMD) reads every line of a buffer
+  // holding one field: half the lines DISPLAY counts. Field mode reads every
+  // other line of a full frame per field; both fields together are the
+  // frame as it is in memory, which is what is shown.
+  if Interlaced and ((SMODE2 and 3) = 3) then
     H := H div 2;
   SetLength(Pixels, W * H);
   for var Y := 0 to H - 1 do
   begin
     var SY := DBY + Y;
-    if FrameMode then
-      SY := DBY + Y * 2 + Ord(OddField);
     for var X := 0 to W - 1 do
       Pixels[Y * W + X] := FRaster.Memory.ReadPixel(PSM, FBP, FBW, DBX + X, SY);
   end;

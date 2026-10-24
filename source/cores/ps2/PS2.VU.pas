@@ -51,6 +51,12 @@ type
     FlagQCount: Integer;
   end;
 
+  // The VF registers an instruction writes and reads, with field masks.
+  TPS2VURegUse = record
+    Dest, S1, S2: Integer;
+    DestMask, M1, M2: Cardinal;
+  end;
+
   TPS2VUCore = class
   private
     FIndex: Integer;
@@ -61,14 +67,15 @@ type
     FOnKick: TPS2VUKick;
     // The clip flag the current pair's FC* instructions see.
     FClipVisible: Cardinal;
-    // Cycle from which each VF register (32: ACC) holds its pending result.
-    FReady: array[0..32] of Int64;
+    // Cycle from which each VF register field (x..w) holds its pending result.
+    FReady: array[0..31, 0..3] of Int64;
     // Results of the current pair (written after both halves ran).
     FUpperReg, FLowerReg: Integer;
     FUpperValue, FLowerValue: TPS2Reg128;
     FUpperMask, FLowerMask: Cardinal;
-    procedure UpperRegs(Op: Cardinal; out Dest, S1, S2: Integer; out ReadsAcc: Boolean);
-    procedure LowerRegs(Op: Cardinal; out Dest, S1, S2: Integer);
+    procedure UpperRegs(Op: Cardinal; out R: TPS2VURegUse);
+    procedure LowerRegs(Op: Cardinal; out R: TPS2VURegUse);
+    function ReadyAt(Reg: Integer; Mask: Cardinal): Int64;
     function HazardStall(UpperOp, LowerOp: Cardinal): Integer;
     procedure NoteWrites(UpperOp, LowerOp: Cardinal);
     procedure AdvanceCycles(N: Integer);
@@ -894,112 +901,180 @@ end;
 
 { Pipeline timing }
 
-// The VF registers an upper op reads and writes (-1: none; 32: ACC).
-procedure TPS2VUCore.UpperRegs(Op: Cardinal; out Dest, S1, S2: Integer; out ReadsAcc: Boolean);
+// The VF registers an upper op reads and writes with their fields (x 8,
+// y 4, z 2, w 1; register -1: none). Results going to ACC are not tracked:
+// there are no hazard checks on ACC.
+procedure TPS2VUCore.UpperRegs(Op: Cardinal; out R: TPS2VURegUse);
 begin
   var Fs := Integer((Op shr 11) and 31);
   var Ft := Integer((Op shr 16) and 31);
   var Fd := Integer((Op shr 6) and 31);
-  Dest := -1;
-  S1 := -1;
-  S2 := -1;
-  ReadsAcc := False;
+  var Mask := (Op shr 21) and $F;
+  // Broadcast ops read one field of ft.
+  var Bc := FieldBit(Integer(Op and 3));
+  R.Dest := -1;
+  R.DestMask := Mask;
+  R.S1 := -1;
+  R.S2 := -1;
+  R.M1 := Mask;
+  R.M2 := Mask;
   var F := Integer(Op and $3F);
   if F >= $3C then
   begin
     var X := (Integer((Op shr 6) and 31) shl 2) or (F and 3);
     case X of
-      $00..$0F, $18..$1B, $28..$2E:
+      $00..$0F, $18..$1B:
         begin
-          S1 := Fs;
-          S2 := Ft;
-          Dest := 32;
-          ReadsAcc := (X in [$08..$0F, $29, $2D]);
+          R.S1 := Fs;
+          R.S2 := Ft;
+          R.M2 := Bc;
+        end;
+      $28..$2D:
+        begin
+          R.S1 := Fs;
+          R.S2 := Ft;
+        end;
+      $2E:
+        begin
+          // OPMULA: the cross product reads x, y and z of both.
+          R.S1 := Fs;
+          R.S2 := Ft;
+          R.M1 := $E;
+          R.M2 := $E;
         end;
       $10..$17, $1D:
         begin
-          S1 := Fs;
-          Dest := Ft;
+          R.S1 := Fs;
+          R.Dest := Ft;
         end;
       $1C, $1E, $20..$27:
-        begin
-          S1 := Fs;
-          Dest := 32;
-          ReadsAcc := X in [$21, $23, $25, $27];
-        end;
+        R.S1 := Fs;
       $1F:
         begin
-          S1 := Fs;
-          S2 := Ft;
+          // CLIP: fs.xyz against ft.w.
+          R.S1 := Fs;
+          R.S2 := Ft;
+          R.M1 := $E;
+          R.M2 := 1;
         end;
     end;
     Exit;
   end;
   case F of
-    $00..$1B, $28..$2F:
+    $00..$1B:
       begin
-        S1 := Fs;
-        S2 := Ft;
-        Dest := Fd;
-        ReadsAcc := (F in [$08..$0F, $29, $2D, $2E]);
+        R.S1 := Fs;
+        R.S2 := Ft;
+        R.M2 := Bc;
+        R.Dest := Fd;
+      end;
+    $28..$2D, $2F:
+      begin
+        R.S1 := Fs;
+        R.S2 := Ft;
+        R.Dest := Fd;
+      end;
+    $2E:
+      begin
+        // OPMSUB
+        R.S1 := Fs;
+        R.S2 := Ft;
+        R.M1 := $E;
+        R.M2 := $E;
+        R.Dest := Fd;
       end;
     $1C..$27:
       begin
-        S1 := Fs;
-        Dest := Fd;
-        ReadsAcc := F in [$21, $23, $25, $27];
+        R.S1 := Fs;
+        R.Dest := Fd;
       end;
   end;
 end;
 
-// The VF registers a lower op reads and writes (-1: none).
-procedure TPS2VUCore.LowerRegs(Op: Cardinal; out Dest, S1, S2: Integer);
+// The VF registers a lower op reads and writes with their fields.
+procedure TPS2VUCore.LowerRegs(Op: Cardinal; out R: TPS2VURegUse);
 begin
   var Fs := Integer((Op shr 11) and 31);
   var Ft := Integer((Op shr 16) and 31);
-  Dest := -1;
-  S1 := -1;
-  S2 := -1;
+  var Mask := (Op shr 21) and $F;
+  // Single-field operands (DIV, SQRT, RSQRT, MTIR, EFU): fsf, ftf.
+  var Fsf := FieldBit(Integer((Op shr 21) and 3));
+  var Ftf := FieldBit(Integer((Op shr 23) and 3));
+  R.Dest := -1;
+  R.DestMask := Mask;
+  R.S1 := -1;
+  R.S2 := -1;
+  R.M1 := Mask;
+  R.M2 := Mask;
   case Op shr 25 of
-    $00: Dest := Ft;
-    $01: S1 := Fs;
+    $00: R.Dest := Ft;
+    $01: R.S1 := Fs;
     $40:
       if (Op and $3F) >= $3C then
         case (Integer((Op shr 6) and 31) shl 2) or Integer(Op and 3) of
-          $30, $31:
+          $30:
             begin
-              S1 := Fs;
-              Dest := Ft;
+              R.S1 := Fs;
+              R.Dest := Ft;
             end;
-          $34, $36, $3D, $64: Dest := Ft;
-          $35, $37, $3C, $70..$7E: S1 := Fs;
+          $31:
+            begin
+              // MR32: x from y, y from z, z from w, w from x.
+              R.S1 := Fs;
+              R.M1 := ((Mask shr 1) and 7) or ((Mask and 1) shl 3);
+              R.Dest := Ft;
+            end;
+          $34, $36, $3D, $64: R.Dest := Ft;
+          $35, $37: R.S1 := Fs;
+          $3C:
+            begin
+              R.S1 := Fs;
+              R.M1 := Fsf;
+            end;
+          $70..$7E:
+            begin
+              R.S1 := Fs;
+              R.M1 := $F;
+            end;
           $38, $3A:
             begin
-              S1 := Fs;
-              S2 := Ft;
+              R.S1 := Fs;
+              R.M1 := Fsf;
+              R.S2 := Ft;
+              R.M2 := Ftf;
             end;
-          $39: S1 := Ft;
+          $39:
+            begin
+              R.S1 := Ft;
+              R.M1 := Ftf;
+            end;
         end;
   end;
 end;
 
-// Cycles the pair waits for its source registers.
+function TPS2VUCore.ReadyAt(Reg: Integer; Mask: Cardinal): Int64;
+begin
+  Result := 0;
+  if Reg <= 0 then
+    Exit;
+  for var K := 0 to 3 do
+    if ((Mask and FieldBit(K)) <> 0) and (FReady[Reg, K] > Result) then
+      Result := FReady[Reg, K];
+end;
+
+// Cycles the pair waits for its source fields (hazard checks are per
+// field; none on ACC, VF00, I, Q, P, R).
 function TPS2VUCore.HazardStall(UpperOp, LowerOp: Cardinal): Integer;
 var
-  Dest, S1, S2, L1, L2: Integer;
-  Acc: Boolean;
+  U, L: TPS2VURegUse;
 begin
-  UpperRegs(UpperOp, Dest, S1, S2, Acc);
-  L1 := -1;
-  L2 := -1;
+  UpperRegs(UpperOp, U);
+  var Need := Max(ReadyAt(U.S1, U.M1), ReadyAt(U.S2, U.M2));
   if (UpperOp and $80000000) = 0 then
-    LowerRegs(LowerOp, Dest, L1, L2);
-  var Need: Int64 := 0;
-  for var R in [S1, S2, L1, L2] do
-    if (R > 0) and (FReady[R] > Need) then
-      Need := FReady[R];
-  if Acc and (FReady[32] > Need) then
-    Need := FReady[32];
+  begin
+    LowerRegs(LowerOp, L);
+    Need := Max(Need, Max(ReadyAt(L.S1, L.M1), ReadyAt(L.S2, L.M2)));
+  end;
   Result := 0;
   if Need > S.Cycles then
     Result := Integer(Need - S.Cycles);
@@ -1008,17 +1083,20 @@ end;
 // The pair's results are ready four cycles after issue.
 procedure TPS2VUCore.NoteWrites(UpperOp, LowerOp: Cardinal);
 var
-  Dest, S1, S2: Integer;
-  Acc: Boolean;
+  U, L: TPS2VURegUse;
 begin
-  UpperRegs(UpperOp, Dest, S1, S2, Acc);
-  if Dest > 0 then
-    FReady[Dest] := S.Cycles + 4;
+  UpperRegs(UpperOp, U);
+  if U.Dest > 0 then
+    for var K := 0 to 3 do
+      if (U.DestMask and FieldBit(K)) <> 0 then
+        FReady[U.Dest, K] := S.Cycles + 4;
   if (UpperOp and $80000000) = 0 then
   begin
-    LowerRegs(LowerOp, Dest, S1, S2);
-    if Dest > 0 then
-      FReady[Dest] := S.Cycles + 4;
+    LowerRegs(LowerOp, L);
+    if L.Dest > 0 then
+      for var K := 0 to 3 do
+        if (L.DestMask and FieldBit(K)) <> 0 then
+          FReady[L.Dest, K] := S.Cycles + 4;
   end;
 end;
 

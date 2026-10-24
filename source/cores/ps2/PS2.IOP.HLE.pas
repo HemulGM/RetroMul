@@ -249,6 +249,16 @@ begin
         end;
         Result := IntBytes(0);
       end;
+    // AllocSysMemory(size, mode, address); memory size; largest and total
+    // free (after Play!'s Iop_Sysmem).
+    4:
+      if PCardinal(Args + 4)^ = 2 then
+        Result := IntBytes(Integer(FAllocator.Allocate(PCardinal(Args)^, PCardinal(Args + 8)^)))
+      else
+        Result := IntBytes(Integer(FAllocator.Allocate(PCardinal(Args)^)));
+    5: Result := IntBytes(PS2IOPRAMSize);
+    6: Result := IntBytes(Integer(FAllocator.LargestFree));
+    7: Result := IntBytes(Integer(FAllocator.FreeTotal));
   else
     Result := IntBytes(-1);
   end;
@@ -324,6 +334,9 @@ begin
           Path := '';
           if Assigned(FImageReader) then
             Image := FImageReader(PCardinal(Args)^);
+          if (FLog <> nil) and (Length(Image) >= 4) then
+            FLog.Add(Format('module buffer at %.8x: %.2x %.2x %.2x %.2x, %d bytes', [PCardinal(Args)^, Image[0], Image[1],
+              Image[2], Image[3], Length(Image)]));
         end;
         var ModArgs: TBytes;
         if (ArgLen > 0) and (ArgLen <= 252) then

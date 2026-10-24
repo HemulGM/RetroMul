@@ -55,7 +55,6 @@ type
   TPS2FileIOServer = class(TPS2RPCServer)
   private
     FIOMan: TPS2IOMan;
-    function EEString(Address: Cardinal): string;
     procedure WriteEE(Address: Cardinal; const Data: TBytes);
   public
     constructor Create(IOMan: TPS2IOMan);
@@ -283,11 +282,6 @@ constructor TPS2FileIOServer.Create(IOMan: TPS2IOMan);
 begin
   inherited Create($80000001);
   FIOMan := IOMan;
-end;
-
-function TPS2FileIOServer.EEString(Address: Cardinal): string;
-begin
-  Result := '';
 end;
 
 procedure TPS2FileIOServer.WriteEE(Address: Cardinal; const Data: TBytes);

@@ -369,9 +369,6 @@ end;
 procedure TPS2Console.RunFrame;
 begin
   // One field: until the next VBlank start has been handled.
-  var Target := Scheduler.Due(TPS2Event.VBlankStart);
-  if Target = PS2Never then
-    Target := Scheduler.Now + FFieldCycles;
   while True do
   begin
     var Event: TPS2Event;

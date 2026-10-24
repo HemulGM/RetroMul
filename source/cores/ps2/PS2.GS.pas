@@ -103,12 +103,11 @@ end;
 procedure TPS2GS.CheckInterrupt;
 begin
   // CSR bits 0..4 (SIGNAL, FINISH, HSINT, VSINT, EDWINT) against IMR bits 8..12.
-  var Pending := (CSR and $1F) and not ((IMR shr 8) and $1F);
   if FRaster.SignalPending then
     CSR := CSR or 1;
   if FRaster.FinishPending then
     CSR := CSR or 2;
-  Pending := (CSR and $1F) and not ((IMR shr 8) and $1F);
+  var Pending := (CSR and $1F) and not ((IMR shr 8) and $1F);
   if (Pending <> 0) and Assigned(FOnInterrupt) then
     FOnInterrupt;
 end;

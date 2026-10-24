@@ -28,6 +28,7 @@ const
   ROM_SYSTEM_N64 = 'n64';
   ROM_SYSTEM_SATURN = 'saturn';
   ROM_SYSTEM_PS1 = 'ps1';
+  ROM_SYSTEM_PS2 = 'ps2';
   ROM_SYSTEM_NEOGEO = 'neogeo';
   ROM_SYSTEM_NEOGEOCD = 'neogeocd';
   ROM_SYSTEM_NEOGEOAES = 'neogeoaes';
@@ -58,6 +59,7 @@ const
   ROM_CORE_ID_N64 = 'N64';
   ROM_CORE_ID_SATURN = 'SATURN';
   ROM_CORE_ID_PS1 = 'PS1';
+  ROM_CORE_ID_PS2 = 'PS2';
   ROM_CORE_ID_NEOGEO = 'NEOGEO';
   ROM_CORE_ID_NEOGEOCD = 'NEOGEOCD';
 

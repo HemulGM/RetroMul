@@ -164,7 +164,7 @@
         <Icon_MainIcon>$(BDS)\bin\delphi_PROJECTICON.ico</Icon_MainIcon>
         <Icns_MainIcns>$(BDS)\bin\delphi_PROJECTICNS.icns</Icns_MainIcns>
         <SanitizedProjectName>RetroMul</SanitizedProjectName>
-        <DCC_UnitSearchPath>..\..\source\ui\fmx\shaders;..\..\source\cores\cps;..\..\dependencies\Delphi7z;..\..\source\cores\ngp;..\..\source\cores\saturn;..\..\source\cores\ps1;..\..\source\contracts;..\..\source\runtime;..\..\source\services\settings;main;controllers;controls;library;theme;platform;settings;devices;..\..\source\cores\pce;..\..\source\cores\gamewatch;..\..\source\ui\fmx\gamewatch;..\..\source\ui\fmx\svg;settings;..\..\source\cores\sms;..\..\source\hardware\audio;..\..\source\cores\msx;..\..\source\cores\sg1000;..\..\source\hardware\video;..\..\source\cores\n64;..\..\source\media\chd;..\..\source\cores\gba;..\..\dependencies\FMXVibration;..\..\source\cores\neogeo;..\..\source\cores\atari;..\..\source\cores\c64;..\..\source\cores\zx;..\..\dependencies\FMXInput;..\..\source\hardware\audio\opl;devices;platform;..\..\source\cores;..\..\source\contracts;..\..\source\media\cd;..\..\source\media\rom;..\..\source\platform;..\..\source\runtime;..\..\source\runtime\adapters;..\..\source\services\catalog;..\..\source\services\settings;..\..\source\services\storage;..\..\source\ui\fmx\icons;..\..\source\cores\snes;..\..\source\cores\md;..\..\source\hardware\cpu;..\..\source\cores\nes;..\..\source\cores\nes\mappers;..\..\source\cores\gb;..\..\source\cores\gbc;..\..\source\services\library;..\..\dependencies\PCMAudio;..\..\dependencies\DelphiWinUI3\Sources;..\..\dependencies\DelphiWinUI3\DelphiWindowStyle;..\..\dependencies\DelphiWinUI3\FMXWindowsDispatch;..\..\dependencies\DelphiWinUI3\FMXWindowsHint;..\..\dependencies\DelphiWinUI3\WindowsNotificationManager;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>..\..\source\ui\fmx\shaders;..\..\source\cores\cps;..\..\dependencies\Delphi7z;..\..\source\cores\ngp;..\..\source\cores\saturn;..\..\source\cores\ps1;..\..\source\cores\ps2;..\..\source\media\dvd;..\..\source\contracts;..\..\source\runtime;..\..\source\services\settings;main;controllers;controls;library;theme;platform;settings;devices;..\..\source\cores\pce;..\..\source\cores\gamewatch;..\..\source\ui\fmx\gamewatch;..\..\source\ui\fmx\svg;settings;..\..\source\cores\sms;..\..\source\hardware\audio;..\..\source\cores\msx;..\..\source\cores\sg1000;..\..\source\hardware\video;..\..\source\cores\n64;..\..\source\media\chd;..\..\source\cores\gba;..\..\dependencies\FMXVibration;..\..\source\cores\neogeo;..\..\source\cores\atari;..\..\source\cores\c64;..\..\source\cores\zx;..\..\dependencies\FMXInput;..\..\source\hardware\audio\opl;devices;platform;..\..\source\cores;..\..\source\contracts;..\..\source\media\cd;..\..\source\media\rom;..\..\source\platform;..\..\source\runtime;..\..\source\runtime\adapters;..\..\source\services\catalog;..\..\source\services\settings;..\..\source\services\storage;..\..\source\ui\fmx\icons;..\..\source\cores\snes;..\..\source\cores\md;..\..\source\hardware\cpu;..\..\source\cores\nes;..\..\source\cores\nes\mappers;..\..\source\cores\gb;..\..\source\cores\gbc;..\..\source\services\library;..\..\dependencies\PCMAudio;..\..\dependencies\DelphiWinUI3\Sources;..\..\dependencies\DelphiWinUI3\DelphiWindowStyle;..\..\dependencies\DelphiWinUI3\FMXWindowsDispatch;..\..\dependencies\DelphiWinUI3\FMXWindowsHint;..\..\dependencies\DelphiWinUI3\WindowsNotificationManager;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Android)'!=''">
         <DCC_UsePackage>fmx;DbxCommonDriver;bindengine;IndyIPCommon;emsclient;IndyProtocols;dbxcds;FmxTeeUI;FireDACSqliteDriver;DbxClientDriver;soapmidas;dbexpress;inet;FireDACDBXDriver;CustomIPTransport;IndySystem;FireDACCommon;emsserverresource;bindcompdbx;rtl;DBXSqliteDriver;DataSnapFireDAC;FireDAC;xmlrtl;dsnap;DataSnapNativeClient;emshosting;FireDACCommonDriver;IndyIPClient;emsedge;bindcompfmx;fmxFireDAC;FMXAudioHGM;DataSnapCommon;fmxase;dbrtl;DBXInterBaseDriver;bindcomp;VLCPlayer;inetstn;IndyCore;RESTBackendComponents;RESTComponents;IndyIPServer;dsnapxml;DataSnapClient;DataSnapProviderClient;emsclientfiredac;FireDACDSDriver;tethering;CloudService;FMXTee;soaprtl;soapserver;FireDACIBDriver;$(DCC_UsePackage)</DCC_UsePackage>
@@ -704,6 +704,28 @@
         <DCCReference Include="..\..\source\cores\ps1\PS1.Firmware.pas"/>
         <DCCReference Include="..\..\source\cores\ps1\PS1.Console.pas"/>
         <DCCReference Include="settings\RM.Settings.PS1.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Types.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Scheduler.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.ELF.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.EE.CPU.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Timers.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.DMAC.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.SIF.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.EE.Bus.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.Memory.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.Raster.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GS.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.GIF.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.VU.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Kernel.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.FileIO.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.HLE.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.CDVD.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.Console.pas"/>
+        <DCCReference Include="..\..\source\media\dvd\Core.DVD.Image.pas"/>
+        <DCCReference Include="..\..\source\runtime\adapters\Core.PS2.Playback.pas"/>
+        <DCCReference Include="..\..\source\runtime\adapters\Core.Adapter.PS2.pas"/>
+        <DCCReference Include="settings\RM.Settings.PS2.pas"/>
         <DCCReference Include="..\..\source\cores\md\MD.Firmware.pas"/>
         <DCCReference Include="..\..\source\cores\md\MD.Mars.pas"/>
         <DCCReference Include="..\..\source\cores\md\MD.MegaCD.pas"/>

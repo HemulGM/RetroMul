@@ -10,7 +10,7 @@ uses
 type
   TRomSystem = (Unknown, NES, GB, GBC, MD, SNES, NeoGeo, GBA, NeoGeoCD, N64, SG1000, SC3000,
     SF7000, Multivision, SMS, GameGear, GameWatch, PCE, SuperGrafx, PCECD, SegaCD, Sega32X, Saturn, NeoGeoAES, NeoGeoPocket, NeoGeoPocketColor,
-    CPS1, CPS2, CPS3, ZXSpectrum, PS1);
+    CPS1, CPS2, CPS3, ZXSpectrum, PS1, PS2);
 
 type
   // Stable system IDs and settings keys preserve existing collections and INI files.
@@ -107,6 +107,9 @@ begin
   RegisterPlatform(TRomSystem.PS1, ROM_SYSTEM_PS1, 'PlayStation', 'PS1',
     'Sony', 'PS1 PSX PSone PlayStation', 'ps1', ['ps1', 'psx', 'playstation'],
     [ROM_EXTENSION_CUE, ROM_EXTENSION_CHD, ROM_EXTENSION_ISO, ROM_EXTENSION_BIN, ROM_EXTENSION_EXE], 'PS1', 'ps1', 2);
+  RegisterPlatform(TRomSystem.PS2, ROM_SYSTEM_PS2, 'PlayStation 2', 'PS2',
+    'Sony', 'PS2 PlayStation 2', 'ps2', ['ps2', 'playstation2'],
+    [ROM_EXTENSION_ISO, ROM_EXTENSION_CHD, ROM_EXTENSION_CUE, ROM_EXTENSION_BIN, '.mds', '.elf'], 'PS2', 'ps2', 2);
   RegisterPlatform(TRomSystem.Saturn, ROM_SYSTEM_SATURN, 'SEGA Saturn', 'Saturn',
     'Sega', 'Saturn SH2 CD', 'saturn', ['saturn'], [ROM_EXTENSION_BIN, ROM_EXTENSION_GENERIC, '.bios', ROM_EXTENSION_CUE, ROM_EXTENSION_ISO, ROM_EXTENSION_CHD],
     'Saturn', 'saturn', 2);
@@ -179,7 +182,7 @@ begin
   for var i := 0 to High(Extensions) do
     Item.Extensions[i] := Extensions[i];
   if not (System in [TRomSystem.SegaCD, TRomSystem.PCECD, TRomSystem.NeoGeoCD,
-      TRomSystem.Saturn, TRomSystem.PS1]) then
+      TRomSystem.Saturn, TRomSystem.PS1, TRomSystem.PS2]) then
   begin
     if not MatchText(ROM_EXTENSION_ZIP, Item.Extensions) then
       Item.Extensions := Item.Extensions + [ROM_EXTENSION_ZIP];

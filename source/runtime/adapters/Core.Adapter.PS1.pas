@@ -830,7 +830,7 @@ begin
         Path := Candidate;
         Break;
       end;
-      Candidate := TPath.Combine(FStorage.RomFolder, TPath.Combine(ROM_SYSTEM_PS1, Name));
+      Candidate := TPath.Combine(FStorage.RomFolder(ROM_SYSTEM_PS1), Name);
       if not Candidate.StartsWith('content://', True) and FStorage.Exists(Candidate) then
       begin
         Path := Candidate;

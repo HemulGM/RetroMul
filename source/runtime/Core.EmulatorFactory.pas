@@ -19,7 +19,7 @@ uses
   Core.Adapter.SG1000, Core.Adapter.NES, Core.Adapter.GB, Core.Adapter.GBC,
   Core.Adapter.N64, Core.Adapter.MD, Core.Adapter.GBA, Core.Adapter.SNES,
   Core.Adapter.NeoGeo, NeoGeo.Cartridge, Core.Adapter.Saturn, Core.Adapter.NGP,
-  Core.Adapter.CPS, CPS.RomSets, Core.Adapter.ZX, Core.Adapter.PS1;
+  Core.Adapter.CPS, CPS.RomSets, Core.Adapter.ZX, Core.Adapter.PS1, Core.Adapter.PS2, Core.DVD.Image;
 
 function CreateEmulationCore(const FileName: string): IEmulationCore;
 begin
@@ -38,6 +38,11 @@ begin
   var SourceName := RomName;
   if (Storage <> nil) and RomName.StartsWith('content://', True) then
     SourceName := Storage.Describe(RomName).Name;
+
+  // PlayStation 2 DVD images may exceed what TCDDisc reads; ELF programs too.
+  var PS2 := TPS2CoreAdapter.TryCreate(Stream, Storage, RomName, SourceName);
+  if PS2 <> nil then
+    Exit(PS2);
 
   // A raw single-track .bin is a disc, not a cartridge (CD sync at sector 0).
   var RawDisc := SameText(ExtractFileExt(SourceName), ROM_EXTENSION_BIN) and IsCDRawImage(Stream);
@@ -93,6 +98,13 @@ begin
       begin
         Stream.Position := 0;
         Exit(TMDCoreAdapter.Create(Stream, Storage, RomName, True));
+      end;
+      // PS2 CDs name their executable with BOOT2 (PS1 detection would take them).
+      if not IsPCE and TPS2CoreAdapter.IsPS2CD(Disc) then
+      begin
+        var OwnedDisc := Disc;
+        Disc := nil;
+        Exit(TPS2CoreAdapter.Create(Stream, DiscStorage, RomName, TDVDCDImage.Create(OwnedDisc, True)));
       end;
       if not IsPCE and TPS1CoreAdapter.IsPS1Disc(Disc) then
       begin

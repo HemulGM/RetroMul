@@ -41,6 +41,7 @@ const
   SETTINGS_PAGE_CPS3 = 26;
   SETTINGS_PAGE_PS1 = 27;
   SETTINGS_PAGE_ZX = 27;
+  SETTINGS_PAGE_PS2 = 29;
 
 type
   TPlatformPresentation = record
@@ -125,6 +126,12 @@ begin
         Result.SettingsPageId := SETTINGS_PAGE_PS1;
         Result.PadLayout := TPlatformPadLayout.PlayStation;
         Result.IconData := PlatformIconPS1;
+      end;
+    TRomSystem.PS2:
+      begin
+        Result.SettingsPageId := SETTINGS_PAGE_PS2;
+        Result.PadLayout := TPlatformPadLayout.PlayStation;
+        Result.IconData := PlatformIconPS2;
       end;
     TRomSystem.N64:
       begin

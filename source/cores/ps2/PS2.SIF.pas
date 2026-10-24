@@ -637,7 +637,8 @@ begin
       var Dest := C.Dest;
       var IRQ := C.IRQ;
       var Due := C.Due;
-      var Len := Length(C.Data);
+      // Integer as on loading (Length is NativeInt on 64-bit targets).
+      var Len: Integer := Length(C.Data);
       State.Field(Dest, SizeOf(Dest));
       State.Field(IRQ, SizeOf(IRQ));
       State.Field(Due, SizeOf(Due));
@@ -670,7 +671,12 @@ begin
       var SID := S.SID;
       State.Field(SID, SizeOf(SID));
     end;
+  // The real servers, then the stubs: loading re-adds the stubs at the end
+  // of the server list, so the list order differs from the saved one.
   for var S in FServers do
+    if not FStubs.Contains(S) then
+      S.SerializeState(State);
+  for var S in FStubs do
     S.SerializeState(State);
 end;
 

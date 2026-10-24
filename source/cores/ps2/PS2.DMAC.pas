@@ -84,6 +84,9 @@ type
     // Diagnostics: writes to RAM covering WatchAddress go to WatchLog.
     WatchAddress: Cardinal;
     WatchLog: TStrings;
+    // Diagnostics: register writes and ends of the channels in LogMask.
+    Log: TStrings;
+    LogMask: Cardinal;
     constructor Create(Scheduler: TPS2Scheduler; RAM, Scratch: PByte; RAMGen: PCardinal);
     procedure Reset;
     function Read(Address: Cardinal): Cardinal;
@@ -284,10 +287,24 @@ begin
   for var N := 0 to 9 do
     if (Offset and $FF00) = ChannelBase[N] then
     begin
+      if (Log <> nil) and (((LogMask shr N) and 1) <> 0) and (Log.Count < 200000) then
+        Log.Add(Format('%d ch%d w %.2x = %.8x (chcr %.8x madr %.8x qwc %x tadr %.8x)', [FScheduler.Now, N, Offset and $FF,
+          Value, Ch[N].CHCR, Ch[N].MADR, Ch[N].QWC, Ch[N].TADR]));
       case Offset and $FF of
         $00:
           begin
             var Was := (Ch[N].CHCR and CHCRSTR) <> 0;
+            if Was and Ch[N].Finishing and ((Value and CHCRSTR) <> 0) then
+            begin
+              // The transfer has moved all its data and only waits out its
+              // bus time: it ends now and the new one starts.
+              Ch[N].Finishing := False;
+              Ch[N].CHCR := Ch[N].CHCR and not Cardinal(CHCRSTR);
+              STAT := STAT or (Cardinal(1) shl N);
+              UpdateInterrupt;
+              ScheduleNext;
+              Was := False;
+            end;
             if Was and ((Value and CHCRSTR) = 0) then
             begin
               // Stopping a channel.
@@ -364,6 +381,8 @@ begin
   for var N := 0 to 9 do
     if Ch[N].Finishing and (Ch[N].DoneAt <= FScheduler.Now) then
     begin
+      if (Log <> nil) and (((LogMask shr N) and 1) <> 0) and (Log.Count < 200000) then
+        Log.Add(Format('%d ch%d end (madr %.8x)', [FScheduler.Now, N, Ch[N].MADR]));
       Ch[N].Finishing := False;
       Ch[N].CHCR := Ch[N].CHCR and not Cardinal(CHCRSTR);
       STAT := STAT or (Cardinal(1) shl N);

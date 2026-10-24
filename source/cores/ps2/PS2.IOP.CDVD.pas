@@ -327,7 +327,21 @@ begin
       case Fn of
         $01: // Read(sector, count, EE buffer, mode)
           begin
+            if Log <> nil then
+              Log.Add(Format('cdvd read %d x%d -> %.8x mode %.8x %.8x %.8x', [A[0], A[1], A[2], A[3], A[4], A[5]]));
             ReadSectors(A[0], Integer(A[1]), A[2], False);
+            // All data went straight to the buffer: the EE's alignment fixup
+            // (A[4]: head/tail sizes, destinations, bytes) has nothing to copy;
+            // A[5] is the read position.
+            var Fix: array[0..15] of Byte;
+            FillChar(Fix, SizeOf(Fix), 0);
+            if A[4] <> 0 then
+              WriteEE(A[4], @Fix[0], 16);
+            if A[5] <> 0 then
+            begin
+              var Pos := A[1] * 2048;
+              WriteEE(A[5], @Pos, 4);
+            end;
             PCardinal(@Result[0])^ := 0;
           end;
         $04: PCardinal(@Result[0])^ := 1;

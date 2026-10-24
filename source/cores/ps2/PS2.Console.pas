@@ -88,6 +88,8 @@ type
     procedure RunFrame;
     function TakeTTY: string;
     procedure SerializeState(State: TStateArchive);
+    // Diagnostics: CDVD server requests go to Log.
+    procedure SetCDVDLog(Log: TStrings);
     property FrameCount: Int64 read FFrameCount;
     property Halted: Boolean read GetHalted;
     property IdleCycles: Int64 read FIdleCycles;
@@ -547,6 +549,12 @@ begin
     CPU.Run;
     IOP.Run(Scheduler.Now);
   end;
+end;
+
+procedure TPS2Console.SetCDVDLog(Log: TStrings);
+begin
+  for var S in FCDVD do
+    S.Log := Log;
 end;
 
 procedure TPS2Console.SerializeState(State: TStateArchive);

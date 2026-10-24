@@ -1443,7 +1443,7 @@ begin
           if Assigned(K.OnHighLevelModule) then
             K.OnHighLevelModule(Path, nil);
           if (Fn = 7) and (K.Arg(3) <> 0) then
-            K.W32(K.Arg(3), 0);
+            K.W32(K.Arg(3), Ord(K.IsAbsentDevice(Path, '')));
           Exit(1000);
         end;
         var Device, P: string;

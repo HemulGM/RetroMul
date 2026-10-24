@@ -47,7 +47,10 @@ type
   // (nil: read by path) and arguments. Returns the module id, or an error;
   // a module started as IOP code answers later (Server.DeferCall, then
   // Server.FinishModule).
-  TPS2ModuleLoad = function(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes): Integer of object;
+  // The module id (or an error) and, for a module the high-level IOP
+  // answers at once, its start result (0 resident, 1 no resident end).
+  TPS2ModuleLoad = function(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes;
+    out ModResult: Integer): Integer of object;
 
   TPS2IOPHeapServer = class(TPS2RPCServer)
   private
@@ -380,12 +383,13 @@ begin
           Move((Args + 260)^, ModArgs[0], ArgLen);
         end;
         var Id := -200;
+        var ModResult := 0;
         if Assigned(FOnModule) then
-          Id := FOnModule(Self, Path, Image, ModArgs);
+          Id := FOnModule(Self, Path, Image, ModArgs, ModResult);
         if FLog <> nil then
-          FLog.Add(Format('load module %s: %d', [Path, Id]));
+          FLog.Add(Format('load module %s: %d (result %d)', [Path, Id, ModResult]));
         PInteger(@Result[0])^ := Id;
-        PInteger(@Result[4])^ := 0;
+        PInteger(@Result[4])^ := ModResult;
       end;
     1, 5:
       begin

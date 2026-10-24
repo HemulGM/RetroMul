@@ -48,7 +48,8 @@ type
     function ImageVersion(const ResetArgs: string): Integer;
     procedure VU1Kick(Address: Cardinal);
     procedure NoteModuleVersion(const Path: string; const Image: TBytes);
-    function StartModule(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes): Integer;
+    function StartModule(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes;
+      out ModResult: Integer): Integer;
     procedure ModuleDone(const Token: TBytes; ModuleId, Result: Integer);
     function GetHalted: Boolean;
   public
@@ -381,8 +382,10 @@ begin
     MemoryCards.ManVersion := Info.Version;
 end;
 
-function TPS2Console.StartModule(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes): Integer;
+function TPS2Console.StartModule(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes;
+  out ModResult: Integer): Integer;
 begin
+  ModResult := 0;
   // The high-level IOP provides the system modules; game modules run as IOP
   // code and answer once their start routine returned.
   if Path <> '' then
@@ -396,12 +399,20 @@ begin
       Data := FDiscFS.ReadFile(Device, P);
   end;
   if not RunIOPModules or (Data = nil) then
+  begin
+    if IOP.IsAbsentDevice(Path, '') then
+      ModResult := 1;
     Exit(1000 + ModuleLog.Count);
+  end;
   var Info: TIRXInfo;
   if not ParseIRX(Data, Info) then
     Exit(-201);
   if IOP.IsHLEModule(Path, Info.Name) then
+  begin
+    if IOP.IsAbsentDevice(Path, Info.Name) then
+      ModResult := 1;
     Exit(1000 + ModuleLog.Count);
+  end;
   var Index := IOP.LoadModule(Data, Path);
   if Index <= 0 then
     Exit(Index);

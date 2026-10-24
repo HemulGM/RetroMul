@@ -293,6 +293,9 @@ type
     procedure Warn(const Text: string);
     // Modules.
     function IsHLEModule(const Path, Name: string): Boolean;
+    // An expansion bay driver (DEV9, ATAD, HDD, PFS, SMAP, network): no
+    // device is there, its start ends without staying resident.
+    function IsAbsentDevice(const Path, Name: string): Boolean;
     // Loads an IRX image: the module index (>0) or an error (<0).
     function LoadModule(const Data: TBytes; const Path: string): Integer;
     // Starts a loaded module in a thread; on return the EE request (Token)
@@ -1050,6 +1053,32 @@ const
   Names: array[0..12] of string = ('padman', 'mcman', 'mcserv', 'cdvd_ee_driver', 'cdvd_driver',
     'IO/File_Manager', 'FILEIO_service', 'dev9', 'atad_driver', 'hdd_driver', 'pfs_driver', 'Smap_driver',
     'USB_driver');
+begin
+  var Base := ExtractFileName(Path.Replace('/', '\')).ToUpper;
+  var Semi := Base.IndexOf(';');
+  if Semi >= 0 then
+    Base := Base.Substring(0, Semi);
+  if Base.EndsWith('.IRX') then
+    Base := Base.Substring(0, Length(Base) - 4);
+  var Colon := Base.IndexOf(':');
+  if Colon >= 0 then
+    Base := Base.Substring(Colon + 1);
+  for var F in Files do
+    if Base = F then
+      Exit(True);
+  for var N in Names do
+    if SameText(Name, N) then
+      Exit(True);
+  Result := False;
+end;
+
+// Drivers for the expansion bay (network adapter, HDD): with no device
+// there, DEV9 and the drivers above it end at start (MODULE_NO_RESIDENT_END).
+function TPS2IOPKernel.IsAbsentDevice(const Path, Name: string): Boolean;
+const
+  Files: array[0..10] of string = ('DEV9', 'ATAD', 'HDD', 'PFS', 'SMAP', 'INET', 'INETCTL', 'NETCNF', 'NETCNFIF',
+    'PPP', 'PPPOE');
+  Names: array[0..4] of string = ('dev9', 'atad_driver', 'hdd_driver', 'pfs_driver', 'Smap_driver');
 begin
   var Base := ExtractFileName(Path.Replace('/', '\')).ToUpper;
   var Semi := Base.IndexOf(';');

@@ -216,6 +216,8 @@ end;
 
 function TPS2IOPHardware.ReadSPU2(Offset: Cardinal): Cardinal;
 begin
+  if (SPULog <> nil) and (SPULog.Count < 100000) and (Offset < $800) and ((Offset and $3FF) >= $180) then
+    SPULog.Add(Format('%d spu r %.3x', [FScheduler.Now, Offset]));
   var Index := (Offset shr 1) and $7FF;
   var Local := Offset and $3FF;
   if (Offset < $800) and (Local = SPUStatX) then

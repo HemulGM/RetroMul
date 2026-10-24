@@ -35,6 +35,9 @@ uses
 
 const
   PS2PadSIDs: array[0..3] of Cardinal = ($80000100, $80000101, $8000010F, $8000011F);
+  // IOP memory for the slots' request buffers (8 x 64 bytes, a free spot
+  // of the high-level IOP's low memory).
+  PS2PadIOPBuffers = $0000F800;
 
 type
   // Front-end input for one pad: buttons active high in the pad bit order
@@ -551,6 +554,10 @@ begin
           FillChar(S.ActAlign, SizeOf(S.ActAlign), $FF);
           WriteSlot(Port, Slot);
           A[3] := 1;
+          // An IOP buffer per slot (two 32-byte halves) older libpads send
+          // their requests to by SIF DMA every frame; the HLE module does
+          // not read it.
+          A[5] := PS2PadIOPBuffers + Cardinal(Port * 4 + Slot) * $40;
         end;
       end;
     CmdClose:

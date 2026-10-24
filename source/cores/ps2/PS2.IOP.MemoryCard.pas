@@ -72,6 +72,8 @@ type
     function ChDir(Port: Integer; Table: Cardinal; const Name: string): Integer;
   public
     Cards: array[0..1] of TPS2MemoryCard;
+    // A card in the second slot (the first always has one).
+    SecondCard: Boolean;
     Log: TStrings;
     constructor Create(EERAM: PByte);
     destructor Destroy; override;
@@ -304,6 +306,7 @@ begin
   Cards[0] := TPS2MemoryCard.Create;
   Cards[1] := TPS2MemoryCard.Create;
   FListing := TList<TBytes>.Create;
+  SecondCard := True;
   // libmc expects the reply some time after the call.
   Latency := PS2EEClock div 400;
 end;
@@ -330,7 +333,7 @@ end;
 
 function TPS2MCServer.Card(Port: Cardinal): TPS2MemoryCard;
 begin
-  if Port > 1 then
+  if (Port > 1) or ((Port = 1) and not SecondCard) then
     Exit(nil);
   Result := Cards[Port];
 end;
@@ -552,7 +555,17 @@ begin
         var Port := PCardinal(Args + 4)^;
         var Buffer := PCardinal(Args + 28)^;
         if Card(Port) = nil then
-          R := -1
+        begin
+          // No card: type 0, result 'not detected'.
+          var P := EEPtr(Buffer, $94);
+          if P <> nil then
+          begin
+            PCardinal(P)^ := 0;
+            PCardinal(P + 4)^ := 0;
+            PCardinal(P + $90)^ := 0;
+          end;
+          R := -10;
+        end
         else
         begin
           var P := EEPtr(Buffer, $94);

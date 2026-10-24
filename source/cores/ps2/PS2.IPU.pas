@@ -1,15 +1,18 @@
 ﻿unit PS2.IPU;
 
-// Image processing unit: the MPEG macroblock decoder behind DMA channels 4
-// (toIPU, the bit stream) and 3 (fromIPU, decoded data). Commands BCLR,
-// IDEC, BDEC, VDEC, FDEC, SETIQ, SETVQ, CSC, PACK and SETTH run as resumable
-// state machines on the input FIFO (8 quadwords) as data arrives; results
-// queue in the output FIFO until DMA or the CPU takes them. A finished
-// command raises the IPU interrupt.
-// Ported from Play! (Source/ee/IPU.cpp, BSD-2-Clause, Copyright (c)
-// Jean-Philip Desjardins) with the MPEG-2 tables of Play! Framework; the IDCT
-// is the IEEE 1180 reference transform both use.
-// References: EE User's Manual (IPU chapter), ISO/IEC 13818-2.
+// Image processing unit: the MPEG-1/MPEG-2 macroblock decoder behind DMA
+// channels 4 (toIPU, the bit stream) and 3 (fromIPU, decoded data).
+// The decoding follows ISO/IEC 13818-2 (and 11172-2 for MPEG-1 streams):
+// macroblock syntax, the VLC tables of Annex B, inverse scan, inverse
+// quantisation with mismatch control (MPEG-1 oddification) and the IDCT
+// (a separable fixed-point transform written for this unit). Colour space
+// conversion uses the ITU-R BT.601 equations for studio-range YCbCr.
+// The commands (BCLR, IDEC, BDEC, VDEC, FDEC, SETIQ, SETVQ, CSC, PACK,
+// SETTH), registers and FIFOs follow the IPU documentation (ps2tek) and the
+// way ps2sdk's libmpeg drives the unit. Commands run as data arrives and may
+// stop at any syntax element when the input FIFO (8 quadwords plus a
+// 2-quadword decode buffer) runs dry; results queue in the output FIFO until
+// DMA or the CPU takes them. Finished commands raise the IPU interrupt.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$POINTERMATH ON}
 
@@ -19,35 +22,33 @@ uses
   System.SysUtils, System.Classes, System.Math, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.Bus, PS2.DMAC;
 
 type
-  // A code table indexed by the next Bits bits of the stream: entries hold
-  // (code length shl 24) or value, 0 where no code matches.
-  TPS2IPUVLC = record
+  // A prefix code indexed by the next Bits bits of the stream: each entry is
+  // (code length shl 24) or value; 0 where no code starts.
+  TPS2IPUCode = record
     Bits: Integer;
     Entries: TArray<Cardinal>;
   end;
 
   TPS2IPUState = record
     CTRL, Data, Command: Cardinal;
-    LastCommand: Integer;
+    // Data holds an FDEC/VDEC result (until then IPU_CMD shows the stream).
+    DataValid: Boolean;
     Busy: Boolean;
-    // A delayed command (IDEC) starts here.
-    StartAt: Int64;
     TH0, TH1: Cardinal;
-    IntraIQ, NonIntraIQ: array[0..63] of Byte;
+    // Quantiser matrices in raster order.
+    IntraW, NonIntraW: array[0..63] of Byte;
     VQCLUT: array[0..15] of Word;
-    DCPredictor: array[0..2] of Integer;
-    // Input FIFO: InSize bytes; the stream is at bit InBit of the first
-    // quadword. Bytes past 128 are slack for reads.
-    InBuf: array[0..159] of Byte;
-    InSize, InBit: Integer;
+    DCPred: array[0..2] of Integer;
+    // Input: Size bytes (whole quadwords); the stream is at bit Bit of the
+    // first quadword. Bytes past the capacity are slack for reads.
+    Buf: array[0..175] of Byte;
+    Size, Bit: Integer;
     // Command progress.
-    Phase, Index, MBCount: Integer;
-    // Macroblock decoding (BDEC, and IDEC through it).
-    BCommand: Cardinal;
-    BPhase, CBP, Block, DCTPhase, DCTIndex, DCSize: Integer;
+    Step, Index, MBCount: Integer;
+    // The macroblock in progress (BDEC, IDEC).
+    MBStep, MBType, QScaleCode, DCTType, CBP, Block, Coef, DCSize: Integer;
+    MBIntra, MBResetDC, MBFieldDCT: Boolean;
     Blocks: array[0..5, 0..63] of SmallInt;
-    // IDEC macroblock fields.
-    MBType, QSC, DT: Cardinal;
     // CSC/PACK input macroblock.
     Raw: array[0..1023] of Byte;
   end;
@@ -60,36 +61,39 @@ type
     FOut: TBytes;
     FOutHead, FOutSize: Integer;
     FPumping, FAgain: Boolean;
-    FMBAI, FMBTypeI, FMBTypeP, FMBTypeB, FMotionCode, FDMVector, FDCSizeLum, FDCSizeChrom, FCBP, FDCT0,
-      FDCT1: TPS2IPUVLC;
+    FAddrInc, FTypeI, FTypeP, FTypeB, FTypeD, FMotion, FDMV, FDCLum, FDCChrom, FPattern, FCoefB14,
+      FCoefB15: TPS2IPUCode;
+    // Bit stream.
     function Avail: Integer; inline;
     function Peek(N: Integer): Cardinal; inline;
-    procedure Advance(N: Integer);
-    procedure AlignByte;
+    procedure Skip(N: Integer);
+    function TryRead(N: Integer; out V: Cardinal): Boolean;
     function PeekTop: Cardinal;
-    function PeekVLC(const T: TPS2IPUVLC; out Value: Cardinal; out Len: Integer): Integer;
-    function TryVLC(const T: TPS2IPUVLC; out Value: Cardinal): Integer;
-    function TryRunLevel(Table1: Boolean; out Run, Level: Integer): Integer;
-    function TryFirstCoefficient(out Run, Level: Integer): Integer;
+    function ZerosAhead(N: Integer): Integer;
+    function Lookup(const T: TPS2IPUCode; out Value: Cardinal; out Len: Integer): Integer;
+    function Decode(const T: TPS2IPUCode; out Value: Cardinal): Integer;
+    function DecodeCoefficient(First: Boolean; out Run, Level: Integer; out EndOfBlock: Boolean): Integer;
+    // Commands.
+    procedure StartCommand(Value: Cardinal);
+    procedure Execute;
+    procedure Finish(Flags: Cardinal);
+    function RunMacroblock: Integer;
+    function RunBlock: Integer;
+    procedure ReconstructBlock(B: Integer);
+    procedure MacroblockRaw16(Dest: PSmallInt);
+    function RunBDEC: Integer;
+    function RunIDEC: Integer;
+    function RunVDEC: Integer;
+    function RunFDEC: Integer;
+    function RunSETIQ: Integer;
+    function RunSETVQ: Integer;
+    function RunCSC: Integer;
+    function RunPACK: Integer;
+    procedure ConvertColour(Raw: PByte; RGB16, Signed: Boolean);
+    // Data flow.
     procedure OutWrite(Data: Pointer; Size: Integer);
     procedure RequestPump;
     procedure Pump;
-    procedure Kick;
-    procedure StartCommand(Value: Cardinal);
-    procedure Execute;
-    procedure Finish(Flags: Cardinal; Interrupt: Boolean);
-    function StepBDEC(IDEC: Boolean): Integer;
-    function StepCoefficients(Intra: Boolean): Integer;
-    function StepIDEC: Integer;
-    function StepVDEC: Integer;
-    function StepFDEC: Integer;
-    function StepSETIQ: Integer;
-    function StepSETVQ: Integer;
-    function StepCSC: Integer;
-    function StepPACK: Integer;
-    procedure Dequantise(B: PSmallInt; Intra: Boolean; QSC: Integer);
-    procedure MacroblockRaw16(Dest: PSmallInt; FieldDCT: Boolean);
-    procedure ColorConvert(Raw: PByte; RGB16: Boolean);
     procedure FIFOState(out BP, IFC, FP: Cardinal);
   public
     S: TPS2IPUState;
@@ -108,7 +112,7 @@ type
     // moved; fewer stalls the channel).
     function TakeInput(Data: PByte; Count: Integer): Integer;
     function GiveOutput(Data: PByte; Count: Integer): Integer;
-    // Scheduler event: a delayed command starts, DMA data moves.
+    // Scheduler event: the command goes on with the data DMA brought.
     procedure Event;
     procedure SerializeState(State: TStateArchive);
     property OnInterrupt: TProc read FOnInterrupt write FOnInterrupt;
@@ -125,11 +129,19 @@ type
 
 implementation
 
+type
+  // A code from Annex B: its bits (MSB first) and its value.
+  TCodeDef = record
+    Code: string;
+    Value: Integer;
+  end;
+
 const
-  StepWait = 0;
-  StepDone = 1;
-  StepStart = 2;
-  StepError = 3;
+  // Results of a command step.
+  RunWait = 0;
+  RunDone = 1;
+  RunStartCode = 2;
+  RunError = 3;
 
   CtrlECD = $00004000;
   CtrlSCD = $00008000;
@@ -139,268 +151,324 @@ const
   CtrlMP1 = $00800000;
   CtrlRST = $40000000;
 
-  // EE cycles before IDEC starts (games restart DMA after issuing it).
-  IDECDelay = 1000;
-  InCapacity = 128;
-  RunEscape = 102;
+  // Input FIFO (8 quadwords) and decode buffer (2 quadwords), in bytes.
+  InCapacity = 160;
 
-  DefaultIntraIQ: array[0..63] of Byte = (
-    8, 16, 19, 22, 26, 27, 29, 34, 16, 16, 22, 24, 27, 29, 34, 37,
-    19, 22, 26, 27, 29, 34, 34, 38, 22, 22, 26, 27, 29, 34, 37, 40,
-    22, 26, 27, 29, 32, 35, 40, 48, 26, 27, 29, 32, 35, 40, 48, 58,
-    26, 27, 29, 34, 38, 46, 56, 69, 27, 29, 35, 38, 46, 56, 69, 83);
-  DefaultNonIntraIQ: array[0..63] of Byte = (
-    16, 17, 18, 19, 20, 21, 22, 23, 17, 18, 19, 20, 21, 22, 23, 24,
-    18, 19, 20, 21, 22, 23, 24, 25, 19, 20, 21, 22, 23, 24, 26, 27,
-    20, 21, 22, 23, 25, 26, 27, 28, 21, 22, 23, 24, 26, 27, 28, 30,
-    22, 23, 24, 26, 27, 28, 30, 31, 23, 24, 25, 27, 28, 30, 31, 33);
-  NonLinearQScale: array[0..31] of Byte = (
+  // DCT coefficient code values: run shl 8 or level; or one of these.
+  CoefEscape = $10000;
+  CoefEOB = $20000;
+
+  // Scan position -> raster position (ISO/IEC 13818-2 figures 7-2, 7-3).
+  ZigZag: array[0..63] of Byte = (
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
+    12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63);
+  Alternate: array[0..63] of Byte = (
+    0, 8, 16, 24, 1, 9, 2, 10, 17, 25, 32, 40, 48, 56, 57, 49,
+    41, 33, 26, 18, 3, 11, 4, 12, 19, 27, 34, 42, 50, 58, 35, 43,
+    51, 59, 20, 28, 5, 13, 6, 14, 21, 29, 36, 44, 52, 60, 37, 45,
+    53, 61, 22, 30, 7, 15, 23, 31, 38, 46, 54, 62, 39, 47, 55, 63);
+
+  // Default intra quantiser matrix, raster order (6.3.11); the default
+  // non-intra matrix is 16 everywhere.
+  DefaultIntra: array[0..63] of Byte = (
+    8, 16, 19, 22, 26, 27, 29, 34,
+    16, 16, 22, 24, 27, 29, 34, 37,
+    19, 22, 26, 27, 29, 34, 34, 38,
+    22, 22, 26, 27, 29, 34, 37, 40,
+    22, 26, 27, 29, 32, 35, 40, 48,
+    26, 27, 29, 32, 35, 40, 48, 58,
+    26, 27, 29, 34, 38, 46, 56, 69,
+    27, 29, 35, 38, 46, 56, 69, 83);
+
+  // quantiser_scale for q_scale_type 1 (table 7-6).
+  NonLinearScale: array[0..31] of Byte = (
     0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 18, 20, 22,
     24, 28, 32, 36, 40, 44, 48, 52, 56, 64, 72, 80, 88, 96, 104, 112);
-  // Raster position -> scan position.
-  ZigZagScan: array[0..63] of Byte = (
-    0, 1, 5, 6, 14, 15, 27, 28, 2, 4, 7, 13, 16, 26, 29, 42,
-    3, 8, 12, 17, 25, 30, 41, 43, 9, 11, 18, 24, 31, 40, 44, 53,
-    10, 19, 23, 32, 39, 45, 52, 54, 20, 22, 33, 38, 46, 51, 55, 60,
-    21, 34, 37, 47, 50, 56, 59, 61, 35, 36, 48, 49, 57, 58, 62, 63);
-  AlternateScan: array[0..63] of Byte = (
-    0, 4, 6, 20, 22, 36, 38, 52, 1, 5, 7, 21, 23, 37, 39, 53,
-    2, 8, 19, 24, 34, 40, 50, 54, 3, 9, 18, 25, 35, 41, 51, 55,
-    10, 17, 26, 30, 42, 46, 56, 60, 11, 16, 27, 31, 43, 47, 57, 61,
-    12, 15, 28, 32, 44, 48, 58, 62, 13, 14, 29, 33, 45, 49, 59, 63);
 
-  // Code tables (code, length, value) and run/level pairs, from Play!.
-  MBAITable: array[0..34, 0..2] of Cardinal = (
-    ($0001, 1, $00010001), ($0003, 3, $00030002), ($0002, 3, $00030003), ($0003, 4, $00040004),
-    ($0002, 4, $00040005), ($0003, 5, $00050006), ($0002, 5, $00050007), ($0007, 7, $00070008),
-    ($0006, 7, $00070009), ($000B, 8, $0008000A), ($000A, 8, $0008000B), ($0009, 8, $0008000C),
-    ($0008, 8, $0008000D), ($0007, 8, $0008000E), ($0006, 8, $0008000F), ($0017, 10, $000A0010),
-    ($0016, 10, $000A0011), ($0015, 10, $000A0012), ($0014, 10, $000A0013), ($0013, 10, $000A0014),
-    ($0012, 10, $000A0015), ($0023, 11, $000B0016), ($0022, 11, $000B0017), ($0021, 11, $000B0018),
-    ($0020, 11, $000B0019), ($001F, 11, $000B001A), ($001E, 11, $000B001B), ($001D, 11, $000B001C),
-    ($001C, 11, $000B001D), ($001B, 11, $000B001E), ($001A, 11, $000B001F), ($0019, 11, $000B0020),
-    ($0018, 11, $000B0021), ($000F, 11, $000B0022), ($0008, 11, $000B0023));
-  MBTypeITable: array[0..1, 0..2] of Cardinal = (
-    ($0001, 1, $00010001), ($0001, 2, $00020011));
-  MBTypePTable: array[0..6, 0..2] of Cardinal = (
-    ($0001, 1, $0001000A), ($0001, 2, $00020002), ($0001, 3, $00030008), ($0003, 5, $00050001),
-    ($0002, 5, $0005001A), ($0001, 5, $00050012), ($0001, 6, $00060011));
-  MBTypeBTable: array[0..10, 0..2] of Cardinal = (
-    ($0002, 2, $0002000C), ($0003, 2, $0002000E), ($0002, 3, $00030004), ($0003, 3, $00030006),
-    ($0002, 4, $00040008), ($0003, 4, $0004000A), ($0003, 5, $00050001), ($0002, 5, $0005001E),
-    ($0003, 6, $0006001A), ($0002, 6, $00060016), ($0001, 6, $00060011));
-  MotionCodeTable: array[0..32, 0..2] of Cardinal = (
-    ($0001, 1, $00010000), ($0002, 3, $00030001), ($0003, 3, $0003FFFF), ($0002, 4, $00040002),
-    ($0003, 4, $0004FFFE), ($0002, 5, $00050003), ($0003, 5, $0005FFFD), ($0006, 7, $00070004),
-    ($0007, 7, $0007FFFC), ($000A, 8, $00080005), ($000B, 8, $0008FFFB), ($0008, 8, $00080006),
-    ($0009, 8, $0008FFFA), ($0006, 8, $00080007), ($0007, 8, $0008FFF9), ($0016, 10, $000A0008),
-    ($0017, 10, $000AFFF8), ($0014, 10, $000A0009), ($0015, 10, $000AFFF7), ($0012, 10, $000A000A),
-    ($0013, 10, $000AFFF6), ($0022, 11, $000B000B), ($0023, 11, $000BFFF5), ($0020, 11, $000B000C),
-    ($0021, 11, $000BFFF4), ($001E, 11, $000B000D), ($001F, 11, $000BFFF3), ($001C, 11, $000B000E),
-    ($001D, 11, $000BFFF2), ($001A, 11, $000B000F), ($001B, 11, $000BFFF1), ($0018, 11, $000B0010),
-    ($0019, 11, $000BFFF0));
-  DMVectorTable: array[0..2, 0..2] of Cardinal = (
-    ($0000, 1, $00010000), ($0002, 2, $00020001), ($0003, 2, $0002FFFF));
-  DCSizeLumTable: array[0..11, 0..2] of Cardinal = (
-    ($0000, 2, $00000001), ($0001, 2, $00000002), ($0004, 3, $00000000), ($0005, 3, $00000003),
-    ($0006, 3, $00000004), ($000E, 4, $00000005), ($001E, 5, $00000006), ($003E, 6, $00000007),
-    ($007E, 7, $00000008), ($00FE, 8, $00000009), ($01FE, 9, $0000000A), ($01FF, 9, $0000000B));
-  DCSizeChromTable: array[0..11, 0..2] of Cardinal = (
-    ($0000, 2, $00000000), ($0001, 2, $00000001), ($0002, 2, $00000002), ($0006, 3, $00000003),
-    ($000E, 4, $00000004), ($001E, 5, $00000005), ($003E, 6, $00000006), ($007E, 7, $00000007),
-    ($00FE, 8, $00000008), ($01FE, 9, $00000009), ($03FE, 10, $0000000A), ($03FF, 10, $0000000B));
-  CBPTable: array[0..63, 0..2] of Cardinal = (
-    ($0007, 3, $0000003C), ($000D, 4, $00000004), ($000C, 4, $00000008), ($000B, 4, $00000010),
-    ($000A, 4, $00000020), ($0013, 5, $0000000C), ($0012, 5, $00000030), ($0011, 5, $00000014),
-    ($0010, 5, $00000028), ($000F, 5, $0000001C), ($000E, 5, $0000002C), ($000D, 5, $00000034),
-    ($000C, 5, $00000038), ($000B, 5, $00000001), ($000A, 5, $0000003D), ($0009, 5, $00000002),
-    ($0008, 5, $0000003E), ($000F, 6, $00000018), ($000E, 6, $00000024), ($000D, 6, $00000003),
-    ($000C, 6, $0000003F), ($0017, 7, $00000005), ($0016, 7, $00000009), ($0015, 7, $00000011),
-    ($0014, 7, $00000021), ($0013, 7, $00000006), ($0012, 7, $0000000A), ($0011, 7, $00000012),
-    ($0010, 7, $00000022), ($001F, 8, $00000007), ($001E, 8, $0000000B), ($001D, 8, $00000013),
-    ($001C, 8, $00000023), ($001B, 8, $0000000D), ($001A, 8, $00000031), ($0019, 8, $00000015),
-    ($0018, 8, $00000029), ($0017, 8, $0000000E), ($0016, 8, $00000032), ($0015, 8, $00000016),
-    ($0014, 8, $0000002A), ($0013, 8, $0000000F), ($0012, 8, $00000033), ($0011, 8, $00000017),
-    ($0010, 8, $0000002B), ($000F, 8, $00000019), ($000E, 8, $00000025), ($000D, 8, $0000001A),
-    ($000C, 8, $00000026), ($000B, 8, $0000001D), ($000A, 8, $0000002D), ($0009, 8, $00000035),
-    ($0008, 8, $00000039), ($0007, 8, $0000001E), ($0006, 8, $0000002E), ($0005, 8, $00000036),
-    ($0004, 8, $0000003A), ($0007, 9, $0000001F), ($0006, 9, $0000002F), ($0005, 9, $00000037),
-    ($0004, 9, $0000003B), ($0003, 9, $0000001B), ($0002, 9, $00000027), ($0001, 9, $00000000));
-  DCT0Table: array[0..111, 0..2] of Cardinal = (
-    ($0003, 2, $00000000), ($0003, 3, $00000001), ($0004, 4, $00000002), ($0005, 4, $00000003),
-    ($0005, 5, $00000004), ($0007, 5, $00000005), ($0006, 5, $00000006), ($0006, 6, $00000007),
-    ($0007, 6, $00000008), ($0005, 6, $00000009), ($0004, 6, $0000000A), ($0001, 6, $0000000F),
-    ($0006, 7, $0000000B), ($0004, 7, $0000000C), ($0007, 7, $0000000D), ($0005, 7, $0000000E),
-    ($0026, 8, $00000010), ($0021, 8, $00000011), ($0025, 8, $00000012), ($0024, 8, $00000013),
-    ($0027, 8, $00000014), ($0023, 8, $00000015), ($0022, 8, $00000016), ($0020, 8, $00000017),
-    ($000A, 10, $00000018), ($000C, 10, $00000019), ($000B, 10, $0000001A), ($000F, 10, $0000001B),
-    ($0009, 10, $0000001C), ($000E, 10, $0000001D), ($000D, 10, $0000001E), ($0008, 10, $0000001F),
-    ($001D, 12, $00000020), ($0018, 12, $00000021), ($0013, 12, $00000022), ($0010, 12, $00000023),
-    ($001B, 12, $00000024), ($0014, 12, $00000025), ($001C, 12, $00000026), ($0012, 12, $00000027),
-    ($001E, 12, $00000028), ($0015, 12, $00000029), ($0011, 12, $0000002A), ($001F, 12, $0000002B),
-    ($001A, 12, $0000002C), ($0019, 12, $0000002D), ($0017, 12, $0000002E), ($0016, 12, $0000002F),
-    ($001A, 13, $00000030), ($0019, 13, $00000031), ($0018, 13, $00000032), ($0017, 13, $00000033),
-    ($0016, 13, $00000034), ($0015, 13, $00000035), ($0014, 13, $00000036), ($0013, 13, $00000037),
-    ($0012, 13, $00000038), ($0011, 13, $00000039), ($0010, 13, $0000003A), ($001F, 13, $0000003B),
-    ($001E, 13, $0000003C), ($001D, 13, $0000003D), ($001C, 13, $0000003E), ($001B, 13, $0000003F),
-    ($001F, 14, $00000040), ($001E, 14, $00000041), ($001D, 14, $00000042), ($001C, 14, $00000043),
-    ($001B, 14, $00000044), ($001A, 14, $00000045), ($0019, 14, $00000046), ($0018, 14, $00000047),
-    ($0017, 14, $00000048), ($0016, 14, $00000049), ($0015, 14, $0000004A), ($0014, 14, $0000004B),
-    ($0013, 14, $0000004C), ($0012, 14, $0000004D), ($0011, 14, $0000004E), ($0010, 14, $0000004F),
-    ($0018, 15, $00000050), ($0017, 15, $00000051), ($0016, 15, $00000052), ($0015, 15, $00000053),
-    ($0014, 15, $00000054), ($0013, 15, $00000055), ($0012, 15, $00000056), ($0011, 15, $00000057),
-    ($0010, 15, $00000058), ($001F, 15, $00000059), ($001E, 15, $0000005A), ($001D, 15, $0000005B),
-    ($001C, 15, $0000005C), ($001B, 15, $0000005D), ($001A, 15, $0000005E), ($0019, 15, $0000005F),
-    ($0013, 16, $00000060), ($0012, 16, $00000061), ($0011, 16, $00000062), ($0010, 16, $00000063),
-    ($0014, 16, $00000064), ($001A, 16, $00000065), ($0019, 16, $00000066), ($0018, 16, $00000067),
-    ($0017, 16, $00000068), ($0016, 16, $00000069), ($0015, 16, $0000006A), ($001F, 16, $0000006B),
-    ($001E, 16, $0000006C), ($001D, 16, $0000006D), ($001C, 16, $0000006E), ($001B, 16, $0000006F));
-  DCT1Table: array[0..111, 0..2] of Cardinal = (
-    ($0002, 2, $00000000), ($0002, 3, $00000001), ($0006, 3, $00000002), ($0007, 4, $00000004),
-    ($0005, 5, $00000003), ($0007, 5, $00000005), ($0006, 5, $00000007), ($001C, 5, $0000000B),
-    ($001D, 5, $00000010), ($0006, 6, $00000006), ($0007, 6, $00000008), ($0005, 6, $00000011),
-    ($0004, 6, $00000018), ($0001, 6, $0000000F), ($0079, 7, $00000012), ($007A, 7, $00000014),
-    ($0007, 7, $0000000C), ($0005, 7, $0000000D), ($0078, 7, $0000000E), ($0006, 7, $00000009),
-    ($0004, 7, $0000000A), ($007B, 7, $00000020), ($007C, 7, $00000021), ($0026, 8, $00000013),
-    ($0021, 8, $00000015), ($0025, 8, $00000016), ($0024, 8, $00000017), ($0027, 8, $00000019),
-    ($00FC, 8, $0000001A), ($00FD, 8, $0000001B), ($00FA, 8, $00000030), ($00FB, 8, $00000031),
-    ($00FE, 8, $00000032), ($00FF, 8, $00000033), ($0023, 8, $00000022), ($0022, 8, $00000023),
-    ($0020, 8, $00000024), ($0004, 9, $0000001C), ($0005, 9, $0000001D), ($0007, 9, $0000001E),
-    ($000D, 10, $0000001F), ($000C, 10, $00000025), ($001C, 12, $00000026), ($0012, 12, $00000027),
-    ($001E, 12, $00000028), ($0015, 12, $00000029), ($0011, 12, $0000002A), ($001F, 12, $0000002B),
-    ($001A, 12, $0000002C), ($0019, 12, $0000002D), ($0017, 12, $0000002E), ($0016, 12, $0000002F),
-    ($0016, 13, $00000034), ($0015, 13, $00000035), ($0014, 13, $00000036), ($0013, 13, $00000037),
-    ($0012, 13, $00000038), ($0011, 13, $00000039), ($0010, 13, $0000003A), ($001F, 13, $0000003B),
-    ($001E, 13, $0000003C), ($001D, 13, $0000003D), ($001C, 13, $0000003E), ($001B, 13, $0000003F),
-    ($001F, 14, $00000040), ($001E, 14, $00000041), ($001D, 14, $00000042), ($001C, 14, $00000043),
-    ($001B, 14, $00000044), ($001A, 14, $00000045), ($0019, 14, $00000046), ($0018, 14, $00000047),
-    ($0017, 14, $00000048), ($0016, 14, $00000049), ($0015, 14, $0000004A), ($0014, 14, $0000004B),
-    ($0013, 14, $0000004C), ($0012, 14, $0000004D), ($0011, 14, $0000004E), ($0010, 14, $0000004F),
-    ($0018, 15, $00000050), ($0017, 15, $00000051), ($0016, 15, $00000052), ($0015, 15, $00000053),
-    ($0014, 15, $00000054), ($0013, 15, $00000055), ($0012, 15, $00000056), ($0011, 15, $00000057),
-    ($0010, 15, $00000058), ($001F, 15, $00000059), ($001E, 15, $0000005A), ($001D, 15, $0000005B),
-    ($001C, 15, $0000005C), ($001B, 15, $0000005D), ($001A, 15, $0000005E), ($0019, 15, $0000005F),
-    ($0013, 16, $00000060), ($0012, 16, $00000061), ($0011, 16, $00000062), ($0010, 16, $00000063),
-    ($0014, 16, $00000064), ($001A, 16, $00000065), ($0019, 16, $00000066), ($0018, 16, $00000067),
-    ($0017, 16, $00000068), ($0016, 16, $00000069), ($0015, 16, $0000006A), ($001F, 16, $0000006B),
-    ($001E, 16, $0000006C), ($001D, 16, $0000006D), ($001C, 16, $0000006E), ($001B, 16, $0000006F));
-  DCT0RunLevel: array[0..111, 0..1] of Byte = (
-    (0, 1), (1, 1), (0, 2), (2, 1), (0, 3), (3, 1), (4, 1), (1, 2),
-    (5, 1), (6, 1), (7, 1), (0, 4), (2, 2), (8, 1), (9, 1), (102, 0),
-    (0, 5), (0, 6), (1, 3), (3, 2), (10, 1), (11, 1), (12, 1), (13, 1),
-    (0, 7), (1, 4), (2, 3), (4, 2), (5, 2), (14, 1), (15, 1), (16, 1),
-    (0, 8), (0, 9), (0, 10), (0, 11), (1, 5), (2, 4), (3, 3), (4, 3),
-    (6, 2), (7, 2), (8, 2), (17, 1), (18, 1), (19, 1), (20, 1), (21, 1),
-    (0, 12), (0, 13), (0, 14), (0, 15), (1, 6), (1, 7), (2, 5), (3, 4),
-    (5, 3), (9, 2), (10, 2), (22, 1), (23, 1), (24, 1), (25, 1), (26, 1),
-    (0, 16), (0, 17), (0, 18), (0, 19), (0, 20), (0, 21), (0, 22), (0, 23),
-    (0, 24), (0, 25), (0, 26), (0, 27), (0, 28), (0, 29), (0, 30), (0, 31),
-    (0, 32), (0, 33), (0, 34), (0, 35), (0, 36), (0, 37), (0, 38), (0, 39),
-    (0, 40), (1, 8), (1, 9), (1, 10), (1, 11), (1, 12), (1, 13), (1, 14),
-    (1, 15), (1, 16), (1, 17), (1, 18), (6, 3), (11, 2), (12, 2), (13, 2),
-    (14, 2), (15, 2), (16, 2), (27, 1), (28, 1), (29, 1), (30, 1), (31, 1));
-  DCT1RunLevel: array[0..111, 0..1] of Byte = (
-    (0, 1), (1, 1), (0, 2), (2, 1), (0, 3), (3, 1), (4, 1), (1, 2),
-    (5, 1), (6, 1), (7, 1), (0, 4), (2, 2), (8, 1), (9, 1), (102, 0),
-    (0, 5), (0, 6), (1, 3), (3, 2), (10, 1), (11, 1), (12, 1), (13, 1),
-    (0, 7), (1, 4), (2, 3), (4, 2), (5, 2), (14, 1), (15, 1), (16, 1),
-    (0, 8), (0, 9), (0, 10), (0, 11), (1, 5), (2, 4), (3, 3), (4, 3),
-    (6, 2), (7, 2), (8, 2), (17, 1), (18, 1), (19, 1), (20, 1), (21, 1),
-    (0, 12), (0, 13), (0, 14), (0, 15), (1, 6), (1, 7), (2, 5), (3, 4),
-    (5, 3), (9, 2), (10, 2), (22, 1), (23, 1), (24, 1), (25, 1), (26, 1),
-    (0, 16), (0, 17), (0, 18), (0, 19), (0, 20), (0, 21), (0, 22), (0, 23),
-    (0, 24), (0, 25), (0, 26), (0, 27), (0, 28), (0, 29), (0, 30), (0, 31),
-    (0, 32), (0, 33), (0, 34), (0, 35), (0, 36), (0, 37), (0, 38), (0, 39),
-    (0, 40), (1, 8), (1, 9), (1, 10), (1, 11), (1, 12), (1, 13), (1, 14),
-    (1, 15), (1, 16), (1, 17), (1, 18), (6, 3), (11, 2), (12, 2), (13, 2),
-    (14, 2), (15, 2), (16, 2), (27, 1), (28, 1), (29, 1), (30, 1), (31, 1));
+  // ISO/IEC 13818-2 Annex B. Sign bits that follow a code are not part of it.
 
-var
-  // IEEE 1180 reference IDCT basis: C[frequency, time].
-  IDCTBasis: array[0..7, 0..7] of Double;
+  // B.1 macroblock_address_increment; 34 = stuffing (MPEG-1), 35 = escape.
+  AddrIncCodes: array[0..34] of TCodeDef = (
+    (Code: '1'; Value: 1), (Code: '011'; Value: 2), (Code: '010'; Value: 3), (Code: '0011'; Value: 4),
+    (Code: '0010'; Value: 5), (Code: '00011'; Value: 6), (Code: '00010'; Value: 7), (Code: '0000111'; Value: 8),
+    (Code: '0000110'; Value: 9), (Code: '00001011'; Value: 10), (Code: '00001010'; Value: 11),
+    (Code: '00001001'; Value: 12), (Code: '00001000'; Value: 13), (Code: '00000111'; Value: 14),
+    (Code: '00000110'; Value: 15), (Code: '0000010111'; Value: 16), (Code: '0000010110'; Value: 17),
+    (Code: '0000010101'; Value: 18), (Code: '0000010100'; Value: 19), (Code: '0000010011'; Value: 20),
+    (Code: '0000010010'; Value: 21), (Code: '00000100011'; Value: 22), (Code: '00000100010'; Value: 23),
+    (Code: '00000100001'; Value: 24), (Code: '00000100000'; Value: 25), (Code: '00000011111'; Value: 26),
+    (Code: '00000011110'; Value: 27), (Code: '00000011101'; Value: 28), (Code: '00000011100'; Value: 29),
+    (Code: '00000011011'; Value: 30), (Code: '00000011010'; Value: 31), (Code: '00000011001'; Value: 32),
+    (Code: '00000011000'; Value: 33), (Code: '00000001111'; Value: 34), (Code: '00000001000'; Value: 35));
 
-procedure InitIDCT;
+  // B.2-B.4 macroblock_type: quant 10h, motion forward 8, motion backward 4,
+  // pattern 2, intra 1. D pictures (MPEG-1) have intra macroblocks only.
+  TypeICodes: array[0..1] of TCodeDef = ((Code: '1'; Value: $01), (Code: '01'; Value: $11));
+  TypePCodes: array[0..6] of TCodeDef = (
+    (Code: '1'; Value: $0A), (Code: '01'; Value: $02), (Code: '001'; Value: $08), (Code: '00011'; Value: $01),
+    (Code: '00010'; Value: $1A), (Code: '00001'; Value: $12), (Code: '000001'; Value: $11));
+  TypeBCodes: array[0..10] of TCodeDef = (
+    (Code: '10'; Value: $0C), (Code: '11'; Value: $0E), (Code: '010'; Value: $04), (Code: '011'; Value: $06),
+    (Code: '0010'; Value: $08), (Code: '0011'; Value: $0A), (Code: '00011'; Value: $01),
+    (Code: '00010'; Value: $1E), (Code: '000011'; Value: $1A), (Code: '000010'; Value: $16),
+    (Code: '000001'; Value: $11));
+  TypeDCodes: array[0..0] of TCodeDef = ((Code: '1'; Value: $01));
+
+  // B.9 coded_block_pattern.
+  PatternCodes: array[0..63] of TCodeDef = (
+    (Code: '111'; Value: 60), (Code: '1101'; Value: 4), (Code: '1100'; Value: 8), (Code: '1011'; Value: 16),
+    (Code: '1010'; Value: 32), (Code: '10011'; Value: 12), (Code: '10010'; Value: 48), (Code: '10001'; Value: 20),
+    (Code: '10000'; Value: 40), (Code: '01111'; Value: 28), (Code: '01110'; Value: 44), (Code: '01101'; Value: 52),
+    (Code: '01100'; Value: 56), (Code: '01011'; Value: 1), (Code: '01010'; Value: 61), (Code: '01001'; Value: 2),
+    (Code: '01000'; Value: 62), (Code: '001111'; Value: 24), (Code: '001110'; Value: 36), (Code: '001101'; Value: 3),
+    (Code: '001100'; Value: 63), (Code: '0010111'; Value: 5), (Code: '0010110'; Value: 9),
+    (Code: '0010101'; Value: 17), (Code: '0010100'; Value: 33), (Code: '0010011'; Value: 6),
+    (Code: '0010010'; Value: 10), (Code: '0010001'; Value: 18), (Code: '0010000'; Value: 34),
+    (Code: '00011111'; Value: 7), (Code: '00011110'; Value: 11), (Code: '00011101'; Value: 19),
+    (Code: '00011100'; Value: 35), (Code: '00011011'; Value: 13), (Code: '00011010'; Value: 49),
+    (Code: '00011001'; Value: 21), (Code: '00011000'; Value: 41), (Code: '00010111'; Value: 14),
+    (Code: '00010110'; Value: 50), (Code: '00010101'; Value: 22), (Code: '00010100'; Value: 42),
+    (Code: '00010011'; Value: 15), (Code: '00010010'; Value: 51), (Code: '00010001'; Value: 23),
+    (Code: '00010000'; Value: 43), (Code: '00001111'; Value: 25), (Code: '00001110'; Value: 37),
+    (Code: '00001101'; Value: 26), (Code: '00001100'; Value: 38), (Code: '00001011'; Value: 29),
+    (Code: '00001010'; Value: 45), (Code: '00001001'; Value: 53), (Code: '00001000'; Value: 57),
+    (Code: '00000111'; Value: 30), (Code: '00000110'; Value: 46), (Code: '00000101'; Value: 54),
+    (Code: '00000100'; Value: 58), (Code: '000000111'; Value: 31), (Code: '000000110'; Value: 47),
+    (Code: '000000101'; Value: 55), (Code: '000000100'; Value: 59), (Code: '000000011'; Value: 27),
+    (Code: '000000010'; Value: 39), (Code: '000000001'; Value: 0));
+
+  // B.10 motion_code magnitudes 0..16; a sign bit (1 = negative) follows
+  // every code but the one for 0.
+  MotionCodes: array[0..16] of string = (
+    '1', '01', '001', '0001', '000011', '0000101', '0000100', '0000011', '000001011', '000001010',
+    '000001001', '0000010001', '0000010000', '0000001111', '0000001110', '0000001101', '0000001100');
+
+  // B.11 dmvector.
+  DMVCodes: array[0..2] of TCodeDef = ((Code: '0'; Value: 0), (Code: '10'; Value: 1), (Code: '11'; Value: -1));
+
+  // B.12/B.13 dct_dc_size_luminance / dct_dc_size_chrominance.
+  DCLumCodes: array[0..11] of TCodeDef = (
+    (Code: '100'; Value: 0), (Code: '00'; Value: 1), (Code: '01'; Value: 2), (Code: '101'; Value: 3),
+    (Code: '110'; Value: 4), (Code: '1110'; Value: 5), (Code: '11110'; Value: 6), (Code: '111110'; Value: 7),
+    (Code: '1111110'; Value: 8), (Code: '11111110'; Value: 9), (Code: '111111110'; Value: 10),
+    (Code: '111111111'; Value: 11));
+  DCChromCodes: array[0..11] of TCodeDef = (
+    (Code: '00'; Value: 0), (Code: '01'; Value: 1), (Code: '10'; Value: 2), (Code: '110'; Value: 3),
+    (Code: '1110'; Value: 4), (Code: '11110'; Value: 5), (Code: '111110'; Value: 6), (Code: '1111110'; Value: 7),
+    (Code: '11111110'; Value: 8), (Code: '111111110'; Value: 9), (Code: '1111111110'; Value: 10),
+    (Code: '1111111111'; Value: 11));
+
+  // B.14/B.15 dct_coefficients: value = run shl 8 or level (a sign bit
+  // follows), CoefEOB or CoefEscape. In B.14 the first coefficient of a
+  // non-intra block uses '1s' for run 0, level 1 (handled in code).
+  // Codes of 14 bits and more are common to both tables.
+  CoefCommonCodes: array[0..36] of TCodeDef = (
+    (Code: '00000000011111'; Value: 16), (Code: '00000000011110'; Value: 17), (Code: '00000000011101'; Value: 18),
+    (Code: '00000000011100'; Value: 19), (Code: '00000000011011'; Value: 20), (Code: '00000000011010'; Value: 21),
+    (Code: '00000000011001'; Value: 22), (Code: '00000000011000'; Value: 23), (Code: '00000000010111'; Value: 24),
+    (Code: '00000000010110'; Value: 25), (Code: '00000000010101'; Value: 26), (Code: '00000000010100'; Value: 27),
+    (Code: '00000000010011'; Value: 28), (Code: '00000000010010'; Value: 29), (Code: '00000000010001'; Value: 30),
+    (Code: '00000000010000'; Value: 31),
+    (Code: '000000000011000'; Value: 32), (Code: '000000000010111'; Value: 33), (Code: '000000000010110'; Value: 34),
+    (Code: '000000000010101'; Value: 35), (Code: '000000000010100'; Value: 36), (Code: '000000000010011'; Value: 37),
+    (Code: '000000000010010'; Value: 38), (Code: '000000000010001'; Value: 39), (Code: '000000000010000'; Value: 40),
+    (Code: '000000000011111'; Value: $108), (Code: '000000000011110'; Value: $109),
+    (Code: '000000000011101'; Value: $10A), (Code: '000000000011100'; Value: $10B),
+    (Code: '000000000011011'; Value: $10C), (Code: '000000000011010'; Value: $10D),
+    (Code: '000000000011001'; Value: $10E),
+    (Code: '0000000000010011'; Value: $10F), (Code: '0000000000010010'; Value: $110),
+    (Code: '0000000000010001'; Value: $111), (Code: '0000000000010000'; Value: $112),
+    (Code: '0000000000010100'; Value: $603));
+  CoefCommonCodes2: array[0..10] of TCodeDef = (
+    (Code: '0000000000011010'; Value: $B02), (Code: '0000000000011001'; Value: $C02),
+    (Code: '0000000000011000'; Value: $D02), (Code: '0000000000010111'; Value: $E02),
+    (Code: '0000000000010110'; Value: $F02), (Code: '0000000000010101'; Value: $1002),
+    (Code: '0000000000011111'; Value: $1B01), (Code: '0000000000011110'; Value: $1C01),
+    (Code: '0000000000011101'; Value: $1D01), (Code: '0000000000011100'; Value: $1E01),
+    (Code: '0000000000011011'; Value: $1F01));
+
+  CoefB14Codes: array[0..64] of TCodeDef = (
+    (Code: '10'; Value: CoefEOB), (Code: '11'; Value: $001), (Code: '011'; Value: $101), (Code: '0100'; Value: $002),
+    (Code: '0101'; Value: $201), (Code: '00101'; Value: $003), (Code: '00111'; Value: $301),
+    (Code: '00110'; Value: $401), (Code: '000110'; Value: $102), (Code: '000111'; Value: $501),
+    (Code: '000101'; Value: $601), (Code: '000100'; Value: $701), (Code: '0000110'; Value: $004),
+    (Code: '0000100'; Value: $202), (Code: '0000111'; Value: $801), (Code: '0000101'; Value: $901),
+    (Code: '000001'; Value: CoefEscape),
+    (Code: '00100110'; Value: $005), (Code: '00100001'; Value: $006), (Code: '00100101'; Value: $103),
+    (Code: '00100100'; Value: $302), (Code: '00100111'; Value: $A01), (Code: '00100011'; Value: $B01),
+    (Code: '00100010'; Value: $C01), (Code: '00100000'; Value: $D01),
+    (Code: '0000001010'; Value: $007), (Code: '0000001100'; Value: $104), (Code: '0000001011'; Value: $203),
+    (Code: '0000001111'; Value: $402), (Code: '0000001001'; Value: $502), (Code: '0000001110'; Value: $E01),
+    (Code: '0000001101'; Value: $F01), (Code: '0000001000'; Value: $1001),
+    (Code: '000000011101'; Value: $008), (Code: '000000011000'; Value: $009), (Code: '000000010011'; Value: $00A),
+    (Code: '000000010000'; Value: $00B), (Code: '000000011011'; Value: $105), (Code: '000000010100'; Value: $204),
+    (Code: '000000011100'; Value: $303), (Code: '000000010010'; Value: $403), (Code: '000000011110'; Value: $602),
+    (Code: '000000010101'; Value: $702), (Code: '000000010001'; Value: $802), (Code: '000000011111'; Value: $1101),
+    (Code: '000000011010'; Value: $1201), (Code: '000000011001'; Value: $1301), (Code: '000000010111'; Value: $1401),
+    (Code: '000000010110'; Value: $1501),
+    (Code: '0000000011010'; Value: $00C), (Code: '0000000011001'; Value: $00D), (Code: '0000000011000'; Value: $00E),
+    (Code: '0000000010111'; Value: $00F), (Code: '0000000010110'; Value: $106), (Code: '0000000010101'; Value: $107),
+    (Code: '0000000010100'; Value: $205), (Code: '0000000010011'; Value: $304), (Code: '0000000010010'; Value: $503),
+    (Code: '0000000010001'; Value: $902), (Code: '0000000010000'; Value: $A02), (Code: '0000000011111'; Value: $1601),
+    (Code: '0000000011110'; Value: $1701), (Code: '0000000011101'; Value: $1801), (Code: '0000000011100'; Value: $1901),
+    (Code: '0000000011011'; Value: $1A01));
+
+  CoefB15Codes: array[0..60] of TCodeDef = (
+    (Code: '0110'; Value: CoefEOB), (Code: '10'; Value: $001), (Code: '010'; Value: $101), (Code: '110'; Value: $002),
+    (Code: '00101'; Value: $201), (Code: '0111'; Value: $003), (Code: '00111'; Value: $301),
+    (Code: '000110'; Value: $401), (Code: '00110'; Value: $102), (Code: '000111'; Value: $501),
+    (Code: '0000110'; Value: $601), (Code: '0000100'; Value: $701), (Code: '11100'; Value: $004),
+    (Code: '0000111'; Value: $202), (Code: '0000101'; Value: $801), (Code: '1111000'; Value: $901),
+    (Code: '000001'; Value: CoefEscape),
+    (Code: '11101'; Value: $005), (Code: '000101'; Value: $006), (Code: '1111001'; Value: $103),
+    (Code: '00100110'; Value: $302), (Code: '1111010'; Value: $A01), (Code: '00100001'; Value: $B01),
+    (Code: '00100101'; Value: $C01), (Code: '00100100'; Value: $D01), (Code: '000100'; Value: $007),
+    (Code: '00100111'; Value: $104), (Code: '11111100'; Value: $203), (Code: '11111101'; Value: $402),
+    (Code: '000000100'; Value: $502), (Code: '000000101'; Value: $E01), (Code: '000000111'; Value: $F01),
+    (Code: '0000001101'; Value: $1001), (Code: '1111011'; Value: $008), (Code: '1111100'; Value: $009),
+    (Code: '00100011'; Value: $00A), (Code: '00100010'; Value: $00B), (Code: '00100000'; Value: $105),
+    (Code: '0000001100'; Value: $204), (Code: '000000011100'; Value: $303), (Code: '000000010010'; Value: $403),
+    (Code: '000000011110'; Value: $602), (Code: '000000010101'; Value: $702), (Code: '000000010001'; Value: $802),
+    (Code: '000000011111'; Value: $1101), (Code: '000000011010'; Value: $1201), (Code: '000000011001'; Value: $1301),
+    (Code: '000000010111'; Value: $1401), (Code: '000000010110'; Value: $1501),
+    (Code: '11111010'; Value: $00C), (Code: '11111011'; Value: $00D), (Code: '11111110'; Value: $00E),
+    (Code: '11111111'; Value: $00F), (Code: '0000000010110'; Value: $106), (Code: '0000000010101'; Value: $107),
+    (Code: '0000000010100'; Value: $205), (Code: '0000000010011'; Value: $304), (Code: '0000000010010'; Value: $503),
+    (Code: '0000000010001'; Value: $902), (Code: '0000000010000'; Value: $A02), (Code: '0000000011111'; Value: $1601));
+  CoefB15Codes2: array[0..3] of TCodeDef = (
+    (Code: '0000000011110'; Value: $1701), (Code: '0000000011101'; Value: $1801),
+    (Code: '0000000011100'; Value: $1901), (Code: '0000000011011'; Value: $1A01));
+
+procedure AddCodes(var T: TPS2IPUCode; const Defs: array of TCodeDef);
 begin
-  for var F := 0 to 7 do
+  for var D in Defs do
   begin
-    var Scale: Double := 0.5;
-    if F = 0 then
-      Scale := Sqrt(0.125);
-    for var T := 0 to 7 do
-      IDCTBasis[F, T] := Scale * Cos((Pi / 8.0) * F * (T + 0.5));
+    var Len := Length(D.Code);
+    var Code: Cardinal := 0;
+    for var K := 1 to Len do
+      Code := (Code shl 1) or Cardinal(Ord(D.Code[K] = '1'));
+    var Shift := T.Bits - Len;
+    var Entry := (Cardinal(Len) shl 24) or (Cardinal(D.Value) and $FFFFFF);
+    for var K := Integer(Code shl Shift) to Integer(((Code + 1) shl Shift) - 1) do
+      T.Entries[K] := Entry;
   end;
 end;
 
-// Rows, then columns, rounding to nearest; all-zero rows are skipped (their
-// terms add nothing).
-procedure IDCT(B: PSmallInt);
-var
-  Tmp: array[0..63] of Double;
-  Used: array[0..7] of Boolean;
+procedure InitCode(var T: TPS2IPUCode; Bits: Integer);
 begin
-  for var I := 0 to 7 do
+  T.Bits := Bits;
+  SetLength(T.Entries, 1 shl Bits);
+  FillChar(T.Entries[0], Length(T.Entries) * SizeOf(Cardinal), 0);
+end;
+
+// Arithmetic shift right (floor division by 2^N).
+function Sar(V: Integer; N: Integer): Integer; inline;
+begin
+  if V >= 0 then
+    Result := V shr N
+  else
+    Result := -((-V + (1 shl N) - 1) shr N);
+end;
+
+{ IDCT }
+
+// 2-D inverse DCT of an 8x8 raster block (ISO/IEC 13818-2 annex A):
+// two 1-D passes, each split into even and odd halves. Cosines are scaled by
+// 2^13; the row pass keeps 3 fraction bits for the column pass.
+const
+  IC1 = 8035; // cos(1 pi/16) * 8192
+  IC2 = 7568;
+  IC3 = 6811;
+  IC4 = 5793;
+  IC5 = 4551;
+  IC6 = 3135;
+  IC7 = 1598;
+
+procedure InverseDCT(B: PSmallInt);
+var
+  T: array[0..63] of Integer;
+begin
+  for var R := 0 to 7 do
   begin
-    var Row := B + I * 8;
-    var Any := False;
-    for var K := 0 to 7 do
-      if Row[K] <> 0 then
-        Any := True;
-    Used[I] := Any;
-    if not Any then
+    var X := B + R * 8;
+    var P := PInteger(@T[R * 8]);
+    if (X[1] = 0) and (X[2] = 0) and (X[3] = 0) and (X[4] = 0) and (X[5] = 0) and (X[6] = 0) and (X[7] = 0) then
+    begin
+      // DC only: X0 cos(pi/4) / 2, with 3 fraction bits.
+      var V := Sar(X[0] * IC4 + (1 shl 10), 11);
+      for var K := 0 to 7 do
+        P[K] := V;
       Continue;
-    for var J := 0 to 7 do
-    begin
-      var P: Double := 0.0;
-      for var K := 0 to 7 do
-        if Row[K] <> 0 then
-          P := P + IDCTBasis[K, J] * Row[K];
-      Tmp[I * 8 + J] := P;
     end;
+    var A0 := (X[0] + X[4]) * IC4;
+    var A1 := (X[0] - X[4]) * IC4;
+    var A2 := X[2] * IC2 + X[6] * IC6;
+    var A3 := X[2] * IC6 - X[6] * IC2;
+    var E0 := A0 + A2;
+    var E3 := A0 - A2;
+    var E1 := A1 + A3;
+    var E2 := A1 - A3;
+    var O0 := X[1] * IC1 + X[3] * IC3 + X[5] * IC5 + X[7] * IC7;
+    var O1 := X[1] * IC3 - X[3] * IC7 - X[5] * IC1 - X[7] * IC5;
+    var O2 := X[1] * IC5 - X[3] * IC1 + X[5] * IC7 + X[7] * IC3;
+    var O3 := X[1] * IC7 - X[3] * IC5 + X[5] * IC3 - X[7] * IC1;
+    // (E +- O) / 2 at 2^13 -> 3 fraction bits.
+    P[0] := Sar(E0 + O0 + (1 shl 10), 11);
+    P[7] := Sar(E0 - O0 + (1 shl 10), 11);
+    P[1] := Sar(E1 + O1 + (1 shl 10), 11);
+    P[6] := Sar(E1 - O1 + (1 shl 10), 11);
+    P[2] := Sar(E2 + O2 + (1 shl 10), 11);
+    P[5] := Sar(E2 - O2 + (1 shl 10), 11);
+    P[3] := Sar(E3 + O3 + (1 shl 10), 11);
+    P[4] := Sar(E3 - O3 + (1 shl 10), 11);
   end;
-  for var J := 0 to 7 do
-    for var I := 0 to 7 do
+  for var C := 0 to 7 do
+  begin
+    var X0 := Int64(T[C]);
+    var X1 := Int64(T[8 + C]);
+    var X2 := Int64(T[16 + C]);
+    var X3 := Int64(T[24 + C]);
+    var X4 := Int64(T[32 + C]);
+    var X5 := Int64(T[40 + C]);
+    var X6 := Int64(T[48 + C]);
+    var X7 := Int64(T[56 + C]);
+    var A0 := (X0 + X4) * IC4;
+    var A1 := (X0 - X4) * IC4;
+    var A2 := X2 * IC2 + X6 * IC6;
+    var A3 := X2 * IC6 - X6 * IC2;
+    var E0 := A0 + A2;
+    var E3 := A0 - A2;
+    var E1 := A1 + A3;
+    var E2 := A1 - A3;
+    var O0 := X1 * IC1 + X3 * IC3 + X5 * IC5 + X7 * IC7;
+    var O1 := X1 * IC3 - X3 * IC7 - X5 * IC1 - X7 * IC5;
+    var O2 := X1 * IC5 - X3 * IC1 + X5 * IC7 + X7 * IC3;
+    var O3 := X1 * IC7 - X3 * IC5 + X5 * IC3 - X7 * IC1;
+    // (E +- O) / 2 at 2^(13+3) -> integer, rounded to nearest.
+    var Outs: array[0..7] of Int64;
+    Outs[0] := E0 + O0;
+    Outs[7] := E0 - O0;
+    Outs[1] := E1 + O1;
+    Outs[6] := E1 - O1;
+    Outs[2] := E2 + O2;
+    Outs[5] := E2 - O2;
+    Outs[3] := E3 + O3;
+    Outs[4] := E3 - O3;
+    for var K := 0 to 7 do
     begin
-      var P: Double := 0.0;
-      for var K := 0 to 7 do
-        if Used[K] then
-          P := P + IDCTBasis[K, I] * Tmp[K * 8 + J];
-      var V := Floor(P + 0.5);
+      var V := Outs[K] + (Int64(1) shl 16);
+      if V >= 0 then
+        V := V shr 17
+      else
+        V := -((-V + (Int64(1) shl 17) - 1) shr 17);
       if V > 32767 then
         V := 32767
       else if V < -32768 then
         V := -32768;
-      B[I * 8 + J] := SmallInt(V);
+      B[K * 8 + C] := SmallInt(V);
     end;
-end;
-
-procedure InverseScan(B: PSmallInt; Alternate: Boolean);
-var
-  T: array[0..63] of SmallInt;
-begin
-  Move(B^, T, SizeOf(T));
-  if Alternate then
-    for var I := 0 to 63 do
-      B[I] := T[AlternateScan[I]]
-  else
-    for var I := 0 to 63 do
-      B[I] := T[ZigZagScan[I]];
-end;
-
-procedure BuildVLC(var T: TPS2IPUVLC; Codes: PCardinal; Count: Integer);
-begin
-  T.Bits := 0;
-  for var I := 0 to Count - 1 do
-    T.Bits := Max(T.Bits, Integer(Codes[I * 3 + 1]));
-  SetLength(T.Entries, 1 shl T.Bits);
-  FillChar(T.Entries[0], Length(T.Entries) * SizeOf(Cardinal), 0);
-  for var I := 0 to Count - 1 do
-  begin
-    var Code := Codes[I * 3];
-    var Len := Integer(Codes[I * 3 + 1]);
-    var Shift := T.Bits - Len;
-    var Entry := (Cardinal(Len) shl 24) or (Codes[I * 3 + 2] and $FFFFFF);
-    for var K := Integer(Code shl Shift) to Integer(((Code + 1) shl Shift) - 1) do
-      T.Entries[K] := Entry;
   end;
 end;
 
@@ -411,28 +479,53 @@ begin
   inherited Create;
   FScheduler := Scheduler;
   FDMAC := DMAC;
-  if IDCTBasis[0, 0] = 0 then
-    InitIDCT;
-  BuildVLC(FMBAI, @MBAITable[0, 0], Length(MBAITable));
-  BuildVLC(FMBTypeI, @MBTypeITable[0, 0], Length(MBTypeITable));
-  BuildVLC(FMBTypeP, @MBTypePTable[0, 0], Length(MBTypePTable));
-  BuildVLC(FMBTypeB, @MBTypeBTable[0, 0], Length(MBTypeBTable));
-  BuildVLC(FMotionCode, @MotionCodeTable[0, 0], Length(MotionCodeTable));
-  BuildVLC(FDMVector, @DMVectorTable[0, 0], Length(DMVectorTable));
-  BuildVLC(FDCSizeLum, @DCSizeLumTable[0, 0], Length(DCSizeLumTable));
-  BuildVLC(FDCSizeChrom, @DCSizeChromTable[0, 0], Length(DCSizeChromTable));
-  BuildVLC(FCBP, @CBPTable[0, 0], Length(CBPTable));
-  BuildVLC(FDCT0, @DCT0Table[0, 0], Length(DCT0Table));
-  BuildVLC(FDCT1, @DCT1Table[0, 0], Length(DCT1Table));
+  InitCode(FAddrInc, 11);
+  AddCodes(FAddrInc, AddrIncCodes);
+  InitCode(FTypeI, 2);
+  AddCodes(FTypeI, TypeICodes);
+  InitCode(FTypeP, 6);
+  AddCodes(FTypeP, TypePCodes);
+  InitCode(FTypeB, 6);
+  AddCodes(FTypeB, TypeBCodes);
+  InitCode(FTypeD, 1);
+  AddCodes(FTypeD, TypeDCodes);
+  InitCode(FPattern, 9);
+  AddCodes(FPattern, PatternCodes);
+  InitCode(FMotion, 11);
+  var M: array[0..32] of TCodeDef;
+  M[0].Code := MotionCodes[0];
+  M[0].Value := 0;
+  for var K := 1 to 16 do
+  begin
+    M[K * 2 - 1].Code := MotionCodes[K] + '0';
+    M[K * 2 - 1].Value := K;
+    M[K * 2].Code := MotionCodes[K] + '1';
+    M[K * 2].Value := -K;
+  end;
+  AddCodes(FMotion, M);
+  InitCode(FDMV, 2);
+  AddCodes(FDMV, DMVCodes);
+  InitCode(FDCLum, 9);
+  AddCodes(FDCLum, DCLumCodes);
+  InitCode(FDCChrom, 10);
+  AddCodes(FDCChrom, DCChromCodes);
+  InitCode(FCoefB14, 16);
+  AddCodes(FCoefB14, CoefB14Codes);
+  AddCodes(FCoefB14, CoefCommonCodes);
+  AddCodes(FCoefB14, CoefCommonCodes2);
+  InitCode(FCoefB15, 16);
+  AddCodes(FCoefB15, CoefB15Codes);
+  AddCodes(FCoefB15, CoefB15Codes2);
+  AddCodes(FCoefB15, CoefCommonCodes);
+  AddCodes(FCoefB15, CoefCommonCodes2);
   Reset;
 end;
 
 procedure TPS2IPU.Reset;
 begin
   S := Default(TPS2IPUState);
-  S.LastCommand := -1;
-  Move(DefaultIntraIQ, S.IntraIQ, 64);
-  Move(DefaultNonIntraIQ, S.NonIntraIQ, 64);
+  Move(DefaultIntra, S.IntraW, 64);
+  FillChar(S.NonIntraW, 64, 16);
   FOutHead := 0;
   FOutSize := 0;
   FPumping := False;
@@ -440,11 +533,11 @@ begin
   FScheduler.Cancel(TPS2Event.IPU);
 end;
 
-{ Input bit stream }
+{ Bit stream }
 
 function TPS2IPU.Avail: Integer;
 begin
-  Result := S.InSize * 8 - S.InBit;
+  Result := S.Size * 8 - S.Bit;
   if Result < 0 then
     Result := 0;
 end;
@@ -452,30 +545,37 @@ end;
 // The next N (1..32) bits, most significant first; N <= Avail.
 function TPS2IPU.Peek(N: Integer): Cardinal;
 begin
-  var P := PByte(@S.InBuf[S.InBit shr 3]);
+  var P := PByte(@S.Buf[S.Bit shr 3]);
   var V := (UInt64(P[0]) shl 32) or (UInt64(P[1]) shl 24) or (UInt64(P[2]) shl 16) or (UInt64(P[3]) shl 8) or P[4];
-  Result := Cardinal((V shr (40 - (S.InBit and 7) - N)) and ((UInt64(1) shl N) - 1));
+  Result := Cardinal((V shr (40 - (S.Bit and 7) - N)) and ((UInt64(1) shl N) - 1));
 end;
 
-// N <= Avail; consumed quadwords leave the FIFO.
-procedure TPS2IPU.Advance(N: Integer);
+// N <= Avail; quadwords fully read leave the buffer.
+procedure TPS2IPU.Skip(N: Integer);
 begin
-  Inc(S.InBit, N);
-  while (S.InBit >= 128) and (S.InSize >= 16) do
+  Inc(S.Bit, N);
+  while (S.Bit >= 128) and (S.Size >= 16) do
   begin
-    Move(S.InBuf[16], S.InBuf[0], S.InSize - 16);
-    Dec(S.InSize, 16);
-    Dec(S.InBit, 128);
+    Move(S.Buf[16], S.Buf[0], S.Size - 16);
+    Dec(S.Size, 16);
+    Dec(S.Bit, 128);
   end;
 end;
 
-procedure TPS2IPU.AlignByte;
+function TPS2IPU.TryRead(N: Integer; out V: Cardinal): Boolean;
 begin
-  if (S.InBit and 7) <> 0 then
-    Advance(Min(8 - (S.InBit and 7), Avail));
+  V := 0;
+  if Avail < N then
+    Exit(False);
+  if N > 0 then
+  begin
+    V := Peek(N);
+    Skip(N);
+  end;
+  Result := True;
 end;
 
-// BSTOP: the next 32 bits (zero filled when fewer are there).
+// The next 32 bits, zero filled when fewer are there.
 function TPS2IPU.PeekTop: Cardinal;
 begin
   var N := Min(32, Avail);
@@ -484,13 +584,25 @@ begin
   Result := Peek(N) shl (32 - N);
 end;
 
-function TPS2IPU.PeekVLC(const T: TPS2IPUVLC; out Value: Cardinal; out Len: Integer): Integer;
+// 1 when the next N (<= 32) bits are zero, 0 when they are not, -1 when
+// the bits there are zero but too few.
+function TPS2IPU.ZerosAhead(N: Integer): Integer;
+begin
+  var A := Min(Avail, N);
+  if (A > 0) and (Peek(A) <> 0) then
+    Exit(0);
+  if A < N then
+    Exit(-1);
+  Result := 1;
+end;
+
+function TPS2IPU.Lookup(const T: TPS2IPUCode; out Value: Cardinal; out Len: Integer): Integer;
 begin
   Value := 0;
   Len := 0;
   var A := Avail;
   if A = 0 then
-    Exit(StepWait);
+    Exit(RunWait);
   var Bits: Cardinal;
   if A >= T.Bits then
     Bits := Peek(T.Bits)
@@ -499,405 +611,354 @@ begin
   var E := T.Entries[Bits];
   if E = 0 then
   begin
+    // No code starts here (or it may, given more bits).
     if A >= T.Bits then
-      Exit(StepError);
-    Exit(StepWait);
+      Exit(RunError);
+    Exit(RunWait);
   end;
   Len := Integer(E shr 24);
   if Len > A then
-    Exit(StepWait);
+    Exit(RunWait);
   Value := E and $FFFFFF;
-  Result := StepDone;
+  Result := RunDone;
 end;
 
-function TPS2IPU.TryVLC(const T: TPS2IPUVLC; out Value: Cardinal): Integer;
+function TPS2IPU.Decode(const T: TPS2IPUCode; out Value: Cardinal): Integer;
 begin
   var Len: Integer;
-  Result := PeekVLC(T, Value, Len);
-  if Result = StepDone then
-    Advance(Len);
+  Result := Lookup(T, Value, Len);
+  if Result = RunDone then
+    Skip(Len);
 end;
 
-{ Macroblock decoding }
-
-// A run/level pair of table B-14 (Table1 False) or B-15 with its sign or
-// escape (MPEG-1: 8/16-bit level, MPEG-2: 12-bit level).
-function TPS2IPU.TryRunLevel(Table1: Boolean; out Run, Level: Integer): Integer;
+// One dct_coefficient of the current block (7.2.2.3): a run/level pair,
+// an escape (6-bit run, 12-bit level; MPEG-1: 8 or 16-bit level) or the end
+// of block. Nothing is consumed unless the whole element is there.
+function TPS2IPU.DecodeCoefficient(First: Boolean; out Run, Level: Integer; out EndOfBlock: Boolean): Integer;
 begin
   Run := 0;
   Level := 0;
-  var Index: Cardinal;
-  var Len: Integer;
-  if Table1 then
-    Result := PeekVLC(FDCT1, Index, Len)
-  else
-    Result := PeekVLC(FDCT0, Index, Len);
-  if Result <> StepDone then
-    Exit;
-  var R, L: Integer;
-  if Table1 then
+  EndOfBlock := False;
+  var B15 := S.MBIntra and ((S.CTRL and CtrlIVF) <> 0);
+  if First and not B15 then
   begin
-    R := DCT1RunLevel[Index, 0];
-    L := DCT1RunLevel[Index, 1];
-  end
-  else
-  begin
-    R := DCT0RunLevel[Index, 0];
-    L := DCT0RunLevel[Index, 1];
-  end;
-  if R = RunEscape then
-  begin
-    if (S.CTRL and CtrlMP1) <> 0 then
+    // First coefficient of a non-intra block: '1s' is run 0, level 1.
+    if Avail < 1 then
+      Exit(RunWait);
+    if Peek(1) = 1 then
     begin
-      if Avail < Len + 14 then
-        Exit(StepWait);
-      var X := Peek(Len + 14);
-      Run := Integer((X shr 8) and $3F);
-      var V := Integer(X and $FF);
-      var Total := Len + 14;
-      if (V = 0) or (V = 128) then
-      begin
-        if Avail < Len + 22 then
-          Exit(StepWait);
-        var X2 := Integer(Peek(Len + 22) and $FF);
-        if V = 0 then
-          Level := X2
-        else
-          Level := X2 - 256;
-        Total := Len + 22;
-      end
-      else if V > 128 then
-        Level := V - 256
-      else
-        Level := V;
-      Advance(Total);
-    end
-    else
+      if Avail < 2 then
+        Exit(RunWait);
+      Level := 1;
+      if (Peek(2) and 1) <> 0 then
+        Level := -1;
+      Skip(2);
+      Exit(RunDone);
+    end;
+  end;
+  var V: Cardinal;
+  var Len: Integer;
+  if B15 then
+    Result := Lookup(FCoefB15, V, Len)
+  else
+    Result := Lookup(FCoefB14, V, Len);
+  if Result <> RunDone then
+    Exit;
+  if V = CoefEOB then
+  begin
+    Skip(Len);
+    EndOfBlock := True;
+    Exit(RunDone);
+  end;
+  if V = CoefEscape then
+  begin
+    if (S.CTRL and CtrlMP1) = 0 then
     begin
       if Avail < Len + 18 then
-        Exit(StepWait);
+        Exit(RunWait);
       var X := Peek(Len + 18);
       Run := Integer((X shr 12) and $3F);
       Level := Integer(X and $FFF);
-      if (Level and $800) <> 0 then
-        Level := Level - $1000;
-      Advance(Len + 18);
-    end;
-  end
-  else
-  begin
-    if Avail < Len + 1 then
-      Exit(StepWait);
-    Run := R;
-    Level := L;
-    if (Peek(Len + 1) and 1) <> 0 then
-      Level := -L;
-    Advance(Len + 1);
-  end;
-  Result := StepDone;
-end;
-
-// The first coefficient of a non-intra block: '1s' is run 0, level 1.
-function TPS2IPU.TryFirstCoefficient(out Run, Level: Integer): Integer;
-begin
-  Run := 0;
-  Level := 0;
-  if Avail < 1 then
-    Exit(StepWait);
-  if Peek(1) = 0 then
-    Exit(TryRunLevel(False, Run, Level));
-  if Avail < 2 then
-    Exit(StepWait);
-  if (Peek(2) and 1) <> 0 then
-    Level := -1
-  else
-    Level := 1;
-  Advance(2);
-  Result := StepDone;
-end;
-
-// The coefficients of block S.Block in scan order: DC (intra), run/level
-// pairs, end of block.
-function TPS2IPU.StepCoefficients(Intra: Boolean): Integer;
-begin
-  var Table1 := Intra and ((S.CTRL and CtrlIVF) <> 0);
-  var B := PSmallInt(@S.Blocks[S.Block, 0]);
-  while True do
-    case S.DCTPhase of
-      0:
-        if Intra then
-          S.DCTPhase := 1
-        else
-          S.DCTPhase := 3;
-      1:
-        begin
-          var V: Cardinal;
-          if S.Block < 4 then
-            Result := TryVLC(FDCSizeLum, V)
-          else
-            Result := TryVLC(FDCSizeChrom, V);
-          if Result <> StepDone then
-            Exit;
-          S.DCSize := Integer(V);
-          S.DCTPhase := 2;
-        end;
-      2:
-        begin
-          var Diff := 0;
-          if S.DCSize > 0 then
-          begin
-            if Avail < S.DCSize then
-              Exit(StepWait);
-            Diff := Integer(Peek(S.DCSize));
-            Advance(S.DCSize);
-            var Half := 1 shl (S.DCSize - 1);
-            if Diff < Half then
-              Diff := Diff + 1 - 2 * Half;
-          end;
-          var Ch := 0;
-          if S.Block >= 4 then
-            Ch := S.Block - 3;
-          var DC := SmallInt(S.DCPredictor[Ch] + Diff);
-          B[0] := DC;
-          S.DCPredictor[Ch] := DC;
-          S.DCTIndex := 1;
-          S.DCTPhase := 3;
-        end;
-      3:
-        begin
-          // End of block: '10' (B-14) or '0110' (B-15), never first.
-          var N := 2;
-          var Code: Cardinal := 2;
-          if Table1 then
-          begin
-            N := 4;
-            Code := 6;
-          end;
-          if Avail < N then
-            Exit(StepWait);
-          if (S.DCTIndex <> 0) and (Peek(N) = Code) then
-          begin
-            Advance(N);
-            Exit(StepDone);
-          end;
-          S.DCTPhase := 4;
-        end;
+      if Level >= $800 then
+        Dec(Level, $1000);
+      if (Level = 0) or (Level = -2048) then
+        Exit(RunError);
+      Skip(Len + 18);
+    end
     else
+    begin
+      if Avail < Len + 14 then
+        Exit(RunWait);
+      var X := Peek(Len + 14);
+      Run := Integer((X shr 8) and $3F);
+      var L := Integer(X and $FF);
+      var Total := Len + 14;
+      if (L = 0) or (L = $80) then
       begin
-        var Run, Level: Integer;
-        if S.DCTIndex = 0 then
-          Result := TryFirstCoefficient(Run, Level)
+        // 16-bit forms: 0 then 128..255, or 80h then -256..-129.
+        if Avail < Len + 22 then
+          Exit(RunWait);
+        var L2 := Integer(Peek(Len + 22) and $FF);
+        if L = 0 then
+          Level := L2
         else
-          Result := TryRunLevel(Table1, Run, Level);
-        if Result <> StepDone then
-          Exit;
-        S.DCTIndex := S.DCTIndex + Run;
-        if S.DCTIndex >= 64 then
-          Exit(StepError);
-        B[S.DCTIndex] := SmallInt(Level);
-        Inc(S.DCTIndex);
-        S.DCTPhase := 3;
-      end;
-    end;
-end;
-
-// Inverse quantisation in scan order with saturation; MPEG-1 makes values
-// odd, MPEG-2 applies mismatch control.
-procedure TPS2IPU.Dequantise(B: PSmallInt; Intra: Boolean; QSC: Integer);
-begin
-  var Scale: Integer;
-  if (S.CTRL and CtrlQST) = 0 then
-    Scale := QSC * 2
-  else
-    Scale := NonLinearQScale[QSC and 31];
-  var MPEG1 := (S.CTRL and CtrlMP1) <> 0;
-  var First := 0;
-  if Intra then
-  begin
-    var DC := Integer(B[0]) * (8 shr ((S.CTRL shr 16) and 3));
-    B[0] := SmallInt(EnsureRange(DC, -2048, 2047));
-    First := 1;
-  end;
-  for var I := First to 63 do
-  begin
-    var V := Integer(B[I]);
-    if V = 0 then
-      Continue;
-    if Intra then
-      V := (V * S.IntraIQ[I] * Scale * 2) div 32
-    else if V > 0 then
-      V := ((2 * V + 1) * S.NonIntraIQ[I] * Scale) div 32
-    else
-      V := ((2 * V - 1) * S.NonIntraIQ[I] * Scale) div 32;
-    if MPEG1 and (V <> 0) and not Odd(V) then
-      if V > 0 then
-        Dec(V)
-      else
-        Inc(V);
-    B[I] := SmallInt(EnsureRange(V, -2048, 2047));
-  end;
-  if not MPEG1 then
-  begin
-    var Sum := 0;
-    for var I := 0 to 63 do
-      Inc(Sum, B[I]);
-    if not Odd(Sum) then
-      B[63] := B[63] xor 1;
-  end;
-end;
-
-// The decoded macroblock as RAW16: Y as 16x16 (frame DCT: Y0 Y1 over
-// Y2 Y3; field DCT: Y0 Y1 lines interleaved with Y2 Y3), then Cb, Cr.
-procedure TPS2IPU.MacroblockRaw16(Dest: PSmallInt; FieldDCT: Boolean);
-begin
-  var D := Dest;
-  if FieldDCT then
-    for var I := 0 to 7 do
-      for var K := 0 to 3 do
-      begin
-        Move(S.Blocks[K, I * 8], D^, 16);
-        Inc(D, 8);
+          Level := L2 - 256;
+        Total := Len + 22;
       end
-  else
-    for var Half := 0 to 1 do
-      for var I := 0 to 7 do
-        for var K := 0 to 1 do
-        begin
-          Move(S.Blocks[Half * 2 + K, I * 8], D^, 16);
-          Inc(D, 8);
-        end;
-  Move(S.Blocks[4, 0], D^, 128);
-  Inc(D, 64);
-  Move(S.Blocks[5, 0], D^, 128);
+      else if L > $80 then
+        Level := L - 256
+      else
+        Level := L;
+      Skip(Total);
+    end;
+    Exit(RunDone);
+  end;
+  if Avail < Len + 1 then
+    Exit(RunWait);
+  Run := Integer(V shr 8);
+  Level := Integer(V and $FF);
+  if (Peek(Len + 1) and 1) <> 0 then
+    Level := -Level;
+  Skip(Len + 1);
 end;
 
-// One macroblock from S.BCommand (BDEC fields: FB, QSC, DT, DCR, MBI). For
-// IDEC the blocks stay in S.Blocks.
-function TPS2IPU.StepBDEC(IDEC: Boolean): Integer;
+{ Macroblocks }
+
+// The coefficients of block S.Block into S.Blocks (scan order): the DC
+// differential of intra blocks, then run/level pairs up to end of block.
+function TPS2IPU.RunBlock: Integer;
 begin
-  var Cmd := S.BCommand;
-  var MBI := (Cmd and $08000000) <> 0;
+  var B := PSmallInt(@S.Blocks[S.Block, 0]);
+  if S.MBIntra and (S.Coef = 0) then
+  begin
+    if S.DCSize < 0 then
+    begin
+      var V: Cardinal;
+      if S.Block < 4 then
+        Result := Decode(FDCLum, V)
+      else
+        Result := Decode(FDCChrom, V);
+      if Result <> RunDone then
+        Exit;
+      S.DCSize := Integer(V);
+    end;
+    var Diff := 0;
+    if S.DCSize > 0 then
+    begin
+      var V: Cardinal;
+      if not TryRead(S.DCSize, V) then
+        Exit(RunWait);
+      Diff := Integer(V);
+      // A leading 0 marks a negative difference.
+      if (V shr (S.DCSize - 1)) = 0 then
+        Diff := Diff - (1 shl S.DCSize) + 1;
+    end;
+    var Ch := 0;
+    if S.Block >= 4 then
+      Ch := S.Block - 3;
+    S.DCPred[Ch] := S.DCPred[Ch] + Diff;
+    B[0] := SmallInt(EnsureRange(S.DCPred[Ch], -32768, 32767));
+    S.Coef := 1;
+  end;
   while True do
-    case S.BPhase of
+  begin
+    var Run, Level: Integer;
+    var EOB: Boolean;
+    Result := DecodeCoefficient(not S.MBIntra and (S.Coef = 0), Run, Level, EOB);
+    if Result <> RunDone then
+      Exit;
+    if EOB then
+      Exit(RunDone);
+    S.Coef := S.Coef + Run;
+    if S.Coef > 63 then
+      Exit(RunError);
+    B[S.Coef] := SmallInt(Level);
+    Inc(S.Coef);
+  end;
+end;
+
+// Inverse scan, inverse quantisation, IDCT of block B (7.3, 7.4, annex A).
+procedure TPS2IPU.ReconstructBlock(B: Integer);
+var
+  F: array[0..63] of Integer;
+begin
+  var QF := PSmallInt(@S.Blocks[B, 0]);
+  var Scan := PByte(@ZigZag);
+  if (S.CTRL and CtrlAS) <> 0 then
+    Scan := PByte(@Alternate);
+  FillChar(F, SizeOf(F), 0);
+  for var N := 0 to 63 do
+    F[Scan[N]] := QF[N];
+  var Scale: Integer;
+  if (S.CTRL and CtrlQST) <> 0 then
+    Scale := NonLinearScale[S.QScaleCode and 31]
+  else
+    Scale := 2 * (S.QScaleCode and 31);
+  var MPEG1 := (S.CTRL and CtrlMP1) <> 0;
+  var W := PByte(@S.NonIntraW);
+  if S.MBIntra then
+    W := PByte(@S.IntraW);
+  var Sum := 0;
+  for var K := 0 to 63 do
+  begin
+    var V := F[K];
+    if S.MBIntra and (K = 0) then
+      V := V * (8 shr ((S.CTRL shr 16) and 3))
+    else if V <> 0 then
+    begin
+      if S.MBIntra then
+        V := (V * W[K] * Scale * 2) div 32
+      else if V > 0 then
+        V := ((2 * V + 1) * W[K] * Scale) div 32
+      else
+        V := ((2 * V - 1) * W[K] * Scale) div 32;
+      // MPEG-1: reconstructed values are odd.
+      if MPEG1 and (V <> 0) and not Odd(V) then
+        if V > 0 then
+          Dec(V)
+        else
+          Inc(V);
+    end;
+    V := EnsureRange(V, -2048, 2047);
+    F[K] := V;
+    Inc(Sum, V);
+  end;
+  // MPEG-2 mismatch control: an even sum toggles the last coefficient.
+  if not MPEG1 and not Odd(Sum) then
+    F[63] := F[63] xor 1;
+  for var K := 0 to 63 do
+    QF[K] := SmallInt(F[K]);
+  InverseDCT(QF);
+end;
+
+// The current macroblock: coded block pattern, then its six blocks.
+function TPS2IPU.RunMacroblock: Integer;
+begin
+  while True do
+    case S.MBStep of
       0:
         begin
-          var FB := Integer(Cmd and $3F);
-          if Avail < FB then
-            Exit(StepWait);
-          Advance(FB);
-          S.BPhase := 1;
-        end;
-      1:
-        begin
-          if MBI then
-            S.CBP := $3F
+          if S.MBIntra then
+            S.CBP := 63
           else
           begin
             var V: Cardinal;
-            Result := TryVLC(FCBP, V);
-            if Result <> StepDone then
+            Result := Decode(FPattern, V);
+            if Result <> RunDone then
               Exit;
             S.CBP := Integer(V);
           end;
           S.CTRL := (S.CTRL and not Cardinal($3F00)) or (Cardinal(S.CBP) shl 8);
-          S.BPhase := 2;
+          if S.MBResetDC then
+          begin
+            // 2^(7 + intra_dc_precision).
+            var DC := 128 shl ((S.CTRL shr 16) and 3);
+            S.DCPred[0] := DC;
+            S.DCPred[1] := DC;
+            S.DCPred[2] := DC;
+          end;
+          S.Block := 0;
+          S.MBStep := 1;
+        end;
+      1:
+        begin
+          FillChar(S.Blocks[S.Block, 0], SizeOf(S.Blocks[0]), 0);
+          if (S.CBP and (32 shr S.Block)) <> 0 then
+          begin
+            S.Coef := 0;
+            S.DCSize := -1;
+            S.MBStep := 2;
+          end
+          else
+            S.MBStep := 3;
         end;
       2:
         begin
-          if (Cmd and $04000000) <> 0 then
-          begin
-            var DC := 128 shl ((S.CTRL shr 16) and 3);
-            S.DCPredictor[0] := DC;
-            S.DCPredictor[1] := DC;
-            S.DCPredictor[2] := DC;
-          end;
-          S.Block := 0;
-          S.BPhase := 3;
+          Result := RunBlock;
+          if Result <> RunDone then
+            Exit;
+          ReconstructBlock(S.Block);
+          S.MBStep := 3;
         end;
       3:
         begin
-          FillChar(S.Blocks[S.Block, 0], 128, 0);
-          if (S.CBP and (1 shl (5 - S.Block))) <> 0 then
-          begin
-            S.DCTPhase := 0;
-            S.DCTIndex := 0;
-            S.BPhase := 4;
-          end
-          else
-            S.BPhase := 5;
-        end;
-      4:
-        begin
-          Result := StepCoefficients(MBI);
-          if Result <> StepDone then
-            Exit;
-          var B := PSmallInt(@S.Blocks[S.Block, 0]);
-          Dequantise(B, MBI, Integer((Cmd shr 16) and $1F));
-          InverseScan(B, (S.CTRL and CtrlAS) <> 0);
-          IDCT(B);
-          S.BPhase := 5;
-        end;
-      5:
-        begin
           Inc(S.Block);
           if S.Block = 6 then
-            S.BPhase := 6
+          begin
+            S.MBStep := 4;
+            Inc(Macroblocks);
+          end
           else
-            S.BPhase := 3;
+            S.MBStep := 1;
         end;
     else
-      begin
-        Inc(Macroblocks);
-        if not IDEC then
-        begin
-          var Raw: array[0..383] of SmallInt;
-          MacroblockRaw16(@Raw[0], (Cmd and $02000000) <> 0);
-          OutWrite(@Raw[0], SizeOf(Raw));
-          // Eight zero bits next: a start code follows.
-          if (Avail >= 8) and (Peek(8) = 0) then
-          begin
-            AlignByte;
-            Exit(StepStart);
-          end;
-        end;
-        Exit(StepDone);
-      end;
+      Exit(RunDone);
     end;
 end;
 
-// YCbCr 4:2:0 RAW8 (256 Y, 64 Cb, 64 Cr) to RGBA32 or RGBA16 with the
-// TH0/TH1 alpha thresholds.
-procedure TPS2IPU.ColorConvert(Raw: PByte; RGB16: Boolean);
+// RAW16 macroblock: luminance as 16x16 rows (field DCT: blocks 0/1 hold the
+// even lines, 2/3 the odd ones), then Cb and Cr 8x8.
+procedure TPS2IPU.MacroblockRaw16(Dest: PSmallInt);
+begin
+  for var Y := 0 to 15 do
+    for var X := 0 to 15 do
+    begin
+      var Blk, Row: Integer;
+      if S.MBFieldDCT then
+      begin
+        Blk := (Y and 1) * 2 + X shr 3;
+        Row := Y shr 1;
+      end
+      else
+      begin
+        Blk := (Y shr 3) * 2 + X shr 3;
+        Row := Y and 7;
+      end;
+      Dest[Y * 16 + X] := S.Blocks[Blk, Row * 8 + (X and 7)];
+    end;
+  Move(S.Blocks[4, 0], Dest[256], 128);
+  Move(S.Blocks[5, 0], Dest[320], 128);
+end;
+
+// YCbCr 4:2:0 RAW8 (256 Y, 64 Cb, 64 Cr) to RGBA, BT.601 studio range; alpha
+// 0 under TH0, 40h under TH1, else 80h (all of R, G, B below).
+procedure TPS2IPU.ConvertColour(Raw: PByte; RGB16, Signed: Boolean);
 var
   Pixels: array[0..255] of Cardinal;
   Half: array[0..255] of Word;
 begin
   var TH0 := Integer(S.TH0 and $1FF);
   var TH1 := Integer(S.TH1 and $1FF);
-  for var Row := 0 to 15 do
-    for var Col := 0 to 15 do
+  for var Y := 0 to 15 do
+    for var X := 0 to 15 do
     begin
-      var C := (Row shr 1) * 8 + (Col shr 1);
-      var Y: Single := Raw[Row * 16 + Col];
-      var Cb: Single := Integer(Raw[256 + C]) - 128;
-      var Cr: Single := Integer(Raw[320 + C]) - 128;
-      var R := Trunc(EnsureRange(Y + 1.402 * Cr, 0.0, 255.0));
-      var G := Trunc(EnsureRange(Y - 0.34414 * Cb - 0.71414 * Cr, 0.0, 255.0));
-      var B := Trunc(EnsureRange(Y + 1.772 * Cb, 0.0, 255.0));
+      var C := (Y shr 1) * 8 + (X shr 1);
+      var L := 298 * (Integer(Raw[Y * 16 + X]) - 16) + 128;
+      var Cb := Integer(Raw[256 + C]) - 128;
+      var Cr := Integer(Raw[320 + C]) - 128;
+      var R := EnsureRange(Sar(L + 409 * Cr, 8), 0, 255);
+      var G := EnsureRange(Sar(L - 100 * Cb - 208 * Cr, 8), 0, 255);
+      var B := EnsureRange(Sar(L + 516 * Cb, 8), 0, 255);
       var A: Cardinal := $80;
       if (R < TH0) and (G < TH0) and (B < TH0) then
         A := 0
       else if (R < TH1) and (G < TH1) and (B < TH1) then
         A := $40;
-      Pixels[Row * 16 + Col] := (A shl 24) or (Cardinal(B) shl 16) or (Cardinal(G) shl 8) or Cardinal(R);
+      if Signed then
+      begin
+        R := (R - 128) and $FF;
+        G := (G - 128) and $FF;
+        B := (B - 128) and $FF;
+      end;
+      Pixels[Y * 16 + X] := (A shl 24) or (Cardinal(B) shl 16) or (Cardinal(G) shl 8) or Cardinal(R);
     end;
   if RGB16 then
   begin
-    for var I := 0 to 255 do
+    for var K := 0 to 255 do
     begin
-      var P := Pixels[I];
-      Half[I] := Word(((P and $F8) shr 3) or (((P shr 8) and $F8) shl 2) or (((P shr 16) and $F8) shl 7) or
-        ((P shr 31) shl 15));
+      var P := Pixels[K];
+      Half[K] := Word(((P and $FF) shr 3) or (((P shr 8) and $F8) shl 2) or (((P shr 16) and $F8) shl 7) or
+        (Cardinal(Ord((P shr 24) <> 0)) shl 15));
     end;
     OutWrite(@Half[0], SizeOf(Half));
   end
@@ -905,311 +966,346 @@ begin
     OutWrite(@Pixels[0], SizeOf(Pixels));
 end;
 
-// IDEC: the macroblocks of an intra slice to RGB until a start code.
-function TPS2IPU.StepIDEC: Integer;
+{ Commands }
+
+// BDEC: one macroblock (FB, QSC, DT, DCR, MBI from the command) as RAW16.
+function TPS2IPU.RunBDEC: Integer;
+var
+  Raw: array[0..383] of SmallInt;
 begin
   var Cmd := S.Command;
   while True do
-    case S.Phase of
+    case S.Step of
       0:
         begin
-          var FB := Integer(Cmd and $3F);
-          if Avail < FB then
-            Exit(StepWait);
-          Advance(FB);
-          S.Phase := 1;
+          var V: Cardinal;
+          if not TryRead(Integer(Cmd and $3F), V) then
+            Exit(RunWait);
+          S.MBIntra := (Cmd and $08000000) <> 0;
+          S.MBResetDC := (Cmd and $04000000) <> 0;
+          S.MBFieldDCT := (Cmd and $02000000) <> 0;
+          S.QScaleCode := Integer((Cmd shr 16) and $1F);
+          S.MBStep := 0;
+          S.Step := 1;
+        end;
+      1:
+        begin
+          Result := RunMacroblock;
+          if Result <> RunDone then
+            Exit;
+          MacroblockRaw16(@Raw[0]);
+          OutWrite(@Raw[0], SizeOf(Raw));
+          S.Step := 2;
+        end;
+    else
+      begin
+        // A start code next ends the slice (next_start_code: byte aligned).
+        case ZerosAhead(23) of
+          -1: Exit(RunWait);
+          1:
+            begin
+              Skip(Min((8 - (S.Bit and 7)) and 7, Avail));
+              Exit(RunStartCode);
+            end;
+        end;
+        Exit(RunDone);
+      end;
+    end;
+end;
+
+// IDEC: the macroblocks of an intra slice, from the first macroblock_type
+// (the caller read the slice header and the first address increment) to the
+// next start code, each converted to RGB.
+function TPS2IPU.RunIDEC: Integer;
+var
+  Raw16: array[0..383] of SmallInt;
+  Raw8: array[0..383] of Byte;
+begin
+  var Cmd := S.Command;
+  while True do
+    case S.Step of
+      0:
+        begin
+          var V: Cardinal;
+          if not TryRead(Integer(Cmd and $3F), V) then
+            Exit(RunWait);
+          S.QScaleCode := Integer((Cmd shr 16) and $1F);
+          S.MBCount := 0;
+          S.MBResetDC := True;
+          S.Step := 1;
         end;
       1:
         begin
           var V: Cardinal;
-          Result := TryVLC(FMBTypeI, V);
-          if Result <> StepDone then
+          Result := Decode(FTypeI, V);
+          if Result <> RunDone then
             Exit;
-          S.MBType := V;
-          S.Phase := 2;
+          S.MBType := Integer(V);
+          S.Step := 2;
         end;
       2:
         begin
-          S.DT := 0;
+          S.DCTType := 0;
           if (Cmd and $01000000) <> 0 then
           begin
-            if Avail < 1 then
-              Exit(StepWait);
-            S.DT := Peek(1);
-            Advance(1);
+            var V: Cardinal;
+            if not TryRead(1, V) then
+              Exit(RunWait);
+            S.DCTType := Integer(V);
           end;
-          S.Phase := 3;
+          S.Step := 3;
         end;
       3:
         begin
           if (S.MBType and $10) <> 0 then
           begin
-            if Avail < 5 then
-              Exit(StepWait);
-            S.QSC := Peek(5);
-            Advance(5);
+            var V: Cardinal;
+            if not TryRead(5, V) then
+              Exit(RunWait);
+            S.QScaleCode := Integer(V);
           end;
-          // The macroblock through BDEC: intra, DC reset at the slice start.
-          S.BCommand := $28000000 or (S.QSC shl 16) or (S.DT shl 25);
-          if S.MBCount = 0 then
-            S.BCommand := S.BCommand or $04000000;
-          S.BPhase := 0;
-          S.Phase := 4;
+          S.MBIntra := True;
+          S.MBFieldDCT := S.DCTType <> 0;
+          S.MBStep := 0;
+          S.Step := 4;
         end;
       4:
         begin
-          Result := StepBDEC(True);
-          if Result <> StepDone then
+          Result := RunMacroblock;
+          if Result <> RunDone then
             Exit;
+          MacroblockRaw16(@Raw16[0]);
+          for var K := 0 to 383 do
+            Raw8[K] := Byte(EnsureRange(Integer(Raw16[K]), 0, 255));
+          ConvertColour(@Raw8[0], (Cmd and $08000000) <> 0, (Cmd and $02000000) <> 0);
           Inc(S.MBCount);
-          var Raw16: array[0..383] of SmallInt;
-          MacroblockRaw16(@Raw16[0], S.DT <> 0);
-          for var I := 0 to 383 do
-            S.Raw[I] := Byte(EnsureRange(Integer(Raw16[I]), 0, 255));
-          ColorConvert(@S.Raw[0], (Cmd and $08000000) <> 0);
-          S.Phase := 5;
+          S.MBResetDC := False;
+          S.Step := 5;
         end;
       5:
         begin
-          // The next macroblock once this one has left.
+          // The next macroblock once this one has left the output FIFO.
           if FOutSize > 0 then
-            Exit(StepWait);
-          S.Phase := 6;
+            Exit(RunWait);
+          S.Step := 6;
         end;
       6:
-        begin
-          if Avail < 8 then
-            Exit(StepWait);
-          if Peek(8) <> 0 then
-            S.Phase := 8
-          else
-          begin
-            AlignByte;
-            S.Phase := 7;
-          end;
-        end;
-      7:
-        begin
-          // Zero bytes up to 00 00 01; a stream ending in zeros counts too.
-          if Avail < 24 then
-            Exit(StepStart);
-          var V := Peek(24);
-          if V = 1 then
-            Exit(StepStart);
-          if V <> 0 then
-            Exit(StepError);
-          Advance(8);
+        case ZerosAhead(23) of
+          -1: Exit(RunWait);
+          1:
+            begin
+              Skip(Min((8 - (S.Bit and 7)) and 7, Avail));
+              Exit(RunStartCode);
+            end;
+        else
+          S.Step := 7;
         end;
     else
       begin
+        // macroblock_address_increment: stuffing and escapes, then 1 (skipped
+        // macroblocks reset the DC predictors).
         var V: Cardinal;
-        Result := TryVLC(FMBAI, V);
-        if Result <> StepDone then
+        Result := Decode(FAddrInc, V);
+        if Result <> RunDone then
           Exit;
-        S.Phase := 1;
+        case V of
+          34: ;
+          35: S.MBResetDC := True;
+        else
+          begin
+            if V > 1 then
+              S.MBResetDC := True;
+            S.Step := 1;
+          end;
+        end;
       end;
     end;
 end;
 
-// VDEC: one symbol (address increment, macroblock type, motion code, dual
-// prime vector); DATA gets (code length shl 16) or value.
-function TPS2IPU.StepVDEC: Integer;
+// VDEC: one symbol; DATA = code length shl 16 or the value (16-bit).
+function TPS2IPU.RunVDEC: Integer;
 begin
-  if S.Phase = 0 then
+  if S.Step = 0 then
   begin
-    var FB := Integer(S.Command and $3F);
-    if Avail < FB then
-      Exit(StepWait);
-    Advance(FB);
-    S.Phase := 1;
+    var V: Cardinal;
+    if not TryRead(Integer(S.Command and $3F), V) then
+      Exit(RunWait);
+    S.Step := 1;
   end;
-  var V: Cardinal;
+  var Value: Cardinal;
+  var Len: Integer;
   case (S.Command shr 26) and 3 of
-    0: Result := TryVLC(FMBAI, V);
+    0: Result := Lookup(FAddrInc, Value, Len);
     1:
       case (S.CTRL shr 24) and 7 of
-        1: Result := TryVLC(FMBTypeI, V);
-        2: Result := TryVLC(FMBTypeP, V);
-        3: Result := TryVLC(FMBTypeB, V);
+        1: Result := Lookup(FTypeI, Value, Len);
+        2: Result := Lookup(FTypeP, Value, Len);
+        3: Result := Lookup(FTypeB, Value, Len);
+        4: Result := Lookup(FTypeD, Value, Len);
       else
-        Exit(StepError);
+        Result := RunError;
       end;
-    2: Result := TryVLC(FMotionCode, V);
+    2: Result := Lookup(FMotion, Value, Len);
   else
-    Result := TryVLC(FDMVector, V);
+    Result := Lookup(FDMV, Value, Len);
   end;
-  if Result = StepDone then
-    S.Data := V;
+  if Result = RunError then
+  begin
+    S.Data := 0;
+    S.DataValid := True;
+  end;
+  if Result <> RunDone then
+    Exit;
+  Skip(Len);
+  S.Data := (Cardinal(Len) shl 16) or (Value and $FFFF);
+  S.DataValid := True;
 end;
 
-// FDEC: the next 32 bits after FB, not consumed.
-function TPS2IPU.StepFDEC: Integer;
+// FDEC: the next 32 bits after FB, left in the stream.
+function TPS2IPU.RunFDEC: Integer;
 begin
-  if S.Phase = 0 then
+  if S.Step = 0 then
   begin
-    var FB := Integer(S.Command and $3F);
-    if Avail < FB then
-      Exit(StepWait);
-    Advance(FB);
-    S.Phase := 1;
+    var V: Cardinal;
+    if not TryRead(Integer(S.Command and $3F), V) then
+      Exit(RunWait);
+    S.Step := 1;
   end;
   if Avail < 32 then
-    Exit(StepWait);
+    Exit(RunWait);
   S.Data := Peek(32);
-  Result := StepDone;
+  S.DataValid := True;
+  Result := RunDone;
 end;
 
-function TPS2IPU.StepSETIQ: Integer;
+// SETIQ: 64 matrix bytes in zigzag order (as in the sequence header).
+function TPS2IPU.RunSETIQ: Integer;
 begin
-  if S.Phase = 0 then
+  if S.Step = 0 then
   begin
-    var FB := Integer(S.Command and $3F);
-    if Avail < FB then
-      Exit(StepWait);
-    Advance(FB);
-    S.Phase := 1;
+    var V: Cardinal;
+    if not TryRead(Integer(S.Command and $3F), V) then
+      Exit(RunWait);
+    S.Step := 1;
   end;
   while S.Index < 64 do
   begin
-    if Avail < 8 then
-      Exit(StepWait);
+    var V: Cardinal;
+    if not TryRead(8, V) then
+      Exit(RunWait);
     if (S.Command and $08000000) <> 0 then
-      S.NonIntraIQ[S.Index] := Byte(Peek(8))
+      S.NonIntraW[ZigZag[S.Index]] := Byte(V)
     else
-      S.IntraIQ[S.Index] := Byte(Peek(8));
-    Advance(8);
+      S.IntraW[ZigZag[S.Index]] := Byte(V);
     Inc(S.Index);
   end;
-  Result := StepDone;
+  Result := RunDone;
 end;
 
-function TPS2IPU.StepSETVQ: Integer;
+// SETVQ: the 16 RGB16 colours PACK chooses from.
+function TPS2IPU.RunSETVQ: Integer;
 begin
-  if S.Phase = 0 then
-  begin
-    var FB := Integer(S.Command and $3F);
-    if Avail < FB then
-      Exit(StepWait);
-    Advance(FB);
-    S.Phase := 1;
-  end;
   while S.Index < 16 do
   begin
-    if Avail < 16 then
-      Exit(StepWait);
-    S.VQCLUT[S.Index] := Word(Peek(16));
-    Advance(16);
+    var V: Cardinal;
+    if not TryRead(16, V) then
+      Exit(RunWait);
+    S.VQCLUT[S.Index] := Word(V);
     Inc(S.Index);
   end;
-  Result := StepDone;
+  Result := RunDone;
 end;
 
-// CSC: MBC macroblocks of RAW8 to RGB, each one leaving before the next.
-function TPS2IPU.StepCSC: Integer;
+// CSC: MBC RAW8 macroblocks to RGB, one at a time through the output FIFO.
+function TPS2IPU.RunCSC: Integer;
 begin
   while True do
-    case S.Phase of
-      0:
-        begin
-          if S.MBCount = 0 then
-            Exit(StepDone);
-          S.Index := 0;
-          S.Phase := 1;
-        end;
-      1:
-        begin
-          while S.Index < 384 do
-          begin
-            if Avail < 8 then
-              Exit(StepWait);
-            S.Raw[S.Index] := Byte(Peek(8));
-            Advance(8);
-            Inc(S.Index);
-          end;
-          ColorConvert(@S.Raw[0], (S.Command and $08000000) <> 0);
-          Dec(S.MBCount);
-          S.Phase := 2;
-        end;
-    else
-      begin
-        if FOutSize > 0 then
-          Exit(StepWait);
-        S.Phase := 0;
-      end;
+  begin
+    if S.Step = 1 then
+    begin
+      if FOutSize > 0 then
+        Exit(RunWait);
+      S.Step := 0;
     end;
+    if S.MBCount = 0 then
+      Exit(RunDone);
+    while S.Index < 384 do
+    begin
+      var V: Cardinal;
+      if not TryRead(8, V) then
+        Exit(RunWait);
+      S.Raw[S.Index] := Byte(V);
+      Inc(S.Index);
+    end;
+    ConvertColour(@S.Raw[0], (S.Command and $08000000) <> 0, False);
+    Dec(S.MBCount);
+    S.Index := 0;
+    S.Step := 1;
+  end;
 end;
 
-// PACK: MBC macroblocks of RGBA32 to RGBA16 (OFM) or 4-bit indices of the
-// nearest VQ CLUT colour.
-function TPS2IPU.StepPACK: Integer;
+// PACK: MBC RGBA32 macroblocks to RGBA16 (OFM) or 4-bit indices of the
+// nearest SETVQ colour.
+function TPS2IPU.RunPACK: Integer;
 var
   Half: array[0..255] of Word;
   Index4: array[0..127] of Byte;
 begin
   while True do
-    case S.Phase of
-      0:
-        begin
-          if S.MBCount = 0 then
-            Exit(StepDone);
-          S.Index := 0;
-          S.Phase := 1;
-        end;
-      1:
-        begin
-          while S.Index < 1024 do
-          begin
-            if Avail < 8 then
-              Exit(StepWait);
-            S.Raw[S.Index] := Byte(Peek(8));
-            Advance(8);
-            Inc(S.Index);
-          end;
-          for var I := 0 to 255 do
-          begin
-            var P := PByte(@S.Raw[I * 4]);
-            Half[I] := Word((P[0] shr 3) or (Cardinal(P[1] shr 3) shl 5) or (Cardinal(P[2] shr 3) shl 10) or
-              (Cardinal(P[3] shr 7) shl 15));
-          end;
-          if (S.Command and $08000000) <> 0 then
-            OutWrite(@Half[0], SizeOf(Half))
-          else
-          begin
-            FillChar(Index4, SizeOf(Index4), 0);
-            for var I := 0 to 255 do
-            begin
-              var Best := 0;
-              var BestD := MaxInt;
-              for var K := 0 to 15 do
-              begin
-                var C := S.VQCLUT[K];
-                var DR := Integer(Half[I] and 31) - Integer(C and 31);
-                var DG := Integer((Half[I] shr 5) and 31) - Integer((C shr 5) and 31);
-                var DB := Integer((Half[I] shr 10) and 31) - Integer((C shr 10) and 31);
-                var D := DR * DR + DG * DG + DB * DB;
-                if D < BestD then
-                begin
-                  BestD := D;
-                  Best := K;
-                end;
-              end;
-              Index4[I shr 1] := Index4[I shr 1] or Byte(Best shl ((I and 1) * 4));
-            end;
-            OutWrite(@Index4[0], SizeOf(Index4));
-          end;
-          Dec(S.MBCount);
-          S.Phase := 2;
-        end;
-    else
-      begin
-        if FOutSize > 0 then
-          Exit(StepWait);
-        S.Phase := 0;
-      end;
+  begin
+    if S.Step = 1 then
+    begin
+      if FOutSize > 0 then
+        Exit(RunWait);
+      S.Step := 0;
     end;
+    if S.MBCount = 0 then
+      Exit(RunDone);
+    while S.Index < 1024 do
+    begin
+      var V: Cardinal;
+      if not TryRead(8, V) then
+        Exit(RunWait);
+      S.Raw[S.Index] := Byte(V);
+      Inc(S.Index);
+    end;
+    for var K := 0 to 255 do
+    begin
+      var P := PByte(@S.Raw[K * 4]);
+      Half[K] := Word((P[0] shr 3) or (Cardinal(P[1] shr 3) shl 5) or (Cardinal(P[2] shr 3) shl 10) or
+        (Cardinal(Ord(P[3] <> 0)) shl 15));
+    end;
+    if (S.Command and $08000000) <> 0 then
+      OutWrite(@Half[0], SizeOf(Half))
+    else
+    begin
+      FillChar(Index4, SizeOf(Index4), 0);
+      for var K := 0 to 255 do
+      begin
+        var Best := 0;
+        var BestD := MaxInt;
+        for var E := 0 to 15 do
+        begin
+          var C := S.VQCLUT[E];
+          var DR := Integer(Half[K] and 31) - Integer(C and 31);
+          var DG := Integer((Half[K] shr 5) and 31) - Integer((C shr 5) and 31);
+          var DB := Integer((Half[K] shr 10) and 31) - Integer((C shr 10) and 31);
+          var D := DR * DR + DG * DG + DB * DB;
+          if D < BestD then
+          begin
+            BestD := D;
+            Best := E;
+          end;
+        end;
+        Index4[K shr 1] := Index4[K shr 1] or Byte(Best shl ((K and 1) * 4));
+      end;
+      OutWrite(@Index4[0], SizeOf(Index4));
+    end;
+    Dec(S.MBCount);
+    S.Index := 0;
+    S.Step := 1;
+  end;
 end;
-
-{ Commands }
 
 procedure TPS2IPU.StartCommand(Value: Cardinal);
 begin
@@ -1223,72 +1319,55 @@ begin
       Trace.Add(Format('%d cmd=%.8x', [FScheduler.Now, Value]));
   S.CTRL := S.CTRL and not Cardinal(CtrlECD or CtrlSCD);
   S.Command := Value;
-  S.LastCommand := Integer(Value shr 28);
   S.Busy := True;
-  S.Phase := 0;
+  S.Step := 0;
   S.Index := 0;
-  S.StartAt := 0;
-  case Value shr 28 of
-    1:
-      begin
-        S.MBCount := 0;
-        S.QSC := (Value shr 16) and $1F;
-        S.DT := 0;
-        S.MBType := 0;
-        S.StartAt := FScheduler.Now + IDECDelay;
-      end;
-    2:
-      begin
-        S.BCommand := Value;
-        S.BPhase := 0;
-      end;
-    7, 8:
-      S.MBCount := Integer(Value and $7FF);
-  end;
+  if (Value shr 28) in [7, 8] then
+    S.MBCount := Integer(Value and $7FF);
 end;
 
-procedure TPS2IPU.Finish(Flags: Cardinal; Interrupt: Boolean);
+procedure TPS2IPU.Finish(Flags: Cardinal);
 begin
   S.Busy := False;
   S.CTRL := S.CTRL or Flags;
-  if Interrupt and Assigned(FOnInterrupt) then
+  if Assigned(FOnInterrupt) then
     FOnInterrupt();
 end;
 
 procedure TPS2IPU.Execute;
 begin
-  if not S.Busy or (S.StartAt > FScheduler.Now) then
+  if not S.Busy then
     Exit;
   var R: Integer;
   case S.Command shr 28 of
     0:
       begin
-        // BCLR: empty input FIFO, the stream starts at bit BP.
-        S.InSize := 0;
-        S.InBit := Integer(S.Command and $7F);
-        R := StepDone;
+        // BCLR: empty input; the stream starts at bit BP of the next data.
+        S.Size := 0;
+        S.Bit := Integer(S.Command and $7F);
+        R := RunDone;
       end;
-    1: R := StepIDEC;
-    2: R := StepBDEC(False);
-    3: R := StepVDEC;
-    4: R := StepFDEC;
-    5: R := StepSETIQ;
-    6: R := StepSETVQ;
-    7: R := StepCSC;
-    8: R := StepPACK;
+    1: R := RunIDEC;
+    2: R := RunBDEC;
+    3: R := RunVDEC;
+    4: R := RunFDEC;
+    5: R := RunSETIQ;
+    6: R := RunSETVQ;
+    7: R := RunCSC;
+    8: R := RunPACK;
     9:
       begin
         S.TH0 := S.Command and $1FF;
         S.TH1 := (S.Command shr 16) and $1FF;
-        R := StepDone;
+        R := RunDone;
       end;
   else
-    R := StepDone;
+    R := RunError;
   end;
   case R of
-    StepDone: Finish(0, True);
-    StepStart: Finish(CtrlSCD, True);
-    StepError: Finish(CtrlECD, False);
+    RunDone: Finish(0);
+    RunStartCode: Finish(CtrlSCD);
+    RunError: Finish(CtrlECD);
   end;
 end;
 
@@ -1311,11 +1390,11 @@ end;
 
 function TPS2IPU.TakeInput(Data: PByte; Count: Integer): Integer;
 begin
-  Result := Min(Count, (InCapacity - S.InSize) div 16);
+  Result := Min(Count, (InCapacity - S.Size) div 16);
   if Result <= 0 then
     Exit(0);
-  Move(Data^, S.InBuf[S.InSize], Result * 16);
-  Inc(S.InSize, Result * 16);
+  Move(Data^, S.Buf[S.Size], Result * 16);
+  Inc(S.Size, Result * 16);
   RequestPump;
 end;
 
@@ -1332,8 +1411,8 @@ begin
   RequestPump;
 end;
 
-// Data moved inside a DMA transfer: the IPU goes on once the DMAC is done
-// (from the pump loop, or right after through the scheduler).
+// Data moved inside a DMA transfer: the command goes on from the pump loop,
+// or right after through the scheduler.
 procedure TPS2IPU.RequestPump;
 begin
   if FPumping then
@@ -1357,7 +1436,7 @@ begin
       Execute;
       if FDMAC <> nil then
       begin
-        if S.InSize < InCapacity then
+        if S.Size < InCapacity then
           FDMAC.Resume(DMAToIPU);
         if FOutSize > 0 then
           FDMAC.Resume(DMAFromIPU);
@@ -1368,46 +1447,35 @@ begin
   end;
 end;
 
-procedure TPS2IPU.Kick;
-begin
-  Pump;
-  if S.Busy and (S.StartAt > FScheduler.Now) then
-    FScheduler.Schedule(TPS2Event.IPU, S.StartAt);
-end;
-
 procedure TPS2IPU.Event;
 begin
-  Kick;
+  Pump;
 end;
 
 { Registers }
 
+// IFC: quadwords in the input FIFO; FP: quadwords in the decode buffer (the
+// first two); BP: bit position in the first of them.
 procedure TPS2IPU.FIFOState(out BP, IFC, FP: Cardinal);
 begin
-  BP := Cardinal(S.InBit) and $7F;
-  IFC := Cardinal(S.InSize div 16);
-  FP := 0;
-  if (BP <> 0) and (IFC <> 0) then
-  begin
-    FP := 1;
-    Dec(IFC);
-  end;
+  var Q := Cardinal(S.Size div 16);
+  FP := Min(Q, 2);
+  IFC := Q - FP;
+  BP := Cardinal(S.Bit) and $7F;
 end;
 
 function TPS2IPU.Read(Address: Cardinal; Size: Integer): UInt64;
 begin
   var BP, IFC, FP: Cardinal;
-  var Busy: UInt64 := 0;
-  if S.Busy then
-    Busy := 1;
+  var Busy: UInt64 := Ord(S.Busy);
   case Address and $FF of
     $00:
       begin
-        // DATA: the VDEC/FDEC result, else the stream ahead.
-        var D := S.Data;
-        if (S.LastCommand <> 3) and (S.LastCommand <> 4) then
-          D := PeekTop;
-        Result := D;
+        // DATA: the FDEC/VDEC result; before any, the stream ahead.
+        if S.DataValid then
+          Result := S.Data
+        else
+          Result := PeekTop;
         if Size = 8 then
           Result := Result or (Busy shl 63);
       end;
@@ -1425,9 +1493,7 @@ begin
       end;
     $30:
       begin
-        Result := 0;
-        if not S.Busy then
-          Result := PeekTop;
+        Result := PeekTop;
         if (Size = 8) and (S.Busy or (Avail < 32)) then
           Result := Result or (UInt64(1) shl 63);
       end;
@@ -1447,24 +1513,26 @@ begin
     $00:
       begin
         StartCommand(Cardinal(Value));
-        Kick;
+        Pump;
       end;
     $10:
       begin
         var V := Cardinal(Value);
         if (V and CtrlRST) <> 0 then
         begin
+          // Reset: an executing command ends with an interrupt.
+          var WasBusy := S.Busy;
           S.Busy := False;
-          S.LastCommand := -1;
-          S.TH0 := 0;
-          S.TH1 := 0;
-          S.InSize := 0;
-          S.InBit := 0;
+          S.DataValid := False;
+          S.Size := 0;
+          S.Bit := 0;
           FOutHead := 0;
           FOutSize := 0;
+          if WasBusy and Assigned(FOnInterrupt) then
+            FOnInterrupt();
         end;
         S.CTRL := (S.CTRL and not Cardinal($3FFF0000)) or (V and $3FFF0000);
-        Kick;
+        Pump;
       end;
   end;
 end;
@@ -1475,7 +1543,7 @@ begin
     Exit;
   var V := Value;
   if TakeInput(@V, 1) > 0 then
-    Kick;
+    Pump;
 end;
 
 procedure TPS2IPU.ReadFIFO(Address: Cardinal; out Value: TPS2Reg128);
@@ -1484,7 +1552,7 @@ begin
   if (Address and $F0) <> 0 then
     Exit;
   if GiveOutput(@Value, 1) > 0 then
-    Kick;
+    Pump;
 end;
 
 procedure TPS2IPU.SerializeState(State: TStateArchive);
@@ -1528,5 +1596,4 @@ function TPS2IPUPort.Pull(Channel: Integer; Data: PByte; Count: Integer): Intege
 begin
   Result := FIPU.GiveOutput(Data, Count);
 end;
-
 end.

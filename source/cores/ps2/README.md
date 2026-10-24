@@ -51,9 +51,11 @@ DVD CHD, CD images through the CD layer). The front end lives in
 
 - Play! (BSD-2-Clause, Jean-Philip Desjardins): structure of the high-level
   IOP (PADMAN/MCSERV data layouts, IRX relocation rules, SIF RPC flow) was
-  rewritten in Delphi with attribution in the unit headers. `PS2.IPU` is a
-  port of Play!'s IPU with the MPEG-2 tables of Play! Framework (BSD-2-Clause)
-  and the IEEE 1180 reference IDCT.
+  rewritten in Delphi with attribution in the unit headers.
+- `PS2.IPU` is written from ISO/IEC 13818-2 (syntax, Annex B tables, inverse
+  quantisation, IDCT), ITU-R BT.601 (colour conversion), the IPU description in
+  ps2tek and the way ps2sdk's libmpeg drives the unit; no emulator code. It is
+  checked against ffmpeg (`codex-work/tests/iputest.ps1`).
 - ps2sdk (AFL 2.0): export tables, structure layouts and function numbers
   (interfaces only); ps2autotests for testing.
 - PCSX2, DobieStation and similar GPL projects were used only as

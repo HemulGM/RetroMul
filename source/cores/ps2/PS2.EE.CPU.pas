@@ -3839,7 +3839,9 @@ begin
     Inc(Address, 4);
     // A non-likely branch in a delay slot takes the next instruction as its
     // own delay slot, then the last taken branch wins (R5900 behavior).
-    if Slot and Branch and ((Insts[Count - 1].Flags and IFLikely) = 0) and (Count < MaxBlockInsts) then
+    // (ps2autotests: so for BC1T in a BC1T slot; BEQ in a BEQ slot is classic.)
+    if Slot and Branch and ((Insts[Count - 1].Flags and IFLikely) = 0) and ((Op shr 26) in [$10..$12]) and
+      (Count < MaxBlockInsts) then
       Continue;
     if Slot or ((Insts[Count - 1].Flags and IFEnd) <> 0) then
       Break;

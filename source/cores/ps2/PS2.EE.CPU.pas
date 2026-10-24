@@ -220,6 +220,7 @@ type
     // INTC_STAT sees the cause bit before the handler acknowledges it).
     FIntDelay: Boolean;
     FInt0, FInt1: Boolean;
+    FIntBlock: Boolean;
     FExitRequest: Boolean;
     FStop: Byte;
     FBranchTaken: Boolean;
@@ -419,6 +420,9 @@ type
     // INTC (INT0, IP2) and DMAC (INT1, IP3) interrupt lines.
     procedure SetInt0(Active: Boolean);
     procedure SetInt1(Active: Boolean);
+    // Holds interrupts off whatever Status says (the HLE kernel while it
+    // runs interrupt handlers, which may set EIE or rewrite Status).
+    procedure SetIntBlock(Value: Boolean);
     // COP0 timer: the absolute cycle where Count reaches Compare next.
     function CompareDue: Int64;
     procedure CompareReached;
@@ -659,6 +663,7 @@ begin
   FillChar(FScratch^, PS2ScratchpadSize, 0);
   FInt0 := False;
   FInt1 := False;
+  FIntBlock := False;
   FExitRequest := False;
   FCop2.Reset;
   RebuildMaps;
@@ -680,12 +685,21 @@ begin
     Cause := Cause or EECauseIP3;
   S.COP0[C0Cause] := Cause;
   var Was := FIntPending;
-  FIntPending := ((SR and (EESRIE or EESREIE or EESREXL or EESRERL)) = (EESRIE or EESREIE)) and
+  FIntPending := not FIntBlock and ((SR and (EESRIE or EESREIE or EESREXL or EESRERL)) = (EESRIE or EESREIE)) and
     ((Cause and SR and $8C00) <> 0);
   if FIntPending and not Was then
     FIntDelay := True;
   if FIntPending then
     FExitRequest := True;
+end;
+
+procedure TEECPU.SetIntBlock(Value: Boolean);
+begin
+  if FIntBlock <> Value then
+  begin
+    FIntBlock := Value;
+    UpdateInterrupts;
+  end;
 end;
 
 procedure TEECPU.SetInt0(Active: Boolean);

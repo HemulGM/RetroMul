@@ -303,6 +303,7 @@ begin
   FCurrent := -1;
   FSeq := 0;
   FInInterrupt := False;
+  FCPU.SetIntBlock(False);
   FNeedSchedule := False;
   FInCustom := False;
   FVSyncFlag1 := 0;
@@ -564,6 +565,9 @@ begin
   SaveContext(FIntContext);
   FIntStatus := FCPU.S.COP0[C0Status];
   FInInterrupt := True;
+  // Handlers do not nest, whatever they do to Status (some set EIE or
+  // write Status before returning).
+  FCPU.SetIntBlock(True);
   // The handlers run now even if the idle loop just asked to sleep.
   FIdle := False;
   FNeedSchedule := False;
@@ -670,6 +674,7 @@ begin
   if Trace <> nil then
     Trace.Add(Format('%d interrupt return pc=%.8x ra=%.8x', [FScheduler.Now, FCPU.S.PC, Cardinal(FCPU.S.GPR[31].Lo)]));
   FCPU.S.COP0[C0Status] := FIntStatus and not Cardinal(EESREXL);
+  FCPU.SetIntBlock(False);
   if FNeedSchedule or (FCurrent < 0) then
   begin
     FNeedSchedule := False;
@@ -1813,6 +1818,8 @@ begin
   State.Field(FCurrent, SizeOf(FCurrent));
   State.Field(FSeq, SizeOf(FSeq));
   State.Field(FInInterrupt, SizeOf(FInInterrupt));
+  if State.Loading then
+    FCPU.SetIntBlock(FInInterrupt);
   State.Field(FNeedSchedule, SizeOf(FNeedSchedule));
   State.Field(FIntContext, SizeOf(FIntContext));
   State.Field(FIntStatus, SizeOf(FIntStatus));

@@ -418,12 +418,20 @@ begin
   Move((FIOPRAM + Address)^, P[0], Size);
   var Cid := PacketU32(P, 8);
   if (Log <> nil) and (Cid <> SIFCmdRPCCall) then
-    Log.Add(Format('sif cmd %.8x %.8x', [Cid, PacketU32(P, 32)]));
+  begin
+    var Hex := '';
+    if (Cid and $80000000) = 0 then
+      for var K := 0 to Min(Size, 64) - 1 do
+        Hex := Hex + IntToHex(P[K], 2);
+    Log.Add(Format('sif cmd %.8x %.8x %s', [Cid, PacketU32(P, 32), Hex]));
+  end;
   case Cid of
     SIFCmdChangeSAddr:
       EERecvAddr := PacketU32(P, 16);
     SIFCmdSetSReg:
-      ;
+      // The IOP's software register (index, value): sifcmd keeps them.
+      if Assigned(FOnGuestCommand) then
+        FOnGuestCommand(Cid, P);
     SIFCmdInit:
       if PacketU32(P, 12) = 0 then
         EERecvAddr := PacketU32(P, 16)

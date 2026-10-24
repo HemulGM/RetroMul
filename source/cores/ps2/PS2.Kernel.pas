@@ -1175,11 +1175,15 @@ begin
     var Dest := ReadU32(P + Cardinal(K) * 16 + 4);
     var Size := Integer(ReadU32(P + Cardinal(K) * 16 + 8));
     var Attr := ReadU32(P + Cardinal(K) * 16 + 12);
+    if Trace <> nil then
+      Trace.Add(Format('%d sifdma %.8x -> %.8x size %x attr %x', [FScheduler.Now, Src, Dest, Size, Attr]));
     // Source addresses are EE virtual (KSEG, user or uncached RAM views).
     var Host := FCPU.HostPointer(Src);
     if (Host <> nil) and (NativeUInt(Host) >= NativeUInt(FBus.RAM)) and
       (NativeUInt(Host) < NativeUInt(FBus.RAM) + PS2RAMSize) then
-      FBus.SIF.EEToIOP(Cardinal(NativeUInt(Host) - NativeUInt(FBus.RAM)), Dest, Size, Attr);
+      FBus.SIF.EEToIOP(Cardinal(NativeUInt(Host) - NativeUInt(FBus.RAM)), Dest, Size, Attr)
+    else if FUnknown.IndexOf(Format('SifSetDma from %.8x', [Src])) < 0 then
+      FUnknown.Add(Format('SifSetDma from %.8x', [Src]));
   end;
   Inc(FSifDmaId);
   if FSifDmaId = 0 then

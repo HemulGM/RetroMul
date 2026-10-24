@@ -1392,6 +1392,14 @@ end;
 
 procedure TPS2IOPKernel.GuestCommand(Kind: Cardinal; const P: TBytes);
 begin
+  if Kind = SIFCmdSetSReg then
+  begin
+    // The EE sets one of the software registers modules read with
+    // sceSifGetSreg.
+    if Length(P) >= 24 then
+      SifRegs[PacketU32(P, 16) and 31] := PacketU32(P, 20);
+    Exit;
+  end;
   if Kind = SIFCmdRPCCall then
   begin
     var SD := PacketU32(P, 52);

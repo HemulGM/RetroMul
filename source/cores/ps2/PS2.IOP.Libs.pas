@@ -1367,7 +1367,13 @@ function IomanCall(K: TPS2IOPKernel; Fn: Integer): Cardinal;
 begin
   Result := 0;
   case Fn of
-    4: Result := Cardinal(K.IOMan.Open(K.ReadString(K.Arg(0), 256), Integer(K.Arg(1))));
+    4:
+      begin
+        var Path := K.ReadString(K.Arg(0), 256);
+        Result := Cardinal(K.IOMan.Open(Path, Integer(K.Arg(1))));
+        if (K.Log <> nil) and not K.Logged($80000000 or (Cardinal(Path.GetHashCode) and $7FFFFFFF)) then
+          K.Warn(Format('open %s (at %.8x) mode %x -> %d', [Path, K.Arg(0), K.Arg(1), Integer(Result)]));
+      end;
     5: Result := Cardinal(K.IOMan.Close(Integer(K.Arg(0))));
     6:
       begin

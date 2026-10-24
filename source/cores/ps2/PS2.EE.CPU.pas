@@ -19,7 +19,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, Core.Snapshots, PS2.Types;
+  System.SysUtils, System.Classes, System.Math, System.Generics.Collections, Core.Snapshots, PS2.Types;
 
 const
   EEExcInterrupt = 0;
@@ -407,6 +407,8 @@ type
     WatchPtr: PCardinal;
     WatchLast: Cardinal;
     WatchLog: TStrings;
+    // Diagnostics: block starts by PC when assigned.
+    BlockProfile: TDictionary<Cardinal, Int64>;
     constructor Create(Bus: TEEBus; Cop2: TEECop2; NowCounter, DeadlineCounter: PInt64);
     destructor Destroy; override;
     procedure Reset;
@@ -3967,6 +3969,13 @@ begin
         WatchLog.Add(Format('%d at block %.8x after %.8x: %.8x -> %.8x', [Now^, PC, PCHistory[(PCHistoryPos - 1) and 15],
           WatchLast, WatchPtr^]));
       WatchLast := WatchPtr^;
+    end;
+    if BlockProfile <> nil then
+    begin
+      var N: Int64;
+      if not BlockProfile.TryGetValue(PC, N) then
+        N := 0;
+      BlockProfile.AddOrSetValue(PC, N + 1);
     end;
     PCHistory[PCHistoryPos and 15] := PC;
     Inc(PCHistoryPos);

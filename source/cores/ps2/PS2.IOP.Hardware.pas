@@ -77,6 +77,9 @@ type
     OnInterrupt: TPS2IOPInterrupt;
     SIO2: TPS2SIO2;
     Log: TStrings;
+    // Diagnostics: writes to the SPU2 core and voice address registers
+    // (not the data port).
+    SPULog: TStrings;
     constructor Create(Scheduler: TPS2Scheduler; IOPRAM: PByte; Cycles: PInt64);
     destructor Destroy; override;
     procedure Reset;
@@ -258,6 +261,10 @@ end;
 procedure TPS2IOPHardware.WriteSPU2(Offset, Value: Cardinal);
 begin
   var Index := (Offset shr 1) and $7FF;
+  if (SPULog <> nil) and (SPULog.Count < 100000) and (Offset < $800) and
+    (((Offset and $3FF) >= $180) and ((Offset and $3FF) < $1C0) or ((Offset and $3FF) >= $1C0) and ((Offset and $3FF) < $2E0)) and
+    ((Offset and $3FF) <> SPUData) then
+    SPULog.Add(Format('%d spu w %.3x = %.4x', [FScheduler.Now, Offset, Value and $FFFF]));
   FSPU2Regs[Index] := Word(Value);
   if Offset >= $800 then
     Exit;

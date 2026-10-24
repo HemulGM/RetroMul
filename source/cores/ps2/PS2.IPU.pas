@@ -100,8 +100,10 @@ type
     // Diagnostics: commands started, macroblocks decoded, bytes output.
     Commands, Macroblocks, OutBytes: Int64;
     CommandCounts: array[0..15] of Int64;
-    // Diagnostics: commands other than VDEC/FDEC/BDEC when assigned.
+    // Diagnostics: commands other than VDEC/FDEC/BDEC when assigned (all
+    // of them, the latest kept, with TraceAll).
     Trace: TStrings;
+    TraceAll: Boolean;
     constructor Create(Scheduler: TPS2Scheduler; DMAC: TPS2DMAC);
     procedure Reset;
     function Read(Address: Cardinal; Size: Integer): UInt64; override;
@@ -1311,7 +1313,22 @@ procedure TPS2IPU.StartCommand(Value: Cardinal);
 begin
   Inc(Commands);
   Inc(CommandCounts[Value shr 28]);
-  if (Trace <> nil) and not (Value shr 28 in [2, 3, 4]) and (Trace.Count < 100000) then
+  if (Trace <> nil) and TraceAll then
+  begin
+    if Trace.Count >= 100000 then
+    begin
+      var Keep := TStringList.Create;
+      try
+        for var K := Trace.Count - 50000 to Trace.Count - 1 do
+          Keep.Add(Trace[K]);
+        Trace.Assign(Keep);
+      finally
+        Keep.Free;
+      end;
+    end;
+    Trace.Add(Format('%d cmd=%.8x size=%d bit=%d', [FScheduler.Now, Value, S.Size, S.Bit]));
+  end
+  else if (Trace <> nil) and not (Value shr 28 in [2, 3, 4]) and (Trace.Count < 100000) then
     if FDMAC <> nil then
       Trace.Add(Format('%d cmd=%.8x ctrl=%.8x d3=%.8x/%x d4=%.8x/%x', [FScheduler.Now, Value, S.CTRL,
         FDMAC.Ch[DMAFromIPU].MADR, FDMAC.Ch[DMAFromIPU].QWC, FDMAC.Ch[DMAToIPU].MADR, FDMAC.Ch[DMAToIPU].QWC]))
@@ -1328,6 +1345,8 @@ end;
 
 procedure TPS2IPU.Finish(Flags: Cardinal);
 begin
+  if (Trace <> nil) and TraceAll then
+    Trace.Add(Format('%d done flags=%x data=%.8x size=%d bit=%d', [FScheduler.Now, Flags, S.Data, S.Size, S.Bit]));
   S.Busy := False;
   S.CTRL := S.CTRL or Flags;
   if Assigned(FOnInterrupt) then

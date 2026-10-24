@@ -197,6 +197,8 @@ type
     // Diagnostics: syscalls by number, Deci2Call by function.
     SyscallCounts: array[0..255] of Int64;
     Deci2Counts: array[0..16] of Int64;
+    // Diagnostics: one line per thread (state, wait, priority, PC, RA).
+    function DescribeThreads: TArray<string>;
   end;
 
 implementation
@@ -1743,6 +1745,32 @@ begin
   else
     Unknown(Code);
   end;
+end;
+
+function TPS2Kernel.DescribeThreads: TArray<string>;
+const
+  Names: array[TPS2ThreadState] of string = ('free', 'dormant', 'ready', 'waiting', 'suspended', 'waitsuspended');
+begin
+  Result := nil;
+  for var K := 1 to KernelMaxThreads - 1 do
+    if FThreads[K].State <> TPS2ThreadState.Free then
+    begin
+      var PC := FThreads[K].Context.PC;
+      var RA := Cardinal(FThreads[K].Context.GPR[31].Lo);
+      var Mark := '';
+      if K = FCurrent then
+      begin
+        PC := FCPU.S.PC;
+        RA := Cardinal(FCPU.S.GPR[31].Lo);
+        Mark := ' current';
+      end;
+      Result := Result + [Format('ee thread %d: %s wait %d id %d prio %d pc %.8x ra %.8x func %.8x%s', [K,
+        Names[FThreads[K].State], FThreads[K].WaitKind, FThreads[K].WaitId, FThreads[K].Priority, PC, RA,
+        FThreads[K].Func, Mark])];
+    end;
+  for var K := 1 to KernelMaxSemas - 1 do
+    if FSemas[K].Used then
+      Result := Result + [Format('ee sema %d: count %d max %d', [K, FSemas[K].Count, FSemas[K].MaxCount])];
 end;
 
 procedure TPS2Kernel.SerializeState(State: TStateArchive);

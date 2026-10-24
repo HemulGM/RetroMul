@@ -234,6 +234,12 @@ type
     CdStreamLBA: Int64;
     DmaId: Cardinal;
     Log: TStrings;
+    // Diagnostics: library calls by (library shl 16) or function when
+    // assigned; interrupt-context calls started, by kind; interrupts
+    // raised, by line.
+    LibCallCounts: TDictionary<Cardinal, Int64>;
+    CallKindCounts: array[0..7] of Int64;
+    IntrCounts: array[0..63] of Int64;
     OnTTY: TProc<string>;
     // A system module the high-level IOP provides was loaded: its path or
     // name and its image (nil when loaded by path).
@@ -683,6 +689,8 @@ end;
 
 procedure TPS2IOPKernel.StartCall(const C: TIOPCall);
 begin
+  if (C.Kind >= 0) and (C.Kind <= High(CallKindCounts)) then
+    Inc(CallKindCounts[C.Kind]);
   CurrentCall := C;
   CPU.SetPC(C.Func);
   CPU.R[IOPRegA0] := C.A0;
@@ -851,6 +859,7 @@ procedure TPS2IOPKernel.RaiseInterrupt(Line: Integer);
 begin
   if (Line < 0) or (Line > High(Intr)) then
     Exit;
+  Inc(IntrCounts[Line]);
   if Intr[Line].Registered and Intr[Line].Enabled then
     QueueCall(CallIntr, Intr[Line].Handler, Intr[Line].Arg, 0, 0, 0, Cardinal(Line));
 end;

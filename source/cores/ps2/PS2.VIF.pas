@@ -26,6 +26,8 @@ type
     UnpackAddr, UnpackCount, CycleIndex, CycleWritten: Integer;
     UnpackBits: UInt64;
     UnpackBitCount: Integer;
+    // 32-bit elements (up to 128 bits a vector) collect as words.
+    UnpackWords: array[0..3] of Cardinal;
     // MPG progress (in 32-bit words).
     MPGAddr: Cardinal;
     DBF: Boolean;
@@ -134,6 +136,14 @@ begin
   end;
 end;
 
+// STCYCL write length; 0 stands for 256.
+function CycleWL(Cycle: Cardinal): Integer;
+begin
+  Result := Integer((Cycle shr 8) and $FF);
+  if Result = 0 then
+    Result := 256;
+end;
+
 function UnpackWordsFor(Cmd: Cardinal; Num, CL, WL: Integer): Integer;
 begin
   // Data words of an UNPACK: vectors actually read from the stream.
@@ -219,7 +229,7 @@ begin
         S.UnpackBits := 0;
         S.UnpackBitCount := 0;
         var CL := Integer(S.CYCLE and $FF);
-        var WL := Integer((S.CYCLE shr 8) and $FF);
+        var WL := CycleWL(S.CYCLE);
         S.Remaining := UnpackWordsFor(Cmd, Num, CL, WL);
         if S.Remaining = 0 then
           FinishCommand;
@@ -234,7 +244,7 @@ begin
   var Mask := S.MASK;
   var R := V;
   var CL := Integer(S.CYCLE and $FF);
-  var WL := Integer((S.CYCLE shr 8) and $FF);
+  var WL := CycleWL(S.CYCLE);
   var Masked := ((S.Command and $10) <> 0);
   var Row := Min(S.CycleWritten, 3);
   var P := PPS2Reg128(FData + ((Cardinal(S.UnpackAddr) * 16) and FDataMask));
@@ -252,6 +262,8 @@ begin
               R.UW[K] := Cardinal(UInt64(R.UW[K]) + S.Row[K]);
               S.Row[K] := R.UW[K];
             end;
+          // Mode 3 keeps the data and loads it into the row.
+          3: S.Row[K] := R.UW[K];
         end;
       1: R.UW[K] := S.Row[K];
       2: R.UW[K] := S.Col[Min(S.CycleWritten, 3)];
@@ -286,10 +298,13 @@ begin
     VecBits := 16
   else
     VecBits := ElemBits * (VN + 1);
-  S.UnpackBits := S.UnpackBits or (UInt64(W) shl S.UnpackBitCount);
+  if VL = 0 then
+    S.UnpackWords[(S.UnpackBitCount shr 5) and 3] := W
+  else
+    S.UnpackBits := S.UnpackBits or (UInt64(W) shl S.UnpackBitCount);
   Inc(S.UnpackBitCount, 32);
   var CL := Integer(S.CYCLE and $FF);
-  var WL := Integer((S.CYCLE shr 8) and $FF);
+  var WL := CycleWL(S.CYCLE);
   while (S.UnpackBitCount >= VecBits) and (S.UnpackCount < Integer(S.NUM)) do
   begin
     // Fill mode writes the rows beyond CL from the mask/row without data.
@@ -315,7 +330,11 @@ begin
       var E: array[0..3] of Cardinal;
       for var K := 0 to VN do
       begin
-        var Raw := Cardinal((S.UnpackBits shr (K * ElemBits)) and ((UInt64(1) shl ElemBits) - 1));
+        var Raw: Cardinal;
+        if VL = 0 then
+          Raw := S.UnpackWords[K]
+        else
+          Raw := Cardinal((S.UnpackBits shr (K * ElemBits)) and ((UInt64(1) shl ElemBits) - 1));
         if (ElemBits < 32) and not Unsigned and ((Raw and (Cardinal(1) shl (ElemBits - 1))) <> 0) then
           Raw := Raw or not ((Cardinal(1) shl ElemBits) - 1);
         E[K] := Raw;
@@ -343,7 +362,8 @@ begin
           V.UW[K] := E[K];
       end;
     end;
-    S.UnpackBits := S.UnpackBits shr VecBits;
+    if VL <> 0 then
+      S.UnpackBits := S.UnpackBits shr VecBits;
     Dec(S.UnpackBitCount, VecBits);
     WriteVector(V);
   end;
@@ -421,7 +441,11 @@ begin
     $030: Result := S.MARK;
     $040: Result := S.CYCLE;
     $050: Result := S.MODE;
-    $060: Result := S.NUM;
+    $060:
+      if FIndex = 0 then
+        Result := S.NUM and $FF
+      else
+        Result := S.NUM;
     $070: Result := S.MASK;
     $080: Result := S.CODE;
     $090: Result := S.ITOPS;

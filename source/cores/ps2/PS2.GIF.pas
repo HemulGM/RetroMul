@@ -12,7 +12,7 @@
 interface
 
 uses
-  System.SysUtils, Core.Snapshots, PS2.Types, PS2.EE.Bus, PS2.DMAC, PS2.GS;
+  System.SysUtils, System.Classes, Core.Snapshots, PS2.Types, PS2.EE.Bus, PS2.DMAC, PS2.GS;
 
 type
   TPS2GIFPathState = record
@@ -38,6 +38,8 @@ type
     MaskedPath3: Boolean;
     // PATH3 may move again (unmasked): the GIF DMA channel goes on.
     OnPath3Resume: TProc;
+    // Diagnostics: tags started when assigned.
+    TagLog: TStrings;
     constructor Create(GS: TPS2GS);
     property GS: TPS2GS read FGS;
     procedure Reset;
@@ -169,6 +171,9 @@ begin
       if (P.Tag.Lo and (UInt64(1) shl 46)) <> 0 then
         FGS.WriteRegister($00, (P.Tag.Lo shr 47) and $7FF);
       P.Active := P.NLoop > 0;
+      if (TagLog <> nil) and (TagLog.Count < 200000) then
+        TagLog.Add(Format('tag path%d nloop=%d eop=%d flg=%d nreg=%d regs=%x pre=%d prim=%x', [PathIndex, P.NLoop, Ord(P.EOP), P.Flg,
+          P.NReg, P.Regs, (P.Tag.Lo shr 46) and 1, (P.Tag.Lo shr 47) and $7FF]));
       Inc(Result);
       Inc(Q);
       Continue;

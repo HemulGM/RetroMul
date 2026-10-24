@@ -16,7 +16,7 @@
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.Bus, PS2.DMAC;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.Bus, PS2.DMAC;
 
 type
   // A code table indexed by the next Bits bits of the stream: entries hold
@@ -95,6 +95,9 @@ type
     S: TPS2IPUState;
     // Diagnostics: commands started, macroblocks decoded, bytes output.
     Commands, Macroblocks, OutBytes: Int64;
+    CommandCounts: array[0..15] of Int64;
+    // Diagnostics: commands other than VDEC/FDEC/BDEC when assigned.
+    Trace: TStrings;
     constructor Create(Scheduler: TPS2Scheduler; DMAC: TPS2DMAC);
     procedure Reset;
     function Read(Address: Cardinal; Size: Integer): UInt64; override;
@@ -1211,6 +1214,13 @@ end;
 procedure TPS2IPU.StartCommand(Value: Cardinal);
 begin
   Inc(Commands);
+  Inc(CommandCounts[Value shr 28]);
+  if (Trace <> nil) and not (Value shr 28 in [2, 3, 4]) and (Trace.Count < 100000) then
+    if FDMAC <> nil then
+      Trace.Add(Format('%d cmd=%.8x ctrl=%.8x d3=%.8x/%x d4=%.8x/%x', [FScheduler.Now, Value, S.CTRL,
+        FDMAC.Ch[DMAFromIPU].MADR, FDMAC.Ch[DMAFromIPU].QWC, FDMAC.Ch[DMAToIPU].MADR, FDMAC.Ch[DMAToIPU].QWC]))
+    else
+      Trace.Add(Format('%d cmd=%.8x', [FScheduler.Now, Value]));
   S.CTRL := S.CTRL and not Cardinal(CtrlECD or CtrlSCD);
   S.Command := Value;
   S.LastCommand := Integer(Value shr 28);

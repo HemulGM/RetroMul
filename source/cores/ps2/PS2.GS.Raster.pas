@@ -14,7 +14,7 @@
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.GS.Memory;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots, PS2.Types, PS2.GS.Memory;
 
 const
   GSRegPRIM = $00;
@@ -125,7 +125,7 @@ type
     FXferBitCount: Integer;
     FReadBuffer: TArray<Cardinal>;
     FReadPos: Integer;
-    FPrimitives, FPixels: Int64;
+    FPrimitives, FPixels, FXferPixels: Int64;
     procedure Kick(DrawingKick: Boolean);
     procedure SetupDraw;
     procedure DrawPoint(const V: TPS2GSVertex);
@@ -145,6 +145,9 @@ type
   public
     Regs: array[0..$7F] of UInt64;
     SigLblId: UInt64;
+    // Diagnostics: transfers started (BITBLTBUF, TRXPOS, TRXREG, TRXDIR) when assigned.
+    TransferLog: TStrings;
+    PrimLog: TStrings;
     constructor Create;
     destructor Destroy; override;
     procedure Reset;
@@ -160,6 +163,7 @@ type
     property OnSignal: TProc read FOnSignal write FOnSignal;
     property Primitives: Int64 read FPrimitives;
     property PixelsDrawn: Int64 read FPixels;
+    property PixelsTransferred: Int64 read FXferPixels;
   end;
 
 implementation
@@ -227,6 +231,8 @@ end;
 procedure TPS2GSRaster.WriteRegister(Index: Integer; Value: UInt64);
 begin
   Index := Index and $7F;
+  if (PrimLog <> nil) and (PrimLog.Count < 200000) and (Index in [6, 7, $14, $15, $16, $17, $3B, $4C, $4D]) then
+    PrimLog.Add(Format('reg %.2x = %.16x', [Index, Value]));
   Regs[Index] := Value;
   case Index of
     GSRegPRIM:
@@ -847,6 +853,12 @@ end;
 procedure TPS2GSRaster.DrawSprite(const V0, V1: TPS2GSVertex);
 begin
   Inc(FPrimitives);
+  if (PrimLog <> nil) and (PrimLog.Count < 200000) then
+    PrimLog.Add(Format('sprite %d,%d-%d,%d uv=%d,%d-%d,%d st=%g,%g q=%g rgba=%d,%d,%d,%d tme=%s fst=%s abe=%s fbp=%x fbw=%d fpsm=%x msk=%x tbp=%x tbw=%d tpsm=%x tw=%d th=%d tcc=%s tfx=%d ate=%s atst=%d aref=%d afail=%d zte=%s ztst=%d blend=%d%d%d%d fix=%d',
+      [V0.X div 16, V0.Y div 16, V1.X div 16, V1.Y div 16, V0.U div 16, V0.V div 16, V1.U div 16, V1.V div 16, V0.S, V0.T, V0.Q,
+      V1.R, V1.G, V1.B, V1.A, BoolToStr(FD.TME, True), BoolToStr(FD.FST, True), BoolToStr(FD.ABE, True), FD.FBP, FD.FBW, FD.FPSM,
+      FD.FBMSK, FD.TBP, FD.TBW, FD.TPSM, FD.TW, FD.TH, BoolToStr(FD.TCC, True), FD.TFX, BoolToStr(FD.ATE, True), FD.ATST, FD.AREF,
+      FD.AFAIL, BoolToStr(FD.ZTE, True), FD.ZTST, FD.BlendA, FD.BlendB, FD.BlendC, FD.BlendD, FD.BlendFix]));
   var X0 := V0.X;
   var X1 := V1.X;
   var Y0 := V0.Y;
@@ -902,6 +914,12 @@ end;
 procedure TPS2GSRaster.DrawTriangle(const V0, V1, V2: TPS2GSVertex);
 begin
   Inc(FPrimitives);
+  if (PrimLog <> nil) and (PrimLog.Count < 200000) and FD.TME then
+    PrimLog.Add(Format('tri %d,%d %d,%d %d,%d uv=%d,%d %d,%d st=%g,%g,%g q=%g rgba=%d,%d,%d,%d fst=%s abe=%s fbp=%x fbw=%d fpsm=%x tbp=%x tbw=%d tpsm=%x tw=%d th=%d tcc=%s tfx=%d ate=%s atst=%d aref=%d zte=%s ztst=%d blend=%d%d%d%d fix=%d iip=%s',
+      [V0.X div 16, V0.Y div 16, V1.X div 16, V1.Y div 16, V2.X div 16, V2.Y div 16, V0.U div 16, V0.V div 16, V2.U div 16, V2.V div 16,
+      V0.S, V0.T, V2.S, V0.Q, V0.R, V0.G, V0.B, V0.A, BoolToStr(FD.FST, True), BoolToStr(FD.ABE, True), FD.FBP, FD.FBW, FD.FPSM,
+      FD.TBP, FD.TBW, FD.TPSM, FD.TW, FD.TH, BoolToStr(FD.TCC, True), FD.TFX, BoolToStr(FD.ATE, True), FD.ATST, FD.AREF,
+      BoolToStr(FD.ZTE, True), FD.ZTST, FD.BlendA, FD.BlendB, FD.BlendC, FD.BlendD, FD.BlendFix, BoolToStr(FD.IIP, True)]));
   var X0 := Int64(V0.X);
   var Y0 := Int64(V0.Y);
   var X1 := Int64(V1.X);
@@ -1111,6 +1129,9 @@ end;
 procedure TPS2GSRaster.StartTransfer;
 begin
   var Dir := Integer(Regs[GSRegTRXDIR] and 3);
+  if (TransferLog <> nil) and (TransferLog.Count < 100000) then
+    TransferLog.Add(Format('buf=%.16x pos=%.16x reg=%.16x dir=%d', [Regs[GSRegBITBLTBUF], Regs[GSRegTRXPOS],
+      Regs[GSRegTRXREG], Dir]));
   FXferActive := False;
   FXferX := 0;
   FXferY := 0;
@@ -1141,6 +1162,7 @@ begin
     Exit;
   end;
   FMemory.WriteRaw(DPSM, DBP, DBW, Cardinal((DSAX + FXferX) and $7FF), Cardinal((DSAY + FXferY) and $7FF), Value);
+  Inc(FXferPixels);
   Inc(FXferX);
   if FXferX >= RRW then
   begin

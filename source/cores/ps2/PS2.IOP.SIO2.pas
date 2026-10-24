@@ -11,7 +11,7 @@
 // queue; RECV1 then shows the entries no device answered and the interrupt
 // flags completion. The first byte of a command picks the device: 01h pad,
 // 21h multitap, 61h infrared, 81h memory card. DualShock 2 pads answer on
-// ports 0 and 1; nothing else does (memory cards are high level).
+// ports 0 and 1, memory cards (as flash, TPS2CardLink) on ports 2 and 3.
 // References: ps2tek (SIO2), ps2sdk sio2man and the SIO2 register notes of
 // mx4sio_bd (AFL 2.0).
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
@@ -19,7 +19,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, System.Generics.Collections, Core.Snapshots, PS2.IOP.Pad;
+  System.SysUtils, System.Classes, System.Math, System.Generics.Collections, Core.Snapshots, PS2.IOP.Pad,
+  PS2.IOP.MemoryCard;
 
 type
   TPS2SIO2 = class
@@ -37,12 +38,15 @@ type
     FOutArmed: Boolean;
     FOutAddress: Cardinal;
     FOutBlock, FOutBlocks: Integer;
+    FCardLinks: array[0..1] of TPS2CardLink;
     procedure RunQueue;
     procedure Exchange(Port: Integer; Cmd, Reply: PByte; Len: Integer; out Answered: Boolean);
     function DeliverOut: Boolean;
   public
     // The pads (front-end inputs and their controller state).
     PadSource: TPS2PadMan;
+    // The memory cards (CardSource's card N is in SIO2 port 2 + N).
+    CardSource: TPS2MCServer;
     // Raised when a transfer completes (SIO2 interrupt line).
     OnInterrupt: TProc;
     // DMA channel 12 delivered its blocks (the channel completes).
@@ -52,6 +56,8 @@ type
     constructor Create(IOPRAM: PByte);
     destructor Destroy; override;
     procedure Reset;
+    // A memory card in SIO2 port 2 or 3.
+    function CardPresent(Port: Integer): Boolean;
     function Read(Address: Cardinal): Cardinal;
     procedure Write(Address, Value: Cardinal);
     // DMA channel 11: Blocks blocks of BlockSize bytes into the input FIFO.
@@ -98,6 +104,7 @@ const
   IStatError = $2;
 
   DevicePad = $01;
+  DeviceCard = $81;
 
 constructor TPS2SIO2.Create(IOPRAM: PByte);
 begin
@@ -130,6 +137,13 @@ begin
   FOutSizes.Clear;
   FInBlock := 0;
   FOutArmed := False;
+  FCardLinks[0].Reset;
+  FCardLinks[1].Reset;
+end;
+
+function TPS2SIO2.CardPresent(Port: Integer): Boolean;
+begin
+  Result := (CardSource <> nil) and (Port >= 2) and (Port <= 3) and (CardSource.PortCard(Port - 2) <> nil);
 end;
 
 function TPS2SIO2.Read(Address: Cardinal): Cardinal;
@@ -209,9 +223,17 @@ end;
 
 procedure TPS2SIO2.Exchange(Port: Integer; Cmd, Reply: PByte; Len: Integer; out Answered: Boolean);
 begin
-  Answered := (Len > 0) and (Cmd[0] = DevicePad) and (Port <= 1) and (PadSource <> nil);
-  if Answered then
-    PadSource.Devices[Port].Exchange(PadSource.Pads[Port], Cmd, Reply, Len)
+  Answered := False;
+  if (Len > 0) and (Cmd[0] = DevicePad) and (Port <= 1) and (PadSource <> nil) then
+  begin
+    Answered := True;
+    PadSource.Devices[Port].Exchange(PadSource.Pads[Port], Cmd, Reply, Len);
+  end
+  else if (Len > 0) and (Cmd[0] = DeviceCard) and CardPresent(Port) then
+  begin
+    Answered := True;
+    FCardLinks[Port - 2].Exchange(CardSource.PortCard(Port - 2), CardSource.CardNow, Cmd, Reply, Len);
+  end
   else
     // Nobody drives the line: all ones.
     FillChar(Reply^, Len, $FF);
@@ -360,6 +382,7 @@ begin
   State.Field(FOutAddress, SizeOf(FOutAddress));
   State.Field(FOutBlock, SizeOf(FOutBlock));
   State.Field(FOutBlocks, SizeOf(FOutBlocks));
+  State.Field(FCardLinks, SizeOf(FCardLinks));
   Bytes(FIn);
   Bytes(FOut);
   var N := FOutSizes.Count;

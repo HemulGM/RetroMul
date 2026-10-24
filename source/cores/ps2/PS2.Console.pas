@@ -202,6 +202,7 @@ begin
   IOP.OnModuleDone := ModuleDone;
   IOP.OnMarkEE := Bus.MarkRAM;
   IOP.Hardware.SIO2.PadSource := PadMan;
+  IOP.Hardware.SIO2.CardSource := MemoryCards;
   SIF.OnGuestBind := IOP.GuestBind;
   SIF.OnGuestCommand := IOP.GuestCommand;
   LoadFile.ImageReader := IOP.ImageAt;

@@ -3,7 +3,7 @@
 // The system libraries IOP modules import, implemented in Delphi: sysmem,
 // loadcore, intrman, thbase/thevent/thsemap/thmsgbx/thfpool/thvpool,
 // sysclib, stdio, sifman, sifcmd, timrman, vblank, dmacman, cdvdman,
-// ioman/iomanx, modload and heaplib. Function numbers are the export
+// ioman/iomanx, modload, heaplib and secrman. Function numbers are the export
 // indices of the ps2sdk export tables; structures, error codes and behaviour
 // follow the ps2sdk headers and its reimplementations of these modules
 // (threadman, intrman, sysmem, timrman, vblank...; AFL 2.0). Unknown
@@ -52,6 +52,7 @@ const
   LIomanx = 18;
   LModload = 19;
   LHeaplib = 20;
+  LSecrman = 24;
 
   KEOk = 0;
   KEUnknownThid = -407;
@@ -1507,6 +1508,20 @@ begin
   end;
 end;
 
+// secrman: MagicGate is not emulated; card authentication
+// (SecrAuthCard(port, slot, cnum), SIO2 port 2 or 3) succeeds when a card
+// is in the port, the card driver's handlers are not needed, and the
+// decryption functions fail.
+function SecrmanCall(K: TPS2IOPKernel; Fn: Integer): Cardinal;
+begin
+  Result := 0;
+  case Fn of
+    6:
+      if K.Hardware.SIO2.CardPresent(Integer(K.Arg(0))) then
+        Result := 1;
+  end;
+end;
+
 procedure IOPLibraryCall(K: TPS2IOPKernel; Lib, Fn: Integer);
 begin
   var V: Cardinal := 0;
@@ -1531,10 +1546,19 @@ begin
     LIoman, LIomanx: V := IomanCall(K, Fn);
     LModload: V := ModloadCall(K, Fn);
     LHeaplib: V := HeaplibCall(K, Fn);
+    LSecrman: V := SecrmanCall(K, Fn);
   end;
   // A blocked call gets its result when the thread is woken.
   if (K.Current <= 0) or (K.Threads[K.Current].State = ThReady) then
     K.CPU.R[IOPRegV0] := V;
+  if K.LibCallCounts <> nil then
+  begin
+    var Key := (Cardinal(Lib) shl 16) or Cardinal(Fn);
+    var N: Int64;
+    if not K.LibCallCounts.TryGetValue(Key, N) then
+      N := 0;
+    K.LibCallCounts.AddOrSetValue(Key, N + 1);
+  end;
   if K.Log <> nil then
   begin
     var Key := (Cardinal(Lib) shl 16) or Cardinal(Fn);

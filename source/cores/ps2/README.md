@@ -17,7 +17,7 @@ Most commercial games do not reach gameplay yet; there is no sound output.
 | `PS2.IPU` | IPU MPEG decoder (BDEC/IDEC/VDEC/FDEC/CSC/PACK, FIFOs on DMA channels 3/4) |
 | `PS2.Kernel`, `PS2.ELF` | High-level EE kernel (threads, semaphores, interrupts, alarms, SIF DMA, syscall table) and ELF loading |
 | `PS2.IOP.FileIO`, `PS2.IOP.CDVD`, `PS2.IOP.HLE` | FILEIO, CDVD and LOADFILE/IOP heap RPC servers, ISO 9660 access |
-| `PS2.IOP.Pad`, `PS2.IOP.SIO2`, `PS2.IOP.MemoryCard` | DualShock 2 protocol, PADMAN/XPADMAN (pad data in libpad's areas), SIO2 for IOP pad drivers, MCSERV/XMCSERV (file-level memory cards) |
+| `PS2.IOP.Pad`, `PS2.IOP.SIO2`, `PS2.IOP.MemoryCard` | DualShock 2 protocol, PADMAN/XPADMAN (pad data in libpad's areas), SIO2 for IOP pad and memory card drivers, MCSERV/XMCSERV (file-level memory cards), memory cards as flash for games' own card drivers |
 | `PS2.IOP.CPU`, `PS2.IOP.Hardware` | IOP R3000A interpreter and the IOP register file (root counters, SPU2 registers and RAM, IOP DMA 4/7) |
 | `PS2.IOP.Loader`, `PS2.IOP.Kernel`, `PS2.IOP.Libs` | IRX loading and linking, the high-level IOP kernel and the system libraries IOP modules import |
 | `PS2.Console` | Wiring, field timing (NTSC/PAL), the run loop and snapshots |
@@ -43,8 +43,11 @@ DVD CHD, CD images through the CD layer). The front end lives in
 
 - No BIOS boot (OSDSYS), no SPU2 audio, no sound output; VU programs run synchronously; the GS rasterizer is a software
   renderer without upscaling.
-- Memory cards are emulated at the file level (one file per card in the save
-  folder), not as raw `.ps2` card images.
+- Memory cards are kept in one file per card in the save folder (not as raw
+  `.ps2` card images). Games using the system card modules see the card at
+  the file level; games bringing their own card driver (MCMAN over SIO2) see
+  it as flash memory, created formatted and empty, which the same file keeps.
+  The two views do not share saves. MagicGate authentication is skipped.
 - HDD, network, USB and i.LINK modules are reported as loaded but do nothing.
 
 ## References and licences

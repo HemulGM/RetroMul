@@ -10,9 +10,15 @@
 // card, at most three files are open, directories list in creation order
 // ('.' and '..' except in the root) with '*' and '?' patterns, a file
 // created over an existing one replaces it, and file times come from the
-// console clock. The raw card format (pages, ECC, FAT) is not emulated.
+// console clock.
+// Games that bring their own card driver (MCMAN/XMCMAN over SIO2) see the
+// card as flash memory instead (TPS2CardLink): 16384 pages of 512 bytes
+// with 16 spare bytes for ECC, erased in blocks of 16 pages, which the card
+// file keeps next to the file tree (the two views are separate). It is
+// created formatted and empty the first time a driver talks to the card.
 // References: ps2sdk libmc, mcserv and mcman (AFL 2.0; interface, data
-// layouts and result codes).
+// layouts, result codes, the file system structures and the card command
+// set), ps2tek (SIO2 PS2 memory card commands, superblock).
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$POINTERMATH ON}
 
@@ -20,12 +26,19 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Math, System.DateUtils, System.Generics.Collections,
-  System.Generics.Defaults, Core.Snapshots, PS2.Types, PS2.SIF;
+  System.Generics.Defaults, System.ZLib, Core.Snapshots, PS2.Types, PS2.SIF;
 
 const
   PS2MCServerSID = $80000400;
   PS2MemoryCardMagic: array[0..7] of AnsiChar = 'RMPS2MC2';
   PS2MemoryCardMagic1: array[0..7] of AnsiChar = 'RMPS2MC1';
+  // The card as flash: pages of data and spare bytes, erase blocks.
+  PS2CardPageSize = 512;
+  PS2CardSpareSize = 16;
+  PS2CardRawPage = PS2CardPageSize + PS2CardSpareSize;
+  PS2CardBlockPages = 16;
+  PS2CardPages = 16384;
+  PS2CardFlashSize = PS2CardPages * PS2CardRawPage;
 
 type
   TPS2MemoryCardEntry = class
@@ -49,9 +62,14 @@ type
     FNextOrder: Int64;
   public
     Dirty: Boolean;
+    // The card as flash pages (PS2CardRawPage bytes each) for drivers that
+    // talk to it over SIO2; empty until one does.
+    Flash: TBytes;
     constructor Create;
     destructor Destroy; override;
     procedure Clear;
+    // Flash holding a freshly formatted card without files.
+    procedure FormatFlash(Time: UInt64);
     function Find(const Path: string): TPS2MemoryCardEntry;
     function Add(const Path: string; Directory: Boolean; Time: UInt64): TPS2MemoryCardEntry;
     procedure Remove(const Path: string);
@@ -63,6 +81,18 @@ type
     function Image: TBytes;
     procedure Load(const Data: TBytes);
     procedure SerializeState(State: TStateArchive);
+  end;
+
+  // A card as SIO2 reaches it (commands after the 81h device byte): the end
+  // byte replies close with (55h after power-on) and the page and byte
+  // position the start commands 21h-23h set for erasing, writing and
+  // reading. Replies run alongside the command bytes: after the device and
+  // command bytes, most end with 2Bh and the end byte.
+  TPS2CardLink = record
+    Terminator: Byte;
+    Page, Offset: Integer;
+    procedure Reset;
+    procedure Exchange(Card: TPS2MemoryCard; Time: UInt64; Cmd, Reply: PByte; Len: Integer);
   end;
 
   TPS2MCFile = record
@@ -86,7 +116,6 @@ type
     FListPos: Integer;
     FListValid: Boolean;
     function Card(Port, Slot: Cardinal): TPS2MemoryCard;
-    function CardNow: UInt64;
     function Detect(Port, Slot: Cardinal; Second: Boolean = False): Integer;
     function EEPtr(Address: Cardinal; Size: Integer): PByte;
     procedure Touched(Address: Cardinal; Size: Integer);
@@ -116,6 +145,10 @@ type
     procedure Reset; override;
     function Call(Fn: Cardinal; Args: PByte; Size: Integer; ReplySize: Integer): TBytes; override;
     procedure SerializeState(State: TStateArchive); override;
+    // The card time now (sceMcStDateTime layout).
+    function CardNow: UInt64;
+    // The card in a port (0, 1), nil when there is none.
+    function PortCard(Port: Integer): TPS2MemoryCard;
     // The cards' contents (kept across IOP resets).
     procedure SerializeCards(State: TStateArchive);
   end;
@@ -253,6 +286,75 @@ begin
     (UInt64(Mo) shl 40) or (UInt64(Y) shl 48);
 end;
 
+const
+  // The card's answer to command 26h: flags (ECC in the spare bytes, bad
+  // block list), then page size, pages per erase block, pages.
+  CardSpecFlags = $2B;
+  // Flash file system of a standard card: 2 pages per cluster, the
+  // superblock in cluster 0, one indirect FAT cluster listing 32 FAT
+  // clusters, the first allocatable cluster after them, the last two erase
+  // blocks kept for backups.
+  FlashClusterPages = 2;
+  FlashBlockClusters = PS2CardBlockPages div FlashClusterPages;
+  FlashClusters = PS2CardPages div FlashClusterPages;
+  FlashIndirectCluster = 8;
+  FlashFATClusters = FlashClusters * 4 div ClusterSize;
+  FlashAllocOffset = FlashIndirectCluster + 1 + FlashFATClusters;
+  FlashBackupBlock1 = PS2CardPages div PS2CardBlockPages - 1;
+  FlashBackupBlock2 = FlashBackupBlock1 - 1;
+  FlashAllocEnd = FlashBackupBlock2 * FlashBlockClusters - FlashAllocOffset;
+  FlashMagic: AnsiString = 'Sony PS2 Memory Card Format 1.2.0.0';
+  // FAT entries: end of a chain (allocated), free.
+  FATChainEnd = $FFFFFFFF;
+  FATFree = $7FFFFFFF;
+  // Card file section after the file tree: the flash, deflated.
+  FlashTag: array[0..3] of AnsiChar = 'FLSH';
+
+// ECC of 128 bytes of page data, 3 bytes: column parities (bits 0-2 of
+// the data bits whose bit number has bit 0, 1, 2 clear; bits 4-6 of those
+// with it set), then the line parities (over the numbers of the bytes with
+// odd parity, complemented and plain), each inverted.
+procedure CardChunkECC(Data, ECC: PByte);
+begin
+  var Column := 0;
+  var LineNot := 0;
+  var Line := 0;
+  for var I := 0 to 127 do
+  begin
+    var B := Data[I];
+    var Parity := 0;
+    for var K := 0 to 7 do
+      if ((B shr K) and 1) <> 0 then
+      begin
+        Parity := Parity xor 1;
+        for var J := 0 to 2 do
+          if ((K shr J) and 1) = 0 then
+            Column := Column xor (1 shl J)
+          else
+            Column := Column xor (1 shl (J + 4));
+      end;
+    if Parity <> 0 then
+    begin
+      LineNot := LineNot xor not I;
+      Line := Line xor I;
+    end;
+  end;
+  ECC[0] := Byte(not Column and $77);
+  ECC[1] := Byte(not LineNot and $7F);
+  ECC[2] := Byte(not Line and $7F);
+end;
+
+// A page as a card driver programs it: the data, then the ECC of each 128
+// bytes in the spare area (the rest of it zero).
+procedure WriteFlashPage(const Flash: TBytes; Page: Integer; Data: PByte);
+begin
+  var P := PByte(@Flash[Page * PS2CardRawPage]);
+  Move(Data^, P^, PS2CardPageSize);
+  FillChar(P[PS2CardPageSize], PS2CardSpareSize, 0);
+  for var K := 0 to PS2CardPageSize div 128 - 1 do
+    CardChunkECC(@P[K * 128], @P[PS2CardPageSize + K * 3]);
+end;
+
 { TPS2MemoryCard }
 
 constructor TPS2MemoryCard.Create;
@@ -273,7 +375,95 @@ begin
   FEntries.Clear;
   FNextOrder := 0;
   Add('', True, PS2CardTime(0));
+  Flash := nil;
   Dirty := False;
+end;
+
+// The layout a card driver's format leaves: block 0 (superblock), the
+// blocks of the indirect FAT and FAT clusters and the first backup block
+// programmed with zeros, the FAT marking the root directory's cluster and
+// the allocatable clusters free, the root directory ('.' and '..') in the
+// first allocatable cluster; the rest erased.
+procedure TPS2MemoryCard.FormatFlash(Time: UInt64);
+var
+  Cluster: array[0..ClusterSize - 1] of Byte;
+
+  procedure WriteCluster(N: Integer);
+  begin
+    for var K := 0 to FlashClusterPages - 1 do
+      WriteFlashPage(Flash, N * FlashClusterPages + K, @Cluster[K * PS2CardPageSize]);
+  end;
+
+  procedure Put32(Offset: Integer; Value: Cardinal);
+  begin
+    PCardinal(@Cluster[Offset])^ := Value;
+  end;
+
+begin
+  SetLength(Flash, PS2CardFlashSize);
+  FillChar(Flash[0], Length(Flash), $FF);
+  FillChar(Cluster, SizeOf(Cluster), 0);
+  for var Block := 0 to (FlashAllocOffset - 1) div FlashBlockClusters do
+    for var K := 0 to PS2CardBlockPages - 1 do
+      WriteFlashPage(Flash, Block * PS2CardBlockPages + K, @Cluster[0]);
+  for var K := 0 to PS2CardBlockPages - 1 do
+    WriteFlashPage(Flash, FlashBackupBlock1 * PS2CardBlockPages + K, @Cluster[0]);
+  // Superblock.
+  Move(FlashMagic[1], Cluster[0], Length(FlashMagic));
+  PWord(@Cluster[40])^ := PS2CardPageSize;
+  PWord(@Cluster[42])^ := FlashClusterPages;
+  PWord(@Cluster[44])^ := PS2CardBlockPages;
+  PWord(@Cluster[46])^ := $FF00;
+  Put32(48, FlashClusters);
+  Put32(52, FlashAllocOffset);
+  Put32(56, FlashAllocEnd);
+  Put32(60, 0);
+  Put32(64, FlashBackupBlock1);
+  Put32(68, FlashBackupBlock2);
+  Put32(80, FlashIndirectCluster);
+  // No bad blocks.
+  FillChar(Cluster[208], 32 * 4, $FF);
+  Cluster[336] := 2;
+  Cluster[337] := $52;
+  Put32(340, ClusterSize);
+  Put32(344, ClusterSize div 4);
+  Put32(348, FlashBlockClusters);
+  Put32(368, CardClusters);
+  Put32(380, $FFFFFFFF);
+  WriteCluster(0);
+  // Indirect FAT cluster: where the FAT clusters are.
+  FillChar(Cluster, SizeOf(Cluster), 0);
+  for var K := 0 to FlashFATClusters - 1 do
+    Put32(K * 4, FlashIndirectCluster + 1 + Cardinal(K));
+  WriteCluster(FlashIndirectCluster);
+  // FAT, by cluster number from the first allocatable one.
+  for var F := 0 to FlashFATClusters - 1 do
+  begin
+    FillChar(Cluster, SizeOf(Cluster), 0);
+    for var K := 0 to ClusterSize div 4 - 1 do
+    begin
+      var N := F * (ClusterSize div 4) + K;
+      if N = 0 then
+        Put32(K * 4, FATChainEnd)
+      else if N < FlashAllocEnd then
+        Put32(K * 4, FATFree);
+    end;
+    WriteCluster(FlashIndirectCluster + 1 + F);
+  end;
+  // Root directory: '.' (its entry count) and '..'.
+  FillChar(Cluster, SizeOf(Cluster), 0);
+  PWord(@Cluster[0])^ := ModeDir;
+  Put32(4, 2);
+  PUInt64(@Cluster[8])^ := Time;
+  PUInt64(@Cluster[24])^ := Time;
+  Cluster[64] := Ord('.');
+  PWord(@Cluster[512])^ := ModeDir and not AttrReadable or AttrHidden;
+  PUInt64(@Cluster[512 + 8])^ := Time;
+  PUInt64(@Cluster[512 + 24])^ := Time;
+  Cluster[512 + 64] := Ord('.');
+  Cluster[512 + 65] := Ord('.');
+  WriteCluster(FlashAllocOffset);
+  Dirty := True;
 end;
 
 function TPS2MemoryCard.Find(const Path: string): TPS2MemoryCardEntry;
@@ -413,6 +603,24 @@ begin
       if DataLen > 0 then
         S.WriteBuffer(E.Data[0], DataLen);
     end;
+    if Length(Flash) = PS2CardFlashSize then
+    begin
+      S.WriteBuffer(FlashTag, 4);
+      var Deflated := TMemoryStream.Create;
+      try
+        var Z := TZCompressionStream.Create(Deflated);
+        try
+          Z.WriteBuffer(Flash[0], Length(Flash));
+        finally
+          Z.Free;
+        end;
+        var DeflatedLen := Integer(Deflated.Size);
+        S.WriteBuffer(DeflatedLen, 4);
+        S.WriteBuffer(Deflated.Memory^, DeflatedLen);
+      finally
+        Deflated.Free;
+      end;
+    end;
     SetLength(Result, S.Size);
     Move(S.Memory^, Result[0], S.Size);
   finally
@@ -468,6 +676,28 @@ begin
       if DataLen > 0 then
         S.ReadBuffer(E.Data[0], DataLen);
     end;
+    var Tag: array[0..3] of AnsiChar;
+    if (S.Size - S.Position >= 8) and (S.Read(Tag, 4) = 4) and CompareMem(@Tag, @FlashTag, 4) then
+    begin
+      var DeflatedLen: Integer;
+      S.ReadBuffer(DeflatedLen, 4);
+      if (DeflatedLen <= 0) or (DeflatedLen > S.Size - S.Position) then
+        raise EReadError.Create('Damaged PS2 memory card');
+      var Deflated := TMemoryStream.Create;
+      try
+        Deflated.CopyFrom(S, DeflatedLen);
+        Deflated.Position := 0;
+        var Z := TZDecompressionStream.Create(Deflated);
+        try
+          SetLength(Flash, PS2CardFlashSize);
+          Z.ReadBuffer(Flash[0], PS2CardFlashSize);
+        finally
+          Z.Free;
+        end;
+      finally
+        Deflated.Free;
+      end;
+    end;
   finally
     S.Free;
   end;
@@ -493,6 +723,135 @@ begin
   begin
     Load(Data);
     Dirty := True;
+  end;
+end;
+
+{ TPS2CardLink }
+
+procedure TPS2CardLink.Reset;
+begin
+  Terminator := $55;
+  Page := 0;
+  Offset := 0;
+end;
+
+// Cmd[0] is the device byte (81h), Cmd[1] the command. Commands: 11h probe,
+// 12h (before writes and erases), 21h/22h/23h start erase/write/read at a
+// page (4 bytes and their XOR), 26h card specs, 27h set and 28h get the end
+// byte, 42h write and 43h read up to 128 bytes at the position (size byte,
+// data, XOR), 81h end of a read or write, 82h erase the block; the rest
+// (BFh, F3h and the authentication commands) are acknowledged.
+procedure TPS2CardLink.Exchange(Card: TPS2MemoryCard; Time: UInt64; Cmd, Reply: PByte; Len: Integer);
+
+  procedure Close;
+  begin
+    if Len >= 4 then
+    begin
+      Reply[Len - 2] := $2B;
+      Reply[Len - 1] := Terminator;
+    end;
+  end;
+
+  function Position(Size: Integer): Integer;
+  begin
+    if (Page < 0) or (Page >= PS2CardPages) or (Offset + Size > PS2CardRawPage) then
+      Exit(-1);
+    Result := Page * PS2CardRawPage + Offset;
+  end;
+
+begin
+  FillChar(Reply^, Len, $FF);
+  if Len < 2 then
+    Exit;
+  if Length(Card.Flash) <> PS2CardFlashSize then
+    Card.FormatFlash(Time);
+  case Cmd[1] of
+    $21, $22, $23:
+      begin
+        if Len >= 6 then
+          Page := Integer(Cmd[2] or (Cardinal(Cmd[3]) shl 8) or (Cardinal(Cmd[4]) shl 16) or (Cardinal(Cmd[5]) shl 24));
+        Offset := 0;
+        Close;
+      end;
+    $26:
+      if Len >= 13 then
+      begin
+        Reply[2] := CardSpecFlags;
+        PWord(@Reply[3])^ := PS2CardPageSize;
+        PWord(@Reply[5])^ := PS2CardBlockPages;
+        PCardinal(@Reply[7])^ := PS2CardPages;
+        var X: Byte := 0;
+        for var K := 3 to 10 do
+          X := X xor Reply[K];
+        Reply[11] := X;
+        Reply[12] := Terminator;
+      end;
+    $27:
+      begin
+        if Len >= 3 then
+          Terminator := Cmd[2];
+        Close;
+      end;
+    $28:
+      if Len >= 5 then
+      begin
+        Reply[2] := $2B;
+        Reply[3] := Terminator;
+        Reply[4] := $55;
+      end;
+    $42:
+      begin
+        var Size := 0;
+        if Len >= 3 then
+          Size := Min(Integer(Cmd[2]), Len - 3);
+        var P := Position(Size);
+        if P >= 0 then
+        begin
+          Move(Cmd[3], Card.Flash[P], Size);
+          Card.Dirty := True;
+        end;
+        Inc(Offset, Size);
+        if Len >= 4 then
+        begin
+          Reply[2] := $2B;
+          Reply[3] := Terminator;
+          Reply[Len - 1] := Terminator;
+        end;
+      end;
+    $43:
+      begin
+        var Size := 0;
+        if Len >= 3 then
+          Size := Max(0, Min(Integer(Cmd[2]), Len - 6));
+        var P := Position(Size);
+        var X: Byte := 0;
+        for var K := 0 to Size - 1 do
+        begin
+          if P >= 0 then
+            Reply[4 + K] := Card.Flash[P + K];
+          X := X xor Reply[4 + K];
+        end;
+        Inc(Offset, Size);
+        if Len >= 6 then
+        begin
+          Reply[2] := $2B;
+          Reply[3] := Terminator;
+          Reply[4 + Size] := X;
+          Reply[Len - 1] := Terminator;
+        end;
+      end;
+    $82:
+      begin
+        if (Page >= 0) and (Page < PS2CardPages) then
+        begin
+          var First := Page - Page mod PS2CardBlockPages;
+          FillChar(Card.Flash[First * PS2CardRawPage], PS2CardBlockPages * PS2CardRawPage, $FF);
+          Card.Dirty := True;
+        end;
+        Close;
+      end;
+  else
+    Close;
   end;
 end;
 
@@ -539,6 +898,13 @@ begin
   if (Port > 1) or (Slot <> 0) or ((Port = 1) and not SecondCard) then
     Exit(nil);
   Result := Cards[Port];
+end;
+
+function TPS2MCServer.PortCard(Port: Integer): TPS2MemoryCard;
+begin
+  if (Port < 0) or (Port > 1) then
+    Exit(nil);
+  Result := Card(Cardinal(Port), 0);
 end;
 
 function TPS2MCServer.CardNow: UInt64;

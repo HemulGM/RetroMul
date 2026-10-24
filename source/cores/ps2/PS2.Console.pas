@@ -134,6 +134,7 @@ begin
   GIF := TPS2GIF.Create(GS);
   Bus.GIF := GIF;
   GIFPort := TPS2GIFPort.Create(GIF);
+  GIF.OnPath3Resume := procedure begin DMAC.Resume(DMAGIF); end;
   DMAC.Ports[DMAGIF] := GIFPort;
   VIF0 := TPS2VIF.Create(0, VU0.Core, nil, Bus.VU0Code, Bus.VU0Data, $1000, $1000);
   VIF1 := TPS2VIF.Create(1, VU1.Core, GIF, Bus.VU1Code, Bus.VU1Data, $4000, $4000);

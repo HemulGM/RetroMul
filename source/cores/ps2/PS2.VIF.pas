@@ -177,7 +177,11 @@ begin
       begin
         S.Path3Masked := (Imm and $8000) <> 0;
         if FGIF <> nil then
+        begin
           FGIF.MaskedPath3 := S.Path3Masked;
+          if not S.Path3Masked and Assigned(FGIF.OnPath3Resume) then
+            FGIF.OnPath3Resume();
+        end;
       end;
     $07: S.MARK := Imm;
     $10, $11, $13: ;

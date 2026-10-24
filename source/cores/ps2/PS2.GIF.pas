@@ -36,6 +36,8 @@ type
     CTRL, MODE: Cardinal;
     // Set while PATH3 is masked by VIF1 MSKPATH3.
     MaskedPath3: Boolean;
+    // PATH3 may move again (unmasked): the GIF DMA channel goes on.
+    OnPath3Resume: TProc;
     constructor Create(GS: TPS2GS);
     property GS: TPS2GS read FGS;
     procedure Reset;
@@ -255,7 +257,12 @@ begin
             Path[K] := Default(TPS2GIFPathState);
         end;
       end;
-    $010: MODE := Cardinal(Value) and 5;
+    $010:
+      begin
+        MODE := Cardinal(Value) and 5;
+        if ((MODE and 1) = 0) and Assigned(OnPath3Resume) then
+          OnPath3Resume();
+      end;
   end;
 end;
 

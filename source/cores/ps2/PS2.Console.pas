@@ -485,6 +485,8 @@ begin
         Bus.RaiseIRQ(2);
         GS.VBlank;
         PadMan.Update;
+        // SPU2 voices move on by one field of 48 kHz samples.
+        IOP.Hardware.TickSPU2(Integer(Int64(PS2SPU2Rate) * FFieldCycles div PS2EEClock));
         IOP.VBlank(True);
         Kernel.VBlankStart(GS.OddField);
         Scheduler.Schedule(TPS2Event.VBlankEnd, FFieldStart + FFieldCycles);

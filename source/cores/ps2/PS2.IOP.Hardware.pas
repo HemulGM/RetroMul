@@ -31,6 +31,14 @@ const
 type
   TPS2IOPInterrupt = procedure(Line: Integer) of object;
 
+  // A voice's playback position (no sound is generated): the ADPCM block
+  // being read (halfword address), samples into it in 1/4096 units, and the
+  // loop address.
+  TPS2SPU2Voice = record
+    Active: Boolean;
+    Addr, Frac, Loop: Cardinal;
+  end;
+
   TPS2IOPHardware = class
   private
     FScheduler: TPS2Scheduler;
@@ -40,6 +48,16 @@ type
     FPendingLine: array[0..1] of Integer;
     // STATX: bit 7 set once a DMA transfer finished.
     FStatX: array[0..1] of Word;
+    FVoices: array[0..1, 0..23] of TPS2SPU2Voice;
+    FEndX: array[0..1] of Cardinal;
+    FIRQInfo: Word;
+    // IRQ raised since the core's enable bit was last set.
+    FIRQFired: array[0..1] of Boolean;
+    function Reg(Core: Integer; Offset: Cardinal): Word; inline;
+    function IRQAddress(Core: Integer): Cardinal;
+    procedure CheckIRQ(Core: Integer; First, Count: Cardinal);
+    procedure KeyOn(Core: Integer; Mask: Cardinal);
+    procedure KeyOff(Core: Integer; Mask: Cardinal);
     function IO32(Offset: Cardinal): Cardinal; inline;
     procedure SetIO32(Offset, Value: Cardinal); inline;
     function CoreTSA(Core: Integer): Cardinal;
@@ -65,6 +83,9 @@ type
     procedure Write(Address, Value: Cardinal; Size: Integer);
     // Scheduler event IOPDMA.
     procedure Event;
+    // Advances the voices by Samples output samples (48 kHz): end and loop
+    // flags, ENDX, IRQ address hits.
+    procedure TickSPU2(Samples: Integer);
     procedure SerializeState(State: TStateArchive);
   end;
 
@@ -140,6 +161,11 @@ begin
   FPendingLine[1] := 0;
   FStatX[0] := 0;
   FStatX[1] := 0;
+  FillChar(FVoices, SizeOf(FVoices), 0);
+  FillChar(FEndX, SizeOf(FEndX), 0);
+  FIRQInfo := 0;
+  FIRQFired[0] := False;
+  FIRQFired[1] := False;
   FScheduler.Cancel(TPS2Event.IOPDMA);
   SIO2.Reset;
 end;
@@ -176,7 +202,39 @@ begin
     // No manual transfer in progress, FIFO empty; bit 7 after a DMA.
     Exit(FStatX[(Offset shr 10) and 1]);
   if Offset = $7C2 then
-    Exit(0);
+  begin
+    Result := FIRQInfo;
+    FIRQInfo := 0;
+    Exit;
+  end;
+  if Offset < $800 then
+  begin
+    var Core := Integer(Offset shr 10) and 1;
+    case Local of
+      $340: Exit(FEndX[Core] and $FFFF);
+      $342: Exit(FEndX[Core] shr 16);
+      $1C0..$2DF:
+        begin
+          // Voice addresses: SSA, LSAX, NAX (hi/lo) per 12 bytes.
+          var V := Integer((Local - $1C0) div 12);
+          var Field := (Local - $1C0) mod 12;
+          if FVoices[Core, V].Active and (Field >= 8) then
+            if Field = 8 then
+              Exit((FVoices[Core, V].Addr shr 16) and $F)
+            else
+              Exit(FVoices[Core, V].Addr and $FFFF);
+        end;
+    end;
+    if (Local < $180) and ((Local and $F) = $A) then
+    begin
+      // ENVX: full while the voice plays.
+      var V := Integer(Local shr 4);
+      if (V < 24) and FVoices[Core, V].Active then
+        Exit($7FFF)
+      else
+        Exit(0);
+    end;
+  end;
   Result := FSPU2Regs[Index];
 end;
 
@@ -189,7 +247,16 @@ begin
   var Core := Integer(Offset shr 10) and 1;
   case Offset and $3FF of
     SPUAttr:
-      FStatX[Core] := 0;
+      begin
+        FStatX[Core] := 0;
+        if (Value and $40) = 0 then
+          FIRQFired[Core] := False;
+      end;
+    $1A0: KeyOn(Core, Value and $FFFF);
+    $1A2: KeyOn(Core, (Value and $FF) shl 16);
+    $1A4: KeyOff(Core, Value and $FFFF);
+    $1A6: KeyOff(Core, (Value and $FF) shl 16);
+    $340, $342: FEndX[Core] := 0;
     SPUData:
       begin
         // Manual transfer: one halfword at the transfer address.
@@ -198,6 +265,90 @@ begin
         SetCoreTSA(Core, A + 1);
       end;
   end;
+end;
+
+function TPS2IOPHardware.Reg(Core: Integer; Offset: Cardinal): Word;
+begin
+  Result := FSPU2Regs[((Offset + Cardinal(Core) * $400) shr 1) and $7FF];
+end;
+
+function TPS2IOPHardware.IRQAddress(Core: Integer): Cardinal;
+begin
+  Result := ((Cardinal(Reg(Core, $19C)) shl 16) or Reg(Core, $19E)) and $FFFFF;
+end;
+
+// An access to Count halfwords at First: the IRQ fires when it covers the
+// core's IRQ address (ATTR bit 6 enables it).
+procedure TPS2IOPHardware.CheckIRQ(Core: Integer; First, Count: Cardinal);
+begin
+  for var C := 0 to 1 do
+  begin
+    if FIRQFired[C] or ((Reg(C, SPUAttr) and $40) = 0) then
+      Continue;
+    var A := IRQAddress(C);
+    if (A >= First) and (A < First + Count) then
+    begin
+      FIRQFired[C] := True;
+      FIRQInfo := FIRQInfo or Word(4 shl C);
+      if Assigned(OnInterrupt) then
+        OnInterrupt(IOPIntSPU2);
+    end;
+  end;
+end;
+
+procedure TPS2IOPHardware.KeyOn(Core: Integer; Mask: Cardinal);
+begin
+  for var V := 0 to 23 do
+    if (Mask and (Cardinal(1) shl V)) <> 0 then
+    begin
+      var R := $1C0 + Cardinal(V) * 12;
+      FVoices[Core, V].Active := True;
+      FVoices[Core, V].Addr := ((Cardinal(Reg(Core, R)) shl 16) or Reg(Core, R + 2)) and $FFFF8;
+      FVoices[Core, V].Loop := ((Cardinal(Reg(Core, R + 4)) shl 16) or Reg(Core, R + 6)) and $FFFF8;
+      FVoices[Core, V].Frac := 0;
+      FEndX[Core] := FEndX[Core] and not (Cardinal(1) shl V);
+    end;
+end;
+
+procedure TPS2IOPHardware.KeyOff(Core: Integer; Mask: Cardinal);
+begin
+  for var V := 0 to 23 do
+    if (Mask and (Cardinal(1) shl V)) <> 0 then
+      FVoices[Core, V].Active := False;
+end;
+
+procedure TPS2IOPHardware.TickSPU2(Samples: Integer);
+begin
+  for var Core := 0 to 1 do
+    for var V := 0 to 23 do
+    begin
+      var P: ^TPS2SPU2Voice := @FVoices[Core, V];
+      if not P.Active then
+        Continue;
+      var Pitch := Cardinal(Reg(Core, Cardinal(V) * $10 + 4)) and $3FFF;
+      Inc(P.Frac, Pitch * Cardinal(Samples));
+      // 28 samples per 16-byte block (8 halfwords).
+      var Guard := 0;
+      while (P.Frac >= 28 * 4096) and P.Active and (Guard < 4096) do
+      begin
+        Dec(P.Frac, 28 * 4096);
+        Inc(Guard);
+        var Flags := SPU2RAM[((P.Addr * 2) + 1) and (PS2SPU2RAMSize - 1)];
+        if (Flags and 4) <> 0 then
+          P.Loop := P.Addr;
+        CheckIRQ(Core, P.Addr, 8);
+        if (Flags and 1) <> 0 then
+        begin
+          FEndX[Core] := FEndX[Core] or (Cardinal(1) shl V);
+          if (Flags and 2) <> 0 then
+            P.Addr := P.Loop
+          else
+            P.Active := False;
+        end
+        else
+          P.Addr := (P.Addr + 8) and $FFFFF;
+      end;
+    end;
 end;
 
 procedure TPS2IOPHardware.StartDMA(Channel: Integer);
@@ -218,6 +369,7 @@ begin
   var Bytes := Words * 4;
   if Log <> nil then
     Log.Add(Format('iop dma%d madr %.6x bcr %.8x chcr %.8x tsa %x', [Channel, MADR, BCR, CHCR, CoreTSA(Core)]));
+  CheckIRQ(Core, CoreTSA(Core), Cardinal(Max(Bytes, 2) div 2));
   var A := CoreTSA(Core) * 2;
   FStatX[Core] := FStatX[Core] and not $80;
   if Bytes > 0 then
@@ -350,6 +502,10 @@ begin
   State.Field(FDue, SizeOf(FDue));
   State.Field(FPendingLine, SizeOf(FPendingLine));
   State.Field(FStatX, SizeOf(FStatX));
+  State.Field(FVoices, SizeOf(FVoices));
+  State.Field(FEndX, SizeOf(FEndX));
+  State.Field(FIRQInfo, SizeOf(FIRQInfo));
+  State.Field(FIRQFired, SizeOf(FIRQFired));
   State.Field(SPU2RAM[0], Length(SPU2RAM));
   SIO2.SerializeState(State);
 end;

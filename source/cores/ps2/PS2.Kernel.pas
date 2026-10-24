@@ -554,6 +554,8 @@ begin
   SaveContext(FIntContext);
   FIntStatus := FCPU.S.COP0[C0Status];
   FInInterrupt := True;
+  // The handlers run now even if the idle loop just asked to sleep.
+  FIdle := False;
   FNeedSchedule := False;
   FCalls.Clear;
   var Cause := FCPU.S.COP0[C0Cause];

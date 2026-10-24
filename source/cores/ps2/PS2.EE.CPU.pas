@@ -216,6 +216,9 @@ type
     FPhys: PEEPhysMap;
     FDummyGen: Cardinal;
     FIntPending: Boolean;
+    // A newly pending interrupt is taken after one more block (code polling
+    // INTC_STAT sees the cause bit before the handler acknowledges it).
+    FIntDelay: Boolean;
     FInt0, FInt1: Boolean;
     FExitRequest: Boolean;
     FStop: Byte;
@@ -667,8 +670,11 @@ begin
   if FInt1 then
     Cause := Cause or EECauseIP3;
   S.COP0[C0Cause] := Cause;
+  var Was := FIntPending;
   FIntPending := ((SR and (EESRIE or EESREIE or EESREXL or EESRERL)) = (EESRIE or EESREIE)) and
     ((Cause and SR and $8C00) <> 0);
+  if FIntPending and not Was then
+    FIntDelay := True;
   if FIntPending then
     FExitRequest := True;
 end;
@@ -3940,10 +3946,13 @@ begin
   while Now^ < Deadline^ do
   begin
     if FIntPending then
-    begin
-      EnterException(EEExcInterrupt);
-      Prev := nil;
-    end;
+      if FIntDelay then
+        FIntDelay := False
+      else
+      begin
+        EnterException(EEExcInterrupt);
+        Prev := nil;
+      end;
     var PC := S.PC;
     B := nil;
     if Prev <> nil then
@@ -4007,6 +4016,7 @@ begin
   State.Field(FScratch^, PS2ScratchpadSize);
   State.Field(FInt0, SizeOf(FInt0));
   State.Field(FInt1, SizeOf(FInt1));
+  State.Field(FIntDelay, SizeOf(FIntDelay));
   if State.Loading then
   begin
     S.GPR[0] := Default(TPS2Reg128);

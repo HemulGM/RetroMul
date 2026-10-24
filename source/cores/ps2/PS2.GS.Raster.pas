@@ -164,6 +164,16 @@ type
 
 implementation
 
+// A texel coordinate in 1/16 texels, clamped (degenerate S/T/Q give huge or NaN values).
+function TexCoord(D: Double): Integer;
+begin
+  if not (D > -$1000000) then
+    Exit(-$1000000);
+  if D > $1000000 then
+    Exit($1000000);
+  Result := Trunc(D);
+end;
+
 constructor TPS2GSRaster.Create;
 begin
   inherited Create;
@@ -875,11 +885,11 @@ begin
     DVDY := (TV1 - TV0) / (Y1 - Y0) * 16;
   for var Y := PY0 to PY1 - 1 do
   begin
-    var VV := Trunc(TV0 + (Y * 16 - Y0) * DVDY / 16);
+    var VV := TexCoord(TV0 + (Y * 16 - Y0) * DVDY / 16);
     var UStart := U0 + (PX0 * 16 - X0) * DUDX / 16;
     for var X := PX0 to PX1 - 1 do
     begin
-      var UU := Trunc(UStart + (X - PX0) * DUDX);
+      var UU := TexCoord(UStart + (X - PX0) * DUDX);
       Pixel(X, Y, V1.Z, V1.R, V1.G, V1.B, V1.A, V1.F, UU, VV);
     end;
   end;
@@ -970,16 +980,16 @@ begin
         begin
           if FD.FST then
           begin
-            U := Trunc(W0 * V0.U + W1 * V1.U + W2 * V2.U);
-            TV := Trunc(W0 * V0.V + W1 * V1.V + W2 * V2.V);
+            U := TexCoord(W0 * V0.U + W1 * V1.U + W2 * V2.U);
+            TV := TexCoord(W0 * V0.V + W1 * V1.V + W2 * V2.V);
           end
           else
           begin
             var Q := W0 * V0.Q + W1 * V1.Q + W2 * V2.Q;
             if Q = 0 then
               Q := 1;
-            U := Trunc((W0 * V0.S + W1 * V1.S + W2 * V2.S) / Q * SW);
-            TV := Trunc((W0 * V0.T + W1 * V1.T + W2 * V2.T) / Q * TH);
+            U := TexCoord((W0 * V0.S + W1 * V1.S + W2 * V2.S) / Q * SW);
+            TV := TexCoord((W0 * V0.T + W1 * V1.T + W2 * V2.T) / Q * TH);
           end;
         end
         else

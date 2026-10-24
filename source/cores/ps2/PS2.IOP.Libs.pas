@@ -25,9 +25,10 @@ uses
   PS2.IOP.CPU, PS2.IOP.FileIO, PS2.IOP.Hardware, PS2.IOP.Loader, PS2.SIF, Core.DVD.Image;
 
 const
-  LibNames: array[0..24] of string = ('sysmem', 'loadcore', 'intrman', 'thbase', 'thevent', 'thsemap', 'thmsgbx',
+  // usbd: the USB stack is absent (no devices): drivers register and wait.
+  LibNames: array[0..25] of string = ('sysmem', 'loadcore', 'intrman', 'thbase', 'thevent', 'thsemap', 'thmsgbx',
     'thfpool', 'thvpool', 'sysclib', 'stdio', 'sifman', 'sifcmd', 'timrman', 'vblank', 'dmacman', 'cdvdman',
-    'ioman', 'iomanx', 'modload', 'heaplib', 'thrdman', 'excepman', 'ssbusc', 'secrman');
+    'ioman', 'iomanx', 'modload', 'heaplib', 'thrdman', 'excepman', 'ssbusc', 'secrman', 'usbd');
   LSysmem = 0;
   LLoadcore = 1;
   LIntrman = 2;

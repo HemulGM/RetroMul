@@ -311,6 +311,7 @@ begin
       if IPU <> nil then
       begin
         IPU.Write(Address, Value, Size);
+        CPU.RequestExit;
         Exit;
       end;
     $10003000..$100037FF:
@@ -395,7 +396,7 @@ end;
 procedure TPS2EEBus.Read128(Address: Cardinal; out Value: TPS2Reg128);
 begin
   case Address and not Cardinal($F) of
-    $10004000, $10005000, $10006000, $10007000:
+    $10004000, $10005000, $10006000, $10007000, $10007010:
       begin
         var Dev: TPS2Device := nil;
         case (Address shr 12) and $F of
@@ -417,7 +418,7 @@ end;
 procedure TPS2EEBus.Write128(Address: Cardinal; const Value: TPS2Reg128);
 begin
   case Address and not Cardinal($F) of
-    $10004000, $10005000, $10006000, $10007000:
+    $10004000, $10005000, $10006000, $10007000, $10007010:
       begin
         var Dev: TPS2Device := nil;
         case (Address shr 12) and $F of

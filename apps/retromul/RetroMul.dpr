@@ -281,6 +281,7 @@ uses
   PS2.IOP.Kernel in '..\..\source\cores\ps2\PS2.IOP.Kernel.pas',
   PS2.IOP.Libs in '..\..\source\cores\ps2\PS2.IOP.Libs.pas',
   PS2.VIF in '..\..\source\cores\ps2\PS2.VIF.pas',
+  PS2.IPU in '..\..\source\cores\ps2\PS2.IPU.pas',
   PS2.Console in '..\..\source\cores\ps2\PS2.Console.pas',
   Core.DVD.Image in '..\..\source\media\dvd\Core.DVD.Image.pas',
   Core.PS2.Playback in '..\..\source\runtime\adapters\Core.PS2.Playback.pas',

@@ -14,6 +14,7 @@ Most commercial games do not reach gameplay yet; there is no sound output.
 | `PS2.Timers`, `PS2.DMAC`, `PS2.SIF` | EE timers, DMA controller (chain/interleave/MFIFO), SIF registers and the SIF command/RPC protocol |
 | `PS2.GS`, `PS2.GS.Memory`, `PS2.GS.Raster`, `PS2.GIF` | GS registers, swizzled local memory, software rasterizer, GIF paths |
 | `PS2.VU`, `PS2.VIF` | VU0/VU1 micro mode, VIF0/VIF1 command processing |
+| `PS2.IPU` | IPU MPEG decoder (BDEC/IDEC/VDEC/FDEC/CSC/PACK, FIFOs on DMA channels 3/4) |
 | `PS2.Kernel`, `PS2.ELF` | High-level EE kernel (threads, semaphores, interrupts, alarms, SIF DMA, syscall table) and ELF loading |
 | `PS2.IOP.FileIO`, `PS2.IOP.CDVD`, `PS2.IOP.HLE` | FILEIO, CDVD and LOADFILE/IOP heap RPC servers, ISO 9660 access |
 | `PS2.IOP.Pad`, `PS2.IOP.MemoryCard` | PADMAN (DualShock 2 data in libpad's areas) and MCSERV (file-level memory cards) |
@@ -40,8 +41,7 @@ DVD CHD, CD images through the CD layer). The front end lives in
 
 ## Limits
 
-- No BIOS boot (OSDSYS), no SPU2 audio, no IPU (MPEG movies), no sound
-  output; VU programs run synchronously; the GS rasterizer is a software
+- No BIOS boot (OSDSYS), no SPU2 audio, no sound output; VU programs run synchronously; the GS rasterizer is a software
   renderer without upscaling.
 - Memory cards are emulated at the file level (one file per card in the save
   folder), not as raw `.ps2` card images.
@@ -51,7 +51,9 @@ DVD CHD, CD images through the CD layer). The front end lives in
 
 - Play! (BSD-2-Clause, Jean-Philip Desjardins): structure of the high-level
   IOP (PADMAN/MCSERV data layouts, IRX relocation rules, SIF RPC flow) was
-  rewritten in Delphi with attribution in the unit headers.
+  rewritten in Delphi with attribution in the unit headers. `PS2.IPU` is a
+  port of Play!'s IPU with the MPEG-2 tables of Play! Framework (BSD-2-Clause)
+  and the IEEE 1180 reference IDCT.
 - ps2sdk (AFL 2.0): export tables, structure layouts and function numbers
   (interfaces only); ps2autotests for testing.
 - PCSX2, DobieStation and similar GPL projects were used only as

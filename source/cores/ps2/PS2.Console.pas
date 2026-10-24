@@ -9,7 +9,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.IOUtils, System.Generics.Collections, Core.Snapshots, Core.DVD.Image, PS2.Types, PS2.Scheduler, PS2.EE.CPU,
-  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.IOP.Pad, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.VU, PS2.VIF;
+  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.IOP.Pad, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.VU, PS2.VIF, PS2.IPU;
 
 type
   TPS2ConsoleConfig = record
@@ -64,6 +64,8 @@ type
     GIFPort: TPS2GIFPort;
     VIF0, VIF1: TPS2VIF;
     VIF0Port, VIF1Port: TPS2VIFPort;
+    IPU: TPS2IPU;
+    IPUPort: TPS2IPUPort;
     Kernel: TPS2Kernel;
     IOMan: TPS2IOMan;
     FileIO: TPS2FileIOServer;
@@ -148,6 +150,12 @@ begin
   VIF1Port := TPS2VIFPort.Create(VIF1);
   DMAC.Ports[DMAVIF0] := VIF0Port;
   DMAC.Ports[DMAVIF1] := VIF1Port;
+  IPU := TPS2IPU.Create(Scheduler, DMAC);
+  IPU.OnInterrupt := procedure begin Bus.RaiseIRQ(8); end;
+  Bus.IPU := IPU;
+  IPUPort := TPS2IPUPort.Create(IPU);
+  DMAC.Ports[DMAFromIPU] := IPUPort;
+  DMAC.Ports[DMAToIPU] := IPUPort;
   Kernel := TPS2Kernel.Create(CPU, Bus, Scheduler);
   Kernel.OnTTY := TTYWrite;
   Kernel.OnLoadExec := LoadExec;
@@ -201,6 +209,8 @@ begin
   GIFPort.Free;
   VIF0Port.Free;
   VIF1Port.Free;
+  IPUPort.Free;
+  IPU.Free;
   VIF0.Free;
   VIF1.Free;
   GIF.Free;
@@ -283,6 +293,7 @@ begin
   GIF.Reset;
   VIF0.Reset;
   VIF1.Reset;
+  IPU.Reset;
   Kernel.Reset;
   // OSD configuration (GetOsdConfigParam): Japanese on Japanese consoles,
   // English elsewhere (language bits 16-20, 'English' flag bit 4).
@@ -506,6 +517,7 @@ begin
     TPS2Event.Timer2: Timers.Event(2);
     TPS2Event.Timer3: Timers.Event(3);
     TPS2Event.DMAC: DMAC.Event;
+    TPS2Event.IPU: IPU.Event;
     TPS2Event.SIF: SIF.Deliver;
     TPS2Event.Alarm: Kernel.AlarmEvent;
     TPS2Event.Compare: CPU.CompareReached;
@@ -582,6 +594,7 @@ begin
   GIF.SerializeState(State);
   VIF0.SerializeState(State);
   VIF1.SerializeState(State);
+  IPU.SerializeState(State);
   Kernel.SerializeState(State);
   IOMan.SerializeState(State);
   IOPHeap.SerializeState(State);

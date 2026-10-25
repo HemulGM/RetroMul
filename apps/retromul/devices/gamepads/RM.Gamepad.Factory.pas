@@ -49,7 +49,8 @@ begin
       Result := TGamepadSNESStandart;
     TRomSystem.N64:
       Result := TGamepadN64Standart;
-    TRomSystem.PS1:
+    // The DualShock 2 has the DualShock's layout.
+    TRomSystem.PS1, TRomSystem.PS2:
       if Device = 'pad-analog' then
         Result := TGamepadPS1Analog
       else

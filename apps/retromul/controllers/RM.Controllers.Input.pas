@@ -51,7 +51,7 @@ uses
   System.SysUtils, System.Types, System.IOUtils, System.Math, FMX.Types,
   FMX.Forms, FMX.Objects, FMX.Dialogs, FMX.Platform, FMX.Edit, FMX.OpenDialog,
   FMXInput, RM.Input, RM.Rumble, Core.Adapter.NES, Core.Adapter.N64, N64.Console, Core.Adapter.PS1, PS1.SIO,
-  Core.InputConfig, Core.RomFormat, Core.Adapter.SG1000, SG1000.Keyboard,
+  Core.Adapter.PS2, Core.InputConfig, Core.RomFormat, Core.Adapter.SG1000, SG1000.Keyboard,
   NES.Controller, RM.Gamepad, NES.SuborKeyboard, NES.FamicomKeyboard,
   NES.MiraclePiano, NES.PowerPad, RM.Dialogs, RM.Styles
   {$IFDEF MSWINDOWS}
@@ -852,6 +852,36 @@ begin
         end;
       end;
       PS1Input.SetPS1Controller(Port, Pad);
+    end;
+
+  // The DualShock 2 takes the same extras (and the same L2/L3/R3 bits).
+  var PS2Input: IPS2ControllerInput;
+  if Supports(FState.Session.Emulation, IPS2ControllerInput, PS2Input) then
+    for var Port := 0 to 1 do
+    begin
+      var Pad := ReadPS1Pad(FState.Input.Manager, Port);
+      if Port = 0 then
+      begin
+        var Auxiliary := FState.Input.Gamepad.AuxiliaryButtons;
+        if (Auxiliary and (1 shl Ord(TPS1Extra.L2))) <> 0 then
+          Pad.Buttons := Pad.Buttons or PS1PadL2;
+        if (Auxiliary and (1 shl Ord(TPS1Extra.Analog))) <> 0 then
+          Pad.AnalogButton := True;
+        var Right := FState.Input.Gamepad.RightAnalogInput;
+        if Right.Valid then
+        begin
+          Pad.RightX := EnsureRange(Integer(Pad.RightX) + Right.X, -32768, 32767);
+          Pad.RightY := EnsureRange(Integer(Pad.RightY) + Right.Y, -32768, 32767);
+        end;
+      end;
+      var Pad2: TPS2Pad;
+      Pad2.Buttons := Pad.Buttons;
+      Pad2.AnalogButton := Pad.AnalogButton;
+      Pad2.LeftX := Pad.LeftX;
+      Pad2.LeftY := Pad.LeftY;
+      Pad2.RightX := Pad.RightX;
+      Pad2.RightY := Pad.RightY;
+      PS2Input.SetPS2Controller(Port, Pad2);
     end;
 
   var Piano: INesMiraclePianoCore;

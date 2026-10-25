@@ -132,6 +132,7 @@ type
     procedure DrawLine(const V0, V1: TPS2GSVertex);
     procedure DrawTriangle(const V0, V1, V2: TPS2GSVertex);
     procedure DrawSprite(const V0, V1: TPS2GSVertex);
+    procedure CheckPrimLogBreak;
     procedure Pixel(X, Y: Integer; Z: Cardinal; R, G, B, A, F: Integer; U, V: Integer);
     function Texel(U, V: Integer): Cardinal;
     function TexelAt(TU, TV: Integer): Cardinal;
@@ -148,6 +149,12 @@ type
     // Diagnostics: transfers started (BITBLTBUF, TRXPOS, TRXREG, TRXDIR) when assigned.
     TransferLog: TStrings;
     PrimLog: TStrings;
+    // Diagnostics: OnPrimLogBreak runs before the next sprite or triangle
+    // once PrimLog holds PrimLogBreak lines (then PrimLogBreak is 0).
+    PrimLogBreak: Integer;
+    OnPrimLogBreak: TProc;
+    // Diagnostics: writes to this pixel go to PrimLog (WatchX -1: none).
+    WatchX, WatchY: Integer;
     constructor Create;
     destructor Destroy; override;
     procedure Reset;
@@ -196,6 +203,7 @@ constructor TPS2GSRaster.Create;
 begin
   inherited Create;
   FMemory := TPS2GSMemory.Create;
+  WatchX := -1;
   Reset;
 end;
 
@@ -252,7 +260,7 @@ end;
 procedure TPS2GSRaster.WriteRegister(Index: Integer; Value: UInt64);
 begin
   Index := Index and $7F;
-  if (PrimLog <> nil) and (PrimLog.Count < 200000) and (Index in [6, 7, $14, $15, $16, $17, $1C, $3B, $42, $43, $47, $48, $4C, $4D, $4E, $4F, $50, $51, $52, $53]) then
+  if (PrimLog <> nil) and (PrimLog.Count < 200000) and (Index in [6, 7, $14, $15, $16, $17, $18, $19, $1C, $3B, $40, $41, $42, $43, $47, $48, $4C, $4D, $4E, $4F, $50, $51, $52, $53]) then
     PrimLog.Add(Format('reg %.2x = %.16x', [Index, Value]));
   Regs[Index] := Value;
   case Index of
@@ -791,6 +799,9 @@ begin
   end;
   if FD.FBA then
     A := A or $80;
+  if (WatchX >= 0) and (X = WatchX) and (Y = WatchY) and (PrimLog <> nil) then
+    PrimLog.Add(Format('watch %d,%d fb=%s z=%s rgba=%d,%d,%d,%d zval=%x fbp=%x zbp=%x', [X, Y, BoolToStr(WriteFB, True),
+      BoolToStr(WriteZ and WriteFB or (WriteZ and (FD.AFAIL = 2)), True), R, G, B, A, Z, FD.FBP, FD.ZBP]));
   if WriteFB then
   begin
     var Color := Cardinal(R) or (Cardinal(G) shl 8) or (Cardinal(B) shl 16) or (Cardinal(A and $FF) shl 24);
@@ -806,6 +817,13 @@ begin
   end;
   if WriteZ and WriteFB or (WriteZ and (FD.AFAIL = 2)) then
     FMemory.WriteRaw(Integer(FD.ZPSM), FD.ZBP, FD.FBW, Cardinal(X), Cardinal(Y), Z);
+end;
+
+procedure TPS2GSRaster.CheckPrimLogBreak;
+begin
+  PrimLogBreak := 0;
+  if Assigned(OnPrimLogBreak) then
+    OnPrimLogBreak();
 end;
 
 procedure TPS2GSRaster.DrawPoint(const V: TPS2GSVertex);
@@ -873,6 +891,8 @@ end;
 procedure TPS2GSRaster.DrawSprite(const V0, V1: TPS2GSVertex);
 begin
   Inc(FPrimitives);
+  if (PrimLogBreak > 0) and (PrimLog <> nil) and (PrimLog.Count >= PrimLogBreak) then
+    CheckPrimLogBreak;
   if (PrimLog <> nil) and (PrimLog.Count < 200000) then
     PrimLog.Add(Format('sprite %d,%d-%d,%d uv=%d,%d-%d,%d st=%g,%g q=%g rgba=%d,%d,%d,%d tme=%s fst=%s abe=%s fbp=%x fbw=%d fpsm=%x msk=%x tbp=%x tbw=%d tpsm=%x tw=%d th=%d tcc=%s tfx=%d ate=%s atst=%d aref=%d afail=%d zte=%s ztst=%d blend=%d%d%d%d fix=%d',
       [V0.X div 16, V0.Y div 16, V1.X div 16, V1.Y div 16, V0.U div 16, V0.V div 16, V1.U div 16, V1.V div 16, V0.S, V0.T, V0.Q,
@@ -967,10 +987,13 @@ end;
 procedure TPS2GSRaster.DrawTriangle(const V0, V1, V2: TPS2GSVertex);
 begin
   Inc(FPrimitives);
-  if (PrimLog <> nil) and (PrimLog.Count < 200000) and FD.TME then
-    PrimLog.Add(Format('tri %d,%d %d,%d %d,%d uv=%d,%d %d,%d st=%g,%g,%g q=%g rgba=%d,%d,%d,%d fst=%s abe=%s fbp=%x fbw=%d fpsm=%x tbp=%x tbw=%d tpsm=%x tw=%d th=%d tcc=%s tfx=%d ate=%s atst=%d aref=%d zte=%s ztst=%d blend=%d%d%d%d fix=%d iip=%s',
+  if (PrimLogBreak > 0) and (PrimLog <> nil) and (PrimLog.Count >= PrimLogBreak) then
+    CheckPrimLogBreak;
+  if (PrimLog <> nil) and (PrimLog.Count < 200000) then
+    PrimLog.Add(Format('tri %d,%d %d,%d %d,%d uv=%d,%d %d,%d st=%g,%g,%g q=%g rgba=%d,%d,%d,%d tme=%s fge=%s fog=%d,%d,%d z=%x,%x,%x fst=%s abe=%s fbp=%x fbw=%d fpsm=%x tbp=%x tbw=%d tpsm=%x tw=%d th=%d tcc=%s tfx=%d ate=%s atst=%d aref=%d zte=%s ztst=%d blend=%d%d%d%d fix=%d iip=%s',
       [V0.X div 16, V0.Y div 16, V1.X div 16, V1.Y div 16, V2.X div 16, V2.Y div 16, V0.U div 16, V0.V div 16, V2.U div 16, V2.V div 16,
-      V0.S, V0.T, V2.S, V0.Q, V0.R, V0.G, V0.B, V0.A, BoolToStr(FD.FST, True), BoolToStr(FD.ABE, True), FD.FBP, FD.FBW, FD.FPSM,
+      V0.S, V0.T, V2.S, V0.Q, V0.R, V0.G, V0.B, V0.A, BoolToStr(FD.TME, True), BoolToStr(FD.FGE, True), V0.F, V1.F, V2.F, V0.Z, V1.Z, V2.Z,
+      BoolToStr(FD.FST, True), BoolToStr(FD.ABE, True), FD.FBP, FD.FBW, FD.FPSM,
       FD.TBP, FD.TBW, FD.TPSM, FD.TW, FD.TH, BoolToStr(FD.TCC, True), FD.TFX, BoolToStr(FD.ATE, True), FD.ATST, FD.AREF,
       BoolToStr(FD.ZTE, True), FD.ZTST, FD.BlendA, FD.BlendB, FD.BlendC, FD.BlendD, FD.BlendFix, BoolToStr(FD.IIP, True)]));
   var X0 := Int64(V0.X);

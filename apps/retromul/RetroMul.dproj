@@ -725,6 +725,7 @@
         <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.MemoryCard.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.CPU.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.SIO2.pas"/>
+        <DCCReference Include="..\..\source\cores\ps2\PS2.SPU2.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Hardware.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Loader.pas"/>
         <DCCReference Include="..\..\source\cores\ps2\PS2.IOP.Kernel.pas"/>

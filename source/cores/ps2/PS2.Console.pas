@@ -38,7 +38,7 @@ type
     procedure IOPTTY(Text: string);
     procedure DMACInterrupt(Active: Boolean);
     procedure GSInterrupt;
-    procedure HandleEvent(Event: TPS2Event);
+    procedure HandleEvent(Event: TPS2Event; At: Int64);
     procedure SetVideo(PAL: Boolean);
     procedure LoadExec(const Path: string; const Args: TArray<string>);
     procedure IOPReset(const Args: string);
@@ -109,6 +109,9 @@ const
   IOPSlice = 4096;
   // EE cycles from a FINISH register write to CSR.FINISH.
   GSFinishDelay = 8192;
+  // SPU2 samples computed together, and their EE cycles.
+  SPU2Batch = 32;
+  SPU2BatchCycles = SPU2Batch * (PS2EEClock div PS2SPU2Rate);
 
 { TPS2Console }
 
@@ -328,6 +331,7 @@ begin
   FInVBlank := False;
   FIdleCycles := 0;
   Scheduler.Schedule(TPS2Event.VBlankStart, FVisibleCycles);
+  Scheduler.Schedule(TPS2Event.SPU2, SPU2BatchCycles);
   IOP.CPU.Cycles := 0;
   BootIOP;
 end;
@@ -547,7 +551,7 @@ begin
   LoadProgram(Data, Path);
 end;
 
-procedure TPS2Console.HandleEvent(Event: TPS2Event);
+procedure TPS2Console.HandleEvent(Event: TPS2Event; At: Int64);
 begin
   case Event of
     TPS2Event.VBlankStart:
@@ -556,8 +560,6 @@ begin
         Bus.RaiseIRQ(2);
         GS.VBlank;
         PadMan.Update;
-        // SPU2 voices move on by one field of 48 kHz samples.
-        IOP.Hardware.TickSPU2(Integer(Int64(PS2SPU2Rate) * FFieldCycles div PS2EEClock));
         IOP.VBlank(True);
         Kernel.VBlankStart(GS.OddField);
         Scheduler.Schedule(TPS2Event.VBlankEnd, FFieldStart + FFieldCycles);
@@ -583,6 +585,12 @@ begin
     TPS2Event.IOPSync: BootIOP;
     TPS2Event.IOPTimers: IOP.TimerEvent;
     TPS2Event.IOPDMA: IOP.Hardware.Event;
+    TPS2Event.SPU2:
+      begin
+        // 48 kHz output in batches (6144 EE cycles a sample).
+        IOP.Hardware.SPU2.Tick(SPU2Batch);
+        Scheduler.Schedule(TPS2Event.SPU2, At + SPU2BatchCycles);
+      end;
   end;
 end;
 
@@ -595,7 +603,7 @@ begin
     var At: Int64;
     while Scheduler.TakeDue(Event, At) do
     begin
-      HandleEvent(Event);
+      HandleEvent(Event, At);
       if Event = TPS2Event.VBlankStart then
       begin
         Inc(FFrameCount);

@@ -276,6 +276,7 @@ uses
   PS2.IOP.MemoryCard in '..\..\source\cores\ps2\PS2.IOP.MemoryCard.pas',
   PS2.IOP.CPU in '..\..\source\cores\ps2\PS2.IOP.CPU.pas',
   PS2.IOP.SIO2 in '..\..\source\cores\ps2\PS2.IOP.SIO2.pas',
+  PS2.SPU2 in '..\..\source\cores\ps2\PS2.SPU2.pas',
   PS2.IOP.Hardware in '..\..\source\cores\ps2\PS2.IOP.Hardware.pas',
   PS2.IOP.Loader in '..\..\source\cores\ps2\PS2.IOP.Loader.pas',
   PS2.IOP.Kernel in '..\..\source\cores\ps2\PS2.IOP.Kernel.pas',

@@ -2,8 +2,8 @@
 
 // PlayStation 2 front-end adapter: disc images (DVD/CD through
 // Core.DVD.Image) and homebrew ELF programs, a worker thread running fields,
-// frame publishing, pacing (by audio once SPU2 output exists, by time
-// otherwise), snapshots and the controller state for DualShock 2.
+// frame publishing, SPU2 sound (the audio queue paces the emulation; by time
+// with sound off), snapshots and the controller state for DualShock 2.
 
 interface
 
@@ -82,13 +82,19 @@ type
     FSnapshotDirectory, FError: string;
     FCardFiles: array[0..1] of string;
     FInputs: TPS2PadInputs;
-    FPause, FReset, FAvailable: Boolean;
+    FPause, FReset, FAvailable, FAudioEnabled: Boolean;
+    FVolume: Single;
+    FAudio: TPS2AudioPlayback;
+    FAudioFailed: Boolean;
+    FAudioError: string;
     FFrame: TEmulatorFrame;
     FConsole: TPS2Console;
     FRate: TEmulationFrameRate;
     FDeadline: Double;
     FClockGuest: Int64;
     procedure ReportError(const Text: string);
+    procedure AudioFailure(E: Exception);
+    procedure ClearAudio;
     procedure Restart;
     procedure Boot;
     procedure TransferSnapshot(const Name: string; Loading: Boolean);
@@ -102,15 +108,16 @@ type
       Region: TPS2Region; PAL: Boolean; const Storage: IStorage; const SnapshotDirectory, CardFile1,
       CardFile2: string);
     destructor Destroy; override;
-    procedure Configure(const Inputs: TPS2PadInputs; Paused: Boolean);
+    procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single);
     procedure RequestReset;
     procedure StopAndSave;
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
-    function TakeError: string;
+    function TakeError(Audio: Boolean = False): string;
     procedure Snapshot(const Name: string; Loading: Boolean);
   end;
 
-  TPS2CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationSnapshotLocation, IPS2ControllerInput)
+  TPS2CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationSnapshotLocation, IPS2ControllerInput,
+    IEmulationAudioDiagnostics)
   private
     FStorage: IStorage;
     FConfig: IEmulatorConfig;
@@ -165,6 +172,7 @@ type
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
     function TakeError: string;
+    function TakeAudioError: string;
     function GetConfig: IEmulatorConfig;
     function IsPaused: Boolean;
   end;
@@ -321,7 +329,7 @@ begin
   FLock.Free;
 end;
 
-procedure TPS2Worker.Configure(const Inputs: TPS2PadInputs; Paused: Boolean);
+procedure TPS2Worker.Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single);
 begin
   var Wake: Boolean;
   FLock.Acquire;
@@ -329,6 +337,8 @@ begin
     Wake := FPause <> Paused;
     FInputs := Inputs;
     FPause := Paused;
+    FAudioEnabled := AudioEnabled;
+    FVolume := EnsureRange(Volume, 0.0, 1.0);
   finally
     FLock.Release;
   end;
@@ -372,14 +382,47 @@ begin
   end;
 end;
 
-function TPS2Worker.TakeError: string;
+function TPS2Worker.TakeError(Audio: Boolean): string;
 begin
   FLock.Acquire;
   try
-    Result := FError;
-    FError := '';
+    if Audio then
+    begin
+      Result := FAudioError;
+      FAudioError := '';
+    end
+    else
+    begin
+      Result := FError;
+      FError := '';
+    end;
   finally
     FLock.Release;
+  end;
+end;
+
+procedure TPS2Worker.AudioFailure(E: Exception);
+begin
+  FLock.Acquire;
+  try
+    FAudioError := 'PS2 audio: ' + E.Message;
+  finally
+    FLock.Release;
+  end;
+  FAudioFailed := True;
+  FreeAndNil(FAudio);
+  Restart;
+end;
+
+procedure TPS2Worker.ClearAudio;
+begin
+  if FAudio = nil then
+    Exit;
+  try
+    FAudio.Clear;
+  except
+    on E: Exception do
+      AudioFailure(E);
   end;
 end;
 
@@ -491,6 +534,8 @@ begin
   if Loading then
   begin
     LoadCoreSnapshot(Path, ROM_CORE_ID_PS2, FIdentity, Transfer, FStorage);
+    Console.IOP.Hardware.SPU2.TakeSamples;
+    ClearAudio;
     Publish(Console);
   end
   else
@@ -507,7 +552,10 @@ end;
 procedure TPS2Worker.Execute;
 begin
   FConsole := nil;
+  FAudio := nil;
+  FAudioFailed := False;
   var WasPaused := False;
+  var WasEnabled := False;
   {$IFDEF MSWINDOWS}
   var TimerSet := timeBeginPeriod(1) = TIMERR_NOERROR;
   {$ENDIF}
@@ -530,7 +578,8 @@ begin
           begin
             TransferSnapshot(Name, Loading);
           end);
-        var Paused, ResetRequested: Boolean;
+        var Paused, ResetRequested, Enabled: Boolean;
+        var Volume: Single;
         var Inputs: TPS2PadInputs;
         FLock.Acquire;
         try
@@ -538,6 +587,8 @@ begin
           ResetRequested := FReset;
           FReset := False;
           Inputs := FInputs;
+          Enabled := FAudioEnabled;
+          Volume := FVolume;
         finally
           FLock.Release;
         end;
@@ -552,12 +603,17 @@ begin
           SaveCards;
           FConsole.Reset;
           Boot;
+          FConsole.IOP.Hardware.SPU2.TakeSamples;
+          ClearAudio;
           Restart;
         end;
         if Paused then
         begin
           if not WasPaused then
+          begin
             SaveCards;
+            ClearAudio;
+          end;
           WasPaused := True;
           FWake.WaitFor(10);
           Restart;
@@ -566,20 +622,53 @@ begin
         if WasPaused then
           Restart;
         WasPaused := False;
+        if WasEnabled <> Enabled then
+        begin
+          if not Enabled then
+            ClearAudio;
+          Restart;
+        end;
+        WasEnabled := Enabled;
+        // With sound on, the audio queue is the real-time clock: a field runs
+        // only when the device has room for its samples.
+        if Enabled and not FAudioFailed and (FAudio <> nil) then
+        try
+          if not FAudio.CanAdvance then
+          begin
+            FWake.WaitFor(1);
+            Continue;
+          end;
+        except
+          on E: Exception do
+            AudioFailure(E);
+        end;
         FConsole.RunFrame;
         FConsole.TakeTTY;
         if Terminated then
           Break;
+        var Samples := FConsole.IOP.Hardware.SPU2.TakeSamples;
+        if Enabled and not FAudioFailed then
+        try
+          if FAudio = nil then
+            FAudio := TPS2AudioPlayback.Create;
+          FAudio.Enqueue(Samples, Volume);
+        except
+          on E: Exception do
+            AudioFailure(E);
+        end;
         Publish(FConsole);
-        // Pace the emulated time (no SPU2 output yet).
-        var Target := FDeadline + (FConsole.Scheduler.Now - FClockGuest) * (TStopwatch.Frequency / PS2EEClock);
-        var Remaining := (Target - TStopwatch.GetTimeStamp) * 1000 / TStopwatch.Frequency;
-        if Remaining > 0 then
-          FWake.WaitFor(Min(100, Ceil(Remaining)))
-        else if Remaining < -250 then
+        if not Enabled or FAudioFailed then
         begin
-          FDeadline := TStopwatch.GetTimeStamp;
-          FClockGuest := FConsole.Scheduler.Now;
+          // Without sound, pace the emulated time.
+          var Target := FDeadline + (FConsole.Scheduler.Now - FClockGuest) * (TStopwatch.Frequency / PS2EEClock);
+          var Remaining := (Target - TStopwatch.GetTimeStamp) * 1000 / TStopwatch.Frequency;
+          if Remaining > 0 then
+            FWake.WaitFor(Min(100, Ceil(Remaining)))
+          else if Remaining < -250 then
+          begin
+            FDeadline := TStopwatch.GetTimeStamp;
+            FClockGuest := FConsole.Scheduler.Now;
+          end;
         end;
       end;
     except
@@ -593,6 +682,7 @@ begin
         ReportError('PS2 memory card: ' + E.Message);
     end;
   finally
+    FreeAndNil(FAudio);
     FreeAndNil(FConsole);
     {$IFDEF MSWINDOWS}
     if TimerSet then
@@ -781,7 +871,7 @@ begin
     for var K := 0 to 11 do
       Inputs[Port].Pressure[K] := 0;
   end;
-  FWorker.Configure(Inputs, FPaused);
+  FWorker.Configure(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume);
 end;
 
 procedure TPS2CoreAdapter.Start;
@@ -909,6 +999,13 @@ begin
   FError := '';
   if (Result = '') and (FWorker <> nil) then
     Result := FWorker.TakeError;
+end;
+
+function TPS2CoreAdapter.TakeAudioError: string;
+begin
+  Result := '';
+  if FWorker <> nil then
+    Result := FWorker.TakeError(True);
 end;
 
 function TPS2CoreAdapter.GetConfig: IEmulatorConfig;

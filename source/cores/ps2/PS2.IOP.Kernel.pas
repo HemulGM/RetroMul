@@ -232,6 +232,10 @@ type
     CdCallback: Cardinal;
     CdLastCommand: Integer;
     CdStreamLBA: Int64;
+    // Bytes of the last sceCdRead (its data is there at once) and the
+    // stream buffer's sectors (sceCdStInit).
+    CdReadBytes: Integer;
+    CdStreamSectors: Integer;
     DmaId: Cardinal;
     Log: TStrings;
     // EE cycles per video line (the HLINE timer source).
@@ -412,6 +416,8 @@ begin
   CdCallback := 0;
   CdLastCommand := 0;
   CdStreamLBA := 0;
+  CdReadBytes := 0;
+  CdStreamSectors := 0;
   DmaId := 1;
   FReadySeq := 0;
   FCmdSlot := 0;
@@ -832,6 +838,14 @@ begin
                 SetLength(Reply, RecvSize);
                 for var B := 0 to RecvSize - 1 do
                   Reply[B] := R8(Src + Cardinal(B));
+              end;
+              if Log <> nil then
+              begin
+                var H := '';
+                for var B := 0 to Min(RecvSize, 32) - 1 do
+                  H := H + IntToHex(Reply[B], 2);
+                Warn(Format('guest reply %.8x fn %x from %.6x size %d to %.8x mode %d: %s', [Servers[S].SID,
+                  PacketU32(P, 32), Src, RecvSize, PacketU32(P, 40), PacketU32(P, 48), H]));
               end;
               SIF.ReplyCall(P, Reply);
               Break;
@@ -1615,6 +1629,8 @@ begin
   State.Field(CdCallback, SizeOf(CdCallback));
   State.Field(CdLastCommand, SizeOf(CdLastCommand));
   State.Field(CdStreamLBA, SizeOf(CdStreamLBA));
+  State.Field(CdReadBytes, SizeOf(CdReadBytes));
+  State.Field(CdStreamSectors, SizeOf(CdStreamSectors));
   State.Field(DmaId, SizeOf(DmaId));
   State.Field(FReadySeq, SizeOf(FReadySeq));
   State.Field(FCmdSlot, SizeOf(FCmdSlot));

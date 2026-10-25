@@ -1270,6 +1270,7 @@ begin
         CdReadSectors(K, K.Arg(0), Count, K.Arg(2), Size);
         if K.Log <> nil then
           K.Warn(Format('sceCdRead %d x%d -> %.6x', [K.Arg(0), Count, K.Arg(2)]));
+        K.CdReadBytes := Count * Size;
         K.CdLastCommand := 1;
         K.CdDoneAt := K.CPU.Cycles * 8 + Max(Int64(Count) * (PS2EEClock div 1800), 20000);
         K.ScheduleTimers;
@@ -1349,11 +1350,38 @@ begin
         Result := K.CdCallback;
         K.CdCallback := K.Arg(0);
       end;
-    44: Result := 0;
+    // sceCdGetReadPos: the data of a read is there as soon as it starts.
+    44: Result := Cardinal(K.CdReadBytes);
+    // sceCdStandby, sceCdSeek, sceCdStop, sceCdPause, sceCdBreak: commands
+    // that end a little later, with the callback (SCECdFuncStandby 5,
+    // SCECdFuncSeek 4, SCECdFuncStop 6, SCECdFuncPause 7, SCECdFuncBreak 8).
+    // A break ends a read at once; the others wait for a command running.
+    5, 7, 15, 38, 39:
+      if Busy and (Fn <> 39) then
+        Result := 0
+      else
+      begin
+        case Fn of
+          5: K.CdLastCommand := 5;
+          7: K.CdLastCommand := 4;
+          15: K.CdLastCommand := 6;
+          38: K.CdLastCommand := 7;
+        else
+          K.CdLastCommand := 8;
+        end;
+        K.CdDoneAt := K.CPU.Cycles * 8 + PS2EEClock div 1000;
+        K.ScheduleTimers;
+      end;
     // sceCdSC/sceCdRC: secret commands; a retail console answers 0 (God of
     // War II's check module treats 1 as an unsupported unit).
     50, 51: Result := 0;
-    56: Result := 1;
+    // sceCdStInit(bufmax, bankmax, buffer): the stream reads the disc when
+    // read, so its buffer is always full (sceCdStStat).
+    56:
+      begin
+        K.CdStreamSectors := Integer(K.Arg(0));
+        Result := 1;
+      end;
     57:
       begin
         // sceCdStRead(sectors, buf, mode, *err)
@@ -1365,7 +1393,7 @@ begin
         Result := Cardinal(Count);
       end;
     58, 59: K.CdStreamLBA := K.Arg(0);
-    60: Result := 64;
+    60: Result := Cardinal(K.CdStreamSectors);
     79, 80:
       if K.Arg(0) <> 0 then
         K.W32(K.Arg(0), 0);

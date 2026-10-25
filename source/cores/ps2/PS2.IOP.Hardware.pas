@@ -3,8 +3,8 @@
 // IOP hardware registers as IOP modules see them while the kernel and the
 // system modules are high level: a register file for the I/O area, running
 // root counters, the SPU2 (PS2.SPU2) behind its register window and IOP DMA
-// channels 4/7 (completion interrupts paced like the hardware: AutoDMA blocks
-// at the 48 kHz output rate) and SIO2.
+// channels 4/7 (completion interrupts paced like the hardware: an AutoDMA
+// transfer ends when the core has taken its last block) and SIO2.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 
 interface
@@ -80,6 +80,21 @@ begin
     begin
       if Assigned(OnInterrupt) then
         OnInterrupt(IOPIntSPU2);
+    end;
+  SPU2.IOPRAM := IOPRAM;
+  // AutoDMA: the channel's address follows the blocks the core takes; the
+  // transfer ends (soon after) once it has taken the last one.
+  SPU2.OnAutoDMA := procedure(Core: Integer; Address: Cardinal; Finished: Boolean)
+    begin
+      var Base: Cardinal := DMACh4;
+      if Core = 1 then
+        Base := DMACh7;
+      SetIO32(Base, Address);
+      if Finished then
+      begin
+        FDue[Core] := FScheduler.Now + 64;
+        ScheduleNext;
+      end;
     end;
   SIO2 := TPS2SIO2.Create(IOPRAM);
   SIO2.OnInterrupt := SIO2Interrupt;
@@ -180,19 +195,21 @@ begin
       (Cardinal(SPU2.Read(Cardinal(Core) * $400 + $1A8)) shl 16) or SPU2.Read(Cardinal(Core) * $400 + $1AA), Ord(SPU2.AutoDMA(Core))]));
   if MADR + Cardinal(Bytes) > PS2IOPRAMSize then
     Bytes := Integer(PS2IOPRAMSize - MADR);
-  SPU2.DMA(Core, RAM + MADR, Bytes, (CHCR and 1) <> 0);
-  // AutoDMA blocks play out at 48 kHz (4 bytes per stereo sample); other
-  // transfers take about a cycle per halfword.
-  var Delay: Int64;
-  if SPU2.AutoDMA(Core) then
-    Delay := Int64(Max(Bytes, 512)) div 4 * PS2EEClock div PS2SPU2Rate
-  else
-    Delay := Int64(Max(Bytes, 64)) * 4;
-  FDue[Core] := FScheduler.Now + Delay;
   if Channel = 7 then
     FPendingLine[Core] := IOPIntDMASPU1
   else
     FPendingLine[Core] := IOPIntDMASPU0;
+  if SPU2.AutoDMA(Core) and ((CHCR and 1) <> 0) then
+  begin
+    // AutoDMA blocks go out as the core plays them (OnAutoDMA ends it).
+    FDue[Core] := PS2Never;
+    ScheduleNext;
+    SPU2.StartAutoDMA(Core, MADR, Bytes);
+    Exit;
+  end;
+  SPU2.DMA(Core, RAM + MADR, Bytes, (CHCR and 1) <> 0);
+  // Other transfers take about a cycle per halfword.
+  FDue[Core] := FScheduler.Now + Int64(Max(Bytes, 64)) * 4;
   ScheduleNext;
 end;
 

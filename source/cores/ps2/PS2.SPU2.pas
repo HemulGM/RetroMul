@@ -5,8 +5,8 @@
 // shift and filter, flags: loop end, repeat, loop start), interpolates them
 // with the 4-point Gaussian table and runs its ADSR envelope and volume
 // sweeps; noise and pitch modulation as on the PlayStation SPU. Each core
-// mixes its voices (VMIX*), its MEMIN input fed by AutoDMA (AVOL) and its
-// sound input (core 0's output for core 1) as MMIX selects: bits 11/10 voices
+// mixes its voices (VMIX*), its MEMIN input fed by AutoDMA (BVOL) and its
+// sound input (core 0's output for core 1, AVOL) as MMIX selects: bits 11/10 voices
 // left/right, 7/6 MEMIN, 3/2 sound input, and bits 9/8, 5/4, 1/0 the same
 // into the core's effects unit (VMIXEL/VMIXER for the voices). The effects
 // unit is the PlayStation reverb at half rate in the work area ESA..EEA,
@@ -58,6 +58,11 @@ type
     MainVolume, MainCounter: array[0..1] of Integer;
     // MEMIN: the half (256 samples) being played and the position in it.
     PlayHalf, PlayPos: Integer;
+    // AutoDMA: the IOP address and bytes still to move, and whether the half
+    // not playing has its block for the next turn.
+    AdmaAddr: Cardinal;
+    AdmaLeft: Integer;
+    MemInLoaded: Boolean;
     // Output of the last sample (core 0's feeds core 1).
     OutLeft, OutRight: Integer;
     // Reverb: current halfword in the work area, half-rate phase and the
@@ -92,12 +97,20 @@ type
     procedure TickReverb(Core: Integer; InLeft, InRight: Integer; out OutLeft, OutRight: Integer);
     procedure MixCore(Core: Integer; InLeft, InRight: Integer);
     procedure Emit(Left, Right: Integer);
+    function ReadRegister(Offset: Cardinal): Word;
+    procedure LoadMemIn(Core: Integer);
   public
     // Byte offsets 0..7FFh of the register window (1F900000h).
     Regs: array[0..$3FF] of Word;
     RAM: TBytes;
     OnInterrupt: TProc;
-    // Diagnostics: register writes (not the data port) and voice ends.
+    // IOP memory AutoDMA blocks come from.
+    IOPRAM: PByte;
+    // An AutoDMA block moved: the channel's address now, and whether the
+    // transfer has ended.
+    OnAutoDMA: TProc<Integer, Cardinal, Boolean>;
+    // Diagnostics: register writes (not the data port), reads of the voice
+    // addresses, ENDX and STATX, and voice ends.
     Log: TStrings;
     constructor Create(Scheduler: TPS2Scheduler);
     procedure Reset;
@@ -105,9 +118,12 @@ type
     procedure Write(Offset: Cardinal; Value: Word);
     // AutoDMA mode on this core (ADMA register).
     function AutoDMA(Core: Integer): Boolean;
-    // A DMA block: into MEMIN in AutoDMA mode, else at TSA (or from TSA when
-    // not ToSPU).
+    // A DMA block at TSA (or from TSA when not ToSPU).
     procedure DMA(Core: Integer; Data: PByte; Bytes: Integer; ToSPU: Boolean);
+    // An AutoDMA transfer from IOP memory: the core takes a 1 KiB block
+    // (512 bytes of left then right samples) into the MEMIN half that is not
+    // playing whenever that half is free, the first one at once.
+    procedure StartAutoDMA(Core: Integer; Address: Cardinal; Bytes: Integer);
     procedure DMADone(Core: Integer);
     // Runs Samples output samples (48 kHz).
     procedure Tick(Samples: Integer);
@@ -182,7 +198,8 @@ const
   VolumesStride = $28;
   VolMain = 0;
   VolEffects = 4;
-  VolMemIn = 8;
+  VolInput = 8;
+  VolMemIn = $C;
   VolMainX = $10;
   VolIIR = $14;
   VolComb1 = $16;
@@ -849,12 +866,18 @@ begin
   Inc(C.PlayPos);
   if C.PlayPos >= $100 then
   begin
+    // The half just played is free for the next AutoDMA block.
     C.PlayPos := 0;
     C.PlayHalf := C.PlayHalf xor 1;
+    C.MemInLoaded := False;
+    if C.AdmaLeft > 0 then
+      LoadMemIn(Core);
   end;
   var VolBase := RegVolumes + Cardinal(Core) * VolumesStride;
   MemL := Sar32(MemL * Signed(VolBase + VolMemIn), 15);
   MemR := Sar32(MemR * Signed(VolBase + VolMemIn + 2), 15);
+  InLeft := Sar32(InLeft * Signed(VolBase + VolInput), 15);
+  InRight := Sar32(InRight * Signed(VolBase + VolInput + 2), 15);
 
   var OutL: Int64 := 0;
   var OutR: Int64 := 0;
@@ -941,6 +964,13 @@ end;
 function TPS2SPU2.Read(Offset: Cardinal): Word;
 begin
   Offset := Offset and $7FE;
+  Result := ReadRegister(Offset);
+  if (Log <> nil) and (Log.Count < 100000) and ((Offset and $3FF) >= RegAddresses) and ((Offset and $3FF) <= RegSTATX) then
+    Log.Add(Format('%d spu r %.3x = %.4x', [FScheduler.Now, Offset, Result]));
+end;
+
+function TPS2SPU2.ReadRegister(Offset: Cardinal): Word;
+begin
   if Offset = RegIRQInfo then
   begin
     Result := FIRQInfo;
@@ -1006,6 +1036,9 @@ begin
         if (Value and AttrIRQ) = 0 then
           C.IRQFired := False;
       end;
+    RegADMA:
+      if (Value and (1 shl Core)) = 0 then
+        C.AdmaLeft := 0;
     RegKON: KeyOn(Core, Value);
     RegKON + 2: KeyOn(Core, Cardinal(Value and $FF) shl 16);
     RegKOFF: KeyOff(Core, Value);
@@ -1027,19 +1060,6 @@ begin
   FCores[Core].StatX := FCores[Core].StatX and not $80;
   if Bytes <= 0 then
     Exit;
-  if ToSPU and AutoDMA(Core) then
-  begin
-    // A block of left then right samples into the MEMIN half not playing.
-    var Count := Bytes div 4;
-    if Count > $100 then
-      Count := $100;
-    var Half := Cardinal(FCores[Core].PlayHalf xor 1) * $100;
-    var L := (MemInBase + Cardinal(Core) * $400 + Half) * 2;
-    var Rt := L + $400;
-    Move(Data^, RAM[L], Count * 2);
-    Move((Data + Bytes div 2)^, RAM[Rt], Count * 2);
-    Exit;
-  end;
   var A := R32(Core, RegTSA);
   var Halfwords := Cardinal(Bytes div 2);
   CheckIRQ(A, Halfwords);
@@ -1051,6 +1071,48 @@ begin
     else
       PWord(Data + K * 2)^ := PWord(@RAM[S])^;
   end;
+end;
+
+procedure TPS2SPU2.StartAutoDMA(Core: Integer; Address: Cardinal; Bytes: Integer);
+begin
+  var C: ^TPS2SPU2Core := @FCores[Core];
+  C.StatX := C.StatX and not $80;
+  C.AdmaAddr := Address;
+  C.AdmaLeft := Bytes;
+  if Bytes <= 0 then
+  begin
+    C.AdmaLeft := 0;
+    if Assigned(OnAutoDMA) then
+      OnAutoDMA(Core, Address, True);
+    Exit;
+  end;
+  LoadMemIn(Core);
+end;
+
+procedure TPS2SPU2.LoadMemIn(Core: Integer);
+begin
+  var C: ^TPS2SPU2Core := @FCores[Core];
+  if (C.AdmaLeft <= 0) or C.MemInLoaded or (IOPRAM = nil) then
+    Exit;
+  var Size := C.AdmaLeft;
+  if Size > $400 then
+    Size := $400;
+  var Count := Size div 4;
+  var Half := Cardinal(C.PlayHalf xor 1) * $100;
+  var L := (MemInBase + Cardinal(Core) * $400 + Half) * 2;
+  var Rt := L + $400;
+  Move((IOPRAM + C.AdmaAddr)^, RAM[L], Count * 2);
+  Move((IOPRAM + C.AdmaAddr + Cardinal(Size div 2))^, RAM[Rt], Count * 2);
+  if Count < $100 then
+  begin
+    FillChar(RAM[L + Cardinal(Count) * 2], ($100 - Count) * 2, 0);
+    FillChar(RAM[Rt + Cardinal(Count) * 2], ($100 - Count) * 2, 0);
+  end;
+  Inc(C.AdmaAddr, Cardinal(Size));
+  Dec(C.AdmaLeft, Size);
+  C.MemInLoaded := True;
+  if Assigned(OnAutoDMA) then
+    OnAutoDMA(Core, C.AdmaAddr, C.AdmaLeft <= 0);
 end;
 
 procedure TPS2SPU2.DMADone(Core: Integer);
@@ -1065,9 +1127,10 @@ begin
   begin
     var C: ^TPS2SPU2Core := @FCores[Core];
     var VolBase := RegVolumes + Cardinal(Core) * VolumesStride;
-    Result := Result + Format('spu2 core %d: admas %.4x tsa %x attr %.4x mmix %.4x mvol %.4x/%.4x (now %d/%d) avol %.4x/%.4x out %d/%d',
+    Result := Result + Format('spu2 core %d: admas %.4x tsa %x attr %.4x mmix %.4x mvol %.4x/%.4x (now %d/%d) avol %.4x/%.4x bvol %.4x/%.4x out %d/%d',
       [Core, R(Core, RegADMA), R32(Core, RegTSA), R(Core, RegATTR), R(Core, RegMMIX), Regs[(VolBase shr 1) and $3FF], Regs[((VolBase + 2) shr 1) and $3FF],
-      C.MainVolume[0], C.MainVolume[1], Regs[((VolBase + VolMemIn) shr 1) and $3FF],
+      C.MainVolume[0], C.MainVolume[1], Regs[((VolBase + VolInput) shr 1) and $3FF],
+      Regs[((VolBase + VolInput + 2) shr 1) and $3FF], Regs[((VolBase + VolMemIn) shr 1) and $3FF],
       Regs[((VolBase + VolMemIn + 2) shr 1) and $3FF], C.OutLeft, C.OutRight]) + sLineBreak;
     for var Index := 0 to 23 do
     begin

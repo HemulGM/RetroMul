@@ -365,6 +365,9 @@ begin
         CheckIRQ(Core, P.Addr, 8);
         if (Flags and 1) <> 0 then
         begin
+          if (SPULog <> nil) and (SPULog.Count < 100000) then
+            SPULog.Add(Format('%d spu voice %d:%d end at %x flags %x loop %x', [FScheduler.Now, Core, V, P.Addr,
+              Flags, P.Loop]));
           FEndX[Core] := FEndX[Core] or (Cardinal(1) shl V);
           if (Flags and 2) <> 0 then
             P.Addr := P.Loop

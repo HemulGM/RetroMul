@@ -54,6 +54,8 @@ type
     // Data moved; the channel ends at DoneAt.
     Finishing: Boolean;
     DoneAt: Int64;
+    // When STR was set: the bus time of the data counts from here.
+    StartedAt: Int64;
   end;
 
   TPS2DMAC = class
@@ -323,7 +325,18 @@ begin
             if (Value and CHCRSTR) <> 0 then
             begin
               Ch[N].TagEnd := False;
+              // A chain started with data left (QWC) resumes its current tag:
+              // that data goes first, then the tag's ID in CHCR decides as
+              // after any tag: refe and end, or IRQ with TIE, end the
+              // transfer instead of reading the next tag.
+              if (((Value shr 2) and 3) = 1) and (Ch[N].QWC > 0) then
+              begin
+                var Id := (Value shr 28) and 7;
+                Ch[N].TagEnd := (Id = 0) or (Id = 7) or (((Value and $80000000) <> 0) and
+                  ((Value and CHCRTIE) <> 0));
+              end;
               Ch[N].Finishing := False;
+              Ch[N].StartedAt := FScheduler.Now;
               Moved[N] := 0;
               Run(N);
             end;
@@ -359,10 +372,15 @@ begin
   Result := (Address and RBSR) or RBOR;
 end;
 
+// The data has moved; the channel ends once its bus time from the start
+// has passed. A transfer that waited for its device (a full FIFO, a masked
+// path) has spent that time already and ends right after its last data:
+// programs that stop a channel and restart it from its tag address see it
+// ended at an end tag (refe, end) rather than past it.
 procedure TPS2DMAC.Finish(N: Integer; Cycles: Int64);
 begin
   Ch[N].Finishing := True;
-  Ch[N].DoneAt := FScheduler.Now + Cycles;
+  Ch[N].DoneAt := Max(Ch[N].StartedAt + Cycles, FScheduler.Now + 8);
   ScheduleNext;
 end;
 
@@ -462,6 +480,9 @@ begin
   var Lo := Cardinal(T.Lo);
   var Addr := Cardinal(T.Lo shr 32);
   var Id := (Lo shr 28) and 7;
+  if (Log <> nil) and (((LogMask shr N) and 1) <> 0) and (Log.Count < 200000) then
+    Log.Add(Format('%d ch%d tag at %.8x: id %d qwc %x addr %.8x', [FScheduler.Now, N, Ch[N].TADR, Id, Lo and $FFFF,
+      Addr]));
   Ch[N].CHCR := (Ch[N].CHCR and $0000FFFF) or (Lo and $FFFF0000);
   Ch[N].QWC := Lo and $FFFF;
   var TagAddr := Ch[N].TADR;
@@ -676,6 +697,7 @@ begin
   if IRQ and ((Ch[DMASIF0].CHCR and CHCRTIE) <> 0) then
   begin
     Ch[DMASIF0].QWC := 0;
+    Ch[DMASIF0].StartedAt := FScheduler.Now;
     Finish(DMASIF0, 16);
   end;
 end;

@@ -252,7 +252,7 @@ end;
 procedure TPS2GSRaster.WriteRegister(Index: Integer; Value: UInt64);
 begin
   Index := Index and $7F;
-  if (PrimLog <> nil) and (PrimLog.Count < 200000) and (Index in [6, 7, $14, $15, $16, $17, $3B, $42, $43, $47, $48, $4C, $4D, $4E, $4F]) then
+  if (PrimLog <> nil) and (PrimLog.Count < 200000) and (Index in [6, 7, $14, $15, $16, $17, $1C, $3B, $42, $43, $47, $48, $4C, $4D, $4E, $4F, $50, $51, $52, $53]) then
     PrimLog.Add(Format('reg %.2x = %.16x', [Index, Value]));
   Regs[Index] := Value;
   case Index of

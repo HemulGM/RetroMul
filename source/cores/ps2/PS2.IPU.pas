@@ -104,6 +104,11 @@ type
     // of them, the latest kept, with TraceAll).
     Trace: TStrings;
     TraceAll: Boolean;
+    // Diagnostics (with Trace): the last input bytes, their total and the
+    // stream bit where the current command started; an error dumps the
+    // command's input.
+    InHistory: TBytes;
+    InTotal, CommandStartBit: Int64;
     constructor Create(Scheduler: TPS2Scheduler; DMAC: TPS2DMAC);
     procedure Reset;
     function Read(Address: Cardinal; Size: Integer): UInt64; override;
@@ -1313,6 +1318,8 @@ procedure TPS2IPU.StartCommand(Value: Cardinal);
 begin
   Inc(Commands);
   Inc(CommandCounts[Value shr 28]);
+  if Trace <> nil then
+    CommandStartBit := (InTotal - S.Size) * 8 + S.Bit;
   if (Trace <> nil) and TraceAll then
   begin
     if Trace.Count >= 100000 then
@@ -1345,8 +1352,20 @@ end;
 
 procedure TPS2IPU.Finish(Flags: Cardinal);
 begin
-  if (Trace <> nil) and TraceAll then
-    Trace.Add(Format('%d done flags=%x data=%.8x size=%d bit=%d', [FScheduler.Now, Flags, S.Data, S.Size, S.Bit]));
+  if (Trace <> nil) and (TraceAll or (Flags = CtrlECD)) then
+    Trace.Add(Format('%d done cmd=%.8x flags=%x data=%.8x size=%d bit=%d step=%d mbstep=%d block=%d coef=%d next=%.8x',
+      [FScheduler.Now, S.Command, Flags, S.Data, S.Size, S.Bit, S.Step, S.MBStep, S.Block, S.Coef, PeekTop]));
+  if (Trace <> nil) and (Flags = CtrlECD) and (InHistory <> nil) then
+  begin
+    // The command's input from its first bit (offset within the first byte).
+    var First := CommandStartBit div 8;
+    var Last := Min(InTotal, (InTotal - S.Size) + (S.Bit div 8) + 32);
+    var Hex := '';
+    for var A := First to Last - 1 do
+      if InTotal - A <= Length(InHistory) then
+        Hex := Hex + IntToHex(InHistory[A and $FFFF], 2);
+    Trace.Add(Format('%d input bit %d: %s', [FScheduler.Now, CommandStartBit mod 8, Hex]));
+  end;
   S.Busy := False;
   S.CTRL := S.CTRL or Flags;
   if Assigned(FOnInterrupt) then
@@ -1414,6 +1433,14 @@ begin
     Exit(0);
   Move(Data^, S.Buf[S.Size], Result * 16);
   Inc(S.Size, Result * 16);
+  if Trace <> nil then
+  begin
+    if InHistory = nil then
+      SetLength(InHistory, $10000);
+    for var K := 0 to Result * 16 - 1 do
+      InHistory[(InTotal + K) and $FFFF] := S.Buf[S.Size - Result * 16 + K];
+    Inc(InTotal, Result * 16);
+  end;
   RequestPump;
 end;
 

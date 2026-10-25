@@ -116,6 +116,8 @@ end;
 
 procedure TPS2VIF.StartVU(Address: Cardinal);
 begin
+  if (FGIF <> nil) and (FGIF.TagLog <> nil) and (FGIF.TagLog.Count < 200000) then
+    FGIF.TagLog.Add(Format('vif%d start vu at %x', [FIndex, Address]));
   if FIndex = 1 then
   begin
     // Double buffering: TOP takes TOPS, the next TOPS the other buffer.
@@ -246,9 +248,9 @@ begin
         S.Path3Masked := (Imm and $8000) <> 0;
         if FGIF <> nil then
         begin
-          FGIF.MaskedPath3 := S.Path3Masked;
-          if not S.Path3Masked and Assigned(FGIF.OnPath3Resume) then
-            FGIF.OnPath3Resume();
+          if (FGIF.TagLog <> nil) and (FGIF.TagLog.Count < 200000) then
+            FGIF.TagLog.Add(Format('vif%d mskpath3 %d', [FIndex, Ord(S.Path3Masked)]));
+          FGIF.SetPath3Mask(S.Path3Masked);
         end;
       end;
     $07: S.MARK := Imm;
@@ -281,6 +283,9 @@ begin
         if (FIndex = 1) and ((Imm and $8000) <> 0) then
           Inc(Addr, Integer(S.TOPS));
         S.UnpackAddr := Addr;
+        if (FGIF <> nil) and (FGIF.TagLog <> nil) and (FGIF.TagLog.Count < 200000) then
+          FGIF.TagLog.Add(Format('vif%d unpack %.2x num %d addr %x usn %d cycle %.4x mask %.8x mode %d', [FIndex, Cmd, Num,
+            Addr, (Imm shr 14) and 1, S.CYCLE, S.MASK, S.MODE]));
         if CaptureUnfinished then
           CommandRing[(CommandRingPos - 1) and High(CommandRing)][2] := Cardinal(Addr);
         S.UnpackCount := 0;

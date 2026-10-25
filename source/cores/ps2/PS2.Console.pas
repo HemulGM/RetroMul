@@ -154,6 +154,7 @@ begin
   Bus.GIF := GIF;
   GIFPort := TPS2GIFPort.Create(GIF);
   GIF.OnPath3Resume := procedure begin DMAC.Resume(DMAGIF); end;
+  GIF.OnPath3Held := procedure(Cycles: Int64) begin Scheduler.Schedule(TPS2Event.GIF, Scheduler.Now + Cycles); end;
   DMAC.Ports[DMAGIF] := GIFPort;
   VIF0 := TPS2VIF.Create(0, VU0.Core, nil, Bus.VU0Code, Bus.VU0Data, $1000, $1000);
   VIF1 := TPS2VIF.Create(1, VU1.Core, GIF, Bus.VU1Code, Bus.VU1Data, $4000, $4000);
@@ -440,6 +441,8 @@ end;
 
 procedure TPS2Console.VU1Kick(Address: Cardinal);
 begin
+  if (GIF.TagLog <> nil) and (GIF.TagLog.Count < 200000) then
+    GIF.TagLog.Add(Format('xgkick %x pc %x', [Address, VU1.Core.S.TPC]));
   GIF.Kick(Bus.VU1Data, Address, $3FFF);
 end;
 
@@ -577,6 +580,7 @@ begin
     TPS2Event.Timer2: Timers.Event(2);
     TPS2Event.Timer3: Timers.Event(3);
     TPS2Event.DMAC: DMAC.Event;
+    TPS2Event.GIF: GIF.ReleasePath3;
     TPS2Event.IPU: IPU.Event;
     TPS2Event.GSSignal: GS.Raster.SetFinish;
     TPS2Event.SIF: SIF.Deliver;

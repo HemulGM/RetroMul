@@ -4,7 +4,11 @@
 // paths (PATH1 from VU1 XGKICK, PATH2 from VIF1 DIRECT, PATH3 from DMA
 // channel 2 or the FIFO), each with its own tag state so that packets of
 // different paths may alternate between whole packets; the GIF registers
-// (CTRL, MODE, STAT, TAG0-3, CNT, P3CNT, P3TAG) and PATH3 masking.
+// (CTRL, MODE, STAT, TAG0-3, CNT, P3CNT, P3TAG) and PATH3 masking. Masking
+// takes effect between packets: once unmasked, PATH3 DMA moves to the end of
+// a packet and only goes on after that packet's transfer time, so a mask set
+// again right away (VIF1 MSKPATH3 1 after MSKPATH3 0) lets exactly one packet
+// through, as programs that interleave texture uploads with drawing expect.
 // References: EE User's Manual (GIF chapter), GS User's Manual, ps2tek.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$POINTERMATH ON}
@@ -31,13 +35,20 @@ type
     FGS: TPS2GS;
     procedure PackedWrite(var P: TPS2GIFPathState; Reg: Integer; const D: TPS2Reg128);
     procedure ReglistWrite(var P: TPS2GIFPathState; Value: UInt64);
+    procedure StartPath3Burst;
   public
     Path: array[1..3] of TPS2GIFPathState;
     CTRL, MODE: Cardinal;
     // Set while PATH3 is masked by VIF1 MSKPATH3.
     MaskedPath3: Boolean;
+    // After an unmask: PATH3 DMA stops at the next packet end (Burst), then
+    // waits (Held) until ReleasePath3; BurstQuads counts its quadwords.
+    Path3Burst, Path3Held: Boolean;
+    Path3BurstQuads: Integer;
     // PATH3 may move again (unmasked): the GIF DMA channel goes on.
     OnPath3Resume: TProc;
+    // A PATH3 DMA burst ended after Cycles (EE cycles): ReleasePath3 then.
+    OnPath3Held: TProc<Int64>;
     // Diagnostics: tags started when assigned.
     TagLog: TStrings;
     constructor Create(GS: TPS2GS);
@@ -45,8 +56,12 @@ type
     procedure Reset;
     // Feeds quadwords to a path; returns how many were taken (PATH3 stops
     // at the end of a packet while it is masked).
-    function Transfer(PathIndex: Integer; Data: PByte; Count: Integer): Integer;
+    function Transfer(PathIndex: Integer; Data: PByte; Count: Integer; FromDMA: Boolean = False): Integer;
     function PathIdle(PathIndex: Integer): Boolean;
+    // MSKPATH3 or MODE.M3R: PATH3 masked or unmasked.
+    procedure SetPath3Mask(Masked: Boolean);
+    // The end of a burst's transfer time: PATH3 DMA goes on unless masked.
+    procedure ReleasePath3;
     // XGKICK: GIF packets from VU1 data memory at Address until one ends
     // with EOP.
     procedure Kick(Memory: PByte; Address, Mask: Cardinal);
@@ -83,6 +98,35 @@ begin
   CTRL := 0;
   MODE := 0;
   MaskedPath3 := False;
+  Path3Burst := False;
+  Path3Held := False;
+  Path3BurstQuads := 0;
+end;
+
+procedure TPS2GIF.StartPath3Burst;
+begin
+  Path3Burst := True;
+  Path3Held := False;
+  Path3BurstQuads := 0;
+  if Assigned(OnPath3Resume) then
+    OnPath3Resume();
+end;
+
+procedure TPS2GIF.SetPath3Mask(Masked: Boolean);
+begin
+  var Was := MaskedPath3;
+  MaskedPath3 := Masked;
+  if Was and not Masked and ((MODE and 1) = 0) then
+    StartPath3Burst;
+end;
+
+procedure TPS2GIF.ReleasePath3;
+begin
+  if not Path3Held then
+    Exit;
+  Path3Held := False;
+  if not MaskedPath3 and ((MODE and 1) = 0) and Assigned(OnPath3Resume) then
+    OnPath3Resume();
 end;
 
 function TPS2GIF.PathIdle(PathIndex: Integer): Boolean;
@@ -144,7 +188,20 @@ begin
   end;
 end;
 
-function TPS2GIF.Transfer(PathIndex: Integer; Data: PByte; Count: Integer): Integer;
+function TPS2GIF.Transfer(PathIndex: Integer; Data: PByte; Count: Integer; FromDMA: Boolean): Integer;
+
+  procedure PacketEnd(Done: Integer);
+  begin
+    if FromDMA and Path3Burst then
+    begin
+      Path3Burst := False;
+      Path3Held := True;
+      // The GS takes about a quadword per bus clock (two EE cycles).
+      if Assigned(OnPath3Held) then
+        OnPath3Held(Int64(Path3BurstQuads + Done) * 2 + 64);
+    end;
+  end;
+
 begin
   Result := 0;
   var Q := PPS2Reg128(Data);
@@ -153,9 +210,13 @@ begin
     var P: PPS2GIFPathState := @Path[PathIndex];
     if not P.Active then
     begin
-      // PATH3 masked: stop between packets.
-      if (PathIndex = 3) and (MaskedPath3 or ((MODE and 1) <> 0)) then
+      // PATH3 masked or held after a burst: stop between packets.
+      if (PathIndex = 3) and (MaskedPath3 or ((MODE and 1) <> 0) or FromDMA and Path3Held) then
+      begin
+        if FromDMA then
+          Inc(Path3BurstQuads, Result);
         Exit;
+      end;
       // A new tag.
       P.Tag := Q^;
       P.NLoop := Integer(P.Tag.Lo and $7FFF);
@@ -176,6 +237,8 @@ begin
           P.NReg, P.Regs, (P.Tag.Lo shr 46) and 1, (P.Tag.Lo shr 47) and $7FF]));
       Inc(Result);
       Inc(Q);
+      if not P.Active and P.EOP and (PathIndex = 3) then
+        PacketEnd(Result);
       Continue;
     end;
     case P.Flg of
@@ -205,8 +268,14 @@ begin
     Inc(Result);
     Inc(Q);
     if P.Loop >= P.NLoop then
+    begin
       P.Active := False;
+      if P.EOP and (PathIndex = 3) then
+        PacketEnd(Result);
+    end;
   end;
+  if FromDMA then
+    Inc(Path3BurstQuads, Result);
 end;
 
 procedure TPS2GIF.Kick(Memory: PByte; Address, Mask: Cardinal);
@@ -266,8 +335,11 @@ begin
       end;
     $010:
       begin
+        var WasMasked := (MODE and 1) <> 0;
         MODE := Cardinal(Value) and 5;
-        if ((MODE and 1) = 0) and Assigned(OnPath3Resume) then
+        if WasMasked and ((MODE and 1) = 0) and not MaskedPath3 then
+          StartPath3Burst
+        else if ((MODE and 1) = 0) and Assigned(OnPath3Resume) then
           OnPath3Resume();
       end;
   end;
@@ -285,6 +357,9 @@ begin
   State.Field(CTRL, SizeOf(CTRL));
   State.Field(MODE, SizeOf(MODE));
   State.Field(MaskedPath3, SizeOf(MaskedPath3));
+  State.Field(Path3Burst, SizeOf(Path3Burst));
+  State.Field(Path3Held, SizeOf(Path3Held));
+  State.Field(Path3BurstQuads, SizeOf(Path3BurstQuads));
 end;
 
 { TPS2GIFPort }
@@ -297,7 +372,7 @@ end;
 
 function TPS2GIFPort.Push(Channel: Integer; Data: PByte; Count: Integer): Integer;
 begin
-  Result := FGIF.Transfer(3, Data, Count);
+  Result := FGIF.Transfer(3, Data, Count, True);
 end;
 
 function TPS2GIFPort.TakeBusyCycles: Int64;

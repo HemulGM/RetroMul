@@ -45,6 +45,8 @@ type
     FOnInterrupt: TProc;
     FDirectBuf: TPS2Reg128;
     FDirectWords: Integer;
+    // DIRECT data went to the GIF (not yet taken).
+    FDirectSent: Boolean;
     procedure StartCommand(W: Cardinal);
     procedure UnpackWord(W: Cardinal);
     procedure WriteVector(const V: TPS2Reg128);
@@ -74,6 +76,8 @@ type
     procedure Reset;
     // Feeds 32-bit words; returns how many were taken (fewer: stalled on IRQ).
     function Feed(Data: PCardinal; Count: Integer): Integer;
+    // Whether DIRECT data went to the GIF since the last call.
+    function TakeDirectSent: Boolean;
     function Read(Address: Cardinal; Size: Integer): UInt64; override;
     procedure Write(Address: Cardinal; Value: UInt64; Size: Integer); override;
     procedure WriteFIFO(Address: Cardinal; const Value: TPS2Reg128); override;
@@ -88,6 +92,7 @@ type
     constructor Create(VIF: TPS2VIF);
     function Push(Channel: Integer; Data: PByte; Count: Integer): Integer; override;
     procedure Tag(Channel: Integer; const Tag: TPS2Reg128); override;
+    function TakeBusyCycles: Int64; override;
   end;
 
 implementation
@@ -446,6 +451,12 @@ begin
   end;
 end;
 
+function TPS2VIF.TakeDirectSent: Boolean;
+begin
+  Result := FDirectSent;
+  FDirectSent := False;
+end;
+
 function TPS2VIF.Feed(Data: PCardinal; Count: Integer): Integer;
 begin
   Result := 0;
@@ -483,7 +494,10 @@ begin
           begin
             FDirectWords := 0;
             if FGIF <> nil then
+            begin
               FGIF.Transfer(2, @FDirectBuf, 1);
+              FDirectSent := True;
+            end;
           end;
         end;
       $60..$7F: UnpackWord(W);
@@ -602,6 +616,16 @@ begin
   // TTE: the upper half of the DMA tag goes to the VIF as two words.
   var T := Tag;
   FVIF.Feed(@T.UW[2], 2);
+end;
+
+// DIRECT data reaches the GS after what is queued before it (PATH1 packets
+// from earlier kicks, drawing in progress): the channel ends once the GS has
+// drawn it all.
+function TPS2VIFPort.TakeBusyCycles: Int64;
+begin
+  Result := 0;
+  if FVIF.TakeDirectSent then
+    Result := FVIF.FGIF.GSBusyCycles;
 end;
 
 end.

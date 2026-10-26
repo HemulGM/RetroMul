@@ -34,6 +34,11 @@ type
     FProgram: TBytes;
     FProgramName: string;
     FIdleCycles: Int64;
+    // FINISH writes not in CSR yet: the EE cycle each shows, oldest first.
+    FFinishDue: array[0..7] of Int64;
+    FFinishCount: Integer;
+    procedure GSFinishWritten;
+    procedure GSFinishShown;
     procedure TTYWrite(const Text: string);
     procedure IOPTTY(Text: string);
     procedure DMACInterrupt(Active: Boolean);
@@ -102,7 +107,7 @@ type
 implementation
 
 uses
-  PS2.IOP.Loader;
+  System.Math, PS2.IOP.Loader;
 
 const
   // EE cycles per IOP slice while IOP code has work.
@@ -141,16 +146,10 @@ begin
   Bus.SIF := SIF;
   GS := TPS2GS.Create;
   GS.OnInterrupt := GSInterrupt;
-  // FINISH shows in CSR once the GS has drawn the packet (programs clear CSR
-  // events right after starting a transfer and then wait for FINISH).
-  GS.Raster.OnFinish :=
-    procedure
-    begin
-      if not Scheduler.Pending(TPS2Event.GSSignal) then
-        Scheduler.Schedule(TPS2Event.GSSignal, Scheduler.Now + GSFinishDelay);
-    end;
+  GS.Raster.OnFinish := GSFinishWritten;
   Bus.GS := GS;
   GIF := TPS2GIF.Create(GS);
+  GIF.Clock := @Scheduler.Now;
   Bus.GIF := GIF;
   GIFPort := TPS2GIFPort.Create(GIF);
   GIF.OnPath3Resume := procedure begin DMAC.Resume(DMAGIF); end;
@@ -281,6 +280,38 @@ begin
   Bus.RaiseIRQ(0);
 end;
 
+// FINISH shows in CSR once the GS has drawn what came before it, and not
+// before GSFinishDelay (programs clear CSR events right after starting a
+// transfer and then wait for FINISH). Each write shows on its own: programs
+// count FINISH interrupts, one per packet they send.
+procedure TPS2Console.GSFinishWritten;
+begin
+  var Due := Max(Scheduler.Now + GSFinishDelay, GIF.GSBusyUntil);
+  if FFinishCount > 0 then
+    Due := Max(Due, FFinishDue[FFinishCount - 1]);
+  if FFinishCount = Length(FFinishDue) then
+  begin
+    FFinishDue[FFinishCount - 1] := Due;
+    Exit;
+  end;
+  FFinishDue[FFinishCount] := Due;
+  Inc(FFinishCount);
+  if FFinishCount = 1 then
+    Scheduler.Schedule(TPS2Event.GSSignal, Due);
+end;
+
+procedure TPS2Console.GSFinishShown;
+begin
+  if FFinishCount > 0 then
+  begin
+    Dec(FFinishCount);
+    Move(FFinishDue[1], FFinishDue[0], FFinishCount * SizeOf(Int64));
+  end;
+  GS.Raster.SetFinish;
+  if FFinishCount > 0 then
+    Scheduler.Schedule(TPS2Event.GSSignal, FFinishDue[0]);
+end;
+
 procedure TPS2Console.SetVideo(PAL: Boolean);
 begin
   FConfig.PAL := PAL;
@@ -305,6 +336,7 @@ end;
 procedure TPS2Console.Reset;
 begin
   Scheduler.Reset;
+  FFinishCount := 0;
   Bus.Reset;
   CPU.Reset;
   VU1.Reset;
@@ -583,7 +615,7 @@ begin
     TPS2Event.DMAC: DMAC.Event;
     TPS2Event.GIF: GIF.ReleasePath3;
     TPS2Event.IPU: IPU.Event;
-    TPS2Event.GSSignal: GS.Raster.SetFinish;
+    TPS2Event.GSSignal: GSFinishShown;
     TPS2Event.SIF: SIF.Deliver;
     TPS2Event.Alarm: Kernel.AlarmEvent;
     TPS2Event.Compare: CPU.CompareReached;
@@ -676,6 +708,11 @@ begin
   State.Field(FFieldStart, SizeOf(FFieldStart));
   State.Field(FFrameCount, SizeOf(FFrameCount));
   State.Field(FInVBlank, SizeOf(FInVBlank));
+  GIF.SerializeTimeline(State);
+  State.Field(FFinishDue, SizeOf(FFinishDue));
+  State.Field(FFinishCount, SizeOf(FFinishCount));
+  if (FFinishCount < 0) or (FFinishCount > Length(FFinishDue)) then
+    FFinishCount := 0;
 end;
 
 end.

@@ -18,6 +18,11 @@ interface
 uses
   System.SysUtils, System.Classes, Core.Snapshots, PS2.Types, PS2.EE.Bus, PS2.DMAC, PS2.GS;
 
+const
+  // GS drawing speed for DMA timing: about four pixels per EE cycle (the GS
+  // fills 8..16 per 147 MHz clock).
+  GSPixelsPerCycle = 4;
+
 type
   TPS2GIFPathState = record
     Tag: TPS2Reg128;
@@ -33,6 +38,11 @@ type
   TPS2GIF = class(TPS2Device)
   private
     FGS: TPS2GS;
+    FClock: PInt64;
+    // The GS drawing timeline: the EE cycle the GS is busy until, and the
+    // pixel count it has been brought up to.
+    FBusyUntil, FBusyPixels: Int64;
+    procedure UpdateBusy;
     procedure PackedWrite(var P: TPS2GIFPathState; Reg: Integer; const D: TPS2Reg128);
     procedure ReglistWrite(var P: TPS2GIFPathState; Value: UInt64);
     procedure StartPath3Burst;
@@ -53,6 +63,14 @@ type
     TagLog: TStrings;
     constructor Create(GS: TPS2GS);
     property GS: TPS2GS read FGS;
+    // The EE cycle counter, for the drawing timeline.
+    property Clock: PInt64 write FClock;
+    // The EE cycle the GS has drawn what it was sent by: pixels take
+    // 1 / GSPixelsPerCycle EE cycles each, from the time their data came.
+    function GSBusyUntil: Int64;
+    // EE cycles from now until then (0 when the GS is idle).
+    function GSBusyCycles: Int64;
+    procedure SerializeTimeline(State: TStateArchive);
     procedure Reset;
     // Feeds quadwords to a path; returns how many were taken (PATH3 stops
     // at the end of a packet while it is masked).
@@ -92,8 +110,56 @@ begin
   Reset;
 end;
 
+// Pixels drawn since the last update started drawing no earlier than now
+// (the data that drew them came before).
+procedure TPS2GIF.UpdateBusy;
+begin
+  var Pixels := FGS.Raster.PixelsDrawn;
+  if Pixels < FBusyPixels then
+    FBusyPixels := Pixels
+  else if Pixels - FBusyPixels >= GSPixelsPerCycle then
+  begin
+    var Cycles := (Pixels - FBusyPixels) div GSPixelsPerCycle;
+    var Now: Int64 := 0;
+    if FClock <> nil then
+      Now := FClock^;
+    if FBusyUntil < Now then
+      FBusyUntil := Now;
+    Inc(FBusyUntil, Cycles);
+    Inc(FBusyPixels, Cycles * GSPixelsPerCycle);
+  end;
+end;
+
+function TPS2GIF.GSBusyUntil: Int64;
+begin
+  UpdateBusy;
+  Result := FBusyUntil;
+end;
+
+function TPS2GIF.GSBusyCycles: Int64;
+begin
+  UpdateBusy;
+  Result := 0;
+  if FClock <> nil then
+    Result := FBusyUntil - FClock^;
+  if Result < 0 then
+    Result := 0;
+end;
+
+procedure TPS2GIF.SerializeTimeline(State: TStateArchive);
+begin
+  // The pixel counter itself is not part of the state: keep what it is
+  // still ahead of the timeline.
+  var Ahead := FGS.Raster.PixelsDrawn - FBusyPixels;
+  State.Field(FBusyUntil, SizeOf(FBusyUntil));
+  State.Field(Ahead, SizeOf(Ahead));
+  FBusyPixels := FGS.Raster.PixelsDrawn - Ahead;
+end;
+
 procedure TPS2GIF.Reset;
 begin
+  FBusyUntil := 0;
+  FBusyPixels := FGS.Raster.PixelsDrawn;
   for var K := 1 to 3 do
     Path[K] := Default(TPS2GIFPathState);
   CTRL := 0;
@@ -204,6 +270,7 @@ function TPS2GIF.Transfer(PathIndex: Integer; Data: PByte; Count: Integer; FromD
   end;
 
 begin
+  UpdateBusy;
   Result := 0;
   var Q := PPS2Reg128(Data);
   while Result < Count do
@@ -378,12 +445,11 @@ begin
   Inc(FBusyPixels, FGIF.GS.Raster.PixelsDrawn - Pixels);
 end;
 
-// The GS time of what this channel's data drew: about four pixels per EE
-// cycle (the GS fills 8..16 per 147 MHz clock). Drawing from the other paths
+// The GS time of what this channel's data drew. Drawing from the other paths
 // does not hold the channel.
 function TPS2GIFPort.TakeBusyCycles: Int64;
 begin
-  Result := FBusyPixels div 4;
+  Result := FBusyPixels div GSPixelsPerCycle;
   FBusyPixels := 0;
 end;
 

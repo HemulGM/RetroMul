@@ -732,6 +732,11 @@ begin
       Interrupt;
     KernelTrapHandlerReturn:
       begin
+        // A custom syscall may end here instead of returning: the alarm patch
+        // runs an alarm callback outside the timer 3 handler, and its
+        // ResumeIntrDispatch (syscall 8) restores the handler's ra and sp and
+        // returns from the handler.
+        FInCustom := False;
         if (FCallKind <= 1) and (Integer(Cardinal(FCPU.S.GPR[2].Lo)) < 0) then
           FSkipCause := FCallCause + FCallKind * 64;
         if FInInterrupt then

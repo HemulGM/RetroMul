@@ -169,6 +169,9 @@ begin
   // Saturn v5 adds physical presence of the optional offline NetLink cartridge.
   if SameText(PlatformCore, 'SATURN') then
     Result.Version := 5;
+  // PS2 v2 adds the GS drawing timeline and FINISH writes not shown yet.
+  if PlatformCore = ROM_CORE_ID_PS2 then
+    Result.Version := 2;
   var Core := AnsiString(PlatformCore);
   if (Length(Core) = 0) or (Length(Core) > 8) then
     raise EArgumentException.Create('Invalid snapshot platform');

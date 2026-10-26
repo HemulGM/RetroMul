@@ -75,7 +75,8 @@ type
   TPS2GIFPort = class(TPS2DMAPort)
   private
     FGIF: TPS2GIF;
-    FPixels: Int64;
+    // Pixels the GS drew from data this channel moved (not yet taken).
+    FBusyPixels: Int64;
   public
     constructor Create(GIF: TPS2GIF);
     function Push(Channel: Integer; Data: PByte; Count: Integer): Integer; override;
@@ -372,15 +373,18 @@ end;
 
 function TPS2GIFPort.Push(Channel: Integer; Data: PByte; Count: Integer): Integer;
 begin
+  var Pixels := FGIF.GS.Raster.PixelsDrawn;
   Result := FGIF.Transfer(3, Data, Count, True);
+  Inc(FBusyPixels, FGIF.GS.Raster.PixelsDrawn - Pixels);
 end;
 
+// The GS time of what this channel's data drew: about four pixels per EE
+// cycle (the GS fills 8..16 per 147 MHz clock). Drawing from the other paths
+// does not hold the channel.
 function TPS2GIFPort.TakeBusyCycles: Int64;
 begin
-  // About four pixels per EE cycle (the GS fills 8..16 per 147 MHz clock).
-  var Pixels := FGIF.GS.Raster.PixelsDrawn;
-  Result := (Pixels - FPixels) div 4;
-  FPixels := Pixels;
+  Result := FBusyPixels div 4;
+  FBusyPixels := 0;
 end;
 
 end.

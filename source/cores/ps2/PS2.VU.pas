@@ -72,9 +72,9 @@ type
     FLoadReg, FBranchReg: Integer;
     FLoadOld, FBranchOld: Cardinal;
     // XGKICK in progress: the GIF takes quadword K of the packet at
-    // FKickStart + 2K (VU cycles), into FKickBuf; FKickNextTag is the next
-    // GIF tag's position, FKickEnd the packet's length once its EOP tag is
-    // in (-1 before).
+    // FKickStart + 2K (VU cycles; FKickStart includes the latency), into
+    // FKickBuf; FKickNextTag is the next GIF tag's position, FKickEnd the
+    // packet's length once its EOP tag is in (-1 before).
     FKickPending: Boolean;
     FKickAddress: Cardinal;
     FKickStart: Int64;
@@ -185,6 +185,8 @@ const
   DestY = 4;
   DestZ = 2;
   DestW = 1;
+  // VU cycles from an XGKICK to the GIF's first read of the packet.
+  KickLatency = 4;
 
 function FieldBit(K: Integer): Cardinal; inline;
 begin
@@ -1167,10 +1169,11 @@ begin
   end;
 end;
 
-// XGKICK: the GIF reads the packet from VU memory a quadword every two VU
+// XGKICK: the GIF starts reading the packet from VU memory a few cycles
+// after the XGKICK (KickLatency) and then takes a quadword every two VU
 // cycles while the program goes on, so stores the program makes to the
-// packet's later quadwords right after the XGKICK still go out with it
-// (programs kick a packet and write its last quadword in the next pair). A
+// packet right after the XGKICK still go out with it (programs kick a
+// packet and write its GIF tag or its last quadword in the next pairs). A
 // second XGKICK waits for the first transfer; the end of the program or of
 // the run hands the rest over at once.
 procedure TPS2VUCore.StartKick(Address: Cardinal);
@@ -1181,7 +1184,7 @@ begin
     SetLength(FKickBuf, (FDataMask + 1) div 16);
   FKickPending := True;
   FKickAddress := Address;
-  FKickStart := S.Cycles;
+  FKickStart := S.Cycles + KickLatency;
   FKickCount := 0;
   FKickNextTag := 0;
   FKickEnd := -1;
@@ -1314,16 +1317,21 @@ begin
       Inc(RunTraceCount);
     end;
     // An integer register loaded by ILW, ILWR or MTIR reaches a conditional
-    // branch in the next pair only after it has read its operands.
+    // branch in the next pair only after it has read its operands (the
+    // integer ALU's results reach it at once).
     FBranchReg := FLoadReg;
     FBranchOld := FLoadOld;
     FLoadReg := -1;
-    if ((UpperOp and $80000000) = 0) and ((((LowerOp and $80000000) = 0) and ((LowerOp shr 25) = $04)) or
-      (((LowerOp and $8000003C) = $8000003C) and ((((LowerOp shr 4) and $7C) or (LowerOp and 3)) in [$3C, $3E]))) then
-    begin
-      FLoadReg := Integer((LowerOp shr 16) and 15);
+    if (UpperOp and $80000000) = 0 then
+      if (LowerOp and $80000000) = 0 then
+      begin
+        if (LowerOp shr 25) = $04 then // ILW
+          FLoadReg := Integer((LowerOp shr 16) and 15);
+      end
+      else if ((LowerOp and $3C) = $3C) and ((((LowerOp shr 4) and $7C) or (LowerOp and 3)) in [$3C, $3E]) then
+        FLoadReg := Integer((LowerOp shr 16) and 15); // MTIR, ILWR
+    if FLoadReg >= 0 then
       FLoadOld := FVI[FLoadReg];
-    end;
     FUpperReg := -1;
     FLowerReg := -1;
     Upper(UpperOp, True);

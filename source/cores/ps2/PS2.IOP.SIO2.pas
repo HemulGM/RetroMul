@@ -276,8 +276,13 @@ begin
     if (Entry and EntryRxDMA) <> 0 then
       FOutSizes.Add(RxSize);
     if Log <> nil then
-      Log.Add(Format('sio2 %d: %.8x %.2x %.2x -> %.2x %.2x answered=%d', [Count, Entry, Cmd[0], Cmd[1], Reply[1],
-        Reply[2], Ord(Answered)]));
+    begin
+      var Hex := '';
+      for var K := 0 to Min(Len, 24) - 1 do
+        Hex := Hex + IntToHex(Reply[K], 2);
+      Log.Add(Format('sio2 %d: %.8x %.2x %.2x -> %.2x %.2x answered=%d len %d: %s', [Count, Entry, Cmd[0], Cmd[1], Reply[1],
+        Reply[2], Ord(Answered), Len, Hex]));
+    end;
     Inc(Count);
   end;
   if FIn.Count = 0 then

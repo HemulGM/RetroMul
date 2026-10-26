@@ -435,7 +435,8 @@ end;
 
 procedure TPS2Console.StartVU1(Address: Cardinal);
 begin
-  VU1.Core.Start(Address * 8);
+  // CMSAR1 holds a 16-bit instruction address.
+  VU1.Core.Start((Address and $FFFF) * 8);
   VU1.Core.Run(4000000);
 end;
 

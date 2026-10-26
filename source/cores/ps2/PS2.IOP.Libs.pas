@@ -815,6 +815,20 @@ begin
           K.W8(A0 + Cardinal(I), Byte(A1));
         Result := A0;
       end;
+    // _wmemcopy / _wmemset: whole 32-bit words, size in bytes (the remainder
+    // below a word is left alone).
+    40:
+      begin
+        for var I := 0 to Integer(A2 shr 2) - 1 do
+          K.W32(A0 + Cardinal(I) * 4, K.R32(A1 + Cardinal(I) * 4));
+        Result := A0;
+      end;
+    41:
+      begin
+        for var I := 0 to Integer(A2 shr 2) - 1 do
+          K.W32(A0 + Cardinal(I) * 4, A1);
+        Result := A0;
+      end;
     16:
       if (A2 > 0) and (A2 < PS2IOPRAMSize) then
       begin

@@ -118,6 +118,9 @@ type
     function Execute(Op: Cardinal): Boolean; virtual;
     // Interlocked transfers wait for a running VU0 micro program.
     procedure Interlock; virtual;
+    // Transfers without interlock, BC2F/BC2T and LQC2/SQC2 see a running
+    // micro program as far as it can get: it runs alongside the EE.
+    procedure Sync; virtual;
     // BC2F/BC2T condition.
     function Condition: Boolean; virtual;
     procedure SerializeState(State: TStateArchive); virtual;
@@ -606,6 +609,10 @@ begin
 end;
 
 procedure TEECop2.Interlock;
+begin
+end;
+
+procedure TEECop2.Sync;
 begin
 end;
 
@@ -2110,12 +2117,16 @@ begin
   var A := Add32(Cardinal(S.GPR[I.S].Lo), I.Imm);
   Result := Load128(I, A, V);
   if not Result and ((I.Op shr 16 and 31) <> 0) then
+  begin
+    FCop2.Sync;
     FCop2.VF[I.Op shr 16 and 31] := V;
+  end;
 end;
 
 function TEECPU.OpSQC2(I: PEEInst): Boolean;
 begin
   var A := Add32(Cardinal(S.GPR[I.S].Lo), I.Imm);
+  FCop2.Sync;
   Result := Store128(I, A, FCop2.VF[I.Op shr 16 and 31]);
 end;
 
@@ -2622,32 +2633,41 @@ begin
     1:
       begin
         if (Op and 1) <> 0 then
-          FCop2.Interlock;
+          FCop2.Interlock
+        else
+          FCop2.Sync;
         S.GPR[I.T] := FCop2.VF[Fs];
       end;
     2:
       begin
         if (Op and 1) <> 0 then
-          FCop2.Interlock;
+          FCop2.Interlock
+        else
+          FCop2.Sync;
         S.GPR[I.T].Lo := SX32(FCop2.ReadControl(Fs));
       end;
     5:
       begin
         if (Op and 1) <> 0 then
-          FCop2.Interlock;
+          FCop2.Interlock
+        else
+          FCop2.Sync;
         if Fs <> 0 then
           FCop2.VF[Fs] := S.GPR[I.T];
       end;
     6:
       begin
         if (Op and 1) <> 0 then
-          FCop2.Interlock;
+          FCop2.Interlock
+        else
+          FCop2.Sync;
         FCop2.WriteControl(Fs, Cardinal(S.GPR[I.T].Lo));
         FStop := StopLeave;
         Exit(True);
       end;
     8:
       begin
+        FCop2.Sync;
         var Cond := FCop2.Condition;
         if (Op and $10000) = 0 then
           Cond := not Cond;

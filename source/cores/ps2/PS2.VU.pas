@@ -134,6 +134,13 @@ type
     FCore: TPS2VUCore;
     FVU1: TPS2VUCore;
     FCMSAR1Start: TProc<Cardinal>;
+    // The micro program spins waiting for the EE; FBlockVF/FBlockVI are the
+    // registers then (it stays blocked while they stay so).
+    FBlocked: Boolean;
+    FBlockVF: array[0..31] of TPS2Reg128;
+    FBlockVI: array[0..15] of Cardinal;
+    procedure RunUntilBlocked;
+    function Spins: Boolean;
   public
     constructor Create(Code, Data: PByte);
     destructor Destroy; override;
@@ -142,6 +149,7 @@ type
     procedure WriteControl(Index: Integer; Value: Cardinal); override;
     function Execute(Op: Cardinal): Boolean; override;
     procedure Interlock; override;
+    procedure Sync; override;
     function Condition: Boolean; override;
     procedure SerializeState(State: TStateArchive); override;
     property Core: TPS2VUCore read FCore;
@@ -1367,6 +1375,7 @@ begin
   inherited Reset;
   if FCore <> nil then
     FCore.Reset;
+  FBlocked := False;
 end;
 
 function TPS2VU0.ReadControl(Index: Integer): Cardinal;
@@ -1432,18 +1441,85 @@ begin
           Address := ((Op shr 6) and $7FFF) * 8
         else
           Address := (VI[27] and $FFFF) * 8;
+        // A program still running is waited for first.
+        Interlock;
+        FBlocked := False;
         FCore.Start(Address);
-        FCore.Run(1000000);
+        RunUntilBlocked;
         Exit(True);
       end;
   end;
+  // Macro instructions wait for a running micro program.
+  Interlock;
   Result := FCore.Macro(Op);
+end;
+
+// A micro program runs alongside the EE. Programs wait in loops on
+// registers the EE writes (a VI flag released by CTC2, VF data handed over
+// by QMTC2) and hand results back the same way, so the program runs as far
+// as it can whenever the EE starts it or looks at VU0: to its end, or until
+// it spins without changing anything (Spins). Once it spins, it is only
+// probed again (one turn of the loop, which also sees VU memory the EE
+// wrote) until the EE changes its registers.
+procedure TPS2VU0.RunUntilBlocked;
+begin
+  if FBlocked and CompareMem(@VF[0], @FBlockVF[0], SizeOf(FBlockVF)) and
+    CompareMem(@VI[0], @FBlockVI[0], SizeOf(FBlockVI)) and Spins then
+    Exit;
+  FBlocked := False;
+  // Short runs first: a released program often goes back to waiting soon.
+  var Chunk := 16;
+  var Budget := 1000000;
+  while FCore.S.Running and (Budget > 0) do
+  begin
+    FCore.Run(Chunk);
+    Dec(Budget, Chunk);
+    Chunk := Min(Chunk * 2, 4096);
+    if FCore.S.Running and Spins then
+    begin
+      FBlocked := True;
+      Move(VF[0], FBlockVF[0], SizeOf(FBlockVF));
+      Move(VI[0], FBlockVI[0], SizeOf(FBlockVI));
+      Break;
+    end;
+  end;
+end;
+
+// Runs up to 64 pairs: True when the program came back to the same TPC with
+// the same registers (a loop that waits).
+function TPS2VU0.Spins: Boolean;
+var
+  SavedVF: array[0..31] of TPS2Reg128;
+  SavedVI: array[0..15] of Cardinal;
+begin
+  var TPC := FCore.S.TPC;
+  var Acc := FCore.S.ACC;
+  var Q := FCore.S.Q;
+  var P := FCore.S.P;
+  Move(VF[0], SavedVF[0], SizeOf(SavedVF));
+  Move(VI[0], SavedVI[0], SizeOf(SavedVI));
+  for var K := 1 to 64 do
+  begin
+    FCore.Run(1);
+    if not FCore.S.Running then
+      Exit(False);
+    if (FCore.S.TPC = TPC) and (FCore.S.Q = Q) and (FCore.S.P = P) and CompareMem(@FCore.S.ACC, @Acc, SizeOf(Acc))
+      and CompareMem(@VF[0], @SavedVF[0], SizeOf(SavedVF)) and CompareMem(@VI[0], @SavedVI[0], SizeOf(SavedVI)) then
+      Exit(True);
+  end;
+  Result := False;
 end;
 
 procedure TPS2VU0.Interlock;
 begin
   if FCore.S.Running then
-    FCore.Run(1000000);
+    RunUntilBlocked;
+end;
+
+procedure TPS2VU0.Sync;
+begin
+  if FCore.S.Running then
+    RunUntilBlocked;
 end;
 
 function TPS2VU0.Condition: Boolean;

@@ -378,11 +378,7 @@ begin
         Result := Cardinal(KEUnknownThid);
     6, 7:
       if ValidThread(K, Id) then
-      begin
-        K.StartThread(Id, K.Arg(1), K.Arg(2));
-        if Fn = 7 then
-          K.Threads[Id].Ctx.R[IOPRegA0] := K.Arg(1);
-      end
+        K.StartThread(Id, K.Arg(1), K.Arg(2), Fn = 7)
       else
         Result := Cardinal(KEUnknownThid);
     8, 9:

@@ -51,6 +51,12 @@ const
   WaitCd = 9;
   WaitModule = 10;
 
+  // Thread attribute TH_NO_FILLSTACK; the register context at the top of a
+  // started thread's stack and the saved registers in it.
+  IOPThreadNoFillStack = $00100000;
+  IOPThreadContextSize = $B8;
+  IOPThreadSavedRegs = $98;
+
   // Interrupt-context calls.
   CallIntr = 0;
   CallVblank = 1;
@@ -269,7 +275,9 @@ type
     procedure RaiseInterrupt(Line: Integer);
     // Threads.
     function CreateThread(Attr, Entry, Priority, StackSize, Option, GP: Cardinal): Integer;
-    procedure StartThread(Id: Integer; A0, A1: Cardinal);
+    // ArgsOnStack (StartThreadArgs): A0 bytes at A1 are copied to the top of
+    // the stack and A1 points there.
+    procedure StartThread(Id: Integer; A0, A1: Cardinal; ArgsOnStack: Boolean = False);
     procedure MakeReady(Id: Integer);
     // Blocks the running thread (it continues at the trap's return address
     // with v0 set by Wake).
@@ -491,6 +499,8 @@ procedure TPS2IOPKernel.Print(const Text: string);
 begin
   if Assigned(OnTTY) then
     OnTTY(Text);
+  if Log <> nil then
+    Log.Add('iop: tty ' + Text.TrimRight);
 end;
 
 procedure TPS2IOPKernel.Warn(const Text: string);
@@ -577,23 +587,43 @@ begin
       Threads[K].Priority := Integer(Priority);
       Threads[K].RpcServer := -1;
       Threads[K].Module := 0;
-      // Stacks start filled like the IOP kernel does (FFh).
-      FillChar((RAM + (Stack and PS2IOPRAMMask))^, Threads[K].StackSize, $FF);
+      // The IOP kernel fills a new stack with FFh up to its top 30h bytes
+      // unless the thread asks it not to (TH_NO_FILLSTACK).
+      if (Attr and IOPThreadNoFillStack) = 0 then
+        FillChar((RAM + (Stack and PS2IOPRAMMask))^, Threads[K].StackSize - $30, $FF);
       Exit(K);
     end;
   Result := -400;
 end;
 
-procedure TPS2IOPKernel.StartThread(Id: Integer; A0, A1: Cardinal);
+// The kernel starts a thread from a register context it builds at the top of
+// the stack (B8h bytes, cleared, below the arguments StartThreadArgs copies
+// there); the thread's SP is the end of the saved registers, 20h below the
+// context's end. Code that reads a local it never wrote finds zero there,
+// not the FFh fill.
+procedure TPS2IOPKernel.StartThread(Id: Integer; A0, A1: Cardinal; ArgsOnStack: Boolean);
 begin
   var T: PIOPThread := @Threads[Id];
+  var Top := T.StackBase + T.StackSize;
+  if ArgsOnStack then
+  begin
+    var Size := Max(Integer(A0), 0);
+    Dec(Top, (Cardinal(Size) + 3) and not Cardinal(3));
+    if A1 <> 0 then
+      for var K := 0 to Size - 1 do
+        W8(Top + Cardinal(K), R8(A1 + Cardinal(K)));
+    A1 := Top;
+  end;
+  var Regs := Top - IOPThreadContextSize;
+  for var K := 0 to IOPThreadContextSize div 4 - 1 do
+    W32(Regs + Cardinal(K) * 4, 0);
   T.Ctx := Default(TIOPContext);
   T.Ctx.PC := T.Entry;
   T.Ctx.NextPC := 0;
   T.Ctx.R[IOPRegA0] := A0;
   T.Ctx.R[IOPRegA1] := A1;
   T.Ctx.R[IOPRegGP] := T.GP;
-  T.Ctx.R[IOPRegSP] := T.StackBase + T.StackSize - 16;
+  T.Ctx.R[IOPRegSP] := Regs + IOPThreadSavedRegs;
   T.Ctx.R[IOPRegFP] := T.Ctx.R[IOPRegSP];
   T.Ctx.R[IOPRegRA] := TrapAddress(IOPRetThreadExit);
   T.Priority := T.InitPriority;
@@ -637,6 +667,8 @@ procedure TPS2IOPKernel.DeleteThread(Id: Integer);
 begin
   if (Id <= 0) or (Id > IOPMaxThreads) or not Threads[Id].Used then
     Exit;
+  // The kernel clears a stack before it frees it.
+  FillChar((RAM + (Threads[Id].StackBase and PS2IOPRAMMask))^, Threads[Id].StackSize, 0);
   Allocator.Release(Threads[Id].StackBase);
   Threads[Id].Used := False;
   Threads[Id].State := ThDormant;
@@ -1495,7 +1527,12 @@ begin
       Exit;
     end;
     if Log <> nil then
-      Warn(Format('guest call %.8x fn %x', [Servers[Index].SID, PacketU32(P, 32)]));
+    begin
+      var Args := '';
+      for var K := 0 to Min(Integer(PacketU32(P, 36)), 32) - 1 do
+        Args := Args + IntToHex(R8(Servers[Index].Buff + Cardinal(K)), 2);
+      Warn(Format('guest call %.8x fn %x size %d: %s', [Servers[Index].SID, PacketU32(P, 32), PacketU32(P, 36), Args]));
+    end;
     var Req: TIOPRequest;
     Req.Server := Index;
     Req.Busy := False;

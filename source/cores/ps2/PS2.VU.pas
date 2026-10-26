@@ -66,6 +66,11 @@ type
     FCode, FData: PByte;
     FCodeMask, FDataMask: Cardinal;
     FOnKick: TPS2VUKick;
+    // A VI register the current pair loads (ILW, ILWR, MTIR) and its value
+    // before; a branch in the next pair sees that older value (FBranchReg,
+    // FBranchOld). -1: none.
+    FLoadReg, FBranchReg: Integer;
+    FLoadOld, FBranchOld: Cardinal;
     // XGKICK in progress: the GIF takes quadword K of the packet at
     // FKickStart + 2K (VU cycles), into FKickBuf; FKickNextTag is the next
     // GIF tag's position, FKickEnd the packet's length once its EOP tag is
@@ -610,6 +615,10 @@ begin
         var Take: Boolean;
         var A := SmallInt(Word(FVI[Is_ and 15]));
         var B := SmallInt(Word(FVI[It and 15]));
+        if (Is_ and 15) = FBranchReg then
+          A := SmallInt(Word(FBranchOld));
+        if (It and 15) = FBranchReg then
+          B := SmallInt(Word(FBranchOld));
         case Op shr 25 of
           $20, $21: Take := True;
           $28: Take := Word(A) = Word(B);
@@ -1217,6 +1226,7 @@ end;
 
 procedure TPS2VUCore.Start(Address: Cardinal);
 begin
+  FLoadReg := -1;
   S.TPC := Address and FCodeMask;
   S.Running := True;
   S.BranchPending := False;
@@ -1303,6 +1313,17 @@ begin
         RunTrace[RunTraceCount * 16 + K] := Word(FVI[K]);
       Inc(RunTraceCount);
     end;
+    // An integer register loaded by ILW, ILWR or MTIR reaches a conditional
+    // branch in the next pair only after it has read its operands.
+    FBranchReg := FLoadReg;
+    FBranchOld := FLoadOld;
+    FLoadReg := -1;
+    if ((UpperOp and $80000000) = 0) and ((((LowerOp and $80000000) = 0) and ((LowerOp shr 25) = $04)) or
+      (((LowerOp and $8000003C) = $8000003C) and ((((LowerOp shr 4) and $7C) or (LowerOp and 3)) in [$3C, $3E]))) then
+    begin
+      FLoadReg := Integer((LowerOp shr 16) and 15);
+      FLoadOld := FVI[FLoadReg];
+    end;
     FUpperReg := -1;
     FLowerReg := -1;
     Upper(UpperOp, True);
@@ -1354,6 +1375,8 @@ end;
 procedure TPS2VUCore.SerializeState(State: TStateArchive);
 begin
   State.Field(S, SizeOf(S));
+  if State.Loading then
+    FLoadReg := -1;
 end;
 
 { TPS2VU0 }

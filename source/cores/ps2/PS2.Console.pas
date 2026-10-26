@@ -46,7 +46,7 @@ type
     procedure AddIOPServers;
     procedure StartVU1(Address: Cardinal);
     function ImageVersion(const ResetArgs: string): Integer;
-    procedure VU1Kick(Address: Cardinal);
+    procedure VU1Kick(Address: Cardinal; Data: PByte);
     procedure NoteModuleVersion(const Path: string; const Image: TBytes);
     function StartModule(Server: TPS2LoadFileServer; const Path: string; const Image, Args: TBytes;
       out ModResult: Integer): Integer;
@@ -440,11 +440,11 @@ begin
   VU1.Core.Run(4000000);
 end;
 
-procedure TPS2Console.VU1Kick(Address: Cardinal);
+procedure TPS2Console.VU1Kick(Address: Cardinal; Data: PByte);
 begin
   if (GIF.TagLog <> nil) and (GIF.TagLog.Count < 200000) then
     GIF.TagLog.Add(Format('xgkick %x pc %x', [Address, VU1.Core.S.TPC]));
-  GIF.Kick(Bus.VU1Data, Address, $3FFF);
+  GIF.Kick(Data, 0, $3FFF);
 end;
 
 // The IOP module set an IOP reset loads (IOPRP/DNAS image): its FILEIO

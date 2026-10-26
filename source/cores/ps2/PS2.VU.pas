@@ -23,7 +23,8 @@ type
   TPS2VIArray = array[0..31] of Cardinal;
   PPS2VIArray = ^TPS2VIArray;
 
-  TPS2VUKick = procedure(Address: Cardinal) of object;
+  // An XGKICK packet as the GIF took it (Data) from VU memory at Address.
+  TPS2VUKick = procedure(Address: Cardinal; Data: PByte) of object;
 
   TPS2VUState = record
     ACC: TPS2Reg128;
@@ -65,6 +66,15 @@ type
     FCode, FData: PByte;
     FCodeMask, FDataMask: Cardinal;
     FOnKick: TPS2VUKick;
+    // XGKICK in progress: the GIF takes quadword K of the packet at
+    // FKickStart + 2K (VU cycles), into FKickBuf; FKickNextTag is the next
+    // GIF tag's position, FKickEnd the packet's length once its EOP tag is
+    // in (-1 before).
+    FKickPending: Boolean;
+    FKickAddress: Cardinal;
+    FKickStart: Int64;
+    FKickCount, FKickNextTag, FKickEnd: Integer;
+    FKickBuf: array of TPS2Reg128;
     // The clip flag the current pair's FC* instructions see.
     FClipVisible: Cardinal;
     // Cycle from which each VF register field (x..w) holds its pending result.
@@ -89,6 +99,8 @@ type
     procedure CommitVF(Reg: Integer; const V: TPS2Reg128; Dest: Cardinal);
     function DataAddress(Base: Cardinal): PPS2Reg128; inline;
     function Bc(const V: TPS2Reg128; Op: Cardinal): Cardinal; inline;
+    procedure StartKick(Address: Cardinal);
+    procedure TakeKick(All: Boolean);
   public
     S: TPS2VUState;
     // Micro instructions executed (diagnostics).
@@ -186,6 +198,7 @@ end;
 procedure TPS2VUCore.Reset;
 begin
   S := Default(TPS2VUState);
+  FKickPending := False;
   S.Q := $3F800000;
   S.R := $3F800000;
   FVF[0].UW[0] := 0;
@@ -812,7 +825,7 @@ begin
         FVI[Ft and 15] := FVI[16 + 11];
     $6C: // XGKICK
       if Assigned(FOnKick) then
-        FOnKick((FVI[Fs and 15] * 16) and FDataMask);
+        StartKick((FVI[Fs and 15] * 16) and FDataMask);
     $70..$7E: // EFU -> P
       begin
         var V := FVF[Fs];
@@ -1137,6 +1150,63 @@ begin
   end;
 end;
 
+// XGKICK: the GIF reads the packet from VU memory a quadword every two VU
+// cycles while the program goes on, so stores the program makes to the
+// packet's later quadwords right after the XGKICK still go out with it
+// (programs kick a packet and write its last quadword in the next pair). A
+// second XGKICK waits for the first transfer; the end of the program or of
+// the run hands the rest over at once.
+procedure TPS2VUCore.StartKick(Address: Cardinal);
+begin
+  if FKickPending then
+    TakeKick(True);
+  if Length(FKickBuf) = 0 then
+    SetLength(FKickBuf, (FDataMask + 1) div 16);
+  FKickPending := True;
+  FKickAddress := Address;
+  FKickStart := S.Cycles;
+  FKickCount := 0;
+  FKickNextTag := 0;
+  FKickEnd := -1;
+  TakeKick(False);
+end;
+
+procedure TPS2VUCore.TakeKick(All: Boolean);
+begin
+  var Limit := Length(FKickBuf);
+  while ((FKickEnd < 0) or (FKickCount < FKickEnd)) and (FKickCount < Limit) and
+    (All or (FKickStart + 2 * FKickCount <= S.Cycles)) do
+  begin
+    var Q := PPS2Reg128(FData + ((FKickAddress + Cardinal(FKickCount) * 16) and FDataMask))^;
+    FKickBuf[FKickCount] := Q;
+    if FKickCount = FKickNextTag then
+    begin
+      var NLoop := Integer(Q.UW[0] and $7FFF);
+      var Flg := (Q.UW[1] shr 26) and 3;
+      var NReg := Integer(Q.UW[1] shr 28);
+      if NReg = 0 then
+        NReg := 16;
+      var Size: Integer;
+      case Flg of
+        0: Size := NLoop * NReg;
+        1: Size := (NLoop * NReg + 1) div 2;
+      else
+        Size := NLoop;
+      end;
+      FKickNextTag := FKickCount + 1 + Size;
+      if (Q.UW[0] and $8000) <> 0 then
+        FKickEnd := FKickNextTag;
+    end;
+    Inc(FKickCount);
+  end;
+  if ((FKickEnd >= 0) and (FKickCount >= FKickEnd)) or (FKickCount >= Limit) then
+  begin
+    FKickPending := False;
+    if Assigned(FOnKick) then
+      FOnKick(FKickAddress, @FKickBuf[0]);
+  end;
+end;
+
 procedure TPS2VUCore.Start(Address: Cardinal);
 begin
   S.TPC := Address and FCodeMask;
@@ -1164,6 +1234,8 @@ begin
     var Stall := HazardStall(UpperOp, LowerOp);
     if Stall > 0 then
       AdvanceCycles(Stall);
+    if FKickPending then
+      TakeKick(False);
     while (S.ClipQCount > 0) and (S.ClipQReady[0] <= S.Cycles) do
     begin
       S.ClipBase := S.ClipQValue[0];
@@ -1266,6 +1338,8 @@ begin
     if (UpperOp and $40000000) <> 0 then
       S.EndPending := True;
   end;
+  if FKickPending then
+    TakeKick(True);
   Result := not S.Running;
 end;
 

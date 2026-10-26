@@ -32,6 +32,8 @@ const
   GSRegXYZ3 = $0D;
   GSRegTEX1_1 = $14;
   GSRegTEX1_2 = $15;
+  GSRegMIPTBP1_1 = $34;
+  GSRegMIPTBP2_1 = $36;
   GSRegTEX2_1 = $16;
   GSRegTEX2_2 = $17;
   GSRegXYOFFSET_1 = $18;
@@ -99,7 +101,17 @@ type
     TFX: Integer;
     WMS, WMT: Integer;
     MINU, MAXU, MINV, MAXV: Integer;
+    // TEX1: filter when magnifying (MMAG) and minifying (MMIN 0..5), the
+    // last mipmap level (MXL), LOD from K only (LCM), L and K.
     Linear: Boolean;
+    MMIN, MXL: Integer;
+    LCM: Boolean;
+    LShift: Integer;
+    K: Single;
+    // The LOD decides between MMAG and MMIN, or picks levels.
+    UseLod: Boolean;
+    // Base pointers and widths of levels 0..6 (TEX0, MIPTBP1, MIPTBP2).
+    LevelTBP, LevelTBW: array[0..6] of Cardinal;
     TA0, TA1: Integer;
     AEM: Boolean;
     FogR, FogG, FogB: Integer;
@@ -126,6 +138,8 @@ type
     FReadBuffer: TArray<Cardinal>;
     FReadPos: Integer;
     FPrimitives, FPixels, FXferPixels: Int64;
+    // LOD of the pixel being drawn (K when LCM is set).
+    FLod: Single;
     procedure Kick(DrawingKick: Boolean);
     procedure SetupDraw;
     procedure DrawPoint(const V: TPS2GSVertex);
@@ -135,7 +149,9 @@ type
     procedure CheckPrimLogBreak;
     procedure Pixel(X, Y: Integer; Z: Cardinal; R, G, B, A, F: Integer; U, V: Integer);
     function Texel(U, V: Integer): Cardinal;
-    function TexelAt(TU, TV: Integer): Cardinal;
+    function SampleLevel(Level, U, V: Integer; Linear: Boolean): Cardinal;
+    function TexelAt(TBP, TBW: Cardinal; TU, TV: Integer): Cardinal;
+    procedure SetLod(Q: Single); inline;
     function ClampCoord(C, Size, Mode, MinC, MaxC: Integer): Integer; inline;
     procedure LoadClut(Tex0: UInt64);
     procedure StartTransfer;
@@ -412,6 +428,31 @@ begin
   D.MAXV := Integer((Clamp shr 34) and $3FF);
   var Tex1 := Regs[GSRegTEX1_1 + C];
   D.Linear := (Tex1 and $20) <> 0;
+  D.MMIN := Integer((Tex1 shr 6) and 7);
+  if D.MMIN > 5 then
+    D.MMIN := 5;
+  D.MXL := Integer((Tex1 shr 2) and 7);
+  if D.MXL > 6 then
+    D.MXL := 6;
+  D.LCM := (Tex1 and 1) <> 0;
+  D.LShift := Integer((Tex1 shr 19) and 3);
+  // K: signed, 4 fraction bits.
+  var KRaw := Integer((Tex1 shr 32) and $FFF);
+  if KRaw >= $800 then
+    Dec(KRaw, $1000);
+  D.K := KRaw / 16;
+  D.UseLod := (D.MMIN >= 2) or ((D.MMIN = 1) <> D.Linear);
+  D.LevelTBP[0] := D.TBP;
+  D.LevelTBW[0] := D.TBW;
+  var Mip1 := Regs[GSRegMIPTBP1_1 + C];
+  var Mip2 := Regs[GSRegMIPTBP2_1 + C];
+  for var L := 0 to 2 do
+  begin
+    D.LevelTBP[1 + L] := Cardinal((Mip1 shr (L * 20)) and $3FFF);
+    D.LevelTBW[1 + L] := Cardinal((Mip1 shr (L * 20 + 14)) and $3F);
+    D.LevelTBP[4 + L] := Cardinal((Mip2 shr (L * 20)) and $3FFF);
+    D.LevelTBW[4 + L] := Cardinal((Mip2 shr (L * 20 + 14)) and $3F);
+  end;
   var TexA := Regs[GSRegTEXA];
   D.TA0 := Integer(TexA and $FF);
   D.AEM := (TexA and $8000) <> 0;
@@ -560,9 +601,9 @@ begin
   Result := Result or (Cardinal(A) shl 24);
 end;
 
-function TPS2GSRaster.TexelAt(TU, TV: Integer): Cardinal;
+function TPS2GSRaster.TexelAt(TBP, TBW: Cardinal; TU, TV: Integer): Cardinal;
 begin
-  var Raw := FMemory.ReadRaw(Integer(FD.TPSM), FD.TBP, FD.TBW, Cardinal(TU), Cardinal(TV));
+  var Raw := FMemory.ReadRaw(Integer(FD.TPSM), TBP, TBW, Cardinal(TU), Cardinal(TV));
   case FD.TPSM of
     PSMCT32, PSMZ32:
       Result := Raw;
@@ -595,24 +636,64 @@ begin
   end;
 end;
 
-function TPS2GSRaster.Texel(U, V: Integer): Cardinal;
+// LOD = log2(1/Q) * 2^L + K (GS User's Manual, texture mapping), or K
+// alone with LCM.
+procedure TPS2GSRaster.SetLod(Q: Single);
 begin
-  var W := 1 shl FD.TW;
-  var H := 1 shl FD.TH;
-  if not FD.Linear then
+  if FD.LCM then
+    FLod := FD.K
+  else
   begin
-    var TU := ClampCoord(Sar(U, 4), W, FD.WMS, FD.MINU, FD.MAXU);
-    var TV := ClampCoord(Sar(V, 4), H, FD.WMT, FD.MINV, FD.MAXV);
-    Exit(TexelAt(TU, TV));
+    if Q < 0 then
+      Q := -Q;
+    if Q < 1E-30 then
+      Q := 1E-30;
+    FLod := -Log2(Q) * (1 shl FD.LShift) + FD.K;
+  end;
+end;
+
+// One texel of mipmap level Level (U, V in level-0 texels, 4 fraction
+// bits), point sampled or bilinear.
+function TPS2GSRaster.SampleLevel(Level, U, V: Integer; Linear: Boolean): Cardinal;
+begin
+  var TBP := FD.LevelTBP[Level];
+  var TBW := FD.LevelTBW[Level];
+  var W := Max(1, (1 shl FD.TW) shr Level);
+  var H := Max(1, (1 shl FD.TH) shr Level);
+  var MinU := FD.MINU shr Level;
+  var MaxU := FD.MAXU shr Level;
+  var MinV := FD.MINV shr Level;
+  var MaxV := FD.MAXV shr Level;
+  if FD.WMS = 3 then
+  begin
+    MinU := FD.MINU;
+    MaxU := FD.MAXU;
+  end;
+  if FD.WMT = 3 then
+  begin
+    MinV := FD.MINV;
+    MaxV := FD.MAXV;
+  end;
+  U := Integer(Sar(U, Level));
+  V := Integer(Sar(V, Level));
+  if not Linear then
+  begin
+    var TU := ClampCoord(Integer(Sar(U, 4)), W, FD.WMS, MinU, MaxU);
+    var TV := ClampCoord(Integer(Sar(V, 4)), H, FD.WMT, MinV, MaxV);
+    Exit(TexelAt(TBP, TBW, TU, TV));
   end;
   var U0 := Integer(Sar(U - 8, 4));
   var V0 := Integer(Sar(V - 8, 4));
   var FU := (U - 8) and 15;
   var FV := (V - 8) and 15;
-  var A := TexelAt(ClampCoord(U0, W, FD.WMS, FD.MINU, FD.MAXU), ClampCoord(V0, H, FD.WMT, FD.MINV, FD.MAXV));
-  var B := TexelAt(ClampCoord(U0 + 1, W, FD.WMS, FD.MINU, FD.MAXU), ClampCoord(V0, H, FD.WMT, FD.MINV, FD.MAXV));
-  var C := TexelAt(ClampCoord(U0, W, FD.WMS, FD.MINU, FD.MAXU), ClampCoord(V0 + 1, H, FD.WMT, FD.MINV, FD.MAXV));
-  var D := TexelAt(ClampCoord(U0 + 1, W, FD.WMS, FD.MINU, FD.MAXU), ClampCoord(V0 + 1, H, FD.WMT, FD.MINV, FD.MAXV));
+  var CU0 := ClampCoord(U0, W, FD.WMS, MinU, MaxU);
+  var CU1 := ClampCoord(U0 + 1, W, FD.WMS, MinU, MaxU);
+  var CV0 := ClampCoord(V0, H, FD.WMT, MinV, MaxV);
+  var CV1 := ClampCoord(V0 + 1, H, FD.WMT, MinV, MaxV);
+  var A := TexelAt(TBP, TBW, CU0, CV0);
+  var B := TexelAt(TBP, TBW, CU1, CV0);
+  var C := TexelAt(TBP, TBW, CU0, CV1);
+  var D := TexelAt(TBP, TBW, CU1, CV1);
   Result := 0;
   for var Shift := 0 to 3 do
   begin
@@ -620,6 +701,38 @@ begin
     var Top := Integer((A shr S) and $FF) * (16 - FU) + Integer((B shr S) and $FF) * FU;
     var Bottom := Integer((C shr S) and $FF) * (16 - FU) + Integer((D shr S) and $FF) * FU;
     var Value := (Top * (16 - FV) + Bottom * FV) shr 8;
+    Result := Result or (Cardinal(Value and $FF) shl S);
+  end;
+end;
+
+// A negative LOD magnifies (MMAG); otherwise MMIN filters level 0 or picks
+// mipmap levels up to MXL: the nearest one, or the two around the LOD
+// blended by its fraction.
+function TPS2GSRaster.Texel(U, V: Integer): Cardinal;
+begin
+  if not FD.UseLod then
+    Exit(SampleLevel(0, U, V, FD.Linear));
+  var Lod := FLod;
+  if Lod < 0 then
+    Exit(SampleLevel(0, U, V, FD.Linear));
+  var Bilinear := FD.MMIN in [1, 4, 5];
+  if (FD.MMIN <= 1) or (FD.MXL = 0) then
+    Exit(SampleLevel(0, U, V, Bilinear));
+  if FD.MMIN in [2, 4] then
+    Exit(SampleLevel(Min(Trunc(Lod + 0.5), FD.MXL), U, V, Bilinear));
+  var L0 := Trunc(Lod);
+  if L0 >= FD.MXL then
+    Exit(SampleLevel(FD.MXL, U, V, Bilinear));
+  var Frac := Round((Lod - L0) * 16);
+  var A := SampleLevel(L0, U, V, Bilinear);
+  if Frac <= 0 then
+    Exit(A);
+  var B := SampleLevel(L0 + 1, U, V, Bilinear);
+  Result := 0;
+  for var Shift := 0 to 3 do
+  begin
+    var S := Shift * 8;
+    var Value := (Integer((A shr S) and $FF) * (16 - Frac) + Integer((B shr S) and $FF) * Frac) shr 4;
     Result := Result or (Cardinal(Value and $FF) shl S);
   end;
 end;
@@ -829,6 +942,11 @@ end;
 procedure TPS2GSRaster.DrawPoint(const V: TPS2GSVertex);
 begin
   Inc(FPrimitives);
+  if FD.UseLod then
+    if FD.FST then
+      SetLod(1)
+    else
+      SetLod(V.Q);
   var U := V.U;
   var TV := V.V;
   if FD.TME and not FD.FST then
@@ -845,6 +963,11 @@ end;
 procedure TPS2GSRaster.DrawLine(const V0, V1: TPS2GSVertex);
 begin
   Inc(FPrimitives);
+  if FD.UseLod then
+    if FD.FST then
+      SetLod(1)
+    else
+      SetLod(V1.Q);
   var DX := V1.X - V0.X;
   var DY := V1.Y - V0.Y;
   var Steps := Max(Abs(DX), Abs(DY)) shr 4;
@@ -891,6 +1014,11 @@ end;
 procedure TPS2GSRaster.DrawSprite(const V0, V1: TPS2GSVertex);
 begin
   Inc(FPrimitives);
+  if FD.UseLod then
+    if FD.FST then
+      SetLod(1)
+    else
+      SetLod(V1.Q);
   if (PrimLogBreak > 0) and (PrimLog <> nil) and (PrimLog.Count >= PrimLogBreak) then
     CheckPrimLogBreak;
   if (PrimLog <> nil) and (PrimLog.Count < 200000) then
@@ -987,6 +1115,11 @@ end;
 procedure TPS2GSRaster.DrawTriangle(const V0, V1, V2: TPS2GSVertex);
 begin
   Inc(FPrimitives);
+  if FD.UseLod then
+    if FD.FST then
+      SetLod(1)
+    else
+      SetLod(V2.Q);
   if (PrimLogBreak > 0) and (PrimLog <> nil) and (PrimLog.Count >= PrimLogBreak) then
     CheckPrimLogBreak;
   if (PrimLog <> nil) and (PrimLog.Count < 200000) then
@@ -1094,6 +1227,8 @@ begin
           else
           begin
             var Q := W0 * V0.Q + W1 * V1.Q + W2 * V2.Q;
+            if FD.UseLod then
+              SetLod(Q);
             if Q = 0 then
               Q := 1;
             U := TexCoord((W0 * V0.S + W1 * V1.S + W2 * V2.S) / Q * SW);

@@ -160,6 +160,10 @@ const
   XState = $70;
   XReqState = $71;
   XTask = $72;
+  // The buttons the pad can send (the reply to command 41h, low byte
+  // first): libpad versions without the RPC take the mask from here, and
+  // only a pad that reports all 18 buttons enters pressure mode.
+  XButtonMask = $79;
   XSize = $80;
   // ROM PADMAN pad structure (64 bytes).
   RFrame = $00;
@@ -482,6 +486,7 @@ begin
     P[XLock] := S.Lock;
     if S.ActDirectSet then
       P[XActDirectSize] := 6;
+    Move(ButtonsReply[0], P[XButtonMask], 3);
     P[XState] := StateStable;
   end
   else

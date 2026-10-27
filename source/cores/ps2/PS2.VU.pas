@@ -58,6 +58,16 @@ type
     DestMask, M1, M2: Cardinal;
   end;
 
+  // A pair decoded once: its words (it is decoded again when they differ),
+  // the registers its halves read and write (none for the lower half of an
+  // I-bit pair) and whether its upper op sets the MAC and status flags.
+  TPS2VUPair = record
+    Lower, Upper: Cardinal;
+    Valid, SetsFlags: Boolean;
+    U, L: TPS2VURegUse;
+  end;
+  PPS2VUPair = ^TPS2VUPair;
+
   TPS2VUCore = class
   private
     FIndex: Integer;
@@ -84,15 +94,20 @@ type
     FClipVisible: Cardinal;
     // Cycle from which each VF register field (x..w) holds its pending result.
     FReady: array[0..31, 0..3] of Int64;
+    // The latest of a register's four (nothing pending once S.Cycles reaches it).
+    FReadyAny: array[0..31] of Int64;
     // Results of the current pair (written after both halves ran).
     FUpperReg, FLowerReg: Integer;
     FUpperValue, FLowerValue: TPS2Reg128;
     FUpperMask, FLowerMask: Cardinal;
+    FPairs: array of TPS2VUPair;
+    function DecodedPair(PC, LowerOp, UpperOp: Cardinal): PPS2VUPair; inline;
+    procedure DecodePair(var P: TPS2VUPair; LowerOp, UpperOp: Cardinal);
     procedure UpperRegs(Op: Cardinal; out R: TPS2VURegUse);
     procedure LowerRegs(Op: Cardinal; out R: TPS2VURegUse);
     function ReadyAt(Reg: Integer; Mask: Cardinal): Int64;
-    function HazardStall(UpperOp, LowerOp: Cardinal): Integer;
-    procedure NoteWrites(UpperOp, LowerOp: Cardinal);
+    function HazardStall(const P: TPS2VUPair): Integer;
+    procedure NoteWrites(const P: TPS2VUPair);
     procedure AdvanceCycles(N: Integer);
     function UpperSetsFlags(Op: Cardinal): Boolean;
     procedure SetFlags(const R: TPS2Reg128; Dest: Cardinal; Flags: Cardinal);
@@ -209,6 +224,7 @@ begin
   FData := Data;
   FCodeMask := CodeSize - 1;
   FDataMask := DataSize - 1;
+  SetLength(FPairs, CodeSize div 8);
   Reset;
 end;
 
@@ -1089,7 +1105,7 @@ end;
 function TPS2VUCore.ReadyAt(Reg: Integer; Mask: Cardinal): Int64;
 begin
   Result := 0;
-  if Reg <= 0 then
+  if (Reg <= 0) or (FReadyAny[Reg] <= S.Cycles) then
     Exit;
   for var K := 0 to 3 do
     if ((Mask and FieldBit(K)) <> 0) and (FReady[Reg, K] > Result) then
@@ -1098,39 +1114,56 @@ end;
 
 // Cycles the pair waits for its source fields (hazard checks are per
 // field; none on ACC, VF00, I, Q, P, R).
-function TPS2VUCore.HazardStall(UpperOp, LowerOp: Cardinal): Integer;
-var
-  U, L: TPS2VURegUse;
+procedure TPS2VUCore.DecodePair(var P: TPS2VUPair; LowerOp, UpperOp: Cardinal);
 begin
-  UpperRegs(UpperOp, U);
-  var Need := Max(ReadyAt(U.S1, U.M1), ReadyAt(U.S2, U.M2));
+  P.Lower := LowerOp;
+  P.Upper := UpperOp;
+  UpperRegs(UpperOp, P.U);
   if (UpperOp and $80000000) = 0 then
+    LowerRegs(LowerOp, P.L)
+  else
   begin
-    LowerRegs(LowerOp, L);
-    Need := Max(Need, Max(ReadyAt(L.S1, L.M1), ReadyAt(L.S2, L.M2)));
+    P.L := Default(TPS2VURegUse);
+    P.L.Dest := -1;
+    P.L.S1 := -1;
+    P.L.S2 := -1;
   end;
+  P.SetsFlags := UpperSetsFlags(UpperOp);
+  P.Valid := True;
+end;
+
+function TPS2VUCore.DecodedPair(PC, LowerOp, UpperOp: Cardinal): PPS2VUPair;
+begin
+  Result := @FPairs[PC shr 3];
+  if not Result.Valid or (Result.Lower <> LowerOp) or (Result.Upper <> UpperOp) then
+    DecodePair(Result^, LowerOp, UpperOp);
+end;
+
+function TPS2VUCore.HazardStall(const P: TPS2VUPair): Integer;
+begin
+  var Need := Max(ReadyAt(P.U.S1, P.U.M1), ReadyAt(P.U.S2, P.U.M2));
+  Need := Max(Need, Max(ReadyAt(P.L.S1, P.L.M1), ReadyAt(P.L.S2, P.L.M2)));
   Result := 0;
   if Need > S.Cycles then
     Result := Integer(Need - S.Cycles);
 end;
 
 // The pair's results are ready four cycles after issue.
-procedure TPS2VUCore.NoteWrites(UpperOp, LowerOp: Cardinal);
-var
-  U, L: TPS2VURegUse;
+procedure TPS2VUCore.NoteWrites(const P: TPS2VUPair);
 begin
-  UpperRegs(UpperOp, U);
-  if U.Dest > 0 then
-    for var K := 0 to 3 do
-      if (U.DestMask and FieldBit(K)) <> 0 then
-        FReady[U.Dest, K] := S.Cycles + 4;
-  if (UpperOp and $80000000) = 0 then
+  if (P.U.Dest > 0) and (P.U.DestMask <> 0) then
   begin
-    LowerRegs(LowerOp, L);
-    if L.Dest > 0 then
-      for var K := 0 to 3 do
-        if (L.DestMask and FieldBit(K)) <> 0 then
-          FReady[L.Dest, K] := S.Cycles + 4;
+    for var K := 0 to 3 do
+      if (P.U.DestMask and FieldBit(K)) <> 0 then
+        FReady[P.U.Dest, K] := S.Cycles + 4;
+    FReadyAny[P.U.Dest] := S.Cycles + 4;
+  end;
+  if (P.L.Dest > 0) and (P.L.DestMask <> 0) then
+  begin
+    for var K := 0 to 3 do
+      if (P.L.DestMask and FieldBit(K)) <> 0 then
+        FReady[P.L.Dest, K] := S.Cycles + 4;
+    FReadyAny[P.L.Dest] := S.Cycles + 4;
   end;
 end;
 
@@ -1242,6 +1275,7 @@ begin
   S.StatusBase := S.Status;
   S.FlagQCount := 0;
   FillChar(FReady, SizeOf(FReady), 0);
+  FillChar(FReadyAny, SizeOf(FReadyAny), 0);
 end;
 
 function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
@@ -1254,7 +1288,8 @@ begin
     var UpperOp := PCardinal(FCode + PC + 4)^;
     // Registers still in the FMAC pipeline stall the pair; Q/P and the
     // clip flag move on meanwhile.
-    var Stall := HazardStall(UpperOp, LowerOp);
+    var Pair := DecodedPair(PC, LowerOp, UpperOp);
+    var Stall := HazardStall(Pair^);
     if Stall > 0 then
       AdvanceCycles(Stall);
     if FKickPending then
@@ -1352,8 +1387,8 @@ begin
     end
     else if FUpperReg >= 0 then
       CommitVF(FUpperReg, FUpperValue, FUpperMask);
-    NoteWrites(UpperOp, LowerOp);
-    if UpperSetsFlags(UpperOp) and (S.FlagQCount < 4) then
+    NoteWrites(Pair^);
+    if Pair.SetsFlags and (S.FlagQCount < 4) then
     begin
       S.FlagQMAC[S.FlagQCount] := S.MAC;
       S.FlagQStatus[S.FlagQCount] := S.Status;

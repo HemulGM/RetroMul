@@ -1,0 +1,149 @@
+object SettingsDeviceTemplate: TSettingsDeviceTemplate
+  Size.Width = 900.000000000000000000
+  Size.Height = 460.000000000000000000
+  Size.PlatformDefault = False
+  object PanelSetting: TPanel
+    Align = Top
+    Padding.Left = 16.000000000000000000
+    Padding.Top = 12.000000000000000000
+    Padding.Right = 16.000000000000000000
+    Padding.Bottom = 12.000000000000000000
+    Margins.Bottom = 6.000000000000000000
+    Size.Width = 900.000000000000000000
+    Size.Height = 460.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'retromul_row'
+    object LayoutSettingText: TLayout
+      Align = Top
+      Position.X = 16.000000000000000000
+      Position.Y = 12.000000000000000000
+      Size.Width = 868.000000000000000000
+      Size.Height = 34.000000000000000000
+      Size.PlatformDefault = False
+      object LabelSettingTitle: TLabel
+        Align = Top
+        StyledSettings = [Family, Style, FontColor]
+        Size.Width = 868.000000000000000000
+        Size.Height = 24.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 15.000000000000000000
+        TextSettings.WordWrap = False
+        Text = 'Button bindings'
+      end
+      object LabelSettingDetail: TLabel
+        Align = Client
+        StyledSettings = [Family, Style, FontColor]
+        Opacity = 0.720000028610229500
+        Size.Width = 320.000000000000000000
+        Size.Height = 8.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 14.000000000000000000
+        Text = 
+          'Select a button on the diagram, then press a key or controller b' +
+          'utton.'
+        Visible = False
+      end
+    end
+    object LayoutSettingEditorContainer: TLayout
+      Align = Client
+      Size.Width = 868.000000000000000000
+      Size.Height = 402.000000000000000000
+      Size.PlatformDefault = False
+      object LayoutBindingFooter: TLayout
+        Align = Bottom
+        Margins.Top = 8.000000000000000000
+        Margins.Bottom = 8.000000000000000000
+        Position.Y = 330.000000000000000000
+        Size.Width = 868.000000000000000000
+        Size.Height = 64.000000000000000000
+        Size.PlatformDefault = False
+        object LabelBindingCaption: TLabel
+          Align = Client
+          Size.Width = 600.000000000000000000
+          Size.Height = 64.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.Font.Size = 13.000000000000000000
+          TextSettings.WordWrap = False
+        end
+        object LayoutPadEditors: TLayout
+          Align = Right
+          Margins.Top = 14.000000000000000000
+          Margins.Bottom = 14.000000000000000000
+          Position.X = 600.000000000000000000
+          Position.Y = 14.000000000000000000
+          Size.Width = 268.000000000000000000
+          Size.Height = 36.000000000000000000
+          Size.PlatformDefault = False
+          object ButtonPadEditorsCapture: TButton
+            Align = Client
+            Size.Width = 224.000000000000000000
+            Size.Height = 36.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            Text = 'Assign'
+            TextSettings.Trimming = Character
+          end
+          object ButtonPadEditorsClear: TButton
+            Align = Right
+            Hint = 'Remove binding'
+            Margins.Left = 8.000000000000000000
+            Position.X = 232.000000000000000000
+            Size.Width = 36.000000000000000000
+            Size.Height = 36.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            TextSettings.Trimming = Character
+            ParentShowHint = False
+            ShowHint = True
+            object PathPadEditorsClearIcon: TPath
+              Align = Center
+              Data.Path = {
+                04000000000000000000804000008040010000000000A0410000A04100000000
+                0000A0410000804001000000000080400000A041}
+              Fill.Kind = None
+              HitTest = False
+              Size.Width = 14.000000000000000000
+              Size.Height = 14.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Color = xFFE8ECF1
+              Stroke.Thickness = 1.600000023841858000
+              WrapMode = Fit
+            end
+          end
+        end
+      end
+      object LayoutBindingBody: TLayout
+        Align = Client
+        Size.Width = 868.000000000000000000
+        Size.Height = 322.000000000000000000
+        Size.PlatformDefault = False
+        object LayoutPadAssignments: TLayout
+          Align = Right
+          Margins.Left = 12.000000000000000000
+          Margins.Top = 8.000000000000000000
+          Margins.Bottom = 8.000000000000000000
+          Position.X = 620.000000000000000000
+          Position.Y = 8.000000000000000000
+          Size.Width = 248.000000000000000000
+          Size.Height = 306.000000000000000000
+          Size.PlatformDefault = False
+          object LayoutPadAssignmentList: TLayout
+            Align = Top
+            Size.Width = 248.000000000000000000
+            Size.Height = 342.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 0
+          end
+        end
+        object LayoutBindingPreview: TLayout
+          Align = Client
+          Margins.Top = 8.000000000000000000
+          Margins.Bottom = 8.000000000000000000
+          Size.Width = 608.000000000000000000
+          Size.Height = 306.000000000000000000
+          Size.PlatformDefault = False
+        end
+      end
+    end
+  end
+end

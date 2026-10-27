@@ -31,6 +31,17 @@ type
     DAC: Integer; // 0 none, 1 Covox FB, 2 Covox DD, 3 GS B3, 4 SounDrive 1, 5 SpecDrum, 6 Next-DAC
     NextDACMode: Integer; // 0 all, 1 SD1, 2 SD2, 3 Profi, 4 Covox, 5 Pentagon, 6 GS, 7 SpecDrum, 8 NextReg only
     NextDACStartup: Boolean;
+    GeneralSound: Boolean;
+    GeneralSoundRAMKB: Integer;
+    NeoGS: Boolean;
+    NeoGSRAMKB: Integer;
+    MoonSound, MoonSoundIRQ, MoonSoundInDOS: Boolean;
+    SID, SIDNTSC: Boolean;
+    SIDModel: Integer; // 0 MOS6581, 1 MOS8580
+    SIDInterface: Integer; // 0 eZX/MB 6C3B/6D3B, 1 HardSID/ZX-TSid xxCF
+    SIDClock1MHz: Boolean; // Fixed ZX-TSid clock; otherwise SIDNTSC selects PAL/NTSC.
+    DMAUSC, DMAUSCULABypass: Boolean;
+    DMAUSCStereo: Integer; // 0 AD/BC, 1 AB/CD, 2 mono; four physical card outputs
     class function ForModel(Value: TZXMachineModel): TZXMachineConfig; static;
     class function FromId(const Id: string): TZXMachineConfig; static;
     class function FromLegacy(Is128, Pentagon: Boolean; RAMSizeKB: Integer): TZXMachineConfig; static;
@@ -58,9 +69,10 @@ type
     SecondJoystick: Boolean; // Controller 2: Gama PPI B, otherwise Interface 2 keys 12345.
     AutoLoad, TapeAutoPlay, DiskWriteProtected: Boolean;
     TapeSpeed: Integer;
+    FastForwardSpeed: Integer; // Host pacing only, while F10 is held.
     class function Defaults: TZXRuntimeOptions; static;
     function Normalized: TZXRuntimeOptions;
-    function PlaybackSpeed(HasTape, Stopped: Boolean): Integer;
+    function PlaybackSpeed(HasTape, Stopped: Boolean; FastForward: Boolean = False): Integer;
   end;
 
 implementation
@@ -78,6 +90,7 @@ begin
   Result.AutoLoad := True;
   Result.TapeAutoPlay := True;
   Result.TapeSpeed := 1;
+  Result.FastForwardSpeed := 8;
 end;
 
 function TZXRuntimeOptions.Normalized: TZXRuntimeOptions;
@@ -93,13 +106,17 @@ begin
     Result.Joystick := 0;
   if not (TapeSpeed in [1, 2, 4, 8]) then
     Result.TapeSpeed := 1;
+  if not (FastForwardSpeed in [1, 2, 4, 8]) then
+    Result.FastForwardSpeed := 8;
 end;
 
-function TZXRuntimeOptions.PlaybackSpeed(HasTape, Stopped: Boolean): Integer;
+function TZXRuntimeOptions.PlaybackSpeed(HasTape, Stopped: Boolean; FastForward: Boolean): Integer;
 begin
   Result := 1;
   if HasTape and not Stopped then
     Result := Normalized.TapeSpeed;
+  if FastForward then
+    Result := Max(Result, Normalized.FastForwardSpeed);
 end;
 
 class function TZXMachineConfig.ForModel(Value: TZXMachineModel): TZXMachineConfig;
@@ -110,6 +127,9 @@ begin
   Result.Model := Value;
   Result.ByteCompatibility := True;
   Result.NextDACStartup := True;
+  Result.GeneralSoundRAMKB := 128;
+  Result.NeoGSRAMKB := 2048;
+  Result.DMAUSCULABypass := True;
 end;
 
 class function TZXMachineConfig.FromId(const Id: string): TZXMachineConfig;
@@ -176,10 +196,43 @@ begin
     Add('Unsupported TK90X/TK95 video timing');
   if (NextDACMode < 0) or (NextDACMode > 8) then
     Add('Unsupported Next-DAC port profile');
+  if (SIDModel < 0) or (SIDModel > 1) then
+    Add('Unsupported SID model');
+  if (SIDInterface < 0) or (SIDInterface > 1) then
+    Add('Unsupported SID interface');
+  if SID and SIDClock1MHz and ((SIDInterface <> 1) or SIDNTSC) then
+    Add('The 1 MHz SID clock requires HardSID xxCF and cannot be combined with NTSC');
   if (DAC < 0) or (DAC > 6) then
     Add('Unsupported Spectrum DAC board');
   if (DivType = zdIDE) and (DAC = 6) and (NextDACMode in [0, 6]) then
     Add('DivIDE ATA and the selected Next-DAC GS alias both use port B3; choose another DAC port profile or interface');
+  if (GeneralSoundRAMKB <> 0) and (GeneralSoundRAMKB <> 128) and (GeneralSoundRAMKB <> 512) then
+    Add('Unsupported General Sound RAM size');
+  if (NeoGSRAMKB <> 0) and (NeoGSRAMKB <> 512) and (NeoGSRAMKB <> 2048) and (NeoGSRAMKB <> 4096) then
+    Add('Unsupported NeoGS RAM size');
+  if (DMAUSCStereo < 0) or (DMAUSCStereo > 2) then
+    Add('Unsupported DMA Ultrasound stereo layout');
+  if MoonSound and MoonSoundIRQ and DMAUSC then
+    Add('DMA Ultrasound and MoonSound IRQ share the interrupt bus; disable the MoonSound IRQ jumper');
+  if DMAUSC and not (Model in [zmSpectrum128, zmSpectrumPlus2, zmSpectrumPlus2b, zmSpectrumPlus3,
+      zmPentagon128, zmPentagon512, zmPentagon1024, zmScorpion256, zmProfi512, zmProfi1024]) then
+    Add('DMA Ultrasound requires a supported 128K or expanded motherboard with physical RAM banking');
+  if NeoGS then
+  begin
+    if GeneralSound then
+      Add('NeoGS and General Sound share the same host ports; choose one board');
+    if DivType = zdIDE then
+      Add('NeoGS and divIDE ATA share ports B3/BB; choose divMMC or disable one interface');
+    if (DAC = 3) or ((DAC = 6) and (NextDACMode in [0, 6])) then
+      Add('NeoGS and the selected DAC share port B3; choose another DAC port profile or disable one board');
+  end;
+  if GeneralSound then
+  begin
+    if DivType = zdIDE then
+      Add('General Sound and divIDE ATA share ports B3/BB; choose divMMC or disable one interface');
+    if (DAC = 3) or ((DAC = 6) and (NextDACMode in [0, 6])) then
+      Add('General Sound and the selected DAC share port B3; choose another DAC port profile or disable one board');
+  end;
   if TurboSound and TurboSoundFM then
     Add('Turbo Sound and Turbo Sound FM replace the same PSG interface; choose one board');
   if TurboSoundFM and (Model = zmTimex2068) then

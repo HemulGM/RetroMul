@@ -41,6 +41,21 @@ begin
     Result.DAC := 0;
   Result.NextDACMode := Ini.ReadInteger('Hardware', 'NextDACMode', 0);
   Result.NextDACStartup := Ini.ReadBool('Hardware', 'NextDACStartup', True);
+  Result.GeneralSound := Ini.ReadBool('Hardware', 'GeneralSound', False);
+  Result.GeneralSoundRAMKB := Ini.ReadInteger('Hardware', 'GeneralSoundRAMKB', 128);
+  Result.NeoGS := Ini.ReadBool('Hardware', 'NeoGS', False);
+  Result.SID := Ini.ReadBool('Hardware', 'SID', False);
+  Result.SIDModel := Ini.ReadInteger('Hardware', 'SIDModel', 0);
+  Result.SIDNTSC := SameText(Ini.ReadString('Hardware', 'SIDClock', 'pal'), 'ntsc');
+  Result.SIDClock1MHz := SameText(Ini.ReadString('Hardware', 'SIDClock', 'pal'), '1mhz');
+  Result.SIDInterface := IndexStr(LowerCase(Ini.ReadString('Hardware', 'SIDInterface', 'ezxmb')), ['ezxmb', 'xxcf']);
+  Result.MoonSound := Ini.ReadBool('Hardware', 'MoonSound', False);
+  Result.MoonSoundIRQ := Ini.ReadBool('Hardware', 'MoonSoundIRQ', False);
+  Result.MoonSoundInDOS := Ini.ReadBool('Hardware', 'MoonSoundInDOS', False);
+  Result.DMAUSC := Ini.ReadBool('Hardware', 'DMAUSC', False);
+  Result.DMAUSCULABypass := Ini.ReadBool('Hardware', 'DMAUSCULABypass', True);
+  Result.DMAUSCStereo := Ini.ReadInteger('Hardware', 'DMAUSCStereo', 0);
+  Result.NeoGSRAMKB := Ini.ReadInteger('Hardware', 'NeoGSRAMKB', 2048);
   if SameText(Ini.ReadString('Hardware', 'DivType', 'none'), 'divide') then
     Result.DivType := zdIDE;
   if SameText(Ini.ReadString('Hardware', 'DivType', 'none'), 'divmmc') then
@@ -87,6 +102,35 @@ begin
   Result[High(Result)].Machine.TurboSoundFM := True;
   Add('nextdac', 'Pentagon 128K + Next-DAC (audio only)', zmPentagon128);
   Result[High(Result)].Machine.DAC := 6;
+  Add('gs128', 'Pentagon 128K + General Sound 128K', zmPentagon128);
+  Result[High(Result)].Machine.GeneralSound := True;
+  Add('gs512', 'Pentagon 128K + General Sound 512K', zmPentagon128);
+  Result[High(Result)].Machine.GeneralSound := True;
+  Result[High(Result)].Machine.GeneralSoundRAMKB := 512;
+  Add('neogs512', 'Pentagon 128K + NeoGS 512K', zmPentagon128);
+  Result[High(Result)].Machine.NeoGS := True;
+  Result[High(Result)].Machine.NeoGSRAMKB := 512;
+  Add('neogs2048', 'Pentagon 128K + NeoGS 2M', zmPentagon128);
+  Result[High(Result)].Machine.NeoGS := True;
+  Add('neogs4096', 'Pentagon 128K + NeoGS 4M', zmPentagon128);
+  Result[High(Result)].Machine.NeoGS := True;
+  Result[High(Result)].Machine.NeoGSRAMKB := 4096;
+  Add('dmausc', 'Pentagon 128K + DMA Ultrasound Card', zmPentagon128);
+  Result[High(Result)].Machine.DMAUSC := True;
+  Add('sid6581', 'Pentagon 128K + SID 6581 (eZX/MB)', zmPentagon128);
+  Result[High(Result)].Machine.SID := True;
+  Add('sid8580', 'Pentagon 128K + SID 8580 (eZX/MB)', zmPentagon128);
+  Result[High(Result)].Machine.SID := True;
+  Result[High(Result)].Machine.SIDModel := 1;
+  Add('hardsid6581', 'Pentagon 1024K + HardSID 6581 (xxCF)', zmPentagon1024);
+  Result[High(Result)].Machine.SID := True;
+  Result[High(Result)].Machine.SIDInterface := 1;
+  Add('hardsid8580', 'Pentagon 1024K + HardSID 8580 (xxCF)', zmPentagon1024);
+  Result[High(Result)].Machine.SID := True;
+  Result[High(Result)].Machine.SIDInterface := 1;
+  Result[High(Result)].Machine.SIDModel := 1;
+  Add('moonsound', 'Pentagon 128K + ZXM-MoonSound', zmPentagon128);
+  Result[High(Result)].Machine.MoonSound := True;
   Add('ulaplus', 'Spectrum 48K + ULAplus', zmSpectrum48);
   Result[High(Result)].Machine.ULAPlus := True;
   Add('gama-divmmc', 'Gama 1989 + divMMC / esxDOS', zmGama89);
@@ -130,6 +174,27 @@ begin
   Ini.WriteString('Hardware', 'DAC', DACNames[Machine.DAC]);
   Ini.WriteInteger('Hardware', 'NextDACMode', Machine.NextDACMode);
   Ini.WriteBool('Hardware', 'NextDACStartup', Machine.NextDACStartup);
+  Ini.WriteBool('Hardware', 'GeneralSound', Machine.GeneralSound);
+  Ini.WriteInteger('Hardware', 'GeneralSoundRAMKB', Machine.GeneralSoundRAMKB);
+  Ini.WriteBool('Hardware', 'NeoGS', Machine.NeoGS);
+  Ini.WriteBool('Hardware', 'SID', Machine.SID);
+  Ini.WriteInteger('Hardware', 'SIDModel', Machine.SIDModel);
+  Ini.WriteString('Hardware', 'SIDInterface', 'ezxmb');
+  if Machine.SIDInterface = 1 then
+    Ini.WriteString('Hardware', 'SIDInterface', 'xxcf');
+  Ini.WriteString('Hardware', 'SIDClock', 'pal');
+  if Machine.SIDNTSC then
+    Ini.WriteString('Hardware', 'SIDClock', 'ntsc');
+  if Machine.SIDClock1MHz then
+    Ini.WriteString('Hardware', 'SIDClock', '1mhz');
+  Ini.WriteBool('Hardware', 'MoonSound', Machine.MoonSound);
+  Ini.WriteBool('Hardware', 'MoonSoundIRQ', Machine.MoonSoundIRQ);
+  Ini.WriteBool('Hardware', 'MoonSoundInDOS', Machine.MoonSoundInDOS);
+  Ini.WriteBool('Hardware', 'DMAUSC', Machine.DMAUSC);
+  Ini.WriteBool('Hardware', 'DMAUSCULABypass', Machine.DMAUSCULABypass);
+  Ini.WriteInteger('Hardware', 'DMAUSCStereo', Machine.DMAUSCStereo);
+  Ini.WriteInteger('Hardware', 'NeoGSRAMKB', Machine.NeoGSRAMKB);
+  Ini.WriteString('Hardware', 'NeoGSImage', '');
   Ini.WriteString('Hardware', 'DivType', 'none');
   if Machine.DivType = zdMMC then
     Ini.WriteString('Hardware', 'DivType', 'divmmc');
@@ -185,7 +250,13 @@ begin
             if SameText(Key, 'Preset') then
               Continue;
             if not Ini.ValueExists(Section, Key) then
+            begin
+              // Configurations saved before HardSID implicitly use eZX/MB.
+              if SameText(Section, 'Hardware') and SameText(Key, 'SIDInterface') and
+                (P.Machine.SIDInterface = 0) then
+                Continue;
               Exit;
+            end;
             var Value := Expected.ReadString(Section, Key, '');
             if not SameText(Ini.ReadString(Section, Key, Value), Value) then
               Exit;
@@ -215,6 +286,22 @@ begin
   var Machine := ReadMachine(Ini);
   for var Error in Machine.ConfigurationErrors do
     Add('Conflict: ' + Error);
+  if Machine.MoonSound and Machine.MoonSoundInDOS then
+    Add('Notice: MoonSound stays available in TR-DOS except during disk-controller I/O. This emulates the PentEvo jumper.');
+  if Machine.DMAUSC and not Machine.DMAUSCULABypass then
+    Add('Notice: DMA Ultrasound uses the complete interrupt controller. Programs must enable IRQ-control bit 3 for normal Spectrum interrupts; early players may require the ULA compatibility option.');
+  if Machine.DMAUSC and (Machine.Model = zmPentagon1024) then
+    Add('Notice: DMA Ultrasound register aliases can also reach Pentagon EFF7. Programs should use the documented 77 ports.');
+  if Machine.NeoGS then
+    Add('Notice: NeoGS supports standard NedoPC FPGA configurations and VS1011e MP3. Custom FPGA designs and DSP plugins are unsupported.');
+  if Machine.NeoGS and (Machine.Model = zmPentagon1024) then
+    Add('Notice: NeoGS data writes at E0B3..EFB3 also reach Pentagon 1024SL EFF7. Software must use explicit port addresses such as 00B3.');
+  if not Machine.NeoGS and (Ini.ReadString('Hardware', 'NeoGSImage', '').Trim <> '') then
+    Add('Notice: The NeoGS SD image is ignored while NeoGS is disabled.');
+  if Machine.GeneralSound and (Machine.Model = zmPentagon1024) then
+    Add('Notice: General Sound data writes at E0B3..EFB3 also reach Pentagon 1024SL EFF7. Software must use explicit port addresses such as 00B3.');
+  if Machine.GeneralSound and (Machine.GeneralSoundRAMKB = 512) then
+    Add('Notice: Classic GS512 exposes 480 KiB of RAM. Its original decoder leaves one 32 KiB region unavailable.');
   if Machine.DAC = 6 then
   begin
     Add('Notice: Next-DAC provides audio ports only. Spectrum Next CPU, video, DMA and copper are not enabled.');

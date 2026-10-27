@@ -29,8 +29,7 @@ type
     procedure SetMuted(Value: Boolean);
     procedure Push(Left, Right: Integer);
     procedure Resample(Left, Right: Integer);
-    procedure DecodeBlock(const Sector: array of Byte; Offset, Block, Channel: Integer; EightBit: Boolean;
-      var Output: array of SmallInt; Start: Integer);
+    procedure DecodeBlock(const Sector: array of Byte; Offset, Block, Channel: Integer; EightBit: Boolean; var Output: array of SmallInt; Start: Integer);
   public
     // Called before anything that changes the frames Pop returns, so that
     // the consumer can first take the frames due by the current time.
@@ -65,19 +64,19 @@ const
   // each group of seven, applied to the 29 most recent 37800 Hz samples.
   ZigZag: array[0..6, 1..29] of Integer = (
     (0, 0, 0, 0, 0, -$0002, $000A, -$0022, $0041, -$0054, $0034, $0009, -$010A, $0400, -$0A78, $234C,
-     $6794, -$1780, $0BCD, -$0623, $0350, -$016D, $006B, $000A, -$0010, $0011, -$0008, $0003, -$0001),
+    $6794, -$1780, $0BCD, -$0623, $0350, -$016D, $006B, $000A, -$0010, $0011, -$0008, $0003, -$0001),
     (0, 0, 0, -$0002, 0, $0003, -$0013, $003C, -$004B, $00A2, -$00E3, $0132, -$0043, -$0267, $0C9D, $74BB,
-     -$11B4, $09B8, -$05BF, $0372, -$01A8, $00A6, -$001B, $0005, $0006, -$0008, $0003, -$0001, 0),
+    -$11B4, $09B8, -$05BF, $0372, -$01A8, $00A6, -$001B, $0005, $0006, -$0008, $0003, -$0001, 0),
     (0, 0, -$0001, $0003, -$0002, -$0005, $001F, -$004A, $00B3, -$0192, $02B1, -$039E, $04F8, -$05A6, $7939,
-     -$05A6, $04F8, -$039E, $02B1, -$0192, $00B3, -$004A, $001F, -$0005, -$0002, $0003, -$0001, 0, 0),
+    -$05A6, $04F8, -$039E, $02B1, -$0192, $00B3, -$004A, $001F, -$0005, -$0002, $0003, -$0001, 0, 0),
     (0, -$0001, $0003, -$0008, $0006, $0005, -$001B, $00A6, -$01A8, $0372, -$05BF, $09B8, -$11B4, $74BB,
-     $0C9D, -$0267, -$0043, $0132, -$00E3, $00A2, -$004B, $003C, -$0013, $0003, 0, -$0002, 0, 0, 0),
+    $0C9D, -$0267, -$0043, $0132, -$00E3, $00A2, -$004B, $003C, -$0013, $0003, 0, -$0002, 0, 0, 0),
     (-$0001, $0003, -$0008, $0011, -$0010, $000A, $006B, -$016D, $0350, -$0623, $0BCD, -$1780, $6794, $234C,
-     -$0A78, $0400, -$010A, $0009, $0034, -$0054, $0041, -$0022, $000A, -$0001, 0, $0001, 0, 0, 0),
+    -$0A78, $0400, -$010A, $0009, $0034, -$0054, $0041, -$0022, $000A, -$0001, 0, $0001, 0, 0, 0),
     ($0002, -$0008, $0010, -$0023, $002B, $001A, -$00EB, $027B, -$0548, $0AFA, -$16FA, $53E0, $3C07, -$1249,
-     $080E, -$0347, $015B, -$0044, -$0017, $0046, -$0023, $0011, -$0005, 0, 0, 0, 0, 0, 0),
+    $080E, -$0347, $015B, -$0044, -$0017, $0046, -$0023, $0011, -$0005, 0, 0, 0, 0, 0, 0),
     (-$0005, $0011, -$0023, $0046, -$0017, -$0044, $015B, -$0347, $080E, -$1249, $3C07, $53E0, -$16FA,
-     $0AFA, -$0548, $027B, -$00EB, $001A, $002B, -$0023, $0010, -$0008, $0002, 0, 0, 0, 0, 0, 0));
+    $0AFA, -$0548, $027B, -$00EB, $001A, $002B, -$0023, $0010, -$0008, $0002, 0, 0, 0, 0, 0, 0));
 
 function Sar(Value: Int64; Count: Integer): Int64; inline;
 begin
@@ -195,8 +194,7 @@ begin
 end;
 
 // 28 samples of one block of a 128-byte sound group starting at Offset.
-procedure TPS1CDAudio.DecodeBlock(const Sector: array of Byte; Offset, Block, Channel: Integer; EightBit: Boolean;
-  var Output: array of SmallInt; Start: Integer);
+procedure TPS1CDAudio.DecodeBlock(const Sector: array of Byte; Offset, Block, Channel: Integer; EightBit: Boolean; var Output: array of SmallInt; Start: Integer);
 begin
   var Header := Sector[Offset + 4 + Block];
   var Range := Header and $F;
@@ -328,3 +326,4 @@ begin
 end;
 
 end.
+

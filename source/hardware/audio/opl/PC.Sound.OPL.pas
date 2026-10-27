@@ -3,9 +3,11 @@
 interface
 
 uses
-  System.SysUtils, PC.OPL.Nuked, Core.AudioFilter;
+  System.SysUtils, PC.OPL.Nuked, Core.AudioFilter, Core.Snapshots;
 
 type
+  TOPLTimerEvent = procedure(Timer: Integer) of object;
+
   // Common AdLib / Sound Blaster synthesis backend. Instances own their state;
   // the internal pointer graph must never be copied as a plain record.
   TOPLSound = class
@@ -19,6 +21,7 @@ type
     FTimerRunning, FTimerMasked: array[0..1] of Boolean;
     FTimerCycles: array[0..1] of UInt64;
     FStatus: Byte;
+    FOnTimerOverflow: TOPLTimerEvent;
     FPhase: Double;
     FFiltered: array[0..1] of Double;
     FFilter: array[0..1] of TPCMLowPass;
@@ -32,12 +35,18 @@ type
     function ReadPort(Port: Byte): Byte;
     function ReadStatus: Byte;
     procedure AdvanceClocks(Cycles: Cardinal);
-    procedure GenerateNative(out Left, Right: SmallInt);
-    procedure Sample(out Left, Right: SmallInt);
+    procedure GenerateNative(out Left, Right: SmallInt; Timers: Boolean = True);
+    procedure ClockNative;
+    procedure CurrentSample(out Left, Right: SmallInt);
+    procedure SetCSMKey(Enabled: Boolean);
+    function RegisterValue(Index: Word): Byte;
+    procedure SerializeState(State: TStateArchive);
+    procedure Sample(out Left, Right: SmallInt; Timers: Boolean = True);
     procedure Render(var PCM: array of SmallInt; Frames: Integer);
     property Clock: Integer read FClock;
     property SampleRate: Integer read FSampleRate;
     property IsOPL3: Boolean read FOPL3;
+    property OnTimerOverflow: TOPLTimerEvent read FOnTimerOverflow write FOnTimerOverflow;
   end;
 
   // YM3526: OPL synthesis with sine waveform only.
@@ -49,7 +58,7 @@ type
 implementation
 
 uses
-  System.Math;
+  System.Math, System.Classes;
 
 constructor TOPL1.Create(Clock, SampleRate: Integer);
 begin
@@ -193,6 +202,8 @@ begin
       var Period := UInt64(256 - Integer(FTimerValue[i])) * Cardinal(FDivider) * Cardinal(4 shl (i * 2));
       if FTimerCycles[i] >= Period then
       begin
+        if Assigned(FOnTimerOverflow) then
+          FOnTimerOverflow(i);
         FTimerCycles[i] := FTimerCycles[i] mod Period;
         if not FTimerMasked[i] then
           FStatus := FStatus or ($40 shr i);
@@ -200,7 +211,7 @@ begin
     end;
 end;
 
-procedure TOPLSound.GenerateNative(out Left, Right: SmallInt);
+procedure TOPLSound.GenerateNative(out Left, Right: SmallInt; Timers: Boolean);
 var
   PCM: array[0..1] of SmallInt;
 begin
@@ -210,20 +221,45 @@ begin
     Right := PCM[1]
   else
     Right := Left;
-  AdvanceClocks(FDivider);
+  if Timers then
+    AdvanceClocks(FDivider);
 end;
 
-procedure TOPLSound.Sample(out Left, Right: SmallInt);
+procedure TOPLSound.Sample(out Left, Right: SmallInt; Timers: Boolean);
 begin
   FPhase := FPhase + FClock / (Double(FDivider) * FSampleRate);
   while FPhase >= 1 do
   begin
     FPhase := FPhase - 1;
     var L, R: SmallInt;
-    GenerateNative(L, R);
+    GenerateNative(L, R, Timers);
     FFiltered[0] := FFilter[0].Process(L);
     FFiltered[1] := FFilter[1].Process(R);
   end;
+  Left := EnsureRange(Round(FFiltered[0]), -32768, 32767);
+  Right := EnsureRange(Round(FFiltered[1]), -32768, 32767);
+end;
+
+procedure TOPLSound.SetCSMKey(Enabled: Boolean);
+begin
+  // Separate key source: releasing CSM must preserve normal and rhythm keys.
+  for var I := 0 to 17 do
+    if Enabled then
+      FChip.slot[I].key := FChip.slot[I].key or 4
+    else
+      FChip.slot[I].key := FChip.slot[I].key and $FB;
+end;
+
+procedure TOPLSound.ClockNative;
+begin
+  var L, R: SmallInt;
+  GenerateNative(L, R, False);
+  FFiltered[0] := FFilter[0].Process(L);
+  FFiltered[1] := FFilter[1].Process(R);
+end;
+
+procedure TOPLSound.CurrentSample(out Left, Right: SmallInt);
+begin
   Left := EnsureRange(Round(FFiltered[0]), -32768, 32767);
   Right := EnsureRange(Round(FFiltered[1]), -32768, 32767);
 end;
@@ -235,6 +271,82 @@ begin
 
   for var J := 0 to Frames - 1 do
     Sample(PCM[J * 2], PCM[J * 2 + 1]);
+end;
+
+function TOPLSound.RegisterValue(Index: Word): Byte;
+begin
+  Result := FRegisters[Index and $1FF];
+end;
+
+procedure TOPLSound.SerializeState(State: TStateArchive);
+var
+  Chip: TOplChip;
+
+  procedure PointerField(var P; Loading: Boolean);
+  var
+    N: NativeUInt;
+  begin
+    Move(P, N, SizeOf(N));
+    if not Loading then
+    begin
+      if N <> 0 then
+      begin
+        if (N < NativeUInt(@FChip)) or (N >= NativeUInt(@FChip) + SizeOf(FChip)) then
+          raise EReadError.Create('Invalid OPL internal pointer');
+        N := N - NativeUInt(@FChip) + 1;
+      end;
+    end
+    else if N <> 0 then
+    begin
+      if N > SizeOf(FChip) then
+        raise EReadError.Create('Invalid OPL state pointer');
+      N := NativeUInt(@FChip) + N - 1;
+    end;
+    Move(N, P, SizeOf(N));
+  end;
+
+  procedure Pointers(Loading: Boolean);
+  begin
+    for var I := 0 to 17 do
+    begin
+      for var J := 0 to 1 do
+        PointerField(Chip.channel[I].slotz[J], Loading);
+      PointerField(Chip.channel[I].pair, Loading);
+      PointerField(Chip.channel[I].Chip, Loading);
+      for var J := 0 to 3 do
+        PointerField(Chip.channel[I].&out[J], Loading);
+    end;
+    for var I := 0 to 35 do
+    begin
+      PointerField(Chip.slot[I].channel, Loading);
+      PointerField(Chip.slot[I].Chip, Loading);
+      PointerField(Chip.slot[I].&mod, Loading);
+      PointerField(Chip.slot[I].trem, Loading);
+    end;
+  end;
+
+begin
+  Chip := FChip;
+  if not State.Loading then
+    Pointers(False);
+  State.Field(Chip, SizeOf(Chip));
+  if State.Loading then
+  begin
+    Pointers(True);
+    FChip := Chip;
+    if (FChip.writebuf_cur > 1023) or (FChip.writebuf_last > 1023) then
+      raise EReadError.Create('Invalid OPL write buffer');
+  end;
+  State.Field(FAddress, SizeOf(FAddress));
+  State.Field(FRegisters, SizeOf(FRegisters));
+  State.Field(FTimerValue, SizeOf(FTimerValue));
+  State.Field(FTimerRunning, SizeOf(FTimerRunning));
+  State.Field(FTimerMasked, SizeOf(FTimerMasked));
+  State.Field(FTimerCycles, SizeOf(FTimerCycles));
+  State.Field(FStatus, 1);
+  State.Field(FPhase, SizeOf(FPhase));
+  State.Field(FFiltered, SizeOf(FFiltered));
+  State.Field(FFilter, SizeOf(FFilter));
 end;
 
 end.

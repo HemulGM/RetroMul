@@ -21,6 +21,9 @@ type
     FName: string;
     FMachine: TZXMachineConfig;
     FOptions: TZXRuntimeOptions;
+    FPreparedConsole: TZXConsole;
+    FPreparedOptions: TZXRuntimeOptions;
+    FFastForward: Boolean;
     FMouseDX, FMouseDY: Integer;
     FMouseButtons: Byte;
     FNMIPending: Boolean;
@@ -33,17 +36,24 @@ type
     FTapeChoices: TArray<string>;
     FTapeCommands: TArray<Integer>;
     procedure Publish(Console: TZXConsole);
+    procedure PersistNeoGSFlash(Console: TZXConsole);
   protected
     procedure Execute; override;
   public
     SnapshotDirectory, DiskSaveFile, CMOSSaveFile, ServiceROMFile, TimexCartridgeFile: string;
     DivImageFile, DivFirmwareFile, DivSaveFile: string;
     DivImageHash: TBytes;
+    MoonSoundFlashFile: string;
+    NeoGSImageFile, NeoGSSaveFile, NeoGSFlashFile: string;
+    NeoGSImageHash: TBytes;
     property InputPorts: TCoreInputPorts read GetInputPorts write SetInputPorts;
   public
     constructor Create(const Data: TBytes; const Name: string; const Storage: IStorage; Tape128: Boolean = False; Pentagon: Boolean = False; PentagonRAMKB: Integer = 128); overload;
     constructor Create(const Data: TBytes; const Name: string; const Storage: IStorage; const Machine: TZXMachineConfig); overload;
+    // Data is privately owned by the adapter and remains immutable for restarts.
+    constructor CreatePrepared(const Data: TBytes; const Name: string; const Storage: IStorage; const Machine: TZXMachineConfig; const Options: TZXRuntimeOptions; var Console: TZXConsole);
     destructor Destroy; override;
+    procedure SetFastForward(Enabled: Boolean);
     procedure MoveMouse(DX, DY: Integer; Buttons: Byte);
     procedure ConfigureOptions(const Options: TZXRuntimeOptions);
     procedure Configure(const Input: TEmulatorInput; const Keys: TZXHostKeys; Paused, AudioEnabled: Boolean; Volume: Single);
@@ -97,6 +107,25 @@ begin
   FOptions := TZXRuntimeOptions.Defaults;
 end;
 
+constructor TZXWorker.CreatePrepared(const Data: TBytes; const Name: string; const Storage: IStorage; const Machine: TZXMachineConfig; const Options: TZXRuntimeOptions; var Console: TZXConsole);
+begin
+  Create(nil, Name, Storage, Machine);
+  FData := Data;
+  FPreparedOptions := Options.Normalized;
+  FPreparedConsole := Console;
+  Console := nil;
+end;
+
+procedure TZXWorker.SetFastForward(Enabled: Boolean);
+begin
+  FLock.Acquire;
+  try
+    FFastForward := Enabled;
+  finally
+    FLock.Release;
+  end;
+end;
+
 destructor TZXWorker.Destroy;
 begin
   Terminate;
@@ -105,6 +134,7 @@ begin
 
   // Join before freeing synchronization objects used by Execute.
   inherited;
+  FPreparedConsole.Free;
   FInputPortsCommand.Free;
   FSnapshots.Free;
   FWake.Free;
@@ -283,6 +313,28 @@ begin
   end;
 end;
 
+procedure TZXWorker.PersistNeoGSFlash(Console: TZXConsole);
+begin
+  if (Console <> nil) and (Console.MoonSound <> nil) and Console.MoonSound.FlashDirty and (MoonSoundFlashFile <> '') then
+  begin
+    var MoonStream := TBytesStream.Create(Console.MoonSound.FlashImage);
+    try
+      SaveStreamAtomically(MoonStream, MoonSoundFlashFile, FStorage);
+    finally
+      MoonStream.Free;
+    end;
+  end;
+  if (Console = nil) or (Console.NeoGS = nil) or not Console.NeoGS.FlashDirty or
+    (NeoGSFlashFile = '') then
+    Exit;
+  var Stream := TBytesStream.Create(Console.NeoGS.FlashImage);
+  try
+    SaveStreamAtomically(Stream, NeoGSFlashFile, FStorage);
+  finally
+    Stream.Free;
+  end;
+end;
+
 procedure TZXWorker.Execute;
 var
   Console: TZXConsole;
@@ -299,7 +351,8 @@ var
   TapeSpeed: Integer;
   MouseDX, MouseDY: Integer;
   MouseButtons: Byte;
-  NMI: Boolean;
+  NMI, FastForward, Prepared: Boolean;
+  PreviousSpeed: Integer;
 begin
   Console := nil;
   Audio := nil;
@@ -307,23 +360,46 @@ begin
   CoreId := 'ZX';
   try
     try
-      Console := TZXConsole.Create;
       FLock.Acquire;
       try
         Options := FOptions;
       finally
         FLock.Release;
       end;
-      Console.ApplyOptions(Options);
-      Console.Load(FData, FName, FMachine);
-      if (TimexCartridgeFile <> '') and (Console.Machine.Model = zmTimex2068) and not SameText(ExtractFileExt(FName), '.dck') then
+      Prepared := (FPreparedConsole <> nil) and CompareMem(@Options, @FPreparedOptions, SizeOf(Options));
+      if Prepared then
+      begin
+        Console := FPreparedConsole;
+        FPreparedConsole := nil;
+        Console.CMOS.SetDateTime(Now);
+      end
+      else
+      begin
+        FreeAndNil(FPreparedConsole);
+        Console := TZXConsole.Create;
+        Console.ApplyOptions(Options);
+        Console.Load(FData, FName, FMachine);
+      end;
+      if not Prepared and (TimexCartridgeFile <> '') and (Console.Machine.Model = zmTimex2068) and not SameText(ExtractFileExt(FName), '.dck') then
         Console.MountTimexCartridge(FStorage.ReadBytes(TimexCartridgeFile));
-      if DivFirmwareFile <> '' then
+      if not Prepared and (DivFirmwareFile <> '') then
         Console.DivStorage.Configure(Console.DivStorage.Kind, FMachine.DivRAMKB, FStorage.ReadBytes(DivFirmwareFile));
-      if DivImageFile <> '' then
+      if not Prepared and (DivImageFile <> '') then
         Console.DivStorage.Mount(FStorage.OpenRead(DivImageFile), DivImageHash);
       if (Console.DivStorage.Disk <> nil) and (DivSaveFile <> '') and FStorage.Exists(DivSaveFile) then
         Console.DivStorage.Disk.LoadOverlay(FStorage.ReadBytes(DivSaveFile));
+      if (Console.MoonSound <> nil) and (MoonSoundFlashFile <> '') and FStorage.Exists(MoonSoundFlashFile) then
+        Console.MoonSound.LoadFlash(FStorage.ReadBytes(MoonSoundFlashFile));
+      if (Console.NeoGS <> nil) and (NeoGSFlashFile <> '') and FStorage.Exists(NeoGSFlashFile) then
+        Console.NeoGS.LoadFlash(FStorage.ReadBytes(NeoGSFlashFile));
+      if (Console.NeoGS <> nil) and (NeoGSImageFile <> '') then
+      begin
+        if not Prepared then
+          Console.NeoGS.Mount(FStorage.OpenRead(NeoGSImageFile), NeoGSImageHash);
+        if (NeoGSSaveFile <> '') and FStorage.Exists(NeoGSSaveFile) then
+          Console.NeoGS.Disk.LoadOverlay(FStorage.ReadBytes(NeoGSSaveFile));
+        Console.NeoGS.Disk.WriteProtected := Options.DiskWriteProtected;
+      end;
       if (ServiceROMFile <> '') and (Console.Pentagon and (Console.RAMSizeKB = 1024)) then
         Console.SetServiceROM(FStorage.ReadBytes(ServiceROMFile));
       if (Console.Beta.Disk <> nil) and (DiskSaveFile <> '') and FStorage.Exists(DiskSaveFile) then
@@ -339,6 +415,7 @@ begin
       Format.BlockFrames := 2048;
       Format.BlockCount := 4;
       Deadline := TStopwatch.GetTimeStamp;
+      PreviousSpeed := 1;
       WasEnabled := False;
       WasPaused := False;
       AudioFailed := False;
@@ -357,6 +434,8 @@ begin
               end;
             if Loading then
             begin
+              // A state may remove the board. Retain completed guest flash writes.
+              PersistNeoGSFlash(Console);
               LoadCoreSnapshot(Path, CoreId, FData, Transfer, FStorage);
               FLock.Acquire;
               try
@@ -382,6 +461,7 @@ begin
           TapeCommands := FTapeCommands;
           FTapeCommands := nil;
           Options := FOptions;
+          FastForward := FFastForward;
           NMI := FNMIPending;
           FNMIPending := False;
           MouseDX := FMouseDX;
@@ -424,7 +504,18 @@ begin
           var DivOverlay: TBytes;
           if Console.DivStorage.Disk <> nil then
             DivOverlay := Console.DivStorage.Disk.SaveOverlay;
+          var NeoGSOverlay: TBytes;
+          if (Console.NeoGS <> nil) and (Console.NeoGS.Disk <> nil) then
+            NeoGSOverlay := Console.NeoGS.Disk.SaveOverlay;
           Console.Load(FData, FName, FMachine);
+          if (Console.NeoGS <> nil) and (NeoGSImageFile <> '') then
+          begin
+            if Console.NeoGS.Disk = nil then
+              Console.NeoGS.Mount(FStorage.OpenRead(NeoGSImageFile), NeoGSImageHash);
+            if Length(NeoGSOverlay) > 0 then
+              Console.NeoGS.Disk.LoadOverlay(NeoGSOverlay);
+            Console.NeoGS.Disk.WriteProtected := Options.DiskWriteProtected;
+          end;
           if (TimexCartridgeFile <> '') and (Console.Machine.Model = zmTimex2068) and not SameText(ExtractFileExt(FName), '.dck') then
             Console.MountTimexCartridge(FStorage.ReadBytes(TimexCartridgeFile));
           if DivFirmwareFile <> '' then
@@ -501,8 +592,12 @@ begin
         if Terminated then
           Break;
 
-        Publish(Console);
-        TapeSpeed := Options.PlaybackSpeed(Console.HasTape, Console.Tape.Stopped);
+        TapeSpeed := Options.PlaybackSpeed(Console.HasTape, Console.Tape.Stopped, FastForward);
+        if (TapeSpeed = 1) or (Console.FrameNumber mod Cardinal(TapeSpeed) = 0) then
+          Publish(Console);
+        if TapeSpeed <> PreviousSpeed then
+          Deadline := TStopwatch.GetTimeStamp;
+        PreviousSpeed := TapeSpeed;
         Enabled := Enabled and (TapeSpeed = 1); // Accelerated playback is muted, without changing chip clocks.
         if Enabled and not AudioFailed then
         try
@@ -560,6 +655,41 @@ begin
       var Stream := TBytesStream.Create(Console.DivStorage.Disk.SaveOverlay);
       try
         SaveStreamAtomically(Stream, DivSaveFile, FStorage);
+      finally
+        Stream.Free;
+      end;
+    except
+      on E: Exception do
+      begin
+        FLock.Acquire;
+        try
+          FError := E.Message;
+        finally
+          FLock.Release;
+        end;
+      end;
+    end;
+    if (Console <> nil) and (((Console.NeoGS <> nil) and Console.NeoGS.FlashDirty and (NeoGSFlashFile <> '')) or
+      ((Console.MoonSound <> nil) and Console.MoonSound.FlashDirty and (MoonSoundFlashFile <> ''))) then
+    try
+      PersistNeoGSFlash(Console);
+    except
+      on E: Exception do
+      begin
+        FLock.Acquire;
+        try
+          FError := E.Message;
+        finally
+          FLock.Release;
+        end;
+      end;
+    end;
+    if (Console <> nil) and (Console.NeoGS <> nil) and (Console.NeoGS.Disk <> nil) and
+      Console.NeoGS.Disk.Dirty and (NeoGSSaveFile <> '') then
+    try
+      var Stream := TBytesStream.Create(Console.NeoGS.Disk.SaveOverlay);
+      try
+        SaveStreamAtomically(Stream, NeoGSSaveFile, FStorage);
       finally
         Stream.Free;
       end;

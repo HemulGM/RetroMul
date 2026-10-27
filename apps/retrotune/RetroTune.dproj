@@ -116,10 +116,11 @@
         <Cfg_2>true</Cfg_2>
         <Base>true</Base>
     </PropertyGroup>
+    <Import Project="..\..\source\RetroMul.Paths.props"/>
     <PropertyGroup Condition="'$(Base)'!=''">
         <DCC_DcuOutput>$(Platform)\$(Config)_DCU</DCC_DcuOutput>
         <DCC_ExeOutput>$(Platform)\$(Config)</DCC_ExeOutput>
-        <DCC_UnitSearchPath>..\..\source\contracts;..\..\source\runtime;..\..\source\services\settings;..\..\source\music\trackers\amiga;..\..\source\cores\n64;..\..\source\cores\gba;..\..\source\music\common;..\..\source\music\decoders;..\..\source\music\trackers;..\..\source\music\chips;..\..\source\music\playback;..\..\source\music\export;ui;..\..\source\cores\atari;..\..\source\cores\c64;..\..\source\hardware\audio;..\..\source\cores\zx;..\..\source\hardware\audio\opl;..\..\source\cores;..\..\source\contracts;..\..\source\media\cd;..\..\source\media\rom;..\..\source\platform;..\..\source\runtime;..\..\source\runtime\adapters;..\..\source\services\catalog;..\..\source\services\settings;..\..\source\services\storage;..\..\source\ui\fmx\icons;..\..\source\cores\nes;..\..\source\cores\nes\mappers;..\..\source\cores\gb;..\..\source\cores\gbc;..\..\source\cores\md;..\..\source\hardware\cpu;..\..\source\cores\snes;..\..\dependencies\PCMAudio;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>ui;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <DCC_E>false</DCC_E>
         <DCC_N>false</DCC_N>
         <DCC_S>false</DCC_S>
@@ -360,6 +361,7 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="..\..\source\hardware\cpu\HW.ARM.Shifter.pas"/>
         <DCCReference Include="..\..\source\cores\a2600\A2600.AudioMachine.pas"/>
         <DCCReference Include="..\..\source\hardware\audio\A2600.Sound.TIA.pas"/>
         <DCCReference Include="..\..\source\music\trackers\amiga\Amiga.AHX.pas"/>

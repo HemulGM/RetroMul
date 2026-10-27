@@ -1,6 +1,7 @@
 ﻿program RetroTune;
 
 uses
+  HW.ARM.Shifter in '..\..\source\hardware\cpu\HW.ARM.Shifter.pas',
 
   System.StartUpCopy,
   A2600.AudioMachine in '..\..\source\cores\a2600\A2600.AudioMachine.pas',

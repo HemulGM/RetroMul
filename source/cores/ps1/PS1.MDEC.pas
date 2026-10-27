@@ -76,7 +76,6 @@ const
   InputFIFO = 64;
   // Fraction bits of IDCT output and YUV conversion.
   Fraction = 7;
-
   CommandDecode = 1;
   CommandQuant = 2;
   CommandScale = 3;
@@ -157,8 +156,10 @@ begin
   begin
     // Block being received: Cr, Cb, Y1..Y4.
     case FBlock of
-      0: Block := 4;
-      1: Block := 5;
+      0:
+        Block := 4;
+      1:
+        Block := 5;
     else
       Block := Cardinal(FBlock - 2);
     end;
@@ -677,3 +678,4 @@ initialization
     ZagZig[ZigZag[I]] := I;
 
 end.
+

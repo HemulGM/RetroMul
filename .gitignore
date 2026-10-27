@@ -28,6 +28,13 @@ __recovery/
 /source/cores/md/README.md
 /apps/terminal/Win32/*
 /tests/*
+!/tests/cores/
+/tests/cores/*
+!/tests/cores/n64/
+/tests/cores/n64/*
+!/tests/cores/n64/hardware/
+/tests/**/bin/
+/tests/cores/n64/hardware/roms/
 /tools/*
 /MULTICORE_AUDIT.md
 /audit-output/*
@@ -42,3 +49,5 @@ __recovery/
 /apps/retrotune/soundfonts/*
 /apps/retrotune/Win64/*
 /apps/retromul/Lang/*
+/fpc/*
+/apps/gpu_tests/*

@@ -23,11 +23,15 @@ type
 
   IEmulationMouseInput = Core.Emulation.Types.IEmulationMouseInput;
 
+  IEmulationPointerInput = Core.Emulation.Types.IEmulationPointerInput;
+
   IEmulationMotionInput = Core.Emulation.Types.IEmulationMotionInput;
 
   IEmulationRotationInput = Core.Emulation.Types.IEmulationRotationInput;
 
   IEmulationRumbleOutput = Core.Emulation.Types.IEmulationRumbleOutput;
+
+  IEmulationDiscControl = Core.Emulation.Types.IEmulationDiscControl;
 
   IEmulationSnapshotLocation = Core.Emulation.Types.IEmulationSnapshotLocation;
 

@@ -1,0 +1,177 @@
+[
+  {
+    "file": "fmpac.rom",
+    "size": 65536,
+    "sha1": "9d789166e3caf28e4742fe933d962e99618c633d",
+    "sha256": "3cfe44646b69a622656b96305f1b975f48ca018839f7946895f7a1352d9720aa",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/extensions/fmpac.rom",
+    "verified_machine_definitions": [
+      "extensions\\fmpac.xml",
+      "extensions\\mbstereo.xml"
+    ]
+  },
+  {
+    "file": "fs-a1wsx_basic-bios2p.rom",
+    "size": 32768,
+    "sha1": "f4433752d3bf876bfefb363c749d4d2e08a218b6",
+    "sha256": "cc5b5b461e24be70ebea4dc2762ec98c2e6db850acf646eb88450ab6354d8b26",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/machines/panasonic/fs-a1wsx_basic-bios2p.rom",
+    "verified_machine_definitions": [
+      "machines\\Boosted_MSX2+_JP.xml",
+      "machines\\Panasonic_FS-A1WSX.xml",
+      "machines\\Sanyo_PHC-35J.xml"
+    ]
+  },
+  {
+    "file": "fs-a1wsx_fmbasic.rom",
+    "size": 16384,
+    "sha1": "aad42ba4289b33d8eed225d42cea930b7fc5c228",
+    "sha256": "29325437196ec7fc7b39b25a87f6981805bd8cb302acf4708f504fb1fb89108b",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/machines/panasonic/fs-a1wsx_fmbasic.rom",
+    "verified_machine_definitions": [
+      "machines\\Boosted_MSX2+_JP.xml",
+      "machines\\Panasonic_FS-A1WSX.xml",
+      "machines\\Panasonic_FS-A1WX.xml",
+      "machines\\Sanyo_PHC-70FD.xml",
+      "machines\\Sanyo_PHC-70FD2.xml",
+      "machines\\Sony_HB-F1XDJ.xml",
+      "machines\\Sony_HB-F1XV.xml"
+    ]
+  },
+  {
+    "file": "fs-a1wsx_kanjibasic.rom",
+    "size": 32768,
+    "sha1": "dcc3a67732aa01c4f2ee8d1ad886444a4dbafe06",
+    "sha256": "9fb7ef5003fcb953f46ffe5bab399832d8175f53cccb763d8c454a91bc2429fd",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/machines/panasonic/fs-a1wsx_kanjibasic.rom",
+    "verified_machine_definitions": [
+      "machines\\Acid1Test-slots.xml",
+      "machines\\Boosted_MSX2+_JP.xml",
+      "machines\\Panasonic_FS-A1WSX.xml",
+      "machines\\Sanyo_PHC-35J.xml",
+      "machines\\Sony_HB-F1XV.xml"
+    ]
+  },
+  {
+    "file": "fs-a1wsx_kanjifont.rom",
+    "size": 262144,
+    "sha1": "5aff2d9b6efc723bc395b0f96f0adfa83cc54a49",
+    "sha256": "d87ce758a7171870a2a3e7893e09cbba2bd68ee70b4d0f0e49dd2ecd60aafdd1",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/machines/panasonic/fs-a1wsx_kanjifont.rom",
+    "verified_machine_definitions": [
+      "machines\\Acid3Test-mapper.xml",
+      "machines\\Boosted_MSX2+_JP.xml",
+      "machines\\Boosted_MSXturboR_with_IDE.xml",
+      "machines\\Panasonic_FS-A1GT.xml",
+      "machines\\Panasonic_FS-A1ST.xml",
+      "machines\\Panasonic_FS-A1WSX.xml",
+      "machines\\Panasonic_FS-A1WX.xml"
+    ]
+  },
+  {
+    "file": "fs-a1wsx_msx2psub.rom",
+    "size": 16384,
+    "sha1": "fe0254cbfc11405b79e7c86c7769bd6322b04995",
+    "sha256": "36000685128f95ff515a128973f8d439116c1a1a8e38c1777293a428894434a2",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/machines/panasonic/fs-a1wsx_msx2psub.rom",
+    "verified_machine_definitions": [
+      "machines\\Acid1Test-slots.xml",
+      "machines\\Boosted_MSX2+_JP.xml",
+      "machines\\Panasonic_FS-A1FX.xml",
+      "machines\\Panasonic_FS-A1WSX.xml",
+      "machines\\Panasonic_FS-A1WX.xml",
+      "machines\\Sanyo_PHC-35J.xml",
+      "machines\\Sanyo_PHC-70FD.xml",
+      "machines\\Sanyo_PHC-70FD2.xml",
+      "machines\\Sony_HB-F1XDJ.xml",
+      "machines\\Sony_HB-F1XV.xml"
+    ]
+  },
+  {
+    "file": "nms8250_basic-bios2.rom",
+    "size": 32768,
+    "sha1": "6103b39f1e38d1aa2d84b1c3219c44f1abb5436e",
+    "sha256": "4bc4ae85ca5f28246cd3e7b7e017d298ddd375603657f84ef2c7954bc2d9b919",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/machines/philips/nms8250_basic-bios2.rom",
+    "verified_machine_definitions": [
+      "machines\\Philips_NMS_8220.xml",
+      "machines\\Philips_NMS_8245.xml",
+      "machines\\Philips_NMS_8250.xml",
+      "machines\\Philips_NMS_8255.xml",
+      "machines\\Philips_VG_8235-20.xml"
+    ]
+  },
+  {
+    "file": "nms8250_disk.rom",
+    "size": 16384,
+    "sha1": "c3efedda7ab947a06d9345f7b8261076fa7ceeef",
+    "sha256": "26cf5bbdde918cafb4605267dc415528424ed5b5dcd028076bf72157ed5c37cb",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/machines/philips/nms8250_disk.rom",
+    "verified_machine_definitions": [
+      "machines\\Philips_NMS_8250-16.xml",
+      "machines\\Philips_NMS_8250-19.xml",
+      "machines\\Philips_NMS_8250.xml",
+      "machines\\Philips_NMS_8255.xml"
+    ]
+  },
+  {
+    "file": "nms8250_msx2sub.rom",
+    "size": 16384,
+    "sha1": "5c1f9c7fb655e43d38e5dd1fcc6b942b2ff68b02",
+    "sha256": "6c6f421a10c428d960b7ecc990f99af1c638147f747bddca7b0bf0e2ab738300",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/machines/philips/nms8250_msx2sub.rom",
+    "verified_machine_definitions": [
+      "machines\\Philips_NMS_8245.xml",
+      "machines\\Philips_NMS_8250.xml",
+      "machines\\Philips_NMS_8255.xml",
+      "machines\\Philips_VG_8235-20.xml"
+    ]
+  },
+  {
+    "file": "vg8020_basic-bios1.rom",
+    "size": 32768,
+    "sha1": "829c00c3114f25b3dae5157c0a238b52a3ac37db",
+    "sha256": "04fd77f02f652770cbb3cc6b4a594cc736d56486a106c1068965f1fe090746a5",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/machines/philips/vg8020_basic-bios1.rom",
+    "verified_machine_definitions": [
+      "machines\\AVT_DPC-200.xml",
+      "machines\\Goldstar_FC-200.xml",
+      "machines\\Philips_VG_8020.xml",
+      "machines\\Toshiba_HX-20E.xml",
+      "machines\\Toshiba_HX-22I.xml",
+      "machines\\Toshiba_HX-51I.xml"
+    ]
+  },
+  {
+    "file": "fs-ca1_CLEAN.rom",
+    "size": 131072,
+    "sha1": "36d47cf70618fdb460f97a8ceb75013ec4529063",
+    "sha256": "3a5671111276287dd66feaedd038854bc9f376bbb115eb7b4c0ab1b6de4b552a",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/extensions/fs-ca1_CLEAN.rom",
+    "verified_machine_definitions": [
+      "extensions\\Panasonic_FS-CA1.xml"
+    ]
+  },
+  {
+    "file": "nms1205.rom",
+    "size": 32768,
+    "sha1": "c7463e1fd0433c5d41b70670d6c10fd781b66426",
+    "sha256": "3e914ea47784c2389c6cdecb6d2488506398fc25eff24af8b98802e9bc71eeae",
+    "bundled": true,
+    "source": "https://download.file-hunter.com/System%20ROMs/extensions/nms1205.rom",
+    "verified_machine_definitions": [
+      "extensions\\Philips_NMS_1205.xml"
+    ]
+  }
+]

@@ -92,7 +92,7 @@ procedure Z80NonMaskableInterrupt(var State: TZ80State);
 // Optional M1 bus view for encrypted CPUs. Operands and the indexed CB tail
 // retain the normal data bus. HOLD interrupts clear when acknowledged;
 // existing callers retain their original level-sensitive interrupt behavior.
-function Z80DoInstruction(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; OpcodeRead: TZ80ReadCallback = nil; HoldInterrupt: Boolean = False): Cardinal;
+function Z80DoInstruction(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; OpcodeRead: TZ80ReadCallback = nil; HoldInterrupt: Boolean = False; InterruptVector: Byte = $FF): Cardinal;
 
 implementation
 
@@ -2215,7 +2215,7 @@ begin
   State.NMIPending := 1;
 end;
 
-function Z80DoInstruction(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; OpcodeRead: TZ80ReadCallback; HoldInterrupt: Boolean): Cardinal;
+function Z80DoInstruction(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; OpcodeRead: TZ80ReadCallback; HoldInterrupt: Boolean; InterruptVector: Byte): Cardinal;
 begin
   var Instruction: TZ80Instruction;
   State.Cycles := 0;
@@ -2257,12 +2257,15 @@ begin
     State.StackPointer := (State.StackPointer + $FFFF) and $FFFF;
     MemoryWrite(State, Callbacks, State.StackPointer, (State.ProgramCounter and $FF));
 
-    // The Mega Drive's undriven interrupt data bus supplies $FF (RST $38 in IM 0).
+    // Undriven buses default to FF. Boards with a daisy-chain supply a vector
+    // (NeoGS uses the RST 38/30/28 opcodes FF/F7/EF in IM 0 and IM 2).
     if State.InterruptMode = 2 then
     begin
-      State.ProgramCounter := Word(MemoryRead16Bit(State, Callbacks, (Cardinal(State.i) shl 8) or $FF));
+      State.ProgramCounter := Word(MemoryRead16Bit(State, Callbacks, (Cardinal(State.i) shl 8) or InterruptVector));
       State.Cycles := 19;
     end
+    else if State.InterruptMode = 0 then
+      State.ProgramCounter := InterruptVector and $38
     else
       State.ProgramCounter := $38;
 

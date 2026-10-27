@@ -1,0 +1,31 @@
+object SettingsGroupTemplate: TSettingsGroupTemplate
+  Size.Width = 900.000000000000000000
+  Size.Height = 458.000000000000000000
+  Size.PlatformDefault = False
+  object PanelSetting: TPanel
+    Align = Top
+    Padding.Left = 16.000000000000000000
+    Padding.Top = 14.000000000000000000
+    Padding.Right = 16.000000000000000000
+    Padding.Bottom = 12.000000000000000000
+    Margins.Bottom = 16.000000000000000000
+    Size.Width = 900.000000000000000000
+    Size.Height = 458.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'retromul_card'
+    object LabelSettingTitle: TLabel
+      Align = Top
+      StyledSettings = [Family, FontColor]
+      Margins.Bottom = 6.000000000000000000
+      Position.X = 16.000000000000000000
+      Position.Y = 14.000000000000000000
+      Size.Width = 868.000000000000000000
+      Size.Height = 36.000000000000000000
+      Size.PlatformDefault = False
+      TextSettings.Font.Size = 20.000000000000000000
+      TextSettings.Font.StyleExt = {00070000000000000004000000}
+      TextSettings.WordWrap = False
+      Text = 'Video'
+    end
+  end
+end

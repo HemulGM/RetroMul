@@ -7,6 +7,7 @@ uses
 
 type
   TSIDModel = (MOS6581, MOS8580);
+  TSIDStateField = procedure(var Value; Size: Integer) of object;
 
   TSIDVoice = record
     Phase, Noise: Cardinal;
@@ -30,17 +31,21 @@ type
   public
     constructor Create(Model: TSIDModel = MOS6581; Clock: Integer = 985248; SampleRate: Integer = 44100);
     procedure Reset;
+    procedure Configure(Model: TSIDModel; Clock: Integer);
+    procedure SerializeState(const Field: TSIDStateField; Loading: Boolean);
     procedure WriteRegister(RegisterID, Value: Byte);
     function ReadRegister(RegisterID: Byte): Byte;
     procedure Clock;
     function Sample: SmallInt;
     property Model: TSIDModel read FModel;
+    property ChipClock: Integer read FClock;
+    property SampleRate: Integer read FSampleRate;
   end;
 
 implementation
 
 uses
-  System.Math;
+  System.Math, System.Classes;
 
 const
   Rates: array[0..15] of Integer = (9, 32, 63, 95, 149, 220, 267, 313, 392, 977, 1954, 3126, 3907, 11720, 19532, 31251);
@@ -56,6 +61,49 @@ begin
   FSampleRate := SampleRate;
   FDC.Configure(SampleRate, 20);
   Reset;
+end;
+
+procedure TSID.Configure(Model: TSIDModel; Clock: Integer);
+begin
+  if (Ord(Model) > Ord(High(TSIDModel))) or (Clock < 500000) or (Clock > 2000000) then
+    raise EArgumentOutOfRangeException.Create('Invalid SID clock/model');
+  // The eZX/MB parameter register switches the implementation without a reset.
+  FModel := Model;
+  FClock := Clock;
+end;
+
+procedure TSID.SerializeState(const Field: TSIDStateField; Loading: Boolean);
+begin
+  var Model := Ord(FModel);
+  Field(Model, SizeOf(Model));
+  Field(FClock, SizeOf(FClock));
+  Field(FSampleRate, SizeOf(FSampleRate));
+  Field(FRegisters, SizeOf(FRegisters));
+  Field(FVoices, SizeOf(FVoices));
+  Field(FLow, SizeOf(FLow));
+  Field(FBand, SizeOf(FBand));
+  Field(FBus, SizeOf(FBus));
+  Field(FDirectSum, SizeOf(FDirectSum));
+  Field(FRoutedSum, SizeOf(FRoutedSum));
+  Field(FVolumeSum, SizeOf(FVolumeSum));
+  Field(FDACSum, SizeOf(FDACSum));
+  Field(FCount, SizeOf(FCount));
+  Field(FDC, SizeOf(FDC));
+  if (Model < 0) or (Model > Ord(High(TSIDModel))) or
+    (FClock < 500000) or (FClock > 2000000) or (FSampleRate < 8000) or
+    (FSampleRate > 192000) or (FCount < 0) or (FCount >= 2000000) or
+    IsNan(FLow) or IsInfinite(FLow) or IsNan(FBand) or IsInfinite(FBand) or
+    IsNan(FDirectSum) or IsInfinite(FDirectSum) or IsNan(FRoutedSum) or IsInfinite(FRoutedSum) or
+    IsNan(FVolumeSum) or IsInfinite(FVolumeSum) or IsNan(FDACSum) or IsInfinite(FDACSum) then
+    raise EReadError.Create('Invalid SID state');
+  for var V in FVoices do
+    if (V.Phase > $FFFFFF) or (V.Noise > $7FFFFF) or
+      (V.Envelope < 0) or (V.Envelope > 255) or (V.State < 0) or (V.State > 2) or
+      (V.RateCounter < 0) or (V.RateCounter > $7FFF) or (V.ExpCounter < 0) or
+      (V.ExpCounter > 30) or not (V.ExpPeriod in [1, 2, 4, 8, 16, 30]) then
+      raise EReadError.Create('Invalid SID voice state');
+  if Loading then
+    FModel := TSIDModel(Model);
 end;
 
 procedure TSID.Reset;

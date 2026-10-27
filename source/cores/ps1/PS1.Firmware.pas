@@ -60,7 +60,6 @@ const
     (SHA1: 'dcffe16bd90a723499ad46c641424981338d8378'; Name: 'SCPH-101'; Region: TPS1Region.NorthAmerica),
     (SHA1: 'beb0ac693c0dc26daf5665b3314db81480fa5c7c'; Name: 'SCPH-102 (A)'; Region: TPS1Region.Europe),
     (SHA1: 'dbc7339e5d85827c095764fc077b41f78fd2ecae'; Name: 'SCPH-102 (B)'; Region: TPS1Region.Europe));
-
   BuiltinNames: array[0..0] of string = (PS1BuiltinOpenBIOS);
   BuiltinResources: array[0..0] of string = ('PS1_OPENBIOS');
   BuiltinHashes: array[0..0] of string = (PS1OpenBIOSSHA256);
@@ -126,3 +125,4 @@ begin
 end;
 
 end.
+

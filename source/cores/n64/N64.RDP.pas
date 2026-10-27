@@ -137,6 +137,12 @@ type
     FTexelStamps: array[0..1023] of Cardinal;
     FTexels: array[0..1023] of TN64Texel;
     FPackedTexels: array[0..1023] of UInt64;
+    // The same for palette indices (TLUTIndex, the same slots), and the
+    // decoded palette halfwords (PackedTLUTTexel, by index * 4 + halfword).
+    FIndexKeys: array[0..1023] of UInt64;
+    FIndexStamps, FPaletteStamps: array[0..1023] of Cardinal;
+    FIndexValues: array[0..1023] of Integer;
+    FPaletteTexels: array[0..1023] of UInt64;
     FFilteredKeys, FFilteredTexels: array[0..4095] of UInt64;
     FFilteredStamps: array[0..4095] of Cardinal;
     FBilinearFiltering: Boolean;
@@ -265,9 +271,14 @@ type
     procedure UpdateTileInfo(Tile: Integer);
     procedure SetBilinearFiltering(Value: Boolean);
     procedure InvalidateTexels;
+    function TexelBits(Tile, S, T: Integer; out Address: Integer): Cardinal;
+    function PaletteIndex(Tile: Integer; Bits: Cardinal): Integer;
+    function TLUTIndex(Tile, S, T: Integer): Integer;
+    function PackedTLUTTexel(Index, Halfword: Integer): UInt64;
     function DecodeTexel(Tile, S, T: Integer): TN64Texel;
     function TexelAt(Tile, S, T: Integer): TN64Texel; inline;
     function PackedTexelAt(Tile, S, T: Integer): UInt64; inline;
+    procedure LoadTLUTPipeline(Tile, SL, TL, SH: Integer);
     procedure LoadTexture(Tile, SL, TL, SH, TH: Integer; Block: Boolean);
     function Converted(const Raw: TN64Texel): TN64Texel;
     procedure DecodeMode(Textured: Boolean);
@@ -1833,7 +1844,11 @@ begin
   if FTexelGeneration = High(Cardinal) then
   begin
     for var I := 0 to High(FTexelStamps) do
+    begin
       FTexelStamps[I] := 0;
+      FIndexStamps[I] := 0;
+      FPaletteStamps[I] := 0;
+    end;
     for var I := 0 to High(FFilteredStamps) do FFilteredStamps[I] := 0;
     FTexelGeneration := 1;
   end
@@ -1867,14 +1882,15 @@ begin
   Result := FPackedTexels[Slot];
 end;
 
-function TN64RDP.DecodeTexel(Tile, S, T: Integer): TN64Texel;
+function TN64RDP.TexelBits(Tile, S, T: Integer; out Address: Integer): Cardinal;
 begin
-  // S and T are tile coordinates already wrapped/clamped by WrapTexel.
+  // Texel (S, T)'s bits in TMEM (4-bit ones in the low nibble) and where
+  // they are. S and T are tile coordinates already wrapped/clamped by
+  // WrapTexel.
   var Size := FTiles[Tile].Size;
   var Format := FTiles[Tile].Format;
   // TMEM <= 511, Line <= 511, Row <= 255 and S < 64K: every sum fits Integer.
   var LineBase := FTiles[Tile].TMEM * 8 + (T and $FF) * FTiles[Tile].Line * 8;
-  var Address: Integer;
   if Format = 1 then
     Address := (LineBase + S) and $7FF
   else if Size = 3 then
@@ -1883,27 +1899,92 @@ begin
     Address := (LineBase + ((S * (4 shl Size)) shr 3)) and $FFF;
   if Odd(T) then
     Address := Address xor 4;
-  var V := Cardinal(FTMEM[Address]);
+  Result := Cardinal(FTMEM[Address]);
   if Size >= 2 then
-    V := (V shl 8) or FTMEM[(Address + 1) and $FFF];
+    Result := (Result shl 8) or FTMEM[(Address + 1) and $FFF];
   if (Size = 3) and (Format = 0) then
   begin
     Address := Address and $7FF;
-    V := (Cardinal(FTMEM[Address]) shl 24) or (Cardinal(FTMEM[(Address + 1) and $7FF]) shl 16) or
+    Result := (Cardinal(FTMEM[Address]) shl 24) or (Cardinal(FTMEM[(Address + 1) and $7FF]) shl 16) or
       (Cardinal(FTMEM[Address or $800]) shl 8) or FTMEM[((Address + 1) and $7FF) or $800];
   end;
   if Size = 0 then
     if (S and 1) = 0 then
-      V := V shr 4
+      Result := Result shr 4
     else
-      V := V and 15;
+      Result := Result and 15;
+end;
+
+function TN64RDP.PaletteIndex(Tile: Integer; Bits: Cardinal): Integer;
+begin
+  // The palette entry of a texel with these bits (TexelBits'): a 4-bit
+  // texel's with the tile's palette, else the first byte of the texel's
+  // (first) halfword in TMEM (of a 32-bit RGBA texel the low half's).
+  case FTiles[Tile].Size of
+    0:
+      Result := FTiles[Tile].Palette * 16 + Integer(Bits);
+    1:
+      Result := Integer(Bits);
+    2:
+      Result := Integer(Bits shr 8);
+  else
+    if FTiles[Tile].Format = 0 then
+      Result := Integer(Bits shr 24)
+    else
+      Result := Integer(Bits shr 8);
+  end;
+  Result := Result and $FF;
+end;
+
+function TN64RDP.TLUTIndex(Tile, S, T: Integer): Integer;
+begin
+  // (Cached as TexelAt's texels.)
+  var Key := (UInt64(Tile) shl 32) or (UInt64(S) shl 16) or UInt64(T);
+  var Slot := (S + T * 33 + Tile * 257) and 1023;
+  if (FIndexStamps[Slot] = FTexelGeneration) and (FIndexKeys[Slot] = Key) then
+    Exit(FIndexValues[Slot]);
+  var Address: Integer;
+  Result := PaletteIndex(Tile, TexelBits(Tile, S, T, Address));
+  FIndexValues[Slot] := Result;
+  FIndexKeys[Slot] := Key;
+  FIndexStamps[Slot] := FTexelGeneration;
+end;
+
+function TN64RDP.PackedTLUTTexel(Index, Halfword: Integer): UInt64;
+begin
+  // Halfword (0..3) of palette entry Index, decoded as the TLUT type says,
+  // its channels in four 16-bit lanes.
+  var Slot := Index * 4 + Halfword;
+  if FPaletteStamps[Slot] = FTexelGeneration then
+    Exit(FPaletteTexels[Slot]);
+  var PA := $800 + Index * 8 + Halfword * 2;
+  var V := (Cardinal(FTMEM[PA]) shl 8) or FTMEM[PA + 1];
+  if (FOtherHi and $4000) <> 0 then
+  begin
+    var I := UInt64(V shr 8);
+    Result := I or (I shl 16) or (I shl 32) or (UInt64(V and $FF) shl 48);
+  end
+  else
+  begin
+    var R := (V shr 11) and 31;
+    var G := (V shr 6) and 31;
+    var B := (V shr 1) and 31;
+    Result := UInt64((R shl 3) or (R shr 2)) or (UInt64((G shl 3) or (G shr 2)) shl 16) or
+      (UInt64((B shl 3) or (B shr 2)) shl 32) or (UInt64((V and 1) * $FF) shl 48);
+  end;
+  FPaletteTexels[Slot] := Result;
+  FPaletteStamps[Slot] := FTexelGeneration;
+end;
+
+function TN64RDP.DecodeTexel(Tile, S, T: Integer): TN64Texel;
+begin
+  var Size := FTiles[Tile].Size;
+  var Format := FTiles[Tile].Format;
+  var Address: Integer;
+  var V := TexelBits(Tile, S, T, Address);
   if (FOtherHi and $8000) <> 0 then
   begin
-    if Size = 0 then
-      V := Cardinal(FTiles[Tile].Palette * 16) + V
-    else if Size >= 2 then
-      V := (V shr ((Size - 1) * 8)) and $FF;
-    var PA := ($800 + Integer(V and $FF) * 8 + ((Address shr 1) and 3) * 2) and $FFF;
+    var PA := ($800 + PaletteIndex(Tile, V) * 8 + ((Address shr 1) and 3) * 2) and $FFF;
     var Palette := (Cardinal(FTMEM[PA]) shl 8) or FTMEM[(PA + 1) and $FFF];
     if (FOtherHi and $4000) = 0 then
       Exit(Texel5551(Word(Palette)));
@@ -2127,7 +2208,48 @@ begin
     var S1 := WrapTexel(X + 1, LimitS, MaskS, WrapClampS, MirrorS);
     var T1 := WrapTexel(Y + 1, LimitT, MaskT, WrapClampT, MirrorT);
     var Sum: UInt64;
-    if ((FOtherHi and $1000) <> 0) and (FX = 16) and (FY = 16) then
+    if (FOtherHi and $8000) <> 0 then
+    begin
+      // Through the TLUT: each palette entry is four halfwords, and tap K
+      // reads halfword K of its entry (3 - K in the upper triangle); with
+      // point sampling all four taps take the entry of texel (S0, T0), so
+      // an entry's four halfwords are filtered between (the same colour as
+      // LoadTLUT writes them).
+      // (Only the taps the weights use.)
+      var I0 := TLUTIndex(Tile, S0, T0);
+      if ((FOtherHi and $1000) <> 0) and (FX = 16) and (FY = 16) then
+      begin
+        // Mid-texel (the upper triangle's halfwords).
+        if Sample then
+          Sum := PackedTLUTTexel(I0, 3) + PackedTLUTTexel(TLUTIndex(Tile, S1, T0), 2) +
+            PackedTLUTTexel(TLUTIndex(Tile, S0, T1), 1) + PackedTLUTTexel(TLUTIndex(Tile, S1, T1), 0)
+        else
+          Sum := PackedTLUTTexel(I0, 3) + PackedTLUTTexel(I0, 2) + PackedTLUTTexel(I0, 1) + PackedTLUTTexel(I0, 0);
+        Sum := Sum * 8;
+      end
+      else if FX + FY < 32 then
+      begin
+        Sum := PackedTLUTTexel(I0, 0) * UInt64(32 - FX - FY);
+        if FX <> 0 then
+          if Sample then
+            Inc(Sum, PackedTLUTTexel(TLUTIndex(Tile, S1, T0), 1) * UInt64(FX))
+          else
+            Inc(Sum, PackedTLUTTexel(I0, 1) * UInt64(FX));
+        if FY <> 0 then
+          if Sample then
+            Inc(Sum, PackedTLUTTexel(TLUTIndex(Tile, S0, T1), 2) * UInt64(FY))
+          else
+            Inc(Sum, PackedTLUTTexel(I0, 2) * UInt64(FY));
+      end
+      else if Sample then
+        Sum := PackedTLUTTexel(TLUTIndex(Tile, S1, T1), 0) * UInt64(FX + FY - 32) +
+          PackedTLUTTexel(TLUTIndex(Tile, S0, T1), 1) * UInt64(32 - FX) +
+          PackedTLUTTexel(TLUTIndex(Tile, S1, T0), 2) * UInt64(32 - FY)
+      else
+        Sum := PackedTLUTTexel(I0, 0) * UInt64(FX + FY - 32) + PackedTLUTTexel(I0, 1) * UInt64(32 - FX) +
+          PackedTLUTTexel(I0, 2) * UInt64(32 - FY);
+    end
+    else if ((FOtherHi and $1000) <> 0) and (FX = 16) and (FY = 16) then
       Sum := (PackedTexelAt(Tile, S0, T0) + PackedTexelAt(Tile, S1, T0) +
         PackedTexelAt(Tile, S0, T1) + PackedTexelAt(Tile, S1, T1)) * 8
     else if FX + FY < 32 then
@@ -2562,6 +2684,134 @@ begin
     end;
   end;
   Result := (Result shl 8) or Cardinal(FinalAlpha);
+end;
+
+procedure TN64RDP.LoadTLUTPipeline(Tile, SL, TL, SH: Integer);
+const
+  // A halfword times this: four copies of it.
+  Replicate4: UInt64 = $0001000100010001;
+begin
+  // LoadTLUT as the loading pipeline takes it (angrylion's
+  // loading_pipeline): a step per 8 (8-bit image), 1 (16-bit) or 2 (32-bit)
+  // texels of the row, each reading the image's 8 bytes on from TIPtr and
+  // writing the halfword at TIPtr four times (the whole doubleword where
+  // TIPtr is odd) to the four TMEM banks at the tile's S (as the tile's
+  // format lays texels out), which moves 64, 16 or 8 quarter texels a step.
+  var Size := FTextureSize;
+  var SpanAdvance := 8;
+  var TIAdvance := 8;
+  if Size = 2 then
+  begin
+    SpanAdvance := 1;
+    TIAdvance := 2;
+  end
+  else if Size = 3 then
+    SpanAdvance := 2;
+  var Length := ((SH shr 2) - (SL shr 2) + 1) and $FFF;
+  var TIPtr := FTextureAddress + Cardinal((FTextureWidth * (TL shr 2) + (SL shr 2)) shl Size) shr 1;
+  var Step := 0;
+  var J := 0;
+  while J < Length do
+  begin
+    var SS := (Step * ($200 shr Size)) shr 3;
+    var Shorts: Integer;
+    if (FTiles[Tile].Size = 1) or (FTiles[Tile].Format = 1) then
+      Shorts := SS shr 1
+    else if FTiles[Tile].Size >= 2 then
+      Shorts := SS
+    else
+      Shorts := SS shr 2;
+    Shorts := Shorts and $7FF;
+    var Flipped := (Shorts and 2) <> 0;
+    var A := ((FTiles[Tile].TMEM shl 2) + Shorts) and $7FD;
+    var High := (A and $400) <> 0;
+    // Bank K's halfword (the one of A..A+3 that is K mod 4).
+    var Banks: array[0..3] of Integer;
+    for var K := 0 to 3 do
+      Banks[((A + K) and $7FF) and 3] := ((A + K) and $7FF) and $3FF;
+    var Words: array[0..3] of Cardinal;
+    var Index := (TIPtr shr 2) and not Cardinal(1);
+    for var K := 0 to 3 do
+    begin
+      var Address := ((Index + Cardinal(K)) shl 2) and $FFFFFF;
+      if Address < $800000 then
+        Words[K] := (Cardinal(MemRead8(Address)) shl 24) or (Cardinal(MemRead8(Address + 1)) shl 16) or
+          (Cardinal(MemRead8(Address + 2)) shl 8) or MemRead8(Address + 3)
+      else
+        Words[K] := 0;
+    end;
+    var Q: UInt64;
+    case TIPtr and 7 of
+      0: Q := UInt64(Words[0] shr 16) * Replicate4;
+      1: Q := (UInt64(Words[0]) shl 40) or (UInt64(Words[1]) shl 8) or (Words[2] shr 24);
+      2: Q := UInt64(Words[0] and $FFFF) * Replicate4;
+      3: Q := (UInt64(Words[0]) shl 56) or (UInt64(Words[1]) shl 24) or (Words[2] shr 8);
+      4: Q := UInt64(Words[1] shr 16) * Replicate4;
+      5: Q := (UInt64(Words[1]) shl 40) or (UInt64(Words[2]) shl 8) or (Words[3] shr 24);
+      6: Q := UInt64(Words[1] and $FFFF) * Replicate4;
+    else
+      Q := (UInt64(Words[1]) shl 56) or (UInt64(Words[2]) shl 24) or (Words[3] shr 8);
+    end;
+    var Halves: array[0..3] of Word;
+    var Targets: array[0..3] of Integer;
+    if FTiles[Tile].Format = 1 then
+    begin
+      // YUV: the doubleword's even bytes to the low TMEM half, odd ones to
+      // the high half.
+      var V0 := Cardinal(((Q shr 56) and $FF) shl 24) or Cardinal(((Q shr 40) and $FF) shl 16) or
+        Cardinal(((Q shr 24) and $FF) shl 8) or Cardinal((Q shr 8) and $FF);
+      var V1 := Cardinal(((Q shr 48) and $FF) shl 24) or Cardinal(((Q shr 32) and $FF) shl 16) or
+        Cardinal(((Q shr 16) and $FF) shl 8) or Cardinal(Q and $FF);
+      var B0 := 0;
+      if Flipped then
+        B0 := 2;
+      Targets[0] := Banks[B0];
+      Targets[1] := Banks[B0 + 1];
+      Targets[2] := Banks[B0] or $400;
+      Targets[3] := Banks[B0 + 1] or $400;
+      Halves[0] := V0 shr 16;
+      Halves[1] := V0 and $FFFF;
+      Halves[2] := V1 shr 16;
+      Halves[3] := V1 and $FFFF;
+    end
+    else if (FTiles[Tile].Format = 0) and (FTiles[Tile].Size = 3) then
+    begin
+      // RGBA32: each texel's high halfword to the low TMEM half, its low
+      // halfword to the high half.
+      var B0 := 0;
+      if Flipped then
+        B0 := 2;
+      Targets[0] := Banks[B0];
+      Targets[1] := Banks[B0 + 1];
+      Targets[2] := Banks[B0] or $400;
+      Targets[3] := Banks[B0 + 1] or $400;
+      Halves[0] := Q shr 48;
+      Halves[1] := (Q shr 16) and $FFFF;
+      Halves[2] := (Q shr 32) and $FFFF;
+      Halves[3] := Q and $FFFF;
+    end
+    else
+    begin
+      for var K := 0 to 3 do
+      begin
+        Targets[K] := Banks[K];
+        if High then
+          Targets[K] := Targets[K] or $400;
+      end;
+      Halves[0] := Q shr 48;
+      Halves[1] := (Q shr 32) and $FFFF;
+      Halves[2] := (Q shr 16) and $FFFF;
+      Halves[3] := Q and $FFFF;
+    end;
+    for var K := 0 to 3 do
+    begin
+      FTMEM[Targets[K] * 2] := Byte(Halves[K] shr 8);
+      FTMEM[Targets[K] * 2 + 1] := Byte(Halves[K]);
+    end;
+    Inc(TIPtr, TIAdvance);
+    Inc(Step);
+    Inc(J, SpanAdvance);
+  end;
 end;
 
 procedure TN64RDP.LoadTexture(Tile, SL, TL, SH, TH: Integer; Block: Boolean);
@@ -3630,65 +3880,103 @@ begin
           var Count := ((SH div 4) - (SL div 4) + 1) and $FFF;
           if Count > 0 then
             Inc(FWorkClocks, Cardinal(Min(Count, 256)));
-          // Entry J comes from RDRAM bytes First + 2J and First + 2J + 1, if
-          // both lie below $800000. As in LoadTexture, a timing RDP sends them
-          // with the command words unless a queued list may write them.
-          var First := UInt64(FTextureAddress) + Cardinal(((TL div 4) * FTextureWidth + SL div 4) * 2);
-          var Entries := Min(Count, 256);
-          if FClocksOnly then
-            // (No bus: Replay.)
-          else if FTimingOnly then
+          if (FTextureSize <> 2) or (FTiles[I].Format = 1) or ((FTiles[I].Format = 0) and (FTiles[I].Size = 3)) then
           begin
-            var Payload := Assigned(FOnDataOut) and ((First >= $800000) or
-              not FBus.RDPWriteHazard(Cardinal(First), Cardinal(Entries * 2)));
-            if Payload then
-              Inc(FLoadStats[0])
-            else if Assigned(FOnDataOut) then
-              Inc(FLoadStats[1])
-            else
-              Inc(FLoadStats[3]);
-            if Assigned(FOnDataOut) then
-              FOnDataOut(Ord(Payload));
-            if Payload then
+            // From an 8- or 32-bit image, or into a YUV or RGBA32 tile
+            // (LoadTLUTPipeline; else entry J is 4 copies of halfword J, as
+            // below): the full RDP reads RDRAM itself (a timing RDP sends no
+            // bytes and marks the doublewords the steps read).
+            if FClocksOnly then
+              // (No bus: Replay.)
+            else if FTimingOnly then
             begin
-              for var J := 0 to Entries - 1 do
-                if First + Cardinal(J * 2) + 1 < $800000 then
-                begin
-                  PutDataByte(FBus.RDPRead8(Cardinal(First) + Cardinal(J * 2)));
-                  PutDataByte(FBus.RDPRead8(Cardinal(First) + Cardinal(J * 2) + 1));
-                end;
-              EndData;
+              if Assigned(FOnDataOut) then
+              begin
+                Inc(FLoadStats[2]);
+                FOnDataOut(0);
+              end
+              else
+                Inc(FLoadStats[3]);
+              var Steps := (Count + 7) div 8;
+              if FTextureSize = 2 then
+                Steps := Count div 4 + 1
+              else if FTextureSize = 3 then
+                Steps := (Count + 1) div 2;
+              var First := (UInt64(FTextureAddress) + Cardinal(((TL div 4) * FTextureWidth + SL div 4) shl FTextureSize) shr 1) and
+                not UInt64(7);
+              if (Steps > 0) and (First < $800000) then
+                FBus.MarkRDPRead(Cardinal(First), Cardinal(Min(UInt64(Steps * 8 + 8), $800000 - First)));
             end
-            else if (Entries > 0) and (First < $800000) then
-              FBus.MarkRDPRead(Cardinal(First), Cardinal(Entries * 2));
+            else
+            begin
+              if Assigned(FOnDataIn) then
+                FOnDataIn();
+              if ReadsRDRAM then
+                LoadTLUTPipeline(I, SL, TL, SH);
+            end;
           end
           else
           begin
-            var Payload := Assigned(FOnDataIn) and (FOnDataIn() <> 0);
-            FDataBytes := 0;
-            if Payload or ReadsRDRAM then
-              for var J := 0 to Entries - 1 do
+            // Entry J comes from RDRAM bytes First + 2J and First + 2J + 1, if
+            // both lie below $800000. As in LoadTexture, a timing RDP sends them
+            // with the command words unless a queued list may write them.
+            var First := UInt64(FTextureAddress) + Cardinal(((TL div 4) * FTextureWidth + SL div 4) * 2);
+            var Entries := Min(Count, 256);
+            if FClocksOnly then
+              // (No bus: Replay.)
+            else if FTimingOnly then
+            begin
+              var Payload := Assigned(FOnDataOut) and ((First >= $800000) or
+                not FBus.RDPWriteHazard(Cardinal(First), Cardinal(Entries * 2)));
+              if Payload then
+                Inc(FLoadStats[0])
+              else if Assigned(FOnDataOut) then
+                Inc(FLoadStats[1])
+              else
+                Inc(FLoadStats[3]);
+              if Assigned(FOnDataOut) then
+                FOnDataOut(Ord(Payload));
+              if Payload then
               begin
-                var Source := First + Cardinal(J * 2);
-                var V: Cardinal := 0;
-                if Source + 1 < $800000 then
-                  if Payload then
+                for var J := 0 to Entries - 1 do
+                  if First + Cardinal(J * 2) + 1 < $800000 then
                   begin
-                    V := Cardinal(NextDataByte) shl 8;
-                    V := V or NextDataByte;
-                  end
-                  else
-                    V := (Cardinal(MemRead8(Cardinal(Source))) shl 8) or MemRead8(Cardinal(Source + 1));
-                for var K := 0 to 3 do
+                    PutDataByte(FBus.RDPRead8(Cardinal(First) + Cardinal(J * 2)));
+                    PutDataByte(FBus.RDPRead8(Cardinal(First) + Cardinal(J * 2) + 1));
+                  end;
+                EndData;
+              end
+              else if (Entries > 0) and (First < $800000) then
+                FBus.MarkRDPRead(Cardinal(First), Cardinal(Entries * 2));
+            end
+            else
+            begin
+              var Payload := Assigned(FOnDataIn) and (FOnDataIn() <> 0);
+              FDataBytes := 0;
+              if Payload or ReadsRDRAM then
+                for var J := 0 to Entries - 1 do
                 begin
-                  // Quad-coordinate loading expands S before tile-size addressing.
-                  // Standard TLUT tiles use size=4b; 8b/16b tiles leave sparse entries.
-                  var Stride := 8 shl Min(FTiles[I].Size, 2);
-                  var Address := (FTiles[I].TMEM * 8 + J * Stride + K * 2) and $FFF;
-                  FTMEM[Address] := Byte(V shr 8);
-                  FTMEM[(Address + 1) and $FFF] := Byte(V and $FF);
+                  var Source := First + Cardinal(J * 2);
+                  var V: Cardinal := 0;
+                  if Source + 1 < $800000 then
+                    if Payload then
+                    begin
+                      V := Cardinal(NextDataByte) shl 8;
+                      V := V or NextDataByte;
+                    end
+                    else
+                      V := (Cardinal(MemRead8(Cardinal(Source))) shl 8) or MemRead8(Cardinal(Source + 1));
+                  for var K := 0 to 3 do
+                  begin
+                    // Quad-coordinate loading expands S before tile-size addressing.
+                    // Standard TLUT tiles use size=4b; 8b/16b tiles leave sparse entries.
+                    var Stride := 8 shl Min(FTiles[I].Size, 2);
+                    var Address := (FTiles[I].TMEM * 8 + J * Stride + K * 2) and $FFF;
+                    FTMEM[Address] := Byte(V shr 8);
+                    FTMEM[(Address + 1) and $FFF] := Byte(V and $FF);
+                  end;
                 end;
-              end;
+            end;
           end;
         end
         else

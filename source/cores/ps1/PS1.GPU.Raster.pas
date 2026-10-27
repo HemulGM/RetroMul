@@ -11,26 +11,29 @@ type
     DrawMode, TextureWindow, AreaTopLeft, AreaBottomRight, Offset: Cardinal;
     MaskSet, MaskCheck, TextureDisableAllowed: Boolean;
   end;
+
   PPS1DrawEnvironment = ^TPS1DrawEnvironment;
 
   // Draws GP0 polygons, lines and rectangles into VRAM.
   TPS1Rasterizer = class
-  private const
+  private
+    const
     // 4x4 dither offsets added to 8-bit colors before truncation to 5 bits
     // (here so that the inline Shade can use them).
-    DitherTable: array[0..3, 0..3] of Integer = ((-4, 0, -3, 1), (2, -2, 3, -1), (-3, 1, -4, 0), (3, -1, 2, -2));
-  private type
-    TVertex = record
-      X, Y, R, G, B, U, V: Integer;
-    end;
+      DitherTable: array[0..3, 0..3] of Integer = ((-4, 0, -3, 1), (2, -2, 3, -1), (-3, 1, -4, 0), (3, -1, 2, -2));
+  private
+    type
+      TVertex = record
+        X, Y, R, G, B, U, V: Integer;
+      end;
 
-    TMode = record
-      Textured, Raw, Shaded, SemiTransparent, Dither: Boolean;
-      Blend, Depth, PageX, PageY: Integer;
-      WindowAndU, WindowOrU, WindowAndV, WindowOrV: Integer;
-      MaskOut: Word;
-      PixelWork: Integer;
-    end;
+      TMode = record
+        Textured, Raw, Shaded, SemiTransparent, Dither: Boolean;
+        Blend, Depth, PageX, PageY: Integer;
+        WindowAndU, WindowOrU, WindowAndV, WindowOrV: Integer;
+        MaskOut: Word;
+        PixelWork: Integer;
+      end;
   private
     FVRAM: PPS1VRAM;
     FEnv: PPS1DrawEnvironment;
@@ -299,9 +302,18 @@ begin
         B5 := OldB + B5 shr 2;
       end;
     end;
-    if R5 < 0 then R5 := 0 else if R5 > 31 then R5 := 31;
-    if G5 < 0 then G5 := 0 else if G5 > 31 then G5 := 31;
-    if B5 < 0 then B5 := 0 else if B5 > 31 then B5 := 31;
+    if R5 < 0 then
+      R5 := 0
+    else if R5 > 31 then
+      R5 := 31;
+    if G5 < 0 then
+      G5 := 0
+    else if G5 > 31 then
+      G5 := 31;
+    if B5 < 0 then
+      B5 := 0
+    else if B5 > 31 then
+      B5 := 31;
   end;
   FVRAM[Index] := Word(R5 or (G5 shl 5) or (B5 shl 10)) or Mask;
 end;
@@ -320,10 +332,14 @@ begin
   var MaxY := V0.Y;
   for var V in [V1, V2] do
   begin
-    if V.X < MinX then MinX := V.X;
-    if V.X > MaxX then MaxX := V.X;
-    if V.Y < MinY then MinY := V.Y;
-    if V.Y > MaxY then MaxY := V.Y;
+    if V.X < MinX then
+      MinX := V.X;
+    if V.X > MaxX then
+      MaxX := V.X;
+    if V.Y < MinY then
+      MinY := V.Y;
+    if V.Y > MaxY then
+      MaxY := V.Y;
   end;
   if (MaxX - MinX >= 1024) or (MaxY - MinY >= 512) then
     Exit;
@@ -347,12 +363,41 @@ begin
       Inc(PlaneCount);
       var A0, A1, A2, AO: Integer;
       case I of
-        0: begin A0 := V0.R; A1 := V1.R; A2 := V2.R; AO := O.R; end;
-        1: begin A0 := V0.G; A1 := V1.G; A2 := V2.G; AO := O.G; end;
-        2: begin A0 := V0.B; A1 := V1.B; A2 := V2.B; AO := O.B; end;
-        3: begin A0 := V0.U; A1 := V1.U; A2 := V2.U; AO := O.U; end;
+        0:
+          begin
+            A0 := V0.R;
+            A1 := V1.R;
+            A2 := V2.R;
+            AO := O.R;
+          end;
+        1:
+          begin
+            A0 := V0.G;
+            A1 := V1.G;
+            A2 := V2.G;
+            AO := O.G;
+          end;
+        2:
+          begin
+            A0 := V0.B;
+            A1 := V1.B;
+            A2 := V2.B;
+            AO := O.B;
+          end;
+        3:
+          begin
+            A0 := V0.U;
+            A1 := V1.U;
+            A2 := V2.U;
+            AO := O.U;
+          end;
       else
-        begin A0 := V0.V; A1 := V1.V; A2 := V2.V; AO := O.V; end;
+        begin
+          A0 := V0.V;
+          A1 := V1.V;
+          A2 := V2.V;
+          AO := O.V;
+        end;
       end;
       var NumX := Int64(A1 - A0) * (V2.Y - V0.Y) - Int64(A2 - A0) * (V1.Y - V0.Y);
       var NumY := Int64(A2 - A0) * (V1.X - V0.X) - Int64(A1 - A0) * (V2.X - V0.X);
@@ -365,9 +410,24 @@ begin
   P[0] := V0;
   P[1] := V1;
   P[2] := V2;
-  if P[1].Y < P[0].Y then begin var T := P[0]; P[0] := P[1]; P[1] := T; end;
-  if P[2].Y < P[1].Y then begin var T := P[1]; P[1] := P[2]; P[2] := T; end;
-  if P[1].Y < P[0].Y then begin var T := P[0]; P[0] := P[1]; P[1] := T; end;
+  if P[1].Y < P[0].Y then
+  begin
+    var T := P[0];
+    P[0] := P[1];
+    P[1] := T;
+  end;
+  if P[2].Y < P[1].Y then
+  begin
+    var T := P[1];
+    P[1] := P[2];
+    P[2] := T;
+  end;
+  if P[1].Y < P[0].Y then
+  begin
+    var T := P[0];
+    P[0] := P[1];
+    P[1] := T;
+  end;
   // The middle vertex lies left of the long edge when Side < 0.
   var Side := Int64(P[1].X - P[0].X) * (P[2].Y - P[0].Y) - Int64(P[2].X - P[0].X) * (P[1].Y - P[0].Y);
 
@@ -484,8 +544,10 @@ begin
       V[I].U := Integer(UV and $FF);
       V[I].V := Integer((UV shr 8) and $FF);
       case I of
-        0: Clut := UV shr 16;
-        1: Page := UV shr 16;
+        0:
+          Clut := UV shr 16;
+        1:
+          Page := UV shr 16;
       end;
     end;
   end;
@@ -683,3 +745,4 @@ begin
 end;
 
 end.
+

@@ -14,13 +14,11 @@ const
   PS1VideoClockNTSC = 53693175;
   PS1VideoClockPAL = 53203425;
   PS1CyclesPerSample = 768;
-
   PS1RAMSize = $200000;
   PS1RAMMask = PS1RAMSize - 1;
   PS1BIOSSize = $80000;
   PS1BIOSMask = PS1BIOSSize - 1;
   PS1ScratchpadSize = $400;
-
   PS1VRAMWidth = 1024;
   PS1VRAMHeight = 512;
 
@@ -28,6 +26,7 @@ type
   EPS1Error = class(Exception);
 
   TPS1VRAM = array[0..PS1VRAMWidth * PS1VRAMHeight - 1] of Word;
+
   PPS1VRAM = ^TPS1VRAM;
 
   // Fixed scheduler slots. The declaration order breaks ties between events
@@ -81,3 +80,4 @@ begin
 end;
 
 end.
+

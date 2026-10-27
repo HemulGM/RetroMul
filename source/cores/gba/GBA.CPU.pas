@@ -3,7 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, Core.Snapshots, GBA.Multiply;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots, GBA.Multiply,
+  HW.ARM.Shifter;
 
 type
   TARMRead = function(Address: Cardinal; Size: Integer): Cardinal of object;
@@ -64,7 +65,6 @@ type
     procedure SetPSR(Value: Cardinal);
     function SavedStatus: Cardinal; inline;
     procedure NZ(Value: Cardinal); inline;
-    function Shift(Value: Cardinal; Kind, Count: Integer; Immediate: Boolean; var Carry: Cardinal): Cardinal;
     function Operand(Op: Cardinal; var Carry: Cardinal): Cardinal; inline;
     procedure ExceptionEntry(Mode: Integer; Vector: Cardinal);
   public
@@ -103,15 +103,6 @@ end;
 function ARMSub(A, B: Cardinal): Cardinal;
 begin
   Result := Cardinal((UInt64(A) + UInt64($100000000) - B) and $FFFFFFFF);
-end;
-
-function Rotate(V: Cardinal; Count: Integer): Cardinal; inline;
-begin
-  Count := Count and 31;
-  if Count = 0 then
-    Result := V
-  else
-    Result := (V shr Count) or (V shl (32 - Count));
 end;
 
 function Bank(Mode: Cardinal): Integer; inline;
@@ -241,81 +232,12 @@ begin
     Result := not Result;
 end;
 
-function TGBAProcessor.Shift(Value: Cardinal; Kind, Count: Integer; Immediate: Boolean; var Carry: Cardinal): Cardinal;
-begin
-  Result := Value;
-  if (Count = 0) and not Immediate then
-    Exit;
-
-  case Kind of
-    0:
-      begin
-        if Count = 0 then
-          Exit;
-
-        if Count <= 32 then
-          Carry := (Value shr (32 - Count)) and 1
-        else
-          Carry := 0;
-        if Count < 32 then
-          Result := Value shl Count
-        else
-          Result := 0;
-      end;
-    1:
-      begin
-        if Count = 0 then
-          Count := 32;
-        if Count <= 32 then
-          Carry := (Value shr (Count - 1)) and 1
-        else
-          Carry := 0;
-        if Count < 32 then
-          Result := Value shr Count
-        else
-          Result := 0;
-      end;
-    2:
-      begin
-        if Count = 0 then
-          Count := 32;
-        if Count < 32 then
-        begin
-          Carry := (Value shr (Count - 1)) and 1;
-          Result := Value shr Count;
-          if Value and $80000000 <> 0 then
-            Result := Result or ($FFFFFFFF shl (32 - Count));
-        end
-        else
-        begin
-          Carry := Value shr 31;
-          Result := 0;
-          if Carry <> 0 then
-            Result := $FFFFFFFF;
-        end;
-      end;
-    3:
-      begin
-        if (Count = 0) and Immediate then
-        begin
-          Result := (Carry shl 31) or (Value shr 1);
-          Carry := Value and 1;
-        end
-        else
-        begin
-          Result := Rotate(Value, Count);
-          Carry := Result shr 31;
-        end;
-      end;
-  end;
-end;
-
 function TGBAProcessor.Operand(Op: Cardinal; var Carry: Cardinal): Cardinal;
 begin
   if Op and $02000000 <> 0 then
   begin
     var Count := Integer((Op shr 8) and 15) * 2;
-    Result := Rotate(Op and 255, Count);
+    Result := ARMRotateRight(Op and 255, Count);
     if Count <> 0 then
       Carry := Result shr 31;
     Exit;
@@ -332,7 +254,7 @@ begin
     if Op and 15 = 15 then
       Value := ARMAdd(Value, 4);
   end;
-  Result := Shift(Value, (Op shr 5) and 3, Count, Immediate, Carry);
+  Result := ARMShift(Value, (Op shr 5) and 3, Count, Immediate, Carry);
 end;
 
 procedure TGBAProcessor.ExceptionEntry(Mode: Integer; Vector: Cardinal);
@@ -517,7 +439,7 @@ begin
   begin
     var Offset := Op and $FFF;
     if Op and $02000000 <> 0 then
-      Offset := Shift(Reg(Op and 15), (Op shr 5) and 3, (Op shr 7) and 31, True, Carry);
+      Offset := ARMShift(Reg(Op and 15), (Op shr 5) and 3, (Op shr 7) and 31, True, Carry);
     var Base := Reg(RN);
     var Adjusted: Cardinal;
     if Op and $00800000 <> 0 then
@@ -1028,7 +950,7 @@ begin
   end
   else if Op and $E000 = 0 then
   begin
-    R[RD] := Shift(R[RS], (Op shr 11) and 3, (Op shr 6) and 31, True, Carry);
+    R[RD] := ARMShift(R[RS], (Op shr 11) and 3, (Op shr 6) and 31, True, Carry);
     NZ(R[RD]);
     PSR := (PSR and $DFFFFFFF) or (Carry shl 29);
   end
@@ -1060,13 +982,13 @@ begin
       1:
         V := V xor B;
       2, 3, 4:
-        V := Shift(V, Kind - 2, B and 255, False, Carry);
+        V := ARMShift(V, Kind - 2, B and 255, False, Carry);
       5:
         V := AddFlags(V, B, Carry);
       6:
         V := AddFlags(V, not B, Carry);
       7:
-        V := Shift(V, 3, B and 255, False, Carry);
+        V := ARMShift(V, 3, B and 255, False, Carry);
       8:
         V := V and B;
       9:

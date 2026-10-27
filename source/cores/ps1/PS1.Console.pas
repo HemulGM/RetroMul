@@ -3,9 +3,9 @@ unit PS1.Console;
 interface
 
 uses
-  System.SysUtils, System.Classes, System.UITypes, Core.Snapshots, Core.CD.Disc, PS1.Types,
-  PS1.Scheduler, PS1.Bus, PS1.GTE, PS1.CPU, PS1.DMA, PS1.Timers, PS1.SIO,
-  PS1.GPU, PS1.CDROM, PS1.SPU, PS1.MDEC, PS1.Exe;
+  System.SysUtils, System.Classes, System.UITypes, Core.Snapshots, Core.CD.Disc,
+  PS1.Types, PS1.Scheduler, PS1.Bus, PS1.GTE, PS1.CPU, PS1.DMA, PS1.Timers,
+  PS1.SIO, PS1.GPU, PS1.CDROM, PS1.SPU, PS1.MDEC, PS1.Exe;
 
 type
   TPS1Console = class(TPS1IOHandler)
@@ -250,15 +250,24 @@ var
 begin
   while FScheduler.TakeDue(Event, At) do
     case Event of
-      TPS1Event.GPU: FGPU.Event(At);
-      TPS1Event.Timer0: FTimers.Event(0, At);
-      TPS1Event.Timer1: FTimers.Event(1, At);
-      TPS1Event.Timer2: FTimers.Event(2, At);
-      TPS1Event.DMA: FDMA.Event(At);
-      TPS1Event.CDROM: FCDROM.Event(At);
-      TPS1Event.SPU: FSPU.Event(At);
-      TPS1Event.SIO0: FSIO0.Event(At);
-      TPS1Event.GPUDraw: FGPU.DrawEvent(At);
+      TPS1Event.GPU:
+        FGPU.Event(At);
+      TPS1Event.Timer0:
+        FTimers.Event(0, At);
+      TPS1Event.Timer1:
+        FTimers.Event(1, At);
+      TPS1Event.Timer2:
+        FTimers.Event(2, At);
+      TPS1Event.DMA:
+        FDMA.Event(At);
+      TPS1Event.CDROM:
+        FCDROM.Event(At);
+      TPS1Event.SPU:
+        FSPU.Event(At);
+      TPS1Event.SIO0:
+        FSIO0.Event(At);
+      TPS1Event.GPUDraw:
+        FGPU.DrawEvent(At);
     end;
 end;
 
@@ -283,20 +292,29 @@ begin
   Value := 0;
   Result := True;
   case Address of
-    $1F801040..$1F80104F: Value := FSIO0.Read(Address, Size);
-    $1F801050..$1F80105F: Value := FSIO1.Read(Address, Size);
-    $1F801070..$1F801073: Value := Narrow(FIStat, Address, Size);
-    $1F801074..$1F801077: Value := Narrow(FIMask, Address, Size);
-    $1F801080..$1F8010FF: Value := Narrow(FDMA.Read(Address and not 3), Address, Size);
-    $1F801100..$1F80112F: Value := Narrow(FTimers.Read(Address and not 3), Address, Size);
+    $1F801040..$1F80104F:
+      Value := FSIO0.Read(Address, Size);
+    $1F801050..$1F80105F:
+      Value := FSIO1.Read(Address, Size);
+    $1F801070..$1F801073:
+      Value := Narrow(FIStat, Address, Size);
+    $1F801074..$1F801077:
+      Value := Narrow(FIMask, Address, Size);
+    $1F801080..$1F8010FF:
+      Value := Narrow(FDMA.Read(Address and not 3), Address, Size);
+    $1F801100..$1F80112F:
+      Value := Narrow(FTimers.Read(Address and not 3), Address, Size);
     $1F801800..$1F801803:
       // 8-bit bus: wider accesses repeat the byte access, at the same
       // address unless DEV5 auto-increment is enabled.
       for var I := 0 to Size - 1 do
         Value := Value or (Cardinal(FCDROM.Read(CDROMAddress(Address, I))) shl (I * 8));
-    $1F801810..$1F801813: Value := Narrow(FGPU.ReadGP0, Address, Size);
-    $1F801814..$1F801817: Value := Narrow(FGPU.Status, Address, Size);
-    $1F801820..$1F801827: Value := Narrow(FMDEC.Read(Address and not 3), Address, Size);
+    $1F801810..$1F801813:
+      Value := Narrow(FGPU.ReadGP0, Address, Size);
+    $1F801814..$1F801817:
+      Value := Narrow(FGPU.Status, Address, Size);
+    $1F801820..$1F801827:
+      Value := Narrow(FMDEC.Read(Address and not 3), Address, Size);
     $1F801C00..$1F801FFF:
       begin
         Value := FSPU.Read(Address and not 1);
@@ -322,8 +340,10 @@ begin
   DispatchEvents;
   Result := True;
   case Address of
-    $1F801040..$1F80104F: FSIO0.Write(Address, Value, Size);
-    $1F801050..$1F80105F: FSIO1.Write(Address, Value, Size);
+    $1F801040..$1F80104F:
+      FSIO0.Write(Address, Value, Size);
+    $1F801050..$1F80105F:
+      FSIO1.Write(Address, Value, Size);
     $1F801070..$1F801073:
       begin
         FIStat := FIStat and Wide(Value, Address);
@@ -334,14 +354,19 @@ begin
         FIMask := Wide(Value, Address) and $7FF;
         UpdateIRQ;
       end;
-    $1F801080..$1F8010F7: FDMA.Write(Address and not 3, Wide(Value, Address));
-    $1F801100..$1F80112F: FTimers.Write(Address and not 3, Wide(Value, Address));
+    $1F801080..$1F8010F7:
+      FDMA.Write(Address and not 3, Wide(Value, Address));
+    $1F801100..$1F80112F:
+      FTimers.Write(Address and not 3, Wide(Value, Address));
     $1F801800..$1F801803:
       for var I := 0 to Size - 1 do
         FCDROM.Write(CDROMAddress(Address, I), Byte(Value shr (I * 8)));
-    $1F801810..$1F801813: FGPU.WriteGP0(Value);
-    $1F801814..$1F801817: FGPU.WriteGP1(Value);
-    $1F801820..$1F801827: FMDEC.Write(Address and not 3, Value);
+    $1F801810..$1F801813:
+      FGPU.WriteGP0(Value);
+    $1F801814..$1F801817:
+      FGPU.WriteGP1(Value);
+    $1F801820..$1F801827:
+      FMDEC.Write(Address and not 3, Value);
     $1F801C00..$1F801FFF:
       begin
         FSPU.Write(Address and not 1, Word(Value));
@@ -530,3 +555,4 @@ begin
 end;
 
 end.
+

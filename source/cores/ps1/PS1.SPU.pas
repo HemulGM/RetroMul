@@ -3,7 +3,8 @@ unit PS1.SPU;
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Snapshots, PS1.Types, PS1.Scheduler, PS1.DMA, PS1.CDROM.Audio;
+  System.SysUtils, System.Classes, Core.Snapshots, PS1.Types, PS1.Scheduler,
+  PS1.DMA, PS1.CDROM.Audio;
 
 const
   PS1SoundRAMSize = $80000;
@@ -177,14 +178,12 @@ const
   VoiceADSR2 = 5;
   VoiceLevel = 6;
   VoiceRepeat = 7;
-
   ControlCDAudio = $0001;
   ControlCDReverb = $0004;
   ControlIRQ = $0040;
   ControlReverb = $0080;
   ControlUnmute = $4000;
   ControlEnable = $8000;
-
   PhaseOff = 0;
   PhaseAttack = 1;
   PhaseDecay = 2;
@@ -198,7 +197,6 @@ const
   BatchCycles = 64 * PS1CyclesPerSample;
   // Output kept for the front end; older frames are dropped.
   OutputLimit = 2 * 44100;
-
   ADPCMPositive: array[0..4] of Integer = (0, 60, 115, 98, 122);
   ADPCMNegative: array[0..4] of Integer = (0, 0, -52, -55, -60);
 
@@ -307,8 +305,7 @@ end;
 
 // psx-spx "Envelope Operation depending on Shift/Step/Mode/Direction", one
 // 44100 Hz step. A rate of all ones (Step or Shift shl 2 = 7Fh) never steps.
-procedure EnvelopeStep(var Level, Counter: Integer; Exponential, Decrease, Negative: Boolean;
-  Shift, Step: Integer);
+procedure EnvelopeStep(var Level, Counter: Integer; Exponential, Decrease, Negative: Boolean; Shift, Step: Integer);
 begin
   if (Step or (Shift shl 2)) = $7F then
     Exit;
@@ -536,8 +533,7 @@ end;
 // One frame of a voice: interpolated ADPCM (or noise) after the envelope,
 // the left/right contributions, then the pitch counter, envelope and sweeps.
 // Previous is the output of the voice before (pitch modulation source).
-procedure TPS1SPU.TickVoice(Index: Integer; Noise, Modulate: Boolean; Previous: Integer;
-  out Left, Right: Integer);
+procedure TPS1SPU.TickVoice(Index: Integer; Noise, Modulate: Boolean; Previous: Integer; out Left, Right: Integer);
 begin
   var V: ^TPS1SPUVoice := @FVoices[Index];
   var Base := Index * 8;
@@ -671,17 +667,17 @@ var
   function Comb(A, B, C, D: Integer): Integer;
   begin
     Result := Clamp16(Sar(Int64(V(RvComb1)) * ReverbRead(R(A)) + Int64(V(RvComb2)) * ReverbRead(R(B)) +
-      Int64(V(RvComb3)) * ReverbRead(R(C)) + Int64(V(RvComb4)) * ReverbRead(R(D)), 15));
+        Int64(V(RvComb3)) * ReverbRead(R(C)) + Int64(V(RvComb4)) * ReverbRead(R(D)), 15));
   end;
 
   function AllPass(Value, Dest, Offset, Volume: Integer): Integer;
   begin
-    var Delayed := ReverbRead((Integer(FRegisters[Dest]) - Integer(FRegisters[Offset])) * 8);
+    var delayed := ReverbRead((Integer(FRegisters[Dest]) - Integer(FRegisters[Offset])) * 8);
     var Gain := V(Volume);
-    var X := Clamp16(Value - Sar32(Gain * Delayed, 15));
+    var X := Clamp16(Value - Sar32(Gain * delayed, 15));
     if Enabled then
       ReverbWrite(R(Dest), X);
-    Result := Clamp16(Sar32(X * Gain, 15) + Delayed);
+    Result := Clamp16(Sar32(X * Gain, 15) + delayed);
   end;
 
 begin
@@ -964,8 +960,12 @@ begin
         if (C and $20) <> 0 then
           Result := Result or $80;
         case TransferMode of
-          2: if Now >= FWriteBusyUntil then Result := Result or $100;
-          3: if Now >= FReadReadyAt then Result := Result or $200;
+          2:
+            if Now >= FWriteBusyUntil then
+              Result := Result or $100;
+          3:
+            if Now >= FReadReadyAt then
+              Result := Result or $200;
         end;
         if FWriteBusyUntil > Now then
           Result := Result or $400;
@@ -1015,7 +1015,7 @@ begin
         FKeyOff := FKeyOff or (Cardinal(Value and $FF) shl 16);
       end;
     // ENDX and SPUSTAT are read-only; current volumes follow the hardware.
-    RegEndX, RegEndX + 1, RegStatus, RegMainCurrentLeft, RegMainCurrentRight:
+      RegEndX, RegEndX + 1, RegStatus, RegMainCurrentLeft, RegMainCurrentRight:
       ;
     RegReverbBase:
       begin
@@ -1065,8 +1065,10 @@ end;
 function TPS1SPU.DMARequest(Channel: Integer): Boolean;
 begin
   case TransferMode of
-    2: Result := FScheduler.Now >= FWriteBusyUntil;
-    3: Result := FScheduler.Now >= FReadReadyAt;
+    2:
+      Result := FScheduler.Now >= FWriteBusyUntil;
+    3:
+      Result := FScheduler.Now >= FReadReadyAt;
   else
     Result := False;
   end;
@@ -1165,3 +1167,4 @@ begin
 end;
 
 end.
+

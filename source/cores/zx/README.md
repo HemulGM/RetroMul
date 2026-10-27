@@ -42,16 +42,17 @@ RS232/keypad devices remain outside the implementation.
 
 Tapes use the selected profile and 128K-family tapes start in that model's own
 48 BASIC ROM. SNA lacks a 16K/+2 model tag: a selected 16K is retained for a 48K
-container (its saved return address must be in installed RAM), and selected +2
-is retained for a 128K container. Other SNA files use the existing automatic
-48K/128K/Pentagon selection. Z80 v2/v3 hardware metadata selects its exact model;
+container (its saved return address must be in installed RAM). A 128K SNA
+retains any selected motherboard with compatible 128K paging, including expanded
+Pentagon/Scorpion/Profi profiles. Other SNA files use automatic 48K/128K/Pentagon selection. Z80 v2/v3 hardware metadata selects its exact model;
 mode 12 identifies +2, and byte 37 bit 7 maps 48K to 16K or Sinclair 128K to +2.
 16K Z80 files may contain only page 8 or include padded upper-memory pages.
 Ambiguous Z80 v1 and 48K SNA files retain selected 16K or Timex profiles, otherwise select 48K. Timex snapshots of Spectrum programs need the appropriate HOME emulator cartridge. Explicit Pentagon
 selection retains the existing snapshot override. TRD/SCL still auto-select
 Pentagon 128 unless an expanded Pentagon, Scorpion or Profi profile was selected.
 
-Native state version 21 stores a validated machine identifier and attached device state; earlier state
+Native state version 27 stores a validated machine identifier, attached device state,
+DMA USC bus continuation, MoonSound/FM/PCM/flash and eZX/MB SID state; earlier native state
 versions are rejected. Restoring a state selects the matching embedded ROM pair.
 Reset retains the current machine profile; frontend reset reloads the original
 media using its configured profile.
@@ -88,9 +89,9 @@ Early Ferranti TK90X boards, earlier/custom ROM revisions, printer, light pen,
 native Beta 48 adapters and electrical PAL-M/PAL-N color encoding are outside
 this MC16845 package's scope.
 
-The settings page starts with **32 ready presets** and a Custom entry. They cover
+The settings page starts with **37 ready presets** and a Custom entry. They cover
 all 21 machine profiles, TK frequency/language variants, Atarin on Pentagon 128K,
-Turbo Sound, Turbo Sound FM, Next-DAC, ULAplus and esxDOS configurations. Selecting a preset replaces the
+Turbo Sound, Turbo Sound FM, Next-DAC, General Sound 128K/512K, NeoGS 512K/2M/4M, ULAplus and esxDOS configurations. Selecting a preset replaces the
 machine, interface, sound, input and media preferences in the draft; master
 volume, rendering/shaders and button bindings are retained. Optional BIOS paths
 are reset to embedded firmware. A selected CF/SD image is retained for CF/SD
@@ -619,7 +620,7 @@ CPU/video/audio/tape hardware clocks relative to each other are unchanged.
 Sound, joystick, playback speed and write protection apply without reopening.
 Machine and service-ROM selection take effect when opening media. Current sound
 and write-protection preferences are reapplied after loading a native state;
-tape transport itself is restored from the state. Native state version is now 19 (TK timing/language, Gama PPI, Byte MMU/ROM gate, VI53 counters, KDI/PRO sector identity and existing device state).
+tape transport itself is restored from the state. Native state version 23 also preserves these TK/Gama/Byte/Profi devices alongside GS/NeoGS and the shared SD state.
 Defaults preserve the previous AY/ABC, full chip volumes, combined joystick,
 auto-load/auto-play, normal speed and writable-disk behaviour.
 
@@ -799,5 +800,270 @@ analog board calibration are outside this DAC component's precision target.
 No BIOS is required or added for the DAC. The original plain-Z80 diagnostic
 snapshot is in `H:/ROMS/zxspectrum/tests/next-dac/`, with its source in
 `codex-work/tests/ZXNextDACTests.dpr`. Firmware resources are unchanged.
-Native v20 and earlier states are rejected; standard SNA/Z80 imports remain
+Native v22 and earlier states are rejected; standard SNA/Z80 imports remain
 supported. Validation and source pins: [Next-DAC report](../../../codex-work/zx-nextdac/VALIDATION.md).
+
+## General Sound
+
+`Hardware/GeneralSound=true` attaches the classic GS with a separate native
+Z80 at 12 MHz, original GS 1.05b ROM (32 KiB embedded resource), RAM, periodic
+37.5 kHz interrupt, four DAC latches and four six-bit volume latches. Commands,
+MOD loading/conversion/playback, samples and Covox modes run in the guest ROM;
+there is no host command interpreter or host MOD playback library.
+
+`GeneralSoundRAMKB` is 128 (default; 0 is accepted for zero-initialized legacy
+configuration records) or 512. The original base board maps ROM at 0000..3FFF,
+fixed RAM at 4000..7FFF, and 32 KiB bank windows at 8000..FFFF. Page 0 is the
+whole ROM; fixed RAM aliases page 1's upper half. GS128 has pages 1..4.
+Classic GS512 has pages 1..15 and retains the documented missing 32 KiB
+region: 480 KiB is addressable, including the 16 KiB work area. The original
+ROM reports three or fourteen module pages, respectively. This is the classic
+decoder, not the corrected NeoGS memory controller.
+
+The host exchanges data/commands via B3/BB, with a shared data flag and a
+separate command flag. The upper host address byte is ignored. Internal ports
+decode A0..A3; handshake strobes on 2/3/5/A/B apply on IN and OUT. Port A uses
+the inverse of page-register bit 0; port B uses volume A bit 5. Sample reads
+through 6000..7FFF latch channel (address >> 8) & 3, including M1 fetches;
+writes and refresh do not latch a sample. A/B feed left and C/D right.
+
+The /5, /4 and /16 divider chain produces a 320-cycle, 50% duty INT signal.
+Integer rational conversion follows the selected motherboard's base clock;
+GS continues during Pentagon turbo/wait/BUSACK. Synchronization finishes
+the current GS instruction and repays its cycle overshoot. Sub-instruction
+host/GS ordering, asynchronous crystal startup phase, analog crossfeed,
+electrical bus contention and board filter calibration are not certified.
+The existing T-state PCM mixer/DC filters and expansion-volume slider mix GS.
+
+Settings include two GS presets, enable and RAM controls, and translated
+conflicts with divIDE ATA and B3 DAC aliases. divMMC and DAC profiles without
+B3 can coexist. A notice explains E0B3..EFB3 writes also reaching Pentagon
+1024SL EFF7; use explicit addresses such as 00B3. The motherboard's original
+decoder remains active. Whole-emulator reset/open resets both CPUs and GS
+RAM; physical GS boards can have independent reset wiring, which is not a
+separate host control here. Native v23 preserves both CPUs, installed GS RAM,
+handshake/data latches, sample/volume latches, IRQ and fractional clock/debt.
+Disabled GS allocates no secondary CPU/RAM and stores no GS payload.
+
+`GS-port Covox #B3` remains the old ideal direct DAC option. To execute GS
+firmware commands and its Covox mode, enable General Sound and leave that
+direct DAC option off. NeoGS is a separate board model (below). Overclocked
+classic GS revisions, custom ROM overrides and analog calibration remain
+separate work.
+
+Validation, reference pins, BIOS and authored diagnostics:
+[General Sound report](../../../codex-work/zx-generalsound/VALIDATION.md).
+
+## NeoGS (PCM / MP3 / SD / DMA / flash / FPGA)
+
+`Hardware/NeoGS=true` selects the NedoPC board independently of classic GS.
+`NeoGSRAMKB` accepts 512, 2048 (default, also 0 for legacy zeroed records) and
+4096 KiB. Three ready presets select these configurations. Both sound boards
+share B3/BB and cannot be attached together. divIDE and B3 DAC aliases also
+conflict; settings collect and translate every conflict before Apply/open.
+NeoGS can coexist with divMMC and has its own SD image and sector overlay.
+
+`ZX.NeoGS` derives from the existing GS CPU/mixer path, reusing the native
+Z80. The embedded complete 512 KiB firmware 1.11 executes its original loader,
+RAM test, command processor and MOD player without patches. It reports 14,
+62 and 126 module pages on 512 KiB, 2 MiB and 4 MiB boards. Guest software
+controls all four 16 KiB MMU windows, normal MPAG or independent EXPAG windows,
+ROM/RAM selection and RAMRO. The 10/12/20/24 MHz oscillator selection uses
+rational clocks. A separate 24 MHz timer has the published eight divisors;
+latched interrupt enables/requests prioritize timer, SD DMA and MP3 DMA,
+with FF/F7/EF vectors in IM0/IM2 (IM1 retains RST38).
+
+Sample reads at 6000..7FFF latch four or eight channels. Eight independent
+six-bit volume registers, stereo routing, four-channel panning and live INV7B
+feed the existing expansion-volume, T-state mixer and DC filtering. NeoGS
+internal ports decode the entire low byte, unlike classic GS's 4-bit aliases;
+OUT02/IN03 have no handshake effect. Compatibility strobe A uses raw PG2 D0
+and strobe B uses VOL4 D5. Host port 33 selects warm reset/NMI/LED with exact
+E0-mask decode. Warm reset retains RAM and mounted SD; host reset/open clears
+board RAM and restarts the ROM, preserving the mounted media overlay.
+
+`Hardware/NeoGSImage` attaches a raw 512-byte-sector card through `ZX.SDCard`,
+extracted from the existing divMMC protocol implementation. Both interfaces
+use the same tested SD initialization, SDSC/SDHC, read/write/multiblock/CRC
+logic and `ZX.BlockImage` immutable source plus sparse sector overlay. The
+adapter retains the source hash/read lock; the worker loads/saves a separate
+`.ngs` overlay atomically. Disk write protection applies to this card as well.
+SPI reads return the completed byte; port 14 also starts the next FF transfer.
+SPI follows the selected CPU clock; the timer follows its independent crystal.
+
+ZX DMA reads require ROMCS in 0000..3FFF, with the documented initial dummy
+read and prefetch. Writes to that region feed NeoGS even when motherboard
+RAM is mapped, preserving both writes. The pointer is 22-bit with installed
+RAM address-line mirroring. SD DMA receives one 512-byte block and two CRC
+bytes, then requests the sound CPU memory bus for a two-clock-per-byte FIFO
+burst. Its completion disables the one-shot and latches the SD interrupt.
+Native v25 stores both CPUs, MMU, clocks, samples/volumes, SPI pipeline,
+partially received SD/FIFO burst, DMA pointers/prefetch and mounted-card hash
+and overlay. Mounted media survives a state-driven NeoGS RAM-size change.
+
+`ZX.VS1011` implements the VS1011e MPEG Layer III profile in native Pascal.
+SCI on port 15 is a timed, big-endian four-byte transaction; SDI on port 14
+accepts a bounded MP3 stream. SCTRL controls XRESET, XCS and serial dividers;
+port 12 reports DREQ and control-SPI READY. The decoder handles MPEG-1/2/2.5
+CBR/VBR mono/stereo, bit reservoirs, volume/mute, reset, header/rate/time
+registers, WRAM access and sine/SCI/memory diagnostics. Audio joins the existing
+NeoGS/expansion mixer. MP3 DMA module 3 fetches 512 physical RAM bytes into its
+own FIFO at two CPU clocks per byte, honors DREQ while transmitting, and
+latches the EF interrupt. State v25 includes decoder overlap/filter history,
+compressed/PCM buffers, serial progress and partial DMA.
+
+`ZX.AM29F040` shares the board's existing 512 KiB flash array and implements
+AMD unlock/autoselect, byte programming (only 1-to-0), sector/chip erasure,
+suspend/resume, busy polling and operation timing. Configured ROM windows are
+writable through the flash command protocol. CPLD ports 40..7F, 80..BF and
+C0..FF provide unconfigured 32 KiB memory banking, nCONFIG/status and parallel
+FPGA data with the board's bit routing. Only published standard NedoPC
+bitstreams are accepted; an unknown image leaves nSTATUS low. A completed
+configuration schedules the sound-CPU reset at an instruction boundary.
+The original BIOS bootFPGA code performs its own CRC, unpacking and writes.
+
+A clean built-in image retains the previous configured-FPGA fast startup.
+Explicit cold reset, modified flash and persisted flash execute the original
+cold bootstrap. Reset preserves programmed bytes. The worker atomically saves
+completed flash writes beside the ZX configuration (`zx.neogs.flash`), separate
+from SD and game saves, loads them on the next session, and preserves them
+before loading a state that may remove the board. The embedded factory BIOS
+is unchanged. Native snapshots contain mutable flash and pending operations;
+older native v24 and earlier states are rejected. SNA/Z80 imports remain supported.
+
+The supported profile excludes arbitrary FPGA HDL, VSDSP application/plugin
+execution, MPEG layers I/II, WAV and free-format MP3. Bass/treble and analog
+attenuation are approximations, not a bit-exact model of the proprietary DSP
+or analog circuit. Sub-instruction WAIT/arbitration and analog calibration
+remain uncertified. The registry marks the implemented standard NeoGS profile;
+it does not claim a general-purpose FPGA or DSP emulator.
+
+[NeoGS MP3/programming validation and reference pins](../../../codex-work/zx-neogs-vs-flash/VALIDATION.md).
+[Earlier PCM/SD/DMA validation](../../../codex-work/zx-neogs/VALIDATION.md).
+
+
+## DMA Ultrasound Card
+
+The `dmausc` ready configuration selects Pentagon 128K with Witchcraft/Stranger
+DMA USC. `Hardware/DMAUSC=true` attaches the board to Sinclair 128K/+2/+2b/+3,
+Pentagon 128/512/1024, Scorpion 256 or Profi 512/1024. Unsupported motherboards
+produce a live settings conflict. The board has no BIOS or private sample RAM:
+its native 8237A reads/writes physical motherboard RAM. No firmware resource is needed.
+
+`ZX.DMAUSC` supplies four sample DACs with 6-bit volumes, two native readable
+8253s, bank latches, DMA requests and the board's EOP/timer IM2 interrupt vectors.
+Normal audio counters run at the motherboard base clock; the two interrupt
+counters run at half that clock. The controller supports masks, shared byte
+pointer, count/address wrap, auto-init, fixed/rotating priorities, demand/single/
+block/verify transfers and memory copy/fill. Software requests require block
+mode and bypass channel masks. Contiguous block transfers omit redundant high
+address cycles, and compressed timing omits S3.
+
+Use the documented `77` ports: DMA registers `0C77..FC77`, PITs `3D77/7D77/BD77/FD77`
+and `3E77/7E77/BE77/FE77`, bank latches `0777/1777/2777/3777`, volumes
+`3F77/7F77/BF77/FF77`, IRQ control `F777`. Decode aliases follow the published
+schematic and retain motherboard side effects; settings warn about Pentagon
+EFF7 aliases. Bank latches select 64 KiB groups, independent of CPU paging,
+with address-line mirroring at the selected motherboard's RAM capacity.
+
+`DMAUSCStereo=0/1/2` selects AD-left/BC-right (default), AB-left/CD-right or mono.
+All outputs use the existing expansion volume, DC filter and host PCM path.
+`DMAUSCULABypass=true` (default) is an explicit compatibility option for early
+players that write zero to IRQ control while still expecting frame interrupts.
+Disable it to emulate the complete DD18/DD19 interrupt controller: bit 0 masks
+EOP, bits 1/2 enable timer interrupts and bit 3 enables the ULA interrupt path.
+For example, EOP alone supplies IM2 vector 6F, and EOP with ULA supplies EF.
+The software option is not a claim that reset enables the schematic's ULA gate.
+
+DMA owns the bus between CPU machine cycles; video, other audio and interrupt
+timers continue. A long transfer can suspend an instruction across a frame.
+Native state v25 preserves its continuation journal, active DMA source latch,
+register byte pointer, both PITs, pending interrupts, sample latches, volumes
+and mixer phases. Worker reset, presets and settings persistence retain the
+installed hardware profile. A compatible 128K SNA retains the selected
+motherboard rather than silently changing its timing or expanded RAM.
+
+The acceptance scope is the standard card with fixed-high GATE/READY and no
+external cascaded DMA controller or input peripheral. Four physical analog
+outputs are mixed in software; analog voltage calibration, unusual DACK-polarity
+programming and pin-exact CPU/BUSRQ/INT edge timing remain uncertified.
+Original unmodified DMA Demo Planet/Technological players and sample data pass
+alongside register/timing, full 64K bus holds, snapshots and runtime-worker tests.
+
+[DMA USC validation and source hashes](../../../codex-work/zx-dmausc/VALIDATION.md).
+
+## ZXM-MoonSound (Mick revision 01)
+
+Enable `MoonSound` or choose **Pentagon 128K + ZXM-MoonSound**. The board has
+a native YMF278B at 33.8688 MHz, existing RetroMul OPL3 FM and 24 PCM voices
+at 44.1 kHz. PCM supports signed packed 8/12/16-bit samples, ROM/RAM headers,
+fractional pitch and interpolation, looping, envelopes, rate correction,
+pseudo reverb, DAMP, LFO, level interpolation and stereo pan/mix registers.
+The board uses DO2; voices routed exclusively to unconnected DO1 are silent.
+
+The complete 2 MiB YRW801 table is embedded as `ZX_MOON_WAVE`; an external
+BIOS file is unnecessary. This is sample data, not guest executable firmware.
+AM29F016D ID/read/program/sector and chip erase use the shared native AMD flash
+controller. Guest programming persists in `zx.moonsound.flash` beside
+the ZX configuration. Reset retains programmed flash and SRAM. The factory
+resource is immutable. Original MoonService 0.3a identifies the flash as 01/AD.
+
+There is 1 MiB external SRAM. Memory type 0 maps it at 200000..2FFFFF. Type 1
+maps MCS6 at 380000..39FFFF and MCS7 at 3A0000..3BFFFF, preserving the wired
+nineteen address lines on each 512 KiB SRAM; these windows are not a linear
+remapping of the entire RAM. Flash occupies 000000..1FFFFF in either mode.
+
+The low-byte decoder selects 7E/7F (PCM) and C4..C7 (FM); upper address bits
+are ignored. IORQG inhibits motherboard aliases, including even-port ULA and
+paging. The optional IRQ jumper is off by default; the board has no IM2 vector.
+Enabling it together with DMA USC is rejected as an interrupt-bus conflict.
+The PentEvo jumper can expose the board in TR-DOS; disk-controller I/O retains
+priority. Both jumper settings have localized controls and conflict/advisory
+messages. Presets and manual settings use the same validated configuration.
+
+MoonSound state (introduced in native v26) saves PCM/FM phases, SRAM, flash commands and clock
+remainders. FM pointer graphs are rebased when loading. Older native states
+are rejected; native states are architecture-local. SNA/Z80 interchange formats
+retain their existing behavior.
+
+Implementation follows the author's schematics/CPLD and Yamaha documentation.
+Independent YMFM vectors cover PCM format/loop/pitch at unity gain; existing
+FM output matches Nuked-OPL3 goldens. Envelope/effect and analog behavior are
+not certified bit-exact to a physical card. Other board revisions and CPLD/JTAG
+reprogramming are outside this profile. No external host audio library is linked.
+
+Sources, original player tests and regression results:
+[MoonSound validation](../../../codex-work/zx-moonsound/VALIDATION.md).
+
+## SID (eLeMeNt ZX / MB03+ application interface)
+
+Enable `SID` or select **Pentagon 128K + SID 6581 (eZX/MB)** / **SID 8580**.
+This attaches one chip using the existing native `C64.Sound.SID` synthesizer:
+three voices, ADSR, triangle/saw/pulse/noise, sync/ring modulation, volume DAC
+and model-dependent approximate filters. No SID BIOS or sample ROM is required.
+
+The full 16-bit ports are **6C3B** (index) and **6D3B** (read/write data).
+Original registers 00..1C are forwarded to the SID. Register **1F** bit 0 selects
+6581/8580; bit 1 selects PAL **985248 Hz** / NTSC **1022730 Hz**; bits 2..7 read
+zero. Switching preserves voices, envelopes and filter state. The clock ratio
+to the motherboard is rational and independent of Spectrum video timing and
+Pentagon CPU turbo. The optional multiple-chip register 20 leaves chip 0 selected;
+other reserved indices are ignored/read FF and do not alias original registers.
+POT inputs read FF. The index port has no claimed readback and returns FF.
+
+Settings define startup model/clock. Reset restores them; guest changes are
+saved in native states rather than written back to the startup configuration.
+Audio is mono through the expansion sound volume, with existing DC filtering.
+The board can coexist with AY, DAC, GS/NeoGS, DMA USC and MoonSound; it adds no
+IRQ. State v27 stores all oscillator/envelope/filter/DC/sample phases and latches.
+Earlier ZX native states are rejected; SNA/Z80 interchange formats are unchanged.
+
+This package implements the documented single-chip application interface, not
+the complete eZX/MB motherboard or SetUp port families 70/71/78/793B. Other SID
+cards (for example xxCF) are separate interfaces. The existing synthesizer is
+not certified bit-exact to physical SID analog circuits or the FPGA's internal
+pipelines/combined waveforms. Original Hood Z80 music routines are exercised
+without player patches; complete game/firmware boot is not implied.
+
+See [SID validation](../../../codex-work/zx-sid/VALIDATION.md) for primary
+documentation, regression hashes and reproducible tests.

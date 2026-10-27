@@ -4,8 +4,7 @@ interface
 
 uses
   RM.Platforms.Presentation, System.Classes, System.SysUtils, System.IniFiles,
-  System.Generics.Collections, FMX.Types, FMX.Controls, FMX.Layouts,
-  FMX.StdCtrls, FMX.Edit, FMX.ListBox, FMX.SpinBox, RM.Gamepad, Core.Platforms;
+  System.Generics.Collections, RM.Gamepad, Core.Platforms, RM.Settings.Builder;
 
 const
   SETTINGS_CATEGORY_GENERAL = 0;
@@ -37,34 +36,10 @@ const
   SETTINGS_PAGE_NEOGEOCD = RM.Platforms.Presentation.SETTINGS_PAGE_NEOGEOCD;
 
 type
-  TSettingsEditorClass = class of TControl;
-
-  TSettingsEditorKind = (sekSwitch, sekCombo, sekNumber, sekPath);
-
-  // The platform describes settings; the view owns controls, drafts and navigation.
-  TSettingsPageContext = class abstract
-  public
-    Owner: TComponent;
-    Store: TLayout;
-    PageId: Integer;
-    Draft: TMemIniFile;
-    ComboClass, NumberClass: TSettingsEditorClass;
-    OnRebuild, OnClearPath: TNotifyEvent;
-    function NewLabel: TLabel;
-    procedure CreateGroup(const Name, Caption: string);
-    function CreateOption(const Name, Caption, Detail: string; Kind: TSettingsEditorKind): TControl;
-    procedure Heading(const Name: string); virtual; abstract;
-    function Combo(const Name, Section, Key: string; const Labels, Values: array of string; const Default: string): TComboBox; virtual; abstract;
-    function Check(const Name, Section, Key: string; Default: Boolean): TSwitch; virtual; abstract;
-    function Number(const Name, Section, Key: string; Default, Max: Integer): TSpinBox; virtual; abstract;
-    function PathEdit(const Name, Section, Key, Default: string; Folder: Boolean): TEdit; virtual; abstract;
-    procedure PalettePreview(Palette, Scaling: TComboBox); virtual; abstract;
-    procedure BuildBindings(Port: Integer; const Device: string); virtual; abstract;
-  end;
-
   TSettingsPortOptions = record
-    RowName, Default: string;
+    RowName, Caption, Description, Default: string;
     Labels, Values: TArray<string>;
+    SingleLineDescription: Boolean;
   end;
 
   TSettingsPlatform = class
@@ -74,12 +49,11 @@ type
     PadLayout: TScreenGamepadLayout;
     Ports: Integer;
     constructor Create(const Info: TPlatformInfo);
-    procedure Initialize(Context: TSettingsPageContext); virtual;
-    procedure Configuration(Context: TSettingsPageContext); virtual;
-    procedure Video(Context: TSettingsPageContext); virtual;
-    procedure Audio(Context: TSettingsPageContext); virtual;
-    procedure Peripherals(Context: TSettingsPageContext); virtual;
-    procedure Expansion(Context: TSettingsPageContext); virtual;
+    procedure Configuration(Context: TSettingsPageBuilder); virtual;
+    procedure Video(Context: TSettingsPageBuilder); virtual;
+    procedure Audio(Context: TSettingsPageBuilder); virtual;
+    procedure Peripherals(Context: TSettingsPageBuilder); virtual;
+    procedure Expansion(Context: TSettingsPageBuilder); virtual;
     procedure Validate(Draft: TMemIniFile); virtual;
     function HasConfiguration: Boolean; virtual;
     function ChangeConfiguration(Draft: TMemIniFile; const Section, Key: string): Boolean; virtual;
@@ -87,6 +61,8 @@ type
     function PlayerCount(Draft: TMemIniFile): Integer; virtual;
     function PortOptions(Port: Integer): TSettingsPortOptions; virtual;
   end;
+
+  TSettingsPlatformClass = class of TSettingsPlatform;
 
   TSettingsPlatformRegistry = class
   private
@@ -104,121 +80,7 @@ type
 implementation
 
 uses
-  System.Types, System.Generics.Defaults, RM.Icons;
-
-function TSettingsPageContext.NewLabel: TLabel;
-begin
-  Result := TLabel.Create(Owner);
-  Result.StyledSettings := Result.StyledSettings - [TStyledSetting.Other];
-  Result.TextSettings.Trimming := TTextTrimming.Character;
-  Result.TextSettings.WordWrap := False;
-end;
-
-procedure TSettingsPageContext.CreateGroup(const Name, Caption: string);
-begin
-  if Owner.FindComponent('PanelGroup' + Name) <> nil then
-    Exit;
-  var Panel := TPanel.Create(Owner);
-  Panel.Name := 'PanelGroup' + Name;
-  Panel.Parent := Store;
-  Panel.StyleLookup := 'retromul_card';
-  Panel.Align := TAlignLayout.Top;
-  Panel.Margins.Bottom := 16;
-  Panel.Width := 900;
-  Panel.Height := 230;
-  Panel.Padding.Rect := TRectF.Create(16, 14, 16, 12);
-  var Title := NewLabel;
-  Title.Name := 'LabelGroup' + Name + 'Title';
-  Title.Parent := Panel;
-  Title.Align := TAlignLayout.Top;
-  Title.Height := 36;
-  Title.Margins.Bottom := 6;
-  Title.StyledSettings := Title.StyledSettings - [TStyledSetting.Size];
-  Title.TextSettings.Font.Size := 20;
-  Title.Text := Caption;
-end;
-
-function TSettingsPageContext.CreateOption(const Name, Caption, Detail: string; Kind: TSettingsEditorKind): TControl;
-begin
-  if Owner.FindComponent('Panel' + Name) <> nil then
-  begin
-    var Existing := Owner.FindComponent('Panel' + Name) as TPanel;
-    for var i := 0 to Existing.ChildrenCount - 1 do
-      if Existing.Children[i] is TControl then
-        if string(Existing.Children[i].Name).EndsWith('Editor') then
-          Exit(TControl(Existing.Children[i]));
-    var Editors := Owner.FindComponent('Layout' + Name + 'EditorContainer') as TLayout;
-    if (Editors <> nil) and (Editors.ChildrenCount > 0) then
-      Exit(TControl(Editors.Children[0]));
-    raise EInvalidOperation.Create('Settings row has no editor: ' + Name);
-  end;
-  var Panel := TPanel.Create(Owner);
-  Panel.Name := 'Panel' + Name;
-  Panel.Parent := Store;
-  Panel.StyleLookup := 'retromul_row';
-  Panel.Padding.Rect := TRectF.Create(16, 12, 16, 12);
-  Panel.Align := TAlignLayout.Top;
-  Panel.Height := 72;
-  Panel.Width := 868;
-  Panel.Margins.Bottom := 6;
-  var Text := TLayout.Create(Owner);
-  Text.Name := 'Layout' + Name + 'Text';
-  Text.Parent := Panel;
-  Text.Align := TAlignLayout.Client;
-  var Title := NewLabel;
-  Title.Name := 'Label' + Name + 'Title';
-  Title.Parent := Text;
-  Title.Align := TAlignLayout.Top;
-  Title.Height := 24;
-  Title.StyledSettings := Title.StyledSettings - [TStyledSetting.Size];
-  Title.TextSettings.Font.Size := 15;
-  Title.Text := Caption;
-  var Note := NewLabel;
-  Note.Name := 'Label' + Name + 'Detail';
-  Note.Parent := Text;
-  Note.Align := TAlignLayout.Client;
-  Note.Opacity := 0.72;
-  Note.Text := Detail;
-  case Kind of
-    sekSwitch:
-      Result := TSwitch.Create(Owner);
-    sekCombo:
-      Result := ComboClass.Create(Owner);
-    sekNumber:
-      Result := NumberClass.Create(Owner);
-    sekPath:
-      Result := TEdit.Create(Owner);
-  else
-    raise EArgumentOutOfRangeException.Create('Invalid settings editor kind');
-  end;
-  Result.Name := Copy(Result.ClassName, 2, MaxInt) + Name + 'Editor';
-  var Editors := TLayout.Create(Owner);
-  Editors.Name := 'Layout' + Name + 'EditorContainer';
-  Editors.Parent := Panel;
-  Editors.Align := TAlignLayout.Right;
-  Editors.Width := 220;
-  if Kind = sekSwitch then
-    Editors.Width := 64;
-  Editors.Margins.Rect := TRectF.Create(16, 8, 0, 8);
-  Result.Parent := Editors;
-  Result.Align := TAlignLayout.Client;
-  if Kind = sekPath then
-  begin
-    var Browse := TEditButton.Create(Owner);
-    Browse.Name := 'EditButton' + Name + 'Browse';
-    Browse.Parent := Result;
-    Browse.Width := 32;
-    Browse.Text := '…';
-    var Clear := TEditButton.Create(Owner);
-    Clear.Name := 'EditButton' + Name + 'Clear';
-    Clear.Parent := Result;
-    Clear.Width := 32;
-    Clear.Text := '×';
-    Clear.Hint := Translate('Clear');
-    Clear.TagObject := Result;
-    Clear.OnClick := OnClearPath;
-  end;
-end;
+  FMX.Types, System.Types, System.Generics.Defaults, RM.Icons;
 
 constructor TSettingsPlatform.Create(const Info: TPlatformInfo);
 begin
@@ -232,27 +94,23 @@ begin
   Ports := Info.Ports;
 end;
 
-procedure TSettingsPlatform.Initialize(Context: TSettingsPageContext);
+procedure TSettingsPlatform.Configuration(Context: TSettingsPageBuilder);
 begin
 end;
 
-procedure TSettingsPlatform.Configuration(Context: TSettingsPageContext);
+procedure TSettingsPlatform.Video(Context: TSettingsPageBuilder);
 begin
 end;
 
-procedure TSettingsPlatform.Video(Context: TSettingsPageContext);
+procedure TSettingsPlatform.Audio(Context: TSettingsPageBuilder);
 begin
 end;
 
-procedure TSettingsPlatform.Audio(Context: TSettingsPageContext);
+procedure TSettingsPlatform.Peripherals(Context: TSettingsPageBuilder);
 begin
 end;
 
-procedure TSettingsPlatform.Peripherals(Context: TSettingsPageContext);
-begin
-end;
-
-procedure TSettingsPlatform.Expansion(Context: TSettingsPageContext);
+procedure TSettingsPlatform.Expansion(Context: TSettingsPageBuilder);
 begin
 end;
 
@@ -282,9 +140,20 @@ end;
 
 function TSettingsPlatform.PortOptions(Port: Integer): TSettingsPortOptions;
 begin
+  Result.SingleLineDescription := False;
   Result.RowName := 'RowConnecteddevice26Port' + IntToStr(Port + 1);
   if Ports = 1 then
     Result.RowName := 'RowControllerPort' + IntToStr(Port + 1);
+  if Ports = 1 then
+  begin
+    Result.Caption := 'Controller';
+    Result.Description := 'Use the console''s built-in buttons.';
+  end
+  else
+  begin
+    Result.Caption := 'Connected device';
+    Result.Description := 'Controller connected to this port.';
+  end;
   Result.Labels := ['Gamepad', 'None'];
   Result.Values := ['pad', 'none'];
   Result.Default := 'pad';

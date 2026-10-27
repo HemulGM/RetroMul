@@ -1,0 +1,137 @@
+object SettingsPathTemplate: TSettingsPathTemplate
+  Size.Width = 900.000000000000000000
+  Size.Height = 72.000000000000000000
+  Size.PlatformDefault = False
+  object PanelSetting: TPanel
+    Align = Top
+    Padding.Left = 16.000000000000000000
+    Padding.Top = 12.000000000000000000
+    Padding.Right = 16.000000000000000000
+    Padding.Bottom = 12.000000000000000000
+    Margins.Bottom = 6.000000000000000000
+    Size.Width = 900.000000000000000000
+    Size.Height = 72.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'retromul_row'
+    object LayoutSettingText: TLayout
+      Align = Client
+      Size.Width = 632.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      object LabelSettingTitle: TLabel
+        Align = Top
+        StyledSettings = [Family, Style]
+        Size.Width = 632.000000000000000000
+        Size.Height = 24.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 15.000000000000000000
+        TextSettings.FontColor = claWhite
+        TextSettings.WordWrap = False
+        Text = 'Translation file'
+      end
+      object LabelSettingDetail: TLabel
+        Align = Client
+        StyledSettings = [Family, Style]
+        Opacity = 0.720000028610229500
+        Size.Width = 632.000000000000000000
+        Size.Height = 24.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 14.000000000000000000
+        TextSettings.FontColor = claWhite
+        Text = 
+          'Overrides the selected language. Leave empty to use the built-in' +
+          ' translation.'
+      end
+    end
+    object LayoutSettingEditorContainer: TLayout
+      Align = Right
+      Margins.Left = 16.000000000000000000
+      Position.X = 664.000000000000000000
+      Position.Y = 12.000000000000000000
+      Size.Width = 220.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      object EditSettingEditor: TEdit
+        Touch.InteractiveGestures = [LongTap, DoubleTap]
+        Align = Client
+        Margins.Top = 8.000000000000000000
+        Margins.Bottom = 8.000000000000000000
+        Size.Width = 220.000000000000000000
+        Size.Height = 32.000000000000000000
+        Size.PlatformDefault = False
+        object EditButtonSettingBrowse: TEditButton
+          Touch.InteractiveGestures = [LongTap]
+          CanFocus = False
+          Cursor = crArrow
+          Hint = 'Choose translation file'
+          Size.Width = 32.000000000000000000
+          Size.Height = 28.000000000000000000
+          Size.PlatformDefault = False
+          TabOrder = 0
+          object PathSettingBrowseIcon: TPath
+            Align = Center
+            Data.Path = {
+              18000000000000000000804000002041020000006666D6400000204102000000
+              6666D64000006041020000000000804000006041020000006666A63F00006041
+              020000006666A63F000020410200000000008040000020410300000000008040
+              000020410000000000004041000020410200000033336B410000204102000000
+              33336B410000604102000000000040410000604102000000CDCC144100006041
+              02000000CDCC1441000020410200000000004041000020410300000000004041
+              00002041000000000000A04100002041020000009A99B5410000204102000000
+              9A99B54100006041020000000000A041000060410200000066668A4100006041
+              0200000066668A4100002041020000000000A04100002041030000000000A041
+              00002041}
+            Fill.Kind = None
+            HitTest = False
+            Size.Width = 16.000000000000000000
+            Size.Height = 16.000000000000000000
+            Size.PlatformDefault = False
+            Stroke.Color = xFFE8ECF1
+            Stroke.Thickness = 1.600000023841858000
+            WrapMode = Fit
+          end
+          object PathFolderBrowseIcon: TPath
+            Align = Center
+            Data.Path = {
+              2A000000000000000000C84000002041020000000000C840E10B2B4102000000
+              6E17B64000003441020000000000A040000034410200000092E8894000003441
+              0200000000007040E10B2B410200000000007040000020410200000000007040
+              49F414410200000092E8894000000C41020000000000A04000000C4102000000
+              6E17B64000000C41020000000000C84049F41441020000000000C84000002041
+              030000000000C840000020410000000000003441000020410200000000003441
+              E10B2B4102000000E10B2B410000344102000000000020410000344102000000
+              49F41441000034410200000000000C41E10B2B410200000000000C4100002041
+              0200000000000C4149F414410200000049F4144100000C410200000000002041
+              00000C4102000000E10B2B4100000C41020000000000344149F4144102000000
+              0000344100002041030000000000344100002041000000000000704100003441
+              02000000E10B7B41000034410200000000008241E10B2B410200000000008241
+              00002041020000000000824149F4144102000000E10B7B4100000C4102000000
+              0000704100000C41020000001FF4644100000C410200000000005C4149F41441
+              0200000000005C41000020410200000000005C41E10B2B41020000001FF46441
+              00003441020000000000704100003441030000000000704100003441}
+            Fill.Color = xFFE8ECF1
+            HitTest = False
+            Size.Width = 16.000000000000000000
+            Size.Height = 16.000000000000000000
+            Size.PlatformDefault = False
+            Stroke.Kind = None
+            Visible = False
+            WrapMode = Fit
+          end
+        end
+        object EditButtonSettingClear: TEditButton
+          Touch.InteractiveGestures = [LongTap]
+          CanFocus = False
+          Cursor = crArrow
+          Hint = 'Clear'
+          Position.X = 32.000000000000000000
+          Size.Width = 32.000000000000000000
+          Size.Height = 28.000000000000000000
+          Size.PlatformDefault = False
+          TabOrder = 1
+          Text = #215
+        end
+      end
+    end
+  end
+end

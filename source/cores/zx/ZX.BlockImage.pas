@@ -14,6 +14,9 @@ type
     FChanges: TDictionary<Cardinal, TBytes>;
     FProtected, FDirty: Boolean;
     FCount: Cardinal;
+    // Derived immutable-source read cache, never persisted; overlay wins.
+    FReadCache: TBytes;
+    FCacheFirst, FCacheSectors: Cardinal;
   public
     constructor Create(Source: TStream; const KnownHash: TBytes = nil);
     destructor Destroy; override;
@@ -32,7 +35,7 @@ type
 implementation
 
 uses
-  System.Hash, System.Generics.Defaults;
+  System.Hash, System.Math, System.Generics.Defaults;
 
 class function TZXBlockImage.Identity(Source: TStream): TBytes;
 begin
@@ -87,8 +90,35 @@ begin
     Exit;
   end;
   SetLength(Data, 512);
-  FSource.Position := Int64(LBA) * 512;
-  FSource.ReadBuffer(Data[0], 512);
+  if (FCacheSectors = 0) or (LBA < FCacheFirst) or (LBA - FCacheFirst >= FCacheSectors) then
+  begin
+    // Read the requested sector first: its I/O failures must propagate unchanged.
+    var Sequential := (FCacheSectors <> 0) and (LBA = FCacheFirst + FCacheSectors);
+    FCacheSectors := 0;
+    FSource.Position := Int64(LBA) * 512;
+    FSource.ReadBuffer(Data[0], 512);
+    FCacheFirst := LBA;
+    if Length(FReadCache) < 512 then
+      SetLength(FReadCache, 512);
+    Move(Data[0], FReadCache[0], 512);
+    FCacheSectors := 1;
+    // Random misses stay sector-sized; sequential access enables 64 KiB read-ahead.
+    var Count: Cardinal := 1;
+    if Sequential then
+      Count := Min(Cardinal(128), FCount - LBA);
+    if Count > 1 then
+    try
+      SetLength(FReadCache, Count * 512);
+      FSource.ReadBuffer(FReadCache[512], (Count - 1) * 512);
+      FCacheSectors := Count;
+    except
+      // A speculative neighbour failure cannot invalidate the requested sector
+      // or surface an error before that neighbour is actually requested.
+      FCacheSectors := 1;
+    end;
+  end
+  else
+    Move(FReadCache[(LBA - FCacheFirst) * 512], Data[0], 512);
 end;
 
 function TZXBlockImage.WriteSector(LBA: Cardinal; const Data: TBytes): Boolean;

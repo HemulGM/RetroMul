@@ -410,9 +410,15 @@ begin
   if FTransfer = 2 then
     Result := Result or $08000000;
   case FDMADirection of
-    1: if FFIFOWords < FIFOSize then Result := Result or $02000000;
-    2: if Empty then Result := Result or $02000000;
-    3: if (FTransfer = 2) and not Busy then Result := Result or $02000000;
+    1:
+      if FFIFOWords < FIFOSize then
+        Result := Result or $02000000;
+    2:
+      if Empty then
+        Result := Result or $02000000;
+    3:
+      if (FTransfer = 2) and not Busy then
+        Result := Result or $02000000;
   end;
   Result := Result or (FDMADirection shl 29);
   if OddField then
@@ -497,8 +503,10 @@ begin
         if (Op and $18) = 0 then
           Inc(Result);
       end;
-    4: Result := 4;
-    5, 6: Result := 3;
+    4:
+      Result := 4;
+    5, 6:
+      Result := 3;
   else
     if Op = $02 then
       Result := 3
@@ -613,8 +621,10 @@ begin
       end;
   else
     case Op of
-      $01: FRaster.InvalidateClut;
-      $02: Fill;
+      $01:
+        FRaster.InvalidateClut;
+      $02:
+        Fill;
       $1F:
         if not FInterrupt then
         begin
@@ -636,10 +646,14 @@ begin
         if FEnv.TextureDisableAllowed then
           FEnv.DrawMode := FEnv.DrawMode or (Word_ and $800);
       end;
-    $E2: FEnv.TextureWindow := Word_ and $FFFFF;
-    $E3: FEnv.AreaTopLeft := Word_ and $FFFFF;
-    $E4: FEnv.AreaBottomRight := Word_ and $FFFFF;
-    $E5: FEnv.Offset := Word_ and $3FFFFF;
+    $E2:
+      FEnv.TextureWindow := Word_ and $FFFFF;
+    $E3:
+      FEnv.AreaTopLeft := Word_ and $FFFFF;
+    $E4:
+      FEnv.AreaBottomRight := Word_ and $FFFFF;
+    $E5:
+      FEnv.Offset := Word_ and $3FFFFF;
     $E6:
       begin
         FEnv.MaskSet := (Word_ and 1) <> 0;
@@ -752,12 +766,18 @@ end;
 procedure TPS1GPU.ReadRegister(Index: Cardinal);
 begin
   case Index and $F of
-    2: FRead := FEnv.TextureWindow;
-    3: FRead := FEnv.AreaTopLeft;
-    4: FRead := FEnv.AreaBottomRight;
-    5: FRead := FEnv.Offset;
-    7: FRead := 2;
-    8: FRead := 0;
+    2:
+      FRead := FEnv.TextureWindow;
+    3:
+      FRead := FEnv.AreaTopLeft;
+    4:
+      FRead := FEnv.AreaBottomRight;
+    5:
+      FRead := FEnv.Offset;
+    7:
+      FRead := 2;
+    8:
+      FRead := 0;
   end;
 end;
 
@@ -799,28 +819,39 @@ begin
         ResetCommands;
         FRaster.InvalidateClut;
       end;
-    $02: FInterrupt := False;
-    $03: FDisplayDisabled := (Value and 1) <> 0;
-    $04: FDMADirection := Value and 3;
-    $05: FDisplayStart := Value and $7FFFF;
+    $02:
+      FInterrupt := False;
+    $03:
+      FDisplayDisabled := (Value and 1) <> 0;
+    $04:
+      FDMADirection := Value and 3;
+    $05:
+      FDisplayStart := Value and $7FFFF;
     $06:
       begin
         FHorizontalRange := Value and $FFFFFF;
         UpdateBlankRange;
       end;
-    $07: FVerticalRange := Value and $FFFFF;
-    $08: SetDisplayMode(Value);
-    $09: FEnv.TextureDisableAllowed := (Value and 1) <> 0;
-    $10..$1F: ReadRegister(Value and $FFFFFF);
+    $07:
+      FVerticalRange := Value and $FFFFF;
+    $08:
+      SetDisplayMode(Value);
+    $09:
+      FEnv.TextureDisableAllowed := (Value and 1) <> 0;
+    $10..$1F:
+      ReadRegister(Value and $FFFFFF);
   end;
 end;
 
 function TPS1GPU.DMARequest(Channel: Integer): Boolean;
 begin
   case FDMADirection of
-    1: Result := (FTransfer <> 2) and (FFIFOWords < FIFOSize);
-    2: Result := FIFOEmpty and (FTransfer <> 2);
-    3: Result := (FTransfer = 2) and not Busy;
+    1:
+      Result := (FTransfer <> 2) and (FFIFOWords < FIFOSize);
+    2:
+      Result := FIFOEmpty and (FTransfer <> 2);
+    3:
+      Result := (FTransfer = 2) and not Busy;
   else
     Result := False;
   end;
@@ -967,3 +998,4 @@ initialization
   InitColor15;
 
 end.
+

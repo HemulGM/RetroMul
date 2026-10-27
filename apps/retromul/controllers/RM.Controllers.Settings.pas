@@ -272,9 +272,6 @@ begin
     Exit;
 
   FState.Help.WasPaused := FState.Session.Emulation.IsPaused or FState.Session.UserPaused or FState.Session.AutoPaused;
-  FState.Help.FullScreen := FView.FullScreen;
-  if FView.FullScreen then
-    FView.SwitchFullScreen;
   FView.FormDeactivate(FView);
   FState.Session.Emulation.Pause;
   var Players := TPlatformRegistry.Require(FState.Input.SystemId).Ports;
@@ -313,8 +310,6 @@ begin
     FreeAndNil(FState.Help.View);
     if not FState.Help.WasPaused then
       FState.Session.Emulation.Resume;
-    if FState.Help.FullScreen then
-      FView.SwitchFullScreen;
     raise;
   end;
 
@@ -367,8 +362,6 @@ begin
       end
       else
       begin
-        if FState.Help.FullScreen and (FState.Session.Emulation <> nil) and not FState.Browser.ViewingLibrary then
-          FView.SwitchFullScreen;
         FView.FormActivate(FView);
         FView.LayoutClient.SetFocus;
       end;

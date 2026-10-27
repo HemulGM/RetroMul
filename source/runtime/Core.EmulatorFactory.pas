@@ -19,7 +19,34 @@ uses
   Core.Adapter.SG1000, Core.Adapter.NES, Core.Adapter.GB, Core.Adapter.GBC,
   Core.Adapter.N64, Core.Adapter.MD, Core.Adapter.GBA, Core.Adapter.SNES,
   Core.Adapter.NeoGeo, NeoGeo.Cartridge, Core.Adapter.Saturn, Core.Adapter.NGP,
-  Core.Adapter.CPS, CPS.RomSets, Core.Adapter.ZX, Core.Adapter.PS1, Core.Adapter.PS2, Core.DVD.Image;
+  Core.Adapter.CPS, CPS.RomSets, Core.Adapter.ZX, Core.Adapter.PS1,
+  Core.Adapter.PSP, Core.PSP.Archive, PSP.Media, Core.Adapter.DC, DC.ELF,
+  System.StrUtils, Core.Adapter.MSX, MSX.Machine, MSX.Cartridge, Core.Adapter.PS2, Core.DVD.Image;
+
+// The first disc named by an M3U playlist (as written); restores the stream position.
+function FirstPlaylistEntry(Stream: TStream): string;
+begin
+  Result := '';
+  var Start := Stream.Position;
+  try
+    var Size := Stream.Size - Start;
+    if Size > 64 * 1024 then
+      Size := 64 * 1024;
+    var Data: TBytes;
+    SetLength(Data, Size);
+    if Size > 0 then
+      Stream.ReadBuffer(Data[0], Size);
+    for var Line in TEncoding.UTF8.GetString(Data).Split([#13, #10]) do
+    begin
+      var Entry := Line.Trim;
+      if (Entry = '') or Entry.StartsWith('#') then
+        Continue;
+      Exit(Entry.DeQuotedString('"'));
+    end;
+  finally
+    Stream.Position := Start;
+  end;
+end;
 
 function CreateEmulationCore(const FileName: string): IEmulationCore;
 begin
@@ -36,6 +63,11 @@ function CreateEmulationCore(Stream: TStream; const Storage: IStorage; const Rom
 begin
   // Disc streams exceed cartridge limits; keep them on disk and read sectors.
   var SourceName := RomName;
+  var MSXHint := -1;
+  var FolderHint := RomName.ToLower.Replace('\', '/');
+  if FolderHint.Contains('/msx1/') or FolderHint.Contains('/msx/') then MSXHint := Ord(MSX1);
+  if FolderHint.Contains('/msx2/') then MSXHint := Ord(MSX2);
+  if FolderHint.Contains('/msx2plus/') or FolderHint.Contains('/msx2+/') then MSXHint := Ord(MSX2Plus);
   if (Storage <> nil) and RomName.StartsWith('content://', True) then
     SourceName := Storage.Describe(RomName).Name;
 
@@ -44,11 +76,79 @@ begin
   if PS2 <> nil then
     Exit(PS2);
 
+  // ELF is shared by PSP and Dreamcast; use the existing SH-4 header probe.
+  if SameText(ExtractFileExt(SourceName), ROM_EXTENSION_ELF) then
+  begin
+    var SavedPosition := Stream.Position;
+    var Header: TBytes;
+    SetLength(Header, 52);
+    try
+      SetLength(Header, Stream.Read(Header[0], Length(Header)));
+    finally
+      Stream.Position := SavedPosition;
+    end;
+    if IsDCELF(Header) then
+      Exit(TDCCoreAdapter.Create(Stream, Storage, RomName));
+  end;
+
+  // PSP executables and UMD must be dispatched before generic CD/cartridge
+  // readers, whose sector assumptions and 64 MiB cartridge limit differ.
+  if SameText(ExtractFileExt(SourceName), ROM_EXTENSION_PBP) or
+    SameText(ExtractFileExt(SourceName), ROM_EXTENSION_ELF) or
+    SameText(ExtractFileExt(SourceName), ROM_EXTENSION_PRX) or
+    SameText(ExtractFileExt(SourceName), ROM_EXTENSION_CSO) then
+    Exit(TPSPCoreAdapter.Create(Stream, Storage, RomName));
+  if SameText(ExtractFileExt(SourceName), ROM_EXTENSION_ISO) and TPSPDisc.Recognizes(Stream) then
+  begin
+    var SavedPosition := Stream.Position;
+    var PSPDisc := TPSPDisc.Create(Stream);
+    try
+      if PSPDisc.IsPSP then Exit(TPSPCoreAdapter.Create(Stream, Storage, RomName));
+    finally
+      PSPDisc.Free;
+      Stream.Position := SavedPosition;
+    end;
+  end;
+  if SameText(ExtractFileExt(SourceName), ROM_EXTENSION_ZIP) and IsPSPArchive(Stream) then
+    Exit(TPSPCoreAdapter.Create(Stream, Storage, RomName));
+
+  // GD-ROM and DiscJuggler images only hold Dreamcast discs.
+  if SameText(ExtractFileExt(SourceName), ROM_EXTENSION_GDI) or
+    SameText(ExtractFileExt(SourceName), ROM_EXTENSION_CDI) then
+  begin
+    var DiscStorage := Storage;
+    if DiscStorage = nil then
+      DiscStorage := TStorage.Default;
+    var Disc := TCDDisc.Create(Stream, DiscStorage, RomName);
+    try
+      if not TDCCoreAdapter.IsDCDisc(Disc) then
+        raise EReadError.Create('Not a Dreamcast disc: the boot track lacks the SEGA SEGAKATANA identifier');
+    except
+      Disc.Free;
+      raise;
+    end;
+    Exit(TDCCoreAdapter.Create(Stream, DiscStorage, RomName, Disc));
+  end;
+
+  // Playlists: Dreamcast in its ROM folder or for GD-ROM/DiscJuggler images,
+  // else PlayStation.
+  if SameText(ExtractFileExt(SourceName), ROM_EXTENSION_M3U) then
+  begin
+    var PlaylistFolder := ExtractFileName(ExcludeTrailingPathDelimiter(ExtractFilePath(SourceName)));
+    if SameText(PlaylistFolder, ROM_SYSTEM_DC) or SameText(PlaylistFolder, 'dreamcast') or
+      MatchText(ExtractFileExt(FirstPlaylistEntry(Stream)), [ROM_EXTENSION_GDI, ROM_EXTENSION_CDI]) then
+      Exit(TDCCoreAdapter.Create(Stream, Storage, RomName));
+    Exit(TPS1CoreAdapter.Create(Stream, Storage, RomName));
+  end;
+
   // A raw single-track .bin is a disc, not a cartridge (CD sync at sector 0).
   var RawDisc := SameText(ExtractFileExt(SourceName), ROM_EXTENSION_BIN) and IsCDRawImage(Stream);
+  var ZipDisc := SameText(ExtractFileExt(SourceName), ROM_EXTENSION_ZIP) and TCDDisc.IsDiscZip(Stream);
   if SameText(ExtractFileExt(SourceName), ROM_EXTENSION_CUE) or
     SameText(ExtractFileExt(SourceName), ROM_EXTENSION_ISO) or
-    SameText(ExtractFileExt(SourceName), ROM_EXTENSION_CHD) or RawDisc then
+    SameText(ExtractFileExt(SourceName), ROM_EXTENSION_CHD) or
+    SameText(ExtractFileExt(SourceName), ROM_EXTENSION_MDS) or
+    SameText(ExtractFileExt(SourceName), ROM_EXTENSION_NRG) or RawDisc or ZipDisc then
   begin
     // A location is only a hint. Confirm the native NEC boot string in the first
     // data track so generic .cue/.iso/.chd still select the correct CD family.
@@ -60,6 +160,12 @@ begin
     var IsSegaCD := False;
     var IsSaturn := False;
     try
+      if TDCCoreAdapter.IsDCDisc(Disc) then
+      begin
+        var OwnedDisc := Disc;
+        Disc := nil;
+        Exit(TDCCoreAdapter.Create(Stream, DiscStorage, RomName, OwnedDisc));
+      end;
       for var T := 1 to Disc.TrackCount do
       begin
         var Track := Disc.Track(T);
@@ -172,7 +278,7 @@ begin
           Continue;
 
         var BinaryCartridge := False;
-        if SameText(ExtractFileExt(Name), '.bin') and
+        if MatchText(ExtractFileExt(Name), ['.bin', '.rom']) and
           (Archive.FileInfo[i].UncompressedSize <= ROM_MAX_SIZE) then
         begin
           var Probe: TBytes;
@@ -180,11 +286,12 @@ begin
           var ProbeFormat := DetectRom(Probe);
           BinaryCartridge := not (ProbeFormat.System in [TRomSystem.Unknown, TRomSystem.NeoGeo]);
         end;
-        if CartridgeArchiveEntry(Name, Archive.FileInfo[i].UncompressedSize) or BinaryCartridge then
+        var MSXEntry := (MSXHint >= 0) and MatchText(ExtractFileExt(Name), ['.rom','.wav']);
+        if CartridgeArchiveEntry(Name, Archive.FileInfo[i].UncompressedSize) or BinaryCartridge or MSXEntry then
         begin
           if Candidate >= 0 then
           begin
-            if not IsSevenZip then
+            if not IsSevenZip and (MSXHint < 0) then
             begin
               var OldName := Archive.FileNames[Candidate];
               var NewDisk := SameText(ExtractFileExt(Name), '.trd') or SameText(ExtractFileExt(Name), '.scl') or SameText(ExtractFileExt(Name), '.dsk');
@@ -234,6 +341,30 @@ begin
     end;
   end;
 
+  if SameText(ExtractFileExt(SourceName), '.mx1') and (MSXHint < 0) then MSXHint := Ord(MSX1);
+  if SameText(ExtractFileExt(SourceName), '.mx2') and (MSXHint < 0) then MSXHint := Ord(MSX2);
+  if SameText(ExtractFileExt(SourceName), '.mxp') then MSXHint := Ord(MSX2Plus);
+  if SameText(ExtractFileExt(SourceName),'.cas') then
+  begin
+    if MSXHint<0 then MSXHint:=Ord(MSX1);
+    Exit(TMSXCoreAdapter.Create(Data,TMSXModel(MSXHint),Storage,RomName,CASMedia));
+  end;
+  if (MSXHint>=0) and SameText(ExtractFileExt(SourceName),'.wav') then
+    Exit(TMSXCoreAdapter.Create(Data,TMSXModel(MSXHint),Storage,RomName,WAVMedia));
+  var MSXDisk:=SameText(ExtractFileExt(SourceName),'.dsk') and (MSXHint>=0);
+  // Outside a system folder, only claim a raw FAT image with a valid MSX BPB.
+  // CPC containers and the historic SF-7000 160 KiB dispatch keep their paths.
+  if SameText(ExtractFileExt(SourceName),'.dsk') and (MSXHint<0) and
+    (Length(Data)>=320*1024) and (Length(Data)<=86*2*9*512) and
+    ((Data[0]=$EB) or (Data[0]=$E9)) and (Data[11]=0) and (Data[12]=2) and
+    (Data[24] in [8,9]) and (Data[25]=0) and (Data[26] in [1,2]) and (Data[27]=0) and
+    (Length(Data) mod (512*Data[24]*Data[26])=0) then
+  begin MSXDisk:=True; MSXHint:=Ord(MSX2);end;
+  if MSXDisk then Exit(TMSXCoreAdapter.Create(Data,TMSXModel(MSXHint),Storage,RomName,DiskMedia));
+  if (MSXHint >= 0) and
+    (TMSXCartridge.Recognizes(Data) or MatchText(ExtractFileExt(SourceName), ['.rom', '.mx1', '.mx2', '.mxp'])) then
+    Exit(TMSXCoreAdapter.Create(Data, TMSXModel(MSXHint), Storage, RomName));
+
   if SameText(ExtractFileExt(SourceName), ROM_EXTENSION_PCE) or
     SameText(ExtractFileExt(SourceName), ROM_EXTENSION_SGX) then
   begin
@@ -260,12 +391,7 @@ begin
     RomName.ToLower.Contains('(sf-7000)') or RomName.ToLower.Contains('initial program loader'));
   if IsZXImageName(SourceName) and not SegaDisk then
   begin
-    var ZXStream := TBytesStream.Create(Data);
-    try
-      Result := TZXCoreAdapter.Create(ZXStream, Storage, RomName, SourceName);
-    finally
-      ZXStream.Free;
-    end;
+    Result := TZXCoreAdapter.CreateOwned(Data, Storage, RomName, SourceName);
     Exit;
   end;
 
@@ -308,6 +434,12 @@ begin
   var Input := TBytesStream.Create(Data);
   try
     case Format.System of
+      TRomSystem.MSX1:
+        Result := TMSXCoreAdapter.Create(Data, MSX1, Storage, RomName);
+      TRomSystem.MSX2:
+        Result := TMSXCoreAdapter.Create(Data, MSX2, Storage, RomName);
+      TRomSystem.MSX2Plus:
+        Result := TMSXCoreAdapter.Create(Data, MSX2Plus, Storage, RomName);
       TRomSystem.SG1000, TRomSystem.SC3000:
         Result := TSGCoreAdapter.Create(Input, Storage, RomName, Format.System = TRomSystem.SC3000);
       TRomSystem.SF7000:
@@ -338,6 +470,8 @@ begin
         Result := TSaturnCoreAdapter.Create(Input, Storage, RomName);
       TRomSystem.PS1:
         Result := TPS1CoreAdapter.Create(Input, Storage, RomName);
+      TRomSystem.DC:
+        Result := TDCCoreAdapter.Create(Input, Storage, RomName);
       TRomSystem.SNES:
         Result := TSnesCoreAdapter.Create(Input, Storage, RomName);
     end;

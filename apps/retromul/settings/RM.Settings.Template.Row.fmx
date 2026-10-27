@@ -1,0 +1,62 @@
+object SettingsRowTemplate: TSettingsRowTemplate
+  Size.Width = 900.000000000000000000
+  Size.Height = 72.000000000000000000
+  Size.PlatformDefault = False
+  object PanelSetting: TPanel
+    Align = Top
+    Padding.Left = 16.000000000000000000
+    Padding.Top = 12.000000000000000000
+    Padding.Right = 16.000000000000000000
+    Padding.Bottom = 12.000000000000000000
+    Margins.Bottom = 6.000000000000000000
+    Size.Width = 900.000000000000000000
+    Size.Height = 72.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'retromul_row'
+    object LayoutSettingText: TLayout
+      Align = Client
+      Size.Width = 632.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      object LabelSettingTitle: TLabel
+        Align = Top
+        StyledSettings = [Family, Style]
+        Size.Width = 632.000000000000000000
+        Size.Height = 24.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 15.000000000000000000
+        TextSettings.FontColor = claWhite
+        TextSettings.WordWrap = False
+        Text = 'Language'
+      end
+      object LabelSettingDetail: TLabel
+        Align = Client
+        StyledSettings = [Family, Style]
+        Opacity = 0.720000028610229500
+        Size.Width = 632.000000000000000000
+        Size.Height = 24.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 14.000000000000000000
+        TextSettings.FontColor = claWhite
+        Text = 'Detected on first launch. Your selection is saved.'
+      end
+    end
+    object LayoutSettingEditorContainer: TLayout
+      Align = Right
+      Margins.Left = 16.000000000000000000
+      Position.X = 664.000000000000000000
+      Position.Y = 12.000000000000000000
+      Size.Width = 220.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      object LayoutSettingEditorSlot: TLayout
+        Align = Client
+        Margins.Top = 8.000000000000000000
+        Margins.Bottom = 8.000000000000000000
+        Size.Width = 220.000000000000000000
+        Size.Height = 32.000000000000000000
+        Size.PlatformDefault = False
+      end
+    end
+  end
+end

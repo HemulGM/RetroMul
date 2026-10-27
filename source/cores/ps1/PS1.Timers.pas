@@ -9,18 +9,21 @@ type
   // Continuous dot clock count at a CPU cycle, and the first cycle at which
   // the count reaches a value (assuming the current video mode persists).
   TPS1DotCount = function(Time: Int64): Int64 of object;
+
   TPS1DotTime = function(Count: Int64): Int64 of object;
 
   // Root counters 0..2. Counters advance lazily between synchronization
   // points: register accesses, blanking edges and scheduled IRQ reaches.
   TPS1Timers = class
-  private type
-    TTimer = record
-      Counter, Mode, Target: Cardinal;
-      Sync, DotSync: Int64;
-      Paused, Fired, WaitBlank: Boolean;
-    end;
-    PTimer = ^TTimer;
+  private
+    type
+      TTimer = record
+        Counter, Mode, Target: Cardinal;
+        Sync, DotSync: Int64;
+        Paused, Fired, WaitBlank: Boolean;
+      end;
+
+      PTimer = ^TTimer;
   private
     FTimers: array[0..2] of TTimer;
     FScheduler: TPS1Scheduler;
@@ -62,7 +65,6 @@ const
   ModeINTF = $0400;
   ModeReachedTarget = $0800;
   ModeReachedWrap = $1000;
-
   TimerEvents: array[0..2] of TPS1Event = (TPS1Event.Timer0, TPS1Event.Timer1, TPS1Event.Timer2);
   TimerIRQs: array[0..2] of TPS1IRQ = (TPS1IRQ.Timer0, TPS1IRQ.Timer1, TPS1IRQ.Timer2);
 
@@ -220,9 +222,12 @@ begin
   if Index = 1 then
     InBlank := FInVBlank;
   case SyncMode of
-    0: T.Paused := InBlank;
-    2: T.Paused := not InBlank;
-    3: T.Paused := T.WaitBlank;
+    0:
+      T.Paused := InBlank;
+    2:
+      T.Paused := not InBlank;
+    3:
+      T.Paused := T.WaitBlank;
   end;
 end;
 
@@ -289,14 +294,16 @@ begin
   Sync(Index, FScheduler.Now);
   var T: PTimer := @FTimers[Index];
   case Address and $C of
-    $0: Result := T.Counter;
+    $0:
+      Result := T.Counter;
     $4:
       begin
         Result := T.Mode;
         // Reached flags clear on read.
         T.Mode := T.Mode and not (ModeReachedTarget or ModeReachedWrap);
       end;
-    $8: Result := T.Target;
+    $8:
+      Result := T.Target;
   else
     Result := 0;
   end;
@@ -311,7 +318,8 @@ begin
   Sync(Index, FScheduler.Now);
   var T: PTimer := @FTimers[Index];
   case Address and $C of
-    $0: T.Counter := Value and $FFFF;
+    $0:
+      T.Counter := Value and $FFFF;
     $4:
       begin
         T.Mode := (T.Mode and (ModeReachedTarget or ModeReachedWrap)) or (Value and $3FF) or ModeINTF;
@@ -322,7 +330,8 @@ begin
           T.DotSync := DotCount(T.Sync);
         UpdateGate(Index);
       end;
-    $8: T.Target := Value and $FFFF;
+    $8:
+      T.Target := Value and $FFFF;
   end;
   Reschedule(Index);
 end;
@@ -334,8 +343,10 @@ begin
   if Active and ((T.Mode and ModeSync) <> 0) then
   begin
     case (T.Mode shr 1) and 3 of
-      1, 2: T.Counter := 0;
-      3: T.WaitBlank := False;
+      1, 2:
+        T.Counter := 0;
+      3:
+        T.WaitBlank := False;
     end;
   end;
   UpdateGate(Index);
@@ -382,3 +393,4 @@ begin
 end;
 
 end.
+

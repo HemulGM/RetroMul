@@ -125,7 +125,10 @@ type
     FPreviousLoad, FPreviousFP: Integer;
     FPreviousStore, FPreviousCondition, FPreviousException: Boolean;
     FExecutingInstruction, FDataCached: Boolean;
-    FDelay, FInDelay, FLL: Boolean;
+    FDelay, FInDelay: Boolean;
+    // LL's bit (set by LL and LLD, cleared by ERET) and the physical address
+    // it loaded (LLAddr; snapshots keep it, SC does not compare it).
+    FLL: Boolean;
     FLLAddress: UInt64;
     FCountHalf: Integer;
     // RunBatch: PClocks of the batch's instructions before the current one,
@@ -472,10 +475,11 @@ begin
   end
   else
     Refill := False;
+  // TLB exceptions and address errors alike: BadVAddr, and its page in
+  // Context, XContext and EntryHi (ASID kept).
   if Code in [1, 2, 3, 4, 5] then
-    CP0[8] := Address;
-  if Code in [1, 2, 3] then
   begin
+    CP0[8] := Address;
     CP0[4] := (CP0[4] and $FFFFFFFFFF800000) or ((Address shr 9) and $007FFFF0);
     CP0[20] := (CP0[20] and $FFFFFFFE00000000) or
       ((Address shr 31) and $180000000) or ((Address shr 9) and $7FFFFFF0);
@@ -501,7 +505,6 @@ begin
     else
       Vector := $FFFFFFFFBFC00380;
   SetPC(Vector);
-  FLL := False;
   raise EGuestFault.Create('');
 end;
 
@@ -942,9 +945,16 @@ begin
     Result := FBus.Read32(Cardinal(Physical))
   else
   begin
+    var A := Cardinal(Physical);
+    // A byte or a halfword from the PI's buses (the cartridge, its save
+    // memory, the 64DD): the PI reads the 32-bit word from the halfword at A
+    // on and the CPU takes the lane A selects in it, so bit 1 of A moves the
+    // data two bytes on.
+    if (A >= $05000000) and (A < $1FC00000) then
+      Inc(A, A and 2);
     Result := 0;
     for var I := 0 to Size - 1 do
-      Result := (Result shl 8) or FBus.Read8(Add32(Cardinal(Physical), Cardinal(I)));
+      Result := (Result shl 8) or FBus.Read8(Add32(A, Cardinal(I)));
   end;
   if FBus.TraceEnabled and (Physical >= $03F00000) and (Physical < $04A00000) then
     FBus.Trace(MMIORead, FInstructionPC, Physical, Result);
@@ -958,7 +968,6 @@ begin
   var Physical := TranslateData(Address, True, Cached);
   if FExecutingInstruction then
     FDataCached := Cached;
-  FLL := False;
   if Physical > $FFFFFFFF then
     Exit;
   // Same byte order and final hidden bits as the bus's byte/word RDRAM writes.
@@ -2106,36 +2115,30 @@ begin
       63:
         begin
           var V := GPR[T];
-          FLL := False;
           FBus.WriteRAM32(Physical, Cardinal(V shr 32));
           FBus.WriteRAM32(Physical + 4, Cardinal(V and $FFFFFFFF));
         end;
       40:
         begin
-          FLL := False;
           FBus.WriteRAM8(Physical, Byte(GPR[T] and $FF));
         end;
       41:
         begin
-          FLL := False;
           FBus.WriteRAM8(Physical, Byte((GPR[T] shr 8) and $FF));
           FBus.WriteRAM8(Physical + 1, Byte(GPR[T] and $FF));
         end;
       43:
         begin
-          FLL := False;
           FBus.WriteRAM32(Physical, Cardinal(GPR[T] and $FFFFFFFF));
         end;
       57:
         begin
           var V := FPBits(T, 16);
-          FLL := False;
           FBus.WriteRAM32(Physical, Cardinal(V and $FFFFFFFF));
         end;
       61:
         begin
           var V := FPBits(T, 17);
-          FLL := False;
           FBus.WriteRAM32(Physical, Cardinal(V shr 32));
           FBus.WriteRAM32(Physical + 4, Cardinal(V and $FFFFFFFF));
         end;
@@ -2803,7 +2806,8 @@ begin
       var Physical2: Cardinal := 0;
       var Cached := False;
       var Kind := Step.Kind;
-      var FPA, FPB: UInt64;
+      var FPA: UInt64 := 0;
+      var FPB: UInt64 := 0;
       var FPResult: TSoftFloatResult;
       var FPCycles: Cardinal;
       var FPTarget: Integer;
@@ -3045,36 +3049,30 @@ begin
         63:
           begin
             var V := GPR[T];
-            FLL := False;
             FBus.WriteRAM32(Physical2, Cardinal(V shr 32));
             FBus.WriteRAM32(Physical2 + 4, Cardinal(V and $FFFFFFFF));
           end;
         40:
           begin
-            FLL := False;
             FBus.WriteRAM8(Physical2, Byte(GPR[T] and $FF));
           end;
         41:
           begin
-            FLL := False;
             FBus.WriteRAM8(Physical2, Byte((GPR[T] shr 8) and $FF));
             FBus.WriteRAM8(Physical2 + 1, Byte(GPR[T] and $FF));
           end;
         43:
           begin
-            FLL := False;
             FBus.WriteRAM32(Physical2, Cardinal(GPR[T] and $FFFFFFFF));
           end;
         57:
           begin
             var V := FPBits(T, 16);
-            FLL := False;
             FBus.WriteRAM32(Physical2, Cardinal(V and $FFFFFFFF));
           end;
         61:
           begin
             var V := FPBits(T, 17);
-            FLL := False;
             FBus.WriteRAM32(Physical2, Cardinal(V shr 32));
             FBus.WriteRAM32(Physical2 + 4, Cardinal(V and $FFFFFFFF));
           end;
@@ -3460,11 +3458,14 @@ begin
           Size := 8;
         if (Address and Cardinal(Size - 1)) <> 0 then
           Fault(5, Address);
-        var P := Translate(Address, True);
-        var Success := FLL and (P = FLLAddress);
+        // The store happens while LL's bit is set, wherever it goes (no
+        // address is compared; only ERET clears the bit: no other store, no
+        // exception).
+        var Success := FLL;
         if Success then
-          Store(Address, Size, B);
-        FLL := False;
+          Store(Address, Size, B)
+        else
+          Translate(Address, True);
         GPR[T] := Ord(Success);
       end;
     49, 53, 57, 61:

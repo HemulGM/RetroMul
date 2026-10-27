@@ -4,9 +4,10 @@ interface
 
 uses
   System.SysUtils, System.UITypes, MD.Z80, ZX.Sound.YM2149, SAM.Sound.SAA1099,
-  ZX.NextDAC, ZX.TurboSoundFM, ZX.Timex, ZX.DivStorage, SG1000.FDC, SG1000.Disk,
-  ZX.Tape, ZX.BetaDisk, ZX.CMOS, Core.Emulation.Types, Core.AudioFilter,
-  Core.Snapshots, ZX.Machine;
+  ZX.SID, ZX.MoonSound, ZX.DMAUSC, ZX.NeoGS, ZX.GeneralSound, ZX.NextDAC,
+  ZX.TurboSoundFM, ZX.Timex, ZX.DivStorage, SG1000.FDC, SG1000.Disk, ZX.Tape,
+  ZX.BetaDisk, ZX.CMOS, Core.Emulation.Types, Core.AudioFilter, Core.Snapshots,
+  ZX.Machine;
 
 type
   TZXBusEvent = record
@@ -104,6 +105,13 @@ type
     FSAA: TSAA1099;
     FTFM: TZXTurboSoundFM;
     FNextDAC: TZXNextDAC;
+    FGS: TZXGeneralSound;
+    FNeoGS: TZXNeoGS;
+    FMoon: TZXMoonSound;
+    FSID: TZXSID;
+    FUSC: TZXDMAUSC;
+    FUSCBusAck: Boolean;
+    FUSCVector: Byte;
     FAYSelect: Byte;
     FDAC: array[0..3] of Byte;
     FLevel2L, FLevel2R: Double;
@@ -149,6 +157,7 @@ type
     function BorderColor: TAlphaColor;
     function DisplayColor(Attr: Byte; Ink: Boolean): TAlphaColor;
     function FlashActive: Boolean; inline;
+    function VideoDisplayStart: Integer; inline;
     procedure DrawCompatibleVideo;
     procedure UpdatePalette(Index: Integer);
     function TimexHiRes: Boolean; inline;
@@ -176,6 +185,9 @@ type
     procedure SetMachine(const Machine: TZXMachineConfig);
     procedure SetModel(Is128: Boolean; Pentagon: Boolean = False; RAMSizeKB: Integer = 128);
     function PagedBank: Integer;
+    function ServiceUSC: Boolean;
+    function MoonSoundSelected(Address: Word): Boolean;
+    function InterruptActive(Length: Integer): Boolean;
     procedure ClockBus(Kind: TZ80BusCycle; Address, Count: Cardinal);
     procedure Contend(Address: Word; Force: Boolean = False);
     procedure FetchULA;
@@ -196,6 +208,12 @@ type
     procedure MountPlus3Disk(const Data: TBytes);
     procedure RequestNMI;
     procedure MountTimexCartridge(const Data: TBytes);
+    property GeneralSound: TZXGeneralSound read FGS;
+    property NeoGS: TZXNeoGS read FNeoGS;
+    property MoonSound: TZXMoonSound read FMoon;
+    property SID: TZXSID read FSID;
+    property DMAUSC: TZXDMAUSC read FUSC;
+    property DMAUSCBusHeld: Boolean read FUSCBusAck;
     property DivStorage: TZXDivStorage read FDiv;
     property Plus3Disk: TSGDisk read FPlus3Disk;
     function BytePITOutput(Channel: Integer): Boolean;
@@ -291,6 +309,20 @@ begin
   TZXConsole(Context).ClockBus(Kind, Address, Count);
 end;
 
+function USCRead(Context: Pointer; Address: Cardinal): Byte;
+begin
+  var C := TZXConsole(Context);
+  Address := Address and Cardinal(C.FRAMSizeKB * 1024 - 1);
+  Result := C.FRAM[Address shr 14, Address and $3FFF];
+end;
+
+procedure USCWrite(Context: Pointer; Address: Cardinal; Value: Byte);
+begin
+  var C := TZXConsole(Context);
+  Address := Address and Cardinal(C.FRAMSizeKB * 1024 - 1);
+  C.FRAM[Address shr 14, Address and $3FFF] := Value;
+end;
+
 constructor TZXConsole.Create;
 const
   Names: array[0..38] of string = ('ZX_ROM48', 'ZX_ROM128_0', 'ZX_ROM128_1', 'ZX_PENTAGON0', 'ZX_TRDOS', 'ZX_PLUS2_0', 'ZX_PLUS2_1',
@@ -360,6 +392,10 @@ begin
   FCMOS.Free;
   FBeta.Free;
   FTape.Free;
+  FSID.Free;
+  FMoon.Free;
+  FUSC.Free;
+  FGS.Free;
   FNextDAC.Free;
   FTFM.Free;
   FSAA.Free;
@@ -377,8 +413,63 @@ end;
 procedure TZXConsole.SetMachine(const Machine: TZXMachineConfig);
 begin
   Machine.Validate;
+  if Machine.SID then
+  begin
+    if FSID = nil then
+      FSID := TZXSID.Create;
+  end
+  else
+    FreeAndNil(FSID);
+  if Machine.MoonSound then
+  begin
+    if FMoon = nil then
+      FMoon := TZXMoonSound.Create;
+  end
+  else
+    FreeAndNil(FMoon);
+  if Machine.DMAUSC then
+  begin
+    if FUSC = nil then
+      FUSC := TZXDMAUSC.Create(Self, USCRead, USCWrite);
+  end
+  else
+    FreeAndNil(FUSC);
   var Profile := Machine.Profile;
   FMachine := Machine;
+  FNeoGS := nil;
+  if Machine.GeneralSound or Machine.NeoGS then
+  begin
+    var RAMKB := Machine.GeneralSoundRAMKB;
+    if RAMKB = 0 then
+      RAMKB := 128;
+    if Machine.NeoGS then
+    begin
+      RAMKB := Machine.NeoGSRAMKB;
+      if RAMKB = 0 then
+        RAMKB := 2048;
+    end;
+    if (FGS <> nil) and ((FGS.RAMKB <> RAMKB) or ((FGS is TZXNeoGS) <> Machine.NeoGS)) then
+    begin
+      if (FGS is TZXNeoGS) and Machine.NeoGS then
+      begin
+        var Replacement := TZXNeoGS.Create(RAMKB);
+        TZXNeoGS(FGS).MoveMediaTo(Replacement);
+        FGS.Free;
+        FGS := Replacement;
+      end
+      else
+        FreeAndNil(FGS);
+    end;
+    if FGS = nil then
+      if Machine.NeoGS then
+        FGS := TZXNeoGS.Create(RAMKB)
+      else
+        FGS := TZXGeneralSound.Create(RAMKB);
+    if Machine.NeoGS then
+      FNeoGS := TZXNeoGS(FGS);
+  end
+  else
+    FreeAndNil(FGS);
   FPentagon := Profile.IsPentagon;
   F128 := Profile.Has128Paging;
   FHasAY := Profile.HasAY;
@@ -388,6 +479,8 @@ begin
     FCallbacks.InternalMachineCallback := ClockBusCallback;
   FRAMSizeKB := Profile.RAMSizeKB;
   FClock := Profile.ClockHz;
+  if FSID <> nil then
+    FSID.SetMotherboardClock(FClock);
   if FTFM.Clock <> FClock then
     FTFM.Reset(FClock);
   FFrameCycles := Profile.FrameCycles;
@@ -533,6 +626,19 @@ begin
   FTape.Rewind;
   FDiv.Configure(FMachine.DivType, FMachine.DivRAMKB);
   SetMachine(FMachine);
+  if FGS <> nil then
+    FGS.Reset;
+  if FSID <> nil then
+    FSID.Reset(FClock, FMachine.SIDModel, FMachine.SIDNTSC, FMachine.SIDInterface, FMachine.SIDClock1MHz);
+  if FMoon <> nil then
+    FMoon.Reset(FClock);
+  FUSCBusAck := False;
+  FUSCVector := $FF;
+  if FUSC <> nil then
+  begin
+    FUSC.Reset;
+    FUSC.ConfigureULABypass(FMachine.DMAUSCULABypass);
+  end;
   ApplyOptions(FOptions);
   UpdateVideoSize;
 end;
@@ -614,6 +720,8 @@ begin
       end;
   if FDiv.Disk <> nil then
     FDiv.Disk.WriteProtected := FOptions.DiskWriteProtected;
+  if (FNeoGS <> nil) and (FNeoGS.Disk <> nil) then
+    FNeoGS.Disk.WriteProtected := FOptions.DiskWriteProtected;
   if FPlus3Disk <> nil then
     FPlus3Disk.WriteProtected := FOptions.DiskWriteProtected;
   for var Drive := 0 to 3 do
@@ -799,6 +907,10 @@ begin
     Exit(FRAM[RAMBank(Address), Address and $3FFF]);
   if Address < $4000 then
   begin
+    var DMAValue: Byte;
+    if (FNeoGS <> nil) and not (ExtendedHardware and ((FExpansion and 8) <> 0)) and
+      FNeoGS.DMARead(Address, True, DMAValue) then
+      Exit(DMAValue);
     if FMachine.ByteFamily then
       Exit(ReadByteROM(Address));
     Bank := 0;
@@ -867,6 +979,8 @@ procedure TZXConsole.WriteMemory(Address: Word; Value: Byte);
 var
   Bank: Integer;
 begin
+  if FNeoGS <> nil then
+    FNeoGS.DMAWrite(Address, Value);
   if (Address < $4000) and FDiv.Mapped then
   begin
     FDiv.WriteMemory(Address, Value);
@@ -910,6 +1024,50 @@ begin
   FRAM[Bank, Address and $3FFF] := Value;
 end;
 
+function TZXConsole.MoonSoundSelected(Address: Word): Boolean;
+begin
+  Result := (FMoon <> nil) and TZXMoonSound.Decodes(Address);
+  if not Result then
+    Exit;
+  if FTRDOSActive and not FMachine.MoonSoundInDOS then
+    Exit(False);
+  if (FTRDOSActive or (FMachine.Profi and ((FProfiPaging and $20) <> 0))) and (BetaPort(Address) >= 0) then
+    Exit(False);
+end;
+
+function TZXConsole.InterruptActive(Length: Integer): Boolean;
+begin
+  Result := (FTime < Length) and not (FMachine.VideoTimex and ((FTimex and $40) <> 0));
+  if FUSC <> nil then
+    Result := FUSC.Interrupt(Result);
+  if (FMoon <> nil) and FMachine.MoonSoundIRQ then
+    Result := Result or FMoon.Interrupt;
+end;
+
+function TZXConsole.ServiceUSC: Boolean;
+begin
+  Result := True;
+  var Frame := FFrameNumber;
+  while FUSC.BusRequest do
+  begin
+    if not FUSC.BeginBus then
+      Break;
+    FUSCBusAck := True;
+    if ExtendedHardware then
+      for var I := 1 to 8 do
+        PentagonMasterEdge
+    else
+      Tick;
+    if FUSC.Released then
+      FUSCBusAck := False;
+    if FFrameNumber <> Frame then
+      Exit(False);
+    if FUSC.Released then
+      Exit(True); // single mode grants a CPU cycle between services
+  end;
+  FUSCBusAck := False;
+end;
+
 procedure TZXConsole.AdvanceTStates(Count: Integer);
 begin
   for var i := 1 to Count do
@@ -951,95 +1109,118 @@ begin
     var Value := Cardinal(Ord(Kind));
     if ReplayBusEvent(0, Address, Count, Value) then
       Exit;
+    if (FUSC <> nil) and not (Kind in [zbcRefresh, zbcInternal, zbcIdle, zbcInternalMachine]) then
+    begin
+      PentagonEndCycle;
+      if FBusAck or not ServiceUSC then
+        raise EZXBusHeld.Create('DMA USC BUSACK');
+    end;
+    if (Kind = zbcAcknowledge) and (FUSC <> nil) then
+      FUSC.Acknowledge;
     TurboBus(Kind, Address, Count);
     RememberBusEvent(0, Address, Count, Value);
     Exit;
   end;
+  if FUSC <> nil then
+  begin
+    var Value := Cardinal(Ord(Kind));
+    if ReplayBusEvent(0, Address, Count, Value) then
+      Exit;
+    if not (Kind in [zbcRefresh, zbcInternal, zbcIdle, zbcInternalMachine]) and not ServiceUSC then
+      raise EZXBusHeld.Create('DMA USC BUSACK');
+    if Kind = zbcAcknowledge then
+      FUSC.Acknowledge;
+  end;
   Inc(FCPUTStates, Count);
-  case Kind of
-    zbcMemory, zbcOpcode:
-      begin
-        if FMachine.Scorpion and (Kind = zbcOpcode) and ((FTime and 1) <> 0) then
-          AdvanceTStates(1);
-        Contend(Address);
-        AdvanceTStates(Count);
-      end;
-    zbcInternal:
-      if ASICMachine then
-      begin
-        Contend(Address);
-        AdvanceTStates(Count);
-      end
-      else
-        for var i := 1 to Count do
+  try
+    case Kind of
+      zbcMemory, zbcOpcode:
+        begin
+          if FMachine.Scorpion and (Kind = zbcOpcode) and ((FTime and 1) <> 0) then
+            AdvanceTStates(1);
+          Contend(Address);
+          AdvanceTStates(Count);
+        end;
+      zbcInternal:
+        if ASICMachine then
         begin
           Contend(Address);
-          Tick;
-        end;
-    zbcIO:
-      begin
-        if ASICMachine or FMachine.Scorpion or FMachine.Profi or FMachine.ByteFamily then
-        begin
           AdvanceTStates(Count);
-          Exit;
-        end;
-        if FMachine.TK then
-        begin
-          // MC16845 gates the address phase and the delayed /IORQ phase.
-          var RAMAddress := (Address and $C000) = $4000;
-          if RAMAddress then
-            Contend(0, True);
-          Tick;
-          var T := FTime - (FContentionStart - 2);
-          var Delay := 0;
-          if (T >= 0) and (T div FLineCycles < 192) then
-          begin
-            var X := T mod FLineCycles;
-            if RAMAddress and (X <= 128) then
-            begin
-              if X < 2 then
-                Delay := 6
-              else if X < 122 then
-                Delay := 12 - Max(0, ((X - 2) and 7) - 1)
-              else
-                Delay := Min(6, 129 - X);
-            end
-            else if ((Address and 1) = 0) and (X < 128) then
-              Delay := Min(6, 7 - (X and 7));
-          end;
-          Inc(FIOWaitStates, Delay);
-          AdvanceTStates(3 + Delay);
-          Exit;
-        end;
-        // The 128K/+2 upper window also contends when an odd RAM bank is mapped.
-        var HighContended := ContendedRAM(Address);
-        if ((not FMachine.ByteFamily and not FMachine.Timex and not FMachine.Scorpion and ((Address and 1) = 0)) or
-          (FMachine.ByteFamily and ((Address and $35) = $34)) or
-          (FMachine.Timex and ((Address and 255) in [$F4, $FE, $FF]))) then
-        begin
-          if HighContended then
-            Contend(0, True);
-          Tick;
-          Contend(0, True);
-          AdvanceTStates(3);
         end
-        else if HighContended then
-          for var i := 1 to 4 do
-          begin
-            Contend(0, True);
-            Tick;
-          end
         else
-          AdvanceTStates(4);
-      end;
-    zbcRefresh:
-      begin
-        FRefreshAddress := Address;
-        AdvanceTStates(Count);
-        FRefreshAddress := -1;
-      end;
-  else
-    AdvanceTStates(Count);
+          for var i := 1 to Count do
+          begin
+            Contend(Address);
+            Tick;
+          end;
+      zbcIO:
+        begin
+          if ASICMachine or FMachine.Scorpion or FMachine.Profi or FMachine.ByteFamily then
+          begin
+            AdvanceTStates(Count);
+            Exit;
+          end;
+          if FMachine.TK then
+          begin
+          // MC16845 gates the address phase and the delayed /IORQ phase.
+            var RAMAddress := (Address and $C000) = $4000;
+            if RAMAddress then
+              Contend(0, True);
+            Tick;
+            var T := FTime - (FContentionStart - 2);
+            var Delay := 0;
+            if (T >= 0) and (T div FLineCycles < 192) then
+            begin
+              var X := T mod FLineCycles;
+              if RAMAddress and (X <= 128) then
+              begin
+                if X < 2 then
+                  Delay := 6
+                else if X < 122 then
+                  Delay := 12 - Max(0, ((X - 2) and 7) - 1)
+                else
+                  Delay := Min(6, 129 - X);
+              end
+              else if ((Address and 1) = 0) and (X < 128) then
+                Delay := Min(6, 7 - (X and 7));
+            end;
+            Inc(FIOWaitStates, Delay);
+            AdvanceTStates(3 + Delay);
+            Exit;
+          end;
+        // The 128K/+2 upper window also contends when an odd RAM bank is mapped.
+          var HighContended := ContendedRAM(Address);
+          if ((not FMachine.ByteFamily and not FMachine.Timex and not FMachine.Scorpion and ((Address and 1) = 0)) or
+            (FMachine.ByteFamily and ((Address and $35) = $34)) or
+            (FMachine.Timex and ((Address and 255) in [$F4, $FE, $FF]))) then
+          begin
+            if HighContended then
+              Contend(0, True);
+            Tick;
+            Contend(0, True);
+            AdvanceTStates(3);
+          end
+          else if HighContended then
+            for var i := 1 to 4 do
+            begin
+              Contend(0, True);
+              Tick;
+            end
+          else
+            AdvanceTStates(4);
+        end;
+      zbcRefresh:
+        begin
+          FRefreshAddress := Address;
+          AdvanceTStates(Count);
+          FRefreshAddress := -1;
+        end;
+    else
+      AdvanceTStates(Count);
+    end;
+  finally
+    if FUSC <> nil then
+      RememberBusEvent(0, Address, Count, Ord(Kind));
   end;
 end;
 
@@ -1227,6 +1408,10 @@ end;
 
 function TZXConsole.ReadPort(Address: Word): Byte;
 begin
+  if (FSID <> nil) and FSID.HandlesPort(Address) then
+    Exit(FSID.ReadPort(Address));
+  if MoonSoundSelected(Address) then
+    Exit(FMoon.ReadPort(Address));
   Result := ReadOtherPort(Address);
   // Only A7 and /IORQ select the on-board PPI; A5/A6 select its register.
   // A0..A4 and the high byte are not decoded. Even aliases also select ULA.
@@ -1252,6 +1437,12 @@ begin
   var NextValue: Byte;
   if (FMachine.DAC = 6) and FNextDAC.ReadPort(Address, NextValue) then
     Exit(NextValue);
+  var USCValue: Byte;
+  if (FUSC <> nil) and FUSC.ReadPort(Address, USCValue) then
+    Exit(USCValue);
+  var GSValue: Byte;
+  if (FGS <> nil) and FGS.HostRead(Address, GSValue) then
+    Exit(GSValue);
   var DivValue: Byte;
   if FDiv.ReadPort(Address, DivValue) then
     Exit(DivValue);
@@ -1398,6 +1589,25 @@ procedure TZXConsole.WritePortPart(Address: Word; Value, Parts: Byte; Timed: Boo
   end;
 
 begin
+  if (FSID <> nil) and FSID.HandlesPort(Address) then
+  begin
+    if (Parts and 16) <> 0 then
+    begin
+      FSID.WritePort(Address, Value);
+      Notify(19);
+    end;
+    Exit;
+  end;
+  // CPLD IORQG suppresses motherboard I/O, including even-port ULA and paging.
+  if MoonSoundSelected(Address) then
+  begin
+    if (Parts and 16) <> 0 then
+    begin
+      FMoon.WritePort(Address, Value);
+      Notify(18);
+    end;
+    Exit;
+  end;
   if FMachine.Gama and ((Address and $80) = 0) and ((Parts and 16) <> 0) then
     WriteGamaPort((Address shr 5) and 3, Value);
   if FMachine.ByteFamily then
@@ -1663,6 +1873,14 @@ begin
       FTape.Tick;
     end;
   end;
+  if FSID <> nil then
+    FSID.Tick;
+  if FMoon <> nil then
+    FMoon.Tick;
+  if FUSC <> nil then
+    FUSC.Tick(FUSCBusAck);
+  if FGS <> nil then
+    FGS.Tick(FClock);
   if FMachine.TurboSoundFM then
     FTFM.Tick;
   Inc(FAYPhase);
@@ -1693,6 +1911,33 @@ begin
   end;
   var DACLeft, DACRight: Double;
   DACLevels(DACLeft, DACRight);
+  if FGS <> nil then
+  begin
+    var GSL, GSR: Double;
+    FGS.Levels(GSL, GSR);
+    DACLeft := DACLeft + GSL;
+    DACRight := DACRight + GSR;
+  end;
+  if FUSC <> nil then
+  begin
+    var USCL, USCR: Double;
+    FUSC.Levels(FMachine.DMAUSCStereo, USCL, USCR);
+    DACLeft := DACLeft + USCL;
+    DACRight := DACRight + USCR;
+  end;
+  if FMoon <> nil then
+  begin
+    var L, R: Double;
+    FMoon.Levels(L, R);
+    DACLeft := DACLeft + L;
+    DACRight := DACRight + R;
+  end;
+  if FSID <> nil then
+  begin
+    var SIDLevel := FSID.Level;
+    DACLeft := DACLeft + SIDLevel;
+    DACRight := DACRight + SIDLevel;
+  end;
   FSumL := FSumL + AYLeft * FAYGain + Beeper + DACLeft * FExpansionGain;
   FSumR := FSumR + AYRight * FAYGain + Beeper + DACRight * FExpansionGain;
   Inc(FSampleCount);
@@ -1726,7 +1971,7 @@ begin
     FTime := 0;
     Inc(FFrameNumber);
   end;
-  Z80Interrupt(FCPU, Ord((FTime < InterruptLength) and not (FMachine.VideoTimex and ((FTimex and $40) <> 0))));
+  Z80Interrupt(FCPU, Ord(InterruptActive(InterruptLength)));
 end;
 
 function TZXConsole.StepInstruction: Cardinal;
@@ -1739,9 +1984,9 @@ begin
     FTRDOSActive := True;
     Z80NonMaskableInterrupt(FCPU);
   end;
-  if ExtendedHardware then
+  if ExtendedHardware or FMachine.DMAUSC then
   begin
-    if FBusAck and not PentagonServiceBusAck then
+    if ExtendedHardware and FBusAck and not PentagonServiceBusAck then
       Exit(FAbsoluteTStates - Before);
     if FInstructionActive then
     begin
@@ -1750,26 +1995,30 @@ begin
     end
     else
     begin
-      Z80Interrupt(FCPU, Ord((FTime < 36) and not (FMachine.VideoTimex and ((FTimex and $40) <> 0))));
+      Z80Interrupt(FCPU, Ord(InterruptActive(InterruptLength)));
+      FUSCVector := $FF;
+      if FUSC <> nil then
+        FUSCVector := FUSC.InterruptVector((FTime < InterruptLength) and not (FMachine.VideoTimex and ((FTimex and $40) <> 0)));
       FInstructionStart := FCPU;
       FInstructionActive := True;
       FBusEventCount := 0;
       FBusEventPosition := 0;
     end;
     try
-      Z80DoInstruction(FCPU, FCallbacks, OpcodeRead);
+      Z80DoInstruction(FCPU, FCallbacks, OpcodeRead, False, FUSCVector);
     except
       on E: EZXBusHeld do
         Exit(FAbsoluteTStates - Before);
     end;
-    PentagonEndCycle;
+    if ExtendedHardware then
+      PentagonEndCycle;
     FInstructionActive := False;
     FBusEventCount := 0;
     FBusEventPosition := 0;
   end
   else
   begin
-    Z80Interrupt(FCPU, Ord((FTime < InterruptLength) and not (FMachine.VideoTimex and ((FTimex and $40) <> 0))));
+    Z80Interrupt(FCPU, Ord(InterruptActive(InterruptLength)));
     Z80DoInstruction(FCPU, FCallbacks, OpcodeRead);
   end;
   var Snapshot: TBytes;
@@ -1909,6 +2158,21 @@ begin
   State.Field(FMachine.DAC, SizeOf(FMachine.DAC));
   State.Field(FMachine.NextDACMode, SizeOf(FMachine.NextDACMode));
   State.Field(FMachine.NextDACStartup, SizeOf(FMachine.NextDACStartup));
+  State.Field(FMachine.GeneralSound, SizeOf(FMachine.GeneralSound));
+  State.Field(FMachine.GeneralSoundRAMKB, SizeOf(FMachine.GeneralSoundRAMKB));
+  State.Field(FMachine.SID, SizeOf(FMachine.SID));
+  State.Field(FMachine.SIDModel, SizeOf(FMachine.SIDModel));
+  State.Field(FMachine.SIDNTSC, SizeOf(FMachine.SIDNTSC));
+  State.Field(FMachine.SIDInterface, SizeOf(FMachine.SIDInterface));
+  State.Field(FMachine.SIDClock1MHz, SizeOf(FMachine.SIDClock1MHz));
+  State.Field(FMachine.MoonSound, SizeOf(FMachine.MoonSound));
+  State.Field(FMachine.MoonSoundIRQ, SizeOf(FMachine.MoonSoundIRQ));
+  State.Field(FMachine.MoonSoundInDOS, SizeOf(FMachine.MoonSoundInDOS));
+  State.Field(FMachine.DMAUSC, SizeOf(FMachine.DMAUSC));
+  State.Field(FMachine.DMAUSCULABypass, SizeOf(FMachine.DMAUSCULABypass));
+  State.Field(FMachine.DMAUSCStereo, SizeOf(FMachine.DMAUSCStereo));
+  State.Field(FMachine.NeoGS, SizeOf(FMachine.NeoGS));
+  State.Field(FMachine.NeoGSRAMKB, SizeOf(FMachine.NeoGSRAMKB));
   State.Field(FPalette, SizeOf(FPalette));
   State.Field(FPaletteSelect, SizeOf(FPaletteSelect));
   State.Field(FPaletteMode, SizeOf(FPaletteMode));
@@ -1961,6 +2225,10 @@ begin
     SetMachine(FMachine.WithModel(TZXMachineModel(ModelCode)));
     UpdateVideoSize;
   end;
+  State.Field(FUSCBusAck, SizeOf(FUSCBusAck));
+  State.Field(FUSCVector, 1);
+  if FUSCBusAck and (FUSC = nil) then
+    raise EReadError.Create('DMA USC bus held without card');
   State.Field(FTurboPhase, SizeOf(FTurboPhase));
   State.Field(FCPUTStates, SizeOf(FCPUTStates));
   State.Field(FMemoryWaitStates, SizeOf(FMemoryWaitStates));
@@ -2063,6 +2331,19 @@ begin
     raise EReadError.Create('Invalid Turbo Sound chip select');
   State.Field(FDAC, SizeOf(FDAC));
   FNextDAC.SerializeState(State);
+  if FSID <> nil then
+  begin
+    FSID.SerializeState(State);
+    if (FSID.MotherboardClock <> FClock) or (FSID.InterfaceType <> FMachine.SIDInterface) or
+      (FSID.FixedClock <> Ord(FMachine.SIDClock1MHz) * 1000000) then
+      raise EReadError.Create('Mismatched SID interface state');
+  end;
+  if FMoon <> nil then
+    FMoon.SerializeState(State);
+  if FUSC <> nil then
+    FUSC.SerializeState(State);
+  if FGS <> nil then
+    FGS.SerializeState(State);
   State.Field(FLevel2L, SizeOf(FLevel2L));
   State.Field(FLevel2R, SizeOf(FLevel2R));
   FTape.SerializeState(State);
@@ -2826,9 +3107,18 @@ begin
   Result := Color(C or ((Attr shr 3) and 8));
 end;
 
+function TZXConsole.VideoDisplayStart: Integer;
+begin
+  // Pentagon visible paper starts at 17989 T. Keep the 17984 T physical
+  // counter origin for memory fetches and the 1024SL bus arbitration.
+  Result := FDisplayStart;
+  if FPentagon then
+    Inc(Result, 5);
+end;
+
 procedure TZXConsole.DrawCompatibleVideo;
 begin
-  var T := FTime - (FDisplayStart - 24 * FLineCycles - 16);
+  var T := FTime - (VideoDisplayStart - 24 * FLineCycles - 16);
   if T < 0 then
     Exit;
   var Y := T div FLineCycles;
@@ -2899,6 +3189,10 @@ end;
 
 procedure TZXConsole.WriteSoundExpansion(Address: Word; Value: Byte);
 begin
+  if FUSC <> nil then
+    FUSC.WritePort(Address, Value);
+  if FGS <> nil then
+    FGS.HostWrite(Address, Value);
   if FMachine.DAC = 6 then
     FNextDAC.WritePort(Address, Value);
   if FMachine.SAA1099 then
@@ -2976,7 +3270,9 @@ begin
     if not (FMachine.Model in [zmSpectrum16, zmTimex2048, zmTimex2068]) then
       SetModel(False);
   end
-  else if not (FMachine.Model in [zmSpectrumPlus2, zmScorpion256]) then
+  // A 128K SNA does not identify the motherboard. Retain the selected
+  // compatible paging profile (including expanded RAM and its bus timing).
+  else if not FMachine.Profile.Has128Paging then
     SetModel(True);
   FCPU.i := Data[0];
   FCPU.LAlt := Data[1];
@@ -3015,7 +3311,7 @@ begin
     FPaging := Data[49181];
     if Data[49182] <> 0 then
     begin
-      if not FMachine.Scorpion then
+      if not (FMachine.Scorpion or BetaMachine) then
         SetModel(True, True);
       FTRDOSActive := True;
     end;
@@ -3410,7 +3706,7 @@ begin
   Value := Event.Value;
   Inc(FBusEventPosition);
   if FBusEventPosition = FBusEventCount then
-    Z80Interrupt(FCPU, Ord((FTime < 36) and not (FMachine.VideoTimex and ((FTimex and $40) <> 0))));
+    Z80Interrupt(FCPU, Ord(InterruptActive(InterruptLength)));
 end;
 
 procedure TZXConsole.RememberBusEvent(Kind: Byte; Address, Count, Value: Cardinal);
@@ -3753,9 +4049,9 @@ begin
   var Wide := (FExpansion and $40) <> 0;
   var Hires := not Wide and ((FExpansion and 2) <> 0) and ((FExpansion and 1) = 0);
   var Nibbles := (FExpansion and 1) <> 0;
-  var Start := FDisplayStart - 24 * FLineCycles - 16;
+  var Start := VideoDisplayStart - 24 * FLineCycles - 16;
   if Wide then
-    Start := FDisplayStart - 64 * FLineCycles - 32;
+    Start := VideoDisplayStart - 64 * FLineCycles - 32;
   var T := FTime - Start;
   if T < 0 then
     Exit;

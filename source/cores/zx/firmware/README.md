@@ -170,3 +170,72 @@ C/C++ ROM headers are not used; some include additional language-selector patche
 | tk90x-pt.rom | 16384 | 3e785f6f | f3892b4140901f8289b962f5e097cf330c6997260052baac351026639012beeb |
 | tk95-es.rom | 16384 | 602ba2c9 | 4aa2421e29487917bfd183012b114a3caacbf10ff46f3686c87e94ba5c492819 |
 | tk95-pt.rom | 16384 | 17368e07 | c0f7c0a7b2dd838488189cda052e414cd3474f3a718c1fde0a6cef3e8e0f4776 |
+
+## General Sound 1.05b
+
+`gs105b.rom` is the unchanged 32 KiB guest Z80 firmware by Stinger,
+with fixes by psb and Evgeny Muchkin. It is embedded as RCDATA `ZX_GS105B`
+in `ZX.Firmware.RES`; no external BIOS file is required. The General Sound
+project was opened by its authors in 2007. Firmware remains guest program
+data, with attribution and rights retained by its authors; no host binary
+library or high-level MOD player is used.
+
+Source: [original firmware archive](https://zxgit.org/RomanRom2/GeneralSound/src/commit/d0312a7f463138b8a151944893dcd09b1ced6db6/firmware/release/gs105b.rom),
+downloaded 2026-10-24. Git blob, byte count, full source pins and diagnostics
+are recorded in `codex-work/zx-generalsound/references.json`.
+
+Bytes: 32768; CRC32: `0fe97025`;
+SHA-256: `9948ec9617365fb1913b0c56e00d5f6b6a36084875cca16debae270a4c6e6adf`.
+
+## NeoGS 1.11
+
+`neogs111.rom` is the unchanged complete 512 KiB guest flash image from
+NedoPC's [official update of 2026-02-07](http://nedopc.com/gs/up260207.zip),
+downloaded 2026-10-24. It is embedded as RCDATA `ZX_NEOGS111`, including the
+standard SD loader, main ROM 1.11 and FPGA boot data. Runtime starts with the
+standard FPGA configured and executes the loader from flash page 0. There
+are no ROM patches, command traps or external host binary libraries.
+Firmware remains the work of Stinger, psb, Evgeny Muchkin, Savelij and the
+NeoGS authors; original copyright remains with the respective authors.
+The board model follows [NedoPC's published HDL](https://github.com/tslabs/neogs/tree/a1c3bbcd2f9bd74dfd44afdb5bb1729cbe9a1367).
+VS1011e MP3, AMD flash erase/program and standard NedoPC FPGA configuration
+are implemented natively. Modified/persisted flash uses the original cold
+bootstrap; programmed bytes are saved as `zx.neogs.flash` beside the ZX
+configuration. Factory resource bytes remain unchanged. No additional DSP
+binary library or external decoder firmware is required.
+
+Bytes: 524288; CRC32: `3605f8d8`;
+SHA-256: `764fc819f831f64ce736d9254af4fb6dd6fcd154d09f494f3afab92543a0cd37`.
+Full source URLs and hashes: `codex-work/zx-neogs/references.json`.
+
+
+## DMA Ultrasound Card
+
+DMA USC contains no BIOS or private sample RAM. The native 8237A/8253 model
+uses motherboard RAM; this package adds no firmware resource. Original DMA
+Demo programs are test fixtures under `codex-work/zx-dmausc/references`, not
+BIOS images embedded into the application.
+
+## ZXM-MoonSound YRW801
+
+`yrw801.rom` is the unchanged 2 MiB Yamaha YRW801 sample table supplied in
+[Mick's original board archive](http://micklab.ru/file/zxm_moonsound/yrw801m_1993.rar).
+It is embedded as RCDATA `ZX_MOON_WAVE` in `ZX.Firmware.RES`; no external ROM
+path is needed. The table is audio/header data, not a host library or executable
+BIOS. Yamaha and the original respective rights holders retain their copyrights.
+The factory resource is unchanged by guest flash programming; modified bytes
+are saved separately as `zx.moonsound.flash`. The file was downloaded
+2026-10-25 from the board author's publication.
+
+Bytes: 2097152; CRC32: `2a9d8d43`;
+SHA-256: `0481e861f639fa3d6a64a75b735035a54b0875d57aaae33fdbe400146c80423f`.
+Primary schematic, chip documentation, archive and test-vector hashes are
+recorded in `codex-work/zx-moonsound/references.json`.
+
+## SID (eZX/MB)
+
+The eLeMeNt ZX/MB03+ SID application interface requires no BIOS, sample ROM
+or additional firmware. This package leaves `ZX.Firmware.rc`, `ZX.Firmware.RES`
+and all existing firmware images unchanged. Hood's original Z80 SID players
+are regression fixtures in `codex-work/zx-sid/references`, not application
+resources or host binary libraries.

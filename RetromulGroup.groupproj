@@ -1,4 +1,4 @@
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
         <ProjectGuid>{D1D610E6-27EB-415C-851B-6ACE1A335D30}</ProjectGuid>
     </PropertyGroup>
@@ -13,6 +13,9 @@
             <Dependencies/>
         </Projects>
         <Projects Include="apps\retrotune\RetroTune.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="apps\gpu_tests\GPUTest.dproj">
             <Dependencies/>
         </Projects>
     </ItemGroup>
@@ -59,14 +62,23 @@
     <Target Name="RetroTune:Make">
         <MSBuild Projects="apps\retrotune\RetroTune.dproj" Targets="Make"/>
     </Target>
+    <Target Name="GPUTest">
+        <MSBuild Projects="apps\gpu_tests\GPUTest.dproj"/>
+    </Target>
+    <Target Name="GPUTest:Clean">
+        <MSBuild Projects="apps\gpu_tests\GPUTest.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="GPUTest:Make">
+        <MSBuild Projects="apps\gpu_tests\GPUTest.dproj" Targets="Make"/>
+    </Target>
     <Target Name="Build">
-        <CallTarget Targets="RetroMul;RetromulTerm;FMXInputDemo;RetroTune"/>
+        <CallTarget Targets="RetroMul;RetromulTerm;FMXInputDemo;RetroTune;GPUTest"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="RetroMul:Clean;RetromulTerm:Clean;FMXInputDemo:Clean;RetroTune:Clean"/>
+        <CallTarget Targets="RetroMul:Clean;RetromulTerm:Clean;FMXInputDemo:Clean;RetroTune:Clean;GPUTest:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="RetroMul:Make;RetromulTerm:Make;FMXInputDemo:Make;RetroTune:Make"/>
+        <CallTarget Targets="RetroMul:Make;RetromulTerm:Make;FMXInputDemo:Make;RetroTune:Make;GPUTest:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>

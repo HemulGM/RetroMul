@@ -43,7 +43,7 @@ begin
   if FState.Browser.ActionsTool <> nil then
   begin
     var Actions := FView.FindComponent('LayoutGameActions') as TLayout;
-    Actions.Width := 128;
+    Actions.Width := 196;
     FState.Browser.ActionsTool.Parent := Actions;
     FState.Browser.ActionsTool.Align := TAlignLayout.Right;
     FState.Browser.ActionsTool.Width := 60;
@@ -52,6 +52,16 @@ begin
     FView.GamePause.Align := TAlignLayout.Right;
     FView.GamePause.Width := 60;
     FView.GamePause.Margins.Rect := TRectF.Create(0, 0, 8, 0);
+    FView.ButtonReset.Align := TAlignLayout.Right;
+    FView.ButtonReset.Width := 60;
+    FView.ButtonReset.Text := '';
+    FView.ButtonReset.Margins.Rect := TRectF.Create(0, 0, 8, 0);
+    for var Child in FView.ButtonReset.Children do
+      if Child is TPath then
+      begin
+        TPath(Child).Align := TAlignLayout.Center;
+        TPath(Child).Margins.Rect := TRectF.Empty;
+      end;
     FView.LabelStatus.Align := TAlignLayout.Client;
   end;
   {$ENDIF}
@@ -59,23 +69,21 @@ begin
   if (FState.Browser.BackTool <> nil) and (FState.Browser.HelpTool <> nil) then
   begin
     var HasCoin := (FState.Browser.CoinTool <> nil) and FState.Browser.CoinTool.Visible;
-    var Narrow := FView.LayoutHead.Width < IfThen(HasCoin, 1482, 1282);
-    var Compact := FView.LayoutHead.Width < IfThen(HasCoin, 740, 660);
+    var Narrow := FView.LayoutHead.Width < IfThen(HasCoin, 1420, 1220);
+    var Compact := FView.LayoutHead.Width < IfThen(HasCoin, 820, 740);
     var ActionLayout := FView.FindComponent('LayoutGameActions') as TLayout;
     var Identity := FView.FindComponent('LayoutGameIdentity') as TLayout;
     ActionLayout.BeginUpdate;
     var Actions: TArray<TButton> := [
-        FState.Browser.Tools[0], FState.Browser.Tools[1], FState.Browser.Tools[2],
-        FState.Browser.ScreenshotTool,
-        FState.Browser.Tools[3], FState.Browser.Tools[4], FState.Browser.HelpTool];
-    var Widths: TArray<Single> := [130, 164, 164, 144, 44, 44, 88];
+        FState.Browser.Tools[0], FView.ButtonReset, FState.Browser.Tools[1],
+        FState.Browser.Tools[3], FState.Browser.Tools[4], FState.Browser.HelpTool, FView.GameActionsButton];
+    var Widths: TArray<Single> := [130, 130, 164, 44, 44, 88, 60];
     if HasCoin then
     begin
       Actions := [
-          FState.Browser.Tools[0], FState.Browser.CoinTool, FState.Browser.Tools[1],
-          FState.Browser.Tools[2], FState.Browser.ScreenshotTool,
-          FState.Browser.Tools[3], FState.Browser.Tools[4], FState.Browser.HelpTool];
-      Widths := [130, 188, 164, 164, 144, 44, 44, 88];
+          FState.Browser.Tools[0], FView.ButtonReset, FState.Browser.CoinTool, FState.Browser.Tools[1],
+          FState.Browser.Tools[3], FState.Browser.Tools[4], FState.Browser.HelpTool, FView.GameActionsButton];
+      Widths := [130, 130, 188, 164, 44, 44, 88, 60];
     end;
     if Narrow and Compact then
     begin
@@ -138,9 +146,8 @@ begin
       FState.Browser.Tools[0].Text := Translate('Resume')
     else
       FState.Browser.Tools[0].Text := Translate('Pause');
+    FView.ButtonReset.Text := Translate('Reset');
     FState.Browser.Tools[1].Text := Translate('Save');
-    FState.Browser.Tools[2].Text := Translate('Load');
-    FState.Browser.ScreenshotTool.Text := Translate('Screenshot');
     if HasCoin then
       FState.Browser.CoinTool.Text := Translate('Insert coin');
     FState.Browser.Tools[3].Text := '';

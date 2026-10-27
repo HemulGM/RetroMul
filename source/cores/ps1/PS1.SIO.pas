@@ -236,8 +236,10 @@ begin
   if not Analog then
     Buttons := Buttons and not (PS1PadL3 or PS1PadR3);
   case Step of
-    2: Result := Byte(not Buttons);
-    3: Result := Byte(not Buttons shr 8);
+    2:
+      Result := Byte(not Buttons);
+    3:
+      Result := Byte(not Buttons shr 8);
   else
     Result := FInput.Axes[Step - 4];
   end;
@@ -256,8 +258,10 @@ begin
     Exit;
   end;
   case FRumble[Step - 2] of
-    $00: FSmall := Odd(Value);
-    $01: FLarge := Value;
+    $00:
+      FSmall := Odd(Value);
+    $01:
+      FLarge := Value;
   end;
 end;
 
@@ -275,8 +279,10 @@ begin
           Result := $41
         else
           Ack := False;
-      1: Result := $5A;
-      2: Result := InputByte(2, False);
+      1:
+        Result := $5A;
+      2:
+        Result := InputByte(2, False);
       3:
         begin
           Result := InputByte(3, False);
@@ -352,18 +358,26 @@ begin
       case Step of
         2:
           case Value of
-            0: FAnalog := False;
-            1: FAnalog := True;
+            0:
+              FAnalog := False;
+            1:
+              FAnalog := True;
           end;
-        3: FLocked := (Value and 3) = 3;
+        3:
+          FLocked := (Value and 3) = 3;
       end;
     $45:
       case Step of
-        2: Result := $01;
-        3: Result := $02;
-        4: Result := Ord(FAnalog);
-        5: Result := $02;
-        6: Result := $01;
+        2:
+          Result := $01;
+        3:
+          Result := $02;
+        4:
+          Result := Ord(FAnalog);
+        5:
+          Result := $02;
+        6:
+          Result := $01;
       end;
     $46:
       if Step = 2 then
@@ -372,8 +386,10 @@ begin
         Result := Byte(IfThen(FParam = 0, $0A000201, $14010101) shr ((Step - 4) * 8));
     $47:
       case Step of
-        4: Result := $02;
-        6: Result := $01;
+        4:
+          Result := $02;
+        6:
+          Result := $01;
       end;
     $48:
       if Step = 2 then
@@ -501,8 +517,10 @@ begin
   case FCommand of
     $52:
       case Step of
-        1: Result := $5A;
-        2: Result := $5D;
+        1:
+          Result := $5A;
+        2:
+          Result := $5D;
         3:
           begin
             FSector := Cardinal(Value) shl 8;
@@ -518,7 +536,8 @@ begin
             Result := $5C;
             Inc(Delay, CardReadDelay);
           end;
-        6: Result := $5D;
+        6:
+          Result := $5D;
         7:
           if FSector > $3FF then
             Result := $FF
@@ -543,7 +562,8 @@ begin
             Result := Data[FSector * 128 + Cardinal(Step - 9)];
             FChecksum := FChecksum xor Result;
           end;
-        137: Result := FChecksum;
+        137:
+          Result := FChecksum;
         138:
           begin
             Result := $47;
@@ -554,8 +574,10 @@ begin
       end;
     $57:
       case Step of
-        1: Result := $5A;
-        2: Result := $5D;
+        1:
+          Result := $5A;
+        2:
+          Result := $5D;
         3:
           begin
             FSector := Cardinal(Value) shl 8;
@@ -579,8 +601,10 @@ begin
             FChecksum := FChecksum xor Value;
             Result := FPrevious;
           end;
-        134: Result := $5C;
-        135: Result := $5D;
+        134:
+          Result := $5C;
+        135:
+          Result := $5D;
         136:
           begin
             Ack := False;
@@ -602,13 +626,20 @@ begin
       end;
     $53:
       case Step of
-        1: Result := $5A;
-        2: Result := $5D;
-        3: Result := $5C;
-        4: Result := $5D;
-        5: Result := $04;
-        6: Result := $00;
-        7: Result := $00;
+        1:
+          Result := $5A;
+        2:
+          Result := $5D;
+        3:
+          Result := $5C;
+        4:
+          Result := $5D;
+        5:
+          Result := $04;
+        6:
+          Result := $00;
+        7:
+          Result := $00;
         8:
           begin
             Result := $80;
@@ -679,8 +710,10 @@ function TPS1SIO0.BitCycles: Int64;
 begin
   var Factor: Cardinal := 1;
   case FMode and 3 of
-    2: Factor := 16;
-    3: Factor := 64;
+    2:
+      Factor := 16;
+    3:
+      Factor := 64;
   end;
   Result := (Int64(FBaud) * Factor) and not Int64(1);
   if Result < 1 then
@@ -758,8 +791,10 @@ begin
     else if not FFinished[Port] then
     begin
       case FSelected[Port] of
-        1: Response := Pads[Port].Exchange(FTXShift, Ack, Delay);
-        2: Response := Cards[Port].Exchange(FTXShift, Ack, Delay);
+        1:
+          Response := Pads[Port].Exchange(FTXShift, Ack, Delay);
+        2:
+          Response := Cards[Port].Exchange(FTXShift, Ack, Delay);
       end;
     end;
     FFinished[Port] := FFinished[Port] or ((FSelected[Port] <> -1) and not Ack);
@@ -854,9 +889,12 @@ begin
         if Reload > 0 then
           Result := Result or (Cardinal(Reload - (FScheduler.Now - FBaudStart) mod Reload) and $1FFFFF) shl 11;
       end;
-    $8: Result := FMode;
-    $A: Result := FControl;
-    $E: Result := FBaud;
+    $8:
+      Result := FMode;
+    $A:
+      Result := FControl;
+    $E:
+      Result := FBaud;
   else
     Result := 0;
   end;
@@ -876,7 +914,8 @@ begin
         if not FTXActive and FTXLatchedEnable then
           StartTransfer(FScheduler.Now);
       end;
-    $8: FMode := Value and $13F;
+    $8:
+      FMode := Value and $13F;
     $A:
       begin
         var Old := FControl;
@@ -956,13 +995,19 @@ end;
 function TPS1SIO1.Read(Address: Cardinal; Size: Integer): Cardinal;
 begin
   case Address and $F of
-    $0: Result := $FF;
+    $0:
+      Result := $FF;
     // TX ready and idle; no partner drives CTS/DSR.
-    $4: Result := $00000005;
-    $8: Result := FMode;
-    $A: Result := FControl;
-    $C: Result := FMisc;
-    $E: Result := FBaud;
+      $4:
+      Result := $00000005;
+    $8:
+      Result := FMode;
+    $A:
+      Result := FControl;
+    $C:
+      Result := FMisc;
+    $E:
+      Result := FBaud;
   else
     Result := 0;
   end;
@@ -973,10 +1018,14 @@ end;
 procedure TPS1SIO1.Write(Address, Value: Cardinal; Size: Integer);
 begin
   case Address and $F of
-    $8: FMode := Value and $FF;
-    $A: FControl := Value and $FFFF;
-    $C: FMisc := Value and $FFFF;
-    $E: FBaud := Value and $FFFF;
+    $8:
+      FMode := Value and $FF;
+    $A:
+      FControl := Value and $FFFF;
+    $C:
+      FMisc := Value and $FFFF;
+    $E:
+      FBaud := Value and $FFFF;
   end;
 end;
 
@@ -989,3 +1038,4 @@ begin
 end;
 
 end.
+

@@ -29,8 +29,9 @@ type
     FDone: TEvent;
     FPending, FLoading: Boolean;
     FName, FError: string;
+    FValidateNames: Boolean;
   public
-    constructor Create;
+    constructor Create(ValidateNames: Boolean = True);
     destructor Destroy; override;
     procedure Execute(Worker: TThread; const Name: string; Loading: Boolean);
     procedure Process(const Action: TSnapshotAction);
@@ -120,14 +121,35 @@ begin
   var Magic: AnsiString := 'RMSNAP01';
   Move(Magic[1], Result.Magic, 8);
   Result.Version := 1;
+  // MSX v3 adds RTC/calendar, floppy, cassette, Kanji, mouse and slot-2 states.
+  // MSX v5 adds SCC+ RAM/clock latches, Y8950/board state and the YJK line latch.
+  // MSX v6 adds deferred VRAM transactions, video-fetch latches and CSM phase.
+  // MSX v7 adds clocked sprite statuses and positional bitmap fetch latches.
+  // MSX v8 adds silicon identity and asynchronous status-read recovery.
+  // MSX v9 adds the status transition history for CPU sample/acknowledge timing.
+  // MSX v10 adds accepted CPU transactions, request-buffer grants and dummy slots.
+  // MSX v11 separates issued RAM transactions from their CAS data completion.
+  // MSX v12 keeps the previous R18 latch and the command's memory-clock origin.
+  // MSX v13 retains video-read addresses between CAS assertion and release.
+  // MSX v14 distinguishes ignored border reads and rebuilds per-line fetch windows.
+  // MSX v16 also stores the V9958 WAIT latch and validates motherboard wiring.
+  if SameText(PlatformCore, 'MSX1') or SameText(PlatformCore, 'MSX2') or
+    SameText(PlatformCore, 'MSX2PLUS') then Result.Version := 16;
   // ZX v16 adds Profi CMR1, DS80 latches/palette and variable-sector disk states.
   // ZX v17 adds Byte PROM gate, VI53, Byte-01 RAM/video and KDI geometry.
   // ZX v18 adds Didaktik Gama 8255 mode, latches and output/interrupt state.
   // ZX v19 adds TK90X/TK95 timing and original ROM language selection.
   // ZX v20 adds the Turbo Sound FM configuration, CPLD and both YM2203 states.
   // ZX v21 adds Next-DAC startup configuration, gates, selector and sample latches.
+  // ZX v22 adds the independent General Sound CPU, memory, clocks and DAC state.
+  // ZX v23 adds NeoGS and the shared native SPI SD state.
+  // ZX v24 stores VS1011e, MP3 DMA, CPLD/FPGA and programmable flash.
+  // ZX v25 adds DMA USC controller/timers, physical DMA and bus continuation.
+  // ZX v26 adds ZXM-MoonSound and shared 040B/016D flash geometry.
+  // ZX v27 adds the eZX/MB SID voices, filters and rational clock phases.
+  // ZX v28 adds the SID interface selection and the fixed 1 MHz HardSID clock.
   if SameText(PlatformCore, 'ZX') then
-    Result.Version := 21;
+    Result.Version := 28;
   // CPS v2 adds OKI bank state, enlarged sprite buffers and board peripherals.
   if SameText(PlatformCore, 'CPS1') or SameText(PlatformCore, 'CPS2') then
     Result.Version := 2;
@@ -221,6 +243,12 @@ begin
       CompareMem(@Header.platform, @Expected.platform, 8) and
       (Header.Version <> Expected.Version) then
       raise EReadError.CreateFmt('N64 snapshot version %d is unsupported; expected version %d', [Header.Version, Expected.Version]);
+
+    if SameText(platform, 'PS1') and
+      CompareMem(@Header.Magic, @Expected.Magic, 8) and
+      CompareMem(@Header.platform, @Expected.platform, 8) and
+      not CompareMem(@Header.ROMHash, @Expected.ROMHash, 32) then
+      raise EReadError.Create('This PS1 snapshot belongs to a different disc. Insert the disc used to save it.');
 
     if not CompareMem(@Header.Magic, @Expected.Magic, 8) or
       ((Header.Version <> Expected.Version) and not
@@ -358,9 +386,10 @@ end;
 
 { TSnapshotQueue }
 
-constructor TSnapshotQueue.Create;
+constructor TSnapshotQueue.Create(ValidateNames: Boolean);
 begin
-  inherited;
+  inherited Create;
+  FValidateNames:=ValidateNames;
   FLock := TCriticalSection.Create;
   FCommandLock := TCriticalSection.Create;
   FDone := TEvent.Create(nil, True, False, '');
@@ -376,7 +405,9 @@ end;
 
 procedure TSnapshotQueue.Execute(Worker: TThread; const Name: string; Loading: Boolean);
 begin
-  ValidateSnapshotName(Name);
+  // Peripheral workers can reuse the synchronous command transport for media
+  // locations. Snapshot clients retain strict name validation by default.
+  if FValidateNames then ValidateSnapshotName(Name);
 
   FCommandLock.Enter;
   try

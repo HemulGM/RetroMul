@@ -220,8 +220,10 @@ begin
   begin
     var Base: Cardinal := 0;
     case Segment of
-      1: Base := $8000;
-      2: Base := $A000;
+      1:
+        Base := $8000;
+      2:
+        Base := $A000;
     end;
     var Cached := Segment < 2;
     for var Index := 0 to $13F do
@@ -289,8 +291,10 @@ end;
 function ReadBytes(Source: PByte; Size: Integer): Cardinal; inline;
 begin
   case Size of
-    1: Result := Source^;
-    2: Result := PWord(Source)^;
+    1:
+      Result := Source^;
+    2:
+      Result := PWord(Source)^;
   else
     Result := PCardinal(Source)^;
   end;
@@ -299,8 +303,10 @@ end;
 procedure WriteBytes(Target: PByte; Value: Cardinal; Size: Integer); inline;
 begin
   case Size of
-    1: Target^ := Byte(Value);
-    2: PWord(Target)^ := Word(Value);
+    1:
+      Target^ := Byte(Value);
+    2:
+      PWord(Target)^ := Word(Value);
   else
     PCardinal(Target)^ := Value;
   end;
@@ -523,3 +529,4 @@ begin
 end;
 
 end.
+

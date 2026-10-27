@@ -7,85 +7,68 @@ uses
 
 var
   SettingsPlatforms: TSettingsPlatformRegistry;
-  // Compatibility lookup tables, generated from the registry. Index zero is Main.
+  // Sparse compatibility tables, updated by each registration. Zero is Main.
   SettingsCoreIds, SettingsPageNames: TArray<string>;
   SettingsCoreOrder: TArray<Integer>;
+
+// Called by platform units during initialization. There is no implicit fallback
+// for metadata whose settings provider has not been linked into this build.
+procedure RegisterSettingsPlatform(const Id: string; PageClass: TSettingsPlatformClass);
+
+procedure RegisterSettingsProfile(const Profile: string; PageClass: TSettingsPlatformClass);
 
 implementation
 
 uses
-  Core.Platforms, System.SysUtils, System.Generics.Collections, RM.Gamepad,
-  RM.Settings.GameBoy, RM.Settings.GBA, RM.Settings.NES, RM.Settings.SNES,
-  RM.Settings.N64, RM.Settings.MegaDrive, RM.Settings.Sega8Bit,
-  RM.Settings.GameBoyColor, RM.Settings.SG1000, RM.Settings.SC3000,
-  RM.Settings.SF7000, RM.Settings.Multivision, RM.Settings.Saturn,
-  RM.Settings.PCE, RM.Settings.MasterSystem, RM.Settings.GameGear,
-  RM.Settings.NeoGeo, RM.Settings.NGP, RM.Settings.ZX, RM.Settings.PS1, RM.Settings.PS2;
+  Core.Platforms, System.SysUtils;
 
-type
-  TSettingsPlatformClass = class of TSettingsPlatform;
-
-procedure RegisterPlatforms;
+procedure UpdateCompatibilityTables;
 begin
-  // Bind UI implementations by profile; page IDs and artwork live in RM.Platforms.Presentation.
-  var Classes := TDictionary<string, TSettingsPlatformClass>.Create;
-  try
-    Classes.Add('', TSettingsPlatform);
-    Classes.Add('ZXSpectrum', TZXSettings);
-    Classes.Add('CPS1', TSettingsPlatform);
-    Classes.Add('CPS2', TSettingsPlatform);
-    Classes.Add('CPS3', TSettingsPlatform);
-    Classes.Add('GameBoy', TGameBoySettings);
-    Classes.Add('GameBoyColor', TGameBoyColorSettings);
-    Classes.Add('GBA', TGBASettings);
-    Classes.Add('NES', TNESSettings);
-    Classes.Add('SNES', TSNESSettings);
-    Classes.Add('N64', TN64Settings);
-    Classes.Add('Saturn', TSaturnSettings);
-    Classes.Add('PS1', TPS1Settings);
-    Classes.Add('PS2', TPS2Settings);
-    Classes.Add('MegaDrive', TMegaDriveSettings);
-    Classes.Add('SG1000', TSG1000Settings);
-    Classes.Add('SC3000', TSC3000Settings);
-    Classes.Add('SF7000', TSF7000Settings);
-    Classes.Add('MasterSystem', TMasterSystemSettings);
-    Classes.Add('GameGear', TGameGearSettings);
-    Classes.Add('Multivision', TMultivisionSettings);
-    Classes.Add('NeoGeo', TNeoGeoSettings);
-    Classes.Add('NeoGeoPocket', TNGPSettings);
-    Classes.Add('PCE', TPCESettings);
-    for var Info in TPlatformRegistry.All do
-    begin
-      // Library variants may share one canonical settings page.
-      if not SameText(Info.Id, Info.SettingsCoreId) then
-        Continue;
-
-      var PageClass: TSettingsPlatformClass;
-      if not Classes.TryGetValue(Info.SettingsProfile, PageClass) then
-        raise EInvalidOpException.Create('Unknown settings profile: ' + Info.SettingsProfile);
-
-      SettingsPlatforms.Add(PageClass.Create(Info));
-    end;
-  finally
-    Classes.Free;
-  end;
+  SettingsCoreIds := nil;
+  SettingsPageNames := nil;
   SetLength(SettingsCoreIds, SettingsPlatforms.MaxPageId + 1);
   SetLength(SettingsPageNames, Length(SettingsCoreIds));
   SettingsPageNames[0] := 'Main';
   var Ordered := SettingsPlatforms.Matching('');
   SetLength(SettingsCoreOrder, Length(Ordered));
-  for var i := 0 to High(Ordered) do
+  for var I := 0 to High(Ordered) do
   begin
-    var platform := Ordered[i];
-    SettingsCoreOrder[i] := platform.PageId;
+    var platform := Ordered[I];
+    SettingsCoreOrder[I] := platform.PageId;
     SettingsCoreIds[platform.PageId] := platform.CoreId;
     SettingsPageNames[platform.PageId] := platform.Name;
   end;
 end;
 
+procedure RegisterSettingsPlatform(const Id: string; PageClass: TSettingsPlatformClass);
+begin
+  if PageClass = nil then
+    raise EArgumentException.Create('Settings page class is required: ' + Id);
+  var Info := TPlatformRegistry.Require(Id);
+  if not SameText(Info.Id, Info.SettingsCoreId) then
+    raise EArgumentException.Create('Register the canonical settings platform: ' + Info.SettingsCoreId);
+  SettingsPlatforms.Add(PageClass.Create(Info));
+  UpdateCompatibilityTables;
+end;
+
+procedure RegisterSettingsProfile(const Profile: string; PageClass: TSettingsPlatformClass);
+begin
+  if (Profile = '') or (PageClass = nil) then
+    raise EArgumentException.Create('Settings profile and page class are required');
+  var Found := False;
+  for var Info in TPlatformRegistry.All do
+    if SameText(Info.SettingsProfile, Profile) and SameText(Info.Id, Info.SettingsCoreId) then
+    begin
+      RegisterSettingsPlatform(Info.Id, PageClass);
+      Found := True;
+    end;
+  if not Found then
+    raise EArgumentException.Create('Unknown settings profile: ' + Profile);
+end;
+
 initialization
   SettingsPlatforms := TSettingsPlatformRegistry.Create;
-  RegisterPlatforms;
+  UpdateCompatibilityTables;
 
 finalization
   SettingsPlatforms.Free;

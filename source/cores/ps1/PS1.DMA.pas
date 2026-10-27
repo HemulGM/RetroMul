@@ -3,7 +3,8 @@ unit PS1.DMA;
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Snapshots, PS1.Types, PS1.Scheduler, PS1.Bus;
+  System.SysUtils, System.Classes, Core.Snapshots, PS1.Types, PS1.Scheduler,
+  PS1.Bus;
 
 type
   // Device side of DMA channels 0..5 (channel 6 only clears ordering tables).
@@ -23,13 +24,15 @@ type
   // short window. Completion (CHCR bit 24, DICR flags, IRQ3) follows the
   // last step.
   TPS1DMA = class
-  private type
-    TChannel = record
-      Address, Block, Control: Cardinal;
+  private
+    type
+      TChannel = record
+        Address, Block, Control: Cardinal;
       // A burst that started keeps going without DREQ (chopped bursts).
-      Bursting: Cardinal;
-    end;
-    PChannel = ^TChannel;
+        Bursting: Cardinal;
+      end;
+
+      PChannel = ^TChannel;
   private
     FChannels: array[0..6] of TChannel;
     FPriority, FInterrupt: Cardinal;
@@ -136,9 +139,12 @@ end;
 function TPS1DMA.WordCost(Index: Integer): Integer;
 begin
   case Index of
-    3: Result := FBus.DeviceCycles(6, 4, False) * 16;
-    4: Result := 66;
-    5: Result := 320;
+    3:
+      Result := FBus.DeviceCycles(6, 4, False) * 16;
+    4:
+      Result := 66;
+    5:
+      Result := 320;
   else
     Result := 17;
   end;
@@ -281,8 +287,10 @@ begin
   var Ch: PChannel := @FChannels[Index];
   var Done := True;
   case (Ch.Control shr 9) and 3 of
-    1: Done := (Ch.Block shr 16) = 0;
-    2: Done := (Ch.Address and $800000) <> 0;
+    1:
+      Done := (Ch.Block shr 16) = 0;
+    2:
+      Done := (Ch.Address and $800000) <> 0;
   end;
   if (((Ch.Control shr 9) and 3) = 0) and ((Ch.Control and ControlChop) <> 0) then
     Done := (Ch.Block and $FFFF) = 0;
@@ -360,16 +368,21 @@ begin
   var Index := Integer((Address shr 4) and 7);
   if Index < 7 then
     case Address and $C of
-      $0: Result := FChannels[Index].Address;
-      $4: Result := FChannels[Index].Block;
+      $0:
+        Result := FChannels[Index].Address;
+      $4:
+        Result := FChannels[Index].Block;
     else
       Result := FChannels[Index].Control;
     end
   else
     case Address and $C of
-      $0: Result := FPriority;
-      $4: Result := FInterrupt;
-      $8: Result := $7FFAC68B;
+      $0:
+        Result := FPriority;
+      $4:
+        Result := FInterrupt;
+      $8:
+        Result := $7FFAC68B;
     else
       Result := $00FFFFF7;
     end;
@@ -382,8 +395,10 @@ begin
   begin
     var Ch: PChannel := @FChannels[Index];
     case Address and $C of
-      $0: Ch.Address := Value and $FFFFFF;
-      $4: Ch.Block := Value;
+      $0:
+        Ch.Address := Value and $FFFFFF;
+      $4:
+        Ch.Block := Value;
     else
       Ch.Bursting := 0;
       if Index = 6 then
@@ -394,7 +409,8 @@ begin
   end
   else
     case Address and $C of
-      $0: FPriority := Value;
+      $0:
+        FPriority := Value;
       $4:
         begin
           var Before := (FInterrupt and $80000000) <> 0;
@@ -417,3 +433,4 @@ begin
 end;
 
 end.
+

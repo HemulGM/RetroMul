@@ -96,7 +96,7 @@ begin
     Exit;
 
   for var E := Low(TPS1Event) to High(TPS1Event) do
-    if FDue[E] < At then
+    if (FDue[E] < At) then
     begin
       At := FDue[E];
       Event := E;
@@ -125,3 +125,4 @@ begin
 end;
 
 end.
+

@@ -7,33 +7,35 @@ uses
 
 type
   TPS1GTEVector = array[0..2] of SmallInt;
+
   TPS1GTEMatrix = array[0..2, 0..2] of SmallInt;
 
   // Geometry transformation engine (COP2), following psx-spx: 44-bit MAC1..3
   // accumulation with per-step overflow flags, IR/color/screen saturation and
   // the UNR perspective division.
   TPS1GTE = class
-  private type
-    TState = record
-      V: array[0..2] of TPS1GTEVector;
-      RGBC: Cardinal;
-      OTZ: Word;
-      IR: array[0..3] of SmallInt;
-      SXY: array[0..2] of Cardinal;
-      SZ: array[0..3] of Word;
-      RGB: array[0..2] of Cardinal;
-      RES1: Cardinal;
-      MAC: array[0..3] of Integer;
-      LZCS: Cardinal;
-      RT, LLM, LCM: TPS1GTEMatrix;
-      TR, BK, FC: array[0..2] of Integer;
-      OFX, OFY: Integer;
-      H: Word;
-      DQA: SmallInt;
-      DQB: Integer;
-      ZSF3, ZSF4: SmallInt;
-      Flag: Cardinal;
-    end;
+  private
+    type
+      TState = record
+        V: array[0..2] of TPS1GTEVector;
+        RGBC: Cardinal;
+        OTZ: Word;
+        IR: array[0..3] of SmallInt;
+        SXY: array[0..2] of Cardinal;
+        SZ: array[0..3] of Word;
+        RGB: array[0..2] of Cardinal;
+        RES1: Cardinal;
+        MAC: array[0..3] of Integer;
+        LZCS: Cardinal;
+        RT, LLM, LCM: TPS1GTEMatrix;
+        TR, BK, FC: array[0..2] of Integer;
+        OFX, OFY: Integer;
+        H: Word;
+        DQA: SmallInt;
+        DQB: Integer;
+        ZSF3, ZSF4: SmallInt;
+        Flag: Cardinal;
+      end;
   private
     S: TState;
     FShift: Integer;
@@ -50,8 +52,7 @@ type
     procedure PushSZ(Value: Int64);
     function Divide: Int64;
     procedure Transform(VectorIndex: Integer; Last: Boolean);
-    procedure MultiplyMatrix(const M: TPS1GTEMatrix; const V: TPS1GTEVector; Translation: Integer;
-      out R0, R1, R2: Int64);
+    procedure MultiplyMatrix(const M: TPS1GTEMatrix; const V: TPS1GTEVector; Translation: Integer; out R0, R1, R2: Int64);
     procedure LightAndColor(VectorIndex: Integer);
     procedure ColorProduct(out R0, R1, R2: Int64);
     procedure DepthCue(var R0, R1, R2: Int64);
@@ -246,8 +247,7 @@ begin
     Result := $1FFFF;
 end;
 
-procedure TPS1GTE.MultiplyMatrix(const M: TPS1GTEMatrix; const V: TPS1GTEVector; Translation: Integer;
-  out R0, R1, R2: Int64);
+procedure TPS1GTE.MultiplyMatrix(const M: TPS1GTEMatrix; const V: TPS1GTEVector; Translation: Integer; out R0, R1, R2: Int64);
 var
   R: array[0..2] of Int64;
 begin
@@ -255,9 +255,12 @@ begin
   begin
     var T: Int64 := 0;
     case Translation of
-      0: T := Int64(S.TR[I]) shl 12;
-      1: T := Int64(S.BK[I]) shl 12;
-      2: T := Int64(S.FC[I]) shl 12;
+      0:
+        T := Int64(S.TR[I]) shl 12;
+      1:
+        T := Int64(S.BK[I]) shl 12;
+      2:
+        T := Int64(S.FC[I]) shl 12;
     end;
     if Translation = 2 then
     begin
@@ -438,8 +441,8 @@ end;
 
 function TPS1GTE.Execute(Command: Cardinal): Integer;
 const
-  Valid = [$01, $06, $0C, $10, $11, $12, $13, $14, $16, $1B, $1C, $1E, $20, $28, $29, $2A,
-    $2D, $2E, $30, $3D, $3E, $3F];
+  Valid =[ $01,  $06,  $0C,  $10,  $11,  $12,  $13,  $14,  $16,  $1B,  $1C,  $1E,  $20,  $28,  $29,  $2A,
+      $2D,  $2E,  $30,  $3D,  $3E,  $3F];
 var
   R0, R1, R2: Int64;
 begin
@@ -516,15 +519,19 @@ begin
       begin
         var V: TPS1GTEVector;
         case (Command shr 15) and 3 of
-          0..2: V := S.V[(Command shr 15) and 3];
+          0..2:
+            V := S.V[(Command shr 15) and 3];
         else
           V := IRVector;
         end;
         var M: TPS1GTEMatrix;
         case (Command shr 17) and 3 of
-          0: M := S.RT;
-          1: M := S.LLM;
-          2: M := S.LCM;
+          0:
+            M := S.RT;
+          1:
+            M := S.LLM;
+          2:
+            M := S.LCM;
         else
           M := GarbageMatrix;
         end;
@@ -716,19 +723,32 @@ end;
 function TPS1GTE.ReadData(Index: Integer): Cardinal;
 begin
   case Index and 31 of
-    0, 2, 4: Result := Pack(S.V[Index shr 1][0], S.V[Index shr 1][1]);
-    1, 3, 5: Result := Extend(S.V[Index shr 1][2]);
-    6: Result := S.RGBC;
-    7: Result := S.OTZ;
-    8..11: Result := Extend(S.IR[Index - 8]);
-    12..14: Result := S.SXY[Index - 12];
-    15: Result := S.SXY[2];
-    16..19: Result := S.SZ[Index - 16];
-    20..22: Result := S.RGB[Index - 20];
-    23: Result := S.RES1;
-    24..27: Result := Cardinal(S.MAC[Index - 24]);
-    28, 29: Result := ReadIRGB;
-    30: Result := S.LZCS;
+    0, 2, 4:
+      Result := Pack(S.V[Index shr 1][0], S.V[Index shr 1][1]);
+    1, 3, 5:
+      Result := Extend(S.V[Index shr 1][2]);
+    6:
+      Result := S.RGBC;
+    7:
+      Result := S.OTZ;
+    8..11:
+      Result := Extend(S.IR[Index - 8]);
+    12..14:
+      Result := S.SXY[Index - 12];
+    15:
+      Result := S.SXY[2];
+    16..19:
+      Result := S.SZ[Index - 16];
+    20..22:
+      Result := S.RGB[Index - 20];
+    23:
+      Result := S.RES1;
+    24..27:
+      Result := Cardinal(S.MAC[Index - 24]);
+    28, 29:
+      Result := ReadIRGB;
+    30:
+      Result := S.LZCS;
   else
     Result := LeadingCount;
   end;
@@ -742,48 +762,71 @@ begin
         S.V[Index shr 1][0] := Low16(Value);
         S.V[Index shr 1][1] := High16(Value);
       end;
-    1, 3, 5: S.V[Index shr 1][2] := Low16(Value);
-    6: S.RGBC := Value;
-    7: S.OTZ := Word(Value);
-    8..11: S.IR[Index - 8] := Low16(Value);
-    12..14: S.SXY[Index - 12] := Value;
+    1, 3, 5:
+      S.V[Index shr 1][2] := Low16(Value);
+    6:
+      S.RGBC := Value;
+    7:
+      S.OTZ := Word(Value);
+    8..11:
+      S.IR[Index - 8] := Low16(Value);
+    12..14:
+      S.SXY[Index - 12] := Value;
     15:
       begin
         S.SXY[0] := S.SXY[1];
         S.SXY[1] := S.SXY[2];
         S.SXY[2] := Value;
       end;
-    16..19: S.SZ[Index - 16] := Word(Value);
-    20..22: S.RGB[Index - 20] := Value;
-    23: S.RES1 := Value;
-    24..27: S.MAC[Index - 24] := Integer(Value);
+    16..19:
+      S.SZ[Index - 16] := Word(Value);
+    20..22:
+      S.RGB[Index - 20] := Value;
+    23:
+      S.RES1 := Value;
+    24..27:
+      S.MAC[Index - 24] := Integer(Value);
     28:
       begin
         S.IR[1] := SmallInt((Value and $1F) * $80);
         S.IR[2] := SmallInt(((Value shr 5) and $1F) * $80);
         S.IR[3] := SmallInt(((Value shr 10) and $1F) * $80);
       end;
-    30: S.LZCS := Value;
+    30:
+      S.LZCS := Value;
   end;
 end;
 
 function TPS1GTE.ReadControl(Index: Integer): Cardinal;
 begin
   case Index and 31 of
-    0..4: Result := MatrixWord(S.RT, Index);
-    5..7: Result := Cardinal(S.TR[Index - 5]);
-    8..12: Result := MatrixWord(S.LLM, Index - 8);
-    13..15: Result := Cardinal(S.BK[Index - 13]);
-    16..20: Result := MatrixWord(S.LCM, Index - 16);
-    21..23: Result := Cardinal(S.FC[Index - 21]);
-    24: Result := Cardinal(S.OFX);
-    25: Result := Cardinal(S.OFY);
+    0..4:
+      Result := MatrixWord(S.RT, Index);
+    5..7:
+      Result := Cardinal(S.TR[Index - 5]);
+    8..12:
+      Result := MatrixWord(S.LLM, Index - 8);
+    13..15:
+      Result := Cardinal(S.BK[Index - 13]);
+    16..20:
+      Result := MatrixWord(S.LCM, Index - 16);
+    21..23:
+      Result := Cardinal(S.FC[Index - 21]);
+    24:
+      Result := Cardinal(S.OFX);
+    25:
+      Result := Cardinal(S.OFY);
     // H reads back sign-extended (hardware bug); it is unsigned in use.
-    26: Result := Extend(SmallInt(S.H));
-    27: Result := Extend(S.DQA);
-    28: Result := Cardinal(S.DQB);
-    29: Result := Extend(S.ZSF3);
-    30: Result := Extend(S.ZSF4);
+      26:
+      Result := Extend(SmallInt(S.H));
+    27:
+      Result := Extend(S.DQA);
+    28:
+      Result := Cardinal(S.DQB);
+    29:
+      Result := Extend(S.ZSF3);
+    30:
+      Result := Extend(S.ZSF4);
   else
     Result := S.Flag;
   end;
@@ -792,19 +835,32 @@ end;
 procedure TPS1GTE.WriteControl(Index: Integer; Value: Cardinal);
 begin
   case Index and 31 of
-    0..4: SetMatrixWord(S.RT, Index, Value);
-    5..7: S.TR[Index - 5] := Integer(Value);
-    8..12: SetMatrixWord(S.LLM, Index - 8, Value);
-    13..15: S.BK[Index - 13] := Integer(Value);
-    16..20: SetMatrixWord(S.LCM, Index - 16, Value);
-    21..23: S.FC[Index - 21] := Integer(Value);
-    24: S.OFX := Integer(Value);
-    25: S.OFY := Integer(Value);
-    26: S.H := Word(Value);
-    27: S.DQA := Low16(Value);
-    28: S.DQB := Integer(Value);
-    29: S.ZSF3 := Low16(Value);
-    30: S.ZSF4 := Low16(Value);
+    0..4:
+      SetMatrixWord(S.RT, Index, Value);
+    5..7:
+      S.TR[Index - 5] := Integer(Value);
+    8..12:
+      SetMatrixWord(S.LLM, Index - 8, Value);
+    13..15:
+      S.BK[Index - 13] := Integer(Value);
+    16..20:
+      SetMatrixWord(S.LCM, Index - 16, Value);
+    21..23:
+      S.FC[Index - 21] := Integer(Value);
+    24:
+      S.OFX := Integer(Value);
+    25:
+      S.OFY := Integer(Value);
+    26:
+      S.H := Word(Value);
+    27:
+      S.DQA := Low16(Value);
+    28:
+      S.DQB := Integer(Value);
+    29:
+      S.ZSF3 := Low16(Value);
+    30:
+      S.ZSF4 := Low16(Value);
   else
     begin
       S.Flag := Value and $7FFFF000;
@@ -829,3 +885,4 @@ initialization
   end;
 
 end.
+

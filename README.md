@@ -2,7 +2,7 @@
 
 ![RetroMul](https://github.com/HemulGM/RetroMul/blob/main/screen/screen0.png?raw=true)
 
-RetroMul is a multi-system retro game emulator written in Delphi with a FireMonkey interface. It runs games for NES / Famicom, Game Boy, Game Boy Color, Game Boy Advance, SEGA Mega Drive / Genesis, SEGA SG-1000 / SC-3000 / SF-7000, Othello Multivision, SEGA Master System / Mark III, SEGA Game Gear, Super Nintendo, Neo Geo MVS, Neo Geo CD, and the PC Engine / TurboGrafx / SuperGrafx family. The repository also includes RetroTune, a companion music player, and RetromulTerm, a Windows console frontend.
+RetroMul is a multi-system retro game emulator written in Delphi with a FireMonkey interface. It runs games for NES / Famicom, Game Boy, Game Boy Color, Game Boy Advance, SEGA Mega Drive / Genesis, SEGA CD / Mega-CD, SEGA 32X, SEGA SG-1000 / SC-3000 / SF-7000, Othello Multivision, SEGA Master System / Mark III, SEGA Game Gear, Super Nintendo, Neo Geo MVS / AES, Neo Geo CD, Neo Geo Pocket / Pocket Color, Sony PlayStation, Capcom Play System I / II / III, and the PC Engine / TurboGrafx / SuperGrafx family. The repository also includes RetroTune, a companion music player, and RetromulTerm, a Windows console frontend.
 
 ## Supported systems and ROM formats
 
@@ -14,22 +14,33 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 | Game & Watch | `.gw`, `.mgw`, catalogued MAME `.zip` sets with SVG screens |
 | Game Boy Advance | `.gba` |
 | Nintendo 64 (experimental) | `.z64`, `.n64`, `.v64` |
-| PlayStation 2 (experimental) | `.iso`, `.mds`/`.mdf`, DVD `.chd`, `.elf` (homebrew) |
+| PlayStation 2 (experimental, no BIOS needed; see [PS2 core](source/cores/ps2/README.md)) | `.iso`, `.mds`/`.mdf`, DVD `.chd`, `.elf` (homebrew) |
 | SEGA Mega Drive / Genesis | `.md`, `.bin`, `.gen`, `.smd` |
+| SEGA CD / Mega-CD | `.cue`, `.iso`, `.chd`, `.mds`, `.nrg` |
+| SEGA 32X | `.32x`, `.bin`, `.gen`, `.md`, `.smd` |
 | SEGA SG-1000 | `.sg` (legacy `.sms` images in `sg1000/`) |
 | SEGA SC-3000 | `.sc` |
 | SEGA SF-7000 | `.sf7`, `.sf`, `.dsk` (external IPL required) |
 | Othello Multivision | `.mv` |
 | SEGA Master System / Mark III | `.sms` |
 | SEGA Game Gear | `.gg` |
-| SEGA Saturn | `.iso`, `.cue`, `.chd` |
+| MSX1 / MSX2 / MSX2+ (experimental) | `.rom`, `.mx1`, `.mx2`, `.mxp`, `.dsk`, `.cas`, `.wav`, `.zip` / `.7z` |
+| SEGA Saturn | `.iso`, `.cue`, `.chd`, `.mds`, `.nrg` |
+| SEGA Dreamcast (experimental) | `.gdi`, `.cdi`, `.chd`, `.cue`, `.iso`, `.mds`, `.nrg`, homebrew `.elf`, multi-disc `.m3u` |
+| Sony PlayStation (PS1) | `.cue`, `.chd`, `.iso`, `.mds`, `.nrg`, raw `.bin`, PS-X `.exe`, disc / executable `.zip`, multi-disc `.m3u` |
+| Sony PSP (experimental) | ELF/PRX/PBP, encrypted executables, ISO9660 `.iso`, CISO v1 `.cso`, single-image `.zip`; commercial compatibility is being validated |
 | ZX Spectrum family / clones | `.sna`, `.z80`, `.tap`, `.tzx`, `.trd`, `.scl`, `.dsk`, `.dck`, `.pro`, `.kdi`, `.ide`, `.mmc`, `.zip` / `.7z` |
 | Super Nintendo / Super Famicom | `.sfc`, `.smc`, `.swc`, `.fig` |
-| Neo Geo MVS | Named MAME ROM sets in `.zip`, unencrypted NeoSD `.neo` images |
-| Neo Geo CD / CDZ | `.iso`, `.cue` with BIN/PCM WAV tracks, `.chd` |
+| Neo Geo MVS / AES | Named MAME ROM sets in `.zip`, unencrypted NeoSD `.neo` images |
+| Neo Geo CD / CDZ | `.iso`, `.cue` with BIN/PCM WAV tracks, `.chd`, `.mds`, `.nrg` |
+| Neo Geo Pocket | `.ngp`, `.ngc`, `.zip` |
+| Neo Geo Pocket Color | `.ngp`, `.ngc`, `.zip` |
+| Capcom Play System I (CPS-1) | Named arcade ROM sets in `.zip` |
+| Capcom Play System II (CPS-2) | Named arcade ROM sets in `.zip` |
+| Capcom Play System III (CPS-3) | Supported SIMM / No-CD ROM sets in `.zip` |
 | PC Engine / TurboGrafx-16 | `.pce`, single-HuCard `.zip` |
 | SuperGrafx | `.sgx`, `.pce`, single-HuCard `.zip` |
-| PC Engine CD / Duo / Arcade Card | `.cue`, `.iso`, `.chd` (built-in System Cards 1/2/3) |
+| PC Engine CD / Duo / Arcade Card | `.cue`, `.iso`, `.chd`, `.mds`, `.nrg` (built-in System Cards 1/2/3) |
 
 ## Features
 
@@ -48,12 +59,6 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 
 Compatibility depends on the game's cartridge hardware, protection, and peripherals. Mapper or ROM-set support does not imply complete hardware accuracy or full gameplay compatibility for every game. Save-state formats can change between builds.
 
-ZX Spectrum includes built-in 48K/128K ROMs, a touch keyboard, Kempston plus QAOP/Space controls,
-beeper and AY audio, and automatic cassette loading. TAP/TZX play at original tape speed.
-Snapshots load immediately. TRD/SCL auto-select Pentagon 128K and boot through native Beta 128 / TR-DOS; disk writes use separate save overlays. PAL Timex TC2048/TC2068, Scorpion ZS-256 and Profi+ 512K/1024K are selectable in settings; DCK boots Timex cartridges; PRO boots native Profi CP/M disks. Microdigital TK90X/TK95 adds MC16845 60/50 Hz timing and embedded Portuguese/Spanish ROMs. ZX settings include 30 ready configurations and live conflict notifications. Didaktik Gama 1987/1988/1989 adds native 80K paging, on-board 8255 and embedded ROMs. Byte 48K and Byte-01 128K/KVU are selectable with embedded ROM/PROM images, native video/VI53 sound and 800K KDI CP/M boot. Optional Pentagon 512K/1024K models are available in settings; 1024K includes software-controlled turbo, 16C/512/384 video and persistent Gluk CMOS. See [ZX Spectrum support and accuracy limits](source/cores/zx/README.md).
-
-PlayStation 2 support is experimental and runs without a BIOS: the EE kernel, the IOP system modules, pads and file-level memory cards are high level, while the games' own IOP modules (sound drivers) run on an emulated IOP. There is no sound output or BIOS boot yet, and most games do not reach gameplay. See [PlayStation 2 core](source/cores/ps2/README.md).
-
 ## Getting started
 
 Open a ROM directly, or select the library root folder in Settings. The library uses these system subdirectories:
@@ -68,8 +73,13 @@ ROMS/
   n64/
   ps2/
   megadrive/
+  segacd/
+  sega32x/
   sg1000/
   sc3000/
+  msx1/
+  msx2/
+  msx2plus/
   zxspectrum/
   sf7000/
   omv/
@@ -77,7 +87,15 @@ ROMS/
   gg/
   snes/
   neogeo/
+  ngp/
+  ngpc/
+  cps1/
+  cps2/
+  cps3/
+  ps1/
+  psp/
   saturn/
+  dc/
   neogeocd/
   pcengine/
   sgx/
@@ -156,18 +174,17 @@ The script signs and verifies the staged EXE using SignTool and SHA-256, with an
 
 | Directory | Responsibility |
 | --- | --- |
-| `apps/retromul` | Emulator frontend: forms, controllers, settings, virtual devices and platform UI |
+| `apps/retromul` | Emulator frontend, with `ui`, `controllers`, `settings`, `input` and `platform` modules |
 | `apps/retrotune` | Music player project and forms |
 | `apps/terminal` | Windows console frontend |
-| `source/contracts` | Emulation and storage interfaces and shared data types |
-| `source/runtime` | Emulator factory, adapters, worker timing and snapshot coordination |
+| `source/runtime` | Shared contracts, emulator factory, timing, snapshots, configuration, storage and catalog |
+| `source/adapters` | All emulator adapters and their playback/archive integration helpers |
 | `source/cores` | System-specific emulation, cartridges, audio machines and firmware |
 | `source/hardware` | Shared CPU, audio-chip and video implementations |
 | `source/media` | ROM identification, CD access and native CHD decoding |
-| `source/services` | Storage, configuration, system catalog and game-list metadata |
-| `source/platform` | Host storage integration and performance hints |
 | `source/music` | Reusable decoders, trackers, playback, synthesis and export |
-| `source/ui/fmx` | Shared FMX controls, SVG rendering and Game & Watch artwork backend |
+| `source/ui` | Shared FMX controls, SVG rendering, shaders and Game & Watch artwork backend |
+| `source/RetroMul.Paths.props` | Shared relative unit search paths imported by all three application projects |
 | `dependencies` | Git submodules: DelphiWinUI3, FMXVibration, FMXInput and PCMAudio |
 
 Initialize dependencies with `git submodule update --init --recursive`. Their repository URLs and pinned commits are unchanged; the logical submodule names in `.gitmodules` are retained so existing Git metadata continues to work. DelphiWinUI3's nested submodules remain part of that dependency. Do not add dependency contents to the parent repository as ordinary files.
@@ -252,7 +269,7 @@ MiniDSF needs its referenced library files beside the source file. MD1 needs the
 
 ### Using the player in another Delphi application
 
-`TTunePlayer` in `source/music/playback/RetroTune.Player.pas` owns the playback thread and PCM device; it does not depend on FireMonkey or `RetroTune.Main`. Add `source/music/decoders`, `source/music/common`, `source/music/chips`, `source/music/playback`, and `dependencies/PCMAudio` to your project's unit search path. Other decoders can additionally require `source/music/trackers` (including its `amiga` directory), `source/contracts`, `source/runtime`, the relevant `source/hardware` directories and system-specific core directories. The complete decoder set's paths are listed in `apps/retrotune/RetroTune.dproj`.
+`TTunePlayer` in `source/music/playback/RetroTune.Player.pas` owns the playback thread and PCM device; it does not depend on FireMonkey or `RetroTune.Main`. Add `source/music/decoders`, `source/music/common`, `source/music/chips`, `source/music/playback`, and `dependencies/PCMAudio` to your project's unit search path. Other decoders can additionally require `source/music/trackers` (including its `amiga` directory), `source/runtime`, `source/runtime`, the relevant `source/hardware` directories and system-specific core directories. The complete decoder set's paths are listed in `apps/retrotune/RetroTune.dproj`.
 
 Decoder units register their formats in their `initialization` sections. This standalone console example enables WAV and MIDI; add the other `RetroTune.Decoder.*` units used by [RetroTune.dpr](apps/retrotune/RetroTune.dpr) to enable their formats. Keep dependent decoder units when using containers. For MIDI, prepare the `sf2` directory beside **your application's** EXE, or call `SetMidiSoundFont` with a custom SF2 path before opening the MIDI file.
 

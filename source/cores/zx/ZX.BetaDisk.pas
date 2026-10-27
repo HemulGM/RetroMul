@@ -12,8 +12,11 @@ type
     FCylinders, FHeads: Integer;
     FSectorSize, FSectorsPerTrack: Integer;
     FDirty, FProtected, FProfiBoot: Boolean;
+    FRevision: Cardinal;
+    procedure ContentChanged; inline;
   public
     constructor Create(const Data: TBytes; SCL: Boolean; ProfiMedia: Boolean = False; KDI: Boolean = False);
+    constructor CreateRaw(const Data: TBytes; Cylinders, Heads, Sectors, SectorSize: Integer);
     function SectorId(Cylinder, Head, Position: Integer): Integer;
     function Offset(Cylinder, Head, Sector: Integer): Integer;
     procedure SerializeState(State: TStateArchive);
@@ -29,6 +32,9 @@ type
 
   TZXBetaDisk = class
   private
+    const
+      RotationT = 700000;
+  protected
     FDisks: array[0..3] of TZXDisk;
     FPhysicalTrack: array[0..3] of Integer;
     FControl, FCommand, FTrack, FSector, FData, FError, FForce: Byte;
@@ -37,9 +43,16 @@ type
     FTimer, FRotation, FDirection, FPosition, FLength, FOffset: Integer;
     FBuffer: TBytes;
     FReadSectors, FWrittenSectors: UInt64;
-    function Selected: Integer;
-    function Head: Integer;
-    function Ready: Boolean;
+    FTrackCache: TBytes;
+    FTrackCacheValid: Boolean;
+    FTrackCacheDrive, FTrackCacheCylinder, FTrackCacheHead: Integer;
+    FTrackCacheRevision: Cardinal;
+    procedure InvalidateTrackCache;
+    procedure BuildReadTrack(D: TZXDisk; Cylinder, Side: Integer);
+    procedure ProcessPhase;
+    function Selected: Integer; virtual;
+    function Head: Integer; virtual;
+    function Ready: Boolean; virtual;
     procedure Finish(Error: Byte = 0);
     procedure Command(Value: Byte);
     procedure FindSector;
@@ -50,9 +63,11 @@ type
     constructor Create;
     destructor Destroy; override;
     procedure Mount(const Data: TBytes; SCL: Boolean; Drive: Integer = 0; ProfiMedia: Boolean = False; KDI: Boolean = False);
-    procedure Reset;
+    procedure MountRaw(const Data: TBytes; Cylinders, Heads, Sectors, SectorSize, Drive: Integer);
+    procedure Reset; virtual;
     procedure EjectAll;
-    procedure Tick;
+    procedure Tick; inline;
+    procedure Advance(Cycles: Integer);
     function ReadPort(Port: Byte): Byte;
     procedure WritePort(Port, Value: Byte);
     procedure SerializeState(State: TStateArchive);
@@ -69,9 +84,8 @@ uses
   System.Math;
 
 const
-  RotationT = 700000;
   ByteT = 112;
-  SectorT = RotationT div 16;
+  SectorT = TZXBetaDisk.RotationT div 16;
   Rates: array[0..3] of Integer = (21000, 42000, 70000, 105000);
 
 constructor TZXDisk.Create(const Data: TBytes; SCL: Boolean; ProfiMedia: Boolean; KDI: Boolean);
@@ -215,12 +229,36 @@ begin
   Result := Copy(FData);
 end;
 
+constructor TZXDisk.CreateRaw(const Data: TBytes; Cylinders, Heads, Sectors, SectorSize: Integer);
+begin
+  inherited Create;
+  if (Cylinders < 1) or (Cylinders > 86) or not (Heads in [1, 2]) or
+    not (((SectorSize = 256) and (Sectors = 16)) or ((SectorSize = 512) and (Sectors in [8, 9])) or
+    ((SectorSize = 1024) and (Sectors = 5))) or
+    (Length(Data) <> Cylinders * Heads * Sectors * SectorSize) then
+    raise EReadError.Create('Invalid raw floppy geometry');
+  FCylinders := Cylinders;
+  FHeads := Heads;
+  FSectorsPerTrack := Sectors;
+  FSectorSize := SectorSize;
+  FData := Copy(Data);
+end;
+
+procedure TZXDisk.ContentChanged;
+begin
+  FRevision := Cardinal((UInt64(FRevision) + 1) and $FFFFFFFF);
+end;
+
 procedure TZXDisk.SerializeState(State: TStateArchive);
 begin
+  if State.Loading then
+    ContentChanged;
   State.Field(FProfiBoot, SizeOf(FProfiBoot));
   State.Field(FSectorSize, SizeOf(FSectorSize));
   State.Field(FSectorsPerTrack, SizeOf(FSectorsPerTrack));
-  if not (((FSectorSize = 256) and (FSectorsPerTrack = 16)) or ((FSectorSize = 1024) and (FSectorsPerTrack = 5))) then
+  if not (((FSectorSize = 256) and (FSectorsPerTrack = 16)) or
+    ((FSectorSize = 512) and (FSectorsPerTrack in [8, 9])) or
+    ((FSectorSize = 1024) and (FSectorsPerTrack = 5))) then
     raise EReadError.Create('Invalid disk sector geometry');
 
   var N := Length(FData);
@@ -262,6 +300,7 @@ begin
     Finish($10);
   FDisks[Drive].Free;
   FDisks[Drive] := NewDisk;
+  InvalidateTrackCache;
 end;
 
 procedure TZXBetaDisk.EjectAll;
@@ -269,6 +308,18 @@ begin
   for var i := 0 to 3 do
     FreeAndNil(FDisks[i]);
   Reset;
+end;
+
+procedure TZXBetaDisk.MountRaw(const Data: TBytes; Cylinders, Heads, Sectors, SectorSize, Drive: Integer);
+begin
+  if not (Drive in [0..3]) then
+    raise EArgumentOutOfRangeException.Create('Floppy drive');
+  var NewDisk := TZXDisk.CreateRaw(Data, Cylinders, Heads, Sectors, SectorSize);
+  if FBusy and (Selected = Drive) then
+    Finish($10);
+  FDisks[Drive].Free;
+  FDisks[Drive] := NewDisk;
+  InvalidateTrackCache;
 end;
 
 function TZXBetaDisk.Disk(Drive: Integer): TZXDisk;
@@ -293,8 +344,15 @@ begin
   Result := (FDisks[Selected] <> nil) and ((FControl and 4) <> 0);
 end;
 
+procedure TZXBetaDisk.InvalidateTrackCache;
+begin
+  FTrackCacheValid := False;
+  FTrackCache := nil;
+end;
+
 procedure TZXBetaDisk.Reset;
 begin
+  InvalidateTrackCache;
   FControl := $3C;
   FCommand := 0;
   FTrack := 0;
@@ -338,10 +396,20 @@ begin
   if FDisks[Selected] <> nil then
     Count := FDisks[Selected].FSectorsPerTrack;
   var R := Integer(FSector);
+  var SearchRotation := FRotation;
+  // Read Address finds the next physical ID, independently of Sector Register.
+  // Selecting by FSector would repeatedly return the same ID after C is copied
+  // into that register, trapping loaders that wait for rotational ID changes.
+  if (FCommand and $F0) = $C0 then
+  begin
+    if (FCommand and 4) <> 0 then
+      SearchRotation := (SearchRotation + 52500) mod RotationT;
+    R := (SearchRotation div (RotationT div Count) + 1) mod Count + 1;
+  end;
   if (FDisks[Selected] <> nil) and FDisks[Selected].FProfiBoot and (Count = 5) and (FPhysicalTrack[Selected] = 0) and (Head = 0) and (R = 9) then
     R := 5;
   var Target := ((R - 1 + Count) mod Count) * (RotationT div Count);
-  FTimer := (Target - FRotation + RotationT) mod RotationT + 28 * ByteT;
+  FTimer := (Target - SearchRotation + RotationT) mod RotationT + 28 * ByteT;
   if (FCommand and 4) <> 0 then
     Inc(FTimer, 52500);
 end;
@@ -440,6 +508,52 @@ begin
   Result := C;
 end;
 
+procedure TZXBetaDisk.BuildReadTrack(D: TZXDisk; Cylinder, Side: Integer);
+begin
+  if FTrackCacheValid and (FTrackCacheDrive = Selected) and
+    (FTrackCacheCylinder = Cylinder) and (FTrackCacheHead = Side) and
+    (FTrackCacheRevision = D.FRevision) then
+  begin
+    FBuffer := Copy(FTrackCache);
+    Exit;
+  end;
+  // Exactly the same reconstructed MFM bytes as before; only allocation changes.
+  var Size := Max(6250, D.FSectorsPerTrack * (96 + D.FSectorSize));
+  SetLength(FBuffer, Size);
+  FillChar(FBuffer[0], Size, $4E);
+  var Offset := 0;
+  var N := 1;
+  if D.FSectorSize = 512 then
+    N := 2;
+  if D.FSectorSize = 1024 then
+    N := 3;
+  for var Position := 1 to D.FSectorsPerTrack do
+  begin
+    var R := D.SectorId(Cylinder, Side, Position);
+    var Header := TBytes.Create($A1, $A1, $A1, $FE, Byte(Cylinder), Byte(Side), Byte(R), Byte(N));
+    var Check := CRC(Header);
+    Inc(Offset, 40);
+    Move(Header[0], FBuffer[Offset], 8);
+    Inc(Offset, 8);
+    FBuffer[Offset] := Check shr 8;
+    FBuffer[Offset + 1] := Check and 255;
+    Inc(Offset, 42); // ID CRC plus the following 40-byte gap.
+    Header := TBytes.Create($A1, $A1, $A1, $FB) + Copy(D.FData, D.Offset(Cylinder, Side, R), D.FSectorSize);
+    Check := CRC(Header);
+    Move(Header[0], FBuffer[Offset], Length(Header));
+    Inc(Offset, Length(Header));
+    FBuffer[Offset] := Check shr 8;
+    FBuffer[Offset + 1] := Check and 255;
+    Inc(Offset, 2);
+  end;
+  FTrackCache := Copy(FBuffer);
+  FTrackCacheDrive := Selected;
+  FTrackCacheCylinder := Cylinder;
+  FTrackCacheHead := Side;
+  FTrackCacheRevision := D.FRevision;
+  FTrackCacheValid := True;
+end;
+
 procedure TZXBetaDisk.StartTransfer;
 begin
   if not Ready then
@@ -464,6 +578,8 @@ begin
     var R := (FRotation div (RotationT div D.FSectorsPerTrack)) mod D.FSectorsPerTrack + 1;
     R := D.SectorId(C, Head, R);
     var N := 1;
+    if D.FSectorSize = 512 then
+      N := 2;
     if D.FSectorSize = 1024 then
       N := 3;
     if D.Offset(C, Head, R) < 0 then
@@ -497,30 +613,8 @@ begin
     end
     else
     begin
-      // Canonical MFM stream reconstructed from sector media (no flux/protection data).
-      FBuffer := nil;
-      for var Position := 1 to D.FSectorsPerTrack do
-      begin
-        var R := D.SectorId(C, Head, Position);
-        var Gap: TBytes;
-        SetLength(Gap, 40);
-        FillChar(Gap[0], 40, $4E);
-        var N := 1;
-        if D.FSectorSize = 1024 then
-          N := 3;
-        var H := TBytes.Create($A1, $A1, $A1, $FE, Byte(C), Byte(Head), Byte(R), Byte(N));
-        var Check := CRC(H);
-        FBuffer := FBuffer + Gap + H + TBytes.Create(Check shr 8, Check and 255) + Gap;
-        H := TBytes.Create($A1, $A1, $A1, $FB) + Copy(D.FData, D.Offset(C, Head, R), D.FSectorSize);
-        Check := CRC(H);
-        FBuffer := FBuffer + H + TBytes.Create(Check shr 8, Check and 255);
-      end;
-      var Old := Length(FBuffer);
-      var Size := Max(Old, 6250);
-      SetLength(FBuffer, Size);
-      if Size > Old then
-        FillChar(FBuffer[Old], Size - Old, $4E);
-      FLength := Size;
+      BuildReadTrack(D, C, Head);
+      FLength := Length(FBuffer);
       FPhase := fdcRead;
     end;
   end
@@ -570,11 +664,13 @@ begin
       N := FBuffer[P + 4];
       Inc(P, 5);
     end
-    else if (FBuffer[P] in [$FB, $F8]) and (N in [1, 3]) and ((128 shl N) = D.FSectorSize) and (C = FPhysicalTrack[Selected]) and
+    else if (FBuffer[P] in [$FB, $F8]) and (N in [1, 2, 3]) and ((128 shl N) = D.FSectorSize) and (C = FPhysicalTrack[Selected]) and
       (H = Head) and (D.Offset(C, H, R) >= 0) and (P + D.FSectorSize < Length(FBuffer)) then
     begin
       Move(FBuffer[P + 1], D.FData[D.Offset(C, H, R)], D.FSectorSize);
       D.FDirty := True;
+      D.ContentChanged;
+      InvalidateTrackCache;
       Inc(FWrittenSectors);
       Inc(P, D.FSectorSize + 1);
       N := -1;
@@ -596,6 +692,8 @@ begin
     end;
     Move(FBuffer[0], D.FData[FOffset], FLength);
     D.FDirty := True;
+    D.ContentChanged;
+    InvalidateTrackCache;
     Inc(FWrittenSectors);
   end
   else if (FCommand and $F0) = $F0 then
@@ -611,20 +709,8 @@ begin
     Finish;
 end;
 
-procedure TZXBetaDisk.Tick;
+procedure TZXBetaDisk.ProcessPhase;
 begin
-  Inc(FRotation);
-  if FRotation = RotationT then
-  begin
-    FRotation := 0;
-    if (FForce and 4) <> 0 then
-      FINTRQ := True;
-  end;
-  if not FBusy then
-    Exit;
-  Dec(FTimer);
-  if FTimer > 0 then
-    Exit;
   case FPhase of
     fdcSeek:
       begin
@@ -709,6 +795,52 @@ begin
       end;
     fdcCRC:
       EndTransfer;
+  end;
+end;
+
+procedure TZXBetaDisk.Tick;
+begin
+  Inc(FRotation);
+  if FRotation = RotationT then
+  begin
+    FRotation := 0;
+    if (FForce and 4) <> 0 then
+      FINTRQ := True;
+  end;
+  if not FBusy then
+    Exit;
+  Dec(FTimer);
+  if FTimer > 0 then
+    Exit;
+  ProcessPhase;
+end;
+
+procedure TZXBetaDisk.Advance(Cycles: Integer);
+begin
+  if Cycles < 0 then
+    raise EArgumentOutOfRangeException.Create('FDC clocks');
+  // Same state transitions as Tick, stopping at timer/index boundaries.
+  // Floppy users running at a different host clock can scale their time once
+  // per bus access, without a 3.5-million-iteration loop for an idle drive.
+  while Cycles > 0 do
+  begin
+    var Chunk := Min(Cycles, RotationT - FRotation);
+    if FBusy then
+      Chunk := Min(Chunk, Max(1, FTimer));
+    Dec(Cycles, Chunk);
+    Inc(FRotation, Chunk);
+    if FRotation = RotationT then
+    begin
+      FRotation := 0;
+      if FForce and 4 <> 0 then
+        FINTRQ := True;
+    end;
+    if FBusy then
+    begin
+      Dec(FTimer, Chunk);
+      if FTimer <= 0 then
+        ProcessPhase;
+    end;
   end;
 end;
 
@@ -800,6 +932,8 @@ end;
 
 procedure TZXBetaDisk.SerializeState(State: TStateArchive);
 begin
+  if State.Loading then
+    InvalidateTrackCache;
   for var i := 0 to 3 do
   begin
     var Present := FDisks[i] <> nil;

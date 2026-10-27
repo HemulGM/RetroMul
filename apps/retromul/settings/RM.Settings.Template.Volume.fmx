@@ -1,0 +1,78 @@
+object SettingsVolumeTemplate: TSettingsVolumeTemplate
+  Size.Width = 900.000000000000000000
+  Size.Height = 72.000000000000000000
+  Size.PlatformDefault = False
+  object PanelSetting: TPanel
+    Align = Top
+    Padding.Left = 16.000000000000000000
+    Padding.Top = 12.000000000000000000
+    Padding.Right = 16.000000000000000000
+    Padding.Bottom = 12.000000000000000000
+    Margins.Bottom = 6.000000000000000000
+    Size.Width = 900.000000000000000000
+    Size.Height = 72.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'retromul_row'
+    object LayoutSettingText: TLayout
+      Align = Client
+      Size.Width = 584.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      object LabelSettingTitle: TLabel
+        Align = Top
+        StyledSettings = [Family, Style, FontColor]
+        Size.Width = 584.000000000000000000
+        Size.Height = 24.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 15.000000000000000000
+        TextSettings.WordWrap = False
+        Text = 'Volume'
+      end
+      object LabelSettingDetail: TLabel
+        Align = Client
+        StyledSettings = [Family, Style, FontColor]
+        Opacity = 0.720000028610229500
+        Size.Width = 584.000000000000000000
+        Size.Height = 24.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 14.000000000000000000
+        Text = 'Audio level for the selected platform.'
+      end
+    end
+    object LayoutSettingEditorContainer: TLayout
+      Align = Right
+      Margins.Left = 16.000000000000000000
+      Position.X = 616.000000000000000000
+      Position.Y = 12.000000000000000000
+      Size.Width = 268.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      object LayoutVolumeEditor: TLayout
+        Align = Client
+        Margins.Top = 8.000000000000000000
+        Margins.Bottom = 8.000000000000000000
+        Size.Width = 268.000000000000000000
+        Size.Height = 32.000000000000000000
+        Size.PlatformDefault = False
+        object LayoutVolumeTrackSlot: TLayout
+          Align = Client
+          Size.Width = 208.000000000000000000
+          Size.Height = 32.000000000000000000
+          Size.PlatformDefault = False
+        end
+        object LabelVolumeValue: TLabel
+          Align = Right
+          Margins.Left = 8.000000000000000000
+          Position.X = 216.000000000000000000
+          Size.Width = 52.000000000000000000
+          Size.Height = 32.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.Font.Size = 13.000000000000000000
+          TextSettings.HorzAlign = Trailing
+          TextSettings.WordWrap = False
+          Text = '50%'
+        end
+      end
+    end
+  end
+end

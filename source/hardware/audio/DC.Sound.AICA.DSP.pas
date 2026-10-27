@@ -2,6 +2,9 @@
 
 interface
 
+uses
+  Core.Snapshots;
+
 type
   TDSPRead = function(Address: Cardinal): Byte of object;
 
@@ -17,7 +20,15 @@ type
     FMix: array[0..15] of Integer;
     FEffects: array[0..15] of SmallInt;
     FDelay: Integer;
-    function WordAt(Index: Integer): Integer;
+    FExternal: array[0..1] of Integer;
+    // Program words per step, decoded from MPRO, and the last step that is
+    // not all zero (-1: none). An all-zero step changes only the step-local
+    // accumulator, so steps after the last one have no effect.
+    FProgram: array[0..127, 0..3] of Integer;
+    FLastStep: Integer;
+    FProgramDirty: Boolean;
+    function WordAt(Index: Integer): Integer; inline;
+    procedure DecodeProgram;
   public
     RingBase, RingLength: Integer;
     constructor Create(Read: TDSPRead; Write: TDSPWrite);
@@ -26,7 +37,10 @@ type
     function ReadRegister(Address: Integer): Byte;
     procedure Mix(Channel, Sample: Integer);
     procedure Step;
+    // EXTS0/1 inputs (16-bit) for the next steps.
+    procedure SetExternal(Left, Right: Integer);
     function Effect(Channel: Integer): Integer;
+    procedure SerializeState(Archive: TStateArchive);
   end;
 
 implementation
@@ -34,7 +48,7 @@ implementation
 uses
   System.Math;
 
-function Sar(Value: Int64; Count: Integer): Integer;
+function Sar(Value: Int64; Count: Integer): Integer; inline;
 begin
   if Value >= 0 then
     Result := Value shr Count
@@ -42,7 +56,7 @@ begin
     Result := -((-Value + (Int64(1) shl Count) - 1) shr Count);
 end;
 
-function SignedBits(Value: Int64; Bits: Integer): Integer;
+function SignedBits(Value: Int64; Bits: Integer): Integer; inline;
 begin
   Result := Value and ((Int64(1) shl Bits) - 1);
   if Result and (1 shl (Bits - 1)) <> 0 then
@@ -102,6 +116,23 @@ begin
   FDelay := 0;
   RingBase := 0;
   RingLength := 8192;
+  FProgramDirty := True;
+end;
+
+procedure TAICADSP.DecodeProgram;
+begin
+  FLastStep := -1;
+  for var Index := 0 to 127 do
+  begin
+    var P := $400 + Index * 16;
+    FProgram[Index, 0] := WordAt(P);
+    FProgram[Index, 1] := WordAt(P + 4);
+    FProgram[Index, 2] := WordAt(P + 8);
+    FProgram[Index, 3] := WordAt(P + 12);
+    if (FProgram[Index, 0] or FProgram[Index, 1] or FProgram[Index, 2] or FProgram[Index, 3]) <> 0 then
+      FLastStep := Index;
+  end;
+  FProgramDirty := False;
 end;
 
 function TAICADSP.WordAt(Index: Integer): Integer;
@@ -113,7 +144,11 @@ end;
 procedure TAICADSP.WriteRegister(Address: Integer; Value: Byte);
 begin
   if (Address >= $3000) and (Address < $4000) then
+  begin
     FRegisters[Address - $3000] := Value;
+    if Address >= $3400 then
+      FProgramDirty := True;
+  end;
 end;
 
 function TAICADSP.ReadRegister(Address: Integer): Byte;
@@ -146,9 +181,35 @@ begin
   FMix[Channel and 15] := SignedBits(Int64(FMix[Channel and 15]) + Sample, 20);
 end;
 
+procedure TAICADSP.SerializeState(Archive: TStateArchive);
+begin
+  Archive.Field(FRegisters, SizeOf(FRegisters));
+  Archive.Field(FTemp, SizeOf(FTemp));
+  Archive.Field(FMemory, SizeOf(FMemory));
+  Archive.Field(FMix, SizeOf(FMix));
+  Archive.Field(FEffects, SizeOf(FEffects));
+  Archive.Field(FDelay, SizeOf(FDelay));
+  Archive.Field(RingBase, SizeOf(RingBase));
+  Archive.Field(RingLength, SizeOf(RingLength));
+  if Archive.Loading then
+  begin
+    FDelay := FDelay and $FFFF;
+    RingBase := RingBase and $FFF;
+    if (RingLength <> 8192) and (RingLength <> 16384) and (RingLength <> 32768) and (RingLength <> 65536) then
+      RingLength := 8192;
+    FProgramDirty := True;
+  end;
+end;
+
 function TAICADSP.Effect(Channel: Integer): Integer;
 begin
   Result := FEffects[Channel and 15];
+end;
+
+procedure TAICADSP.SetExternal(Left, Right: Integer);
+begin
+  FExternal[0] := Left;
+  FExternal[1] := Right;
 end;
 
 procedure TAICADSP.Step;
@@ -159,13 +220,14 @@ begin
   var Fraction := 0;
   var YReg := 0;
   var AddressReg := 0;
-  for var Index := 0 to 127 do
+  if FProgramDirty then
+    DecodeProgram;
+  for var Index := 0 to FLastStep do
   begin
-    var P := $400 + Index * 16;
-    var I0 := WordAt(P);
-    var I1 := WordAt(P + 4);
-    var I2 := WordAt(P + 8);
-    var I3 := WordAt(P + 12);
+    var I0 := FProgram[Index, 0];
+    var I1 := FProgram[Index, 1];
+    var I2 := FProgram[Index, 2];
+    var I3 := FProgram[Index, 3];
     var ReadTemp := (I0 shr 9) and 127;
     var WriteTemp := (I0 shr 1) and 127;
     var InputIndex := (I1 shr 7) and 63;
@@ -173,7 +235,9 @@ begin
     if InputIndex < 32 then
       Input := FMemory[InputIndex]
     else if InputIndex < 48 then
-      Input := SignedBits(Int64(FMix[InputIndex - 32]) * 16, 24);
+      Input := SignedBits(Int64(FMix[InputIndex - 32]) * 16, 24)
+    else if InputIndex < 50 then
+      Input := FExternal[InputIndex - 48] * 256;
     if I1 and $40 <> 0 then
     begin
       var IW := (I1 shr 1) and 31;

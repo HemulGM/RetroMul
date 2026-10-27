@@ -1,0 +1,65 @@
+object SettingsPreviewTemplate: TSettingsPreviewTemplate
+  Size.Width = 900.000000000000000000
+  Size.Height = 500.000000000000000000
+  Size.PlatformDefault = False
+  object LabelShaderStatus: TLabel
+    Align = Bottom
+    StyledSettings = [Family, Style, FontColor]
+    Margins.Top = 8.000000000000000000
+    Size.Width = 868.000000000000000000
+    Size.Height = 48.000000000000000000
+    Size.PlatformDefault = False
+    Text = 'Choose a shader file to see the preview.'
+    Visible = False
+  end
+  object PanelSetting: TPanel
+    Tag = 1
+    Align = Top
+    Margins.Bottom = 6.000000000000000000
+    Size.Width = 900.000000000000000000
+    Size.Height = 350.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'retromul_row'
+    object LayoutSettingText: TLayout
+      Align = Client
+      Size.Width = 320.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+      Visible = False
+      object LabelSettingTitle: TLabel
+        Align = Top
+        StyledSettings = [Family, Style, FontColor]
+        Size.Width = 320.000000000000000000
+        Size.Height = 24.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 15.000000000000000000
+        TextSettings.WordWrap = False
+        Text = '160 '#215' 144'
+      end
+      object LabelSettingDetail: TLabel
+        Align = Client
+        StyledSettings = [Family, Style, FontColor]
+        Opacity = 0.720000028610229500
+        Size.Width = 320.000000000000000000
+        Size.Height = 8.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 14.000000000000000000
+        Text = 'Preview of the selected palette and shader settings.'
+      end
+    end
+    object LayoutSettingEditorContainer: TLayout
+      Align = Client
+      Size.Width = 900.000000000000000000
+      Size.Height = 350.000000000000000000
+      Size.PlatformDefault = False
+      object LayoutPalettePreviewSlot: TLayout
+        Align = Client
+        Margins.Top = 8.000000000000000000
+        Margins.Bottom = 8.000000000000000000
+        Size.Width = 900.000000000000000000
+        Size.Height = 334.000000000000000000
+        Size.PlatformDefault = False
+      end
+    end
+  end
+end

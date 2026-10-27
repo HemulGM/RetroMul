@@ -6,7 +6,7 @@ interface
 
 uses
   RM.BitmapShaders, RM.Platforms.Presentation, System.SysUtils, FMX.Types,
-  Core.Emulation, RM.Controllers.Base;
+  Core.Emulation, RM.Controllers.Base, RM.VMUOverlay;
 
 type
   TSessionController = class(TMainController)
@@ -14,7 +14,9 @@ type
     FLoadingCore: Boolean;
     FLoadGeneration: Integer;
     FCancelLoad: TProc;
+    FVMUOverlay: TVMUOverlay;
     procedure UpdateVirtualButtons;
+    procedure UpdateVMUOverlay;
     procedure EndCoreLoading;
     procedure CancelCoreLoading;
     procedure BeginGameLoading(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string);
@@ -34,6 +36,7 @@ type
     procedure FinishFileSelection;
     function CanAcceptRomDrop(const Data: TDragObject): Boolean;
     procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False; const SnapshotName: string = '');
+    procedure ResetConsole(Hard: Boolean);
     procedure HardRestart;
     procedure ButtonCloseRomClick(Sender: TObject);
     procedure Stop;
@@ -80,7 +83,19 @@ destructor TSessionController.Destroy;
 begin
   if Assigned(FCancelLoad) then
     FCancelLoad();
+  FVMUOverlay.Free;
   inherited;
+end;
+
+procedure TSessionController.UpdateVMUOverlay;
+begin
+  if FVMUOverlay = nil then
+  begin
+    if FState.Session.Emulation = nil then
+      Exit;
+    FVMUOverlay := TVMUOverlay.Create(FView.ImageCanvas);
+  end;
+  FVMUOverlay.Update(FState.Session.Emulation);
 end;
 
 procedure TSessionController.FormActivate(Sender: TObject);
@@ -219,6 +234,9 @@ begin
     FState.Session.DialogWasPaused := FState.Session.UserPaused;
     FState.Session.Emulation.Pause;
   end;
+  FView.ButtonReset.Enabled := (FState.Session.Emulation <> nil) and not FState.Session.OpeningRom and
+    not FState.Session.PendingAutosaveChoice and not FState.Browser.ViewingLibrary and
+    (FState.Settings.View = nil) and (FState.Help.View = nil);
   FView.GamePause.Enabled := (FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted and not FState.Session.OpeningRom;
   var UserPaused := (FState.Session.Emulation <> nil) and (FState.Session.UserPaused or FState.Session.AutoPaused);
   FView.GamePauseIcon.Visible := not UserPaused;
@@ -240,7 +258,8 @@ begin
     FView.GamePause.Text := ''
   else
     FView.GamePause.Text := FView.GamePause.Hint;
-  FView.GamePause.Hint := FView.GamePause.Hint + ' · P';
+  if (FState.Input.SystemId <> ROM_SYSTEM_ZX) or not FState.Input.Ports.KeyboardEnabled then
+    FView.GamePause.Hint := FView.GamePause.Hint + ' · P';
   // Changing the style recreates its text resource, including its margins.
   FView.GamePause.ApplyStyleLookup;
   FView.GamePause.StylesData['text.Margins.Left'] := 36;
@@ -249,7 +268,6 @@ begin
   if FState.Browser.Tools[0] <> nil then
   begin
     FState.Browser.Tools[1].Enabled := (FState.Session.Emulation <> nil) and FState.Session.Emulation.SupportsSnapshots and not FState.Session.OpeningRom;
-    FState.Browser.Tools[2].Enabled := FState.Browser.Tools[1].Enabled;
     FState.Browser.Tools[4].Enabled := not FState.Session.OpeningRom;
   end;
   if FState.Browser.ScreenshotTool <> nil then
@@ -645,6 +663,36 @@ begin
     end, 'Load autosave', 'Start new game', 'Cancel launch');
 end;
 
+procedure TSessionController.ResetConsole(Hard: Boolean);
+begin
+  if (FState.Session.Emulation = nil) or FState.Session.OpeningRom or
+    FLoadingCore or FState.Session.PendingAutosaveChoice or FState.Browser.ViewingLibrary or
+    (FState.Settings.View <> nil) or (FState.Help.View <> nil) then
+    Exit;
+  if Hard then
+  begin
+    HardRestart;
+    Exit;
+  end;
+  FView.TimerUpdate.Enabled := False;
+  try
+    if FState.Input.Rumble <> nil then
+      FState.Input.Rumble.Reset;
+    FState.Session.Emulation.Reset;
+    FState.Session.UserPaused := False;
+    FState.Session.EmulationFaulted := False;
+    {$IFDEF ISMOBILE}
+    if FState.Mobile.ActivityPaused then
+      FState.Session.Emulation.Pause;
+    {$ENDIF}
+    FView.SyncActivity;
+    FView.SetStatus(FState.Session.RomDisplayName);
+  except
+    FView.StopOnError;
+    raise;
+  end;
+end;
+
 procedure TSessionController.HardRestart;
 begin
   if (FState.Session.Emulation = nil) or FState.Session.OpeningRom or
@@ -664,7 +712,8 @@ begin
   if FileName.StartsWith('content://', True) then
     SourceName := FState.Session.Storage.Describe(FileName).Name;
   var Ext := ExtractFileExt(SourceName);
-  if not (SameText(Ext, ROM_EXTENSION_CUE) or SameText(Ext, ROM_EXTENSION_ISO) or SameText(Ext, ROM_EXTENSION_CHD)) then
+  if not (SameText(Ext, ROM_EXTENSION_M3U) or SameText(Ext, ROM_EXTENSION_CUE) or SameText(Ext, ROM_EXTENSION_ISO) or SameText(Ext, ROM_EXTENSION_CHD) or
+    SameText(Ext, ROM_EXTENSION_MDS) or SameText(Ext, ROM_EXTENSION_NRG)) then
   begin
     InstallCore(FView.NewCore(FileName), FileName, DisplayName, StartPaused);
     if SnapshotName <> '' then
@@ -778,6 +827,8 @@ begin
   if FState.Input.Rumble <> nil then
     FState.Input.Rumble.Reset;
   FState.Session.Emulation := nil; // Join before replacing the session.
+  if FVMUOverlay <> nil then
+    FVMUOverlay.Hide;
   FView.SyncMotionSensor;
   FState.Session.Emulation := NewEmulation;
   FState.Session.PreserveOpeningAutosave := False;
@@ -889,6 +940,8 @@ begin
     FView.ImageCanvas.Bitmap := nil;
     FView.ImageLogo.Visible := True;
     FState.Session.Emulation := nil;
+    if FVMUOverlay <> nil then
+      FVMUOverlay.Hide;
   end;
   if FState.Browser.View <> nil then
     FView.LibraryBack(FView);
@@ -1021,6 +1074,7 @@ begin
     FView.ImageCanvas.Bitmap.Unmap(Data);
   end;
   FView.ImageCanvas.Repaint;
+  UpdateVMUOverlay;
 end;
 
 procedure TSessionController.PauseClick(Sender: TObject);

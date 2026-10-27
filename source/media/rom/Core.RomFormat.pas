@@ -7,6 +7,9 @@ uses
 
 const
   ROM_SYSTEM_ZX = 'zx';
+  ROM_SYSTEM_MSX1 = 'msx1';
+  ROM_SYSTEM_MSX2 = 'msx2';
+  ROM_SYSTEM_MSX2PLUS = 'msx2plus';
   ROM_SYSTEM_NES = 'nes';
   ROM_SYSTEM_GB = 'gb';
   ROM_SYSTEM_GBC = 'gbc';
@@ -29,6 +32,8 @@ const
   ROM_SYSTEM_SATURN = 'saturn';
   ROM_SYSTEM_PS1 = 'ps1';
   ROM_SYSTEM_PS2 = 'ps2';
+  ROM_SYSTEM_PSP = 'psp';
+  ROM_SYSTEM_DC = 'dc';
   ROM_SYSTEM_NEOGEO = 'neogeo';
   ROM_SYSTEM_NEOGEOCD = 'neogeocd';
   ROM_SYSTEM_NEOGEOAES = 'neogeoaes';
@@ -60,6 +65,8 @@ const
   ROM_CORE_ID_SATURN = 'SATURN';
   ROM_CORE_ID_PS1 = 'PS1';
   ROM_CORE_ID_PS2 = 'PS2';
+  ROM_CORE_ID_PSP = 'PSP';
+  ROM_CORE_ID_DC = 'DC';
   ROM_CORE_ID_NEOGEO = 'NEOGEO';
   ROM_CORE_ID_NEOGEOCD = 'NEOGEOCD';
 
@@ -98,10 +105,19 @@ const
   ROM_EXTENSION_NEO = '.neo';
   ROM_EXTENSION_NGP = '.ngp';
   ROM_EXTENSION_NGPC = '.ngc';
+  ROM_EXTENSION_M3U = '.m3u';
   ROM_EXTENSION_CUE = '.cue';
   ROM_EXTENSION_ISO = '.iso';
   ROM_EXTENSION_CHD = '.chd';
   ROM_EXTENSION_EXE = '.exe';
+  ROM_EXTENSION_CSO = '.cso';
+  ROM_EXTENSION_PBP = '.pbp';
+  ROM_EXTENSION_ELF = '.elf';
+  ROM_EXTENSION_PRX = '.prx';
+  ROM_EXTENSION_GDI = '.gdi';
+  ROM_EXTENSION_CDI = '.cdi';
+  ROM_EXTENSION_MDS = '.mds';
+  ROM_EXTENSION_NRG = '.nrg';
 
 const
   ROM_MAX_SIZE = 64 * 1024 * 1024;
@@ -394,6 +410,14 @@ begin
     Exit;
   end;
 
+  // Dreamcast homebrew: 32-bit little-endian SuperH (machine 42) ELF executables.
+  if (Length(Data) >= 52) and Signature(0, #$7F'ELF'#1#1) and (Data[16] = 2) and (Data[17] = 0) and
+    (Data[18] = 42) and (Data[19] = 0) then
+  begin
+    Result.System := TRomSystem.DC;
+    Exit;
+  end;
+
   // Retail Saturn BIOS reset vectors. Identification is independent of filenames.
   if (Length(Data) >= 16) and Signature(0, AnsiString(#$20#$00#$02#$00#$06#$00#$20#$00#$20#$00#$02#$00#$06#$00#$20#$00)) then
   begin
@@ -486,6 +510,12 @@ begin
     Result.System := TRomSystem.MD;
     Result.Encoding := TRomEncoding.SMD;
   end
+  // AB headers identify a cartridge, but do not encode the MSX generation.
+  // Prefer the dedicated signatures above; the factory refines the model hint.
+  else if (Length(Data) >= $2000) and (Length(Data) <= $800000) and
+    (((Data[0] = $41) and (Data[1] = $42)) or
+    ((Length(Data) >= $4010) and (Data[$4000] = $41) and (Data[$4001] = $42))) then
+    Result.System := TRomSystem.MSX1
   else
   begin
     var Header: TSnesHeader;

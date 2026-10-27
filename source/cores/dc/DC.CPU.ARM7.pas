@@ -5,7 +5,7 @@
 interface
 
 uses
-  System.SysUtils;
+  System.SysUtils, Core.Snapshots;
 
 type
   TARMRead = function(Address: Cardinal; Size: Integer): Cardinal of object;
@@ -22,15 +22,19 @@ type
     function Condition(Code: Integer): Boolean;
     procedure SetPSR(Value: Cardinal);
     procedure NZ(Value: Cardinal);
-    function Shift(Value: Cardinal; Kind, Count: Integer; Immediate: Boolean; var Carry: Cardinal): Cardinal;
     function Operand(Op: Cardinal; var Carry: Cardinal): Cardinal;
     procedure ExceptionEntry(Mode: Integer; Vector: Cardinal);
+    // User mode view of R0..R14 from any mode (LDM/STM with the S bit).
+    function UserReg(Index: Integer): Cardinal;
+    procedure SetUserReg(Index: Integer; Value: Cardinal);
   public
     R: array[0..15] of Cardinal;
     PSR, SPSR: Cardinal;
     constructor Create(Read: TARMRead; Write: TARMWrite);
     procedure Reset;
     function Step(FIQ: Boolean): Integer;
+    // Banked registers and saved PSRs; R, PSR and SPSR are public fields.
+    procedure SerializeBanks(Archive: TStateArchive);
   end;
 
 function ARMAdd(A, B: Cardinal): Cardinal; inline;
@@ -38,6 +42,8 @@ function ARMAdd(A, B: Cardinal): Cardinal; inline;
 function ARMSub(A, B: Cardinal): Cardinal; inline;
 
 implementation
+
+uses HW.ARM.Shifter;
 
 function ARMAdd(A, B: Cardinal): Cardinal;
 begin
@@ -47,15 +53,6 @@ end;
 function ARMSub(A, B: Cardinal): Cardinal;
 begin
   Result := Cardinal((UInt64(A) + UInt64($100000000) - B) and $FFFFFFFF);
-end;
-
-function Rotate(V: Cardinal; Count: Integer): Cardinal; inline;
-begin
-  Count := Count and 31;
-  if Count = 0 then
-    Result := V
-  else
-    Result := (V shr Count) or (V shl (32 - Count));
 end;
 
 function Bank(Mode: Integer): Integer; inline;
@@ -82,6 +79,12 @@ begin
   FRead := Read;
   FWrite := Write;
   Reset;
+end;
+
+procedure TARM7.SerializeBanks(Archive: TStateArchive);
+begin
+  Archive.Field(FBanked, SizeOf(FBanked));
+  Archive.Field(FSaved, SizeOf(FSaved));
 end;
 
 procedure TARM7.Reset;
@@ -129,6 +132,25 @@ begin
   PSR := Value;
 end;
 
+// R8..R12 are banked in FIQ mode only, R13/R14 in every privileged mode.
+function TARM7.UserReg(Index: Integer): Cardinal;
+begin
+  var Current := Bank(PSR and 31);
+  if (Current <> 0) and ((Index >= 13) or ((Index >= 8) and (Current = 1))) then
+    Result := FBanked[0, Index - 8]
+  else
+    Result := R[Index];
+end;
+
+procedure TARM7.SetUserReg(Index: Integer; Value: Cardinal);
+begin
+  var Current := Bank(PSR and 31);
+  if (Current <> 0) and ((Index >= 13) or ((Index >= 8) and (Current = 1))) then
+    FBanked[0, Index - 8] := Value
+  else
+    R[Index] := Value;
+end;
+
 procedure TARM7.NZ(Value: Cardinal);
 begin
   PSR := (PSR and $3FFFFFFF) or (Value and $80000000);
@@ -164,80 +186,12 @@ begin
     Result := not Result;
 end;
 
-function TARM7.Shift(Value: Cardinal; Kind, Count: Integer; Immediate: Boolean; var Carry: Cardinal): Cardinal;
-begin
-  Result := Value;
-  if (Count = 0) and not Immediate then
-    Exit;
-
-  case Kind of
-    0:
-      begin
-        if Count = 0 then
-          Exit;
-        if Count <= 32 then
-          Carry := (Value shr (32 - Count)) and 1
-        else
-          Carry := 0;
-        if Count < 32 then
-          Result := Value shl Count
-        else
-          Result := 0;
-      end;
-    1:
-      begin
-        if Count = 0 then
-          Count := 32;
-        if Count <= 32 then
-          Carry := (Value shr (Count - 1)) and 1
-        else
-          Carry := 0;
-        if Count < 32 then
-          Result := Value shr Count
-        else
-          Result := 0;
-      end;
-    2:
-      begin
-        if Count = 0 then
-          Count := 32;
-        if Count < 32 then
-        begin
-          Carry := (Value shr (Count - 1)) and 1;
-          Result := Value shr Count;
-          if Value and $80000000 <> 0 then
-            Result := Result or ($FFFFFFFF shl (32 - Count));
-        end
-        else
-        begin
-          Carry := Value shr 31;
-          Result := 0;
-          if Carry <> 0 then
-            Result := $FFFFFFFF;
-        end;
-      end;
-    3:
-      begin
-        if (Count = 0) and Immediate then
-        begin
-          Result := (Carry shl 31) or (Value shr 1);
-          Carry := Value and 1;
-        end
-        else
-        begin
-          Result := Rotate(Value, Count);
-          Carry := Result shr 31;
-        end;
-      end;
-  end;
-end;
-
 function TARM7.Operand(Op: Cardinal; var Carry: Cardinal): Cardinal;
 begin
   if Op and $02000000 <> 0 then
   begin
     var Count := Integer((Op shr 8) and 15) * 2;
-    Result := Rotate(Op and 255, Count);
+    Result := ARMRotateRight(Op and 255, Count);
     if Count <> 0 then
       Carry := Result shr 31;
     Exit;
@@ -251,7 +205,7 @@ begin
     if Op and 15 = 15 then
       Value := ARMAdd(Value, 4);
   end;
-  Result := Shift(Value, (Op shr 5) and 3, Count, Immediate, Carry);
+  Result := ARMShift(Value, (Op shr 5) and 3, Count, Immediate, Carry);
 end;
 
 procedure TARM7.ExceptionEntry(Mode: Integer; Vector: Cardinal);
@@ -341,6 +295,8 @@ begin
       Writeback := ARMAdd(Base, Count * 4)
     else
       Writeback := ARMSub(Base, Count * 4);
+    // S bit: STM, and LDM without R15, transfer the user mode registers.
+    var UserBank := (Op and $00400000 <> 0) and not (Load and (List and $8000 <> 0));
 
     for var i := 0 to 15 do
       if List and (1 shl i) <> 0 then
@@ -350,12 +306,18 @@ begin
           var V := FRead(Address, 4);
           if i = 15 then
             Next := V and $FFFFFFFC
+          else if UserBank then
+            SetUserReg(i, V)
           else
             R[i] := V;
         end
         else
         begin
-          var V := Reg(i);
+          var V: Cardinal;
+          if UserBank and (i < 15) then
+            V := UserReg(i)
+          else
+            V := Reg(i);
           if i = 15 then
             V := ARMAdd(V, 4);
           FWrite(Address, V, 4);
@@ -372,7 +334,7 @@ begin
   begin
     var Offset := Op and $FFF;
     if Op and $02000000 <> 0 then
-      Offset := Shift(Reg(Op and 15), (Op shr 5) and 3, (Op shr 7) and 31, True, Carry);
+      Offset := ARMShift(Reg(Op and 15), (Op shr 5) and 3, (Op shr 7) and 31, True, Carry);
     var Base := Reg(RN);
     var Adjusted: Cardinal;
     if Op and $00800000 <> 0 then
@@ -385,9 +347,13 @@ begin
     var Size := 4;
     if Op and $00400000 <> 0 then
       Size := 1;
+    var WriteBack := (Op and $00200000 <> 0) or (Op and $01000000 = 0);
     if Load then
     begin
       var Value := FRead(Address, Size);
+      // With the base as destination the loaded value wins over writeback.
+      if WriteBack then
+        R[RN] := Adjusted;
       if RD = 15 then
         Next := Value and $FFFFFFFC
       else
@@ -399,9 +365,9 @@ begin
       if RD = 15 then
         Value := ARMAdd(Value, 4);
       FWrite(Address, Value, Size);
+      if WriteBack then
+        R[RN] := Adjusted;
     end;
-    if (Op and $00200000 <> 0) or (Op and $01000000 = 0) then
-      R[RN] := Adjusted;
     Result := 3;
   end
   else if Op and $0FBF0FFF = $010F0000 then

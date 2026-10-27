@@ -185,8 +185,10 @@ const
   DestY = 4;
   DestZ = 2;
   DestW = 1;
-  // VU cycles from an XGKICK to the GIF's first read of the packet.
-  KickLatency = 4;
+  // VU cycles from an XGKICK to the GIF's first read of the packet: a store
+  // to the packet in the next two pairs goes out with it, one in the third
+  // pair does not.
+  KickLatency = 3;
 
 function FieldBit(K: Integer): Cardinal; inline;
 begin

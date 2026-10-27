@@ -27,7 +27,7 @@ type
   private
     FKeys: TPS2KeyMap;
     FExtraKeys: TPS2ExtraKeyMap;
-    FBIOSMode, FBIOSFile, FRegion, FVideo, FLanguage: string;
+    FBIOSMode, FBIOSFile, FRegion, FVideo, FLanguage, FRenderer: string;
   protected
     procedure LoadCoreSettings(Ini: TCustomIniFile); override;
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
@@ -43,6 +43,11 @@ type
     // 'auto' (from SYSTEM.CNF), 'ntsc' or 'pal'.
     property Video: string read FVideo write FVideo;
     property Language: string read FLanguage write FLanguage;
+    // GS drawing (Video/Renderer): 'threads' (default: band threads beside
+    // the emulation) or 'single' (on the emulation thread).
+    property Renderer: string read FRenderer write FRenderer;
+    // Band threads for Renderer (0: none).
+    function GSThreads: Integer;
     property Keys: TPS2KeyMap read FKeys;
   end;
 
@@ -84,6 +89,7 @@ type
     FInputs: TPS2PadInputs;
     FPause, FReset, FAvailable, FAudioEnabled: Boolean;
     FVolume: Single;
+    FGSThreads: Integer;
     FAudio: TPS2AudioPlayback;
     FAudioFailed: Boolean;
     FAudioError: string;
@@ -108,7 +114,7 @@ type
       Region: TPS2Region; PAL: Boolean; const Storage: IStorage; const SnapshotDirectory, CardFile1,
       CardFile2: string);
     destructor Destroy; override;
-    procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single);
+    procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer);
     procedure RequestReset;
     procedure StopAndSave;
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -242,6 +248,15 @@ begin
   FRegion := 'auto';
   FVideo := 'auto';
   FLanguage := 'english';
+  FRenderer := 'threads';
+end;
+
+function TPS2Config.GSThreads: Integer;
+begin
+  Result := 0;
+  // One per two logical processors (the emulation keeps one), 2..8.
+  if FRenderer = 'threads' then
+    Result := EnsureRange(TThread.ProcessorCount div 2, 2, 8);
 end;
 
 class function TPS2Config.ExtraKeyName(Extra: TPS2Extra): string;
@@ -265,6 +280,9 @@ begin
   if (FVideo <> 'ntsc') and (FVideo <> 'pal') then
     FVideo := 'auto';
   FLanguage := Ini.ReadString('System', 'Language', 'english').ToLower;
+  FRenderer := Ini.ReadString('Video', 'Renderer', 'threads').ToLower;
+  if FRenderer <> 'single' then
+    FRenderer := 'threads';
   for var P := 0 to 1 do
   begin
     var Section := 'Keys';
@@ -284,6 +302,7 @@ begin
   Ini.WriteString('System', 'Region', FRegion);
   Ini.WriteString('System', 'Video', FVideo);
   Ini.WriteString('System', 'Language', FLanguage);
+  Ini.WriteString('Video', 'Renderer', FRenderer);
   for var P := 0 to 1 do
   begin
     var Section := 'Keys';
@@ -329,7 +348,7 @@ begin
   FLock.Free;
 end;
 
-procedure TPS2Worker.Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single);
+procedure TPS2Worker.Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer);
 begin
   var Wake: Boolean;
   FLock.Acquire;
@@ -339,6 +358,7 @@ begin
     FPause := Paused;
     FAudioEnabled := AudioEnabled;
     FVolume := EnsureRange(Volume, 0.0, 1.0);
+    FGSThreads := GSThreads;
   finally
     FLock.Release;
   end;
@@ -581,6 +601,7 @@ begin
         var Paused, ResetRequested, Enabled: Boolean;
         var Volume: Single;
         var Inputs: TPS2PadInputs;
+        var GSThreads: Integer;
         FLock.Acquire;
         try
           Paused := FPause;
@@ -589,9 +610,11 @@ begin
           Inputs := FInputs;
           Enabled := FAudioEnabled;
           Volume := FVolume;
+          GSThreads := FGSThreads;
         finally
           FLock.Release;
         end;
+        FConsole.GS.Raster.Threads := GSThreads;
         for var Port := 0 to 1 do
         begin
           FConsole.PadMan.Pads[Port].Buttons := Inputs[Port].Buttons;
@@ -871,7 +894,7 @@ begin
     for var K := 0 to 11 do
       Inputs[Port].Pressure[K] := 0;
   end;
-  FWorker.Configure(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume);
+  FWorker.Configure(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume, FConfigObject.GSThreads);
 end;
 
 procedure TPS2CoreAdapter.Start;

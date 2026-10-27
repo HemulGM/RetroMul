@@ -114,8 +114,13 @@ type
     class function AddrZ16S(BP, BW, X, Y: Cardinal): Cardinal; static; inline;
     // Raw stored value of a pixel in format PSM (index for palettized
     // formats, 16-bit value for 16-bit formats, 32/24 bits otherwise).
-    function ReadRaw(PSM: Integer; BP, BW, X, Y: Cardinal): Cardinal;
+    function ReadRaw(PSM: Integer; BP, BW, X, Y: Cardinal): Cardinal; inline;
     procedure WriteRaw(PSM: Integer; BP, BW, X, Y, Value: Cardinal);
+    // The same in two steps: a pixel's address in format PSM's units (words,
+    // halfwords, bytes or nibbles), then its value there.
+    function Locate(PSM: Integer; BP, BW, X, Y: Cardinal): Cardinal; inline;
+    function ReadAt(PSM: Integer; A: Cardinal): Cardinal; inline;
+    procedure WriteAt(PSM: Integer; A, Value: Cardinal); inline;
     // A displayable pixel as 32-bit ABGR (R in bits 0..7) for the CRTC.
     function ReadPixel(PSM: Integer; FBP, FBW: Cardinal; X, Y: Integer): Cardinal;
     property Data: PByte read FData;
@@ -217,76 +222,62 @@ begin
   Result := (BP shl 9 + Page shl 14 + Cardinal(Block) shl 9 + Column4[Y and 15, X and 31]) and $7FFFFF;
 end;
 
-function TPS2GSMemory.ReadRaw(PSM: Integer; BP, BW, X, Y: Cardinal): Cardinal;
+function TPS2GSMemory.Locate(PSM: Integer; BP, BW, X, Y: Cardinal): Cardinal;
 begin
   case PSM of
-    PSMCT32, PSMZ32:
-      if PSM = PSMCT32 then
-        Result := PCardinal(FData)[Addr32(BP, BW, X, Y)]
-      else
-        Result := PCardinal(FData)[AddrZ32(BP, BW, X, Y)];
-    PSMCT24: Result := PCardinal(FData)[Addr32(BP, BW, X, Y)] and $FFFFFF;
-    PSMZ24: Result := PCardinal(FData)[AddrZ32(BP, BW, X, Y)] and $FFFFFF;
-    PSMCT16: Result := PWord(FData)[Addr16(BP, BW, X, Y)];
-    PSMCT16S: Result := PWord(FData)[Addr16S(BP, BW, X, Y)];
-    PSMZ16: Result := PWord(FData)[AddrZ16(BP, BW, X, Y)];
-    PSMZ16S: Result := PWord(FData)[AddrZ16S(BP, BW, X, Y)];
-    PSMT8: Result := FData[Addr8(BP, BW, X, Y)];
+    PSMZ32, PSMZ24: Result := AddrZ32(BP, BW, X, Y);
+    PSMCT16: Result := Addr16(BP, BW, X, Y);
+    PSMCT16S: Result := Addr16S(BP, BW, X, Y);
+    PSMZ16: Result := AddrZ16(BP, BW, X, Y);
+    PSMZ16S: Result := AddrZ16S(BP, BW, X, Y);
+    PSMT8: Result := Addr8(BP, BW, X, Y);
+    PSMT4: Result := Addr4(BP, BW, X, Y);
+  else
+    Result := Addr32(BP, BW, X, Y);
+  end;
+end;
+
+function TPS2GSMemory.ReadAt(PSM: Integer; A: Cardinal): Cardinal;
+begin
+  case PSM of
+    PSMCT24, PSMZ24: Result := PCardinal(FData)[A] and $FFFFFF;
+    PSMCT16, PSMCT16S, PSMZ16, PSMZ16S: Result := PWord(FData)[A];
+    PSMT8: Result := FData[A];
+    PSMT4: Result := (FData[A shr 1] shr ((A and 1) * 4)) and $F;
+    PSMT8H: Result := PCardinal(FData)[A] shr 24;
+    PSMT4HL: Result := (PCardinal(FData)[A] shr 24) and $F;
+    PSMT4HH: Result := PCardinal(FData)[A] shr 28;
+  else
+    Result := PCardinal(FData)[A];
+  end;
+end;
+
+procedure TPS2GSMemory.WriteAt(PSM: Integer; A, Value: Cardinal);
+begin
+  case PSM of
+    PSMCT32, PSMZ32: PCardinal(FData)[A] := Value;
+    PSMCT24, PSMZ24: PCardinal(FData)[A] := (PCardinal(FData)[A] and $FF000000) or (Value and $FFFFFF);
+    PSMCT16, PSMCT16S, PSMZ16, PSMZ16S: PWord(FData)[A] := Word(Value);
+    PSMT8: FData[A] := Byte(Value);
     PSMT4:
       begin
-        var A := Addr4(BP, BW, X, Y);
-        Result := (FData[A shr 1] shr ((A and 1) * 4)) and $F;
+        var Shift := (A and 1) * 4;
+        FData[A shr 1] := (FData[A shr 1] and not ($F shl Shift)) or ((Value and $F) shl Shift);
       end;
-    PSMT8H: Result := PCardinal(FData)[Addr32(BP, BW, X, Y)] shr 24;
-    PSMT4HL: Result := (PCardinal(FData)[Addr32(BP, BW, X, Y)] shr 24) and $F;
-    PSMT4HH: Result := PCardinal(FData)[Addr32(BP, BW, X, Y)] shr 28;
-  else
-    Result := PCardinal(FData)[Addr32(BP, BW, X, Y)];
+    PSMT8H: PCardinal(FData)[A] := (PCardinal(FData)[A] and $00FFFFFF) or (Value shl 24);
+    PSMT4HL: PCardinal(FData)[A] := (PCardinal(FData)[A] and $F0FFFFFF) or ((Value and $F) shl 24);
+    PSMT4HH: PCardinal(FData)[A] := (PCardinal(FData)[A] and $0FFFFFFF) or ((Value and $F) shl 28);
   end;
+end;
+
+function TPS2GSMemory.ReadRaw(PSM: Integer; BP, BW, X, Y: Cardinal): Cardinal;
+begin
+  Result := ReadAt(PSM, Locate(PSM, BP, BW, X, Y));
 end;
 
 procedure TPS2GSMemory.WriteRaw(PSM: Integer; BP, BW, X, Y, Value: Cardinal);
 begin
-  case PSM of
-    PSMCT32: PCardinal(FData)[Addr32(BP, BW, X, Y)] := Value;
-    PSMZ32: PCardinal(FData)[AddrZ32(BP, BW, X, Y)] := Value;
-    PSMCT24:
-      begin
-        var A := Addr32(BP, BW, X, Y);
-        PCardinal(FData)[A] := (PCardinal(FData)[A] and $FF000000) or (Value and $FFFFFF);
-      end;
-    PSMZ24:
-      begin
-        var A := AddrZ32(BP, BW, X, Y);
-        PCardinal(FData)[A] := (PCardinal(FData)[A] and $FF000000) or (Value and $FFFFFF);
-      end;
-    PSMCT16: PWord(FData)[Addr16(BP, BW, X, Y)] := Word(Value);
-    PSMCT16S: PWord(FData)[Addr16S(BP, BW, X, Y)] := Word(Value);
-    PSMZ16: PWord(FData)[AddrZ16(BP, BW, X, Y)] := Word(Value);
-    PSMZ16S: PWord(FData)[AddrZ16S(BP, BW, X, Y)] := Word(Value);
-    PSMT8: FData[Addr8(BP, BW, X, Y)] := Byte(Value);
-    PSMT4:
-      begin
-        var A := Addr4(BP, BW, X, Y);
-        var Shift := (A and 1) * 4;
-        FData[A shr 1] := (FData[A shr 1] and not ($F shl Shift)) or ((Value and $F) shl Shift);
-      end;
-    PSMT8H:
-      begin
-        var A := Addr32(BP, BW, X, Y);
-        PCardinal(FData)[A] := (PCardinal(FData)[A] and $00FFFFFF) or (Value shl 24);
-      end;
-    PSMT4HL:
-      begin
-        var A := Addr32(BP, BW, X, Y);
-        PCardinal(FData)[A] := (PCardinal(FData)[A] and $F0FFFFFF) or ((Value and $F) shl 24);
-      end;
-    PSMT4HH:
-      begin
-        var A := Addr32(BP, BW, X, Y);
-        PCardinal(FData)[A] := (PCardinal(FData)[A] and $0FFFFFFF) or ((Value and $F) shl 28);
-      end;
-  end;
+  WriteAt(PSM, Locate(PSM, BP, BW, X, Y), Value);
 end;
 
 function TPS2GSMemory.ReadPixel(PSM: Integer; FBP, FBW: Cardinal; X, Y: Integer): Cardinal;

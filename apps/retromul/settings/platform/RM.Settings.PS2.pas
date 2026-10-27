@@ -20,6 +20,8 @@ uses
 
 procedure TPS2Settings.Video(Context: TSettingsPageBuilder);
 begin
+  Context.Heading('GroupPS2Rendering', 'PS2 rendering');
+  Context.AddChoice('RowPS2Renderer', 'Graphics Synthesizer', 'Software drawing on the CPU: in threads beside the emulation (faster on several cores) or on the emulation thread. Both draw the same picture. Applies during play.', 'Video', 'Renderer', SettingChoices(['Software, multithreaded', 'Software, one thread'], ['threads', 'single']), 'threads', True);
   Context.Heading('GroupPS2System', 'System');
   Context.AddChoice('RowPS2BIOSMode', 'BIOS', 'High-level emulation needs no BIOS. Automatic uses the IOP modules of a BIOS found in the settings, beside the game or in the ps2 folder; External boots a PlayStation 2 BIOS.', 'Hardware', 'BIOSMode', SettingChoices(['High-level', 'Automatic', 'External'], ['hle', 'auto', 'external']), 'hle');
   Context.AddPath('RowPS2BIOS', 'BIOS file', 'Optional PlayStation 2 BIOS image (4 MiB).', 'Hardware', 'BIOS', '', False);

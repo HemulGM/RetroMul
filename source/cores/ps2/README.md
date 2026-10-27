@@ -3,7 +3,8 @@
 A native Delphi PlayStation 2 core. It boots discs and homebrew without a
 BIOS: the EE kernel, the IOP kernel and the IOP system modules are high level,
 while the games' own IOP modules (sound drivers, streaming) run as IOP code.
-Most commercial games do not reach gameplay yet; there is no sound output.
+Several commercial games reach gameplay; many still stop early or draw parts
+of the picture wrongly.
 
 ## Layout
 
@@ -12,7 +13,7 @@ Most commercial games do not reach gameplay yet; there is no sound output.
 | `PS2.Types`, `PS2.Scheduler` | Constants, 128-bit registers, checked arithmetic helpers, the event scheduler in EE cycles |
 | `PS2.EE.CPU`, `PS2.EE.Bus` | R5900 block interpreter (MMI, COP0, FPU with the PS2 float range, COP2 macro mode), EE memory map, INTC |
 | `PS2.Timers`, `PS2.DMAC`, `PS2.SIF` | EE timers, DMA controller (chain/interleave/MFIFO), SIF registers and the SIF command/RPC protocol |
-| `PS2.GS`, `PS2.GS.Memory`, `PS2.GS.Raster`, `PS2.GIF` | GS registers, swizzled local memory, software rasterizer, GIF paths |
+| `PS2.GS`, `PS2.GS.Memory`, `PS2.GS.Raster`, `PS2.GIF` | GS registers, swizzled local memory, software rasterizer (on the emulation thread or in band threads), GIF paths |
 | `PS2.VU`, `PS2.VIF` | VU0/VU1 micro mode, VIF0/VIF1 command processing |
 | `PS2.IPU` | IPU MPEG decoder (BDEC/IDEC/VDEC/FDEC/CSC/PACK, FIFOs on DMA channels 3/4) |
 | `PS2.Kernel`, `PS2.ELF` | High-level EE kernel (threads, semaphores, interrupts, alarms, SIF DMA, syscall table) and ELF loading |
@@ -24,8 +25,15 @@ Most commercial games do not reach gameplay yet; there is no sound output.
 
 Disc images come from `source/media/dvd/Core.DVD.Image.pas` (ISO, MDS/MDF,
 DVD CHD, CD images through the CD layer). The front end lives in
-`source/runtime/adapters/Core.Adapter.PS2.pas` and
-`apps/retromul/settings/RM.Settings.PS2.pas`.
+`source/adapters/Core.Adapter.PS2.pas` and
+`apps/retromul/settings/platform/RM.Settings.PS2.pas`.
+
+The GS draws on the emulation thread or, by default, in band threads (one per
+two logical processors, 2..8): each draws every queued primitive's rows of
+its 8-row stripes, in queue order. The emulation thread counts the pixels
+(GS timing), keeps each queued primitive's CLUT and waits for the threads
+where a primitive reads what queued ones write (render to texture, depth over
+the frame's memory, transfers, the display). The memory is the same either way.
 
 ## What works
 
@@ -41,8 +49,8 @@ DVD CHD, CD images through the CD layer). The front end lives in
 
 ## Limits
 
-- No BIOS boot (OSDSYS), no SPU2 audio, no sound output; VU programs run synchronously; the GS rasterizer is a software
-  renderer without upscaling.
+- No BIOS boot (OSDSYS); the GS rasterizer is a software renderer without
+  upscaling.
 - Memory cards are kept in one file per card in the save folder (not as raw
   `.ps2` card images). Games using the system card modules see the card at
   the file level; games bringing their own card driver (MCMAN over SIO2) see

@@ -14,7 +14,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, Core.Snapshots, PS2.Types, PS2.GS.Memory;
+  System.SysUtils, System.Classes, System.Math, System.SyncObjs, Core.Snapshots, PS2.Types, PS2.GS.Memory;
 
 const
   GSRegPRIM = $00;
@@ -115,7 +115,69 @@ type
     TA0, TA1: Integer;
     AEM: Boolean;
     FogR, FogG, FogB: Integer;
+    // Worked out once: the largest depth of ZPSM, a 16- or 24-bit frame,
+    // whether a pixel reads the frame's colour (when its alpha is written),
+    // the CLUT format and the 4-bit formats' CSA offset.
+    ZMax: Cardinal;
+    FB16, FB24: Boolean;
+    DstRead: Boolean;
+    Clut32: Boolean;
+    ClutOffset: Integer;
   end;
+
+  TPS2GSPrimitive = (gpPoint, gpLine, gpTriangle, gpSprite);
+
+  // A primitive to draw: its kind, the drawing state and its vertices; the
+  // host rounding it was queued with (the EE runs with truncation), which
+  // the drawing's arithmetic follows wherever it is drawn.
+  TPS2GSCommand = record
+    Kind: TPS2GSPrimitive;
+    Rounding: TRoundingMode;
+    // The CLUT: a slot of the raster's ring (-1: its current one).
+    Clut: Integer;
+    D: TPS2GSDraw;
+    V: array[0..2] of TPS2GSVertex;
+  end;
+  PPS2GSCommand = ^TPS2GSCommand;
+
+  TPS2GSRaster = class;
+
+  // The pixel pipeline of one thread: draws primitives into GS memory. With
+  // bands (BandCount > 1) only the rows of its band (8-row stripes taken in
+  // turn); counting only (CountOnly), it finds which pixels a primitive
+  // covers and draws none. PixelsDrawn counts the pixels inside the scissor.
+  TPS2GSDrawer = class
+  private
+    FOwner: TPS2GSRaster;
+    FMemory: TPS2GSMemory;
+    FD: TPS2GSDraw;
+    FClut: PWord;
+    FBand, FBandCount: Integer;
+    FCountOnly: Boolean;
+    FPixels: Int64;
+    // LOD of the pixel being drawn (K when LCM is set).
+    FLod: Single;
+    function InBand(Y: Integer): Boolean; inline;
+    procedure DrawPoint(const V: TPS2GSVertex);
+    procedure DrawLine(const V0, V1: TPS2GSVertex);
+    procedure DrawTriangle(const V0, V1, V2: TPS2GSVertex);
+    procedure DrawSprite(const V0, V1: TPS2GSVertex);
+    procedure LogWatch(X, Y: Integer; WriteFB, WriteZ: Boolean; R, G, B, A: Integer; Z: Cardinal);
+    procedure LogSprite(const V0, V1: TPS2GSVertex);
+    procedure LogTriangle(const V0, V1, V2: TPS2GSVertex);
+    procedure Pixel(X, Y: Integer; Z: Cardinal; R, G, B, A, F: Integer; U, V: Integer);
+    function Texel(U, V: Integer): Cardinal;
+    function SampleLevel(Level, U, V: Integer; Linear: Boolean): Cardinal;
+    function TexelAt(TBP, TBW: Cardinal; TU, TV: Integer): Cardinal;
+    procedure SetLod(Q: Single); inline;
+    function ClampCoord(C, Size, Mode, MinC, MaxC: Integer): Integer; inline;
+  public
+    constructor Create(Owner: TPS2GSRaster; Band, BandCount: Integer; CountOnly: Boolean);
+    procedure Draw(const Command: TPS2GSCommand);
+    property PixelsDrawn: Int64 read FPixels;
+  end;
+
+  TPS2GSBands = class;
 
   TPS2GSRaster = class
   private
@@ -138,22 +200,34 @@ type
     FReadBuffer: TArray<Cardinal>;
     FReadPos: Integer;
     FPrimitives, FPixels, FXferPixels: Int64;
-    // LOD of the pixel being drawn (K when LCM is set).
-    FLod: Single;
+    // Drawing on this thread, and counting the pixels of what the band
+    // threads draw (their timing is the same).
+    FDrawer, FCounter: TPS2GSDrawer;
+    FCommand: TPS2GSCommand;
+    FThreads: Integer;
+    FBands: TPS2GSBands;
+    // Something queued since the last Sync; the 8 KiB pages queued
+    // primitives write and read as texture, and the buffer (base, width,
+    // format) each written page is drawn through.
+    FPending: Boolean;
+    FWritten, FRead: array[0..15] of Cardinal;
+    FPageOwner: array[0..511] of UInt64;
+    // CLUTs of queued primitives (the current one copied when it changed),
+    // and the queue position after the last primitive using each.
+    FClutRing: array of array[0..511] of Word;
+    FClutUse: array of Int64;
+    FClutSlot: Integer;
+    FClutChanged: Boolean;
+    function Hazard(const C: TPS2GSCommand; out Feedback: Boolean): Boolean;
+    procedure MarkQueued(const C: TPS2GSCommand);
     procedure Kick(DrawingKick: Boolean);
     procedure SetupDraw;
-    procedure DrawPoint(const V: TPS2GSVertex);
-    procedure DrawLine(const V0, V1: TPS2GSVertex);
-    procedure DrawTriangle(const V0, V1, V2: TPS2GSVertex);
-    procedure DrawSprite(const V0, V1: TPS2GSVertex);
+    procedure Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex);
     procedure CheckPrimLogBreak;
-    procedure Pixel(X, Y: Integer; Z: Cardinal; R, G, B, A, F: Integer; U, V: Integer);
-    function Texel(U, V: Integer): Cardinal;
-    function SampleLevel(Level, U, V: Integer; Linear: Boolean): Cardinal;
-    function TexelAt(TBP, TBW: Cardinal; TU, TV: Integer): Cardinal;
-    procedure SetLod(Q: Single); inline;
-    function ClampCoord(C, Size, Mode, MinC, MaxC: Integer): Integer; inline;
+    procedure LogRegister(Index: Integer; Value: UInt64);
     procedure LoadClut(Tex0: UInt64);
+    function GetMemory: TPS2GSMemory;
+    procedure SetThreads(Value: Integer);
     procedure StartTransfer;
     procedure FeedWord(W: Cardinal);
     procedure TransferPixel(Value: Cardinal);
@@ -182,7 +256,13 @@ type
     // The FINISH event reaches CSR (after the drawing time, see OnFinish).
     procedure SetFinish;
     procedure SerializeState(State: TStateArchive);
-    property Memory: TPS2GSMemory read FMemory;
+    // Waits until the band threads have drawn everything queued.
+    procedure Sync;
+    // GS memory as drawn so far (waits for the band threads).
+    property Memory: TPS2GSMemory read GetMemory;
+    // Band threads drawing (0 or 1: none, everything drawn at once on the
+    // caller's thread). The memory and timing are the same either way.
+    property Threads: Integer read FThreads write SetThreads;
     property SignalPending: Boolean read FSignal;
     property FinishPending: Boolean read FFinish;
     property OnSignal: TProc read FOnSignal write FOnSignal;
@@ -191,6 +271,60 @@ type
     property Primitives: Int64 read FPrimitives;
     property PixelsDrawn: Int64 read FPixels;
     property PixelsTransferred: Int64 read FXferPixels;
+  end;
+
+  // Band threads. Each draws every queued primitive, in queue order, with a
+  // drawer of its own band; a pixel's primitives are all drawn by one thread,
+  // so the memory ends up as drawn on one thread.
+  TPS2GSBands = class
+  private const
+    RingBits = 12;
+    RingSize = 1 shl RingBits;
+    RingMask = RingSize - 1;
+    SpinRounds = 4000;
+  private type
+    TBand = class(TThread)
+    private
+      FOwner: TPS2GSBands;
+      FIndex: Integer;
+      FDrawer: TPS2GSDrawer;
+    protected
+      procedure Execute; override;
+    public
+      constructor Create(Owner: TPS2GSBands; Index: Integer; Drawer: TPS2GSDrawer);
+      destructor Destroy; override;
+    end;
+
+    // What one band thread writes, a cache line apart from the others.
+    TSlot = record
+      Consumed: Int64;
+      Sleeping: Integer;
+      Wake: TEvent;
+      Pad: array[0..4] of Int64;
+    end;
+  private
+    FRing: TArray<TPS2GSCommand>;
+    FWrite, FPublished: Int64;
+    FSlots: TArray<TSlot>;
+    FBands: TArray<TBand>;
+    FProgress: TEvent;
+    FMainWaiting, FFailed: Integer;
+    FFailure: string;
+    function Published: Int64; inline;
+    function Slowest: Int64;
+    procedure WaitConsumed(Value: Int64);
+    procedure Fail(const Message: string);
+    procedure CheckFailed;
+  public
+    constructor Create(Raster: TPS2GSRaster; Count: Integer);
+    destructor Destroy; override;
+    // Room for the next primitive (waits for it); Publish hands it over.
+    function Next: PPS2GSCommand;
+    procedure Publish;
+    procedure Sync;
+    // Primitives queued so far; waits until the first Position are drawn.
+    property Position: Int64 read FWrite;
+    procedure WaitFor(Position: Int64);
   end;
 
 implementation
@@ -203,6 +337,37 @@ begin
     Result := V shr N
   else
     Result := not ((not V) shr N);
+end;
+
+function Clamp255(V: Integer): Integer; inline;
+begin
+  if V < 0 then
+    Result := 0
+  else if V > 255 then
+    Result := 255
+  else
+    Result := V;
+end;
+
+// Round (to nearest, ties to even) without the RTL call: after adding
+// 1.5 * 2^52 the double's low 32 bits are the rounded value; exact for
+// |D| < 2^31.
+function FastRound(D: Double): Integer; inline;
+begin
+  var T := D + 6755399441055744.0;
+  Result := PInteger(@T)^;
+end;
+
+
+// Trunc for 0 <= D < 2^32 (depth): the low 52 bits after adding 1.5 * 2^52
+// are 2^51 plus the rounded value.
+function TruncDepth(D: Double): Cardinal; inline;
+begin
+  var T := D + 6755399441055744.0;
+  var R := (PInt64(@T)^ and $FFFFFFFFFFFFF) - $8000000000000;
+  if R > D then
+    Dec(R);
+  Result := Cardinal(R);
 end;
 
 // A texel coordinate in 1/16 texels, clamped (degenerate S/T/Q give huge or NaN values).
@@ -219,18 +384,320 @@ constructor TPS2GSRaster.Create;
 begin
   inherited Create;
   FMemory := TPS2GSMemory.Create;
+  FDrawer := TPS2GSDrawer.Create(Self, 0, 1, False);
+  FCounter := TPS2GSDrawer.Create(Self, 0, 1, True);
+  FClutSlot := -1;
   WatchX := -1;
   Reset;
 end;
 
 destructor TPS2GSRaster.Destroy;
 begin
+  FBands.Free;
+  FCounter.Free;
+  FDrawer.Free;
   FMemory.Free;
   inherited;
 end;
 
+procedure TPS2GSRaster.SetThreads(Value: Integer);
+begin
+  if Value <= 1 then
+    Value := 0;
+  if Value = FThreads then
+    Exit;
+  Sync;
+  FreeAndNil(FBands);
+  FThreads := Value;
+  FClutRing := nil;
+  FClutUse := nil;
+  FClutSlot := -1;
+  if Value > 1 then
+  begin
+    FBands := TPS2GSBands.Create(Self, Value);
+    SetLength(FClutRing, 64);
+    SetLength(FClutUse, 64);
+  end;
+end;
+
+procedure TPS2GSRaster.Sync;
+begin
+  if not FPending then
+    Exit;
+  FPending := False;
+  FillChar(FWritten, SizeOf(FWritten), 0);
+  FillChar(FRead, SizeOf(FRead), 0);
+  FBands.Sync;
+end;
+
+function TPS2GSRaster.GetMemory: TPS2GSMemory;
+begin
+  Sync;
+  Result := FMemory;
+end;
+
+// The pages (8 KiB, 2048 words; numbered from 0, 512 in all) of buffer BP
+// (blocks), BW (64 pixels) in format PSM, rows Y0..Y1, columns 0..X1.
+procedure PageSpan(BP, BW, PSM: Cardinal; X1, Y0, Y1: Integer; out First, Last: Integer);
+begin
+  var PW := 64;
+  var PH := 32;
+  case PSM of
+    PSMCT16, PSMCT16S, PSMZ16, PSMZ16S:
+      PH := 64;
+    PSMT8:
+      begin
+        PW := 128;
+        PH := 64;
+      end;
+    PSMT4:
+      begin
+        PW := 128;
+        PH := 128;
+      end;
+  end;
+  var Cols := Integer(BW);
+  if PW = 128 then
+    Cols := (Cols + 1) shr 1;
+  Cols := Max(Cols, X1 div PW + 1);
+  First := Integer(BP shr 5) + (Y0 div PH) * Cols;
+  Last := Integer((BP + 31) shr 5) + (Y1 div PH) * Cols + Cols - 1;
+end;
+
+function PagesMeet(const Bits: array of Cardinal; First, Last: Integer): Boolean;
+begin
+  if Last - First >= 511 then
+    Exit(True);
+  for var P := First to Last do
+    if (Bits[(P and 511) shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then
+      Exit(True);
+  Result := False;
+end;
+
+procedure MarkPages(var Bits: array of Cardinal; First, Last: Integer);
+begin
+  if Last - First >= 511 then
+    Last := First + 511;
+  for var P := First to Last do
+    Bits[(P and 511) shr 5] := Bits[(P and 511) shr 5] or (Cardinal(1) shl (P and 31));
+end;
+
+// The rows and last column a primitive may touch, inside the scissor.
+procedure PrimitiveArea(const C: TPS2GSCommand; out X1, Y0, Y1: Integer);
+begin
+  var N := 3;
+  if C.Kind in [gpLine, gpSprite] then
+    N := 2
+  else if C.Kind = gpPoint then
+    N := 1;
+  var MaxX := C.V[0].X;
+  var MinY := C.V[0].Y;
+  var MaxY := C.V[0].Y;
+  for var K := 1 to N - 1 do
+  begin
+    MaxX := Max(MaxX, C.V[K].X);
+    MinY := Min(MinY, C.V[K].Y);
+    MaxY := Max(MaxY, C.V[K].Y);
+  end;
+  X1 := Min(C.D.SX1, Max(0, (MaxX + 15) div 16));
+  Y0 := Max(C.D.SY0, Min(2047, Max(0, MinY div 16)));
+  Y1 := Min(C.D.SY1, Max(0, (MaxY + 15) div 16));
+  if Y1 < Y0 then
+    Y1 := Y0;
+end;
+
+// The pages a primitive's texture levels may be read from.
+procedure TexturePages(const D: TPS2GSDraw; Level: Integer; out First, Last: Integer);
+begin
+  var W := Max(1, (1 shl D.TW) shr Level);
+  var H := Max(1, (1 shl D.TH) shr Level);
+  if D.WMS >= 2 then
+    W := Max(W, D.MAXU + 1);
+  if D.WMS = 3 then
+    W := 1024;
+  if D.WMT >= 2 then
+    H := Max(H, D.MAXV + 1);
+  if D.WMT = 3 then
+    H := 1024;
+  PageSpan(D.LevelTBP[Level], D.LevelTBW[Level], D.TPSM, W - 1, 0, H - 1, First, Last);
+end;
+
+// The mipmap levels a primitive may sample: from the LOD of its vertices'
+// Q (pixels interpolate between them; one level more each side for edge
+// pixels), as TPS2GSDrawer.Texel picks them.
+procedure TextureLevels(const C: TPS2GSCommand; out First, Last: Integer);
+begin
+  First := 0;
+  Last := 0;
+  var D := C.D;
+  if not D.UseLod or (D.MMIN < 2) or (D.MXL = 0) then
+    Exit;
+  var LodMin, LodMax: Double;
+  if D.LCM or D.FST then
+  begin
+    LodMin := D.K;
+    LodMax := D.K;
+  end
+  else
+  begin
+    var N := 1;
+    var Q0 := C.V[0].Q;
+    case C.Kind of
+      gpLine, gpSprite: Q0 := C.V[1].Q;
+      gpTriangle: N := 3;
+    end;
+    var QMin := Q0;
+    var QMax := Q0;
+    for var K := 1 to N - 1 do
+    begin
+      QMin := Min(QMin, C.V[K].Q);
+      QMax := Max(QMax, C.V[K].Q);
+    end;
+    if not ((QMin > 0) or (QMax < 0)) then
+    begin
+      // Q crosses zero (or is NaN): any level.
+      First := 0;
+      Last := D.MXL;
+      Exit;
+    end;
+    var AMin := Max(Min(Abs(QMin), Abs(QMax)), 1E-30);
+    var AMax := Max(Max(Abs(QMin), Abs(QMax)), 1E-30);
+    LodMin := -Log2(AMax) * (1 shl D.LShift) + D.K;
+    LodMax := -Log2(AMin) * (1 shl D.LShift) + D.K;
+  end;
+  if LodMax < 0 then
+    Exit;
+  First := Max(0, Trunc(Max(LodMin, 0)) - 1);
+  if LodMax >= D.MXL then
+    Last := D.MXL
+  else
+    Last := Min(D.MXL, Trunc(LodMax) + 2);
+end;
+
+// Whether a primitive must wait for the queued ones: it reads as texture a
+// page they write, writes a page they read as texture, or writes a page they
+// draw through another buffer (another band's rows). Feedback: it reads its
+// own target, so it is drawn alone, on this thread.
+function TPS2GSRaster.Hazard(const C: TPS2GSCommand; out Feedback: Boolean): Boolean;
+begin
+  Result := False;
+  Feedback := False;
+  var X1, Y0, Y1, F0, F1, Z0, Z1: Integer;
+  PrimitiveArea(C, X1, Y0, Y1);
+  PageSpan(C.D.FBP, C.D.FBW, C.D.FPSM, X1, Y0, Y1, F0, F1);
+  PageSpan(C.D.ZBP, C.D.FBW, C.D.ZPSM, X1, Y0, Y1, Z0, Z1);
+  var WritesZ := not C.D.ZMSK;
+  // Depth written over the frame's own memory: a word may hold one pixel's
+  // colour and another row's depth.
+  if WritesZ and (Z1 >= F0) and (Z0 <= F1) then
+    Feedback := True;
+  var L0, L1: Integer;
+  TextureLevels(C, L0, L1);
+  if C.D.TME then
+    for var L := L0 to L1 do
+    begin
+      var T0, T1: Integer;
+      TexturePages(C.D, L, T0, T1);
+      if PagesMeet(FWritten, T0, T1) then
+        Result := True;
+      if ((T1 >= F0) and (T0 <= F1)) or (WritesZ and (T1 >= Z0) and (T0 <= Z1)) then
+        Feedback := True;
+    end;
+  if PagesMeet(FRead, F0, F1) or (WritesZ and PagesMeet(FRead, Z0, Z1)) then
+    Result := True;
+  var FKey := UInt64(C.D.FBP) or (UInt64(C.D.FBW) shl 20) or (UInt64(C.D.FPSM) shl 32) or (UInt64(1) shl 40);
+  var ZKey := UInt64(C.D.ZBP) or (UInt64(C.D.FBW) shl 20) or (UInt64(C.D.ZPSM) shl 32) or (UInt64(1) shl 40);
+  for var P := F0 to Min(F1, F0 + 511) do
+    if ((FWritten[(P and 511) shr 5] and (Cardinal(1) shl (P and 31))) <> 0) and (FPageOwner[P and 511] <> FKey) then
+      Exit(True);
+  if WritesZ then
+    for var P := Z0 to Min(Z1, Z0 + 511) do
+      if ((FWritten[(P and 511) shr 5] and (Cardinal(1) shl (P and 31))) <> 0) and (FPageOwner[P and 511] <> ZKey) then
+        Exit(True);
+end;
+
+procedure TPS2GSRaster.MarkQueued(const C: TPS2GSCommand);
+begin
+  var X1, Y0, Y1, F0, F1: Integer;
+  PrimitiveArea(C, X1, Y0, Y1);
+  PageSpan(C.D.FBP, C.D.FBW, C.D.FPSM, X1, Y0, Y1, F0, F1);
+  MarkPages(FWritten, F0, F1);
+  var FKey := UInt64(C.D.FBP) or (UInt64(C.D.FBW) shl 20) or (UInt64(C.D.FPSM) shl 32) or (UInt64(1) shl 40);
+  for var P := F0 to Min(F1, F0 + 511) do
+    FPageOwner[P and 511] := FKey;
+  if not C.D.ZMSK then
+  begin
+    var Z0, Z1: Integer;
+    PageSpan(C.D.ZBP, C.D.FBW, C.D.ZPSM, X1, Y0, Y1, Z0, Z1);
+    MarkPages(FWritten, Z0, Z1);
+    var ZKey := UInt64(C.D.ZBP) or (UInt64(C.D.FBW) shl 20) or (UInt64(C.D.ZPSM) shl 32) or (UInt64(1) shl 40);
+    for var P := Z0 to Min(Z1, Z0 + 511) do
+      FPageOwner[P and 511] := ZKey;
+  end;
+  var L0, L1: Integer;
+  TextureLevels(C, L0, L1);
+  if C.D.TME then
+    for var L := L0 to L1 do
+    begin
+      var T0, T1: Integer;
+      TexturePages(C.D, L, T0, T1);
+      MarkPages(FRead, T0, T1);
+    end;
+end;
+
+procedure TPS2GSRaster.Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex);
+begin
+  Inc(FPrimitives);
+  FCommand.Kind := Kind;
+  FCommand.Rounding := GetRoundMode;
+  FCommand.Clut := -1;
+  FCommand.D := FD;
+  FCommand.V[0] := V0;
+  FCommand.V[1] := V1;
+  FCommand.V[2] := V2;
+  // Diagnostics see the primitives drawn in order, here.
+  if (FBands = nil) or (PrimLog <> nil) or (WatchX >= 0) then
+  begin
+    Sync;
+    var Before := FDrawer.PixelsDrawn;
+    FDrawer.Draw(FCommand);
+    Inc(FPixels, FDrawer.PixelsDrawn - Before);
+    Exit;
+  end;
+  var Before := FCounter.PixelsDrawn;
+  FCounter.Draw(FCommand);
+  Inc(FPixels, FCounter.PixelsDrawn - Before);
+  var Feedback: Boolean;
+  if Hazard(FCommand, Feedback) then
+    Sync;
+  if Feedback then
+  begin
+    Sync;
+    FDrawer.Draw(FCommand);
+    Exit;
+  end;
+  if FCommand.D.TME and (FCommand.D.TPSM in [PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]) then
+  begin
+    // A palettized texture: its CLUT as it is now, in a slot of the ring.
+    if FClutChanged or (FClutSlot < 0) then
+    begin
+      FClutSlot := (FClutSlot + 1) mod Length(FClutRing);
+      FBands.WaitFor(FClutUse[FClutSlot]);
+      Move(FClut, FClutRing[FClutSlot], SizeOf(FClut));
+      FClutChanged := False;
+    end;
+    FCommand.Clut := FClutSlot;
+    FClutUse[FClutSlot] := FBands.Position + 1;
+  end;
+  FBands.Next^ := FCommand;
+  FBands.Publish;
+  MarkQueued(FCommand);
+  FPending := True;
+end;
+
 procedure TPS2GSRaster.Reset;
 begin
+  Sync;
   FillChar(Regs, SizeOf(Regs), 0);
   FSignal := False;
   FFinish := False;
@@ -240,6 +707,7 @@ begin
   FCurrent := Default(TPS2GSVertex);
   FQ := 1;
   FillChar(FClut, SizeOf(FClut), 0);
+  FClutChanged := True;
   FCBP0 := 0;
   FCBP1 := 0;
   FXferActive := False;
@@ -276,8 +744,8 @@ end;
 procedure TPS2GSRaster.WriteRegister(Index: Integer; Value: UInt64);
 begin
   Index := Index and $7F;
-  if (PrimLog <> nil) and (PrimLog.Count < 200000) and (Index in [6, 7, $14, $15, $16, $17, $18, $19, $1C, $3B, $40, $41, $42, $43, $47, $48, $4C, $4D, $4E, $4F, $50, $51, $52, $53]) then
-    PrimLog.Add(Format('reg %.2x = %.16x', [Index, Value]));
+  if PrimLog <> nil then
+    LogRegister(Index, Value);
   Regs[Index] := Value;
   case Index of
     GSRegPRIM:
@@ -461,6 +929,19 @@ begin
   D.FogR := Integer(FogCol and $FF);
   D.FogG := Integer((FogCol shr 8) and $FF);
   D.FogB := Integer((FogCol shr 16) and $FF);
+  case D.ZPSM of
+    PSMZ24: D.ZMax := $FFFFFF;
+    PSMZ16, PSMZ16S: D.ZMax := $FFFF;
+  else
+    D.ZMax := $FFFFFFFF;
+  end;
+  D.FB16 := (D.FPSM = PSMCT16) or (D.FPSM = PSMCT16S) or (D.FPSM = PSMZ16) or (D.FPSM = PSMZ16S);
+  D.FB24 := (D.FPSM = PSMCT24) or (D.FPSM = PSMZ24);
+  D.DstRead := D.DATE or (D.ABE and ((D.BlendA = 1) or (D.BlendB = 1) or (D.BlendC = 1) or (D.BlendD = 1))) or
+    (D.FBMSK <> 0);
+  D.Clut32 := Integer((Tex0 shr 51) and $F) = PSMCT32;
+  if (D.TPSM = PSMT4) or (D.TPSM = PSMT4HL) or (D.TPSM = PSMT4HH) then
+    D.ClutOffset := Integer((Tex0 shr 56) and $1F) * 16;
   FD := D;
 end;
 
@@ -481,7 +962,7 @@ begin
         if DrawingKick then
         begin
           SetupDraw;
-          DrawPoint(V);
+          Draw(gpPoint, V, V, V);
         end;
       end;
     1, 6:
@@ -495,9 +976,9 @@ begin
           begin
             SetupDraw;
             if Prim = 1 then
-              DrawLine(FQueue[0], FQueue[1])
+              Draw(gpLine, FQueue[0], FQueue[1], FQueue[1])
             else
-              DrawSprite(FQueue[0], FQueue[1]);
+              Draw(gpSprite, FQueue[0], FQueue[1], FQueue[1]);
           end;
         end;
       end;
@@ -510,7 +991,7 @@ begin
           if DrawingKick then
           begin
             SetupDraw;
-            DrawLine(FQueue[0], FQueue[1]);
+            Draw(gpLine, FQueue[0], FQueue[1], FQueue[1]);
           end;
           FQueue[0] := FQueue[1];
           FQueueCount := 1;
@@ -526,7 +1007,7 @@ begin
           if DrawingKick then
           begin
             SetupDraw;
-            DrawTriangle(FQueue[0], FQueue[1], FQueue[2]);
+            Draw(gpTriangle, FQueue[0], FQueue[1], FQueue[2]);
           end;
         end;
       end;
@@ -539,7 +1020,7 @@ begin
           if DrawingKick then
           begin
             SetupDraw;
-            DrawTriangle(FQueue[0], FQueue[1], FQueue[2]);
+            Draw(gpTriangle, FQueue[0], FQueue[1], FQueue[2]);
           end;
           FQueue[0] := FQueue[1];
           FQueue[1] := FQueue[2];
@@ -555,7 +1036,7 @@ begin
           if DrawingKick then
           begin
             SetupDraw;
-            DrawTriangle(FQueue[0], FQueue[1], FQueue[2]);
+            Draw(gpTriangle, FQueue[0], FQueue[1], FQueue[2]);
           end;
           FQueue[1] := FQueue[2];
           FQueueCount := 2;
@@ -564,7 +1045,39 @@ begin
   end;
 end;
 
-function TPS2GSRaster.ClampCoord(C, Size, Mode, MinC, MaxC: Integer): Integer;
+{ TPS2GSDrawer }
+
+constructor TPS2GSDrawer.Create(Owner: TPS2GSRaster; Band, BandCount: Integer; CountOnly: Boolean);
+begin
+  inherited Create;
+  FOwner := Owner;
+  FMemory := Owner.FMemory;
+  FBand := Band;
+  FBandCount := BandCount;
+  FCountOnly := CountOnly;
+end;
+
+function TPS2GSDrawer.InBand(Y: Integer): Boolean;
+begin
+  Result := (FBandCount <= 1) or ((Cardinal(Y) shr 3) mod Cardinal(FBandCount) = Cardinal(FBand));
+end;
+
+procedure TPS2GSDrawer.Draw(const Command: TPS2GSCommand);
+begin
+  FD := Command.D;
+  if Command.Clut < 0 then
+    FClut := @FOwner.FClut[0]
+  else
+    FClut := @FOwner.FClutRing[Command.Clut][0];
+  case Command.Kind of
+    gpPoint: DrawPoint(Command.V[0]);
+    gpLine: DrawLine(Command.V[0], Command.V[1]);
+    gpTriangle: DrawTriangle(Command.V[0], Command.V[1], Command.V[2]);
+    gpSprite: DrawSprite(Command.V[0], Command.V[1]);
+  end;
+end;
+
+function TPS2GSDrawer.ClampCoord(C, Size, Mode, MinC, MaxC: Integer): Integer;
 begin
   case Mode of
     0: Result := C and (Size - 1);
@@ -601,7 +1114,7 @@ begin
   Result := Result or (Cardinal(A) shl 24);
 end;
 
-function TPS2GSRaster.TexelAt(TBP, TBW: Cardinal; TU, TV: Integer): Cardinal;
+function TPS2GSDrawer.TexelAt(TBP, TBW: Cardinal; TU, TV: Integer): Cardinal;
 begin
   var Raw := FMemory.ReadRaw(Integer(FD.TPSM), TBP, TBW, Cardinal(TU), Cardinal(TV));
   case FD.TPSM of
@@ -619,13 +1132,8 @@ begin
   else
     begin
       // Palettized: CLUT entry.
-      var Tex0 := Regs[GSRegTEX0_1 + FD.Ctx];
-      var CPSM := Integer((Tex0 shr 51) and $F);
-      var CSA := Integer((Tex0 shr 56) and $1F);
-      var Index := Integer(Raw);
-      if (FD.TPSM = PSMT4) or (FD.TPSM = PSMT4HL) or (FD.TPSM = PSMT4HH) then
-        Index := Index + CSA * 16;
-      if CPSM = PSMCT32 then
+      var Index := Integer(Raw) + FD.ClutOffset;
+      if FD.Clut32 then
       begin
         Index := Index and 255;
         Result := Cardinal(FClut[Index]) or (Cardinal(FClut[Index + 256]) shl 16);
@@ -638,7 +1146,7 @@ end;
 
 // LOD = log2(1/Q) * 2^L + K (GS User's Manual, texture mapping), or K
 // alone with LCM.
-procedure TPS2GSRaster.SetLod(Q: Single);
+procedure TPS2GSDrawer.SetLod(Q: Single);
 begin
   if FD.LCM then
     FLod := FD.K
@@ -654,7 +1162,7 @@ end;
 
 // One texel of mipmap level Level (U, V in level-0 texels, 4 fraction
 // bits), point sampled or bilinear.
-function TPS2GSRaster.SampleLevel(Level, U, V: Integer; Linear: Boolean): Cardinal;
+function TPS2GSDrawer.SampleLevel(Level, U, V: Integer; Linear: Boolean): Cardinal;
 begin
   var TBP := FD.LevelTBP[Level];
   var TBW := FD.LevelTBW[Level];
@@ -708,7 +1216,7 @@ end;
 // A negative LOD magnifies (MMAG); otherwise MMIN filters level 0 or picks
 // mipmap levels up to MXL: the nearest one, or the two around the LOD
 // blended by its fraction.
-function TPS2GSRaster.Texel(U, V: Integer): Cardinal;
+function TPS2GSDrawer.Texel(U, V: Integer): Cardinal;
 begin
   if not FD.UseLod then
     Exit(SampleLevel(0, U, V, FD.Linear));
@@ -737,13 +1245,15 @@ begin
   end;
 end;
 
-procedure TPS2GSRaster.Pixel(X, Y: Integer; Z: Cardinal; R, G, B, A, F: Integer; U, V: Integer);
+procedure TPS2GSDrawer.Pixel(X, Y: Integer; Z: Cardinal; R, G, B, A, F: Integer; U, V: Integer);
 var
   Mask: Cardinal;
 begin
   if (X < FD.SX0) or (X > FD.SX1) or (Y < FD.SY0) or (Y > FD.SY1) then
     Exit;
   Inc(FPixels);
+  if FCountOnly then
+    Exit;
   if FD.TME then
   begin
     var T := Texel(U, V);
@@ -823,35 +1333,32 @@ begin
       end;
   end;
   // Depth.
-  var ZMax: Cardinal := $FFFFFFFF;
-  case FD.ZPSM of
-    PSMZ24: ZMax := $FFFFFF;
-    PSMZ16, PSMZ16S: ZMax := $FFFF;
-  end;
-  if Z > ZMax then
-    Z := ZMax;
+  if Z > FD.ZMax then
+    Z := FD.ZMax;
+  var ZA: Cardinal := 0;
   if FD.ZTST <> 1 then
   begin
     if FD.ZTST = 0 then
       Exit;
-    var Old := FMemory.ReadRaw(Integer(FD.ZPSM), FD.ZBP, FD.FBW, Cardinal(X), Cardinal(Y));
+    ZA := FMemory.Locate(Integer(FD.ZPSM), FD.ZBP, FD.FBW, Cardinal(X), Cardinal(Y));
+    var Old := FMemory.ReadAt(Integer(FD.ZPSM), ZA);
     if (FD.ZTST = 2) and (Z < Old) then
       Exit;
     if (FD.ZTST = 3) and (Z <= Old) then
       Exit;
-  end;
+  end
+  else if WriteZ then
+    ZA := FMemory.Locate(Integer(FD.ZPSM), FD.ZBP, FD.FBW, Cardinal(X), Cardinal(Y));
   // Destination colour.
   var Dst: Cardinal := 0;
-  var Is16 := (FD.FPSM = PSMCT16) or (FD.FPSM = PSMCT16S) or (FD.FPSM = PSMZ16) or (FD.FPSM = PSMZ16S);
-  var NeedDst := FD.DATE or (FD.ABE and ((FD.BlendA = 1) or (FD.BlendB = 1) or (FD.BlendC = 1) or (FD.BlendD = 1))) or
-    (FD.FBMSK <> 0) or not WriteAlpha;
-  if NeedDst then
+  var FA := FMemory.Locate(Integer(FD.FPSM), FD.FBP, FD.FBW, Cardinal(X), Cardinal(Y));
+  if FD.DstRead or not WriteAlpha then
   begin
-    var Raw := FMemory.ReadRaw(Integer(FD.FPSM), FD.FBP, FD.FBW, Cardinal(X), Cardinal(Y));
-    if Is16 then
+    var Raw := FMemory.ReadAt(Integer(FD.FPSM), FA);
+    if FD.FB16 then
       Dst := ((Raw and $1F) shl 3) or (((Raw shr 5) and $1F) shl 11) or (((Raw shr 10) and $1F) shl 19) or
         (((Raw shr 15) and 1) shl 31)
-    else if (FD.FPSM = PSMCT24) or (FD.FPSM = PSMZ24) then
+    else if FD.FB24 then
       Dst := (Raw and $FFFFFF) or $80000000
     else
       Dst := Raw;
@@ -900,9 +1407,9 @@ begin
   end;
   if FD.ColClamp then
   begin
-    R := EnsureRange(R, 0, 255);
-    G := EnsureRange(G, 0, 255);
-    B := EnsureRange(B, 0, 255);
+    R := Clamp255(R);
+    G := Clamp255(G);
+    B := Clamp255(B);
   end
   else
   begin
@@ -912,9 +1419,8 @@ begin
   end;
   if FD.FBA then
     A := A or $80;
-  if (WatchX >= 0) and (X = WatchX) and (Y = WatchY) and (PrimLog <> nil) then
-    PrimLog.Add(Format('watch %d,%d fb=%s z=%s rgba=%d,%d,%d,%d zval=%x fbp=%x zbp=%x', [X, Y, BoolToStr(WriteFB, True),
-      BoolToStr(WriteZ and WriteFB or (WriteZ and (FD.AFAIL = 2)), True), R, G, B, A, Z, FD.FBP, FD.ZBP]));
+  if (FOwner.WatchX >= 0) and (X = FOwner.WatchX) and (Y = FOwner.WatchY) and (FOwner.PrimLog <> nil) then
+    LogWatch(X, Y, WriteFB, WriteZ and WriteFB or (WriteZ and (FD.AFAIL = 2)), R, G, B, A, Z);
   if WriteFB then
   begin
     var Color := Cardinal(R) or (Cardinal(G) shl 8) or (Cardinal(B) shl 16) or (Cardinal(A and $FF) shl 24);
@@ -923,13 +1429,48 @@ begin
       Mask := Mask or $FF000000;
     if Mask <> 0 then
       Color := (Color and not Mask) or (Dst and Mask);
-    if Is16 then
-      FMemory.WriteRaw(Integer(FD.FPSM), FD.FBP, FD.FBW, Cardinal(X), Cardinal(Y), Color32To16(Color))
+    if FD.FB16 then
+      FMemory.WriteAt(Integer(FD.FPSM), FA, Color32To16(Color))
     else
-      FMemory.WriteRaw(Integer(FD.FPSM), FD.FBP, FD.FBW, Cardinal(X), Cardinal(Y), Color);
+      FMemory.WriteAt(Integer(FD.FPSM), FA, Color);
   end;
   if WriteZ and WriteFB or (WriteZ and (FD.AFAIL = 2)) then
-    FMemory.WriteRaw(Integer(FD.ZPSM), FD.ZBP, FD.FBW, Cardinal(X), Cardinal(Y), Z);
+    FMemory.WriteAt(Integer(FD.ZPSM), ZA, Z);
+end;
+
+// The diagnostics' lines are written apart, so that the drawing routines keep
+// no string temporaries.
+procedure TPS2GSRaster.LogRegister(Index: Integer; Value: UInt64);
+begin
+  if (PrimLog.Count < 200000) and (Index in [6, 7, $14, $15, $16, $17, $18, $19, $1C, $3B, $40, $41, $42, $43, $47, $48, $4C,
+    $4D, $4E, $4F, $50, $51, $52, $53]) then
+    PrimLog.Add(Format('reg %.2x = %.16x', [Index, Value]));
+end;
+
+procedure TPS2GSDrawer.LogWatch(X, Y: Integer; WriteFB, WriteZ: Boolean; R, G, B, A: Integer; Z: Cardinal);
+begin
+  FOwner.PrimLog.Add(Format('watch %d,%d fb=%s z=%s rgba=%d,%d,%d,%d zval=%x fbp=%x zbp=%x', [X, Y, BoolToStr(WriteFB, True),
+    BoolToStr(WriteZ, True), R, G, B, A, Z, FD.FBP, FD.ZBP]));
+end;
+
+procedure TPS2GSDrawer.LogSprite(const V0, V1: TPS2GSVertex);
+begin
+  FOwner.PrimLog.Add(Format('sprite %d,%d-%d,%d uv=%d,%d-%d,%d st=%g,%g q=%g rgba=%d,%d,%d,%d tme=%s fst=%s abe=%s fbp=%x fbw=%d fpsm=%x msk=%x tbp=%x tbw=%d tpsm=%x tw=%d th=%d tcc=%s tfx=%d ate=%s atst=%d aref=%d afail=%d zte=%s ztst=%d blend=%d%d%d%d fix=%d z=%x zbp=%x zpsm=%x zmsk=%s',
+    [V0.X div 16, V0.Y div 16, V1.X div 16, V1.Y div 16, V0.U div 16, V0.V div 16, V1.U div 16, V1.V div 16, V0.S, V0.T, V0.Q,
+    V1.R, V1.G, V1.B, V1.A, BoolToStr(FD.TME, True), BoolToStr(FD.FST, True), BoolToStr(FD.ABE, True), FD.FBP, FD.FBW, FD.FPSM,
+    FD.FBMSK, FD.TBP, FD.TBW, FD.TPSM, FD.TW, FD.TH, BoolToStr(FD.TCC, True), FD.TFX, BoolToStr(FD.ATE, True), FD.ATST, FD.AREF,
+    FD.AFAIL, BoolToStr(FD.ZTE, True), FD.ZTST, FD.BlendA, FD.BlendB, FD.BlendC, FD.BlendD, FD.BlendFix, V1.Z, FD.ZBP, FD.ZPSM,
+    BoolToStr(FD.ZMSK, True)]));
+end;
+
+procedure TPS2GSDrawer.LogTriangle(const V0, V1, V2: TPS2GSVertex);
+begin
+  FOwner.PrimLog.Add(Format('tri %d,%d %d,%d %d,%d uv=%d,%d %d,%d st=%g,%g,%g q=%g rgba=%d,%d,%d,%d tme=%s fge=%s fog=%d,%d,%d z=%x,%x,%x fst=%s abe=%s fbp=%x fbw=%d fpsm=%x tbp=%x tbw=%d tpsm=%x tw=%d th=%d tcc=%s tfx=%d ate=%s atst=%d aref=%d zte=%s ztst=%d blend=%d%d%d%d fix=%d iip=%s',
+    [V0.X div 16, V0.Y div 16, V1.X div 16, V1.Y div 16, V2.X div 16, V2.Y div 16, V0.U div 16, V0.V div 16, V2.U div 16, V2.V div 16,
+    V0.S, V0.T, V2.S, V0.Q, V0.R, V0.G, V0.B, V0.A, BoolToStr(FD.TME, True), BoolToStr(FD.FGE, True), V0.F, V1.F, V2.F, V0.Z, V1.Z, V2.Z,
+    BoolToStr(FD.FST, True), BoolToStr(FD.ABE, True), FD.FBP, FD.FBW, FD.FPSM,
+    FD.TBP, FD.TBW, FD.TPSM, FD.TW, FD.TH, BoolToStr(FD.TCC, True), FD.TFX, BoolToStr(FD.ATE, True), FD.ATST, FD.AREF,
+    BoolToStr(FD.ZTE, True), FD.ZTST, FD.BlendA, FD.BlendB, FD.BlendC, FD.BlendD, FD.BlendFix, BoolToStr(FD.IIP, True)]));
 end;
 
 procedure TPS2GSRaster.CheckPrimLogBreak;
@@ -939,9 +1480,8 @@ begin
     OnPrimLogBreak();
 end;
 
-procedure TPS2GSRaster.DrawPoint(const V: TPS2GSVertex);
+procedure TPS2GSDrawer.DrawPoint(const V: TPS2GSVertex);
 begin
-  Inc(FPrimitives);
   if FD.UseLod then
     if FD.FST then
       SetLod(1)
@@ -957,12 +1497,13 @@ begin
     U := TexCoord(V.S / Q * (1 shl FD.TW) * 16);
     TV := TexCoord(V.T / Q * (1 shl FD.TH) * 16);
   end;
-  Pixel(Integer(Sar(V.X + 8, 4)), Integer(Sar(V.Y + 8, 4)), V.Z, V.R, V.G, V.B, V.A, V.F, U, TV);
+  var Y := Integer(Sar(V.Y + 8, 4));
+  if InBand(Y) then
+    Pixel(Integer(Sar(V.X + 8, 4)), Y, V.Z, V.R, V.G, V.B, V.A, V.F, U, TV);
 end;
 
-procedure TPS2GSRaster.DrawLine(const V0, V1: TPS2GSVertex);
+procedure TPS2GSDrawer.DrawLine(const V0, V1: TPS2GSVertex);
 begin
-  Inc(FPrimitives);
   if FD.UseLod then
     if FD.FST then
       SetLod(1)
@@ -981,6 +1522,8 @@ begin
     var T := K / Steps;
     var X := Integer(EnsureRange((Int64(V0.X) + Round(DX * T) + 8) div 16, -1, 4096));
     var Y := Integer(EnsureRange((Int64(V0.Y) + Round(DY * T) + 8) div 16, -1, 4096));
+    if not InBand(Y) then
+      Continue;
     var R := V1.R;
     var G := V1.G;
     var B := V1.B;
@@ -1011,23 +1554,17 @@ begin
   end;
 end;
 
-procedure TPS2GSRaster.DrawSprite(const V0, V1: TPS2GSVertex);
+procedure TPS2GSDrawer.DrawSprite(const V0, V1: TPS2GSVertex);
 begin
-  Inc(FPrimitives);
   if FD.UseLod then
     if FD.FST then
       SetLod(1)
     else
       SetLod(V1.Q);
-  if (PrimLogBreak > 0) and (PrimLog <> nil) and (PrimLog.Count >= PrimLogBreak) then
-    CheckPrimLogBreak;
-  if (PrimLog <> nil) and (PrimLog.Count < 200000) then
-    PrimLog.Add(Format('sprite %d,%d-%d,%d uv=%d,%d-%d,%d st=%g,%g q=%g rgba=%d,%d,%d,%d tme=%s fst=%s abe=%s fbp=%x fbw=%d fpsm=%x msk=%x tbp=%x tbw=%d tpsm=%x tw=%d th=%d tcc=%s tfx=%d ate=%s atst=%d aref=%d afail=%d zte=%s ztst=%d blend=%d%d%d%d fix=%d z=%x zbp=%x zpsm=%x zmsk=%s',
-      [V0.X div 16, V0.Y div 16, V1.X div 16, V1.Y div 16, V0.U div 16, V0.V div 16, V1.U div 16, V1.V div 16, V0.S, V0.T, V0.Q,
-      V1.R, V1.G, V1.B, V1.A, BoolToStr(FD.TME, True), BoolToStr(FD.FST, True), BoolToStr(FD.ABE, True), FD.FBP, FD.FBW, FD.FPSM,
-      FD.FBMSK, FD.TBP, FD.TBW, FD.TPSM, FD.TW, FD.TH, BoolToStr(FD.TCC, True), FD.TFX, BoolToStr(FD.ATE, True), FD.ATST, FD.AREF,
-      FD.AFAIL, BoolToStr(FD.ZTE, True), FD.ZTST, FD.BlendA, FD.BlendB, FD.BlendC, FD.BlendD, FD.BlendFix, V1.Z, FD.ZBP, FD.ZPSM,
-      BoolToStr(FD.ZMSK, True)]));
+  if (FOwner.PrimLogBreak > 0) and (FOwner.PrimLog <> nil) and (FOwner.PrimLog.Count >= FOwner.PrimLogBreak) then
+    FOwner.CheckPrimLogBreak;
+  if (FOwner.PrimLog <> nil) and (FOwner.PrimLog.Count < 200000) then
+    LogSprite(V0, V1);
   var X0 := V0.X;
   var X1 := V1.X;
   var Y0 := V0.Y;
@@ -1042,6 +1579,11 @@ begin
   if PY1 > FD.SY1 + 1 then PY1 := FD.SY1 + 1;
   if (PX0 >= PX1) or (PY0 >= PY1) then
     Exit;
+  if FCountOnly then
+  begin
+    Inc(FPixels, Int64(PX1 - PX0) * (PY1 - PY0));
+    Exit;
+  end;
   // Texture coordinates along the edges (in 1/16 texels).
   var U0, U1, TV0, TV1: Double;
   if FD.FST then
@@ -1070,6 +1612,8 @@ begin
     DVDY := (TV1 - TV0) / (Y1 - Y0) * 16;
   for var Y := PY0 to PY1 - 1 do
   begin
+    if not InBand(Y) then
+      Continue;
     var VV := TexCoord(TV0 + (Y * 16 - Y0) * DVDY / 16);
     var UStart := U0 + (PX0 * 16 - X0) * DUDX / 16;
     for var X := PX0 to PX1 - 1 do
@@ -1113,23 +1657,17 @@ begin
     Result := False;
 end;
 
-procedure TPS2GSRaster.DrawTriangle(const V0, V1, V2: TPS2GSVertex);
+procedure TPS2GSDrawer.DrawTriangle(const V0, V1, V2: TPS2GSVertex);
 begin
-  Inc(FPrimitives);
   if FD.UseLod then
     if FD.FST then
       SetLod(1)
     else
       SetLod(V2.Q);
-  if (PrimLogBreak > 0) and (PrimLog <> nil) and (PrimLog.Count >= PrimLogBreak) then
-    CheckPrimLogBreak;
-  if (PrimLog <> nil) and (PrimLog.Count < 200000) then
-    PrimLog.Add(Format('tri %d,%d %d,%d %d,%d uv=%d,%d %d,%d st=%g,%g,%g q=%g rgba=%d,%d,%d,%d tme=%s fge=%s fog=%d,%d,%d z=%x,%x,%x fst=%s abe=%s fbp=%x fbw=%d fpsm=%x tbp=%x tbw=%d tpsm=%x tw=%d th=%d tcc=%s tfx=%d ate=%s atst=%d aref=%d zte=%s ztst=%d blend=%d%d%d%d fix=%d iip=%s',
-      [V0.X div 16, V0.Y div 16, V1.X div 16, V1.Y div 16, V2.X div 16, V2.Y div 16, V0.U div 16, V0.V div 16, V2.U div 16, V2.V div 16,
-      V0.S, V0.T, V2.S, V0.Q, V0.R, V0.G, V0.B, V0.A, BoolToStr(FD.TME, True), BoolToStr(FD.FGE, True), V0.F, V1.F, V2.F, V0.Z, V1.Z, V2.Z,
-      BoolToStr(FD.FST, True), BoolToStr(FD.ABE, True), FD.FBP, FD.FBW, FD.FPSM,
-      FD.TBP, FD.TBW, FD.TPSM, FD.TW, FD.TH, BoolToStr(FD.TCC, True), FD.TFX, BoolToStr(FD.ATE, True), FD.ATST, FD.AREF,
-      BoolToStr(FD.ZTE, True), FD.ZTST, FD.BlendA, FD.BlendB, FD.BlendC, FD.BlendD, FD.BlendFix, BoolToStr(FD.IIP, True)]));
+  if (FOwner.PrimLogBreak > 0) and (FOwner.PrimLog <> nil) and (FOwner.PrimLog.Count >= FOwner.PrimLogBreak) then
+    FOwner.CheckPrimLogBreak;
+  if (FOwner.PrimLog <> nil) and (FOwner.PrimLog.Count < 200000) then
+    LogTriangle(V0, V1, V2);
   var X0 := Int64(V0.X);
   var Y0 := Int64(V0.Y);
   var X1 := Int64(V1.X);
@@ -1181,8 +1719,13 @@ begin
   end;
   var SW := Double(1 shl FD.TW) * 16;
   var TH := Double(1 shl FD.TH) * 16;
+  // Depth is only read by the test and written unless masked (the watched
+  // pixel's line shows it too).
+  var NeedZ := (FD.ZTST >= 2) or not FD.ZMSK or (FOwner.WatchX >= 0);
   for var Y := MinY to MaxY do
   begin
+    if not InBand(Y) then
+      Continue;
     var PY := Int64(Y) * 16;
     var PX := Int64(MinX) * 16;
     var E0 := A0 * (PX - X1) + B0 * (PY - Y1);
@@ -1199,6 +1742,25 @@ begin
     Inc(E1, A1 * 16 * KL);
     Inc(E2, A2 * 16 * KL);
     var Started := False;
+    if FCountOnly then
+    begin
+      // The same walk as below, counting what it would draw.
+      for var X := MinX + Integer(KL) to MinX + Integer(KR) do
+      begin
+        if (E0 + Bias0 >= 0) and (E1 + Bias1 >= 0) and (E2 + Bias2 >= 0) then
+        begin
+          Started := True;
+          if (X >= FD.SX0) and (X <= FD.SX1) and (Y >= FD.SY0) and (Y <= FD.SY1) then
+            Inc(FPixels);
+        end
+        else if Started then
+          Break;
+        Inc(E0, A0 * 16);
+        Inc(E1, A1 * 16);
+        Inc(E2, A2 * 16);
+      end;
+      Continue;
+    end;
     for var X := MinX + Integer(KL) to MinX + Integer(KR) do
     begin
       if (E0 + Bias0 >= 0) and (E1 + Bias1 >= 0) and (E2 + Bias2 >= 0) then
@@ -1207,16 +1769,22 @@ begin
         var W0 := E0 * Sign * InvArea;
         var W1 := E1 * Sign * InvArea;
         var W2 := 1.0 - W0 - W1;
-        var R := Round(W0 * R0 + W1 * R1 + W2 * R2);
-        var G := Round(W0 * G0 + W1 * G1 + W2 * G2);
-        var B := Round(W0 * BB0 + W1 * BB1 + W2 * BB2);
-        var A := Round(W0 * AA0 + W1 * AA1 + W2 * AA2);
-        var ZD := W0 * V0.Z + W1 * V1.Z + W2 * V2.Z;
-        if ZD < 0 then
-          ZD := 0;
-        if ZD > 4294967295.0 then
-          ZD := 4294967295.0;
-        var F := Round(W0 * V0.F + W1 * V1.F + W2 * V2.F);
+        var R := FastRound(W0 * R0 + W1 * R1 + W2 * R2);
+        var G := FastRound(W0 * G0 + W1 * G1 + W2 * G2);
+        var B := FastRound(W0 * BB0 + W1 * BB1 + W2 * BB2);
+        var A := FastRound(W0 * AA0 + W1 * AA1 + W2 * AA2);
+        var ZD := 0.0;
+        if NeedZ then
+        begin
+          ZD := W0 * V0.Z + W1 * V1.Z + W2 * V2.Z;
+          if ZD < 0 then
+            ZD := 0;
+          if ZD > 4294967295.0 then
+            ZD := 4294967295.0;
+        end;
+        var F := 0;
+        if FD.FGE then
+          F := FastRound(W0 * V0.F + W1 * V1.F + W2 * V2.F);
         var U, TV: Integer;
         if FD.TME then
         begin
@@ -1241,8 +1809,7 @@ begin
           U := 0;
           TV := 0;
         end;
-        Pixel(X, Y, Cardinal(Trunc(ZD)), EnsureRange(R, 0, 255), EnsureRange(G, 0, 255), EnsureRange(B, 0, 255),
-          EnsureRange(A, 0, 255), EnsureRange(F, 0, 255), U, TV);
+        Pixel(X, Y, TruncDepth(ZD), Clamp255(R), Clamp255(G), Clamp255(B), Clamp255(A), Clamp255(F), U, TV);
       end
       else if Started then
         Break;
@@ -1280,9 +1847,29 @@ begin
     Exit;
   end;
   var PSM := Integer((Tex0 shr 20) and $3F);
+  if not ((PSM = PSMT8) or (PSM = PSMT8H) or (PSM = PSMT4) or (PSM = PSMT4HL) or (PSM = PSMT4HH)) then
+    Exit;
   var CPSM := Integer((Tex0 shr 51) and $F);
   var CSM := Integer((Tex0 shr 55) and 1);
   var CSA := Integer((Tex0 shr 56) and $1F);
+  // Queued primitives keep the CLUT they were queued with; only wait for
+  // them when they draw where this one is read from.
+  if FPending then
+  begin
+    var P0, P1: Integer;
+    if CSM = 0 then
+      PageSpan(CBP, 1, Cardinal(CPSM), 15, 0, 15, P0, P1)
+    else
+    begin
+      var TexClut := Regs[GSRegTEXCLUT];
+      var CY := Integer((TexClut shr 12) and $3FF);
+      PageSpan(CBP, Cardinal(TexClut and $3F), Cardinal(CPSM), Integer((TexClut shr 6) and $3F) * 16 + 255, CY, CY, P0,
+        P1);
+    end;
+    if PagesMeet(FWritten, P0, P1) then
+      Sync;
+  end;
+  FClutChanged := True;
   var Count := 16;
   if (PSM = PSMT8) or (PSM = PSMT8H) then
     Count := 256
@@ -1368,6 +1955,8 @@ end;
 
 procedure TPS2GSRaster.TransferPixel(Value: Cardinal);
 begin
+  if FPending then
+    Sync;
   var Buf := Regs[GSRegBITBLTBUF];
   var Pos := Regs[GSRegTRXPOS];
   var Reg := Regs[GSRegTRXREG];
@@ -1419,6 +2008,7 @@ end;
 
 procedure TPS2GSRaster.LocalToLocal;
 begin
+  Sync;
   var Buf := Regs[GSRegBITBLTBUF];
   var Pos := Regs[GSRegTRXPOS];
   var Reg := Regs[GSRegTRXREG];
@@ -1444,6 +2034,7 @@ end;
 
 procedure TPS2GSRaster.LocalToHost;
 begin
+  Sync;
   var Buf := Regs[GSRegBITBLTBUF];
   var Pos := Regs[GSRegTRXPOS];
   var Reg := Regs[GSRegTRXREG];
@@ -1496,6 +2087,7 @@ end;
 
 procedure TPS2GSRaster.SerializeState(State: TStateArchive);
 begin
+  Sync;
   State.Field(Regs, SizeOf(Regs));
   State.Field(SigLblId, SizeOf(SigLblId));
   State.Field(FSignal, SizeOf(FSignal));
@@ -1521,6 +2113,178 @@ begin
     State.Field(FReadBuffer[0], N * 4);
   State.Field(FReadPos, SizeOf(FReadPos));
   State.Field(FMemory.Data^, PS2GSMemorySize);
+  FClutChanged := True;
+end;
+
+{ TPS2GSBands }
+
+constructor TPS2GSBands.TBand.Create(Owner: TPS2GSBands; Index: Integer; Drawer: TPS2GSDrawer);
+begin
+  FOwner := Owner;
+  FIndex := Index;
+  FDrawer := Drawer;
+  inherited Create(False);
+end;
+
+destructor TPS2GSBands.TBand.Destroy;
+begin
+  inherited;
+  FDrawer.Free;
+end;
+
+procedure TPS2GSBands.TBand.Execute;
+begin
+  SetExceptionMask(exAllArithmeticExceptions);
+  var Rounding := GetRoundMode;
+  var Position: Int64 := 0;
+  while not Terminated do
+  begin
+    var Spins := 0;
+    while (FOwner.Published <= Position) and not Terminated do
+    begin
+      if Spins < SpinRounds then
+      begin
+        Inc(Spins);
+        YieldProcessor;
+        Continue;
+      end;
+      TInterlocked.Exchange(FOwner.FSlots[FIndex].Sleeping, 1);
+      if (FOwner.Published <= Position) and not Terminated then
+        FOwner.FSlots[FIndex].Wake.WaitFor(INFINITE);
+      TInterlocked.Exchange(FOwner.FSlots[FIndex].Sleeping, 0);
+      Spins := 0;
+    end;
+    if Terminated then
+      Break;
+    var Last := FOwner.Published;
+    while Position < Last do
+    begin
+      try
+        var Command: PPS2GSCommand := @FOwner.FRing[Position and RingMask];
+        if Command.Rounding <> Rounding then
+        begin
+          Rounding := Command.Rounding;
+          SetRoundMode(Rounding);
+        end;
+        FDrawer.Draw(Command^);
+      except
+        on E: Exception do
+          FOwner.Fail(E.Message);
+      end;
+      Inc(Position);
+      TInterlocked.Exchange(FOwner.FSlots[FIndex].Consumed, Position);
+      if FOwner.FMainWaiting <> 0 then
+        FOwner.FProgress.SetEvent;
+    end;
+  end;
+end;
+
+constructor TPS2GSBands.Create(Raster: TPS2GSRaster; Count: Integer);
+begin
+  inherited Create;
+  SetLength(FRing, RingSize);
+  SetLength(FSlots, Count);
+  for var I := 0 to Count - 1 do
+    FSlots[I].Wake := TEvent.Create(nil, False, False, '');
+  FProgress := TEvent.Create(nil, False, False, '');
+  SetLength(FBands, Count);
+  for var I := 0 to Count - 1 do
+    FBands[I] := TBand.Create(Self, I, TPS2GSDrawer.Create(Raster, I, Count, False));
+end;
+
+destructor TPS2GSBands.Destroy;
+begin
+  for var Band in FBands do
+    Band.Terminate;
+  for var I := 0 to High(FSlots) do
+    FSlots[I].Wake.SetEvent;
+  for var Band in FBands do
+    Band.Free;
+  for var I := 0 to High(FSlots) do
+    FSlots[I].Wake.Free;
+  FProgress.Free;
+  inherited;
+end;
+
+function TPS2GSBands.Published: Int64;
+begin
+  {$IFDEF CPUX64}
+  // Aligned 64-bit loads are atomic and ordered on x64 (written by Exchange).
+  Result := FPublished;
+  {$ELSE}
+  Result := TInterlocked.Read(FPublished);
+  {$ENDIF}
+end;
+
+function TPS2GSBands.Slowest: Int64;
+begin
+  Result := TInterlocked.Read(FSlots[0].Consumed);
+  for var I := 1 to High(FSlots) do
+  begin
+    var Value := TInterlocked.Read(FSlots[I].Consumed);
+    if Value < Result then
+      Result := Value;
+  end;
+end;
+
+procedure TPS2GSBands.Fail(const Message: string);
+begin
+  if TInterlocked.CompareExchange(FFailed, 2, 0) = 0 then
+  begin
+    FFailure := Message;
+    TInterlocked.Exchange(FFailed, 1);
+  end;
+end;
+
+procedure TPS2GSBands.CheckFailed;
+begin
+  if TInterlocked.CompareExchange(FFailed, 0, 0) = 1 then
+    raise Exception.Create('GS band thread: ' + FFailure);
+end;
+
+procedure TPS2GSBands.WaitConsumed(Value: Int64);
+begin
+  var Spins := 0;
+  while Slowest < Value do
+  begin
+    if Spins < SpinRounds then
+    begin
+      Inc(Spins);
+      YieldProcessor;
+      Continue;
+    end;
+    TInterlocked.Exchange(FMainWaiting, 1);
+    if Slowest < Value then
+      FProgress.WaitFor(5);
+    TInterlocked.Exchange(FMainWaiting, 0);
+  end;
+  CheckFailed;
+end;
+
+function TPS2GSBands.Next: PPS2GSCommand;
+begin
+  if FWrite - RingSize >= 0 then
+    WaitConsumed(FWrite + 1 - RingSize);
+  Result := @FRing[FWrite and RingMask];
+end;
+
+procedure TPS2GSBands.Publish;
+begin
+  Inc(FWrite);
+  TInterlocked.Exchange(FPublished, FWrite);
+  for var I := 0 to High(FSlots) do
+    if FSlots[I].Sleeping <> 0 then
+      FSlots[I].Wake.SetEvent;
+end;
+
+procedure TPS2GSBands.Sync;
+begin
+  WaitConsumed(FWrite);
+end;
+
+procedure TPS2GSBands.WaitFor(Position: Int64);
+begin
+  WaitConsumed(Position);
 end;
 
 end.

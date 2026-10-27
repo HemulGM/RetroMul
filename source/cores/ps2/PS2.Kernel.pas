@@ -1007,13 +1007,16 @@ begin
   var P := Arg(1);
   if Id = 0 then
     Id := FCurrent;
-  if (Id <= 0) or (Id >= KernelMaxThreads) or (FThreads[Id].State = TPS2ThreadState.Free) then
+  if (Id <= 0) or (Id >= KernelMaxThreads) then
   begin
     Ret(-1);
     Exit;
   end;
   var Code: Integer;
   case FThreads[Id].State of
+    // A deleted (or never created) thread's slot reads as status 0: games
+    // wait for a helper thread to be gone by polling for 0.
+    TPS2ThreadState.Free: Code := 0;
     TPS2ThreadState.Ready:
       if Id = FCurrent then
         Code := THSRun

@@ -713,6 +713,7 @@ begin
   State.Field(FFinishCount, SizeOf(FFinishCount));
   if (FFinishCount < 0) or (FFinishCount > Length(FFinishDue)) then
     FFinishCount := 0;
+  State.Field(IOP.StrtokNext, SizeOf(IOP.StrtokNext));
 end;
 
 end.

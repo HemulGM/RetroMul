@@ -243,6 +243,8 @@ type
     CdReadBytes: Integer;
     CdStreamSectors: Integer;
     DmaId: Cardinal;
+    // sysclib strtok: where the next call without a string goes on.
+    StrtokNext: Cardinal;
     Log: TStrings;
     // EE cycles per video line (the HLINE timer source).
     LineCycles: Int64;
@@ -422,6 +424,7 @@ begin
   InVblank := False;
   CdDoneAt := 0;
   CdCallback := 0;
+  StrtokNext := 0;
   CdLastCommand := 0;
   CdStreamLBA := 0;
   CdReadBytes := 0;

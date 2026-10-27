@@ -915,6 +915,43 @@ begin
         if P > 0 then
           Result := A0 + Cardinal(P - 1);
       end;
+    // strspn(s, accept): length of the leading run of characters in accept.
+    33:
+      begin
+        var Accept := K.ReadString(A1, 256);
+        while (K.R8(A0 + Result) <> 0) and (Pos(Char(K.R8(A0 + Result)), Accept) > 0) do
+          Inc(Result);
+      end;
+    // strtok(s, delim): the next token of s (or of the string the last call
+    // stopped in when s is NULL), ended in place by a zero byte.
+    35:
+      begin
+        var Delim := K.ReadString(A1, 256);
+        var P := A0;
+        if P = 0 then
+          P := K.StrtokNext;
+        Result := 0;
+        if P <> 0 then
+        begin
+          while (K.R8(P) <> 0) and (Pos(Char(K.R8(P)), Delim) > 0) do
+            Inc(P);
+          if K.R8(P) = 0 then
+            K.StrtokNext := 0
+          else
+          begin
+            Result := P;
+            while (K.R8(P) <> 0) and (Pos(Char(K.R8(P)), Delim) = 0) do
+              Inc(P);
+            if K.R8(P) <> 0 then
+            begin
+              K.W8(P, 0);
+              K.StrtokNext := P + 1;
+            end
+            else
+              K.StrtokNext := 0;
+          end;
+        end;
+      end;
     36, 38:
       begin
         var S := K.ReadString(A0, 64).Trim;

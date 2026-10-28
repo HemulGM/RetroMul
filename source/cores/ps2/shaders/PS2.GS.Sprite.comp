@@ -1,12 +1,14 @@
 #version 450
-// GS sprites, integer pixel/texture pipeline. References: GS User's
+// GS sprites and prepared triangle fragments, integer pixel/texture pipeline.
+// References: GS User's
 // Manual and PS2.GS.Raster. Each invocation owns a distinct frame/depth word.
 layout(local_size_x=8, local_size_y=8) in;
 layout(set=0,binding=0,std430) buffer VRAM { uint ram[]; };
 struct Draw { uint p[64]; };
 layout(set=0,binding=1,std430) readonly buffer State { Draw draws[]; };
 layout(set=0,binding=2,std430) readonly buffer Coordinates { int coords[]; };
-layout(push_constant) uniform Bounds { ivec4 bounds; uint slot; };
+layout(set=0,binding=3,std430) readonly buffer Fragments { uint fragments[]; };
+layout(push_constant) uniform Bounds { ivec4 bounds; uint slot; uint mode; };
 // Address fields on demand, rather than copying all words into private
 // storage even for a pixel rejected by an early test.
 #define p draws[slot].p
@@ -48,14 +50,26 @@ uvec4 sampleTexture(int u,int v) {
   return (top*(16-fv)+bottom*fv)>>8;
 }
 void main() {
-  ivec2 xy=bounds.xy+ivec2(gl_GlobalInvocationID.xy);
-  if(any(greaterThanEqual(xy,bounds.zw))) return;
+  ivec2 xy;
+  uint base=0;
+  if(mode==0) {
+    xy=bounds.xy+ivec2(gl_GlobalInvocationID.xy);
+    if(any(greaterThanEqual(xy,bounds.zw))) return;
+  } else {
+    uint index=gl_WorkGroupID.x*64+gl_LocalInvocationIndex;
+    if(index>=uint(bounds.y)) return;
+    base=(uint(bounds.x)+index)*10;
+    xy=ivec2(fragments[base],fragments[base+1]);
+  }
   uint x=uint(xy.x),y=uint(xy.y);
-  ivec3 c=ivec3(p[26],p[27],p[28]);
-  int a=int(p[29]),f=int(p[30]);
+  ivec3 c=mode==0 ? ivec3(p[26],p[27],p[28]) :
+    ivec3(fragments[base+3],fragments[base+4],fragments[base+5]);
+  int a=int(mode==0 ? p[29] : fragments[base+6]);
+  int f=int(mode==0 ? p[30] : fragments[base+7]);
+  uint sourceZ=mode==0 ? p[31] : fragments[base+2];
   if(p[47]!=0) {
-    int u=coords[slot*4096+uint(xy.x-bounds.x)];
-    int v=coords[slot*4096+2048+uint(xy.y-bounds.y)];
+    int u=mode==0 ? coords[slot*4096+uint(xy.x-bounds.x)] : int(fragments[base+8]);
+    int v=mode==0 ? coords[slot*4096+2048+uint(xy.y-bounds.y)] : int(fragments[base+9]);
     ivec4 t=ivec4(sampleTexture(u,v));
     switch(p[43]) {
       case 0: c=(c*t.rgb)>>7; if(p[44]!=0) a=(a*t.a)>>7; break;
@@ -90,7 +104,7 @@ void main() {
   }
   uint za=address(p[4],p[1],x,y,true);
   uint zmask=p[5]==0x31 ? 0xffffff : 0xffffffff;
-  uint z=min(p[31],zmask);
+  uint z=min(sourceZ,zmask);
   if(p[12]!=1) {
     if(p[12]==0) return;
     uint old=ram[za]&zmask;

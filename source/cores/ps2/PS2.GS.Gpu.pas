@@ -1,9 +1,10 @@
 ﻿unit PS2.GS.Gpu;
 
-// GS compute path: 32/24-bit sprites, including nearest/bilinear 32/24-bit
-// textures without mipmapping, with disjoint
-// frame/depth surfaces. Other draws retain the software pixel pipeline.
-// Queued sprites retain their own parameters until Sync publishes their
+// GS compute path: 32/24-bit sprites and prepared triangle fragments, with
+// nearest/bilinear 32/24-bit textures, no mipmapping, disjoint frame/depth
+// surfaces and no texture feedback. Other draws keep the software pipeline.
+// Triangle coverage/interpolation stay on the host; shading runs on the GPU.
+// Queued draws retain their own parameters until Sync publishes their
 // writes to CPU consumers. Compute barriers order draws within each batch.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$POINTERMATH ON}
@@ -18,28 +19,40 @@ type
   TPS2GSGpu = class(TPS2GSAccelerator)
   private const
     BatchSize = 128;
+    FragmentCapacity = 65536;
   private type
     TPush = record
       Bounds: array[0..3] of Integer;
       Slot: Cardinal;
+      Mode: Cardinal;
     end;
   private
     FCompute: TVulkanCompute;
     FKernel: TVulkanKernel;
-    FRAM, FState, FCoordinates: TVulkanBuffer;
+    FRAM, FState, FCoordinates, FFragments: TVulkanBuffer;
     FDraws: Int64;
     FTexturedDraws: Int64;
     FUsed: Integer;
     FSubmissions: Int64;
+    FTriangles: Int64;
+    FFragmentsUsed, FFragmentStart, FFragmentCount: Integer;
+    FTriangleState: TPS2GSDraw;
+    function Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean;
+    procedure WriteState(const D: TPS2GSDraw; const V: TPS2GSVertex);
+    procedure FlushFragments;
   public
     constructor Create(RAM: Pointer);
     destructor Destroy; override;
     procedure Sync; override;
     function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer): Boolean; override;
+    function BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean; override;
+    procedure Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer); override;
+    procedure EndTriangle; override;
     property Draws: Int64 read FDraws;
     property TexturedDraws: Int64 read FTexturedDraws;
     property Submissions: Int64 read FSubmissions;
+    property Triangles: Int64 read FTriangles;
   end;
 
 implementation
@@ -56,8 +69,9 @@ begin
     raise Exception.Create('Vulkan GS needs coherent host-memory import for GS VRAM');
   FState := FCompute.CreateBuffer(BatchSize * 64 * SizeOf(Cardinal), True);
   FCoordinates := FCompute.CreateBuffer(BatchSize * 4096 * SizeOf(Integer), True);
-  FKernel := FCompute.CreateKernel(PS2SpriteSPIRV, 3, SizeOf(TPush));
-  FCompute.Bind(FKernel, [FRAM, FState, FCoordinates]);
+  FFragments := FCompute.CreateBuffer(FragmentCapacity * 10 * SizeOf(Cardinal), True);
+  FKernel := FCompute.CreateKernel(PS2SpriteSPIRV, 4, SizeOf(TPush));
+  FCompute.Bind(FKernel, [FRAM, FState, FCoordinates, FFragments]);
 end;
 
 destructor TPS2GSGpu.Destroy;
@@ -72,6 +86,7 @@ begin
   FCompute.Finish;
   FPending := False;
   FUsed := 0;
+  FFragmentsUsed := 0;
   Inc(FSubmissions);
 end;
 
@@ -83,8 +98,7 @@ begin
   Result := Trunc(D);
 end;
 
-function TPS2GSGpu.Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
-  X0, Y0, X1, Y1: Integer): Boolean;
+function TPS2GSGpu.Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean;
 begin
   Result := False;
   if not (D.FPSM in [PSMCT32, PSMCT24]) or
@@ -118,7 +132,11 @@ begin
   end;
   // Small draws cost more to submit than to draw on the host.
   if Int64(X1 - X0) * (Y1 - Y0) < 4096 then Exit;
-  if FUsed = BatchSize then Sync;
+  Result := True;
+end;
+
+procedure TPS2GSGpu.WriteState(const D: TPS2GSDraw; const V: TPS2GSVertex);
+begin
   var P := PCardinal(FState.Data) + FUsed * 64;
   P[0] := D.FBP; P[1] := D.FBW; P[2] := D.FPSM; P[3] := D.FBMSK;
   P[4] := D.ZBP; P[5] := D.ZPSM; P[6] := Ord(D.ZMSK);
@@ -143,6 +161,18 @@ begin
     P[41] := Cardinal(D.MINV); P[42] := Cardinal(D.MAXV);
     P[43] := Cardinal(D.TFX); P[44] := Ord(D.TCC);
     P[45] := Cardinal(D.TA0); P[46] := Ord(D.AEM); P[48] := Ord(D.Linear);
+  end;
+end;
+
+function TPS2GSGpu.Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
+  X0, Y0, X1, Y1: Integer): Boolean;
+begin
+  Result := False;
+  if not Supports(D, X0, Y0, X1, Y1) then Exit;
+  if FUsed = BatchSize then Sync;
+  WriteState(D, V);
+  if D.TME then
+  begin
     // Keep the CPU's arithmetic and rounding for UV/STQ interpolation.
     // The GPU samples these integer coordinates, not an approximate float
     // reconstruction. A sprite needs only one U per column and V per row.
@@ -174,12 +204,67 @@ begin
   var Push: TPush;
   Push.Bounds[0] := X0; Push.Bounds[1] := Y0; Push.Bounds[2] := X1; Push.Bounds[3] := Y1;
   Push.Slot := Cardinal(FUsed);
+  Push.Mode := 0;
   FCompute.Launch(FKernel, Push, Cardinal((X1-X0+7) div 8), Cardinal((Y1-Y0+7) div 8), 1);
   Inc(FUsed);
   FPending := True;
   Inc(FDraws);
   if D.TME then Inc(FTexturedDraws);
   Result := True;
+end;
+
+function TPS2GSGpu.BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean;
+begin
+  Result := Supports(D, X0, Y0, X1, Y1);
+  if not Result then Exit;
+  if FUsed = BatchSize then Sync;
+  FTriangleState := D;
+  WriteState(D, Default(TPS2GSVertex));
+  FFragmentStart := FFragmentsUsed;
+  FFragmentCount := 0;
+  Inc(FTriangles);
+  Inc(FDraws);
+  if D.TME then Inc(FTexturedDraws);
+end;
+
+procedure TPS2GSGpu.FlushFragments;
+begin
+  if FFragmentCount = 0 then Exit;
+  var Push := Default(TPush);
+  Push.Bounds[0] := FFragmentStart;
+  Push.Bounds[1] := FFragmentCount;
+  Push.Slot := Cardinal(FUsed);
+  Push.Mode := 1;
+  FCompute.Launch(FKernel, Push, Cardinal((FFragmentCount + 63) div 64), 1, 1);
+  Inc(FUsed);
+  FPending := True;
+  FFragmentCount := 0;
+end;
+
+procedure TPS2GSGpu.Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer);
+begin
+  if FFragmentsUsed = FragmentCapacity then
+  begin
+    FlushFragments;
+    Sync;
+    WriteState(FTriangleState, Default(TPS2GSVertex));
+    FFragmentStart := 0;
+  end;
+  // The software edge walker emits each covered pixel exactly once. It
+  // supplies the already rounded attributes, avoiding GPU float differences.
+  var P := PCardinal(FFragments.Data) + FFragmentsUsed * 10;
+  P[0] := Cardinal(X); P[1] := Cardinal(Y); P[2] := Z;
+  P[3] := Cardinal(R); P[4] := Cardinal(G); P[5] := Cardinal(B);
+  P[6] := Cardinal(A); P[7] := Cardinal(F);
+  PInteger(@P[8])^ := U;
+  PInteger(@P[9])^ := V;
+  Inc(FFragmentsUsed);
+  Inc(FFragmentCount);
+end;
+
+procedure TPS2GSGpu.EndTriangle;
+begin
+  FlushFragments;
 end;
 
 end.

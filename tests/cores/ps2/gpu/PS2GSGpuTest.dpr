@@ -17,6 +17,107 @@ begin
   Raster.WriteRegister(GSRegXYZ2, UInt64(V.X) or (UInt64(V.Y) shl 16) or (UInt64(V.Z) shl 32));
 end;
 
+procedure CheckTriangles;
+const
+  Registers: array[0..13] of Integer = (GSRegFRAME_1, GSRegZBUF_1, GSRegTEST_1, GSRegALPHA_1,
+    GSRegPABE, GSRegFBA_1, GSRegCOLCLAMP, GSRegFOGCOL, GSRegSCISSOR_1, GSRegPRIM,
+    GSRegTEX0_1, GSRegTEX1_1, GSRegCLAMP_1, GSRegTEXA);
+var
+  V: array[0..2] of TPS2GSVertex;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    B.Vulkan := True;
+    if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
+    RandSeed := 8173;
+    for var N := 0 to 255 do
+    begin
+      if N and 1 = 0 then SetRoundMode(rmNearest) else SetRoundMode(rmTruncate);
+      A.Reset; B.Reset;
+      var PA := PCardinal(A.Memory.Data);
+      for var K := 0 to PS2GSMemorySize div 4 - 1 do PA[K] := Cardinal(K) * 1664525 + Cardinal(N) * 1013904223;
+      Move(PA^, B.Memory.Data^, PS2GSMemorySize);
+      var D := Default(TPS2GSDraw);
+      D.FBW := 4; D.FPSM := Cardinal(N and 1);
+      D.ZBP := 8192; D.ZPSM := PSMZ32 + Cardinal((N shr 1) and 1);
+      D.ZMSK := Random(2) <> 0;
+      D.ATE := Random(2) <> 0; D.ATST := N and 7;
+      D.AREF := Random(256); D.AFAIL := (N shr 3) and 3;
+      D.DATE := Random(2) <> 0; D.DATM := Random(2) <> 0;
+      D.ZTST := (N shr 5) and 3;
+      D.ABE := Random(2) <> 0; D.FGE := Random(2) <> 0;
+      D.IIP := Random(2) <> 0;
+      D.BlendA := Random(4); D.BlendB := Random(4); D.BlendC := Random(4); D.BlendD := Random(4);
+      D.BlendFix := Random(256); D.PABE := Random(2) <> 0; D.FBA := Random(2) <> 0;
+      D.ColClamp := Random(2) <> 0; D.FBMSK := Cardinal(Random(MaxInt));
+      if N mod 3 = 0 then D.FBMSK := 0;
+      D.FogR := Random(256); D.FogG := Random(256); D.FogB := Random(256);
+      D.TME := N mod 3 <> 0; D.TPSM := Cardinal(N and 1);
+      D.TCC := Random(2) <> 0; D.TFX := N mod 4; D.FST := N and 2 = 0;
+      D.Linear := Random(2) <> 0; D.TA0 := Random(256); D.AEM := Random(2) <> 0;
+      for var K := 0 to 2 do
+      begin
+        V[K] := Default(TPS2GSVertex);
+        V[K].R := Random(256); V[K].G := Random(256); V[K].B := Random(256); V[K].A := Random(256);
+        V[K].F := Random(256); V[K].Z := Cardinal(Random(MaxInt));
+        V[K].U := Random(8192); V[K].V := Random(8192);
+        V[K].S := Random * 3; V[K].T := Random * 3; V[K].Q := 0.25 + Random * 2;
+      end;
+      V[0].X := (8 + Random(16)) * 16 + Random(16); V[0].Y := (8 + Random(16)) * 16 + Random(16);
+      V[1].X := (216 + Random(16)) * 16 + Random(16); V[1].Y := (16 + Random(16)) * 16 + Random(16);
+      V[2].X := (64 + Random(64)) * 16 + Random(16); V[2].Y := (216 + Random(16)) * 16 + Random(16);
+      D.SX0 := 16; D.SY0 := 16; D.SX1 := 223; D.SY1 := 223;
+      if N = 255 then
+      begin
+        // More than 65536 fragments: rollover inside one primitive must
+        // preserve both the parameter slot and order of earlier chunks.
+        D.FBW := 10; D.SX0 := 0; D.SY0 := 0; D.SX1 := 639; D.SY1 := 479;
+        D.TME := False;
+        V[0].X := 0; V[0].Y := 0;
+        V[1].X := 640 * 16; V[1].Y := 0;
+        V[2].X := 0; V[2].Y := 480 * 16;
+      end;
+      if N and 4 <> 0 then
+      begin
+        var Temp := V[0]; V[0] := V[1]; V[1] := Temp;
+      end;
+      A.WriteRegister(GSRegFRAME_1, (UInt64(D.FBW) shl 16) or (UInt64(D.FPSM) shl 24) or (UInt64(D.FBMSK) shl 32));
+      A.WriteRegister(GSRegZBUF_1, UInt64(D.ZBP div 32) or (UInt64(D.ZPSM and 15) shl 24) or (UInt64(Ord(D.ZMSK)) shl 32));
+      A.WriteRegister(GSRegTEST_1, UInt64(Ord(D.ATE)) or (UInt64(D.ATST) shl 1) or
+        (UInt64(D.AREF) shl 4) or (UInt64(D.AFAIL) shl 12) or (UInt64(Ord(D.DATE)) shl 14) or
+        (UInt64(Ord(D.DATM)) shl 15) or $10000 or (UInt64(D.ZTST) shl 17));
+      A.WriteRegister(GSRegALPHA_1, UInt64(D.BlendA) or (UInt64(D.BlendB) shl 2) or
+        (UInt64(D.BlendC) shl 4) or (UInt64(D.BlendD) shl 6) or (UInt64(D.BlendFix) shl 32));
+      A.WriteRegister(GSRegPABE, Ord(D.PABE)); A.WriteRegister(GSRegFBA_1, Ord(D.FBA));
+      A.WriteRegister(GSRegCOLCLAMP, Ord(D.ColClamp));
+      A.WriteRegister(GSRegFOGCOL, UInt64(D.FogR) or (UInt64(D.FogG) shl 8) or (UInt64(D.FogB) shl 16));
+      A.WriteRegister(GSRegSCISSOR_1, UInt64(D.SX0) or (UInt64(D.SX1) shl 16) or
+        (UInt64(D.SY0) shl 32) or (UInt64(D.SY1) shl 48));
+      A.WriteRegister(GSRegPRIM, 3 or (UInt64(Ord(D.ABE)) shl 6) or (UInt64(Ord(D.FGE)) shl 5) or
+        (UInt64(Ord(D.TME)) shl 4) or (UInt64(Ord(D.IIP)) shl 3) or (UInt64(Ord(D.FST)) shl 8));
+      A.WriteRegister(GSRegTEX0_1, 4096 or (UInt64(2) shl 14) or (UInt64(D.TPSM) shl 20) or
+        (UInt64(7) shl 26) or (UInt64(7) shl 30) or (UInt64(Ord(D.TCC)) shl 34) or (UInt64(D.TFX) shl 35));
+      A.WriteRegister(GSRegTEX1_1, UInt64(Ord(D.Linear)) * $60);
+      A.WriteRegister(GSRegCLAMP_1, UInt64(Random(16)) or (UInt64(Random(128)) shl 4) or
+        (UInt64(128 + Random(128)) shl 14) or (UInt64(Random(128)) shl 24) or (UInt64(128 + Random(128)) shl 34));
+      A.WriteRegister(GSRegTEXA, UInt64(D.TA0) or (UInt64(Ord(D.AEM)) shl 15));
+      for var Reg in Registers do B.WriteRegister(Reg, A.Regs[Reg]);
+      for var K := 0 to 2 do Vertex(A, V[K]);
+      for var K := 0 to 2 do Vertex(B, V[K]);
+      B.Sync;
+      if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) or
+        (A.PixelsDrawn <> B.PixelsDrawn) or (A.Primitives <> B.Primitives) then
+        raise Exception.CreateFmt('Triangle mismatch %d', [N]);
+      if B.VulkanTriangles <> N + 1 then raise Exception.CreateFmt('Triangle fell back %d', [N]);
+    end;
+    Writeln('Triangles=256, fragment rollover, both windings and rounding modes: OK');
+  finally
+    B.Free;
+    A.Free;
+  end;
+end;
+
 begin
   try
     var A := TPS2GSRaster.Create;
@@ -217,6 +318,7 @@ begin
       B.Free;
       A.Free;
     end;
+    CheckTriangles;
   except
     on E: Exception do
     begin

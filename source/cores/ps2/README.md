@@ -72,12 +72,12 @@ It covers code replacement (including an interior pair rewritten during
 XGKICK), partial execution budgets, mode changes, memory, registers, traces
 and pipeline state. `-Checked` enables checked core code.
 
-## Experimental Vulkan sprites
+## Experimental Vulkan GS
 
 `Video/Renderer=vulkan` independently selects Vulkan compute for supported
-32/24-bit sprites, including 32/24-bit nearest/bilinear textures without
+32/24-bit sprites and triangle pixels, including 32/24-bit nearest/bilinear textures without
 mipmaps. This uses `RM.Vulkan.Compute` from the Xbox branch (3f3ce45), with
-coherent GS VRAM import. Triangles, small sprites, texture feedback,
+coherent GS VRAM import. Small draws, texture feedback,
 overlapping surfaces and unsupported storage
 formats retain the software path. If device creation or host-memory import
 is unavailable, software rendering continues; `VulkanError` reports why.
@@ -88,7 +88,11 @@ alpha, masks, texture functions and 24-bit preservation. Sprite UV/STQ
 interpolation stays on the CPU with the software renderer's arithmetic;
 integer coordinates are uploaded per column/row. The GPU performs exact
 integer filtering and sampling, including all clamp/repeat modes and TEXA.
-Up to 128 sprites are recorded with
+Triangles keep the software edge walker, clipping and attribute interpolation
+on the host; the GPU consumes the exact integer fragments for texture sampling,
+tests, blending and writes. A 65536-fragment arena is split and synchronized
+when full, including in the middle of one triangle.
+Up to 128 draw commands are recorded with
 separate parameter slots and ordered by compute memory barriers. Pending
 work finishes before CPU drawing, transfers, palette loads, display reads,
 reset, snapshots and mode changes. This is not a complete or consistently
@@ -101,6 +105,8 @@ Regenerate its embedded SPIR-V with `source/cores/ps2/shaders/build.ps1`
 256-draw sequence, with and without textures, against the CPU over all
 4 MiB of VRAM. It checks batch capacity/reuse, texture feedback fallback,
 render-to-texture ordering, transfers, CLUT state and live mode changes.
+Another 256 triangles cover winding, clipping, flat/Gouraud colours, UV/STQ,
+both host rounding modes, varying depth/fog and fragment-arena rollover.
 It requires a Vulkan device with coherent host-memory import.
 
 ## Limits

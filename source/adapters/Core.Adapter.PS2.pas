@@ -46,7 +46,7 @@ type
     property Language: string read FLanguage write FLanguage;
     // GS drawing (Video/Renderer): 'threads' (default: band threads beside
     // the emulation), 'single' (on the emulation thread), or experimental
-    // 'vulkan' (supported sprites on the GPU, other draws on the CPU).
+    // 'vulkan' (supported sprites/triangle pixels on the GPU, other draws on the CPU).
     property Renderer: string read FRenderer write FRenderer;
     property Recompiler: Boolean read FRecompiler write FRecompiler;
     // Band threads for Renderer (0: none).

@@ -148,6 +148,9 @@ type
     property Pending: Boolean read FPending;
     function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer): Boolean; virtual; abstract;
+    function BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean; virtual; abstract;
+    procedure Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer); virtual; abstract;
+    procedure EndTriangle; virtual; abstract;
   end;
 
   TPS2GSRaster = class;
@@ -164,6 +167,7 @@ type
     FClut: PWord;
     FBand, FBandCount: Integer;
     FCountOnly: Boolean;
+    FAccelerating: Boolean;
     FPixels: Int64;
     // LOD of the pixel being drawn (K when LCM is set).
     FLod: Single;
@@ -245,6 +249,7 @@ type
     function GetVulkanDraws: Int64;
     function GetVulkanSubmissions: Int64;
     function GetVulkanTexturedDraws: Int64;
+    function GetVulkanTriangles: Int64;
     procedure StartTransfer;
     procedure FeedWord(W: Cardinal);
     procedure TransferPixel(Value: Cardinal);
@@ -285,6 +290,7 @@ type
     property VulkanDraws: Int64 read GetVulkanDraws;
     property VulkanSubmissions: Int64 read GetVulkanSubmissions;
     property VulkanTexturedDraws: Int64 read GetVulkanTexturedDraws;
+    property VulkanTriangles: Int64 read GetVulkanTriangles;
     property SignalPending: Boolean read FSignal;
     property FinishPending: Boolean read FFinish;
     property OnSignal: TProc read FOnSignal write FOnSignal;
@@ -445,6 +451,13 @@ begin
   Result := 0;
   if FAccelerator <> nil then
     Result := TPS2GSGpu(FAccelerator).TexturedDraws;
+end;
+
+function TPS2GSRaster.GetVulkanTriangles: Int64;
+begin
+  Result := 0;
+  if FAccelerator <> nil then
+    Result := TPS2GSGpu(FAccelerator).Triangles;
 end;
 
 procedure TPS2GSRaster.SetVulkan(Value: Boolean);
@@ -716,7 +729,7 @@ procedure TPS2GSRaster.Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVerte
 begin
   // CPU primitives must see all earlier GPU writes. Sprites decide after
   // clipping whether they can join the batch or need the software path.
-  if (FAccelerator <> nil) and ((Kind <> gpSprite) or (PrimLog <> nil) or (WatchX >= 0)) then
+  if (FAccelerator <> nil) and (not (Kind in [gpSprite, gpTriangle]) or (PrimLog <> nil) or (WatchX >= 0)) then
     Sync;
   Inc(FPrimitives);
   FCommand.Kind := Kind;
@@ -1327,6 +1340,11 @@ begin
   Inc(FPixels);
   if FCountOnly then
     Exit;
+  if FAccelerating then
+  begin
+    FOwner.FAccelerator.Fragment(X, Y, Z, R, G, B, A, F, U, V);
+    Exit;
+  end;
   if FD.TME then
   begin
     var T := Texel(U, V);
@@ -1804,6 +1822,16 @@ begin
   // Depth is only read by the test and written unless masked (the watched
   // pixel's line shows it too).
   var NeedZ := (FD.ZTST >= 2) or not FD.ZMSK or (FOwner.WatchX >= 0);
+  var Accelerated := False;
+  if not FCountOnly and (FBandCount = 1) and (FOwner.FAccelerator <> nil) then
+  begin
+    if (FOwner.PrimLog = nil) and (FOwner.WatchX < 0) then
+      Accelerated := FOwner.FAccelerator.BeginTriangle(FD, Integer(MinX), Integer(MinY),
+        Integer(MaxX + 1), Integer(MaxY + 1));
+    if not Accelerated then FOwner.Sync;
+  end;
+  FAccelerating := Accelerated;
+  try
   for var Y := MinY to MaxY do
   begin
     if not InBand(Y) then
@@ -1899,6 +1927,10 @@ begin
       Inc(E1, A1 * 16);
       Inc(E2, A2 * 16);
     end;
+  end;
+  finally
+    FAccelerating := False;
+    if Accelerated then FOwner.FAccelerator.EndTriangle;
   end;
 end;
 

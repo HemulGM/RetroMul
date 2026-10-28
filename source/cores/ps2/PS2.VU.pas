@@ -70,6 +70,16 @@ type
   end;
   PPS2VUPair = ^TPS2VUPair;
 
+  // Per Run call, shared by interpreted pairs and generated blocks. Nothing
+  // here persists across calls or belongs in a save state.
+  TPS2VURun = record
+    Count, Limit: Integer;
+    PC, Target: Cardinal;
+    Pair: PPS2VUPair;
+    Branching, Ending, Invalid: Boolean;
+  end;
+  PPS2VURun = ^TPS2VURun;
+
   TPS2VUCore = class
   private
     FIndex: Integer;
@@ -106,7 +116,11 @@ type
     FJit: TJitAsm;
     FUseJit: Boolean;
     FJitRuns: Int64;
-    function CompilePair(var P: TPS2VUPair): Pointer;
+    FJitBlocks: Int64;
+    function CompileBlock(PC: Cardinal): Pointer;
+    procedure EmitPair(const P: TPS2VUPair);
+    procedure PreparePair(var Run: TPS2VURun); inline;
+    procedure FinishPair(var Run: TPS2VURun); inline;
     function DecodedPair(PC, LowerOp, UpperOp: Cardinal): PPS2VUPair; inline;
     procedure DecodePair(var P: TPS2VUPair; LowerOp, UpperOp: Cardinal);
     procedure UpperRegs(Op: Cardinal; out R: TPS2VURegUse);
@@ -140,9 +154,10 @@ type
     constructor Create(Index: Integer; VF: PPS2VFArray; VI: PPS2VIArray; Code, Data: PByte;
       CodeSize, DataSize: Cardinal);
     destructor Destroy; override;
-    // Experimental pair compiler; timing and pipeline commits stay shared.
+    // Experimental block compiler; timing and pipeline commits stay shared.
     property UseJit: Boolean read FUseJit write FUseJit;
     property JitRuns: Int64 read FJitRuns;
+    property JitBlocks: Int64 read FJitBlocks;
     // Select the portable generator model before running a differential test.
     procedure UseJitModel;
     procedure Reset;
@@ -258,14 +273,14 @@ begin
   FUseJit := True;
 end;
 
-function TPS2VUCore.CompilePair(var P: TPS2VUPair): Pointer;
+function TPS2VUCore.CompileBlock(PC: Cardinal): Pointer;
 begin
   Result := nil;
   if FJit = nil then
     FJit := CreateJitAsm(8 * 1024 * 1024);
   if FJit = nil then
     Exit;
-  if not FJit.Room(4096) then
+  if not FJit.Room(16 * 4096) then
   begin
     // No generated function is running here. Re-uploaded microprograms may
     // replace every pair, so bound the cache rather than retaining old code.
@@ -278,6 +293,56 @@ begin
   J.Align(16);
   Result := J.Here;
   J.Enter;
+  var Done := J.NewLabel;
+  var Stale := J.NewLabel;
+  var Last := False;
+  for var K := 0 to 15 do
+  begin
+    var LowerOp := PCardinal(FCode + PC)^;
+    var UpperOp := PCardinal(FCode + PC + 4)^;
+    var P := DecodedPair(PC, LowerOp, UpperOp);
+    // Guard every pair, not just the block entry. A callback can replace
+    // code while a block is running, and a small budget may end anywhere.
+    J.Move(jw8, JT0, JMem(jrSelf, Integer(NativeInt(@S.Running) - NativeInt(Self))));
+    J.Branch(jcEq, jw32, JT0, JImm(0), Done);
+    J.Move(jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Count))));
+    J.Branch(jcGe, jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Limit))), Done);
+    J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.TPC) - NativeInt(Self))));
+    J.Alu(jaAnd, jw32, JT0, JImm(FCodeMask));
+    J.Branch(jcNe, jw32, JT0, JImm(PC), Done);
+    J.Move(jw64, JT0, JMem(jrSelf, Integer(NativeInt(@FCode) - NativeInt(Self))));
+    J.Branch(jcNe, jw32, JMem(jrT0, Integer(PC)), JImm(LowerOp), Stale);
+    J.Branch(jcNe, jw32, JMem(jrT0, Integer(PC + 4)), JImm(UpperOp), Stale);
+    J.Move(jw64, JT1, JImm(NativeInt(P)));
+    // Another block may have decoded this address since this one was
+    // compiled. Its cached hazard/flag metadata must agree as well.
+    J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Lower))), JImm(LowerOp), Stale);
+    J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Upper))), JImm(UpperOp), Stale);
+    J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))), JImm(PC));
+    J.Move(jw64, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Pair))), JT1);
+    J.Call(@TPS2VUCore.PreparePair, [JSelf, JCtx]);
+    EmitPair(P^);
+    J.Call(@TPS2VUCore.FinishPair, [JSelf, JCtx]);
+    if Last then Break;
+    // End after the delay pair of a branch or E-bit pair. Conditional
+    // branches return to the dispatcher on either outcome.
+    Last := (UpperOp and $40000000) <> 0;
+    if (UpperOp and $80000000) = 0 then
+      Last := Last or ((LowerOp shr 25) in [$20, $21, $24, $25, $28, $29, $2C..$2F]);
+    PC := (PC + 8) and FCodeMask;
+  end;
+  J.Jump(Done);
+  J.Bind(Stale);
+  J.Move(jw8, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Invalid))), JImm(1));
+  J.Bind(Done);
+  J.Leave(JImm(0));
+  J.ForgetLabels;
+  J.Flush;
+end;
+
+procedure TPS2VUCore.EmitPair(const P: TPS2VUPair);
+begin
+  var J := FJit;
   // Floating-point arithmetic still uses the interpreter's PS2-specific
   // operations. NOP needs no call; all commits happen after both halves.
   var U := P.Upper;
@@ -438,9 +503,6 @@ begin
     else if D < 0 then
       J.Call(@TPS2VUCore.Lower, [JSelf, JImm(Op)]);
   end;
-  J.Leave(JImm(0));
-  J.ForgetLabels;
-  J.Flush;
 end;
 
 procedure TPS2VUCore.Reset;
@@ -1504,17 +1566,14 @@ begin
   FillChar(FReadyAny, SizeOf(FReadyAny), 0);
 end;
 
-function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
+procedure TPS2VUCore.PreparePair(var Run: TPS2VURun);
 begin
-  var Count := 0;
-  while S.Running and (Count < MaxPairs) do
-  begin
-    var PC := S.TPC and FCodeMask;
-    var LowerOp := PCardinal(FCode + PC)^;
-    var UpperOp := PCardinal(FCode + PC + 4)^;
+    var PC := Run.PC;
+    var Pair := Run.Pair;
+    var LowerOp := Pair.Lower;
+    var UpperOp := Pair.Upper;
     // Registers still in the FMAC pipeline stall the pair; Q/P and the
     // clip flag move on meanwhile.
-    var Pair := DecodedPair(PC, LowerOp, UpperOp);
     var Stall := HazardStall(Pair^);
     if Stall > 0 then
       AdvanceCycles(Stall);
@@ -1543,9 +1602,9 @@ begin
       end;
       Dec(S.FlagQCount);
     end;
-    var Branching := S.BranchPending;
-    var Target := S.BranchTarget;
-    var Ending := S.EndPending;
+    Run.Branching := S.BranchPending;
+    Run.Target := S.BranchTarget;
+    Run.Ending := S.EndPending;
     S.BranchPending := False;
     // Q and P land after their latency.
     if S.QDelay > 0 then
@@ -1597,28 +1656,13 @@ begin
       FLoadOld := FVI[FLoadReg];
     FUpperReg := -1;
     FLowerReg := -1;
-    if FUseJit and Pair.NativeCandidate and (FIndex = 1) and (JitSupported or (FJit <> nil)) then
-    begin
-      if Pair.Native = nil then
-      begin
-        Inc(Pair.Heat);
-        if Pair.Heat >= 16 then
-          Pair.Native := CompilePair(Pair^);
-      end;
-    end;
-    if FUseJit and (Pair.Native <> nil) then
-    begin
-      FJit.Invoke(Pair.Native, NativeUInt(Self), 0, 0, 0);
-      Inc(FJitRuns);
-    end
-    else
-    begin
-      Upper(UpperOp, True);
-      if (UpperOp and $80000000) <> 0 then
-        S.I := LowerOp
-      else
-        Lower(LowerOp);
-    end;
+end;
+
+procedure TPS2VUCore.FinishPair(var Run: TPS2VURun);
+begin
+    var PC := Run.PC;
+    var Pair := Run.Pair;
+    var UpperOp := Pair.Upper;
     // Lower writes first; the upper result wins on the same register.
     if FLowerReg >= 0 then
       CommitVF(FLowerReg, FLowerValue, FLowerMask);
@@ -1640,20 +1684,60 @@ begin
     end;
     Inc(Executed);
     Inc(S.Cycles);
-    Inc(Count);
-    if Count > MaxPairs - Length(LoopTrace) then
-      LoopTrace[Count - (MaxPairs - Length(LoopTrace)) - 1] := PC;
+    Inc(Run.Count);
+    if Run.Count > Run.Limit - Length(LoopTrace) then
+      LoopTrace[Run.Count - (Run.Limit - Length(LoopTrace)) - 1] := PC;
     S.TPC := (PC + 8) and FCodeMask;
-    if Branching then
-      S.TPC := Target;
-    if Ending then
+    if Run.Branching then
+      S.TPC := Run.Target;
+    if Run.Ending then
     begin
       S.Running := False;
       S.EndPending := False;
-      Break;
+      Exit;
     end;
     if (UpperOp and $40000000) <> 0 then
       S.EndPending := True;
+end;
+
+function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
+begin
+  var Context := Default(TPS2VURun);
+  Context.Limit := MaxPairs;
+  while S.Running and (Context.Count < Context.Limit) do
+  begin
+    var PC := S.TPC and FCodeMask;
+    var LowerOp := PCardinal(FCode + PC)^;
+    var UpperOp := PCardinal(FCode + PC + 4)^;
+    var Pair := DecodedPair(PC, LowerOp, UpperOp);
+    if FUseJit and Pair.NativeCandidate and (FIndex = 1) and (JitSupported or (FJit <> nil)) then
+    begin
+      if Pair.Native = nil then
+      begin
+        Inc(Pair.Heat);
+        if Pair.Heat >= 16 then
+          Pair.Native := CompileBlock(PC);
+      end;
+    end;
+    if FUseJit and (Pair.Native <> nil) then
+    begin
+      var Before := Context.Count;
+      Context.Invalid := False;
+      FJit.Invoke(Pair.Native, NativeUInt(Self), NativeUInt(@Context), 0, 0);
+      Inc(FJitBlocks);
+      Inc(FJitRuns, Context.Count - Before);
+      if Context.Invalid then Pair.Native := nil;
+      if Context.Count <> Before then Continue;
+    end;
+    Context.PC := PC;
+    Context.Pair := Pair;
+    PreparePair(Context);
+    Upper(UpperOp, True);
+    if (UpperOp and $80000000) <> 0 then
+      S.I := LowerOp
+    else
+      Lower(LowerOp);
+    FinishPair(Context);
   end;
   if FKickPending then
     TakeKick(True);

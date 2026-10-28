@@ -30,7 +30,8 @@ type
     // Count sectors from LBA into Dest (zeros past the end).
     procedure ReadSectors(LBA: Int64; Count: Integer; Dest: PByte); virtual; abstract;
     function ReadSector(LBA: Int64): TBytes;
-    // Sectors of layer 0 for a dual-layer DVD, 0 otherwise.
+    // First sector of layer 1 (the sectors of layer 0) for a dual-layer
+    // DVD, 0 otherwise.
     property LayerBreak: Int64 read FLayerBreak;
     // True for DVD media (false for CD images).
     function IsDVD: Boolean; virtual;
@@ -89,11 +90,14 @@ type
   TISO9660 = class
   private
     FImage: TDVDImage;
+    FBase: Int64;
     FRootLBA, FRootSize: Int64;
     function ReadDirectory(LBA, Size: Int64): TArray<TISO9660Entry>;
   public
-    constructor Create(Image: TDVDImage);
-    class function HasVolume(Image: TDVDImage): Boolean; static;
+    // A volume whose sector numbers count from Base (layer 1 of a dual-layer
+    // disc); entries carry image LBAs.
+    constructor Create(Image: TDVDImage; Base: Int64 = 0);
+    class function HasVolume(Image: TDVDImage; Base: Int64 = 0): Boolean; static;
     // Path with '/' or '\' separators, case-insensitive, ";1" optional.
     function Find(const Path: string; out Entry: TISO9660Entry): Boolean;
     function ReadFile(const Path: string; MaximumSize: Integer = 16 * 1024 * 1024): TBytes;
@@ -133,8 +137,11 @@ end;
 
 procedure TDVDImage.DetectLayers;
 begin
-  // Layer 0 ends where the primary volume says the volume ends; a dual-layer
-  // image carries a second volume descriptor 16 sectors into layer 1.
+  // A dual-layer image carries a second volume descriptor 16 sectors into
+  // layer 1. On PS2 discs the primary volume size counts those 16 sectors,
+  // so the descriptor sits at the volume size and layer 1 starts 16 sectors
+  // earlier; an image whose layer 1 starts right at the volume size is
+  // accepted too.
   FLayerBreak := 0;
   if SectorCount < 32 then
     Exit;
@@ -142,11 +149,17 @@ begin
   if (PVD[0] <> 1) or (TEncoding.ASCII.GetString(PVD, 1, 5) <> 'CD001') then
     Exit;
   var VolumeSize := Int64(PCardinal(@PVD[80])^);
-  if (VolumeSize <= 0) or (VolumeSize + 17 > SectorCount) then
-    Exit;
-  var Second := ReadSector(VolumeSize + 16);
-  if (Second[0] = 1) and (TEncoding.ASCII.GetString(Second, 1, 5) = 'CD001') then
-    FLayerBreak := VolumeSize;
+  for var Start in [VolumeSize - 16, VolumeSize] do
+  begin
+    if (Start <= 16) or (Start + 17 > SectorCount) then
+      Continue;
+    var Second := ReadSector(Start + 16);
+    if (Second[0] = 1) and (TEncoding.ASCII.GetString(Second, 1, 5) = 'CD001') then
+    begin
+      FLayerBreak := Start;
+      Exit;
+    end;
+  end;
 end;
 
 procedure TDVDImage.ComputeIdentity;
@@ -413,20 +426,21 @@ end;
 
 { TISO9660 }
 
-constructor TISO9660.Create(Image: TDVDImage);
+constructor TISO9660.Create(Image: TDVDImage; Base: Int64);
 begin
   inherited Create;
   FImage := Image;
-  var PVD := Image.ReadSector(16);
+  FBase := Base;
+  var PVD := Image.ReadSector(Base + 16);
   if (PVD[0] <> 1) or (TEncoding.ASCII.GetString(PVD, 1, 5) <> 'CD001') then
     raise EDVDImage.Create('No ISO 9660 volume');
-  FRootLBA := PCardinal(@PVD[156 + 2])^;
+  FRootLBA := Base + PCardinal(@PVD[156 + 2])^;
   FRootSize := PCardinal(@PVD[156 + 10])^;
 end;
 
-class function TISO9660.HasVolume(Image: TDVDImage): Boolean;
+class function TISO9660.HasVolume(Image: TDVDImage; Base: Int64): Boolean;
 begin
-  var PVD := Image.ReadSector(16);
+  var PVD := Image.ReadSector(Base + 16);
   Result := (PVD[0] = 1) and (TEncoding.ASCII.GetString(PVD, 1, 5) = 'CD001');
 end;
 
@@ -453,7 +467,7 @@ begin
       Break;
     var NameLen := Data[P + 32];
     var E: TISO9660Entry;
-    E.LBA := PCardinal(@Data[P + 2])^;
+    E.LBA := FBase + PCardinal(@Data[P + 2])^;
     E.Size := PCardinal(@Data[P + 10])^;
     E.Directory := (Data[P + 25] and 2) <> 0;
     if (NameLen = 1) and (Data[P + 33] <= 1) then

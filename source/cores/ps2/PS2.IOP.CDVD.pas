@@ -26,7 +26,7 @@ type
   TPS2DiscFileSystem = class(TPS2FileSystem)
   private
     FImage: TDVDImage;
-    FISO: TISO9660;
+    FISO, FISO1: TISO9660;
     FHostRoot: string;
     FRegion: TPS2Region;
     FROMFiles: TDictionary<string, TBytes>;
@@ -41,6 +41,9 @@ type
     function ReadAt(const Device, Path: string; Offset: Int64; Count: Integer): TBytes; override;
     // Files from the user's BIOS replace the generated rom0: ones.
     procedure SetROMFile(const Name: string; const Data: TBytes);
+    // A file of the volume on Layer (0, or 1 on a dual-layer disc); ";1"
+    // optional, image LBAs.
+    function SearchLayer(const Path: string; Layer: Integer; out Entry: TISO9660Entry): Boolean;
     property Image: TDVDImage read FImage;
     property ISO: TISO9660 read FISO;
     property Region: TPS2Region read FRegion write FRegion;
@@ -91,6 +94,8 @@ begin
   FImage := Image;
   if (Image <> nil) and TISO9660.HasVolume(Image) then
     FISO := TISO9660.Create(Image);
+  if (Image <> nil) and (Image.LayerBreak > 0) and TISO9660.HasVolume(Image, Image.LayerBreak) then
+    FISO1 := TISO9660.Create(Image, Image.LayerBreak);
   FHostRoot := HostRoot;
   FRegion := Region;
   FROMFiles := TDictionary<string, TBytes>.Create;
@@ -100,6 +105,7 @@ end;
 destructor TPS2DiscFileSystem.Destroy;
 begin
   FISO.Free;
+  FISO1.Free;
   FROMFiles.Free;
   FWritten.Free;
   inherited;
@@ -108,6 +114,14 @@ end;
 procedure TPS2DiscFileSystem.SetROMFile(const Name: string; const Data: TBytes);
 begin
   FROMFiles.AddOrSetValue(Name.ToUpper, Data);
+end;
+
+function TPS2DiscFileSystem.SearchLayer(const Path: string; Layer: Integer; out Entry: TISO9660Entry): Boolean;
+begin
+  var Volume := FISO;
+  if Layer <> 0 then
+    Volume := FISO1;
+  Result := (Volume <> nil) and Volume.Find(Path, Entry) and not Entry.Directory;
 end;
 
 function TPS2DiscFileSystem.ROMFile(const Path: string): TBytes;
@@ -313,14 +327,12 @@ begin
   var Semi := Clean.IndexOf(';');
   if Semi >= 0 then
     Clean := Clean.Substring(0, Semi);
-  var Found := (FFS.ISO <> nil) and FFS.ISO.Find(Clean, E) and not E.Directory;
+  var Layer := 0;
+  if Size >= $12C then
+    Layer := PInteger(Args + $128)^;
+  var Found := FFS.SearchLayer(Clean, Layer, E);
   if Log <> nil then
-  begin
-    var Layer := 0;
-    if Size >= $12C then
-      Layer := PInteger(Args + $128)^;
     Log.Add(Format('cdvd search %s layer %d: %s', [Path, Layer, BoolToStr(Found, True)]));
-  end;
   if not Found then
     Exit(0);
   FillChar(Info, SizeOf(Info), 0);

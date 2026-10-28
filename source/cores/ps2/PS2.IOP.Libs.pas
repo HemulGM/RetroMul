@@ -1262,7 +1262,7 @@ begin
   Result := Byte(((V div 10) shl 4) or (V mod 10));
 end;
 
-function CdSearch(K: TPS2IOPKernel; FileAddress, NameAddress: Cardinal): Cardinal;
+function CdSearch(K: TPS2IOPKernel; FileAddress, NameAddress: Cardinal; Layer: Integer): Cardinal;
 var
   E: TISO9660Entry;
 begin
@@ -1271,7 +1271,7 @@ begin
   var Semi := Clean.IndexOf(';');
   if Semi >= 0 then
     Clean := Clean.Substring(0, Semi);
-  if (K.DiscFS = nil) or (K.DiscFS.ISO = nil) or not K.DiscFS.ISO.Find(Clean, E) or E.Directory then
+  if (K.DiscFS = nil) or not K.DiscFS.SearchLayer(Clean, Layer, E) then
   begin
     K.Warn('cdvd search ' + Name + ': not found');
     Exit(0);
@@ -1323,14 +1323,11 @@ begin
         K.ScheduleTimers;
       end;
     8: Result := 0;
-    // sceCdSearchFile, sceCdLayerSearchFile (the layer does not matter for
-    // an image that holds both layers).
-    10, 84:
-      begin
-        if (Fn = 84) and (K.Arg(2) <> 0) then
-          K.Warn(Format('cdvd layer %d search %s', [K.Arg(2), K.ReadString(K.Arg(1), 256)]));
-        Result := CdSearch(K, K.Arg(0), K.Arg(1));
-      end;
+    // sceCdSearchFile (layer 0), sceCdLayerSearchFile(fp, name, layer).
+    10:
+      Result := CdSearch(K, K.Arg(0), K.Arg(1), 0);
+    84:
+      Result := CdSearch(K, K.Arg(0), K.Arg(1), Integer(K.Arg(2)));
     11:
       if (K.Arg(0) and 1) <> 0 then
         Result := Ord(Busy)

@@ -13,6 +13,7 @@ type
   TN64Config = class(TEmulatorConfigBase)
   private
     FBilinearFiltering: Boolean;
+    FRecompiler: Boolean;
     FKeys: TN64KeyMap;
     FLKeys: array[0..3] of UInt32;
     FConnected: array[0..3] of Boolean;
@@ -24,6 +25,9 @@ type
     constructor Create(const FileName: string; const Storage: IStorage);
     property Keys: TN64KeyMap read FKeys;
     property BilinearFiltering: Boolean read FBilinearFiltering write FBilinearFiltering;
+    // The CPU and the RSP as generated code where there is a code generator
+    // (Emulation/Execution jit), else interpreted (interpreter).
+    property Recompiler: Boolean read FRecompiler write FRecompiler;
     property SaveType: TN64SaveType read FSaveType write FSaveType;
     function LKey(Port: Integer): UInt32;
     function Connected(Port: Integer): Boolean;
@@ -45,7 +49,7 @@ type
     FSavePath, FSnapshotDirectory, FError, FAudioError: string;
     FInputs: TN64Pads;
     FPause, FReset, FAudioEnabled, FAvailable: Boolean;
-    FBilinearFiltering: Boolean;
+    FBilinearFiltering, FRecompiler: Boolean;
     FVolume: Single;
     FSaveType: TN64SaveType;
     FFrame: TEmulatorFrame;
@@ -131,6 +135,7 @@ constructor TN64Config.Create(const FileName: string; const Storage: IStorage);
 begin
   inherited Create(FileName, Storage);
   FBilinearFiltering := True;
+  FRecompiler := True;
   for var P := 0 to 3 do
     for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
       if P = 0 then
@@ -155,6 +160,7 @@ end;
 procedure TN64Config.LoadCoreSettings(Ini: TCustomIniFile);
 begin
   FBilinearFiltering := Ini.ReadBool('Video', 'BilinearFiltering', True);
+  FRecompiler := not SameText(Ini.ReadString('Emulation', 'Execution', 'jit'), 'interpreter');
   var Value := Ini.ReadInteger('Cartridge', 'SaveType', Ord(TN64SaveType.Auto));
   if (Value < Ord(Low(TN64SaveType))) or (Value > Ord(High(TN64SaveType))) then
     Value := 0;
@@ -180,6 +186,10 @@ end;
 procedure TN64Config.SaveCoreSettings(Ini: TCustomIniFile);
 begin
   Ini.WriteBool('Video', 'BilinearFiltering', FBilinearFiltering);
+  if FRecompiler then
+    Ini.WriteString('Emulation', 'Execution', 'jit')
+  else
+    Ini.WriteString('Emulation', 'Execution', 'interpreter');
   Ini.WriteInteger('Cartridge', 'SaveType', Ord(FSaveType));
   for var P := 0 to 3 do
   begin
@@ -204,6 +214,7 @@ begin
   FreeOnTerminate := False;
   FData := Copy(Data);
   FBilinearFiltering := True;
+  FRecompiler := True;
   FStorage := Storage;
   FSavePath := SavePath;
   FSnapshotDirectory := SnapshotDirectory;
@@ -234,6 +245,7 @@ begin
     FVolume := Config.AudioVolume;
     FSaveType := (Config as TN64Config).SaveType;
     FBilinearFiltering := (Config as TN64Config).BilinearFiltering;
+    FRecompiler := (Config as TN64Config).Recompiler;
   finally
     FLock.Release
   end;
@@ -496,7 +508,7 @@ begin
             Rate.Reset(Console.FrameNumber, TStopwatch.GetTimeStamp);
           end);
         var Inputs: TN64Pads;
-        var Paused, Enabled, ResetRequested, Filtering: Boolean;
+        var Paused, Enabled, ResetRequested, Filtering, Recompiler: Boolean;
         var Volume: Single;
         FLock.Acquire;
         try
@@ -504,6 +516,7 @@ begin
           Paused := FPause;
           Enabled := FAudioEnabled;
           Filtering := FBilinearFiltering;
+          Recompiler := FRecompiler;
           Volume := FVolume;
           ResetRequested := FReset;
           FReset := False;
@@ -511,6 +524,7 @@ begin
           FLock.Release
         end;
         Console.BilinearFiltering := Filtering;
+        Console.UseRecompiler := Recompiler;
         if ResetRequested then
         begin
           SaveBattery(Console);

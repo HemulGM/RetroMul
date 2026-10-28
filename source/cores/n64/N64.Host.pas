@@ -51,7 +51,7 @@ uses
   Winapi.Windows,
   {$ENDIF}
   {$IF DEFINED(LINUX) or DEFINED(ANDROID)}
-  Posix.Base, System.IOUtils,
+  Posix.Base, System.Classes,
   {$ENDIF}
   System.SysUtils, System.Generics.Collections, System.Generics.Defaults;
 
@@ -210,21 +210,27 @@ end;
 
 function ReadNumber(const Path: string; Default: Int64): Int64;
 begin
-  // The first decimal number in a /sys file.
+  // The first decimal number in a /sys file. (Such a file claims a page's
+  // size and holds a few bytes: TFile.ReadAllText, which reads the size,
+  // fails on it; this reads what there is.)
   Result := Default;
   try
-    var Text := TFile.ReadAllText(Path).Trim;
-    var I := 1;
-    var Value: Int64 := 0;
-    var Digits := 0;
-    while (I <= Length(Text)) and CharInSet(Text[I], ['0'..'9']) do
-    begin
-      Value := Value * 10 + (Ord(Text[I]) - Ord('0'));
-      Inc(Digits);
-      Inc(I);
+    var Stream := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
+    try
+      var Text: array[0..63] of Byte;
+      var Count := Stream.Read(Text, SizeOf(Text));
+      var Value: Int64 := 0;
+      var Digits := 0;
+      while (Digits < Count) and (Text[Digits] >= Ord('0')) and (Text[Digits] <= Ord('9')) do
+      begin
+        Value := Value * 10 + (Text[Digits] - Ord('0'));
+        Inc(Digits);
+      end;
+      if Digits > 0 then
+        Result := Value;
+    finally
+      Stream.Free;
     end;
-    if Digits > 0 then
-      Result := Value;
   except
     Result := Default;
   end;

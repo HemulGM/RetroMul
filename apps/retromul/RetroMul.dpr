@@ -462,6 +462,7 @@ uses
   N64.SoftFloat in '..\..\source\cores\n64\N64.SoftFloat.pas',
   N64.Timing in '..\..\source\cores\n64\N64.Timing.pas',
   N64.Types in '..\..\source\cores\n64\N64.Types.pas',
+  HW.JIT in '..\..\source\hardware\jit\HW.JIT.pas',
   N64.VI in '..\..\source\cores\n64\N64.VI.pas',
   N64.Console in '..\..\source\cores\n64\N64.Console.pas',
   N64.CPU in '..\..\source\cores\n64\N64.CPU.pas',

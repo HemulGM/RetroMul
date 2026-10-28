@@ -8,7 +8,7 @@ interface
 
 uses
   System.SysUtils, System.SyncObjs, System.Classes, System.Math, N64.Types,
-  Core.Snapshots;
+  Core.Snapshots, HW.JIT;
 
 type
   // One vector register's eight lanes.
@@ -149,8 +149,8 @@ type
   // with an external instruction other than one MFC0 or MTC0. Which words
   // issue, paired or not, and the
   // stalls depend on nothing else. Its Words IMEM words from the slot on
-  // (all those the clocks looked at) are compared again once IMEM changed
-  // after Checked.
+  // (all those the clocks looked at) are compared again once a word of the
+  // IMEM eighths they lie in (Regions) changed after Checked.
   PRSPBlock = ^TRSPBlock;
 
   TRSPBlock = record
@@ -162,15 +162,43 @@ type
     // RunClocks taking the rest).
     Clocks: Integer;
     Checked: UInt64;
-    // The next block from the same slot, or -1.
-    Next: Integer;
+    // The next block from the same slot, or -1; its own index (FBlocks).
+    Next, Index: Integer;
+    // The IMEM eighths (TN64Bus.IMemRegionStamp) of its first and last word.
+    Regions: array[0..1] of Byte;
     // The blocks that came next after this one ran to its end, at LinkPC:
     // [0] with no branch taken, [1] after a taken one (and its bubble). The
     // pipeline there follows from this block, the branch and its target
     // alone, so the block found there then fits it again (nil: none yet).
+    // The last one of each; all of them in FJumps.
     Link: array[0..1] of PRSPBlock;
     LinkPC: array[0..1] of Cardinal;
+    // Its generated code (HW.JIT; nil: none, or not yet): its clocks as
+    // RunBlock runs them where the budget left takes them all. Entries before
+    // the code is made (JitHeat), whether it was tried.
+    Native: Pointer;
+    JitTried: Boolean;
+    JitHeat: Word;
   end;
+
+  // What RunBlock and the blocks' code exchange (TN64RSP.JitRun): the
+  // budget (Stop: the clocks from which it may end at a block's end), the
+  // clocks run, the checks of the run (Mask but StepMemory;
+  // Fences: StepMemory too while DMEM has fences), RunBlock's Status and
+  // Interrupt. When the code returns: the last block it ran to its end and
+  // the PC after it (Outcome -1), or where a clock of its stopped the run as
+  // RunBlock stops it there (Outcome its result; PC, Ran as it leaves them).
+  // Slot: whether a branch was pending before a block's last clock run by
+  // JitCheck (PC: as its words moved it).
+  TRSPJitCtx = record
+    Cycles, Stop, Ran, Outcome: Integer;
+    PC: Cardinal;
+    Mask, Fences, Slot: Byte;
+    Block: PRSPBlock;
+    Status, Interrupt: PCardinal;
+  end;
+
+  PRSPJitCtx = ^TRSPJitCtx;
 
   // After a block's clocks (tests): Clocks run so far in this call.
   TRSPBlockDone = procedure(Clocks: Integer) of object;
@@ -251,8 +279,9 @@ type
     FAheadClocks: Integer;
     FAheadStop: TRSPAheadStop;
     // 8-byte groups of DMEM a run-ahead window must not read (bit 0) or
-    // write (bit 1): DMA or the RDP uses them meanwhile.
-    FFence: array[0..511] of Byte;
+    // write (bit 1): DMA or the RDP uses them meanwhile. 512..515: groups
+    // 0..3 again (the blocks' code reads past the end without wrapping).
+    FFence: array[0..515] of Byte;
     FFenced: Boolean;
     FAheadStopIndex: Integer;
     // The instructions of the clock a fence stops (for ClockFenced).
@@ -269,13 +298,45 @@ type
     // Counts ClearBlocks (blocks from before are gone).
     FBlockGen: Cardinal;
     FBlocksBuilt, FBlocksRun, FBlockClocks: Int64;
+    // The blocks that came next (TRSPBlock.Link) by the block, whether the
+    // branch was taken and the PC (JumpKey; 0: none), hashed (JumpSlot): a
+    // block ending in JR goes on at many PCs.
+    FJumps: array[0..1023] of record
+      Key: Cardinal;
+      Block: PRSPBlock;
+    end;
     FOnBlock: TRSPBlockDone;
+    // Blocks as generated code (HW.JIT, as the CPU's): its writer, whether
+    // to use it and whether its buffer filled up (until ClearBlocks drops
+    // the code with the blocks); the code all blocks share (FJitEnter 0: none
+    // yet): the entry, the start of a run, the way back, the chaining code.
+    FJit: TJitAsm;
+    FUseJit, FJitFull: Boolean;
+    FJitEnter, FJitOuter, FJitReturn, FJitStop, FJitChain: NativeInt;
+    // The routines the code calls (CallAt): the steps' by kind, then
+    // JitCheck.
+    FJitCalls: array[0..256] of Pointer;
+    FJitCompiled, FJitRuns: Int64;
+    // (N64RSPJIT=stats: why the chaining code went back, and why RunBlock
+    // did not enter a block's code, by reason.)
+    FJitBack: array[0..15] of Int64;
+    FJitGen: array[0..255] of Int64;
+    function JitCodeFor(B: PRSPBlock): Pointer;
+    function JitCompile(B: PRSPBlock): Pointer;
+    procedure JitEmitShared;
+    function JitRun(var B: PRSPBlock; var PC, Status, Interrupt: Cardinal; var Ran: Integer; Cycles, Stop: Integer;
+      Mask: Byte; Fences: Boolean): Integer;
+    function JitCheck(Ctx: PRSPJitCtx; Step, Ran: Integer): Cardinal;
+    procedure CountGeneral(S: PRSPBlockStep);
     procedure ClearBlocks;
     function BlockValid(B: PRSPBlock; Slot: Integer): Boolean; inline;
+    function CheckBlock(B: PRSPBlock; Slot: Integer): Boolean;
+    function NextBlock(B: PRSPBlock; Taken: Integer; PC: Cardinal): PRSPBlock;
     function FindBlock(PC: Cardinal): PRSPBlock;
     function BuildBlock(PC: Cardinal): PRSPBlock;
 
-    function RunBlock(B: PRSPBlock; var PC, Status, Interrupt: Cardinal; Cycles: Integer; Ahead: Boolean; var Ran: Integer): Integer;
+    function RunBlock(B: PRSPBlock; var PC, Status, Interrupt: Cardinal; Cycles, Stop: Integer; Ahead: Boolean;
+      var Ran: Integer): Integer;
     function RunSteps(S: PRSPBlockStep; Mask: Byte; Room, Limit: Integer): PRSPBlockStep;
     function TouchesFence(Op: Cardinal): Boolean;
     procedure HoldStep(Done, S: PRSPBlockStep);
@@ -296,7 +357,7 @@ type
     procedure IssueMoveCOP2(Op: Cardinal);
     procedure IssueLoadStore(Op, Address: Cardinal);
     class procedure Unsupported(const Kind: string; Op: Cardinal); static;
-    function RunClocks(var PC, Status, Interrupt: Cardinal; Cycles: Integer; Ahead: Boolean): Integer;
+    function RunClocks(var PC, Status, Interrupt: Cardinal; Cycles: Integer; Ahead: Boolean; Least: Integer = 0): Integer;
     class function external(Op: Cardinal): Boolean; static;
     procedure AgePipeline; inline;
     procedure AgePipelineBy(Clocks: Integer); inline;
@@ -319,7 +380,11 @@ type
     function AccMid(I: Integer): Word; inline;
     function AccLo(I: Integer): Word; inline;
     procedure SetAcc(I: Integer; Value: Int64); inline;
-    procedure SetAccLo(I: Integer; Value: Word); inline;
+    procedure SetAccLo(I: Integer; Value: Word);
+    {$IF Defined(CPU64BITS)}
+    procedure SetAccLoQuads(Lo0, Lo1: UInt64); inline;
+    procedure SelectQuads(Op: Cardinal; VS, VT: PRSPQuadLanes; T0, T1: UInt64);
+    {$ENDIF} inline;
     function VTLanes(Op: Cardinal; var Copy: TRSPQuadLanes): PRSPLanes; inline;
     procedure VectorOp(Op: Cardinal);
     procedure VectorMulFrac(Op: Cardinal);
@@ -416,6 +481,7 @@ type
     procedure SetByte(R, Index: Integer; Value: Byte);
   public
     constructor Create(Bus: TN64Bus);
+    destructor Destroy; override;
     procedure Reset;
     // SP_PC writes discard pending branches and fetched instructions.
     procedure ResetPipeline;
@@ -431,7 +497,10 @@ type
     // single-step). Rewind returns to the state before them and runs Keep of
     // them again, with the journal's values for their MFC0s (and without
     // their MTC0s). EndAhead keeps them all. Both empty the journal.
-    function RunAhead(var PC: Cardinal; Status: Cardinal; Cycles: Integer): Integer;
+    // With Least (1..Cycles), the clocks may end at any block's end from Least
+    // on (as RunAhead or ContinueAhead with a smaller Cycles would end there),
+    // fewer than Least only where the window stops.
+    function RunAhead(var PC: Cardinal; Status: Cardinal; Cycles: Integer; Least: Integer = 0): Integer;
     // Starts the run of the next window now (RunAhead does it otherwise), so
     // that LineSaved can tell its saved lines while it runs elsewhere.
     procedure NewRun;
@@ -441,7 +510,7 @@ type
     function LineSaved(Offset: Cardinal): Boolean;
     // Up to Cycles more clocks of the window RunAhead started (after it ran
     // all its clocks): one window run in parts, exactly as in one.
-    function ContinueAhead(var PC: Cardinal; Status: Cardinal; Cycles: Integer): Integer;
+    function ContinueAhead(var PC: Cardinal; Status: Cardinal; Cycles: Integer; Least: Integer = 0): Integer;
     procedure Rewind(var PC: Cardinal; Keep: Integer); overload;
     // The same, calling OnStop(I) after the first Stops[I] clocks (in
     // ascending order, at most Keep): for outside writes to DMEM made while
@@ -488,6 +557,18 @@ type
     property BlocksBuilt: Int64 read FBlocksBuilt;
     property BlocksRun: Int64 read FBlocksRun;
     property BlockClocks: Int64 read FBlockClocks;
+    // Blocks run as generated code where HW.JIT can make it (the same clocks
+    // either way); whether there is generated code here (a backend, not
+    // N64RSPJIT=off).
+    property UseJit: Boolean read FUseJit write FUseJit;
+    class function JitAvailable: Boolean; static;
+    // Tests: blocks made generated code from their Hot+1th entry on (0: their
+    // first), by HW.JIT's model with Model (RSPs that make their first code
+    // after this).
+    class procedure JitForTests(Hot: Integer; Model: Boolean); static;
+    // Blocks made generated code, and runs of it (each RunBlock entering it).
+    property JitCompiled: Int64 read FJitCompiled;
+    property JitRuns: Int64 read FJitRuns;
   public
     const
     // Journal entries one window may hold (the journal never grows, so the
@@ -503,6 +584,20 @@ type
 
 implementation
 
+const
+  // Blocks as generated code where HW.JIT has a backend (N64_NO_JIT: never).
+  RSPJit = {$IFDEF N64_NO_JIT}False{$ELSE}JitSupported{$ENDIF};
+
+var
+  // N64RSPJIT (debugging): off (no generated code), model (the code run by
+  // HW.JIT's model, for the tests: much slower), stats (counts at the end),
+  // hotN (entries of a block before its code is made).
+  {$IF RSPJit}
+  RSPJitOff, RSPJitModel: Boolean;
+  {$ENDIF}
+  RSPJitStats: Boolean;
+  RSPJitHot: Integer = 16;
+
 constructor TN64RSP.Create(Bus: TN64Bus);
 begin
   inherited Create;
@@ -511,11 +606,35 @@ begin
   for var I := 0 to High(FDecStamp) do
     FDecStamp[I] := NotDecoded;
   FUseBlocks := True;
+  {$IF RSPJit}
+  FUseJit := not RSPJitOff;
+  {$ENDIF}
   // (Whole 64-bit words of the vector registers are read and written.)
   if (NativeUInt(@FVec[0, 0]) and 7) <> 0 then
     raise EInvalidOpException.Create('RSP vector registers not 8-byte aligned');
   ClearBlocks;
   Reset
+end;
+
+destructor TN64RSP.Destroy;
+const
+  Names: array[0..15] of string = ('budget', 'bubble budget', 'branch pending', 'not linked', '-',
+    'IMEM written', 'no code', 'checks', 'clocks', 'enter: checks', 'enter: clocks', 'enter: no code', 'enter: cold',
+    '  of which gen.', '  of which ext.', '  of which mem.');
+begin
+  if IsConsole and RSPJitStats then
+  begin
+    Writeln(ErrOutput, Format('RSP JIT: %d blocks compiled, %d runs; %d blocks run, %d built', [FJitCompiled, FJitRuns,
+      FBlocksRun, FBlocksBuilt]));
+    for var K := 0 to High(Names) do
+      if FJitBack[K] <> 0 then
+        Writeln(ErrOutput, Format('  %-16s %d', [Names[K], FJitBack[K]]));
+    for var K := 0 to 255 do
+      if FJitGen[K] > 10000 then
+        Writeln(ErrOutput, Format('  general op %d: %d', [K, FJitGen[K]]));
+  end;
+  FJit.Free;
+  inherited;
 end;
 
 procedure TN64RSP.Reset;
@@ -1310,39 +1429,168 @@ begin
     VectorAdd(Op);
 end;
 
+const
+  // Four 16-bit lanes in a 64-bit word (SWAR): all but their sign bits,
+  // their sign bits, a 1 in each.
+  RSPLaneLow = UInt64($7FFF7FFF7FFF7FFF);
+  RSPLaneSign = UInt64($8000800080008000);
+  RSPLaneOne = UInt64($0001000100010001);
+
+var
+  // A 1 in lane K of four for bit K of a nibble (VCO's carries).
+  RSPNibbleLanes: array[0..15] of UInt64;
+
+function SatAdd4(A, B, C: UInt64; out Sum: UInt64): UInt64; inline;
+begin
+  // Four signed 16-bit lanes at once: A + B + C (C a lane's 0 or 1), wrapped
+  // to 16 bits (Sum) and clamped to them (the result). The sign bits are
+  // added apart, so that no carry crosses into the next lane; a lane
+  // overflows where A and B have one sign and the sum the other, then is
+  // $7FFF or $8000 by A's sign.
+  var S := ((A and RSPLaneLow) + (B and RSPLaneLow)) xor ((A xor B) and RSPLaneSign);
+  S := ((S and RSPLaneLow) + C) xor (S and RSPLaneSign);
+  Sum := S;
+  var M := ((((not (A xor B)) and (A xor S)) and RSPLaneSign) shr 15) * $FFFF;
+  Result := (S and not M) or ((RSPLaneLow + ((A shr 15) and RSPLaneOne)) and M);
+end;
+
+{$IF Defined(CPU64BITS)}
+procedure TN64RSP.SetAccLoQuads(Lo0, Lo1: UInt64);
+begin
+  // Each lane's ACC_LO from four lanes at a time (Lo0: lanes 0..3).
+  PWord(@FAcc[0])^ := Word(Lo0);
+  PWord(@FAcc[1])^ := Word(Lo0 shr 16);
+  PWord(@FAcc[2])^ := Word(Lo0 shr 32);
+  PWord(@FAcc[3])^ := Word(Lo0 shr 48);
+  PWord(@FAcc[4])^ := Word(Lo1);
+  PWord(@FAcc[5])^ := Word(Lo1 shr 16);
+  PWord(@FAcc[6])^ := Word(Lo1 shr 32);
+  PWord(@FAcc[7])^ := Word(Lo1 shr 48);
+end;
+
+// More of four lanes at a time: a 1 in a lane where it is equal, below
+// (unsigned), less (signed); the wrapped difference and sum; a sum's carry
+// out (a 1 in the lane); a lane's 1 widened to $FFFF; the four lanes' 1s as
+// four bits (lane 0 lowest).
+
+function LaneEqual4(A, B: UInt64): UInt64; inline;
+begin
+  var Z := A xor B;
+  Result := (((((Z and RSPLaneLow) + RSPLaneLow) or Z) and RSPLaneSign) xor RSPLaneSign) shr 15;
+end;
+
+function LaneDiff4(A, B: UInt64): UInt64; inline;
+begin
+  Result := ((A or RSPLaneSign) - (B and RSPLaneLow)) xor ((A xor not B) and RSPLaneSign);
+end;
+
+function LaneBelow4(A, B: UInt64): UInt64; inline;
+begin
+  // A borrow out of the lane: B's top bit over A's, or equal top bits and a
+  // borrow from below (the difference's top bit then).
+  var D := LaneDiff4(A, B);
+  Result := ((((not A) and B) or ((not (A xor B)) and D)) and RSPLaneSign) shr 15;
+end;
+
+function LaneLess4(A, B: UInt64): UInt64; inline;
+begin
+  Result := LaneBelow4(A xor RSPLaneSign, B xor RSPLaneSign);
+end;
+
+function LaneSum4(A, B: UInt64): UInt64; inline;
+begin
+  Result := ((A and RSPLaneLow) + (B and RSPLaneLow)) xor ((A xor B) and RSPLaneSign);
+end;
+
+function LaneCarry4(A, B, S: UInt64): UInt64; inline;
+begin
+  Result := (((A and B) or ((A or B) and not S)) and RSPLaneSign) shr 15;
+end;
+
+function LaneMask4(F: UInt64): UInt64; inline;
+begin
+  Result := (F shl 16) - F;
+end;
+
+function LaneNibble4(F: UInt64): Cardinal; inline;
+begin
+  Result := Cardinal((F or (F shr 15) or (F shr 30) or (F shr 45)) and 15);
+end;
+
+procedure TN64RSP.SelectQuads(Op: Cardinal; VS, VT: PRSPQuadLanes; T0, T1: UInt64);
+begin
+  // The compares' and VMRG's result: VS's lanes where T0, T1 (lanes 0..3,
+  // 4..7) have a 1, else VT's, into VD and ACC_LO; VCO cleared.
+  var R0 := VT.Quads[0] xor ((VS.Quads[0] xor VT.Quads[0]) and LaneMask4(T0));
+  var R1 := VT.Quads[1] xor ((VS.Quads[1] xor VT.Quads[1]) and LaneMask4(T1));
+  var VD := PRSPQuadLanes(@FVec[(Op shr 6) and 31]);
+  VD.Quads[0] := R0;
+  VD.Quads[1] := R1;
+  SetAccLoQuads(R0, R1);
+  FVCO := 0;
+end;
+{$ENDIF}
+
 procedure TN64RSP.VectorAdd(Op: Cardinal);
 begin
+  // VADD with the VCO carries (VS + VT + carry, clamped; the sum wrapped
+  // into ACC_LO); VCO cleared. 64-bit hosts four lanes at a time, 32-bit
+  // ones (which split each 64-bit operation) a lane at a time.
   var Copy: TRSPQuadLanes;
+  var Carry := Cardinal(FVCO);
+  {$IF Defined(CPU64BITS)}
+  var VT := PRSPQuadLanes(VTLanes(Op, Copy));
+  var VS := PRSPQuadLanes(@FVec[(Op shr 11) and 31]);
+  var VD := PRSPQuadLanes(@FVec[(Op shr 6) and 31]);
+  var Sum0, Sum1: UInt64;
+  var R0 := SatAdd4(VS.Quads[0], VT.Quads[0], RSPNibbleLanes[Carry and 15], Sum0);
+  var R1 := SatAdd4(VS.Quads[1], VT.Quads[1], RSPNibbleLanes[(Carry shr 4) and 15], Sum1);
+  VD.Quads[0] := R0;
+  VD.Quads[1] := R1;
+  SetAccLoQuads(Sum0, Sum1);
+  {$ELSE}
   var VT := VTLanes(Op, Copy);
   var VS: PRSPLanes := @FVec[(Op shr 11) and 31];
   var VD: PRSPLanes := @FVec[(Op shr 6) and 31];
-  var A: PRSPAccLanes := @FAcc;
-  var Carry := Cardinal(FVCO);
   for var I := 0 to 7 do
   begin
     var V := S16(VS[I]) + S16(VT[I]) + Integer(Carry and 1);
     Carry := Carry shr 1;
-    PWord(@A[I])^ := Word(V);
+    PWord(@FAcc[I])^ := Word(V);
     VD[I] := ClampSigned(V);
   end;
+  {$ENDIF}
   FVCO := 0;
 end;
 
 procedure TN64RSP.VectorSub(Op: Cardinal);
 begin
+  // VSUB: VS - VT - carry; 64-bit hosts as VS + not VT + (1 - carry), four
+  // lanes at a time (as VectorAdd).
   var Copy: TRSPQuadLanes;
+  var Carry := Cardinal(FVCO);
+  {$IF Defined(CPU64BITS)}
+  var VT := PRSPQuadLanes(VTLanes(Op, Copy));
+  var VS := PRSPQuadLanes(@FVec[(Op shr 11) and 31]);
+  var VD := PRSPQuadLanes(@FVec[(Op shr 6) and 31]);
+  var Sum0, Sum1: UInt64;
+  var R0 := SatAdd4(VS.Quads[0], not VT.Quads[0], RSPLaneOne - RSPNibbleLanes[Carry and 15], Sum0);
+  var R1 := SatAdd4(VS.Quads[1], not VT.Quads[1], RSPLaneOne - RSPNibbleLanes[(Carry shr 4) and 15], Sum1);
+  VD.Quads[0] := R0;
+  VD.Quads[1] := R1;
+  SetAccLoQuads(Sum0, Sum1);
+  {$ELSE}
   var VT := VTLanes(Op, Copy);
   var VS: PRSPLanes := @FVec[(Op shr 11) and 31];
   var VD: PRSPLanes := @FVec[(Op shr 6) and 31];
-  var A: PRSPAccLanes := @FAcc;
-  var Carry := Cardinal(FVCO);
   for var I := 0 to 7 do
   begin
     var V := S16(VS[I]) - S16(VT[I]) - Integer(Carry and 1);
     Carry := Carry shr 1;
-    PWord(@A[I])^ := Word(V);
+    PWord(@FAcc[I])^ := Word(V);
     VD[I] := ClampSigned(V);
   end;
+  {$ENDIF}
   FVCO := 0;
 end;
 
@@ -1369,6 +1617,33 @@ end;
 procedure TN64RSP.VectorCarry(Op: Cardinal);
 begin
   // VADDC (carry out), VSUBC (borrow and not-equal) into VCO.
+  {$IF Defined(CPU64BITS)}
+  var Copy: TRSPQuadLanes;
+  var VT := PRSPQuadLanes(VTLanes(Op, Copy));
+  var VS := PRSPQuadLanes(@FVec[(Op shr 11) and 31]);
+  var VD := PRSPQuadLanes(@FVec[(Op shr 6) and 31]);
+  var R0, R1: UInt64;
+  if (Op and 63) = 20 then
+  begin
+    R0 := LaneSum4(VS.Quads[0], VT.Quads[0]);
+    R1 := LaneSum4(VS.Quads[1], VT.Quads[1]);
+    FVCO := Word(LaneNibble4(LaneCarry4(VS.Quads[0], VT.Quads[0], R0)) or
+      (LaneNibble4(LaneCarry4(VS.Quads[1], VT.Quads[1], R1)) shl 4));
+  end
+  else
+  begin
+    R0 := LaneDiff4(VS.Quads[0], VT.Quads[0]);
+    R1 := LaneDiff4(VS.Quads[1], VT.Quads[1]);
+    var Borrow := LaneNibble4(LaneBelow4(VS.Quads[0], VT.Quads[0])) or
+      (LaneNibble4(LaneBelow4(VS.Quads[1], VT.Quads[1])) shl 4);
+    var NotEqual := LaneNibble4(LaneEqual4(VS.Quads[0], VT.Quads[0]) xor RSPLaneOne) or
+      (LaneNibble4(LaneEqual4(VS.Quads[1], VT.Quads[1]) xor RSPLaneOne) shl 4);
+    FVCO := Word(Borrow or (NotEqual shl 8));
+  end;
+  VD.Quads[0] := R0;
+  VD.Quads[1] := R1;
+  SetAccLoQuads(R0, R1);
+  {$ELSE}
   var Copy: TRSPQuadLanes;
   var VT := VTLanes(Op, Copy);
   var S := (Op shr 11) and 31;
@@ -1395,6 +1670,7 @@ begin
     FVec[D, I] := Word(V and $FFFF);
   end;
   FVCO := Word(Carry);
+  {$ENDIF}
 end;
 
 procedure TN64RSP.VectorSar(Op: Cardinal);
@@ -1421,6 +1697,18 @@ end;
 procedure TN64RSP.VectorLT(Op: Cardinal);
 begin
   // Less, or equal with VCO's carry and not-equal both set.
+  {$IF Defined(CPU64BITS)}
+  var Copy: TRSPQuadLanes;
+  var VT := PRSPQuadLanes(VTLanes(Op, Copy));
+  var VS := PRSPQuadLanes(@FVec[(Op shr 11) and 31]);
+  var Equal := Cardinal(FVCO) and (Cardinal(FVCO) shr 8);
+  var T0 := LaneLess4(VS.Quads[0], VT.Quads[0]) or
+    (LaneEqual4(VS.Quads[0], VT.Quads[0]) and RSPNibbleLanes[Equal and 15]);
+  var T1 := LaneLess4(VS.Quads[1], VT.Quads[1]) or
+    (LaneEqual4(VS.Quads[1], VT.Quads[1]) and RSPNibbleLanes[(Equal shr 4) and 15]);
+  SelectQuads(Op, VS, VT, T0, T1);
+  FVCC := Word(LaneNibble4(T0) or (LaneNibble4(T1) shl 4));
+  {$ELSE}
   var Copy: TRSPQuadLanes;
   var VT := VTLanes(Op, Copy);
   var VS: PRSPLanes := @FVec[(Op shr 11) and 31];
@@ -1440,11 +1728,22 @@ begin
   end;
   FVCO := 0;
   FVCC := Word(Compare);
+  {$ENDIF}
 end;
 
 procedure TN64RSP.VectorEQ(Op: Cardinal);
 begin
   // Equal, without VCO's not-equal.
+  {$IF Defined(CPU64BITS)}
+  var Copy: TRSPQuadLanes;
+  var VT := PRSPQuadLanes(VTLanes(Op, Copy));
+  var VS := PRSPQuadLanes(@FVec[(Op shr 11) and 31]);
+  var Kept := not (Cardinal(FVCO) shr 8);
+  var T0 := LaneEqual4(VS.Quads[0], VT.Quads[0]) and RSPNibbleLanes[Kept and 15];
+  var T1 := LaneEqual4(VS.Quads[1], VT.Quads[1]) and RSPNibbleLanes[(Kept shr 4) and 15];
+  SelectQuads(Op, VS, VT, T0, T1);
+  FVCC := Word(LaneNibble4(T0) or (LaneNibble4(T1) shl 4));
+  {$ELSE}
   var Copy: TRSPQuadLanes;
   var VT := VTLanes(Op, Copy);
   var VS: PRSPLanes := @FVec[(Op shr 11) and 31];
@@ -1464,11 +1763,22 @@ begin
   end;
   FVCO := 0;
   FVCC := Word(Compare);
+  {$ENDIF}
 end;
 
 procedure TN64RSP.VectorNE(Op: Cardinal);
 begin
   // Not equal, or VCO's not-equal.
+  {$IF Defined(CPU64BITS)}
+  var Copy: TRSPQuadLanes;
+  var VT := PRSPQuadLanes(VTLanes(Op, Copy));
+  var VS := PRSPQuadLanes(@FVec[(Op shr 11) and 31]);
+  var NotEqual := Cardinal(FVCO) shr 8;
+  var T0 := (LaneEqual4(VS.Quads[0], VT.Quads[0]) xor RSPLaneOne) or RSPNibbleLanes[NotEqual and 15];
+  var T1 := (LaneEqual4(VS.Quads[1], VT.Quads[1]) xor RSPLaneOne) or RSPNibbleLanes[(NotEqual shr 4) and 15];
+  SelectQuads(Op, VS, VT, T0, T1);
+  FVCC := Word(LaneNibble4(T0) or (LaneNibble4(T1) shl 4));
+  {$ELSE}
   var Copy: TRSPQuadLanes;
   var VT := VTLanes(Op, Copy);
   var VS: PRSPLanes := @FVec[(Op shr 11) and 31];
@@ -1488,11 +1798,24 @@ begin
   end;
   FVCO := 0;
   FVCC := Word(Compare);
+  {$ENDIF}
 end;
 
 procedure TN64RSP.VectorGE(Op: Cardinal);
 begin
   // Greater, or equal unless VCO's carry and not-equal are both set.
+  {$IF Defined(CPU64BITS)}
+  var Copy: TRSPQuadLanes;
+  var VT := PRSPQuadLanes(VTLanes(Op, Copy));
+  var VS := PRSPQuadLanes(@FVec[(Op shr 11) and 31]);
+  var Kept := not (Cardinal(FVCO) and (Cardinal(FVCO) shr 8));
+  var T0 := LaneLess4(VT.Quads[0], VS.Quads[0]) or
+    (LaneEqual4(VS.Quads[0], VT.Quads[0]) and RSPNibbleLanes[Kept and 15]);
+  var T1 := LaneLess4(VT.Quads[1], VS.Quads[1]) or
+    (LaneEqual4(VS.Quads[1], VT.Quads[1]) and RSPNibbleLanes[(Kept shr 4) and 15]);
+  SelectQuads(Op, VS, VT, T0, T1);
+  FVCC := Word(LaneNibble4(T0) or (LaneNibble4(T1) shl 4));
+  {$ELSE}
   var Copy: TRSPQuadLanes;
   var VT := VTLanes(Op, Copy);
   var VS: PRSPLanes := @FVec[(Op shr 11) and 31];
@@ -1512,6 +1835,7 @@ begin
   end;
   FVCO := 0;
   FVCC := Word(Compare);
+  {$ENDIF}
 end;
 
 procedure TN64RSP.VectorClipLow(Op: Cardinal);
@@ -1653,6 +1977,12 @@ end;
 procedure TN64RSP.VectorMerge(Op: Cardinal);
 begin
   // VMRG: VS where VCC is set, else VT; clears VCO.
+  {$IF Defined(CPU64BITS)}
+  var Copy: TRSPQuadLanes;
+  var VT := PRSPQuadLanes(VTLanes(Op, Copy));
+  var VS := PRSPQuadLanes(@FVec[(Op shr 11) and 31]);
+  SelectQuads(Op, VS, VT, RSPNibbleLanes[FVCC and 15], RSPNibbleLanes[(FVCC shr 4) and 15]);
+  {$ELSE}
   var Copy: TRSPQuadLanes;
   var VT := VTLanes(Op, Copy);
   var S := (Op shr 11) and 31;
@@ -1666,6 +1996,7 @@ begin
     FVec[D, I] := R;
   end;
   FVCO := 0;
+  {$ENDIF}
 end;
 
 procedure TN64RSP.VectorLogic(Op: Cardinal);
@@ -1710,8 +2041,12 @@ begin
   end;
   VD.Quads[0] := R0;
   VD.Quads[1] := R1;
+  {$IF Defined(CPU64BITS)}
+  SetAccLoQuads(R0, R1);
+  {$ELSE}
   for var I := 0 to 7 do
     PWord(@FAcc[I])^ := VD.Lanes[I];
+  {$ENDIF}
 end;
 
 procedure TN64RSP.VectorReserved(Op: Cardinal);
@@ -1809,6 +2144,11 @@ begin
   end;
 end;
 
+const
+  // 64-bit hosts (x64, ARM64) load and store 8-byte words at any address;
+  // 32-bit ones only aligned (ARM's LDRD, STRD).
+  RSPUnaligned = {$IF Defined(CPU64BITS)}True{$ELSE}False{$ENDIF};
+
 procedure TN64RSP.VectorMemoryDirect(Op: Cardinal; Writing: Boolean);
 begin
   // VectorMemory's LBV, LSV, LLV, LDV, LQV and their stores with direct SP
@@ -1840,16 +2180,17 @@ begin
     if not Odd(E) and (E + Size <= 16) and (Address + Cardinal(Size) <= $1000) then
     begin
       // Whole lanes to bytes that do not wrap: a 16-byte line in two
-      // 8-byte words where it is aligned so (little-endian hosts only).
+      // 8-byte words where the host takes them there (RSPUnaligned, else
+      // aligned so; little-endian hosts only).
       var P := SP + Address;
-      if (Size = 16) and ((NativeUInt(P) and 7) = 0) then
+      if (Size = 16) and (RSPUnaligned or ((NativeUInt(P) and 7) = 0)) then
       begin
         var Q := PRSPQuadLanes(Lanes);
         PUInt64(P)^ := ((Q.Quads[0] shr 8) and $00FF00FF00FF00FF) or ((Q.Quads[0] and $00FF00FF00FF00FF) shl 8);
         PUInt64(P + 8)^ := ((Q.Quads[1] shr 8) and $00FF00FF00FF00FF) or ((Q.Quads[1] and $00FF00FF00FF00FF) shl 8);
         I := 16;
       end
-      else if (Size = 8) and ((NativeUInt(P) and 7) = 0) then
+      else if (Size = 8) and (RSPUnaligned or ((NativeUInt(P) and 7) = 0)) then
       begin
         // SDV's four lanes in one 8-byte word.
         var L := E shr 1;
@@ -1892,7 +2233,7 @@ begin
     begin
       // Whole lanes from bytes that do not wrap (as the store).
       var P := SP + Address;
-      if (Size = 16) and ((NativeUInt(P) and 7) = 0) then
+      if (Size = 16) and (RSPUnaligned or ((NativeUInt(P) and 7) = 0)) then
       begin
         var Q := PRSPQuadLanes(Lanes);
         var Q0 := PUInt64(P)^;
@@ -1901,7 +2242,7 @@ begin
         Q.Quads[1] := ((Q1 shr 8) and $00FF00FF00FF00FF) or ((Q1 and $00FF00FF00FF00FF) shl 8);
         I := 16;
       end
-      else if (Size = 8) and ((NativeUInt(P) and 7) = 0) then
+      else if (Size = 8) and (RSPUnaligned or ((NativeUInt(P) and 7) = 0)) then
       begin
         // LDV's four lanes from one 8-byte word.
         var L := E shr 1;
@@ -4216,12 +4557,17 @@ begin
   IssueInstruction(Op, PC, Status, Interrupt);
 end;
 
-function TN64RSP.RunClocks(var PC, Status, Interrupt: Cardinal; Cycles: Integer; Ahead: Boolean): Integer;
+function TN64RSP.RunClocks(var PC, Status, Interrupt: Cardinal; Cycles: Integer; Ahead: Boolean; Least: Integer): Integer;
 begin
   // Ahead: stop before the first clock that is not free (see RunAhead); the
-  // checkpoint is taken before the first clock that changes anything.
+  // checkpoint is taken before the first clock that changes anything. Least
+  // (1..Cycles): the clocks may end anywhere from Least on (blocks run to
+  // their end there).
+  var Stop := Cycles;
+  if (Least > 0) and (Least < Cycles) then
+    Stop := Least;
   Result := 0;
-  while Result < Cycles do
+  while Result < Stop do
   begin
     if (Status and 1) <> 0 then
       Break;
@@ -4233,7 +4579,7 @@ begin
       AgePipeline;
       Inc(Result);
       // Nothing else happens in a bubble (Status stays): the next clock now.
-      if Result >= Cycles then
+      if Result >= Stop then
         Break;
     end;
     // A stalled opcode only counts at its own PC. Both outcomes below set
@@ -4247,7 +4593,7 @@ begin
       var Block := FindBlock(PC);
       if Block.Count > 0 then
       begin
-        var Outcome := RunBlock(Block, PC, Status, Interrupt, Cycles, Ahead, Result);
+        var Outcome := RunBlock(Block, PC, Status, Interrupt, Cycles, Stop, Ahead, Result);
         if Outcome = 2 then
           Break;
         if Outcome = 0 then
@@ -4442,22 +4788,76 @@ begin
   FBlockCount := 0;
   FStepCount := 0;
   FWordCount := 0;
+  FillChar(FJumps, SizeOf(FJumps), 0);
   Inc(FBlockGen);
+  // Their code goes with them.
+  if FJit <> nil then
+    FJit.Reset;
+  FJitEnter := 0;
+  FJitFull := False;
 end;
 
 function TN64RSP.BlockValid(B: PRSPBlock; Slot: Integer): Boolean;
 begin
   // Whether block B (from Slot) holds for IMEM as it is: one whose IMEM
-  // changed after it was checked holds if its words are the same again
-  // (code that comes back).
-  var Counter := FBus.IMemCounter;
-  if B.Checked = Counter then
+  // eighths changed after it was checked holds if its words are the same
+  // again (code that comes back, or a word of the eighth not its own).
+  var Checked := B.Checked;
+  if (FBus.IMemRegionStamp(B.Regions[0]) <= Checked) and (FBus.IMemRegionStamp(B.Regions[1]) <= Checked) then
     Exit(True);
+  Result := CheckBlock(B, Slot);
+end;
+
+function TN64RSP.CheckBlock(B: PRSPBlock; Slot: Integer): Boolean;
+begin
   for var I := 0 to B.Words - 1 do
     if FBus.IMemWord((Slot + I) and 1023) <> FBlockWords[B.FirstWord + I] then
       Exit(False);
-  B.Checked := Counter;
+  B.Checked := FBus.IMemCounter;
   Result := True;
+end;
+
+function JumpKey(B: PRSPBlock; Taken: Integer; PC: Cardinal): Cardinal; inline;
+begin
+  Result := ((Cardinal(B.Index) shl 13) or (Cardinal(Taken) shl 12) or PC) + 1;
+end;
+
+function JumpSlot(B: PRSPBlock; Taken: Integer; PC: Cardinal): Integer; inline;
+begin
+  Result := Integer(((PC shr 2) xor Cardinal(B.Index) xor (Cardinal(Taken) shl 9)) and 1023);
+end;
+
+function TN64RSP.NextBlock(B: PRSPBlock; Taken: Integer; PC: Cardinal): PRSPBlock;
+begin
+  // The block after B ran to its end (its branch Taken or not), at PC with
+  // the pipeline as it is: the one that came there before (B.Link, FJumps),
+  // else found (FindBlock), and kept as B's link.
+  var Slot := Integer((PC shr 2) and 1023);
+  Result := B.Link[Taken];
+  if (Result <> nil) and (B.LinkPC[Taken] = PC) and BlockValid(Result, Slot) then
+    Exit;
+  var J := JumpSlot(B, Taken, PC);
+  var Key := JumpKey(B, Taken, PC);
+  if FJumps[J].Key = Key then
+  begin
+    Result := FJumps[J].Block;
+    if BlockValid(Result, Slot) then
+    begin
+      B.Link[Taken] := Result;
+      B.LinkPC[Taken] := PC;
+      Exit;
+    end;
+  end;
+  var Gen := FBlockGen;
+  Result := FindBlock(PC);
+  // (Not if B went with the blocks dropped for room.)
+  if FBlockGen = Gen then
+  begin
+    B.Link[Taken] := Result;
+    B.LinkPC[Taken] := PC;
+    FJumps[J].Key := Key;
+    FJumps[J].Block := Result;
+  end;
 end;
 
 function TN64RSP.FindBlock(PC: Cardinal): PRSPBlock;
@@ -4507,7 +4907,11 @@ begin
   Result.Checked := FBus.IMemCounter;
   Result.Link[0] := nil;
   Result.Link[1] := nil;
+  Result.Native := nil;
+  Result.JitTried := False;
+  Result.JitHeat := 0;
   Result.Next := FBlockHead[Start];
+  Result.Index := FBlockCount;
   FBlockHead[Start] := FBlockCount;
   Inc(FBlockCount);
   var SLo := FScalarLo;
@@ -4665,6 +5069,9 @@ begin
   for var I := 0 to Words - 1 do
     FBlockWords[FWordCount + I] := FDec[(Start + I) and 1023].Op;
   Result.Words := Words;
+  // (At most 2 * MaxSteps + 1 words: in two eighths at most.)
+  Result.Regions[0] := Byte(Start shr 7);
+  Result.Regions[1] := Byte(((Start + Words - 1) and 1023) shr 7);
   Inc(FWordCount, Words);
   Result.Count := Count;
   Result.Clocks := Clocks;
@@ -5257,10 +5664,12 @@ begin
   VectorMemoryDirect(Op, True);
 end;
 
-function TN64RSP.RunBlock(B: PRSPBlock; var PC, Status, Interrupt: Cardinal; Cycles: Integer; Ahead: Boolean; var Ran: Integer): Integer;
+function TN64RSP.RunBlock(B: PRSPBlock; var PC, Status, Interrupt: Cardinal; Cycles, Stop: Integer; Ahead: Boolean;
+  var Ran: Integer): Integer;
 begin
   // Block B's clocks as RunClocks takes them, then those of the blocks after
-  // it, up to Cycles in all (Ran so far): 0 when they ran as far as the
+  // it, up to Cycles in all (Ran so far; none after a block's end from Stop
+  // on): 0 when they ran as far as the
   // budget allows, 1 before a stall longer than the budget left, 3 before a
   // clock no block takes (RunClocks takes those), 2 when a fence stopped the
   // window (FAheadStop). The pipeline is set after the last clock run, and
@@ -5278,162 +5687,195 @@ begin
   while True do
   begin
     Result := 0;
-    Inc(FBlocksRun);
-    var First: PRSPBlockStep := @FBlockSteps[B.First];
-    var S := First;
-    var Last: PRSPBlockStep := @FBlockSteps[B.First + B.Count - 1];
-    {$IFDEF N64_CHECKED}
-    if First.PC <> PC then
-      raise EInvalidOpException.Create('RSP block run at another PC');
-    {$ENDIF}
-    // The budget from the block's start (at least a clock), and where the
-    // clocks stop: after the clock that reaches it or the last one.
+    // The budget from the block's start (at least a clock).
     var Room := Cycles - Ran;
-    var Limit := Min(Room, B.Clocks);
-    // The last clock run (nil: none yet).
-    var Done: PRSPBlockStep := nil;
-    // A branch is pending only before the last clock (its delay slot).
-    var DelaySlot := False;
-    // The last clock ran by its routines (the PC still to be set).
-    var Plain := False;
     var Mask := Base;
     if Fences and FFenced then
       Mask := Mask or StepMemory;
-    while True do
+    // The last clock run (nil: none yet), and the block's last.
+    var Done: PRSPBlockStep := nil;
+    var Last: PRSPBlockStep;
+    // Its generated code where the budget takes all of the block's clocks:
+    // it runs them as below (its clocks that need a check by JitCheck), and
+    // the blocks after it while the budget takes theirs; then B is the last
+    // that ran to its end, as below, or a clock stopped the run as below.
+    var Native: Pointer := nil;
+    if FUseJit and (Room >= B.Clocks) and not Assigned(FOnBlock) then
     begin
-      // The clocks that need no check, then the one that does.
-      var R := RunSteps(S, Mask, Room, Limit);
-      if R <> First then
+      Native := B.Native;
+      if (Native = nil) and not B.JitTried then
+        Native := JitCodeFor(B);
+    end;
+    if RSPJitStats and FUseJit then
+      if Room < B.Clocks then
+        Inc(FJitBack[10])
+      else if (Native = nil) and B.JitTried then
+        Inc(FJitBack[11])
+      else if Native = nil then
+        Inc(FJitBack[12]);
+    if Native <> nil then
+    begin
+      var Outcome := JitRun(B, PC, Status, Interrupt, Ran, Cycles, Stop, Base, Fences);
+      if Outcome >= 0 then
+        Exit(Outcome);
+      Last := @FBlockSteps[B.First + B.Count - 1];
+      Done := Last;
+    end
+    else
+    begin
+      Inc(FBlocksRun);
+      var First: PRSPBlockStep := @FBlockSteps[B.First];
+      var S := First;
+      Last := @FBlockSteps[B.First + B.Count - 1];
+      {$IFDEF N64_CHECKED}
+      if First.PC <> PC then
+        raise EInvalidOpException.Create('RSP block run at another PC');
+      {$ENDIF}
+      // Where the clocks stop: after the clock that reaches the budget or the
+      // last one.
+      var Limit := Min(Room, B.Clocks);
+      // A branch is pending only before the last clock (its delay slot).
+      var DelaySlot := False;
+      // The last clock ran by its routines (the PC still to be set).
+      var Plain := False;
+      while True do
       begin
-        Done := R;
-        Dec(Done);
-        if Done.Clocks >= Limit then
+        // The clocks that need no check, then the one that does.
+        var R := RunSteps(S, Mask, Room, Limit);
+        if R <> First then
         begin
-          Plain := True;
+          Done := R;
+          Dec(Done);
+          if Done.Clocks >= Limit then
+          begin
+            Plain := True;
+            Break;
+          end;
+        end;
+        S := R;
+        if (S.Wait <> 0) and (S.Clocks > Room) then
+        begin
+          // (The clocks before the stall.)
+          Result := 1;
+          PC := S.PC;
           Break;
         end;
-      end;
-      S := R;
-      if (S.Wait <> 0) and (S.Clocks > Room) then
-      begin
-        // (The clocks before the stall.)
-        Result := 1;
-        PC := S.PC;
-        Break;
-      end;
-      var Checks := S.Checks and Mask;
-      // (The clocks before this one, its stall included.)
-      var Before := Ran + S.Clocks - 1;
-      if ((Checks and StepMemory) <> 0) and (TouchesFence(S.Op) or (S.Pair and TouchesFence(S.Second))) then
-      begin
-        HoldStep(Done, S);
-        if not LiftFence(S.PC, S.Op, S.Second, S.Pair, FClockBase + Before + 1) then
+        var Checks := S.Checks and Mask;
+        // (The clocks before this one, its stall included.)
+        var Before := Ran + S.Clocks - 1;
+        if ((Checks and StepMemory) <> 0) and (TouchesFence(S.Op) or (S.Pair and TouchesFence(S.Second))) then
         begin
-          FAheadStop := TRSPAheadStop.Fence;
+          HoldStep(Done, S);
+          if not LiftFence(S.PC, S.Op, S.Second, S.Pair, FClockBase + Before + 1) then
+          begin
+            FAheadStop := TRSPAheadStop.Fence;
+            Inc(FBlockClocks, S.Clocks - 1);
+            PC := S.PC;
+            Ran := Before;
+            Exit(2);
+          end;
+          // (No fence left after the lift, no more checks: they would find
+          // none. A lift sets no fence where there was none.)
+          Mask := Base;
+          if FFenced then
+            Mask := Mask or StepMemory;
+        end;
+        if ((Checks and StepExternal) <> 0) and not JournalCOP0(S.Op, S.Second, S.Pair, FClockBase + Before + 1) then
+        begin
+          // The window ends before the clock, as RunClocks ends it. (No lift
+          // came first: an MFC0 or MTC0 shares its clock with no load or
+          // store, both being scalar-unit instructions.)
+          HoldStep(Done, S);
+          StopAtExternal(S.Op, S.Second);
           Inc(FBlockClocks, S.Clocks - 1);
           PC := S.PC;
           Ran := Before;
           Exit(2);
         end;
-        // (No fence left after the lift, no more checks: they would find
-        // none. A lift sets no fence where there was none.)
-        Mask := Base;
-        if FFenced then
-          Mask := Mask or StepMemory;
-      end;
-      if ((Checks and StepExternal) <> 0) and not JournalCOP0(S.Op, S.Second, S.Pair, FClockBase + Before + 1) then
-      begin
-        // The window ends before the clock, as RunClocks ends it. (No lift
-        // came first: an MFC0 or MTC0 shares its clock with no load or
-        // store, both being scalar-unit instructions.)
-        HoldStep(Done, S);
-        StopAtExternal(S.Op, S.Second);
-        Inc(FBlockClocks, S.Clocks - 1);
-        PC := S.PC;
-        Ran := Before;
-        Exit(2);
-      end;
-      if (Checks and StepGeneral) <> 0 then
-      begin
-        // A branch, COP0 or other instruction of IssueInstruction's, or a
-        // delay slot: the PC as each instruction takes it.
-        if S = Last then
-          DelaySlot := FBranch;
-        PC := S.PC;
-        IssueKind(S.Kind, S.Arg, PC, Status, Interrupt);
-        // (An MTC0 run here, not ahead, may halt the RSP: then not the
-        // word paired with it, nor any clock after it.)
-        var external := (S.Checks and StepExternal) <> 0;
-        if S.Pair and (not external or ((Status and 1) = 0)) then
-          IssueKind(S.SecondKind, S.SecondArg, PC, Status, Interrupt);
+        if (Checks and StepGeneral) <> 0 then
+        begin
+          // A branch, COP0 or other instruction of IssueInstruction's, or a
+          // delay slot: the PC as each instruction takes it.
+          if RSPJitStats then
+            CountGeneral(S);
+          if S = Last then
+            DelaySlot := FBranch;
+          PC := S.PC;
+          IssueKind(S.Kind, S.Arg, PC, Status, Interrupt);
+          // (An MTC0 run here, not ahead, may halt the RSP: then not the
+          // word paired with it, nor any clock after it.)
+          var external := (S.Checks and StepExternal) <> 0;
+          if S.Pair and (not external or ((Status and 1) = 0)) then
+            IssueKind(S.SecondKind, S.SecondArg, PC, Status, Interrupt);
+          Done := S;
+          if external and ((Status and $21) <> 0) then
+          begin
+            if (Status and $20) <> 0 then
+              Status := Status or 1;
+            Break;
+          end;
+          // (A journal entry may have set fences.)
+          Mask := Base;
+          if Fences and FFenced then
+            Mask := Mask or StepMemory;
+          if S.Clocks >= Limit then
+            Break;
+          Inc(S);
+          Continue;
+        end;
+        // A load or store let through: the clock's words by their routines.
+        TRSPIssueProc(S.Issue)(Self, S.Arg);
+        if S.Pair then
+          TRSPIssueProc(S.SecondIssue)(Self, S.SecondArg);
         Done := S;
-        if external and ((Status and $21) <> 0) then
-        begin
-          if (Status and $20) <> 0 then
-            Status := Status or 1;
-          Break;
-        end;
-        // (A journal entry may have set fences.)
-        Mask := Base;
-        if Fences and FFenced then
-          Mask := Mask or StepMemory;
         if S.Clocks >= Limit then
-          Break;
-        Inc(S);
-        Continue;
-      end;
-      // A load or store let through: the clock's words by their routines.
-      TRSPIssueProc(S.Issue)(Self, S.Arg);
-      if S.Pair then
-        TRSPIssueProc(S.SecondIssue)(Self, S.SecondArg);
-      Done := S;
-      if S.Clocks >= Limit then
-      begin
-        Plain := True;
-        Break;
-      end;
-      Inc(S);
-    end;
-    if Plain then
-    begin
-      // The last clock ran by its routines: the PC after it, after a delay
-      // slot where the branch took it (as IssueKind moves it).
-      PC := (Cardinal(Done.PC) + 4 + 4 * Cardinal(Ord(Done.Pair))) and $FFC;
-      if Done.Delay then
-      begin
-        // (A delay slot issues alone.)
-        DelaySlot := FBranch;
-        if FBranch then
         begin
-          PC := FNextPC;
-          FBranch := False;
+          Plain := True;
+          Break;
+        end;
+        Inc(S);
+      end;
+      if Plain then
+      begin
+        // The last clock ran by its routines: the PC after it, after a delay
+        // slot where the branch took it (as IssueKind moves it).
+        PC := (Cardinal(Done.PC) + 4 + 4 * Cardinal(Ord(Done.Pair))) and $FFC;
+        if Done.Delay then
+        begin
+          // (A delay slot issues alone.)
+          DelaySlot := FBranch;
+          if FBranch then
+          begin
+            PC := FNextPC;
+            FBranch := False;
+          end;
         end;
       end;
-    end;
-    var Clocks := 0;
-    if Done <> nil then
-    begin
-      Clocks := Done.Clocks;
-      FScalarLo := Done.ScalarLo;
-      FScalarHi := Done.ScalarHi;
-      FVectorLo := Done.VectorLo;
-      FVectorHi := Done.VectorHi;
-      FLoadHistory := Done.LoadHistory;
-      FSingleIssue := Done.SingleIssue;
-      FHasStalledOpcode := False;
-      FHasStalledSecondOpcode := False;
-      if DelaySlot then
+      var Clocks := 0;
+      if Done <> nil then
       begin
-        FBranchBubble := 1;
-        if (PC and 4) <> 0 then
-          FSingleIssue := 1;
+        Clocks := Done.Clocks;
+        FScalarLo := Done.ScalarLo;
+        FScalarHi := Done.ScalarHi;
+        FVectorLo := Done.VectorLo;
+        FVectorHi := Done.VectorHi;
+        FLoadHistory := Done.LoadHistory;
+        FSingleIssue := Done.SingleIssue;
+        FHasStalledOpcode := False;
+        FHasStalledSecondOpcode := False;
+        if DelaySlot then
+        begin
+          FBranchBubble := 1;
+          if (PC and 4) <> 0 then
+            FSingleIssue := 1;
+        end;
       end;
+      Inc(FBlockClocks, Clocks);
+      Inc(Ran, Clocks);
+      if Assigned(FOnBlock) then
+        FOnBlock(Ran);
     end;
-    Inc(FBlockClocks, Clocks);
-    Inc(Ran, Clocks);
-    if Assigned(FOnBlock) then
-      FOnBlock(Ran);
-    if (Result <> 0) or (Done <> Last) or (Ran >= Cycles) or ((Status and 1) <> 0) then
+    if (Result <> 0) or (Done <> Last) or (Ran >= Stop) or ((Status and 1) <> 0) then
       Exit;
     // The block ran to its end: its bubble, as RunClocks takes it (the
     // checkpoint is taken).
@@ -5444,7 +5886,7 @@ begin
       Dec(FBranchBubble);
       AgePipeline;
       Inc(Ran);
-      if Ran >= Cycles then
+      if Ran >= Stop then
         Exit;
     end;
     // A branch still pending (in the delay slot, or its delay slot external,
@@ -5452,19 +5894,7 @@ begin
     if FBranch then
       Exit(3);
     // The next block: the one that came here before, else found.
-    var Slot := Integer((PC shr 2) and 1023);
-    var Next := B.Link[Taken];
-    if (Next = nil) or (B.LinkPC[Taken] <> PC) or not BlockValid(Next, Slot) then
-    begin
-      var Gen := FBlockGen;
-      Next := FindBlock(PC);
-      // (Not if B went with the blocks dropped for room.)
-      if FBlockGen = Gen then
-      begin
-        B.Link[Taken] := Next;
-        B.LinkPC[Taken] := PC;
-      end;
-    end;
+    var Next := NextBlock(B, Taken, PC);
     {$IFDEF N64_CHECKED}
     if (Next.ScalarLo <> FScalarLo) or (Next.ScalarHi <> FScalarHi) or (Next.VectorLo <> FVectorLo) or
       (Next.VectorHi <> FVectorHi) or (Next.LoadHistory <> FLoadHistory) or (Next.SingleIssue <> FSingleIssue) then
@@ -5474,6 +5904,610 @@ begin
       Exit(3);
     B := Next;
   end;
+end;
+
+// --- Blocks as generated code ------------------------------------------------
+//
+// HW.JIT, as the CPU's blocks (N64.CPU): a block's code runs its clocks as
+// RunBlock does where the budget takes them all: each clock's stall noted,
+// its words' routines called (FKindIssue: what a word does is its routine's
+// alone), a clock that needs a check of the run by JitCheck (RunBlock's
+// steps for it), then the block's plain end (the PC after it, the pipeline,
+// the counts). Then the shared chaining code goes on as RunBlock does (the
+// budget, the branch bubble, the link) into the next block's code where it
+// is such a block too, else back to RunBlock with the last block that ran
+// to its end (or where JitCheck stopped the run). The code is written in
+// HW.JIT's operations; its registers by role: Self the RSP, Ctx the
+// TRSPJitCtx, and the kept S0..S3 as Block, Ran (the clocks run), Slot (a
+// delay slot's branch taken) and PC (after the block).
+
+const
+  jrRB = jrS0;
+  jrRan = jrS1;
+  jrSlot = jrS2;
+  jrPC = jrS3;
+  JRB: TJitOp = (Kind: okReg; Reg: jrRB);
+  JRan: TJitOp = (Kind: okReg; Reg: jrRan);
+  JSlot: TJitOp = (Kind: okReg; Reg: jrSlot);
+  JPC: TJitOp = (Kind: okReg; Reg: jrPC);
+  RSPJitBufferSize = 16 * 1024 * 1024;
+  // FJitCalls past the kinds' routines.
+  RSPJitCallCheck = 256;
+  // JitCheck's Step: the step's index, whether it is its block's first,
+  // last.
+  RSPJitFirstStep = 1 shl 28;
+  RSPJitLastStep = 1 shl 29;
+
+type
+  // Where the code reads and writes the RSP, its context and blocks
+  // (offsets, worked out once).
+  TRSPJitOffsets = record
+    StalledOp, StalledPC, StalledSecond, HasStalled, HasStalledSecond: Integer;
+    ScalarLo, ScalarHi, VectorLo, VectorHi, LoadHistory, SingleIssue: Integer;
+    Branch, NextPC, BranchBubble, BlocksRun, BlockClocks, Calls, Back: Integer;
+    CtxCycles, CtxStop, CtxRan, CtxPC, CtxFences, CtxSlot, CtxBlock: Integer;
+    BClocks, BNative, BLink, BLinkPC, BChecked, BIndex, BRegions, Fenced, Fence, Reg: Integer;
+    Jumps, JumpBlock: Integer;
+  end;
+
+var
+  RSPOff: TRSPJitOffsets;
+
+procedure RSPJitWorkOutOffsets;
+begin
+  var O := Default(TRSPJitOffsets);
+  O.StalledOp := Integer(NativeUInt(@TN64RSP(nil).FStalledOpcode));
+  O.StalledPC := Integer(NativeUInt(@TN64RSP(nil).FStalledPC));
+  O.StalledSecond := Integer(NativeUInt(@TN64RSP(nil).FStalledSecondOpcode));
+  O.HasStalled := Integer(NativeUInt(@TN64RSP(nil).FHasStalledOpcode));
+  O.HasStalledSecond := Integer(NativeUInt(@TN64RSP(nil).FHasStalledSecondOpcode));
+  O.ScalarLo := Integer(NativeUInt(@TN64RSP(nil).FScalarLo));
+  O.ScalarHi := Integer(NativeUInt(@TN64RSP(nil).FScalarHi));
+  O.VectorLo := Integer(NativeUInt(@TN64RSP(nil).FVectorLo));
+  O.VectorHi := Integer(NativeUInt(@TN64RSP(nil).FVectorHi));
+  O.LoadHistory := Integer(NativeUInt(@TN64RSP(nil).FLoadHistory));
+  O.SingleIssue := Integer(NativeUInt(@TN64RSP(nil).FSingleIssue));
+  O.Branch := Integer(NativeUInt(@TN64RSP(nil).FBranch));
+  O.NextPC := Integer(NativeUInt(@TN64RSP(nil).FNextPC));
+  O.BranchBubble := Integer(NativeUInt(@TN64RSP(nil).FBranchBubble));
+  O.BlocksRun := Integer(NativeUInt(@TN64RSP(nil).FBlocksRun));
+  O.BlockClocks := Integer(NativeUInt(@TN64RSP(nil).FBlockClocks));
+  O.Calls := Integer(NativeUInt(@TN64RSP(nil).FJitCalls[0]));
+  O.Back := Integer(NativeUInt(@TN64RSP(nil).FJitBack[0]));
+  O.CtxCycles := Integer(NativeUInt(@PRSPJitCtx(nil).Cycles));
+  O.CtxStop := Integer(NativeUInt(@PRSPJitCtx(nil).Stop));
+  O.CtxRan := Integer(NativeUInt(@PRSPJitCtx(nil).Ran));
+  O.CtxPC := Integer(NativeUInt(@PRSPJitCtx(nil).PC));
+  O.CtxFences := Integer(NativeUInt(@PRSPJitCtx(nil).Fences));
+  O.CtxSlot := Integer(NativeUInt(@PRSPJitCtx(nil).Slot));
+  O.CtxBlock := Integer(NativeUInt(@PRSPJitCtx(nil).Block));
+  O.BClocks := Integer(NativeUInt(@PRSPBlock(nil).Clocks));
+  O.BNative := Integer(NativeUInt(@PRSPBlock(nil).Native));
+  O.BLink := Integer(NativeUInt(@PRSPBlock(nil).Link[0]));
+  O.BLinkPC := Integer(NativeUInt(@PRSPBlock(nil).LinkPC[0]));
+  O.BChecked := Integer(NativeUInt(@PRSPBlock(nil).Checked));
+  O.BIndex := Integer(NativeUInt(@PRSPBlock(nil).Index));
+  O.BRegions := Integer(NativeUInt(@PRSPBlock(nil).Regions[0]));
+  O.Jumps := Integer(NativeUInt(@TN64RSP(nil).FJumps[0].Key));
+  O.JumpBlock := Integer(NativeUInt(@TN64RSP(nil).FJumps[0].Block)) - O.Jumps;
+  O.Fenced := Integer(NativeUInt(@TN64RSP(nil).FFenced));
+  O.Fence := Integer(NativeUInt(@TN64RSP(nil).FFence[0]));
+  O.Reg := Integer(NativeUInt(@TN64RSP(nil).FReg[0]));
+  RSPOff := O;
+end;
+
+class function TN64RSP.JitAvailable: Boolean;
+begin
+  {$IF RSPJit}
+  Result := not RSPJitOff;
+  {$ELSE}
+  Result := False;
+  {$ENDIF}
+end;
+
+class procedure TN64RSP.JitForTests(Hot: Integer; Model: Boolean);
+begin
+  RSPJitHot := Hot;
+  {$IF RSPJit}
+  RSPJitModel := Model;
+  {$ENDIF}
+end;
+
+function TN64RSP.JitCodeFor(B: PRSPBlock): Pointer;
+begin
+  // B's code, made once B was entered RSPJitHot times (nil: none).
+  Result := B.Native;
+  if (Result <> nil) or B.JitTried then
+    Exit;
+  if B.JitHeat < RSPJitHot then
+  begin
+    Inc(B.JitHeat);
+    Exit;
+  end;
+  Result := JitCompile(B);
+  B.Native := Result;
+end;
+
+procedure TN64RSP.JitEmitShared;
+var
+  // Where the chaining code goes back (N64RSPJIT=stats: counted by reason).
+  NoLabel: array[0..15] of TJitLabel;
+  NoReason: array[0..15] of Integer;
+  NoCount: Integer;
+
+  function No(Reason: Integer): TJitLabel;
+  begin
+    Result := FJit.NewLabel;
+    NoLabel[NoCount] := Result;
+    NoReason[NoCount] := Reason;
+    Inc(NoCount);
+  end;
+
+begin
+  // The code every block's code shares: the entry (TJitAsm.EnterJump: the
+  // frame, then the start of a run with the block in T1), the start of a
+  // run (Block and Ran set, into the block's code), the ways back to
+  // RunBlock (Block, Ran and PC into Ctx; or as JitCheck left Ctx), and the
+  // chaining code: after a block ran to its end, as RunBlock goes on (the
+  // budget, a branch bubble, no branch pending, the link at the PC, the
+  // block found there valid as IMEM is) into the next block's code where
+  // the budget takes all of that block's clocks; else back, nothing of that
+  // done.
+  var J := FJit;
+  var O := RSPOff;
+  var Info := FBus.JitInfo;
+  J.ForgetLabels;
+  J.Align(16);
+  FJitEnter := J.Offset;
+  J.EnterJump;
+  J.Align(16);
+  FJitOuter := J.Offset;
+  J.Move(jw64, JRB, JT1);
+  J.Move(jw32, JRan, JMem(jrCtx, O.CtxRan));
+  J.JumpIndirect(JMem(jrRB, O.BNative));
+  J.Align(16);
+  FJitReturn := J.Offset;
+  J.Move(jw32, JMem(jrCtx, O.CtxRan), JRan);
+  J.Move(jw32, JMem(jrCtx, O.CtxPC), JPC);
+  J.Move(jw64, JMem(jrCtx, O.CtxBlock), JRB);
+  J.Leave(JImm(0));
+  // Back where JitCheck stopped the run (it set Ctx).
+  J.Align(16);
+  FJitStop := J.Offset;
+  J.Leave(JImm(0));
+
+  J.Align(16);
+  FJitChain := J.Offset;
+  NoCount := 0;
+  // T0: where the run may stop; the clocks run reach it.
+  J.Move(jw32, JT0, JMem(jrCtx, O.CtxStop));
+  J.Branch(jcGe, jw32, JRan, JT0, No(0));
+  // T2: the bubble; T4: whether there is one (Taken); T1: the clocks run
+  // after it, which reach the stop.
+  J.Move(jw8, JT2, JMem(jrSelf, O.BranchBubble));
+  J.Move(jw32, JT1, JRan);
+  J.Move(jw32, JT4, JImm(0));
+  var NoBubble := J.NewLabel;
+  J.BranchTest(jcEq, jw32, JT2, JT2, NoBubble);
+  J.Alu(jaAdd, jw32, JT1, JImm(1));
+  J.Move(jw32, JT4, JImm(1));
+  J.Bind(NoBubble);
+  J.Branch(jcGe, jw32, JT1, JT0, No(1));
+  // A branch still pending.
+  J.Move(jw8, JT3, JMem(jrSelf, O.Branch));
+  J.BranchTest(jcNe, jw32, JT3, JT3, No(2));
+  // T5: the link Taken, at the PC; else the block FJumps has for it
+  // (JumpKey, JumpSlot).
+  var Lookup := J.NewLabel;
+  var Linked := J.NewLabel;
+  J.Move(jw64, JT5, JT4);
+  J.Shift(jsShl, jw64, jrT5, 3);
+  J.Alu(jaAdd, jw64, JT5, JRB);
+  J.Move(jw64, JT5, JMem(jrT5, O.BLink));
+  J.BranchTest(jcEq, jw64, JT5, JT5, Lookup);
+  J.Move(jw64, JT6, JT4);
+  J.Shift(jsShl, jw64, jrT6, 2);
+  J.Alu(jaAdd, jw64, JT6, JRB);
+  J.Branch(jcEq, jw32, JPC, JMem(jrT6, O.BLinkPC), Linked);
+  J.Bind(Lookup);
+  J.Move(jw32, JT3, JMem(jrRB, O.BIndex));
+  J.Move(jw32, JT6, JT4);
+  J.Shift(jsShl, jw32, jrT6, 9);
+  J.Alu(jaXor, jw32, JT6, JT3);
+  J.Move(jw32, JT5, JPC);
+  J.Shift(jsShr, jw32, jrT5, 2);
+  J.Alu(jaXor, jw32, JT5, JT6);
+  J.Alu(jaAnd, jw32, JT5, JImm(1023));
+  J.Shift(jsShl, jw64, jrT5, 4);
+  J.Alu(jaAdd, jw64, JT5, JSelf);
+  J.Shift(jsShl, jw32, jrT3, 13);
+  J.Move(jw32, JT6, JT4);
+  J.Shift(jsShl, jw32, jrT6, 12);
+  J.Alu(jaOr, jw32, JT3, JT6);
+  J.Alu(jaOr, jw32, JT3, JPC);
+  J.Alu(jaAdd, jw32, JT3, JImm(1));
+  J.Branch(jcNe, jw32, JT3, JMem(jrT5, O.Jumps), No(3));
+  J.Move(jw64, JT5, JMem(jrT5, O.Jumps + O.JumpBlock));
+  J.Bind(Linked);
+  // Its IMEM eighths unchanged since it was checked (else RunBlock compares
+  // its words).
+  J.Move(jw64, JT6, JImm(Int64(NativeUInt(Info.IMemRegions))));
+  for var K := 0 to 1 do
+  begin
+    J.Move(jw8, JT3, JMem(jrT5, O.BRegions + K));
+    J.Shift(jsShl, jw64, jrT3, 3);
+    J.Alu(jaAdd, jw64, JT3, JT6);
+    J.Move(jw64, JT3, JMem(jrT3, 0));
+    J.Branch(jcAbove, jw64, JT3, JMem(jrT5, O.BChecked), No(5));
+  end;
+  // Its code, its clocks within the budget left after the bubble.
+  J.Move(jw64, JT6, JMem(jrT5, O.BNative));
+  J.BranchTest(jcEq, jw64, JT6, JT6, No(6));
+  J.Move(jw32, JT6, JMem(jrCtx, O.CtxCycles));
+  J.Alu(jaSub, jw32, JT6, JT1);
+  J.Branch(jcLt, jw32, JT6, JMem(jrT5, O.BClocks), No(8));
+  // On: the bubble as RunBlock takes it, then the next block.
+  J.Move(jw64, JRB, JT5);
+  J.Move(jw32, JRan, JT1);
+  var NoAge := J.NewLabel;
+  J.BranchTest(jcEq, jw32, JT4, JT4, NoAge);
+  J.Alu(jaSub, jw32, JT2, JImm(1));
+  J.Move(jw8, JMem(jrSelf, O.BranchBubble), JT2);
+  // AgePipeline: each counter (Lo + 2 * Hi) down by one, to 0 at least.
+  for var K := 0 to 1 do
+  begin
+    var Lo := O.ScalarLo;
+    var Hi := O.ScalarHi;
+    if K = 1 then
+    begin
+      Lo := O.VectorLo;
+      Hi := O.VectorHi;
+    end;
+    J.Move(jw32, JT3, JMem(jrSelf, Lo));
+    J.Move(jw32, JT6, JMem(jrSelf, Hi));
+    J.Move(jw32, JT5, JT6);
+    J.Alu(jaAnd, jw32, JT5, JT3);
+    J.Move(jw32, JMem(jrSelf, Hi), JT5);
+    J.Alu(jaXor, jw32, JT3, JImm(-1));
+    J.Alu(jaAnd, jw32, JT3, JT6);
+    J.Move(jw32, JMem(jrSelf, Lo), JT3);
+  end;
+  J.Move(jw8, JT3, JMem(jrSelf, O.LoadHistory));
+  J.Shift(jsShl, jw32, jrT3, 1);
+  J.Alu(jaAnd, jw32, JT3, JImm(3));
+  J.Move(jw8, JMem(jrSelf, O.LoadHistory), JT3);
+  J.Bind(NoAge);
+  J.JumpIndirect(JMem(jrRB, O.BNative));
+  for var K := 0 to NoCount - 1 do
+  begin
+    J.Bind(NoLabel[K]);
+    if RSPJitStats then
+      J.Alu(jaAdd, jw64, JMem(jrSelf, O.Back + NoReason[K] * 8), JImm(1));
+    J.JumpTo(FJitReturn);
+  end;
+  J.ForgetLabels;
+  J.Flush;
+end;
+
+function TN64RSP.JitCompile(B: PRSPBlock): Pointer;
+begin
+  // B's code (nil: none): as RunBlock runs B's clocks with no check and the
+  // budget taking them all (RunSteps through the last, then the plain end),
+  // then on by the chaining code. Entered with Block and Ran set.
+  Result := nil;
+  B.JitTried := True;
+  if not FUseJit or FJitFull or (B.Count = 0) then
+    Exit;
+  if FJit = nil then
+  begin
+    // (The chaining code takes FJumps' entries as 16 bytes.)
+    if SizeOf(FJumps[0]) <> 16 then
+    begin
+      FUseJit := False;
+      Exit;
+    end;
+    {$IF RSPJit}
+    if RSPJitModel then
+      FJit := CreateJitModel(RSPJitBufferSize)
+    else
+    {$ENDIF}
+      FJit := CreateJitAsm(RSPJitBufferSize);
+    if FJit = nil then
+    begin
+      FUseJit := False;
+      Exit;
+    end;
+    // (Fields the code uses past the first ones: the pipeline's rest, the
+    // counts, the routines it calls.)
+    FJit.AddWindow(RSPOff.SingleIssue);
+    FJit.AddWindow(RSPOff.Calls);
+    for var K := 0 to 255 do
+      FJitCalls[K] := FKindIssue[K];
+    FJitCalls[RSPJitCallCheck] := @TN64RSP.JitCheck;
+  end;
+  if not FJit.Room(4096 + B.Count * 512) then
+  begin
+    FJitFull := True;
+    Exit;
+  end;
+  if FJitEnter = 0 then
+    JitEmitShared;
+  var J := FJit;
+  var O := RSPOff;
+  J.ForgetLabels;
+  J.Align(16);
+  Result := J.Here;
+  J.Alu(jaAdd, jw64, JMem(jrSelf, O.BlocksRun), JImm(1));
+  // A clock that needs a check of the run: by JitCheck (a general one
+  // always; a load or store while the run has fences), back where it stops
+  // the run.
+  var Stop := J.NewLabel;
+  for var I := 0 to B.Count - 1 do
+  begin
+    var S: PRSPBlockStep := @FBlockSteps[B.First + I];
+    var Step := B.First + I;
+    if I = 0 then
+      Step := Step or RSPJitFirstStep;
+    if I = B.Count - 1 then
+      Step := Step or RSPJitLastStep;
+    if S.Wait <> 0 then
+    begin
+      J.Move(jw32, JMem(jrSelf, O.StalledOp), JImm(S.Op));
+      J.Move(jw32, JMem(jrSelf, O.StalledPC), JImm(S.PC));
+      J.Move(jw32, JMem(jrSelf, O.StalledSecond), JImm(S.Second));
+    end;
+    if (S.Checks and StepGeneral) <> 0 then
+    begin
+      J.CallAt(JMem(jrSelf, O.Calls + RSPJitCallCheck * 8), [JSelf, JCtx, JImm(Step), JRan]);
+      J.BranchTest(jcNe, jw32, JT0, JT0, Stop);
+      Continue;
+    end;
+    var Next: TJitLabel := -1;
+    if (S.Checks and StepMemory) <> 0 then
+    begin
+      // While the run has fences and DMEM has any: the groups the load or
+      // store may touch (as TouchesFence finds them, the base register as
+      // before the clock) tested here, JitCheck where one is fenced.
+      var Plain := J.NewLabel;
+      var Fenced := J.NewLabel;
+      Next := J.NewLabel;
+      J.Move(jw8, JT0, JMem(jrCtx, O.CtxFences));
+      J.BranchTest(jcEq, jw32, JT0, JT0, Plain);
+      J.Move(jw8, JT0, JMem(jrSelf, O.Fenced));
+      J.BranchTest(jcEq, jw32, JT0, JT0, Plain);
+      var W := S.Op;
+      if not LoadStore(W) then
+        W := S.Second;
+      var Code := W shr 26;
+      J.Move(jw32, JT0, JMem(jrSelf, O.Reg + Integer((W shr 21) and 31) * 4));
+      var Flags: Cardinal := 1;
+      if Code in [40..43, 58] then
+        Flags := 2;
+      if Code in [50, 58] then
+      begin
+        // 32 bytes from 16 below the 16-byte line: four groups (FFence's
+        // copy of 0..3 past its end).
+        var Kind := (W shr 11) and 31;
+        var Size: Integer := 16;
+        if Kind <= 3 then
+          Size := 1 shl Kind
+        else if Kind in [6, 7] then
+          Size := 8;
+        var Offset := Integer(SignedValue(SX(W and 127, 7)));
+        J.Alu(jaAdd, jw32, JT0, JImm(Int64(Cardinal((Int64(Offset) * Size) and $FFFFFFFF))));
+        J.Alu(jaAnd, jw32, JT0, JImm($FF0));
+        J.Shift(jsShr, jw32, jrT0, 3);
+        J.Alu(jaAdd, jw64, JT0, JSelf);
+        J.Move(jw32, JT1, JMem(jrT0, O.Fence));
+        J.BranchTest(jcNe, jw32, JT1, JImm(Flags * $01010101), Fenced);
+      end
+      else
+      begin
+        // Its first and last byte's groups.
+        var Size := 1;
+        if Code in [33, 37, 41] then
+          Size := 2
+        else if Code in [35, 39, 43] then
+          Size := 4;
+        J.Alu(jaAdd, jw32, JT0, JImm(W and $FFF));
+        J.Alu(jaAnd, jw32, JT0, JImm($FFF));
+        J.Move(jw32, JT1, JT0);
+        J.Alu(jaAdd, jw32, JT1, JImm(Size - 1));
+        J.Shift(jsShr, jw32, jrT0, 3);
+        J.Shift(jsShr, jw32, jrT1, 3);
+        J.Alu(jaAdd, jw64, JT0, JSelf);
+        J.Alu(jaAdd, jw64, JT1, JSelf);
+        J.Move(jw8, JT2, JMem(jrT0, O.Fence));
+        J.Move(jw8, JT3, JMem(jrT1, O.Fence));
+        J.Alu(jaOr, jw32, JT2, JT3);
+        J.BranchTest(jcNe, jw32, JT2, JImm(Flags), Fenced);
+      end;
+      J.Jump(Plain);
+      J.Bind(Fenced);
+      J.CallAt(JMem(jrSelf, O.Calls + RSPJitCallCheck * 8), [JSelf, JCtx, JImm(Step), JRan]);
+      J.BranchTest(jcNe, jw32, JT0, JT0, Stop);
+      J.Jump(Next);
+      J.Bind(Plain);
+    end;
+    J.CallAt(JMem(jrSelf, O.Calls + Integer(S.Kind) * 8), [JSelf, JImm(S.Arg)]);
+    if S.Pair then
+      J.CallAt(JMem(jrSelf, O.Calls + Integer(S.SecondKind) * 8), [JSelf, JImm(S.SecondArg)]);
+    if Next >= 0 then
+      J.Bind(Next);
+  end;
+  // The plain end: the PC after the last clock (after a delay slot where the
+  // branch took it; as JitCheck left it after a general one), the pipeline
+  // after it, a delay slot's bubble, the counts.
+  var Last: PRSPBlockStep := @FBlockSteps[B.First + B.Count - 1];
+  var LastGeneral := (Last.Checks and StepGeneral) <> 0;
+  if LastGeneral then
+  begin
+    J.Move(jw32, JPC, JMem(jrCtx, O.CtxPC));
+    J.Move(jw8, JSlot, JMem(jrCtx, O.CtxSlot));
+  end
+  else
+    J.Move(jw32, JPC, JImm((Cardinal(Last.PC) + 4 + 4 * Cardinal(Ord(Last.Pair))) and $FFC));
+  if Last.Delay and not LastGeneral then
+  begin
+    var NoBranch := J.NewLabel;
+    J.Move(jw8, JSlot, JMem(jrSelf, O.Branch));
+    J.BranchTest(jcEq, jw32, JSlot, JSlot, NoBranch);
+    J.Move(jw32, JPC, JMem(jrSelf, O.NextPC));
+    J.Move(jw8, JMem(jrSelf, O.Branch), JImm(0));
+    J.Bind(NoBranch);
+  end;
+  J.Move(jw32, JMem(jrSelf, O.ScalarLo), JImm(Last.ScalarLo));
+  J.Move(jw32, JMem(jrSelf, O.ScalarHi), JImm(Last.ScalarHi));
+  J.Move(jw32, JMem(jrSelf, O.VectorLo), JImm(Last.VectorLo));
+  J.Move(jw32, JMem(jrSelf, O.VectorHi), JImm(Last.VectorHi));
+  J.Move(jw8, JMem(jrSelf, O.LoadHistory), JImm(Last.LoadHistory));
+  J.Move(jw8, JMem(jrSelf, O.SingleIssue), JImm(Last.SingleIssue));
+  J.Move(jw8, JMem(jrSelf, O.HasStalled), JImm(0));
+  J.Move(jw8, JMem(jrSelf, O.HasStalledSecond), JImm(0));
+  if Last.Delay or LastGeneral then
+  begin
+    var NoSlot := J.NewLabel;
+    J.BranchTest(jcEq, jw32, JSlot, JSlot, NoSlot);
+    J.Move(jw8, JMem(jrSelf, O.BranchBubble), JImm(1));
+    J.BranchTest(jcEq, jw32, JPC, JImm(4), NoSlot);
+    J.Move(jw8, JMem(jrSelf, O.SingleIssue), JImm(1));
+    J.Bind(NoSlot);
+  end;
+  J.Alu(jaAdd, jw64, JMem(jrSelf, O.BlockClocks), JImm(B.Clocks));
+  J.Alu(jaAdd, jw32, JRan, JImm(B.Clocks));
+  J.JumpTo(FJitChain);
+  J.Bind(Stop);
+  J.JumpTo(FJitStop);
+  J.ForgetLabels;
+  J.Flush;
+  Inc(FJitCompiled);
+end;
+
+function TN64RSP.JitRun(var B: PRSPBlock; var PC, Status, Interrupt: Cardinal; var Ran: Integer; Cycles, Stop: Integer;
+  Mask: Byte; Fences: Boolean): Integer;
+begin
+  // B's code and the blocks' it chains to (RunBlock found that the budget
+  // takes all of B's clocks; Mask: the run's checks but StepMemory, Fences:
+  // that too while DMEM has fences): then B is the last block that ran to
+  // its end, PC the PC after it, Ran with all their clocks (and the bubbles
+  // between them), the result -1; or a clock stopped the run as RunBlock
+  // stops it there, the result RunBlock's (PC, Ran as it leaves them).
+  var Ctx: TRSPJitCtx;
+  Ctx.Cycles := Cycles;
+  Ctx.Stop := Stop;
+  Ctx.Ran := Ran;
+  Ctx.Outcome := -1;
+  Ctx.PC := PC;
+  Ctx.Mask := Mask;
+  Ctx.Fences := Ord(Fences);
+  Ctx.Slot := 0;
+  Ctx.Block := B;
+  Ctx.Status := @Status;
+  Ctx.Interrupt := @Interrupt;
+  Inc(FJitRuns);
+  FJit.Invoke(FJit.Base + FJitEnter, NativeUInt(Self), NativeUInt(@Ctx), NativeUInt(FJit.Base + FJitOuter), NativeUInt(B));
+  B := Ctx.Block;
+  PC := Ctx.PC;
+  Ran := Ctx.Ran;
+  Result := Ctx.Outcome;
+end;
+
+procedure TN64RSP.CountGeneral(S: PRSPBlockStep);
+begin
+  // (N64RSPJIT=stats: a general clock's instruction, by opcode; SPECIAL by
+  // function, COP0 and COP2 by their rs.)
+  var G := S.Op;
+  if S.Kind <> 0 then
+    G := S.Second;
+  if (G shr 26) = 0 then
+    Inc(FJitGen[64 + (G and 63)])
+  else if (G shr 26) in [16, 18] then
+    Inc(FJitGen[128 + ((G shr 26) - 16) * 16 + ((G shr 21) and 15)])
+  else
+    Inc(FJitGen[G shr 26]);
+end;
+
+function TN64RSP.JitCheck(Ctx: PRSPJitCtx; Step, Ran: Integer): Cardinal;
+begin
+  // (For a block's code.) Block clock Step (with RSPJitFirstStep and
+  // RSPJitLastStep) that needs a check of the run, as RunBlock takes it, Ran
+  // the clocks before its block: 0 when the code goes on after it (it ran);
+  // 1 when it stopped the run as RunBlock stops it there (Ctx: Outcome, PC,
+  // Ran as RunBlock leaves them). Ctx.PC: the PC as a general clock's words
+  // moved it; Ctx.Slot: whether a branch was pending before them.
+  var S: PRSPBlockStep := @FBlockSteps[Step and (RSPJitFirstStep - 1)];
+  var Done: PRSPBlockStep := nil;
+  if (Step and RSPJitFirstStep) = 0 then
+  begin
+    Done := S;
+    Dec(Done);
+  end;
+  // (The clocks before this one, its stall included.)
+  var Before := Ran + S.Clocks - 1;
+  Result := 1;
+  if ((S.Checks and StepMemory) <> 0) and (Ctx.Fences <> 0) and FFenced and
+    (TouchesFence(S.Op) or (S.Pair and TouchesFence(S.Second))) then
+  begin
+    HoldStep(Done, S);
+    if not LiftFence(S.PC, S.Op, S.Second, S.Pair, FClockBase + Before + 1) then
+    begin
+      FAheadStop := TRSPAheadStop.Fence;
+      Inc(FBlockClocks, S.Clocks - 1);
+      Ctx.Outcome := 2;
+      Ctx.PC := S.PC;
+      Ctx.Ran := Before;
+      Exit;
+    end;
+  end;
+  if ((S.Checks and Ctx.Mask and StepExternal) <> 0) and not JournalCOP0(S.Op, S.Second, S.Pair, FClockBase + Before + 1) then
+  begin
+    HoldStep(Done, S);
+    StopAtExternal(S.Op, S.Second);
+    Inc(FBlockClocks, S.Clocks - 1);
+    Ctx.Outcome := 2;
+    Ctx.PC := S.PC;
+    Ctx.Ran := Before;
+    Exit;
+  end;
+  if (S.Checks and StepGeneral) = 0 then
+  begin
+    // A load or store let through.
+    TRSPIssueProc(S.Issue)(Self, S.Arg);
+    if S.Pair then
+      TRSPIssueProc(S.SecondIssue)(Self, S.SecondArg);
+    Exit(0);
+  end;
+  if RSPJitStats then
+    CountGeneral(S);
+  Ctx.Slot := Ord(FBranch);
+  var PC := Cardinal(S.PC);
+  IssueKind(S.Kind, S.Arg, PC, Ctx.Status^, Ctx.Interrupt^);
+  var external := (S.Checks and StepExternal) <> 0;
+  if S.Pair and (not external or ((Ctx.Status^ and 1) = 0)) then
+    IssueKind(S.SecondKind, S.SecondArg, PC, Ctx.Status^, Ctx.Interrupt^);
+  Ctx.PC := PC;
+  if not external or ((Ctx.Status^ and $21) = 0) then
+    Exit(0);
+  // Halted or single-stepping: the run ends after the clock.
+  if (Ctx.Status^ and $20) <> 0 then
+    Ctx.Status^ := Ctx.Status^ or 1;
+  FScalarLo := S.ScalarLo;
+  FScalarHi := S.ScalarHi;
+  FVectorLo := S.VectorLo;
+  FVectorHi := S.VectorHi;
+  FLoadHistory := S.LoadHistory;
+  FSingleIssue := S.SingleIssue;
+  FHasStalledOpcode := False;
+  FHasStalledSecondOpcode := False;
+  if ((Step and RSPJitLastStep) <> 0) and (Ctx.Slot <> 0) then
+  begin
+    FBranchBubble := 1;
+    if (PC and 4) <> 0 then
+      FSingleIssue := 1;
+  end;
+  Inc(FBlockClocks, S.Clocks);
+  Ctx.Outcome := 0;
+  Ctx.Ran := Ran + S.Clocks;
 end;
 
 function TN64RSP.RunSteps(S: PRSPBlockStep; Mask: Byte; Room, Limit: Integer): PRSPBlockStep;
@@ -5713,6 +6747,8 @@ begin
     Flags := Flags or 1;
   for var Group := Integer(Offset shr 3) to Integer((Offset + Count - 1) shr 3) do
     FFence[Group and 511] := FFence[Group and 511] or Flags;
+  for var Group := 0 to 3 do
+    FFence[512 + Group] := FFence[Group];
   FFenced := True;
 end;
 
@@ -5877,7 +6913,7 @@ begin
   Result := FJournal[I];
 end;
 
-function TN64RSP.RunAhead(var PC: Cardinal; Status: Cardinal; Cycles: Integer): Integer;
+function TN64RSP.RunAhead(var PC: Cardinal; Status: Cardinal; Cycles, Least: Integer): Integer;
 begin
   if (Status and $21) <> 0 then
     raise EInvalidOpException.Create('RSP run-ahead while halted or single-stepping');
@@ -5893,24 +6929,24 @@ begin
   var Interrupt: Cardinal := 0;
   FAheadStop := TRSPAheadStop.Budget;
   FClockBase := 0;
-  Result := RunClocks(PC, Status, Interrupt, Cycles, True);
+  Result := RunClocks(PC, Status, Interrupt, Cycles, True, Least);
   FAheadClocks := Result;
-  if (FAheadStop = TRSPAheadStop.Budget) and (Result < Cycles) then
+  if (FAheadStop = TRSPAheadStop.Budget) and (Result < Cycles) and ((Least <= 0) or (Result < Least)) then
     FAheadStop := TRSPAheadStop.Halt;
   // Without a clock run nothing was saved or changed.
   if Result = 0 then
     EndAhead;
 end;
 
-function TN64RSP.ContinueAhead(var PC: Cardinal; Status: Cardinal; Cycles: Integer): Integer;
+function TN64RSP.ContinueAhead(var PC: Cardinal; Status: Cardinal; Cycles, Least: Integer): Integer;
 begin
   if not FAhead or (FAheadStop <> TRSPAheadStop.Budget) then
     raise EInvalidOpException.Create('RSP window continued after it stopped');
   var Interrupt: Cardinal := 0;
   FClockBase := FAheadClocks;
-  Result := RunClocks(PC, Status, Interrupt, Cycles, True);
+  Result := RunClocks(PC, Status, Interrupt, Cycles, True, Least);
   Inc(FAheadClocks, Result);
-  if (FAheadStop = TRSPAheadStop.Budget) and (Result < Cycles) then
+  if (FAheadStop = TRSPAheadStop.Budget) and (Result < Cycles) and ((Least <= 0) or (Result < Least)) then
     FAheadStop := TRSPAheadStop.Halt;
 end;
 
@@ -6055,8 +7091,34 @@ begin
 end;
 
 initialization
+  for var N := 0 to 15 do
+    for var K := 0 to 3 do
+      if (N and (1 shl K)) <> 0 then
+        RSPNibbleLanes[N] := RSPNibbleLanes[N] or (UInt64(1) shl (16 * K));
   InitKindIssue;
   InitDivideTables;
+  RSPJitWorkOutOffsets;
+  // N64RSPJIT: off, model, stats, hotN (where there is generated code).
+  {$IF RSPJit}
+  begin
+    var Words := GetEnvironmentVariable('N64RSPJIT').ToLower;
+    RSPJitOff := Words.Contains('off');
+    RSPJitModel := Words.Contains('model');
+    RSPJitStats := Words.Contains('stats');
+    var P := Words.IndexOf('hot');
+    if P >= 0 then
+    begin
+      var N := 0;
+      var K := P + 3;
+      while (K < Words.Length) and CharInSet(Words.Chars[K], ['0'..'9']) do
+      begin
+        N := N * 10 + Ord(Words.Chars[K]) - Ord('0');
+        Inc(K);
+      end;
+      RSPJitHot := Min(N, 60000);
+    end;
+  end;
+  {$ENDIF}
 
 end.
 

@@ -421,6 +421,7 @@
         <DCCReference Include="..\..\source\adapters\Core.Adapter.N64.pas"/>
         <DCCReference Include="..\..\source\adapters\Core.N64.Playback.pas"/>
         <DCCReference Include="..\..\source\cores\n64\N64.Types.pas"/>
+        <DCCReference Include="..\..\source\hardware\jit\HW.JIT.pas"/>
         <DCCReference Include="..\..\source\cores\n64\N64.CPU.pas"/>
         <DCCReference Include="..\..\source\cores\n64\N64.RSP.pas"/>
         <DCCReference Include="..\..\source\cores\n64\N64.RDP.pas"/>

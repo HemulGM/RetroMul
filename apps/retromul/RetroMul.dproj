@@ -768,6 +768,7 @@
         <DCCReference Include="..\..\source\cores\sms\SMS.Cartridge.pas"/>
         <DCCReference Include="..\..\source\cores\sms\SMS.VDP.pas"/>
         <DCCReference Include="..\..\source\cores\n64\N64.Types.pas"/>
+        <DCCReference Include="..\..\source\hardware\jit\HW.JIT.pas"/>
         <DCCReference Include="..\..\source\cores\n64\N64.CPU.pas"/>
         <DCCReference Include="..\..\source\cores\n64\N64.RSP.pas"/>
         <DCCReference Include="..\..\source\cores\n64\N64.RDP.pas"/>

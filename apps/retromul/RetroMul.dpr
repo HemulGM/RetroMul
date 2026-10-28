@@ -298,6 +298,7 @@ uses
   SMS.Cartridge in '..\..\source\cores\sms\SMS.Cartridge.pas',
   SMS.VDP in '..\..\source\cores\sms\SMS.VDP.pas',
   N64.Types in '..\..\source\cores\n64\N64.Types.pas',
+  HW.JIT in '..\..\source\hardware\jit\HW.JIT.pas',
   N64.CPU in '..\..\source\cores\n64\N64.CPU.pas',
   N64.RSP in '..\..\source\cores\n64\N64.RSP.pas',
   N64.RDP in '..\..\source\cores\n64\N64.RDP.pas',

@@ -28,11 +28,15 @@ __recovery/
 /source/cores/md/README.md
 /apps/terminal/Win32/*
 /tests/*
+!/tests/hardware/
+/tests/hardware/*
+!/tests/hardware/jit/
 !/tests/cores/
 /tests/cores/*
 !/tests/cores/n64/
 /tests/cores/n64/*
 !/tests/cores/n64/hardware/
+!/tests/cores/n64/jit/
 /tests/**/bin/
 /tests/cores/n64/hardware/roms/
 /tools/*

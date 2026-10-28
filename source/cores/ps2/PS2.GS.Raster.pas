@@ -261,8 +261,8 @@ type
     // Diagnostics: transfers started (BITBLTBUF, TRXPOS, TRXREG, TRXDIR) when assigned.
     TransferLog: TStrings;
     PrimLog: TStrings;
-    // Diagnostics: OnPrimLogBreak runs before the next sprite or triangle
-    // once PrimLog holds PrimLogBreak lines (then PrimLogBreak is 0).
+    // Diagnostics: OnPrimLogBreak runs before the next sprite, triangle or
+    // transfer once PrimLog holds PrimLogBreak lines (then PrimLogBreak is 0).
     PrimLogBreak: Integer;
     OnPrimLogBreak: TProc;
     // Diagnostics: writes to this pixel go to PrimLog (WatchX -1: none).
@@ -2056,6 +2056,11 @@ end;
 procedure TPS2GSRaster.StartTransfer;
 begin
   var Dir := Integer(Regs[GSRegTRXDIR] and 3);
+  if (PrimLogBreak > 0) and (PrimLog <> nil) and (PrimLog.Count >= PrimLogBreak) then
+  begin
+    Sync;
+    CheckPrimLogBreak;
+  end;
   if (TransferLog <> nil) and (TransferLog.Count < 100000) then
     TransferLog.Add(Format('buf=%.16x pos=%.16x reg=%.16x dir=%d', [Regs[GSRegBITBLTBUF], Regs[GSRegTRXPOS],
       Regs[GSRegTRXREG], Dir]));

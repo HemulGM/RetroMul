@@ -67,6 +67,28 @@ interpreter, using both the native backend and the portable generator model.
 It covers code replacement, partial execution budgets, mode changes,
 memory, registers and pipeline state. `-Checked` enables checked core code.
 
+## Experimental Vulkan sprites
+
+`Video/Renderer=vulkan` independently selects Vulkan compute for supported
+untextured 32/24-bit sprites. This uses `RM.Vulkan.Compute` from the Xbox
+branch (3f3ce45), with coherent GS VRAM import. Textured primitives,
+triangles, small sprites, overlapping surfaces and unsupported storage
+formats retain the software path. If device creation or host-memory import
+is unavailable, software rendering continues; `VulkanError` reports why.
+The default remains multithreaded software rendering.
+
+The integer shader implements alpha/depth tests, fog, blending, destination
+alpha, masks and 24-bit preservation. Each accepted draw finishes before
+CPU consumers access VRAM. This is an initial synchronous implementation,
+not a complete or consistently faster GPU renderer. It does not require
+JIT. GS saves contain the same VRAM and state in either mode.
+
+Regenerate its embedded SPIR-V with `source/cores/ps2/shaders/build.ps1`
+(Vulkan SDK `glslc` required). Application builds use the checked-in include.
+`tests/cores/ps2/gpu/build.ps1` compares 256 draws against the CPU over all
+4 MiB of VRAM, and checks that unsupported draws leave memory untouched.
+It requires a Vulkan device with coherent host-memory import.
+
 ## Limits
 
 - No BIOS boot (OSDSYS); the GS rasterizer is a software renderer without

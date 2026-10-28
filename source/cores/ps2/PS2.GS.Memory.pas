@@ -99,6 +99,7 @@ type
   TPS2GSMemory = class
   private
     FData: PByte;
+    FAllocation: Pointer;
   public
     constructor Create;
     destructor Destroy; override;
@@ -150,12 +151,15 @@ end;
 constructor TPS2GSMemory.Create;
 begin
   inherited Create;
-  FData := AllocMem(PS2GSMemorySize + 64);
+  // Page-aligned storage can be imported by VK_EXT_external_memory_host.
+  // Keep the original allocation for the software renderer's ownership.
+  FAllocation := AllocMem(PS2GSMemorySize + $10000);
+  FData := PByte((NativeUInt(FAllocation) + $FFFF) and not NativeUInt($FFFF));
 end;
 
 destructor TPS2GSMemory.Destroy;
 begin
-  FreeMem(FData);
+  FreeMem(FAllocation);
   inherited;
 end;
 

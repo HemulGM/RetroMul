@@ -45,7 +45,8 @@ type
     property Video: string read FVideo write FVideo;
     property Language: string read FLanguage write FLanguage;
     // GS drawing (Video/Renderer): 'threads' (default: band threads beside
-    // the emulation) or 'single' (on the emulation thread).
+    // the emulation), 'single' (on the emulation thread), or experimental
+    // 'vulkan' (supported sprites on the GPU, other draws on the CPU).
     property Renderer: string read FRenderer write FRenderer;
     property Recompiler: Boolean read FRecompiler write FRecompiler;
     // Band threads for Renderer (0: none).
@@ -93,6 +94,7 @@ type
     FVolume: Single;
     FGSThreads: Integer;
     FRecompiler: Boolean;
+    FVulkan: Boolean;
     FAudio: TPS2AudioPlayback;
     FAudioFailed: Boolean;
     FAudioError: string;
@@ -118,7 +120,7 @@ type
       CardFile2: string);
     destructor Destroy; override;
     procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
-      Recompiler: Boolean);
+      Recompiler, Vulkan: Boolean);
     procedure RequestReset;
     procedure StopAndSave;
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -286,7 +288,7 @@ begin
   FLanguage := Ini.ReadString('System', 'Language', 'english').ToLower;
   FRenderer := Ini.ReadString('Video', 'Renderer', 'threads').ToLower;
   FRecompiler := SameText(Ini.ReadString('Emulation', 'Execution', 'interpreter'), 'jit');
-  if FRenderer <> 'single' then
+  if (FRenderer <> 'single') and (FRenderer <> 'vulkan') then
     FRenderer := 'threads';
   for var P := 0 to 1 do
   begin
@@ -358,7 +360,7 @@ begin
 end;
 
 procedure TPS2Worker.Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
-  Recompiler: Boolean);
+  Recompiler, Vulkan: Boolean);
 begin
   var Wake: Boolean;
   FLock.Acquire;
@@ -370,6 +372,7 @@ begin
     FVolume := EnsureRange(Volume, 0.0, 1.0);
     FGSThreads := GSThreads;
     FRecompiler := Recompiler;
+    FVulkan := Vulkan;
   finally
     FLock.Release;
   end;
@@ -613,7 +616,7 @@ begin
         var Volume: Single;
         var Inputs: TPS2PadInputs;
         var GSThreads: Integer;
-        var Recompiler: Boolean;
+        var Recompiler, Vulkan: Boolean;
         FLock.Acquire;
         try
           Paused := FPause;
@@ -624,9 +627,11 @@ begin
           Volume := FVolume;
           GSThreads := FGSThreads;
           Recompiler := FRecompiler;
+          Vulkan := FVulkan;
         finally
           FLock.Release;
         end;
+        FConsole.GS.Raster.Vulkan := Vulkan;
         FConsole.GS.Raster.Threads := GSThreads;
         FConsole.VU1.Core.UseJit := Recompiler;
         for var Port := 0 to 1 do
@@ -909,7 +914,7 @@ begin
       Inputs[Port].Pressure[K] := 0;
   end;
   FWorker.Configure(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume, FConfigObject.GSThreads,
-    FConfigObject.Recompiler);
+    FConfigObject.Recompiler, FConfigObject.Renderer = 'vulkan');
 end;
 
 procedure TPS2CoreAdapter.Start;

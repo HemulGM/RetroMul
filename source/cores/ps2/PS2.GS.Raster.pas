@@ -140,6 +140,12 @@ type
   end;
   PPS2GSCommand = ^TPS2GSCommand;
 
+  TPS2GSAccelerator = class abstract
+  public
+    function Sprite(const D: TPS2GSDraw; const V: TPS2GSVertex;
+      X0, Y0, X1, Y1: Integer): Boolean; virtual; abstract;
+  end;
+
   TPS2GSRaster = class;
 
   // The pixel pipeline of one thread: draws primitives into GS memory. With
@@ -206,6 +212,9 @@ type
     FCommand: TPS2GSCommand;
     FThreads: Integer;
     FBands: TPS2GSBands;
+    FAccelerator: TPS2GSAccelerator;
+    FVulkan: Boolean;
+    FVulkanError: string;
     // Something queued since the last Sync; the 8 KiB pages queued
     // primitives write and read as texture, and the buffer (base, width,
     // format) each written page is drawn through.
@@ -228,6 +237,8 @@ type
     procedure LoadClut(Tex0: UInt64);
     function GetMemory: TPS2GSMemory;
     procedure SetThreads(Value: Integer);
+    procedure SetVulkan(Value: Boolean);
+    function GetVulkanDraws: Int64;
     procedure StartTransfer;
     procedure FeedWord(W: Cardinal);
     procedure TransferPixel(Value: Cardinal);
@@ -263,6 +274,9 @@ type
     // Band threads drawing (0 or 1: none, everything drawn at once on the
     // caller's thread). The memory and timing are the same either way.
     property Threads: Integer read FThreads write SetThreads;
+    property Vulkan: Boolean read FVulkan write SetVulkan;
+    property VulkanError: string read FVulkanError;
+    property VulkanDraws: Int64 read GetVulkanDraws;
     property SignalPending: Boolean read FSignal;
     property FinishPending: Boolean read FFinish;
     property OnSignal: TProc read FOnSignal write FOnSignal;
@@ -329,6 +343,9 @@ type
 
 implementation
 
+uses
+  PS2.GS.Gpu;
+
 // Arithmetic shift right (rounds toward minus infinity); Delphi's shr is a
 // logical shift, wrong for negative values.
 function Sar(V: Int64; N: Integer): Int64; inline;
@@ -394,10 +411,36 @@ end;
 destructor TPS2GSRaster.Destroy;
 begin
   FBands.Free;
+  FAccelerator.Free;
   FCounter.Free;
   FDrawer.Free;
   FMemory.Free;
   inherited;
+end;
+
+function TPS2GSRaster.GetVulkanDraws: Int64;
+begin
+  Result := 0;
+  if FAccelerator <> nil then
+    Result := TPS2GSGpu(FAccelerator).Draws;
+end;
+
+procedure TPS2GSRaster.SetVulkan(Value: Boolean);
+begin
+  if Value = FVulkan then Exit;
+  Sync;
+  FreeAndNil(FAccelerator);
+  FVulkan := Value;
+  FVulkanError := '';
+  if Value then
+  begin
+    SetThreads(0);
+    try
+      FAccelerator := TPS2GSGpu.Create(FMemory.Data);
+    except
+      on E: Exception do FVulkanError := E.Message;
+    end;
+  end;
 end;
 
 procedure TPS2GSRaster.SetThreads(Value: Integer);
@@ -1584,6 +1627,13 @@ begin
     Inc(FPixels, Int64(PX1 - PX0) * (PY1 - PY0));
     Exit;
   end;
+  if (FBandCount = 1) and (FOwner.FAccelerator <> nil) and
+    (FOwner.PrimLog = nil) and (FOwner.WatchX < 0) then
+    if FOwner.FAccelerator.Sprite(FD, V1, PX0, PY0, PX1, PY1) then
+    begin
+      Inc(FPixels, Int64(PX1 - PX0) * (PY1 - PY0));
+      Exit;
+    end;
   // Texture coordinates along the edges (in 1/16 texels).
   var U0, U1, TV0, TV1: Double;
   if FD.FST then

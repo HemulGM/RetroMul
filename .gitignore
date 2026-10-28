@@ -37,6 +37,7 @@ __recovery/
 !/tests/cores/ps2/
 /tests/cores/ps2/*
 !/tests/cores/ps2/jit/
+!/tests/cores/ps2/gpu/
 /tests/cores/n64/*
 !/tests/cores/n64/hardware/
 !/tests/cores/n64/jit/

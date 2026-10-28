@@ -37,6 +37,9 @@ __recovery/
 /tests/cores/n64/*
 !/tests/cores/n64/hardware/
 !/tests/cores/n64/jit/
+!/tests/cores/dc/
+/tests/cores/dc/*
+!/tests/cores/dc/jit/
 /tests/**/bin/
 /tests/cores/n64/hardware/roms/
 /tools/*

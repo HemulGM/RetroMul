@@ -15,7 +15,7 @@
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots;
+  System.SysUtils, System.Math, Core.Snapshots, HW.JIT;
 
 const
   // TSH4TLBPage.Flags: device memory reached through the bus (reads,
@@ -160,7 +160,21 @@ type
     // Recently followed successors (validated by PC, mode and code).
     Link: array[0..1] of PSH4Block;
     Idle, Translated: Boolean;
+    // Recompiler: the block's generated code (nil: none) and its entries
+    // from RunBlocks before it is made.
+    Runs: Integer;
+    Native: Pointer;
   end;
+
+  // A run of generated code (TSH4.JitRun): the last block it ran, its next
+  // PC where it ran to its end, the instructions done where it stopped.
+  TSH4JitCtx = record
+    Block: PSH4Block;
+    Next: Cardinal;
+    Done: Integer;
+  end;
+
+  PSH4JitCtx = ^TSH4JitCtx;
 
   // A 4 KiB page of P0/P3 with a cached translation: host memory for reads
   // and (when allowed) writes, the physical page and its write generation,
@@ -293,6 +307,33 @@ type
     FFastFilled: TArray<Cardinal>;
     FFastFilledCount: Integer;
     FFastOverflow: Boolean;
+    // Recompiler (see JitCompile): in use, unavailable here (no code
+    // generator), the code generator, whether its shared code is written and
+    // where, the context of a run, entries before a block's code is made and
+    // the handlers the code calls (SH4Ops by Kind).
+    FUseJit, FJitUnavailable, FJitShared: Boolean;
+    FJit: TJitAsm;
+    FJitEnter, FJitReturn, FJitChain: NativeInt;
+    FJitCtx: TSH4JitCtx;
+    FJitHot: Integer;
+    FJitOps: array[Byte] of Pointer;
+    FJitCompiled, FJitRuns: Int64;
+    FJitExits: array[0..15] of Int64;
+    // The block being written: the accesses its code makes itself that take
+    // the handler where they cannot (out of line: where, back to, which).
+    FJitSlowLabel, FJitSlowBack: array[0..MaxBlockInsts + 1] of TJitLabel;
+    FJitSlowStep: array[0..MaxBlockInsts + 1] of Integer;
+    FJitSlowCount: Integer;
+    function JitEmitOwn(B: PSH4Block; K: Integer): Boolean;
+    procedure SetRecompiler(Value: Boolean);
+    function JitReady(B: PSH4Block): Boolean;
+    procedure JitCompile(B: PSH4Block);
+    procedure JitEmitShared;
+    procedure JitEmitBlock(B: PSH4Block);
+    procedure JitDrop;
+    function JitRun(var B: PSH4Block; out Next: Cardinal): Integer;
+    function JitStopped(B: PSH4Block; Done: Integer; out Next: Cardinal): Integer;
+    procedure JitRTE;
     procedure FastFill(Address: Cardinal; Host: PByte; Page: PSH4TLBPage);
     procedure FastSelect; inline;
     procedure FastClear;
@@ -561,7 +602,17 @@ type
     // Diagnostics (not serialized): exceptions taken and the first one.
     ExceptionCount: Int64;
     FirstExceptionPC, FirstExceptionCode, FirstExceptionPR: Cardinal;
+    class var
+      // Tests: entries from RunBlocks before a block's code is made (0: the
+      // default) and HW.JIT's model in place of the code generator, for CPUs
+      // created after they are set.
+      JitHot: Integer;
+      JitModel: Boolean;
+      // Diagnostics: the chaining code counts where it stops (JitExits);
+      // every instruction's handler called (none written out).
+      JitStats, JitCallsOnly: Boolean;
     constructor Create(const Bus: TSH4Bus; NowCounter, DeadlineCounter: PInt64);
+    destructor Destroy; override;
     procedure Reset;
     // Physical page tables or MMU/OCRAM state changed.
     procedure RemapMemory;
@@ -603,6 +654,14 @@ type
     procedure SetFPSCR(Value: Cardinal);
     property BlocksBuilt: Int64 read FBlocksBuilt;
     property BlocksEnabled: Boolean read FBlocksEnabled write FBlocksEnabled;
+    // Blocks as generated code where HW.JIT has a code generator (else always
+    // interpreted). Either way the same execution, bit for bit, so it may
+    // change at any time; off by default.
+    property Recompiler: Boolean read FUseJit write SetRecompiler;
+    // Diagnostics: blocks given code, runs of code from RunBlocks.
+    property JitCompiled: Int64 read FJitCompiled;
+    property JitRuns: Int64 read FJitRuns;
+    function JitExits(Reason: Integer): Int64;
     // SingleStepTests conventions: no alignment, privilege or FPU-disable
     // exceptions. Never set for emulation.
     property Lenient: Boolean read FLenient write FLenient;
@@ -5396,6 +5455,7 @@ end;
 
 procedure TSH4.ClearBlocks;
 begin
+  JitDrop;
   FillChar(FBlockHead, SizeOf(FBlockHead), 0);
   FBlockCount := 0;
   FInstChunk := 0;
@@ -5658,6 +5718,8 @@ begin
   B.Idle := False;
   B.Link[0] := nil;
   B.Link[1] := nil;
+  B.Runs := 0;
+  B.Native := nil;
   var Bucket := (PC shr 1) and (BlockBuckets - 1);
   B.Next := FBlockHead[Bucket];
   FBlockHead[Bucket] := B;
@@ -5679,7 +5741,16 @@ begin
   Deadline := DeadlineCounter;
   FBlocksEnabled := True;
   IdleSkipping := True;
+  FJitHot := JitHot;
+  if FJitHot <= 0 then
+    FJitHot := 16;
   Reset;
+end;
+
+destructor TSH4.Destroy;
+begin
+  FJit.Free;
+  inherited;
 end;
 
 procedure TSH4.SetStepHook(Hook: TSH4StepHook; User: Pointer);
@@ -5999,7 +6070,24 @@ begin
     end;
     if B <> nil then
     begin
-      Count := Execute(B.Insts, B.Count, Next) + FFusedExtra;
+      if not FUseJit or not JitReady(B) then
+        Count := Execute(B.Insts, B.Count, Next) + FFusedExtra
+      else
+      begin
+        // B's code, and the blocks it went on into: all done after the last
+        // one, or as Execute for it.
+        Count := JitRun(B, Next);
+        if Count < 0 then
+        begin
+          Prev := B;
+          if FExitRequest then
+          begin
+            FExitRequest := False;
+            Break;
+          end;
+          Continue;
+        end;
+      end;
       FFusedExtra := 0;
       S.PC := Next;
       Inc(InstructionsExecuted, Count);
@@ -6085,6 +6173,1383 @@ begin
     SetExceptionMask(SavedMask);
     SetRoundMode(SavedRound);
   end;
+end;
+
+{ Recompiler }
+
+// A block as generated code, written in HW.JIT's operations: it calls its
+// instructions' handlers (SH4Ops) one after another as Execute does, and
+// leaves where one stops; works out the next PC as Execute's end does; does
+// what RunBlocks does after a block (what is fixed for the block written
+// out); then takes the next block as RunBlocks's loop would (the same checks,
+// the links of the block that ran) and goes on into its code. Anything else
+// returns to RunBlocks where it carries on exactly (JitRun), so a block's
+// code changes nothing the interpreter would not: the execution is the same
+// either way, bit for bit (DCRun -statehashes compares them). What a block's
+// instructions do stays their handlers' alone. Registers by role: Self the
+// CPU, Ctx the TSH4JitCtx, S0 the block being run, S2 its instructions.
+
+const
+  // What the code returns (JitRun): RunBlocks's work after the last block
+  // done (JitStatusDone); the last block ran to its end, its next PC in the
+  // context, nothing after it done (JitStatusEnded); a handler stopped the last
+  // block before instruction Done, or a fault or exception was noted after
+  // all of them (JitStatusStopped).
+  JitStatusDone = 0;
+  JitStatusEnded = 1;
+  JitStatusStopped = 2;
+  JitBufferSize = 64 * 1024 * 1024;
+
+type
+  // Where the code reads and writes the CPU, the context and blocks.
+  TSH4JitOffsets = record
+    Ops, PC, SR, FPSCR, DelaySlot, DelayTarget, RTEPending, Sleeping: Integer;
+    Jumped, Excepted, Fault, JumpTarget, FusedExtra, Instructions, NowPtr, DeadlinePtr: Integer;
+    ExitRequest, IRQLevel, IdlePhase, IdleHead, IdleHits, IdleSkipped, IdleRejected, IdleSkipping: Integer;
+    BlocksEnabled, Fetch, StepHook, TLBEpoch, Exits, MMUCR, PTEH, TLBChunks, BlockHead: Integer;
+    CtxBlock, CtxNext, CtxDone: Integer;
+    BPC, BMode, BInsts, BGenPtr, BGenPtr2, BGen, BGen2, BLink0, BLink1, BTranslated, BEpoch, BNative: Integer;
+    BPhys, BNext, PRead, PPhys, PFlags, PASID: Integer;
+    R, T, FR, XF, GBR, PR, MACH, MACL, FPUL: Integer;
+    ReadMap, WriteMap, GenMap, FastRead, FastWrite, JournalOn, PWrite, PGen: Integer;
+    // A cached page's size as a shift (0: not a power of two).
+    PageShift: Integer;
+  end;
+
+var
+  JitOff: TSH4JitOffsets;
+
+procedure JitWorkOutOffsets;
+
+  function At(P: Pointer): Integer; inline;
+  begin
+    Result := Integer(NativeUInt(P));
+  end;
+
+begin
+  var O := Default(TSH4JitOffsets);
+  O.Ops := At(@TSH4(nil).FJitOps[0]);
+  O.PC := At(@TSH4(nil).S.PC);
+  O.SR := At(@TSH4(nil).S.SR);
+  O.FPSCR := At(@TSH4(nil).S.FPSCR);
+  O.DelaySlot := At(@TSH4(nil).S.DelaySlot);
+  O.DelayTarget := At(@TSH4(nil).S.DelayTarget);
+  O.RTEPending := At(@TSH4(nil).S.RTEPending);
+  O.Sleeping := At(@TSH4(nil).S.Sleeping);
+  O.Jumped := At(@TSH4(nil).FJumped);
+  O.Excepted := At(@TSH4(nil).FExcepted);
+  O.Fault := At(@TSH4(nil).FFault);
+  O.JumpTarget := At(@TSH4(nil).FJumpTarget);
+  O.FusedExtra := At(@TSH4(nil).FFusedExtra);
+  O.Instructions := At(@TSH4(nil).InstructionsExecuted);
+  O.NowPtr := At(@TSH4(nil).Now);
+  O.DeadlinePtr := At(@TSH4(nil).Deadline);
+  O.ExitRequest := At(@TSH4(nil).FExitRequest);
+  O.IRQLevel := At(@TSH4(nil).FIRQLevel);
+  O.IdlePhase := At(@TSH4(nil).FIdlePhase);
+  O.IdleHead := At(@TSH4(nil).FIdleHead);
+  O.IdleHits := At(@TSH4(nil).FIdleHits);
+  O.IdleSkipped := At(@TSH4(nil).FIdleSkipped);
+  O.IdleRejected := At(@TSH4(nil).FIdleRejected);
+  O.IdleSkipping := At(@TSH4(nil).IdleSkipping);
+  O.BlocksEnabled := At(@TSH4(nil).FBlocksEnabled);
+  O.Fetch := At(@@TSH4(nil).FFetch);
+  O.StepHook := At(@@TSH4(nil).FStepHook);
+  O.TLBEpoch := At(@TSH4(nil).FTLBEpoch);
+  O.Exits := At(@TSH4(nil).FJitExits[0]);
+  O.MMUCR := At(@TSH4(nil).S.MMUCR);
+  O.PTEH := At(@TSH4(nil).S.PTEH);
+  O.TLBChunks := At(@TSH4(nil).FTLBChunks);
+  O.BlockHead := At(@TSH4(nil).FBlockHead[0]);
+  O.CtxBlock := At(@PSH4JitCtx(nil).Block);
+  O.CtxNext := At(@PSH4JitCtx(nil).Next);
+  O.CtxDone := At(@PSH4JitCtx(nil).Done);
+  O.BPC := At(@PSH4Block(nil).PC);
+  O.BMode := At(@PSH4Block(nil).Mode);
+  O.BInsts := At(@PSH4Block(nil).Insts);
+  O.BGenPtr := At(@PSH4Block(nil).GenPtr);
+  O.BGenPtr2 := At(@PSH4Block(nil).GenPtr2);
+  O.BGen := At(@PSH4Block(nil).Gen);
+  O.BGen2 := At(@PSH4Block(nil).Gen2);
+  O.BLink0 := At(@PSH4Block(nil).Link[0]);
+  O.BLink1 := At(@PSH4Block(nil).Link[1]);
+  O.BTranslated := At(@PSH4Block(nil).Translated);
+  O.BEpoch := At(@PSH4Block(nil).Epoch);
+  O.BNative := At(@PSH4Block(nil).Native);
+  O.BPhys := At(@PSH4Block(nil).Phys);
+  O.BNext := At(@PSH4Block(nil).Next);
+  O.PRead := At(@PSH4TLBPage(nil).Read);
+  O.PPhys := At(@PSH4TLBPage(nil).Phys);
+  O.PFlags := At(@PSH4TLBPage(nil).Flags);
+  O.PASID := At(@PSH4TLBPage(nil).ASID);
+  O.R := At(@TSH4(nil).S.R[0]);
+  O.T := At(@TSH4(nil).S.T);
+  O.FR := At(@TSH4(nil).S.FR.U[0]);
+  O.XF := At(@TSH4(nil).S.XF.U[0]);
+  O.GBR := At(@TSH4(nil).S.GBR);
+  O.PR := At(@TSH4(nil).S.PR);
+  O.MACH := At(@TSH4(nil).S.MACH);
+  O.MACL := At(@TSH4(nil).S.MACL);
+  O.FPUL := At(@TSH4(nil).S.FPUL);
+  O.ReadMap := At(@TSH4(nil).FReadMap[0]);
+  O.WriteMap := At(@TSH4(nil).FWriteMap[0]);
+  O.GenMap := At(@TSH4(nil).FGenMap[0]);
+  O.FastRead := At(@TSH4(nil).FFastRead);
+  O.FastWrite := At(@TSH4(nil).FFastWrite);
+  O.JournalOn := At(@TSH4(nil).FJournalOn);
+  O.PWrite := At(@PSH4TLBPage(nil).Write);
+  O.PGen := At(@PSH4TLBPage(nil).Gen);
+  O.PageShift := 0;
+  for var K := 1 to 8 do
+    if (1 shl K) = SizeOf(TSH4TLBPage) then
+      O.PageShift := K;
+  JitOff := O;
+end;
+
+procedure TSH4.SetRecompiler(Value: Boolean);
+begin
+  FUseJit := Value and not FJitUnavailable;
+end;
+
+function TSH4.JitReady(B: PSH4Block): Boolean;
+begin
+  // (RunBlocks found B to run: its code is made on its FJitHot-th entry.)
+  if B.Native = nil then
+  begin
+    Inc(B.Runs);
+    if B.Runs = FJitHot then
+      JitCompile(B);
+  end;
+  Result := B.Native <> nil;
+end;
+
+procedure TSH4.JitCompile(B: PSH4Block);
+begin
+  if FJit = nil then
+  begin
+    // (The code takes pointers as 64 bits: on 64-bit hosts only, the
+    // model's too.)
+    if SizeOf(Pointer) <> 8 then
+      FJit := nil
+    else if JitModel then
+      FJit := CreateJitModel(JitBufferSize)
+    else
+      FJit := CreateJitAsm(JitBufferSize);
+    if FJit = nil then
+    begin
+      FJitUnavailable := True;
+      FUseJit := False;
+      Exit;
+    end;
+    JitWorkOutOffsets;
+    // (The fields the code uses most: the run's and the state's.)
+    FJit.AddWindow(JitOff.Jumped);
+    FJit.AddWindow(JitOff.Ops);
+    System.Move(SH4Ops, FJitOps, SizeOf(SH4Ops));
+  end;
+  // Room for the block's code (an access written out takes the most), else
+  // all code goes and is made again.
+  if not FJit.Room(4096 + B.Count * 512) then
+    JitDrop;
+  if not FJitShared then
+    JitEmitShared;
+  JitEmitBlock(B);
+end;
+
+procedure TSH4.JitDrop;
+begin
+  // All generated code goes; the blocks stay and get code again as they are
+  // entered. Code running now (a handler cleared the blocks) goes on to its
+  // block's end and back to RunBlocks: no block has code to go on into.
+  if FJit = nil then
+    Exit;
+  for var K := 0 to FBlockCount - 1 do
+  begin
+    var B: PSH4Block := @FBlockChunks[K div BlockChunkSize][K mod BlockChunkSize];
+    B.Native := nil;
+    B.Runs := 0;
+  end;
+  FJit.Reset;
+  FJitShared := False;
+end;
+
+procedure TSH4.JitEmitShared;
+var
+  J: TJitAsm;
+  O: TSH4JitOffsets;
+  // Where the chaining code stops (JitStats: counted by reason, JitExits).
+  NoLabel: array[0..31] of TJitLabel;
+  NoReason: array[0..31] of Integer;
+  NoCount: Integer;
+
+  function No(Reason: Integer): TJitLabel;
+  begin
+    Result := J.NewLabel;
+    NoLabel[NoCount] := Result;
+    NoReason[NoCount] := Reason;
+    Inc(NoCount);
+  end;
+
+  procedure EmitMapped(Fail: TJitLabel);
+  begin
+    // As BlockMapped for block T1 at PC T0 (T2 SR) where the cached page
+    // of the PC still has the physical address the block was read from:
+    // its epoch becomes the current one. Anything else to Fail.
+    if O.PageShift = 0 then
+    begin
+      J.Jump(Fail);
+      Exit;
+    end;
+    J.BranchTest(jcEq, jw32, JMem(jrSelf, O.MMUCR), JImm(1), Fail);
+    J.Move(jw64, JT4, JMem(jrSelf, O.TLBChunks));
+    J.BranchTest(jcEq, jw64, JT4, JT4, Fail);
+    // T5: TLBIndex.
+    J.Move(jw32, JT5, JT0);
+    var P3 := J.NewLabel;
+    var HaveIndex := J.NewLabel;
+    J.Branch(jcAboveEq, jw32, JT0, JImm($80000000), P3);
+    J.Shift(jsShr, jw32, jrT5, 12);
+    J.Jump(HaveIndex);
+    J.Bind(P3);
+    J.Branch(jcBelow, jw32, JT0, JImm($C0000000), Fail);
+    J.Branch(jcAboveEq, jw32, JT0, JImm($E0000000), Fail);
+    J.Alu(jaSub, jw32, JT5, JImm($C0000000));
+    J.Shift(jsShr, jw32, jrT5, 12);
+    J.Alu(jaAdd, jw32, JT5, JImm($80000));
+    J.Bind(HaveIndex);
+    // T4: the page (its chunk allocated).
+    J.Move(jw32, JT6, JT5);
+    J.Shift(jsShr, jw32, jrT6, 12);
+    J.Shift(jsShl, jw64, jrT6, 3);
+    J.Alu(jaAdd, jw64, JT6, JT4);
+    J.Move(jw64, JT4, JMem(jrT6, 0));
+    J.BranchTest(jcEq, jw64, JT4, JT4, Fail);
+    J.Alu(jaAnd, jw32, JT5, JImm(4095));
+    J.Shift(jsShl, jw64, jrT5, O.PageShift);
+    J.Alu(jaAdd, jw64, JT4, JT5);
+    // Usable now (TLBPage): this address space's or shared, privileged only
+    // in privileged mode; readable.
+    J.Move(jw8, JT5, JMem(jrT4, O.PFlags));
+    var AnySpace := J.NewLabel;
+    J.BranchTest(jcNe, jw32, JT5, JImm(SH4PageShared), AnySpace);
+    J.Move(jw8, JT6, JMem(jrSelf, O.PTEH));
+    J.Branch(jcNe, jw8, JT6, JMem(jrT4, O.PASID), Fail);
+    J.Bind(AnySpace);
+    var Allowed := J.NewLabel;
+    J.BranchTest(jcEq, jw32, JT5, JImm(SH4PagePrivileged), Allowed);
+    J.BranchTest(jcEq, jw32, JT2, JImm(SRMD), Fail);
+    J.Bind(Allowed);
+    J.Move(jw64, JT5, JMem(jrT4, O.PRead));
+    J.BranchTest(jcEq, jw64, JT5, JT5, Fail);
+    J.Move(jw32, JT5, JMem(jrT4, O.PPhys));
+    J.Move(jw32, JT6, JT0);
+    J.Alu(jaAnd, jw32, JT6, JImm($FFF));
+    J.Alu(jaOr, jw32, JT5, JT6);
+    J.Branch(jcNe, jw32, JT5, JMem(jrT1, O.BPhys), Fail);
+    J.Move(jw32, JT5, JMem(jrSelf, O.TLBEpoch));
+    J.Move(jw32, JMem(jrT1, O.BEpoch), JT5);
+  end;
+
+begin
+  NoCount := 0;
+  // The code every block's code shares: the entry (Invoke'd with the CPU,
+  // the context, the block's code and the block: to the code with the block
+  // in T1); the way back to RunBlocks (T1 the instructions done shl 2 or the
+  // status, S0 the last block); the chaining code (JitStatusDone where it stops).
+  J := FJit;
+  O := JitOff;
+  J.ForgetLabels;
+  J.Align(16);
+  FJitEnter := J.Offset;
+  J.EnterJump;
+  J.Align(16);
+  FJitReturn := J.Offset;
+  J.Move(jw32, JT0, JT1);
+  J.Alu(jaAnd, jw32, JT0, JImm(3));
+  J.Shift(jsShr, jw32, jrT1, 2);
+  J.Move(jw32, JMem(jrCtx, O.CtxDone), JT1);
+  J.Move(jw64, JMem(jrCtx, O.CtxBlock), JS0);
+  J.Leave(JT0);
+
+  // After a block (S0) and RunBlocks's work after it (S.PC its next PC): the
+  // next block as RunBlocks's loop takes it, by the links of the block that
+  // ran, else as FindBlock finds it (and RunBlocks links it). Back to
+  // RunBlocks for anything it does more than look: an exit request, the
+  // deadline, a probe's loop head, an interrupt to take, sleep, a delay slot
+  // or no blocks to run; a block not found, or whose code was written or
+  // whose translation changed (where BlockMapped would not find it as before
+  // in the cached pages), or that has no code.
+  J.Align(16);
+  FJitChain := J.Offset;
+  var Back := J.NewLabel;
+  J.BranchTest(jcNe, jw8, JMem(jrSelf, O.ExitRequest), JImm($FF), No(0));
+  J.Move(jw64, JT0, JMem(jrSelf, O.NowPtr));
+  J.Move(jw64, JT0, JMem(jrT0, 0));
+  J.Move(jw64, JT1, JMem(jrSelf, O.DeadlinePtr));
+  J.Branch(jcGe, jw64, JT0, JMem(jrT1, 0), No(1));
+  // T0: the PC.
+  J.Move(jw32, JT0, JMem(jrSelf, O.PC));
+  var NoProbe := J.NewLabel;
+  J.Branch(jcEq, jw32, JMem(jrSelf, O.IdlePhase), JImm(0), NoProbe);
+  J.Branch(jcEq, jw32, JT0, JMem(jrSelf, O.IdleHead), No(2));
+  J.Bind(NoProbe);
+  // T2: SR.
+  J.Move(jw32, JT2, JMem(jrSelf, O.SR));
+  J.Move(jw32, JT1, JT2);
+  J.Shift(jsShr, jw32, jrT1, 4);
+  J.Alu(jaAnd, jw32, JT1, JImm(15));
+  var NoIRQ := J.NewLabel;
+  J.Branch(jcLe, jw32, JMem(jrSelf, O.IRQLevel), JT1, NoIRQ);
+  J.BranchTest(jcEq, jw32, JT2, JImm(SRBL), No(3));
+  J.Bind(NoIRQ);
+  J.BranchTest(jcNe, jw8, JMem(jrSelf, O.Sleeping), JImm($FF), No(4));
+  J.BranchTest(jcNe, jw8, JMem(jrSelf, O.DelaySlot), JImm($FF), No(4));
+  J.BranchTest(jcEq, jw8, JMem(jrSelf, O.BlocksEnabled), JImm($FF), No(4));
+  J.Branch(jcNe, jw64, JMem(jrSelf, O.Fetch), JImm(0), No(4));
+  J.Branch(jcNe, jw64, JMem(jrSelf, O.StepHook), JImm(0), No(4));
+  // T3: Mode.
+  J.Move(jw32, JT3, JT2);
+  J.Shift(jsShr, jw32, jrT3, 30);
+  J.Alu(jaAnd, jw32, JT3, JImm(ModeMD));
+  J.Move(jw32, JT4, JT2);
+  J.Shift(jsShr, jw32, jrT4, 14);
+  J.Alu(jaAnd, jw32, JT4, JImm(ModeFD));
+  J.Alu(jaOr, jw32, JT3, JT4);
+  J.Move(jw32, JT4, JMem(jrSelf, O.FPSCR));
+  J.Shift(jsShr, jw32, jrT4, 17);
+  J.Alu(jaAnd, jw32, JT4, JImm(ModePR or ModeSZ));
+  J.Alu(jaOr, jw32, JT3, JT4);
+  // T1: the block linked (the first link, else the second).
+  var Second := J.NewLabel;
+  var Linked := J.NewLabel;
+  var Find := J.NewLabel;
+  J.Move(jw64, JT1, JMem(jrS0, O.BLink0));
+  J.BranchTest(jcEq, jw64, JT1, JT1, Second);
+  J.Branch(jcNe, jw32, JT0, JMem(jrT1, O.BPC), Second);
+  J.Branch(jcEq, jw32, JT3, JMem(jrT1, O.BMode), Linked);
+  J.Bind(Second);
+  J.Move(jw64, JT1, JMem(jrS0, O.BLink1));
+  J.BranchTest(jcEq, jw64, JT1, JT1, Find);
+  J.Branch(jcNe, jw32, JT0, JMem(jrT1, O.BPC), Find);
+  J.Branch(jcNe, jw32, JT3, JMem(jrT1, O.BMode), Find);
+  J.Bind(Linked);
+  // Its code unwritten (BlockValid), then its translation (BlockMapped:
+  // where the cached page of its PC still has the physical address it was
+  // read from, its epoch the current one).
+  J.Move(jw64, JT4, JMem(jrT1, O.BGenPtr));
+  J.Move(jw32, JT4, JMem(jrT4, 0));
+  J.Branch(jcNe, jw32, JT4, JMem(jrT1, O.BGen), No(5));
+  J.Move(jw64, JT4, JMem(jrT1, O.BGenPtr2));
+  J.Move(jw32, JT4, JMem(jrT4, 0));
+  J.Branch(jcNe, jw32, JT4, JMem(jrT1, O.BGen2), No(5));
+  var Current := J.NewLabel;
+  J.BranchTest(jcEq, jw8, JMem(jrT1, O.BTranslated), JImm($FF), Current);
+  J.Move(jw32, JT4, JMem(jrSelf, O.TLBEpoch));
+  J.Branch(jcEq, jw32, JT4, JMem(jrT1, O.BEpoch), Current);
+  EmitMapped(No(6));
+  J.Bind(Current);
+  J.Move(jw64, JT4, JMem(jrT1, O.BNative));
+  J.BranchTest(jcEq, jw64, JT4, JT4, No(7));
+  J.JumpIndirect(JT4);
+
+  // No link: FindBlock's block (the first of this PC and mode in its
+  // bucket) where it is current with no more checks (its translation's
+  // epoch the current one, its code unwritten); RunBlocks puts it first in
+  // the links of the block that ran.
+  J.Bind(Find);
+  J.Move(jw32, JT4, JT0);
+  J.Shift(jsShr, jw32, jrT4, 1);
+  J.Alu(jaAnd, jw32, JT4, JImm(BlockBuckets - 1));
+  J.Shift(jsShl, jw64, jrT4, 3);
+  J.Alu(jaAdd, jw64, JT4, JSelf);
+  J.Move(jw64, JT1, JMem(jrT4, O.BlockHead));
+  var Walk := J.NewLabel;
+  var Found := J.NewLabel;
+  var NextInBucket := J.NewLabel;
+  J.Bind(Walk);
+  J.BranchTest(jcEq, jw64, JT1, JT1, No(8));
+  J.Branch(jcNe, jw32, JT0, JMem(jrT1, O.BPC), NextInBucket);
+  J.Branch(jcEq, jw32, JT3, JMem(jrT1, O.BMode), Found);
+  J.Bind(NextInBucket);
+  J.Move(jw64, JT1, JMem(jrT1, O.BNext));
+  J.Jump(Walk);
+  J.Bind(Found);
+  var Unmapped := J.NewLabel;
+  J.BranchTest(jcEq, jw8, JMem(jrT1, O.BTranslated), JImm($FF), Unmapped);
+  J.Move(jw32, JT4, JMem(jrSelf, O.TLBEpoch));
+  J.Branch(jcEq, jw32, JT4, JMem(jrT1, O.BEpoch), Unmapped);
+  EmitMapped(No(11));
+  J.Bind(Unmapped);
+  J.Move(jw64, JT4, JMem(jrT1, O.BGenPtr));
+  J.Move(jw32, JT4, JMem(jrT4, 0));
+  J.Branch(jcNe, jw32, JT4, JMem(jrT1, O.BGen), No(9));
+  J.Move(jw64, JT4, JMem(jrT1, O.BGenPtr2));
+  J.Move(jw32, JT4, JMem(jrT4, 0));
+  J.Branch(jcNe, jw32, JT4, JMem(jrT1, O.BGen2), No(9));
+  J.Move(jw64, JT4, JMem(jrT1, O.BNative));
+  J.BranchTest(jcEq, jw64, JT4, JT4, No(10));
+  J.Move(jw64, JT5, JMem(jrS0, O.BLink0));
+  J.Move(jw64, JMem(jrS0, O.BLink1), JT5);
+  J.Move(jw64, JMem(jrS0, O.BLink0), JT1);
+  J.JumpIndirect(JT4);
+
+  for var K := 0 to NoCount - 1 do
+  begin
+    J.Bind(NoLabel[K]);
+    if JitStats then
+      J.Alu(jaAdd, jw64, JMem(jrSelf, O.Exits + NoReason[K] * 8), JImm(1));
+    J.Jump(Back);
+  end;
+  J.Bind(Back);
+  J.Move(jw32, JT1, JImm(JitStatusDone));
+  J.JumpTo(FJitReturn);
+  J.ForgetLabels;
+  J.Flush;
+  FJitShared := True;
+end;
+
+procedure TSH4.JitEmitBlock(B: PSH4Block);
+var
+  J: TJitAsm;
+  O: TSH4JitOffsets;
+  // Where the code leaves after a handler's stop before each instruction,
+  // and after all of them (a fault or exception noted).
+  Stop: array[0..MaxBlockInsts + 1] of TJitLabel;
+begin
+  J := FJit;
+  O := JitOff;
+  J.ForgetLabels;
+  J.Align(16);
+  var Code := J.Here;
+  J.Move(jw64, JS0, JT1);
+  J.Move(jw64, JS2, JMem(jrS0, O.BInsts));
+  J.Move(jw8, JMem(jrSelf, O.Jumped), JImm(0));
+  J.Move(jw8, JMem(jrSelf, O.Excepted), JImm(0));
+  FJitSlowCount := 0;
+  for var K := 0 to B.Count - 1 do
+  begin
+    Stop[K] := J.NewLabel;
+    if not JitEmitOwn(B, K) then
+    begin
+      J.CallAt(JMem(jrSelf, O.Ops + Integer(B.Insts[K].Kind) * SizeOf(Pointer)),
+        [JSelf, JAddr(jrS2, K * SizeOf(TSH4Inst))]);
+      J.BranchTest(jcNe, jw8, JT0, JT0, Stop[K]);
+    end;
+  end;
+  Stop[B.Count] := J.NewLabel;
+  J.Move(jw8, JT0, JMem(jrSelf, O.Fault));
+  J.Move(jw8, JT1, JMem(jrSelf, O.Excepted));
+  J.Alu(jaOr, jw32, JT0, JT1);
+  J.BranchTest(jcNe, jw32, JT0, JT0, Stop[B.Count]);
+
+  // The next PC into T0, as Execute's end.
+  var Last: PSH4Inst := B.Insts + (B.Count - 1);
+  var Jumped := J.NewLabel;
+  var HaveNext := J.NewLabel;
+  J.BranchTest(jcNe, jw8, JMem(jrSelf, O.Jumped), JImm($FF), Jumped);
+  if (Last.Flags and IFDelayed) <> 0 then
+    J.Move(jw32, JT0, JImm(Int64(Cardinal(Last.Addr + 2))))
+  else
+  begin
+    var Delay := J.NewLabel;
+    J.BranchTest(jcNe, jw8, JMem(jrSelf, O.DelaySlot), JImm($FF), Delay);
+    var Plain := Cardinal(Last.Addr + 2);
+    if TOp(Last.Kind) in [oROTDIV, oDIVROT] then
+      Plain := Cardinal(Last.Addr + (Last.Imm and $FFFF) * 4);
+    J.Move(jw32, JT0, JImm(Int64(Plain)));
+    J.Jump(HaveNext);
+    J.Bind(Delay);
+    J.Move(jw8, JMem(jrSelf, O.DelaySlot), JImm(0));
+    var NoRTE := J.NewLabel;
+    J.BranchTest(jcEq, jw8, JMem(jrSelf, O.RTEPending), JImm($FF), NoRTE);
+    J.Call(@TSH4.JitRTE, [JSelf]);
+    J.Bind(NoRTE);
+    J.Move(jw32, JT0, JMem(jrSelf, O.DelayTarget));
+  end;
+  J.Jump(HaveNext);
+  J.Bind(Jumped);
+  J.Move(jw32, JT0, JMem(jrSelf, O.JumpTarget));
+  J.Bind(HaveNext);
+
+  // RunBlocks after the block. A short backward branch: a wait-loop
+  // candidate (where a probe would start, all of it left to RunBlocks:
+  // JitStatusEnded). Then the PC, the counts and the next block.
+  var Tail: Cardinal := B.PC + Cardinal(B.Words) * 2;
+  var Writes := J.NewLabel;
+  J.Branch(jcAboveEq, jw32, JT0, JImm(Int64(Tail)), Writes);
+  J.Move(jw32, JT1, JImm(Int64(Tail)));
+  J.Alu(jaSub, jw32, JT1, JT0);
+  J.Branch(jcAbove, jw32, JT1, JImm(256), Writes);
+  J.Branch(jcNe, jw32, JMem(jrSelf, O.IdlePhase), JImm(0), Writes);
+  var SameHead := J.NewLabel;
+  J.Branch(jcEq, jw32, JT0, JMem(jrSelf, O.IdleHead), SameHead);
+  J.Move(jw32, JMem(jrSelf, O.IdleHead), JT0);
+  J.Move(jw32, JMem(jrSelf, O.IdleHits), JImm(0));
+  J.Jump(Writes);
+  J.Bind(SameHead);
+  J.Move(jw32, JT2, JMem(jrSelf, O.IdleHits));
+  J.Alu(jaAdd, jw32, JT2, JImm(1));
+  var Maybe := J.NewLabel;
+  var NoProbe := J.NewLabel;
+  J.Branch(jcGe, jw32, JT2, JImm(16), Maybe);
+  J.Branch(jcNe, jw32, JT0, JMem(jrSelf, O.IdleSkipped), NoProbe);
+  J.Bind(Maybe);
+  J.BranchTest(jcEq, jw8, JMem(jrSelf, O.IdleSkipping), JImm($FF), NoProbe);
+  J.Branch(jcEq, jw32, JT0, JMem(jrSelf, O.IdleRejected), NoProbe);
+  J.BranchTest(jcNe, jw8, JMem(jrSelf, O.DelaySlot), JImm($FF), NoProbe);
+  J.Move(jw32, JMem(jrCtx, O.CtxNext), JT0);
+  J.Move(jw32, JT1, JImm(JitStatusEnded));
+  J.JumpTo(FJitReturn);
+  J.Bind(NoProbe);
+  J.Move(jw32, JMem(jrSelf, O.IdleHits), JT2);
+  J.Bind(Writes);
+  J.Move(jw32, JMem(jrSelf, O.PC), JT0);
+  J.Alu(jaAdd, jw64, JMem(jrSelf, O.Instructions), JImm(B.Words));
+  J.Move(jw64, JT1, JMem(jrSelf, O.NowPtr));
+  J.Alu(jaAdd, jw64, JMem(jrT1, 0), JImm(B.Words));
+  if B.Words <> B.Count then
+    J.Move(jw32, JMem(jrSelf, O.FusedExtra), JImm(0));
+  J.JumpTo(FJitChain);
+
+  // The accesses the code did not make itself: by the handler, as any.
+  for var X := 0 to FJitSlowCount - 1 do
+  begin
+    var K := FJitSlowStep[X];
+    J.Bind(FJitSlowLabel[X]);
+    J.CallAt(JMem(jrSelf, O.Ops + Integer(B.Insts[K].Kind) * SizeOf(Pointer)),
+      [JSelf, JAddr(jrS2, K * SizeOf(TSH4Inst))]);
+    J.BranchTest(jcNe, jw8, JT0, JT0, Stop[K]);
+    J.Jump(FJitSlowBack[X]);
+  end;
+
+  for var K := 0 to B.Count do
+  begin
+    J.Bind(Stop[K]);
+    J.Move(jw32, JT1, JImm(K shl 2 or JitStatusStopped));
+    J.JumpTo(FJitReturn);
+  end;
+  J.ForgetLabels;
+  J.Flush;
+  B.Native := Code;
+  Inc(FJitCompiled);
+end;
+
+function TSH4.JitEmitOwn(B: PSH4Block; K: Integer): Boolean;
+var
+  J: TJitAsm;
+  O: TSH4JitOffsets;
+  I: PSH4Inst;
+  N, M: Integer;
+  Back, SlowL: TJitLabel;
+
+  function R(X: Integer): TJitOp;
+  begin
+    Result := JMem(jrSelf, O.R + X * 4);
+  end;
+
+  function FR(X: Integer): TJitOp;
+  begin
+    Result := JMem(jrSelf, O.FR + X * 4);
+  end;
+
+  function Field(Disp: Integer): TJitOp;
+  begin
+    Result := JMem(jrSelf, Disp);
+  end;
+
+  function Imm(V: Cardinal): TJitOp;
+  begin
+    Result := JImm(Int64(V));
+  end;
+
+  function Width(Size: Integer): TJitWidth;
+  begin
+    case Size of
+      1: Result := jw8;
+      4: Result := jw32;
+    else
+      Result := jw64;
+    end;
+  end;
+
+  // A register pair (FMOVD's numbering: odd ones XD).
+  function Pair(X: Integer): TJitOp;
+  begin
+    if (X and 1) = 0 then
+      Result := JMem(jrSelf, O.FR + (X shr 1) * 8)
+    else
+      Result := JMem(jrSelf, O.XF + (X shr 1) * 8);
+  end;
+
+  // Register X's 64 bits with their halves swapped (SwapHalves).
+  procedure SwapHalves(X: TJitReg);
+  begin
+    J.Move(jw64, JT1, JReg(X));
+    J.Shift(jsShl, jw64, X, 32);
+    J.Shift(jsShr, jw64, jrT1, 32);
+    J.Alu(jaOr, jw64, JReg(X), JT1);
+  end;
+
+  // Dst := Src (32 bits).
+  procedure Copy(const Dst, Src: TJitOp);
+  begin
+    J.Move(jw32, JT0, Src);
+    J.Move(jw32, Dst, JT0);
+  end;
+
+  // R[N] := R[N] Op Src.
+  procedure Op(Alu: TJitAlu; const Src: TJitOp);
+  begin
+    J.Move(jw32, JT0, R(N));
+    J.Alu(Alu, jw32, JT0, Src);
+    J.Move(jw32, R(N), JT0);
+  end;
+
+  // T := Ord(A Cond Y) (A a register).
+  procedure SetT(Cond: TJitCond; const A, Y: TJitOp);
+  begin
+    var L := J.NewLabel;
+    J.Move(jw32, JT2, JImm(1));
+    J.Branch(Cond, jw32, A, Y, L);
+    J.Move(jw32, JT2, JImm(0));
+    J.Bind(L);
+    J.Move(jw32, Field(O.T), JT2);
+  end;
+
+  // T := Ord((A and Y) = 0).
+  procedure SetTZero(const A, Y: TJitOp);
+  begin
+    var L := J.NewLabel;
+    J.Move(jw32, JT2, JImm(1));
+    J.BranchTest(jcEq, jw32, A, Y, L);
+    J.Move(jw32, JT2, JImm(0));
+    J.Bind(L);
+    J.Move(jw32, Field(O.T), JT2);
+  end;
+
+  // The instruction's handler, out of line (JitEmitBlock), where the code
+  // cannot make its access itself; back after the instruction.
+  procedure UseSlow;
+  begin
+    SlowL := J.NewLabel;
+    FJitSlowLabel[FJitSlowCount] := SlowL;
+    FJitSlowBack[FJitSlowCount] := Back;
+    FJitSlowStep[FJitSlowCount] := K;
+    Inc(FJitSlowCount);
+  end;
+
+  // T2 := the Size bytes at address T0 (zero-extended) where Read8,
+  // Read32 or Read64 reads them from host memory without more (FReadMap, else
+  // TranslatedRead's page of FFastRead); else the handler.
+  procedure Load(Size: Integer);
+  begin
+    UseSlow;
+    var Translated := J.NewLabel;
+    var Have := J.NewLabel;
+    J.Move(jw32, JT1, JT0);
+    J.Shift(jsShr, jw32, jrT1, 16);
+    J.Shift(jsShl, jw64, jrT1, 3);
+    J.Alu(jaAdd, jw64, JT1, JSelf);
+    J.Move(jw64, JT1, JMem(jrT1, O.ReadMap));
+    J.BranchTest(jcEq, jw64, JT1, JT1, Translated);
+    if Size > 1 then
+      J.BranchTest(jcNe, jw32, JT0, JImm(Size - 1), SlowL);
+    J.Move(jw32, JT2, JT0);
+    J.Alu(jaAnd, jw32, JT2, JImm($FFFF));
+    J.Alu(jaAdd, jw64, JT2, JT1);
+    J.Move(Width(Size), JT2, JMem(jrT2, 0));
+    J.Jump(Have);
+    J.Bind(Translated);
+    J.Branch(jcEq, jw64, Field(O.TLBChunks), JImm(0), SlowL);
+    J.Branch(jcAboveEq, jw32, JT0, Imm($80000000), SlowL);
+    J.Move(jw64, JT1, Field(O.FastRead));
+    J.BranchTest(jcEq, jw64, JT1, JT1, SlowL);
+    J.Move(jw32, JT3, JT0);
+    J.Shift(jsShr, jw32, jrT3, 12);
+    J.Shift(jsShl, jw64, jrT3, 3);
+    J.Alu(jaAdd, jw64, JT3, JT1);
+    J.Move(jw64, JT1, JMem(jrT3, 0));
+    J.BranchTest(jcEq, jw64, JT1, JT1, SlowL);
+    if Size > 1 then
+      J.BranchTest(jcNe, jw32, JT0, JImm(Size - 1), SlowL);
+    J.Move(jw32, JT2, JT0);
+    J.Alu(jaAnd, jw32, JT2, JImm($FFF));
+    J.Alu(jaAdd, jw64, JT2, JT1);
+    J.Move(Width(Size), JT2, JMem(jrT2, 0));
+    J.Bind(Have);
+  end;
+
+  // The Size bytes of T4 to address T0 where Write8, Write32 or Write64
+  // writes them
+  // to host memory without more (no probe's journal; FWriteMap, else
+  // TranslatedWrite's page of FFastWrite), with its write generation;
+  // else the handler.
+  procedure Store(Size: Integer);
+  begin
+    UseSlow;
+    var Translated := J.NewLabel;
+    var Done := J.NewLabel;
+    J.BranchTest(jcNe, jw8, Field(O.JournalOn), JImm($FF), SlowL);
+    J.Move(jw32, JT1, JT0);
+    J.Shift(jsShr, jw32, jrT1, 16);
+    J.Shift(jsShl, jw64, jrT1, 3);
+    J.Alu(jaAdd, jw64, JT1, JSelf);
+    J.Move(jw64, JT2, JMem(jrT1, O.WriteMap));
+    J.BranchTest(jcEq, jw64, JT2, JT2, Translated);
+    if Size > 1 then
+      J.BranchTest(jcNe, jw32, JT0, JImm(Size - 1), SlowL);
+    J.Move(jw32, JT3, JT0);
+    J.Alu(jaAnd, jw32, JT3, JImm($FFFF));
+    J.Alu(jaAdd, jw64, JT3, JT2);
+    J.Move(Width(Size), JMem(jrT3, 0), JT4);
+    J.Move(jw64, JT2, JMem(jrT1, O.GenMap));
+    J.Move(jw32, JT3, JT0);
+    J.Shift(jsShr, jw32, jrT3, 12);
+    J.Alu(jaAnd, jw32, JT3, JImm(15));
+    J.Shift(jsShl, jw64, jrT3, 2);
+    J.Alu(jaAdd, jw64, JT3, JT2);
+    J.Alu(jaAdd, jw32, JMem(jrT3, 0), JImm(1));
+    J.Jump(Done);
+    J.Bind(Translated);
+    J.Branch(jcEq, jw64, Field(O.TLBChunks), JImm(0), SlowL);
+    J.Branch(jcAboveEq, jw32, JT0, Imm($80000000), SlowL);
+    J.Move(jw64, JT1, Field(O.FastWrite));
+    J.BranchTest(jcEq, jw64, JT1, JT1, SlowL);
+    J.Move(jw32, JT3, JT0);
+    J.Shift(jsShr, jw32, jrT3, 12);
+    J.Shift(jsShl, jw64, jrT3, 3);
+    J.Alu(jaAdd, jw64, JT3, JT1);
+    J.Move(jw64, JT1, JMem(jrT3, 0));
+    J.BranchTest(jcEq, jw64, JT1, JT1, SlowL);
+    J.Move(jw64, JT2, JMem(jrT1, O.PWrite));
+    J.BranchTest(jcEq, jw64, JT2, JT2, SlowL);
+    if Size > 1 then
+      J.BranchTest(jcNe, jw32, JT0, JImm(Size - 1), SlowL);
+    J.Move(jw32, JT3, JT0);
+    J.Alu(jaAnd, jw32, JT3, JImm($FFF));
+    J.Alu(jaAdd, jw64, JT3, JT2);
+    J.Move(Width(Size), JMem(jrT3, 0), JT4);
+    J.Move(jw64, JT2, JMem(jrT1, O.PGen));
+    J.Alu(jaAdd, jw32, JMem(jrT2, 0), JImm(1));
+    J.Bind(Done);
+  end;
+
+  // T0 := Base + Offset (a register or a constant).
+  procedure Address(const Base, Offset: TJitOp);
+  begin
+    J.Move(jw32, JT0, Base);
+    J.Alu(jaAdd, jw32, JT0, Offset);
+  end;
+
+  procedure SignExtend8;
+  begin
+    J.Shift(jsShl, jw32, jrT2, 24);
+    J.Shift(jsSar, jw32, jrT2, 24);
+  end;
+
+  procedure Delayed;
+  begin
+    J.Move(jw8, Field(O.DelaySlot), JImm(1));
+  end;
+
+begin
+  // Instruction K of B written out as its handler does it (False: not one of
+  // these; its handler is called). Its handler must be the one SH4Ops has
+  // for it; memory instructions make the accesses that need nothing more
+  // than host memory themselves, the handler (out of line) any other.
+  J := FJit;
+  O := JitOff;
+  I := B.Insts + K;
+  N := I.N;
+  M := I.M;
+  var Expected: Pointer := nil;
+  case TOp(I.Kind) of
+    oNOP: Expected := @TSH4.OpNOP;
+    oMOV: Expected := @TSH4.OpMOV;
+    oMOVI: Expected := @TSH4.OpMOVI;
+    oMOVA: Expected := @TSH4.OpMOVA;
+    oADD: Expected := @TSH4.OpADD;
+    oADDI: Expected := @TSH4.OpADDI;
+    oSUB: Expected := @TSH4.OpSUB;
+    oAND: Expected := @TSH4.OpAND;
+    oOR: Expected := @TSH4.OpOR;
+    oXOR: Expected := @TSH4.OpXOR;
+    oANDI: Expected := @TSH4.OpANDI;
+    oORI: Expected := @TSH4.OpORI;
+    oXORI: Expected := @TSH4.OpXORI;
+    oNOT: Expected := @TSH4.OpNOT;
+    oNEG: Expected := @TSH4.OpNEG;
+    oEXTUB: Expected := @TSH4.OpEXTUB;
+    oEXTUW: Expected := @TSH4.OpEXTUW;
+    oEXTSB: Expected := @TSH4.OpEXTSB;
+    oEXTSW: Expected := @TSH4.OpEXTSW;
+    oSHLL2: Expected := @TSH4.OpSHLL2;
+    oSHLL8: Expected := @TSH4.OpSHLL8;
+    oSHLL16: Expected := @TSH4.OpSHLL16;
+    oSHLR2: Expected := @TSH4.OpSHLR2;
+    oSHLR8: Expected := @TSH4.OpSHLR8;
+    oSHLR16: Expected := @TSH4.OpSHLR16;
+    oSHAL, oSHLL: Expected := @TSH4.OpSHAL;
+    oSHAR: Expected := @TSH4.OpSHAR;
+    oSHLR: Expected := @TSH4.OpSHLR;
+    oROTL: Expected := @TSH4.OpROTL;
+    oROTR: Expected := @TSH4.OpROTR;
+    oROTCL: Expected := @TSH4.OpROTCL;
+    oROTCR: Expected := @TSH4.OpROTCR;
+    oMOVT: Expected := @TSH4.OpMOVT;
+    oCLRT: Expected := @TSH4.OpCLRT;
+    oSETT: Expected := @TSH4.OpSETT;
+    oDT: Expected := @TSH4.OpDT;
+    oTST: Expected := @TSH4.OpTST;
+    oTSTI: Expected := @TSH4.OpTSTI;
+    oCMPEQ: Expected := @TSH4.OpCMPEQ;
+    oCMPHS: Expected := @TSH4.OpCMPHS;
+    oCMPHI: Expected := @TSH4.OpCMPHI;
+    oCMPGE: Expected := @TSH4.OpCMPGE;
+    oCMPGT: Expected := @TSH4.OpCMPGT;
+    oCMPEQI: Expected := @TSH4.OpCMPEQI;
+    oCMPPZ: Expected := @TSH4.OpCMPPZ;
+    oCMPPL: Expected := @TSH4.OpCMPPL;
+    oSWAPW: Expected := @TSH4.OpSWAPW;
+    oXTRCT: Expected := @TSH4.OpXTRCT;
+    oBT: Expected := @TSH4.OpBT;
+    oBF: Expected := @TSH4.OpBF;
+    oBTS: Expected := @TSH4.OpBTS;
+    oBFS: Expected := @TSH4.OpBFS;
+    oBRA: Expected := @TSH4.OpBRA;
+    oBSR: Expected := @TSH4.OpBSR;
+    oBRAF: Expected := @TSH4.OpBRAF;
+    oBSRF: Expected := @TSH4.OpBSRF;
+    oJMP: Expected := @TSH4.OpJMP;
+    oJSR: Expected := @TSH4.OpJSR;
+    oRTS: Expected := @TSH4.OpRTS;
+    oLDSPR: Expected := @TSH4.OpLDSPR;
+    oSTSPR: Expected := @TSH4.OpSTSPR;
+    oLDSMACL: Expected := @TSH4.OpLDSMACL;
+    oSTSMACL: Expected := @TSH4.OpSTSMACL;
+    oLDSMACH: Expected := @TSH4.OpLDSMACH;
+    oSTSMACH: Expected := @TSH4.OpSTSMACH;
+    oLDCGBR: Expected := @TSH4.OpLDCGBR;
+    oSTCGBR: Expected := @TSH4.OpSTCGBR;
+    oLDSFPUL: Expected := @TSH4.OpLDSFPUL;
+    oSTSFPUL: Expected := @TSH4.OpSTSFPUL;
+    oFLDS: Expected := @TSH4.OpFLDS;
+    oFSTS: Expected := @TSH4.OpFSTS;
+    oFLDI0: Expected := @TSH4.OpFLDI0;
+    oFLDI1: Expected := @TSH4.OpFLDI1;
+    oFMOV: Expected := @TSH4.OpFMOV;
+    oMOVLL: Expected := @TSH4.OpMOVLL;
+    oMOVLL4: Expected := @TSH4.OpMOVLL4;
+    oMOVLL0: Expected := @TSH4.OpMOVLL0;
+    oMOVLLG: Expected := @TSH4.OpMOVLLG;
+    oMOVLPC: Expected := @TSH4.OpMOVLPC;
+    oMOVLP: Expected := @TSH4.OpMOVLP;
+    oFMOVLD: Expected := @TSH4.OpFMOVLD;
+    oFMOVLD0: Expected := @TSH4.OpFMOVLD0;
+    oFMOVLDP: Expected := @TSH4.OpFMOVLDP;
+    oMOVBL: Expected := @TSH4.OpMOVBL;
+    oMOVBL4: Expected := @TSH4.OpMOVBL4;
+    oMOVBL0: Expected := @TSH4.OpMOVBL0;
+    oMOVBLG: Expected := @TSH4.OpMOVBLG;
+    oMOVBP: Expected := @TSH4.OpMOVBP;
+    oMOVLS: Expected := @TSH4.OpMOVLS;
+    oMOVLS4: Expected := @TSH4.OpMOVLS4;
+    oMOVLS0: Expected := @TSH4.OpMOVLS0;
+    oMOVLSG: Expected := @TSH4.OpMOVLSG;
+    oMOVLM: Expected := @TSH4.OpMOVLM;
+    oFMOVST: Expected := @TSH4.OpFMOVST;
+    oFMOVST0: Expected := @TSH4.OpFMOVST0;
+    oFMOVSTM: Expected := @TSH4.OpFMOVSTM;
+    oMOVBS: Expected := @TSH4.OpMOVBS;
+    oMOVBS4: Expected := @TSH4.OpMOVBS4;
+    oMOVBS0: Expected := @TSH4.OpMOVBS0;
+    oMOVBSG: Expected := @TSH4.OpMOVBSG;
+    oMOVBM: Expected := @TSH4.OpMOVBM;
+    oPREF: Expected := @TSH4.OpPREF;
+    oFSCHG: Expected := @TSH4.OpFSCHG;
+    oFMOVD: Expected := @TSH4.OpFMOVD;
+    oFMOVDLD, oFMOVDLD0, oFMOVDLDP: Expected := @TSH4.OpFMOVDLD;
+    oFMOVDST, oFMOVDST0, oFMOVDSTM: Expected := @TSH4.OpFMOVDST;
+    oSTSMPR, oSTSMMACL, oSTSMMACH, oSTCMGBR, oSTSMFPUL: Expected := @TSH4.OpSTCMSR;
+    oLDSMPR, oLDSMMACL, oLDSMMACH, oLDCMGBR, oLDSMFPUL: Expected := @TSH4.OpLDCMSR;
+  end;
+  if (Expected = nil) or (FJitOps[I.Kind] <> Expected) or JitCallsOnly then
+    Exit(False);
+  Result := True;
+  Back := J.NewLabel;
+  SlowL := -1;
+  case TOp(I.Kind) of
+    oNOP: ;
+    oMOV: Copy(R(N), R(M));
+    oMOVI: J.Move(jw32, R(N), Imm(I.Imm));
+    oMOVA: J.Move(jw32, R(0), Imm(I.Imm));
+    oADD: Op(jaAdd, R(M));
+    oADDI: J.Alu(jaAdd, jw32, R(N), Imm(I.Imm));
+    oSUB: Op(jaSub, R(M));
+    oAND: Op(jaAnd, R(M));
+    oOR: Op(jaOr, R(M));
+    oXOR: Op(jaXor, R(M));
+    oANDI: J.Alu(jaAnd, jw32, R(0), Imm(I.Imm));
+    oORI: J.Alu(jaOr, jw32, R(0), Imm(I.Imm));
+    oXORI: J.Alu(jaXor, jw32, R(0), Imm(I.Imm));
+    oNOT:
+      begin
+        J.Move(jw32, JT0, R(M));
+        J.Alu(jaXor, jw32, JT0, JImm(-1));
+        J.Move(jw32, R(N), JT0);
+      end;
+    oNEG:
+      begin
+        J.Move(jw32, JT0, JImm(0));
+        J.Alu(jaSub, jw32, JT0, R(M));
+        J.Move(jw32, R(N), JT0);
+      end;
+    oEXTUB, oEXTUW:
+      begin
+        J.Move(jw32, JT0, R(M));
+        if TOp(I.Kind) = oEXTUB then
+          J.Alu(jaAnd, jw32, JT0, JImm($FF))
+        else
+          J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+        J.Move(jw32, R(N), JT0);
+      end;
+    oEXTSB, oEXTSW:
+      begin
+        var Bits := 24;
+        if TOp(I.Kind) = oEXTSW then
+          Bits := 16;
+        J.Move(jw32, JT0, R(M));
+        J.Shift(jsShl, jw32, jrT0, Bits);
+        J.Shift(jsSar, jw32, jrT0, Bits);
+        J.Move(jw32, R(N), JT0);
+      end;
+    oSHLL2, oSHLL8, oSHLL16, oSHLR2, oSHLR8, oSHLR16:
+      begin
+        J.Move(jw32, JT0, R(N));
+        case TOp(I.Kind) of
+          oSHLL2: J.Shift(jsShl, jw32, jrT0, 2);
+          oSHLL8: J.Shift(jsShl, jw32, jrT0, 8);
+          oSHLL16: J.Shift(jsShl, jw32, jrT0, 16);
+          oSHLR2: J.Shift(jsShr, jw32, jrT0, 2);
+          oSHLR8: J.Shift(jsShr, jw32, jrT0, 8);
+        else
+          J.Shift(jsShr, jw32, jrT0, 16);
+        end;
+        J.Move(jw32, R(N), JT0);
+      end;
+    oSHAL, oSHLL, oROTL:
+      begin
+        J.Move(jw32, JT0, R(N));
+        J.Move(jw32, JT1, JT0);
+        J.Shift(jsShr, jw32, jrT1, 31);
+        J.Move(jw32, Field(O.T), JT1);
+        J.Shift(jsShl, jw32, jrT0, 1);
+        if TOp(I.Kind) = oROTL then
+          J.Alu(jaOr, jw32, JT0, JT1);
+        J.Move(jw32, R(N), JT0);
+      end;
+    oSHAR, oSHLR, oROTR:
+      begin
+        J.Move(jw32, JT0, R(N));
+        J.Move(jw32, JT1, JT0);
+        J.Alu(jaAnd, jw32, JT1, JImm(1));
+        J.Move(jw32, Field(O.T), JT1);
+        if TOp(I.Kind) = oSHAR then
+          J.Shift(jsSar, jw32, jrT0, 1)
+        else
+          J.Shift(jsShr, jw32, jrT0, 1);
+        if TOp(I.Kind) = oROTR then
+        begin
+          J.Shift(jsShl, jw32, jrT1, 31);
+          J.Alu(jaOr, jw32, JT0, JT1);
+        end;
+        J.Move(jw32, R(N), JT0);
+      end;
+    oROTCL, oROTCR:
+      begin
+        J.Move(jw32, JT0, R(N));
+        J.Move(jw32, JT1, Field(O.T));
+        J.Move(jw32, JT2, JT0);
+        if TOp(I.Kind) = oROTCL then
+        begin
+          J.Shift(jsShr, jw32, jrT2, 31);
+          J.Shift(jsShl, jw32, jrT0, 1);
+        end
+        else
+        begin
+          J.Alu(jaAnd, jw32, JT2, JImm(1));
+          J.Shift(jsShr, jw32, jrT0, 1);
+          J.Shift(jsShl, jw32, jrT1, 31);
+        end;
+        J.Alu(jaOr, jw32, JT0, JT1);
+        J.Move(jw32, R(N), JT0);
+        J.Move(jw32, Field(O.T), JT2);
+      end;
+    oMOVT: Copy(R(N), Field(O.T));
+    oCLRT: J.Move(jw32, Field(O.T), JImm(0));
+    oSETT: J.Move(jw32, Field(O.T), JImm(1));
+    oDT:
+      begin
+        J.Move(jw32, JT0, R(N));
+        J.Alu(jaSub, jw32, JT0, JImm(1));
+        J.Move(jw32, R(N), JT0);
+        SetTZero(JT0, JT0);
+      end;
+    oTST:
+      begin
+        J.Move(jw32, JT0, R(N));
+        J.Move(jw32, JT1, R(M));
+        SetTZero(JT0, JT1);
+      end;
+    oTSTI:
+      begin
+        J.Move(jw32, JT0, R(0));
+        SetTZero(JT0, Imm(I.Imm));
+      end;
+    oCMPEQ, oCMPHS, oCMPHI, oCMPGE, oCMPGT:
+      begin
+        J.Move(jw32, JT0, R(N));
+        case TOp(I.Kind) of
+          oCMPEQ: SetT(jcEq, JT0, R(M));
+          oCMPHS: SetT(jcAboveEq, JT0, R(M));
+          oCMPHI: SetT(jcAbove, JT0, R(M));
+          oCMPGE: SetT(jcGe, JT0, R(M));
+        else
+          SetT(jcGt, JT0, R(M));
+        end;
+      end;
+    oCMPEQI:
+      begin
+        J.Move(jw32, JT0, R(0));
+        SetT(jcEq, JT0, Imm(I.Imm));
+      end;
+    oCMPPZ, oCMPPL:
+      begin
+        J.Move(jw32, JT0, R(N));
+        if TOp(I.Kind) = oCMPPZ then
+          SetT(jcGe, JT0, JImm(0))
+        else
+          SetT(jcGt, JT0, JImm(0));
+      end;
+    oSWAPW:
+      begin
+        J.Move(jw32, JT0, R(M));
+        J.Move(jw32, JT1, JT0);
+        J.Shift(jsShl, jw32, jrT0, 16);
+        J.Shift(jsShr, jw32, jrT1, 16);
+        J.Alu(jaOr, jw32, JT0, JT1);
+        J.Move(jw32, R(N), JT0);
+      end;
+    oXTRCT:
+      begin
+        J.Move(jw32, JT0, R(N));
+        J.Shift(jsShr, jw32, jrT0, 16);
+        J.Move(jw32, JT1, R(M));
+        J.Shift(jsShl, jw32, jrT1, 16);
+        J.Alu(jaOr, jw32, JT0, JT1);
+        J.Move(jw32, R(N), JT0);
+      end;
+    oBT, oBF:
+      begin
+        var Skip := J.NewLabel;
+        if TOp(I.Kind) = oBT then
+          J.BranchTest(jcEq, jw32, Field(O.T), JImm(-1), Skip)
+        else
+          J.BranchTest(jcNe, jw32, Field(O.T), JImm(-1), Skip);
+        J.Move(jw8, Field(O.Jumped), JImm(1));
+        J.Move(jw32, Field(O.JumpTarget), Imm(I.Imm));
+        J.Bind(Skip);
+      end;
+    oBTS, oBFS:
+      begin
+        Delayed;
+        var Other := J.NewLabel;
+        J.Move(jw32, JT0, Imm(I.Addr + 4));
+        if TOp(I.Kind) = oBTS then
+          J.BranchTest(jcEq, jw32, Field(O.T), JImm(-1), Other)
+        else
+          J.BranchTest(jcNe, jw32, Field(O.T), JImm(-1), Other);
+        J.Move(jw32, JT0, Imm(I.Imm));
+        J.Bind(Other);
+        J.Move(jw32, Field(O.DelayTarget), JT0);
+      end;
+    oBRA, oBSR:
+      begin
+        if TOp(I.Kind) = oBSR then
+          J.Move(jw32, Field(O.PR), Imm(I.Addr + 4));
+        Delayed;
+        J.Move(jw32, Field(O.DelayTarget), Imm(I.Imm));
+      end;
+    oBRAF, oBSRF:
+      begin
+        Delayed;
+        J.Move(jw32, JT0, R(N));
+        J.Alu(jaAdd, jw32, JT0, Imm(I.Addr + 4));
+        J.Move(jw32, Field(O.DelayTarget), JT0);
+        if TOp(I.Kind) = oBSRF then
+          J.Move(jw32, Field(O.PR), Imm(I.Addr + 4));
+      end;
+    oJMP, oJSR:
+      begin
+        Delayed;
+        Copy(Field(O.DelayTarget), R(N));
+        if TOp(I.Kind) = oJSR then
+          J.Move(jw32, Field(O.PR), Imm(I.Addr + 4));
+      end;
+    oRTS:
+      begin
+        Delayed;
+        Copy(Field(O.DelayTarget), Field(O.PR));
+      end;
+    oLDSPR: Copy(Field(O.PR), R(N));
+    oSTSPR: Copy(R(N), Field(O.PR));
+    oLDSMACL: Copy(Field(O.MACL), R(N));
+    oSTSMACL: Copy(R(N), Field(O.MACL));
+    oLDSMACH: Copy(Field(O.MACH), R(N));
+    oSTSMACH: Copy(R(N), Field(O.MACH));
+    oLDCGBR: Copy(Field(O.GBR), R(N));
+    oSTCGBR: Copy(R(N), Field(O.GBR));
+    oLDSFPUL: Copy(Field(O.FPUL), R(N));
+    oSTSFPUL: Copy(R(N), Field(O.FPUL));
+    oFLDS: Copy(Field(O.FPUL), FR(N));
+    oFSTS: Copy(FR(N), Field(O.FPUL));
+    oFLDI0: J.Move(jw32, FR(N), JImm(0));
+    oFLDI1: J.Move(jw32, FR(N), JImm($3F800000));
+    oFMOV: Copy(FR(N), FR(M));
+
+    oMOVLL, oMOVLL4, oMOVLL0, oMOVLLG, oMOVLPC, oMOVLP, oFMOVLD, oFMOVLD0, oFMOVLDP:
+      begin
+        case TOp(I.Kind) of
+          oMOVLL4: Address(R(M), Imm(I.Imm));
+          oMOVLL0, oFMOVLD0: Address(R(M), R(0));
+          oMOVLLG: Address(Field(O.GBR), Imm(I.Imm));
+          oMOVLPC: J.Move(jw32, JT0, Imm(I.Imm));
+        else
+          J.Move(jw32, JT0, R(M));
+        end;
+        Load(4);
+        case TOp(I.Kind) of
+          oMOVLLG: J.Move(jw32, R(0), JT2);
+          oMOVLP:
+            begin
+              if N <> M then
+                J.Alu(jaAdd, jw32, R(M), JImm(4));
+              J.Move(jw32, R(N), JT2);
+            end;
+          oFMOVLD, oFMOVLD0: J.Move(jw32, FR(N), JT2);
+          oFMOVLDP:
+            begin
+              J.Alu(jaAdd, jw32, R(M), JImm(4));
+              J.Move(jw32, FR(N), JT2);
+            end;
+        else
+          J.Move(jw32, R(N), JT2);
+        end;
+      end;
+    oMOVBL, oMOVBL4, oMOVBL0, oMOVBLG, oMOVBP:
+      begin
+        case TOp(I.Kind) of
+          oMOVBL4: Address(R(M), Imm(I.Imm));
+          oMOVBL0: Address(R(M), R(0));
+          oMOVBLG: Address(Field(O.GBR), Imm(I.Imm));
+        else
+          J.Move(jw32, JT0, R(M));
+        end;
+        Load(1);
+        if (TOp(I.Kind) = oMOVBP) and (N <> M) then
+          J.Alu(jaAdd, jw32, R(M), JImm(1));
+        SignExtend8;
+        if TOp(I.Kind) in [oMOVBL4, oMOVBLG] then
+          J.Move(jw32, R(0), JT2)
+        else
+          J.Move(jw32, R(N), JT2);
+      end;
+    oMOVLS, oMOVLS4, oMOVLS0, oMOVLSG, oMOVLM, oFMOVST, oFMOVST0, oFMOVSTM, oMOVBS, oMOVBS4, oMOVBS0, oMOVBSG, oMOVBM:
+      begin
+        case TOp(I.Kind) of
+          oMOVLS4: Address(R(N), Imm(I.Imm));
+          oMOVLS0, oFMOVST0, oMOVBS0: Address(R(N), R(0));
+          oMOVLSG, oMOVBSG: Address(Field(O.GBR), Imm(I.Imm));
+          oMOVLM, oFMOVSTM: Address(R(N), JImm(-4));
+          oMOVBM: Address(R(N), JImm(-1));
+          oMOVBS4: Address(R(M), Imm(I.Imm));
+        else
+          J.Move(jw32, JT0, R(N));
+        end;
+        case TOp(I.Kind) of
+          oMOVLSG, oMOVBSG, oMOVBS4: J.Move(jw32, JT4, R(0));
+          oFMOVST, oFMOVST0, oFMOVSTM: J.Move(jw32, JT4, FR(M));
+        else
+          J.Move(jw32, JT4, R(M));
+        end;
+        if TOp(I.Kind) in [oMOVBS, oMOVBS4, oMOVBS0, oMOVBSG, oMOVBM] then
+          Store(1)
+        else
+          Store(4);
+        if TOp(I.Kind) in [oMOVLM, oFMOVSTM, oMOVBM] then
+          J.Move(jw32, R(N), JT0);
+      end;
+    oPREF:
+      begin
+        // (A store queue's address: its write, by the handler.)
+        UseSlow;
+        J.Move(jw32, JT0, R(N));
+        J.Alu(jaAnd, jw32, JT0, Imm($FC000000));
+        J.Branch(jcEq, jw32, JT0, Imm($E0000000), SlowL);
+      end;
+    oFSCHG: J.Alu(jaXor, jw32, Field(O.FPSCR), JImm(FPSCRSZ));
+    oFMOVD:
+      begin
+        J.Move(jw64, JT0, Pair(M));
+        J.Move(jw64, Pair(N), JT0);
+      end;
+    oFMOVDLD, oFMOVDLD0, oFMOVDLDP:
+      begin
+        if TOp(I.Kind) = oFMOVDLD0 then
+          Address(R(M), R(0))
+        else
+          J.Move(jw32, JT0, R(M));
+        Load(8);
+        if TOp(I.Kind) = oFMOVDLDP then
+          J.Alu(jaAdd, jw32, R(M), JImm(8));
+        SwapHalves(jrT2);
+        J.Move(jw64, Pair(N), JT2);
+      end;
+    oFMOVDST, oFMOVDST0, oFMOVDSTM:
+      begin
+        J.Move(jw64, JT4, Pair(M));
+        SwapHalves(jrT4);
+        case TOp(I.Kind) of
+          oFMOVDST0: Address(R(N), R(0));
+          oFMOVDSTM: Address(R(N), JImm(-8));
+        else
+          J.Move(jw32, JT0, R(N));
+        end;
+        Store(8);
+        if TOp(I.Kind) = oFMOVDSTM then
+          J.Move(jw32, R(N), JT0);
+      end;
+    oSTSMPR, oSTSMMACL, oSTSMMACH, oSTCMGBR, oSTSMFPUL:
+      begin
+        case TOp(I.Kind) of
+          oSTSMPR: J.Move(jw32, JT4, Field(O.PR));
+          oSTSMMACL: J.Move(jw32, JT4, Field(O.MACL));
+          oSTSMMACH: J.Move(jw32, JT4, Field(O.MACH));
+          oSTCMGBR: J.Move(jw32, JT4, Field(O.GBR));
+        else
+          J.Move(jw32, JT4, Field(O.FPUL));
+        end;
+        Address(R(N), JImm(-4));
+        Store(4);
+        J.Move(jw32, R(N), JT0);
+      end;
+    oLDSMPR, oLDSMMACL, oLDSMMACH, oLDCMGBR, oLDSMFPUL:
+      begin
+        J.Move(jw32, JT0, R(N));
+        Load(4);
+        J.Alu(jaAdd, jw32, R(N), JImm(4));
+        case TOp(I.Kind) of
+          oLDSMPR: J.Move(jw32, Field(O.PR), JT2);
+          oLDSMMACL: J.Move(jw32, Field(O.MACL), JT2);
+          oLDSMMACH: J.Move(jw32, Field(O.MACH), JT2);
+          oLDCMGBR: J.Move(jw32, Field(O.GBR), JT2);
+        else
+          J.Move(jw32, Field(O.FPUL), JT2);
+        end;
+      end;
+  end;
+  J.Bind(Back);
+end;
+
+function TSH4.JitRun(var B: PSH4Block; out Next: Cardinal): Integer;
+begin
+  // B's code and the blocks it went on into (RunBlocks found B and did its
+  // checks before it). -1: RunBlocks's work after the last block done (B that
+  // block); else the last block ran (B) as Execute returns for it, with
+  // FFusedExtra, and nothing after it was done.
+  Next := 0;
+  Inc(FJitRuns);
+  var Status := FJit.Invoke(FJit.Base + FJitEnter, NativeUInt(Self), NativeUInt(@FJitCtx), NativeUInt(B.Native),
+    NativeUInt(B));
+  B := FJitCtx.Block;
+  case Status of
+    JitStatusDone:
+      Result := -1;
+    JitStatusEnded:
+      begin
+        Next := FJitCtx.Next;
+        Result := B.Count + FFusedExtra;
+      end;
+  else
+    Result := JitStopped(B, FJitCtx.Done, Next) + FFusedExtra;
+  end;
+end;
+
+function TSH4.JitStopped(B: PSH4Block; Done: Integer; out Next: Cardinal): Integer;
+var
+  I: PSH4Inst;
+begin
+  // Execute's end where B's code left: a handler stopped it before
+  // instruction Done, or all ran (Done = B.Count) with a fault or exception
+  // noted.
+  Result := Done;
+  I := B.Insts + Done;
+  if Done < B.Count then
+  begin
+    if FStop = StopTrap then
+    begin
+      FStop := StopNone;
+      Inc(Result);
+      Next := S.PC;
+      Exit;
+    end;
+    if FStop = StopLeave then
+    begin
+      FStop := StopNone;
+      Inc(Result);
+      Inc(I);
+    end;
+  end;
+
+  if FFault or FExcepted then
+  begin
+    FFault := False;
+    Fault(S.EXPEVT, I^, (I.Flags and IFSlot) <> 0);
+    Next := S.PC;
+    Exit;
+  end;
+
+  Dec(I);
+  if FJumped then
+    Next := FJumpTarget
+  else if (I.Flags and IFDelayed) <> 0 then
+    Next := I.Addr + 2
+  else if S.DelaySlot then
+  begin
+    Next := S.DelayTarget;
+    S.DelaySlot := False;
+    if S.RTEPending then
+    begin
+      S.RTEPending := False;
+      SetSRValue(S.RTESR);
+    end;
+  end
+  else if TOp(I.Kind) in [oROTDIV, oDIVROT] then
+    Next := I.Addr + (I.Imm and $FFFF) * 4
+  else
+    Next := I.Addr + 2;
+end;
+
+function TSH4.JitExits(Reason: Integer): Int64;
+begin
+  Result := FJitExits[Reason and High(FJitExits)];
+end;
+
+procedure TSH4.JitRTE;
+begin
+  // (Execute's end after RTE's delay slot.)
+  S.RTEPending := False;
+  SetSRValue(S.RTESR);
 end;
 
 procedure TSH4.SerializeState(Archive: TStateArchive);

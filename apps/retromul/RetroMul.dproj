@@ -466,7 +466,6 @@
         <DCCReference Include="..\..\source\media\audio\atrac3plus\Audio.ATRAC3Plus.Tables.pas"/>
         <DCCReference Include="..\..\source\ui\shaders\RM.ShaderBitmap.pas"/>
         <DCCReference Include="..\..\source\ui\shaders\RM.BitmapShaders.pas"/>
-        <DCCReference Include="..\..\source\ui\shaders\RM.BitmapShaders.Skia.pas"/>
         <DCCReference Include="..\..\source\ui\shaders\RM.BitmapShaderSources.pas"/>
         <DCCReference Include="..\..\source\ui\shaders\RM.BitmapShaders.D2D.pas"/>
         <DCCReference Include="..\..\source\ui\shaders\RM.ShaderCompiler.pas"/>
@@ -1125,6 +1124,7 @@
         <DCCReference Include="..\..\source\cores\zx\ZX.BlockImage.pas"/>
         <DCCReference Include="..\..\source\cores\zx\ZX.CMOS.pas"/>
         <DCCReference Include="..\..\source\cores\zx\ZX.Configuration.pas"/>
+        <DCCReference Include="ui\RM.Controls.Lifetime.pas"/>
         <None Include="..\..\source\cores\cps\CPS.RomData.inc"/>
         <None Include="..\..\source\cores\sms\SMS.Region.inc"/>
         <BuildConfiguration Include="Base">

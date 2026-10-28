@@ -1,11 +1,22 @@
 ﻿unit RM.Controls.Lifetime;
+
 interface
-uses FMX.Controls;
+
+uses
+  FMX.Controls;
+
 procedure DisconnectControl(Control: TControl);
+
 procedure RetireControl(Control: TControl);
+
 implementation
-uses FMX.Types, FMX.StdCtrls, FMX.Edit, FMX.ListBox, FMX.SpinBox;
-type TControlAccess = class(TControl);
+
+uses
+  FMX.Types, FMX.StdCtrls, FMX.Edit, FMX.ListBox, FMX.SpinBox;
+
+type
+  TControlAccess = class(TControl);
+
 procedure DisconnectControl(Control: TControl);
 begin
   // Clear FMX's reference as well as its native capture before detaching.
@@ -55,3 +66,4 @@ begin
 end;
 
 end.
+

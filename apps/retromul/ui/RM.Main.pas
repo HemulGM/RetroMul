@@ -281,22 +281,24 @@ procedure TFormMain.InitializeDesktopViews;
 begin
   FBrowserController.InitializeDesktopViews;
 end;
-
 {$ENDIF}
+
 {$IFDEF ANDROID}
+
 procedure TFormMain.InitializeAndroidServices;
 begin
   FMobileController.InitializeAndroidServices;
 end;
-
 {$ENDIF}
+
 {$IFDEF ISMOBILE}
+
 procedure TFormMain.InitializeMobileViews;
 begin
   FMobileController.InitializeMobileViews;
 end;
-
 {$ENDIF}
+
 destructor TFormMain.Destroy;
 begin
   if TMethod(Application.OnException).Data = Self then

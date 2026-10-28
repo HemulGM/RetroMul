@@ -6,6 +6,7 @@ uses
   FMX.Forms,
   {$IF Defined(ANDROID) or Defined(IOS)}
   FMX.Skia,
+  RM.BitmapShaders.Skia in '..\..\source\ui\shaders\RM.BitmapShaders.Skia.pas',
   {$ENDIF }
   RetroMul.Platforms in 'RetroMul.Platforms.pas',
   Yamaha.Sound.Y8950 in '..\..\source\hardware\audio\opl\Yamaha.Sound.Y8950.pas',
@@ -39,9 +40,6 @@ uses
   Audio.ATRAC3Plus.Tables in '..\..\source\media\audio\atrac3plus\Audio.ATRAC3Plus.Tables.pas',
   RM.ShaderBitmap in '..\..\source\ui\shaders\RM.ShaderBitmap.pas',
   RM.BitmapShaders in '..\..\source\ui\shaders\RM.BitmapShaders.pas',
-  {$IF Defined(ANDROID) or Defined(IOS)}
-  RM.BitmapShaders.Skia in '..\..\source\ui\shaders\RM.BitmapShaders.Skia.pas',
-  {$ENDIF }
   RM.BitmapShaderSources in '..\..\source\ui\shaders\RM.BitmapShaderSources.pas',
   RM.BitmapShaders.D2D in '..\..\source\ui\shaders\RM.BitmapShaders.D2D.pas',
   RM.ShaderCompiler in '..\..\source\ui\shaders\RM.ShaderCompiler.pas',
@@ -648,7 +646,8 @@ uses
   ZX.BetaDisk in '..\..\source\cores\zx\ZX.BetaDisk.pas',
   ZX.BlockImage in '..\..\source\cores\zx\ZX.BlockImage.pas',
   ZX.CMOS in '..\..\source\cores\zx\ZX.CMOS.pas',
-  ZX.Configuration in '..\..\source\cores\zx\ZX.Configuration.pas';
+  ZX.Configuration in '..\..\source\cores\zx\ZX.Configuration.pas',
+  RM.Controls.Lifetime in 'ui\RM.Controls.Lifetime.pas';
 
 {$R *.res}
 
@@ -664,3 +663,4 @@ begin
     Application.CreateForm(TFormMain, FormMain);
   Application.Run;
 end.
+

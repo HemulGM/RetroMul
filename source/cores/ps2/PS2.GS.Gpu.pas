@@ -2,6 +2,8 @@
 
 // Initial GS compute path: untextured 32/24-bit sprites with disjoint
 // frame/depth surfaces. Other draws retain the software pixel pipeline.
+// Queued sprites retain their own parameters until Sync publishes their
+// writes to CPU consumers. Compute barriers order draws within each batch.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$POINTERMATH ON}
 
@@ -12,17 +14,28 @@ uses
 
 type
   TPS2GSGpu = class(TPS2GSAccelerator)
+  private const
+    BatchSize = 128;
+  private type
+    TPush = record
+      Bounds: array[0..3] of Integer;
+      Slot: Cardinal;
+    end;
   private
     FCompute: TVulkanCompute;
     FKernel: TVulkanKernel;
     FRAM, FState: TVulkanBuffer;
     FDraws: Int64;
+    FUsed: Integer;
+    FSubmissions: Int64;
   public
     constructor Create(RAM: Pointer);
     destructor Destroy; override;
+    procedure Sync; override;
     function Sprite(const D: TPS2GSDraw; const V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer): Boolean; override;
     property Draws: Int64 read FDraws;
+    property Submissions: Int64 read FSubmissions;
   end;
 
 implementation
@@ -37,8 +50,8 @@ begin
   FRAM := FCompute.ImportHost(RAM, PS2GSMemorySize);
   if FRAM = nil then
     raise Exception.Create('Vulkan GS needs coherent host-memory import for GS VRAM');
-  FState := FCompute.CreateBuffer(32 * SizeOf(Cardinal), True);
-  FKernel := FCompute.CreateKernel(PS2SpriteSPIRV, 2, 16);
+  FState := FCompute.CreateBuffer(BatchSize * 32 * SizeOf(Cardinal), True);
+  FKernel := FCompute.CreateKernel(PS2SpriteSPIRV, 2, SizeOf(TPush));
   FCompute.Bind(FKernel, [FRAM, FState]);
 end;
 
@@ -46,6 +59,15 @@ destructor TPS2GSGpu.Destroy;
 begin
   FCompute.Free;
   inherited;
+end;
+
+procedure TPS2GSGpu.Sync;
+begin
+  if not FPending then Exit;
+  FCompute.Finish;
+  FPending := False;
+  FUsed := 0;
+  Inc(FSubmissions);
 end;
 
 function TPS2GSGpu.Sprite(const D: TPS2GSDraw; const V: TPS2GSVertex;
@@ -67,7 +89,8 @@ begin
     if (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0)) then Exit;
   // Small draws cost more to submit than to draw on the host.
   if Int64(X1 - X0) * (Y1 - Y0) < 4096 then Exit;
-  var P := PCardinal(FState.Data);
+  if FUsed = BatchSize then Sync;
+  var P := PCardinal(FState.Data) + FUsed * 32;
   P[0] := D.FBP; P[1] := D.FBW; P[2] := D.FPSM; P[3] := D.FBMSK;
   P[4] := D.ZBP; P[5] := D.ZPSM; P[6] := Ord(D.ZMSK);
   P[7] := 1;
@@ -81,12 +104,12 @@ begin
   P[23] := Cardinal(D.FogR); P[24] := Cardinal(D.FogG); P[25] := Cardinal(D.FogB);
   P[26] := Cardinal(V.R); P[27] := Cardinal(V.G); P[28] := Cardinal(V.B);
   P[29] := Cardinal(V.A); P[30] := Cardinal(V.F); P[31] := V.Z;
-  var Bounds: array[0..3] of Integer;
-  Bounds[0] := X0; Bounds[1] := Y0; Bounds[2] := X1; Bounds[3] := Y1;
-  FCompute.Launch(FKernel, Bounds, Cardinal((X1-X0+7) div 8), Cardinal((Y1-Y0+7) div 8), 1);
-  // All CPU consumers (transfers, CLUT, diagnostics and display) see the
-  // completed draw before returning. Batching is a later optimization.
-  FCompute.Finish;
+  var Push: TPush;
+  Push.Bounds[0] := X0; Push.Bounds[1] := Y0; Push.Bounds[2] := X1; Push.Bounds[3] := Y1;
+  Push.Slot := Cardinal(FUsed);
+  FCompute.Launch(FKernel, Push, Cardinal((X1-X0+7) div 8), Cardinal((Y1-Y0+7) div 8), 1);
+  Inc(FUsed);
+  FPending := True;
   Inc(FDraws);
   Result := True;
 end;

@@ -5,7 +5,7 @@
 {$Q-} // Deliberately wrapping pattern used to initialize VRAM.
 
 uses
-  System.SysUtils, PS2.Types, PS2.GS.Memory, PS2.GS.Raster, PS2.GS.Gpu;
+  System.SysUtils, System.Classes, Core.Snapshots, PS2.Types, PS2.GS.Memory, PS2.GS.Raster, PS2.GS.Gpu;
 
 begin
   try
@@ -13,14 +13,19 @@ begin
     var B := TPS2GSMemory.Create;
     var GPU := TPS2GSGpu.Create(B.Data);
     try
+      for var Batch := 0 to 1 do
+      begin
       RandSeed := 3917;
       for var N := 0 to 255 do
       begin
-        A.Reset;
         var PA := PCardinal(A.Memory.Data);
-        for var K := 0 to PS2GSMemorySize div 4 - 1 do
-          PA[K] := Cardinal(K) * 1664525 + Cardinal(N) * 1013904223;
-        Move(PA^, B.Data^, PS2GSMemorySize);
+        if (Batch = 0) or (N = 0) then
+        begin
+          A.Reset;
+          for var K := 0 to PS2GSMemorySize div 4 - 1 do
+            PA[K] := Cardinal(K) * 1664525 + Cardinal(N) * 1013904223;
+          Move(PA^, B.Data^, PS2GSMemorySize);
+        end;
         var D := Default(TPS2GSDraw);
         D.FBW := 4;
         D.FPSM := Cardinal(N and 1);
@@ -68,7 +73,9 @@ begin
         A.WriteRegister(GSRegXYZ2, 2304 or (UInt64(2304) shl 16) or (UInt64(V.Z) shl 32));
         if not GPU.Sprite(D, V, 16, 16, 144, 144) then
           raise Exception.CreateFmt('Unexpected fallback %d', [N]);
-        if not CompareMem(A.Memory.Data, B.Data, PS2GSMemorySize) then
+        if (Batch = 0) or (N = 255) then
+          GPU.Sync;
+        if ((Batch = 0) or (N = 255)) and not CompareMem(A.Memory.Data, B.Data, PS2GSMemorySize) then
         begin
           var PB := PCardinal(B.Data);
           for var K := 0 to PS2GSMemorySize div 4 - 1 do
@@ -84,11 +91,15 @@ begin
         D.ZBP := 8192;
         D.FPSM := PSMCT16;
         if GPU.Sprite(D, V, 16, 16, 144, 144) then raise Exception.Create('Unsupported format accepted');
-        if not CompareMem(A.Memory.Data, B.Data, PS2GSMemorySize) then raise Exception.Create('Fallback wrote memory');
+        if ((Batch = 0) or (N = 255)) and not CompareMem(A.Memory.Data, B.Data, PS2GSMemorySize) then
+          raise Exception.Create('Fallback wrote memory');
       end;
-      Writeln('GPU draws=', GPU.Draws, ' mismatches=0');
+      end;
+      if GPU.Submissions <> 258 then raise Exception.Create('Batch capacity/reuse mismatch');
+      Writeln('GPU draws=', GPU.Draws, ' submissions=', GPU.Submissions, ' mismatches=0');
       // Exercise the public selector as well as direct GPU calls: the
       // raster owns the imported memory while changing execution mode.
+      var Baseline: TBytes;
       for var Mode := 0 to 2 do
       begin
         A.Vulkan := Mode = 1;
@@ -101,12 +112,48 @@ begin
         A.WriteRegister(GSRegPRIM, 6);
         A.WriteRegister(GSRegRGBAQ, $80402010);
         A.WriteRegister(GSRegXYZ2, 0);
+        A.WriteRegister(GSRegXYZ2, 4096 or (UInt64(4096) shl 16));
+        // Software point after a queued GPU draw.
+        A.WriteRegister(GSRegPRIM, 0);
+        A.WriteRegister(GSRegRGBAQ, $80808080);
+        A.WriteRegister(GSRegXYZ2, 3840 or (UInt64(3840) shl 16));
+        A.WriteRegister(GSRegPRIM, 6);
+        A.WriteRegister(GSRegXYZ2, 1024 or (UInt64(1024) shl 16));
+        A.WriteRegister(GSRegXYZ2, 3072 or (UInt64(3072) shl 16));
+        // CPU host-to-local transfer must follow the second GPU sprite.
+        A.WriteRegister(GSRegBITBLTBUF, UInt64(4) shl 48);
+        A.WriteRegister(GSRegTRXPOS, (UInt64(168) shl 32) or (UInt64(168) shl 48));
+        A.WriteRegister(GSRegTRXREG, 1 or (UInt64(1) shl 32));
+        A.WriteRegister(GSRegTRXDIR, 0);
+        A.WriteRegister(GSRegHWREG, $AABBCCDD);
+        // A CLUT load from the next sprite's target reads before an explicit
+        // Sync. Compare serialized CLUT bytes as well as VRAM below.
+        A.WriteRegister(GSRegRGBAQ, $80706050);
+        A.WriteRegister(GSRegXYZ2, 0);
         A.WriteRegister(GSRegXYZ2, 2048 or (UInt64(2048) shl 16));
-        A.Sync;
+        A.WriteRegister(GSRegTEX0_1, (UInt64(PSMT8) shl 20) or (UInt64(1) shl 61));
+        // A snapshot must also drain a still-pending draw. Keep the point
+        // and transfer outside this rectangle so their ordering stays visible.
+        A.WriteRegister(GSRegRGBAQ, $80605040);
+        A.WriteRegister(GSRegXYZ2, 0);
+        A.WriteRegister(GSRegXYZ2, 2048 or (UInt64(2048) shl 16));
+        var Stream := TMemoryStream.Create;
+        try
+          var Archive := TStateArchive.Create(Stream, False);
+          try A.SerializeState(Archive); finally Archive.Free; end;
+          var Bytes: TBytes;
+          SetLength(Bytes, Stream.Size);
+          Move(Stream.Memory^, Bytes[0], Length(Bytes));
+          if Mode = 0 then Baseline := Bytes
+          else if (Length(Bytes) <> Length(Baseline)) or not CompareMem(@Bytes[0], @Baseline[0], Length(Bytes)) then
+            raise Exception.CreateFmt('Renderer state mismatch %d', [Mode]);
+        finally
+          Stream.Free;
+        end;
         if Mode = 0 then Move(A.Memory.Data^, B.Data^, PS2GSMemorySize)
         else if not CompareMem(A.Memory.Data, B.Data, PS2GSMemorySize) then
           raise Exception.CreateFmt('Renderer switch mismatch %d', [Mode]);
-        if (Mode = 1) and (A.VulkanDraws <> 1) then raise Exception.Create('GPU selector did not draw');
+        if (Mode = 1) and (A.VulkanDraws <> 4) then raise Exception.Create('GPU selector did not draw');
       end;
       Writeln('software -> Vulkan -> threaded software: OK');
     finally

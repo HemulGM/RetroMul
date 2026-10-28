@@ -83,15 +83,18 @@ is unavailable, software rendering continues; `VulkanError` reports why.
 The default remains multithreaded software rendering.
 
 The integer shader implements alpha/depth tests, fog, blending, destination
-alpha, masks and 24-bit preservation. Each accepted draw finishes before
-CPU consumers access VRAM. This is an initial synchronous implementation,
-not a complete or consistently faster GPU renderer. It does not require
+alpha, masks and 24-bit preservation. Up to 128 sprites are recorded with
+separate parameter slots and ordered by compute memory barriers. Pending
+work finishes before CPU drawing, transfers, palette loads, display reads,
+reset, snapshots and mode changes. This is not a complete or consistently
+faster GPU renderer. It does not require
 JIT. GS saves contain the same VRAM and state in either mode.
 
 Regenerate its embedded SPIR-V with `source/cores/ps2/shaders/build.ps1`
 (Vulkan SDK `glslc` required). Application builds use the checked-in include.
-`tests/cores/ps2/gpu/build.ps1` compares 256 draws against the CPU over all
-4 MiB of VRAM, and checks that unsupported draws leave memory untouched.
+`tests/cores/ps2/gpu/build.ps1` compares 256 isolated draws and a dependent
+256-draw sequence against the CPU over all 4 MiB of VRAM. It checks batch
+capacity/reuse, software fallback, transfers, CLUT state and live mode changes.
 It requires a Vulkan device with coherent host-memory import.
 
 ## Limits

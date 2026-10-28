@@ -3,8 +3,12 @@
 // Manual and PS2.GS.Raster. Each invocation owns a distinct frame/depth word.
 layout(local_size_x=8, local_size_y=8) in;
 layout(set=0,binding=0,std430) buffer VRAM { uint ram[]; };
-layout(set=0,binding=1,std430) readonly buffer State { uint p[]; };
-layout(push_constant) uniform Bounds { ivec4 bounds; };
+struct Draw { uint p[32]; };
+layout(set=0,binding=1,std430) readonly buffer State { Draw draws[]; };
+layout(push_constant) uniform Bounds { ivec4 bounds; uint slot; };
+// Address fields on demand, rather than copying all 32 words into private
+// storage even for a pixel rejected by an early test.
+#define p draws[slot].p
 
 const uint blocks[32] = uint[32](0,1,4,5,16,17,20,21,
   2,3,6,7,18,19,22,23,8,9,12,13,24,25,28,29,10,11,14,15,26,27,30,31);

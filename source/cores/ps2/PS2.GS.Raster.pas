@@ -141,7 +141,11 @@ type
   PPS2GSCommand = ^TPS2GSCommand;
 
   TPS2GSAccelerator = class abstract
+  protected
+    FPending: Boolean;
   public
+    procedure Sync; virtual; abstract;
+    property Pending: Boolean read FPending;
     function Sprite(const D: TPS2GSDraw; const V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer): Boolean; virtual; abstract;
   end;
@@ -239,6 +243,7 @@ type
     procedure SetThreads(Value: Integer);
     procedure SetVulkan(Value: Boolean);
     function GetVulkanDraws: Int64;
+    function GetVulkanSubmissions: Int64;
     procedure StartTransfer;
     procedure FeedWord(W: Cardinal);
     procedure TransferPixel(Value: Cardinal);
@@ -277,6 +282,7 @@ type
     property Vulkan: Boolean read FVulkan write SetVulkan;
     property VulkanError: string read FVulkanError;
     property VulkanDraws: Int64 read GetVulkanDraws;
+    property VulkanSubmissions: Int64 read GetVulkanSubmissions;
     property SignalPending: Boolean read FSignal;
     property FinishPending: Boolean read FFinish;
     property OnSignal: TProc read FOnSignal write FOnSignal;
@@ -425,6 +431,13 @@ begin
     Result := TPS2GSGpu(FAccelerator).Draws;
 end;
 
+function TPS2GSRaster.GetVulkanSubmissions: Int64;
+begin
+  Result := 0;
+  if FAccelerator <> nil then
+    Result := TPS2GSGpu(FAccelerator).Submissions;
+end;
+
 procedure TPS2GSRaster.SetVulkan(Value: Boolean);
 begin
   if Value = FVulkan then Exit;
@@ -465,6 +478,8 @@ end;
 
 procedure TPS2GSRaster.Sync;
 begin
+  if (FAccelerator <> nil) and FAccelerator.Pending then
+    FAccelerator.Sync;
   if not FPending then
     Exit;
   FPending := False;
@@ -690,6 +705,10 @@ end;
 
 procedure TPS2GSRaster.Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex);
 begin
+  // CPU primitives must see all earlier GPU writes. Sprites decide after
+  // clipping whether they can join the batch or need the software path.
+  if (FAccelerator <> nil) and ((Kind <> gpSprite) or (PrimLog <> nil) or (WatchX >= 0)) then
+    Sync;
   Inc(FPrimitives);
   FCommand.Kind := Kind;
   FCommand.Rounding := GetRoundMode;
@@ -701,7 +720,9 @@ begin
   // Diagnostics see the primitives drawn in order, here.
   if (FBands = nil) or (PrimLog <> nil) or (WatchX >= 0) then
   begin
-    Sync;
+    // Drain CPU bands if necessary, but let eligible sprites accumulate in
+    // the GPU batch. DrawSprite drains it before any software fallback.
+    if FPending then Sync;
     var Before := FDrawer.PixelsDrawn;
     FDrawer.Draw(FCommand);
     Inc(FPixels, FDrawer.PixelsDrawn - Before);
@@ -1634,6 +1655,8 @@ begin
       Inc(FPixels, Int64(PX1 - PX0) * (PY1 - PY0));
       Exit;
     end;
+  if FOwner.FAccelerator <> nil then
+    FOwner.Sync;
   // Texture coordinates along the edges (in 1/16 texels).
   var U0, U1, TV0, TV1: Double;
   if FD.FST then
@@ -1902,6 +1925,10 @@ begin
   var CPSM := Integer((Tex0 shr 51) and $F);
   var CSM := Integer((Tex0 shr 55) and 1);
   var CSA := Integer((Tex0 shr 56) and $1F);
+  // A palette load reads VRAM on the CPU, even if the new texture is only
+  // used by a later primitive.
+  if (FAccelerator <> nil) and FAccelerator.Pending then
+    FAccelerator.Sync;
   // Queued primitives keep the CLUT they were queued with; only wait for
   // them when they draw where this one is read from.
   if FPending then
@@ -2038,6 +2065,8 @@ procedure TPS2GSRaster.FeedWord(W: Cardinal);
 begin
   if not FXferActive then
     Exit;
+  if (FAccelerator <> nil) and FAccelerator.Pending then
+    Sync;
   var Bits := TransferBits(Cardinal((Regs[GSRegBITBLTBUF] shr 56) and $3F));
   FXferBits := FXferBits or (UInt64(W) shl FXferBitCount);
   Inc(FXferBitCount, 32);

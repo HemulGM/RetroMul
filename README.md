@@ -60,113 +60,18 @@ Compatibility depends on the game's cartridge hardware, protection, and peripher
 
 ## Getting started
 
-Open a ROM directly, or select the library root folder in Settings. The library uses these system subdirectories:
-
-```text
-ROMS/
-  nes/
-  gb/
-  gbc/
-  gw/
-  gba/
-  n64/
-  megadrive/
-  segacd/
-  sega32x/
-  sg1000/
-  sc3000/
-  msx1/
-  msx2/
-  msx2plus/
-  zxspectrum/
-  sf7000/
-  omv/
-  sms/
-  gg/
-  snes/
-  neogeo/
-  ngp/
-  ngpc/
-  cps1/
-  cps2/
-  cps3/
-  ps1/
-  psp/
-  saturn/
-  dc/
-  neogeocd/
-  pcengine/
-  sgx/
-  pcecd/
-```
-
-Place ROMs in the corresponding folders. On desktop, an optional `gamelist.xml` in each system folder supplies titles, descriptions, cover paths, and other metadata; games without metadata use their filenames. On Android, choose the ROM folder through the system folder picker.
-
 Desktop shortcuts during gameplay:
 
 | Key | Action |
 | --- | --- |
 | `P` | Pause / resume |
 | `R` | Reset |
+| `F1` | Help |
 | `F5` | Save the quick state |
 | `F6` | Load the quick state |
 | `F8` | Take a screenshot |
 
 These shortcuts are suspended while an emulated NES or Subor keyboard is active.
-
-## Building from source
-
-The main application uses Delphi / RAD Studio and FireMonkey. Its Windows sources currently reference the Delphi 13 platform fixes in the DelphiWinUI3 submodule. Initialize the repository's submodules before building:
-
-```sh
-git submodule update --init --recursive
-```
-
-Open `RetromulGroup.groupproj` for the project group, or open an individual project:
-
-| Project | Purpose |
-| --- | --- |
-| `apps/retromul/RetroMul.dproj` | FireMonkey emulator |
-| `apps/retrotune/RetroTune.dproj` | FireMonkey music player |
-| `apps/terminal/RetromulTerm.dproj` | Windows console emulator with ASCII video output |
-
-`BuildReleases.ps1` builds and packages RetroMul for Windows 32/64-bit, Linux 64-bit, and Android 32/64-bit. Install and configure the corresponding RAD Studio platform SDKs and toolchains. For example, build only the Windows packages from the repository root:
-
-```powershell
-.\BuildReleases.ps1 -Platforms win32,win64
-```
-
-## Building a Microsoft Store package
-
-After building the Windows application, run:
-
-```powershell
-.\BuildStorePackage.ps1
-```
-
-The script packages the existing `Win64 / Release` build as an unsigned MSIX in `releases`, using `MakeAppx.exe` from the Windows SDK. It reads the selected configuration's effective MSBuild properties from `apps/retromul/RetroMul.dproj`: `PF_UWPPackageName`, `PF_UWPPublisher`, `PF_UWPPackageDisplayName`, and `PF_UWPPublisherDisplayName`. Configure those values in RAD Studio using the identities from Partner Center. The script does not modify the project, compile the application, install the package, or submit it to the Store.
-
-Output filenames are `RetroMul-x64.msix` and `RetroMul-x86.msix`; the version is stored inside the package manifest. The package version defaults to the executable's file version. Use `-Version` to set a new four-part Store version with a final component of zero:
-
-```powershell
-.\BuildStorePackage.ps1 -Version 1.2.0.0
-```
-
-`-Platform Win32` selects the 32-bit build and that platform's project settings; the default is `Win64`. `-Configuration` defaults to `Release`. Missing Store identity settings produce an error; they are not borrowed from a different platform or configuration. Optional `-PackageName`, `-Publisher`, `-PublisherDisplayName`, and `-DisplayName` parameters override project values.
-
-The payload contains the project executable, adjacent DLLs, the build's `Lang` directory if present, and the project's Windows logos. `-InputDirectory` selects another build directory; `-ContentDirectory` adds runtime resources from another directory. Build intermediates and release ZIPs are not copied by default. `-MakeAppxPath` overrides SDK tool discovery, and `-OutputDirectory` overrides the output location. All staging files and evaluated settings remain in `codex-work/build/store-package`.
-
-The unsigned `.msix` is intended for Store submission; local installation requires a separate signing or development deployment step. Packaging success does not replace installation testing or Microsoft Store certification.
-
-To Authenticode-sign the executable before packaging, install a code-signing certificate with its private key in the Windows Personal certificate store, then pass its thumbprint:
-
-```powershell
-.\BuildStorePackage.ps1 -SigningCertificateThumbprint '0123456789ABCDEF0123456789ABCDEF01234567'
-```
-
-The script signs and verifies the staged EXE using SignTool and SHA-256, with an RFC 3161 timestamp. The original build executable is preserved. `-SigningCertificateStore LocalMachine` selects the machine's Personal store instead of the current user's store. `-SignToolPath` and `-TimestampUrl` override the SDK tool path and timestamp server. Signing or verification errors stop packaging. The MSIX itself remains unsigned for Store submission. Without `-SigningCertificateThumbprint`, executable signing is skipped.
-
-`CreateRelease.ps1 -Tag v1.0.0` uploads the seven platform ZIPs and `releases/RetroMul-x64.msix` by default. Build the MSIX before creating the release. Use `-StoreArchitectures x86,x64` to include both Windows packages or `-StoreArchitectures @()` to upload only the ZIPs. Missing or empty selected packages stop release creation before contacting GitHub.
 
 ## Source layout
 

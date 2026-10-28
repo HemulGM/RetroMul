@@ -1,9 +1,9 @@
-﻿unit PC.Sound.OPL2;
+﻿unit HW.Sound.OPL2;
 
 interface
 
 uses
-  PC.Sound.OPL;
+  HW.Sound.OPL;
 
 type
   // YM3812, nine two-operator channels, mono output.

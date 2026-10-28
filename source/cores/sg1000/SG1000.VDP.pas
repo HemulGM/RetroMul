@@ -263,7 +263,8 @@ begin
     Inc(Count);
     if Count = 5 then
     begin
-      if FStatus and $40 = 0 then
+      // TI data manual 2.3.3: 5S only latches while the frame flag is clear.
+      if FStatus and $C0 = 0 then
         FStatus := (FStatus and $A0) or $40 or i;
       if not FRemoveSpriteLimit then
         Break;

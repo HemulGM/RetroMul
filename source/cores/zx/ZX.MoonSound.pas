@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, Yamaha.Sound.OPL4, ZX.AM29F040, Core.Snapshots;
+  System.SysUtils, HW.Sound.OPL4, ZX.AM29F040, Core.Snapshots;
 
 type
   // Mick ZXM-MoonSound revision 01: OPL4 + AM29F016D + 2 x 512K SRAM.

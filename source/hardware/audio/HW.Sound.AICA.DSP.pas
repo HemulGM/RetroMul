@@ -1,4 +1,4 @@
-﻿unit DC.Sound.AICA.DSP;
+﻿unit HW.Sound.AICA.DSP;
 
 interface
 

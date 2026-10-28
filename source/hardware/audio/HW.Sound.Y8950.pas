@@ -1,9 +1,9 @@
-﻿unit Yamaha.Sound.Y8950;
+﻿unit HW.Sound.Y8950;
 
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, Core.Snapshots, PC.Sound.OPL;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots, HW.Sound.OPL;
 
 type
   TY8950 = class

@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, MD.Z80, ZX.Sound.YM2149, Core.AudioFilter;
+  System.SysUtils, HW.Z80, HW.Sound.YM2149, Core.AudioFilter;
 
 type
   TZXAudioMachine = class

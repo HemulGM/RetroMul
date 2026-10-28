@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, C64.CPU, A2600.Sound.TIA;
+  System.SysUtils, C64.CPU, HW.Sound.TIA;
 
 type
   TAtari2600Audio = class

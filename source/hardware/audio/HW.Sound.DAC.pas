@@ -1,4 +1,4 @@
-﻿unit ZX.Sound.DAC;
+﻿unit HW.Sound.DAC;
 
 interface
 

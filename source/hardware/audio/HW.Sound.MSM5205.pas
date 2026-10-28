@@ -1,4 +1,4 @@
-﻿unit HW.MSM5205;
+﻿unit HW.Sound.MSM5205;
 
 interface
 

@@ -1769,6 +1769,9 @@ begin
   // GD-ROM images (CHGD track metadata) may exceed a CD's size.
   var Source := OpenCHD(Storage.OpenRead(Location));
   var GDROM := Source.Metadata($43484744, 0) <> ''; // CHGD
+  var TrackLimit := 450000;
+  if GDROM then
+    TrackLimit := 560000;
   var Input := Storage.OpenRead(Location);
   try
     if (Input.Size > Int64(800) * 1024 * 1024) and not (GDROM and (Input.Size <= Int64(1600) * 1024 * 1024)) then
@@ -1805,6 +1808,7 @@ begin
     var Frames := 0;
     var Gap := 0;
     var PostGap := 0;
+    var Pad := 0;
     var Kind := '';
     var GapKind := '';
     var SubKind := '';
@@ -1816,7 +1820,7 @@ begin
       if Length(Pair) <> 2 then
         raise EReadError.Create('Invalid CHD track metadata');
 
-      case IndexStr(Pair[0], ['TRACK', 'TYPE', 'FRAMES', 'PREGAP', 'PGTYPE', 'POSTGAP']) of
+      case IndexStr(Pair[0], ['TRACK', 'TYPE', 'FRAMES', 'PREGAP', 'PGTYPE', 'POSTGAP', 'PAD']) of
         0:
           Number := StrToInt(Pair[1]);
         1:
@@ -1829,10 +1833,13 @@ begin
           GapKind := Pair[1];
         5:
           PostGap := StrToInt(Pair[1]);
+        6:
+          Pad := StrToInt(Pair[1]);
       end;
     end;
-    if (Number <> I + 1) or (Frames <= 0) or (Frames > 450000) or
-      (Gap < 0) or (Gap > 450000) or (PostGap < 0) or (PostGap > 450000) then
+    if (Number <> I + 1) or (Frames <= 0) or (Frames > TrackLimit) or
+      (Gap < 0) or (Gap > TrackLimit) or (PostGap < 0) or (PostGap > TrackLimit) or
+      (Pad < 0) or (Pad >= Frames) or ((Pad <> 0) and not GDROM) then
       raise EReadError.Create('Invalid CHD track bounds');
 
     var Audio := Kind = 'AUDIO';
@@ -1846,7 +1853,7 @@ begin
     // Only the V prefix denotes pregap sectors physically stored in the CHD.
     if GapKind.StartsWith('V') then
       StoredGap := Gap;
-    if Frames <= StoredGap then
+    if Frames - Pad <= StoredGap then
       raise EReadError.Create('CHD track contains only a pregap');
 
     // The GD-ROM high-density area starts with track 3 at LBA 45000.
@@ -1867,7 +1874,9 @@ begin
     Inc(Cursor, Gap);
     Item.StartLBA := Cursor;
     Inc(Cursor, Frames - StoredGap);
-    Item.EndLBA := Cursor;
+    // GD-ROM PAD sectors fill the address gap to the following track;
+    // they remain in the CHD stream but are not part of this track's data.
+    Item.EndLBA := Cursor - Pad;
     Inc(Cursor, PostGap);
     Item.FileSector := FileCursor + StoredGap;
     Inc(FileCursor, Frames);

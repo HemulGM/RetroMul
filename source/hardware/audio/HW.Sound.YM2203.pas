@@ -1,9 +1,9 @@
-﻿unit ZX.Sound.YM2203;
+﻿unit HW.Sound.YM2203;
 
 interface
 
 uses
-  System.SysUtils, MD.Sound, ZX.Sound.YM2149, Core.AudioFilter, Core.Snapshots;
+  System.SysUtils, MD.Sound, HW.Sound.YM2149, Core.AudioFilter, Core.Snapshots;
 
 type
   // OPN FM operators are shared with the existing OPN2 core. YM2203 runs

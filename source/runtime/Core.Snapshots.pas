@@ -12,10 +12,13 @@ type
   private
     FStream: TStream;
     FLoading: Boolean;
+    FVersion: Cardinal;
   public
-    constructor Create(Stream: TStream; Loading: Boolean);
+    constructor Create(Stream: TStream; Loading: Boolean; Version: Cardinal = 0);
     procedure Field(var Value; Size: Integer);
     property Loading: Boolean read FLoading;
+    // The core payload version; zero for direct, current-layout archives.
+    property Version: Cardinal read FVersion;
   end;
 
   TStateTransfer = reference to procedure(State: TStateArchive);
@@ -111,11 +114,12 @@ end;
 
 { TStateArchive }
 
-constructor TStateArchive.Create(Stream: TStream; Loading: Boolean);
+constructor TStateArchive.Create(Stream: TStream; Loading: Boolean; Version: Cardinal);
 begin
   inherited Create;
   FStream := Stream;
   FLoading := Loading;
+  FVersion := Version;
 end;
 
 procedure TStateArchive.Field(var Value; Size: Integer);
@@ -125,7 +129,8 @@ begin
   begin
     FStream.ReadBuffer(StoredSize, SizeOf(StoredSize));
     if (StoredSize <> Size) or (Size < 0) or (Size > FStream.Size - FStream.Position) then
-      raise EReadError.Create('Incompatible or truncated snapshot');
+      raise EReadError.CreateFmt('Incompatible or truncated snapshot (field at %d: stored %d, expected %d)',
+        [FStream.Position - SizeOf(StoredSize), StoredSize, Size]);
 
     if Size > 0 then
       FStream.ReadBuffer(Value, Size);
@@ -138,9 +143,9 @@ begin
   end;
 end;
 
-procedure TransferStream(Stream: TStream; Loading: Boolean; const Transfer: TStateTransfer);
+procedure TransferStream(Stream: TStream; Loading: Boolean; const Transfer: TStateTransfer; Version: Cardinal);
 begin
-  var State := TStateArchive.Create(Stream, Loading);
+  var State := TStateArchive.Create(Stream, Loading, Version);
   try
     Transfer(State);
   finally
@@ -194,8 +199,8 @@ begin
   var Payload := TMemoryStream.Create;
   var Output := TMemoryStream.Create;
   try
-    TransferStream(Payload, False, Transfer);
     var Header := MakeHeader(platform, ROM);
+    TransferStream(Payload, False, Transfer, Header.Version);
     Header.PayloadSize := Payload.Size;
     Payload.Position := 0;
     var Digest := THashSHA2.GetHashBytes(Payload);
@@ -266,15 +271,15 @@ begin
     if not CompareMem(@Digest[0], @Header.Digest, 32) then
       raise EReadError.Create('Snapshot checksum mismatch');
 
-    TransferStream(Backup, False, Transfer);
+    TransferStream(Backup, False, Transfer, Expected.Version);
     try
       Payload.Position := 0;
-      TransferStream(Payload, True, Transfer);
+      TransferStream(Payload, True, Transfer, Header.Version);
       if Payload.Position <> Payload.Size then
         raise EReadError.Create('Unexpected snapshot data');
     except
       Backup.Position := 0;
-      TransferStream(Backup, True, Transfer);
+      TransferStream(Backup, True, Transfer, Expected.Version);
       raise;
     end;
   finally

@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, MD.Z80, Core.Snapshots;
+  System.SysUtils, HW.Z80, Core.Snapshots;
 
 type
   // Classic 12 MHz GS, not NeoGS. Commands are executed by its guest ROM.

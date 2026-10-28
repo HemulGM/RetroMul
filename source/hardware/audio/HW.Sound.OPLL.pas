@@ -1,4 +1,4 @@
-﻿unit MSX.Sound.OPLL;
+﻿unit HW.Sound.OPLL;
 
 interface
 

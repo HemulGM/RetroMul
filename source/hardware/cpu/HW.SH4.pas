@@ -376,6 +376,7 @@ type
     function Decode(Op: Word; Address, AMode: Cardinal; Slot: Boolean; out I: TSH4Inst): Boolean;
     function Execute(Insts: PSH4Inst; Count: Integer; out Next: Cardinal): Integer;
     // Operation handlers (SH4Ops); True stops the block.
+    function OpFPUChecked(I: PSH4Inst): Boolean;
     function OpNOP(I: PSH4Inst): Boolean;
     function OpMOV(I: PSH4Inst): Boolean;
     function OpMOVI(I: PSH4Inst): Boolean;
@@ -744,6 +745,7 @@ const
 
 var
   SH4Ops: array[TOp] of TSH4OpHandler;
+  SH4FPOps: array[TOp] of TSH4OpHandler;
 
 { Memory }
 
@@ -1781,7 +1783,10 @@ begin
         $000010:
           begin
             var Old := S.MMUCR;
-            S.MMUCR := Value and $FCFCFF05;
+            // TI triggers invalidation on this write and always reads as 0.
+            // Keeping it set makes later read/modify/write URC updates
+            // unexpectedly invalidate every translation again.
+            S.MMUCR := Value and $FCFCFF01;
             if (Value and 4) <> 0 then
             begin
               // TI: invalidate all TLB entries.
@@ -4989,6 +4994,203 @@ begin
   S.FR.U[N] := S.FPUL;
 end;
 
+function TSH4.OpFPUChecked(I: PSH4Inst): Boolean;
+const
+  EventI = 1; EventU = 2; EventO = 4; EventZ = 8; EventV = 16; EventE = 32;
+var
+  DN, AnyNaN, AnySNaN, AnyDenormal, AnyInfinity: Boolean;
+
+  procedure InputSingle(var Bits: Cardinal);
+  begin
+    AnyInfinity := AnyInfinity or ((Bits and $7FFFFFFF) = $7F800000);
+    if IsNaNBits(Bits) then
+    begin
+      AnyNaN := True;
+      // SH-4's signaling bit has the opposite sense to the host's. Let the
+      // host propagate a quiet NaN; detect guest signaling operands here.
+      AnySNaN := AnySNaN or ((Bits and $00400000) <> 0);
+      Bits := Bits or $00400000;
+    end
+    else if ((Bits and $7F800000) = 0) and ((Bits and $7FFFFF) <> 0) then
+    begin
+      AnyDenormal := True;
+      if DN then Bits := Bits and $80000000;
+    end;
+  end;
+
+  procedure InputDouble(var Bits: UInt64);
+  begin
+    AnyInfinity := AnyInfinity or ((Bits and $7FFFFFFFFFFFFFFF) = $7FF0000000000000);
+    if IsNaN64(Bits) then
+    begin
+      AnyNaN := True;
+      AnySNaN := AnySNaN or ((Bits and $0008000000000000) <> 0);
+      Bits := Bits or $0008000000000000;
+    end
+    else if ((Bits and $7FF0000000000000) = 0) and ((Bits and $FFFFFFFFFFFFF) <> 0) then
+    begin
+      AnyDenormal := True;
+      if DN then Bits := Bits and $8000000000000000;
+    end;
+  end;
+
+  procedure OutputSingle(var Bits: Cardinal; var Events: Cardinal);
+  begin
+    if IsNaNBits(Bits) then Bits := $7FBFFFFF
+    else if DN and ((Bits and $7F800000) = 0) and ((Bits and $7FFFFF) <> 0) then
+    begin
+      Bits := Bits and $80000000;
+      Events := Events or EventU or EventI;
+    end;
+  end;
+
+  procedure OutputDouble(var Bits: UInt64; var Events: Cardinal);
+  begin
+    if IsNaN64(Bits) then Bits := $7FF7FFFFFFFFFFFF
+    else if DN and ((Bits and $7FF0000000000000) = 0) and ((Bits and $FFFFFFFFFFFFF) <> 0) then
+    begin
+      Bits := Bits and $8000000000000000;
+      Events := Events or EventU or EventI;
+    end;
+  end;
+
+begin
+  var K := TOp(I.Kind);
+  var OldFPSCR := S.FPSCR;
+  var SavedFR := S.FR;
+  var SavedXF: TSH4FPBank;
+  if K = oFTRV then SavedXF := S.XF;
+  var SavedFPUL := S.FPUL;
+  var SavedT := S.T;
+  DN := (OldFPSCR and FPSCRDN) <> 0;
+  AnyNaN := False; AnySNaN := False; AnyDenormal := False; AnyInfinity := False;
+  var DoubleInput := K in [oDADD, oDSUB, oDMUL, oDDIV, oDSQRT,
+    oDCMPEQ, oDCMPGT, oDFTRC, oFCNVDS];
+  var DoubleOutput := K in [oDADD, oDSUB, oDMUL, oDDIV, oDSQRT, oDFLOAT, oFCNVSD];
+  var Compare := K in [oFCMPEQ, oFCMPGT, oDCMPEQ, oDCMPGT];
+  var ToInteger := K in [oFTRC, oDFTRC];
+  var ToFPUL := ToInteger or (K = oFCNVDS);
+  var InputMask: Cardinal := 0;
+  var OutputMask: Cardinal := Cardinal(1) shl I.N;
+  case K of
+    oFADD, oFSUB, oFMUL, oFDIV, oFCMPEQ, oFCMPGT,
+    oDADD, oDSUB, oDMUL, oDDIV, oDCMPEQ, oDCMPGT:
+      InputMask := (Cardinal(1) shl I.N) or (Cardinal(1) shl I.M);
+    oFMAC:
+      InputMask := (Cardinal(1) shl I.N) or (Cardinal(1) shl I.M) or 2;
+    oFSQRT, oFSRRA, oFTRC, oDSQRT, oDFTRC, oFCNVDS:
+      InputMask := Cardinal(1) shl I.N;
+    oFCNVSD:
+      InputSingle(S.FPUL);
+    oFIPR:
+      begin
+        InputMask := ($F shl I.N) or ($F shl I.M);
+        OutputMask := Cardinal(1) shl ((I.N + 3) xor 1);
+      end;
+    oFTRV:
+      begin
+        InputMask := $F shl I.N;
+        OutputMask := InputMask;
+        for var J := 0 to 15 do InputSingle(S.XF.U[J]);
+      end;
+  end;
+  if DoubleInput then
+  begin
+    InputDouble(S.FR.Q[I.N shr 1]);
+    if (K in [oDADD, oDSUB, oDMUL, oDDIV, oDCMPEQ, oDCMPGT]) and (I.M <> I.N) then
+      InputDouble(S.FR.Q[I.M shr 1]);
+  end
+  else if K in [oFIPR, oFTRV] then
+  begin
+    for var J := 0 to 15 do
+      if (InputMask and (Cardinal(1) shl J)) <> 0 then InputSingle(S.FR.U[J]);
+  end
+  else if InputMask <> 0 then
+  begin
+    InputSingle(S.FR.U[I.N]);
+    if (K in [oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oFCMPEQ, oFCMPGT]) and (I.M <> I.N) then
+      InputSingle(S.FR.U[I.M]);
+    if (K = oFMAC) and (I.N <> 1) and (I.M <> 1) then InputSingle(S.FR.U[1]);
+  end;
+
+  // Inputs have already been normalized. Keep the unflushed result until
+  // its underflow can be recorded, and isolate status from prior host work.
+  S.FPSCR := OldFPSCR and not Cardinal(FPSCRDN);
+  FSetExceptFlag(0);
+  SH4FPOps[K](Self, I);
+  var HostFlags := FGetExceptFlag;
+  var Events: Cardinal := 0;
+  if (HostFlags and feeINEXACT) <> 0 then Events := Events or EventI;
+  if (HostFlags and feeUNDERFLOW) <> 0 then Events := Events or EventU;
+  if (HostFlags and feeOVERFLOW) <> 0 then Events := Events or EventO;
+  if (HostFlags and feeDIVBYZERO) <> 0 then Events := Events or EventZ;
+  if ((HostFlags and feeINVALID) <> 0) or AnySNaN then Events := Events or EventV;
+  // The vector instructions are approximate: even an exact finite dot
+  // product signals inexact (SH-4 Core Architecture, FIPR special cases).
+  if (K in [oFIPR, oFTRV]) and not AnyNaN and not AnyInfinity then
+    Events := Events or EventI;
+  if Compare then
+  begin
+    Events := Events and EventV;
+    if AnyNaN and (K in [oFCMPGT, oDCMPGT]) then Events := EventV;
+  end;
+  if ToInteger then
+  begin
+    Events := 0; // FTRC does not signal inexact or denormal-input error.
+    if AnyNaN then Events := EventV
+    else if DoubleInput then
+    begin
+      if (SavedFR.D[I.N shr 1] >= 2147483648.0) or
+        (SavedFR.D[I.N shr 1] < -2147483648.0) then Events := EventV;
+    end
+    else if (SavedFR.S[I.N] >= 2147483648.0) or
+      (SavedFR.S[I.N] < -2147483648.0) then Events := EventV;
+  end;
+
+  var ResultFR := S.FR;
+  var ResultFPUL := S.FPUL;
+  var ResultT := S.T;
+  if not Compare and not ToInteger then
+    if K = oFCNVDS then OutputSingle(ResultFPUL, Events)
+    else if DoubleOutput then OutputDouble(ResultFR.Q[I.N shr 1], Events)
+    else
+      for var J := 0 to 15 do
+        if (OutputMask and (Cardinal(1) shl J)) <> 0 then OutputSingle(ResultFR.U[J], Events);
+
+  // Special conditions have priority over normal rounding conditions.
+  if (Events and EventV) <> 0 then Events := EventV
+  else if (Events and EventZ) <> 0 then Events := EventZ
+  else if not DN and AnyDenormal and not AnyNaN and
+    not (K in [oFIPR, oFTRV, oFTRC, oDFTRC]) then Events := EventE;
+  S.FR := SavedFR;
+  if K = oFTRV then S.XF := SavedXF;
+  S.FPUL := SavedFPUL; S.T := SavedT;
+  S.FPSCR := (OldFPSCR and not Cardinal($3F000)) or (Events shl 12) or ((Events and 31) shl 2);
+
+  var Potential: Cardinal := 0;
+  case K of
+    oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oFSRRA, oFIPR,
+    oDADD, oDSUB, oDMUL, oDDIV, oFCNVDS: Potential := 7;
+    oFSQRT, oDSQRT, oFLOAT: Potential := EventI;
+    oFTRV: Potential := EventV or 7;
+  end;
+  Result := ((Events and EventE) <> 0) or
+    (((Events and 31) and (OldFPSCR shr 7)) <> 0) or
+    ((Potential and (OldFPSCR shr 7)) <> 0);
+  if Result then
+  begin
+    S.EXPEVT := SH4ExcFPU;
+    FExcepted := True;
+    Exit;
+  end;
+  if Compare then S.T := ResultT
+  else if ToFPUL then S.FPUL := ResultFPUL
+  else if DoubleOutput then S.FR.Q[I.N shr 1] := ResultFR.Q[I.N shr 1]
+  else
+    for var J := 0 to 15 do
+      if (OutputMask and (Cardinal(1) shl J)) <> 0 then S.FR.U[J] := ResultFR.U[J];
+end;
+
 function TSH4.OpFABS(I: PSH4Inst): Boolean;
 var
   N: Integer;
@@ -5805,6 +6007,12 @@ end;
 
 procedure TSH4.Run;
 begin
+{$IFDEF CPUX64}
+  var SavedMXCSR := GetMXCSR;
+  // Guest DN is handled explicitly. Host DAZ/FTZ must not change either
+  // the arithmetic result or the exception flags observed by the wrapper.
+  SetMXCSR(SavedMXCSR and not Cardinal($8040));
+{$ENDIF}
   FHostMaskSaved := GetExceptionMask;
   FHostRoundSaved := GetRoundMode;
   SetExceptionMask(exAllArithmeticExceptions);
@@ -5815,6 +6023,9 @@ begin
     ClearExceptions(False);
     SetExceptionMask(FHostMaskSaved);
     SetRoundMode(FHostRoundSaved);
+{$IFDEF CPUX64}
+    SetMXCSR(SavedMXCSR and not Cardinal($3F));
+{$ENDIF}
   end;
 end;
 
@@ -6135,6 +6346,10 @@ end;
 procedure TSH4.Step;
 begin
   Inc(FSideEffects);
+{$IFDEF CPUX64}
+  var SavedMXCSR := GetMXCSR;
+  SetMXCSR(SavedMXCSR and not Cardinal($8040));
+{$ENDIF}
   var SavedMask := GetExceptionMask;
   var SavedRound := GetRoundMode;
   SetExceptionMask(exAllArithmeticExceptions);
@@ -6172,6 +6387,9 @@ begin
     ClearExceptions(False);
     SetExceptionMask(SavedMask);
     SetRoundMode(SavedRound);
+{$IFDEF CPUX64}
+    SetMXCSR(SavedMXCSR and not Cardinal($3F));
+{$ENDIF}
   end;
 end;
 
@@ -6765,8 +6983,10 @@ var
   function Width(Size: Integer): TJitWidth;
   begin
     case Size of
-      1: Result := jw8;
-      4: Result := jw32;
+      1:
+        Result := jw8;
+      4:
+        Result := jw32;
     else
       Result := jw64;
     end;
@@ -6947,7 +7167,7 @@ var
     J.Shift(jsSar, jw32, jrT2, 24);
   end;
 
-  procedure Delayed;
+  procedure delayed;
   begin
     J.Move(jw8, Field(O.DelaySlot), JImm(1));
   end;
@@ -6964,114 +7184,222 @@ begin
   M := I.M;
   var Expected: Pointer := nil;
   case TOp(I.Kind) of
-    oNOP: Expected := @TSH4.OpNOP;
-    oMOV: Expected := @TSH4.OpMOV;
-    oMOVI: Expected := @TSH4.OpMOVI;
-    oMOVA: Expected := @TSH4.OpMOVA;
-    oADD: Expected := @TSH4.OpADD;
-    oADDI: Expected := @TSH4.OpADDI;
-    oSUB: Expected := @TSH4.OpSUB;
-    oAND: Expected := @TSH4.OpAND;
-    oOR: Expected := @TSH4.OpOR;
-    oXOR: Expected := @TSH4.OpXOR;
-    oANDI: Expected := @TSH4.OpANDI;
-    oORI: Expected := @TSH4.OpORI;
-    oXORI: Expected := @TSH4.OpXORI;
-    oNOT: Expected := @TSH4.OpNOT;
-    oNEG: Expected := @TSH4.OpNEG;
-    oEXTUB: Expected := @TSH4.OpEXTUB;
-    oEXTUW: Expected := @TSH4.OpEXTUW;
-    oEXTSB: Expected := @TSH4.OpEXTSB;
-    oEXTSW: Expected := @TSH4.OpEXTSW;
-    oSHLL2: Expected := @TSH4.OpSHLL2;
-    oSHLL8: Expected := @TSH4.OpSHLL8;
-    oSHLL16: Expected := @TSH4.OpSHLL16;
-    oSHLR2: Expected := @TSH4.OpSHLR2;
-    oSHLR8: Expected := @TSH4.OpSHLR8;
-    oSHLR16: Expected := @TSH4.OpSHLR16;
-    oSHAL, oSHLL: Expected := @TSH4.OpSHAL;
-    oSHAR: Expected := @TSH4.OpSHAR;
-    oSHLR: Expected := @TSH4.OpSHLR;
-    oROTL: Expected := @TSH4.OpROTL;
-    oROTR: Expected := @TSH4.OpROTR;
-    oROTCL: Expected := @TSH4.OpROTCL;
-    oROTCR: Expected := @TSH4.OpROTCR;
-    oMOVT: Expected := @TSH4.OpMOVT;
-    oCLRT: Expected := @TSH4.OpCLRT;
-    oSETT: Expected := @TSH4.OpSETT;
-    oDT: Expected := @TSH4.OpDT;
-    oTST: Expected := @TSH4.OpTST;
-    oTSTI: Expected := @TSH4.OpTSTI;
-    oCMPEQ: Expected := @TSH4.OpCMPEQ;
-    oCMPHS: Expected := @TSH4.OpCMPHS;
-    oCMPHI: Expected := @TSH4.OpCMPHI;
-    oCMPGE: Expected := @TSH4.OpCMPGE;
-    oCMPGT: Expected := @TSH4.OpCMPGT;
-    oCMPEQI: Expected := @TSH4.OpCMPEQI;
-    oCMPPZ: Expected := @TSH4.OpCMPPZ;
-    oCMPPL: Expected := @TSH4.OpCMPPL;
-    oSWAPW: Expected := @TSH4.OpSWAPW;
-    oXTRCT: Expected := @TSH4.OpXTRCT;
-    oBT: Expected := @TSH4.OpBT;
-    oBF: Expected := @TSH4.OpBF;
-    oBTS: Expected := @TSH4.OpBTS;
-    oBFS: Expected := @TSH4.OpBFS;
-    oBRA: Expected := @TSH4.OpBRA;
-    oBSR: Expected := @TSH4.OpBSR;
-    oBRAF: Expected := @TSH4.OpBRAF;
-    oBSRF: Expected := @TSH4.OpBSRF;
-    oJMP: Expected := @TSH4.OpJMP;
-    oJSR: Expected := @TSH4.OpJSR;
-    oRTS: Expected := @TSH4.OpRTS;
-    oLDSPR: Expected := @TSH4.OpLDSPR;
-    oSTSPR: Expected := @TSH4.OpSTSPR;
-    oLDSMACL: Expected := @TSH4.OpLDSMACL;
-    oSTSMACL: Expected := @TSH4.OpSTSMACL;
-    oLDSMACH: Expected := @TSH4.OpLDSMACH;
-    oSTSMACH: Expected := @TSH4.OpSTSMACH;
-    oLDCGBR: Expected := @TSH4.OpLDCGBR;
-    oSTCGBR: Expected := @TSH4.OpSTCGBR;
-    oLDSFPUL: Expected := @TSH4.OpLDSFPUL;
-    oSTSFPUL: Expected := @TSH4.OpSTSFPUL;
-    oFLDS: Expected := @TSH4.OpFLDS;
-    oFSTS: Expected := @TSH4.OpFSTS;
-    oFLDI0: Expected := @TSH4.OpFLDI0;
-    oFLDI1: Expected := @TSH4.OpFLDI1;
-    oFMOV: Expected := @TSH4.OpFMOV;
-    oMOVLL: Expected := @TSH4.OpMOVLL;
-    oMOVLL4: Expected := @TSH4.OpMOVLL4;
-    oMOVLL0: Expected := @TSH4.OpMOVLL0;
-    oMOVLLG: Expected := @TSH4.OpMOVLLG;
-    oMOVLPC: Expected := @TSH4.OpMOVLPC;
-    oMOVLP: Expected := @TSH4.OpMOVLP;
-    oFMOVLD: Expected := @TSH4.OpFMOVLD;
-    oFMOVLD0: Expected := @TSH4.OpFMOVLD0;
-    oFMOVLDP: Expected := @TSH4.OpFMOVLDP;
-    oMOVBL: Expected := @TSH4.OpMOVBL;
-    oMOVBL4: Expected := @TSH4.OpMOVBL4;
-    oMOVBL0: Expected := @TSH4.OpMOVBL0;
-    oMOVBLG: Expected := @TSH4.OpMOVBLG;
-    oMOVBP: Expected := @TSH4.OpMOVBP;
-    oMOVLS: Expected := @TSH4.OpMOVLS;
-    oMOVLS4: Expected := @TSH4.OpMOVLS4;
-    oMOVLS0: Expected := @TSH4.OpMOVLS0;
-    oMOVLSG: Expected := @TSH4.OpMOVLSG;
-    oMOVLM: Expected := @TSH4.OpMOVLM;
-    oFMOVST: Expected := @TSH4.OpFMOVST;
-    oFMOVST0: Expected := @TSH4.OpFMOVST0;
-    oFMOVSTM: Expected := @TSH4.OpFMOVSTM;
-    oMOVBS: Expected := @TSH4.OpMOVBS;
-    oMOVBS4: Expected := @TSH4.OpMOVBS4;
-    oMOVBS0: Expected := @TSH4.OpMOVBS0;
-    oMOVBSG: Expected := @TSH4.OpMOVBSG;
-    oMOVBM: Expected := @TSH4.OpMOVBM;
-    oPREF: Expected := @TSH4.OpPREF;
-    oFSCHG: Expected := @TSH4.OpFSCHG;
-    oFMOVD: Expected := @TSH4.OpFMOVD;
-    oFMOVDLD, oFMOVDLD0, oFMOVDLDP: Expected := @TSH4.OpFMOVDLD;
-    oFMOVDST, oFMOVDST0, oFMOVDSTM: Expected := @TSH4.OpFMOVDST;
-    oSTSMPR, oSTSMMACL, oSTSMMACH, oSTCMGBR, oSTSMFPUL: Expected := @TSH4.OpSTCMSR;
-    oLDSMPR, oLDSMMACL, oLDSMMACH, oLDCMGBR, oLDSMFPUL: Expected := @TSH4.OpLDCMSR;
+    oNOP:
+      Expected := @TSH4.OpNOP;
+    oMOV:
+      Expected := @TSH4.OpMOV;
+    oMOVI:
+      Expected := @TSH4.OpMOVI;
+    oMOVA:
+      Expected := @TSH4.OpMOVA;
+    oADD:
+      Expected := @TSH4.OpADD;
+    oADDI:
+      Expected := @TSH4.OpADDI;
+    oSUB:
+      Expected := @TSH4.OpSUB;
+    oAND:
+      Expected := @TSH4.OpAND;
+    oOR:
+      Expected := @TSH4.OpOR;
+    oXOR:
+      Expected := @TSH4.OpXOR;
+    oANDI:
+      Expected := @TSH4.OpANDI;
+    oORI:
+      Expected := @TSH4.OpORI;
+    oXORI:
+      Expected := @TSH4.OpXORI;
+    oNOT:
+      Expected := @TSH4.OpNOT;
+    oNEG:
+      Expected := @TSH4.OpNEG;
+    oEXTUB:
+      Expected := @TSH4.OpEXTUB;
+    oEXTUW:
+      Expected := @TSH4.OpEXTUW;
+    oEXTSB:
+      Expected := @TSH4.OpEXTSB;
+    oEXTSW:
+      Expected := @TSH4.OpEXTSW;
+    oSHLL2:
+      Expected := @TSH4.OpSHLL2;
+    oSHLL8:
+      Expected := @TSH4.OpSHLL8;
+    oSHLL16:
+      Expected := @TSH4.OpSHLL16;
+    oSHLR2:
+      Expected := @TSH4.OpSHLR2;
+    oSHLR8:
+      Expected := @TSH4.OpSHLR8;
+    oSHLR16:
+      Expected := @TSH4.OpSHLR16;
+    oSHAL, oSHLL:
+      Expected := @TSH4.OpSHAL;
+    oSHAR:
+      Expected := @TSH4.OpSHAR;
+    oSHLR:
+      Expected := @TSH4.OpSHLR;
+    oROTL:
+      Expected := @TSH4.OpROTL;
+    oROTR:
+      Expected := @TSH4.OpROTR;
+    oROTCL:
+      Expected := @TSH4.OpROTCL;
+    oROTCR:
+      Expected := @TSH4.OpROTCR;
+    oMOVT:
+      Expected := @TSH4.OpMOVT;
+    oCLRT:
+      Expected := @TSH4.OpCLRT;
+    oSETT:
+      Expected := @TSH4.OpSETT;
+    oDT:
+      Expected := @TSH4.OpDT;
+    oTST:
+      Expected := @TSH4.OpTST;
+    oTSTI:
+      Expected := @TSH4.OpTSTI;
+    oCMPEQ:
+      Expected := @TSH4.OpCMPEQ;
+    oCMPHS:
+      Expected := @TSH4.OpCMPHS;
+    oCMPHI:
+      Expected := @TSH4.OpCMPHI;
+    oCMPGE:
+      Expected := @TSH4.OpCMPGE;
+    oCMPGT:
+      Expected := @TSH4.OpCMPGT;
+    oCMPEQI:
+      Expected := @TSH4.OpCMPEQI;
+    oCMPPZ:
+      Expected := @TSH4.OpCMPPZ;
+    oCMPPL:
+      Expected := @TSH4.OpCMPPL;
+    oSWAPW:
+      Expected := @TSH4.OpSWAPW;
+    oXTRCT:
+      Expected := @TSH4.OpXTRCT;
+    oBT:
+      Expected := @TSH4.OpBT;
+    oBF:
+      Expected := @TSH4.OpBF;
+    oBTS:
+      Expected := @TSH4.OpBTS;
+    oBFS:
+      Expected := @TSH4.OpBFS;
+    oBRA:
+      Expected := @TSH4.OpBRA;
+    oBSR:
+      Expected := @TSH4.OpBSR;
+    oBRAF:
+      Expected := @TSH4.OpBRAF;
+    oBSRF:
+      Expected := @TSH4.OpBSRF;
+    oJMP:
+      Expected := @TSH4.OpJMP;
+    oJSR:
+      Expected := @TSH4.OpJSR;
+    oRTS:
+      Expected := @TSH4.OpRTS;
+    oLDSPR:
+      Expected := @TSH4.OpLDSPR;
+    oSTSPR:
+      Expected := @TSH4.OpSTSPR;
+    oLDSMACL:
+      Expected := @TSH4.OpLDSMACL;
+    oSTSMACL:
+      Expected := @TSH4.OpSTSMACL;
+    oLDSMACH:
+      Expected := @TSH4.OpLDSMACH;
+    oSTSMACH:
+      Expected := @TSH4.OpSTSMACH;
+    oLDCGBR:
+      Expected := @TSH4.OpLDCGBR;
+    oSTCGBR:
+      Expected := @TSH4.OpSTCGBR;
+    oLDSFPUL:
+      Expected := @TSH4.OpLDSFPUL;
+    oSTSFPUL:
+      Expected := @TSH4.OpSTSFPUL;
+    oFLDS:
+      Expected := @TSH4.OpFLDS;
+    oFSTS:
+      Expected := @TSH4.OpFSTS;
+    oFLDI0:
+      Expected := @TSH4.OpFLDI0;
+    oFLDI1:
+      Expected := @TSH4.OpFLDI1;
+    oFMOV:
+      Expected := @TSH4.OpFMOV;
+    oMOVLL:
+      Expected := @TSH4.OpMOVLL;
+    oMOVLL4:
+      Expected := @TSH4.OpMOVLL4;
+    oMOVLL0:
+      Expected := @TSH4.OpMOVLL0;
+    oMOVLLG:
+      Expected := @TSH4.OpMOVLLG;
+    oMOVLPC:
+      Expected := @TSH4.OpMOVLPC;
+    oMOVLP:
+      Expected := @TSH4.OpMOVLP;
+    oFMOVLD:
+      Expected := @TSH4.OpFMOVLD;
+    oFMOVLD0:
+      Expected := @TSH4.OpFMOVLD0;
+    oFMOVLDP:
+      Expected := @TSH4.OpFMOVLDP;
+    oMOVBL:
+      Expected := @TSH4.OpMOVBL;
+    oMOVBL4:
+      Expected := @TSH4.OpMOVBL4;
+    oMOVBL0:
+      Expected := @TSH4.OpMOVBL0;
+    oMOVBLG:
+      Expected := @TSH4.OpMOVBLG;
+    oMOVBP:
+      Expected := @TSH4.OpMOVBP;
+    oMOVLS:
+      Expected := @TSH4.OpMOVLS;
+    oMOVLS4:
+      Expected := @TSH4.OpMOVLS4;
+    oMOVLS0:
+      Expected := @TSH4.OpMOVLS0;
+    oMOVLSG:
+      Expected := @TSH4.OpMOVLSG;
+    oMOVLM:
+      Expected := @TSH4.OpMOVLM;
+    oFMOVST:
+      Expected := @TSH4.OpFMOVST;
+    oFMOVST0:
+      Expected := @TSH4.OpFMOVST0;
+    oFMOVSTM:
+      Expected := @TSH4.OpFMOVSTM;
+    oMOVBS:
+      Expected := @TSH4.OpMOVBS;
+    oMOVBS4:
+      Expected := @TSH4.OpMOVBS4;
+    oMOVBS0:
+      Expected := @TSH4.OpMOVBS0;
+    oMOVBSG:
+      Expected := @TSH4.OpMOVBSG;
+    oMOVBM:
+      Expected := @TSH4.OpMOVBM;
+    oPREF:
+      Expected := @TSH4.OpPREF;
+    oFSCHG:
+      Expected := @TSH4.OpFSCHG;
+    oFMOVD:
+      Expected := @TSH4.OpFMOVD;
+    oFMOVDLD, oFMOVDLD0, oFMOVDLDP:
+      Expected := @TSH4.OpFMOVDLD;
+    oFMOVDST, oFMOVDST0, oFMOVDSTM:
+      Expected := @TSH4.OpFMOVDST;
+    oSTSMPR, oSTSMMACL, oSTSMMACH, oSTCMGBR, oSTSMFPUL:
+      Expected := @TSH4.OpSTCMSR;
+    oLDSMPR, oLDSMMACL, oLDSMMACH, oLDCMGBR, oLDSMFPUL:
+      Expected := @TSH4.OpLDCMSR;
   end;
   if (Expected = nil) or (FJitOps[I.Kind] <> Expected) or JitCallsOnly then
     Exit(False);
@@ -7079,19 +7407,32 @@ begin
   Back := J.NewLabel;
   SlowL := -1;
   case TOp(I.Kind) of
-    oNOP: ;
-    oMOV: Copy(R(N), R(M));
-    oMOVI: J.Move(jw32, R(N), Imm(I.Imm));
-    oMOVA: J.Move(jw32, R(0), Imm(I.Imm));
-    oADD: Op(jaAdd, R(M));
-    oADDI: J.Alu(jaAdd, jw32, R(N), Imm(I.Imm));
-    oSUB: Op(jaSub, R(M));
-    oAND: Op(jaAnd, R(M));
-    oOR: Op(jaOr, R(M));
-    oXOR: Op(jaXor, R(M));
-    oANDI: J.Alu(jaAnd, jw32, R(0), Imm(I.Imm));
-    oORI: J.Alu(jaOr, jw32, R(0), Imm(I.Imm));
-    oXORI: J.Alu(jaXor, jw32, R(0), Imm(I.Imm));
+    oNOP:
+      ;
+    oMOV:
+      Copy(R(N), R(M));
+    oMOVI:
+      J.Move(jw32, R(N), Imm(I.Imm));
+    oMOVA:
+      J.Move(jw32, R(0), Imm(I.Imm));
+    oADD:
+      Op(jaAdd, R(M));
+    oADDI:
+      J.Alu(jaAdd, jw32, R(N), Imm(I.Imm));
+    oSUB:
+      Op(jaSub, R(M));
+    oAND:
+      Op(jaAnd, R(M));
+    oOR:
+      Op(jaOr, R(M));
+    oXOR:
+      Op(jaXor, R(M));
+    oANDI:
+      J.Alu(jaAnd, jw32, R(0), Imm(I.Imm));
+    oORI:
+      J.Alu(jaOr, jw32, R(0), Imm(I.Imm));
+    oXORI:
+      J.Alu(jaXor, jw32, R(0), Imm(I.Imm));
     oNOT:
       begin
         J.Move(jw32, JT0, R(M));
@@ -7127,11 +7468,16 @@ begin
       begin
         J.Move(jw32, JT0, R(N));
         case TOp(I.Kind) of
-          oSHLL2: J.Shift(jsShl, jw32, jrT0, 2);
-          oSHLL8: J.Shift(jsShl, jw32, jrT0, 8);
-          oSHLL16: J.Shift(jsShl, jw32, jrT0, 16);
-          oSHLR2: J.Shift(jsShr, jw32, jrT0, 2);
-          oSHLR8: J.Shift(jsShr, jw32, jrT0, 8);
+          oSHLL2:
+            J.Shift(jsShl, jw32, jrT0, 2);
+          oSHLL8:
+            J.Shift(jsShl, jw32, jrT0, 8);
+          oSHLL16:
+            J.Shift(jsShl, jw32, jrT0, 16);
+          oSHLR2:
+            J.Shift(jsShr, jw32, jrT0, 2);
+          oSHLR8:
+            J.Shift(jsShr, jw32, jrT0, 8);
         else
           J.Shift(jsShr, jw32, jrT0, 16);
         end;
@@ -7185,9 +7531,12 @@ begin
         J.Move(jw32, R(N), JT0);
         J.Move(jw32, Field(O.T), JT2);
       end;
-    oMOVT: Copy(R(N), Field(O.T));
-    oCLRT: J.Move(jw32, Field(O.T), JImm(0));
-    oSETT: J.Move(jw32, Field(O.T), JImm(1));
+    oMOVT:
+      Copy(R(N), Field(O.T));
+    oCLRT:
+      J.Move(jw32, Field(O.T), JImm(0));
+    oSETT:
+      J.Move(jw32, Field(O.T), JImm(1));
     oDT:
       begin
         J.Move(jw32, JT0, R(N));
@@ -7210,10 +7559,14 @@ begin
       begin
         J.Move(jw32, JT0, R(N));
         case TOp(I.Kind) of
-          oCMPEQ: SetT(jcEq, JT0, R(M));
-          oCMPHS: SetT(jcAboveEq, JT0, R(M));
-          oCMPHI: SetT(jcAbove, JT0, R(M));
-          oCMPGE: SetT(jcGe, JT0, R(M));
+          oCMPEQ:
+            SetT(jcEq, JT0, R(M));
+          oCMPHS:
+            SetT(jcAboveEq, JT0, R(M));
+          oCMPHI:
+            SetT(jcAbove, JT0, R(M));
+          oCMPGE:
+            SetT(jcGe, JT0, R(M));
         else
           SetT(jcGt, JT0, R(M));
         end;
@@ -7262,7 +7615,7 @@ begin
       end;
     oBTS, oBFS:
       begin
-        Delayed;
+        delayed;
         var Other := J.NewLabel;
         J.Move(jw32, JT0, Imm(I.Addr + 4));
         if TOp(I.Kind) = oBTS then
@@ -7277,12 +7630,12 @@ begin
       begin
         if TOp(I.Kind) = oBSR then
           J.Move(jw32, Field(O.PR), Imm(I.Addr + 4));
-        Delayed;
+        delayed;
         J.Move(jw32, Field(O.DelayTarget), Imm(I.Imm));
       end;
     oBRAF, oBSRF:
       begin
-        Delayed;
+        delayed;
         J.Move(jw32, JT0, R(N));
         J.Alu(jaAdd, jw32, JT0, Imm(I.Addr + 4));
         J.Move(jw32, Field(O.DelayTarget), JT0);
@@ -7291,52 +7644,72 @@ begin
       end;
     oJMP, oJSR:
       begin
-        Delayed;
+        delayed;
         Copy(Field(O.DelayTarget), R(N));
         if TOp(I.Kind) = oJSR then
           J.Move(jw32, Field(O.PR), Imm(I.Addr + 4));
       end;
     oRTS:
       begin
-        Delayed;
+        delayed;
         Copy(Field(O.DelayTarget), Field(O.PR));
       end;
-    oLDSPR: Copy(Field(O.PR), R(N));
-    oSTSPR: Copy(R(N), Field(O.PR));
-    oLDSMACL: Copy(Field(O.MACL), R(N));
-    oSTSMACL: Copy(R(N), Field(O.MACL));
-    oLDSMACH: Copy(Field(O.MACH), R(N));
-    oSTSMACH: Copy(R(N), Field(O.MACH));
-    oLDCGBR: Copy(Field(O.GBR), R(N));
-    oSTCGBR: Copy(R(N), Field(O.GBR));
-    oLDSFPUL: Copy(Field(O.FPUL), R(N));
-    oSTSFPUL: Copy(R(N), Field(O.FPUL));
-    oFLDS: Copy(Field(O.FPUL), FR(N));
-    oFSTS: Copy(FR(N), Field(O.FPUL));
-    oFLDI0: J.Move(jw32, FR(N), JImm(0));
-    oFLDI1: J.Move(jw32, FR(N), JImm($3F800000));
-    oFMOV: Copy(FR(N), FR(M));
-
+    oLDSPR:
+      Copy(Field(O.PR), R(N));
+    oSTSPR:
+      Copy(R(N), Field(O.PR));
+    oLDSMACL:
+      Copy(Field(O.MACL), R(N));
+    oSTSMACL:
+      Copy(R(N), Field(O.MACL));
+    oLDSMACH:
+      Copy(Field(O.MACH), R(N));
+    oSTSMACH:
+      Copy(R(N), Field(O.MACH));
+    oLDCGBR:
+      Copy(Field(O.GBR), R(N));
+    oSTCGBR:
+      Copy(R(N), Field(O.GBR));
+    oLDSFPUL:
+      Copy(Field(O.FPUL), R(N));
+    oSTSFPUL:
+      Copy(R(N), Field(O.FPUL));
+    oFLDS:
+      Copy(Field(O.FPUL), FR(N));
+    oFSTS:
+      Copy(FR(N), Field(O.FPUL));
+    oFLDI0:
+      J.Move(jw32, FR(N), JImm(0));
+    oFLDI1:
+      J.Move(jw32, FR(N), JImm($3F800000));
+    oFMOV:
+      Copy(FR(N), FR(M));
     oMOVLL, oMOVLL4, oMOVLL0, oMOVLLG, oMOVLPC, oMOVLP, oFMOVLD, oFMOVLD0, oFMOVLDP:
       begin
         case TOp(I.Kind) of
-          oMOVLL4: Address(R(M), Imm(I.Imm));
-          oMOVLL0, oFMOVLD0: Address(R(M), R(0));
-          oMOVLLG: Address(Field(O.GBR), Imm(I.Imm));
-          oMOVLPC: J.Move(jw32, JT0, Imm(I.Imm));
+          oMOVLL4:
+            Address(R(M), Imm(I.Imm));
+          oMOVLL0, oFMOVLD0:
+            Address(R(M), R(0));
+          oMOVLLG:
+            Address(Field(O.GBR), Imm(I.Imm));
+          oMOVLPC:
+            J.Move(jw32, JT0, Imm(I.Imm));
         else
           J.Move(jw32, JT0, R(M));
         end;
         Load(4);
         case TOp(I.Kind) of
-          oMOVLLG: J.Move(jw32, R(0), JT2);
+          oMOVLLG:
+            J.Move(jw32, R(0), JT2);
           oMOVLP:
             begin
               if N <> M then
                 J.Alu(jaAdd, jw32, R(M), JImm(4));
               J.Move(jw32, R(N), JT2);
             end;
-          oFMOVLD, oFMOVLD0: J.Move(jw32, FR(N), JT2);
+          oFMOVLD, oFMOVLD0:
+            J.Move(jw32, FR(N), JT2);
           oFMOVLDP:
             begin
               J.Alu(jaAdd, jw32, R(M), JImm(4));
@@ -7349,9 +7722,12 @@ begin
     oMOVBL, oMOVBL4, oMOVBL0, oMOVBLG, oMOVBP:
       begin
         case TOp(I.Kind) of
-          oMOVBL4: Address(R(M), Imm(I.Imm));
-          oMOVBL0: Address(R(M), R(0));
-          oMOVBLG: Address(Field(O.GBR), Imm(I.Imm));
+          oMOVBL4:
+            Address(R(M), Imm(I.Imm));
+          oMOVBL0:
+            Address(R(M), R(0));
+          oMOVBLG:
+            Address(Field(O.GBR), Imm(I.Imm));
         else
           J.Move(jw32, JT0, R(M));
         end;
@@ -7367,18 +7743,26 @@ begin
     oMOVLS, oMOVLS4, oMOVLS0, oMOVLSG, oMOVLM, oFMOVST, oFMOVST0, oFMOVSTM, oMOVBS, oMOVBS4, oMOVBS0, oMOVBSG, oMOVBM:
       begin
         case TOp(I.Kind) of
-          oMOVLS4: Address(R(N), Imm(I.Imm));
-          oMOVLS0, oFMOVST0, oMOVBS0: Address(R(N), R(0));
-          oMOVLSG, oMOVBSG: Address(Field(O.GBR), Imm(I.Imm));
-          oMOVLM, oFMOVSTM: Address(R(N), JImm(-4));
-          oMOVBM: Address(R(N), JImm(-1));
-          oMOVBS4: Address(R(M), Imm(I.Imm));
+          oMOVLS4:
+            Address(R(N), Imm(I.Imm));
+          oMOVLS0, oFMOVST0, oMOVBS0:
+            Address(R(N), R(0));
+          oMOVLSG, oMOVBSG:
+            Address(Field(O.GBR), Imm(I.Imm));
+          oMOVLM, oFMOVSTM:
+            Address(R(N), JImm(-4));
+          oMOVBM:
+            Address(R(N), JImm(-1));
+          oMOVBS4:
+            Address(R(M), Imm(I.Imm));
         else
           J.Move(jw32, JT0, R(N));
         end;
         case TOp(I.Kind) of
-          oMOVLSG, oMOVBSG, oMOVBS4: J.Move(jw32, JT4, R(0));
-          oFMOVST, oFMOVST0, oFMOVSTM: J.Move(jw32, JT4, FR(M));
+          oMOVLSG, oMOVBSG, oMOVBS4:
+            J.Move(jw32, JT4, R(0));
+          oFMOVST, oFMOVST0, oFMOVSTM:
+            J.Move(jw32, JT4, FR(M));
         else
           J.Move(jw32, JT4, R(M));
         end;
@@ -7397,7 +7781,8 @@ begin
         J.Alu(jaAnd, jw32, JT0, Imm($FC000000));
         J.Branch(jcEq, jw32, JT0, Imm($E0000000), SlowL);
       end;
-    oFSCHG: J.Alu(jaXor, jw32, Field(O.FPSCR), JImm(FPSCRSZ));
+    oFSCHG:
+      J.Alu(jaXor, jw32, Field(O.FPSCR), JImm(FPSCRSZ));
     oFMOVD:
       begin
         J.Move(jw64, JT0, Pair(M));
@@ -7420,8 +7805,10 @@ begin
         J.Move(jw64, JT4, Pair(M));
         SwapHalves(jrT4);
         case TOp(I.Kind) of
-          oFMOVDST0: Address(R(N), R(0));
-          oFMOVDSTM: Address(R(N), JImm(-8));
+          oFMOVDST0:
+            Address(R(N), R(0));
+          oFMOVDSTM:
+            Address(R(N), JImm(-8));
         else
           J.Move(jw32, JT0, R(N));
         end;
@@ -7432,10 +7819,14 @@ begin
     oSTSMPR, oSTSMMACL, oSTSMMACH, oSTCMGBR, oSTSMFPUL:
       begin
         case TOp(I.Kind) of
-          oSTSMPR: J.Move(jw32, JT4, Field(O.PR));
-          oSTSMMACL: J.Move(jw32, JT4, Field(O.MACL));
-          oSTSMMACH: J.Move(jw32, JT4, Field(O.MACH));
-          oSTCMGBR: J.Move(jw32, JT4, Field(O.GBR));
+          oSTSMPR:
+            J.Move(jw32, JT4, Field(O.PR));
+          oSTSMMACL:
+            J.Move(jw32, JT4, Field(O.MACL));
+          oSTSMMACH:
+            J.Move(jw32, JT4, Field(O.MACH));
+          oSTCMGBR:
+            J.Move(jw32, JT4, Field(O.GBR));
         else
           J.Move(jw32, JT4, Field(O.FPUL));
         end;
@@ -7449,10 +7840,14 @@ begin
         Load(4);
         J.Alu(jaAdd, jw32, R(N), JImm(4));
         case TOp(I.Kind) of
-          oLDSMPR: J.Move(jw32, Field(O.PR), JT2);
-          oLDSMMACL: J.Move(jw32, Field(O.MACL), JT2);
-          oLDSMMACH: J.Move(jw32, Field(O.MACH), JT2);
-          oLDCMGBR: J.Move(jw32, Field(O.GBR), JT2);
+          oLDSMPR:
+            J.Move(jw32, Field(O.PR), JT2);
+          oLDSMMACL:
+            J.Move(jw32, Field(O.MACL), JT2);
+          oLDSMMACH:
+            J.Move(jw32, Field(O.MACH), JT2);
+          oLDCMGBR:
+            J.Move(jw32, Field(O.GBR), JT2);
         else
           J.Move(jw32, Field(O.FPUL), JT2);
         end;
@@ -7801,6 +8196,16 @@ begin
   @SH4Ops[oXORB] := @TSH4.OpANDB;
   @SH4Ops[oXORI] := @TSH4.OpXORI;
   @SH4Ops[oXTRCT] := @TSH4.OpXTRCT;
+  // Share guest FPU exception handling with the generated-code call path.
+  // Register and memory moves leave the arithmetic status unchanged.
+  for var K in [oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oFSQRT, oFSRRA,
+    oFCMPEQ, oFCMPGT, oFLOAT, oFTRC, oFIPR, oFTRV,
+    oDADD, oDSUB, oDMUL, oDDIV, oDSQRT, oDCMPEQ, oDCMPGT,
+    oDFLOAT, oDFTRC, oFCNVSD, oFCNVDS] do
+  begin
+    SH4FPOps[K] := SH4Ops[K];
+    @SH4Ops[K] := @TSH4.OpFPUChecked;
+  end;
 end;
 
 initialization

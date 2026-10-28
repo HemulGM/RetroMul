@@ -1,4 +1,4 @@
-﻿unit MSX.Sound.SCC;
+﻿unit HW.Sound.SCC;
 
 interface
 

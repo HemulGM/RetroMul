@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.UITypes, MD.Z80, ZX.Sound.YM2149, SAM.Sound.SAA1099,
+  System.SysUtils, System.UITypes, HW.Z80, HW.Sound.YM2149, HW.Sound.SAA1099,
   ZX.SID, ZX.MoonSound, ZX.DMAUSC, ZX.NeoGS, ZX.GeneralSound, ZX.NextDAC,
   ZX.TurboSoundFM, ZX.Timex, ZX.DivStorage, SG1000.FDC, SG1000.Disk, ZX.Tape,
   ZX.BetaDisk, ZX.CMOS, Core.Emulation.Types, Core.AudioFilter, Core.Snapshots,

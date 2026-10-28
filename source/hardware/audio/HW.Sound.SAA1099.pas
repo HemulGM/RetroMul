@@ -1,4 +1,4 @@
-﻿unit SAM.Sound.SAA1099;
+﻿unit HW.Sound.SAA1099;
 
 interface
 

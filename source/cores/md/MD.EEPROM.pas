@@ -148,7 +148,7 @@ constructor TMDEEPROM.Create(const Config: TMDEEPROMConfig);
 begin
   inherited Create;
   if (Config.Mode = TMDEEPROMMode.None) or (Config.Size < 128) or
-    (Config.Size > 8192) or (Config.Size and (Config.Size - 1) <> 0) or
+    (Config.Size > 32768) or (Config.Size and (Config.Size - 1) <> 0) or
     (Config.PageSize < 1) or (Config.PageSize > 64) or
     (Config.PageSize and (Config.PageSize - 1) <> 0) or
     (Config.PageAlignment < 1) or (Config.PageAlignment > Config.PageSize) or

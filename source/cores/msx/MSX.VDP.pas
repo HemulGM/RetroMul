@@ -493,7 +493,7 @@ function TMSXVDP.CommandStartDelay(Command: Integer): Integer;
 const
   Delay: array[4..15] of Byte = (45, 70, 70, 94, 70, 46, 58, 70, 94, 82, 82, 94);
 begin
-  // /CSW-to-first-request delays measured in the h/i captures. MD.Z80 calls
+  // /CSW-to-first-request delays measured in the h/i captures. HW.Z80 calls
   // the port at I/O completion: do not add openMSX's 18-clock T2-to-/CSW term.
   Result := 0;
   if Command in [4..15] then
@@ -1337,7 +1337,7 @@ begin
     Index := FR[15] and 15;
   if Index > 1 then
     Exit(ReadStatus);
-  // MD.Z80 calls the port after the entire four-T-state I/O cycle. The
+  // HW.Z80 calls the port after the entire four-T-state I/O cycle. The
   // falling T3 data sample precedes that callback by half a T (3 master
   // ticks). Acknowledge at the callback, but return the sampled byte.
   // This bounded digital aperture follows the observed read/clear ordering:
@@ -3709,7 +3709,7 @@ begin
     end;
     Exit;
   end;
-  // Measured pin-to-request delay: 10.9 +/- 0.2 master clocks. MD.Z80's
+  // Measured pin-to-request delay: 10.9 +/- 0.2 master clocks. HW.Z80's
   // callback is at the end of the I/O cycle, rather than openMSX's T2 anchor.
   var Request := FVideoClock + 11;
   if not CPURequestAllowed(Request) then

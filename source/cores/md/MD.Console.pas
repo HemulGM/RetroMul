@@ -4,7 +4,7 @@ interface
 
 uses
   Core.InputConfig, Core.Snapshots, System.Classes, System.SysUtils,
-  System.UITypes, MD.Cartridge, MD.M68k, MD.Z80, MD.VDP, MD.Sound,
+  System.UITypes, MD.Cartridge, HW.M68k, HW.Z80, MD.VDP, MD.Sound,
   Core.AudioFilter, MD.EEPROM, MD.Mapper, MD.Mars, MD.MegaCD, Core.CD.Disc;
 
 {$SCOPEDENUMS ON}
@@ -1204,7 +1204,7 @@ end;
 
 initialization
   MD.VDP.ConstantInitialise;
-  MD.Z80.ConstantInitialise;
+  HW.Z80.ConstantInitialise;
 
 end.
 

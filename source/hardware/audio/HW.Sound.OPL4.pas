@@ -1,9 +1,9 @@
-﻿unit Yamaha.Sound.OPL4;
+﻿unit HW.Sound.OPL4;
 
 interface
 
 uses
-  System.SysUtils, PC.Sound.OPL3, Core.Snapshots;
+  System.SysUtils, HW.Sound.OPL3, Core.Snapshots;
 
 type
   TOPL4Read = function(Context: Pointer; Address: Cardinal; MemoryMode: Boolean): Byte;

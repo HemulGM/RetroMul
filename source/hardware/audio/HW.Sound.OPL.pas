@@ -1,9 +1,9 @@
-﻿unit PC.Sound.OPL;
+﻿unit HW.Sound.OPL;
 
 interface
 
 uses
-  System.SysUtils, PC.OPL.Nuked, Core.AudioFilter, Core.Snapshots;
+  System.SysUtils, HW.Sound.OPL.Nuked, Core.AudioFilter, Core.Snapshots;
 
 type
   TOPLTimerEvent = procedure(Timer: Integer) of object;

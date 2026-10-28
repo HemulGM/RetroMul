@@ -10,9 +10,10 @@ uses
   RM.Platforms.N64, RM.Platforms.NeoGeo, RM.Platforms.NES, RM.Platforms.NGP,
   RM.Platforms.PCE, RM.Platforms.PS1, RM.Platforms.PSP, RM.Platforms.Saturn,
   RM.Platforms.SG1000, RM.Platforms.SMS, RM.Platforms.SNES, RM.Platforms.ZX,
-  System.SysUtils;
+  RM.Platforms.ColecoVision, System.SysUtils;
 
 initialization
+  TColecoVisionPlatform.RegisterPlatform;
   TCPSPlatform.RegisterPlatform;
   TDCPlatform.RegisterPlatform;
   TGWPlatform.RegisterPlatform;

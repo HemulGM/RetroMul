@@ -1,12 +1,5 @@
 ﻿unit Core.Bitstream;
 
-{
-  Shared AAC/AVC bit reader and VLC tables, extracted from FMXAudio.Bitstream
-  and Video.AVC.Bitstream. Upstream: FMXAudioLib and Player, supplied by the
-  user; FFmpeg n7.1 derived algorithms, LGPL-2.1-or-later.
-  See ../hardware/audio/codecs/ORIGIN.md and ../hardware/video/avc/NOTICE.txt.
-}
-
 interface
 
 uses

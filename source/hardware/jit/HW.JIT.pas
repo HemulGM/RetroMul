@@ -21,10 +21,15 @@ interface
 
 uses
   System.SysUtils;
+{$IF (DEFINED(CPUX64) AND (DEFINED(MSWINDOWS) OR DEFINED(LINUX))) OR (DEFINED(CPUARM64) AND DEFINED(ANDROID))}
 
 const
-  JitSupported = {$IF (DEFINED(CPUX64) AND (DEFINED(MSWINDOWS) OR DEFINED(LINUX))) OR
-    (DEFINED(CPUARM64) AND DEFINED(ANDROID))}True{$ELSE}False{$ENDIF};
+  JitSupported = True;
+{$ELSE}
+
+const
+  JitSupported = False;
+{$ENDIF}
 
 type
   // Registers by role. The fixed ones keep their values across calls: Self
@@ -40,6 +45,7 @@ type
   // as a value. At most one operand of an operation is in memory; constants
   // fit 32 bits (sign-extended to 64) but in Move to a register.
   TJitOpKind = (okReg, okImm, okMem, okAddr);
+
   TJitOp = record
     Kind: TJitOpKind;
     Reg: TJitReg;
@@ -49,10 +55,12 @@ type
 
   TJitAlu = (jaAdd, jaSub, jaAnd, jaOr, jaXor);
   // Left, right logical, right arithmetic (8 bits: as 32).
+
   TJitShift = (jsShl, jsShr, jsSar);
   // After Branch's comparison of A with B: signed jcLt..jcGe, unsigned
   // jcBelow..jcAboveEq. After BranchTest of A and B: jcEq none of the bits,
   // jcNe some.
+
   TJitCond = (jcEq, jcNe, jcLt, jcLe, jcGt, jcGe, jcBelow, jcBelowEq, jcAbove, jcAboveEq);
 
   TJitLabel = Integer;
@@ -166,8 +174,11 @@ type
   end;
 
 function JReg(Reg: TJitReg): TJitOp; inline;
+
 function JImm(Value: Int64): TJitOp; inline;
+
 function JMem(Base: TJitReg; Disp: Integer): TJitOp; inline;
+
 function JAddr(Base: TJitReg; Disp: Integer): TJitOp; inline;
 
 const
@@ -189,13 +200,21 @@ const
 // This target's code generator with Size bytes of code (nil: none here).
 function CreateJitAsm(Size: NativeInt): TJitAsm;
 // The model (every target), with Size bytes for its operations.
+
 function CreateJitModel(Size: NativeInt): TJitAsm;
 
 implementation
 
 {$IF JitSupported}
+  {$IFDEF MSWINDOWS}
+
 uses
-  {$IFDEF MSWINDOWS}Winapi.Windows{$ELSE}Posix.SysMman{$ENDIF};
+  Winapi.Windows;
+  {$ELSE}
+
+uses
+  Posix.SysMman;
+  {$ENDIF}
 {$ENDIF}
 
 function JReg(Reg: TJitReg): TJitOp;
@@ -439,8 +458,22 @@ end;
 { x64 }
 
 const
-  rAX = 0; rCX = 1; rDX = 2; rBX = 3; rSP = 4; rBP = 5; rSI = 6; rDI = 7;
-  r8 = 8; r9 = 9; r10 = 10; r11 = 11; r12 = 12; r13 = 13; r14 = 14; r15 = 15;
+  rAX = 0;
+  rCX = 1;
+  rDX = 2;
+  rBX = 3;
+  rSP = 4;
+  rBP = 5;
+  rSI = 6;
+  rDI = 7;
+  r8 = 8;
+  r9 = 9;
+  r10 = 10;
+  r11 = 11;
+  r12 = 12;
+  r13 = 13;
+  r14 = 14;
+  r15 = 15;
 
 type
   // An operand with x64 register numbers.
@@ -459,8 +492,7 @@ type
     FPhys: array[TJitReg] of Byte;
     FArgs: array[0..3] of Byte;
     function X(const Op: TJitOp): TX64Op;
-    procedure ModRM(W64: Boolean; const Opcode: array of Byte; RegField: Integer; ByteReg: Boolean; const RM: TX64Op;
-      ByteRM: Boolean);
+    procedure ModRM(W64: Boolean; const Opcode: array of Byte; RegField: Integer; ByteReg: Boolean; const RM: TX64Op; ByteRM: Boolean);
     procedure LoadImm(W: TJitWidth; Reg: Integer; Value: Int64);
     procedure MoveX(W: TJitWidth; const Dst, Src: TX64Op);
     procedure MoveArgs(const Args: array of TJitOp);
@@ -516,8 +548,7 @@ begin
   Result.Imm := Op.Imm;
 end;
 
-procedure TJitAsmX64.ModRM(W64: Boolean; const Opcode: array of Byte; RegField: Integer; ByteReg: Boolean;
-  const RM: TX64Op; ByteRM: Boolean);
+procedure TJitAsmX64.ModRM(W64: Boolean; const Opcode: array of Byte; RegField: Integer; ByteReg: Boolean; const RM: TX64Op; ByteRM: Boolean);
 begin
   // REX: W for 64 bits, R and B for registers 8..15, a plain one for the byte
   // registers SPL..DIL (ByteReg, ByteRM: the operand is a byte register).
@@ -849,7 +880,7 @@ type
     function HasS4: Boolean; override;
     procedure I(V: Cardinal); inline;
     procedure LoadImm(Is64: Boolean; Rd: Integer; Value: UInt64);
-    procedure MovReg(Is64: Boolean; Rd, Rm: Integer);
+    procedure MovReg(Is64: Boolean; Rd, RM: Integer);
     procedure AddImm(Is64: Boolean; Rd, Rn: Integer; Value: Int64);
     function Direct(var Base, Disp: Integer; Size: Integer): Boolean;
     procedure LoadStore(Store: Boolean; Size, Rt, Base, Disp: Integer);
@@ -985,8 +1016,10 @@ begin
   var Ones := 0;
   for var K := 0 to Pieces - 1 do
     case (Value shr (16 * K)) and $FFFF of
-      0: Inc(Zeros);
-      $FFFF: Inc(Ones);
+      0:
+        Inc(Zeros);
+      $FFFF:
+        Inc(Ones);
     end;
   var Inverted := Ones > Zeros;
   var Needed := Pieces - Zeros;
@@ -1094,8 +1127,10 @@ begin
   // Direct, else Disp in x16 as an index. Loads zero-extend.
   var SizeBits: Cardinal := 3;
   case Size of
-    1: SizeBits := 0;
-    4: SizeBits := 2;
+    1:
+      SizeBits := 0;
+    4:
+      SizeBits := 2;
   end;
   var B := Base;
   var Dsp := Disp;
@@ -1139,7 +1174,7 @@ begin
         case W of
           jw8:
             I($53001C00 or (Cardinal(FPhys[Src.Reg]) shl 5) or Cardinal(R));                     // uxtb
-          jw32:
+            jw32:
             MovReg(False, R, FPhys[Src.Reg]);
           jw64:
             if R <> FPhys[Src.Reg] then
@@ -1228,15 +1263,21 @@ begin
   var C := Cardinal(Count);
   if W = jw64 then
     case Op of
-      jsShl: I($D3400000 or (((64 - C) and 63) shl 16) or ((63 - C) shl 10) or (R shl 5) or R);
-      jsShr: I($D3400000 or (C shl 16) or (63 shl 10) or (R shl 5) or R);
-      jsSar: I($93400000 or (C shl 16) or (63 shl 10) or (R shl 5) or R);
+      jsShl:
+        I($D3400000 or (((64 - C) and 63) shl 16) or ((63 - C) shl 10) or (R shl 5) or R);
+      jsShr:
+        I($D3400000 or (C shl 16) or (63 shl 10) or (R shl 5) or R);
+      jsSar:
+        I($93400000 or (C shl 16) or (63 shl 10) or (R shl 5) or R);
     end
   else
     case Op of
-      jsShl: I($53000000 or (((32 - C) and 31) shl 16) or ((31 - C) shl 10) or (R shl 5) or R);
-      jsShr: I($53000000 or (C shl 16) or (31 shl 10) or (R shl 5) or R);
-      jsSar: I($13000000 or (C shl 16) or (31 shl 10) or (R shl 5) or R);
+      jsShl:
+        I($53000000 or (((32 - C) and 31) shl 16) or ((31 - C) shl 10) or (R shl 5) or R);
+      jsShr:
+        I($53000000 or (C shl 16) or (31 shl 10) or (R shl 5) or R);
+      jsSar:
+        I($13000000 or (C shl 16) or (31 shl 10) or (R shl 5) or R);
     end;
 end;
 
@@ -1529,8 +1570,8 @@ end;
 
 { Win64 }
 
-function RtlAddFunctionTable(FunctionTable: Pointer; EntryCount: DWORD; BaseAddress: UInt64): BOOL; stdcall;
-  external kernel32;
+function RtlAddFunctionTable(FunctionTable: Pointer; EntryCount: DWORD; BaseAddress: UInt64): BOOL; stdcall; external kernel32;
+
 function RtlDeleteFunctionTable(FunctionTable: Pointer): BOOL; stdcall; external kernel32;
 
 type
@@ -1645,6 +1686,7 @@ end;
 { Linux x64 }
 
 procedure __register_frame(Frame: Pointer); cdecl; external 'libgcc_s.so.1' name '__register_frame';
+
 procedure __deregister_frame(Frame: Pointer); cdecl; external 'libgcc_s.so.1' name '__deregister_frame';
 
 type
@@ -1674,9 +1716,9 @@ const
   // code (its start and length at offsets 32 and 40: CFA RSP + 64; RBX, RBP,
   // R12..R15 at CFA - 16 .. CFA - 56) and the terminator.
   SysVFrame: array[0..67] of Byte = (
-    20, 0, 0, 0,  0, 0, 0, 0,  1, Ord('z'), Ord('R'), 0,  1, $78, 16, 1,  0,  $0C, 7, 8,  $90, 1,  0, 0,
-    36, 0, 0, 0,  28, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0,
-    $0E, 64,  $83, 2,  $86, 3,  $8C, 4,  $8D, 5,  $8E, 6,  $8F, 7,  0,
+    20, 0, 0, 0, 0, 0, 0, 0, 1, Ord('z'), Ord('R'), 0, 1, $78, 16, 1, 0, $0C, 7, 8, $90, 1, 0, 0,
+    36, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    $0E, 64, $83, 2, $86, 3, $8C, 4, $8D, 5, $8E, 6, $8F, 7, 0,
     0, 0, 0, 0);
 
 constructor TJitAsmSysV64.Create(Size: NativeInt);
@@ -1753,7 +1795,9 @@ end;
 // The RTL's unwinder (LLVM libunwind, linked statically: __register_frame
 // takes one FDE) and compiler-rt's __clear_cache (on every Android link).
 procedure __register_frame(FDE: Pointer); cdecl; external 'libunwind.a' name '__register_frame';
+
 procedure __deregister_frame(FDE: Pointer); cdecl; external 'libunwind.a' name '__deregister_frame';
+
 procedure __clear_cache(Start, Stop: Pointer); cdecl; external 'libunwind.a' name '__clear_cache';
 
 type
@@ -1778,18 +1822,18 @@ const
   // length at offsets 32 and 40: CFA SP + 96; x29, x30, x19..x28 at
   // CFA - 96 .. CFA - 8) and the terminator.
   A64Frame: array[0..83] of Byte = (
-    20, 0, 0, 0,  0, 0, 0, 0,  1, Ord('z'), Ord('R'), 0,  1, $78, 30, 1,  0,  $0C, 31, 0,  0, 0, 0, 0,
-    52, 0, 0, 0,  28, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0,
-    $0E, 96,  $9D, 12,  $9E, 11,  $93, 10,  $94, 9,  $95, 8,  $96, 7,  $97, 6,  $98, 5,  $99, 4,  $9A, 3,
-    $9B, 2,  $9C, 1,  0, 0, 0, 0, 0,
+    20, 0, 0, 0, 0, 0, 0, 0, 1, Ord('z'), Ord('R'), 0, 1, $78, 30, 1, 0, $0C, 31, 0, 0, 0, 0, 0,
+    52, 0, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    $0E, 96, $9D, 12, $9E, 11, $93, 10, $94, 9, $95, 8, $96, 7, $97, 6, $98, 5, $99, 4, $9A, 3,
+    $9B, 2, $9C, 1, 0, 0, 0, 0, 0,
     0, 0, 0, 0);
 
 function TJitAsmAndroid64.Allocate(Size: NativeInt; out CodeStart: NativeInt): PByte;
 begin
   // Read, write and execute: code is written while other code runs.
-  var Near := Pointer((NativeUInt(@TJitAsmAndroid64.Allocate) + 32 shl 20) and not NativeUInt($1FFFFF));
+  var near := Pointer((NativeUInt(@TJitAsmAndroid64.Allocate) + 32 shl 20) and not NativeUInt($1FFFFF));
   {$WARN SYMBOL_PLATFORM OFF}
-  Result := mmap(Near, Size, PROT_READ or PROT_WRITE or PROT_EXEC, MAP_PRIVATE or MAP_ANONYMOUS, -1, 0);
+  Result := mmap(near, Size, PROT_READ or PROT_WRITE or PROT_EXEC, MAP_PRIVATE or MAP_ANONYMOUS, -1, 0);
   {$WARN SYMBOL_PLATFORM ON}
   if Result = MAP_FAILED then
     RaiseLastOSError;
@@ -1952,6 +1996,7 @@ procedure TJitAsmModel.Move(W: TJitWidth; const Dst, Src: TJitOp);
 begin
   if Dst.Kind = okReg then
     // (Any source; a constant fills 32 bits for 8 and 32.)
+
   else if Dst.Kind = okMem then
   begin
     if not (Src.Kind in [okReg, okImm]) then
@@ -2103,9 +2148,13 @@ end;
 function TJitAsmModel.Invoke(Code: Pointer; A0, A1, A2, A3: NativeUInt): NativeInt;
 type
   TFn0 = function: NativeUInt;
+
   TFn1 = function(A: NativeUInt): NativeUInt;
+
   TFn2 = function(A, B: NativeUInt): NativeUInt;
+
   TFn3 = function(A, B, C: NativeUInt): NativeUInt;
+
   TFn4 = function(A, B, C, D: NativeUInt): NativeUInt;
 const
   Masks: array[TJitWidth] of UInt64 = ($FF, $FFFFFFFF, UInt64($FFFFFFFFFFFFFFFF));
@@ -2124,8 +2173,10 @@ var
   function Load(A: NativeUInt; W: TJitWidth): UInt64;
   begin
     case W of
-      jw8: Result := PByte(A)^;
-      jw32: Result := PCardinal(A)^;
+      jw8:
+        Result := PByte(A)^;
+      jw32:
+        Result := PCardinal(A)^;
     else
       Result := PUInt64(A)^;
     end;
@@ -2134,8 +2185,10 @@ var
   procedure Store(A: NativeUInt; W: TJitWidth; V: UInt64);
   begin
     case W of
-      jw8: PByte(A)^ := Byte(V);
-      jw32: PCardinal(A)^ := Cardinal(V);
+      jw8:
+        PByte(A)^ := Byte(V);
+      jw32:
+        PCardinal(A)^ := Cardinal(V);
     else
       PUInt64(A)^ := V;
     end;
@@ -2145,9 +2198,12 @@ var
   begin
     // A source operand, W bits of it (registers whole: the callers mask).
     case TJitOpKind(O.Kind) of
-      okReg: Result := R[TJitReg(O.Reg)];
-      okImm: Result := UInt64(O.Imm);
-      okMem: Result := Load(Address(O), W);
+      okReg:
+        Result := R[TJitReg(O.Reg)];
+      okImm:
+        Result := UInt64(O.Imm);
+      okMem:
+        Result := Load(Address(O), W);
     else
       Result := Address(O);
     end;
@@ -2156,8 +2212,10 @@ var
   function Signed(V: UInt64; W: TJitWidth): Int64;
   begin
     case W of
-      jw8: Result := ShortInt(Byte(V));
-      jw32: Result := Integer(Cardinal(V));
+      jw8:
+        Result := ShortInt(Byte(V));
+      jw32:
+        Result := Integer(Cardinal(V));
     else
       Result := Int64(V);
     end;
@@ -2194,13 +2252,15 @@ begin
         begin
           var V: UInt64;
           case TJitOpKind(P.B.Kind) of
-            okReg: V := R[TJitReg(P.B.Reg)] and Masks[W];
+            okReg:
+              V := R[TJitReg(P.B.Reg)] and Masks[W];
             okImm:
               if W = jw64 then
                 V := UInt64(P.B.Imm)
               else
                 V := UInt64(P.B.Imm) and $FFFFFFFF;
-            okMem: V := Load(Address(P.B), W);
+            okMem:
+              V := Load(Address(P.B), W);
           else
             V := Address(P.B);
           end;
@@ -2213,10 +2273,14 @@ begin
           var Dst := Value(P.A, W) and Masks[W];
           var Src := Value(P.B, W) and Masks[W];
           case TJitAlu(P.Sub) of
-            jaAdd: Dst := Dst + Src;
-            jaSub: Dst := Dst - Src;
-            jaAnd: Dst := Dst and Src;
-            jaOr: Dst := Dst or Src;
+            jaAdd:
+              Dst := Dst + Src;
+            jaSub:
+              Dst := Dst - Src;
+            jaAnd:
+              Dst := Dst and Src;
+            jaOr:
+              Dst := Dst or Src;
           else
             Dst := Dst xor Src;
           end;
@@ -2233,8 +2297,10 @@ begin
           var C := P.Count;
           if W = jw64 then
             case TJitShift(P.Sub) of
-              jsShl: R[X] := R[X] shl C;
-              jsShr: R[X] := R[X] shr C;
+              jsShl:
+                R[X] := R[X] shl C;
+              jsShr:
+                R[X] := R[X] shr C;
             else
               if Int64(R[X]) < 0 then
                 R[X] := not ((not R[X]) shr C)
@@ -2245,8 +2311,10 @@ begin
           begin
             var V := Cardinal(R[X]);
             case TJitShift(P.Sub) of
-              jsShl: V := V shl C;
-              jsShr: V := V shr C;
+              jsShl:
+                V := V shl C;
+              jsShr:
+                V := V shr C;
             else
               if Integer(V) < 0 then
                 V := not ((not V) shr C)
@@ -2286,15 +2354,24 @@ begin
             var SA := Signed(FlagA, FlagW);
             var SB := Signed(FlagB, FlagW);
             case TJitCond(P.Sub) of
-              jcEq: Taken := FlagA = FlagB;
-              jcNe: Taken := FlagA <> FlagB;
-              jcLt: Taken := SA < SB;
-              jcLe: Taken := SA <= SB;
-              jcGt: Taken := SA > SB;
-              jcGe: Taken := SA >= SB;
-              jcBelow: Taken := FlagA < FlagB;
-              jcBelowEq: Taken := FlagA <= FlagB;
-              jcAbove: Taken := FlagA > FlagB;
+              jcEq:
+                Taken := FlagA = FlagB;
+              jcNe:
+                Taken := FlagA <> FlagB;
+              jcLt:
+                Taken := SA < SB;
+              jcLe:
+                Taken := SA <= SB;
+              jcGt:
+                Taken := SA > SB;
+              jcGe:
+                Taken := SA >= SB;
+              jcBelow:
+                Taken := FlagA < FlagB;
+              jcBelowEq:
+                Taken := FlagA <= FlagB;
+              jcAbove:
+                Taken := FlagA > FlagB;
             else
               Taken := FlagA >= FlagB;
             end;
@@ -2316,10 +2393,14 @@ begin
             Args[K] := NativeUInt(Value(P.Args[K], jw64));
           var Res: NativeUInt;
           case P.Count of
-            0: Res := TFn0(Routine)();
-            1: Res := TFn1(Routine)(Args[0]);
-            2: Res := TFn2(Routine)(Args[0], Args[1]);
-            3: Res := TFn3(Routine)(Args[0], Args[1], Args[2]);
+            0:
+              Res := TFn0(Routine)();
+            1:
+              Res := TFn1(Routine)(Args[0]);
+            2:
+              Res := TFn2(Routine)(Args[0], Args[1]);
+            3:
+              Res := TFn3(Routine)(Args[0], Args[1], Args[2]);
           else
             Res := TFn4(Routine)(Args[0], Args[1], Args[2], Args[3]);
           end;
@@ -2377,3 +2458,4 @@ begin
 end;
 
 end.
+

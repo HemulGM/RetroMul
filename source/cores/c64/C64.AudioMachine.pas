@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, C64.CPU, C64.Sound.SID;
+  System.SysUtils, C64.CPU, HW.Sound.SID;
 
 type
   TC64AudioMachine = class

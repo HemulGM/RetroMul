@@ -1,4 +1,4 @@
-﻿unit C64.Sound.SID;
+﻿unit HW.Sound.SID;
 
 interface
 

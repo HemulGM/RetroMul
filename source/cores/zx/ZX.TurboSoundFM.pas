@@ -3,7 +3,7 @@
 interface
 
 uses
-  ZX.Sound.YM2203, Core.Snapshots;
+  HW.Sound.YM2203, Core.Snapshots;
 
 type
   // NedoPC revision C, 2022 CPLD: doubled motherboard AY clock,

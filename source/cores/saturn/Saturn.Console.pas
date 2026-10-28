@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.UITypes, System.SyncObjs, HW.SH2,
-  HW.SH7604, MD.M68k, Saturn.SCU, Saturn.SMPC, Saturn.VDP1, Saturn.VDP2,
+  HW.SH7604, HW.M68k, Saturn.SCU, Saturn.SMPC, Saturn.VDP1, Saturn.VDP2,
   Core.Snapshots, Core.CD.Disc, Saturn.CD, Saturn.SCSP, Saturn.Cartridge;
 
 type

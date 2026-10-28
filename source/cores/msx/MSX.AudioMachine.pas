@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, MD.Z80, SMS.Sound.SN76489, ZX.Sound.YM2149, MSX.Sound.SCC,
-  MSX.Sound.OPLL, PC.Sound.OPL, Core.AudioFilter;
+  System.SysUtils, HW.Z80, HW.Sound.SN76489, HW.Sound.YM2149, HW.Sound.SCC,
+  HW.Sound.OPLL, HW.Sound.OPL, Core.AudioFilter;
 
 type
   TKSSAudio = class

@@ -1,4 +1,4 @@
-﻿unit SMS.Sound.SN76489;
+﻿unit HW.Sound.SN76489;
 
 interface
 

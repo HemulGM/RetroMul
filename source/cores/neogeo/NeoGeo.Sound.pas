@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, MD.Sound, ZX.Sound.YM2149, NeoGeo.Cartridge,
+  System.SysUtils, System.Classes, MD.Sound, HW.Sound.YM2149, NeoGeo.Cartridge,
   Core.Snapshots;
 
 const

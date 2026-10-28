@@ -424,10 +424,15 @@ begin
     var Line := Format('syscall %.8x r4=%.8x r5=%.8x r6=%.8x r7=%.8x r1=%.8x pr=%.8x', [Address, S.R[4], S.R[5], S.R[6],
         S.R[7], S.R[1], S.PR]);
     // GD-ROM commands: their parameter words.
-    if ((Address = DCStubGDROM) or (Address = DCGDROMEntry)) and (S.R[6] = 0) and (S.R[7] = 0) and (S.R[5] <> 0) and
+    if ((Address = DCStubGDROM) or (Address = DCGDROMEntry)) and (S.R[6] = 0) and (S.R[7] in [0, 6, 12]) and (S.R[5] <> 0) and
       (((S.R[5] shr 24) and $1F) in [$0C..$0F]) then
-      for var I := 0 to 3 do
+    begin
+      var LastParam := 3;
+      if S.R[7] <> 0 then
+        LastParam := 1;
+      for var I := 0 to LastParam do
         Line := Line + Format(' p%d=%.8x', [I, PCardinal(FMemory.RAM + ((S.R[5] + Cardinal(I) * 4) and $FFFFFF))^]);
+    end;
     Trace.Add(Line);
   end;
   try

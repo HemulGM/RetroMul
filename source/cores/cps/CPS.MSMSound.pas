@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, CPS1.Sound, HW.MSM5205, MD.Z80, Core.Snapshots;
+  System.SysUtils, CPS1.Sound, HW.Sound.MSM5205, HW.Z80, Core.Snapshots;
 
 type
   // Two LS157 byte latches, a VCK flip-flop and cascaded MSM5205 clocks.

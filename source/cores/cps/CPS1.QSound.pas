@@ -41,7 +41,7 @@ function CreateCPS1Console(Cart: TCPSCartridge): TCPS1Console;
 implementation
 
 uses
-  CPS.Kabuki, MD.Z80, CPS1.Boards, CPS1.Fcrash, CPS1.PIC, CPS1.MSM,
+  CPS.Kabuki, HW.Z80, CPS1.Boards, CPS1.Fcrash, CPS1.PIC, CPS1.MSM,
   CPS1.Multigame;
 
 function CreateCPS1Console(Cart: TCPSCartridge): TCPS1Console;

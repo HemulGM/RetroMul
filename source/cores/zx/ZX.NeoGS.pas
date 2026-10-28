@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, MD.Z80, Core.Snapshots, ZX.GeneralSound,
+  System.SysUtils, System.Classes, HW.Z80, Core.Snapshots, ZX.GeneralSound,
   ZX.SDCard, ZX.BlockImage, ZX.VS1011, ZX.AM29F040;
 
 type

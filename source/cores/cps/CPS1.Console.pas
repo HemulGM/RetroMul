@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, MD.M68k, MD.Z80, CPS.Cartridge, CPS.RomSets,
+  System.SysUtils, System.Classes, HW.M68k, HW.Z80, CPS.Cartridge, CPS.RomSets,
   CPS.Video, Core.Emulation.Types, Core.Snapshots, CPS1.Sound;
 
 type
@@ -549,7 +549,7 @@ begin
 end;
 
 initialization
-  MD.Z80.ConstantInitialise;
+  HW.Z80.ConstantInitialise;
 
 end.
 

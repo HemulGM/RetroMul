@@ -1,9 +1,9 @@
-﻿unit PC.Sound.OPL3;
+﻿unit HW.Sound.OPL3;
 
 interface
 
 uses
-  PC.Sound.OPL;
+  HW.Sound.OPL;
 
 type
   // YMF262, eighteen channels, six optional four-operator pairs and stereo.

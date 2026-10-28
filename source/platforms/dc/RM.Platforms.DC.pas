@@ -32,7 +32,7 @@ implementation
 
 uses
   RM.Settings.Catalog, Core.CD.Disc, Core.PlatformServices, System.StrUtils,
-  Core.Emulation, Core.Platforms, Core.Platforms.DC.Adapter,
+  Core.Emulation, Core.Platforms, Core.Platforms.DC.Adapter, Core.Snapshots,
   DC.ELF, RM.Platforms.DC.Settings, RM.Platforms.Presentation,
   RM.Platforms.DC.Icons, RM.Gamepad.Factory, RM.Platforms.DC.Gamepads,
   RM.Input.Runtime, RM.Platforms.DC.Runtime, RM.Session.Runtime,
@@ -116,6 +116,9 @@ end;
 
 class procedure TDCPlatform.RegisterRuntimeServices;
 begin
+  var Policy := TSnapshotPolicy.Create(2);
+  Policy.AcceptedVersions := [1];
+  RegisterSnapshotPolicy(ROM_CORE_ID_DC, Policy);
   var Service := Default(TPlatformServices);
   Service.LibraryFeatures := [TLibraryFeature.Playlists, TLibraryFeature.CueTracks] + [TLibraryFeature.GdiTracks];
   RegisterPlatformServices('dc', Service);

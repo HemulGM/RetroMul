@@ -15,7 +15,7 @@
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.EE.CPU;
+  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.EE.CPU, HW.JIT;
 
 type
   TPS2VFArray = array[0..31] of TPS2Reg128;
@@ -63,8 +63,10 @@ type
   // I-bit pair) and whether its upper op sets the MAC and status flags.
   TPS2VUPair = record
     Lower, Upper: Cardinal;
-    Valid, SetsFlags: Boolean;
+    Valid, SetsFlags, NativeCandidate: Boolean;
     U, L: TPS2VURegUse;
+    Native: Pointer;
+    Heat: Integer;
   end;
   PPS2VUPair = ^TPS2VUPair;
 
@@ -101,6 +103,10 @@ type
     FUpperValue, FLowerValue: TPS2Reg128;
     FUpperMask, FLowerMask: Cardinal;
     FPairs: array of TPS2VUPair;
+    FJit: TJitAsm;
+    FUseJit: Boolean;
+    FJitRuns: Int64;
+    function CompilePair(var P: TPS2VUPair): Pointer;
     function DecodedPair(PC, LowerOp, UpperOp: Cardinal): PPS2VUPair; inline;
     procedure DecodePair(var P: TPS2VUPair; LowerOp, UpperOp: Cardinal);
     procedure UpperRegs(Op: Cardinal; out R: TPS2VURegUse);
@@ -133,6 +139,12 @@ type
     RunTraceCount: Integer;
     constructor Create(Index: Integer; VF: PPS2VFArray; VI: PPS2VIArray; Code, Data: PByte;
       CodeSize, DataSize: Cardinal);
+    destructor Destroy; override;
+    // Experimental pair compiler; timing and pipeline commits stay shared.
+    property UseJit: Boolean read FUseJit write FUseJit;
+    property JitRuns: Int64 read FJitRuns;
+    // Select the portable generator model before running a differential test.
+    procedure UseJitModel;
     procedure Reset;
     // A macro instruction (VU0 COP2, bit 25 set): True when it is one.
     function Macro(Op: Cardinal): Boolean;
@@ -226,6 +238,209 @@ begin
   FDataMask := DataSize - 1;
   SetLength(FPairs, CodeSize div 8);
   Reset;
+end;
+
+destructor TPS2VUCore.Destroy;
+begin
+  FJit.Free;
+  inherited;
+end;
+
+procedure TPS2VUCore.UseJitModel;
+begin
+  FreeAndNil(FJit);
+  for var K := 0 to High(FPairs) do
+  begin
+    FPairs[K].Native := nil;
+    FPairs[K].Heat := 0;
+  end;
+  FJit := CreateJitModel(8 * 1024 * 1024);
+  FUseJit := True;
+end;
+
+function TPS2VUCore.CompilePair(var P: TPS2VUPair): Pointer;
+begin
+  Result := nil;
+  if FJit = nil then
+    FJit := CreateJitAsm(8 * 1024 * 1024);
+  if FJit = nil then
+    Exit;
+  if not FJit.Room(4096) then
+  begin
+    // No generated function is running here. Re-uploaded microprograms may
+    // replace every pair, so bound the cache rather than retaining old code.
+    FJit.Reset;
+    for var K := 0 to High(FPairs) do
+      FPairs[K].Native := nil;
+  end;
+  var J := FJit;
+  J.ForgetLabels;
+  J.Align(16);
+  Result := J.Here;
+  J.Enter;
+  // Floating-point arithmetic still uses the interpreter's PS2-specific
+  // operations. NOP needs no call; all commits happen after both halves.
+  var U := P.Upper;
+  var Funct := U and $3F;
+  var Special := ((U shr 4) and $7C) or (U and 3);
+  var IsAbs := (Funct >= $3C) and (Special = $1D);
+  var IsMax := (Funct in [$10..$13, $1D, $2B]);
+  var IsMin := (Funct in [$14..$17, $1F, $2F]);
+  if IsAbs or IsMax or IsMin then
+  begin
+    var Fs := Integer((U shr 11) and 31);
+    var Ft := Integer((U shr 16) and 31);
+    var Target := Integer((U shr 6) and 31);
+    if IsAbs then Target := Ft;
+    J.Move(jw64, JT6, JMem(jrSelf, Integer(NativeInt(@FVF) - NativeInt(Self))));
+    for var K := 0 to 3 do
+    begin
+      J.Move(jw32, JT0, JMem(jrT6, Fs * 16 + K * 4));
+      if IsAbs then
+        J.Alu(jaAnd, jw32, JT0, JImm($7FFFFFFF))
+      else
+      begin
+        if Funct in [$1D, $1F] then
+          J.Move(jw32, JT1, JMem(jrSelf, Integer(NativeInt(@S.I) - NativeInt(Self))))
+        else if Funct in [$2B, $2F] then
+          J.Move(jw32, JT1, JMem(jrT6, Ft * 16 + K * 4))
+        else
+          J.Move(jw32, JT1, JMem(jrT6, Ft * 16 + Integer(U and 3) * 4));
+        // PS2FloatKey: invert the magnitude of negative values, retaining
+        // their sign bit. Signed comparison also distinguishes -0 from +0.
+        J.Move(jw32, JT2, JT0);
+        J.Move(jw32, JT3, JT1);
+        var PositiveA := J.NewLabel;
+        var PositiveB := J.NewLabel;
+        var Selected := J.NewLabel;
+        J.Branch(jcGe, jw32, JT2, JImm(0), PositiveA);
+        J.Alu(jaXor, jw32, JT2, JImm($7FFFFFFF));
+        J.Bind(PositiveA);
+        J.Branch(jcGe, jw32, JT3, JImm(0), PositiveB);
+        J.Alu(jaXor, jw32, JT3, JImm($7FFFFFFF));
+        J.Bind(PositiveB);
+        if IsMax then J.Branch(jcGe, jw32, JT2, JT3, Selected)
+        else J.Branch(jcLe, jw32, JT2, JT3, Selected);
+        J.Move(jw32, JT0, JT1);
+        J.Bind(Selected);
+      end;
+      J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FUpperValue) - NativeInt(Self)) + K * 4), JT0);
+    end;
+    J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FUpperReg) - NativeInt(Self))), JImm(Target));
+    J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FUpperMask) - NativeInt(Self))), JImm((U shr 21) and 15));
+  end
+  else if not ((Funct >= $3C) and (Special = $2F)) then
+    J.Call(@TPS2VUCore.Upper, [JSelf, JImm(U), JImm(1)]);
+  if (U and $80000000) <> 0 then
+    J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.I) - NativeInt(Self))), JImm(P.Lower))
+  else
+  begin
+    var Op := P.Lower;
+    var D := -1;
+    var Is_ := Integer((Op shr 11) and 15);
+    var It := Integer((Op shr 16) and 15);
+    var Id := Integer((Op shr 6) and 15);
+    var Alu := jaAdd;
+    var Imm := 0;
+    var Immediate := False;
+    var Truncate16 := True;
+    if (Op and $80000000) <> 0 then
+      case Op and $3F of
+        $30: D := Id;
+        $31: begin D := Id; Alu := jaSub; end;
+        $32:
+          begin
+            D := It;
+            Immediate := True;
+            Imm := Integer((Op shr 6) and 31);
+            if Imm >= 16 then Dec(Imm, 32);
+          end;
+        $34: begin D := Id; Alu := jaAnd; Truncate16 := False; end;
+        $35: begin D := Id; Alu := jaOr; Truncate16 := False; end;
+      end
+    else if (Op shr 25) in [$08, $09] then
+    begin
+      D := It;
+      Immediate := True;
+      Imm := Integer((Op and $7FF) or ((Op shr 10) and $7800));
+      if (Op shr 25) = $09 then Alu := jaSub;
+    end;
+    if D > 0 then
+    begin
+      J.Move(jw64, JT2, JMem(jrSelf, Integer(NativeInt(@FVI) - NativeInt(Self))));
+      J.Move(jw32, JT0, JMem(jrT2, Is_ * 4));
+      if Immediate then
+        J.Alu(Alu, jw32, JT0, JImm(Imm))
+      else
+        J.Alu(Alu, jw32, JT0, JMem(jrT2, It * 4));
+      if Truncate16 then
+        J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+      J.Move(jw32, JMem(jrT2, D * 4), JT0);
+    end
+    else if (D < 0) and ((Op shr 25) in [$00, $01, $04, $05]) then
+    begin
+      var Kind := Op shr 25;
+      var Base := Is_;
+      if Kind = $01 then Base := It;
+      var Imm11 := Integer(Op and $7FF);
+      if Imm11 >= $400 then Dec(Imm11, $800);
+      J.Move(jw64, JT2, JMem(jrSelf, Integer(NativeInt(@FVI) - NativeInt(Self))));
+      J.Move(jw32, JT0, JMem(jrT2, Base * 4));
+      J.Alu(jaAdd, jw32, JT0, JImm(Imm11));
+      J.Shift(jsShl, jw32, jrT0, 4);
+      J.Alu(jaAnd, jw32, JT0, JImm(FDataMask));
+      J.Move(jw64, JT3, JMem(jrSelf, Integer(NativeInt(@FData) - NativeInt(Self))));
+      J.Alu(jaAdd, jw64, JT3, JT0);
+      var Mask := (Op shr 21) and 15;
+      case Kind of
+        $00:
+          begin
+            // LQ stages all lanes, even the masked ones; common commit
+            // code preserves upper/lower overlap and the VF00 constant.
+            for var K := 0 to 3 do
+            begin
+              J.Move(jw32, JT0, JMem(jrT3, K * 4));
+              J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FLowerValue) - NativeInt(Self)) + K * 4), JT0);
+            end;
+            J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FLowerReg) - NativeInt(Self))), JImm((Op shr 16) and 31));
+            J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FLowerMask) - NativeInt(Self))), JImm(Mask));
+          end;
+        $01:
+          begin
+            J.Move(jw64, JT4, JMem(jrSelf, Integer(NativeInt(@FVF) - NativeInt(Self))));
+            for var K := 0 to 3 do
+              if (Mask and (8 shr K)) <> 0 then
+              begin
+                J.Move(jw32, JT0, JMem(jrT4, Integer((Op shr 11) and 31) * 16 + K * 4));
+                J.Move(jw32, JMem(jrT3, K * 4), JT0);
+              end;
+          end;
+        $04:
+          if It <> 0 then
+            for var K := 0 to 3 do
+              if (Mask and (8 shr K)) <> 0 then
+              begin
+                J.Move(jw32, JT0, JMem(jrT3, K * 4));
+                J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+                J.Move(jw32, JMem(jrT2, It * 4), JT0);
+                Break;
+              end;
+        $05:
+          begin
+            J.Move(jw32, JT0, JMem(jrT2, It * 4));
+            J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+            for var K := 0 to 3 do
+              if (Mask and (8 shr K)) <> 0 then
+                J.Move(jw32, JMem(jrT3, K * 4), JT0);
+          end;
+      end;
+    end
+    else if D < 0 then
+      J.Call(@TPS2VUCore.Lower, [JSelf, JImm(Op)]);
+  end;
+  J.Leave(JImm(0));
+  J.ForgetLabels;
+  J.Flush;
 end;
 
 procedure TPS2VUCore.Reset;
@@ -1116,6 +1331,17 @@ end;
 // field; none on ACC, VF00, I, Q, P, R).
 procedure TPS2VUCore.DecodePair(var P: TPS2VUPair; LowerOp, UpperOp: Cardinal);
 begin
+  P.Native := nil;
+  P.Heat := 0;
+  var UF := UpperOp and $3F;
+  var US := ((UpperOp shr 4) and $7C) or (UpperOp and 3);
+  P.NativeCandidate := (UF in [$10..$17, $1D, $1F, $2B, $2F]) or
+    ((UF >= $3C) and (US = $1D)) or ((UpperOp and $80000000) <> 0);
+  if (UpperOp and $80000000) = 0 then
+    if (LowerOp and $80000000) <> 0 then
+      P.NativeCandidate := P.NativeCandidate or ((LowerOp and $3F) in [$30..$32, $34, $35])
+    else
+      P.NativeCandidate := P.NativeCandidate or ((LowerOp shr 25) in [$00, $01, $04, $05, $08, $09]);
   P.Lower := LowerOp;
   P.Upper := UpperOp;
   UpperRegs(UpperOp, P.U);
@@ -1371,11 +1597,28 @@ begin
       FLoadOld := FVI[FLoadReg];
     FUpperReg := -1;
     FLowerReg := -1;
-    Upper(UpperOp, True);
-    if (UpperOp and $80000000) <> 0 then
-      S.I := LowerOp
+    if FUseJit and Pair.NativeCandidate and (FIndex = 1) and (JitSupported or (FJit <> nil)) then
+    begin
+      if Pair.Native = nil then
+      begin
+        Inc(Pair.Heat);
+        if Pair.Heat >= 16 then
+          Pair.Native := CompilePair(Pair^);
+      end;
+    end;
+    if FUseJit and (Pair.Native <> nil) then
+    begin
+      FJit.Invoke(Pair.Native, NativeUInt(Self), 0, 0, 0);
+      Inc(FJitRuns);
+    end
     else
-      Lower(LowerOp);
+    begin
+      Upper(UpperOp, True);
+      if (UpperOp and $80000000) <> 0 then
+        S.I := LowerOp
+      else
+        Lower(LowerOp);
+    end;
     // Lower writes first; the upper result wins on the same register.
     if FLowerReg >= 0 then
       CommitVF(FLowerReg, FLowerValue, FLowerMask);

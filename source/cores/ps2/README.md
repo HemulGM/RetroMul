@@ -47,6 +47,26 @@ the frame's memory, transfers, the display). The memory is the same either way.
   RPC servers on the emulated IOP.
 - Snapshots cover the EE, GS, IOP and memory cards.
 
+## Experimental VU1 recompiler
+
+`Emulation/Execution=jit` selects the VU1 pair recompiler; `interpreter`
+(the default) uses the original execution path. This is independent of
+`Video/Renderer` and can change during play. VU0 and EE remain interpreted.
+
+The shared `HW.JIT` generator emits integer VI arithmetic, LQ/SQ/ILW/ISW,
+ABS and MAX/MIN operations. Other operations use the interpreter's helpers.
+Pipeline stalls, delayed flags, branch delay slots and XGKICK timing stay
+in the common execution loop. Code is generated after 16 visits, checked
+against both instruction words and discarded when replaced. The code cache
+is bounded to 8 MiB per VU1 and is not part of saved state. Unsupported hosts
+keep interpreting. This first version compiles pairs rather than whole
+blocks: it is experimental and may be slower on some games.
+
+`tests/cores/ps2/jit/build.ps1` runs a Win64 differential test against the
+interpreter, using both the native backend and the portable generator model.
+It covers code replacement, partial execution budgets, mode changes,
+memory, registers and pipeline state. `-Checked` enables checked core code.
+
 ## Limits
 
 - No BIOS boot (OSDSYS); the GS rasterizer is a software renderer without

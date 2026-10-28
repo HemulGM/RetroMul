@@ -16,10 +16,17 @@ type
 implementation
 
 uses
-  RM.Settings.Catalog, System.SysUtils;
+  RM.Settings.Catalog, System.SysUtils, HW.JIT;
 
 procedure TPS2Settings.Video(Context: TSettingsPageBuilder);
 begin
+  if JitSupported then
+  begin
+    Context.Heading('GroupPS2Execution', 'PS2 emulation');
+    Context.AddChoice('RowPS2Execution', 'VU1 execution', 'Experimental pair recompiler. Integer operations use native code; other operations retain interpreter helpers. Applies during play. Speed depends on the game.',
+      'Emulation', 'Execution', SettingChoices(['Interpreter', 'Recompiler (JIT, experimental)'],
+      ['interpreter', 'jit']), 'interpreter', True);
+  end;
   Context.Heading('GroupPS2Rendering', 'PS2 rendering');
   Context.AddChoice('RowPS2Renderer', 'Graphics Synthesizer', 'Software drawing on the CPU: in threads beside the emulation (faster on several cores) or on the emulation thread. Both draw the same picture. Applies during play.', 'Video', 'Renderer', SettingChoices(['Software, multithreaded', 'Software, one thread'], ['threads', 'single']), 'threads', True);
   Context.Heading('GroupPS2System', 'System');

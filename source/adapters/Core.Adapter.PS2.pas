@@ -28,6 +28,7 @@ type
     FKeys: TPS2KeyMap;
     FExtraKeys: TPS2ExtraKeyMap;
     FBIOSMode, FBIOSFile, FRegion, FVideo, FLanguage, FRenderer: string;
+    FRecompiler: Boolean;
   protected
     procedure LoadCoreSettings(Ini: TCustomIniFile); override;
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
@@ -46,6 +47,7 @@ type
     // GS drawing (Video/Renderer): 'threads' (default: band threads beside
     // the emulation) or 'single' (on the emulation thread).
     property Renderer: string read FRenderer write FRenderer;
+    property Recompiler: Boolean read FRecompiler write FRecompiler;
     // Band threads for Renderer (0: none).
     function GSThreads: Integer;
     property Keys: TPS2KeyMap read FKeys;
@@ -90,6 +92,7 @@ type
     FPause, FReset, FAvailable, FAudioEnabled: Boolean;
     FVolume: Single;
     FGSThreads: Integer;
+    FRecompiler: Boolean;
     FAudio: TPS2AudioPlayback;
     FAudioFailed: Boolean;
     FAudioError: string;
@@ -114,7 +117,8 @@ type
       Region: TPS2Region; PAL: Boolean; const Storage: IStorage; const SnapshotDirectory, CardFile1,
       CardFile2: string);
     destructor Destroy; override;
-    procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer);
+    procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
+      Recompiler: Boolean);
     procedure RequestReset;
     procedure StopAndSave;
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -281,6 +285,7 @@ begin
     FVideo := 'auto';
   FLanguage := Ini.ReadString('System', 'Language', 'english').ToLower;
   FRenderer := Ini.ReadString('Video', 'Renderer', 'threads').ToLower;
+  FRecompiler := SameText(Ini.ReadString('Emulation', 'Execution', 'interpreter'), 'jit');
   if FRenderer <> 'single' then
     FRenderer := 'threads';
   for var P := 0 to 1 do
@@ -303,6 +308,10 @@ begin
   Ini.WriteString('System', 'Video', FVideo);
   Ini.WriteString('System', 'Language', FLanguage);
   Ini.WriteString('Video', 'Renderer', FRenderer);
+  if FRecompiler then
+    Ini.WriteString('Emulation', 'Execution', 'jit')
+  else
+    Ini.WriteString('Emulation', 'Execution', 'interpreter');
   for var P := 0 to 1 do
   begin
     var Section := 'Keys';
@@ -348,7 +357,8 @@ begin
   FLock.Free;
 end;
 
-procedure TPS2Worker.Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer);
+procedure TPS2Worker.Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
+  Recompiler: Boolean);
 begin
   var Wake: Boolean;
   FLock.Acquire;
@@ -359,6 +369,7 @@ begin
     FAudioEnabled := AudioEnabled;
     FVolume := EnsureRange(Volume, 0.0, 1.0);
     FGSThreads := GSThreads;
+    FRecompiler := Recompiler;
   finally
     FLock.Release;
   end;
@@ -602,6 +613,7 @@ begin
         var Volume: Single;
         var Inputs: TPS2PadInputs;
         var GSThreads: Integer;
+        var Recompiler: Boolean;
         FLock.Acquire;
         try
           Paused := FPause;
@@ -611,10 +623,12 @@ begin
           Enabled := FAudioEnabled;
           Volume := FVolume;
           GSThreads := FGSThreads;
+          Recompiler := FRecompiler;
         finally
           FLock.Release;
         end;
         FConsole.GS.Raster.Threads := GSThreads;
+        FConsole.VU1.Core.UseJit := Recompiler;
         for var Port := 0 to 1 do
         begin
           FConsole.PadMan.Pads[Port].Buttons := Inputs[Port].Buttons;
@@ -894,7 +908,8 @@ begin
     for var K := 0 to 11 do
       Inputs[Port].Pressure[K] := 0;
   end;
-  FWorker.Configure(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume, FConfigObject.GSThreads);
+  FWorker.Configure(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume, FConfigObject.GSThreads,
+    FConfigObject.Recompiler);
 end;
 
 procedure TPS2CoreAdapter.Start;

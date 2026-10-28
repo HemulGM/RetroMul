@@ -1,16 +1,18 @@
 ﻿unit PS2.GS.Gpu;
 
-// Initial GS compute path: untextured 32/24-bit sprites with disjoint
+// GS compute path: 32/24-bit sprites, including nearest/bilinear 32/24-bit
+// textures without mipmapping, with disjoint
 // frame/depth surfaces. Other draws retain the software pixel pipeline.
 // Queued sprites retain their own parameters until Sync publishes their
 // writes to CPU consumers. Compute barriers order draws within each batch.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$POINTERMATH ON}
+{$EXCESSPRECISION OFF}
 
 interface
 
 uses
-  System.SysUtils, PS2.Types, PS2.GS.Raster, PS2.GS.Memory, RM.Vulkan.Compute;
+  System.SysUtils, System.Math, PS2.Types, PS2.GS.Raster, PS2.GS.Memory, RM.Vulkan.Compute;
 
 type
   TPS2GSGpu = class(TPS2GSAccelerator)
@@ -24,17 +26,19 @@ type
   private
     FCompute: TVulkanCompute;
     FKernel: TVulkanKernel;
-    FRAM, FState: TVulkanBuffer;
+    FRAM, FState, FCoordinates: TVulkanBuffer;
     FDraws: Int64;
+    FTexturedDraws: Int64;
     FUsed: Integer;
     FSubmissions: Int64;
   public
     constructor Create(RAM: Pointer);
     destructor Destroy; override;
     procedure Sync; override;
-    function Sprite(const D: TPS2GSDraw; const V: TPS2GSVertex;
+    function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer): Boolean; override;
     property Draws: Int64 read FDraws;
+    property TexturedDraws: Int64 read FTexturedDraws;
     property Submissions: Int64 read FSubmissions;
   end;
 
@@ -50,9 +54,10 @@ begin
   FRAM := FCompute.ImportHost(RAM, PS2GSMemorySize);
   if FRAM = nil then
     raise Exception.Create('Vulkan GS needs coherent host-memory import for GS VRAM');
-  FState := FCompute.CreateBuffer(BatchSize * 32 * SizeOf(Cardinal), True);
-  FKernel := FCompute.CreateKernel(PS2SpriteSPIRV, 2, SizeOf(TPush));
-  FCompute.Bind(FKernel, [FRAM, FState]);
+  FState := FCompute.CreateBuffer(BatchSize * 64 * SizeOf(Cardinal), True);
+  FCoordinates := FCompute.CreateBuffer(BatchSize * 4096 * SizeOf(Integer), True);
+  FKernel := FCompute.CreateKernel(PS2SpriteSPIRV, 3, SizeOf(TPush));
+  FCompute.Bind(FKernel, [FRAM, FState, FCoordinates]);
 end;
 
 destructor TPS2GSGpu.Destroy;
@@ -70,11 +75,19 @@ begin
   Inc(FSubmissions);
 end;
 
-function TPS2GSGpu.Sprite(const D: TPS2GSDraw; const V: TPS2GSVertex;
+// Same truncation and finite-range handling as the software sprite path.
+function TextureCoordinate(D: Double): Integer;
+begin
+  if not (D > -$1000000) then Exit(-$1000000);
+  if D > $1000000 then Exit($1000000);
+  Result := Trunc(D);
+end;
+
+function TPS2GSGpu.Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
   X0, Y0, X1, Y1: Integer): Boolean;
 begin
   Result := False;
-  if D.TME or not (D.FPSM in [PSMCT32, PSMCT24]) or
+  if not (D.FPSM in [PSMCT32, PSMCT24]) or
     not (D.ZPSM in [PSMZ32, PSMZ24]) or (X0 < 0) or (Y0 < 0) or
     (X1 <= X0) or (Y1 <= Y0) or (X1 > 2048) or (Y1 > 2048) then Exit;
   // One invocation must own each word: reject zero stride, row aliases,
@@ -87,10 +100,26 @@ begin
   if F1 >= 512 then Exit;
   if not D.ZMSK or (D.ZTST <> 1) then
     if (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0)) then Exit;
+  if D.TME then
+  begin
+    if D.UseLod or (D.TW > 10) or (D.TH > 10) or not (D.TPSM in [PSMCT32, PSMCT24]) then Exit;
+    var W := 1 shl D.TW;
+    var H := 1 shl D.TH;
+    if D.WMS >= 2 then W := Max(W, Max(D.MINU, D.MAXU) + 1);
+    if D.WMT >= 2 then H := Max(H, Max(D.MINV, D.MAXV) + 1);
+    if D.WMS = 3 then W := 1024;
+    if D.WMT = 3 then H := 1024;
+    var T0 := D.TBP div 32;
+    var T1 := (D.TBP + 31) div 32 + Cardinal((H - 1) div 32) * D.TBW + Cardinal((W - 1) div 64);
+    // No texture feedback within one dispatch. Between dispatches the
+    // compute barriers allow a previous target to become the next texture.
+    if (T1 >= 512) or ((T1 >= F0) and (F1 >= T0)) or
+      (not D.ZMSK and (T1 >= Z0) and (Z1 >= T0)) then Exit;
+  end;
   // Small draws cost more to submit than to draw on the host.
   if Int64(X1 - X0) * (Y1 - Y0) < 4096 then Exit;
   if FUsed = BatchSize then Sync;
-  var P := PCardinal(FState.Data) + FUsed * 32;
+  var P := PCardinal(FState.Data) + FUsed * 64;
   P[0] := D.FBP; P[1] := D.FBW; P[2] := D.FPSM; P[3] := D.FBMSK;
   P[4] := D.ZBP; P[5] := D.ZPSM; P[6] := Ord(D.ZMSK);
   P[7] := 1;
@@ -104,6 +133,44 @@ begin
   P[23] := Cardinal(D.FogR); P[24] := Cardinal(D.FogG); P[25] := Cardinal(D.FogB);
   P[26] := Cardinal(V.R); P[27] := Cardinal(V.G); P[28] := Cardinal(V.B);
   P[29] := Cardinal(V.A); P[30] := Cardinal(V.F); P[31] := V.Z;
+  P[47] := Ord(D.TME);
+  if D.TME then
+  begin
+    P[32] := D.TBP; P[33] := D.TBW; P[34] := D.TPSM;
+    P[35] := Cardinal(1 shl D.TW); P[36] := Cardinal(1 shl D.TH);
+    P[37] := Cardinal(D.WMS); P[38] := Cardinal(D.WMT);
+    P[39] := Cardinal(D.MINU); P[40] := Cardinal(D.MAXU);
+    P[41] := Cardinal(D.MINV); P[42] := Cardinal(D.MAXV);
+    P[43] := Cardinal(D.TFX); P[44] := Ord(D.TCC);
+    P[45] := Cardinal(D.TA0); P[46] := Ord(D.AEM); P[48] := Ord(D.Linear);
+    // Keep the CPU's arithmetic and rounding for UV/STQ interpolation.
+    // The GPU samples these integer coordinates, not an approximate float
+    // reconstruction. A sprite needs only one U per column and V per row.
+    var U0, U1, TV0, TV1: Double;
+    if D.FST then
+    begin
+      U0 := V0.U; U1 := V.U; TV0 := V0.V; TV1 := V.V;
+    end
+    else
+    begin
+      var Q0 := V0.Q;
+      var Q1 := V.Q;
+      if Q0 = 0 then Q0 := 1;
+      if Q1 = 0 then Q1 := 1;
+      U0 := V0.S / Q0 * (1 shl D.TW) * 16;
+      U1 := V.S / Q1 * (1 shl D.TW) * 16;
+      TV0 := V0.T / Q0 * (1 shl D.TH) * 16;
+      TV1 := V.T / Q1 * (1 shl D.TH) * 16;
+    end;
+    var DUDX := 0.0;
+    var DVDY := 0.0;
+    if V.X <> V0.X then DUDX := (U1 - U0) / (V.X - V0.X) * 16;
+    if V.Y <> V0.Y then DVDY := (TV1 - TV0) / (V.Y - V0.Y) * 16;
+    var UStart := U0 + (X0 * 16 - V0.X) * DUDX / 16;
+    var Coords := PInteger(FCoordinates.Data) + FUsed * 4096;
+    for var X := X0 to X1 - 1 do Coords[X - X0] := TextureCoordinate(UStart + (X - X0) * DUDX);
+    for var Y := Y0 to Y1 - 1 do Coords[2048 + Y - Y0] := TextureCoordinate(TV0 + (Y * 16 - V0.Y) * DVDY / 16);
+  end;
   var Push: TPush;
   Push.Bounds[0] := X0; Push.Bounds[1] := Y0; Push.Bounds[2] := X1; Push.Bounds[3] := Y1;
   Push.Slot := Cardinal(FUsed);
@@ -111,6 +178,7 @@ begin
   Inc(FUsed);
   FPending := True;
   Inc(FDraws);
+  if D.TME then Inc(FTexturedDraws);
   Result := True;
 end;
 

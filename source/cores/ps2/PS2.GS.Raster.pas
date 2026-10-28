@@ -146,7 +146,7 @@ type
   public
     procedure Sync; virtual; abstract;
     property Pending: Boolean read FPending;
-    function Sprite(const D: TPS2GSDraw; const V: TPS2GSVertex;
+    function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer): Boolean; virtual; abstract;
   end;
 
@@ -244,6 +244,7 @@ type
     procedure SetVulkan(Value: Boolean);
     function GetVulkanDraws: Int64;
     function GetVulkanSubmissions: Int64;
+    function GetVulkanTexturedDraws: Int64;
     procedure StartTransfer;
     procedure FeedWord(W: Cardinal);
     procedure TransferPixel(Value: Cardinal);
@@ -283,6 +284,7 @@ type
     property VulkanError: string read FVulkanError;
     property VulkanDraws: Int64 read GetVulkanDraws;
     property VulkanSubmissions: Int64 read GetVulkanSubmissions;
+    property VulkanTexturedDraws: Int64 read GetVulkanTexturedDraws;
     property SignalPending: Boolean read FSignal;
     property FinishPending: Boolean read FFinish;
     property OnSignal: TProc read FOnSignal write FOnSignal;
@@ -436,6 +438,13 @@ begin
   Result := 0;
   if FAccelerator <> nil then
     Result := TPS2GSGpu(FAccelerator).Submissions;
+end;
+
+function TPS2GSRaster.GetVulkanTexturedDraws: Int64;
+begin
+  Result := 0;
+  if FAccelerator <> nil then
+    Result := TPS2GSGpu(FAccelerator).TexturedDraws;
 end;
 
 procedure TPS2GSRaster.SetVulkan(Value: Boolean);
@@ -1650,7 +1659,7 @@ begin
   end;
   if (FBandCount = 1) and (FOwner.FAccelerator <> nil) and
     (FOwner.PrimLog = nil) and (FOwner.WatchX < 0) then
-    if FOwner.FAccelerator.Sprite(FD, V1, PX0, PY0, PX1, PY1) then
+    if FOwner.FAccelerator.Sprite(FD, V0, V1, PX0, PY0, PX1, PY1) then
     begin
       Inc(FPixels, Int64(PX1 - PX0) * (PY1 - PY0));
       Exit;

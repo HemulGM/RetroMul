@@ -75,15 +75,20 @@ and pipeline state. `-Checked` enables checked core code.
 ## Experimental Vulkan sprites
 
 `Video/Renderer=vulkan` independently selects Vulkan compute for supported
-untextured 32/24-bit sprites. This uses `RM.Vulkan.Compute` from the Xbox
-branch (3f3ce45), with coherent GS VRAM import. Textured primitives,
-triangles, small sprites, overlapping surfaces and unsupported storage
+32/24-bit sprites, including 32/24-bit nearest/bilinear textures without
+mipmaps. This uses `RM.Vulkan.Compute` from the Xbox branch (3f3ce45), with
+coherent GS VRAM import. Triangles, small sprites, texture feedback,
+overlapping surfaces and unsupported storage
 formats retain the software path. If device creation or host-memory import
 is unavailable, software rendering continues; `VulkanError` reports why.
 The default remains multithreaded software rendering.
 
 The integer shader implements alpha/depth tests, fog, blending, destination
-alpha, masks and 24-bit preservation. Up to 128 sprites are recorded with
+alpha, masks, texture functions and 24-bit preservation. Sprite UV/STQ
+interpolation stays on the CPU with the software renderer's arithmetic;
+integer coordinates are uploaded per column/row. The GPU performs exact
+integer filtering and sampling, including all clamp/repeat modes and TEXA.
+Up to 128 sprites are recorded with
 separate parameter slots and ordered by compute memory barriers. Pending
 work finishes before CPU drawing, transfers, palette loads, display reads,
 reset, snapshots and mode changes. This is not a complete or consistently
@@ -93,8 +98,9 @@ JIT. GS saves contain the same VRAM and state in either mode.
 Regenerate its embedded SPIR-V with `source/cores/ps2/shaders/build.ps1`
 (Vulkan SDK `glslc` required). Application builds use the checked-in include.
 `tests/cores/ps2/gpu/build.ps1` compares 256 isolated draws and a dependent
-256-draw sequence against the CPU over all 4 MiB of VRAM. It checks batch
-capacity/reuse, software fallback, transfers, CLUT state and live mode changes.
+256-draw sequence, with and without textures, against the CPU over all
+4 MiB of VRAM. It checks batch capacity/reuse, texture feedback fallback,
+render-to-texture ordering, transfers, CLUT state and live mode changes.
 It requires a Vulkan device with coherent host-memory import.
 
 ## Limits

@@ -1,12 +1,13 @@
 #version 450
-// Untextured GS sprites, integer pixel pipeline. References: GS User's
+// GS sprites, integer pixel/texture pipeline. References: GS User's
 // Manual and PS2.GS.Raster. Each invocation owns a distinct frame/depth word.
 layout(local_size_x=8, local_size_y=8) in;
 layout(set=0,binding=0,std430) buffer VRAM { uint ram[]; };
-struct Draw { uint p[32]; };
+struct Draw { uint p[64]; };
 layout(set=0,binding=1,std430) readonly buffer State { Draw draws[]; };
+layout(set=0,binding=2,std430) readonly buffer Coordinates { int coords[]; };
 layout(push_constant) uniform Bounds { ivec4 bounds; uint slot; };
-// Address fields on demand, rather than copying all 32 words into private
+// Address fields on demand, rather than copying all words into private
 // storage even for a pixel rejected by an early test.
 #define p draws[slot].p
 
@@ -21,12 +22,51 @@ uint address(uint bp,uint bw,uint x,uint y,bool depth) {
 ivec3 selectColor(uint which,ivec3 src,ivec3 dst) {
   return which==0 ? src : (which==1 ? dst : ivec3(0));
 }
+int clampCoordinate(int c,uint size,uint mode,uint low,uint high) {
+  if(mode==0) return c&int(size-1);
+  if(mode==1) return c<0 ? 0 : (c>=int(size) ? int(size)-1 : c);
+  if(mode==2) return c<int(low) ? int(low) : (c>int(high) ? int(high) : c);
+  return (c&int(low))|int(high);
+}
+uvec4 readTexel(int u,int v) {
+  u=clampCoordinate(u,p[35],p[37],p[39],p[40]);
+  v=clampCoordinate(v,p[36],p[38],p[41],p[42]);
+  uint t=ram[address(p[32],p[33],uint(u),uint(v),false)];
+  if(p[34]==1) {
+    uint a=p[46]!=0 && (t&0xffffff)==0 ? 0 : p[45];
+    t=(t&0xffffff)|(a<<24);
+  }
+  return uvec4(t&255,(t>>8)&255,(t>>16)&255,t>>24);
+}
+uvec4 sampleTexture(int u,int v) {
+  if(p[48]==0) return readTexel(u>>4,v>>4);
+  u-=8; v-=8;
+  uint fu=uint(u&15),fv=uint(v&15);
+  int u0=u>>4,v0=v>>4;
+  uvec4 top=readTexel(u0,v0)*(16-fu)+readTexel(u0+1,v0)*fu;
+  uvec4 bottom=readTexel(u0,v0+1)*(16-fu)+readTexel(u0+1,v0+1)*fu;
+  return (top*(16-fv)+bottom*fv)>>8;
+}
 void main() {
   ivec2 xy=bounds.xy+ivec2(gl_GlobalInvocationID.xy);
   if(any(greaterThanEqual(xy,bounds.zw))) return;
   uint x=uint(xy.x),y=uint(xy.y);
   ivec3 c=ivec3(p[26],p[27],p[28]);
   int a=int(p[29]),f=int(p[30]);
+  if(p[47]!=0) {
+    int u=coords[slot*4096+uint(xy.x-bounds.x)];
+    int v=coords[slot*4096+2048+uint(xy.y-bounds.y)];
+    ivec4 t=ivec4(sampleTexture(u,v));
+    switch(p[43]) {
+      case 0: c=(c*t.rgb)>>7; if(p[44]!=0) a=(a*t.a)>>7; break;
+      case 1: c=t.rgb; if(p[44]!=0) a=t.a; break;
+      default:
+        c=((c*t.rgb)>>7)+a;
+        if(p[44]!=0) a=p[43]==2 ? t.a+a : t.a;
+        break;
+    }
+    c=min(c,ivec3(255)); a=min(a,255);
+  }
   if(p[22]!=0) c=(f*c+(255-f)*ivec3(p[23],p[24],p[25]))>>8;
   bool writeFB=true,writeZ=p[6]==0,writeAlpha=true;
   bool pass=false;

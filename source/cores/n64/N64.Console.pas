@@ -246,11 +246,19 @@ type
     FRDPLastPending, FRDPFollowStale: Boolean;
     // Diagnostics: False runs only the timing RDP (no pixels drawn).
     FRDPDrawing: Boolean;
+    // UseRecompiler as last set (the CPU and the RSP give up generated code
+    // they cannot make: not asked again until it changes).
+    FUseRecompiler: Boolean;
     // Thread placement (see PlaceThreads): enabled, and the emulation thread
     // pinned (FPinnedThread) with what it could run on before.
     FPlacement, FPinned: Boolean;
     FPinnedThread: TThreadID;
     FUnpinned: TN64CPUSet;
+    // The host's cores as first found, and where the RDP bands (and the VI
+    // thread) run once placed.
+    FCores: TArray<TN64HostCore>;
+    FCoresFound: Boolean;
+    FBandCPUs: TN64CPUSet;
     FHintAttempted, FHinted: Boolean;
     FPreviousIdeal: Integer;
     FHintedThread: TThreadID;
@@ -381,6 +389,8 @@ type
     // used): a rewind replays the window's clocks with them in place.
     FRSPBeats: TArray<TN64RSPBeat>;
     FRSPBeatCount: Integer;
+    // (RewindRSPTo: the beats' positions.)
+    FRSPStops: TArray<Integer>;
     FRSPStats: TN64RSPAheadStats;
     FLastLeft, FLastRight: SmallInt;
     FCurrentFrame: TEmulatorFrame;
@@ -389,7 +399,10 @@ type
     FTick, FLine, FField: Integer;
     FSPPC: Cardinal;
     FInputs: TN64Pads;
+    // The samples since TakeSamples: the first FSampleCount of FSample (kept
+    // from frame to frame, as no memory manager call is made for each).
     FSample: TArray<SmallInt>;
+    FSampleCount: Integer;
     FAIAddress, FAILength, FAIProgress, FAIPhase: Cardinal;
     FAINextAddress, FAINextLength: Cardinal;
     FAudioClock: Integer;
@@ -429,6 +442,8 @@ type
     procedure SetRDPDrawing(Value: Boolean);
     procedure SetBilinearFiltering(Value: Boolean);
     function GetBilinearFiltering: Boolean;
+    procedure SetUseRecompiler(Value: Boolean);
+    function GetUseRecompiler: Boolean;
     procedure PlaceThreads(out BandCPUs: TN64CPUSet; out Preferred: TArray<Integer>);
     procedure UnplaceThreads;
     procedure SetPlacement(Value: Boolean);
@@ -551,6 +566,11 @@ type
     // guest then sees stale images). Not to be switched back on.
     property RDPDrawing: Boolean read FRDPDrawing write SetRDPDrawing;
     property BilinearFiltering: Boolean read GetBilinearFiltering write SetBilinearFiltering;
+    // The CPU's and the RSP's blocks as generated code where there is a code
+    // generator (else always interpreted). Either way the same emulation, bit
+    // for bit: it may change at any time (the emulation thread; the RSP
+    // thread takes it at its next block).
+    property UseRecompiler: Boolean read GetUseRecompiler write SetUseRecompiler;
     // The emulation thread on a core of its own (the fastest), each RDP band
     // on another: threads sharing a core (SMT) or on slow cores slow the
     // emulation thread down. Set when the RDP worker starts; the emulation
@@ -739,6 +759,7 @@ begin
   FRDPMode := TN64RDPMode.Threaded;
   {$ENDIF}
   FVI := TN64VI.Create(Self);
+  FUseRecompiler := True;
   FHostFloat := True;
   // With three physical cores or more, VI fields on a thread of their own.
   SetVIThreaded(PhysicalCores >= 3);
@@ -857,7 +878,7 @@ begin
   FLine := 0;
   FField := 0;
   FSPPC := 0;
-  FSample := nil;
+  FSampleCount := 0;
   FAIAddress := 0;
   FAILength := 0;
   FAIProgress := 0;
@@ -2537,6 +2558,28 @@ end;
 
 procedure TN64Console.TVIThread.Execute;
 begin
+  // Made by the emulation thread: where that is pinned (Linux and Android
+  // pass a thread's affinity on to the threads it starts), with the RDP
+  // bands instead; before they are placed, off the emulation thread's core
+  // and the RSP thread's.
+  {$IF DEFINED(LINUX) or DEFINED(ANDROID)}
+  if FOwner.FPinned then
+  begin
+    var CPUs := FOwner.FBandCPUs;
+    if CPUs.IsEmpty then
+    begin
+      CPUs := FOwner.FUnpinned;
+      for var C := 0 to Min(1, High(FOwner.FCores)) do
+        for var W := 0 to High(CPUs.Bits) do
+          CPUs.Bits[W] := CPUs.Bits[W] and not FOwner.FCores[C].CPUs.Bits[W];
+    end;
+    if not CPUs.IsEmpty then
+    begin
+      var Previous: TN64CPUSet;
+      PinCurrentThread(CPUs, Previous);
+    end;
+  end;
+  {$ENDIF}
   var Slot := 0;
   while True do
   begin
@@ -2672,12 +2715,14 @@ end;
 procedure TN64Console.AudioTick;
 begin
   // Guest DAC consumption has its own clock; this is only the 48 kHz sink.
-  var N := Length(FSample);
+  var N := FSampleCount;
   if N < 16384 then
   begin
-    SetLength(FSample, N + 2);
+    if N + 2 > Length(FSample) then
+      SetLength(FSample, Max(N + 2, Length(FSample) * 2));
     FSample[N] := FLastLeft;
-    FSample[N + 1] := FLastRight
+    FSample[N + 1] := FLastRight;
+    FSampleCount := N + 2
   end;
 end;
 
@@ -2838,8 +2883,8 @@ end;
 
 function TN64Console.TakeSamples: TArray<SmallInt>;
 begin
-  Result := FSample;
-  FSample := nil
+  Result := Copy(FSample, 0, FSampleCount);
+  FSampleCount := 0
 end;
 
 function TN64Console.SaveBattery: TBytes;
@@ -2975,7 +3020,7 @@ begin
   State.Field(FDebugBuffer, SizeOf(FDebugBuffer));
   if State.Loading then
   begin
-    FSample := nil;
+    FSampleCount := 0;
     FSaveDirty := True;
     if (FVIPhase >= UInt64(VideoClock) * 2) or (FAIDACPhase >= VideoClock) or
       (FAIAnchorTick > FTimeline.Now) or
@@ -3274,6 +3319,20 @@ begin
   Result := FRDP.BilinearFiltering;
 end;
 
+function TN64Console.GetUseRecompiler: Boolean;
+begin
+  Result := FUseRecompiler;
+end;
+
+procedure TN64Console.SetUseRecompiler(Value: Boolean);
+begin
+  if Value = FUseRecompiler then
+    Exit;
+  FUseRecompiler := Value;
+  FCPU.UseJit := Value and TN64CPU.JitAvailable;
+  FRSP.UseJit := Value and TN64RSP.JitAvailable;
+end;
+
 procedure TN64Console.SetBilinearFiltering(Value: Boolean);
 begin
   if FRDP.BilinearFiltering = Value then
@@ -3381,6 +3440,7 @@ begin
   for var C := First to High(Cores) do
     for var W := 0 to High(BandCPUs.Bits) do
       BandCPUs.Bits[W] := BandCPUs.Bits[W] or Cores[C].CPUs.Bits[W];
+  FBandCPUs := BandCPUs;
   SetLength(Preferred, FRDPBands);
   for var I := 0 to FRDPBands - 1 do
   begin
@@ -3414,7 +3474,14 @@ begin
     end;
     Exit;
   end;
-  Cores := HostCores;
+  // The cores found once, before this thread is pinned: on Linux and
+  // Android HostCores sees the calling thread's own affinity.
+  if not FCoresFound then
+  begin
+    FCores := HostCores;
+    FCoresFound := True;
+  end;
+  Cores := FCores;
   if Length(Cores) < 2 then
     Exit;
   if not FPinned then
@@ -3557,6 +3624,8 @@ begin
     if RemainingBeats(FSPTransfer) > 1 then
       R.LastBeat := RCPTickAfter(R.LastBeat, RemainingBeats(FSPTransfer) - 1);
     FRSPDoneBase := FSPDone;
+    // (The slot's Data stays for its next transfer: see LiftRSPTransfer.)
+    R.Data := FRSPDMAs[0].Data;
     FRSPDMAs[0] := R;
     FRSPDMACount := 1;
     if FSPQueued.Active then
@@ -3980,6 +4049,7 @@ begin
   end;
   if FRSPDMACount = Length(FRSPDMAs) then
     raise EInvalidOpException.Create('N64 RSP window knows too many transfers');
+  R.Data := FRSPDMAs[FRSPDMACount].Data;
   FRSPDMAs[FRSPDMACount] := R;
   // Published with the clock that adds it (full barrier there).
   Inc(FRSPDMACount);
@@ -4130,13 +4200,16 @@ begin
   if Beats <= 0 then
   begin
     // All its beats have run.
-    FRSPDMAs[Index].Data := nil;
     TInterlocked.Exchange(FRSPDMAs[Index].State, 2);
     Exit;
   end;
   for var B := 1 to Done do
     StepSPTransfer(Transfer);
-  SetLength(FRSPDMAs[Index].Data, Beats * 8);
+  // Data: kept, at least DMEM's size, grown by doubling (no memory manager
+  // call on the RSP thread once the slots are long enough; one could wait
+  // 10 ms for a lock another thread holds).
+  if Length(FRSPDMAs[Index].Data) < Beats * 8 then
+    SetLength(FRSPDMAs[Index].Data, Max(Max(Beats * 8, $1000), Length(FRSPDMAs[Index].Data) * 2));
   FRSPOverlapCount := 0;
   if not Transfer.Writing then
   begin
@@ -4364,12 +4437,16 @@ begin
   // Back to the window's first Keep clocks, with the DMA beats into DMEM
   // that came between them: undone (the window's clocks before them may
   // have read the bytes they replaced), then done again in place
-  // (ReplayRSPBeat).
-  var Stops: TArray<Integer>;
-  SetLength(Stops, FRSPBeatCount);
+  // (ReplayRSPBeat). Their positions in FRSPStops, kept from rewind to
+  // rewind (no memory manager call).
+  if Length(FRSPStops) < FRSPBeatCount then
+    SetLength(FRSPStops, Max(FRSPBeatCount, Length(FRSPStops) * 2));
   for var I := 0 to FRSPBeatCount - 1 do
-    Stops[I] := FRSPBeats[I].Position;
-  FRSP.Rewind(FSPPC, Keep, Stops, ReplayRSPBeat);
+    FRSPStops[I] := FRSPBeats[I].Position;
+  if FRSPBeatCount = 0 then
+    FRSP.Rewind(FSPPC, Keep, [], ReplayRSPBeat)
+  else
+    FRSP.Rewind(FSPPC, Keep, Slice(PIntegerArray(FRSPStops)^, FRSPBeatCount), ReplayRSPBeat);
   FRSPBeatCount := 0;
 end;
 
@@ -4535,23 +4612,24 @@ end;
 procedure TN64Console.RunThreadedWindow;
 begin
   // RSP thread: the requested window, in parts, each published as it ends
-  // (a window run in parts is the same as one run at once).
+  // (a window run in parts is the same as one run at once): of AheadPart
+  // clocks at least, to the end of the RSP block running then.
   var PC := FAheadPC;
   var Status := FAheadStatus;
   var Budget := FAheadBudget;
   var Done := 0;
   try
     var Part := Min(AheadPart, Budget);
-    var Ran := FRSP.RunAhead(PC, Status, Part);
+    var Ran := FRSP.RunAhead(PC, Status, Budget, Part);
     Done := Ran;
-    while (Ran = Part) and (Done < Budget) and (FRSP.AheadStop = TRSPAheadStop.Budget) and
+    while (Ran >= Part) and (Done < Budget) and (FRSP.AheadStop = TRSPAheadStop.Budget) and
       (SharedRead(FAheadStopRequest) = 0) do
     begin
       PublishAhead(Done);
       if FRSPStress then
         StressPause;
       Part := Min(AheadPart, Budget - Done);
-      Ran := FRSP.ContinueAhead(PC, Status, Part);
+      Ran := FRSP.ContinueAhead(PC, Status, Budget - Done, Part);
       Inc(Done, Ran);
     end;
   except

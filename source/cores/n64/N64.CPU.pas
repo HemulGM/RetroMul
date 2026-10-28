@@ -7,7 +7,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, N64.Types, N64.SoftFloat,
+  System.SysUtils, System.Classes, System.Math, System.Diagnostics, N64.Types, N64.SoftFloat, HW.JIT,
   Core.Snapshots;
 
 type
@@ -76,11 +76,83 @@ type
     // instruction, [1] a branch taken; at LinkPC (nil: none yet).
     Link: array[0..1] of PN64CPUBlock;
     LinkPC: array[0..1] of UInt64;
+    // Its generated code (HW.JIT; nil: none, or not yet if not JitTried): its
+    // steps with a LUI pair counted twice (JitSteps), their PClocks without
+    // stalls (JitClocks) and an upper bound of all its PClocks (JitMax).
+    Native, NativeInner: Pointer;
+    JitSteps, JitClocks, JitMax: Cardinal;
+    // Blocks entered after this one on another page, at FarPC:
+    // its code jumps to theirs as RunBlocks would enter them.
+    Far: array[0..1] of PN64CPUBlock;
+    FarPC: array[0..1] of UInt64;
+    // Direct links in its code (JitLink): the jump after its last step, the
+    // blocks it goes to directly and at which PCs.
+    JitTail: NativeInt;
+    JitLinks: Integer;
+    JitLinkTo: array[0..3] of PN64CPUBlock;
+    JitLinkPC: array[0..3] of UInt64;
+    JitTried: Boolean;
+    // The careful code (JitCompile), for where Native may not run.
+    NativeCareful: Pointer;
+    CarefulTried: Boolean;
+    // Entries before its code (or careful code) is made: blocks that run
+    // only a few times are not compiled (JitHot).
+    JitHeat, CarefulHeat: Word;
   end;
 
   TN64CPU = class
+  private type
+    // The floating-point inputs RunBlocks works out for a COP1 step.
+    TStepFP = record
+      A, B: UInt64;
+      Res: TSoftFloatResult;
+      Cycles: Cardinal;
+      Target: Integer;
+    end;
+    PStepFP = ^TStepFP;
+    // A block step's routine by its Kind (FStepRoutines; RunBlocks calls it
+    // with Self after doing what every step shares): the instruction itself.
+    // Physical: its data access (Step.Size <> 0); FP: the COP1 inputs.
+    // Returns PClocks to add to the step's own.
+    TStepRoutine = function(CPU: TObject; Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    // What RunBlocks and a block's code exchange (JitRun): the totals and
+    // limits, the page context and mode; JitData's results (FastData's);
+    // when the code returns, the last block it entered, the steps of that one
+    // it completed (Done), the PClocks of their stalls and FP operations
+    // beyond the steps' own (Extra) and whether its last store was cached.
+    TJitCtx = record
+      // Totals as RunBlocks's Clocks and Result, with the limits.
+      Clocks, Limit: UInt64;
+      Count, MaxSteps: Integer;
+      // The last block entered and its PC.
+      Block: PN64CPUBlock;
+      BlockPC: UInt64;
+      Context: Cardinal;
+      // (64 bits: a step's argument as it is.)
+      Physical: UInt64;
+      Cached: Boolean;
+      PrevStore: Boolean;
+      Done: Integer;
+      Extra: Cardinal;
+      // KernelMode (for KSEG0/KSEG1 code on another page).
+      Kernel: Boolean;
+      // Data accesses through KSEG0/KSEG1 go as FastData takes them without
+      // asking it (the code's own check): Context allows them, RDRAM is
+      // direct, no SP DMA beat may wait (none of which changes in a batch).
+      Direct: Boolean;
+      FP: TStepFP;
+    end;
+    PJitCtx = ^TJitCtx;
+    // What JitCompile carries from step to step (JitEmitStep): about the step
+    // before, whether Store is known to be 0, and (careful code) the steps
+    // and their PClocks so far.
+    TJitStepState = record
+      PrevBranch, PrevStore, PrevCondition, StoreZero: Boolean;
+      PrefixSteps, PrefixClk: Integer;
+    end;
   private
     const
+      JitBufferSize = 128 * 1024 * 1024;
       KSeg0Base = UInt64($FFFFFFFF80000000);
       KSeg1Base = UInt64($FFFFFFFFA0000000);
       KSeg2Base = UInt64($FFFFFFFFC0000000);
@@ -170,12 +242,146 @@ type
     FLastEnd, FResumePC: UInt64;
     FResumeStep: Integer;
     FCarryGen: Cardinal;
+    // Blocks as generated code (HW.JIT): its writer, whether to use it and
+    // whether its buffer filled up (all blocks are dropped at the next
+    // BuildBlock).
+    FJit: TJitAsm;
+    FUseJit, FJitFull: Boolean;
+    // The code all blocks share in FJit (JitEmitShared; FJitChain 0: none
+    // yet): their entry, their way back to RunBlocks, the chaining code.
+    FJitEnter, FJitReturn, FJitChain, FJitChainIdle: NativeInt;
+    FJitCompiled, FJitRuns: Int64;
+    // (N64JIT=stats: why chains ended, by reason.)
+    FJitExits: array[0..23] of Int64;
+    // The routines the code calls (CallAt, near the fields it uses most):
+    // the steps' by Kind, then JitData and JitFP.
+    FJitCalls: array[0..257] of Pointer;
+    FJitDbg: array[0..3] of UInt64;
+    FJitResets: Integer;
+    FJitCompileTicks: Int64;
+    FJitStats: Boolean;
+    FJitSlowOps: array[0..255] of Int64;
+    // (N64JIT=stats: what the code at each offset in FJit does, ascending.)
+    FJitMapOffset: TArray<NativeInt>;
+    FJitMapKind: TArray<Integer>;
+    FJitMapCount: Integer;
+    // JitCompile's ways out of a block (their labels, the steps done, the
+    // status), kept from block to block: making a block's code calls no
+    // memory manager, whose locks the RSP thread's calls would make it wait
+    // for (10 ms, the RTL's sleep on a lock held).
+    FJitExitLabel: TArray<TJitLabel>;
+    FJitExitDone, FJitExitStatus: TArray<Integer>;
+    FJitExitCount: Integer;
+    // Data accesses the code's own check does not take, asked of JitData
+    // after the block's steps (JitEmitData): where from, back to, the step.
+    FJitSlowLabel, FJitSlowBack, FJitSlowStep: TArray<Integer>;
+    FJitSlowCount: Integer;
+    function JitExitTo(Done, Status: Integer): TJitLabel;
+    procedure JitMark(Kind: Integer);
     procedure ClearBlocks;
     function BlockKey(EntryLoad, EntryFP: Integer; Mode: Byte; Physical: Cardinal): PN64CPUBlock;
     function BuildBlock(PC: UInt64; Physical: Cardinal; Mode: Byte): PN64CPUBlock;
     function BlockValid(B: PN64CPUBlock): Boolean; inline;
     function FastFloat(Op: Cardinal; A, B: UInt64; out R: TSoftFloatResult; out Cycles: Cardinal; out Target: Integer): Boolean;
     function RunBlocks(MaxSteps: Integer; Limit: UInt64; Context: Cardinal; out Clocks: UInt64): Integer;
+    function JitFP(Step: PN64CPUStep; Ctx: PJitCtx): Cardinal;
+    function JitData(Ctx: PJitCtx; Step: PN64CPUStep): Cardinal;
+    function JitCompile(B: PN64CPUBlock; Careful: Boolean = False): Pointer;
+    procedure JitMeasure(B: PN64CPUBlock);
+    procedure JitEmitStep(B: PN64CPUBlock; I: Integer; Careful: Boolean; var State: TJitStepState);
+    function JitEmitOwn(S: PN64CPUStep): Boolean;
+    procedure JitEmitData(B: PN64CPUBlock; I: Integer; NeedCached: Boolean);
+    function JitStepArg(B: PN64CPUBlock; I: Integer): TJitOp;
+    procedure JitEmitEnd(B: PN64CPUBlock; Careful: Boolean);
+    procedure JitEmitReturn(B: PN64CPUBlock; FallThrough: Boolean);
+    procedure JitEmitShared;
+    procedure JitEmitChain;
+    procedure JitLink(From, B: PN64CPUBlock; PC: UInt64);
+    function JitRun(Code: Pointer; var B: PN64CPUBlock; var PC: UInt64; Limit: UInt64; MaxSteps: Integer; var Count: Integer;
+      var Clocks: UInt64; var Jit: TJitCtx): Integer;
+    // Block step routines (TStepRoutine), by Kind.
+    class var FStepRoutines: array[Byte] of Pointer;
+    function StepNop(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSLL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSRL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSRA(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSLLV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSRLV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSRAV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepJR(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepJALR(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepMFHI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepMTHI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepMFLO(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepMTLO(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDSLLV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDSRLV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDSRAV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepMULT(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepMULTU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDIV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDIVU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDMULT(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDMULTU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDDIV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDDIVU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepADDU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSUBU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepAND(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepOR(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepXOR(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepNOR(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSLT(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSLTU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDADDU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDSUBU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDSLL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDSRL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDSRA(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDSLL32(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDSRL32(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDSRA32(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepRegimm(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepJ(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepJAL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepBEQ(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepBEQL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepBNE(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepBNEL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepBLEZ(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepBLEZL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepBGTZ(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepBGTZL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepADDIU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSLTI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSLTIU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepANDI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepORI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepXORI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepLUI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepLB(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepLH(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepLW(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepLBU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepLHU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepLWU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepLWC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepLDC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepLD(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSB(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSH(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSW(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSD(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSWC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepSDC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepMFC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDMFC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepMTC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepDMTC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepFPCompare(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepFPArith(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepFPMov(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+    function StepBC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
     procedure DeviceAccess; inline;
     function FastCode(PC: UInt64; Context: Cardinal): Boolean;
     function FastData(Address: UInt64; Size: Integer; Writing: Boolean; Context: Cardinal; out Physical: Cardinal; out Cached: Boolean): Boolean; inline;
@@ -236,7 +442,22 @@ type
     // Tests: all blocks dropped once Blocks were made or Chunks chunks of
     // steps used (both at least 1).
     procedure LimitBlocks(Blocks, Chunks: Integer);
+    // Blocks run as generated code where HW.JIT can make it (Win64, Linux
+    // x64, Android ARM64; the same steps either way).
+    property UseJit: Boolean read FUseJit write FUseJit;
+    // Whether there is generated code here (a backend, not N64JIT=off).
+    class function JitAvailable: Boolean; static;
+    // Tests: blocks made generated code from their Hot+1th run on (0: their
+    // first), by HW.JIT's model with Model (CPUs that make their first code
+    // after this).
+    class procedure JitForTests(Hot: Integer; Model: Boolean); static;
+    property JitCompiled: Int64 read FJitCompiled;
+    property JitRuns: Int64 read FJitRuns;
+    // (N64JIT=stats) What generated code at Address does: a step kind, 1000+
+    // block parts, 2000+ shared code; -1: not in the code.
+    function JitWhat(Address: UInt64): Integer;
     constructor Create(Bus: TN64Bus);
+    destructor Destroy; override;
     procedure Reset;
     procedure Step;
     // Up to MaxSteps Steps, stopping after the one that brought their
@@ -268,17 +489,112 @@ type
 implementation
 
 type
-  EGuestFault = class(Exception);
+  // N64JIT (debugging): off, stats (counts, and a map of the code for
+  // profiles), nochain, hotN; no code for blocks with nobranch, nomem,
+  // nostore, nofp, nolui; calls (every step by its routine, none written
+  // out in the code); model (the code run by HW.JIT's model, for the
+  // tests: much slower).
+  TJitDebug = (jdOff, jdStats, jdNoChain, jdNoBranch, jdNoMem, jdNoStore, jdNoFP, jdNoLui, jdCalls, jdModel);
+
+const
+  JitDebugNames: array[TJitDebug] of string = ('off', 'stats', 'nochain', 'nobranch', 'nomem', 'nostore', 'nofp', 'nolui',
+    'calls', 'model');
+  // Blocks as generated code where HW.JIT has a backend (N64_NO_JIT: never).
+  N64Jit = {$IFDEF N64_NO_JIT}False{$ELSE}JitSupported{$ENDIF};
+
+var
+  JitDebug: set of TJitDebug;
+  // Entries of a block before its code is made (N64JIT=hotN sets it).
+  JitHot: Integer = 16;
+
+// (N64JIT=stats: time spent making blocks' code.)
+function JitTicks: Int64;
+begin
+  Result := TStopwatch.GetTimeStamp;
+end;
+
+function JitTickRate: Double;
+begin
+  Result := TStopwatch.Frequency;
+end;
+
+type
+  // A guest exception (Fault) leaving the instruction for Step. Its object is
+  // its thread's buffer, not the memory manager's (GoldenEye raises some 160
+  // a VI, and a memory manager call that finds the lock held sleeps 10 ms).
+  EGuestFault = class(Exception)
+  public
+    class function NewInstance: TObject; override;
+    procedure FreeInstance; override;
+  end;
+
+threadvar
+  GuestFaultBuffer: array[0..31] of UInt64;
+  GuestFaultBusy: Boolean;
+
+class function EGuestFault.NewInstance: TObject;
+begin
+  // (One raised in a handler of another: from the memory manager.)
+  if GuestFaultBusy or (InstanceSize > SizeOf(GuestFaultBuffer)) then
+    Exit(inherited NewInstance);
+  GuestFaultBusy := True;
+  Result := InitInstance(@GuestFaultBuffer);
+end;
+
+procedure EGuestFault.FreeInstance;
+begin
+  if Pointer(Self) <> @GuestFaultBuffer then
+  begin
+    inherited;
+    Exit;
+  end;
+  CleanupInstance;
+  GuestFaultBusy := False;
+end;
 
 constructor TN64CPU.Create(Bus: TN64Bus);
 begin
   inherited Create;
   FBus := Bus;
   FUseBlocks := True;
+  FUseJit := N64Jit and not (jdOff in JitDebug);
+  FJitStats := jdStats in JitDebug;
   FBlockLimit := MaxBlocks;
   FChunkLimit := MaxStepChunks;
   ClearBlocks;
   Reset;
+end;
+
+destructor TN64CPU.Destroy;
+const
+  Names: array[0..22] of string = ('idle head', 'delay', 'PC unaligned', 'NextPC', 'other page', 'link PC 0', 'link PC 1',
+    'no link', 'mode', 'entry load', 'entry FP', 'no code', 'code written', 'clocks', 'steps', 'decline', 'rewrite',
+    'ran to end', 'not kernel', 'no page', 'past RAM', 'SP hazard', 'RDP work');
+begin
+  if IsConsole and (jdStats in JitDebug) then
+  begin
+    Writeln(ErrOutput, Format('JIT: %d blocks compiled, %d of %d block runs as code', [FJitCompiled, FJitRuns, FBlocksRun]));
+    if FJit <> nil then
+      Writeln(ErrOutput, Format('JIT: %d resets, %d bytes now, blocks built %d, first compiles %.1f ms', [FJitResets, FJit.Offset, FBlocksBuilt, FJitCompileTicks * 1000 / JitTickRate]));
+    for var K := 0 to High(Names) do
+      if FJitExits[K] <> 0 then
+        Writeln(ErrOutput, Format('  exit %-12s %d', [Names[K], FJitExits[K]]));
+    for var K := 0 to 255 do
+      if FJitSlowOps[K] > 10000 then
+        Writeln(ErrOutput, Format('  slow op %d: %d', [K, FJitSlowOps[K]]));
+    if FJitDbg[2] <> 0 then
+    begin
+      var DB := PN64CPUBlock(FJitDbg[2]);
+      Writeln(ErrOutput, Format('  last delay path: PC %x entry %x; block phys %x mode %d count %d words %d', [FJitDbg[0], FJitDbg[1], DB.Physical, DB.Mode, DB.Count, DB.Words]));
+      for var I := 0 to DB.Count - 1 do
+      begin
+        var DS := PN64CPUStep(NativeUInt(DB.Steps) + NativeUInt(I) * SizeOf(TN64CPUStep));
+        Writeln(ErrOutput, Format('    step %d kind %d flags %x index %d op %.8x', [I, DS.Kind, DS.Flags, DS.Index, DS.Op]));
+      end;
+    end;
+  end;
+  FJit.Free;
+  inherited;
 end;
 
 procedure TN64CPU.SetPC(Value: UInt64);
@@ -2322,6 +2638,15 @@ begin
   FWordChunk := 0;
   FWordUsed := 0;
   Inc(FBlockGen);
+  // Their code goes with them.
+  if FJit <> nil then
+  begin
+    FJit.Reset;
+    Inc(FJitResets);
+    FJitMapCount := 0;
+    FJitChain := 0;
+  end;
+  FJitFull := False;
 end;
 
 function TN64CPU.BlockValid(B: PN64CPUBlock): Boolean;
@@ -2373,7 +2698,7 @@ begin
     Inc(FWordChunk);
     FWordUsed := 0;
   end;
-  if (FBlockCount >= FBlockLimit) or (FStepChunk >= FChunkLimit) or (FWordChunk >= FChunkLimit) then
+  if (FBlockCount >= FBlockLimit) or (FStepChunk >= FChunkLimit) or (FWordChunk >= FChunkLimit) or FJitFull then
     ClearBlocks;
   if FStepChunk >= Length(FStepChunks) then
   begin
@@ -2404,6 +2729,15 @@ begin
   var Words_: PCardinal := Result.Code;
   Result.Link[0] := nil;
   Result.Link[1] := nil;
+  Result.Native := nil;
+  Result.NativeInner := nil;
+  Result.Far[0] := nil;
+  Result.Far[1] := nil;
+  Result.JitTried := False;
+  Result.NativeCareful := nil;
+  Result.CarefulTried := False;
+  Result.JitHeat := 0;
+  Result.CarefulHeat := 0;
   FBus.MarkCodePage(Physical);
   Result.Gen := FBus.CodeGeneration(Physical);
   var Bucket := (Physical shr 2) and High(FBlockHead);
@@ -2664,8 +2998,1855 @@ begin
   Inc(FWordUsed, Words);
 end;
 
+// Block step routines: what RunBlocks's steps did by Kind, one routine each.
+// RunBlocks has already moved the PC on (FInstructionPC is the step's own)
+// and zeroes GPR[0] after; A is read before anything is written.
+
+function TN64CPU.StepNop(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Result := 0;
+end;
+
+function TN64CPU.StepSLL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := SX32(GPR[Step.T] shl Step.N);
+  Result := 0;
+end;
+
+function TN64CPU.StepSRL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := SX32((GPR[Step.T] and $FFFFFFFF) shr Step.N);
+  Result := 0;
+end;
+
+function TN64CPU.StepSRA(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := SX32(SAR(GPR[Step.T], Step.N, 32));
+  Result := 0;
+end;
+
+function TN64CPU.StepSLLV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := SX32(GPR[Step.T] shl (GPR[Step.S] and 31));
+  Result := 0;
+end;
+
+function TN64CPU.StepSRLV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := SX32((GPR[Step.T] and $FFFFFFFF) shr (GPR[Step.S] and 31));
+  Result := 0;
+end;
+
+function TN64CPU.StepSRAV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := SX32(SAR(GPR[Step.T], GPR[Step.S] and 31, 32));
+  Result := 0;
+end;
+
+function TN64CPU.StepJR(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Branch(True, False, GPR[Step.S]);
+  Result := 0;
+end;
+
+function TN64CPU.StepJALR(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  var A := GPR[Step.S];
+  GPR[Step.D] := Add64(FInstructionPC, 8);
+  Branch(True, False, A);
+  Result := 0;
+end;
+
+function TN64CPU.StepMFHI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := HI;
+  Result := 0;
+end;
+
+function TN64CPU.StepMTHI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  HI := GPR[Step.S];
+  Result := 0;
+end;
+
+function TN64CPU.StepMFLO(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := LO;
+  Result := 0;
+end;
+
+function TN64CPU.StepMTLO(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  LO := GPR[Step.S];
+  Result := 0;
+end;
+
+function TN64CPU.StepDSLLV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := GPR[Step.T] shl (GPR[Step.S] and 63);
+  Result := 0;
+end;
+
+function TN64CPU.StepDSRLV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := GPR[Step.T] shr (GPR[Step.S] and 63);
+  Result := 0;
+end;
+
+function TN64CPU.StepDSRAV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := SAR(GPR[Step.T], GPR[Step.S] and 63, 64);
+  Result := 0;
+end;
+
+function TN64CPU.StepMULT(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  var V: UInt64;
+  Multiply64(SX(GPR[Step.S], 32), SX(GPR[Step.T], 32), True, HI, V);
+  LO := SX(V, 32);
+  HI := SX(V shr 32, 32);
+  Result := 0;
+end;
+
+function TN64CPU.StepMULTU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  var V := (GPR[Step.S] and $FFFFFFFF) * (GPR[Step.T] and $FFFFFFFF);
+  LO := SX(V, 32);
+  HI := SX(V shr 32, 32);
+  Result := 0;
+end;
+
+function TN64CPU.StepDIV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Divide64(SX(GPR[Step.S], 32), SX(GPR[Step.T], 32), True, HI, LO);
+  HI := SX(HI, 32);
+  LO := SX(LO, 32);
+  Result := 0;
+end;
+
+function TN64CPU.StepDIVU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Divide64(GPR[Step.S] and $FFFFFFFF, GPR[Step.T] and $FFFFFFFF, False, HI, LO);
+  HI := SX(HI, 32);
+  LO := SX(LO, 32);
+  Result := 0;
+end;
+
+function TN64CPU.StepDMULT(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Multiply64(GPR[Step.S], GPR[Step.T], True, HI, LO);
+  Result := 0;
+end;
+
+function TN64CPU.StepDMULTU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Multiply64(GPR[Step.S], GPR[Step.T], False, HI, LO);
+  Result := 0;
+end;
+
+function TN64CPU.StepDDIV(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Divide64(GPR[Step.S], GPR[Step.T], True, HI, LO);
+  Result := 0;
+end;
+
+function TN64CPU.StepDDIVU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Divide64(GPR[Step.S], GPR[Step.T], False, HI, LO);
+  Result := 0;
+end;
+
+function TN64CPU.StepADDU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := SX32(Add64(GPR[Step.S], GPR[Step.T]));
+  Result := 0;
+end;
+
+function TN64CPU.StepSUBU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := SX32(Sub64(GPR[Step.S], GPR[Step.T]));
+  Result := 0;
+end;
+
+function TN64CPU.StepAND(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := GPR[Step.S] and GPR[Step.T];
+  Result := 0;
+end;
+
+function TN64CPU.StepOR(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := GPR[Step.S] or GPR[Step.T];
+  Result := 0;
+end;
+
+function TN64CPU.StepXOR(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := GPR[Step.S] xor GPR[Step.T];
+  Result := 0;
+end;
+
+function TN64CPU.StepNOR(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := not (GPR[Step.S] or GPR[Step.T]);
+  Result := 0;
+end;
+
+function TN64CPU.StepSLT(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := Ord(SignedLess(GPR[Step.S], GPR[Step.T]));
+  Result := 0;
+end;
+
+function TN64CPU.StepSLTU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := Ord(GPR[Step.S] < GPR[Step.T]);
+  Result := 0;
+end;
+
+function TN64CPU.StepDADDU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := Add64(GPR[Step.S], GPR[Step.T]);
+  Result := 0;
+end;
+
+function TN64CPU.StepDSUBU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := Sub64(GPR[Step.S], GPR[Step.T]);
+  Result := 0;
+end;
+
+function TN64CPU.StepDSLL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := GPR[Step.T] shl Step.N;
+  Result := 0;
+end;
+
+function TN64CPU.StepDSRL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := GPR[Step.T] shr Step.N;
+  Result := 0;
+end;
+
+function TN64CPU.StepDSRA(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := SAR(GPR[Step.T], Step.N, 64);
+  Result := 0;
+end;
+
+function TN64CPU.StepDSLL32(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := GPR[Step.T] shl (Step.N + 32);
+  Result := 0;
+end;
+
+function TN64CPU.StepDSRL32(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := GPR[Step.T] shr (Step.N + 32);
+  Result := 0;
+end;
+
+function TN64CPU.StepDSRA32(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.D] := SAR(GPR[Step.T], Step.N + 32, 64);
+  Result := 0;
+end;
+
+function TN64CPU.StepRegimm(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  var T := Integer(Step.T);
+  var Taken := SignedLess(GPR[Step.S], 0);
+  if (T and 1) <> 0 then
+    Taken := not Taken;
+  if T >= 16 then
+    GPR[31] := Add64(FInstructionPC, 8);
+  Branch(Taken, (T and 2) <> 0, Add64(FPC, Step.Value shl 2));
+  Result := 0;
+end;
+
+function TN64CPU.StepJ(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Branch(True, False, (FPC and $FFFFFFFFF0000000) or ((Step.Op and $3FFFFFF) shl 2));
+  Result := 0;
+end;
+
+function TN64CPU.StepJAL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[31] := Add64(FInstructionPC, 8);
+  Branch(True, False, (FPC and $FFFFFFFFF0000000) or ((Step.Op and $3FFFFFF) shl 2));
+  Result := 0;
+end;
+
+function TN64CPU.StepBEQ(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Branch(GPR[Step.S] = GPR[Step.T], False, Add64(FPC, Step.Value shl 2));
+  Result := 0;
+end;
+
+function TN64CPU.StepBEQL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Branch(GPR[Step.S] = GPR[Step.T], True, Add64(FPC, Step.Value shl 2));
+  Result := 0;
+end;
+
+function TN64CPU.StepBNE(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Branch(GPR[Step.S] <> GPR[Step.T], False, Add64(FPC, Step.Value shl 2));
+  Result := 0;
+end;
+
+function TN64CPU.StepBNEL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Branch(GPR[Step.S] <> GPR[Step.T], True, Add64(FPC, Step.Value shl 2));
+  Result := 0;
+end;
+
+function TN64CPU.StepBLEZ(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Branch(not SignedLess(0, GPR[Step.S]), False, Add64(FPC, Step.Value shl 2));
+  Result := 0;
+end;
+
+function TN64CPU.StepBLEZL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Branch(not SignedLess(0, GPR[Step.S]), True, Add64(FPC, Step.Value shl 2));
+  Result := 0;
+end;
+
+function TN64CPU.StepBGTZ(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Branch(SignedLess(0, GPR[Step.S]), False, Add64(FPC, Step.Value shl 2));
+  Result := 0;
+end;
+
+function TN64CPU.StepBGTZL(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  Branch(SignedLess(0, GPR[Step.S]), True, Add64(FPC, Step.Value shl 2));
+  Result := 0;
+end;
+
+function TN64CPU.StepADDIU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := SX32(Add64(GPR[Step.S], Step.Value));
+  Result := 0;
+end;
+
+function TN64CPU.StepSLTI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := Ord(SignedLess(GPR[Step.S], Step.Value));
+  Result := 0;
+end;
+
+function TN64CPU.StepSLTIU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := Ord(GPR[Step.S] < Step.Value);
+  Result := 0;
+end;
+
+function TN64CPU.StepANDI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := GPR[Step.S] and (Step.Op and $FFFF);
+  Result := 0;
+end;
+
+function TN64CPU.StepORI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := GPR[Step.S] or (Step.Op and $FFFF);
+  Result := 0;
+end;
+
+function TN64CPU.StepXORI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := GPR[Step.S] xor (Step.Op and $FFFF);
+  Result := 0;
+end;
+
+function TN64CPU.StepLUI(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := SX32((Step.Op and $FFFF) shl 16);
+  Result := 0;
+end;
+
+function TN64CPU.StepLB(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := SX8(FBus.ReadRAM8(Physical));
+  Result := 0;
+end;
+
+function TN64CPU.StepLH(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := SX16(FBus.ReadRAM16(Physical));
+  Result := 0;
+end;
+
+function TN64CPU.StepLW(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := SX32(FBus.ReadRAM32(Physical));
+  Result := 0;
+end;
+
+function TN64CPU.StepLBU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := FBus.ReadRAM8(Physical);
+  Result := 0;
+end;
+
+function TN64CPU.StepLHU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := FBus.ReadRAM16(Physical);
+  Result := 0;
+end;
+
+function TN64CPU.StepLWU(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := FBus.ReadRAM32(Physical);
+  Result := 0;
+end;
+
+function TN64CPU.StepLWC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  SetFPBits(Integer(Step.T), 16, FBus.ReadRAM32(Physical));
+  Result := 0;
+end;
+
+function TN64CPU.StepLDC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  SetFPBits(Integer(Step.T), 17, (UInt64(FBus.ReadRAM32(Physical)) shl 32) or FBus.ReadRAM32(Physical + 4));
+  Result := 0;
+end;
+
+function TN64CPU.StepLD(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := (UInt64(FBus.ReadRAM32(Physical)) shl 32) or FBus.ReadRAM32(Physical + 4);
+  Result := 0;
+end;
+
+function TN64CPU.StepSB(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  FBus.WriteRAM8(Physical, Byte(GPR[Step.T] and $FF));
+  Result := 0;
+end;
+
+function TN64CPU.StepSH(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  FBus.WriteRAM8(Physical, Byte((GPR[Step.T] shr 8) and $FF));
+  FBus.WriteRAM8(Physical + 1, Byte(GPR[Step.T] and $FF));
+  Result := 0;
+end;
+
+function TN64CPU.StepSW(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  FBus.WriteRAM32(Physical, Cardinal(GPR[Step.T] and $FFFFFFFF));
+  Result := 0;
+end;
+
+function TN64CPU.StepSD(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  var V := GPR[Step.T];
+  FBus.WriteRAM32(Physical, Cardinal(V shr 32));
+  FBus.WriteRAM32(Physical + 4, Cardinal(V and $FFFFFFFF));
+  Result := 0;
+end;
+
+function TN64CPU.StepSWC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  var V := FPBits(Integer(Step.T), 16);
+  FBus.WriteRAM32(Physical, Cardinal(V and $FFFFFFFF));
+  Result := 0;
+end;
+
+function TN64CPU.StepSDC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  var V := FPBits(Integer(Step.T), 17);
+  FBus.WriteRAM32(Physical, Cardinal(V shr 32));
+  FBus.WriteRAM32(Physical + 4, Cardinal(V and $FFFFFFFF));
+  Result := 0;
+end;
+
+function TN64CPU.StepMFC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := SX(FPBits(Step.D, 16), 32);
+  Result := 0;
+end;
+
+function TN64CPU.StepDMFC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  GPR[Step.T] := FPBits(Step.D, 17);
+  Result := 0;
+end;
+
+function TN64CPU.StepMTC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  SetFPBits(Step.D, 16, GPR[Step.T]);
+  Result := 0;
+end;
+
+function TN64CPU.StepDMTC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  SetFPBits(Step.D, 17, GPR[Step.T]);
+  Result := 0;
+end;
+
+function TN64CPU.StepFPCompare(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  var F := Integer(Step.S);
+  var Fn := Integer(Step.Op and 63);
+  FCR31 := FCR31 and not $3F000;
+  Result := FPClocks(FP.A, FP.B, F, Fn) - 1;
+  var Unordered, Equal, Less: Boolean;
+  SFCompare(FP.A, FP.B, F, Unordered, Equal, Less);
+  FCR31 := FCR31 and not $800000;
+  if (((Fn and 1) <> 0) and Unordered) or (((Fn and 2) <> 0) and Equal) or (((Fn and 4) <> 0) and Less) then
+    FCR31 := FCR31 or $800000;
+end;
+
+function TN64CPU.StepFPArith(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  // As Cop1, which FastFloat found takes no special path.
+  FCR31 := FCR31 and not $3F000;
+  Result := FP.Cycles - 1;
+  // FPExceptions of the result's events (none traps).
+  FCR31 := FCR31 or ((FP.Res.Events and 31) shl 12);
+  FCR31 := FCR31 or (((FP.Res.Events and not (FCR31 shr 7)) and 31) shl 2);
+  var D := Integer(Step.N);
+  if (FP.Target in [16, 20]) and ((CP0[12] and $4000000) <> 0) then
+    FPR[D] := FP.Res.Bits and $FFFFFFFF
+  else
+    SetFPBits(D, FP.Target, FP.Res.Bits);
+end;
+
+function TN64CPU.StepFPMov(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  SetFPBits(Integer(Step.N), 17, FPBits(Integer(Step.D), 17));
+  Result := 0;
+end;
+
+function TN64CPU.StepBC1(Step: PN64CPUStep; Physical: Cardinal; FP: PStepFP): Cardinal;
+begin
+  var T := Integer(Step.T);
+  FCR31 := FCR31 and not $3F000;
+  Branch(((FCR31 and $800000) <> 0) = ((T and 1) <> 0), (T and 2) <> 0, Add64(FPC, Step.Value shl 2));
+  Result := 0;
+end;
+
+// --- Blocks as generated code ------------------------------------------------
+//
+// HW.JIT (on targets with a code generator, N64Jit): a block's code
+// runs its steps as RunBlocks's loop does, from its first, when their PClocks
+// and count cannot reach Limit and MaxSteps before its last step (JitMax,
+// JitSteps); else its careful code, which stops after any step that does. It
+// leaves out what no step reads: the PC and pipeline bookkeeping of each
+// step, its count and PClocks, the stop checks; it writes them for its last
+// step (JitRun for a block left early). Steps up to a branch read no PC, so
+// the code writes it only for a branch (from the PC on entry) and its delay
+// slot (as RunBlocks does). Each step calls its routine (FStepRoutines): what
+// a step does is its routine's alone, whatever compiled it. Memory steps call
+// JitData (FastData) first, COP1 compares and arithmetic JitFP. After its
+// last step a block goes on into the next block's code as RunBlocks would
+// enter it: by direct links (JitLink) or the shared chaining code
+// (JitEmitChain: links on its page, far links on others); else back to
+// RunBlocks. The same steps either way: CPUTest and the suite's hashes
+// compare them.
+// The code is written in HW.JIT's operations; its registers by role: Self
+// the CPU, Ctx the TJitCtx, and the kept S0..S3 as Block, Extra, Store, Entry.
+
+const
+  // The kept registers: the block being run, its stall and FP PClocks (32
+  // bits), whether its last store was cached (a byte), its PC on entry.
+  jrBlock = jrS0;
+  jrExtra = jrS1;
+  jrStore = jrS2;
+  jrEntry = jrS3;
+  JBlock: TJitOp = (Kind: okReg; Reg: jrBlock);
+  JExtra: TJitOp = (Kind: okReg; Reg: jrExtra);
+  JStore: TJitOp = (Kind: okReg; Reg: jrStore);
+  JEntry: TJitOp = (Kind: okReg; Reg: jrEntry);
+  // A block's code returns (with the steps done of the last block it ran): 0
+  // all of them, 1 declined before step Done (FastData or FastFloat), 2 a
+  // store wrote its own code, 3 careful code reached a limit (after Done).
+  JitStatusDone = 0;
+  JitStatusDecline = 1;
+  JitStatusRewritten = 2;
+  JitStatusStopped = 3;
+  // (The order the code for its exits comes in.)
+  JitExitOrder: array[0..2] of Integer = (JitStatusDecline, JitStatusStopped, JitStatusRewritten);
+  // FJitCalls past the steps' routines.
+  JitCallData = 256;
+  JitCallFP = 257;
+  // FPClocks at most: a compare or arithmetic step's PClocks beyond its own.
+  JitFPExtraMax = 57;
+
+type
+  PN64PageEntryJit = ^TN64PageEntry;
+
+  // Where the code reads and writes the CPU, its context, blocks and page
+  // entries (offsets, worked out once).
+  TJitOffsets = record
+    GPR, HI, LO, PC, NextPC, InstrPC, Delay, InDelay, PrevStore, PrevCond, PrevLoad, PrevFP, PrevExc: Integer;
+    BlocksRun, JitRuns, Exits, Calls, TLBGeneration, Pages: Integer;
+    FastPage, FastPhysical, FastContext, FastGeneration, FastValid: Integer;
+    CtxPhysical, CtxCached, CtxDone, CtxExtra, CtxPrevStore, CtxFP, CtxBlock, CtxBlockPC: Integer;
+    CtxCount, CtxClocks, CtxLimit, CtxMaxSteps, CtxKernel, CtxDirect, CtxContext: Integer;
+    BMode, BEntryLoad, BEntryFP, BGen, BWords, BPhysical, BSteps, BLink0, BLink1, BLinkPC0, BLinkPC1: Integer;
+    BFar0, BFar1, BFarPC0, BFarPC1, BInner, BJitMax, BJitSteps: Integer;
+    EPage, EPhysical, EContext, EGeneration, EReadOK, EWriteOK: Integer;
+    // A page entry's size, as a shift.
+    PageShift: Integer;
+  end;
+
+var
+  JitOff: TJitOffsets;
+
+procedure JitWorkOutOffsets;
+type
+  PCtx = TN64CPU.PJitCtx;
+begin
+  var O := Default(TJitOffsets);
+  O.GPR := Integer(NativeUInt(@TN64CPU(nil).GPR[0]));
+  O.HI := Integer(NativeUInt(@TN64CPU(nil).HI));
+  O.LO := Integer(NativeUInt(@TN64CPU(nil).LO));
+  O.PC := Integer(NativeUInt(@TN64CPU(nil).FPC));
+  O.NextPC := Integer(NativeUInt(@TN64CPU(nil).FNextPC));
+  O.InstrPC := Integer(NativeUInt(@TN64CPU(nil).FInstructionPC));
+  O.Delay := Integer(NativeUInt(@TN64CPU(nil).FDelay));
+  O.InDelay := Integer(NativeUInt(@TN64CPU(nil).FInDelay));
+  O.PrevStore := Integer(NativeUInt(@TN64CPU(nil).FPreviousStore));
+  O.PrevCond := Integer(NativeUInt(@TN64CPU(nil).FPreviousCondition));
+  O.PrevLoad := Integer(NativeUInt(@TN64CPU(nil).FPreviousLoad));
+  O.PrevFP := Integer(NativeUInt(@TN64CPU(nil).FPreviousFP));
+  O.PrevExc := Integer(NativeUInt(@TN64CPU(nil).FPreviousException));
+  O.BlocksRun := Integer(NativeUInt(@TN64CPU(nil).FBlocksRun));
+  O.JitRuns := Integer(NativeUInt(@TN64CPU(nil).FJitRuns));
+  O.Exits := Integer(NativeUInt(@TN64CPU(nil).FJitExits[0]));
+  O.Calls := Integer(NativeUInt(@TN64CPU(nil).FJitCalls[0]));
+  O.TLBGeneration := Integer(NativeUInt(@TN64CPU(nil).FTLBGeneration));
+  O.Pages := Integer(NativeUInt(@TN64CPU(nil).FPages[0]));
+  O.FastPage := Integer(NativeUInt(@TN64CPU(nil).FFastCodePage));
+  O.FastPhysical := Integer(NativeUInt(@TN64CPU(nil).FFastCodePhysical));
+  O.FastContext := Integer(NativeUInt(@TN64CPU(nil).FFastCodeContext));
+  O.FastGeneration := Integer(NativeUInt(@TN64CPU(nil).FFastCodeGeneration));
+  O.FastValid := Integer(NativeUInt(@TN64CPU(nil).FFastCodeValid));
+  O.CtxPhysical := Integer(NativeUInt(@PCtx(nil).Physical));
+  O.CtxCached := Integer(NativeUInt(@PCtx(nil).Cached));
+  O.CtxDone := Integer(NativeUInt(@PCtx(nil).Done));
+  O.CtxExtra := Integer(NativeUInt(@PCtx(nil).Extra));
+  O.CtxPrevStore := Integer(NativeUInt(@PCtx(nil).PrevStore));
+  O.CtxFP := Integer(NativeUInt(@PCtx(nil).FP));
+  O.CtxBlock := Integer(NativeUInt(@PCtx(nil).Block));
+  O.CtxBlockPC := Integer(NativeUInt(@PCtx(nil).BlockPC));
+  O.CtxCount := Integer(NativeUInt(@PCtx(nil).Count));
+  O.CtxClocks := Integer(NativeUInt(@PCtx(nil).Clocks));
+  O.CtxLimit := Integer(NativeUInt(@PCtx(nil).Limit));
+  O.CtxMaxSteps := Integer(NativeUInt(@PCtx(nil).MaxSteps));
+  O.CtxKernel := Integer(NativeUInt(@PCtx(nil).Kernel));
+  O.CtxDirect := Integer(NativeUInt(@PCtx(nil).Direct));
+  O.CtxContext := Integer(NativeUInt(@PCtx(nil).Context));
+  O.BMode := Integer(NativeUInt(@PN64CPUBlock(nil).Mode));
+  O.BEntryLoad := Integer(NativeUInt(@PN64CPUBlock(nil).EntryLoad));
+  O.BEntryFP := Integer(NativeUInt(@PN64CPUBlock(nil).EntryFP));
+  O.BGen := Integer(NativeUInt(@PN64CPUBlock(nil).Gen));
+  O.BWords := Integer(NativeUInt(@PN64CPUBlock(nil).Words));
+  O.BPhysical := Integer(NativeUInt(@PN64CPUBlock(nil).Physical));
+  O.BSteps := Integer(NativeUInt(@PN64CPUBlock(nil).Steps));
+  O.BLink0 := Integer(NativeUInt(@PN64CPUBlock(nil).Link[0]));
+  O.BLink1 := Integer(NativeUInt(@PN64CPUBlock(nil).Link[1]));
+  O.BLinkPC0 := Integer(NativeUInt(@PN64CPUBlock(nil).LinkPC[0]));
+  O.BLinkPC1 := Integer(NativeUInt(@PN64CPUBlock(nil).LinkPC[1]));
+  O.BFar0 := Integer(NativeUInt(@PN64CPUBlock(nil).Far[0]));
+  O.BFar1 := Integer(NativeUInt(@PN64CPUBlock(nil).Far[1]));
+  O.BFarPC0 := Integer(NativeUInt(@PN64CPUBlock(nil).FarPC[0]));
+  O.BFarPC1 := Integer(NativeUInt(@PN64CPUBlock(nil).FarPC[1]));
+  O.BInner := Integer(NativeUInt(@PN64CPUBlock(nil).NativeInner));
+  O.BJitMax := Integer(NativeUInt(@PN64CPUBlock(nil).JitMax));
+  O.BJitSteps := Integer(NativeUInt(@PN64CPUBlock(nil).JitSteps));
+  O.EPage := Integer(NativeUInt(@PN64PageEntryJit(nil).Page));
+  O.EPhysical := Integer(NativeUInt(@PN64PageEntryJit(nil).Physical));
+  O.EContext := Integer(NativeUInt(@PN64PageEntryJit(nil).Context));
+  O.EGeneration := Integer(NativeUInt(@PN64PageEntryJit(nil).Generation));
+  O.EReadOK := Integer(NativeUInt(@PN64PageEntryJit(nil).ReadOK));
+  O.EWriteOK := Integer(NativeUInt(@PN64PageEntryJit(nil).WriteOK));
+  while (1 shl O.PageShift) < SizeOf(TN64PageEntry) do
+    Inc(O.PageShift);
+  Assert((1 shl O.PageShift) = SizeOf(TN64PageEntry));
+  JitOff := O;
+end;
+
+function TN64CPU.JitFP(Step: PN64CPUStep; Ctx: PJitCtx): Cardinal;
+begin
+  // As RunBlocks before a COP1 compare or arithmetic step (FT only for a
+  // compare and arithmetic 0..3: a unary operation or conversion has 0); 1
+  // where it goes on, 0 where it declines (32 bits: one test of the result).
+  var F := Integer(Step.S);
+  Ctx.FP.A := FPBits(Integer(Step.D), F);
+  Ctx.FP.B := 0;
+  if (Step.Kind = KindCop1Compare) or ((Step.Op and 63) <= 3) then
+    Ctx.FP.B := FPBits(Integer(Step.T), F);
+  if Step.Kind = KindCop1Compare then
+    Result := Ord(not (SFIsNaN(Ctx.FP.A, F) or SFIsNaN(Ctx.FP.B, F)))
+  else
+    Result := Ord(FastFloat(Step.Op, Ctx.FP.A, Ctx.FP.B, Ctx.FP.Res, Ctx.FP.Cycles, Ctx.FP.Target));
+end;
+
+function TN64CPU.JitData(Ctx: PJitCtx; Step: PN64CPUStep): Cardinal;
+begin
+  // As RunBlocks before a memory step: FastData for its access (into Ctx:
+  // its physical address and whether it is cached); 1 where it goes on, 0
+  // where it declines.
+  var Physical: Cardinal;
+  var Cached: Boolean;
+  Result := 0;
+  if FastData(Add64(GPR[Step.S], Step.Value), Step.Size, (Step.Flags and StepWriting) <> 0, Ctx.Context,
+    Physical, Cached) then
+  begin
+    Ctx.Physical := Physical;
+    Ctx.Cached := Cached;
+    Result := 1;
+  end;
+end;
+
+// Whether step K of B writes GPR[0] (its routine; RunBlocks zeroes it after).
+function WritesR0(S: PN64CPUStep): Boolean;
+begin
+  case S.Kind of
+    KindSpecial + 0, KindSpecial + 2..KindSpecial + 4, KindSpecial + 6, KindSpecial + 7, KindSpecial + 9,
+    KindSpecial + 16, KindSpecial + 18, KindSpecial + 20, KindSpecial + 22, KindSpecial + 23,
+    KindSpecial + 33, KindSpecial + 35..KindSpecial + 39, KindSpecial + 42, KindSpecial + 43,
+    KindSpecial + 45, KindSpecial + 47, KindSpecial + 56, KindSpecial + 58..KindSpecial + 60,
+    KindSpecial + 62, KindSpecial + 63:
+      Result := S.D = 0;
+    9..15, 32, 33, 35..37, 39, 55, KindCop1Move + 0, KindCop1Move + 1, KindLuiPair:
+      Result := S.T = 0;
+  else
+    Result := False;
+  end;
+end;
+
+// Whether a block's code writes the PC and pipeline bookkeeping of its
+// step I itself (a branch, or its delay slot), as RunBlocks's steps do.
+function StepWritesPC(B: PN64CPUBlock; I: Integer): Boolean;
+begin
+  Result := ((StepOf(B, I).Flags and StepBranch) <> 0) or
+    ((I >= 1) and ((StepOf(B, I - 1).Flags and StepBranch) <> 0)) or
+    ((I = 0) and ((B.Mode and ModeDelay) <> 0));
+end;
+
+function TN64CPU.JitExitTo(Done, Status: Integer): TJitLabel;
+begin
+  // A way out of the block's code back to RunBlocks, after its first Done
+  // steps (JitEmitReturn writes it).
+  if FJitExitCount = Length(FJitExitLabel) then
+  begin
+    SetLength(FJitExitLabel, FJitExitCount * 2 + 64);
+    SetLength(FJitExitDone, FJitExitCount * 2 + 64);
+    SetLength(FJitExitStatus, FJitExitCount * 2 + 64);
+  end;
+  Result := FJit.NewLabel;
+  FJitExitLabel[FJitExitCount] := Result;
+  FJitExitDone[FJitExitCount] := Done;
+  FJitExitStatus[FJitExitCount] := Status;
+  Inc(FJitExitCount);
+end;
+
+procedure TN64CPU.JitMark(Kind: Integer);
+begin
+  if not FJitStats then
+    Exit;
+  if FJitMapCount = Length(FJitMapOffset) then
+  begin
+    SetLength(FJitMapOffset, FJitMapCount * 2 + 1024);
+    SetLength(FJitMapKind, FJitMapCount * 2 + 1024);
+  end;
+  FJitMapOffset[FJitMapCount] := FJit.Offset;
+  FJitMapKind[FJitMapCount] := Kind;
+  Inc(FJitMapCount);
+end;
+
+class function TN64CPU.JitAvailable: Boolean;
+begin
+  Result := N64Jit and not (jdOff in JitDebug);
+end;
+
+class procedure TN64CPU.JitForTests(Hot: Integer; Model: Boolean);
+begin
+  JitHot := Hot;
+  if Model then
+    Include(JitDebug, jdModel)
+  else
+    Exclude(JitDebug, jdModel);
+end;
+
+function TN64CPU.JitWhat(Address: UInt64): Integer;
+begin
+  Result := -1;
+  if (FJit = nil) or (Address < UInt64(FJit.Base)) or (Address >= UInt64(FJit.Base) + UInt64(FJit.Size)) then
+    Exit;
+  var Off := NativeInt(Address - UInt64(FJit.Base));
+  var Lo := 0;
+  var Hi := FJitMapCount - 1;
+  while Lo <= Hi do
+  begin
+    var Mid := (Lo + Hi) div 2;
+    if FJitMapOffset[Mid] <= Off then
+    begin
+      Result := FJitMapKind[Mid];
+      Lo := Mid + 1;
+    end
+    else
+      Hi := Mid - 1;
+  end;
+end;
+
+procedure TN64CPU.JitMeasure(B: PN64CPUBlock);
+begin
+  // Its steps (a LUI pair counted twice) and their PClocks without stalls,
+  // for JitRun and chaining; an upper bound of all its PClocks, for the
+  // checks before entering it.
+  var Steps: Cardinal := 0;
+  var Clk: Cardinal := 0;
+  var MaxClk: Cardinal := 0;
+  for var I := 0 to B.Count - 1 do
+  begin
+    var S := StepOf(B, I);
+    Inc(Steps);
+    Inc(Clk, S.Clocks);
+    if S.Kind = KindLuiPair then
+    begin
+      Inc(Steps);
+      Inc(Clk);
+    end;
+    if (S.Size <> 0) and ((S.Flags and StepMemoryHazard) <> 0) then
+      Inc(MaxClk);
+    if S.Kind = KindCop1Branch then
+      Inc(MaxClk);
+    if S.Kind in [KindCop1Compare, KindCop1Arith] then
+      Inc(MaxClk, JitFPExtraMax);
+  end;
+  B.JitSteps := Steps;
+  B.JitClocks := Clk;
+  B.JitMax := Clk + MaxClk;
+end;
+
+procedure TN64CPU.JitEmitShared;
+begin
+  // The code every block's code shares: the entry (Invoke'd with the CPU,
+  // the TJitCtx, the block's code and the block; the frame, then to the
+  // block's code with Block in T1; its result 0 all the last block's steps
+  // ran (their totals added), 1 declined before step Done (FastData or
+  // FastFloat), 2 a store wrote its own code (after Done), 3 careful code
+  // reached a limit (after Done)), the way back to RunBlocks (T1 the
+  // steps done shl 2 or the status; Extra, Store, Block and Entry as the
+  // block's code left them), and the chaining code (JitEmitChain).
+  var J := FJit;
+  var O := JitOff;
+  J.ForgetLabels;
+  J.Align(16);
+  JitMark(2000);
+  FJitEnter := J.Offset;
+  J.EnterJump;
+  J.Align(16);
+  FJitReturn := J.Offset;
+  J.Move(jw32, JT0, JT1);
+  J.Alu(jaAnd, jw32, JT0, JImm(3));
+  J.Shift(jsShr, jw32, jrT1, 2);
+  if FJitStats then
+  begin
+    // (Declines and rewrites counted.)
+    var NotDecline := J.NewLabel;
+    J.Branch(jcNe, jw32, JT0, JImm(JitStatusDecline), NotDecline);
+    J.Alu(jaAdd, jw64, JMem(jrSelf, O.Exits + 15 * 8), JImm(1));
+    J.Bind(NotDecline);
+    var NotRewritten := J.NewLabel;
+    J.Branch(jcNe, jw32, JT0, JImm(JitStatusRewritten), NotRewritten);
+    J.Alu(jaAdd, jw64, JMem(jrSelf, O.Exits + 16 * 8), JImm(1));
+    J.Bind(NotRewritten);
+  end;
+  J.Move(jw32, JMem(jrCtx, O.CtxDone), JT1);
+  J.Move(jw32, JMem(jrCtx, O.CtxExtra), JExtra);
+  J.Move(jw8, JMem(jrCtx, O.CtxPrevStore), JStore);
+  J.Move(jw64, JMem(jrCtx, O.CtxBlock), JBlock);
+  J.Move(jw64, JMem(jrCtx, O.CtxBlockPC), JEntry);
+  J.Leave(JT0);
+  J.ForgetLabels;
+  JitEmitChain;
+end;
+
+procedure TN64CPU.JitEmitChain;
+var
+  // Where the chaining stops (N64JIT=stats: counted by reason).
+  NoLabel: array[0..31] of TJitLabel;
+  NoReason: array[0..31] of Integer;
+  NoCount: Integer;
+
+  function No(Reason: Integer): TJitLabel;
+  begin
+    Result := FJit.NewLabel;
+    NoLabel[NoCount] := Result;
+    NoReason[NoCount] := Reason;
+    Inc(NoCount);
+  end;
+
+begin
+  // The code every block's code jumps to after its last step: into the next
+  // block's code as RunBlocks would enter it from there, else back to
+  // RunBlocks (status 0: all steps ran). The next block: by link on this
+  // page (its link PC, mode, entry state, code unchanged, steps within the
+  // limits), or by far link on another page (also its page as FastCode and
+  // RunBlocks's clean-code checks find it; it becomes the fast code page).
+  // In: Self, Ctx, Block the block that ran, Entry its PC; the block's frame.
+  // FJitChainIdle first stops where IdleHead holds.
+  var J := FJit;
+  var O := JitOff;
+  var Info := FBus.JitInfo;
+  NoCount := 0;
+  J.ForgetLabels;
+
+  // IdleHead (after a step that may leave it): RunBlocks stops.
+  J.Align(16);
+  JitMark(2000);
+  FJitChainIdle := J.Offset;
+  var NotIdle := J.NewLabel;
+  J.Move(jw8, JT0, JMem(jrSelf, O.InDelay));
+  J.BranchTest(jcEq, jw8, JT0, JT0, NotIdle);
+  J.Move(jw8, JT0, JMem(jrSelf, O.Delay));
+  J.BranchTest(jcNe, jw8, JT0, JT0, NotIdle);
+  J.Move(jw64, JT0, JMem(jrSelf, O.InstrPC));
+  J.Alu(jaAdd, jw64, JT0, JImm(-4));
+  J.Branch(jcNe, jw64, JT0, JMem(jrSelf, O.PC), NotIdle);
+  J.Move(jw64, JT0, JMem(jrSelf, O.PC));
+  J.Alu(jaAdd, jw64, JT0, JImm(4));
+  J.Branch(jcEq, jw64, JT0, JMem(jrSelf, O.NextPC), No(0));
+  J.Bind(NotIdle);
+
+  // T0: the PC (aligned); T6: the next block's mode.
+  FJitChain := J.Offset;
+  J.Move(jw64, JT0, JMem(jrSelf, O.PC));
+  J.BranchTest(jcNe, jw8, JT0, JImm(3), No(2));
+  J.Move(jw8, JT6, JMem(jrBlock, O.BMode));
+  J.Alu(jaAnd, jw32, JT6, JImm(not ModeDelay));
+  J.Move(jw8, JT1, JMem(jrSelf, O.Delay));
+  var NotDelay := J.NewLabel;
+  var PageCheck := J.NewLabel;
+  J.BranchTest(jcEq, jw8, JT1, JT1, NotDelay);
+  // In a delay slot (a likely branch taken, or a branch the page or the
+  // block ended after): a block entered in one.
+  J.Alu(jaOr, jw32, JT6, JImm(ModeDelay));
+  J.Jump(PageCheck);
+  J.Bind(NotDelay);
+  // NextPC after the PC.
+  J.Move(jw64, JT1, JT0);
+  J.Alu(jaAdd, jw64, JT1, JImm(4));
+  J.Branch(jcNe, jw64, JT1, JMem(jrSelf, O.NextPC), No(3));
+  J.Bind(PageCheck);
+  J.Move(jw64, JT1, JT0);
+  J.Shift(jsShr, jw64, jrT1, 12);
+  J.Move(jw64, JT2, JEntry);
+  J.Shift(jsShr, jw64, jrT2, 12);
+  var ToFar := J.NewLabel;
+  J.Branch(jcNe, jw64, JT1, JT2, ToFar);
+
+  // This page (T5 0): the link as RunBlocks takes it, [0] at the block's end;
+  // T1 the block linked.
+  J.Move(jw32, JT5, JImm(0));
+  J.Move(jw32, JT1, JMem(jrBlock, O.BWords));
+  J.Shift(jsShl, jw32, jrT1, 2);
+  J.Alu(jaAdd, jw64, JT1, JEntry);
+  var Taken := J.NewLabel;
+  var HaveLink := J.NewLabel;
+  J.Branch(jcNe, jw64, JT1, JT0, Taken);
+  J.Branch(jcNe, jw64, JT0, JMem(jrBlock, O.BLinkPC0), No(5));
+  J.Move(jw64, JT1, JMem(jrBlock, O.BLink0));
+  J.Jump(HaveLink);
+  J.Bind(Taken);
+  J.Branch(jcNe, jw64, JT0, JMem(jrBlock, O.BLinkPC1), No(6));
+  J.Move(jw64, JT1, JMem(jrBlock, O.BLink1));
+  J.Bind(HaveLink);
+  J.BranchTest(jcEq, jw64, JT1, JT1, No(7));
+  // T3: its code page's count (the block's).
+  J.Move(jw32, JT3, JMem(jrBlock, O.BPhysical));
+  J.Shift(jsShr, jw32, jrT3, 12);
+  J.Shift(jsShl, jw64, jrT3, 2);
+  J.Move(jw64, JT4, JImm(Int64(NativeUInt(Info.CodeGen))));
+  J.Alu(jaAdd, jw64, JT3, JT4);
+  var Common := J.NewLabel;
+  J.Jump(Common);
+
+  // Another page, as FastCode finds it: KSEG0/KSEG1 in kernel mode, or a
+  // page translated before in this context (FPages); all in RDRAM. T2: its
+  // physical page; T5: the PC.
+  J.Bind(ToFar);
+  J.Move(jw64, JT5, JT0);
+  J.Move(jw64, JT1, JImm($80000000));             // T1 := PC - KSeg0Base
+  J.Alu(jaAdd, jw64, JT1, JT0);
+  var Mapped := J.NewLabel;
+  var HavePage := J.NewLabel;
+  J.Branch(jcAboveEq, jw64, JT1, JImm($40000000), Mapped);
+  J.Move(jw8, JT1, JMem(jrCtx, O.CtxKernel));
+  J.BranchTest(jcEq, jw8, JT1, JT1, No(18));
+  J.Move(jw64, JT2, JT0);
+  J.Alu(jaAnd, jw32, JT2, JImm($1FFFF000));
+  J.Jump(HavePage);
+  J.Bind(Mapped);
+  J.Shift(jsShr, jw64, jrT0, 12);                  // the virtual page
+  J.Move(jw64, JT1, JT0);
+  J.Shift(jsShr, jw64, jrT1, 10);
+  J.Alu(jaXor, jw64, JT1, JT0);
+  J.Alu(jaAnd, jw32, JT1, JImm(High(FPages)));
+  J.Shift(jsShl, jw64, jrT1, O.PageShift);
+  J.Alu(jaAdd, jw64, JT1, JSelf);                  // T1: Self + the slot's offset
+  J.Branch(jcNe, jw64, JT0, JMem(jrT1, O.Pages + O.EPage), No(19));
+  J.Move(jw32, JT3, JMem(jrSelf, O.TLBGeneration));
+  J.Branch(jcNe, jw32, JT3, JMem(jrT1, O.Pages + O.EGeneration), No(19));
+  J.Move(jw32, JT3, JMem(jrCtx, O.CtxContext));
+  J.Branch(jcNe, jw32, JT3, JMem(jrT1, O.Pages + O.EContext), No(19));
+  J.Move(jw8, JT0, JMem(jrT1, O.Pages + O.EReadOK));
+  J.Move(jw8, JT3, JMem(jrT1, O.Pages + O.EWriteOK));
+  J.Alu(jaOr, jw32, JT0, JT3);
+  J.BranchTest(jcEq, jw8, JT0, JT0, No(19));
+  J.Move(jw64, JT2, JMem(jrT1, O.Pages + O.EPhysical));
+  J.Bind(HavePage);
+  J.Branch(jcAbove, jw64, JT2, JImm(FBus.RAMSize - $1000), No(20));
+  // No SP DMA beat may write it, no queued RDP work (SPReadHazard,
+  // RDPReadClean).
+  J.Move(jw64, JT3, JImm(Int64(NativeUInt(Info.SPMarked))));
+  J.Move(jw64, JT0, JMem(jrT3, 0));
+  J.Move(jw64, JT4, JImm(Int64(NativeUInt(Info.SPDoneCount))));
+  J.Move(jw64, JT4, JMem(jrT4, 0));
+  var NoSP := J.NewLabel;
+  J.Branch(jcLe, jw64, JT0, JT4, NoSP);
+  J.Move(jw64, JT3, JT2);
+  J.Shift(jsShr, jw64, jrT3, 9);                   // (page shr 12) * 8
+  J.Move(jw64, JT0, JImm(Int64(NativeUInt(Info.SPWrites))));
+  J.Alu(jaAdd, jw64, JT3, JT0);
+  J.Move(jw64, JT0, JMem(jrT3, 0));
+  J.Branch(jcGt, jw64, JT0, JT4, No(21));
+  J.Bind(NoSP);
+  J.Move(jw64, JT3, JImm(Int64(NativeUInt(Info.RDPPending))));
+  J.Move(jw8, JT0, JMem(jrT3, 0));
+  var NoRDP := J.NewLabel;
+  J.BranchTest(jcEq, jw8, JT0, JT0, NoRDP);
+  J.Move(jw64, JT3, JT2);
+  J.Shift(jsShr, jw64, jrT3, 9);
+  J.Move(jw64, JT0, JImm(Int64(NativeUInt(Info.RDPWrites))));
+  J.Alu(jaAdd, jw64, JT3, JT0);
+  J.Move(jw64, JT0, JMem(jrT3, 0));
+  J.Move(jw64, JT4, JImm(Int64(NativeUInt(Info.RDPDone))));
+  J.Branch(jcAbove, jw64, JT0, JMem(jrT4, 0), No(22));
+  J.Bind(NoRDP);
+  // Its far link, at that physical address now.
+  var Far1 := J.NewLabel;
+  var HaveFar := J.NewLabel;
+  J.Branch(jcNe, jw64, JT5, JMem(jrBlock, O.BFarPC0), Far1);
+  J.Move(jw64, JT1, JMem(jrBlock, O.BFar0));
+  J.Jump(HaveFar);
+  J.Bind(Far1);
+  J.Branch(jcNe, jw64, JT5, JMem(jrBlock, O.BFarPC1), No(7));
+  J.Move(jw64, JT1, JMem(jrBlock, O.BFar1));
+  J.Bind(HaveFar);
+  J.BranchTest(jcEq, jw64, JT1, JT1, No(7));
+  J.Move(jw64, JT0, JT5);
+  J.Alu(jaAnd, jw32, JT0, JImm($FFF));
+  J.Alu(jaOr, jw32, JT0, JT2);
+  J.Branch(jcNe, jw32, JT0, JMem(jrT1, O.BPhysical), No(7));
+  // T3: its code page's count.
+  J.Move(jw64, JT3, JT2);
+  J.Shift(jsShr, jw64, jrT3, 10);                  // (page shr 12) * 4
+  J.Move(jw64, JT0, JImm(Int64(NativeUInt(Info.CodeGen))));
+  J.Alu(jaAdd, jw64, JT3, JT0);
+  J.Bind(Common);
+
+  // Both: its mode, entry state, code and limits.
+  J.Branch(jcNe, jw8, JMem(jrT1, O.BMode), JT6, No(8));
+  J.Move(jw8, JT0, JMem(jrSelf, O.PrevLoad));
+  J.Branch(jcNe, jw8, JMem(jrT1, O.BEntryLoad), JT0, No(9));
+  J.Move(jw8, JT0, JMem(jrSelf, O.PrevFP));
+  J.Branch(jcNe, jw8, JMem(jrT1, O.BEntryFP), JT0, No(10));
+  J.Move(jw64, JT4, JMem(jrT1, O.BInner));
+  J.BranchTest(jcEq, jw64, JT4, JT4, No(11));
+  J.Move(jw32, JT0, JMem(jrT3, 0));
+  J.Branch(jcNe, jw32, JT0, JMem(jrT1, O.BGen), No(12));
+  J.Move(jw32, JT0, JMem(jrT1, O.BJitMax));
+  J.Alu(jaAdd, jw64, JT0, JMem(jrCtx, O.CtxClocks));
+  J.Branch(jcAboveEq, jw64, JT0, JMem(jrCtx, O.CtxLimit), No(13));
+  J.Move(jw32, JT0, JMem(jrCtx, O.CtxCount));
+  J.Alu(jaAdd, jw32, JT0, JMem(jrT1, O.BJitSteps));
+  J.Branch(jcGe, jw32, JT0, JMem(jrCtx, O.CtxMaxSteps), No(14));
+  // Another page: it becomes the fast code page (FastCode).
+  var SamePage := J.NewLabel;
+  J.BranchTest(jcEq, jw64, JT5, JT5, SamePage);
+  J.Move(jw64, JT0, JT5);
+  J.Shift(jsShr, jw64, jrT0, 12);
+  J.Move(jw64, JMem(jrSelf, O.FastPage), JT0);
+  J.Move(jw32, JMem(jrSelf, O.FastPhysical), JT2);
+  J.Move(jw32, JT0, JMem(jrCtx, O.CtxContext));
+  J.Move(jw32, JMem(jrSelf, O.FastContext), JT0);
+  J.Move(jw32, JT0, JMem(jrSelf, O.TLBGeneration));
+  J.Move(jw32, JMem(jrSelf, O.FastGeneration), JT0);
+  J.Move(jw8, JMem(jrSelf, O.FastValid), JImm(1));
+  J.Bind(SamePage);
+  J.Alu(jaAdd, jw64, JMem(jrSelf, O.BlocksRun), JImm(1));
+  J.Alu(jaAdd, jw64, JMem(jrSelf, O.JitRuns), JImm(1));
+  J.JumpIndirect(JMem(jrT1, O.BInner));
+
+  // Back to RunBlocks: status 0 (RunBlocks reads nothing else of it).
+  var Back := J.NewLabel;
+  for var K := 0 to NoCount - 1 do
+  begin
+    J.Bind(NoLabel[K]);
+    if FJitStats then
+    begin
+      J.Alu(jaAdd, jw64, JMem(jrSelf, O.Exits + NoReason[K] * 8), JImm(1));
+      J.Jump(Back);
+    end;
+  end;
+  J.Bind(Back);
+  J.Move(jw64, JMem(jrCtx, O.CtxBlock), JBlock);
+  J.Move(jw64, JMem(jrCtx, O.CtxBlockPC), JEntry);
+  J.Leave(JImm(JitStatusDone));
+  J.ForgetLabels;
+end;
+
+procedure TN64CPU.JitLink(From, B: PN64CPUBlock; PC: UInt64);
+begin
+  // A direct jump from From's code to B's, for RunBlocks's way from From to
+  // B at PC on this page (From's link). Its code checks what can change:
+  // the PC, whether in a delay slot, B's code page unwritten since B was
+  // checked, B's steps within the limits; IdleHead first after a step that
+  // may leave it. Otherwise it goes on as before (the next direct link or
+  // the shared chaining code).
+  if not N64Jit or (From.Native = nil) or (B.NativeInner = nil) or (From.JitTail < 0) then
+    Exit;
+  if (Int64(PC) < -Int64($80000000)) or (Int64(PC) >= $80000000) or ((PC and 3) <> 0) then
+    Exit;
+  if (From.Physical shr 12) <> (B.Physical shr 12) then
+    Exit;
+  for var K := 0 to From.JitLinks - 1 do
+    if (From.JitLinkTo[K] = B) and (From.JitLinkPC[K] = PC) then
+      Exit;
+  var Last := StepOf(From, From.Count - 1);
+  if (B.EntryLoad <> Last.LoadAfter) or (B.EntryFP <> Last.FPAfter) or
+    ((B.Mode and not ModeDelay) <> (From.Mode and not ModeDelay)) then
+    Exit;
+  if not FJit.Room(256) then
+    Exit;
+  var J := FJit;
+  var O := JitOff;
+  var MayIdle := (Last.Flags and StepMayIdle) <> 0;
+  var Generic := FJitChain;
+  if MayIdle then
+    Generic := FJitChainIdle;
+  // Where From's code went after its last step so far.
+  var Before := J.SiteTarget(From.JitTail);
+
+  J.Align(16);
+  JitMark(2004);
+  var Start := J.Offset;
+  J.BranchTo(jcNe, jw64, JMem(jrSelf, O.PC), JImm(Int64(PC)), Before);
+  if MayIdle then
+  begin
+    // FPC = FInstructionPC - 4: maybe IdleHead (the shared code decides).
+    J.Move(jw64, JT0, JMem(jrSelf, O.InstrPC));
+    J.Alu(jaAdd, jw64, JT0, JImm(-4));
+    J.BranchTo(jcEq, jw64, JT0, JImm(Int64(PC)), Generic);
+  end;
+  J.BranchTo(jcNe, jw8, JMem(jrSelf, O.Delay), JImm(Ord((B.Mode and ModeDelay) <> 0)), Generic);
+  J.Move(jw64, JT1, JImm(Int64(NativeUInt(B))));
+  J.Move(jw32, JT0, JMem(jrT1, O.BGen));
+  J.Move(jw64, JT3, JImm(Int64(NativeUInt(FBus.CodeGenerations) + NativeUInt(B.Physical shr 12) * 4)));
+  J.BranchTo(jcNe, jw32, JT0, JMem(jrT3, 0), Generic);
+  J.Move(jw64, JT0, JMem(jrCtx, O.CtxClocks));
+  J.Alu(jaAdd, jw64, JT0, JImm(B.JitMax));
+  J.BranchTo(jcAboveEq, jw64, JT0, JMem(jrCtx, O.CtxLimit), Generic);
+  J.Move(jw32, JT0, JMem(jrCtx, O.CtxCount));
+  J.Alu(jaAdd, jw32, JT0, JImm(B.JitSteps));
+  J.BranchTo(jcGe, jw32, JT0, JMem(jrCtx, O.CtxMaxSteps), Generic);
+  J.Alu(jaAdd, jw64, JMem(jrSelf, O.BlocksRun), JImm(1));
+  if FJitStats then
+    J.Alu(jaAdd, jw64, JMem(jrSelf, O.JitRuns), JImm(1));
+  J.JumpTo(NativeInt(NativeUInt(B.NativeInner) - NativeUInt(J.Base)));
+  J.Flush;
+  // From's code goes here first.
+  J.Redirect(From.JitTail, Start);
+  From.JitLinkTo[From.JitLinks] := B;
+  From.JitLinkPC[From.JitLinks] := PC;
+  Inc(From.JitLinks);
+end;
+
+function TN64CPU.JitCompile(B: PN64CPUBlock; Careful: Boolean): Pointer;
+begin
+  Result := nil;
+  // Careful: a second code for B (its first has been made) that stops
+  // after any step that reaches Limit or MaxSteps, as RunBlocks's loop, for
+  // where the first may not run; it chains to nothing.
+  if Careful then
+    B.CarefulTried := True
+  else
+  begin
+    B.JitTried := True;
+    B.Native := nil;
+    B.NativeInner := nil;
+    B.JitTail := -1;
+    B.JitLinks := 0;
+  end;
+  if not FUseJit or (B.Count = 0) then
+    Exit;
+  // (Careful: not with a LUI pair, which RunBlocks splits where the pair
+  // would not fit.)
+  if Careful then
+    for var I := 0 to B.Count - 1 do
+      if StepOf(B, I).Kind = KindLuiPair then
+        Exit;
+  if JitDebug * [jdNoBranch, jdNoMem, jdNoStore, jdNoFP, jdNoLui] <> [] then
+    for var I := 0 to B.Count - 1 do
+    begin
+      var S := StepOf(B, I);
+      if ((jdNoBranch in JitDebug) and ((S.Flags and StepBranch) <> 0)) or
+        ((jdNoMem in JitDebug) and (S.Size <> 0)) or
+        ((jdNoStore in JitDebug) and ((S.Flags and StepStore) <> 0)) or
+        ((jdNoFP in JitDebug) and (S.Kind >= KindCop1Move) and (S.Kind <> KindLuiPair)) or
+        ((jdNoLui in JitDebug) and (S.Kind = KindLuiPair)) then
+        Exit;
+    end;
+  if FJit = nil then
+  begin
+    if jdModel in JitDebug then
+      FJit := CreateJitModel(JitBufferSize)
+    else
+      FJit := CreateJitAsm(JitBufferSize);
+    if FJit = nil then
+    begin
+      FUseJit := False;
+      Exit;
+    end;
+    // (Fields the code uses often past the others: the GPRs, the counts and
+    // the routines it calls.)
+    FJit.AddWindow(JitOff.BlocksRun);
+    FJit.AddWindow(JitOff.GPR);
+    FJit.AddWindow(JitOff.Calls);
+    for var K := 0 to 255 do
+      FJitCalls[K] := FStepRoutines[K];
+    FJitCalls[JitCallData] := @TN64CPU.JitData;
+    FJitCalls[JitCallFP] := @TN64CPU.JitFP;
+  end;
+  // (Room for the block's code.)
+  if not FJit.Room(4096 + B.Count * 1024) then
+  begin
+    FJitFull := True;
+    Exit;
+  end;
+  if FJitChain = 0 then
+    JitEmitShared;
+  JitMeasure(B);
+
+  var J := FJit;
+  var O := JitOff;
+  J.ForgetLabels;
+  FJitExitCount := 0;
+  FJitSlowCount := 0;
+  J.Align(16);
+  JitMark(1000);
+  // Entered with Self, Ctx and the frame as set (the shared entry, the
+  // chaining code, a direct link), the block in T1: Block the block, Entry
+  // its PC; S4 where there is one its steps. (Ctx's Block and BlockPC are
+  // written on the way out.)
+  Result := J.Here;
+  if not Careful then
+    B.NativeInner := J.Here;
+  J.Move(jw64, JBlock, JT1);
+  J.Move(jw64, JEntry, JMem(jrSelf, O.PC));
+  if J.Has(jrS4) then
+    J.Move(jw64, JS4, JMem(jrBlock, O.BSteps));
+  J.Move(jw32, JExtra, JImm(0));
+  // Store: the store before, if a step may stall behind it.
+  var State := Default(TJitStepState);
+  var First := StepOf(B, 0);
+  if (First.Size <> 0) and ((First.Flags and StepMemoryHazard) <> 0) then
+    J.Move(jw8, JStore, JMem(jrSelf, O.PrevStore))
+  else
+  begin
+    J.Move(jw32, JStore, JImm(0));
+    State.StoreZero := True;
+  end;
+  // (A block entered in a delay slot: its step is one.)
+  State.PrevBranch := (B.Mode and ModeDelay) <> 0;
+  for var I := 0 to B.Count - 1 do
+    JitEmitStep(B, I, Careful, State);
+  JitEmitEnd(B, Careful);
+  JitEmitReturn(B, Careful or (jdNoChain in JitDebug));
+  J.ForgetLabels;
+  J.Flush;
+  Inc(FJitCompiled);
+end;
+
+procedure TN64CPU.JitEmitStep(B: PN64CPUBlock; I: Integer; Careful: Boolean; var State: TJitStepState);
+begin
+  // Block B's step I as RunBlocks's loop runs it (but the bookkeeping no
+  // step reads).
+  var J := FJit;
+  var O := JitOff;
+  var S := StepOf(B, I);
+  var Kind := Integer(S.Kind);
+  var IsStore := (S.Flags and StepStore) <> 0;
+  var IsFP := Kind in [KindCop1Compare, KindCop1Arith];
+  var StepArg := JitStepArg(B, I);
+  JitMark(3000 + Kind);
+
+  // Before the step's bookkeeping: its data access or FP operands.
+  if S.Size <> 0 then
+  begin
+    var Stall := ((S.Flags and StepMemoryHazard) <> 0) and ((I = 0) or State.PrevStore);
+    JitEmitData(B, I, Stall or IsStore);
+    // A cached store before stalls a cached access that needs it.
+    if Stall then
+    begin
+      J.Move(jw8, JT0, JMem(jrCtx, O.CtxCached));
+      J.Alu(jaAnd, jw32, JT0, JStore);
+      J.Alu(jaAdd, jw32, JExtra, JT0);
+    end;
+  end
+  else if Kind = KindCop1Branch then
+  begin
+    // ApplyStalls: BC1 right after a compare.
+    if I = 0 then
+    begin
+      J.Move(jw8, JT0, JMem(jrSelf, O.PrevCond));
+      J.Alu(jaAdd, jw32, JExtra, JT0);
+    end
+    else if State.PrevCondition then
+      J.Alu(jaAdd, jw32, JExtra, JImm(1));
+  end
+  else if IsFP then
+  begin
+    J.CallAt(JMem(jrSelf, O.Calls + JitCallFP * 8), [JSelf, StepArg, JCtx]);
+    J.BranchTest(jcEq, jw32, JT0, JT0, JitExitTo(I, JitStatusDecline));
+  end;
+
+  // The bookkeeping a branch and its delay slot read: a delay slot's (even
+  // a branch in one) as RunBlocks does it, a branch's from the PC on entry.
+  var IsBranch := (S.Flags and StepBranch) <> 0;
+  if IsBranch and not State.PrevBranch then
+  begin
+    J.Move(jw64, JT0, JEntry);
+    J.Alu(jaAdd, jw64, JT0, JImm(Integer(S.Index) * 4));
+    J.Move(jw64, JMem(jrSelf, O.InstrPC), JT0);
+    J.Alu(jaAdd, jw64, JT0, JImm(4));
+    J.Move(jw64, JMem(jrSelf, O.PC), JT0);
+    J.Alu(jaAdd, jw64, JT0, JImm(4));
+    J.Move(jw64, JMem(jrSelf, O.NextPC), JT0);
+    J.Move(jw8, JMem(jrSelf, O.InDelay), JImm(0));
+    J.Move(jw8, JMem(jrSelf, O.Delay), JImm(0));
+  end
+  else if State.PrevBranch then
+  begin
+    J.Move(jw64, JT0, JMem(jrSelf, O.PC));
+    J.Move(jw64, JMem(jrSelf, O.InstrPC), JT0);
+    J.Move(jw8, JT0, JMem(jrSelf, O.Delay));
+    J.Move(jw8, JMem(jrSelf, O.InDelay), JT0);
+    J.Move(jw8, JMem(jrSelf, O.Delay), JImm(0));
+    J.Move(jw64, JT0, JMem(jrSelf, O.NextPC));
+    J.Move(jw64, JMem(jrSelf, O.PC), JT0);
+    J.Alu(jaAdd, jw64, JT0, JImm(4));
+    J.Move(jw64, JMem(jrSelf, O.NextPC), JT0);
+  end;
+
+  // The instruction: a LUI pair as RunBlocks does it, else its routine
+  // (Self, the step, its physical address, its FP inputs).
+  // (Own: written out here, JitEmitOwn; never GPR[0].)
+  JitMark(Kind);
+  var Own := False;
+  if Kind = KindLuiPair then
+  begin
+    if (Int64(S.Value) >= -Int64($80000000)) and (Int64(S.Value) <= $7FFFFFFF) then
+      J.Move(jw64, JMem(jrSelf, O.GPR + Integer(S.T) * 8), JImm(Int64(S.Value)))
+    else
+    begin
+      J.Move(jw64, JT0, JImm(Int64(S.Value)));
+      J.Move(jw64, JMem(jrSelf, O.GPR + Integer(S.T) * 8), JT0);
+    end;
+  end
+  else if S.Size <> 0 then
+    J.CallAt(JMem(jrSelf, O.Calls + Kind * 8), [JSelf, StepArg, JMem(jrCtx, O.CtxPhysical)])
+  else if IsFP then
+  begin
+    J.CallAt(JMem(jrSelf, O.Calls + Kind * 8), [JSelf, StepArg, JImm(0), JAddr(jrCtx, O.CtxFP)]);
+    J.Alu(jaAdd, jw32, JExtra, JT0);
+  end
+  else
+  begin
+    Own := not (jdCalls in JitDebug) and not IsBranch and JitEmitOwn(S);
+    if not Own then
+      J.CallAt(JMem(jrSelf, O.Calls + Kind * 8), [JSelf, StepArg]);
+  end;
+  JitMark(1003);
+  if WritesR0(S) and not Own then
+    J.Move(jw64, JMem(jrSelf, O.GPR), JImm(0));
+
+  // What the next step's stall and JitRun read: the store's access.
+  if IsStore then
+  begin
+    J.Move(jw8, JStore, JMem(jrCtx, O.CtxCached));
+    State.StoreZero := False;
+  end
+  else if not State.StoreZero then
+  begin
+    J.Move(jw32, JStore, JImm(0));
+    State.StoreZero := True;
+  end;
+
+  // A store into the block's own code ends it after the store: its first
+  // byte from B.Physical - Size + 1 to the code's last (one unsigned
+  // comparison).
+  if IsStore then
+  begin
+    J.Move(jw32, JT0, JMem(jrCtx, O.CtxPhysical));
+    J.Alu(jaSub, jw32, JT0, JImm(Int64(B.Physical) - S.Size + 1));
+    J.Branch(jcBelow, jw32, JT0, JImm(Int64(B.Words) * 4 + S.Size - 1), JitExitTo(I + 1, JitStatusRewritten));
+  end;
+
+  // Careful: stop after it where RunBlocks would (not after the last: JitRun
+  // checks that).
+  if Careful then
+  begin
+    Inc(State.PrefixSteps);
+    Inc(State.PrefixClk, S.Clocks);
+    if Kind = KindLuiPair then
+    begin
+      Inc(State.PrefixSteps);
+      Inc(State.PrefixClk);
+    end;
+    if I < B.Count - 1 then
+    begin
+      J.Move(jw64, JT0, JMem(jrCtx, O.CtxClocks));
+      J.Alu(jaAdd, jw64, JT0, JImm(State.PrefixClk));
+      J.Alu(jaAdd, jw64, JT0, JExtra);
+      J.Branch(jcAboveEq, jw64, JT0, JMem(jrCtx, O.CtxLimit), JitExitTo(I + 1, JitStatusStopped));
+      J.Move(jw32, JT0, JMem(jrCtx, O.CtxCount));
+      J.Alu(jaAdd, jw32, JT0, JImm(State.PrefixSteps));
+      J.Branch(jcGe, jw32, JT0, JMem(jrCtx, O.CtxMaxSteps), JitExitTo(I + 1, JitStatusStopped));
+    end;
+  end;
+
+  State.PrevBranch := IsBranch;
+  State.PrevStore := IsStore;
+  State.PrevCondition := (S.Flags and StepCondition) <> 0;
+end;
+
+function TN64CPU.JitStepArg(B: PN64CPUBlock; I: Integer): TJitOp;
+begin
+  // Step I's address as a call's argument (from S4 where there is one).
+  if FJit.Has(jrS4) then
+    Result := JAddr(jrS4, I * SizeOf(TN64CPUStep))
+  else
+    Result := JImm(Int64(NativeUInt(StepOf(B, I))));
+end;
+
+procedure TN64CPU.JitEmitData(B: PN64CPUBlock; I: Integer; NeedCached: Boolean);
+begin
+  // Step I's access as FastData finds it, into Ctx's Physical (and Cached
+  // where NeedCached: a stall or a store reads it). Through KSEG0/KSEG1 in
+  // RDRAM, aligned, where Ctx.Direct: here. Anything else asks JitData
+  // after the block's steps (JitEmitReturn) and comes back; JitData
+  // declining leaves the block. (N64JIT=calls: JitData for every access.)
+  var J := FJit;
+  var O := JitOff;
+  var S := StepOf(B, I);
+  var Size := Integer(S.Size);
+  var Ram := FBus.RAMSize;
+  if (jdCalls in JitDebug) or (Ram < $1000) or ((Ram and (Ram - 1)) <> 0) then
+  begin
+    J.CallAt(JMem(jrSelf, O.Calls + JitCallData * 8), [JSelf, JCtx, JitStepArg(B, I)]);
+    J.BranchTest(jcEq, jw32, JT0, JT0, JitExitTo(I, JitStatusDecline));
+    Exit;
+  end;
+  if FJitSlowCount = Length(FJitSlowLabel) then
+  begin
+    SetLength(FJitSlowLabel, FJitSlowCount * 2 + 64);
+    SetLength(FJitSlowBack, FJitSlowCount * 2 + 64);
+    SetLength(FJitSlowStep, FJitSlowCount * 2 + 64);
+  end;
+  var Slow := J.NewLabel;
+  var Back := J.NewLabel;
+  FJitSlowLabel[FJitSlowCount] := Slow;
+  FJitSlowBack[FJitSlowCount] := Back;
+  FJitSlowStep[FJitSlowCount] := I;
+  Inc(FJitSlowCount);
+  J.Move(jw8, JT1, JMem(jrCtx, O.CtxDirect));
+  J.BranchTest(jcEq, jw32, JT1, JT1, Slow);
+  // T0: the address; T1: it xor KSeg0Base, whose bits 63..30 are clear in
+  // KSEG0/KSEG1 (bit 29 set in KSEG1), bits 28..23 too in RDRAM (8 MB or
+  // what it is, a power of two), the low ones too where aligned: one test.
+  J.Move(jw64, JT0, JMem(jrSelf, O.GPR + Integer(S.S) * 8));
+  J.Alu(jaAdd, jw64, JT0, JImm(Int64(S.Value)));
+  J.Move(jw64, JT1, JT0);
+  J.Alu(jaXor, jw64, JT1, JImm(-Int64($80000000)));
+  J.BranchTest(jcNe, jw64, JT1, JImm(-Int64($40000000) or Int64($1FFFFFFF and not (Ram - 1)) or (Size - 1)), Slow);
+  if NeedCached then
+  begin
+    J.Shift(jsShr, jw32, jrT1, 29);
+    J.Alu(jaXor, jw32, JT1, JImm(1));
+    J.Move(jw8, JMem(jrCtx, O.CtxCached), JT1);
+  end;
+  J.Alu(jaAnd, jw32, JT0, JImm($1FFFFFFF));
+  J.Move(jw64, JMem(jrCtx, O.CtxPhysical), JT0);
+  J.Bind(Back);
+end;
+
+function TN64CPU.JitEmitOwn(S: PN64CPUStep): Boolean;
+var
+  J: TJitAsm;
+  O: TJitOffsets;
+
+  function G(R: Integer): TJitOp;
+  begin
+    Result := JMem(jrSelf, O.GPR + R * 8);
+  end;
+
+  // GPR[R] := T0's low 32 bits sign-extended (SX32).
+  procedure Put32(R: Integer);
+  begin
+    J.SignExtend(jw32, jrT0);
+    J.Move(jw64, G(R), JT0);
+  end;
+
+  // GPR[R] := Ord(GPR[S.S] Cond B), 64 bits.
+  procedure SetIf(Cond: TJitCond; const B: TJitOp; R: Integer);
+  begin
+    var L := J.NewLabel;
+    J.Move(jw64, JT1, G(S.S));
+    J.Move(jw32, JT0, JImm(1));
+    J.Branch(Cond, jw64, JT1, B, L);
+    J.Move(jw32, JT0, JImm(0));
+    J.Bind(L);
+    J.Move(jw64, G(R), JT0);
+  end;
+
+  // GPR[R] := GPR[S.S] Op Src (64 bits).
+  procedure Logic(Op: TJitAlu; const Src: TJitOp; R: Integer);
+  begin
+    J.Move(jw64, JT0, G(S.S));
+    J.Alu(Op, jw64, JT0, Src);
+    J.Move(jw64, G(R), JT0);
+  end;
+
+  // GPR[R] := GPR[S.T] shifted by N (32 bits sign-extended, or 64).
+  procedure ShiftBy(Op: TJitShift; W: TJitWidth; N, R: Integer);
+  begin
+    J.Move(W, JT0, G(S.T));
+    if N <> 0 then
+      J.Shift(Op, W, jrT0, N);
+    if W = jw32 then
+      Put32(R)
+    else
+      J.Move(jw64, G(R), JT0);
+  end;
+
+begin
+  // A step written out as host instructions, as its routine does it (GPR[0]
+  // reads 0: the code keeps it so); False: not one of these (its routine is
+  // called). Writing GPR[0] does nothing, so neither does the code.
+  J := FJit;
+  O := JitOff;
+  var Kind := Integer(S.Kind);
+  var D := Integer(S.D);
+  var T := Integer(S.T);
+  var Imm16 := Int64(S.Op and $FFFF);
+  case Kind of
+    KindSpecial + 17:
+      begin
+        J.Move(jw64, JT0, G(S.S));                                   // MTHI
+        J.Move(jw64, JMem(jrSelf, O.HI), JT0);
+        Exit(True);
+      end;
+    KindSpecial + 19:
+      begin
+        J.Move(jw64, JT0, G(S.S));                                   // MTLO
+        J.Move(jw64, JMem(jrSelf, O.LO), JT0);
+        Exit(True);
+      end;
+    KindSpecial + 0, KindSpecial + 2, KindSpecial + 3, KindSpecial + 16, KindSpecial + 18,
+    KindSpecial + 33, KindSpecial + 35..KindSpecial + 39, KindSpecial + 42, KindSpecial + 43,
+    KindSpecial + 45, KindSpecial + 47, KindSpecial + 56, KindSpecial + 58..KindSpecial + 60,
+    KindSpecial + 62, KindSpecial + 63:
+      if D = 0 then
+        Exit(True);
+    9..15:
+      if T = 0 then
+        Exit(True);
+  else
+    // (A kind whose routine does nothing: CACHE, SYNC and the like.)
+    Exit(FStepRoutines[Kind] = @TN64CPU.StepNop);
+  end;
+  case Kind of
+    KindSpecial + 0:
+      ShiftBy(jsShl, jw32, S.N, D);                                  // SLL
+    KindSpecial + 2:
+      ShiftBy(jsShr, jw32, S.N, D);                                  // SRL
+    KindSpecial + 3:
+      ShiftBy(jsSar, jw32, S.N, D);                                  // SRA
+    KindSpecial + 56:
+      ShiftBy(jsShl, jw64, S.N, D);                                  // DSLL
+    KindSpecial + 58:
+      ShiftBy(jsShr, jw64, S.N, D);                                  // DSRL
+    KindSpecial + 59:
+      ShiftBy(jsSar, jw64, S.N, D);                                  // DSRA
+    KindSpecial + 60:
+      ShiftBy(jsShl, jw64, S.N + 32, D);                             // DSLL32
+    KindSpecial + 62:
+      ShiftBy(jsShr, jw64, S.N + 32, D);                             // DSRL32
+    KindSpecial + 63:
+      ShiftBy(jsSar, jw64, S.N + 32, D);                             // DSRA32
+    KindSpecial + 16, KindSpecial + 18:
+      begin
+        if Kind = KindSpecial + 16 then                              // MFHI, MFLO
+          J.Move(jw64, JT0, JMem(jrSelf, O.HI))
+        else
+          J.Move(jw64, JT0, JMem(jrSelf, O.LO));
+        J.Move(jw64, G(D), JT0);
+      end;
+    KindSpecial + 33, KindSpecial + 35:
+      begin
+        J.Move(jw32, JT0, G(S.S));                                   // ADDU, SUBU
+        if Kind = KindSpecial + 33 then
+          J.Alu(jaAdd, jw32, JT0, G(T))
+        else
+          J.Alu(jaSub, jw32, JT0, G(T));
+        Put32(D);
+      end;
+    KindSpecial + 45:
+      Logic(jaAdd, G(T), D);                                         // DADDU
+    KindSpecial + 47:
+      Logic(jaSub, G(T), D);                                         // DSUBU
+    KindSpecial + 36:
+      Logic(jaAnd, G(T), D);                                         // AND
+    KindSpecial + 37:
+      if T = 0 then
+      begin
+        J.Move(jw64, JT0, G(S.S));                                   // OR (a move)
+        J.Move(jw64, G(D), JT0);
+      end
+      else
+        Logic(jaOr, G(T), D);
+    KindSpecial + 38:
+      Logic(jaXor, G(T), D);                                         // XOR
+    KindSpecial + 39:
+      begin
+        J.Move(jw64, JT0, G(S.S));                                   // NOR
+        J.Alu(jaOr, jw64, JT0, G(T));
+        J.Alu(jaXor, jw64, JT0, JImm(-1));
+        J.Move(jw64, G(D), JT0);
+      end;
+    KindSpecial + 42:
+      SetIf(jcLt, G(T), D);                                          // SLT
+    KindSpecial + 43:
+      SetIf(jcBelow, G(T), D);                                       // SLTU
+    9:
+      if S.S = 0 then
+        J.Move(jw64, G(T), JImm(Int64(S.Value)))                     // ADDIU (a constant)
+      else
+      begin
+        J.Move(jw32, JT0, G(S.S));
+        J.Alu(jaAdd, jw32, JT0, JImm(Int64(S.Value)));
+        Put32(T);
+      end;
+    10:
+      SetIf(jcLt, JImm(Int64(S.Value)), T);                          // SLTI
+    11:
+      SetIf(jcBelow, JImm(Int64(S.Value)), T);                       // SLTIU
+    12:
+      begin
+        J.Move(jw32, JT0, G(S.S));                                   // ANDI
+        J.Alu(jaAnd, jw32, JT0, JImm(Imm16));
+        J.Move(jw64, G(T), JT0);
+      end;
+    13:
+      if S.S = 0 then
+        J.Move(jw64, G(T), JImm(Imm16))                              // ORI (a constant)
+      else
+        Logic(jaOr, JImm(Imm16), T);
+    14:
+      Logic(jaXor, JImm(Imm16), T);                                  // XORI
+    15:
+      J.Move(jw64, G(T), JImm(Int64(Integer(Cardinal(Imm16) shl 16)))); // LUI
+  end;
+  Result := True;
+end;
+
+procedure TN64CPU.JitEmitEnd(B: PN64CPUBlock; Careful: Boolean);
+begin
+  // All steps ran: the last one's pipeline state and PC, the block's count
+  // and PClocks into the totals; then the next block.
+  var J := FJit;
+  var O := JitOff;
+  JitMark(1004);
+  var Last := StepOf(B, B.Count - 1);
+  J.Move(jw32, JMem(jrSelf, O.PrevLoad), JImm(Last.LoadAfter));
+  J.Move(jw32, JMem(jrSelf, O.PrevFP), JImm(Last.FPAfter));
+  J.Move(jw8, JMem(jrSelf, O.PrevCond), JImm(Ord((Last.Flags and StepCondition) <> 0)));
+  J.Move(jw8, JMem(jrSelf, O.PrevExc), JImm(0));
+  if (Last.Flags and StepStore) <> 0 then
+    J.Move(jw8, JMem(jrSelf, O.PrevStore), JStore)
+  else
+    J.Move(jw8, JMem(jrSelf, O.PrevStore), JImm(0));
+  if not StepWritesPC(B, B.Count - 1) then
+  begin
+    var Words := 1;
+    if Last.Kind = KindLuiPair then
+      Words := 2;
+    J.Move(jw64, JT0, JEntry);
+    J.Alu(jaAdd, jw64, JT0, JImm((Integer(Last.Index) + Words - 1) * 4));
+    J.Move(jw64, JMem(jrSelf, O.InstrPC), JT0);
+    J.Alu(jaAdd, jw64, JT0, JImm(4));
+    J.Move(jw64, JMem(jrSelf, O.PC), JT0);
+    J.Alu(jaAdd, jw64, JT0, JImm(4));
+    J.Move(jw64, JMem(jrSelf, O.NextPC), JT0);
+    J.Move(jw8, JMem(jrSelf, O.InDelay), JImm(0));
+    J.Move(jw8, JMem(jrSelf, O.Delay), JImm(0));
+  end;
+  J.Alu(jaAdd, jw32, JMem(jrCtx, O.CtxCount), JImm(B.JitSteps));
+  J.Move(jw64, JT0, JMem(jrCtx, O.CtxClocks));
+  J.Alu(jaAdd, jw64, JT0, JImm(B.JitClocks));
+  J.Alu(jaAdd, jw64, JT0, JExtra);
+  J.Move(jw64, JMem(jrCtx, O.CtxClocks), JT0);
+
+  // The next block: by the shared chaining code (JitEmitChain), whose jump
+  // JitLink points to direct links it adds. (Careful code, N64JIT=nochain:
+  // back to RunBlocks.)
+  if not Careful and not (jdNoChain in JitDebug) then
+    if (Last.Flags and StepMayIdle) <> 0 then
+      B.JitTail := J.JumpSite(FJitChainIdle)
+    else
+      B.JitTail := J.JumpSite(FJitChain);
+end;
+
+procedure TN64CPU.JitEmitReturn(B: PN64CPUBlock; FallThrough: Boolean);
+begin
+  // Back to RunBlocks by the shared way (JitEmitShared), T1 the steps done
+  // shl 2 or the status: from the end where the last step falls through to
+  // here (status 0); the data accesses the steps' own checks did not take
+  // (JitData, back into the steps); then the exits (declines, stops,
+  // rewrites).
+  var J := FJit;
+  var O := JitOff;
+  JitMark(1005);
+  if FallThrough then
+  begin
+    J.Move(jw32, JT1, JImm(B.Count shl 2 or JitStatusDone));
+    J.JumpTo(FJitReturn);
+  end;
+  for var K := 0 to FJitSlowCount - 1 do
+  begin
+    J.Bind(FJitSlowLabel[K]);
+    J.CallAt(JMem(jrSelf, O.Calls + JitCallData * 8), [JSelf, JCtx, JitStepArg(B, FJitSlowStep[K])]);
+    J.BranchTest(jcEq, jw32, JT0, JT0, JitExitTo(FJitSlowStep[K], JitStatusDecline));
+    J.Jump(FJitSlowBack[K]);
+  end;
+  for var Status in JitExitOrder do
+    for var K := 0 to FJitExitCount - 1 do
+      if FJitExitStatus[K] = Status then
+      begin
+        J.Bind(FJitExitLabel[K]);
+        J.Move(jw32, JT1, JImm(FJitExitDone[K] shl 2 or Status));
+        J.JumpTo(FJitReturn);
+      end;
+end;
+
+function TN64CPU.JitRun(Code: Pointer; var B: PN64CPUBlock; var PC: UInt64; Limit: UInt64; MaxSteps: Integer;
+  var Count: Integer; var Clocks: UInt64; var Jit: TJitCtx): Integer;
+begin
+  // B's code from its first step and the blocks it chains to (RunBlocks
+  // checked that B's steps cannot reach Limit or MaxSteps; the code checks
+  // that for the others). Then what RunBlocks's loop does for the last step
+  // that ran: B and PC become the last block's; Count and Clocks (RunBlocks's
+  // Result and Clocks) include its steps; its pipeline state and PC where the
+  // code did not write them; the stop checks. Returns 0: go on after the
+  // block, 1: stop (RunBlocks sets Stop), 2: the block wrote its own code.
+  Result := 0;
+  Inc(FJitRuns);
+  Jit.Count := Count;
+  Jit.Clocks := Clocks;
+  Jit.Limit := Limit;
+  Jit.MaxSteps := MaxSteps;
+  Jit.Kernel := KernelMode;
+  // (FastData's KSEG0/KSEG1 checks that hold for the whole batch.)
+  Jit.Direct := (((Jit.Context and 6) <> 0) or ((Jit.Context and $18) = 0)) and FBus.SPIdle;
+  var Status := Integer(FJit.Invoke(FJit.Base + FJitEnter, NativeUInt(Self), NativeUInt(@Jit), NativeUInt(Code), NativeUInt(B)));
+  B := Jit.Block;
+  PC := Jit.BlockPC;
+  Count := Jit.Count;
+  Clocks := Jit.Clocks;
+  var Done := Jit.Done;
+  if Status <> 0 then
+  begin
+    // Part of the last block: its steps up to Done (the code added none).
+    if Done > 0 then
+    begin
+      Inc(Count, Done);
+      var Clk := Jit.Extra;
+      for var I := 0 to Done - 1 do
+      begin
+        var T := StepOf(B, I);
+        Inc(Clk, T.Clocks);
+        if T.Kind = KindLuiPair then
+        begin
+          Inc(Count);
+          Inc(Clk);
+        end;
+      end;
+      Inc(Clocks, Clk);
+      var S := StepOf(B, Done - 1);
+      FPreviousLoad := S.LoadAfter;
+      FPreviousFP := S.FPAfter;
+      FPreviousCondition := (S.Flags and StepCondition) <> 0;
+      FPreviousException := False;
+      FPreviousStore := ((S.Flags and StepStore) <> 0) and Jit.PrevStore;
+      var Words := 1;
+      if S.Kind = KindLuiPair then
+        Words := 2;
+      var Branchy := StepWritesPC(B, Done - 1);
+      if not Branchy then
+      begin
+        FInstructionPC := Add64(PC, Cardinal(S.Index + Words - 1) * 4);
+        FInDelay := False;
+        FDelay := False;
+        FPC := Add64(PC, Cardinal(S.Index + Words) * 4);
+        FNextPC := Add64(FPC, 4);
+      end;
+    end;
+    if Status = 1 then
+    begin
+      // Declined before step Done, as RunBlocks's loop.
+      FSlowSafe := True;
+      Exit(1);
+    end;
+  end
+  else
+    Done := B.Count;
+  // The stop checks after the last step that ran.
+  var S := StepOf(B, Done - 1);
+  if (Clocks >= Limit) or (Count >= MaxSteps) or (((S.Flags and StepMayIdle) <> 0) and IdleHead) then
+  begin
+    if Done < B.Count then
+    begin
+      FResumeBlock := B;
+      FResumeStep := Done;
+      FResumePC := FPC;
+      FCarryGen := FBlockGen;
+    end
+    else
+    begin
+      FLastBlock := B;
+      FLastEnd := Add64(PC, Cardinal(B.Words) * 4);
+      FCarryGen := FBlockGen;
+    end;
+    Exit(1);
+  end;
+  if Status = 2 then
+    Result := 2;
+end;
+
 function TN64CPU.RunBlocks(MaxSteps: Integer; Limit: UInt64; Context: Cardinal; out Clocks: UInt64): Integer;
 begin
+  var FP: TStepFP;
+  var Jit: TJitCtx;
   // FastRun's steps (after FastReady), exactly as it takes them, from blocks:
   // at most MaxSteps, up to the one that brings their PClocks to Limit or
   // more or after which IdleLimit may find an idle loop's head, or before
@@ -2713,9 +4894,11 @@ begin
   FResumeBlock := nil;
   var Stop := False;
   var Rewritten := False;
+  var FarFrom: PN64CPUBlock;
   while (Result < MaxSteps) and not Stop do
   begin
     FSlowSafe := False;
+    FarFrom := nil;
     var PC := FPC;
     if ((PC and 3) <> 0) or (not FDelay and (FNextPC <> Add64(PC, 4))) then
     begin
@@ -2728,6 +4911,8 @@ begin
       if not FastCode(PC, Context) then
         Break;
       CodeClean := False;
+      // (Blocks as generated code: the block before, for its far link.)
+      FarFrom := Prev;
       Prev := nil;
       ResumeBlock := nil;
     end;
@@ -2771,6 +4956,10 @@ begin
       ResumeBlock := nil;
     end;
     var Taken := Ord(PC <> PrevEnd);
+    // (Blocks as generated code: the block before, for a direct link, while no
+    // block was dropped.)
+    var LinkFrom := Prev;
+    var LinkGen := FBlockGen;
     if (B = nil) and (Prev <> nil) then
     begin
       // (The entry hazards after Prev follow from Prev and the way it left;
@@ -2791,26 +4980,86 @@ begin
         Prev.Link[Taken] := B;
         Prev.LinkPC[Taken] := PC;
       end;
+      // Entered from a block on another page that ran to its end: its far
+      // link (its code checks the page as FastCode does).
+      if (FarFrom <> nil) and (FBlockGen = Gen) then
+      begin
+        FarFrom.Far[1] := FarFrom.Far[0];
+        FarFrom.FarPC[1] := FarFrom.FarPC[0];
+        FarFrom.Far[0] := B;
+        FarFrom.FarPC[0] := PC;
+      end;
     end;
     if B.Count = 0 then
     begin
       FSlowSafe := B.SlowSafe;
+      if FJitStats then
+      begin
+        var W := B.Code^;
+        var K := Integer(W shr 26);
+        if K = 0 then
+          K := 64 + (W and 63)
+        else if K in [16..18] then
+          K := 128 + (K - 16) * 32 + Integer((W shr 21) and 31);
+        Inc(FJitSlowOps[K and 255]);
+      end;
       Break;
     end;
     Inc(FBlocksRun);
     var Step := StepOf(B, First);
     var Last := StepOf(B, B.Count - 1);
+    // As generated code, from its first step, where its steps cannot reach
+    // Limit or MaxSteps before the last (JitRun does the rest).
+    var Native := False;
+    if (First = 0) and FUseJit then
+    begin
+      if not B.JitTried and (B.JitHeat < JitHot) then
+        Inc(B.JitHeat)
+      else if not B.JitTried then
+      begin
+        var T0: Int64 := 0;
+        if FJitStats then
+          T0 := JitTicks;
+        B.Native := JitCompile(B);
+        if FJitStats then
+          Inc(FJitCompileTicks, JitTicks - T0);
+      end;
+      if (LinkFrom <> nil) and (LinkGen = FBlockGen) and (B.Native <> nil) and (LinkFrom.Native <> nil) and
+        (LinkFrom.JitLinks < Length(LinkFrom.JitLinkTo)) then
+        JitLink(LinkFrom, B, PC);
+      // Its code where its steps cannot reach Limit or MaxSteps before the
+      // last; else its careful code.
+      var Code: Pointer := nil;
+      if B.Native <> nil then
+        if (Clk + B.JitMax < Limit) and (Result + Integer(B.JitSteps) < MaxSteps) then
+          Code := B.Native
+        else
+        begin
+          if not B.CarefulTried and (B.CarefulHeat < JitHot) then
+            Inc(B.CarefulHeat)
+          else if not B.CarefulTried then
+            B.NativeCareful := JitCompile(B, True);
+          Code := B.NativeCareful;
+        end;
+      if Code <> nil then
+      begin
+        Native := True;
+        Jit.Context := Context;
+        case JitRun(Code, B, PC, Limit, MaxSteps, Result, Clk, Jit) of
+          1:
+            Stop := True;
+          2:
+            Rewritten := True;
+        end;
+      end;
+    end;
+    if not Native then
     while True do
     begin
       var C: Cardinal := Step.Clocks;
       var Physical2: Cardinal := 0;
       var Cached := False;
       var Kind := Step.Kind;
-      var FPA: UInt64 := 0;
-      var FPB: UInt64 := 0;
-      var FPResult: TSoftFloatResult;
-      var FPCycles: Cardinal;
-      var FPTarget: Integer;
       if Step.Size <> 0 then
       begin
         if not FastData(Add64(GPR[Step.S], Step.Value), Step.Size, (Step.Flags and StepWriting) <> 0, Context,
@@ -2843,34 +5092,29 @@ begin
           // FR is fixed for this batch. A unary operation/conversion never
           // consumes FT; a compare and arithmetic 0..3 do.
           var Binary := (Kind = KindCop1Compare) or ((Step.Op and 63) <= 3);
-          FPB := 0;
+          FP.B := 0;
           if (BaseMode and ModeFR) <> 0 then
           begin
-            FPA := FPR[Step.D];
-            if Binary then
-              FPB := FPR[Step.T];
+            FP.A := FPR[Step.D];
+            if Binary then FP.B := FPR[Step.T];
             if F in [16, 20] then
-            begin
-              FPA := FPA and $FFFFFFFF;
-              FPB := FPB and $FFFFFFFF
-            end;
+            begin FP.A := FP.A and $FFFFFFFF; FP.B := FP.B and $FFFFFFFF end;
           end
           else
           begin
-            FPA := FPBits(Integer(Step.D), F);
-            if Binary then
-              FPB := FPBits(Integer(Step.T), F);
+            FP.A := FPBits(Integer(Step.D), F);
+            if Binary then FP.B := FPBits(Integer(Step.T), F);
           end;
           if Kind = KindCop1Compare then
           begin
-            if SFIsNaN(FPA, F) or SFIsNaN(FPB, F) then
+            if SFIsNaN(FP.A, F) or SFIsNaN(FP.B, F) then
             begin
               FSlowSafe := True;
               Stop := True;
               Break;
             end;
           end
-          else if not FastFloat(Step.Op, FPA, FPB, FPResult, FPCycles, FPTarget) then
+          else if not FastFloat(Step.Op, FP.A, FP.B, FP.Res, FP.Cycles, FP.Target) then
           begin
             FSlowSafe := True;
             Stop := True;
@@ -2884,262 +5128,43 @@ begin
       FPreviousCondition := (Step.Flags and StepCondition) <> 0;
       FPreviousException := False;
       FPreviousStore := ((Step.Flags and StepStore) <> 0) and Cached;
-      var PC2 := FPC;
-      FInstructionPC := PC2;
+      FInstructionPC := FPC;
       FInDelay := FDelay;
       FDelay := False;
       FPC := FNextPC;
       FNextPC := Add64(FNextPC, 4);
-      var T := Integer(Step.T);
-      var A := GPR[Step.S];
-      case Kind of
-        KindSpecial + 0:
-          GPR[Step.D] := SX32(GPR[T] shl Step.N);
-        KindSpecial + 2:
-          GPR[Step.D] := SX32((GPR[T] and $FFFFFFFF) shr Step.N);
-        KindSpecial + 3:
-          GPR[Step.D] := SX32(SAR(GPR[T], Step.N, 32));
-        KindSpecial + 4:
-          GPR[Step.D] := SX32(GPR[T] shl (A and 31));
-        KindSpecial + 6:
-          GPR[Step.D] := SX32((GPR[T] and $FFFFFFFF) shr (A and 31));
-        KindSpecial + 7:
-          GPR[Step.D] := SX32(SAR(GPR[T], A and 31, 32));
-        KindSpecial + 8:
-          Branch(True, False, A);
-        KindSpecial + 9:
+      if Kind = KindLuiPair then
+      begin
+        // The ORI/ADDIU after the LUI: its Step as FastRun takes it.
+        Inc(Result);
+        Inc(Clk);
+        FInstructionPC := FPC;
+        FInDelay := False;
+        FPC := FNextPC;
+        FNextPC := Add64(FNextPC, 4);
+        GPR[Step.T] := Step.Value;
+      end
+      else
+      begin
+        Inc(C, TStepRoutine(FStepRoutines[Kind])(Self, Step, Physical2, @FP));
+        // A canonical NOP after successful arithmetic has no reads or
+        // side effects beyond its PC, one clock and clearing FP hazards.
+        // Retain the decoded NOP for exact budget/resume boundaries.
+        if (Kind = KindCop1Arith) and (Step <> Last) and (Clk + C < Limit) and (Result + 1 < MaxSteps) then
+        begin
+          var Tail := PN64CPUStep(NativeUInt(Step) + SizeOf(TN64CPUStep));
+          if (Tail.Op = 0) and (Tail.Flags = 0) and (Tail.Clocks = 1) then
           begin
-            GPR[Step.D] := Add64(PC2, 8);
-            Branch(True, False, A);
-          end;
-        KindSpecial + 15:
-          ; // SYNC
-          KindSpecial + 16:
-          GPR[Step.D] := HI;
-        KindSpecial + 17:
-          HI := A;
-        KindSpecial + 18:
-          GPR[Step.D] := LO;
-        KindSpecial + 19:
-          LO := A;
-        KindSpecial + 20:
-          GPR[Step.D] := GPR[T] shl (A and 63);
-        KindSpecial + 22:
-          GPR[Step.D] := GPR[T] shr (A and 63);
-        KindSpecial + 23:
-          GPR[Step.D] := SAR(GPR[T], A and 63, 64);
-        KindSpecial + 24, KindSpecial + 25:
-          begin
-            var BB := GPR[T];
-            var V: UInt64;
-            if Kind = KindSpecial + 24 then
-              Multiply64(SX(A, 32), SX(BB, 32), True, HI, V)
-            else
-              V := (A and $FFFFFFFF) * (BB and $FFFFFFFF);
-            LO := SX(V, 32);
-            HI := SX(V shr 32, 32);
-          end;
-        KindSpecial + 26, KindSpecial + 27:
-          begin
-            var BB := GPR[T];
-            if Kind = KindSpecial + 26 then
-              Divide64(SX(A, 32), SX(BB, 32), True, HI, LO)
-            else
-              Divide64(A and $FFFFFFFF, BB and $FFFFFFFF, False, HI, LO);
-            HI := SX(HI, 32);
-            LO := SX(LO, 32);
-          end;
-        KindSpecial + 28, KindSpecial + 29:
-          Multiply64(A, GPR[T], Kind = KindSpecial + 28, HI, LO);
-        KindSpecial + 30, KindSpecial + 31:
-          Divide64(A, GPR[T], Kind = KindSpecial + 30, HI, LO);
-        KindSpecial + 33:
-          GPR[Step.D] := SX32(Add64(A, GPR[T]));
-        KindSpecial + 35:
-          GPR[Step.D] := SX32(Sub64(A, GPR[T]));
-        KindSpecial + 36:
-          GPR[Step.D] := A and GPR[T];
-        KindSpecial + 37:
-          GPR[Step.D] := A or GPR[T];
-        KindSpecial + 38:
-          GPR[Step.D] := A xor GPR[T];
-        KindSpecial + 39:
-          GPR[Step.D] := not (A or GPR[T]);
-        KindSpecial + 42:
-          GPR[Step.D] := Ord(SignedLess(A, GPR[T]));
-        KindSpecial + 43:
-          GPR[Step.D] := Ord(A < GPR[T]);
-        KindSpecial + 45:
-          GPR[Step.D] := Add64(A, GPR[T]);
-        KindSpecial + 47:
-          GPR[Step.D] := Sub64(A, GPR[T]);
-        KindSpecial + 56:
-          GPR[Step.D] := GPR[T] shl Step.N;
-        KindSpecial + 58:
-          GPR[Step.D] := GPR[T] shr Step.N;
-        KindSpecial + 59:
-          GPR[Step.D] := SAR(GPR[T], Step.N, 64);
-        KindSpecial + 60:
-          GPR[Step.D] := GPR[T] shl (Step.N + 32);
-        KindSpecial + 62:
-          GPR[Step.D] := GPR[T] shr (Step.N + 32);
-        KindSpecial + 63:
-          GPR[Step.D] := SAR(GPR[T], Step.N + 32, 64);
-        1:
-          begin
-            var Taken2 := SignedLess(A, 0);
-            if (T and 1) <> 0 then
-              Taken2 := not Taken2;
-            if T >= 16 then
-              GPR[31] := Add64(PC2, 8);
-            Branch(Taken2, (T and 2) <> 0, Add64(FPC, Step.Value shl 2));
-          end;
-        2, 3:
-          begin
-            if Kind = 3 then
-              GPR[31] := Add64(PC2, 8);
-            Branch(True, False, (FPC and $FFFFFFFFF0000000) or ((Step.Op and $3FFFFFF) shl 2));
-          end;
-        4, 20:
-          Branch(A = GPR[T], Kind = 20, Add64(FPC, Step.Value shl 2));
-        5, 21:
-          Branch(A <> GPR[T], Kind = 21, Add64(FPC, Step.Value shl 2));
-        6, 22:
-          Branch(not SignedLess(0, A), Kind = 22, Add64(FPC, Step.Value shl 2));
-        7, 23:
-          Branch(SignedLess(0, A), Kind = 23, Add64(FPC, Step.Value shl 2));
-        9:
-          GPR[T] := SX32(Add64(A, Step.Value));
-        10:
-          GPR[T] := Ord(SignedLess(A, Step.Value));
-        11:
-          GPR[T] := Ord(A < Step.Value);
-        12:
-          GPR[T] := A and (Step.Op and $FFFF);
-        13:
-          GPR[T] := A or (Step.Op and $FFFF);
-        14:
-          GPR[T] := A xor (Step.Op and $FFFF);
-        15:
-          GPR[T] := SX32((Step.Op and $FFFF) shl 16);
-        KindLuiPair:
-          begin
-            // The ORI/ADDIU after the LUI: its Step as FastRun takes it.
             Inc(Result);
-            Inc(Clk);
+            Inc(C);
+            Step := Tail;
+            FPreviousFP := -1;
             FInstructionPC := FPC;
             FInDelay := False;
             FPC := FNextPC;
             FNextPC := Add64(FNextPC, 4);
-            GPR[T] := Step.Value;
           end;
-        32:
-          GPR[T] := SX8(FBus.ReadRAM8(Physical2));
-        33:
-          GPR[T] := SX16(FBus.ReadRAM16(Physical2));
-        35:
-          GPR[T] := SX32(FBus.ReadRAM32(Physical2));
-        36:
-          GPR[T] := FBus.ReadRAM8(Physical2);
-        37:
-          GPR[T] := FBus.ReadRAM16(Physical2);
-        39:
-          GPR[T] := FBus.ReadRAM32(Physical2);
-        49:
-          SetFPBits(T, 16, FBus.ReadRAM32(Physical2));
-        53:
-          SetFPBits(T, 17, (UInt64(FBus.ReadRAM32(Physical2)) shl 32) or FBus.ReadRAM32(Physical2 + 4));
-        55:
-          GPR[T] := (UInt64(FBus.ReadRAM32(Physical2)) shl 32) or FBus.ReadRAM32(Physical2 + 4);
-        63:
-          begin
-            var V := GPR[T];
-            FBus.WriteRAM32(Physical2, Cardinal(V shr 32));
-            FBus.WriteRAM32(Physical2 + 4, Cardinal(V and $FFFFFFFF));
-          end;
-        40:
-          begin
-            FBus.WriteRAM8(Physical2, Byte(GPR[T] and $FF));
-          end;
-        41:
-          begin
-            FBus.WriteRAM8(Physical2, Byte((GPR[T] shr 8) and $FF));
-            FBus.WriteRAM8(Physical2 + 1, Byte(GPR[T] and $FF));
-          end;
-        43:
-          begin
-            FBus.WriteRAM32(Physical2, Cardinal(GPR[T] and $FFFFFFFF));
-          end;
-        57:
-          begin
-            var V := FPBits(T, 16);
-            FBus.WriteRAM32(Physical2, Cardinal(V and $FFFFFFFF));
-          end;
-        61:
-          begin
-            var V := FPBits(T, 17);
-            FBus.WriteRAM32(Physical2, Cardinal(V shr 32));
-            FBus.WriteRAM32(Physical2 + 4, Cardinal(V and $FFFFFFFF));
-          end;
-        KindCop1Move + 0:
-          GPR[T] := SX(FPBits(Step.D, 16), 32);
-        KindCop1Move + 1:
-          GPR[T] := FPBits(Step.D, 17);
-        KindCop1Move + 4:
-          SetFPBits(Step.D, 16, GPR[T]);
-        KindCop1Move + 5:
-          SetFPBits(Step.D, 17, GPR[T]);
-        KindCop1Compare:
-          begin
-            var F := Integer(Step.S);
-            var Fn := Integer(Step.Op and 63);
-            FCR31 := FCR31 and not $3F000;
-            Inc(C, FPClocks(FPA, FPB, F, Fn) - 1);
-            var Unordered, Equal, Less: Boolean;
-            SFCompare(FPA, FPB, F, Unordered, Equal, Less);
-            FCR31 := FCR31 and not $800000;
-            if (((Fn and 1) <> 0) and Unordered) or (((Fn and 2) <> 0) and Equal) or (((Fn and 4) <> 0) and Less) then
-              FCR31 := FCR31 or $800000;
-          end;
-        KindCop1Arith:
-          begin
-            // As Cop1, which FastFloat found takes no special path.
-            FCR31 := FCR31 and not $3F000;
-            Inc(C, FPCycles - 1);
-            // FPExceptions of the result's events (none traps).
-            FCR31 := FCR31 or ((FPResult.Events and 31) shl 12);
-            FCR31 := FCR31 or (((FPResult.Events and not (FCR31 shr 7)) and 31) shl 2);
-            var D := Integer(Step.N);
-            if (FPTarget in [16, 20]) and ((CP0[12] and $4000000) <> 0) then
-              FPR[D] := FPResult.Bits and $FFFFFFFF
-            else
-              SetFPBits(D, FPTarget, FPResult.Bits);
-            // A canonical NOP after successful arithmetic has no reads or
-            // side effects beyond its PC, one clock and clearing FP hazards.
-            // Retain the decoded NOP for exact budget/resume boundaries.
-            if (Step <> Last) and (Clk + C < Limit) and (Result + 1 < MaxSteps) then
-            begin
-              var Tail := PN64CPUStep(NativeUInt(Step) + SizeOf(TN64CPUStep));
-              if (Tail.Op = 0) and (Tail.Flags = 0) and (Tail.Clocks = 1) then
-              begin
-                Inc(Result);
-                Inc(C);
-                Step := Tail;
-                FPreviousFP := -1;
-                FInstructionPC := FPC;
-                FInDelay := False;
-                FPC := FNextPC;
-                FNextPC := Add64(FNextPC, 4);
-              end;
-            end;
-          end;
-        KindCop1Mov:
-          SetFPBits(Integer(Step.N), 17, FPBits(Integer(Step.D), 17));
-        KindCop1Branch:
-          begin
-            FCR31 := FCR31 and not $3F000;
-            Branch(((FCR31 and $800000) <> 0) = ((T and 1) <> 0), (T and 2) <> 0, Add64(FPC, Step.Value shl 2));
-          end;
+        end;
       end;
       // (47, CACHE: nothing.)
       GPR[0] := 0;
@@ -3719,5 +5744,110 @@ begin
     raise EReadError.Create('Invalid N64 CPU snapshot');
 end;
 
+initialization
+  // Block step routines by Kind (BuildBlock's kinds; any other does nothing,
+  // as CACHE).
+  for var K := 0 to 255 do
+    TN64CPU.FStepRoutines[K] := @TN64CPU.StepNop;
+  TN64CPU.FStepRoutines[KindSpecial + 0] := @TN64CPU.StepSLL;
+  TN64CPU.FStepRoutines[KindSpecial + 2] := @TN64CPU.StepSRL;
+  TN64CPU.FStepRoutines[KindSpecial + 3] := @TN64CPU.StepSRA;
+  TN64CPU.FStepRoutines[KindSpecial + 4] := @TN64CPU.StepSLLV;
+  TN64CPU.FStepRoutines[KindSpecial + 6] := @TN64CPU.StepSRLV;
+  TN64CPU.FStepRoutines[KindSpecial + 7] := @TN64CPU.StepSRAV;
+  TN64CPU.FStepRoutines[KindSpecial + 8] := @TN64CPU.StepJR;
+  TN64CPU.FStepRoutines[KindSpecial + 9] := @TN64CPU.StepJALR;
+  TN64CPU.FStepRoutines[KindSpecial + 16] := @TN64CPU.StepMFHI;
+  TN64CPU.FStepRoutines[KindSpecial + 17] := @TN64CPU.StepMTHI;
+  TN64CPU.FStepRoutines[KindSpecial + 18] := @TN64CPU.StepMFLO;
+  TN64CPU.FStepRoutines[KindSpecial + 19] := @TN64CPU.StepMTLO;
+  TN64CPU.FStepRoutines[KindSpecial + 20] := @TN64CPU.StepDSLLV;
+  TN64CPU.FStepRoutines[KindSpecial + 22] := @TN64CPU.StepDSRLV;
+  TN64CPU.FStepRoutines[KindSpecial + 23] := @TN64CPU.StepDSRAV;
+  TN64CPU.FStepRoutines[KindSpecial + 24] := @TN64CPU.StepMULT;
+  TN64CPU.FStepRoutines[KindSpecial + 25] := @TN64CPU.StepMULTU;
+  TN64CPU.FStepRoutines[KindSpecial + 26] := @TN64CPU.StepDIV;
+  TN64CPU.FStepRoutines[KindSpecial + 27] := @TN64CPU.StepDIVU;
+  TN64CPU.FStepRoutines[KindSpecial + 28] := @TN64CPU.StepDMULT;
+  TN64CPU.FStepRoutines[KindSpecial + 29] := @TN64CPU.StepDMULTU;
+  TN64CPU.FStepRoutines[KindSpecial + 30] := @TN64CPU.StepDDIV;
+  TN64CPU.FStepRoutines[KindSpecial + 31] := @TN64CPU.StepDDIVU;
+  TN64CPU.FStepRoutines[KindSpecial + 33] := @TN64CPU.StepADDU;
+  TN64CPU.FStepRoutines[KindSpecial + 35] := @TN64CPU.StepSUBU;
+  TN64CPU.FStepRoutines[KindSpecial + 36] := @TN64CPU.StepAND;
+  TN64CPU.FStepRoutines[KindSpecial + 37] := @TN64CPU.StepOR;
+  TN64CPU.FStepRoutines[KindSpecial + 38] := @TN64CPU.StepXOR;
+  TN64CPU.FStepRoutines[KindSpecial + 39] := @TN64CPU.StepNOR;
+  TN64CPU.FStepRoutines[KindSpecial + 42] := @TN64CPU.StepSLT;
+  TN64CPU.FStepRoutines[KindSpecial + 43] := @TN64CPU.StepSLTU;
+  TN64CPU.FStepRoutines[KindSpecial + 45] := @TN64CPU.StepDADDU;
+  TN64CPU.FStepRoutines[KindSpecial + 47] := @TN64CPU.StepDSUBU;
+  TN64CPU.FStepRoutines[KindSpecial + 56] := @TN64CPU.StepDSLL;
+  TN64CPU.FStepRoutines[KindSpecial + 58] := @TN64CPU.StepDSRL;
+  TN64CPU.FStepRoutines[KindSpecial + 59] := @TN64CPU.StepDSRA;
+  TN64CPU.FStepRoutines[KindSpecial + 60] := @TN64CPU.StepDSLL32;
+  TN64CPU.FStepRoutines[KindSpecial + 62] := @TN64CPU.StepDSRL32;
+  TN64CPU.FStepRoutines[KindSpecial + 63] := @TN64CPU.StepDSRA32;
+  TN64CPU.FStepRoutines[1] := @TN64CPU.StepRegimm;
+  TN64CPU.FStepRoutines[2] := @TN64CPU.StepJ;
+  TN64CPU.FStepRoutines[3] := @TN64CPU.StepJAL;
+  TN64CPU.FStepRoutines[4] := @TN64CPU.StepBEQ;
+  TN64CPU.FStepRoutines[20] := @TN64CPU.StepBEQL;
+  TN64CPU.FStepRoutines[5] := @TN64CPU.StepBNE;
+  TN64CPU.FStepRoutines[21] := @TN64CPU.StepBNEL;
+  TN64CPU.FStepRoutines[6] := @TN64CPU.StepBLEZ;
+  TN64CPU.FStepRoutines[22] := @TN64CPU.StepBLEZL;
+  TN64CPU.FStepRoutines[7] := @TN64CPU.StepBGTZ;
+  TN64CPU.FStepRoutines[23] := @TN64CPU.StepBGTZL;
+  TN64CPU.FStepRoutines[9] := @TN64CPU.StepADDIU;
+  TN64CPU.FStepRoutines[10] := @TN64CPU.StepSLTI;
+  TN64CPU.FStepRoutines[11] := @TN64CPU.StepSLTIU;
+  TN64CPU.FStepRoutines[12] := @TN64CPU.StepANDI;
+  TN64CPU.FStepRoutines[13] := @TN64CPU.StepORI;
+  TN64CPU.FStepRoutines[14] := @TN64CPU.StepXORI;
+  TN64CPU.FStepRoutines[15] := @TN64CPU.StepLUI;
+  TN64CPU.FStepRoutines[32] := @TN64CPU.StepLB;
+  TN64CPU.FStepRoutines[33] := @TN64CPU.StepLH;
+  TN64CPU.FStepRoutines[35] := @TN64CPU.StepLW;
+  TN64CPU.FStepRoutines[36] := @TN64CPU.StepLBU;
+  TN64CPU.FStepRoutines[37] := @TN64CPU.StepLHU;
+  TN64CPU.FStepRoutines[39] := @TN64CPU.StepLWU;
+  TN64CPU.FStepRoutines[49] := @TN64CPU.StepLWC1;
+  TN64CPU.FStepRoutines[53] := @TN64CPU.StepLDC1;
+  TN64CPU.FStepRoutines[55] := @TN64CPU.StepLD;
+  TN64CPU.FStepRoutines[40] := @TN64CPU.StepSB;
+  TN64CPU.FStepRoutines[41] := @TN64CPU.StepSH;
+  TN64CPU.FStepRoutines[43] := @TN64CPU.StepSW;
+  TN64CPU.FStepRoutines[63] := @TN64CPU.StepSD;
+  TN64CPU.FStepRoutines[57] := @TN64CPU.StepSWC1;
+  TN64CPU.FStepRoutines[61] := @TN64CPU.StepSDC1;
+  TN64CPU.FStepRoutines[KindCop1Move + 0] := @TN64CPU.StepMFC1;
+  TN64CPU.FStepRoutines[KindCop1Move + 1] := @TN64CPU.StepDMFC1;
+  TN64CPU.FStepRoutines[KindCop1Move + 4] := @TN64CPU.StepMTC1;
+  TN64CPU.FStepRoutines[KindCop1Move + 5] := @TN64CPU.StepDMTC1;
+  TN64CPU.FStepRoutines[KindCop1Compare] := @TN64CPU.StepFPCompare;
+  TN64CPU.FStepRoutines[KindCop1Arith] := @TN64CPU.StepFPArith;
+  TN64CPU.FStepRoutines[KindCop1Mov] := @TN64CPU.StepFPMov;
+  TN64CPU.FStepRoutines[KindCop1Branch] := @TN64CPU.StepBC1;
+  // N64JIT: words with or without commas between them (hot16, nochain).
+  begin
+    var Words := GetEnvironmentVariable('N64JIT').ToLower;
+    for var D := Low(TJitDebug) to High(TJitDebug) do
+      if Words.Contains(JitDebugNames[D]) then
+        Include(JitDebug, D);
+    var P := Words.IndexOf('hot');
+    if P >= 0 then
+    begin
+      var N := 0;
+      var K := P + 3;
+      while (K < Words.Length) and CharInSet(Words.Chars[K], ['0'..'9']) do
+      begin
+        N := N * 10 + Ord(Words.Chars[K]) - Ord('0');
+        Inc(K);
+      end;
+      JitHot := Min(N, 60000);
+    end;
+  end;
+  JitWorkOutOffsets;
 end.
 

@@ -25,8 +25,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs, System.Diagnostics,
-  N64.Types, N64.RDP, N64.Host;
+  System.SysUtils, System.Classes, System.SyncObjs, System.Diagnostics, System.Math, N64.Types, N64.RDP, N64.Host;
 
 type
   TN64RDPWorker = class
@@ -108,6 +107,9 @@ type
     // Pending 1 until made.
     FCopies: array[0..CopySlots - 1] of TCopy;
     FCopyNext: Integer;
+    // With bands: the copy band 0 makes at the barrier (CopyAt).
+    FCopyAt: Integer;
+    FMakeCopy: TProc;
   protected
     // Fields written by different threads sit on different cache lines.
     FPad0: array[0..7] of Int64;
@@ -125,6 +127,7 @@ type
     procedure OpenSegment;
     procedure CloseSegment(Last: Boolean);
     procedure Publish;
+    procedure WakeBands(Index: Integer);
     function MinConsumed: Int64;
     function Reached(Target: TWaitTarget; Value: Int64): Boolean;
     procedure WaitFor(Target: TWaitTarget; Value: Int64);
@@ -234,6 +237,8 @@ begin
         TInterlocked.Exchange(FOwner.FSlots[FIndex].Sleeping, 0);
       Continue;
     end;
+    // (Before a copy's barrier too, where every band must come.)
+    FOwner.WakeBands(FIndex);
     if FOwner.FStress then
       StressDelay(FNoise);
     var Header := FOwner.FRing[Position and RingMask];
@@ -297,6 +302,11 @@ begin
   end;
   if Bands > 1 then
     FGroup := TN64RDPGroup.Create(FRDPs);
+  FMakeCopy :=
+    procedure
+    begin
+      MakeCopy(FCopyAt);
+    end;
   FEnded := Completed;
   SetLength(FSlots, Bands);
   for var I := 0 to Bands - 1 do
@@ -398,15 +408,16 @@ end;
 procedure TN64RDPWorker.CopyAt(RDP: TN64RDP; Index: Integer);
 begin
   // Every band has finished the lists before (band 0 copies at the
-  // barrier, while the others wait).
+  // barrier, while the others wait). FMakeCopy, made once (no memory manager
+  // call on the band threads), copies FCopyAt, which band 0 sets.
   if FGroup = nil then
     MakeCopy(Index)
   else
-    FGroup.Barrier(RDP,
-      procedure
-      begin
-        MakeCopy(Index);
-      end);
+  begin
+    if RDP = FRDPs[0] then
+      FCopyAt := Index;
+    FGroup.Barrier(RDP, FMakeCopy);
+  end;
 end;
 
 procedure TN64RDPWorker.QueueCopy(Target: TN64Bus; Address, Count: Cardinal; Ready: TEvent);
@@ -533,9 +544,20 @@ end;
 
 procedure TN64RDPWorker.Publish;
 begin
+  // Band 0 only: the bands wake each other (WakeBands), so a publication
+  // costs this thread one wake-up at most.
   TInterlocked.Exchange(FPublished, FWrite);
-  for var I := 0 to High(FSlots) do
-    Signal(FSlots[I].Sleeping, FSlots[I].DataReady);
+  Signal(FSlots[0].Sleeping, FSlots[0].DataReady);
+end;
+
+procedure TN64RDPWorker.WakeBands(Index: Integer);
+begin
+  // Band Index, taking a segment, wakes bands 2 Index + 1 and 2 Index + 2:
+  // from band 0 every band in turn. A band sleeps only after setting its flag
+  // and finding nothing published, and this runs only after the segment was
+  // published, so none sleeps through it.
+  for var C := 2 * Index + 1 to Min(2 * Index + 2, High(FSlots)) do
+    Signal(FSlots[C].Sleeping, FSlots[C].DataReady);
 end;
 
 procedure TN64RDPWorker.BeginList;

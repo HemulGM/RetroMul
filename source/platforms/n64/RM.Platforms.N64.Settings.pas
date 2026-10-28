@@ -10,14 +10,25 @@ type
   public
     procedure PrepareSave(Draft: TMemIniFile); override;
   public
+    procedure Configuration(Context: TSettingsPageBuilder); override;
     procedure Video(Context: TSettingsPageBuilder); override;
   end;
 
 implementation
 
 uses
-  FMX.Types, System.SysUtils, System.Math, RM.Icons;
+  FMX.Types, System.SysUtils, System.Math, RM.Icons, HW.JIT;
 
+procedure TN64Settings.Configuration(Context: TSettingsPageBuilder);
+begin
+  // (First on the page; only where there is a code generator: elsewhere
+  // always the interpreter.)
+  if JitSupported then
+  begin
+    Context.Heading('GroupN64Emulation', 'N64 emulation');
+    Context.AddChoice('RowN64Execution', 'CPU and RSP', 'The recompiler runs the game''s code as native code; the interpreter runs it instruction by instruction. Both give the same emulation; the recompiler is faster. Applies during play.', 'Emulation', 'Execution', SettingChoices([Translate('Recompiler (JIT)'), Translate('Interpreter')], ['jit', 'interpreter']), 'jit', True);
+  end;
+end;
 procedure TN64Settings.Video(Context: TSettingsPageBuilder);
 begin
   Context.Heading('GroupN64Video', 'N64 rendering');

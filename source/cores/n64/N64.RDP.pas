@@ -133,6 +133,28 @@ type
     // Decoded texels by (tile, wrapped S, wrapped T). Entries from an older
     // generation are stale: tiles, TMEM or the TLUT mode changed since.
     FTexelGeneration: Cardinal;
+    {$IF Defined(CPU64BITS)}
+    // An entry in one place (a lookup reads one cache line): Tag is the key
+    // (below 2^36) with the generation's low 28 bits from bit 36 on (never 0
+    // there: InvalidateTexels skips it, clearing the entries).
+    FTexelCache: array[0..1023] of record
+      Tag, Quad: UInt64;
+      Texel: TN64Texel;
+    end;
+    FFiltered: array[0..4095] of record
+      Tag, Texel: UInt64;
+    end;
+    // The same for palette indices (TLUTIndex, the same slots), and the
+    // decoded palette halfwords (PackedTLUTTexel, by index * 4 + halfword:
+    // Tag is the generation's low 28 bits alone).
+    FIndexCache: array[0..1023] of record
+      Tag: UInt64;
+      Value: Integer;
+    end;
+    FPaletteCache: array[0..1023] of record
+      Tag, Texel: UInt64;
+    end;
+    {$ELSE}
     FTexelKeys: array[0..1023] of UInt64;
     FTexelStamps: array[0..1023] of Cardinal;
     FTexels: array[0..1023] of TN64Texel;
@@ -145,6 +167,7 @@ type
     FPaletteTexels: array[0..1023] of UInt64;
     FFilteredKeys, FFilteredTexels: array[0..4095] of UInt64;
     FFilteredStamps: array[0..4095] of Cardinal;
+    {$ENDIF}
     FBilinearFiltering: Boolean;
     FColorAddress, FTextureAddress, FFill, FPrimitive, FEnvironment, FOtherHi, FOtherLo: Cardinal;
     FCombineHi, FCombineLo: Cardinal;
@@ -473,6 +496,19 @@ function WrapSigned32(Value: Int64): Int64; inline;
 begin
   Result := Integer(Cardinal(Value and $FFFFFFFF));
 end;
+
+{$IF Defined(CPU64BITS)}
+function ClampTo(Value, Low, High: Integer): Integer; inline;
+begin
+  // EnsureRange, inline (System.Math's is a call on ARM64).
+  if Value < Low then
+    Result := Low
+  else if Value > High then
+    Result := High
+  else
+    Result := Value;
+end;
+{$ENDIF}
 
 function Clamp9(Value: Integer): Integer; inline;
 begin
@@ -1143,8 +1179,24 @@ begin
   end;
 end;
 
+{$IF Defined(CPU64BITS)}
+var
+  // The highest set bit of each byte (0 for 0 and 1); the leading ones of
+  // each 7-bit value.
+  HighBit8: array[0..255] of Byte;
+  LeadingOnes7: array[0..127] of Byte;
+{$ENDIF}
+
 function EncodedDZ(V: Cardinal): Integer;
 begin
+  // The highest set bit of V's low 16 bits (0 for 0 and 1).
+  {$IF Defined(CPU64BITS)}
+  V := V and $FFFF;
+  if V >= 256 then
+    Result := 8 + HighBit8[V shr 8]
+  else
+    Result := HighBit8[V];
+  {$ELSE}
   Result := 0;
   V := V and $FFFF;
   while V > 1 do
@@ -1152,6 +1204,7 @@ begin
     V := V shr 1;
     Inc(Result)
   end;
+  {$ENDIF}
 end;
 
 function BlenderDivide(Denominator, Numerator: Integer): Integer;
@@ -1190,6 +1243,14 @@ begin
     Result := FFogColor
   end;
 end;
+
+{$IF Defined(CPU64BITS)}
+function BlendLanes(C: Cardinal): UInt64; inline;
+begin
+  // A colour's red, green and blue (bits 8..31) in 16-bit lanes 0, 1, 2.
+  Result := UInt64((C shr 8) and $FF) or (UInt64((C shr 16) and $FF) shl 16) or (UInt64(C shr 24) shl 32);
+end;
+{$ENDIF}
 
 function TN64RDP.Blend(Cycle: Integer; AlwaysBlend: Boolean): Cardinal;
 begin
@@ -1231,6 +1292,17 @@ begin
     Beta := (Beta shr FBlend.BlendShiftB) or 3;
   end;
   Result := FBlend.InputColor and $FF;
+  {$IF Defined(CPU64BITS)}
+  if AlwaysBlend or ((FOtherLo and $4000) <> 0) then
+  begin
+    // The three channels at once, in 16-bit lanes (each sum at most
+    // 255 * 31 + 255 * 32 < 2^16): bits 5..12 of each.
+    var V := BlendLanes(First) * UInt64(Alpha) + BlendLanes(Second) * UInt64(Beta + 1);
+    V := (V shr 5) and UInt64($000000FF00FF00FF);
+    Exit(Result or (Cardinal(V and $FF) shl 8) or (Cardinal((V shr 16) and $FF) shl 16) or
+      (Cardinal((V shr 32) and $FF) shl 24));
+  end;
+  {$ENDIF}
   for var Channel := 1 to 3 do
   begin
     var Value := Integer((First shr (Channel * 8)) and $FF) * Alpha +
@@ -1637,8 +1709,13 @@ begin
     var Nearer := Coplanar or (Int64(Depth) - Tolerance <= OldZ);
     var InFront := Cardinal(Depth) < OldZ;
     var IsMax := OldZ = $3FFFF;
+    {$IF Defined(CPU64BITS)}
+    FBlend.BlendShiftA := ClampTo(DZEncode - OldDZEncode, 0, 4);
+    FBlend.BlendShiftB := ClampTo(OldDZEncode - DZEncode, 0, 4);
+    {$ELSE}
     FBlend.BlendShiftA := EnsureRange(DZEncode - OldDZEncode, 0, 4);
     FBlend.BlendShiftB := EnsureRange(OldDZEncode - DZEncode, 0, 4);
+    {$ENDIF}
     FBlend.BlendEnabled := ((FOtherLo and $4000) <> 0) or (((FOtherLo and 8) <> 0) and not FBlend.PreWrap and Farther);
     case (FOtherLo shr 10) and 3 of
       0:
@@ -1683,6 +1760,29 @@ begin
         DitherValue := Bayer[Index];
       if RGBDither = 2 then
         DitherValue := FNoise;
+      {$IF Defined(CPU64BITS)}
+      // The three channels unrolled: blue (bits 8..15) takes the noise's bits
+      // 6..8, green 3..5, red 0..2.
+      var T1 := DitherValue;
+      var T2 := DitherValue;
+      var T3 := DitherValue;
+      if RGBDither = 2 then
+      begin
+        T1 := (DitherValue shr 6) and 7;
+        T2 := (DitherValue shr 3) and 7;
+        T3 := DitherValue and 7;
+      end;
+      var V1 := Integer((Color shr 8) and $FF);
+      var V2 := Integer((Color shr 16) and $FF);
+      var V3 := Integer(Color shr 24);
+      if (V1 and 7) > T1 then
+        V1 := Min(255, (V1 and $F8) + 8);
+      if (V2 and 7) > T2 then
+        V2 := Min(255, (V2 and $F8) + 8);
+      if (V3 and 7) > T3 then
+        V3 := Min(255, (V3 and $F8) + 8);
+      Color := (Color and $FF) or (Cardinal(V1) shl 8) or (Cardinal(V2) shl 16) or (Cardinal(V3) shl 24);
+      {$ELSE}
       var Dithered := Color and $FF;
       for var Channel := 1 to 3 do
       begin
@@ -1695,6 +1795,7 @@ begin
         Dithered := Dithered or (Cardinal(V) shl (Channel * 8));
       end;
       Color := Dithered;
+      {$ENDIF}
     end;
   end;
   var FinalCoverage := 7;
@@ -1720,10 +1821,20 @@ begin
     end;
   if UseDepth and ((FOtherLo and $20) <> 0) then
   begin
+    {$IF Defined(CPU64BITS)}
+    var Z := Cardinal(ClampTo(Depth, 0, $3FFFF));
+    {$ELSE}
     var Z := Cardinal(EnsureRange(Depth, 0, $3FFFF));
+    {$ENDIF}
+    {$IF Defined(CPU64BITS)}
+    // The leading ones of bits 17..11 (Z < 2^18): the largest Level with
+    // ZBase[Level] <= Z.
+    var Level := Integer(LeadingOnes7[(Z shr 11) and $7F]);
+    {$ELSE}
     var Level := 7;
     while (Level > 0) and (Z < ZBase[Level]) do
       Dec(Level);
+    {$ENDIF}
     var Stored := Word((Cardinal(Level) shl 13) or (((Z - ZBase[Level]) shr ZShift[Level]) shl 2) or Cardinal(DZEncode shr 2));
     MemWrite16Hidden(Cardinal(ZAddress), Stored, Byte(DZEncode and 3));
   end;
@@ -1844,6 +1955,21 @@ end;
 
 procedure TN64RDP.InvalidateTexels;
 begin
+  {$IF Defined(CPU64BITS)}
+  // (Entries keep the generation's low 28 bits: cleared when those wrap.)
+  if FTexelGeneration = High(Cardinal) then
+    FTexelGeneration := 0;
+  Inc(FTexelGeneration);
+  if (FTexelGeneration and $0FFFFFFF) <= 1 then
+  begin
+    FillChar(FTexelCache, SizeOf(FTexelCache), 0);
+    FillChar(FFiltered, SizeOf(FFiltered), 0);
+    FillChar(FIndexCache, SizeOf(FIndexCache), 0);
+    FillChar(FPaletteCache, SizeOf(FPaletteCache), 0);
+    if (FTexelGeneration and $0FFFFFFF) = 0 then
+      Inc(FTexelGeneration);
+  end;
+  {$ELSE}
   if FTexelGeneration = High(Cardinal) then
   begin
     for var I := 0 to High(FTexelStamps) do
@@ -1858,6 +1984,7 @@ begin
   end
   else
     Inc(FTexelGeneration);
+  {$ENDIF}
 end;
 
 function TN64RDP.TexelAt(Tile, S, T: Integer): TN64Texel;
@@ -1865,6 +1992,18 @@ begin
   // S, T are wrapped (0..$FFFF) and Tile is 0..7, so the key is exact.
   var Key := (UInt64(Tile) shl 32) or (UInt64(S) shl 16) or UInt64(T);
   var Slot := (S + T * 33 + Tile * 257) and 1023;
+  {$IF Defined(CPU64BITS)}
+  var Tag := Key or (UInt64(FTexelGeneration and $0FFFFFFF) shl 36);
+  if FTexelCache[Slot].Tag = Tag then
+    Exit(FTexelCache[Slot].Texel);
+  Result := DecodeTexel(Tile, S, T);
+  FTexelCache[Slot].Texel := Result;
+  FTexelCache[Slot].Quad := UInt64(Result.C[0] and $FF) or
+    (UInt64(Result.C[1] and $FF) shl 16) or
+    (UInt64(Result.C[2] and $FF) shl 32) or
+    (UInt64(Result.C[3] and $FF) shl 48);
+  FTexelCache[Slot].Tag := Tag;
+  {$ELSE}
   if (FTexelStamps[Slot] = FTexelGeneration) and (FTexelKeys[Slot] = Key) then
     Exit(FTexels[Slot]);
   Result := DecodeTexel(Tile, S, T);
@@ -1875,15 +2014,22 @@ begin
     (UInt64(Result.C[3] and $FF) shl 48);
   FTexelKeys[Slot] := Key;
   FTexelStamps[Slot] := FTexelGeneration;
+  {$ENDIF}
 end;
 
 function TN64RDP.PackedTexelAt(Tile, S, T: Integer): UInt64;
 begin
   var Key := (UInt64(Tile) shl 32) or (UInt64(S) shl 16) or UInt64(T);
   var Slot := (S + T * 33 + Tile * 257) and 1023;
+  {$IF Defined(CPU64BITS)}
+  if FTexelCache[Slot].Tag <> Key or (UInt64(FTexelGeneration and $0FFFFFFF) shl 36) then
+    TexelAt(Tile, S, T);
+  Result := FTexelCache[Slot].Quad;
+  {$ELSE}
   if (FTexelStamps[Slot] <> FTexelGeneration) or (FTexelKeys[Slot] <> Key) then
     TexelAt(Tile, S, T);
   Result := FPackedTexels[Slot];
+  {$ENDIF}
 end;
 
 function TN64RDP.TexelBits(Tile, S, T: Integer; out Address: Integer): Cardinal;
@@ -1945,13 +2091,24 @@ begin
   // (Cached as TexelAt's texels.)
   var Key := (UInt64(Tile) shl 32) or (UInt64(S) shl 16) or UInt64(T);
   var Slot := (S + T * 33 + Tile * 257) and 1023;
+  {$IF Defined(CPU64BITS)}
+  var Tag := Key or (UInt64(FTexelGeneration and $0FFFFFFF) shl 36);
+  if FIndexCache[Slot].Tag = Tag then
+    Exit(FIndexCache[Slot].Value);
+  {$ELSE}
   if (FIndexStamps[Slot] = FTexelGeneration) and (FIndexKeys[Slot] = Key) then
     Exit(FIndexValues[Slot]);
+  {$ENDIF}
   var Address: Integer;
   Result := PaletteIndex(Tile, TexelBits(Tile, S, T, Address));
+  {$IF Defined(CPU64BITS)}
+  FIndexCache[Slot].Value := Result;
+  FIndexCache[Slot].Tag := Tag;
+  {$ELSE}
   FIndexValues[Slot] := Result;
   FIndexKeys[Slot] := Key;
   FIndexStamps[Slot] := FTexelGeneration;
+  {$ENDIF}
 end;
 
 function TN64RDP.PackedTLUTTexel(Index, Halfword: Integer): UInt64;
@@ -1959,8 +2116,14 @@ begin
   // Halfword (0..3) of palette entry Index, decoded as the TLUT type says,
   // its channels in four 16-bit lanes.
   var Slot := Index * 4 + Halfword;
+  {$IF Defined(CPU64BITS)}
+  var Tag := UInt64(FTexelGeneration and $0FFFFFFF);
+  if FPaletteCache[Slot].Tag = Tag then
+    Exit(FPaletteCache[Slot].Texel);
+  {$ELSE}
   if FPaletteStamps[Slot] = FTexelGeneration then
     Exit(FPaletteTexels[Slot]);
+  {$ENDIF}
   var PA := $800 + Index * 8 + Halfword * 2;
   var V := (Cardinal(FTMEM[PA]) shl 8) or FTMEM[PA + 1];
   if (FOtherHi and $4000) <> 0 then
@@ -1976,8 +2139,13 @@ begin
     Result := UInt64((R shl 3) or (R shr 2)) or (UInt64((G shl 3) or (G shr 2)) shl 16) or
       (UInt64((B shl 3) or (B shr 2)) shl 32) or (UInt64((V and 1) * $FF) shl 48);
   end;
+  {$IF Defined(CPU64BITS)}
+  FPaletteCache[Slot].Texel := Result;
+  FPaletteCache[Slot].Tag := Tag;
+  {$ELSE}
   FPaletteTexels[Slot] := Result;
   FPaletteStamps[Slot] := FTexelGeneration;
+  {$ENDIF}
 end;
 
 function TN64RDP.DecodeTexel(Tile, S, T: Integer): TN64Texel;
@@ -2115,9 +2283,17 @@ begin
     FilterKey := UInt64(S and $FFFF) or (UInt64(T and $FFFF) shl 16) or
       (UInt64(Tile) shl 32) or (UInt64(Cycle) shl 35);
     FilterSlot := Integer((FilterKey xor (FilterKey shr 11) xor (FilterKey shr 23)) and 4095);
+    {$IF Defined(CPU64BITS)}
+    // (From here on the key with the generation: the entry's tag.)
+    FilterKey := FilterKey or (UInt64(FTexelGeneration and $0FFFFFFF) shl 36);
+    if FFiltered[FilterSlot].Tag = FilterKey then
+    begin
+      var P := FFiltered[FilterSlot].Texel;
+    {$ELSE}
     if (FFilteredStamps[FilterSlot] = FTexelGeneration) and (FFilteredKeys[FilterSlot] = FilterKey) then
     begin
       var P := FFilteredTexels[FilterSlot];
+    {$ENDIF}
       Result.C[0] := Integer(P and $FF);
       Result.C[1] := Integer((P shr 16) and $FF);
       Result.C[2] := Integer((P shr 32) and $FF);
@@ -2182,11 +2358,18 @@ begin
       Exit(Converted(Nearest));
     if Cacheable then
     begin
+      {$IF Defined(CPU64BITS)}
+      FFiltered[FilterSlot].Texel := UInt64(Nearest.C[0]) or
+        (UInt64(Nearest.C[1]) shl 16) or (UInt64(Nearest.C[2]) shl 32) or
+        (UInt64(Nearest.C[3]) shl 48);
+      FFiltered[FilterSlot].Tag := FilterKey;
+      {$ELSE}
       FFilteredTexels[FilterSlot] := UInt64(Nearest.C[0]) or
         (UInt64(Nearest.C[1]) shl 16) or (UInt64(Nearest.C[2]) shl 32) or
         (UInt64(Nearest.C[3]) shl 48);
       FFilteredKeys[FilterSlot] := FilterKey;
       FFilteredStamps[FilterSlot] := FTexelGeneration;
+      {$ENDIF}
     end;
     Exit(Nearest);
   end;
@@ -2274,9 +2457,14 @@ begin
     Result.C[1] := Integer((Sum shr 21) and $FF);
     Result.C[2] := Integer((Sum shr 37) and $FF);
     Result.C[3] := Integer((Sum shr 53) and $FF);
+    {$IF Defined(CPU64BITS)}
+    FFiltered[FilterSlot].Texel := (Sum shr 5) and UInt64($00FF00FF00FF00FF);
+    FFiltered[FilterSlot].Tag := FilterKey;
+    {$ELSE}
     FFilteredTexels[FilterSlot] := (Sum shr 5) and UInt64($00FF00FF00FF00FF);
     FFilteredKeys[FilterSlot] := FilterKey;
     FFilteredStamps[FilterSlot] := FTexelGeneration;
+    {$ENDIF}
     Exit;
   end;
   var Base := TexelAt(Tile, S0, T0);
@@ -2382,8 +2570,13 @@ function Extend9(Value: Integer): Integer; inline;
 begin
   // Combiner inputs: nine bits, with 0x180..0x1FF read as negative.
   Result := Value and $1FF;
+  {$IF Defined(CPU64BITS)}
+  // (Without a branch: Result + 128 reaches 512 just from 0x180 on.)
+  Dec(Result, ((Result + 128) shr 9) shl 9);
+  {$ELSE}
   if (Result and $180) = $180 then
     Dec(Result, 512);
+  {$ENDIF}
 end;
 
 function Sign9(Value: Integer): Integer; inline;
@@ -2887,6 +3080,54 @@ begin
     var RowSwap := 0;
     if not Block and Odd(Y) then
       RowSwap := 4;
+    {$IF Defined(CPU64BITS)}
+    if (Layout <= 1) and ((Valid and 3) = 0) and ((Payload and (FDataBytes = 0)) or (not Payload and Direct)) then
+    begin
+      // A word (four bytes) at a time, where the loop below would put them:
+      // with X a multiple of 4 (Base one of 8), bytes X..X + 3 go to Target
+      // .. Target + 3 (Layout 0), or X, X + 1 to Target, Target + 1 and X + 2,
+      // X + 3 to the same in the upper half (Layout 1); the swap is the same
+      // for the four.
+      var X := 0;
+      while X < Valid do
+      begin
+        var W: Cardinal;
+        if Payload then
+          W := FOnDataIn()
+        else
+          W := FBus.RDPRead32(Cardinal(RowSource) + Cardinal(X));
+        var Target: Integer;
+        if Layout = 0 then
+          Target := (Base + X) and $FFF
+        else
+          Target := (Base + X div 2) and $7FF;
+        if Block then
+        begin
+          if Odd((X div 8 * TH) div 2048) then
+            Target := Target xor 4;
+        end
+        else
+          Target := Target xor RowSwap;
+        FTMEM[Target] := Byte(W shr 24);
+        FTMEM[Target + 1] := Byte(W shr 16);
+        if Layout = 0 then
+        begin
+          FTMEM[Target + 2] := Byte(W shr 8);
+          FTMEM[Target + 3] := Byte(W);
+        end
+        else
+        begin
+          FTMEM[Target or $800] := Byte(W shr 8);
+          FTMEM[(Target + 1) or $800] := Byte(W);
+        end;
+        Inc(X, 4);
+      end;
+      // (As NextDataByte leaves it after whole words.)
+      if Payload and (Valid > 0) then
+        FDataWord := 0;
+      Continue;
+    end;
+    {$ENDIF}
     for var X := 0 to Valid - 1 do
     begin
       var Target: Integer;
@@ -3076,6 +3317,31 @@ function TN64RDP.TextureDivide(Coordinate, W: Int64): Integer;
 begin
   // Only bits 16..31 participate: sign extension of the discarded upper
   // bits is unnecessary. The reciprocal is a pure function of the 15-bit W.
+  {$IF Defined(CPU64BITS)}
+  // In 32 bits: |SS| <= 2^15 and the reciprocal < 2^15, so the product and
+  // its double fit.
+  var SS := Integer(SmallInt(Word(Cardinal(Coordinate) shr 16)));
+  if (FOtherHi and $80000) = 0 then
+    Exit(SS);
+  var SW := Integer((Cardinal(W) shr 16) and $FFFF);
+  if (SW = 0) or ((SW and $8000) <> 0) then
+    Exit(32767);
+  var Product := SS * Integer(PerspectiveReciprocal[SW]);
+  var Shift := Integer(PerspectiveShift[SW]);
+  var V: Integer;
+  if Shift = 14 then
+    V := Product * 2
+  else if Product >= 0 then
+    V := Product shr (13 - Shift)
+  else
+    V := not ((not Product) shr (13 - Shift));
+  if V > 32767 then
+    Result := 32767
+  else if V < -32768 then
+    Result := -32768
+  else
+    Result := V;
+  {$ELSE}
   var SS := Int64(SmallInt(Word((Coordinate shr 16) and $FFFF)));
   if (FOtherHi and $80000) = 0 then
     Exit(Integer(SS));
@@ -3088,7 +3354,17 @@ begin
   var V := Product * 2;
   if Shift <> 14 then
     V := ShiftRight(Product, 13 - Shift);
+  {$IF Defined(CPU64BITS)}
+  if V > 32767 then
+    Result := 32767
+  else if V < -32768 then
+    Result := -32768
+  else
+    Result := Integer(V);
+  {$ELSE}
   Result := Integer(EnsureRange(V, Int64(-32768), Int64(32767)));
+  {$ENDIF}
+  {$ENDIF}
 end;
 
 procedure TN64RDP.RowAddresses(Y: Integer);
@@ -3305,6 +3581,45 @@ begin
   // Only the attribute groups present in this primitive are ever read.
   var Attributes: array[0..7] of Int64;
   var SpanX := X - FPrim.UnscrX;
+  {$IF Defined(CPU64BITS)}
+  // Unrolled. A shade lane's nine bits are bits of its attribute (with the
+  // offsets' products below full coverage, modulo 2^32): the floor shifts
+  // and the 9-bit mask below are bit extraction.
+  var Shade: Cardinal := 0;
+  if (FPrim.Code and 4) <> 0 then
+  begin
+    var A0 := Cardinal(FPrim.SpanAttribute[0] + FPrim.Coeff[1, 0] * SpanX);
+    var A1 := Cardinal(FPrim.SpanAttribute[1] + FPrim.Coeff[1, 1] * SpanX);
+    var A2 := Cardinal(FPrim.SpanAttribute[2] + FPrim.Coeff[1, 2] * SpanX);
+    var A3 := Cardinal(FPrim.SpanAttribute[3] + FPrim.Coeff[1, 3] * SpanX);
+    Attributes[0] := Integer(A0);
+    Attributes[1] := Integer(A1);
+    Attributes[2] := Integer(A2);
+    Attributes[3] := Integer(A3);
+    if Coverage = 8 then
+      Shade := (Cardinal(Clamp9(Integer((A0 shr 16) and $1FF))) shl 24) or
+        (Cardinal(Clamp9(Integer((A1 shr 16) and $1FF))) shl 16) or
+        (Cardinal(Clamp9(Integer((A2 shr 16) and $1FF))) shl 8) or Cardinal(Clamp9(Integer((A3 shr 16) and $1FF)))
+    else
+    begin
+      A0 := ((A0 shr 14) shl 2) + Cardinal(OffX * FPrim.ShadeDX[0] + OffY * FPrim.ShadeDY[0]);
+      A1 := ((A1 shr 14) shl 2) + Cardinal(OffX * FPrim.ShadeDX[1] + OffY * FPrim.ShadeDY[1]);
+      A2 := ((A2 shr 14) shl 2) + Cardinal(OffX * FPrim.ShadeDX[2] + OffY * FPrim.ShadeDY[2]);
+      A3 := ((A3 shr 14) shl 2) + Cardinal(OffX * FPrim.ShadeDX[3] + OffY * FPrim.ShadeDY[3]);
+      Shade := (Cardinal(Clamp9(Integer((A0 shr 4) and $1FF))) shl 24) or
+        (Cardinal(Clamp9(Integer((A1 shr 4) and $1FF))) shl 16) or
+        (Cardinal(Clamp9(Integer((A2 shr 4) and $1FF))) shl 8) or Cardinal(Clamp9(Integer((A3 shr 4) and $1FF)));
+    end;
+  end;
+  if (FPrim.Code and 2) <> 0 then
+  begin
+    Attributes[4] := Integer(Cardinal(FPrim.SpanAttribute[4] + FPrim.Coeff[1, 4] * SpanX));
+    Attributes[5] := Integer(Cardinal(FPrim.SpanAttribute[5] + FPrim.Coeff[1, 5] * SpanX));
+    Attributes[6] := Integer(Cardinal(FPrim.SpanAttribute[6] + FPrim.Coeff[1, 6] * SpanX));
+  end;
+  if (FPrim.Code and 1) <> 0 then
+    Attributes[7] := Integer(Cardinal(FPrim.SpanAttribute[7] + FPrim.Coeff[1, 7] * SpanX));
+  {$ELSE}
   if (FPrim.Code and 4) <> 0 then
     for var I := 0 to 3 do
       Attributes[I] := WrapSigned32(FPrim.SpanAttribute[I] + FPrim.Coeff[1, I] * SpanX);
@@ -3327,6 +3642,7 @@ begin
       Shade := (Shade shl 8) or Cardinal(Clamp9(Integer(V and $1FF)));
     end;
   end;
+  {$ENDIF}
   // Without texture the combiner's texels are the shade (DecodeMode), and
   // so is a copied pixel.
   FLODFraction := 0;
@@ -3413,8 +3729,15 @@ begin
       FIn.Slots[InTexelNext] := Texture(Tile0, NextS, NextT, 0, NoTexel);
       // Lane by lane: copying the whole texel right after its lanes were
       // stored one by one would stall on store forwarding.
+      {$IF Defined(CPU64BITS)}
+      FPrim.MemoTexel.C[0] := FIn.Slots[InTexelNext].C[0];
+      FPrim.MemoTexel.C[1] := FIn.Slots[InTexelNext].C[1];
+      FPrim.MemoTexel.C[2] := FIn.Slots[InTexelNext].C[2];
+      FPrim.MemoTexel.C[3] := FIn.Slots[InTexelNext].C[3];
+      {$ELSE}
       for var I := 0 to 3 do
         FPrim.MemoTexel.C[I] := FIn.Slots[InTexelNext].C[I];
+      {$ENDIF}
       FPrim.MemoTile := Tile0;
       FPrim.MemoTexelS := NextS;
       FPrim.MemoTexelT := NextT;
@@ -3454,8 +3777,17 @@ begin
   else
   begin
     if FHasCombine then
+    begin
+      {$IF Defined(CPU64BITS)}
+      FIn.Slots[InShade].C[0] := Integer(Shade shr 24);
+      FIn.Slots[InShade].C[1] := Integer((Shade shr 16) and $FF);
+      FIn.Slots[InShade].C[2] := Integer((Shade shr 8) and $FF);
+      FIn.Slots[InShade].C[3] := Integer(Shade and $FF);
+      {$ELSE}
       for var I := 0 to 3 do
         FIn.Slots[InShade].C[I] := Integer((Shade shr (24 - I * 8)) and $FF);
+      {$ENDIF}
+    end;
     FIn.Slots[InNoise].C[0] := Integer(FNoise);
     FIn.Slots[InLOD].C[0] := FLODFraction;
     Pixel(X, Y, Combine(Shade), False, Depth, Delta, Coverage, (Mask and $80) <> 0);
@@ -3656,7 +3988,24 @@ begin
     begin
       FPrim.UnscrX := Integer(SignedValue(SX(UInt64(ShiftRight(XMajor, 16) and $FFF), 12)));
       var Fraction := ShiftRight(XMajor, 8) and $FF;
+      {$IF Defined(CPU64BITS)}
+      // Only for a row this RDP draws (RasterRow), only the groups the
+      // primitive has: RasterPixel reads no others.
+      var Groups := 0;
+      if OwnsRow(Y) then
+      begin
+        if (Code and 4) <> 0 then
+          Groups := $0F;
+        if (Code and 2) <> 0 then
+          Groups := Groups or $70;
+        if (Code and 1) <> 0 then
+          Groups := Groups or $80;
+      end;
       for var I := 0 to 7 do
+        if (Groups and (1 shl I)) <> 0 then
+      {$ELSE}
+      for var I := 0 to 7 do
+      {$ENDIF}
       begin
         var DE := FPrim.Coeff[2, I] and not Int64($1FF);
         var DY := FPrim.Coeff[3, I] and not Int64($1FF);
@@ -4431,6 +4780,22 @@ end;
 
 initialization
   InitPerspective;
+  {$IF Defined(CPU64BITS)}
+  for var N := 2 to 255 do
+  begin
+    var B := 0;
+    while (N shr (B + 1)) <> 0 do
+      Inc(B);
+    HighBit8[N] := B;
+  end;
+  for var N := 0 to 127 do
+  begin
+    var B := 0;
+    while (B < 7) and ((N and ($40 shr B)) <> 0) do
+      Inc(B);
+    LeadingOnes7[N] := B;
+  end;
+  {$ENDIF}
 
 end.
 

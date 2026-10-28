@@ -54,6 +54,18 @@ type
 
   TN64TraceSink = reference to procedure(const Event: TN64TraceRecord);
 
+  // Where generated CPU code reads the bus's page state (N64.CPU's JIT), and
+  // generated RSP code the IMEM write count and the eighths' stamps
+  // (N64.RSP's).
+  TN64BusJitInfo = record
+    SPMarked, SPDoneCount, SPWrites, SPReads: PInt64;
+    RDPPending: PBoolean;
+    RDPWrites, RDPDone: PUInt64;
+    CodeGen: PCardinal;
+    IMemCounter: PUInt64;
+    IMemRegions: PUInt64;
+  end;
+
   TN64Bus = class abstract
   private
     FTraceSink: TN64TraceSink;
@@ -64,6 +76,9 @@ type
     FIMemWords: array[0..1023] of Cardinal;
     FIMemStamps: array[0..1023] of UInt64;
     FIMemCounter: UInt64;
+    // For each eighth of IMEM (128 words), the value of FIMemCounter when one
+    // of its words last changed value (a write of the same value leaves it).
+    FIMemRegions: array[0..7] of UInt64;
     // SP DMEM+IMEM ($04000000..$04001FFF), plain RDRAM bytes and their
     // hidden bits. Fixed bounds keep the checked accesses cheap. A bus that
     // sets FDirectMemory promises that CPU/RSP/RDP/VI accesses there have
@@ -142,6 +157,8 @@ type
     // complete writes the page (or, for a write, reads it).
     function SPReadHazard(Address: Cardinal): Boolean; inline;
     function SPWriteHazard(Address: Cardinal): Boolean; inline;
+    // Neither is true anywhere: no SP DMA transfer is still to complete.
+    function SPIdle: Boolean; inline;
     function PlainRAM32(Address: Cardinal): Cardinal; inline;
     // Callers guarantee Address < RAMSize.
     function ReadHiddenRAM(Address: Cardinal): Byte; inline;
@@ -180,6 +197,9 @@ type
     // Decoded CPU code: its page counts writes from now on; the count.
     procedure MarkCodePage(Address: Cardinal); inline;
     function CodeGeneration(Address: Cardinal): Cardinal; inline;
+    // The counts by 4 KB page (generated CPU code reads them).
+    function CodeGenerations: PCardinal; inline;
+    function JitInfo: TN64BusJitInfo;
     // RDRAM changed as a whole (reset, state load): every page's count.
     procedure RAMReplaced;
     // Pages the list being queued may read, or write (and read). Parts of
@@ -211,6 +231,9 @@ type
     function IMemStamp(Slot: Integer): UInt64; inline;
     // The stamp of the last change to any IMEM word.
     function IMemCounter: UInt64; inline;
+    // The stamp of the last change of value in IMEM's eighth Region (words
+    // Region * 128 on).
+    function IMemRegionStamp(Region: Integer): UInt64; inline;
     function InterruptLine: Boolean; inline;
     property DirectMemory: Boolean read FDirectMemory;
     property TraceEnabled: Boolean read FTraceEnabled;
@@ -469,7 +492,7 @@ function TN64Bus.ReadRAM16(Address: Cardinal): Cardinal;
 begin
   if FRDPPending and ((FRDPWrites[Address shr RDPPageShift] > FRDPDone) or ((Address and $FFF) = $FFF)) then
     SyncRDPRead(Address, 2);
-  {$IF DEFINED(CPU386) or DEFINED(CPUX64)}
+  {$IF DEFINED(CPU386) or DEFINED(CPUX64) or DEFINED(CPUARM64)}
   Result := Swap(PWord(@FRAM[Address])^);
   {$ELSE}
   Result := (Cardinal(FRAM[Address]) shl 8) or FRAM[Address + 1];
@@ -492,6 +515,11 @@ begin
     (FSPReads[Address shr RDPPageShift] > FSPDoneCount));
 end;
 
+function TN64Bus.SPIdle: Boolean;
+begin
+  Result := FSPMarked <= FSPDoneCount;
+end;
+
 function TN64Bus.PlainRAM32(Address: Cardinal): Cardinal;
 begin
   // RDRAM holds big-endian words.
@@ -503,9 +531,9 @@ function TN64Bus.ReadRAM32(Address: Cardinal): Cardinal;
 begin
   if FRDPPending and ((FRDPWrites[Address shr RDPPageShift] > FRDPDone) or ((Address and $FFF) > $FFC)) then
     SyncRDPRead(Address, 4);
-  {$IF DEFINED(CPU386) or DEFINED(CPUX64)}
-  // x86 permits unaligned loads. Keep the bus fences above; decode one
-  // native word instead of loading its four bytes separately.
+  {$IF DEFINED(CPU386) or DEFINED(CPUX64) or DEFINED(CPUARM64)}
+  // x86 and ARM64 permit unaligned loads. Keep the bus fences above; decode
+  // one native word instead of loading its four bytes separately.
   Result := PlainRAM32(Address);
   {$ELSE}
   Result := (Cardinal(FRAM[Address]) shl 24) or (Cardinal(FRAM[Address + 1]) shl 16) or
@@ -695,7 +723,7 @@ end;
 
 function TN64Bus.RDPRead16(Address: Cardinal): Cardinal;
 begin
-  {$IF DEFINED(CPU386) or DEFINED(CPUX64)}
+  {$IF DEFINED(CPU386) or DEFINED(CPUX64) or DEFINED(CPUARM64)}
   Result := Swap(PWord(@FRAM[Address])^);
   {$ELSE}
   Result := (Cardinal(FRAM[Address]) shl 8) or FRAM[Address + 1];
@@ -704,9 +732,9 @@ end;
 
 function TN64Bus.RDPRead32(Address: Cardinal): Cardinal;
 begin
-  {$IF DEFINED(CPU386) or DEFINED(CPUX64)}
-  // x86 permits unaligned loads. Keep the bus fences above; decode one
-  // native word instead of loading its four bytes separately.
+  {$IF DEFINED(CPU386) or DEFINED(CPUX64) or DEFINED(CPUARM64)}
+  // x86 and ARM64 permit unaligned loads. Keep the bus fences above; decode
+  // one native word instead of loading its four bytes separately.
   Result := PlainRAM32(Address);
   {$ELSE}
   Result := (Cardinal(FRAM[Address]) shl 24) or (Cardinal(FRAM[Address + 1]) shl 16) or
@@ -731,6 +759,25 @@ begin
   Result := FCodeGen[Address shr 12];
 end;
 
+function TN64Bus.JitInfo: TN64BusJitInfo;
+begin
+  Result.SPMarked := @FSPMarked;
+  Result.SPDoneCount := @FSPDoneCount;
+  Result.SPWrites := @FSPWrites[0];
+  Result.SPReads := @FSPReads[0];
+  Result.RDPPending := @FRDPPending;
+  Result.RDPWrites := @FRDPWrites[0];
+  Result.RDPDone := @FRDPDone;
+  Result.CodeGen := @FCodeGen[0];
+  Result.IMemCounter := @FIMemCounter;
+  Result.IMemRegions := @FIMemRegions[0];
+end;
+
+function TN64Bus.CodeGenerations: PCardinal;
+begin
+  Result := @FCodeGen[0];
+end;
+
 procedure TN64Bus.RAMReplaced;
 begin
   for var I := 0 to High(FCodeGen) do
@@ -747,9 +794,8 @@ end;
 procedure TN64Bus.RDPWrite32(Address, Value: Cardinal);
 begin
   CodeWritten(Address);
-  if (Address and $FFF) > $FFC then
-    CodeWritten(Address + 3);
-  {$IF DEFINED(CPU386) or DEFINED(CPUX64)}
+  if (Address and $FFF) > $FFC then CodeWritten(Address + 3);
+  {$IF DEFINED(CPU386) or DEFINED(CPUX64) or DEFINED(CPUARM64)}
   PCardinal(@FRAM[Address])^ := (Cardinal(Swap(Word(Value and $FFFF))) shl 16) or Swap(Word(Value shr 16));
   {$ELSE}
   FRAM[Address] := Byte(Value shr 24);
@@ -781,7 +827,7 @@ end;
 procedure TN64Bus.RDPWrite16Hidden(Address, Value: Cardinal; Hidden: Byte);
 begin
   CodeWritten(Address);
-  {$IF DEFINED(CPU386) or DEFINED(CPUX64)}
+  {$IF DEFINED(CPU386) or DEFINED(CPUX64) or DEFINED(CPUARM64)}
   PWord(@FRAM[Address])^ := Swap(Word(Value and $FFFF));
   {$ELSE}
   FRAM[Address] := Byte((Value shr 8) and $FF);
@@ -793,9 +839,8 @@ end;
 procedure TN64Bus.RDPWrite32Hidden(Address, Value: Cardinal; HiddenHi, HiddenLo: Byte);
 begin
   CodeWritten(Address);
-  if (Address and $FFF) > $FFC then
-    CodeWritten(Address + 3);
-  {$IF DEFINED(CPU386) or DEFINED(CPUX64)}
+  if (Address and $FFF) > $FFC then CodeWritten(Address + 3);
+  {$IF DEFINED(CPU386) or DEFINED(CPUX64) or DEFINED(CPUARM64)}
   PCardinal(@FRAM[Address])^ := (Cardinal(Swap(Word(Value and $FFFF))) shl 16) or Swap(Word(Value shr 16));
   {$ELSE}
   FRAM[Address] := Byte(Value shr 24);
@@ -837,8 +882,11 @@ end;
 procedure TN64Bus.IMemChanged(Offset: Cardinal);
 begin
   var Slot := (Offset - $1000) shr 2;
-  FIMemWords[Slot] := ReadSP32(Offset and not Cardinal(3));
+  var Value := ReadSP32(Offset and not Cardinal(3));
   Inc(FIMemCounter);
+  if FIMemWords[Slot] <> Value then
+    FIMemRegions[Slot shr 7] := FIMemCounter;
+  FIMemWords[Slot] := Value;
   FIMemStamps[Slot] := FIMemCounter;
 end;
 
@@ -861,6 +909,11 @@ end;
 function TN64Bus.IMemCounter: UInt64;
 begin
   Result := FIMemCounter;
+end;
+
+function TN64Bus.IMemRegionStamp(Region: Integer): UInt64;
+begin
+  Result := FIMemRegions[Region];
 end;
 
 procedure TN64Bus.CopyFromSP(Offset: Cardinal; var Dest: array of Byte; Index, Count: Integer);

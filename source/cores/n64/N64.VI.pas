@@ -25,10 +25,13 @@ type
   private
     FBus: TN64Bus;
     FRandom: Cardinal;
-    // Double-buffered weave: FBuffers[FFront] is the persistent raster (the
+    // Triple-buffered weave: FBuffers[FFront] is the persistent raster (the
     // snapshot state) and the frame most recently returned by Render. The
-    // next field is composed in the other buffer, then the two swap.
-    FBuffers: array[0..1] of TArray<TAlphaColor>;
+    // next field is composed in the oldest buffer, the one after it, which
+    // then becomes the front: with VI fields in two slots the console still
+    // holds the frame before the front (CompleteVISlot), and a buffer held
+    // would be copied (SetLength), a memory manager call for each field.
+    FBuffers: array[0..2] of TArray<TAlphaColor>;
     FFront: Integer;
     FWidth, FHeight: Integer;
     FLastField: Integer;
@@ -53,8 +56,8 @@ type
   public
     constructor Create(Bus: TN64Bus);
     procedure Reset;
-    // Pixels stays unchanged until the next-but-one Render. A consumer that
-    // still holds it then gets a private copy (SetLength copy-on-write).
+    // Pixels stays unchanged for the next two Renders. A consumer that still
+    // holds it then gets a private copy (SetLength copy-on-write).
     procedure Render(const Registers: array of Cardinal; out Width, Height: Integer; out Pixels: TArray<TAlphaColor>);
     // The RDRAM bytes Render(Registers) may read (more, not fewer): Count
     // from Address, within RDRAM. False: it reads none.
@@ -124,6 +127,7 @@ begin
   FRandom := 3;
   FBuffers[0] := nil;
   FBuffers[1] := nil;
+  FBuffers[2] := nil;
   FFront := 0;
   FWidth := 0;
   FHeight := 0;
@@ -272,6 +276,31 @@ begin
   end;
   // All in plain RDRAM: the same reads as Raw.
   var A := Cardinal(Address);
+  {$IF Defined(CPU64BITS)}
+  // The queued RDP work on the window's bytes waited for once, then each
+  // word read without (ReadRAM16/32 and ReadHiddenRAM wait for their own).
+  FBus.SyncRDPRead(A, Cardinal(Count * Bytes));
+  if FPixelType = 3 then
+    for var K := 0 to Count - 1 do
+    begin
+      var V := FBus.RDPRead32(A);
+      FWindow[K].R := (V shr 24) and $FF;
+      FWindow[K].G := (V shr 16) and $FF;
+      FWindow[K].B := (V shr 8) and $FF;
+      FWindow[K].Coverage := (V shr 5) and 7;
+      Inc(A, 4);
+    end
+  else
+    for var K := 0 to Count - 1 do
+    begin
+      var V := FBus.RDPRead16(A);
+      FWindow[K].R := Integer((V shr 8) and $F8);
+      FWindow[K].G := Integer((V shr 3) and $F8);
+      FWindow[K].B := Integer((V shl 2) and $F8);
+      FWindow[K].Coverage := Integer((V and 1) shl 2) or FBus.RDPReadHidden(A);
+      Inc(A, 2);
+    end;
+  {$ELSE}
   if FPixelType = 3 then
     for var K := 0 to Count - 1 do
     begin
@@ -292,6 +321,7 @@ begin
       FWindow[K].Coverage := Integer((V and 1) shl 2) or FBus.ReadHiddenRAM(A);
       Inc(A, 2);
     end;
+  {$ENDIF}
 end;
 
 function Toward(const Neighbour: TN64VIPixel; R, G, B: Integer): Cardinal; inline;
@@ -619,9 +649,9 @@ begin
     for var I := 0 to Size - 1 do
       FBuffers[FFront][I] := $FF000000;
   end;
-  // Compose in the back buffer; SetLength also makes it private if a frame
-  // returned two fields ago is still referenced by a consumer.
-  var Back := 1 - FFront;
+  // Compose in the oldest buffer; SetLength also makes it private if a frame
+  // returned three fields ago is still referenced by a consumer.
+  var Back := (FFront + 1) mod Length(FBuffers);
   SetLength(FBuffers[Back], Size);
   var Weave := FBuffers[Back];
   if not (PixelType in [2, 3]) then
@@ -633,14 +663,14 @@ begin
     Exit;
   end;
   // This field's rows start opaque black; with interlace the other field's
-  // rows keep the previous raster.
-  var BlackRow: TArray<TAlphaColor>;
-  SetLength(BlackRow, Width);
-  for var X := 0 to Width - 1 do
-    BlackRow[X] := $FF000000;
+  // rows keep the previous raster. (No row of black allocated for it: the VI
+  // thread calls no memory manager, which sleeps 10 ms on a lock held.)
   for var Y := 0 to Height - 1 do
     if not Interlaced or ((Y and 1) = Field) then
-      Move(BlackRow[0], Weave[Y * Width], Width * SizeOf(TAlphaColor))
+    begin
+      for var X := Y * Width to Y * Width + Width - 1 do
+        Weave[X] := $FF000000;
+    end
     else
       Move(FBuffers[FFront][Y * Width], Weave[Y * Width], Width * SizeOf(TAlphaColor));
   FStatus := Status;
@@ -814,6 +844,7 @@ begin
       (FLastField < -1) or (FLastField > 1) then
       raise EReadError.Create('Invalid VI raster snapshot');
     FFront := 0;
+    FBuffers[2] := nil;
     FBuffers[1] := nil;
     FBuffers[0] := nil;
     SetLength(FBuffers[0], FWidth * FHeight);

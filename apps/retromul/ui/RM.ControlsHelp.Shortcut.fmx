@@ -1,0 +1,54 @@
+object ControlsHelpShortcutView: TControlsHelpShortcutView
+  Align = Top
+  Size.Width = 425.000000000000000000
+  Size.Height = 44.000000000000000000
+  Size.PlatformDefault = False
+  object LayoutShortcutRow: TLayout
+    Align = Client
+    Size.Width = 425.000000000000000000
+    Size.Height = 44.000000000000000000
+    Size.PlatformDefault = False
+    object LabelShortcutCaption: TLabel
+      Align = Client
+      StyledSettings = []
+      Size.Width = 329.000000000000000000
+      Size.Height = 44.000000000000000000
+      Size.PlatformDefault = False
+      TextSettings.Font.Size = 13.000000000000000000
+      TextSettings.FontColor = xFFE8ECF1
+      TextSettings.WordWrap = False
+    end
+    object RectangleShortcutKey: TRectangle
+      Align = Right
+      Fill.Color = xFF1B2126
+      HitTest = False
+      Margins.Left = 8.000000000000000000
+      Margins.Top = 4.000000000000000000
+      Margins.Bottom = 4.000000000000000000
+      Position.X = 337.000000000000000000
+      Position.Y = 4.000000000000000000
+      Size.Width = 88.000000000000000000
+      Size.Height = 36.000000000000000000
+      Size.PlatformDefault = False
+      Stroke.Color = xFF586572
+      XRadius = 5.000000000000000000
+      YRadius = 5.000000000000000000
+      object LabelShortcutKey: TLabel
+        Tag = -1
+        Align = Client
+        StyledSettings = []
+        HitTest = True
+        Margins.Left = 8.000000000000000000
+        Margins.Right = 8.000000000000000000
+        Size.Width = 72.000000000000000000
+        Size.Height = 36.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.HorzAlign = Center
+        TextSettings.WordWrap = False
+        ParentShowHint = False
+        ShowHint = True
+      end
+    end
+  end
+end

@@ -57,6 +57,7 @@ type
 // The boot area of a data track starts with the hardware ID string.
 function IsDreamcastDisc(Disc: TCDDisc): Boolean;
 // Undo the slice permutation the boot ROM applies to a CD boot file.
+
 procedure DCDescramble(var Data: TBytes);
 
 implementation
@@ -373,3 +374,4 @@ begin
 end;
 
 end.
+

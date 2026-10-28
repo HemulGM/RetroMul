@@ -3,8 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs, Core.Storage, Core.Emulation.Types,
-  Core.InputConfig, Core.Snapshots, PCE.Console, PCE.Cartridge, Core.CD.Disc;
+  System.SysUtils, System.Classes, System.SyncObjs, Core.Storage,
+  Core.Emulation.Types, Core.InputConfig, Core.Snapshots, PCE.Console,
+  PCE.Cartridge, Core.CD.Disc;
 
 type
   TPCEWorker = class(TThread)
@@ -51,7 +52,7 @@ implementation
 
 uses
   System.Diagnostics, System.Math, Core.SavePaths, Core.PerformanceHints,
-  Core.RomFormat, PCM.Audio;
+  PCM.Audio;
 
 function TPCEWorker.GetInputPorts: TCoreInputPorts;
 begin
@@ -71,7 +72,10 @@ begin
   FLock := TCriticalSection.Create;
   FWake := TEvent.Create(nil, False, False, '');
   FSnapshots := TSnapshotQueue.Create;
-  FCartridge := Cartridge; FModel := Model; FDisc := Disc; FOptions := TPCEOptions.Defaults;
+  FCartridge := Cartridge;
+  FModel := Model;
+  FDisc := Disc;
+  FOptions := TPCEOptions.Defaults;
   FStorage := Storage;
 end;
 
@@ -109,7 +113,11 @@ end;
 procedure TPCEWorker.ConfigureOptions(const Options: TPCEOptions);
 begin
   FLock.Acquire;
-  try FOptions := Options; finally FLock.Release; end;
+  try
+    FOptions := Options;
+  finally
+    FLock.Release;
+  end;
 end;
 
 procedure TPCEWorker.RequestReset;
@@ -211,8 +219,10 @@ begin
   Audio := nil;
   Hints := nil;
   CoreId := 'PCE';
-  if PCESuperGrafx(FModel) then CoreId := 'SGX';
-  if PCEHasCD(FModel) then CoreId := 'PCECD';
+  if PCESuperGrafx(FModel) then
+    CoreId := 'SGX';
+  if PCEHasCD(FModel) then
+    CoreId := 'PCECD';
   try
     try
       var SavedData: TBytes := nil;
@@ -265,7 +275,8 @@ begin
           end);
         FLock.Acquire;
         try
-          Input := FInput; Options := FOptions;
+          Input := FInput;
+          Options := FOptions;
           Paused := FPause;
           Enabled := FAudioEnabled;
           Volume := FVolume;

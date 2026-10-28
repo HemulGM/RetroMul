@@ -178,13 +178,14 @@ The script signs and verifies the staged EXE using SignTool and SHA-256, with an
 | `apps/retrotune` | Music player project and forms |
 | `apps/terminal` | Windows console frontend |
 | `source/runtime` | Shared contracts, emulator factory, timing, snapshots, configuration, storage and catalog |
-| `source/adapters` | All emulator adapters and their playback/archive integration helpers |
+| `source/platforms/<id>` | Adapters, registration, settings, controls and all frontend integration for the matching core folder |
 | `source/cores` | System-specific emulation, cartridges, audio machines and firmware |
 | `source/hardware` | Shared CPU, audio-chip and video implementations |
 | `source/media` | ROM identification, CD access and native CHD decoding |
 | `source/music` | Reusable decoders, trackers, playback, synthesis and export |
-| `source/ui` | Shared FMX controls, SVG rendering, shaders and Game & Watch artwork backend |
-| `source/RetroMul.Paths.props` | Shared relative unit search paths imported by all three application projects |
+| `source/ui` | Shared FMX controls, SVG rendering and shaders |
+| `apps/*/*.dproj` | Explicit relative unit search paths and module references |
+| `source/platforms/RetroMul.Platforms.pas` | Explicit platform composition and calls to platform class registration methods |
 | `dependencies` | Git submodules: DelphiWinUI3, FMXVibration, FMXInput and PCMAudio |
 
 Initialize dependencies with `git submodule update --init --recursive`. Their repository URLs and pinned commits are unchanged; the logical submodule names in `.gitmodules` are retained so existing Git metadata continues to work. DelphiWinUI3's nested submodules remain part of that dependency. Do not add dependency contents to the parent repository as ordinary files.

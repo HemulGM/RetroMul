@@ -10,7 +10,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, Core.Snapshots, DC.Types, DC.Memory, DC.Scheduler, DC.Interrupts;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots, DC.Types,
+  DC.Memory, DC.Scheduler, DC.Interrupts;
 
 const
   PVRID = $000;
@@ -282,8 +283,10 @@ begin
   var Concat := (Ctrl shr 4) and 7;
   var Width: Integer;
   case Depth of
-    0, 1: Width := Words * 2;
-    2: Width := Words * 4 div 3;
+    0, 1:
+      Width := Words * 2;
+    2:
+      Width := Words * 4 div 3;
   else
     Width := Words;
   end;
@@ -550,3 +553,4 @@ begin
 end;
 
 end.
+

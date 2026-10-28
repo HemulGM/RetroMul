@@ -7,6 +7,10 @@ uses
 
 {$SCOPEDENUMS ON}
 
+const
+  ROM_SYSTEM_NES = 'nes';
+  ROM_CORE_ID_NES = 'NES';
+
 type
   // Dendy uses NTSC-style CPU/APU timing with PAL-style PPU frame timing.
   TNesRegion = (NTSC, PAL, Dendy);

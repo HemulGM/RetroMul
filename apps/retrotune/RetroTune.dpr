@@ -61,7 +61,7 @@ uses
   RetroTune.Decoder.XGM in '..\..\source\music\decoders\RetroTune.Decoder.XGM.pas',
   RetroTune.Decoder.ProTracker in '..\..\source\music\decoders\RetroTune.Decoder.ProTracker.pas',
   RetroTune.Decoder.MIDI in '..\..\source\music\decoders\RetroTune.Decoder.MIDI.pas',
-  RetroTune.SoundFont in '..\..\source\music\chips\RetroTune.SoundFont.pas',
+  RetroTune.SoundFont in '..\..\source\music\synthesis\RetroTune.SoundFont.pas',
   RetroTune.SoundFontCatalog in '..\..\source\music\common\RetroTune.SoundFontCatalog.pas',
   RetroTune.TFM.Stream in '..\..\source\music\trackers\RetroTune.TFM.Stream.pas',
   RetroTune.TFM.MusicMaker in '..\..\source\music\trackers\RetroTune.TFM.MusicMaker.pas',
@@ -82,7 +82,7 @@ uses
   RetroTune.InfoForm in 'ui\RetroTune.InfoForm.pas',
   RetroTune.ReferenceForm in 'ui\RetroTune.ReferenceForm.pas',
   RetroTune.FormatsForm in 'ui\RetroTune.FormatsForm.pas',
-  RetroTune.Chip.FDS in '..\..\source\music\chips\RetroTune.Chip.FDS.pas',
+  NES.Audio.FDS in '..\..\source\cores\nes\NES.Audio.FDS.pas',
   RetroTune.Spectrum in '..\..\source\music\playback\RetroTune.Spectrum.pas';
 
 {$R *.res}

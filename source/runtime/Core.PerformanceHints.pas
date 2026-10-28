@@ -35,6 +35,9 @@ type
     {$ENDIF}
     procedure SetTargetDurationNanos(Value: Int64);
   public
+    // Pair a successful begin with end using the same period. No-op outside Windows.
+    class function BeginTimerPeriod(Period: Cardinal = 1): Boolean; static;
+    class procedure EndTimerPeriod(Period: Cardinal = 1); static;
     constructor Create(TargetNanos: Int64; const Name: string);
     destructor Destroy; override;
     // True means a command/stop woke the worker before the deadline.
@@ -100,6 +103,22 @@ function AndroidGetAffinity(tid: Integer; size: NativeUInt; mask: Pointer): Inte
 function AndroidSetAffinity(tid: Integer; size: NativeUInt; mask: Pointer): Integer; cdecl; external 'libc.so' name 'sched_setaffinity';
 {$ENDIF}
 
+class function TEmulationPerformanceHints.BeginTimerPeriod(Period: Cardinal): Boolean;
+begin
+  {$IFDEF MSWINDOWS}
+  Result := timeBeginPeriod(Period) = TIMERR_NOERROR;
+  {$ELSE}
+  Result := False;
+  {$ENDIF}
+end;
+
+class procedure TEmulationPerformanceHints.EndTimerPeriod(Period: Cardinal);
+begin
+  {$IFDEF MSWINDOWS}
+  timeEndPeriod(Period);
+  {$ENDIF}
+end;
+
 constructor TEmulationPerformanceHints.Create(TargetNanos: Int64; const Name: string);
 begin
   inherited Create;
@@ -108,10 +127,11 @@ begin
   {$IFDEF MSWINDOWS}
   // High-resolution waitable timers do not rely on message processing or the
   // system clock tick. The flag is supported since Windows 10 version 1803.
-  FTimer := CreateWaitableTimerEx(nil, nil, $00000002 { HIGH_RESOLUTION },
+  FTimer := CreateWaitableTimerEx(nil, nil,
+    $00000002 { HIGH_RESOLUTION },
     $00100002 { SYNCHRONIZE or TIMER_MODIFY_STATE });
   if FTimer = 0 then
-    FTimerPeriodActive := timeBeginPeriod(1) = TIMERR_NOERROR;
+    FTimerPeriodActive := BeginTimerPeriod(1);
   {$ENDIF}
   {$IFDEF ANDROID}
   try
@@ -136,7 +156,7 @@ begin
   if FTimer <> 0 then
     CloseHandle(FTimer);
   if FTimerPeriodActive then
-    timeEndPeriod(1);
+    EndTimerPeriod(1);
   {$ENDIF}
   inherited;
 end;

@@ -98,8 +98,10 @@ end;
 class function TZXSID.Decodes(Address: Word; InterfaceType: Integer): Boolean;
 begin
   case InterfaceType of
-    0: Result := (Address = $6C3B) or (Address = $6D3B);
-    1: Result := (Address and $FF) = $CF;
+    0:
+      Result := (Address = $6C3B) or (Address = $6D3B);
+    1:
+      Result := (Address and $FF) = $CF;
   else
     Result := False;
   end;

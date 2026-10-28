@@ -25,8 +25,10 @@ of the picture wrongly.
 
 Disc images come from `source/media/dvd/Core.DVD.Image.pas` (ISO, MDS/MDF,
 DVD CHD, CD images through the CD layer). The front end lives in
-`source/adapters/Core.Adapter.PS2.pas` and
-`apps/retromul/settings/platform/RM.Settings.PS2.pas`.
+`source/platforms/ps2/Core.Platforms.PS2.Adapter.pas` and
+`source/platforms/ps2/RM.Platforms.PS2.Settings.pas`. Platform registration,
+snapshot policy, presentation and controller integration live alongside them
+in `RM.Platforms.PS2` and `RM.Platforms.PS2.Input`.
 
 The GS draws on the emulation thread or, by default, in band threads (one per
 two logical processors, 2..8): each draws every queued primitive's rows of

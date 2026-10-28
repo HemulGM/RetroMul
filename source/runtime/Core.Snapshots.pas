@@ -3,11 +3,11 @@
 interface
 
 uses
-  Core.RomFormat, Core.Storage, System.SysUtils, System.Classes, System.SyncObjs;
+  Core.Storage, System.SysUtils, System.Classes, System.SyncObjs;
 
 type
   // Persist fields, never object references, callbacks or host audio handles.
-  // Bump MakeHeader's version when any core's serialized field order/layout changes.
+  // Each platform registers its own serialized layout version.
   TStateArchive = class
   private
     FStream: TStream;
@@ -37,6 +37,20 @@ type
     procedure Process(const Action: TSnapshotAction);
   end;
 
+type
+  TSnapshotPolicy = record
+    Version: Cardinal;
+    AcceptedVersions: TArray<Cardinal>;
+    MaximumSize: Cardinal;
+    VersionError, IdentityError: string;
+    class function Create(Version: Cardinal; MaximumSize: Cardinal = 64 * 1024 * 1024): TSnapshotPolicy; static;
+    function Accepts(Value: Cardinal): Boolean;
+  end;
+
+procedure RegisterSnapshotPolicy(const CoreId: string; const Policy: TSnapshotPolicy);
+
+function SnapshotPolicy(const CoreId: string): TSnapshotPolicy;
+
 function SnapshotIdentity(const ROM: TBytes): string;
 
 // Replace in the same directory without requiring a backup filename.
@@ -51,7 +65,8 @@ procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer
 implementation
 
 uses
-  Core.SavePaths, System.Hash, System.ZLib;
+  Core.SavePaths, System.Hash, System.ZLib, System.Generics.Collections,
+  System.Generics.Defaults;
 
 type
   THeader = packed record
@@ -60,6 +75,39 @@ type
     platform: array[0..7] of AnsiChar;
     ROMHash, Digest: array[0..31] of Byte;
   end;
+
+var
+  Policies: TDictionary<string, TSnapshotPolicy>;
+
+class function TSnapshotPolicy.Create(Version, MaximumSize: Cardinal): TSnapshotPolicy;
+begin
+  Result := Default(TSnapshotPolicy);
+  Result.Version := Version;
+  Result.MaximumSize := MaximumSize;
+end;
+
+function TSnapshotPolicy.Accepts(Value: Cardinal): Boolean;
+begin
+  Result := Value = Version;
+  for var Accepted in AcceptedVersions do
+    Result := Result or (Accepted = Value);
+end;
+
+procedure RegisterSnapshotPolicy(const CoreId: string; const Policy: TSnapshotPolicy);
+begin
+  if (CoreId.Trim = '') or (Policy.Version = 0) or (Policy.MaximumSize = 0) then
+    raise EArgumentException.Create('Invalid snapshot policy');
+  var Value := Policy;
+  Value.AcceptedVersions := Copy(Policy.AcceptedVersions);
+  Policies.Add(CoreId.Trim, Value);
+end;
+
+function SnapshotPolicy(const CoreId: string): TSnapshotPolicy;
+begin
+  if not Policies.TryGetValue(CoreId.Trim, Result) then
+    Result := TSnapshotPolicy.Create(1);
+  Result.AcceptedVersions := Copy(Result.AcceptedVersions);
+end;
 
 { TStateArchive }
 
@@ -120,86 +168,21 @@ begin
   Result := Default(THeader);
   var Magic: AnsiString := 'RMSNAP01';
   Move(Magic[1], Result.Magic, 8);
-  Result.Version := 1;
-  // MSX v3 adds RTC/calendar, floppy, cassette, Kanji, mouse and slot-2 states.
-  // MSX v5 adds SCC+ RAM/clock latches, Y8950/board state and the YJK line latch.
-  // MSX v6 adds deferred VRAM transactions, video-fetch latches and CSM phase.
-  // MSX v7 adds clocked sprite statuses and positional bitmap fetch latches.
-  // MSX v8 adds silicon identity and asynchronous status-read recovery.
-  // MSX v9 adds the status transition history for CPU sample/acknowledge timing.
-  // MSX v10 adds accepted CPU transactions, request-buffer grants and dummy slots.
-  // MSX v11 separates issued RAM transactions from their CAS data completion.
-  // MSX v12 keeps the previous R18 latch and the command's memory-clock origin.
-  // MSX v13 retains video-read addresses between CAS assertion and release.
-  // MSX v14 distinguishes ignored border reads and rebuilds per-line fetch windows.
-  // MSX v16 also stores the V9958 WAIT latch and validates motherboard wiring.
-  if SameText(PlatformCore, 'MSX1') or SameText(PlatformCore, 'MSX2') or
-    SameText(PlatformCore, 'MSX2PLUS') then Result.Version := 16;
-  // ZX v16 adds Profi CMR1, DS80 latches/palette and variable-sector disk states.
-  // ZX v17 adds Byte PROM gate, VI53, Byte-01 RAM/video and KDI geometry.
-  // ZX v18 adds Didaktik Gama 8255 mode, latches and output/interrupt state.
-  // ZX v19 adds TK90X/TK95 timing and original ROM language selection.
-  // ZX v20 adds the Turbo Sound FM configuration, CPLD and both YM2203 states.
-  // ZX v21 adds Next-DAC startup configuration, gates, selector and sample latches.
-  // ZX v22 adds the independent General Sound CPU, memory, clocks and DAC state.
-  // ZX v23 adds NeoGS and the shared native SPI SD state.
-  // ZX v24 stores VS1011e, MP3 DMA, CPLD/FPGA and programmable flash.
-  // ZX v25 adds DMA USC controller/timers, physical DMA and bus continuation.
-  // ZX v26 adds ZXM-MoonSound and shared 040B/016D flash geometry.
-  // ZX v27 adds the eZX/MB SID voices, filters and rational clock phases.
-  // ZX v28 adds the SID interface selection and the fixed 1 MHz HardSID clock.
-  if SameText(PlatformCore, 'ZX') then
-    Result.Version := 28;
-  // CPS v2 adds OKI bank state, enlarged sprite buffers and board peripherals.
-  if SameText(PlatformCore, 'CPS1') or SameText(PlatformCore, 'CPS2') then
-    Result.Version := 2;
-  // CPS1 v3 stores medal devices and independent multigame flash selectors.
-  if SameText(PlatformCore, 'CPS1') then
-    Result.Version := 4;
-  // Z80 MEMPTR/Q extend the serialized CPU record; reject older layouts.
-  if (PlatformCore = ROM_CORE_ID_SG1000) or (PlatformCore = ROM_CORE_ID_SC3000) then
-    Result.Version := 3;
-  if (PlatformCore = ROM_CORE_ID_SF7000) or (PlatformCore = ROM_CORE_ID_OMV) or
-    (PlatformCore = ROM_CORE_ID_SMS) or (PlatformCore = ROM_CORE_ID_GG) or
-    SameText(PlatformCore, 'NGP') or SameText(PlatformCore, 'NGPC') then
-    Result.Version := 2;
-  // SMS/GG v4 also preserves a partially rendered CRAM transition scanline.
-  if (PlatformCore = ROM_CORE_ID_SMS) or (PlatformCore = ROM_CORE_ID_GG) then
-    Result.Version := 4;
-  if SameText(PlatformCore, 'N64') then
-    // N64 v4 preserves the clocked DMA/event queues, hidden RDRAM bits,
-    // 64-bit architectural CPU state and the software VI pipeline.
-    Result.Version := 4;
-  // GB/GBC v5 extends the sprite FIFO selection and stores fractional CPU clocks.
-  // Earlier layouts are rejected; host enhancement settings are not restored.
-  if (PlatformCore = ROM_CORE_ID_GB) or (PlatformCore = ROM_CORE_ID_GBC) then
-    Result.Version := 5;
-  // MD v9 also stores Z80 MEMPTR/Q.
-  if PlatformCore = ROM_CORE_ID_MD then
-    Result.Version := 9;
-  // SNES v10 adds the S-DSP phase latches, SPC MMIO latches and PPU mosaic counter.
-  if PlatformCore = ROM_CORE_ID_SNES then
-    Result.Version := 10;
-  // GBA v6 adds the clocked video pipeline and HALT synchronizer.
-  if PlatformCore = ROM_CORE_ID_GBA then
-    Result.Version := 6;
-  // Neo Geo v4 and Neo Geo CD v3 also store Z80 MEMPTR/Q.
-  if PlatformCore = ROM_CORE_ID_NEOGEO then
-    Result.Version := 4;
-  if PlatformCore = ROM_CORE_ID_NEOGEOCD then
-    Result.Version := 3;
-  // Saturn v5 adds physical presence of the optional offline NetLink cartridge.
-  if SameText(PlatformCore, 'SATURN') then
-    Result.Version := 5;
-  // PS2 v2 adds the GS drawing timeline and FINISH writes not shown yet;
-  // v3 the IOP strtok position.
-  if PlatformCore = ROM_CORE_ID_PS2 then
-    Result.Version := 3;
+  Result.Version := SnapshotPolicy(PlatformCore).Version;
   var Core := AnsiString(PlatformCore);
-  if (Length(Core) = 0) or (Length(Core) > 8) then
+  var Utf8Id := TEncoding.UTF8.GetBytes(PlatformCore);
+  if (Length(Utf8Id) = 0) or (Length(Utf8Id) > 4096) then
     raise EArgumentException.Create('Invalid snapshot platform');
-
-  Move(Core[1], Result.platform, Length(Core));
+  var LegacyId := Length(PlatformCore) <= 8;
+  for var Character in PlatformCore do
+    LegacyId := LegacyId and (Ord(Character) >= 32) and (Ord(Character) <= 126);
+  if LegacyId then
+    Move(Core[1], Result.platform, Length(Core))
+  else
+  begin
+    Magic := 'RMSNAP02';
+    Move(Magic[1], Result.Magic, 8);
+  end;
   var Hash := THashSHA2.Create;
   Hash.Update(ROM);
   var Digest := Hash.HashAsBytes;
@@ -218,7 +201,15 @@ begin
     var Digest := THashSHA2.GetHashBytes(Payload);
     Move(Digest[0], Header.Digest, 32);
     Output.WriteBuffer(Header, SizeOf(Header));
-    Output.WriteBuffer(Payload.Memory^, Payload.Size);
+    if Header.Magic[7] = '2' then
+    begin
+      var Id := TEncoding.UTF8.GetBytes(platform);
+      var IdSize := Cardinal(Length(Id));
+      Output.WriteBuffer(IdSize, SizeOf(IdSize));
+      Output.WriteBuffer(Id[0], IdSize);
+    end;
+    if Payload.Size > 0 then
+      Output.WriteBuffer(Payload.Memory^, Payload.Size);
     SaveStreamAtomically(Output, Path, Storage);
   finally
     Output.Free;
@@ -238,26 +229,34 @@ begin
     var Header: THeader;
     Input.ReadBuffer(Header, SizeOf(Header));
     var Expected := MakeHeader(platform, ROM);
-    if SameText(platform, 'N64') and
-      CompareMem(@Header.Magic, @Expected.Magic, 8) and
-      CompareMem(@Header.platform, @Expected.platform, 8) and
-      (Header.Version <> Expected.Version) then
-      raise EReadError.CreateFmt('N64 snapshot version %d is unsupported; expected version %d', [Header.Version, Expected.Version]);
-
-    if SameText(platform, 'PS1') and
-      CompareMem(@Header.Magic, @Expected.Magic, 8) and
-      CompareMem(@Header.platform, @Expected.platform, 8) and
-      not CompareMem(@Header.ROMHash, @Expected.ROMHash, 32) then
-      raise EReadError.Create('This PS1 snapshot belongs to a different disc. Insert the disc used to save it.');
-
-    if not CompareMem(@Header.Magic, @Expected.Magic, 8) or
-      ((Header.Version <> Expected.Version) and not
-      (SameText(platform, 'SATURN') and ((Header.Version = 2) or (Header.Version = 3) or (Header.Version = 4)))) or
+    var PlatformMatches := True;
+    if CompareMem(@Header.Magic, PAnsiChar(AnsiString('RMSNAP02')), 8) then
+    begin
+      var IdSize: Cardinal;
+      Input.ReadBuffer(IdSize, SizeOf(IdSize));
+      if (IdSize = 0) or (IdSize > 4096) or (IdSize > Input.Size - Input.Position) then
+        raise EReadError.Create('Invalid snapshot platform ID');
+      var Id: TBytes;
+      SetLength(Id, IdSize);
+      Input.ReadBuffer(Id[0], IdSize);
+      var ExpectedId := TEncoding.UTF8.GetBytes(platform);
+      PlatformMatches := (Length(Id) = Length(ExpectedId)) and
+        CompareMem(@Id[0], @ExpectedId[0], Length(Id));
+    end;
+    var Policy := SnapshotPolicy(platform);
+    if PlatformMatches and CompareMem(@Header.Magic, @Expected.Magic, 8) and
+      CompareMem(@Header.platform, @Expected.platform, 8) then
+    begin
+      if (Header.Version <> Expected.Version) and (Policy.VersionError <> '') then
+        raise EReadError.CreateFmt(Policy.VersionError, [Header.Version, Expected.Version]);
+      if not CompareMem(@Header.ROMHash, @Expected.ROMHash, 32) and (Policy.IdentityError <> '') then
+        raise EReadError.Create(Policy.IdentityError);
+    end;
+    if not PlatformMatches or not CompareMem(@Header.Magic, @Expected.Magic, 8) or
+      not Policy.Accepts(Header.Version) or
       not CompareMem(@Header.platform, @Expected.platform, 8) or
       not CompareMem(@Header.ROMHash, @Expected.ROMHash, 32) or
-      (Header.PayloadSize = 0) or
-      ((Header.PayloadSize > 64 * 1024 * 1024) and not
-      (SameText(platform, 'CPS3') and (Header.PayloadSize <= 128 * 1024 * 1024))) or
+      (Header.PayloadSize = 0) or (Header.PayloadSize > Policy.MaximumSize) or
       (Int64(Header.PayloadSize) <> Input.Size - Input.Position) then
       raise EReadError.Create('Snapshot is incompatible with this game or core');
 
@@ -389,7 +388,7 @@ end;
 constructor TSnapshotQueue.Create(ValidateNames: Boolean);
 begin
   inherited Create;
-  FValidateNames:=ValidateNames;
+  FValidateNames := ValidateNames;
   FLock := TCriticalSection.Create;
   FCommandLock := TCriticalSection.Create;
   FDone := TEvent.Create(nil, True, False, '');
@@ -407,7 +406,8 @@ procedure TSnapshotQueue.Execute(Worker: TThread; const Name: string; Loading: B
 begin
   // Peripheral workers can reuse the synchronous command transport for media
   // locations. Snapshot clients retain strict name validation by default.
-  if FValidateNames then ValidateSnapshotName(Name);
+  if FValidateNames then
+    ValidateSnapshotName(Name);
 
   FCommandLock.Enter;
   try
@@ -459,6 +459,12 @@ begin
     FLock.Leave;
   end;
 end;
+
+initialization
+  Policies := TDictionary<string, TSnapshotPolicy>.Create(TIStringComparer.Ordinal);
+
+finalization
+  Policies.Free;
 
 end.
 

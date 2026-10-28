@@ -28,7 +28,7 @@ function IsLegacyMiraclePianoRom(const Sha1: string): Boolean;
 implementation
 
 uses
-  Core.RomHashes, System.Hash, System.SysUtils;
+  NES.RomHashes, System.Hash, System.SysUtils;
 
 function IsLegacyVsZapperRom(const Sha1: string): Boolean;
 begin
@@ -192,7 +192,8 @@ begin
   begin
     var Payload := THashSHA1.Create;
     Payload.Update(Prg[0], Length(Prg));
-    if Length(Chr) > 0 then Payload.Update(Chr[0], Length(Chr));
+    if Length(Chr) > 0 then
+      Payload.Update(Chr[0], Length(Chr));
     if SameText(Payload.HashAsString, ROM_NES_MARIO_DUCK_HUNT_PAL_SHA1) then
       Exit(True);
   end;

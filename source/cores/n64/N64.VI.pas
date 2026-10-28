@@ -7,7 +7,9 @@
 
 interface
 
-uses System.SysUtils, System.Classes, System.Math, System.UITypes, N64.Types, Core.Snapshots;
+uses
+  System.SysUtils, System.Classes, System.Math, System.UITypes, N64.Types,
+  Core.Snapshots;
 
 type
   TN64VIPixel = record
@@ -17,8 +19,9 @@ type
   // The active analogue raster is independent of the RDRAM framebuffer stride.
   // All colour filtering and 10-bit source addressing use integer arithmetic.
   TN64VI = class
-  private const
-    Slots = 8;
+  private
+    const
+      Slots = 8;
   private
     FBus: TN64Bus;
     FRandom: Cardinal;
@@ -49,8 +52,7 @@ type
     function FilteredSlot(Row: Integer): Integer;
     function DivotSlot(Row: Integer): Integer;
     function RowPixels(Row: Integer): TArray<TN64VIPixel>;
-    procedure ComposeRow(const Weave: TArray<TAlphaColor>; const ColumnR, ColumnG, ColumnB: TArray<Integer>;
-      OutputIndex, Width, FirstSample, LastSample, XStart, XStep, FirstColumn: Integer; Progressive: Boolean);
+    procedure ComposeRow(const Weave: TArray<TAlphaColor>; const ColumnR, ColumnG, ColumnB: TArray<Integer>; OutputIndex, Width, FirstSample, LastSample, XStart, XStep, FirstColumn: Integer; Progressive: Boolean);
   public
     constructor Create(Bus: TN64Bus);
     procedure Reset;
@@ -72,15 +74,18 @@ begin
   // Floor division by 2^Count (Count <= 24); the logical shift only sees
   // non-negative values. The filters' values are small: the bias keeps them
   // non-negative without a branch on their sign.
-  if Value >= -$1000000 then Result := ((Value + $1000000) shr Count) - ($1000000 shr Count)
-  else Result := not ((not Value) shr Count);
+  if Value >= -$1000000 then
+    Result := ((Value + $1000000) shr Count) - ($1000000 shr Count)
+  else
+    Result := not ((not Value) shr Count);
 end;
 
 function IntegerSqrt(Value: Cardinal): Cardinal;
 begin
   Result := 0;
   var Bit: Cardinal := 1 shl 30;
-  while Bit > Value do Bit := Bit shr 2;
+  while Bit > Value do
+    Bit := Bit shr 2;
   while Bit <> 0 do
   begin
     if Value >= Result + Bit then
@@ -106,7 +111,8 @@ function FloorDivide(Value, Divisor: Integer): Integer; inline;
 begin
   // Divisor > 0. Row of a linear framebuffer index, rounding towards minus infinity.
   Result := Value div Divisor;
-  if (Value < 0) and (Result * Divisor <> Value) then Dec(Result);
+  if (Value < 0) and (Result * Divisor <> Value) then
+    Dec(Result);
 end;
 
 constructor TN64VI.Create(Bus: TN64Bus);
@@ -138,10 +144,12 @@ function TN64VI.Raw(Index: Integer): TN64VIPixel;
 begin
   Result := Default(TN64VIPixel);
   var Bytes := 2;
-  if FPixelType = 3 then Bytes := 4;
+  if FPixelType = 3 then
+    Bytes := 4;
   // Origin <= $FFFFFF and |Index| < 2^23: the address fits an Integer.
   var Address := FOrigin + Index * Bytes;
-  if (Address < 0) or (Address + Bytes > $800000) then Exit;
+  if (Address < 0) or (Address + Bytes > $800000) then
+    Exit;
   var A := Cardinal(Address);
   // Plain RDRAM under the TN64Bus contract: identical to the bus readers.
   if A + Cardinal(Bytes) <= FBus.RAMSize then
@@ -210,8 +218,14 @@ begin
   begin
     var Middle := Here[Column];
     var Left, Right: TN64VIPixel;
-    if Column > 0 then Left := Here[Column - 1] else Left := Above[Last];
-    if Column < Last then Right := Here[Column + 1] else Right := Below[0];
+    if Column > 0 then
+      Left := Here[Column - 1]
+    else
+      Left := Above[Last];
+    if Column < Last then
+      Right := Here[Column + 1]
+    else
+      Right := Below[0];
     if (Middle.Coverage and Left.Coverage and Right.Coverage) <> 7 then
     begin
       Middle.R := Median(Middle.R, Left.R, Right.R);
@@ -222,8 +236,7 @@ begin
   end;
 end;
 
-procedure InterpolateColumns(const Top, Bottom: TArray<TN64VIPixel>; First: Integer;
-  const R, G, B: TArray<Integer>; Output, Count, YFraction: Integer; Resample: Boolean);
+procedure InterpolateColumns(const Top, Bottom: TArray<TN64VIPixel>; First: Integer; const R, G, B: TArray<Integer>; Output, Count, YFraction: Integer; Resample: Boolean);
 begin
   // Vertical step of the bilinear tap, once per source column (1/32 steps),
   // from Top[First..] and Bottom[First..] to R/G/B[Output..]. A zero
@@ -321,8 +334,7 @@ begin
     (Cardinal(1 + Ord((Neighbour.B shr 3) > B) - Ord((Neighbour.B shr 3) < B)) shl 16);
 end;
 
-procedure FilterRow(const Window, Target: TArray<TN64VIPixel>; Stride, AAMode: Integer; Dither: Boolean;
-  FetchState: Integer);
+procedure FilterRow(const Window, Target: TArray<TN64VIPixel>; Stride, AAMode: Integer; Dither: Boolean; FetchState: Integer);
 var
   Colours: array[0..6] of TN64VIPixel;
   Values: array[0..6] of Integer;
@@ -368,13 +380,24 @@ begin
     begin
       var N: Integer;
       case I of
-        0: N := W - Stride - 1;
-        1: N := W - Stride + 1;
-        2: N := W - 2;
-        3: N := W + 2;
-        4: if FetchState = 1 then N := W - 2 else N := W + Stride - 1;
+        0:
+          N := W - Stride - 1;
+        1:
+          N := W - Stride + 1;
+        2:
+          N := W - 2;
+        3:
+          N := W + 2;
+        4:
+          if FetchState = 1 then
+            N := W - 2
+          else
+            N := W + Stride - 1;
       else
-        if FetchState = 1 then N := W + 2 else N := W + Stride + 1;
+        if FetchState = 1 then
+          N := W + 2
+        else
+          N := W + Stride + 1;
       end;
       if Window[N].Coverage = 7 then
       begin
@@ -386,8 +409,10 @@ begin
     begin
       for var I := 0 to Count - 1 do
         case Channel of
-          0: Values[I] := Colours[I].R;
-          1: Values[I] := Colours[I].G;
+          0:
+            Values[I] := Colours[I].R;
+          1:
+            Values[I] := Colours[I].G;
         else
           Values[I] := Colours[I].B;
         end;
@@ -416,8 +441,10 @@ begin
       var Center := Values[0];
       var Value := (Center + FloorShift((Low + High - Center * 2) * (7 - Pixel.Coverage) + 4, 3)) and $FF;
       case Channel of
-        0: Pixel.R := Value;
-        1: Pixel.G := Value;
+        0:
+          Pixel.R := Value;
+        1:
+          Pixel.G := Value;
       else
         Pixel.B := Value;
       end;
@@ -431,7 +458,8 @@ begin
   // The filtered pixels (dither filter or anti-alias reconstruction) of the
   // whole row, current fetch state.
   Result := Row and (Slots - 1);
-  if FSlotFiltered[Result] and (FSlotRow[Result] = Row) and (FSlotState[Result] = FFetchState) then Exit;
+  if FSlotFiltered[Result] and (FSlotRow[Result] = Row) and (FSlotState[Result] = FFetchState) then
+    Exit;
   var Stride := FStride;
   var Base := Row * Stride;
   if (FAAMode >= 2) and ((FStatus and $10000) = 0) and (FPixelType = 2) and FBus.DirectMemory and
@@ -459,7 +487,8 @@ begin
   var Above := FilteredSlot(Row - 1);
   var Below := FilteredSlot(Row + 1);
   Result := FilteredSlot(Row);
-  if FSlotDivot[Result] then Exit;
+  if FSlotDivot[Result] then
+    Exit;
   DivotRow(FFilteredRows[Result], FFilteredRows[Above], FFilteredRows[Below], FDivotRows[Result], FStride);
   FSlotDivot[Result] := True;
 end;
@@ -472,8 +501,8 @@ begin
   else
     Result := FFilteredRows[FilteredSlot(Row)];
 end;
-procedure TN64VI.ComposeRow(const Weave: TArray<TAlphaColor>; const ColumnR, ColumnG, ColumnB: TArray<Integer>;
-  OutputIndex, Width, FirstSample, LastSample, XStart, XStep, FirstColumn: Integer; Progressive: Boolean);
+
+procedure TN64VI.ComposeRow(const Weave: TArray<TAlphaColor>; const ColumnR, ColumnG, ColumnB: TArray<Integer>; OutputIndex, Width, FirstSample, LastSample, XStart, XStep, FirstColumn: Integer; Progressive: Boolean);
 begin
   var Resample := FAAMode <> 3;
   var Noisy := (FStatus and 4) <> 0;
@@ -482,7 +511,9 @@ begin
   begin
     var SX := XStart + X * XStep;
     var K := (SX shr 10) - FirstColumn;
-    var R := ColumnR[K]; var G := ColumnG[K]; var B := ColumnB[K];
+    var R := ColumnR[K];
+    var G := ColumnG[K];
+    var B := ColumnB[K];
     // Horizontal step between this and the next column, 1/32 steps (none
     // for a zero fraction, as in InterpolateColumns).
     var XFraction := (SX shr 5) and 31;
@@ -493,15 +524,31 @@ begin
       B := B + FloorShift((ColumnB[K + 1] - B) * XFraction + 16, 5);
     end;
     var Noise: Cardinal := 0;
-    if Noisy then Noise := Random;
-    if R < 0 then R := 0 else if R > 255 then R := 255;
-    if G < 0 then G := 0 else if G > 255 then G := 255;
-    if B < 0 then B := 0 else if B > 255 then B := 255;
+    if Noisy then
+      Noise := Random;
+    if R < 0 then
+      R := 0
+    else if R > 255 then
+      R := 255;
+    if G < 0 then
+      G := 0
+    else if G > 255 then
+      G := 255;
+    if B < 0 then
+      B := 0
+    else if B > 255 then
+      B := 255;
     if Gamma then
     begin
-      var RD := 0; var GD := 0; var BD := 0;
+      var RD := 0;
+      var GD := 0;
+      var BD := 0;
       if Noisy then
-      begin RD := Noise and 63; GD := (Noise shr 6) and 63; BD := ((Noise shr 9) and 56) or (Noise and 7) end;
+      begin
+        RD := Noise and 63;
+        GD := (Noise shr 6) and 63;
+        BD := ((Noise shr 9) and 56) or (Noise and 7)
+      end;
       R := GammaTable[R * 64 + RD];
       G := GammaTable[G * 64 + GD];
       B := GammaTable[B * 64 + BD];
@@ -514,14 +561,16 @@ begin
     end;
     var Colour: TAlphaColor := $FF000000 or (Cardinal(R) shl 16) or (Cardinal(G) shl 8) or Cardinal(B);
     Weave[OutputIndex] := Colour;
-    if Progressive then Weave[OutputIndex + Width] := Colour;
+    if Progressive then
+      Weave[OutputIndex + Width] := Colour;
     Inc(OutputIndex);
   end;
 end;
 
 procedure TN64VI.Render(const Registers: array of Cardinal; out Width, Height: Integer; out Pixels: TArray<TAlphaColor>);
 begin
-  if Length(Registers) < 14 then raise EArgumentException.Create('VI requires fourteen registers');
+  if Length(Registers) < 14 then
+    raise EArgumentException.Create('VI requires fourteen registers');
   var Status := Integer(Registers[0] and $1FFFF);
   var Stride := Integer(Registers[2] and $FFF);
   var PixelType := Status and 3;
@@ -539,47 +588,66 @@ begin
   var PAL := (Registers[6] and $3FF) > 550;
   // The signal includes its blank borders. A progressive field has 1:2 pixel
   // aspect; repeat each filtered scanline for IEmulationCore square pixels.
-  Width := 640; Height := 480;
-  if PAL then Height := 576;
+  Width := 640;
+  Height := 480;
+  if PAL then
+    Height := 576;
   if (ActiveWidth < 1) or (ActiveWidth > 1024) or (FieldRows < 1) or (FieldRows > 512) or
     (Stride < 1) or (XStep = 0) or (YStep = 0) then
   begin
     SetLength(Pixels, Width * Height);
-    for var I := 0 to High(Pixels) do Pixels[I] := $FF000000;
+    for var I := 0 to High(Pixels) do
+      Pixels[I] := $FF000000;
     Exit;
   end;
   var LeftBlank := 108;
   var TopBlank := 34;
-  if PAL then begin LeftBlank := 128; TopBlank := 44 end;
+  if PAL then
+  begin
+    LeftBlank := 128;
+    TopBlank := 44
+  end;
   var ActiveLeft := HStart - LeftBlank;
   var ActiveTop := (VStart - TopBlank) div 2;
   var LeftClipped := ActiveLeft < 0;
   if LeftClipped then
   begin
     Inc(XStart, -ActiveLeft * XStep);
-    Inc(ActiveWidth, ActiveLeft); ActiveLeft := 0;
+    Inc(ActiveWidth, ActiveLeft);
+    ActiveLeft := 0;
   end;
-  if ActiveTop < 0 then begin Inc(YStart, -ActiveTop * YStep); ActiveTop := 0 end;
+  if ActiveTop < 0 then
+  begin
+    Inc(YStart, -ActiveTop * YStep);
+    ActiveTop := 0
+  end;
   var RightClipped := ActiveLeft + ActiveWidth > Width;
-  if RightClipped then ActiveWidth := Width - ActiveLeft;
+  if RightClipped then
+    ActiveWidth := Width - ActiveLeft;
   // These samples belong to the VI analog blanking interval. Retain the
   // border in the output instead of masking it in an oracle comparison.
-  var FirstSample := 8; var LastSample := ActiveWidth - 7;
-  if LeftClipped then FirstSample := 0;
-  if RightClipped then LastSample := ActiveWidth;
+  var FirstSample := 8;
+  var LastSample := ActiveWidth - 7;
+  if LeftClipped then
+    FirstSample := 0;
+  if RightClipped then
+    LastSample := ActiveWidth;
   FieldRows := Min(FieldRows, Height div 2 - ActiveTop);
   var Field := Integer(Registers[4] and 1);
   // CURRENT identifies the physical field belonging to this ORIGIN/scale
   // packet. Its visible canvas row parity is inverted, as in the references.
   // At wrap Console passes the saved completed physical field; its guest
   // MMIO CURRENT may already name the next field.
-  if Interlaced then Field := Field xor 1;
+  if Interlaced then
+    Field := Field xor 1;
   var Size := Width * Height;
   if (FWidth <> Width) or (FHeight <> Height) then
   begin
-    FWidth := Width; FHeight := Height;
+    FWidth := Width;
+    FHeight := Height;
     SetLength(FBuffers[FFront], Size);
-    for var I := 0 to Size - 1 do FBuffers[FFront][I] := $FF000000;
+    for var I := 0 to Size - 1 do
+      FBuffers[FFront][I] := $FF000000;
   end;
   // Compose in the oldest buffer; SetLength also makes it private if a frame
   // returned three fields ago is still referenced by a consumer.
@@ -588,7 +656,8 @@ begin
   var Weave := FBuffers[Back];
   if not (PixelType in [2, 3]) then
   begin
-    for var I := 0 to Size - 1 do Weave[I] := $FF000000;
+    for var I := 0 to Size - 1 do
+      Weave[I] := $FF000000;
     FFront := Back;
     Pixels := Weave;
     Exit;
@@ -614,8 +683,10 @@ begin
   begin
     FSlotFiltered[Slot] := False;
     FSlotDivot[Slot] := False;
-    if Length(FFilteredRows[Slot]) <> Stride then SetLength(FFilteredRows[Slot], Stride);
-    if ((Status and $10) <> 0) and (Length(FDivotRows[Slot]) <> Stride) then SetLength(FDivotRows[Slot], Stride);
+    if Length(FFilteredRows[Slot]) <> Stride then
+      SetLength(FFilteredRows[Slot], Stride);
+    if ((Status and $10) <> 0) and (Length(FDivotRows[Slot]) <> Stride) then
+      SetLength(FDivotRows[Slot], Stride);
   end;
   // Source columns of this field: SX = XStart + X * XStep grows with X.
   var FirstColumn := 0;
@@ -635,10 +706,15 @@ begin
   begin
     var SY := YStart + Y * YStep;
     var SourceRow := SY shr 10;
-    if SourceRow = (SY + YStep) shr 10 then FFetchState := 2 else FFetchState := FFetchState shr 1;
-    if Columns = 0 then Continue;
+    if SourceRow = (SY + YStep) shr 10 then
+      FFetchState := 2
+    else
+      FFetchState := FFetchState shr 1;
+    if Columns = 0 then
+      Continue;
     var OutputY := (ActiveTop + Y) * 2;
-    if Interlaced then Inc(OutputY, Field);
+    if Interlaced then
+      Inc(OutputY, Field);
     // The two source rows of the bilinear tap, as linear framebuffer spans.
     // The columns are linear framebuffer indices, so they may run on into
     // the next rows: one row's part at a time, from the slots themselves.
@@ -653,7 +729,8 @@ begin
       var Take := Min(Columns - Done, Stride - Column);
       var Top := RowPixels(Row);
       var Bottom := Top;
-      if FAAMode <> 3 then Bottom := RowPixels(Row + 1);
+      if FAAMode <> 3 then
+        Bottom := RowPixels(Row + 1);
       InterpolateColumns(Top, Bottom, Column, FColumnR, FColumnG, FColumnB, Done, Take, (SY shr 5) and 31,
         FAAMode <> 3);
       Inc(Done, Take);
@@ -764,15 +841,21 @@ begin
   if State.Loading then
   begin
     if (FWidth < 0) or (FWidth > 1024) or (FHeight < 0) or (FHeight > 1024) or
-      (FLastField < -1) or (FLastField > 1) then raise EReadError.Create('Invalid VI raster snapshot');
+      (FLastField < -1) or (FLastField > 1) then
+      raise EReadError.Create('Invalid VI raster snapshot');
     FFront := 0;
     FBuffers[2] := nil;
     FBuffers[1] := nil;
     FBuffers[0] := nil;
     SetLength(FBuffers[0], FWidth * FHeight);
   end;
-  if Length(FBuffers[FFront]) > 0 then State.Field(FBuffers[FFront][0], Length(FBuffers[FFront]) * SizeOf(Cardinal))
-  else begin var Empty: Byte := 0; State.Field(Empty, 0) end;
+  if Length(FBuffers[FFront]) > 0 then
+    State.Field(FBuffers[FFront][0], Length(FBuffers[FFront]) * SizeOf(Cardinal))
+  else
+  begin
+    var Empty: Byte := 0;
+    State.Field(Empty, 0)
+  end;
 end;
 
 initialization
@@ -780,3 +863,4 @@ initialization
     GammaTable[V] := Byte(IntegerSqrt(Cardinal(V)) * 2);
 
 end.
+

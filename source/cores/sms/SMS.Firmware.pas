@@ -2,14 +2,17 @@
 
 interface
 
-uses System.SysUtils;
+uses
+  System.SysUtils;
 
 function LoadBuiltinSMSBIOS(Japanese: Boolean): TBytes;
+
 function DefaultSMSBIOSJapanese(const ROM: TBytes): Boolean;
 
 implementation
 
-uses System.Classes, System.Hash;
+uses
+  System.Classes, System.Hash;
 
 {$R 'SMS.Firmware.res' 'SMS.Firmware.rc'}
 
@@ -50,3 +53,4 @@ begin
 end;
 
 end.
+

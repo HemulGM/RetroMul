@@ -206,6 +206,8 @@ const
     (Hash: 'fe4bd35e87dd50fddd255172129b9bec38691188'; Mapper: Konami) { King Kong 2 },
     (Hash: 'ff72a1788d47f9876d9fabd720f6a289fb409090'; Mapper: KonamiSCC)
 
+
+
  { F1 Spirit - The Way To Formula 1 }
     );
 {$ENDREGION}

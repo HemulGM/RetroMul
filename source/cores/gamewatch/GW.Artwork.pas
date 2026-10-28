@@ -2,7 +2,8 @@
 
 interface
 
-uses System.SysUtils, System.UITypes;
+uses
+  System.SysUtils, System.UITypes;
 
 type
   TGWLayer = record
@@ -24,6 +25,7 @@ type
   end;
 
 procedure SetDefaultGWArtworkRenderer(const Renderer: IGWArtworkRenderer);
+
 function DefaultGWArtworkRenderer: IGWArtworkRenderer;
 
 implementation
@@ -42,3 +44,4 @@ begin
 end;
 
 end.
+

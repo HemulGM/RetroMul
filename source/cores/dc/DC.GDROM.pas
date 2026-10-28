@@ -14,7 +14,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Snapshots, DC.Types, DC.Scheduler, DC.Interrupts, DC.Disc;
+  System.SysUtils, System.Classes, Core.Snapshots, DC.Types, DC.Scheduler,
+  DC.Interrupts, DC.Disc;
 
 type
   TDCCDDAState = record
@@ -131,13 +132,11 @@ const
   // Interrupt reason (sector count register): CoD and IO.
   ReasonCommand = 1;
   ReasonToHost = 2;
-
   PhaseIdle = 0;
   PhasePacket = 1;
   PhaseDataIn = 2;
   PhaseDataOut = 3;
   PhaseDMA = 4;
-
   PendingChunk = 1;
   PendingComplete = 2;
 
@@ -145,12 +144,10 @@ const
   CommandDelay = 4000;
   SectorDelay = 2000;
   MaxChunkSectors = 32;
-
   DefaultMode: array[0..31] of Byte = (0, 0, 0, 0, 0, $B4, $19, 0, 0, 8,
     Ord('S'), Ord('E'), 32, 32, 32, 32, 32, 32,
     Ord('R'), Ord('e'), Ord('v'), 32, Ord('6'), Ord('.'), Ord('4'), Ord('3'),
     Ord('9'), Ord('9'), Ord('0'), Ord('4'), Ord('0'), Ord('8'));
-
   IdentifyText: AnsiString = 'SE              CD-ROM DRIVE    6.43990408      ';
 
 constructor TDCGDROM.Create(Scheduler: TDCScheduler; Interrupts: TDCInterrupts);
@@ -181,8 +178,10 @@ begin
   if (Disc = nil) or not Disc.HasBootTrack then
     Exit(7);
   case S.CDDA.Status of
-    1: Result := 3;
-    2: Result := 1;
+    1:
+      Result := 3;
+    2:
+      Result := 1;
   else
     Result := 1;
   end;
@@ -220,9 +219,12 @@ end;
 function TDCGDROM.AudioStatus: Byte;
 begin
   case S.CDDA.Status of
-    1: Result := $11;
-    2: Result := $12;
-    3: Result := $13;
+    1:
+      Result := $11;
+    2:
+      Result := $12;
+    3:
+      Result := $13;
   else
     Result := $15;
   end;
@@ -748,19 +750,26 @@ begin
           Exit;
         end;
         case P[1] and 7 of
-          1: PlaySectors(BE24(P, 2), BE24(P, 8), P[6]);
-          2: PlaySectors(MSFToFAD(P[2], P[3], P[4]), MSFToFAD(P[8], P[9], P[10]), P[6]);
-          7: ResumeCDDA;
+          1:
+            PlaySectors(BE24(P, 2), BE24(P, 8), P[6]);
+          2:
+            PlaySectors(MSFToFAD(P[2], P[3], P[4]), MSFToFAD(P[8], P[9], P[10]), P[6]);
+          7:
+            ResumeCDDA;
         end;
         Complete(CommandDelay);
       end;
     $21:
       begin
         case P[1] and 15 of
-          1: SeekCDDA(BE24(P, 2));
-          2: SeekCDDA(MSFToFAD(P[2], P[3], P[4]));
-          3: StopCDDA;
-          4: PauseCDDA;
+          1:
+            SeekCDDA(BE24(P, 2));
+          2:
+            SeekCDDA(MSFToFAD(P[2], P[3], P[4]));
+          3:
+            StopCDDA;
+          4:
+            PauseCDDA;
         end;
         Complete(CommandDelay);
       end;
@@ -991,3 +1000,4 @@ begin
 end;
 
 end.
+

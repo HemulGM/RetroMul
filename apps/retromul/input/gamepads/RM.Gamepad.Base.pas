@@ -21,7 +21,8 @@ type
     procedure Notification(AComponent: TComponent; Operation: TOperation); override;
     procedure ButtonActivated; override;
   public
-    class var TouchHapticsEnabled: Boolean;
+    class var
+      TouchHapticsEnabled: Boolean;
     destructor Destroy; override;
     procedure AttachToForm(Form: TCommonCustomForm);
     class function PreferredHeight(AvailableWidth, AvailableHeight: Single): Single; static;
@@ -374,7 +375,8 @@ begin
   for var B in FBindings do
     B.Element.PartEnabled[B.Part] := B.Button in Value;
   for var E in FAuxiliary do
-    if E <> nil then E.PartEnabled[0] := Value <> [];
+    if E <> nil then
+      E.PartEnabled[0] := Value <> [];
   for var Stick in [FStick, FRightStick] do
     if Stick <> nil then
       for var Part := 0 to Stick.PartCount - 1 do
@@ -417,3 +419,4 @@ initialization
   TVirtualGamepadControl.TouchHapticsEnabled := True;
 
 end.
+

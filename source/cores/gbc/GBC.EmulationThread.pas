@@ -3,8 +3,8 @@
 interface
 
 uses
-  Core.RomFormat, GB.EmulationThread, GB.GPU, GB.ROM, GB.MBC, GB.Memory,
-  GB.Joypad, GB.Timer, GB.InterruptManager;
+  GB.EmulationThread, GB.GPU, GB.ROM, GB.MBC, GB.Memory, GB.Joypad, GB.Timer,
+  GB.InterruptManager;
 
 type
   TGBInputEvent = GB.EmulationThread.TGBInputEvent;
@@ -23,7 +23,7 @@ type
 implementation
 
 uses
-  GBC.GPU, GBC.Memory, GBC.Joypad, GBC.Timer, GBC.InterruptManager;
+  GB.Cartridge, GBC.GPU, GBC.Memory, GBC.Joypad, GBC.Timer, GBC.InterruptManager;
 
 function TGBCEmulationThread.CoreID: string;
 begin

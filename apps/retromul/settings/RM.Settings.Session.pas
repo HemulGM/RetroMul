@@ -3,53 +3,70 @@
 interface
 
 uses
-  System.SysUtils, System.IniFiles, Core.Storage;
+  System.SysUtils, System.IniFiles, System.Generics.Collections, Core.Storage;
 
 type
-  // The session owns drafts, independently of the lifetime of page controls.
-  // An INI is loaded whole, so keys not exposed by an editor are preserved.
+  // Drafts are keyed by page ID; configuration paths still use SettingsId.
+  // The session owns every whole INI and preserves keys not exposed by editors.
   TSettingsSession = class
   private
     FStorage: IStorage;
-    FDrafts: TArray<TMemIniFile>;
+    FDrafts: TObjectDictionary<string, TMemIniFile>;
+    FPageOrder: TList<string>;
+    function GetDraft(const PageId: string): TMemIniFile;
   public
-    constructor Create(const Storage: IStorage; PageCount: Integer);
+    constructor Create(const Storage: IStorage);
     destructor Destroy; override;
-    procedure Open(Page: Integer; const SettingsId: string);
+    procedure Open(const PageId, SettingsId: string);
     procedure Save;
-    property Drafts: TArray<TMemIniFile> read FDrafts;
+    property Drafts[const PageId: string]: TMemIniFile read GetDraft;
   end;
 
 implementation
 
-constructor TSettingsSession.Create(const Storage: IStorage; PageCount: Integer);
+uses System.Generics.Defaults;
+
+constructor TSettingsSession.Create(const Storage: IStorage);
 begin
   inherited Create;
   FStorage := Storage;
-  SetLength(FDrafts, PageCount);
+  FDrafts := TObjectDictionary<string, TMemIniFile>.Create([doOwnsValues], TIStringComparer.Ordinal);
+  FPageOrder := TList<string>.Create;
 end;
 
 destructor TSettingsSession.Destroy;
 begin
-  for var Draft in FDrafts do
-    Draft.Free;
+  FPageOrder.Free;
+  FDrafts.Free;
   inherited;
 end;
 
-procedure TSettingsSession.Open(Page: Integer; const SettingsId: string);
+procedure TSettingsSession.Open(const PageId, SettingsId: string);
 begin
-  if (Page < 0) or (Page >= Length(FDrafts)) or (FDrafts[Page] <> nil) then
-    raise EArgumentException.Create('Invalid or duplicate settings session page');
-  FDrafts[Page] := FStorage.ReadConfig(FStorage.ConfigFile(SettingsId));
+  var Key := PageId.Trim.ToLower;
+  if (Key = '') or (SettingsId = '') or FDrafts.ContainsKey(Key) then
+    raise EArgumentException.Create('Invalid or duplicate settings session page: ' + PageId);
+  var Draft := FStorage.ReadConfig(FStorage.ConfigFile(SettingsId));
+  try
+    FDrafts.Add(Key, Draft);
+  except
+    Draft.Free;
+    raise;
+  end;
+  FPageOrder.Add(Key);
+end;
+
+function TSettingsSession.GetDraft(const PageId: string): TMemIniFile;
+begin
+  if not FDrafts.TryGetValue(PageId.Trim, Result) then
+    raise EArgumentException.Create('Settings session page is not open: ' + PageId);
 end;
 
 procedure TSettingsSession.Save;
 begin
-  // The caller validates every platform before starting any writes.
-  for var Draft in FDrafts do
-    if Draft <> nil then
-      FStorage.WriteConfig(Draft);
+  // Validate all pages before calling Save. Keep writes in declaration order,
+  // independent of dictionary iteration order; the view opens main first.
+  for var PageId in FPageOrder do FStorage.WriteConfig(FDrafts[PageId]);
 end;
 
 end.
-

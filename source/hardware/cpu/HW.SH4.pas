@@ -39,7 +39,6 @@ const
   SH4ExcSlotIllegal = $1A0;
   SH4ExcFPUDisabled = $800;
   SH4ExcSlotFPUDisabled = $820;
-
   SH4SRWriteMask = $700083F3;
   SH4FPSCRMask = $003FFFFF;
 
@@ -47,25 +46,35 @@ type
   // Bus callbacks receive physical (29-bit) addresses outside the direct
   // pages. Size is 1, 2, 4 or 8 bytes; values are little-endian.
   TSH4BusRead = function(User: Pointer; Address: Cardinal; Size: Integer): UInt64;
+
   TSH4BusWrite = procedure(User: Pointer; Address: Cardinal; Value: UInt64; Size: Integer);
   // 32-byte store-queue or similar burst to a physical address.
+
   TSH4BusBurst = procedure(User: Pointer; Address: Cardinal; Data: PCardinal; Count: Integer);
   // On-chip modules outside the CPU core (P4 0xFF000000.., area 7).
+
   TSH4OnChipRead = function(User: Pointer; Address: Cardinal; Size: Integer): Cardinal;
+
   TSH4OnChipWrite = procedure(User: Pointer; Address, Value: Cardinal; Size: Integer);
   // Optional instruction fetch hook for test harnesses (all fetches when set).
+
   TSH4Fetch = function(User: Pointer; Address: Cardinal): Word;
   // Optional observer of instructions run by steps (diagnostics).
+
   TSH4StepHook = procedure(User: Pointer; PC: Cardinal);
   // Called for an illegal instruction; True when the owner handled it (HLE
   // firmware entry points) and set PC itself.
+
   TSH4IllegalHook = function(User: Pointer; Address: Cardinal): Boolean;
 
   // Physical 64 KiB pages: host memory or nil (callbacks). Gens points to
   // sixteen write-generation counters, one per 4 KiB of the page.
   TSH4PhysicalPages = array[0..8191] of PByte;
+
   TSH4PhysicalGens = array[0..8191] of PCardinal;
+
   PSH4PhysicalPages = ^TSH4PhysicalPages;
+
   PSH4PhysicalGens = ^TSH4PhysicalGens;
 
   TSH4Bus = record
@@ -82,10 +91,14 @@ type
 
   TSH4FPBank = record
     case Integer of
-      0: (S: array[0..15] of Single);
-      1: (U: array[0..15] of Cardinal);
-      2: (D: array[0..7] of Double);
-      3: (Q: array[0..7] of UInt64);
+      0:
+        (S: array[0..15] of Single);
+      1:
+        (U: array[0..15] of Cardinal);
+      2:
+        (D: array[0..7] of Double);
+      3:
+        (Q: array[0..7] of UInt64);
   end;
 
   TSH4TLBEntry = record
@@ -125,9 +138,11 @@ type
     Imm: Cardinal;
     Addr: Cardinal;
   end;
+
   PSH4Inst = ^TSH4Inst;
 
   PSH4Block = ^TSH4Block;
+
   TSH4Block = record
     PC, Mode: Cardinal;
     Count: Integer;
@@ -156,12 +171,16 @@ type
     Phys: Cardinal;
     Flags, ASID: Byte;
   end;
+
   PSH4TLBPage = ^TSH4TLBPage;
 
   // Host memory of the 4 KiB pages of P0, or their cached translations.
   TSH4FastPages = array[0..$7FFFF] of PByte;
+
   PSH4FastPages = ^TSH4FastPages;
+
   TSH4FastWrites = array[0..$7FFFF] of PSH4TLBPage;
+
   PSH4FastWrites = ^TSH4FastWrites;
 
   TSH4 = class
@@ -289,7 +308,7 @@ type
     function BlockMapped(B: PSH4Block): Boolean;
     procedure BuildMaps;
     procedure MapPage(Page: Integer);
-    function PhysicalPage(Virtual: Cardinal; Writing: Boolean): PByte;
+    function PhysicalPage(virtual: Cardinal; Writing: Boolean): PByte;
     function SlowRead(Address: Cardinal; Size: Integer): UInt64;
     procedure SlowWrite(Address: Cardinal; Value: UInt64; Size: Integer);
     // Accesses that miss the direct maps while translation pages are cached:
@@ -567,7 +586,7 @@ type
     procedure Step;
     // Physical address from a virtual one with the current MMU state (the
     // low 29 bits where nothing maps it).
-    function PhysicalAddress(Virtual: Cardinal): Cardinal;
+    function PhysicalAddress(virtual: Cardinal): Cardinal;
     // For high-level code standing in for the instruction at PC (system
     // calls): the physical address of a virtual one. Where the MMU cannot
     // translate it, the CPU takes the exception that instruction would and
@@ -605,12 +624,10 @@ const
   SRBL = $10000000;
   SRRB = $20000000;
   SRMD = $40000000;
-
   FPSCRDN = $00040000;
   FPSCRPR = $00080000;
   FPSCRSZ = $00100000;
   FPSCRFR = $00200000;
-
   ModeMD = 1;
   ModeFD = 2;
   ModePR = 4;
@@ -671,14 +688,14 @@ var
 
 { Memory }
 
-function TSH4.PhysicalPage(Virtual: Cardinal; Writing: Boolean): PByte;
+function TSH4.PhysicalPage(virtual: Cardinal; Writing: Boolean): PByte;
 begin
   Result := nil;
-  if Virtual >= $E0000000 then
+  if virtual >= $E0000000 then
     Exit;
-  if ((Virtual < $80000000) or (Virtual >= $C0000000)) and ((S.MMUCR and 1) <> 0) then
+  if ((virtual < $80000000) or (virtual >= $C0000000)) and ((S.MMUCR and 1) <> 0) then
     Exit;
-  var Physical := Virtual and $1FFFFFFF;
+  var Physical := virtual and $1FFFFFFF;
   // Area 7 holds on-chip registers; 7C000000..7FFFFFFF the operand-cache RAM.
   if Physical >= $1C000000 then
     Exit;
@@ -690,13 +707,13 @@ end;
 
 procedure TSH4.MapPage(Page: Integer);
 begin
-  var Virtual := Cardinal(Page) shl 16;
-  FReadMap[Page] := PhysicalPage(Virtual, False);
-  FWriteMap[Page] := PhysicalPage(Virtual, True);
+  var virtual := Cardinal(Page) shl 16;
+  FReadMap[Page] := PhysicalPage(virtual, False);
+  FWriteMap[Page] := PhysicalPage(virtual, True);
   FGenMap[Page] := @FSinkGens[0];
   if FReadMap[Page] <> nil then
   begin
-    var G := FBus.Gens[(Virtual and $1FFFFFFF) shr 16];
+    var G := FBus.Gens[(virtual and $1FFFFFFF) shr 16];
     if G <> nil then
       FGenMap[Page] := G
     else if FWriteMap[Page] = nil then
@@ -738,11 +755,10 @@ begin
   var P := FReadMap[A shr 16];
   if P <> nil then
     Result := (P + (A and $FFFF))^
+  else if FTLBChunks <> nil then
+    Result := Cardinal(TranslatedRead(A, 1))
   else
-    if FTLBChunks <> nil then
-      Result := Cardinal(TranslatedRead(A, 1))
-    else
-      Result := Cardinal(SlowRead(A, 1));
+    Result := Cardinal(SlowRead(A, 1));
 end;
 
 function TSH4.Read16(A: Cardinal): Cardinal;
@@ -750,11 +766,10 @@ begin
   var P := FReadMap[A shr 16];
   if (P <> nil) and ((A and 1) = 0) then
     Result := PWord(P + (A and $FFFF))^
+  else if FTLBChunks <> nil then
+    Result := Cardinal(TranslatedRead(A, 2))
   else
-    if FTLBChunks <> nil then
-      Result := Cardinal(TranslatedRead(A, 2))
-    else
-      Result := Cardinal(SlowRead(A, 2));
+    Result := Cardinal(SlowRead(A, 2));
 end;
 
 function TSH4.Read32(A: Cardinal): Cardinal;
@@ -762,11 +777,10 @@ begin
   var P := FReadMap[A shr 16];
   if (P <> nil) and ((A and 3) = 0) then
     Result := PCardinal(P + (A and $FFFF))^
+  else if FTLBChunks <> nil then
+    Result := Cardinal(TranslatedRead(A, 4))
   else
-    if FTLBChunks <> nil then
-      Result := Cardinal(TranslatedRead(A, 4))
-    else
-      Result := Cardinal(SlowRead(A, 4));
+    Result := Cardinal(SlowRead(A, 4));
 end;
 
 function TSH4.Read64(A: Cardinal): UInt64;
@@ -919,9 +933,12 @@ begin
   end;
   var Mask: Cardinal;
   case ((Flags shr 6) and 2) or ((Flags shr 4) and 1) of
-    0: Mask := $FFFFFC00;
-    1: Mask := $FFFFF000;
-    2: Mask := $FFFF0000;
+    0:
+      Mask := $FFFFFC00;
+    1:
+      Mask := $FFFFF000;
+    2:
+      Mask := $FFFF0000;
   else
     Mask := $FFF00000;
   end;
@@ -947,9 +964,12 @@ begin
       Continue;
     var Mask: Cardinal;
     case ((E.Flags shr 6) and 2) or ((E.Flags shr 4) and 1) of
-      0: Mask := $FFFFFC00;
-      1: Mask := $FFFFF000;
-      2: Mask := $FFFF0000;
+      0:
+        Mask := $FFFFFC00;
+      1:
+        Mask := $FFFFF000;
+      2:
+        Mask := $FFFF0000;
     else
       Mask := $FFF00000;
     end;
@@ -1084,9 +1104,12 @@ begin
     Exit;
   var Size: Cardinal;
   case ((E.Flags shr 6) and 2) or ((E.Flags shr 4) and 1) of
-    0: Size := $400;
-    1: Size := $1000;
-    2: Size := $10000;
+    0:
+      Size := $400;
+    1:
+      Size := $1000;
+    2:
+      Size := $10000;
   else
     Size := $100000;
   end;
@@ -1107,12 +1130,12 @@ begin
   end;
 end;
 
-function TSH4.PhysicalAddress(Virtual: Cardinal): Cardinal;
+function TSH4.PhysicalAddress(virtual: Cardinal): Cardinal;
 begin
-  if not Translate(Virtual, False, Result) then
+  if not Translate(virtual, False, Result) then
   begin
     FFault := False;
-    Result := Virtual and $1FFFFFFF;
+    Result := virtual and $1FFFFFFF;
   end;
 end;
 
@@ -1130,8 +1153,10 @@ end;
 function TSH4.LoadVirtual(Address: Cardinal; Size: Integer): Cardinal;
 begin
   case Size of
-    1: Result := Read8(Address) and $FF;
-    2: Result := Read16(Address) and $FFFF;
+    1:
+      Result := Read8(Address) and $FF;
+    2:
+      Result := Read16(Address) and $FFFF;
   else
     Result := Read32(Address);
   end;
@@ -1140,8 +1165,10 @@ end;
 procedure TSH4.StoreVirtual(Address, Value: Cardinal; Size: Integer);
 begin
   case Size of
-    1: Write8(Address, Value);
-    2: Write16(Address, Value);
+    1:
+      Write8(Address, Value);
+    2:
+      Write16(Address, Value);
   else
     Write32(Address, Value);
   end;
@@ -1188,9 +1215,12 @@ begin
   begin
     H := H + (Address and $FFF);
     case Size of
-      1: Result := H^;
-      2: Result := PWord(H)^;
-      4: Result := PCardinal(H)^;
+      1:
+        Result := H^;
+      2:
+        Result := PWord(H)^;
+      4:
+        Result := PCardinal(H)^;
     else
       Result := PUInt64(H)^;
     end;
@@ -1299,9 +1329,12 @@ begin
     if FJournalOn then
       JournalHost(Address, H, Page.Gen, Page.Phys or (Address and $FFF), Size);
     case Size of
-      1: H^ := Byte(Value);
-      2: PWord(H)^ := Word(Value);
-      4: PCardinal(H)^ := Cardinal(Value);
+      1:
+        H^ := Byte(Value);
+      2:
+        PWord(H)^ := Word(Value);
+      4:
+        PCardinal(H)^ := Cardinal(Value);
     else
       PUInt64(H)^ := Value;
     end;
@@ -1322,9 +1355,12 @@ begin
       begin
         var H := Page.Read + (Address and $FFF);
         case Size of
-          1: Result := H^;
-          2: Result := PWord(H)^;
-          4: Result := PCardinal(H)^;
+          1:
+            Result := H^;
+          2:
+            Result := PWord(H)^;
+          4:
+            Result := PCardinal(H)^;
         else
           Result := PUInt64(H)^;
         end;
@@ -1371,9 +1407,12 @@ begin
   begin
     var Offset := OCRAMOffset(Address, S.CCR);
     case Size of
-      1: Result := S.OCRAM[Offset];
-      2: Result := PWord(@S.OCRAM[Offset])^;
-      4: Result := PCardinal(@S.OCRAM[Offset])^;
+      1:
+        Result := S.OCRAM[Offset];
+      2:
+        Result := PWord(@S.OCRAM[Offset])^;
+      4:
+        Result := PCardinal(@S.OCRAM[Offset])^;
     else
       Result := PUInt64(@S.OCRAM[Offset])^;
     end;
@@ -1391,9 +1430,12 @@ begin
   begin
     P := P + (Physical and $FFFF);
     case Size of
-      1: Result := P^;
-      2: Result := PWord(P)^;
-      4: Result := PCardinal(P)^;
+      1:
+        Result := P^;
+      2:
+        Result := PWord(P)^;
+      4:
+        Result := PCardinal(P)^;
     else
       Result := PUInt64(P)^;
     end;
@@ -1415,9 +1457,12 @@ begin
         if FJournalOn then
           JournalHost(Address, H, Page.Gen, Page.Phys or (Address and $FFF), Size);
         case Size of
-          1: H^ := Byte(Value);
-          2: PWord(H)^ := Word(Value);
-          4: PCardinal(H)^ := Cardinal(Value);
+          1:
+            H^ := Byte(Value);
+          2:
+            PWord(H)^ := Word(Value);
+          4:
+            PCardinal(H)^ := Cardinal(Value);
         else
           PUInt64(H)^ := Value;
         end;
@@ -1471,9 +1516,12 @@ begin
   begin
     var Offset := OCRAMOffset(Address, S.CCR);
     case Size of
-      1: S.OCRAM[Offset] := Byte(Value);
-      2: PWord(@S.OCRAM[Offset])^ := Word(Value);
-      4: PCardinal(@S.OCRAM[Offset])^ := Cardinal(Value);
+      1:
+        S.OCRAM[Offset] := Byte(Value);
+      2:
+        PWord(@S.OCRAM[Offset])^ := Word(Value);
+      4:
+        PCardinal(@S.OCRAM[Offset])^ := Cardinal(Value);
     else
       PUInt64(@S.OCRAM[Offset])^ := Value;
     end;
@@ -1494,9 +1542,12 @@ begin
   begin
     P := P + (Physical and $FFFF);
     case Size of
-      1: P^ := Byte(Value);
-      2: PWord(P)^ := Word(Value);
-      4: PCardinal(P)^ := Cardinal(Value);
+      1:
+        P^ := Byte(Value);
+      2:
+        PWord(P)^ := Word(Value);
+      4:
+        PCardinal(P)^ := Cardinal(Value);
     else
       PUInt64(P)^ := Value;
     end;
@@ -1563,28 +1614,44 @@ begin
       end;
     $FF, $1F:
       case Address and $00FFFFFF of
-        $000000: Result := S.PTEH;
-        $000004: Result := S.PTEL;
-        $000008: Result := S.TTB;
-        $00000C: Result := S.TEA;
-        $000010: Result := S.MMUCR;
-        $000014: Result := S.BASRA;
-        $000018: Result := S.BASRB;
-        $00001C: Result := S.CCR;
-        $000020: Result := S.TRA;
-        $000024: Result := S.EXPEVT;
-        $000028: Result := S.INTEVT;
-        $000034: Result := S.PTEA;
-        $000038: Result := S.QACR0;
-        $00003C: Result := S.QACR1;
+        $000000:
+          Result := S.PTEH;
+        $000004:
+          Result := S.PTEL;
+        $000008:
+          Result := S.TTB;
+        $00000C:
+          Result := S.TEA;
+        $000010:
+          Result := S.MMUCR;
+        $000014:
+          Result := S.BASRA;
+        $000018:
+          Result := S.BASRB;
+        $00001C:
+          Result := S.CCR;
+        $000020:
+          Result := S.TRA;
+        $000024:
+          Result := S.EXPEVT;
+        $000028:
+          Result := S.INTEVT;
+        $000034:
+          Result := S.PTEA;
+        $000038:
+          Result := S.QACR0;
+        $00003C:
+          Result := S.QACR1;
       else
         if Assigned(FBus.OnChipRead) then
           Result := FBus.OnChipRead(FBus.OnChipUser, (Address and $00FFFFFF) or $FF000000, Size);
       end;
   end;
   case Size of
-    1: Result := Result and $FF;
-    2: Result := Result and $FFFF;
+    1:
+      Result := Result and $FF;
+    2:
+      Result := Result and $FFFF;
   end;
 end;
 
@@ -1646,9 +1713,12 @@ begin
             end;
             S.PTEH := Value and $FFFFFCFF;
           end;
-        $000004: S.PTEL := Value and $1FFFFDFF;
-        $000008: S.TTB := Value;
-        $00000C: S.TEA := Value;
+        $000004:
+          S.PTEL := Value and $1FFFFDFF;
+        $000008:
+          S.TTB := Value;
+        $00000C:
+          S.TEA := Value;
         $000010:
           begin
             var Old := S.MMUCR;
@@ -1671,19 +1741,27 @@ begin
               InvalidateBlocks;
             end;
           end;
-        $000014: S.BASRA := Value and $FF;
-        $000018: S.BASRB := Value and $FF;
+        $000014:
+          S.BASRA := Value and $FF;
+        $000018:
+          S.BASRB := Value and $FF;
         $00001C:
           begin
             S.CCR := Value and $000089AF;
             S.CCR := S.CCR and not Cardinal($0808); // ICI/OCI read as 0
           end;
-        $000020: S.TRA := Value and $3FC;
-        $000024: S.EXPEVT := Value and $FFF;
-        $000028: S.INTEVT := Value and $FFF;
-        $000034: S.PTEA := Value and $F;
-        $000038: S.QACR0 := Value and $1C;
-        $00003C: S.QACR1 := Value and $1C;
+        $000020:
+          S.TRA := Value and $3FC;
+        $000024:
+          S.EXPEVT := Value and $FFF;
+        $000028:
+          S.INTEVT := Value and $FFF;
+        $000034:
+          S.PTEA := Value and $F;
+        $000038:
+          S.QACR0 := Value and $1C;
+        $00003C:
+          S.QACR1 := Value and $1C;
       else
         if Assigned(FBus.OnChipWrite) then
           FBus.OnChipWrite(FBus.OnChipUser, (Address and $00FFFFFF) or $FF000000, Value, Size);
@@ -1834,7 +1912,7 @@ var
   K: TOp;
   N, M: Integer;
   Imm: Cardinal;
-  Privileged, FPU, Branch, Delayed, Ends: Boolean;
+  Privileged, FPU, Branch, delayed, Ends: Boolean;
   PR, SZ: Boolean;
 begin
   N := (Op shr 8) and 15;
@@ -1844,7 +1922,7 @@ begin
   Privileged := False;
   FPU := False;
   Branch := False;
-  Delayed := False;
+  delayed := False;
   Ends := False;
   PR := (AMode and ModePR) <> 0;
   SZ := (AMode and ModeSZ) <> 0;
@@ -1860,32 +1938,76 @@ begin
           end
           else
             case M of
-              0: begin K := oSTCSR; Privileged := True; end;
-              1: K := oSTCGBR;
-              2: begin K := oSTCVBR; Privileged := True; end;
-              3: begin K := oSTCSSR; Privileged := True; end;
-              4: begin K := oSTCSPC; Privileged := True; end;
+              0:
+                begin
+                  K := oSTCSR;
+                  Privileged := True;
+                end;
+              1:
+                K := oSTCGBR;
+              2:
+                begin
+                  K := oSTCVBR;
+                  Privileged := True;
+                end;
+              3:
+                begin
+                  K := oSTCSSR;
+                  Privileged := True;
+                end;
+              4:
+                begin
+                  K := oSTCSPC;
+                  Privileged := True;
+                end;
             end;
         3:
           case M of
-            0: begin K := oBSRF; Branch := True; Delayed := True; end;
-            2: begin K := oBRAF; Branch := True; Delayed := True; end;
-            8: K := oPREF;
-            9, 10, 11: K := oOCB;
-            12: K := oMOVCAL;
+            0:
+              begin
+                K := oBSRF;
+                Branch := True;
+                delayed := True;
+              end;
+            2:
+              begin
+                K := oBRAF;
+                Branch := True;
+                delayed := True;
+              end;
+            8:
+              K := oPREF;
+            9, 10, 11:
+              K := oOCB;
+            12:
+              K := oMOVCAL;
           end;
-        4: K := oMOVBS0;
-        5: K := oMOVWS0;
-        6: K := oMOVLS0;
-        7: K := oMULL;
+        4:
+          K := oMOVBS0;
+        5:
+          K := oMOVWS0;
+        6:
+          K := oMOVLS0;
+        7:
+          K := oMULL;
         8:
           case Op of
-            $0008: K := oCLRT;
-            $0018: K := oSETT;
-            $0028: K := oCLRMAC;
-            $0038: begin K := oLDTLB; Privileged := True; Ends := True; end;
-            $0048: K := oCLRS;
-            $0058: K := oSETS;
+            $0008:
+              K := oCLRT;
+            $0018:
+              K := oSETT;
+            $0028:
+              K := oCLRMAC;
+            $0038:
+              begin
+                K := oLDTLB;
+                Privileged := True;
+                Ends := True;
+              end;
+            $0048:
+              K := oCLRS;
+            $0058:
+              K := oSETS;
           end;
         9:
           if Op = $0009 then
@@ -1896,24 +2018,63 @@ begin
             K := oMOVT;
         10:
           case M of
-            0: K := oSTSMACH;
-            1: K := oSTSMACL;
-            2: K := oSTSPR;
-            3: begin K := oSTCSGR; Privileged := True; end;
-            5: begin K := oSTSFPUL; FPU := True; end;
-            6: begin K := oSTSFPSCR; FPU := True; end;
-            15: begin K := oSTCDBR; Privileged := True; end;
+            0:
+              K := oSTSMACH;
+            1:
+              K := oSTSMACL;
+            2:
+              K := oSTSPR;
+            3:
+              begin
+                K := oSTCSGR;
+                Privileged := True;
+              end;
+            5:
+              begin
+                K := oSTSFPUL;
+                FPU := True;
+              end;
+            6:
+              begin
+                K := oSTSFPSCR;
+                FPU := True;
+              end;
+            15:
+              begin
+                K := oSTCDBR;
+                Privileged := True;
+              end;
           end;
         11:
           case Op of
-            $000B: begin K := oRTS; Branch := True; Delayed := True; end;
-            $001B: begin K := oSLEEP; Privileged := True; Ends := True; end;
-            $002B: begin K := oRTE; Privileged := True; Branch := True; Delayed := True; end;
+            $000B:
+              begin
+                K := oRTS;
+                Branch := True;
+                delayed := True;
+              end;
+            $001B:
+              begin
+                K := oSLEEP;
+                Privileged := True;
+                Ends := True;
+              end;
+            $002B:
+              begin
+                K := oRTE;
+                Privileged := True;
+                Branch := True;
+                delayed := True;
+              end;
           end;
-        12: K := oMOVBL0;
-        13: K := oMOVWL0;
-        14: K := oMOVLL0;
-        15: K := oMACL;
+        12:
+          K := oMOVBL0;
+        13:
+          K := oMOVWL0;
+        14:
+          K := oMOVLL0;
+        15:
+          K := oMACL;
       end;
     1:
       begin
@@ -1922,62 +2083,116 @@ begin
       end;
     2:
       case Op and 15 of
-        0: K := oMOVBS;
-        1: K := oMOVWS;
-        2: K := oMOVLS;
-        4: K := oMOVBM;
-        5: K := oMOVWM;
-        6: K := oMOVLM;
-        7: K := oDIV0S;
-        8: K := oTST;
-        9: K := oAND;
-        10: K := oXOR;
-        11: K := oOR;
-        12: K := oCMPSTR;
-        13: K := oXTRCT;
-        14: K := oMULUW;
-        15: K := oMULSW;
+        0:
+          K := oMOVBS;
+        1:
+          K := oMOVWS;
+        2:
+          K := oMOVLS;
+        4:
+          K := oMOVBM;
+        5:
+          K := oMOVWM;
+        6:
+          K := oMOVLM;
+        7:
+          K := oDIV0S;
+        8:
+          K := oTST;
+        9:
+          K := oAND;
+        10:
+          K := oXOR;
+        11:
+          K := oOR;
+        12:
+          K := oCMPSTR;
+        13:
+          K := oXTRCT;
+        14:
+          K := oMULUW;
+        15:
+          K := oMULSW;
       end;
     3:
       case Op and 15 of
-        0: K := oCMPEQ;
-        2: K := oCMPHS;
-        3: K := oCMPGE;
-        4: K := oDIV1;
-        5: K := oDMULU;
-        6: K := oCMPHI;
-        7: K := oCMPGT;
-        8: K := oSUB;
-        10: K := oSUBC;
-        11: K := oSUBV;
-        12: K := oADD;
-        13: K := oDMULS;
-        14: K := oADDC;
-        15: K := oADDV;
+        0:
+          K := oCMPEQ;
+        2:
+          K := oCMPHS;
+        3:
+          K := oCMPGE;
+        4:
+          K := oDIV1;
+        5:
+          K := oDMULU;
+        6:
+          K := oCMPHI;
+        7:
+          K := oCMPGT;
+        8:
+          K := oSUB;
+        10:
+          K := oSUBC;
+        11:
+          K := oSUBV;
+        12:
+          K := oADD;
+        13:
+          K := oDMULS;
+        14:
+          K := oADDC;
+        15:
+          K := oADDV;
       end;
     4:
       case Op and 15 of
         0:
           case M of
-            0: K := oSHLL;
-            1: K := oDT;
-            2: K := oSHAL;
+            0:
+              K := oSHLL;
+            1:
+              K := oDT;
+            2:
+              K := oSHAL;
           end;
         1:
           case M of
-            0: K := oSHLR;
-            1: K := oCMPPZ;
-            2: K := oSHAR;
+            0:
+              K := oSHLR;
+            1:
+              K := oCMPPZ;
+            2:
+              K := oSHAR;
           end;
         2:
           case M of
-            0: K := oSTSMMACH;
-            1: K := oSTSMMACL;
-            2: K := oSTSMPR;
-            3: begin K := oSTCMSGR; Privileged := True; end;
-            5: begin K := oSTSMFPUL; FPU := True; end;
-            6: begin K := oSTSMFPSCR; FPU := True; end;
-            15: begin K := oSTCMDBR; Privileged := True; end;
+            0:
+              K := oSTSMMACH;
+            1:
+              K := oSTSMMACL;
+            2:
+              K := oSTSMPR;
+            3:
+              begin
+                K := oSTCMSGR;
+                Privileged := True;
+              end;
+            5:
+              begin
+                K := oSTSMFPUL;
+                FPU := True;
+              end;
+            6:
+              begin
+                K := oSTSMFPSCR;
+                FPU := True;
+              end;
+            15:
+              begin
+                K := oSTCMDBR;
+                Privileged := True;
+              end;
           end;
         3:
           if (M and 8) <> 0 then
@@ -1988,31 +2203,69 @@ begin
           end
           else
             case M of
-              0: begin K := oSTCMSR; Privileged := True; end;
-              1: K := oSTCMGBR;
-              2: begin K := oSTCMVBR; Privileged := True; end;
-              3: begin K := oSTCMSSR; Privileged := True; end;
-              4: begin K := oSTCMSPC; Privileged := True; end;
+              0:
+                begin
+                  K := oSTCMSR;
+                  Privileged := True;
+                end;
+              1:
+                K := oSTCMGBR;
+              2:
+                begin
+                  K := oSTCMVBR;
+                  Privileged := True;
+                end;
+              3:
+                begin
+                  K := oSTCMSSR;
+                  Privileged := True;
+                end;
+              4:
+                begin
+                  K := oSTCMSPC;
+                  Privileged := True;
+                end;
             end;
         4:
           case M of
-            0: K := oROTL;
-            2: K := oROTCL;
+            0:
+              K := oROTL;
+            2:
+              K := oROTCL;
           end;
         5:
           case M of
-            0: K := oROTR;
-            1: K := oCMPPL;
-            2: K := oROTCR;
+            0:
+              K := oROTR;
+            1:
+              K := oCMPPL;
+            2:
+              K := oROTCR;
           end;
         6:
           case M of
-            0: K := oLDSMMACH;
-            1: K := oLDSMMACL;
-            2: K := oLDSMPR;
-            5: begin K := oLDSMFPUL; FPU := True; end;
-            6: begin K := oLDSMFPSCR; FPU := True; Ends := True; end;
-            15: begin K := oLDCMDBR; Privileged := True; end;
+            0:
+              K := oLDSMMACH;
+            1:
+              K := oLDSMMACL;
+            2:
+              K := oLDSMPR;
+            5:
+              begin
+                K := oLDSMFPUL;
+                FPU := True;
+              end;
+            6:
+              begin
+                K := oLDSMFPSCR;
+                FPU := True;
+                Ends := True;
+              end;
+            15:
+              begin
+                K := oLDCMDBR;
+                Privileged := True;
+              end;
           end;
         7:
           if (M and 8) <> 0 then
@@ -2023,41 +2276,94 @@ begin
           end
           else
             case M of
-              0: begin K := oLDCMSR; Privileged := True; Ends := True; end;
-              1: K := oLDCMGBR;
-              2: begin K := oLDCMVBR; Privileged := True; end;
-              3: begin K := oLDCMSSR; Privileged := True; end;
-              4: begin K := oLDCMSPC; Privileged := True; end;
+              0:
+                begin
+                  K := oLDCMSR;
+                  Privileged := True;
+                  Ends := True;
+                end;
+              1:
+                K := oLDCMGBR;
+              2:
+                begin
+                  K := oLDCMVBR;
+                  Privileged := True;
+                end;
+              3:
+                begin
+                  K := oLDCMSSR;
+                  Privileged := True;
+                end;
+              4:
+                begin
+                  K := oLDCMSPC;
+                  Privileged := True;
+                end;
             end;
         8:
           case M of
-            0: K := oSHLL2;
-            1: K := oSHLL8;
-            2: K := oSHLL16;
+            0:
+              K := oSHLL2;
+            1:
+              K := oSHLL8;
+            2:
+              K := oSHLL16;
           end;
         9:
           case M of
-            0: K := oSHLR2;
-            1: K := oSHLR8;
-            2: K := oSHLR16;
+            0:
+              K := oSHLR2;
+            1:
+              K := oSHLR8;
+            2:
+              K := oSHLR16;
           end;
         10:
           case M of
-            0: K := oLDSMACH;
-            1: K := oLDSMACL;
-            2: K := oLDSPR;
-            5: begin K := oLDSFPUL; FPU := True; end;
-            6: begin K := oLDSFPSCR; FPU := True; Ends := True; end;
-            15: begin K := oLDCDBR; Privileged := True; end;
+            0:
+              K := oLDSMACH;
+            1:
+              K := oLDSMACL;
+            2:
+              K := oLDSPR;
+            5:
+              begin
+                K := oLDSFPUL;
+                FPU := True;
+              end;
+            6:
+              begin
+                K := oLDSFPSCR;
+                FPU := True;
+                Ends := True;
+              end;
+            15:
+              begin
+                K := oLDCDBR;
+                Privileged := True;
+              end;
           end;
         11:
           case M of
-            0: begin K := oJSR; Branch := True; Delayed := True; end;
-            1: K := oTASB;
-            2: begin K := oJMP; Branch := True; Delayed := True; end;
+            0:
+              begin
+                K := oJSR;
+                Branch := True;
+                delayed := True;
+              end;
+            1:
+              K := oTASB;
+            2:
+              begin
+                K := oJMP;
+                Branch := True;
+                delayed := True;
+              end;
           end;
-        12: K := oSHAD;
-        13: K := oSHLD;
+        12:
+          K := oSHAD;
+        13:
+          K := oSHLD;
         14:
           if (M and 8) <> 0 then
           begin
@@ -2067,13 +2373,32 @@ begin
           end
           else
             case M of
-              0: begin K := oLDCSR; Privileged := True; Ends := True; end;
-              1: K := oLDCGBR;
-              2: begin K := oLDCVBR; Privileged := True; end;
-              3: begin K := oLDCSSR; Privileged := True; end;
-              4: begin K := oLDCSPC; Privileged := True; end;
+              0:
+                begin
+                  K := oLDCSR;
+                  Privileged := True;
+                  Ends := True;
+                end;
+              1:
+                K := oLDCGBR;
+              2:
+                begin
+                  K := oLDCVBR;
+                  Privileged := True;
+                end;
+              3:
+                begin
+                  K := oLDCSSR;
+                  Privileged := True;
+                end;
+              4:
+                begin
+                  K := oLDCSPC;
+                  Privileged := True;
+                end;
             end;
-        15: K := oMACW;
+        15:
+          K := oMACW;
       end;
     5:
       begin
@@ -2082,22 +2407,38 @@ begin
       end;
     6:
       case Op and 15 of
-        0: K := oMOVBL;
-        1: K := oMOVWL;
-        2: K := oMOVLL;
-        3: K := oMOV;
-        4: K := oMOVBP;
-        5: K := oMOVWP;
-        6: K := oMOVLP;
-        7: K := oNOT;
-        8: K := oSWAPB;
-        9: K := oSWAPW;
-        10: K := oNEGC;
-        11: K := oNEG;
-        12: K := oEXTUB;
-        13: K := oEXTUW;
-        14: K := oEXTSB;
-        15: K := oEXTSW;
+        0:
+          K := oMOVBL;
+        1:
+          K := oMOVWL;
+        2:
+          K := oMOVLL;
+        3:
+          K := oMOV;
+        4:
+          K := oMOVBP;
+        5:
+          K := oMOVWP;
+        6:
+          K := oMOVLP;
+        7:
+          K := oNOT;
+        8:
+          K := oSWAPB;
+        9:
+          K := oSWAPW;
+        10:
+          K := oNEGC;
+        11:
+          K := oNEG;
+        12:
+          K := oEXTUB;
+        13:
+          K := oEXTUW;
+        14:
+          K := oEXTSB;
+        15:
+          K := oEXTSW;
       end;
     7:
       begin
@@ -2106,23 +2447,46 @@ begin
       end;
     8:
       case N of
-        0: begin K := oMOVBS4; Imm := Op and 15; end;
-        1: begin K := oMOVWS4; Imm := (Op and 15) * 2; end;
-        4: begin K := oMOVBL4; Imm := Op and 15; end;
-        5: begin K := oMOVWL4; Imm := (Op and 15) * 2; end;
-        8: begin K := oCMPEQI; Imm := SignExtend8(Op); end;
+        0:
+          begin
+            K := oMOVBS4;
+            Imm := Op and 15;
+          end;
+        1:
+          begin
+            K := oMOVWS4;
+            Imm := (Op and 15) * 2;
+          end;
+        4:
+          begin
+            K := oMOVBL4;
+            Imm := Op and 15;
+          end;
+        5:
+          begin
+            K := oMOVWL4;
+            Imm := (Op and 15) * 2;
+          end;
+        8:
+          begin
+            K := oCMPEQI;
+            Imm := SignExtend8(Op);
+          end;
         9, 11, 13, 15:
           begin
             case N of
-              9: K := oBT;
-              11: K := oBF;
-              13: K := oBTS;
+              9:
+                K := oBT;
+              11:
+                K := oBF;
+              13:
+                K := oBTS;
             else
               K := oBFS;
             end;
             Branch := True;
-            Delayed := N >= 13;
-            Ends := not Delayed;
+            delayed := N >= 13;
+            Ends := not delayed;
             Imm := Address + 4 + SignExtend8(Op) * 2;
           end;
       end;
@@ -2138,27 +2502,93 @@ begin
         else
           K := oBSR;
         Branch := True;
-        Delayed := True;
+        delayed := True;
         Imm := Address + 4 + SignExtend12(Op) * 2;
       end;
     12:
       case N of
-        0: begin K := oMOVBSG; Imm := Op and $FF; end;
-        1: begin K := oMOVWSG; Imm := (Op and $FF) * 2; end;
-        2: begin K := oMOVLSG; Imm := (Op and $FF) * 4; end;
-        3: begin K := oTRAPA; Imm := Op and $FF; Branch := True; Ends := True; end;
-        4: begin K := oMOVBLG; Imm := Op and $FF; end;
-        5: begin K := oMOVWLG; Imm := (Op and $FF) * 2; end;
-        6: begin K := oMOVLLG; Imm := (Op and $FF) * 4; end;
-        7: begin K := oMOVA; Imm := (Address and $FFFFFFFC) + 4 + (Op and $FF) * 4; end;
-        8: begin K := oTSTI; Imm := Op and $FF; end;
-        9: begin K := oANDI; Imm := Op and $FF; end;
-        10: begin K := oXORI; Imm := Op and $FF; end;
-        11: begin K := oORI; Imm := Op and $FF; end;
-        12: begin K := oTSTB; Imm := Op and $FF; end;
-        13: begin K := oANDB; Imm := Op and $FF; end;
-        14: begin K := oXORB; Imm := Op and $FF; end;
-        15: begin K := oORB; Imm := Op and $FF; end;
+        0:
+          begin
+            K := oMOVBSG;
+            Imm := Op and $FF;
+          end;
+        1:
+          begin
+            K := oMOVWSG;
+            Imm := (Op and $FF) * 2;
+          end;
+        2:
+          begin
+            K := oMOVLSG;
+            Imm := (Op and $FF) * 4;
+          end;
+        3:
+          begin
+            K := oTRAPA;
+            Imm := Op and $FF;
+            Branch := True;
+            Ends := True;
+          end;
+        4:
+          begin
+            K := oMOVBLG;
+            Imm := Op and $FF;
+          end;
+        5:
+          begin
+            K := oMOVWLG;
+            Imm := (Op and $FF) * 2;
+          end;
+        6:
+          begin
+            K := oMOVLLG;
+            Imm := (Op and $FF) * 4;
+          end;
+        7:
+          begin
+            K := oMOVA;
+            Imm := (Address and $FFFFFFFC) + 4 + (Op and $FF) * 4;
+          end;
+        8:
+          begin
+            K := oTSTI;
+            Imm := Op and $FF;
+          end;
+        9:
+          begin
+            K := oANDI;
+            Imm := Op and $FF;
+          end;
+        10:
+          begin
+            K := oXORI;
+            Imm := Op and $FF;
+          end;
+        11:
+          begin
+            K := oORI;
+            Imm := Op and $FF;
+          end;
+        12:
+          begin
+            K := oTSTB;
+            Imm := Op and $FF;
+          end;
+        13:
+          begin
+            K := oANDB;
+            Imm := Op and $FF;
+          end;
+        14:
+          begin
+            K := oXORB;
+            Imm := Op and $FF;
+          end;
+        15:
+          begin
+            K := oORB;
+            Imm := Op and $FF;
+          end;
       end;
     13:
       begin
@@ -2179,11 +2609,16 @@ begin
               if PR then
               begin
                 case Op and 15 of
-                  0: K := oDADD;
-                  1: K := oDSUB;
-                  2: K := oDMUL;
-                  3: K := oDDIV;
-                  4: K := oDCMPEQ;
+                  0:
+                    K := oDADD;
+                  1:
+                    K := oDSUB;
+                  2:
+                    K := oDMUL;
+                  3:
+                    K := oDDIV;
+                  4:
+                    K := oDCMPEQ;
                 else
                   K := oDCMPGT;
                 end;
@@ -2193,11 +2628,16 @@ begin
               else
               begin
                 case Op and 15 of
-                  0: K := oFADD;
-                  1: K := oFSUB;
-                  2: K := oFMUL;
-                  3: K := oFDIV;
-                  4: K := oFCMPEQ;
+                  0:
+                    K := oFADD;
+                  1:
+                    K := oFSUB;
+                  2:
+                    K := oFMUL;
+                  3:
+                    K := oFDIV;
+                  4:
+                    K := oFCMPEQ;
                 else
                   K := oFCMPGT;
                 end;
@@ -2264,8 +2704,16 @@ begin
             end;
           13:
             case M of
-              0: begin K := oFSTS; N := N xor 1; end;
-              1: begin K := oFLDS; N := N xor 1; end;
+              0:
+                begin
+                  K := oFSTS;
+                  N := N xor 1;
+                end;
+              1:
+                begin
+                  K := oFLDS;
+                  N := N xor 1;
+                end;
               2:
                 if PR then
                 begin
@@ -2321,11 +2769,23 @@ begin
                   K := oFSQRT;
                   N := N xor 1;
                 end;
-              7: begin K := oFSRRA; N := N xor 1; end;
-              8: begin K := oFLDI0; N := N xor 1; end;
-              9: begin K := oFLDI1; N := N xor 1; end;
+              7:
+                begin
+                  K := oFSRRA;
+                  N := N xor 1;
+                end;
+              8:
+                begin
+                  K := oFLDI0;
+                  N := N xor 1;
+                end;
+              9:
+                begin
+                  K := oFLDI1;
+                  N := N xor 1;
+                end;
               // Defined only for PR=1; PR=0 leaves state unchanged (SingleStepTests).
-              10:
+                10:
                 if PR then
                 begin
                   K := oFCNVSD;
@@ -2392,7 +2852,7 @@ begin
     K := oSlotIllegal;
   if K in [oIllegal, oSlotIllegal, oFPUDisabled, oSlotFPUDisabled] then
   begin
-    Delayed := False;
+    delayed := False;
     Ends := True;
   end;
   I.Kind := Ord(K);
@@ -2403,11 +2863,11 @@ begin
   I.Flags := 0;
   if Ends then
     I.Flags := I.Flags or IFEnd;
-  if Delayed then
+  if delayed then
     I.Flags := I.Flags or IFDelayed;
   if Slot then
     I.Flags := I.Flags or IFSlot;
-  Result := Delayed;
+  Result := delayed;
 end;
 
 { FPU helpers }
@@ -2648,7 +3108,8 @@ var
 begin
   N := I.N;
   V := Read16(I.Imm);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := SignExtend16(V);
   Result := FFault;
 end;
@@ -2660,7 +3121,8 @@ var
 begin
   N := I.N;
   V := Read32(I.Imm);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := V;
   Result := FFault;
 end;
@@ -2709,7 +3171,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read8(S.R[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := SignExtend8(V);
   Result := FFault;
 end;
@@ -2722,7 +3185,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read16(S.R[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := SignExtend16(V);
   Result := FFault;
 end;
@@ -2735,7 +3199,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read32(S.R[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := V;
   Result := FFault;
 end;
@@ -2749,7 +3214,8 @@ begin
   M := I.M;
   A := S.R[N] - 1;
   Write8(A, S.R[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := A;
   Result := FFault;
 end;
@@ -2763,7 +3229,8 @@ begin
   M := I.M;
   A := S.R[N] - 2;
   Write16(A, S.R[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := A;
   Result := FFault;
 end;
@@ -2777,7 +3244,8 @@ begin
   M := I.M;
   A := S.R[N] - 4;
   Write32(A, S.R[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := A;
   Result := FFault;
 end;
@@ -2790,7 +3258,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read8(S.R[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   if N <> M then
     S.R[M] := S.R[M] + 1;
   S.R[N] := SignExtend8(V);
@@ -2805,7 +3274,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read16(S.R[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   if N <> M then
     S.R[M] := S.R[M] + 2;
   S.R[N] := SignExtend16(V);
@@ -2820,7 +3290,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read32(S.R[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   if N <> M then
     S.R[M] := S.R[M] + 4;
   S.R[N] := V;
@@ -2865,7 +3336,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read8(S.R[M] + S.R[0]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := SignExtend8(V);
   Result := FFault;
 end;
@@ -2878,7 +3350,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read16(S.R[M] + S.R[0]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := SignExtend16(V);
   Result := FFault;
 end;
@@ -2891,7 +3364,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read32(S.R[M] + S.R[0]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := V;
   Result := FFault;
 end;
@@ -2931,7 +3405,8 @@ var
 begin
   M := I.M;
   V := Read8(S.R[M] + I.Imm);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[0] := SignExtend8(V);
   Result := FFault;
 end;
@@ -2943,7 +3418,8 @@ var
 begin
   M := I.M;
   V := Read16(S.R[M] + I.Imm);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[0] := SignExtend16(V);
   Result := FFault;
 end;
@@ -2956,7 +3432,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read32(S.R[M] + I.Imm);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := V;
   Result := FFault;
 end;
@@ -2984,7 +3461,8 @@ var
   V: Cardinal;
 begin
   V := Read8(S.GBR + I.Imm);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[0] := SignExtend8(V);
   Result := FFault;
 end;
@@ -2994,7 +3472,8 @@ var
   V: Cardinal;
 begin
   V := Read16(S.GBR + I.Imm);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[0] := SignExtend16(V);
   Result := FFault;
 end;
@@ -3004,7 +3483,8 @@ var
   V: Cardinal;
 begin
   V := Read32(S.GBR + I.Imm);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[0] := V;
   Result := FFault;
 end;
@@ -3185,7 +3665,7 @@ begin
   M := I.M;
   V := S.R[N] xor S.R[M];
   S.T := Cardinal(Ord(((V and $FF) = 0) or ((V and $FF00) = 0) or
-    ((V and $FF0000) = 0) or ((V and $FF000000) = 0)));
+      ((V and $FF0000) = 0) or ((V and $FF000000) = 0)));
 end;
 
 function TSH4.OpDIV0S(I: PSH4Inst): Boolean;
@@ -3311,9 +3791,11 @@ begin
   N := I.N;
   M := I.M;
   A := Read32(S.R[N]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   B := Read32(S.R[M] + Cardinal(Ord(N = M)) * 4);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := S.R[N] + 4;
   S.R[M] := S.R[M] + 4;
   P64 := Int64(Integer(A)) * Int64(Integer(B));
@@ -3339,9 +3821,11 @@ begin
   N := I.N;
   M := I.M;
   A := Read16(S.R[N]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   B := Read16(S.R[M] + Cardinal(Ord(N = M)) * 2);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := S.R[N] + 2;
   S.R[M] := S.R[M] + 2;
   var Product := Integer(SmallInt(Word(A))) * Integer(SmallInt(Word(B)));
@@ -3480,11 +3964,15 @@ var
 begin
   A := S.GBR + S.R[0];
   V := Read8(A);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   case TOp(I.Kind) of
-    oANDB: Write8(A, V and I.Imm);
-    oORB: Write8(A, V or I.Imm);
-    oXORB: Write8(A, V xor I.Imm);
+    oANDB:
+      Write8(A, V and I.Imm);
+    oORB:
+      Write8(A, V or I.Imm);
+    oXORB:
+      Write8(A, V xor I.Imm);
   else
     S.T := Cardinal(Ord((V and I.Imm) = 0));
   end;
@@ -3525,9 +4013,11 @@ begin
   N := I.N;
   A := S.R[N];
   V := Read8(A);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   Write8(A, V or $80);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.T := Cardinal(Ord(V = 0));
   Result := FFault;
 end;
@@ -4006,20 +4496,32 @@ begin
   N := I.N;
   M := I.M;
   V := Read32(S.R[N]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := S.R[N] + 4;
   case TOp(I.Kind) of
-    oLDCMSR: SetSRValue(V);
-    oLDCMGBR: S.GBR := V;
-    oLDCMVBR: S.VBR := V;
-    oLDCMSSR: S.SSR := V;
-    oLDCMSPC: S.SPC := V;
-    oLDCMDBR: S.DBR := V;
-    oLDCMBANK: S.RBank[M] := V;
-    oLDSMMACH: S.MACH := V;
-    oLDSMMACL: S.MACL := V;
-    oLDSMPR: S.PR := V;
-    oLDSMFPUL: S.FPUL := V;
+    oLDCMSR:
+      SetSRValue(V);
+    oLDCMGBR:
+      S.GBR := V;
+    oLDCMVBR:
+      S.VBR := V;
+    oLDCMSSR:
+      S.SSR := V;
+    oLDCMSPC:
+      S.SPC := V;
+    oLDCMDBR:
+      S.DBR := V;
+    oLDCMBANK:
+      S.RBank[M] := V;
+    oLDSMMACH:
+      S.MACH := V;
+    oLDSMMACL:
+      S.MACL := V;
+    oLDSMPR:
+      S.PR := V;
+    oLDSMFPUL:
+      S.FPUL := V;
   else
     begin
       SetFPSCRValue(V);
@@ -4136,24 +4638,37 @@ begin
   N := I.N;
   M := I.M;
   case TOp(I.Kind) of
-    oSTCMSR: V := GetSRValue;
-    oSTCMGBR: V := S.GBR;
-    oSTCMVBR: V := S.VBR;
-    oSTCMSSR: V := S.SSR;
-    oSTCMSPC: V := S.SPC;
-    oSTCMSGR: V := S.SGR;
-    oSTCMDBR: V := S.DBR;
-    oSTCMBANK: V := S.RBank[M];
-    oSTSMMACH: V := S.MACH;
-    oSTSMMACL: V := S.MACL;
-    oSTSMPR: V := S.PR;
-    oSTSMFPUL: V := S.FPUL;
+    oSTCMSR:
+      V := GetSRValue;
+    oSTCMGBR:
+      V := S.GBR;
+    oSTCMVBR:
+      V := S.VBR;
+    oSTCMSSR:
+      V := S.SSR;
+    oSTCMSPC:
+      V := S.SPC;
+    oSTCMSGR:
+      V := S.SGR;
+    oSTCMDBR:
+      V := S.DBR;
+    oSTCMBANK:
+      V := S.RBank[M];
+    oSTSMMACH:
+      V := S.MACH;
+    oSTSMMACL:
+      V := S.MACL;
+    oSTSMPR:
+      V := S.PR;
+    oSTSMFPUL:
+      V := S.FPUL;
   else
     V := S.FPSCR;
   end;
   A := S.R[N] - 4;
   Write32(A, V);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := A;
   Result := FFault;
 end;
@@ -4240,7 +4755,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read32(S.R[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.FR.U[N] := V;
   Result := FFault;
 end;
@@ -4253,7 +4769,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read32(S.R[M] + S.R[0]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.FR.U[N] := V;
   Result := FFault;
 end;
@@ -4266,7 +4783,8 @@ begin
   N := I.N;
   M := I.M;
   V := Read32(S.R[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[M] := S.R[M] + 4;
   S.FR.U[N] := V;
   Result := FFault;
@@ -4301,7 +4819,8 @@ begin
   M := I.M;
   A := S.R[N] - 4;
   Write32(A, S.FR.U[M]);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   S.R[N] := A;
   Result := FFault;
 end;
@@ -4337,7 +4856,8 @@ begin
   if TOp(I.Kind) = oFMOVDLD0 then
     A := A + S.R[0];
   V64 := Read64(A);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   if TOp(I.Kind) = oFMOVDLDP then
     S.R[M] := S.R[M] + 8;
   if (N and 1) = 0 then
@@ -4361,11 +4881,14 @@ begin
     V64 := SwapHalves(S.XF.Q[M shr 1]);
   A := S.R[N];
   case TOp(I.Kind) of
-    oFMOVDST0: A := A + S.R[0];
-    oFMOVDSTM: A := A - 8;
+    oFMOVDST0:
+      A := A + S.R[0];
+    oFMOVDSTM:
+      A := A - 8;
   end;
   Write64(A, V64);
-  if FFault then Exit(True);
+  if FFault then
+    Exit(True);
   if TOp(I.Kind) = oFMOVDSTM then
     S.R[N] := A;
   Result := FFault;
@@ -4687,9 +5210,12 @@ begin
     Y := FlushDouble(Y);
   end;
   case TOp(I.Kind) of
-    oDADD: DV := X + Y;
-    oDSUB: DV := X - Y;
-    oDMUL: DV := X * Y;
+    oDADD:
+      DV := X + Y;
+    oDSUB:
+      DV := X - Y;
+    oDMUL:
+      DV := X * Y;
   else
     DV := X / Y;
   end;
@@ -4790,9 +5316,12 @@ begin
     end;
   end;
   case TOp(I.Kind) of
-    oIllegal: S.EXPEVT := SH4ExcIllegal;
-    oSlotIllegal: S.EXPEVT := SH4ExcSlotIllegal;
-    oFPUDisabled: S.EXPEVT := SH4ExcFPUDisabled;
+    oIllegal:
+      S.EXPEVT := SH4ExcIllegal;
+    oSlotIllegal:
+      S.EXPEVT := SH4ExcSlotIllegal;
+    oFPUDisabled:
+      S.EXPEVT := SH4ExcFPUDisabled;
   else
     S.EXPEVT := SH4ExcSlotFPUDisabled;
   end;
@@ -5077,13 +5606,13 @@ begin
         Break;
       Op := PWord(Page + (Address and $FFFF))^;
     end;
-    var Delayed := Decode(Op, Address, AMode, Slot, Insts[Count]);
+    var delayed := Decode(Op, Address, AMode, Slot, Insts[Count]);
     Code[Count] := Op;
     Inc(Count);
     Inc(Address, 2);
     if Slot or ((Insts[Count - 1].Flags and IFEnd) <> 0) then
       Break;
-    Slot := Delayed;
+    Slot := delayed;
     if Slot then
       Continue;
     if (Count >= MaxBlockInsts) or ((Address and $FFF) = 0) then
@@ -5262,9 +5791,12 @@ begin
   end;
   var Old: UInt64;
   case Size of
-    1: Old := Host^;
-    2: Old := PWord(Host)^;
-    4: Old := PCardinal(Host)^;
+    1:
+      Old := Host^;
+    2:
+      Old := PWord(Host)^;
+    4:
+      Old := PCardinal(Host)^;
   else
     Old := PUInt64(Host)^;
   end;
@@ -5297,9 +5829,12 @@ begin
     var P := FJournal[K].Host;
     var Current: UInt64;
     case FJournal[K].Size of
-      1: Current := P^;
-      2: Current := PWord(P)^;
-      4: Current := PCardinal(P)^;
+      1:
+        Current := P^;
+      2:
+        Current := PWord(P)^;
+      4:
+        Current := PCardinal(P)^;
     else
       Current := PUInt64(P)^;
     end;
@@ -5807,3 +6342,4 @@ initialization
   InitOps;
 
 end.
+

@@ -60,8 +60,7 @@ type
     // once per scene, which must not change them until the next.
     procedure NewScene;
     // Texture for a TCW and the TSP size bits (U size 5..3, V size 2..0).
-    function Get(TCW, TSP: Cardinal; const Palette: array of Cardinal; PalFormat, PaletteGen: Cardinal;
-      Stride: Integer): TPVRTexture;
+    function Get(TCW, TSP: Cardinal; const Palette: array of Cardinal; PalFormat, PaletteGen: Cardinal; Stride: Integer): TPVRTexture;
     // Drops the least recently used half above MaxTextures, never a texture
     // used since Clock was Mark (the current scene's).
     procedure Trim(MaxTextures: Integer; Mark: Int64);
@@ -69,7 +68,9 @@ type
   end;
 
 function Twiddle(X, Y, Width, Height: Integer): Integer;
+
 function DecodeTexel(Value: Cardinal; Format: Integer): Cardinal;
+
 function YUVToARGB(Y, U, V: Integer): Cardinal;
 
 implementation
@@ -222,8 +223,7 @@ begin
   Result := True;
 end;
 
-function TPVRTextureCache.Get(TCW, TSP: Cardinal; const Palette: array of Cardinal; PalFormat, PaletteGen: Cardinal;
-  Stride: Integer): TPVRTexture;
+function TPVRTextureCache.Get(TCW, TSP: Cardinal; const Palette: array of Cardinal; PalFormat, PaletteGen: Cardinal; Stride: Integer): TPVRTexture;
 begin
   Inc(FClock);
   var Format := Integer((TCW shr 27) and 7);
@@ -280,9 +280,12 @@ var
   begin
     var Entry := Palette[Index and 1023];
     case PalFormat of
-      0: Result := DecodeTexel(Entry, TexARGB1555);
-      1: Result := DecodeTexel(Entry, TexRGB565);
-      2: Result := DecodeTexel(Entry, TexARGB4444);
+      0:
+        Result := DecodeTexel(Entry, TexARGB1555);
+      1:
+        Result := DecodeTexel(Entry, TexRGB565);
+      2:
+        Result := DecodeTexel(Entry, TexARGB4444);
     else
       Result := Entry;
     end;
@@ -336,8 +339,10 @@ begin
     T.LevelOffset[L] := Total;
     var W := USize shr L;
     var H := VSize shr L;
-    if W < 1 then W := 1;
-    if H < 1 then H := 1;
+    if W < 1 then
+      W := 1;
+    if H < 1 then
+      H := 1;
     var Shift := 0;
     while (1 shl Shift) < W do
       Inc(Shift);
@@ -360,8 +365,10 @@ begin
   begin
     var W := USize shr L;
     var H := VSize shr L;
-    if W < 1 then W := 1;
-    if H < 1 then H := 1;
+    if W < 1 then
+      W := 1;
+    if H < 1 then
+      H := 1;
     // Level K = log2 of its side; mipmap chains are stored smallest first.
     var LevelBase := DataBase;
     if Mipmapped then
@@ -385,14 +392,16 @@ begin
         for var J := 0 to K - 1 do
           Inc(Texel, 1 shl (2 * J));
         case Format of
-          TexPal4: LevelBase := DataBase + Cardinal(Texel div 2);
-          TexPal8: LevelBase := DataBase + Cardinal(Texel);
+          TexPal4:
+            LevelBase := DataBase + Cardinal(Texel div 2);
+          TexPal8:
+            LevelBase := DataBase + Cardinal(Texel);
         else
           LevelBase := DataBase + Cardinal(Texel) * 2;
         end;
       end;
     end;
-    var Out := T.LevelOffset[L];
+    var out := T.LevelOffset[L];
     for var Y := 0 to H - 1 do
       for var X := 0 to W - 1 do
       begin
@@ -465,7 +474,7 @@ begin
           if Last > MaxOffset then
             MaxOffset := Last;
         end;
-        T.Texels[Out + Y * W + X] := Texel;
+        T.Texels[out + Y * W + X] := Texel;
       end;
     if VQ then
     begin
@@ -490,3 +499,4 @@ begin
 end;
 
 end.
+

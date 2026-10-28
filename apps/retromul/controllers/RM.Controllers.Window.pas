@@ -5,10 +5,12 @@
 interface
 
 uses
-  System.Types, RM.Controllers.Base;
+  System.Types, RM.Controllers.Base, RM.Window.Layout;
 
 type
   TWindowController = class(TMainController)
+  private
+    function LayoutContext: TWindowLayoutContext;
   public
     procedure FormResize(Sender: TObject);
     procedure ApplyControlInset;
@@ -27,12 +29,17 @@ implementation
 
 uses
   System.SysUtils, System.Classes, System.Math, System.UITypes, FMX.Types,
-  FMX.Forms, FMX.Objects, FMX.StdCtrls, FMX.Layouts, RM.Toolbar, RM.Gamepad,
-  SG1000.Keyboard, NES.SuborKeyboard, NES.FamicomKeyboard, NES.MiraclePiano, NES.PowerPad,
-  NES.DataRecorder, RM.Styles, RM.Gamepad.Viewport
+  FMX.Forms, FMX.Objects, FMX.StdCtrls, FMX.Layouts, RM.Toolbar, RM.Styles
   {$IFDEF MSWINDOWS}
     , Winapi.Windows, Winapi.MultiMon, FMX.Platform.Win, FMX.Helpers.Win
   {$ENDIF};
+
+function TWindowController.LayoutContext: TWindowLayoutContext;
+begin
+  Result := Default(TWindowLayoutContext);
+  Result.View := FView;
+  Result.State := FState;
+end;
 
 procedure TWindowController.FormResize(Sender: TObject);
 begin
@@ -104,21 +111,21 @@ begin
     var Total: Single := (Length(Actions) - 1) * 8;
     for var W in Widths do
       Total := Total + W;
-    FView.LayoutHead.Padding.Rect := TRectF.Create(8,8,8,8);
-    FView.LayoutHead.Height := IfThen(Narrow,112,64);
+    FView.LayoutHead.Padding.Rect := TRectF.Create(8, 8, 8, 8);
+    FView.LayoutHead.Height := IfThen(Narrow, 112, 64);
     ActionLayout.Align := TAlignLayout.Right;
     ActionLayout.Width := Total;
-    ActionLayout.Margins.Rect := TRectF.Create(16,4,0,4);
+    ActionLayout.Margins.Rect := TRectF.Create(16, 4, 0, 4);
     if Narrow then
     begin
       ActionLayout.Align := TAlignLayout.Bottom;
       ActionLayout.Height := 40;
-      ActionLayout.Margins.Rect := TRectF.Create(0,8,0,0);
+      ActionLayout.Margins.Rect := TRectF.Create(0, 8, 0, 0);
     end;
     Identity.Align := TAlignLayout.Client;
     FState.Browser.BackTool.Align := TAlignLayout.Left;
     FState.Browser.BackTool.Width := 156;
-    FState.Browser.BackTool.Margins.Rect := TRectF.Create(0,0,20,8);
+    FState.Browser.BackTool.Margins.Rect := TRectF.Create(0, 0, 20, 8);
     FView.LabelStatus.Align := TAlignLayout.Top;
     FView.LabelStatus.Height := 26;
     FState.Browser.GamePlatform.Align := TAlignLayout.Client;
@@ -136,10 +143,10 @@ begin
       Actions[i].Parent := ActionLayout;
       Actions[i].Align := TAlignLayout.Left;
       Actions[i].Width := W;
-      Actions[i].Margins.Rect := TRectF.Create(0,0,IfThen(Narrow,6,8),0);
-      if I = High(Actions) then Actions[I].Margins.Right := 0;
+      Actions[i].Margins.Rect := TRectF.Create(0, 0, IfThen(Narrow, 6, 8), 0);
+      if I = High(Actions) then
+        Actions[I].Margins.Right := 0;
       Actions[i].Position.X := I * 200; // Left-alignment ordering key.
-
     end;
     ActionLayout.EndUpdate;
     if (FState.Session.Emulation <> nil) and (FState.Session.UserPaused or FState.Session.AutoPaused) then
@@ -180,37 +187,9 @@ begin
         end;
     end;
   end;
-  if FState.Input.MiraclePiano <> nil then
-    FState.Input.MiraclePiano.Height := TNesMiraclePiano.PreferredHeight(FView.LayoutClient.Width,
-      FView.ClientHeight - FView.Padding.Top - FView.Padding.Bottom - FView.LayoutHead.Height);
-  if FState.Input.DataRecorder <> nil then
-    FState.Input.DataRecorder.Height := TNesDataRecorder.PreferredHeight(FView.LayoutClient.Width,
-      FView.ClientHeight - FView.Padding.Top - FView.Padding.Bottom - FView.LayoutHead.Height);
-  if FState.Input.PowerPad <> nil then
-    FState.Input.PowerPad.Height := TNesPowerPad.PreferredHeight(FView.LayoutClient.Width,
-      FView.ClientHeight - FView.Padding.Top - FView.Padding.Bottom - FView.LayoutHead.Height);
-  if FState.Input.Gamepad <> nil then
-  begin
-    FState.Input.Gamepad.Height := TScreenGamepad.PreferredHeight(
-      FView.ClientWidth - FView.Padding.Left - FView.Padding.Right,
-      FView.ClientHeight - FView.Padding.Top - FView.Padding.Bottom - FView.LayoutHead.Height);
-  end;
-  if FState.Input.SGKeyboard <> nil then
-    FState.Input.SGKeyboard.Height := TSGKeyboard.PreferredHeight(
-      FView.ClientWidth - FView.Padding.Left - FView.Padding.Right,
-      FView.ClientHeight - FView.Padding.Top - FView.Padding.Bottom - FView.LayoutHead.Height);
-  if FState.Input.SuborKeyboard <> nil then
-  begin
-    FState.Input.SuborKeyboard.Height := TNesSuborKeyboard.PreferredHeight(
-      FView.ClientWidth - FView.Padding.Left - FView.Padding.Right,
-      FView.ClientHeight - FView.Padding.Top - FView.Padding.Bottom - FView.LayoutHead.Height);
-  end;
-  if FState.Input.FamicomKeyboard <> nil then
-    FState.Input.FamicomKeyboard.Height := TNesFamicomKeyboard.PreferredHeight(
-      FView.ClientWidth - FView.Padding.Left - FView.Padding.Right,
-      FView.ClientHeight - FView.Padding.Top - FView.Padding.Bottom - FView.LayoutHead.Height);
+  ResizePlatformControls(LayoutContext);
   {$IFDEF ISMOBILE}
-  ArrangeVirtualGamepads(FState.Input.Gamepad, FState.Input.PowerPad, FView.ImageCanvas);
+  ArrangePlatformWindowControls(LayoutContext);
   if FView.LayoutShowPanel.Visible then
     FView.LayoutShowPanel.BringToFront;
   if FView.GameActionsPopup.IsOpen then
@@ -220,17 +199,7 @@ end;
 
 procedure TWindowController.ApplyControlInset;
 begin
-  if FState.Input.Gamepad <> nil then
-    FState.Input.Gamepad.Margins.Bottom := FState.Input.BottomInset;
-  if FState.Input.PowerPad <> nil then
-    FState.Input.PowerPad.Margins.Bottom := FState.Input.BottomInset;
-  if FState.Input.SuborKeyboard <> nil then
-    FState.Input.SuborKeyboard.Margins.Bottom := FState.Input.BottomInset;
-  if FState.Input.SGKeyboard <> nil then FState.Input.SGKeyboard.Margins.Bottom := FState.Input.BottomInset;
-  if FState.Input.FamicomKeyboard <> nil then
-    FState.Input.FamicomKeyboard.Margins.Bottom := FState.Input.BottomInset;
-  if FState.Input.MiraclePiano <> nil then
-    FState.Input.MiraclePiano.Margins.Bottom := FState.Input.BottomInset;
+  ApplyPlatformControlInset(LayoutContext);
 end;
 
 procedure TWindowController.FormSafeAreaChanged(Sender: TObject; const AInsets: TRectF);

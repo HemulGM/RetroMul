@@ -3,23 +3,65 @@
 interface
 
 uses
-  Core.RomFormat, System.SysUtils, System.Classes, System.IniFiles,
-  System.UITypes, FMXInput, Core.Emulation, Core.InputConfig, NES.Controller,
-  NES.FamicomKeyboardDevice, NES.MiraclePianoDevice, Core.Adapter.PS1, Core.Adapter.DC;
+  System.SysUtils, System.Classes, System.IniFiles, System.UITypes, FMXInput,
+  Core.Emulation, Core.InputConfig;
 
 const
-  PowerPadAction = 128;
-  ZapperTriggerAction = 160;
-  SuborAction = 256;
-  FamicomAction = 384;
-  PianoAction = 512;
-  ExtraPadAction = 1024; // Preserve the existing NES peripheral action IDs.
-  N64LAction = 4096;
-  PS1ExtraAction = 4112; // PlayStation inputs outside the logical pad, see PS1Action.
-  DCExtraAction = 4160; // Dreamcast analog stick directions, see DCAction.
+  // Historical encoding of logical buttons for players 5..12.
+  ExtraPadAction = 1024;
 
 type
   THostKeys = array[0..255] of Boolean;
+
+  TPlatformInputKeyMap = array[0..11, TEmulatorButton] of Word;
+
+  TInputButtonNames = array[TEmulatorButton] of string;
+
+  TInputKeyMapLoader = reference to procedure(var Keys: TPlatformInputKeyMap);
+
+  TInputBindingsSetup = reference to procedure(Input: TInputManager; Ini: TCustomIniFile);
+
+  TInputBindingPolicy = record
+    Enabled: Boolean;
+    SourceKey: string;
+  end;
+
+  TInputBindingFilter = reference to procedure(const Binding: TInputBinding; Ini: TCustomIniFile; var Policy: TInputBindingPolicy);
+
+  TInputDeviceVariant = record
+    DeviceId: string;
+    Buttons: TEmulatorButtons;
+    class function Create(const DeviceId: string; const Buttons: TEmulatorButtons): TInputDeviceVariant; static;
+  end;
+
+  TPlatformInputDefinition = record
+    Buttons: TEmulatorButtons;
+    // Preserve the historical auto/pad* fallback without limiting explicit variants.
+    PadDevicesOnly: Boolean;
+    Devices: TArray<TInputDeviceVariant>;
+    ButtonNames, LegacyKeyNames: TInputButtonNames;
+    LegacyPorts: Integer;
+    LegacySection: string;
+    LegacyButtons: TEmulatorButtons;
+    // Existing profiles opt into shared historical codecs. New profiles are independent.
+    UseSharedBindingRules: Boolean;
+    SharedBindingOrder: Integer;
+    SharedLegacyBindings: TInputBindingsSetup;
+    SharedFilterBinding, FilterBinding: TInputBindingFilter;
+    LoadLegacyKeys: TInputKeyMapLoader;
+    BeforeLegacyBindings, AfterLegacyBindings, AfterLoadBindings: TInputBindingsSetup;
+    class function Create(const Buttons: TEmulatorButtons): TPlatformInputDefinition; static;
+  end;
+
+// Static platform registration. Definitions and device arrays are copied.
+procedure RegisterPlatformInput(const PlatformId: string; const Definition: TPlatformInputDefinition);
+
+function TryPlatformInput(const PlatformId: string; out Definition: TPlatformInputDefinition): Boolean;
+
+procedure AddLegacyInputKey(Input: TInputManager; Action: Integer; Code: Word);
+// Opt-in compatibility contributions registered by the owning platform modules.
+
+procedure LoadSharedLegacyBindings(Input: TInputManager; Ini: TCustomIniFile);
 
 function HidToHostKey(Code: Integer): Word;
 
@@ -27,19 +69,8 @@ function HostKeyToHid(Code: Word): Integer;
 
 function PadAction(Port: Integer; Button: TEmulatorButton): Integer;
 
-function PS1Action(Port: Integer; Extra: TPS1Extra): Integer;
-
-function PS1ExtraName(Extra: TPS1Extra): string;
-
-// The extras of a DualShock-capable port: L2/L3/R3, ANALOG and both sticks.
-function ReadPS1Pad(Input: TInputManager; Port: Integer): TPS1Pad;
-function DCAction(Port: Integer; Extra: TDCExtra): Integer;
-
-function DCExtraName(Extra: TDCExtra): string;
-
-// The analog stick (DC extras) and the triggers (Select and Mode) of a
-// Dreamcast controller; axes give partial deflection.
-function ReadDCPad(Input: TInputManager; Port: Integer): TDCAnalogPad;
+// Generic axis travel, including calibrated trigger origins and digital fallback.
+function ActionAmount(Input: TInputManager; const Bindings: TArray<TInputBinding>; const Values: TArray<TInputValue>; Action: Integer): Single;
 
 function CoreButtons(const SystemId, Device: string): TEmulatorButtons;
 
@@ -49,7 +80,7 @@ procedure LoadInputBindings(Input: TInputManager; Ini: TCustomIniFile; const Sys
 
 procedure SaveInputBindings(Input: TInputManager; Ini: TCustomIniFile);
 
-procedure FilterInputBindings(Input: TInputManager; Ini: TCustomIniFile);
+procedure FilterInputBindings(Input: TInputManager; Ini: TCustomIniFile; const SystemId: string = '');
 
 function BindingCaption(Input: TInputManager; Action: Integer): string;
 
@@ -60,23 +91,75 @@ function ReadHostKeys(Input: TInputManager): THostKeys;
 
 function ReadPadInput(Input: TInputManager; const Ports: TCoreInputPorts): TEmulatorInput;
 
-function ReadSuborInput(Input: TInputManager): TSuborKeys;
-
-function ReadFamicomInput(Input: TInputManager): TFamicomKeys;
-
-function ReadPianoInput(Input: TInputManager): TMiracleKeys;
-
 // Reads the aggregate mouse once, avoiding duplicate physical-device aliases.
 procedure ReadRelativeMouse(Input: TInputManager; out DX, DY: Integer; out Buttons: Byte);
 
 implementation
 
 uses
-  Core.Adapter.ZX, Core.Adapter.PCE, Core.Adapter.GW, Core.Adapter.Saturn,
-  Core.Adapter.N64, Core.Adapter.GB, Core.Adapter.NES, Core.Adapter.MD,
-  Core.Adapter.SNES, Core.Adapter.NeoGeo, Core.Adapter.NGP, Core.Adapter.GBA,
-  Core.Adapter.CPS, GB.Joypad, NES.Input, NES.Types, MD.Console, SNES.Console,
-  System.Math, FMX.Types, PS1.SIO, Core.Adapter.PSP;
+  System.Generics.Collections, System.Generics.Defaults, Core.Platforms,
+  System.Math, FMX.Types;
+
+var
+  PlatformInputs: TDictionary<string, TPlatformInputDefinition>;
+
+class function TInputDeviceVariant.Create(const DeviceId: string; const Buttons: TEmulatorButtons): TInputDeviceVariant;
+begin
+  Result.DeviceId := DeviceId;
+  Result.Buttons := Buttons;
+end;
+
+class function TPlatformInputDefinition.Create(const Buttons: TEmulatorButtons): TPlatformInputDefinition;
+const
+  Names: TInputButtonNames = ('↑', '↓', '←', '→', 'A', 'B', 'Select', 'Start', 'C', 'X', 'Y', 'Z', 'Mode');
+  Keys: TInputButtonNames = ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Select', 'Start', 'C', 'X', 'Y', 'Z', 'Mode');
+begin
+  Result := Default(TPlatformInputDefinition);
+  Result.Buttons := Buttons;
+  Result.PadDevicesOnly := True;
+  Result.ButtonNames := Names;
+  Result.LegacyKeyNames := Keys;
+  Result.LegacyButtons := Buttons;
+  Result.LegacyPorts := 1;
+  Result.LegacySection := 'Keys';
+end;
+
+procedure RegisterPlatformInput(const PlatformId: string; const Definition: TPlatformInputDefinition);
+begin
+  var Id := PlatformId.Trim.ToLower;
+  if (Id = '') or (Definition.LegacyPorts < 0) or (Definition.LegacyPorts > 12) or
+    ((Definition.LegacyPorts > 0) and (Definition.LegacySection = '')) then
+    raise EArgumentException.Create('Invalid platform input: ' + PlatformId);
+  if PlatformInputs.ContainsKey(Id) then
+    raise EArgumentException.Create('Duplicate platform input: ' + Id);
+  var Item := Definition;
+  Item.Devices := Copy(Definition.Devices);
+  for var I := 0 to High(Item.Devices) do
+  begin
+    if Item.Devices[I].DeviceId = '' then
+      raise EArgumentException.Create('Empty input device variant');
+    for var J := 0 to I - 1 do
+      if Item.Devices[J].DeviceId = Item.Devices[I].DeviceId then
+        raise EArgumentException.Create('Duplicate input device variant: ' + Item.Devices[I].DeviceId);
+  end;
+  PlatformInputs.Add(Id, Item);
+end;
+
+function FindPlatformInput(const PlatformId: string; out Definition: TPlatformInputDefinition): Boolean;
+begin
+  Definition := Default(TPlatformInputDefinition);
+  var Id := PlatformId.Trim.ToLower;
+  Result := PlatformInputs.TryGetValue(Id, Definition);
+  if not Result then
+    Result := PlatformInputs.TryGetValue(TPlatformRegistry.CanonicalId(Id), Definition);
+end;
+
+function TryPlatformInput(const PlatformId: string; out Definition: TPlatformInputDefinition): Boolean;
+begin
+  Result := FindPlatformInput(PlatformId, Definition);
+  if Result then
+    Definition.Devices := Copy(Definition.Devices);
+end;
 
 procedure ReadRelativeMouse(Input: TInputManager; out DX, DY: Integer; out Buttons: Byte);
 begin
@@ -185,34 +268,8 @@ begin
     Result := ExtraPadAction + (Port - 4) * 32 + Ord(Button);
 end;
 
-function PS1Action(Port: Integer; Extra: TPS1Extra): Integer;
-begin
-  Result := PS1ExtraAction + Port * 16 + Ord(Extra);
-end;
-
-function PS1ExtraName(Extra: TPS1Extra): string;
-const
-  Names: array[TPS1Extra] of string = ('L2', 'L3', 'R3', 'Analog', 'LS ↑', 'LS ↓', 'LS ←', 'LS →', 'RS ↑', 'RS ↓',
-    'RS ←', 'RS →');
-begin
-  Result := Names[Extra];
-end;
-
-function DCAction(Port: Integer; Extra: TDCExtra): Integer;
-begin
-  Result := DCExtraAction + Port * 16 + Ord(Extra);
-end;
-
-function DCExtraName(Extra: TDCExtra): string;
-const
-  Names: array[TDCExtra] of string = ('Stick ↑', 'Stick ↓', 'Stick ←', 'Stick →');
-begin
-  Result := Names[Extra];
-end;
-
 // 0..1: the deflection of an axis bound to the action, else 1 while pressed.
-function ActionAmount(Input: TInputManager; const Bindings: TArray<TInputBinding>;
-  const Values: TArray<TInputValue>; Action: Integer): Single;
+function ActionAmount(Input: TInputManager; const Bindings: TArray<TInputBinding>; const Values: TArray<TInputValue>; Action: Integer): Single;
 begin
   Result := 0;
   for var B in Bindings do
@@ -228,296 +285,26 @@ begin
     Result := 1;
 end;
 
-function ReadPS1Pad(Input: TInputManager; Port: Integer): TPS1Pad;
-
-  function Axis(Negative, Positive: TPS1Extra; const Bindings: TArray<TInputBinding>;
-    const Values: TArray<TInputValue>): SmallInt;
-  begin
-    var Amount := ActionAmount(Input, Bindings, Values, PS1Action(Port, Positive)) -
-      ActionAmount(Input, Bindings, Values, PS1Action(Port, Negative));
-    Result := EnsureRange(Round(Amount * 32767), -32768, 32767);
-  end;
-
-begin
-  Result := Default(TPS1Pad);
-  if Input = nil then
-    Exit;
-
-  if Input.IsPressed(PS1Action(Port, TPS1Extra.L2)) then
-    Result.Buttons := Result.Buttons or PS1PadL2;
-  if Input.IsPressed(PS1Action(Port, TPS1Extra.L3)) then
-    Result.Buttons := Result.Buttons or PS1PadL3;
-  if Input.IsPressed(PS1Action(Port, TPS1Extra.R3)) then
-    Result.Buttons := Result.Buttons or PS1PadR3;
-  Result.AnalogButton := Input.IsPressed(PS1Action(Port, TPS1Extra.Analog));
-  var Bindings := Input.Bindings;
-  var Values := Input.Values;
-  Result.LeftX := Axis(TPS1Extra.LeftLeft, TPS1Extra.LeftRight, Bindings, Values);
-  Result.LeftY := Axis(TPS1Extra.LeftUp, TPS1Extra.LeftDown, Bindings, Values);
-  Result.RightX := Axis(TPS1Extra.RightLeft, TPS1Extra.RightRight, Bindings, Values);
-  Result.RightY := Axis(TPS1Extra.RightUp, TPS1Extra.RightDown, Bindings, Values);
-end;
-
-function ReadDCPad(Input: TInputManager; Port: Integer): TDCAnalogPad;
-begin
-  Result := Default(TDCAnalogPad);
-  if Input = nil then
-    Exit;
-
-  var Bindings := Input.Bindings;
-  var Values := Input.Values;
-  var X := ActionAmount(Input, Bindings, Values, DCAction(Port, TDCExtra.StickRight)) -
-    ActionAmount(Input, Bindings, Values, DCAction(Port, TDCExtra.StickLeft));
-  var Y := ActionAmount(Input, Bindings, Values, DCAction(Port, TDCExtra.StickDown)) -
-    ActionAmount(Input, Bindings, Values, DCAction(Port, TDCExtra.StickUp));
-  Result.StickX := EnsureRange(Round(X * 32767), -32768, 32767);
-  Result.StickY := EnsureRange(Round(Y * 32767), -32768, 32767);
-  Result.LeftTrigger := Round(ActionAmount(Input, Bindings, Values, PadAction(Port, TEmulatorButton.Select)) * 255);
-  Result.RightTrigger := Round(ActionAmount(Input, Bindings, Values, PadAction(Port, TEmulatorButton.Mode)) * 255);
-end;
-
 function CoreButtons(const SystemId, Device: string): TEmulatorButtons;
 begin
-  if SystemId = ROM_SYSTEM_ZX then
-  begin
-    if Device = 'none' then
-      Exit([]);
-    Exit([TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left,
-        TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Mode, TEmulatorButton.Select, TEmulatorButton.Start]);
-  end;
-  // Dreamcast controller: Select and Mode are the L and R triggers.
-  if SystemId = ROM_SYSTEM_DC then
-  begin
-    if Device = 'none' then
-      Exit([]);
-    Exit([TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right,
-      TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.Start,
-      TEmulatorButton.Select, TEmulatorButton.Mode]);
-  end;
-
-  if (SystemId = ROM_SYSTEM_PCE) or (SystemId = ROM_SYSTEM_SGX) or (SystemId = ROM_SYSTEM_PCECD) then
-  begin
-    if Device = 'none' then
-      Exit([]);
-
-    Result := [TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right,
-        TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Select, TEmulatorButton.Start];
-    if Device = 'pad6' then
-      Result := Result + [TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.C, TEmulatorButton.Z];
-    Exit;
-  end;
-
-  if SystemId = ROM_SYSTEM_GW then
-    Exit([Low(TEmulatorButton)..High(TEmulatorButton)]);
-
-  if (SystemId = ROM_SYSTEM_MSX1) or (SystemId = ROM_SYSTEM_MSX2) or (SystemId = ROM_SYSTEM_MSX2PLUS) then
-    Exit([TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right,
-      TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Start, TEmulatorButton.Select]);
-
   Result := [];
-  if not (Device = 'auto') and not Device.StartsWith('pad') then
+  var Definition: TPlatformInputDefinition;
+  if not FindPlatformInput(SystemId, Definition) then
     Exit;
-
-  Result := [TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left,
-      TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Start];
-  if (SystemId = ROM_SYSTEM_NES) and (Device = 'paddendy') then
-    Result := Result + [TEmulatorButton.X, TEmulatorButton.Y];
-  if (SystemId = ROM_SYSTEM_SG1000) or (SystemId = ROM_SYSTEM_SC3000) or (SystemId = ROM_SYSTEM_SF7000) or (SystemId = ROM_SYSTEM_OMV) or (SystemId = ROM_SYSTEM_SMS) or (SystemId = ROM_SYSTEM_GG) then
+  for var Variant in Definition.Devices do
+    if Variant.DeviceId = Device then
+      Exit(Variant.Buttons);
+  if Definition.PadDevicesOnly and (Device <> 'auto') and not Device.StartsWith('pad') then
     Exit;
-
-  if (SystemId = ROM_SYSTEM_NGP) or (SystemId = ROM_SYSTEM_NGPC) then
-    Exit;
-
-  if SystemId = ROM_SYSTEM_N64 then
-    Exit([Low(TEmulatorButton)..High(TEmulatorButton)]);
-
-  if SystemId = ROM_SYSTEM_SATURN then
-    Exit([Low(TEmulatorButton)..High(TEmulatorButton)]);
-
-  if SystemId = ROM_SYSTEM_PS1 then
-    Exit([Low(TEmulatorButton)..High(TEmulatorButton)]);
-  if SystemId = ROM_SYSTEM_PSP then
-    Exit([Low(TEmulatorButton)..TEmulatorButton.Z]);
-
-  if (SystemId = ROM_SYSTEM_MD) or (SystemId = ROM_SYSTEM_SEGACD) or (SystemId = ROM_SYSTEM_SEGA32X) then
-  begin
-    Include(Result, TEmulatorButton.C);
-    if Device <> 'pad3' then
-      Result := Result + [TEmulatorButton.X, TEmulatorButton.Y,
-          TEmulatorButton.Z, TEmulatorButton.Mode];
-  end
-  else
-  begin
-    Include(Result, TEmulatorButton.Select);
-    if (SystemId = ROM_SYSTEM_CPS1) or (SystemId = ROM_SYSTEM_CPS2) or (SystemId = ROM_SYSTEM_CPS3) then
-      Result := Result + [TEmulatorButton.C, TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.Z, TEmulatorButton.Mode];
-    if ((SystemId = ROM_SYSTEM_NEOGEO) or (SystemId = ROM_SYSTEM_NEOGEOCD) or (SystemId = ROM_SYSTEM_NEOGEOAES)) then
-      Result := Result + [TEmulatorButton.C, TEmulatorButton.X];
-    if SystemId = ROM_SYSTEM_GBA then
-      Result := Result + [TEmulatorButton.C, TEmulatorButton.Z];
-    if SystemId = ROM_SYSTEM_SNES then
-      Result := Result + [TEmulatorButton.X, TEmulatorButton.Y,
-          TEmulatorButton.C, TEmulatorButton.Z];
-  end;
+  Result := Definition.Buttons;
 end;
 
 function CoreButtonName(const SystemId: string; Button: TEmulatorButton): string;
-const
-  Names: array[TEmulatorButton] of string =
-    ('↑', '↓', '←', '→', 'A', 'B', 'Select', 'Start', 'C', 'X', 'Y', 'Z', 'Mode');
 begin
-  if SystemId = ROM_SYSTEM_ZX then
-    case Button of
-      TEmulatorButton.A:
-        Exit('Fire');
-      TEmulatorButton.B:
-        Exit('Tape play/pause');
-      TEmulatorButton.Mode:
-        Exit('Tape rewind');
-      TEmulatorButton.Select:
-        Exit('1');
-      TEmulatorButton.Start:
-        Exit('Enter');
-    end;
-  if (SystemId = ROM_SYSTEM_CPS1) or (SystemId = ROM_SYSTEM_CPS2) or (SystemId = ROM_SYSTEM_CPS3) then
-    case Button of
-      TEmulatorButton.A:
-        Exit('LP');
-      TEmulatorButton.B:
-        Exit('MP');
-      TEmulatorButton.C:
-        Exit('HP');
-      TEmulatorButton.X:
-        Exit('LK');
-      TEmulatorButton.Y:
-        Exit('MK');
-      TEmulatorButton.Z:
-        Exit('HK');
-      TEmulatorButton.Select:
-        Exit('Coin');
-      TEmulatorButton.Mode:
-        Exit('Service');
-    end;
-  if SystemId = ROM_SYSTEM_GW then
-    case Button of
-      TEmulatorButton.Select:
-        Exit('Time');
-      TEmulatorButton.Start:
-        Exit('Game A');
-      TEmulatorButton.X:
-        Exit('Game B');
-      TEmulatorButton.Y:
-        Exit('Alarm / ACL');
-      TEmulatorButton.C:
-        Exit('X');
-      TEmulatorButton.Z:
-        Exit('Y');
-      TEmulatorButton.Mode:
-        Exit('Start');
-    end;
-
-  Result := Names[Button];
-  if (SystemId = ROM_SYSTEM_SATURN) or (SystemId = ROM_SYSTEM_DC) then
-    case Button of
-      TEmulatorButton.Select:
-        Exit('L');
-      TEmulatorButton.Mode:
-        Exit('R');
-    end;
-
-  if SystemId = ROM_SYSTEM_PSP then
-  begin
-    case Button of
-      TEmulatorButton.A: Result := 'Cross';
-      TEmulatorButton.B: Result := 'Circle';
-      TEmulatorButton.X: Result := 'Square';
-      TEmulatorButton.Y: Result := 'Triangle';
-      TEmulatorButton.C: Result := 'L';
-      TEmulatorButton.Z: Result := 'R';
-    end;
-    Exit;
-  end;
-  if SystemId = ROM_SYSTEM_PS1 then
-  begin
-    case Button of
-      TEmulatorButton.A:
-        Result := 'Cross';
-      TEmulatorButton.B:
-        Result := 'Circle';
-      TEmulatorButton.X:
-        Result := 'Square';
-      TEmulatorButton.Y:
-        Result := 'Triangle';
-      TEmulatorButton.C:
-        Result := 'L1';
-      TEmulatorButton.Z:
-        Result := 'R1';
-      TEmulatorButton.Mode:
-        Result := 'R2';
-    end;
-    Exit;
-  end;
-
-  if (SystemId = ROM_SYSTEM_PCE) or (SystemId = ROM_SYSTEM_SGX) or (SystemId = ROM_SYSTEM_PCECD) then
-  begin
-    case Button of
-      TEmulatorButton.A:
-        Result := 'I';
-      TEmulatorButton.B:
-        Result := 'II';
-      TEmulatorButton.X:
-        Result := 'III';
-      TEmulatorButton.Y:
-        Result := 'IV';
-      TEmulatorButton.C:
-        Result := 'V';
-      TEmulatorButton.Z:
-        Result := 'VI';
-      TEmulatorButton.Start:
-        Result := 'Run';
-    end;
-    Exit;
-  end;
-
-  if SystemId = ROM_SYSTEM_N64 then
-  begin
-    case Button of
-      TEmulatorButton.Select:
-        Result := 'Z';
-      TEmulatorButton.C:
-        Result := 'CDown';
-      TEmulatorButton.X:
-        Result := 'CLeft';
-      TEmulatorButton.Y:
-        Result := 'CUp';
-      TEmulatorButton.Z:
-        Result := 'CRight';
-      TEmulatorButton.Mode:
-        Result := 'R';
-    end;
-    Exit;
-  end;
-
-  if SystemId = ROM_SYSTEM_NES then
-    case Button of
-      TEmulatorButton.X:
-        Result := 'Turbo B';
-      TEmulatorButton.Y:
-        Result := 'Turbo A';
-    end;
-
-  if ((SystemId = ROM_SYSTEM_NEOGEO) or (SystemId = ROM_SYSTEM_NEOGEOCD) or (SystemId = ROM_SYSTEM_NEOGEOAES)) and (Button = TEmulatorButton.X) then
-    Result := 'D';
-  if ((SystemId = ROM_SYSTEM_NGP) or (SystemId = ROM_SYSTEM_NGPC)) and (Button = TEmulatorButton.Start) then
-    Result := 'Option';
-
-  if (SystemId = ROM_SYSTEM_SNES) or (SystemId = ROM_SYSTEM_GBA) then
-    case Button of
-      TEmulatorButton.C:
-        Result := 'L';
-      TEmulatorButton.Z:
-        Result := 'R';
-    end;
+  var Definition: TPlatformInputDefinition;
+  if not FindPlatformInput(SystemId, Definition) then
+    Definition := TPlatformInputDefinition.Create([]);
+  Result := Definition.ButtonNames[Button];
 end;
 
 procedure SaveInputBindings(Input: TInputManager; Ini: TCustomIniFile);
@@ -537,103 +324,20 @@ begin
   end;
 end;
 
-procedure EnsurePeripheralBindings(Input: TInputManager; Ini: TCustomIniFile);
-
-  procedure AddKey(Action, Hid: Integer);
-  begin
+procedure AddLegacyInputKey(Input: TInputManager; Action: Integer; Code: Word);
+begin
+  var Hid := HostKeyToHid(Code);
+  if Hid <> 0 then
     Input.AddBinding(TInputBinding.Create(Action,
         TInputValue.Create(SystemKeyboardId, TInputElementKind.Key, Hid, 1)));
-  end;
-
-begin
-  if Ini.ReadInteger('FMXInput', 'PeripheralVersion', 0) >= 1 then
-    Exit;
-
-  var Subor := TSuborKeyboard.Create;
-  var Famicom := TFamicomKeyboard.Create;
-  try
-    for var Hid := 4 to 231 do
-    begin
-      var Code := HidToHostKey(Hid);
-      if Code = 0 then
-        Continue;
-
-      Subor.Clear;
-      Subor.SetHostKey(Code, True);
-      for var K in Subor.GetPressedKeys do
-        AddKey(SuborAction + Ord(K), Hid);
-      Famicom.Clear;
-      Famicom.SetHostKey(Code, True);
-      for var K in Famicom.GetPressedKeys do
-        AddKey(FamicomAction + Ord(K), Hid);
-      var PianoKey := TMiraclePianoDevice.HostKey(Code);
-      if PianoKey >= 0 then
-        AddKey(PianoAction + PianoKey, Hid);
-    end;
-    Ini.WriteInteger('FMXInput', 'PeripheralVersion', 1);
-  finally
-    Famicom.Free;
-    Subor.Free;
-  end;
 end;
 
 procedure LoadInputBindings(Input: TInputManager; Ini: TCustomIniFile; const SystemId: string);
-const
-  MDMapping: array[TMDButton] of TEmulatorButton = (TEmulatorButton.Up,
-    TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right,
-    TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.C, TEmulatorButton.Start,
-    TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.Z, TEmulatorButton.Mode);
-  SNESMapping: array[TSnesButton] of TEmulatorButton = (TEmulatorButton.Up,
-    TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right,
-    TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Select, TEmulatorButton.Start,
-    TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.C, TEmulatorButton.Z);
-  NESMapping: array[TNesButton] of TEmulatorButton = (TEmulatorButton.A,
-    TEmulatorButton.B, TEmulatorButton.Select, TEmulatorButton.Start,
-    TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right);
-  Second: array[TEmulatorButton] of Word = (vkNumpad8, vkNumpad5, vkNumpad4,
-    vkNumpad6, vkNumpad1, vkNumpad2, vkNumpad3, vkNumpad0,
-    vkNumpad3, vkNumpad7, vkNumpad9, vkDecimal, vkMultiply);
-  PowerKeys: array[0..11] of Word = (vk1, vk2, vk3, vk4, vk5, vk6, vk7, vk8,
-    vk9, vk0, vkMinus, vkEqual);
-var
-  Keys: array[0..11, TEmulatorButton] of Word;
-  Config: IEmulatorConfig;
-
-  procedure AddKey(Action: Integer; Code: Word);
-  begin
-    var Hid := HostKeyToHid(Code);
-    if Hid <> 0 then
-      Input.AddBinding(TInputBinding.Create(Action,
-          TInputValue.Create(SystemKeyboardId, TInputElementKind.Key, Hid, 1)));
-  end;
-
-  procedure CopyGB(const Map: TGBKeyMap);
-  begin
-    Keys[0, TEmulatorButton.A] := Map.A;
-    Keys[0, TEmulatorButton.B] := Map.B;
-    Keys[0, TEmulatorButton.Select] := Map.Select;
-    Keys[0, TEmulatorButton.Start] := Map.Start;
-    Keys[0, TEmulatorButton.Up] := Map.Up;
-    Keys[0, TEmulatorButton.Down] := Map.Down;
-    Keys[0, TEmulatorButton.Left] := Map.Left;
-    Keys[0, TEmulatorButton.Right] := Map.Right;
-  end;
-
-  procedure CopyNES(Port: Integer; const Map: TKeyMap);
-  begin
-    Keys[Port, TEmulatorButton.A] := Map.A;
-    Keys[Port, TEmulatorButton.B] := Map.B;
-    Keys[Port, TEmulatorButton.Select] := Map.Select;
-    Keys[Port, TEmulatorButton.Start] := Map.Start;
-    Keys[Port, TEmulatorButton.Up] := Map.Up;
-    Keys[Port, TEmulatorButton.Down] := Map.Down;
-    Keys[Port, TEmulatorButton.Left] := Map.Left;
-    Keys[Port, TEmulatorButton.Right] := Map.Right;
-  end;
-
 begin
   Input.CancelCapture;
   Input.ClearBindings;
+  var Definition: TPlatformInputDefinition;
+  var Registered := FindPlatformInput(SystemId, Definition);
   var JSON := Ini.ReadString('FMXInput', 'Bindings', '');
   if JSON <> '' then
   begin
@@ -643,290 +347,28 @@ begin
     finally
       Stream.Free;
     end;
-    if SystemId = ROM_SYSTEM_NES then
-      EnsurePeripheralBindings(Input, Ini);
-    Exit;
-  end;
-
-  FillChar(Keys, SizeOf(Keys), 0);
-
-  // Import the existing core keyboard maps once; all later assignments use FMXInput.
-  if SystemId = ROM_SYSTEM_ZX then
-  begin
-    var C := TZXConfig.Create('', nil);
-    Config := C;
-    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-      Keys[0, B] := C.Keys[B];
   end
-  else if (SystemId = ROM_SYSTEM_CPS1) or (SystemId = ROM_SYSTEM_CPS2) or (SystemId = ROM_SYSTEM_CPS3) then
+  else if Registered then
   begin
-    var C := TCPSConfig.Create('', nil);
-    Config := C;
-    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-    begin
-      Keys[0, B] := C.Keys[0, B];
-      Keys[1, B] := C.Keys[1, B];
-    end;
-  end
-  else if (SystemId = ROM_SYSTEM_PCE) or (SystemId = ROM_SYSTEM_SGX) or (SystemId = ROM_SYSTEM_PCECD) then
-  begin
-    var C := TPCEConfig.Create('');
-    Config := C;
-    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-    begin
-      Keys[0, B] := C.Keys[B];
-      Keys[1, B] := C.Keys2[B];
-    end;
-  end
-  else if SystemId = ROM_SYSTEM_GW then
-  begin
-    var C := TGWConfig.Create('');
-    Config := C;
-    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-    begin
-      Keys[0, B] := C.Keys[B];
-      Keys[1, B] := C.Keys2[B];
-    end;
-  end
-  else if SystemId = ROM_SYSTEM_SATURN then
-  begin
-    var C := TSaturnConfig.Create('');
-    Config := C;
-    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-    begin
-      Keys[0, B] := C.Keys[B];
-      Keys[1, B] := C.Keys2[B];
-    end;
-  end
-  else if SystemId = ROM_SYSTEM_NES then
-  begin
-    var C := TNesEmulatorConfig.Create('');
-    Config := C;
-    CopyNES(0, C.GetKeys);
-    CopyNES(1, C.GetKeys2);
-    CopyNES(2, C.GetKeys3);
-    CopyNES(3, C.GetKeys4);
-  end
-  else if (SystemId = ROM_SYSTEM_MSX1) or (SystemId = ROM_SYSTEM_MSX2) or (SystemId = ROM_SYSTEM_MSX2PLUS) or (SystemId = ROM_SYSTEM_SG1000) or (SystemId = ROM_SYSTEM_SC3000) or (SystemId = ROM_SYSTEM_SF7000) or (SystemId = ROM_SYSTEM_OMV) or (SystemId = ROM_SYSTEM_SMS) or (SystemId = ROM_SYSTEM_GG) then
-  begin
-    Keys[0, TEmulatorButton.Up] := vkUp;
-    Keys[0, TEmulatorButton.Down] := vkDown;
-    Keys[0, TEmulatorButton.Left] := vkLeft;
-    Keys[0, TEmulatorButton.Right] := vkRight;
-    Keys[0, TEmulatorButton.A] := vkZ;
-    Keys[0, TEmulatorButton.B] := vkX;
-    Keys[0, TEmulatorButton.Start] := vkReturn;
-    Keys[1, TEmulatorButton.Up] := vkNumpad8;
-    Keys[1, TEmulatorButton.Down] := vkNumpad5;
-    Keys[1, TEmulatorButton.Left] := vkNumpad4;
-    Keys[1, TEmulatorButton.Right] := vkNumpad6;
-    Keys[1, TEmulatorButton.A] := vkNumpad1;
-    Keys[1, TEmulatorButton.B] := vkNumpad2;
-    Keys[1, TEmulatorButton.Start] := vkNumpad0;
-  end
-  else if (SystemId = ROM_SYSTEM_MD) or (SystemId = ROM_SYSTEM_SEGACD) or (SystemId = ROM_SYSTEM_SEGA32X) then
-  begin
-    var C := TMDConfig.Create('');
-    Config := C;
-    for var B := Low(TMDButton) to High(TMDButton) do
-    begin
-      Keys[0, MDMapping[B]] := C.Keys[B];
-      Keys[1, MDMapping[B]] := C.Keys2[B];
-    end;
-  end
-  else if ((SystemId = ROM_SYSTEM_NEOGEO) or (SystemId = ROM_SYSTEM_NEOGEOCD) or (SystemId = ROM_SYSTEM_NEOGEOAES)) then
-  begin
-    var C := TNeoGeoConfig.Create('');
-    Config := C;
-    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-    begin
-      Keys[0, B] := C.Keys[B];
-      Keys[1, B] := C.Keys2[B];
-    end;
-  end
-  else if (SystemId = ROM_SYSTEM_NGP) or (SystemId = ROM_SYSTEM_NGPC) then
-  begin
-    var C := TNGPConfig.Create('');
-    Config := C;
-    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-      Keys[0, B] := C.Keys[B];
-  end
-  else if SystemId = ROM_SYSTEM_N64 then
-  begin
-    var C := TN64Config.Create('', nil);
-    Config := C;
-    var Map := C.Keys;
-    for var Port := 0 to 3 do
-      for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-        Keys[Port, B] := Map[Port, B];
-  end
-  else if SystemId = ROM_SYSTEM_PSP then
-  begin
-    var C := TPSPConfig.Create('', nil);
-    Config := C;
-    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-      Keys[0, B] := C.Keys[B];
-  end
-  else if SystemId = ROM_SYSTEM_PS1 then
-  begin
-    var C := TPS1Config.Create('', nil);
-    Config := C;
-    var Map := C.Keys;
-    for var Port := 0 to 1 do
-      for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-        Keys[Port, B] := Map[Port, B];
-  end
-  else if SystemId = ROM_SYSTEM_DC then
-  begin
-    var C := TDCConfig.Create('', nil);
-    Config := C;
-    var Map := C.Keys;
-    for var Port := 0 to 3 do
-      for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-        Keys[Port, B] := Map[Port, B];
-  end
-  else if SystemId = ROM_SYSTEM_GBA then
-  begin
-    var C := TGBAConfig.Create('');
-    Config := C;
-    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-      Keys[0, B] := C.Keys[B];
-  end
-  else if SystemId = ROM_SYSTEM_SNES then
-  begin
-    var C := TSnesConfig.Create('');
-    Config := C;
-    for var B := Low(TSnesButton) to High(TSnesButton) do
-    begin
-      for var Port := 0 to 7 do
+    var Keys := Default(TPlatformInputKeyMap);
+    if Assigned(Definition.LoadLegacyKeys) then
+      Definition.LoadLegacyKeys(Keys);
+    if Assigned(Definition.BeforeLegacyBindings) then
+      Definition.BeforeLegacyBindings(Input, Ini);
+    for var Port := 0 to Definition.LegacyPorts - 1 do
+      for var B in Definition.LegacyButtons do
       begin
-        var Map := C.KeyMap(Port);
-        Keys[Port, SNESMapping[B]] := Map[B];
-      end;
-    end;
-  end
-  else
-  begin
-    var C := TGBEmulatorConfig.Create('');
-    Config := C;
-    CopyGB(C.GetKeys);
-  end;
-  var Count := 2;
-  if SystemId = ROM_SYSTEM_N64 then
-  begin
-    var C := TN64Config.Create('', nil);
-    Config := C;
-    for var Port := 0 to 3 do
-    begin
-      var Section := 'Keys';
-      if Port > 0 then
-        Section := Section + IntToStr(Port + 1);
-      AddKey(N64LAction + Port, ReadEmulatorKey(Ini, Section, 'L', C.LKey(Port)));
-    end;
-  end;
-  if SystemId = ROM_SYSTEM_PS1 then
-  begin
-    var C := TPS1Config.Create('', nil);
-    Config := C;
-    for var Port := 0 to 1 do
-    begin
-      var Section := 'Keys';
-      if Port > 0 then
-        Section := Section + IntToStr(Port + 1);
-      for var Extra := Low(TPS1Extra) to High(TPS1Extra) do
-        AddKey(PS1Action(Port, Extra), ReadEmulatorKey(Ini, Section, TPS1Config.ExtraKeyName(Extra),
-          C.ExtraKey(Port, Extra)));
-    end;
-  end;
-  if SystemId = ROM_SYSTEM_DC then
-  begin
-    var C := TDCConfig.Create('', nil);
-    Config := C;
-    for var Port := 0 to 3 do
-    begin
-      var Section := 'Keys';
-      if Port > 0 then
-        Section := Section + IntToStr(Port + 1);
-      for var Extra := Low(TDCExtra) to High(TDCExtra) do
-        AddKey(DCAction(Port, Extra), ReadEmulatorKey(Ini, Section, TDCConfig.ExtraKeyName(Extra),
-          C.ExtraKey(Port, Extra)));
-    end;
-  end;
-  if (SystemId = ROM_SYSTEM_NES) or (SystemId = ROM_SYSTEM_N64) or (SystemId = ROM_SYSTEM_DC) then
-    Count := 4;
-  if SystemId = ROM_SYSTEM_SNES then
-    Count := 8;
-  if SystemId = ROM_SYSTEM_SATURN then
-    Count := 12;
-  if (SystemId = ROM_SYSTEM_PCE) or (SystemId = ROM_SYSTEM_SGX) or (SystemId = ROM_SYSTEM_PCECD) then
-    Count := 5;
-  if (SystemId = ROM_SYSTEM_PSP) or (SystemId = ROM_SYSTEM_ZX) or (SystemId = ROM_SYSTEM_NGP) or (SystemId = ROM_SYSTEM_NGPC) or (SystemId = ROM_SYSTEM_GB) or (SystemId = ROM_SYSTEM_GBC) or (SystemId = ROM_SYSTEM_GBA) then
-    Count := 1;
-  if (SystemId = ROM_SYSTEM_MD) or (SystemId = ROM_SYSTEM_SEGACD) or (SystemId = ROM_SYSTEM_SEGA32X) then
-    Count := 4;
-  var BindingDevice := 'auto';
-  if (SystemId = ROM_SYSTEM_PCE) or (SystemId = ROM_SYSTEM_SGX) or (SystemId = ROM_SYSTEM_PCECD) then
-    BindingDevice := 'pad6';
-  for var Port := 0 to Count - 1 do
-    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-      if (SystemId <> ROM_SYSTEM_SC3000) and (B in CoreButtons(SystemId, BindingDevice)) then
-      begin
-        var Section := 'Controls';
-        if SystemId = ROM_SYSTEM_ZX then
-          Section := 'Keys';
-        if (SystemId = ROM_SYSTEM_CPS1) or (SystemId = ROM_SYSTEM_CPS2) or (SystemId = ROM_SYSTEM_CPS3) then
-          Section := 'Keys';
-        if (SystemId = ROM_SYSTEM_SG1000) or (SystemId = ROM_SYSTEM_SC3000) or (SystemId = ROM_SYSTEM_SF7000) or (SystemId = ROM_SYSTEM_OMV) or (SystemId = ROM_SYSTEM_SMS) or (SystemId = ROM_SYSTEM_GG) or (SystemId = ROM_SYSTEM_GW) or (SystemId = ROM_SYSTEM_N64) or ((SystemId = ROM_SYSTEM_MD) or (SystemId = ROM_SYSTEM_SEGACD) or (SystemId = ROM_SYSTEM_SEGA32X)) or (SystemId = ROM_SYSTEM_SNES) or ((SystemId = ROM_SYSTEM_NEOGEO) or (SystemId = ROM_SYSTEM_NEOGEOCD) or (SystemId = ROM_SYSTEM_NEOGEOAES)) or (SystemId = ROM_SYSTEM_GBA) then
-          Section := 'Keys';
-        if (SystemId = ROM_SYSTEM_PCE) or (SystemId = ROM_SYSTEM_SGX) or (SystemId = ROM_SYSTEM_PCECD) then
-          Section := 'Keys';
-        if (SystemId = ROM_SYSTEM_SATURN) or (SystemId = ROM_SYSTEM_NGP) or (SystemId = ROM_SYSTEM_NGPC) or
-          (SystemId = ROM_SYSTEM_PS1) or (SystemId = ROM_SYSTEM_PSP) or (SystemId = ROM_SYSTEM_DC) then
-          Section := 'Keys';
+        var Section := Definition.LegacySection;
         if Port > 0 then
           Section := Section + IntToStr(Port + 1);
-        var KeyName := CoreButtonName(SystemId, B).Replace('↑', 'Up').Replace('↓', 'Down')
-          .Replace('←', 'Left').Replace('→', 'Right');
-        if ((SystemId = ROM_SYSTEM_NGP) or (SystemId = ROM_SYSTEM_NGPC)) and (B = TEmulatorButton.Start) then
-          KeyName := 'Start';
-        if (SystemId = ROM_SYSTEM_SATURN) or (SystemId = ROM_SYSTEM_DC) then
-          case B of
-            TEmulatorButton.Select:
-              KeyName := 'Select';
-            TEmulatorButton.Mode:
-              KeyName := 'Mode';
-          end;
-
-        // Config keys are stable identifiers, not the displayed GW button labels.
-        if (SystemId = ROM_SYSTEM_PSP) or (SystemId = ROM_SYSTEM_ZX) or (SystemId = ROM_SYSTEM_GW) or (SystemId = ROM_SYSTEM_PCE) or (SystemId = ROM_SYSTEM_SGX) or (SystemId = ROM_SYSTEM_PCECD) then
-          case B of
-            TEmulatorButton.Mode:
-              KeyName := 'Mode';
-            TEmulatorButton.A:
-              KeyName := 'A';
-            TEmulatorButton.B:
-              KeyName := 'B';
-            TEmulatorButton.Select:
-              KeyName := 'Select';
-            TEmulatorButton.Start:
-              KeyName := 'Start';
-            TEmulatorButton.C:
-              KeyName := 'C';
-            TEmulatorButton.X:
-              KeyName := 'X';
-            TEmulatorButton.Y:
-              KeyName := 'Y';
-            TEmulatorButton.Z:
-              KeyName := 'Z';
-          end;
-        AddKey(PadAction(Port, B), ReadEmulatorKey(Ini, Section, KeyName, Keys[Port, B]));
+        AddLegacyInputKey(Input, PadAction(Port, B),
+          ReadEmulatorKey(Ini, Section, Definition.LegacyKeyNames[B], Keys[Port, B]));
       end;
-  for var i := 0 to 11 do
-    AddKey(PowerPadAction + i, PowerKeys[i]);
-  Input.AddBinding(TInputBinding.Create(ZapperTriggerAction,
-      TInputValue.Create(SystemMouseId, TInputElementKind.Button, MouseLeft, 1)));
-  if SystemId = ROM_SYSTEM_NES then
-    EnsurePeripheralBindings(Input, Ini);
+    if Assigned(Definition.AfterLegacyBindings) then
+      Definition.AfterLegacyBindings(Input, Ini);
+  end;
+  if Registered and Assigned(Definition.AfterLoadBindings) then
+    Definition.AfterLoadBindings(Input, Ini);
 end;
 
 function BindingCaption(Input: TInputManager; Action: Integer): string;
@@ -973,70 +415,61 @@ begin
   Result[vkMenu] := Result[vkLMenu] or Result[vkRMenu];
 end;
 
-procedure FilterInputBindings(Input: TInputManager; Ini: TCustomIniFile);
+function OrderedSharedInputs: TArray<string>;
 begin
-  var Bindings := Input.Bindings;
-  Input.ClearBindings;
-  for var B in Bindings do
-  begin
-    if not Ini.ReadBool('Ports', 'KeyboardEnabled', True) and
-      (B.Kind = TInputElementKind.Key) and
-      (((B.Action >= SuborAction) and (B.Action < ExtraPadAction)) or
-      ((Ini.ReadString('Ports', 'Port1', 'auto') = 'piano') and (B.Action < 32))) then
-      Continue;
+  Result := PlatformInputs.Keys.ToArray;
+  TArray.Sort<string>(Result, TComparer<string>.Construct(
+    function(const A, B: string): Integer
+    begin
+      Result := CompareValue(PlatformInputs[A].SharedBindingOrder, PlatformInputs[B].SharedBindingOrder);
+      if Result = 0 then
+        Result := CompareStr(A, B);
+    end));
+end;
 
-    var Port := B.Action div 32;
-    if (B.Action >= PowerPadAction) and (B.Action < SuborAction) then
-      Port := 1;
-    if (B.Action >= SuborAction) and (B.Action < PianoAction) then
-      Port := 4;
-    if (B.Action >= PianoAction) and (B.Action < ExtraPadAction) then
-      Port := 0;
-    if B.Action >= ExtraPadAction then
-      Port := 4 + (B.Action - ExtraPadAction) div 32;
-    if (B.Action >= PS1ExtraAction) and (B.Action < PS1ExtraAction + 2 * 16) then
-      Port := (B.Action - PS1ExtraAction) div 16;
-    var Source := '';
-    if (Port >= 0) and (Port < 12) then
-      Source := Ini.ReadString('Ports', 'Source' + IntToStr(Port + 1), '');
-    if (Port = 4) and (B.Action < ExtraPadAction) then
-      Source := Ini.ReadString('Ports', 'SourceExpansion', '');
-    if (Source = '') or (Source = B.DeviceId) then
-      Input.AddBinding(B);
+procedure LoadSharedLegacyBindings(Input: TInputManager; Ini: TCustomIniFile);
+begin
+  for var Id in OrderedSharedInputs do
+  begin
+    var Definition := PlatformInputs[Id];
+    if Assigned(Definition.SharedLegacyBindings) then
+      Definition.SharedLegacyBindings(Input, Ini);
   end;
 end;
 
-function ReadSuborInput(Input: TInputManager): TSuborKeys;
+procedure FilterInputBindings(Input: TInputManager; Ini: TCustomIniFile; const SystemId: string);
 begin
-  Result := [];
-  if Input = nil then
-    Exit;
-
-  for var K := Low(TSuborKey) to High(TSuborKey) do
-    if (K <> SkNone) and Input.IsPressed(SuborAction + Ord(K)) then
-      Include(Result, K);
-end;
-
-function ReadFamicomInput(Input: TInputManager): TFamicomKeys;
-begin
-  Result := [];
-  if Input = nil then
-    Exit;
-
-  for var K := Low(TFamicomKey) to High(TFamicomKey) do
-    if (K <> FkNone) and Input.IsPressed(FamicomAction + Ord(K)) then
-      Include(Result, K);
-end;
-
-function ReadPianoInput(Input: TInputManager): TMiracleKeys;
-begin
-  Result := [];
-  if Input = nil then
-    Exit;
-
-  for var K := Low(TMiracleKey) to High(TMiracleKey) do
-    if Input.IsPressed(PianoAction + K) then
-      Include(Result, K);
+  var Definition: TPlatformInputDefinition;
+  var Registered := FindPlatformInput(SystemId, Definition);
+  var Rules := OrderedSharedInputs;
+  var Bindings := Input.Bindings;
+  Input.ClearBindings;
+  for var Binding in Bindings do
+  begin
+    var Policy := Default(TInputBindingPolicy);
+    Policy.Enabled := True;
+    var Port := Binding.Action div 32;
+    if Binding.Action >= ExtraPadAction then
+      Port := 4 + (Binding.Action - ExtraPadAction) div 32;
+    if (Port >= 0) and (Port < 12) then
+      Policy.SourceKey := 'Source' + IntToStr(Port + 1);
+    if not Registered or Definition.UseSharedBindingRules then
+      for var Id in Rules do
+      begin
+        var Shared := PlatformInputs[Id];
+        if Assigned(Shared.SharedFilterBinding) then
+          Shared.SharedFilterBinding(Binding, Ini, Policy);
+      end;
+    if Registered and Assigned(Definition.FilterBinding) then
+      Definition.FilterBinding(Binding, Ini, Policy);
+    if not Policy.Enabled then
+      Continue;
+    var Source := '';
+    if Policy.SourceKey <> '' then
+      Source := Ini.ReadString('Ports', Policy.SourceKey, '');
+    if (Source = '') or (Source = Binding.DeviceId) then
+      Input.AddBinding(Binding);
+  end;
 end;
 
 function ReadPadInput(Input: TInputManager; const Ports: TCoreInputPorts): TEmulatorInput;
@@ -1119,6 +552,12 @@ begin
     end;
   end;
 end;
+
+initialization
+  PlatformInputs := TDictionary<string, TPlatformInputDefinition>.Create(TIStringComparer.Ordinal);
+
+finalization
+  PlatformInputs.Free;
 
 end.
 

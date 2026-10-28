@@ -386,17 +386,26 @@ begin
   FDataRecorder.Connected := FCartridge.Metadata.DefaultExpansionDevice in [$20, $23];
   var Resolved := Ports;
   if Resolved.Devices[0] = 'auto' then
-    if FMiraclePiano.Connected then Resolved.Devices[0] := 'piano'
-    else Resolved.Devices[0] := 'pad';
+    if FMiraclePiano.Connected then
+      Resolved.Devices[0] := 'piano'
+    else
+      Resolved.Devices[0] := 'pad';
   if Resolved.Devices[1] = 'auto' then
-    if FZapper.Enabled then Resolved.Devices[1] := 'zapper'
-    else if FController2.PowerPadEnabled then Resolved.Devices[1] := 'powerpad'
-    else Resolved.Devices[1] := 'pad';
+    if FZapper.Enabled then
+      Resolved.Devices[1] := 'zapper'
+    else if FController2.PowerPadEnabled then
+      Resolved.Devices[1] := 'powerpad'
+    else
+      Resolved.Devices[1] := 'pad';
   if Resolved.Expansion = 'auto' then
-    if FFamicomKeyboard.Connected then Resolved.Expansion := 'famicom'
-    else if FSuborKeyboard.Connected then Resolved.Expansion := 'subor'
-    else if FDataRecorder.Connected then Resolved.Expansion := 'recorder'
-    else Resolved.Expansion := 'none';
+    if FFamicomKeyboard.Connected then
+      Resolved.Expansion := 'famicom'
+    else if FSuborKeyboard.Connected then
+      Resolved.Expansion := 'subor'
+    else if FDataRecorder.Connected then
+      Resolved.Expansion := 'recorder'
+    else
+      Resolved.Expansion := 'none';
   ConfigureInputPorts(Resolved);
   FZapper.Reset;
   FSuborKeyboard.Clear;

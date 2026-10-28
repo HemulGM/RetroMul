@@ -2,7 +2,8 @@
 
 interface
 
-uses System.SysUtils, System.Classes, System.IniFiles;
+uses
+  System.SysUtils, System.Classes, System.IniFiles;
 
 type
   TStorageFile = record
@@ -71,7 +72,7 @@ type
     property MaxRomFileSize: Int64 read GetMaxRomFileSize write SetMaxRomFileSize;
   end;
 
-
 implementation
 
 end.
+

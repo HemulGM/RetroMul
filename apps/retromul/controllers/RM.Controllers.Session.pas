@@ -6,7 +6,7 @@ interface
 
 uses
   RM.BitmapShaders, RM.Platforms.Presentation, System.SysUtils, FMX.Types,
-  Core.Emulation, RM.Controllers.Base, RM.VMUOverlay;
+  Core.Emulation, RM.Controllers.Base, RM.Session.Runtime;
 
 type
   TSessionController = class(TMainController)
@@ -14,15 +14,15 @@ type
     FLoadingCore: Boolean;
     FLoadGeneration: Integer;
     FCancelLoad: TProc;
-    FVMUOverlay: TVMUOverlay;
+    function RuntimeContext: TSessionRuntimeContext;
     procedure UpdateVirtualButtons;
-    procedure UpdateVMUOverlay;
     procedure EndCoreLoading;
     procedure CancelCoreLoading;
     procedure BeginGameLoading(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string);
     procedure InstallCore(const NewEmulation: IEmulationCore; const FileName, DisplayName: string; StartPaused: Boolean);
   public
     destructor Destroy; override;
+    procedure DisconnectSession;
     procedure FormActivate(Sender: TObject);
     procedure FormDeactivate(Sender: TObject);
     procedure ApplicationException(Sender: TObject; E: Exception);
@@ -54,12 +54,9 @@ implementation
 uses
   System.Classes, System.SyncObjs, System.UITypes, System.Math, RM.Input,
   System.IOUtils, FMX.Forms, FMX.Objects, FMX.Graphics, FMX.OpenDialog,
-  Core.Storage, Core.EmulatorFactory, Core.Adapter.ZX, Core.Adapter.SG1000,
-  Core.Adapter.N64, Core.Adapter.MD, Core.Adapter.SNES, Core.Adapter.NeoGeo,
-  Core.Adapter.PCE, Core.Adapter.GW, Core.Adapter.GBA, Core.Adapter.GB,
-  Core.Adapter.GBC, Core.Adapter.NES, Core.InputConfig, Core.Platforms,
-  Core.RomFormat, RM.Gamepad, RM.FrameUpload, NES.Controller, RM.Dialogs,
-  RM.Styles, RM.Gamepad.Viewport, Core.SavePaths;
+  Core.Storage, Core.EmulatorFactory, Core.InputConfig, Core.Platforms,
+  Core.PlatformServices, RM.Gamepad, RM.FrameUpload, RM.Dialogs, RM.Styles,
+  Core.SavePaths;
 
 function NewLoadCancellation(out CancelLoad: TProc): TProc;
 begin
@@ -83,19 +80,20 @@ destructor TSessionController.Destroy;
 begin
   if Assigned(FCancelLoad) then
     FCancelLoad();
-  FVMUOverlay.Free;
   inherited;
 end;
 
-procedure TSessionController.UpdateVMUOverlay;
+function TSessionController.RuntimeContext: TSessionRuntimeContext;
 begin
-  if FVMUOverlay = nil then
-  begin
-    if FState.Session.Emulation = nil then
-      Exit;
-    FVMUOverlay := TVMUOverlay.Create(FView.ImageCanvas);
-  end;
-  FVMUOverlay.Update(FState.Session.Emulation);
+  Result := Default(TSessionRuntimeContext);
+  Result.View := FView;
+  Result.State := FState;
+end;
+
+procedure TSessionController.DisconnectSession;
+begin
+  DetachSessionTouch(RuntimeContext);
+  PlatformSessionHandler(FState.Input.SystemId).Disconnect(RuntimeContext);
 end;
 
 procedure TSessionController.FormActivate(Sender: TObject);
@@ -113,18 +111,7 @@ begin
 
   FState.Input.SuppressInputUntilRelease := True;
   {$IFDEF ANDROID}
-  if FState.Mobile.MiraclePianoTouchAttached then
-    FState.Input.MiraclePiano.AttachToForm(FView)
-  else if FState.Mobile.PowerPadTouchAttached then
-    FState.Input.PowerPad.AttachToForm(FView)
-  else if FState.Mobile.SGKeyboardTouchAttached then
-    FState.Input.SGKeyboard.AttachToForm(FView)
-  else if FState.Mobile.SuborKeyboardTouchAttached then
-    FState.Input.SuborKeyboard.AttachToForm(FView)
-  else if FState.Mobile.FamicomKeyboardTouchAttached then
-    FState.Input.FamicomKeyboard.AttachToForm(FView)
-  else if FState.Input.Gamepad <> nil then
-    FState.Input.Gamepad.AttachToForm(FView);
+  ReattachSessionTouch(RuntimeContext);
   {$ENDIF}
   FView.SyncActivity;
 end;
@@ -153,16 +140,7 @@ begin
     FState.Settings.View.CancelCapture;
   if FState.Input.Gamepad <> nil then
     FState.Input.Gamepad.ReleaseAll;
-  if FState.Input.SuborKeyboard <> nil then
-    FState.Input.SuborKeyboard.ReleaseAll;
-  if FState.Input.SGKeyboard <> nil then
-    FState.Input.SGKeyboard.ReleaseAll;
-  if FState.Input.FamicomKeyboard <> nil then
-    FState.Input.FamicomKeyboard.ReleaseAll;
-  if FState.Input.MiraclePiano <> nil then
-    FState.Input.MiraclePiano.ReleaseAll;
-  if FState.Input.PowerPad <> nil then
-    FState.Input.PowerPad.ReleaseAll;
+  ReleaseSessionInputs(RuntimeContext);
   if FState.Session.Emulation <> nil then
     FState.Session.Emulation.ClearInput;
   FState.Input.GamepadInput := Default(TEmulatorInput);
@@ -258,7 +236,7 @@ begin
     FView.GamePause.Text := ''
   else
     FView.GamePause.Text := FView.GamePause.Hint;
-  if (FState.Input.SystemId <> ROM_SYSTEM_ZX) or not FState.Input.Ports.KeyboardEnabled then
+  if PlatformSessionHandler(FState.Input.SystemId).ShowPauseShortcut(RuntimeContext) then
     FView.GamePause.Hint := FView.GamePause.Hint + ' · P';
   // Changing the style recreates its text resource, including its margins.
   FView.GamePause.ApplyStyleLookup;
@@ -274,131 +252,13 @@ begin
     FState.Browser.ScreenshotTool.Enabled := (FState.Session.Emulation <> nil) and not FState.Session.OpeningRom;
   if FState.Browser.ActionsTool <> nil then
     FState.Browser.ActionsTool.Enabled := not FState.Session.OpeningRom;
-  var Tape: INesTapeCore;
-  if FState.Input.DataRecorder <> nil then
-  begin
-    FState.Input.DataRecorder.Visible := Supports(FState.Session.Emulation, INesTapeCore, Tape) and Tape.UsesDataRecorder;
-    FState.Input.DataRecorder.Enabled := FState.Input.DataRecorder.Visible and not FState.Session.OpeningRom and not FState.Session.EmulationFaulted;
-    if FState.Input.DataRecorder.Visible then
-      FState.Input.DataRecorder.Progress := Tape.GetTapeProgress;
-  end;
-  var SGKeyboard: ISGKeyboardCore;
-  var SGKeyboardActive := Supports(FState.Session.Emulation, ISGKeyboardCore, SGKeyboard) and SGKeyboard.HasKeyboard;
-  if FState.Input.SGKeyboard <> nil then
-  begin
-    FState.Input.SGKeyboard.SpectrumMode := FState.Input.SystemId = 'zx';
-    FState.Input.SGKeyboard.Visible := SGKeyboardActive;
-    FState.Input.SGKeyboard.Enabled := SGKeyboardActive and not FState.Session.EmulationFaulted and not FState.Session.OpeningRom
-      and not FState.Browser.ViewingLibrary and (FState.Settings.View = nil) and (FState.Help.View = nil) and not RetroDialogVisible(FView);
-  end;
-  var SuborKeyboardActive := (FState.Session.Emulation <> nil) and FState.Session.Emulation.UsesSuborKeyboard;
-  var Peripheral: INesPeripheralCore;
-  var FamicomKeyboardActive := Supports(FState.Session.Emulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard;
-  var Piano: INesMiraclePianoCore;
-  var PianoActive := Supports(FState.Session.Emulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano;
-  if FState.Input.MiraclePiano <> nil then
-  begin
-    FState.Input.MiraclePiano.Visible := PianoActive;
-    FState.Input.MiraclePiano.Enabled := PianoActive and not FState.Session.EmulationFaulted and not FState.Session.OpeningRom;
-  end;
+  PlatformSessionHandler(FState.Input.SystemId).SyncActivity(RuntimeContext);
   {$IFDEF ISMOBILE}
-  var KeyboardActive := SGKeyboardActive or SuborKeyboardActive or FamicomKeyboardActive or PianoActive;
-  var PowerPadActive := Supports(FState.Session.Emulation, INesPeripheralCore, Peripheral);
-  if PowerPadActive then
-    PowerPadActive := Peripheral.UsesPowerPad and not KeyboardActive;
-  if FState.Input.Gamepad <> nil then
-  begin
-    FState.Input.Gamepad.Visible := not KeyboardActive and not PowerPadActive;
-    FState.Input.Gamepad.Enabled := (FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted and not FState.Session.OpeningRom and not KeyboardActive and not PowerPadActive;
-  end;
-  {$ENDIF}
-  if FState.Input.SuborKeyboard <> nil then
-  begin
-    FState.Input.SuborKeyboard.Visible := SuborKeyboardActive;
-    FState.Input.SuborKeyboard.Enabled := SuborKeyboardActive and not FState.Session.EmulationFaulted and not FState.Session.OpeningRom;
-  end;
-  if FState.Input.FamicomKeyboard <> nil then
-  begin
-    FState.Input.FamicomKeyboard.Visible := FamicomKeyboardActive;
-    FState.Input.FamicomKeyboard.Enabled := FamicomKeyboardActive and not FState.Session.EmulationFaulted and not FState.Session.OpeningRom;
-  end;
-
-  {$IFDEF ISMOBILE}
-  if FState.Input.PowerPad <> nil then
-  begin
-    FState.Input.PowerPad.Visible := PowerPadActive;
-    FState.Input.PowerPad.Enabled := PowerPadActive and not FState.Session.EmulationFaulted and not FState.Session.OpeningRom;
-  end;
-  {$IFDEF ANDROID}
-  // The Android view accepts one native touch listener.
-  // The controls are mutually exclusive, so hand it to the currently visible control.
-  if (FState.Mobile.SGKeyboardTouchAttached <> SGKeyboardActive) or
-    (FState.Mobile.SuborKeyboardTouchAttached <> SuborKeyboardActive) or
-    (FState.Mobile.FamicomKeyboardTouchAttached <> FamicomKeyboardActive) or
-    (FState.Mobile.PowerPadTouchAttached <> PowerPadActive) or
-    (FState.Mobile.MiraclePianoTouchAttached <> PianoActive) then
-  begin
-    if FState.Mobile.MiraclePianoTouchAttached then
-      FState.Input.MiraclePiano.AttachToForm(nil)
-    else if FState.Mobile.PowerPadTouchAttached then
-      FState.Input.PowerPad.AttachToForm(nil)
-    else if FState.Mobile.SGKeyboardTouchAttached then
-      FState.Input.SGKeyboard.AttachToForm(nil)
-    else if FState.Mobile.SuborKeyboardTouchAttached then
-      FState.Input.SuborKeyboard.AttachToForm(nil)
-    else if FState.Mobile.FamicomKeyboardTouchAttached then
-      FState.Input.FamicomKeyboard.AttachToForm(nil)
-    else
-      FState.Input.Gamepad.AttachToForm(nil);
-    if PianoActive then
-      FState.Input.MiraclePiano.AttachToForm(FView)
-    else if PowerPadActive then
-      FState.Input.PowerPad.AttachToForm(FView)
-    else if SGKeyboardActive then
-      FState.Input.SGKeyboard.AttachToForm(FView)
-    else if SuborKeyboardActive then
-      FState.Input.SuborKeyboard.AttachToForm(FView)
-    else if FamicomKeyboardActive then
-      FState.Input.FamicomKeyboard.AttachToForm(FView)
-    else
-      FState.Input.Gamepad.AttachToForm(FView);
-    FState.Mobile.SGKeyboardTouchAttached := SGKeyboardActive;
-    FState.Mobile.SuborKeyboardTouchAttached := SuborKeyboardActive;
-    FState.Mobile.FamicomKeyboardTouchAttached := FamicomKeyboardActive;
-    FState.Mobile.PowerPadTouchAttached := PowerPadActive;
-    FState.Mobile.MiraclePianoTouchAttached := PianoActive;
-  end;
-  {$ENDIF}
-  {$IFDEF IOS}
-  if PowerPadActive then
-  begin
-    FState.Input.Gamepad.AttachToForm(nil);
-    FState.Input.PowerPad.AttachToForm(FView);
-  end
-  else
-  begin
-    FState.Input.PowerPad.AttachToForm(nil);
-    if KeyboardActive then
-      FState.Input.Gamepad.AttachToForm(nil)
-    else
-      FState.Input.Gamepad.AttachToForm(FView);
-  end;
-  {$ENDIF}
-  ArrangeVirtualGamepads(FState.Input.Gamepad, FState.Input.PowerPad, FView.ImageCanvas);
-  if FState.Input.MiraclePiano <> nil then
-    FState.Input.MiraclePiano.Enabled := FState.Input.MiraclePiano.Enabled and not FState.Mobile.InBackground and not FView.GameActionsPopup.IsOpen and not RetroDialogVisible(FView);
+  SyncSessionTouch(RuntimeContext);
+  PlatformSessionHandler(FState.Input.SystemId).LayoutControls(RuntimeContext);
+  PlatformSessionHandler(FState.Input.SystemId).ApplyActivityGate(RuntimeContext);
   var Paused := FState.Mobile.InBackground or FView.GameActionsPopup.IsOpen or FState.Session.OpeningRom or FState.Browser.ViewingLibrary or FState.Session.UserPaused or
     (FState.Settings.View <> nil) or (FState.Help.View <> nil) or RetroDialogVisible(FView);
-  if FState.Input.PowerPad <> nil then
-    FState.Input.PowerPad.Enabled := FState.Input.PowerPad.Enabled and not FState.Mobile.InBackground and not FView.GameActionsPopup.IsOpen and not RetroDialogVisible(FView);
-  if FState.Input.SGKeyboard <> nil then
-    FState.Input.SGKeyboard.Enabled := FState.Input.SGKeyboard.Enabled and not FState.Mobile.InBackground and not FView.GameActionsPopup.IsOpen;
-  if FState.Input.Gamepad <> nil then
-    FState.Input.Gamepad.Enabled := FState.Input.Gamepad.Enabled and not FState.Mobile.InBackground and not FView.GameActionsPopup.IsOpen and not RetroDialogVisible(FView);
-  if FState.Input.SuborKeyboard <> nil then
-    FState.Input.SuborKeyboard.Enabled := FState.Input.SuborKeyboard.Enabled and not FState.Mobile.InBackground and not FView.GameActionsPopup.IsOpen and not RetroDialogVisible(FView);
-  if FState.Input.FamicomKeyboard <> nil then
-    FState.Input.FamicomKeyboard.Enabled := FState.Input.FamicomKeyboard.Enabled and not FState.Mobile.InBackground and not FView.GameActionsPopup.IsOpen and not RetroDialogVisible(FView);
   if Paused <> FState.Mobile.ActivityPaused then
   begin
     FState.Mobile.ActivityPaused := Paused;
@@ -501,7 +361,7 @@ begin
             begin
               {$IFDEF ANDROID}
               FState.Mobile.ChoosingTape := True;
-              FState.Mobile.Transfer.Import(Selection.Location, True);
+              FState.Mobile.Transfer.Import(Selection.Location, True, FState.Input.SystemId);
               Importing := True;
               {$ELSE}
               FView.SelectTapeFile(Selection.Location);
@@ -530,8 +390,9 @@ begin
     begin
       FState.Session.FileDialog.InitialDirectory := '';
       FState.Session.FileDialog.FileMustExist := False;
-      FState.Session.FileDialog.Title := Translate('Choose a cassette file');
-      FState.Session.FileDialog.Filter := Translate('Cassette (*.tape)|*.tape|All files|*.*');
+      var Selection := PlatformDocumentSelection(FState.Input.SystemId);
+      FState.Session.FileDialog.Title := Translate(Selection.Title);
+      FState.Session.FileDialog.Filter := Translate(Selection.FileFilter);
       FState.Session.FileDialog.SelectFiles(
         procedure(const Selection: TFMXSelectionResult)
         begin
@@ -711,9 +572,7 @@ begin
   var SourceName := FileName;
   if FileName.StartsWith('content://', True) then
     SourceName := FState.Session.Storage.Describe(FileName).Name;
-  var Ext := ExtractFileExt(SourceName);
-  if not (SameText(Ext, ROM_EXTENSION_M3U) or SameText(Ext, ROM_EXTENSION_CUE) or SameText(Ext, ROM_EXTENSION_ISO) or SameText(Ext, ROM_EXTENSION_CHD) or
-    SameText(Ext, ROM_EXTENSION_MDS) or SameText(Ext, ROM_EXTENSION_NRG)) then
+  if not LoadMediaInBackground(SourceName) then
   begin
     InstallCore(FView.NewCore(FileName), FileName, DisplayName, StartPaused);
     if SnapshotName <> '' then
@@ -813,22 +672,12 @@ begin
 
   if FState.Input.Gamepad <> nil then
     FState.Input.Gamepad.ReleaseAll;
-  if FState.Input.SuborKeyboard <> nil then
-    FState.Input.SuborKeyboard.ReleaseAll;
-  if FState.Input.SGKeyboard <> nil then
-    FState.Input.SGKeyboard.ReleaseAll;
-  if FState.Input.FamicomKeyboard <> nil then
-    FState.Input.FamicomKeyboard.ReleaseAll;
-  if FState.Input.MiraclePiano <> nil then
-    FState.Input.MiraclePiano.ReleaseAll;
-  if FState.Input.PowerPad <> nil then
-    FState.Input.PowerPad.ReleaseAll;
+  ReleaseSessionInputs(RuntimeContext);
   FView.TimerUpdate.Enabled := False;
   if FState.Input.Rumble <> nil then
     FState.Input.Rumble.Reset;
+  DisconnectSession;
   FState.Session.Emulation := nil; // Join before replacing the session.
-  if FVMUOverlay <> nil then
-    FVMUOverlay.Hide;
   FView.SyncMotionSensor;
   FState.Session.Emulation := NewEmulation;
   FState.Session.PreserveOpeningAutosave := False;
@@ -837,28 +686,7 @@ begin
   var platform := TPlatformRegistry.Require(FState.Session.Emulation.SystemId);
   var InputSystem := platform.Id;
   FView.LoadHostInput(InputSystem);
-  FState.Input.Gamepad.Configure(platform.System, FState.Input.Ports.Devices[0],
-    CoreButtons(InputSystem, FState.Input.Ports.Devices[0]));
-
-  FView.ImageCanvas.HitTest := False;
-  FView.ImageCanvas.CanFocus := False;
-  FView.ImageCanvas.DisableFocusEffect := True;
-
-  var Peripheral: INesPeripheralCore;
-  if Supports(FState.Session.Emulation, INesPeripheralCore, Peripheral) then
-  begin
-    FView.ImageCanvas.HitTest := True;
-    FView.ImageCanvas.CanFocus := True;
-    FView.ImageCanvas.OnKeyDown := FView.FormKeyDown;
-    FView.ImageCanvas.OnKeyUp := FView.FormKeyUp;
-    FView.ImageCanvas.DisableFocusEffect := False;
-    FView.ImageCanvas.CanParentFocus := True;
-    Peripheral.Zapper.OnReadLight :=
-      function(const Mask: TNesZapperMask): Boolean
-      begin
-        Result := TZapper.ReadMask(Mask, FState.Input.ZapperPixel.X, FState.Input.ZapperPixel.Y);
-      end;
-  end;
+  PlatformSessionHandler(InputSystem).Connect(RuntimeContext);
 
   FState.Session.UserPaused := StartPaused;
   FState.Session.AutoPaused := False;
@@ -936,12 +764,11 @@ begin
     FView.AutosaveOnExit;
     FView.TimerUpdate.Enabled := False;
     FState.Session.Emulation.Stop;
+    DisconnectSession;
     FView.ImageCanvas.Mode := TBitmapShaderMode.Original;
     FView.ImageCanvas.Bitmap := nil;
     FView.ImageLogo.Visible := True;
     FState.Session.Emulation := nil;
-    if FVMUOverlay <> nil then
-      FVMUOverlay.Hide;
   end;
   if FState.Browser.View <> nil then
     FView.LibraryBack(FView);
@@ -1051,13 +878,7 @@ begin
       FView.SetStatus(FrameStatus);
     {$ENDIF}
   end;
-  var Tape: IZXTapeCore;
-  if Supports(FState.Session.Emulation, IZXTapeCore, Tape) then
-  begin
-    var Status := Tape.GetTapeStatus;
-    if Status <> '' then
-      FView.SetStatus(Status);
-  end;
+  PlatformSessionHandler(FState.Input.SystemId).FrameStatus(RuntimeContext);
   if not NewFrame then
     Exit;
 
@@ -1074,7 +895,7 @@ begin
     FView.ImageCanvas.Bitmap.Unmap(Data);
   end;
   FView.ImageCanvas.Repaint;
-  UpdateVMUOverlay;
+  PlatformSessionHandler(FState.Input.SystemId).FramePresented(RuntimeContext);
 end;
 
 procedure TSessionController.PauseClick(Sender: TObject);

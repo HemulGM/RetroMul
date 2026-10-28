@@ -8,8 +8,7 @@ uses
   System.SysUtils, System.Types, System.UITypes, FMX.Forms, FMX.StdCtrls,
   FMX.Menus, Core.Emulation, Core.Storage, Core.InputConfig, FMX.OpenDialog,
   RM.LibraryView, RM.Settings, RM.ControlsHelp, RM.Input, FMXInput, RM.Rumble,
-  RM.Gamepad, SG1000.Keyboard, NES.SuborKeyboard, NES.FamicomKeyboard, NES.MiraclePiano,
-  NES.PowerPad, NES.DataRecorder
+  RM.Gamepad
   {$IFDEF MSWINDOWS}
     , Winapi.Windows
   {$ENDIF}
@@ -81,23 +80,18 @@ type
   end;
 
   TMainInputState = record
+    // Provider data is owned by this view's state, never by a shared handler.
+    RuntimeData: IInterface;
     Manager: TInputManager;
     Ports: TCoreInputPorts;
     SystemId: string;
     BottomInset: Integer;
     DispatchingInput, SuppressInputUntilRelease, PollingFailed: Boolean;
     Gamepad: TScreenGamepad;
-    SuborKeyboard: TNesSuborKeyboard;
-    SGKeyboard: TSGKeyboard;
-    FamicomKeyboard: TNesFamicomKeyboard;
-    MiraclePiano: TNesMiraclePiano;
-    PowerPad: TNesPowerPad;
-    DataRecorder: TNesDataRecorder;
     Rumble: TRumblePlayer;
     RumbleDeviceId: string;
     GamepadInput: TEmulatorInput;
     KeysDown: array[0..2048] of Boolean;
-    ZapperPixel: TPoint;
     {$IF not Defined(LINUX)}
     MotionSensor: TMotionSensor;
     MotionAttempted: Boolean;
@@ -121,11 +115,6 @@ type
     {$IFDEF ANDROID}
     Transfer: TAndroidDocumentTransfer;
     ChoosingTape: Boolean;
-    SuborKeyboardTouchAttached: Boolean;
-    SGKeyboardTouchAttached: Boolean;
-    FamicomKeyboardTouchAttached: Boolean;
-    MiraclePianoTouchAttached: Boolean;
-    PowerPadTouchAttached: Boolean;
     {$ENDIF}
   end;
 

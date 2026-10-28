@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.RomFormat, GB.Cartridge;
+  GB.Cartridge;
 
 const
   AddressRAMSize: Integer = GB_ROM_RAM_SIZE_OFFSET;

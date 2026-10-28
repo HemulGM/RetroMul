@@ -4,14 +4,18 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.SyncObjs, System.IniFiles,
-  Core.Storage, Core.Emulation.Types;
+  Core.Storage, Core.Emulation.Types, System.Generics.Collections;
 
 type
   TCoreInputPorts = record
-    Devices: array[0..11] of string;
+    Devices: array[0..EmulatorMaxPlayers - 1] of string;
     Multitap: array[0..1] of Boolean;
     Expansion: string;
-    FourScore, LegacyZapper, KeyboardEnabled: Boolean;
+    FourScore, LegacyZapper, KeyboardEnabled: Boolean; // Legacy hardware ABI.
+    Options: TArray<TPair<string, string>>;
+    function Option(const Name, Default: string): string;
+    procedure SetOption(const Name, Value: string);
+    class function Defaults: TCoreInputPorts; static;
   end;
 
   IEmulationInputPorts = interface
@@ -39,19 +43,64 @@ type
     procedure Process(const Action: TInputPortsAction);
   end;
 
+type
+  TInputPortsReader = reference to procedure(Ini: TCustomIniFile; var Ports: TCoreInputPorts);
+
+procedure RegisterInputPortsReader(const SystemId: string; const Reader: TInputPortsReader);
+
 function SameInputPorts(const A, B: TCoreInputPorts): Boolean;
 
-function ReadCoreInputPorts(Ini: TCustomIniFile): TCoreInputPorts;
+function ReadCoreInputPorts(Ini: TCustomIniFile; const SystemId: string = ''): TCoreInputPorts;
 
 function LoadCoreInputPorts(const Storage: IStorage; const SystemId: string): TCoreInputPorts;
 
-procedure UpdateMappedButtons(Code: UInt32; Pressed: Boolean;
-  const Keys: array of UInt32; var Buttons: TEmulatorButtons);
+procedure UpdateMappedButtons(Code: UInt32; Pressed: Boolean; const Keys: array of UInt32; var Buttons: TEmulatorButtons);
 
 implementation
 
-procedure UpdateMappedButtons(Code: UInt32; Pressed: Boolean;
-  const Keys: array of UInt32; var Buttons: TEmulatorButtons);
+uses
+  Core.Platforms, System.Generics.Defaults;
+
+var
+  Readers: TDictionary<string, TInputPortsReader>;
+
+procedure RegisterInputPortsReader(const SystemId: string; const Reader: TInputPortsReader);
+begin
+  if (SystemId.Trim = '') or not Assigned(Reader) then
+    raise EArgumentException.Create('Invalid input ports reader');
+  Readers.Add(SystemId.Trim, Reader);
+end;
+
+function TCoreInputPorts.Option(const Name, Default: string): string;
+begin
+  Result := Default;
+  for var Item in Options do
+    if SameText(Item.Key, Name) then
+      Exit(Item.Value);
+end;
+
+procedure TCoreInputPorts.SetOption(const Name, Value: string);
+begin
+  Options := Copy(Options);
+  for var I := 0 to High(Options) do
+    if SameText(Options[I].Key, Name) then
+    begin
+      Options[I].Value := Value;
+      Exit;
+    end;
+  Options := Options + [TPair<string, string>.Create(Name, Value)];
+end;
+
+class function TCoreInputPorts.Defaults: TCoreInputPorts;
+begin
+  Result := Default(TCoreInputPorts);
+  for var I := 0 to High(Result.Devices) do
+    Result.Devices[I] := 'auto';
+  Result.Expansion := 'auto';
+  Result.KeyboardEnabled := True;
+end;
+
+procedure UpdateMappedButtons(Code: UInt32; Pressed: Boolean; const Keys: array of UInt32; var Buttons: TEmulatorButtons);
 begin
   if Code = 0 then
     Exit;
@@ -74,6 +123,11 @@ begin
     if A.Multitap[i] <> B.Multitap[i] then
       Exit;
 
+  if Length(A.Options) <> Length(B.Options) then
+    Exit;
+  for var Item in A.Options do
+    if B.Option(Item.Key, #0) <> Item.Value then
+      Exit;
   Result := (A.Expansion = B.Expansion) and (A.FourScore = B.FourScore) and
     (A.LegacyZapper = B.LegacyZapper) and (A.KeyboardEnabled = B.KeyboardEnabled);
 end;
@@ -183,27 +237,39 @@ begin
   end;
 end;
 
-function ReadCoreInputPorts(Ini: TCustomIniFile): TCoreInputPorts;
+function ReadCoreInputPorts(Ini: TCustomIniFile; const SystemId: string): TCoreInputPorts;
 begin
+  Result := TCoreInputPorts.Defaults;
   for var i := 0 to High(Result.Devices) do
-    Result.Devices[i] := Ini.ReadString('Ports', 'Port' + IntToStr(i + 1), 'auto').ToLower;
+    Result.Devices[i] := Ini.ReadString('Ports', 'Port' + IntToStr(i + 1), Result.Devices[i]).ToLower;
   for var i := 0 to 1 do
-    Result.Multitap[i] := Ini.ReadBool('Input', 'Multitap' + IntToStr(i + 1), False);
-  Result.Expansion := Ini.ReadString('Ports', 'Expansion', 'auto').ToLower;
-  Result.FourScore := Ini.ReadBool('Input', 'FourScore', False);
-  Result.LegacyZapper := Ini.ReadBool('Input', 'Zapper', False);
-  Result.KeyboardEnabled := Ini.ReadBool('Ports', 'KeyboardEnabled', True);
+    Result.Multitap[i] := Ini.ReadBool('Input', 'Multitap' + IntToStr(i + 1), Result.Multitap[i]);
+  Result.Expansion := Ini.ReadString('Ports', 'Expansion', Result.Expansion).ToLower;
+
+  Result.KeyboardEnabled := Ini.ReadBool('Ports', 'KeyboardEnabled', Result.KeyboardEnabled);
+  var Id := SystemId;
+  if Id = '' then
+    Id := ChangeFileExt(ExtractFileName(Ini.FileName), '');
+  var Reader: TInputPortsReader;
+  if Readers.TryGetValue(TPlatformRegistry.CanonicalId(Id), Reader) then
+    Reader(Ini, Result);
 end;
 
 function LoadCoreInputPorts(const Storage: IStorage; const SystemId: string): TCoreInputPorts;
 begin
   var Ini := Storage.ReadConfig(Storage.ConfigFile(SystemId));
   try
-    Result := ReadCoreInputPorts(Ini);
+    Result := ReadCoreInputPorts(Ini, SystemId);
   finally
     Ini.Free;
   end;
 end;
+
+initialization
+  Readers := TDictionary<string, TInputPortsReader>.Create(TIStringComparer.Ordinal);
+
+finalization
+  Readers.Free;
 
 end.
 

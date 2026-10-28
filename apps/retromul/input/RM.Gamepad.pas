@@ -4,29 +4,24 @@ interface
 
 uses
   System.Classes, System.Types, FMX.Types, FMX.Controls, FMX.Forms,
-  NES.Controller, Core.Emulation, Core.Emulation.Types, Core.Platforms, RM.Platforms.Presentation,
-  RM.Gamepad.Base;
+  Core.Emulation, Core.Emulation.Types, Core.Platforms,
+  RM.Platforms.Presentation, RM.Gamepad.Base;
 
 type
-  TScreenGamepadLayout = TPlatformPadLayout;
-
   // Stable host API. The platform-specific child is the actual virtual control.
   TScreenGamepad = class(TControl)
   private
     FPad: TPlatformGamepad;
-    FLayout: TScreenGamepadLayout;
     FLayoutScale: Single;
-    FSystem: TRomSystem;
+    FSystemId: string;
     FDevice: string;
-    FExplicitPlatform: Boolean;
     FButtonMask: TEmulatorButtons;
     FForm: TCommonCustomForm;
     FOnChange: TNotifyEvent;
     procedure SetLayoutScale(Value: Single);
     procedure UpdateLayoutScale;
     procedure PadChanged(Sender: TObject);
-    procedure ReplacePad(System: TRomSystem; const Device: string);
-    procedure SetLayout(Value: TScreenGamepadLayout);
+    procedure ReplacePad(const SystemId: string; const Device: string);
     procedure SetButtonMask(const Value: TEmulatorButtons);
     procedure SetCoreButtons(const Value: TEmulatorButtons);
     function GetAnalogInput: TEmulatorAnalogPad;
@@ -36,7 +31,6 @@ type
     function GetCoreButtons: TEmulatorButtons;
     function GetHighlightedButtons: TEmulatorButtons;
     function GetAspectRatio: Single;
-    procedure ConfigureLegacy;
   protected
     procedure EnabledChanged; override;
     procedure VisibleChanged; override;
@@ -47,7 +41,7 @@ type
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     class function PreferredHeight(AvailableWidth, AvailableHeight: Single): Single; static;
-    procedure Configure(System: TRomSystem; const Device: string; const Buttons: TEmulatorButtons);
+    procedure Configure(const SystemId: string; const Device: string; const Buttons: TEmulatorButtons);
     procedure AttachToForm(Form: TCommonCustomForm);
     procedure PointerDown(Id: NativeInt; const Point: TPointF);
     procedure PointerMove(Id: NativeInt; const Point: TPointF);
@@ -57,7 +51,7 @@ type
     function AuxiliaryButtonBounds(Index: Integer): TRectF;
     property AuxiliaryButtons: Cardinal read GetAuxiliaryButtons;
     function PointInObjectLocal(X, Y: Single): Boolean; override;
-    property System: TRomSystem read FSystem;
+    property SystemId: string read FSystemId;
     property DeviceId: string read FDevice;
     property PlatformPad: TPlatformGamepad read FPad;
     property LayoutScale: Single read FLayoutScale write SetLayoutScale;
@@ -67,7 +61,6 @@ type
     property CoreButtons: TEmulatorButtons read GetCoreButtons write SetCoreButtons;
     property HighlightedButtons: TEmulatorButtons read GetHighlightedButtons;
     // Compatibility for existing clients; application code uses Configure.
-    property Layout: TScreenGamepadLayout read FLayout write SetLayout;
     property ButtonMask: TEmulatorButtons read FButtonMask write SetButtonMask;
     property AspectRatio: Single read GetAspectRatio;
   published
@@ -80,23 +73,10 @@ type
     property OnChange: TNotifyEvent read FOnChange write FOnChange;
   end;
 
-  TNesGamepad = class(TScreenGamepad)
-  private
-    function GetNesButtons: TNesButtons;
-  public
-    function ButtonBounds(Button: TNesButton): TRectF; reintroduce;
-    property Buttons: TNesButtons read GetNesButtons;
-  end;
-
 implementation
 
-uses System.SysUtils, System.Math, RM.Gamepad.Factory;
-
-const
-  NesButtonMap: array[TNesButton] of TEmulatorButton =
-    (TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Select,
-     TEmulatorButton.Start, TEmulatorButton.Up, TEmulatorButton.Down,
-     TEmulatorButton.Left, TEmulatorButton.Right);
+uses
+  System.SysUtils, System.Math, RM.Gamepad.Factory, RM.Controls.Lifetime;
 
 constructor TScreenGamepad.Create(AOwner: TComponent);
 begin
@@ -104,7 +84,6 @@ begin
   FLayoutScale := 1;
   FButtonMask := [Low(TEmulatorButton)..High(TEmulatorButton)];
   SetBounds(0, 0, 480, 320);
-  ConfigureLegacy;
 end;
 
 destructor TScreenGamepad.Destroy;
@@ -118,19 +97,22 @@ end;
 procedure TScreenGamepad.EnabledChanged;
 begin
   inherited;
-  if not Enabled then ReleaseAll;
+  if not Enabled then
+    ReleaseAll;
 end;
 
 procedure TScreenGamepad.VisibleChanged;
 begin
   inherited;
-  if not Visible then ReleaseAll;
+  if not Visible then
+    ReleaseAll;
 end;
 
 procedure TScreenGamepad.AncestorVisibleChanged(const Visible: Boolean);
 begin
   inherited;
-  if not Visible then ReleaseAll;
+  if not Visible then
+    ReleaseAll;
 end;
 
 procedure TScreenGamepad.Resize;
@@ -158,33 +140,35 @@ begin
   // Scale relative to the fitted default size, including on small screens.
   // The child caps the result to the available space for drawing and input.
   var Fit := Min(1.0, Min(Width / (2 * FPad.DesignSideSize.Width),
-    Height / FPad.DesignSideSize.Height));
+      Height / FPad.DesignSideSize.Height));
   FPad.LayoutScale := Max(0.001, Fit * FLayoutScale);
 end;
 
 procedure TScreenGamepad.Notification(AComponent: TComponent; Operation: TOperation);
 begin
   inherited;
-  if (Operation = opRemove) and (AComponent = FForm) then FForm := nil;
+  if (Operation = opRemove) and (AComponent = FForm) then
+    FForm := nil;
 end;
 
 procedure TScreenGamepad.PadChanged(Sender: TObject);
 begin
-  if Assigned(FOnChange) then FOnChange(Self);
+  if Assigned(FOnChange) then
+    FOnChange(Self);
 end;
 
-procedure TScreenGamepad.ReplacePad(System: TRomSystem; const Device: string);
+procedure TScreenGamepad.ReplacePad(const SystemId: string; const Device: string);
 begin
-  var NewClass := GamepadClass(System, Device);
+  var NewClass := GamepadClass(SystemId, Device);
   if (FPad <> nil) and (FPad.ClassType = NewClass) then
   begin
-    FSystem := System;
+    FSystemId := SystemId.Trim.ToLower;
     FDevice := Device;
     FPad.ButtonMask := FButtonMask;
     Exit;
   end;
   // Construct before releasing the old layout, so exceptions leave a valid pad.
-  var NewPad := CreatePlatformGamepad(Self, System, Device);
+  var NewPad := CreatePlatformGamepad(Self, SystemId, Device);
   try
     NewPad.ButtonMask := FButtonMask;
     if FPad <> nil then
@@ -193,10 +177,11 @@ begin
       FPad.OnChange := nil;
       FPad.AttachToForm(nil);
     end;
-    FreeAndNil(FPad);
+    if FPad <> nil then
+      RetireControl(FPad);
     FPad := NewPad;
     NewPad := nil;
-    FSystem := System;
+    FSystemId := SystemId.Trim.ToLower;
     FDevice := Device;
     FPad.Parent := Self;
     FPad.Align := TAlignLayout.Client;
@@ -208,59 +193,19 @@ begin
   end;
 end;
 
-procedure TScreenGamepad.Configure(System: TRomSystem; const Device: string; const Buttons: TEmulatorButtons);
+procedure TScreenGamepad.Configure(const SystemId: string; const Device: string; const Buttons: TEmulatorButtons);
 begin
-  FExplicitPlatform := True;
-  FLayout := PlatformPresentation(System).PadLayout;
-  if (System = TRomSystem.NES) and (Device = 'paddendy') then FLayout := TScreenGamepadLayout.Dendy;
   FButtonMask := Buttons;
-  ReplacePad(System, Device);
-end;
-
-procedure TScreenGamepad.ConfigureLegacy;
-var System: TRomSystem; Device: string;
-begin
-  System := TRomSystem.NES; Device := 'pad';
-  case FLayout of
-    TScreenGamepadLayout.CPS: System := TRomSystem.CPS1;
-    TScreenGamepadLayout.Dendy: Device := 'paddendy';
-    TScreenGamepadLayout.Sega:
-      begin
-        System := TRomSystem.MD;
-        Device := 'pad3';
-        if FButtonMask * [TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.Z] <> [] then Device := 'pad6';
-      end;
-    TScreenGamepadLayout.Snes: System := TRomSystem.SNES;
-    TScreenGamepadLayout.GameBoy: System := TRomSystem.GB;
-    TScreenGamepadLayout.GameBoyColor: System := TRomSystem.GBC;
-    TScreenGamepadLayout.GameBoyAdvance: System := TRomSystem.GBA;
-    TScreenGamepadLayout.Nintendo64: System := TRomSystem.N64;
-    TScreenGamepadLayout.PlayStation: System := TRomSystem.PS1;
-    TScreenGamepadLayout.PSP: System := TRomSystem.PSP;
-    TScreenGamepadLayout.Dreamcast: System := TRomSystem.DC;
-    TScreenGamepadLayout.NeoGeo: System := TRomSystem.NeoGeo;
-    TScreenGamepadLayout.PCE:
-      begin
-        System := TRomSystem.PCE;
-        if FButtonMask * [TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.C, TEmulatorButton.Z] <> [] then Device := 'pad6';
-      end;
-  end;
-  ReplacePad(System, Device);
-end;
-
-procedure TScreenGamepad.SetLayout(Value: TScreenGamepadLayout);
-begin
-  if (FLayout = Value) and not FExplicitPlatform then Exit;
-  FLayout := Value;
-  FExplicitPlatform := False;
-  ConfigureLegacy;
+  ReplacePad(SystemId, Device);
 end;
 
 procedure TScreenGamepad.SetButtonMask(const Value: TEmulatorButtons);
 begin
-  if FButtonMask = Value then Exit;
+  if FButtonMask = Value then
+    Exit;
   FButtonMask := Value;
-  if FExplicitPlatform then FPad.ButtonMask := Value else ConfigureLegacy;
+  if FPad <> nil then
+    FPad.ButtonMask := Value;
 end;
 
 class function TScreenGamepad.PreferredHeight(AvailableWidth, AvailableHeight: Single): Single;
@@ -270,36 +215,44 @@ end;
 
 procedure TScreenGamepad.AttachToForm(Form: TCommonCustomForm);
 begin
-  if FForm <> nil then FForm.RemoveFreeNotification(Self);
+  if FForm <> nil then
+    FForm.RemoveFreeNotification(Self);
   FForm := Form;
-  if FForm <> nil then FForm.FreeNotification(Self);
-  if FPad <> nil then FPad.AttachToForm(Form);
+  if FForm <> nil then
+    FForm.FreeNotification(Self);
+  if FPad <> nil then
+    FPad.AttachToForm(Form);
 end;
 
 function TScreenGamepad.GetAnalogInput: TEmulatorAnalogPad;
 begin
   Result := Default(TEmulatorAnalogPad);
-  if FPad <> nil then Result := FPad.AnalogInput;
+  if FPad <> nil then
+    Result := FPad.AnalogInput;
 end;
 
 function TScreenGamepad.GetRightAnalogInput: TEmulatorAnalogPad;
 begin
   Result := Default(TEmulatorAnalogPad);
-  if FPad <> nil then Result := FPad.RightAnalogInput;
+  if FPad <> nil then
+    Result := FPad.RightAnalogInput;
 end;
 
 function TScreenGamepad.GetAuxiliaryButtons: Cardinal;
 begin
   Result := 0;
-  if FPad <> nil then Result := FPad.AuxiliaryButtons;
+  if FPad <> nil then
+    Result := FPad.AuxiliaryButtons;
 end;
 
 function TScreenGamepad.AuxiliaryButtonBounds(Index: Integer): TRectF;
 begin
   Result := TRectF.Empty;
-  if FPad = nil then Exit;
+  if FPad = nil then
+    Exit;
   Result := FPad.AuxiliaryButtonBounds(Index);
-  if Result.IsEmpty then Exit;
+  if Result.IsEmpty then
+    Exit;
   Result := TRectF.Create(AbsoluteToLocal(FPad.LocalToAbsolute(Result.TopLeft)),
     AbsoluteToLocal(FPad.LocalToAbsolute(Result.BottomRight)));
 end;
@@ -307,52 +260,62 @@ end;
 function TScreenGamepad.GetButtons: TEmulatorButtons;
 begin
   Result := [];
-  if FPad <> nil then Result := FPad.Buttons;
+  if FPad <> nil then
+    Result := FPad.Buttons;
 end;
 
 function TScreenGamepad.GetCoreButtons: TEmulatorButtons;
 begin
   Result := [];
-  if FPad <> nil then Result := FPad.CoreButtons;
+  if FPad <> nil then
+    Result := FPad.CoreButtons;
 end;
 
 function TScreenGamepad.GetHighlightedButtons: TEmulatorButtons;
 begin
   Result := [];
-  if FPad <> nil then Result := FPad.HighlightedButtons;
+  if FPad <> nil then
+    Result := FPad.HighlightedButtons;
 end;
 
 procedure TScreenGamepad.SetCoreButtons(const Value: TEmulatorButtons);
 begin
-  if FPad <> nil then FPad.CoreButtons := Value;
+  if FPad <> nil then
+    FPad.CoreButtons := Value;
 end;
 
 procedure TScreenGamepad.PointerDown(Id: NativeInt; const Point: TPointF);
 begin
-  if FPad <> nil then FPad.PointerDown(Id, FPad.AbsoluteToLocal(LocalToAbsolute(Point)));
+  if FPad <> nil then
+    FPad.PointerDown(Id, FPad.AbsoluteToLocal(LocalToAbsolute(Point)));
 end;
 
 procedure TScreenGamepad.PointerMove(Id: NativeInt; const Point: TPointF);
 begin
-  if FPad <> nil then FPad.PointerMove(Id, FPad.AbsoluteToLocal(LocalToAbsolute(Point)));
+  if FPad <> nil then
+    FPad.PointerMove(Id, FPad.AbsoluteToLocal(LocalToAbsolute(Point)));
 end;
 
 procedure TScreenGamepad.PointerUp(Id: NativeInt);
 begin
-  if FPad <> nil then FPad.PointerUp(Id);
+  if FPad <> nil then
+    FPad.PointerUp(Id);
 end;
 
 procedure TScreenGamepad.ReleaseAll;
 begin
-  if FPad <> nil then FPad.ReleaseAll;
+  if FPad <> nil then
+    FPad.ReleaseAll;
 end;
 
 function TScreenGamepad.ButtonBounds(Button: TEmulatorButton): TRectF;
 begin
   Result := TRectF.Empty;
-  if FPad = nil then Exit;
+  if FPad = nil then
+    Exit;
   Result := FPad.ButtonBounds(Button);
-  if Result.IsEmpty then Exit;
+  if Result.IsEmpty then
+    Exit;
   Result := TRectF.Create(AbsoluteToLocal(FPad.LocalToAbsolute(Result.TopLeft)),
     AbsoluteToLocal(FPad.LocalToAbsolute(Result.BottomRight)));
 end;
@@ -365,19 +328,9 @@ end;
 function TScreenGamepad.GetAspectRatio: Single;
 begin
   Result := 2 / 3;
-  if FPad <> nil then Result := FPad.AspectRatio;
-end;
-
-function TNesGamepad.GetNesButtons: TNesButtons;
-begin
-  Result := [];
-  for var Button := Low(TNesButton) to High(TNesButton) do
-    if NesButtonMap[Button] in inherited Buttons then Include(Result, Button);
-end;
-
-function TNesGamepad.ButtonBounds(Button: TNesButton): TRectF;
-begin
-  Result := inherited ButtonBounds(NesButtonMap[Button]);
+  if FPad <> nil then
+    Result := FPad.AspectRatio;
 end;
 
 end.
+

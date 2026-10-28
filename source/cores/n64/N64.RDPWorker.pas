@@ -29,53 +29,56 @@ uses
 
 type
   TN64RDPWorker = class
-  private const
-    RingBits = 16;
-    RingSize = 1 shl RingBits;
-    RingMask = RingSize - 1;
+  private
+    const
+      RingBits = 16;
+      RingSize = 1 shl RingBits;
+      RingMask = RingSize - 1;
     // Segment header: word count, first segment of a list, last segment,
     // a copy's (QueueCopy: a list of its own, no words).
-    CountMask = $1FFFFFFF;
-    CopyFlag = $20000000;
-    FirstFlag = $40000000;
-    LastFlag = $80000000;
-    SpinRounds = 4000;
+      CountMask = $1FFFFFFF;
+      CopyFlag = $20000000;
+      FirstFlag = $40000000;
+      LastFlag = $80000000;
+      SpinRounds = 4000;
     // Copies that may be queued at once.
-    CopySlots = 4;
-  private type
-    TCopy = record
-      Target: TN64Bus;
-      Address, Count: Cardinal;
-      Ready: TEvent;
-      Pending: Integer;
-    end;
-    TWaitTarget = (Consumed, Done);
+      CopySlots = 4;
+  private
+    type
+      TCopy = record
+        Target: TN64Bus;
+        Address, Count: Cardinal;
+        Ready: TEvent;
+        Pending: Integer;
+      end;
 
-    TBand = class(TThread)
-    private
-      FOwner: TN64RDPWorker;
-      FIndex: Integer;
-      FRDP: TN64RDP;
-      FCursor, FEnd: Int64;
-      FNoise: Cardinal;
+      TWaitTarget = (Consumed, Done);
+
+      TBand = class(TThread)
+      private
+        FOwner: TN64RDPWorker;
+        FIndex: Integer;
+        FRDP: TN64RDP;
+        FCursor, FEnd: Int64;
+        FNoise: Cardinal;
       // The logical processors this band may run on (empty: anywhere), and
       // the one it prefers (-1: none).
-      FCPUs: TN64CPUSet;
-      FPreferred: Integer;
-      function NextWord: Cardinal;
-    protected
-      procedure Execute; override;
-    public
-      constructor Create(Owner: TN64RDPWorker; Index: Integer; RDP: TN64RDP; const CPUs: TN64CPUSet; Preferred: Integer);
-    end;
+        FCPUs: TN64CPUSet;
+        FPreferred: Integer;
+        function NextWord: Cardinal;
+      protected
+        procedure Execute; override;
+      public
+        constructor Create(Owner: TN64RDPWorker; Index: Integer; RDP: TN64RDP; const CPUs: TN64CPUSet; Preferred: Integer);
+      end;
 
     // What one band thread writes, a cache line apart from the others.
-    TBandSlot = record
-      Consumed, Done: Int64;
-      Sleeping: Integer;
-      DataReady: TEvent;
-      Pad: array[0..3] of Int64;
-    end;
+      TBandSlot = record
+        Consumed, Done: Int64;
+        Sleeping: Integer;
+        DataReady: TEvent;
+        Pad: array[0..3] of Int64;
+      end;
   private
     FRDPs: TArray<TN64RDP>;
     FBus: TN64Bus;
@@ -133,7 +136,7 @@ type
     procedure CopyAt(RDP: TN64RDP; Index: Integer);
     procedure MakeCopy(Index: Integer);
     function Failed: Boolean;
-    function Published: Int64; inline;
+    function published: Int64; inline;
     class procedure Signal(var Waiting: Integer; Event: TEvent); static;
     class function Noise(var State: Cardinal): Cardinal; static;
     class procedure StressDelay(var State: Cardinal); static;
@@ -143,8 +146,7 @@ type
     // queued is Completed + 1). Stress adds random stalls to every thread.
     // The bands run on the logical processors BandCPUs (if not empty), band
     // I preferably on Preferred[I] (if given).
-    constructor Create(RDP: TN64RDP; Bus: TN64Bus; Bands: Integer; Completed: Int64; Stress: Boolean;
-      const BandCPUs: TN64CPUSet; const Preferred: TArray<Integer>); overload;
+    constructor Create(RDP: TN64RDP; Bus: TN64Bus; Bands: Integer; Completed: Int64; Stress: Boolean; const BandCPUs: TN64CPUSet; const Preferred: TArray<Integer>); overload;
     // The same, the bands placed by the scheduler.
     constructor Create(RDP: TN64RDP; Bus: TN64Bus; Bands: Integer; Completed: Int64; Stress: Boolean); overload;
     destructor Destroy; override;
@@ -186,8 +188,7 @@ implementation
 
 { TN64RDPWorker.TBand }
 
-constructor TN64RDPWorker.TBand.Create(Owner: TN64RDPWorker; Index: Integer; RDP: TN64RDP; const CPUs: TN64CPUSet;
-  Preferred: Integer);
+constructor TN64RDPWorker.TBand.Create(Owner: TN64RDPWorker; Index: Integer; RDP: TN64RDP; const CPUs: TN64CPUSet; Preferred: Integer);
 begin
   FOwner := Owner;
   FIndex := Index;
@@ -219,18 +220,18 @@ begin
   var Position: Int64 := 0;
   while not Terminated do
   begin
-    if (FOwner.Published <= Position) or FOwner.Failed then
+    if (FOwner.published <= Position) or FOwner.Failed then
     begin
       // Idle (or stopped by an exception): spin a little, then sleep until
       // the producer publishes or the thread is terminated.
       var Spins := 0;
-      while (Spins < SpinRounds) and (FOwner.Published <= Position) and not Terminated do
+      while (Spins < SpinRounds) and (FOwner.published <= Position) and not Terminated do
       begin
         Inc(Spins);
         YieldProcessor;
       end;
       TInterlocked.Exchange(FOwner.FSlots[FIndex].Sleeping, 1);
-      if not Terminated and ((FOwner.Published <= Position) or FOwner.Failed) then
+      if not Terminated and ((FOwner.published <= Position) or FOwner.Failed) then
         FOwner.FSlots[FIndex].DataReady.WaitFor(INFINITE)
       else
         TInterlocked.Exchange(FOwner.FSlots[FIndex].Sleeping, 0);
@@ -281,8 +282,7 @@ end;
 
 { TN64RDPWorker }
 
-constructor TN64RDPWorker.Create(RDP: TN64RDP; Bus: TN64Bus; Bands: Integer; Completed: Int64; Stress: Boolean;
-  const BandCPUs: TN64CPUSet; const Preferred: TArray<Integer>);
+constructor TN64RDPWorker.Create(RDP: TN64RDP; Bus: TN64Bus; Bands: Integer; Completed: Int64; Stress: Boolean; const BandCPUs: TN64CPUSet; const Preferred: TArray<Integer>);
 begin
   inherited Create;
   FBus := Bus;
@@ -439,7 +439,7 @@ begin
   Publish;
 end;
 
-function TN64RDPWorker.Published: Int64;
+function TN64RDPWorker.published: Int64;
 begin
   {$IFDEF CPUX64}
   // Aligned 64-bit loads are atomic and acquire-ordered on x64. Publication
@@ -660,3 +660,4 @@ begin
 end;
 
 end.
+

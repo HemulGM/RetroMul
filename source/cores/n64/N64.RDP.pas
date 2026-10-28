@@ -244,8 +244,10 @@ type
     // FMemoryCoverage; FKeyMemoryRGB: the last one that read its RGB.
     FKeyRaster, FKeyShade, FKeyMemory, FKeyMemoryRGB, FKeyNoise: UInt64;
     FKeyHidden: array[0..7] of UInt64;
-    class var PerspectiveReciprocal: array[0..32767] of Word;
-    class var PerspectiveShift: array[0..32767] of Byte;
+    class var
+      PerspectiveReciprocal: array[0..32767] of Word;
+    class var
+      PerspectiveShift: array[0..32767] of Byte;
     function BandReason(Carry: Boolean): Integer;
     procedure SelectBand(Safe: Boolean);
     procedure CarryRow(Y: Integer);
@@ -532,7 +534,8 @@ end;
 
 procedure TN64RDP.SetBilinearFiltering(Value: Boolean);
 begin
-  if FBilinearFiltering = Value then Exit;
+  if FBilinearFiltering = Value then
+    Exit;
   FBilinearFiltering := Value;
   // Both filtered and nearest results share the coordinate cache. Switching
   // the host mode invalidates it before any new command is drawn.
@@ -1975,7 +1978,8 @@ begin
       FIndexStamps[I] := 0;
       FPaletteStamps[I] := 0;
     end;
-    for var I := 0 to High(FFilteredStamps) do FFilteredStamps[I] := 0;
+    for var I := 0 to High(FFilteredStamps) do
+      FFilteredStamps[I] := 0;
     FTexelGeneration := 1;
   end
   else
@@ -2350,7 +2354,8 @@ begin
     var Nearest := TexelAt(Tile,
       WrapTexel(X + Ord(FX >= 16), FTileInfo[Tile].LimitS, FTileInfo[Tile].MaskS, FTileInfo[Tile].ClampS, FTiles[Tile].MirrorS),
       WrapTexel(Y + Ord(FY >= 16), FTileInfo[Tile].LimitT, FTileInfo[Tile].MaskT, FTileInfo[Tile].ClampT, FTiles[Tile].MirrorT));
-    if FTiles[Tile].Format = 1 then Exit(Converted(Nearest));
+    if FTiles[Tile].Format = 1 then
+      Exit(Converted(Nearest));
     if Cacheable then
     begin
       {$IF Defined(CPU64BITS)}
@@ -2438,8 +2443,10 @@ begin
     else if FX + FY < 32 then
     begin
       Sum := PackedTexelAt(Tile, S0, T0) * UInt64(32 - FX - FY);
-      if FX <> 0 then Inc(Sum, PackedTexelAt(Tile, S1, T0) * UInt64(FX));
-      if FY <> 0 then Inc(Sum, PackedTexelAt(Tile, S0, T1) * UInt64(FY));
+      if FX <> 0 then
+        Inc(Sum, PackedTexelAt(Tile, S1, T0) * UInt64(FX));
+      if FY <> 0 then
+        Inc(Sum, PackedTexelAt(Tile, S0, T1) * UInt64(FY));
     end
     else
       Sum := PackedTexelAt(Tile, S1, T1) * UInt64(FX + FY - 32) +
@@ -2461,7 +2468,8 @@ begin
     Exit;
   end;
   var Base := TexelAt(Tile, S0, T0);
-  if ((FOtherHi shr 20) and 3) = 2 then Exit(Base);
+  if ((FOtherHi shr 20) and 3) = 2 then
+    Exit(Base);
   // At an integer texel the bilinear weights select Base exactly. YUV has
   // separate chroma fractions, so it must keep the general path.
   if Bilerp and not ConvertOne and (FX = 0) and (FY = 0) and (FTiles[Tile].Format <> 1) then
@@ -2935,13 +2943,20 @@ begin
     end;
     var Q: UInt64;
     case TIPtr and 7 of
-      0: Q := UInt64(Words[0] shr 16) * Replicate4;
-      1: Q := (UInt64(Words[0]) shl 40) or (UInt64(Words[1]) shl 8) or (Words[2] shr 24);
-      2: Q := UInt64(Words[0] and $FFFF) * Replicate4;
-      3: Q := (UInt64(Words[0]) shl 56) or (UInt64(Words[1]) shl 24) or (Words[2] shr 8);
-      4: Q := UInt64(Words[1] shr 16) * Replicate4;
-      5: Q := (UInt64(Words[1]) shl 40) or (UInt64(Words[2]) shl 8) or (Words[3] shr 24);
-      6: Q := UInt64(Words[1] and $FFFF) * Replicate4;
+      0:
+        Q := UInt64(Words[0] shr 16) * Replicate4;
+      1:
+        Q := (UInt64(Words[0]) shl 40) or (UInt64(Words[1]) shl 8) or (Words[2] shr 24);
+      2:
+        Q := UInt64(Words[0] and $FFFF) * Replicate4;
+      3:
+        Q := (UInt64(Words[0]) shl 56) or (UInt64(Words[1]) shl 24) or (Words[2] shr 8);
+      4:
+        Q := UInt64(Words[1] shr 16) * Replicate4;
+      5:
+        Q := (UInt64(Words[1]) shl 40) or (UInt64(Words[2]) shl 8) or (Words[3] shr 24);
+      6:
+        Q := UInt64(Words[1] and $FFFF) * Replicate4;
     else
       Q := (UInt64(Words[1]) shl 56) or (UInt64(Words[2]) shl 24) or (Words[3] shr 8);
     end;
@@ -4237,6 +4252,7 @@ begin
             // bytes and marks the doublewords the steps read).
             if FClocksOnly then
               // (No bus: Replay.)
+
             else if FTimingOnly then
             begin
               if Assigned(FOnDataOut) then
@@ -4273,6 +4289,7 @@ begin
             var Entries := Min(Count, 256);
             if FClocksOnly then
               // (No bus: Replay.)
+
             else if FTimingOnly then
             begin
               var Payload := Assigned(FOnDataOut) and ((First >= $800000) or
@@ -4781,3 +4798,4 @@ initialization
   {$ENDIF}
 
 end.
+

@@ -97,180 +97,213 @@ implementation
 
 function TPSPDepthLayout.Stored(Offset: Cardinal): Cardinal;
 begin
-  var Bits:=Offset and RotateMask;
-  Result:=((Offset and not RotateMask) or (((Bits shl 1) or (Bits shr RotateShift)) and RotateMask)) xor XorBits;
+  var Bits := Offset and RotateMask;
+  Result := ((Offset and not RotateMask) or (((Bits shl 1) or (Bits shr RotateShift)) and RotateMask)) xor XorBits;
 end;
 
 procedure TPSPMemory.SetDepthTranslation(Value: Cardinal);
 begin
-  case Value of 0,$200,$400,$800,$1000:;
-  else raise EArgumentOutOfRangeException.Create('PSP: EDRAM address translation') end;
-  FDepthTranslation:=Value;
-  FDepthWindowSize:=$800;
-  if Value<>0 then FDepthWindowSize:=Value shl 4;
-  for var Color32:=False to True do
+  case Value of
+    0, $200, $400, $800, $1000:
+      ;
+  else
+    raise EArgumentOutOfRangeException.Create('PSP: EDRAM address translation')
+  end;
+  FDepthTranslation := Value;
+  FDepthWindowSize := $800;
+  if Value <> 0 then
+    FDepthWindowSize := Value shl 4;
+  for var Color32 := False to True do
   begin
-    var Layout:=Default(TPSPDepthLayout);
-    if Value=0 then
+    var Layout := Default(TPSPDepthLayout);
+    if Value = 0 then
     begin
-      Layout.XorBits:=$600;
-      if Color32 then begin Layout.RotateMask:=$600;Layout.RotateShift:=1 end;
+      Layout.XorBits := $600;
+      if Color32 then
+      begin
+        Layout.RotateMask := $600;
+        Layout.RotateShift := 1
+      end;
     end
     else
     begin
-      Layout.XorBits:=(Value shl 3) or $40;
-      var Top:=0;
-      while Cardinal(2 shl Top)<=Value do Inc(Top);
-      if Color32 and (Top-5>1) then
-      begin Layout.RotateMask:=((Cardinal(1) shl (Top-5))-1) shl 5;Layout.RotateShift:=Top-6 end;
+      Layout.XorBits := (Value shl 3) or $40;
+      var Top := 0;
+      while Cardinal(2 shl Top) <= Value do
+        Inc(Top);
+      if Color32 and (Top - 5 > 1) then
+      begin
+        Layout.RotateMask := ((Cardinal(1) shl (Top - 5)) - 1) shl 5;
+        Layout.RotateShift := Top - 6
+      end;
     end;
-    FDepthLayouts[Color32]:=Layout;
+    FDepthLayouts[Color32] := Layout;
   end;
 end;
 
 class function TPSPMemory.IsDepthMirror(Address: Cardinal): Boolean;
 begin
-  Result:=Address and $BFA00000=$04200000;
+  Result := Address and $BFA00000 = $04200000;
 end;
 
 class function TPSPMemory.GEAddress(Address: Cardinal): Cardinal;
 begin
-  var Physical:=Address and $3FFFFFFF;
-  Result:=Address;
-  if (Physical>=PSPVRAMBase) and (Physical<PSPVRAMBase+$1000000) then
-    Result:=(Address and $C0000000) or PSPVRAMBase or (Address and $7FFFFF);
+  var Physical := Address and $3FFFFFFF;
+  Result := Address;
+  if (Physical >= PSPVRAMBase) and (Physical < PSPVRAMBase + $1000000) then
+    Result := (Address and $C0000000) or PSPVRAMBase or (Address and $7FFFFF);
 end;
 
 function TPSPMemory.DepthAddress(Address: Cardinal; Color32: Boolean): Cardinal;
 begin
-  Result:=PSPVRAMBase or FDepthLayouts[Color32].Stored(Address and $1FFFFF);
+  Result := PSPVRAMBase or FDepthLayouts[Color32].Stored(Address and $1FFFFF);
 end;
 
 function TPSPMemory.DepthStorageBounds(Address, Count: Cardinal; out First, Size: Cardinal): Boolean;
 begin
-  First:=0;Size:=0;
-  var Physical:=Address and $3FFFFFFF;
-  var Offset:=Address and $1FFFFF;
-  Result:=(Physical>=PSPVRAMBase) and (Physical<PSPVRAMBase+$800000) and
-    (UInt64(Offset)+Count<=PSPVRAMSize);
-  if not Result or (Count=0) then Exit;
-  var Start:=Offset and not (FDepthWindowSize-1);
-  var Finish:=(Offset+Count+FDepthWindowSize-1) and not (FDepthWindowSize-1);
-  First:=PSPVRAMBase+Start;Size:=Finish-Start;
+  First := 0;
+  Size := 0;
+  var Physical := Address and $3FFFFFFF;
+  var Offset := Address and $1FFFFF;
+  Result := (Physical >= PSPVRAMBase) and (Physical < PSPVRAMBase + $800000) and
+    (UInt64(Offset) + Count <= PSPVRAMSize);
+  if not Result or (Count = 0) then
+    Exit;
+  var Start := Offset and not (FDepthWindowSize - 1);
+  var Finish := (Offset + Count + FDepthWindowSize - 1) and not (FDepthWindowSize - 1);
+  First := PSPVRAMBase + Start;
+  Size := Finish - Start;
 end;
 
 function TPSPMemory.ReadGE8(Address: Cardinal): Byte;
 begin
-  Address:=GEAddress(Address);
-  if IsDepthMirror(Address) then Address:=DepthAddress(Address,Address and $400000<>0);
-  Result:=Read8(Address);
+  Address := GEAddress(Address);
+  if IsDepthMirror(Address) then
+    Address := DepthAddress(Address, Address and $400000 <> 0);
+  Result := Read8(Address);
 end;
 
 function TPSPMemory.ReadGE16(Address: Cardinal): Word;
 begin
-  Address:=GEAddress(Address);
+  Address := GEAddress(Address);
   if IsDepthMirror(Address) then
   begin
-    if Address and 31=31 then
-      Exit(Word(ReadGE8(Address)) or (Word(ReadGE8(Address+1)) shl 8));
-    Address:=DepthAddress(Address,Address and $400000<>0);
+    if Address and 31 = 31 then
+      Exit(Word(ReadGE8(Address)) or (Word(ReadGE8(Address + 1)) shl 8));
+    Address := DepthAddress(Address, Address and $400000 <> 0);
   end;
-  Result:=Read16(Address);
+  Result := Read16(Address);
 end;
 
 function TPSPMemory.ReadGE32(Address: Cardinal): Cardinal;
 begin
-  Address:=GEAddress(Address);
+  Address := GEAddress(Address);
   if IsDepthMirror(Address) then
   begin
-    if Address and 31>28 then
-      Exit(Cardinal(ReadGE8(Address)) or (Cardinal(ReadGE8(Address+1)) shl 8) or
-        (Cardinal(ReadGE8(Address+2)) shl 16) or (Cardinal(ReadGE8(Address+3)) shl 24));
-    Address:=DepthAddress(Address,Address and $400000<>0);
+    if Address and 31 > 28 then
+      Exit(Cardinal(ReadGE8(Address)) or (Cardinal(ReadGE8(Address + 1)) shl 8) or
+        (Cardinal(ReadGE8(Address + 2)) shl 16) or (Cardinal(ReadGE8(Address + 3)) shl 24));
+    Address := DepthAddress(Address, Address and $400000 <> 0);
   end;
-  Result:=Read32(Address);
+  Result := Read32(Address);
 end;
 
 procedure TPSPMemory.ReadGEInto(Address, Count: Cardinal; var Buffer: TBytes; Offset: Cardinal);
 begin
-  if UInt64(Offset)+Count>UInt64(Length(Buffer)) then
+  if UInt64(Offset) + Count > UInt64(Length(Buffer)) then
     raise EArgumentOutOfRangeException.Create('PSP: GE destination buffer span');
-  while Count<>0 do
+  while Count <> 0 do
   begin
-    var At:=GEAddress(Address);
-    var Run:=Count;
-    if (At and $3FFFFFFF>=PSPVRAMBase) and (At and $3FFFFFFF<PSPVRAMBase+$800000) then
+    var At := GEAddress(Address);
+    var Run := Count;
+    if (At and $3FFFFFFF >= PSPVRAMBase) and (At and $3FFFFFFF < PSPVRAMBase + $800000) then
     begin
       if IsDepthMirror(At) then
       begin
-        if Run>32-(At and 31) then Run:=32-(At and 31);
-        At:=DepthAddress(At,At and $400000<>0);
+        if Run > 32 - (At and 31) then
+          Run := 32 - (At and 31);
+        At := DepthAddress(At, At and $400000 <> 0);
       end
-      else if Run>PSPVRAMSize-(At and $1FFFFF) then Run:=PSPVRAMSize-(At and $1FFFFF);
+      else if Run > PSPVRAMSize - (At and $1FFFFF) then
+        Run := PSPVRAMSize - (At and $1FFFFF);
     end;
-    ReadInto(At,Run,Buffer,Offset);
-    Inc(Address,Run);Inc(Offset,Run);Dec(Count,Run);
+    ReadInto(At, Run, Buffer, Offset);
+    Inc(Address, Run);
+    Inc(Offset, Run);
+    Dec(Count, Run);
   end;
 end;
 
 procedure TPSPMemory.WriteGEFrom(Address, Count: Cardinal; const Buffer: TBytes; Offset: Cardinal);
 begin
-  if UInt64(Offset)+Count>UInt64(Length(Buffer)) then
+  if UInt64(Offset) + Count > UInt64(Length(Buffer)) then
     raise EArgumentOutOfRangeException.Create('PSP: GE source buffer span');
-  while Count<>0 do
+  while Count <> 0 do
   begin
-    var At:=GEAddress(Address);
-    var Run:=Count;
-    if (At and $3FFFFFFF>=PSPVRAMBase) and (At and $3FFFFFFF<PSPVRAMBase+$800000) then
+    var At := GEAddress(Address);
+    var Run := Count;
+    if (At and $3FFFFFFF >= PSPVRAMBase) and (At and $3FFFFFFF < PSPVRAMBase + $800000) then
     begin
       if IsDepthMirror(At) then
       begin
-        if Run>32-(At and 31) then Run:=32-(At and 31);
-        At:=DepthAddress(At,At and $400000<>0);
+        if Run > 32 - (At and 31) then
+          Run := 32 - (At and 31);
+        At := DepthAddress(At, At and $400000 <> 0);
       end
-      else if Run>PSPVRAMSize-(At and $1FFFFF) then Run:=PSPVRAMSize-(At and $1FFFFF);
+      else if Run > PSPVRAMSize - (At and $1FFFFF) then
+        Run := PSPVRAMSize - (At and $1FFFFF);
     end;
-    WriteFrom(At,Run,Buffer,Offset);
-    Inc(Address,Run);Inc(Offset,Run);Dec(Count,Run);
+    WriteFrom(At, Run, Buffer, Offset);
+    Inc(Address, Run);
+    Inc(Offset, Run);
+    Dec(Count, Run);
   end;
 end;
 
 procedure TPSPMemory.ReadDepthInto(Address, Count: Cardinal; Color32: Boolean; var Buffer: TBytes; Offset: Cardinal);
 begin
-  if UInt64(Offset)+Count>UInt64(Length(Buffer)) then
+  if UInt64(Offset) + Count > UInt64(Length(Buffer)) then
     raise EArgumentOutOfRangeException.Create('PSP: depth destination buffer span');
-  while Count<>0 do
+  while Count <> 0 do
   begin
-    var Run:=32-(Address and 31);
-    if Run>Count then Run:=Count;
-    ReadInto(DepthAddress(Address,Color32),Run,Buffer,Offset);
-    Inc(Address,Run);Inc(Offset,Run);Dec(Count,Run);
+    var Run := 32 - (Address and 31);
+    if Run > Count then
+      Run := Count;
+    ReadInto(DepthAddress(Address, Color32), Run, Buffer, Offset);
+    Inc(Address, Run);
+    Inc(Offset, Run);
+    Dec(Count, Run);
   end;
 end;
 
 procedure TPSPMemory.WriteDepthFrom(Address, Count: Cardinal; Color32: Boolean; const Buffer: TBytes; Offset: Cardinal);
 begin
-  if UInt64(Offset)+Count>UInt64(Length(Buffer)) then
+  if UInt64(Offset) + Count > UInt64(Length(Buffer)) then
     raise EArgumentOutOfRangeException.Create('PSP: depth source buffer span');
-  while Count<>0 do
+  while Count <> 0 do
   begin
-    var Run:=32-(Address and 31);
-    if Run>Count then Run:=Count;
-    WriteFrom(DepthAddress(Address,Color32),Run,Buffer,Offset);
-    Inc(Address,Run);Inc(Offset,Run);Dec(Count,Run);
+    var Run := 32 - (Address and 31);
+    if Run > Count then
+      Run := Count;
+    WriteFrom(DepthAddress(Address, Color32), Run, Buffer, Offset);
+    Inc(Address, Run);
+    Inc(Offset, Run);
+    Dec(Count, Run);
   end;
 end;
 
 procedure TPSPMemory.FillDepth16(Address, Count: Cardinal; Value: Word; Color32: Boolean);
 begin
-  if (Address and 1<>0) or (Count>High(Cardinal) div 2) then
+  if (Address and 1 <> 0) or (Count > High(Cardinal) div 2) then
     raise EPSPMemory.Create('PSP: invalid depth fill span');
-  while Count<>0 do
+  while Count <> 0 do
   begin
-    var Run:=(32-(Address and 31)) div 2;
-    if Run>Count then Run:=Count;
-    Fill16(DepthAddress(Address,Color32),Run,Value);
-    Inc(Address,Run*2);Dec(Count,Run);
+    var Run := (32 - (Address and 31)) div 2;
+    if Run > Count then
+      Run := Count;
+    Fill16(DepthAddress(Address, Color32), Run, Value);
+    Inc(Address, Run * 2);
+    Dec(Count, Run);
   end;
 end;
 
@@ -286,7 +319,8 @@ end;
 
 procedure TPSPMemory.Clear;
 begin
-  if FRenderParent <> nil then raise EInvalidOpException.Create('PSP: render view cannot clear shared memory');
+  if FRenderParent <> nil then
+    raise EInvalidOpException.Create('PSP: render view cannot clear shared memory');
   Inc(FWriteGeneration);
   SetDepthTranslation($400);
   FillChar(FRAM[0], Length(FRAM), 0);
@@ -308,7 +342,8 @@ begin
   end
   else if (Physical >= PSPVRAMBase) and (Physical < PSPVRAMBase + $00800000) then
   begin
-    if FRenderParent<>nil then Exit(ResolveRenderVRAM(Address,Count));
+    if FRenderParent <> nil then
+      Exit(ResolveRenderVRAM(Address, Count));
     Offset := (Physical - PSPVRAMBase) and (PSPVRAMSize - 1);
     Size := Length(FVRAM);
     Result := @FVRAM[Offset];
@@ -327,18 +362,21 @@ end;
 
 function TPSPMemory.ResolveRenderVRAM(Address, Count: Cardinal): PByte;
 begin
-  var Offset:=Address and $1FFFFF;
-  if OwnsRenderRange(Address,Count) then Exit(@FVRAM[Offset]);
-  var Finish:=UInt64(Offset)+Count;
-  if ((Offset<FRenderColorEnd) and (Finish>FRenderColorStart)) or
-    ((FRenderDepthEnd<>FRenderDepthStart) and (Offset<FRenderDepthEnd) and (Finish>FRenderDepthStart)) then Exit(nil);
-  Result:=FRenderParent.Resolve(Address,Count);
+  var Offset := Address and $1FFFFF;
+  if OwnsRenderRange(Address, Count) then
+    Exit(@FVRAM[Offset]);
+  var Finish := UInt64(Offset) + Count;
+  if ((Offset < FRenderColorEnd) and (Finish > FRenderColorStart)) or
+    ((FRenderDepthEnd <> FRenderDepthStart) and (Offset < FRenderDepthEnd) and (Finish > FRenderDepthStart)) then
+    Exit(nil);
+  Result := FRenderParent.Resolve(Address, Count);
 end;
 
 function TPSPMemory.OwnsRenderRange(Address, Count: Cardinal): Boolean;
 begin
   var Physical := Address and $3FFFFFFF;
-  if (Physical < PSPVRAMBase) or (Physical >= PSPVRAMBase + $800000) then Exit(False);
+  if (Physical < PSPVRAMBase) or (Physical >= PSPVRAMBase + $800000) then
+    Exit(False);
   var Offset := (Physical - PSPVRAMBase) and (PSPVRAMSize - 1);
   var Finish := UInt64(Offset) + Count;
   Result := ((Offset >= FRenderColorStart) and (Finish <= FRenderColorEnd)) or
@@ -347,14 +385,16 @@ end;
 
 function TPSPMemory.ResolveWrite(Address, Count: Cardinal): PByte;
 begin
-  if FRenderParent<>nil then Exit(ResolveRenderWrite(Address,Count));
+  if FRenderParent <> nil then
+    Exit(ResolveRenderWrite(Address, Count));
   Result := Resolve(Address, Count);
 end;
 
 function TPSPMemory.ResolveRenderWrite(Address, Count: Cardinal): PByte;
 begin
-  if not OwnsRenderRange(Address,Count) then Exit(nil);
-  Result:=@FVRAM[Address and $1FFFFF];
+  if not OwnsRenderRange(Address, Count) then
+    Exit(nil);
+  Result := @FVRAM[Address and $1FFFFF];
 end;
 
 constructor TPSPMemory.CreateRenderView(Parent: TPSPMemory);
@@ -372,7 +412,8 @@ end;
 
 procedure TPSPMemory.PrepareRenderView(ColorAddress, ColorSize, DepthAddress, DepthSize: Cardinal);
 begin
-  if FRenderParent = nil then raise EInvalidOpException.Create('PSP: not a render view');
+  if FRenderParent = nil then
+    raise EInvalidOpException.Create('PSP: not a render view');
   SetDepthTranslation(FRenderParent.DepthTranslation);
   var ColorOffset := (ColorAddress - PSPVRAMBase) and (PSPVRAMSize - 1);
   var DepthOffset := (DepthAddress - PSPVRAMBase) and (PSPVRAMSize - 1);
@@ -391,16 +432,19 @@ begin
   FRenderDepthStart := DepthOffset;
   FRenderDepthEnd := DepthOffset + DepthSize;
   Move(FRenderParent.Resolve(ColorAddress, ColorSize)^, FVRAM[ColorOffset], ColorSize);
-  if DepthSize <> 0 then Move(FRenderParent.Resolve(DepthAddress, DepthSize)^, FVRAM[DepthOffset], DepthSize);
+  if DepthSize <> 0 then
+    Move(FRenderParent.Resolve(DepthAddress, DepthSize)^, FVRAM[DepthOffset], DepthSize);
   FWriteGeneration := 0;
   FInstructionPage := $FFFFFFFF;
 end;
 
 function TPSPMemory.CommitRenderView: Boolean;
 begin
-  if FRenderParent = nil then raise EInvalidOpException.Create('PSP: not a render view');
+  if FRenderParent = nil then
+    raise EInvalidOpException.Create('PSP: not a render view');
   Result := FWriteGeneration <> 0;
-  if not Result then Exit;
+  if not Result then
+    Exit;
   FRenderParent.CopyFrom(PSPVRAMBase + FRenderColorStart, Self, PSPVRAMBase + FRenderColorStart,
     FRenderColorEnd - FRenderColorStart);
   if FRenderDepthEnd <> FRenderDepthStart then
@@ -426,8 +470,9 @@ function TPSPMemory.Read16(Address: Cardinal): Word;
 begin
   if IsDepthMirror(Address) then
   begin
-    if Address and 31=31 then Exit(ReadGE16(Address));
-    Address:=DepthAddress(Address,Address and $400000<>0);
+    if Address and 31 = 31 then
+      Exit(ReadGE16(Address));
+    Address := DepthAddress(Address, Address and $400000 <> 0);
   end;
   var P := Resolve(Address, 2);
   if P = nil then
@@ -459,11 +504,13 @@ begin
   // Storage is fixed for this bus's lifetime; host pointers stay inside the bus.
   var Page := (Address and $3FFFFFFF) and $FFFFF000;
   var Offset := Address and $FFF;
-  if Offset > $FFC then Exit(Read32(Address));
+  if Offset > $FFC then
+    Exit(Read32(Address));
   if Page <> FInstructionPage then
   begin
     var Mapping := Resolve(Page, $1000);
-    if Mapping = nil then Exit(Read32(Address));
+    if Mapping = nil then
+      Exit(Read32(Address));
     FInstructionBytes := Mapping;
     FInstructionPage := Page;
   end;
@@ -489,17 +536,21 @@ procedure TPSPMemory.Write16(Address: Cardinal; Value: Word);
 begin
   if IsDepthMirror(Address) then
   begin
-    if Address and 31=31 then
+    if Address and 31 = 31 then
     begin
-      var Next:=Address+1;
-      if IsDepthMirror(Next) then Next:=DepthAddress(Next,Next and $400000<>0);
-      var FirstByte:=ResolveWrite(DepthAddress(Address,Address and $400000<>0),1);
-      var LastByte:=ResolveWrite(Next,1);
-      if (FirstByte=nil) or (LastByte=nil) then raise EPSPMemory.Create('PSP: invalid mirrored halfword write');
-      FirstByte^:=Byte(Value);LastByte^:=Byte(Value shr 8);Inc(FWriteGeneration);
+      var Next := Address + 1;
+      if IsDepthMirror(Next) then
+        Next := DepthAddress(Next, Next and $400000 <> 0);
+      var FirstByte := ResolveWrite(DepthAddress(Address, Address and $400000 <> 0), 1);
+      var LastByte := ResolveWrite(Next, 1);
+      if (FirstByte = nil) or (LastByte = nil) then
+        raise EPSPMemory.Create('PSP: invalid mirrored halfword write');
+      FirstByte^ := Byte(Value);
+      LastByte^ := Byte(Value shr 8);
+      Inc(FWriteGeneration);
       Exit;
     end;
-    Address:=DepthAddress(Address,Address and $400000<>0);
+    Address := DepthAddress(Address, Address and $400000 <> 0);
   end;
   var P := ResolveWrite(Address, 2);
   if P = nil then
@@ -553,12 +604,14 @@ end;
 
 procedure TPSPMemory.WriteFrom(Address, Count: Cardinal; const Buffer: TBytes; Offset: Cardinal);
 begin
-  if Count=0 then Exit;
-  if UInt64(Offset)+Count>UInt64(Length(Buffer)) then
+  if Count = 0 then
+    Exit;
+  if UInt64(Offset) + Count > UInt64(Length(Buffer)) then
     raise EArgumentOutOfRangeException.Create('PSP: source buffer span');
-  var Destination:=ResolveWrite(Address,Count);
-  if Destination=nil then raise EPSPMemory.CreateFmt('PSP: invalid write range at %.8x (%d bytes)',[Address,Count]);
-  Move(Buffer[Offset],Destination^,Count);
+  var Destination := ResolveWrite(Address, Count);
+  if Destination = nil then
+    raise EPSPMemory.CreateFmt('PSP: invalid write range at %.8x (%d bytes)', [Address, Count]);
+  Move(Buffer[Offset], Destination^, Count);
   Inc(FWriteGeneration);
 end;
 
@@ -647,11 +700,14 @@ end;
 
 procedure TPSPMemory.CopyFrom(Destination: Cardinal; SourceMemory: TPSPMemory; Source, Count: Cardinal);
 begin
-  if Count = 0 then Exit;
+  if Count = 0 then
+    Exit;
   var A := ResolveWrite(Destination, Count);
-  if SourceMemory = nil then raise EArgumentNilException.Create('PSP: source memory');
+  if SourceMemory = nil then
+    raise EArgumentNilException.Create('PSP: source memory');
   var B := SourceMemory.Resolve(Source, Count);
-  if (A = nil) or (B = nil) then raise EPSPMemory.Create('PSP: invalid bus memory copy');
+  if (A = nil) or (B = nil) then
+    raise EPSPMemory.Create('PSP: invalid bus memory copy');
   Move(B^, A^, Count);
   Inc(FWriteGeneration);
 end;

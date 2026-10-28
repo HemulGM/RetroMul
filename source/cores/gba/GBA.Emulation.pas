@@ -3,9 +3,9 @@
 interface
 
 uses
-  Core.InputConfig, Core.Storage, Core.RomFormat, Core.Snapshots,
-  System.SysUtils, System.Classes, System.SyncObjs, Core.Emulation.Types,
-  Core.Emulation.Timing, GBA.Console;
+  Core.InputConfig, Core.Storage, Core.Snapshots, System.SysUtils,
+  System.Classes, System.SyncObjs, Core.Emulation.Types, Core.Emulation.Timing,
+  GBA.Console;
 
 const
   GBA_SAMPLE_RATE = 44100;

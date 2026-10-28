@@ -61,8 +61,7 @@ implementation
 
 uses
   System.Diagnostics, System.Math, Core.SavePaths, Core.PerformanceHints,
-  Core.RomFormat, PCM.Audio, System.UITypes, System.DateUtils, System.IOUtils,
-  MSX.Floppy;
+  PCM.Audio, System.UITypes, System.DateUtils, System.IOUtils, MSX.Floppy;
 
 function TMSXWorker.GetInputPorts: TCoreInputPorts;
 begin

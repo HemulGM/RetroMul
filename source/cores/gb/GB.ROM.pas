@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Classes, System.SysUtils, GB.Cartridge, Core.RomFormat;
+  System.Classes, System.SysUtils, GB.Cartridge, GB.RomFormat;
 
 type
   TCartridgeType = GB.Cartridge.TCartridgeType;
@@ -27,6 +27,9 @@ type
   end;
 
 implementation
+
+uses
+  Core.Storage;
 
 function SizeDescription(Bytes: Integer): string;
 begin

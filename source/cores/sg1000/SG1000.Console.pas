@@ -780,7 +780,7 @@ begin
         FSound.SampleStereo(FSamples[FSampleCount * 2], FSamples[FSampleCount * 2 + 1]);
         for var Channel := 0 to 1 do
           FSamples[FSampleCount * 2 + Channel] := EnsureRange(
-            Round(FPSGDC[Channel].Process(FSamples[FSampleCount * 2 + Channel])), -32768, 32767);
+              Round(FPSGDC[Channel].Process(FSamples[FSampleCount * 2 + Channel])), -32768, 32767);
       end;
       Inc(FSampleCount);
     end;

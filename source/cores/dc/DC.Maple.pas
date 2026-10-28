@@ -11,7 +11,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, Core.Snapshots, DC.Types, DC.Memory;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots, DC.Types,
+  DC.Memory;
 
 const
   MapleFuncController = $01000000;
@@ -52,16 +53,14 @@ type
   TDCMapleDevice = class
   public
     // Handles one frame: the response code and its length in words.
-    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal;
-      out Response: Byte): Integer; virtual; abstract;
+    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer; virtual; abstract;
     procedure SerializeState(Archive: TStateArchive); virtual;
   end;
 
   TDCController = class(TDCMapleDevice)
   public
     Pad: TDCPad;
-    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal;
-      out Response: Byte): Integer; override;
+    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer; override;
   end;
 
   // Light gun: a controller (trigger on A, B, Start, D-pad) whose position
@@ -72,8 +71,7 @@ type
     // Aim in frame pixels; OnScreen False when pointing off the picture.
     X, Y: Integer;
     OnScreen: Boolean;
-    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal;
-      out Response: Byte): Integer; override;
+    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer; override;
   end;
 
   // Keyboard: up to six keys (USB HID usage codes) and the modifier bits.
@@ -83,8 +81,7 @@ type
     Region: Byte;
     Modifiers, LEDs: Byte;
     Keys: array[0..5] of Byte;
-    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal;
-      out Response: Byte): Integer; override;
+    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer; override;
   end;
 
   // Mouse: buttons (MapleMouse* bits while pressed) and the movement since
@@ -93,8 +90,7 @@ type
   public
     Buttons: Word;
     DX, DY, DZ: Integer;
-    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal;
-      out Response: Byte): Integer; override;
+    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer; override;
   end;
 
   // Visual Memory: 128 KiB flash (256 blocks of 512 bytes), the 48x32
@@ -106,8 +102,7 @@ type
     Dirty, LCDChanged: Boolean;
     constructor Create;
     procedure Format;
-    function Handle(Command, Address: Byte; Data_: PCardinal; Words: Integer; Reply: PCardinal;
-      out Response: Byte): Integer; override;
+    function Handle(Command, Address: Byte; Data_: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer; override;
     procedure SerializeState(Archive: TStateArchive); override;
   end;
 
@@ -116,8 +111,7 @@ type
   public
     Setting: Cardinal;
     function Level: Byte;
-    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal;
-      out Response: Byte): Integer; override;
+    function Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer; override;
     procedure SerializeState(Archive: TStateArchive); override;
   end;
 
@@ -162,8 +156,7 @@ end;
 
 { TDCController }
 
-function TDCController.Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal;
-  out Response: Byte): Integer;
+function TDCController.Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer;
 begin
   Response := $FD;
   Result := 0;
@@ -210,8 +203,7 @@ end;
 
 // Device info: functions, three function data words, area, direction, product
 // name, license, standby and maximum power (0.1 mA).
-function DeviceInfo(Reply: PCardinal; Functions, Data0, Data1: Cardinal; const Name: AnsiString;
-  Standby, MaxPower: Word): Integer;
+function DeviceInfo(Reply: PCardinal; Functions, Data0, Data1: Cardinal; const Name: AnsiString; Standby, MaxPower: Word): Integer;
 begin
   FillChar(Reply^, 28 * 4, 0);
   Reply[0] := Functions;
@@ -229,23 +221,21 @@ end;
 
 { TDCLightGun }
 
-function TDCLightGun.Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal;
-  out Response: Byte): Integer;
+function TDCLightGun.Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer;
 begin
   if Command in [1, 2] then
   begin
     // Function data in descending function order: light gun, controller.
     Response := 5;
     Exit(DeviceInfo(Reply, MapleFuncLightGun or MapleFuncController, 0, $FE060F00, 'Dreamcast Gun',
-      $0069, $0120));
+        $0069, $0120));
   end;
   Result := inherited Handle(Command, Address, Data, Words, Reply, Response);
 end;
 
 { TDCKeyboard }
 
-function TDCKeyboard.Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal;
-  out Response: Byte): Integer;
+function TDCKeyboard.Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer;
 begin
   Response := $FD;
   Result := 0;
@@ -285,8 +275,7 @@ end;
 
 { TDCMouse }
 
-function TDCMouse.Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal;
-  out Response: Byte): Integer;
+function TDCMouse.Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer;
 
   // Ten-bit axis centred on 200h; what does not fit stays for the next read.
   function Take(var Delta: Integer): Cardinal;
@@ -360,8 +349,7 @@ begin
   Dirty := True;
 end;
 
-function TDCVMU.Handle(Command, Address: Byte; Data_: PCardinal; Words: Integer; Reply: PCardinal;
-  out Response: Byte): Integer;
+function TDCVMU.Handle(Command, Address: Byte; Data_: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer;
 begin
   Response := $FD;
   Result := 0;
@@ -494,8 +482,7 @@ begin
   Result := Byte(Power * 36);
 end;
 
-function TDCPuruPuru.Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal;
-  out Response: Byte): Integer;
+function TDCPuruPuru.Handle(Command, Address: Byte; Data: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer;
 begin
   Response := $FD;
   Result := 0;
@@ -582,7 +569,7 @@ begin
   if Trace <> nil then
   begin
     var Line := Format('maple port %d unit %d cmd %d words %d data0 %.8x', [Port, AUnit, Command, Words,
-      Frame[Min(1, Words - 1)]]);
+        Frame[Min(1, Words - 1)]]);
     if (Device = nil) or (Devices[Port, 0] = nil) then
       Line := Line + ' (none)';
     Trace.Add(Line);
@@ -675,3 +662,4 @@ begin
 end;
 
 end.
+

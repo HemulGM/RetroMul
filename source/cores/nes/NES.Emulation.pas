@@ -3,10 +3,10 @@
 interface
 
 uses
-  Core.Storage, Core.RomFormat, System.Classes, System.SysUtils, System.SyncObjs,
-  NES.Types, NES.Console, NES.Input, PCM.Audio, NES.AudioDiagnostics,
-  NES.Controller, Core.InputConfig, NES.FamicomKeyboardDevice,
-  NES.FamicomDataRecorder, NES.MiraclePianoDevice;
+  Core.Storage, System.Classes, System.SysUtils, System.SyncObjs, NES.Types,
+  NES.Console, NES.Input, PCM.Audio, NES.AudioDiagnostics, NES.Controller,
+  Core.InputConfig, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder,
+  NES.MiraclePianoDevice;
 
 const
   NES_SAMPLE_RATE = 44100;
@@ -868,7 +868,9 @@ begin
               FUsesDataRecorder := FConsole.DataRecorder.Connected;
               FStatus.TapeState := FConsole.DataRecorder.TransportState;
               FStatus.TapeProgress := FConsole.DataRecorder.GetProgress;
-            finally FLock.Leave; end;
+            finally
+              FLock.Leave;
+            end;
           end);
         if ProcessSnapshot then
         begin

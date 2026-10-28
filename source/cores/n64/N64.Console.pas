@@ -3335,7 +3335,8 @@ end;
 
 procedure TN64Console.SetBilinearFiltering(Value: Boolean);
 begin
-  if FRDP.BilinearFiltering = Value then Exit;
+  if FRDP.BilinearFiltering = Value then
+    Exit;
   // Finish old work before changing the host preference. Fresh bands copy
   // the preference from FRDP; no worker can observe a partially changed list.
   DrainRDP;
@@ -3344,7 +3345,9 @@ begin
   FRDPTiming.OnDataOut := nil;
   FRDP.BilinearFiltering := Value;
   FRDPTimingStale := True;
-  FRDPTuneWait := 0; FRDPBusyFields := 0; FRDPQuietFields := 0;
+  FRDPTuneWait := 0;
+  FRDPBusyFields := 0;
+  FRDPQuietFields := 0;
 end;
 
 procedure TN64Console.SetRDPMode(Value: TN64RDPMode);
@@ -3366,23 +3369,36 @@ end;
 procedure TN64Console.AdaptRDPThreads;
 begin
   if not FAdaptiveRDP or (FRDPWorker = nil) or not FRDPDrawing or
-    (FRDPMode <> TN64RDPMode.Threaded) or FRDP.Traced then Exit;
+    (FRDPMode <> TN64RDPMode.Threaded) or FRDP.Traced then
+    Exit;
   var Waited := FRDPWorker.WaitTime;
   var Delta := Waited - FRDPTuneWait;
   FRDPTuneWait := Waited;
   // A restarted worker has a fresh counter. Ignore the old sample window.
-  if Delta < 0 then begin FRDPBusyFields := 0; FRDPQuietFields := 0; Exit end;
+  if Delta < 0 then
+  begin
+    FRDPBusyFields := 0;
+    FRDPQuietFields := 0;
+    Exit
+  end;
   var FieldBudget := TStopwatch.Frequency / FramesPerSecond;
-  if Delta > FieldBudget * 0.20 then FRDPBusyFields := 1
-  else FRDPBusyFields := 0;
-  if Delta < FieldBudget * 0.02 then FRDPQuietFields := Min(120, FRDPQuietFields + 1)
-  else FRDPQuietFields := 0;
+  if Delta > FieldBudget * 0.20 then
+    FRDPBusyFields := 1
+  else
+    FRDPBusyFields := 0;
+  if Delta < FieldBudget * 0.02 then
+    FRDPQuietFields := Min(120, FRDPQuietFields + 1)
+  else
+    FRDPQuietFields := 0;
   // Grow quickly enough for the audio reserve to cover the transition.
   // Shrink only after two seconds of quiet fields, avoiding oscillation.
   var Desired := FRDPBands;
-  if FRDPBusyFields >= 1 then Desired := FMaxRDPBands
-  else if FRDPQuietFields >= 120 then Desired := Max(Min(2, FMaxRDPBands), FRDPBands div 2);
-  if Desired = FRDPBands then Exit;
+  if FRDPBusyFields >= 1 then
+    Desired := FMaxRDPBands
+  else if FRDPQuietFields >= 120 then
+    Desired := Max(Min(2, FMaxRDPBands), FRDPBands div 2);
+  if Desired = FRDPBands then
+    Exit;
   ResizeRDPThreads(Desired);
   Inc(FRDPThreadChanges);
 end;
@@ -3398,7 +3414,9 @@ begin
   FRDPTiming.OnWords := nil;
   FRDPTiming.OnDataOut := nil;
   FRDPBands := Value;
-  FRDPTuneWait := 0; FRDPBusyFields := 0; FRDPQuietFields := 0;
+  FRDPTuneWait := 0;
+  FRDPBusyFields := 0;
+  FRDPQuietFields := 0;
   FRDPTimingStale := True;
 end;
 
@@ -3447,7 +3465,8 @@ begin
       if Length(Available) > 0 then
       begin
         var Preferred := 0;
-        while not Available[0].CPUs.Contains(Preferred) do Inc(Preferred);
+        while not Available[0].CPUs.Contains(Preferred) do
+          Inc(Preferred);
         FPreviousIdeal := SuggestProcessor(Preferred);
         FHinted := FPreviousIdeal >= 0;
         FHintedThread := TThread.CurrentThread.ThreadID;

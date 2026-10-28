@@ -10,6 +10,7 @@ interface
 
 // Writes the narrow glyphs (12x24, 36 bytes each, ASCII 20h..7Fh, then
 // A0h..FFh; space and DEL blank) to Dest, the font area of the boot ROM.
+
 procedure DCWriteFont(Dest: PByte);
 
 implementation
@@ -122,7 +123,6 @@ const
     'DNOOOOOxOUUUUY  aaaaaa ceeeeiiiionooooo ouuuuypy';
   LatinMarks = '-!v-----:-------o---/--.,------!`/^~:o-,`/^:`/^:' +
     '-~`/^~:-|`/^:/--`/^~:o-,`/^:`/^:-~`/^~:-|`/^:/-:';
-
   CellWidth = 12;
   CellHeight = 24;
   // Hershey y runs from -7 (descender) to 25 (top); rows from the top.
@@ -183,21 +183,30 @@ function MarkStrokes(Mark: Char; CX, Top: Single): TArray<TSegment>;
 begin
   Result := nil;
   case Mark of
-    '`': AddStrokes(Result, [CX - 2, Top + 4, CX + 1, Top + 1]);
-    '/': AddStrokes(Result, [CX + 2, Top + 4, CX - 1, Top + 1]);
-    '^': AddStrokes(Result, [CX - 3, Top + 1, CX, Top + 4, CX + 3, Top + 1]);
-    '~': AddStrokes(Result, [CX - 4, Top + 2, CX - 2, Top + 4, CX + 2, Top + 2, CX + 4, Top + 4]);
+    '`':
+      AddStrokes(Result, [CX - 2, Top + 4, CX + 1, Top + 1]);
+    '/':
+      AddStrokes(Result, [CX + 2, Top + 4, CX - 1, Top + 1]);
+    '^':
+      AddStrokes(Result, [CX - 3, Top + 1, CX, Top + 4, CX + 3, Top + 1]);
+    '~':
+      AddStrokes(Result, [CX - 4, Top + 2, CX - 2, Top + 4, CX + 2, Top + 2, CX + 4, Top + 4]);
     ':':
       begin
         AddStrokes(Result, [CX - 3, Top + 2, CX - 3, Top + 3]);
         AddStrokes(Result, [CX + 3, Top + 2, CX + 3, Top + 3]);
       end;
-    'o': AddStrokes(Result, [CX, Top + 1.5, CX + 1.5, Top + 2.5, CX + 1.5, Top + 3.5, CX, Top + 4.5,
-      CX - 1.5, Top + 3.5, CX - 1.5, Top + 2.5, CX, Top + 1.5]);
-    ',': AddStrokes(Result, [CX, 0, CX, -2, CX + 2, -3, CX - 1, -5]);
-    '|': AddStrokes(Result, [CX - 6, -1, CX + 6, Top + 1]);
-    'v': AddStrokes(Result, [CX, Top + 3, CX, -3]);
-    '.': AddStrokes(Result, [CX, 9, CX, 10]);
+    'o':
+      AddStrokes(Result, [CX, Top + 1.5, CX + 1.5, Top + 2.5, CX + 1.5, Top + 3.5, CX, Top + 4.5,
+          CX - 1.5, Top + 3.5, CX - 1.5, Top + 2.5, CX, Top + 1.5]);
+    ',':
+      AddStrokes(Result, [CX, 0, CX, -2, CX + 2, -3, CX - 1, -5]);
+    '|':
+      AddStrokes(Result, [CX - 6, -1, CX + 6, Top + 1]);
+    'v':
+      AddStrokes(Result, [CX, Top + 3, CX, -3]);
+    '.':
+      AddStrokes(Result, [CX, 9, CX, 10]);
   end;
 end;
 
@@ -222,7 +231,7 @@ begin
     begin
       var PX := Col + 0.5;
       var PY := Row + 0.5;
-      var On := False;
+      var &On := False;
       for var S in Segments do
       begin
         var AX := (S.X0 - Center) * XScale + CellWidth / 2;
@@ -239,11 +248,11 @@ begin
         var QY := AY + T * DY - PY;
         if QX * QX + QY * QY <= PenRadius * PenRadius then
         begin
-          On := True;
+          &On := True;
           Break;
         end;
       end;
-      if On then
+      if &On then
       begin
         var Bit := Row * CellWidth + Col;
         (Dest + Bit div 8)^ := (Dest + Bit div 8)^ or ($80 shr (Bit mod 8));
@@ -308,3 +317,4 @@ begin
 end;
 
 end.
+

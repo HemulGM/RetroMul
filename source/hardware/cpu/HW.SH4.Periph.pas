@@ -18,8 +18,8 @@ const
 type
   // Memory-to-memory DMA on physical addresses; Step is the signed byte
   // increment per unit for each side.
-  TSH4DMACopy = procedure(User: Pointer; Source, Dest: Cardinal; UnitSize: Integer; Count: Cardinal;
-    SourceStep, DestStep: Integer);
+  TSH4DMACopy = procedure(User: Pointer; Source, Dest: Cardinal; UnitSize: Integer; Count: Cardinal; SourceStep, DestStep: Integer);
+
   TSH4ScheduleChanged = procedure(User: Pointer; At: Int64);
 
   TSH4DMAChannel = record
@@ -99,6 +99,7 @@ type
 
 // The on-chip read/write callbacks for TSH4Bus (User is a TSH4Periph).
 function SH4PeriphRead(User: Pointer; Address: Cardinal; Size: Integer): Cardinal;
+
 procedure SH4PeriphWrite(User: Pointer; Address, Value: Cardinal; Size: Integer);
 
 implementation
@@ -299,10 +300,14 @@ begin
     Exit;
   var UnitSize: Integer;
   case (C.CHCR shr 4) and 7 of
-    0: UnitSize := 8;
-    1: UnitSize := 1;
-    2: UnitSize := 2;
-    3: UnitSize := 4;
+    0:
+      UnitSize := 8;
+    1:
+      UnitSize := 1;
+    2:
+      UnitSize := 2;
+    3:
+      UnitSize := 4;
   else
     UnitSize := 32;
   end;
@@ -311,13 +316,17 @@ begin
     Count := $1000000;
   var SourceStep := 0;
   case (C.CHCR shr 12) and 3 of
-    1: SourceStep := UnitSize;
-    2: SourceStep := -UnitSize;
+    1:
+      SourceStep := UnitSize;
+    2:
+      SourceStep := -UnitSize;
   end;
   var DestStep := 0;
   case (C.CHCR shr 14) and 3 of
-    1: DestStep := UnitSize;
-    2: DestStep := -UnitSize;
+    1:
+      DestStep := UnitSize;
+    2:
+      DestStep := -UnitSize;
   end;
   FCopy(FUser, C.SAR and $1FFFFFFF, C.DAR and $1FFFFFFF, UnitSize, Count, SourceStep, DestStep);
   S.DMA[Channel].SAR := C.SAR + Cardinal(Int64(SourceStep) * Count);
@@ -369,120 +378,196 @@ begin
   Result := 0;
   case Address of
     // BSC
-    $FF800000: Result := S.BCR1;
-    $FF800004: Result := S.BCR2;
-    $FF800008: Result := S.WCR1;
-    $FF80000C: Result := S.WCR2;
-    $FF800010: Result := S.WCR3;
-    $FF800014: Result := S.MCR;
-    $FF800018: Result := S.PCR;
-    $FF80001C: Result := S.RTCSR;
-    $FF800020: Result := S.RTCNT;
-    $FF800024: Result := S.RTCOR;
+    $FF800000:
+      Result := S.BCR1;
+    $FF800004:
+      Result := S.BCR2;
+    $FF800008:
+      Result := S.WCR1;
+    $FF80000C:
+      Result := S.WCR2;
+    $FF800010:
+      Result := S.WCR3;
+    $FF800014:
+      Result := S.MCR;
+    $FF800018:
+      Result := S.PCR;
+    $FF80001C:
+      Result := S.RTCSR;
+    $FF800020:
+      Result := S.RTCNT;
+    $FF800024:
+      Result := S.RTCOR;
     $FF800028:
       // Refresh counter: advances with the refresh timer (about every 16 us).
       Result := Cardinal((FNow^ div 3200) and $3FF);
-    $FF80002C: Result := S.PCTRA;
-    $FF800030: Result := ReadPortA;
-    $FF800040: Result := S.PCTRB;
-    $FF800044: Result := S.PDTRB;
-    $FF800048: Result := S.GPIOIC;
+    $FF80002C:
+      Result := S.PCTRA;
+    $FF800030:
+      Result := ReadPortA;
+    $FF800040:
+      Result := S.PCTRB;
+    $FF800044:
+      Result := S.PDTRB;
+    $FF800048:
+      Result := S.GPIOIC;
     // DMAC
-    $FFA00000..$FFA0003F:
+      $FFA00000..$FFA0003F:
       begin
         var C := (Address shr 4) and 3;
         case Address and $C of
-          0: Result := S.DMA[C].SAR;
-          4: Result := S.DMA[C].DAR;
-          8: Result := S.DMA[C].DMATCR;
+          0:
+            Result := S.DMA[C].SAR;
+          4:
+            Result := S.DMA[C].DAR;
+          8:
+            Result := S.DMA[C].DMATCR;
         else
           Result := S.DMA[C].CHCR;
         end;
       end;
-    $FFA00040: Result := S.DMAOR;
+    $FFA00040:
+      Result := S.DMAOR;
     // CPG / WDT
-    $FFC00000: Result := S.FRQCR;
-    $FFC00004: Result := S.STBCR;
-    $FFC00008: Result := S.WTCNT;
-    $FFC0000C: Result := S.WTCSR;
-    $FFC00010: Result := S.STBCR2;
+      $FFC00000:
+      Result := S.FRQCR;
+    $FFC00004:
+      Result := S.STBCR;
+    $FFC00008:
+      Result := S.WTCNT;
+    $FFC0000C:
+      Result := S.WTCSR;
+    $FFC00010:
+      Result := S.STBCR2;
     // RTC
-    $FFC80000..$FFC8003C:
+      $FFC80000..$FFC8003C:
       if Address = $FFC80000 then
         Result := Cardinal((FNow^ div (200000000 div 128)) and $7F) // R64CNT
       else
         Result := S.RTCRegs[(Address shr 2) and 15];
     // INTC
-    $FFD00000: Result := S.ICR;
-    $FFD00004: Result := S.IPRA;
-    $FFD00008: Result := S.IPRB;
-    $FFD0000C: Result := S.IPRC;
+        $FFD00000:
+      Result := S.ICR;
+    $FFD00004:
+      Result := S.IPRA;
+    $FFD00008:
+      Result := S.IPRB;
+    $FFD0000C:
+      Result := S.IPRC;
     // TMU
-    $FFD80000: Result := S.TOCR;
-    $FFD80004: Result := S.TSTR;
-    $FFD80008: Result := S.Timers[0].TCOR;
-    $FFD8000C: Result := TimerCount(0, FNow^);
-    $FFD80010: Result := S.Timers[0].TCR;
-    $FFD80014: Result := S.Timers[1].TCOR;
-    $FFD80018: Result := TimerCount(1, FNow^);
-    $FFD8001C: Result := S.Timers[1].TCR;
-    $FFD80020: Result := S.Timers[2].TCOR;
-    $FFD80024: Result := TimerCount(2, FNow^);
-    $FFD80028: Result := S.Timers[2].TCR;
-    $FFD8002C: Result := S.TCPR2;
+      $FFD80000:
+      Result := S.TOCR;
+    $FFD80004:
+      Result := S.TSTR;
+    $FFD80008:
+      Result := S.Timers[0].TCOR;
+    $FFD8000C:
+      Result := TimerCount(0, FNow^);
+    $FFD80010:
+      Result := S.Timers[0].TCR;
+    $FFD80014:
+      Result := S.Timers[1].TCOR;
+    $FFD80018:
+      Result := TimerCount(1, FNow^);
+    $FFD8001C:
+      Result := S.Timers[1].TCR;
+    $FFD80020:
+      Result := S.Timers[2].TCOR;
+    $FFD80024:
+      Result := TimerCount(2, FNow^);
+    $FFD80028:
+      Result := S.Timers[2].TCR;
+    $FFD8002C:
+      Result := S.TCPR2;
     // SCI
-    $FFE00000: Result := S.SCSMR1;
-    $FFE00004: Result := S.SCBRR1;
-    $FFE00008: Result := S.SCSCR1;
-    $FFE0000C: Result := S.SCTDR1;
-    $FFE00010: Result := S.SCSSR1 or $84;
-    $FFE0001C: Result := S.SCSPTR1;
+      $FFE00000:
+      Result := S.SCSMR1;
+    $FFE00004:
+      Result := S.SCBRR1;
+    $FFE00008:
+      Result := S.SCSCR1;
+    $FFE0000C:
+      Result := S.SCTDR1;
+    $FFE00010:
+      Result := S.SCSSR1 or $84;
+    $FFE0001C:
+      Result := S.SCSPTR1;
     // SCIF: the transmitter is always empty, nothing is received.
-    $FFE80000: Result := S.SCSMR2;
-    $FFE80004: Result := S.SCBRR2;
-    $FFE80008: Result := S.SCSCR2;
-    $FFE80010: Result := S.SCFSR2 or $60;
-    $FFE80014: Result := 0;
-    $FFE80018: Result := S.SCFCR2;
-    $FFE8001C: Result := 0;
-    $FFE80020: Result := S.SCSPTR2;
-    $FFE80024: Result := S.SCLSR2;
+      $FFE80000:
+      Result := S.SCSMR2;
+    $FFE80004:
+      Result := S.SCBRR2;
+    $FFE80008:
+      Result := S.SCSCR2;
+    $FFE80010:
+      Result := S.SCFSR2 or $60;
+    $FFE80014:
+      Result := 0;
+    $FFE80018:
+      Result := S.SCFCR2;
+    $FFE8001C:
+      Result := 0;
+    $FFE80020:
+      Result := S.SCSPTR2;
+    $FFE80024:
+      Result := S.SCLSR2;
     // UBC
-    $FF200000..$FF20003F:
+      $FF200000..$FF20003F:
       Result := S.UBCRegs[(Address shr 2) and 15];
   end;
   case Size of
-    1: Result := Result and $FF;
-    2: Result := Result and $FFFF;
+    1:
+      Result := Result and $FF;
+    2:
+      Result := Result and $FFFF;
   end;
 end;
 
 procedure TSH4Periph.Write(Address, Value: Cardinal; Size: Integer);
 begin
   case Address of
-    $FF800000: S.BCR1 := Value;
-    $FF800004: S.BCR2 := Value and $FFFF;
-    $FF800008: S.WCR1 := Value;
-    $FF80000C: S.WCR2 := Value;
-    $FF800010: S.WCR3 := Value;
-    $FF800014: S.MCR := Value;
-    $FF800018: S.PCR := Value and $FFFF;
-    $FF80001C: S.RTCSR := Value and $FF;
-    $FF800020: S.RTCNT := Value and $FF;
-    $FF800024: S.RTCOR := Value and $FF;
-    $FF800028: S.RFCR := Value and $3FF;
-    $FF80002C: S.PCTRA := Value;
-    $FF800030: S.PDTRA := Value and $FFFF;
-    $FF800040: S.PCTRB := Value;
-    $FF800044: S.PDTRB := Value and $FFFF;
-    $FF800048: S.GPIOIC := Value and $FFFF;
+    $FF800000:
+      S.BCR1 := Value;
+    $FF800004:
+      S.BCR2 := Value and $FFFF;
+    $FF800008:
+      S.WCR1 := Value;
+    $FF80000C:
+      S.WCR2 := Value;
+    $FF800010:
+      S.WCR3 := Value;
+    $FF800014:
+      S.MCR := Value;
+    $FF800018:
+      S.PCR := Value and $FFFF;
+    $FF80001C:
+      S.RTCSR := Value and $FF;
+    $FF800020:
+      S.RTCNT := Value and $FF;
+    $FF800024:
+      S.RTCOR := Value and $FF;
+    $FF800028:
+      S.RFCR := Value and $3FF;
+    $FF80002C:
+      S.PCTRA := Value;
+    $FF800030:
+      S.PDTRA := Value and $FFFF;
+    $FF800040:
+      S.PCTRB := Value;
+    $FF800044:
+      S.PDTRB := Value and $FFFF;
+    $FF800048:
+      S.GPIOIC := Value and $FFFF;
     $FFA00000..$FFA0003F:
       begin
         var C := (Address shr 4) and 3;
         case Address and $C of
-          0: S.DMA[C].SAR := Value;
-          4: S.DMA[C].DAR := Value;
-          8: S.DMA[C].DMATCR := Value and $FFFFFF;
+          0:
+            S.DMA[C].SAR := Value;
+          4:
+            S.DMA[C].DAR := Value;
+          8:
+            S.DMA[C].DMATCR := Value and $FFFFFF;
         else
           begin
             // TE clears only by writing 0 after reading 1.
@@ -500,18 +585,22 @@ begin
         for var C := 0 to 3 do
           StartDMA(C);
       end;
-    $FFC00000: S.FRQCR := Value and $FFFF;
-    $FFC00004: S.STBCR := Value and $FF;
+    $FFC00000:
+      S.FRQCR := Value and $FFFF;
+    $FFC00004:
+      S.STBCR := Value and $FF;
     $FFC00008:
       if (Value shr 8) = $5A then
         S.WTCNT := Value and $FF;
     $FFC0000C:
       if (Value shr 8) = $A5 then
         S.WTCSR := Value and $FF;
-    $FFC00010: S.STBCR2 := Value and $FF;
+    $FFC00010:
+      S.STBCR2 := Value and $FF;
     $FFC80000..$FFC8003C:
       S.RTCRegs[(Address shr 2) and 15] := Value;
-    $FFD00000: S.ICR := Value and $FFFF;
+    $FFD00000:
+      S.ICR := Value and $FFFF;
     $FFD00004:
       begin
         S.IPRA := Value and $FFFF;
@@ -527,7 +616,8 @@ begin
         S.IPRC := Value and $FFFF;
         UpdateInterrupts;
       end;
-    $FFD80000: S.TOCR := Value and 1;
+    $FFD80000:
+      S.TOCR := Value and 1;
     $FFD80004:
       begin
         for var I := 0 to 2 do
@@ -563,16 +653,26 @@ begin
         UpdateInterrupts;
         Reschedule;
       end;
-    $FFD8002C: S.TCPR2 := Value;
-    $FFE00000: S.SCSMR1 := Value and $FF;
-    $FFE00004: S.SCBRR1 := Value and $FF;
-    $FFE00008: S.SCSCR1 := Value and $FF;
-    $FFE0000C: S.SCTDR1 := Value and $FF;
-    $FFE00010: S.SCSSR1 := S.SCSSR1 and Value and $F8;
-    $FFE0001C: S.SCSPTR1 := Value and $FF;
-    $FFE80000: S.SCSMR2 := Value and $FFFF;
-    $FFE80004: S.SCBRR2 := Value and $FF;
-    $FFE80008: S.SCSCR2 := Value and $FFFF;
+    $FFD8002C:
+      S.TCPR2 := Value;
+    $FFE00000:
+      S.SCSMR1 := Value and $FF;
+    $FFE00004:
+      S.SCBRR1 := Value and $FF;
+    $FFE00008:
+      S.SCSCR1 := Value and $FF;
+    $FFE0000C:
+      S.SCTDR1 := Value and $FF;
+    $FFE00010:
+      S.SCSSR1 := S.SCSSR1 and Value and $F8;
+    $FFE0001C:
+      S.SCSPTR1 := Value and $FF;
+    $FFE80000:
+      S.SCSMR2 := Value and $FFFF;
+    $FFE80004:
+      S.SCBRR2 := Value and $FF;
+    $FFE80008:
+      S.SCSCR2 := Value and $FFFF;
     $FFE8000C:
       begin
         if FSerialCount >= Length(FSerial) then
@@ -580,10 +680,14 @@ begin
         FSerial[FSerialCount] := Byte(Value);
         Inc(FSerialCount);
       end;
-    $FFE80010: S.SCFSR2 := S.SCFSR2 and Value;
-    $FFE80018: S.SCFCR2 := Value and $FFFF;
-    $FFE80020: S.SCSPTR2 := Value and $FFFF;
-    $FFE80024: S.SCLSR2 := S.SCLSR2 and Value and 1;
+    $FFE80010:
+      S.SCFSR2 := S.SCFSR2 and Value;
+    $FFE80018:
+      S.SCFCR2 := Value and $FFFF;
+    $FFE80020:
+      S.SCSPTR2 := Value and $FFFF;
+    $FFE80024:
+      S.SCLSR2 := S.SCLSR2 and Value and 1;
     $FF200000..$FF20003F:
       S.UBCRegs[(Address shr 2) and 15] := Value;
   end;
@@ -607,3 +711,4 @@ begin
 end;
 
 end.
+

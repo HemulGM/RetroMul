@@ -5,16 +5,21 @@
 interface
 
 uses
-  System.Classes, System.UITypes, Core.Emulation, NES.DataRecorder,
-  NES.FamicomDataRecorder, RM.Controllers.Base
+  System.Classes, System.UITypes, Core.Emulation, RM.Controllers.Base,
+  RM.Input.Runtime
   {$IF not Defined(LINUX)}
     , System.Sensors
   {$ENDIF};
 
 type
   TInputController = class(TMainController)
+  private
+    function RuntimeContext: TInputRuntimeContext;
+    procedure PeripheralChanged(Sender: TObject);
   public
     procedure InitializePeripherals;
+    procedure FinalizePeripherals;
+    procedure InitializeHostInput;
     procedure PollRumble;
     procedure SyncMotionSensor;
     procedure PollMotionSensor;
@@ -31,18 +36,9 @@ type
     function CombinedGamepadInput: TEmulatorInput;
     procedure UpdatePeripheralInput;
     procedure UpdatePeripheralFeedback;
-    procedure MiraclePianoChanged(Sender: TObject);
-    procedure FamicomKeyboardChanged(Sender: TObject);
-    procedure SuborKeyboardChanged(Sender: TObject);
-    procedure SGKeyboardChanged(Sender: TObject);
-    procedure SuborKeyboardPower(Sender: TObject);
-    procedure PowerPadChanged(Sender: TObject);
     procedure ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
     procedure ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
-    procedure TapeAction(Sender: TObject; Action: TTapeAction; const FileName: string);
     procedure SelectTapeFile(const FileName: string);
-    procedure ChooseTapeFile(Sender: TObject);
-    procedure SaveTapeAs(Sender: TObject);
   end;
 
 implementation
@@ -50,14 +46,8 @@ implementation
 uses
   System.SysUtils, System.Types, System.IOUtils, System.Math, FMX.Types,
   FMX.Forms, FMX.Objects, FMX.Dialogs, FMX.Platform, FMX.Edit, FMX.OpenDialog,
-  FMXInput, RM.Input, RM.Rumble, Core.Adapter.NES, Core.Adapter.N64, N64.Console,
-  Core.Adapter.PS1, PS1.SIO, Core.Adapter.PS2, Core.InputConfig, Core.RomFormat,
-  Core.Adapter.SG1000, SG1000.Keyboard, NES.Controller, RM.Gamepad,
-  NES.SuborKeyboard, NES.FamicomKeyboard, NES.MiraclePiano, NES.PowerPad,
-  RM.Dialogs, RM.Styles, Core.Adapter.DC
-  {$IFDEF MSWINDOWS}
-    , Winapi.Windows
-  {$ENDIF}
+  FMXInput, RM.Input, RM.Rumble, Core.InputConfig, RM.Gamepad, RM.Dialogs,
+  RM.Styles
   {$IF not Defined(LINUX)}
     , System.Sensors.Components
   {$ENDIF}
@@ -128,27 +118,11 @@ begin
   end;
 end;
 
-function TryGetImagePixel(const Image: TImage; const X, Y: Single; out PixelX, PixelY: Integer): Boolean;
+function TInputController.RuntimeContext: TInputRuntimeContext;
 begin
-  Result := False;
-  PixelX := -1;
-  PixelY := -1;
-
-  if (Image.Width <= 0) or (Image.Height <= 0) or (Image.Bitmap.Width <= 0) or (Image.Bitmap.Height <= 0) then
-    Exit;
-
-  var Scale := Min(Image.Width / Image.Bitmap.Width, Image.Height / Image.Bitmap.Height);
-  var DrawWidth := Image.Bitmap.Width * Scale;
-  var DrawHeight := Image.Bitmap.Height * Scale;
-  var Left := (Image.Width - DrawWidth) / 2;
-  var Top := (Image.Height - DrawHeight) / 2;
-
-  if (X < Left) or (Y < Top) or (X >= Left + DrawWidth) or (Y >= Top + DrawHeight) then
-    Exit;
-
-  PixelX := Min(Image.Bitmap.Width - 1, Floor((X - Left) / Scale));
-  PixelY := Min(Image.Bitmap.Height - 1, Floor((Y - Top) / Scale));
-  Result := True;
+  Result.View := FView;
+  Result.State := FState;
+  Result.ScreenInputChanged := PeripheralChanged;
 end;
 
 procedure TInputController.InitializePeripherals;
@@ -162,57 +136,17 @@ begin
   FState.Input.Gamepad.Visible := False;
   FState.Input.Gamepad.Margins.Bottom := 100;
 
-  FState.Input.SGKeyboard := TSGKeyboard.Create(FView);
-  FState.Input.SGKeyboard.Parent := FView.LayoutClient;
-  FState.Input.SGKeyboard.Align := TAlignLayout.Bottom;
-  FState.Input.SGKeyboard.OnChange := SGKeyboardChanged;
-  FState.Input.SGKeyboard.Enabled := False;
-  FState.Input.SGKeyboard.Visible := False;
+  InitializePlatformInputHandlers(RuntimeContext);
+end;
 
-  FState.Input.SuborKeyboard := TNesSuborKeyboard.Create(FView);
-  FState.Input.SuborKeyboard.Name := 'ScreenSuborKeyboard';
-  FState.Input.SuborKeyboard.Parent := FView.LayoutClient;
-  FState.Input.SuborKeyboard.Align := TAlignLayout.Bottom;
-  FState.Input.SuborKeyboard.OnChange := FView.SuborKeyboardChanged;
-  FState.Input.SuborKeyboard.OnPower := FView.SuborKeyboardPower;
-  FState.Input.SuborKeyboard.OnReset := FView.SuborKeyboardPower;
-  FState.Input.SuborKeyboard.Enabled := False;
-  FState.Input.SuborKeyboard.Visible := False;
+procedure TInputController.PeripheralChanged(Sender: TObject);
+begin
+  PlatformInputHandler(FState.Input.SystemId).ScreenInputChanged(RuntimeContext, Sender);
+end;
 
-  FState.Input.FamicomKeyboard := TNesFamicomKeyboard.Create(FView);
-  FState.Input.FamicomKeyboard.Name := 'ScreenFamicomKeyboard';
-  FState.Input.FamicomKeyboard.Parent := FView.LayoutClient;
-  FState.Input.FamicomKeyboard.Align := TAlignLayout.Bottom;
-  FState.Input.FamicomKeyboard.OnChange := FView.FamicomKeyboardChanged;
-  FState.Input.FamicomKeyboard.Enabled := False;
-  FState.Input.FamicomKeyboard.Visible := False;
-
-  FState.Input.MiraclePiano := TNesMiraclePiano.Create(FView);
-  FState.Input.MiraclePiano.Name := 'ScreenMiraclePiano';
-  FState.Input.MiraclePiano.Parent := FView.LayoutClient;
-  FState.Input.MiraclePiano.Align := TAlignLayout.Bottom;
-  FState.Input.MiraclePiano.OnChange := FView.MiraclePianoChanged;
-  FState.Input.MiraclePiano.Enabled := False;
-  FState.Input.MiraclePiano.Visible := False;
-
-  FState.Input.PowerPad := TNesPowerPad.Create(FView);
-  FState.Input.PowerPad.Name := 'ScreenPowerPad';
-  FState.Input.PowerPad.Parent := FView.LayoutClient;
-  FState.Input.PowerPad.Align := TAlignLayout.Bottom;
-  FState.Input.PowerPad.OnChange := FView.PowerPadChanged;
-  FState.Input.PowerPad.Enabled := False;
-  FState.Input.PowerPad.Visible := False;
-  FState.Input.PowerPad.Margins.Bottom := 100;
-
-  FState.Input.DataRecorder := TNesDataRecorder.Create(FView);
-  FState.Input.DataRecorder.Name := 'ScreenDataRecorder';
-  FState.Input.DataRecorder.Parent := FView.LayoutClient;
-  FState.Input.DataRecorder.Align := TAlignLayout.Bottom;
-  FState.Input.DataRecorder.OnAction := FView.TapeAction;
-  FState.Input.DataRecorder.OnChooseFile := FView.ChooseTapeFile;
-  FState.Input.DataRecorder.OnSaveAs := FView.SaveTapeAs;
-  FState.Input.DataRecorder.Visible := False;
-  FState.Input.DataRecorder.Enabled := False;
+procedure TInputController.FinalizePeripherals;
+begin
+  FinalizePlatformInputHandlers(RuntimeContext);
 end;
 
 procedure TInputController.PollRumble;
@@ -408,8 +342,29 @@ begin
 end;
 {$ENDIF}
 
+procedure TInputController.InitializeHostInput;
+begin
+  // Before the first game there is no platform profile to load.
+  FState.Input.SystemId := '';
+  FState.Input.Ports := TCoreInputPorts.Defaults;
+  FState.Input.GamepadInput := Default(TEmulatorInput);
+  FState.Input.PollingFailed := False;
+  FState.Input.SuppressInputUntilRelease := True;
+  FillChar(FState.Input.KeysDown, SizeOf(FState.Input.KeysDown), 0);
+  if FState.Input.Manager <> nil then
+  begin
+    FState.Input.Manager.CancelCapture;
+    FState.Input.Manager.ClearBindings;
+  end;
+end;
+
 procedure TInputController.LoadHostInput(const SystemId: string);
 begin
+  if SystemId = '' then
+  begin
+    InitializeHostInput;
+    Exit;
+  end;
   FState.Input.SystemId := SystemId;
   FState.Input.Ports := LoadCoreInputPorts(FState.Session.Storage, SystemId);
   FView.ReloadHostInputBindings;
@@ -417,6 +372,11 @@ end;
 
 procedure TInputController.ReloadHostInputBindings;
 begin
+  if FState.Input.SystemId = '' then
+  begin
+    InitializeHostInput;
+    Exit;
+  end;
   if FState.Input.Manager = nil then
     Exit;
 
@@ -425,7 +385,7 @@ begin
   var Ini := FState.Session.Storage.ReadConfig(FState.Session.Storage.ConfigFile(FState.Input.SystemId));
   try
     LoadInputBindings(FState.Input.Manager, Ini, FState.Input.SystemId);
-    FilterInputBindings(FState.Input.Manager, Ini);
+    FilterInputBindings(FState.Input.Manager, Ini, FState.Input.SystemId);
     FState.Input.PollingFailed := False;
   finally
     Ini.Free;
@@ -540,20 +500,7 @@ begin
     PointerInput.SetPointer(PixelX, PixelY, Valid);
   end;
   FView.UpdatePeripheralInput;
-  var Peripheral: INesPeripheralCore;
-  if Supports(FState.Session.Emulation, INesPeripheralCore, Peripheral) then
-  begin
-    if Peripheral.Zapper.Enabled then
-    begin
-      var Mouse: IFMXMouseService;
-      if TPlatformServices.Current.SupportsPlatformService(IFMXMouseService, Mouse) then
-      begin
-        var Point := FView.ImageCanvas.AbsoluteToLocal(FView.ScreenToClient(Mouse.GetMousePos));
-        TryGetImagePixel(FView.ImageCanvas, Point.X, Point.Y, FState.Input.ZapperPixel.X, FState.Input.ZapperPixel.Y);
-      end;
-      Peripheral.Zapper.TriggerPressed := FState.Input.Manager.IsPressed(ZapperTriggerAction);
-    end;
-  end;
+  PlatformInputHandler(FState.Input.SystemId).PollInput(RuntimeContext);
 end;
 
 procedure TInputController.FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
@@ -585,15 +532,8 @@ begin
   end;
 
   var Code: Word := Key;
-  var SuborKeyboardActive := (FState.Session.Emulation <> nil) and FState.Session.Emulation.UsesSuborKeyboard;
-  var Peripheral: INesPeripheralCore;
-  var Piano: INesMiraclePianoCore;
-  var SGKeyboard: ISGKeyboardCore;
-  var KeyboardActive := (Supports(FState.Session.Emulation, ISGKeyboardCore, SGKeyboard) and SGKeyboard.HasKeyboard) or SuborKeyboardActive or
-    (Supports(FState.Session.Emulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard) or
-    (Supports(FState.Session.Emulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano);
-
-  var ZXActive := FState.Input.SystemId = ROM_SYSTEM_ZX;
+  var Policy := PlatformInputHandler(FState.Input.SystemId).KeyPolicy(RuntimeContext);
+  var KeyboardActive := Policy.KeyboardActive;
 
   var WasDown: Boolean := False;
   if Code <= High(FState.Input.KeysDown) then
@@ -643,9 +583,9 @@ begin
     end
     else if (Code = vkP) and not KeyboardActive then
       FView.SwitchPause
-    else if (Code = vkF9) and not KeyboardActive and not ZXActive then
+    else if (Code = vkF9) and not KeyboardActive and not Policy.ReserveCaptureShortcuts then
       FView.InsertCoinClick(FView)
-    else if (Code = vkF8) and (FState.Session.Emulation <> nil) and not KeyboardActive and not ZXActive then
+    else if (Code = vkF8) and (FState.Session.Emulation <> nil) and not KeyboardActive and not Policy.ReserveCaptureShortcuts then
     begin
       try
         FView.SetStatus(Translate('Screenshot: ') + FView.SaveScreenshot);
@@ -654,7 +594,7 @@ begin
           ShowRetroMessage(FView, E.Message);
       end;
     end
-    else if (Code in [vkF5, vkF6]) and (FState.Session.Emulation <> nil) and (not KeyboardActive or ZXActive) then
+    else if (Code in [vkF5, vkF6]) and (FState.Session.Emulation <> nil) and (not KeyboardActive or Policy.AllowSnapshotsWithKeyboard) then
     begin
       try
         if Code = vkF5 then
@@ -668,9 +608,9 @@ begin
     end;
   end;
 
-  var ZXControlKey := ZXActive and (Code in [vkF7, vkF8, vkF9, vkF10]);
-  if (FState.Help.View = nil) and (KeyboardActive or not (ssCtrl in Shift) or ZXControlKey) then
-    if (FState.Session.Emulation <> nil) and ((FState.Input.Manager = nil) or ZXControlKey or ((SGKeyboard <> nil) and SGKeyboard.HasKeyboard)) then
+  var ControlKey := Policy.IsControlKey(Code);
+  if (FState.Help.View = nil) and (KeyboardActive or not (ssCtrl in Shift) or ControlKey) then
+    if (FState.Session.Emulation <> nil) and ((FState.Input.Manager = nil) or ControlKey or Policy.ForwardWithManager) then
       FView.ForwardKeyState(Code, True);
 
   Key := 0;
@@ -746,10 +686,10 @@ begin
   if Code <= High(FState.Input.KeysDown) then
     FState.Input.KeysDown[Code] := False;
 
-  var SGKeyboard: ISGKeyboardCore;
+  var Policy := PlatformInputHandler(FState.Input.SystemId).KeyPolicy(RuntimeContext);
   if (FState.Help.View = nil) and (FState.Session.Emulation <> nil) and
-    ((FState.Input.Manager = nil) or ((FState.Input.SystemId = ROM_SYSTEM_ZX) and (Code in [vkF7, vkF8, vkF9, vkF10])) or
-    (Supports(FState.Session.Emulation, ISGKeyboardCore, SGKeyboard) and SGKeyboard.HasKeyboard)) then
+    ((FState.Input.Manager = nil) or Policy.IsControlKey(Code) or
+    Policy.ForwardWithManager) then
     FView.ForwardKeyState(Code, False);
 
   Key := 0;
@@ -760,18 +700,8 @@ procedure TInputController.ForwardKeyState(Code: Word; Pressed: Boolean);
 begin
   if FState.Session.Emulation = nil then
     Exit;
-
-  {$IFDEF MSWINDOWS}
-  // Windows FMX reports generic Shift. HVC-007 has two separate contacts.
-  var Peripheral: INesPeripheralCore;
-  if (FState.Input.Manager = nil) and (Code = vkShift) and Supports(FState.Session.Emulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard then
-  begin
-    FState.Session.Emulation.SetKeyState(vkLShift, Winapi.Windows.GetKeyState(vkLShift) < 0);
-    FState.Session.Emulation.SetKeyState(vkRShift, Winapi.Windows.GetKeyState(vkRShift) < 0);
-    Exit;
-  end;
-  {$ENDIF}
-  FState.Session.Emulation.SetKeyState(Code, Pressed);
+  if not PlatformInputHandler(FState.Input.SystemId).ForwardKey(RuntimeContext, Code, Pressed) then
+    FState.Session.Emulation.SetKeyState(Code, Pressed);
 end;
 
 procedure TInputController.GamepadChanged(Sender: TObject);
@@ -783,10 +713,6 @@ begin
 end;
 
 function TInputController.CombinedGamepadInput: TEmulatorInput;
-const
-  Mapping: array[TNesButton] of TEmulatorButton = (TEmulatorButton.A,
-    TEmulatorButton.B, TEmulatorButton.Select, TEmulatorButton.Start,
-    TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right);
 begin
   Result := FState.Input.GamepadInput;
   if FState.Input.Manager <> nil then
@@ -816,302 +742,38 @@ begin
     Result.Analog[0].Valid := False;
   end;
 
-  var N64Input: IN64ControllerInput;
-  if Supports(FState.Session.Emulation, IN64ControllerInput, N64Input) then
-    for var Port := 0 to 3 do
-    begin
-      var Pad := Default(TN64Pad);
-      if ((Port = 0) and ((FState.Input.Gamepad.AuxiliaryButtons and 1) <> 0)) or
-        ((FState.Input.Manager <> nil) and FState.Input.Manager.IsPressed(N64LAction + Port)) then
-        Pad.Buttons := $20;
-      if Result.Analog[Port].Valid then
-      begin
-        Pad.StickX := Round(Result.Analog[Port].X / 32767 * 80);
-        Pad.StickY := -Round(Result.Analog[Port].Y / 32767 * 80);
-      end;
-      N64Input.SetN64Controller(Port, Pad);
-    end;
-
-  // PlayStation L2/L3/R3, ANALOG and the right stick sit outside the logical
-  // pad; on-screen auxiliary button N is TPS1Extra(N).
-  var PS1Input: IPS1ControllerInput;
-  if Supports(FState.Session.Emulation, IPS1ControllerInput, PS1Input) then
-    for var Port := 0 to 1 do
-    begin
-      var Pad := ReadPS1Pad(FState.Input.Manager, Port);
-      if Port = 0 then
-      begin
-        var Auxiliary := FState.Input.Gamepad.AuxiliaryButtons;
-        if (Auxiliary and (1 shl Ord(TPS1Extra.L2))) <> 0 then
-          Pad.Buttons := Pad.Buttons or PS1PadL2;
-        if (Auxiliary and (1 shl Ord(TPS1Extra.L3))) <> 0 then
-          Pad.Buttons := Pad.Buttons or PS1PadL3;
-        if (Auxiliary and (1 shl Ord(TPS1Extra.R3))) <> 0 then
-          Pad.Buttons := Pad.Buttons or PS1PadR3;
-        if (Auxiliary and (1 shl Ord(TPS1Extra.Analog))) <> 0 then
-          Pad.AnalogButton := True;
-        // The on-screen right stick (the left one arrives as Analog[0]).
-        var Right := FState.Input.Gamepad.RightAnalogInput;
-        if Right.Valid then
-        begin
-          Pad.RightX := EnsureRange(Integer(Pad.RightX) + Right.X, -32768, 32767);
-          Pad.RightY := EnsureRange(Integer(Pad.RightY) + Right.Y, -32768, 32767);
-        end;
-      end;
-      PS1Input.SetPS1Controller(Port, Pad);
-    end;
-  // Dreamcast stick and trigger axes from host bindings (the on-screen stick
-  // and triggers arrive as Analog[0]).
-  var DCInput: IDCControllerInput;
-  if Supports(FState.Session.Emulation, IDCControllerInput, DCInput) then
-    for var Port := 0 to 3 do
-      DCInput.SetDCController(Port, ReadDCPad(FState.Input.Manager, Port));
-
-  // The DualShock 2 takes the same extras (and the same L2/L3/R3 bits).
-  var PS2Input: IPS2ControllerInput;
-  if Supports(FState.Session.Emulation, IPS2ControllerInput, PS2Input) then
-    for var Port := 0 to 1 do
-    begin
-      var Pad := ReadPS1Pad(FState.Input.Manager, Port);
-      if Port = 0 then
-      begin
-        var Auxiliary := FState.Input.Gamepad.AuxiliaryButtons;
-        if (Auxiliary and (1 shl Ord(TPS1Extra.L2))) <> 0 then
-          Pad.Buttons := Pad.Buttons or PS1PadL2;
-        if (Auxiliary and (1 shl Ord(TPS1Extra.Analog))) <> 0 then
-          Pad.AnalogButton := True;
-        var Right := FState.Input.Gamepad.RightAnalogInput;
-        if Right.Valid then
-        begin
-          Pad.RightX := EnsureRange(Integer(Pad.RightX) + Right.X, -32768, 32767);
-          Pad.RightY := EnsureRange(Integer(Pad.RightY) + Right.Y, -32768, 32767);
-        end;
-      end;
-      var Pad2: TPS2Pad;
-      Pad2.Buttons := Pad.Buttons;
-      Pad2.AnalogButton := Pad.AnalogButton;
-      Pad2.LeftX := Pad.LeftX;
-      Pad2.LeftY := Pad.LeftY;
-      Pad2.RightX := Pad.RightX;
-      Pad2.RightY := Pad.RightY;
-      PS2Input.SetPS2Controller(Port, Pad2);
-    end;
-
-  var Piano: INesMiraclePianoCore;
-  if Supports(FState.Session.Emulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano then
-  begin
-    for var Button in FState.Input.MiraclePiano.Buttons do
-      Include(Result.Buttons, Mapping[Button]);
-    if FState.Input.Manager <> nil then
-      for var Button := Low(TNesButton) to High(TNesButton) do
-        if FState.Input.Manager.IsPressed(PadAction(0, Mapping[Button])) then
-          Include(Result.Buttons, Mapping[Button]);
-  end;
+  PlatformInputHandler(FState.Input.SystemId).CombineInput(RuntimeContext, Result);
 end;
 
 procedure TInputController.UpdatePeripheralInput;
 begin
-  SGKeyboardChanged(nil);
-  var Peripheral: INesPeripheralCore;
-  if Supports(FState.Session.Emulation, INesPeripheralCore, Peripheral) then
-  begin
-    if FState.Session.Emulation.UsesSuborKeyboard then
-      Peripheral.SetSuborKeys(FState.Input.SuborKeyboard.Keys + ReadSuborInput(FState.Input.Manager));
-    if Peripheral.UsesFamicomKeyboard then
-      Peripheral.SetFamicomKeys(FState.Input.FamicomKeyboard.Keys + ReadFamicomInput(FState.Input.Manager));
-    if Peripheral.UsesPowerPad then
-    begin
-      var Buttons := FState.Input.PowerPad.Buttons;
-      if FState.Input.Manager <> nil then
-        for var i := 0 to 11 do
-          if FState.Input.Manager.IsPressed(PowerPadAction + i) then
-            Include(Buttons, i + 1);
-      Peripheral.SetPowerPadButtons(Buttons);
-    end;
-  end;
-
-  var Piano: INesMiraclePianoCore;
-  if Supports(FState.Session.Emulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano then
-    Piano.SetMiracleKeys(FState.Input.MiraclePiano.Keys + ReadPianoInput(FState.Input.Manager));
+  PlatformInputHandler(FState.Input.SystemId).UpdateInput(RuntimeContext);
 end;
 
 procedure TInputController.UpdatePeripheralFeedback;
-var
-  Peripheral: INesPeripheralCore;
-  Tape: INesTapeCore;
-  Piano: INesMiraclePianoCore;
 begin
   if (FState.Session.Emulation = nil) or FState.Session.EmulationFaulted then
     Exit;
-
-  if (FState.Input.MiraclePiano <> nil) and FState.Input.MiraclePiano.Visible and FState.Input.MiraclePiano.Enabled and
-    Supports(FState.Session.Emulation, INesMiraclePianoCore, Piano) then
-    FState.Input.MiraclePiano.CoreKeys := Piano.GetMiracleKeys;
-  if (FState.Input.DataRecorder <> nil) and Supports(FState.Session.Emulation, INesTapeCore, Tape) and Tape.UsesDataRecorder then
-    FState.Input.DataRecorder.Progress := Tape.GetTapeProgress;
-  if (FState.Input.Gamepad <> nil) and FState.Input.Gamepad.Visible and FState.Input.Gamepad.Enabled then
-    FState.Input.Gamepad.CoreButtons := FState.Session.Emulation.GetInputState.Buttons;
-  if Supports(FState.Session.Emulation, INesPeripheralCore, Peripheral) then
-  begin
-    if (FState.Input.SuborKeyboard <> nil) and FState.Input.SuborKeyboard.Visible and FState.Input.SuborKeyboard.Enabled then
-    begin
-      FState.Input.SuborKeyboard.CoreKeys := Peripheral.GetSuborKeys;
-      FState.Input.SuborKeyboard.Indicators := Peripheral.GetSuborIndicators;
-    end;
-    if (FState.Input.FamicomKeyboard <> nil) and FState.Input.FamicomKeyboard.Visible and FState.Input.FamicomKeyboard.Enabled then
-      FState.Input.FamicomKeyboard.CoreKeys := Peripheral.GetFamicomKeys;
-    if (FState.Input.PowerPad <> nil) and FState.Input.PowerPad.Visible and FState.Input.PowerPad.Enabled then
-      FState.Input.PowerPad.CoreButtons := Peripheral.GetPowerPadButtons;
-  end;
-end;
-
-procedure TInputController.MiraclePianoChanged(Sender: TObject);
-begin
-  var Piano: INesMiraclePianoCore;
-  if not Supports(FState.Session.Emulation, INesMiraclePianoCore, Piano) or not Piano.UsesMiraclePiano then
-    Exit;
-
-  FView.UpdatePeripheralInput;
-  FState.Session.Emulation.SetGamepadInput(FView.CombinedGamepadInput);
-end;
-
-procedure TInputController.FamicomKeyboardChanged(Sender: TObject);
-begin
-  FView.UpdatePeripheralInput;
-end;
-
-procedure TInputController.SGKeyboardChanged(Sender: TObject);
-begin
-  var Keyboard: ISGKeyboardCore;
-  if (FState.Input.SGKeyboard <> nil) and Supports(FState.Session.Emulation, ISGKeyboardCore, Keyboard) and Keyboard.HasKeyboard then
-    Keyboard.SetScreenKeys(FState.Input.SGKeyboard.Keys);
-end;
-
-procedure TInputController.SuborKeyboardChanged(Sender: TObject);
-begin
-  FView.UpdatePeripheralInput;
-end;
-
-procedure TInputController.SuborKeyboardPower(Sender: TObject);
-begin
-  if (FState.Session.Emulation = nil) or FState.Session.EmulationFaulted then
-    Exit;
-
-  try
-    if FState.Input.Rumble <> nil then
-      FState.Input.Rumble.Reset;
-    FState.Session.Emulation.Reset;
-  except
-    FView.StopOnError;
-    raise;
-  end;
-end;
-
-procedure TInputController.PowerPadChanged(Sender: TObject);
-begin
-  FView.UpdatePeripheralInput;
+  PlatformInputHandler(FState.Input.SystemId).UpdateFeedback(RuntimeContext);
 end;
 
 procedure TInputController.ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
   if (FState.Input.Manager <> nil) or (Button <> TMouseButton.mbLeft) then
     Exit;
-
-  var Peripheral: INesPeripheralCore;
-  if Supports(FState.Session.Emulation, INesPeripheralCore, Peripheral) then
-  begin
-    TryGetImagePixel(FView.ImageCanvas, X, Y, FState.Input.ZapperPixel.X, FState.Input.ZapperPixel.Y);
-    Peripheral.Zapper.TriggerPressed := True;
-  end;
+  PlatformInputHandler(FState.Input.SystemId).PointerButton(RuntimeContext, X, Y, True);
 end;
 
 procedure TInputController.ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
   if (FState.Input.Manager <> nil) or (Button <> TMouseButton.mbLeft) then
     Exit;
-
-  var Peripheral: INesPeripheralCore;
-  if Supports(FState.Session.Emulation, INesPeripheralCore, Peripheral) then
-  begin
-    Peripheral.Zapper.TriggerPressed := False;
-  end;
-end;
-
-procedure TInputController.TapeAction(Sender: TObject; Action: TTapeAction; const FileName: string);
-begin
-  var Tape: INesTapeCore;
-  if not Supports(FState.Session.Emulation, INesTapeCore, Tape) then
-    Exit;
-
-  try
-    Tape.TapeCommand(Action, FileName);
-    FState.Input.DataRecorder.Progress := Tape.GetTapeProgress;
-  except
-    on E: Exception do
-      ShowRetroMessage(FView, Translate('Cassette: ') + E.Message);
-  end;
+  PlatformInputHandler(FState.Input.SystemId).PointerButton(RuntimeContext, X, Y, False);
 end;
 
 procedure TInputController.SelectTapeFile(const FileName: string);
 begin
-  var Tape: INesTapeCore;
-  if not Supports(FState.Session.Emulation, INesTapeCore, Tape) or not Tape.UsesDataRecorder then
-    raise EInvalidOperation.Create(Translate('No data recorder connected'));
-
-  Tape.TapeCommand(TapeSelectFile, FileName);
-  FState.Input.DataRecorder.Progress := Tape.GetTapeProgress;
-end;
-
-procedure TInputController.ChooseTapeFile(Sender: TObject);
-begin
-  FView.SelectDocument(True);
-end;
-
-procedure TInputController.SaveTapeAs(Sender: TObject);
-begin
-  var Tape: INesTapeCore;
-  if not Supports(FState.Session.Emulation, INesTapeCore, Tape) or not Tape.UsesDataRecorder then
-    Exit;
-
-  FView.FormDeactivate(FView);
-  {$IFDEF ANDROID}
-  if FState.Session.OpeningRom then
-    Exit;
-
-  var Path := FState.Session.Storage.TemporaryFile('.tape');
-  try
-    Tape.TapeCommand(TapeSaveAs, Path);
-    FState.Mobile.Transfer.Save(Path, ExtractFileName(Tape.GetTapeProgress.FileName));
-    FState.Session.OpeningRom := True;
-    FView.SyncActivity;
-  except
-    on E: Exception do
-    begin
-      FState.Session.Storage.Delete(Path);
-      ShowRetroMessage(FView, Translate('Cassette: ') + E.Message);
-    end;
-  end;
-  {$ELSE}
-  var Dialog := TSaveDialog.Create(FView);
-  try
-    Dialog.Title := Translate('Save cassette as');
-    Dialog.Filter := Translate('Cassette (*.tape)|*.tape');
-    Dialog.DefaultExt := 'tape';
-    Dialog.Options := [TOpenOption.ofPathMustExist, TOpenOption.ofOverwritePrompt];
-    Dialog.FileName := Tape.GetTapeProgress.FileName;
-    if Dialog.Execute then
-    try
-      Tape.TapeCommand(TapeSaveAs, Dialog.FileName);
-      FState.Input.DataRecorder.Progress := Tape.GetTapeProgress;
-    except
-      on E: Exception do
-        ShowRetroMessage(FView, Translate('Cassette: ') + E.Message);
-    end;
-  finally
-    Dialog.Free;
-    FView.FormActivate(FView);
-  end;
-  {$ENDIF}
+  PlatformInputHandler(FState.Input.SystemId).Command(RuntimeContext, 'tape.select', 0, FileName);
 end;
 
 end.

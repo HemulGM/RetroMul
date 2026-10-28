@@ -12,8 +12,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Snapshots, HW.SH4, HW.SH4.Periph, DC.Types, DC.Memory, DC.PVR, DC.Disc,
-  DC.Flash;
+  System.SysUtils, System.Classes, Core.Snapshots, HW.SH4, HW.SH4.Periph,
+  DC.Types, DC.Memory, DC.PVR, DC.Disc, DC.Flash;
 
 const
   DCStubBase = $8C000800;
@@ -314,11 +314,31 @@ function TDCBoot.FlashPartition(Index: Integer; out Offset, Size: Integer): Bool
 begin
   Result := True;
   case Index of
-    0: begin Offset := $1A000; Size := $2000; end;
-    1: begin Offset := $18000; Size := $2000; end;
-    2: begin Offset := $1C000; Size := $4000; end;
-    3: begin Offset := $10000; Size := $8000; end;
-    4: begin Offset := $00000; Size := $10000; end;
+    0:
+      begin
+        Offset := $1A000;
+        Size := $2000;
+      end;
+    1:
+      begin
+        Offset := $18000;
+        Size := $2000;
+      end;
+    2:
+      begin
+        Offset := $1C000;
+        Size := $4000;
+      end;
+    3:
+      begin
+        Offset := $10000;
+        Size := $8000;
+      end;
+    4:
+      begin
+        Offset := $00000;
+        Size := $10000;
+      end;
   else
     Offset := 0;
     Size := 0;
@@ -402,7 +422,7 @@ begin
   if Trace <> nil then
   begin
     var Line := Format('syscall %.8x r4=%.8x r5=%.8x r6=%.8x r7=%.8x r1=%.8x pr=%.8x', [Address, S.R[4], S.R[5], S.R[6],
-      S.R[7], S.R[1], S.PR]);
+        S.R[7], S.R[1], S.PR]);
     // GD-ROM commands: their parameter words.
     if ((Address = DCStubGDROM) or (Address = DCGDROMEntry)) and (S.R[6] = 0) and (S.R[7] = 0) and (S.R[5] <> 0) and
       (((S.R[5] shr 24) and $1F) in [$0C..$0F]) then
@@ -426,7 +446,8 @@ begin
         end;
       DCStubFont:
         case S.R[1] of
-          0: S.R[0] := DCFontAddress;
+          0:
+            S.R[0] := DCFontAddress;
         else
           S.R[0] := 0;
         end;
@@ -478,3 +499,4 @@ begin
 end;
 
 end.
+

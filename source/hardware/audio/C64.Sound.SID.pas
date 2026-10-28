@@ -7,6 +7,7 @@ uses
 
 type
   TSIDModel = (MOS6581, MOS8580);
+
   TSIDStateField = procedure(var Value; Size: Integer) of object;
 
   TSIDVoice = record

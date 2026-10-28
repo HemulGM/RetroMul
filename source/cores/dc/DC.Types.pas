@@ -54,9 +54,12 @@ type
   {$SCOPEDENUMS OFF}
 
   TDCRegion = (Japan, USA, Europe);
+
   TDCCable = (VGA, RGB, Composite);
+
   TDCBroadcast = (NTSC, PAL, PALM, PALN);
 
 implementation
 
 end.
+

@@ -53,7 +53,7 @@ type
 implementation
 
 uses
-  System.Math{$IFDEF PSP_PROFILE},PSP.Profile{$ENDIF};
+  System.Math{$IFDEF PSP_PROFILE}, PSP.Profile{$ENDIF};
 
 // PPSSPP SasReverb.cpp preset data, GPL-2.0-or-later. See PSP.PRX-LICENSE.md.
 const
@@ -280,7 +280,8 @@ end;
 
 procedure TPSPSAS.Mix(Core: TPSPSASCore; Address: Cardinal; WithMix: Boolean; Left, Right: Integer);
 begin
-  {$IFDEF PSP_PROFILE}var ProfileStarted:=PSPProfileStart;{$ENDIF}
+  {$IFDEF PSP_PROFILE}
+  var ProfileStarted := PSPProfileStart;{$ENDIF}
   var Channels: Cardinal := 2;
   if Core.OutputMode = 1 then
     Channels := 4;
@@ -349,7 +350,7 @@ begin
     end;
   for var I := 0 to High(Accum) do
     FMemory.Write16(Address + Cardinal(I) * 2, Word(SmallInt(EnsureRange(Accum[I], -32768, 32767))));
-  {$IFDEF PSP_PROFILE}PSPProfileEnd(TPSPProfilePart.SAS,ProfileStarted);{$ENDIF}
+  {$IFDEF PSP_PROFILE}  PSPProfileEnd(TPSPProfilePart.SAS, ProfileStarted);{$ENDIF}
 end;
 
 constructor TPSPSAS.Create(Memory: TPSPMemory; CPU: TPSPCPU);

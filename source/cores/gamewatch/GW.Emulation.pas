@@ -3,8 +3,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs, Core.Storage, Core.Emulation.Types,
-  Core.InputConfig, Core.Snapshots, GW.Console, GW.Cartridge;
+  System.SysUtils, System.Classes, System.SyncObjs, Core.Storage,
+  Core.Emulation.Types, Core.InputConfig, Core.Snapshots, GW.Console,
+  GW.Cartridge;
 
 type
   TGWWorker = class(TThread)
@@ -48,7 +49,7 @@ implementation
 
 uses
   System.Diagnostics, System.Math, Core.SavePaths, Core.PerformanceHints,
-  Core.RomFormat, PCM.Audio;
+  PCM.Audio;
 
 function TGWWorker.GetInputPorts: TCoreInputPorts;
 begin
@@ -177,7 +178,11 @@ end;
 function TGWWorker.SupportedButtons: TEmulatorButtons;
 begin
   FLock.Acquire;
-  try Result := FControlButtons; finally FLock.Release; end;
+  try
+    Result := FControlButtons;
+  finally
+    FLock.Release;
+  end;
 end;
 
 procedure TGWWorker.Publish(Console: TGWConsole);

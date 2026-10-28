@@ -6,6 +6,12 @@ uses
   System.SysUtils, System.Classes, Core.Storage;
 
 type
+  TCDDisc = class;
+
+  TCDMediaLoader = reference to procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string);
+
+  TCDMediaProbe = reference to function(Stream: TStream): Boolean;
+
   TCDIndex = record
     Number, FileSector, LBA: Integer;
   end;
@@ -24,6 +30,14 @@ type
     // Recording session (multi-session CD-R images); 1 otherwise.
     Session: Integer;
   end;
+
+  TCDMediaFormat = record
+    Loader: TCDMediaLoader;
+    Probe: TCDMediaProbe;
+    Descriptor, Container: Boolean;
+  end;
+
+  TCDTrackAdjustment = reference to function(const Track: TCDTrack; StartLBA: Integer): Integer;
 
   // Immutable TOC; streams are owned here and accessed by the emulation worker.
   TCDDisc = class
@@ -45,6 +59,7 @@ type
     procedure LoadCue(Stream: TStream; const Storage: IStorage; const Location: string);
     procedure LoadMDS(Stream: TStream; const Storage: IStorage; const Location, FileName: string);
     procedure LoadNRG(const Storage: IStorage; const Location: string);
+    procedure LoadISO(const Storage: IStorage; const Location: string);
     procedure LoadRaw(const Storage: IStorage; const Location: string);
     procedure ValidateAndHash(HashContent: Boolean);
   public
@@ -52,9 +67,10 @@ type
     // requirements are selected by the caller after construction.
     // DeferIdentity skips reading the whole image here; the first Identity
     // call does it instead, and must come before another thread reads sectors.
-    constructor Create(Stream: TStream; const Storage: IStorage; const Location: string; DeferIdentity: Boolean = False);
+    constructor Create(Stream: TStream; const Storage: IStorage; const Location: string; DeferIdentity: Boolean = False; const ImageName: string = '');
     // Inspect ZIP directory metadata without loading cartridge/disc payloads.
     class function IsDiscZip(Stream: TStream): Boolean; static;
+    procedure AddTrack(const Track: TCDTrack);
     procedure RequireISO9660;
     // Optional root-directory file; bounded to avoid trusting corrupt extents.
     function ReadISOFile(const Name: string; MaximumSize: Integer = 65536): TBytes;
@@ -79,7 +95,17 @@ type
 
 // UTF-8 playlist; paths are relative to its location. Nested playlists are rejected.
 // SystemId names the ROM folder that resolves document (content://) locations.
-function ReadCDPlaylist(Stream: TStream; const Storage: IStorage; const Location: string; const SystemId: string = 'ps1'): TArray<string>;
+function ReadCDPlaylist(Stream: TStream; const Storage: IStorage; const Location: string; const SystemId: string): TArray<string>;
+
+procedure RegisterCDMediaFormat(const Extension: string; const Format: TCDMediaFormat);
+
+procedure RegisterCDCompanionExtension(const Extension: string);
+
+procedure RegisterCDTrackAdjustment(const Extension: string; const Adjustment: TCDTrackAdjustment);
+
+function IsCDMediaExtension(const Extension: string): Boolean;
+
+function IsCDMediaSource(const Name: string; Stream: TStream): Boolean;
 
 function CDSibling(const Storage: IStorage; const Location, Name: string): string;
 // File names of the tracks a GDI lists (as written, relative to the GDI);
@@ -100,8 +126,62 @@ implementation
 
 uses
   Core.Platforms, System.Hash, System.IOUtils, System.Math, System.StrUtils,
-  System.Zip, System.Generics.Collections, Core.CD.CHD
+  System.Zip, System.Generics.Collections, System.Generics.Defaults, Core.CD.CHD
   {$IFDEF ANDROID}, Core.Storage.Android{$ENDIF};
+
+var
+  MediaFormats: TDictionary<string, TCDMediaFormat>;
+  CompanionExtensions: TDictionary<string, Boolean>;
+  TrackAdjustments: TDictionary<string, TCDTrackAdjustment>;
+
+procedure RegisterCDMediaFormat(const Extension: string; const Format: TCDMediaFormat);
+begin
+  if not Extension.StartsWith('.') or not Assigned(Format.Loader) then
+    raise EArgumentException.Create('Invalid CD format');
+  MediaFormats.Add(Extension, Format);
+end;
+
+procedure RegisterCDCompanionExtension(const Extension: string);
+begin
+  if not Extension.StartsWith('.') then
+    raise EArgumentException.Create('Invalid CD companion extension');
+  CompanionExtensions.AddOrSetValue(Extension, True);
+end;
+
+procedure RegisterCDTrackAdjustment(const Extension: string; const Adjustment: TCDTrackAdjustment);
+begin
+  if not Assigned(Adjustment) then
+    raise EArgumentException.Create('Invalid CD track adjustment');
+  TrackAdjustments.Add(Extension, Adjustment);
+end;
+
+function IsCDMediaExtension(const Extension: string): Boolean;
+begin
+  Result := MediaFormats.ContainsKey(Extension);
+end;
+
+function IsCDMediaSource(const Name: string; Stream: TStream): Boolean;
+begin
+  Result := False;
+  var Format: TCDMediaFormat;
+  if not MediaFormats.TryGetValue(ExtractFileExt(Name), Format) then
+    Exit;
+  if not Assigned(Format.Probe) then
+    Exit(True);
+  var Position := Stream.Position;
+  try
+    Result := Format.Probe(Stream);
+  finally
+    Stream.Position := Position;
+  end;
+end;
+
+procedure TCDDisc.AddTrack(const Track: TCDTrack);
+begin
+  if Track.Stream = nil then
+    raise EArgumentException.Create('CD track needs a stream');
+  FTracks := FTracks + [Track];
+end;
 
 function CDSibling(const Storage: IStorage; const Location, Name: string): string;
 begin
@@ -247,7 +327,7 @@ begin
       if (Length(Line) >= 2) and Line.StartsWith('"') and Line.EndsWith('"') then
         Line := Line.Substring(1, Length(Line) - 2);
       var Ext := ExtractFileExt(Line);
-      if not MatchText(Ext, ['.cue', '.chd', '.iso', '.bin', '.zip', '.gdi', '.cdi', '.mds', '.nrg']) then
+      if not IsCDMediaExtension(Ext) then
         raise EReadError.Create('M3U expects CUE, CHD, ISO, raw BIN, disc ZIP, GDI, CDI, MDS or NRG: ' + Line);
       if Entries.Count >= 99 then
         raise EReadError.Create('M3U playlist exceeds 99 discs');
@@ -323,53 +403,52 @@ begin
     raise EReadError.Create('CD audio WAV requires 44100 Hz, stereo, 16-bit PCM');
 end;
 
-constructor TCDDisc.Create(Stream: TStream; const Storage: IStorage; const Location: string; DeferIdentity: Boolean);
+constructor TCDDisc.Create(Stream: TStream; const Storage: IStorage; const Location: string; DeferIdentity: Boolean; const ImageName: string);
 begin
   inherited Create;
   if (Stream = nil) or (Storage = nil) or (Location = '') then
     raise EArgumentException.Create('CD needs a source location and storage');
 
-  var SourceName := Location;
-  if Location.StartsWith('content://', True) then
-    SourceName := Storage.Describe(Location).Name;
-  if SameText(ExtractFileExt(SourceName), '.zip') then
+  var SourceName := ImageName;
+  if SourceName = '' then
+  begin
+    SourceName := Location;
+    if Location.StartsWith('content://', True) then
+      SourceName := Storage.Describe(Location).Name;
+  end;
+  var Saved := Stream.Position;
+  var Magic: Cardinal := 0;
+  Stream.Read(Magic, SizeOf(Magic));
+  Stream.Position := Saved;
+  var Format: TCDMediaFormat;
+  if (Magic = $04034B50) then
   begin
     LoadZip(Stream, Storage);
     Exit;
-  end
-  else if SameText(ExtractFileExt(SourceName), '.cue') then
-    LoadCue(Stream, Storage, Location)
-  else if SameText(ExtractFileExt(SourceName), '.iso') then
-  begin
-    SetLength(FTracks, 1);
-    FTracks[0].Number := 1;
-    FTracks[0].SectorSize := 2048;
-    FTracks[0].Stream := Storage.OpenRead(Location);
-    FTracks[0].ByteSize := FTracks[0].Stream.Size;
-    if (FTracks[0].ByteSize < 2048) or (FTracks[0].ByteSize > Int64(800) * 1024 * 1024) or (FTracks[0].ByteSize mod 2048 <> 0) then
-      raise EReadError.Create('Invalid CD ISO size');
-
-    FTracks[0].EndLBA := FTracks[0].ByteSize div 2048;
-  end
-  else if SameText(ExtractFileExt(SourceName), '.chd') then
-    LoadCHD(Storage, Location)
-  else if SameText(ExtractFileExt(SourceName), '.gdi') then
-    LoadGDI(Stream, Storage, Location)
-  else if SameText(ExtractFileExt(SourceName), '.cdi') then
-    LoadCDI(Storage, Location)
-  else if SameText(ExtractFileExt(SourceName), '.mds') then
-    LoadMDS(Stream, Storage, Location, ExtractFileName(SourceName.Replace('/', PathDelim)))
-  else if SameText(ExtractFileExt(SourceName), '.nrg') then
-    LoadNRG(Storage, Location)
-  else if SameText(ExtractFileExt(SourceName), '.bin') then
-    LoadRaw(Storage, Location)
-  else
-    raise EReadError.Create('CD expects ISO, CUE, MDS, NRG, CHD, GDI, CDI, a raw BIN or a disc ZIP');
+  end;
+  if not MediaFormats.TryGetValue(ExtractFileExt(SourceName), Format) then
+    raise EReadError.Create('Unsupported CD image format: ' + ExtractFileExt(SourceName));
+  Format.Loader(Self, Stream, Storage, Location, SourceName);
+  if SameText(ExtractFileExt(SourceName), '.zip') then
+    Exit;
 
   if (FLeadOut = 0) and (Length(FTracks) > 0) then
     FLeadOut := FTracks[High(FTracks)].EndLBA;
   LoadSBI(Storage, Location, SourceName);
   ValidateAndHash(not DeferIdentity);
+end;
+
+procedure TCDDisc.LoadISO(const Storage: IStorage; const Location: string);
+begin
+  SetLength(FTracks, 1);
+  FTracks[0].Number := 1;
+  FTracks[0].SectorSize := 2048;
+  FTracks[0].Stream := Storage.OpenRead(Location);
+  FTracks[0].ByteSize := FTracks[0].Stream.Size;
+  if (FTracks[0].ByteSize < 2048) or (FTracks[0].ByteSize > Int64(800) * 1024 * 1024) or (FTracks[0].ByteSize mod 2048 <> 0) then
+    raise EReadError.Create('Invalid CD ISO size');
+
+  FTracks[0].EndLBA := FTracks[0].ByteSize div 2048;
 end;
 
 destructor TCDDisc.Destroy;
@@ -394,7 +473,9 @@ begin
   var Leaf := Normalized.Substring(Normalized.LastIndexOf('/') + 1);
   Result := not Normalized.StartsWith('__MACOSX/') and
     not Leaf.StartsWith('._') and
-    MatchText(ExtractFileExt(Name), ['.cue', '.iso', '.chd', '.bin']);
+    IsCDMediaExtension(ExtractFileExt(Name));
+  if Result then
+    Result := not MediaFormats[ExtractFileExt(Name)].Container;
 end;
 
 class function TCDDisc.IsDiscZip(Stream: TStream): Boolean;
@@ -459,25 +540,25 @@ begin
     if Zip.FileCount > 4096 then
       raise EReadError.Create('CD ZIP contains too many entries');
     var Selected := -1;
-    var CueCount := 0;
+    var DescriptorCount := 0;
     var ImageCount := 0;
     for var i := 0 to Zip.FileCount - 1 do
       if DiscZipEntry(Zip.FileNames[i]) then
       begin
-        if SameText(ExtractFileExt(Zip.FileNames[i]), '.cue') then
+        if MediaFormats[ExtractFileExt(Zip.FileNames[i])].Descriptor then
         begin
-          Inc(CueCount);
+          Inc(DescriptorCount);
           Selected := i;
         end
         else
         begin
           Inc(ImageCount);
-          if CueCount = 0 then
+          if DescriptorCount = 0 then
             Selected := i;
         end;
       end;
-    if (Selected < 0) or (CueCount > 1) or ((CueCount = 0) and (ImageCount <> 1)) then
-      raise EReadError.Create('CD ZIP must contain one CUE or one standalone disc image');
+    if (Selected < 0) or (DescriptorCount > 1) or ((DescriptorCount = 0) and (ImageCount <> 1)) then
+      raise EReadError.Create('CD ZIP must contain one disc descriptor or one standalone disc image');
 
     var SelectedName := Zip.FileNames[Selected].Replace('\', '/');
     var Separator := SelectedName.LastIndexOf('/');
@@ -501,7 +582,7 @@ begin
           Continue;
         var Leaf := Name.Substring(Split + 1);
         if (Leaf = '') or Leaf.StartsWith('._') or
-          not MatchText(ExtractFileExt(Leaf), ['.cue', '.bin', '.iso', '.chd', '.wav', '.sub', '.sbi']) then
+          not (DiscZipEntry(Leaf) or CompanionExtensions.ContainsKey(ExtractFileExt(Leaf))) then
           Continue;
         if Leaf.Contains(':') or (Leaf = '.') or (Leaf = '..') then
           raise EReadError.Create('Invalid CD ZIP filename: ' + Name);
@@ -874,14 +955,6 @@ begin
     Result := 24;
 end;
 
-function SegaBootSector(Stream: TStream; Position: Int64): Boolean;
-var
-  Text: array[0..15] of AnsiChar;
-begin
-  Stream.Position := Position;
-  Result := (Stream.Read(Text, SizeOf(Text)) = SizeOf(Text)) and CompareMem(@Text[0], PAnsiChar(AnsiString('SEGA SEGAKATANA ')), 16);
-end;
-
 // A GDI track line: "number LBA type sectorsize file offset"; the file name
 // may be quoted and contain spaces. Tokens holds the four numbers first.
 function GDITrackLine(const Value: string; out Tokens: TArray<string>; out FileName: string): Boolean;
@@ -985,10 +1058,9 @@ begin
       raise EReadError.Create('GDI track exceeds 1400 MiB');
     if not Item.Audio and (SectorSize = 2352) then
       Item.DataOffset := RawDataOffset(Item.Stream, 0);
-    // Some dumps keep the 150-sector pregap in the high-density data file.
-    if not Item.Audio and (Start >= 45000) and (SectorSize = 2352) and
-      not SegaBootSector(Item.Stream, Item.DataOffset) and SegaBootSector(Item.Stream, Int64(150) * 2352 + Item.DataOffset) then
-      Item.FileSector := 150;
+    var Adjustment: TCDTrackAdjustment;
+    if TrackAdjustments.TryGetValue('.gdi', Adjustment) then
+      Item.FileSector := Adjustment(Item, Start);
     Item.StartLBA := Start;
     Item.PregapLBA := Start;
     Item.EndLBA := Start + Integer(Item.ByteSize div SectorSize) - Item.FileSector;
@@ -2369,6 +2441,97 @@ begin
     ValidateAndHash(True);
   Result := Copy(FIdentity);
 end;
+
+procedure RegisterNativeMediaFormats;
+var
+  Format: TCDMediaFormat;
+begin
+  Format := Default(TCDMediaFormat);
+  Format.Loader :=
+    procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
+    begin
+      Disc.LoadCue(Stream, Storage, Location);
+    end;
+  Format.Descriptor := True;
+  RegisterCDMediaFormat('.cue', Format);
+  Format := Default(TCDMediaFormat);
+  Format.Loader :=
+    procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
+    begin
+      Disc.LoadISO(Storage, Location);
+    end;
+  RegisterCDMediaFormat('.iso', Format);
+  Format := Default(TCDMediaFormat);
+  Format.Loader :=
+    procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
+    begin
+      Disc.LoadCHD(Storage, Location);
+    end;
+  RegisterCDMediaFormat('.chd', Format);
+  Format := Default(TCDMediaFormat);
+  Format.Loader :=
+    procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
+    begin
+      Disc.LoadGDI(Stream, Storage, Location);
+    end;
+  Format.Descriptor := True;
+  RegisterCDMediaFormat('.gdi', Format);
+  Format := Default(TCDMediaFormat);
+  Format.Loader :=
+    procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
+    begin
+      Disc.LoadCDI(Storage, Location);
+    end;
+  RegisterCDMediaFormat('.cdi', Format);
+  Format := Default(TCDMediaFormat);
+  Format.Loader :=
+    procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
+    begin
+      Disc.LoadMDS(Stream, Storage, Location, ExtractFileName(SourceName.Replace('/', PathDelim)));
+    end;
+  Format.Descriptor := True;
+  RegisterCDMediaFormat('.mds', Format);
+  Format := Default(TCDMediaFormat);
+  Format.Loader :=
+    procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
+    begin
+      Disc.LoadNRG(Storage, Location);
+    end;
+  RegisterCDMediaFormat('.nrg', Format);
+  Format := Default(TCDMediaFormat);
+  Format.Loader :=
+    procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
+    begin
+      Disc.LoadRaw(Storage, Location);
+    end;
+  Format.Probe := IsCDRawImage;
+  RegisterCDMediaFormat('.bin', Format);
+  Format := Default(TCDMediaFormat);
+  Format.Loader :=
+    procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
+    begin
+      Disc.LoadZip(Stream, Storage);
+    end;
+  Format.Probe := TCDDisc.IsDiscZip;
+  Format.Container := True;
+  RegisterCDMediaFormat('.zip', Format);
+  RegisterCDCompanionExtension('.raw');
+  RegisterCDCompanionExtension('.mdf');
+  RegisterCDCompanionExtension('.wav');
+  RegisterCDCompanionExtension('.sub');
+  RegisterCDCompanionExtension('.sbi');
+end;
+
+initialization
+  MediaFormats := TDictionary<string, TCDMediaFormat>.Create(TIStringComparer.Ordinal);
+  CompanionExtensions := TDictionary<string, Boolean>.Create(TIStringComparer.Ordinal);
+  TrackAdjustments := TDictionary<string, TCDTrackAdjustment>.Create(TIStringComparer.Ordinal);
+  RegisterNativeMediaFormats;
+
+finalization
+  TrackAdjustments.Free;
+  CompanionExtensions.Free;
+  MediaFormats.Free;
 
 end.
 

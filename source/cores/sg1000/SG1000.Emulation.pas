@@ -56,8 +56,8 @@ type
 implementation
 
 uses
-  System.Diagnostics, System.Math, Core.SavePaths, Core.PerformanceHints,
-  Core.RomFormat, PCM.Audio;
+  SG1000.Cartridge, System.Diagnostics, System.Math, Core.SavePaths,
+  Core.PerformanceHints, PCM.Audio;
 
 function TSGWorker.GetInputPorts: TCoreInputPorts;
 begin

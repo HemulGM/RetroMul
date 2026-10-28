@@ -7,8 +7,8 @@ interface
 uses
   System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Types,
   FMX.Platform, FMX.Dialogs, Core.Emulation, Core.Storage, FMXInput,
-  NES.FamicomDataRecorder, RM.Main.View, RM.Main.State, RM.Controllers.Browser,
-  RM.ShaderBitmap, RM.Controllers.Window, RM.Controllers.Settings, RM.Controllers.Snapshots,
+  RM.Main.View, RM.Main.State, RM.Controllers.Browser, RM.ShaderBitmap,
+  RM.Controllers.Window, RM.Controllers.Settings, RM.Controllers.Snapshots,
   RM.Controllers.Input, RM.Controllers.Mobile, RM.Controllers.Session, FMX.Menus,
   FMX.Objects, FMX.StdCtrls, FMX.Controls.Presentation, FMX.Layouts,
   FMX.Controls, FMX.TabControl
@@ -116,14 +116,6 @@ type
     function CombinedGamepadInput: TEmulatorInput; override;
     procedure UpdatePeripheralInput; override;
     procedure UpdatePeripheralFeedback; override;
-    procedure MiraclePianoChanged(Sender: TObject); override;
-    procedure FamicomKeyboardChanged(Sender: TObject); override;
-    procedure SuborKeyboardChanged(Sender: TObject); override;
-    procedure SuborKeyboardPower(Sender: TObject); override;
-    procedure PowerPadChanged(Sender: TObject); override;
-    procedure TapeAction(Sender: TObject; Action: TTapeAction; const FileName: string); override;
-    procedure ChooseTapeFile(Sender: TObject); override;
-    procedure SaveTapeAs(Sender: TObject); override;
     {$IFDEF ISMOBILE}
     function ApplicationStateChanged(Sender: TObject; const AAppEvent: TApplicationEvent; const AContext: TObject): Boolean; override;
     {$ENDIF}
@@ -170,8 +162,8 @@ implementation
 
 uses
   System.IOUtils, System.Messaging, FMX.Forms, FMX.Graphics, FMX.OpenDialog,
-  WinUI3.Form, WinUI3.Style, Core.EmulatorFactory, Core.RomFormat,
-  RM.Storage.Dialogs, RM.Dialogs, RM.Styles, RM.Rumble, NES.Consts
+  WinUI3.Form, WinUI3.Style, Core.EmulatorFactory, RM.Storage.Dialogs,
+  RM.Dialogs, RM.Styles, RM.Rumble
   {$IF not Defined(LINUX)}
     , System.Sensors.Components
   {$ENDIF}
@@ -250,7 +242,7 @@ begin
   Fill.Color := TAlphaColors.Black;
   ImageCanvas.WrapMode := TImageWrapMode.Fit;
   ImageCanvas.DisableInterpolation := True;
-  ImageCanvas.Bitmap.SetSize(NES_WIDTH, NES_HEIGHT);
+  ImageCanvas.Bitmap.SetSize(256, 240);
   ImageCanvas.Bitmap.Clear(TAlphaColors.Black);
   InitializePeripherals;
   State.Input.Rumble := TRumblePlayer.Create;
@@ -261,7 +253,7 @@ begin
   FormResize(Self);
   TimerUpdate.Interval := 8;
   Load;
-  LoadHostInput(ROM_SYSTEM_GB);
+  FInputController.InitializeHostInput;
   InitializeLibrary;
   {$IFNDEF ISMOBILE}
   InitializeDesktopViews;
@@ -330,6 +322,19 @@ begin
   FreeAndNil(State.Settings.View);
   FreeAndNil(State.Help.View);
   FreeAndNil(State.Browser.View);
+  // Stop callbacks and detach session input while the devices still exist.
+  if State.Session.Emulation <> nil then
+  try
+    State.Session.Emulation.Stop;
+  except
+    Application.HandleException(Self);
+  end;
+  FSessionController.DisconnectSession;
+  try
+    FInputController.FinalizePeripherals;
+  except
+    Application.HandleException(Self);
+  end;
   {$IF not Defined(LINUX)}
   if State.Input.MotionSensor <> nil then
   try
@@ -339,12 +344,6 @@ begin
   FreeAndNil(State.Input.MotionSensor);
   {$ENDIF}
   FreeAndNil(State.Input.Manager);
-  FreeAndNil(State.Input.SuborKeyboard);
-  FreeAndNil(State.Input.SGKeyboard);
-  FreeAndNil(State.Input.FamicomKeyboard);
-  FreeAndNil(State.Input.MiraclePiano);
-  FreeAndNil(State.Input.PowerPad);
-  FreeAndNil(State.Input.DataRecorder);
   FreeAndNil(State.Input.Gamepad); // Detach the native listener before destroying the form.
   {$IFDEF ISMOBILE}
   FreeAndNil(State.Mobile.AppEvents);
@@ -352,12 +351,6 @@ begin
   {$IFDEF ANDROID}
   FreeAndNil(State.Mobile.Transfer);
   {$ENDIF}
-  if State.Session.Emulation <> nil then
-  try
-    State.Session.Emulation.Stop;
-  except
-    Application.HandleException(Self);
-  end;
   State.Session.Emulation := nil;
   try
     inherited;
@@ -927,49 +920,9 @@ begin
   FInputController.ImageCanvasMouseUp(Sender, Button, Shift, X, Y);
 end;
 
-procedure TFormMain.MiraclePianoChanged(Sender: TObject);
-begin
-  FInputController.MiraclePianoChanged(Sender);
-end;
-
-procedure TFormMain.FamicomKeyboardChanged(Sender: TObject);
-begin
-  FInputController.FamicomKeyboardChanged(Sender);
-end;
-
-procedure TFormMain.SuborKeyboardChanged(Sender: TObject);
-begin
-  FInputController.SuborKeyboardChanged(Sender);
-end;
-
-procedure TFormMain.SuborKeyboardPower(Sender: TObject);
-begin
-  FInputController.SuborKeyboardPower(Sender);
-end;
-
-procedure TFormMain.PowerPadChanged(Sender: TObject);
-begin
-  FInputController.PowerPadChanged(Sender);
-end;
-
-procedure TFormMain.TapeAction(Sender: TObject; Action: TTapeAction; const FileName: string);
-begin
-  FInputController.TapeAction(Sender, Action, FileName);
-end;
-
 procedure TFormMain.SelectTapeFile(const FileName: string);
 begin
   FInputController.SelectTapeFile(FileName);
-end;
-
-procedure TFormMain.ChooseTapeFile(Sender: TObject);
-begin
-  FInputController.ChooseTapeFile(Sender);
-end;
-
-procedure TFormMain.SaveTapeAs(Sender: TObject);
-begin
-  FInputController.SaveTapeAs(Sender);
 end;
 
 {$IFDEF ISMOBILE}

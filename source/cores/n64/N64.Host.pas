@@ -30,14 +30,18 @@ type
 // the one the calling thread runs on first, then by processor number.
 function HostCores: TArray<TN64HostCore>;
 // The logical processor the calling thread runs on (-1 if unknown).
+
 function CurrentProcessor: Integer;
 // Pins the calling thread to CPUs; Previous receives what it may run on
 // before. False (nothing changed) where unsupported.
+
 function PinCurrentThread(const CPUs: TN64CPUSet; out Previous: TN64CPUSet): Boolean;
 // Asks the scheduler to prefer logical processor CPU for the calling thread
 // (a hint, Windows only).
+
 procedure PreferProcessor(CPU: Integer);
 // Same hint, returning the previous preference for an owning thread to restore.
+
 function SuggestProcessor(CPU: Integer): Integer;
 
 implementation
@@ -52,12 +56,11 @@ uses
   System.SysUtils, System.Generics.Collections, System.Generics.Defaults;
 
 {$IF DEFINED(LINUX) or DEFINED(ANDROID)}
-function sched_setaffinity(pid: Int32; cpusetsize: NativeUInt; mask: Pointer): Int32; cdecl;
-  external libc name 'sched_setaffinity';
-function sched_getaffinity(pid: Int32; cpusetsize: NativeUInt; mask: Pointer): Int32; cdecl;
-  external libc name 'sched_getaffinity';
-function sched_getcpu: Int32; cdecl;
-  external libc name 'sched_getcpu';
+function sched_setaffinity(pid: Int32; cpusetsize: NativeUInt; mask: Pointer): Int32; cdecl; external libc name 'sched_setaffinity';
+
+function sched_getaffinity(pid: Int32; cpusetsize: NativeUInt; mask: Pointer): Int32; cdecl; external libc name 'sched_getaffinity';
+
+function sched_getcpu: Int32; cdecl; external libc name 'sched_getcpu';
 {$ENDIF}
 
 { TN64CPUSet }
@@ -128,7 +131,8 @@ begin
     function(const A, B: TN64HostCore): Integer
     begin
       if A.Speed <> B.Speed then
-        Exit(Ord(A.Speed < B.Speed) - Ord(A.Speed > B.Speed));
+        Exit(Ord((A.Speed) < (B.Speed)) - Ord(A.Speed > B.Speed));
+
       if A.CPUs.Contains(Here) <> B.CPUs.Contains(Here) then
         Exit(Ord(B.CPUs.Contains(Here)) - Ord(A.CPUs.Contains(Here)));
       // By the first processor of each.
@@ -203,6 +207,7 @@ end;
 {$ENDIF}
 
 {$IF DEFINED(LINUX) or DEFINED(ANDROID)}
+
 function ReadNumber(const Path: string; Default: Int64): Int64;
 begin
   // The first decimal number in a /sys file. (Such a file claims a page's
@@ -286,6 +291,7 @@ end;
 {$ENDIF}
 
 {$IF not DEFINED(MSWINDOWS) and not DEFINED(LINUX) and not DEFINED(ANDROID)}
+
 function HostCores: TArray<TN64HostCore>;
 begin
   Result := nil;
@@ -299,3 +305,4 @@ end;
 {$ENDIF}
 
 end.
+

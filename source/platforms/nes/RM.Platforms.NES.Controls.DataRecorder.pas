@@ -1,0 +1,355 @@
+﻿unit RM.Platforms.NES.Controls.DataRecorder;
+
+interface
+
+uses
+  System.Classes, System.Types, System.UITypes, FMX.Types, FMX.Controls,
+  FMX.StdCtrls, FMX.Layouts, NES.FamicomDataRecorder;
+
+type
+  TTapeActionEvent = procedure(Sender: TObject; Action: TTapeAction; const FileName: string) of object;
+
+  TNesDataRecorder = class(TControl)
+  private
+    FProgress: TTapeProgress;
+    FButtons: array[TTapeAction] of TButton;
+    FTransportRow, FFileRow: TLayout;
+    FOnAction: TTapeActionEvent;
+    FOnChooseFile: TNotifyEvent;
+    FOnSaveAs: TNotifyEvent;
+    procedure ButtonClick(Sender: TObject);
+    procedure SetProgress(const Value: TTapeProgress);
+    procedure LayoutButtons;
+    function GetStateText: string;
+    function GetActivityText: string;
+    function GetCounterText: string;
+    function GetPositionText: string;
+    function GetFileText: string;
+  protected
+    procedure Paint; override;
+    procedure Resize; override;
+  public
+    constructor Create(AOwner: TComponent); override;
+    class function PreferredHeight(AvailableWidth, AvailableHeight: Single): Single; static;
+    procedure RequestAction(Action: TTapeAction; const FileName: string = '');
+    function ActionButton(Action: TTapeAction): TButton;
+    function MapBounds: TRectF;
+    property Progress: TTapeProgress read FProgress write SetProgress;
+    property StateText: string read GetStateText;
+    property ActivityText: string read GetActivityText;
+    property CounterText: string read GetCounterText;
+    property PositionText: string read GetPositionText;
+    property FileText: string read GetFileText;
+  published
+    property Align;
+    property Anchors;
+    property Enabled;
+    property Margins;
+    property Position;
+    property Size;
+    property Visible;
+    property OnAction: TTapeActionEvent read FOnAction write FOnAction;
+    property OnChooseFile: TNotifyEvent read FOnChooseFile write FOnChooseFile;
+    property OnSaveAs: TNotifyEvent read FOnSaveAs write FOnSaveAs;
+  end;
+
+implementation
+
+uses
+  System.SysUtils, System.Math, FMX.Graphics, RM.Icons;
+
+type
+  // Keep TButton click/capture/accessibility behavior while drawing mechanical keys.
+  TRecorderButton = class(TButton)
+  protected
+    procedure ApplyStyle; override;
+    procedure Paint; override;
+    procedure SetIsPressed(const Value: Boolean); override;
+  end;
+
+procedure TRecorderButton.ApplyStyle;
+begin
+  inherited;
+  if ResourceLink is TControl then
+    TControl(ResourceLink).Visible := False;
+end;
+
+procedure TRecorderButton.SetIsPressed(const Value: Boolean);
+begin
+  inherited;
+  Repaint;
+end;
+
+procedure TRecorderButton.Paint;
+begin
+  var Opacity := AbsoluteOpacity;
+  if not AbsoluteEnabled then
+    Opacity := Opacity * 0.45;
+  var R := LocalRect;
+  Canvas.Fill.Kind := TBrushKind.Solid;
+  Canvas.Fill.Color := $FF776A54;
+  Canvas.FillRect(R, 2, 2, AllCorners, Opacity);
+  R.Inflate(-1, -1);
+  if IsPressed then
+    R.Top := R.Top + 2
+  else
+    R.Bottom := R.Bottom - 2;
+  Canvas.Fill.Color := $FFE9E2CE;
+  if Tag = Ord(TapeRecord) then
+    Canvas.Fill.Color := $FF934037;
+  Canvas.FillRect(R, 2, 2, AllCorners, Opacity);
+  Canvas.Font.Family := 'Arial';
+  Canvas.Font.Style := [TFontStyle.fsBold];
+  Canvas.Font.Size := Max(8, Min(12, Height * 0.45));
+  Canvas.Fill.Color := $FF41382E;
+  if Tag = Ord(TapeRecord) then
+    Canvas.Fill.Color := $FFFFEFCE;
+  Canvas.FillText(R, Text, False, Opacity, [], TTextAlign.Center, TTextAlign.Center);
+end;
+
+constructor TNesDataRecorder.Create(AOwner: TComponent);
+const
+  Names: array[TTapeAction] of string = ('Play', 'Record', 'Stop', 'Rewind', 'Forward', 'ChooseFile', 'DefaultFile', 'SaveAs');
+  Captions: array[TTapeAction] of string = ('Play cassette', 'Record', 'Stop', 'Rewind', 'Forward', 'Choose file...', 'ROM cassette', 'Save as...');
+begin
+  inherited;
+  SetSize(480, 212);
+  HitTest := False;
+  FFileRow := TLayout.Create(Self);
+  FFileRow.Parent := Self;
+  FFileRow.Align := TAlignLayout.Bottom;
+  FTransportRow := TLayout.Create(Self);
+  FTransportRow.Parent := Self;
+  FTransportRow.Align := TAlignLayout.Bottom;
+  for var Action := Low(TTapeAction) to High(TTapeAction) do
+  begin
+    FButtons[Action] := TRecorderButton.Create(Self);
+    FButtons[Action].StyleLookup := 'buttonstyle';
+    FButtons[Action].Name := 'Tape' + Names[Action];
+    if Action <= TapeForward then
+      FButtons[Action].Parent := FTransportRow
+    else
+      FButtons[Action].Parent := FFileRow;
+    FButtons[Action].Align := TAlignLayout.Left;
+    FButtons[Action].Margins.Right := 5;
+    FButtons[Action].Tag := Ord(Action);
+    FButtons[Action].Text := Translate(Captions[Action]);
+    FButtons[Action].CanFocus := False;
+    FButtons[Action].OnClick := ButtonClick;
+  end;
+  FButtons[TapeRewind].Hint := Translate('Rewind 5% of the cassette');
+  FButtons[TapeForward].Hint := Translate('Advance 5% of the cassette');
+  AddButtonIcon(FButtons[TapeRewind], IconRewind, 16, $FF41382E);
+  AddButtonIcon(FButtons[TapeForward], IconForward, 16, $FF41382E);
+  LayoutButtons;
+end;
+
+class function TNesDataRecorder.PreferredHeight(AvailableWidth, AvailableHeight: Single): Single;
+begin
+  Result := Min(212, Max(150, AvailableHeight * 0.4));
+  if AvailableWidth < 360 then
+    Result := Max(Result, 198);
+end;
+
+function TNesDataRecorder.ActionButton(Action: TTapeAction): TButton;
+begin
+  Result := FButtons[Action];
+end;
+
+procedure TNesDataRecorder.ButtonClick(Sender: TObject);
+begin
+  RequestAction(TTapeAction(TButton(Sender).Tag));
+end;
+
+procedure TNesDataRecorder.RequestAction(Action: TTapeAction; const FileName: string);
+begin
+  if not Enabled or not Visible then
+    Exit;
+  if (Action in [TapeRewind, TapeForward]) and ((FProgress.State = TapeRecording) or (FProgress.TapeBytes = 0)) then
+    Exit;
+
+  if (Action = TapeSelectFile) and (FileName = '') then
+  begin
+    if Assigned(FOnChooseFile) then
+      FOnChooseFile(Self);
+  end
+  else if (Action = TapeSaveAs) and (FileName = '') then
+  begin
+    if Assigned(FOnSaveAs) then
+      FOnSaveAs(Self);
+  end
+  else if Assigned(FOnAction) then
+    FOnAction(Self, Action, FileName);
+end;
+
+procedure TNesDataRecorder.SetProgress(const Value: TTapeProgress);
+begin
+  FProgress := Value;
+  FButtons[TapeRewind].Enabled := (Value.State <> TapeRecording) and (Value.TapeBytes > 0);
+  FButtons[TapeForward].Enabled := FButtons[TapeRewind].Enabled;
+  FButtons[TapeDefaultFile].Enabled := not Value.DefaultFile;
+  Repaint;
+end;
+
+function TNesDataRecorder.GetStateText: string;
+begin
+  case FProgress.State of
+    TapePlaying:
+      Result := Translate('Data Recorder - playing');
+    TapeRecording:
+      Result := Translate('Data Recorder - recording');
+  else
+    Result := Translate('Data Recorder - stopped');
+  end;
+end;
+
+function TNesDataRecorder.GetActivityText: string;
+begin
+  if FProgress.Reading then
+    Result := Translate('Game is reading')
+  else if FProgress.Writing then
+    Result := Translate('Game is writing')
+  else
+    Result := Translate('Waiting for game');
+  Result := Result + Format('  |  I/O: R %d / W %d', [FProgress.ReadAccesses, FProgress.WriteAccesses]);
+end;
+
+function TNesDataRecorder.GetCounterText: string;
+begin
+  Result := Format(Translate('READ %d B [$%s]   WRITE %d B [$%s]'), [
+      FProgress.ReadBytes, IntToHex(FProgress.LastReadByte, 2),
+      FProgress.WrittenBytes, IntToHex(FProgress.LastWrittenByte, 2)]);
+end;
+
+function TNesDataRecorder.GetPositionText: string;
+begin
+  if FProgress.State = TapeRecording then
+    Result := Format(Translate('Tape signal: %d bytes recorded'), [FProgress.WrittenBytes])
+  else if FProgress.TapeBytes = 0 then
+    Result := Translate('Empty cassette')
+  else
+    Result := Format(Translate('Position: %d / %d B (%.1f%%)'), [
+        FProgress.PositionBytes, FProgress.TapeBytes,
+        FProgress.PositionBytes * 100.0 / FProgress.TapeBytes]);
+end;
+
+function TNesDataRecorder.GetFileText: string;
+begin
+  if FProgress.DefaultFile then
+    Result := Translate('ROM cassette: ')
+  else
+    Result := Translate('Selected: ');
+  Result := Result + ExtractFileName(FProgress.FileName);
+end;
+
+function TNesDataRecorder.MapBounds: TRectF;
+begin
+  Result := RectF(10, Height * 0.44, Max(10, Width - 10), Height * 0.53);
+end;
+
+procedure TNesDataRecorder.LayoutButtons;
+begin
+  if (FButtons[TapePlay] = nil) or (FFileRow = nil) then
+    Exit;
+  FFileRow.Height := Height * 0.12;
+  FFileRow.Margins.Rect := RectF(10, Height * 0.03, 10, Height * 0.03);
+  FTransportRow.Height := Height * 0.12;
+  FTransportRow.Margins.Rect := RectF(10, 0, 10, 0);
+  var W := Max(1, (Width - 40) / 5);
+  for var Action := TapePlay to TapeForward do
+    FButtons[Action].Width := W;
+  FButtons[TapeForward].Margins.Right := 0;
+  W := Max(1, (Width - 30) / 3);
+  for var Action := TapeSelectFile to TapeSaveAs do
+    FButtons[Action].Width := W;
+  FButtons[TapeSaveAs].Margins.Right := 0;
+end;
+
+procedure TNesDataRecorder.Resize;
+begin
+  inherited;
+  LayoutButtons;
+end;
+
+procedure TNesDataRecorder.Paint;
+
+  procedure Text(const Value: string; Y: Single; Color: TAlphaColor; Bold: Boolean = False);
+  begin
+    Canvas.Fill.Color := Color;
+    if Bold then
+      Canvas.Font.Style := [TFontStyle.fsBold]
+    else
+      Canvas.Font.Style := [];
+    var TextRight := Width * 0.55;
+    if Width < 480 then
+      TextRight := Width - 10;
+    Canvas.FillText(RectF(10, Y, TextRight, Y + Height * 0.085), Value,
+      False, AbsoluteOpacity, [], TTextAlign.Leading, TTextAlign.Center);
+  end;
+
+begin
+  inherited;
+  Canvas.Fill.Kind := TBrushKind.Solid;
+  Canvas.Fill.Color := $FFDACCA8;
+  Canvas.FillRect(LocalRect, 7, 7, AllCorners, AbsoluteOpacity);
+  Canvas.Stroke.Kind := TBrushKind.Solid;
+  Canvas.Stroke.Color := $FF8C7755;
+  Canvas.Stroke.Thickness := 1;
+  Canvas.DrawRect(LocalRect, 7, 7, AllCorners, AbsoluteOpacity);
+  // Smoked cassette window and twin reels of the Famicom data recorder.
+  var Window := RectF(Width * 0.59, Height * 0.04, Width - 10, Height * 0.37);
+  if Width < 480 then
+    Window := RectF(Width * 0.76, Height * 0.015, Width - 10, Height * 0.105);
+  Canvas.Fill.Color := $FF413B32;
+  Canvas.FillRect(Window, 4, 4, AllCorners, AbsoluteOpacity);
+  Canvas.Fill.Color := $FFB7AA87;
+  var ReelSize := Min(Window.Height * 0.64, Window.Width * 0.34);
+  for var I := 0 to 1 do
+  begin
+    var CX := Window.Left + Window.Width * (0.28 + I * 0.44);
+    var CY := Window.CenterPoint.Y;
+    var Reel := RectF(CX - ReelSize / 2, CY - ReelSize / 2, CX + ReelSize / 2, CY + ReelSize / 2);
+    Canvas.Fill.Color := $FFB7AA87;
+    Canvas.FillEllipse(Reel, AbsoluteOpacity);
+    Reel.Inflate(-ReelSize * 0.30, -ReelSize * 0.30);
+    Canvas.Fill.Color := $FF413B32;
+    Canvas.FillEllipse(Reel, AbsoluteOpacity);
+  end;
+  Canvas.Font.Family := 'sans-serif';
+  Canvas.Font.Size := Max(10, Min(13, Width / 28));
+  Text(StateText, Height * 0.025, $FF41382E, True);
+  var Color: TAlphaColor := $FF75634D;
+  if FProgress.Reading then
+    Color := $FF47744E
+  else if FProgress.Writing then
+    Color := $FFA03932;
+  Text(ActivityText, Height * 0.13, Color);
+  Text(CounterText, Height * 0.23, $FF41382E);
+  Text(PositionText, Height * 0.33, $FF75634D);
+  var R := MapBounds;
+  Canvas.Fill.Color := $FF352F28;
+  Canvas.FillRect(R, 3, 3, [], AbsoluteOpacity);
+  Canvas.Stroke.Kind := TBrushKind.Solid;
+  Canvas.Stroke.Thickness := 3;
+  Canvas.Stroke.Color := $FF47744E;
+  if FProgress.State = TapeRecording then
+    Canvas.Stroke.Color := $FFA03932;
+  for var i := 0 to 255 do
+    if FProgress.SignalMap[i] <> 0 then
+      Canvas.DrawLine(PointF(R.Left + R.Width * i / 256, R.CenterPoint.Y),
+        PointF(R.Left + R.Width * (i + 1) / 256, R.CenterPoint.Y), AbsoluteOpacity);
+  if FProgress.TapeBytes > 0 then
+  begin
+    var X := R.Left + R.Width * Min(1.0, FProgress.PositionBytes / FProgress.TapeBytes);
+    Canvas.Stroke.Color := $FF41382E;
+    Canvas.Stroke.Thickness := 2;
+    Canvas.DrawLine(PointF(X, R.Top), PointF(X, R.Bottom), AbsoluteOpacity);
+  end;
+  Canvas.Fill.Color := $FF75634D;
+  Canvas.Font.Style := [];
+  Canvas.FillText(RectF(10, Height * 0.57, Width - 10, Height * 0.655), FileText,
+    False, AbsoluteOpacity, [], TTextAlign.Leading, TTextAlign.Center);
+end;
+
+end.
+

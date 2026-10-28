@@ -7,16 +7,20 @@
 
 interface
 
-uses System.SysUtils, System.Classes, Core.Snapshots;
+uses
+  System.SysUtils, System.Classes, Core.Snapshots;
 
 type
   TN64EventKind = (VIHalfLine, OutputSample, AIConsume, SPTransfer,
     PITransfer, SITransfer, RSPClock, DPInterrupt);
+
   TN64Event = record
     Due, Sequence: UInt64;
     Kind: TN64EventKind;
   end;
+
   TN64EventArray = array[0..31] of TN64Event;
+
   TN64Timeline = class
   private
     FNow, FSequence: UInt64;
@@ -89,9 +93,12 @@ type
 // tick, the following ones are exactly the PClocks T with T mod 3 <> 1.
 function NextRCPClock(Tick: UInt64): UInt64; inline;
 // X mod 3, without a division.
+
 function Mod3(X: UInt64): Cardinal; inline;
 // RCP ticks in (A, B] (B >= A), and the Count-th tick after A (Count >= 1).
+
 function RCPTicksBetween(A, B: UInt64): UInt64; inline;
+
 function RCPTickAfter(A, Count: UInt64): UInt64;
 
 implementation
@@ -174,10 +181,18 @@ end;
 
 procedure TN64Timeline.Reset;
 begin
-  FNow := 0; FSequence := 0; FCount := 0;
-  for var I := 0 to High(FEvents) do FEvents[I] := Default(TN64Event);
-  FFast := Default(TN64Event); FFastActive := False;
-  FAheadLeft := 0; FAheadDone := 0; FHorizon := 0; FMaterialized := 0; FInEvent := False;
+  FNow := 0;
+  FSequence := 0;
+  FCount := 0;
+  for var I := 0 to High(FEvents) do
+    FEvents[I] := Default(TN64Event);
+  FFast := Default(TN64Event);
+  FFastActive := False;
+  FAheadLeft := 0;
+  FAheadDone := 0;
+  FHorizon := 0;
+  FMaterialized := 0;
+  FInEvent := False;
   CountKinds;
   UpdateNext;
 end;
@@ -282,9 +297,12 @@ end;
 
 procedure TN64Timeline.CountKinds;
 begin
-  for var Kind := Low(TN64EventKind) to High(TN64EventKind) do FKindCount[Kind] := 0;
-  for var I := 0 to FCount - 1 do Inc(FKindCount[FEvents[I].Kind]);
-  if FFastActive then Inc(FKindCount[FFast.Kind]);
+  for var Kind := Low(TN64EventKind) to High(TN64EventKind) do
+    FKindCount[Kind] := 0;
+  for var I := 0 to FCount - 1 do
+    Inc(FKindCount[FEvents[I].Kind]);
+  if FFastActive then
+    Inc(FKindCount[FFast.Kind]);
 end;
 
 function TN64Timeline.FastFirst: Boolean;
@@ -301,18 +319,23 @@ begin
     MaterializeCurrent;
   if (Delay >= High(UInt64) - FNow) or (FSequence = High(UInt64)) then
     raise ERangeError.Create('N64 guest timeline exceeds representable time');
-  if FCount + Ord(FFastActive) = Length(FEvents) then raise ERangeError.Create('N64 event queue is full');
+  if FCount + Ord(FFastActive) = Length(FEvents) then
+    raise ERangeError.Create('N64 event queue is full');
   Inc(FKindCount[Kind]);
   if (Kind = TN64EventKind.RSPClock) and FFastActive then
     raise EInvalidOpException.Create('N64 RSP clock scheduled twice');
   if (Kind = TN64EventKind.RSPClock) and not FFastActive then
   begin
     // An inactive slot is all zero (Reset/Pop/Cancel), padding included.
-    FFast.Due := FNow + Delay; FFast.Sequence := FSequence; FFast.Kind := Kind;
+    FFast.Due := FNow + Delay;
+    FFast.Sequence := FSequence;
+    FFast.Kind := Kind;
     FFastActive := True;
     Inc(FSequence);
-    if FFast.Due < FNextDue then FNextDue := FFast.Due;
-    if FFast.Due < FNextHard then FNextHard := FFast.Due;
+    if FFast.Due < FNextDue then
+      FNextDue := FFast.Due;
+    if FFast.Due < FNextHard then
+      FNextHard := FFast.Due;
     Exit;
   end;
   var Due := FNow + Delay;
@@ -323,24 +346,35 @@ begin
     FEvents[FCount].Due := Due;
     FEvents[FCount].Sequence := FSequence;
     FEvents[FCount].Kind := Kind;
-    Inc(FSequence); Inc(FCount);
-    if Due < FNextDue then FNextDue := Due;
-    if (Kind <> TN64EventKind.SPTransfer) and (Due < FNextHard) then FNextHard := Due;
+    Inc(FSequence);
+    Inc(FCount);
+    if Due < FNextDue then
+      FNextDue := Due;
+    if (Kind <> TN64EventKind.SPTransfer) and (Due < FNextHard) then
+      FNextHard := Due;
     Exit;
   end;
   var E := Default(TN64Event);
-  E.Due := FNow + Delay; E.Sequence := FSequence; E.Kind := Kind;
+  E.Due := FNow + Delay;
+  E.Sequence := FSequence;
+  E.Kind := Kind;
   Inc(FSequence);
   // The new event has the largest sequence, so it pops after every queued
   // event due at the same time and goes below them in this latest-first array.
   var I := FCount;
   while (I > 0) and (FEvents[I - 1].Due <= E.Due) do
-  begin FEvents[I] := FEvents[I - 1]; Dec(I) end;
-  FEvents[I] := E; Inc(FCount);
+  begin
+    FEvents[I] := FEvents[I - 1];
+    Dec(I)
+  end;
+  FEvents[I] := E;
+  Inc(FCount);
   // Insertion can only lower the cached deadlines. SP beats are omitted
   // from NextHard, so adding one never requires rescanning that deadline.
-  if E.Due < FNextDue then FNextDue := E.Due;
-  if (Kind <> TN64EventKind.SPTransfer) and (E.Due < FNextHard) then FNextHard := E.Due;
+  if E.Due < FNextDue then
+    FNextDue := E.Due;
+  if (Kind <> TN64EventKind.SPTransfer) and (E.Due < FNextHard) then
+    FNextHard := E.Due;
 end;
 
 procedure TN64Timeline.Cancel(Kind: TN64EventKind);
@@ -351,16 +385,22 @@ begin
     if (Kind = TN64EventKind.RSPClock) and (FAheadLeft > 0) then
       raise EInvalidOpException.Create('N64 RSP clock cancelled during run-ahead');
   end;
-  if FKindCount[Kind] = 0 then Exit;
+  if FKindCount[Kind] = 0 then
+    Exit;
   if FFastActive and (FFast.Kind = Kind) then
   begin
-    FFast := Default(TN64Event); FFastActive := False;
+    FFast := Default(TN64Event);
+    FFastActive := False;
   end;
   var N := 0;
   for var I := 0 to FCount - 1 do
     if FEvents[I].Kind <> Kind then
-    begin FEvents[N] := FEvents[I]; Inc(N) end;
-  for var I := N to FCount - 1 do FEvents[I] := Default(TN64Event);
+    begin
+      FEvents[N] := FEvents[I];
+      Inc(N)
+    end;
+  for var I := N to FCount - 1 do
+    FEvents[I] := Default(TN64Event);
   FCount := N;
   FKindCount[Kind] := 0;
   UpdateNext;
@@ -411,7 +451,8 @@ end;
 
 procedure TN64Timeline.AdvanceTo(Tick: UInt64);
 begin
-  if Tick < FNow then RaiseBackwards;
+  if Tick < FNow then
+    RaiseBackwards;
   FNow := Tick;
   FInEvent := False;
 end;
@@ -432,13 +473,18 @@ begin
     if (FCount = 0) or (FEvents[FCount - 1].Due > 0) then
       MaterializeTo(Limit);
     while (FAheadLeft > 0) and (FFast.Due <= FNow) and ((FCount = 0) or (FFast.Due < FEvents[FCount - 1].Due) or
-      ((FFast.Due = FEvents[FCount - 1].Due) and (FFast.Sequence < FEvents[FCount - 1].Sequence))) do
+        ((FFast.Due = FEvents[FCount - 1].Due) and (FFast.Sequence < FEvents[FCount - 1].Sequence))) do
       MaterializeOne;
     if FAheadLeft > 0 then
     begin
       // The fast slot is a run-ahead clock after the first queued event.
       Result := (FCount > 0) and (FEvents[FCount - 1].Due <= FNow);
-      if not Result then begin Event := Default(TN64Event); FInEvent := False; Exit end;
+      if not Result then
+      begin
+        Event := Default(TN64Event);
+        FInEvent := False;
+        Exit
+      end;
       Dec(FCount);
       Event := FEvents[FCount];
       FEvents[FCount] := Default(TN64Event);
@@ -447,24 +493,38 @@ begin
       if Event.Kind = TN64EventKind.SPTransfer then
       begin
         FNextDue := FNextHard;
-        if (FCount > 0) and (FEvents[FCount - 1].Due < FNextDue) then FNextDue := FEvents[FCount - 1].Due;
+        if (FCount > 0) and (FEvents[FCount - 1].Due < FNextDue) then
+          FNextDue := FEvents[FCount - 1].Due;
       end
-      else UpdateNext;
+      else
+        UpdateNext;
       Exit;
     end;
   end;
   if FastFirst then
   begin
     Result := FFast.Due <= FNow;
-    if not Result then begin Event := Default(TN64Event); FInEvent := False; Exit end;
+    if not Result then
+    begin
+      Event := Default(TN64Event);
+      FInEvent := False;
+      Exit
+    end;
     Event := FFast;
-    FFast.Due := 0; FFast.Sequence := 0; FFast.Kind := Low(TN64EventKind);
+    FFast.Due := 0;
+    FFast.Sequence := 0;
+    FFast.Kind := Low(TN64EventKind);
     FFastActive := False;
   end
   else
   begin
     Result := (FCount > 0) and (FEvents[FCount - 1].Due <= FNow);
-    if not Result then begin Event := Default(TN64Event); FInEvent := False; Exit end;
+    if not Result then
+    begin
+      Event := Default(TN64Event);
+      FInEvent := False;
+      Exit
+    end;
     Dec(FCount);
     Event := FEvents[FCount];
     FEvents[FCount] := Default(TN64Event);
@@ -474,9 +534,11 @@ begin
   if Event.Kind = TN64EventKind.SPTransfer then
   begin
     FNextDue := FNextHard;
-    if (FCount > 0) and (FEvents[FCount - 1].Due < FNextDue) then FNextDue := FEvents[FCount - 1].Due;
+    if (FCount > 0) and (FEvents[FCount - 1].Due < FNextDue) then
+      FNextDue := FEvents[FCount - 1].Due;
   end
-  else UpdateNext;
+  else
+    UpdateNext;
 end;
 
 procedure TN64Timeline.SerializeState(State: TStateArchive);
@@ -487,7 +549,8 @@ begin
   if FAheadLeft > 0 then
     raise EInvalidOpException.Create('N64 timeline saved during RSP run-ahead');
   var Ordered: TN64EventArray;
-  for var I := 0 to High(Ordered) do Ordered[I] := Default(TN64Event);
+  for var I := 0 to High(Ordered) do
+    Ordered[I] := Default(TN64Event);
   var Total := FCount;
   if not State.Loading then
   begin
@@ -499,15 +562,24 @@ begin
       if FastPending and ((FFast.Due < FEvents[I].Due) or
         ((FFast.Due = FEvents[I].Due) and (FFast.Sequence < FEvents[I].Sequence))) then
       begin
-        Ordered[N] := FFast; Inc(N); FastPending := False;
+        Ordered[N] := FFast;
+        Inc(N);
+        FastPending := False;
       end;
-      Ordered[N] := FEvents[I]; Inc(N);
+      Ordered[N] := FEvents[I];
+      Inc(N);
     end;
-    if FastPending then begin Ordered[N] := FFast; Inc(N) end;
+    if FastPending then
+    begin
+      Ordered[N] := FFast;
+      Inc(N)
+    end;
     Total := N;
   end;
-  State.Field(FNow, SizeOf(FNow)); State.Field(FSequence, SizeOf(FSequence));
-  State.Field(Total, SizeOf(Total)); State.Field(Ordered, SizeOf(Ordered));
+  State.Field(FNow, SizeOf(FNow));
+  State.Field(FSequence, SizeOf(FSequence));
+  State.Field(Total, SizeOf(Total));
+  State.Field(Ordered, SizeOf(Ordered));
   if State.Loading then
   begin
     if (Total < 0) or (Total > Length(Ordered)) then
@@ -531,13 +603,21 @@ begin
     end;
     // Restored events all go to the queue; the next RSP clock refills the slot.
     FCount := Total;
-    for var I := 0 to High(FEvents) do FEvents[I] := Default(TN64Event);
-    for var I := 0 to FCount - 1 do FEvents[I] := Ordered[FCount - 1 - I];
-    FFast := Default(TN64Event); FFastActive := False;
-    FAheadLeft := 0; FAheadDone := 0; FHorizon := 0; FMaterialized := 0; FInEvent := False;
+    for var I := 0 to High(FEvents) do
+      FEvents[I] := Default(TN64Event);
+    for var I := 0 to FCount - 1 do
+      FEvents[I] := Ordered[FCount - 1 - I];
+    FFast := Default(TN64Event);
+    FFastActive := False;
+    FAheadLeft := 0;
+    FAheadDone := 0;
+    FHorizon := 0;
+    FMaterialized := 0;
+    FInEvent := False;
     CountKinds;
     UpdateNext;
   end;
 end;
 
 end.
+

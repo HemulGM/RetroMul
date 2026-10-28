@@ -89,8 +89,7 @@ type
     procedure Reset;
     procedure RunFrame;
     procedure ConfigureInputPorts(const Ports: TCoreInputPorts);
-    procedure SetInput(const Buttons: TMDButtons; const Buttons2: TMDButtons = [];
-      const Buttons3: TMDButtons = []; const Buttons4: TMDButtons = []);
+    procedure SetInput(const Buttons: TMDButtons; const Buttons2: TMDButtons = []; const Buttons3: TMDButtons = []; const Buttons4: TMDButtons = []);
     function ReadByte(Address: Cardinal): Byte;
     function ReadWord(Address: Cardinal): Word;
     procedure WriteByte(Address: Cardinal; Value: Byte);
@@ -255,7 +254,8 @@ begin
   begin
     C.FCD.Advance(C.FBusTime);
     var Data: Word;
-    if C.FCD.ReadVDPDMA(Address, Data) then Exit(Data);
+    if C.FCD.ReadVDPDMA(Address, Data) then
+      Exit(Data);
   end;
   Result := C.ReadWord(Address);
 end;
@@ -294,11 +294,13 @@ begin
   if FCartridge.Is32X or TMDMegaCD.Requires32X(Disc) then
   begin
     var CartROM := FCartridge.Data;
-    if Disc <> nil then CartROM := nil;
+    if Disc <> nil then
+      CartROM := nil;
     F32X := TMD32X.Create(CartROM, LoadMDFirmware('32x_g'),
       LoadMDFirmware('32x_m'), LoadMDFirmware('32x_s'), FLines = 313);
   end;
-  if Disc <> nil then FCD := TMDMegaCD.Create(Data, Disc, FMasterClock);
+  if Disc <> nil then
+    FCD := TMDMegaCD.Create(Data, Disc, FMasterClock);
   SetLength(FFrame, 320 * 480);
   SetLength(FAudio, 2048 * 2);
   if (FEEPROM = nil) and not FMapper.HasBattery and (FCartridge.ReadWord($1B0) = $5241) then
@@ -332,8 +334,10 @@ end;
 procedure TMDConsole.Reset;
 begin
   FMapper.Reset;
-  if FCD <> nil then FCD.Reset;
-  if F32X <> nil then F32X.Reset;
+  if FCD <> nil then
+    FCD.Reset;
+  if F32X <> nil then
+    F32X.Reset;
   if FEEPROM <> nil then
     FEEPROM.Reset;
   FillChar(FRAM, SizeOf(FRAM), 0);
@@ -526,12 +530,14 @@ begin
   if FCD <> nil then
   begin
     FCD.Advance(FBusTime);
-    if FCD.MainRead(Address, Result) then Exit;
+    if FCD.MainRead(Address, Result) then
+      Exit;
   end;
   if F32X <> nil then
   begin
     F32X.Advance(FBusTime);
-    if F32X.MainRead(Address, Result) then Exit;
+    if F32X.MainRead(Address, Result) then
+      Exit;
   end;
   if FCartridge.JCart and (Address = $38FFFE) then
     // J-Cart D6 echoes TH; D14 is wired low, not the second pad's TH.
@@ -581,7 +587,8 @@ begin
             V := $20;
           if FCartridge.Region = TMDRegion.Europe then
             V := $E0;
-          if FCD <> nil then V := V and $DF;
+          if FCD <> nil then
+            V := V and $DF;
         end;
       1, 2:
         V := ReadPad(Index);
@@ -644,12 +651,14 @@ begin
   begin
     FCD.Advance(FBusTime);
 
-    if FCD.MainWrite(Address, Value, HighByte, LowByte) then Exit;
+    if FCD.MainWrite(Address, Value, HighByte, LowByte) then
+      Exit;
   end;
   if F32X <> nil then
   begin
     F32X.Advance(FBusTime);
-    if F32X.MainWrite(Address, Value, HighByte, LowByte) then Exit;
+    if F32X.MainWrite(Address, Value, HighByte, LowByte) then
+      Exit;
   end;
   if FCartridge.JCart and (Address = $38FFFE) then
   begin
@@ -660,7 +669,8 @@ begin
     end;
     Exit;
   end;
-  if FMapper.Write(Address, Value, HighByte, LowByte) then Exit;
+  if FMapper.Write(Address, Value, HighByte, LowByte) then
+    Exit;
   if Address < $400000 then
   begin
     if (FEEPROM <> nil) and FEEPROM.WriteBus(Address, Value, HighByte, LowByte) then
@@ -894,17 +904,31 @@ begin
   while FAudioTime < Target do
   begin
     Next := Min(Target, Min(FNextPCM, Min(FNextFM, FNextPSG)));
-    PWMLeft := 0; PWMRight := 0;
+    PWMLeft := 0;
+    PWMRight := 0;
     if F32X <> nil then
     begin
-      F32X.Advance(Next); F32X.Sample(PWMLeft, PWMRight);
+      F32X.Advance(Next);
+      F32X.Sample(PWMLeft, PWMRight);
     end;
-    CDLeft := 0; CDRight := 0;
+    CDLeft := 0;
+    CDRight := 0;
     if FCD <> nil then
-    begin FCD.Advance(Next); FCD.Sample(CDLeft, CDRight); end;
+    begin
+      FCD.Advance(Next);
+      FCD.Sample(CDLeft, CDRight);
+    end;
     // Keep advancing expansion hardware even when its audio is muted.
-    if not FCDAudioEnabled then begin CDLeft := 0; CDRight := 0; end;
-    if not F32XAudioEnabled then begin PWMLeft := 0; PWMRight := 0; end;
+    if not FCDAudioEnabled then
+    begin
+      CDLeft := 0;
+      CDRight := 0;
+    end;
+    if not F32XAudioEnabled then
+    begin
+      PWMLeft := 0;
+      PWMRight := 0;
+    end;
     CDLeft := CDLeft * FCDVolume div 100;
     CDRight := CDRight * FCDVolume div 100;
     PWMLeft := PWMLeft * F32XVolume div 100;
@@ -970,8 +994,10 @@ begin
   SyncVDP(Target);
   SyncZ80(Target);
   SyncAudio(Target);
-  if F32X <> nil then F32X.Advance(Target);
-  if FCD <> nil then FCD.Advance(Target);
+  if F32X <> nil then
+    F32X.Advance(Target);
+  if FCD <> nil then
+    FCD.Advance(Target);
 end;
 
 procedure TMDConsole.RunFrame;
@@ -1030,8 +1056,16 @@ end;
 
 procedure TMDConsole.LoadBattery(const Data: TBytes);
 begin
-  if FCD <> nil then begin FCD.LoadBattery(Data); Exit; end;
-  if FMapper.HasBattery then begin FMapper.LoadBattery(Data); Exit; end;
+  if FCD <> nil then
+  begin
+    FCD.LoadBattery(Data);
+    Exit;
+  end;
+  if FMapper.HasBattery then
+  begin
+    FMapper.LoadBattery(Data);
+    Exit;
+  end;
   if FEEPROM <> nil then
   begin
     FEEPROM.LoadBattery(Data);
@@ -1046,8 +1080,10 @@ end;
 
 function TMDConsole.BatteryData: TBytes;
 begin
-  if FCD <> nil then Exit(FCD.BatteryData);
-  if FMapper.HasBattery then Exit(FMapper.BatteryData);
+  if FCD <> nil then
+    Exit(FCD.BatteryData);
+  if FMapper.HasBattery then
+    Exit(FMapper.BatteryData);
   if FEEPROM <> nil then
     Result := FEEPROM.BatteryData
   else
@@ -1056,8 +1092,10 @@ end;
 
 function TMDConsole.GetBatteryDirty: Boolean;
 begin
-  if FCD <> nil then Exit(FCD.Dirty);
-  if FMapper.HasBattery then Exit(FMapper.Dirty);
+  if FCD <> nil then
+    Exit(FCD.Dirty);
+  if FMapper.HasBattery then
+    Exit(FMapper.Dirty);
   Result := FSRAMDirty;
   if FEEPROM <> nil then
     Result := FEEPROM.Dirty;
@@ -1068,7 +1106,8 @@ begin
   var Expansions: Byte := Ord(FCD <> nil) or (Ord(F32X <> nil) shl 1);
   var Expected := Expansions;
   State.Field(Expansions, SizeOf(Expansions));
-  if Expansions <> Expected then raise EReadError.Create('Snapshot expansion hardware mismatch');
+  if Expansions <> Expected then
+    raise EReadError.Create('Snapshot expansion hardware mismatch');
   State.Field(FCPU, SizeOf(FCPU));
   State.Field(FZ80, SizeOf(FZ80));
   State.Field(FVDP, SizeOf(FVDP));
@@ -1154,8 +1193,10 @@ end;
 
 procedure TMDConsole.MarkBatteryDirty;
 begin
-  if FCD <> nil then FCD.Dirty := True;
-  if FMapper.HasBattery then FMapper.Dirty := True;
+  if FCD <> nil then
+    FCD.Dirty := True;
+  if FMapper.HasBattery then
+    FMapper.Dirty := True;
   FSRAMDirty := Length(FSRAM) > 0;
   if FEEPROM <> nil then
     FEEPROM.Dirty := True;

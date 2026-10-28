@@ -36,7 +36,7 @@ type
     FAdhocctlInitialized: Boolean;
     FAdhocctlBlock: Cardinal;
     FAdhocctlProduct: TBytes;
-    FAdhocctlHandlers: TDictionary<Cardinal,TPSPAdhocHandler>;
+    FAdhocctlHandlers: TDictionary<Cardinal, TPSPAdhocHandler>;
     procedure ReleaseNet;
     procedure ReleaseMatching;
     procedure ReleaseAdhocctl;
@@ -61,7 +61,7 @@ begin
   inherited Create;
   FMemory := Memory;
   FModules := TDictionary<Cardinal, Boolean>.Create;
-  FAdhocctlHandlers:=TDictionary<Cardinal,TPSPAdhocHandler>.Create;
+  FAdhocctlHandlers := TDictionary<Cardinal, TPSPAdhocHandler>.Create;
   FCPU := CPU;
   FKernel := Kernel;
   FLanguage := 1;
@@ -91,7 +91,7 @@ procedure TPSPSystemHLE.ReleaseNet;
 begin
   ReleaseAdhocctl;
   ReleaseMatching;
-  FAdhocInitialized:=False;
+  FAdhocInitialized := False;
   for var I := 0 to 2 do
     if FNetBlocks[I] <> 0 then
     begin
@@ -103,113 +103,208 @@ end;
 
 procedure TPSPSystemHLE.ReleaseMatching;
 begin
-  if FMatchingBlock<>0 then FKernel.ReleaseModule(FMatchingBlock);
-  FMatchingBlock:=0;
-  FMatchingPoolSize:=0;
-  FMatchingInitialized:=False;
+  if FMatchingBlock <> 0 then
+    FKernel.ReleaseModule(FMatchingBlock);
+  FMatchingBlock := 0;
+  FMatchingPoolSize := 0;
+  FMatchingInitialized := False;
 end;
 
 procedure TPSPSystemHLE.ReleaseAdhocctl;
 begin
-  if FAdhocctlBlock<>0 then FKernel.ReleaseModule(FAdhocctlBlock);
-  FAdhocctlBlock:=0;
-  FAdhocctlInitialized:=False;
-  FAdhocctlProduct:=nil;
-  if FAdhocctlHandlers<>nil then FAdhocctlHandlers.Clear;
+  if FAdhocctlBlock <> 0 then
+    FKernel.ReleaseModule(FAdhocctlBlock);
+  FAdhocctlBlock := 0;
+  FAdhocctlInitialized := False;
+  FAdhocctlProduct := nil;
+  if FAdhocctlHandlers <> nil then
+    FAdhocctlHandlers.Clear;
 end;
 
 function TPSPSystemHLE.Adhoc(const ModuleName: string; NID, A, B, C: Cardinal; out Value: Cardinal): Boolean;
 begin
-  Result:=True;Value:=0;
-  if ModuleName='sceNetAdhoc' then
+  Result := True;
+  Value := 0;
+  if ModuleName = 'sceNetAdhoc' then
   begin
     case NID of
       $E1D621D7:
-        if FAdhocInitialized then Value:=$80410713
-        else FAdhocInitialized:=True;
+        if FAdhocInitialized then
+          Value := $80410713
+        else
+          FAdhocInitialized := True;
       $A62C6F57:
-        begin ReleaseAdhocctl;ReleaseMatching;FAdhocInitialized:=False end;
-    else Result:=False end;
+        begin
+          ReleaseAdhocctl;
+          ReleaseMatching;
+          FAdhocInitialized := False
+        end;
+    else
+      Result := False
+    end;
     Exit;
   end;
-  if ModuleName='sceNetAdhocctl' then
+  if ModuleName = 'sceNetAdhocctl' then
   begin
-    if NID=$E26F226E then
+    if NID = $E26F226E then
     begin
-      if FAdhocctlInitialized then begin Value:=$80410B07;Exit end;
-      if (C<>0) and not FMemory.IsValid(C,13) then begin Value:=$80410B04;Exit end;
-      if (B<8) or (B>119) then begin Value:=$80020193;Exit end;
-      if A>PSPRAMSize then begin Value:=$80020190;Exit end;
-      var Size:=A;if Size<$200 then Size:=$200;
-      var Address:Cardinal;var Block:=FKernel.ReserveModule(Size,Address);
-      if Block and $80000000<>0 then begin Value:=Block;Exit end;
-      FAdhocctlBlock:=Block;
-      FMemory.Zero(Address,Size);
-      SetLength(FAdhocctlProduct,16);
-      if C<>0 then FMemory.ReadInto(C,13,FAdhocctlProduct);
-      FAdhocctlInitialized:=True;
+      if FAdhocctlInitialized then
+      begin
+        Value := $80410B07;
+        Exit
+      end;
+      if (C <> 0) and not FMemory.IsValid(C, 13) then
+      begin
+        Value := $80410B04;
+        Exit
+      end;
+      if (B < 8) or (B > 119) then
+      begin
+        Value := $80020193;
+        Exit
+      end;
+      if A > PSPRAMSize then
+      begin
+        Value := $80020190;
+        Exit
+      end;
+      var Size := A;
+      if Size < $200 then
+        Size := $200;
+      var Address: Cardinal;
+      var Block := FKernel.ReserveModule(Size, Address);
+      if Block and $80000000 <> 0 then
+      begin
+        Value := Block;
+        Exit
+      end;
+      FAdhocctlBlock := Block;
+      FMemory.Zero(Address, Size);
+      SetLength(FAdhocctlProduct, 16);
+      if C <> 0 then
+        FMemory.ReadInto(C, 13, FAdhocctlProduct);
+      FAdhocctlInitialized := True;
       Exit;
     end;
-    if NID=$9D689E13 then begin ReleaseAdhocctl;Exit end;
+    if NID = $9D689E13 then
+    begin
+      ReleaseAdhocctl;
+      Exit
+    end;
     case NID of
-      $20B317A0,$6402490B,$75ECD386,$362CBE8F,$DED9D28E,$81AEE1BE,$E162CB14,
-      $34401D65,$0AD043ED,$EC0635C1,$08FFF7A0,$5E7F79C9:;
-    else Exit(False) end;
-    if not FAdhocctlInitialized then begin Value:=$80410B08;Exit end;
+      $20B317A0, $6402490B, $75ECD386, $362CBE8F, $DED9D28E, $81AEE1BE, $E162CB14, $34401D65, $0AD043ED, $EC0635C1, $08FFF7A0, $5E7F79C9:
+        ;
+    else
+      Exit(False)
+    end;
+    if not FAdhocctlInitialized then
+    begin
+      Value := $80410B08;
+      Exit
+    end;
     case NID of
       $20B317A0:
         begin
-          if (A and 3<>0) or not FMemory.IsValid(A,4) then begin Value:=$80410B04;Exit end;
+          if (A and 3 <> 0) or not FMemory.IsValid(A, 4) then
+          begin
+            Value := $80410B04;
+            Exit
+          end;
           // PSP handler IDs occupy 0..3 (also used by Jpcsp's UID range).
-          if FAdhocctlHandlers.Count>=4 then begin Value:=$80410B12;Exit end;
-          while FAdhocctlHandlers.ContainsKey(Value) do Inc(Value);
-          var Handler:TPSPAdhocHandler;Handler.Entry:=A;Handler.Argument:=B;
-          FAdhocctlHandlers.Add(Value,Handler);
+          if FAdhocctlHandlers.Count >= 4 then
+          begin
+            Value := $80410B12;
+            Exit
+          end;
+          while FAdhocctlHandlers.ContainsKey(Value) do
+            Inc(Value);
+          var Handler: TPSPAdhocHandler;
+          Handler.Entry := A;
+          Handler.Argument := B;
+          FAdhocctlHandlers.Add(Value, Handler);
         end;
-      $6402490B:FAdhocctlHandlers.Remove(A);
+      $6402490B:
+        FAdhocctlHandlers.Remove(A);
       $75ECD386:
-        if not FMemory.IsValid(A,4) then Value:=$80410B04
-        else FMemory.Write32(A,0); // Disconnected while the WLAN switch is off.
-      $362CBE8F:
-        if not FMemory.IsValid(A,16) then Value:=$80410B04
-        else FMemory.Load(A,FAdhocctlProduct);
-      $DED9D28E:Value:=$80410B09;
-      $81AEE1BE,$E162CB14:
-        if not FMemory.IsValid(A,4) then Value:=$80410B04
-        else FMemory.Write32(A,0); // No scan results or peers exist offline.
-      $34401D65:; // Already disconnected; there is no transition to report.
-      $0AD043ED,$EC0635C1,$08FFF7A0,$5E7F79C9:Value:=$80410B03;
+        if not FMemory.IsValid(A, 4) then
+          Value := $80410B04
+        else
+          FMemory.Write32(A, 0); // Disconnected while the WLAN switch is off.
+        $362CBE8F:
+        if not FMemory.IsValid(A, 16) then
+          Value := $80410B04
+        else
+          FMemory.Load(A, FAdhocctlProduct);
+      $DED9D28E:
+        Value := $80410B09;
+      $81AEE1BE, $E162CB14:
+        if not FMemory.IsValid(A, 4) then
+          Value := $80410B04
+        else
+          FMemory.Write32(A, 0); // No scan results or peers exist offline.
+        $34401D65:
+        ; // Already disconnected; there is no transition to report.
+      $0AD043ED, $EC0635C1, $08FFF7A0, $5E7F79C9:
+        Value := $80410B03;
     end;
     Exit;
   end;
-  if ModuleName<>'sceNetAdhocMatching' then Exit(False);
+  if ModuleName <> 'sceNetAdhocMatching' then
+    Exit(False);
   case NID of
     $2A2A1E07:
       begin
-        if FMatchingInitialized then begin Value:=$80410812;Exit end;
-        if A>PSPRAMSize then begin Value:=$80410809;Exit end;
-        if A<>0 then
+        if FMatchingInitialized then
         begin
-          var Address:Cardinal;
-          var Block:=FKernel.ReserveModule(A,Address);
-          if Block and $80000000<>0 then begin Value:=$80410809;Exit end;
-          FMatchingBlock:=Block;
-          FMemory.Zero(Address,A);
+          Value := $80410812;
+          Exit
         end;
-        FMatchingPoolSize:=A;
-        FMatchingInitialized:=True;
+        if A > PSPRAMSize then
+        begin
+          Value := $80410809;
+          Exit
+        end;
+        if A <> 0 then
+        begin
+          var Address: Cardinal;
+          var Block := FKernel.ReserveModule(A, Address);
+          if Block and $80000000 <> 0 then
+          begin
+            Value := $80410809;
+            Exit
+          end;
+          FMatchingBlock := Block;
+          FMemory.Zero(Address, A);
+        end;
+        FMatchingPoolSize := A;
+        FMatchingInitialized := True;
       end;
-    $7945ECDA:ReleaseMatching;
-    $40F8F435,$9C5CFB7D:
+    $7945ECDA:
+      ReleaseMatching;
+    $40F8F435, $9C5CFB7D:
       begin
-        if not FMatchingInitialized then begin Value:=$80410813;Exit end;
-        if NID=$40F8F435 then begin Value:=FMatchingPoolSize;Exit end;
-        if not FMemory.IsValid(A,12) then begin Value:=$80410806;Exit end;
-        FMemory.Write32(A,FMatchingPoolSize);
-        FMemory.Write32(A+4,0);
-        FMemory.Write32(A+8,FMatchingPoolSize);
+        if not FMatchingInitialized then
+        begin
+          Value := $80410813;
+          Exit
+        end;
+        if NID = $40F8F435 then
+        begin
+          Value := FMatchingPoolSize;
+          Exit
+        end;
+        if not FMemory.IsValid(A, 12) then
+        begin
+          Value := $80410806;
+          Exit
+        end;
+        FMemory.Write32(A, FMatchingPoolSize);
+        FMemory.Write32(A + 4, 0);
+        FMemory.Write32(A + 8, FMatchingPoolSize);
       end;
-  else Result:=False end;
+  else
+    Result := False
+  end;
 end;
 
 function TPSPSystemHLE.Net(NID, A, B, C, D: Cardinal; out Value: Cardinal): Boolean;
@@ -525,8 +620,8 @@ begin
   end;
   if ModuleName = 'sceNet' then
     Exit(Net(NID, A, B, C, FCPU.Registers[7], Value));
-  if (ModuleName='sceNetAdhoc') or (ModuleName='sceNetAdhocMatching') or (ModuleName='sceNetAdhocctl') then
-    Exit(Adhoc(ModuleName,NID,A,B,C,Value));
+  if (ModuleName = 'sceNetAdhoc') or (ModuleName = 'sceNetAdhocMatching') or (ModuleName = 'sceNetAdhocctl') then
+    Exit(Adhoc(ModuleName, NID, A, B, C, Value));
   if ModuleName = 'sceWlanDrv' then
   begin
     case NID of

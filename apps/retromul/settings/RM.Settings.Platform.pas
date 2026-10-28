@@ -3,6 +3,7 @@
 interface
 
 uses
+  Core.Emulation.Types,
   RM.Platforms.Presentation, System.Classes, System.SysUtils, System.IniFiles,
   System.Generics.Collections, RM.Gamepad, Core.Platforms, RM.Settings.Builder;
 
@@ -13,28 +14,6 @@ const
   SETTINGS_CATEGORY_CONTROLS = 3;
   SETTINGS_CATEGORY_PERIPHERALS = 4;
 
-const
-  SETTINGS_PAGE_MAIN = RM.Platforms.Presentation.SETTINGS_PAGE_MAIN;
-  SETTINGS_PAGE_GB = RM.Platforms.Presentation.SETTINGS_PAGE_GB;
-  SETTINGS_PAGE_GBC = RM.Platforms.Presentation.SETTINGS_PAGE_GBC;
-  SETTINGS_PAGE_NES = RM.Platforms.Presentation.SETTINGS_PAGE_NES;
-  SETTINGS_PAGE_MD = RM.Platforms.Presentation.SETTINGS_PAGE_MD;
-  SETTINGS_PAGE_SNES = RM.Platforms.Presentation.SETTINGS_PAGE_SNES;
-  SETTINGS_PAGE_NEOGEO = RM.Platforms.Presentation.SETTINGS_PAGE_NEOGEO;
-  SETTINGS_PAGE_GBA = RM.Platforms.Presentation.SETTINGS_PAGE_GBA;
-  SETTINGS_PAGE_N64 = RM.Platforms.Presentation.SETTINGS_PAGE_N64;
-  SETTINGS_PAGE_SG1000 = RM.Platforms.Presentation.SETTINGS_PAGE_SG1000;
-  SETTINGS_PAGE_SC3000 = RM.Platforms.Presentation.SETTINGS_PAGE_SC3000;
-  SETTINGS_PAGE_SF7000 = RM.Platforms.Presentation.SETTINGS_PAGE_SF7000;
-  SETTINGS_PAGE_MULTIVISION = RM.Platforms.Presentation.SETTINGS_PAGE_MULTIVISION;
-  SETTINGS_PAGE_SMS = RM.Platforms.Presentation.SETTINGS_PAGE_SMS;
-  SETTINGS_PAGE_GG = RM.Platforms.Presentation.SETTINGS_PAGE_GG;
-  SETTINGS_PAGE_GW = RM.Platforms.Presentation.SETTINGS_PAGE_GW;
-  SETTINGS_PAGE_PCE = RM.Platforms.Presentation.SETTINGS_PAGE_PCE;
-  SETTINGS_PAGE_SGX = RM.Platforms.Presentation.SETTINGS_PAGE_SGX;
-  SETTINGS_PAGE_PCECD = RM.Platforms.Presentation.SETTINGS_PAGE_PCECD;
-  SETTINGS_PAGE_NEOGEOCD = RM.Platforms.Presentation.SETTINGS_PAGE_NEOGEOCD;
-
 type
   TSettingsPortOptions = record
     RowName, Caption, Description, Default: string;
@@ -44,9 +23,8 @@ type
 
   TSettingsPlatform = class
   public
-    PageId: Integer;
+    PageId: string;
     CoreId, Name, Brand, SearchTerms: string;
-    PadLayout: TScreenGamepadLayout;
     Ports: Integer;
     constructor Create(const Info: TPlatformInfo);
     procedure Configuration(Context: TSettingsPageBuilder); virtual;
@@ -54,6 +32,7 @@ type
     procedure Audio(Context: TSettingsPageBuilder); virtual;
     procedure Peripherals(Context: TSettingsPageBuilder); virtual;
     procedure Expansion(Context: TSettingsPageBuilder); virtual;
+    procedure PrepareSave(Draft: TMemIniFile); virtual;
     procedure Validate(Draft: TMemIniFile); virtual;
     function HasConfiguration: Boolean; virtual;
     function ChangeConfiguration(Draft: TMemIniFile; const Section, Key: string): Boolean; virtual;
@@ -71,8 +50,8 @@ type
     constructor Create;
     destructor Destroy; override;
     procedure Add(SettingsPlatform: TSettingsPlatform);
-    function Find(PageId: Integer): TSettingsPlatform;
-    function MaxPageId: Integer;
+    function Find(const PageId: string): TSettingsPlatform;
+    function Require(const PageId: string): TSettingsPlatform;
     function Matching(const Query: string): TArray<TSettingsPlatform>;
     property Items: TObjectList<TSettingsPlatform> read FItems;
   end;
@@ -85,12 +64,12 @@ uses
 constructor TSettingsPlatform.Create(const Info: TPlatformInfo);
 begin
   inherited Create;
-  PageId := PlatformPresentation(Info.System).SettingsPageId;
+  var Presentation := PlatformPresentation(Info.Id);
+  PageId := Presentation.SettingsPageId;
   CoreId := Info.SettingsCoreId;
   Name := Info.Name;
   Brand := Info.Manufacturer;
   SearchTerms := Info.SearchTerms;
-  PadLayout := PlatformPresentation(Info.System).PadLayout;
   Ports := Info.Ports;
 end;
 
@@ -111,6 +90,10 @@ begin
 end;
 
 procedure TSettingsPlatform.Expansion(Context: TSettingsPageBuilder);
+begin
+end;
+
+procedure TSettingsPlatform.PrepareSave(Draft: TMemIniFile);
 begin
 end;
 
@@ -174,8 +157,9 @@ end;
 procedure TSettingsPlatformRegistry.Add(SettingsPlatform: TSettingsPlatform);
 begin
   try
-    if (SettingsPlatform.PageId <= 0) or (SettingsPlatform.CoreId = '') or (SettingsPlatform.Brand = '') or
-      (SettingsPlatform.Ports < 1) or (SettingsPlatform.Ports > 8) or (Find(SettingsPlatform.PageId) <> nil) then
+    SettingsPlatform.PageId := SettingsPlatform.PageId.Trim.ToLower;
+    if ((SettingsPlatform.PageId = '') or (SettingsPlatform.PageId = 'main')) or (SettingsPlatform.CoreId = '') or (SettingsPlatform.Brand = '') or
+      (SettingsPlatform.Ports < 1) or (SettingsPlatform.Ports > EmulatorMaxPlayers) or (Find(SettingsPlatform.PageId) <> nil) then
       raise EArgumentException.Create('Invalid or duplicate settings platform: ' + SettingsPlatform.Name);
 
     for var Item in FItems do
@@ -189,20 +173,18 @@ begin
   end;
 end;
 
-function TSettingsPlatformRegistry.Find(PageId: Integer): TSettingsPlatform;
+function TSettingsPlatformRegistry.Find(const PageId: string): TSettingsPlatform;
 begin
   Result := nil;
   for var Item in FItems do
-    if Item.PageId = PageId then
+    if SameText(Item.PageId, PageId.Trim) then
       Exit(Item);
 end;
 
-function TSettingsPlatformRegistry.MaxPageId: Integer;
+function TSettingsPlatformRegistry.Require(const PageId: string): TSettingsPlatform;
 begin
-  Result := 0;
-  for var Item in FItems do
-    if Item.PageId > Result then
-      Result := Item.PageId;
+  Result := Find(PageId);
+  if Result = nil then raise EArgumentException.Create('Unknown settings page: ' + PageId);
 end;
 
 function TSettingsPlatformRegistry.Matching(const Query: string): TArray<TSettingsPlatform>;
@@ -228,4 +210,3 @@ begin
 end;
 
 end.
-

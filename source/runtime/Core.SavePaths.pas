@@ -2,7 +2,8 @@
 
 interface
 
-uses Core.Storage;
+uses
+  Core.Storage;
 
 // An empty extension selects a snapshot directory; '.sav' selects a battery file.
 // Existing paths are reused by hash alone, including legacy hash-only names.
@@ -27,6 +28,7 @@ function ResolveGameSavePath(const Root, RomFileName, Hash, Extension: string): 
 
 // Resolve a previously recorded game without opening its ROM or constructing a core.
 function FindRecordedAutosave(const Storage: IStorage; const RomLocation: string): string;
+
 procedure RecordGameSnapshotDirectory(const Storage: IStorage; const RomLocation, Directory: string);
 
 implementation
@@ -69,18 +71,22 @@ begin
       Ini.Free;
     end;
   end;
-  if Directory = '' then Exit;
+  if Directory = '' then
+    Exit;
   var Path := ResolveSnapshotPath(Directory, SNAPSHOT_AUTOSAVE);
-  if Storage.Exists(Path) then Result := Path;
+  if Storage.Exists(Path) then
+    Result := Path;
 end;
 
 procedure RecordGameSnapshotDirectory(const Storage: IStorage; const RomLocation, Directory: string);
 begin
-  if RomLocation = '' then Exit;
+  if RomLocation = '' then
+    Exit;
   var Ini := Storage.ReadConfig(Storage.ConfigFile('sessions'));
   try
     var Key := SessionKey(RomLocation);
-    if Ini.ValueExists('Snapshots', Key) and (Ini.ReadString('Snapshots', Key, '') = Directory) then Exit;
+    if Ini.ValueExists('Snapshots', Key) and (Ini.ReadString('Snapshots', Key, '') = Directory) then
+      Exit;
     Ini.WriteString('Snapshots', Key, Directory);
     Storage.WriteConfig(Ini);
   finally

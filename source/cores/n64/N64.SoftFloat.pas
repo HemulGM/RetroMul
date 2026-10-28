@@ -7,10 +7,15 @@
 
 interface
 
-uses N64.Types;
+uses
+  N64.Types;
 
 const
-  sfInexact = 1; sfUnderflow = 2; sfOverflow = 4; sfDivideZero = 8; sfInvalid = 16;
+  sfInexact = 1;
+  sfUnderflow = 2;
+  sfOverflow = 4;
+  sfDivideZero = 8;
+  sfInvalid = 16;
 
 type
   TSoftFloatResult = record
@@ -19,9 +24,13 @@ type
   end;
 
 function SFCalculate(A, B: UInt64; Format, Operation, Rounding: Integer): TSoftFloatResult;
+
 function SFConvert(A: UInt64; SourceFormat, TargetFormat, Rounding: Integer): TSoftFloatResult;
+
 procedure SFCompare(A, B: UInt64; Format: Integer; out Unordered, Equal, Less: Boolean);
+
 function SFIsNaN(A: UInt64; Format: Integer): Boolean; inline;
+
 function SFIsSubnormal(A: UInt64; Format: Integer): Boolean; inline;
 
 // Whether the calling thread's floating point suits SFQuick: rounding to
@@ -29,6 +38,7 @@ function SFIsSubnormal(A: UInt64; Format: Integer): Boolean; inline;
 // significand. SFPrepareHost sets that up; a thread that runs the CPU calls
 // it once. Only on x86 and x64 (tested there): False elsewhere (ARM).
 function SFHostReady: Boolean;
+
 procedure SFPrepareHost;
 
 // SFCalculate(A, B, Format, Operation, 0) (round to nearest) for add, sub,
@@ -40,6 +50,7 @@ function SFQuick(A, B: UInt64; Format, Operation: Integer; out R: TSoftFloatResu
 // (rounding to nearest, the host's where it rounds), and single or double to
 // integers in any rounding mode, of normal values and zeros whose result is
 // in range: the same bits and events. False where it cannot tell.
+
 function SFQuickConvert(A: UInt64; SourceFormat, TargetFormat, Rounding: Integer; out R: TSoftFloatResult): Boolean;
 
 implementation
@@ -57,28 +68,43 @@ type
 
 function FractionBits(Format: Integer): Integer; inline;
 begin
-  if Format = 16 then Result := 23 else Result := 52;
+  if Format = 16 then
+    Result := 23
+  else
+    Result := 52;
 end;
 
 function Bias(Format: Integer): Integer; inline;
 begin
-  if Format = 16 then Result := 127 else Result := 1023;
+  if Format = 16 then
+    Result := 127
+  else
+    Result := 1023;
 end;
 
 function SignMask(Format: Integer): UInt64; inline;
 begin
-  if Format = 16 then Result := $80000000 else Result := UInt64(1) shl 63;
+  if Format = 16 then
+    Result := $80000000
+  else
+    Result := UInt64(1) shl 63;
 end;
 
 function Infinity(Format: Integer): UInt64; inline;
 begin
-  if Format = 16 then Result := $7F800000 else Result := $7FF0000000000000;
+  if Format = 16 then
+    Result := $7F800000
+  else
+    Result := $7FF0000000000000;
 end;
 
 function DefaultNaN(Format: Integer): UInt64;
 begin
   // R4300 uses the pre-NaN2008 encoding (quiet bit clear).
-  if Format = 16 then Result := $7FBFFFFF else Result := $7FF7FFFFFFFFFFFF;
+  if Format = 16 then
+    Result := $7FBFFFFF
+  else
+    Result := $7FF7FFFFFFFFFFFF;
 end;
 
 function SFIsNaN(A: UInt64; Format: Integer): Boolean;
@@ -99,8 +125,10 @@ end;
 
 function ShiftJam(A: UInt64; N: Integer): UInt64;
 begin
-  if N <= 0 then Exit(A);
-  if N >= 64 then Exit(Ord(A <> 0));
+  if N <= 0 then
+    Exit(A);
+  if N >= 64 then
+    Exit(Ord(A <> 0));
   Result := (A shr N) or UInt64(Ord((A shl (64 - N)) <> 0));
 end;
 
@@ -130,10 +158,13 @@ begin
     Exit;
   end;
   Result.Exponent := E - Bias(Format);
-  if E <> 0 then F := F or (UInt64(1) shl P)
-  else Result.Exponent := 1 - Bias(Format);
+  if E <> 0 then
+    F := F or (UInt64(1) shl P)
+  else
+    Result.Exponent := 1 - Bias(Format);
   Result.Significand := F shl (62 - P);
-  if F = 0 then Exit;
+  if F = 0 then
+    Exit;
   while (Result.Significand and (UInt64(1) shl 62)) = 0 do
   begin
     Result.Significand := Result.Significand shl 1;
@@ -141,12 +172,13 @@ begin
   end;
 end;
 
-function Pack(Negative: Boolean; Exponent: Integer; Sig: UInt64;
-  Format, Rounding: Integer): TSoftFloatResult;
+function Pack(Negative: Boolean; Exponent: Integer; Sig: UInt64; Format, Rounding: Integer): TSoftFloatResult;
 begin
   Result := Default(TSoftFloatResult);
-  if Negative then Result.Bits := SignMask(Format);
-  if Sig = 0 then Exit;
+  if Negative then
+    Result.Bits := SignMask(Format);
+  if Sig = 0 then
+    Exit;
   if (Sig shr 63) <> 0 then
   begin
     Sig := ShiftJam(Sig, 1);
@@ -173,13 +205,17 @@ begin
   begin
     Result.Events := sfInexact;
     case Rounding of
-      0: Increment := (Remainder > (UInt64(1) shl (Shift - 1))) or
-        ((Remainder = (UInt64(1) shl (Shift - 1))) and Odd(Fraction));
-      2: Increment := not Negative;
-      3: Increment := Negative;
+      0:
+        Increment := (Remainder > (UInt64(1) shl (Shift - 1))) or
+          ((Remainder = (UInt64(1) shl (Shift - 1))) and Odd(Fraction));
+      2:
+        Increment := not Negative;
+      3:
+        Increment := Negative;
     end;
   end;
-  if Increment then Inc(Fraction);
+  if Increment then
+    Inc(Fraction);
   if Fraction >= (UInt64(1) shl (P + 1)) then
   begin
     Fraction := Fraction shr 1;
@@ -190,12 +226,15 @@ begin
     Result.Events := sfOverflow or sfInexact;
     var ToInfinity := (Rounding = 0) or ((Rounding = 2) and not Negative) or
       ((Rounding = 3) and Negative);
-    if ToInfinity then Result.Bits := Result.Bits or Infinity(Format)
-    else Result.Bits := Result.Bits or (Infinity(Format) - 1);
+    if ToInfinity then
+      Result.Bits := Result.Bits or Infinity(Format)
+    else
+      Result.Bits := Result.Bits or (Infinity(Format) - 1);
     Exit;
   end;
   var E := Exponent + B;
-  if Fraction < (UInt64(1) shl P) then E := 0;
+  if Fraction < (UInt64(1) shl P) then
+    E := 0;
   if Tiny and (E = 0) and (Remainder <> 0) then
     Result.Events := Result.Events or sfUnderflow;
   Result.Bits := Result.Bits or (UInt64(E) shl P) or
@@ -213,8 +252,10 @@ begin
   Result := Default(TSoftFloatResult);
   var X := Decode(A, Format);
   var Y := Decode(B, Format);
-  if (X.Kind = 2) or ((Operation <= 3) and (Y.Kind = 2)) then Exit(Invalid(Format));
-  if Operation = 1 then Y.Negative := not Y.Negative;
+  if (X.Kind = 2) or ((Operation <= 3) and (Y.Kind = 2)) then
+    Exit(Invalid(Format));
+  if Operation = 1 then
+    Y.Negative := not Y.Negative;
   var Negative := X.Negative xor Y.Negative;
   var Sig: UInt64;
   var E: Integer;
@@ -223,23 +264,31 @@ begin
       begin
         if (X.Kind = 1) or (Y.Kind = 1) then
         begin
-          if (X.Kind = 1) and (Y.Kind = 1) and (X.Negative <> Y.Negative) then Exit(Invalid(Format));
-          if X.Kind <> 1 then X := Y;
+          if (X.Kind = 1) and (Y.Kind = 1) and (X.Negative <> Y.Negative) then
+            Exit(Invalid(Format));
+          if X.Kind <> 1 then
+            X := Y;
           Result.Bits := Infinity(Format);
-          if X.Negative then Result.Bits := Result.Bits or SignMask(Format);
+          if X.Negative then
+            Result.Bits := Result.Bits or SignMask(Format);
           Exit;
         end;
         if (X.Exponent < Y.Exponent) or ((X.Exponent = Y.Exponent) and
           (X.Significand < Y.Significand)) then
         begin
-          var Temp := X; X := Y; Y := Temp;
+          var Temp := X;
+          X := Y;
+          Y := Temp;
         end;
         Y.Significand := ShiftJam(Y.Significand, X.Exponent - Y.Exponent);
-        if X.Negative = Y.Negative then Sig := X.Significand + Y.Significand
-        else Sig := X.Significand - Y.Significand;
+        if X.Negative = Y.Negative then
+          Sig := X.Significand + Y.Significand
+        else
+          Sig := X.Significand - Y.Significand;
         Negative := X.Negative;
-        if Sig = 0 then Negative := ((X.Negative = Y.Negative) and X.Negative) or
-          ((X.Negative <> Y.Negative) and (Rounding = 3));
+        if Sig = 0 then
+          Negative := ((X.Negative = Y.Negative) and X.Negative) or
+            ((X.Negative <> Y.Negative) and (Rounding = 3));
         Result := Pack(Negative, X.Exponent, Sig, Format, Rounding);
       end;
     2:
@@ -247,9 +296,11 @@ begin
         if (X.Kind = 1) or (Y.Kind = 1) then
         begin
           if ((X.Kind = 0) and (X.Significand = 0)) or
-            ((Y.Kind = 0) and (Y.Significand = 0)) then Exit(Invalid(Format));
+            ((Y.Kind = 0) and (Y.Significand = 0)) then
+            Exit(Invalid(Format));
           Result.Bits := Infinity(Format);
-          if Negative then Result.Bits := Result.Bits or SignMask(Format);
+          if Negative then
+            Result.Bits := Result.Bits or SignMask(Format);
           Exit;
         end;
         var Hi, Lo: UInt64;
@@ -261,38 +312,61 @@ begin
     3:
       begin
         if ((X.Kind = 1) and (Y.Kind = 1)) or ((X.Kind = 0) and (X.Significand = 0) and
-          (Y.Kind = 0) and (Y.Significand = 0)) then Exit(Invalid(Format));
+          (Y.Kind = 0) and (Y.Significand = 0)) then
+          Exit(Invalid(Format));
         if (X.Kind = 1) or ((Y.Kind = 0) and (Y.Significand = 0)) then
         begin
           Result.Bits := Infinity(Format);
-          if X.Kind <> 1 then Result.Events := sfDivideZero;
+          if X.Kind <> 1 then
+            Result.Events := sfDivideZero;
         end
-        else if (Y.Kind = 1) or (X.Significand = 0) then Result.Bits := 0
+        else if (Y.Kind = 1) or (X.Significand = 0) then
+          Result.Bits := 0
         else
         begin
           var R := X.Significand shr 10;
           var Divisor := Y.Significand shr 10;
           E := X.Exponent - Y.Exponent;
-          if R < Divisor then begin R := R shl 1; Dec(E); end;
+          if R < Divisor then
+          begin
+            R := R shl 1;
+            Dec(E);
+          end;
           Sig := 0;
           for var I := 62 downto 0 do
           begin
-            if R >= Divisor then begin R := R - Divisor; Sig := Sig or (UInt64(1) shl I); end;
+            if R >= Divisor then
+            begin
+              R := R - Divisor;
+              Sig := Sig or (UInt64(1) shl I);
+            end;
             R := R shl 1;
           end;
-          if R <> 0 then Sig := Sig or 1;
+          if R <> 0 then
+            Sig := Sig or 1;
           Exit(Pack(Negative, E, Sig, Format, Rounding));
         end;
-        if Negative then Result.Bits := Result.Bits or SignMask(Format);
+        if Negative then
+          Result.Bits := Result.Bits or SignMask(Format);
       end;
     4:
       begin
-        if X.Negative and ((X.Kind = 1) or (X.Significand <> 0)) then Exit(Invalid(Format));
-        if X.Kind = 1 then begin Result.Bits := A; Exit; end;
-        if X.Significand = 0 then begin Result.Bits := A and SignMask(Format); Exit; end;
+        if X.Negative and ((X.Kind = 1) or (X.Significand <> 0)) then
+          Exit(Invalid(Format));
+        if X.Kind = 1 then
+        begin
+          Result.Bits := A;
+          Exit;
+        end;
+        if X.Significand = 0 then
+        begin
+          Result.Bits := A and SignMask(Format);
+          Exit;
+        end;
         E := X.Exponent;
         var OddExponent := Odd(E);
-        if OddExponent then Dec(E);
+        if OddExponent then
+          Dec(E);
         E := E div 2;
         // A 126-bit radicand and a 63-bit root. Trial squares avoid any
         // overflowing 65-bit remainder in a restoring square-root loop.
@@ -305,18 +379,22 @@ begin
           var Trial := Sig or (UInt64(1) shl I);
           var Hi, Lo: UInt64;
           Product64(Trial, Trial, Hi, Lo);
-          if (Hi < RadHi) or ((Hi = RadHi) and (Lo <= RadLo)) then Sig := Trial;
+          if (Hi < RadHi) or ((Hi = RadHi) and (Lo <= RadLo)) then
+            Sig := Trial;
         end;
         var Hi, Lo: UInt64;
         Product64(Sig, Sig, Hi, Lo);
-        if (Hi <> RadHi) or (Lo <> RadLo) then Sig := Sig or 1;
+        if (Hi <> RadHi) or (Lo <> RadLo) then
+          Sig := Sig or 1;
         Result := Pack(False, E, Sig, Format, Rounding);
       end;
     5, 7:
       begin
         Result.Bits := A;
-        if Operation = 5 then Result.Bits := A and not SignMask(Format)
-        else Result.Bits := A xor SignMask(Format);
+        if Operation = 5 then
+          Result.Bits := A and not SignMask(Format)
+        else
+          Result.Bits := A xor SignMask(Format);
       end;
   end;
 end;
@@ -326,34 +404,51 @@ begin
   Result := Default(TSoftFloatResult);
   if SourceFormat in [20, 21] then
   begin
-    if SourceFormat = 20 then A := SX(A, 32);
+    if SourceFormat = 20 then
+      A := SX(A, 32);
     var Negative := (A shr 63) <> 0;
-    if Negative then A := Sub64(0, A);
+    if Negative then
+      A := Sub64(0, A);
     var E := 62;
-    if (A shr 63) <> 0 then begin A := ShiftJam(A, 1); Inc(E); end;
+    if (A shr 63) <> 0 then
+    begin
+      A := ShiftJam(A, 1);
+      Inc(E);
+    end;
     Exit(Pack(Negative, E, A, TargetFormat, Rounding));
   end;
   var X := Decode(A, SourceFormat);
   if TargetFormat in [16, 17] then
   begin
-    if X.Kind = 2 then Exit(Invalid(TargetFormat));
+    if X.Kind = 2 then
+      Exit(Invalid(TargetFormat));
     if X.Kind = 1 then
     begin
       Result.Bits := Infinity(TargetFormat);
-      if X.Negative then Result.Bits := Result.Bits or SignMask(TargetFormat);
+      if X.Negative then
+        Result.Bits := Result.Bits or SignMask(TargetFormat);
       Exit;
     end;
     Exit(Pack(X.Negative, X.Exponent, X.Significand, TargetFormat, Rounding));
   end;
   var Width := 64;
-  if TargetFormat = 20 then Width := 32;
+  if TargetFormat = 20 then
+    Width := 32;
   Result.Bits := UInt64(1) shl (Width - 1);
-  if (X.Kind <> 0) or (X.Exponent > Width - 1) then begin Result.Events := sfInvalid; Exit; end;
+  if (X.Kind <> 0) or (X.Exponent > Width - 1) then
+  begin
+    Result.Events := sfInvalid;
+    Exit;
+  end;
   var Shift := 62 - X.Exponent;
   var Fraction: UInt64 := 0;
   var Remainder: UInt64 := X.Significand;
   var Half: UInt64 := 0;
-  if Shift <= 0 then begin Fraction := X.Significand shl (-Shift); Remainder := 0; end
+  if Shift <= 0 then
+  begin
+    Fraction := X.Significand shl (-Shift);
+    Remainder := 0;
+  end
   else if Shift < 64 then
   begin
     Fraction := X.Significand shr Shift;
@@ -365,34 +460,49 @@ begin
   begin
     Result.Events := sfInexact;
     case Rounding of
-      0: Increment := (Half <> 0) and ((Remainder > Half) or ((Remainder = Half) and Odd(Fraction)));
-      2: Increment := not X.Negative;
-      3: Increment := X.Negative;
+      0:
+        Increment := (Half <> 0) and ((Remainder > Half) or ((Remainder = Half) and Odd(Fraction)));
+      2:
+        Increment := not X.Negative;
+      3:
+        Increment := X.Negative;
     end;
   end;
-  if Increment then Fraction := Add64(Fraction, 1);
+  if Increment then
+    Fraction := Add64(Fraction, 1);
   var Limit := UInt64(1) shl (Width - 1);
   if (Fraction > Limit) or ((Fraction = Limit) and not X.Negative) then
   begin
     Result.Events := sfInvalid;
     Exit;
   end;
-  if X.Negative then Fraction := Sub64(0, Fraction);
-  if Width = 32 then Fraction := Fraction and $FFFFFFFF;
+  if X.Negative then
+    Fraction := Sub64(0, Fraction);
+  if Width = 32 then
+    Fraction := Fraction and $FFFFFFFF;
   Result.Bits := Fraction;
 end;
 
 procedure SFCompare(A, B: UInt64; Format: Integer; out Unordered, Equal, Less: Boolean);
 begin
   Unordered := SFIsNaN(A, Format) or SFIsNaN(B, Format);
-  Equal := False; Less := False;
-  if Unordered then Exit;
+  Equal := False;
+  Less := False;
+  if Unordered then
+    Exit;
   var Mask := SignMask(Format);
-  if ((A and not Mask) = 0) and ((B and not Mask) = 0) then begin Equal := True; Exit; end;
+  if ((A and not Mask) = 0) and ((B and not Mask) = 0) then
+  begin
+    Equal := True;
+    Exit;
+  end;
   Equal := A = B;
-  if ((A xor B) and Mask) <> 0 then Less := (A and Mask) <> 0
-  else if (A and Mask) <> 0 then Less := A > B
-  else Less := A < B;
+  if ((A xor B) and Mask) <> 0 then
+    Less := (A and Mask) <> 0
+  else if (A and Mask) <> 0 then
+    Less := A > B
+  else
+    Less := A < B;
 end;
 
 function SFHostReady: Boolean;
@@ -795,4 +905,6 @@ begin
   R.Bits := Bits;
   Result := True;
 end;
+
 end.
+

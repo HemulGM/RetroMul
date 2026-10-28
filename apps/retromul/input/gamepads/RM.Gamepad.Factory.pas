@@ -3,133 +3,105 @@
 interface
 
 uses
-  System.Classes, Core.Platforms, RM.Gamepad.Base;
+  System.Classes, RM.Gamepad.Base;
 
-function GamepadClass(System: TRomSystem; const Device: string): TPlatformGamepadClass;
+type
+  TGamepadDeviceVariant = record
+    DeviceId: string;
+    GamepadClass: TPlatformGamepadClass;
+    class function Create(const DeviceId: string; GamepadClass: TPlatformGamepadClass): TGamepadDeviceVariant; static;
+  end;
 
-function CreatePlatformGamepad(Owner: TComponent; System: TRomSystem; const Device: string): TPlatformGamepad;
+// Platform modules register once during static initialization. Unknown devices
+// use DefaultClass; device IDs retain their original case-sensitive semantics.
+procedure RegisterPlatformGamepads(const PlatformId: string; DefaultClass: TPlatformGamepadClass; const Variants: array of TGamepadDeviceVariant);
+
+function TryGamepadClass(const SystemId, Device: string; out Value: TPlatformGamepadClass): Boolean;
+
+function GamepadClass(const SystemId: string; const Device: string): TPlatformGamepadClass;
+
+function CreatePlatformGamepad(Owner: TComponent; const SystemId: string; const Device: string): TPlatformGamepad;
 
 implementation
 
 uses
-  System.SysUtils, RM.Gamepad.NES.Standart, RM.Gamepad.GB.Standart,
-  RM.Gamepad.GBC.Standart, RM.Gamepad.GBA.Standart, RM.Gamepad.SNES.Standart,
-  RM.Gamepad.N64.Standart, RM.Gamepad.Saturn.Digital, RM.Gamepad.Saturn.Analog,
-  RM.Gamepad.NeoGeo.Arcade, RM.Gamepad.NeoGeo.AES, RM.Gamepad.NeoGeo.CD,
-  RM.Gamepad.NGP.Standart, RM.Gamepad.NGPC.Standart, RM.Gamepad.SG1000.Standart,
-  RM.Gamepad.SC3000.Standart, RM.Gamepad.SF7000.Standart,
-  RM.Gamepad.SMS.Standart, RM.Gamepad.GameGear.Standart,
-  RM.Gamepad.Multivision.Standart, RM.Gamepad.GameWatch.Standart,
-  RM.Gamepad.NES.Dendy, RM.Gamepad.SEGA.Pad3, RM.Gamepad.SEGA.Pad6,
-  RM.Gamepad.SEGA.MegaCD.Pad3, RM.Gamepad.SEGA.MegaCD.Pad6,
-  RM.Gamepad.SEGA.Mega32X.Pad3, RM.Gamepad.SEGA.Mega32X.Pad6,
-  RM.Gamepad.PCE.Pad2, RM.Gamepad.PCE.Pad6, RM.Gamepad.SuperGrafx.Pad2,
-  RM.Gamepad.SuperGrafx.Pad6, RM.Gamepad.PCECD.Pad2, RM.Gamepad.PCECD.Pad6,
-  RM.Gamepad.CPS.Arcade, RM.Gamepad.ZX, RM.Gamepad.PS1.Digital, RM.Gamepad.PS1.Analog,
-  RM.Gamepad.PSP, RM.Gamepad.DC.Standart;
+  System.SysUtils, System.Generics.Collections, System.Generics.Defaults,
+  Core.Platforms;
 
-function GamepadClass(System: TRomSystem; const Device: string): TPlatformGamepadClass;
-begin
-  case System of
-    TRomSystem.MSX1, TRomSystem.MSX2, TRomSystem.MSX2Plus:
-      Result := TGamepadSC3000Standart;
-    TRomSystem.ZXSpectrum:
-      Result := TGamepadZX;
-    TRomSystem.CPS1, TRomSystem.CPS2, TRomSystem.CPS3:
-      Result := TGamepadCPSArcade;
-    TRomSystem.NES:
-      if Device = 'paddendy' then
-        Result := TGamepadNESDendy
-      else
-        Result := TGamepadNESStandart;
-    TRomSystem.GB:
-      Result := TGamepadGBStandart;
-    TRomSystem.GBC:
-      Result := TGamepadGBCStandart;
-    TRomSystem.GBA:
-      Result := TGamepadGBAStandart;
-    TRomSystem.SNES:
-      Result := TGamepadSNESStandart;
-    TRomSystem.N64:
-      Result := TGamepadN64Standart;
-    TRomSystem.PSP:
-      Result := TGamepadPSP;
-    // The DualShock 2 has the DualShock's layout.
-    TRomSystem.PS1, TRomSystem.PS2:
-      if Device = 'pad-analog' then
-        Result := TGamepadPS1Analog
-      else
-        Result := TGamepadPS1Digital;
-    TRomSystem.Saturn:
-      if Device = 'pad-analog' then
-        Result := TGamepadSaturnAnalog
-      else
-        Result := TGamepadSaturnDigital;
-    TRomSystem.DC:
-      Result := TGamepadDCStandart;
-    TRomSystem.NeoGeo:
-      Result := TGamepadNeoGeoArcade;
-    TRomSystem.NeoGeoAES:
-      Result := TGamepadNeoGeoAES;
-    TRomSystem.NeoGeoCD:
-      Result := TGamepadNeoGeoCD;
-    TRomSystem.NeoGeoPocket:
-      Result := TGamepadNGPStandart;
-    TRomSystem.NeoGeoPocketColor:
-      Result := TGamepadNGPCStandart;
-    TRomSystem.SG1000:
-      Result := TGamepadSG1000Standart;
-    TRomSystem.SC3000:
-      Result := TGamepadSC3000Standart;
-    TRomSystem.SF7000:
-      Result := TGamepadSF7000Standart;
-    TRomSystem.SMS:
-      Result := TGamepadSMSStandart;
-    TRomSystem.GameGear:
-      Result := TGamepadGameGearStandart;
-    TRomSystem.Multivision:
-      Result := TGamepadMultivisionStandart;
-    TRomSystem.GameWatch:
-      Result := TGamepadGameWatchStandart;
-    TRomSystem.MD:
-      if Device = 'pad3' then
-        Result := TGamepadSEGAPad3
-      else
-        Result := TGamepadSEGAPad6;
-    TRomSystem.SegaCD:
-      if Device = 'pad3' then
-        Result := TGamepadSEGAMegaCDPad3
-      else
-        Result := TGamepadSEGAMegaCDPad6;
-    TRomSystem.Sega32X:
-      if Device = 'pad3' then
-        Result := TGamepadSEGAMega32XPad3
-      else
-        Result := TGamepadSEGAMega32XPad6;
-    TRomSystem.PCE:
-      if Device = 'pad6' then
-        Result := TGamepadPCEPad6
-      else
-        Result := TGamepadPCEPad2;
-    TRomSystem.SuperGrafx:
-      if Device = 'pad6' then
-        Result := TGamepadSuperGrafxPad6
-      else
-        Result := TGamepadSuperGrafxPad2;
-    TRomSystem.PCECD:
-      if Device = 'pad6' then
-        Result := TGamepadPCECDPad6
-      else
-        Result := TGamepadPCECDPad2;
-  else
-    raise EArgumentException.Create('No virtual gamepad for this platform');
+type
+  TGamepadRegistration = record
+    DefaultClass: TPlatformGamepadClass;
+    Variants: TArray<TGamepadDeviceVariant>;
   end;
+
+var
+  Registrations: TDictionary<string, TGamepadRegistration>;
+
+class function TGamepadDeviceVariant.Create(const DeviceId: string; GamepadClass: TPlatformGamepadClass): TGamepadDeviceVariant;
+begin
+  Result.DeviceId := DeviceId;
+  Result.GamepadClass := GamepadClass;
 end;
 
-function CreatePlatformGamepad(Owner: TComponent; System: TRomSystem; const Device: string): TPlatformGamepad;
+procedure RegisterPlatformGamepads(const PlatformId: string; DefaultClass: TPlatformGamepadClass; const Variants: array of TGamepadDeviceVariant);
 begin
-  Result := GamepadClass(System, Device).Create(Owner);
+  var Id := PlatformId.Trim.ToLower;
+  if (Id = '') or (DefaultClass = nil) then
+    raise EArgumentException.Create('Invalid platform gamepads: ' + PlatformId);
+  if Registrations.ContainsKey(Id) then
+    raise EArgumentException.Create('Duplicate platform gamepads: ' + Id);
+  var Item: TGamepadRegistration;
+  Item.DefaultClass := DefaultClass;
+  SetLength(Item.Variants, Length(Variants));
+  for var I := 0 to High(Variants) do
+  begin
+    if (Variants[I].DeviceId = '') or (Variants[I].GamepadClass = nil) then
+      raise EArgumentException.Create('Invalid gamepad device variant: ' + Id);
+    for var J := 0 to I - 1 do
+      if Variants[J].DeviceId = Variants[I].DeviceId then
+        raise EArgumentException.Create('Duplicate gamepad device variant: ' + Variants[I].DeviceId);
+    Item.Variants[I] := Variants[I];
+  end;
+  Registrations.Add(Id, Item);
 end;
+
+function TryGamepadClass(const SystemId, Device: string; out Value: TPlatformGamepadClass): Boolean;
+begin
+  Value := nil;
+  var Id := SystemId.Trim.ToLower;
+  var Item: TGamepadRegistration;
+  // A module can supply a distinct controller for a metadata alias. Otherwise
+  // aliases and historical folder IDs use the canonical platform registration.
+  Result := Registrations.TryGetValue(Id, Item);
+  if not Result then
+    Result := Registrations.TryGetValue(TPlatformRegistry.CanonicalId(Id), Item);
+  if not Result then
+    Exit;
+  Value := Item.DefaultClass;
+  for var Variant in Item.Variants do
+    if Variant.DeviceId = Device then
+    begin
+      Value := Variant.GamepadClass;
+      Exit;
+    end;
+end;
+
+function GamepadClass(const SystemId: string; const Device: string): TPlatformGamepadClass;
+begin
+  if not TryGamepadClass(SystemId, Device, Result) then
+    raise EArgumentException.Create('No virtual gamepad for this platform');
+end;
+
+function CreatePlatformGamepad(Owner: TComponent; const SystemId: string; const Device: string): TPlatformGamepad;
+begin
+  Result := GamepadClass(SystemId, Device).Create(Owner);
+end;
+
+initialization
+  Registrations := TDictionary<string, TGamepadRegistration>.Create(TIStringComparer.Ordinal);
+
+finalization
+  Registrations.Free;
 
 end.
 

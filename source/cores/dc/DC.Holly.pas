@@ -11,8 +11,9 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, Core.Snapshots, HW.SH4.Periph, DC.Types, DC.Memory, DC.Scheduler,
-  DC.Interrupts, DC.PVR, DC.GDROM, DC.AICA, DC.Maple;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots, HW.SH4.Periph,
+  DC.Types, DC.Memory, DC.Scheduler, DC.Interrupts, DC.PVR, DC.GDROM, DC.AICA,
+  DC.Maple;
 
 type
   TDCHollyState = record
@@ -46,8 +47,7 @@ type
     S: TDCHollyState;
     // SB_SFRES written with 7611h.
     OnSoftReset: procedure of object;
-    constructor Create(Memory: TDCMemory; Scheduler: TDCScheduler; Interrupts: TDCInterrupts; Periph: TSH4Periph;
-      PVR: TDCPVR; GDROM: TDCGDROM; AICA: TDCAICA; Maple: TDCMaple);
+    constructor Create(Memory: TDCMemory; Scheduler: TDCScheduler; Interrupts: TDCInterrupts; Periph: TSH4Periph; PVR: TDCPVR; GDROM: TDCGDROM; AICA: TDCAICA; Maple: TDCMaple);
     procedure Reset;
     function Read(Address: Cardinal; Size: Integer): Cardinal;
     procedure Write(Address, Value: Cardinal; Size: Integer);
@@ -104,8 +104,7 @@ const
   SB_PDEN = $005F7C14;
   SB_PDST = $005F7C18;
 
-constructor TDCHolly.Create(Memory: TDCMemory; Scheduler: TDCScheduler; Interrupts: TDCInterrupts;
-  Periph: TSH4Periph; PVR: TDCPVR; GDROM: TDCGDROM; AICA: TDCAICA; Maple: TDCMaple);
+constructor TDCHolly.Create(Memory: TDCMemory; Scheduler: TDCScheduler; Interrupts: TDCInterrupts; Periph: TSH4Periph; PVR: TDCPVR; GDROM: TDCGDROM; AICA: TDCAICA; Maple: TDCMaple);
 begin
   inherited Create;
   FMemory := Memory;
@@ -464,13 +463,19 @@ end;
 function TDCHolly.Read(Address: Cardinal; Size: Integer): Cardinal;
 begin
   case Address and $FFFFFFFC of
-    SB_ISTNRM: Result := FInterrupts.NormalStatus;
-    SB_ISTEXT: Result := FInterrupts.S.External;
-    SB_ISTERR: Result := FInterrupts.S.Error;
-    SB_FFST: Result := 0;
+    SB_ISTNRM:
+      Result := FInterrupts.NormalStatus;
+    SB_ISTEXT:
+      Result := FInterrupts.S.external;
+    SB_ISTERR:
+      Result := FInterrupts.S.Error;
+    SB_FFST:
+      Result := 0;
     // Free TA FIFO entries: the FIFO is always drained (8 = empty).
-    SB_TFREM: Result := 8;
-    SB_SBREV: Result := $0B;
+      SB_TFREM:
+      Result := 8;
+    SB_SBREV:
+      Result := $0B;
     SB_IML2NRM..SB_IML2NRM + $28:
       begin
         var Index := (Address - SB_IML2NRM) shr 2;
@@ -556,3 +561,4 @@ begin
 end;
 
 end.
+

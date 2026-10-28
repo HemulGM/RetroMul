@@ -7,6 +7,14 @@ uses
 
 {$SCOPEDENUMS ON}
 
+const
+  ROM_CORE_ID_SG1000 = 'SG1000';
+  ROM_CORE_ID_SC3000 = 'SC3000';
+  ROM_CORE_ID_SF7000 = 'SF7000';
+  ROM_CORE_ID_OMV = 'OMV';
+  ROM_CORE_ID_SMS = 'SMS';
+  ROM_CORE_ID_GG = 'GG';
+
 type
   TSGMapper = (Standard, Ram2K, Ram8K, Basic32K, Music10K, DahjeeA, DahjeeB, SegaBanked, System2K,
     Terebi, Survivors, Megacart);

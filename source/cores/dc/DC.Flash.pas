@@ -223,8 +223,10 @@ end;
 function TDCFlash.Region: TDCRegion;
 begin
   case FData[FactoryOffset + 2] of
-    Ord('0'): Result := TDCRegion.Japan;
-    Ord('1'): Result := TDCRegion.USA;
+    Ord('0'):
+      Result := TDCRegion.Japan;
+    Ord('1'):
+      Result := TDCRegion.USA;
   else
     Result := TDCRegion.Europe;
   end;
@@ -323,3 +325,4 @@ begin
 end;
 
 end.
+

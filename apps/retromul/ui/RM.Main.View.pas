@@ -8,7 +8,7 @@ uses
   System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Types,
   FMX.Controls, FMX.Forms, FMX.TabControl, FMX.Objects, FMX.StdCtrls,
   FMX.Layouts, FMX.Menus, FMX.Dialogs, WinUI3.Form, Core.Emulation, Core.Storage,
-  RM.ShaderBitmap, RM.Input, FMXInput, NES.DataRecorder, NES.FamicomDataRecorder, RM.Main.State
+  RM.ShaderBitmap, RM.Input, FMXInput, RM.Main.State
   {$IF not Defined(LINUX)}
     , System.Sensors
   {$ENDIF}
@@ -167,14 +167,6 @@ type
     function CombinedGamepadInput: TEmulatorInput; virtual; abstract;
     procedure UpdatePeripheralInput; virtual; abstract;
     procedure UpdatePeripheralFeedback; virtual; abstract;
-    procedure MiraclePianoChanged(Sender: TObject); virtual; abstract;
-    procedure FamicomKeyboardChanged(Sender: TObject); virtual; abstract;
-    procedure SuborKeyboardChanged(Sender: TObject); virtual; abstract;
-    procedure SuborKeyboardPower(Sender: TObject); virtual; abstract;
-    procedure PowerPadChanged(Sender: TObject); virtual; abstract;
-    procedure TapeAction(Sender: TObject; Action: TTapeAction; const FileName: string); virtual; abstract;
-    procedure ChooseTapeFile(Sender: TObject); virtual; abstract;
-    procedure SaveTapeAs(Sender: TObject); virtual; abstract;
     {$IFDEF ISMOBILE}
     function ApplicationStateChanged(Sender: TObject; const AAppEvent: TApplicationEvent; const AContext: TObject): Boolean; virtual; abstract;
     {$ENDIF}

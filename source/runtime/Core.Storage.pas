@@ -6,6 +6,13 @@ uses
   System.SysUtils, System.Classes, System.IniFiles, Core.Storage.Types
   {$IFDEF IOS}, iOSapi.Foundation{$ENDIF};
 
+const
+  ROM_EXTENSION_BIN = '.bin';
+  ROM_EXTENSION_M3U = '.m3u';
+  ROM_EXTENSION_CUE = '.cue';
+  ROM_EXTENSION_ISO = '.iso';
+  ROM_EXTENSION_GDI = '.gdi';
+
 type
   TStorageFile = Core.Storage.Types.TStorageFile;
 
@@ -76,16 +83,21 @@ type
 function RememberIOSDocumentURL(const URL: NSURL): string;
 {$ENDIF}
 
+function ReadRomData(Stream: TStream): TBytes;
+
 implementation
 
 uses
-  System.IOUtils, System.StrUtils, System.Generics.Collections, Core.Platforms,
-  Core.RomFormat, Core.CD.Disc,
+  Core.PlatformServices, System.IOUtils, System.StrUtils,
+  System.Generics.Collections, Core.Platforms, Core.CD.Disc,
   {$IFDEF ANDROID}
   Core.Storage.Android, {$ENDIF}
   {$IFDEF IOS} Macapi.Helpers, System.Hash, {$ENDIF}
   {$IFDEF MSWINDOWS} Winapi.Windows, {$ELSE} Posix.Stdio, Posix.Unistd, {$ENDIF}
   System.Types;
+
+const
+  DEFAULT_MAX_ROM_FILE_SIZE = 64 * 1024 * 1024;
 
 type
   TReadCancellationScope = class(TInterfacedObject)
@@ -113,6 +125,36 @@ type
 
 threadvar
   ReadCancellationScope: TReadCancellationScope;
+
+function ReadRomData(Stream: TStream): TBytes;
+const
+  MAX_ROM_DATA_SIZE = 64 * 1024 * 1024;
+begin
+  if Stream = nil then
+    raise EArgumentNilException.Create('Stream');
+
+  var Buffer: array[0..65535] of Byte;
+  var Memory := TMemoryStream.Create;
+  try
+    while True do
+    begin
+      var Count := Stream.Read(Buffer, SizeOf(Buffer));
+      if Count = 0 then
+        Break;
+
+      if Memory.Size + Count > MAX_ROM_DATA_SIZE then
+        raise EReadError.Create('ROM exceeds 64 MiB');
+
+      Memory.WriteBuffer(Buffer, Count);
+    end;
+    SetLength(Result, Memory.Size);
+    if Length(Result) > 0 then
+      Move(Memory.Memory^, Result[0], Length(Result));
+  finally
+    Memory.Free;
+  end;
+end;
+
 
 constructor TReadCancellationScope.Create(const Check: TProc);
 begin
@@ -370,7 +412,7 @@ constructor TStorage.Create(const Root: string; const Picker: IStoragePicker);
 begin
   inherited Create;
   FCheckRomFileSize := True;
-  FMaxRomFileSize := ROM_MAX_SIZE;
+  FMaxRomFileSize := DEFAULT_MAX_ROM_FILE_SIZE;
   FRoot := Root;
   if FRoot = '' then
   begin
@@ -671,19 +713,11 @@ begin
   Result := TMemIniFile.Create('', TEncoding.UTF8);
   try
     Result.Rename(Location, False);
-    var ReadLocation := Location;
-    if not Exists(ReadLocation) then
-    begin
-      var platform: TPlatformInfo;
-      if TPlatformRegistry.Find(TPath.GetFileNameWithoutExtension(Location), platform) and
-        (platform.LegacySettingsId <> '') and SameText(Location, ConfigFile(platform.Id)) then
-        ReadLocation := ConfigFile(platform.LegacySettingsId);
-    end;
-    if Exists(ReadLocation) then
+    if Exists(Location) then
     begin
       var Lines := TStringList.Create;
       try
-        Lines.Text := ReadText(ReadLocation);
+        Lines.Text := ReadText(Location);
         Result.SetStrings(Lines);
       finally
         Lines.Free;
@@ -769,7 +803,7 @@ end;
 function GameIdentity(const SystemId, Identity: string): string;
 begin
   Result := Identity;
-  if not SameText(SystemId, ROM_SYSTEM_NES) and not StartsText(UpperCase(SystemId) + '-', Identity) then
+  if not PlatformServices(SystemId).UnprefixedSaveIdentity and not StartsText(UpperCase(SystemId) + '-', Identity) then
     Result := UpperCase(SafeName(SystemId)) + '-' + Identity;
 end;
 
@@ -866,8 +900,9 @@ begin
             ExpandFileName(Locations[i])).Replace('\', '/');
       end;
     end;
-    var DiscSystem := SameText(SystemId, ROM_SYSTEM_PS1) or SameText(SystemId, ROM_SYSTEM_DC);
-    if DiscSystem then
+    var Features := PlatformServices(SystemId).LibraryFeatures;
+    var DiscSystem := TLibraryFeature.CueTracks in Features;
+    if TLibraryFeature.Playlists in Features then
       for var Candidate in Candidates do
         if SameText(ExtractFileExt(Candidate.Name), ROM_EXTENSION_M3U) then
         try
@@ -890,7 +925,7 @@ begin
       if SameText(ExtractFileExt(Candidate.Name), ROM_EXTENSION_CUE) then
         CueNames.Add(ChangeFileExt(Candidate.RelativePath, ''));
     // The track files of a Dreamcast GDI belong to its library entry.
-    if SameText(SystemId, ROM_SYSTEM_DC) then
+    if TLibraryFeature.GdiTracks in Features then
       for var Candidate in Candidates do
         if SameText(ExtractFileExt(Candidate.Name), ROM_EXTENSION_GDI) then
         try

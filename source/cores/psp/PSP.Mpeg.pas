@@ -75,7 +75,7 @@ begin
     // AU in a packet; estimated per-AU stamps can repeat at a PES boundary.
     // Count pictures actually released by the reorder queue, including drains.
     if ClockInitialized then
-      Decoded.PTS:=FirstVideoPTS+Int64(ReceivedVideoFrames)*3003;
+      Decoded.PTS := FirstVideoPTS + Int64(ReceivedVideoFrames) * 3003;
     Inc(ReceivedVideoFrames);
     Frame := Decoded;
     VideoEndPTS := Max(VideoEndPTS, Decoded.PTS + Decoded.Duration);
@@ -86,8 +86,9 @@ procedure TPSPMpegContext.SendVideo;
 begin
   if not ClockInitialized then
   begin
-    if ExpectedVideoFrames=0 then FirstVideoPTS:=Max(VideoAU.PTS,0);
-    ClockInitialized:=True;
+    if ExpectedVideoFrames = 0 then
+      FirstVideoPTS := Max(VideoAU.PTS, 0);
+    ClockInitialized := True;
   end;
   Decoder.SendAnnexB(VideoAU);
   Inc(SubmittedVideoFrames);
@@ -138,7 +139,7 @@ begin
     Result := Result + Format('MPEG %8.8x frames=%d input=%d/%d eof=%s retained=%d video=%s drain=%s audio=%s pts=%d end=%d aus=%d/%d audio_end=%d' + sLineBreak,
       [Ctx.Handle, Ctx.Frames, Ctx.ReceivedBytes, Ctx.ExpectedBytes, BoolToStr(Ctx.InputEOF, True), Ctx.Demux.RetainedBytes,
         BoolToStr(Ctx.HasVideo, True), BoolToStr(Ctx.VideoDrain, True), BoolToStr(Ctx.HasAudio, True), Ctx.Frame.PTS,
-        Ctx.VideoEndPTS,Ctx.SubmittedVideoFrames,Ctx.ExpectedVideoFrames,Ctx.AudioEndPTS]);
+        Ctx.VideoEndPTS, Ctx.SubmittedVideoFrames, Ctx.ExpectedVideoFrames, Ctx.AudioEndPTS]);
 end;
 
 function TPSPMpeg.Context(Address: Cardinal): TPSPMpegContext;
@@ -242,8 +243,8 @@ begin
     begin
       var Actual := Integer(FKernel.LastCallResult);
       {$IFDEF PSP_TRACE_MPEG_RING}
-      Writeln('MPEG ring ',IntToHex(Ring,8),' position=',Position,' request=',Count,' actual=',Actual,
-        ' first=',IntToHex(FMemory.Read32(Address),8),IntToHex(FMemory.Read32(Address+4),8),IntToHex(FMemory.Read32(Address+8),8));
+      Writeln('MPEG ring ', IntToHex(Ring, 8), ' position=', Position, ' request=', Count, ' actual=', Actual,
+        ' first=', IntToHex(FMemory.Read32(Address), 8), IntToHex(FMemory.Read32(Address + 4), 8), IntToHex(FMemory.Read32(Address + 8), 8));
       {$ENDIF}
       if Actual < 0 then
       begin
@@ -287,7 +288,7 @@ begin
   var E := FCPU.Registers[8];
   var F := FCPU.Registers[9];
   var Ctx := Context(A);
- {$IFDEF PSP_TRACE_MPEG}    Writeln('mpeg ', IntToHex(NID, 8), ' ', IntToHex(A, 8), ' ', IntToHex(B, 8), ' ', IntToHex(C, 8), ' ', IntToHex(D, 8));{$ENDIF}
+ {$IFDEF PSP_TRACE_MPEG}      Writeln('mpeg ', IntToHex(NID, 8), ' ', IntToHex(A, 8), ' ', IntToHex(B, 8), ' ', IntToHex(C, 8), ' ', IntToHex(D, 8));{$ENDIF}
   case NID of
     $682A619B, $874624D6:
       ; // Native service lifecycle owns codec state.
@@ -380,24 +381,28 @@ begin
           Ctx.InputEOF := False;
           for var I := 0 to 3 do
             Ctx.ExpectedBytes := (Ctx.ExpectedBytes shl 8) or FMemory.Read8(Header + 12 + Cardinal(I));
-          Ctx.ExpectedVideoFrames:=0;Ctx.SubmittedVideoFrames:=0;Ctx.ReceivedVideoFrames:=0;
-          Ctx.ClockInitialized:=False;
-          if FMemory.IsValid(Header,96) then
+          Ctx.ExpectedVideoFrames := 0;
+          Ctx.SubmittedVideoFrames := 0;
+          Ctx.ReceivedVideoFrames := 0;
+          Ctx.ClockInitialized := False;
+          if FMemory.IsValid(Header, 96) then
           begin
-            var FirstPTS,LastPTS:UInt64;FirstPTS:=0;LastPTS:=0;
-            for var I:=0 to 5 do
+            var FirstPTS, LastPTS: UInt64;
+            FirstPTS := 0;
+            LastPTS := 0;
+            for var I := 0 to 5 do
             begin
-              FirstPTS:=(FirstPTS shl 8) or FMemory.Read8(Header+$54+Cardinal(I));
-              LastPTS:=(LastPTS shl 8) or FMemory.Read8(Header+$5A+Cardinal(I));
+              FirstPTS := (FirstPTS shl 8) or FMemory.Read8(Header + $54 + Cardinal(I));
+              LastPTS := (LastPTS shl 8) or FMemory.Read8(Header + $5A + Cardinal(I));
             end;
             // The native PSP video clock currently uses 3003 ticks per AU.
             // Use an exact header duration only; audio padding may continue
             // after the final video AU and need not be read by the application.
-            if (LastPTS>FirstPTS) and ((LastPTS-FirstPTS) mod 3003=0) and
-              ((LastPTS-FirstPTS) div 3003<=High(Cardinal)) then
+            if (LastPTS > FirstPTS) and ((LastPTS - FirstPTS) mod 3003 = 0) and
+              ((LastPTS - FirstPTS) div 3003 <= High(Cardinal)) then
             begin
-              Ctx.ExpectedVideoFrames:=(LastPTS-FirstPTS) div 3003;
-              Ctx.FirstVideoPTS:=FirstPTS;
+              Ctx.ExpectedVideoFrames := (LastPTS - FirstPTS) div 3003;
+              Ctx.FirstVideoPTS := FirstPTS;
             end;
           end;
         end;
@@ -487,17 +492,22 @@ begin
           Value := InvalidValue;
           Exit
         end;
-        if not FMemory.IsValid(C, 24) then begin Value := InvalidValue;Exit end;
+        if not FMemory.IsValid(C, 24) then
+        begin
+          Value := InvalidValue;
+          Exit
+        end;
         var IsVideo := NID = $FE246728;
         if IsVideo then
         begin
           if not Ctx.HasVideo then
           begin
             Ctx.HasVideo := Ctx.Demux.ReceiveVideo(Ctx.VideoAU);
-            if Ctx.HasVideo then Ctx.VideoAttribute:=Ctx.Demux.LastVideoAttribute;
+            if Ctx.HasVideo then
+              Ctx.VideoAttribute := Ctx.Demux.LastVideoAttribute;
           end;
-          var VideoEOF:=Ctx.InputEOF or ((Ctx.ExpectedVideoFrames<>0) and
-            (Ctx.SubmittedVideoFrames>=Ctx.ExpectedVideoFrames));
+          var VideoEOF := Ctx.InputEOF or ((Ctx.ExpectedVideoFrames <> 0) and
+            (Ctx.SubmittedVideoFrames >= Ctx.ExpectedVideoFrames));
           if not Ctx.HasVideo and VideoEOF then
           begin
        // Delayed B pictures still belong to this stream. Publish each one
@@ -510,7 +520,7 @@ begin
               Ctx.VideoAU := Default(TMediaPacket);
               Ctx.VideoAU.PTS := Ctx.Frame.PTS;
               Ctx.VideoAU.DTS := Ctx.Frame.PTS;
-              Ctx.VideoAttribute:=1
+              Ctx.VideoAttribute := 1
             end;
           end;
           if not Ctx.HasVideo then
@@ -519,7 +529,8 @@ begin
             begin
               FMemory.Write32(C, Cardinal(UInt64(Ctx.VideoEndPTS) shr 32));
               FMemory.Write32(C + 4, Cardinal(Ctx.VideoEndPTS));
-              FMemory.Write32(C + 8, $FFFFFFFF);FMemory.Write32(C + 12, $FFFFFFFF);
+              FMemory.Write32(C + 8, $FFFFFFFF);
+              FMemory.Write32(C + 12, $FFFFFFFF);
             end;
             Value := NoData;
             Exit
@@ -536,7 +547,8 @@ begin
             begin
               FMemory.Write32(C, Cardinal(UInt64(Ctx.AudioEndPTS) shr 32));
               FMemory.Write32(C + 4, Cardinal(Ctx.AudioEndPTS));
-              FMemory.Write32(C + 8, $FFFFFFFF);FMemory.Write32(C + 12, $FFFFFFFF);
+              FMemory.Write32(C + 8, $FFFFFFFF);
+              FMemory.Write32(C + 12, $FFFFFFFF);
             end;
             Value := NoData;
             Exit
@@ -544,7 +556,10 @@ begin
           WriteAU(C, Ctx.AudioAU);
         end;
         if FMemory.IsValid(D, 4) then
-          if IsVideo then FMemory.Write32(D, Ctx.VideoAttribute) else FMemory.Write32(D, 0);
+          if IsVideo then
+            FMemory.Write32(D, Ctx.VideoAttribute)
+          else
+            FMemory.Write32(D, 0);
       end;
     $211A057C:
       begin
@@ -801,9 +816,12 @@ begin
         Ctx.InputEOF := False;
         Ctx.FrameReady := False;
         Ctx.Frame := Default(TVideoFrame);
-        Ctx.VideoEndPTS := 0;Ctx.AudioEndPTS := 0;Ctx.ReceivedBytes := 0;
-        Ctx.SubmittedVideoFrames:=0;Ctx.ReceivedVideoFrames:=0;
-        Ctx.ClockInitialized:=False;
+        Ctx.VideoEndPTS := 0;
+        Ctx.AudioEndPTS := 0;
+        Ctx.ReceivedBytes := 0;
+        Ctx.SubmittedVideoFrames := 0;
+        Ctx.ReceivedVideoFrames := 0;
+        Ctx.ClockInitialized := False;
         if Ctx.Audio <> nil then
           Ctx.Audio.Reset;
       end;

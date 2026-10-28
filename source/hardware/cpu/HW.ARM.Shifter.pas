@@ -7,6 +7,7 @@
 interface
 
 function ARMRotateRight(Value: Cardinal; Count: Integer): Cardinal; inline;
+
 function ARMShift(Value: Cardinal; Kind, Count: Integer; Immediate: Boolean; var Carry: Cardinal): Cardinal;
 
 implementation
@@ -89,3 +90,4 @@ begin
 end;
 
 end.
+

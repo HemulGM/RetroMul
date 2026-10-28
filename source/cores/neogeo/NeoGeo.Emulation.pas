@@ -3,9 +3,9 @@
 interface
 
 uses
-  Core.InputConfig, Core.Storage, Core.RomFormat, Core.Snapshots,
-  System.SysUtils, System.Classes, System.SyncObjs, Core.Emulation.Types,
-  NeoGeo.Console, NeoGeo.Cartridge, NeoGeo.Video;
+  Core.InputConfig, Core.Storage, Core.Snapshots, System.SysUtils,
+  System.Classes, System.SyncObjs, Core.Emulation.Types, NeoGeo.Console,
+  NeoGeo.Cartridge, NeoGeo.Video;
 
 const
   NG_WORKER_SAMPLE_RATE = 44100;

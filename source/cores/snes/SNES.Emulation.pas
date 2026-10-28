@@ -3,8 +3,8 @@
 interface
 
 uses
-  Core.Storage, Core.RomFormat, Core.Snapshots, System.SysUtils, System.Classes,
-  System.SyncObjs, Core.InputConfig, Core.Emulation.Types, SNES.Console;
+  Core.Storage, Core.Snapshots, System.SysUtils, System.Classes, System.SyncObjs,
+  Core.InputConfig, Core.Emulation.Types, SNES.Console;
 
 const
   SNES_SAMPLE_RATE = 32000;
@@ -57,8 +57,8 @@ type
 implementation
 
 uses
-  Core.SavePaths, Core.PerformanceHints, System.IOUtils, System.UITypes,
-  System.Diagnostics, System.Math, PCM.Audio;
+  SNES.Cartridge, Core.SavePaths, Core.PerformanceHints, System.IOUtils,
+  System.UITypes, System.Diagnostics, System.Math, PCM.Audio;
 
 { TSnesWorker }
 

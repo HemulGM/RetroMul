@@ -5583,9 +5583,11 @@ begin
     // The watched code page tracks every CPU/DMA/RDP write. Never trust a
     // generation while a renderer may still write it, or across two pages.
     if ((FIdlePhysical and $FFF) <= $FF8) and FBus.RDPReadClean(FIdlePhysical) and
-      (FBus.CodeGeneration(FIdlePhysical) = FIdleGeneration) then Exit(True);
+      (FBus.CodeGeneration(FIdlePhysical) = FIdleGeneration) then
+      Exit(True);
     Result := (FBus.ReadRAM32(FIdlePhysical) = FIdleBranch) and (FBus.ReadRAM32(FIdlePhysical + 4) = FIdleSlot);
-    if Result then FIdleGeneration := FBus.CodeGeneration(FIdlePhysical);
+    if Result then
+      FIdleGeneration := FBus.CodeGeneration(FIdlePhysical);
   end
   else
     Result := (FBus.Read32(FIdlePhysical) = FIdleBranch) and (FBus.Read32(FIdlePhysical + 4) = FIdleSlot);

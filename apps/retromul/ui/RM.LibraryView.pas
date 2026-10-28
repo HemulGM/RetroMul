@@ -170,8 +170,8 @@ implementation
 uses
   System.IOUtils, System.Math, System.Math.Vectors, System.Hash,
   System.Character, System.Generics.Defaults, FMX.Graphics, FMX.BehaviorManager,
-  SCRP.GameList, HGM.FMX.Image, Core.Platforms, Core.RomFormat, Core.SavePaths,
-  RM.Icons, RM.SearchEdit, RM.Styles;
+  Core.GameList, FMX.Image, Core.Platforms, Core.SavePaths, RM.Icons,
+  RM.SearchEdit, RM.Styles;
 
 {$IFDEF ISMOBILE}
 type
@@ -1350,9 +1350,10 @@ begin
     PanelInspector.Visible := (FLoadThread = nil) and (WideInspector or FInspectorOpen);
     if InspectorOverlay.Visible then
       InspectorOverlay.BringToFront;
-    for var Child in VertScrollBoxPlatforms.Content.Children do
-      if Child is TLayout then
-        TLayout(Child).Width := VertScrollBoxPlatforms.Width;
+    if VertScrollBoxPlatforms.Content <> nil then
+      for var I := 0 to VertScrollBoxPlatforms.Content.ChildrenCount - 1 do
+        if VertScrollBoxPlatforms.Content.Children[I] is TLayout then
+          TLayout(VertScrollBoxPlatforms.Content.Children[I]).Width := VertScrollBoxPlatforms.Width;
     LayoutEmptyMessage.Width := Min(520, Max(1, LayoutLibraryEmptyState.Width - 32));
     var ContentWidth := Max(1, LayoutBody.Width - 48);
     LayoutContinuePreview.Visible := ContentWidth >= 720;
@@ -1685,6 +1686,8 @@ begin
 
   for var Button in FPlatformButtons do
     Button.Visible := (Button.TagString = '') or FConfiguredPlatforms.Contains(Button.TagString);
+  if (VertScrollBoxPlatforms.Content = nil) or (VertScrollBoxPlatforms.Content.ChildrenCount = 0) then
+    Exit;
   for var Child in VertScrollBoxPlatforms.Content.Children do
     if Child is TLayout then
     begin

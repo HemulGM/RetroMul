@@ -7,6 +7,15 @@ uses
 
 {$SCOPEDENUMS ON}
 
+const
+  NES_ROM_SIGNATURE: AnsiString = 'NES' + #$1A;
+  NES_ROM_SIGNATURE_SIZE = 4;
+  NES_ROM_HEADER_SIZE = 16;
+  NES_ROM_TRAINER_SIZE = 512;
+  NES_ROM_PRG_BANK_SIZE = $4000;
+  NES_ROM_CHR_BANK_SIZE = $2000;
+  NES_ROM_RAM_BANK_SIZE = $2000;
+
 type
   TRomFormat = (Unknown, INES, NES20);
 
@@ -58,9 +67,8 @@ type
 implementation
 
 uses
-  Core.RomHashes, NES.RomMetadata, NES.Mapper.Factory, Core.SavePaths,
-  NES.Mapper.ExtendedMemory, NES.Mapper.Mmc3, NES.Mapper.Mmc5, Core.RomFormat,
-  System.Hash,
+  NES.RomHashes, NES.RomMetadata, NES.Mapper.Factory, Core.SavePaths,
+  NES.Mapper.ExtendedMemory, NES.Mapper.Mmc3, NES.Mapper.Mmc5, System.Hash,
   {$IFDEF MSWINDOWS}
   Winapi.Windows,
   {$ENDIF}

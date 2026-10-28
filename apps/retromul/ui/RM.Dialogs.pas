@@ -9,6 +9,7 @@ uses
 
 type
   TRetroDialogKind = (Information, Warning, Error, Confirmation, Loading);
+
   TRetroDialogChoice = (Accept, Alternative, Cancel);
 
   TRetroDialog = class(TFrame)
@@ -32,9 +33,7 @@ type
     procedure Resize; override;
   public
     constructor Create(AOwner: TComponent); override;
-    procedure Configure(const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>;
-      const AcceptText: string = ''; const CancelText: string = '';
-      const AlternativeText: string = ''; const OnAlternative: TProc = nil);
+    procedure Configure(const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>; const AcceptText: string = ''; const CancelText: string = ''; const AlternativeText: string = ''; const OnAlternative: TProc = nil);
     procedure FocusDefault;
     procedure HandleKey(var Key: Word; var KeyChar: WideChar);
   end;
@@ -42,11 +41,9 @@ type
 // All dialogs are asynchronous and belong to the host form. Call on the UI thread.
 procedure ShowRetroMessage(Owner: TComponent; const Text: string; Kind: TRetroDialogKind = TRetroDialogKind.Error);
 
-procedure ShowRetroConfirmation(Owner: TComponent; const Text: string; const OnResult: TProc<Boolean>;
-  const AcceptText: string = ''; const CancelText: string = '');
+procedure ShowRetroConfirmation(Owner: TComponent; const Text: string; const OnResult: TProc<Boolean>; const AcceptText: string = ''; const CancelText: string = '');
 
-procedure ShowRetroChoice(Owner: TComponent; const Text: string; const OnResult: TProc<TRetroDialogChoice>;
-  const AcceptText, AlternativeText, CancelText: string);
+procedure ShowRetroChoice(Owner: TComponent; const Text: string; const OnResult: TProc<TRetroDialogChoice>; const AcceptText, AlternativeText, CancelText: string);
 
 procedure ShowRetroLoading(Owner: TComponent; const Text: string; const OnCancel: TProc);
 
@@ -95,9 +92,7 @@ type
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
-    procedure Enqueue(Requester: TComponent; const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>;
-      const AcceptText: string = ''; const CancelText: string = '';
-      const AlternativeText: string = ''; const OnAlternative: TProc = nil);
+    procedure Enqueue(Requester: TComponent; const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>; const AcceptText: string = ''; const CancelText: string = ''; const AlternativeText: string = ''; const OnAlternative: TProc = nil);
   end;
 
 function FindHost(Form: TCustomForm; CreateIfMissing: Boolean): TRetroDialogHost;
@@ -138,29 +133,31 @@ begin
     Host.Enqueue(Owner, Text, Kind, nil);
 end;
 
-procedure ShowRetroConfirmation(Owner: TComponent; const Text: string; const OnResult: TProc<Boolean>;
-  const AcceptText, CancelText: string);
+procedure ShowRetroConfirmation(Owner: TComponent; const Text: string; const OnResult: TProc<Boolean>; const AcceptText, CancelText: string);
 begin
   var Host := FindHost(OwnerForm(Owner), True);
   if Host <> nil then
     Host.Enqueue(Owner, Text, TRetroDialogKind.Confirmation, OnResult, AcceptText, CancelText);
 end;
 
-procedure ShowRetroChoice(Owner: TComponent; const Text: string; const OnResult: TProc<TRetroDialogChoice>;
-  const AcceptText, AlternativeText, CancelText: string);
+procedure ShowRetroChoice(Owner: TComponent; const Text: string; const OnResult: TProc<TRetroDialogChoice>; const AcceptText, AlternativeText, CancelText: string);
 begin
   var Host := FindHost(OwnerForm(Owner), True);
   if Host <> nil then
     Host.Enqueue(Owner, Text, TRetroDialogKind.Confirmation,
       procedure(Confirmed: Boolean)
       begin
-        if not Assigned(OnResult) then Exit;
-        if Confirmed then OnResult(TRetroDialogChoice.Accept)
-        else OnResult(TRetroDialogChoice.Cancel);
+        if not Assigned(OnResult) then
+          Exit;
+        if Confirmed then
+          OnResult(TRetroDialogChoice.Accept)
+        else
+          OnResult(TRetroDialogChoice.Cancel);
       end, AcceptText, CancelText, AlternativeText,
       procedure
       begin
-        if Assigned(OnResult) then OnResult(TRetroDialogChoice.Alternative);
+        if Assigned(OnResult) then
+          OnResult(TRetroDialogChoice.Alternative);
       end);
 end;
 
@@ -231,8 +228,7 @@ begin
   FReady := True;
 end;
 
-procedure TRetroDialog.Configure(const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>;
-  const AcceptText, CancelText, AlternativeText: string; const OnAlternative: TProc);
+procedure TRetroDialog.Configure(const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>; const AcceptText, CancelText, AlternativeText: string; const OnAlternative: TProc);
 const
   Titles: array[TRetroDialogKind] of string = ('Information', 'Warning', 'Error', 'Confirmation', 'Loading...');
   Symbols: array[TRetroDialogKind] of string = ('i', '!', '!', '?', '');
@@ -294,7 +290,8 @@ end;
 procedure TRetroDialog.AlternativeClick(Sender: TObject);
 begin
   var Callback := FOnAlternative;
-  if Assigned(Callback) then Callback();
+  if Assigned(Callback) then
+    Callback();
 end;
 
 procedure TRetroDialog.HandleKey(var Key: Word; var KeyChar: WideChar);
@@ -328,7 +325,8 @@ end;
 
 procedure TRetroDialog.Arrange;
 begin
-  if FArranging then Exit;
+  if FArranging then
+    Exit;
   FArranging := True;
   try
     var W := Max(1, Min(560, Width - 32));
@@ -396,7 +394,8 @@ begin
             Button.Position.Y := I * 56;
             Button.Height := 48;
             Button.Margins.Right := 0;
-            if I < High(Buttons) then Button.Margins.Bottom := 8;
+            if I < High(Buttons) then
+              Button.Margins.Bottom := 8;
           end
           else
           begin
@@ -563,7 +562,8 @@ begin
     if InvokeCallback then
       if Alternative then
       begin
-        if Assigned(AlternativeCallback) then AlternativeCallback();
+        if Assigned(AlternativeCallback) then
+          AlternativeCallback();
       end
       else if Assigned(Callback) then
         Callback(Confirmed);
@@ -573,8 +573,7 @@ begin
   end;
 end;
 
-procedure TRetroDialogHost.Enqueue(Requester: TComponent; const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>;
-  const AcceptText, CancelText, AlternativeText: string; const OnAlternative: TProc);
+procedure TRetroDialogHost.Enqueue(Requester: TComponent; const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>; const AcceptText, CancelText, AlternativeText: string; const OnAlternative: TProc);
 begin
   if not Assigned(OnResult) then
   begin

@@ -100,7 +100,7 @@ begin
         if Count > Cardinal((Length(Data) - Offset) div 8) then
           InvalidFile;
         var Found := False;
-        for var I := 1 to Count do
+        for var i := 1 to Count do
         begin
           var Code := ReadString;
           var Values := ReadString;
@@ -205,8 +205,8 @@ begin
     try
       Values.CaseSensitive := True;
       Values.Assign(Lang.LangStr[Code]);
-      for var I := 0 to Translation.Count - 1 do
-        Values.Values[Translation.Names[I]] := Translation.ValueFromIndex[I];
+      for var i := 0 to Translation.Count - 1 do
+        Values.Values[Translation.Names[i]] := Translation.ValueFromIndex[i];
       if Lang.Lang.StartsWith('custom-') and (Lang.LangStr[Lang.Lang].Text = Values.Text) then
         Exit;
       // Keep the previous dictionary for reverse lookup during UI relocalization.

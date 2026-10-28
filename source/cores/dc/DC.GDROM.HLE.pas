@@ -11,11 +11,12 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Snapshots, HW.SH4, DC.Types, DC.Memory, DC.Interrupts, DC.Disc,
-  DC.GDROM, DC.Boot;
+  System.SysUtils, System.Classes, Core.Snapshots, HW.SH4, DC.Types, DC.Memory,
+  DC.Interrupts, DC.Disc, DC.GDROM, DC.Boot;
 
 type
   TDCBusReader = function(Address: Cardinal; Size: Integer): UInt64 of object;
+
   TDCBusWriter = procedure(Address: Cardinal; Value: UInt64; Size: Integer) of object;
 
   TDCGDWords = array[0..3] of Cardinal;
@@ -56,8 +57,7 @@ type
     function DiscPresent: Boolean;
   public
     S: TDCGDROMHLEState;
-    constructor Create(Drive: TDCGDROM; Memory: TDCMemory; Interrupts: TDCInterrupts; Read: TDCBusReader;
-      Write: TDCBusWriter);
+    constructor Create(Drive: TDCGDROM; Memory: TDCMemory; Interrupts: TDCInterrupts; Read: TDCBusReader; Write: TDCBusWriter);
     procedure Reset; override;
     function Call(CPU: TSH4; Memory: TDCMemory): Boolean; override;
     procedure SerializeState(Archive: TStateArchive); override;
@@ -74,7 +74,6 @@ const
   GDC_COMPLETE = 2;
   GDC_CONTINUE = 3;
   GDC_ERR = -1;
-
   CMD_CHECK_LICENSE = 2;
   CMD_PIOREAD = 16;
   CMD_DMAREAD = 17;
@@ -98,8 +97,7 @@ const
   // Pseudo command: a PIO transfer queued by REQ_PIO_TRANS.
   CMD_PIO_TRANSFER = $100;
 
-constructor TDCGDROMHLE.Create(Drive: TDCGDROM; Memory: TDCMemory; Interrupts: TDCInterrupts; Read: TDCBusReader;
-  Write: TDCBusWriter);
+constructor TDCGDROMHLE.Create(Drive: TDCGDROM; Memory: TDCMemory; Interrupts: TDCInterrupts; Read: TDCBusReader; Write: TDCBusWriter);
 begin
   inherited Create;
   FDrive := Drive;
@@ -637,3 +635,4 @@ begin
 end;
 
 end.
+

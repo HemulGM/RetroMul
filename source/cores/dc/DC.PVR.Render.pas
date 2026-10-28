@@ -18,8 +18,8 @@
 interface
 
 uses
-  System.SysUtils, System.Math, System.Classes, System.SyncObjs, DC.Types, DC.Memory, DC.PVR, DC.PVR.TA,
-  DC.PVR.Texture;
+  System.SysUtils, System.Math, System.Classes, System.SyncObjs, DC.Types,
+  DC.Memory, DC.PVR, DC.PVR.TA, DC.PVR.Texture;
 
 const
   TileSize = 32;
@@ -45,6 +45,7 @@ type
     // slope (EA * X + EB * Y + EC = 0).
     SpanBase, SpanSlope: array[0..2] of Double;
   end;
+
   PRenderTri = ^TRenderTri;
 
   TRenderPoly = record
@@ -58,9 +59,11 @@ type
   // A Gouraud vertex's base and offset colour channels (B, G, R, A) as
   // floating point.
   TChannels = array[0..3] of Single;
+
   TVertexChannels = record
     Base, Offset: TChannels;
   end;
+
   PVertexChannels = ^TVertexChannels;
 
   TTileBuffers = record
@@ -75,6 +78,7 @@ type
     BestDepth: array[0..TileSize * TileSize - 1] of Single;
     BestTag: array[0..TileSize * TileSize - 1] of Integer;
   end;
+
   PTileBuffers = ^TTileBuffers;
 
   // Translucent fragments of a tile, linked per pixel in submission order,
@@ -87,6 +91,7 @@ type
     SortZ: TArray<Single>;
     SortTag: TArray<Integer>;
   end;
+
   PFragmentBuffer = ^TFragmentBuffer;
 
   TRegionEntry = record
@@ -468,9 +473,15 @@ begin
   var S: Single := 1;
   if Area < 0 then
     S := -1;
-  T.EA[0] := (Y1 - Y2) * S; T.EB[0] := (X2 - X1) * S; T.EC[0] := (X1 * Y2 - X2 * Y1) * S;
-  T.EA[1] := (Y2 - Y0) * S; T.EB[1] := (X0 - X2) * S; T.EC[1] := (X2 * Y0 - X0 * Y2) * S;
-  T.EA[2] := (Y0 - Y1) * S; T.EB[2] := (X1 - X0) * S; T.EC[2] := (X0 * Y1 - X1 * Y0) * S;
+  T.EA[0] := (Y1 - Y2) * S;
+  T.EB[0] := (X2 - X1) * S;
+  T.EC[0] := (X1 * Y2 - X2 * Y1) * S;
+  T.EA[1] := (Y2 - Y0) * S;
+  T.EB[1] := (X0 - X2) * S;
+  T.EC[1] := (X2 * Y0 - X0 * Y2) * S;
+  T.EA[2] := (Y0 - Y1) * S;
+  T.EB[2] := (X1 - X0) * S;
+  T.EC[2] := (X0 * Y1 - X1 * Y0) * S;
   for var K := 0 to 2 do
   begin
     T.TopLeft[K] := (T.EA[K] > 0) or ((T.EA[K] = 0) and (T.EB[K] > 0));
@@ -767,19 +778,21 @@ end;
 // rounding, without calls into the runtime.
 function RoundInt(X: Double): Int64;
 asm
-  cvtsd2si rax, xmm0
+        cvtsd2si rax, xmm0
 end;
 
 function FloorInt(X: Double): Integer;
 asm
-  cvttsd2si eax, xmm0
-  cvtsi2sd xmm1, eax
-  comisd xmm1, xmm0
-  jbe @Done
-  dec eax
+        cvttsd2si eax, xmm0
+        cvtsi2sd xmm1, eax
+        comisd  xmm1, xmm0
+        jbe     @Done
+        dec     eax
+
 @Done:
 end;
 {$ELSE}
+
 function RoundInt(X: Double): Int64; inline;
 begin
   Result := Round(X);
@@ -792,6 +805,7 @@ end;
 {$ENDIF}
 
 {$IFDEF CPUX64}
+
 const
   RoundMagic: Single = 12582912; // 1.5 * 2^23: sums round to integers
   ChannelLow: Single = 0.5;
@@ -811,6 +825,7 @@ begin
     Result := Cardinal(Clamp255(RoundInt(X)));
 end;
 {$ELSE}
+
 function ChannelRound(X: Single): Cardinal; inline;
 begin
   Result := Cardinal(Clamp255(RoundInt(X)));
@@ -818,6 +833,7 @@ end;
 {$ENDIF}
 
 // Perspective-correct Gouraud colour from the vertices' channels.
+
 function GouraudColor(const A, B, C: TChannels; P0, P1, P2: Single): Cardinal; inline;
 begin
   // (Locals: inlined, ChannelRound would evaluate an expression per use.)
@@ -827,7 +843,6 @@ begin
   var X3: Single := A[3] * P0 + B[3] * P1 + C[3] * P2;
   Result := ChannelRound(X0) or (ChannelRound(X1) shl 8) or (ChannelRound(X2) shl 16) or (ChannelRound(X3) shl 24);
 end;
-
 
 function IsNaNSingle(const V: Single): Boolean; inline;
 begin
@@ -921,13 +936,20 @@ end;
 function TDCRenderer.DepthPass(Mode: Cardinal; Z, Stored: Single): Boolean;
 begin
   case Mode of
-    0: Result := False;
-    1: Result := Z < Stored;
-    2: Result := Z = Stored;
-    3: Result := Z <= Stored;
-    4: Result := Z > Stored;
-    5: Result := Z <> Stored;
-    6: Result := Z >= Stored;
+    0:
+      Result := False;
+    1:
+      Result := Z < Stored;
+    2:
+      Result := Z = Stored;
+    3:
+      Result := Z <= Stored;
+    4:
+      Result := Z > Stored;
+    5:
+      Result := Z <> Stored;
+    6:
+      Result := Z >= Stored;
   else
     Result := True;
   end;
@@ -1129,9 +1151,9 @@ begin
       begin
         var Sh := S * 8;
         Base := Base or (Cardinal(Clamp255(RoundInt(((VA.Base1 shr Sh) and $FF) * P0 + ((VB.Base1 shr Sh) and $FF) * P1 +
-          ((VC.Base1 shr Sh) and $FF) * P2))) shl Sh);
+              ((VC.Base1 shr Sh) and $FF) * P2))) shl Sh);
         Offset := Offset or (Cardinal(Clamp255(RoundInt(((VA.Offset1 shr Sh) and $FF) * P0 + ((VB.Offset1 shr Sh) and $FF) * P1 +
-          ((VC.Offset1 shr Sh) and $FF) * P2))) shl Sh);
+              ((VC.Offset1 shr Sh) and $FF) * P2))) shl Sh);
       end;
     end
     else
@@ -1206,11 +1228,17 @@ begin
     case (TSP shr 6) and 3 of
       0:
         begin
-          R := TR; G := TG; B := TB; A := TA_;
+          R := TR;
+          G := TG;
+          B := TB;
+          A := TA_;
         end;
       1:
         begin
-          R := Div255(CR * TR + 127); G := Div255(CG * TG + 127); B := Div255(CB * TB + 127); A := TA_;
+          R := Div255(CR * TR + 127);
+          G := Div255(CG * TG + 127);
+          B := Div255(CB * TB + 127);
+          A := TA_;
         end;
       2:
         begin
@@ -1221,7 +1249,9 @@ begin
         end;
     else
       begin
-        R := Div255(CR * TR + 127); G := Div255(CG * TG + 127); B := Div255(CB * TB + 127);
+        R := Div255(CR * TR + 127);
+        G := Div255(CG * TG + 127);
+        B := Div255(CB * TB + 127);
         A := Div255(CA * TA_ + 127);
       end;
     end;
@@ -1359,7 +1389,6 @@ begin
       end;
     end;
   end;
-
 end;
 
 procedure TDCRenderer.ShadeOpaque(B: PTileBuffers; TileX, TileY: Integer);
@@ -1385,13 +1414,20 @@ end;
 function BlendFactor(Instr: Cardinal; Src, Dst: Cardinal; Channel: Integer; Other: Cardinal): Integer; inline;
 begin
   case Instr of
-    0: Result := 0;
-    1: Result := 255;
-    2: Result := Integer((Other shr Channel) and $FF);
-    3: Result := 255 - Integer((Other shr Channel) and $FF);
-    4: Result := Integer(Src shr 24);
-    5: Result := 255 - Integer(Src shr 24);
-    6: Result := Integer(Dst shr 24);
+    0:
+      Result := 0;
+    1:
+      Result := 255;
+    2:
+      Result := Integer((Other shr Channel) and $FF);
+    3:
+      Result := 255 - Integer((Other shr Channel) and $FF);
+    4:
+      Result := Integer(Src shr 24);
+    5:
+      Result := 255 - Integer(Src shr 24);
+    6:
+      Result := Integer(Dst shr 24);
   else
     Result := 255 - Integer(Dst shr 24);
   end;
@@ -1429,8 +1465,7 @@ begin
     BlendChannel(Src, Dst, 16, FS, FD) or BlendChannel(Src, Dst, 24, FS, FD);
 end;
 
-procedure TDCRenderer.RasterTranslucent(B: PTileBuffers; F: PFragmentBuffer; TileX, TileY, Pass: Integer;
-  Presort: Boolean);
+procedure TDCRenderer.RasterTranslucent(B: PTileBuffers; F: PFragmentBuffer; TileX, TileY, Pass: Integer; Presort: Boolean);
 begin
   var Bin := (TileY * FTilesX + TileX) * 5 + TAListTranslucent;
   if FBinCount[Bin] = 0 then
@@ -1592,8 +1627,10 @@ begin
   var MaxY := Integer((ClipY shr 16) and $3FF);
   var Bytes: Integer;
   case Pack of
-    0..3: Bytes := 2;
-    4: Bytes := 3;
+    0..3:
+      Bytes := 2;
+    4:
+      Bytes := 3;
   else
     Bytes := 4;
   end;
@@ -1632,16 +1669,20 @@ begin
       end;
       var V: Cardinal;
       case Pack of
-        0: V := (Cardinal(R shr 3) shl 10) or (Cardinal(G shr 3) shl 5) or Cardinal(BB shr 3) or ((KVal shr 7) shl 15);
-        1: V := (Cardinal(R shr 3) shl 11) or (Cardinal(G shr 2) shl 5) or Cardinal(BB shr 3);
-        2: V := (Cardinal(A shr 4) shl 12) or (Cardinal(R shr 4) shl 8) or (Cardinal(G shr 4) shl 4) or Cardinal(BB shr 4);
+        0:
+          V := (Cardinal(R shr 3) shl 10) or (Cardinal(G shr 3) shl 5) or Cardinal(BB shr 3) or ((KVal shr 7) shl 15);
+        1:
+          V := (Cardinal(R shr 3) shl 11) or (Cardinal(G shr 2) shl 5) or Cardinal(BB shr 3);
+        2:
+          V := (Cardinal(A shr 4) shl 12) or (Cardinal(R shr 4) shl 8) or (Cardinal(G shr 4) shl 4) or Cardinal(BB shr 4);
         3:
           begin
             V := (Cardinal(R shr 3) shl 10) or (Cardinal(G shr 3) shl 5) or Cardinal(BB shr 3);
             if Cardinal(A) >= AlphaThreshold then
               V := V or $8000;
           end;
-        4, 5: V := (Cardinal(R) shl 16) or (Cardinal(G) shl 8) or Cardinal(BB) or (KVal shl 24);
+        4, 5:
+          V := (Cardinal(R) shl 16) or (Cardinal(G) shl 8) or Cardinal(BB) or (KVal shl 24);
       else
         V := C;
       end;
@@ -1656,7 +1697,8 @@ begin
       end;
       var P := FMemory.VRAM + (Offset and $7FFFFF);
       case Bytes of
-        2: PWord(FMemory.VRAM + (Offset and $7FFFFE))^ := Word(V);
+        2:
+          PWord(FMemory.VRAM + (Offset and $7FFFFE))^ := Word(V);
         3:
           begin
             P^ := Byte(V);
@@ -1777,3 +1819,4 @@ begin
 end;
 
 end.
+

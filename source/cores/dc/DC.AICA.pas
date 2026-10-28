@@ -12,8 +12,8 @@
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots, DC.Types, DC.Memory, DC.Scheduler, DC.Interrupts,
-  DC.CPU.ARM7, DC.Sound.AICA, DC.GDROM;
+  System.SysUtils, System.Math, Core.Snapshots, DC.Types, DC.Memory,
+  DC.Scheduler, DC.Interrupts, DC.CPU.ARM7, DC.Sound.AICA, DC.GDROM;
 
 const
   AICASampleRate = 44100;
@@ -368,8 +368,10 @@ begin
   Sync;
   Offset := Offset and (DCARAMSize - 1);
   case Size of
-    1: Result := FMemory.ARAM[Offset];
-    2: Result := PWord(FMemory.ARAM + (Offset and not Cardinal(1)))^;
+    1:
+      Result := FMemory.ARAM[Offset];
+    2:
+      Result := PWord(FMemory.ARAM + (Offset and not Cardinal(1)))^;
   else
     Result := PCardinal(FMemory.ARAM + (Offset and not Cardinal(3)))^;
   end;
@@ -380,8 +382,10 @@ begin
   Sync;
   Offset := Offset and (DCARAMSize - 1);
   case Size of
-    1: FMemory.ARAM[Offset] := Byte(Value);
-    2: PWord(FMemory.ARAM + (Offset and not Cardinal(1)))^ := Word(Value);
+    1:
+      FMemory.ARAM[Offset] := Byte(Value);
+    2:
+      PWord(FMemory.ARAM + (Offset and not Cardinal(1)))^ := Word(Value);
   else
     PCardinal(FMemory.ARAM + (Offset and not Cardinal(3)))^ := Value;
   end;
@@ -391,8 +395,10 @@ function TDCAICA.ReadRTC(Offset: Cardinal): Cardinal;
 begin
   Sync;
   case Offset and $C of
-    0: Result := S.RTC shr 16;
-    4: Result := S.RTC and $FFFF;
+    0:
+      Result := S.RTC shr 16;
+    4:
+      Result := S.RTC and $FFFF;
   else
     Result := 0;
   end;
@@ -435,3 +441,4 @@ begin
 end;
 
 end.
+

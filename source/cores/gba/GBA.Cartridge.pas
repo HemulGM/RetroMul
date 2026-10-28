@@ -6,6 +6,9 @@ uses
   System.SysUtils, System.Classes, System.Math, Core.Snapshots, GBA.Peripherals;
 
 const
+  ROM_CORE_ID_GBA = 'GBA';
+
+const
   GBA_ROM_MAX_SIZE = 32 * 1024 * 1024;
   GBA_LOGO_PREFIX: array[0..15] of Byte = ($24, $FF, $AE, $51, $69, $9A, $A2, $21, $3D, $84, $82, $0A, $84, $E4, $09, $AD);
 

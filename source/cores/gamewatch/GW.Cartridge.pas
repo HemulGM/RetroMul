@@ -8,6 +8,7 @@ uses
 
 type
   TGWLayer = GW.Artwork.TGWLayer;
+
   TGWArtwork = GW.Artwork.TGWArtwork;
 
   TGWCartridge = class
@@ -67,12 +68,15 @@ end;
 function TGWCartridge.SupportedButtons: TEmulatorButtons;
 begin
   Result := [];
-  if MGW <> nil then Exit; // Runtime keymap is published by the script worker.
+  if MGW <> nil then
+    Exit; // Runtime keymap is published by the script worker.
   var Mask := BA or B;
   for var Row := Low(Keys) to High(Keys) do
-    for var Bit := Low(Keys[Row]) to High(Keys[Row]) do Mask := Mask or Keys[Row, Bit];
+    for var Bit := Low(Keys[Row]) to High(Keys[Row]) do
+      Mask := Mask or Keys[Row, Bit];
   for var Button := Low(TEmulatorButton) to High(TEmulatorButton) do
-    if (Mask and (Cardinal(1) shl Ord(Button))) <> 0 then Include(Result, Button);
+    if (Mask and (Cardinal(1) shl Ord(Button))) <> 0 then
+      Include(Result, Button);
 end;
 
 function GWColor565(Value: Word): TAlphaColor;

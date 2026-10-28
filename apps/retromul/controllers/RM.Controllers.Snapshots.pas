@@ -33,7 +33,7 @@ uses
   System.SysUtils, System.Classes, System.UITypes, FMX.Types, System.IOUtils,
   System.Math, System.Generics.Collections, System.Generics.Defaults,
   FMX.Graphics, FMX.Dialogs, FMX.Menus, Core.Emulation, Core.Storage,
-  Core.SavePaths, HGM.FMX.Image, RM.Dialogs, RM.Styles;
+  Core.SavePaths, RM.Dialogs, RM.Styles;
 
 function TSnapshotsController.GameSnapshotDirectory: string;
 begin

@@ -87,7 +87,7 @@ type
   TPathSetting = class(TTextSetting)
   public
     Folder, AllowEmpty, AllowClear: Boolean;
-    Filters: TArray<string>;
+    FileFilter, PickerTitle: string;
   end;
 
   TSliderSetting = class(TSettingsFieldDefinition)
@@ -152,7 +152,7 @@ type
     procedure SetDraft(Value: TMemIniFile);
     procedure Add(Field: TSettingsFieldDefinition; const Id, Caption, Description, Section, Key, Default: string);
   public
-    PageId: Integer;
+    PageId: string;
     CurrentGroup: TSettingsGroup;
     OnGroup: TProc<TSettingsGroup>;
     OnField: TProc<TSettingsFieldDefinition>;
@@ -505,6 +505,8 @@ function TSettingsPageBuilder.AddPath(const Id, Caption, Description, Section, K
 begin
   Result := TPathSetting.Create(Draft);
   Result.Kind := TSettingsFieldKind.Path;
+  Result.FileFilter := 'All files|*.*';
+  Result.PickerTitle := 'Choose file';
   Result.Folder := Folder;
   Result.AllowEmpty := True;
   Result.AllowClear := not Folder;
@@ -544,4 +546,3 @@ begin
 end;
 
 end.
-

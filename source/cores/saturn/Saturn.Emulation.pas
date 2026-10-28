@@ -55,7 +55,7 @@ implementation
 
 uses
   System.Diagnostics, System.Math, Core.SavePaths, Core.PerformanceHints,
-  Core.RomFormat, PCM.Audio, Saturn.Audio;
+  PCM.Audio, Saturn.Audio;
 
 function TSaturnWorker.GetInputPorts: TCoreInputPorts;
 begin

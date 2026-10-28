@@ -43,7 +43,8 @@ type
 implementation
 
 uses
-  System.Math, PSP.Media, Audio.ATRAC3Plus.Primitives{$IFDEF PSP_PROFILE},PSP.Profile{$ENDIF};
+  System.Math, PSP.Media, Audio.ATRAC3Plus.Primitives{$IFDEF PSP_PROFILE},
+  PSP.Profile{$ENDIF};
 
 destructor TPSPATRACContext.Destroy;
 begin
@@ -246,63 +247,68 @@ end;
 
 function TPSPATRAC.Decode(Context: TPSPATRACContext; Address, Samples, Finish, Remain: Cardinal): Cardinal;
 begin
-  {$IFDEF PSP_PROFILE}var ProfileStarted:=PSPProfileStart;try{$ENDIF}
-  if (Context.Decoder = nil) and (Context.Decoder3 = nil) then
-    Exit($80630010);
-  if Samples <> 0 then
-    FMemory.Write32(Samples, 0);
-  if Finish <> 0 then
-    FMemory.Write32(Finish, 0);
-  if Context.Position >= Context.SampleCount then
-  begin
+  {$IFDEF PSP_PROFILE}
+  var ProfileStarted := PSPProfileStart;
+  try{$ENDIF}
+    if (Context.Decoder = nil) and (Context.Decoder3 = nil) then
+      Exit($80630010);
+    if Samples <> 0 then
+      FMemory.Write32(Samples, 0);
     if Finish <> 0 then
-      FMemory.Write32(Finish, 1);
-    Exit($80630024);
-  end;
-  while Context.PCMOffset >= Length(Context.PCM) do
-  begin
-    var Offset := UInt64(Context.DataOffset) + UInt64(Context.NextFrame) * Context.BlockSize;
-    if Offset + Context.BlockSize > Cardinal(Length(Context.Encoded)) then
-      Exit($80630023);
-    var Packet := Copy(Context.Encoded, Offset, Context.BlockSize);
-    if Context.Decoder <> nil then
-      Context.PCM := Context.Decoder.Decode(Packet)
-    else
-      Context.PCM := Context.Decoder3.Decode(Packet);
-    Inc(Context.NextFrame);
-    Context.PCMOffset := Integer(Min(Context.FrameSamples, Context.Skip)) * Context.OutputChannels;
-    Dec(Context.Skip, Min(Context.FrameSamples, Context.Skip));
-  end;
-  var Count := Min(Cardinal((Length(Context.PCM) - Context.PCMOffset) div Context.OutputChannels), Context.SampleCount - Context.Position);
-  if (Context.LoopCount <> 0) and (Context.LoopEnd >= 0) and (Context.Position <= Cardinal(Context.LoopEnd)) then
-    Count := Min(Count, Cardinal(Context.LoopEnd) + 1 - Context.Position);
-  if (Address <> 0) and not FMemory.IsValid(Address, Count * Cardinal(Context.OutputChannels) * 2) then
-    Exit($800200D3);
-  if Address <> 0 then
-  begin
-    var Output: TBytes;
-    SetLength(Output, Integer(Count) * Context.OutputChannels * 2);
-    if Length(Output) > 0 then
-      Move(Context.PCM[Context.PCMOffset], Output[0], Length(Output));
-    FMemory.Load(Address, Output);
-  end;
-  Inc(Context.PCMOffset, Integer(Count) * Context.OutputChannels);
-  Inc(Context.Position, Count);
-  if (Context.LoopCount <> 0) and (Context.LoopEnd >= 0) and (Context.Position = Cardinal(Context.LoopEnd) + 1) then
-  begin
-    if Context.LoopCount > 0 then
-      Dec(Context.LoopCount);
-    Context.Seek(Context.LoopStart);
-  end;
-  if Samples <> 0 then
-    FMemory.Write32(Samples, Count);
-  if Finish <> 0 then
-    FMemory.Write32(Finish, Ord(Context.Position >= Context.SampleCount));
-  if Remain <> 0 then
-    FMemory.Write32(Remain, Cardinal(Context.Remaining));
-  FKernel.WaitUntil(FKernel.Time + 1500);
-  Result := 0;
-  {$IFDEF PSP_PROFILE}finally PSPProfileEnd(TPSPProfilePart.ATRAC,ProfileStarted) end;{$ENDIF}
+      FMemory.Write32(Finish, 0);
+    if Context.Position >= Context.SampleCount then
+    begin
+      if Finish <> 0 then
+        FMemory.Write32(Finish, 1);
+      Exit($80630024);
+    end;
+    while Context.PCMOffset >= Length(Context.PCM) do
+    begin
+      var Offset := UInt64(Context.DataOffset) + UInt64(Context.NextFrame) * Context.BlockSize;
+      if Offset + Context.BlockSize > Cardinal(Length(Context.Encoded)) then
+        Exit($80630023);
+      var Packet := Copy(Context.Encoded, Offset, Context.BlockSize);
+      if Context.Decoder <> nil then
+        Context.PCM := Context.Decoder.Decode(Packet)
+      else
+        Context.PCM := Context.Decoder3.Decode(Packet);
+      Inc(Context.NextFrame);
+      Context.PCMOffset := Integer(Min(Context.FrameSamples, Context.Skip)) * Context.OutputChannels;
+      Dec(Context.Skip, Min(Context.FrameSamples, Context.Skip));
+    end;
+    var Count := Min(Cardinal((Length(Context.PCM) - Context.PCMOffset) div Context.OutputChannels), Context.SampleCount - Context.Position);
+    if (Context.LoopCount <> 0) and (Context.LoopEnd >= 0) and (Context.Position <= Cardinal(Context.LoopEnd)) then
+      Count := Min(Count, Cardinal(Context.LoopEnd) + 1 - Context.Position);
+    if (Address <> 0) and not FMemory.IsValid(Address, Count * Cardinal(Context.OutputChannels) * 2) then
+      Exit($800200D3);
+    if Address <> 0 then
+    begin
+      var Output: TBytes;
+      SetLength(Output, Integer(Count) * Context.OutputChannels * 2);
+      if Length(Output) > 0 then
+        Move(Context.PCM[Context.PCMOffset], Output[0], Length(Output));
+      FMemory.Load(Address, Output);
+    end;
+    Inc(Context.PCMOffset, Integer(Count) * Context.OutputChannels);
+    Inc(Context.Position, Count);
+    if (Context.LoopCount <> 0) and (Context.LoopEnd >= 0) and (Context.Position = Cardinal(Context.LoopEnd) + 1) then
+    begin
+      if Context.LoopCount > 0 then
+        Dec(Context.LoopCount);
+      Context.Seek(Context.LoopStart);
+    end;
+    if Samples <> 0 then
+      FMemory.Write32(Samples, Count);
+    if Finish <> 0 then
+      FMemory.Write32(Finish, Ord(Context.Position >= Context.SampleCount));
+    if Remain <> 0 then
+      FMemory.Write32(Remain, Cardinal(Context.Remaining));
+    FKernel.WaitUntil(FKernel.Time + 1500);
+    Result := 0;
+  {$IFDEF PSP_PROFILE}
+  finally
+    PSPProfileEnd(TPSPProfilePart.ATRAC, ProfileStarted)
+  end;{$ENDIF}
 end;
 
 function TPSPATRAC.Handle(NID: Cardinal; out Value: Cardinal): Boolean;

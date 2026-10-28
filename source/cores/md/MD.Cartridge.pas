@@ -5,6 +5,31 @@ interface
 uses
   System.SysUtils, System.Classes, MD.EEPROM;
 
+const
+  MD_ROM_COPIER_HEADER_SIZE = 512;
+
+const
+  ROM_CORE_ID_MD = 'MD';
+  ROM_EXTENSION_MD = '.md';
+  ROM_EXTENSION_SMD = '.smd';
+
+const
+  SMD_BLOCK_SIZE = $4000;
+  SMD_HALF_BLOCK_SIZE = SMD_BLOCK_SIZE div 2;
+  ROM_SIGNATURE_PROBE_SIZE = MD_ROM_COPIER_HEADER_SIZE + SMD_BLOCK_SIZE;
+
+const
+  MD_ROM_MAX_SIZE = 64 * 1024 * 1024;
+  MD_ROM_SIGNATURE: AnsiString = 'SEGA';
+  MD_ROM_HEADER_OFFSET = $100;
+  MD_ROM_ALTERNATE_HEADER_OFFSET = $200;
+  MD_ROM_HEADER_SIZE = $100;
+  MD_ROM_DOMESTIC_TITLE_OFFSET = $120;
+  MD_ROM_OVERSEAS_TITLE_OFFSET = $150;
+  MD_ROM_TITLE_SIZE = 48;
+  MD_ROM_REGION_OFFSET = $1F0;
+  MD_ROM_REGION_SIZE = 16;
+
 type
   EMDCartridge = class(Exception);
 
@@ -38,7 +63,7 @@ type
 implementation
 
 uses
-  Core.Storage, Core.RomFormat;
+  Core.Storage, MD.RomFormat;
 
 constructor TMDCartridge.Create(const FileName: string);
 begin
@@ -53,11 +78,11 @@ end;
 constructor TMDCartridge.Create(Stream: TStream);
 begin
   var Bytes := ReadRomData(Stream);
-  var Format := DetectRom(Bytes);
-  if Format.System <> TRomSystem.MD then
+  var Encoding: string;
+  if not MD.RomFormat.TryDetectEncoding(Bytes, Encoding) then
     raise EMDCartridge.Create('Unrecognized Mega Drive ROM header');
 
-  Create(NormalizeRom(Bytes, Format), '');
+  Create(MD.RomFormat.NormalizeImage(Bytes, Encoding), '');
 end;
 
 constructor TMDCartridge.Create(const Data: TBytes; const Extension: string);
@@ -71,15 +96,15 @@ begin
     not ((Length(Data) >= MD_ROM_HEADER_OFFSET + MD_ROM_HEADER_SIZE) and
     CompareMem(@Data[MD_ROM_HEADER_OFFSET], PAnsiChar(MD_ROM_SIGNATURE), Length(MD_ROM_SIGNATURE))) then
   begin
-    if (Length(Data) <= ROM_COPIER_HEADER_SIZE) or
-      ((Length(Data) - ROM_COPIER_HEADER_SIZE) mod SMD_BLOCK_SIZE <> 0) or
-      (Length(Data) > MD_ROM_MAX_SIZE + ROM_COPIER_HEADER_SIZE) then
+    if (Length(Data) <= MD_ROM_COPIER_HEADER_SIZE) or
+      ((Length(Data) - MD_ROM_COPIER_HEADER_SIZE) mod SMD_BLOCK_SIZE <> 0) or
+      (Length(Data) > MD_ROM_MAX_SIZE + MD_ROM_COPIER_HEADER_SIZE) then
       raise EMDCartridge.Create('Invalid SMD size: expected a 512-byte header and 16 KiB blocks');
 
-    SetLength(FData, Length(Data) - ROM_COPIER_HEADER_SIZE);
+    SetLength(FData, Length(Data) - MD_ROM_COPIER_HEADER_SIZE);
     for var Block := 0 to Length(FData) div SMD_BLOCK_SIZE - 1 do
     begin
-      var Source := ROM_COPIER_HEADER_SIZE + Block * SMD_BLOCK_SIZE;
+      var Source := MD_ROM_COPIER_HEADER_SIZE + Block * SMD_BLOCK_SIZE;
       for var i := 0 to SMD_HALF_BLOCK_SIZE - 1 do
       begin
         FData[Block * SMD_BLOCK_SIZE + i * 2] := Data[Source + SMD_HALF_BLOCK_SIZE + i];
@@ -94,7 +119,7 @@ begin
     (Length(FData) > MD_ROM_MAX_SIZE) or Odd(Length(FData)) then
     raise EMDCartridge.Create('Invalid Mega Drive ROM size');
 
-  if (HeaderText(MD_ROM_HEADER_OFFSET, Length(MD_ROM_SIGNATURE)) <> string(MD_ROM_SIGNATURE)) and not IsMDRealtec(FData) then
+  if (HeaderText(MD_ROM_HEADER_OFFSET, Length(MD_ROM_SIGNATURE)) <> string(MD_ROM_SIGNATURE)) and not MD.RomFormat.CheckImage(FData) then
   begin
     // Some early diagnostics retain the first 128 vector entries and
     // place the identification header at $200 (Charles MacDonald's itest).
@@ -118,9 +143,9 @@ begin
     (Pos('T-120106', Product) > 0) or (Pos('T-120066', Product) > 0) or
     (Pos('T-123456', Product) > 0) or
     ((Pos('00000000', Product) > 0) and
-      ((ReadWord($18E) = $168B) or (ReadWord($18E) = $165E) or
-       (ReadWord($18E) = $CEE0) or (ReadWord($18E) = $2C41)) and
-      ((InitialSP = $444E4C44) or (InitialSP = $FFFFFFFC)));
+    ((ReadWord($18E) = $168B) or (ReadWord($18E) = $165E) or
+    (ReadWord($18E) = $CEE0) or (ReadWord($18E) = $2C41)) and
+    ((InitialSP = $444E4C44) or (InitialSP = $FFFFFFFC)));
   // SRAM-patched Mega Man / Wonder Boy dumps retain their product ID but
   // advertise a parallel RAM range instead of the original serial port.
   if (FEEPROMConfig.Mode = TMDEEPROMMode.Address7) and
@@ -133,8 +158,8 @@ begin
       ReadWord(Cardinal(FHeaderOffset + $BA));
     if (StartAddress < EndAddress) and (EndAddress - StartAddress > 2) and
       ((Pos('T-12046', HeaderText($180, 14)) > 0) or
-       (Pos('T-12053', HeaderText($180, 14)) > 0) or
-       (Pos('G-4060', HeaderText($180, 14)) > 0)) then
+      (Pos('T-12053', HeaderText($180, 14)) > 0) or
+      (Pos('G-4060', HeaderText($180, 14)) > 0)) then
       FEEPROMConfig := Default(TMDEEPROMConfig);
   end;
   FTitle := HeaderText(MD_ROM_OVERSEAS_TITLE_OFFSET, MD_ROM_TITLE_SIZE);

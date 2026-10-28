@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.UITypes, System.Generics.Collections, Core.Emulation.Types,
-  GW.Script, GW.MGW.Package, Core.Snapshots;
+  System.SysUtils, System.UITypes, System.Generics.Collections,
+  Core.Emulation.Types, GW.Script, GW.MGW.Package, Core.Snapshots;
 
 type
   TMGWImage = class
@@ -524,12 +524,14 @@ end;
 function TMGWConsole.SupportedButtons: TEmulatorButtons;
 begin
   // Polling-style scripts can read the whole input state without a keymap.
-  if not (FKeymap.Obj is TScriptTable) then Exit([Low(TEmulatorButton)..High(TEmulatorButton)]);
+  if not (FKeymap.Obj is TScriptTable) then
+    Exit([Low(TEmulatorButton)..High(TEmulatorButton)]);
   Result := [];
   for var Button := Low(TEmulatorButton) to High(TEmulatorButton) do
   begin
     var Mapping := KeyMapping(Button);
-    if not (Mapping.Obj is TScriptTable) then Continue;
+    if not (Mapping.Obj is TScriptTable) then
+      Continue;
     for var I := 1 to TScriptTable(Mapping.Obj).Count do
       if FEngine.Get(Mapping, N(I)).Kind = skNumber then
       begin
@@ -540,6 +542,7 @@ begin
 end;
 
 procedure TMGWConsole.SetInput(const Input: TEmulatorInput);
+
   function Keys(const State: TEmulatorInput): TArray<Integer>;
   begin
     Result := nil;

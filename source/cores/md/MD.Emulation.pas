@@ -3,8 +3,9 @@
 interface
 
 uses
-  Core.Microphone, Core.InputConfig, Core.Storage, Core.RomFormat, Core.Snapshots,
-  System.SysUtils, System.Classes, System.SyncObjs, Core.Emulation.Types, MD.Console;
+  Core.Microphone, Core.InputConfig, Core.Storage, Core.Snapshots,
+  System.SysUtils, System.Classes, System.SyncObjs, Core.Emulation.Types,
+  MD.Console;
 
 const
   MD_SAMPLE_RATE = 44100;
@@ -40,12 +41,10 @@ type
   protected
     procedure Execute; override;
   public
-    constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil;
-      const DiscLocation: string = '');
+    constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil; const DiscLocation: string = '');
     destructor Destroy; override;
     procedure WakeSetEvent;
-    procedure Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single;
-      const Input2: TMDButtons = []; const Input3: TMDButtons = []; const Input4: TMDButtons = []);
+    procedure Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TMDButtons = []; const Input3: TMDButtons = []; const Input4: TMDButtons = []);
     procedure ConfigureExpansionVolume(CDVolume, Volume32X: Integer);
     procedure ConfigureExpansion(CDAudio, Audio32X, Microphone: Boolean; const Source: IMicrophoneSource);
     procedure SaveSnapshot(const Name: string);
@@ -64,8 +63,9 @@ type
 implementation
 
 uses
-  Core.SavePaths, Core.PerformanceHints, System.IOUtils, System.UITypes,
-  System.Diagnostics, System.Math, PCM.Audio, Core.CD.Disc, MD.Firmware;
+  MD.Cartridge, Core.SavePaths, Core.PerformanceHints, System.IOUtils,
+  System.UITypes, System.Diagnostics, System.Math, PCM.Audio, Core.CD.Disc,
+  MD.Firmware;
 
 { TMDWorker }
 
@@ -111,8 +111,7 @@ begin
   FLock.Free;
 end;
 
-procedure TMDWorker.Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single;
-  const Input2, Input3, Input4: TMDButtons);
+procedure TMDWorker.Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2, Input3, Input4: TMDButtons);
 begin
   FLock.Acquire;
   try
@@ -305,7 +304,11 @@ begin
       begin
         var Stream := FStorage.OpenRead(FDiscLocation);
         var Disc: TCDDisc;
-        try Disc := TCDDisc.Create(Stream, FStorage, FDiscLocation); finally Stream.Free; end;
+        try
+          Disc := TCDDisc.Create(Stream, FStorage, FDiscLocation);
+        finally
+          Stream.Free;
+        end;
         var BIOSName := 'cd_u';
         var Sector: TBytes;
         try
@@ -314,12 +317,23 @@ begin
             raise EReadError.Create('Sega CD disc identity changed');
           Disc.ReadData(Disc.Track(1).StartLBA, Sector);
           var Region := UpperCase(TEncoding.ASCII.GetString(Sector, $1F0, 16));
-          if Region.Contains('U') then BIOSName := 'cd_u'
-          else if Region.Contains('E') then BIOSName := 'cd_e'
-          else if Region.Contains('J') then BIOSName := 'cd_j';
-        except Disc.Free; raise; end;
+          if Region.Contains('U') then
+            BIOSName := 'cd_u'
+          else if Region.Contains('E') then
+            BIOSName := 'cd_e'
+          else if Region.Contains('J') then
+            BIOSName := 'cd_j';
+        except
+          Disc.Free;
+          raise;
+        end;
         var BIOS: TBytes;
-        try BIOS := LoadMDFirmware(BIOSName); except Disc.Free; raise; end;
+        try
+          BIOS := LoadMDFirmware(BIOSName);
+        except
+          Disc.Free;
+          raise;
+        end;
         Console := TMDConsole.Create(BIOS, ROM_EXTENSION_MD, Disc);
       end
       else
@@ -360,7 +374,8 @@ begin
             begin
               LoadCoreSnapshot(Path, ROM_CORE_ID_MD, FData, Transfer, FStorage);
               Console.ConfigureInputPorts(InputPorts);
-              if Microphone <> nil then Microphone.Clear;
+              if Microphone <> nil then
+                Microphone.Clear;
               Console.MarkBatteryDirty;
               if Audio <> nil then
                 Audio.Clear;
@@ -445,7 +460,8 @@ begin
           Break;
 
         SetLength(MicSamples, Console.SampleFrames);
-        if Length(MicSamples) > 0 then FillChar(MicSamples[0], Length(MicSamples) * SizeOf(SmallInt), 0);
+        if Length(MicSamples) > 0 then
+          FillChar(MicSamples[0], Length(MicSamples) * SizeOf(SmallInt), 0);
         if MicEnabled and (Microphone <> nil) then
           Microphone.ReadSamples(MicSamples);
 
@@ -473,7 +489,7 @@ begin
           SetLength(Samples, Console.SampleFrames * 2);
           for var i := 0 to High(Samples) do
             Samples[i] := EnsureRange(Round((Integer(Console.Samples[i]) + MicSamples[i div 2]) * Volume),
-              Integer(Low(SmallInt)), Integer(High(SmallInt)));
+                Integer(Low(SmallInt)), Integer(High(SmallInt)));
           Audio.Submit(Samples, Console.SampleFrames);
           if Audio.Error <> '' then
             raise EInOutError.Create(Audio.Error);

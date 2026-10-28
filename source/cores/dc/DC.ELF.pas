@@ -14,7 +14,9 @@ const
 
 function IsDCELF(const Data: TBytes): Boolean;
 // Copies the loadable segments into RAM and returns the entry point.
+
 function LoadDCELF(const Data: TBytes; Memory: TDCMemory): Cardinal;
+
 function LoadDCBinary(const Data: TBytes; Memory: TDCMemory; Address: Cardinal = DCProgramAddress): Cardinal;
 
 implementation
@@ -91,3 +93,4 @@ begin
 end;
 
 end.
+

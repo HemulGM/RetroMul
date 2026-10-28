@@ -3,9 +3,47 @@
 interface
 
 uses
-  System.SysUtils, Core.RomFormat;
+  System.SysUtils, GB.RomFormat;
 
 {$SCOPEDENUMS ON}
+
+const
+  ROM_CORE_ID_GB = 'GB';
+  ROM_CORE_ID_GBC = 'GBC';
+
+const
+  GB_ROM_HEADER_SIZE = $150;
+  GB_ROM_LOGO_OFFSET = $104;
+  GB_ROM_CGB_FLAG_OFFSET = $143;
+  GB_ROM_CGB_SUPPORTED_FLAG = $80;
+  GB_ROM_CGB_ONLY_FLAG = $C0;
+  GB_ROM_MIN_SIZE = $8000;
+  GB_ROM_MAX_SIZE = 8 * 1024 * 1024;
+  GB_ROM_BANK_SIZE = $4000;
+  GB_ROM_TITLE_OFFSET = $134;
+  GB_ROM_TITLE_SIZE = 16;
+  GB_ROM_CGB_TITLE_SIZE = 15;
+  GB_ROM_CGB_SHORT_TITLE_SIZE = 11;
+  GB_ROM_MANUFACTURER_OFFSET = $13F;
+  GB_ROM_MANUFACTURER_SIZE = 4;
+  GB_ROM_NEW_LICENSEE_OFFSET = $144;
+  GB_ROM_NEW_LICENSEE_SIZE = 2;
+  GB_ROM_NEW_LICENSEE_FLAG = $33;
+  GB_ROM_SGB_FLAG_OFFSET = $146;
+  GB_ROM_SGB_SUPPORTED_FLAG = $03;
+  GB_ROM_CARTRIDGE_TYPE_OFFSET = $147;
+  GB_ROM_SIZE_OFFSET = $148;
+  GB_ROM_RAM_SIZE_OFFSET = $149;
+  GB_ROM_DESTINATION_OFFSET = $14A;
+  GB_ROM_OLD_LICENSEE_OFFSET = $14B;
+  GB_ROM_VERSION_OFFSET = $14C;
+  GB_ROM_HEADER_CHECKSUM_OFFSET = $14D;
+  GB_ROM_GLOBAL_CHECKSUM_OFFSET = $14E;
+  GB_ROM_LOGO: array[0..47] of Byte = (
+    $CE, $ED, $66, $66, $CC, $0D, $00, $0B, $03, $73, $00, $83,
+    $00, $0C, $00, $0D, $00, $08, $11, $1F, $88, $89, $00, $0E,
+    $DC, $CC, $6E, $E6, $DD, $DD, $D9, $99, $BB, $BB, $67, $63,
+    $6E, $0E, $EC, $CC, $DD, $DC, $99, $9F, $BB, $B9, $33, $3E);
 
 type
   // Header-recognized families; recognition does not imply emulation support.

@@ -3,7 +3,8 @@
 interface
 
 uses
-  System.SysUtils, Core.Emulation.Types, Core.Snapshots, GW.CPU, GW.Cartridge, GW.MGW;
+  System.SysUtils, Core.Emulation.Types, Core.Snapshots, GW.CPU, GW.Cartridge,
+  GW.MGW;
 
 type
   TGWConsoleState = packed record
@@ -105,8 +106,10 @@ end;
 
 function TGWConsole.SupportedButtons: TEmulatorButtons;
 begin
-  if FMGW <> nil then Result := FMGW.SupportedButtons
-  else Result := FCartridge.SupportedButtons;
+  if FMGW <> nil then
+    Result := FMGW.SupportedButtons
+  else
+    Result := FCartridge.SupportedButtons;
 end;
 
 procedure TGWConsole.SetInput(const Input: TEmulatorInput);

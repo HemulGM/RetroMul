@@ -13,7 +13,7 @@ type
   TDCIRLChanged = procedure(User: Pointer; Level: Integer);
 
   TDCInterruptState = record
-    Normal, External, Error: Cardinal;
+    Normal, external, Error: Cardinal;
     Masks: array[0..2, 0..2] of Cardinal; // [IML2/4/6][NRM/EXT/ERR]
   end;
 
@@ -59,7 +59,7 @@ function TDCInterrupts.NormalStatus: Cardinal;
 begin
   // Bits 30/31 summarize pending external and error causes.
   Result := S.Normal and $3FFFFFFF;
-  if S.External <> 0 then
+  if S.external <> 0 then
     Result := Result or $40000000;
   if S.Error <> 0 then
     Result := Result or $80000000;
@@ -70,7 +70,7 @@ begin
   var Normal := NormalStatus;
   var NewLevel := 0;
   for var L := 2 downto 0 do
-    if ((Normal and S.Masks[L, 0]) or (S.External and S.Masks[L, 1]) or (S.Error and S.Masks[L, 2])) <> 0 then
+    if ((Normal and S.Masks[L, 0]) or (S.external and S.Masks[L, 1]) or (S.Error and S.Masks[L, 2])) <> 0 then
     begin
       NewLevel := 2 + L * 2;
       Break;
@@ -90,12 +90,12 @@ end;
 
 procedure TDCInterrupts.SetExternal(Bit: Integer; Active: Boolean);
 begin
-  var Old := S.External;
+  var Old := S.external;
   if Active then
-    S.External := S.External or (Cardinal(1) shl Bit)
+    S.external := S.external or (Cardinal(1) shl Bit)
   else
-    S.External := S.External and not (Cardinal(1) shl Bit);
-  if Old <> S.External then
+    S.external := S.external and not (Cardinal(1) shl Bit);
+  if Old <> S.external then
     Update;
 end;
 
@@ -134,3 +134,4 @@ begin
 end;
 
 end.
+

@@ -5,10 +5,12 @@
 interface
 
 uses
-  RM.Platforms.Presentation, RM.Controllers.Base;
+  RM.Platforms.Presentation, RM.Controllers.Base, RM.Settings.Runtime;
 
 type
   TSettingsController = class(TMainController)
+  private
+    function RuntimeContext: TSettingsRuntimeContext;
   public
     procedure Load;
     procedure Save;
@@ -25,10 +27,15 @@ implementation
 
 uses
   System.SysUtils, System.Classes, System.Math, System.UITypes, FMX.Types,
-  Core.Emulation, Core.Adapter.SG1000, Core.Adapter.GB, Core.Adapter.NES,
-  Core.Adapter.N64, Core.SavePaths, Core.Platforms, Core.RomFormat,
-  Core.InputConfig, RM.Input, RM.Gamepad, RM.Settings, RM.ControlsHelp,
-  RM.Styles, RM.Dialogs, RM.Gamepad.Base;
+  RM.Gamepad, RM.Settings, RM.ControlsHelp, RM.Styles, RM.Dialogs,
+  RM.Gamepad.Base;
+
+function TSettingsController.RuntimeContext: TSettingsRuntimeContext;
+begin
+  Result := Default(TSettingsRuntimeContext);
+  Result.View := FView;
+  Result.State := FState;
+end;
 
 procedure TSettingsController.Load;
 begin
@@ -141,12 +148,7 @@ begin
   FView.SyncActivity;
 
   {$IFDEF ISMOBILE}
-  FState.Input.Gamepad.AttachToForm(nil);
-  FState.Input.PowerPad.AttachToForm(nil);
-  FState.Input.SuborKeyboard.AttachToForm(nil);
-  FState.Input.SGKeyboard.AttachToForm(nil);
-  FState.Input.FamicomKeyboard.AttachToForm(nil);
-  FState.Input.MiraclePiano.AttachToForm(nil);
+  DetachSettingsPeripherals(RuntimeContext);
   {$ENDIF}
 end;
 
@@ -157,30 +159,7 @@ begin
     var Config := FState.Session.Emulation.Config;
     var Ini := FState.Session.Storage.ReadConfig(Config.FileName);
     try
-      Config.Load;
-      var InputPorts: IEmulationInputPorts;
-      if Supports(FState.Session.Emulation, IEmulationInputPorts, InputPorts) then
-      begin
-        var Ports := ReadCoreInputPorts(Ini);
-        if not SameInputPorts(FState.Input.Ports, Ports) then
-        begin
-          FState.Input.Gamepad.ReleaseAll;
-          FState.Input.PowerPad.ReleaseAll;
-          FState.Input.SuborKeyboard.ReleaseAll;
-          FState.Input.FamicomKeyboard.ReleaseAll;
-          FState.Input.MiraclePiano.ReleaseAll;
-          FState.Input.SGKeyboard.ReleaseAll;
-          FState.Input.GamepadInput := Default(TEmulatorInput);
-          InputPorts.ApplyInputPorts(Ports);
-          FState.Input.Ports := Ports;
-          var platform := TPlatformRegistry.Require(FState.Input.SystemId);
-          FState.Input.Gamepad.Configure(platform.System, Ports.Devices[0],
-            CoreButtons(FState.Input.SystemId, Ports.Devices[0]));
-        end;
-      end;
-      var LiveSettings: IEmulationLiveSettings;
-      if Supports(FState.Session.Emulation, IEmulationLiveSettings, LiveSettings) then
-        LiveSettings.ApplyLiveSettings;
+      PlatformSettingsHandler(FState.Input.SystemId).Apply(RuntimeContext, Ini);
       FView.ImageCanvas.LoadSettings(Ini);
       FView.ImageCanvas.DisableInterpolation := SameText(Config.Filter, 'nearest');
       FView.UpdateFrame;
@@ -274,33 +253,9 @@ begin
   FState.Help.WasPaused := FState.Session.Emulation.IsPaused or FState.Session.UserPaused or FState.Session.AutoPaused;
   FView.FormDeactivate(FView);
   FState.Session.Emulation.Pause;
-  var Players := TPlatformRegistry.Require(FState.Input.SystemId).Ports;
-  if (FState.Input.SystemId = ROM_SYSTEM_PCE) or (FState.Input.SystemId = ROM_SYSTEM_SGX) or
-    (FState.Input.SystemId = ROM_SYSTEM_PCECD) then
-  begin
-    Players := 1;
-    if FState.Input.Ports.Multitap[0] then
-      Players := 5;
-  end;
-  if FState.Input.SystemId = ROM_SYSTEM_SNES then
-    if FState.Input.Ports.Multitap[0] then
-      Players := 8
-    else if FState.Input.Ports.Multitap[1] then
-      Players := 5;
-  if FState.Input.SystemId = ROM_SYSTEM_NES then
-  begin
-    var Config: INesEmulatorConfig;
-    if Supports(FState.Session.Emulation.Config, INesEmulatorConfig, Config) and Config.FourScore then
-      Players := 4;
-  end;
-  var Peripheral: INesPeripheralCore;
-  var Piano: INesMiraclePianoCore;
-  var SGKeyboard: ISGKeyboardCore;
-  var KeyboardPeripheral := (Supports(FState.Session.Emulation, ISGKeyboardCore, SGKeyboard) and SGKeyboard.HasKeyboard) or FState.Session.Emulation.UsesSuborKeyboard or
-    (Supports(FState.Session.Emulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard) or
-    (Supports(FState.Session.Emulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano);
+  var HelpInfo := PlatformSettingsHandler(FState.Input.SystemId).HelpInfo(RuntimeContext);
   try
-    FState.Help.View := TControlsHelpView.CreateHelp(FView, FState.Input.Manager, FState.Input.SystemId, FState.Input.Ports, Players, KeyboardPeripheral, FState.Session.Storage, FState.Session.Emulation.HasCoinAcceptor);
+    FState.Help.View := TControlsHelpView.CreateHelp(FView, FState.Input.Manager, FState.Input.SystemId, FState.Input.Ports, HelpInfo.Players, HelpInfo.KeyboardPeripheral, FState.Session.Storage, FState.Session.Emulation.HasCoinAcceptor);
     FState.Help.View.Parent := FView;
     FState.Help.View.Align := TAlignLayout.Contents;
     FState.Help.View.OnClose := FView.ControlsHelpClose;

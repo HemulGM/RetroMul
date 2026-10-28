@@ -157,45 +157,60 @@ begin
   // PSMF AVC reference-picture stream (private_stream_2, 01 E0 00).
   // Each descriptor carries the exact Annex-B AU length and firmware attributes.
   // This releases the final AU without inventing EOF at a temporary ring gap.
-  if (Length(Data)<18) or (Data[0]<>1) or (Data[1]<>$E0) or (Data[2]<>0) then Exit;
-  if not FLengthMode and ((Length(FVideo)<>0) or (Length(FAccess)<>0)) then Exit;
-  var Count:=Integer(Data[17]);
-  if Length(Data)<18+Count*4 then raise EPlayerFormat.Create('Truncated PSMF AVC length table');
-  if FVideoLengths.Count+Count>8192 then raise EPlayerFormat.Create('PSMF AVC length queue overflow');
-  for var I:=0 to Count-1 do
+  if (Length(Data) < 18) or (Data[0] <> 1) or (Data[1] <> $E0) or (Data[2] <> 0) then
+    Exit;
+  if not FLengthMode and ((Length(FVideo) <> 0) or (Length(FAccess) <> 0)) then
+    Exit;
+  var Count := Integer(Data[17]);
+  if Length(Data) < 18 + Count * 4 then
+    raise EPlayerFormat.Create('Truncated PSMF AVC length table');
+  if FVideoLengths.Count + Count > 8192 then
+    raise EPlayerFormat.Create('PSMF AVC length queue overflow');
+  for var I := 0 to Count - 1 do
   begin
-    var P:=18+I*4;
-    var Descriptor:Cardinal:=(Cardinal(Data[P]) shl 24) or (Cardinal(Data[P+1]) shl 16) or (Cardinal(Data[P+2]) shl 8) or Data[P+3];
-    if Descriptor and $1FFFFF=0 then raise EPlayerFormat.Create('Empty PSMF AVC access unit');
+    var P := 18 + I * 4;
+    var Descriptor: Cardinal := (Cardinal(Data[P]) shl 24) or (Cardinal(Data[P + 1]) shl 16) or (Cardinal(Data[P + 2]) shl 8) or Data[P + 3];
+    if Descriptor and $1FFFFF = 0 then
+      raise EPlayerFormat.Create('Empty PSMF AVC access unit');
     FVideoLengths.Enqueue(Descriptor);
   end;
-  FLengthMode:=True;
-  LengthVideoData(nil,-1);
+  FLengthMode := True;
+  LengthVideoData(nil, -1);
 end;
 
 procedure TPSPMpegStream.LengthVideoData(const Data: TBytes; PTS: Int64);
 begin
-  if (Length(FVideo)=0) and (PTS>=0) then FPTS:=PTS;
-  if FPTS<0 then FPTS:=FNextPTS;
-  if Length(Data)>8*1024*1024-Length(FVideo) then raise EPlayerFormat.Create('PSMF AVC buffer overflow');
-  FVideo:=FVideo+Data;
-  var Consumed:=0;
-  while FVideoLengths.Count<>0 do
+  if (Length(FVideo) = 0) and (PTS >= 0) then
+    FPTS := PTS;
+  if FPTS < 0 then
+    FPTS := FNextPTS;
+  if Length(Data) > 8 * 1024 * 1024 - Length(FVideo) then
+    raise EPlayerFormat.Create('PSMF AVC buffer overflow');
+  FVideo := FVideo + Data;
+  var Consumed := 0;
+  while FVideoLengths.Count <> 0 do
   begin
-    var Descriptor:=FVideoLengths.Peek;
-    var Size:=Integer(Descriptor and $1FFFFF);
-    if Size>Length(FVideo)-Consumed then Break;
-    if FVideoPackets.Count>=8192 then raise EPlayerFormat.Create('PSP MPEG video queue overflow');
+    var Descriptor := FVideoLengths.Peek;
+    var Size := Integer(Descriptor and $1FFFFF);
+    if Size > Length(FVideo) - Consumed then
+      Break;
+    if FVideoPackets.Count >= 8192 then
+      raise EPlayerFormat.Create('PSP MPEG video queue overflow');
     FVideoLengths.Dequeue;
-    var Packet:=Default(TMediaPacket);
-    Packet.Data:=Copy(FVideo,Consumed,Size);
-    Packet.PTS:=FPTS;Packet.DTS:=FPTS;Packet.Duration:=3003;
+    var Packet := Default(TMediaPacket);
+    Packet.Data := Copy(FVideo, Consumed, Size);
+    Packet.PTS := FPTS;
+    Packet.DTS := FPTS;
+    Packet.Duration := 3003;
     FVideoPackets.Enqueue(Packet);
     FVideoAttributes.Enqueue(((Descriptor shr 23) and 1) or (((Descriptor shr 24) and 15) shl 1));
-    Inc(FQueuedBytes,Size);Inc(Consumed,Size);
-    FNextPTS:=FPTS+3003;FPTS:=FNextPTS;
+    Inc(FQueuedBytes, Size);
+    Inc(Consumed, Size);
+    FNextPTS := FPTS + 3003;
+    FPTS := FNextPTS;
   end;
-  if Consumed<>0 then FVideo:=Copy(FVideo,Consumed,Length(FVideo)-Consumed);
+  if Consumed <> 0 then
+    FVideo := Copy(FVideo, Consumed, Length(FVideo) - Consumed);
 end;
 
 procedure TPSPMpegStream.Feed(const Data: TBytes);
@@ -230,7 +245,8 @@ begin
     var Size := 6 + (Integer(FInput[P + 4]) shl 8) + FInput[P + 5];
     if P + Size > Length(FInput) then
       Break;
-    if Code=$BF then VideoLengths(Copy(FInput,P+6,Size-6))
+    if Code = $BF then
+      VideoLengths(Copy(FInput, P + 6, Size - 6))
     else if Code in [$E0..$EF, $BD] then
     begin
       if Size < 9 then
@@ -323,14 +339,14 @@ begin
   // Completed AUs wait for their consumer, while a partial PES still belongs
   // to demux input. Elementary fragments have already moved into ES assembly
   // storage and must not pin ring packets after an underflowing Get*Au call.
-  Result:=FQueuedBytes+Length(FInput);
+  Result := FQueuedBytes + Length(FInput);
 end;
 
 procedure TPSPMpegStream.Flush;
 begin
   if FLengthMode then
   begin
-    LengthVideoData(nil,-1);
+    LengthVideoData(nil, -1);
     Exit
   end;
   VideoData(nil, -1);

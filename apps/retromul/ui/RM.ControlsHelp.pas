@@ -3,7 +3,7 @@
 interface
 
 uses
-  RM.Platforms.Presentation, Core.Platforms, Core.RomFormat, System.Classes,
+  System.Classes, RM.ControlsHelp.Content, RM.ControlsHelp.Shortcut,
   System.Types, System.UITypes, FMX.Types, FMX.Controls, FMX.Forms, FMX.Layouts,
   FMX.Objects, FMX.StdCtrls, FMXInput, Core.InputConfig, Core.Storage,
   FMX.Controls.Presentation;
@@ -19,6 +19,9 @@ type
     RectangleDivider: TRectangle;
   private
     FInput: TInputManager;
+    FContent: TPlatformControlsHelpClass;
+    FInfo: TControlsHelpInfo;
+    FKeyboardPeripheral, FHasCoinAcceptor: Boolean;
     FOwnsInput: Boolean;
     FSystemId: string;
     FPorts: TCoreInputPorts;
@@ -26,6 +29,8 @@ type
     FPlayerButtons: array[0..7] of TButton;
     FOnClose, FOnSettings: TNotifyEvent;
     FArranging: Boolean;
+    function HelpContext: TControlsHelpContext;
+    procedure BuildShortcuts;
     procedure BuildPlayer;
     function Assignments(Action: Integer): string;
     procedure AssignmentRow(Parent: TLayout; const Caption, Keys: string; Y: Single; Action: Integer = -1);
@@ -46,9 +51,8 @@ implementation
 
 uses
   System.SysUtils, System.Math, System.Generics.Collections,
-  System.Generics.Defaults, FMX.Graphics, FMX.TextLayout, FMX.BehaviorManager, RM.LibraryView,
-  RM.Settings, RM.Input, RM.Gamepad, Core.Emulation, RM.Icons, RM.Styles,
-  NES.PowerPad, Core.Adapter.PS1, Core.Adapter.DC;
+  System.Generics.Defaults, FMX.Graphics, FMX.TextLayout, FMX.BehaviorManager,
+  RM.LibraryView, Core.Emulation, RM.Input, RM.Settings.Rendering, RM.Styles;
 
 {$R *.fmx}
 
@@ -83,6 +87,9 @@ end;
 
 constructor TControlsHelpView.CreateHelp(AOwner: TComponent; Input: TInputManager; const SystemId: string; const Ports: TCoreInputPorts; Players: Integer; KeyboardPeripheral: Boolean; const Storage: IStorage; HasCoinAcceptor: Boolean);
 begin
+  FInfo.AssignmentColumns := 2;
+  FInfo.AssignmentRowHeight := 34;
+  FInfo.AssignmentCaptionWidth := 40;
   inherited Create(AOwner);
   Name := 'ControlsHelp';
   FInput := Input;
@@ -93,29 +100,23 @@ begin
     var Ini := Storage.ReadConfig(Storage.ConfigFile(SystemId));
     try
       LoadInputBindings(FInput, Ini, SystemId);
-      FilterInputBindings(FInput, Ini);
+      FilterInputBindings(FInput, Ini, SystemId);
     finally
       Ini.Free;
     end;
   end;
   FSystemId := SystemId;
   FPorts := Ports;
+  FKeyboardPeripheral := KeyboardPeripheral;
+  FHasCoinAcceptor := HasCoinAcceptor;
+  FContent := PlatformControlsHelp(SystemId);
 
   FPlayers := EnsureRange(Players, 1, 8);
   FormStyles.RelocalizeUI(Self, 'en');
-  if SystemId = ROM_SYSTEM_GW then
-    (FindComponent('LabelControllerTitle') as TLabel).Text := LibrarySystemName(SystemId);
+  FInfo := FContent.Info(HelpContext);
+  (FindComponent('LabelControllerTitle') as TLabel).Text := FInfo.ControllerTitle;
   LabelSubtitle.Text := Translate('Current bindings · ') + LibrarySystemName(SystemId) + Translate(' · game paused');
-  var ZXActive := SystemId = ROM_SYSTEM_ZX;
-  if KeyboardPeripheral then
-    LabelNote.Text := Translate('Letter shortcuts, F5, F6 and F8 are unavailable with keyboard peripherals.');
-  if KeyboardPeripheral and HasCoinAcceptor then
-    LabelNote.Text := Translate('Letter shortcuts, F5, F6, F8 and F9 are unavailable with keyboard peripherals.');
-  if ZXActive then
-    if KeyboardPeripheral then
-      LabelNote.Text := Translate('ZX: F5/F6 save/load; F7 tape; F8 rewind; F9 NMI. P, R, Shift+R and Ctrl+O go to ZX. Use toolbar buttons for emulator actions.') + ' ' + Translate('Hold F10 to fast-forward.')
-    else
-      LabelNote.Text := Translate('ZX: F5/F6 save/load; F7 tape; F8 rewind; F9 NMI.') + ' ' + Translate('Hold F10 to fast-forward.');
+  LabelNote.Text := FInfo.Note;
   ButtonSettings.OnClick := SettingsClick;
   ButtonSettings.StylesData['text.Margins.Left'] := 36;
   ButtonSettings.StylesData['text.Margins.Right'] := 10;
@@ -127,29 +128,78 @@ begin
     FPlayerButtons[i].Visible := i < FPlayers;
     FPlayerButtons[i].OnClick := PlayerClick;
   end;
-  for var i := 0 to 9 do
-  begin
-    var Row := FindComponent('LayoutFunction' + IntToStr(i)) as TLayout;
-    if KeyboardPeripheral and ((i in [4, 6, 7, 9]) or (not ZXActive and (i in [1, 2, 3]))) then
-      Row.Opacity := 0.4;
-    if i = 9 then
-      Row.Visible := HasCoinAcceptor;
-  end;
-  if KeyboardPeripheral then
-    (FindComponent('LayoutFunctionHardRestart') as TLayout).Opacity := 0.4;
-  (FindComponent('LayoutFunctionTapePlay') as TLayout).Visible := ZXActive;
-  (FindComponent('LayoutFunctionNMI') as TLayout).Visible := ZXActive;
-  if ZXActive then
-  begin
-    (FindComponent('LabelFunctionCaption3') as TLabel).Text := Translate('Rewind tape');
-    (FindComponent('PathFunctionIcon3') as TPath).Visible := False;
-  end;
-  LayoutFunctions.Height := (10 + Ord(HasCoinAcceptor) + 2 * Ord(ZXActive)) * 44;
+  BuildShortcuts;
   BuildPlayer;
+end;
+
+procedure RetireHelpChildren(Parent: TControl);
+begin
+  if Parent = nil then
+    Exit;
+  if Parent.ChildrenCount > 0 then
+    for var Child in Parent.Children.ToArray do
+      if Child is TControl then
+        RetireSettingsControl(TControl(Child));
+end;
+
+procedure DisableDiagramInput(Control: TControl);
+begin
+  Control.HitTest := False;
+  if Control.ChildrenCount > 0 then
+    for var Child in Control.Children do
+      if Child is TControl then
+        DisableDiagramInput(TControl(Child));
+end;
+
+function TControlsHelpView.HelpContext: TControlsHelpContext;
+begin
+  Result.SystemId := FSystemId;
+  Result.Ports := FPorts;
+  Result.Player := FPlayer;
+  Result.KeyboardPeripheral := FKeyboardPeripheral;
+  Result.HasCoinAcceptor := FHasCoinAcceptor;
+  Result.Input := FInput;
+end;
+
+procedure TControlsHelpView.BuildShortcuts;
+const
+  Ids: array[0..10] of string = ('help', 'save', 'load', 'screenshot', 'pause', 'fullscreen',
+    'reset', 'hard-restart', 'open', 'exit-fullscreen', 'coin');
+  Suffixes: array[0..10] of string = ('0', '1', '2', '3', '4', '5', '6', 'HardRestart', '7', '8', '9');
+begin
+  var Y: Single := 0;
+  for var I := 0 to High(Ids) do
+  begin
+    var Row := FindComponent('LayoutFunction' + Suffixes[I]) as TLayout;
+    Row.TagString := Ids[I];
+    Row.Visible := (Ids[I] <> 'coin') or FHasCoinAcceptor;
+    Row.Opacity := 1;
+    if not FContent.StandardShortcutAvailable(HelpContext, Ids[I]) then
+      Row.Opacity := 0.4;
+    if Row.Visible then
+    begin
+      Row.Position.Y := Y;
+      Y := Y + Row.Height;
+    end;
+  end;
+  var Shortcuts := FContent.Shortcuts(HelpContext);
+  for var I := 0 to High(Shortcuts) do
+  begin
+    var Row := TControlsHelpShortcutView.Create(LayoutFunctions);
+    Row.Name := '';
+    Row.Parent := LayoutFunctions;
+    Row.Position.Y := Y; // Aligned rows follow the complete standard group.
+    Row.Configure(Shortcuts[I]);
+    Y := Y + Row.Height;
+  end;
+  LayoutFunctions.Height := Y;
 end;
 
 destructor TControlsHelpView.Destroy;
 begin
+  RetireHelpChildren(LayoutDiagram);
+  for var I := 0 to 1 do
+    RetireHelpChildren(FindComponent('LayoutAssignmentColumn' + IntToStr(I)) as TLayout);
   if FOwnsInput then
     FInput.Free;
   inherited;
@@ -157,17 +207,16 @@ end;
 
 procedure TControlsHelpView.BuildPlayer;
 begin
-  LayoutDiagram.DeleteChildren;
+  RetireHelpChildren(LayoutDiagram);
   LayoutDiagram.Visible := True;
   for var i := 0 to 1 do
-    TLayout(FindComponent('LayoutAssignmentColumn' + IntToStr(i))).DeleteChildren;
+    RetireHelpChildren(TLayout(FindComponent('LayoutAssignmentColumn' + IntToStr(i))));
   LayoutAssignments.Height := 0;
   for var i := 0 to FPlayers - 1 do
     if i = FPlayer then
       FPlayerButtons[i].StyleLookup := 'buttonstyle_accent'
     else
       FPlayerButtons[i].StyleLookup := 'buttonstyle';
-  var Buttons := CoreButtons(FSystemId, FPorts.Devices[FPlayer]);
   var Devices := TStringList.Create;
   try
     if FInput <> nil then
@@ -193,8 +242,8 @@ begin
   finally
     Devices.Free;
   end;
-  var PowerPadActive := (FSystemId = ROM_SYSTEM_NES) and (FPorts.Devices[FPlayer] = 'powerpad');
-  if (Buttons = []) and not PowerPadActive then
+  var Diagram := FContent.CreateDiagram(HelpContext, LayoutDiagram);
+  if Diagram = nil then
   begin
     var L := GameplayLabel(Self, LayoutDiagram, Translate('No controller is connected to this port. Choose a device in the controls settings.'), 14);
     L.Align := TAlignLayout.Client;
@@ -202,60 +251,15 @@ begin
   end
   else
   begin
-    begin
-      var Pad: TControl;
-      if PowerPadActive then
-        Pad := TNesPowerPad.Create(LayoutDiagram)
-      else
-      begin
-        var Gamepad := TScreenGamepad.Create(LayoutDiagram);
-        Gamepad.Configure(TPlatformRegistry.Require(FSystemId).System, FPorts.Devices[FPlayer], Buttons);
-        Pad := Gamepad;
-      end;
-      Pad.HitTest := False;
-      Pad.Enabled := False;
-      var Diagram := TDeviceCallouts.Create(LayoutDiagram);
-      Diagram.Parent := LayoutDiagram;
-      Diagram.Align := TAlignLayout.Client;
-      Diagram.Configure(Pad, FInput, FSystemId, FPlayer, nil);
-      // This diagram is a reference; it cannot capture or forward controller input.
-      Diagram.HitTest := False;
-      for var Child in Diagram.Children do
-        if Child is TControl then
-          TControl(Child).HitTest := False;
-    end;
+    Diagram.Parent := LayoutDiagram;
+    Diagram.Align := TAlignLayout.Client;
+    DisableDiagramInput(Diagram);
     var Y: Single := 0;
-    for var B in Buttons do
+    for var Binding in FContent.Assignments(HelpContext) do
     begin
-      AssignmentRow(LayoutAssignments, CoreButtonName(FSystemId, B), Assignments(PadAction(FPlayer, B)), Y, PadAction(FPlayer, B));
+      AssignmentRow(LayoutAssignments, Binding.Caption, Assignments(Binding.Action), Y, Binding.Action);
       Y := Y + 34;
     end;
-    if FSystemId = ROM_SYSTEM_N64 then
-    begin
-      AssignmentRow(LayoutAssignments, 'L', Assignments(N64LAction + FPlayer), Y, N64LAction + FPlayer);
-      Y := Y + 34;
-    end;
-    if FSystemId = ROM_SYSTEM_PS1 then
-      for var Extra := Low(TPS1Extra) to High(TPS1Extra) do
-        if (Extra = TPS1Extra.L2) or (FPorts.Devices[FPlayer] = 'pad-analog') then
-        begin
-          var Action := PS1Action(FPlayer, Extra);
-          AssignmentRow(LayoutAssignments, PS1ExtraName(Extra), Assignments(Action), Y, Action);
-          Y := Y + 34;
-        end;
-    if FSystemId = ROM_SYSTEM_DC then
-      for var Extra := Low(TDCExtra) to High(TDCExtra) do
-      begin
-        var Action := DCAction(FPlayer, Extra);
-        AssignmentRow(LayoutAssignments, DCExtraName(Extra), Assignments(Action), Y, Action);
-        Y := Y + 34;
-      end;
-    if PowerPadActive then
-      for var Button := 1 to 12 do
-      begin
-        AssignmentRow(LayoutAssignments, IntToStr(Button), Assignments(PowerPadAction + Button - 1), Y, PowerPadAction + Button - 1);
-        Y := Y + 34;
-      end;
     LayoutAssignments.Height := Y;
   end;
   Resize;
@@ -411,8 +415,8 @@ begin
       LayoutPlayerTabs.EndUpdate;
     end;
     var AssignmentColumns := 1;
-    if (FSystemId <> ROM_SYSTEM_GW) and (ColumnW >= 380) then
-      AssignmentColumns := 2;
+    if (FInfo.AssignmentColumns > 1) and (ColumnW >= 380) then
+      AssignmentColumns := Min(2, FInfo.AssignmentColumns);
     var AllRows := TList<TControl>.Create;
     try
       for var i := 0 to 1 do
@@ -428,7 +432,7 @@ begin
           Result := CompareValue(A.Tag, B.Tag);
         end));
       var Rows := Ceil(AllRows.Count / AssignmentColumns);
-      var RowHeight := IfThen(FSystemId = ROM_SYSTEM_GW, 32, 34);
+      var RowHeight := FInfo.AssignmentRowHeight;
       for var i := 0 to 1 do
       begin
         var Column := FindComponent('LayoutAssignmentColumn' + IntToStr(i)) as TLayout;
@@ -444,7 +448,7 @@ begin
         Row.Height := RowHeight;
         Row.Margins.Right := IfThen(AssignmentColumns = 2, 10, 0);
         Row.Position.Y := (i mod Max(1, Rows)) * RowHeight;
-        TControl(Row.Children[0]).Width := IfThen(FSystemId = ROM_SYSTEM_GW, 112, 40);
+        TControl(Row.Children[0]).Width := FInfo.AssignmentCaptionWidth;
       end;
       LayoutAssignments.Height := Rows * RowHeight;
     finally
@@ -454,8 +458,13 @@ begin
     if LayoutDiagram.Visible then
       LayoutLeft.Height := LayoutLeft.Height + 10 + 180;
     LayoutRight.Height := LayoutFunctions.Height + 70;
-    for var Row in LayoutFunctions.Children do
-      TControl(TFmxObject(Row).Children[0]).Width := Max(120, IfThen(TwoColumns, ContentW - ColumnW - 48, ContentW) - 128);
+    var CaptionWidth := Max(120, IfThen(TwoColumns, ContentW - ColumnW - 48, ContentW) - 128);
+    if LayoutFunctions.ChildrenCount > 0 then
+      for var Child in LayoutFunctions.Children do
+        if Child is TControlsHelpShortcutView then
+          TControlsHelpShortcutView(Child).SetCaptionWidth(CaptionWidth)
+        else if (Child is TControl) and (Child.ChildrenCount > 0) then
+          TControl(Child.Children[0]).Width := CaptionWidth;
     if TwoColumns then
       LayoutContent.Height := Max(LayoutLeft.Height, LayoutRight.Height)
     else

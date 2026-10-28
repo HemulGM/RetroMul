@@ -6,6 +6,39 @@ uses
   System.SysUtils, System.Classes, System.Hash, Core.Snapshots, SNES.SDD1,
   SNES.NecDSP, SNES.CX4, SNES.SA1, SNES.GSU, SNES.SPC7110, SNES.ST018;
 
+const
+  SNES_ROM_COPIER_HEADER_SIZE = 512;
+
+const
+  ROM_CORE_ID_SNES = 'SNES';
+  ROM_EXTENSION_SFC = '.sfc';
+  ROM_COPIER_ALIGNMENT_MASK = SNES_ROM_COPIER_HEADER_SIZE * 2 - 1;
+  SNES_ROM_BANK_SIZE = $8000;
+  SNES_ROM_EXTENDED_BASE = $400000;
+  SNES_ROM_HEADER_OFFSET = $7FC0;
+  SNES_ROM_METADATA_SIZE = $20;
+  SNES_ROM_TITLE_SIZE = 21;
+  SNES_ROM_MAP_MODE_OFFSET = $15;
+  SNES_ROM_CARTRIDGE_TYPE_OFFSET = $16;
+  SNES_ROM_SIZE_OFFSET = $17;
+  SNES_ROM_RAM_SIZE_OFFSET = $18;
+  SNES_ROM_REGION_OFFSET = $19;
+  SNES_ROM_LICENSEE_OFFSET = $1A;
+  SNES_ROM_CHECKSUM_COMPLEMENT_OFFSET = $1C;
+  SNES_ROM_CHECKSUM_OFFSET = $1E;
+  SNES_ROM_RESET_VECTOR_OFFSET = $3C;
+  SNES_ROM_COPROCESSOR_SUBTYPE_OFFSET = -1;
+  SNES_ROM_EXPANSION_RAM_SIZE_OFFSET = -3;
+  SNES_ROM_HEADER_BASES: array[0..7] of Integer = (
+    0,
+    SNES_ROM_COPIER_HEADER_SIZE,
+    SNES_ROM_BANK_SIZE,
+    SNES_ROM_BANK_SIZE + SNES_ROM_COPIER_HEADER_SIZE,
+    SNES_ROM_EXTENDED_BASE,
+    SNES_ROM_EXTENDED_BASE + SNES_ROM_COPIER_HEADER_SIZE,
+    SNES_ROM_EXTENDED_BASE + SNES_ROM_BANK_SIZE,
+    SNES_ROM_EXTENDED_BASE + SNES_ROM_BANK_SIZE + SNES_ROM_COPIER_HEADER_SIZE);
+
 type
   TSnesMapping = (LoROM, HiROM, ExLoROM, ExHiROM);
 
@@ -81,7 +114,7 @@ implementation
 {$R 'SNES.Firmware.res' 'SNES.Firmware.rc'}
 
 uses
-  Core.RomHashes, Core.RomFormat;
+  SNES.RomHashes;
 
 function SnesResourceFirmware(const Name: string): TBytes;
 begin
@@ -225,7 +258,7 @@ begin
   begin
     // A 512-byte copier prefix leaves this residue even with DSP firmware
     // appended. Full KiB images must not select a header inside game code.
-    if ((Base and ROM_COPIER_HEADER_SIZE) <> 0) and ((Length(Data) and ROM_COPIER_ALIGNMENT_MASK) <> ROM_COPIER_HEADER_SIZE) then
+    if ((Base and SNES_ROM_COPIER_HEADER_SIZE) <> 0) and ((Length(Data) and ROM_COPIER_ALIGNMENT_MASK) <> SNES_ROM_COPIER_HEADER_SIZE) then
       Continue;
 
     if Length(Data) < Base + SNES_ROM_BANK_SIZE then
@@ -269,7 +302,7 @@ begin
 
     Header.Score := Score;
     Header.Offset := H;
-    Header.CopierSize := Base and ROM_COPIER_HEADER_SIZE;
+    Header.CopierSize := Base and SNES_ROM_COPIER_HEADER_SIZE;
     if (Base and SNES_ROM_BANK_SIZE) = 0 then
       if (Base and SNES_ROM_EXTENDED_BASE) = 0 then
         Header.Mapping := LoROM

@@ -186,9 +186,12 @@ begin
     Observe(VRAM64(Offset + 4) and not Cardinal(3), 4);
   end;
   case Size of
-    1: Result := (VRAM + VRAM64(Offset))^;
-    2: Result := PWord(VRAM + VRAM64(Offset))^;
-    4: Result := PCardinal(VRAM + VRAM64(Offset))^;
+    1:
+      Result := (VRAM + VRAM64(Offset))^;
+    2:
+      Result := PWord(VRAM + VRAM64(Offset))^;
+    4:
+      Result := PCardinal(VRAM + VRAM64(Offset))^;
   else
     Result := PCardinal(VRAM + VRAM64(Offset))^ or (UInt64(PCardinal(VRAM + VRAM64(Offset + 4))^) shl 32);
   end;
@@ -204,9 +207,12 @@ begin
   end;
   var Linear := VRAM64(Offset);
   case Size of
-    1: (VRAM + Linear)^ := Byte(Value);
-    2: PWord(VRAM + Linear)^ := Word(Value);
-    4: PCardinal(VRAM + Linear)^ := Cardinal(Value);
+    1:
+      (VRAM + Linear)^ := Byte(Value);
+    2:
+      PWord(VRAM + Linear)^ := Word(Value);
+    4:
+      PCardinal(VRAM + Linear)^ := Cardinal(Value);
   else
     begin
       PCardinal(VRAM + Linear)^ := Cardinal(Value);
@@ -234,3 +240,4 @@ begin
 end;
 
 end.
+

@@ -3,9 +3,8 @@
 interface
 
 uses
-  RM.Platforms.Presentation,
-  System.Types, System.UITypes, FMX.Types, FMX.Controls, FMX.Objects,
-  FMX.StdCtrls, FMX.Graphics;
+  RM.Platforms.Presentation, System.Types, System.UITypes, FMX.Types,
+  FMX.Controls, FMX.Objects, FMX.StdCtrls, FMX.Graphics;
 
 const
   //IconBack = 'M24,13 L2,13 M10,5 L2,13 L10,21';
@@ -46,14 +45,15 @@ procedure GameplayButton(Button: TButton; const Text, Icon, Hint: string);
 
 implementation
 
-uses System.Math, Core.Platforms;
+uses
+  System.Math, Core.Platforms;
 
 function CreatePlatformIcon(Parent: TControl; const PlatformId: string; Size: Single): TPath;
 begin
-  var Platform := TPlatformRegistry.Require(PlatformId);
+  var Presentation := PlatformPresentation(PlatformId);
   Result := TPath.Create(Parent);
   Result.Parent := Parent;
-  Result.Data.Data := PlatformPresentation(Platform.System).IconData;
+  Result.Data.Data := Presentation.IconData;
   Result.Fill.Color := $FFB9C2CC;
   Result.Stroke.Kind := TBrushKind.None;
   Result.WrapMode := TPathWrapMode.Fit;
@@ -77,7 +77,7 @@ begin
   Result.Width := Size;
   Result.Height := Size;
   Result.Align := TAlignLayout.Left;
-  Result.Margins.Rect := TRectF.Create(X,Y,0,Max(0,Parent.Height-Y-Size));
+  Result.Margins.Rect := TRectF.Create(X, Y, 0, Max(0, Parent.Height - Y - Size));
 end;
 
 function AddButtonIcon(Button: TCustomButton; const Data: string; Size: Single; Color: TAlphaColor): TPath;

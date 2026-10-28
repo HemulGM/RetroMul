@@ -3,7 +3,8 @@ unit PS1.CPU;
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Snapshots, PS1.Types, PS1.Scheduler, PS1.Bus, PS1.GTE;
+  System.SysUtils, System.Classes, Core.Snapshots, PS1.Types, PS1.Scheduler,
+  PS1.Bus, PS1.GTE;
 
 const
   // COP0 status register bits.
@@ -498,8 +499,10 @@ begin
     Drain;
     Inc(P, Address and $FFFF);
     case Size of
-      1: Value := P^;
-      2: Value := PWord(P)^;
+      1:
+        Value := P^;
+      2:
+        Value := PWord(P)^;
     else
       Value := PCardinal(P)^;
     end;
@@ -534,8 +537,10 @@ begin
   begin
     Inc(P, Address and $FFFF);
     case Size of
-      1: P^ := Byte(Value);
-      2: PWord(P)^ := Word(Value);
+      1:
+        P^ := Byte(Value);
+      2:
+        PWord(P)^ := Word(Value);
     else
       PCardinal(P)^ := Value;
     end;
@@ -687,40 +692,49 @@ begin
   var Rd := Integer((Op shr 11) and 31);
   var Shamt := Integer((Op shr 6) and 31);
   case Op and $3F of
-    $00: SetReg(Rd, Rt shl Shamt);
-    $02: SetReg(Rd, Rt shr Shamt);
+    $00:
+      SetReg(Rd, Rt shl Shamt);
+    $02:
+      SetReg(Rd, Rt shr Shamt);
     $03:
       if (Rt and $80000000) <> 0 then
         SetReg(Rd, not ((not Rt) shr Shamt))
       else
         SetReg(Rd, Rt shr Shamt);
-    $04: SetReg(Rd, Rt shl (Rs and 31));
-    $06: SetReg(Rd, Rt shr (Rs and 31));
+    $04:
+      SetReg(Rd, Rt shl (Rs and 31));
+    $06:
+      SetReg(Rd, Rt shr (Rs and 31));
     $07:
       if (Rt and $80000000) <> 0 then
         SetReg(Rd, not ((not Rt) shr (Rs and 31)))
       else
         SetReg(Rd, Rt shr (Rs and 31));
-    $08: Branch(True, Rs);
+    $08:
+      Branch(True, Rs);
     $09:
       begin
         SetReg(Rd, Add32(FCurrentPC, 8));
         Branch(True, Rs);
       end;
-    $0C: Fault(TPS1ExceptionCode.Syscall);
-    $0D: Fault(TPS1ExceptionCode.Breakpoint);
+    $0C:
+      Fault(TPS1ExceptionCode.Syscall);
+    $0D:
+      Fault(TPS1ExceptionCode.Breakpoint);
     $10:
       begin
         WaitMulDiv;
         SetReg(Rd, FHi);
       end;
-    $11: FHi := Rs;
+    $11:
+      FHi := Rs;
     $12:
       begin
         WaitMulDiv;
         SetReg(Rd, FLo);
       end;
-    $13: FLo := Rs;
+    $13:
+      FLo := Rs;
     $18, $19:
       begin
         var Magnitude := Rs;
@@ -786,7 +800,8 @@ begin
         else
           SetReg(Rd, Cardinal(Sum));
       end;
-    $21: SetReg(Rd, Add32(Rs, Rt));
+    $21:
+      SetReg(Rd, Add32(Rs, Rt));
     $22:
       begin
         var Difference := Int64(Integer(Rs)) - Integer(Rt);
@@ -795,13 +810,20 @@ begin
         else
           SetReg(Rd, Cardinal(Difference));
       end;
-    $23: SetReg(Rd, Sub32(Rs, Rt));
-    $24: SetReg(Rd, Rs and Rt);
-    $25: SetReg(Rd, Rs or Rt);
-    $26: SetReg(Rd, Rs xor Rt);
-    $27: SetReg(Rd, not (Rs or Rt));
-    $2A: SetReg(Rd, Ord(Integer(Rs) < Integer(Rt)));
-    $2B: SetReg(Rd, Ord(Rs < Rt));
+    $23:
+      SetReg(Rd, Sub32(Rs, Rt));
+    $24:
+      SetReg(Rd, Rs and Rt);
+    $25:
+      SetReg(Rd, Rs or Rt);
+    $26:
+      SetReg(Rd, Rs xor Rt);
+    $27:
+      SetReg(Rd, not (Rs or Rt));
+    $2A:
+      SetReg(Rd, Ord(Integer(Rs) < Integer(Rt)));
+    $2B:
+      SetReg(Rd, Ord(Rs < Rt));
   else
     Fault(TPS1ExceptionCode.Reserved);
   end;
@@ -823,18 +845,30 @@ begin
       begin
         var Value: Cardinal;
         case Rd of
-          3: Value := FBPC;
-          5: Value := FBDA;
-          6: Value := FTAR;
-          7: Value := FDCIC;
-          8: Value := FBadVaddr;
-          9: Value := FBDAM;
-          11: Value := FBPCM;
-          12: Value := FSR;
-          13: Value := GetCause;
-          14: Value := FEPC;
-          15: Value := PRId;
-          16..31: Value := 0;
+          3:
+            Value := FBPC;
+          5:
+            Value := FBDA;
+          6:
+            Value := FTAR;
+          7:
+            Value := FDCIC;
+          8:
+            Value := FBadVaddr;
+          9:
+            Value := FBDAM;
+          11:
+            Value := FBPCM;
+          12:
+            Value := FSR;
+          13:
+            Value := GetCause;
+          14:
+            Value := FEPC;
+          15:
+            Value := PRId;
+          16..31:
+            Value := 0;
         else
           Fault(TPS1ExceptionCode.Reserved);
           Exit;
@@ -845,11 +879,16 @@ begin
       begin
         var Value := FRegs[(Op shr 16) and 31];
         case Rd of
-          3: FBPC := Value;
-          5: FBDA := Value;
-          7: FDCIC := Value and DCICWritable;
-          9: FBDAM := Value;
-          11: FBPCM := Value;
+          3:
+            FBPC := Value;
+          5:
+            FBDA := Value;
+          7:
+            FDCIC := Value and DCICWritable;
+          9:
+            FBDAM := Value;
+          11:
+            FBPCM := Value;
           12:
             begin
               FSR := Value and SRWritable;
@@ -898,10 +937,14 @@ begin
   var Rt := Integer((Op shr 16) and 31);
   var Rd := Integer((Op shr 11) and 31);
   case (Op shr 21) and 31 of
-    $00: LoadReg(Rt, FGTE.ReadData(Rd));
-    $02: LoadReg(Rt, FGTE.ReadControl(Rd));
-    $04: FGTE.WriteData(Rd, FRegs[Rt]);
-    $06: FGTE.WriteControl(Rd, FRegs[Rt]);
+    $00:
+      LoadReg(Rt, FGTE.ReadData(Rd));
+    $02:
+      LoadReg(Rt, FGTE.ReadControl(Rd));
+    $04:
+      FGTE.WriteData(Rd, FRegs[Rt]);
+    $06:
+      FGTE.WriteControl(Rd, FRegs[Rt]);
     $08:
       // The GTE drives no branch condition input.
       Branch((Op and $10000) = 0, RelativeTarget(Op));
@@ -954,7 +997,8 @@ end;
 procedure TPS1CPU.Execute(Op: Cardinal);
 begin
   case Op shr 26 of
-    $00: ExecuteSpecial(Op);
+    $00:
+      ExecuteSpecial(Op);
     $01:
       begin
         var Rs := FRegs[(Op shr 21) and 31];
@@ -968,16 +1012,21 @@ begin
           SetReg(31, Add32(FCurrentPC, 8));
         Branch(Taken, RelativeTarget(Op));
       end;
-    $02: Branch(True, JumpTarget(Op));
+    $02:
+      Branch(True, JumpTarget(Op));
     $03:
       begin
         SetReg(31, Add32(FCurrentPC, 8));
         Branch(True, JumpTarget(Op));
       end;
-    $04: Branch(FRegs[(Op shr 21) and 31] = FRegs[(Op shr 16) and 31], RelativeTarget(Op));
-    $05: Branch(FRegs[(Op shr 21) and 31] <> FRegs[(Op shr 16) and 31], RelativeTarget(Op));
-    $06: Branch(Integer(FRegs[(Op shr 21) and 31]) <= 0, RelativeTarget(Op));
-    $07: Branch(Integer(FRegs[(Op shr 21) and 31]) > 0, RelativeTarget(Op));
+    $04:
+      Branch(FRegs[(Op shr 21) and 31] = FRegs[(Op shr 16) and 31], RelativeTarget(Op));
+    $05:
+      Branch(FRegs[(Op shr 21) and 31] <> FRegs[(Op shr 16) and 31], RelativeTarget(Op));
+    $06:
+      Branch(Integer(FRegs[(Op shr 21) and 31]) <= 0, RelativeTarget(Op));
+    $07:
+      Branch(Integer(FRegs[(Op shr 21) and 31]) > 0, RelativeTarget(Op));
     $08:
       begin
         var Sum := Int64(Integer(FRegs[(Op shr 21) and 31])) + SmallInt(Op and $FFFF);
@@ -986,31 +1035,56 @@ begin
         else
           SetReg((Op shr 16) and 31, Cardinal(Sum));
       end;
-    $09: SetReg((Op shr 16) and 31, Add32(FRegs[(Op shr 21) and 31], SX16(Op and $FFFF)));
-    $0A: SetReg((Op shr 16) and 31, Ord(Integer(FRegs[(Op shr 21) and 31]) < SmallInt(Op and $FFFF)));
-    $0B: SetReg((Op shr 16) and 31, Ord(FRegs[(Op shr 21) and 31] < SX16(Op and $FFFF)));
-    $0C: SetReg((Op shr 16) and 31, FRegs[(Op shr 21) and 31] and (Op and $FFFF));
-    $0D: SetReg((Op shr 16) and 31, FRegs[(Op shr 21) and 31] or (Op and $FFFF));
-    $0E: SetReg((Op shr 16) and 31, FRegs[(Op shr 21) and 31] xor (Op and $FFFF));
-    $0F: SetReg((Op shr 16) and 31, (Op and $FFFF) shl 16);
-    $10: ExecuteCop0(Op);
-    $11: ExecuteCopUnused(Op, 1);
-    $12: ExecuteCop2(Op);
-    $13: ExecuteCopUnused(Op, 3);
-    $20: Load(Op, 1, True);
-    $21: Load(Op, 2, True);
-    $22: LoadUnaligned(Op, True);
-    $23: Load(Op, 4, False);
-    $24: Load(Op, 1, False);
-    $25: Load(Op, 2, False);
-    $26: LoadUnaligned(Op, False);
-    $28: Store(Op, 1);
-    $29: Store(Op, 2);
-    $2A: StoreUnaligned(Op, True);
-    $2B: Store(Op, 4);
-    $2E: StoreUnaligned(Op, False);
-    $30..$33: ExecuteCopMemory(Op, Integer(Op shr 26) and 3, False);
-    $38..$3B: ExecuteCopMemory(Op, Integer(Op shr 26) and 3, True);
+    $09:
+      SetReg((Op shr 16) and 31, Add32(FRegs[(Op shr 21) and 31], SX16(Op and $FFFF)));
+    $0A:
+      SetReg((Op shr 16) and 31, Ord(Integer(FRegs[(Op shr 21) and 31]) < SmallInt(Op and $FFFF)));
+    $0B:
+      SetReg((Op shr 16) and 31, Ord(FRegs[(Op shr 21) and 31] < SX16(Op and $FFFF)));
+    $0C:
+      SetReg((Op shr 16) and 31, FRegs[(Op shr 21) and 31] and (Op and $FFFF));
+    $0D:
+      SetReg((Op shr 16) and 31, FRegs[(Op shr 21) and 31] or (Op and $FFFF));
+    $0E:
+      SetReg((Op shr 16) and 31, FRegs[(Op shr 21) and 31] xor (Op and $FFFF));
+    $0F:
+      SetReg((Op shr 16) and 31, (Op and $FFFF) shl 16);
+    $10:
+      ExecuteCop0(Op);
+    $11:
+      ExecuteCopUnused(Op, 1);
+    $12:
+      ExecuteCop2(Op);
+    $13:
+      ExecuteCopUnused(Op, 3);
+    $20:
+      Load(Op, 1, True);
+    $21:
+      Load(Op, 2, True);
+    $22:
+      LoadUnaligned(Op, True);
+    $23:
+      Load(Op, 4, False);
+    $24:
+      Load(Op, 1, False);
+    $25:
+      Load(Op, 2, False);
+    $26:
+      LoadUnaligned(Op, False);
+    $28:
+      Store(Op, 1);
+    $29:
+      Store(Op, 2);
+    $2A:
+      StoreUnaligned(Op, True);
+    $2B:
+      Store(Op, 4);
+    $2E:
+      StoreUnaligned(Op, False);
+    $30..$33:
+      ExecuteCopMemory(Op, Integer(Op shr 26) and 3, False);
+    $38..$3B:
+      ExecuteCopMemory(Op, Integer(Op shr 26) and 3, True);
   else
     Fault(TPS1ExceptionCode.Reserved);
   end;
@@ -1141,3 +1215,4 @@ begin
 end;
 
 end.
+

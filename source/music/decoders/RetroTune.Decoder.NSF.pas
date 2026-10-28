@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, RetroTune.Decoder, NES.CPU, NES.APU, NES.Types, NES.Mapper,
-  RetroTune.Chip.FDS;
+  NES.Audio.FDS;
 
 type
   TNSFDecoder = class(TInterfacedObject, ITuneDecoder)

@@ -6,6 +6,9 @@ uses
   Core.Storage, System.Messaging, Androidapi.Jni,
   Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.Net;
 
+const
+  ROM_EXTENSION_GENERIC = '.rom';
+
 type
   IRomImport = interface
     ['{871CFC81-D811-4B37-9A59-E8468E861B41}']
@@ -28,7 +31,7 @@ type
   public
     constructor Create(const Storage: IStorage);
     destructor Destroy; override;
-    procedure Import(const Uri: string; ForCassette: Boolean = False);
+    procedure Import(const Uri: string; ForCassette: Boolean = False; const PlatformId: string = '');
     procedure Save(const SourceFile, SuggestedName: string);
     function Poll(out FileName, DisplayName, Error: string): Boolean;
     // Keep the private file alive until LoadRom has finished reading it.
@@ -38,9 +41,12 @@ type
 implementation
 
 uses
-  Core.RomFormat, System.SysUtils, System.Classes, System.IOUtils,
+  Core.PlatformServices, System.SysUtils, System.Classes, System.IOUtils,
   Androidapi.Helpers, Androidapi.JNI.App, Androidapi.JNI.JavaTypes,
   Androidapi.JNIBridge;
+
+const
+  MAX_ROM_IMPORT_SIZE = 64 * 1024 * 1024;
 
 const
   ROM_REQUEST_CODE = $4E45;
@@ -51,11 +57,12 @@ type
     FCancelled, FDone: Boolean;
     FForCassette: Boolean;
     FExporting: Boolean;
+    FSelection: TPlatformDocumentSelection;
     FFileName, FDisplayName, FError: string;
     FStorage: IStorage;
     function Cancelled: Boolean;
   public
-    constructor Create(ForCassette: Boolean; const Storage: IStorage; const ExportSource: string = '');
+    constructor Create(ForCassette: Boolean; const Storage: IStorage; const ExportSource: string = ''; const PlatformId: string = '');
     destructor Destroy; override;
     procedure Run(const Resolver: JContentResolver; const Uri: Jnet_Uri);
     procedure Cancel;
@@ -64,12 +71,13 @@ type
 
 { TRomImport }
 
-constructor TRomImport.Create(ForCassette: Boolean; const Storage: IStorage; const ExportSource: string);
+constructor TRomImport.Create(ForCassette: Boolean; const Storage: IStorage; const ExportSource, PlatformId: string);
 begin
   inherited Create;
   FStorage := Storage;
   FForCassette := ForCassette;
-  FFileName := FStorage.TemporaryFile('.tape');
+  FFileName := FStorage.TemporaryFile('.media');
+  FSelection := PlatformDocumentSelection(PlatformId);
   FDisplayName := 'Temp' + ROM_EXTENSION_GENERIC;
   FExporting := ExportSource <> '';
   if FExporting then
@@ -135,8 +143,10 @@ begin
       begin
         var Info := FStorage.Describe(Location);
         FDisplayName := Info.Name;
-        if FForCassette and not SameText(ExtractFileExt(FDisplayName), '.tape') then
-          raise EReadError.Create('Choose a .tape cassette');
+        if FForCassette and not FSelection.Accepts(FDisplayName) then
+          raise EReadError.Create(FSelection.Title);
+        // Keep the media suffix for the receiving platform's own decoder.
+        FFileName := FStorage.TemporaryFile(ExtractFileExt(FDisplayName));
       end;
       var Input: TStream;
       var Output: TStream;
@@ -169,7 +179,7 @@ begin
           if Count = 0 then
             Break;
           Inc(Total, Count);
-          if Total > ROM_MAX_SIZE then
+          if Total > MAX_ROM_IMPORT_SIZE then
             raise EReadError.Create('Document exceeds 64 MiB');
           Output.WriteBuffer(Buffer, Count);
         end;
@@ -205,14 +215,14 @@ begin
   inherited;
 end;
 
-procedure TAndroidDocumentTransfer.Import(const Uri: string; ForCassette: Boolean);
+procedure TAndroidDocumentTransfer.Import(const Uri: string; ForCassette: Boolean; const PlatformId: string);
 begin
   if FWaiting or FReady or (FJob <> nil) then
     raise EInvalidOperation.Create('A document transfer is already active');
 
   var Resolver := TAndroidHelper.Context.getContentResolver;
   var DocumentUri := TJnet_Uri.JavaClass.parse(StringToJString(Uri));
-  var Job: IRomImport := TRomImport.Create(ForCassette, FStorage);
+  var Job: IRomImport := TRomImport.Create(ForCassette, FStorage, '', PlatformId);
   FJob := Job;
   TThread.CreateAnonymousThread(
     procedure

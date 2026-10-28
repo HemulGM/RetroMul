@@ -3,7 +3,28 @@
 interface
 
 uses
-  Core.RomFormat, System.SysUtils, System.Classes, Core.Storage, Core.CD.Disc;
+  System.SysUtils, System.Classes, Core.Storage, Core.CD.Disc;
+
+const
+  ROM_SYSTEM_NEOGEO = 'neogeo';
+  ROM_SYSTEM_NEOGEOCD = 'neogeocd';
+  ROM_SYSTEM_NEOGEOAES = 'neogeoaes';
+  ROM_CORE_ID_NEOGEO = 'NEOGEO';
+  ROM_CORE_ID_NEOGEOCD = 'NEOGEOCD';
+
+const
+  ROM_EXTENSION_ZIP = '.zip';
+  ROM_EXTENSION_7Z = '.7z';
+
+const
+  NEOGEO_ROM_SIGNATURE: AnsiString = 'NEO' + #1;
+  NEOGEO_ROM_MAGIC_SIZE = 3;
+  NEOGEO_ROM_HEADER_SIZE = $1000;
+  NEOGEO_ROM_MAX_CONTAINER_SIZE = 256 * 1024 * 1024;
+  NEOGEO_ROM_REGION_COUNT = 5;
+  NEOGEO_ROM_REGION_SIZES_OFFSET = 4;
+  NEOGEO_ROM_NAME_OFFSET = $30;
+  NEOGEO_ROM_NAME_SIZE = 33;
 
 const
   NG_MAX_CONTAINER = NEOGEO_ROM_MAX_CONTAINER_SIZE;
@@ -40,7 +61,7 @@ function ReadNeoGeoData(Stream: TStream): TBytes;
 implementation
 
 uses
-  Core.RomArchive, System.Zip, System.IOUtils, System.Hash, NeoGeo.RomSets,
+  Core.Archive.SevenZip, System.Zip, System.IOUtils, System.Hash, NeoGeo.RomSets,
   NeoGeo.Protection, NeoGeo.Bootleg, NeoGeo.PCB;
 
 {$R NeoGeo.Firmware.res}

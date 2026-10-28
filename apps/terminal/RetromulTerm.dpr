@@ -5,33 +5,12 @@
 {$R *.res}
 
 uses
-  Core.Adapter.MSX in '..\..\source\adapters\Core.Adapter.MSX.pas',
-  MSX.Cartridge in '..\..\source\cores\msx\MSX.Cartridge.pas',
-  MSX.MapperAnalysis in '..\..\source\cores\msx\MSX.MapperAnalysis.pas',
-  MSX.Console in '..\..\source\cores\msx\MSX.Console.pas',
-  MSX.AudioBoard in '..\..\source\cores\msx\MSX.AudioBoard.pas',
+  RetroMul.Platforms in '..\..\source\platforms\RetroMul.Platforms.pas',
   Yamaha.Sound.Y8950 in '..\..\source\hardware\audio\opl\Yamaha.Sound.Y8950.pas',
-  MSX.RTC in '..\..\source\cores\msx\MSX.RTC.pas',
-  MSX.Floppy in '..\..\source\cores\msx\MSX.Floppy.pas',
-  MSX.Cassette in '..\..\source\cores\msx\MSX.Cassette.pas',
-  MSX.Peripherals in '..\..\source\cores\msx\MSX.Peripherals.pas',
-  MSX.Emulation in '..\..\source\cores\msx\MSX.Emulation.pas',
-  MSX.Firmware in '..\..\source\cores\msx\MSX.Firmware.pas',
-  MSX.Machine in '..\..\source\cores\msx\MSX.Machine.pas',
-  MSX.VDP in '..\..\source\cores\msx\MSX.VDP.pas',
-  MSX.VDP.Timing in '..\..\source\cores\msx\MSX.VDP.Timing.pas',
-  MSX.VDP.AdjustTiming in '..\..\source\cores\msx\MSX.VDP.AdjustTiming.pas',
-  MSX.VDP.SpriteTiming in '..\..\source\cores\msx\MSX.VDP.SpriteTiming.pas',
-  MSX.VDP.ShortTiming in '..\..\source\cores\msx\MSX.VDP.ShortTiming.pas',
 
   HW.ARM.Shifter in '..\..\source\hardware\cpu\HW.ARM.Shifter.pas',
-  PSP.Registry in '..\..\source\cores\psp\PSP.Registry.pas',
-  PSP.YCbCr in '..\..\source\cores\psp\PSP.YCbCr.pas',
   Audio.ATRAC3.Decoder in '..\..\source\hardware\audio\atrac3\Audio.ATRAC3.Decoder.pas',
   Audio.ATRAC3 in '..\..\source\hardware\audio\atrac3\Audio.ATRAC3.pas',
-  PSP.MP3 in '..\..\source\cores\psp\PSP.MP3.pas',
-  PSP.Mpeg in '..\..\source\cores\psp\PSP.Mpeg.pas',
-  PSP.MpegStream in '..\..\source\cores\psp\PSP.MpegStream.pas',
   Core.Bitstream in '..\..\source\media\Core.Bitstream.pas',
   Video.AVC.Bitstream in '..\..\source\hardware\video\avc\Video.AVC.Bitstream.pas',
   Video.AVC.H264.CABAC in '..\..\source\hardware\video\avc\Video.AVC.H264.CABAC.pas',
@@ -53,39 +32,16 @@ uses
   FMXAudio.Bitstream in '..\..\source\hardware\audio\codecs\FMXAudio.Bitstream.pas',
   FMXAudio.Transform in '..\..\source\hardware\audio\codecs\FMXAudio.Transform.pas',
   FMXAudio.Types in '..\..\source\hardware\audio\codecs\FMXAudio.Types.pas',
-  PSP.VariablePool in '..\..\source\cores\psp\PSP.VariablePool.pas',
-  PSP.VFPUMath in '..\..\source\cores\psp\PSP.VFPUMath.pas',
-  PSP.Controller in '..\..\source\cores\psp\PSP.Controller.pas',
-  PSP.ATRAC in '..\..\source\cores\psp\PSP.ATRAC.pas',
   Audio.ATRAC3Plus in '..\..\source\hardware\audio\atrac3plus\Audio.ATRAC3Plus.pas',
   Audio.ATRAC3Plus.Decoder in '..\..\source\hardware\audio\atrac3plus\Audio.ATRAC3Plus.Decoder.pas',
   Audio.ATRAC3Plus.Primitives in '..\..\source\hardware\audio\atrac3plus\Audio.ATRAC3Plus.Primitives.pas',
   Audio.ATRAC3Plus.Tables in '..\..\source\hardware\audio\atrac3plus\Audio.ATRAC3Plus.Tables.pas',
-  PSP.Audio in '..\..\source\cores\psp\PSP.Audio.pas',
-  PSP.SAS in '..\..\source\cores\psp\PSP.SAS.pas',
-  PSP.Utility in '..\..\source\cores\psp\PSP.Utility.pas',
-  PSP.VFPU in '..\..\source\cores\psp\PSP.VFPU.pas',
-  PSP.SystemHLE in '..\..\source\cores\psp\PSP.SystemHLE.pas',
-  PSP.GE in '..\..\source\cores\psp\PSP.GE.pas',
-  PSP.AES in '..\..\source\cores\psp\PSP.AES.pas',
-  PSP.PRX in '..\..\source\cores\psp\PSP.PRX.pas',
-  PSP.Relocations in '..\..\source\cores\psp\PSP.Relocations.pas',
-  PSP.Kernel in '..\..\source\cores\psp\PSP.Kernel.pas',
-  PSP.FileSystem in '..\..\source\cores\psp\PSP.FileSystem.pas',
-  PSP.Memory in '..\..\source\cores\psp\PSP.Memory.pas',
-  PSP.Media in '..\..\source\cores\psp\PSP.Media.pas',
-  PSP.CPU in '..\..\source\cores\psp\PSP.CPU.pas',
-  PSP.Executable in '..\..\source\cores\psp\PSP.Executable.pas',
-  PSP.Console in '..\..\source\cores\psp\PSP.Console.pas',
-  Core.PSP.Archive in '..\..\source\adapters\Core.PSP.Archive.pas',
-  Core.Adapter.PSP in '..\..\source\adapters\Core.Adapter.PSP.pas',
   System.SysUtils,
   System.Classes, System.UITypes,
   Winapi.Windows,
   FMX.Graphics,
-  GW.Artwork.FMX in '..\..\source\ui\gamewatch\GW.Artwork.FMX.pas',
   Core.Emulation,
-  Core.EmulatorFactory, Core.Adapter.PCE, Core.Adapter.SG1000,
+  Core.EmulatorFactory, Core.PlatformServices,
   Core.Storage,
   Core.Platforms in '..\..\source\runtime\Core.Platforms.pas',
   Core.RomFormat,
@@ -174,11 +130,7 @@ begin
     TRetromulTerminal.SetTitle('RetroMul');
     TRetromulTerminal.Clear;
     var RomName := ParamStr(1);
-    {$IFDEF DEBUG}
-    RomName := 'H:\ROMS\' + ROM_SYSTEM_NES + '\Super Mario Brothers' + ROM_EXTENSION_NES;
-    //RomName := 'H:\ROMS\megadrive\Sonic The Hedgehog (USA, Europe).gen';
-    //RomName := 'H:\ROMS\gb\DuckTales (USA).gb';
-    {$ENDIF}
+
     if RomName.IsEmpty then
     begin
       Writeln('Set file name as param 1');
@@ -196,9 +148,8 @@ begin
         raise;
       end;
 
-      var Keyboard: ISGKeyboardCore;
-      var SCKeyboard := Supports(FEmulation, ISGKeyboardCore, Keyboard) and Keyboard.HasKeyboard;
-      if SCKeyboard or (FEmulation.Config is TPCEConfig) then
+      var InputPolicy := TerminalInputPolicy(FEmulation);
+      if InputPolicy.AllKeys then
       begin
         for var Code := 1 to 255 do
         begin
@@ -219,9 +170,7 @@ begin
         FEmulation.SetKeyState(VK_SPACE, TRetromulTerminal.IsKeyDown(VK_SPACE));
       end;
 
-      // Escape is the SC-3000 BREAK key; F12 exits that keyboard session.
-      if ((not SCKeyboard) and TRetromulTerminal.IsKeyDown(VK_ESCAPE)) or
-        (SCKeyboard and TRetromulTerminal.IsKeyDown(VK_F12)) then
+      if TRetromulTerminal.IsKeyDown(InputPolicy.ExitKey) then
         Running := False;
 
       Sleep(16);
@@ -230,4 +179,3 @@ begin
     TRetromulTerminal.Finalize;
   end;
 end.
-

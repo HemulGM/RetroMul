@@ -144,7 +144,7 @@ type
     function CreateThread(Name: string; Entry, Priority, StackSize, Attributes: Cardinal; KernelStack: Boolean = False): Cardinal;
     function StartThread(Id, ArgSize, ArgPointer: Cardinal): Cardinal;
     procedure WakeWaiters(Id: Cardinal);
-    procedure SetCPUClock(Value:Cardinal);
+    procedure SetCPUClock(Value: Cardinal);
     procedure InitializeContext(Thread: TPSPThread; ArgSize, ArgPointer: Cardinal);
     function HandleVpl(NID: Cardinal; out Value: Cardinal): Boolean;
     function HandleMsgPipe(NID: Cardinal; out Value: Cardinal): Boolean;
@@ -182,8 +182,7 @@ type
     procedure CompleteDevice(Kind, Id, Value: Cardinal);
     function ReserveModule(Size: Cardinal; out Address: Cardinal; KernelMemory: Boolean = False): Cardinal;
     function ReleaseModule(Id: Cardinal): Cardinal;
-    function StartModule(Entry, GP, ArgSize, ArgPointer, Priority, StackSize, Attributes: Cardinal;
-      KernelMemory: Boolean = False; ModuleId: Cardinal = 0): Cardinal;
+    function StartModule(Entry, GP, ArgSize, ArgPointer, Priority, StackSize, Attributes: Cardinal; KernelMemory: Boolean = False; ModuleId: Cardinal = 0): Cardinal;
     property OnThreadExit: TPSPThreadExitEvent read FOnThreadExit write FOnThreadExit;
     property ResolveGP: TPSPResolveGPEvent read FResolveGP write FResolveGP;
     function DescribeThreads: string;
@@ -259,13 +258,13 @@ begin
   FreeRange.Address := (Executable.HighAddress + $FF) and $FFFFFF00;
   FreeRange.Size := PSPRAMBase + PSPRAMSize - $10000 - FreeRange.Address;
   FFree.Add(FreeRange);
-  if (Executable.LowAddress>=PSPUserBase) and (Executable.LowAddress<Executable.HighAddress) and
-    (Executable.HighAddress<=PSPRAMBase+PSPRAMSize-$10000) then
+  if (Executable.LowAddress >= PSPUserBase) and (Executable.LowAddress < Executable.HighAddress) and
+    (Executable.HighAddress <= PSPRAMBase + PSPRAMSize - $10000) then
   begin
-    var RootBlock:=Default(TPSPMemoryBlock);
-    RootBlock.Id:=$50;
-    RootBlock.Address:=Executable.LowAddress and $FFFFFF00;
-    RootBlock.Size:=((Executable.HighAddress+$FF) and $FFFFFF00)-RootBlock.Address;
+    var RootBlock := Default(TPSPMemoryBlock);
+    RootBlock.Id := $50;
+    RootBlock.Address := Executable.LowAddress and $FFFFFF00;
+    RootBlock.Size := ((Executable.HighAddress + $FF) and $FFFFFF00) - RootBlock.Address;
     FBlocks.Add(RootBlock);
   end;
   var Root := TPSPThread.Create;
@@ -332,7 +331,7 @@ begin
       if Thread = FCurrent then
         Context := FCPU.SaveContext;
       Builder.AppendFormat('thread %.8x %s priority=%d state=%d PC=%.8x RA=%.8x callbacks=%d S0=%.8x S1=%.8x SP=%.8x GP=%.8x module=%.8x',
-        [Thread.Id, Thread.Name, Thread.Priority, Ord(Thread.State.Status), Context.PC, Context.R[31], Length(Thread.CallbackContexts), Context.R[16], Context.R[17], Context.R[29],Context.R[28],Thread.ModuleId]).AppendLine;
+        [Thread.Id, Thread.Name, Thread.Priority, Ord(Thread.State.Status), Context.PC, Context.R[31], Length(Thread.CallbackContexts), Context.R[16], Context.R[17], Context.R[29], Context.R[28], Thread.ModuleId]).AppendLine;
       for var Depth := 0 to Length(Thread.CallbackWaits) do
       begin
         var State := Thread.WaitState(Depth);
@@ -342,7 +341,7 @@ begin
     end;
     for var Obj in FObjects.Values do
       Builder.AppendFormat('object %.8x %s kind=%d count=%.8x max=%d owner=%.8x attributes=%.8x',
-        [Obj.Id,Obj.Name,Obj.Kind,Obj.Count,Obj.Maximum,Obj.Owner,Obj.Attributes]).AppendLine;
+        [Obj.Id, Obj.Name, Obj.Kind, Obj.Count, Obj.Maximum, Obj.Owner, Obj.Attributes]).AppendLine;
     Result := Builder.ToString;
   finally
     Builder.Free;
@@ -356,7 +355,7 @@ end;
 
 function TPSPKernel.CurrentModuleId: Cardinal;
 begin
-  Result:=FCurrent.ModuleId;
+  Result := FCurrent.ModuleId;
 end;
 
 function TPSPKernel.IsWaitingUntil(Id: Cardinal; Deadline: UInt64): Boolean;
@@ -660,8 +659,7 @@ begin
   Result := FreeBlock(Id);
 end;
 
-function TPSPKernel.StartModule(Entry, GP, ArgSize, ArgPointer, Priority, StackSize, Attributes: Cardinal;
-  KernelMemory: Boolean; ModuleId: Cardinal): Cardinal;
+function TPSPKernel.StartModule(Entry, GP, ArgSize, ArgPointer, Priority, StackSize, Attributes: Cardinal; KernelMemory: Boolean; ModuleId: Cardinal): Cardinal;
 begin
   Result := CreateThread('module_start', Entry, Priority, StackSize, Attributes, KernelMemory);
   if Result and $80000000 <> 0 then
@@ -678,7 +676,8 @@ begin
   end;
   FindThread(Id).Context.R[28] := GP;
   FindThread(Id).ModuleStartThread := True;
-  if ModuleId<>0 then FindThread(Id).ModuleId:=ModuleId;
+  if ModuleId <> 0 then
+    FindThread(Id).ModuleId := ModuleId;
   Result := Id;
 end;
 
@@ -713,23 +712,35 @@ end;
 
 function TPSPKernel.TerminateDeleteThread(Id, Status: Cardinal): Cardinal;
 begin
-  var Thread:=FindThread(Id);
-  if (Thread=nil) or (Thread.State.Status=TPSPThreadStatus.Dead) then Exit($80020198);
-  if Thread=FCurrent then
-  begin ExitCurrent(Status,True);Exit(0) end;
-  Thread.ExitStatus:=Status;
-  Thread.State.Status:=TPSPThreadStatus.Dead;
-  for var State in Thread.CallbackWaits do State.Free;
-  Thread.CallbackWaits:=nil;Thread.CallbackContexts:=nil;Thread.CallbackIds:=nil;
-  Thread.CallbackCompletions:=nil;Thread.CallbackInterrupts:=nil;Thread.CallbackAlarms:=nil;
-  Thread.State.AcceptCallbacks:=False;
-  for var I:=FGuestCalls.Count-1 downto 0 do
-    if not FGuestCalls[I].Interrupt and (FGuestCalls[I].ThreadId=Thread.Id) then FGuestCalls.Delete(I);
+  var Thread := FindThread(Id);
+  if (Thread = nil) or (Thread.State.Status = TPSPThreadStatus.Dead) then
+    Exit($80020198);
+  if Thread = FCurrent then
+  begin
+    ExitCurrent(Status, True);
+    Exit(0)
+  end;
+  Thread.ExitStatus := Status;
+  Thread.State.Status := TPSPThreadStatus.Dead;
+  for var State in Thread.CallbackWaits do
+    State.Free;
+  Thread.CallbackWaits := nil;
+  Thread.CallbackContexts := nil;
+  Thread.CallbackIds := nil;
+  Thread.CallbackCompletions := nil;
+  Thread.CallbackInterrupts := nil;
+  Thread.CallbackAlarms := nil;
+  Thread.State.AcceptCallbacks := False;
+  for var I := FGuestCalls.Count - 1 downto 0 do
+    if not FGuestCalls[I].Interrupt and (FGuestCalls[I].ThreadId = Thread.Id) then
+      FGuestCalls.Delete(I);
   WakeWaiters(Thread.Id);
-  if Assigned(FOnThreadExit) then FOnThreadExit(Thread.Id,Status);
-  if Thread.StackBlock<>0 then FreeBlock(Thread.StackBlock);
-  Thread.StackBlock:=0;
-  Result:=0;
+  if Assigned(FOnThreadExit) then
+    FOnThreadExit(Thread.Id, Status);
+  if Thread.StackBlock <> 0 then
+    FreeBlock(Thread.StackBlock);
+  Thread.StackBlock := 0;
+  Result := 0;
 end;
 
 procedure TPSPKernel.WaitUntil(Time: UInt64);
@@ -752,12 +763,14 @@ begin
   FCPU.Yield
 end;
 
-procedure TPSPKernel.SetCPUClock(Value:Cardinal);
+procedure TPSPKernel.SetCPUClock(Value: Cardinal);
 begin
-  if (Value<1) or (Value>333) then raise EArgumentOutOfRangeException.Create('PSP CPU clock');
-  if FCPUClock=Value then Exit;
-  FCPUClock:=Value;
-  FClockRemainder:=0;
+  if (Value < 1) or (Value > 333) then
+    raise EArgumentOutOfRangeException.Create('PSP CPU clock');
+  if FCPUClock = Value then
+    Exit;
+  FCPUClock := Value;
+  FClockRemainder := 0;
   FCPU.Yield;
 end;
 
@@ -896,19 +909,23 @@ begin
       end;
     var Before := FCPU.Instructions;
     var Slice := Min(Budget, Cardinal(10000));
-    var SliceClock:=FCPUClock;var Remainder:=FClockRemainder;
-    var UntilDeadline:UInt64:=(Deadline-FTime)*SliceClock-Remainder;
-    Slice:=Min(Slice,Cardinal(Min(UInt64(10000),UntilDeadline)));
+    var SliceClock := FCPUClock;
+    var Remainder := FClockRemainder;
+    var UntilDeadline: UInt64 := (Deadline - FTime) * SliceClock - Remainder;
+    Slice := Min(Slice, Cardinal(Min(UInt64(10000), UntilDeadline)));
     FCPU.Run(Slice);
     var Count := Cardinal(FCPU.Instructions - Before);
     Inc(FCurrent.RunClocks, Count);
     FCurrent.Context := FCPU.SaveContext;
-    Dec(Budget,Max(Cardinal(1),Count));
-    var Clocks:=UInt64(Count)+Remainder;
-    Inc(FTime,Clocks div SliceClock);
-    if FCPUClock=SliceClock then FClockRemainder:=Clocks mod SliceClock
-    else FClockRemainder:=0;
-    if Count=0 then Inc(FTime);
+    Dec(Budget, Max(Cardinal(1), Count));
+    var Clocks := UInt64(Count) + Remainder;
+    Inc(FTime, Clocks div SliceClock);
+    if FCPUClock = SliceClock then
+      FClockRemainder := Clocks mod SliceClock
+    else
+      FClockRemainder := 0;
+    if Count = 0 then
+      Inc(FTime);
     if FCPU.Halted then
       ExitCurrent(FCPU.Registers[2], False);
   end;
@@ -1376,7 +1393,7 @@ begin
     FDebugOutput := FDebugOutput + Text.ToString;
     if Length(FDebugOutput) > 65536 then
       Delete(FDebugOutput, 1, Length(FDebugOutput) - 65536);
-    {$IFDEF PSP_TRACE_PRINTF}        Write(Text.ToString);{$ENDIF}
+    {$IFDEF PSP_TRACE_PRINTF}            Write(Text.ToString);{$ENDIF}
     Result := 0;
   finally
     Text.Free
@@ -2242,7 +2259,10 @@ begin
       1:
         Value := $8002019A;
       2:
-        if Lightweight then Value := $800201CA else Value := $800201C3;
+        if Lightweight then
+          Value := $800201CA
+        else
+          Value := $800201C3;
     end;
     Exit;
   end;
@@ -2383,7 +2403,8 @@ begin
           FMemory.Write32(A + 16, $FFFFFFFF);
         end;
         FObjects.Remove(Id);
-        if WokeThreads then Yield;
+        if WokeThreads then
+          Yield;
       end;
   else
     Result := False;
@@ -3031,8 +3052,8 @@ begin
             Value := $80020197
           else if (NID = $9FA03CD3) and (Thread.State.Status <> TPSPThreadStatus.Dormant) then
             Value := $800201A4
-          else if NID=$383F7BCC then
-            Value:=TerminateDeleteThread(A,$800201AC)
+          else if NID = $383F7BCC then
+            Value := TerminateDeleteThread(A, $800201AC)
           else
           begin
             if NID <> $9FA03CD3 then

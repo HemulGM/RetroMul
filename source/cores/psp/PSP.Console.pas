@@ -6,7 +6,8 @@ uses
   System.SysUtils, System.UITypes, System.Generics.Collections,
   Core.Emulation.Types, PSP.Memory, PSP.Media, PSP.Executable, PSP.CPU,
   PSP.Kernel, PSP.FileSystem, Core.Storage, PSP.SystemHLE, PSP.GE, PSP.Audio,
-  PSP.SAS, PSP.Utility, PSP.ATRAC, PSP.Controller, PSP.Mpeg, PSP.Registry, PSP.MP3;
+  PSP.SAS, PSP.Utility, PSP.ATRAC, PSP.Controller, PSP.Mpeg, PSP.Registry,
+  PSP.MP3;
 
 const
   PSPFrameWidth = 480;
@@ -90,13 +91,13 @@ type
 implementation
 
 uses
-  System.Math, System.Classes{$IFDEF PSP_PROFILE},PSP.Profile{$ENDIF};
+  System.Math, System.Classes{$IFDEF PSP_PROFILE}, PSP.Profile{$ENDIF};
 
 constructor TPSPConsole.Create(const ProgramData: TPSPProgram; const Storage: IStorage);
 begin
   inherited Create;
   FProgram := ProgramData;
-  FRenderWorkerCount := Min(4,TThread.ProcessorCount);
+  FRenderWorkerCount := Min(4, TThread.ProcessorCount);
   FStorage := Storage;
   FMemory := TPSPMemory.Create;
   FCPU := TPSPCPU.Create(FMemory);
@@ -106,10 +107,14 @@ end;
 
 procedure TPSPConsole.SetRenderWorkerCount(Value: Integer);
 begin
-  if (Value<1) or (Value>4) then raise EArgumentOutOfRangeException.Create('PSP: render worker count');
-  FRenderWorkerCount:=Value;
-  if FGE<>nil then
-  begin FGE.MaxRenderWorkers:=Value;FGE.ParallelRendering:=Value>1 end;
+  if (Value < 1) or (Value > 4) then
+    raise EArgumentOutOfRangeException.Create('PSP: render worker count');
+  FRenderWorkerCount := Value;
+  if FGE <> nil then
+  begin
+    FGE.MaxRenderWorkers := Value;
+    FGE.ParallelRendering := Value > 1
+  end;
 end;
 
 destructor TPSPConsole.Destroy;
@@ -156,7 +161,8 @@ begin
   FModules := TObjectList<TPSPLoadedModule>.Create(True);
   var Root := TPSPLoadedModule.Create;
   Root.Id := $50;
-  if FExecutable.LowAddress>=PSPUserBase then Root.Block:=$50;
+  if FExecutable.LowAddress >= PSPUserBase then
+    Root.Block := $50;
   Root.Executable := FExecutable;
   Root.Started := True;
   Root.Path := FProgram.BootPath;
@@ -278,17 +284,24 @@ begin
   for var Module in FModules do
   begin
     if Module.UnloadPending and
-      (((Module.Thread=Id) and Module.Stopping) or ((Module.SelfUnloadThread=Id) and not Module.Stopping)) then
+      (((Module.Thread = Id) and Module.Stopping) or ((Module.SelfUnloadThread = Id) and not Module.Stopping)) then
     begin
-      if Module.SelfStatusPointer<>0 then
-        if Module.Stopping then FMemory.Write32(Module.SelfStatusPointer,Status)
-        else FMemory.Write32(Module.SelfStatusPointer,0);
-      if Module.StatusPointer<>0 then FMemory.Write32(Module.StatusPointer,Module.SelfExitCode);
-      var Caller:=Module.SelfUnloadThread;var ModuleId:=Module.Id;
-      Module.SelfUnloadThread:=0;Module.Thread:=0;Module.UnloadPending:=False;
-      if Caller<>Id then FKernel.TerminateDeleteThread(Caller,Module.SelfExitCode);
-      var Error:=UnloadModule(Module);
-      FKernel.CompleteDevice(3,ModuleId,Error);
+      if Module.SelfStatusPointer <> 0 then
+        if Module.Stopping then
+          FMemory.Write32(Module.SelfStatusPointer, Status)
+        else
+          FMemory.Write32(Module.SelfStatusPointer, 0);
+      if Module.StatusPointer <> 0 then
+        FMemory.Write32(Module.StatusPointer, Module.SelfExitCode);
+      var Caller := Module.SelfUnloadThread;
+      var ModuleId := Module.Id;
+      Module.SelfUnloadThread := 0;
+      Module.Thread := 0;
+      Module.UnloadPending := False;
+      if Caller <> Id then
+        FKernel.TerminateDeleteThread(Caller, Module.SelfExitCode);
+      var Error := UnloadModule(Module);
+      FKernel.CompleteDevice(3, ModuleId, Error);
       Exit;
     end;
     if (Module.Thread <> 0) and (Module.Thread = Id) then
@@ -298,7 +311,7 @@ begin
       Module.Thread := 0;
       if Module.StatusPointer <> 0 then
         FMemory.Write32(Module.StatusPointer, Status);
-      Module.StatusPointer:=0;
+      Module.StatusPointer := 0;
       var WasStopping := Module.Stopping;
       if Module.Stopping then
         Module.Started := False
@@ -316,75 +329,97 @@ end;
 
 function TPSPConsole.UnloadModule(Module: TPSPLoadedModule): Cardinal;
 begin
-  Result:=0;
-  if Module.Block<>0 then
+  Result := 0;
+  if Module.Block <> 0 then
   begin
-    Result:=FKernel.ReleaseModule(Module.Block);
-    if Result<>0 then Exit;
+    Result := FKernel.ReleaseModule(Module.Block);
+    if Result <> 0 then
+      Exit;
   end;
-  for var I:=High(FImports) downto 0 do
-    if (FImports[I].Address>=Module.Executable.LowAddress) and
-      (FImports[I].Address<Module.Executable.HighAddress) then Delete(FImports,I,1);
+  for var I := High(FImports) downto 0 do
+    if (FImports[I].Address >= Module.Executable.LowAddress) and
+      (FImports[I].Address < Module.Executable.HighAddress) then
+      Delete(FImports, I, 1);
   FModules.Remove(Module);
   LinkModules;
 end;
 
 function TPSPConsole.SelfStopUnload(ExitCode, ArgSize, ArgPointer, StatusPointer, Options: Cardinal): Cardinal;
 begin
-  if (StatusPointer<>0) and not FMemory.IsValid(StatusPointer,4) then Exit($800200D3);
-  if Options<>0 then
+  if (StatusPointer <> 0) and not FMemory.IsValid(StatusPointer, 4) then
+    Exit($800200D3);
+  if Options <> 0 then
   begin
-    if not FMemory.IsValid(Options,20) then Exit($800200D3);
-    if FMemory.Read32(Options)<20 then Exit($800200D2);
+    if not FMemory.IsValid(Options, 20) then
+      Exit($800200D3);
+    if FMemory.Read32(Options) < 20 then
+      Exit($800200D2);
   end;
-  var Module:TPSPLoadedModule:=nil;
-  for var Item in FModules do if Item.Id=FKernel.CurrentModuleId then Module:=Item;
-  if Module=nil then Exit($8002012E);
+  var Module: TPSPLoadedModule := nil;
+  for var Item in FModules do
+    if Item.Id = FKernel.CurrentModuleId then
+      Module := Item;
+  if Module = nil then
+    Exit($8002012E);
   {$IFDEF PSP_TRACE_MODULES}
-  Writeln('self unload ',Module.Executable.ModuleName,' uid=',IntToHex(Module.Id,8),' thread=',IntToHex(FKernel.CurrentThreadId,8));
+  Writeln('self unload ', Module.Executable.ModuleName, ' uid=', IntToHex(Module.Id, 8), ' thread=', IntToHex(FKernel.CurrentThreadId, 8));
   {$ENDIF}
   if Module.UnloadPending or Module.Stopping or
-    ((Module.Thread<>0) and (Module.Thread<>FKernel.CurrentThreadId)) then Exit($80020133);
-  var Entry:Cardinal:=0;var Priority:Cardinal:=32;var StackSize:Cardinal:=$40000;var Attributes:Cardinal:=0;
-  var KernelMemory:=Module.Executable.Attributes and $1000<>0;
-  if KernelMemory then StackSize:=$1000;
+    ((Module.Thread <> 0) and (Module.Thread <> FKernel.CurrentThreadId)) then
+    Exit($80020133);
+  var Entry: Cardinal := 0;
+  var Priority: Cardinal := 32;
+  var StackSize: Cardinal := $40000;
+  var Attributes: Cardinal := 0;
+  var KernelMemory := Module.Executable.Attributes and $1000 <> 0;
+  if KernelMemory then
+    StackSize := $1000;
   for var Symbol in Module.Executable.Symbols do
-    if Symbol.ModuleName='' then
-      if not Symbol.Variable and (Symbol.NID=$CEE8593C) then Entry:=Symbol.Address
-      else if Symbol.Variable and (Symbol.NID=$CF0CC697) then
+    if Symbol.ModuleName = '' then
+      if not Symbol.Variable and (Symbol.NID = $CEE8593C) then
+        Entry := Symbol.Address
+      else if Symbol.Variable and (Symbol.NID = $CF0CC697) then
       begin
-        if FMemory.Read32(Symbol.Address+4)<>0 then Priority:=FMemory.Read32(Symbol.Address+4);
-        if FMemory.Read32(Symbol.Address+8)<>0 then StackSize:=FMemory.Read32(Symbol.Address+8);
-        Attributes:=FMemory.Read32(Symbol.Address+12);
+        if FMemory.Read32(Symbol.Address + 4) <> 0 then
+          Priority := FMemory.Read32(Symbol.Address + 4);
+        if FMemory.Read32(Symbol.Address + 8) <> 0 then
+          StackSize := FMemory.Read32(Symbol.Address + 8);
+        Attributes := FMemory.Read32(Symbol.Address + 12);
       end;
-  if Options<>0 then
+  if Options <> 0 then
   begin
-    if FMemory.Read32(Options+8)<>0 then StackSize:=FMemory.Read32(Options+8);
-    if FMemory.Read32(Options+12)<>0 then Priority:=FMemory.Read32(Options+12);
-    Attributes:=FMemory.Read32(Options+16);
+    if FMemory.Read32(Options + 8) <> 0 then
+      StackSize := FMemory.Read32(Options + 8);
+    if FMemory.Read32(Options + 12) <> 0 then
+      Priority := FMemory.Read32(Options + 12);
+    Attributes := FMemory.Read32(Options + 16);
   end;
-  var StopThread:Cardinal:=0;
-  if Entry<>0 then
+  var StopThread: Cardinal := 0;
+  if Entry <> 0 then
   begin
-    if (ArgSize<>0) and not FMemory.IsValid(ArgPointer,ArgSize) then Exit($800200D3);
-    StopThread:=FKernel.StartModule(Entry,Module.Executable.GP,ArgSize,ArgPointer,Priority,StackSize,Attributes,KernelMemory,Module.Id);
-    if StopThread and $80000000<>0 then Exit(StopThread);
+    if (ArgSize <> 0) and not FMemory.IsValid(ArgPointer, ArgSize) then
+      Exit($800200D3);
+    StopThread := FKernel.StartModule(Entry, Module.Executable.GP, ArgSize, ArgPointer, Priority, StackSize, Attributes, KernelMemory, Module.Id);
+    if StopThread and $80000000 <> 0 then
+      Exit(StopThread);
   end;
-  Module.UnloadPending:=True;
-  Module.SelfUnloadThread:=FKernel.CurrentThreadId;
-  Module.SelfExitCode:=ExitCode;
-  Module.SelfStatusPointer:=StatusPointer;
-  if StopThread<>0 then
+  Module.UnloadPending := True;
+  Module.SelfUnloadThread := FKernel.CurrentThreadId;
+  Module.SelfExitCode := ExitCode;
+  Module.SelfStatusPointer := StatusPointer;
+  if StopThread <> 0 then
   begin
-    Module.Thread:=StopThread;Module.Stopping:=True;
-    FKernel.WaitDevice(3,Module.Id);
+    Module.Thread := StopThread;
+    Module.Stopping := True;
+    FKernel.WaitDevice(3, Module.Id);
   end
   else
   begin
-    if StatusPointer<>0 then FMemory.Write32(StatusPointer,0);
-    FKernel.ExitCurrent(ExitCode,True);
+    if StatusPointer <> 0 then
+      FMemory.Write32(StatusPointer, 0);
+    FKernel.ExitCurrent(ExitCode, True);
   end;
-  Result:=0;
+  Result := 0;
 end;
 
 function TPSPConsole.ModuleCall(NID: Cardinal; out Value: Cardinal): Boolean;
@@ -400,8 +435,10 @@ begin
     if Item.Id = A then
       Module := Item;
   case NID of
-    $D675EBB8,$CC1D3699:Value:=SelfStopUnload(A,B,C,0,0);
-    $8F2DF740:Value:=SelfStopUnload(A,B,C,D,FCPU.Registers[8]);
+    $D675EBB8, $CC1D3699:
+      Value := SelfStopUnload(A, B, C, 0, 0);
+    $8F2DF740:
+      Value := SelfStopUnload(A, B, C, D, FCPU.Registers[8]);
     $977DE386, $B7F46618:
       begin
         var Path: string;
@@ -426,7 +463,7 @@ begin
             end
           end;
         end;
-        {$IFDEF PSP_TRACE_MODULES}                 Writeln('load module ', Path); {$ENDIF}
+        {$IFDEF PSP_TRACE_MODULES}                         Writeln('load module ', Path); {$ENDIF}
         var Data := ProgramData.Executable;
         if (Length(Data) < 52) or (PSPLE16(Data, 16) <> $FFA0) then
           raise EPSPFormat.Create('PSP: dynamic module requires relocatable PRX');
@@ -479,7 +516,7 @@ begin
         end;
         LinkModules;
         Value := Block;
-        {$IFDEF PSP_TRACE_MODULES}                 Writeln('loaded ', Loaded.Executable.ModuleName, ' uid=', Block, ' entry=', IntToHex(Loaded.Executable.Entry, 8), ' gp=', IntToHex(Loaded.Executable.GP, 8)); {$ENDIF}
+        {$IFDEF PSP_TRACE_MODULES}                         Writeln('loaded ', Loaded.Executable.ModuleName, ' uid=', Block, ' entry=', IntToHex(Loaded.Executable.Entry, 8), ' gp=', IntToHex(Loaded.Executable.GP, 8)); {$ENDIF}
       end;
     $50F0C1EC, $D1FF982A:
       begin
@@ -591,8 +628,8 @@ begin
             Value := 0;
           Exit;
         end;
-        {$IFDEF PSP_TRACE_MODULES}                 Writeln('start entry=', IntToHex(Entry, 8), ' priority=', Priority, ' stack=', IntToHex(StackSize, 8)); {$ENDIF}
-        Value := FKernel.StartModule(Entry, Module.Executable.GP, B, C, Priority, StackSize, Attributes, KernelMemory,Module.Id);
+        {$IFDEF PSP_TRACE_MODULES}                         Writeln('start entry=', IntToHex(Entry, 8), ' priority=', Priority, ' stack=', IntToHex(StackSize, 8)); {$ENDIF}
+        Value := FKernel.StartModule(Entry, Module.Executable.GP, B, C, Priority, StackSize, Attributes, KernelMemory, Module.Id);
         if Value and $80000000 <> 0 then
           Exit;
         Module.Thread := Value;
@@ -617,14 +654,16 @@ begin
       end;
     $D8B73127, $F0A26395:
       begin
-        if NID=$F0A26395 then
+        if NID = $F0A26395 then
         begin
-          Value:=$8002012E;
-          for var Item in FModules do if Item.Id=FKernel.CurrentModuleId then Value:=Item.Id;
+          Value := $8002012E;
+          for var Item in FModules do
+            if Item.Id = FKernel.CurrentModuleId then
+              Value := Item.Id;
           Exit;
         end;
         var Address := A;
-        Address:=Address and $3FFFFFFF;
+        Address := Address and $3FFFFFFF;
         Value := $8002012E;
         for var Item in FModules do
           if (Address >= Item.Executable.LowAddress) and (Address < Item.Executable.HighAddress) then
@@ -648,7 +687,8 @@ end;
 
 function TPSPConsole.CallImport(const Import: TPSPImport): Cardinal;
 begin
-  if (Import.ModuleName = 'sceMp3') and FMP3.Handle(Import.NID, Result) then Exit;
+  if (Import.ModuleName = 'sceMp3') and FMP3.Handle(Import.NID, Result) then
+    Exit;
   if (Import.ModuleName = 'sceMpeg') and FMpeg.Handle(Import.NID, Result) then
     Exit;
   if (Import.ModuleName = 'sceAudio') and FAudio.Handle(Import.NID, Result) then
@@ -1043,18 +1083,18 @@ begin
   FUtility.Update(FInput);
   // Cover a complete frame even if the guest switches to 333 MHz mid-frame.
   // RunUntil stops at its deadline; this is a runaway guard, not CPU throttling.
-  {$IFDEF PSP_PROFILE}var ProfileStarted:=PSPProfileStart;{$ENDIF}
+  {$IFDEF PSP_PROFILE}  var ProfileStarted := PSPProfileStart;{$ENDIF}
   FKernel.RunUntil((FFrameNumber + 1) * 16683, 16683 * 333 + 10000);
-  {$IFDEF PSP_PROFILE}PSPProfileEnd(TPSPProfilePart.Kernel,ProfileStarted);{$ENDIF}
+  {$IFDEF PSP_PROFILE}  PSPProfileEnd(TPSPProfilePart.Kernel, ProfileStarted);{$ENDIF}
   if FLoadExecPending then
   begin
     Render(Frame);
     Exit
   end;
   FGE.Update;
-  {$IFDEF PSP_PROFILE}ProfileStarted:=PSPProfileStart;{$ENDIF}
+  {$IFDEF PSP_PROFILE}  ProfileStarted := PSPProfileStart;{$ENDIF}
   FAudioSamples := FAudio.Render;
-  {$IFDEF PSP_PROFILE}PSPProfileEnd(TPSPProfilePart.AudioOutput,ProfileStarted);{$ENDIF}
+  {$IFDEF PSP_PROFILE}  PSPProfileEnd(TPSPProfilePart.AudioOutput, ProfileStarted);{$ENDIF}
   Inc(FFrameNumber);
   if FPendingDisplay then
   begin
@@ -1063,10 +1103,10 @@ begin
     FFormat := FPendingFormat;
     FPendingDisplay := False;
   end;
-  {$IFDEF PSP_PROFILE}ProfileStarted:=PSPProfileStart;{$ENDIF}
+  {$IFDEF PSP_PROFILE}  ProfileStarted := PSPProfileStart;{$ENDIF}
   Render(Frame);
   FUtility.Render(Frame);
-  {$IFDEF PSP_PROFILE}PSPProfileEnd(TPSPProfilePart.Display,ProfileStarted);{$ENDIF}
+  {$IFDEF PSP_PROFILE}  PSPProfileEnd(TPSPProfilePart.Display, ProfileStarted);{$ENDIF}
 end;
 
 end.

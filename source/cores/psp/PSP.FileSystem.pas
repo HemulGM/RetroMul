@@ -814,7 +814,7 @@ begin
       $54F5FB11:
         begin
           Value := Devctl(FMemory.ReadString(A, 128), B, C, FCPU.Registers[7], FCPU.Registers[8], FCPU.Registers[9]);
-          {$IFDEF PSP_TRACE_IO}                     Writeln('devctl ', FMemory.ReadString(A, 128), ' cmd=', IntToHex(B, 8), ' in=', FCPU.Registers[7], ' out=', FCPU.Registers[9], ' result=', IntToHex(Value, 8)); {$ENDIF}
+          {$IFDEF PSP_TRACE_IO}                               Writeln('devctl ', FMemory.ReadString(A, 128), ' cmd=', IntToHex(B, 8), ' in=', FCPU.Registers[7], ' out=', FCPU.Registers[9], ' result=', IntToHex(Value, 8)); {$ENDIF}
         end;
       $89AA9906:
         begin

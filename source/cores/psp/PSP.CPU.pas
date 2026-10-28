@@ -75,7 +75,7 @@ type
 implementation
 
 uses
-  N64.SoftFloat{$IFDEF PSP_PROFILE},PSP.Profile{$ENDIF};
+  N64.SoftFloat{$IFDEF PSP_PROFILE}, PSP.Profile{$ENDIF};
 
 // Wrap only guest arithmetic, independently of host compiler check settings.
 {$IFOPT Q+}{$DEFINE PSP_RESTORE_Q}{$ENDIF}
@@ -461,8 +461,8 @@ begin
         begin
           if FunctionCode <> 32 then
             Unsupported(Op);
-          var Converted:TSoftFloatResult;
-          if not SFHostReady or not SFQuickConvert(A,20,16,Rounding,Converted) then
+          var Converted: TSoftFloatResult;
+          if not SFHostReady or not SFQuickConvert(A, 20, 16, Rounding, Converted) then
             Converted := SFConvert(A, 20, 16, Rounding);
           FFPR[D] := Cardinal(Converted.Bits);
           Exit;
@@ -479,8 +479,8 @@ begin
           case FunctionCode of
             0..4:
               begin
-                var Value:TSoftFloatResult;
-                if (Rounding<>0) or not SFHostReady or not SFQuick(A,B,16,FunctionCode,Value) then
+                var Value: TSoftFloatResult;
+                if (Rounding <> 0) or not SFHostReady or not SFQuick(A, B, 16, FunctionCode, Value) then
                   Value := SFCalculate(A, B, 16, FunctionCode, Rounding);
                 FFPR[D] := Cardinal(Value.Bits);
                 if SFIsNaN(Value.Bits, 16) then
@@ -501,8 +501,8 @@ begin
                   Rounding := FunctionCode - 12;
                 if (FFCR31 and $1000000 <> 0) and SFIsSubnormal(A, 16) then
                   A := A and $80000000;
-                var Value:TSoftFloatResult;
-                if not SFHostReady or not SFQuickConvert(A,16,20,Rounding,Value) then
+                var Value: TSoftFloatResult;
+                if not SFHostReady or not SFQuickConvert(A, 16, 20, Rounding, Value) then
                   Value := SFConvert(A, 16, 20, Rounding);
                 FFPR[D] := Cardinal(Value.Bits);
               // Allegrex saturates integer conversion, unlike R4300's indefinite result.
@@ -527,7 +527,8 @@ begin
   if PSPProfileCollecting then
   begin
     Inc(PSPProfileOpcode[Op shr 26]);
-    if Op shr 26=17 then Inc(PSPProfileCOP1[Op and 63]);
+    if Op shr 26 = 17 then
+      Inc(PSPProfileCOP1[Op and 63]);
   end;
   {$ENDIF}
   var S := Integer((Op shr 21) and 31);

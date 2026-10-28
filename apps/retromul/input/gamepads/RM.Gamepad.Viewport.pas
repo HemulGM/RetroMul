@@ -3,55 +3,60 @@
 interface
 
 uses
-  FMX.Controls, RM.Gamepad, NES.PowerPad;
+  FMX.Controls;
 
-// Shared by resize and session visibility changes. Safe-area padding belongs to
-// the host form. Landscape controllers overlay the full fitted game image.
-procedure ArrangeVirtualGamepads(Gamepad: TScreenGamepad; PowerPad: TNesPowerPad; Screen: TControl);
+type
+  TControlPreferredHeight = function(AvailableWidth, AvailableHeight: Single): Single;
+
+  TViewportControl = record
+    Control: TControl;
+    PreferredHeight: TControlPreferredHeight;
+    class function Create(Control: TControl; PreferredHeight: TControlPreferredHeight): TViewportControl; static;
+  end;
+
+// Controls are ordered from back to front. Safe-area padding belongs to the form.
+procedure ArrangeVirtualControls(Host, Screen: TControl; const Controls: TArray<TViewportControl>);
 
 implementation
 
 uses
   FMX.Types, FMX.Objects;
 
-procedure ArrangeVirtualGamepads(Gamepad: TScreenGamepad; PowerPad: TNesPowerPad; Screen: TControl);
-var
-  W, H: Single;
-  Landscape: Boolean;
+class function TViewportControl.Create(Control: TControl; PreferredHeight: TControlPreferredHeight): TViewportControl;
 begin
-  if (Gamepad = nil) or (Screen = nil) or not (Gamepad.Parent is TControl) then
-    Exit;
+  Result.Control := Control;
+  Result.PreferredHeight := PreferredHeight;
+end;
 
-  W := TControl(Gamepad.Parent).Width;
-  H := TControl(Gamepad.Parent).Height;
-  Landscape := W > H;
-  if Landscape then
-  begin
-    Gamepad.Align := TAlignLayout.Contents;
-    if PowerPad <> nil then
-      PowerPad.Align := TAlignLayout.Contents;
-  end
-  else
-  begin
-    Gamepad.Align := TAlignLayout.Bottom;
-    Gamepad.Height := TScreenGamepad.PreferredHeight(W, H);
-    if PowerPad <> nil then
-    begin
-      PowerPad.Align := TAlignLayout.Bottom;
-      PowerPad.Height := TNesPowerPad.PreferredHeight(W, H);
-    end;
-  end;
+procedure ArrangeVirtualControls(Host, Screen: TControl; const Controls: TArray<TViewportControl>);
+begin
+  if (Host = nil) or (Screen = nil) then
+    Exit;
+  var W := Host.Width;
+  var H := Host.Height;
+  var Landscape := W > H;
+  for var Item in Controls do
+    if Item.Control <> nil then
+      if Landscape then
+        Item.Control.Align := TAlignLayout.Contents
+      else
+      begin
+        Item.Control.Align := TAlignLayout.Bottom;
+        if Assigned(Item.PreferredHeight) then
+          Item.Control.Height := Item.PreferredHeight(W, H);
+      end;
   Screen.Margins.Left := 0;
   Screen.Margins.Right := 0;
   if Screen is TImage then
     TImage(Screen).WrapMode := TImageWrapMode.Fit;
-
-  // The controller is an overlay; its hit test passes the central screen through.
+  // Bring forward only the highest-priority visible controller, as before.
   if Landscape then
-    if (PowerPad <> nil) and PowerPad.Visible then
-      PowerPad.BringToFront
-    else if Gamepad.Visible then
-      Gamepad.BringToFront;
+    for var I := High(Controls) downto 0 do
+      if (Controls[I].Control <> nil) and Controls[I].Control.Visible then
+      begin
+        Controls[I].Control.BringToFront;
+        Break;
+      end;
 end;
 
 end.

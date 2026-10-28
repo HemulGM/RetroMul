@@ -8,265 +8,87 @@ uses
 {$SCOPEDENUMS ON}
 
 type
-  TPlatformPadLayout = (Nes, Sega, Snes, GameBoy, GameBoyColor, NeoGeo, Dendy, GameBoyAdvance, Nintendo64, PCE, CPS,
-    PlayStation, PSP, Dreamcast);
-
-const
-  SETTINGS_PAGE_MAIN = 0;
-  SETTINGS_PAGE_GB = 1;
-  SETTINGS_PAGE_GBC = 2;
-  SETTINGS_PAGE_NES = 3;
-  SETTINGS_PAGE_MD = 4;
-  SETTINGS_PAGE_SNES = 5;
-  SETTINGS_PAGE_NEOGEO = 6;
-  SETTINGS_PAGE_GBA = 7;
-  SETTINGS_PAGE_N64 = 8;
-  SETTINGS_PAGE_SG1000 = 9;
-  SETTINGS_PAGE_SC3000 = 10;
-  SETTINGS_PAGE_SF7000 = 11;
-  SETTINGS_PAGE_MULTIVISION = 12;
-  SETTINGS_PAGE_SMS = 13;
-  SETTINGS_PAGE_GG = 14;
-  SETTINGS_PAGE_GW = 15;
-  SETTINGS_PAGE_PCE = 16;
-  SETTINGS_PAGE_SGX = 17;
-  SETTINGS_PAGE_PCECD = 18;
-  SETTINGS_PAGE_NEOGEOCD = 19;
-  SETTINGS_PAGE_SATURN = 20;
-  SETTINGS_PAGE_NEOGEOAES = SETTINGS_PAGE_NEOGEO;
-  SETTINGS_PAGE_NGP = 22;
-  SETTINGS_PAGE_NGPC = 23;
-  SETTINGS_PAGE_CPS1 = 24;
-  SETTINGS_PAGE_CPS2 = 25;
-  SETTINGS_PAGE_CPS3 = 26;
-  SETTINGS_PAGE_PS1 = 28;
-  SETTINGS_PAGE_ZX = 27;
-  SETTINGS_PAGE_PSP = 29;
-  SETTINGS_PAGE_DC = 30;
-  SETTINGS_PAGE_MSX1 = 31;
-  SETTINGS_PAGE_MSX2 = 32;
-  SETTINGS_PAGE_MSX2PLUS = 33;
-  SETTINGS_PAGE_PS2 = 34;
-
-type
   TPlatformPresentation = record
-    SettingsPageId: Integer;
-    PadLayout: TPlatformPadLayout;
+    SettingsPageId: string;
     IconData: string;
   end;
 
-function PlatformPresentation(System: TRomSystem): TPlatformPresentation; overload;
+type
+  TPresentationRegistrationListener = reference to procedure(const PlatformId: string);
 
-function PlatformPresentation(const Id: string): TPlatformPresentation; overload;
+// Registration uses canonical platform IDs and can precede core metadata.
+procedure RegisterPlatformPresentation(const Id, SettingsPageId: string; const IconData: string);
+
+function TryPlatformPresentation(const Id: string; out Value: TPlatformPresentation): Boolean;
+
+function PlatformPresentation(const Id: string): TPlatformPresentation;
+
+function AddPresentationRegistrationListener(const Listener: TPresentationRegistrationListener): Integer;
+
+procedure RemovePresentationRegistrationListener(Token: Integer);
 
 implementation
 
 uses
-  System.SysUtils, Core.Platforms.Icons;
+  System.SysUtils, System.Generics.Collections, System.Generics.Defaults;
 
-function PlatformPresentation(System: TRomSystem): TPlatformPresentation;
+var
+  Presentations: TDictionary<string, TPlatformPresentation>;
+  Listeners: TDictionary<Integer, TPresentationRegistrationListener>;
+  NextListener: Integer;
+
+procedure RegisterPlatformPresentation(const Id, SettingsPageId: string; const IconData: string);
 begin
-  Result := Default(TPlatformPresentation);
-  case System of
-    TRomSystem.MSX1, TRomSystem.MSX2, TRomSystem.MSX2Plus:
-      begin
-        case System of
-          TRomSystem.MSX1:
-            Result.SettingsPageId := SETTINGS_PAGE_MSX1;
-          TRomSystem.MSX2:
-            Result.SettingsPageId := SETTINGS_PAGE_MSX2;
-          TRomSystem.MSX2Plus:
-            Result.SettingsPageId := SETTINGS_PAGE_MSX2PLUS;
-        end;
-        Result.PadLayout := TPlatformPadLayout.Nes;
-        Result.IconData := PlatformIconSC3000;
-      end;
-    TRomSystem.ZXSpectrum:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_ZX;
-        Result.PadLayout := TPlatformPadLayout.Nes;
-        Result.IconData := PlatformIconSC3000;
-      end;
-    TRomSystem.CPS1, TRomSystem.CPS2, TRomSystem.CPS3:
-      begin
-        case System of
-          TRomSystem.CPS1:
-            Result.SettingsPageId := SETTINGS_PAGE_CPS1;
-          TRomSystem.CPS2:
-            Result.SettingsPageId := SETTINGS_PAGE_CPS2;
-          TRomSystem.CPS3:
-            Result.SettingsPageId := SETTINGS_PAGE_CPS3;
-        end;
-        Result.PadLayout := TPlatformPadLayout.CPS;
-        Result.IconData := PlatformIconCPS;
-      end;
-    TRomSystem.GameWatch:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_GW;
-        Result.PadLayout := TPlatformPadLayout.Snes;
-        Result.IconData := PlatformIconGW;
-      end;
-    TRomSystem.GB:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_GB;
-        Result.PadLayout := TPlatformPadLayout.GameBoy;
-        Result.IconData := PlatformIconGB;
-      end;
-    TRomSystem.GBC:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_GBC;
-        Result.PadLayout := TPlatformPadLayout.GameBoyColor;
-        Result.IconData := PlatformIconGBC;
-      end;
-    TRomSystem.GBA:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_GBA;
-        Result.PadLayout := TPlatformPadLayout.GameBoyAdvance;
-        Result.IconData := PlatformIconGBA;
-      end;
-    TRomSystem.NES:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_NES;
-        Result.PadLayout := TPlatformPadLayout.Nes;
-        Result.IconData := PlatformIconNES;
-      end;
-    TRomSystem.SNES:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_SNES;
-        Result.PadLayout := TPlatformPadLayout.Snes;
-        Result.IconData := PlatformIconSNES;
-      end;
-    TRomSystem.Saturn:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_SATURN;
-        Result.PadLayout := TPlatformPadLayout.Sega;
-        Result.IconData := PlatformIconSaturn;
-      end;
-    TRomSystem.PS1:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_PS1;
-        Result.PadLayout := TPlatformPadLayout.PlayStation;
-        Result.IconData := PlatformIconPS1;
-      end;
-    TRomSystem.PS2:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_PS2;
-        Result.PadLayout := TPlatformPadLayout.PlayStation;
-        Result.IconData := PlatformIconPS2;
-      end;
-    TRomSystem.PSP:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_PSP;
-        Result.PadLayout := TPlatformPadLayout.PSP;
-        Result.IconData := PlatformIconGBA;
-      end;
-    TRomSystem.DC:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_DC;
-        Result.PadLayout := TPlatformPadLayout.Dreamcast;
-        Result.IconData := PlatformIconDC;
-      end;
-    TRomSystem.N64:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_N64;
-        Result.PadLayout := TPlatformPadLayout.Nintendo64;
-        Result.IconData := PlatformIconN64;
-      end;
-    TRomSystem.MD, TRomSystem.SegaCD, TRomSystem.Sega32X:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_MD;
-        Result.PadLayout := TPlatformPadLayout.Sega;
-        Result.IconData := PlatformIconMD;
-      end;
-    TRomSystem.SG1000:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_SG1000;
-        Result.PadLayout := TPlatformPadLayout.Nes;
-        Result.IconData := PlatformIconSG1000;
-      end;
-    TRomSystem.SC3000:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_SC3000;
-        Result.PadLayout := TPlatformPadLayout.Nes;
-        Result.IconData := PlatformIconSC3000;
-      end;
-    TRomSystem.SF7000:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_SF7000;
-        Result.PadLayout := TPlatformPadLayout.Nes;
-        Result.IconData := PlatformIconSF7000;
-      end;
-    TRomSystem.SMS:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_SMS;
-        Result.PadLayout := TPlatformPadLayout.Nes;
-        Result.IconData := PlatformIconSMS;
-      end;
-    TRomSystem.GameGear:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_GG;
-        Result.PadLayout := TPlatformPadLayout.Nes;
-        Result.IconData := PlatformIconGG;
-      end;
-    TRomSystem.Multivision:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_MULTIVISION;
-        Result.PadLayout := TPlatformPadLayout.Nes;
-        Result.IconData := PlatformIconOMV;
-      end;
-    TRomSystem.NeoGeo:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_NEOGEO;
-        Result.PadLayout := TPlatformPadLayout.NeoGeo;
-        Result.IconData := PlatformIconNEOGEO;
-      end;
-    TRomSystem.NeoGeoAES:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_NEOGEOAES;
-        Result.PadLayout := TPlatformPadLayout.NeoGeo;
-        Result.IconData := PlatformIconNEOGEO;
-      end;
-    TRomSystem.NeoGeoPocket, TRomSystem.NeoGeoPocketColor:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_NGP;
-        if System = TRomSystem.NeoGeoPocketColor then
-          Result.SettingsPageId := SETTINGS_PAGE_NGPC;
-        Result.PadLayout := TPlatformPadLayout.GameBoy;
-        Result.IconData := PlatformIconGB;
-      end;
-    TRomSystem.NeoGeoCD:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_NEOGEOCD;
-        Result.PadLayout := TPlatformPadLayout.NeoGeo;
-        Result.IconData := PlatformIconNEOGEOCD;
-      end;
-    TRomSystem.PCE:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_PCE;
-        Result.PadLayout := TPlatformPadLayout.PCE;
-        Result.IconData := PlatformIconPCE;
-      end;
-    TRomSystem.SuperGrafx:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_SGX;
-        Result.PadLayout := TPlatformPadLayout.PCE;
-        Result.IconData := PlatformIconSGX;
-      end;
-    TRomSystem.PCECD:
-      begin
-        Result.SettingsPageId := SETTINGS_PAGE_PCECD;
-        Result.PadLayout := TPlatformPadLayout.PCE;
-        Result.IconData := PlatformIconPCECD;
-      end;
-  else
-    raise EArgumentException.Create('Unknown platform presentation');
-  end;
+  if (Id = '') or ((SettingsPageId.Trim = '') or SameText(SettingsPageId.Trim, 'main')) or (IconData = '') then
+    raise EArgumentException.Create('Invalid platform presentation: ' + Id);
+  var Info: TPlatformInfo;
+  if TPlatformRegistry.Find(Id, Info) and not SameText(Id, Info.Id) then
+    raise EArgumentException.Create('Register the canonical platform presentation: ' + Info.Id);
+  if Presentations.ContainsKey(Id) then
+    raise EArgumentException.Create('Duplicate platform presentation: ' + Id);
+  var Value: TPlatformPresentation;
+  Value.SettingsPageId := SettingsPageId.Trim.ToLower;
+  Value.IconData := IconData;
+  Presentations.Add(Id, Value);
+  for var Listener in Listeners.Values.ToArray do
+    Listener(Id);
+end;
+
+function TryPlatformPresentation(const Id: string; out Value: TPlatformPresentation): Boolean;
+begin
+  Value := Default(TPlatformPresentation);
+  var Info: TPlatformInfo;
+  Result := TPlatformRegistry.Find(Id, Info) and Presentations.TryGetValue(Info.Id, Value);
 end;
 
 function PlatformPresentation(const Id: string): TPlatformPresentation;
 begin
-  Result := PlatformPresentation(TPlatformRegistry.Require(Id).System);
+  var Info := TPlatformRegistry.Require(Id);
+  if not Presentations.TryGetValue(Info.Id, Result) then
+    raise EArgumentException.Create('Unknown platform presentation');
 end;
+
+function AddPresentationRegistrationListener(const Listener: TPresentationRegistrationListener): Integer;
+begin
+  if not Assigned(Listener) then
+    raise EArgumentNilException.Create('Listener');
+  Inc(NextListener);
+  Result := NextListener;
+  Listeners.Add(Result, Listener);
+end;
+
+procedure RemovePresentationRegistrationListener(Token: Integer);
+begin
+  Listeners.Remove(Token);
+end;
+
+initialization
+  Presentations := TDictionary<string, TPlatformPresentation>.Create(TIStringComparer.Ordinal);
+  Listeners := TDictionary<Integer, TPresentationRegistrationListener>.Create;
+
+finalization
+  Listeners.Free;
+  Presentations.Free;
 
 end.
 

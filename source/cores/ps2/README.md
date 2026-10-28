@@ -14,7 +14,7 @@ of the picture wrongly.
 | `PS2.EE.CPU`, `PS2.EE.Bus` | R5900 block interpreter (MMI, COP0, FPU with the PS2 float range, COP2 macro mode), EE memory map, INTC |
 | `PS2.Timers`, `PS2.DMAC`, `PS2.SIF` | EE timers, DMA controller (chain/interleave/MFIFO), SIF registers and the SIF command/RPC protocol |
 | `PS2.GS`, `PS2.GS.Memory`, `PS2.GS.Raster`, `PS2.GIF` | GS registers, swizzled local memory, software rasterizer (on the emulation thread or in band threads), GIF paths |
-| `PS2.VU`, `PS2.VIF` | VU0/VU1 micro mode, VIF0/VIF1 command processing |
+| `PS2.VU`, `PS2.VU.Float`, `PS2.VIF` | VU0/VU1 micro mode, the PS2 float product and sum for one or four fields (SSE2 on Win64, checked against the one-field routines by `tests/cores/ps2/vufloat/build.ps1`), VIF0/VIF1 command processing |
 | `PS2.IPU` | IPU MPEG decoder (BDEC/IDEC/VDEC/FDEC/CSC/PACK, FIFOs on DMA channels 3/4) |
 | `PS2.Kernel`, `PS2.ELF` | High-level EE kernel (threads, semaphores, interrupts, alarms, SIF DMA, syscall table) and ELF loading |
 | `PS2.IOP.FileIO`, `PS2.IOP.CDVD`, `PS2.IOP.HLE` | FILEIO, CDVD and LOADFILE/IOP heap RPC servers, ISO 9660 access |

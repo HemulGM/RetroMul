@@ -15,7 +15,7 @@
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.EE.CPU, HW.JIT;
+  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.EE.CPU, PS2.VU.Float, HW.JIT;
 
 type
   TPS2VFArray = array[0..31] of TPS2Reg128;
@@ -131,8 +131,6 @@ type
     procedure AdvanceCycles(N: Integer);
     function UpperSetsFlags(Op: Cardinal): Boolean;
     procedure SetFlags(const R: TPS2Reg128; Dest: Cardinal; Flags: Cardinal);
-    function FAdd(A, B: Cardinal; var Flags: Cardinal): Cardinal; inline;
-    function FMul(A, B: Cardinal; var Flags: Cardinal): Cardinal;
     procedure Upper(Op: Cardinal; Micro: Boolean);
     procedure Lower(Op: Cardinal);
     procedure LowerSpecial(Op: Cardinal);
@@ -517,38 +515,10 @@ begin
   FVF[0].UW[3] := $3F800000;
 end;
 
-function TPS2VUCore.FAdd(A, B: Cardinal; var Flags: Cardinal): Cardinal;
-var
-  F: Cardinal;
-begin
-  Result := PS2FloatAdd(A, B, F);
-  Flags := Flags or F;
-end;
-
-function TPS2VUCore.FMul(A, B: Cardinal; var Flags: Cardinal): Cardinal;
-begin
-  if ((A and $7F800000) = 0) or ((B and $7F800000) = 0) then
-    Exit((A xor B) and $80000000);
-  var D := EEFloatIn(A) * EEFloatIn(B);
-  var Bits := PUInt64(@D)^;
-  var Sign := Cardinal(Bits shr 32) and $80000000;
-  var E := Integer((Bits shr 52) and $7FF) - (1023 - 127);
-  if E > 255 then
-  begin
-    Flags := Flags or 1;
-    Exit(Sign or $7FFFFFFF);
-  end;
-  if E <= 0 then
-  begin
-    Flags := Flags or 2;
-    Exit(Sign);
-  end;
-  Result := Sign or (Cardinal(E) shl 23) or (Cardinal(Bits shr 29) and $7FFFFF);
-end;
-
 procedure TPS2VUCore.SetFlags(const R: TPS2Reg128; Dest: Cardinal; Flags: Cardinal);
 begin
   // MAC: Z bits 0..3, S 4..7, U 8..11, O 12..15; bit 3 of each group is x.
+  // Flags: bit K overflow and bit K + 4 underflow of field K.
   var M: Cardinal := 0;
   for var K := 0 to 3 do
     if (Dest and FieldBit(K)) <> 0 then
@@ -559,11 +529,11 @@ begin
         M := M or (Cardinal(1) shl B);
       if (V and $80000000) <> 0 then
         M := M or (Cardinal(1) shl (B + 4));
+      if (Flags and (Cardinal(16) shl K)) <> 0 then
+        M := M or (Cardinal(1) shl (B + 8));
+      if (Flags and (Cardinal(1) shl K)) <> 0 then
+        M := M or (Cardinal(1) shl (B + 12));
     end;
-  if (Flags and 2) <> 0 then
-    M := M or (Dest shl 8);
-  if (Flags and 1) <> 0 then
-    M := M or (Dest shl 12);
   S.MAC := M;
   var St := S.Status and $FF0;
   if (M and $F) <> 0 then
@@ -595,88 +565,66 @@ end;
 // Upper (FMAC) instruction: computes into FUpperValue/FUpperReg; the ACC
 // forms write ACC directly at commit time (register 32).
 procedure TPS2VUCore.Upper(Op: Cardinal; Micro: Boolean);
+type
+  TKind = (ukAdd, ukSub, ukMul, ukMadd, ukMsub, ukMax, ukMin, ukItof, ukFtoi, ukAbs, ukOpMula, ukOpMsub);
+  // The second operand: ft's own field, ft's broadcast field, Q or I.
+  TSource = (usVector, usBroadcast, usQ, usI);
 var
   R: TPS2Reg128;
-  Flags: Cardinal;
 begin
   var Dest := (Op shr 21) and $F;
   var Ft := Integer((Op shr 16) and 31);
   var Fs := Integer((Op shr 11) and 31);
   var Fd := Integer((Op shr 6) and 31);
-  var A := FVF[Fs];
-  var B := FVF[Ft];
-  Flags := 0;
-  R := Default(TPS2Reg128);
   FUpperReg := -1;
   var Funct := Op and $3F;
   var Target := Fd;
-  var SetMac := True;
+  var Kind: TKind;
+  var Source := usBroadcast;
   if Funct >= $3C then
   begin
     // Special: ACC forms and conversions; index = fd field << 2 | bc.
     Funct := ((Op shr 4) and $7C) or (Op and 3);
     Target := 32;
     case Funct of
-      $00..$03: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], Bc(B, Op), Flags);
-      $04..$07: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], Bc(B, Op) xor $80000000, Flags);
-      $08..$0B: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], Bc(B, Op), Flags), Flags);
-      $0C..$0F: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], Bc(B, Op), Flags) xor $80000000, Flags);
+      $00..$03: Kind := ukAdd;
+      $04..$07: Kind := ukSub;
+      $08..$0B: Kind := ukMadd;
+      $0C..$0F: Kind := ukMsub;
       $10..$13:
         begin
-          // ITOF0/4/12/15: fixed point to float.
-          var Scale: Double := 1;
-          case Funct of
-            $11: Scale := 1 / 16;
-            $12: Scale := 1 / 4096;
-            $13: Scale := 1 / 32768;
-          end;
-          for var K := 0 to 3 do
-          begin
-            var F: Single := A.SW[K] * Scale;
-            R.UW[K] := PCardinal(@F)^;
-          end;
+          Kind := ukItof;
           Target := Ft;
-          SetMac := False;
         end;
       $14..$17:
         begin
-          var Scale: Double := 1;
-          case Funct of
-            $15: Scale := 16;
-            $16: Scale := 4096;
-            $17: Scale := 32768;
-          end;
-          for var K := 0 to 3 do
-          begin
-            var D := EEFloatIn(A.UW[K]) * Scale;
-            if D >= 2147483647.0 then
-              R.UW[K] := $7FFFFFFF
-            else if D <= -2147483648.0 then
-              R.UW[K] := $80000000
-            else
-              R.SW[K] := Trunc(D);
-          end;
+          Kind := ukFtoi;
           Target := Ft;
-          SetMac := False;
         end;
-      $18..$1B: for var K := 0 to 3 do R.UW[K] := FMul(A.UW[K], Bc(B, Op), Flags);
-      $1C: for var K := 0 to 3 do R.UW[K] := FMul(A.UW[K], S.Q, Flags);
+      $18..$1B: Kind := ukMul;
+      $1C:
+        begin
+          Kind := ukMul;
+          Source := usQ;
+        end;
       $1D:
         begin
-          for var K := 0 to 3 do
-            R.UW[K] := A.UW[K] and $7FFFFFFF;
+          Kind := ukAbs;
           Target := Ft;
-          SetMac := False;
         end;
-      $1E: for var K := 0 to 3 do R.UW[K] := FMul(A.UW[K], S.I, Flags);
+      $1E:
+        begin
+          Kind := ukMul;
+          Source := usI;
+        end;
       $1F:
         begin
           // CLIP: |fs.xyz| against |ft.w|.
-          var W := Abs(EEFloatIn(B.UW[3]));
+          var W := Abs(EEFloatIn(FVF[Ft].UW[3]));
           var C: Cardinal := 0;
           for var K := 0 to 2 do
           begin
-            var V := EEFloatIn(A.UW[K]);
+            var V := EEFloatIn(FVF[Fs].UW[K]);
             if V > W then
               C := C or (Cardinal(1) shl (K * 2));
             if V < -W then
@@ -693,105 +641,260 @@ begin
             S.ClipBase := S.Clip;
           Exit;
         end;
-      $20: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], S.Q, Flags);
-      $21: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], S.Q, Flags), Flags);
-      $22: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], S.I, Flags);
-      $23: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], S.I, Flags), Flags);
-      $24: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], S.Q xor $80000000, Flags);
-      $25: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], S.Q, Flags) xor $80000000, Flags);
-      $26: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], S.I xor $80000000, Flags);
-      $27: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], S.I, Flags) xor $80000000, Flags);
-      $28: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], B.UW[K], Flags);
-      $29: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], B.UW[K], Flags), Flags);
-      $2A: for var K := 0 to 3 do R.UW[K] := FMul(A.UW[K], B.UW[K], Flags);
-      $2C: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], B.UW[K] xor $80000000, Flags);
-      $2D: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], B.UW[K], Flags) xor $80000000, Flags);
+      $20, $22, $24, $26:
+        begin
+          if Funct >= $24 then
+            Kind := ukSub
+          else
+            Kind := ukAdd;
+          if (Funct and 2) = 0 then
+            Source := usQ
+          else
+            Source := usI;
+        end;
+      $21, $23, $25, $27:
+        begin
+          if Funct >= $24 then
+            Kind := ukMsub
+          else
+            Kind := ukMadd;
+          if (Funct and 2) = 0 then
+            Source := usQ
+          else
+            Source := usI;
+        end;
+      $28, $29, $2A, $2C, $2D:
+        begin
+          case Funct of
+            $28: Kind := ukAdd;
+            $29: Kind := ukMadd;
+            $2A: Kind := ukMul;
+            $2C: Kind := ukSub;
+          else
+            Kind := ukMsub;
+          end;
+          Source := usVector;
+        end;
       $2E:
         begin
           // OPMULA: ACC.xyz = fs.yzx * ft.zxy
-          R.UW[0] := FMul(A.UW[1], B.UW[2], Flags);
-          R.UW[1] := FMul(A.UW[2], B.UW[0], Flags);
-          R.UW[2] := FMul(A.UW[0], B.UW[1], Flags);
+          Kind := ukOpMula;
           Dest := Dest and $E;
         end;
-      $2F: Exit;
     else
-      if not Micro then
-        Exit;
+      // NOP and the undefined forms.
       Exit;
     end;
   end
   else
     case Funct of
-      $00..$03: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], Bc(B, Op), Flags);
-      $04..$07: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], Bc(B, Op) xor $80000000, Flags);
-      $08..$0B: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], Bc(B, Op), Flags), Flags);
-      $0C..$0F: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], Bc(B, Op), Flags) xor $80000000, Flags);
-      $10..$13, $1D, $2B:
+      $00..$03: Kind := ukAdd;
+      $04..$07: Kind := ukSub;
+      $08..$0B: Kind := ukMadd;
+      $0C..$0F: Kind := ukMsub;
+      $10..$13: Kind := ukMax;
+      $14..$17: Kind := ukMin;
+      $18..$1B: Kind := ukMul;
+      $1C:
         begin
-          var Other: Cardinal;
-          for var K := 0 to 3 do
-          begin
-            case Funct of
-              $1D: Other := S.I;
-              $2B: Other := B.UW[K];
-            else
-              Other := Bc(B, Op);
-            end;
-            if PS2FloatKey(A.UW[K]) >= PS2FloatKey(Other) then
-              R.UW[K] := A.UW[K]
-            else
-              R.UW[K] := Other;
-          end;
-          SetMac := False;
+          Kind := ukMul;
+          Source := usQ;
         end;
-      $14..$17, $1F, $2F:
+      $1D:
         begin
-          var Other: Cardinal;
-          for var K := 0 to 3 do
-          begin
-            case Funct of
-              $1F: Other := S.I;
-              $2F: Other := B.UW[K];
-            else
-              Other := Bc(B, Op);
-            end;
-            if PS2FloatKey(A.UW[K]) <= PS2FloatKey(Other) then
-              R.UW[K] := A.UW[K]
-            else
-              R.UW[K] := Other;
-          end;
-          SetMac := False;
+          Kind := ukMax;
+          Source := usI;
         end;
-      $18..$1B: for var K := 0 to 3 do R.UW[K] := FMul(A.UW[K], Bc(B, Op), Flags);
-      $1C: for var K := 0 to 3 do R.UW[K] := FMul(A.UW[K], S.Q, Flags);
-      $1E: for var K := 0 to 3 do R.UW[K] := FMul(A.UW[K], S.I, Flags);
-      $20: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], S.Q, Flags);
-      $21: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], S.Q, Flags), Flags);
-      $22: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], S.I, Flags);
-      $23: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], S.I, Flags), Flags);
-      $24: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], S.Q xor $80000000, Flags);
-      $25: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], S.Q, Flags) xor $80000000, Flags);
-      $26: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], S.I xor $80000000, Flags);
-      $27: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], S.I, Flags) xor $80000000, Flags);
-      $28: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], B.UW[K], Flags);
-      $29: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], B.UW[K], Flags), Flags);
-      $2A: for var K := 0 to 3 do R.UW[K] := FMul(A.UW[K], B.UW[K], Flags);
-      $2C: for var K := 0 to 3 do R.UW[K] := FAdd(A.UW[K], B.UW[K] xor $80000000, Flags);
-      $2D: for var K := 0 to 3 do R.UW[K] := FAdd(S.ACC.UW[K], FMul(A.UW[K], B.UW[K], Flags) xor $80000000, Flags);
+      $1E:
+        begin
+          Kind := ukMul;
+          Source := usI;
+        end;
+      $1F:
+        begin
+          Kind := ukMin;
+          Source := usI;
+        end;
+      $20, $22, $24, $26:
+        begin
+          if Funct >= $24 then
+            Kind := ukSub
+          else
+            Kind := ukAdd;
+          if (Funct and 2) = 0 then
+            Source := usQ
+          else
+            Source := usI;
+        end;
+      $21, $23, $25, $27:
+        begin
+          if Funct >= $24 then
+            Kind := ukMsub
+          else
+            Kind := ukMadd;
+          if (Funct and 2) = 0 then
+            Source := usQ
+          else
+            Source := usI;
+        end;
+      $28..$2D:
+        begin
+          case Funct of
+            $28: Kind := ukAdd;
+            $29: Kind := ukMadd;
+            $2A: Kind := ukMul;
+            $2B: Kind := ukMax;
+            $2C: Kind := ukSub;
+          else
+            Kind := ukMsub;
+          end;
+          Source := usVector;
+        end;
       $2E:
         begin
           // OPMSUB: fd.xyz = ACC.xyz - fs.yzx * ft.zxy
-          R.UW[0] := FAdd(S.ACC.UW[0], FMul(A.UW[1], B.UW[2], Flags) xor $80000000, Flags);
-          R.UW[1] := FAdd(S.ACC.UW[1], FMul(A.UW[2], B.UW[0], Flags) xor $80000000, Flags);
-          R.UW[2] := FAdd(S.ACC.UW[2], FMul(A.UW[0], B.UW[1], Flags) xor $80000000, Flags);
+          Kind := ukOpMsub;
           Dest := Dest and $E;
+        end;
+      $2F:
+        begin
+          Kind := ukMin;
+          Source := usVector;
         end;
     else
       Exit;
     end;
-  if SetMac then
-    SetFlags(R, Dest, Flags);
+  // The arithmetic on all four fields at once (the fields not written are
+  // dropped, with their flags); the rest field by field.
+  var A := PPS2Reg128(@FVF[Fs]);
+  var B := PPS2Reg128(@FVF[Ft]);
+  var Other: TPS2Reg128;
+  case Source of
+    usVector: Other := B^;
+    usBroadcast:
+      begin
+        var V := B.UW[Op and 3];
+        Other.UW[0] := V;
+        Other.UW[1] := V;
+        Other.UW[2] := V;
+        Other.UW[3] := V;
+      end;
+    usQ:
+      begin
+        Other.UW[0] := S.Q;
+        Other.UW[1] := S.Q;
+        Other.UW[2] := S.Q;
+        Other.UW[3] := S.Q;
+      end;
+    usI:
+      begin
+        Other.UW[0] := S.I;
+        Other.UW[1] := S.I;
+        Other.UW[2] := S.I;
+        Other.UW[3] := S.I;
+      end;
+  end;
+  var F: Cardinal := 0;
+  case Kind of
+    ukAdd:
+      PS2Add4(A^, Other, R, F);
+    ukSub:
+      begin
+        Other.Lo := Other.Lo xor UInt64($8000000080000000);
+        Other.Hi := Other.Hi xor UInt64($8000000080000000);
+        PS2Add4(A^, Other, R, F);
+      end;
+    ukMul:
+      PS2Mul4(A^, Other, R, F);
+    ukMadd, ukMsub, ukOpMula, ukOpMsub:
+      begin
+        var M: TPS2Reg128;
+        if Kind in [ukOpMula, ukOpMsub] then
+        begin
+          // fs.yzx * ft.zxy.
+          var X: TPS2Reg128;
+          X.UW[0] := A.UW[1];
+          X.UW[1] := A.UW[2];
+          X.UW[2] := A.UW[0];
+          X.UW[3] := 0;
+          Other.UW[0] := B.UW[2];
+          Other.UW[1] := B.UW[0];
+          Other.UW[2] := B.UW[1];
+          Other.UW[3] := 0;
+          PS2Mul4(X, Other, M, F);
+        end
+        else
+          PS2Mul4(A^, Other, M, F);
+        if Kind = ukOpMula then
+          R := M
+        else
+        begin
+          if Kind <> ukMadd then
+          begin
+            M.Lo := M.Lo xor UInt64($8000000080000000);
+            M.Hi := M.Hi xor UInt64($8000000080000000);
+          end;
+          var F2: Cardinal;
+          PS2Add4(S.ACC, M, R, F2);
+          F := F or F2;
+        end;
+      end;
+  else
+    R := Default(TPS2Reg128);
+    for var K := 0 to 3 do
+    begin
+      if (Dest and FieldBit(K)) = 0 then
+        Continue;
+      var V := Other.UW[K];
+      case Kind of
+        ukMax:
+          if PS2FloatKey(A.UW[K]) >= PS2FloatKey(V) then
+            R.UW[K] := A.UW[K]
+          else
+            R.UW[K] := V;
+        ukMin:
+          if PS2FloatKey(A.UW[K]) <= PS2FloatKey(V) then
+            R.UW[K] := A.UW[K]
+          else
+            R.UW[K] := V;
+        ukItof:
+          begin
+            // ITOF0/4/12/15: fixed point to float.
+            var Scale: Double := 1;
+            case Funct of
+              $11: Scale := 1 / 16;
+              $12: Scale := 1 / 4096;
+              $13: Scale := 1 / 32768;
+            end;
+            var X: Single := A.SW[K] * Scale;
+            R.UW[K] := PCardinal(@X)^;
+          end;
+        ukFtoi:
+          begin
+            var Scale: Double := 1;
+            case Funct of
+              $15: Scale := 16;
+              $16: Scale := 4096;
+              $17: Scale := 32768;
+            end;
+            var D := EEFloatIn(A.UW[K]) * Scale;
+            if D >= 2147483647.0 then
+              R.UW[K] := $7FFFFFFF
+            else if D <= -2147483648.0 then
+              R.UW[K] := $80000000
+            else
+              R.SW[K] := Trunc(D);
+          end;
+        ukAbs:
+          R.UW[K] := A.UW[K] and $7FFFFFFF;
+      end;
+    end;
+    FUpperReg := Target;
+    FUpperValue := R;
+    FUpperMask := Dest;
+    Exit;
+  end;
+  SetFlags(R, Dest, F);
   FUpperReg := Target;
   FUpperValue := R;
   FUpperMask := Dest;

@@ -33,9 +33,16 @@ in `RM.Platforms.PS2` and `RM.Platforms.PS2.Input`.
 The GS draws on the emulation thread or, by default, in band threads (one per
 two logical processors, 2..8): each draws every queued primitive's rows of
 its 8-row stripes, in queue order. The emulation thread counts the pixels
-(GS timing), keeps each queued primitive's CLUT and waits for the threads
-where a primitive reads what queued ones write (render to texture, depth over
-the frame's memory, transfers, the display). The memory is the same either way.
+(GS timing) and keeps queueing: where a primitive reads what queued ones
+write (render to texture, a depth buffer written through another layout),
+the band threads first finish the earlier commands (a barrier in the queue);
+a primitive reading its own target, host-to-local and local-to-local
+transfers and CLUT loads are done by the first band thread alone while the
+others wait. Each queued primitive keeps its CLUT in a ring. The emulation
+thread only waits for the bands when it reads GS memory itself (local-to-host
+transfers, the display, snapshots). The memory is the same either way;
+`PS2.GS.RaceCheck` (define `GS_RACECHECK`) reports GS memory words two band
+threads touch in commands no barrier orders.
 
 ## What works
 

@@ -132,6 +132,21 @@ function Color32To16(V: Cardinal): Cardinal; inline;
 
 implementation
 
+{$IFDEF GS_RACECHECK}
+uses PS2.GS.RaceCheck;
+
+function RaceWord(PSM: Integer; A: Cardinal): Cardinal; inline;
+begin
+  case PSM of
+    PSMCT16, PSMCT16S, PSMZ16, PSMZ16S: Result := A shr 1;
+    PSMT8: Result := A shr 2;
+    PSMT4: Result := A shr 3;
+  else
+    Result := A;
+  end;
+end;
+{$ENDIF}
+
 function Color16To32(V: Cardinal): Cardinal;
 begin
   // 1:5:5:5 (A B G R) to 32-bit with the 5-bit channels in the high bits.
@@ -243,6 +258,7 @@ end;
 
 function TPS2GSMemory.ReadAt(PSM: Integer; A: Cardinal): Cardinal;
 begin
+  {$IFDEF GS_RACECHECK}RaceAccess(RaceWord(PSM, A), False);{$ENDIF}
   case PSM of
     PSMCT24, PSMZ24: Result := PCardinal(FData)[A] and $FFFFFF;
     PSMCT16, PSMCT16S, PSMZ16, PSMZ16S: Result := PWord(FData)[A];
@@ -258,6 +274,7 @@ end;
 
 procedure TPS2GSMemory.WriteAt(PSM: Integer; A, Value: Cardinal);
 begin
+  {$IFDEF GS_RACECHECK}if RaceBandPlus1 = 0 then RaceMainWrite(RaceWord(PSM, A)) else RaceAccess(RaceWord(PSM, A), True);{$ENDIF}
   case PSM of
     PSMCT32, PSMZ32: PCardinal(FData)[A] := Value;
     PSMCT24, PSMZ24: PCardinal(FData)[A] := (PCardinal(FData)[A] and $FF000000) or (Value and $FFFFFF);

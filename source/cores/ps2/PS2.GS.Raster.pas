@@ -127,16 +127,34 @@ type
 
   TPS2GSPrimitive = (gpPoint, gpLine, gpTriangle, gpSprite);
 
+  // How the band threads take a command: each draws its own rows (Draw);
+  // the same once every band has finished the earlier commands (Barrier);
+  // or, once they have, the first band does the whole job alone while the
+  // others wait for it (SoloDraw: a primitive reading its own target;
+  // SoloWrite: pixels of a host-to-local transfer; SoloCopy: a local-to-local
+  // transfer; SoloClut: a CLUT load). Clut: the first band loads a CLUT while
+  // the others wait for it, without waiting for the earlier commands.
+  TPS2GSCommandOp = (coDraw, coBarrier, coSoloDraw, coSoloWrite, coSoloCopy, coSoloClut, coClut);
+
+  TPS2GSClut = array[0..511] of Word;
+
   // A primitive to draw: its kind, the drawing state and its vertices; the
   // host rounding it was queued with (the EE runs with truncation), which
   // the drawing's arithmetic follows wherever it is drawn.
   TPS2GSCommand = record
     Kind: TPS2GSPrimitive;
+    Op: TPS2GSCommandOp;
     Rounding: TRoundingMode;
     // The CLUT: a slot of the raster's ring (-1: its current one).
     Clut: Integer;
     D: TPS2GSDraw;
     V: array[0..2] of TPS2GSVertex;
+    // SoloWrite: XferCount pixels of the raster's transfer ring from
+    // XferStart, the first at (XferX, XferY) of the area. SoloWrite and
+    // SoloCopy: the transfer's BITBLTBUF, TRXPOS and TRXREG.
+    XferStart: Int64;
+    XferCount, XferX, XferY: Integer;
+    XferRegs: array[0..2] of UInt64;
   end;
   PPS2GSCommand = ^TPS2GSCommand;
 
@@ -203,7 +221,7 @@ type
     FStripIndex: Integer;
     FCurrent: TPS2GSVertex;
     FQ: Single;
-    FClut: array[0..511] of Word;
+    FClut: TPS2GSClut;
     FCBP0, FCBP1: Cardinal;
     FD: TPS2GSDraw;
     // Host-to-local transfer.
@@ -225,24 +243,45 @@ type
     FVulkanError: string;
     // Something queued since the last Sync; the 8 KiB pages queued
     // primitives write and read as texture, and the buffer (base, width,
-    // format) each written page is drawn through.
+    // format) each written page is drawn through. These only cover what the
+    // next command may overlap (a barrier orders everything before it);
+    // FPendingWrites has every page written since the last Sync, for reads
+    // of GS memory on this thread.
     FPending: Boolean;
-    FWritten, FRead: array[0..15] of Cardinal;
+    FWritten, FRead, FPendingWrites: array[0..15] of Cardinal;
     FPageOwner: array[0..511] of UInt64;
+    // Host-to-local pixels for the band threads (with FQueueXfer): the ring,
+    // its next position, the run not queued yet (its start, length and first
+    // pixel in the area), and the ring and queue positions of the queued
+    // runs, oldest first.
+    FQueueXfer: Boolean;
+    FXferRing: TArray<Cardinal>;
+    FXferRingPos, FXferRunStart: Int64;
+    FXferRunCount, FXferRunX, FXferRunY: Integer;
+    FXferRuns: array[0..31] of record StartPos, Position: Int64; end;
+    FXferRunHead, FXferRunTail: Integer;
     // CLUTs of queued primitives (the current one copied when it changed),
     // and the queue position after the last primitive using each.
-    FClutRing: array of array[0..511] of Word;
+    FClutRing: array of TPS2GSClut;
     FClutUse: array of Int64;
     FClutSlot: Integer;
     FClutChanged: Boolean;
     function Hazard(const C: TPS2GSCommand; out Feedback: Boolean): Boolean;
     procedure MarkQueued(const C: TPS2GSCommand);
+    procedure MarkPendingDraw(const C: TPS2GSCommand);
+    procedure MarkPendingArea(const Regs: array of UInt64);
+    procedure ClearOverlap;
+    function Queueing: Boolean; inline;
+    procedure FlushTransfer;
+    procedure RunSolo(const C: TPS2GSCommand; Drawer: TPS2GSDrawer);
+    procedure CopyLocal(Buf, Pos, Reg: UInt64);
     procedure Kick(DrawingKick: Boolean);
     procedure SetupDraw;
     procedure Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex);
     procedure CheckPrimLogBreak;
     procedure LogRegister(Index: Integer; Value: UInt64);
     procedure LoadClut(Tex0: UInt64);
+    procedure ReadClut(Tex0, TexClut: UInt64; var Clut: TPS2GSClut);
     function GetMemory: TPS2GSMemory;
     procedure SetThreads(Value: Integer);
     procedure SetVulkan(Value: Boolean);
@@ -316,6 +355,8 @@ type
       FOwner: TPS2GSBands;
       FIndex: Integer;
       FDrawer: TPS2GSDrawer;
+      // The first band's drawer for whole primitives (SoloDraw).
+      FSolo: TPS2GSDrawer;
     protected
       procedure Execute; override;
     public
@@ -331,16 +372,21 @@ type
       Pad: array[0..4] of Int64;
     end;
   private
+    FRaster: TPS2GSRaster;
     FRing: TArray<TPS2GSCommand>;
     FWrite, FPublished: Int64;
     FSlots: TArray<TSlot>;
     FBands: TArray<TBand>;
     FProgress: TEvent;
-    FMainWaiting, FFailed: Integer;
+    FMainWaiting, FFailed, FBandsWaiting: Integer;
     FFailure: string;
     function Published: Int64; inline;
     function Slowest: Int64;
     procedure WaitConsumed(Value: Int64);
+    // A band thread waits until every band (or the first one) has taken the
+    // commands before Value.
+    procedure BandWait(Index: Integer; Value: Int64; FirstOnly: Boolean);
+    procedure WakeWaitingBands;
     procedure Fail(const Message: string);
     procedure CheckFailed;
   public
@@ -358,7 +404,14 @@ type
 implementation
 
 uses
-  PS2.GS.Gpu;
+  PS2.GS.Gpu{$IFDEF GS_RACECHECK}, PS2.GS.RaceCheck{$ENDIF};
+
+const
+  // Transferred pixels queued for the band threads: the ring, and the most
+  // one run (one queued command) takes.
+  XferRingSize = 1 shl 20;
+  XferRingMask = XferRingSize - 1;
+  XferRunMax = 1 shl 16;
 
 // Arithmetic shift right (rounds toward minus infinity); Delphi's shr is a
 // logical shift, wrong for negative values.
@@ -490,11 +543,16 @@ begin
   FClutRing := nil;
   FClutUse := nil;
   FClutSlot := -1;
+  FXferRing := nil;
+  FQueueXfer := False;
+  FXferRunHead := 0;
+  FXferRunTail := 0;
   if Value > 1 then
   begin
     FBands := TPS2GSBands.Create(Self, Value);
     SetLength(FClutRing, 64);
     SetLength(FClutUse, 64);
+    SetLength(FXferRing, XferRingSize);
   end;
 end;
 
@@ -502,12 +560,100 @@ procedure TPS2GSRaster.Sync;
 begin
   if (FAccelerator <> nil) and FAccelerator.Pending then
     FAccelerator.Sync;
+  FlushTransfer;
   if not FPending then
     Exit;
   FPending := False;
+  ClearOverlap;
+  FillChar(FPendingWrites, SizeOf(FPendingWrites), 0);
+  FBands.Sync;
+  {$IFDEF GS_RACECHECK}RaceBarrier(FBands.Position);{$ENDIF}
+  // CLUTs loaded on the band threads.
+  if (FClutSlot >= 0) and not FClutChanged then
+    FClut := FClutRing[FClutSlot];
+  FXferRunHead := 0;
+  FXferRunTail := 0;
+end;
+
+procedure TPS2GSRaster.ClearOverlap;
+begin
   FillChar(FWritten, SizeOf(FWritten), 0);
   FillChar(FRead, SizeOf(FRead), 0);
-  FBands.Sync;
+end;
+
+// Commands go to the band threads (diagnostics draw everything here, in order).
+function TPS2GSRaster.Queueing: Boolean;
+begin
+  Result := (FBands <> nil) and (PrimLog = nil) and (WatchX < 0);
+end;
+
+// Queues the transferred pixels not queued yet (one SoloWrite).
+procedure TPS2GSRaster.FlushTransfer;
+begin
+  if FXferRunCount = 0 then
+    Exit;
+  {$IFDEF GS_RACECHECK}RaceBarrier(FBands.Position); RaceBarrier(FBands.Position + 1); RaceDescribe(FBands.Position, 'xfer');{$ENDIF}
+  var C := FBands.Next;
+  C.Op := coSoloWrite;
+  C.Rounding := GetRoundMode;
+  C.Clut := -1;
+  C.XferStart := FXferRunStart;
+  C.XferCount := FXferRunCount;
+  C.XferX := FXferRunX;
+  C.XferY := FXferRunY;
+  C.XferRegs[0] := Regs[GSRegBITBLTBUF];
+  C.XferRegs[1] := Regs[GSRegTRXPOS];
+  C.XferRegs[2] := Regs[GSRegTRXREG];
+  MarkPendingArea(C.XferRegs);
+  FBands.Publish;
+  FXferRuns[FXferRunTail and High(FXferRuns)].StartPos := FXferRunStart;
+  FXferRuns[FXferRunTail and High(FXferRuns)].Position := FBands.Position;
+  Inc(FXferRunTail);
+  ClearOverlap;
+  FPending := True;
+  FXferRunCount := 0;
+end;
+
+// A whole command on the first band thread (SoloDraw, SoloWrite, SoloCopy).
+procedure TPS2GSRaster.RunSolo(const C: TPS2GSCommand; Drawer: TPS2GSDrawer);
+begin
+  case C.Op of
+    coSoloDraw:
+      Drawer.Draw(C);
+    coSoloWrite:
+      begin
+        var Buf := C.XferRegs[0];
+        var Pos := C.XferRegs[1];
+        var Reg := C.XferRegs[2];
+        var DBP := Cardinal((Buf shr 32) and $3FFF);
+        var DBW := Cardinal((Buf shr 48) and $3F);
+        var DPSM := Integer((Buf shr 56) and $3F);
+        var DSAX := Integer((Pos shr 32) and $7FF);
+        var DSAY := Integer((Pos shr 48) and $7FF);
+        var RRW := Integer(Reg and $FFF);
+        var X := C.XferX;
+        var Y := C.XferY;
+        for var K := 0 to C.XferCount - 1 do
+        begin
+          FMemory.WriteRaw(DPSM, DBP, DBW, Cardinal((DSAX + X) and $7FF), Cardinal((DSAY + Y) and $7FF),
+            FXferRing[(C.XferStart + K) and XferRingMask]);
+          Inc(X);
+          if X >= RRW then
+          begin
+            X := 0;
+            Inc(Y);
+          end;
+        end;
+      end;
+    coSoloCopy:
+      CopyLocal(C.XferRegs[0], C.XferRegs[1], C.XferRegs[2]);
+    coSoloClut, coClut:
+      begin
+        // The CLUT before the load (XferX's slot), then what it loads.
+        FClutRing[C.Clut] := FClutRing[C.XferX];
+        ReadClut(C.XferRegs[0], C.XferRegs[1], FClutRing[C.Clut]);
+      end;
+  end;
 end;
 
 function TPS2GSRaster.GetMemory: TPS2GSMemory;
@@ -667,9 +813,11 @@ begin
   PageSpan(C.D.FBP, C.D.FBW, C.D.FPSM, X1, Y0, Y1, F0, F1);
   PageSpan(C.D.ZBP, C.D.FBW, C.D.ZPSM, X1, Y0, Y1, Z0, Z1);
   var WritesZ := not C.D.ZMSK;
-  // Depth written over the frame's own memory: a word may hold one pixel's
-  // colour and another row's depth.
-  if WritesZ and (Z1 >= F0) and (Z0 <= F1) then
+  // The depth test reads the depth buffer.
+  var UsesZ := WritesZ or (C.D.ZTST >= 2);
+  // Depth over the frame's own memory: a word may hold one pixel's colour
+  // and another row's depth.
+  if UsesZ and (Z1 >= F0) and (Z0 <= F1) then
     Feedback := True;
   var L0, L1: Integer;
   TextureLevels(C, L0, L1);
@@ -690,7 +838,9 @@ begin
   for var P := F0 to Min(F1, F0 + 511) do
     if ((FWritten[(P and 511) shr 5] and (Cardinal(1) shl (P and 31))) <> 0) and (FPageOwner[P and 511] <> FKey) then
       Exit(True);
-  if WritesZ then
+  // Depth tested or written through another buffer than the queued
+  // primitives wrote those pages through: another band's rows.
+  if UsesZ then
     for var P := Z0 to Min(Z1, Z0 + 511) do
       if ((FWritten[(P and 511) shr 5] and (Cardinal(1) shl (P and 31))) <> 0) and (FPageOwner[P and 511] <> ZKey) then
         Exit(True);
@@ -725,6 +875,37 @@ begin
     end;
 end;
 
+// The pages a queued primitive writes, until the next Sync.
+procedure TPS2GSRaster.MarkPendingDraw(const C: TPS2GSCommand);
+begin
+  var X1, Y0, Y1, P0, P1: Integer;
+  PrimitiveArea(C, X1, Y0, Y1);
+  PageSpan(C.D.FBP, C.D.FBW, C.D.FPSM, X1, Y0, Y1, P0, P1);
+  MarkPages(FPendingWrites, P0, P1);
+  if not C.D.ZMSK then
+  begin
+    PageSpan(C.D.ZBP, C.D.FBW, C.D.ZPSM, X1, Y0, Y1, P0, P1);
+    MarkPages(FPendingWrites, P0, P1);
+  end;
+end;
+
+// The pages a queued transfer's destination area may cover, until the next
+// Sync.
+procedure TPS2GSRaster.MarkPendingArea(const Regs: array of UInt64);
+begin
+  var Buf := Regs[0];
+  var Pos := Regs[1];
+  var Reg := Regs[2];
+  var DSAX := Integer((Pos shr 32) and $7FF);
+  var DSAY := Integer((Pos shr 48) and $7FF);
+  var X1 := Min(2047, DSAX + Integer(Reg and $FFF));
+  var Y1 := Min(2047, DSAY + Integer((Reg shr 32) and $FFF));
+  var P0, P1: Integer;
+  PageSpan(Cardinal((Buf shr 32) and $3FFF), Cardinal((Buf shr 48) and $3F), Cardinal((Buf shr 56) and $3F),
+    X1, DSAY, Y1, P0, P1);
+  MarkPages(FPendingWrites, P0, P1);
+end;
+
 procedure TPS2GSRaster.Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex);
 begin
   // CPU primitives must see all earlier GPU writes. Sprites decide after
@@ -753,15 +934,15 @@ begin
   var Before := FCounter.PixelsDrawn;
   FCounter.Draw(FCommand);
   Inc(FPixels, FCounter.PixelsDrawn - Before);
+  FlushTransfer;
+  // Overlapping the queued primitives: the band threads first finish them;
+  // reading its own target: the first band thread draws it alone.
   var Feedback: Boolean;
+  FCommand.Op := coDraw;
   if Hazard(FCommand, Feedback) then
-    Sync;
+    FCommand.Op := coBarrier;
   if Feedback then
-  begin
-    Sync;
-    FDrawer.Draw(FCommand);
-    Exit;
-  end;
+    FCommand.Op := coSoloDraw;
   if FCommand.D.TME and (FCommand.D.TPSM in [PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]) then
   begin
     // A palettized texture: its CLUT as it is now, in a slot of the ring.
@@ -775,9 +956,18 @@ begin
     FCommand.Clut := FClutSlot;
     FClutUse[FClutSlot] := FBands.Position + 1;
   end;
+  {$IFDEF GS_RACECHECK}
+  if FCommand.Op <> coDraw then RaceBarrier(FBands.Position);
+  if FCommand.Op = coSoloDraw then RaceBarrier(FBands.Position + 1);
+  RaceDescribe(FBands.Position, Format('%d op%d fbp %x/%d/%x tbp %x/%d/%x tme %d zbp %x/%x zmsk %d', [Ord(FCommand.Kind), Ord(FCommand.Op), FCommand.D.FBP, FCommand.D.FBW, FCommand.D.FPSM, FCommand.D.TBP, FCommand.D.TBW, FCommand.D.TPSM, Ord(FCommand.D.TME), FCommand.D.ZBP, FCommand.D.ZPSM, Ord(FCommand.D.ZMSK)]));
+  {$ENDIF}
   FBands.Next^ := FCommand;
   FBands.Publish;
-  MarkQueued(FCommand);
+  MarkPendingDraw(FCommand);
+  if FCommand.Op <> coDraw then
+    ClearOverlap;
+  if FCommand.Op <> coSoloDraw then
+    MarkQueued(FCommand);
   FPending := True;
 end;
 
@@ -832,6 +1022,9 @@ begin
   Index := Index and $7F;
   if PrimLog <> nil then
     LogRegister(Index, Value);
+  // Queued transferred pixels go with the transfer registers they came with.
+  if (FXferRunCount > 0) and ((Index = GSRegBITBLTBUF) or (Index = GSRegTRXPOS) or (Index = GSRegTRXREG)) then
+    FlushTransfer;
   Regs[Index] := Value;
   case Index of
     GSRegPRIM:
@@ -1970,24 +2163,70 @@ begin
   // used by a later primitive.
   if (FAccelerator <> nil) and FAccelerator.Pending then
     FAccelerator.Sync;
-  // Queued primitives keep the CLUT they were queued with; only wait for
-  // them when they draw where this one is read from.
-  if FPending then
+  FlushTransfer;
+  var P0, P1: Integer;
+  if CSM = 0 then
+    PageSpan(CBP, 1, Cardinal(CPSM), 15, 0, 15, P0, P1)
+  else
   begin
-    var P0, P1: Integer;
-    if CSM = 0 then
-      PageSpan(CBP, 1, Cardinal(CPSM), 15, 0, 15, P0, P1)
-    else
-    begin
-      var TexClut := Regs[GSRegTEXCLUT];
-      var CY := Integer((TexClut shr 12) and $3FF);
-      PageSpan(CBP, Cardinal(TexClut and $3F), Cardinal(CPSM), Integer((TexClut shr 6) and $3F) * 16 + 255, CY, CY, P0,
-        P1);
-    end;
-    if PagesMeet(FWritten, P0, P1) then
-      Sync;
+    var TexClut := Regs[GSRegTEXCLUT];
+    var CY := Integer((TexClut shr 12) and $3FF);
+    PageSpan(CBP, Cardinal(TexClut and $3F), Cardinal(CPSM), Integer((TexClut shr 6) and $3F) * 16 + 255, CY, CY, P0,
+      P1);
   end;
+  if Queueing then
+  begin
+    // The first band thread loads it into a new slot of the ring, after the
+    // queued primitives that write its pages; the others wait for it.
+    if FClutChanged or (FClutSlot < 0) then
+    begin
+      FClutSlot := (FClutSlot + 1) mod Length(FClutRing);
+      FBands.WaitFor(FClutUse[FClutSlot]);
+      Move(FClut, FClutRing[FClutSlot], SizeOf(FClut));
+      FClutUse[FClutSlot] := FBands.Position;
+      FClutChanged := False;
+    end;
+    var Prev := FClutSlot;
+    FClutSlot := (FClutSlot + 1) mod Length(FClutRing);
+    FBands.WaitFor(FClutUse[FClutSlot]);
+    var C := FBands.Next;
+    C.Op := coClut;
+    if PagesMeet(FWritten, P0, P1) then
+      C.Op := coSoloClut;
+    C.Rounding := GetRoundMode;
+    C.Clut := FClutSlot;
+    C.XferX := Prev;
+    C.XferRegs[0] := Tex0;
+    C.XferRegs[1] := Regs[GSRegTEXCLUT];
+    {$IFDEF GS_RACECHECK}if C.Op = coSoloClut then RaceBarrier(FBands.Position); RaceBarrier(FBands.Position + 1); RaceDescribe(FBands.Position, Format('clut p%d-%d w%x cbp %x csm %d', [P0, P1, FWritten[0], CBP, CSM]));{$ENDIF}
+    var Solo := C.Op = coSoloClut;
+    FBands.Publish;
+    FClutUse[FClutSlot] := FBands.Position;
+    if FClutUse[Prev] < FBands.Position then
+      FClutUse[Prev] := FBands.Position;
+    if Solo then
+      ClearOverlap;
+    // Later primitives writing these pages wait for the load.
+    MarkPages(FRead, P0, P1);
+    FPending := True;
+    Exit;
+  end;
+  // Queued primitives keep the CLUT they were queued with; only wait for
+  // them when they draw (or transfers write) where this one is read from.
+  if FPending and PagesMeet(FPendingWrites, P0, P1) then
+    Sync;
   FClutChanged := True;
+  ReadClut(Tex0, Regs[GSRegTEXCLUT], FClut);
+end;
+
+// The entries a CLUT load (TEX0, TEXCLUT) reads from GS memory, into Clut.
+procedure TPS2GSRaster.ReadClut(Tex0, TexClut: UInt64; var Clut: TPS2GSClut);
+begin
+  var CBP := Cardinal((Tex0 shr 37) and $3FFF);
+  var PSM := Integer((Tex0 shr 20) and $3F);
+  var CPSM := Integer((Tex0 shr 51) and $F);
+  var CSM := Integer((Tex0 shr 55) and 1);
+  var CSA := Integer((Tex0 shr 56) and $1F);
   var Count := 16;
   if (PSM = PSMT8) or (PSM = PSMT8H) then
     Count := 256
@@ -2016,24 +2255,23 @@ begin
     end
     else
     begin
-      var TexClut := Regs[GSRegTEXCLUT];
       X := Integer((TexClut shr 6) and $3F) * 16 + I;
       Y := Integer((TexClut shr 12) and $3FF);
     end;
     var BW: Cardinal := 1;
     if CSM <> 0 then
-      BW := Cardinal(Regs[GSRegTEXCLUT] and $3F);
+      BW := Cardinal(TexClut and $3F);
     if Is32 then
     begin
       var V := FMemory.ReadRaw(PSMCT32, CBP, BW, Cardinal(X), Cardinal(Y));
       var Slot := (Base + I) and 255;
-      FClut[Slot] := Word(V);
-      FClut[Slot + 256] := Word(V shr 16);
+      Clut[Slot] := Word(V);
+      Clut[Slot + 256] := Word(V shr 16);
     end
     else
     begin
       var V := FMemory.ReadRaw(CPSM, CBP, BW, Cardinal(X), Cardinal(Y));
-      FClut[(Base + I) and 511] := Word(V);
+      Clut[(Base + I) and 511] := Word(V);
     end;
   end;
 end;
@@ -2064,11 +2302,13 @@ begin
   if (TransferLog <> nil) and (TransferLog.Count < 100000) then
     TransferLog.Add(Format('buf=%.16x pos=%.16x reg=%.16x dir=%d', [Regs[GSRegBITBLTBUF], Regs[GSRegTRXPOS],
       Regs[GSRegTRXREG], Dir]));
+  FlushTransfer;
   FXferActive := False;
   FXferX := 0;
   FXferY := 0;
   FXferBits := 0;
   FXferBitCount := 0;
+  FQueueXfer := Queueing;
   case Dir of
     0: FXferActive := True;
     1: LocalToHost;
@@ -2078,16 +2318,7 @@ end;
 
 procedure TPS2GSRaster.TransferPixel(Value: Cardinal);
 begin
-  if FPending then
-    Sync;
-  var Buf := Regs[GSRegBITBLTBUF];
-  var Pos := Regs[GSRegTRXPOS];
   var Reg := Regs[GSRegTRXREG];
-  var DBP := Cardinal((Buf shr 32) and $3FFF);
-  var DBW := Cardinal((Buf shr 48) and $3F);
-  var DPSM := Integer((Buf shr 56) and $3F);
-  var DSAX := Integer((Pos shr 32) and $7FF);
-  var DSAY := Integer((Pos shr 48) and $7FF);
   var RRW := Integer(Reg and $FFF);
   var RRH := Integer((Reg shr 32) and $FFF);
   if (RRW = 0) or (RRH = 0) then
@@ -2095,7 +2326,41 @@ begin
     FXferActive := False;
     Exit;
   end;
-  FMemory.WriteRaw(DPSM, DBP, DBW, Cardinal((DSAX + FXferX) and $7FF), Cardinal((DSAY + FXferY) and $7FF), Value);
+  if FQueueXfer and (FPending or (FXferRunCount > 0)) then
+  begin
+    // Drawing is queued: the pixels follow it, through the ring.
+    if FXferRunCount = 0 then
+    begin
+      // Room for a whole run: wait for the oldest queued runs if needed.
+      while (FXferRunHead < FXferRunTail) and
+        (FXferRingPos + XferRunMax - FXferRuns[FXferRunHead and High(FXferRuns)].StartPos > XferRingSize) do
+      begin
+        FBands.WaitFor(FXferRuns[FXferRunHead and High(FXferRuns)].Position);
+        Inc(FXferRunHead);
+      end;
+      if FXferRunTail - FXferRunHead > High(FXferRuns) then
+      begin
+        FBands.WaitFor(FXferRuns[FXferRunHead and High(FXferRuns)].Position);
+        Inc(FXferRunHead);
+      end;
+      FXferRunStart := FXferRingPos;
+      FXferRunX := FXferX;
+      FXferRunY := FXferY;
+    end;
+    FXferRing[FXferRingPos and XferRingMask] := Value;
+    Inc(FXferRingPos);
+    Inc(FXferRunCount);
+  end
+  else
+  begin
+    if FPending then
+      Sync;
+    var Buf := Regs[GSRegBITBLTBUF];
+    var Pos := Regs[GSRegTRXPOS];
+    FMemory.WriteRaw(Integer((Buf shr 56) and $3F), Cardinal((Buf shr 32) and $3FFF), Cardinal((Buf shr 48) and $3F),
+      Cardinal((Integer((Pos shr 32) and $7FF) + FXferX) and $7FF),
+      Cardinal((Integer((Pos shr 48) and $7FF) + FXferY) and $7FF), Value);
+  end;
   Inc(FXferPixels);
   Inc(FXferX);
   if FXferX >= RRW then
@@ -2105,6 +2370,8 @@ begin
     if FXferY >= RRH then
       FXferActive := False;
   end;
+  if (FXferRunCount > 0) and (not FXferActive or (FXferRunCount >= XferRunMax)) then
+    FlushTransfer;
 end;
 
 procedure TPS2GSRaster.FeedWord(W: Cardinal);
@@ -2133,10 +2400,29 @@ end;
 
 procedure TPS2GSRaster.LocalToLocal;
 begin
+  if Queueing then
+  begin
+    // After the queued drawing, on the first band thread.
+    {$IFDEF GS_RACECHECK}RaceBarrier(FBands.Position); RaceBarrier(FBands.Position + 1); RaceDescribe(FBands.Position, 'copy');{$ENDIF}
+    var C := FBands.Next;
+    C.Op := coSoloCopy;
+    C.Rounding := GetRoundMode;
+    C.Clut := -1;
+    C.XferRegs[0] := Regs[GSRegBITBLTBUF];
+    C.XferRegs[1] := Regs[GSRegTRXPOS];
+    C.XferRegs[2] := Regs[GSRegTRXREG];
+    MarkPendingArea(C.XferRegs);
+    FBands.Publish;
+    ClearOverlap;
+    FPending := True;
+    Exit;
+  end;
   Sync;
-  var Buf := Regs[GSRegBITBLTBUF];
-  var Pos := Regs[GSRegTRXPOS];
-  var Reg := Regs[GSRegTRXREG];
+  CopyLocal(Regs[GSRegBITBLTBUF], Regs[GSRegTRXPOS], Regs[GSRegTRXREG]);
+end;
+
+procedure TPS2GSRaster.CopyLocal(Buf, Pos, Reg: UInt64);
+begin
   var SBP := Cardinal(Buf and $3FFF);
   var SBW := Cardinal((Buf shr 16) and $3F);
   var SPSM := Integer((Buf shr 24) and $3F);
@@ -2248,6 +2534,8 @@ begin
   FOwner := Owner;
   FIndex := Index;
   FDrawer := Drawer;
+  if Index = 0 then
+    FSolo := TPS2GSDrawer.Create(Owner.FRaster, 0, 1, False);
   inherited Create(False);
 end;
 
@@ -2255,6 +2543,7 @@ destructor TPS2GSBands.TBand.Destroy;
 begin
   inherited;
   FDrawer.Free;
+  FSolo.Free;
 end;
 
 procedure TPS2GSBands.TBand.Execute;
@@ -2291,7 +2580,27 @@ begin
           Rounding := Command.Rounding;
           SetRoundMode(Rounding);
         end;
-        FDrawer.Draw(Command^);
+        {$IFDEF GS_RACECHECK}RaceBandPlus1 := FIndex + 1; RaceCmd := Position;{$ENDIF}
+        case Command.Op of
+          coDraw:
+            FDrawer.Draw(Command^);
+          coBarrier:
+            begin
+              FOwner.BandWait(FIndex, Position, False);
+              FDrawer.Draw(Command^);
+            end;
+          coClut:
+            if FIndex = 0 then
+              FOwner.FRaster.RunSolo(Command^, FSolo)
+            else
+              FOwner.BandWait(FIndex, Position + 1, True);
+        else
+          FOwner.BandWait(FIndex, Position, False);
+          if FIndex = 0 then
+            FOwner.FRaster.RunSolo(Command^, FSolo)
+          else
+            FOwner.BandWait(FIndex, Position + 1, True);
+        end;
       except
         on E: Exception do
           FOwner.Fail(E.Message);
@@ -2300,6 +2609,8 @@ begin
       TInterlocked.Exchange(FOwner.FSlots[FIndex].Consumed, Position);
       if FOwner.FMainWaiting <> 0 then
         FOwner.FProgress.SetEvent;
+      if FOwner.FBandsWaiting <> 0 then
+        FOwner.WakeWaitingBands;
     end;
   end;
 end;
@@ -2307,6 +2618,7 @@ end;
 constructor TPS2GSBands.Create(Raster: TPS2GSRaster; Count: Integer);
 begin
   inherited Create;
+  FRaster := Raster;
   SetLength(FRing, RingSize);
   SetLength(FSlots, Count);
   for var I := 0 to Count - 1 do
@@ -2384,6 +2696,47 @@ begin
     TInterlocked.Exchange(FMainWaiting, 0);
   end;
   CheckFailed;
+end;
+
+procedure TPS2GSBands.BandWait(Index: Integer; Value: Int64; FirstOnly: Boolean);
+begin
+  var Spins := 0;
+  while not TThread.CheckTerminated do
+  begin
+    if FirstOnly then
+    begin
+      if TInterlocked.Read(FSlots[0].Consumed) >= Value then
+        Exit;
+    end
+    else if Slowest >= Value then
+      Exit;
+    if Spins < SpinRounds then
+    begin
+      Inc(Spins);
+      YieldProcessor;
+      Continue;
+    end;
+    // Asleep until a band finishes a command (a band that finishes one after
+    // the check below sees this one waiting and wakes it).
+    TInterlocked.Exchange(FSlots[Index].Sleeping, 1);
+    TInterlocked.Increment(FBandsWaiting);
+    var Reached: Boolean;
+    if FirstOnly then
+      Reached := TInterlocked.Read(FSlots[0].Consumed) >= Value
+    else
+      Reached := Slowest >= Value;
+    if not Reached then
+      FSlots[Index].Wake.WaitFor(1);
+    TInterlocked.Decrement(FBandsWaiting);
+    TInterlocked.Exchange(FSlots[Index].Sleeping, 0);
+  end;
+end;
+
+procedure TPS2GSBands.WakeWaitingBands;
+begin
+  for var I := 0 to High(FSlots) do
+    if FSlots[I].Sleeping <> 0 then
+      FSlots[I].Wake.SetEvent;
 end;
 
 function TPS2GSBands.Next: PPS2GSCommand;

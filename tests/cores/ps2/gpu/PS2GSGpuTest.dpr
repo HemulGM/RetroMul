@@ -17,6 +17,126 @@ begin
   Raster.WriteRegister(GSRegXYZ2, UInt64(V.X) or (UInt64(V.Y) shl 16) or (UInt64(V.Z) shl 32));
 end;
 
+procedure CheckClutSnapshots;
+var
+  Clut: array[0..511] of Word;
+begin
+  var Memory := TPS2GSMemory.Create;
+  var GPU := TPS2GSGpu.Create(Memory.Data, @Clut[0]);
+  try
+    var D := Default(TPS2GSDraw);
+    D.FBW := 4; D.FPSM := PSMCT32; D.ZPSM := PSMZ32; D.ZMSK := True; D.ZTST := 1;
+    D.TME := True; D.TPSM := PSMT8; D.TBP := 4096; D.TBW := 1; D.TW := 6; D.TH := 6;
+    D.Clut32 := True; D.TCC := True; D.TFX := 1; D.FST := True; D.ColClamp := True;
+    for var Draw := 0 to 1 do
+    begin
+      var Color: Cardinal := $80112233;
+      if Draw = 1 then Color := $80445566;
+      for var I := 0 to 255 do begin Clut[I] := Word(Color); Clut[I+256] := Word(Color shr 16); end;
+      var V0 := Default(TPS2GSVertex);
+      var V1 := V0;
+      V0.X := Draw * 64 * 16; V0.Y := V0.X;
+      V1.X := (128 + Draw * 64) * 16; V1.Y := V1.X;
+      if not GPU.Sprite(D, V0, V1, Draw * 64, Draw * 64, 128 + Draw * 64, 128 + Draw * 64, 0) then
+        raise Exception.Create('CLUT snapshot draw declined');
+    end;
+    if GPU.Submissions <> 0 then raise Exception.Create('CLUT draws did not share a batch');
+    GPU.Sync;
+    if (Memory.ReadRaw(PSMCT32, 0, 4, 32, 32) <> $80112233) or
+      (Memory.ReadRaw(PSMCT32, 0, 4, 96, 96) <> $80445566) then
+      raise Exception.Create('Queued palette was overwritten');
+    Writeln('Queued CLUT snapshots: OK');
+  finally GPU.Free; Memory.Free; end;
+end;
+
+procedure CheckTextureFormats;
+const
+  Formats: array[0..12] of Cardinal = (PSMCT32, PSMCT24, PSMCT16, PSMCT16S,
+    PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH, PSMZ32, PSMZ24, PSMZ16, PSMZ16S);
+  Bases: array[0..6] of Cardinal = (4096, 5120, 5376, 5504, 5568, 5632, 5696);
+  PaletteFormats: array[0..2] of Cardinal = (PSMCT32, PSMCT16, PSMCT16S);
+var
+  V: array[0..2] of TPS2GSVertex;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    B.Vulkan := True;
+    if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
+    var Draws := 0;
+    for var Format in Formats do
+      for var N := 0 to 23 do
+      begin
+        if N and 1 = 0 then SetRoundMode(rmNearest) else SetRoundMode(rmTruncate);
+        A.Reset; B.Reset;
+        var PA := PCardinal(A.Memory.Data);
+        for var K := 0 to PS2GSMemorySize div 4 - 1 do
+          if K mod 31 = 0 then PA[K] := 0
+          else PA[K] := Cardinal(K) * 1664525 + Cardinal(N) * 1013904223;
+        Move(PA^, B.Memory.Data^, PS2GSMemorySize);
+        var IsTriangle := N mod 2 <> 0;
+        for var K := 0 to 2 do
+        begin
+          V[K] := Default(TPS2GSVertex);
+          V[K].R := 80 + K * 40; V[K].G := 60 + K * 20; V[K].B := 200 - K * 20;
+          V[K].A := 64 + K * 64; V[K].F := 255; V[K].Z := 32;
+          V[K].U := 1023 + K * 2049; V[K].V := 4095 - K * 1041;
+          V[K].S := 0.125 + K * 0.375; V[K].T := 1.25 - K * 0.375;
+        end;
+        V[0].Q := 0.125; V[1].Q := 1; V[2].Q := 2;
+        V[0].X := 256; V[0].Y := 256;
+        V[1].X := 2304; V[1].Y := 256;
+        V[2].X := 256; V[2].Y := 2304;
+        if not IsTriangle then V[2].X := 2304;
+        for var R in TArray<TPS2GSRaster>.Create(A, B) do
+        begin
+          R.WriteRegister(GSRegFRAME_1, UInt64(4) shl 16);
+          R.WriteRegister(GSRegZBUF_1, (UInt64(1) shl 32) or 256);
+          R.WriteRegister(GSRegSCISSOR_1, (UInt64(255) shl 16) or (UInt64(255) shl 48));
+          R.WriteRegister(GSRegCOLCLAMP, 1);
+          R.WriteRegister(GSRegALPHA_1, $44);
+          var Prim: UInt64 := 6;
+          if IsTriangle then Prim := 3 or 8;
+          Prim := Prim or $10;
+          if N and 2 <> 0 then Prim := Prim or $100;
+          if N and 4 <> 0 then Prim := Prim or $40;
+          R.WriteRegister(GSRegPRIM, Prim);
+          R.WriteRegister(GSRegCLAMP_1, UInt64(N and 15) or (UInt64(31) shl 4) or
+            (UInt64(191) shl 14) or (UInt64(63) shl 24) or (UInt64(255) shl 34));
+          R.WriteRegister(GSRegTEXCLUT, 1 or (UInt64(2) shl 6) or (UInt64(3) shl 12));
+          R.WriteRegister(GSRegTEXA, 73 or (UInt64(201) shl 32) or (UInt64(N and 1) shl 15));
+          R.WriteRegister(GSRegTEX0_1, UInt64(Bases[0]) or (UInt64(1) shl 14) or (UInt64(Format) shl 20) or
+            (UInt64(6) shl 26) or (UInt64(6) shl 30) or (UInt64(N and 1) shl 34) or
+            (UInt64(N mod 4) shl 35) or (UInt64(12288) shl 37) or
+            (UInt64(PaletteFormats[N mod 3]) shl 51) or (UInt64(N and 1) shl 55) or
+            (UInt64(N and 31) shl 56) or (UInt64(1) shl 61));
+          var KRaw := (N mod 9) * 13 - 16;
+          R.WriteRegister(GSRegTEX1_1, UInt64((N shr 1) and 1) or (UInt64(6) shl 2) or
+            (UInt64(N and 1) shl 5) or (UInt64(N mod 6) shl 6) or (UInt64(N and 1) shl 19) or
+            (UInt64(KRaw and $FFF) shl 32));
+          var M1, M2: UInt64;
+          M1 := 0; M2 := 0;
+          for var L := 0 to 2 do
+          begin
+            M1 := M1 or ((UInt64(Bases[L+1]) or (UInt64(1) shl 14)) shl (L * 20));
+            M2 := M2 or ((UInt64(Bases[L+4]) or (UInt64(1) shl 14)) shl (L * 20));
+          end;
+          R.WriteRegister(GSRegMIPTBP1_1, M1); R.WriteRegister(GSRegMIPTBP2_1, M2);
+          Vertex(R, V[0]);
+          if IsTriangle then Vertex(R, V[1]);
+          Vertex(R, V[2]);
+        end;
+        B.Sync;
+        if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) or
+          (A.PixelsDrawn <> B.PixelsDrawn) then
+          raise Exception.CreateFmt('Texture/mipmap mismatch psm=%x case=%d', [Format, N]);
+        Inc(Draws);
+        if B.VulkanDraws <> Draws then raise Exception.CreateFmt('Texture fell back psm=%x case=%d', [Format, N]);
+      end;
+    Writeln('Texture formats=13, CLUT/CSA/CSM/TEXA, mipmaps/filters, sprites/triangles: ', Draws, ' OK');
+  finally B.Free; A.Free; end;
+end;
+
 procedure CheckTriangles;
 const
   Registers: array[0..13] of Integer = (GSRegFRAME_1, GSRegZBUF_1, GSRegTEST_1, GSRegALPHA_1,
@@ -213,7 +333,7 @@ begin
         A.WriteRegister(GSRegFOG, UInt64(V.F) shl 56);
         Vertex(A, V0);
         Vertex(A, V);
-        if not GPU.Sprite(D, V0, V, 16, 16, 144, 144) then
+        if not GPU.Sprite(D, V0, V, 16, 16, 144, 144, 0) then
           raise Exception.CreateFmt('Unexpected fallback %d', [N]);
         if (Batch = 0) or (N = 255) then
           GPU.Sync;
@@ -226,14 +346,14 @@ begin
         end;
         D.TME := True;
         D.TBP := 0;
-        if GPU.Sprite(D, V0, V, 16, 16, 144, 144) then raise Exception.Create('Texture feedback accepted');
+        if GPU.Sprite(D, V0, V, 16, 16, 144, 144, 0) then raise Exception.Create('Texture feedback accepted');
         D.TME := False;
         D.ZBP := D.FBP;
         D.ZMSK := False;
-        if GPU.Sprite(D, V0, V, 16, 16, 144, 144) then raise Exception.Create('Overlapping surfaces accepted');
+        if GPU.Sprite(D, V0, V, 16, 16, 144, 144, 0) then raise Exception.Create('Overlapping surfaces accepted');
         D.ZBP := 8192;
         D.FPSM := PSMCT16;
-        if GPU.Sprite(D, V0, V, 16, 16, 144, 144) then raise Exception.Create('Unsupported format accepted');
+        if GPU.Sprite(D, V0, V, 16, 16, 144, 144, 0) then raise Exception.Create('Unsupported format accepted');
         if ((Batch = 0) or (N = 255)) and not CompareMem(A.Memory.Data, B.Data, PS2GSMemorySize) then
           raise Exception.Create('Fallback wrote memory');
       end;
@@ -319,6 +439,8 @@ begin
       A.Free;
     end;
     CheckTriangles;
+    CheckTextureFormats;
+    CheckClutSnapshots;
   except
     on E: Exception do
     begin

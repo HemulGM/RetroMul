@@ -1,10 +1,12 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "PS2.GS.Tables.glsl"
 // GS sprites and prepared triangle fragments, integer pixel/texture pipeline.
 // References: GS User's
 // Manual and PS2.GS.Raster. Each invocation owns a distinct frame/depth word.
 layout(local_size_x=8, local_size_y=8) in;
 layout(set=0,binding=0,std430) buffer VRAM { uint ram[]; };
-struct Draw { uint p[64]; };
+struct Draw { uint p[384]; };
 layout(set=0,binding=1,std430) readonly buffer State { Draw draws[]; };
 layout(set=0,binding=2,std430) readonly buffer Coordinates { int coords[]; };
 layout(set=0,binding=3,std430) readonly buffer Fragments { uint fragments[]; };
@@ -30,23 +32,68 @@ int clampCoordinate(int c,uint size,uint mode,uint low,uint high) {
   if(mode==2) return c<int(low) ? int(low) : (c>int(high) ? int(high) : c);
   return (c&int(low))|int(high);
 }
-uvec4 readTexel(int u,int v) {
-  u=clampCoordinate(u,p[35],p[37],p[39],p[40]);
-  v=clampCoordinate(v,p[36],p[38],p[41],p[42]);
-  uint t=ram[address(p[32],p[33],uint(u),uint(v),false)];
-  if(p[34]==1) {
+uint rawTexel(uint bp,uint bw,uint x,uint y,uint psm) {
+  if(psm==2 || psm==10 || psm==0x32 || psm==0x3a) {
+    uint page=(x>>6)+(y>>6)*bw;
+    uint block=(psm==10 || psm==0x3a) ? gsBlock16S[((y>>3)&7)*4+((x>>4)&3)] :
+      gsBlock16[((y>>3)&7)*4+((x>>4)&3)];
+    if(psm>=0x30) block^=24;
+    uint a=((bp<<7)+(page<<12)+(block<<7)+gsColumn16[(y&7)*16+(x&15)])&0x1fffff;
+    return (ram[a>>1]>>((a&1)*16))&0xffff;
+  }
+  if(psm==0x13) {
+    uint page=(x>>7)+(y>>6)*((bw+1)>>1);
+    uint block=blocks[((y>>4)&3)*8+((x>>4)&7)];
+    uint a=((bp<<8)+(page<<13)+(block<<8)+gsColumn8[(y&15)*16+(x&15)])&0x3fffff;
+    return (ram[a>>2]>>((a&3)*8))&255;
+  }
+  if(psm==0x14) {
+    uint page=(x>>7)+(y>>7)*((bw+1)>>1);
+    uint block=gsBlock16[((y>>4)&7)*4+((x>>5)&3)];
+    uint a=((bp<<9)+(page<<14)+(block<<9)+gsColumn4[(y&15)*32+(x&31)])&0x7fffff;
+    return (ram[a>>3]>>((a&7)*4))&15;
+  }
+  uint t=ram[address(bp,bw,x,y,psm==0x30 || psm==0x31)];
+  if(psm==0x1b) return t>>24;
+  if(psm==0x24) return (t>>24)&15;
+  if(psm==0x2c) return t>>28;
+  return t;
+}
+uint clutWord(uint index) { return (p[128+(index>>1)]>>((index&1)*16))&0xffff; }
+uint expand16(uint t) {
+  uint a=(t&0x8000)!=0 ? p[51] : ((p[46]!=0 && (t&0x7fff)==0) ? 0 : p[45]);
+  return ((t&31)<<3)|(((t>>5)&31)<<11)|(((t>>10)&31)<<19)|(a<<24);
+}
+uvec4 readTexel(int u,int v,uint level) {
+  uint w=max(1u,p[35]>>level),h=max(1u,p[36]>>level);
+  uint minu=p[37]==3 ? p[39] : p[39]>>level;
+  uint maxu=p[37]==3 ? p[40] : p[40]>>level;
+  uint minv=p[38]==3 ? p[41] : p[41]>>level;
+  uint maxv=p[38]==3 ? p[42] : p[42]>>level;
+  u=clampCoordinate(u,w,p[37],minu,maxu);
+  v=clampCoordinate(v,h,p[38],minv,maxv);
+  uint psm=p[34];
+  uint t=rawTexel(p[64+level],p[71+level],uint(u),uint(v),psm);
+  if(psm==1 || psm==0x31) {
     uint a=p[46]!=0 && (t&0xffffff)==0 ? 0 : p[45];
     t=(t&0xffffff)|(a<<24);
+  } else if(psm==2 || psm==10 || psm==0x32 || psm==0x3a) {
+    t=expand16(t);
+  } else if(psm==0x13 || psm==0x14 || psm==0x1b || psm==0x24 || psm==0x2c) {
+    uint index=t+p[50];
+    if(p[49]!=0) { index&=255; t=clutWord(index)|(clutWord(index+256)<<16); }
+    else t=expand16(clutWord(index&511));
   }
   return uvec4(t&255,(t>>8)&255,(t>>16)&255,t>>24);
 }
-uvec4 sampleTexture(int u,int v) {
-  if(p[48]==0) return readTexel(u>>4,v>>4);
+uvec4 sampleLevel(int u,int v,uint level,bool linear) {
+  u>>=level; v>>=level;
+  if(!linear) return readTexel(u>>4,v>>4,level);
   u-=8; v-=8;
   uint fu=uint(u&15),fv=uint(v&15);
   int u0=u>>4,v0=v>>4;
-  uvec4 top=readTexel(u0,v0)*(16-fu)+readTexel(u0+1,v0)*fu;
-  uvec4 bottom=readTexel(u0,v0+1)*(16-fu)+readTexel(u0+1,v0+1)*fu;
+  uvec4 top=readTexel(u0,v0,level)*(16-fu)+readTexel(u0+1,v0,level)*fu;
+  uvec4 bottom=readTexel(u0,v0+1,level)*(16-fu)+readTexel(u0+1,v0+1,level)*fu;
   return (top*(16-fv)+bottom*fv)>>8;
 }
 void main() {
@@ -58,7 +105,7 @@ void main() {
   } else {
     uint index=gl_WorkGroupID.x*64+gl_LocalInvocationIndex;
     if(index>=uint(bounds.y)) return;
-    base=(uint(bounds.x)+index)*10;
+    base=(uint(bounds.x)+index)*11;
     xy=ivec2(fragments[base],fragments[base+1]);
   }
   uint x=uint(xy.x),y=uint(xy.y);
@@ -70,7 +117,12 @@ void main() {
   if(p[47]!=0) {
     int u=mode==0 ? coords[slot*4096+uint(xy.x-bounds.x)] : int(fragments[base+8]);
     int v=mode==0 ? coords[slot*4096+2048+uint(xy.y-bounds.y)] : int(fragments[base+9]);
-    ivec4 t=ivec4(sampleTexture(u,v));
+    uint mip=mode==0 ? p[52] : fragments[base+10];
+    uint l0=mip&7,l1=(mip>>3)&7,weight=(mip>>6)&31;
+    bool linear=(mip&2048)!=0;
+    uvec4 tex=sampleLevel(u,v,l0,linear);
+    if(weight!=0) tex=(tex*(16-weight)+sampleLevel(u,v,l1,linear)*weight)>>4;
+    ivec4 t=ivec4(tex);
     switch(p[43]) {
       case 0: c=(c*t.rgb)>>7; if(p[44]!=0) a=(a*t.a)>>7; break;
       case 1: c=t.rgb; if(p[44]!=0) a=t.a; break;

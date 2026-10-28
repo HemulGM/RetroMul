@@ -147,9 +147,9 @@ type
     procedure Sync; virtual; abstract;
     property Pending: Boolean read FPending;
     function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
-      X0, Y0, X1, Y1: Integer): Boolean; virtual; abstract;
+      X0, Y0, X1, Y1: Integer; Lod: Single): Boolean; virtual; abstract;
     function BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean; virtual; abstract;
-    procedure Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer); virtual; abstract;
+    procedure Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer; Lod: Single); virtual; abstract;
     procedure EndTriangle; virtual; abstract;
   end;
 
@@ -471,7 +471,7 @@ begin
   begin
     SetThreads(0);
     try
-      FAccelerator := TPS2GSGpu.Create(FMemory.Data);
+      FAccelerator := TPS2GSGpu.Create(FMemory.Data, @FClut[0]);
     except
       on E: Exception do FVulkanError := E.Message;
     end;
@@ -1342,7 +1342,7 @@ begin
     Exit;
   if FAccelerating then
   begin
-    FOwner.FAccelerator.Fragment(X, Y, Z, R, G, B, A, F, U, V);
+    FOwner.FAccelerator.Fragment(X, Y, Z, R, G, B, A, F, U, V, FLod);
     Exit;
   end;
   if FD.TME then
@@ -1677,7 +1677,7 @@ begin
   end;
   if (FBandCount = 1) and (FOwner.FAccelerator <> nil) and
     (FOwner.PrimLog = nil) and (FOwner.WatchX < 0) then
-    if FOwner.FAccelerator.Sprite(FD, V0, V1, PX0, PY0, PX1, PY1) then
+    if FOwner.FAccelerator.Sprite(FD, V0, V1, PX0, PY0, PX1, PY1, FLod) then
     begin
       Inc(FPixels, Int64(PX1 - PX0) * (PY1 - PY0));
       Exit;

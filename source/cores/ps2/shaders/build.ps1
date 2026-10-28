@@ -1,6 +1,16 @@
 param([string]$Out = 'D:\Work\tmp\ps2-gs-shader')
 $ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force $Out | Out-Null
+# Share the documented GS swizzle tables with the software implementation.
+$memory = [IO.File]::ReadAllText("$PSScriptRoot\..\PS2.GS.Memory.pas")
+$tables = @('// Generated from PS2.GS.Memory.pas by shaders/build.ps1.')
+foreach ($name in 'Block16','Block16S','Column16','Column8','Column4') {
+  $match = [regex]::Match($memory, '(?s)\b' + $name + ':.*?=\s*\((.*?)\);')
+  if (!$match.Success) { throw "Missing GS table $name" }
+  $values = @([regex]::Matches($match.Groups[1].Value, '\d+') | ForEach-Object Value)
+  $tables += "const uint gs$name[$($values.Count)] = uint[$($values.Count)](" + ($values -join ',') + ');'
+}
+[IO.File]::WriteAllText("$PSScriptRoot\PS2.GS.Tables.glsl", ($tables -join "`n")+"`n", [Text.UTF8Encoding]::new($false))
 $compiler = Join-Path $env:VULKAN_SDK 'Bin\glslc.exe'
 $spv = Join-Path $Out 'PS2.GS.Sprite.spv'
 & $compiler --target-env=vulkan1.1 -O "$PSScriptRoot\PS2.GS.Sprite.comp" -o $spv

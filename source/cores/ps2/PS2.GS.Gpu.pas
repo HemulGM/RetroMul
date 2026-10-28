@@ -1,10 +1,10 @@
 ﻿unit PS2.GS.Gpu;
 
 // GS compute path: 32/24-bit sprites and prepared triangle fragments, with
-// nearest/bilinear 32/24-bit textures, no mipmapping, disjoint frame/depth
+// GS direct/palettized textures and mipmapping, disjoint frame/depth
 // surfaces and no texture feedback. Other draws keep the software pipeline.
 // Triangle coverage/interpolation stay on the host; shading runs on the GPU.
-// Queued draws retain their own parameters until Sync publishes their
+// Queued draws retain their own parameters and CLUT until Sync publishes their
 // writes to CPU consumers. Compute barriers order draws within each batch.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$POINTERMATH ON}
@@ -37,17 +37,18 @@ type
     FTriangles: Int64;
     FFragmentsUsed, FFragmentStart, FFragmentCount: Integer;
     FTriangleState: TPS2GSDraw;
-    function Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean;
+    FHostClut: PWord;
+    function Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal = $7F): Boolean;
     procedure WriteState(const D: TPS2GSDraw; const V: TPS2GSVertex);
     procedure FlushFragments;
   public
-    constructor Create(RAM: Pointer);
+    constructor Create(RAM: Pointer; Clut: PWord = nil);
     destructor Destroy; override;
     procedure Sync; override;
     function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
-      X0, Y0, X1, Y1: Integer): Boolean; override;
+      X0, Y0, X1, Y1: Integer; Lod: Single): Boolean; override;
     function BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean; override;
-    procedure Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer); override;
+    procedure Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer; Lod: Single); override;
     procedure EndTriangle; override;
     property Draws: Int64 read FDraws;
     property TexturedDraws: Int64 read FTexturedDraws;
@@ -60,16 +61,17 @@ implementation
 const
 {$I shaders\PS2.GS.Sprite.inc}
 
-constructor TPS2GSGpu.Create(RAM: Pointer);
+constructor TPS2GSGpu.Create(RAM: Pointer; Clut: PWord);
 begin
   inherited Create;
+  FHostClut := Clut;
   FCompute := TVulkanCompute.Create;
   FRAM := FCompute.ImportHost(RAM, PS2GSMemorySize);
   if FRAM = nil then
     raise Exception.Create('Vulkan GS needs coherent host-memory import for GS VRAM');
-  FState := FCompute.CreateBuffer(BatchSize * 64 * SizeOf(Cardinal), True);
+  FState := FCompute.CreateBuffer(BatchSize * 384 * SizeOf(Cardinal), True);
   FCoordinates := FCompute.CreateBuffer(BatchSize * 4096 * SizeOf(Integer), True);
-  FFragments := FCompute.CreateBuffer(FragmentCapacity * 10 * SizeOf(Cardinal), True);
+  FFragments := FCompute.CreateBuffer(FragmentCapacity * 11 * SizeOf(Cardinal), True);
   FKernel := FCompute.CreateKernel(PS2SpriteSPIRV, 4, SizeOf(TPush));
   FCompute.Bind(FKernel, [FRAM, FState, FCoordinates, FFragments]);
 end;
@@ -98,7 +100,35 @@ begin
   Result := Trunc(D);
 end;
 
-function TPS2GSGpu.Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean;
+// The same discrete choices as TPS2GSDrawer.Texel: choose on the host so
+// conversion/rounding of LOD never depends on GPU floating-point controls.
+function MipCode(const D: TPS2GSDraw; Lod: Single): Cardinal;
+begin
+  if not D.TME then Exit(0);
+  var L0 := 0;
+  var L1 := 0;
+  var Weight := 0;
+  var Linear := D.Linear;
+  if D.UseLod and (Lod >= 0) then
+  begin
+    Linear := D.MMIN in [1, 4, 5];
+    if (D.MMIN >= 2) and (D.MXL > 0) then
+    begin
+      if D.MMIN in [2, 4] then
+        L0 := Min(Trunc(Lod + 0.5), D.MXL)
+      else
+      begin
+        L0 := Min(Trunc(Lod), D.MXL);
+        if L0 < D.MXL then Weight := Round((Lod - L0) * 16);
+      end;
+      L1 := L0;
+      if Weight > 0 then L1 := L0 + 1;
+    end;
+  end;
+  Result := Cardinal(L0 or (L1 shl 3) or (Weight shl 6) or (Ord(Linear) shl 11));
+end;
+
+function TPS2GSGpu.Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal): Boolean;
 begin
   Result := False;
   if not (D.FPSM in [PSMCT32, PSMCT24]) or
@@ -116,19 +146,35 @@ begin
     if (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0)) then Exit;
   if D.TME then
   begin
-    if D.UseLod or (D.TW > 10) or (D.TH > 10) or not (D.TPSM in [PSMCT32, PSMCT24]) then Exit;
-    var W := 1 shl D.TW;
-    var H := 1 shl D.TH;
-    if D.WMS >= 2 then W := Max(W, Max(D.MINU, D.MAXU) + 1);
-    if D.WMT >= 2 then H := Max(H, Max(D.MINV, D.MAXV) + 1);
-    if D.WMS = 3 then W := 1024;
-    if D.WMT = 3 then H := 1024;
-    var T0 := D.TBP div 32;
-    var T1 := (D.TBP + 31) div 32 + Cardinal((H - 1) div 32) * D.TBW + Cardinal((W - 1) div 64);
-    // No texture feedback within one dispatch. Between dispatches the
-    // compute barriers allow a previous target to become the next texture.
-    if (T1 >= 512) or ((T1 >= F0) and (F1 >= T0)) or
-      (not D.ZMSK and (T1 >= Z0) and (Z1 >= T0)) then Exit;
+    if (D.TW > 10) or (D.TH > 10) or (D.MXL < 0) or (D.MXL > 6) or
+      not (D.TPSM in [PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ32, PSMZ24, PSMZ16, PSMZ16S,
+        PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]) then Exit;
+    if (D.TPSM in [PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]) and (FHostClut = nil) then Exit;
+    var Last := 0;
+    if D.UseLod and (D.MMIN >= 2) then Last := D.MXL;
+    for var L := 0 to Last do
+    begin
+      if (Levels and (Cardinal(1) shl L)) = 0 then Continue;
+      var BP := D.TBP; var BW := D.TBW;
+      if L > 0 then begin BP := D.LevelTBP[L]; BW := D.LevelTBW[L]; end;
+      var W := Max(1, (1 shl D.TW) shr L);
+      var H := Max(1, (1 shl D.TH) shr L);
+      if D.WMS = 2 then W := Max(W, (Max(D.MINU, D.MAXU) shr L) + 1);
+      if D.WMT = 2 then H := Max(H, (Max(D.MINV, D.MAXV) shr L) + 1);
+      if D.WMS = 3 then W := 1024;
+      if D.WMT = 3 then H := 1024;
+      var PW := 64; var PH := 32;
+      if D.TPSM in [PSMCT16, PSMCT16S, PSMZ16, PSMZ16S] then PH := 64;
+      if D.TPSM in [PSMT8, PSMT4] then
+      begin
+        PW := 128; PH := 64; BW := (BW + 1) shr 1;
+        if D.TPSM = PSMT4 then PH := 128;
+      end;
+      var T0 := BP div 32;
+      var T1 := (BP + 31) div 32 + Cardinal((H - 1) div PH) * BW + Cardinal((W - 1) div PW);
+      if (T1 >= 512) or ((T1 >= F0) and (F1 >= T0)) or
+        (not D.ZMSK and (T1 >= Z0) and (Z1 >= T0)) then Exit;
+    end;
   end;
   // Small draws cost more to submit than to draw on the host.
   if Int64(X1 - X0) * (Y1 - Y0) < 4096 then Exit;
@@ -137,7 +183,7 @@ end;
 
 procedure TPS2GSGpu.WriteState(const D: TPS2GSDraw; const V: TPS2GSVertex);
 begin
-  var P := PCardinal(FState.Data) + FUsed * 64;
+  var P := PCardinal(FState.Data) + FUsed * 384;
   P[0] := D.FBP; P[1] := D.FBW; P[2] := D.FPSM; P[3] := D.FBMSK;
   P[4] := D.ZBP; P[5] := D.ZPSM; P[6] := Ord(D.ZMSK);
   P[7] := 1;
@@ -161,16 +207,27 @@ begin
     P[41] := Cardinal(D.MINV); P[42] := Cardinal(D.MAXV);
     P[43] := Cardinal(D.TFX); P[44] := Ord(D.TCC);
     P[45] := Cardinal(D.TA0); P[46] := Ord(D.AEM); P[48] := Ord(D.Linear);
+    P[49] := Ord(D.Clut32); P[50] := Cardinal(D.ClutOffset); P[51] := Cardinal(D.TA1);
+    for var L := 0 to 6 do
+    begin
+      P[64 + L] := D.LevelTBP[L]; P[71 + L] := D.LevelTBW[L];
+    end;
+    P[64] := D.TBP; P[71] := D.TBW;
+    if D.TPSM in [PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH] then
+      Move(FHostClut^, P[128], 512 * SizeOf(Word));
   end;
 end;
 
 function TPS2GSGpu.Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
-  X0, Y0, X1, Y1: Integer): Boolean;
+  X0, Y0, X1, Y1: Integer; Lod: Single): Boolean;
 begin
   Result := False;
-  if not Supports(D, X0, Y0, X1, Y1) then Exit;
+  var Mip := MipCode(D, Lod);
+  if not Supports(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or
+    (Cardinal(1) shl ((Mip shr 3) and 7))) then Exit;
   if FUsed = BatchSize then Sync;
   WriteState(D, V);
+  PCardinal(FState.Data)[FUsed * 384 + 52] := Mip;
   if D.TME then
   begin
     // Keep the CPU's arithmetic and rounding for UV/STQ interpolation.
@@ -241,7 +298,7 @@ begin
   FFragmentCount := 0;
 end;
 
-procedure TPS2GSGpu.Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer);
+procedure TPS2GSGpu.Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer; Lod: Single);
 begin
   if FFragmentsUsed = FragmentCapacity then
   begin
@@ -252,12 +309,13 @@ begin
   end;
   // The software edge walker emits each covered pixel exactly once. It
   // supplies the already rounded attributes, avoiding GPU float differences.
-  var P := PCardinal(FFragments.Data) + FFragmentsUsed * 10;
+  var P := PCardinal(FFragments.Data) + FFragmentsUsed * 11;
   P[0] := Cardinal(X); P[1] := Cardinal(Y); P[2] := Z;
   P[3] := Cardinal(R); P[4] := Cardinal(G); P[5] := Cardinal(B);
   P[6] := Cardinal(A); P[7] := Cardinal(F);
   PInteger(@P[8])^ := U;
   PInteger(@P[9])^ := V;
+  P[10] := MipCode(FTriangleState, Lod);
   Inc(FFragmentsUsed);
   Inc(FFragmentCount);
 end;

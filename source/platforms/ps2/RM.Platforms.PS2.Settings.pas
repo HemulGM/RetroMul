@@ -28,7 +28,7 @@ begin
       ['interpreter', 'jit']), 'interpreter', True);
   end;
   Context.Heading('GroupPS2Rendering', 'PS2 rendering');
-  Context.AddChoice('RowPS2Renderer', 'Graphics Synthesizer', 'Software rendering or experimental Vulkan compute for 32/24-bit sprites and triangle pixels with nearest/bilinear textures. Unsupported draws and devices use the CPU. Vulkan may be slower. Applies during play.', 'Video', 'Renderer', SettingChoices(['Software, multithreaded', 'Software, one thread', 'Vulkan (experimental)'], ['threads', 'single', 'vulkan']), 'threads', True);
+  Context.AddChoice('RowPS2Renderer', 'Graphics Synthesizer', 'Software rendering or experimental Vulkan compute for 32/24-bit targets, direct/palettized textures and mipmapping. Unsupported draws and devices use the CPU. Vulkan may be slower. Applies during play.', 'Video', 'Renderer', SettingChoices(['Software, multithreaded', 'Software, one thread', 'Vulkan (experimental)'], ['threads', 'single', 'vulkan']), 'threads', True);
   Context.Heading('GroupPS2System', 'System');
   Context.AddChoice('RowPS2BIOSMode', 'BIOS', 'High-level emulation needs no BIOS. Automatic uses the IOP modules of a BIOS found in the settings, beside the game or in the ps2 folder; External boots a PlayStation 2 BIOS.', 'Hardware', 'BIOSMode', SettingChoices(['High-level', 'Automatic', 'External'], ['hle', 'auto', 'external']), 'hle');
   Context.AddPath('RowPS2BIOS', 'BIOS file', 'Optional PlayStation 2 BIOS image (4 MiB).', 'Hardware', 'BIOS', '', False);

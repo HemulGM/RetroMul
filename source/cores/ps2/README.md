@@ -77,8 +77,8 @@ and pipeline state. `-Checked` enables checked core code.
 ## Experimental Vulkan GS
 
 `Video/Renderer=vulkan` independently selects Vulkan compute for supported
-32/24-bit sprites and triangle pixels, including 32/24-bit nearest/bilinear textures without
-mipmaps. This uses `RM.Vulkan.Compute` from the Xbox branch (3f3ce45), with
+32/24-bit sprites and triangle pixels, including all GS direct and palettized
+texture formats and mipmapping. This uses `RM.Vulkan.Compute` from the Xbox branch (3f3ce45), with
 coherent GS VRAM import. Small draws, texture feedback,
 overlapping surfaces and unsupported storage
 formats retain the software path. If device creation or host-memory import
@@ -90,6 +90,11 @@ alpha, masks, texture functions and 24-bit preservation. Sprite UV/STQ
 interpolation stays on the CPU with the software renderer's arithmetic;
 integer coordinates are uploaded per column/row. The GPU performs exact
 integer filtering and sampling, including all clamp/repeat modes and TEXA.
+Each queued draw keeps a CLUT snapshot (including 16-bit palettes and CSA).
+Texture swizzle tables are generated from `PS2.GS.Memory`. LOD selection and
+the 4-bit inter-level weight are computed on the CPU with the same rounding
+as the software path; the GPU samples the chosen levels and blends integers.
+Triangle safety checks conservatively cover all potentially used levels.
 Triangles keep the software edge walker, clipping and attribute interpolation
 on the host; the GPU consumes the exact integer fragments for texture sampling,
 tests, blending and writes. A 65536-fragment arena is split and synchronized
@@ -109,6 +114,9 @@ Regenerate its embedded SPIR-V with `source/cores/ps2/shaders/build.ps1`
 render-to-texture ordering, transfers, CLUT state and live mode changes.
 Another 256 triangles cover winding, clipping, flat/Gouraud colours, UV/STQ,
 both host rounding modes, varying depth/fog and fragment-arena rollover.
+An additional 312 cases cover all 13 texture formats, CLUT/CSA/CSM/TEXA,
+all minification modes, multiple mip levels, sprites and triangles. A separate
+test mutates the host CLUT while two draws are pending in the same GPU batch.
 It requires a Vulkan device with coherent host-memory import.
 
 ## Limits

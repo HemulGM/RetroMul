@@ -347,7 +347,7 @@ begin
     FView.SaveSnapshot(SNAPSHOT_AUTOSAVE);
   except
     on E: Exception do
-      ShowRetroMessage(FView, Translate('Autosave failed: ') + E.Message);
+      ShowRetroMessage(FView, Translate('Autosave failed: ') + Translate(E.Message));
   end;
 end;
 

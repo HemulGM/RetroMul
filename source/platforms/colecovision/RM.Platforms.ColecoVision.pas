@@ -121,7 +121,7 @@ begin
     end;
   RegisterPlatformServices('colecovision', Service);
   RegisterSettingsProfile('ColecoVision', TColecoSettings);
-  RegisterPlatformSettingsDevices('colecovision', TPlatformSettingsDevices);
+  RegisterPlatformSettingsDevices('colecovision', TColecoSettingsDevices);
   RegisterPlatformDeviceCallouts('colecovision', TColecoDeviceCallouts);
   RegisterPlatformControlsHelp('colecovision', TColecoControlsHelp);
   RegisterPlatformSettingsHandler('colecovision', TPlatformSettingsHandler);

@@ -146,6 +146,7 @@ type
     FPlatformPicker: TComboBox;
     FCategoryIcons: array[SETTINGS_CATEGORY_GENERAL..SETTINGS_CATEGORY_PERIPHERALS] of TControl;
     FPage: string;
+    FPageBuildError: string;
     FGroup: TPanel;
     FPreview: TControl;
     FPreviewGroup: TPanel;
@@ -176,6 +177,7 @@ type
     procedure ClearPathClick(Sender: TObject);
     procedure SaveTemplateClick(Sender: TObject);
     procedure BuildPage(PreserveScroll: Boolean = False);
+    procedure BuildPageContent(PreserveScroll: Boolean);
     procedure RequestRebuild;
     procedure StorePage;
     function CurrentCoreId: string;
@@ -249,6 +251,8 @@ type
     property SettingsSearch: TEdit read FSearch;
     property Category: Integer read FCategory;
     property CorePage: string read FCorePage;
+    // Diagnostic detail for callers; the UI displays a single translated message.
+    property PageBuildError: string read FPageBuildError;
     procedure Poll;
     procedure CancelCapture;
     property InputManager: TInputManager read FInput;
@@ -994,9 +998,61 @@ end;
 
 procedure TSettingsView.BuildPage(PreserveScroll: Boolean);
 begin
+  var Draft: TMemIniFile := nil;
+  var Before := TStringList.Create;
+  try
+    FPageBuildError := '';
+    try
+      Draft := FSession.Drafts[FPage];
+      Draft.GetStrings(Before);
+      BuildPageContent(PreserveScroll);
+      ButtonApply.Enabled := True;
+      ButtonReset.Enabled := True;
+      ButtonRefresh.Enabled := FInput <> nil;
+    except
+      on E: Exception do
+      begin
+        FPageBuildError := E.ClassName + ': ' + E.Message;
+        FBuilding := True;
+        try
+          // Drop partially rendered controls before their definitions. ReleasePage
+          // disconnects events and capture and retires the controls through FMX.
+          ReleasePage;
+          if Draft <> nil then
+          begin
+            Draft.Clear;
+            Draft.SetStrings(Before);
+          end;
+          FGroup := nil;
+          FPreviewGroup := nil;
+          FAutosaveMinutes := nil;
+          FVolumeValue := nil;
+          FNextKind := TSettingsRowKind.Standard;
+          LabelConfigurationNotice.Text := '';
+          PanelConfigurationNotice.Visible := False;
+          LabelStatus.Text := Translate('Unable to build the settings page.');
+          ButtonApply.Enabled := False;
+          ButtonReset.Enabled := False;
+          ButtonRefresh.Enabled := False;
+        finally
+          FBuilding := False;
+        end;
+        Resize;
+      end;
+    end;
+  finally
+    Before.Free;
+  end;
+end;
+
+procedure TSettingsView.BuildPageContent(PreserveScroll: Boolean);
+begin
   var Position := VertScrollBoxScroll.ViewportPosition;
+  var Complete := False;
   FBuilding := True;
   VertScrollBoxScroll.BeginUpdate;
+  LayoutSettingsMainColumn.BeginUpdate;
+  LayoutSettingsPreviewColumn.BeginUpdate;
   try
     FPagePicker.ItemIndex := FCategory;
     CancelCapture;
@@ -1009,8 +1065,6 @@ begin
     ReleasePage;
     FContext.PageId := FPage;
     FContext.Draft := FSession.Drafts[FPage];
-    LayoutSettingsMainColumn.BeginUpdate;
-    LayoutSettingsPreviewColumn.BeginUpdate;
     LayoutContent.Margins.Right := Max(16, VertScrollBoxScroll.Width - 1240);
     FGroup := nil;
     FHeight := 0;
@@ -1164,21 +1218,39 @@ begin
         LabelStatus.Text := Translate('Configuration changes stay in this draft until you click Apply. Hardware options apply when you next open a ROM.');
     end;
     WireConfigurationChanges;
+    Complete := True;
   finally
-    FBuilding := False;
-    UpdateShaderPreview;
-    UpdateConfigurationNotice;
-    Resize;
-    LayoutSettingsMainColumn.EndUpdate;
-    LayoutSettingsPreviewColumn.EndUpdate;
-    VertScrollBoxScroll.EndUpdate;
-    if PreserveScroll then
-      VertScrollBoxScroll.ViewportPosition := TPointF.Create(0, EnsureRange(Position.Y, 0,
-          Max(0, VertScrollBoxScroll.ContentBounds.Height - VertScrollBoxScroll.ClientHeight)))
-    else
-      VertScrollBoxScroll.ViewportPosition := TPointF.Zero;
-    SearchChange(FSearch);
+    try
+      if Complete then
+      begin
+        UpdateShaderPreview;
+        UpdateConfigurationNotice;
+      end;
+    finally
+      // Balance every update even when a provider, preview or notice fails.
+      // Keep resize callbacks suspended until all containers are settled.
+      try
+        try
+          LayoutSettingsMainColumn.EndUpdate;
+        finally
+          LayoutSettingsPreviewColumn.EndUpdate;
+        end;
+      finally
+        try
+          VertScrollBoxScroll.EndUpdate;
+        finally
+          FBuilding := False;
+        end;
+      end;
+    end;
   end;
+  Resize;
+  if PreserveScroll then
+    VertScrollBoxScroll.ViewportPosition := TPointF.Create(0, EnsureRange(Position.Y, 0,
+        Max(0, VertScrollBoxScroll.ContentBounds.Height - VertScrollBoxScroll.ClientHeight)))
+  else
+    VertScrollBoxScroll.ViewportPosition := TPointF.Zero;
+  SearchChange(FSearch);
 end;
 
 procedure TSettingsView.RequestRebuild;
@@ -1284,6 +1356,8 @@ end;
 
 procedure TSettingsView.UpdateConfigurationNotice;
 begin
+  if FPageBuildError <> '' then
+    Exit;
   var platform := SettingsPlatforms.Find(FPage);
   var Text := '';
   if (platform <> nil) and platform.HasConfiguration then
@@ -1305,6 +1379,8 @@ end;
 
 procedure TSettingsView.StorePage;
 begin
+  if FPageBuildError <> '' then
+    Exit;
   for var Field in FFields do
     Field.Pull;
   if (FPage <> 'main') and (FInput <> nil) then
@@ -2406,6 +2482,8 @@ begin
       var Visual := D.Provider.CreateVisual(D.Context);
       D.Control := Visual.Control;
       D.Diagram := Visual.Diagram;
+      if D.Control = nil then
+        raise EInvalidOpException.Create('Settings device provider returned no control');
       P.Height := Visual.InitialHeight;
       var Preview := D.Control;
       if D.Diagram <> nil then
@@ -2654,6 +2732,8 @@ end;
 
 procedure TSettingsView.ResetClick(Sender: TObject);
 begin
+  if FPageBuildError <> '' then
+    Exit;
   CancelCapture;
   for var Field in FFields do
     Field.Definition.Reset;
@@ -2851,6 +2931,8 @@ end;
 
 procedure TSettingsView.ApplyClick(Sender: TObject);
 begin
+  if FPageBuildError <> '' then
+    Exit;
   try
     CancelCapture;
     StorePage;

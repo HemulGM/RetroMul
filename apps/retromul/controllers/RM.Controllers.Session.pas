@@ -511,7 +511,7 @@ begin
             BeginGameLoading(FileName, DisplayName, StartPaused or (Choice = TRetroDialogChoice.Accept), Snapshot);
           except
             on E: Exception do
-              ShowRetroMessage(FView, Translate('Unable to open game: ') + E.Message);
+              ShowRetroMessage(FView, Translate('Unable to open game: ') + Translate(E.Message));
           end;
         end;
       finally
@@ -638,7 +638,7 @@ begin
 
             try
               if ErrorText <> '' then
-                ShowRetroMessage(FView, Translate('Unable to open game: ') + ErrorText)
+                ShowRetroMessage(FView, Translate('Unable to open game: ') + Translate(ErrorText))
               else
               try
                 InstallCore(Core, Path, Title, Paused);
@@ -646,7 +646,7 @@ begin
                   FView.LoadSnapshot(Snapshot);
               except
                 on E: Exception do
-                  ShowRetroMessage(FView, Translate('Unable to open game: ') + E.Message);
+                  ShowRetroMessage(FView, Translate('Unable to open game: ') + Translate(E.Message));
               end;
             finally
               EndCoreLoading;
@@ -806,8 +806,8 @@ begin
         FState.Session.Emulation.Pause;
       end;
       FView.SyncActivity;
-      FView.SetStatus(Translate('Input error: ') + E.Message);
-      ShowRetroMessage(FView, Translate('Input error: ') + E.Message);
+      FView.SetStatus(Translate('Input error: ') + Translate(E.Message));
+      ShowRetroMessage(FView, Translate('Input error: ') + Translate(E.Message));
       Exit;
     end;
   end;

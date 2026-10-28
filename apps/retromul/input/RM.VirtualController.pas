@@ -496,6 +496,9 @@ procedure TVirtualElement.DrawLabel(Canvas: TCanvas; const R: TRectF; const Text
 begin
   Canvas.Fill.Color := TAlphaColors.White;
   Canvas.Font.Size := Max(9, Min(R.Width, R.Height) * 0.3);
+  var TextWidth := Canvas.TextWidth(Text);
+  if TextWidth > R.Width - 8 then
+    Canvas.Font.Size := Max(6, Canvas.Font.Size * Max(1, R.Width - 8) / Max(1, TextWidth));
   Canvas.FillText(R, Text, False, Alpha, [], TTextAlign.Center, TTextAlign.Center);
 end;
 

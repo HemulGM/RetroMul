@@ -44,6 +44,10 @@ type
 
 function AddSettingsControl(Page: TSettingsPageBuilder; const Id, Caption, Description: string; RowKind: TSettingsRowKind; const Factory: TSettingsControlFactory): TSettingsControlDefinition;
 begin
+  if Page = nil then
+    raise EArgumentNilException.Create('Page');
+  if not Assigned(Factory) then
+    raise EArgumentNilException.Create('Factory');
   Result := TSettingsControlDefinition.Create;
   Result.RowKind := RowKind;
   Result.Factory := Factory;

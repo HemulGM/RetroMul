@@ -476,7 +476,7 @@ begin
     FView.LoadRom(Game.FileInfo.Location, Game.Title, Snapshot <> '', Snapshot);
   except
     on E: Exception do
-      ShowRetroMessage(FView, Translate('Unable to open game: ') + E.Message);
+      ShowRetroMessage(FView, Translate('Unable to open game: ') + Translate(E.Message));
   end;
 end;
 

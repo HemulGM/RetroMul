@@ -130,7 +130,7 @@ procedure ShowRetroMessage(Owner: TComponent; const Text: string; Kind: TRetroDi
 begin
   var Host := FindHost(OwnerForm(Owner), True);
   if Host <> nil then
-    Host.Enqueue(Owner, Text, Kind, nil);
+    Host.Enqueue(Owner, Translate(Text), Kind, nil);
 end;
 
 procedure ShowRetroConfirmation(Owner: TComponent; const Text: string; const OnResult: TProc<Boolean>; const AcceptText, CancelText: string);

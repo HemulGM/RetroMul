@@ -603,7 +603,7 @@ begin
           FView.LoadSnapshot('Quick');
       except
         on E: Exception do
-          ShowRetroMessage(FView, Translate('Snapshot: ') + E.Message);
+          ShowRetroMessage(FView, Translate('Snapshot: ') + Translate(E.Message));
       end;
     end;
   end;

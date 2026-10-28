@@ -88,7 +88,7 @@ type
     FCode, FData: PByte;
     FCodeMask, FDataMask: Cardinal;
     FOnKick: TPS2VUKick;
-    // A VI register the current pair loads (ILW, ILWR, MTIR) and its value
+    // A VI register the current pair's integer unit writes and its value
     // before; a branch in the next pair sees that older value (FBranchReg,
     // FBranchOld). -1: none.
     FLoadReg, FBranchReg: Integer;
@@ -1638,20 +1638,39 @@ begin
         RunTrace[RunTraceCount * 16 + K] := Word(FVI[K]);
       Inc(RunTraceCount);
     end;
-    // An integer register loaded by ILW, ILWR or MTIR reaches a conditional
-    // branch in the next pair only after it has read its operands (the
-    // integer ALU's results reach it at once).
+    // An integer register written by the integer unit (ILW, ILWR, MTIR,
+    // the integer ALU, LQI/LQD/SQI/SQD address updates) reaches a
+    // conditional branch in the next pair only after it has read its
+    // operands. Flag reads (FS*/FM*/FC*) reach it at once.
     FBranchReg := FLoadReg;
     FBranchOld := FLoadOld;
     FLoadReg := -1;
     if (UpperOp and $80000000) = 0 then
       if (LowerOp and $80000000) = 0 then
       begin
-        if (LowerOp shr 25) = $04 then // ILW
-          FLoadReg := Integer((LowerOp shr 16) and 15);
+        case LowerOp shr 25 of
+          $04, $08, $09: // ILW, IADDIU, ISUBIU
+            FLoadReg := Integer((LowerOp shr 16) and 15);
+        end;
       end
-      else if ((LowerOp and $3C) = $3C) and ((((LowerOp shr 4) and $7C) or (LowerOp and 3)) in [$3C, $3E]) then
-        FLoadReg := Integer((LowerOp shr 16) and 15); // MTIR, ILWR
+      else
+        case LowerOp and $3F of
+          $30, $31, $34, $35: // IADD, ISUB, IAND, IOR
+            FLoadReg := Integer((LowerOp shr 6) and 15);
+          $32: // IADDI
+            FLoadReg := Integer((LowerOp shr 16) and 15);
+          $3C..$3F:
+            case ((LowerOp shr 4) and $7C) or (LowerOp and 3) of
+              $3C, $3E: // MTIR, ILWR
+                FLoadReg := Integer((LowerOp shr 16) and 15);
+              $34, $36: // LQI, LQD
+                FLoadReg := Integer((LowerOp shr 11) and 15);
+              $35, $37: // SQI, SQD
+                FLoadReg := Integer((LowerOp shr 16) and 15);
+            end;
+        end;
+    if FLoadReg = 0 then
+      FLoadReg := -1;
     if FLoadReg >= 0 then
       FLoadOld := FVI[FLoadReg];
     FUpperReg := -1;

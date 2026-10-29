@@ -6,7 +6,7 @@ uses
   Core.Storage, System.Classes, System.SysUtils, System.SyncObjs, NES.Types,
   NES.Console, NES.Input, PCM.Audio, NES.AudioDiagnostics, NES.Controller,
   Core.InputConfig, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder,
-  NES.MiraclePianoDevice;
+  NES.MiraclePianoDevice, NES.Options;
 
 const
   NES_SAMPLE_RATE = 44100;
@@ -23,6 +23,8 @@ type
     TapeState: TTapeState;
     TapeProgress: TTapeProgress;
     DiskSide: Integer;
+    PlaybackSpeed: Integer;
+    CropLeft, CropRight, CropTop, CropBottom: Integer;
     DiskNames: TArray<string>;
   end;
 
@@ -38,6 +40,8 @@ type
     FAudioEnabled: Boolean;
     FAudioVolume: Single;
     FDiskWriteProtected: Boolean;
+    FOptions: TNesOptions;
+    FOptionsPending: Boolean;
     FDiagnostics: TAudioDiagnostics;
     FInput: TNesInput;
     FPendingCoins: array[0..1] of Integer;
@@ -88,6 +92,7 @@ type
     destructor Destroy; override;
     procedure ConfigureAudio(Volume: Single);
     procedure ConfigureDiskWriteProtection(Value: Boolean);
+    procedure ConfigureOptions(const Options: TNesOptions);
     procedure StopAndSave;
     procedure SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2: TKeyMap); overload;
     procedure SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2, Keys3, Keys4: TKeyMap); overload;
@@ -187,6 +192,11 @@ begin
     FDiskWriteProtected := PortIni.ReadBool('FDS', 'WriteProtected', False);
     FConsole.ConfigureDiskSystem(PortIni.ReadString('FDS', 'BIOSFile', ''), FDiskWriteProtected);
     FConsole.LoadRom(Stream, RomName, RegionOverride);
+    FOptions.Load(PortIni);
+    FConsole.Ppu.SetCustomPalette(LoadNesPalette(FStorage, FOptions.PaletteFile));
+    FConsole.ConfigureOptions(FOptions);
+    if (FConsole.DiskSystem <> nil) and not FOptions.FdsAutoLoad then
+      FConsole.DiskSystem.Eject;
     if (Ports.Devices[1] = 'auto') and PortIni.ReadBool('Input', 'Zapper', False) then
       Ports.Devices[1] := 'zapper';
   finally
@@ -235,8 +245,8 @@ begin
     Exit;
   FStatus.DiskSide := Disk.Side;
   SetLength(FStatus.DiskNames, Disk.Media.SideCount);
-  for var I := 0 to High(FStatus.DiskNames) do
-    FStatus.DiskNames[I] := Disk.Media.SideName(I);
+  for var i := 0 to High(FStatus.DiskNames) do
+    FStatus.DiskNames[i] := Disk.Media.SideName(i);
 end;
 
 function TNesEmulationThread.GetDiscCount: Integer;
@@ -288,6 +298,19 @@ begin
   FLock.Enter;
   try
     FAudioVolume := EnsureRange(Volume, 0.0, 1.0);
+  finally
+    FLock.Leave;
+  end;
+  FWake.SetEvent;
+end;
+
+procedure TNesEmulationThread.ConfigureOptions(const Options: TNesOptions);
+begin
+  FLock.Enter;
+  try
+    FOptions := Options;
+    FOptions.Normalize;
+    FOptionsPending := True;
   finally
     FLock.Leave;
   end;
@@ -869,6 +892,10 @@ begin
   FLock.Enter;
   try
     Status := FStatus;
+    Status.CropLeft := FOptions.CropLeft;
+    Status.CropRight := FOptions.CropRight;
+    Status.CropTop := FOptions.CropTop;
+    Status.CropBottom := FOptions.CropBottom;
     Result := FFramePending;
     if Result then
     begin
@@ -948,10 +975,13 @@ procedure TNesEmulationThread.RunEmulation;
 begin
   var Samples: TArray<SmallInt>;
   SetLength(Samples, FAudioFormat.BlockFrames);
-  var FramePeriod := Round(TStopwatch.Frequency / FrameRate(FConsole.Region));
+  var FramePeriod: Int64;
   var NextFrame := TStopwatch.GetTimeStamp;
   var FpsStart := NextFrame;
   var Frames := 0;
+  var PlaybackSpeed := 1;
+  var LastDiskSide := FStatus.DiskSide;
+  var Options: TNesOptions;
   FPaused := False;
   var Failed := False;
   var NextSave := TStopwatch.GetTimeStamp + TStopwatch.Frequency * 5;
@@ -963,6 +993,15 @@ begin
         FLock.Enter;
         try
           FConsole.SetDiskWriteProtection(FDiskWriteProtected);
+          if FOptionsPending then
+          begin
+            FConsole.ConfigureOptions(FOptions);
+            FOptionsPending := False;
+            // Crop changes must also publish while paused, without advancing CPU.
+            FFrame := FConsole.Ppu.Frame;
+            FFramePending := True;
+          end;
+          Options := FOptions;
         finally
           FLock.Leave;
         end;
@@ -1079,6 +1118,19 @@ begin
           Continue;
         end;
 
+        // Fast loading changes only the host deadline. Every CPU/PPU/disk
+        // cycle is still executed, including IRQ, DMA and serial writes.
+        var Speed := 1;
+        var Disk := FConsole.DiskSystem;
+        if Options.FdsFastForward and (Disk <> nil) and Disk.ReadActive then
+          Speed := Options.FdsLoadSpeed;
+        if Speed <> PlaybackSpeed then
+        begin
+          PlaybackSpeed := Speed;
+          FAudio.Clear;
+          NextFrame := TStopwatch.GetTimeStamp;
+        end;
+        FramePeriod := Round(TStopwatch.Frequency / (FrameRate(FConsole.Region) * Speed));
         var ClockNow := TStopwatch.GetTimeStamp;
         if ClockNow < NextFrame then
         begin
@@ -1089,7 +1141,7 @@ begin
         if Terminated then
           Break;
 
-        FrameHints.TargetDurationNanos := Round(1000000000.0 / FrameRate(FConsole.Region));
+        FrameHints.TargetDurationNanos := Round(1000000000.0 / (FrameRate(FConsole.Region) * Speed));
         FrameHints.BeginWork;
         // Consume one request per slot per emulated frame. Pausing keeps requests.
         FLock.Enter;
@@ -1113,17 +1165,27 @@ begin
 
         var T1 := TStopwatch.GetTimeStamp;
         FConsole.RunFrame;
+        // Automatic changes originate inside BIOS assistance. Preserve the
+        // same persistence boundary as the manual side-change command.
+        var CurrentDisk := FConsole.DiskSystem;
+        if (CurrentDisk <> nil) and (CurrentDisk.Side <> LastDiskSide) then
+        begin
+          FConsole.SaveBattery;
+          LastDiskSide := CurrentDisk.Side;
+        end;
         var T2 := TStopwatch.GetTimeStamp;
         FRunFrameMs := (T2 - T1) * 1000.0 / TStopwatch.Frequency;
         var Count: Integer;
         repeat
           Count := FConsole.Apu.PopSamples(Samples);
-          if Count > 0 then
+          // Drain, but do not queue accelerated audio. It would retain the
+          // old wall-clock duration and delay sound after the load completes.
+          if (Count > 0) and (Speed = 1) then
           begin
             if FUsesMiraclePiano then
               FConsole.MiraclePiano.MixAudio(Samples, Count, NES_SAMPLE_RATE);
-            for var I := 0 to Count - 1 do
-              Samples[I] := Round(Samples[I] * AudioVolume);
+            for var i := 0 to Count - 1 do
+              Samples[i] := Round(Samples[i] * AudioVolume);
             FAudio.Submit(Samples, Count);
             FLock.Enter;
             try
@@ -1161,6 +1223,7 @@ begin
             Frames := 0;
             FpsStart := ClockNow;
           end;
+          FStatus.PlaybackSpeed := Speed;
         finally
           FLock.Leave;
         end;

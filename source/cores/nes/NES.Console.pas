@@ -6,7 +6,7 @@ uses
   Core.Storage, System.SysUtils, System.Classes, NES.State, NES.Types, NES.CPU,
   NES.PPU, NES.APU, NES.Bus, NES.Cartridge, NES.Controller, Core.InputConfig,
   NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice,
-  NES.DiskSystem;
+  NES.DiskSystem, NES.Options;
 
 type
   TNesConsole = class
@@ -35,7 +35,7 @@ type
     FDmcDmaCycles: Integer;
     FMapperHasCpuClock, FMapperHasCpuBus, FMapperHasIrq, FMapperHasAudio: Boolean;
     FFdsProtectionConfigured, FFdsWriteProtected: Boolean;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 24);
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 25);
     function GetRomIdentity: string;
     function GetUsesMiraclePiano: Boolean;
     function GetUsesPowerPad: Boolean;
@@ -52,6 +52,7 @@ type
     function DiskSystem: TMapperFds;
     procedure ConfigureDiskSystem(const BiosFile: string; WriteProtected: Boolean);
     procedure SetDiskWriteProtection(Value: Boolean);
+    procedure ConfigureOptions(const Options: TNesOptions);
     procedure OpenDisk(const FileName, SaveDirectory: string);
     procedure SaveSnapshot(const FileName: string);
     procedure LoadSnapshot(const FileName: string);
@@ -89,7 +90,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper, Core.Snapshots;
 
 const
-  SNAPSHOT_VERSION = 24;
+  SNAPSHOT_VERSION = 25;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -459,6 +460,8 @@ begin
   case RegionOverride of
     TRegionOverride.PAL:
       FRegion := TNesRegion.PAL;
+    TRegionOverride.Dendy:
+      FRegion := TNesRegion.Dendy;
     TRegionOverride.Auto:
       begin
         if FCartridge.Metadata.Timing = TRomTiming.PAL then
@@ -495,6 +498,21 @@ procedure TNesConsole.ConfigureDiskSystem(const BiosFile: string; WriteProtected
 begin
   FCartridge.ConfigureFdsBIOS(BiosFile);
   SetDiskWriteProtection(WriteProtected);
+end;
+
+procedure TNesConsole.ConfigureOptions(const Options: TNesOptions);
+begin
+  FPpu.RemoveSpriteLimit := Options.RemoveSpriteLimit;
+  var Volumes: TNesChannelVolumes := Options.ChannelVolume;
+  if DiskSystem <> nil then
+  begin
+    DiskSystem.ChangeDelayMs := Options.FdsChangeDelayMs;
+    DiskSystem.RamReader := FBus.PeekInternalRam;
+    DiskSystem.AutoSwitchEnabled := Options.FdsAutoSwitch;
+    Volumes[5] := Options.FdsVolume;
+  end;
+  FApu.ConfigureMixer(Volumes, Options.SwapDutyCycles,
+    Options.SilenceUltrasonicTriangle, Options.DisableNoiseMode);
 end;
 
 procedure TNesConsole.SetDiskWriteProtection(Value: Boolean);
@@ -662,7 +680,11 @@ begin
   FCpu.PollInterrupts;
 
   if FPpu.FrameReady and not WasFrameReady then
+  begin
     FBus.ClockCoinFrame;
+    if DiskSystem <> nil then
+      DiskSystem.EndFrame;
+  end;
   Inc(FCpuCycles);
 end;
 

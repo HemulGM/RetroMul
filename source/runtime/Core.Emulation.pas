@@ -45,6 +45,9 @@ type
 
   TEmulationFrameRate = Core.Emulation.Timing.TEmulationFrameRate;
 
+const
+  DEFAULT_AUDIO_VOLUME = Core.Emulation.Config.DEFAULT_AUDIO_VOLUME;
+
 function EmulatorConfigFileName(const EmulatorId: string): string;
 
 function ReadEmulatorKey(Ini: TCustomIniFile; const Section, Name: string; DefaultValue: UInt32): UInt32;

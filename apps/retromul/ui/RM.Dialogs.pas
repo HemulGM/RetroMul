@@ -132,7 +132,8 @@ end;
 
 function TranslateCoreMessage(const Text: string): string;
 begin
-  for var Prefix in TArray<string>.Create('FDS BIOS must be exactly 8192 bytes: ', 'FDS BIOS file not found: ') do
+  for var Prefix in TArray<string>.Create('FDS BIOS must be exactly 8192 bytes: ', 'FDS BIOS file not found: ',
+    'NES palette file not found: ', 'NES palette must contain 192 or 1536 bytes: ') do
     if Text.StartsWith(Prefix) then
       Exit(Format(Translate(Prefix + '%s'), [Copy(Text, Length(Prefix) + 1, MaxInt)]));
   var Side := TRegEx.Match(Text, '^Disk ([0-9]+) · Side ([AB])$');

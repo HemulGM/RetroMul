@@ -3,7 +3,8 @@
 interface
 
 uses
-  NES.State, System.Math, NES.Types, NES.Consts, Core.AudioFilter;
+  NES.State, System.Math, System.SysUtils, NES.Types, NES.Consts,
+  Core.AudioFilter;
 
 type
   TApuRegisterWriteEvent = procedure(Cycle: UInt32; Address: UInt16; Value: UInt8) of object;
@@ -88,6 +89,8 @@ type
     FFrameIrqClearPending: Boolean;
     FSampleRate: Integer;
     FExpansionAudio: Double;
+    FChannelGain: array[0..5] of Double;
+    FSwapDutyCycles, FSilenceUltrasonicTriangle, FDisableNoiseMode: Boolean;
     FSampleTimer: Double;
     FSampleStep: Double;
     FBuffer: array of SmallInt;
@@ -137,6 +140,7 @@ type
     procedure SetRegion(Value: TNesRegion);
     procedure Reset;
     procedure SetSampleRate(Value: Integer);
+    procedure ConfigureMixer(const Volumes: array of Integer; SwapDutyCycles, SilenceUltrasonicTriangle, DisableNoiseMode: Boolean);
     procedure SetExpansionAudio(Value: Double); inline;
     procedure CpuWrite(Address: UInt16; Value: UInt8);
     function CpuReadStatus: UInt8;
@@ -280,8 +284,23 @@ constructor TApu.Create;
 begin
   inherited Create;
   SetSampleRate(44100);
+  for var I := 0 to High(FChannelGain) do
+    FChannelGain[I] := 1;
   SetLength(FBuffer, 16384);
   Reset;
+end;
+
+procedure TApu.ConfigureMixer(const Volumes: array of Integer; SwapDutyCycles, SilenceUltrasonicTriangle, DisableNoiseMode: Boolean);
+begin
+  if Length(Volumes) <> Length(FChannelGain) then
+    raise EArgumentException.Create('NES mixer channel count');
+  for var I := 0 to High(FChannelGain) do
+    FChannelGain[I] := EnsureRange(Volumes[I], 0, 200) / 100.0;
+  FSwapDutyCycles := SwapDutyCycles;
+  FSilenceUltrasonicTriangle := SilenceUltrasonicTriangle;
+  FDisableNoiseMode := DisableNoiseMode;
+  FMixValid := False;
+  FMixDirty := True;
 end;
 
 procedure TApu.SetRegion(Value: TNesRegion);
@@ -396,6 +415,11 @@ begin
   if SweepTarget > $7FF then
     Exit;
   var Duty: Integer := (Channel.Reg0 shr 6) and 3;
+  if FSwapDutyCycles then
+    if Duty = 1 then
+      Duty := 2
+    else if Duty = 2 then
+      Duty := 1;
   if DUTY_TABLE[Duty, Channel.SequenceStep and 7] = 0 then
     Exit;
   Result := PulseVolume(Channel);
@@ -404,6 +428,8 @@ end;
 function TApu.TriangleRawOutput: Integer;
 begin
   // Stopping the sequencer holds its DAC level; it does not output zero.
+  if FSilenceUltrasonicTriangle and (FTriangle.TimerReload < 2) then
+    Exit(0);
   Result := TRI_TABLE[FTriangle.SequenceStep and 31];
 end;
 
@@ -722,15 +748,16 @@ begin
   var P2: Integer := PulseRawOutput(FPulse2, 0);
   var Tri: Integer := TriangleRawOutput;
   var Noi: Integer := NoiseRawOutput;
-  var Key := (P1 + P2) or (Tri shl 5) or (Noi shl 9) or (Integer(FDmc.OutputLevel) shl 13);
+  var Key := P1 or (P2 shl 4) or (Tri shl 8) or (Noi shl 12) or (Integer(FDmc.OutputLevel) shl 16);
   if FMixValid and (FMixKey = Key) then
     Exit(FMixValue);
 
-  if (P1 + P2) = 0 then
+  var PulseInput := P1 * FChannelGain[0] + P2 * FChannelGain[1];
+  if PulseInput = 0 then
     PulseMix := 0
   else
   begin
-    PulseDenom := (8128.0 / (P1 + P2)) + 100.0;
+    PulseDenom := (8128.0 / PulseInput) + 100.0;
     if PulseDenom <= 0 then
       PulseMix := 0
     else
@@ -741,7 +768,8 @@ begin
     TndMix := 0
   else
   begin
-    TndInput := (Tri / 8227.0) + (Noi / 12241.0) + (FDmc.OutputLevel / 22638.0);
+    TndInput := (Tri * FChannelGain[2] / 8227.0) +
+      (Noi * FChannelGain[3] / 12241.0) + (FDmc.OutputLevel * FChannelGain[4] / 22638.0);
     if TndInput <= 0 then
       TndMix := 0
     else
@@ -973,7 +1001,7 @@ begin
   if FNoise.Timer <= 0 then
   begin
     FNoise.Timer := FNoise.TimerReload - 1;
-    if (FNoise.Reg2 and $80) <> 0 then
+    if ((FNoise.Reg2 and $80) <> 0) and not FDisableNoiseMode then
       Feedback := ((FNoise.Shift and 1) xor ((FNoise.Shift shr 6) and 1))
     else
       Feedback := ((FNoise.Shift and 1) xor ((FNoise.Shift shr 1) and 1));
@@ -1000,7 +1028,7 @@ begin
 
   // An output-rate low-pass cannot remove frequencies that have already
   // folded into the audible band. Keep its history at the APU clock rate.
-  FLp14Output := FLp14Output + FLp14Coefficient * (FAntiAlias.Process(MixSample + FExpansionAudio) - FLp14Output);
+  FLp14Output := FLp14Output + FLp14Coefficient * (FAntiAlias.Process(MixSample + FExpansionAudio * FChannelGain[5]) - FLp14Output);
   FSampleTimer := FSampleTimer + 1.0;
   while FSampleTimer >= FSampleStep do
   begin

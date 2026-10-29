@@ -34,9 +34,9 @@ type
   TMSXCPUAccessTrace = procedure(Time: Int64; Dummy, Write: Boolean; Address: Integer; Value: Byte);
 
   TMSXCommandAccessTrace = procedure(RAS, Data: Int64; Write, Enabled: Boolean; Address: Integer; Value: Byte);
+
   // Keep physical VRAM banks stable across mode switches. G6/G7 interleave
   // logical CPU, display and command addresses across the two 64 KiB banks.
-
   TMSXVDP = class(TSGVDP)
   private
     FModel: TMSXModel;

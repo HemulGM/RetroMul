@@ -75,6 +75,7 @@ type
 
   TSliderSettingsBinding = class(TSettingsBinding)
   public
+    procedure UpdateValueLabel;
     procedure Load; override;
     function Pull: Boolean; override;
   end;
@@ -103,8 +104,8 @@ begin
   begin
     var Choice := TChoiceSetting(Definition);
     SetLength(Result, Length(Choice.Items));
-    for var I := 0 to High(Result) do
-      Result[I] := Choice.Items[I].Value;
+    for var i := 0 to High(Result) do
+      Result[i] := Choice.Items[i].Value;
   end;
 end;
 
@@ -128,13 +129,13 @@ begin
   Combo.Items.Clear;
   var Selected := -1;
   var Fallback := -1;
-  for var I := 0 to High(Field.Items) do
+  for var i := 0 to High(Field.Items) do
   begin
-    Combo.Items.Add(Translate(Field.Items[I].Caption));
-    if SameText(Field.Items[I].Value, Field.Value) then
-      Selected := I;
-    if SameText(Field.Items[I].Value, Field.DefaultValue) then
-      Fallback := I;
+    Combo.Items.Add(Translate(Field.Items[i].Caption));
+    if SameText(Field.Items[i].Value, Field.Value) then
+      Selected := i;
+    if SameText(Field.Items[i].Value, Field.DefaultValue) then
+      Fallback := i;
   end;
   if Selected < 0 then
     Selected := Fallback;
@@ -195,10 +196,22 @@ begin
   Slider.Min := Field.Min;
   Slider.Max := Field.Max;
   Slider.Value := Field.Value;
+  UpdateValueLabel;
+end;
+
+procedure TSliderSettingsBinding.UpdateValueLabel;
+begin
+  if (RowView = nil) or (RowView.ValueLabel = nil) then
+    Exit;
+  var UnitText := TSliderSetting(Definition).UnitCaption;
+  if (UnitText <> '') and (UnitText <> '%') then
+    UnitText := ' ' + Translate(UnitText);
+  RowView.ValueLabel.Text := IntToStr(Round(TTrackBar(Control).Value)) + UnitText;
 end;
 
 function TSliderSettingsBinding.Pull: Boolean;
 begin
+  UpdateValueLabel;
   var Field := TSliderSetting(Definition);
   var Value := TTrackBar(Control).Value;
   Result := Abs(Field.Value - Value) > 0.0001;

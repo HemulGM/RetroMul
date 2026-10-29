@@ -496,6 +496,7 @@ uses
   NES.State in '..\..\source\cores\nes\NES.State.pas',
   NES.Audio.FDS in '..\..\source\cores\nes\NES.Audio.FDS.pas',
   NES.DiskSystem in '..\..\source\cores\nes\NES.DiskSystem.pas',
+  NES.Options in '..\..\source\cores\nes\NES.Options.pas',
   NES.Firmware in '..\..\source\cores\nes\NES.Firmware.pas',
   NES.Types in '..\..\source\cores\nes\NES.Types.pas',
   NES.APU in '..\..\source\cores\nes\NES.APU.pas',

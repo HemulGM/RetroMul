@@ -12,17 +12,26 @@ const
   FDS_MAPPER_ID = 20;
 
 type
+  TFdsDiskRequest = array[0..9] of Byte;
+
+  TFdsDiskHeader = array[0..55] of Byte;
+
+  TFdsRamReader = function(Address: Word): Byte of object;
   // Bytes on the magnetic track, including sync marks, gaps and CRCs. Writes
   // stay in this representation so new files and changed block sizes survive.
+
   TFdsMedia = class
   private
     FSides: TArray<NES.Types.TByteArray>;
     FIdentity: string;
+    function ReadHeader(Index: Integer; out Header: TFdsDiskHeader): Boolean;
     procedure DecodeSide(const Data: NES.Types.TByteArray; Offset, Capacity: Integer; HasCRC: Boolean);
   public
     constructor Create(const Data: NES.Types.TByteArray; QuickDisk: Boolean = False);
     class function HasSignature(const Data: TBytes): Boolean; static;
     function SideCount: Integer;
+    // -1: unavailable; -2: ambiguous. $FF in a BIOS request is a wildcard.
+    function MatchSide(const Request: TFdsDiskRequest): Integer;
     function SideName(Index: Integer): string;
     function SaveMemory: NES.Types.TByteArray;
     procedure LoadMemory(const Data: NES.Types.TByteArray);
@@ -45,17 +54,36 @@ type
     FSide, FPendingSide, FInsertDelay, FPosition, FDelay, FBytePhase: Integer;
     FScanning, FEndOfHead, FGapEnded, FBadCRC, FPreviousCRC, FWriteProtected: Boolean;
     FCRC: Word;
+    FChangeDelayMs: Integer;
+    FRamReader: TFdsRamReader;
+    FAutoSwitchEnabled, FStandardBios, FAutoSuspended: Boolean;
+    FAutoReadSeen, FAutoProbePending: Boolean;
+    FAutoIdleFrames, FAutoPollAge, FAutoPollCount, FAutoRetryFrames: Integer;
     FHeadBit, FReadBits, FReadShift, FWriteShift, FWriteModeControl: Byte;
+    procedure ClearAutoSwitch;
+    procedure SuspendAutoSwitch;
+    procedure SetAutoSwitchEnabled(Value: Boolean);
+    function AutoSwitchActive: Boolean;
+    function PeekRequestByte(Address: Word; out Value: Byte): Boolean;
     procedure TransferBit(MoveHead: Boolean);
     function MotorOn: Boolean;
+    function GetReadActive: Boolean;
+    procedure SetChangeDelayMs(Value: Integer);
     procedure StopDrive;
   public
     constructor Create(Media: TFdsMedia; const Bios: NES.Types.TByteArray);
     destructor Destroy; override;
     // Ownership passes only after success. CPU RAM and sound are preserved.
     procedure ReplaceMedia(Media: TFdsMedia);
-    procedure InsertSide(Index: Integer);
-    procedure Eject;
+    procedure InsertSide(Index: Integer; Automatic: Boolean = False);
+    procedure Eject(Automatic: Boolean = False);
+    procedure CheckBiosDiskRequest;
+    procedure ObserveDiskStatusRead;
+    procedure EndFrame;
+    function DebugAutoSwitch: string;
+    property AutoSwitchEnabled: Boolean read FAutoSwitchEnabled write SetAutoSwitchEnabled;
+    property AutoSwitchSuspended: Boolean read FAutoSuspended;
+    property RamReader: TFdsRamReader read FRamReader write FRamReader;
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
@@ -71,6 +99,8 @@ type
     procedure Reset; override;
     property Media: TFdsMedia read FMedia;
     property Side: Integer read FSide;
+    property ReadActive: Boolean read GetReadActive;
+    property ChangeDelayMs: Integer read FChangeDelayMs write SetChangeDelayMs;
     property WriteProtected: Boolean read FWriteProtected write FWriteProtected;
   end;
 
@@ -230,6 +260,56 @@ begin
   end;
 end;
 
+function TFdsMedia.ReadHeader(Index: Integer; out Header: TFdsDiskHeader): Boolean;
+const
+  Signature: AnsiString = '*NINTENDO-HVC*';
+begin
+  Result := False;
+  FillChar(Header, SizeOf(Header), 0);
+  var Track := FSides[Index];
+  var Position := 0;
+  while (Position < Length(Track)) and (Track[Position] = 0) do
+    Inc(Position);
+  if Position >= Length(Track) then
+    Exit;
+  var BitOffset := 0;
+  while ((Track[Position] shr BitOffset) and 1) = 0 do
+    Inc(BitOffset);
+  var FirstBit := Position * 8 + BitOffset + 1;
+  if FirstBit + SizeOf(Header) * 8 > Length(Track) * 8 then
+    Exit;
+  for var i := 0 to High(Header) do
+    for var Bit := 0 to 7 do
+    begin
+      var SourceBit := FirstBit + i * 8 + Bit;
+      Header[i] := Header[i] or (((Track[SourceBit div 8] shr (SourceBit and 7)) and 1) shl Bit);
+    end;
+  Result := (Header[0] = 1) and CompareMem(@Header[1], PAnsiChar(Signature), Length(Signature));
+end;
+
+function TFdsMedia.MatchSide(const Request: TFdsDiskRequest): Integer;
+begin
+  Result := -1;
+  for var Side := 0 to High(FSides) do
+  begin
+    var Header: TFdsDiskHeader;
+    if not ReadHeader(Side, Header) then
+      Continue;
+    var Matches := True;
+    for var i := 0 to High(Request) do
+      if (Request[i] <> $FF) and (Request[i] <> Header[15 + i]) then
+      begin
+        Matches := False;
+        Break;
+      end;
+    if not Matches then
+      Continue;
+    if Result >= 0 then
+      Exit(-2);
+    Result := Side;
+  end;
+end;
+
 function TFdsMedia.SideCount: Integer;
 begin
   Result := Length(FSides);
@@ -288,9 +368,13 @@ begin
   if Length(Bios) <> $2000 then
     raise ENesException.Create('FDS BIOS must be exactly 8192 bytes');
   FBios := Copy(Bios);
+  var BiosHash := THashSHA1.Create;
+  BiosHash.Update(TBytes(FBios));
+  FStandardBios := SameText(BiosHash.HashAsString, '57fe1bdee955bb48d357e463ccbf129496930b62');
   FAudio := TFdsAudio.Create;
   FMedia := Media;
   FSide := 0;
+  FChangeDelayMs := 1000;
   FPendingSide := -1;
   Reset;
 end;
@@ -321,6 +405,7 @@ end;
 
 procedure TMapperFds.Reset;
 begin
+  ClearAutoSwitch;
   FReload := 0;
   FCounter := 0;
   FBytePhase := 0;
@@ -347,28 +432,195 @@ procedure TMapperFds.ReplaceMedia(Media: TFdsMedia);
 begin
   FMedia.Free;
   FMedia := Media;
-  Eject;
-  InsertSide(0);
+  ClearAutoSwitch;
+  Eject(True);
+  InsertSide(0, True);
 end;
 
-procedure TMapperFds.Eject;
+procedure TMapperFds.Eject(Automatic: Boolean);
 begin
+  if not Automatic then
+    SuspendAutoSwitch;
   FSide := -1;
   FPendingSide := -1;
   FInsertDelay := 0;
   StopDrive;
 end;
 
-procedure TMapperFds.InsertSide(Index: Integer);
+procedure TMapperFds.InsertSide(Index: Integer; Automatic: Boolean);
 begin
   if (Index < 0) or (Index >= FMedia.SideCount) then
     raise EArgumentOutOfRangeException.Create('FDS side index');
+  if not Automatic then
+    SuspendAutoSwitch;
   if (Index = FSide) and (FPendingSide < 0) then
     Exit;
-  Eject;
+  Eject(True);
   FPendingSide := Index;
   // Keep the disk absent long enough for software to observe removal.
-  FInsertDelay := 1789773;
+  FInsertDelay := Round(1789773.0 * FChangeDelayMs / 1000);
+end;
+
+procedure TMapperFds.ClearAutoSwitch;
+begin
+  if FAutoProbePending and (FPendingSide >= 0) then
+  begin
+    FPendingSide := -1;
+    FInsertDelay := 0;
+  end;
+  FAutoSuspended := False;
+  FAutoReadSeen := False;
+  FAutoProbePending := False;
+  FAutoIdleFrames := 0;
+  FAutoPollAge := 100;
+  FAutoPollCount := 0;
+  FAutoRetryFrames := 0;
+end;
+
+procedure TMapperFds.SuspendAutoSwitch;
+begin
+  ClearAutoSwitch;
+  FAutoSuspended := True;
+end;
+
+procedure TMapperFds.SetAutoSwitchEnabled(Value: Boolean);
+begin
+  if FAutoSwitchEnabled = Value then
+    Exit;
+  ClearAutoSwitch;
+  FAutoSwitchEnabled := Value;
+  // Enabling while a running game is already waiting for a side must work.
+  FAutoReadSeen := FSide >= 0;
+end;
+
+function TMapperFds.AutoSwitchActive: Boolean;
+begin
+  // Optional BIOS assistance, separate from hardware behavior. Never guess
+  // instruction addresses in replacement BIOSes or peek through I/O registers.
+  Result := FAutoSwitchEnabled and FStandardBios and not FAutoSuspended and Assigned(FRamReader);
+end;
+
+function TMapperFds.PeekRequestByte(Address: Word; out Value: Byte): Boolean;
+begin
+  Result := True;
+  if Address < $2000 then
+    Value := FRamReader(Address)
+  else if Address >= $E000 then
+    Value := FBios[Address - $E000]
+  else if Address >= $6000 then
+    Value := FRam[Address - $6000]
+  else
+    Result := False;
+end;
+
+procedure TMapperFds.CheckBiosDiskRequest;
+begin
+  if not AutoSwitchActive then
+    Exit;
+  var PointerLow := FRamReader(0);
+  var PointerHigh := FRamReader(1);
+  var Address := Word(PointerLow or (Word(PointerHigh) shl 8));
+  var Request: TFdsDiskRequest;
+  for var i := 0 to High(Request) do
+    if not PeekRequestByte(Word((Integer(Address) + i) and $FFFF), Request[i]) then
+      Exit;
+  var MatchingSide := FMedia.MatchSide(Request);
+  if MatchingSide = -2 then
+  begin
+    SuspendAutoSwitch;
+    Exit;
+  end;
+  if MatchingSide >= 0 then
+  begin
+    if FPendingSide >= 0 then
+      FPendingSide := MatchingSide
+    else if FSide >= 0 then
+    begin
+      // Selection at CheckDiskHeader precedes its serial header read. Keep
+      // the adapter's clock/shift phase, like a BIOS-assisted disk selector.
+      FSide := MatchingSide;
+      FPosition := Min(FPosition, Length(FMedia.FSides[FSide]));
+    end;
+    FAutoReadSeen := True;
+  end;
+  FAutoProbePending := FAutoProbePending and (FPendingSide >= 0);
+  FAutoRetryFrames := 0;
+  FAutoPollCount := 0;
+end;
+
+procedure TMapperFds.ObserveDiskStatusRead;
+begin
+  if not AutoSwitchActive or ((FIO and 1) = 0) then
+    Exit;
+  if FAutoPollAge >= 100 then
+    FAutoPollCount := 0;
+  FAutoPollAge := 0;
+  if FAutoPollCount < 21 then
+    Inc(FAutoPollCount);
+  if (FAutoPollCount < 21) or (FAutoIdleFrames < 77) or not FAutoReadSeen or
+    (FPendingSide >= 0) or FAutoProbePending or ((FControl and 4) = 0) or
+    ReadActive or (MotorOn and (FDelay > 0)) then
+    Exit;
+  // A stopped drive repeatedly polled after a completed read is the usual
+  // side-change prompt. Present removal before the BIOS identifies the side.
+  Eject(True);
+  InsertSide(0, True);
+  FAutoProbePending := True;
+  FAutoRetryFrames := 0;
+  FAutoIdleFrames := 0;
+  FAutoPollCount := 0;
+end;
+
+procedure TMapperFds.EndFrame;
+begin
+  if not AutoSwitchActive then
+    Exit;
+  if FAutoPollAge < 100 then
+    Inc(FAutoPollAge);
+  if ReadActive then
+  begin
+    FAutoReadSeen := True;
+    FAutoIdleFrames := 0;
+    FAutoPollCount := 0;
+    FAutoRetryFrames := 0;
+    FAutoProbePending := False;
+  end
+  else if ((FControl and 4) = 0) or (MotorOn and (FDelay > 0)) then
+  begin
+    FAutoIdleFrames := 0;
+    FAutoPollCount := 0;
+  end
+  else if FAutoIdleFrames < 77 then
+    Inc(FAutoIdleFrames);
+  if FAutoRetryFrames > 0 then
+  begin
+    Dec(FAutoRetryFrames);
+    if FAutoRetryFrames = 0 then
+    begin
+      FAutoProbePending := False;
+      FAutoIdleFrames := 43; // Allow another poll-triggered removal in 34 frames.
+      FAutoPollCount := 0;
+    end;
+  end;
+end;
+
+function TMapperFds.DebugAutoSwitch: string;
+begin
+  Result := Format('enabled=%d bios=%d reader=%d suspended=%d seen=%d idle=%d age=%d polls=%d retry=%d io=%.2x ctrl=%.2x scanning=%d end=%d',
+    [Ord(FAutoSwitchEnabled), Ord(FStandardBios), Ord(Assigned(FRamReader)), Ord(FAutoSuspended),
+      Ord(FAutoReadSeen), FAutoIdleFrames, FAutoPollAge, FAutoPollCount, FAutoRetryFrames,
+      FIO, FControl, Ord(FScanning), Ord(FEndOfHead)]);
+end;
+
+procedure TMapperFds.SetChangeDelayMs(Value: Integer);
+begin
+  FChangeDelayMs := EnsureRange(Value, 500, 2000);
+end;
+
+function TMapperFds.GetReadActive: Boolean;
+begin
+  Result := (FSide >= 0) and ((FIO and 1) <> 0) and MotorOn and
+    ((FControl and 5) = 5) and not FEndOfHead;
 end;
 
 function TMapperFds.MotorOn: Boolean;
@@ -670,6 +922,8 @@ begin
     begin
       FSide := FPendingSide;
       FPendingSide := -1;
+      if FAutoProbePending then
+        FAutoRetryFrames := 200;
       StopDrive;
     end;
   end;
@@ -829,11 +1083,37 @@ begin
           FCRC := FdsCRCBit(FCRC, DataBit);
       end;
   end;
+  if State.Version >= 25 then
+  begin
+    State.Field(FAutoSuspended, SizeOf(FAutoSuspended));
+    State.Field(FAutoReadSeen, SizeOf(FAutoReadSeen));
+    State.Field(FAutoProbePending, SizeOf(FAutoProbePending));
+    State.Field(FAutoIdleFrames, SizeOf(FAutoIdleFrames));
+    State.Field(FAutoPollAge, SizeOf(FAutoPollAge));
+    State.Field(FAutoPollCount, SizeOf(FAutoPollCount));
+    State.Field(FAutoRetryFrames, SizeOf(FAutoRetryFrames));
+    if State.Loading then
+    begin
+      if (FAutoIdleFrames < 0) or (FAutoIdleFrames > 77) or
+        (FAutoPollAge < 0) or (FAutoPollAge > 100) or
+        (FAutoPollCount < 0) or (FAutoPollCount > 21) or
+        (FAutoRetryFrames < 0) or (FAutoRetryFrames > 200) then
+        raise EReadError.Create('Invalid FDS snapshot state');
+      if not FAutoSwitchEnabled then
+        ClearAutoSwitch;
+    end;
+  end
+  else if State.Loading then
+  begin
+    FAutoProbePending := False;
+    ClearAutoSwitch;
+    FAutoReadSeen := FSide >= 0;
+  end;
   if State.Loading then
     if (FHeadBit > 7) or (FReadBits > 7) or (FRefreshCounter < 0) or (FRefreshCounter > $7F) or
       (FRefreshTimer < 0) or (FRefreshTimer > $FFF) or (FSide < -1) or (FSide >= FMedia.SideCount) or
       (FPendingSide < -1) or (FPendingSide >= FMedia.SideCount) or
-      (FInsertDelay < 0) or (FInsertDelay > 1789773) or
+      (FInsertDelay < 0) or (FInsertDelay > 3579546) or
       (FPosition < 0) or ((FSide >= 0) and (FPosition > Length(FMedia.FSides[FSide]))) or
       (FBytePhase < 0) or (FBytePhase >= 448) or (FDelay < 0) or (FDelay > 50000) or
       (FCounter < 0) or (FCounter > $FFFF) or (FReload < 0) or (FReload > $FFFF) then

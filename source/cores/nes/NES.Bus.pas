@@ -70,6 +70,7 @@ type
     procedure ClockDma(CpuCycleOdd: Boolean);
     procedure ClockIo; inline;
     function DebugCpuRead(Address: UInt16): UInt8;
+    function PeekInternalRam(Address: Word): Byte;
     property CpuAddress: UInt16 read FCpuAddress write FCpuAddress;
     property CpuCycle: UInt64 read FCpuCycle write FCpuCycle;
     property DmaWritePending: Boolean read FDmaHaveData;
@@ -83,7 +84,7 @@ type
 implementation
 
 uses
-  NES.Mapper;
+  NES.Mapper, NES.DiskSystem;
 
 function TNesBus.GetHasCoinAcceptor: Boolean;
 begin
@@ -287,6 +288,15 @@ end;
 function TNesBus.CpuRead(Address: UInt16): UInt8;
 begin
   FCpuAddress := Address;
+  if ((Address = $4032) or (Address = $E445)) and (FCartridge <> nil) then
+  begin
+    var Disk := FCartridge.DiskSystem;
+    if Disk <> nil then
+      if Address = $4032 then
+        Disk.ObserveDiskStatusRead
+      else
+        Disk.CheckBiosDiskRequest;
+  end;
   if Address < $2000 then
     Result := FRam[Address and $07FF]
   else
@@ -547,12 +557,21 @@ begin
   end;
 end;
 
+function TNesBus.PeekInternalRam(Address: Word): Byte;
+begin
+  Result := FRam[Address and $7FF];
+end;
+
 function TNesBus.DebugCpuRead(Address: UInt16): UInt8;
 begin
   // Inspecting RAM must not drive the emulated CPU data bus.
   if Address < $2000 then
     Exit(FRam[Address and $07FF]);
 
+  // Debugger inspection is not evidence of a game requesting a new side.
+  if ((Address = $4032) or (Address = $E445)) and (FCartridge <> nil) and
+    (FCartridge.DiskSystem <> nil) then
+    Exit(ReadDevice(Address));
   Result := CpuRead(Address);
 end;
 

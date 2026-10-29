@@ -5,6 +5,9 @@ interface
 uses
   System.SysUtils, System.IniFiles, Core.Storage, Core.Emulation.Types;
 
+const
+  DEFAULT_AUDIO_VOLUME = 1.0;
+
 type
   // Common settings are persisted by every core in its own INI file. Descendants
   // add hardware-specific options in LoadCoreSettings / SaveCoreSettings.
@@ -66,7 +69,7 @@ begin
     FStorage := TStorage.Default;
   FFileName := AFileName;
   FAudioEnabled := True;
-  FAudioVolume := 0.5;
+  FAudioVolume := DEFAULT_AUDIO_VOLUME;
   FFilter := 'nearest';
   FScale := 2;
 end;
@@ -107,7 +110,7 @@ begin
       if FFilter.IsEmpty then
         FFilter := 'nearest';
       FAudioEnabled := True;
-      SetAudioVolume(Ini.ReadFloat('Audio', 'Volume', FAudioVolume));
+      SetAudioVolume(Ini.ReadFloat('Audio', 'Volume', DEFAULT_AUDIO_VOLUME));
       LoadCoreSettings(Ini);
     finally
       Ini.Free;
@@ -150,7 +153,7 @@ end;
 procedure TEmulatorConfigBase.SetAudioVolume(const Value: Single);
 begin
   if IsNan(Value) or IsInfinite(Value) then
-    FAudioVolume := 0.5
+    FAudioVolume := DEFAULT_AUDIO_VOLUME
   else
     FAudioVolume := EnsureRange(Value, 0.0, 1.0);
 end;

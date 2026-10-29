@@ -148,7 +148,7 @@ begin
   FROMData := Copy(ROMData);
   FSnapshotIdentityData := FROMData;
   FEnableAudio := EnableAudio;
-  FSoundVolume := 0.5;
+  FSoundVolume := 1.0;
   FRuntimeOptions := TGBRuntimeOptions.Defaults;
   FLock := TCriticalSection.Create;
   FStopEvent := TEvent.Create(nil, True, False, '');

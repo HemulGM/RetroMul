@@ -32,6 +32,8 @@ type
   private
     FRegion: TNesRegion;
     FUseVs2C04DPalette: Boolean;
+    FRemoveSpriteLimit: Boolean;
+    FCustomPalette: TArray<UInt32>;
     FPreRenderLine: Integer;
     FMapper: TMapper;
     FNameTable: array[0..4095] of UInt8;
@@ -121,6 +123,8 @@ type
     constructor Create;
     // Select timing before running; resets PPU state.
     procedure SetRegion(Value: TNesRegion);
+    procedure SetCustomPalette(const Colors: TArray<UInt32>);
+    property RemoveSpriteLimit: Boolean read FRemoveSpriteLimit write FRemoveSpriteLimit;
     procedure ConnectMapper(AMapper: TMapper);
     property UseVs2C04DPalette: Boolean read FUseVs2C04DPalette write FUseVs2C04DPalette;
     procedure Reset;
@@ -152,6 +156,9 @@ type
   end;
 
 implementation
+
+uses
+  System.SysUtils;
 
 procedure TPPU.SerializeState(State: TNesStateArchive);
 begin
@@ -223,6 +230,13 @@ constructor TPPU.Create;
 begin
   inherited Create;
   SetRegion(TNesRegion.NTSC);
+end;
+
+procedure TPPU.SetCustomPalette(const Colors: TArray<UInt32>);
+begin
+  if (Length(Colors) <> 0) and (Length(Colors) <> 64) and (Length(Colors) <> 512) then
+    raise EArgumentException.Create('NES palette color count');
+  FCustomPalette := Copy(Colors);
 end;
 
 procedure TPPU.SetRegion(Value: TNesRegion);
@@ -873,10 +887,8 @@ begin
   // Expand each horizontal-flip bit to a byte mask. Strip cross-byte carries
   // so all four shifters advance independently, including transparent ones.
   var Reverse := ((Attributes and $40404040) shr 6) * $FF;
-  Low := ((Low shl 1) and $FEFEFEFE and not Reverse) or
-    ((Low shr 1) and $7F7F7F7F and Reverse);
-  High := ((High shl 1) and $FEFEFEFE and not Reverse) or
-    ((High shr 1) and $7F7F7F7F and Reverse);
+  Low := ((Low shl 1) and $FEFEFEFE and not Reverse) or ((Low shr 1) and $7F7F7F7F and Reverse);
+  High := ((High shl 1) and $FEFEFEFE and not Reverse) or ((High shr 1) and $7F7F7F7F and Reverse);
   Move(Low, FPixel.SpriteLow[Offset], SizeOf(Low));
   Move(High, FPixel.SpriteHigh[Offset], SizeOf(High));
 end;
@@ -1613,15 +1625,20 @@ begin
   for var i := 0 to 31 do
   begin
     var ColorIndex := PpuReadMemory($3F00 + i) and ColorMask;
+    // VS boards keep their board-specific scrambled palette.
     if FUseVs2C04DPalette then
       Colors[i] := NES_VS_2C04D_PALETTE[ColorIndex]
+    else if Length(FCustomPalette) = 512 then
+      Colors[i] := FCustomPalette[((FRenderMask and $E0) shl 1) or ColorIndex]
+    else if Length(FCustomPalette) = 64 then
+      Colors[i] := FCustomPalette[ColorIndex]
     else
       Colors[i] := NES_PALETTE[ColorIndex];
   end;
   var Y: Integer := FScanline;
 
-  // OAM and control registers cannot change during this synchronous render.
-  // Preserve the existing unlimited-sprite behavior (do not impose an 8 limit).
+  // Presentation enhancements do not change OAM evaluation, overflow, sprite
+  // zero hits or timed mapper bus fetches in the hardware pipeline.
   FLineSpriteCount := 0;
   if (FRenderMask and $10) <> 0 then
   begin
@@ -1633,6 +1650,8 @@ begin
       begin
         FLineSprites[FLineSpriteCount] := i;
         Inc(FLineSpriteCount);
+        if (FLineSpriteCount = 8) and not FRemoveSpriteLimit then
+          Break;
       end;
   end;
   var BatchSprites := FCacheBackground and not FMapperHasRenderCallbacks;
@@ -1759,5 +1778,4 @@ begin
 end;
 
 end.
-
 

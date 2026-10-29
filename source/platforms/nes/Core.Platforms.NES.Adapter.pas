@@ -5,7 +5,7 @@ interface
 uses
   Core.InputConfig, System.Classes, System.IniFiles, Core.Storage,
   Core.Emulation, NES.Emulation, NES.Input, NES.Types, NES.Controller,
-  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice;
+  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice, NES.Options;
 
 type
   TNesZapperMask = NES.Types.TNesZapperMask;
@@ -27,6 +27,7 @@ type
     function GetSuborIndicators: TSuborIndicators;
     function GetPowerPadButtons: TPowerPadButtons;
     function Zapper: TZapper;
+    function ReadZapperLight(const Mask: TNesZapperMask; X, Y: Integer): Boolean;
     function UsesPowerPad: Boolean;
   end;
 
@@ -74,6 +75,9 @@ type
     procedure SetFdsWriteProtected(Value: Boolean);
     property FdsBiosFile: string read GetFdsBiosFile write SetFdsBiosFile;
     property FdsWriteProtected: Boolean read GetFdsWriteProtected write SetFdsWriteProtected;
+    function GetOptions: TNesOptions;
+    procedure SetOptions(const Value: TNesOptions);
+    property Options: TNesOptions read GetOptions write SetOptions;
   end;
 
   TNesEmulatorConfig = class(TEmulatorConfigBase, INesEmulatorConfig)
@@ -83,6 +87,7 @@ type
     FRegion: TRegionOverride;
     FFdsBiosFile: string;
     FFdsWriteProtected: Boolean;
+    FOptions: TNesOptions;
     FKeys, FKeys2, FKeys3, FKeys4: TKeyMap;
     procedure LoadKeyMap(Ini: TCustomIniFile; const Section: string; var Keys: TKeyMap);
     procedure SaveKeyMap(Ini: TCustomIniFile; const Section: string; const Keys: TKeyMap);
@@ -109,6 +114,8 @@ type
     procedure SetFdsBiosFile(const Value: string);
     function GetFdsWriteProtected: Boolean;
     procedure SetFdsWriteProtected(Value: Boolean);
+    function GetOptions: TNesOptions;
+    procedure SetOptions(const Value: TNesOptions);
   end;
 
   TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, INesSuborKeyboardCore, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore, IEmulationDiscControl)
@@ -116,6 +123,7 @@ type
     FThread: TNesEmulationThread;
     FGamepadInput: TEmulatorInput;
     FDendyPads: array[0..3] of Boolean;
+    FPresentedLeft, FPresentedTop, FPresentedWidth, FPresentedHeight: Integer;
     FConfig: INesEmulatorConfig;
     FFrameNumber: UInt64;
     FError, FAudioError: string;
@@ -173,6 +181,7 @@ type
     function GetConfig: IEmulatorConfig;
     function IsPaused: Boolean;
     function Zapper: TZapper;
+    function ReadZapperLight(const Mask: TNesZapperMask; X, Y: Integer): Boolean;
     function UsesPowerPad: Boolean;
   end;
 
@@ -221,6 +230,7 @@ begin
   begin
     FThread.ConfigureAudio(FConfig.AudioVolume);
     FThread.ConfigureDiskWriteProtection(FConfig.FdsWriteProtected);
+    FThread.ConfigureOptions(FConfig.Options);
   end;
 end;
 
@@ -547,15 +557,26 @@ begin
   if not Result then
     Exit;
 
-  Frame.Width := 256;
-  Frame.Height := 240;
+  FPresentedLeft := Status.CropLeft;
+  FPresentedTop := Status.CropTop;
+  Frame.Width := 256 - Status.CropLeft - Status.CropRight;
+  Frame.Height := 240 - Status.CropTop - Status.CropBottom;
+  FPresentedWidth := Frame.Width;
+  FPresentedHeight := Frame.Height;
   SetLength(Frame.Pixels, Frame.Width * Frame.Height);
   for var Y := 0 to Frame.Height - 1 do
     for var X := 0 to Frame.Width - 1 do
-      Frame.Pixels[Y * Frame.Width + X] := NesFrame[X, Y] or $FF000000;
+      Frame.Pixels[Y * Frame.Width + X] := NesFrame[X + Status.CropLeft, Y + Status.CropTop] or $FF000000;
   Inc(FFrameNumber);
   Frame.FrameNumber := FFrameNumber;
   Frame.FramesPerSecond := Status.FramesPerSecond;
+end;
+
+function TNesCoreAdapter.ReadZapperLight(const Mask: TNesZapperMask; X, Y: Integer): Boolean;
+begin
+  Result := (X >= 0) and (Y >= 0) and (X < FPresentedWidth) and (Y < FPresentedHeight);
+  if Result then
+    Result := TZapper.ReadMask(Mask, X + FPresentedLeft, Y + FPresentedTop);
 end;
 
 function TNesCoreAdapter.Zapper: TZapper;
@@ -608,6 +629,7 @@ begin
   FFourScore := True;
   FZapperEnabled := False;
   FRegion := TRegionOverride.Auto;
+  FOptions := TNesOptions.Defaults;
 end;
 
 function ReadKey(Ini: TCustomIniFile; const Section, Name: string; DefaultValue: UInt32): UInt32;
@@ -641,12 +663,15 @@ end;
 
 procedure TNesEmulatorConfig.LoadCoreSettings(Ini: TCustomIniFile);
 begin
+  FOptions.Load(Ini);
   FFdsBiosFile := Ini.ReadString('FDS', 'BIOSFile', '').Trim;
   FFdsWriteProtected := Ini.ReadBool('FDS', 'WriteProtected', False);
   FFourScore := Ini.ReadBool('Input', 'FourScore', FFourScore);
   FZapperEnabled := Ini.ReadBool('Input', 'Zapper', False);
   var Region := Ini.ReadString('Video', 'Region', 'Auto');
-  if SameText(Region, 'PAL') then
+  if SameText(Region, 'Dendy') then
+    FRegion := TRegionOverride.Dendy
+  else if SameText(Region, 'PAL') then
     FRegion := TRegionOverride.PAL
   else if SameText(Region, 'NTSC') then
     FRegion := TRegionOverride.NTSC
@@ -660,11 +685,14 @@ end;
 
 procedure TNesEmulatorConfig.SaveCoreSettings(Ini: TCustomIniFile);
 begin
+  FOptions.Save(Ini);
   Ini.WriteString('FDS', 'BIOSFile', FFdsBiosFile);
   Ini.WriteBool('FDS', 'WriteProtected', FFdsWriteProtected);
   Ini.WriteBool('Input', 'FourScore', FFourScore);
   Ini.WriteBool('Input', 'Zapper', FZapperEnabled);
   case FRegion of
+    TRegionOverride.Dendy:
+      Ini.WriteString('Video', 'Region', 'Dendy');
     TRegionOverride.NTSC:
       Ini.WriteString('Video', 'Region', 'NTSC');
     TRegionOverride.PAL:
@@ -676,6 +704,17 @@ begin
   SaveKeyMap(Ini, 'Controls2', FKeys2);
   SaveKeyMap(Ini, 'Controls3', FKeys3);
   SaveKeyMap(Ini, 'Controls4', FKeys4);
+end;
+
+function TNesEmulatorConfig.GetOptions: TNesOptions;
+begin
+  Result := FOptions;
+end;
+
+procedure TNesEmulatorConfig.SetOptions(const Value: TNesOptions);
+begin
+  FOptions := Value;
+  FOptions.Normalize;
 end;
 
 function TNesEmulatorConfig.GetFourScore: Boolean;

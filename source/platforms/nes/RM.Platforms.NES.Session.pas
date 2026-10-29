@@ -103,7 +103,9 @@ begin
     Peripheral.Zapper.OnReadLight :=
       function(const Mask: TNesZapperMask): Boolean
       begin
-        Result := TZapper.ReadMask(Mask, Devices.ZapperPixel.X, Devices.ZapperPixel.Y);
+        var Core: INesPeripheralCore;
+        Result := Supports(Context.State.Session.Emulation, INesPeripheralCore, Core) and
+          Core.ReadZapperLight(Mask, Devices.ZapperPixel.X, Devices.ZapperPixel.Y);
       end;
   end;
 end;

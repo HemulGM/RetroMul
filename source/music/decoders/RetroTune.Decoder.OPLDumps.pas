@@ -6,7 +6,7 @@ implementation
 
 uses
   System.SysUtils, System.Math, System.Generics.Collections, RetroTune.Decoder,
-  RetroTune.Binary, PC.Sound.OPL, PC.Sound.OPL2, PC.Sound.OPL3;
+  RetroTune.Binary, HW.Sound.OPL, HW.Sound.OPL2, HW.Sound.OPL3;
 
 type
   TOPLEvent = record

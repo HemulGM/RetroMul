@@ -1,9 +1,10 @@
-﻿unit Atari.AudioMachine;
+﻿unit A5200.AudioMachine;
 
 interface
 
 uses
-  System.SysUtils, Atari.Audio.ASAP;
+  System.SysUtils, A5200.ASAP.Types, A5200.POKEY.Types, A5200.ASAP,
+  A5200.ASAP.Info, A5200.ASAP.CPU, A5200.POKEY.Engine;
 
 type
   TAtariAudioMachine = class
@@ -26,7 +27,7 @@ type
 implementation
 
 uses
-  Atari.Audio.MPT;
+  A5200.Audio.MPT;
 
 const
   RMT4Player: array[0..2006] of Byte = (

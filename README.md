@@ -8,6 +8,7 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 
 | System | ROM formats |
 | --- | --- |
+| [Atari 5200](source/cores/at5200/README.md) | `.a52`, Atari 5200 `.car`; `.bin`/`.rom` in the system folder; ZIP/7z supported, BIOS embedded |
 | NES / Famicom | `.nes` |
 | Game Boy | `.gb`, `.gbx` |
 | Game Boy Color | `.gbc`, `.gbx` |

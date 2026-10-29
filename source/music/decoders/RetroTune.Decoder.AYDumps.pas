@@ -6,7 +6,7 @@ implementation
 
 uses
   System.SysUtils, System.Math, RetroTune.Decoder, RetroTune.Binary,
-  RetroTune.Compression.LH5, ZX.Sound.YM2149;
+  RetroTune.Compression.LH5, HW.Sound.YM2149;
 
 type
   TAYFrame = array[0..15] of Byte;

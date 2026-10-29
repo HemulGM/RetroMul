@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, ZX.Sound.DAC;
+  System.SysUtils, HW.Sound.DAC;
 
 type
   TDigitalKind = (dkCHI, dkDMM, dkDST, dkSQD, dkSTR, dkET1, dkPDT);

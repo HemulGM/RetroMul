@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, Core.AudioFilter;
+  System.SysUtils, Core.AudioFilter, Core.Snapshots;
 
 type
   TTIAVoice = record
@@ -24,12 +24,21 @@ type
     procedure WriteRegister(Index, Value: Byte);
     function ReadRegister(Index: Byte): Byte;
     procedure Sample(out Left, Right: SmallInt);
+    procedure SerializeState(State: TStateArchive);
   end;
 
 implementation
 
 uses
   System.Math;
+
+procedure TTIASound.SerializeState(State: TStateArchive);
+begin
+  State.Field(FVoices, SizeOf(FVoices));
+  State.Field(FPhase, SizeOf(FPhase));
+  State.Field(FOutput, SizeOf(FOutput));
+  State.Field(FDC, SizeOf(FDC));
+end;
 
 constructor TTIASound.Create(Clock: Double);
 begin

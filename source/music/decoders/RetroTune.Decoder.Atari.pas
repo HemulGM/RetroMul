@@ -6,7 +6,7 @@ implementation
 
 uses
   System.SysUtils, System.IOUtils, RetroTune.Decoder, RetroTune.Binary,
-  Atari.AudioMachine;
+  A5200.AudioMachine;
 
 type
   TAtariDecoder = class(TInterfacedObject, ITuneDecoder)

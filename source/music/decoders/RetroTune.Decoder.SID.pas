@@ -6,7 +6,7 @@ implementation
 
 uses
   System.SysUtils, System.Math, RetroTune.Decoder, RetroTune.Binary,
-  C64.AudioMachine, C64.Sound.SID;
+  C64.AudioMachine, HW.Sound.SID;
 
 type
   TSIDDecoder = class(TInterfacedObject, ITuneDecoder)

@@ -1,9 +1,10 @@
-﻿unit Atari.Audio.MPT;
+﻿unit A5200.Audio.MPT;
 
 interface
 
 uses
-  System.SysUtils, Atari.Audio.ASAP;
+  System.SysUtils, A5200.ASAP.Types, A5200.POKEY.Types, A5200.ASAP,
+  A5200.ASAP.Info, A5200.ASAP.CPU, A5200.POKEY.Engine;
 
 procedure LoadMPTSamples(State: TASAP; const Data: TBytes);
 

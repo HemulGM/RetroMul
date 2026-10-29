@@ -119,7 +119,7 @@
     <PropertyGroup Condition="'$(Base)'!=''">
         <DCC_DcuOutput>$(Platform)\$(Config)_DCU</DCC_DcuOutput>
         <DCC_ExeOutput>$(Platform)\$(Config)</DCC_ExeOutput>
-        <DCC_UnitSearchPath>ui;..\..\source\cores\a2600;..\..\source\cores\atari;..\..\source\cores\c64;..\..\source\cores\cps;..\..\source\cores\dc;..\..\source\cores\gamewatch;..\..\source\cores\gb;..\..\source\cores\gba;..\..\source\cores\gba\firmware;..\..\source\cores\gbc;..\..\source\cores\md;..\..\source\cores\md\firmware;..\..\source\cores\msx;..\..\source\cores\msx\firmware;..\..\source\cores\n64;..\..\source\cores\neogeo;..\..\source\cores\neogeo\firmware;..\..\source\cores\nes;..\..\source\cores\nes\mappers;..\..\source\cores\ngp;..\..\source\cores\ngp\firmware;..\..\source\cores\pce;..\..\source\cores\pce\firmware;..\..\source\cores\ps1;..\..\source\cores\ps1\firmware;..\..\source\cores\psp;..\..\source\cores\sam;..\..\source\cores\saturn;..\..\source\cores\saturn\firmware;..\..\source\cores\sg1000;..\..\source\cores\sms;..\..\source\cores\sms\firmware;..\..\source\cores\snes;..\..\source\cores\snes\firmware;..\..\source\cores\zx;..\..\source\cores\zx\firmware;..\..\source\platforms;..\retromul;..\..\source\platforms\a2600;..\..\source\platforms\atari;..\..\source\platforms\c64;..\..\source\platforms\cps;..\..\source\platforms\dc;..\..\source\platforms\gamewatch;..\..\source\platforms\gb;..\..\source\platforms\gba;..\..\source\platforms\gbc;..\..\source\platforms\md;..\..\source\platforms\msx;..\..\source\platforms\n64;..\..\source\platforms\neogeo;..\..\source\platforms\nes;..\..\source\platforms\ngp;..\..\source\platforms\pce;..\..\source\platforms\ps1;..\..\source\platforms\psp;..\..\source\platforms\sam;..\..\source\platforms\saturn;..\..\source\platforms\sg1000;..\..\source\platforms\sms;..\..\source\platforms\snes;..\..\source\platforms\zx;..\..\dependencies\Delphi7z;..\..\dependencies\DelphiWinUI3\DelphiWindowStyle;..\..\dependencies\DelphiWinUI3\FMXWindowsDispatch;..\..\dependencies\DelphiWinUI3\FMXWindowsHint;..\..\dependencies\DelphiWinUI3\Sources;..\..\dependencies\DelphiWinUI3\WindowsNotificationManager;..\..\dependencies\FMXInput;..\..\dependencies\FMXVibration;..\..\dependencies\PCMAudio;..\..\source\hardware\audio;..\..\source\runtime\audio;..\..\source\media\audio\atrac3;..\..\source\media\audio\atrac3plus;..\..\source\media\audio\aac;..\..\source\media\audio\common;..\..\source\media\common;..\..\source\media\audio\mp3;..\..\source\hardware\audio\opl;..\..\source\hardware\cpu;..\..\source\hardware\jit;..\..\source\hardware\video;..\..\source\media\video\avc;..\..\source\media;..\..\source\media\cd;..\..\source\media\chd;..\..\source\media\archive;..\..\source\music\synthesis;..\..\source\music\common;..\..\source\music\decoders;..\..\source\music\export;..\..\source\music\playback;..\..\source\music\trackers;..\..\source\music\trackers\amiga;..\..\source\runtime;..\..\source\ui\controls;..\retromul\input\keyboard;..\..\source\ui\shaders;..\..\source\ui\svg;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>ui;..\..\source\cores\at2600;..\..\source\cores\at5200;..\..\source\cores\c64;..\..\source\cores\cps;..\..\source\cores\dc;..\..\source\cores\gamewatch;..\..\source\cores\gb;..\..\source\cores\gba;..\..\source\cores\gba\firmware;..\..\source\cores\gbc;..\..\source\cores\md;..\..\source\cores\md\firmware;..\..\source\cores\msx;..\..\source\cores\msx\firmware;..\..\source\cores\n64;..\..\source\cores\neogeo;..\..\source\cores\neogeo\firmware;..\..\source\cores\nes;..\..\source\cores\nes\mappers;..\..\source\cores\ngp;..\..\source\cores\ngp\firmware;..\..\source\cores\pce;..\..\source\cores\pce\firmware;..\..\source\cores\ps1;..\..\source\cores\ps1\firmware;..\..\source\cores\psp;..\..\source\cores\sam;..\..\source\cores\saturn;..\..\source\cores\saturn\firmware;..\..\source\cores\sg1000;..\..\source\cores\sms;..\..\source\cores\sms\firmware;..\..\source\cores\snes;..\..\source\cores\snes\firmware;..\..\source\cores\zx;..\..\source\cores\zx\firmware;..\..\source\platforms;..\retromul;..\..\source\platforms\at2600;..\..\source\platforms\c64;..\..\source\platforms\cps;..\..\source\platforms\dc;..\..\source\platforms\gamewatch;..\..\source\platforms\gb;..\..\source\platforms\gba;..\..\source\platforms\gbc;..\..\source\platforms\md;..\..\source\platforms\msx;..\..\source\platforms\n64;..\..\source\platforms\neogeo;..\..\source\platforms\nes;..\..\source\platforms\ngp;..\..\source\platforms\pce;..\..\source\platforms\ps1;..\..\source\platforms\psp;..\..\source\platforms\sam;..\..\source\platforms\saturn;..\..\source\platforms\sg1000;..\..\source\platforms\sms;..\..\source\platforms\snes;..\..\source\platforms\zx;..\..\dependencies\Delphi7z;..\..\dependencies\DelphiWinUI3\DelphiWindowStyle;..\..\dependencies\DelphiWinUI3\FMXWindowsDispatch;..\..\dependencies\DelphiWinUI3\FMXWindowsHint;..\..\dependencies\DelphiWinUI3\Sources;..\..\dependencies\DelphiWinUI3\WindowsNotificationManager;..\..\dependencies\FMXInput;..\..\dependencies\FMXVibration;..\..\dependencies\PCMAudio;..\..\source\hardware\audio;..\..\source\runtime\audio;..\..\source\media\audio\atrac3;..\..\source\media\audio\atrac3plus;..\..\source\media\audio\aac;..\..\source\media\audio\common;..\..\source\media\common;..\..\source\media\audio\mp3;..\..\source\hardware\audio\opl;..\..\source\hardware\cpu;..\..\source\hardware\jit;..\..\source\hardware\video;..\..\source\media\video\avc;..\..\source\media;..\..\source\media\cd;..\..\source\media\chd;..\..\source\media\archive;..\..\source\music\synthesis;..\..\source\music\common;..\..\source\music\decoders;..\..\source\music\export;..\..\source\music\playback;..\..\source\music\trackers;..\..\source\music\trackers\amiga;..\..\source\runtime;..\..\source\ui\controls;..\retromul\input\keyboard;..\..\source\ui\shaders;..\..\source\ui\svg;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <DCC_E>false</DCC_E>
         <DCC_N>false</DCC_N>
         <DCC_S>false</DCC_S>
@@ -360,8 +360,27 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="..\..\source\cores\at5200\A5200.Arithmetic.pas"/>
+        <DCCReference Include="..\..\source\cores\at5200\A5200.ASAP.CPU.pas"/>
+        <DCCReference Include="..\..\source\cores\at5200\A5200.ASAP.Info.pas"/>
+        <DCCReference Include="..\..\source\cores\at5200\A5200.ASAP.Types.pas"/>
+        <DCCReference Include="..\..\source\cores\at5200\A5200.POKEY.Engine.pas"/>
+        <DCCReference Include="..\..\source\cores\at5200\A5200.POKEY.pas"/>
+        <DCCReference Include="..\..\source\cores\at5200\A5200.POKEY.Types.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.Types.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.CPU.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.Cartridge.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.DPC.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.Supercharger.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.Controller.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.Paddle.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.RIOT.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.Palette.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.TIA.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.State.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.Console.pas"/>
         <DCCReference Include="..\..\source\hardware\cpu\HW.ARM.Shifter.pas"/>
-        <DCCReference Include="..\..\source\cores\a2600\A2600.AudioMachine.pas"/>
+        <DCCReference Include="..\..\source\cores\at2600\A2600.AudioMachine.pas"/>
         <DCCReference Include="..\..\source\hardware\audio\HW.Sound.TIA.pas"/>
         <DCCReference Include="..\..\source\music\trackers\amiga\Amiga.AHX.pas"/>
         <DCCReference Include="..\..\source\music\trackers\amiga\Amiga.ProTracker.pas"/>
@@ -388,10 +407,10 @@
         <DCCReference Include="..\..\source\cores\c64\C64.AudioMachine.pas"/>
         <DCCReference Include="..\..\source\cores\zx\ZX.AudioMachine.pas"/>
         <DCCReference Include="..\..\source\hardware\audio\HW.Sound.YM2149.pas"/>
-        <DCCReference Include="..\..\source\hardware\audio\opl\PC.OPL.Nuked.pas"/>
-        <DCCReference Include="..\..\source\hardware\audio\opl\PC.Sound.OPL.pas"/>
-        <DCCReference Include="..\..\source\hardware\audio\opl\PC.Sound.OPL2.pas"/>
-        <DCCReference Include="..\..\source\hardware\audio\opl\PC.Sound.OPL3.pas"/>
+        <DCCReference Include="..\..\source\hardware\audio\HW.Sound.OPL.Nuked.pas"/>
+        <DCCReference Include="..\..\source\hardware\audio\HW.Sound.OPL.pas"/>
+        <DCCReference Include="..\..\source\hardware\audio\opl\HW.Sound.OPL2.pas"/>
+        <DCCReference Include="..\..\source\hardware\audio\opl\HW.Sound.OPL3.pas"/>
         <DCCReference Include="ui\RetroTune.Main.pas">
             <Form>FormMain</Form>
             <FormType>fmx</FormType>
@@ -408,9 +427,9 @@
         <DCCReference Include="..\..\source\music\common\RetroTune.Compression.LH5.pas"/>
         <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.AYDumps.pas"/>
         <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.Atari.pas"/>
-        <DCCReference Include="..\..\source\cores\atari\Atari.Audio.ASAP.pas"/>
-        <DCCReference Include="..\..\source\cores\atari\Atari.Audio.MPT.pas"/>
-        <DCCReference Include="..\..\source\cores\atari\Atari.AudioMachine.pas"/>
+        <DCCReference Include="..\..\source\cores\at5200\A5200.ASAP.pas"/>
+        <DCCReference Include="..\..\source\cores\at5200\A5200.Audio.MPT.pas"/>
+        <DCCReference Include="..\..\source\cores\at5200\A5200.AudioMachine.pas"/>
         <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.AY.pas"/>
         <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.SID.pas"/>
         <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.PT3.pas"/>

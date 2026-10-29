@@ -6,7 +6,7 @@ implementation
 
 uses
   System.SysUtils, System.Math, RetroTune.Decoder, RetroTune.Digital.Module,
-  RetroTune.Binary, ZX.Sound.DAC;
+  RetroTune.Binary, HW.Sound.DAC;
 
 type
   TChannelState = record

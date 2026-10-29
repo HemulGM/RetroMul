@@ -22,6 +22,8 @@ type
     AudioError, Error: string;
     TapeState: TTapeState;
     TapeProgress: TTapeProgress;
+    DiskSide: Integer;
+    DiskNames: TArray<string>;
   end;
 
   // The core and audio backend belong to Execute after Start. The UI only exchanges
@@ -35,6 +37,7 @@ type
     FAudioFormat: TPCMAudioFormat;
     FAudioEnabled: Boolean;
     FAudioVolume: Single;
+    FDiskWriteProtected: Boolean;
     FDiagnostics: TAudioDiagnostics;
     FInput: TNesInput;
     FPendingCoins: array[0..1] of Integer;
@@ -49,6 +52,7 @@ type
     FSnapshotDone: TEvent;
     FSnapshotPending, FSnapshotLoading: Boolean;
     FSnapshotTape, FUsesDataRecorder: Boolean;
+    FSnapshotDisk: Boolean;
     FTapeAction: TTapeAction;
     FSnapshotName, FSnapshotError: string;
     FPowerPad: array[1..12] of Boolean;
@@ -69,7 +73,8 @@ type
     function GetPaused: Boolean;
     procedure RunEmulation;
     procedure SnapshotCommand(const Name: string; Loading: Boolean);
-    procedure WorkerCommand(const Name: string; Loading, Tape: Boolean; Action: TTapeAction);
+    procedure WorkerCommand(const Name: string; Loading, Tape: Boolean; Action: TTapeAction; Disk: Boolean = False);
+    procedure UpdateDiskStatus;
     function ProcessSnapshot: Boolean;
     function GetInputPorts: TCoreInputPorts;
     procedure SetInputPorts(const Ports: TCoreInputPorts);
@@ -82,6 +87,7 @@ type
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = ''; const InputConfigFile: string = ''); overload;
     destructor Destroy; override;
     procedure ConfigureAudio(Volume: Single);
+    procedure ConfigureDiskWriteProtection(Value: Boolean);
     procedure StopAndSave;
     procedure SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2: TKeyMap); overload;
     procedure SetKey(Code: UInt32; Pressed: Boolean; const Keys, Keys2, Keys3, Keys4: TKeyMap); overload;
@@ -108,6 +114,11 @@ type
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     procedure TapeCommand(Action: TTapeAction; const FileName: string = '');
+    function GetDiscCount: Integer;
+    function GetDiscName(Index: Integer): string;
+    function GetDiscIndex: Integer;
+    procedure ChangeDisc(Index: Integer);
+    procedure OpenDisc(const Location: string);
     function GetTapeState: TTapeState;
     function GetTapeProgress: TTapeProgress;
     property UsesDataRecorder: Boolean read FUsesDataRecorder;
@@ -164,7 +175,6 @@ begin
   if FSaveDirectory = '' then
     FSaveDirectory := FStorage.SaveRoot;
   FConsole := TNesConsole.Create(FourScoreEnabled, FStorage);
-  FConsole.LoadRom(Stream, RomName, RegionOverride);
   var ConfigPath := InputConfigFile;
   if ConfigPath = '' then
     ConfigPath := FStorage.ConfigFile(ROM_SYSTEM_NES);
@@ -174,6 +184,9 @@ begin
   var Ports := ReadCoreInputPorts(PortIni);
   Ports.FourScore := FourScoreEnabled;
   try
+    FDiskWriteProtected := PortIni.ReadBool('FDS', 'WriteProtected', False);
+    FConsole.ConfigureDiskSystem(PortIni.ReadString('FDS', 'BIOSFile', ''), FDiskWriteProtected);
+    FConsole.LoadRom(Stream, RomName, RegionOverride);
     if (Ports.Devices[1] = 'auto') and PortIni.ReadBool('Input', 'Zapper', False) then
       Ports.Devices[1] := 'zapper';
   finally
@@ -208,7 +221,66 @@ begin
   FStatus.TapeProgress := FConsole.DataRecorder.GetProgress;
   FStatus.TapeProgress.DefaultFile := True;
   FStatus.Region := FConsole.Region;
+  UpdateDiskStatus;
   FConsole.Apu.SetSampleRate(NES_SAMPLE_RATE);
+end;
+
+procedure TNesEmulationThread.UpdateDiskStatus;
+begin
+  // Called before Start or with FLock held by the worker.
+  FStatus.DiskSide := -1;
+  FStatus.DiskNames := nil;
+  var Disk := FConsole.DiskSystem;
+  if Disk = nil then
+    Exit;
+  FStatus.DiskSide := Disk.Side;
+  SetLength(FStatus.DiskNames, Disk.Media.SideCount);
+  for var I := 0 to High(FStatus.DiskNames) do
+    FStatus.DiskNames[I] := Disk.Media.SideName(I);
+end;
+
+function TNesEmulationThread.GetDiscCount: Integer;
+begin
+  FLock.Enter;
+  try
+    Result := Length(FStatus.DiskNames);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TNesEmulationThread.GetDiscName(Index: Integer): string;
+begin
+  FLock.Enter;
+  try
+    if (Index < 0) or (Index >= Length(FStatus.DiskNames)) then
+      raise EArgumentOutOfRangeException.Create('FDS side index');
+    Result := FStatus.DiskNames[Index];
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TNesEmulationThread.GetDiscIndex: Integer;
+begin
+  FLock.Enter;
+  try
+    Result := FStatus.DiskSide;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TNesEmulationThread.ChangeDisc(Index: Integer);
+begin
+  if (Index < -1) or (Index >= GetDiscCount) then
+    raise EArgumentOutOfRangeException.Create('FDS side index');
+  WorkerCommand(IntToStr(Index), False, False, TapeStop, True);
+end;
+
+procedure TNesEmulationThread.OpenDisc(const Location: string);
+begin
+  WorkerCommand(Location, True, False, TapeStop, True);
 end;
 
 procedure TNesEmulationThread.ConfigureAudio(Volume: Single);
@@ -216,6 +288,17 @@ begin
   FLock.Enter;
   try
     FAudioVolume := EnsureRange(Volume, 0.0, 1.0);
+  finally
+    FLock.Leave;
+  end;
+  FWake.SetEvent;
+end;
+
+procedure TNesEmulationThread.ConfigureDiskWriteProtection(Value: Boolean);
+begin
+  FLock.Enter;
+  try
+    FDiskWriteProtected := Value;
   finally
     FLock.Leave;
   end;
@@ -305,7 +388,7 @@ begin
   end;
 end;
 
-procedure TNesEmulationThread.WorkerCommand(const Name: string; Loading, Tape: Boolean; Action: TTapeAction);
+procedure TNesEmulationThread.WorkerCommand(const Name: string; Loading, Tape: Boolean; Action: TTapeAction; Disk: Boolean);
 begin
   FSnapshotLock.Enter;
   try
@@ -318,6 +401,7 @@ begin
       FSnapshotName := Name;
       FSnapshotLoading := Loading;
       FSnapshotTape := Tape;
+      FSnapshotDisk := Disk;
       FTapeAction := Action;
       FSnapshotError := '';
       FSnapshotPending := True;
@@ -347,6 +431,7 @@ begin
   var Name: string;
   var Loading: Boolean;
   var Tape: Boolean;
+  var Disk: Boolean;
   var Action: TTapeAction;
   FLock.Enter;
   try
@@ -356,6 +441,7 @@ begin
     Name := FSnapshotName;
     Loading := FSnapshotLoading;
     Tape := FSnapshotTape;
+    Disk := FSnapshotDisk;
     Action := FTapeAction;
     FSnapshotPending := False;
   finally
@@ -363,7 +449,24 @@ begin
   end;
   var ErrorText := '';
   try
-    if Tape then
+    if Disk then
+    begin
+      if FConsole.DiskSystem = nil then
+        raise ENesException.Create('No Famicom Disk System is connected');
+      if Loading then
+        FConsole.OpenDisk(Name, FSaveDirectory)
+      else if StrToInt(Name) < 0 then
+      begin
+        FConsole.SaveBattery;
+        FConsole.DiskSystem.Eject;
+      end
+      else
+      begin
+        FConsole.SaveBattery;
+        FConsole.DiskSystem.InsertSide(StrToInt(Name));
+      end;
+    end
+    else if Tape then
     begin
       var TapePath := FSelectedTapeFile;
       if TapePath = '' then
@@ -440,6 +543,7 @@ begin
   FLock.Enter;
   try
     FSnapshotError := ErrorText;
+    UpdateDiskStatus;
     FStatus.TapeState := FConsole.DataRecorder.TransportState;
     FStatus.TapeProgress := FConsole.DataRecorder.GetProgress;
     FStatus.TapeProgress.DefaultFile := FSelectedTapeFile = '';
@@ -856,6 +960,12 @@ begin
     while not Terminated do
     begin
       try
+        FLock.Enter;
+        try
+          FConsole.SetDiskWriteProtection(FDiskWriteProtected);
+        finally
+          FLock.Leave;
+        end;
         FInputPortsCommand.Process(
           procedure(const Ports: TCoreInputPorts)
           begin
@@ -1038,6 +1148,7 @@ begin
           FFrame := FConsole.Ppu.Frame;
           FFramePending := True;
           Inc(FStatus.FrameNumber);
+          UpdateDiskStatus;
           FInput.AdvanceTurbo;
           FStatus.TapeProgress := FConsole.DataRecorder.GetProgress;
           FStatus.TapeProgress.DefaultFile := FSelectedTapeFile = '';

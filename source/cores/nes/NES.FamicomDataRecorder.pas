@@ -6,8 +6,7 @@ uses
   Core.Storage, System.SysUtils, NES.State;
 
 type
-  TTapeAction = (
-    TapePlay, TapeRecord, TapeStop, TapeRewind,
+  TTapeAction = (TapePlay, TapeRecord, TapeStop, TapeRewind,
     TapeForward, TapeSelectFile, TapeDefaultFile, TapeSaveAs);
 
   TTapeState = (TapeStopped, TapePlaying, TapeRecording);

@@ -24,8 +24,9 @@ type
 implementation
 
 uses
-  NES.Cartridge, RM.Settings.Catalog, Core.InputConfig, System.IniFiles, Core.PlatformServices,
-  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.NES.Adapter, RM.Platforms.NES.Settings,
+  NES.Cartridge, NES.DiskSystem, RM.Settings.Catalog, Core.InputConfig,
+  System.IniFiles, Core.PlatformServices, System.StrUtils, Core.Emulation,
+  Core.Platforms, Core.Platforms.NES.Adapter, RM.Platforms.NES.Settings,
   RM.Platforms.Presentation, RM.Platforms.NES.Icons, RM.Gamepad.Factory,
   RM.Platforms.NES.Gamepads, NES.Controller, NES.Types, RM.Input.Runtime,
   RM.Platforms.NES.Input, RM.Session.Runtime, RM.Platforms.NES.Session,
@@ -41,25 +42,35 @@ class function TNESPlatform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
 
-  if Context.Signature(0, NES_ROM_SIGNATURE) then
+  var DiskImage := Context.Signature(0, FDS_SIGNATURE) or
+    Context.Signature(0, #1'*NINTENDO-HVC*') or Context.HasExtension(['.fds', '.qd']);
+  if Context.Signature(0, NES_ROM_SIGNATURE) or DiskImage then
+  begin
+    var SystemId := 'nes';
+    if DiskImage then
+      SystemId := 'fds';
     Result := ImageMatch(Context, 'NES',
       function(const Data: TBytes; Input: TStream): IEmulationCore
       begin
         Result := TNesCoreAdapter.Create(Input, Context.Storage, Context.RomName);
-      end, True, 'nes', '', NES_IMAGE_MAX_SIZE);
+      end, True, SystemId, '', NES_IMAGE_MAX_SIZE);
+  end;
 end;
 
 class procedure TNESPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('nes', 'NES / Famicom', 'NES',
-    'Nintendo', 'NES Famicom Dendy', 'nes', ['nes'],
-    ['.nes', '.zip', '.7z'], 'NES', 'nes', 2);
+    'Nintendo', 'NES Famicom Dendy Disk System FDS', 'nes', ['nes'],
+    ['.nes', '.fds', '.qd', '.zip', '.7z'], 'NES', 'nes', 2);
+  TPlatformRegistry.RegisterPlatform('fds', 'Famicom Disk System', 'FDS',
+    'Nintendo', 'FDS Famicom Disk System Twin Famicom', 'fds', ['fds', 'famicomdisksystem'],
+    ['.fds', '.qd', '.zip', '.7z'], 'NES', 'nes', 2);
 end;
 
 class procedure TNESPlatform.RegisterCore;
 begin
   RegisterPlatforms;
-  var Registration := TEmulationCoreRegistration.Create('NES', ['.nes']);
+  var Registration := TEmulationCoreRegistration.Create('NES', ['.nes', '.fds', '.qd']);
   Registration.Add(TCoreLoadStage.Header, 100, Recognize);
   RegisterEmulationCore(Registration);
 end;
@@ -72,6 +83,10 @@ begin
   Service.DocumentSelection.FileFilter := 'Cassette (*.tape)|*.tape|All files|*.*';
   Service.DocumentSelection.AllowedExtensions := ['.tape'];
   RegisterPlatformServices('nes', Service);
+  Service.DocumentSelection.Title := 'Choose FDS disk image';
+  Service.DocumentSelection.FileFilter := 'FDS disks (*.fds;*.qd)|*.fds;*.qd|All files|*.*';
+  Service.DocumentSelection.AllowedExtensions := ['.fds', '.qd'];
+  RegisterPlatformServices('fds', Service);
 end;
 
 class procedure TNESPlatform.LoadLegacyKeys(var Keys: TPlatformInputKeyMap);
@@ -135,6 +150,7 @@ begin
   RegisterInput;
   RegisterPlatformGamepads('nes', TGamepadNESStandart, [TGamepadDeviceVariant.Create('paddendy', TGamepadNESDendy)]);
   RegisterPlatformPresentation('nes', 'nes', PlatformIconNES);
+  RegisterPlatformPresentation('fds', 'nes', PlatformIconNES);
 end;
 
 class procedure TNESPlatform.RegisterPlatform;
@@ -154,5 +170,4 @@ begin
 end;
 
 end.
-
 

@@ -37,6 +37,7 @@ type
     FDataBus: UInt8;
     FInternalDataBus: UInt8;
     FHaltedCpuAddress: UInt16;
+    FCpuAddress: UInt16;
     FTimedIo: Boolean;
     FPendingStrobe: UInt8;
     FStrobeDirty: Boolean;
@@ -69,6 +70,7 @@ type
     procedure ClockDma(CpuCycleOdd: Boolean);
     procedure ClockIo; inline;
     function DebugCpuRead(Address: UInt16): UInt8;
+    property CpuAddress: UInt16 read FCpuAddress write FCpuAddress;
     property CpuCycle: UInt64 read FCpuCycle write FCpuCycle;
     property DmaWritePending: Boolean read FDmaHaveData;
     property HaltedCpuAddress: UInt16 read FHaltedCpuAddress write FHaltedCpuAddress;
@@ -284,6 +286,7 @@ end;
 
 function TNesBus.CpuRead(Address: UInt16): UInt8;
 begin
+  FCpuAddress := Address;
   if Address < $2000 then
     Result := FRam[Address and $07FF]
   else
@@ -296,6 +299,7 @@ end;
 
 function TNesBus.DmaRead(Address: UInt16): UInt8;
 begin
+  FCpuAddress := Address;
   // DMA drives the external bus without replacing the CPU's internal latch.
   Result := ReadDevice(Address);
   if Address <> $4015 then
@@ -304,6 +308,7 @@ end;
 
 function TNesBus.DmaTransferRead(Address: UInt16): UInt8;
 begin
+  FCpuAddress := Address;
   // The CPU's held address enables the internal I/O decoder; DMA supplies
   // the low five address bits. External memory remains selected in parallel.
   if (FHaltedCpuAddress and $FFE0) <> $4000 then
@@ -402,6 +407,7 @@ end;
 
 procedure TNesBus.CpuWrite(Address: UInt16; Value: UInt8);
 begin
+  FCpuAddress := Address;
   FDataBus := Value;
   FInternalDataBus := Value;
   if (FCartridge <> nil) and (FCartridge.Mapper <> nil) then
@@ -502,6 +508,7 @@ begin
     FDmaHaveData := False;
     FDataBus := FDmaData;
     FInternalDataBus := FDmaData;
+    FCpuAddress := $2004;
     FPpu.WriteOamDma(FDmaAddress, FDmaData);
     FDmaAddress := (FDmaAddress + 1) and $FF;
     if FDmaAddress = 0 then

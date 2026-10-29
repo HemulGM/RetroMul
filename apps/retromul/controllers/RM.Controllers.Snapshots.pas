@@ -118,7 +118,7 @@ begin
     FView.SaveSnapshot('Quick');
   except
     on E: Exception do
-      ShowRetroMessage(FView, Translate(E.Message));
+      ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
   end;
 end;
 
@@ -131,7 +131,7 @@ begin
     FView.LoadSnapshot('Quick');
   except
     on E: Exception do
-      ShowRetroMessage(FView, Translate(E.Message));
+      ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
   end;
 end;
 
@@ -191,7 +191,7 @@ begin
     end;
   except
     on E: Exception do
-      ShowRetroMessage(FView, Translate(E.Message));
+      ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
   end;
 end;
 
@@ -221,7 +221,7 @@ begin
         FView.SaveSnapshot(TPath.GetFullPath(Dialog.FileName));
     except
       on E: Exception do
-        ShowRetroMessage(FView, Translate(E.Message));
+        ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
     end;
   finally
     Dialog.Free;
@@ -256,7 +256,7 @@ begin
         FView.LoadSnapshot(TPath.GetFullPath(Dialog.FileName));
     except
       on E: Exception do
-        ShowRetroMessage(FView, Translate(E.Message));
+        ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
     end;
   finally
     Dialog.Free;
@@ -275,7 +275,7 @@ begin
     FView.LoadSnapshot(TMenuItem(Sender).TagString);
   except
     on E: Exception do
-      ShowRetroMessage(FView, Translate(E.Message));
+      ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
   end;
 end;
 
@@ -288,7 +288,7 @@ begin
     FView.SetStatus(Translate('Screenshot: ') + FView.SaveScreenshot);
   except
     on E: Exception do
-      ShowRetroMessage(FView, Translate(E.Message));
+      ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
   end;
 end;
 
@@ -315,7 +315,7 @@ begin
     FView.ShowDirectory(Directory);
   except
     on E: Exception do
-      ShowRetroMessage(FView, Translate(E.Message));
+      ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
   end;
 end;
 
@@ -347,7 +347,7 @@ begin
     FView.SaveSnapshot(SNAPSHOT_AUTOSAVE);
   except
     on E: Exception do
-      ShowRetroMessage(FView, Translate('Autosave failed: ') + Translate(E.Message));
+      ShowRetroMessage(FView, Translate('Autosave failed: ') + TranslateCoreMessage(E.Message));
   end;
 end;
 

@@ -324,6 +324,8 @@ type
     procedure ClockPpuAddress(Address: UInt16; PpuCycle: UInt64); virtual;
     procedure SetRegion(Region: TNesRegion); virtual;
     procedure ClockCpu; virtual;
+    // External CPU address observed once per bus cycle, including DMA.
+    procedure ClockCpuBus(Address: UInt16); virtual;
     procedure ClockCpuWrite; virtual;
     procedure ClockPpuRead; virtual;
     function HasPpuClockCallbacks: Boolean;
@@ -447,6 +449,10 @@ begin
 end;
 
 procedure TMapper.ClockCpu;
+begin
+end;
+
+procedure TMapper.ClockCpuBus(Address: UInt16);
 begin
 end;
 

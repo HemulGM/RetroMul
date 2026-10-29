@@ -68,6 +68,12 @@ type
     property Keys2: TKeyMap read GetKeys2 write SetKeys2;
     property Keys3: TKeyMap read GetKeys3 write SetKeys3;
     property Keys4: TKeyMap read GetKeys4 write SetKeys4;
+    function GetFdsBiosFile: string;
+    procedure SetFdsBiosFile(const Value: string);
+    function GetFdsWriteProtected: Boolean;
+    procedure SetFdsWriteProtected(Value: Boolean);
+    property FdsBiosFile: string read GetFdsBiosFile write SetFdsBiosFile;
+    property FdsWriteProtected: Boolean read GetFdsWriteProtected write SetFdsWriteProtected;
   end;
 
   TNesEmulatorConfig = class(TEmulatorConfigBase, INesEmulatorConfig)
@@ -75,6 +81,8 @@ type
     FFourScore: Boolean;
     FZapperEnabled: Boolean;
     FRegion: TRegionOverride;
+    FFdsBiosFile: string;
+    FFdsWriteProtected: Boolean;
     FKeys, FKeys2, FKeys3, FKeys4: TKeyMap;
     procedure LoadKeyMap(Ini: TCustomIniFile; const Section: string; var Keys: TKeyMap);
     procedure SaveKeyMap(Ini: TCustomIniFile; const Section: string; const Keys: TKeyMap);
@@ -97,9 +105,13 @@ type
     procedure SetKeys3(const Value: TKeyMap);
     function GetKeys4: TKeyMap;
     procedure SetKeys4(const Value: TKeyMap);
+    function GetFdsBiosFile: string;
+    procedure SetFdsBiosFile(const Value: string);
+    function GetFdsWriteProtected: Boolean;
+    procedure SetFdsWriteProtected(Value: Boolean);
   end;
 
-  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, INesSuborKeyboardCore, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore)
+  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, INesSuborKeyboardCore, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore, IEmulationDiscControl)
   private
     FThread: TNesEmulationThread;
     FGamepadInput: TEmulatorInput;
@@ -114,6 +126,12 @@ type
     function GetUsesSuborKeyboard: Boolean;
   public
     procedure ApplyLiveSettings;
+    function GetDiscCount: Integer;
+    function GetDiscName(Index: Integer): string;
+    function GetDiscIndex: Integer;
+    procedure ChangeDisc(Index: Integer);
+    procedure OpenDisc(const Location: string);
+    procedure EjectDisc;
     constructor Create(const FileName: string; const ConfigFileName: string = ''); overload;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; const ConfigFileName: string = ''); overload;
     destructor Destroy; override;
@@ -167,10 +185,43 @@ uses
 
 { TNesCoreAdapter }
 
+function TNesCoreAdapter.GetDiscCount: Integer;
+begin
+  Result := FThread.GetDiscCount;
+end;
+
+function TNesCoreAdapter.GetDiscName(Index: Integer): string;
+begin
+  Result := FThread.GetDiscName(Index);
+end;
+
+function TNesCoreAdapter.GetDiscIndex: Integer;
+begin
+  Result := FThread.GetDiscIndex;
+end;
+
+procedure TNesCoreAdapter.ChangeDisc(Index: Integer);
+begin
+  FThread.ChangeDisc(Index);
+end;
+
+procedure TNesCoreAdapter.OpenDisc(const Location: string);
+begin
+  FThread.OpenDisc(Location);
+end;
+
+procedure TNesCoreAdapter.EjectDisc;
+begin
+  FThread.ChangeDisc(-1);
+end;
+
 procedure TNesCoreAdapter.ApplyLiveSettings;
 begin
   if FThread <> nil then
+  begin
     FThread.ConfigureAudio(FConfig.AudioVolume);
+    FThread.ConfigureDiskWriteProtection(FConfig.FdsWriteProtected);
+  end;
 end;
 
 function TNesCoreAdapter.UsesMiraclePiano: Boolean;
@@ -364,7 +415,10 @@ end;
 
 function TNesCoreAdapter.GetName: string;
 begin
-  Result := ROM_CORE_ID_NES;
+  if GetDiscCount > 0 then
+    Result := 'Famicom Disk System'
+  else
+    Result := ROM_CORE_ID_NES;
 end;
 
 function TNesCoreAdapter.GetSupportsSnapshots: Boolean;
@@ -587,6 +641,8 @@ end;
 
 procedure TNesEmulatorConfig.LoadCoreSettings(Ini: TCustomIniFile);
 begin
+  FFdsBiosFile := Ini.ReadString('FDS', 'BIOSFile', '').Trim;
+  FFdsWriteProtected := Ini.ReadBool('FDS', 'WriteProtected', False);
   FFourScore := Ini.ReadBool('Input', 'FourScore', FFourScore);
   FZapperEnabled := Ini.ReadBool('Input', 'Zapper', False);
   var Region := Ini.ReadString('Video', 'Region', 'Auto');
@@ -604,6 +660,8 @@ end;
 
 procedure TNesEmulatorConfig.SaveCoreSettings(Ini: TCustomIniFile);
 begin
+  Ini.WriteString('FDS', 'BIOSFile', FFdsBiosFile);
+  Ini.WriteBool('FDS', 'WriteProtected', FFdsWriteProtected);
   Ini.WriteBool('Input', 'FourScore', FFourScore);
   Ini.WriteBool('Input', 'Zapper', FZapperEnabled);
   case FRegion of
@@ -623,6 +681,26 @@ end;
 function TNesEmulatorConfig.GetFourScore: Boolean;
 begin
   Result := FFourScore;
+end;
+
+function TNesEmulatorConfig.GetFdsBiosFile: string;
+begin
+  Result := FFdsBiosFile;
+end;
+
+procedure TNesEmulatorConfig.SetFdsBiosFile(const Value: string);
+begin
+  FFdsBiosFile := Value.Trim;
+end;
+
+function TNesEmulatorConfig.GetFdsWriteProtected: Boolean;
+begin
+  Result := FFdsWriteProtected;
+end;
+
+procedure TNesEmulatorConfig.SetFdsWriteProtected(Value: Boolean);
+begin
+  FFdsWriteProtected := Value;
 end;
 
 function TNesEmulatorConfig.GetZapperEnabled: Boolean;

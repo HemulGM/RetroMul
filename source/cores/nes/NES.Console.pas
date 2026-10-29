@@ -5,7 +5,8 @@ interface
 uses
   Core.Storage, System.SysUtils, System.Classes, NES.State, NES.Types, NES.CPU,
   NES.PPU, NES.APU, NES.Bus, NES.Cartridge, NES.Controller, Core.InputConfig,
-  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice;
+  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice,
+  NES.DiskSystem;
 
 type
   TNesConsole = class
@@ -32,8 +33,9 @@ type
     FPortsConfigured: Boolean;
     FInputPorts: TCoreInputPorts;
     FDmcDmaCycles: Integer;
-    FMapperHasCpuClock, FMapperHasIrq, FMapperHasAudio: Boolean;
-    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 22);
+    FMapperHasCpuClock, FMapperHasCpuBus, FMapperHasIrq, FMapperHasAudio: Boolean;
+    FFdsProtectionConfigured, FFdsWriteProtected: Boolean;
+    procedure SerializeState(Stream: TStream; Loading: Boolean; Version: Integer = 24);
     function GetRomIdentity: string;
     function GetUsesMiraclePiano: Boolean;
     function GetUsesPowerPad: Boolean;
@@ -47,6 +49,10 @@ type
     procedure ApplyInputPorts(const Ports: TCoreInputPorts);
     procedure LoadBattery(const DirectoryName: string);
     procedure SaveBattery;
+    function DiskSystem: TMapperFds;
+    procedure ConfigureDiskSystem(const BiosFile: string; WriteProtected: Boolean);
+    procedure SetDiskWriteProtection(Value: Boolean);
+    procedure OpenDisk(const FileName, SaveDirectory: string);
     procedure SaveSnapshot(const FileName: string);
     procedure LoadSnapshot(const FileName: string);
     property RomIdentity: string read GetRomIdentity;
@@ -83,7 +89,7 @@ uses
   System.Hash, System.IOUtils, NES.Mapper, Core.Snapshots;
 
 const
-  SNAPSHOT_VERSION = 22;
+  SNAPSHOT_VERSION = 24;
   SNAPSHOT_MAGIC: array[0..7] of AnsiChar = ('R', 'E', 'T', 'R', 'O', 'M', 'U', 'L');
 
 type
@@ -269,6 +275,8 @@ begin
       // Automatic ports still follow the restored state.
       if FPortsConfigured then
         ConfigureInputPorts(FInputPorts);
+      if FFdsProtectionConfigured then
+        SetDiskWriteProtection(FFdsWriteProtected);
     except
       // A failed load must leave the running game completely unchanged.
       Backup.Position := 0;
@@ -431,6 +439,8 @@ begin
   FPortsConfigured := False;
   FBus.DisconnectedPads := 0;
   FCartridge.LoadFromStream(Stream, RomName);
+  if FFdsProtectionConfigured then
+    SetDiskWriteProtection(FFdsWriteProtected);
   FZapper.VsMode := (FCartridge.MapperId = MAPPER_VS_SYSTEM) or
     (FCartridge.Metadata.ConsoleType = 1);
   FZapper.Enabled := FCartridge.Metadata.DefaultExpansionDevice = 7;
@@ -457,6 +467,8 @@ begin
           FRegion := TNesRegion.Dendy;
       end;
   end;
+  if FCartridge.DiskSystem <> nil then
+    FRegion := TNesRegion.NTSC;
   FPpu.SetRegion(FRegion);
   FPpu.UseVs2C04DPalette := (FCartridge.MapperId = MAPPER_VS_SYSTEM) and (FCartridge.Metadata.VsPpuType = 5);
   FApu.SetRegion(FRegion);
@@ -474,15 +486,42 @@ begin
   FCartridge.SaveBattery;
 end;
 
+function TNesConsole.DiskSystem: TMapperFds;
+begin
+  Result := FCartridge.DiskSystem;
+end;
+
+procedure TNesConsole.ConfigureDiskSystem(const BiosFile: string; WriteProtected: Boolean);
+begin
+  FCartridge.ConfigureFdsBIOS(BiosFile);
+  SetDiskWriteProtection(WriteProtected);
+end;
+
+procedure TNesConsole.SetDiskWriteProtection(Value: Boolean);
+begin
+  FFdsWriteProtected := Value;
+  FFdsProtectionConfigured := True;
+  if DiskSystem <> nil then
+    DiskSystem.WriteProtected := Value;
+end;
+
+procedure TNesConsole.OpenDisk(const FileName, SaveDirectory: string);
+begin
+  FCartridge.OpenDisk(FileName, SaveDirectory);
+end;
+
 procedure TNesConsole.Reset;
 type
   TClockCallback = procedure of object;
+
+  TBusCallback = procedure(Address: UInt16) of object;
 
   TIrqCallback = function: Boolean of object;
 
   TAudioCallback = function: Double of object;
 var
   ClockCallback: TClockCallback;
+  BusCallback: TBusCallback;
   IrqCallback: TIrqCallback;
   AudioCallback: TAudioCallback;
 begin
@@ -498,14 +537,17 @@ begin
   // Virtual method identity is fixed for the loaded board. Avoid calling the
   // base mapper's empty clock and constant IRQ/audio queries every CPU cycle.
   FMapperHasCpuClock := False;
+  FMapperHasCpuBus := False;
   FMapperHasIrq := False;
   FMapperHasAudio := False;
   if FCartridge.Mapper <> nil then
   begin
     ClockCallback := FCartridge.Mapper.ClockCpu;
+    BusCallback := FCartridge.Mapper.ClockCpuBus;
     IrqCallback := FCartridge.Mapper.IrqPending;
     AudioCallback := FCartridge.Mapper.ExpansionAudio;
     FMapperHasCpuClock := TMethod(ClockCallback).Code <> @TMapper.ClockCpu;
+    FMapperHasCpuBus := TMethod(BusCallback).Code <> @TMapper.ClockCpuBus;
     FMapperHasIrq := TMethod(IrqCallback).Code <> @TMapper.IrqPending;
     FMapperHasAudio := TMethod(AudioCallback).Code <> @TMapper.ExpansionAudio;
   end;
@@ -522,6 +564,8 @@ procedure TNesConsole.Clock;
 begin
   var WasFrameReady := FPpu.FrameReady;
   FBus.CpuCycle := FCpuCycles;
+  if FMapperHasCpuBus then
+    FBus.CpuAddress := FCpu.NextReadAddress;
   case FRegion of
     TNesRegion.PAL:
       FDataRecorder.Clock(FCpuCycles * 16);
@@ -603,6 +647,12 @@ begin
     FBus.ClockDma(CpuOdd)
   else
     FCpu.Clock(True);
+
+  if FMapperHasCpuBus then
+  begin
+    FCartridge.Mapper.ClockCpuBus(FBus.CpuAddress);
+    FCpu.SetIrqLine(FApu.IrqPending or (FMapperHasIrq and FCartridge.Mapper.IrqPending));
+  end;
 
   // Register access precedes interrupt sampling within phi2. Keep one PPU
   // dot between them, including when the access reads/clears PPUSTATUS.

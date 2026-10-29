@@ -3,7 +3,8 @@
 interface
 
 uses
-  Core.Storage, System.Classes, System.SysUtils, NES.Types, NES.Mapper;
+  Core.Storage, System.Classes, System.SysUtils, NES.Types, NES.Mapper,
+  NES.DiskSystem;
 
 {$SCOPEDENUMS ON}
 
@@ -17,7 +18,7 @@ const
   NES_ROM_RAM_BANK_SIZE = $2000;
 
 type
-  TRomFormat = (Unknown, INES, NES20);
+  TRomFormat = (Unknown, INES, NES20, FDS);
 
   TRomTiming = (Unknown, NTSC, PAL, MultiRegion, Dendy);
 
@@ -46,6 +47,11 @@ type
     FSaveSize: Integer;
     FLastSaveMemory: TByteArray;
     FStorage: IStorage;
+    FFdsBiosFile: string;
+    FFdsBiosConfigured: Boolean;
+    function LoadFdsBios(const RomName: string): TByteArray;
+    function ReadFdsMedia(Stream: TStream; const FileName: string): TFdsMedia;
+    procedure LoadDisk(Stream: TStream; const RomName: string);
     procedure LoadBufferedRom(Stream: TStream; const RomName: string);
   public
     destructor Destroy; override;
@@ -55,6 +61,9 @@ type
     procedure Reset;
     procedure LoadBattery(const DirectoryName: string);
     procedure SaveBattery;
+    function DiskSystem: TMapperFds;
+    procedure ConfigureFdsBIOS(const FileName: string);
+    procedure OpenDisk(const FileName, SaveDirectory: string);
     property RomIdentity: string read FRomIdentity;
     property SaveFileName: string read FSaveFileName;
     property Mapper: TMapper read FMapper;
@@ -68,14 +77,15 @@ implementation
 
 uses
   NES.RomHashes, NES.RomMetadata, NES.Mapper.Factory, Core.SavePaths,
-  NES.Mapper.ExtendedMemory, NES.Mapper.Mmc3, NES.Mapper.Mmc5, System.Hash,
+  NES.Firmware, NES.Mapper.ExtendedMemory, NES.Mapper.Mmc3, NES.Mapper.Mmc5,
+  System.Hash,
   {$IFDEF MSWINDOWS}
   Winapi.Windows,
   {$ENDIF}
   {$IFDEF POSIX}
   Posix.Stdio, Posix.Unistd,
   {$ENDIF}
-  System.IOUtils;
+  System.IOUtils, System.Zip, Core.MediaArchive;
 
 type
   TInesHeader = packed record
@@ -259,6 +269,17 @@ begin
   FHeaderMapperId := -1;
   FMetadata := Default(TCartridgeMetadata);
   FRomFileName := RomName;
+
+  var Prefix: TBytes;
+  SetLength(Prefix, 16);
+  SetLength(Prefix, Stream.Read(Prefix[0], Length(Prefix)));
+  Stream.Position := 0;
+  if TFdsMedia.HasSignature(Prefix) or SameText(ExtractFileExt(RomName), '.fds') or
+    SameText(ExtractFileExt(RomName), '.qd') then
+  begin
+    LoadDisk(Stream, RomName);
+    Exit;
+  end;
 
   var Header: TInesHeader;
   var PrgRom: TByteArray;
@@ -512,6 +533,140 @@ procedure TCartridge.Reset;
 begin
   if FMapper <> nil then
     FMapper.Reset;
+end;
+
+function TCartridge.DiskSystem: TMapperFds;
+begin
+  Result := nil;
+  if FMapper is TMapperFds then
+    Result := TMapperFds(FMapper);
+end;
+
+function TCartridge.LoadFdsBios(const RomName: string): TByteArray;
+begin
+  var ConfigPath := FStorage.ConfigFile('nes');
+  var Path := FFdsBiosFile;
+  if not FFdsBiosConfigured then
+  begin
+    var Ini := FStorage.ReadConfig(ConfigPath);
+    try
+      Path := Ini.ReadString('FDS', 'BIOSFile', '');
+    finally
+      Ini.Free;
+    end;
+  end;
+  if Path = '' then
+    for var Candidate in TArray<string>.Create(TPath.Combine(ExtractFilePath(RomName), 'disksys.rom'), TPath.Combine(FStorage.RomFolder('nes'), 'disksys.rom'), TPath.Combine(ExtractFilePath(ConfigPath), 'disksys.rom')) do
+      if FStorage.Exists(Candidate) then
+      begin
+        Path := Candidate;
+        Break;
+      end;
+  if Path = '' then
+    Exit(LoadBuiltinFdsBIOS);
+  if not FStorage.Exists(Path) then
+    raise ENesException.CreateFmt('FDS BIOS file not found: %s', [Path]);
+  var Input := FStorage.OpenRead(Path);
+  try
+    if Input.Size <> $2000 then
+      raise ENesException.CreateFmt('FDS BIOS must be exactly 8192 bytes: %s', [Path]);
+    SetLength(Result, $2000);
+    Input.ReadBuffer(Result[0], Length(Result));
+  finally
+    Input.Free;
+  end;
+end;
+
+procedure TCartridge.ConfigureFdsBIOS(const FileName: string);
+begin
+  FFdsBiosFile := FileName.Trim;
+  FFdsBiosConfigured := True;
+end;
+
+procedure TCartridge.LoadDisk(Stream: TStream; const RomName: string);
+begin
+  var Bios := LoadFdsBios(RomName);
+  var Media := ReadFdsMedia(Stream, RomName);
+  try
+    FMapper := TMapperFds.Create(Media, Bios);
+    FRomIdentity := Media.Identity;
+    Media := nil;
+  finally
+    Media.Free;
+  end;
+  FMapperId := FDS_MAPPER_ID;
+  FHeaderMapperId := FMapperId;
+  FMetadata.Format := TRomFormat.FDS;
+  FMetadata.MapperId := FMapperId;
+  FMetadata.PrgRamSize := $8000;
+  FMetadata.ChrRamSize := $2000;
+  FMetadata.PrgRomSize := $2000;
+  FMetadata.MirrorMode := TMirrorMode.Vertical;
+  FMetadata.Timing := TRomTiming.NTSC;
+  FMetadata.HasBattery := True;
+  FValid := True;
+end;
+
+procedure TCartridge.OpenDisk(const FileName, SaveDirectory: string);
+begin
+  var Disk := DiskSystem;
+  if Disk = nil then
+    raise ENesException.Create('No Famicom Disk System is connected');
+  var Stream := FStorage.OpenRead(FileName);
+  var Media: TFdsMedia := nil;
+  try
+    Media := ReadFdsMedia(Stream, FileName);
+    SaveBattery;
+    // Validate the replacement save before touching the running session.
+    var Path := FStorage.GamePath(SaveDirectory, FileName, Media.Identity, '.sav');
+    if FStorage.Exists(Path) then
+      Media.LoadMemory(TByteArray(FStorage.ReadBytes(Path)));
+    var Memory := Media.SaveMemory;
+    Disk.ReplaceMedia(Media);
+    Media := nil;
+    FRomFileName := FileName;
+    FLastSaveMemory := Memory;
+    FSaveSize := Length(Memory);
+    FSaveFileName := Path;
+  finally
+    Media.Free;
+    Stream.Free;
+  end;
+end;
+
+function TCartridge.ReadFdsMedia(Stream: TStream; const FileName: string): TFdsMedia;
+begin
+  var Data := ReadRomData(Stream);
+  // The main registry may already have extracted the image while retaining
+  // its archive filename. Media replacement also accepts the archive itself.
+  if TFdsMedia.HasSignature(Data) or not IsMediaArchive(FileName) then
+    Exit(TFdsMedia.Create(TByteArray(Data), SameText(ExtractFileExt(FileName), '.qd')));
+  if not SameText(ExtractFileExt(FileName), '.zip') then
+    Data := DecodeMediaArchive(FileName, Data);
+  var Input := TBytesStream.Create(Data);
+  var Archive := TZipFile.Create;
+  try
+    Archive.Open(Input, zmRead);
+    var Candidate := -1;
+    for var I := 0 to Archive.FileCount - 1 do
+      if SameText(ExtractFileExt(Archive.FileNames[I]), '.fds') or
+        SameText(ExtractFileExt(Archive.FileNames[I]), '.qd') then
+      begin
+        if Candidate >= 0 then
+          raise ENesException.Create('FDS archive must contain exactly one disk image');
+        Candidate := I;
+      end;
+    if Candidate < 0 then
+      raise ENesException.Create('FDS archive must contain exactly one disk image');
+    if Archive.FileInfo[Candidate].UncompressedSize64 > 64 * 1024 * 1024 then
+      raise ENesException.Create('FDS archive image exceeds 64 MiB');
+    var Name := Archive.FileNames[Candidate];
+    Archive.Read(Candidate, Data);
+    Result := TFdsMedia.Create(TByteArray(Data), SameText(ExtractFileExt(Name), '.qd'));
+  finally
+    Archive.Free;
+    Input.Free;
+  end;
 end;
 
 end.

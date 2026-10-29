@@ -972,6 +972,9 @@
         <DCCReference Include="..\..\source\cores\nes\NES.PPU.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.RomMetadata.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.State.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\NES.Audio.FDS.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\NES.DiskSystem.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\NES.Firmware.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.Types.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.APU.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.Audio.Vrc7.pas"/>

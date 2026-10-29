@@ -318,7 +318,7 @@ begin
     DiscMenu.Name := 'MenuItemChangeDisc';
     for var I := 0 to Discs.GetDiscCount - 1 do
     begin
-      var Caption := Format('%d. %s', [I + 1, Discs.GetDiscName(I)]);
+      var Caption := Format('%d. %s', [I + 1, TranslateCoreMessage(Discs.GetDiscName(I))]);
       if I = Discs.GetDiscIndex then
         Caption := '✓ ' + Caption;
       var DiscItem := Add(DiscMenu, Caption, DiscMenuClick);
@@ -476,7 +476,7 @@ begin
     FView.LoadRom(Game.FileInfo.Location, Game.Title, Snapshot <> '', Snapshot);
   except
     on E: Exception do
-      ShowRetroMessage(FView, Translate('Unable to open game: ') + Translate(E.Message));
+      ShowRetroMessage(FView, Translate('Unable to open game: ') + TranslateCoreMessage(E.Message));
   end;
 end;
 

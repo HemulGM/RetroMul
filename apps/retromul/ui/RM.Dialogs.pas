@@ -41,6 +41,10 @@ type
 // All dialogs are asynchronous and belong to the host form. Call on the UI thread.
 procedure ShowRetroMessage(Owner: TComponent; const Text: string; Kind: TRetroDialogKind = TRetroDialogKind.Error);
 
+// Core messages remain language-neutral on the worker. Translate their
+// parameters on the UI thread, preserving filenames and side letters.
+function TranslateCoreMessage(const Text: string): string;
+
 procedure ShowRetroConfirmation(Owner: TComponent; const Text: string; const OnResult: TProc<Boolean>; const AcceptText: string = ''; const CancelText: string = '');
 
 procedure ShowRetroChoice(Owner: TComponent; const Text: string; const OnResult: TProc<TRetroDialogChoice>; const AcceptText, AlternativeText, CancelText: string);
@@ -59,7 +63,7 @@ implementation
 
 uses
   System.Math, System.Generics.Collections, FMX.TextLayout, FMX.Graphics,
-  RM.Icons;
+  RM.Icons, System.RegularExpressions;
 
 {$R *.fmx}
 
@@ -126,11 +130,26 @@ begin
     Result := TCustomForm(Application.MainForm);
 end;
 
+function TranslateCoreMessage(const Text: string): string;
+begin
+  for var Prefix in TArray<string>.Create('FDS BIOS must be exactly 8192 bytes: ', 'FDS BIOS file not found: ') do
+    if Text.StartsWith(Prefix) then
+      Exit(Format(Translate(Prefix + '%s'), [Copy(Text, Length(Prefix) + 1, MaxInt)]));
+  var Side := TRegEx.Match(Text, '^Disk ([0-9]+) · Side ([AB])$');
+  if Side.Success then
+    Exit(Format(Translate('Disk %d · Side %s'), [StrToInt(Side.Groups[1].Value), Side.Groups[2].Value]));
+  var SaveSize := TRegEx.Match(Text, '^Invalid save size: (.*) \(expected ([0-9]+) bytes\)$');
+  if SaveSize.Success then
+    Exit(Format(Translate('Invalid save size: %s (expected %d bytes)'),
+        [SaveSize.Groups[1].Value, StrToInt(SaveSize.Groups[2].Value)]));
+  Result := Translate(Text);
+end;
+
 procedure ShowRetroMessage(Owner: TComponent; const Text: string; Kind: TRetroDialogKind);
 begin
   var Host := FindHost(OwnerForm(Owner), True);
   if Host <> nil then
-    Host.Enqueue(Owner, Translate(Text), Kind, nil);
+    Host.Enqueue(Owner, TranslateCoreMessage(Text), Kind, nil);
 end;
 
 procedure ShowRetroConfirmation(Owner: TComponent; const Text: string; const OnResult: TProc<Boolean>; const AcceptText, CancelText: string);

@@ -25,8 +25,8 @@ uses
 
 procedure TNESSettings.Video(Context: TSettingsPageBuilder);
 begin
-  Context.AddChoice('RowNESregion', 'NES region', 'Frame rate and timing based on the ROM.', 'Video', 'Region',
-    SettingChoices([Translate('Automatic'), 'NTSC', 'PAL'], ['Auto', 'NTSC', 'PAL']), 'Auto');
+  Context.AddChoice('RowNESregion', 'NES region', 'Frame rate and timing based on the ROM. Famicom Disk System always uses NTSC.', 'Video', 'Region',
+    SettingChoices([Translate('Automatic'), 'NTSC', 'PAL'], ['Auto', 'NTSC', 'PAL']), 'Auto').ApplyMode := TSettingsApplyMode.OnNextLoad;
 end;
 
 procedure TNESSettings.Peripherals(Context: TSettingsPageBuilder);
@@ -40,6 +40,15 @@ end;
 
 procedure TNESSettings.Expansion(Context: TSettingsPageBuilder);
 begin
+  Context.Heading('GroupFamicomDiskSystem', 'Famicom Disk System', True);
+  with Context.AddPath('RowFdsBIOS', 'FDS BIOS', 'Optional 8 KiB BIOS override. Leave blank for automatic selection. BIOS changes apply when a game is reopened.', 'FDS', 'BIOSFile', '', False) do
+  begin
+    ApplyMode := TSettingsApplyMode.OnNextLoad;
+    FileFilter := 'BIOS files (*.rom;*.bin)|*.rom;*.bin|All files|*.*';
+    PickerTitle := 'Choose FDS BIOS';
+  end;
+  Context.AddBoolean('RowFdsWriteProtected', 'Write protect disks',
+    'Prevent the emulated drive from changing disk contents. Applies immediately.', 'FDS', 'WriteProtected', False);
   Context.Heading('GroupFamicomexpansionport', 'Famicom expansion port', True);
   var Expansion := Context.AddChoice('RowConnecteddevice', 'Connected device', 'Automatic uses the ROM metadata.',
     'Ports', 'Expansion',

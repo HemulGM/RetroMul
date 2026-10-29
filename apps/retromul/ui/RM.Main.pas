@@ -643,7 +643,7 @@ end;
 
 procedure TFormMain.ReportAudioError(const MessageText: string);
 begin
-  ShowRetroMessage(Self, Translate('Sound unavailable; the game will continue without audio.') + SLineBreak + MessageText, TRetroDialogKind.Warning);
+  ShowRetroMessage(Self, Translate('Sound unavailable; the game will continue without audio.') + SLineBreak + TranslateCoreMessage(MessageText), TRetroDialogKind.Warning);
 end;
 
 function TFormMain.AutosaveClock: UInt64;

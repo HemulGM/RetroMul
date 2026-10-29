@@ -91,7 +91,7 @@ begin
         AUTOSAVE_DEFAULT_MINUTES), 1, AUTOSAVE_MAX_MINUTES);
     FState.Autosave.LastTick := FView.CurrentTick;
     if TranslationError <> '' then
-      FView.SetStatus(Translate('Unable to load translation: ') + TranslationError);
+      FView.SetStatus(Translate('Unable to load translation: ') + TranslateCoreMessage(TranslationError));
   finally
     Ini.Free;
   end;

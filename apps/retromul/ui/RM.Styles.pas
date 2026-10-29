@@ -4,6 +4,7 @@ interface
 
 uses
   System.SysUtils, System.Types, System.UITypes, System.Classes, System.Variants,
+  System.Generics.Collections,
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, Core.Storage;
 
 type
@@ -13,10 +14,15 @@ type
   private
     FCustomIndex: Integer;
     FSelectedLanguage: string;
+    FTranslationKeys: TDictionary<string, Boolean>;
+    FComplexTranslationKeys: TArray<string>;
+    function OriginalTranslationKey(const Line: string): string;
   public
+    destructor Destroy; override;
     function LoadTranslation(const Storage: IStorage; const FileName, Language: string): TStringList;
     procedure SaveTranslationTemplate(const Storage: IStorage; const FileName: string);
     procedure SetLanguage(const Language: string; const Translation: TStrings = nil);
+    function TranslateKey(const Key: string): string;
     procedure RelocalizeUI(Root: TFmxObject; const PreviousLanguage: string);
     property SelectedLanguage: string read FSelectedLanguage;
   end;
@@ -41,6 +47,50 @@ begin
   else
     Code := 'en';
   Result := Code;
+end;
+
+destructor TFormStyles.Destroy;
+begin
+  FTranslationKeys.Free;
+  inherited;
+end;
+
+// TStrings.Names splits at the first '='. Diagnostic keys such as PC=%s
+// contain that character themselves, so use the longest known original key.
+function TFormStyles.OriginalTranslationKey(const Line: string): string;
+begin
+  if FTranslationKeys = nil then
+  begin
+    FTranslationKeys := TDictionary<string, Boolean>.Create;
+    for var Key in Lang.Original do
+    begin
+      FTranslationKeys.AddOrSetValue(Key, True);
+      if Key.Contains('=') then
+        FComplexTranslationKeys := FComplexTranslationKeys + [Key];
+    end;
+  end;
+  Result := '';
+  var Separator := Pos('=', Line);
+  if Separator <= 1 then
+    Exit;
+  var Candidate := Copy(Line, 1, Separator - 1);
+  if FTranslationKeys.ContainsKey(Candidate) then
+    Result := Candidate;
+  for var Key in FComplexTranslationKeys do
+    if (Key.Length > Result.Length) and Line.StartsWith(Key + '=') then
+      Result := Key;
+end;
+
+function TFormStyles.TranslateKey(const Key: string): string;
+begin
+  Result := Translate(Key);
+  if not Key.Contains('=') then
+    Exit;
+  var Values := Lang.LangStr[Lang.Lang];
+  if Values <> nil then
+    for var Line in Values do
+      if (OriginalTranslationKey(Line) = Key) and (Line.Length > Key.Length + 1) then
+        Exit(Line.Substring(Key.Length + 1));
 end;
 
 function TFormStyles.LoadTranslation(const Storage: IStorage; const FileName, Language: string): TStringList;
@@ -139,17 +189,17 @@ begin
       Result.CaseSensitive := True;
       for var Line in Lines do
       begin
-        var Separator := Pos('=', Line);
-        if Separator <= 1 then
+        var Key := OriginalTranslationKey(Line);
+        if Key = '' then
           Continue;
         // Leading/trailing spaces can be part of an original key or translation.
-        var Key := Copy(Line, 1, Separator - 1);
-        var Value := Copy(Line, Separator + 1, MaxInt);
-        if (Lang.Original.IndexOf(Key) >= 0) and (Value <> '') then
+        var Value := Line.Substring(Key.Length + 1);
+        if Value <> '' then
         begin
-          if Result.IndexOfName(Key) >= 0 then
-            InvalidFile;
-          Result.Values[Key] := Value;
+          for var Existing in Result do
+            if OriginalTranslationKey(Existing) = Key then
+              InvalidFile;
+          Result.Add(Key + '=' + Value);
         end;
       end;
       if Result.Count = 0 then
@@ -205,8 +255,22 @@ begin
     try
       Values.CaseSensitive := True;
       Values.Assign(Lang.LangStr[Code]);
-      for var i := 0 to Translation.Count - 1 do
-        Values.Values[Translation.Names[i]] := Translation.ValueFromIndex[i];
+      for var Line in Translation do
+      begin
+        var Key := OriginalTranslationKey(Line);
+        if Key = '' then
+          Continue;
+        var Found := False;
+        for var i := 0 to Values.Count - 1 do
+          if OriginalTranslationKey(Values[i]) = Key then
+          begin
+            Values[i] := Line;
+            Found := True;
+            Break;
+          end;
+        if not Found then
+          Values.Add(Line);
+      end;
       if Lang.Lang.StartsWith('custom-') and (Lang.LangStr[Lang.Lang].Text = Values.Text) then
         Exit;
       // Keep the previous dictionary for reverse lookup during UI relocalization.

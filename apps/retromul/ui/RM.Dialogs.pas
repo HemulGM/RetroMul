@@ -63,7 +63,7 @@ implementation
 
 uses
   System.Math, System.Generics.Collections, FMX.TextLayout, FMX.Graphics,
-  RM.Icons, System.RegularExpressions;
+  RM.Icons, RM.Styles, System.RegularExpressions;
 
 {$R *.fmx}
 
@@ -130,20 +130,130 @@ begin
     Result := TCustomForm(Application.MainForm);
 end;
 
+// Match only complete dictionary templates. Substitutions are already formatted by
+// the core: keep their text verbatim (Unicode paths, hex addresses, large numbers).
+function TryTranslateCoreFormat(const Text, Key: string; out Value: string): Boolean;
+const
+  TokenPattern = '%(?:(\d+):)?[-]?[0-9]*(?:\.[0-9]+)?[sSdDuUxX]|%%';
+begin
+  Result := False;
+  var Tokens := TRegEx.Matches(Key, TokenPattern);
+  if Tokens.Count = 0 then
+    Exit;
+  var Pattern := '\A';
+  var Position := 0;
+  var Count := 0;
+  for var Token in Tokens do
+  begin
+    Pattern := Pattern + TRegEx.Escape(Key.Substring(Position, Token.Index - 1 - Position));
+    if Token.Value = '%%' then
+      Pattern := Pattern + '%'
+    else
+    begin
+      Inc(Count);
+      case UpCase(Token.Value[Length(Token.Value)]) of
+        'D', 'U': Pattern := Pattern + '( *[+-]?[0-9]+)';
+        'X': Pattern := Pattern + '( *[0-9A-Fa-f]+)';
+      else
+        Pattern := Pattern + '([^\r\n]*)';
+      end;
+    end;
+    Position := Token.Index - 1 + Token.Length;
+  end;
+  if Count = 0 then
+    Exit;
+  Pattern := Pattern + TRegEx.Escape(Key.Substring(Position)) + '\z';
+  var Match := TRegEx.Match(Text, Pattern);
+  if not Match.Success then
+    Exit;
+
+  var Arguments := TDictionary<Integer, string>.Create;
+  var Used := TDictionary<Integer, Boolean>.Create;
+  try
+    var Index := 0;
+    var Group := 1;
+    for var Token in Tokens do
+      if Token.Value <> '%%' then
+      begin
+        if (Token.Groups.Count > 1) and Token.Groups[1].Success then
+          if not TryStrToInt(Token.Groups[1].Value, Index) then
+            Exit;
+        var Argument := Match.Groups[Group].Value;
+        var Previous: string;
+        if Arguments.TryGetValue(Index, Previous) and (Previous <> Argument) then
+          Exit;
+        Arguments.AddOrSetValue(Index, Argument);
+        Inc(Index);
+        Inc(Group);
+      end;
+
+    var Localized := FormStyles.TranslateKey(Key);
+    Value := '';
+    Position := 0;
+    Index := 0;
+    for var Token in TRegEx.Matches(Localized, TokenPattern) do
+    begin
+      Value := Value + Localized.Substring(Position, Token.Index - 1 - Position);
+      if Token.Value = '%%' then
+        Value := Value + '%'
+      else
+      begin
+        if (Token.Groups.Count > 1) and Token.Groups[1].Success then
+          if not TryStrToInt(Token.Groups[1].Value, Index) then
+            Exit;
+        var Argument: string;
+        if not Arguments.TryGetValue(Index, Argument) then
+          Exit;
+        Used.AddOrSetValue(Index, True);
+        Value := Value + Argument;
+        Inc(Index);
+      end;
+      Position := Token.Index - 1 + Token.Length;
+    end;
+    Value := Value + Localized.Substring(Position);
+    // A malformed custom translation must not silently drop error details.
+    Result := Used.Count = Arguments.Count;
+  finally
+    Used.Free;
+    Arguments.Free;
+  end;
+end;
+
 function TranslateCoreMessage(const Text: string): string;
 begin
-  for var Prefix in TArray<string>.Create('FDS BIOS must be exactly 8192 bytes: ', 'FDS BIOS file not found: ',
-    'NES palette file not found: ', 'NES palette must contain 192 or 1536 bytes: ') do
+  if FormStyles <> nil then
+    Result := FormStyles.TranslateKey(Text)
+  else
+    Result := Translate(Text);
+  if (Result <> Text) or (Text = '') then
+    Exit;
+  if FormStyles <> nil then
+    for var Key in FormStyles.Lang.Original do
+      if Key.Contains('%') and TryTranslateCoreFormat(Text, Key, Result) then
+        Exit;
+
+  // These prefixes wrap another error, rather than a filename or other data.
+  for var Prefix in TArray<string>.Create('Unable to open game: ', 'Autosave failed: ',
+    'Input error: ', 'Snapshot: ', 'CPS audio: ', 'CPS save: ', 'N64 save: ',
+    'PS1 audio: ', 'PS1 save: ', 'Dreamcast audio: ', 'Dreamcast save: ') do
     if Text.StartsWith(Prefix) then
-      Exit(Format(Translate(Prefix + '%s'), [Copy(Text, Length(Prefix) + 1, MaxInt)]));
-  var Side := TRegEx.Match(Text, '^Disk ([0-9]+) · Side ([AB])$');
-  if Side.Success then
-    Exit(Format(Translate('Disk %d · Side %s'), [StrToInt(Side.Groups[1].Value), Side.Groups[2].Value]));
-  var SaveSize := TRegEx.Match(Text, '^Invalid save size: (.*) \(expected ([0-9]+) bytes\)$');
-  if SaveSize.Success then
-    Exit(Format(Translate('Invalid save size: %s (expected %d bytes)'),
-        [SaveSize.Groups[1].Value, StrToInt(SaveSize.Groups[2].Value)]));
-  Result := Translate(Text);
+      Exit(Translate(Prefix) + TranslateCoreMessage(Text.Substring(Prefix.Length)));
+
+  // Workers may preserve the exception class before the actual message.
+  var ExceptionText := TRegEx.Match(Text, '\A(E[A-Za-z][A-Za-z0-9_.]*): ([\s\S]+)\z');
+  if ExceptionText.Success then
+    Exit(ExceptionText.Groups[1].Value + ': ' + TranslateCoreMessage(ExceptionText.Groups[2].Value));
+
+  var BreakAt := Text.IndexOf(#10);
+  if BreakAt >= 0 then
+  begin
+    var LineEnd := BreakAt;
+    if (LineEnd > 0) and (Text[LineEnd] = #13) then
+      Dec(LineEnd);
+    Exit(TranslateCoreMessage(Text.Substring(0, LineEnd)) +
+      Text.Substring(LineEnd, BreakAt + 1 - LineEnd) + TranslateCoreMessage(Text.Substring(BreakAt + 1)));
+  end;
+  Result := Text;
 end;
 
 procedure ShowRetroMessage(Owner: TComponent; const Text: string; Kind: TRetroDialogKind);

@@ -43,7 +43,8 @@ function ReadEmulatorKey(Ini: TCustomIniFile; const Section, Name: string; Defau
 
 implementation
 
-uses System.Math;
+uses
+  System.Math;
 
 function ReadEmulatorKey(Ini: TCustomIniFile; const Section, Name: string; DefaultValue: UInt32): UInt32;
 begin
@@ -171,3 +172,4 @@ begin
 end;
 
 end.
+

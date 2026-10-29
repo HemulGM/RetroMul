@@ -638,7 +638,7 @@ begin
 
             try
               if ErrorText <> '' then
-                ShowRetroMessage(FView, Translate('Unable to open game: ') + Translate(ErrorText))
+                ShowRetroMessage(FView, Translate('Unable to open game: ') + TranslateCoreMessage(ErrorText))
               else
               try
                 InstallCore(Core, Path, Title, Paused);

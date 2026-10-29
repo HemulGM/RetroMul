@@ -5,7 +5,8 @@ interface
 uses
   Core.InputConfig, System.Classes, System.IniFiles, Core.Storage,
   Core.Emulation, NES.Emulation, NES.Input, NES.Types, NES.Controller,
-  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice, NES.Options;
+  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice,
+  NES.Options;
 
 type
   TNesZapperMask = NES.Types.TNesZapperMask;
@@ -301,8 +302,8 @@ begin
   var Ini := CoreStorage.ReadConfig(ConfigPath);
   try
     var Ports := ReadCoreInputPorts(Ini, 'nes');
-    for var I := 0 to 3 do
-      FDendyPads[I] := Ports.Devices[I] = 'paddendy';
+    for var i := 0 to 3 do
+      FDendyPads[i] := Ports.Devices[i] = 'paddendy';
   finally
     Ini.Free;
   end;
@@ -383,22 +384,22 @@ begin
   Pads[1] := FGamepadInput.Buttons2;
   Pads[2] := FGamepadInput.Buttons3;
   Pads[3] := FGamepadInput.Buttons4;
-  for var I := 0 to 3 do
+  for var i := 0 to 3 do
   begin
     Buttons := [];
     for var Button := Low(TNesButton) to High(TNesButton) do
-      if Mapping[Button] in Pads[I] then
+      if Mapping[Button] in Pads[i] then
         Include(Buttons, Button);
     TurboButtons := [];
-    if FDendyPads[I] then
+    if FDendyPads[i] then
     begin
       // NES Dendy uses the common pad's extra upper row: X = Turbo B, Y = Turbo A.
-      if TEmulatorButton.X in Pads[I] then
+      if TEmulatorButton.X in Pads[i] then
         Include(TurboButtons, TNesButton.B);
-      if TEmulatorButton.Y in Pads[I] then
+      if TEmulatorButton.Y in Pads[i] then
         Include(TurboButtons, TNesButton.A);
     end;
-    FThread.SetButtons(INPUT_SCREEN_GAMEPAD, I + 1, Buttons, TurboButtons);
+    FThread.SetButtons(INPUT_SCREEN_GAMEPAD, i + 1, Buttons, TurboButtons);
   end;
 end;
 

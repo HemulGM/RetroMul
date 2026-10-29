@@ -22,7 +22,8 @@ type
 implementation
 
 uses
-  FMX.Types, System.SysUtils, System.Math, RM.Icons, NES.Options, Core.Storage, RM.Dialogs;
+  FMX.Types, System.SysUtils, System.Math, RM.Icons, NES.Options, Core.Storage,
+  RM.Dialogs;
 
 procedure TNESSettings.Video(Context: TSettingsPageBuilder);
 begin
@@ -32,9 +33,7 @@ begin
   Context.AddBoolean('RowNesRemoveSpriteLimit', 'Remove sprite limit',
     'Display more than eight sprites per scanline to reduce flicker. Some games rely on the original limit.',
     'Video', 'RemoveSpriteLimit', False);
-  with Context.AddPath('RowNesPaletteFile', 'Custom NES palette',
-    'Optional RGB .pal file: 192 bytes for 64 colors or 1536 bytes including emphasis colors. Leave blank for the standard palette. Applies when reopening a game; VS palettes stay automatic.',
-    'Video', 'PaletteFile', '', False) do
+  with Context.AddPath('RowNesPaletteFile', 'Custom NES palette', 'Optional RGB .pal file: 192 bytes for 64 colors or 1536 bytes including emphasis colors. Leave blank for the standard palette. Applies when reopening a game; VS palettes stay automatic.', 'Video', 'PaletteFile', '', False) do
   begin
     ApplyMode := TSettingsApplyMode.OnNextLoad;
     FileFilter := 'NES palettes (*.pal)|*.pal|All files|*.*';
@@ -48,13 +47,13 @@ begin
 end;
 
 procedure TNESSettings.Audio(Context: TSettingsPageBuilder);
-const Captions: array[0..5] of string = ('Pulse 1', 'Pulse 2', 'Triangle channel', 'Noise', 'DMC', 'Cartridge expansion audio');
+const
+  Captions: array[0..5] of string = ('Pulse 1', 'Pulse 2', 'Triangle channel', 'Noise', 'DMC', 'Cartridge expansion audio');
 begin
   Context.Heading('GroupNesChannelMixer', 'NES channel mixer', True);
   for var I := 0 to High(NES_CHANNEL_KEYS) do
-    with Context.AddSlider('RowNes' + NES_CHANNEL_KEYS[I], Captions[I],
-      '100% keeps the original level; 0% mutes this channel. Boosting above 100% may clip.',
-      'Audio', NES_CHANNEL_KEYS[I], 100, 0, 200, 1, True) do UnitCaption := '%';
+    with Context.AddSlider('RowNes' + NES_CHANNEL_KEYS[I], Captions[I], '100% keeps the original level; 0% mutes this channel. Boosting above 100% may clip.', 'Audio', NES_CHANNEL_KEYS[I], 100, 0, 200, 1, True) do
+      UnitCaption := '%';
   Context.Heading('GroupNesSoundCompatibility', 'Sound compatibility', True);
   Context.AddBoolean('RowNesSwapDutyCycles', 'Swap pulse duty cycles',
     'Reproduce the swapped 25% and 50% pulse widths of some Famicom clones.', 'Audio', 'SwapDutyCycles', False);
@@ -101,9 +100,8 @@ begin
   Context.AddChoice('RowFdsChangeDelay', 'Disk change delay',
     'How long the disk remains absent when changing sides. Applies to the next insertion.',
     'FDS', 'ChangeDelayMs', SettingChoices(['0.5 s', '1 s', '2 s'], ['500', '1000', '2000']), '1000');
-  with Context.AddSlider('RowFdsAudioVolume', 'FDS audio volume',
-    'Adjust the FDS wavetable channel independently of NES audio. 100% keeps the original level.',
-    'FDS', 'Volume', 100, 0, 200, 1, True) do UnitCaption := '%';
+  with Context.AddSlider('RowFdsAudioVolume', 'FDS audio volume', 'Adjust the FDS wavetable channel independently of NES audio. 100% keeps the original level.', 'FDS', 'Volume', 100, 0, 200, 1, True) do
+    UnitCaption := '%';
   Context.Heading('GroupFamicomexpansionport', 'Famicom expansion port', True);
   var Expansion := Context.AddChoice('RowConnecteddevice', 'Connected device', 'Automatic uses the ROM metadata.',
     'Ports', 'Expansion',
@@ -166,7 +164,8 @@ begin
   try
     LoadNesPalette(TStorage.Default, Draft.ReadString('Video', 'PaletteFile', ''));
   except
-    on E: Exception do raise Exception.Create(TranslateCoreMessage(E.Message));
+    on E: Exception do
+      raise Exception.Create(TranslateCoreMessage(E.Message));
   end;
   if Draft.ReadBool('Input', 'FourScore', False) and
     ((Draft.ReadString('Ports', 'Port1', 'auto') = 'piano') or

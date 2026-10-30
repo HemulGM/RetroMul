@@ -80,6 +80,10 @@ dual-circuit composition against a scalar reference over alpha boundaries,
 magnification, interlacing, disabled circuits and background selection, and
 IMAGE uploads with scalar HWREG transfers over all storage formats, including
 partial bitstreams, row/VRAM wrapping, ring reuse and serialized state.
+Display rows use immutable offsets for 32/24/16-bit colour/depth layouts,
+preserving the scalar conversion and VRAM wrap without wrapping large display
+coordinates at 2048. Unsupported formats, negative coordinates and race
+instrumentation retain scalar pixel reads.
 Queued whole-quadword IMAGE uploads unpack integer formats into the transfer
 ring in chunks; 24-bit streams, partial tails and unusual state retain the
 scalar path. Reservation, row progression and barriers keep the same order.

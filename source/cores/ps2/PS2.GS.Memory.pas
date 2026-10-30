@@ -127,6 +127,10 @@ type
     procedure WriteAt(PSM: Integer; A, Value: Cardinal); inline;
     // A displayable pixel as 32-bit ABGR (R in bits 0..7) for the CRTC.
     function ReadPixel(PSM: Integer; FBP, FBW: Cardinal; X, Y: Integer): Cardinal;
+    // Exactly ReadPixel's display conversion, including coordinates beyond
+    // 2047 (only VRAM addresses wrap here, unlike transfer coordinates).
+    procedure ReadDisplayRow(PSM: Integer; FBP, FBW: Cardinal; X, Y: Integer;
+      Pixels: PCardinal; Count: Integer);
     property Data: PByte read FData;
   end;
 
@@ -156,6 +160,8 @@ var
   // the same swizzle without rebuilding page/block/column terms per pixel.
   TransferOffsets8: array[0..63, 0..127] of Word;
   TransferOffsets4: array[0..127, 0..127] of Word;
+  DisplayOffsets32: array[0..31, 0..63] of Word;
+  DisplayOffsets16, DisplayOffsets16S: array[0..63, 0..63] of Word;
 {$ENDIF}
 
 function Color16To32(V: Cardinal): Cardinal;
@@ -374,17 +380,76 @@ begin
   end;
 end;
 
+procedure TPS2GSMemory.ReadDisplayRow(PSM: Integer; FBP, FBW: Cardinal; X, Y: Integer;
+  Pixels: PCardinal; Count: Integer);
+begin
+  if Count <= 0 then Exit;
+  {$IFNDEF GS_RACECHECK}
+  if (X >= 0) and (Y >= 0) then
+  begin
+    var BP := FBP div 64;
+    var BW := FBW div 64;
+    if PSM in [PSMCT32, PSMCT24, PSMZ32, PSMZ24] then
+    begin
+      var RowBase := (BP shl 6) + (((Cardinal(Y) shr 5) * BW) shl 11);
+      var Depth: Cardinal := 0;
+      if PSM in [PSMZ32, PSMZ24] then Depth := 24 shl 6;
+      while Count > 0 do
+      begin
+        var N := Min(Count, 64 - (X and 63));
+        var Base := RowBase + ((Cardinal(X) shr 6) shl 11);
+        var Offsets: PWord := @DisplayOffsets32[Y and 31, X and 63];
+        for var K := 0 to N - 1 do
+          Pixels[K] := PCardinal(FData)[(Base + (Offsets[K] xor Depth)) and $FFFFF] or $FF000000;
+        Inc(Pixels, N);
+        Dec(Count, N);
+        Inc(X, N);
+      end;
+      Exit;
+    end;
+    if PSM in [PSMCT16, PSMCT16S, PSMZ16, PSMZ16S] then
+    begin
+      var RowBase := (BP shl 7) + (((Cardinal(Y) shr 6) * BW) shl 12);
+      var Depth: Cardinal := 0;
+      if PSM in [PSMZ16, PSMZ16S] then Depth := 24 shl 7;
+      while Count > 0 do
+      begin
+        var N := Min(Count, 64 - (X and 63));
+        var Base := RowBase + ((Cardinal(X) shr 6) shl 12);
+        var Offsets: PWord := @DisplayOffsets16[Y and 63, X and 63];
+        if PSM in [PSMCT16S, PSMZ16S] then Offsets := @DisplayOffsets16S[Y and 63, X and 63];
+        for var K := 0 to N - 1 do
+          Pixels[K] := Color16To32(PWord(FData)[(Base + (Offsets[K] xor Depth)) and $1FFFFF]);
+        Inc(Pixels, N);
+        Dec(Count, N);
+        Inc(X, N);
+      end;
+      Exit;
+    end;
+  end;
+  {$ENDIF}
+  for var K := 0 to Count - 1 do Pixels[K] := ReadPixel(PSM, FBP, FBW, X + K, Y);
+end;
+
 {$IFNDEF GS_RACECHECK}
-procedure InitTransferOffsets;
+procedure InitPageOffsets;
 begin
   for var Y := 0 to 63 do
     for var X := 0 to 127 do TransferOffsets8[Y, X] := Word(TPS2GSMemory.Addr8(0, 0, Cardinal(X), Cardinal(Y)));
   for var Y := 0 to 127 do
     for var X := 0 to 127 do TransferOffsets4[Y, X] := Word(TPS2GSMemory.Addr4(0, 0, Cardinal(X), Cardinal(Y)));
+  for var Y := 0 to 31 do
+    for var X := 0 to 63 do DisplayOffsets32[Y, X] := Word(TPS2GSMemory.Addr32(0, 0, Cardinal(X), Cardinal(Y)));
+  for var Y := 0 to 63 do
+    for var X := 0 to 63 do
+    begin
+      DisplayOffsets16[Y, X] := Word(TPS2GSMemory.Addr16(0, 0, Cardinal(X), Cardinal(Y)));
+      DisplayOffsets16S[Y, X] := Word(TPS2GSMemory.Addr16S(0, 0, Cardinal(X), Cardinal(Y)));
+    end;
 end;
 
 initialization
-  InitTransferOffsets;
+  InitPageOffsets;
 {$ENDIF}
 
 end.

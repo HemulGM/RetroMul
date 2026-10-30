@@ -226,6 +226,41 @@ begin
   end;
 end;
 
+procedure CheckDisplayRows;
+const
+  Xs: array[0..9] of Integer = (-3, -1, 0, 1, 63, 64, 127, 2047, 2048, 3070);
+  Counts: array[0..7] of Integer = (0, 1, 3, 63, 64, 65, 129, 1031);
+  Sentinel = Cardinal($DA1937C5);
+var
+  Actual: array[0..1032] of Cardinal;
+begin
+  var Memory := TPS2GSMemory.Create;
+  try
+    var P := PCardinal(Memory.Data);
+    for var I := 0 to PS2GSMemorySize div 4 - 1 do P[I] := Cardinal(I) * 1664525 + 1013904223;
+    for var Format in Formats do
+      for var N := 0 to 127 do
+      begin
+        var FBP := Cardinal((N * 2093) and $FFFFF);
+        var FBW := Cardinal((N mod 7) * 64 + (N and 31));
+        var X := Xs[N mod Length(Xs)];
+        var Y := N * 17 - 3;
+        var Count := Counts[N mod Length(Counts)];
+        for var K := 0 to High(Actual) do Actual[K] := Sentinel;
+        Memory.ReadDisplayRow(Format, FBP, FBW, X, Y, @Actual[1], Count);
+        Memory.ReadDisplayRow(Format, FBP, FBW, X, Y, nil, 0);
+        for var K := 0 to Count - 1 do
+          if Actual[K + 1] <> Memory.ReadPixel(Format, FBP, FBW, X + K, Y) then
+            raise Exception.CreateFmt('Display row mismatch format=%x case=%d pixel=%d', [Format, N, K]);
+        if (Actual[0] <> Sentinel) or (Actual[Count + 1] <> Sentinel) then
+          raise Exception.CreateFmt('Display row overrun format=%x case=%d', [Format, N]);
+      end;
+    Writeln('1664 scalar/display-row comparisons: colour/depth formats, negative/large coordinates, strides and VRAM wrap: OK');
+  finally
+    Memory.Free;
+  end;
+end;
+
 procedure CheckRows;
 const
   Xs: array[0..5] of Cardinal = (0, 1, 15, 127, 128, 2047);
@@ -344,6 +379,7 @@ begin
   try
     CheckDisplay;
     CheckComposition;
+    CheckDisplayRows;
     CheckRows;
     CheckTransfers;
   except

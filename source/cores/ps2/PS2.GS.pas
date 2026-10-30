@@ -271,11 +271,7 @@ begin
   // issued while this circuit is scanned, so do that once, not per pixel.
   var Memory := FRaster.Memory;
   for var Y := 0 to H - 1 do
-  begin
-    var SY := DBY + Y;
-    for var X := 0 to W - 1 do
-      Pixels[Y * W + X] := Memory.ReadPixel(PSM, FBP, FBW, DBX + X, SY);
-  end;
+    Memory.ReadDisplayRow(PSM, FBP, FBW, DBX, DBY + Y, @Pixels[Y * W], W);
 end;
 
 procedure TPS2GS.BuildFrame;

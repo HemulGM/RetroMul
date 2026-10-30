@@ -2,6 +2,35 @@
 // ram[], draws[], and a private drawIndex for the current invocation.
 #define p draws[drawIndex].p
 
+// Ordered tile clusters own one logical/physical pixel per invocation.
+// Keep its colour/depth in registers across draws, then publish once.
+// Texture dependencies or layout changes end a cluster on the host.
+bool pixelCache=false;
+bool frameLoaded=false,depthLoaded=false,frameDirty=false,depthDirty=false;
+uint cachedFrame,cachedDepth,cachedFA,cachedZA;
+uint loadFrame(uint a) {
+  if(!pixelCache) return ram[a];
+  if(!frameLoaded) { cachedFrame=ram[a]; cachedFA=a; frameLoaded=true; }
+  return cachedFrame;
+}
+uint loadDepth(uint a) {
+  if(!pixelCache) return ram[a];
+  if(!depthLoaded) { cachedDepth=ram[a]; cachedZA=a; depthLoaded=true; }
+  return cachedDepth;
+}
+void storeFrame(uint a,uint value) {
+  if(!pixelCache) { ram[a]=value; return; }
+  cachedFA=a; cachedFrame=value; frameLoaded=true; frameDirty=true;
+}
+void storeDepth(uint a,uint value) {
+  if(!pixelCache) { ram[a]=value; return; }
+  cachedZA=a; cachedDepth=value; depthLoaded=true; depthDirty=true;
+}
+void finishPixelCache() {
+  if(frameDirty) ram[cachedFA]=cachedFrame;
+  if(depthDirty) ram[cachedZA]=cachedDepth;
+}
+
 const uint blocks[32] = uint[32](0,1,4,5,16,17,20,21,
   2,3,6,7,18,19,22,23,8,9,12,13,24,25,28,29,10,11,14,15,26,27,30,31);
 uint address(uint bp,uint bw,uint x,uint y,bool depth) {
@@ -88,7 +117,7 @@ bool depthPass(ivec2 xy,uint sourceZ) {
   if(p[12]==0) return false;
   uint za=address(p[4],p[1],uint(xy.x),uint(xy.y),true);
   uint mask=p[5]==0x31 ? 0xffffff : 0xffffffff;
-  uint z=min(sourceZ,mask),old=ram[za]&mask;
+  uint z=min(sourceZ,mask),old=loadDepth(za)&mask;
   return !((p[12]==2 && z<old)||(p[12]==3 && z<=old));
 }
 void shadePixel(ivec2 xy,uint sourceZ,ivec3 c,int a,int f,int u,int v,uint mip) {
@@ -135,7 +164,7 @@ void shadePixel(ivec2 xy,uint sourceZ,ivec3 c,int a,int f,int u,int v,uint mip) 
   uint zmask=p[5]==0x31 ? 0xffffff : 0xffffffff;
   uint z=min(sourceZ,zmask);
   uint fa=address(p[0],p[1],x,y,false);
-  uint raw=ram[fa];
+  uint raw=loadFrame(fa);
   uint dst=p[2]==1 ? (raw&0xffffff)|0x80000000 : raw;
   if(p[10]!=0 && ((dst>>31)!=p[11])) return;
   if(p[21]!=0 && (p[18]==0 || a>=128)) {
@@ -150,7 +179,7 @@ void shadePixel(ivec2 xy,uint sourceZ,ivec3 c,int a,int f,int u,int v,uint mip) 
     uint color=uint(c.r)|(uint(c.g)<<8)|(uint(c.b)<<16)|(uint(a&255)<<24);
     uint mask=p[3]|(writeAlpha?0u:0xff000000u);
     color=(color&~mask)|(dst&mask);
-    ram[fa]=p[2]==1 ? (raw&0xff000000)|(color&0xffffff) : color;
+    storeFrame(fa,p[2]==1 ? (raw&0xff000000)|(color&0xffffff) : color);
   }
-  if(writeZ && (writeFB || p[9]==2)) ram[za]=(ram[za]&~zmask)|(z&zmask);
+  if(writeZ && (writeFB || p[9]==2)) storeDepth(za,(loadDepth(za)&~zmask)|(z&zmask));
 }

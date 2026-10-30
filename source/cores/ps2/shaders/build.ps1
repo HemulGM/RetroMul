@@ -12,10 +12,17 @@ foreach ($name in 'Block16','Block16S','Column16','Column8','Column4') {
 }
 [IO.File]::WriteAllText("$PSScriptRoot\PS2.GS.Tables.glsl", ($tables -join "`n")+"`n", [Text.UTF8Encoding]::new($false))
 $compiler = Join-Path $env:VULKAN_SDK 'Bin\glslc.exe'
+# glslc rejects a UTF-8 BOM before #version. Normalize a source mirror in
+# the build directory, including headers, without depending on editor encoding.
+$sourceDir = Join-Path $Out 'source'
+New-Item -ItemType Directory -Force $sourceDir | Out-Null
+Get-ChildItem $PSScriptRoot -File | Where-Object { $_.Extension -in '.comp','.glsl' } | ForEach-Object {
+  [IO.File]::WriteAllText((Join-Path $sourceDir $_.Name), [IO.File]::ReadAllText($_.FullName), [Text.UTF8Encoding]::new($false))
+}
 foreach ($kind in 'Sprite','Triangle') {
   $spv = Join-Path $Out "PS2.GS.$kind.spv"
   $optimization = if ($kind -eq 'Triangle') { '-O0' } else { '-O' }
-  & $compiler --target-env=vulkan1.1 $optimization "$PSScriptRoot\PS2.GS.$kind.comp" -o $spv
+  & $compiler --target-env=vulkan1.1 $optimization "$sourceDir\PS2.GS.$kind.comp" -o $spv
   if ($LASTEXITCODE -ne 0) { throw "$kind shader compilation failed" }
   if ($kind -eq 'Triangle') {
     # These execution modes are only used when TVulkanCompute.ExactDouble

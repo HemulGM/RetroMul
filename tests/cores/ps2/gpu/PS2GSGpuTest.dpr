@@ -220,6 +220,352 @@ begin
   end;
 end;
 
+procedure CheckTiledTriangles;
+var
+  V: array[0..2] of TPS2GSVertex;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    B.Vulkan := True;
+    if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
+    for var R in TArray<TPS2GSRaster>.Create(A, B) do
+    begin
+      R.WriteRegister(GSRegFRAME_1, UInt64(4) shl 16);
+      R.WriteRegister(GSRegZBUF_1, UInt64(1) shl 32);
+      R.WriteRegister(GSRegTEST_1, $30000);
+      R.WriteRegister(GSRegSCISSOR_1, (UInt64(255) shl 16) or (UInt64(255) shl 48));
+      R.WriteRegister(GSRegALPHA_1, $64 or (UInt64(80) shl 32));
+      R.WriteRegister(GSRegCOLCLAMP, 1);
+      R.WriteRegister(GSRegPRIM, 3 or 8 or $40);
+    end;
+    for var N := 0 to 255 do
+    begin
+      if N and 1 = 0 then SetRoundMode(rmNearest) else SetRoundMode(rmTruncate);
+      for var K := 0 to 2 do
+      begin
+        V[K] := Default(TPS2GSVertex);
+        V[K].R := (N * 17 + K * 71) and 255;
+        V[K].G := (N * 31 + K * 53) and 255;
+        V[K].B := (N * 43 + K * 37) and 255;
+        V[K].A := 64; V[K].Q := 1;
+      end;
+      V[0].X := 256 + (N and 15); V[0].Y := 256 + (N and 7);
+      V[1].X := (200 + (N and 31)) * 16; V[1].Y := 384;
+      V[2].X := (48 + (N and 63)) * 16; V[2].Y := (200 + (N and 15)) * 16;
+      for var K := 0 to 2 do Vertex(A, V[K]);
+      for var K := 0 to 2 do Vertex(B, V[K]);
+      if (N = 0) and (B.VulkanRasterizedTriangles = 0) then
+      begin
+        Writeln('Exact FP64 unavailable: full tile path skipped, fragment fallback retained');
+        Exit;
+      end;
+    end;
+    B.Sync;
+    if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) or (A.PixelsDrawn <> B.PixelsDrawn) then
+      raise Exception.Create('Ordered tiled triangle batch mismatch');
+    if (B.VulkanRasterizedTriangles <> 256) or (B.VulkanTriangleDispatches <> 2) then
+      raise Exception.Create('Triangles were not grouped into 128-draw tile clusters');
+    Writeln('256 ordered blended triangles, mixed rounding, 2 tiled dispatches: OK');
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
+procedure CheckPageBarriers;
+begin
+  var Memory := TPS2GSMemory.Create;
+  var GPU := TPS2GSGpu.Create(Memory.Data);
+  try
+    var D := Default(TPS2GSDraw);
+    D.FBW := 4; D.ZPSM := PSMZ32; D.ZMSK := True; D.ZTST := 1;
+    D.TME := True; D.TPSM := PSMCT32; D.TBP := 4096; D.TBW := 1;
+    D.TW := 6; D.TH := 6; D.TFX := 1; D.FST := True; D.ColClamp := True;
+    var V0 := Default(TPS2GSVertex);
+    var V1 := V0;
+    V1.X := 1024; V1.Y := 1024;
+    if not GPU.Sprite(D, V0, V1, 0, 0, 64, 64, 0) then raise Exception.Create('Page probe declined');
+    GPU.ReadPages(128, 129); // GPU reads only: concurrent CPU reads are safe.
+    GPU.WritePages(300, 300);
+    if not GPU.Pending or (GPU.Submissions <> 0) then raise Exception.Create('Unrelated page drained GPU');
+    GPU.WritePages(640, 641); // Wrapped aliases of the sampled texture.
+    if GPU.Pending or (GPU.Submissions <> 1) then raise Exception.Create('Texture write hazard missed');
+    if not GPU.Sprite(D, V0, V1, 0, 0, 64, 64, 0) then raise Exception.Create('Second page probe declined');
+    GPU.ReadPages(512, 512); // Wrapped alias of the colour target.
+    if GPU.Pending or (GPU.Submissions <> 2) then raise Exception.Create('Target read hazard missed');
+    if not GPU.Sprite(D, V0, V1, 0, 0, 64, 64, 0) then raise Exception.Create('Third page probe declined');
+    GPU.WritePages(4, 4);
+    if GPU.Pending or (GPU.Submissions <> 3) then raise Exception.Create('Target write hazard missed');
+    Writeln('Selective read/write page barriers and wrapped aliases: OK');
+  finally
+    GPU.Free; Memory.Free;
+  end;
+end;
+
+procedure CheckTransferBarriers;
+const
+  Bases: array[0..6] of Cardinal = (8192, 0, 0, $3FFF, 0, 0, 4096);
+  Strides: array[0..6] of Cardinal = (0, 0, 1, 1, 4, 4, 0);
+  Xs: array[0..6] of Integer = (0, 0, 256, 64, 2047, 0, 0);
+  Ys: array[0..6] of Integer = (64, 64, 0, 0, 0, 2047, 64);
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    B.Vulkan := True;
+    if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
+    var MA := A.Memory;
+    var MB := B.Memory;
+    for var N := 0 to High(Bases) do
+    begin
+      A.Reset; B.Reset;
+      var Before := B.VulkanSubmissions;
+      for var R in TArray<TPS2GSRaster>.Create(A, B) do
+      begin
+        R.WriteRegister(GSRegFRAME_1, UInt64(4) shl 16);
+        R.WriteRegister(GSRegZBUF_1, UInt64(1) shl 32);
+        R.WriteRegister(GSRegSCISSOR_1, (UInt64(255) shl 16) or (UInt64(255) shl 48));
+        R.WriteRegister(GSRegCOLCLAMP, 1);
+        R.WriteRegister(GSRegTEX0_1, 4096 or (UInt64(1) shl 14) or (UInt64(6) shl 26) or
+          (UInt64(6) shl 30) or (UInt64(1) shl 35));
+        var Prim: UInt64 := 6;
+        if N = 6 then Prim := Prim or $110;
+        R.WriteRegister(GSRegPRIM, Prim);
+        var V := Default(TPS2GSVertex);
+        V.Q := 1; V.R := 71; V.G := 93; V.B := 117; V.A := 128;
+        Vertex(R, V);
+        V.X := 128 * 16; V.Y := 128 * 16;
+        Vertex(R, V);
+        R.WriteRegister(GSRegBITBLTBUF, (UInt64(Bases[N]) shl 32) or (UInt64(Strides[N]) shl 48));
+        R.WriteRegister(GSRegTRXPOS, (UInt64(Xs[N]) shl 32) or (UInt64(Ys[N]) shl 48));
+        R.WriteRegister(GSRegTRXREG, 2 or (UInt64(2) shl 32));
+        R.WriteRegister(GSRegTRXDIR, 0);
+        R.WriteRegister(GSRegHWREG, $8123456789ABCDEF);
+        R.WriteRegister(GSRegHWREG, $FEDCBA9876543210);
+      end;
+      var Expected := Before + 1;
+      if N = 0 then Expected := Before;
+      if B.VulkanSubmissions <> Expected then
+        raise Exception.CreateFmt('Transfer barrier mismatch case=%d', [N]);
+      B.Sync;
+      if not CompareMem(MA.Data, MB.Data, PS2GSMemorySize) or (A.PixelsTransferred <> B.PixelsTransferred) then
+        raise Exception.CreateFmt('Wrapped/zero-stride transfer mismatch case=%d', [N]);
+    end;
+    Writeln('Zero/undersized transfer strides, texture hazards, VRAM/coordinate wrap: OK');
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
+procedure CheckPaletteBarriers;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    B.Vulkan := True;
+    if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
+    var MA := A.Memory;
+    var MB := B.Memory;
+    for var N := 0 to 3 do
+    begin
+      A.Reset; B.Reset;
+      var Before := B.VulkanSubmissions;
+      for var R in TArray<TPS2GSRaster>.Create(A, B) do
+      begin
+        R.WriteRegister(GSRegFRAME_1, UInt64(4) shl 16);
+        R.WriteRegister(GSRegZBUF_1, UInt64(1) shl 32);
+        R.WriteRegister(GSRegSCISSOR_1, (UInt64(255) shl 16) or (UInt64(255) shl 48));
+        R.WriteRegister(GSRegCOLCLAMP, 1);
+        R.WriteRegister(GSRegPRIM, 6);
+        var V := Default(TPS2GSVertex);
+        V.Q := 1; V.R := 31; V.G := 79; V.B := 113; V.A := 128;
+        Vertex(R, V); V.X := 128 * 16; V.Y := 128 * 16; Vertex(R, V);
+        var CBP := 0;
+        var TexClut: UInt64 := UInt64(64) shl 12; // Zero stride aliases the first page.
+        if N = 1 then begin CBP := $3FFF; TexClut := 1 or (UInt64(32) shl 12); end;
+        if N = 2 then CBP := $3FFF;
+        if N = 3 then CBP := 12288;
+        R.WriteRegister(GSRegTEXCLUT, TexClut);
+        var Tex0 := UInt64(4096) or (UInt64(1) shl 14) or (UInt64(PSMT8) shl 20) or
+          (UInt64(6) shl 26) or (UInt64(6) shl 30) or (UInt64(1) shl 35) or
+          (UInt64(CBP) shl 37) or (UInt64(1) shl 61);
+        if N <> 2 then Tex0 := Tex0 or (UInt64(1) shl 55);
+        R.WriteRegister(GSRegTEX0_1, Tex0);
+      end;
+      var Expected := Before + 1;
+      if N = 3 then Expected := Before;
+      if B.VulkanSubmissions <> Expected then
+        raise Exception.CreateFmt('Palette barrier mismatch case=%d', [N]);
+      for var R in TArray<TPS2GSRaster>.Create(A, B) do
+      begin
+        R.WriteRegister(GSRegFRAME_1, 256 or (UInt64(4) shl 16));
+        R.WriteRegister(GSRegPRIM, 6 or $110);
+        var V := Default(TPS2GSVertex);
+        V.Q := 1; V.A := 128;
+        Vertex(R, V); V.X := 128 * 16; V.Y := 128 * 16; Vertex(R, V);
+      end;
+      B.Sync;
+      if not CompareMem(MA.Data, MB.Data, PS2GSMemorySize) then
+        raise Exception.CreateFmt('Zero-stride/wrapped palette mismatch case=%d', [N]);
+    end;
+    Writeln('CSM1/CSM2 palette barriers, zero stride and wrapped VRAM: OK');
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
+procedure CheckClusterDependencies;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    B.Vulkan := True;
+    if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
+    var MA := A.Memory;
+    var MB := B.Memory;
+    for var DepthCase := 0 to 1 do
+    begin
+      A.Reset; B.Reset;
+      var Before := B.VulkanTriangleDispatches;
+      var Count := 3;
+      if DepthCase <> 0 then Count := 2;
+      for var N := 0 to Count - 1 do
+        for var R in TArray<TPS2GSRaster>.Create(A, B) do
+        begin
+          var Target := 0;
+          var Texture := 8192;
+          if N = 1 then begin Target := 8192; Texture := 0; end;
+          if DepthCase <> 0 then Target := 0;
+          R.WriteRegister(GSRegFRAME_1, UInt64(Target div 32) or (UInt64(4) shl 16));
+          var ZBuf := UInt64(2) or (UInt64(1) shl 32);
+          if (DepthCase <> 0) and (N = 0) then ZBuf := 2;
+          R.WriteRegister(GSRegZBUF_1, ZBuf);
+          R.WriteRegister(GSRegSCISSOR_1, (UInt64(255) shl 16) or (UInt64(255) shl 48));
+          R.WriteRegister(GSRegCOLCLAMP, 1);
+          var Prim: UInt64 := 3;
+          if (DepthCase = 0) and (N > 0) then Prim := Prim or $110;
+          R.WriteRegister(GSRegPRIM, Prim);
+          R.WriteRegister(GSRegTEX0_1, UInt64(Texture) or (UInt64(4) shl 14) or
+            (UInt64(8) shl 26) or (UInt64(8) shl 30) or (UInt64(1) shl 35));
+          var V := Default(TPS2GSVertex);
+          V.Q := 1; V.R := 37; V.G := 61; V.B := 107; V.A := 128; V.Z := 100;
+          V.U := 16 * 16; V.V := 16 * 16;
+          Vertex(R, V);
+          var Height := 128;
+          if (DepthCase <> 0) and (N = 0) then Height := 16;
+          V.X := 64 * 16; Vertex(R, V); V.X := 0; V.Y := Height * 16; Vertex(R, V);
+        end;
+      B.Sync;
+      if not CompareMem(MA.Data, MB.Data, PS2GSMemorySize) or (A.PixelsDrawn <> B.PixelsDrawn) then
+        raise Exception.CreateFmt('Cluster dependency mismatch depth=%d', [DepthCase]);
+      if (B.VulkanRasterizedTriangles > 0) and (B.VulkanTriangleDispatches <> Before + Count) then
+        raise Exception.CreateFmt('Dependent triangles shared a cluster depth=%d', [DepthCase]);
+    end;
+    Writeln('Texture dependency, layout and mixed-depth union cluster breaks: OK');
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
+procedure CheckNativeArenas;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    B.Vulkan := True;
+    if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
+    var MA := A.Memory;
+    var MB := B.Memory;
+    for var Large := 0 to 1 do
+    begin
+      A.Reset; B.Reset;
+      var Before := B.VulkanSubmissions;
+      var BeforeTriangles := B.VulkanRasterizedTriangles;
+      var Count := 2065;
+      if Large <> 0 then Count := 260;
+      for var R in TArray<TPS2GSRaster>.Create(A, B) do
+      begin
+        R.WriteRegister(GSRegFRAME_1, UInt64(16) shl 16);
+        R.WriteRegister(GSRegZBUF_1, UInt64(1) shl 32);
+        R.WriteRegister(GSRegSCISSOR_1, (UInt64(1023) shl 16) or (UInt64(511) shl 48));
+        R.WriteRegister(GSRegCOLCLAMP, 0);
+        R.WriteRegister(GSRegALPHA_1, $68 or (UInt64(128) shl 32)); // Add each palette snapshot, wrapping.
+        R.WriteRegister(GSRegPRIM, 3 or $150);
+      end;
+      for var N := 0 to Count - 1 do
+      begin
+        var Color := Cardinal($80000000) or Cardinal((N * 71) and 255) or
+          (Cardinal((N * 37) and 255) shl 8) or (Cardinal((N * 19) and 255) shl 16);
+        MA.WriteRaw(PSMCT32, 12288, 1, 0, 0, Color);
+        MB.WriteRaw(PSMCT32, 12288, 1, 0, 0, Color);
+        for var R in TArray<TPS2GSRaster>.Create(A, B) do
+        begin
+          var Format := 0;
+          if Large <> 0 then Format := (N div 2) and 1; // Two snapshots per cluster.
+          R.WriteRegister(GSRegFRAME_1, (UInt64(16) shl 16) or (UInt64(Format) shl 24));
+          R.WriteRegister(GSRegTEX0_1, 8192 or (UInt64(1) shl 14) or (UInt64(PSMT8) shl 20) or
+            (UInt64(6) shl 26) or (UInt64(6) shl 30) or (UInt64(1) shl 35) or
+            (UInt64(12288) shl 37) or (UInt64(1) shl 61));
+          var V := Default(TPS2GSVertex);
+          V.Q := 1; V.A := 128;
+          if Large = 0 then
+          begin
+            V.X := (N and 31) * 32; V.Y := ((N shr 5) and 31) * 32;
+            Vertex(R, V); Inc(V.X, 32); Vertex(R, V); Dec(V.X, 32); Inc(V.Y, 32); Vertex(R, V);
+          end
+          else
+          begin
+            // A thin diagonal has huge tile bounds but little pixel work.
+            Vertex(R, V); V.X := 1024 * 16; V.Y := 512 * 16; Vertex(R, V);
+            Dec(V.X, 16); Vertex(R, V);
+          end;
+        end;
+        if (N = 0) and (B.VulkanRasterizedTriangles = BeforeTriangles) then
+        begin
+          Writeln('Exact FP64 unavailable: native arena tests skipped');
+          Exit;
+        end;
+      end;
+      B.Sync;
+      if not CompareMem(MA.Data, MB.Data, PS2GSMemorySize) or (A.PixelsDrawn <> B.PixelsDrawn) then
+        raise Exception.CreateFmt('Native arena/CLUT preservation mismatch large=%d', [Large]);
+      if (B.VulkanRasterizedTriangles <> BeforeTriangles + Count) or
+        (B.VulkanSubmissions <> Before + 2) then
+        raise Exception.CreateFmt('Native arena was not refilled large=%d', [Large]);
+    end;
+    Writeln('2048-slot reuse and 16 MiB tile refill preserve ordered CLUT snapshots: OK');
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
+procedure CheckFragmentRollover;
+begin
+  var A := TPS2GSMemory.Create;
+  var B := TPS2GSMemory.Create;
+  var GPU := TPS2GSGpu.Create(B.Data);
+  try
+    var D := Default(TPS2GSDraw);
+    D.FBW := 10; D.FPSM := PSMCT32; D.ZPSM := PSMZ32; D.ZMSK := True; D.ZTST := 1;
+    D.ColClamp := True;
+    if not GPU.BeginTriangle(D, 0, 0, 640, 480) then raise Exception.Create('Fragment probe declined');
+    for var N := 0 to 69999 do
+    begin
+      var X := N mod 640; var Y := N div 640;
+      var R := N and 255; var G := (N shr 3) and 255; var Blue := (N shr 7) and 255;
+      GPU.Fragment(X, Y, 0, R, G, Blue, 128, 0, 0, 0, 0);
+      A.WriteRaw(PSMCT32, 0, 10, Cardinal(X), Cardinal(Y), Cardinal(R or (G shl 8) or (Blue shl 16)) or $80000000);
+    end;
+    GPU.EndTriangle;
+    GPU.Sync;
+    if not CompareMem(A.Data, B.Data, PS2GSMemorySize) or (GPU.Submissions < 2) then
+      raise Exception.Create('Prepared fragment arena rollover mismatch');
+    Writeln('70000 prepared fragments and arena rollover: OK');
+  finally
+    GPU.Free; A.Free; B.Free;
+  end;
+end;
+
 procedure CheckTriangles;
 const
   Registers: array[0..13] of Integer = (GSRegFRAME_1, GSRegZBUF_1, GSRegTEST_1, GSRegALPHA_1,
@@ -462,7 +808,7 @@ begin
           raise Exception.Create('Fallback wrote memory');
       end;
       end;
-      if GPU.Submissions <> 516 then raise Exception.Create('Batch capacity/reuse mismatch');
+      if GPU.Submissions <> 514 then raise Exception.Create('Batch grouping mismatch');
       Writeln('GPU draws=', GPU.Draws, ' submissions=', GPU.Submissions, ' mismatches=0');
       // Exercise the public selector as well as direct GPU calls: the
       // raster owns the imported memory while changing execution mode.
@@ -543,6 +889,13 @@ begin
       A.Free;
     end;
     CheckCoverageCounter;
+    CheckTiledTriangles;
+    CheckPageBarriers;
+    CheckTransferBarriers;
+    CheckPaletteBarriers;
+    CheckClusterDependencies;
+    CheckNativeArenas;
+    CheckFragmentRollover;
     CheckTriangles;
     CheckTextureFormats;
     CheckClutSnapshots;

@@ -8,6 +8,7 @@ layout(local_size_x=8, local_size_y=8) in;
 layout(set=0,binding=0,std430) buffer VRAM { uint ram[]; };
 struct Draw { uint p[384]; };
 layout(set=0,binding=1,std430) readonly buffer State { Draw draws[]; };
+layout(set=0,binding=2,std430) readonly buffer TileMasks { uint tileMasks[]; };
 layout(push_constant) uniform Bounds { ivec4 bounds; uint slot; uint mode; };
 uint drawIndex;
 #include "PS2.GS.Pixel.glsl"
@@ -104,10 +105,8 @@ double vf(uint vertex,uint field) {
   if(field==0 || field==1 || field==8 || field==9) return double(int(raw));
   return double(raw);
 }
-void main() {
-  drawIndex=slot;
-  ivec2 xy=bounds.xy+ivec2(gl_GlobalInvocationID.xy);
-  if(any(greaterThanEqual(xy,bounds.zw))) return;
+void rasterize(ivec2 xy) {
+  if(xy.x<int(p[60]) || xy.y<int(p[61]) || xy.x>=int(p[62]) || xy.y>=int(p[63])) return;
   double x=double(xy.x)*16.0,y=double(xy.y)*16.0;
   double x0=vf(0,0),y0=vf(0,1),x1=vf(1,0),y1=vf(1,1),x2=vf(2,0),y2=vf(2,1);
   double sign=double(int(p[58]));
@@ -146,4 +145,28 @@ void main() {
     }
   }
   shadePixel(xy,z,clamp(c,ivec3(0),ivec3(255)),clamp(a,0,255),clamp(fog,0,255),u,v,p[52]);
+}
+
+void main() {
+  ivec2 xy=bounds.xy+ivec2(gl_GlobalInvocationID.xy);
+  if(any(greaterThanEqual(xy,bounds.zw))) return;
+  if(mode==0) {
+    drawIndex=slot;
+    rasterize(xy);
+    return;
+  }
+  // One invocation owns this pixel through the whole ordered cluster.
+  // Four mask words identify only triangles intersecting this 8x8 tile.
+  pixelCache=true;
+  uint base=mode-1+(gl_WorkGroupID.y*gl_NumWorkGroups.x+gl_WorkGroupID.x)*4;
+  for(uint word=0;word<4;word++) {
+    uint mask=tileMasks[base+word];
+    while(mask!=0) {
+      int bit=findLSB(mask);
+      mask&=mask-1;
+      drawIndex=slot+word*32+uint(bit);
+      rasterize(xy);
+    }
+  }
+  finishPixelCache();
 }

@@ -136,11 +136,16 @@ dynamic per-pixel LOD and unsupported layouts retain host interpolation.
 For those triangles the GPU consumes the exact integer fragments for texture sampling,
 tests, blending and writes. A 65536-fragment arena is split and synchronized
 when full, including in the middle of one triangle.
-Up to 128 draw commands are recorded with
-separate parameter slots and ordered by compute memory barriers. Pending
-work finishes before CPU drawing, transfers, palette loads, display reads,
-reset, snapshots and mode changes. This is not a complete or consistently
-faster GPU renderer. It does not require
+The parameter arena holds 2048 draws. Compatible native triangles are binned
+into ordered 128-draw clusters with 128-bit masks per 8x8 tile; one invocation
+owns a pixel through the cluster and caches its colour/depth until the end.
+Texture dependencies, layout changes and colour/depth aliases end clusters.
+The 16 MiB tile arena can refill while preserving undispatched parameter and
+CLUT snapshots. Other dispatches are ordered by compute memory barriers.
+CPU transfers and palette loads wait only for overlapping GPU read/write
+pages, including zero/undersized strides and wrapped VRAM. CPU drawing,
+display reads, reset, snapshots and mode changes still drain pending work.
+This is not a complete or consistently faster GPU renderer. It does not require
 JIT. GS saves contain the same VRAM and state in either mode.
 
 Regenerate its embedded SPIR-V with `source/cores/ps2/shaders/build.ps1`
@@ -154,6 +159,11 @@ both host rounding modes, varying depth/fog and fragment-arena rollover.
 An additional 312 cases cover all 13 texture formats, CLUT/CSA/CSM/TEXA,
 all minification modes, multiple mip levels, sprites and triangles. A separate
 test mutates the host CLUT while two draws are pending in the same GPU batch.
+Tile tests cover 256 ordered blended triangles in two dispatches, mixed host
+rounding, texture/layout/depth cluster breaks, 2048-slot reuse, tile-arena
+refill with preserved palettes, 70000 prepared fragments, selective page
+hazards and zero-stride/wrapped transfers and palettes. The `-coverageonly`
+switch repeats the CPU band stress 100 times, comparing VRAM and counters.
 It requires a Vulkan device with coherent host-memory import.
 
 ## Limits

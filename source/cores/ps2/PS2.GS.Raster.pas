@@ -161,9 +161,15 @@ type
   TPS2GSAccelerator = class abstract
   protected
     FPending: Boolean;
+    FRevision: Int64;
   public
     procedure Sync; virtual; abstract;
+    // CPU access to wrapped 8 KiB GS pages; unknown accelerators sync fully.
+    procedure ReadPages(First, Last: Integer); virtual;
+    procedure WritePages(First, Last: Integer); virtual;
     property Pending: Boolean read FPending;
+    // Incremented when work is queued; zero disables CPU write-barrier caching.
+    property Revision: Int64 read FRevision;
     function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer; Lod: Single): Boolean; virtual; abstract;
     // Optional full coverage/interpolation; False retains the fragment path.
@@ -232,6 +238,7 @@ type
     FXferX, FXferY: Integer;
     FXferBits: UInt64;
     FXferBitCount: Integer;
+    FXferGPURevision: Int64;
     FReadBuffer: TArray<Cardinal>;
     FReadPos: Integer;
     FPrimitives, FPixels, FXferPixels: Int64;
@@ -293,8 +300,10 @@ type
     function GetVulkanTexturedDraws: Int64;
     function GetVulkanTriangles: Int64;
     function GetVulkanRasterizedTriangles: Int64;
+    function GetVulkanTriangleDispatches: Int64;
     procedure StartTransfer;
     procedure FeedWord(W: Cardinal);
+    procedure CheckGPUTransfer;
     procedure TransferPixel(Value: Cardinal);
     procedure LocalToLocal;
     procedure LocalToHost;
@@ -335,6 +344,7 @@ type
     property VulkanTexturedDraws: Int64 read GetVulkanTexturedDraws;
     property VulkanTriangles: Int64 read GetVulkanTriangles;
     property VulkanRasterizedTriangles: Int64 read GetVulkanRasterizedTriangles;
+    property VulkanTriangleDispatches: Int64 read GetVulkanTriangleDispatches;
     property SignalPending: Boolean read FSignal;
     property FinishPending: Boolean read FFinish;
     property OnSignal: TProc read FOnSignal write FOnSignal;
@@ -511,6 +521,16 @@ begin
   Result := False;
 end;
 
+procedure TPS2GSAccelerator.ReadPages(First, Last: Integer);
+begin
+  Sync;
+end;
+
+procedure TPS2GSAccelerator.WritePages(First, Last: Integer);
+begin
+  Sync;
+end;
+
 destructor TPS2GSRaster.Destroy;
 begin
   FBands.Free;
@@ -556,6 +576,13 @@ begin
     Result := TPS2GSGpu(FAccelerator).RasterizedTriangles;
 end;
 
+function TPS2GSRaster.GetVulkanTriangleDispatches: Int64;
+begin
+  Result := 0;
+  if FAccelerator <> nil then
+    Result := TPS2GSGpu(FAccelerator).TriangleDispatches;
+end;
+
 procedure TPS2GSRaster.SetVulkan(Value: Boolean);
 begin
   if Value = FVulkan then Exit;
@@ -563,6 +590,7 @@ begin
   FreeAndNil(FAccelerator);
   FVulkan := Value;
   FVulkanError := '';
+  FXferGPURevision := -1;
   if Value then
   begin
     SetThreads(0);
@@ -1017,6 +1045,7 @@ end;
 procedure TPS2GSRaster.Reset;
 begin
   Sync;
+  FXferGPURevision := -1;
   FillChar(Regs, SizeOf(Regs), 0);
   FSignal := False;
   FFinish := False;
@@ -1068,6 +1097,8 @@ begin
   // Queued transferred pixels go with the transfer registers they came with.
   if (FXferRunCount > 0) and ((Index = GSRegBITBLTBUF) or (Index = GSRegTRXPOS) or (Index = GSRegTRXREG)) then
     FlushTransfer;
+  if Index in [GSRegBITBLTBUF, GSRegTRXPOS, GSRegTRXREG, GSRegTRXDIR] then
+    FXferGPURevision := -1;
   Regs[Index] := Value;
   case Index of
     GSRegPRIM:
@@ -2213,10 +2244,6 @@ begin
   var CPSM := Integer((Tex0 shr 51) and $F);
   var CSM := Integer((Tex0 shr 55) and 1);
   var CSA := Integer((Tex0 shr 56) and $1F);
-  // A palette load reads VRAM on the CPU, even if the new texture is only
-  // used by a later primitive.
-  if (FAccelerator <> nil) and FAccelerator.Pending then
-    FAccelerator.Sync;
   FlushTransfer;
   var P0, P1: Integer;
   if CSM = 0 then
@@ -2227,6 +2254,25 @@ begin
     var CY := Integer((TexClut shr 12) and $3FF);
     PageSpan(CBP, Cardinal(TexClut and $3F), Cardinal(CPSM), Integer((TexClut shr 6) and $3F) * 16 + 255, CY, CY, P0,
       P1);
+  end;
+  // Palettes are snapshotted per GPU draw. Reading unrelated palette RAM
+  // need not drain geometry whose targets are on other pages.
+  if (FAccelerator <> nil) and FAccelerator.Pending then
+  begin
+    var GPUFirst := P0;
+    var GPULast := P1;
+    if CSM <> 0 then
+    begin
+      var TexClut := Regs[GSRegTEXCLUT];
+      var CY := Integer((TexClut shr 12) and $3FF);
+      var PH := 32;
+      if CPSM in [PSMCT16, PSMCT16S] then PH := 64;
+      var BW := Integer(TexClut and $3F);
+      GPUFirst := Integer(CBP shr 5) + (CY div PH) * BW;
+      GPULast := Integer((CBP + 31) shr 5) + (CY div PH) * BW +
+        (Integer((TexClut shr 6) and $3F) * 16 + 255) div 64;
+    end;
+    FAccelerator.ReadPages(GPUFirst, GPULast);
   end;
   if Queueing then
   begin
@@ -2428,12 +2474,47 @@ begin
     FlushTransfer;
 end;
 
+procedure TPS2GSRaster.CheckGPUTransfer;
+begin
+  if (FAccelerator = nil) or not FAccelerator.Pending or
+    ((FAccelerator.Revision <> 0) and (FXferGPURevision = FAccelerator.Revision)) then Exit;
+  var Buf := Regs[GSRegBITBLTBUF];
+  var Pos := Regs[GSRegTRXPOS];
+  var Reg := Regs[GSRegTRXREG];
+  var X := Integer((Pos shr 32) and $7FF);
+  var Y := Integer((Pos shr 48) and $7FF);
+  var W := Integer(Reg and $FFF);
+  var H := Integer((Reg shr 32) and $FFF);
+  if (W <= 0) or (H <= 0) then Exit;
+  if (X + W > 2048) or (Y + H > 2048) then
+    FAccelerator.WritePages(0, 511)
+  else
+  begin
+    var PW := 64;
+    var PH := 32;
+    var PSM := Integer((Buf shr 56) and $3F);
+    case PSM of
+      PSMCT16, PSMCT16S, PSMZ16, PSMZ16S: PH := 64;
+      PSMT8: begin PW := 128; PH := 64; end;
+      PSMT4: begin PW := 128; PH := 128; end;
+    end;
+    var BW := Integer((Buf shr 48) and $3F);
+    if PW = 128 then BW := (BW + 1) shr 1;
+    var BP := Integer((Buf shr 32) and $3FFF);
+    // Use the actual stride, including zero/undersized widths and aliases.
+    // Extents beyond the end of VRAM wrap in ReadPages/WritePages.
+    var First := (BP shr 5) + (Y div PH) * BW;
+    var Last := ((BP + 31) shr 5) + ((Y + H - 1) div PH) * BW + (X + W - 1) div PW;
+    FAccelerator.WritePages(First, Last);
+  end;
+  FXferGPURevision := FAccelerator.Revision;
+end;
+
 procedure TPS2GSRaster.FeedWord(W: Cardinal);
 begin
   if not FXferActive then
     Exit;
-  if (FAccelerator <> nil) and FAccelerator.Pending then
-    Sync;
+  CheckGPUTransfer;
   var Bits := TransferBits(Cardinal((Regs[GSRegBITBLTBUF] shr 56) and $3F));
   FXferBits := FXferBits or (UInt64(W) shl FXferBitCount);
   Inc(FXferBitCount, 32);

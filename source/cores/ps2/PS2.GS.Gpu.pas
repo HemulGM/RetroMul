@@ -418,6 +418,7 @@ begin
   var Mip := MipCode(D, Lod);
   if not Supports(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or
     (Cardinal(1) shl ((Mip shr 3) and 7))) then Exit;
+  if Assigned(FBeforeDraw) then FBeforeDraw();
   FlushNative;
   if FUsed = BatchSize then Sync;
   WriteState(D, V);
@@ -504,6 +505,7 @@ begin
     (Int64(V2.X) - V0.X) * (Int64(V1.Y) - V0.Y);
   if Area = 0 then Exit;
   var InvArea: Double := 1.0 / Area;
+  if Assigned(FBeforeDraw) then FBeforeDraw();
   BuildAccess(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or
     (Cardinal(1) shl ((Mip shr 3) and 7)), Reads, Writes, Textures);
   if FNativeCount > 0 then
@@ -589,6 +591,7 @@ function TPS2GSGpu.BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): 
 begin
   Result := Supports(D, X0, Y0, X1, Y1);
   if not Result then Exit;
+  if Assigned(FBeforeDraw) then FBeforeDraw();
   FlushNative;
   if FUsed = BatchSize then Sync;
   FTriangleState := D;

@@ -111,11 +111,16 @@ live/unused flag queues. `-Checked` enables checked core code.
 `Video/Renderer=vulkan` independently selects Vulkan compute for supported
 32/24-bit sprites and triangle pixels, including all GS direct and palettized
 texture formats and mipmapping. This uses `RM.Vulkan.Compute` from the Xbox branch (3f3ce45), with
-coherent GS VRAM import. Small draws, texture feedback,
+coherent GS VRAM import. Small sprites, texture feedback,
 overlapping surfaces and unsupported storage
 formats retain the software path. If device creation or host-memory import
 is unavailable, software rendering continues; `VulkanError` reports why.
 The default remains multithreaded software rendering.
+With band workers configured, unsupported sprites/triangles keep the ordered
+software queue rather than drawing on the emulation thread. Accepted GPU
+draws first publish CPU work; software fallbacks and local copies first
+publish GPU work. Workers, including the solo feedback drawer, never call
+Vulkan. Palette loads stay on the host when no CPU work is pending.
 
 The integer shader implements alpha/depth tests, fog, blending, destination
 alpha, masks, texture functions and 24-bit preservation. Sprite UV/STQ
@@ -164,6 +169,10 @@ rounding, texture/layout/depth cluster breaks, 2048-slot reuse, tile-arena
 refill with preserved palettes, 70000 prepared fragments, selective page
 hazards and zero-stride/wrapped transfers and palettes. The `-coverageonly`
 switch repeats the CPU band stress 100 times, comparing VRAM and counters.
+Pass `-Hybrid` to the build script (or `-hybrid` to the test executable) to
+run the renderer cases with four fallback bands. The mixed-renderer test
+also checks two/four/six bands, self-reading 16-bit draws, local copies, palette
+loads, host transfers, mode switching and serialized state equivalence.
 It requires a Vulkan device with coherent host-memory import.
 
 ## Limits

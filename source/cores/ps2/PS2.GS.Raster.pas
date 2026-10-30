@@ -162,6 +162,7 @@ type
   protected
     FPending: Boolean;
     FRevision: Int64;
+    FBeforeDraw: TProc;
   public
     procedure Sync; virtual; abstract;
     // CPU access to wrapped 8 KiB GS pages; unknown accelerators sync fully.
@@ -170,6 +171,9 @@ type
     property Pending: Boolean read FPending;
     // Incremented when work is queued; zero disables CPU write-barrier caching.
     property Revision: Int64 read FRevision;
+    // Host software queues must publish before an accepted GPU draw reads
+    // their targets, textures or the current palette snapshot.
+    property BeforeDraw: TProc read FBeforeDraw write FBeforeDraw;
     function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer; Lod: Single): Boolean; virtual; abstract;
     // Optional full coverage/interpolation; False retains the fragment path.
@@ -288,6 +292,9 @@ type
     procedure Kick(DrawingKick: Boolean);
     procedure SetupDraw;
     procedure Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex);
+    procedure QueueDraw;
+    function QueueFallback(Drawer: TPS2GSDrawer): Boolean;
+    procedure SyncSoftware;
     procedure CheckPrimLogBreak;
     procedure LogRegister(Index: Integer; Value: UInt64);
     procedure LoadClut(Tex0: UInt64);
@@ -593,9 +600,9 @@ begin
   FXferGPURevision := -1;
   if Value then
   begin
-    SetThreads(0);
     try
       FAccelerator := TPS2GSGpu.Create(FMemory.Data, @FClut[0]);
+      FAccelerator.BeforeDraw := procedure begin SyncSoftware; end;
     except
       on E: Exception do FVulkanError := E.Message;
     end;
@@ -631,6 +638,11 @@ procedure TPS2GSRaster.Sync;
 begin
   if (FAccelerator <> nil) and FAccelerator.Pending then
     FAccelerator.Sync;
+  SyncSoftware;
+end;
+
+procedure TPS2GSRaster.SyncSoftware;
+begin
   FlushTransfer;
   if not FPending then
     Exit;
@@ -992,11 +1004,11 @@ begin
   FCommand.V[1] := V1;
   FCommand.V[2] := V2;
   // Diagnostics see the primitives drawn in order, here.
-  if (FBands = nil) or (PrimLog <> nil) or (WatchX >= 0) then
+  if (FBands = nil) or (FAccelerator <> nil) or (PrimLog <> nil) or (WatchX >= 0) then
   begin
-    // Drain CPU bands if necessary, but let eligible sprites accumulate in
-    // the GPU batch. DrawSprite drains it before any software fallback.
-    if FPending then Sync;
+    // GPU acceptance publishes CPU bands first. A fallback can instead
+    // join the software queue after publishing pending GPU writes.
+    if FPending and (FAccelerator = nil) then Sync;
     var Before := FDrawer.PixelsDrawn;
     FDrawer.Draw(FCommand);
     Inc(FPixels, FDrawer.PixelsDrawn - Before);
@@ -1005,6 +1017,24 @@ begin
   var Before := FCounter.PixelsDrawn;
   FCounter.Draw(FCommand);
   Inc(FPixels, FCounter.PixelsDrawn - Before);
+  QueueDraw;
+end;
+
+function TPS2GSRaster.QueueFallback(Drawer: TPS2GSDrawer): Boolean;
+begin
+  Result := (Drawer = FDrawer) and (FAccelerator <> nil) and Queueing;
+  if not Result then Exit;
+  // Only the emulation thread touches the GPU. Workers receive ordinary
+  // software commands; dependent switches drain the previous renderer.
+  if FAccelerator.Pending then FAccelerator.Sync;
+  var Before := FCounter.PixelsDrawn;
+  FCounter.Draw(FCommand);
+  Inc(Drawer.FPixels, FCounter.PixelsDrawn - Before);
+  QueueDraw;
+end;
+
+procedure TPS2GSRaster.QueueDraw;
+begin
   FlushTransfer;
   // Overlapping the queued primitives: the band threads first finish them;
   // reading its own target: the first band thread draws it alone.
@@ -1946,15 +1976,18 @@ begin
     Inc(FPixels, Int64(PX1 - PX0) * (PY1 - PY0));
     Exit;
   end;
-  if (FBandCount = 1) and (FOwner.FAccelerator <> nil) and
+  if (Self = FOwner.FDrawer) and (FOwner.FAccelerator <> nil) and
     (FOwner.PrimLog = nil) and (FOwner.WatchX < 0) then
     if FOwner.FAccelerator.Sprite(FD, V0, V1, PX0, PY0, PX1, PY1, FLod) then
     begin
       Inc(FPixels, Int64(PX1 - PX0) * (PY1 - PY0));
       Exit;
     end;
-  if FOwner.FAccelerator <> nil then
-    FOwner.Sync;
+  if Self = FOwner.FDrawer then
+  begin
+    if FOwner.QueueFallback(Self) then Exit;
+    if FOwner.FAccelerator <> nil then FOwner.Sync;
+  end;
   // Texture coordinates along the edges (in 1/16 texels).
   var U0, U1, TV0, TV1: Double;
   if FD.FST then
@@ -2077,7 +2110,7 @@ begin
   if not ((A1 > 0) or ((A1 = 0) and (B1 > 0))) then Bias1 := -1;
   if not ((A2 > 0) or ((A2 = 0) and (B2 > 0))) then Bias2 := -1;
   var CountCoverage := FCountOnly;
-  if not CountCoverage and (FBandCount = 1) and (FOwner.FAccelerator <> nil) and
+  if not CountCoverage and (Self = FOwner.FDrawer) and (FOwner.FAccelerator <> nil) and
     (FOwner.PrimLog = nil) and (FOwner.WatchX < 0) then
     CountCoverage := FOwner.FAccelerator.Triangle(FD, V0, V1, V2, Integer(MinX), Integer(MinY),
       Integer(MaxX + 1), Integer(MaxY + 1));
@@ -2120,12 +2153,16 @@ begin
   // pixel's line shows it too).
   var NeedZ := (FD.ZTST >= 2) or not FD.ZMSK or (FOwner.WatchX >= 0);
   var Accelerated := False;
-  if not FCountOnly and (FBandCount = 1) and (FOwner.FAccelerator <> nil) then
+  if not FCountOnly and (Self = FOwner.FDrawer) and (FOwner.FAccelerator <> nil) then
   begin
     if (FOwner.PrimLog = nil) and (FOwner.WatchX < 0) then
       Accelerated := FOwner.FAccelerator.BeginTriangle(FD, Integer(MinX), Integer(MinY),
         Integer(MaxX + 1), Integer(MaxY + 1));
-    if not Accelerated then FOwner.Sync;
+    if not Accelerated then
+    begin
+      if FOwner.QueueFallback(Self) then Exit;
+      FOwner.Sync;
+    end;
   end;
   FAccelerating := Accelerated;
   try
@@ -2274,7 +2311,7 @@ begin
     end;
     FAccelerator.ReadPages(GPUFirst, GPULast);
   end;
-  if Queueing then
+  if Queueing and ((FAccelerator = nil) or FPending) then
   begin
     // The first band thread loads it into a new slot of the ring, after the
     // queued primitives that write its pages; the others wait for it.
@@ -2535,6 +2572,10 @@ end;
 
 procedure TPS2GSRaster.LocalToLocal;
 begin
+  // The first CPU worker can start the copy as soon as it is published.
+  // Its source/destination may alias deferred GPU work, so finish that work
+  // even when ordinary software drawing remains queued on the workers.
+  if (FAccelerator <> nil) and FAccelerator.Pending then FAccelerator.Sync;
   if Queueing then
   begin
     // After the queued drawing, on the first band thread.

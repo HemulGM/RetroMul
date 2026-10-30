@@ -17,6 +17,12 @@ begin
   Raster.WriteRegister(GSRegXYZ2, UInt64(V.X) or (UInt64(V.Y) shl 16) or (UInt64(V.Z) shl 32));
 end;
 
+procedure EnableVulkan(Raster: TPS2GSRaster);
+begin
+  if FindCmdLineSwitch('hybrid') then Raster.Threads := 4;
+  Raster.Vulkan := True;
+end;
+
 procedure CheckClutSnapshots;
 var
   Clut: array[0..511] of Word;
@@ -61,7 +67,7 @@ begin
   var A := TPS2GSRaster.Create;
   var B := TPS2GSRaster.Create;
   try
-    B.Vulkan := True;
+    EnableVulkan(B);
     if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
     var Draws := 0;
     for var Format in Formats do
@@ -227,7 +233,7 @@ begin
   var A := TPS2GSRaster.Create;
   var B := TPS2GSRaster.Create;
   try
-    B.Vulkan := True;
+    EnableVulkan(B);
     if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
     for var R in TArray<TPS2GSRaster>.Create(A, B) do
     begin
@@ -272,6 +278,92 @@ begin
   end;
 end;
 
+procedure CheckHybridRenderers;
+begin
+  var Baseline: TBytes;
+  for var Mode := 0 to 3 do
+  begin
+    var R := TPS2GSRaster.Create;
+    try
+      if Mode > 0 then
+      begin
+        R.Threads := Mode * 2;
+        R.Vulkan := True;
+        if R.VulkanError <> '' then raise Exception.Create(R.VulkanError);
+        if R.Threads <> Mode * 2 then raise Exception.Create('Vulkan discarded fallback workers');
+      end;
+      R.WriteRegister(GSRegSCISSOR_1, (UInt64(255) shl 16) or (UInt64(255) shl 48));
+      R.WriteRegister(GSRegZBUF_1, UInt64(1) shl 32);
+      R.WriteRegister(GSRegCOLCLAMP, 1);
+      R.WriteRegister(GSRegALPHA_1, $44);
+      for var N := 0 to 63 do
+      begin
+        if N and 1 = 0 then SetRoundMode(rmNearest) else SetRoundMode(rmTruncate);
+        var CPU := N mod 4 in [1, 2];
+        var Frame := UInt64(4) shl 16;
+        if CPU then Frame := Frame or 256 or (UInt64(PSMCT16) shl 24);
+        R.WriteRegister(GSRegFRAME_1, Frame);
+        var Prim: UInt64 := 6;
+        if N mod 4 = 2 then Prim := Prim or $110; // CPU self-reading 16-bit sprite, solo worker.
+        if N mod 4 = 3 then Prim := 3 or $110; // GPU triangle consumes CPU targets/palettes.
+        if N and 4 <> 0 then Prim := Prim or $40;
+        R.WriteRegister(GSRegPRIM, Prim);
+        var Tex0 := UInt64(8192) or (UInt64(4) shl 14) or (UInt64(PSMCT16) shl 20) or
+          (UInt64(7) shl 26) or (UInt64(7) shl 30) or (UInt64(1) shl 35);
+        if N mod 8 = 3 then
+        begin
+          Tex0 := UInt64(4096) or (UInt64(2) shl 14) or (UInt64(PSMT8) shl 20) or
+            (UInt64(7) shl 26) or (UInt64(7) shl 30) or (UInt64(1) shl 35) or
+            (UInt64(8192) shl 37) or (UInt64(PSMCT16) shl 51) or (UInt64(1) shl 61);
+        end;
+        R.WriteRegister(GSRegTEX0_1, Tex0);
+        R.WriteRegister(GSRegTEXA, 67 or (UInt64(199) shl 32));
+        var V := Default(TPS2GSVertex);
+        V.Q := 1; V.A := 128; V.R := (N * 19) and 255; V.G := (N * 37) and 255; V.B := (N * 71) and 255;
+        V.X := 16 * 16; V.Y := 16 * 16; Vertex(R, V);
+        V.X := 144 * 16; V.U := 127 * 16;
+        if N mod 4 <> 3 then V.Y := 144 * 16;
+        Vertex(R, V);
+        if N mod 4 = 3 then begin V.X := 16 * 16; V.Y := 144 * 16; V.V := 127 * 16; Vertex(R, V); end;
+        if N mod 16 = 0 then
+        begin
+          // A queued CPU copy must first see the deferred GPU target.
+          R.WriteRegister(GSRegBITBLTBUF, (UInt64(4) shl 16) or
+            (UInt64(12288) shl 32) or (UInt64(4) shl 48));
+          R.WriteRegister(GSRegTRXPOS, 0);
+          R.WriteRegister(GSRegTRXREG, 128 or (UInt64(128) shl 32));
+          R.WriteRegister(GSRegTRXDIR, 2);
+        end;
+        if N mod 16 = 8 then
+        begin
+          R.WriteRegister(GSRegBITBLTBUF, (UInt64(4096) shl 32) or (UInt64(2) shl 48));
+          R.WriteRegister(GSRegTRXPOS, 0);
+          R.WriteRegister(GSRegTRXREG, 2 or (UInt64(1) shl 32));
+          R.WriteRegister(GSRegTRXDIR, 0);
+          R.WriteRegister(GSRegHWREG, UInt64($12345678) * Cardinal(N + 1));
+        end;
+      end;
+      var Stream := TMemoryStream.Create;
+      try
+        var Archive := TStateArchive.Create(Stream, False);
+        try R.SerializeState(Archive); finally Archive.Free; end;
+        var Bytes: TBytes;
+        SetLength(Bytes, Stream.Size);
+        Move(Stream.Memory^, Bytes[0], Length(Bytes));
+        if Mode = 0 then Baseline := Bytes
+        else if (Length(Bytes) <> Length(Baseline)) or not CompareMem(@Bytes[0], @Baseline[0], Length(Bytes)) then
+          raise Exception.CreateFmt('Hybrid fallback snapshot mismatch mode=%d', [Mode]);
+      finally
+        Stream.Free;
+      end;
+      if (Mode > 0) and (R.VulkanDraws <> 32) then raise Exception.Create('Hybrid draw did not reach GPU');
+    finally
+      R.Free;
+    end;
+  end;
+  Writeln('GPU / 2/4/6-band fallback ordering, feedback, palettes, transfers and snapshots: OK');
+end;
+
 procedure CheckPageBarriers;
 begin
   var Memory := TPS2GSMemory.Create;
@@ -312,7 +404,7 @@ begin
   var A := TPS2GSRaster.Create;
   var B := TPS2GSRaster.Create;
   try
-    B.Vulkan := True;
+    EnableVulkan(B);
     if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
     var MA := A.Memory;
     var MB := B.Memory;
@@ -357,12 +449,57 @@ begin
   end;
 end;
 
+procedure CheckTransferRevision;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    EnableVulkan(B);
+    if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
+    for var R in TArray<TPS2GSRaster>.Create(A, B) do
+    begin
+      R.WriteRegister(GSRegFRAME_1, UInt64(4) shl 16);
+      R.WriteRegister(GSRegZBUF_1, UInt64(1) shl 32);
+      R.WriteRegister(GSRegSCISSOR_1, (UInt64(255) shl 16) or (UInt64(255) shl 48));
+      R.WriteRegister(GSRegCOLCLAMP, 1);
+      R.WriteRegister(GSRegPRIM, 6 or $110);
+      R.WriteRegister(GSRegTEX0_1, 4096 or (UInt64(1) shl 14) or (UInt64(6) shl 26) or
+        (UInt64(6) shl 30) or (UInt64(1) shl 35));
+      var V := Default(TPS2GSVertex);
+      V.Q := 1; V.A := 128;
+      Vertex(R, V); V.X := 128 * 16; V.Y := 128 * 16; Vertex(R, V);
+      R.WriteRegister(GSRegBITBLTBUF, (UInt64(8192) shl 32) or (UInt64(1) shl 48));
+      R.WriteRegister(GSRegTRXPOS, 0);
+      R.WriteRegister(GSRegTRXREG, 4 or (UInt64(1) shl 32));
+      R.WriteRegister(GSRegTRXDIR, 0);
+      R.WriteRegister(GSRegHWREG, $8123456789ABCDEF); // No GPU consumer of these pages yet.
+    end;
+    if B.VulkanSubmissions <> 0 then raise Exception.Create('Unrelated partial transfer drained GPU');
+    for var R in TArray<TPS2GSRaster>.Create(A, B) do
+    begin
+      R.WriteRegister(GSRegTEX0_1, 8192 or (UInt64(1) shl 14) or (UInt64(6) shl 26) or
+        (UInt64(6) shl 30) or (UInt64(1) shl 35));
+      var V := Default(TPS2GSVertex);
+      V.Q := 1; V.A := 128; V.U := 32; // Reads pixel 2 before the next HWREG changes it.
+      Vertex(R, V); V.X := 128 * 16; V.Y := 128 * 16; Vertex(R, V);
+      R.WriteRegister(GSRegHWREG, $FEDCBA9876543210);
+    end;
+    if B.VulkanSubmissions <> 1 then raise Exception.Create('Transfer revision did not invalidate cached barrier');
+    B.Sync;
+    if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) then
+      raise Exception.Create('Partial transfer / newly sampled texture mismatch');
+    Writeln('GPU revision invalidates partial-transfer barrier cache: OK');
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
 procedure CheckPaletteBarriers;
 begin
   var A := TPS2GSRaster.Create;
   var B := TPS2GSRaster.Create;
   try
-    B.Vulkan := True;
+    EnableVulkan(B);
     if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
     var MA := A.Memory;
     var MB := B.Memory;
@@ -419,7 +556,7 @@ begin
   var A := TPS2GSRaster.Create;
   var B := TPS2GSRaster.Create;
   try
-    B.Vulkan := True;
+    EnableVulkan(B);
     if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
     var MA := A.Memory;
     var MB := B.Memory;
@@ -472,7 +609,7 @@ begin
   var A := TPS2GSRaster.Create;
   var B := TPS2GSRaster.Create;
   try
-    B.Vulkan := True;
+    EnableVulkan(B);
     if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
     var MA := A.Memory;
     var MB := B.Memory;
@@ -577,7 +714,7 @@ begin
   var A := TPS2GSRaster.Create;
   var B := TPS2GSRaster.Create;
   try
-    B.Vulkan := True;
+    EnableVulkan(B);
     if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
     RandSeed := 8173;
     for var N := 0 to 255 do
@@ -813,11 +950,11 @@ begin
       // Exercise the public selector as well as direct GPU calls: the
       // raster owns the imported memory while changing execution mode.
       var Baseline: TBytes;
-      for var Mode := 0 to 2 do
+      for var Mode := 0 to 3 do
       begin
-        A.Vulkan := Mode = 1;
+        A.Vulkan := Mode in [1, 3];
         if A.VulkanError <> '' then raise Exception.Create(A.VulkanError);
-        if Mode = 2 then A.Threads := 4 else A.Threads := 0;
+        if Mode in [2, 3] then A.Threads := 4 else A.Threads := 0;
         A.Reset;
         A.WriteRegister(GSRegFRAME_1, UInt64(4) shl 16);
         A.WriteRegister(GSRegZBUF_1, UInt64(1) shl 32);
@@ -880,7 +1017,7 @@ begin
         if Mode = 0 then Move(A.Memory.Data^, B.Data^, PS2GSMemorySize)
         else if not CompareMem(A.Memory.Data, B.Data, PS2GSMemorySize) then
           raise Exception.CreateFmt('Renderer switch mismatch %d', [Mode]);
-        if (Mode = 1) and (A.VulkanDraws <> 6) then raise Exception.Create('GPU selector did not draw');
+        if (Mode in [1, 3]) and (A.VulkanDraws <> 6) then raise Exception.Create('GPU selector did not draw');
       end;
       Writeln('software -> Vulkan -> threaded software: OK');
     finally
@@ -890,8 +1027,10 @@ begin
     end;
     CheckCoverageCounter;
     CheckTiledTriangles;
+    CheckHybridRenderers;
     CheckPageBarriers;
     CheckTransferBarriers;
+    CheckTransferRevision;
     CheckPaletteBarriers;
     CheckClusterDependencies;
     CheckNativeArenas;

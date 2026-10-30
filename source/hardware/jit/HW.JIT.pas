@@ -1,4 +1,4 @@
-unit HW.JIT;
+﻿unit HW.JIT;
 
 // Code generated at run time, for any core (the N64 CPU's blocks first). A
 // core writes it in TJitAsm's few operations, over registers by role
@@ -54,6 +54,16 @@ type
   // jcBelow..jcAboveEq. After BranchTest of A and B: jcEq none of the bits,
   // jcNe some.
   TJitCond = (jcEq, jcNe, jcLt, jcLe, jcGt, jcGe, jcBelow, jcBelowEq, jcAbove, jcAboveEq);
+
+  // Optional volatile 128-bit scratch registers. Ordinary calls invalidate
+  // all of them; VectorCall leaves its result in v0 only. No saved-vector
+  // state or change to a backend's generated unwind frame is required.
+  TJitVector = (jv0, jv1, jv2, jv3);
+  TJitVectorValue = packed record
+    Lane: array[0..3] of Cardinal;
+  end;
+  TJitVectorAlu = (jvaAnd, jvaOr, jvaXor);
+  TJitVectorMask = (jvmSign, jvmZero);
 
   TJitLabel = Integer;
 
@@ -123,6 +133,21 @@ type
     // As Call, the routine's address read from memory operand Routine (its
     // register not one the arguments change).
     procedure CallAt(const Routine: TJitOp; const Args: array of TJitOp); virtual; abstract;
+    // Optional vector operations; test HasVectors before emitting them.
+    // Memory operands cover 16 bytes, unaligned accesses are allowed. A
+    // store's mask uses bit K for lane K, with zero meaning no memory access.
+    function HasVectors: Boolean; virtual;
+    procedure VectorLoad(Dst: TJitVector; const Src: TJitOp); virtual;
+    procedure VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte = 15); virtual;
+    procedure VectorBroadcast(Dst: TJitVector; const Src: TJitOp); virtual;
+    procedure VectorShuffle(Dst, Src: TJitVector; Pattern: Byte); virtual;
+    procedure VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector); virtual;
+    procedure VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector); virtual;
+    // NativeRoutine's backend-specific ABI receives v0/v1 plus Context in
+    // its first integer argument, returning v0 and an integer in T0. The
+    // model uses ModelRoutine(const A,B:128-bit; Context:pointer; out R).
+    // Both routines may clobber all scratch integer/vector registers.
+    procedure VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp); virtual;
     // A function's start: the fixed registers saved, Self and Ctx from its
     // two arguments. Its end: Value as its result, the fixed registers as
     // they were, back to its caller.
@@ -277,6 +302,51 @@ end;
 
 procedure TJitAsm.AddWindow(Disp: Integer);
 begin
+end;
+
+function TJitAsm.HasVectors: Boolean;
+begin
+  Result := False;
+end;
+
+procedure VectorUnsupported;
+begin
+  raise EInvalidOpException.Create('JIT: vector scratch registers are unavailable');
+end;
+
+procedure TJitAsm.VectorLoad(Dst: TJitVector; const Src: TJitOp);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorBroadcast(Dst: TJitVector; const Src: TJitOp);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorShuffle(Dst, Src: TJitVector; Pattern: Byte);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  VectorUnsupported;
 end;
 
 function TJitAsm.Room(Bytes: NativeInt): Boolean;
@@ -1544,6 +1614,8 @@ type
       BeginAddress, EndAddress, UnwindData: Cardinal;
     end;
     FRegistered: Boolean;
+    FVectorMaskAt: array[0..15] of NativeInt;
+    procedure VectorRIP(const Opcode: array of Byte; Reg: Integer; At: NativeInt);
   protected
     function Allocate(Size: NativeInt; out CodeStart: NativeInt): PByte; override;
     procedure Release(Base: PByte); override;
@@ -1552,6 +1624,14 @@ type
     constructor Create(Size: NativeInt);
     procedure Enter; override;
     procedure Leave(const Value: TJitOp); override;
+    function HasVectors: Boolean; override;
+    procedure VectorLoad(Dst: TJitVector; const Src: TJitOp); override;
+    procedure VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte = 15); override;
+    procedure VectorBroadcast(Dst: TJitVector; const Src: TJitOp); override;
+    procedure VectorShuffle(Dst, Src: TJitVector; Pattern: Byte); override;
+    procedure VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector); override;
+    procedure VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector); override;
+    procedure VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp); override;
   end;
 
 const
@@ -1614,6 +1694,7 @@ end;
 
 procedure TJitAsmWin64.Enter;
 begin
+  FillChar(FVectorMaskAt, SizeOf(FVectorMaskAt), 0);
   Emit([$53]);                // push rbx
   Emit([$56]);                // push rsi
   Emit([$41, $54]);           // push r12
@@ -1636,6 +1717,102 @@ begin
   Emit([$5E]);                // pop rsi
   Emit([$5B]);                // pop rbx
   Emit([$C3]);                // ret
+end;
+
+function TJitAsmWin64.HasVectors: Boolean;
+begin
+  Result := True;
+end;
+
+procedure TJitAsmWin64.VectorRIP(const Opcode: array of Byte; Reg: Integer; At: NativeInt);
+begin
+  Emit(Opcode);
+  Emit([$05 or (Reg shl 3)]);
+  D(Cardinal(At - (Offset + 4)));
+end;
+
+procedure TJitAsmWin64.VectorLoad(Dst: TJitVector; const Src: TJitOp);
+begin
+  if Src.Kind <> okMem then raise EInvalidOpException.Create('JIT: vector load needs memory');
+  Emit([$F3]);
+  ModRM(False, [$0F, $6F], Ord(Dst), False, X(Src), False);
+end;
+
+procedure TJitAsmWin64.VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte);
+begin
+  if Dst.Kind <> okMem then raise EInvalidOpException.Create('JIT: vector store needs memory');
+  Mask := Mask and 15;
+  if Mask = 0 then Exit;
+  var Reg := Ord(Src);
+  if Mask <> 15 then
+  begin
+    if FVectorMaskAt[Mask] = 0 then
+    begin
+      // Frame-local immutable literals need no scratch integer register.
+      // They are skipped in execution and forgotten by every new Enter.
+      var Skip := EmitJump;
+      Align(16);
+      FVectorMaskAt[Mask] := Offset;
+      for var K := 0 to 3 do
+        if Mask and (1 shl K) <> 0 then D($FFFFFFFF) else D(0);
+      PatchJump(Skip, Offset);
+    end;
+    Emit([$F3]);
+    ModRM(False, [$0F, $6F], 4, False, X(Dst), False); // old destination
+    VectorRIP([$F3, $0F, $6F], 5, FVectorMaskAt[Mask]);
+    Emit([$66, $0F, $DF, $EC]);                      // pandn xmm5,xmm4
+    Emit([$66]);
+    ModRM(False, [$0F, $6F], 4, False, X64Reg(Ord(Src)), False);
+    VectorRIP([$66, $0F, $DB], 4, FVectorMaskAt[Mask]);
+    Emit([$66, $0F, $EB, $E5]);                      // por xmm4,xmm5
+    Reg := 4;
+  end;
+  Emit([$F3]);
+  ModRM(False, [$0F, $7F], Reg, False, X(Dst), False);
+end;
+
+procedure TJitAsmWin64.VectorBroadcast(Dst: TJitVector; const Src: TJitOp);
+begin
+  if not (Src.Kind in [okReg, okMem]) then raise EInvalidOpException.Create('JIT: vector broadcast needs a scalar');
+  Emit([$66]);
+  ModRM(False, [$0F, $6E], Ord(Dst), False, X(Src), False);
+  VectorShuffle(Dst, Dst, 0);
+end;
+
+procedure TJitAsmWin64.VectorShuffle(Dst, Src: TJitVector; Pattern: Byte);
+begin
+  Emit([$66]);
+  ModRM(False, [$0F, $70], Ord(Dst), False, X64Reg(Ord(Src)), False);
+  Emit([Pattern]);
+end;
+
+procedure TJitAsmWin64.VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector);
+const
+  Codes: array[TJitVectorAlu] of Byte = ($DB, $EB, $EF);
+begin
+  Emit([$66]);
+  ModRM(False, [$0F, Codes[Op]], Ord(Dst), False, X64Reg(Ord(Src)), False);
+end;
+
+procedure TJitAsmWin64.VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector);
+begin
+  var Reg := Ord(Src);
+  if Op = jvmZero then
+  begin
+    Emit([$66, $0F, $EF, $E4]);                      // pxor xmm4,xmm4
+    Emit([$66]);
+    ModRM(False, [$0F, $6F], 5, False, X64Reg(Reg), False);
+    Emit([$66, $0F, $72, $F5, 1]);                   // pslld xmm5,1 (ignore sign)
+    Emit([$66, $0F, $76, $EC]);                      // pcmpeqd xmm5,xmm4
+    Reg := 5;
+  end;
+  ModRM(False, [$0F, $50], FPhys[Dst], False, X64Reg(Reg), False);
+end;
+
+procedure TJitAsmWin64.VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  if NativeRoutine = nil then raise EInvalidOpException.Create('JIT: no native vector routine');
+  Call(NativeRoutine, [Context]);
 end;
 
 {$ENDIF}
@@ -1825,7 +2002,8 @@ type
 
   // The operations (never $CC, Align's filler: the model skips those bytes).
   TModelCode = (mcMove = 1, mcAlu, mcShift, mcSignExtend, mcCompare, mcTest, mcJumpIf, mcJump, mcCall, mcCallAt,
-    mcEnter, mcLeave, mcEnterJump, mcJumpIndirect);
+    mcEnter, mcLeave, mcEnterJump, mcJumpIndirect, mcVectorLoad, mcVectorStore,
+    mcVectorBroadcast, mcVectorShuffle, mcVectorAlu, mcVectorMask, mcVectorCall);
 
   // One operation: its width, its TJitAlu, TJitShift or TJitCond (Sub), a
   // shift's count or a call's arguments (Count), a jump's target (Target,
@@ -1864,6 +2042,14 @@ type
     function HasS4: Boolean; override;
   public
     constructor Create(Size: NativeInt);
+    function HasVectors: Boolean; override;
+    procedure VectorLoad(Dst: TJitVector; const Src: TJitOp); override;
+    procedure VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte = 15); override;
+    procedure VectorBroadcast(Dst: TJitVector; const Src: TJitOp); override;
+    procedure VectorShuffle(Dst, Src: TJitVector; Pattern: Byte); override;
+    procedure VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector); override;
+    procedure VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector); override;
+    procedure VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp); override;
     procedure Move(W: TJitWidth; const Dst, Src: TJitOp); override;
     procedure Alu(Op: TJitAlu; W: TJitWidth; const Dst, Src: TJitOp); override;
     procedure Shift(Op: TJitShift; W: TJitWidth; Dst: TJitReg; Count: Integer); override;
@@ -1935,6 +2121,68 @@ end;
 function TJitAsmModel.HasS4: Boolean;
 begin
   Result := True;
+end;
+
+function TJitAsmModel.HasVectors: Boolean;
+begin
+  Result := True;
+end;
+
+procedure TJitAsmModel.VectorLoad(Dst: TJitVector; const Src: TJitOp);
+begin
+  if Src.Kind <> okMem then ModelError('vector load needs memory');
+  var P := Put(mcVectorLoad, jw64);
+  P.Sub := Ord(Dst);
+  P.A := ModelOperand(Src);
+end;
+
+procedure TJitAsmModel.VectorStore(const Dst: TJitOp; Src: TJitVector; Mask: Byte);
+begin
+  if Dst.Kind <> okMem then ModelError('vector store needs memory');
+  var P := Put(mcVectorStore, jw64);
+  P.Sub := Ord(Src);
+  P.Count := Mask and 15;
+  P.A := ModelOperand(Dst);
+end;
+
+procedure TJitAsmModel.VectorBroadcast(Dst: TJitVector; const Src: TJitOp);
+begin
+  if not (Src.Kind in [okReg, okMem]) then ModelError('vector broadcast needs a scalar');
+  var P := Put(mcVectorBroadcast, jw32);
+  P.Sub := Ord(Dst);
+  P.A := ModelOperand(Src);
+end;
+
+procedure TJitAsmModel.VectorShuffle(Dst, Src: TJitVector; Pattern: Byte);
+begin
+  var P := Put(mcVectorShuffle, jw64);
+  P.Sub := Ord(Dst);
+  P.Count := Pattern;
+  P.A := ModelOperand(JImm(Ord(Src)));
+end;
+
+procedure TJitAsmModel.VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector);
+begin
+  var P := Put(mcVectorAlu, jw64);
+  P.Sub := Ord(Op);
+  P.Count := Ord(Dst);
+  P.A := ModelOperand(JImm(Ord(Src)));
+end;
+
+procedure TJitAsmModel.VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector);
+begin
+  var P := Put(mcVectorMask, jw32);
+  P.Sub := Ord(Op);
+  P.Count := Ord(Src);
+  P.A := ModelOperand(JReg(Dst));
+end;
+
+procedure TJitAsmModel.VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  if ModelRoutine = nil then ModelError('no model vector routine');
+  var P := Put(mcVectorCall, jw64);
+  P.Routine := ModelRoutine;
+  P.A := ModelOperand(Context);
 end;
 
 function TJitAsmModel.Put(Code: TModelCode; W: TJitWidth): PModelOp;
@@ -2111,6 +2359,7 @@ const
   Masks: array[TJitWidth] of UInt64 = ($FF, $FFFFFFFF, UInt64($FFFFFFFFFFFFFFFF));
 var
   R: array[TJitReg] of UInt64;
+  Vectors: array[TJitVector] of TJitVectorValue;
   // The flags: none, of a comparison or of a test (FlagA the bits tested).
   FlagKind: Integer;
   FlagA, FlagB: UInt64;
@@ -2173,6 +2422,7 @@ var
 begin
   for var X := Low(TJitReg) to High(TJitReg) do
     R[X] := ModelPoison;
+  FillChar(Vectors, SizeOf(Vectors), $BD);
   FlagKind := 0;
   FlagA := 0;
   FlagB := 0;
@@ -2325,6 +2575,69 @@ begin
           end;
           for var X := jrT1 to jrT6 do
             R[X] := ModelPoison;
+          R[jrT0] := Res;
+          FillChar(Vectors, SizeOf(Vectors), $BD);
+          FlagKind := 0;
+        end;
+      mcVectorLoad:
+        begin
+          System.Move(Pointer(Address(P.A))^, Vectors[TJitVector(P.Sub)], SizeOf(TJitVectorValue));
+          FlagKind := 0;
+        end;
+      mcVectorStore:
+        begin
+          for var K := 0 to 3 do
+            if P.Count and (1 shl K) <> 0 then
+              PCardinal(Address(P.A) + NativeUInt(K * 4))^ := Vectors[TJitVector(P.Sub)].Lane[K];
+          FlagKind := 0;
+        end;
+      mcVectorBroadcast:
+        begin
+          var Scalar := Cardinal(Value(P.A, jw32));
+          for var K := 0 to 3 do Vectors[TJitVector(P.Sub)].Lane[K] := Scalar;
+          FlagKind := 0;
+        end;
+      mcVectorShuffle:
+        begin
+          var Old := Vectors[TJitVector(P.A.Imm)];
+          for var K := 0 to 3 do Vectors[TJitVector(P.Sub)].Lane[K] := Old.Lane[(P.Count shr (K * 2)) and 3];
+          FlagKind := 0;
+        end;
+      mcVectorAlu:
+        begin
+          for var K := 0 to 3 do
+          begin
+            var Other := Vectors[TJitVector(P.A.Imm)].Lane[K];
+            case TJitVectorAlu(P.Sub) of
+              jvaAnd: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] and Other;
+              jvaOr: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] or Other;
+              jvaXor: Vectors[TJitVector(P.Count)].Lane[K] := Vectors[TJitVector(P.Count)].Lane[K] xor Other;
+            end;
+          end;
+          FlagKind := 0;
+        end;
+      mcVectorMask:
+        begin
+          var Mask: Cardinal := 0;
+          for var K := 0 to 3 do
+          begin
+            var Lane := Vectors[TJitVector(P.Count)].Lane[K];
+            if ((TJitVectorMask(P.Sub) = jvmSign) and (Lane shr 31 <> 0)) or
+              ((TJitVectorMask(P.Sub) = jvmZero) and (Lane and $7FFFFFFF = 0)) then
+              Mask := Mask or (Cardinal(1) shl K);
+          end;
+          R[TJitReg(P.A.Reg)] := Mask;
+          FlagKind := 0;
+        end;
+      mcVectorCall:
+        begin
+          var ResultVector: TJitVectorValue;
+          FillChar(ResultVector, SizeOf(ResultVector), $BD);
+          var Res := TFn4(P.Routine)(NativeUInt(@Vectors[jv0]), NativeUInt(@Vectors[jv1]),
+            NativeUInt(Value(P.A, jw64)), NativeUInt(@ResultVector));
+          FillChar(Vectors, SizeOf(Vectors), $BD);
+          Vectors[jv0] := ResultVector;
+          for var X := jrT1 to jrT6 do R[X] := ModelPoison;
           R[jrT0] := Res;
           FlagKind := 0;
         end;

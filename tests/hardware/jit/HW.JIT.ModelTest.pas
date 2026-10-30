@@ -1,4 +1,4 @@
-unit HW.JIT.ModelTest;
+﻿unit HW.JIT.ModelTest;
 
 // HW.JIT's backend on this target against the model (CreateJitModel): the
 // same programs written by both and run (Invoke) on the same memory, filled
@@ -346,6 +346,117 @@ begin
     Caught2, R1, R2, Ord(J.SiteTarget(F.Site) = F.Second), Calls]);
 end;
 
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+function NativeVectorSum(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  paddd xmm0, xmm1
+  mov eax, [rcx]
+end;
+{$ENDIF}
+
+function ModelVectorSum(const A, B: TJitVectorValue; Context: Pointer; out V: TJitVectorValue): NativeUInt;
+begin
+  for var K := 0 to 3 do V.Lane[K] := Cardinal(UInt64(A.Lane[K]) + B.Lane[K]);
+  Result := PCardinal(Context)^;
+end;
+
+function NativeVectorBoom(Context: Pointer): NativeUInt;
+begin
+  raise EAbort.Create('vector call unwind probe');
+end;
+
+function ModelVectorBoom(const A, B: TJitVectorValue; Context: Pointer; out V: TJitVectorValue): NativeUInt;
+begin
+  raise EAbort.Create('vector call unwind probe');
+end;
+
+function WriteVectorProgram(J: TJitAsm; Seed: Integer; Raising: Boolean): Pointer;
+begin
+  J.ForgetLabels;
+  J.Align(16);
+  Result := J.Here;
+  J.Enter;
+  var R: TRandom;
+  R.State := UInt64(Seed + 1);
+  for var K := 0 to 31 do
+  begin
+    var At := 4096 + K * 96;
+    J.VectorLoad(jv0, JMem(jrSelf, 65));
+    J.VectorLoad(jv1, JMem(jrCtx, 81 - CtxAt));
+    J.VectorShuffle(jv2, jv0, Byte(Seed * 32 + K));
+    J.VectorAlu(TJitVectorAlu(K mod 3), jv2, jv1);
+    J.VectorStore(JMem(jrSelf, At + 1), jv2, Byte(K and 15));
+    J.VectorStore(JMem(jrSelf, BoxSize + 128), jv2, 0); // must not access memory
+    J.Move(jw64, JT0, JImm(Int64(R.Bits)));
+    J.VectorBroadcast(jv3, JT0);
+    J.Move(jw64, JMem(jrSelf, At + 24), JT0); // broadcast must preserve its GP source
+    J.VectorBroadcast(jv1, JMem(jrSelf, 99));
+    J.VectorShuffle(jv3, jv3, $1B);
+    J.VectorAlu(jvaXor, jv3, jv1);
+    J.VectorStore(JMem(jrSelf, At + 33), jv3);
+    J.VectorMask(jvmSign, jrT1, jv0);
+    J.VectorMask(jvmZero, jrT2, jv0);
+    J.Move(jw32, JMem(jrSelf, At + 56), JT1);
+    J.Move(jw32, JMem(jrSelf, At + 60), JT2);
+    var NativeRoutine: Pointer := nil;
+    {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+    NativeRoutine := @NativeVectorSum;
+    {$ENDIF}
+    if Raising then J.VectorCall(@NativeVectorBoom, @ModelVectorBoom, JAddr(jrSelf, 112))
+    else J.VectorCall(NativeRoutine, @ModelVectorSum, JAddr(jrSelf, 112));
+    J.VectorStore(JMem(jrSelf, At + 65), jv0);
+    J.Move(jw64, JMem(jrSelf, At + 88), JT0);
+  end;
+  J.Leave(JImm(0));
+  J.ForgetLabels;
+  J.Flush;
+end;
+
+function CheckVectors(Model, Native: TJitAsm; Report: TStrings): Boolean;
+begin
+  Result := True;
+  if (Native <> nil) and not Native.HasVectors then
+  begin
+    Report.Add('vector scratch: backend unavailable, model only');
+    Native := nil;
+  end;
+  var Box, Expected: TBytes;
+  SetLength(Box, BoxSize); SetLength(Expected, BoxSize);
+  for var Seed := 0 to 127 do
+  begin
+    if Seed mod 7 = 0 then
+    begin
+      Model.Reset;
+      if Native <> nil then Native.Reset;
+    end;
+    var M := WriteVectorProgram(Model, Seed, False);
+    FillBox(Box, Seed);
+    PCardinal(@Box[65])^ := 0; PCardinal(@Box[69])^ := $80000000;
+    Model.Invoke(M, NativeUInt(@Box[0]), NativeUInt(@Box[CtxAt]), 0, 0);
+    System.Move(Box[0], Expected[0], BoxSize);
+    if Native <> nil then
+    begin
+      var N := WriteVectorProgram(Native, Seed, False);
+      FillBox(Box, Seed);
+      PCardinal(@Box[65])^ := 0; PCardinal(@Box[69])^ := $80000000;
+      Native.Invoke(N, NativeUInt(@Box[0]), NativeUInt(@Box[CtxAt]), 0, 0);
+      if not CompareMem(@Box[0], @Expected[0], BoxSize) then
+        raise EInvalidOpException.CreateFmt('Vector backend/model mismatch seed=%d', [Seed]);
+    end;
+  end;
+  for var J in TArray<TJitAsm>.Create(Model, Native) do
+    if J <> nil then
+    begin
+      var P := WriteVectorProgram(J, 0, True);
+      var Caught := False;
+      try J.Invoke(P, NativeUInt(@Box[0]), NativeUInt(@Box[CtxAt]), 0, 0);
+      except on E: EAbort do Caught := E.Message = 'vector call unwind probe'; end;
+      if not Caught then raise EInvalidOpException.Create('Vector exception did not unwind');
+    end;
+  Report.Add('vector scratch: masks, shuffles, integer operations, unaligned memory, calls/reset/unwind OK');
+end;
+
 function RunJitModelTest(Seeds: Integer; Report: TStrings): Boolean;
 const
   Expected = 'call 42, raised 3, shared start 1041, raised 1, sites 1 2, target 1, calls 6';
@@ -418,6 +529,7 @@ begin
     else
       Report.Add(Format('random programs: %d, %d unlike the model%s', [Seeds, Different, FirstDifference]));
     Result := Result and (Different = 0);
+    Result := CheckVectors(Model, Native, Report) and Result;
   finally
     Native.Free;
     Model.Free;

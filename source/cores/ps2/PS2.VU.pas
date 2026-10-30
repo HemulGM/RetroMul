@@ -2379,6 +2379,45 @@ begin
     Result := Result - $800;
 end;
 
+// EFU arithmetic as ps2autotests' vu/lower/efu shows on hardware: sums and
+// squares go through the PS2 multiplier and adder in order; roots and
+// reciprocals round to nearest (the EE FPU's DIV.S/SQRT.S steps); a zero
+// divisor gives the largest value. A few roots and reciprocals still differ
+// from hardware by one unit in the last place.
+function EFUSum(A, B: Cardinal): Cardinal; inline;
+var
+  Flags: Cardinal;
+begin
+  Result := PS2FloatAdd(A, B, Flags);
+end;
+
+function EFUSquares(const V: TPS2Reg128): Cardinal;
+var
+  Flags: Cardinal;
+begin
+  Result := EFUSum(EFUSum(PS2FloatMul(V.UW[0], V.UW[0], Flags), PS2FloatMul(V.UW[1], V.UW[1], Flags)),
+    PS2FloatMul(V.UW[2], V.UW[2], Flags));
+end;
+
+// The square root of |V|; exponent-zero inputs give +0.
+function EFURoot(V: Cardinal): Cardinal;
+begin
+  if (V and $7F800000) = 0 then
+    Exit(0);
+  Result := PS2FloatNearest(Sqrt(EEFloatIn(V and $7FFFFFFF)));
+end;
+
+// 1/V; a zero V gives the largest value, signed like V when Signed.
+function EFUReciprocal(V: Cardinal; Signed: Boolean): Cardinal;
+begin
+  if (V and $7F800000) = 0 then
+    if Signed then
+      Exit((V and $80000000) or $7FFFFFFF)
+    else
+      Exit($7FFFFFFF);
+  Result := PS2FloatNearest(1 / EEFloatIn(V));
+end;
+
 // Lower instruction: integer results land at once; VF results in
 // FLowerValue for the commit.
 procedure TPS2VUCore.Lower(Op: Cardinal);
@@ -2713,27 +2752,32 @@ begin
     $70..$7E: // EFU -> P
       begin
         var V := FVF[Fs];
-        var X := EEFloatIn(V.UW[0]);
-        var Y := EEFloatIn(V.UW[1]);
-        var Z := EEFloatIn(V.UW[2]);
-        var W := EEFloatIn(V.UW[3]);
-        var F := EEFloatIn(V.UW[Fsf]);
-        var D: Double := 0;
+        var F := V.UW[Fsf];
+        var R: Cardinal := 0;
         case Index of
-          $70: D := X * X + Y * Y + Z * Z;
-          $71: if X * X + Y * Y + Z * Z <> 0 then D := 1 / (X * X + Y * Y + Z * Z);
-          $72: D := Sqrt(X * X + Y * Y + Z * Z);
-          $73: if X * X + Y * Y + Z * Z <> 0 then D := 1 / Sqrt(X * X + Y * Y + Z * Z);
-          $74: if X <> 0 then D := ArcTan(Y / X);
-          $75: if X <> 0 then D := ArcTan(Z / X);
-          $76: D := X + Y + Z + W;
-          $78: D := Sqrt(Abs(F));
-          $79: if F <> 0 then D := 1 / Sqrt(Abs(F));
-          $7A: if F <> 0 then D := 1 / F;
-          $7B: ; // WAITP
-          $7C: D := Sin(F);
-          $7D: D := ArcTan(F);
-          $7E: D := Exp(-F);
+          $70: R := EFUSquares(V);                                // ESADD
+          $71: R := EFUReciprocal(EFUSquares(V), False);          // ERSADD
+          $72: R := EFURoot(EFUSquares(V));                       // ELENG
+          $73: R := EFUReciprocal(EFURoot(EFUSquares(V)), False); // ERLENG
+          $76: R := EFUSum(EFUSum(EFUSum(V.UW[0], V.UW[1]), V.UW[2]), V.UW[3]); // ESUM
+          $78: R := EFURoot(F);                                   // ESQRT
+          $79: R := EFUReciprocal(EFURoot(F), False);             // ERSQRT
+          $7A: R := EFUReciprocal(F, True);                       // ERCPR
+          $74, $75, $7C..$7E:
+            begin
+              // EATAN, ESIN and EEXP: host functions, not the EFU's series.
+              var X := EEFloatIn(V.UW[0]);
+              var D: Double := 0;
+              case Index of
+                $74: if X <> 0 then D := ArcTan(EEFloatIn(V.UW[1]) / X);
+                $75: if X <> 0 then D := ArcTan(EEFloatIn(V.UW[2]) / X);
+                $7C: D := Sin(EEFloatIn(F));
+                $7D: D := ArcTan(EEFloatIn(F));
+                $7E: D := Exp(-EEFloatIn(F));
+              end;
+              var H: Single := D;
+              R := PCardinal(@H)^;
+            end;
         end;
         if Index = $7B then
         begin
@@ -2745,8 +2789,7 @@ begin
         end
         else
         begin
-          var R: Single := D;
-          S.PendingP := PCardinal(@R)^;
+          S.PendingP := R;
           S.PDelay := 12;
         end;
       end;

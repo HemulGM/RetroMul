@@ -78,6 +78,22 @@ coverage/busy counters still include them, so emulated GS timing is unchanged.
 consumer, exact snapshot round-trips, the old-format and wrong-disc errors,
 and the recorded field layout. A layout change must increase the version.
 
+## EE FPU and VU EFU results
+
+The rules come from hardware results in ps2autotests (`cpu/ee_fpu`,
+`vu/lower/efu`). Adds and multiplies truncate. DIV.S and SQRT.S round to
+nearest. RSQRT.S multiplies Fs by a rounded reciprocal of a rounded root,
+which reproduces every hardware vector. An overflowing MADD/MSUB product is
+the result, without ACC. EFU sums and squares chain the PS2 adder and
+multiplier. EFU roots and reciprocals round to nearest, and a zero divisor
+gives the largest value.
+
+Known gaps:
+- The multiplier gives one unit less for 1.0 times an all-ones mantissa. No
+  public rule describes this, so it is not modelled.
+- 9 of the 96 EFU root/reciprocal vectors differ by one unit in the last place.
+- EATAN, ESIN and EEXP use host functions instead of the EFU's series.
+
 ## GS display and transfer checks
 
 Display scanout publishes queued CPU/GPU writes once per read circuit, not

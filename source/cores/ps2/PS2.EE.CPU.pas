@@ -269,6 +269,8 @@ type
     function Translate(I: PEEInst; A: Cardinal; Writing: Boolean; out Phys: Cardinal): Boolean;
     function FPUResult(D: Double; Overflow, Underflow: Cardinal): Cardinal;
     function FAdd(A, B: Cardinal): Cardinal;
+    function FPUDivide(A, B: Cardinal): Cardinal;
+    function FPURoot(V: Cardinal): Cardinal;
     function MultiplyAdd(I: PEEInst; Op: Cardinal): Boolean;
   public
     // Operation handlers (TEEHandler); True stops the block.
@@ -455,6 +457,9 @@ type
 // signed zero and with exponent 255 as the largest finite value.
 function EEFloatIn(V: Cardinal): Double; inline;
 function PS2FloatAdd(A, B: Cardinal; out Flags: Cardinal): Cardinal;
+// A quotient or square root of PS2 floats, rounded to nearest; overflow gives
+// the largest value, underflow a signed zero.
+function PS2FloatNearest(D: Double): Cardinal;
 // Orders PS2 floats like the MAX/MIN instructions do.
 function PS2FloatKey(V: Cardinal): Integer; inline;
 
@@ -2371,6 +2376,44 @@ begin
   Result := Sign or (Cardinal(E) shl 23) or (Cardinal(B shr 29) and $7FFFFF);
 end;
 
+// DIV.S, SQRT.S and the steps of RSQRT.S round to nearest, unlike the
+// truncating adder and multiplier (hardware results in ps2autotests'
+// cpu/ee_fpu). A quotient or root of 24-bit values is never exactly halfway
+// and lies far enough from it that the host double, in any rounding mode,
+// has the right first dropped bit; that bit decides. No O/U flags are set.
+function PS2FloatNearest(D: Double): Cardinal;
+begin
+  var B := PUInt64(@D)^;
+  var Sign := Cardinal(B shr 32) and $80000000;
+  if (B and $7FFFFFFFFFFFFFFF) = 0 then
+    Exit(Sign);
+  var E := Integer((B shr 52) and $7FF) - (1023 - 127);
+  if E > 255 then
+    Exit(Sign or $7FFFFFFF);
+  if E <= 0 then
+    Exit(Sign);
+  var Bits := (Cardinal(E) shl 23) or (Cardinal(B shr 29) and $7FFFFF);
+  if (B and (UInt64(1) shl 28)) <> 0 then
+    if Bits = $7FFFFFFF then
+      Bits := $7FFFFFFF  // exponent 255 is the top of the range: saturate
+    else
+      Inc(Bits);         // a mantissa carry correctly raises the exponent
+  Result := Sign or Bits;
+end;
+
+function TEECPU.FPUDivide(A, B: Cardinal): Cardinal;
+begin
+  Result := PS2FloatNearest(EEFloatIn(A) / EEFloatIn(B));
+end;
+
+// The square root of |V|; zero and exponent-zero inputs give +0.
+function TEECPU.FPURoot(V: Cardinal): Cardinal;
+begin
+  if (V and $7F800000) = 0 then
+    Exit(0);
+  Result := PS2FloatNearest(Sqrt(EEFloatIn(V and $7FFFFFFF)));
+end;
+
 function TEECPU.FAdd(A, B: Cardinal): Cardinal;
 var
   Flags: Cardinal;
@@ -2466,11 +2509,15 @@ function TEECPU.MultiplyAdd(I: PEEInst; Op: Cardinal): Boolean;
 begin
   S.FCR31 := S.FCR31 and not Cardinal(FlagsOU);
   var P := FPUResult(EEFloatIn(S.FPR[I.S]) * EEFloatIn(S.FPR[I.T]), SetO, SetU);
+  if (Op and 1) <> 0 then
+    P := P xor $80000000;
   var R: Cardinal;
-  if (Op and 1) = 0 then
-    R := FAdd(S.ACC, P)
+  // An overflowing product is the result itself; ACC is not added to it
+  // (ps2autotests cpu/ee_fpu muldiv on hardware).
+  if (S.FCR31 and FCROverflow) <> 0 then
+    R := P
   else
-    R := FAdd(S.ACC, P xor $80000000);
+    R := FAdd(S.ACC, P);
   if (Op and 2) <> 0 then
     S.ACC := R
   else
@@ -2512,19 +2559,14 @@ begin
           S.FPR[I.D] := ((Fs xor Ft) and $80000000) or $7FFFFFFF;
         end
         else
-          S.FPR[I.D] := FPUResult(EEFloatIn(Fs) / EEFloatIn(Ft), 0, 0);
+          S.FPR[I.D] := FPUDivide(Fs, Ft);
       end;
     $04:
       begin
         S.FCR31 := S.FCR31 and not Cardinal(FCRInvalid or FCRDivide);
-        if (Ft and $7F800000) = 0 then
-          S.FPR[I.D] := Ft and $80000000
-        else
-        begin
-          if (Ft and $80000000) <> 0 then
-            S.FCR31 := S.FCR31 or FCRInvalid or FCRStickyInvalid;
-          S.FPR[I.D] := FPUResult(Sqrt(Abs(EEFloatIn(Ft))), 0, 0);
-        end;
+        if ((Ft and $7F800000) <> 0) and ((Ft and $80000000) <> 0) then
+          S.FCR31 := S.FCR31 or FCRInvalid or FCRStickyInvalid;
+        S.FPR[I.D] := FPURoot(Ft);
       end;
     $05:
       begin
@@ -2549,8 +2591,10 @@ begin
         begin
           if (Ft and $80000000) <> 0 then
             S.FCR31 := S.FCR31 or FCRInvalid or FCRStickyInvalid;
-          var Root: Single := Sqrt(Abs(EEFloatIn(Ft)));
-          S.FPR[I.D] := FPUResult(EEFloatIn(Fs) / Root, 0, 0);
+          // Fs times the reciprocal of the root: the root and reciprocal
+          // round to nearest, the product truncates like MUL.S. This model
+          // reproduces every hardware result in ps2autotests' sqrt test.
+          S.FPR[I.D] := FPUResult(EEFloatIn(Fs) * EEFloatIn(FPUDivide($3F800000, FPURoot(Ft))), 0, 0);
         end;
       end;
     $18:

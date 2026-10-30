@@ -299,11 +299,27 @@ begin
       for var K := 0 to 2 do Vertex(B, V[K]);
       B.Sync;
       if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) or
-        (A.PixelsDrawn <> B.PixelsDrawn) or (A.Primitives <> B.Primitives) then
+          (A.PixelsDrawn <> B.PixelsDrawn) or (A.Primitives <> B.Primitives) then
+      begin
+        var MA := PCardinal(A.Memory.Data);
+        var MB := PCardinal(B.Memory.Data);
+        var Shown := 0;
+        for var I := 0 to PS2GSMemorySize div 4 - 1 do
+          if MA[I] <> MB[I] then
+          begin
+            Writeln(Format('VRAM %.6x CPU %.8x GPU %.8x', [I, MA[I], MB[I]]));
+            Inc(Shown); if Shown = 12 then Break;
+          end;
+        Writeln(Format('round %d iip %d ztst %d ate %d atst %d aref %d afail %d pixels %d/%d',
+          [Ord(GetRoundMode), Ord(D.IIP), D.ZTST, Ord(D.ATE), D.ATST, D.AREF, D.AFAIL, A.PixelsDrawn, B.PixelsDrawn]));
+        for var I := 0 to 2 do
+          Writeln(Format('v%d %d,%d z=%x rgba=%d,%d,%d,%d', [I,V[I].X,V[I].Y,V[I].Z,V[I].R,V[I].G,V[I].B,V[I].A]));
         raise Exception.CreateFmt('Triangle mismatch %d', [N]);
+      end;
       if B.VulkanTriangles <> N + 1 then raise Exception.CreateFmt('Triangle fell back %d', [N]);
     end;
     Writeln('Triangles=256, fragment rollover, both windings and rounding modes: OK');
+    Writeln('Full GPU coverage/interpolation triangles=', B.VulkanRasterizedTriangles);
   finally
     B.Free;
     A.Free;

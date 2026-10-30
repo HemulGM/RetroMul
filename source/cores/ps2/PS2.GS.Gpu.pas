@@ -1,9 +1,10 @@
 ﻿unit PS2.GS.Gpu;
 
-// GS compute path: 32/24-bit sprites and prepared triangle fragments, with
+// GS compute path: 32/24-bit sprites and triangles, with
 // GS direct/palettized textures and mipmapping, disjoint frame/depth
 // surfaces and no texture feedback. Other draws keep the software pipeline.
-// Triangle coverage/interpolation stay on the host; shading runs on the GPU.
+// Exact-FP64 devices rasterize constant-LOD triangles on the GPU. Other
+// triangles retain host coverage/interpolation and GPU fragment shading.
 // Queued draws retain their own parameters and CLUT until Sync publishes their
 // writes to CPU consumers. Compute barriers order draws within each batch.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
@@ -28,13 +29,14 @@ type
     end;
   private
     FCompute: TVulkanCompute;
-    FKernel: TVulkanKernel;
+    FKernel, FTriangleKernel: TVulkanKernel;
     FRAM, FState, FCoordinates, FFragments: TVulkanBuffer;
     FDraws: Int64;
     FTexturedDraws: Int64;
     FUsed: Integer;
     FSubmissions: Int64;
     FTriangles: Int64;
+    FRasterizedTriangles: Int64;
     FFragmentsUsed, FFragmentStart, FFragmentCount: Integer;
     FTriangleState: TPS2GSDraw;
     FHostClut: PWord;
@@ -47,6 +49,8 @@ type
     procedure Sync; override;
     function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer; Lod: Single): Boolean; override;
+    function Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex;
+      X0, Y0, X1, Y1: Integer): Boolean; override;
     function BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean; override;
     procedure Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer; Lod: Single); override;
     procedure EndTriangle; override;
@@ -54,12 +58,14 @@ type
     property TexturedDraws: Int64 read FTexturedDraws;
     property Submissions: Int64 read FSubmissions;
     property Triangles: Int64 read FTriangles;
+    property RasterizedTriangles: Int64 read FRasterizedTriangles;
   end;
 
 implementation
 
 const
 {$I shaders\PS2.GS.Sprite.inc}
+{$I shaders\PS2.GS.Triangle.inc}
 
 constructor TPS2GSGpu.Create(RAM: Pointer; Clut: PWord);
 begin
@@ -74,6 +80,13 @@ begin
   FFragments := FCompute.CreateBuffer(FragmentCapacity * 11 * SizeOf(Cardinal), True);
   FKernel := FCompute.CreateKernel(PS2SpriteSPIRV, 4, SizeOf(TPush));
   FCompute.Bind(FKernel, [FRAM, FState, FCoordinates, FFragments]);
+  {$IFDEF CPUX64}
+  if FCompute.ExactDouble then
+  begin
+    FTriangleKernel := FCompute.CreateKernel(PS2TriangleSPIRV, 2, SizeOf(TPush));
+    FCompute.Bind(FTriangleKernel, [FRAM, FState]);
+  end;
+  {$ENDIF}
 end;
 
 destructor TPS2GSGpu.Destroy;
@@ -265,6 +278,77 @@ begin
   FCompute.Launch(FKernel, Push, Cardinal((X1-X0+7) div 8), Cardinal((Y1-Y0+7) div 8), 1);
   Inc(FUsed);
   FPending := True;
+  Inc(FDraws);
+  if D.TME then Inc(FTexturedDraws);
+  Result := True;
+end;
+
+function TPS2GSGpu.Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex;
+  X0, Y0, X1, Y1: Integer): Boolean;
+var
+  Vertices: array[0..2] of TPS2GSVertex;
+
+  function FiniteNormalOrZero(const Value: Single): Boolean;
+  begin
+    var Bits := PCardinal(@Value)^;
+    var E := Bits and $7F800000;
+    Result := (E <> $7F800000) and ((E <> 0) or ((Bits and $7FFFFF) = 0));
+  end;
+
+begin
+  Result := False;
+  if FTriangleKernel = nil then Exit;
+  var Rounding := GetRoundMode;
+  if not (Rounding in [rmNearest, rmTruncate]) then Exit;
+  // Dynamic per-pixel log2/LOD remains on the host. Constant mip decisions
+  // retain the existing host rounding and filtering rules.
+  if D.TME and D.UseLod and not D.LCM and not D.FST then Exit;
+  var Mip := MipCode(D, D.K);
+  if not Supports(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or
+    (Cardinal(1) shl ((Mip shr 3) and 7))) then Exit;
+  Vertices[0] := V0; Vertices[1] := V1; Vertices[2] := V2;
+  for var K := 0 to 2 do
+  begin
+    var V := Vertices[K];
+    if (V.X < -65535) or (V.X > 65535) or (V.Y < -65535) or (V.Y > 65535) then Exit;
+    if D.TME and not D.FST then
+      if not FiniteNormalOrZero(V.S) or not FiniteNormalOrZero(V.T) or
+        not FiniteNormalOrZero(V.Q) or not (V.Q > 0) then Exit;
+  end;
+  var Area := (Int64(V1.X) - V0.X) * (Int64(V2.Y) - V0.Y) -
+    (Int64(V2.X) - V0.X) * (Int64(V1.Y) - V0.Y);
+  if Area = 0 then Exit;
+  var InvArea: Double := 1.0 / Area;
+  if FUsed = BatchSize then Sync;
+  WriteState(D, V2);
+  var P := PCardinal(FState.Data) + FUsed * 384;
+  P[52] := Mip;
+  P[53] := Ord(D.FST);
+  P[54] := Ord(D.IIP);
+  P[55] := 0;
+  if Rounding = rmTruncate then P[55] := 3;
+  Move(InvArea, P[56], SizeOf(InvArea));
+  P[58] := 1;
+  if Area < 0 then P[58] := $FFFFFFFF;
+  P[59] := Ord((D.ZTST >= 2) or not D.ZMSK);
+  for var K := 0 to 2 do
+  begin
+    var V := Vertices[K];
+    var W := P + 80 + K * 16;
+    W[0] := Cardinal(V.X); W[1] := Cardinal(V.Y); W[2] := V.Z;
+    W[3] := Cardinal(V.R); W[4] := Cardinal(V.G); W[5] := Cardinal(V.B);
+    W[6] := Cardinal(V.A); W[7] := Cardinal(V.F);
+    W[8] := Cardinal(V.U); W[9] := Cardinal(V.V);
+    W[10] := PCardinal(@V.S)^; W[11] := PCardinal(@V.T)^; W[12] := PCardinal(@V.Q)^;
+  end;
+  var Push := Default(TPush);
+  Push.Bounds[0] := X0; Push.Bounds[1] := Y0; Push.Bounds[2] := X1; Push.Bounds[3] := Y1;
+  Push.Slot := Cardinal(FUsed);
+  FCompute.Launch(FTriangleKernel, Push, Cardinal((X1 - X0 + 7) div 8), Cardinal((Y1 - Y0 + 7) div 8), 1);
+  Inc(FUsed);
+  FPending := True;
+  Inc(FTriangles);
+  Inc(FRasterizedTriangles);
   Inc(FDraws);
   if D.TME then Inc(FTexturedDraws);
   Result := True;

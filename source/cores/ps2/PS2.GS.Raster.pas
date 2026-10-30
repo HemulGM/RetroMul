@@ -166,6 +166,9 @@ type
     property Pending: Boolean read FPending;
     function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer; Lod: Single): Boolean; virtual; abstract;
+    // Optional full coverage/interpolation; False retains the fragment path.
+    function Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex;
+      X0, Y0, X1, Y1: Integer): Boolean; virtual;
     function BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean; virtual; abstract;
     procedure Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer; Lod: Single); virtual; abstract;
     procedure EndTriangle; virtual; abstract;
@@ -289,6 +292,7 @@ type
     function GetVulkanSubmissions: Int64;
     function GetVulkanTexturedDraws: Int64;
     function GetVulkanTriangles: Int64;
+    function GetVulkanRasterizedTriangles: Int64;
     procedure StartTransfer;
     procedure FeedWord(W: Cardinal);
     procedure TransferPixel(Value: Cardinal);
@@ -330,6 +334,7 @@ type
     property VulkanSubmissions: Int64 read GetVulkanSubmissions;
     property VulkanTexturedDraws: Int64 read GetVulkanTexturedDraws;
     property VulkanTriangles: Int64 read GetVulkanTriangles;
+    property VulkanRasterizedTriangles: Int64 read GetVulkanRasterizedTriangles;
     property SignalPending: Boolean read FSignal;
     property FinishPending: Boolean read FFinish;
     property OnSignal: TProc read FOnSignal write FOnSignal;
@@ -475,6 +480,12 @@ begin
   Reset;
 end;
 
+function TPS2GSAccelerator.Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex;
+  X0, Y0, X1, Y1: Integer): Boolean;
+begin
+  Result := False;
+end;
+
 destructor TPS2GSRaster.Destroy;
 begin
   FBands.Free;
@@ -511,6 +522,13 @@ begin
   Result := 0;
   if FAccelerator <> nil then
     Result := TPS2GSGpu(FAccelerator).Triangles;
+end;
+
+function TPS2GSRaster.GetVulkanRasterizedTriangles: Int64;
+begin
+  Result := 0;
+  if FAccelerator <> nil then
+    Result := TPS2GSGpu(FAccelerator).RasterizedTriangles;
 end;
 
 procedure TPS2GSRaster.SetVulkan(Value: Boolean);
@@ -2002,7 +2020,12 @@ begin
   if not ((A0 > 0) or ((A0 = 0) and (B0 > 0))) then Bias0 := -1;
   if not ((A1 > 0) or ((A1 = 0) and (B1 > 0))) then Bias1 := -1;
   if not ((A2 > 0) or ((A2 = 0) and (B2 > 0))) then Bias2 := -1;
-  if FCountOnly then
+  var CountCoverage := FCountOnly;
+  if not CountCoverage and (FBandCount = 1) and (FOwner.FAccelerator <> nil) and
+    (FOwner.PrimLog = nil) and (FOwner.WatchX < 0) then
+    CountCoverage := FOwner.FAccelerator.Triangle(FD, V0, V1, V2, Integer(MinX), Integer(MinY),
+      Integer(MaxX + 1), Integer(MaxY + 1));
+  if CountCoverage then
   begin
     // Count the exact scissored coverage, not a second pixel/render walk.
     // No LOD, attribute interpolation, depth or texture work is needed for

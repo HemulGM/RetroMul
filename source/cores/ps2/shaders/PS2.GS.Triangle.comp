@@ -1,0 +1,149 @@
+﻿#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_ARB_gpu_shader_fp64 : require
+#include "PS2.GS.Tables.glsl"
+// Full coverage/interpolation on devices with exact FP64. build.ps1 adds
+// explicit RTE, signed-zero and denormal execution modes to the SPIR-V.
+layout(local_size_x=8, local_size_y=8) in;
+layout(set=0,binding=0,std430) buffer VRAM { uint ram[]; };
+struct Draw { uint p[384]; };
+layout(set=0,binding=1,std430) readonly buffer State { Draw draws[]; };
+layout(push_constant) uniform Bounds { ivec4 bounds; uint slot; uint mode; };
+uint drawIndex;
+#include "PS2.GS.Pixel.glsl"
+
+double towardZero(double v) {
+  uvec2 b=unpackDouble2x32(v);
+  if(b.x==0) b.y--;
+  b.x--;
+  return packDouble2x32(b);
+}
+double stepDouble(double v,bool up) {
+  uvec2 b=unpackDouble2x32(v);
+  if((v>0.0)==up) { b.x++; if(b.x==0) b.y++; }
+  else { if(b.x==0) b.y--; b.x--; }
+  return packDouble2x32(b);
+}
+double addD(double a,double b) {
+  precise double r=a+b;
+  if(p[55]!=3) return r;
+  precise double z=r-a;
+  precise double e=(a-(r-z))+(b-z);
+  return ((r>0.0 && e<0.0)||(r<0.0 && e>0.0)) ? towardZero(r) : r;
+}
+double subD(double a,double b) { return addD(a,-b); }
+double mulD(double a,double b) {
+  precise double r=a*b;
+  if(p[55]!=3) return r;
+  precise double e=fma(a,b,-r);
+  return ((r>0.0 && e<0.0)||(r<0.0 && e>0.0)) ? towardZero(r) : r;
+}
+// Exact residual as a double-double: the rounded quotient supplied by the
+// device may be a few ulps away. Product error is captured by FMA; a-prod is
+// exact by Sterbenz because the quotient is already close to the answer.
+dvec2 residual(double a,double b,double q) {
+  precise double prod=q*b;
+  precise double pe=fma(q,b,-prod);
+  precise double s=a-prod;
+  precise double e=-pe;
+  precise double hi=s+e;
+  precise double z=hi-s;
+  precise double lo=(s-(hi-z))+(e-z);
+  return dvec2(hi,lo);
+}
+bool positiveDD(dvec2 r) { return r.x>0.0 || (r.x==0.0 && r.y>0.0); }
+dvec2 absDD(dvec2 r) { return positiveDD(r) ? r : -r; }
+double divD(double a,double b) {
+  precise double q=a/b;
+  if(a==0.0) return q;
+  for(int i=0;i<8;i++) {
+    dvec2 r=residual(a,b,q);
+    if(all(equal(r,dvec2(0.0)))) return q;
+    bool up=positiveDD(r)==(b>0.0);
+    double n=stepDouble(q,up);
+    dvec2 rn=residual(a,b,n);
+    if(all(equal(rn,dvec2(0.0)))) return n;
+    if((positiveDD(rn)==(b>0.0))!=up) {
+      if(p[55]==3) return abs(q)<abs(n) ? q : n;
+      dvec2 ar=absDD(r),an=absDD(rn);
+      if(ar.x<an.x || (ar.x==an.x && ar.y<an.y)) return q;
+      if(ar.x>an.x || (ar.x==an.x && ar.y>an.y)) return n;
+      return (unpackDouble2x32(q).x&1)==0 ? q : n;
+    }
+    q=n;
+  }
+  return q; // Vulkan's FP64 division bound is much smaller than eight ulps.
+}
+double interp(double w0,double w1,double w2,double a,double b,double c) {
+  return addD(addD(mulD(w0,a),mulD(w1,b)),mulD(w2,c));
+}
+int rounded(double v) { return int(unpackDouble2x32(addD(v,6755399441055744.0)).x); }
+uint depthValue(double v) {
+  v=clamp(v,0.0lf,4294967295.0lf);
+  // The software inline depth accumulator is inferred as Delphi Currency
+  // (four decimal places). Retain that quantization, including host mode,
+  // rather than silently changing coplanar-depth results in a speed path.
+  double scaled=mulD(v,10000.0lf);
+  double integer=subD(addD(scaled,6755399441055744.0lf),6755399441055744.0lf);
+  uint r=uint(integer/10000.0lf);
+  // Correct a device division rounded just across an integer boundary.
+  // These integer-valued FP64 products/subtractions are exact.
+  precise double rem=integer-double(r)*10000.0lf;
+  if(rem<0.0lf) r--;
+  else if(rem>=10000.0lf) r++;
+  return r;
+}
+int textureCoordinate(double v) {
+  if(!(v>-16777216.0)) return -16777216;
+  if(v>16777216.0) return 16777216;
+  return int(v);
+}
+double vf(uint vertex,uint field) {
+  uint raw=p[80+vertex*16+field];
+  if(field>=10) return double(uintBitsToFloat(raw));
+  if(field==0 || field==1 || field==8 || field==9) return double(int(raw));
+  return double(raw);
+}
+void main() {
+  drawIndex=slot;
+  ivec2 xy=bounds.xy+ivec2(gl_GlobalInvocationID.xy);
+  if(any(greaterThanEqual(xy,bounds.zw))) return;
+  double x=double(xy.x)*16.0,y=double(xy.y)*16.0;
+  double x0=vf(0,0),y0=vf(0,1),x1=vf(1,0),y1=vf(1,1),x2=vf(2,0),y2=vf(2,1);
+  double sign=double(int(p[58]));
+  // Integer-coordinate products/sums fit in 34 bits and are exact in FP64.
+  double a0=(y1-y2)*sign,b0=(x2-x1)*sign;
+  double a1=(y2-y0)*sign,b1=(x0-x2)*sign;
+  double a2=(y0-y1)*sign,b2=(x1-x0)*sign;
+  precise double e0=a0*(x-x1)+b0*(y-y1);
+  precise double e1=a1*(x-x2)+b1*(y-y2);
+  precise double e2=a2*(x-x0)+b2*(y-y0);
+  double bias0=(a0>0.0 || (a0==0.0 && b0>0.0)) ? 0.0 : -1.0;
+  double bias1=(a1>0.0 || (a1==0.0 && b1>0.0)) ? 0.0 : -1.0;
+  double bias2=(a2>0.0 || (a2==0.0 && b2>0.0)) ? 0.0 : -1.0;
+  if(e0+bias0<0.0 || e1+bias1<0.0 || e2+bias2<0.0) return;
+  double inv=packDouble2x32(uvec2(p[56],p[57]));
+  double w0=mulD(e0*sign,inv),w1=mulD(e1*sign,inv),w2=subD(subD(1.0,w0),w1);
+  uint z=p[59]!=0 ? depthValue(interp(w0,w1,w2,vf(0,2),vf(1,2),vf(2,2))) : 0;
+  if(!depthPass(xy,z)) return;
+  uint i0=p[54]!=0 ? 0 : 2,i1=p[54]!=0 ? 1 : 2;
+  ivec3 c=ivec3(
+    rounded(interp(w0,w1,w2,vf(i0,3),vf(i1,3),vf(2,3))),
+    rounded(interp(w0,w1,w2,vf(i0,4),vf(i1,4),vf(2,4))),
+    rounded(interp(w0,w1,w2,vf(i0,5),vf(i1,5),vf(2,5))));
+  int a=rounded(interp(w0,w1,w2,vf(i0,6),vf(i1,6),vf(2,6)));
+  int fog=p[22]!=0 ? rounded(interp(w0,w1,w2,vf(0,7),vf(1,7),vf(2,7))) : 0;
+  int u=0,v=0;
+  if(p[47]!=0) {
+    if(p[53]!=0) {
+      u=textureCoordinate(interp(w0,w1,w2,vf(0,8),vf(1,8),vf(2,8)));
+      v=textureCoordinate(interp(w0,w1,w2,vf(0,9),vf(1,9),vf(2,9)));
+    } else {
+      double q=interp(w0,w1,w2,vf(0,12),vf(1,12),vf(2,12));
+      if(q==0.0) q=1.0;
+      u=textureCoordinate(mulD(divD(interp(w0,w1,w2,vf(0,10),vf(1,10),vf(2,10)),q),double(p[35])*16.0));
+      v=textureCoordinate(mulD(divD(interp(w0,w1,w2,vf(0,11),vf(1,11),vf(2,11)),q),double(p[36])*16.0));
+    }
+  }
+  shadePixel(xy,z,clamp(c,ivec3(0),ivec3(255)),clamp(a,0,255),clamp(fog,0,255),u,v,p[52]);
+}

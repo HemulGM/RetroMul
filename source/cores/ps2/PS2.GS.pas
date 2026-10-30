@@ -302,25 +302,8 @@ begin
     CircuitSize(1, W1, H1, X1, Y1, M1);
   if En2 then
     CircuitSize(2, W2, H2, X2, Y2, M2);
-  if En1 then ReadCircuit(1, W1, H1, P1);
-  if En2 then
-    // Identical source rectangles remain identical even when the circuits
-    // have different output offsets or magnification. Reuse only within
-    // this frame; queued drawing is published by the first actual read.
-    if En1 and (DISPFB1 = DISPFB2) and (W1 = W2) and (H1 = H2) then
-      P2 := P1
-    else
-      ReadCircuit(2, W2, H2, P2);
   var W := Max(W1, W2);
   var H := Max(H1, H2);
-  if (W <> FFrameWidth) or (H <> FFrameHeight) then
-  begin
-    FFrameWidth := W;
-    FFrameHeight := H;
-  end;
-  SetLength(FFrame, W * H);
-  var BG := Cardinal(BGCOLOR and $FFFFFF);
-  var BGPixel := $FF000000 or ((BG and $FF) shl 16) or (BG and $FF00) or ((BG shr 16) and $FF);
   // Offsets between the circuits (in output pixels).
   var OX1 := 0;
   var OY1 := 0;
@@ -338,6 +321,38 @@ begin
   var AlphaFixed := (PMODE and $20) <> 0;
   var ALP := Integer((PMODE shr 8) and $FF);
   var Slbg := (PMODE and $80) <> 0;
+  // An opaque foreground covering the entire output cannot expose circuit
+  // 2 or the background. 32/24-bit ReadPixel always returns opaque alpha;
+  // 16-bit and unknown formats still require the fixed-alpha proof.
+  var FrontPSM := Integer((DISPFB1 shr 15) and $1F);
+  var OpaqueFront := En1 and (OX1 = 0) and (OY1 = 0) and (W1 = W) and (H1 = H) and
+    ((AlphaFixed and (ALP >= 128)) or (not AlphaFixed and (FrontPSM in [PSMCT32, PSMCT24])));
+  if En1 then ReadCircuit(1, W1, H1, P1);
+  if En2 and not OpaqueFront then
+    // Identical source rectangles remain identical even when the circuits
+    // have different output offsets or magnification. Reuse only within
+    // this frame; queued drawing is published by the first actual read.
+    if En1 and (DISPFB1 = DISPFB2) and (W1 = W2) and (H1 = H2) then
+      P2 := P1
+    else
+      ReadCircuit(2, W2, H2, P2);
+  if (W <> FFrameWidth) or (H <> FFrameHeight) then
+  begin
+    FFrameWidth := W;
+    FFrameHeight := H;
+  end;
+  SetLength(FFrame, W * H);
+  if OpaqueFront then
+  begin
+    for var I := 0 to Length(FFrame) - 1 do
+    begin
+      var Color := P1[I];
+      FFrame[I] := $FF000000 or ((Color and $FF) shl 16) or (Color and $FF00) or ((Color shr 16) and $FF);
+    end;
+    Exit;
+  end;
+  var BG := Cardinal(BGCOLOR and $FFFFFF);
+  var BGPixel := $FF000000 or ((BG and $FF) shl 16) or (BG and $FF00) or ((BG shr 16) and $FF);
   for var Y := 0 to H - 1 do
     for var X := 0 to W - 1 do
     begin

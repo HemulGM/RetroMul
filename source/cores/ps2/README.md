@@ -74,7 +74,9 @@ coverage/busy counters still include them, so emulated GS timing is unchanged.
 Display scanout publishes queued CPU/GPU writes once per read circuit, not
 for every pixel. Two circuits sharing the same source rectangle reuse one
 read within that frame while retaining independent output offsets and sizes.
-Nothing is reused across frames. `tests/cores/ps2/gsdata/build.ps1` checks display formats,
+Nothing is reused across frames. A provably opaque foreground covering the
+whole output bypasses background reads and blending; partial coverage and
+transparency retain general composition. `tests/cores/ps2/gsdata/build.ps1` checks display formats,
 both circuits, offsets/wrap, zero stride and queued drawing. It also compares
 dual-circuit composition against a scalar reference over alpha boundaries,
 magnification, interlacing, disabled circuits and background selection, and

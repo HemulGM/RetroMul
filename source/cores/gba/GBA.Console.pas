@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.UITypes, System.Math, System.Hash,
-  Core.InputConfig, Core.Emulation.Types, Core.Snapshots, GBA.CPU, GBA.Firmware,
+  Core.InputConfig, Core.Emulation.Types, Core.Snapshots, HW.ARM, GBA.Firmware,
   GBA.Video, GBA.Sound, GBA.Cartridge;
 
 const
@@ -45,7 +45,7 @@ type
 
   TGBAConsole = class
   private
-    FCPU: TGBAProcessor;
+    FCPU: TARMProcessor;
     FVideo: TGBAVideo;
     FSound: TGBASound;
     FCartridge: TGBACartridge;
@@ -153,7 +153,7 @@ type
     function GetSampleFrames: Integer;
     function FramesPerSecond: Double;
     procedure SerializeState(State: TStateArchive);
-    property CPU: TGBAProcessor read FCPU;
+    property CPU: TARMProcessor read FCPU;
     property Video: TGBAVideo read FVideo;
     property Sound: TGBASound read FSound;
     property Cartridge: TGBACartridge read FCartridge;
@@ -182,7 +182,7 @@ begin
   FVideo := TGBAVideo.Create;
   FVideo.Clocked := not LegacyHLE;
   FSound := TGBASound.Create;
-  FCPU := TGBAProcessor.Create(CPURead, CPUWrite);
+  FCPU := TARMProcessor.Create(CPURead, CPUWrite);
   FCPU.MemoryReadUnrotated := CPUReadUnrotated;
   FCPU.BusState := BusState;
   FCPU.Idle := Idle;

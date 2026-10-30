@@ -235,7 +235,7 @@ begin
   // These prefixes wrap another error, rather than a filename or other data.
   for var Prefix in TArray<string>.Create('Unable to open game: ', 'Autosave failed: ',
     'Input error: ', 'Snapshot: ', 'CPS audio: ', 'CPS save: ', 'N64 save: ',
-    'PS1 audio: ', 'PS1 save: ', 'Dreamcast audio: ', 'Dreamcast save: ') do
+    'PS1 audio: ', 'PS1 save: ', 'Dreamcast audio: ', 'Dreamcast save: ', 'NDS raster: ') do
     if Text.StartsWith(Prefix) then
       Exit(Translate(Prefix) + TranslateCoreMessage(Text.Substring(Prefix.Length)));
 

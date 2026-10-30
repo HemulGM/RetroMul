@@ -20,7 +20,7 @@ uses
   A2600.TIA in '..\..\source\cores\at2600\A2600.TIA.pas',
   A2600.State in '..\..\source\cores\at2600\A2600.State.pas',
   A2600.Console in '..\..\source\cores\at2600\A2600.Console.pas',
-  HW.ARM.Shifter in '..\..\source\hardware\cpu\HW.ARM.Shifter.pas',
+  HW.ARM in '..\..\source\hardware\cpu\HW.ARM.pas',
   System.StartUpCopy,
   A2600.AudioMachine in '..\..\source\cores\at2600\A2600.AudioMachine.pas',
   HW.Sound.TIA in '..\..\source\hardware\audio\HW.Sound.TIA.pas',

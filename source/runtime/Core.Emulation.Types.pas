@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.UITypes;
+  System.UITypes, System.Types;
 
 {$SCOPEDENUMS ON}
 
@@ -59,6 +59,13 @@ type
     Pixels: TArray<TAlphaColor>;
     FrameNumber: UInt64;
     FramesPerSecond: Double;
+  end;
+
+  // Independent display regions in the most recently published frame.
+  // Post-processing must isolate their source pixels and temporal histories.
+  IEmulationVideoRegions = interface
+    ['{AF85F329-1830-4EBA-A4A7-76BE777F360E}']
+    function GetVideoRegions: TArray<TRect>;
   end;
 
   // Device warnings do not stop emulation; frontends may report them once.

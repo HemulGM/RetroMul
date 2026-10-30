@@ -4996,7 +4996,12 @@ end;
 
 function TSH4.OpFPUChecked(I: PSH4Inst): Boolean;
 const
-  EventI = 1; EventU = 2; EventO = 4; EventZ = 8; EventV = 16; EventE = 32;
+  EventI = 1;
+  EventU = 2;
+  EventO = 4;
+  EventZ = 8;
+  EventV = 16;
+  EventE = 32;
 var
   DN, AnyNaN, AnySNaN, AnyDenormal, AnyInfinity: Boolean;
 
@@ -5014,7 +5019,8 @@ var
     else if ((Bits and $7F800000) = 0) and ((Bits and $7FFFFF) <> 0) then
     begin
       AnyDenormal := True;
-      if DN then Bits := Bits and $80000000;
+      if DN then
+        Bits := Bits and $80000000;
     end;
   end;
 
@@ -5030,13 +5036,15 @@ var
     else if ((Bits and $7FF0000000000000) = 0) and ((Bits and $FFFFFFFFFFFFF) <> 0) then
     begin
       AnyDenormal := True;
-      if DN then Bits := Bits and $8000000000000000;
+      if DN then
+        Bits := Bits and $8000000000000000;
     end;
   end;
 
   procedure OutputSingle(var Bits: Cardinal; var Events: Cardinal);
   begin
-    if IsNaNBits(Bits) then Bits := $7FBFFFFF
+    if IsNaNBits(Bits) then
+      Bits := $7FBFFFFF
     else if DN and ((Bits and $7F800000) = 0) and ((Bits and $7FFFFF) <> 0) then
     begin
       Bits := Bits and $80000000;
@@ -5046,7 +5054,8 @@ var
 
   procedure OutputDouble(var Bits: UInt64; var Events: Cardinal);
   begin
-    if IsNaN64(Bits) then Bits := $7FF7FFFFFFFFFFFF
+    if IsNaN64(Bits) then
+      Bits := $7FF7FFFFFFFFFFFF
     else if DN and ((Bits and $7FF0000000000000) = 0) and ((Bits and $FFFFFFFFFFFFF) <> 0) then
     begin
       Bits := Bits and $8000000000000000;
@@ -5059,13 +5068,17 @@ begin
   var OldFPSCR := S.FPSCR;
   var SavedFR := S.FR;
   var SavedXF: TSH4FPBank;
-  if K = oFTRV then SavedXF := S.XF;
+  if K = oFTRV then
+    SavedXF := S.XF;
   var SavedFPUL := S.FPUL;
   var SavedT := S.T;
   DN := (OldFPSCR and FPSCRDN) <> 0;
-  AnyNaN := False; AnySNaN := False; AnyDenormal := False; AnyInfinity := False;
+  AnyNaN := False;
+  AnySNaN := False;
+  AnyDenormal := False;
+  AnyInfinity := False;
   var DoubleInput := K in [oDADD, oDSUB, oDMUL, oDDIV, oDSQRT,
-    oDCMPEQ, oDCMPGT, oDFTRC, oFCNVDS];
+      oDCMPEQ, oDCMPGT, oDFTRC, oFCNVDS];
   var DoubleOutput := K in [oDADD, oDSUB, oDMUL, oDDIV, oDSQRT, oDFLOAT, oFCNVSD];
   var Compare := K in [oFCMPEQ, oFCMPGT, oDCMPEQ, oDCMPGT];
   var ToInteger := K in [oFTRC, oDFTRC];
@@ -5073,8 +5086,7 @@ begin
   var InputMask: Cardinal := 0;
   var OutputMask: Cardinal := Cardinal(1) shl I.N;
   case K of
-    oFADD, oFSUB, oFMUL, oFDIV, oFCMPEQ, oFCMPGT,
-    oDADD, oDSUB, oDMUL, oDDIV, oDCMPEQ, oDCMPGT:
+    oFADD, oFSUB, oFMUL, oFDIV, oFCMPEQ, oFCMPGT, oDADD, oDSUB, oDMUL, oDDIV, oDCMPEQ, oDCMPGT:
       InputMask := (Cardinal(1) shl I.N) or (Cardinal(1) shl I.M);
     oFMAC:
       InputMask := (Cardinal(1) shl I.N) or (Cardinal(1) shl I.M) or 2;
@@ -5091,7 +5103,8 @@ begin
       begin
         InputMask := $F shl I.N;
         OutputMask := InputMask;
-        for var J := 0 to 15 do InputSingle(S.XF.U[J]);
+        for var J := 0 to 15 do
+          InputSingle(S.XF.U[J]);
       end;
   end;
   if DoubleInput then
@@ -5103,14 +5116,16 @@ begin
   else if K in [oFIPR, oFTRV] then
   begin
     for var J := 0 to 15 do
-      if (InputMask and (Cardinal(1) shl J)) <> 0 then InputSingle(S.FR.U[J]);
+      if (InputMask and (Cardinal(1) shl J)) <> 0 then
+        InputSingle(S.FR.U[J]);
   end
   else if InputMask <> 0 then
   begin
     InputSingle(S.FR.U[I.N]);
     if (K in [oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oFCMPEQ, oFCMPGT]) and (I.M <> I.N) then
       InputSingle(S.FR.U[I.M]);
-    if (K = oFMAC) and (I.N <> 1) and (I.M <> 1) then InputSingle(S.FR.U[1]);
+    if (K = oFMAC) and (I.N <> 1) and (I.M <> 1) then
+      InputSingle(S.FR.U[1]);
   end;
 
   // Inputs have already been normalized. Keep the unflushed result until
@@ -5120,11 +5135,16 @@ begin
   SH4FPOps[K](Self, I);
   var HostFlags := FGetExceptFlag;
   var Events: Cardinal := 0;
-  if (HostFlags and feeINEXACT) <> 0 then Events := Events or EventI;
-  if (HostFlags and feeUNDERFLOW) <> 0 then Events := Events or EventU;
-  if (HostFlags and feeOVERFLOW) <> 0 then Events := Events or EventO;
-  if (HostFlags and feeDIVBYZERO) <> 0 then Events := Events or EventZ;
-  if ((HostFlags and feeINVALID) <> 0) or AnySNaN then Events := Events or EventV;
+  if (HostFlags and feeINEXACT) <> 0 then
+    Events := Events or EventI;
+  if (HostFlags and feeUNDERFLOW) <> 0 then
+    Events := Events or EventU;
+  if (HostFlags and feeOVERFLOW) <> 0 then
+    Events := Events or EventO;
+  if (HostFlags and feeDIVBYZERO) <> 0 then
+    Events := Events or EventZ;
+  if ((HostFlags and feeINVALID) <> 0) or AnySNaN then
+    Events := Events or EventV;
   // The vector instructions are approximate: even an exact finite dot
   // product signals inexact (SH-4 Core Architecture, FIPR special cases).
   if (K in [oFIPR, oFTRV]) and not AnyNaN and not AnyInfinity then
@@ -5132,47 +5152,61 @@ begin
   if Compare then
   begin
     Events := Events and EventV;
-    if AnyNaN and (K in [oFCMPGT, oDCMPGT]) then Events := EventV;
+    if AnyNaN and (K in [oFCMPGT, oDCMPGT]) then
+      Events := EventV;
   end;
   if ToInteger then
   begin
     Events := 0; // FTRC does not signal inexact or denormal-input error.
-    if AnyNaN then Events := EventV
+    if AnyNaN then
+      Events := EventV
     else if DoubleInput then
     begin
       if (SavedFR.D[I.N shr 1] >= 2147483648.0) or
-        (SavedFR.D[I.N shr 1] < -2147483648.0) then Events := EventV;
+        (SavedFR.D[I.N shr 1] < -2147483648.0) then
+        Events := EventV;
     end
     else if (SavedFR.S[I.N] >= 2147483648.0) or
-      (SavedFR.S[I.N] < -2147483648.0) then Events := EventV;
+      (SavedFR.S[I.N] < -2147483648.0) then
+      Events := EventV;
   end;
 
   var ResultFR := S.FR;
   var ResultFPUL := S.FPUL;
   var ResultT := S.T;
   if not Compare and not ToInteger then
-    if K = oFCNVDS then OutputSingle(ResultFPUL, Events)
-    else if DoubleOutput then OutputDouble(ResultFR.Q[I.N shr 1], Events)
+    if K = oFCNVDS then
+      OutputSingle(ResultFPUL, Events)
+    else if DoubleOutput then
+      OutputDouble(ResultFR.Q[I.N shr 1], Events)
     else
       for var J := 0 to 15 do
-        if (OutputMask and (Cardinal(1) shl J)) <> 0 then OutputSingle(ResultFR.U[J], Events);
+        if (OutputMask and (Cardinal(1) shl J)) <> 0 then
+          OutputSingle(ResultFR.U[J], Events);
 
   // Special conditions have priority over normal rounding conditions.
-  if (Events and EventV) <> 0 then Events := EventV
-  else if (Events and EventZ) <> 0 then Events := EventZ
+  if (Events and EventV) <> 0 then
+    Events := EventV
+  else if (Events and EventZ) <> 0 then
+    Events := EventZ
   else if not DN and AnyDenormal and not AnyNaN and
-    not (K in [oFIPR, oFTRV, oFTRC, oDFTRC]) then Events := EventE;
+    not (K in [oFIPR, oFTRV, oFTRC, oDFTRC]) then
+    Events := EventE;
   S.FR := SavedFR;
-  if K = oFTRV then S.XF := SavedXF;
-  S.FPUL := SavedFPUL; S.T := SavedT;
+  if K = oFTRV then
+    S.XF := SavedXF;
+  S.FPUL := SavedFPUL;
+  S.T := SavedT;
   S.FPSCR := (OldFPSCR and not Cardinal($3F000)) or (Events shl 12) or ((Events and 31) shl 2);
 
   var Potential: Cardinal := 0;
   case K of
-    oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oFSRRA, oFIPR,
-    oDADD, oDSUB, oDMUL, oDDIV, oFCNVDS: Potential := 7;
-    oFSQRT, oDSQRT, oFLOAT: Potential := EventI;
-    oFTRV: Potential := EventV or 7;
+    oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oFSRRA, oFIPR, oDADD, oDSUB, oDMUL, oDDIV, oFCNVDS:
+      Potential := 7;
+    oFSQRT, oDSQRT, oFLOAT:
+      Potential := EventI;
+    oFTRV:
+      Potential := EventV or 7;
   end;
   Result := ((Events and EventE) <> 0) or
     (((Events and 31) and (OldFPSCR shr 7)) <> 0) or
@@ -5183,12 +5217,16 @@ begin
     FExcepted := True;
     Exit;
   end;
-  if Compare then S.T := ResultT
-  else if ToFPUL then S.FPUL := ResultFPUL
-  else if DoubleOutput then S.FR.Q[I.N shr 1] := ResultFR.Q[I.N shr 1]
+  if Compare then
+    S.T := ResultT
+  else if ToFPUL then
+    S.FPUL := ResultFPUL
+  else if DoubleOutput then
+    S.FR.Q[I.N shr 1] := ResultFR.Q[I.N shr 1]
   else
     for var J := 0 to 15 do
-      if (OutputMask and (Cardinal(1) shl J)) <> 0 then S.FR.U[J] := ResultFR.U[J];
+      if (OutputMask and (Cardinal(1) shl J)) <> 0 then
+        S.FR.U[J] := ResultFR.U[J];
 end;
 
 function TSH4.OpFABS(I: PSH4Inst): Boolean;
@@ -8198,10 +8236,7 @@ begin
   @SH4Ops[oXTRCT] := @TSH4.OpXTRCT;
   // Share guest FPU exception handling with the generated-code call path.
   // Register and memory moves leave the arithmetic status unchanged.
-  for var K in [oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oFSQRT, oFSRRA,
-    oFCMPEQ, oFCMPGT, oFLOAT, oFTRC, oFIPR, oFTRV,
-    oDADD, oDSUB, oDMUL, oDDIV, oDSQRT, oDCMPEQ, oDCMPGT,
-    oDFLOAT, oDFTRC, oFCNVSD, oFCNVDS] do
+  for var K in [oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oFSQRT, oFSRRA, oFCMPEQ, oFCMPGT, oFLOAT, oFTRC, oFIPR, oFTRV, oDADD, oDSUB, oDMUL, oDDIV, oDSQRT, oDCMPEQ, oDCMPGT, oDFLOAT, oDFTRC, oFCNVSD, oFCNVDS] do
   begin
     SH4FPOps[K] := SH4Ops[K];
     @SH4Ops[K] := @TSH4.OpFPUChecked;

@@ -886,6 +886,11 @@ begin
   begin
     FView.ImageCanvas.Bitmap.SetSize(Frame.Width, Frame.Height);
   end;
+  var Regions: IEmulationVideoRegions;
+  if Supports(FState.Session.Emulation, IEmulationVideoRegions, Regions) then
+    FView.ImageCanvas.ScreenRegions := Regions.GetVideoRegions
+  else
+    FView.ImageCanvas.ScreenRegions := nil;
   var Data: TBitmapData;
   if FView.ImageCanvas.Bitmap.Map(TMapAccess.Write, Data) then
   try

@@ -379,7 +379,7 @@
         <DCCReference Include="..\..\source\cores\at2600\A2600.TIA.pas"/>
         <DCCReference Include="..\..\source\cores\at2600\A2600.State.pas"/>
         <DCCReference Include="..\..\source\cores\at2600\A2600.Console.pas"/>
-        <DCCReference Include="..\..\source\hardware\cpu\HW.ARM.Shifter.pas"/>
+        <DCCReference Include="..\..\source\hardware\cpu\HW.ARM.pas"/>
         <DCCReference Include="..\..\source\cores\at2600\A2600.AudioMachine.pas"/>
         <DCCReference Include="..\..\source\hardware\audio\HW.Sound.TIA.pas"/>
         <DCCReference Include="..\..\source\music\trackers\amiga\Amiga.AHX.pas"/>

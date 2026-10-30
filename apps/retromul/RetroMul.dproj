@@ -142,8 +142,6 @@
         <Base>true</Base>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base)'!=''">
-        <DCC_IntegerOverflowCheck>true</DCC_IntegerOverflowCheck>
-        <DCC_RangeChecking>true</DCC_RangeChecking>
         <DCC_DcuOutput>$(Platform)\$(Config)_dcu</DCC_DcuOutput>
         <DCC_ExeOutput>$(Platform)\$(Config)</DCC_ExeOutput>
         <DCC_E>false</DCC_E>
@@ -164,7 +162,7 @@
         <Icon_MainIcon>$(BDS)\bin\delphi_PROJECTICON.ico</Icon_MainIcon>
         <Icns_MainIcns>$(BDS)\bin\delphi_PROJECTICNS.icns</Icns_MainIcns>
         <SanitizedProjectName>RetroMul</SanitizedProjectName>
-        <DCC_UnitSearchPath>..\..\source\platforms\at5200;..\..\source\cores\at2600;..\..\source\platforms\at2600;ui;input;input\keyboard;input\gamepads;controllers;platform;settings;..\..\source\cores\at5200;..\..\source\cores\c64;..\..\source\cores\cps;..\..\source\cores\dc;..\..\source\cores\gamewatch;..\..\source\cores\gb;..\..\source\cores\gba;..\..\source\cores\gba\firmware;..\..\source\cores\gbc;..\..\source\cores\md;..\..\source\cores\md\firmware;..\..\source\cores\msx;..\..\source\cores\msx\firmware;..\..\source\cores\n64;..\..\source\cores\neogeo;..\..\source\cores\neogeo\firmware;..\..\source\cores\nes;..\..\source\cores\nes\mappers;..\..\source\cores\ngp;..\..\source\cores\ngp\firmware;..\..\source\cores\pce;..\..\source\cores\pce\firmware;..\..\source\cores\ps1;..\..\source\cores\ps1\firmware;..\..\source\cores\psp;..\..\source\cores\sam;..\..\source\cores\saturn;..\..\source\cores\saturn\firmware;..\..\source\cores\sg1000;..\..\source\cores\sms;..\..\source\cores\sms\firmware;..\..\source\cores\snes;..\..\source\cores\snes\firmware;..\..\source\cores\zx;..\..\source\cores\zx\firmware;..\..\source\platforms;.;..\..\source\platforms\c64;..\..\source\platforms\cps;..\..\source\platforms\dc;..\..\source\platforms\gamewatch;..\..\source\platforms\gb;..\..\source\platforms\gba;..\..\source\platforms\gbc;..\..\source\platforms\md;..\..\source\platforms\msx;..\..\source\platforms\n64;..\..\source\platforms\neogeo;..\..\source\platforms\nes;..\..\source\platforms\ngp;..\..\source\platforms\pce;..\..\source\platforms\ps1;..\..\source\platforms\psp;..\..\source\platforms\sam;..\..\source\platforms\saturn;..\..\source\platforms\sg1000;..\..\source\platforms\sms;..\..\source\platforms\snes;..\..\source\platforms\zx;..\..\dependencies\Delphi7z;..\..\dependencies\DelphiWinUI3\DelphiWindowStyle;..\..\dependencies\DelphiWinUI3\FMXWindowsDispatch;..\..\dependencies\DelphiWinUI3\FMXWindowsHint;..\..\dependencies\DelphiWinUI3\Sources;..\..\dependencies\DelphiWinUI3\WindowsNotificationManager;..\..\dependencies\FMXInput;..\..\dependencies\FMXVibration;..\..\dependencies\PCMAudio;..\..\source\hardware\audio;..\..\source\runtime\audio;..\..\source\media\audio\atrac3;..\..\source\media\audio\atrac3plus;..\..\source\media\audio\aac;..\..\source\media\audio\common;..\..\source\media\common;..\..\source\media\audio\mp3;..\..\source\hardware\audio\opl;..\..\source\hardware\cpu;..\..\source\hardware\jit;..\..\source\hardware\video;..\..\source\media\video\avc;..\..\source\media;..\..\source\media\cd;..\..\source\media\chd;..\..\source\media\archive;..\..\source\music\synthesis;..\..\source\music\common;..\..\source\music\decoders;..\..\source\music\export;..\..\source\music\playback;..\..\source\music\trackers;..\..\source\music\trackers\amiga;..\..\source\runtime;..\..\source\ui\controls;..\..\source\ui\shaders;..\..\source\ui\svg;..\..\source\cores\colecovision;..\..\source\platforms\colecovision;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>..\..\source\platforms\at5200;..\..\source\cores\at2600;..\..\source\platforms\at2600;ui;input;input\keyboard;input\gamepads;controllers;platform;settings;..\..\source\cores\at5200;..\..\source\cores\c64;..\..\source\cores\cps;..\..\source\cores\dc;..\..\source\cores\gamewatch;..\..\source\cores\gb;..\..\source\cores\gba;..\..\source\cores\gba\firmware;..\..\source\cores\gbc;..\..\source\cores\md;..\..\source\cores\md\firmware;..\..\source\cores\msx;..\..\source\cores\msx\firmware;..\..\source\cores\n64;..\..\source\cores\neogeo;..\..\source\cores\neogeo\firmware;..\..\source\cores\nes;..\..\source\cores\nes\mappers;..\..\source\cores\ngp;..\..\source\cores\ngp\firmware;..\..\source\cores\pce;..\..\source\cores\pce\firmware;..\..\source\cores\ps1;..\..\source\cores\ps1\firmware;..\..\source\cores\psp;..\..\source\cores\sam;..\..\source\cores\saturn;..\..\source\cores\saturn\firmware;..\..\source\cores\sg1000;..\..\source\cores\sms;..\..\source\cores\sms\firmware;..\..\source\cores\snes;..\..\source\cores\snes\firmware;..\..\source\cores\zx;..\..\source\cores\zx\firmware;..\..\source\platforms;.;..\..\source\platforms\c64;..\..\source\platforms\cps;..\..\source\platforms\dc;..\..\source\platforms\gamewatch;..\..\source\platforms\gb;..\..\source\platforms\gba;..\..\source\platforms\gbc;..\..\source\platforms\md;..\..\source\platforms\msx;..\..\source\platforms\n64;..\..\source\platforms\neogeo;..\..\source\platforms\nes;..\..\source\platforms\ngp;..\..\source\platforms\pce;..\..\source\platforms\ps1;..\..\source\platforms\psp;..\..\source\platforms\sam;..\..\source\platforms\saturn;..\..\source\platforms\sg1000;..\..\source\platforms\sms;..\..\source\platforms\snes;..\..\source\platforms\zx;..\..\dependencies\Delphi7z;..\..\dependencies\DelphiWinUI3\DelphiWindowStyle;..\..\dependencies\DelphiWinUI3\FMXWindowsDispatch;..\..\dependencies\DelphiWinUI3\FMXWindowsHint;..\..\dependencies\DelphiWinUI3\Sources;..\..\dependencies\DelphiWinUI3\WindowsNotificationManager;..\..\dependencies\FMXInput;..\..\dependencies\FMXVibration;..\..\dependencies\PCMAudio;..\..\source\hardware\audio;..\..\source\runtime\audio;..\..\source\media\audio\atrac3;..\..\source\media\audio\atrac3plus;..\..\source\media\audio\aac;..\..\source\media\audio\common;..\..\source\media\common;..\..\source\media\audio\mp3;..\..\source\hardware\audio\opl;..\..\source\hardware\cpu;..\..\source\hardware\jit;..\..\source\hardware\video;..\..\source\media\video\avc;..\..\source\media;..\..\source\media\cd;..\..\source\media\chd;..\..\source\media\archive;..\..\source\music\synthesis;..\..\source\music\common;..\..\source\music\decoders;..\..\source\music\export;..\..\source\music\playback;..\..\source\music\trackers;..\..\source\music\trackers\amiga;..\..\source\runtime;..\..\source\ui\controls;..\..\source\ui\shaders;..\..\source\ui\svg;..\..\source\cores\colecovision;..\..\source\platforms\colecovision;..\..\source\cores\nds;..\..\source\platforms\nds;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Android)'!=''">
         <DCC_UsePackage>fmx;DbxCommonDriver;bindengine;IndyIPCommon;emsclient;IndyProtocols;dbxcds;FmxTeeUI;FireDACSqliteDriver;DbxClientDriver;soapmidas;dbexpress;inet;FireDACDBXDriver;CustomIPTransport;IndySystem;FireDACCommon;emsserverresource;bindcompdbx;rtl;DBXSqliteDriver;DataSnapFireDAC;FireDAC;xmlrtl;dsnap;DataSnapNativeClient;emshosting;FireDACCommonDriver;IndyIPClient;emsedge;bindcompfmx;fmxFireDAC;FMXAudioHGM;DataSnapCommon;fmxase;dbrtl;DBXInterBaseDriver;bindcomp;VLCPlayer;inetstn;IndyCore;RESTBackendComponents;RESTComponents;IndyIPServer;dsnapxml;DataSnapClient;DataSnapProviderClient;emsclientfiredac;FireDACDSDriver;tethering;CloudService;FMXTee;soaprtl;soapserver;FireDACIBDriver;$(DCC_UsePackage)</DCC_UsePackage>
@@ -359,6 +357,8 @@
         <Icns_MainIcns>$(ProjectName).Artwork\Windows\AppIcon.icns</Icns_MainIcns>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Cfg_1)'!=''">
+        <DCC_IntegerOverflowCheck>true</DCC_IntegerOverflowCheck>
+        <DCC_RangeChecking>true</DCC_RangeChecking>
         <DCC_Define>DEBUG;$(DCC_Define)</DCC_Define>
         <DCC_DebugDCUs>true</DCC_DebugDCUs>
         <DCC_Optimize>false</DCC_Optimize>
@@ -434,6 +434,18 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="..\..\source\cores\nds\NDS.BIOS.pas"/>
+        <DCCReference Include="..\..\source\cores\nds\NDS.RTC.pas"/>
+        <DCCReference Include="..\..\source\cores\nds\NDS.Geometry.pas"/>
+        <DCCReference Include="..\..\source\platforms\nds\RM.Platforms.NDS.Settings.pas"/>
+        <DCCReference Include="..\..\source\platforms\nds\RM.Platforms.NDS.pas"/>
+        <DCCReference Include="..\..\source\platforms\nds\RM.Platforms.NDS.Input.pas"/>
+        <DCCReference Include="..\..\source\platforms\nds\Core.Platforms.NDS.Adapter.pas"/>
+        <DCCReference Include="..\..\source\platforms\nds\Core.Platforms.NDS.Display.pas"/>
+        <DCCReference Include="..\..\source\cores\nds\NDS.Video.pas"/>
+        <DCCReference Include="..\..\source\cores\nds\NDS.Sound.pas"/>
+        <DCCReference Include="..\..\source\cores\nds\NDS.Console.pas"/>
+        <DCCReference Include="..\..\source\cores\nds\NDS.Cartridge.pas"/>
         <DCCReference Include="..\..\source\cores\at5200\A5200.ANTIC.pas"/>
         <DCCReference Include="..\..\source\cores\at5200\A5200.Arithmetic.pas"/>
         <DCCReference Include="..\..\source\cores\at5200\A5200.ASAP.CPU.pas"/>
@@ -488,7 +500,7 @@
         <DCCReference Include="..\..\source\platforms\colecovision\RM.Platforms.ColecoVision.pas"/>
         <DCCReference Include="..\..\source\platforms\colecovision\RM.Platforms.ColecoVision.Settings.pas"/>
         <DCCReference Include="RetroMul.Platforms.pas"/>
-        <DCCReference Include="..\..\source\hardware\cpu\HW.ARM.Shifter.pas"/>
+        <DCCReference Include="..\..\source\hardware\cpu\HW.ARM.pas"/>
         <DCCReference Include="..\..\source\media\audio\atrac3\Audio.ATRAC3.Decoder.pas"/>
         <DCCReference Include="..\..\source\media\audio\atrac3\Audio.ATRAC3.pas"/>
         <DCCReference Include="..\..\source\media\Core.Bitstream.pas"/>
@@ -517,6 +529,7 @@
         <DCCReference Include="..\..\source\media\audio\atrac3plus\Audio.ATRAC3Plus.Primitives.pas"/>
         <DCCReference Include="..\..\source\media\audio\atrac3plus\Audio.ATRAC3Plus.Tables.pas"/>
         <DCCReference Include="..\..\source\ui\shaders\RM.ShaderBitmap.pas"/>
+        <DCCReference Include="..\..\source\ui\shaders\RM.BitmapShaderSurface.pas"/>
         <DCCReference Include="..\..\source\ui\shaders\RM.BitmapShaders.pas"/>
         <DCCReference Include="..\..\source\ui\shaders\RM.BitmapShaderSources.pas"/>
         <DCCReference Include="..\..\source\ui\shaders\RM.BitmapShaders.D2D.pas"/>
@@ -914,13 +927,11 @@
         <DCCReference Include="..\..\source\cores\gb\GB.Sound.pas"/>
         <DCCReference Include="..\..\source\cores\gb\GB.Timer.pas"/>
         <DCCReference Include="..\..\source\cores\gba\GBA.Firmware.pas"/>
-        <DCCReference Include="..\..\source\cores\gba\GBA.Multiply.pas"/>
         <DCCReference Include="..\..\source\cores\gba\GBA.Peripherals.pas"/>
         <DCCReference Include="..\..\source\cores\gba\GBA.Sound.pas"/>
         <DCCReference Include="..\..\source\cores\gba\GBA.Video.pas"/>
         <DCCReference Include="..\..\source\cores\gba\GBA.Cartridge.pas"/>
         <DCCReference Include="..\..\source\cores\gba\GBA.Console.pas"/>
-        <DCCReference Include="..\..\source\cores\gba\GBA.CPU.pas"/>
         <DCCReference Include="..\..\source\cores\gba\GBA.Emulation.pas"/>
         <DCCReference Include="..\..\source\cores\gbc\GBC.EmulationThread.pas"/>
         <DCCReference Include="..\..\source\cores\gbc\GBC.GPU.pas"/>

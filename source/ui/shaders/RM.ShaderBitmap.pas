@@ -8,7 +8,7 @@ uses
   {$IFDEF MSWINDOWS}
   RM.BitmapShaders.D2D,
   {$ENDIF}
-  RM.BitmapShaders;
+  RM.BitmapShaders, RM.BitmapShaderSurface;
 
 // Align the final blit in physical canvas pixels, including fractional parent
 // offsets and DPI. PixelSize is also the exact shader render-target size.
@@ -37,6 +37,13 @@ type
     FResponseSubscribed: Boolean;
     FNextResponseTime: Double;
     FLastPaintMS, FResponseDeadlineMS: Double;
+    FScreenRegions: TArray<TRect>;
+    FSurfaces: TArray<TBitmapShaderSurface>;
+    procedure SetScreenRegions(const Value: TArray<TRect>);
+    procedure ReleaseSurfaces;
+    function ValidScreenRegions: Boolean;
+    function ScreenBounds(Index: Integer; out PixelSize: TSize): TRectF;
+    function PaintScreens: Boolean;
     procedure SetResponseClock(Enabled: Boolean);
     procedure ResponseFrame(const Time, DeltaTime: Double);
     procedure ResponseTimerTick(Sender: TObject);
@@ -55,6 +62,8 @@ type
     procedure ResetHistory;
     procedure LoadShaderFromFile(const FileName: string);
     procedure LoadSettings(Ini: TCustomIniFile);
+    function TryGetFramePixel(X, Y: Single; out PixelX, PixelY: Integer): Boolean;
+    property ScreenRegions: TArray<TRect> read FScreenRegions write SetScreenRegions;
     property Mode: TBitmapShaderMode read FMode write SetMode;
     property Settings: TBitmapShaderSettings read FSettings write SetSettings;
   end;
@@ -146,6 +155,7 @@ end;
 
 procedure TShaderBitmap.ReleaseShaderResources;
 begin
+  ReleaseSurfaces;
   SetResponseClock(False);
   FResponseLink := nil;
   FreeAndNil(FResponseTimer);
@@ -211,6 +221,8 @@ end;
 procedure TShaderBitmap.InvalidateFrame;
 begin
   FDirty := True;
+  for var Surface in FSurfaces do
+    Surface.Invalidate;
   if FCanvasRenderer <> nil then
     FCanvasRenderer.InvalidateInput;
   WakeResponse;
@@ -271,6 +283,8 @@ begin
     if FD2DRenderer <> nil then
       FD2DRenderer.ResetHistory;
     {$ENDIF}
+    for var Surface in FSurfaces do
+      Surface.ResetHistory;
   end;
   FDirty := True;
   Repaint;
@@ -278,6 +292,8 @@ end;
 
 procedure TShaderBitmap.ResetHistory;
 begin
+  for var Surface in FSurfaces do
+    Surface.ResetHistory;
   if FFilter <> nil then
     FFilter.ResetHistory;
   if FCanvasRenderer <> nil then
@@ -305,7 +321,7 @@ end;
 procedure TShaderBitmap.DoChanged;
 begin
   inherited;
-  if FMode <> TBitmapShaderMode.Original then
+  if (FMode <> TBitmapShaderMode.Original) or (Length(FScreenRegions) <> 0) then
     InvalidateFrame;
 end;
 
@@ -316,6 +332,8 @@ begin
     if Value = TBitmapShaderMode.Original then
       ReleaseShaderResources;
     FMode := Value;
+    for var Surface in FSurfaces do
+      Surface.ResetHistory;
     if FFilter <> nil then
       FFilter.ResetHistory;
     if FCanvasRenderer <> nil then
@@ -334,6 +352,134 @@ begin
   InvalidateFrame;
 end;
 
+procedure TShaderBitmap.ReleaseSurfaces;
+begin
+  for var Surface in FSurfaces do
+    Surface.Free;
+  FSurfaces := nil;
+end;
+
+procedure TShaderBitmap.SetScreenRegions(const Value: TArray<TRect>);
+begin
+  var Same := Length(Value) = Length(FScreenRegions);
+  if Same then
+    for var I := 0 to High(Value) do
+      if Value[I] <> FScreenRegions[I] then
+      begin
+        Same := False;
+        Break;
+      end;
+  if Same then
+    Exit;
+  ReleaseSurfaces;
+  FScreenRegions := Copy(Value);
+  ResetHistory;
+end;
+
+function TShaderBitmap.ValidScreenRegions: Boolean;
+begin
+  Result := False;
+  if (Length(FScreenRegions) = 0) or Bitmap.IsEmpty or (Width <= 0) or (Height <= 0) then
+    Exit;
+  for var Bounds in FScreenRegions do
+    if (Bounds.Left < 0) or (Bounds.Top < 0) or (Bounds.Right > Bitmap.Width) or
+      (Bounds.Bottom > Bitmap.Height) or (Bounds.Width <= 0) or (Bounds.Height <= 0) then
+      Exit;
+  Result := True;
+end;
+
+function TShaderBitmap.ScreenBounds(Index: Integer; out PixelSize: TSize): TRectF;
+begin
+  var Fit := Min(Width / Bitmap.Width, Height / Bitmap.Height);
+  var Bounds := FScreenRegions[Index];
+  Result := RectF(Bounds.Left * Fit, Bounds.Top * Fit, Bounds.Right * Fit, Bounds.Bottom * Fit);
+  Result.Offset((Width - Bitmap.Width * Fit) * 0.5, (Height - Bitmap.Height * Fit) * 0.5);
+  var Scale: Single := 1;
+  if Canvas <> nil then
+    Scale := Canvas.Scale;
+  Result := AlignBitmapOutput(Result, AbsoluteMatrix, Scale, PixelSize);
+end;
+
+function TShaderBitmap.TryGetFramePixel(X, Y: Single; out PixelX, PixelY: Integer): Boolean;
+begin
+  Result := False;
+  PixelX := -1;
+  PixelY := -1;
+  if (Width <= 0) or (Height <= 0) or Bitmap.IsEmpty then
+    Exit;
+  if Length(FScreenRegions) <> 0 then
+  begin
+    if not ValidScreenRegions then
+      Exit;
+    for var I := 0 to High(FScreenRegions) do
+    begin
+      var Size: TSize;
+      var Bounds := ScreenBounds(I, Size);
+      if (X < Bounds.Left) or (Y < Bounds.Top) or (X >= Bounds.Right) or (Y >= Bounds.Bottom) then
+        Continue;
+      var U := (X - Bounds.Left) / Bounds.Width;
+      var V := (Y - Bounds.Top) / Bounds.Height;
+      if FMode = TBitmapShaderMode.CRT then
+      begin
+        // Match the shader's output-to-source warp within this screen only.
+        var PX := U * 2 - 1;
+        var PY := V * 2 - 1;
+        var Curve := EnsureRange(FSettings.Curvature, 0.0, 0.3);
+        U := (PX * (1 + Curve * PY * PY) + 1) * 0.5;
+        V := (PY * (1 + Curve * PX * PX) + 1) * 0.5;
+        if (U < 0) or (V < 0) or (U >= 1) or (V >= 1) then
+          Exit;
+      end;
+      PixelX := FScreenRegions[I].Left + Min(FScreenRegions[I].Width - 1, Floor(U * FScreenRegions[I].Width));
+      PixelY := FScreenRegions[I].Top + Min(FScreenRegions[I].Height - 1, Floor(V * FScreenRegions[I].Height));
+      Exit(True);
+    end;
+    Exit;
+  end;
+  var Fit := Min(Width / Bitmap.Width, Height / Bitmap.Height);
+  var Left := (Width - Bitmap.Width * Fit) * 0.5;
+  var Top := (Height - Bitmap.Height * Fit) * 0.5;
+  if (X < Left) or (Y < Top) or (X >= Left + Bitmap.Width * Fit) or (Y >= Top + Bitmap.Height * Fit) then
+    Exit;
+  PixelX := Min(Bitmap.Width - 1, Floor((X - Left) / Fit));
+  PixelY := Min(Bitmap.Height - 1, Floor((Y - Top) / Fit));
+  Result := True;
+end;
+
+function TShaderBitmap.PaintScreens: Boolean;
+begin
+  Result := ValidScreenRegions;
+  if not Result then
+    Exit;
+  if FMode <> TBitmapShaderMode.Original then
+    EnsureShaderResources;
+  Canvas.Fill.Color := TAlphaColors.Black;
+  Canvas.FillRect(LocalRect, 0, 0, [], AbsoluteOpacity);
+  if Length(FSurfaces) <> Length(FScreenRegions) then
+  begin
+    ReleaseSurfaces;
+    SetLength(FSurfaces, Length(FScreenRegions));
+    for var I := 0 to High(FSurfaces) do
+      FSurfaces[I] := TBitmapShaderSurface.Create;
+    FDirty := True;
+  end;
+  var NowMS := ClockMilliseconds;
+  var Custom: TContextShader := nil;
+  if FFilter <> nil then
+    Custom := FFilter.CustomShader;
+  for var I := 0 to High(FSurfaces) do
+  begin
+    if FDirty then
+      FSurfaces[I].UpdateSource(Bitmap, FScreenRegions[I]);
+    var Size: TSize;
+    var Bounds := ScreenBounds(I, Size);
+    FSurfaces[I].Draw(Canvas, Bounds, Size, FMode, FSettings, AbsoluteOpacity,
+        Max(0.0, NowMS - FLastPaintMS), Custom, DisableInterpolation);
+  end;
+  FLastPaintMS := NowMS;
+  FDirty := False;
+end;
+
 procedure TShaderBitmap.Paint;
 var
   Dest: TRectF;
@@ -342,6 +488,8 @@ var
   PixelSize: TSize;
   NowMS: Double;
 begin
+  if PaintScreens then
+    Exit;
   if FMode = TBitmapShaderMode.Original then
   begin
     inherited;

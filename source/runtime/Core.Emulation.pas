@@ -19,6 +19,8 @@ type
 
   TEmulatorFrame = Core.Emulation.Types.TEmulatorFrame;
 
+  IEmulationVideoRegions = Core.Emulation.Types.IEmulationVideoRegions;
+
   IEmulationAudioDiagnostics = Core.Emulation.Types.IEmulationAudioDiagnostics;
 
   IEmulationMouseInput = Core.Emulation.Types.IEmulationMouseInput;

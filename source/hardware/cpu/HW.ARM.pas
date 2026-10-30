@@ -1,15 +1,21 @@
-﻿unit GBA.CPU;
+﻿unit HW.ARM;
+
+// Shared ARM/Thumb interpreter, barrel shifter and ARM7 multiply helpers.
+// Platform cores provide the memory bus, BIOS callbacks and peripheral timing.
 
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, Core.Snapshots, GBA.Multiply,
-  HW.ARM.Shifter;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots;
 
 type
   TARMRead = function(Address: Cardinal; Size: Integer): Cardinal of object;
 
   TARMWrite = procedure(Address, Value: Cardinal; Size: Integer) of object;
+
+  TARMCodePage = function(Address: Cardinal): PByte of object;
+
+  TARMDataPage = function(Address: Cardinal; Writing: Boolean): PByte of object;
 
   TARMBusState = procedure(Sequential, Code: Boolean) of object;
 
@@ -33,9 +39,27 @@ type
 
   TSoftwareInterrupt = procedure(Number: Byte) of object;
 
-  TGBAProcessor = class
+  // Shared ARM/Thumb interpreter: ARM7TDMI by default, with ARMv5TE
+  // decoding explicitly enabled for ARM946E-S users.
+  TARMCPTransfer = function(Op: Cardinal; var Value: Cardinal): Boolean of object;
+
+  TARMProcessor = class
+  private
+    const  // Bits 0..15 are EQ..NV for each CPSR NZCV nibble.
+      Conditions: array[0..15] of Word = (
+$56AA, $6A6A, $55A6, $6966, $66A9, $6A69, $66A5, $6A65,
+$6A9A, $565A, $6996, $5556, $6A99, $6659, $6A95, $6655);
   private
     FRead: TARMRead;
+    FReadCode: TARMRead;
+    FCodePageRead: TARMCodePage;
+    FCodeAccessFlag: PBoolean;
+    FCodePage: PByte;
+    FCodePageTag: Cardinal;
+    FDataPageRead: TARMDataPage;
+    FDataPageLimit: Cardinal;
+    FDataPages: array[0..1, 0..7] of PByte;
+    FDataPageTags: array[0..1, 0..7] of Cardinal;
     FReadUnrotated: TARMRead;
     FSWI: TSoftwareInterrupt;
     FWrite: TARMWrite;
@@ -43,6 +67,9 @@ type
     FIdle: TARMIdle;
     FIRQSample: TARMIRQSample;
     FBusLock: TARMBusLock;
+    FARMv5: Boolean;
+    FVectorBase: Cardinal;
+    FCoprocessor: TARMCPTransfer;
     FPipeline: array[0..2] of Cardinal;
     FPipelinePC, FPipelineThumb: Cardinal;
     FPipelineValid, FFetchSequential, FDataSequential: Boolean;
@@ -52,13 +79,18 @@ type
     FBankGeneration: UInt64;
     FBanked: array[0..5, 0..6] of Cardinal;
     FSaved: array[0..5] of Cardinal;
-    function DataRead(Address: Cardinal; Size: Integer; RotateValue: Boolean = True): Cardinal;
-    procedure DataWrite(Address, Value: Cardinal; Size: Integer);
-    function Fetch(Address: Cardinal; Size: Integer; Sequential: Boolean): Cardinal;
+    procedure SetCodePageRead(const Value: TARMCodePage);
+    procedure SetDataPageRead(const Value: TARMDataPage);
+    function DataPage(Address: Cardinal; Writing: Boolean): PByte; inline;
+    function DataRead(Address: Cardinal; Size: Integer; RotateValue: Boolean = True): Cardinal; inline;
+    procedure DataWrite(Address, Value: Cardinal; Size: Integer); inline;
+    function Fetch(Address: Cardinal; Size: Integer; Sequential: Boolean): Cardinal; inline;
     procedure Refill;
     function Reg(Index: Integer): Cardinal; inline;
     function StepARM(Op: Cardinal): Integer;
     function StepThumb(Op: Word): Integer;
+    function StepARMv5(Op: Cardinal): Boolean;
+    function StepTwoStage(IRQ: Boolean): Integer; inline;
     function AddFlags(A, B, Carry: Cardinal): Cardinal;
     procedure BranchExchange(Value: Cardinal);
     function Condition(Code: Integer): Boolean; inline;
@@ -72,6 +104,8 @@ type
     PSR, SPSR: Cardinal;
     constructor Create(Read: TARMRead; Write: TARMWrite);
     procedure Reset;
+    procedure InvalidateInstructionPage;
+    procedure InvalidateMemoryPages;
     function Step(IRQ: Boolean): Integer;
     procedure SetStatus(Value: Cardinal);
     procedure SerializeState(State: TStateArchive);
@@ -85,24 +119,254 @@ type
     property BusLock: TARMBusLock read FBusLock write FBusLock;
     property SoftwareInterrupt: TSoftwareInterrupt read FSWI write FSWI;
     property MemoryRead: TARMRead read FRead write FRead;
+    // Optional combined code-bus callback. Other buses retain separate
+    // BusState/MemoryRead calls, including their exact access ordering.
+    property MemoryReadCode: TARMRead read FReadCode write FReadCode;
+    // Optional borrowed 16 KiB instruction page. The bus invalidates this
+    // derived pointer when its mapping changes; fetched pipeline words survive.
+    property InstructionPageRead: TARMCodePage read FCodePageRead write SetCodePageRead;
+    property CodeAccessFlag: PBoolean read FCodeAccessFlag write FCodeAccessFlag;
+    // Raw 4 KiB data pages only; side-effectful/unmapped regions return nil.
+    // The bus calls InvalidateMemoryPages on TCM/WRAM remapping and state load.
+    property MemoryPageRead: TARMDataPage read FDataPageRead write SetDataPageRead;
+    property MemoryPageLimit: Cardinal read FDataPageLimit write FDataPageLimit;
     property MemoryReadUnrotated: TARMRead read FReadUnrotated write FReadUnrotated;
     property MemoryWrite: TARMWrite read FWrite write FWrite;
+    property ARMv5: Boolean read FARMv5 write FARMv5;
+    property VectorBase: Cardinal read FVectorBase write FVectorBase;
+    property Coprocessor: TARMCPTransfer read FCoprocessor write FCoprocessor;
   end;
 
 function ARMAdd(A, B: Cardinal): Cardinal; inline;
 
 function ARMSub(A, B: Cardinal): Cardinal; inline;
 
+// Shared barrel shifter: decoded immediate or low byte of a register.
+// Carry supplies RRX/zero-shift input and receives the shifted-out bit.
+function ARMRotateRight(Value: Cardinal; Count: Integer): Cardinal; inline;
+
+function ARMShift(Value: Cardinal; Kind, Count: Integer; Immediate: Boolean; var Carry: Cardinal): Cardinal;
+
+procedure ARM7MultiplyCarry(Multiplicand, Multiplier: Cardinal; Accumulator: UInt64; LongResult, SignedResult: Boolean; out Carry: Cardinal; out Cycles: Integer);
+
 implementation
+
+function ARMRotateRight(Value: Cardinal; Count: Integer): Cardinal; inline;
+begin
+  Count := Count and 31;
+  if Count = 0 then
+    Result := Value
+  else
+    Result := (Value shr Count) or (Value shl (32 - Count));
+end;
+
+function ARMShift(Value: Cardinal; Kind, Count: Integer; Immediate: Boolean; var Carry: Cardinal): Cardinal;
+begin
+  Result := Value;
+  if (Count = 0) and not Immediate then
+    Exit;
+
+  case Kind of
+    0:
+      begin
+        if Count = 0 then
+          Exit;
+        if Count <= 32 then
+          Carry := (Value shr (32 - Count)) and 1
+        else
+          Carry := 0;
+        if Count < 32 then
+          Result := Value shl Count
+        else
+          Result := 0;
+      end;
+    1:
+      begin
+        if Count = 0 then
+          Count := 32;
+        if Count <= 32 then
+          Carry := (Value shr (Count - 1)) and 1
+        else
+          Carry := 0;
+        if Count < 32 then
+          Result := Value shr Count
+        else
+          Result := 0;
+      end;
+    2:
+      begin
+        if Count = 0 then
+          Count := 32;
+        if Count < 32 then
+        begin
+          Carry := (Value shr (Count - 1)) and 1;
+          Result := Value shr Count;
+          if Value and $80000000 <> 0 then
+            Result := Result or ($FFFFFFFF shl (32 - Count));
+        end
+        else
+        begin
+          Carry := Value shr 31;
+          Result := 0;
+          if Carry <> 0 then
+            Result := $FFFFFFFF;
+        end;
+      end;
+    3:
+      begin
+        if (Count = 0) and Immediate then
+        begin
+          Result := (Carry shl 31) or (Value shr 1);
+          Carry := Value and 1;
+        end
+        else
+        begin
+          Result := ARMRotateRight(Value, Count);
+          Carry := Result shr 31;
+        end;
+      end;
+  end;
+end;
+
+type
+  TPair = record
+    Lo, Hi: UInt64;
+  end;
+
+function Bit(V: UInt64; N: Integer): UInt64; inline;
+begin
+  Result := (V shr N) and 1;
+end;
+
+function ROR128(V: TPair; N: Integer): TPair; inline;
+begin
+  Result.Lo := (V.Lo shr N) or (V.Hi shl (64 - N));
+  Result.Hi := (V.Hi shr N) or (V.Lo shl (64 - N));
+end;
+
+procedure ARM7MultiplyCarry(Multiplicand, Multiplier: Cardinal; Accumulator: UInt64; LongResult, SignedResult: Boolean; out Carry: Cardinal; out Cycles: Integer);
+const
+  Correction: array[1..4] of Integer = (23, 15, 7, 31);
+begin
+  var M := UInt64(Multiplicand);
+  var S := UInt64(Multiplier);
+  if SignedResult then
+  begin
+    if M and $80000000 <> 0 then
+      M := M or UInt64($300000000);
+    if S and $80000000 <> 0 then
+      S := S or UInt64($300000000);
+  end;
+
+  var Sum := Accumulator;
+  var Car: UInt64 := 0;
+  if S and 1 <> 0 then
+    Car := not M;
+
+  var AccShift := Accumulator shr 34;
+  var Partial: TPair;
+  Partial.Lo := Car and 1;
+  Partial.Hi := 0;
+  Sum := Sum shr 1;
+  Car := Car shr 1;
+  Partial := ROR128(Partial, 1);
+  Cycles := 0;
+
+  repeat
+    var OutSum: UInt64 := 0;
+    var OutCar: UInt64 := 0;
+    for var i := 0 to 3 do
+    begin
+      var Addend: UInt64 := 0;
+      var BoothCarry: UInt64 := 0;
+      case (S shr (i * 2)) and 7 of
+        1, 2:
+          Addend := M;
+        3:
+          Addend := M shl 1;
+        4:
+          begin
+            Addend := not (M shl 1);
+            BoothCarry := 1;
+          end;
+        5, 6:
+          begin
+            Addend := not M;
+            BoothCarry := 1;
+          end;
+      end;
+
+      Addend := Addend and UInt64($3FFFFFFFF);
+      Sum := Sum and UInt64($1FFFFFFFF);
+      Car := Car and UInt64($1FFFFFFFF);
+      var LowAddend := Addend and UInt64($1FFFFFFFF);
+      var NextSum := Sum xor LowAddend xor Car;
+      var NextCar := (((Sum and LowAddend) or (LowAddend and Car) or (Car and Sum)) shl 1) or BoothCarry;
+      OutSum := OutSum or ((NextSum and 3) shl (i * 2));
+      OutCar := OutCar or ((NextCar and 3) shl (i * 2));
+      var Magic := Bit(AccShift, 0) + (1 - Bit(Car, 32)) + (1 - Bit(Addend, 33));
+      Sum := (NextSum shr 2) or (Magic shl 31);
+      Car := (NextCar shr 2) or ((1 - Bit(AccShift, 1)) shl 32);
+      AccShift := AccShift shr 2;
+    end;
+
+    Sum := OutSum or (Sum shl 8);
+    Car := OutCar or (Car shl 8);
+    Partial.Lo := Partial.Lo or (Car and 255);
+    Sum := Sum shr 8;
+    Car := Car shr 8;
+    Partial := ROR128(Partial, 8);
+    if S and UInt64($100000000) <> 0 then
+      S := (S shr 8) or UInt64($1FE000000)
+    else
+      S := S shr 8;
+    S := S and UInt64($1FFFFFFFF);
+    Inc(Cycles);
+  until (S = 0) or (SignedResult and (S = UInt64($1FFFFFFFF)));
+
+  Partial.Lo := Partial.Lo or Car;
+  Partial := ROR128(Partial, Correction[Cycles]);
+
+  if not LongResult and (Cycles = 4) then
+    Carry := Cardinal(Bit(Partial.Hi, 31))
+  else
+    Carry := Cardinal(Bit(Partial.Hi, 63));
+end;
+
+function ARMMultiplyCycles(Multiplier: Cardinal; SignedResult: Boolean): Integer; inline;
+begin
+  // The Booth implementation consumes eight multiplier bits per iteration.
+  // Its carry is needed only by ARM7 flag-setting multiplies; timing depends
+  // solely on the remaining zero/sign-extended multiplier bytes.
+  if SignedResult and (Multiplier and $80000000 <> 0) then
+    Multiplier := not Multiplier;
+
+  if Multiplier shr 8 = 0 then
+    Exit(1);
+  if Multiplier shr 16 = 0 then
+    Exit(2);
+  if Multiplier shr 24 = 0 then
+    Exit(3);
+
+  Result := 4;
+end;
 
 function ARMAdd(A, B: Cardinal): Cardinal;
 begin
+  {$IFOPT Q+}
   Result := Cardinal((UInt64(A) + B) and $FFFFFFFF);
+  {$ELSE}
+  Result := A + B;
+  {$ENDIF}
 end;
 
 function ARMSub(A, B: Cardinal): Cardinal;
 begin
+  {$IFOPT Q+}
   Result := Cardinal((UInt64(A) + UInt64($100000000) - B) and $FFFFFFFF);
+  {$ELSE}
+  Result := A - B;
+  {$ENDIF}
 end;
 
 function Bank(Mode: Cardinal): Integer; inline;
@@ -123,16 +387,18 @@ begin
   end;
 end;
 
-constructor TGBAProcessor.Create(Read: TARMRead; Write: TARMWrite);
+constructor TARMProcessor.Create(Read: TARMRead; Write: TARMWrite);
 begin
   inherited Create;
   FRead := Read;
   FWrite := Write;
+  FDataPageLimit := $FFFFFFFF;
   Reset;
 end;
 
-procedure TGBAProcessor.Reset;
+procedure TARMProcessor.Reset;
 begin
+  InvalidateMemoryPages;
   Inc(FBankGeneration);
   FillChar(R, SizeOf(R), 0);
   FillChar(FBanked, SizeOf(FBanked), 0);
@@ -145,7 +411,7 @@ begin
   FDataSequential := False;
 end;
 
-function TGBAProcessor.Reg(Index: Integer): Cardinal;
+function TARMProcessor.Reg(Index: Integer): Cardinal;
 begin
   Result := R[Index];
   if (FLDMGlitch > 0) and (PSR and $20 = 0) and (Index in [8..14]) and (Bank(PSR) <> 0) and ((Index >= 13) or (Bank(PSR) = 1)) then
@@ -158,7 +424,7 @@ begin
       Result := ARMAdd(Result, 8);
 end;
 
-function TGBAProcessor.SavedStatus: Cardinal;
+function TARMProcessor.SavedStatus: Cardinal;
 begin
   if Bank(PSR) = 0 then
     Result := PSR
@@ -166,9 +432,12 @@ begin
     Result := SPSR;
 end;
 
-procedure TGBAProcessor.SetPSR(Value: Cardinal);
+procedure TARMProcessor.SetPSR(Value: Cardinal);
 begin
-  Value := (Value and $F00000FF) or $10;
+  var StatusMask: Cardinal := $F00000FF;
+  if FARMv5 then
+    StatusMask := $F80000FF;
+  Value := (Value and StatusMask) or $10;
   var Old := Bank(PSR and 31);
   var New := Bank(Value and 31);
   if Old <> New then
@@ -197,42 +466,19 @@ begin
   PSR := Value;
 end;
 
-procedure TGBAProcessor.NZ(Value: Cardinal);
+procedure TARMProcessor.NZ(Value: Cardinal);
 begin
   PSR := (PSR and $3FFFFFFF) or (Value and $80000000);
   if Value = 0 then
     PSR := PSR or $40000000;
 end;
 
-function TGBAProcessor.Condition(Code: Integer): Boolean;
+function TARMProcessor.Condition(Code: Integer): Boolean;
 begin
-  var N := PSR and $80000000 <> 0;
-  var Z := PSR and $40000000 <> 0;
-  var C := PSR and $20000000 <> 0;
-  var V := PSR and $10000000 <> 0;
-  case Code shr 1 of
-    0:
-      Result := Z;
-    1:
-      Result := C;
-    2:
-      Result := N;
-    3:
-      Result := V;
-    4:
-      Result := C and not Z;
-    5:
-      Result := N = V;
-    6:
-      Result := (N = V) and not Z;
-  else
-    Result := True;
-  end;
-  if Code and 1 <> 0 then
-    Result := not Result;
+  Result := Conditions[PSR shr 28] and (1 shl Code) <> 0;
 end;
 
-function TGBAProcessor.Operand(Op: Cardinal; var Carry: Cardinal): Cardinal;
+function TARMProcessor.Operand(Op: Cardinal; var Carry: Cardinal): Cardinal;
 begin
   if Op and $02000000 <> 0 then
   begin
@@ -244,6 +490,8 @@ begin
   end;
 
   var Value := Reg(Op and 15);
+  if Op and $FF0 = 0 then
+    Exit(Value);
   var Count := Integer((Op shr 7) and 31);
   var Immediate := Op and $10 = 0;
   if not Immediate then
@@ -257,7 +505,7 @@ begin
   Result := ARMShift(Value, (Op shr 5) and 3, Count, Immediate, Carry);
 end;
 
-procedure TGBAProcessor.ExceptionEntry(Mode: Integer; Vector: Cardinal);
+procedure TARMProcessor.ExceptionEntry(Mode: Integer; Vector: Cardinal);
 begin
   FReloadRequested := True;
   var Old := PSR;
@@ -265,19 +513,237 @@ begin
   SetPSR((PSR and $FFFFFFC0) or Cardinal(Mode) or $80);
   SPSR := Old;
   R[14] := ReturnAddress;
-  R[15] := Vector;
+  R[15] := FVectorBase or Vector;
   if Mode = $11 then
     PSR := PSR or $40;
 end;
 
-function TGBAProcessor.StepARM(Op: Cardinal): Integer;
+function TARMProcessor.StepARMv5(Op: Cardinal): Boolean;
+
+  function SignedWord(V: Cardinal): Int64;
+  begin
+    Result := V;
+    if V and $80000000 <> 0 then
+      Dec(Result, $100000000);
+  end;
+
+  function Half(V: Cardinal; Top: Boolean): Int64;
+  begin
+    if Top then
+      V := V shr 16;
+    Result := V and $FFFF;
+    if Result >= $8000 then
+      Dec(Result, $10000);
+  end;
+
+  function Saturate(V: Int64): Cardinal;
+  begin
+    if V > $7FFFFFFF then
+    begin
+      PSR := PSR or $08000000;
+      Exit($7FFFFFFF);
+    end;
+    if V < -Int64($80000000) then
+    begin
+      PSR := PSR or $08000000;
+      Exit($80000000);
+    end;
+    Result := Cardinal(V and $FFFFFFFF);
+  end;
+
+begin
+  Result := True;
+  var Next := ARMAdd(R[15], 4);
+  var RD := Integer((Op shr 12) and 15);
+  var RN := Integer((Op shr 16) and 15);
+  var RM := Integer(Op and 15);
+  if (Op and $0FFFFFF0 = $012FFF10) or (Op and $0FFFFFF0 = $012FFF30) then
+  begin
+    var Target := Reg(RM);
+    if Op and $20 <> 0 then
+      R[14] := Next;
+    BranchExchange(Target);
+    Exit;
+  end
+  else if Op and $0FFF0FF0 = $016F0F10 then
+  begin
+    var V := Reg(RM);
+    var N := 0;
+    while (N < 32) and (V and $80000000 = 0) do
+    begin
+      Inc(N);
+      V := V shl 1;
+    end;
+    R[RD] := N;
+  end
+  else if Op and $0F9000F0 = $01000050 then
+  begin
+    var Kind := (Op shr 21) and 3;
+    var B := SignedWord(Reg(RN));
+    if Kind >= 2 then
+      B := SignedWord(Saturate(B * 2));
+    var A := SignedWord(Reg(RM));
+    if Kind and 1 <> 0 then
+      R[RD] := Saturate(A - B)
+    else
+      R[RD] := Saturate(A + B);
+  end
+  else if Op and $0F900090 = $01000080 then
+  begin
+    var Kind := (Op shr 21) and 3;
+    var RS := Integer((Op shr 8) and 15);
+    var Product := Half(Reg(RM), Op and $20 <> 0) * Half(Reg(RS), Op and $40 <> 0);
+    case Kind of
+      0:
+        begin
+          var Sum := Product + SignedWord(Reg(RD));
+          if (Sum > $7FFFFFFF) or (Sum < -Int64($80000000)) then
+            PSR := PSR or $08000000;
+          R[RN] := Cardinal(Sum and $FFFFFFFF);
+        end;
+      1:
+        begin
+          Product := SignedWord(Reg(RM)) * Half(Reg(RS), Op and $40 <> 0);
+          // Arithmetic shift right by 16, including negative fractional products.
+          if Product < 0 then
+            Product := -((-Product + $FFFF) div $10000)
+          else
+            Product := Product div $10000;
+          if Op and $20 = 0 then
+          begin
+            Product := Product + SignedWord(Reg(RD));
+            if (Product > $7FFFFFFF) or (Product < -Int64($80000000)) then
+              PSR := PSR or $08000000;
+          end;
+          R[RN] := Cardinal(Product and $FFFFFFFF);
+        end;
+      2:
+        begin
+          var LowSum := UInt64(R[RD]) + UInt64(Product and $FFFFFFFF);
+          var HighSum := UInt64(R[RN]) + Cardinal(UInt64(Product) shr 32) + (LowSum shr 32);
+          R[RD] := Cardinal(LowSum and $FFFFFFFF);
+          R[RN] := Cardinal(HighSum and $FFFFFFFF);
+        end;
+      3:
+        R[RN] := Cardinal(Product and $FFFFFFFF);
+    end;
+  end
+  else if (Op and $0E1000D0 = $000000D0) then
+  begin
+    // ARMv5 LDRD/STRD occupy the ARM7's unused signed-store encodings.
+    if (RD and 1 <> 0) or (RD >= 14) then
+    begin
+      ExceptionEntry($1B, 4);
+      R[14] := Next;
+      Exit;
+    end;
+    var Offset := Reg(RM);
+    if Op and $00400000 <> 0 then
+      Offset := ((Op shr 4) and $F0) or (Op and 15);
+    var Base := Reg(RN);
+    var Adjusted := ARMAdd(Base, Offset);
+    if Op and $00800000 = 0 then
+      Adjusted := ARMSub(Base, Offset);
+    var Address := Adjusted;
+    if Op and $01000000 = 0 then
+      Address := Base;
+    if Op and $20 = 0 then
+    begin
+      R[RD] := DataRead(Address, 4, False);
+      R[RD + 1] := DataRead(ARMAdd(Address, 4), 4, False);
+    end
+    else
+    begin
+      DataWrite(Address, R[RD], 4);
+      DataWrite(ARMAdd(Address, 4), R[RD + 1], 4);
+    end;
+    if (Op and $01000000 = 0) or (Op and $00200000 <> 0) then
+      R[RN] := Adjusted;
+  end
+  else if Op and $0FF000F0 = $01200070 then
+  begin
+    ExceptionEntry($17, $0C);
+    R[14] := Next;
+    Exit;
+  end
+  else
+    Exit(False);
+
+  R[15] := Next;
+end;
+
+function TARMProcessor.StepARM(Op: Cardinal): Integer;
 begin
   Result := 1;
   var PC := R[15];
+  if FARMv5 and (Op shr 28 = 15) then
+  begin
+    // BLX immediate and PLD occupy the unconditional ARMv5 encoding space.
+    if Op and $FE000000 = $FA000000 then
+    begin
+      var Offset := Int64(Op and $FFFFFF) * 4 + ((Op shr 23) and 2);
+      if Op and $800000 <> 0 then
+        Dec(Offset, $4000000);
+      R[14] := ARMAdd(PC, 4);
+      BranchExchange(Cardinal((Int64(PC) + 8 + Offset) and $FFFFFFFF) or 1);
+    end
+    else if Op and $0D70F000 = $0550F000 then
+      R[15] := ARMAdd(PC, 4)
+    else
+      ExceptionEntry($1B, 4);
+    Exit(3);
+  end;
   if (Op shr 28 <> 14) and not Condition(Op shr 28) then
   begin
     R[15] := ARMAdd(PC, 4);
     Exit;
+  end;
+
+  // Ordinary non-flag ALU operations need no extended-opcode decoding,
+  // shifter carry or wide flag arithmetic. Keep PC destinations, shifted
+  // operands and the status-register encodings on the complete path below.
+  if ((Op shr 12) and 15 <> 15) and ((Op and $0E100000 = $02000000) or (Op and $0E100FF0 = 0)) then
+  begin
+    var SimpleKind := (Op shr 21) and 15;
+    if (SimpleKind < 8) or (SimpleKind > 11) then
+    begin
+      var A := Reg((Op shr 16) and 15);
+      var B: Cardinal;
+      if Op and $02000000 <> 0 then
+        B := ARMRotateRight(Op and 255, Integer((Op shr 8) and 15) * 2)
+      else
+        B := Reg(Op and 15);
+      var Value: Cardinal := 0;
+      case SimpleKind of
+        0:
+          Value := A and B;
+        1:
+          Value := A xor B;
+        2:
+          Value := ARMSub(A, B);
+        3:
+          Value := ARMSub(B, A);
+        4:
+          Value := ARMAdd(A, B);
+        5:
+          Value := ARMAdd(ARMAdd(A, B), (PSR shr 29) and 1);
+        6:
+          Value := ARMAdd(ARMAdd(A, not B), (PSR shr 29) and 1);
+        7:
+          Value := ARMAdd(ARMAdd(B, not A), (PSR shr 29) and 1);
+        12:
+          Value := A or B;
+        13:
+          Value := B;
+        14:
+          Value := A and not B;
+        15:
+          Value := not B;
+      end;
+      R[(Op shr 12) and 15] := Value;
+      R[15] := ARMAdd(PC, 4);
+      Exit;
+    end;
   end;
 
   var Next := ARMAdd(PC, 4);
@@ -285,6 +751,9 @@ begin
   var RN := Integer((Op shr 16) and 15);
   var Load := Op and $00100000 <> 0;
   var Carry: Cardinal := (PSR shr 29) and 1;
+  if FARMv5 and ((Op and $0F900000 = $01000000) or (Op and $0E1000D0 = $000000D0)) and StepARMv5(Op) then
+    Exit(3);
+
   if Op and $0F000000 = $0F000000 then
   begin
     R[15] := Next;
@@ -414,6 +883,12 @@ begin
           if i = 15 then
           begin
             Next := V and $FFFFFFFC;
+            if FARMv5 and (Op and $00400000 = 0) then
+            begin
+              PSR := (PSR and not Cardinal($20)) or ((V and 1) shl 5);
+              if V and 1 <> 0 then
+                Next := V and $FFFFFFFE;
+            end;
             FReloadRequested := True;
           end
           else
@@ -429,7 +904,7 @@ begin
     begin
       if List and $8000 <> 0 then
         SetPSR(SavedStatus);
-      FGlitchOnComplete := True;
+      FGlitchOnComplete := not FARMv5;
     end;
     if Load then
       Inc(FInternalCycles);
@@ -459,6 +934,12 @@ begin
       if RD = 15 then
       begin
         Next := Value and $FFFFFFFC;
+        if FARMv5 then
+        begin
+          PSR := (PSR and not Cardinal($20)) or ((Value and 1) shl 5);
+          if Value and 1 <> 0 then
+            Next := Value and $FFFFFFFE;
+        end;
         FReloadRequested := True;
       end
       else
@@ -489,11 +970,17 @@ begin
     if Op and $00010000 <> 0 then
       Mask := Mask or $FF;
     if Op and $00080000 <> 0 then
-      Mask := Mask or $F0000000;
+      if FARMv5 then
+        Mask := Mask or $F8000000
+      else
+        Mask := Mask or $F0000000;
     if Op and $00400000 <> 0 then
     begin
       if Bank(PSR) <> 0 then
-        SPSR := ((SPSR and not Mask) or (V and Mask)) and $F00000FF;
+        if FARMv5 then
+          SPSR := ((SPSR and not Mask) or (V and Mask)) and $F80000FF
+        else
+          SPSR := ((SPSR and not Mask) or (V and Mask)) and $F00000FF;
     end
     else
     begin
@@ -514,7 +1001,13 @@ begin
       Acc := Reg(RD);
     var MultiplyCarry: Cardinal;
     var MultiplyClocks: Integer;
-    ARM7MultiplyCarry(MultiplyM, MultiplyS, Acc, False, True, MultiplyCarry, MultiplyClocks);
+    if FARMv5 or not Load then
+    begin
+      MultiplyCarry := 0;
+      MultiplyClocks := ARMMultiplyCycles(MultiplyS, True);
+    end
+    else
+      ARM7MultiplyCarry(MultiplyM, MultiplyS, Acc, False, True, MultiplyCarry, MultiplyClocks);
     var V := UInt64(MultiplyM) * MultiplyS;
     if Op and $00200000 <> 0 then
       V := V + Reg(RD);
@@ -522,7 +1015,8 @@ begin
     if Load then
     begin
       NZ(R[Dest]);
-      PSR := (PSR and $DFFFFFFF) or (MultiplyCarry shl 29);
+      if not FARMv5 then
+        PSR := (PSR and $DFFFFFFF) or (MultiplyCarry shl 29);
     end;
     Inc(FInternalCycles, MultiplyClocks + Ord(Op and $00200000 <> 0));
     Result := 1 + FInternalCycles;
@@ -536,7 +1030,13 @@ begin
       Acc := (UInt64(R[RN]) shl 32) or R[RD];
     var MultiplyCarry: Cardinal;
     var MultiplyClocks: Integer;
-    ARM7MultiplyCarry(RM, RS, Acc, True, Op and $00400000 <> 0, MultiplyCarry, MultiplyClocks);
+    if FARMv5 or not Load then
+    begin
+      MultiplyCarry := 0;
+      MultiplyClocks := ARMMultiplyCycles(RS, Op and $00400000 <> 0);
+    end
+    else
+      ARM7MultiplyCarry(RM, RS, Acc, True, Op and $00400000 <> 0, MultiplyCarry, MultiplyClocks);
     var V: UInt64;
     if Op and $00400000 <> 0 then
     begin
@@ -565,7 +1065,12 @@ begin
     R[RN] := Cardinal(V shr 32);
     if Load then
     begin
-      PSR := (PSR and $1FFFFFFF) or (R[RN] and $80000000) or (MultiplyCarry shl 29);
+      var SavedCarry := PSR and $20000000;
+      PSR := (PSR and $1FFFFFFF) or (R[RN] and $80000000);
+      if FARMv5 then
+        PSR := PSR or SavedCarry
+      else
+        PSR := PSR or (MultiplyCarry shl 29);
       if V = 0 then
         PSR := PSR or $40000000;
     end;
@@ -653,6 +1158,21 @@ begin
   end
   else if Op and $0F000010 = $0E000010 then
   begin
+    if FARMv5 and Assigned(FCoprocessor) then
+    begin
+      var Value := Reg(RD);
+      if FCoprocessor(Op, Value) then
+      begin
+        if Load then
+          if RD = 15 then
+            PSR := (PSR and $0FFFFFFF) or (Value and $F0000000)
+          else
+            R[RD] := Value;
+        R[15] := Next;
+        Exit(2);
+      end;
+    end;
+
     if (Op shr 8) and 15 <> 14 then
     begin
       ExceptionEntry($1B, 4);
@@ -764,12 +1284,12 @@ begin
   R[15] := Next;
 end;
 
-procedure TGBAProcessor.SetStatus(Value: Cardinal);
+procedure TARMProcessor.SetStatus(Value: Cardinal);
 begin
   SetPSR(Value);
 end;
 
-procedure TGBAProcessor.BranchExchange(Value: Cardinal);
+procedure TARMProcessor.BranchExchange(Value: Cardinal);
 begin
   FReloadRequested := True;
   PSR := (PSR and not $20) or ((Value and 1) shl 5);
@@ -779,7 +1299,7 @@ begin
     R[15] := Value and $FFFFFFFC;
 end;
 
-function TGBAProcessor.AddFlags(A, B, Carry: Cardinal): Cardinal;
+function TARMProcessor.AddFlags(A, B, Carry: Cardinal): Cardinal;
 begin
   var Sum := UInt64(A) + B + Carry;
   Result := Cardinal(Sum and $FFFFFFFF);
@@ -789,24 +1309,117 @@ begin
     (Cardinal(Ord(Overflow)) shl 28);
 end;
 
-function TGBAProcessor.Fetch(Address: Cardinal; Size: Integer; Sequential: Boolean): Cardinal;
+procedure TARMProcessor.InvalidateInstructionPage;
+begin
+  FCodePageTag := $FFFFFFFF;
+  FCodePage := nil;
+end;
+
+procedure TARMProcessor.SetCodePageRead(const Value: TARMCodePage);
+begin
+  FCodePageRead := Value;
+  InvalidateInstructionPage;
+end;
+
+procedure TARMProcessor.InvalidateMemoryPages;
+begin
+  InvalidateInstructionPage;
+  FillChar(FDataPages, SizeOf(FDataPages), 0);
+  FillChar(FDataPageTags, SizeOf(FDataPageTags), $FF);
+end;
+
+procedure TARMProcessor.SetDataPageRead(const Value: TARMDataPage);
+begin
+  FDataPageRead := Value;
+  InvalidateMemoryPages;
+end;
+
+function TARMProcessor.DataPage(Address: Cardinal; Writing: Boolean): PByte;
+begin
+  var Page := Address and $FFFFF000;
+  var Index := (Address shr 12) and 7;
+  if FDataPageTags[Ord(Writing), Index] <> Page then
+  begin
+    FDataPages[Ord(Writing), Index] := FDataPageRead(Page, Writing);
+    if FDataPages[Ord(Writing), Index] <> nil then
+      FDataPageTags[Ord(Writing), Index] := Page
+    else
+      FDataPageTags[Ord(Writing), Index] := $FFFFFFFF;
+  end;
+  Result := FDataPages[Ord(Writing), Index];
+end;
+
+function TARMProcessor.Fetch(Address: Cardinal; Size: Integer; Sequential: Boolean): Cardinal;
 begin
   if FLDMGlitch > 0 then
     Dec(FLDMGlitch);
-  if Assigned(FBusState) then
-    FBusState(Sequential, True);
-  Result := FRead(Address, Size);
+  if Assigned(FReadCode) then
+  begin
+    var Memory: PByte := nil;
+    if Assigned(FCodePageRead) then
+    begin
+      if FCodeAccessFlag <> nil then
+        FCodeAccessFlag^ := True;
+      var Page := Address and $FFFFC000;
+      if FCodePageTag <> Page then
+      begin
+        FCodePage := FCodePageRead(Page);
+        if FCodePage <> nil then
+          FCodePageTag := Page
+        else
+          FCodePageTag := $FFFFFFFF;
+      end;
+      Memory := FCodePage;
+    end;
+    if Memory <> nil then
+    begin
+      Inc(Memory, Address and $3FFF);
+      if Size = 4 then
+        Result := PCardinal(Memory)^
+      else
+        Result := PWord(Memory)^;
+    end
+    else
+      Result := FReadCode(Address, Size);
+  end
+  else
+  begin
+    if Assigned(FBusState) then
+      FBusState(Sequential, True);
+    Result := FRead(Address, Size);
+  end;
   Inc(FBusCount);
 end;
 
-function TGBAProcessor.DataRead(Address: Cardinal; Size: Integer; RotateValue: Boolean): Cardinal;
+function TARMProcessor.DataRead(Address: Cardinal; Size: Integer; RotateValue: Boolean): Cardinal;
 begin
   if FLDMGlitch > 0 then
     Dec(FLDMGlitch);
   if Assigned(FBusState) then
     FBusState(FDataSequential, False);
   FFetchSequential := False;
-  if RotateValue then
+  var Memory: PByte := nil;
+  if Assigned(FDataPageRead) and (Address < FDataPageLimit) then
+  begin
+    if FCodeAccessFlag <> nil then
+      FCodeAccessFlag^ := False;
+    Memory := DataPage(Address, False);
+  end;
+  if Memory <> nil then
+  begin
+    Inc(Memory, (Address and $FFF) and not Cardinal(Size - 1));
+    case Size of
+      1:
+        Result := Memory^;
+      2:
+        Result := PWord(Memory)^;
+    else
+      Result := PCardinal(Memory)^;
+    end;
+    if RotateValue and (Size = 4) and (Address and 3 <> 0) then
+      Result := ARMRotateRight(Result, Integer(Address and 3) * 8);
+  end
+  else if RotateValue then
     Result := FRead(Address, Size)
   else if Assigned(FReadUnrotated) then
     Result := FReadUnrotated(Address, Size)
@@ -815,18 +1428,38 @@ begin
   Inc(FBusCount);
 end;
 
-procedure TGBAProcessor.DataWrite(Address, Value: Cardinal; Size: Integer);
+procedure TARMProcessor.DataWrite(Address, Value: Cardinal; Size: Integer);
 begin
   if FLDMGlitch > 0 then
     Dec(FLDMGlitch);
   if Assigned(FBusState) then
     FBusState(FDataSequential, False);
   FFetchSequential := False;
-  FWrite(Address, Value, Size);
+  var Memory: PByte := nil;
+  if Assigned(FDataPageRead) and (Address < FDataPageLimit) then
+  begin
+    if FCodeAccessFlag <> nil then
+      FCodeAccessFlag^ := False;
+    Memory := DataPage(Address, True);
+  end;
+  if Memory <> nil then
+  begin
+    Inc(Memory, (Address and $FFF) and not Cardinal(Size - 1));
+    case Size of
+      1:
+        Memory^ := Byte(Value);
+      2:
+        PWord(Memory)^ := Word(Value);
+      4:
+        PCardinal(Memory)^ := Value;
+    end;
+  end
+  else
+    FWrite(Address, Value, Size);
   Inc(FBusCount);
 end;
 
-procedure TGBAProcessor.Refill;
+procedure TARMProcessor.Refill;
 begin
   var Size := 4;
   if PSR and $20 <> 0 then
@@ -842,8 +1475,53 @@ begin
   FFetchSequential := True;
 end;
 
-function TGBAProcessor.Step(IRQ: Boolean): Integer;
+function TARMProcessor.StepTwoStage(IRQ: Boolean): Integer;
 begin
+  FBusCount := 0;
+  FInternalCycles := 0;
+  FReloadRequested := False;
+  FGlitchOnComplete := False;
+  FDataSequential := False;
+  if not FPipelineValid or (FPipelinePC <> R[15]) or (FPipelineThumb <> PSR and $20) then
+    Refill;
+  var Op := FPipeline[0];
+  var PC := R[15];
+  var Thumb := PSR and $20;
+  var Size := 4;
+  if Thumb <> 0 then
+    Size := 2;
+  var ColdCycles := FBusCount;
+  FBusCount := 0;
+  FPipeline[0] := FPipeline[1];
+  FPipeline[1] := Fetch(ARMAdd(PC, Size * 2), Size, FFetchSequential);
+  FFetchSequential := True;
+  if IRQ and (PSR and $80 = 0) then
+    ExceptionEntry($12, $18)
+  else if Thumb <> 0 then
+    StepThumb(Word(Op))
+  else
+    StepARM(Op);
+  if FInternalCycles > 0 then
+  begin
+    FFetchSequential := False;
+    FLDMGlitch := Max(0, FLDMGlitch - FInternalCycles);
+    if Assigned(FIdle) then
+      FIdle(FInternalCycles);
+  end;
+  if FGlitchOnComplete then
+    FLDMGlitch := 2;
+  if FReloadRequested or (R[15] <> ARMAdd(PC, Size)) or (PSR and $20 <> Thumb) then
+    Refill
+  else
+    FPipelinePC := R[15];
+  Result := ColdCycles + FBusCount + FInternalCycles;
+end;
+
+function TARMProcessor.Step(IRQ: Boolean): Integer;
+begin
+  if not Assigned(FIRQSample) then
+    Exit(StepTwoStage(IRQ));
+
   FBusCount := 0;
   FInternalCycles := 0;
   FReloadRequested := False;
@@ -930,7 +1608,7 @@ begin
   Result := ColdCycles + FBusCount + FInternalCycles;
 end;
 
-function TGBAProcessor.StepThumb(Op: Word): Integer;
+function TARMProcessor.StepThumb(Op: Word): Integer;
 begin
   Result := 1;
   var PC := R[15];
@@ -1004,7 +1682,10 @@ begin
           // Thumb encodes Rd as the multiplier (ARM Rs), including early-out
           // timing and the otherwise undocumented carry result.
           var MultiplyClocks: Integer;
-          ARM7MultiplyCarry(B, V, 0, False, True, Carry, MultiplyClocks);
+          if FARMv5 then
+            MultiplyClocks := ARMMultiplyCycles(V, True)
+          else
+            ARM7MultiplyCarry(B, V, 0, False, True, Carry, MultiplyClocks);
           V := Cardinal((UInt64(V) * B) and $FFFFFFFF);
           Inc(FInternalCycles, MultiplyClocks);
           Result := 1 + FInternalCycles;
@@ -1018,7 +1699,7 @@ begin
       NZ(V);
     if Kind in [2, 3, 4, 7] then
       Inc(FInternalCycles);
-    if Kind in [2, 3, 4, 7, 13] then
+    if (Kind in [2, 3, 4, 7]) or ((Kind = 13) and not FARMv5) then
       PSR := (PSR and $DFFFFFFF) or (Carry shl 29);
     if not (Kind in [8, 10, 11]) then
       R[RD] := V;
@@ -1051,7 +1732,10 @@ begin
           R[RD] := Reg(RS);
       3:
         begin
-          BranchExchange(Reg(RS));
+          var Target := Reg(RS);
+          if FARMv5 and (Op and $80 <> 0) then
+            R[14] := ARMAdd(PC, 2) or 1;
+          BranchExchange(Target);
           Exit(3);
         end;
     end;
@@ -1187,7 +1871,15 @@ begin
         begin
           var V := DataRead(Address, 4, False);
           if i = 15 then
-            Next := V and $FFFFFFFE
+          begin
+            Next := V and $FFFFFFFE;
+            if FARMv5 then
+            begin
+              PSR := (PSR and not Cardinal($20)) or ((V and 1) shl 5);
+              if V and 1 = 0 then
+                Next := V and $FFFFFFFC;
+            end;
+          end
           else
             R[i] := V;
         end
@@ -1297,6 +1989,14 @@ begin
       Dec(Offset, $800);
     R[14] := Cardinal((Int64(PC) + 4 + Int64(Offset) * 4096 + $100000000) and $FFFFFFFF);
   end
+  else if FARMv5 and (Op and $F800 = $E800) then
+  begin
+    Next := ARMAdd(R[14], (Op and $7FF) * 2) and $FFFFFFFC;
+    R[14] := ARMAdd(PC, 2) or 1;
+    PSR := PSR and not Cardinal($20);
+    FReloadRequested := True;
+    Result := 3;
+  end
   else if Op and $F800 = $F800 then
   begin
     FReloadRequested := True;
@@ -1314,7 +2014,7 @@ begin
   R[15] := Next;
 end;
 
-procedure TGBAProcessor.Capture(out State: TARMCheckpoint);
+procedure TARMProcessor.Capture(out State: TARMCheckpoint);
 begin
   State.Reserved := 0;
   Move(R, State.Registers, SizeOf(R));
@@ -1332,9 +2032,10 @@ begin
   State.LDMGlitch := FLDMGlitch;
 end;
 
-procedure TGBAProcessor.CaptureCached(var State: TARMCheckpoint; var Generation: UInt64);
+procedure TARMProcessor.CaptureCached(var State: TARMCheckpoint; var Generation: UInt64);
 begin
   State.Reserved := 0;
+
   // Fixed-size copies let the ARM compiler emit register-pair loads/stores
   // instead of calling the general RTL Move for every CPU instruction.
   State.Registers[0] := R[0];
@@ -1355,6 +2056,7 @@ begin
   State.Registers[15] := R[15];
   State.Status := PSR;
   State.SavedStatus := SPSR;
+
   // The caller retains this checkpoint between instructions. Banked registers
   // change only on mode switches, reset, restore or snapshot load.
   if Generation <> FBankGeneration then
@@ -1373,8 +2075,9 @@ begin
   State.LDMGlitch := FLDMGlitch;
 end;
 
-procedure TGBAProcessor.Restore(const State: TARMCheckpoint);
+procedure TARMProcessor.Restore(const State: TARMCheckpoint);
 begin
+  InvalidateMemoryPages;
   Inc(FBankGeneration);
   Move(State.Registers, R, SizeOf(R));
   PSR := State.Status;
@@ -1389,8 +2092,10 @@ begin
   FLDMGlitch := State.LDMGlitch;
 end;
 
-procedure TGBAProcessor.SerializeState(State: TStateArchive);
+procedure TARMProcessor.SerializeState(State: TStateArchive);
 begin
+  if State.Loading then
+    InvalidateMemoryPages;
   if State.Loading then
     Inc(FBankGeneration);
   State.Field(R, SizeOf(R));
@@ -1406,10 +2111,10 @@ begin
   State.Field(FLDMGlitch, SizeOf(FLDMGlitch));
 
   if State.Loading and ((FLDMGlitch < 0) or (FLDMGlitch > 2)) then
-    raise EReadError.Create('Invalid GBA LDM state');
+    raise EReadError.Create('Invalid ARM LDM state');
 
   if State.Loading and not ((PSR and 31) in [$10, $11, $12, $13, $17, $1B, $1F]) then
-    raise EReadError.Create('Invalid GBA CPU mode');
+    raise EReadError.Create('Invalid ARM CPU mode');
 end;
 
 end.

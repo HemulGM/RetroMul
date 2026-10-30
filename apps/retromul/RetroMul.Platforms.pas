@@ -5,7 +5,8 @@ interface
 implementation
 
 uses
-  RM.Platforms.Atari5200, RM.Platforms.Atari2600, RM.Platforms.CPS, RM.Platforms.DC, RM.Platforms.GameWatch, RM.Platforms.GB,
+  RM.Platforms.Atari5200, RM.Platforms.Atari2600, RM.Platforms.CPS,
+  RM.Platforms.DC, RM.Platforms.GameWatch, RM.Platforms.GB, RM.Platforms.NDS,
   RM.Platforms.GBA, RM.Platforms.GBC, RM.Platforms.MD, RM.Platforms.MSX,
   RM.Platforms.N64, RM.Platforms.NeoGeo, RM.Platforms.NES, RM.Platforms.NGP,
   RM.Platforms.PCE, RM.Platforms.PS1, RM.Platforms.PSP, RM.Platforms.Saturn,
@@ -21,6 +22,7 @@ initialization
   TGWPlatform.RegisterPlatform;
   TGBPlatform.RegisterPlatform;
   TGBAPlatform.RegisterPlatform;
+  TNDSPlatform.RegisterPlatform;
   TGBCPlatform.RegisterPlatform;
   TMDPlatform.RegisterPlatform;
   TMSXPlatform.RegisterPlatform;

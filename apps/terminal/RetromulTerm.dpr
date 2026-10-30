@@ -5,6 +5,18 @@
 {$R *.res}
 
 uses
+  NDS.BIOS in '..\..\source\cores\nds\NDS.BIOS.pas',
+  NDS.RTC in '..\..\source\cores\nds\NDS.RTC.pas',
+  NDS.Geometry in '..\..\source\cores\nds\NDS.Geometry.pas',
+  RM.Platforms.NDS.Settings in '..\..\source\platforms\nds\RM.Platforms.NDS.Settings.pas',
+  RM.Platforms.NDS in '..\..\source\platforms\nds\RM.Platforms.NDS.pas',
+  RM.Platforms.NDS.Input in '..\..\source\platforms\nds\RM.Platforms.NDS.Input.pas',
+  Core.Platforms.NDS.Adapter in '..\..\source\platforms\nds\Core.Platforms.NDS.Adapter.pas',
+  Core.Platforms.NDS.Display in '..\..\source\platforms\nds\Core.Platforms.NDS.Display.pas',
+  NDS.Video in '..\..\source\cores\nds\NDS.Video.pas',
+  NDS.Sound in '..\..\source\cores\nds\NDS.Sound.pas',
+  NDS.Console in '..\..\source\cores\nds\NDS.Console.pas',
+  NDS.Cartridge in '..\..\source\cores\nds\NDS.Cartridge.pas',
   A5200.ANTIC in '..\..\source\cores\at5200\A5200.ANTIC.pas',
   A5200.Arithmetic in '..\..\source\cores\at5200\A5200.Arithmetic.pas',
   A5200.ASAP.CPU in '..\..\source\cores\at5200\A5200.ASAP.CPU.pas',
@@ -63,7 +75,7 @@ uses
   RetroMul.Platforms in '..\retromul\RetroMul.Platforms.pas',
   HW.Sound.Y8950 in '..\..\source\hardware\audio\HW.Sound.Y8950.pas',
 
-  HW.ARM.Shifter in '..\..\source\hardware\cpu\HW.ARM.Shifter.pas',
+  HW.ARM in '..\..\source\hardware\cpu\HW.ARM.pas',
   Audio.ATRAC3.Decoder in '..\..\source\media\audio\atrac3\Audio.ATRAC3.Decoder.pas',
   Audio.ATRAC3 in '..\..\source\media\audio\atrac3\Audio.ATRAC3.pas',
   Core.Bitstream in '..\..\source\media\Core.Bitstream.pas',

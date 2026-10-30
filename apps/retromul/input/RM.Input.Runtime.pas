@@ -57,7 +57,7 @@ implementation
 
 uses
   System.SysUtils, System.Math, System.Generics.Collections,
-  System.Generics.Defaults, Core.Platforms, RM.Gamepad;
+  System.Generics.Defaults, Core.Platforms, RM.Gamepad, RM.ShaderBitmap;
 
 var
   Handlers: TDictionary<string, TPlatformInputHandlerClass>;
@@ -313,6 +313,8 @@ end;
 
 function TryGetImagePixel(const Image: TImage; const X, Y: Single; out PixelX, PixelY: Integer): Boolean;
 begin
+  if Image is TShaderBitmap then
+    Exit(TShaderBitmap(Image).TryGetFramePixel(X, Y, PixelX, PixelY));
   Result := False;
   PixelX := -1;
   PixelY := -1;

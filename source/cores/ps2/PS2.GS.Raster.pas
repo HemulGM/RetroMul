@@ -717,11 +717,17 @@ begin
         var RRW := Integer(Reg and $FFF);
         var X := C.XferX;
         var Y := C.XferY;
-        for var K := 0 to C.XferCount - 1 do
+        var Head := C.XferStart;
+        var Remaining := C.XferCount;
+        while Remaining > 0 do
         begin
-          FMemory.WriteRaw(DPSM, DBP, DBW, Cardinal((DSAX + X) and $7FF), Cardinal((DSAY + Y) and $7FF),
-            FXferRing[(C.XferStart + K) and XferRingMask]);
-          Inc(X);
+          var Count := Min(Remaining, Max(1, RRW - X));
+          Count := Min(Count, XferRingSize - Integer(Head and XferRingMask));
+          FMemory.WriteRow(DPSM, DBP, DBW, Cardinal((DSAX + X) and $7FF), Cardinal((DSAY + Y) and $7FF),
+            @FXferRing[Head and XferRingMask], Count);
+          Inc(Head, Count);
+          Dec(Remaining, Count);
+          Inc(X, Count);
           if X >= RRW then
           begin
             X := 0;

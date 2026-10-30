@@ -10,7 +10,7 @@
 interface
 
 uses
-  System.SysUtils, PS2.Types;
+  System.SysUtils, System.Math, PS2.Types;
 
 const
   PSMCT32 = $00;
@@ -117,6 +117,9 @@ type
     // formats, 16-bit value for 16-bit formats, 32/24 bits otherwise).
     function ReadRaw(PSM: Integer; BP, BW, X, Y: Cardinal): Cardinal; inline;
     procedure WriteRaw(PSM: Integer; BP, BW, X, Y, Value: Cardinal);
+    // A transfer row of unpacked values. Coordinates and VRAM wrap as in
+    // host-to-local transfers; each source value retains scalar write order.
+    procedure WriteRow(PSM: Integer; BP, BW, X, Y: Cardinal; Values: PCardinal; Count: Integer);
     // The same in two steps: a pixel's address in format PSM's units (words,
     // halfwords, bytes or nibbles), then its value there.
     function Locate(PSM: Integer; BP, BW, X, Y: Cardinal): Cardinal; inline;
@@ -145,6 +148,14 @@ begin
     Result := A;
   end;
 end;
+{$ENDIF}
+
+{$IFNDEF GS_RACECHECK}
+var
+  // Immutable per-row offsets inside an indexed page. Texture uploads reuse
+  // the same swizzle without rebuilding page/block/column terms per pixel.
+  TransferOffsets8: array[0..63, 0..127] of Word;
+  TransferOffsets4: array[0..127, 0..127] of Word;
 {$ENDIF}
 
 function Color16To32(V: Cardinal): Cardinal;
@@ -301,6 +312,52 @@ begin
   WriteAt(PSM, Locate(PSM, BP, BW, X, Y), Value);
 end;
 
+procedure TPS2GSMemory.WriteRow(PSM: Integer; BP, BW, X, Y: Cardinal; Values: PCardinal; Count: Integer);
+begin
+  if Count <= 0 then Exit;
+  X := X and $7FF;
+  Y := Y and $7FF;
+  {$IFNDEF GS_RACECHECK}
+  if PSM = PSMT8 then
+  begin
+    var RowBase := (BP shl 8) + (((Y shr 6) * ((BW + 1) shr 1)) shl 13);
+    while Count > 0 do
+    begin
+      var N := Min(Count, 128 - Integer(X and 127));
+      var Base := RowBase + ((X shr 7) shl 13);
+      var Offsets: PWord := @TransferOffsets8[Y and 63, X and 127];
+      for var K := 0 to N - 1 do FData[(Base + Offsets[K]) and $3FFFFF] := Byte(Values[K]);
+      Inc(Values, N);
+      Dec(Count, N);
+      X := (X + Cardinal(N)) and $7FF;
+    end;
+    Exit;
+  end;
+  if PSM = PSMT4 then
+  begin
+    var RowBase := (BP shl 9) + (((Y shr 7) * ((BW + 1) shr 1)) shl 14);
+    var Shift := (TransferOffsets4[Y and 127, 0] and 1) * 4;
+    var Keep := $FF xor ($F shl Shift);
+    while Count > 0 do
+    begin
+      var N := Min(Count, 128 - Integer(X and 127));
+      var Base := RowBase + ((X shr 7) shl 14);
+      var Offsets: PWord := @TransferOffsets4[Y and 127, X and 127];
+      for var K := 0 to N - 1 do
+      begin
+        var A := ((Base + Offsets[K]) shr 1) and $3FFFFF;
+        FData[A] := Byte((FData[A] and Keep) or ((Values[K] and 15) shl Shift));
+      end;
+      Inc(Values, N);
+      Dec(Count, N);
+      X := (X + Cardinal(N)) and $7FF;
+    end;
+    Exit;
+  end;
+  {$ENDIF}
+  for var K := 0 to Count - 1 do WriteRaw(PSM, BP, BW, (X + Cardinal(K)) and $7FF, Y, Values[K]);
+end;
+
 function TPS2GSMemory.ReadPixel(PSM: Integer; FBP, FBW: Cardinal; X, Y: Integer): Cardinal;
 begin
   if (X < 0) or (Y < 0) then
@@ -316,5 +373,18 @@ begin
     Result := ReadRaw(PSMCT32, BP, FBW div 64, Cardinal(X), Cardinal(Y));
   end;
 end;
+
+{$IFNDEF GS_RACECHECK}
+procedure InitTransferOffsets;
+begin
+  for var Y := 0 to 63 do
+    for var X := 0 to 127 do TransferOffsets8[Y, X] := Word(TPS2GSMemory.Addr8(0, 0, Cardinal(X), Cardinal(Y)));
+  for var Y := 0 to 127 do
+    for var X := 0 to 127 do TransferOffsets4[Y, X] := Word(TPS2GSMemory.Addr4(0, 0, Cardinal(X), Cardinal(Y)));
+end;
+
+initialization
+  InitTransferOffsets;
+{$ENDIF}
 
 end.

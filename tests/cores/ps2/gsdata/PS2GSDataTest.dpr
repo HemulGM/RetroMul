@@ -85,6 +85,41 @@ begin
   end;
 end;
 
+procedure CheckRows;
+const
+  Xs: array[0..5] of Cardinal = (0, 1, 15, 127, 128, 2047);
+  Counts: array[0..3] of Integer = (1, 17, 129, 2053);
+var
+  Values: array[0..2052] of Cardinal;
+begin
+  var A := TPS2GSMemory.Create;
+  var B := TPS2GSMemory.Create;
+  try
+    var P := PCardinal(A.Data);
+    for var I := 0 to PS2GSMemorySize div 4 - 1 do P[I] := Cardinal(I) * 1664525 + 1013904223;
+    Move(A.Data^, B.Data^, PS2GSMemorySize);
+    for var Format in TArray<Integer>.Create(PSMT8, PSMT4) do
+      for var N := 0 to 127 do
+      begin
+        var BP := Cardinal(1 + N * 127);
+        if N and 1 <> 0 then BP := $3FFF;
+        var BW := Cardinal(N mod 5);
+        var X := Xs[N mod Length(Xs)];
+        var Y := Cardinal(N * 17) and $7FF;
+        var Count := Counts[N mod Length(Counts)];
+        for var K := 0 to Count - 1 do Values[K] := Cardinal(K) * 1664525 + Cardinal(N) * 1013904223;
+        for var K := 0 to Count - 1 do A.WriteRaw(Format, BP, BW, (X + Cardinal(K)) and $7FF, Y, Values[K]);
+        B.WriteRow(Format, BP, BW, X, Y, @Values[0], Count);
+        B.WriteRow(Format, BP, BW, X, Y, nil, 0);
+        if not CompareMem(A.Data, B.Data, PS2GSMemorySize) then
+          raise Exception.CreateFmt('Indexed row mismatch format=%x case=%d', [Format, N]);
+      end;
+    Writeln('256 indexed rows: every row phase, page/coordinate/VRAM wrap and masked nibble neighbours: OK');
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
 procedure CheckTransfers;
 begin
   var A := TPS2GSRaster.Create;
@@ -125,6 +160,9 @@ begin
           PSMT4, PSMT4HL, PSMT4HH: Bits := 4;
         end;
         var Quads := (Width * Height * Bits + 127) div 128 + 1;
+        if N and 1 <> 0 then
+          for var R in TArray<TPS2GSRaster>.Create(A, B) do
+            R.WriteRegister(GSRegHWREG, $FEDCBA9876543210); // Half-quad prefix crosses a run inside IMAGE.
         for var I := 0 to Quads - 1 do
         begin
           var Q: TPS2Reg128;
@@ -164,6 +202,7 @@ end;
 begin
   try
     CheckDisplay;
+    CheckRows;
     CheckTransfers;
   except
     on E: Exception do

@@ -79,6 +79,9 @@ partial bitstreams, row/VRAM wrapping, ring reuse and serialized state.
 Queued whole-quadword IMAGE uploads unpack integer formats into the transfer
 ring in chunks; 24-bit streams, partial tails and unusual state retain the
 scalar path. Reservation, row progression and barriers keep the same order.
+The worker writes indexed rows through immutable per-page offsets for
+PSMT8/PSMT4, retaining coordinate/VRAM wrapping and neighbouring nibbles.
+Other storage formats and race-instrumented builds retain scalar writes.
 The tests run without Vulkan; `-Checked` enables checked core code.
 
 ## Experimental VU1 recompiler

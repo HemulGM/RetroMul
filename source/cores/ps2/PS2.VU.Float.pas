@@ -5,9 +5,11 @@
 // PS2Add4) with the same results: products of the 24-bit mantissas and sums
 // with the adder's single guard bit, both truncated; exponent 0 reads as
 // zero, exponent 255 as an ordinary binade; overflow gives the largest value,
-// underflow a signed zero. Win64 uses packed integer AVX2 when both CPU and
-// OS support it; its SSE2 fallback uses doubles (each product and guard-bit
-// sum is exact). Other targets loop over the one-field routines.
+// underflow a signed zero. Win64 uses AVX2 when CPU and OS support it:
+// guarded normal-range operations can use hardware round-to-zero floats,
+// with integer normalization for all other cases. Its SSE2 fallback uses
+// doubles (each product and guard-bit sum is exact). Other targets loop over
+// the one-field routines.
 //
 // Four-field flags: bit K overflow and bit K + 4 underflow of field K.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
@@ -88,6 +90,9 @@ const
   CNot3: array[0..3] of Cardinal = ($FFFFFFFC, $FFFFFFFC, $FFFFFFFC, $FFFFFFFC);
   C26: array[0..3] of Integer = (26, 26, 26, 26);
   C255: array[0..3] of Integer = (255, 255, 255, 255);
+  C253: array[0..3] of Integer = (253, 253, 253, 253);
+  C254: array[0..3] of Integer = (254, 254, 254, 254);
+  C25: array[0..3] of Integer = (25, 25, 25, 25);
   CShift23: array[0..1] of UInt64 = (23, 23);
 
 procedure PS2Mul4SSE2(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
@@ -563,6 +568,136 @@ asm
   vzeroupper
 end;
 
+// Common normal-range cases need no integer normalization: hardware
+// operations rounded toward zero are exact PS2 operations once the smaller
+// addend loses all bits below the PS2 guard bit. Coarse exponent guards
+// exclude any possible overflow/underflow; exponent-zero inputs are first
+// made signed zeros. Other cases use the integer kernels above. These are
+// leaf entries, so no nonvolatile vector registers need saving.
+procedure PS2Mul4Common(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
+asm
+  .NOFRAME
+  stmxcsr [rsp + 8]                    // caller-provided Win64 shadow space
+  mov eax, [rsp + 8]
+  and eax, $6000
+  cmp eax, $6000
+  jne @@Slow
+  vmovdqu xmm0, [rcx]
+  vmovdqu xmm1, [rdx]
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpcmpeqd xmm4, xmm2, [rip + C255]
+  vpcmpeqd xmm5, xmm3, [rip + C255]
+  vpor xmm4, xmm4, xmm5
+  vptest xmm4, xmm4
+  jnz @@Slow                          // PS2 exponent 255 is not IEEE NaN/Inf
+  vpxor xmm4, xmm4, xmm4
+  vpcmpeqd xmm5, xmm2, xmm4
+  vpandn xmm0, xmm5, xmm0
+  vmovdqu xmm4, [rcx]
+  vpand xmm4, xmm4, [rip + CSignMask]
+  vpor xmm0, xmm0, xmm4                // A's subnormals -> signed zero
+  vpxor xmm4, xmm4, xmm4
+  vpcmpeqd xmm4, xmm3, xmm4
+  vpor xmm5, xmm5, xmm4                // either input zero
+  vpandn xmm1, xmm4, xmm1
+  vmovdqu xmm4, [rdx]
+  vpand xmm4, xmm4, [rip + CSignMask]
+  vpor xmm1, xmm1, xmm4
+  vpaddd xmm2, xmm2, xmm3
+  vpsubd xmm2, xmm2, [rip + C127]      // exponent before normalization carry
+  vmovdqu xmm3, [rip + COne]
+  vpcmpgtd xmm3, xmm3, xmm2
+  vpcmpgtd xmm4, xmm2, [rip + C253]
+  vpor xmm3, xmm3, xmm4
+  vpandn xmm5, xmm5, xmm3              // nonzero product outside safe range
+  vptest xmm5, xmm5
+  jnz @@Slow
+  vmulps xmm0, xmm0, xmm1
+  vmovdqu [r8], xmm0
+  mov dword ptr [r9], 0
+  vzeroupper
+  ret
+@@Slow:
+  jmp PS2Mul4AVX2
+end;
+
+procedure PS2Add4Common(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
+asm
+  .NOFRAME
+  stmxcsr [rsp + 8]
+  mov eax, [rsp + 8]
+  and eax, $6000
+  cmp eax, $6000
+  jne @@Slow
+  vmovdqu xmm0, [rcx]
+  vmovdqu xmm1, [rdx]
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpmaxsd xmm4, xmm2, xmm3
+  vpcmpgtd xmm5, xmm4, [rip + C253]
+  vptest xmm5, xmm5
+  jnz @@Slow                          // a sum may raise the exponent by one
+  // The smallest nonzero cancellation is half an ulp of the larger input.
+  // EL >= 25 guarantees it is normal. Two zero inputs are safe too.
+  vmovdqu xmm5, [rip + C25]
+  vpcmpgtd xmm5, xmm5, xmm4
+  vpxor xmm4, xmm4, xmm4
+  vpmaxsd xmm2, xmm2, xmm3
+  vpcmpeqd xmm2, xmm2, xmm4
+  vpandn xmm5, xmm2, xmm5
+  vptest xmm5, xmm5
+  jnz @@Slow
+  // Sanitize each zero-exponent operand, preserving its sign.
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpcmpeqd xmm2, xmm2, xmm4
+  vpandn xmm0, xmm2, xmm0
+  vmovdqu xmm2, [rcx]
+  vpand xmm2, xmm2, [rip + CSignMask]
+  vpor xmm0, xmm0, xmm2
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpcmpeqd xmm3, xmm3, xmm4
+  vpandn xmm1, xmm3, xmm1
+  vmovdqu xmm3, [rdx]
+  vpand xmm3, xmm3, [rip + CSignMask]
+  vpor xmm1, xmm1, xmm3
+  // L = larger magnitude; M = smaller (A stays L when equal).
+  vpand xmm2, xmm0, [rip + CAbsMask]
+  vpand xmm3, xmm1, [rip + CAbsMask]
+  vpcmpgtd xmm3, xmm3, xmm2
+  vpand xmm2, xmm3, xmm1
+  vpandn xmm4, xmm3, xmm0
+  vpor xmm2, xmm2, xmm4                // L
+  vpand xmm4, xmm3, xmm0
+  vpandn xmm3, xmm3, xmm1
+  vpor xmm3, xmm3, xmm4                // M
+  vpslld xmm0, xmm2, 1
+  vpsrld xmm0, xmm0, 24
+  vpslld xmm1, xmm3, 1
+  vpsrld xmm1, xmm1, 24
+  vpsubd xmm0, xmm0, xmm1
+  vpsubd xmm0, xmm0, [rip + COne]
+  vpxor xmm4, xmm4, xmm4
+  vpmaxsd xmm0, xmm0, xmm4             // max(EL - EM - 1, 0)
+  vmovdqu xmm1, [rip + COne]
+  vpsllvd xmm1, xmm1, xmm0
+  vpsubd xmm1, xmm4, xmm1              // -2^shift: mask below guard bit
+  vpand xmm3, xmm3, xmm1
+  vpcmpgtd xmm0, xmm0, [rip + C23]
+  vpandn xmm3, xmm0, xmm3              // beyond the guard bit -> zero
+  vaddps xmm2, xmm2, xmm3
+  vmovdqu [r8], xmm2
+  mov dword ptr [r9], 0
+  vzeroupper
+  ret
+@@Slow:
+  jmp PS2Add4AVX2
+end;
+
 function HostAVX2: Boolean;
 asm
   .NOFRAME
@@ -652,8 +787,8 @@ initialization
   VectorAVX2 := HostAVX2;
   if VectorAVX2 then
   begin
-    Mul4Proc := PS2Mul4AVX2;
-    Add4Proc := PS2Add4AVX2;
+    Mul4Proc := PS2Mul4Common;
+    Add4Proc := PS2Add4Common;
   end;
   {$ENDIF}
   {$ENDIF}

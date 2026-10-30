@@ -28,6 +28,10 @@ checking CPUID, OSXSAVE and XCR0; otherwise it retains SSE2. Both paths keep
 the PS2 guard-bit, extended exponent, signed-zero and saturation rules.
 `tests/cores/ps2/vufloat/build.ps1 -ForceSSE2` explicitly tests the fallback.
 The tests cover all host rounding modes, exponent pairs and in-place results.
+Under host round-to-zero, guarded normal-range operations use hardware floats
+after explicit PS2 operand/guard-bit sanitization. Anything that could
+underflow, overflow or use the PS2-only exponent range stays on integer AVX2;
+other host rounding modes do too. This is not an approximate-math option.
 
 Disc images come from `source/media/dvd/Core.DVD.Image.pas` (ISO, MDS/MDF,
 DVD CHD, CD images through the CD layer). The front end lives in

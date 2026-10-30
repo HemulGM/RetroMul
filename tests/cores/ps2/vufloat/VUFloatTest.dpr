@@ -195,6 +195,21 @@ begin
       Check;
       Directed;
     end;
+    if PS2VectorAVX2 then
+    begin
+      // The common hardware path must also agree with denormal-input and
+      // flush-to-zero host modes: PS2 operands are sanitized explicitly.
+      SetRoundMode(rmTruncate);
+      var Saved := GetMXCSR;
+      try
+        SetMXCSR(Saved or $8040);
+        Writeln('rounding=truncate FTZ/DAZ enabled');
+        Check;
+        Directed;
+      finally
+        SetMXCSR(Saved);
+      end;
+    end;
     SetRoundMode(rmTruncate);
     Time;
   except

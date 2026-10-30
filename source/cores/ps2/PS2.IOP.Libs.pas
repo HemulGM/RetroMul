@@ -1371,18 +1371,17 @@ begin
     24:
       begin
         var P := K.Arg(0);
-        var T := Now;
-        var Y, Mo, D, H, Mi, S, Ms: Word;
-        DecodeDate(T, Y, Mo, D);
-        DecodeTime(T, H, Mi, S, Ms);
+        // sceCdReadClock: the same emulated clock as the EE's CDVD RPC and
+        // memory cards, not host time (runs and snapshots must repeat).
+        var T := PS2ClockAt(K.EETime);
         K.W8(P, 0);
-        K.W8(P + 1, BCD(S));
-        K.W8(P + 2, BCD(Mi));
-        K.W8(P + 3, BCD(H));
+        K.W8(P + 1, PS2BCD(T.Second));
+        K.W8(P + 2, PS2BCD(T.Minute));
+        K.W8(P + 3, PS2BCD(T.Hour));
         K.W8(P + 4, 0);
-        K.W8(P + 5, BCD(D));
-        K.W8(P + 6, BCD(Mo));
-        K.W8(P + 7, BCD(Y mod 100));
+        K.W8(P + 5, PS2BCD(T.Day));
+        K.W8(P + 6, PS2BCD(T.Month));
+        K.W8(P + 7, PS2BCD(T.Year mod 100));
       end;
     28:
       if Busy then

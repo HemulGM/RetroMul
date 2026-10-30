@@ -67,7 +67,16 @@ coverage/busy counters still include them, so emulated GS timing is unchanged.
 - Game IOP modules load from the disc or from EE buffers, link against the
   high-level system libraries and run their threads, interrupt handlers and
   RPC servers on the emulated IOP.
-- Snapshots cover the EE, GS, IOP and memory cards.
+- Snapshots cover the EE, GS, IOP and memory cards. Their header records
+  `PS2SnapshotVersion`; snapshots from another format or disc are rejected with
+  a message naming the cause, and the running console is left unchanged.
+- The console clock (CDVD RPC, IOP `sceCdReadClock` and memory card times)
+  starts at 2004-01-01 12:00:00 and advances with emulated time only. Runs
+  and snapshots therefore repeat regardless of the host clock.
+
+`tests/cores/ps2/system/build.ps1` checks the clock calendar and every clock
+consumer, exact snapshot round-trips, the old-format and wrong-disc errors,
+and the recorded field layout. A layout change must increase the version.
 
 ## GS display and transfer checks
 

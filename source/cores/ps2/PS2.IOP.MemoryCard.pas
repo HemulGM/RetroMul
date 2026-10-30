@@ -279,11 +279,9 @@ end;
 
 function PS2CardTime(Cycles: Int64): UInt64;
 begin
-  var T := IncSecond(EncodeDateTime(2004, 1, 1, 12, 0, 0, 0), Cycles div PS2EEClock);
-  var Y, Mo, D, H, Mi, S, Ms: Word;
-  DecodeDateTime(T, Y, Mo, D, H, Mi, S, Ms);
-  Result := (UInt64(S) shl 8) or (UInt64(Mi) shl 16) or (UInt64(H) shl 24) or (UInt64(D) shl 32) or
-    (UInt64(Mo) shl 40) or (UInt64(Y) shl 48);
+  var T := PS2ClockAt(Cycles);
+  Result := (UInt64(T.Second) shl 8) or (UInt64(T.Minute) shl 16) or (UInt64(T.Hour) shl 24) or
+    (UInt64(T.Day) shl 32) or (UInt64(T.Month) shl 40) or (UInt64(T.Year) shl 48);
 end;
 
 const

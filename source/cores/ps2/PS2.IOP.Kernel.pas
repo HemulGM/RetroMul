@@ -334,6 +334,8 @@ type
     function TakeRequest(QD: Cardinal): Cardinal;
     procedure CopyToEE(Src, Dest: Cardinal; Size: Integer);
     procedure SerializeState(State: TStateArchive);
+    // EE cycles since power-on (the scheduler's clock).
+    function EETime: Int64; inline;
   end;
 
 function IOPTrapWord(Kind: Cardinal): Cardinal;
@@ -354,6 +356,11 @@ begin
 end;
 
 { TPS2IOPKernel }
+
+function TPS2IOPKernel.EETime: Int64;
+begin
+  Result := FScheduler.Now;
+end;
 
 constructor TPS2IOPKernel.Create(Scheduler: TPS2Scheduler; ASIF: TPS2SIF; AAllocator: TPS2IOPAllocator;
   AIOMan: TPS2IOMan; ADiscFS: TPS2DiscFileSystem; AEERAM, AIOPRAM: PByte);

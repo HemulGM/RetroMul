@@ -1,4 +1,4 @@
-unit RM.Platforms.PS2;
+﻿unit RM.Platforms.PS2;
 
 interface
 
@@ -22,7 +22,7 @@ type
 implementation
 
 uses System.SysUtils, Core.Emulation, Core.Platforms, Core.PlatformServices,
-  Core.Snapshots, Core.DVD.Image, Core.Platforms.PS2.Adapter, Core.Platforms.PS1.Adapter,
+  Core.Snapshots, Core.DVD.Image, PS2.Console, Core.Platforms.PS2.Adapter, Core.Platforms.PS1.Adapter,
   RM.Platforms.PS2.Settings, RM.Platforms.PS2.Input, RM.Platforms.PS2.Icons,
   RM.Platforms.PS1.Input, RM.Platforms.PS1.Devices, RM.Platforms.PS1.Help, RM.Platforms.PS1.Gamepads,
   RM.Settings.Platform, RM.Settings.Catalog, RM.Settings.Devices, RM.Settings.Callouts,
@@ -78,7 +78,7 @@ begin
   // Before PSP's generic MIPS ELF route; the PS2 probe checks RAM entry bounds.
   Registration.Add(TCoreLoadStage.Source, 5, Source);
   RegisterEmulationCore(Registration);
-  RegisterSnapshotPolicy('PS2', TSnapshotPolicy.Create(3));
+  RegisterSnapshotPolicy(ROM_CORE_ID_PS2, TPS2Console.SnapshotPolicy);
   var Service := Default(TPlatformServices);
   Service.LibraryFeatures := [TLibraryFeature.CueTracks];
   Service.BackgroundExtensions := ['.iso', '.chd', '.cue', '.mds'];

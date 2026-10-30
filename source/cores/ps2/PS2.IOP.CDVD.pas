@@ -81,11 +81,6 @@ const
 
 implementation
 
-function ToBCD(V: Int64): Byte;
-begin
-  Result := Byte((((V div 10) mod 10) shl 4) or (V mod 10));
-end;
-
 { TPS2DiscFileSystem }
 
 constructor TPS2DiscFileSystem.Create(Image: TDVDImage; const HostRoot: string; Region: TPS2Region);
@@ -357,17 +352,18 @@ begin
     $01:
       begin
         // ReadClock: status, second, minute, hour, -, day, month, year
-        // (BCD): 2004-01-01 12:00:00 plus the emulated time, so that games
-        // waiting for the clock to move see it move.
-        var Secs: Int64 := 12 * 3600;
+        // (BCD) of the emulated console clock, so that games waiting for it
+        // see it move and every run sees the same times.
+        var Cycles: Int64 := 0;
         if Clock <> nil then
-          Inc(Secs, Clock^ div PS2EEClock);
-        Result[5] := ToBCD(Secs mod 60);
-        Result[6] := ToBCD((Secs div 60) mod 60);
-        Result[7] := ToBCD((Secs div 3600) mod 24);
-        Result[9] := ToBCD(1 + (Secs div 86400) mod 31);
-        Result[10] := $01;
-        Result[11] := $04;
+          Cycles := Clock^;
+        var T := PS2ClockAt(Cycles);
+        Result[5] := PS2BCD(T.Second);
+        Result[6] := PS2BCD(T.Minute);
+        Result[7] := PS2BCD(T.Hour);
+        Result[9] := PS2BCD(T.Day);
+        Result[10] := PS2BCD(T.Month);
+        Result[11] := PS2BCD(T.Year mod 100);
       end;
     $03:
       // GetDiskType.

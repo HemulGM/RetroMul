@@ -54,6 +54,10 @@ type
   TPS2RegIndex = 0..32;
   TPS2Field = 0..31;
 
+  TPS2ClockTime = record
+    Year, Month, Day, Hour, Minute, Second: Word;
+  end;
+
 function Add32(A, B: Cardinal): Cardinal; inline;
 function Sub32(A, B: Cardinal): Cardinal; inline;
 function Add64(A, B: UInt64): UInt64; inline;
@@ -63,6 +67,10 @@ function SX16(Value: UInt64): UInt64; inline;
 function SX32(Value: UInt64): UInt64; inline;
 function SX16To32(Value: Cardinal): Cardinal; inline;
 function SignedLess(A, B: UInt64): Boolean; inline;
+// The console's real-time clock EE cycles after power-on: 2004-01-01
+// 12:00:00 plus emulated time. Never host time, so runs and snapshots repeat.
+function PS2ClockAt(Cycles: Int64): TPS2ClockTime;
+function PS2BCD(Value: Integer): Byte; inline;
 
 implementation
 
@@ -131,6 +139,25 @@ end;
 function SignedLess(A, B: UInt64): Boolean;
 begin
   Result := Int64(A) < Int64(B);
+end;
+
+function PS2ClockAt(Cycles: Int64): TPS2ClockTime;
+begin
+  if Cycles < 0 then
+    Cycles := 0;
+  // Integer days and seconds: fractional TDateTime arithmetic can decode
+  // an exact second as the previous one.
+  var Secs := 12 * 3600 + Cycles div PS2EEClock;
+  var Day := Secs mod 86400;
+  DecodeDate(Trunc(EncodeDate(2004, 1, 1)) + Secs div 86400, Result.Year, Result.Month, Result.Day);
+  Result.Hour := Word(Day div 3600);
+  Result.Minute := Word((Day div 60) mod 60);
+  Result.Second := Word(Day mod 60);
+end;
+
+function PS2BCD(Value: Integer): Byte;
+begin
+  Result := Byte((((Value div 10) mod 10) shl 4) or (Value mod 10));
 end;
 
 end.

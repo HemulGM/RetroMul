@@ -11,6 +11,11 @@ uses
   System.SysUtils, System.Classes, System.IOUtils, System.Generics.Collections, Core.Snapshots, Core.DVD.Image, PS2.Types, PS2.Scheduler, PS2.EE.CPU,
   PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.IOP.Pad, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.VU, PS2.VIF, PS2.IPU;
 
+const
+  // Serialized layout of TPS2Console.SerializeState. Increase it with every
+  // layout change; tests/cores/ps2/system checks the recorded field layout.
+  PS2SnapshotVersion = 3;
+
 type
   TPS2ConsoleConfig = record
     PAL: Boolean;
@@ -102,6 +107,8 @@ type
     property FrameCount: Int64 read FFrameCount;
     property Halted: Boolean read GetHalted;
     property IdleCycles: Int64 read FIdleCycles;
+    // Snapshot header policy: version and the errors users see.
+    class function SnapshotPolicy: TSnapshotPolicy; static;
   end;
 
 implementation
@@ -675,6 +682,16 @@ procedure TPS2Console.SetCDVDLog(Log: TStrings);
 begin
   for var S in FCDVD do
     S.Log := Log;
+end;
+
+class function TPS2Console.SnapshotPolicy: TSnapshotPolicy;
+begin
+  // 32 MiB of EE RAM plus GS, IOP, SPU2 memory and both memory cards.
+  Result := TSnapshotPolicy.Create(PS2SnapshotVersion, 128 * 1024 * 1024);
+  Result.VersionError := 'This PS2 snapshot uses state format %d, but this build uses format %d. ' +
+    'Load it with the build that created it, or continue from an in-game save.';
+  Result.IdentityError := 'This PS2 snapshot belongs to a different disc or program. ' +
+    'Load the disc or program used to save it.';
 end;
 
 procedure TPS2Console.SerializeState(State: TStateArchive);

@@ -1,4 +1,4 @@
-/build/
+﻿/build/
 /releases/
 /accuracy-investigation/
 *.dcu
@@ -39,6 +39,7 @@ __recovery/
 !/tests/cores/ps2/jit/
 !/tests/cores/ps2/gpu/
 !/tests/cores/ps2/gsdata/
+!/tests/cores/ps2/system/
 !/tests/cores/ps2/vufloat/
 /tests/cores/n64/*
 !/tests/cores/n64/hardware/

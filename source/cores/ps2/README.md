@@ -69,6 +69,15 @@ coverage/busy counters still include them, so emulated GS timing is unchanged.
   RPC servers on the emulated IOP.
 - Snapshots cover the EE, GS, IOP and memory cards.
 
+## GS display and transfer checks
+
+Display scanout publishes queued CPU/GPU writes once per read circuit, not
+for every pixel. `tests/cores/ps2/gsdata/build.ps1` checks display formats,
+both circuits, offsets/wrap, zero stride and queued drawing. It also compares
+IMAGE uploads with scalar HWREG transfers over all storage formats, including
+partial bitstreams, row/VRAM wrapping, ring reuse and serialized state.
+The tests run without Vulkan; `-Checked` enables checked core code.
+
 ## Experimental VU1 recompiler
 
 `Emulation/Execution=jit` selects the VU1 block recompiler; `interpreter`

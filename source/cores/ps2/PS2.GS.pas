@@ -264,11 +264,15 @@ begin
   if Interlaced and ((SMODE2 and 3) = 3) then
     H := H div 2;
   SetLength(Pixels, W * H);
+  if H = 0 then Exit;
+  // Acquiring VRAM publishes queued CPU/GPU writes. No new GS commands are
+  // issued while this circuit is scanned, so do that once, not per pixel.
+  var Memory := FRaster.Memory;
   for var Y := 0 to H - 1 do
   begin
     var SY := DBY + Y;
     for var X := 0 to W - 1 do
-      Pixels[Y * W + X] := FRaster.Memory.ReadPixel(PSM, FBP, FBW, DBX + X, SY);
+      Pixels[Y * W + X] := Memory.ReadPixel(PSM, FBP, FBW, DBX + X, SY);
   end;
 end;
 

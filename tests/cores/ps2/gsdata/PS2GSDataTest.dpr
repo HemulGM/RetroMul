@@ -85,6 +85,147 @@ begin
   end;
 end;
 
+function ReferenceFrame(GS: TPS2GS): TArray<Cardinal>;
+type
+  TCircuit = record
+    FB: UInt64;
+    W, H, X, Y, Mag: Integer;
+  end;
+var
+  C: array[0..1] of TCircuit;
+
+  function Pixel(Memory: TPS2GSMemory; Index, X, Y: Integer): Cardinal;
+  begin
+    var FB := C[Index].FB;
+    Result := Memory.ReadPixel(Integer((FB shr 15) and $1F), Cardinal(FB and $1FF) * 2048,
+      Cardinal((FB shr 9) and $3F) * 64, Integer((FB shr 32) and $7FF) + X,
+      Integer((FB shr 43) and $7FF) + Y);
+  end;
+
+begin
+  var En1 := GS.PMODE and 1 <> 0;
+  var En2 := GS.PMODE and 2 <> 0;
+  if not En1 and not En2 then
+  begin
+    SetLength(Result, Length(GS.Frame));
+    Exit;
+  end;
+  for var I := 0 to 1 do
+  begin
+    C[I] := Default(TCircuit);
+    C[I].Mag := 1;
+    if GS.PMODE and (UInt64(1) shl I) = 0 then Continue;
+    var Display := GS.DISPLAY1;
+    C[I].FB := GS.DISPFB1;
+    if I = 1 then begin Display := GS.DISPLAY2; C[I].FB := GS.DISPFB2; end;
+    C[I].Mag := Integer((Display shr 23) and 15) + 1;
+    C[I].W := EnsureRange((Integer((Display shr 32) and $FFF) + 1) div C[I].Mag, 1, 1024);
+    C[I].H := EnsureRange((Integer((Display shr 44) and $7FF) + 1) div
+      (Integer((Display shr 27) and 3) + 1), 1, 1024);
+    if GS.Interlaced and (GS.SMODE2 and 3 = 3) then C[I].H := C[I].H div 2;
+    C[I].X := Integer(Display and $FFF) div C[I].Mag;
+    C[I].Y := Integer((Display shr 12) and $7FF);
+  end;
+  var W := Max(C[0].W, C[1].W);
+  var H := Max(C[0].H, C[1].H);
+  if (GS.FrameWidth <> W) or (GS.FrameHeight <> H) then raise Exception.Create('Composition dimensions');
+  if En1 and En2 then
+  begin
+    var X := Min(C[0].X, C[1].X);
+    var Y := Min(C[0].Y, C[1].Y);
+    for var I := 0 to 1 do begin Dec(C[I].X, X); Dec(C[I].Y, Y); end;
+  end
+  else
+    for var I := 0 to 1 do begin C[I].X := 0; C[I].Y := 0; end;
+  SetLength(Result, W * H);
+  var Memory := GS.Raster.Memory;
+  var BG := Cardinal(GS.BGCOLOR and $FFFFFF);
+  BG := $FF000000 or ((BG and $FF) shl 16) or (BG and $FF00) or ((BG shr 16) and $FF);
+  for var Y := 0 to H - 1 do
+    for var X := 0 to W - 1 do
+    begin
+      var Back := BG;
+      var SX := X - C[1].X;
+      var SY := Y - C[1].Y;
+      if En2 and (GS.PMODE and $80 = 0) and (SX >= 0) and (SY >= 0) and
+        (SX < C[1].W) and (SY < C[1].H) then Back := Pixel(Memory, 1, SX, SY);
+      var Color := Back;
+      SX := X - C[0].X;
+      SY := Y - C[0].Y;
+      if En1 and (SX >= 0) and (SY >= 0) and (SX < C[0].W) and (SY < C[0].H) then
+      begin
+        var Front := Pixel(Memory, 0, SX, SY);
+        var A := Integer((GS.PMODE shr 8) and $FF);
+        if GS.PMODE and $20 = 0 then A := Integer(Front shr 24);
+        if A >= 128 then Color := Front
+        else
+        begin
+          Color := 0;
+          for var Channel := 0 to 2 do
+          begin
+            var Shift := Channel * 8;
+            var V := (Integer((Front shr Shift) and $FF) * A +
+              Integer((Back shr Shift) and $FF) * (128 - A)) shr 7;
+            Color := Color or (Cardinal(V) shl Shift);
+          end;
+        end;
+      end;
+      Result[Y * W + X] := $FF000000 or ((Color and $FF) shl 16) or
+        (Color and $FF00) or ((Color shr 16) and $FF);
+    end;
+end;
+
+procedure CheckComposition;
+const
+  Colors: array[0..4] of Integer = (PSMCT32, PSMCT24, PSMCT16, PSMCT16S, $1F);
+  Alphas: array[0..5] of Integer = (0, 1, 127, 128, 129, 255);
+
+  function Display(W, H, X, Y, MH, MV: Integer): UInt64;
+  begin
+    Result := UInt64(X) or (UInt64(Y) shl 12) or (UInt64(MH - 1) shl 23) or
+      (UInt64(MV - 1) shl 27) or (UInt64(W * MH - 1) shl 32) or (UInt64(H * MV - 1) shl 44);
+  end;
+
+begin
+  var GS := TPS2GS.Create;
+  try
+    GS.Raster.Threads := 4;
+    var Memory := GS.Raster.Memory;
+    for var N := 0 to 511 do
+    begin
+      GS.Reset;
+      var P := PCardinal(Memory.Data);
+      for var I := 0 to PS2GSMemorySize div 4 - 1 do P[I] := Cardinal(I) * 1664525 + Cardinal(N) * 1013904223;
+      QueueDraw(GS.Raster);
+      GS.PMODE := UInt64(N and 3) or (UInt64((N shr 2) and 1) shl 5) or
+        (UInt64((N shr 3) and 1) shl 7) or (UInt64(Alphas[(N shr 4) mod Length(Alphas)]) shl 8);
+      GS.BGCOLOR := $2468AC;
+      GS.Interlaced := N and 64 <> 0;
+      GS.SMODE2 := UInt64(N shr 7) and 3;
+      var W1 := 39 + (N and 31);
+      var H1 := 17 + ((N shr 3) and 15);
+      var W2 := W1;
+      var H2 := H1;
+      if N and 32 <> 0 then begin Inc(W2, 7); Dec(H2, 5); end;
+      GS.DISPLAY1 := Display(W1, H1, 36 + N mod 5, 29, 1 + N mod 3, 1 + N mod 2);
+      GS.DISPLAY2 := Display(W2, H2, 31 + N mod 7, 27 + N mod 5, 1 + N mod 4, 1 + N mod 3);
+      GS.DISPFB1 := UInt64((N * 508) and $1FF) or (UInt64(N mod 5) shl 9) or
+        (UInt64(Colors[N mod Length(Colors)]) shl 15) or
+        (UInt64((N * 681) and $7FF) shl 32) or (UInt64((N * 677) and $7FF) shl 43);
+      GS.DISPFB2 := GS.DISPFB1;
+      if N and 16 <> 0 then GS.DISPFB2 := GS.DISPFB1 xor 3 xor (UInt64(1) shl 43);
+      GS.BuildFrame;
+      var Expected := ReferenceFrame(GS);
+      if (Length(Expected) <> Length(GS.Frame)) or
+        ((Length(Expected) > 0) and not CompareMem(@Expected[0], @GS.Frame[0], Length(Expected) * 4)) then
+        raise Exception.CreateFmt('Dual-circuit composition mismatch case=%d', [N]);
+    end;
+    Writeln('512 scalar dual-circuit comparisons: shared/distinct surfaces, offsets, magnification, alpha and background: OK');
+  finally
+    GS.Free;
+  end;
+end;
+
 procedure CheckRows;
 const
   Xs: array[0..5] of Cardinal = (0, 1, 15, 127, 128, 2047);
@@ -202,6 +343,7 @@ end;
 begin
   try
     CheckDisplay;
+    CheckComposition;
     CheckRows;
     CheckTransfers;
   except

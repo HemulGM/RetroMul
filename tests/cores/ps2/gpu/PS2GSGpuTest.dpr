@@ -137,6 +137,64 @@ begin
   finally B.Free; A.Free; end;
 end;
 
+procedure CheckCoverageCounter;
+var
+  V: array[0..2] of TPS2GSVertex;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    for var R in TArray<TPS2GSRaster>.Create(A, B) do
+    begin
+      R.WriteRegister(GSRegFRAME_1, UInt64(1) shl 16);
+      R.WriteRegister(GSRegZBUF_1, UInt64(1) shl 32);
+      R.WriteRegister(GSRegXYOFFSET_1, $8000 or (UInt64($8000) shl 32));
+      R.WriteRegister(GSRegTEST_1, $10000); // NEVER depth: count coverage, write nothing
+      R.WriteRegister(GSRegPRIM, 3);
+    end;
+    RandSeed := 61927;
+    for var Threads in TArray<Integer>.Create(2, 4, 6) do
+    begin
+      B.Threads := Threads;
+      for var N := 0 to 511 do
+      begin
+        if N and 1 = 0 then SetRoundMode(rmNearest) else SetRoundMode(rmTruncate);
+        var X0 := Random(32);
+        var X1 := X0 + Random(33);
+        var Y0 := Random(32);
+        var Y1 := Y0 + Random(33);
+        var Scissor := UInt64(X0) or (UInt64(X1) shl 16) or (UInt64(Y0) shl 32) or (UInt64(Y1) shl 48);
+        A.WriteRegister(GSRegSCISSOR_1, Scissor);
+        B.WriteRegister(GSRegSCISSOR_1, Scissor);
+        for var K := 0 to 2 do
+        begin
+          V[K] := Default(TPS2GSVertex);
+          V[K].X := $8000 + Random(1536) - 256;
+          V[K].Y := $8000 + Random(1536) - 256;
+          V[K].Z := Cardinal(Random(MaxInt));
+        end;
+        if N mod 8 = 0 then
+        begin
+          V[1].X := V[0].X + 1; // subpixel-thin, both windings and clipped spans
+          V[2].X := V[0].X + 2;
+        end;
+        if N mod 16 = 0 then V[2] := V[0]; // degenerate
+        for var K := 0 to 2 do Vertex(A, V[K]);
+        for var K := 0 to 2 do Vertex(B, V[K]);
+        if (A.PixelsDrawn <> B.PixelsDrawn) or (A.Primitives <> B.Primitives) then
+          raise Exception.CreateFmt('Coverage mismatch threads=%d triangle=%d expected=%d actual=%d',
+            [Threads, N, A.PixelsDrawn, B.PixelsDrawn]);
+      end;
+    end;
+    B.Sync;
+    if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) then
+      raise Exception.Create('NEVER-depth coverage test wrote VRAM');
+    Writeln('1536 clipped/subpixel coverage cases, 2/4/6 bands: exact counters OK');
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
 procedure CheckTriangles;
 const
   Registers: array[0..13] of Integer = (GSRegFRAME_1, GSRegZBUF_1, GSRegTEST_1, GSRegALPHA_1,
@@ -438,6 +496,7 @@ begin
       B.Free;
       A.Free;
     end;
+    CheckCoverageCounter;
     CheckTriangles;
     CheckTextureFormats;
     CheckClutSnapshots;

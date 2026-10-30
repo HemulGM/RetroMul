@@ -53,6 +53,9 @@ thread only waits for the bands when it reads GS memory itself (local-to-host
 transfers, the display, snapshots). The memory is the same either way;
 `PS2.GS.RaceCheck` (define `GS_RACECHECK`) reports GS memory words two band
 threads touch in commands no barrier orders.
+The timing counter counts exact covered row spans without shading a second
+copy of every pixel. Software pixels rejected by depth skip texture reads;
+coverage/busy counters still include them, so emulated GS timing is unchanged.
 
 ## What works
 

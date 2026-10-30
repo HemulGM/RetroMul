@@ -1538,6 +1538,23 @@ begin
     FOwner.FAccelerator.Fragment(X, Y, Z, R, G, B, A, F, U, V, FLod);
     Exit;
   end;
+  // A failed depth test cannot write either colour or depth, regardless
+  // of the texture/alpha test. Reject it before expensive texture reads.
+  // Coverage counters above still include every scissored pixel (GS timing).
+  if Z > FD.ZMax then
+    Z := FD.ZMax;
+  var ZA: Cardinal := 0;
+  if FD.ZTST <> 1 then
+  begin
+    if FD.ZTST = 0 then
+      Exit;
+    ZA := FMemory.Locate(Integer(FD.ZPSM), FD.ZBP, FD.FBW, Cardinal(X), Cardinal(Y));
+    var Old := FMemory.ReadAt(Integer(FD.ZPSM), ZA);
+    if (FD.ZTST = 2) and (Z < Old) then
+      Exit;
+    if (FD.ZTST = 3) and (Z <= Old) then
+      Exit;
+  end;
   if FD.TME then
   begin
     var T := Texel(U, V);
@@ -1616,22 +1633,9 @@ begin
         end;
       end;
   end;
-  // Depth.
-  if Z > FD.ZMax then
-    Z := FD.ZMax;
-  var ZA: Cardinal := 0;
-  if FD.ZTST <> 1 then
-  begin
-    if FD.ZTST = 0 then
-      Exit;
-    ZA := FMemory.Locate(Integer(FD.ZPSM), FD.ZBP, FD.FBW, Cardinal(X), Cardinal(Y));
-    var Old := FMemory.ReadAt(Integer(FD.ZPSM), ZA);
-    if (FD.ZTST = 2) and (Z < Old) then
-      Exit;
-    if (FD.ZTST = 3) and (Z <= Old) then
-      Exit;
-  end
-  else if WriteZ then
+  // With an always-passing test, locate depth only when alpha permits a
+  // write; a rejecting alpha test may have disabled it.
+  if (FD.ZTST = 1) and WriteZ then
     ZA := FMemory.Locate(Integer(FD.ZPSM), FD.ZBP, FD.FBW, Cardinal(X), Cardinal(Y));
   // Destination colour.
   var Dst: Cardinal := 0;
@@ -1840,7 +1844,7 @@ end;
 
 procedure TPS2GSDrawer.DrawSprite(const V0, V1: TPS2GSVertex);
 begin
-  if FD.UseLod then
+  if not FCountOnly and FD.UseLod then
     if FD.FST then
       SetLod(1)
     else
@@ -1952,7 +1956,7 @@ end;
 
 procedure TPS2GSDrawer.DrawTriangle(const V0, V1, V2: TPS2GSVertex);
 begin
-  if FD.UseLod then
+  if not FCountOnly and FD.UseLod then
     if FD.FST then
       SetLod(1)
     else
@@ -1984,7 +1988,6 @@ begin
   var Sign: Int64 := 1;
   if Area < 0 then
     Sign := -1;
-  var InvArea := 1.0 / Area;
   // Edge functions E_i (opposite vertex i), positive inside (times Sign).
   // Top-left rule: an edge that is not top or left needs E > 0.
   var A0 := (Y1 - Y2) * Sign;
@@ -1999,6 +2002,28 @@ begin
   if not ((A0 > 0) or ((A0 = 0) and (B0 > 0))) then Bias0 := -1;
   if not ((A1 > 0) or ((A1 = 0) and (B1 > 0))) then Bias1 := -1;
   if not ((A2 > 0) or ((A2 = 0) and (B2 > 0))) then Bias2 := -1;
+  if FCountOnly then
+  begin
+    // Count the exact scissored coverage, not a second pixel/render walk.
+    // No LOD, attribute interpolation, depth or texture work is needed for
+    // the timing counter on the emulation thread.
+    var PX := Int64(MinX) * 16;
+    for var Y := MinY to MaxY do
+    begin
+      if not InBand(Y) then Continue;
+      var PY := Int64(Y) * 16;
+      var E0 := A0 * (PX - X1) + B0 * (PY - Y1) + Bias0;
+      var E1 := A1 * (PX - X2) + B1 * (PY - Y2) + Bias1;
+      var E2 := A2 * (PX - X0) + B2 * (PY - Y0) + Bias2;
+      var KL: Int64 := 0;
+      var KR: Int64 := MaxX - MinX;
+      if EdgeSpan(E0, A0 * 16, KL, KR) and EdgeSpan(E1, A1 * 16, KL, KR) and
+        EdgeSpan(E2, A2 * 16, KL, KR) and (KL <= KR) then
+        Inc(FPixels, KR - KL + 1);
+    end;
+    Exit;
+  end;
+  var InvArea := 1.0 / Area;
   // Attribute values per vertex.
   var R0 := V0.R; var G0 := V0.G; var BB0 := V0.B; var AA0 := V0.A;
   var R1 := V1.R; var G1 := V1.G; var BB1 := V1.B; var AA1 := V1.A;
@@ -2045,25 +2070,6 @@ begin
     Inc(E1, A1 * 16 * KL);
     Inc(E2, A2 * 16 * KL);
     var Started := False;
-    if FCountOnly then
-    begin
-      // The same walk as below, counting what it would draw.
-      for var X := MinX + Integer(KL) to MinX + Integer(KR) do
-      begin
-        if (E0 + Bias0 >= 0) and (E1 + Bias1 >= 0) and (E2 + Bias2 >= 0) then
-        begin
-          Started := True;
-          if (X >= FD.SX0) and (X <= FD.SX1) and (Y >= FD.SY0) and (Y <= FD.SY1) then
-            Inc(FPixels);
-        end
-        else if Started then
-          Break;
-        Inc(E0, A0 * 16);
-        Inc(E1, A1 * 16);
-        Inc(E2, A2 * 16);
-      end;
-      Continue;
-    end;
     for var X := MinX + Integer(KL) to MinX + Integer(KR) do
     begin
       if (E0 + Bias0 >= 0) and (E1 + Bias1 >= 0) and (E2 + Bias2 >= 0) then

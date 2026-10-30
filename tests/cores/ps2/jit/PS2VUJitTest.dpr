@@ -373,6 +373,86 @@ begin
   end;
 end;
 
+procedure CheckConversionClipPipeline(Model: Boolean);
+const
+  Edges: array[0..15] of Cardinal = (0, $80000000, 1, $807FFFFF,
+    $00800000, $3F800000, $BF800000, $4EFFFFFF, $4F000000, $CF000000,
+    $7F800000, $7FFFFFFF, $FF800000, $FFFFFFFF, $01000001, $80000001);
+var
+  Code0, Code1, Data0, Data1: TMemory;
+  VF0, VF1: TPS2VFArray;
+  VI0, VI1: TPS2VIArray;
+begin
+  FillChar(Code0, SizeOf(Code0), 0); FillChar(Code1, SizeOf(Code1), 0);
+  FillChar(Data0, SizeOf(Data0), 0); FillChar(Data1, SizeOf(Data1), 0);
+  FillChar(VF0, SizeOf(VF0), 0); FillChar(VF1, SizeOf(VF1), 0);
+  FillChar(VI0, SizeOf(VI0), 0); FillChar(VI1, SizeOf(VI1), 0);
+  var A := TPS2VUCore.Create(1, @VF0, @VI0, @Code0, @Data0, SizeOf(Code0), SizeOf(Data0));
+  var B := TPS2VUCore.Create(1, @VF1, @VI1, @Code1, @Data1, SizeOf(Code1), SizeOf(Data1));
+  var Saved := GetRoundMode;
+  try
+    if Model then B.UseJitModel else B.UseJit := True;
+    for var Mode := Low(TRoundingMode) to High(TRoundingMode) do
+    begin
+      SetRoundMode(Mode);
+      for var ProgramIndex := 0 to 15 do
+      begin
+        A.Reset; B.Reset;
+        for var K := 0 to 15 do
+        begin
+          var Special := Cardinal($10 + ((ProgramIndex + K) and 7));
+          if K mod 4 = 0 then Special := $1F;
+          var Fs := Cardinal(1 + K mod 3);
+          var Ft := Cardinal((ProgramIndex + K) mod 5); // Includes vf0 and source/target aliasing.
+          var Mask := Cardinal((ProgramIndex + K) and 15);
+          Code0[K * 2 + 1] := $3C or ((Special shr 2) shl 6) or (Special and 3) or
+            (Fs shl 11) or (Ft shl 16) or (Mask shl 21);
+          Code0[K * 2] := $10020000;
+          if K mod 4 = 1 then Code0[K * 2] := (Cardinal($1C) shl 25) or (3 shl 16); // FCGET.
+          if K mod 4 = 2 then Code0[K * 2] := (Ft shl 16) or (Mask shl 21); // LQ collides with upper destination.
+          if K mod 8 = 7 then Code0[K * 2] := (Cardinal($11) shl 25) or $543210; // FCSET.
+        end;
+        Code0[29] := Code0[29] or $40000000;
+        Code1 := Code0;
+        for var RepeatIndex := 0 to 39 do
+        begin
+          for var R := 1 to 31 do
+            for var K := 0 to 3 do VF0[R].UW[K] := Edges[(R + K + RepeatIndex) mod Length(Edges)];
+          VF1 := VF0;
+          for var K := 0 to High(Data0) do Data0[K] := Edges[(K + RepeatIndex) mod Length(Edges)];
+          Data1 := Data0;
+          A.Start(0); B.Start(0);
+          A.S.Clip := $123456; A.S.ClipBase := $ABCDEF;
+          A.S.ClipQCount := RepeatIndex mod 5;
+          for var K := 0 to 3 do
+          begin
+            A.S.ClipQValue[K] := Cardinal($100000 + RepeatIndex * 16 + K);
+            A.S.ClipQReady[K] := A.S.Cycles + K + 1;
+            if RepeatIndex and 1 <> 0 then Inc(A.S.ClipQReady[K], 50);
+          end;
+          B.S := A.S;
+          while A.S.Running do
+          begin
+            var Budget := 1 + RepeatIndex mod 7;
+            if RepeatIndex mod 3 = 0 then Budget := 256;
+            A.Run(Budget); B.Run(Budget);
+            if not CompareMem(@A.S, @B.S, SizeOf(A.S)) or not CompareMem(@VF0, @VF1, SizeOf(VF0)) or
+              not CompareMem(@VI0, @VI1, SizeOf(VI0)) or
+              not CompareMem(@A.LoopTrace, @B.LoopTrace, SizeOf(A.LoopTrace)) then
+              raise Exception.CreateFmt('Conversion/CLIP pipeline mismatch model=%s mode=%d program=%d repeat=%d',
+                [BoolToStr(Model, True), Ord(Mode), ProgramIndex, RepeatIndex]);
+          end;
+        end;
+      end;
+    end;
+    if B.JitRuns = 0 then raise Exception.Create('Conversion/CLIP test did not enter generated code');
+    Writeln('model=', Model, ' conversion masks/aliases, CLIP queue/tails and FCGET/FCSET, four rounding modes: OK');
+  finally
+    SetRoundMode(Saved);
+    A.Free; B.Free;
+  end;
+end;
+
 begin
   try
     SetExceptionMask(exAllArithmeticExceptions);
@@ -383,6 +463,8 @@ begin
     CheckVersions(True);
     CheckScheduled(False);
     CheckScheduled(True);
+    CheckConversionClipPipeline(False);
+    CheckConversionClipPipeline(True);
     SetRoundMode(rmNearest);
     Check(False);
     Check(True);

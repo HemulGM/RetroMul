@@ -10,6 +10,8 @@
 // with integer normalization for all other cases. Its SSE2 fallback uses
 // doubles (each product and guard-bit sum is exact). Other targets loop over
 // the one-field routines.
+// Fixed-point conversions use exact SSE2 on Win64; CLIP compares normalized
+// integer magnitudes. The scalar interpreter remains an independent reference.
 //
 // Four-field flags: bit K overflow and bit K + 4 underflow of field K.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
@@ -24,6 +26,13 @@ function PS2FloatMul(A, B: Cardinal; out Flags: Cardinal): Cardinal;
 // R = A * B and R = A + B for four fields.
 procedure PS2Mul4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
 procedure PS2Add4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
+// Fixed-point conversions, Shift = 0, 4, 12 or 15. ITOF follows the host
+// rounding mode just like the reference Single assignment; FTOI truncates
+// and saturates. Exponent 255 remains finite and exponent 0 reads as zero.
+procedure PS2Itof4(const A: TPS2Reg128; Shift: Integer; out R: TPS2Reg128);
+procedure PS2Ftoi4(const A: TPS2Reg128; Shift: Integer; out R: TPS2Reg128);
+// Six CLIP comparison bits for A.xyz against abs(B.w), without host floats.
+procedure PS2Clip3(const A, B: TPS2Reg128; out Bits: Cardinal);
 // Host backend selected at initialization (CPUID and OS vector-state checks).
 function PS2VectorAVX2: Boolean;
 
@@ -62,6 +71,21 @@ begin
   Result := Sign or (Cardinal(E) shl 23) or (Cardinal(Bits shr 29) and $7FFFFF);
 end;
 
+procedure PS2Clip3(const A, B: TPS2Reg128; out Bits: Cardinal);
+begin
+  var Limit := B.UW[3] and $7FFFFFFF;
+  if Limit and $7F800000 = 0 then Limit := 0;
+  var Result: Cardinal := 0;
+  for var K := 0 to 2 do
+  begin
+    var V := A.UW[K];
+    if (V and $7F800000) = 0 then Continue;
+    if (V and $7FFFFFFF) > Limit then
+      Result := Result or (Cardinal(1) shl (K * 2 + Integer(V shr 31)));
+  end;
+  Bits := Result;
+end;
+
 {$IFDEF CPUX64}
 {$IFDEF MSWINDOWS}
 {$DEFINE PS2_VU_SSE}
@@ -94,6 +118,76 @@ const
   C254: array[0..3] of Integer = (254, 254, 254, 254);
   C25: array[0..3] of Integer = (25, 25, 25, 25);
   CShift23: array[0..1] of UInt64 = (23, 23);
+  CIntMin: array[0..1] of Double = (-2147483648.0, -2147483648.0);
+  CIntMax: array[0..1] of Double = (2147483647.0, 2147483647.0);
+
+procedure PS2Itof4(const A: TPS2Reg128; Shift: Integer; out R: TPS2Reg128);
+asm
+  .NOFRAME
+  // Integer -> Single rounding commutes with this exact power-of-two scale:
+  // all supported results remain normal, including the smallest nonzero one.
+  movdqu xmm0, [rcx]
+  cvtdq2ps xmm0, xmm0
+  mov eax, 127
+  sub eax, edx
+  shl eax, 23
+  movd xmm1, eax
+  pshufd xmm1, xmm1, 0
+  mulps xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure PS2Ftoi4(const A: TPS2Reg128; Shift: Integer; out R: TPS2Reg128);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqa xmm1, xmm0
+  movdqu xmm4, [rip + CAbsMask]
+  pand xmm0, xmm4
+  movdqu xmm4, [rip + CSignMask]
+  pand xmm1, xmm4
+  pxor xmm5, xmm5
+  movdqa xmm2, xmm0
+  punpckldq xmm2, xmm5
+  punpckhdq xmm0, xmm5
+  movdqa xmm3, xmm1
+  punpckldq xmm3, xmm5
+  punpckhdq xmm1, xmm5
+  psllq xmm2, 29
+  psllq xmm0, 29
+  psllq xmm3, 32
+  psllq xmm1, 32
+  // Reconstruct exact finite doubles, including PS2 exponent 255. Scaling
+  // changes only the exponent; no approximate host-float conversion is used.
+  mov eax, edx
+  add eax, 896
+  shl rax, 52
+  movq xmm4, rax
+  punpcklqdq xmm4, xmm4
+  paddq xmm2, xmm4
+  paddq xmm0, xmm4
+  por xmm2, xmm3
+  por xmm0, xmm1
+  movdqu xmm1, [rcx]
+  movdqu xmm4, [rip + CExpMask]
+  pand xmm1, xmm4
+  pcmpeqd xmm1, xmm5
+  movdqa xmm3, xmm1
+  punpckldq xmm3, xmm3
+  punpckhdq xmm1, xmm1
+  pandn xmm3, xmm2
+  pandn xmm1, xmm0
+  movupd xmm4, [rip + CIntMin]
+  maxpd xmm3, xmm4
+  maxpd xmm1, xmm4
+  movupd xmm4, [rip + CIntMax]
+  minpd xmm3, xmm4
+  minpd xmm1, xmm4
+  cvttpd2dq xmm3, xmm3
+  cvttpd2dq xmm1, xmm1
+  punpcklqdq xmm3, xmm1
+  movdqu [r8], xmm3
+end;
 
 procedure PS2Mul4SSE2(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
 var
@@ -748,6 +842,38 @@ asm
 end;
 
 {$ELSE}
+
+procedure PS2Itof4(const A: TPS2Reg128; Shift: Integer; out R: TPS2Reg128);
+begin
+  var Scale: Double := 1;
+  case Shift of
+    4: Scale := 1 / 16;
+    12: Scale := 1 / 4096;
+    15: Scale := 1 / 32768;
+  end;
+  for var K := 0 to 3 do
+  begin
+    var V: Single := A.SW[K] * Scale;
+    R.UW[K] := PCardinal(@V)^;
+  end;
+end;
+
+procedure PS2Ftoi4(const A: TPS2Reg128; Shift: Integer; out R: TPS2Reg128);
+begin
+  var Scale: Double := 1;
+  case Shift of
+    4: Scale := 16;
+    12: Scale := 4096;
+    15: Scale := 32768;
+  end;
+  for var K := 0 to 3 do
+  begin
+    var V := EEFloatIn(A.UW[K]) * Scale;
+    if V >= 2147483647.0 then R.UW[K] := $7FFFFFFF
+    else if V <= -2147483648.0 then R.UW[K] := $80000000
+    else R.SW[K] := Trunc(V);
+  end;
+end;
 
 procedure PS2Mul4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
 begin

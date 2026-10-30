@@ -105,6 +105,10 @@ queues, register commits, VI arithmetic, branches, memory operations and
 CLIP flag reads. Upper ADD/SUB/MUL/MADD/MSUB and cross products call the exact
 four-field PS2 SIMD routines directly; uncommon operations retain interpreter
 helpers. XGKICK still uses the shared packet reader with its original timing.
+ITOF/FTOI0/4/12/15 use packed exact conversion helpers, and CLIP uses integer
+comparisons plus the original four-cycle flag queue. Exponent-zero inputs,
+finite exponent 255, saturation, masks and host conversion rounding retain
+the scalar reference results. CLIP remains a scheduling observation boundary.
 Code is generated after 16 visits in blocks of up to 16 pairs, ending after
 branch/end delay slots. Compiled successors chain through a table within one
 native frame. The general path checks the budget, PC, both instruction words
@@ -130,6 +134,11 @@ traces, delayed flags, loop/call chaining, cache exhaustion and re-uploaded
 versions with deliberately colliding hashes. Both backends must match the
 interpreter's state, including scheduled spans with pending Q/P and poisoned
 live/unused flag queues. `-Checked` enables checked core code.
+Directed conversion/CLIP cases also cover four host rounding modes, vf0,
+overlapping upper/lower destinations, full/delayed CLIP queues and FCGET/FCSET.
+`tests/cores/ps2/vufloat/build.ps1 -ConversionsOnly` checks conversion and CLIP
+helpers against scalar arithmetic, including aliases, unaligned values and
+FTZ/DAZ; the default float suite retains the add/multiply checks too.
 
 ## Experimental Vulkan GS
 

@@ -99,6 +99,87 @@ begin
     ExitCode := 1;
 end;
 
+procedure CheckConversions;
+const
+  Shifts: array[0..3] of Integer = (0, 4, 12, 15);
+  Mantissas: array[0..5] of Cardinal = (0, 1, 3, $3FFFFF, $7FFFFE, $7FFFFF);
+var
+  A, B: TPS2Reg128;
+
+  procedure Vector;
+  var
+    ExpectedI, ExpectedF, ActualI, ActualF: TPS2Reg128;
+    Raw: array[0..63] of Byte;
+  begin
+    for var Shift in Shifts do
+    begin
+      var Scale: Double := Cardinal(1) shl Shift;
+      for var K := 0 to 3 do
+      begin
+        var F: Single := A.SW[K] * (1 / Scale);
+        ExpectedI.UW[K] := PCardinal(@F)^;
+        var D := EEFloatIn(A.UW[K]) * Scale;
+        if D >= 2147483647.0 then ExpectedF.UW[K] := $7FFFFFFF
+        else if D <= -2147483648.0 then ExpectedF.UW[K] := $80000000
+        else ExpectedF.SW[K] := Trunc(D);
+      end;
+      PS2Itof4(A, Shift, ActualI);
+      PS2Ftoi4(A, Shift, ActualF);
+      if not CompareMem(@ExpectedI, @ActualI, SizeOf(ActualI)) or
+        not CompareMem(@ExpectedF, @ActualF, SizeOf(ActualF)) then
+        raise Exception.CreateFmt('Fixed conversion mismatch shift=%d input=%.8x,%.8x,%.8x,%.8x',
+          [Shift, A.UW[0], A.UW[1], A.UW[2], A.UW[3]]);
+      if A.UW[0] and 255 = 0 then
+      begin
+        var Alias := A;
+        PS2Itof4(Alias, Shift, Alias);
+        if not CompareMem(@Alias, @ExpectedI, SizeOf(Alias)) then raise Exception.Create('ITOF alias mismatch');
+        Alias := A;
+        PS2Ftoi4(Alias, Shift, Alias);
+        if not CompareMem(@Alias, @ExpectedF, SizeOf(Alias)) then raise Exception.Create('FTOI alias mismatch');
+        Move(A, Raw[1], SizeOf(A));
+        PS2Itof4(PPS2Reg128(@Raw[1])^, Shift, PPS2Reg128(@Raw[19])^);
+        if not CompareMem(@Raw[19], @ExpectedI, SizeOf(ExpectedI)) then raise Exception.Create('ITOF unaligned mismatch');
+        PS2Ftoi4(PPS2Reg128(@Raw[1])^, Shift, PPS2Reg128(@Raw[19])^);
+        if not CompareMem(@Raw[19], @ExpectedF, SizeOf(ExpectedF)) then raise Exception.Create('FTOI unaligned mismatch');
+      end;
+    end;
+    var W := Abs(EEFloatIn(B.UW[3]));
+    var Expected: Cardinal := 0;
+    for var K := 0 to 2 do
+    begin
+      var V := EEFloatIn(A.UW[K]);
+      if V > W then Expected := Expected or (Cardinal(1) shl (K * 2));
+      if V < -W then Expected := Expected or (Cardinal(2) shl (K * 2));
+    end;
+    var Actual: Cardinal;
+    PS2Clip3(A, B, Actual);
+    if Actual <> Expected then raise Exception.Create('Integer CLIP comparison mismatch');
+  end;
+
+begin
+  for var E := 0 to 255 do
+    for var M in Mantissas do
+    begin
+      A.UW[0] := (Cardinal(E) shl 23) or M;
+      A.UW[1] := A.UW[0] xor $80000000;
+      A.UW[2] := A.UW[0] + 1;
+      A.UW[3] := A.UW[1] xor $7FFFFF;
+      B := A;
+      B.UW[3] := A.UW[0];
+      Vector;
+      B.UW[3] := A.UW[0] - 1;
+      Vector;
+    end;
+  for var N := 0 to 99999 do
+  begin
+    for var K := 0 to 3 do begin A.UW[K] := Rnd; B.UW[K] := Rnd; end;
+    if N mod 4 = 0 then B.UW[3] := A.UW[N mod 3];
+    Vector;
+  end;
+  Writeln('ITOF/FTOI0/4/12/15 and CLIP: scalar results, saturation, exponent edges, alias/unaligned OK');
+end;
+
 procedure Directed;
 const
   Mantissas: array[0..5] of Cardinal = (0, 1, 3, $3FFFFF, $7FFFFE, $7FFFFF);
@@ -188,14 +269,15 @@ begin
   try
     SetExceptionMask(exAllArithmeticExceptions);
     Writeln('AVX2 backend=', PS2VectorAVX2);
+    var ConversionOnly := FindCmdLineSwitch('conversionsonly');
     for var Mode := Low(TRoundingMode) to High(TRoundingMode) do
     begin
       SetRoundMode(Mode);
       Writeln('rounding=', Ord(Mode));
-      Check;
-      Directed;
+      CheckConversions;
+      if not ConversionOnly then begin Check; Directed; end;
     end;
-    if PS2VectorAVX2 then
+    if PS2VectorAVX2 or ConversionOnly then
     begin
       // The common hardware path must also agree with denormal-input and
       // flush-to-zero host modes: PS2 operands are sanitized explicitly.
@@ -204,14 +286,14 @@ begin
       try
         SetMXCSR(Saved or $8040);
         Writeln('rounding=truncate FTZ/DAZ enabled');
-        Check;
-        Directed;
+        CheckConversions;
+        if not ConversionOnly then begin Check; Directed; end;
       finally
         SetMXCSR(Saved);
       end;
     end;
     SetRoundMode(rmTruncate);
-    Time;
+    if not ConversionOnly then Time;
   except
     on E: Exception do
     begin

@@ -150,6 +150,7 @@ type
     // Temporary operands/results of generated arithmetic (not guest state).
     FJitOperand, FJitProduct: TPS2Reg128;
     FJitFlags, FJitProductFlags: Cardinal;
+    FJitClip: Cardinal;
     FJitEvents: array[0..15] of TPS2VUFlagEvent;
     FJitFastPairs: Int64;
     procedure ProfileMark(const Name: string);
@@ -1618,6 +1619,54 @@ begin
   if EmitUpper(U) then
   begin
     // Upper arithmetic and NOP are fully accounted for.
+  end
+  else if (Funct >= $3C) and (Special in [$10..$17]) then
+  begin
+    var Fs := Integer((U shr 11) and 31);
+    var Ft := Integer((U shr 16) and 31);
+    var Shift := 0;
+    case Special and 3 of
+      1: Shift := 4;
+      2: Shift := 12;
+      3: Shift := 15;
+    end;
+    var Value := JAddr(jrSelf, Integer(NativeInt(@FUpperValue) - NativeInt(Self)));
+    if Special < $14 then
+      J.Call(@PS2Itof4, [JAddr(jrS0, Fs * 16), JImm(Shift), Value])
+    else
+      J.Call(@PS2Ftoi4, [JAddr(jrS0, Fs * 16), JImm(Shift), Value]);
+    J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FUpperReg) - NativeInt(Self))), JImm(Ft));
+    J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FUpperMask) - NativeInt(Self))), JImm((U shr 21) and 15));
+  end
+  else if (Funct >= $3C) and (Special = $1F) then
+  begin
+    var Fs := Integer((U shr 11) and 31);
+    var Ft := Integer((U shr 16) and 31);
+    var Clip := Integer(NativeInt(@S.Clip) - NativeInt(Self));
+    var Count := Integer(NativeInt(@S.ClipQCount) - NativeInt(Self));
+    J.Call(@PS2Clip3, [JAddr(jrS0, Fs * 16), JAddr(jrS0, Ft * 16),
+      JAddr(jrSelf, Integer(NativeInt(@FJitClip) - NativeInt(Self)))]);
+    J.Move(jw32, JT0, JMem(jrSelf, Clip));
+    J.Shift(jsShl, jw32, jrT0, 6);
+    J.Alu(jaOr, jw32, JT0, JMem(jrSelf, Integer(NativeInt(@FJitClip) - NativeInt(Self))));
+    J.Alu(jaAnd, jw32, JT0, JImm($FFFFFF));
+    J.Move(jw32, JMem(jrSelf, Clip), JT0);
+    // CLIP remains an observation boundary, with the same four-cycle queue.
+    var Full := J.NewLabel;
+    J.Move(jw32, JT1, JMem(jrSelf, Count));
+    J.Branch(jcGe, jw32, JT1, JImm(4), Full);
+    J.Move(jw64, JT2, JT1);
+    J.Shift(jsShl, jw64, jrT2, 2);
+    J.Alu(jaAdd, jw64, JT2, JSelf);
+    J.Move(jw32, JMem(jrT2, Integer(NativeInt(@S.ClipQValue[0]) - NativeInt(Self))), JT0);
+    J.Move(jw64, JT3, JMem(jrSelf, Integer(NativeInt(@S.Cycles) - NativeInt(Self))));
+    J.Alu(jaAdd, jw64, JT3, JImm(4));
+    J.Shift(jsShl, jw32, jrT1, 3);
+    J.Move(jw64, JT2, JSelf);
+    J.Alu(jaAdd, jw64, JT2, JT1);
+    J.Move(jw64, JMem(jrT2, Integer(NativeInt(@S.ClipQReady[0]) - NativeInt(Self))), JT3);
+    J.Alu(jaAdd, jw32, JMem(jrSelf, Count), JImm(1));
+    J.Bind(Full);
   end
   else if IsAbs or IsMax or IsMin then
   begin

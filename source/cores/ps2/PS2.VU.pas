@@ -3414,12 +3414,14 @@ begin
     0: ;
     1..15: VI[Index] := Value and $FFFF;
     16: FCore.S.Status := (FCore.S.Status and $3F) or (Value and $FC0);
-    17: FCore.S.MAC := Value and $FFFF;
+    // MAC flags and the reserved registers ignore writes (ps2autotests
+    // cpu/vu0_macro/transfer on hardware).
+    17, 19, 23..25: ;
     18: FCore.S.Clip := Value and $FFFFFF;
     20: FCore.S.R := Value and $7FFFFF;
     21: FCore.S.I := Value;
     22: FCore.S.Q := Value;
-    27: VI[27] := Value;
+    27: VI[27] := Value and $FFFF;
     28:
       begin
         // FBRST: reset VU0 (bit 1) / VU1 (bit 9).
@@ -3429,8 +3431,12 @@ begin
           FVU1.Reset;
       end;
     31:
-      if Assigned(FCMSAR1Start) then
-        FCMSAR1Start(Value);
+      begin
+        // CMSAR1 keeps the 16-bit address it starts VU1 at.
+        VI[31] := Value and $FFFF;
+        if Assigned(FCMSAR1Start) then
+          FCMSAR1Start(Value);
+      end;
   else
     VI[Index and 31] := Value;
   end;

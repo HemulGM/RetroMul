@@ -15,7 +15,7 @@
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.EE.CPU, PS2.VU.Float, HW.JIT;
+  System.SysUtils, System.Math, System.Generics.Collections, Core.Snapshots, PS2.Types, PS2.EE.CPU, PS2.VU.Float, HW.JIT;
 
 type
   TPS2VFArray = array[0..31] of TPS2Reg128;
@@ -80,6 +80,17 @@ type
   end;
   PPS2VURun = ^TPS2VURun;
 
+  // Uploaded programs repeatedly reuse addresses. Retain block versions in
+  // the bounded code arena; a hash only selects candidates, all words and
+  // the entry address must match before reusing one.
+  TPS2VUCompiledBlock = record
+    PC: Cardinal;
+    PairCount, Next: Integer;
+    Words: array[0..31] of Cardinal;
+    Native, Body: Pointer;
+  end;
+  PPS2VUCompiledBlock = ^TPS2VUCompiledBlock;
+
   TPS2VUCore = class
   private
     FIndex: Integer;
@@ -113,12 +124,26 @@ type
     FUpperValue, FLowerValue: TPS2Reg128;
     FUpperMask, FLowerMask: Cardinal;
     FPairs: array of TPS2VUPair;
+    // Entry after the common native prologue, for guarded block chaining.
+    FBodies: TArray<Pointer>;
+    FBlockMap: TDictionary<UInt64, Integer>;
+    FBlocks: TArray<TPS2VUCompiledBlock>;
+    FBlockCount: Integer;
     FJit: TJitAsm;
     FUseJit: Boolean;
     FJitRuns: Int64;
     FJitBlocks: Int64;
+    FJitCompiles, FJitResets, FJitCacheHits: Int64;
+    // Temporary operands/results of generated arithmetic (not guest state).
+    FJitOperand, FJitProduct: TPS2Reg128;
+    FJitFlags, FJitProductFlags: Cardinal;
     function CompileBlock(PC: Cardinal): Pointer;
     procedure EmitPair(const P: TPS2VUPair);
+    function EmitUpper(Op: Cardinal): Boolean;
+    function EmitLower(Op: Cardinal): Boolean;
+    procedure EmitFlags(Mask: Cardinal);
+    procedure EmitPrepare(const P: TPS2VUPair);
+    procedure EmitFinish(const P: TPS2VUPair);
     procedure PreparePair(var Run: TPS2VURun); inline;
     procedure FinishPair(var Run: TPS2VURun); inline;
     function DecodedPair(PC, LowerOp, UpperOp: Cardinal): PPS2VUPair; inline;
@@ -152,10 +177,13 @@ type
     constructor Create(Index: Integer; VF: PPS2VFArray; VI: PPS2VIArray; Code, Data: PByte;
       CodeSize, DataSize: Cardinal);
     destructor Destroy; override;
-    // Experimental block compiler; timing and pipeline commits stay shared.
+    // Experimental block compiler; the interpreter remains the reference.
     property UseJit: Boolean read FUseJit write FUseJit;
     property JitRuns: Int64 read FJitRuns;
     property JitBlocks: Int64 read FJitBlocks;
+    property JitCompiles: Int64 read FJitCompiles;
+    property JitResets: Int64 read FJitResets;
+    property JitCacheHits: Int64 read FJitCacheHits;
     // Select the portable generator model before running a differential test.
     procedure UseJitModel;
     procedure Reset;
@@ -250,49 +278,104 @@ begin
   FCodeMask := CodeSize - 1;
   FDataMask := DataSize - 1;
   SetLength(FPairs, CodeSize div 8);
+  SetLength(FBodies, CodeSize div 8);
+  FBlockMap := TDictionary<UInt64, Integer>.Create;
   Reset;
 end;
 
 destructor TPS2VUCore.Destroy;
 begin
   FJit.Free;
+  FBlockMap.Free;
   inherited;
 end;
 
 procedure TPS2VUCore.UseJitModel;
 begin
   FreeAndNil(FJit);
+  FBlockMap.Clear;
+  FBlockCount := 0;
   for var K := 0 to High(FPairs) do
   begin
     FPairs[K].Native := nil;
     FPairs[K].Heat := 0;
+    FBodies[K] := nil;
   end;
-  FJit := CreateJitModel(8 * 1024 * 1024);
+  FJit := CreateJitModel(32 * 1024 * 1024);
   FUseJit := True;
 end;
 
 function TPS2VUCore.CompileBlock(PC: Cardinal): Pointer;
 begin
   Result := nil;
+  var Block := Default(TPS2VUCompiledBlock);
+  Block.PC := PC;
+  var Hash := UInt64(PC);
+  var Address := PC;
+  var EndAfterPair := False;
+  for var K := 0 to 15 do
+  begin
+    var Lo := PCardinal(FCode + Address)^;
+    var Hi := PCardinal(FCode + Address + 4)^;
+    Block.Words[K * 2] := Lo;
+    Block.Words[K * 2 + 1] := Hi;
+    Inc(Block.PairCount);
+    Hash := ((Hash shl 7) or (Hash shr 57)) xor Lo;
+    Hash := ((Hash shl 11) or (Hash shr 53)) xor Hi;
+    // Cached native guards also consult the decoded metadata. Refresh it
+    // on a version hit exactly as a fresh compilation would.
+    DecodedPair(Address, Lo, Hi);
+    if EndAfterPair then Break;
+    EndAfterPair := (Hi and $40000000) <> 0;
+    if (Hi and $80000000) = 0 then
+      EndAfterPair := EndAfterPair or ((Lo shr 25) in [$20, $21, $24, $25, $28, $29, $2C..$2F]);
+    Address := (Address + 8) and FCodeMask;
+  end;
+  var Version: Integer;
+  if FBlockMap.TryGetValue(Hash, Version) then
+    while Version >= 0 do
+    begin
+      var Cached: PPS2VUCompiledBlock := @FBlocks[Version];
+      if (Cached.PC = PC) and (Cached.PairCount = Block.PairCount) and
+        CompareMem(@Cached.Words, @Block.Words, Block.PairCount * 8) then
+      begin
+        FBodies[PC shr 3] := Cached.Body;
+        Inc(FJitCacheHits);
+        Exit(Cached.Native);
+      end;
+      Version := Cached.Next;
+    end;
   if FJit = nil then
-    FJit := CreateJitAsm(8 * 1024 * 1024);
+    FJit := CreateJitAsm(32 * 1024 * 1024);
   if FJit = nil then
     Exit;
   if not FJit.Room(16 * 4096) then
   begin
+    Inc(FJitResets);
     // No generated function is running here. Re-uploaded microprograms may
     // replace every pair, so bound the cache rather than retaining old code.
     FJit.Reset;
+    FBlockMap.Clear;
+    FBlockCount := 0;
     for var K := 0 to High(FPairs) do
+    begin
       FPairs[K].Native := nil;
+      FBodies[K] := nil;
+    end;
   end;
   var J := FJit;
+  Inc(FJitCompiles);
   J.ForgetLabels;
   J.Align(16);
   Result := J.Here;
   J.Enter;
+  J.Move(jw64, JS0, JMem(jrSelf, Integer(NativeInt(@FVF) - NativeInt(Self))));
+  J.Move(jw64, JS3, JMem(jrSelf, Integer(NativeInt(@FVI) - NativeInt(Self))));
+  J.Move(jw64, JS2, JMem(jrSelf, Integer(NativeInt(@FData) - NativeInt(Self))));
   var Done := J.NewLabel;
   var Stale := J.NewLabel;
+  var EntryPC := PC;
+  var Body := J.Here;
   var Last := False;
   for var K := 0 to 15 do
   begin
@@ -318,9 +401,9 @@ begin
     J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Upper))), JImm(UpperOp), Stale);
     J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))), JImm(PC));
     J.Move(jw64, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Pair))), JT1);
-    J.Call(@TPS2VUCore.PreparePair, [JSelf, JCtx]);
+    EmitPrepare(P^);
     EmitPair(P^);
-    J.Call(@TPS2VUCore.FinishPair, [JSelf, JCtx]);
+    EmitFinish(P^);
     if Last then Break;
     // End after the delay pair of a branch or E-bit pair. Conditional
     // branches return to the dispatcher on either outcome.
@@ -329,6 +412,21 @@ begin
       Last := Last or ((LowerOp shr 25) in [$20, $21, $24, $25, $28, $29, $2C..$2F]);
     PC := (PC + 8) and FCodeMask;
   end;
+  // Chain to a compiled successor without leaving the common native frame.
+  // The successor runs all its running/budget/code guards. Nothing points
+  // directly into cached code: invalidation clears this indirection table.
+  J.Move(jw8, JT0, JMem(jrSelf, Integer(NativeInt(@FUseJit) - NativeInt(Self))));
+  J.Branch(jcEq, jw32, JT0, JImm(0), Done);
+  J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.TPC) - NativeInt(Self))));
+  J.Alu(jaAnd, jw32, JT0, JImm(FCodeMask));
+  J.Shift(jsShr, jw32, jrT0, 3);
+  if SizeOf(Pointer) = 8 then J.Shift(jsShl, jw64, jrT0, 3)
+  else J.Shift(jsShl, jw64, jrT0, 2);
+  J.Move(jw64, JT1, JMem(jrSelf, Integer(NativeInt(@FBodies) - NativeInt(Self))));
+  J.Alu(jaAdd, jw64, JT1, JT0);
+  J.Move(jw64, JT0, JMem(jrT1, 0));
+  J.Branch(jcEq, jw64, JT0, JImm(0), Done);
+  J.JumpIndirect(JT0);
   J.Jump(Done);
   J.Bind(Stale);
   J.Move(jw8, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Invalid))), JImm(1));
@@ -336,20 +434,727 @@ begin
   J.Leave(JImm(0));
   J.ForgetLabels;
   J.Flush;
+  FBodies[EntryPC shr 3] := Body;
+  Block.Native := Result;
+  Block.Body := Body;
+  if not FBlockMap.TryGetValue(Hash, Block.Next) then Block.Next := -1;
+  if FBlockCount >= Length(FBlocks) then SetLength(FBlocks, Length(FBlocks) + 256);
+  FBlocks[FBlockCount] := Block;
+  FBlockMap.AddOrSetValue(Hash, FBlockCount);
+  Inc(FBlockCount);
+end;
+
+// Compile-time selection of the upper arithmetic. The exact PS2 SIMD
+// routines are shared with the interpreter, not the opcode decoder.
+function TPS2VUCore.EmitUpper(Op: Cardinal): Boolean;
+type
+  TArithmetic = (akAdd, akSub, akMul, akMadd, akMsub, akOpMula, akOpMsub);
+var
+  Kind: TArithmetic;
+begin
+  Result := False;
+  var F := Op and $3F;
+  var Target := Integer((Op shr 6) and 31);
+  var Acc := F >= $3C;
+  if Acc then
+  begin
+    F := ((Op shr 4) and $7C) or (Op and 3);
+    Target := 32;
+    if F = $2F then Exit(True); // NOP
+  end;
+  case F of
+    $00..$03, $20, $22, $28: Kind := akAdd;
+    $04..$07, $24, $26, $2C: Kind := akSub;
+    $08..$0B, $21, $23, $29: Kind := akMadd;
+    $0C..$0F, $25, $27, $2D: Kind := akMsub;
+    $18..$1C, $1E, $2A: Kind := akMul;
+    $2E: if Acc then Kind := akOpMula else Kind := akOpMsub;
+  else
+    Exit;
+  end;
+  var J := FJit;
+  var Fs := Integer((Op shr 11) and 31);
+  var Ft := Integer((Op shr 16) and 31);
+  var Mask := (Op shr 21) and 15;
+  var Operand := JAddr(jrSelf, Integer(NativeInt(@FJitOperand) - NativeInt(Self)));
+  var Product := JAddr(jrSelf, Integer(NativeInt(@FJitProduct) - NativeInt(Self)));
+  var Value := JAddr(jrSelf, Integer(NativeInt(@FUpperValue) - NativeInt(Self)));
+  var Flags := JAddr(jrSelf, Integer(NativeInt(@FJitFlags) - NativeInt(Self)));
+  var ProductFlags := JAddr(jrSelf, Integer(NativeInt(@FJitProductFlags) - NativeInt(Self)));
+  var A := JAddr(jrS0, Fs * 16);
+  var B := JAddr(jrS0, Ft * 16);
+  if Kind in [akOpMula, akOpMsub] then
+  begin
+    Mask := Mask and $E;
+    for var K := 0 to 3 do
+    begin
+      if K = 3 then
+        J.Move(jw32, JT0, JImm(0))
+      else
+        J.Move(jw32, JT0, JMem(jrS0, Fs * 16 + ((K + 1) mod 3) * 4));
+      J.Move(jw32, JMem(jrSelf, Operand.Disp + K * 4), JT0);
+      if K < 3 then
+        J.Move(jw32, JT0, JMem(jrS0, Ft * 16 + ((K + 2) mod 3) * 4));
+      J.Move(jw32, JMem(jrSelf, Value.Disp + K * 4), JT0);
+    end;
+    A := Operand;
+    B := Value;
+  end
+  else if (F <= $1B) or (F = $1C) or (F = $1E) or (F in [$20..$27]) then
+  begin
+    if (F = $1C) or (F in [$20, $21, $24, $25]) then
+      J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.Q) - NativeInt(Self))))
+    else if (F = $1E) or (F in [$22, $23, $26, $27]) then
+      J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.I) - NativeInt(Self))))
+    else
+      J.Move(jw32, JT0, JMem(jrS0, Ft * 16 + Integer(Op and 3) * 4));
+    J.Move(jw64, JT1, JT0);
+    J.Shift(jsShl, jw64, jrT1, 32);
+    J.Alu(jaOr, jw64, JT0, JT1);
+    J.Move(jw64, JMem(jrSelf, Operand.Disp), JT0);
+    J.Move(jw64, JMem(jrSelf, Operand.Disp + 8), JT0);
+    B := Operand;
+  end;
+  case Kind of
+    akAdd: J.Call(@PS2Add4, [A, B, Value, Flags]);
+    akSub:
+      begin
+        for var K := 0 to 1 do
+        begin
+          J.Move(jw64, JT0, JMem(B.Reg, B.Disp + K * 8));
+          J.Move(jw64, JT1, JImm(Int64($8000000080000000)));
+          J.Alu(jaXor, jw64, JT0, JT1);
+          J.Move(jw64, JMem(jrSelf, Operand.Disp + K * 8), JT0);
+        end;
+        J.Call(@PS2Add4, [A, Operand, Value, Flags]);
+      end;
+    akMul: J.Call(@PS2Mul4, [A, B, Value, Flags]);
+    akMadd, akMsub, akOpMula, akOpMsub:
+      begin
+        J.Call(@PS2Mul4, [A, B, Product, ProductFlags]);
+        if Kind = akOpMula then
+        begin
+          for var K := 0 to 1 do
+          begin
+            J.Move(jw64, JT0, JMem(jrSelf, Product.Disp + K * 8));
+            J.Move(jw64, JMem(jrSelf, Value.Disp + K * 8), JT0);
+          end;
+          J.Move(jw32, JT0, JMem(jrSelf, ProductFlags.Disp));
+          J.Move(jw32, JMem(jrSelf, Flags.Disp), JT0);
+        end
+        else
+        begin
+          if Kind <> akMadd then
+            for var K := 0 to 1 do
+            begin
+              J.Move(jw64, JT0, JMem(jrSelf, Product.Disp + K * 8));
+              J.Move(jw64, JT1, JImm(Int64($8000000080000000)));
+              J.Alu(jaXor, jw64, JT0, JT1);
+              J.Move(jw64, JMem(jrSelf, Product.Disp + K * 8), JT0);
+            end;
+          J.Call(@PS2Add4, [JAddr(jrSelf, Integer(NativeInt(@S.ACC) - NativeInt(Self))), Product, Value, Flags]);
+          J.Move(jw32, JT0, JMem(jrSelf, ProductFlags.Disp));
+          J.Alu(jaOr, jw32, JMem(jrSelf, Flags.Disp), JT0);
+        end;
+      end;
+  end;
+  EmitFlags(Mask);
+  J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FUpperReg) - NativeInt(Self))), JImm(Target));
+  J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FUpperMask) - NativeInt(Self))), JImm(Mask));
+  Result := True;
+end;
+
+// MAC/status updates with a compile-time field mask. No work or flags from
+// an unwritten field may leak into them.
+procedure TPS2VUCore.EmitFlags(Mask: Cardinal);
+begin
+  var J := FJit;
+  J.Move(jw32, JT3, JImm(0));
+  for var K := 0 to 3 do
+    if (Mask and FieldBit(K)) <> 0 then
+    begin
+      var NonZero := J.NewLabel;
+      J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@FUpperValue) - NativeInt(Self)) + K * 4));
+      J.Move(jw32, JT1, JT0);
+      J.Shift(jsShr, jw32, jrT1, 31);
+      J.Shift(jsShl, jw32, jrT1, 7 - K);
+      J.Alu(jaOr, jw32, JT3, JT1);
+      J.Alu(jaAnd, jw32, JT0, JImm($7FFFFFFF));
+      J.Branch(jcNe, jw32, JT0, JImm(0), NonZero);
+      J.Alu(jaOr, jw32, JT3, JImm(FieldBit(K)));
+      J.Bind(NonZero);
+      J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@FJitFlags) - NativeInt(Self))));
+      J.Move(jw32, JT1, JT0);
+      J.Alu(jaAnd, jw32, JT0, JImm(1 shl K));
+      J.Shift(jsShl, jw32, jrT0, 15 - 2 * K);
+      J.Alu(jaOr, jw32, JT3, JT0);
+      J.Alu(jaAnd, jw32, JT1, JImm(16 shl K));
+      J.Shift(jsShl, jw32, jrT1, 7 - 2 * K);
+      J.Alu(jaOr, jw32, JT3, JT1);
+    end;
+  J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.MAC) - NativeInt(Self))), JT3);
+  J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))));
+  J.Alu(jaAnd, jw32, JT0, JImm($FF0));
+  for var K := 0 to 3 do
+  begin
+    var Clear := J.NewLabel;
+    J.BranchTest(jcEq, jw32, JT3, JImm($F shl (K * 4)), Clear);
+    J.Alu(jaOr, jw32, JT0, JImm((1 shl K) or (1 shl (K + 6))));
+    J.Bind(Clear);
+  end;
+  J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))), JT0);
+end;
+
+// Pipeline bookkeeping with the pair's operands already known. Calls only
+// on stalls, an in-flight XGKICK or the diagnostic trace path.
+procedure TPS2VUCore.EmitPrepare(const P: TPS2VUPair);
+var
+  J: TJitAsm;
+
+  function M(Address: Pointer): TJitOp;
+  begin
+    Result := JMem(jrSelf, Integer(NativeInt(Address) - NativeInt(Self)));
+  end;
+
+  procedure Source(Reg: Integer; Mask: Cardinal);
+  begin
+    if (Reg <= 0) or (Mask = 0) then Exit;
+    if Mask = $F then
+    begin
+      var Ready := J.NewLabel;
+      J.Move(jw64, JT1, M(@FReadyAny[Reg]));
+      J.Branch(jcLe, jw64, JT1, JT0, Ready);
+      J.Move(jw64, JT0, JT1);
+      J.Bind(Ready);
+      Exit;
+    end;
+    for var K := 0 to 3 do
+      if (Mask and FieldBit(K)) <> 0 then
+      begin
+        var Ready := J.NewLabel;
+        J.Move(jw64, JT1, M(@FReady[Reg, K]));
+        J.Branch(jcLe, jw64, JT1, JT0, Ready);
+        J.Move(jw64, JT0, JT1);
+        J.Bind(Ready);
+      end;
+  end;
+
+  procedure Drain(Clip: Boolean);
+  var
+    Count, Ready, Base, Values, StatusValues, StatusBase: TJitOp;
+  begin
+    if Clip then
+    begin
+      Count := M(@S.ClipQCount); Ready := M(@S.ClipQReady[0]);
+      Base := M(@S.ClipBase); Values := M(@S.ClipQValue[0]);
+    end
+    else
+    begin
+      Count := M(@S.FlagQCount); Ready := M(@S.FlagQReady[0]);
+      Base := M(@S.MACBase); Values := M(@S.FlagQMAC[0]);
+      StatusValues := M(@S.FlagQStatus[0]); StatusBase := M(@S.StatusBase);
+    end;
+    var Again := J.NewLabel;
+    var Done := J.NewLabel;
+    J.Bind(Again);
+    J.Move(jw32, JT0, Count);
+    J.Branch(jcLe, jw32, JT0, JImm(0), Done);
+    J.Move(jw64, JT1, Ready);
+    J.Branch(jcGt, jw64, JT1, M(@S.Cycles), Done);
+    J.Move(jw32, JT1, Values);
+    J.Move(jw32, Base, JT1);
+    if not Clip then
+    begin
+      J.Move(jw32, JT1, StatusValues);
+      J.Move(jw32, StatusBase, JT1);
+    end;
+    for var K := 1 to 3 do
+    begin
+      var Keep := J.NewLabel;
+      J.Branch(jcLe, jw32, JT0, JImm(K), Keep);
+      J.Move(jw32, JT1, JMem(jrSelf, Values.Disp + K * 4));
+      J.Move(jw32, JMem(jrSelf, Values.Disp + (K - 1) * 4), JT1);
+      J.Move(jw64, JT1, JMem(jrSelf, Ready.Disp + K * 8));
+      J.Move(jw64, JMem(jrSelf, Ready.Disp + (K - 1) * 8), JT1);
+      if not Clip then
+      begin
+        J.Move(jw32, JT1, JMem(jrSelf, StatusValues.Disp + K * 4));
+        J.Move(jw32, JMem(jrSelf, StatusValues.Disp + (K - 1) * 4), JT1);
+      end;
+      J.Bind(Keep);
+    end;
+    J.Alu(jaSub, jw32, Count, JImm(1));
+    J.Jump(Again);
+    J.Bind(Done);
+  end;
+
+  procedure Delay(DelayAddress, PendingAddress, ValueAddress: Pointer; Wait: Boolean);
+  begin
+    var Done := J.NewLabel;
+    J.Move(jw32, JT0, M(DelayAddress));
+    J.Branch(jcLe, jw32, JT0, JImm(0), Done);
+    J.Alu(jaSub, jw32, JT0, JImm(1));
+    J.Move(jw32, M(DelayAddress), JT0);
+    if not Wait then J.Branch(jcNe, jw32, JT0, JImm(0), Done);
+    if Wait then J.Move(jw32, M(DelayAddress), JImm(0));
+    J.Move(jw32, JT1, M(PendingAddress));
+    J.Move(jw32, M(ValueAddress), JT1);
+    J.Bind(Done);
+  end;
+
+begin
+  J := FJit;
+  var Done := J.NewLabel;
+  var Normal := J.NewLabel;
+  J.Branch(jcEq, jw64, M(@RunTrace), JImm(0), Normal);
+  J.Call(@TPS2VUCore.PreparePair, [JSelf, JCtx]);
+  J.Jump(Done);
+  J.Bind(Normal);
+  J.Move(jw64, JT0, M(@S.Cycles));
+  Source(P.U.S1, P.U.M1); Source(P.U.S2, P.U.M2);
+  Source(P.L.S1, P.L.M1); Source(P.L.S2, P.L.M2);
+  var NoStall := J.NewLabel;
+  J.Branch(jcLe, jw64, JT0, M(@S.Cycles), NoStall);
+  J.Alu(jaSub, jw64, JT0, M(@S.Cycles));
+  J.Call(@TPS2VUCore.AdvanceCycles, [JSelf, JT0]);
+  J.Bind(NoStall);
+  var NoKick := J.NewLabel;
+  J.Move(jw8, JT0, M(@FKickPending));
+  J.Branch(jcEq, jw32, JT0, JImm(0), NoKick);
+  J.Call(@TPS2VUCore.TakeKick, [JSelf, JImm(0)]);
+  J.Bind(NoKick);
+  Drain(True);
+  J.Move(jw32, JT0, M(@S.ClipBase));
+  J.Move(jw32, M(@FClipVisible), JT0);
+  Drain(False);
+  J.Move(jw8, JT0, M(@S.BranchPending));
+  J.Move(jw8, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Branching))), JT0);
+  J.Move(jw32, JT0, M(@S.BranchTarget));
+  J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Target))), JT0);
+  J.Move(jw8, JT0, M(@S.EndPending));
+  J.Move(jw8, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Ending))), JT0);
+  J.Move(jw8, M(@S.BranchPending), JImm(0));
+  var Immediate := (P.Upper and $80000000) <> 0;
+  Delay(@S.QDelay, @S.PendingQ, @S.Q, not Immediate and ((P.Lower and $FE0007FF) = $800003BF));
+  Delay(@S.PDelay, @S.PendingP, @S.P, not Immediate and ((P.Lower and $FE0007FF) = $800007BF));
+  J.Move(jw32, JT0, M(@FLoadReg));
+  J.Move(jw32, M(@FBranchReg), JT0);
+  J.Move(jw32, JT0, M(@FLoadOld));
+  J.Move(jw32, M(@FBranchOld), JT0);
+  var Reg := -1;
+  var Op := P.Lower;
+  if not Immediate then
+    if (Op and $80000000) = 0 then
+    begin
+      if (Op shr 25) in [$04, $08, $09] then Reg := Integer((Op shr 16) and 15);
+    end
+    else
+      case Op and $3F of
+        $30, $31, $34, $35: Reg := Integer((Op shr 6) and 15);
+        $32: Reg := Integer((Op shr 16) and 15);
+        $3C..$3F:
+          case ((Op shr 4) and $7C) or (Op and 3) of
+            $3C, $3E, $35, $37: Reg := Integer((Op shr 16) and 15);
+            $34, $36: Reg := Integer((Op shr 11) and 15);
+          end;
+      end;
+  if Reg = 0 then Reg := -1;
+  J.Move(jw32, M(@FLoadReg), JImm(Reg));
+  if Reg >= 0 then
+  begin
+    J.Move(jw32, JT0, JMem(jrS3, Reg * 4));
+    J.Move(jw32, M(@FLoadOld), JT0);
+  end;
+  J.Move(jw32, M(@FUpperReg), JImm(-1));
+  J.Move(jw32, M(@FLowerReg), JImm(-1));
+  J.Bind(Done);
+end;
+
+procedure TPS2VUCore.EmitFinish(const P: TPS2VUPair);
+var
+  J: TJitAsm;
+
+  function M(Address: Pointer): TJitOp;
+  begin
+    Result := JMem(jrSelf, Integer(NativeInt(Address) - NativeInt(Self)));
+  end;
+
+  // Destination and mask are constants, including helper-backed operations.
+  // Commit lower first: the upper half wins overlapping fields.
+  procedure Commit(Upper: Boolean);
+  var
+    Reg: Integer;
+    Mask: Cardinal;
+    Value: TJitOp;
+  begin
+    if Upper then
+    begin
+      Value := M(@FUpperValue);
+      Mask := (P.Upper shr 21) and 15;
+      Reg := Integer((P.Upper shr 6) and 31);
+      var F := P.Upper and $3F;
+      if F >= $3C then
+      begin
+        F := ((P.Upper shr 4) and $7C) or (P.Upper and 3);
+        case F of
+          $00..$0F, $18..$1C, $1E, $20..$2A, $2C..$2E: Reg := 32;
+          $10..$17, $1D: Reg := Integer((P.Upper shr 16) and 31);
+        else
+          Reg := -1;
+        end;
+        if F = $2E then Mask := Mask and $E;
+      end
+      else
+      begin
+        if F > $2F then Reg := -1;
+        if F = $2E then Mask := Mask and $E;
+      end;
+    end
+    else
+    begin
+      Value := M(@FLowerValue);
+      Mask := (P.Lower shr 21) and 15;
+      Reg := -1;
+      if (P.Upper and $80000000) = 0 then
+      begin
+        if (P.Lower shr 25) = 0 then Reg := Integer((P.Lower shr 16) and 31)
+        else if (P.Lower and $8000003C) = $8000003C then
+          if (((P.Lower shr 4) and $7C) or (P.Lower and 3)) in [$30, $31, $34, $36, $3D, $40, $41, $64] then
+            Reg := Integer((P.Lower shr 16) and 31);
+      end;
+    end;
+    if (Reg <= 0) or (Mask = 0) then Exit;
+    var Target := JMem(jrS0, Reg * 16);
+    if Reg = 32 then Target := M(@S.ACC);
+    for var Half := 0 to 1 do
+      if (Mask and (12 shr (Half * 2))) = Cardinal(12 shr (Half * 2)) then
+      begin
+        J.Move(jw64, JT0, JMem(jrSelf, Value.Disp + Half * 8));
+        J.Move(jw64, JMem(Target.Reg, Target.Disp + Half * 8), JT0);
+      end
+      else
+        for var C := 0 to 1 do
+        begin
+          var K := Half * 2 + C;
+          if (Mask and FieldBit(K)) = 0 then Continue;
+          J.Move(jw32, JT0, JMem(jrSelf, Value.Disp + K * 4));
+          J.Move(jw32, JMem(Target.Reg, Target.Disp + K * 4), JT0);
+        end;
+  end;
+
+  procedure Note(const R: TPS2VURegUse);
+  begin
+    if (R.Dest <= 0) or (R.DestMask = 0) then Exit;
+    for var K := 0 to 3 do
+      if (R.DestMask and FieldBit(K)) <> 0 then
+        J.Move(jw64, M(@FReady[R.Dest, K]), JT4);
+    J.Move(jw64, M(@FReadyAny[R.Dest]), JT4);
+  end;
+
+begin
+  J := FJit;
+  Commit(False);
+  Commit(True);
+  J.Move(jw64, JT4, M(@S.Cycles));
+  J.Alu(jaAdd, jw64, JT4, JImm(4));
+  Note(P.U);
+  Note(P.L);
+  if P.SetsFlags then
+  begin
+    var Full := J.NewLabel;
+    J.Move(jw32, JT0, M(@S.FlagQCount));
+    J.Branch(jcGe, jw32, JT0, JImm(4), Full);
+    J.Move(jw64, JT2, JT0);
+    J.Shift(jsShl, jw64, jrT2, 2);
+    J.Alu(jaAdd, jw64, JT2, JSelf);
+    J.Move(jw32, JT1, M(@S.MAC));
+    J.Move(jw32, JMem(jrT2, M(@S.FlagQMAC[0]).Disp), JT1);
+    J.Move(jw32, JT1, M(@S.Status));
+    J.Move(jw32, JMem(jrT2, M(@S.FlagQStatus[0]).Disp), JT1);
+    J.Shift(jsShl, jw32, jrT0, 3);
+    J.Move(jw64, JT2, JSelf);
+    J.Alu(jaAdd, jw64, JT2, JT0);
+    J.Move(jw64, JMem(jrT2, M(@S.FlagQReady[0]).Disp), JT4);
+    J.Alu(jaAdd, jw32, M(@S.FlagQCount), JImm(1));
+    J.Bind(Full);
+  end;
+  J.Alu(jaAdd, jw64, M(@Executed), JImm(1));
+  J.Alu(jaAdd, jw64, M(@S.Cycles), JImm(1));
+  var Count := JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Count)));
+  var Limit := JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Limit)));
+  J.Alu(jaAdd, jw32, Count, JImm(1));
+  var NoTrace := J.NewLabel;
+  J.Move(jw32, JT0, Count);
+  J.Alu(jaSub, jw32, JT0, Limit);
+  J.Alu(jaAdd, jw32, JT0, JImm(63));
+  J.Branch(jcLt, jw32, JT0, JImm(0), NoTrace);
+  J.Shift(jsShl, jw32, jrT0, 2);
+  J.Move(jw64, JT2, JSelf);
+  J.Alu(jaAdd, jw64, JT2, JT0);
+  J.Move(jw32, JT1, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))));
+  J.Move(jw32, JMem(jrT2, M(@LoopTrace[0]).Disp), JT1);
+  J.Bind(NoTrace);
+  J.Move(jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))));
+  J.Alu(jaAdd, jw32, JT0, JImm(8));
+  J.Alu(jaAnd, jw32, JT0, JImm(FCodeMask));
+  var Sequential := J.NewLabel;
+  J.Move(jw8, JT1, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Branching))));
+  J.Branch(jcEq, jw32, JT1, JImm(0), Sequential);
+  J.Move(jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Target))));
+  J.Bind(Sequential);
+  J.Move(jw32, M(@S.TPC), JT0);
+  var NotEnding := J.NewLabel;
+  var Done := J.NewLabel;
+  J.Move(jw8, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Ending))));
+  J.Branch(jcEq, jw32, JT0, JImm(0), NotEnding);
+  J.Move(jw8, M(@S.Running), JImm(0));
+  J.Move(jw8, M(@S.EndPending), JImm(0));
+  J.Jump(Done);
+  J.Bind(NotEnding);
+  if (P.Upper and $40000000) <> 0 then
+    J.Move(jw8, M(@S.EndPending), JImm(1));
+  J.Bind(Done);
+end;
+
+function TPS2VUCore.EmitLower(Op: Cardinal): Boolean;
+var
+  J: TJitAsm;
+
+  function M(Address: Pointer): TJitOp;
+  begin
+    Result := JMem(jrSelf, Integer(NativeInt(Address) - NativeInt(Self)));
+  end;
+
+  procedure BranchOperand(Reg: Integer; Dst: TJitReg);
+  begin
+    var Current := J.NewLabel;
+    J.Move(jw32, JReg(Dst), JMem(jrS3, Reg * 4));
+    J.Branch(jcNe, jw32, M(@FBranchReg), JImm(Reg), Current);
+    J.Move(jw32, JReg(Dst), M(@FBranchOld));
+    J.Bind(Current);
+    J.Shift(jsShl, jw32, Dst, 16);
+    J.Shift(jsSar, jw32, Dst, 16);
+  end;
+
+begin
+  Result := True;
+  J := FJit;
+  var It := Integer((Op shr 16) and 15);
+  var Is_ := Integer((Op shr 11) and 15);
+  var Group := Op shr 25;
+  if (Op and $80000000) = 0 then
+  begin
+    if Group in [$20, $21, $24, $25, $28, $29, $2C..$2F] then
+    begin
+      var Skip := J.NewLabel;
+      if Group in [$28, $29, $2C..$2F] then
+      begin
+        BranchOperand(Is_, jrT0);
+        if Group in [$28, $29] then BranchOperand(It, jrT1);
+        case Group of
+          $28: J.Branch(jcNe, jw32, JT0, JT1, Skip);
+          $29: J.Branch(jcEq, jw32, JT0, JT1, Skip);
+          $2C: J.Branch(jcGe, jw32, JT0, JImm(0), Skip);
+          $2D: J.Branch(jcLe, jw32, JT0, JImm(0), Skip);
+          $2E: J.Branch(jcGt, jw32, JT0, JImm(0), Skip);
+          $2F: J.Branch(jcLt, jw32, JT0, JImm(0), Skip);
+        end;
+      end;
+      if Group in [$24, $25] then
+      begin
+        J.Move(jw32, JT2, JMem(jrS3, Is_ * 4));
+        J.Shift(jsShl, jw32, jrT2, 3);
+        J.Alu(jaAnd, jw32, JT2, JImm(FCodeMask));
+      end
+      else
+      begin
+        var Imm := Integer(Op and $7FF);
+        if Imm >= $400 then Dec(Imm, $800);
+        J.Move(jw32, JT2, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))));
+        J.Alu(jaAdd, jw32, JT2, JImm(8 + Imm * 8));
+        J.Alu(jaAnd, jw32, JT2, JImm(FCodeMask));
+      end;
+      if (Group in [$21, $25]) and (It <> 0) then
+      begin
+        J.Move(jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))));
+        J.Alu(jaAdd, jw32, JT0, JImm(16));
+        J.Shift(jsShr, jw32, jrT0, 3);
+        J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+        J.Move(jw32, JMem(jrS3, It * 4), JT0);
+      end;
+      J.Move(jw8, M(@S.BranchPending), JImm(1));
+      J.Move(jw32, M(@S.BranchTarget), JT2);
+      J.Bind(Skip);
+      Exit;
+    end;
+    // CLIP flag reads write VI1 (their opcode's apparent it field is part
+    // of the immediate, not a register).
+    if Group in [$10..$13, $1C] then
+    begin
+      if Group = $11 then
+      begin
+        J.Move(jw32, M(@S.Clip), JImm(Op and $FFFFFF));
+        J.Move(jw32, M(@S.ClipBase), JImm(Op and $FFFFFF));
+        J.Move(jw32, M(@S.ClipQCount), JImm(0));
+        J.Move(jw32, M(@FClipVisible), JImm(Op and $FFFFFF));
+        Exit;
+      end;
+      if (Group = $1C) and (It = 0) then Exit;
+      J.Move(jw32, JT0, M(@FClipVisible));
+      if Group = $1C then
+      begin
+        J.Alu(jaAnd, jw32, JT0, JImm($FFF));
+        J.Move(jw32, JMem(jrS3, It * 4), JT0);
+        Exit;
+      end;
+      var Zero := J.NewLabel;
+      J.Move(jw32, JMem(jrS3, 4), JImm(0));
+      case Group of
+        $10:
+          begin
+            J.Alu(jaAnd, jw32, JT0, JImm($FFFFFF));
+            J.Branch(jcNe, jw32, JT0, JImm(Op and $FFFFFF), Zero);
+          end;
+        $12: J.BranchTest(jcEq, jw32, JT0, JImm(Op and $FFFFFF), Zero);
+        $13:
+          begin
+            J.Alu(jaOr, jw32, JT0, JImm(Op and $FFFFFF));
+            J.Alu(jaAnd, jw32, JT0, JImm($FFFFFF));
+            J.Branch(jcNe, jw32, JT0, JImm($FFFFFF), Zero);
+          end;
+      end;
+      J.Move(jw32, JMem(jrS3, 4), JImm(1));
+      J.Bind(Zero);
+      Exit;
+    end;
+    Exit(False);
+  end;
+  if (Op and $3F) < $3C then Exit(False);
+  var Index := ((Op shr 4) and $7C) or (Op and 3);
+  var Fs := Integer((Op shr 11) and 31);
+  var Ft := Integer((Op shr 16) and 31);
+  var Mask := (Op shr 21) and $F;
+  case Index of
+    $30, $31: // MOVE, MR32 (stage before the upper result commits)
+      begin
+        for var K := 0 to 3 do
+        begin
+          var C := K;
+          if Index = $31 then C := (C + 1) and 3;
+          J.Move(jw32, JT0, JMem(jrS0, Fs * 16 + C * 4));
+          J.Move(jw32, JMem(jrSelf, M(@FLowerValue).Disp + K * 4), JT0);
+        end;
+        J.Move(jw32, M(@FLowerReg), JImm(Ft));
+        J.Move(jw32, M(@FLowerMask), JImm(Mask));
+      end;
+    $34..$37, $3E, $3F: // LQI/LQD/SQI/SQD, ILWR/ISWR
+      begin
+        var Base := Is_;
+        if Index in [$35, $37] then Base := It;
+        if (Index in [$36, $37]) and (Base <> 0) then
+        begin
+          J.Move(jw32, JT0, JMem(jrS3, Base * 4));
+          J.Alu(jaSub, jw32, JT0, JImm(1));
+          J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+          J.Move(jw32, JMem(jrS3, Base * 4), JT0);
+        end;
+        J.Move(jw32, JT0, JMem(jrS3, Base * 4));
+        J.Shift(jsShl, jw32, jrT0, 4);
+        J.Alu(jaAnd, jw32, JT0, JImm(FDataMask));
+        J.Move(jw64, JT2, JS2);
+        J.Alu(jaAdd, jw64, JT2, JT0);
+        if Index in [$34, $36] then
+        begin
+          for var K := 0 to 1 do
+          begin
+            J.Move(jw64, JT0, JMem(jrT2, K * 8));
+            J.Move(jw64, JMem(jrSelf, M(@FLowerValue).Disp + K * 8), JT0);
+          end;
+          J.Move(jw32, M(@FLowerReg), JImm(Ft));
+          J.Move(jw32, M(@FLowerMask), JImm(Mask));
+        end
+        else if Index = $3E then
+        begin
+          if It > 0 then
+            for var K := 0 to 3 do
+              if (Mask and FieldBit(K)) <> 0 then
+              begin
+                J.Move(jw32, JT0, JMem(jrT2, K * 4));
+                J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+                J.Move(jw32, JMem(jrS3, It * 4), JT0);
+                Break;
+              end;
+        end
+        else
+        begin
+          if Index = $3F then
+          begin
+            J.Move(jw32, JT0, JMem(jrS3, It * 4));
+            J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+          end;
+          for var K := 0 to 3 do
+            if (Mask and FieldBit(K)) <> 0 then
+            begin
+              if Index <> $3F then J.Move(jw32, JT0, JMem(jrS0, Fs * 16 + K * 4));
+              J.Move(jw32, JMem(jrT2, K * 4), JT0);
+            end;
+        end;
+        if (Index in [$34, $35]) and (Base <> 0) then
+        begin
+          J.Move(jw32, JT0, JMem(jrS3, Base * 4));
+          J.Alu(jaAdd, jw32, JT0, JImm(1));
+          J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+          J.Move(jw32, JMem(jrS3, Base * 4), JT0);
+        end;
+      end;
+    $3C: // MTIR
+      if It > 0 then
+      begin
+        J.Move(jw32, JT0, JMem(jrS0, Fs * 16 + Integer((Op shr 21) and 3) * 4));
+        J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+        J.Move(jw32, JMem(jrS3, It * 4), JT0);
+      end;
+    $3D, $64: // MFIR, MFP
+      begin
+        if Index = $64 then J.Move(jw32, JT0, M(@S.P))
+        else
+        begin
+          J.Move(jw32, JT0, JMem(jrS3, Is_ * 4));
+          J.Shift(jsShl, jw32, jrT0, 16);
+          J.Shift(jsSar, jw32, jrT0, 16);
+        end;
+        for var K := 0 to 3 do
+          J.Move(jw32, JMem(jrSelf, M(@FLowerValue).Disp + K * 4), JT0);
+        J.Move(jw32, M(@FLowerReg), JImm(Ft));
+        J.Move(jw32, M(@FLowerMask), JImm(Mask));
+      end;
+    $68, $69: // XTOP, XITOP
+      if It > 0 then
+      begin
+        J.Move(jw32, JT0, JMem(jrS3, (26 + Integer(Index - $68)) * 4));
+        J.Move(jw32, JMem(jrS3, It * 4), JT0);
+      end;
+  else
+    Exit(False);
+  end;
 end;
 
 procedure TPS2VUCore.EmitPair(const P: TPS2VUPair);
 begin
   var J := FJit;
-  // Floating-point arithmetic still uses the interpreter's PS2-specific
-  // operations. NOP needs no call; all commits happen after both halves.
+  // Arithmetic calls the PS2 SIMD routines directly, without dispatching
+  // an upper opcode on each visit. Both halves still read before commits.
   var U := P.Upper;
   var Funct := U and $3F;
   var Special := ((U shr 4) and $7C) or (U and 3);
   var IsAbs := (Funct >= $3C) and (Special = $1D);
   var IsMax := (Funct in [$10..$13, $1D, $2B]);
   var IsMin := (Funct in [$14..$17, $1F, $2F]);
-  if IsAbs or IsMax or IsMin then
+  if EmitUpper(U) then
+  begin
+    // Upper arithmetic and NOP are fully accounted for.
+  end
+  else if IsAbs or IsMax or IsMin then
   begin
     var Fs := Integer((U shr 11) and 31);
     var Ft := Integer((U shr 16) and 31);
@@ -399,6 +1204,7 @@ begin
   else
   begin
     var Op := P.Lower;
+    if EmitLower(Op) then Exit;
     var D := -1;
     var Is_ := Integer((Op shr 11) and 15);
     var It := Integer((Op shr 16) and 15);
@@ -1498,15 +2304,9 @@ procedure TPS2VUCore.DecodePair(var P: TPS2VUPair; LowerOp, UpperOp: Cardinal);
 begin
   P.Native := nil;
   P.Heat := 0;
-  var UF := UpperOp and $3F;
-  var US := ((UpperOp shr 4) and $7C) or (UpperOp and 3);
-  P.NativeCandidate := (UF in [$10..$17, $1D, $1F, $2B, $2F]) or
-    ((UF >= $3C) and (US = $1D)) or ((UpperOp and $80000000) <> 0);
-  if (UpperOp and $80000000) = 0 then
-    if (LowerOp and $80000000) <> 0 then
-      P.NativeCandidate := P.NativeCandidate or ((LowerOp and $3F) in [$30..$32, $34, $35])
-    else
-      P.NativeCandidate := P.NativeCandidate or ((LowerOp shr 25) in [$00, $01, $04, $05, $08, $09]);
+  // Every hot entry benefits from compiled pipeline bookkeeping, even when
+  // an uncommon opcode inside it still calls a helper.
+  P.NativeCandidate := True;
   P.Lower := LowerOp;
   P.Upper := UpperOp;
   UpperRegs(UpperOp, P.U);
@@ -1527,7 +2327,10 @@ function TPS2VUCore.DecodedPair(PC, LowerOp, UpperOp: Cardinal): PPS2VUPair;
 begin
   Result := @FPairs[PC shr 3];
   if not Result.Valid or (Result.Lower <> LowerOp) or (Result.Upper <> UpperOp) then
+  begin
+    FBodies[PC shr 3] := nil;
     DecodePair(Result^, LowerOp, UpperOp);
+  end;
 end;
 
 function TPS2VUCore.HazardStall(const P: TPS2VUPair): Integer;
@@ -1848,7 +2651,14 @@ begin
       FJit.Invoke(Pair.Native, NativeUInt(Self), NativeUInt(@Context), 0, 0);
       Inc(FJitBlocks);
       Inc(FJitRuns, Context.Count - Before);
-      if Context.Invalid then Pair.Native := nil;
+      if Context.Invalid then
+      begin
+        Pair.Native := nil;
+        FBodies[PC shr 3] := nil;
+        // A chained successor can have detected the stale pair.
+        FBodies[(S.TPC and FCodeMask) shr 3] := nil;
+        FPairs[(S.TPC and FCodeMask) shr 3].Native := nil;
+      end;
       if Context.Count <> Before then Continue;
     end;
     Context.PC := PC;

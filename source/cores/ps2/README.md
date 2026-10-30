@@ -62,24 +62,28 @@ threads touch in commands no barrier orders.
 (the default) uses the original execution path. This is independent of
 `Video/Renderer` and can change during play. VU0 and EE remain interpreted.
 
-The shared `HW.JIT` generator emits integer VI arithmetic, LQ/SQ/ILW/ISW,
-ABS and MAX/MIN operations. Other operations use the interpreter's helpers.
-Pipeline stalls, delayed flags, branch delay slots and XGKICK timing stay
-in shared prepare/commit routines. Code is generated after 16 visits in
-blocks of up to 16 pairs, ending after branch/end delay slots. Every pair
-checks the remaining budget, PC and both instruction words before changing
-state; replaced interior code exits to the dispatcher and invalidates the
-block. Decoded hazard/flag metadata is also checked. The code cache
-is bounded to 8 MiB per VU1 and is not part of saved state. Unsupported hosts
-keep interpreting. Blocks still use helpers for pipeline bookkeeping and
-most floating-point work: the recompiler is experimental and may be slower
-on some games.
+The shared `HW.JIT` generator emits pipeline hazard checks, delayed flag
+queues, register commits, VI arithmetic, branches, memory operations and
+CLIP flag reads. Upper ADD/SUB/MUL/MADD/MSUB and cross products call the exact
+four-field PS2 SIMD routines directly; uncommon operations retain interpreter
+helpers. XGKICK still uses the shared packet reader with its original timing.
+Code is generated after 16 visits in blocks of up to 16 pairs, ending after
+branch/end delay slots. Compiled successors chain through a table within one
+native frame. Every pair still checks the budget, PC, both instruction words
+and decoded metadata; code changed by a callback exits before a stale pair.
+Re-uploaded block versions are reused only after the entry address and every
+word match (hashes alone are not trusted). The code arena is bounded to
+32 MiB per VU1; resetting it clears the version and successor tables too.
+None of this cache is saved in snapshots. Unsupported hosts keep interpreting.
+The recompiler remains experimental and off by default.
 
 `tests/cores/ps2/jit/build.ps1` runs a Win64 differential test against the
 interpreter, using both the native backend and the portable generator model.
 It covers code replacement (including an interior pair rewritten during
-XGKICK), partial execution budgets, mode changes, memory, registers, traces
-and pipeline state. `-Checked` enables checked core code.
+XGKICK), partial budgets, mode changes, memory, masked/overlapping registers,
+traces, delayed flags, loop/call chaining, cache exhaustion and re-uploaded
+versions with deliberately colliding hashes. Both backends must match the
+interpreter's state. `-Checked` enables checked core code.
 
 ## Experimental Vulkan GS
 

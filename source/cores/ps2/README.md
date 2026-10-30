@@ -136,6 +136,8 @@ interpreter's state, including scheduled spans with pending Q/P and poisoned
 live/unused flag queues. `-Checked` enables checked core code.
 Directed conversion/CLIP cases also cover four host rounding modes, vf0,
 overlapping upper/lower destinations, full/delayed CLIP queues and FCGET/FCSET.
+Scheduled queue tests cross multiple compiled spans in 64-pair programs.
+The JIT build script accepts `-Defines PS2_FORCE_SSE2` for backend comparisons.
 `tests/cores/ps2/vufloat/build.ps1 -ConversionsOnly` checks conversion and CLIP
 helpers against scalar arithmetic, including aliases, unaligned values and
 FTZ/DAZ; the default float suite retains the add/multiply checks too.

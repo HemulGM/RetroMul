@@ -315,7 +315,8 @@ begin
     if Model then B.UseJitModel else B.UseJit := True;
     for var ProgramIndex := 0 to 4 do
     begin
-      for var K := 0 to 15 do
+      // Cross multiple compiled spans with incoming queue tails still live.
+      for var K := 0 to 63 do
       begin
         Code0[K * 2] := $10020001; // VI arithmetic with a delayed branch operand
         Code0[K * 2 + 1] := $01E10868; // ADD.xyzw vf1,vf1,vf1 (dependent FMAC)
@@ -326,7 +327,7 @@ begin
       end;
       Code0[8] := $81E3067C; // MFP.xyzw vf3
       if ProgramIndex <= 1 then Code0[11] := $01E1085C; // MULq.xyzw vf1,vf1
-      Code0[29] := Code0[29] or $40000000;
+      Code0[125] := Code0[125] or $40000000;
       Code1 := Code0;
       for var RepeatIndex := 0 to 63 do
       begin

@@ -342,6 +342,16 @@ begin
           R.WriteRegister(GSRegTRXDIR, 0);
           R.WriteRegister(GSRegHWREG, UInt64($12345678) * Cardinal(N + 1));
         end;
+        if N mod 16 = 10 then
+        begin
+          R.WriteRegister(GSRegBITBLTBUF, (UInt64(4096) shl 32) or (UInt64(2) shl 48));
+          R.WriteRegister(GSRegTRXPOS, UInt64(16) shl 32);
+          R.WriteRegister(GSRegTRXREG, 4 or (UInt64(1) shl 32));
+          R.WriteRegister(GSRegTRXDIR, 0);
+          var Image := Default(TPS2Reg128);
+          for var K := 0 to 3 do Image.UW[K] := Cardinal($81234567) + Cardinal(N * 17 + K * 31);
+          R.WriteImage(Image); // Chunked upload follows a queued CPU fallback.
+        end;
       end;
       var Stream := TMemoryStream.Create;
       try

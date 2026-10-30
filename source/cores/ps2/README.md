@@ -76,6 +76,9 @@ for every pixel. `tests/cores/ps2/gsdata/build.ps1` checks display formats,
 both circuits, offsets/wrap, zero stride and queued drawing. It also compares
 IMAGE uploads with scalar HWREG transfers over all storage formats, including
 partial bitstreams, row/VRAM wrapping, ring reuse and serialized state.
+Queued whole-quadword IMAGE uploads unpack integer formats into the transfer
+ring in chunks; 24-bit streams, partial tails and unusual state retain the
+scalar path. Reservation, row progression and barriers keep the same order.
 The tests run without Vulkan; `-Checked` enables checked core code.
 
 ## Experimental VU1 recompiler

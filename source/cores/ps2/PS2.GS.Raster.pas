@@ -311,6 +311,7 @@ type
     procedure StartTransfer;
     procedure FeedWord(W: Cardinal);
     procedure CheckGPUTransfer;
+    procedure BeginTransferRun;
     procedure TransferPixel(Value: Cardinal);
     procedure LocalToLocal;
     procedure LocalToHost;
@@ -2453,6 +2454,25 @@ begin
   end;
 end;
 
+procedure TPS2GSRaster.BeginTransferRun;
+begin
+  // Reserve space for a whole run, once rather than for every input pixel.
+  while (FXferRunHead < FXferRunTail) and
+    (FXferRingPos + XferRunMax - FXferRuns[FXferRunHead and High(FXferRuns)].StartPos > XferRingSize) do
+  begin
+    FBands.WaitFor(FXferRuns[FXferRunHead and High(FXferRuns)].Position);
+    Inc(FXferRunHead);
+  end;
+  if FXferRunTail - FXferRunHead > High(FXferRuns) then
+  begin
+    FBands.WaitFor(FXferRuns[FXferRunHead and High(FXferRuns)].Position);
+    Inc(FXferRunHead);
+  end;
+  FXferRunStart := FXferRingPos;
+  FXferRunX := FXferX;
+  FXferRunY := FXferY;
+end;
+
 procedure TPS2GSRaster.TransferPixel(Value: Cardinal);
 begin
   var Reg := Regs[GSRegTRXREG];
@@ -2467,23 +2487,7 @@ begin
   begin
     // Drawing is queued: the pixels follow it, through the ring.
     if FXferRunCount = 0 then
-    begin
-      // Room for a whole run: wait for the oldest queued runs if needed.
-      while (FXferRunHead < FXferRunTail) and
-        (FXferRingPos + XferRunMax - FXferRuns[FXferRunHead and High(FXferRuns)].StartPos > XferRingSize) do
-      begin
-        FBands.WaitFor(FXferRuns[FXferRunHead and High(FXferRuns)].Position);
-        Inc(FXferRunHead);
-      end;
-      if FXferRunTail - FXferRunHead > High(FXferRuns) then
-      begin
-        FBands.WaitFor(FXferRuns[FXferRunHead and High(FXferRuns)].Position);
-        Inc(FXferRunHead);
-      end;
-      FXferRunStart := FXferRingPos;
-      FXferRunX := FXferX;
-      FXferRunY := FXferY;
-    end;
+      BeginTransferRun;
     FXferRing[FXferRingPos and XferRingMask] := Value;
     Inc(FXferRingPos);
     Inc(FXferRunCount);
@@ -2566,6 +2570,46 @@ end;
 
 procedure TPS2GSRaster.WriteImage(const Data: TPS2Reg128);
 begin
+  // IMAGE supplies a complete quadword. Unpack ordinary integer formats
+  // directly into the software ring, keeping reservation, row progression
+  // and barriers per chunk instead of repeating them for 4..32 pixels.
+  // Partial final quads, 24-bit bitstreams and unusual state retain FeedWord.
+  if FXferActive and FQueueXfer and (FPending or (FXferRunCount > 0)) and
+    (FXferBitCount = 0) and (FXferBits = 0) then
+  begin
+    var Bits := TransferBits(Cardinal((Regs[GSRegBITBLTBUF] shr 56) and $3F));
+    if Bits <> 24 then
+    begin
+      var Count := 128 div Bits;
+      var Reg := Regs[GSRegTRXREG];
+      var Width := Integer(Reg and $FFF);
+      var Height := Integer((Reg shr 32) and $FFF);
+      if (Width > 0) and (Height > 0) and (FXferX >= 0) and (FXferX < Width) and
+        (FXferY >= 0) and (FXferY < Height) and
+        (Int64(Height - FXferY) * Width - FXferX >= Count) and
+        (FXferRunCount + Count <= XferRunMax) then
+      begin
+        CheckGPUTransfer;
+        if FXferRunCount = 0 then BeginTransferRun;
+        case Bits of
+          32: for var K := 0 to 3 do FXferRing[(FXferRingPos + K) and XferRingMask] := Data.UW[K];
+          16: for var K := 0 to 7 do FXferRing[(FXferRingPos + K) and XferRingMask] := Data.UH[K];
+          8: for var K := 0 to 15 do FXferRing[(FXferRingPos + K) and XferRingMask] := Data.UB[K];
+          4: for var K := 0 to 31 do
+            FXferRing[(FXferRingPos + K) and XferRingMask] := (Data.UB[K shr 1] shr ((K and 1) * 4)) and 15;
+        end;
+        Inc(FXferRingPos, Count);
+        Inc(FXferRunCount, Count);
+        Inc(FXferPixels, Count);
+        Inc(FXferX, Count);
+        Inc(FXferY, FXferX div Width);
+        FXferX := FXferX mod Width;
+        FXferActive := FXferY < Height;
+        if not FXferActive or (FXferRunCount = XferRunMax) then FlushTransfer;
+        Exit;
+      end;
+    end;
+  end;
   for var K := 0 to 3 do
     FeedWord(Data.UW[K]);
 end;

@@ -137,6 +137,7 @@ type
     // Temporary operands/results of generated arithmetic (not guest state).
     FJitOperand, FJitProduct: TPS2Reg128;
     FJitFlags, FJitProductFlags: Cardinal;
+    procedure ProfileMark(const Name: string);
     function CompileBlock(PC: Cardinal): Pointer;
     procedure EmitPair(const P: TPS2VUPair);
     function EmitUpper(Op: Cardinal): Boolean;
@@ -174,6 +175,8 @@ type
     // pairs of the current run (16 words per pair).
     RunTrace: TArray<Word>;
     RunTraceCount: Integer;
+    // Optional host-profiler symbols for generated code (compile time only).
+    JitProfile: TProc<Pointer, string>;
     constructor Create(Index: Integer; VF: PPS2VFArray; VI: PPS2VIArray; Code, Data: PByte;
       CodeSize, DataSize: Cardinal);
     destructor Destroy; override;
@@ -368,6 +371,7 @@ begin
   J.ForgetLabels;
   J.Align(16);
   Result := J.Here;
+  ProfileMark('prologue');
   J.Enter;
   J.Move(jw64, JS0, JMem(jrSelf, Integer(NativeInt(@FVF) - NativeInt(Self))));
   J.Move(jw64, JS3, JMem(jrSelf, Integer(NativeInt(@FVI) - NativeInt(Self))));
@@ -379,6 +383,7 @@ begin
   var Last := False;
   for var K := 0 to 15 do
   begin
+    ProfileMark('guards');
     var LowerOp := PCardinal(FCode + PC)^;
     var UpperOp := PCardinal(FCode + PC + 4)^;
     var P := DecodedPair(PC, LowerOp, UpperOp);
@@ -401,6 +406,7 @@ begin
     J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Upper))), JImm(UpperOp), Stale);
     J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))), JImm(PC));
     J.Move(jw64, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Pair))), JT1);
+    ProfileMark('prepare');
     EmitPrepare(P^);
     EmitPair(P^);
     EmitFinish(P^);
@@ -415,6 +421,7 @@ begin
   // Chain to a compiled successor without leaving the common native frame.
   // The successor runs all its running/budget/code guards. Nothing points
   // directly into cached code: invalidation clears this indirection table.
+  ProfileMark('chain');
   J.Move(jw8, JT0, JMem(jrSelf, Integer(NativeInt(@FUseJit) - NativeInt(Self))));
   J.Branch(jcEq, jw32, JT0, JImm(0), Done);
   J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.TPC) - NativeInt(Self))));
@@ -442,6 +449,12 @@ begin
   FBlocks[FBlockCount] := Block;
   FBlockMap.AddOrSetValue(Hash, FBlockCount);
   Inc(FBlockCount);
+end;
+
+procedure TPS2VUCore.ProfileMark(const Name: string);
+begin
+  if Assigned(JitProfile) then
+    JitProfile(FJit.Here, Name);
 end;
 
 // Compile-time selection of the upper arithmetic. The exact PS2 SIMD
@@ -558,6 +571,7 @@ begin
         end;
       end;
   end;
+  ProfileMark('mac-status');
   EmitFlags(Mask);
   J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FUpperReg) - NativeInt(Self))), JImm(Target));
   J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FUpperMask) - NativeInt(Self))), JImm(Mask));
@@ -710,6 +724,7 @@ begin
   J.Call(@TPS2VUCore.PreparePair, [JSelf, JCtx]);
   J.Jump(Done);
   J.Bind(Normal);
+  ProfileMark('hazards');
   J.Move(jw64, JT0, M(@S.Cycles));
   Source(P.U.S1, P.U.M1); Source(P.U.S2, P.U.M2);
   Source(P.L.S1, P.L.M1); Source(P.L.S2, P.L.M2);
@@ -723,10 +738,13 @@ begin
   J.Branch(jcEq, jw32, JT0, JImm(0), NoKick);
   J.Call(@TPS2VUCore.TakeKick, [JSelf, JImm(0)]);
   J.Bind(NoKick);
+  ProfileMark('clip-queue');
   Drain(True);
   J.Move(jw32, JT0, M(@S.ClipBase));
   J.Move(jw32, M(@FClipVisible), JT0);
+  ProfileMark('flag-queue');
   Drain(False);
+  ProfileMark('prepare-control');
   J.Move(jw8, JT0, M(@S.BranchPending));
   J.Move(jw8, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Branching))), JT0);
   J.Move(jw32, JT0, M(@S.BranchTarget));
@@ -853,12 +871,15 @@ var
 
 begin
   J := FJit;
+  ProfileMark('commit');
   Commit(False);
   Commit(True);
+  ProfileMark('ready-writes');
   J.Move(jw64, JT4, M(@S.Cycles));
   J.Alu(jaAdd, jw64, JT4, JImm(4));
   Note(P.U);
   Note(P.L);
+  ProfileMark('flag-enqueue');
   if P.SetsFlags then
   begin
     var Full := J.NewLabel;
@@ -878,6 +899,7 @@ begin
     J.Alu(jaAdd, jw32, M(@S.FlagQCount), JImm(1));
     J.Bind(Full);
   end;
+  ProfileMark('finish-control');
   J.Alu(jaAdd, jw64, M(@Executed), JImm(1));
   J.Alu(jaAdd, jw64, M(@S.Cycles), JImm(1));
   var Count := JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Count)));
@@ -1142,6 +1164,7 @@ end;
 procedure TPS2VUCore.EmitPair(const P: TPS2VUPair);
 begin
   var J := FJit;
+  ProfileMark('upper');
   // Arithmetic calls the PS2 SIMD routines directly, without dispatching
   // an upper opcode on each visit. Both halves still read before commits.
   var U := P.Upper;
@@ -1199,6 +1222,7 @@ begin
   end
   else if not ((Funct >= $3C) and (Special = $2F)) then
     J.Call(@TPS2VUCore.Upper, [JSelf, JImm(U), JImm(1)]);
+  ProfileMark('lower');
   if (U and $80000000) <> 0 then
     J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.I) - NativeInt(Self))), JImm(P.Lower))
   else

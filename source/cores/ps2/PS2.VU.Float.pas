@@ -5,10 +5,9 @@
 // PS2Add4) with the same results: products of the 24-bit mantissas and sums
 // with the adder's single guard bit, both truncated; exponent 0 reads as
 // zero, exponent 255 as an ordinary binade; overflow gives the largest value,
-// underflow a signed zero. Win64 does four fields with SSE2 on doubles (every
-// product of two mantissas, and every sum once the smaller operand has lost
-// the bits below the guard bit, is exact in a double); other targets loop
-// over the one-field routines.
+// underflow a signed zero. Win64 uses packed integer AVX2 when both CPU and
+// OS support it; its SSE2 fallback uses doubles (each product and guard-bit
+// sum is exact). Other targets loop over the one-field routines.
 //
 // Four-field flags: bit K overflow and bit K + 4 underflow of field K.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
@@ -23,11 +22,21 @@ function PS2FloatMul(A, B: Cardinal; out Flags: Cardinal): Cardinal;
 // R = A * B and R = A + B for four fields.
 procedure PS2Mul4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
 procedure PS2Add4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
+// Host backend selected at initialization (CPUID and OS vector-state checks).
+function PS2VectorAVX2: Boolean;
 
 implementation
 
 uses
   PS2.EE.CPU;
+
+var
+  VectorAVX2: Boolean;
+
+function PS2VectorAVX2: Boolean;
+begin
+  Result := VectorAVX2;
+end;
 
 function PS2FloatMul(A, B: Cardinal; out Flags: Cardinal): Cardinal;
 begin
@@ -74,8 +83,14 @@ const
   COne: array[0..3] of Integer = (1, 1, 1, 1);
   C23: array[0..3] of Integer = (23, 23, 23, 23);
   C127: array[0..3] of Integer = (127, 127, 127, 127);
+  CMantissa: array[0..3] of Cardinal = ($7FFFFF, $7FFFFF, $7FFFFF, $7FFFFF);
+  CHidden: array[0..3] of Cardinal = ($800000, $800000, $800000, $800000);
+  CNot3: array[0..3] of Cardinal = ($FFFFFFFC, $FFFFFFFC, $FFFFFFFC, $FFFFFFFC);
+  C26: array[0..3] of Integer = (26, 26, 26, 26);
+  C255: array[0..3] of Integer = (255, 255, 255, 255);
+  CShift23: array[0..1] of UInt64 = (23, 23);
 
-procedure PS2Mul4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
+procedure PS2Mul4SSE2(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
 var
   ZeroMask: TPS2Reg128;
 asm
@@ -164,7 +179,7 @@ asm
   mov     [r9], eax
 end;
 
-procedure PS2Add4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
+procedure PS2Add4SSE2(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
 var
   ZeroA, ZeroB, Larger, Smaller, SignL: TPS2Reg128;
 asm
@@ -376,6 +391,227 @@ asm
   mov     [r9], eax
 end;
 
+// AVX2 permits a different integer shift count in every field. Keep the
+// PS2 mantissas as integers instead of expanding four fields to doubles.
+procedure PS2Mul4AVX2(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
+asm
+  .SAVENV XMM6
+  .SAVENV XMM7
+  .SAVENV XMM8
+  .SAVENV XMM9
+  // RCX = A, RDX = B, R8 = result, R9 = flags.
+  vmovdqu xmm0, [rcx]
+  vmovdqu xmm1, [rdx]
+  vpxor xmm9, xmm9, xmm9
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpcmpeqd xmm4, xmm2, xmm9
+  vpcmpeqd xmm6, xmm3, xmm9
+  vpor xmm4, xmm4, xmm6                // zero operand
+  vpxor xmm5, xmm0, xmm1
+  vpand xmm5, xmm5, [rip + CSignMask]
+  vpand xmm0, xmm0, [rip + CMantissa]
+  vpand xmm1, xmm1, [rip + CMantissa]
+  vpor xmm0, xmm0, [rip + CHidden]
+  vpor xmm1, xmm1, [rip + CHidden]
+  vpmuludq xmm6, xmm0, xmm1            // exact 48-bit products, fields 0,2
+  vpsrldq xmm0, xmm0, 4
+  vpsrldq xmm1, xmm1, 4
+  vpmuludq xmm0, xmm0, xmm1            // fields 1,3
+  vpsrlq xmm7, xmm6, 47
+  vpsrlq xmm1, xmm0, 47                // normalization carry
+  vpaddq xmm8, xmm7, [rip + CShift23]
+  vpaddq xmm9, xmm1, [rip + CShift23]
+  vpsrlvq xmm6, xmm6, xmm8
+  vpsrlvq xmm0, xmm0, xmm9
+  vpsllq xmm0, xmm0, 32
+  vpor xmm6, xmm6, xmm0                // four normalized mantissas
+  vpsllq xmm1, xmm1, 32
+  vpor xmm7, xmm7, xmm1                // four carries
+  vpaddd xmm2, xmm2, xmm3
+  vpsubd xmm2, xmm2, [rip + C127]
+  vpaddd xmm2, xmm2, xmm7              // result exponents
+  vpand xmm6, xmm6, [rip + CMantissa]
+  vpslld xmm3, xmm2, 23
+  vpor xmm6, xmm6, xmm3
+  vpcmpgtd xmm7, xmm2, [rip + C255]     // overflow
+  vmovdqu xmm8, [rip + COne]
+  vpcmpgtd xmm8, xmm8, xmm2            // underflow
+  vpand xmm0, xmm7, [rip + CAbsMask]
+  vpandn xmm1, xmm7, xmm6
+  vpor xmm6, xmm0, xmm1                // saturate overflow
+  vpor xmm9, xmm8, xmm4
+  vpandn xmm6, xmm9, xmm6              // underflow/zero operand -> zero
+  vpor xmm6, xmm6, xmm5                // signed, including signed zero
+  vpandn xmm7, xmm4, xmm7
+  vpandn xmm8, xmm4, xmm8              // zero operands do not set flags
+  vmovdqu [r8], xmm6
+  vmovmskps eax, xmm7
+  vmovmskps edx, xmm8
+  shl edx, 4
+  or eax, edx
+  mov [r9], eax
+  vzeroupper
+end;
+
+procedure PS2Add4AVX2(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
+asm
+  .SAVENV XMM6
+  .SAVENV XMM7
+  .SAVENV XMM8
+  .SAVENV XMM9
+  .SAVENV XMM10
+  vmovdqu xmm0, [rcx]
+  vmovdqu xmm1, [rdx]
+  vpand xmm2, xmm0, [rip + CAbsMask]
+  vpand xmm3, xmm1, [rip + CAbsMask]
+  vpcmpgtd xmm3, xmm3, xmm2            // |B| > |A|
+  vpxor xmm4, xmm0, xmm1
+  vpsrad xmm4, xmm4, 31               // opposite signs
+  vpand xmm5, xmm3, xmm1
+  vpandn xmm6, xmm3, xmm0
+  vpor xmm5, xmm5, xmm6                // larger magnitude first (L)
+  vpand xmm6, xmm3, xmm0
+  vpandn xmm3, xmm3, xmm1
+  vpor xmm6, xmm6, xmm3                // smaller (M)
+  vpslld xmm7, xmm5, 1
+  vpsrld xmm7, xmm7, 24                // EL
+  vpslld xmm8, xmm6, 1
+  vpsrld xmm8, xmm8, 24                // EM
+  vpand xmm9, xmm5, [rip + CSignMask]
+  vpand xmm5, xmm5, [rip + CMantissa]
+  vpand xmm6, xmm6, [rip + CMantissa]
+  vpor xmm5, xmm5, [rip + CHidden]
+  vpor xmm6, xmm6, [rip + CHidden]
+  vpslld xmm5, xmm5, 3
+  vpslld xmm6, xmm6, 3
+  vpsubd xmm8, xmm7, xmm8
+  vpsrlvd xmm6, xmm6, xmm8             // shifted-out bits are discarded
+  vpand xmm6, xmm6, [rip + CNot3]      // one guard bit, no sticky bit
+  vpaddd xmm8, xmm5, xmm6
+  vpsubd xmm5, xmm5, xmm6
+  vpand xmm5, xmm5, xmm4
+  vpandn xmm4, xmm4, xmm8
+  vpor xmm5, xmm5, xmm4                // unsigned magnitude of the sum
+  vpxor xmm0, xmm0, xmm0
+  vpcmpeqd xmm10, xmm5, xmm0           // exact cancellation
+
+  // Find the leading bit. Integer-to-float conversion can round across a
+  // power of two under some host rounding modes: detect and correct it.
+  // No rounded mantissa is used in the result.
+  vcvtdq2ps xmm6, xmm5
+  vpsrld xmm6, xmm6, 23
+  vpsubd xmm6, xmm6, [rip + C127]
+  vmovdqu xmm8, [rip + COne]
+  vpsllvd xmm8, xmm8, xmm6
+  vpcmpgtd xmm8, xmm8, xmm5
+  vpaddd xmm6, xmm6, xmm8              // subtract one if conversion carried
+  vpsubd xmm6, xmm6, [rip + C26]
+  vpaddd xmm7, xmm7, xmm6              // normalized exponent
+  vpsubd xmm8, xmm0, xmm6
+  vpsllvd xmm8, xmm5, xmm8
+  vpsrlvd xmm5, xmm5, xmm6
+  vpor xmm5, xmm5, xmm8                // normalize without losing guard bits
+  vpsrld xmm5, xmm5, 3
+  vpand xmm5, xmm5, [rip + CMantissa]
+  vpslld xmm6, xmm7, 23
+  vpor xmm5, xmm5, xmm6
+  vpcmpgtd xmm8, xmm7, [rip + C255]     // overflow
+  vmovdqu xmm6, [rip + COne]
+  vpcmpgtd xmm6, xmm6, xmm7            // small exponent
+  vpand xmm0, xmm8, [rip + CAbsMask]
+  vpandn xmm5, xmm8, xmm5
+  vpor xmm5, xmm5, xmm0
+  vpor xmm0, xmm6, xmm10
+  vpandn xmm5, xmm0, xmm5
+  vpandn xmm0, xmm10, xmm9
+  vpor xmm5, xmm5, xmm0                // cancellation is +0; underflow keeps sign
+  vpandn xmm6, xmm10, xmm6             // cancellation does not underflow
+
+  // Exponent-zero inputs are signed zeros, including their subnormal bits.
+  // With only one zero operand, the other operand is returned unchanged.
+  vmovdqu xmm0, [rcx]
+  vmovdqu xmm1, [rdx]
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpxor xmm4, xmm4, xmm4
+  vpcmpeqd xmm2, xmm2, xmm4            // A zero
+  vpcmpeqd xmm3, xmm3, xmm4            // B zero
+  vpor xmm4, xmm2, xmm3               // either zero
+  vpand xmm9, xmm2, xmm3
+  vpand xmm9, xmm9, xmm0
+  vpand xmm9, xmm9, xmm1
+  vpand xmm9, xmm9, [rip + CSignMask]  // both zero
+  vpandn xmm10, xmm3, xmm2
+  vpand xmm10, xmm10, xmm1             // only A zero -> B
+  vpandn xmm2, xmm2, xmm3
+  vpand xmm2, xmm2, xmm0               // only B zero -> A
+  vpor xmm9, xmm9, xmm10
+  vpor xmm9, xmm9, xmm2
+  vpandn xmm5, xmm4, xmm5
+  vpor xmm5, xmm5, xmm9
+  vpandn xmm6, xmm4, xmm6
+  vpandn xmm8, xmm4, xmm8
+  vmovdqu [r8], xmm5
+  vmovmskps eax, xmm8
+  vmovmskps edx, xmm6
+  shl edx, 4
+  or eax, edx
+  mov [r9], eax
+  vzeroupper
+end;
+
+function HostAVX2: Boolean;
+asm
+  .NOFRAME
+  mov r10, rbx                       // CPUID clobbers nonvolatile RBX
+  xor eax, eax
+  cpuid
+  cmp eax, 7
+  jb @@No
+  mov eax, 1
+  cpuid
+  and ecx, $1C000000                 // XSAVE, OSXSAVE, AVX
+  cmp ecx, $1C000000
+  jne @@No
+  xor ecx, ecx
+  xgetbv
+  and eax, 6                         // OS saves XMM and YMM state
+  cmp eax, 6
+  jne @@No
+  mov eax, 7
+  xor ecx, ecx
+  cpuid
+  shr ebx, 5                         // AVX2 in leaf 7, subleaf 0
+  and ebx, 1
+  mov eax, ebx
+  jmp @@Done
+@@No:
+  xor eax, eax
+@@Done:
+  mov rbx, r10
+end;
+
+type
+  TVectorProc = procedure(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
+
+var
+  Mul4Proc, Add4Proc: TVectorProc;
+
+procedure PS2Mul4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
+asm
+  .NOFRAME
+  jmp qword ptr [rip + Mul4Proc]
+end;
+
+procedure PS2Add4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
+asm
+  .NOFRAME
+  jmp qword ptr [rip + Add4Proc]
+end;
+
 {$ELSE}
 
 procedure PS2Mul4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
@@ -407,5 +643,19 @@ begin
 end;
 
 {$ENDIF}
+
+initialization
+  {$IFDEF PS2_VU_SSE}
+  Mul4Proc := PS2Mul4SSE2;
+  Add4Proc := PS2Add4SSE2;
+  {$IFNDEF PS2_FORCE_SSE2}
+  VectorAVX2 := HostAVX2;
+  if VectorAVX2 then
+  begin
+    Mul4Proc := PS2Mul4AVX2;
+    Add4Proc := PS2Add4AVX2;
+  end;
+  {$ENDIF}
+  {$ENDIF}
 
 end.

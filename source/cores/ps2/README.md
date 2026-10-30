@@ -23,6 +23,12 @@ of the picture wrongly.
 | `PS2.IOP.Loader`, `PS2.IOP.Kernel`, `PS2.IOP.Libs` | IRX loading and linking, the high-level IOP kernel and the system libraries IOP modules import |
 | `PS2.Console` | Wiring, field timing (NTSC/PAL), the run loop and snapshots |
 
+`PS2.VU.Float` selects packed integer AVX2 arithmetic on Win64 only after
+checking CPUID, OSXSAVE and XCR0; otherwise it retains SSE2. Both paths keep
+the PS2 guard-bit, extended exponent, signed-zero and saturation rules.
+`tests/cores/ps2/vufloat/build.ps1 -ForceSSE2` explicitly tests the fallback.
+The tests cover all host rounding modes, exponent pairs and in-place results.
+
 Disc images come from `source/media/dvd/Core.DVD.Image.pas` (ISO, MDS/MDF,
 DVD CHD, CD images through the CD layer). The front end lives in
 `source/platforms/ps2/Core.Platforms.PS2.Adapter.pas` and

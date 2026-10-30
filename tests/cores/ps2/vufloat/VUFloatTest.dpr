@@ -8,7 +8,7 @@
 {$Q-}{$R-}
 
 uses
-  System.SysUtils, System.Diagnostics, PS2.Types, PS2.EE.CPU, PS2.VU.Float;
+  System.SysUtils, System.Diagnostics, System.Math, PS2.Types, PS2.EE.CPU, PS2.VU.Float;
 
 var
   Seed: UInt64 = $123456789ABCDEF;
@@ -52,6 +52,14 @@ begin
       B.UW[K] := RndFloat(A.UW[K]);
     end;
     PS2Mul4(A, B, R, F);
+    if N mod 1024 = 0 then
+    begin
+      var Alias := A;
+      var AF: Cardinal;
+      PS2Mul4(Alias, B, Alias, AF);
+      if not CompareMem(@Alias, @R, SizeOf(R)) or (AF <> F) then
+        raise Exception.Create('In-place product mismatch');
+    end;
     for var K := 0 to 3 do
     begin
       var SF: Cardinal;
@@ -65,6 +73,14 @@ begin
       end;
     end;
     PS2Add4(A, B, R, F);
+    if N mod 1024 = 0 then
+    begin
+      var Alias := B;
+      var AF: Cardinal;
+      PS2Add4(A, Alias, Alias, AF);
+      if not CompareMem(@Alias, @R, SizeOf(R)) or (AF <> F) then
+        raise Exception.Create('In-place sum mismatch');
+    end;
     for var K := 0 to 3 do
     begin
       var SF: Cardinal;
@@ -81,6 +97,49 @@ begin
   Writeln('errors: ', Errors);
   if Errors > 0 then
     ExitCode := 1;
+end;
+
+procedure Directed;
+const
+  Mantissas: array[0..5] of Cardinal = (0, 1, 3, $3FFFFF, $7FFFFE, $7FFFFF);
+var
+  A, B, R: TPS2Reg128;
+begin
+  // All exponent pairs, near normalization/carry/cancellation boundaries.
+  for var EA := 0 to 255 do
+    for var EB := 0 to 255 do
+      for var Mantissa in Mantissas do
+      begin
+        A.UW[0] := (Cardinal(EA) shl 23) or Mantissa;
+        B.UW[0] := (Cardinal(EB) shl 23) or $7FFFFF;
+        A.UW[1] := A.UW[0] or $80000000;
+        B.UW[1] := B.UW[0] or $80000000;
+        A.UW[2] := A.UW[0];
+        B.UW[2] := B.UW[1];
+        A.UW[3] := A.UW[1];
+        B.UW[3] := B.UW[0];
+        var Flags: Cardinal;
+        PS2Add4(A, B, R, Flags);
+        for var K := 0 to 3 do
+        begin
+          var SF: Cardinal;
+          var Want := PS2FloatAdd(A.UW[K], B.UW[K], SF);
+          var F := ((SF and 1) shl K) or (((SF shr 1) and 1) shl (K + 4));
+          if (R.UW[K] <> Want) or ((Flags and ((Cardinal(17) shl K))) <> F) then
+            raise Exception.CreateFmt('Directed ADD %.8x + %.8x: %.8x <> %.8x',
+              [A.UW[K], B.UW[K], R.UW[K], Want]);
+        end;
+        PS2Mul4(A, B, R, Flags);
+        for var K := 0 to 3 do
+        begin
+          var SF: Cardinal;
+          var Want := PS2FloatMul(A.UW[K], B.UW[K], SF);
+          var F := ((SF and 1) shl K) or (((SF shr 1) and 1) shl (K + 4));
+          if (R.UW[K] <> Want) or ((Flags and (Cardinal(17) shl K)) <> F) then
+            raise Exception.Create('Directed product/flags mismatch');
+        end;
+      end;
+  Writeln('all exponent pairs, carry/cancellation boundaries: OK');
 end;
 
 procedure Time;
@@ -127,7 +186,16 @@ end;
 
 begin
   try
-    Check;
+    SetExceptionMask(exAllArithmeticExceptions);
+    Writeln('AVX2 backend=', PS2VectorAVX2);
+    for var Mode := Low(TRoundingMode) to High(TRoundingMode) do
+    begin
+      SetRoundMode(Mode);
+      Writeln('rounding=', Ord(Mode));
+      Check;
+      Directed;
+    end;
+    SetRoundMode(rmTruncate);
     Time;
   except
     on E: Exception do

@@ -166,12 +166,20 @@ begin
         var Scissor := UInt64(X0) or (UInt64(X1) shl 16) or (UInt64(Y0) shl 32) or (UInt64(Y1) shl 48);
         A.WriteRegister(GSRegSCISSOR_1, Scissor);
         B.WriteRegister(GSRegSCISSOR_1, Scissor);
+        var Test: UInt64 := $10000;
+        if (N and 2) <> 0 then Test := Test or (UInt64(1) shl 17);
+        A.WriteRegister(GSRegTEST_1, Test);
+        B.WriteRegister(GSRegTEST_1, Test);
         for var K := 0 to 2 do
         begin
           V[K] := Default(TPS2GSVertex);
           V[K].X := $8000 + Random(1536) - 256;
           V[K].Y := $8000 + Random(1536) - 256;
           V[K].Z := Cardinal(Random(MaxInt));
+          V[K].R := (N + 17 * K) and 255;
+          V[K].G := (N + 91) and 255;
+          V[K].B := 173;
+          V[K].A := 128;
         end;
         if N mod 8 = 0 then
         begin
@@ -184,12 +192,18 @@ begin
         if (A.PixelsDrawn <> B.PixelsDrawn) or (A.Primitives <> B.Primitives) then
           raise Exception.CreateFmt('Coverage mismatch threads=%d triangle=%d expected=%d actual=%d',
             [Threads, N, A.PixelsDrawn, B.PixelsDrawn]);
+        if N mod 64 = 63 then
+        begin
+          B.Sync;
+          if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) then
+            raise Exception.CreateFmt('Band coverage VRAM mismatch threads=%d triangle=%d', [Threads, N]);
+        end;
       end;
     end;
     B.Sync;
     if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) then
-      raise Exception.Create('NEVER-depth coverage test wrote VRAM');
-    Writeln('1536 clipped/subpixel coverage cases, 2/4/6 bands: exact counters OK');
+      raise Exception.Create('Coverage VRAM mismatch');
+    Writeln('1536 clipped/subpixel coverage cases, 2/4/6 bands: VRAM and exact counters OK');
   finally
     A.Free; B.Free;
   end;

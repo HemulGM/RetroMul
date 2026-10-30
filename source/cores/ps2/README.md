@@ -79,8 +79,15 @@ four-field PS2 SIMD routines directly; uncommon operations retain interpreter
 helpers. XGKICK still uses the shared packet reader with its original timing.
 Code is generated after 16 visits in blocks of up to 16 pairs, ending after
 branch/end delay slots. Compiled successors chain through a table within one
-native frame. Every pair still checks the budget, PC, both instruction words
-and decoded metadata; code changed by a callback exits before a stale pair.
+native frame. The general path checks the budget, PC, both instruction words
+and decoded metadata at every pair; callback changes cannot run a stale pair.
+Callback-free spans also have a statically scheduled path: it validates the
+whole span, incoming dependency deadlines and pending queues before changing
+guest state. Internal stalls and final register-ready times are constants;
+flag-queue evolution is compiled symbolically, retaining exact stale tail
+slots. Short budgets, trace capture, pending kicks/branches and unusual input
+latencies fall back to per-pair execution. Division, CLIP/flag operations and
+XGKICK are observation boundaries, not deferred across such a span.
 Re-uploaded block versions are reused only after the entry address and every
 word match (hashes alone are not trusted). The code arena is bounded to
 32 MiB per VU1; resetting it clears the version and successor tables too.
@@ -93,7 +100,8 @@ It covers code replacement (including an interior pair rewritten during
 XGKICK), partial budgets, mode changes, memory, masked/overlapping registers,
 traces, delayed flags, loop/call chaining, cache exhaustion and re-uploaded
 versions with deliberately colliding hashes. Both backends must match the
-interpreter's state. `-Checked` enables checked core code.
+interpreter's state, including scheduled spans with pending Q/P and poisoned
+live/unused flag queues. `-Checked` enables checked core code.
 
 ## Experimental Vulkan GS
 

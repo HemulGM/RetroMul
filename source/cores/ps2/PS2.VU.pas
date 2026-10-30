@@ -64,6 +64,7 @@ type
   TPS2VUPair = record
     Lower, Upper: Cardinal;
     Valid, SetsFlags, NativeCandidate: Boolean;
+    VIWrite: Integer;
     U, L: TPS2VURegUse;
     Native: Pointer;
     Heat: Integer;
@@ -90,6 +91,18 @@ type
     Native, Body: Pointer;
   end;
   PPS2VUCompiledBlock = ^TPS2VUCompiledBlock;
+
+  TPS2VUFastPlan = record
+    Issue: array[0..15] of Integer;
+    // First external read's issue time and last internal write's issue time.
+    ReadAt, WriteAt: array[0..31, 0..3] of Integer;
+    WriteAny: array[0..31] of Integer;
+  end;
+
+  TPS2VUFlagEvent = record
+    Ready: Int64;
+    MAC, Status: Cardinal;
+  end;
 
   TPS2VUCore = class
   private
@@ -137,6 +150,8 @@ type
     // Temporary operands/results of generated arithmetic (not guest state).
     FJitOperand, FJitProduct: TPS2Reg128;
     FJitFlags, FJitProductFlags: Cardinal;
+    FJitEvents: array[0..15] of TPS2VUFlagEvent;
+    FJitFastPairs: Int64;
     procedure ProfileMark(const Name: string);
     function CompileBlock(PC: Cardinal): Pointer;
     procedure EmitPair(const P: TPS2VUPair);
@@ -145,6 +160,12 @@ type
     procedure EmitFlags(Mask: Cardinal);
     procedure EmitPrepare(const P: TPS2VUPair);
     procedure EmitFinish(const P: TPS2VUPair);
+    procedure EmitCommit(const P: TPS2VUPair);
+    procedure EmitVIHistory(const P: TPS2VUPair);
+    function PlanFast(const Block: TPS2VUCompiledBlock; out Plan: TPS2VUFastPlan): Boolean;
+    procedure EmitFast(const Block: TPS2VUCompiledBlock; const Plan: TPS2VUFastPlan;
+      Slow, Stale, Chain: TJitLabel);
+    procedure FinishFastFlags(Count: Integer; LastIssue: Int64);
     procedure PreparePair(var Run: TPS2VURun); inline;
     procedure FinishPair(var Run: TPS2VURun); inline;
     function DecodedPair(PC, LowerOp, UpperOp: Cardinal): PPS2VUPair; inline;
@@ -187,6 +208,7 @@ type
     property JitCompiles: Int64 read FJitCompiles;
     property JitResets: Int64 read FJitResets;
     property JitCacheHits: Int64 read FJitCacheHits;
+    property JitFastPairs: Int64 read FJitFastPairs;
     // Select the portable generator model before running a differential test.
     procedure UseJitModel;
     procedure Reset;
@@ -267,6 +289,44 @@ begin
   Result := Cardinal(8) shr K;
 end;
 
+// Operations with no callback and no direct access to the delayed flag
+// queues. Boundaries (CLIP/flag reads, division, EFU and XGKICK) retain the
+// fully guarded per-pair path.
+function FastPair(Lower, Upper: Cardinal): Boolean;
+begin
+  var F := Upper and $3F;
+  if (F >= $3C) and ((((Upper shr 4) and $7C) or (Upper and 3)) = $1F) then
+    Exit(False);
+  if (Upper and $80000000) <> 0 then Exit(True);
+  if (Lower and $80000000) = 0 then
+    Exit((Lower shr 25) in [$00, $01, $04, $05, $08, $09, $20, $21, $24, $25, $28, $29, $2C..$2F]);
+  if (Lower and $3F) < $3C then
+    Exit((Lower and $3F) in [$30, $31, $32, $34, $35]);
+  Result := (((Lower shr 4) and $7C) or (Lower and 3)) in
+    [$30, $31, $34..$37, $3C..$43, $64, $68, $69];
+end;
+
+function VIWritten(Lower, Upper: Cardinal): Integer;
+begin
+  Result := -1;
+  if (Upper and $80000000) <> 0 then Exit;
+  if (Lower and $80000000) = 0 then
+  begin
+    if (Lower shr 25) in [$04, $08, $09] then Result := Integer((Lower shr 16) and 15);
+  end
+  else
+    case Lower and $3F of
+      $30, $31, $34, $35: Result := Integer((Lower shr 6) and 15);
+      $32: Result := Integer((Lower shr 16) and 15);
+      $3C..$3F:
+        case ((Lower shr 4) and $7C) or (Lower and 3) of
+          $3C, $3E, $35, $37: Result := Integer((Lower shr 16) and 15);
+          $34, $36: Result := Integer((Lower shr 11) and 15);
+        end;
+    end;
+  if Result = 0 then Result := -1;
+end;
+
 { TPS2VUCore }
 
 constructor TPS2VUCore.Create(Index: Integer; VF: PPS2VFArray; VI: PPS2VIArray; Code, Data: PByte;
@@ -320,6 +380,7 @@ begin
   begin
     var Lo := PCardinal(FCode + Address)^;
     var Hi := PCardinal(FCode + Address + 4)^;
+    if (K > 0) and not EndAfterPair and not FastPair(Lo, Hi) then Break;
     Block.Words[K * 2] := Lo;
     Block.Words[K * 2 + 1] := Hi;
     Inc(Block.PairCount);
@@ -332,6 +393,7 @@ begin
     EndAfterPair := (Hi and $40000000) <> 0;
     if (Hi and $80000000) = 0 then
       EndAfterPair := EndAfterPair or ((Lo shr 25) in [$20, $21, $24, $25, $28, $29, $2C..$2F]);
+    if (K = 0) and not EndAfterPair and not FastPair(Lo, Hi) then Break;
     Address := (Address + 8) and FCodeMask;
   end;
   var Version: Integer;
@@ -380,8 +442,14 @@ begin
   var Stale := J.NewLabel;
   var EntryPC := PC;
   var Body := J.Here;
+  var Slow := J.NewLabel;
+  var Chain := J.NewLabel;
+  var Plan: TPS2VUFastPlan;
+  if PlanFast(Block, Plan) then
+    EmitFast(Block, Plan, Slow, Stale, Chain);
+  J.Bind(Slow);
   var Last := False;
-  for var K := 0 to 15 do
+  for var K := 0 to Block.PairCount - 1 do
   begin
     ProfileMark('guards');
     var LowerOp := PCardinal(FCode + PC)^;
@@ -418,6 +486,7 @@ begin
       Last := Last or ((LowerOp shr 25) in [$20, $21, $24, $25, $28, $29, $2C..$2F]);
     PC := (PC + 8) and FCodeMask;
   end;
+  J.Bind(Chain);
   // Chain to a compiled successor without leaving the common native frame.
   // The successor runs all its running/budget/code guards. Nothing points
   // directly into cached code: invalidation clears this indirection table.
@@ -455,6 +524,372 @@ procedure TPS2VUCore.ProfileMark(const Name: string);
 begin
   if Assigned(JitProfile) then
     JitProfile(FJit.Here, Name);
+end;
+
+function TPS2VUCore.PlanFast(const Block: TPS2VUCompiledBlock; out Plan: TPS2VUFastPlan): Boolean;
+var
+  Cycle: Integer;
+
+  procedure Need(Reg: Integer; Mask: Cardinal);
+  begin
+    if Reg <= 0 then Exit;
+    for var K := 0 to 3 do
+      if ((Mask and FieldBit(K)) <> 0) and (Plan.WriteAt[Reg, K] >= 0) then
+        Cycle := Max(Cycle, Plan.WriteAt[Reg, K] + 4);
+  end;
+
+  procedure ReadExternal(Reg: Integer; Mask: Cardinal);
+  begin
+    if Reg <= 0 then Exit;
+    for var K := 0 to 3 do
+      if ((Mask and FieldBit(K)) <> 0) and (Plan.WriteAt[Reg, K] < 0) then
+        if Plan.ReadAt[Reg, K] < 0 then Plan.ReadAt[Reg, K] := Cycle;
+  end;
+
+  procedure Write(const R: TPS2VURegUse);
+  begin
+    if (R.Dest <= 0) or (R.DestMask = 0) then Exit;
+    for var K := 0 to 3 do
+      if (R.DestMask and FieldBit(K)) <> 0 then Plan.WriteAt[R.Dest, K] := Cycle;
+    Plan.WriteAny[R.Dest] := Cycle;
+  end;
+
+begin
+  Result := False;
+  if Block.PairCount < 4 then Exit;
+  // The hardware has separate code and data RAM. Preserve per-pair code
+  // guards for synthetic callers that deliberately alias the two buffers.
+  if (NativeUInt(FData) < NativeUInt(FCode) + FCodeMask + 1) and
+    (NativeUInt(FCode) < NativeUInt(FData) + FDataMask + 1) then Exit;
+  FillChar(Plan, SizeOf(Plan), $FF);
+  Cycle := 0;
+  var PC := Block.PC;
+  for var I := 0 to Block.PairCount - 1 do
+  begin
+    if not FastPair(Block.Words[I * 2], Block.Words[I * 2 + 1]) then Exit;
+    var P: PPS2VUPair := @FPairs[PC shr 3];
+    Need(P.U.S1, P.U.M1); Need(P.U.S2, P.U.M2);
+    Need(P.L.S1, P.L.M1); Need(P.L.S2, P.L.M2);
+    ReadExternal(P.U.S1, P.U.M1); ReadExternal(P.U.S2, P.U.M2);
+    ReadExternal(P.L.S1, P.L.M1); ReadExternal(P.L.S2, P.L.M2);
+    Plan.Issue[I] := Cycle;
+    Write(P.U); Write(P.L);
+    Inc(Cycle);
+    PC := (PC + 8) and FCodeMask;
+  end;
+  Result := True;
+end;
+
+// Reproduce the reference queues at an observable block boundary. No flag
+// instruction or callback runs while events are deferred. Keep even unused
+// tail slots identical, so snapshots and later interpreter execution agree.
+procedure TPS2VUCore.FinishFastFlags(Count: Integer; LastIssue: Int64);
+
+  procedure Drain(Cycle: Int64);
+  begin
+    while (S.FlagQCount > 0) and (S.FlagQReady[0] <= Cycle) do
+    begin
+      S.MACBase := S.FlagQMAC[0];
+      S.StatusBase := S.FlagQStatus[0];
+      for var K := 1 to S.FlagQCount - 1 do
+      begin
+        S.FlagQMAC[K - 1] := S.FlagQMAC[K];
+        S.FlagQStatus[K - 1] := S.FlagQStatus[K];
+        S.FlagQReady[K - 1] := S.FlagQReady[K];
+      end;
+      Dec(S.FlagQCount);
+    end;
+  end;
+
+begin
+  for var I := 0 to Count - 1 do
+  begin
+    Drain(FJitEvents[I].Ready - 4);
+    if S.FlagQCount < 4 then
+    begin
+      S.FlagQMAC[S.FlagQCount] := FJitEvents[I].MAC;
+      S.FlagQStatus[S.FlagQCount] := FJitEvents[I].Status;
+      S.FlagQReady[S.FlagQCount] := FJitEvents[I].Ready;
+      Inc(S.FlagQCount);
+    end;
+  end;
+  Drain(LastIssue);
+  while (S.ClipQCount > 0) and (S.ClipQReady[0] <= LastIssue) do
+  begin
+    S.ClipBase := S.ClipQValue[0];
+    for var K := 1 to S.ClipQCount - 1 do
+    begin
+      S.ClipQValue[K - 1] := S.ClipQValue[K];
+      S.ClipQReady[K - 1] := S.ClipQReady[K];
+    end;
+    Dec(S.ClipQCount);
+  end;
+  FClipVisible := S.ClipBase;
+end;
+
+// A scheduled run with no observation inside it. Validate all code and all
+// external dependency deadlines before any guest change. Short budgets,
+// trace capture, pending branches/ends/kicks and unexpected input latencies
+// use the general path. Internal stalls and final ready times are constants.
+procedure TPS2VUCore.EmitFast(const Block: TPS2VUCompiledBlock; const Plan: TPS2VUFastPlan;
+  Slow, Stale, Chain: TJitLabel);
+var
+  J: TJitAsm;
+  EventReady: array[0..15] of Integer;
+  Slots: array[0..3] of Integer;
+  EventCount, PrefixCount, LiveCount, BaseEvent: Integer;
+
+  function M(Address: Pointer): TJitOp;
+  begin
+    Result := JMem(jrSelf, Integer(NativeInt(Address) - NativeInt(Self)));
+  end;
+
+  // Until a read, a pending Q/P need not be materialized. At the end,
+  // account for every elapsed cycle, including scheduled hazard stalls.
+  procedure Land(DelayAddress, PendingAddress, ValueAddress: Pointer; Elapsed: Integer; Final: Boolean);
+  begin
+    var Done := J.NewLabel;
+    var Pending := J.NewLabel;
+    J.Move(jw32, JT0, M(DelayAddress));
+    J.Branch(jcLe, jw32, JT0, JImm(0), Done);
+    J.Branch(jcGt, jw32, JT0, JImm(Elapsed), Pending);
+    J.Move(jw32, JT1, M(PendingAddress));
+    J.Move(jw32, M(ValueAddress), JT1);
+    J.Move(jw32, M(DelayAddress), JImm(0));
+    J.Jump(Done);
+    J.Bind(Pending);
+    if Final then J.Alu(jaSub, jw32, M(DelayAddress), JImm(Elapsed));
+    J.Bind(Done);
+  end;
+
+  procedure QueueShape(CountAddress, ReadyAddress: Pointer);
+  begin
+    var Done := J.NewLabel;
+    J.Move(jw32, JT0, M(CountAddress));
+    J.Branch(jcAbove, jw32, JT0, JImm(4), Slow);
+    J.Branch(jcEq, jw32, JT0, JImm(0), Done);
+    J.Move(jw64, JT2, JS1);
+    J.Alu(jaAdd, jw64, JT2, JImm(3));
+    for var K := 0 to 3 do
+    begin
+      var Last := J.NewLabel;
+      J.Move(jw64, JT1, JMem(jrSelf, M(ReadyAddress).Disp + K * 8));
+      if K > 0 then J.Branch(jcLe, jw64, JT1, JMem(jrSelf, M(ReadyAddress).Disp + (K - 1) * 8), Slow);
+      J.Branch(jcNe, jw32, JT0, JImm(K + 1), Last);
+      J.Branch(jcGt, jw64, JT1, JT2, Slow);
+      J.Jump(Done);
+      J.Bind(Last);
+    end;
+    J.Bind(Done);
+  end;
+
+  // Once three cycles have elapsed all incoming events have landed. The
+  // remaining queue evolution is entirely compile-time: symbols identify
+  // captured MAC/status values, -1 leaves that physical tail slot untouched.
+  procedure DrainSymbols(Cycle: Integer);
+  begin
+    while (LiveCount > 0) and (EventReady[Slots[0]] <= Cycle) do
+    begin
+      BaseEvent := Slots[0];
+      for var K := 1 to LiveCount - 1 do Slots[K - 1] := Slots[K];
+      Dec(LiveCount);
+    end;
+  end;
+
+begin
+  J := FJit;
+  ProfileMark('fast-entry');
+  var Count := JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Count)));
+  var Limit := JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Limit)));
+  J.Move(jw32, JT0, Count);
+  J.Alu(jaAdd, jw64, JT0, JImm(Block.PairCount + 64));
+  J.Move(jw32, JT1, Limit);
+  J.Branch(jcAbove, jw64, JT0, JT1, Slow); // retain exact per-pair LoopTrace
+  J.Branch(jcNe, jw64, M(@RunTrace), JImm(0), Slow);
+  J.Move(jw8, JT0, M(@S.Running));
+  J.Branch(jcEq, jw32, JT0, JImm(0), Slow);
+  J.Move(jw8, JT0, M(@S.BranchPending));
+  J.Branch(jcNe, jw32, JT0, JImm(0), Slow);
+  J.Move(jw8, JT0, M(@S.EndPending));
+  J.Branch(jcNe, jw32, JT0, JImm(0), Slow);
+  J.Move(jw8, JT0, M(@FKickPending));
+  J.Branch(jcNe, jw32, JT0, JImm(0), Slow);
+  J.Move(jw32, JT0, M(@S.TPC));
+  J.Alu(jaAnd, jw32, JT0, JImm(FCodeMask));
+  J.Branch(jcNe, jw32, JT0, JImm(Block.PC), Slow);
+  J.Move(jw64, JS1, M(@S.Cycles));
+  ProfileMark('fast-inputs');
+  QueueShape(@S.FlagQCount, @S.FlagQReady[0]);
+  QueueShape(@S.ClipQCount, @S.ClipQReady[0]);
+  for var R := 1 to 31 do
+    for var K := 0 to 3 do
+      if Plan.ReadAt[R, K] >= 0 then
+      begin
+        J.Move(jw64, JT0, JS1);
+        J.Alu(jaAdd, jw64, JT0, JImm(Plan.ReadAt[R, K]));
+        J.Branch(jcGt, jw64, M(@FReady[R, K]), JT0, Slow);
+      end;
+  ProfileMark('fast-code-guards');
+  J.Move(jw64, JT2, M(@FCode));
+  var PC := Block.PC;
+  for var I := 0 to Block.PairCount - 1 do
+  begin
+    J.Branch(jcNe, jw32, JMem(jrT2, Integer(PC)), JImm(Block.Words[I * 2]), Stale);
+    J.Branch(jcNe, jw32, JMem(jrT2, Integer(PC + 4)), JImm(Block.Words[I * 2 + 1]), Stale);
+    J.Move(jw64, JT1, JImm(NativeInt(@FPairs[PC shr 3])));
+    J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Lower))), JImm(Block.Words[I * 2]), Stale);
+    J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Upper))), JImm(Block.Words[I * 2 + 1]), Stale);
+    PC := (PC + 8) and FCodeMask;
+  end;
+  EventCount := 0;
+  PrefixCount := 0;
+  PC := Block.PC;
+  for var I := 0 to Block.PairCount - 1 do
+  begin
+    if FPairs[PC shr 3].SetsFlags then
+    begin
+      EventReady[EventCount] := Plan.Issue[I] + 4;
+      Inc(EventCount);
+      if Plan.Issue[I] <= 3 then Inc(PrefixCount);
+    end;
+    PC := (PC + 8) and FCodeMask;
+  end;
+  FillChar(Slots, SizeOf(Slots), $FF);
+  for var I := 0 to PrefixCount - 1 do Slots[I] := I;
+  LiveCount := PrefixCount;
+  BaseEvent := -1;
+  for var I := PrefixCount to EventCount - 1 do
+  begin
+    DrainSymbols(EventReady[I] - 4);
+    if LiveCount < 4 then
+    begin
+      Slots[LiveCount] := I;
+      Inc(LiveCount);
+    end;
+  end;
+  var LastCycle := Plan.Issue[Block.PairCount - 1];
+  DrainSymbols(LastCycle);
+  var WholeQueueKnown := BaseEvent >= 0;
+  for var I := 0 to 3 do WholeQueueKnown := WholeQueueKnown and (Slots[I] >= 0);
+  var Events := 0;
+  PC := Block.PC;
+  for var I := 0 to Block.PairCount - 1 do
+  begin
+    ProfileMark('fast-pair');
+    var P: PPS2VUPair := @FPairs[PC shr 3];
+    var F := P.Upper and $3F;
+    if F >= $3C then F := ((P.Upper shr 4) and $7C) or (P.Upper and 3);
+    if F in [$1C, $20, $21, $24, $25] then
+      Land(@S.QDelay, @S.PendingQ, @S.Q, Plan.Issue[I] + 1, False);
+    if ((P.Upper and $80000000) = 0) and ((P.Lower and $8000003C) = $8000003C) and
+      ((((P.Lower shr 4) and $7C) or (P.Lower and 3)) = $64) then
+      Land(@S.PDelay, @S.PendingP, @S.P, Plan.Issue[I] + 1, False);
+    J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))), JImm(PC));
+    if I = Block.PairCount - 1 then
+    begin
+      J.Move(jw8, JT0, M(@S.BranchPending));
+      J.Move(jw8, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Branching))), JT0);
+      J.Move(jw32, JT0, M(@S.BranchTarget));
+      J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Target))), JT0);
+    end;
+    J.Move(jw8, M(@S.BranchPending), JImm(0));
+    EmitVIHistory(P^);
+    EmitPair(P^);
+    EmitCommit(P^);
+    if P.SetsFlags then
+    begin
+      J.Move(jw32, JT0, M(@S.MAC));
+      J.Move(jw32, M(@FJitEvents[Events].MAC), JT0);
+      J.Move(jw32, JT0, M(@S.Status));
+      J.Move(jw32, M(@FJitEvents[Events].Status), JT0);
+      if not WholeQueueKnown and (Events < PrefixCount) then
+      begin
+        J.Move(jw64, JT0, JS1);
+        J.Alu(jaAdd, jw64, JT0, JImm(Plan.Issue[I] + 4));
+        J.Move(jw64, M(@FJitEvents[Events].Ready), JT0);
+      end;
+      Inc(Events);
+    end;
+    PC := (PC + 8) and FCodeMask;
+  end;
+  ProfileMark('fast-output');
+  for var R := 1 to 31 do
+    if Plan.WriteAny[R] >= 0 then
+    begin
+      for var K := 0 to 3 do
+        if Plan.WriteAt[R, K] >= 0 then
+        begin
+          J.Move(jw64, JT0, JS1);
+          J.Alu(jaAdd, jw64, JT0, JImm(Plan.WriteAt[R, K] + 4));
+          J.Move(jw64, M(@FReady[R, K]), JT0);
+        end;
+      J.Move(jw64, JT0, JS1);
+      J.Alu(jaAdd, jw64, JT0, JImm(Plan.WriteAny[R] + 4));
+      J.Move(jw64, M(@FReadyAny[R]), JT0);
+    end;
+  Land(@S.QDelay, @S.PendingQ, @S.Q, LastCycle + 1, True);
+  Land(@S.PDelay, @S.PendingP, @S.P, LastCycle + 1, True);
+  ProfileMark('fast-replay-flags');
+  if WholeQueueKnown then
+  begin
+    var NoClip := J.NewLabel;
+    J.Branch(jcEq, jw32, M(@S.ClipQCount), JImm(0), NoClip);
+    J.Move(jw64, JT0, JS1);
+    J.Alu(jaAdd, jw64, JT0, JImm(LastCycle));
+    J.Call(@TPS2VUCore.FinishFastFlags, [JSelf, JImm(0), JT0]);
+    J.Bind(NoClip);
+    J.Move(jw32, JT0, M(@S.ClipBase));
+    J.Move(jw32, M(@FClipVisible), JT0);
+  end
+  else
+  begin
+    J.Move(jw64, JT0, JS1);
+    J.Alu(jaAdd, jw64, JT0, JImm(3));
+    J.Call(@TPS2VUCore.FinishFastFlags, [JSelf, JImm(PrefixCount), JT0]);
+  end;
+  for var K := 0 to 3 do
+    if Slots[K] >= 0 then
+    begin
+      // The state keeps MAC and status in separate arrays, not interleaved.
+      J.Move(jw32, JT0, M(@FJitEvents[Slots[K]].MAC));
+      J.Move(jw32, M(@S.FlagQMAC[K]), JT0);
+      J.Move(jw32, JT0, M(@FJitEvents[Slots[K]].Status));
+      J.Move(jw32, M(@S.FlagQStatus[K]), JT0);
+      J.Move(jw64, JT0, JS1);
+      J.Alu(jaAdd, jw64, JT0, JImm(EventReady[Slots[K]]));
+      J.Move(jw64, M(@S.FlagQReady[K]), JT0);
+    end;
+  if BaseEvent >= 0 then
+  begin
+    J.Move(jw32, JT0, M(@FJitEvents[BaseEvent].MAC));
+    J.Move(jw32, M(@S.MACBase), JT0);
+    J.Move(jw32, JT0, M(@FJitEvents[BaseEvent].Status));
+    J.Move(jw32, M(@S.StatusBase), JT0);
+  end;
+  J.Move(jw32, M(@S.FlagQCount), JImm(LiveCount));
+  J.Move(jw64, JT0, JS1);
+  J.Alu(jaAdd, jw64, JT0, JImm(LastCycle + 1));
+  J.Move(jw64, M(@S.Cycles), JT0);
+  J.Alu(jaAdd, jw64, M(@Executed), JImm(Block.PairCount));
+  J.Alu(jaAdd, jw64, M(@FJitFastPairs), JImm(Block.PairCount));
+  J.Alu(jaAdd, jw32, Count, JImm(Block.PairCount));
+  J.Move(jw32, JT0, JImm(PC));
+  var Sequential := J.NewLabel;
+  J.Move(jw8, JT1, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Branching))));
+  J.Branch(jcEq, jw32, JT1, JImm(0), Sequential);
+  J.Move(jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Target))));
+  J.Bind(Sequential);
+  J.Move(jw32, M(@S.TPC), JT0);
+  var Ending := (Block.Words[(Block.PairCount - 2) * 2 + 1] and $40000000) <> 0;
+  J.Move(jw8, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Ending))), JImm(Ord(Ending)));
+  if Ending then
+  begin
+    J.Move(jw8, M(@S.Running), JImm(0));
+    J.Move(jw8, M(@S.EndPending), JImm(0));
+  end
+  else if (Block.Words[(Block.PairCount - 1) * 2 + 1] and $40000000) <> 0 then
+    J.Move(jw8, M(@S.EndPending), JImm(1));
+  J.Jump(Chain);
 end;
 
 // Compile-time selection of the upper arithmetic. The exact PS2 SIMD
@@ -755,40 +1190,35 @@ begin
   var Immediate := (P.Upper and $80000000) <> 0;
   Delay(@S.QDelay, @S.PendingQ, @S.Q, not Immediate and ((P.Lower and $FE0007FF) = $800003BF));
   Delay(@S.PDelay, @S.PendingP, @S.P, not Immediate and ((P.Lower and $FE0007FF) = $800007BF));
+  EmitVIHistory(P);
+  J.Move(jw32, M(@FUpperReg), JImm(-1));
+  J.Move(jw32, M(@FLowerReg), JImm(-1));
+  J.Bind(Done);
+end;
+
+procedure TPS2VUCore.EmitVIHistory(const P: TPS2VUPair);
+var
+  J: TJitAsm;
+  function M(Address: Pointer): TJitOp;
+  begin
+    Result := JMem(jrSelf, Integer(NativeInt(Address) - NativeInt(Self)));
+  end;
+begin
+  J := FJit;
   J.Move(jw32, JT0, M(@FLoadReg));
   J.Move(jw32, M(@FBranchReg), JT0);
   J.Move(jw32, JT0, M(@FLoadOld));
   J.Move(jw32, M(@FBranchOld), JT0);
-  var Reg := -1;
-  var Op := P.Lower;
-  if not Immediate then
-    if (Op and $80000000) = 0 then
-    begin
-      if (Op shr 25) in [$04, $08, $09] then Reg := Integer((Op shr 16) and 15);
-    end
-    else
-      case Op and $3F of
-        $30, $31, $34, $35: Reg := Integer((Op shr 6) and 15);
-        $32: Reg := Integer((Op shr 16) and 15);
-        $3C..$3F:
-          case ((Op shr 4) and $7C) or (Op and 3) of
-            $3C, $3E, $35, $37: Reg := Integer((Op shr 16) and 15);
-            $34, $36: Reg := Integer((Op shr 11) and 15);
-          end;
-      end;
-  if Reg = 0 then Reg := -1;
+  var Reg := P.VIWrite;
   J.Move(jw32, M(@FLoadReg), JImm(Reg));
   if Reg >= 0 then
   begin
     J.Move(jw32, JT0, JMem(jrS3, Reg * 4));
     J.Move(jw32, M(@FLoadOld), JT0);
   end;
-  J.Move(jw32, M(@FUpperReg), JImm(-1));
-  J.Move(jw32, M(@FLowerReg), JImm(-1));
-  J.Bind(Done);
 end;
 
-procedure TPS2VUCore.EmitFinish(const P: TPS2VUPair);
+procedure TPS2VUCore.EmitCommit(const P: TPS2VUPair);
 var
   J: TJitAsm;
 
@@ -860,6 +1290,20 @@ var
         end;
   end;
 
+begin
+  J := FJit;
+  ProfileMark('commit');
+  Commit(False);
+  Commit(True);
+end;
+
+procedure TPS2VUCore.EmitFinish(const P: TPS2VUPair);
+var
+  J: TJitAsm;
+  function M(Address: Pointer): TJitOp;
+  begin
+    Result := JMem(jrSelf, Integer(NativeInt(Address) - NativeInt(Self)));
+  end;
   procedure Note(const R: TPS2VURegUse);
   begin
     if (R.Dest <= 0) or (R.DestMask = 0) then Exit;
@@ -871,9 +1315,7 @@ var
 
 begin
   J := FJit;
-  ProfileMark('commit');
-  Commit(False);
-  Commit(True);
+  EmitCommit(P);
   ProfileMark('ready-writes');
   J.Move(jw64, JT4, M(@S.Cycles));
   J.Alu(jaAdd, jw64, JT4, JImm(4));
@@ -2333,6 +2775,7 @@ begin
   P.NativeCandidate := True;
   P.Lower := LowerOp;
   P.Upper := UpperOp;
+  P.VIWrite := VIWritten(LowerOp, UpperOp);
   UpperRegs(UpperOp, P.U);
   if (UpperOp and $80000000) = 0 then
     LowerRegs(LowerOp, P.L)
@@ -2574,33 +3017,7 @@ begin
     // operands. Flag reads (FS*/FM*/FC*) reach it at once.
     FBranchReg := FLoadReg;
     FBranchOld := FLoadOld;
-    FLoadReg := -1;
-    if (UpperOp and $80000000) = 0 then
-      if (LowerOp and $80000000) = 0 then
-      begin
-        case LowerOp shr 25 of
-          $04, $08, $09: // ILW, IADDIU, ISUBIU
-            FLoadReg := Integer((LowerOp shr 16) and 15);
-        end;
-      end
-      else
-        case LowerOp and $3F of
-          $30, $31, $34, $35: // IADD, ISUB, IAND, IOR
-            FLoadReg := Integer((LowerOp shr 6) and 15);
-          $32: // IADDI
-            FLoadReg := Integer((LowerOp shr 16) and 15);
-          $3C..$3F:
-            case ((LowerOp shr 4) and $7C) or (LowerOp and 3) of
-              $3C, $3E: // MTIR, ILWR
-                FLoadReg := Integer((LowerOp shr 16) and 15);
-              $34, $36: // LQI, LQD
-                FLoadReg := Integer((LowerOp shr 11) and 15);
-              $35, $37: // SQI, SQD
-                FLoadReg := Integer((LowerOp shr 16) and 15);
-            end;
-        end;
-    if FLoadReg = 0 then
-      FLoadReg := -1;
+    FLoadReg := Pair.VIWrite;
     if FLoadReg >= 0 then
       FLoadOld := FVI[FLoadReg];
     FUpperReg := -1;

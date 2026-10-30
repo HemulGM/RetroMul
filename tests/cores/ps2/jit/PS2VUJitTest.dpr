@@ -201,10 +201,12 @@ begin
       KA.Free; KB.Free;
     end;
     if B.JitRuns = 0 then raise Exception.Create('No generated code executed');
+    if B.JitFastPairs = 0 then raise Exception.Create('No statically scheduled pairs executed');
     if (B.JitBlocks = 0) or (B.JitRuns <= B.JitBlocks) then
       raise Exception.Create('Generated code did not execute multiple pairs per block');
     Writeln('model=', Model, ' programs=100 generated pairs=', B.JitRuns, ' entries=', B.JitBlocks,
       ' compiles=', B.JitCompiles, ' resets=', B.JitResets, ' reused=', B.JitCacheHits, ' kicks=40 OK');
+    Writeln('scheduled pairs=', B.JitFastPairs);
   finally
     A.Free;
     B.Free;
@@ -236,6 +238,8 @@ begin
         // I-bit ADDi.xyzw vf1,vf1 (the previous pair's I).
         Code0[K * 2 + 1] := $81E00862;
       end;
+      Code0[32] := $8000033C;
+      Code0[33] := $01E10868; // probe vf1 after a scheduled exit
       Code0[29] := Code0[29] or $40000000;
       if Odd(Round) then
       begin
@@ -246,10 +250,18 @@ begin
       for var RepeatIndex := 0 to 31 do
       begin
         A.Start(0); B.Start(0);
-        A.Run(64); B.Run(64);
+        A.Run(256); B.Run(256);
         if not CompareMem(@A.S, @B.S, SizeOf(A.S)) or not CompareMem(@VF0, @VF1, SizeOf(VF0)) then
           raise Exception.CreateFmt('Version collision model=%s round=%d repeat=%d',
             [BoolToStr(Model, True), Round, RepeatIndex]);
+        // Keep pending ready times: switch to the interpreter without Start().
+        A.S.TPC := 128; B.S.TPC := 128;
+        A.S.Running := True; B.S.Running := True;
+        B.UseJit := False;
+        A.Run(1); B.Run(1);
+        B.UseJit := True;
+        if not CompareMem(@A.S, @B.S, SizeOf(A.S)) or not CompareMem(@VF0, @VF1, SizeOf(VF0)) then
+          raise Exception.Create('Scheduled ready state lost at mode switch');
       end;
     end;
     if B.JitCacheHits = 0 then raise Exception.Create('Uploaded block versions were not reused');
@@ -287,6 +299,80 @@ begin
   end;
 end;
 
+procedure CheckScheduled(Model: Boolean);
+var
+  Code0, Code1, Data0, Data1: TMemory;
+  VF0, VF1: TPS2VFArray;
+  VI0, VI1: TPS2VIArray;
+begin
+  FillChar(Code0, SizeOf(Code0), 0); FillChar(Code1, SizeOf(Code1), 0);
+  FillChar(Data0, SizeOf(Data0), 0); FillChar(Data1, SizeOf(Data1), 0);
+  FillChar(VF0, SizeOf(VF0), 0); FillChar(VF1, SizeOf(VF1), 0);
+  FillChar(VI0, SizeOf(VI0), 0); FillChar(VI1, SizeOf(VI1), 0);
+  var A := TPS2VUCore.Create(1, @VF0, @VI0, @Code0, @Data0, SizeOf(Code0), SizeOf(Data0));
+  var B := TPS2VUCore.Create(1, @VF1, @VI1, @Code1, @Data1, SizeOf(Code1), SizeOf(Data1));
+  try
+    if Model then B.UseJitModel else B.UseJit := True;
+    for var ProgramIndex := 0 to 4 do
+    begin
+      for var K := 0 to 15 do
+      begin
+        Code0[K * 2] := $10020001; // VI arithmetic with a delayed branch operand
+        Code0[K * 2 + 1] := $01E10868; // ADD.xyzw vf1,vf1,vf1 (dependent FMAC)
+        if (ProgramIndex = 1) and (K mod 4 <> 0) then Code0[K * 2 + 1] := $000002FF;
+        if ProgramIndex = 2 then Code0[K * 2 + 1] := $000002FF;
+        if ProgramIndex = 3 then Code0[K * 2 + 1] := $01E2117D; // FTOI4.xyzw vf2,vf2
+        if ProgramIndex = 4 then Code0[K * 2 + 1] := $01E109BC; // MULAx.xyzw ACC,vf1,vf1
+      end;
+      Code0[8] := $81E3067C; // MFP.xyzw vf3
+      if ProgramIndex <= 1 then Code0[11] := $01E1085C; // MULq.xyzw vf1,vf1
+      Code0[29] := Code0[29] or $40000000;
+      Code1 := Code0;
+      for var RepeatIndex := 0 to 63 do
+      begin
+        A.Start(0); B.Start(0);
+        var Base := A.S.Cycles;
+        A.S.QDelay := 1 + RepeatIndex mod 13;
+        A.S.PDelay := 1 + RepeatIndex mod 19;
+        A.S.PendingQ := $3F000000 + Cardinal(RepeatIndex shl 8);
+        A.S.PendingP := $3F800000 + Cardinal(RepeatIndex shl 8);
+        A.S.FlagQCount := RepeatIndex mod 5;
+        A.S.ClipQCount := (RepeatIndex div 5) mod 5;
+        for var K := 0 to 3 do
+        begin
+          // Poison unused tails too: scheduled execution must reproduce
+          // their exact stale values, not only the live queue entries.
+          A.S.FlagQMAC[K] := Cardinal($1200 + RepeatIndex * 4 + K);
+          A.S.FlagQStatus[K] := Cardinal($3400 + RepeatIndex * 4 + K);
+          A.S.FlagQReady[K] := Base + K;
+          A.S.ClipQValue[K] := Cardinal($5600 + RepeatIndex * 4 + K);
+          A.S.ClipQReady[K] := Base + K;
+          if RepeatIndex mod 11 = 0 then
+          begin
+            // Unusual incoming deadlines must select the general path.
+            Inc(A.S.FlagQReady[K], 100);
+            Inc(A.S.ClipQReady[K], 100);
+          end;
+        end;
+        B.S := A.S;
+        VF0[1].UW[0] := $3F800000; VF0[1].UW[1] := $BF800000;
+        VF0[1].UW[2] := $00800001; VF0[1].UW[3] := $7FFFFFFF;
+        VF0[2] := VF0[1]; VF1 := VF0;
+        A.Run(256); B.Run(256);
+        if not CompareMem(@A.S, @B.S, SizeOf(A.S)) or not CompareMem(@VF0, @VF1, SizeOf(VF0)) or
+          not CompareMem(@VI0, @VI1, SizeOf(VI0)) or
+          not CompareMem(@A.LoopTrace, @B.LoopTrace, SizeOf(A.LoopTrace)) then
+          raise Exception.CreateFmt('Scheduled queues/Q/P model=%s program=%d repeat=%d',
+            [BoolToStr(Model, True), ProgramIndex, RepeatIndex]);
+      end;
+    end;
+    if B.JitFastPairs = 0 then raise Exception.Create('Scheduled queue test did not enter the fast path');
+    Writeln('model=', Model, ' scheduled queues/tails, hazards, Q/P landing: OK');
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
 begin
   try
     SetExceptionMask(exAllArithmeticExceptions);
@@ -295,6 +381,8 @@ begin
     Check(True);
     CheckVersions(False);
     CheckVersions(True);
+    CheckScheduled(False);
+    CheckScheduled(True);
     SetRoundMode(rmNearest);
     Check(False);
     Check(True);

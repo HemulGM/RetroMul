@@ -4,7 +4,7 @@
 {$POINTERMATH ON}
 
 uses
-  System.SysUtils, System.Math, PS2.Types, PS2.VU;
+  System.SysUtils, System.Math, PS2.Types, PS2.VU, PS2.VU.Float, PS2.EE.CPU, HW.JIT;
 
 type
   TMemory = array[0..4095] of Cardinal;
@@ -201,12 +201,16 @@ begin
       KA.Free; KB.Free;
     end;
     if B.JitRuns = 0 then raise Exception.Create('No generated code executed');
+    {$IFNDEF PS2_VU_MEMORY_MATH}
+    if PS2VectorAVX2 and (B.JitVectorOps = 0) then raise Exception.Create('No register arithmetic was generated');
+    {$ENDIF}
     if B.JitFastPairs = 0 then raise Exception.Create('No statically scheduled pairs executed');
     if (B.JitBlocks = 0) or (B.JitRuns <= B.JitBlocks) then
       raise Exception.Create('Generated code did not execute multiple pairs per block');
     Writeln('model=', Model, ' programs=100 generated pairs=', B.JitRuns, ' entries=', B.JitBlocks,
       ' compiles=', B.JitCompiles, ' resets=', B.JitResets, ' reused=', B.JitCacheHits, ' kicks=40 OK');
     Writeln('scheduled pairs=', B.JitFastPairs);
+    Writeln('register arithmetic sites=', B.JitVectorOps);
   finally
     A.Free;
     B.Free;
@@ -374,6 +378,185 @@ begin
   end;
 end;
 
+procedure CheckRegisterKernels;
+type
+  TState = record
+    A, B, Acc, R: TPS2Reg128;
+    Status: UInt64;
+  end;
+  PState = ^TState;
+const
+  Edges: array[0..11] of Cardinal = (0, $80000000, 1, $807FFFFF, $00800000,
+    $3F800000, $BF800000, $7F800000, $7FFFFFFF, $FF800000, $FFFFFFFF, $01000001);
+var
+  S: TState;
+  Seed: UInt64;
+
+  function Rnd: Cardinal;
+  begin
+    Seed := Seed xor (Seed shl 13); Seed := Seed xor (Seed shr 7); Seed := Seed xor (Seed shl 17);
+    Result := Cardinal(Seed);
+  end;
+
+  function ProgramFor(J: TJitAsm; Kind: TPS2RegisterMath): Pointer;
+  begin
+    J.Align(16);
+    Result := J.Here;
+    J.Enter;
+    J.VectorLoad(jv0, JMem(jrSelf, Integer(NativeUInt(@PState(nil).A))));
+    J.VectorLoad(jv1, JMem(jrSelf, Integer(NativeUInt(@PState(nil).B))));
+    J.VectorCall(PS2RegisterMathNative(Kind), PS2RegisterMathModel(Kind), JCtx);
+    J.VectorStore(JMem(jrSelf, Integer(NativeUInt(@PState(nil).R))), jv0);
+    J.Move(jw64, JMem(jrSelf, Integer(NativeUInt(@PState(nil).Status))), JT0);
+    J.Leave(JImm(0));
+    J.Flush;
+  end;
+
+begin
+  var Model := CreateJitModel(1 shl 20);
+  var Native := CreateJitAsm(1 shl 20);
+  var SavedMode := GetRoundMode;
+  {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+  var SavedControl := GetMXCSR;
+  {$ENDIF}
+  try
+    if (Native <> nil) and (not Native.HasVectors or (PS2RegisterMathNative(vrmAdd) = nil)) then
+      FreeAndNil(Native);
+    Seed := $123456789ABCDEF;
+    var Vectors, Flagged: Int64;
+    Vectors := 0; Flagged := 0;
+    for var Kind := Low(TPS2RegisterMath) to High(TPS2RegisterMath) do
+    begin
+      var M := ProgramFor(Model, Kind);
+      var N: Pointer := nil;
+      if Native <> nil then N := ProgramFor(Native, Kind);
+      for var Control := 0 to 4 do
+      begin
+        {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+        SetMXCSR(SavedControl);
+        {$ENDIF}
+        var Mode := rmTruncate;
+        if Control < 4 then Mode := TRoundingMode(Control);
+        SetRoundMode(Mode);
+        {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+        if Control = 4 then SetMXCSR(GetMXCSR or $8040);
+        {$ENDIF}
+        for var Sample := 0 to 19999 do
+        begin
+          for var K := 0 to 3 do
+          begin
+            S.A.UW[K] := Rnd;
+            S.B.UW[K] := Rnd;
+            if Sample and 1 = 0 then
+            begin
+              S.A.UW[K] := (Rnd and $807FFFFF) or ((96 + Rnd mod 64) shl 23);
+              S.B.UW[K] := (Rnd and $807FFFFF) or ((96 + Rnd mod 64) shl 23);
+            end;
+            var FM: Cardinal;
+            var Product := PS2FloatMul(S.A.UW[K], S.B.UW[K], FM);
+            S.Acc.UW[K] := Rnd;
+            if Sample mod 4 = 0 then S.Acc.UW[K] := Edges[(Sample + K) mod Length(Edges)];
+            if Sample mod 4 = 2 then S.Acc.UW[K] := Product xor $80000000;
+          end;
+          if Sample mod 16 = 0 then
+          begin
+            S.A.UW[0] := $7FFFFFFF; S.B.UW[0] := $7FFFFFFF;
+            S.A.UW[1] := $00800001; S.B.UW[1] := $80800000;
+            S.A.UW[2] := $80000000; S.B.UW[2] := $80000000;
+          end;
+          var Initial := S;
+          Model.Invoke(M, NativeUInt(@S), NativeUInt(@S.Acc), 0, 0);
+          var Expected := S;
+          if Native <> nil then
+          begin
+            S := Initial;
+            Native.Invoke(N, NativeUInt(@S), NativeUInt(@S.Acc), 0, 0);
+            if (S.Status <> Expected.Status) or not CompareMem(@S.R, @Expected.R, SizeOf(S.R)) then
+              raise Exception.CreateFmt('Register kernel/model mismatch kind=%d mode=%d sample=%d',
+                [Ord(Kind), Ord(Mode), Sample]);
+          end;
+          var ExpectedFlags: UInt64 := 0;
+          for var K := 0 to 3 do
+          begin
+            var F: Cardinal;
+            var V: Cardinal;
+            if Kind = vrmAdd then V := PS2FloatAdd(S.A.UW[K], S.B.UW[K], F)
+            else V := PS2FloatMul(S.A.UW[K], S.B.UW[K], F);
+            if S.R.UW[K] <> V then
+              raise Exception.CreateFmt('Register kernel/scalar mismatch kind=%d sample=%d', [Ord(Kind), Sample]);
+            if F and 1 <> 0 then ExpectedFlags := ExpectedFlags or (UInt64(1) shl (15 - K));
+            if F and 2 <> 0 then ExpectedFlags := ExpectedFlags or (UInt64(1) shl (11 - K));
+          end;
+          if S.Status <> ExpectedFlags then raise Exception.Create('Register kernel scalar OU mismatch');
+          Inc(Vectors);
+          if S.Status <> 0 then Inc(Flagged);
+        end;
+      end;
+    end;
+    if (Vectors = 0) or (Flagged = 0) then raise Exception.Create('Register kernel paths were not exercised');
+    Writeln('register kernels: exact native/model/scalar values and OU, four rounding modes, FTZ/DAZ OK');
+  finally
+    {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+    SetMXCSR(SavedControl);
+    {$ENDIF}
+    SetRoundMode(SavedMode);
+    Native.Free; Model.Free;
+  end;
+end;
+
+procedure CheckVectorAliasFallback(Model: Boolean);
+var
+  Code0, Code1, Memory0, Memory1: TMemory;
+  VF0, VF1: TPS2VFArray;
+  VI0, VI1: TPS2VIArray;
+begin
+  for var AliasKind := 0 to 3 do
+  begin
+    FillChar(Code0, SizeOf(Code0), 0); FillChar(Code1, SizeOf(Code1), 0);
+    FillChar(Memory0, SizeOf(Memory0), 0); FillChar(Memory1, SizeOf(Memory1), 0);
+    FillChar(VF0, SizeOf(VF0), 0); FillChar(VF1, SizeOf(VF1), 0);
+    FillChar(VI0, SizeOf(VI0), 0); FillChar(VI1, SizeOf(VI1), 0);
+    var VA: PPS2VFArray := @VF0; var VB: PPS2VFArray := @VF1;
+    var IA: PPS2VIArray := @VI0; var IB: PPS2VIArray := @VI1;
+    var DA: Pointer := @Memory0; var DB: Pointer := @Memory1;
+    var At := 2;
+    case AliasKind of
+      0: begin VA := @Memory0; VB := @Memory1; end;
+      1: begin IA := @Memory0[256]; IB := @Memory1[256]; At := 65; end;
+      2: begin DA := @Code0; DB := @Code1; At := 128; end;
+      3: begin IA := @VF0; IB := @VF1; end;
+    end;
+    var A := TPS2VUCore.Create(1, VA, IA, @Code0, DA, SizeOf(Code0), SizeOf(Memory0));
+    var B := TPS2VUCore.Create(1, VB, IB, @Code1, DB, SizeOf(Code1), SizeOf(Memory1));
+    try
+      if Model then B.UseJitModel else B.UseJit := True;
+      for var K := 0 to 15 do
+      begin
+        Code0[K * 2 + 1] := $28 or (3 shl 6) or (1 shl 11) or (2 shl 16) or ($F shl 21);
+        Code0[K * 2] := ($01 shl 25) or ($F shl 21) or (3 shl 11) or Cardinal(At);
+      end;
+      Code0[29] := Code0[29] or $40000000;
+      Code1 := Code0;
+      for var RepeatIndex := 0 to 39 do
+      begin
+        for var R := 1 to 31 do
+          for var K := 0 to 3 do VA[R].UW[K] := $3F000000 + Cardinal((R * 16 + K + RepeatIndex) shl 8);
+        VB^ := VA^;
+        A.Start(0); B.Start(0);
+        A.Run(128); B.Run(128);
+        if not CompareMem(@A.S, @B.S, SizeOf(A.S)) or not CompareMem(VA, VB, SizeOf(VF0)) or
+          not CompareMem(IA, IB, SizeOf(VI0)) or not CompareMem(DA, DB, SizeOf(Memory0)) then
+          raise Exception.CreateFmt('Aliased hardware-buffer fallback mismatch model=%s kind=%d',
+            [BoolToStr(Model, True), AliasKind]);
+      end;
+      if B.JitVectorOps <> 0 then raise Exception.Create('Aliased buffers used register-result generation');
+    finally
+      A.Free; B.Free;
+    end;
+  end;
+  Writeln('model=', Model, ' data/register/code aliasing keeps memory-result fallback: OK');
+end;
+
 procedure CheckConversionClipPipeline(Model: Boolean);
 const
   Edges: array[0..15] of Cardinal = (0, $80000000, 1, $807FFFFF,
@@ -457,6 +640,7 @@ end;
 begin
   try
     SetExceptionMask(exAllArithmeticExceptions);
+    CheckRegisterKernels;
     SetRoundMode(rmTruncate);
     Check(False);
     Check(True);
@@ -466,6 +650,8 @@ begin
     CheckScheduled(True);
     CheckConversionClipPipeline(False);
     CheckConversionClipPipeline(True);
+    CheckVectorAliasFallback(False);
+    CheckVectorAliasFallback(True);
     SetRoundMode(rmNearest);
     Check(False);
     Check(True);

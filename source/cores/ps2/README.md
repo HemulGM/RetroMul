@@ -109,6 +109,15 @@ ITOF/FTOI0/4/12/15 use packed exact conversion helpers, and CLIP uses integer
 comparisons plus the original four-cycle flag queue. Exponent-zero inputs,
 finite exponent 255, saturation, masks and host conversion rounding retain
 the scalar reference results. CLIP remains a scheduling observation boundary.
+On Win64/AVX2, compiled ADD/SUB/MUL/MADD/MSUB can pass operands and results
+through volatile 128-bit registers. The result stays live through a call-free
+lower half until the masked commit; Z/S extraction is vectorized and O/U
+groups are returned directly. Every input and rounding mode remains exact,
+using integer normalization outside the guarded common range. MADD/MSUB still
+round the product and sum separately. Callbacks, aliased data/register/code
+buffers and unsupported backends retain the memory-result path. This is not
+a cross-instruction VF register cache. `PS2_VU_MEMORY_MATH` selects the old
+compiled path for build-time differential checks; user options are unchanged.
 Code is generated after 16 visits in blocks of up to 16 pairs, ending after
 branch/end delay slots. Compiled successors chain through a table within one
 native frame. The general path checks the budget, PC, both instruction words
@@ -138,6 +147,9 @@ Directed conversion/CLIP cases also cover four host rounding modes, vf0,
 overlapping upper/lower destinations, full/delayed CLIP queues and FCGET/FCSET.
 Scheduled queue tests cross multiple compiled spans in 64-pair programs.
 The JIT build script accepts `-Defines PS2_FORCE_SSE2` for backend comparisons.
+Register kernels are compared against the native backend, Pascal model and
+one-field arithmetic in all rounding modes and FTZ/DAZ. Aliased hardware-buffer
+tests verify that register-result generation is not used for synthetic aliases.
 `tests/cores/ps2/vufloat/build.ps1 -ConversionsOnly` checks conversion and CLIP
 helpers against scalar arithmetic, including aliases, unaligned values and
 FTZ/DAZ; the default float suite retains the add/multiply checks too.

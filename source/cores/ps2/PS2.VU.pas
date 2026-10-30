@@ -153,10 +153,17 @@ type
     FJitClip: Cardinal;
     FJitEvents: array[0..15] of TPS2VUFlagEvent;
     FJitFastPairs: Int64;
+    // Code-generation state only. Volatile vector results survive a lower
+    // half only when that half has no helper call and data cannot alias us.
+    FVectorMemorySafe, FEmitVectorResult, FAllowVectorResult: Boolean;
+    FJitVectorOps: Int64;
     procedure ProfileMark(const Name: string);
     function CompileBlock(PC: Cardinal): Pointer;
     procedure EmitPair(const P: TPS2VUPair);
     function EmitUpper(Op: Cardinal): Boolean;
+    function EmitScalarUpper(Op: Cardinal): Boolean;
+    function EmitRegisterUpper(Op: Cardinal): Boolean;
+    procedure EmitRegisterFlags(Mask: Cardinal);
     function EmitLower(Op: Cardinal): Boolean;
     procedure EmitFlags(Mask: Cardinal);
     procedure EmitPrepare(const P: TPS2VUPair);
@@ -210,6 +217,7 @@ type
     property JitResets: Int64 read FJitResets;
     property JitCacheHits: Int64 read FJitCacheHits;
     property JitFastPairs: Int64 read FJitFastPairs;
+    property JitVectorOps: Int64 read FJitVectorOps;
     // Select the portable generator model before running a differential test.
     procedure UseJitModel;
     procedure Reset;
@@ -307,6 +315,22 @@ begin
     [$30, $31, $34..$37, $3C..$43, $64, $68, $69];
 end;
 
+function VectorLowerNoCall(Lower, Upper: Cardinal): Boolean;
+begin
+  if Upper and $80000000 <> 0 then Exit(True);
+  if Lower and $80000000 = 0 then
+    Exit((Lower shr 25) in [$00, $01, $04, $05, $08, $09, $10..$13, $1C,
+      $20, $21, $24, $25, $28, $29, $2C..$2F]);
+  if Lower and $3F < $3C then Exit((Lower and $3F) in [$30, $31, $32, $34, $35]);
+  Result := (((Lower shr 4) and $7C) or (Lower and 3)) in
+    [$30, $31, $34..$37, $3C..$3F, $64, $68, $69];
+end;
+
+function SeparateBuffers(A: Pointer; ASize: NativeUInt; B: Pointer; BSize: NativeUInt): Boolean;
+begin
+  Result := (NativeUInt(A) + ASize <= NativeUInt(B)) or (NativeUInt(B) + BSize <= NativeUInt(A));
+end;
+
 function VIWritten(Lower, Upper: Cardinal): Integer;
 begin
   Result := -1;
@@ -341,6 +365,16 @@ begin
   FData := Data;
   FCodeMask := CodeSize - 1;
   FDataMask := DataSize - 1;
+  FVectorMemorySafe := SeparateBuffers(Data, DataSize, Code, CodeSize) and
+    SeparateBuffers(Data, DataSize, VF, SizeOf(TPS2VFArray)) and
+    SeparateBuffers(Data, DataSize, VI, SizeOf(TPS2VIArray)) and
+    SeparateBuffers(Data, DataSize, Self, NativeUInt(InstanceSize)) and
+    SeparateBuffers(VF, SizeOf(TPS2VFArray), VI, SizeOf(TPS2VIArray)) and
+    SeparateBuffers(VF, SizeOf(TPS2VFArray), Code, CodeSize) and
+    SeparateBuffers(VI, SizeOf(TPS2VIArray), Code, CodeSize) and
+    SeparateBuffers(VF, SizeOf(TPS2VFArray), Self, NativeUInt(InstanceSize)) and
+    SeparateBuffers(VI, SizeOf(TPS2VIArray), Self, NativeUInt(InstanceSize)) and
+    SeparateBuffers(Code, CodeSize, Self, NativeUInt(InstanceSize));
   SetLength(FPairs, CodeSize div 8);
   SetLength(FBodies, CodeSize div 8);
   FBlockMap := TDictionary<UInt64, Integer>.Create;
@@ -896,6 +930,104 @@ end;
 // Compile-time selection of the upper arithmetic. The exact PS2 SIMD
 // routines are shared with the interpreter, not the opcode decoder.
 function TPS2VUCore.EmitUpper(Op: Cardinal): Boolean;
+begin
+  if FAllowVectorResult then
+    if EmitRegisterUpper(Op) then
+    begin
+      FEmitVectorResult := True;
+      Exit(True);
+    end;
+  Result := EmitScalarUpper(Op);
+end;
+
+function TPS2VUCore.EmitRegisterUpper(Op: Cardinal): Boolean;
+type
+  TKind = (rkAdd, rkSub, rkMul, rkMadd, rkMsub);
+var
+  Kind: TKind;
+begin
+  Result := False;
+  var F := Op and $3F;
+  if F >= $3C then F := ((Op shr 4) and $7C) or (Op and 3);
+  case F of
+    $00..$03, $20, $22, $28: Kind := rkAdd;
+    $04..$07, $24, $26, $2C: Kind := rkSub;
+    $08..$0B, $21, $23, $29: Kind := rkMadd;
+    $0C..$0F, $25, $27, $2D: Kind := rkMsub;
+    $18..$1C, $1E, $2A: Kind := rkMul;
+  else
+    Exit;
+  end;
+  var J := FJit;
+  var Fs := Integer((Op shr 11) and 31);
+  var Ft := Integer((Op shr 16) and 31);
+  J.VectorLoad(jv0, JMem(jrS0, Fs * 16));
+  if F <= $1B then
+  begin
+    J.VectorLoad(jv1, JMem(jrS0, Ft * 16));
+    J.VectorShuffle(jv1, jv1, Byte((Op and 3) * $55));
+  end
+  else if F in [$1C, $20, $21, $24, $25] then
+    J.VectorBroadcast(jv1, JMem(jrSelf, Integer(NativeInt(@S.Q) - NativeInt(Self))))
+  else if F in [$1E, $22, $23, $26, $27] then
+    J.VectorBroadcast(jv1, JMem(jrSelf, Integer(NativeInt(@S.I) - NativeInt(Self))))
+  else
+    J.VectorLoad(jv1, JMem(jrS0, Ft * 16));
+  if Kind = rkSub then
+  begin
+    J.Move(jw32, JT0, JImm($80000000));
+    J.VectorBroadcast(jv2, JT0);
+    J.VectorAlu(jvaXor, jv1, jv2);
+  end;
+  var Math := vrmAdd;
+  if Kind in [rkMul, rkMadd, rkMsub] then Math := vrmMul;
+  J.VectorCall(PS2RegisterMathNative(Math), PS2RegisterMathModel(Math), JImm(0));
+  if Kind in [rkMadd, rkMsub] then
+  begin
+    J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FJitProductFlags) - NativeInt(Self))), JT0);
+    if Kind = rkMsub then
+    begin
+      J.Move(jw32, JT1, JImm($80000000));
+      J.VectorBroadcast(jv2, JT1);
+      J.VectorAlu(jvaXor, jv0, jv2);
+    end;
+    J.VectorShuffle(jv1, jv0, $E4); // retain the rounded product, never FMA
+    J.VectorLoad(jv0, JMem(jrSelf, Integer(NativeInt(@S.ACC) - NativeInt(Self))));
+    J.VectorCall(PS2RegisterMathNative(vrmAdd), PS2RegisterMathModel(vrmAdd), JImm(0));
+    J.Alu(jaOr, jw32, JT0, JMem(jrSelf, Integer(NativeInt(@FJitProductFlags) - NativeInt(Self))));
+  end;
+  EmitRegisterFlags((Op shr 21) and 15);
+  Inc(FJitVectorOps);
+  Result := True;
+end;
+
+procedure TPS2VUCore.EmitRegisterFlags(Mask: Cardinal);
+begin
+  var J := FJit;
+  ProfileMark('register-mac-status');
+  J.Alu(jaAnd, jw32, JT0, JImm((Mask shl 8) or (Mask shl 12)));
+  J.VectorShuffle(jv2, jv0, $1B); // MAC field order is w,z,y,x
+  J.VectorMask(jvmSign, jrT1, jv2);
+  J.VectorMask(jvmZero, jrT3, jv2);
+  J.Alu(jaAnd, jw32, JT1, JImm(Mask));
+  J.Alu(jaAnd, jw32, JT3, JImm(Mask));
+  J.Shift(jsShl, jw32, jrT1, 4);
+  J.Alu(jaOr, jw32, JT3, JT1);
+  J.Alu(jaOr, jw32, JT3, JT0);
+  J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.MAC) - NativeInt(Self))), JT3);
+  J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))));
+  J.Alu(jaAnd, jw32, JT0, JImm($FF0));
+  for var K := 0 to 3 do
+  begin
+    var Clear := J.NewLabel;
+    J.BranchTest(jcEq, jw32, JT3, JImm($F shl (K * 4)), Clear);
+    J.Alu(jaOr, jw32, JT0, JImm((1 shl K) or (1 shl (K + 6))));
+    J.Bind(Clear);
+  end;
+  J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))), JT0);
+end;
+
+function TPS2VUCore.EmitScalarUpper(Op: Cardinal): Boolean;
 type
   TArithmetic = (akAdd, akSub, akMul, akMadd, akMsub, akOpMula, akOpMsub);
 var
@@ -1275,6 +1407,14 @@ var
     if (Reg <= 0) or (Mask = 0) then Exit;
     var Target := JMem(jrS0, Reg * 16);
     if Reg = 32 then Target := M(@S.ACC);
+    if Upper and FEmitVectorResult then
+    begin
+      var Lanes: Byte := 0;
+      for var K := 0 to 3 do
+        if Mask and FieldBit(K) <> 0 then Lanes := Lanes or (Byte(1) shl K);
+      J.VectorStore(Target, jv0, Lanes);
+      Exit;
+    end;
     for var Half := 0 to 1 do
       if (Mask and (12 shr (Half * 2))) = Cardinal(12 shr (Half * 2)) then
       begin
@@ -1607,6 +1747,12 @@ end;
 procedure TPS2VUCore.EmitPair(const P: TPS2VUPair);
 begin
   var J := FJit;
+  FEmitVectorResult := False;
+  FAllowVectorResult := False;
+  {$IFNDEF PS2_VU_MEMORY_MATH}
+  FAllowVectorResult := FVectorMemorySafe and J.HasVectors and
+    (PS2RegisterMathNative(vrmAdd) <> nil) and VectorLowerNoCall(P.Lower, P.Upper);
+  {$ENDIF}
   ProfileMark('upper');
   // Arithmetic calls the PS2 SIMD routines directly, without dispatching
   // an upper opcode on each visit. Both halves still read before commits.

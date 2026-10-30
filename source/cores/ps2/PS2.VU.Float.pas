@@ -21,6 +21,9 @@ interface
 uses
   PS2.Types;
 
+type
+  TPS2RegisterMath = (vrmAdd, vrmMul);
+
 // A * B; Flags: 1 overflow, 2 underflow.
 function PS2FloatMul(A, B: Cardinal; out Flags: Cardinal): Cardinal;
 // R = A * B and R = A + B for four fields.
@@ -35,6 +38,11 @@ procedure PS2Ftoi4(const A: TPS2Reg128; Shift: Integer; out R: TPS2Reg128);
 procedure PS2Clip3(const A, B: TPS2Reg128; out Bits: Cardinal);
 // Host backend selected at initialization (CPUID and OS vector-state checks).
 function PS2VectorAVX2: Boolean;
+// Optional exact register ABI for HW.JIT.VectorCall: xmm0/xmm1 inputs,
+// xmm0 result, return value = MAC-style underflow/overflow groups (8..15).
+// All inputs/rounding modes are supported; the scalar path is unchanged.
+function PS2RegisterMathNative(Kind: TPS2RegisterMath): Pointer;
+function PS2RegisterMathModel(Kind: TPS2RegisterMath): Pointer;
 
 implementation
 
@@ -792,6 +800,279 @@ asm
   jmp PS2Add4AVX2
 end;
 
+function RegisterMulExact(Context: Pointer): NativeUInt; forward;
+function RegisterAddExact(Context: Pointer): NativeUInt; forward;
+
+function MulRegisters(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  stmxcsr [rsp + 8]
+  mov eax, [rsp + 8]
+  and eax, $6000
+  cmp eax, $6000
+  jne @@No
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpcmpeqd xmm4, xmm2, [rip + C255]
+  vpcmpeqd xmm5, xmm3, [rip + C255]
+  vpor xmm4, xmm4, xmm5
+  vptest xmm4, xmm4
+  jnz @@No
+  vpxor xmm4, xmm4, xmm4
+  vpcmpeqd xmm5, xmm2, xmm4
+  vpand xmm4, xmm5, [rip + CAbsMask]
+  vpandn xmm0, xmm4, xmm0
+  vpxor xmm4, xmm4, xmm4
+  vpcmpeqd xmm4, xmm3, xmm4
+  vpor xmm5, xmm5, xmm4
+  vpand xmm4, xmm4, [rip + CAbsMask]
+  vpandn xmm1, xmm4, xmm1
+  vpaddd xmm2, xmm2, xmm3
+  vpsubd xmm2, xmm2, [rip + C127]
+  vmovdqu xmm3, [rip + COne]
+  vpcmpgtd xmm3, xmm3, xmm2
+  vpcmpgtd xmm4, xmm2, [rip + C253]
+  vpor xmm3, xmm3, xmm4
+  vpandn xmm5, xmm5, xmm3
+  vptest xmm5, xmm5
+  jnz @@No
+  vmulps xmm0, xmm0, xmm1
+  xor eax, eax
+  vzeroupper
+  ret
+@@No:
+  vzeroupper
+  jmp RegisterMulExact
+end;
+
+function AddRegisters(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  stmxcsr [rsp + 8]
+  mov eax, [rsp + 8]
+  and eax, $6000
+  cmp eax, $6000
+  jne @@No
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpmaxsd xmm4, xmm2, xmm3
+  vpcmpgtd xmm5, xmm4, [rip + C253]
+  vptest xmm5, xmm5
+  jnz @@No
+  vmovdqu xmm5, [rip + C25]
+  vpcmpgtd xmm5, xmm5, xmm4
+  vpxor xmm4, xmm4, xmm4
+  vpmaxsd xmm2, xmm2, xmm3
+  vpcmpeqd xmm2, xmm2, xmm4
+  vpandn xmm5, xmm2, xmm5
+  vptest xmm5, xmm5
+  jnz @@No
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpcmpeqd xmm2, xmm2, xmm4
+  vpand xmm2, xmm2, [rip + CAbsMask]
+  vpandn xmm0, xmm2, xmm0
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpcmpeqd xmm3, xmm3, xmm4
+  vpand xmm3, xmm3, [rip + CAbsMask]
+  vpandn xmm1, xmm3, xmm1
+  vpand xmm2, xmm0, [rip + CAbsMask]
+  vpand xmm3, xmm1, [rip + CAbsMask]
+  vpcmpgtd xmm3, xmm3, xmm2
+  vpand xmm2, xmm3, xmm1
+  vpandn xmm4, xmm3, xmm0
+  vpor xmm2, xmm2, xmm4
+  vpand xmm4, xmm3, xmm0
+  vpandn xmm3, xmm3, xmm1
+  vpor xmm3, xmm3, xmm4
+  vpslld xmm0, xmm2, 1
+  vpsrld xmm0, xmm0, 24
+  vpslld xmm1, xmm3, 1
+  vpsrld xmm1, xmm1, 24
+  vpsubd xmm0, xmm0, xmm1
+  vpsubd xmm0, xmm0, [rip + COne]
+  vpxor xmm4, xmm4, xmm4
+  vpmaxsd xmm0, xmm0, xmm4
+  vmovdqu xmm1, [rip + COne]
+  vpsllvd xmm1, xmm1, xmm0
+  vpsubd xmm1, xmm4, xmm1
+  vpand xmm3, xmm3, xmm1
+  vpcmpgtd xmm0, xmm0, [rip + C23]
+  vpandn xmm3, xmm0, xmm3
+  vaddps xmm0, xmm2, xmm3
+  xor eax, eax
+  vzeroupper
+  ret
+@@No:
+  vzeroupper
+  jmp RegisterAddExact
+end;
+
+function RegisterMulExact(Context: Pointer): NativeUInt;
+asm
+  .SAVENV XMM6
+  .SAVENV XMM7
+  .SAVENV XMM8
+  .SAVENV XMM9
+  vpxor xmm9, xmm9, xmm9
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpcmpeqd xmm4, xmm2, xmm9
+  vpcmpeqd xmm6, xmm3, xmm9
+  vpor xmm4, xmm4, xmm6
+  vpxor xmm5, xmm0, xmm1
+  vpand xmm5, xmm5, [rip + CSignMask]
+  vpand xmm0, xmm0, [rip + CMantissa]
+  vpand xmm1, xmm1, [rip + CMantissa]
+  vpor xmm0, xmm0, [rip + CHidden]
+  vpor xmm1, xmm1, [rip + CHidden]
+  vpmuludq xmm6, xmm0, xmm1
+  vpsrldq xmm0, xmm0, 4
+  vpsrldq xmm1, xmm1, 4
+  vpmuludq xmm0, xmm0, xmm1
+  vpsrlq xmm7, xmm6, 47
+  vpsrlq xmm1, xmm0, 47
+  vpaddq xmm8, xmm7, [rip + CShift23]
+  vpaddq xmm9, xmm1, [rip + CShift23]
+  vpsrlvq xmm6, xmm6, xmm8
+  vpsrlvq xmm0, xmm0, xmm9
+  vpsllq xmm0, xmm0, 32
+  vpor xmm6, xmm6, xmm0
+  vpsllq xmm1, xmm1, 32
+  vpor xmm7, xmm7, xmm1
+  vpaddd xmm2, xmm2, xmm3
+  vpsubd xmm2, xmm2, [rip + C127]
+  vpaddd xmm2, xmm2, xmm7
+  vpand xmm6, xmm6, [rip + CMantissa]
+  vpslld xmm3, xmm2, 23
+  vpor xmm6, xmm6, xmm3
+  vpcmpgtd xmm7, xmm2, [rip + C255]
+  vmovdqu xmm8, [rip + COne]
+  vpcmpgtd xmm8, xmm8, xmm2
+  vpand xmm0, xmm7, [rip + CAbsMask]
+  vpandn xmm1, xmm7, xmm6
+  vpor xmm6, xmm0, xmm1
+  vpor xmm9, xmm8, xmm4
+  vpandn xmm6, xmm9, xmm6
+  vpor xmm6, xmm6, xmm5
+  vpandn xmm7, xmm4, xmm7
+  vpandn xmm8, xmm4, xmm8
+  vmovdqa xmm0, xmm6
+  vpshufd xmm7, xmm7, $1B
+  vpshufd xmm8, xmm8, $1B
+  vmovmskps eax, xmm7
+  vmovmskps edx, xmm8
+  shl eax, 12
+  shl edx, 8
+  or eax, edx
+  vzeroupper
+end;
+
+function RegisterAddExact(Context: Pointer): NativeUInt;
+asm
+  .SAVENV XMM6
+  .SAVENV XMM7
+  .SAVENV XMM8
+  .SAVENV XMM9
+  .SAVENV XMM10
+  vpand xmm2, xmm0, [rip + CAbsMask]
+  vpand xmm3, xmm1, [rip + CAbsMask]
+  vpcmpgtd xmm3, xmm3, xmm2
+  vpxor xmm4, xmm0, xmm1
+  vpsrad xmm4, xmm4, 31
+  vpand xmm5, xmm3, xmm1
+  vpandn xmm6, xmm3, xmm0
+  vpor xmm5, xmm5, xmm6
+  vpand xmm6, xmm3, xmm0
+  vpandn xmm3, xmm3, xmm1
+  vpor xmm6, xmm6, xmm3
+  vmovdqa xmm2, xmm0                 // original A; original B stays in xmm1
+  vpslld xmm7, xmm5, 1
+  vpsrld xmm7, xmm7, 24
+  vpslld xmm8, xmm6, 1
+  vpsrld xmm8, xmm8, 24
+  vpand xmm9, xmm5, [rip + CSignMask]
+  vpand xmm5, xmm5, [rip + CMantissa]
+  vpand xmm6, xmm6, [rip + CMantissa]
+  vpor xmm5, xmm5, [rip + CHidden]
+  vpor xmm6, xmm6, [rip + CHidden]
+  vpslld xmm5, xmm5, 3
+  vpslld xmm6, xmm6, 3
+  vpsubd xmm8, xmm7, xmm8
+  vpsrlvd xmm6, xmm6, xmm8
+  vpand xmm6, xmm6, [rip + CNot3]
+  vpaddd xmm8, xmm5, xmm6
+  vpsubd xmm5, xmm5, xmm6
+  vpand xmm5, xmm5, xmm4
+  vpandn xmm4, xmm4, xmm8
+  vpor xmm5, xmm5, xmm4
+  vpxor xmm0, xmm0, xmm0
+  vpcmpeqd xmm10, xmm5, xmm0
+  vcvtdq2ps xmm6, xmm5
+  vpsrld xmm6, xmm6, 23
+  vpsubd xmm6, xmm6, [rip + C127]
+  vmovdqu xmm8, [rip + COne]
+  vpsllvd xmm8, xmm8, xmm6
+  vpcmpgtd xmm8, xmm8, xmm5
+  vpaddd xmm6, xmm6, xmm8
+  vpsubd xmm6, xmm6, [rip + C26]
+  vpaddd xmm7, xmm7, xmm6
+  vpsubd xmm8, xmm0, xmm6
+  vpsllvd xmm8, xmm5, xmm8
+  vpsrlvd xmm5, xmm5, xmm6
+  vpor xmm5, xmm5, xmm8
+  vpsrld xmm5, xmm5, 3
+  vpand xmm5, xmm5, [rip + CMantissa]
+  vpslld xmm6, xmm7, 23
+  vpor xmm5, xmm5, xmm6
+  vpcmpgtd xmm8, xmm7, [rip + C255]
+  vmovdqu xmm6, [rip + COne]
+  vpcmpgtd xmm6, xmm6, xmm7
+  vpand xmm0, xmm8, [rip + CAbsMask]
+  vpandn xmm5, xmm8, xmm5
+  vpor xmm5, xmm5, xmm0
+  vpor xmm0, xmm6, xmm10
+  vpandn xmm5, xmm0, xmm5
+  vpandn xmm0, xmm10, xmm9
+  vpor xmm5, xmm5, xmm0
+  vpandn xmm6, xmm10, xmm6
+  vmovdqa xmm0, xmm2
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpxor xmm4, xmm4, xmm4
+  vpcmpeqd xmm2, xmm2, xmm4
+  vpcmpeqd xmm3, xmm3, xmm4
+  vpor xmm4, xmm2, xmm3
+  vpand xmm9, xmm2, xmm3
+  vpand xmm9, xmm9, xmm0
+  vpand xmm9, xmm9, xmm1
+  vpand xmm9, xmm9, [rip + CSignMask]
+  vpandn xmm10, xmm3, xmm2
+  vpand xmm10, xmm10, xmm1
+  vpandn xmm2, xmm2, xmm3
+  vpand xmm2, xmm2, xmm0
+  vpor xmm9, xmm9, xmm10
+  vpor xmm9, xmm9, xmm2
+  vpandn xmm5, xmm4, xmm5
+  vpor xmm5, xmm5, xmm9
+  vpandn xmm6, xmm4, xmm6
+  vpandn xmm8, xmm4, xmm8
+  vmovdqa xmm0, xmm5
+  vpshufd xmm8, xmm8, $1B
+  vpshufd xmm6, xmm6, $1B
+  vmovmskps eax, xmm8
+  vmovmskps edx, xmm6
+  shl eax, 12
+  shl edx, 8
+  or eax, edx
+  vzeroupper
+end;
+
 function HostAVX2: Boolean;
 asm
   .NOFRAME
@@ -904,6 +1185,52 @@ begin
 end;
 
 {$ENDIF}
+
+function RegisterOU(Flags: Cardinal): NativeUInt;
+begin
+  Result := 0;
+  for var K := 0 to 3 do
+  begin
+    if Flags and (Cardinal(1) shl K) <> 0 then Result := Result or (NativeUInt(1) shl (15 - K));
+    if Flags and (Cardinal(16) shl K) <> 0 then Result := Result or (NativeUInt(1) shl (11 - K));
+  end;
+end;
+
+function ModelAddRegisters(const A, B: TPS2Reg128; Context: Pointer; out R: TPS2Reg128): NativeUInt;
+begin
+  var Flags: Cardinal;
+  PS2Add4(A, B, R, Flags);
+  Result := RegisterOU(Flags);
+end;
+
+function ModelMulRegisters(const A, B: TPS2Reg128; Context: Pointer; out R: TPS2Reg128): NativeUInt;
+begin
+  var Flags: Cardinal;
+  PS2Mul4(A, B, R, Flags);
+  Result := RegisterOU(Flags);
+end;
+
+function PS2RegisterMathNative(Kind: TPS2RegisterMath): Pointer;
+begin
+  Result := nil;
+  {$IFDEF PS2_VU_SSE}
+  if VectorAVX2 then
+    case Kind of
+      vrmAdd: Result := @AddRegisters;
+      vrmMul: Result := @MulRegisters;
+    end;
+  {$ENDIF}
+end;
+
+function PS2RegisterMathModel(Kind: TPS2RegisterMath): Pointer;
+begin
+  case Kind of
+    vrmAdd: Result := @ModelAddRegisters;
+    vrmMul: Result := @ModelMulRegisters;
+  else
+    Result := nil;
+  end;
+end;
 
 initialization
   {$IFDEF PS2_VU_SSE}

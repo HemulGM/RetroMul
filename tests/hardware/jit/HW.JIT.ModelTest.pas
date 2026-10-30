@@ -395,10 +395,12 @@ begin
     J.VectorShuffle(jv3, jv3, $1B);
     J.VectorAlu(jvaXor, jv3, jv1);
     J.VectorStore(JMem(jrSelf, At + 33), jv3);
-    J.VectorMask(jvmSign, jrT1, jv0);
-    J.VectorMask(jvmZero, jrT2, jv0);
-    J.Move(jw32, JMem(jrSelf, At + 56), JT1);
-    J.Move(jw32, JMem(jrSelf, At + 60), JT2);
+    var SignReg := TJitReg(Ord(jrT0) + (K mod 7));
+    var ZeroReg := TJitReg(Ord(jrT0) + ((K + 3) mod 7));
+    J.VectorMask(jvmSign, SignReg, jv0);
+    J.VectorMask(jvmZero, ZeroReg, jv0);
+    J.Move(jw32, JMem(jrSelf, At + 56), JReg(SignReg));
+    J.Move(jw32, JMem(jrSelf, At + 60), JReg(ZeroReg));
     var NativeRoutine: Pointer := nil;
     {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
     NativeRoutine := @NativeVectorSum;

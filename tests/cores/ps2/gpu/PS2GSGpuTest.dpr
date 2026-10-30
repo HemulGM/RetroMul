@@ -196,7 +196,18 @@ begin
         begin
           B.Sync;
           if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) then
+          begin
+            var MA := PCardinal(A.Memory.Data);
+            var MB := PCardinal(B.Memory.Data);
+            var Shown := 0;
+            for var I := 0 to PS2GSMemorySize div 4 - 1 do
+              if MA[I] <> MB[I] then
+              begin
+                Writeln(Format('band VRAM %x CPU %.8x threads %.8x', [I, MA[I], MB[I]]));
+                Inc(Shown); if Shown = 8 then Break;
+              end;
             raise Exception.CreateFmt('Band coverage VRAM mismatch threads=%d triangle=%d', [Threads, N]);
+          end;
         end;
       end;
     end;
@@ -328,6 +339,11 @@ end;
 
 begin
   try
+    if FindCmdLineSwitch('coverageonly') then
+    begin
+      for var RepeatIndex := 0 to 99 do CheckCoverageCounter;
+      Halt(0);
+    end;
     var A := TPS2GSRaster.Create;
     var B := TPS2GSMemory.Create;
     var GPU := TPS2GSGpu.Create(B.Data);

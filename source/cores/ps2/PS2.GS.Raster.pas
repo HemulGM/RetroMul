@@ -418,6 +418,31 @@ const
   XferRingMask = XferRingSize - 1;
   XferRunMax = 1 shl 16;
 
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+// The RTL setter stores DefaultMXCSR globally before loading it. Concurrent
+// callers can therefore load each other's rounding mode. GS workers must
+// change only their own hardware state, never that shared default.
+procedure SetDrawerRounding(Mode: TRoundingMode);
+asm
+  .NOFRAME
+  stmxcsr [rsp + 8]
+  mov eax, [rsp + 8]
+  and eax, $FFFF9FC0                 // clear rounding and status flags
+  or eax, $1F80                      // mask arithmetic exceptions
+  and ecx, 3
+  shl ecx, 13
+  or eax, ecx
+  mov [rsp + 8], eax
+  ldmxcsr [rsp + 8]
+end;
+{$ELSE}
+procedure SetDrawerRounding(Mode: TRoundingMode);
+begin
+  SetExceptionMask(exAllArithmeticExceptions);
+  SetRoundMode(Mode);
+end;
+{$ENDIF}
+
 // Arithmetic shift right (rounds toward minus infinity); Delphi's shr is a
 // logical shift, wrong for negative values.
 function Sar(V: Int64; N: Integer): Int64; inline;
@@ -2577,7 +2602,7 @@ end;
 
 procedure TPS2GSBands.TBand.Execute;
 begin
-  SetExceptionMask(exAllArithmeticExceptions);
+  SetDrawerRounding(GetRoundMode);
   var Rounding := GetRoundMode;
   var Position: Int64 := 0;
   while not Terminated do
@@ -2607,8 +2632,12 @@ begin
         if Command.Rounding <> Rounding then
         begin
           Rounding := Command.Rounding;
-          SetRoundMode(Rounding);
+          SetDrawerRounding(Rounding);
         end;
+        {$IFDEF PS2_CHECKED}
+        if GetRoundMode <> Rounding then
+          raise Exception.Create('GS band rounding state changed');
+        {$ENDIF}
         {$IFDEF GS_RACECHECK}RaceBandPlus1 := FIndex + 1; RaceCmd := Position;{$ENDIF}
         case Command.Op of
           coDraw:
@@ -2630,6 +2659,10 @@ begin
           else
             FOwner.BandWait(FIndex, Position + 1, True);
         end;
+        {$IFDEF PS2_CHECKED}
+        if GetRoundMode <> Rounding then
+          raise Exception.Create('GS drawer changed host rounding state');
+        {$ENDIF}
       except
         on E: Exception do
           FOwner.Fail(E.Message);

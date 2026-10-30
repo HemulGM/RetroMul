@@ -24,7 +24,8 @@ type
     FFrame: TArray<Cardinal>;
     FFrameWidth, FFrameHeight: Integer;
     procedure CheckInterrupt;
-    procedure ReadCircuit(N: Integer; out Pixels: TArray<Cardinal>; out W, H, DX, DY, MagH: Integer);
+    procedure CircuitSize(N: Integer; out W, H, DX, DY, MagH: Integer);
+    procedure ReadCircuit(N, W, H: Integer; out Pixels: TArray<Cardinal>);
   public
     // Privileged registers (index by (address shr 4) and $FF for 1200_0000h,
     // CSR etc. at 1200_1000h).
@@ -229,20 +230,10 @@ begin
   CheckInterrupt;
 end;
 
-procedure TPS2GS.ReadCircuit(N: Integer; out Pixels: TArray<Cardinal>; out W, H, DX, DY, MagH: Integer);
+procedure TPS2GS.CircuitSize(N: Integer; out W, H, DX, DY, MagH: Integer);
 begin
-  var FB := DISPFB1;
   var D := DISPLAY1;
-  if N = 2 then
-  begin
-    FB := DISPFB2;
-    D := DISPLAY2;
-  end;
-  var FBP := Cardinal(FB and $1FF) * 2048;
-  var FBW := Cardinal((FB shr 9) and $3F) * 64;
-  var PSM := Integer((FB shr 15) and $1F);
-  var DBX := Integer((FB shr 32) and $7FF);
-  var DBY := Integer((FB shr 43) and $7FF);
+  if N = 2 then D := DISPLAY2;
   DX := Integer(D and $FFF);
   DY := Integer((D shr 12) and $7FF);
   MagH := Integer((D shr 23) and $F) + 1;
@@ -263,8 +254,19 @@ begin
   // frame as it is in memory, which is what is shown.
   if Interlaced and ((SMODE2 and 3) = 3) then
     H := H div 2;
+end;
+
+procedure TPS2GS.ReadCircuit(N, W, H: Integer; out Pixels: TArray<Cardinal>);
+begin
   SetLength(Pixels, W * H);
   if H = 0 then Exit;
+  var FB := DISPFB1;
+  if N = 2 then FB := DISPFB2;
+  var FBP := Cardinal(FB and $1FF) * 2048;
+  var FBW := Cardinal((FB shr 9) and $3F) * 64;
+  var PSM := Integer((FB shr 15) and $1F);
+  var DBX := Integer((FB shr 32) and $7FF);
+  var DBY := Integer((FB shr 43) and $7FF);
   // Acquiring VRAM publishes queued CPU/GPU writes. No new GS commands are
   // issued while this circuit is scanned, so do that once, not per pixel.
   var Memory := FRaster.Memory;
@@ -301,9 +303,18 @@ begin
   M1 := 1;
   M2 := 1;
   if En1 then
-    ReadCircuit(1, P1, W1, H1, X1, Y1, M1);
+    CircuitSize(1, W1, H1, X1, Y1, M1);
   if En2 then
-    ReadCircuit(2, P2, W2, H2, X2, Y2, M2);
+    CircuitSize(2, W2, H2, X2, Y2, M2);
+  if En1 then ReadCircuit(1, W1, H1, P1);
+  if En2 then
+    // Identical source rectangles remain identical even when the circuits
+    // have different output offsets or magnification. Reuse only within
+    // this frame; queued drawing is published by the first actual read.
+    if En1 and (DISPFB1 = DISPFB2) and (W1 = W2) and (H1 = H2) then
+      P2 := P1
+    else
+      ReadCircuit(2, W2, H2, P2);
   var W := Max(W1, W2);
   var H := Max(H1, H2);
   if (W <> FFrameWidth) or (H <> FFrameHeight) then

@@ -72,8 +72,12 @@ coverage/busy counters still include them, so emulated GS timing is unchanged.
 ## GS display and transfer checks
 
 Display scanout publishes queued CPU/GPU writes once per read circuit, not
-for every pixel. `tests/cores/ps2/gsdata/build.ps1` checks display formats,
+for every pixel. Two circuits sharing the same source rectangle reuse one
+read within that frame while retaining independent output offsets and sizes.
+Nothing is reused across frames. `tests/cores/ps2/gsdata/build.ps1` checks display formats,
 both circuits, offsets/wrap, zero stride and queued drawing. It also compares
+dual-circuit composition against a scalar reference over alpha boundaries,
+magnification, interlacing, disabled circuits and background selection, and
 IMAGE uploads with scalar HWREG transfers over all storage formats, including
 partial bitstreams, row/VRAM wrapping, ring reuse and serialized state.
 Queued whole-quadword IMAGE uploads unpack integer formats into the transfer

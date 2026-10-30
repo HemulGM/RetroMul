@@ -12,6 +12,7 @@ type
     Core: TPS2VUCore;
     Code: PCardinal;
     Count: Integer;
+    RaiseAt: Integer;
     Times: array[0..63] of Int64;
     procedure Kick(Address: Cardinal; Data: PByte);
   end;
@@ -25,6 +26,8 @@ begin
   // Rewrite an interior pair after it has already been compiled. The next
   // guard must leave the block before executing that pair's stale code.
   Code[12] := $10020000 or Cardinal(1 + (Count and 1));
+  if Count = RaiseAt then
+    raise EInvalidOpException.Create('XGKICK unwind probe');
 end;
 
 procedure Check(Model: Boolean);
@@ -160,6 +163,7 @@ begin
     try
       KA.Core := A; KA.Code := @Code0;
       KB.Core := B; KB.Code := @Code1;
+      KA.RaiseAt := 25; KB.RaiseAt := 25;
       A.OnKick := KA.Kick;
       B.OnKick := KB.Kick;
       FillChar(VF0, SizeOf(VF0), 0); FillChar(VF1, SizeOf(VF1), 0);
@@ -178,7 +182,13 @@ begin
       for var K := 0 to 39 do
       begin
         A.Start(0); B.Start(0);
-        A.Run(128); B.Run(128);
+        var RaisedA := False;
+        var RaisedB := False;
+        try A.Run(128); except on E: EInvalidOpException do
+          if E.Message = 'XGKICK unwind probe' then RaisedA := True else raise; end;
+        try B.Run(128); except on E: EInvalidOpException do
+          if E.Message = 'XGKICK unwind probe' then RaisedB := True else raise; end;
+        if RaisedA <> RaisedB then raise Exception.Create('Generated-frame exception unwind mismatch');
         if not CompareMem(@A.S, @B.S, SizeOf(A.S)) or
           not CompareMem(@VI0, @VI1, SizeOf(VI0)) or
           not CompareMem(@Code0, @Code1, SizeOf(Code0)) or
@@ -285,6 +295,9 @@ begin
     Check(True);
     CheckVersions(False);
     CheckVersions(True);
+    SetRoundMode(rmNearest);
+    Check(False);
+    Check(True);
   except
     on E: Exception do
     begin

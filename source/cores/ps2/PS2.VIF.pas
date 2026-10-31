@@ -59,6 +59,12 @@ type
     // DIRECT data went to the GIF (not yet taken).
     FDirectSent: Boolean;
     procedure StartCommand(W: Cardinal);
+    // Diagnostics lines, apart: no string temporaries in the hot routines.
+    procedure LogStartVU(Address: Cardinal);
+    procedure RunCapturing(Address: Cardinal);
+    procedure NoteUnfinished(Address: Cardinal);
+    procedure LogPath3Mask;
+    procedure LogUnpack(Cmd: Cardinal; Num, Addr: Integer; Imm: Cardinal);
     procedure UnpackWord(W: Cardinal);
     procedure WriteVector(const V: TPS2Reg128);
     procedure WriteMasked(const V: TPS2Reg128; P: PPS2Reg128);
@@ -149,10 +155,26 @@ begin
   FDirectWords := 0;
 end;
 
+procedure TPS2VIF.LogStartVU(Address: Cardinal);
+begin
+  FGIF.TagLog.Add(Format('vif%d start vu at %x', [FIndex, Address]));
+end;
+
+procedure TPS2VIF.LogPath3Mask;
+begin
+  FGIF.TagLog.Add(Format('vif%d mskpath3 %d', [FIndex, Ord(S.Path3Masked)]));
+end;
+
+procedure TPS2VIF.LogUnpack(Cmd: Cardinal; Num, Addr: Integer; Imm: Cardinal);
+begin
+  FGIF.TagLog.Add(Format('vif%d unpack %.2x num %d addr %x usn %d cycle %.4x mask %.8x mode %d', [FIndex, Cmd, Num,
+    Addr, (Imm shr 14) and 1, S.CYCLE, S.MASK, S.MODE]));
+end;
+
 procedure TPS2VIF.StartVU(Address: Cardinal);
 begin
   if (FGIF <> nil) and (FGIF.TagLog <> nil) and (FGIF.TagLog.Count < 200000) then
-    FGIF.TagLog.Add(Format('vif%d start vu at %x', [FIndex, Address]));
+    LogStartVU(Address);
   if FIndex = 1 then
   begin
     // Double buffering: TOP takes TOPS, the next TOPS the other buffer.
@@ -173,42 +195,54 @@ begin
   end;
   FVU.Start(Address);
   Inc(Starts);
-  var Before: TBytes := nil;
   if CaptureUnfinished and (UnfinishedCapture = nil) then
   begin
-    // Code, data and VI as the program starts.
-    SetLength(Before, $8000 + 32 * 4);
-    Move(FVU.Code^, Before[0], $4000);
-    Move(FVU.Data^, Before[$4000], $4000);
-    for var K := 0 to 31 do
-      PCardinal(@Before[$8000 + K * 4])^ := FVU.VI[K];
-    if FVU.RunTrace = nil then
-      SetLength(FVU.RunTrace, 40000 * 16);
-    FVU.RunTraceCount := 0;
+    RunCapturing(Address);
+    Exit;
   end;
   FVU.RunProgram(Now, 4000000);
   if FVU.S.Running then
+    NoteUnfinished(Address);
+end;
+
+// StartVU's run with the diagnostics capture (apart: no managed variables in
+// StartVU).
+procedure TPS2VIF.RunCapturing(Address: Cardinal);
+begin
+  // Code, data and VI as the program starts.
+  var Before: TBytes;
+  SetLength(Before, $8000 + 32 * 4);
+  Move(FVU.Code^, Before[0], $4000);
+  Move(FVU.Data^, Before[$4000], $4000);
+  for var K := 0 to 31 do
+    PCardinal(@Before[$8000 + K * 4])^ := FVU.VI[K];
+  if FVU.RunTrace = nil then
+    SetLength(FVU.RunTrace, 40000 * 16);
+  FVU.RunTraceCount := 0;
+  FVU.RunProgram(Now, 4000000);
+  if FVU.S.Running then
   begin
-    if Before <> nil then
-    begin
-      // Then the trace of the run's first pairs.
-      var At := Length(Before);
-      SetLength(Before, At + FVU.RunTraceCount * 32);
-      if FVU.RunTraceCount > 0 then
-        Move(FVU.RunTrace[0], Before[At], FVU.RunTraceCount * 32);
-      UnfinishedCapture := Before;
-      SetLength(UnfinishedCommands, Length(CommandRing) * 3);
-      for var K := 0 to High(CommandRing) do
-        for var J := 0 to 2 do
-          UnfinishedCommands[K * 3 + J] := CommandRing[(CommandRingPos + K) and High(CommandRing)][J];
-      FVU.RunTrace := nil;
-    end;
-    Inc(Unfinished);
-    LastUnfinishedStart := Address;
-    LastUnfinishedPC := FVU.S.TPC;
-    for var K := 0 to 15 do
-      LastUnfinishedVI[K] := FVU.VI[K];
+    // Then the trace of the run's first pairs.
+    var At := Length(Before);
+    SetLength(Before, At + FVU.RunTraceCount * 32);
+    if FVU.RunTraceCount > 0 then
+      Move(FVU.RunTrace[0], Before[At], FVU.RunTraceCount * 32);
+    UnfinishedCapture := Before;
+    SetLength(UnfinishedCommands, Length(CommandRing) * 3);
+    for var K := 0 to High(CommandRing) do
+      for var J := 0 to 2 do
+        UnfinishedCommands[K * 3 + J] := CommandRing[(CommandRingPos + K) and High(CommandRing)][J];
+    FVU.RunTrace := nil;
+    NoteUnfinished(Address);
   end;
+end;
+procedure TPS2VIF.NoteUnfinished(Address: Cardinal);
+begin
+  Inc(Unfinished);
+  LastUnfinishedStart := Address;
+  LastUnfinishedPC := FVU.S.TPC;
+  for var K := 0 to 15 do
+    LastUnfinishedVI[K] := FVU.VI[K];
 end;
 
 procedure TPS2VIF.FinishCommand;
@@ -382,7 +416,7 @@ begin
         if FGIF <> nil then
         begin
           if (FGIF.TagLog <> nil) and (FGIF.TagLog.Count < 200000) then
-            FGIF.TagLog.Add(Format('vif%d mskpath3 %d', [FIndex, Ord(S.Path3Masked)]));
+            LogPath3Mask;
           FGIF.SetPath3Mask(S.Path3Masked);
         end;
       end;
@@ -421,8 +455,7 @@ begin
           Inc(Addr, Integer(S.TOPS));
         S.UnpackAddr := Addr;
         if (FGIF <> nil) and (FGIF.TagLog <> nil) and (FGIF.TagLog.Count < 200000) then
-          FGIF.TagLog.Add(Format('vif%d unpack %.2x num %d addr %x usn %d cycle %.4x mask %.8x mode %d', [FIndex, Cmd, Num,
-            Addr, (Imm shr 14) and 1, S.CYCLE, S.MASK, S.MODE]));
+          LogUnpack(Cmd, Num, Addr, Imm);
         if CaptureUnfinished then
           CommandRing[(CommandRingPos - 1) and High(CommandRing)][2] := Cardinal(Addr);
         S.UnpackCount := 0;

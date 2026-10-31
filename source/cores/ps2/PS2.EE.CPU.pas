@@ -256,6 +256,7 @@ type
     function BlockValid(B: PEEBlock): Boolean;
     function Execute(Insts: PEEInst; Count: Integer; out Next: Cardinal): Integer;
     procedure RunBlocks;
+    procedure LogWatch(PC: Cardinal);
     procedure FetchFault(PC: Cardinal);
     function GetCount: Cardinal;
     function ReadCOP0(Index: Integer; Op: Cardinal): Cardinal;
@@ -4043,6 +4044,15 @@ begin
   end;
 end;
 
+// Diagnostics, apart from RunBlocks: no string temporaries there.
+procedure TEECPU.LogWatch(PC: Cardinal);
+begin
+  if WatchLog.Count < 100000 then
+    WatchLog.Add(Format('%d at block %.8x after %.8x: %.8x -> %.8x', [Now^, PC, PCHistory[(PCHistoryPos - 1) and 15],
+      WatchLast, WatchPtr^]));
+  WatchLast := WatchPtr^;
+end;
+
 procedure TEECPU.RunBlocks;
 var
   Prev, B: PEEBlock;
@@ -4070,12 +4080,7 @@ begin
       end;
     var PC := S.PC;
     if (WatchPtr <> nil) and (WatchPtr^ <> WatchLast) then
-    begin
-      if WatchLog.Count < 100000 then
-        WatchLog.Add(Format('%d at block %.8x after %.8x: %.8x -> %.8x', [Now^, PC, PCHistory[(PCHistoryPos - 1) and 15],
-          WatchLast, WatchPtr^]));
-      WatchLast := WatchPtr^;
-    end;
+      LogWatch(PC);
     if BlockProfile <> nil then
     begin
       var N: Int64;

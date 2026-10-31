@@ -3605,10 +3605,15 @@ begin
   end;
 end;
 
+procedure RaiseBandFailure(const Failure: string);
+begin
+  raise Exception.Create('GS band thread: ' + Failure);
+end;
+
 procedure TPS2GSBands.CheckFailed;
 begin
   if TInterlocked.CompareExchange(FFailed, 0, 0) = 1 then
-    raise Exception.Create('GS band thread: ' + FFailure);
+    RaiseBandFailure(FFailure);
 end;
 
 procedure TPS2GSBands.WaitConsumed(Value: Int64);

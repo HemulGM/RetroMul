@@ -41,6 +41,10 @@ type
     procedure UpdateINT0;
     procedure SIOPut(C: Byte);
     function MCHRead: Cardinal;
+    // Diagnostics lines, apart: no string temporaries in Read and Write.
+    procedure LogRegisterRead(Address: Cardinal);
+    procedure LogUnmappedRead(Address: Cardinal; Size: Integer);
+    procedure LogRegisterWrite(Address: Cardinal; Value: UInt64; Size: Integer);
   public
     RAM, BIOS, IOPRAM: PByte;
     VU0Code, VU0Data, VU1Code, VU1Data: PByte;
@@ -292,6 +296,21 @@ begin
     FSIOLine := FSIOLine + Char(C);
 end;
 
+procedure TPS2EEBus.LogRegisterRead(Address: Cardinal);
+begin
+  RegisterLog.Add(Format('ee r %.8x = %.8x pc %.8x', [Address, FRegs[(Address and $FFFC) shr 2], CPU.SlowPC]));
+end;
+
+procedure TPS2EEBus.LogUnmappedRead(Address: Cardinal; Size: Integer);
+begin
+  RegisterLog.Add(Format('ee r unmapped %.8x/%d pc %.8x', [Address, Size, CPU.SlowPC]));
+end;
+
+procedure TPS2EEBus.LogRegisterWrite(Address: Cardinal; Value: UInt64; Size: Integer);
+begin
+  RegisterLog.Add(Format('ee w %.8x = %.8x/%d pc %.8x', [Address, Value, Size, CPU.SlowPC]));
+end;
+
 function TPS2EEBus.Read(Address: Cardinal; Size: Integer): UInt64;
 begin
   Inc(MMIOReads);
@@ -354,7 +373,7 @@ begin
       var Seen: Integer;
       FReadSeen.TryGetValue(Address, Seen);
       if Seen < 3 then
-        RegisterLog.Add(Format('ee r %.8x = %.8x pc %.8x', [Address, FRegs[(Address and $FFFC) shr 2], CPU.SlowPC]));
+        LogRegisterRead(Address);
       FReadSeen.AddOrSetValue(Address, Seen + 1);
     end;
     var V := UInt64(FRegs[(Address and $FFFC) shr 2]);
@@ -363,7 +382,7 @@ begin
     Exit(V shr ((Address and 3) * 8));
   end;
   if (RegisterLog <> nil) and (RegisterLog.Count < 4000) then
-    RegisterLog.Add(Format('ee r unmapped %.8x/%d pc %.8x', [Address, Size, CPU.SlowPC]));
+    LogUnmappedRead(Address, Size);
   Result := 0;
 end;
 
@@ -492,7 +511,7 @@ begin
       end;
   end;
   if (RegisterLog <> nil) and (RegisterLog.Count < 2000) then
-    RegisterLog.Add(Format('ee w %.8x = %.8x/%d pc %.8x', [Address, Value, Size, CPU.SlowPC]));
+    LogRegisterWrite(Address, Value, Size);
   if (Address >= $10000000) and (Address < $10010000) then
   begin
     var Index := (Address and $FFFC) shr 2;

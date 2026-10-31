@@ -75,6 +75,9 @@ type
     // Feeds quadwords to a path; returns how many were taken (PATH3 stops
     // at the end of a packet while it is masked).
     function Transfer(PathIndex: Integer; Data: PByte; Count: Integer; FromDMA: Boolean = False): Integer;
+    // Diagnostics: the tag just read on path PathIndex (apart from Transfer:
+    // no string temporaries there).
+    procedure LogTag(PathIndex: Integer);
     function PathIdle(PathIndex: Integer): Boolean;
     // MSKPATH3 or MODE.M3R: PATH3 masked or unmasked.
     procedure SetPath3Mask(Masked: Boolean);
@@ -255,6 +258,13 @@ begin
   end;
 end;
 
+procedure TPS2GIF.LogTag(PathIndex: Integer);
+begin
+  var P: PPS2GIFPathState := @Path[PathIndex];
+  TagLog.Add(Format('tag path%d nloop=%d eop=%d flg=%d nreg=%d regs=%x pre=%d prim=%x', [PathIndex, P.NLoop, Ord(P.EOP), P.Flg,
+    P.NReg, P.Regs, (P.Tag.Lo shr 46) and 1, (P.Tag.Lo shr 47) and $7FF]));
+end;
+
 function TPS2GIF.Transfer(PathIndex: Integer; Data: PByte; Count: Integer; FromDMA: Boolean): Integer;
 
   procedure PacketEnd(Done: Integer);
@@ -301,8 +311,7 @@ begin
         FGS.WriteRegister($00, (P.Tag.Lo shr 47) and $7FF);
       P.Active := P.NLoop > 0;
       if (TagLog <> nil) and (TagLog.Count < 200000) then
-        TagLog.Add(Format('tag path%d nloop=%d eop=%d flg=%d nreg=%d regs=%x pre=%d prim=%x', [PathIndex, P.NLoop, Ord(P.EOP), P.Flg,
-          P.NReg, P.Regs, (P.Tag.Lo shr 46) and 1, (P.Tag.Lo shr 47) and $7FF]));
+        LogTag(PathIndex);
       Inc(Result);
       Inc(Q);
       if not P.Active and P.EOP and (PathIndex = 3) then

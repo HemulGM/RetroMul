@@ -90,6 +90,8 @@ type
     procedure TickEnvelope(Core, Index: Integer; var V: TPS2SPU2Voice);
     procedure TickNoise(Core: Integer);
     procedure TickVoice(Core, Index: Integer; Noise, Modulate: Boolean; Previous: Integer; out Left, Right: Integer);
+    // Diagnostics line, apart from TickVoice (no string temporaries there).
+    procedure LogVoiceEnd(Core, Index: Integer);
     function ReverbAddress(Core: Integer; Offset: Integer): Cardinal;
     function ReverbRead(Core: Integer; Offset: Integer): Integer;
     procedure ReverbWrite(Core: Integer; Offset, Value: Integer);
@@ -604,6 +606,12 @@ end;
 // One sample of a voice: interpolated ADPCM (or noise) after the envelope,
 // the left/right contributions, then the pitch counter (psx-spx "Pitch
 // Counter"), the envelope and the volume sweeps.
+procedure TPS2SPU2.LogVoiceEnd(Core, Index: Integer);
+begin
+  var V: ^TPS2SPU2Voice := @FCores[Core].Voices[Index];
+  Log.Add(Format('%d spu voice %d:%d end at %x flags %x', [FScheduler.Now, Core, Index, V.Address, V.Flags]));
+end;
+
 procedure TPS2SPU2.TickVoice(Core, Index: Integer; Noise, Modulate: Boolean; Previous: Integer;
   out Left, Right: Integer);
 begin
@@ -641,7 +649,7 @@ begin
       // level zero.
       FCores[Core].EndX := FCores[Core].EndX or (Cardinal(1) shl Index);
       if (Log <> nil) and (Log.Count < 100000) then
-        Log.Add(Format('%d spu voice %d:%d end at %x flags %x', [FScheduler.Now, Core, Index, V.Address, V.Flags]));
+        LogVoiceEnd(Core, Index);
       V.Address := R32(Core, RegAddresses + Cardinal(Index) * 12 + AddrLSAX);
       if (V.Flags and 2) = 0 then
       begin

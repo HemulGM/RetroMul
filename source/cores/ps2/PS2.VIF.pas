@@ -31,8 +31,13 @@ type
     // MPG progress (in 32-bit words).
     MPGAddr: Cardinal;
     DBF: Boolean;
-    Stalled: Boolean;
+    // Stall on the next command: after an interrupt bit (VIS) or STOP (VSS).
+    StallNext, StopNext: Boolean;
     Path3Masked: Boolean;
+    // Words the stalled VIF holds (its FIFO and the rest of the current
+    // quadword), oldest first.
+    Held: array[0..79] of Cardinal;
+    HeldCount: Integer;
   end;
 
   TPS2VIF = class(TPS2Device)
@@ -43,6 +48,7 @@ type
     FCode, FData: PByte;
     FCodeMask, FDataMask: Cardinal;
     FOnInterrupt: TProc;
+    FOnResume: TProc;
     FDirectBuf: TPS2Reg128;
     FDirectWords: Integer;
     // DIRECT data went to the GIF (not yet taken).
@@ -52,6 +58,11 @@ type
     procedure WriteVector(const V: TPS2Reg128);
     procedure FinishCommand;
     procedure StartVU(Address: Cardinal);
+    procedure ProcessWord(W: Cardinal);
+    function Stalled: Boolean; inline;
+    function Blocked: Boolean;
+    function Hold(W: Cardinal): Boolean;
+    procedure Release;
   public
     S: TPS2VIFState;
     // Words processed (diagnostics).
@@ -74,8 +85,12 @@ type
     UnfinishedCommands: TArray<Cardinal>;
     constructor Create(Index: Integer; VU: TPS2VUCore; GIF: TPS2GIF; Code, Data: PByte; CodeSize, DataSize: Cardinal);
     procedure Reset;
-    // Feeds 32-bit words; returns how many were taken (fewer: stalled on IRQ).
+    // Feeds 32-bit words; a stalled VIF holds them while it has room.
+    // Returns how many were taken.
     function Feed(Data: PCardinal; Count: Integer): Integer;
+    // Feeds DMA quadwords; returns how many were taken (fewer: the stalled
+    // VIF's FIFO is full and the channel waits for OnResume).
+    function FeedQuads(Data: PCardinal; Count: Integer): Integer;
     // Whether DIRECT data went to the GIF since the last call.
     function TakeDirectSent: Boolean;
     function Read(Address: Cardinal; Size: Integer): UInt64; override;
@@ -83,6 +98,8 @@ type
     procedure WriteFIFO(Address: Cardinal; const Value: TPS2Reg128); override;
     procedure SerializeState(State: TStateArchive);
     property OnInterrupt: TProc read FOnInterrupt write FOnInterrupt;
+    // The stall ended and the FIFO has room: a waiting DMA channel goes on.
+    property OnResume: TProc read FOnResume write FOnResume;
   end;
 
   TPS2VIFPort = class(TPS2DMAPort)
@@ -184,14 +201,72 @@ procedure TPS2VIF.FinishCommand;
 begin
   S.Command := 0;
   S.Remaining := 0;
-  if (S.CODE and $80000000) <> 0 then
+  if ((S.CODE and $80000000) <> 0) and ((S.ERR and 1) = 0) then
   begin
-    // IRQ bit: interrupt and stall after this command.
+    // Interrupt bit (unless ERR.MII): INT now, and the VIF stalls on the
+    // next command (VIS), except after MARK.
     S.STAT := S.STAT or $800;
-    S.Stalled := True;
+    if ((S.CODE shr 24) and $7F) <> $07 then
+      S.StallNext := True;
     if Assigned(FOnInterrupt) then
       FOnInterrupt();
   end;
+end;
+
+// VSS (STOP), VFS (force break) or VIS (interrupt bit).
+function TPS2VIF.Stalled: Boolean;
+begin
+  Result := (S.STAT and $700) <> 0;
+end;
+
+// Whether the next word must wait: a stall in force, or one that begins at
+// this command boundary (VIS after an interrupt bit, VSS after STOP).
+function TPS2VIF.Blocked: Boolean;
+begin
+  if S.Remaining = 0 then
+    if S.StallNext then
+    begin
+      S.StallNext := False;
+      S.STAT := S.STAT or $400;
+    end
+    else if S.StopNext then
+    begin
+      S.StopNext := False;
+      S.STAT := S.STAT or $100;
+    end;
+  Result := Stalled;
+end;
+
+// The stalled VIF keeps W for later; False when it has no room.
+function TPS2VIF.Hold(W: Cardinal): Boolean;
+begin
+  Result := S.HeldCount <= High(S.Held);
+  if Result then
+  begin
+    S.Held[S.HeldCount] := W;
+    Inc(S.HeldCount);
+  end;
+end;
+
+// After a stall cancel: the held words run until the VIF stalls again, then
+// a channel waiting for room goes on.
+procedure TPS2VIF.Release;
+begin
+  var Taken := 0;
+  while (Taken < S.HeldCount) and not Blocked do
+  begin
+    var W := S.Held[Taken];
+    Inc(Taken);
+    ProcessWord(W);
+  end;
+  if Taken > 0 then
+  begin
+    Dec(S.HeldCount, Taken);
+    if S.HeldCount > 0 then
+      Move(S.Held[Taken], S.Held[0], S.HeldCount * SizeOf(Cardinal));
+  end;
+  if Assigned(FOnResume) then
+    FOnResume();
 end;
 
 // STCYCL write length; 0 stands for 256.
@@ -258,7 +333,11 @@ begin
           FGIF.SetPath3Mask(S.Path3Masked);
         end;
       end;
-    $07: S.MARK := Imm;
+    $07:
+      begin
+        S.MARK := Imm;
+        S.STAT := S.STAT or $40;
+      end;
     $10, $11, $13: ;
     $14, $15: StartVU((Imm * 8) and FCodeMask);
     $17: StartVU(FVU.S.TPC);
@@ -463,49 +542,76 @@ begin
   while Result < Count do
   begin
     var W := Data[Result];
+    if (S.HeldCount > 0) or Blocked then
+    begin
+      if not Hold(W) then
+        Exit;
+    end
+    else
+      ProcessWord(W);
     Inc(Result);
-    Inc(Words);
-    if S.Remaining = 0 then
-    begin
-      StartCommand(W);
-      Continue;
-    end;
-    if CaptureUnfinished then
-    begin
-      CommandRing[CommandRingPos and High(CommandRing)][0] := W;
-      CommandRing[CommandRingPos and High(CommandRing)][1] := $EEEEEEEE;
-      CommandRing[CommandRingPos and High(CommandRing)][2] := 0;
-      Inc(CommandRingPos);
-    end;
-    case S.Command of
-      $20: S.MASK := W;
-      $30: S.Row[4 - S.Remaining] := W;
-      $31: S.Col[4 - S.Remaining] := W;
-      $4A:
+  end;
+end;
+
+function TPS2VIF.FeedQuads(Data: PCardinal; Count: Integer): Integer;
+begin
+  // FIFO: 8 quadwords on VIF0, 16 on VIF1.
+  var FIFOWords := 32;
+  if FIndex = 1 then
+    FIFOWords := 64;
+  Result := 0;
+  while Result < Count do
+  begin
+    if ((S.HeldCount > 0) or Blocked) and (S.HeldCount >= FIFOWords) then
+      Exit;
+    Feed(Data + Result * 4, 4);
+    Inc(Result);
+  end;
+end;
+
+procedure TPS2VIF.ProcessWord(W: Cardinal);
+begin
+  Inc(Words);
+  if S.Remaining = 0 then
+  begin
+    StartCommand(W);
+    Exit;
+  end;
+  if CaptureUnfinished then
+  begin
+    CommandRing[CommandRingPos and High(CommandRing)][0] := W;
+    CommandRing[CommandRingPos and High(CommandRing)][1] := $EEEEEEEE;
+    CommandRing[CommandRingPos and High(CommandRing)][2] := 0;
+    Inc(CommandRingPos);
+  end;
+  case S.Command of
+    $20: S.MASK := W;
+    $30: S.Row[4 - S.Remaining] := W;
+    $31: S.Col[4 - S.Remaining] := W;
+    $4A:
+      begin
+        PCardinal(FCode + (S.MPGAddr and FCodeMask))^ := W;
+        S.MPGAddr := S.MPGAddr + 4;
+      end;
+    $50, $51:
+      begin
+        FDirectBuf.UW[FDirectWords] := W;
+        Inc(FDirectWords);
+        if FDirectWords = 4 then
         begin
-          PCardinal(FCode + (S.MPGAddr and FCodeMask))^ := W;
-          S.MPGAddr := S.MPGAddr + 4;
-        end;
-      $50, $51:
-        begin
-          FDirectBuf.UW[FDirectWords] := W;
-          Inc(FDirectWords);
-          if FDirectWords = 4 then
+          FDirectWords := 0;
+          if FGIF <> nil then
           begin
-            FDirectWords := 0;
-            if FGIF <> nil then
-            begin
-              FGIF.Transfer(2, @FDirectBuf, 1);
-              FDirectSent := True;
-            end;
+            FGIF.Transfer(2, @FDirectBuf, 1);
+            FDirectSent := True;
           end;
         end;
-      $60..$7F: UnpackWord(W);
-    end;
-    Dec(S.Remaining);
-    if S.Remaining = 0 then
-      FinishCommand;
+      end;
+    $60..$7F: UnpackWord(W);
   end;
+  Dec(S.Remaining);
+  if S.Remaining = 0 then
+    FinishCommand;
 end;
 
 function TPS2VIF.Read(Address: Cardinal; Size: Integer): UInt64;
@@ -513,11 +619,14 @@ begin
   case Address and $1F0 of
     $000:
       begin
-        // STAT: VPS (waiting for data while a command is open), VEW, DBF,
-        // INT, FQC (empty).
-        var V := S.STAT and $800;
+        // STAT: VPS (waiting for data while a command is open, or a
+        // command fetched while stalled), VEW, MRK, DBF, VSS/VFS/VIS, INT,
+        // FQC (0, as hardware reads with held data in ps2autotests).
+        var V := S.STAT and $FC0;
         if S.Remaining > 0 then
-          V := V or 1;
+          V := V or 1
+        else if Stalled and (S.HeldCount > 0) then
+          V := V or 2;
         if FVU.S.Running then
           V := V or 4;
         if S.DBF then
@@ -561,17 +670,36 @@ begin
   case Address and $1F0 of
     $010:
       begin
-        // FBRST: reset (bit 0) and stall cancel (bit 3).
+        // FBRST: reset with the FIFO (bit 0), force break (1: VFS now),
+        // STOP (2: VSS at the next command), stall cancel (3: clears VSS,
+        // VFS, VIS, INT, ER0, ER1; held words run).
+        var Resume := False;
         if (Value and 1) <> 0 then
+        begin
           Reset;
+          Resume := True;
+        end;
+        if (Value and 2) <> 0 then
+          S.STAT := S.STAT or $200;
+        if (Value and 4) <> 0 then
+          S.StopNext := True;
         if (Value and 8) <> 0 then
         begin
-          S.Stalled := False;
-          S.STAT := S.STAT and not Cardinal($800);
-        end;
+          S.STAT := S.STAT and not Cardinal($3F00);
+          S.StallNext := False;
+          S.StopNext := False;
+          Release;
+        end
+        else if Resume and Assigned(FOnResume) then
+          FOnResume();
       end;
     $020: S.ERR := Cardinal(Value);
-    $030: S.MARK := Cardinal(Value);
+    $030:
+      begin
+        // MARK: writes clear MRK.
+        S.MARK := Cardinal(Value);
+        S.STAT := S.STAT and not Cardinal($40);
+      end;
     $100: S.Row[0] := Cardinal(Value);
     $110: S.Row[1] := Cardinal(Value);
     $120: S.Row[2] := Cardinal(Value);
@@ -606,9 +734,7 @@ end;
 
 function TPS2VIFPort.Push(Channel: Integer; Data: PByte; Count: Integer): Integer;
 begin
-  // The IRQ bit interrupts but does not stall the stream yet.
-  FVIF.Feed(PCardinal(Data), Count * 4);
-  Result := Count;
+  Result := FVIF.FeedQuads(PCardinal(Data), Count);
 end;
 
 procedure TPS2VIFPort.Tag(Channel: Integer; const Tag: TPS2Reg128);

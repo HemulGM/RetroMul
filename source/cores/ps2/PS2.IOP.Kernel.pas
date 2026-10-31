@@ -1681,8 +1681,37 @@ begin
   State.Field(DmaId, SizeOf(DmaId));
   State.Field(FReadySeq, SizeOf(FReadySeq));
   State.Field(FCmdSlot, SizeOf(FCmdSlot));
+  // First bind attempts for SIDs not yet registered, in SID order (the
+  // retry window must survive a snapshot).
+  var Retries: TArray<Int64> := nil;
+  if not State.Loading then
+  begin
+    var Keys := FBindRetries.Keys.ToArray;
+    TArray.Sort<Cardinal>(Keys);
+    SetLength(Retries, Length(Keys) * 2);
+    for var K := 0 to High(Keys) do
+    begin
+      Retries[K * 2] := Keys[K];
+      Retries[K * 2 + 1] := FBindRetries[Keys[K]];
+    end;
+  end;
+  var Count: Integer := Length(Retries);
+  State.Field(Count, SizeOf(Count));
   if State.Loading then
+  begin
+    if (Count < 0) or Odd(Count) or (Count > 2 * 4096) then
+      raise EReadError.Create('Invalid snapshot bind retries');
+    SetLength(Retries, Count);
+  end;
+  if Count > 0 then
+    State.Field(Retries[0], Count * SizeOf(Int64));
+  if State.Loading then
+  begin
+    FBindRetries.Clear;
+    for var K := 0 to Count div 2 - 1 do
+      FBindRetries.AddOrSetValue(Cardinal(Retries[K * 2]), Retries[K * 2 + 1]);
     FMaybeReady := True;
+  end;
 end;
 
 end.

@@ -2,7 +2,8 @@
 
 // EE DMA controller: ten channels (VIF0, VIF1, GIF, fromIPU, toIPU, SIF0,
 // SIF1, SIF2, fromSPR, toSPR) with normal, chain and interleave modes, the
-// call/return stack, D_CTRL/D_STAT/D_PCR/D_SQWC and the interrupt line (INT1).
+// call/return stack, MFIFO, stall control (D_STADR), D_CTRL/D_STAT/D_PCR/
+// D_SQWC and the interrupt line (INT1).
 // Data moves when a channel starts (or a stalled device takes more); the
 // channel ends after the bus time of its transfer has passed.
 // References: EE User's Manual (DMAC chapter), ps2tek.
@@ -77,6 +78,10 @@ type
     procedure ScheduleNext;
     function Drain: Integer;
     function Ring(Address: Cardinal): Cardinal; inline;
+    function StallSource: Integer;
+    function StallDrain: Integer;
+    function StallControlled(N: Integer): Boolean;
+    procedure SourceMoved(N: Integer);
   public
     Ch: array[0..9] of TPS2DMAChannel;
     CTRL, STAT, PCR, SQWC, RBSR, RBOR, STADR, ENABLE: Cardinal;
@@ -372,6 +377,67 @@ begin
   Result := (Address and RBSR) or RBOR;
 end;
 
+// Stall control (EE User's Manual 5.3.2): the source channel (D_CTRL.STS:
+// SIF0, fromSPR, fromIPU) copies its MADR to D_STADR as it writes normal
+// mode data or cnts packets; the drain channel (D_CTRL.STD: VIF1, GIF,
+// SIF1) moves normal mode data or refs packets in 8-quadword slices only
+// while MADR + 8 quadwords <= D_STADR, else it waits with D_STAT.SIS set.
+// SIF0 data comes from the high-level IOP without tags, so it never moves
+// D_STADR.
+function TPS2DMAC.StallSource: Integer;
+begin
+  case (CTRL shr 4) and 3 of
+    1: Result := DMASIF0;
+    2: Result := DMAFromSPR;
+    3: Result := DMAFromIPU;
+  else
+    Result := -1;
+  end;
+end;
+
+function TPS2DMAC.StallDrain: Integer;
+begin
+  case (CTRL shr 6) and 3 of
+    1: Result := DMAVIF1;
+    2: Result := DMAGIF;
+    3: Result := DMASIF1;
+  else
+    Result := -1;
+  end;
+end;
+
+// Whether channel N's current data is under stall control: normal mode, or
+// in chain mode a refs packet (drain, source chain) or a cnts packet
+// (source, destination chain).
+function TPS2DMAC.StallControlled(N: Integer): Boolean;
+begin
+  case (Ch[N].CHCR shr 2) and 3 of
+    0: Result := True;
+    1:
+      begin
+        var Id := (Ch[N].CHCR shr 28) and 7;
+        if N = StallDrain then
+          Result := Id = 4
+        else
+          Result := Id = 1;
+      end;
+  else
+    Result := False;
+  end;
+end;
+
+// The stall source wrote up to its MADR: D_STADR follows and a drain
+// waiting on it goes on.
+procedure TPS2DMAC.SourceMoved(N: Integer);
+begin
+  if (N <> StallSource) or not StallControlled(N) then
+    Exit;
+  STADR := Ch[N].MADR and $7FFFFFF0;
+  var D := StallDrain;
+  if D >= 0 then
+    Resume(D);
+end;
+
 // The data has moved; the channel ends once its bus time from the start
 // has passed. A transfer that waited for its device (a full FIFO, a masked
 // path) has spent that time already and ends right after its last data:
@@ -441,9 +507,25 @@ begin
       Count := Integer(((PS2RAMSize - (Ch[N].MADR and $01FFFFF0)) shr 4));
     if Count > Integer(Ch[N].QWC) then
       Count := Integer(Ch[N].QWC);
-    var Done: Integer;
     var ToMemory := ((N = DMAVIF1) or (N = DMASIF2)) and ((Ch[N].CHCR and CHCRDir) = 0) or
       (N = DMAFromIPU) or (N = DMASIF0);
+    if not ToMemory and (N = StallDrain) and StallControlled(N) then
+    begin
+      // Whole 8-quadword slices that end at or before D_STADR.
+      var Allowed: Int64 := 0;
+      var From: Int64 := Ch[N].MADR and $7FFFFFF0;
+      while (Allowed < Count) and (From + (Allowed + 8) * 16 <= Int64(STADR and $7FFFFFF0)) do
+        Inc(Allowed, 8);
+      if Allowed = 0 then
+      begin
+        STAT := STAT or $2000;
+        UpdateInterrupt;
+        Exit(False);
+      end;
+      if Allowed < Count then
+        Count := Integer(Allowed);
+    end;
+    var Done: Integer;
     if Ports[N] = nil then
       Done := Count
     else if ToMemory then
@@ -456,6 +538,8 @@ begin
     Inc(Moved[N], Done);
     Ch[N].MADR := Ch[N].MADR + Cardinal(Done) * 16;
     Ch[N].QWC := Ch[N].QWC - Cardinal(Done);
+    if ToMemory and (Done > 0) then
+      SourceMoved(N);
     if Done < Count then
       Exit(False);
   end;
@@ -628,6 +712,8 @@ begin
       if Mode = 2 then
         Ch[N].MADR := Ch[N].MADR + Cardinal(Skip) * 16;
     end;
+    if N = DMAFromSPR then
+      SourceMoved(N);
   until (Mode <> 1) or Ch[N].TagEnd;
   Finish(N, Int64(Moved[N]) * CyclesPerQuad + 8);
   // New data in the MFIFO ring: a drain channel waiting on it goes on.

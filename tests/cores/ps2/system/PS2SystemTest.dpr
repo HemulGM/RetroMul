@@ -4,14 +4,14 @@
 
 uses
   System.SysUtils, System.Classes, System.Hash, System.IOUtils, Core.Snapshots,
-  PS2.Types, PS2.Console, PS2.IOP.CDVD, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.IOP.Libs;
+  PS2.Types, PS2.Console, PS2.DMAC, PS2.VIF, PS2.IOP.CDVD, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.IOP.Libs;
 
 const
   // The recorded TPS2Console.SerializeState field sizes for this version.
   // A layout change must increase PS2SnapshotVersion and record a new pair.
-  RecordedVersion = 3;
-  RecordedFields = 657;
-  RecordedLayout = '7a7c36a48246fb54900fa7717922569e900ea52eebed02717fc30a068b58a4c9';
+  RecordedVersion = 4;
+  RecordedFields = 658;
+  RecordedLayout = 'd0426a9f0ae946c8714e9b3179717b503f1d960be0b288323ef0e0d16648428c';
 
 procedure Check(Condition: Boolean; const Message: string);
 begin
@@ -217,7 +217,7 @@ begin
 
     var Original := TFile.ReadAllBytes(Path);
     var Old := Copy(Original);
-    PCardinal(@Old[8])^ := 1; // header version of a build before format 3
+    PCardinal(@Old[8])^ := PS2SnapshotVersion - 1; // header version of the previous format
     var OldPath := TPath.Combine(Dir, 'old.rmsnap');
     TFile.WriteAllBytes(OldPath, Old);
     B.Scheduler.Now := 7;
@@ -227,7 +227,7 @@ begin
     except
       on E: EReadError do Message := E.Message;
     end;
-    Check(Message = Format(TPS2Console.SnapshotPolicy.VersionError, [1, PS2SnapshotVersion]),
+    Check(Message = Format(TPS2Console.SnapshotPolicy.VersionError, [PS2SnapshotVersion - 1, PS2SnapshotVersion]),
       'Old snapshot did not report its format: ' + Message);
     Check(B.Scheduler.Now = 7, 'Rejected snapshot changed console state');
 
@@ -246,10 +246,92 @@ begin
   Writeln('Snapshots: exact round-trip, recorded layout, old-format and wrong-disc messages, rejected loads keep state: OK');
 end;
 
+// VIF1 with an interrupt bit: the stalled VIF holds the rest of the quadword
+// and fills its 16-quadword FIFO, the channel waits, and a stall cancel lets
+// both go on. The held words survive a snapshot.
+procedure CheckVIFStall;
+const
+  Base = $20000;
+  Quads = 40;
+begin
+  var C := TPS2Console.Create(Default(TPS2ConsoleConfig));
+  try
+    PCardinal(C.Bus.RAM + Base)^ := $80000000; // NOP with the interrupt bit, then NOPs
+    C.DMAC.Write($1000E000, 1);
+    C.DMAC.Write($10009010, Base);
+    C.DMAC.Write($10009020, Quads);
+    C.DMAC.Write($10009000, $101);
+    var Stat := Cardinal(C.VIF1.Read($10003C00, 4));
+    Check((Stat and $C00) = $C00, Format('VIF1 not stalled on the interrupt bit: STAT %.8x', [Stat]));
+    Check(C.DMAC.Ch[DMAVIF1].QWC = Quads - 17, Format('VIF1 FIFO took %d quadwords, expected 17',
+      [Quads - Integer(C.DMAC.Ch[DMAVIF1].QWC)]));
+    Check((C.DMAC.Ch[DMAVIF1].CHCR and CHCRSTR) <> 0, 'Waiting channel ended');
+
+    var Saved := StateBytes(C);
+    var D := TPS2Console.Create(Default(TPS2ConsoleConfig));
+    try
+      LoadBytes(D, Saved);
+      // Words run after the cancel: the 67 held, then the 23 quadwords left.
+      for var X in [C, D] do
+      begin
+        var Before := X.VIF1.Words;
+        X.VIF1.Write($10003C10, 8, 4); // STC
+        Check(X.DMAC.Ch[DMAVIF1].QWC = 0, 'Channel did not resume after the stall cancel');
+        Check((Cardinal(X.VIF1.Read($10003C00, 4)) and $F03) = 0, 'VIF1 still stalled after the stall cancel');
+        Check(X.VIF1.Words - Before = 67 + (Quads - 17) * 4, Format('%d words ran after the cancel',
+          [X.VIF1.Words - Before]));
+      end;
+    finally
+      D.Free;
+    end;
+  finally
+    C.Free;
+  end;
+  Writeln('VIF stall: interrupt bit holds the FIFO and the DMA channel, stall cancel resumes, snapshot keeps held words: OK');
+end;
+
+// fromSPR as stall source, VIF1 as drain: VIF1 moves whole 8-quadword slices
+// below D_STADR, sets SIS when it waits and finishes once STD is cleared.
+procedure CheckStallControl;
+const
+  Base = $30000;
+begin
+  var C := TPS2Console.Create(Default(TPS2ConsoleConfig));
+  try
+    C.DMAC.Write($1000E000, 1 or (2 shl 4) or (1 shl 6));
+    C.DMAC.Write($1000E060, Base);
+    C.DMAC.Write($10009010, Base);
+    C.DMAC.Write($10009020, 32);
+    C.DMAC.Write($10009000, $101);
+    Check(C.DMAC.Ch[DMAVIF1].QWC = 32, 'Drain moved data past D_STADR');
+    Check((C.DMAC.STAT and $2000) <> 0, 'SIS not set on a stall');
+    var FromSPR: TProc<Cardinal, Integer> := procedure(Dest: Cardinal; Count: Integer)
+      begin
+        C.DMAC.Write($1000D080, 0);
+        C.DMAC.Write($1000D010, Dest);
+        C.DMAC.Write($1000D020, Count);
+        C.DMAC.Write($1000D000, $100);
+      end;
+    FromSPR(Base, 16);
+    Check(C.DMAC.STADR = Base + 16 * 16, Format('D_STADR %.8x after the source', [C.DMAC.STADR]));
+    Check(C.DMAC.Ch[DMAVIF1].QWC = 16, Format('Drain left %d quadwords, expected 16', [C.DMAC.Ch[DMAVIF1].QWC]));
+    FromSPR(Base + 16 * 16, 12);
+    Check(C.DMAC.Ch[DMAVIF1].QWC = 8, Format('Drain left %d quadwords, expected 8 (whole slices only)',
+      [C.DMAC.Ch[DMAVIF1].QWC]));
+    C.DMAC.Write($1000E000, 1);
+    Check(C.DMAC.Ch[DMAVIF1].QWC = 0, 'Drain did not finish without stall control');
+  finally
+    C.Free;
+  end;
+  Writeln('DMAC stall control: source moves D_STADR, drain waits in 8-quadword slices with SIS: OK');
+end;
+
 begin
   try
     CheckClock;
     CheckSnapshots;
+    CheckVIFStall;
+    CheckStallControl;
   except
     on E: Exception do
     begin

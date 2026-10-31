@@ -14,7 +14,7 @@ uses
 const
   // Serialized layout of TPS2Console.SerializeState. Increase it with every
   // layout change; tests/cores/ps2/system checks the recorded field layout.
-  PS2SnapshotVersion = 3;
+  PS2SnapshotVersion = 4;
 
 type
   TPS2ConsoleConfig = record
@@ -166,6 +166,8 @@ begin
   VIF1 := TPS2VIF.Create(1, VU1.Core, GIF, Bus.VU1Code, Bus.VU1Data, $4000, $4000);
   VIF0.OnInterrupt := procedure begin Bus.RaiseIRQ(4); end;
   VIF1.OnInterrupt := procedure begin Bus.RaiseIRQ(5); end;
+  VIF0.OnResume := procedure begin DMAC.Resume(DMAVIF0); end;
+  VIF1.OnResume := procedure begin DMAC.Resume(DMAVIF1); end;
   Bus.VIF0 := VIF0;
   Bus.VIF1 := VIF1;
   VIF0Port := TPS2VIFPort.Create(VIF0);

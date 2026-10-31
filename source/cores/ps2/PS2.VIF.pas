@@ -5,7 +5,9 @@
 // MSCAL/MSCALF/MSCNT, STMASK, STROW, STCOL, MPG, DIRECT/DIRECTHL, UNPACK in
 // every format with write cycles, masks and modes), double buffering of
 // VU1 data (BASE/OFST/TOPS/TOP), the IRQ bit and the registers. VU micro
-// programs run when started (synchronously for now).
+// programs run to their end when started; the VU then stays busy for the
+// cycles they took, and FLUSHE/FLUSH/FLUSHA/MSCAL/MSCALF/MSCNT/MPG wait for
+// that window to pass (the DMA channel waits with them).
 // References: EE User's Manual (VIF chapter), ps2tek.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$POINTERMATH ON}
@@ -13,7 +15,7 @@
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.EE.Bus, PS2.DMAC, PS2.VU, PS2.GIF;
+  System.SysUtils, System.Math, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.Bus, PS2.DMAC, PS2.VU, PS2.GIF;
 
 type
   TPS2VIFState = record
@@ -33,6 +35,8 @@ type
     DBF: Boolean;
     // Stall on the next command: after an interrupt bit (VIS) or STOP (VSS).
     StallNext, StopNext: Boolean;
+    // A command that needs the VU idle waits for its busy window to pass.
+    WaitVU: Boolean;
     Path3Masked: Boolean;
     // Words the stalled VIF holds (its FIFO and the rest of the current
     // quadword), oldest first.
@@ -49,6 +53,7 @@ type
     FCodeMask, FDataMask: Cardinal;
     FOnInterrupt: TProc;
     FOnResume: TProc;
+    FScheduler: TPS2Scheduler;
     FDirectBuf: TPS2Reg128;
     FDirectWords: Integer;
     // DIRECT data went to the GIF (not yet taken).
@@ -61,6 +66,8 @@ type
     procedure ProcessWord(W: Cardinal);
     function Stalled: Boolean; inline;
     function Blocked: Boolean;
+    function Waits(W: Cardinal): Boolean;
+    function Now: Int64; inline;
     function Hold(W: Cardinal): Boolean;
     procedure Release;
   public
@@ -100,6 +107,11 @@ type
     property OnInterrupt: TProc read FOnInterrupt write FOnInterrupt;
     // The stall ended and the FIFO has room: a waiting DMA channel goes on.
     property OnResume: TProc read FOnResume write FOnResume;
+    // EE time for the VU busy window; the VIF0/VIF1 event wakes a command
+    // that waits for it.
+    property Scheduler: TPS2Scheduler read FScheduler write FScheduler;
+    // Scheduler event: the VU program a command waited for has ended.
+    procedure Wake;
   end;
 
   TPS2VIFPort = class(TPS2DMAPort)
@@ -173,7 +185,8 @@ begin
       SetLength(FVU.RunTrace, 40000 * 16);
     FVU.RunTraceCount := 0;
   end;
-  if not FVU.Run(4000000) then
+  FVU.RunProgram(Now, 4000000);
+  if FVU.S.Running then
   begin
     if Before <> nil then
     begin
@@ -234,7 +247,46 @@ begin
       S.StopNext := False;
       S.STAT := S.STAT or $100;
     end;
-  Result := Stalled;
+  Result := Stalled or S.WaitVU;
+end;
+
+function TPS2VIF.Now: Int64;
+begin
+  if FScheduler <> nil then
+    Result := FScheduler.Now
+  else
+    Result := 0;
+end;
+
+// Whether word W must wait: a stall, or a command that needs the VU idle
+// (FLUSHE, FLUSH, FLUSHA, MSCAL, MSCALF, MSCNT, MPG) inside its busy window.
+function TPS2VIF.Waits(W: Cardinal): Boolean;
+begin
+  if Blocked then
+    Exit(True);
+  Result := False;
+  if (S.Remaining <> 0) or (FScheduler = nil) or (Now >= FVU.S.BusyUntil) then
+    Exit;
+  case (W shr 24) and $7F of
+    $10, $11, $13, $14, $15, $17, $4A:
+      begin
+        S.WaitVU := True;
+        var Event := TPS2Event.VIF0;
+        if FIndex = 1 then
+          Event := TPS2Event.VIF1;
+        FScheduler.Schedule(Event, FVU.S.BusyUntil);
+        Result := True;
+      end;
+  end;
+end;
+
+procedure TPS2VIF.Wake;
+begin
+  if S.WaitVU then
+  begin
+    S.WaitVU := False;
+    Release;
+  end;
 end;
 
 // The stalled VIF keeps W for later; False when it has no room.
@@ -253,7 +305,7 @@ end;
 procedure TPS2VIF.Release;
 begin
   var Taken := 0;
-  while (Taken < S.HeldCount) and not Blocked do
+  while (Taken < S.HeldCount) and not Waits(S.Held[Taken]) do
   begin
     var W := S.Held[Taken];
     Inc(Taken);
@@ -542,7 +594,7 @@ begin
   while Result < Count do
   begin
     var W := Data[Result];
-    if (S.HeldCount > 0) or Blocked then
+    if (S.HeldCount > 0) or Waits(W) then
     begin
       if not Hold(W) then
         Exit;
@@ -562,7 +614,7 @@ begin
   Result := 0;
   while Result < Count do
   begin
-    if ((S.HeldCount > 0) or Blocked) and (S.HeldCount >= FIFOWords) then
+    if S.HeldCount >= FIFOWords then
       Exit;
     Feed(Data + Result * 4, 4);
     Inc(Result);
@@ -627,7 +679,7 @@ begin
           V := V or 1
         else if Stalled and (S.HeldCount > 0) then
           V := V or 2;
-        if FVU.S.Running then
+        if FVU.Busy(Now) then
           V := V or 4;
         if S.DBF then
           V := V or $80;

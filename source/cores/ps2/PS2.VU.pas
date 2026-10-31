@@ -50,6 +50,9 @@ type
     FlagQMAC, FlagQStatus: array[0..3] of Cardinal;
     FlagQReady: array[0..3] of Int64;
     FlagQCount: Integer;
+    // A started program runs at once; the VU counts as busy until this EE
+    // cycle: its start plus the cycles it took (VUs run at the EE clock).
+    BusyUntil: Int64;
   end;
 
   // The VF registers an instruction writes and reads, with field masks.
@@ -227,6 +230,11 @@ type
     // it to its end (at most MaxPairs pairs; False when it is still running).
     procedure Start(Address: Cardinal);
     function Run(MaxPairs: Integer): Boolean;
+    // Runs a started program to its end at EE cycle Now and keeps the VU
+    // busy for the cycles it took (Unfinished: still running at the limit).
+    procedure RunProgram(Now: Int64; MaxPairs: Integer);
+    // The program is running or its busy window has not passed by Now.
+    function Busy(Now: Int64): Boolean; inline;
     procedure SerializeState(State: TStateArchive);
     property VF: PPS2VFArray read FVF;
     property VI: PPS2VIArray read FVI;
@@ -248,7 +256,10 @@ type
     FBlockVI: array[0..15] of Cardinal;
     procedure RunUntilBlocked;
     function Spins: Boolean;
+    function Now: Int64; inline;
   public
+    // EE time, for the VUs' busy windows (VPU-STAT, CPCOND2).
+    Clock: PInt64;
     constructor Create(Code, Data: PByte);
     destructor Destroy; override;
     procedure Reset; override;
@@ -3355,6 +3366,18 @@ begin
   Result := not S.Running;
 end;
 
+procedure TPS2VUCore.RunProgram(Now: Int64; MaxPairs: Integer);
+begin
+  var Before := S.Cycles;
+  Run(MaxPairs);
+  S.BusyUntil := Now + (S.Cycles - Before);
+end;
+
+function TPS2VUCore.Busy(Now: Int64): Boolean;
+begin
+  Result := S.Running or (Now < S.BusyUntil);
+end;
+
 procedure TPS2VUCore.SerializeState(State: TStateArchive);
 begin
   State.Field(S, SizeOf(S));
@@ -3399,8 +3422,8 @@ begin
     29:
       begin
         // VPU-STAT: VBS0 (VU0 busy) bit 0, VBS1 bit 8.
-        Result := Ord(FCore.S.Running);
-        if (FVU1 <> nil) and FVU1.S.Running then
+        Result := Ord(FCore.Busy(Now));
+        if (FVU1 <> nil) and FVU1.Busy(Now) then
           Result := Result or $100;
       end;
   else
@@ -3457,7 +3480,9 @@ begin
         Interlock;
         FBlocked := False;
         FCore.Start(Address);
+        var Before := FCore.S.Cycles;
         RunUntilBlocked;
+        FCore.S.BusyUntil := Now + (FCore.S.Cycles - Before);
         Exit(True);
       end;
   end;
@@ -3536,7 +3561,16 @@ end;
 
 function TPS2VU0.Condition: Boolean;
 begin
-  Result := FCore.S.Running;
+  // CPCOND2: VU0 runs a micro program (or is inside its busy window).
+  Result := FCore.Busy(Now);
+end;
+
+function TPS2VU0.Now: Int64;
+begin
+  if Clock <> nil then
+    Result := Clock^
+  else
+    Result := 0;
 end;
 
 procedure TPS2VU0.SerializeState(State: TStateArchive);

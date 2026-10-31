@@ -14,7 +14,7 @@ of the picture wrongly.
 | `PS2.EE.CPU`, `PS2.EE.Bus` | R5900 block interpreter (MMI, COP0, FPU with the PS2 float range, COP2 macro mode), EE memory map, INTC |
 | `PS2.Timers`, `PS2.DMAC`, `PS2.SIF` | EE timers, DMA controller (chain/interleave/MFIFO, stall control through D_STADR), SIF registers and the SIF command/RPC protocol |
 | `PS2.GS`, `PS2.GS.Memory`, `PS2.GS.Raster`, `PS2.GIF` | GS registers, swizzled local memory, software rasterizer (on the emulation thread or in band threads), GIF paths |
-| `PS2.VU`, `PS2.VU.Float`, `PS2.VIF` | VU0/VU1 micro mode, the PS2 float product and sum for one or four fields (SSE2 on Win64, checked against the one-field routines by `tests/cores/ps2/vufloat/build.ps1`), VIF0/VIF1 command processing, interrupt-bit/STOP/force-break stalls with the FIFO held (8/16 quadwords) |
+| `PS2.VU`, `PS2.VU.Float`, `PS2.VIF` | VU0/VU1 micro mode, the PS2 float product and sum for one or four fields (SSE2 on Win64, checked against the one-field routines by `tests/cores/ps2/vufloat/build.ps1`), VIF0/VIF1 command processing, interrupt-bit/STOP/force-break stalls with the FIFO held (8/16 quadwords), VU busy windows |
 | `PS2.IPU` | IPU MPEG decoder (BDEC/IDEC/VDEC/FDEC/CSC/PACK, FIFOs on DMA channels 3/4) |
 | `PS2.Kernel`, `PS2.ELF` | High-level EE kernel (threads, semaphores, interrupts, alarms, SIF DMA, syscall table) and ELF loading |
 | `PS2.IOP.FileIO`, `PS2.IOP.CDVD`, `PS2.IOP.HLE` | FILEIO, CDVD and LOADFILE/IOP heap RPC servers, ISO 9660 access |
@@ -78,8 +78,19 @@ coverage/busy counters still include them, so emulated GS timing is unchanged.
 consumer, exact snapshot round-trips, the old-format and wrong-disc errors,
 and the recorded field layout. A layout change must increase the version.
 It also checks a VIF1 interrupt-bit stall that fills the FIFO and holds the
-DMA channel until a stall cancel (also across a snapshot), and DMAC stall
-control with fromSPR as source and VIF1 as drain.
+DMA channel until a stall cancel (also across a snapshot), the VU busy
+window, and DMAC stall control with fromSPR as source and VIF1 as drain.
+
+## VU busy windows
+
+A micro program started by MSCAL/MSCALF/MSCNT, CTC2 to CMSAR1 or VCALLMS
+still runs to its end at once. The VU then stays busy for the cycles the
+program took, because VUs run at the EE clock. During that window VIF STAT.VEW,
+VPU-STAT.VBS0/VBS1 and CPCOND2 report busy. FLUSHE, FLUSH, FLUSHA, MSCAL,
+MSCALF, MSCNT and MPG wait for the window to pass, and their DMA channel
+waits with them. The interpreter and the JIT count the same cycles. EE macro
+instructions issued during a VU0 window do not wait yet, and FLUSH/FLUSHA do
+not wait for the GIF paths yet.
 
 ## EE FPU and VU EFU results
 

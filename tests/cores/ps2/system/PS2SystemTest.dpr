@@ -1,17 +1,18 @@
 ﻿program PS2SystemTest;
 
 {$APPTYPE CONSOLE}
+{$POINTERMATH ON}
 
 uses
   System.SysUtils, System.Classes, System.Hash, System.IOUtils, Core.Snapshots,
-  PS2.Types, PS2.Console, PS2.DMAC, PS2.VIF, PS2.IOP.CDVD, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.IOP.Libs;
+  PS2.Types, PS2.Scheduler, PS2.Console, PS2.DMAC, PS2.VIF, PS2.IOP.CDVD, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.IOP.Libs;
 
 const
   // The recorded TPS2Console.SerializeState field sizes for this version.
   // A layout change must increase PS2SnapshotVersion and record a new pair.
-  RecordedVersion = 4;
+  RecordedVersion = 5;
   RecordedFields = 658;
-  RecordedLayout = 'd0426a9f0ae946c8714e9b3179717b503f1d960be0b288323ef0e0d16648428c';
+  RecordedLayout = '9a71bc0ede74cbcee7c13fb10948994eb19f4bb40e09c0714efa447d9a6a4e10';
 
 procedure Check(Condition: Boolean; const Message: string);
 begin
@@ -290,6 +291,50 @@ begin
   Writeln('VIF stall: interrupt bit holds the FIFO and the DMA channel, stall cancel resumes, snapshot keeps held words: OK');
 end;
 
+// A VU1 program started by MSCAL keeps VU1 busy for the cycles it took: a
+// second MSCAL waits (VIF1 STAT.VEW, VPU-STAT.VBS1) until the window passes.
+procedure CheckVUBusy;
+const
+  Base = $40000;
+  LowerNop = $8000033C;
+  UpperNop = $000002FF;
+  EBit = $40000000;
+begin
+  var C := TPS2Console.Create(Default(TPS2ConsoleConfig));
+  try
+    var Code := PCardinal(C.Bus.VU1Code);
+    for var K := 0 to 11 do
+    begin
+      Code[K * 2] := LowerNop;
+      Code[K * 2 + 1] := UpperNop;
+    end;
+    Code[9 * 2 + 1] := UpperNop or EBit;
+    var Packet := PCardinal(C.Bus.RAM + Base);
+    Packet[0] := $14000000; // MSCAL 0
+    Packet[1] := $14000000; // MSCAL 0 again: waits for the first program
+    C.Scheduler.Now := 1000;
+    C.DMAC.Write($1000E000, 1);
+    C.DMAC.Write($10009010, Base);
+    C.DMAC.Write($10009020, 1);
+    C.DMAC.Write($10009000, $101);
+    var Window := C.VU1.Core.S.BusyUntil;
+    Check(C.VIF1.Starts = 1, Format('%d programs started, expected 1', [C.VIF1.Starts]));
+    Check(Window >= 1010, Format('VU1 busy until %d', [Window]));
+    Check((Cardinal(C.VIF1.Read($10003C00, 4)) and 4) <> 0, 'VIF1 STAT.VEW clear while VU1 is busy');
+    Check((C.VU0.ReadControl(29) and $100) <> 0, 'VPU-STAT.VBS1 clear while VU1 is busy');
+    Check(C.Scheduler.Due(TPS2Event.VIF1) = Window, 'No wake event at the end of the busy window');
+    C.Scheduler.Now := Window;
+    C.VIF1.Wake;
+    Check(C.VIF1.Starts = 2, 'Waiting MSCAL did not run after the busy window');
+    Check((C.VU0.ReadControl(29) and $100) <> 0, 'Second program not busy');
+    C.Scheduler.Now := C.VU1.Core.S.BusyUntil;
+    Check((C.VU0.ReadControl(29) and $100) = 0, 'VU1 still busy after its window');
+  finally
+    C.Free;
+  end;
+  Writeln('VU busy window: MSCAL waits for the running program, VEW/VBS1 follow it: OK');
+end;
+
 // fromSPR as stall source, VIF1 as drain: VIF1 moves whole 8-quadword slices
 // below D_STADR, sets SIS when it waits and finishes once STD is cleared.
 procedure CheckStallControl;
@@ -331,6 +376,7 @@ begin
     CheckClock;
     CheckSnapshots;
     CheckVIFStall;
+    CheckVUBusy;
     CheckStallControl;
   except
     on E: Exception do

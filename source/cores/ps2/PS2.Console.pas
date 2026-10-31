@@ -14,7 +14,7 @@ uses
 const
   // Serialized layout of TPS2Console.SerializeState. Increase it with every
   // layout change; tests/cores/ps2/system checks the recorded field layout.
-  PS2SnapshotVersion = 4;
+  PS2SnapshotVersion = 5;
 
 type
   TPS2ConsoleConfig = record
@@ -137,6 +137,7 @@ begin
   VU0 := TPS2VU0.Create(Bus.VU0Code, Bus.VU0Data);
   VU1 := TPS2VU1.Create(Bus.VU1Code, Bus.VU1Data);
   VU0.VU1 := VU1.Core;
+  VU0.Clock := @Scheduler.Now;
   VU0.OnStartVU1 := StartVU1;
   VU1.Core.OnKick := VU1Kick;
   CPU := TEECPU.Create(Bus, VU0, @Scheduler.Now, @Scheduler.Deadline);
@@ -168,6 +169,8 @@ begin
   VIF1.OnInterrupt := procedure begin Bus.RaiseIRQ(5); end;
   VIF0.OnResume := procedure begin DMAC.Resume(DMAVIF0); end;
   VIF1.OnResume := procedure begin DMAC.Resume(DMAVIF1); end;
+  VIF0.Scheduler := Scheduler;
+  VIF1.Scheduler := Scheduler;
   Bus.VIF0 := VIF0;
   Bus.VIF1 := VIF1;
   VIF0Port := TPS2VIFPort.Create(VIF0);
@@ -478,7 +481,7 @@ procedure TPS2Console.StartVU1(Address: Cardinal);
 begin
   // CMSAR1 holds a 16-bit instruction address.
   VU1.Core.Start((Address and $FFFF) * 8);
-  VU1.Core.Run(4000000);
+  VU1.Core.RunProgram(Scheduler.Now, 4000000);
 end;
 
 procedure TPS2Console.VU1Kick(Address: Cardinal; Data: PByte);
@@ -623,6 +626,8 @@ begin
     TPS2Event.Timer3: Timers.Event(3);
     TPS2Event.DMAC: DMAC.Event;
     TPS2Event.GIF: GIF.ReleasePath3;
+    TPS2Event.VIF0: VIF0.Wake;
+    TPS2Event.VIF1: VIF1.Wake;
     TPS2Event.IPU: IPU.Event;
     TPS2Event.GSSignal: GSFinishShown;
     TPS2Event.SIF: SIF.Deliver;

@@ -58,6 +58,8 @@ type
     FConfigBlock, FConfigCount, FConfigPos: Integer;
     FConfig: array[0..3, 0..$43, 0..14] of Byte;
     FMechacon: array[0..3] of Byte;
+    // Diagnostics: reads per register.
+    FReads: array[0..255] of Integer;
     procedure Interrupt(Bits: Byte);
     procedure StartN;
     procedure FinishN;
@@ -67,6 +69,7 @@ type
     function BlockTime: Int64;
     function SeekTime(Target: Int64): Int64;
     procedure ClockBytes(out B: array of Byte);
+    function ReadRegister(Reg: Cardinal): Byte;
   public
     OnInterrupt: TProc;
     OnData: TProc;
@@ -392,7 +395,8 @@ var
 begin
   var P := FSParams;
   if (Log <> nil) and (Log.Count < 100000) then
-    Log.Add(Format('cdvd scmd %.2x params %d: %.2x %.2x %.2x %.2x', [FSCmd, FSParamCount, P[0], P[1], P[2], P[3]]));
+    Log.Add(Format('cdvd %d scmd %.2x params %d: %.2x %.2x %.2x %.2x', [FScheduler.Now div 4915200, FSCmd, FSParamCount, P[0], P[1],
+      P[2], P[3]]));
   case FSCmd of
     $02: Result([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     $03:
@@ -506,6 +510,17 @@ begin
 end;
 
 function TPS2CDVDDrive.Read(Reg: Cardinal): Byte;
+begin
+  Result := ReadRegister(Reg);
+  if (Log <> nil) and (Log.Count < 100000) and (Reg <> $17) and (Reg <> $18) then
+  begin
+    Inc(FReads[Reg and $FF]);
+    if FReads[Reg and $FF] <= 20 then
+      Log.Add(Format('cdvd r %.2x = %.2x', [Reg, Result]));
+  end;
+end;
+
+function TPS2CDVDDrive.ReadRegister(Reg: Cardinal): Byte;
 begin
   case Reg of
     $04: Result := FNCmd;

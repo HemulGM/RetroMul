@@ -63,6 +63,8 @@ type
     FTimer: array[0..5] of TPS2IOPTimer;
     FSBus: array[0..1] of Cardinal;
     FRunning, FAgain: array[0..12] of Boolean;
+    // Diagnostics: printable text in SIF1 data.
+    FText: string;
     FLineCycles: Int64;
     FOnEEInterrupt: TProc;
     function BusRead(Address: Cardinal; Size: Integer): Cardinal;
@@ -383,6 +385,17 @@ begin
     var W: Cardinal;
     while (FCh[N].Left > 0) and FSIF.Pull1(W) do
     begin
+      if (Log <> nil) and (Log.Count < 100000) then
+        for var K := 0 to 3 do
+          if (Byte(W shr (K * 8)) >= 32) and (Byte(W shr (K * 8)) < 127) then
+            FText := FText + Char(Byte(W shr (K * 8)))
+          else if Length(FText) >= 6 then
+          begin
+            Log.Add('iop sif1 text: ' + FText);
+            FText := '';
+          end
+          else
+            FText := '';
       PCardinal(FRAM + (FCh[N].MADR and PS2IOPRAMMask and not 3))^ := W;
       FCh[N].MADR := (FCh[N].MADR + 4) and $FFFFFF;
       Dec(FCh[N].Left);

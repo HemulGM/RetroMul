@@ -158,6 +158,9 @@ type
     Gen, Gen2: Cardinal;
     Next: PEEBlock;
     Link: array[0..1] of PEEBlock;
+    // Only NOPs and an unconditional branch back to PC with a NOP in its
+    // delay slot: running it changes nothing but time.
+    Spin: Boolean;
   end;
 
   TEEPageMap = array[0..EEPageCount - 1] of PByte;
@@ -402,6 +405,10 @@ type
     // Advanced by executed instructions; the run loop stops at Deadline^.
     Now, Deadline: PInt64;
     InstructionsExecuted: Int64;
+    // Let blocks that only spin (see TEEBlock.Spin) jump to the deadline
+    // (BIOS boot: the kernel's idle thread), and the cycles that saved.
+    SkipSpins: Boolean;
+    SpinCycles: Int64;
     // Diagnostics (not serialized): the instruction of the last MMIO access.
     SlowPC: Cardinal;
     ExceptionCount: Int64;
@@ -3961,6 +3968,11 @@ begin
   B.Gen2 := B.GenPtr2^;
   B.Link[0] := nil;
   B.Link[1] := nil;
+  B.Spin := (Count >= 2) and (Code[Count - 1] = 0) and ((Code[Count - 2] and $FFFF0000) = $10000000) and
+    (Add32(PC + Cardinal(Count - 2) * 4 + 4, SX16To32(Code[Count - 2] and $FFFF) shl 2) = PC);
+  for var K := 0 to Count - 3 do
+    if Code[K] <> 0 then
+      B.Spin := False;
   var Bucket := (PC shr 2) and (BlockBuckets - 1);
   B.Next := FBlockHead[Bucket];
   FBlockHead[Bucket] := B;
@@ -4102,6 +4114,13 @@ begin
     S.PC := Next;
     Inc(InstructionsExecuted, Count);
     Inc(Now^, Count);
+    // A spin that only waits: nothing changes until the next event, so the
+    // time up to the deadline passes at once.
+    if B.Spin and SkipSpins and (Next = B.PC) and not FIntPending and not FExitRequest and (Now^ < Deadline^) then
+    begin
+      Inc(SpinCycles, Deadline^ - Now^);
+      Now^ := Deadline^;
+    end;
     Prev := B;
     if FExitRequest then
     begin

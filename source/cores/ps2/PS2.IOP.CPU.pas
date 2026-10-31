@@ -96,6 +96,8 @@ type
     // The interrupt controller's line (Cause.IP2, bit 10).
     IntLine: Boolean;
     BadVAddr: Cardinal;
+    // Cycles the idle loop skipped (hardware mode).
+    SpinCycles: Int64;
     // COP0 debug registers (BPC, BDA, JUMPDEST, DCIC, BDAM, BPCM): kept.
     Debug: array[0..15] of Cardinal;
     constructor Create(RAM: PByte);
@@ -630,6 +632,16 @@ begin
     begin
       if Assigned(OnException) then
         OnException(4, PC);
+      Break;
+    end;
+    // The kernel's idle loop (a jump or branch to itself with a NOP after
+    // it) changes nothing until an interrupt: the time passes at once.
+    if Hardware and not FBranch and (A < $00800000) and
+      ((Op = ($08000000 or ((PC and $0FFFFFFF) shr 2))) or (Op = $1000FFFF)) and
+      (PCardinal(FRAM + ((A + 4) and (PS2IOPRAMMask and not 3)))^ = 0) then
+    begin
+      Inc(SpinCycles, Target - Cycles);
+      Cycles := Target;
       Break;
     end;
     if Hardware and ((PC and 3) <> 0) then

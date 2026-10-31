@@ -266,6 +266,7 @@ begin
   Move(FConfig.BIOS[0], Bus.BIOS^, PS2BIOSSize);
   CPU.OnSyscall := nil;
   CPU.OnTrap := nil;
+  CPU.SkipSpins := True;
   Bridge := TPS2SIFBridge.Create;
   Bus.SIFBridge := Bridge;
   SIF0Port := TPS2SIF0Port.Create(Bridge);

@@ -196,11 +196,20 @@ pair but run straight-line pairs (up to a branch's delay slot, an E bit or the
 loop's start) in one budget, which the per-pair budget checks keep exact;
 the register files are compared without CompareMem calls.
 
+On Win64, common multimedia instructions (parallel add/subtract with and
+without saturation, compares, min/max, PEXT*/PPAC*, PCPY*, logic and the
+halfword/word shifts) decode to SSE2 kernels on whole registers
+(EEMMIKernel) for the interpreter and the recompiler alike;
+	ests/cores/ps2/eemmi runs each of them, with every shift amount and aliased
+registers, against the general handlers in both.
+
 The EE recompiler turns a decoded block into host code on its second run.
 Shifts, 32/64-bit integer arithmetic and logic, set-on-less-than, HI/LO moves,
 MOVZ/MOVN, branches and jumps (likely forms included) and the mapped fast path
-of LB/LBU/LW/LWU/LD/LQ and SB/SW/SD/SQ (with the page write generation) are
-emitted inline; every other instruction, and every access the fast path does
+of LB/LBU/LW/LWU/LD/LQ and SB/SW/SD/SQ (with the page write generation),
+PCPYLD/PCPYUD/PAND/POR/PXOR/PNOR and MFHI1/MTHI1/MFLO1/MTLO1 are emitted
+inline, the other multimedia instructions with whole-register kernels (below)
+call them directly; every other instruction, and every access the fast path does
 not take, calls its interpreter handler. After its last instruction a block
 counts its time and goes on into the next block's code (learned per exit,
 checked for its PC and code-page generations) only where the run loop would

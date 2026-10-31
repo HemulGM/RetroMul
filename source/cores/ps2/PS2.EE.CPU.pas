@@ -137,6 +137,9 @@ type
 
   PEEInst = ^TEEInst;
   TEEHandler = function(CPU: TEECPU; I: PEEInst): Boolean;
+  // A 128-bit multimedia operation on whole registers: R from A (rs) and B
+  // (rt), Sa its shift amount (EEMMIKernel).
+  TEEMMIKernel = procedure(A, B, R: PPS2Reg128; Sa: NativeUInt);
 
   TEEInst = record
     Handler: Pointer;
@@ -270,6 +273,8 @@ type
     // be had.
     FJit: TJitAsm;
     FUseJit, FInJit, FJitResetPending, FJitFull, FJitFailed: Boolean;
+    // Multimedia operations decoded to their kernels (EEMMIKernel).
+    FMMIKernels: Boolean;
     FJitBlocks, FJitCompiles, FJitResets: Int64;
     // The block whose code ran last (its predecessors' time is counted).
     FJitLast: PEEBlock;
@@ -440,6 +445,7 @@ type
     function OpMMI1(I: PEEInst): Boolean;
     function OpMMI2(I: PEEInst): Boolean;
     function OpMMI3(I: PEEInst): Boolean;
+    function OpMMIKernel(I: PEEInst): Boolean;
     function OpTrapHLE(I: PEEInst): Boolean;
   public
     S: TEEState;
@@ -515,6 +521,10 @@ type
     property JitBlocks: Int64 read FJitBlocks;
     property JitCompiles: Int64 read FJitCompiles;
     property JitResets: Int64 read FJitResets;
+    // Common multimedia operations run as whole-register kernels where the
+    // host has them (the default; tests compare with the general handlers).
+    // Takes effect for blocks decoded afterwards (InvalidateBlocks).
+    property MMIKernels: Boolean read FMMIKernels write FMMIKernels;
     property Count: Cardinal read GetCount;
   end;
 
@@ -527,6 +537,10 @@ function PS2FloatAdd(A, B: Cardinal; out Flags: Cardinal): Cardinal;
 function PS2FloatNearest(D: Double): Cardinal;
 // Orders PS2 floats like the MAX/MIN instructions do.
 function PS2FloatKey(V: Cardinal): Integer; inline;
+
+// The kernel of MMI instruction Op (opcode $1C) where the host has one (nil:
+// the general handler runs it).
+function EEMMIKernel(Op: Cardinal): TEEMMIKernel;
 
 implementation
 
@@ -699,6 +713,522 @@ end;
 
 { TEECPU }
 
+{ Multimedia kernels }
+
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+// Each does what the general handler (OpMMI0..3, OpMMI's shifts) does for
+// its operation, on whole registers with SSE2: A in RCX, B in RDX, R in R8,
+// Sa in R9 (both read before R is written: R may be A or B).
+
+procedure MMIPADDW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  paddd xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSUBW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  psubd xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPCGTW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  pcmpgtd xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+// A where A > B, else B.
+procedure MMIPMAXW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  movdqa xmm2, xmm0
+  pcmpgtd xmm2, xmm1
+  pand xmm0, xmm2
+  pandn xmm2, xmm1
+  por xmm0, xmm2
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPADDH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  paddw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSUBH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  psubw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPCGTH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  pcmpgtw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPMAXH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  pmaxsw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPADDB(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  paddb xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSUBB(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  psubb xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPCGTB(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  pcmpgtb xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+// B's words 0, 1 interleaved with A's.
+procedure MMIPEXTLW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  movdqu xmm1, [rcx]
+  punpckldq xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+// B's words 0, 2 then A's.
+procedure MMIPPACW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  movdqu xmm1, [rcx]
+  pshufd xmm0, xmm0, $08
+  pshufd xmm1, xmm1, $08
+  punpcklqdq xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPADDSH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  paddsw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSUBSH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  psubsw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPEXTLH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  movdqu xmm1, [rcx]
+  punpcklwd xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+// B's even halfwords then A's: sign-extended words packed back without
+// saturation.
+procedure MMIPPACH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  movdqu xmm1, [rcx]
+  pslld xmm0, 16
+  psrad xmm0, 16
+  pslld xmm1, 16
+  psrad xmm1, 16
+  packssdw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPADDSB(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  paddsb xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSUBSB(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  psubsb xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPEXTLB(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  movdqu xmm1, [rcx]
+  punpcklbw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+// B's even bytes then A's: zero-extended halfwords packed back without
+// saturation.
+procedure MMIPPACB(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  movdqu xmm1, [rcx]
+  pcmpeqw xmm2, xmm2
+  psrlw xmm2, 8
+  pand xmm0, xmm2
+  pand xmm1, xmm2
+  packuswb xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPCEQW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  pcmpeqd xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+// A where A < B, else B.
+procedure MMIPMINW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  movdqa xmm2, xmm1
+  pcmpgtd xmm2, xmm0
+  pand xmm0, xmm2
+  pandn xmm2, xmm1
+  por xmm0, xmm2
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPCEQH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  pcmpeqw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPMINH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  pminsw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPCEQB(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  pcmpeqb xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPEXTUW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  movdqu xmm1, [rcx]
+  punpckhdq xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPADDUH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  paddusw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSUBUH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  psubusw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPEXTUH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  movdqu xmm1, [rcx]
+  punpckhwd xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPADDUB(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  paddusb xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSUBUB(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  psubusb xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPEXTUB(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  movdqu xmm1, [rcx]
+  punpckhbw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+// B's low doubleword then A's.
+procedure MMIPCPYLD(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  movdqu xmm1, [rcx]
+  punpcklqdq xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPAND(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  pand xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPXOR(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  pxor xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+// A's high doubleword then B's.
+procedure MMIPCPYUD(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  punpckhqdq xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPOR(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  por xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPNOR(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rdx]
+  por xmm0, xmm1
+  pcmpeqd xmm2, xmm2
+  pxor xmm0, xmm2
+  movdqu [r8], xmm0
+end;
+
+// Shifts of B by Sa (halfwords: its low four bits).
+procedure MMIPSLLH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  and r9d, 15
+  movd xmm1, r9d
+  psllw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSRLH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  and r9d, 15
+  movd xmm1, r9d
+  psrlw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSRAH(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  and r9d, 15
+  movd xmm1, r9d
+  psraw xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSLLW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  and r9d, 31
+  movd xmm1, r9d
+  pslld xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSRLW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  and r9d, 31
+  movd xmm1, r9d
+  psrld xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+procedure MMIPSRAW(A, B, R: PPS2Reg128; Sa: NativeUInt);
+asm
+  .NOFRAME
+  movdqu xmm0, [rdx]
+  and r9d, 31
+  movd xmm1, r9d
+  psrad xmm0, xmm1
+  movdqu [r8], xmm0
+end;
+
+type
+  TEEMMIKernelEntry = record
+    Funct, Sa: Byte;
+    Kernel: TEEMMIKernel;
+  end;
+
+const
+  // (Sa 255: the shifts, Sa their amount.)
+  EEMMIKernels: array[0..44] of TEEMMIKernelEntry = (
+    (Funct: $08; Sa: 0; Kernel: MMIPADDW), (Funct: $08; Sa: 1; Kernel: MMIPSUBW),
+    (Funct: $08; Sa: 2; Kernel: MMIPCGTW), (Funct: $08; Sa: 3; Kernel: MMIPMAXW),
+    (Funct: $08; Sa: 4; Kernel: MMIPADDH), (Funct: $08; Sa: 5; Kernel: MMIPSUBH),
+    (Funct: $08; Sa: 6; Kernel: MMIPCGTH), (Funct: $08; Sa: 7; Kernel: MMIPMAXH),
+    (Funct: $08; Sa: 8; Kernel: MMIPADDB), (Funct: $08; Sa: 9; Kernel: MMIPSUBB),
+    (Funct: $08; Sa: 10; Kernel: MMIPCGTB), (Funct: $08; Sa: 18; Kernel: MMIPEXTLW),
+    (Funct: $08; Sa: 19; Kernel: MMIPPACW), (Funct: $08; Sa: 20; Kernel: MMIPADDSH),
+    (Funct: $08; Sa: 21; Kernel: MMIPSUBSH), (Funct: $08; Sa: 22; Kernel: MMIPEXTLH),
+    (Funct: $08; Sa: 23; Kernel: MMIPPACH), (Funct: $08; Sa: 24; Kernel: MMIPADDSB),
+    (Funct: $08; Sa: 25; Kernel: MMIPSUBSB), (Funct: $08; Sa: 26; Kernel: MMIPEXTLB),
+    (Funct: $08; Sa: 27; Kernel: MMIPPACB),
+    (Funct: $28; Sa: 2; Kernel: MMIPCEQW), (Funct: $28; Sa: 3; Kernel: MMIPMINW),
+    (Funct: $28; Sa: 6; Kernel: MMIPCEQH), (Funct: $28; Sa: 7; Kernel: MMIPMINH),
+    (Funct: $28; Sa: 10; Kernel: MMIPCEQB), (Funct: $28; Sa: 18; Kernel: MMIPEXTUW),
+    (Funct: $28; Sa: 20; Kernel: MMIPADDUH), (Funct: $28; Sa: 21; Kernel: MMIPSUBUH),
+    (Funct: $28; Sa: 22; Kernel: MMIPEXTUH), (Funct: $28; Sa: 24; Kernel: MMIPADDUB),
+    (Funct: $28; Sa: 25; Kernel: MMIPSUBUB), (Funct: $28; Sa: 26; Kernel: MMIPEXTUB),
+    (Funct: $09; Sa: 14; Kernel: MMIPCPYLD), (Funct: $09; Sa: 18; Kernel: MMIPAND),
+    (Funct: $09; Sa: 19; Kernel: MMIPXOR),
+    (Funct: $29; Sa: 14; Kernel: MMIPCPYUD), (Funct: $29; Sa: 18; Kernel: MMIPOR),
+    (Funct: $29; Sa: 19; Kernel: MMIPNOR),
+    (Funct: $34; Sa: 255; Kernel: MMIPSLLH), (Funct: $36; Sa: 255; Kernel: MMIPSRLH),
+    (Funct: $37; Sa: 255; Kernel: MMIPSRAH), (Funct: $3C; Sa: 255; Kernel: MMIPSLLW),
+    (Funct: $3E; Sa: 255; Kernel: MMIPSRLW), (Funct: $3F; Sa: 255; Kernel: MMIPSRAW));
+
+function EEMMIKernelIndex(Op: Cardinal): Integer;
+begin
+  var Funct := Op and $3F;
+  var Sa := (Op shr 6) and 31;
+  for var K := 0 to High(EEMMIKernels) do
+    if (EEMMIKernels[K].Funct = Funct) and ((EEMMIKernels[K].Sa = Sa) or (EEMMIKernels[K].Sa = 255)) then
+      Exit(K);
+  Result := -1;
+end;
+{$ELSE}
+type
+  TEEMMIKernelEntry = record
+    Funct, Sa: Byte;
+    Kernel: TEEMMIKernel;
+  end;
+
+var
+  EEMMIKernels: array[0..0] of TEEMMIKernelEntry;
+
+function EEMMIKernelIndex(Op: Cardinal): Integer;
+begin
+  Result := -1;
+end;
+{$ENDIF}
+
+function EEMMIKernel(Op: Cardinal): TEEMMIKernel;
+begin
+  var K := EEMMIKernelIndex(Op);
+  if K < 0 then
+    Exit(nil);
+  Result := EEMMIKernels[K].Kernel;
+end;
+
 constructor TEECPU.Create(Bus: TEEBus; Cop2: TEECop2; NowCounter, DeadlineCounter: PInt64);
 begin
   inherited Create;
@@ -714,6 +1244,7 @@ begin
   FGenMap := AllocMem(SizeOf(TEEGenMap));
   FPhys := AllocMem(SizeOf(TEEPhysMap));
   JitHeat := 2;
+  FMMIKernels := True;
   Reset;
 end;
 
@@ -2874,6 +3405,12 @@ begin
   Full := UInt64(P);
 end;
 
+function TEECPU.OpMMIKernel(I: PEEInst): Boolean;
+begin
+  EEMMIKernels[I.Imm].Kernel(@S.GPR[I.S], @S.GPR[I.T], @S.GPR[I.D], I.Sa);
+  Result := False;
+end;
+
 function TEECPU.OpMMI(I: PEEInst): Boolean;
 var
   R: TPS2Reg128;
@@ -3831,7 +4368,19 @@ begin
         H := @TEECPU.OpLDR;
         I.T := Dest(Rt);
       end;
-    $1C: H := @TEECPU.OpMMI;
+    $1C:
+      begin
+        H := @TEECPU.OpMMI;
+        var K := -1;
+        if FMMIKernels then
+          K := EEMMIKernelIndex(Op);
+        if K >= 0 then
+        begin
+          // (The kernel's index where the immediate would be.)
+          H := @TEECPU.OpMMIKernel;
+          I.Imm := Cardinal(K);
+        end;
+      end;
     $1E:
       begin
         H := @TEECPU.OpLQ;

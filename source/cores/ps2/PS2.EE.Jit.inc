@@ -549,6 +549,53 @@ begin
     J.Move(jw64, GHi(I.T), JT0);
     SlowCall(Slow, Done);
   end
+  else if H = @TEECPU.OpMMIKernel then
+  begin
+    // The 64-bit ones written out (both sources read before the result is
+    // written: it may be either), the others a direct call of the kernel.
+    var Funct := I.Op and $3F;
+    if (Funct = $09) and (I.Sa = 14) then // PCPYLD
+    begin
+      J.Move(jw64, JT0, G(I.S));
+      J.Move(jw64, JT1, G(I.T));
+      J.Move(jw64, G(I.D), JT1);
+      J.Move(jw64, GHi(I.D), JT0);
+    end
+    else if (Funct = $29) and (I.Sa = 14) then // PCPYUD
+    begin
+      J.Move(jw64, JT0, GHi(I.S));
+      J.Move(jw64, JT1, GHi(I.T));
+      J.Move(jw64, G(I.D), JT0);
+      J.Move(jw64, GHi(I.D), JT1);
+    end
+    else if ((Funct = $09) or (Funct = $29)) and (I.Sa in [18, 19]) then // PAND PXOR POR PNOR
+    begin
+      var Op := jaAnd;
+      if Funct = $29 then Op := jaOr else if I.Sa = 19 then Op := jaXor;
+      for var Half := 0 to 1 do
+      begin
+        J.Move(jw64, JT0, JMem(jrSelf, O.GPR + I.S * SizeOf(TPS2Reg128) + Half * 8));
+        J.Alu(Op, jw64, JT0, JMem(jrSelf, O.GPR + I.T * SizeOf(TPS2Reg128) + Half * 8));
+        if (Funct = $29) and (I.Sa = 19) then
+          J.Alu(jaXor, jw64, JT0, JImm(-1));
+        J.Move(jw64, JMem(jrSelf, O.GPR + I.D * SizeOf(TPS2Reg128) + Half * 8), JT0);
+      end;
+    end
+    else
+      J.Call(@EEMMIKernels[I.Imm].Kernel, [JAddr(jrSelf, O.GPR + I.S * SizeOf(TPS2Reg128)),
+        JAddr(jrSelf, O.GPR + I.T * SizeOf(TPS2Reg128)), JAddr(jrSelf, O.GPR + I.D * SizeOf(TPS2Reg128)), JImm(I.Sa)]);
+  end
+  else if (H = @TEECPU.OpMMI) and ((I.Op and $3F) in [$10..$13]) then
+  begin
+    // MFHI1 MTHI1 MFLO1 MTLO1: the upper pipeline's HI/LO.
+    case I.Op and $3F of
+      $10: begin J.Move(jw64, JT0, JMem(jrSelf, O.HI + 8)); J.Move(jw64, G(I.D), JT0); end;
+      $11: begin J.Move(jw64, JT0, G(I.S)); J.Move(jw64, JMem(jrSelf, O.HI + 8), JT0); end;
+      $12: begin J.Move(jw64, JT0, JMem(jrSelf, O.LO + 8)); J.Move(jw64, G(I.D), JT0); end;
+    else
+      begin J.Move(jw64, JT0, G(I.S)); J.Move(jw64, JMem(jrSelf, O.LO + 8), JT0); end;
+    end;
+  end
   else if H = @TEECPU.OpSQ then
   begin
     var Slow := J.NewLabel;

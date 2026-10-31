@@ -61,6 +61,7 @@ type
     procedure StartCommand(W: Cardinal);
     procedure UnpackWord(W: Cardinal);
     procedure WriteVector(const V: TPS2Reg128);
+    procedure WriteMasked(const V: TPS2Reg128; P: PPS2Reg128);
     procedure FinishCommand;
     procedure StartVU(Address: Cardinal);
     procedure ProcessWord(W: Cardinal);
@@ -442,13 +443,35 @@ end;
 
 procedure TPS2VIF.WriteVector(const V: TPS2Reg128);
 begin
-  var Mask := S.MASK;
-  var R := V;
   var CL := Integer(S.CYCLE and $FF);
   var WL := CycleWL(S.CYCLE);
+  var P := PPS2Reg128(FData + ((Cardinal(S.UnpackAddr) * 16) and FDataMask));
+  if ((S.Command and $10) = 0) and (S.MODE = 0) then
+    // No mask, no row: the data as it is.
+    P^ := V
+  else
+    WriteMasked(V, P);
+  Inc(S.UnpackCount);
+  Inc(S.CycleWritten);
+  // Write cycle: after WL writes, skip CL - WL vectors (or none in fill mode).
+  if (WL > 0) and (S.CycleWritten >= WL) then
+  begin
+    S.CycleWritten := 0;
+    if CL > WL then
+      Inc(S.UnpackAddr, CL - WL + 1)
+    else
+      Inc(S.UnpackAddr);
+  end
+  else
+    Inc(S.UnpackAddr);
+end;
+
+procedure TPS2VIF.WriteMasked(const V: TPS2Reg128; P: PPS2Reg128);
+begin
+  var Mask := S.MASK;
+  var R := V;
   var Masked := ((S.Command and $10) <> 0);
   var Row := Min(S.CycleWritten, 3);
-  var P := PPS2Reg128(FData + ((Cardinal(S.UnpackAddr) * 16) and FDataMask));
   for var K := 0 to 3 do
   begin
     var M := 0;
@@ -472,19 +495,6 @@ begin
     end;
   end;
   P^ := R;
-  Inc(S.UnpackCount);
-  Inc(S.CycleWritten);
-  // Write cycle: after WL writes, skip CL - WL vectors (or none in fill mode).
-  if (WL > 0) and (S.CycleWritten >= WL) then
-  begin
-    S.CycleWritten := 0;
-    if CL > WL then
-      Inc(S.UnpackAddr, CL - WL + 1)
-    else
-      Inc(S.UnpackAddr);
-  end
-  else
-    Inc(S.UnpackAddr);
 end;
 
 procedure TPS2VIF.UnpackWord(W: Cardinal);
@@ -593,6 +603,20 @@ begin
   Result := 0;
   while Result < Count do
   begin
+    // Inside an UNPACK nothing stalls the VIF until the command ends: its
+    // data words go straight to the unpacker.
+    if (S.Remaining > 1) and (S.Command >= $60) and (S.HeldCount = 0) and not CaptureUnfinished and
+      not Stalled and not S.WaitVU then
+    begin
+      while (Result < Count) and (S.Remaining > 1) do
+      begin
+        Inc(Words);
+        UnpackWord(Data[Result]);
+        Dec(S.Remaining);
+        Inc(Result);
+      end;
+      Continue;
+    end;
     var W := Data[Result];
     if (S.HeldCount > 0) or Waits(W) then
     begin

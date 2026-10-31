@@ -199,8 +199,8 @@ the register files are compared without CompareMem calls.
 On Win64, common multimedia instructions (parallel add/subtract with and
 without saturation, compares, min/max, PEXT*/PPAC*, PCPY*, logic and the
 halfword/word shifts) decode to SSE2 kernels on whole registers
-(EEMMIKernel) for the interpreter and the recompiler alike;
-	ests/cores/ps2/eemmi runs each of them, with every shift amount and aliased
+(`EEMMIKernel`) for the interpreter and the recompiler alike;
+`tests/cores/ps2/eemmi` runs each of them, with every shift amount and aliased
 registers, against the general handlers in both.
 
 The EE recompiler turns a decoded block into host code on its second run.
@@ -240,17 +240,17 @@ helpers. XGKICK still uses the shared packet reader with its original timing.
 ITOF/FTOI0/4/12/15 use packed exact conversion helpers, and CLIP uses integer
 comparisons plus the original four-cycle flag queue. Exponent-zero inputs,
 finite exponent 255, saturation, masks and host conversion rounding retain
-the scalar reference results. CLIP remains a scheduling observation boundary.
+the scalar reference results.
 On Win64/AVX2, compiled ADD/SUB/MUL/MADD/MSUB can pass operands and results
 through volatile 128-bit registers. Each run picks the routines for the host
-rounding it runs under, so no operation reads MXCSR (HW.JIT's
-VectorCallAt calls them through the core): under truncation the host result
+rounding it runs under, so no operation reads MXCSR (`HW.JIT`'s
+`VectorCallAt` calls them through the core): under truncation the host result
 is the PS2's; under round-to-nearest (VU1 programs started by the scheduler)
 the host result is moved one unit toward zero where its exact error (FMA for
 products, Fast2Sum for sums) shows it was rounded away from zero, within
 exponent ranges where every intermediate is normal whatever FTZ/DAZ say;
-other modes and ranges use the exact integer routines. The result stays live through a call-free
-lower half until the masked commit; Z/S extraction is vectorized and O/U
+other modes and ranges use the exact integer routines. The result stays live
+through a call-free lower half until the masked commit; Z/S extraction is vectorized and O/U
 groups are returned directly. Every input and rounding mode remains exact,
 using integer normalization outside the guarded common range. MADD/MSUB still
 round the product and sum separately. Callbacks, aliased data/register/code
@@ -265,9 +265,14 @@ Callback-free spans also have a statically scheduled path: it validates the
 whole span, incoming dependency deadlines and pending queues before changing
 guest state. Internal stalls and final register-ready times are constants;
 flag-queue evolution is compiled symbolically, retaining exact stale tail
-slots. Short budgets, trace capture, pending kicks/branches and unusual input
-latencies fall back to per-pair execution. Division, CLIP/flag operations and
-XGKICK are observation boundaries, not deferred across such a span.
+slots; spans shorter than the four cycles flags take to land, and CLIP
+results, are queued at the end at run time as each pair would have queued
+them (FinishFastFlags). Spans have two pairs or more and may end with a
+DIV/SQRT/RSQRT pair, before which the older Q lands as the pair's preparation
+leaves it. Short budgets, trace capture, pending kicks/branches and unusual
+input latencies fall back to per-pair execution. Flag reads, EFU operations,
+division elsewhere in a span and XGKICK are observation boundaries, not
+deferred across such a span.
 Re-uploaded block versions are reused only after the entry address and every
 word match (hashes alone are not trusted). The code arena is bounded to
 32 MiB per VU; resetting it clears the version and successor tables too.

@@ -159,6 +159,13 @@ type
     FMathMode: TRoundingMode;
     FJitClip: Cardinal;
     FJitEvents: array[0..15] of TPS2VUFlagEvent;
+    // CLIP results of a scheduled run (their clip flags and when they land),
+    // replayed into the queue by FinishFastFlags; FEmitClipSlot: the one the
+    // pair being written makes (-1: not a scheduled run), issued at
+    // FEmitClipIssue cycles into it.
+    FJitClipEvents: array[0..15] of record Value: Cardinal; Ready: Int64; end;
+    FJitClipCount: Integer;
+    FEmitClipSlot, FEmitClipIssue: Integer;
     FJitFastPairs: Int64;
     // Code-generation state only. Volatile vector results survive a lower
     // half only when that half has no helper call and data cannot alias us.
@@ -180,7 +187,8 @@ type
     function PlanFast(const Block: TPS2VUCompiledBlock; out Plan: TPS2VUFastPlan): Boolean;
     procedure EmitFast(const Block: TPS2VUCompiledBlock; const Plan: TPS2VUFastPlan;
       Slow, Stale, Chain: TJitLabel);
-    procedure FinishFastFlags(Count: Integer; LastIssue: Int64);
+    procedure FinishFastFlags(Count: Integer; LastIssue, ClipLast: Int64);
+    procedure DrainClip(Cycle: Int64);
     procedure PreparePair(var Run: TPS2VURun); inline;
     procedure FinishPair(var Run: TPS2VURun); inline;
     function DecodedPair(PC, LowerOp, UpperOp: Cardinal): PPS2VUPair; inline;
@@ -314,14 +322,13 @@ begin
   Result := Cardinal(8) shr K;
 end;
 
-// Operations with no callback and no direct access to the delayed flag
-// queues. Boundaries (CLIP/flag reads, division, EFU and XGKICK) retain the
-// fully guarded per-pair path.
+// Operations with no callback and no read of the delayed flag queues.
+// Boundaries (flag reads, division, EFU and XGKICK) retain the fully guarded
+// per-pair path.
 function FastPair(Lower, Upper: Cardinal): Boolean;
 begin
-  var F := Upper and $3F;
-  if (F >= $3C) and ((((Upper shr 4) and $7C) or (Upper and 3)) = $1F) then
-    Exit(False);
+  // (CLIP queues its flags as FMAC operations do: a scheduled run replays
+  // them, FinishFastFlags.)
   if (Upper and $80000000) <> 0 then Exit(True);
   if (Lower and $80000000) = 0 then
     Exit((Lower shr 25) in [$00, $01, $04, $05, $08, $09, $20, $21, $24, $25, $28, $29, $2C..$2F]);
@@ -329,6 +336,16 @@ begin
     Exit((Lower and $3F) in [$30, $31, $32, $34, $35]);
   Result := (((Lower shr 4) and $7C) or (Lower and 3)) in
     [$30, $31, $34..$37, $3C..$43, $64, $68, $69];
+end;
+
+// A pair whose lower op is DIV, SQRT or RSQRT (its upper one as FastPair
+// allows): a scheduled run may end with one (EmitFast lands the older Q
+// first and leaves the new one pending).
+function QPair(Lower, Upper: Cardinal): Boolean;
+begin
+  Result := ((Upper and $80000000) = 0) and ((Lower and $8000003C) = $8000003C) and
+    ((((Lower shr 4) and $7C) or (Lower and 3)) in [$38..$3A]) and FastPair(0, Upper) and
+    ((Upper and $40000000) = 0);
 end;
 
 function VectorLowerNoCall(Lower, Upper: Cardinal): Boolean;
@@ -381,6 +398,7 @@ begin
   FData := Data;
   FCodeMask := CodeSize - 1;
   FDataMask := DataSize - 1;
+  FEmitClipSlot := -1;
   FVectorMemorySafe := SeparateBuffers(Data, DataSize, Code, CodeSize) and
     SeparateBuffers(Data, DataSize, VF, SizeOf(TPS2VFArray)) and
     SeparateBuffers(Data, DataSize, VI, SizeOf(TPS2VIArray)) and
@@ -431,7 +449,9 @@ begin
   begin
     var Lo := PCardinal(FCode + Address)^;
     var Hi := PCardinal(FCode + Address + 4)^;
-    if (K > 0) and not EndAfterPair and not FastPair(Lo, Hi) then Break;
+    // (A DIV/SQRT/RSQRT pair may end it, see QPair.)
+    var QLast := (K > 0) and not EndAfterPair and not FastPair(Lo, Hi) and QPair(Lo, Hi);
+    if (K > 0) and not EndAfterPair and not FastPair(Lo, Hi) and not QLast then Break;
     Block.Words[K * 2] := Lo;
     Block.Words[K * 2 + 1] := Hi;
     Inc(Block.PairCount);
@@ -440,7 +460,7 @@ begin
     // Cached native guards also consult the decoded metadata. Refresh it
     // on a version hit exactly as a fresh compilation would.
     DecodedPair(Address, Lo, Hi);
-    if EndAfterPair then Break;
+    if EndAfterPair or QLast then Break;
     EndAfterPair := (Hi and $40000000) <> 0;
     if (Hi and $80000000) = 0 then
       EndAfterPair := EndAfterPair or ((Lo shr 25) in [$20, $21, $24, $25, $28, $29, $2C..$2F]);
@@ -607,7 +627,8 @@ var
 
 begin
   Result := False;
-  if Block.PairCount < 4 then Exit;
+  // (Two pairs at least: a branch and its delay slot, or the E bit's.)
+  if Block.PairCount < 2 then Exit;
   // The hardware has separate code and data RAM. Preserve per-pair code
   // guards for synthetic callers that deliberately alias the two buffers.
   if (NativeUInt(FData) < NativeUInt(FCode) + FCodeMask + 1) and
@@ -617,7 +638,8 @@ begin
   var PC := Block.PC;
   for var I := 0 to Block.PairCount - 1 do
   begin
-    if not FastPair(Block.Words[I * 2], Block.Words[I * 2 + 1]) then Exit;
+    if not FastPair(Block.Words[I * 2], Block.Words[I * 2 + 1]) and
+      not ((I = Block.PairCount - 1) and QPair(Block.Words[I * 2], Block.Words[I * 2 + 1])) then Exit;
     var P: PPS2VUPair := @FPairs[PC shr 3];
     Need(P.U.S1, P.U.M1); Need(P.U.S2, P.U.M2);
     Need(P.L.S1, P.L.M1); Need(P.L.S2, P.L.M2);
@@ -634,7 +656,7 @@ end;
 // Reproduce the reference queues at an observable block boundary. No flag
 // instruction or callback runs while events are deferred. Keep even unused
 // tail slots identical, so snapshots and later interpreter execution agree.
-procedure TPS2VUCore.FinishFastFlags(Count: Integer; LastIssue: Int64);
+procedure TPS2VUCore.FinishFastFlags(Count: Integer; LastIssue, ClipLast: Int64);
 
   procedure Drain(Cycle: Int64);
   begin
@@ -665,7 +687,26 @@ begin
     end;
   end;
   Drain(LastIssue);
-  while (S.ClipQCount > 0) and (S.ClipQReady[0] <= LastIssue) do
+  // The run's CLIP results, as each pair drained the clip queue to its issue
+  // and then queued its own; then the queue as the last pair left it.
+  for var I := 0 to FJitClipCount - 1 do
+  begin
+    DrainClip(FJitClipEvents[I].Ready - 4);
+    if S.ClipQCount < 4 then
+    begin
+      S.ClipQValue[S.ClipQCount] := FJitClipEvents[I].Value;
+      S.ClipQReady[S.ClipQCount] := FJitClipEvents[I].Ready;
+      Inc(S.ClipQCount);
+    end;
+  end;
+  FJitClipCount := 0;
+  DrainClip(ClipLast);
+  FClipVisible := S.ClipBase;
+end;
+
+procedure TPS2VUCore.DrainClip(Cycle: Int64);
+begin
+  while (S.ClipQCount > 0) and (S.ClipQReady[0] <= Cycle) do
   begin
     S.ClipBase := S.ClipQValue[0];
     for var K := 1 to S.ClipQCount - 1 do
@@ -820,9 +861,13 @@ begin
   end;
   var LastCycle := Plan.Issue[Block.PairCount - 1];
   DrainSymbols(LastCycle);
-  var WholeQueueKnown := BaseEvent >= 0;
+  // A run shorter than the four cycles events take to land leaves incoming
+  // events in the queue: every event is replayed at run time (Generic).
+  var Generic := LastCycle < 3;
+  var WholeQueueKnown := (BaseEvent >= 0) and not Generic;
   for var I := 0 to 3 do WholeQueueKnown := WholeQueueKnown and (Slots[I] >= 0);
   var Events := 0;
+  var ClipEvents := 0;
   PC := Block.PC;
   for var I := 0 to Block.PairCount - 1 do
   begin
@@ -830,7 +875,12 @@ begin
     var P: PPS2VUPair := @FPairs[PC shr 3];
     var F := P.Upper and $3F;
     if F >= $3C then F := ((P.Upper shr 4) and $7C) or (P.Upper and 3);
-    if F in [$1C, $20, $21, $24, $25] then
+    // A last DIV/SQRT/RSQRT: the older Q lands (or waits less) first, as the
+    // pair's preparation leaves it; the new one is left pending.
+    var QLast := (I = Block.PairCount - 1) and QPair(P.Lower, P.Upper);
+    if QLast then
+      Land(@S.QDelay, @S.PendingQ, @S.Q, Plan.Issue[I] + 1, True)
+    else if F in [$1C, $20, $21, $24, $25] then
       Land(@S.QDelay, @S.PendingQ, @S.Q, Plan.Issue[I] + 1, False);
     if ((P.Upper and $80000000) = 0) and ((P.Lower and $8000003C) = $8000003C) and
       ((((P.Lower shr 4) and $7C) or (P.Lower and 3)) = $64) then
@@ -845,7 +895,16 @@ begin
     end;
     J.Move(jw8, M(@S.BranchPending), JImm(0));
     EmitVIHistory(P^);
+    FEmitClipSlot := -1;
+    if ((P.Upper and $80000000) = 0) and ((P.Upper and $3F) >= $3C) and
+      ((((P.Upper shr 4) and $7C) or (P.Upper and 3)) = $1F) then
+    begin
+      FEmitClipSlot := ClipEvents;
+      FEmitClipIssue := Plan.Issue[I];
+      Inc(ClipEvents);
+    end;
     EmitPair(P^);
+    FEmitClipSlot := -1;
     EmitCommit(P^);
     if P.SetsFlags then
     begin
@@ -853,7 +912,7 @@ begin
       J.Move(jw32, M(@FJitEvents[Events].MAC), JT0);
       J.Move(jw32, JT0, M(@S.Status));
       J.Move(jw32, M(@FJitEvents[Events].Status), JT0);
-      if not WholeQueueKnown and (Events < PrefixCount) then
+      if Generic or (not WholeQueueKnown and (Events < PrefixCount)) then
       begin
         J.Move(jw64, JT0, JS1);
         J.Alu(jaAdd, jw64, JT0, JImm(Plan.Issue[I] + 4));
@@ -878,16 +937,30 @@ begin
       J.Alu(jaAdd, jw64, JT0, JImm(Plan.WriteAny[R] + 4));
       J.Move(jw64, M(@FReadyAny[R]), JT0);
     end;
-  Land(@S.QDelay, @S.PendingQ, @S.Q, LastCycle + 1, True);
+  var LastWords := Block.PairCount - 1;
+  if not QPair(Block.Words[LastWords * 2], Block.Words[LastWords * 2 + 1]) then
+    Land(@S.QDelay, @S.PendingQ, @S.Q, LastCycle + 1, True);
   Land(@S.PDelay, @S.PendingP, @S.P, LastCycle + 1, True);
   ProfileMark('fast-replay-flags');
-  if WholeQueueKnown then
+  // (The clip queue as the last pair leaves it: drained to its issue.)
+  if ClipEvents > 0 then
+    J.Move(jw32, M(@FJitClipCount), JImm(ClipEvents));
+  J.Move(jw64, JT5, JS1);
+  J.Alu(jaAdd, jw64, JT5, JImm(LastCycle));
+  if Generic then
   begin
-    var NoClip := J.NewLabel;
-    J.Branch(jcEq, jw32, M(@S.ClipQCount), JImm(0), NoClip);
     J.Move(jw64, JT0, JS1);
     J.Alu(jaAdd, jw64, JT0, JImm(LastCycle));
-    J.Call(@TPS2VUCore.FinishFastFlags, [JSelf, JImm(0), JT0]);
+    J.Call(@TPS2VUCore.FinishFastFlags, [JSelf, JImm(EventCount), JT0, JT5]);
+  end
+  else if WholeQueueKnown then
+  begin
+    var NoClip := J.NewLabel;
+    if ClipEvents = 0 then
+      J.Branch(jcEq, jw32, M(@S.ClipQCount), JImm(0), NoClip);
+    J.Move(jw64, JT0, JS1);
+    J.Alu(jaAdd, jw64, JT0, JImm(LastCycle));
+    J.Call(@TPS2VUCore.FinishFastFlags, [JSelf, JImm(0), JT0, JT5]);
     J.Bind(NoClip);
     J.Move(jw32, JT0, M(@S.ClipBase));
     J.Move(jw32, M(@FClipVisible), JT0);
@@ -896,8 +969,11 @@ begin
   begin
     J.Move(jw64, JT0, JS1);
     J.Alu(jaAdd, jw64, JT0, JImm(3));
-    J.Call(@TPS2VUCore.FinishFastFlags, [JSelf, JImm(PrefixCount), JT0]);
+    J.Call(@TPS2VUCore.FinishFastFlags, [JSelf, JImm(PrefixCount), JT0, JT5]);
   end;
+  // (Generic: FinishFastFlags left the whole queue.)
+  if not Generic then
+  begin
   for var K := 0 to 3 do
     if Slots[K] >= 0 then
     begin
@@ -918,6 +994,7 @@ begin
     J.Move(jw32, M(@S.StatusBase), JT0);
   end;
   J.Move(jw32, M(@S.FlagQCount), JImm(LiveCount));
+  end;
   J.Move(jw64, JT0, JS1);
   J.Alu(jaAdd, jw64, JT0, JImm(LastCycle + 1));
   J.Move(jw64, M(@S.Cycles), JT0);
@@ -1814,22 +1891,33 @@ begin
     J.Alu(jaOr, jw32, JT0, JMem(jrSelf, Integer(NativeInt(@FJitClip) - NativeInt(Self))));
     J.Alu(jaAnd, jw32, JT0, JImm($FFFFFF));
     J.Move(jw32, JMem(jrSelf, Clip), JT0);
-    // CLIP remains an observation boundary, with the same four-cycle queue.
-    var Full := J.NewLabel;
-    J.Move(jw32, JT1, JMem(jrSelf, Count));
-    J.Branch(jcGe, jw32, JT1, JImm(4), Full);
-    J.Move(jw64, JT2, JT1);
-    J.Shift(jsShl, jw64, jrT2, 2);
-    J.Alu(jaAdd, jw64, JT2, JSelf);
-    J.Move(jw32, JMem(jrT2, Integer(NativeInt(@S.ClipQValue[0]) - NativeInt(Self))), JT0);
-    J.Move(jw64, JT3, JMem(jrSelf, Integer(NativeInt(@S.Cycles) - NativeInt(Self))));
-    J.Alu(jaAdd, jw64, JT3, JImm(4));
-    J.Shift(jsShl, jw32, jrT1, 3);
-    J.Move(jw64, JT2, JSelf);
-    J.Alu(jaAdd, jw64, JT2, JT1);
-    J.Move(jw64, JMem(jrT2, Integer(NativeInt(@S.ClipQReady[0]) - NativeInt(Self))), JT3);
-    J.Alu(jaAdd, jw32, JMem(jrSelf, Count), JImm(1));
-    J.Bind(Full);
+    if FEmitClipSlot >= 0 then
+    begin
+      // In a scheduled run: the result and when it lands, for FinishFastFlags.
+      J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FJitClipEvents[FEmitClipSlot].Value) - NativeInt(Self))), JT0);
+      J.Move(jw64, JT3, JS1);
+      J.Alu(jaAdd, jw64, JT3, JImm(FEmitClipIssue + 4));
+      J.Move(jw64, JMem(jrSelf, Integer(NativeInt(@FJitClipEvents[FEmitClipSlot].Ready) - NativeInt(Self))), JT3);
+    end
+    else
+    begin
+      // The same four-cycle queue as the flags.
+      var Full := J.NewLabel;
+      J.Move(jw32, JT1, JMem(jrSelf, Count));
+      J.Branch(jcGe, jw32, JT1, JImm(4), Full);
+      J.Move(jw64, JT2, JT1);
+      J.Shift(jsShl, jw64, jrT2, 2);
+      J.Alu(jaAdd, jw64, JT2, JSelf);
+      J.Move(jw32, JMem(jrT2, Integer(NativeInt(@S.ClipQValue[0]) - NativeInt(Self))), JT0);
+      J.Move(jw64, JT3, JMem(jrSelf, Integer(NativeInt(@S.Cycles) - NativeInt(Self))));
+      J.Alu(jaAdd, jw64, JT3, JImm(4));
+      J.Shift(jsShl, jw32, jrT1, 3);
+      J.Move(jw64, JT2, JSelf);
+      J.Alu(jaAdd, jw64, JT2, JT1);
+      J.Move(jw64, JMem(jrT2, Integer(NativeInt(@S.ClipQReady[0]) - NativeInt(Self))), JT3);
+      J.Alu(jaAdd, jw32, JMem(jrSelf, Count), JImm(1));
+      J.Bind(Full);
+    end;
   end
   else if IsAbs or IsMax or IsMin then
   begin
@@ -3348,16 +3436,28 @@ begin
   end;
 end;
 
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+// The host rounding (MXCSR RC), without the run-time library's call.
+function HostRounding: TRoundingMode;
+asm
+  .NOFRAME
+  stmxcsr [rsp + 8]
+  mov eax, [rsp + 8]
+  shr eax, 13
+  and eax, 3
+end;
+{$ELSE}
+function HostRounding: TRoundingMode;
+begin
+  Result := GetRoundMode;
+end;
+{$ENDIF}
+
 function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
 begin
-  // (The host rounding stays as it is for the whole run: the routines for it.)
-  var Mode := GetRoundMode;
-  if (Mode <> FMathMode) or (FMath[vrmAdd] = nil) then
-  begin
-    FMathMode := Mode;
-    FMath[vrmAdd] := PS2RegisterMathNativeFor(vrmAdd, Mode);
-    FMath[vrmMul] := PS2RegisterMathNativeFor(vrmMul, Mode);
-  end;
+  // (The host rounding stays as it is for the whole run: the routines for
+  // it, before generated code first runs.)
+  var MathChecked := False;
   var Context := Default(TPS2VURun);
   Context.Limit := MaxPairs;
   while S.Running and (Context.Count < Context.Limit) do
@@ -3377,6 +3477,17 @@ begin
     end;
     if FUseJit and (Pair.Native <> nil) then
     begin
+      if not MathChecked then
+      begin
+        MathChecked := True;
+        var Mode := HostRounding;
+        if (Mode <> FMathMode) or (FMath[vrmAdd] = nil) then
+        begin
+          FMathMode := Mode;
+          FMath[vrmAdd] := PS2RegisterMathNativeFor(vrmAdd, Mode);
+          FMath[vrmMul] := PS2RegisterMathNativeFor(vrmMul, Mode);
+        end;
+      end;
       var Before := Context.Count;
       Context.Invalid := False;
       FJit.Invoke(Pair.Native, NativeUInt(Self), NativeUInt(@Context), 0, 0);
@@ -3405,7 +3516,7 @@ begin
   if FKickPending then
     TakeKick(True);
   {$IFDEF PS2_CHECKED}
-  if GetRoundMode <> Mode then
+  if MathChecked and (GetRoundMode <> FMathMode) then
     raise Exception.Create('VU run changed the host rounding');
   {$ENDIF}
   Result := not S.Running;

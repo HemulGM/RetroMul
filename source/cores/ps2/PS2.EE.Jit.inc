@@ -9,7 +9,7 @@
 // state. After its last instruction a block goes on into the next block's
 // code (JitEmitChain) where RunBlocks would run it next: the time counted,
 // no deadline, interrupt, exit or reset due, the next block compiled, valid
-// and not a spin (RunBlocks's to skip); else back to RunBlocks. The code
+// and not a spin or a polling block (RunBlocks's to pass over); else back to RunBlocks. The code
 // returns the instructions its last block ran (0 after a chain's check), as
 // Execute, the last block in FJitLast. Code is made for a block
 // when it has run JitHeat times, and dropped with the blocks (ClearBlocks,
@@ -220,7 +220,8 @@ begin
   if ((PC and 3) <> 0) or (FReadMap[PC shr 12] = nil) then
     Exit;
   var Next := FindBlock(PC);
-  if (Next = nil) or (Next.NativeInner = nil) or Next.Spin then
+  if (Next = nil) or (Next.NativeInner = nil) or Next.Spin or Next.Poll or PollsWith(B, Next) or
+    PollsWith(Next, B) then
     Exit;
   B.Chain[K] := Next;
   Result := Next;

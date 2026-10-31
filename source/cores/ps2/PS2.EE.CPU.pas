@@ -148,6 +148,12 @@ type
     Flags: Byte;
   end;
 
+  // A load of a polling block: from Address (Base -1) or GPR[Base] + Address.
+  TEEPollLoad = record
+    Base: ShortInt;
+    Address: Cardinal;
+  end;
+
   PEEBlock = ^TEEBlock;
   TEEBlock = record
     PC: Cardinal;
@@ -168,6 +174,14 @@ type
     // The compiled blocks its code goes on to after its last instruction:
     // where its branch went (0), past its end (1).
     Chain: array[0..1] of PEEBlock;
+    // Only polls (FindPoll): a conditional branch back to PC ends it, and a
+    // turn computes the same from the same memory; its loads. With the block
+    // before it (PollsWith): PollFirst, whether the two are such a turn
+    // (their loads then in PollLoads).
+    Poll, PollPair: Boolean;
+    PollFirst: PEEBlock;
+    PollLoadCount: Integer;
+    PollLoads: array[0..3] of TEEPollLoad;
   end;
 
   TEEPageMap = array[0..EEPageCount - 1] of PByte;
@@ -262,6 +276,11 @@ type
     function JitCompile(B: PEEBlock): Pointer;
     procedure JitEmitChain(B: PEEBlock; K: Integer);
     function JitLink(B: PEEBlock; K: Integer): Pointer;
+    function PollCode(const Blocks: array of PEEBlock; LoopPC: Cardinal; var Loads: array of TEEPollLoad;
+      out LoadCount: Integer): Boolean;
+    procedure FindPoll(B: PEEBlock);
+    function PollsWith(First, Second: PEEBlock): Boolean;
+    function PollQuiet(B: PEEBlock): Boolean;
     function JitEmitOwn(I: PEEInst; Stop: TJitLabel): Boolean;
     procedure JitStop(I: PEEInst);
     procedure MapRange(VBase, Size, Phys: Cardinal; Flags: Cardinal);
@@ -431,6 +450,9 @@ type
     // (BIOS boot: the kernel's idle thread), and the cycles that saved.
     SkipSpins: Boolean;
     SpinCycles: Int64;
+    // Diagnostics: the cycles polling blocks were passed over in (exactly as
+    // their turns would have run, see FindPoll).
+    PollCycles: Int64;
     // Diagnostics (BIOS boot): SYSCALLs taken to the guest kernel, interrupts
     // taken by line state (index: INT1 * 2 + INT0).
     SyscallLog: TStrings;
@@ -4027,6 +4049,7 @@ begin
   B.Chain[0] := nil;
   B.Chain[1] := nil;
   B.Heat := 0;
+  FindPoll(B);
   B.Spin := (Count >= 2) and (Code[Count - 1] = 0) and ((Code[Count - 2] and $FFFF0000) = $10000000) and
     (Add32(PC + Cardinal(Count - 2) * 4 + 4, SX16To32(Code[Count - 2] and $FFFF) shl 2) = PC);
   for var K := 0 to Count - 3 do
@@ -4210,6 +4233,43 @@ begin
     S.PC := Next;
     Inc(InstructionsExecuted, Count);
     Inc(Now^, Count);
+    // A polling block about to turn again: memory and registers stay as they
+    // are until the next event (devices change them only then), so its turns
+    // up to the deadline change nothing but time; they pass at once, as many
+    // whole turns as would run.
+    if B.Poll and (Next = B.PC) and not FIntPending and not FExitRequest and (Now^ < Deadline^) and
+      (WatchPtr = nil) and (BlockProfile = nil) and PollQuiet(B) then
+    begin
+      var Turns := (Deadline^ - Now^ + B.Count - 1) div B.Count;
+      Inc(Now^, Turns * B.Count);
+      Inc(InstructionsExecuted, Turns * B.Count);
+      Inc(PollCycles, Turns * B.Count);
+      for var K := 1 to Min(Turns, Length(PCHistory)) do
+      begin
+        PCHistory[PCHistoryPos and 15] := B.PC;
+        Inc(PCHistoryPos);
+      end;
+    end
+    // The same for a turn of two blocks (the one before, then B): whole turns
+    // that end before the deadline (the last, partial one runs as usual).
+    else if (Prev <> nil) and (Next = Prev.PC) and not FIntPending and not FExitRequest and
+      (WatchPtr = nil) and (BlockProfile = nil) and PollsWith(Prev, B) and PollQuiet(B) then
+    begin
+      var Turn := Prev.Count + B.Count;
+      var Turns := (Deadline^ - Now^ - 1) div Turn;
+      if Turns > 0 then
+      begin
+        Inc(Now^, Turns * Turn);
+        Inc(InstructionsExecuted, Turns * Turn);
+        Inc(PollCycles, Turns * Turn);
+        for var K := 1 to Min(Turns, Length(PCHistory) div 2) do
+        begin
+          PCHistory[PCHistoryPos and 15] := Prev.PC;
+          PCHistory[(PCHistoryPos + 1) and 15] := B.PC;
+          Inc(PCHistoryPos, 2);
+        end;
+      end;
+    end;
     // A spin that only waits: nothing changes until the next event, so the
     // time up to the deadline passes at once.
     if B.Spin and SkipSpins and (Next = B.PC) and not FIntPending and not FExitRequest and (Now^ < Deadline^) then
@@ -4233,6 +4293,197 @@ begin
         Break;
     end;
   end;
+end;
+
+// Whether a turn of a loop, the blocks in Blocks one after the other (each
+// falling through to the next), only polls: the last ends with a non-likely
+// conditional branch back to LoopPC, the others with none or a non-likely
+// conditional branch (their delay slots run either way), and the other
+// instructions are loads, register arithmetic and NOPs (no stores, traps,
+// HI/LO, coprocessors) that read no register the turn writes unless the turn
+// wrote it earlier. A turn then computes the same registers from the same
+// memory and branches the same way. Its loads (Loads, Count) have addresses
+// constant within the turn (LUI/ORI/ADDIU/XORI/ANDI from constants) or a
+// register it never writes plus the offset.
+function TEECPU.PollCode(const Blocks: array of PEEBlock; LoopPC: Cardinal; var Loads: array of TEEPollLoad;
+  out LoadCount: Integer): Boolean;
+var
+  Known: array[0..32] of Boolean;
+  Value: array[0..32] of Cardinal;
+  Written, LiveIn, Dynamic: set of 0..32;
+
+  procedure Read(R: Integer);
+  begin
+    if (R <> 0) and not (R in Written) then
+      Include(LiveIn, R);
+  end;
+
+  // False: a write to GPR 0 through a field not mapped to the dummy (32).
+  function Write(R: Integer): Boolean;
+  begin
+    Result := R <> 0;
+    if R = 32 then
+      Exit;
+    Include(Written, R);
+    Known[R] := False;
+  end;
+
+  function Conditional(H: Pointer): Boolean;
+  begin
+    Result := (H = @TEECPU.OpBEQ) or (H = @TEECPU.OpBNE) or (H = @TEECPU.OpBLEZ) or (H = @TEECPU.OpBGTZ) or
+      (H = @TEECPU.OpBLTZ) or (H = @TEECPU.OpBGEZ);
+  end;
+
+begin
+  Result := False;
+  LoadCount := 0;
+  Written := [];
+  LiveIn := [];
+  Dynamic := [];
+  FillChar(Known, SizeOf(Known), 0);
+  Known[0] := True;
+  Value[0] := 0;
+  for var N := 0 to High(Blocks) do
+  begin
+    var B := Blocks[N];
+    // Where its branch is (-1: none, it runs on past its end).
+    var BranchAt := -1;
+    if (B.Count >= 2) and ((B.Insts[B.Count - 1].Flags and IFSlot) <> 0) then
+      BranchAt := B.Count - 2;
+    if N = High(Blocks) then
+    begin
+      if (BranchAt < 0) or not Conditional(B.Insts[BranchAt].Handler) or (B.Insts[BranchAt].Imm <> LoopPC) then
+        Exit;
+    end
+    else if BranchAt >= 0 then
+    begin
+      if not Conditional(B.Insts[BranchAt].Handler) then
+        Exit;
+    end
+    else if (B.Count > 0) and ((B.Insts[B.Count - 1].Flags and IFEnd) <> 0) then
+      Exit;
+    for var K := 0 to B.Count - 1 do
+    begin
+      var I := B.Insts + K;
+      var H := I.Handler;
+      if K = BranchAt then
+      begin
+        Read(I.S);
+        if (H = @TEECPU.OpBEQ) or (H = @TEECPU.OpBNE) then
+          Read(I.T);
+      end
+      else if H = @TEECPU.OpNOP then
+      else if H = @TEECPU.OpLUI then
+      begin
+        if not Write(I.T) then Exit;
+        Known[I.T] := True;
+        Value[I.T] := I.Imm;
+      end
+      else if (H = @TEECPU.OpORI) or (H = @TEECPU.OpXORI) or (H = @TEECPU.OpANDI) or (H = @TEECPU.OpADDIU) then
+      begin
+        Read(I.S);
+        var Was := Known[I.S];
+        var V := Value[I.S];
+        if not Write(I.T) then Exit;
+        if Was then
+        begin
+          if H = @TEECPU.OpORI then V := V or I.Imm
+          else if H = @TEECPU.OpXORI then V := V xor I.Imm
+          else if H = @TEECPU.OpANDI then V := V and I.Imm
+          else V := Add32(V, I.Imm);
+          Known[I.T] := True;
+          Value[I.T] := V;
+        end;
+      end
+      else if (H = @TEECPU.OpSLTI) or (H = @TEECPU.OpSLTIU) or (H = @TEECPU.OpDADDIU) then
+      begin
+        Read(I.S);
+        if not Write(I.T) then Exit;
+      end
+      else if (H = @TEECPU.OpADDU) or (H = @TEECPU.OpSUBU) or (H = @TEECPU.OpAND) or (H = @TEECPU.OpOR) or
+        (H = @TEECPU.OpXOR) or (H = @TEECPU.OpNOR) or (H = @TEECPU.OpSLT) or (H = @TEECPU.OpSLTU) or
+        (H = @TEECPU.OpDADDU) or (H = @TEECPU.OpDSUBU) then
+      begin
+        Read(I.S);
+        Read(I.T);
+        Write(I.D);
+      end
+      else if (H = @TEECPU.OpSLL) or (H = @TEECPU.OpSRL) or (H = @TEECPU.OpSRA) or (H = @TEECPU.OpDSLL) or
+        (H = @TEECPU.OpDSRL) or (H = @TEECPU.OpDSRA) then
+      begin
+        Read(I.T);
+        Write(I.D);
+      end
+      else if (H = @TEECPU.OpLB) or (H = @TEECPU.OpLBU) or (H = @TEECPU.OpLH) or (H = @TEECPU.OpLHU) or
+        (H = @TEECPU.OpLW) or (H = @TEECPU.OpLWU) or (H = @TEECPU.OpLD) then
+      begin
+        if LoadCount > High(Loads) then
+          Exit;
+        Read(I.S);
+        if Known[I.S] then
+        begin
+          Loads[LoadCount].Base := -1;
+          Loads[LoadCount].Address := Add32(Value[I.S], I.Imm);
+        end
+        else
+        begin
+          Loads[LoadCount].Base := I.S;
+          Loads[LoadCount].Address := I.Imm;
+          Include(Dynamic, I.S);
+        end;
+        Inc(LoadCount);
+        if not Write(I.T) then Exit;
+      end
+      else
+        Exit;
+    end;
+  end;
+  Result := (LiveIn * Written = []) and (Dynamic * Written = []);
+end;
+
+// A block that polls by itself (PollCode, a turn of one block).
+procedure TEECPU.FindPoll(B: PEEBlock);
+begin
+  B.PollFirst := nil;
+  B.PollPair := False;
+  B.Poll := PollCode([B], B.PC, B.PollLoads, B.PollLoadCount);
+end;
+
+// Whether First then Second (the next block where First runs on past its
+// end) are a turn of a polling loop back to First (PollCode); learned in
+// Second.
+function TEECPU.PollsWith(First, Second: PEEBlock): Boolean;
+begin
+  if (First = nil) or (Second = nil) or Second.Poll then
+    Exit(False);
+  if Second.PollFirst <> First then
+  begin
+    Second.PollFirst := First;
+    Second.PollPair := (Second.PC = First.PC + Cardinal(First.Count) * 4) and not First.Spin and
+      PollCode([First, Second], First.PC, Second.PollLoads, Second.PollLoadCount);
+  end;
+  Result := Second.PollPair;
+end;
+// Whether B's loads read memory that only changes at events: RAM and the
+// other directly mapped pages, or INTC_STAT and INTC_MASK (read without
+// side effects).
+function TEECPU.PollQuiet(B: PEEBlock): Boolean;
+begin
+  for var K := 0 to B.PollLoadCount - 1 do
+  begin
+    var A := B.PollLoads[K].Address;
+    if B.PollLoads[K].Base >= 0 then
+      A := Add32(Cardinal(S.GPR[B.PollLoads[K].Base].Lo), A);
+    if FReadMap[A shr 12] <> nil then
+      Continue;
+    var E := FPhys[A shr 12];
+    if (E and PhysValid) = 0 then
+      Exit(False);
+    var Phys := (E and $FFFFF000) or (A and $FFF);
+    if (Phys and not $13) <> $1000F000 then
+      Exit(False);
+  end;
+  Result := True;
 end;
 
 procedure TEECPU.SerializeState(State: TStateArchive);

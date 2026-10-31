@@ -207,7 +207,18 @@ checked for its PC and code-page generations) only where the run loop would
 run it next with nothing else to do: no deadline, interrupt, exit or code
 reset due, the next block compiled and not a spin, no diagnostics hooks;
 else it returns to the run loop, so cycle counts, state and frames match the
-interpreter. Code is dropped with the decoded blocks,
+interpreter.
+
+Polling loops (with or without the recompiler): a block, or two blocks the
+first of which falls through to the second, whose turn ends with a
+conditional branch back to its start and only loads (RAM and directly mapped
+pages, INTC_STAT/INTC_MASK), register arithmetic and NOPs that read no
+register the turn writes before writing it, computes the same each turn until
+an event changes memory (devices only run at events). The run loop passes the
+turns up to the next event at once: as many whole turns as would run (for two
+blocks those ending before the event; the last runs as usual), with the same
+cycle and instruction counts. Jak and Daxter and Ratchet & Clank spend much
+of their idle time in such loops on INTC_STAT. Code is dropped with the decoded blocks,
 waiting for running code to return; the arena is bounded to 64 MiB.
 
 ## VU recompiler details

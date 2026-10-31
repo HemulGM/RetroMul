@@ -33,6 +33,9 @@ type
       EXTWRITE, BGCOLOR, CSR, IMR, BUSDIR, SIGLBLID: UInt64;
     PAL, Interlaced: Boolean;
     OddField: Boolean;
+    // SMODE2.INT sets Interlaced (BIOS boot; the high-level kernel keeps it
+    // on).
+    InterlaceFromSMODE2: Boolean;
     constructor Create;
     destructor Destroy; override;
     procedure Reset;
@@ -157,7 +160,12 @@ begin
   case Address and $FFF8 of
     $0000: PMODE := Value;
     $0010: SMODE1 := Value;
-    $0020: SMODE2 := Value;
+    $0020:
+      begin
+        SMODE2 := Value;
+        if InterlaceFromSMODE2 then
+          Interlaced := (Value and 1) <> 0;
+      end;
     $0030: SRFSH := Value;
     $0040: SYNCH1 := Value;
     $0050: SYNCH2 := Value;

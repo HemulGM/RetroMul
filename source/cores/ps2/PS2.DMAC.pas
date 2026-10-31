@@ -67,6 +67,7 @@ type
     FOnInterrupt: TProc<Boolean>;
     FLine: Boolean;
     FLastTag: TPS2Reg128;
+    FRunning, FAgain: array[0..9] of Boolean;
     procedure UpdateInterrupt;
     function Memory(Address: Cardinal; out Valid: Boolean): PByte;
     procedure MarkRAM(Address, Size: Cardinal);
@@ -75,6 +76,8 @@ type
     function ReadTag(N: Integer): Boolean;
     procedure Finish(N: Integer; Cycles: Int64);
     procedure RunSPR(N: Integer);
+    procedure RunSIF0;
+    procedure RunChannel(N: Integer);
     procedure ScheduleNext;
     function Drain: Integer;
     function Ring(Address: Cardinal): Cardinal; inline;
@@ -94,6 +97,9 @@ type
     // Diagnostics: register writes and ends of the channels in LogMask.
     Log: TStrings;
     LogMask: Cardinal;
+    // SIF0 runs as a destination chain from its port (the IOP runs its own
+    // kernel); otherwise the high-level IOP writes through SIF0Write.
+    SIF0Chain: Boolean;
     constructor Create(Scheduler: TPS2Scheduler; RAM, Scratch: PByte; RAMGen: PCardinal);
     procedure Reset;
     function Read(Address: Cardinal): Cardinal;
@@ -536,8 +542,8 @@ begin
     else
       Done := Ports[N].Push(N, P, Count);
     Inc(Moved[N], Done);
-    Ch[N].MADR := Ch[N].MADR + Cardinal(Done) * 16;
-    Ch[N].QWC := Ch[N].QWC - Cardinal(Done);
+    Ch[N].MADR := Add32(Ch[N].MADR, Cardinal(Done) * 16);
+    Ch[N].QWC := Sub32(Ch[N].QWC, Cardinal(Done));
     if ToMemory and (Done > 0) then
       SourceMoved(N);
     if Done < Count then
@@ -722,7 +728,28 @@ begin
     Resume(D);
 end;
 
+// A device that takes or gives data again while the channel runs (a FIFO
+// drained from inside the transfer) makes the running transfer go on
+// instead of starting a nested one.
 procedure TPS2DMAC.Run(N: Integer);
+begin
+  if FRunning[N] then
+  begin
+    FAgain[N] := True;
+    Exit;
+  end;
+  FRunning[N] := True;
+  try
+    repeat
+      FAgain[N] := False;
+      RunChannel(N);
+    until not FAgain[N];
+  finally
+    FRunning[N] := False;
+  end;
+end;
+
+procedure TPS2DMAC.RunChannel(N: Integer);
 begin
   if (CTRL and 1) = 0 then
     Exit;
@@ -734,7 +761,11 @@ begin
     Exit;
   end;
   if N = DMASIF0 then
+  begin
+    if SIF0Chain then
+      RunSIF0;
     Exit;
+  end;
   var Mode := (Ch[N].CHCR shr 2) and 3;
   repeat
     if not TransferData(N) then
@@ -761,6 +792,36 @@ begin
   if Ports[N] <> nil then
     Busy := Ports[N].TakeBusyCycles;
   Finish(N, Max(Int64(Moved[N]) * CyclesPerQuad, Busy) + 8);
+end;
+
+// SIF0 from the SIF FIFO: in chain mode each element starts with a DMAtag
+// quadword (QWC, ID, IRQ, ADDR); cnt/cnts go on, end (and IRQ with TIE)
+// stops after the element. The channel waits while the FIFO lacks data.
+procedure TPS2DMAC.RunSIF0;
+const
+  N = DMASIF0;
+begin
+  var Chain := ((Ch[N].CHCR shr 2) and 3) = 1;
+  repeat
+    if Chain and (Ch[N].QWC = 0) and not Ch[N].TagEnd then
+    begin
+      var T: TPS2Reg128;
+      if (Ports[N] = nil) or (Ports[N].Pull(N, @T, 1) = 0) then
+        Exit;
+      var Lo := Cardinal(T.Lo);
+      Ch[N].CHCR := (Ch[N].CHCR and $0000FFFF) or (Lo and $FFFF0000);
+      Ch[N].QWC := Lo and $FFFF;
+      Ch[N].MADR := Cardinal(T.Lo shr 32);
+      if (Log <> nil) and (((LogMask shr N) and 1) <> 0) and (Log.Count < 200000) then
+        Log.Add(Format('%d ch5 tag id %d qwc %x addr %.8x', [FScheduler.Now, (Lo shr 28) and 7, Lo and $FFFF,
+          Ch[N].MADR]));
+      if (((Lo shr 28) and 7) = 7) or (((Lo and $80000000) <> 0) and ((Ch[N].CHCR and CHCRTIE) <> 0)) then
+        Ch[N].TagEnd := True;
+    end;
+    if not TransferData(N) then
+      Exit;
+  until not Chain or Ch[N].TagEnd;
+  Finish(N, Int64(Moved[N]) * CyclesPerQuad + 8);
 end;
 
 function TPS2DMAC.SIF0Ready: Boolean;

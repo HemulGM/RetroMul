@@ -3,13 +3,18 @@
 // PlayStation 2 machine: EE, its bus and devices, the high-level kernel and
 // IOP services, the scheduler in EE cycles and the field timing (NTSC/PAL,
 // VBlank start/end). RunFrame runs one field.
+// With a BIOS image the console boots it instead (External BIOS mode): the EE
+// and the IOP start at their reset vectors and run the BIOS kernels; the IOP
+// side is TPS2IOPMachine with the SIF hardware (TPS2SIFBridge) and the CDVD
+// drive, and the high-level kernels and servers stay idle.
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 
 interface
 
 uses
   System.SysUtils, System.Classes, System.IOUtils, System.Generics.Collections, Core.Snapshots, Core.DVD.Image, PS2.Types, PS2.Scheduler, PS2.EE.CPU,
-  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.IOP.Pad, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.VU, PS2.VIF, PS2.IPU;
+  PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.IOP.Pad, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.VU, PS2.VIF, PS2.IPU,
+  PS2.SIF.Bridge, PS2.CDVD.Drive, PS2.IOP.Machine;
 
 const
   // Serialized layout of TPS2Console.SerializeState. Increase it with every
@@ -25,6 +30,12 @@ type
     Disc: TDVDImage;
     Region: TPS2Region;
     Language: TPS2Language;
+    // A PlayStation 2 BIOS (4 MiB) to boot instead of the high-level
+    // kernels, and its console's MECHACON version and EEPROM (empty: a
+    // default version, a blank EEPROM).
+    BIOS: TBytes;
+    Mechacon: TBytes;
+    NVM: TBytes;
   end;
 
   TPS2Console = class
@@ -64,6 +75,11 @@ type
       out ModResult: Integer): Integer;
     procedure ModuleDone(const Token: TBytes; ModuleId, Result: Integer);
     function GetHalted: Boolean;
+    procedure CreateMachine;
+    function GetBIOSBoot: Boolean;
+    procedure ResetMachine;
+    procedure HandleMachineEvent(Event: TPS2Event; At: Int64);
+    procedure RunMachine;
   public
     Scheduler: TPS2Scheduler;
     Bus: TPS2EEBus;
@@ -89,6 +105,12 @@ type
     PadMan: TPS2PadMan;
     MemoryCards: TPS2MCServer;
     IOP: TPS2IOPKernel;
+    // BIOS boot: the SIF hardware, the CDVD drive and the IOP running its
+    // own kernel (nil with the high-level kernels).
+    Bridge: TPS2SIFBridge;
+    SIF0Port, SIF1Port: TPS2DMAPort;
+    Drive: TPS2CDVDDrive;
+    IOPMachine: TPS2IOPMachine;
     // Run game IOP modules as IOP code (False: report them loaded only).
     RunIOPModules: Boolean;
     // Modules the EE asked the IOP to load (diagnostics).
@@ -111,6 +133,8 @@ type
     procedure SetCDVDLog(Log: TStrings);
     property FrameCount: Int64 read FFrameCount;
     property Halted: Boolean read GetHalted;
+    // The console boots its BIOS (External BIOS mode).
+    property BIOSBoot: Boolean read GetBIOSBoot;
     property IdleCycles: Int64 read FIdleCycles;
     // Snapshot header policy: version and the errors users see.
     class function SnapshotPolicy: TSnapshotPolicy; static;
@@ -229,11 +253,53 @@ begin
   SIF.OnGuestCommand := IOP.GuestCommand;
   LoadFile.ImageReader := IOP.ImageAt;
   RunIOPModules := True;
+  if Length(Config.BIOS) = PS2BIOSSize then
+    CreateMachine;
   Reset;
+end;
+
+// BIOS boot: the BIOS in ROM, no high-level syscalls, the SIF hardware
+// between EE DMA channels 5/6 and the IOP, the CDVD drive, and the IOP
+// machine sharing the SPU2 and SIO2 with the high-level IOP's hardware.
+procedure TPS2Console.CreateMachine;
+begin
+  Move(FConfig.BIOS[0], Bus.BIOS^, PS2BIOSSize);
+  CPU.OnSyscall := nil;
+  CPU.OnTrap := nil;
+  Bridge := TPS2SIFBridge.Create;
+  Bus.SIFBridge := Bridge;
+  SIF0Port := TPS2SIF0Port.Create(Bridge);
+  SIF1Port := TPS2SIF1Port.Create(Bridge);
+  DMAC.Ports[DMASIF0] := SIF0Port;
+  DMAC.Ports[DMASIF1] := SIF1Port;
+  DMAC.SIF0Chain := True;
+  Drive := TPS2CDVDDrive.Create(Scheduler, FConfig.Disc);
+  Drive.SetMechacon(FConfig.Mechacon);
+  Drive.SetNVM(FConfig.NVM);
+  IOPMachine := TPS2IOPMachine.Create(Scheduler, Bus.IOPRAM, Bus.BIOS, IOP.Hardware, Bridge, Drive);
+  Bridge.OnEEData := procedure begin DMAC.Resume(DMASIF0); end;
+  Bridge.OnEERoom := procedure begin DMAC.Resume(DMASIF1); end;
+  Bridge.OnIOPData := IOPMachine.SIFData;
+  Bridge.OnIOPRoom := IOPMachine.SIFRoom;
+  Drive.OnInterrupt := procedure begin IOPMachine.RaiseIRQ(IOPIrqCDVD); end;
+  Drive.OnData := IOPMachine.CDVDData;
+  IOP.Hardware.OnInterrupt := IOPMachine.HWInterrupt;
+  IOP.Hardware.IOPCycles := @IOPMachine.CPU.Cycles;
+  IOPMachine.OnEEInterrupt := procedure begin Bus.RaiseIRQ(1); end;
+end;
+
+function TPS2Console.GetBIOSBoot: Boolean;
+begin
+  Result := IOPMachine <> nil;
 end;
 
 destructor TPS2Console.Destroy;
 begin
+  IOPMachine.Free;
+  Drive.Free;
+  SIF0Port.Free;
+  SIF1Port.Free;
+  Bridge.Free;
   FileIO.Free;
   LoadFile.Free;
   PadMan.Free;
@@ -270,7 +336,7 @@ end;
 
 function TPS2Console.GetHalted: Boolean;
 begin
-  Result := Kernel.Exited;
+  Result := (IOPMachine = nil) and Kernel.Exited;
 end;
 
 procedure TPS2Console.TTYWrite(const Text: string);
@@ -361,6 +427,11 @@ begin
   VU1.Reset;
   Timers.Reset;
   DMAC.Reset;
+  if IOPMachine <> nil then
+  begin
+    ResetMachine;
+    Exit;
+  end;
   DMAC.CTRL := 1;
   SIF.Reset;
   GS.Reset;
@@ -381,6 +452,94 @@ begin
   Scheduler.Schedule(TPS2Event.SPU2, SPU2BatchCycles);
   IOP.CPU.Cycles := 0;
   BootIOP;
+end;
+
+// BIOS boot: the devices at power-on, the IOP machine at its reset vector,
+// the field timing.
+procedure TPS2Console.ResetMachine;
+begin
+  GS.Reset;
+  GS.InterlaceFromSMODE2 := True;
+  GIF.Reset;
+  VIF0.Reset;
+  VIF1.Reset;
+  IPU.Reset;
+  Bridge.Reset;
+  Drive.Reset;
+  IOP.Hardware.Reset;
+  IOPMachine.Reset;
+  SetVideo(FConfig.PAL);
+  IOPMachine.SetLineCycles(FLineCycles);
+  FFrameCount := 0;
+  FFieldStart := 0;
+  FInVBlank := False;
+  FIdleCycles := 0;
+  Scheduler.Schedule(TPS2Event.VBlankStart, FVisibleCycles);
+  Scheduler.Schedule(TPS2Event.SPU2, SPU2BatchCycles);
+end;
+
+procedure TPS2Console.HandleMachineEvent(Event: TPS2Event; At: Int64);
+begin
+  case Event of
+    TPS2Event.VBlankStart:
+      begin
+        FInVBlank := True;
+        Bus.RaiseIRQ(2);
+        GS.VBlank;
+        IOPMachine.VBlank(True);
+        Scheduler.Schedule(TPS2Event.VBlankEnd, FFieldStart + FFieldCycles);
+      end;
+    TPS2Event.VBlankEnd:
+      begin
+        FInVBlank := False;
+        Bus.RaiseIRQ(3);
+        IOPMachine.VBlank(False);
+        FFieldStart := FFieldStart + FFieldCycles;
+        Scheduler.Schedule(TPS2Event.VBlankStart, FFieldStart + FVisibleCycles);
+      end;
+    TPS2Event.Timer0: Timers.Event(0);
+    TPS2Event.Timer1: Timers.Event(1);
+    TPS2Event.Timer2: Timers.Event(2);
+    TPS2Event.Timer3: Timers.Event(3);
+    TPS2Event.DMAC: DMAC.Event;
+    TPS2Event.GIF: GIF.ReleasePath3;
+    TPS2Event.VIF0: VIF0.Wake;
+    TPS2Event.VIF1: VIF1.Wake;
+    TPS2Event.IPU: IPU.Event;
+    TPS2Event.GSSignal: GSFinishShown;
+    TPS2Event.Compare: CPU.CompareReached;
+    TPS2Event.IOPTimers: IOPMachine.TimerEvent;
+    TPS2Event.IOPSync: IOPMachine.DMAEvent;
+    TPS2Event.IOPDMA: IOP.Hardware.Event;
+    TPS2Event.CDVD: Drive.Event;
+    TPS2Event.SPU2:
+      begin
+        IOP.Hardware.SPU2.Tick(SPU2Batch);
+        Scheduler.Schedule(TPS2Event.SPU2, At + SPU2BatchCycles);
+      end;
+  end;
+end;
+
+// One field of the BIOS-booted console: the EE and the IOP in slices.
+procedure TPS2Console.RunMachine;
+begin
+  while True do
+  begin
+    var Event: TPS2Event;
+    var At: Int64;
+    while Scheduler.TakeDue(Event, At) do
+    begin
+      HandleEvent(Event, At);
+      if Event = TPS2Event.VBlankStart then
+      begin
+        Inc(FFrameCount);
+        Exit;
+      end;
+    end;
+    Scheduler.Deadline := Min(Scheduler.NextDue, Scheduler.Now + IOPSlice);
+    CPU.Run;
+    IOPMachine.Run(Scheduler.Now);
+  end;
 end;
 
 // The OSD configuration games read (GetOsdConfigParam): the non-Japanese
@@ -646,6 +805,11 @@ end;
 
 procedure TPS2Console.HandleEvent(Event: TPS2Event; At: Int64);
 begin
+  if IOPMachine <> nil then
+  begin
+    HandleMachineEvent(Event, At);
+    Exit;
+  end;
   case Event of
     TPS2Event.VBlankStart:
       begin
@@ -692,6 +856,11 @@ end;
 
 procedure TPS2Console.RunFrame;
 begin
+  if IOPMachine <> nil then
+  begin
+    RunMachine;
+    Exit;
+  end;
   // One field: until the next VBlank start has been handled.
   while True do
   begin
@@ -783,6 +952,18 @@ begin
   if (FFinishCount < 0) or (FFinishCount > Length(FFinishDue)) then
     FFinishCount := 0;
   State.Field(IOP.StrtokNext, SizeOf(IOP.StrtokNext));
+  // BIOS boot only (its snapshots do not load into the high-level console
+  // and back).
+  if IOPMachine <> nil then
+  begin
+    Bridge.SerializeState(State);
+    Drive.SerializeState(State);
+    IOPMachine.SerializeState(State);
+    State.Field(Bus.MCHRicm, SizeOf(Bus.MCHRicm));
+    State.Field(Bus.MCHDrd, SizeOf(Bus.MCHDrd));
+    State.Field(Bus.RDRAMDevice, SizeOf(Bus.RDRAMDevice));
+    State.Field(Bus.CmdRegs, SizeOf(Bus.CmdRegs));
+  end;
 end;
 
 end.

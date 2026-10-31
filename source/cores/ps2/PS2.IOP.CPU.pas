@@ -58,7 +58,14 @@ type
     FBranch: Boolean;
     FInDelay: Boolean;
     FCurrentPC: Cardinal;
+    // An exception taken by the current instruction (hardware exceptions).
+    FExcepted: Boolean;
     function ReadMem(Address: Cardinal; Size: Integer): Cardinal;
+    procedure Fault(Code: Integer; Address: Cardinal);
+    function AddOverflows(A, B: Cardinal): Boolean; inline;
+    function SubOverflows(A, B: Cardinal): Boolean; inline;
+    // Raises address error Code when Address has bits of Mask set.
+    function Misaligned(Address, Mask: Cardinal; Code: Integer): Boolean;
     procedure WriteMem(Address, Value: Cardinal; Size: Integer);
     procedure SetR(Index: Integer; Value: Cardinal); inline;
     procedure LoadDelayed(Index: Integer; Value: Cardinal); inline;
@@ -79,7 +86,23 @@ type
     OnWrite: TIOPWrite;
     OnTrap: TIOPTrap;
     OnException: TIOPException;
+    // The IOP running its own kernel (BIOS boot): exceptions and interrupts
+    // go to the exception vector (80000080h, BFC00180h with SR.BEV) instead
+    // of OnException, ADD/ADDI/SUB trap on overflow, misaligned accesses
+    // raise address errors and code runs from the BIOS ROM too.
+    Hardware: Boolean;
+    // The 4 MiB BIOS (code fetch from 1FC00000h).
+    ROM: PByte;
+    // The interrupt controller's line (Cause.IP2, bit 10).
+    IntLine: Boolean;
+    BadVAddr: Cardinal;
+    // COP0 debug registers (BPC, BDA, JUMPDEST, DCIC, BDAM, BPCM): kept.
+    Debug: array[0..15] of Cardinal;
     constructor Create(RAM: PByte);
+    // Takes exception Code (0 interrupt, 4/5 address error, 8 syscall, 9
+    // break, 10 reserved instruction, 12 overflow) for the instruction at
+    // InstrPC.
+    procedure Enter(Code: Integer; InstrPC: Cardinal; InDelay: Boolean);
     procedure Reset;
     // Runs until Cycles reaches Target or Stop is called.
     procedure Run(Target: Int64);
@@ -254,6 +277,64 @@ begin
     OnWrite(P, Value, Size);
 end;
 
+procedure TIOPCPU.Enter(Code: Integer; InstrPC: Cardinal; InDelay: Boolean);
+begin
+  // The load of the previous instruction still lands.
+  if FDelayReg <> 0 then
+  begin
+    R[FDelayReg] := FDelayValue;
+    FDelayReg := 0;
+  end;
+  FLoadReg := 0;
+  var C := Cause and not Cardinal($8000007C);
+  C := C or (Cardinal(Code) shl 2);
+  if InDelay then
+  begin
+    EPC := Sub32(InstrPC, 4);
+    C := C or $80000000;
+  end
+  else
+    EPC := InstrPC;
+  Cause := C;
+  // Push the kernel/user and interrupt-enable pairs (new ones: kernel,
+  // interrupts off).
+  SR := (SR and not Cardinal($3F)) or ((SR shl 2) and $3F);
+  if (SR and $400000) <> 0 then
+    PC := $BFC00180
+  else
+    PC := $80000080;
+  NextPC := PC + 4;
+  FBranch := False;
+  FInDelay := False;
+  FExcepted := True;
+end;
+
+// An address error (4 load or fetch, 5 store) at Address.
+procedure TIOPCPU.Fault(Code: Integer; Address: Cardinal);
+begin
+  BadVAddr := Address;
+  Enter(Code, FCurrentPC, FInDelay);
+end;
+
+function TIOPCPU.Misaligned(Address, Mask: Cardinal; Code: Integer): Boolean;
+begin
+  Result := (Address and Mask) <> 0;
+  if Result then
+    Fault(Code, Address);
+end;
+
+function TIOPCPU.AddOverflows(A, B: Cardinal): Boolean;
+begin
+  var S := Int64(Integer(A)) + Int64(Integer(B));
+  Result := (S < Low(Integer)) or (S > High(Integer));
+end;
+
+function TIOPCPU.SubOverflows(A, B: Cardinal): Boolean;
+begin
+  var S := Int64(Integer(A)) - Int64(Integer(B));
+  Result := (S < Low(Integer)) or (S > High(Integer));
+end;
+
 procedure TIOPCPU.SetR(Index: Integer; Value: Cardinal);
 begin
   if Index <> 0 then
@@ -298,10 +379,14 @@ begin
         Jump(Target);
       end;
     $0C:
-      if Assigned(OnException) then
+      if Hardware then
+        Enter(8, FCurrentPC, FInDelay)
+      else if Assigned(OnException) then
         OnException(8, FCurrentPC);
     $0D:
-      if Assigned(OnException) then
+      if Hardware then
+        Enter(9, FCurrentPC, FInDelay)
+      else if Assigned(OnException) then
         OnException(9, FCurrentPC);
     $10: SetR(Rd, HI);
     $11: HI := R[Rs];
@@ -357,8 +442,18 @@ begin
           HI := N mod D;
         end;
       end;
-    $20, $21: SetR(Rd, Add32(R[Rs], R[Rt]));
-    $22, $23: SetR(Rd, Sub32(R[Rs], R[Rt]));
+    $20:
+      if Hardware and AddOverflows(R[Rs], R[Rt]) then
+        Enter(12, FCurrentPC, FInDelay)
+      else
+        SetR(Rd, Add32(R[Rs], R[Rt]));
+    $21: SetR(Rd, Add32(R[Rs], R[Rt]));
+    $22:
+      if Hardware and SubOverflows(R[Rs], R[Rt]) then
+        Enter(12, FCurrentPC, FInDelay)
+      else
+        SetR(Rd, Sub32(R[Rs], R[Rt]));
+    $23: SetR(Rd, Sub32(R[Rs], R[Rt]));
     $24: SetR(Rd, R[Rs] and R[Rt]);
     $25: SetR(Rd, R[Rs] or R[Rt]);
     $26: SetR(Rd, R[Rs] xor R[Rt]);
@@ -366,7 +461,9 @@ begin
     $2A: SetR(Rd, Ord(Integer(R[Rs]) < Integer(R[Rt])));
     $2B: SetR(Rd, Ord(R[Rs] < R[Rt]));
   else
-    if Assigned(OnException) then
+    if Hardware then
+      Enter(10, FCurrentPC, FInDelay)
+    else if Assigned(OnException) then
       OnException(10, FCurrentPC);
   end;
 end;
@@ -402,7 +499,12 @@ begin
     $05: if R[Rs] <> R[Rt] then Jump(Add32(Add32(FCurrentPC, 4), SImm shl 2));
     $06: if Integer(R[Rs]) <= 0 then Jump(Add32(Add32(FCurrentPC, 4), SImm shl 2));
     $07: if Integer(R[Rs]) > 0 then Jump(Add32(Add32(FCurrentPC, 4), SImm shl 2));
-    $08, $09: SetR(Rt, Add32(R[Rs], SImm));
+    $08:
+      if Hardware and AddOverflows(R[Rs], SImm) then
+        Enter(12, FCurrentPC, FInDelay)
+      else
+        SetR(Rt, Add32(R[Rs], SImm));
+    $09: SetR(Rt, Add32(R[Rs], SImm));
     $0A: SetR(Rt, Ord(Integer(R[Rs]) < Integer(SImm)));
     $0B: SetR(Rt, Ord(R[Rs] < SImm));
     $0C: SetR(Rt, R[Rs] and Imm);
@@ -416,8 +518,10 @@ begin
         case Rs of
           0:
             case Rd of
+              3, 5, 6, 7, 9, 11: LoadDelayed(Rt, Debug[Rd]);
+              8: LoadDelayed(Rt, BadVAddr);
               12: LoadDelayed(Rt, SR);
-              13: LoadDelayed(Rt, Cause);
+              13: LoadDelayed(Rt, Cause or (Cardinal(Ord(IntLine and Hardware)) shl 10));
               14: LoadDelayed(Rt, EPC);
               15: LoadDelayed(Rt, $1F);
             else
@@ -425,6 +529,7 @@ begin
             end;
           4:
             case Rd of
+              3, 5, 6, 7, 9, 11: Debug[Rd] := R[Rt];
               12: SR := R[Rt];
               13: Cause := (Cause and not $300) or (R[Rt] and $300);
               14: EPC := R[Rt];
@@ -435,7 +540,10 @@ begin
         end;
       end;
     $20: LoadDelayed(Rt, Cardinal(Integer(ShortInt(Byte(ReadMem(Add32(R[Rs], SImm), 1))))));
-    $21: LoadDelayed(Rt, SX16To32(ReadMem(Add32(R[Rs], SImm) and not 1, 2)));
+    $21:
+      if Hardware and Misaligned(Add32(R[Rs], SImm), 1, 4) then
+      else
+        LoadDelayed(Rt, SX16To32(ReadMem(Add32(R[Rs], SImm) and not 1, 2)));
     $22, $26:
       begin
         // LWL/LWR merge with a value still in the load delay slot.
@@ -452,11 +560,20 @@ begin
           V := (Cur and not ($FFFFFFFF shr Sh)) or (W shr Sh);
         LoadDelayed(Rt, V);
       end;
-    $23: LoadDelayed(Rt, ReadMem(Add32(R[Rs], SImm) and not 3, 4));
+    $23:
+      if Hardware and Misaligned(Add32(R[Rs], SImm), 3, 4) then
+      else
+        LoadDelayed(Rt, ReadMem(Add32(R[Rs], SImm) and not 3, 4));
     $24: LoadDelayed(Rt, ReadMem(Add32(R[Rs], SImm), 1));
-    $25: LoadDelayed(Rt, ReadMem(Add32(R[Rs], SImm) and not 1, 2));
+    $25:
+      if Hardware and Misaligned(Add32(R[Rs], SImm), 1, 4) then
+      else
+        LoadDelayed(Rt, ReadMem(Add32(R[Rs], SImm) and not 1, 2));
     $28: WriteMem(Add32(R[Rs], SImm), R[Rt] and $FF, 1);
-    $29: WriteMem(Add32(R[Rs], SImm) and not 1, R[Rt] and $FFFF, 2);
+    $29:
+      if Hardware and Misaligned(Add32(R[Rs], SImm), 1, 5) then
+      else
+        WriteMem(Add32(R[Rs], SImm) and not 1, R[Rt] and $FFFF, 2);
     $2A, $2E:
       begin
         var A := Add32(R[Rs], SImm);
@@ -468,13 +585,18 @@ begin
           W := (W and not ($FFFFFFFF shl Sh)) or (R[Rt] shl Sh);
         WriteMem(A and not 3, W, 4);
       end;
-    $2B: WriteMem(Add32(R[Rs], SImm) and not 3, R[Rt], 4);
+    $2B:
+      if Hardware and Misaligned(Add32(R[Rs], SImm), 3, 5) then
+      else
+        WriteMem(Add32(R[Rs], SImm) and not 3, R[Rt], 4);
     IOPTrapOpcode:
       if Assigned(OnTrap) then
         OnTrap(Op and $3FFFFFF);
   else
     // COP2 and the rest: not present on the IOP.
-    if Assigned(OnException) then
+    if Hardware then
+      Enter(10, FCurrentPC, FInDelay)
+    else if Assigned(OnException) then
       OnException(10, FCurrentPC);
   end;
 end;
@@ -484,22 +606,57 @@ begin
   FStop := False;
   while (Cycles < Target) and not FStop do
   begin
+    // A pending interrupt (I_CTRL and I_STAT and I_MASK) is taken before the
+    // next instruction when SR enables IP2 and IEc.
+    if Hardware and IntLine and ((SR and $401) = $401) then
+      Enter(0, PC, FBranch);
     var Op: Cardinal;
     var A := PC and $1FFFFFFF;
     if A < $00800000 then
       Op := PCardinal(FRAM + (A and (PS2IOPRAMMask and not 3)))^
+    else if Hardware and (A >= $1FC00000) and (ROM <> nil) then
+      Op := PCardinal(ROM + (A and (PS2BIOSMask and not 3)))^
+    else if Hardware then
+    begin
+      // No memory to run from: an address error at the fetch.
+      FCurrentPC := PC;
+      FInDelay := FBranch;
+      Fault(4, PC);
+      FExcepted := False;
+      Inc(Cycles);
+      Continue;
+    end
     else
     begin
       if Assigned(OnException) then
         OnException(4, PC);
       Break;
     end;
+    if Hardware and ((PC and 3) <> 0) then
+    begin
+      FCurrentPC := PC;
+      FInDelay := FBranch;
+      Fault(4, PC);
+      FExcepted := False;
+      Inc(Cycles);
+      Continue;
+    end;
     FCurrentPC := PC;
     FInDelay := FBranch;
     FBranch := False;
     PC := NextPC;
     NextPC := Add32(PC, 4);
+    FExcepted := False;
     Execute(Op);
+    if FExcepted then
+    begin
+      // The faulting instruction does not complete; the exception already
+      // landed the previous load.
+      FExcepted := False;
+      Inc(Cycles);
+      Inc(Instructions);
+      Continue;
+    end;
     // The previous load lands after this instruction read its operands.
     if FDelayReg <> 0 then
       R[FDelayReg] := FDelayValue;

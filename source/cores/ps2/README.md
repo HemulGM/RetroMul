@@ -285,10 +285,29 @@ also checks two/four/six bands, self-reading 16-bit draws, local copies, palette
 loads, host transfers, mode switching and serialized state equivalence.
 It requires a Vulkan device with coherent host-memory import.
 
+## BIOS boot (in progress)
+
+With a BIOS image in `TPS2ConsoleConfig.BIOS` the console boots it instead
+of the high-level kernels. The EE starts at its reset vector with the BIOS
+in ROM and no high-level syscalls. The EE side adds the RDRAM controller
+(MCH), the memory controller command register and the 1A000000h command
+interface the BIOS initializes. The IOP side is `PS2.IOP.Machine`: the IOP
+core with hardware exceptions and interrupts, the BIOS ROM, I_STAT/I_MASK/
+I_CTRL, the DMA controller (DPCR/DICR, CDVD, SIF0/SIF1; the SPU2 and SIO2
+channels stay in `PS2.IOP.Hardware`), the root counters and the SBUS
+interrupt to the EE. `PS2.SIF.Bridge` holds the SIF mailbox registers and
+the SIF0/SIF1 FIFOs between EE DMA channels 5/6 and IOP channels 9/10.
+`PS2.CDVD.Drive` is the CDVD drive and MECHACON: N commands with spin-up,
+seek and read timing, S commands with the exact result lengths, the clock,
+NVM and configuration blocks. With SCPH-50008 the EE and IOP kernels boot,
+the IOP loads its modules, SIF RPC runs, and OSDSYS shows the Sony and
+PlayStation 2 logos, the first-start setup and the main menu. Disc boot,
+keeping the console's EEPROM and the front end's BIOS modes are not done
+yet. `PS2Run -bios FILE` boots a BIOS (with `.nvm`/`.mec` files beside it).
+
 ## Limits
 
-- No BIOS boot (OSDSYS); the GS rasterizer is a software renderer without
-  upscaling.
+- The GS rasterizer is a software renderer without upscaling.
 - Each memory card is kept as one file in the save folder: its 8 MB flash
   with the PS2 card file system, deflated. The high-level MCSERV works on that
   file system, and games bringing their own card driver (MCMAN over SIO2)

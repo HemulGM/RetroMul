@@ -11,7 +11,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Generics.Collections, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.CPU, PS2.Timers, PS2.DMAC,
-  PS2.SIF;
+  PS2.SIF, PS2.SIF.Bridge;
 
 type
   // A register block outside the bus (GIF/GS, VIF, IPU): 32/64-bit
@@ -37,8 +37,10 @@ type
     FKernelLine: Boolean;
     FSIOLine: string;
     FOnTTY: TPS2TTYWrite;
+    FReadSeen: TDictionary<Cardinal, Integer>;
     procedure UpdateINT0;
     procedure SIOPut(C: Byte);
+    function MCHRead: Cardinal;
   public
     RAM, BIOS, IOPRAM: PByte;
     VU0Code, VU0Data, VU1Code, VU1Data: PByte;
@@ -46,11 +48,26 @@ type
     Timers: TPS2Timers;
     DMAC: TPS2DMAC;
     SIF: TPS2SIF;
+    // The SIF hardware when the IOP runs its own kernel (it then answers the
+    // SIF registers instead of the high-level SIF).
+    SIFBridge: TPS2SIFBridge;
+    // RDRAM initialization (MCH_RICM at 1000F430h, MCH_DRD at 1000F440h):
+    // the BIOS sends commands and reads the devices' answers.
+    MCHRicm, MCHDrd: Cardinal;
+    RDRAMDevice: Integer;
+    // The command interface at 1A000000h the BIOS drives during its
+    // initialization (16-bit registers): a command written to register 0
+    // with bit 7 completes at once and sets bit 1 (done) of register 6,
+    // which writes to register 6 clear.
+    CmdRegs: array[0..15] of Word;
     GS, GIF, VIF0, VIF1, IPU: TPS2Device;
     MMIOReads, MMIOWrites: Int64;
     // Diagnostics: accesses per address when assigned (reads; writes with bit 0 set).
     MMIOCounts: TDictionary<Cardinal, Int64>;
     LastReadPC: TDictionary<Cardinal, Cardinal>;
+    // Diagnostics: accesses to registers without a device (the plain
+    // register file), writes always, reads the first times per address.
+    RegisterLog: TStrings;
     constructor Create(Scheduler: TPS2Scheduler);
     destructor Destroy; override;
     procedure Reset;
@@ -122,6 +139,7 @@ begin
   FreeMem(VU0Data);
   FreeMem(VU1Code);
   FreeMem(VU1Data);
+  FReadSeen.Free;
   inherited;
 end;
 
@@ -140,6 +158,10 @@ begin
   FINTCMask := 0;
   FKernelLine := False;
   FSIOLine := '';
+  MCHRicm := 0;
+  MCHDrd := 0;
+  RDRAMDevice := 0;
+  FillChar(CmdRegs, SizeOf(CmdRegs), 0);
   MMIOReads := 0;
   MMIOWrites := 0;
 end;
@@ -228,6 +250,28 @@ begin
   UpdateINT0;
 end;
 
+// The answer to the last RDRAM command (ps2tek, EE RDRAM initialization):
+// the two devices' IDs, then their configuration registers.
+function TPS2EEBus.MCHRead: Cardinal;
+begin
+  Result := 0;
+  var SOP := (MCHRicm shr 6) and $F;
+  var SA := (MCHRicm shr 16) and $FFF;
+  if SOP <> 0 then
+    Exit;
+  case SA of
+    $21:
+      if RDRAMDevice < 2 then
+      begin
+        Inc(RDRAMDevice);
+        Result := $1F;
+      end;
+    $23: Result := $0D0D;
+    $24: Result := $0090;
+    $40: Result := MCHRicm and $1F;
+  end;
+end;
+
 procedure TPS2EEBus.SIOPut(C: Byte);
 begin
   if C = 13 then
@@ -276,7 +320,16 @@ begin
     $1000F130:
       Exit(0);
     $1000F200..$1000F2FF:
-      Exit(SIF.ReadRegister(((Address shr 4) and $F) + 1));
+      if SIFBridge <> nil then
+        Exit(SIFBridge.EERead(Address and $FF))
+      else
+        Exit(SIF.ReadRegister(((Address shr 4) and $F) + 1));
+    $1000F430:
+      Exit(0);
+    $1000F440:
+      Exit(MCHRead);
+    $1A000000..$1A00FFFF:
+      Exit(CmdRegs[(Address shr 1) and 15]);
     $1000F520:
       Exit(DMAC.ENABLE);
     $12000000..$12001FFF:
@@ -285,6 +338,16 @@ begin
   end;
   if (Address >= $10000000) and (Address < $10010000) then
   begin
+    if (RegisterLog <> nil) and (RegisterLog.Count < 2000) then
+    begin
+      if FReadSeen = nil then
+        FReadSeen := TDictionary<Cardinal, Integer>.Create;
+      var Seen: Integer;
+      FReadSeen.TryGetValue(Address, Seen);
+      if Seen < 3 then
+        RegisterLog.Add(Format('ee r %.8x = %.8x pc %.8x', [Address, FRegs[(Address and $FFFC) shr 2], CPU.SlowPC]));
+      FReadSeen.AddOrSetValue(Address, Seen + 1);
+    end;
     var V := UInt64(FRegs[(Address and $FFFC) shr 2]);
     if Size = 8 then
       V := V or (UInt64(FRegs[((Address + 4) and $FFFC) shr 2]) shl 32);
@@ -359,7 +422,44 @@ begin
       end;
     $1000F200..$1000F2FF:
       begin
-        SIF.WriteRegister(((Address shr 4) and $F) + 1, Cardinal(Value));
+        if SIFBridge <> nil then
+          SIFBridge.EEWrite(Address and $FF, Cardinal(Value))
+        else
+          SIF.WriteRegister(((Address shr 4) and $F) + 1, Cardinal(Value));
+        Exit;
+      end;
+    $1000F430:
+      begin
+        // A command to the RDRAM devices; a broadcast device-ID reset (SA
+        // 21h, SBC 1) restarts the device count.
+        var SA := (Cardinal(Value) shr 16) and $FFF;
+        var SBC := (Cardinal(Value) shr 6) and $F;
+        if (SA = $21) and (SBC = 1) and (((MCHDrd shr 7) and 1) = 0) then
+          RDRAMDevice := 0;
+        MCHRicm := Cardinal(Value) and not Cardinal($80000000);
+        Exit;
+      end;
+    $1000F440:
+      begin
+        MCHDrd := Cardinal(Value);
+        Exit;
+      end;
+    $1A000000..$1A00FFFF:
+      begin
+        var R := (Address shr 1) and 15;
+        if R = 3 then
+          CmdRegs[3] := CmdRegs[3] and not Word(Value)
+        else
+          CmdRegs[R] := Word(Value);
+        if (R = 0) and ((Value and $80) <> 0) then
+          CmdRegs[3] := CmdRegs[3] or 2;
+        Exit;
+      end;
+    $1000F410:
+      begin
+        // Memory controller command: bit 31 starts it and reads back clear
+        // (the command has completed).
+        FRegs[$F410 shr 2] := Cardinal(Value) and not Cardinal($80000000);
         Exit;
       end;
     $1000F590:
@@ -374,6 +474,8 @@ begin
         Exit;
       end;
   end;
+  if (RegisterLog <> nil) and (RegisterLog.Count < 2000) then
+    RegisterLog.Add(Format('ee w %.8x = %.8x/%d pc %.8x', [Address, Value, Size, CPU.SlowPC]));
   if (Address >= $10000000) and (Address < $10010000) then
   begin
     var Index := (Address and $FFFC) shr 2;

@@ -3325,7 +3325,7 @@ begin
     var LowerOp := PCardinal(FCode + PC)^;
     var UpperOp := PCardinal(FCode + PC + 4)^;
     var Pair := DecodedPair(PC, LowerOp, UpperOp);
-    if FUseJit and Pair.NativeCandidate and (FIndex = 1) and (JitSupported or (FJit <> nil)) then
+    if FUseJit and Pair.NativeCandidate and (JitSupported or (FJit <> nil)) then
     begin
       if Pair.Native = nil then
       begin

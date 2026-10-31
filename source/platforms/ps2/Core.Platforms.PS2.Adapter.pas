@@ -672,6 +672,7 @@ begin
         FConsole.GS.Raster.Vulkan := Vulkan;
         FConsole.GS.Raster.Threads := GSThreads;
         FConsole.VU1.Core.UseJit := Recompiler;
+        FConsole.VU0.Core.UseJit := Recompiler;
         for var Port := 0 to 1 do
         begin
           FConsole.PadMan.Pads[Port].Buttons := Inputs[Port].Buttons;

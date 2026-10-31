@@ -162,11 +162,14 @@ PSMT8/PSMT4, retaining coordinate/VRAM wrapping and neighbouring nibbles.
 Other storage formats and race-instrumented builds retain scalar writes.
 The tests run without Vulkan; `-Checked` enables checked core code.
 
-## Experimental VU1 recompiler
+## Experimental VU recompiler
 
-`Emulation/Execution=jit` selects the VU1 block recompiler; `interpreter`
-(the default) uses the original execution path. This is independent of
-`Video/Renderer` and can change during play. VU0 and EE remain interpreted.
+`Emulation/Execution=jit` selects the VU block recompiler for VU1 and for VU0
+micro programs (each core with its own code arena); `interpreter` (the
+default) uses the original execution path. This is independent of
+`Video/Renderer` and can change during play. VU0 macro instructions and the EE
+remain interpreted. VU0's spin probes run one pair at a time, which the
+per-pair budget checks keep exact.
 
 The shared `HW.JIT` generator emits pipeline hazard checks, delayed flag
 queues, register commits, VI arithmetic, branches, memory operations and
@@ -199,7 +202,7 @@ latencies fall back to per-pair execution. Division, CLIP/flag operations and
 XGKICK are observation boundaries, not deferred across such a span.
 Re-uploaded block versions are reused only after the entry address and every
 word match (hashes alone are not trusted). The code arena is bounded to
-32 MiB per VU1; resetting it clears the version and successor tables too.
+32 MiB per VU; resetting it clears the version and successor tables too.
 None of this cache is saved in snapshots. Unsupported hosts keep interpreting.
 The recompiler remains experimental and off by default.
 

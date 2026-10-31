@@ -23,7 +23,7 @@ begin
   if JitSupported then
   begin
     Context.Heading('GroupPS2Execution', 'PS2 emulation');
-    Context.AddChoice('RowPS2Execution', 'VU1 execution', 'Experimental block recompiler with native pipeline bookkeeping, chained blocks and exact SIMD arithmetic. Uncommon operations retain interpreter helpers. Applies during play. Speed depends on the game.',
+    Context.AddChoice('RowPS2Execution', 'VU execution', 'Experimental block recompiler for VU1 and VU0 micro programs with native pipeline bookkeeping, chained blocks and exact SIMD arithmetic. Uncommon operations retain interpreter helpers. Applies during play. Speed depends on the game.',
       'Emulation', 'Execution', SettingChoices(['Interpreter', 'Recompiler (JIT, experimental)'],
       ['interpreter', 'jit']), 'interpreter', True);
   end;

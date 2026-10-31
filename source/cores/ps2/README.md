@@ -61,7 +61,16 @@ coverage/busy counters still include them, so emulated GS timing is unchanged.
 
 - Homebrew ELFs built with ps2sdk/gsKit run (see `codex-work/tests/autotests.ps1`
   for the ps2autotests results: CPU, FPU, MMI, DMA, SPR, GS, kernel threads
-  and interrupts).
+  and interrupts). The IOP tests (`.irx`) start on the IOP alone
+  (`TPS2Console.LoadIOPModule`). All 23 pass: the IOP CPU and the
+  high-level kernel's threads, event flags, message boxes, interrupt handlers,
+  variable pools and libc.
+- The high-level IOP kernel follows those hardware results. That covers
+  thread call errors and rules, wait types, waiters released with
+  KE_WAIT_DELETE or KE_RELEASE_WAIT, and message boxes as the kernel's ring of
+  messages ordered by MBA_MSPRI. heaplib heaps and variable pools live in IOP
+  memory with SCE heaplib's layout: 8-byte fragments, high-end allocation and
+  growing heaps.
 - Discs boot from `SYSTEM.CNF`; the EE kernel, SIF RPC, FILEIO, CDVD,
   LOADFILE, PADMAN and MCSERV answer the EE libraries.
 - Game IOP modules load from the disc or from EE buffers, link against the
@@ -83,7 +92,9 @@ window, and DMAC stall control with fromSPR as source and VIF1 as drain. It
 also tests the card file system: directories, files across clusters, deleted
 slots, free space, image round trips, raw images and earlier card files. It
 also runs libmc's MCSERV calls: info, mkdir, create, write, read, list and
-delete. It drives the `mc0:` ioman device the same way.
+delete. It drives the `mc0:` ioman device the same way. It also calls IOP
+system library functions: look_ctype_table, ReferModuleStatus, the dmacman
+priority and enable calls, and a growing heaplib heap.
 
 ## VU busy windows
 

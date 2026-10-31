@@ -10,9 +10,9 @@ uses
 const
   // The recorded TPS2Console.SerializeState field sizes for this version.
   // A layout change must increase PS2SnapshotVersion and record a new pair.
-  RecordedVersion = 7;
+  RecordedVersion = 8;
   RecordedFields = 722;
-  RecordedLayout = '1efea0bbeae25679af94e53dc9576fbb85bc97c94c6e3a85b7f44439ddee5290';
+  RecordedLayout = '35a0806ba5e2b1cb8cb9cee4fd636096b5f9a98700589ad7ed8aaeecfccf6880';
 
 procedure Check(Condition: Boolean; const Message: string);
 begin
@@ -554,6 +554,83 @@ begin
   Writeln('mc0: ioman device: mkdir, create, write, seek, getstat, read, dopen/dread, remove on the card: OK');
 end;
 
+// IOP system library calls games make: sysclib look_ctype_table, modload
+// ReferModuleStatus, dmacman priority/enable/disable.
+procedure CheckIOPLibraries;
+const
+  LSysclib = 9;
+  LDmacman = 15;
+  LModload = 19;
+  LHeaplib = 20;
+  Status = $10000;
+begin
+  var C := TPS2Console.Create(Default(TPS2ConsoleConfig));
+  try
+    var K := C.IOP;
+    var Call := function(Lib, Fn: Integer; A0, A1: Cardinal): Cardinal
+      begin
+        K.CPU.R[4] := A0;
+        K.CPU.R[5] := A1;
+        IOPLibraryCall(K, Lib, Fn);
+        Result := K.CPU.R[2];
+      end;
+    for var Ch in [Ord('A'), Ord('f'), Ord('z'), Ord('5'), Ord(' '), 9, Ord('!'), 0, 127] do
+    begin
+      var Want: Cardinal;
+      case Ch of
+        Ord('A'): Want := $41;
+        Ord('f'): Want := $42;
+        Ord('z'): Want := $02;
+        Ord('5'): Want := $04;
+        Ord(' '): Want := $18;
+        9: Want := $08;
+        Ord('!'): Want := $10;
+      else
+        Want := $20;
+      end;
+      Check(Call(LSysclib, 8, Ch, 0) = Want, Format('look_ctype_table(%d)', [Ch]));
+    end;
+    K.Modules[3].Used := True;
+    FillChar(K.Modules[3].Name, SizeOf(K.Modules[3].Name), 0);
+    Move(AnsiString('TestModule')[1], K.Modules[3].Name, 10);
+    K.Modules[3].Version := $0102;
+    K.Modules[3].Base := $50000;
+    K.Modules[3].Entry := $50100;
+    K.Modules[3].GP := $58000;
+    K.Modules[3].TextSize := $1000;
+    K.Modules[3].DataSize := $200;
+    K.Modules[3].BssSize := $300;
+    Check(Call(LModload, 17, 3, Status) = 0, 'ReferModuleStatus failed');
+    Check((K.ReadString(Status, 56) = 'TestModule') and (K.R32(Status + 56) and $FFFF = $0102) and (K.R32(Status + 60) = 3) and
+      (K.R32(Status + 64) = $50100) and (K.R32(Status + 72) = $50000) and (K.R32(Status + 76) = $1000) and
+      (K.R32(Status + 84) = $300), 'ReferModuleStatus fields');
+    Check(Integer(Call(LModload, 17, 9, Status)) = -202, 'ReferModuleStatus of an unknown module');
+    Call(LDmacman, 33, 4, 5);
+    Call(LDmacman, 34, 4, 0);
+    Call(LDmacman, 34, 9, 0);
+    Check((C.IOP.Hardware.Read($1F8010F0, 4) shr 16) and $F = $D, 'DPCR channel 4 priority/enable');
+    Check((C.IOP.Hardware.Read($1F801570, 4) shr 8) and $8 = $8, 'DPCR2 channel 9 enable');
+    Call(LDmacman, 35, 4, 0);
+    Check((C.IOP.Hardware.Read($1F8010F0, 4) shr 16) and $F = $5, 'DPCR channel 4 disable');
+    // heaplib: a growing 1 KB heap (984 bytes free) takes a 2 KB chunk for
+    // a 2000-byte request (8 bytes left there) and returns it when freed.
+    var Heap := Call(LHeaplib, 4, $400, 1);
+    Check((Heap <> 0) and (Integer(Call(LHeaplib, 8, Heap, 0)) = 984), 'CreateHeap free size');
+    var Mem := Call(LHeaplib, 6, Heap, 2000);
+    Check((Mem <> 0) and (Integer(Call(LHeaplib, 8, Heap, 0)) = 992), 'AllocHeapMemory in a new chunk');
+    Check(Call(LHeaplib, 7, Heap, Mem) = 0, 'FreeHeapMemory');
+    Check(Integer(Call(LHeaplib, 8, Heap, 0)) = 984, 'Emptied chunk not returned');
+    Check(Integer(Call(LHeaplib, 7, Heap, Mem)) = -1, 'Second FreeHeapMemory accepted');
+    var Small := Call(LHeaplib, 6, Heap, 1);
+    Check((Small <> 0) and (Integer(Call(LHeaplib, 8, Heap, 0)) = 968), 'A 1-byte allocation takes 16 bytes');
+    Call(LHeaplib, 5, Heap, 0);
+    Check(Integer(Call(LHeaplib, 8, Heap, 0)) = -4, 'Deleted heap still valid');
+  finally
+    C.Free;
+  end;
+  Writeln('IOP libraries: look_ctype_table, ReferModuleStatus, DMA priority/enable/disable, growing heaps: OK');
+end;
+
 // fromSPR as stall source, VIF1 as drain: VIF1 moves whole 8-quadword slices
 // below D_STADR, sets SIS when it waits and finishes once STD is cleared.
 procedure CheckStallControl;
@@ -600,6 +677,7 @@ begin
     CheckMemoryCard;
     CheckMCServer;
     CheckCardDevice;
+    CheckIOPLibraries;
   except
     on E: Exception do
     begin

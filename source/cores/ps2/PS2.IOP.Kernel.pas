@@ -50,6 +50,7 @@ const
   WaitVblankEnd = 8;
   WaitCd = 9;
   WaitModule = 10;
+  WaitVpl = 11;
 
   // Thread attribute TH_NO_FILLSTACK; the register context at the top of a
   // started thread's stack and the saved registers in it.
@@ -106,6 +107,10 @@ type
   TIOPPool = record
     Used: Boolean;
     Attr, Option, BlockSize, Blocks: Cardinal;
+    // Variable pools: the heap in IOP memory and its free size at creation.
+    Variable: Boolean;
+    Heap: Cardinal;
+    InitialFree: Integer;
   end;
 
   TIOPIntrHandler = record
@@ -146,6 +151,8 @@ type
     ResultPtr: Cardinal;
     Token: array[0..127] of Byte;
     TokenLen: Integer;
+    // Section sizes of the image (ReferModuleStatus).
+    TextSize, DataSize, BssSize: Cardinal;
   end;
 
   PIOPModule = ^TIOPModule;
@@ -292,7 +299,12 @@ type
     procedure DeleteThread(Id: Integer);
     procedure CheckSemaWaiters(Id: Integer);
     procedure CheckEventWaiters(Id: Integer);
-    procedure CheckMbxWaiters(Id: Integer);
+    // Message boxes: the ring of messages, the first waiter, waiter counts.
+    procedure QueueMessage(Id: Integer; Msg: Cardinal);
+    function TakeMessage(Id: Integer): Cardinal;
+    procedure SendMessage(Id: Integer; Msg: Cardinal);
+    function FirstWaiter(Wait: Byte; Id: Integer; ByPriority: Boolean): Integer;
+    function WaiterCount(Wait: Byte; Id: Integer): Integer;
     function EventMatches(Bits, Want, Mode: Cardinal): Boolean;
     // Memory helpers (IOP RAM, mirrored).
     function R8(A: Cardinal): Byte; inline;
@@ -578,10 +590,15 @@ end;
 
 function TPS2IOPKernel.CreateThread(Attr, Entry, Priority, StackSize, Option, GP: Cardinal): Integer;
 begin
+  // The stack: the size rounded up to 256 bytes (no memory for more than
+  // there is).
+  if StackSize > PS2IOPRAMSize then
+    Exit(-400);
+  StackSize := (StackSize + 255) and not Cardinal(255);
   for var K := 1 to IOPMaxThreads do
     if not Threads[K].Used then
     begin
-      var Stack := Allocator.Allocate(Max(StackSize, $400));
+      var Stack := Allocator.Allocate(StackSize);
       if Stack = 0 then
         Exit(-400);
       Threads[K] := Default(TIOPThread);
@@ -591,10 +608,11 @@ begin
       Threads[K].Option := Option;
       Threads[K].Entry := Entry;
       Threads[K].StackBase := Stack;
-      Threads[K].StackSize := (Max(StackSize, $400) + 255) and not Cardinal(255);
+      Threads[K].StackSize := StackSize;
       Threads[K].GP := GP;
       Threads[K].InitPriority := Integer(Priority);
-      Threads[K].Priority := Integer(Priority);
+      // The current priority is 0 until the thread starts.
+      Threads[K].Priority := 0;
       Threads[K].RpcServer := -1;
       Threads[K].Module := 0;
       // The IOP kernel fills a new stack with FFh up to its top 30h bytes
@@ -657,6 +675,9 @@ begin
   if Current <= 0 then
     Exit;
   var T: PIOPThread := @Threads[Current];
+  // While it waits, ReadySeq orders the waiters (first come, first served).
+  Inc(FReadySeq);
+  T.ReadySeq := FReadySeq;
   T.State := ThWaiting;
   T.Wait := Wait;
   T.WaitId := WaitId;
@@ -1043,21 +1064,102 @@ begin
     Result := (Bits and Want) = Want;
 end;
 
+// The thread waiting (Wait, Id) that goes first: the earliest waiter, or
+// with ByPriority the highest priority (lowest number), earliest among equals.
+function TPS2IOPKernel.FirstWaiter(Wait: Byte; Id: Integer; ByPriority: Boolean): Integer;
+begin
+  Result := -1;
+  for var K := 1 to IOPMaxThreads do
+    if Threads[K].Used and (Threads[K].State = ThWaiting) and (Threads[K].Wait = Wait) and (Threads[K].WaitId = Id) then
+      if (Result < 0) or (ByPriority and (Threads[K].Priority < Threads[Result].Priority)) or
+        (((not ByPriority) or (Threads[K].Priority = Threads[Result].Priority)) and
+        (Threads[K].ReadySeq < Threads[Result].ReadySeq)) then
+        Result := K;
+end;
+
+function TPS2IOPKernel.WaiterCount(Wait: Byte; Id: Integer): Integer;
+begin
+  Result := 0;
+  for var K := 1 to IOPMaxThreads do
+    if Threads[K].Used and (Threads[K].State = ThWaiting) and (Threads[K].Wait = Wait) and (Threads[K].WaitId = Id) then
+      Inc(Result);
+end;
+
 procedure TPS2IOPKernel.CheckSemaWaiters(Id: Integer);
 begin
   while Semas[Id].Count > 0 do
   begin
-    var Best := -1;
-    for var K := 1 to IOPMaxThreads do
-      if Threads[K].Used and (Threads[K].State = ThWaiting) and (Threads[K].Wait = WaitSema) and
-        (Threads[K].WaitId = Id) then
-        if (Best < 0) or (((Semas[Id].Attr and 1) <> 0) and (Threads[K].Priority < Threads[Best].Priority)) then
-          Best := K;
+    var Best := FirstWaiter(WaitSema, Id, (Semas[Id].Attr and 1) <> 0);
     if Best < 0 then
       Break;
     Dec(Semas[Id].Count);
     Wake(Best, 0);
   end;
+end;
+
+// Message boxes keep their messages in a ring as the kernel does: Head is
+// the newest message and its next field the oldest (the top). With MBA_MSPRI
+// a message goes after those of its priority or a higher one (a lower
+// number).
+procedure TPS2IOPKernel.QueueMessage(Id: Integer; Msg: Cardinal);
+begin
+  var Newest := Mbxs[Id].Head;
+  Inc(Mbxs[Id].Count);
+  if Newest = 0 then
+  begin
+    Mbxs[Id].Head := Msg;
+    W32(Msg, Msg);
+    Exit;
+  end;
+  if (Mbxs[Id].Attr and 4) = 0 then
+  begin
+    W32(Msg, R32(Newest));
+    W32(Newest, Msg);
+    Mbxs[Id].Head := Msg;
+    Exit;
+  end;
+  var Prio := R8(Msg + 4);
+  var Prev := Newest;
+  var Cur := R32(Newest);
+  while Prio >= R8(Cur + 4) do
+  begin
+    Prev := Cur;
+    if Cur = Newest then
+    begin
+      Mbxs[Id].Head := Msg;
+      Break;
+    end;
+    Cur := R32(Cur);
+  end;
+  W32(Msg, R32(Prev));
+  W32(Prev, Msg);
+end;
+
+// The top message, taken off the ring (the box has messages).
+function TPS2IOPKernel.TakeMessage(Id: Integer): Cardinal;
+begin
+  var Newest := Mbxs[Id].Head;
+  Result := R32(Newest);
+  if Result = R32(Result) then
+    Mbxs[Id].Head := 0
+  else
+    W32(Newest, R32(Result));
+  Dec(Mbxs[Id].Count);
+end;
+
+// A sent message goes straight to the first waiting thread (MBA_THPRI: by
+// priority), else onto the ring.
+procedure TPS2IOPKernel.SendMessage(Id: Integer; Msg: Cardinal);
+begin
+  var T := FirstWaiter(WaitMbx, Id, (Mbxs[Id].Attr and 1) <> 0);
+  if T < 0 then
+  begin
+    QueueMessage(Id, Msg);
+    Exit;
+  end;
+  if Threads[T].WaitA <> 0 then
+    W32(Threads[T].WaitA, Msg);
+  Wake(T, 0);
 end;
 
 procedure TPS2IOPKernel.CheckEventWaiters(Id: Integer);
@@ -1073,27 +1175,6 @@ begin
         Events[Id].Bits := 0;
       Wake(K, 0);
     end;
-end;
-
-procedure TPS2IOPKernel.CheckMbxWaiters(Id: Integer);
-begin
-  for var K := 1 to IOPMaxThreads do
-  begin
-    if Mbxs[Id].Count = 0 then
-      Break;
-    if Threads[K].Used and (Threads[K].State = ThWaiting) and (Threads[K].Wait = WaitMbx) and
-      (Threads[K].WaitId = Id) then
-    begin
-      var Msg := Mbxs[Id].Head;
-      Mbxs[Id].Head := R32(Msg);
-      Dec(Mbxs[Id].Count);
-      if Mbxs[Id].Count = 0 then
-        Mbxs[Id].Tail := 0;
-      if Threads[K].WaitA <> 0 then
-        W32(Threads[K].WaitA, Msg);
-      Wake(K, 0);
-    end;
-  end;
 end;
 
 { Modules and libraries }
@@ -1292,6 +1373,9 @@ begin
   Modules[Slot].Entry := Add32(Base, Info.Entry);
   Modules[Slot].GP := Add32(Base, Info.GP);
   Modules[Slot].Version := Info.Version;
+  Modules[Slot].TextSize := Info.TextSize;
+  Modules[Slot].DataSize := Info.DataSize;
+  Modules[Slot].BssSize := Info.BssSize;
   FindImportTables(Base, Info.TextSize + Info.DataSize);
   Warn(Format('module %s (%s) at %.6x size %x entry %.6x', [Name, Path, Base, Info.MemorySize,
     Modules[Slot].Entry]));

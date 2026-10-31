@@ -14,7 +14,7 @@ uses
 const
   // Serialized layout of TPS2Console.SerializeState. Increase it with every
   // layout change; tests/cores/ps2/system checks the recorded field layout.
-  PS2SnapshotVersion = 7;
+  PS2SnapshotVersion = 8;
 
 type
   TPS2ConsoleConfig = record
@@ -96,6 +96,9 @@ type
     procedure Reset;
     // A homebrew ELF (EE executable): loaded and started by the HLE kernel.
     procedure LoadProgram(const Data: TBytes; const Name: string);
+    // Loads an IOP module (IRX) and starts it on the IOP, with no EE program
+    // (IOP test programs).
+    procedure LoadIOPModule(const Data: TBytes; const Name: string);
     // Boots the disc: BOOT2 from SYSTEM.CNF (False without a PS2 disc).
     function BootDisc: Boolean;
     property DiscFS: TPS2DiscFileSystem read FDiscFS;
@@ -572,6 +575,14 @@ begin
   finally
     ELF.Free;
   end;
+end;
+
+procedure TPS2Console.LoadIOPModule(const Data: TBytes; const Name: string);
+begin
+  var Index := IOP.LoadModule(Data, Name);
+  if Index <= 0 then
+    raise EReadError.CreateFmt('IOP module %s did not load (%d)', [Name, Index]);
+  IOP.StartModule(Index, Name, nil, nil, 0, 0);
 end;
 
 function TPS2Console.BootDisc: Boolean;

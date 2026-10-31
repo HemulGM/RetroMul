@@ -339,8 +339,9 @@ type
     FClutChanged: Boolean;
     // The pixels of the primitive being queued (the counter's).
     FCommandPixels: Int64;
-    // Where the accelerator's recent primitives went: taken by it, or to
-    // the band threads as it cannot draw them (halved every 4096).
+    // Where the accelerator's recent primitives went: ones it can take (taken
+    // or declined), or to the band threads as it cannot draw them (halved
+    // every 4096).
     FRecentAccepted, FRecentFallbacks: Integer;
     FRoute: (rtNone, rtAccelerated, rtDeclined, rtUnsupported);
     function OwnedElsewhere(const Pages: TPS2GSPages; Key: UInt64): Boolean;
@@ -1531,7 +1532,8 @@ end;
 procedure TPS2GSRaster.NoteRoute;
 begin
   case FRoute of
-    rtAccelerated: Inc(FRecentAccepted);
+    // A declined primitive is one it could take.
+    rtAccelerated, rtDeclined: Inc(FRecentAccepted);
     rtUnsupported: Inc(FRecentFallbacks);
   end;
   if FRecentAccepted + FRecentFallbacks >= 4096 then
@@ -1551,10 +1553,10 @@ begin
   if PagesOverlap(Reads, FPendingWrites) or PagesOverlap(Writes, FPendingWrites) or
     PagesOverlap(Writes, FPendingReads) then
   begin
-    // Mostly software lately (three primitives in four the accelerator
+    // Mostly software lately (over three primitives in four the accelerator
     // cannot take): a small draw joins the band threads rather than waiting
     // for them (both paths draw the same pixels).
-    if (Area < 65536) and (FRecentFallbacks >= 3 * FRecentAccepted) then
+    if (Area < 65536) and (FRecentFallbacks > 3 * FRecentAccepted) then
     begin
       FRoute := rtDeclined;
       Exit(False);

@@ -48,7 +48,13 @@ write (render to texture, a depth buffer written through another layout),
 the band threads first finish the earlier commands (a barrier in the queue);
 a primitive reading its own target, host-to-local and local-to-local
 transfers and CLUT loads are done by the first band thread alone while the
-others wait. Each queued primitive keeps its CLUT in a ring. The emulation
+others wait. These decisions use the pages a primitive can actually touch:
+its pixel rectangle and the texels its UV/STQ range reaches through the wrap
+modes. Reading its own buffer counts as feedback only where the texel and
+pixel rectangles meet (same layout, distinct addresses), not for sprites
+whose pixels each read their own place, nor for 8H/4HL/4HH texels under a
+24-bit frame or depth buffer (which keep the high byte). Idle band threads are
+woken in batches (by queued pixels) rather than per command. Each queued primitive keeps its CLUT in a ring. The emulation
 thread only waits for the bands when it reads GS memory itself (local-to-host
 transfers, the display, snapshots). The memory is the same either way;
 `PS2.GS.RaceCheck` (define `GS_RACECHECK`) reports GS memory words two band
@@ -228,8 +234,11 @@ is unavailable, software rendering continues; `VulkanError` reports why.
 The default remains multithreaded software rendering.
 With band workers configured, unsupported sprites/triangles keep the ordered
 software queue rather than drawing on the emulation thread. Accepted GPU
-draws first publish CPU work; software fallbacks and local copies first
-publish GPU work. Workers, including the solo feedback drawer, never call
+draws wait for queued CPU work, and software fallbacks for queued GPU work,
+only where their pages meet (reads against writes, writes against both);
+local copies first publish GPU work. A full half of the GPU draw slots is
+submitted without waiting while the other half is recorded (two command
+buffers). Workers, including the solo feedback drawer, never call
 Vulkan. Palette loads stay on the host when no CPU work is pending.
 
 The integer shader implements alpha/depth tests, fog, blending, destination

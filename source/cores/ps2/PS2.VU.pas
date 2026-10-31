@@ -153,6 +153,10 @@ type
     // Temporary operands/results of generated arithmetic (not guest state).
     FJitOperand, FJitProduct: TPS2Reg128;
     FJitFlags, FJitProductFlags: Cardinal;
+    // The register-math routines generated code calls, for the host rounding
+    // of the current Run (toward zero: FMathTruncating).
+    FMath: array[TPS2RegisterMath] of Pointer;
+    FMathTruncating: Boolean;
     FJitClip: Cardinal;
     FJitEvents: array[0..15] of TPS2VUFlagEvent;
     FJitFastPairs: Int64;
@@ -993,7 +997,7 @@ begin
   end;
   var Math := vrmAdd;
   if Kind in [rkMul, rkMadd, rkMsub] then Math := vrmMul;
-  J.VectorCall(PS2RegisterMathNative(Math), PS2RegisterMathModel(Math), JImm(0));
+  J.VectorCallAt(JMem(jrSelf, Integer(NativeInt(@FMath[Math]) - NativeInt(Self))), PS2RegisterMathModel(Math), JImm(0));
   if Kind in [rkMadd, rkMsub] then
   begin
     J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FJitProductFlags) - NativeInt(Self))), JT0);
@@ -1005,7 +1009,8 @@ begin
     end;
     J.VectorShuffle(jv1, jv0, $E4); // retain the rounded product, never FMA
     J.VectorLoad(jv0, JMem(jrSelf, Integer(NativeInt(@S.ACC) - NativeInt(Self))));
-    J.VectorCall(PS2RegisterMathNative(vrmAdd), PS2RegisterMathModel(vrmAdd), JImm(0));
+    J.VectorCallAt(JMem(jrSelf, Integer(NativeInt(@FMath[vrmAdd]) - NativeInt(Self))), PS2RegisterMathModel(vrmAdd),
+      JImm(0));
     J.Alu(jaOr, jw32, JT0, JMem(jrSelf, Integer(NativeInt(@FJitProductFlags) - NativeInt(Self))));
   end;
   EmitRegisterFlags((Op shr 21) and 15);
@@ -3345,6 +3350,14 @@ end;
 
 function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
 begin
+  // (The host rounding stays as it is for the whole run: the routines for it.)
+  var Truncating := GetRoundMode = rmTruncate;
+  if (Truncating <> FMathTruncating) or (FMath[vrmAdd] = nil) then
+  begin
+    FMathTruncating := Truncating;
+    FMath[vrmAdd] := PS2RegisterMathNativeFor(vrmAdd, Truncating);
+    FMath[vrmMul] := PS2RegisterMathNativeFor(vrmMul, Truncating);
+  end;
   var Context := Default(TPS2VURun);
   Context.Limit := MaxPairs;
   while S.Running and (Context.Count < Context.Limit) do
@@ -3391,6 +3404,10 @@ begin
   end;
   if FKickPending then
     TakeKick(True);
+  {$IFDEF PS2_CHECKED}
+  if (GetRoundMode = rmTruncate) <> Truncating then
+    raise Exception.Create('VU run changed the host rounding');
+  {$ENDIF}
   Result := not S.Running;
 end;
 

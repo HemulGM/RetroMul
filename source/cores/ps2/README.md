@@ -222,7 +222,9 @@ comparisons plus the original four-cycle flag queue. Exponent-zero inputs,
 finite exponent 255, saturation, masks and host conversion rounding retain
 the scalar reference results. CLIP remains a scheduling observation boundary.
 On Win64/AVX2, compiled ADD/SUB/MUL/MADD/MSUB can pass operands and results
-through volatile 128-bit registers. The result stays live through a call-free
+through volatile 128-bit registers. Each run picks the routines for the host
+rounding it runs under (the truncating fast path or the exact one), so no
+operation reads MXCSR; HW.JIT's VectorCallAt calls them through the core. The result stays live through a call-free
 lower half until the masked commit; Z/S extraction is vectorized and O/U
 groups are returned directly. Every input and rounding mode remains exact,
 using integer normalization outside the guarded common range. MADD/MSUB still

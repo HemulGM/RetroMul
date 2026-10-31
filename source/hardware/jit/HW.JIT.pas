@@ -148,6 +148,9 @@ type
     // model uses ModelRoutine(const A,B:128-bit; Context:pointer; out R).
     // Both routines may clobber all scratch integer/vector registers.
     procedure VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp); virtual;
+    // As VectorCall, the native routine's address read from memory operand
+    // NativeRoutine (its register not the argument's).
+    procedure VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp); virtual;
     // A function's start: the fixed registers saved, Self and Ctx from its
     // two arguments. Its end: Value as its result, the fixed registers as
     // they were, back to its caller.
@@ -345,6 +348,11 @@ begin
 end;
 
 procedure TJitAsm.VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp);
 begin
   VectorUnsupported;
 end;
@@ -1632,6 +1640,7 @@ type
     procedure VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector); override;
     procedure VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector); override;
     procedure VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp); override;
+    procedure VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp); override;
   end;
 
 const
@@ -1813,6 +1822,11 @@ procedure TJitAsmWin64.VectorCall(NativeRoutine, ModelRoutine: Pointer; const Co
 begin
   if NativeRoutine = nil then raise EInvalidOpException.Create('JIT: no native vector routine');
   Call(NativeRoutine, [Context]);
+end;
+
+procedure TJitAsmWin64.VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  CallAt(NativeRoutine, [Context]);
 end;
 
 {$ENDIF}
@@ -2050,6 +2064,7 @@ type
     procedure VectorAlu(Op: TJitVectorAlu; Dst, Src: TJitVector); override;
     procedure VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector); override;
     procedure VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp); override;
+    procedure VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp); override;
     procedure Move(W: TJitWidth; const Dst, Src: TJitOp); override;
     procedure Alu(Op: TJitAlu; W: TJitWidth; const Dst, Src: TJitOp); override;
     procedure Shift(Op: TJitShift; W: TJitWidth; Dst: TJitReg; Count: Integer); override;
@@ -2183,6 +2198,11 @@ begin
   var P := Put(mcVectorCall, jw64);
   P.Routine := ModelRoutine;
   P.A := ModelOperand(Context);
+end;
+
+procedure TJitAsmModel.VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp);
+begin
+  VectorCall(nil, ModelRoutine, Context);
 end;
 
 function TJitAsmModel.Put(Code: TModelCode; W: TJitWidth): PModelOp;

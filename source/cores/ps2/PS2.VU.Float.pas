@@ -42,6 +42,9 @@ function PS2VectorAVX2: Boolean;
 // xmm0 result, return value = MAC-style underflow/overflow groups (8..15).
 // All inputs/rounding modes are supported; the scalar path is unchanged.
 function PS2RegisterMathNative(Kind: TPS2RegisterMath): Pointer;
+// The same for a host rounding mode known to the caller: toward zero
+// (Truncating) or another (the exact routine at once).
+function PS2RegisterMathNativeFor(Kind: TPS2RegisterMath; Truncating: Boolean): Pointer;
 function PS2RegisterMathModel(Kind: TPS2RegisterMath): Pointer;
 
 implementation
@@ -803,14 +806,11 @@ end;
 function RegisterMulExact(Context: Pointer): NativeUInt; forward;
 function RegisterAddExact(Context: Pointer): NativeUInt; forward;
 
-function MulRegisters(Context: Pointer): NativeUInt;
+// MulRegisters and AddRegisters where the host rounds toward zero (the
+// caller has checked): the fast path's host arithmetic rounds as the PS2's.
+function MulRegistersRZ(Context: Pointer): NativeUInt;
 asm
   .NOFRAME
-  stmxcsr [rsp + 8]
-  mov eax, [rsp + 8]
-  and eax, $6000
-  cmp eax, $6000
-  jne @@No
   vpand xmm2, xmm0, [rip + CExpMask]
   vpand xmm3, xmm1, [rip + CExpMask]
   vpsrld xmm2, xmm2, 23
@@ -847,14 +847,9 @@ asm
   jmp RegisterMulExact
 end;
 
-function AddRegisters(Context: Pointer): NativeUInt;
+function AddRegistersRZ(Context: Pointer): NativeUInt;
 asm
   .NOFRAME
-  stmxcsr [rsp + 8]
-  mov eax, [rsp + 8]
-  and eax, $6000
-  cmp eax, $6000
-  jne @@No
   vpand xmm2, xmm0, [rip + CExpMask]
   vpand xmm3, xmm1, [rip + CExpMask]
   vpsrld xmm2, xmm2, 23
@@ -908,6 +903,32 @@ asm
   ret
 @@No:
   vzeroupper
+  jmp RegisterAddExact
+end;
+
+function MulRegisters(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  stmxcsr [rsp + 8]
+  mov eax, [rsp + 8]
+  and eax, $6000
+  cmp eax, $6000
+  jne @@No
+  jmp MulRegistersRZ
+@@No:
+  jmp RegisterMulExact
+end;
+
+function AddRegisters(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  stmxcsr [rsp + 8]
+  mov eax, [rsp + 8]
+  and eax, $6000
+  cmp eax, $6000
+  jne @@No
+  jmp AddRegistersRZ
+@@No:
   jmp RegisterAddExact
 end;
 
@@ -1218,6 +1239,18 @@ begin
     case Kind of
       vrmAdd: Result := @AddRegisters;
       vrmMul: Result := @MulRegisters;
+    end;
+  {$ENDIF}
+end;
+
+function PS2RegisterMathNativeFor(Kind: TPS2RegisterMath; Truncating: Boolean): Pointer;
+begin
+  Result := nil;
+  {$IFDEF PS2_VU_SSE}
+  if VectorAVX2 then
+    case Kind of
+      vrmAdd: if Truncating then Result := @AddRegistersRZ else Result := @RegisterAddExact;
+      vrmMul: if Truncating then Result := @MulRegistersRZ else Result := @RegisterMulExact;
     end;
   {$ENDIF}
 end;

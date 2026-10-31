@@ -36,6 +36,8 @@ type
     // SMODE2.INT sets Interlaced (BIOS boot; the high-level kernel keeps it
     // on).
     InterlaceFromSMODE2: Boolean;
+    // BIOS boot as well: SMODE1 selects NTSC or PAL field timing.
+    OnVideoMode: TProc<Boolean>;
     constructor Create;
     destructor Destroy; override;
     procedure Reset;
@@ -159,7 +161,14 @@ begin
   end;
   case Address and $FFF8 of
     $0000: PMODE := Value;
-    $0010: SMODE1 := Value;
+    $0010:
+      begin
+        SMODE1 := Value;
+        // CMOD (bits 13-14): 2 NTSC, 3 PAL; other values (VESA, HDTV) leave
+        // the field timing.
+        if InterlaceFromSMODE2 and Assigned(OnVideoMode) and (((Value shr 13) and 3) >= 2) then
+          OnVideoMode(((Value shr 13) and 3) = 3);
+      end;
     $0020:
       begin
         SMODE2 := Value;

@@ -99,6 +99,9 @@ type
     procedure SetMechacon(const Version: TBytes);
     procedure SetNVM(const Data: TBytes; Dragon: Boolean);
     function NVM: TBytes;
+    // Sets the language (OSD numbering: 0 Japanese, 1 English .. 8 Russian)
+    // in the OSD configuration when the console has been set up.
+    procedure SetOSDLanguage(Code: Integer);
     // The BIOS wrote the EEPROM (configuration or NVM words) since the last
     // ClearNVMChanged.
     property NVMChanged: Boolean read FNVMChanged;
@@ -164,6 +167,24 @@ function TPS2CDVDDrive.NVM: TBytes;
 begin
   SetLength(Result, SizeOf(FNVM));
   Move(FNVM[0], Result[0], SizeOf(FNVM));
+end;
+
+// The OSD configuration row (block 1, row 1): byte 0 bit 5 marks the
+// extended language list, byte 1 bits 0-4 the language, byte 2 bit 7 a
+// console that has been set up (PS2 Developer wiki, Config 1 (OSD)); byte 15
+// is the checksum of the others.
+procedure TPS2CDVDDrive.SetOSDLanguage(Code: Integer);
+begin
+  var A := ConfigRow(1, 1);
+  if (A < 0) or ((FNVM[A + 2] and $80) = 0) then
+    Exit;
+  FNVM[A + 1] := (FNVM[A + 1] and $E0) or Byte(Code and $1F);
+  if Code >= 8 then
+    FNVM[A] := FNVM[A] or $20;
+  var Sum: Byte := 0;
+  for var K := 0 to 14 do
+    Sum := Byte(Sum + FNVM[A + K]);
+  FNVM[A + 15] := Sum;
 end;
 
 procedure TPS2CDVDDrive.ClearNVMChanged;
@@ -628,6 +649,11 @@ begin
     $27: Result([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     $2C, $2D, $32, $35: Result([0, 0]);
     $36: Result([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    // MagicGate memory card authentication (SECRMAN): the MECHACON checks
+    // what the card answered and accepts it; 84h and 85h hand out its
+    // challenges (8 + 4 and 4 + 8 bytes), 8Fh reports the calculation done.
+    $80, $81, $82, $83, $86, $87, $88, $8F: Result([0]);
+    $84, $85: Result([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     $40:
       begin
         // OpenConfig(mode, block, blocks).

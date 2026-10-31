@@ -54,6 +54,8 @@ type
     // FINISH writes not in CSR yet: the EE cycle each shows, oldest first.
     FFinishDue: array[0..7] of Int64;
     FFinishCount: Integer;
+    // BIOS boot: the console's video standard at power-on (by BIOS region).
+    FBIOSPAL: Boolean;
     procedure GSFinishWritten;
     procedure GSFinishShown;
     procedure TTYWrite(const Text: string);
@@ -62,6 +64,7 @@ type
     procedure GSInterrupt;
     procedure HandleEvent(Event: TPS2Event; At: Int64);
     procedure SetVideo(PAL: Boolean);
+    procedure SetVideoTiming(PAL: Boolean);
     procedure LoadExec(const Path: string; const Args: TArray<string>);
     procedure IOPReset(const Args: string);
     procedure BootIOP;
@@ -279,17 +282,33 @@ begin
   Drive.SetMechacon(FConfig.Mechacon);
   // The Dragon MECHACON (its EEPROM layout) came with the SCPH-50000 and its
   // BIOS 1.70; earlier consoles have the older MECHACON.
+  // European consoles start with PAL timing, the others with NTSC; SMODE1
+  // switches it later.
   var Version := 0;
+  FBIOSPAL := False;
   if TPS2BIOS.IsBIOS(FConfig.BIOS) then
   begin
     var B := TPS2BIOS.Create(FConfig.BIOS);
     try
       Version := StrToIntDef(Copy(B.ROMVER, 1, 4), 0);
+      FBIOSPAL := B.RegionLetter = 'E';
     finally
       B.Free;
     end;
   end;
   Drive.SetNVM(FConfig.NVM, Version >= 170);
+  // An explicit language setting goes into the console's OSD configuration
+  // (the extended languages from BIOS 1.90 on).
+  if (FConfig.Language <> TPS2Language.Auto) and ((Ord(FConfig.Language) - 1 < 8) or (Version >= 190)) then
+    Drive.SetOSDLanguage(Ord(FConfig.Language) - 1);
+  GS.OnVideoMode := procedure(PAL: Boolean)
+    begin
+      if PAL <> GS.PAL then
+      begin
+        SetVideo(PAL);
+        IOPMachine.SetLineCycles(FLineCycles);
+      end;
+    end;
   IOPMachine := TPS2IOPMachine.Create(Scheduler, Bus.IOPRAM, Bus.BIOS, IOP.Hardware, Bridge, Drive);
   Bridge.OnEEData := procedure begin DMAC.Resume(DMASIF0); end;
   Bridge.OnEERoom := procedure begin DMAC.Resume(DMASIF1); end;
@@ -413,6 +432,14 @@ end;
 
 procedure TPS2Console.SetVideo(PAL: Boolean);
 begin
+  SetVideoTiming(PAL);
+  Timers.SetLineCycles(FLineCycles);
+end;
+
+// The field and line timing of PAL or NTSC, except the EE timers' (they
+// resynchronize when it changes; snapshots restore their own).
+procedure TPS2Console.SetVideoTiming(PAL: Boolean);
+begin
   FConfig.PAL := PAL;
   GS.PAL := PAL;
   if PAL then
@@ -427,7 +454,6 @@ begin
     FLineCycles := FFieldCycles * 2 div 525;
     FVisibleCycles := FFieldCycles - 22 * FLineCycles;
   end;
-  Timers.SetLineCycles(FLineCycles);
   Kernel.SetLineCycles(FLineCycles);
   IOP.LineCycles := FLineCycles;
 end;
@@ -482,7 +508,7 @@ begin
   Drive.Reset;
   IOP.Hardware.Reset;
   IOPMachine.Reset;
-  SetVideo(FConfig.PAL);
+  SetVideo(FBIOSPAL);
   IOPMachine.SetLineCycles(FLineCycles);
   FFrameCount := 0;
   FFieldStart := 0;
@@ -977,6 +1003,12 @@ begin
     State.Field(Bus.MCHDrd, SizeOf(Bus.MCHDrd));
     State.Field(Bus.RDRAMDevice, SizeOf(Bus.RDRAMDevice));
     State.Field(Bus.CmdRegs, SizeOf(Bus.CmdRegs));
+    // The field timing follows the restored GS mode.
+    if State.Loading then
+    begin
+      SetVideoTiming(GS.PAL);
+      IOPMachine.SetLineCycles(FLineCycles);
+    end;
   end;
 end;
 

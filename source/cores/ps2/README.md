@@ -314,9 +314,23 @@ With SCPH-50008 and a configured EEPROM (OSD row with the initialized bit),
 the BIOS boots a game disc the way the console does: OSDSYS checks the disc,
 reads its keys and runs PS2LOGO, then the game resets the IOP with its own
 modules and starts (Final Fantasy X reaches its intro). A blank EEPROM gets
-the first-start setup and the main menu instead. Memory cards (MagicGate),
-keeping the console's EEPROM and the front end's BIOS modes are not done
-yet. `PS2Run -bios FILE` boots a BIOS (with `.nvm`/`.mec` files beside it).
+the first-start setup and the main menu instead; the BIOS stores the
+answers in the EEPROM. Memory cards pass MagicGate authentication: the card
+answers SECRMAN's steps and the MECHACON accepts them, so the browser and
+the games' card drivers reach the same card files as in high-level mode.
+The video standard starts from the BIOS region and follows SMODE1 (CMOD 2
+NTSC, 3 PAL). An explicit language setting goes into the OSD configuration
+of a console that has been set up.
+
+The front end's BIOS setting (`Hardware/BIOSMode`) picks the mode for discs:
+High-level, Automatic (a BIOS from the settings, beside the game, in the ps2
+folder or in the bios folder, one of the disc's region first; high-level
+otherwise) or External (a BIOS is required). The EEPROM is saved per BIOS
+version as `saves/ps2/console-<ROMVER>.nvm` whenever the BIOS writes it; the
+first time an `.nvm` beside the BIOS seeds it, and a `.mec` there gives the
+MECHACON version. BIOS boot snapshots go to their own folder. ELF programs
+always use high-level emulation. `PS2Run -bios FILE` boots a BIOS (with
+`.nvm`/`.mec` files beside it).
 
 ## Limits
 

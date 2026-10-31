@@ -115,9 +115,12 @@ type
     procedure Publish(Console: TPS2Console);
     procedure LoadCards;
     procedure SaveCards;
+    procedure SaveNVM;
   protected
     procedure Execute; override;
   public
+    // Where the console's EEPROM is saved (BIOS boot).
+    NVMFile: string;
     constructor Create(const ProgramData, Identity: TBytes; const ProgramName: string; const Base: TPS2ConsoleConfig;
       const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string);
     destructor Destroy; override;
@@ -148,7 +151,13 @@ type
     FPaused: Boolean;
     FSnapshotDirectory, FError: string;
     FCardFiles: array[0..1] of string;
+    // BIOS boot: the image, its console's MECHACON version and EEPROM, and
+    // where the EEPROM is kept.
+    FBIOS, FMechacon, FNVM: TBytes;
+    FNVMFile: string;
     procedure Configure;
+    procedure SelectBIOS(const RomName: string);
+    function FindBIOS(const RomName: string): string;
   public
     // Disc images are opened from the stream and RomName (owned); otherwise
     // Stream holds a PS2 ELF program.
@@ -214,8 +223,8 @@ implementation
 
 uses
   {$IFDEF MSWINDOWS}Winapi.MMSystem,{$ENDIF}
-  System.Math, System.Diagnostics, System.UITypes, System.Hash, RM.Platforms.PS2, Core.SavePaths, PS2.ELF,
-  PS2.IOP.MemoryCard;
+  System.Math, System.Diagnostics, System.UITypes, System.Hash, System.IOUtils, RM.Platforms.PS2, Core.SavePaths,
+  System.Generics.Collections, PS2.ELF, PS2.IOP.MemoryCard, PS2.BIOS;
 
 const
   KeyNames: array[TEmulatorButton] of string =
@@ -564,8 +573,21 @@ begin
   end;
 end;
 
+// The console's EEPROM after the BIOS wrote it (configuration, NVM words).
+procedure TPS2Worker.SaveNVM;
+begin
+  if (FConsole = nil) or not FConsole.BIOSBoot or not FConsole.Drive.NVMChanged or (NVMFile = '') then
+    Exit;
+  FStorage.EnsureFolder(ExtractFilePath(NVMFile));
+  FStorage.WriteBytes(NVMFile, FConsole.Drive.NVM);
+  FConsole.Drive.ClearNVMChanged;
+end;
+
+// A BIOS boots the disc itself.
 procedure TPS2Worker.Boot;
 begin
+  if FConsole.BIOSBoot then
+    Exit;
   if FBase.Disc <> nil then
   begin
     if not FConsole.BootDisc then
@@ -702,6 +724,7 @@ begin
         end;
         FConsole.RunFrame;
         FConsole.TakeTTY;
+        SaveNVM;
         if Terminated then
           Break;
         var Samples := FConsole.IOP.Hardware.SPU2.TakeSamples;
@@ -738,6 +761,12 @@ begin
     except
       on E: Exception do
         ReportError('PS2 memory card: ' + E.Message);
+    end;
+    try
+      SaveNVM;
+    except
+      on E: Exception do
+        ReportError('PS2 console EEPROM: ' + E.Message);
     end;
   finally
     FreeAndNil(FAudio);
@@ -872,10 +901,107 @@ begin
     FPAL := True
   else if FConfigObject.Video = 'ntsc' then
     FPAL := False;
+  if FDisc <> nil then
+    SelectBIOS(RomName);
   var Identity := SnapshotIdentity(FIdentity);
-  FSnapshotDirectory := FStorage.GameSnapshots(ROM_SYSTEM_PS2, RomName, Identity);
+  // BIOS boot snapshots hold the IOP machine too: kept apart.
+  var SnapshotFolder := Identity;
+  if FBIOS <> nil then
+    SnapshotFolder := Identity + '-bios';
+  FSnapshotDirectory := FStorage.GameSnapshots(ROM_SYSTEM_PS2, RomName, SnapshotFolder);
   FCardFiles[0] := FStorage.GameSave(ROM_SYSTEM_PS2, RomName, Identity);
   FCardFiles[1] := FStorage.GameSave(ROM_SYSTEM_PS2, RomName, Identity + '-2');
+end;
+
+// BIOS modes (Hardware/BIOSMode): 'hle' never boots a BIOS, 'auto' boots one
+// when it finds it, 'external' requires one. The image is the one in the
+// settings, or a PlayStation 2 BIOS beside the game, in the ps2 folder or in
+// the bios folder (one of the disc's region first). The console's EEPROM is
+// kept in the save folder per BIOS version; the first time it comes from an
+// .nvm file beside the BIOS when there is one (blank otherwise: the BIOS runs
+// its first-start setup and stores the answers). A .mec file beside the
+// BIOS gives the MECHACON version.
+procedure TPS2CoreAdapter.SelectBIOS(const RomName: string);
+begin
+  var Mode := FConfigObject.BIOSMode;
+  if Mode = 'hle' then
+    Exit;
+  var Path := FConfigObject.BIOSFile;
+  if (Path <> '') and not FStorage.Exists(Path) then
+  begin
+    if Mode = 'external' then
+      raise EReadError.Create('PlayStation 2 BIOS file not found: ' + Path);
+    Path := '';
+  end;
+  if Path = '' then
+    Path := FindBIOS(RomName);
+  if Path = '' then
+  begin
+    if Mode = 'external' then
+      raise EReadError.Create('PlayStation 2 BIOS not found: choose it in the settings (BIOS file) or put it beside ' +
+        'the game or in the ps2 folder');
+    Exit;
+  end;
+  var Data := FStorage.ReadBytes(Path);
+  if not TPS2BIOS.IsBIOS(Data) then
+  begin
+    if Mode = 'external' then
+      raise EReadError.Create('Not a PlayStation 2 BIOS (4 MiB image with ROMDIR): ' + ExtractFileName(Path));
+    Exit;
+  end;
+  FBIOS := Data;
+  var BIOS := TPS2BIOS.Create(Data);
+  try
+    FNVMFile := TPath.Combine(TPath.Combine(FStorage.SaveRoot, ROM_SYSTEM_PS2), 'console-' + BIOS.ROMVER + '.nvm');
+  finally
+    BIOS.Free;
+  end;
+  if FStorage.Exists(FNVMFile) then
+    FNVM := FStorage.ReadBytes(FNVMFile)
+  else if FStorage.Exists(ChangeFileExt(Path, '.nvm')) then
+    FNVM := FStorage.ReadBytes(ChangeFileExt(Path, '.nvm'));
+  if FStorage.Exists(ChangeFileExt(Path, '.mec')) then
+    FMechacon := FStorage.ReadBytes(ChangeFileExt(Path, '.mec'));
+end;
+
+function TPS2CoreAdapter.FindBIOS(const RomName: string): string;
+begin
+  Result := '';
+  var Wanted := 'A';
+  case FRegion of
+    TPS2Region.Japan: Wanted := 'J';
+    TPS2Region.Europe: Wanted := 'E';
+  end;
+  var Folders: TArray<string> := [FStorage.RomFolder(ROM_SYSTEM_PS2), TPath.Combine(FStorage.Root, 'bios')];
+  if not RomName.StartsWith('content://', True) then
+    Folders := [ExtractFilePath(RomName)] + Folders;
+  for var Folder in Folders do
+  begin
+    if (Folder = '') or not FStorage.FolderExists(Folder) then
+      Continue;
+    var Names := FStorage.Files(Folder);
+    TArray.Sort<string>(Names);
+    for var Name in Names do
+    begin
+      var Ext := ExtractFileExt(Name).ToLower;
+      if ((Ext <> '.bin') and (Ext <> '.rom')) or (FStorage.Describe(Name).Size <> PS2BIOSSize) then
+        Continue;
+      var Data := FStorage.ReadBytes(Name);
+      if not TPS2BIOS.IsBIOS(Data) then
+        Continue;
+      var BIOS := TPS2BIOS.Create(Data);
+      try
+        if BIOS.RegionLetter = Wanted then
+          Exit(Name);
+      finally
+        BIOS.Free;
+      end;
+      if Result = '' then
+        Result := Name;
+    end;
+    if Result <> '' then
+      Exit;
+  end;
 end;
 
 destructor TPS2CoreAdapter.Destroy;
@@ -942,8 +1068,12 @@ begin
   Base.Disc := FDisc;
   Base.Region := FRegion;
   Base.Language := FConfigObject.ConsoleLanguage;
+  Base.BIOS := FBIOS;
+  Base.Mechacon := FMechacon;
+  Base.NVM := FNVM;
   FWorker := TPS2Worker.Create(FProgram, FIdentity, FProgramName, Base, FStorage, FSnapshotDirectory, FCardFiles[0],
     FCardFiles[1]);
+  FWorker.NVMFile := FNVMFile;
   Configure;
   FWorker.Start;
 end;

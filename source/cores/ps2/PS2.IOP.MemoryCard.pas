@@ -1157,8 +1157,8 @@ end;
 // 12h (before writes and erases), 21h/22h/23h start erase/write/read at a
 // page (4 bytes and their XOR), 26h card specs, 27h set and 28h get the end
 // byte, 42h write and 43h read up to 128 bytes at the position (size byte,
-// data, XOR), 81h end of a read or write, 82h erase the block; the rest
-// (BFh, F3h and the authentication commands) are acknowledged.
+// data, XOR), 81h end of a read or write, 82h erase the block, F0h the
+// authentication steps; the rest (BFh, F3h, F7h) are acknowledged.
 procedure TPS2CardLink.Exchange(Card: TPS2MemoryCard; Time: UInt64; Cmd, Reply: PByte; Len: Integer);
 
   procedure Close;
@@ -1268,6 +1268,21 @@ begin
         end;
         Close;
       end;
+    $F0:
+      // MagicGate authentication: the steps that read from the card (01h IV,
+      // 02h material, 04h nonce, 0Fh/11h/13h responses) answer 8 bytes and
+      // their XOR after the 2Bh; the MECHACON (PS2.CDVD.Drive) accepts them.
+      // The others are acknowledged.
+      if (Len >= 14) and (Cmd[2] in [$01, $02, $04, $0F, $11, $13]) then
+      begin
+        Reply[3] := $2B;
+        for var K := 4 to 11 do
+          Reply[K] := 0;
+        Reply[12] := 0;
+        Reply[13] := Terminator;
+      end
+      else
+        Close;
   else
     Close;
   end;

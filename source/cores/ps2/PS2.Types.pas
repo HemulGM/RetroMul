@@ -50,6 +50,11 @@ type
   end;
   PPS2Reg128 = ^TPS2Reg128;
 
+  // The system language games read from the OSD configuration. Auto follows
+  // the console region (Japanese in Japan, English elsewhere); the others
+  // are the OSD language numbers plus one.
+  TPS2Language = (Auto, Japanese, English, French, Spanish, German, Italian, Dutch, Portuguese, Russian);
+
   // Register fields: 0..31, and 32 the sink that writes to $zero go to.
   TPS2RegIndex = 0..32;
   TPS2Field = 0..31;

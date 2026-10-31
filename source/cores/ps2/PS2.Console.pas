@@ -14,7 +14,7 @@ uses
 const
   // Serialized layout of TPS2Console.SerializeState. Increase it with every
   // layout change; tests/cores/ps2/system checks the recorded field layout.
-  PS2SnapshotVersion = 8;
+  PS2SnapshotVersion = 9;
 
 type
   TPS2ConsoleConfig = record
@@ -24,6 +24,7 @@ type
     // The disc (owned by the caller) or nil.
     Disc: TDVDImage;
     Region: TPS2Region;
+    Language: TPS2Language;
   end;
 
   TPS2Console = class
@@ -53,6 +54,7 @@ type
     procedure LoadExec(const Path: string; const Args: TArray<string>);
     procedure IOPReset(const Args: string);
     procedure BootIOP;
+    procedure ConfigureOSD;
     procedure AddIOPServers;
     procedure StartVU1(Address: Cardinal);
     function ImageVersion(const ResetArgs: string): Integer;
@@ -368,12 +370,7 @@ begin
   VIF1.Reset;
   IPU.Reset;
   Kernel.Reset;
-  // OSD configuration (GetOsdConfigParam): Japanese on Japanese consoles,
-  // English elsewhere (language bits 16-20, 'English' flag bit 4).
-  if FConfig.Region = TPS2Region.Japan then
-    Kernel.OsdConfig := 0
-  else
-    Kernel.OsdConfig := (1 shl 16) or (1 shl 4);
+  ConfigureOSD;
   IOMan.Reset;
   SetVideo(FConfig.PAL);
   FFrameCount := 0;
@@ -384,6 +381,41 @@ begin
   Scheduler.Schedule(TPS2Event.SPU2, SPU2BatchCycles);
   IOP.CPU.Cycles := 0;
   BootIOP;
+end;
+
+// The OSD configuration games read (GetOsdConfigParam): the non-Japanese
+// flag (bit 4), the OSD version (bits 13-15: 1 for OSD2, 2 when the
+// language is one of the later ones, which this word reports as English)
+// and the language (bits 16-20). The second area (GetOsdConfigParam2) holds
+// the region's date and time formats and, with version 2, the language.
+procedure TPS2Console.ConfigureOSD;
+begin
+  var Lang := FConfig.Language;
+  if Lang = TPS2Language.Auto then
+    if FConfig.Region = TPS2Region.Japan then
+      Lang := TPS2Language.Japanese
+    else
+      Lang := TPS2Language.English;
+  var Code := Cardinal(Ord(Lang) - 1);
+  var Version: Cardinal := 1;
+  var Shown := Code;
+  if Code >= 8 then
+  begin
+    Version := 2;
+    Shown := 1;
+  end;
+  Kernel.OsdConfig := (Cardinal(Ord(Shown <> 0)) shl 4) or (Version shl 13) or (Shown shl 16);
+  // Date format (bits 6-7): YYYYMMDD in Japan, MMDDYYYY in America,
+  // DDMMYYYY in Europe; 12-hour time (bit 5) in America.
+  var Formats: Byte := 0;
+  case FConfig.Region of
+    TPS2Region.America: Formats := (1 shl 6) or (1 shl 5);
+    TPS2Region.Europe: Formats := 2 shl 6;
+  end;
+  if Version = 2 then
+    Kernel.SetOsdConfig2([0, Formats, 2, Byte(Code)])
+  else
+    Kernel.SetOsdConfig2([0, Formats]);
 end;
 
 procedure TPS2Console.BootIOP;

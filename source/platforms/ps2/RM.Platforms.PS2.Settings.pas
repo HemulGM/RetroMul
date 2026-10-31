@@ -34,7 +34,7 @@ begin
   Context.AddPath('RowPS2BIOS', 'BIOS file', 'Optional PlayStation 2 BIOS image (4 MiB).', 'Hardware', 'BIOS', '', False);
   Context.AddChoice('RowPS2Region', 'Region', 'Automatic follows the disc.', 'System', 'Region', SettingChoices(['Automatic', 'Japan', 'USA', 'Europe'], ['auto', 'japan', 'usa', 'europe']), 'auto');
   Context.AddChoice('RowPS2Video', 'Video standard', 'Automatic follows SYSTEM.CNF of the disc.', 'System', 'Video', SettingChoices(['Automatic', 'NTSC (60 Hz)', 'PAL (50 Hz)'], ['auto', 'ntsc', 'pal']), 'auto');
-  Context.AddChoice('RowPS2Language', 'Language', 'System language reported to games.', 'System', 'Language', SettingChoices(['Japanese', 'English', 'French', 'Spanish', 'German', 'Italian', 'Dutch', 'Portuguese', 'Russian'], ['japanese', 'english', 'french', 'spanish', 'german', 'italian', 'dutch', 'portuguese', 'russian']), 'english');
+  Context.AddChoice('RowPS2Language', 'Language', 'System language reported to games. Automatic is Japanese for the Japan region and English elsewhere; Russian is reported the way consoles with extended languages do.', 'System', 'Language', SettingChoices(['Automatic', 'Japanese', 'English', 'French', 'Spanish', 'German', 'Italian', 'Dutch', 'Portuguese', 'Russian'], ['auto', 'japanese', 'english', 'french', 'spanish', 'german', 'italian', 'dutch', 'portuguese', 'russian']), 'auto');
 end;
 
 function TPS2Settings.PlayerCount(Draft: TMemIniFile): Integer;

@@ -9,7 +9,7 @@ interface
 
 uses
   Core.InputConfig, System.SysUtils, System.Classes, System.IniFiles, System.SyncObjs, Core.Storage, Core.Emulation,
-  Core.Snapshots, Core.CD.Disc, Core.DVD.Image, PS2.Console, PS2.IOP.CDVD, Core.Platforms.PS2.Playback;
+  Core.Snapshots, Core.CD.Disc, Core.DVD.Image, PS2.Types, PS2.Console, PS2.IOP.CDVD, Core.Platforms.PS2.Playback;
 
 {$SCOPEDENUMS ON}
 
@@ -43,7 +43,10 @@ type
     property Region: string read FRegion write FRegion;
     // 'auto' (from SYSTEM.CNF), 'ntsc' or 'pal'.
     property Video: string read FVideo write FVideo;
+    // 'auto' (by region), 'japanese', 'english', 'french', 'spanish',
+    // 'german', 'italian', 'dutch', 'portuguese' or 'russian'.
     property Language: string read FLanguage write FLanguage;
+    function ConsoleLanguage: TPS2Language;
     // GS drawing (Video/Renderer): 'threads' (default: band threads beside
     // the emulation), 'single' (on the emulation thread), or experimental
     // 'vulkan' (supported sprites/triangle pixels on the GPU, other draws on the CPU).
@@ -84,9 +87,9 @@ type
     FStorage: IStorage;
     FProgram, FIdentity: TBytes;
     FProgramName: string;
-    FDisc: TDVDImage;
-    FRegion: TPS2Region;
-    FPAL: Boolean;
+    // The console to build: video, region, language, disc (owned by the
+    // adapter), BIOS.
+    FBase: TPS2ConsoleConfig;
     FSnapshotDirectory, FError: string;
     FCardFiles: array[0..1] of string;
     FInputs: TPS2PadInputs;
@@ -115,9 +118,8 @@ type
   protected
     procedure Execute; override;
   public
-    constructor Create(const ProgramData, Identity: TBytes; const ProgramName: string; Disc: TDVDImage;
-      Region: TPS2Region; PAL: Boolean; const Storage: IStorage; const SnapshotDirectory, CardFile1,
-      CardFile2: string);
+    constructor Create(const ProgramData, Identity: TBytes; const ProgramName: string; const Base: TPS2ConsoleConfig;
+      const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string);
     destructor Destroy; override;
     procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
       Recompiler, Vulkan: Boolean);
@@ -212,7 +214,7 @@ implementation
 
 uses
   {$IFDEF MSWINDOWS}Winapi.MMSystem,{$ENDIF}
-  System.Math, System.Diagnostics, System.UITypes, System.Hash, RM.Platforms.PS2, Core.SavePaths, PS2.Types, PS2.ELF,
+  System.Math, System.Diagnostics, System.UITypes, System.Hash, RM.Platforms.PS2, Core.SavePaths, PS2.ELF,
   PS2.IOP.MemoryCard;
 
 const
@@ -254,7 +256,7 @@ begin
   FBIOSMode := 'hle';
   FRegion := 'auto';
   FVideo := 'auto';
-  FLanguage := 'english';
+  FLanguage := 'auto';
   FRenderer := 'threads';
 end;
 
@@ -264,6 +266,17 @@ begin
   // One per two logical processors (the emulation keeps one), 2..8.
   if FRenderer = 'threads' then
     Result := EnsureRange(TThread.ProcessorCount div 2, 2, 8);
+end;
+
+function TPS2Config.ConsoleLanguage: TPS2Language;
+const
+  Names: array[TPS2Language] of string = ('auto', 'japanese', 'english', 'french', 'spanish', 'german', 'italian',
+    'dutch', 'portuguese', 'russian');
+begin
+  for var L := Low(TPS2Language) to High(TPS2Language) do
+    if FLanguage = Names[L] then
+      Exit(L);
+  Result := TPS2Language.Auto;
 end;
 
 class function TPS2Config.ExtraKeyName(Extra: TPS2Extra): string;
@@ -286,7 +299,7 @@ begin
   FVideo := Ini.ReadString('System', 'Video', 'auto').ToLower;
   if (FVideo <> 'ntsc') and (FVideo <> 'pal') then
     FVideo := 'auto';
-  FLanguage := Ini.ReadString('System', 'Language', 'english').ToLower;
+  FLanguage := Ini.ReadString('System', 'Language', 'auto').ToLower;
   FRenderer := Ini.ReadString('Video', 'Renderer', 'threads').ToLower;
   FRecompiler := SameText(Ini.ReadString('Emulation', 'Execution', 'interpreter'), 'jit');
   if (FRenderer <> 'single') and (FRenderer <> 'vulkan') then
@@ -329,17 +342,15 @@ end;
 
 { TPS2Worker }
 
-constructor TPS2Worker.Create(const ProgramData, Identity: TBytes; const ProgramName: string; Disc: TDVDImage;
-  Region: TPS2Region; PAL: Boolean; const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string);
+constructor TPS2Worker.Create(const ProgramData, Identity: TBytes; const ProgramName: string;
+  const Base: TPS2ConsoleConfig; const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string);
 begin
   inherited Create(True);
   FreeOnTerminate := False;
   FProgram := Copy(ProgramData);
   FIdentity := Copy(Identity);
   FProgramName := ProgramName;
-  FDisc := Disc;
-  FRegion := Region;
-  FPAL := PAL;
+  FBase := Base;
   FStorage := Storage;
   FSnapshotDirectory := SnapshotDirectory;
   FCardFiles[0] := CardFile1;
@@ -555,7 +566,7 @@ end;
 
 procedure TPS2Worker.Boot;
 begin
-  if FDisc <> nil then
+  if FBase.Disc <> nil then
   begin
     if not FConsole.BootDisc then
       raise EReadError.Create('Not a PlayStation 2 disc');
@@ -603,11 +614,8 @@ begin
   {$ENDIF}
   try
     try
-      var Config := Default(TPS2ConsoleConfig);
-      Config.PAL := FPAL;
-      Config.Disc := FDisc;
-      Config.Region := FRegion;
-      if FDisc = nil then
+      var Config := FBase;
+      if FBase.Disc = nil then
         Config.HostDirectory := ExtractFilePath(FProgramName);
       FConsole := TPS2Console.Create(Config);
       LoadCards;
@@ -929,8 +937,13 @@ procedure TPS2CoreAdapter.Start;
 begin
   if FWorker <> nil then
     Exit;
-  FWorker := TPS2Worker.Create(FProgram, FIdentity, FProgramName, FDisc, FRegion, FPAL, FStorage, FSnapshotDirectory,
-    FCardFiles[0], FCardFiles[1]);
+  var Base := Default(TPS2ConsoleConfig);
+  Base.PAL := FPAL;
+  Base.Disc := FDisc;
+  Base.Region := FRegion;
+  Base.Language := FConfigObject.ConsoleLanguage;
+  FWorker := TPS2Worker.Create(FProgram, FIdentity, FProgramName, Base, FStorage, FSnapshotDirectory, FCardFiles[0],
+    FCardFiles[1]);
   Configure;
   FWorker.Start;
 end;

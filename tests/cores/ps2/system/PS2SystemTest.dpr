@@ -10,9 +10,9 @@ uses
 const
   // The recorded TPS2Console.SerializeState field sizes for this version.
   // A layout change must increase PS2SnapshotVersion and record a new pair.
-  RecordedVersion = 8;
-  RecordedFields = 722;
-  RecordedLayout = '35a0806ba5e2b1cb8cb9cee4fd636096b5f9a98700589ad7ed8aaeecfccf6880';
+  RecordedVersion = 9;
+  RecordedFields = 723;
+  RecordedLayout = 'e0c5015a1e674f5f16b0a1d8c6791243ed33fdea12ad3b1206c622c3439203bb';
 
 procedure Check(Condition: Boolean; const Message: string);
 begin
@@ -133,6 +133,38 @@ begin
     Console.Free;
   end;
   Writeln('Console clock: calendar/leap/BCD, CDVD RPC, IOP cdvdman and memory cards use emulated time: OK');
+end;
+
+// The OSD configuration from the language setting: automatic by region,
+// an explicit language, and Russian as consoles with extended languages
+// report it (English in GetOsdConfigParam, version 2, the language in the
+// second area).
+procedure CheckLanguage;
+
+  procedure Expect(Region: TPS2Region; Language: TPS2Language; Word: Cardinal; Formats, Version, Code: Byte);
+  begin
+    var Config := Default(TPS2ConsoleConfig);
+    Config.Region := Region;
+    Config.Language := Language;
+    var C := TPS2Console.Create(Config);
+    try
+      var Area := C.Kernel.OsdConfig2;
+      Check(C.Kernel.OsdConfig = Word, Format('Language %d: OSD config %.8x, expected %.8x', [Ord(Language),
+        C.Kernel.OsdConfig, Word]));
+      Check((Area[0] = 0) and (Area[1] = Formats) and (Area[2] = Version) and (Area[3] = Code),
+        Format('Language %d: second area %.2x %.2x %.2x %.2x', [Ord(Language), Area[0], Area[1], Area[2], Area[3]]));
+    finally
+      C.Free;
+    end;
+  end;
+
+begin
+  Expect(TPS2Region.Japan, TPS2Language.Auto, 1 shl 13, 0, 0, 0);
+  Expect(TPS2Region.America, TPS2Language.Auto, (1 shl 4) or (1 shl 13) or (1 shl 16), $60, 0, 0);
+  Expect(TPS2Region.Europe, TPS2Language.German, (1 shl 4) or (1 shl 13) or (4 shl 16), $80, 0, 0);
+  Expect(TPS2Region.Japan, TPS2Language.English, (1 shl 4) or (1 shl 13) or (1 shl 16), 0, 0, 0);
+  Expect(TPS2Region.Europe, TPS2Language.Russian, (1 shl 4) or (2 shl 13) or (1 shl 16), $80, 2, 8);
+  Writeln('Language: OSD configuration by region, explicit languages, Russian with version 2: OK');
 end;
 
 function StateBytes(Console: TPS2Console): TBytes;
@@ -670,6 +702,7 @@ end;
 begin
   try
     CheckClock;
+    CheckLanguage;
     CheckSnapshots;
     CheckVIFStall;
     CheckVUBusy;

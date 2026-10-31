@@ -15,8 +15,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections, Core.Snapshots, PS2.Types, PS2.Scheduler,
-  PS2.EE.CPU, PS2.EE.Bus, PS2.DMAC, PS2.SIF;
+  System.SysUtils, System.Classes, System.Math, System.Generics.Collections, Core.Snapshots, PS2.Types,
+  PS2.Scheduler, PS2.EE.CPU, PS2.EE.Bus, PS2.DMAC, PS2.SIF;
 
 const
   KernelTrapInterrupt = 1;
@@ -114,6 +114,7 @@ type
     FCrtMode: Cardinal;
     FCrtInterlace, FCrtField: Cardinal;
     FOsdConfig: Cardinal;
+    FOsdConfig2: array[0..127] of Byte;
     FProgramName: string;
     FArgs: TArray<string>;
     FLineCycles: Int64;
@@ -184,6 +185,10 @@ type
     property CrtInterlace: Cardinal read FCrtInterlace;
     property CrtField: Cardinal read FCrtField;
     property OsdConfig: Cardinal read FOsdConfig write FOsdConfig;
+    // The OSD configuration area of GetOsdConfigParam2 (128 bytes; the
+    // first four: format, date/time format flags, version, language).
+    procedure SetOsdConfig2(const Data: array of Byte);
+    function OsdConfig2: TBytes;
     property OnLoadExec: TPS2LoadExec read FOnLoadExec write FOnLoadExec;
     property OnTTY: TPS2TTYWrite read FOnTTY write FOnTTY;
     property OnCrtChange: TProc read FOnCrtChange write FOnCrtChange;
@@ -323,6 +328,19 @@ end;
 procedure TPS2Kernel.SetLineCycles(Cycles: Int64);
 begin
   FLineCycles := Cycles;
+end;
+
+procedure TPS2Kernel.SetOsdConfig2(const Data: array of Byte);
+begin
+  FillChar(FOsdConfig2, SizeOf(FOsdConfig2), 0);
+  for var K := 0 to Min(High(Data), High(FOsdConfig2)) do
+    FOsdConfig2[K] := Data[K];
+end;
+
+function TPS2Kernel.OsdConfig2: TBytes;
+begin
+  SetLength(Result, Length(FOsdConfig2));
+  Move(FOsdConfig2[0], Result[0], Length(FOsdConfig2));
 end;
 
 function TPS2Kernel.Arg(N: Integer): Cardinal;
@@ -1605,13 +1623,26 @@ begin
         FBus.DMAC.Write($1000C000, FBus.DMAC.Ch[DMASIF0].CHCR and not Cardinal(CHCRSTR));
         Ret(0);
       end;
-    $6F: // GetOsdConfigParam2
+    $6E, $6F: // SetOsdConfigParam2, GetOsdConfigParam2 (buffer, size, offset)
       begin
-        for var K := 0 to Integer(Arg(1)) - 1 do
-          FCPU.WriteVirtual(Arg(0) + Cardinal(K), 1, 0);
+        // Only the part inside the 128-byte area moves.
+        var Offset := Integer(Arg(2));
+        var First := Integer(EnsureRange(Int64(Offset), 0, Length(FOsdConfig2)));
+        var Last := Integer(EnsureRange(Int64(Offset) + Integer(Arg(1)), 0, Length(FOsdConfig2)));
+        for var K := First to Last - 1 do
+        begin
+          var At := Add32(Arg(0), Cardinal((Int64(K) - Offset) and $FFFFFFFF));
+          if Abs(Code) = $6E then
+          begin
+            var V: UInt64 := 0;
+            FCPU.ReadVirtual(At, 1, V);
+            FOsdConfig2[K] := Byte(V);
+          end
+          else
+            FCPU.WriteVirtual(At, 1, FOsdConfig2[K]);
+        end;
         Ret(0);
       end;
-    $6E: Ret(0);
     $70: Ret(Integer(Cardinal(FGsIMR))); // GsGetIMR
     $71: // GsPutIMR
       begin
@@ -1869,6 +1900,7 @@ begin
   State.Field(FCrtInterlace, SizeOf(FCrtInterlace));
   State.Field(FCrtField, SizeOf(FCrtField));
   State.Field(FOsdConfig, SizeOf(FOsdConfig));
+  State.Field(FOsdConfig2, SizeOf(FOsdConfig2));
   State.Field(FLineCycles, SizeOf(FLineCycles));
 end;
 

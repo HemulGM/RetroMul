@@ -82,10 +82,18 @@ coverage/busy counters still include them, so emulated GS timing is unchanged.
 - The console clock (CDVD RPC, IOP `sceCdReadClock` and memory card times)
   starts at 2004-01-01 12:00:00 and advances with emulated time only. Runs
   and snapshots therefore repeat regardless of the host clock.
+- The system language (`System/Language`) goes into the OSD configuration
+  that `GetOsdConfigParam` returns. Automatic is Japanese for the Japan region
+  and English elsewhere. The configuration word carries OSD version 1 and the
+  non-Japanese flag. Russian is reported as consoles with extended languages
+  do it: English in that word, version 2, and Russian in the second area
+  (`GetOsdConfigParam2`, 128 bytes). That area also holds the region's date
+  and time formats.
 
 `tests/cores/ps2/system/build.ps1` checks the clock calendar and every clock
-consumer, exact snapshot round-trips, the old-format and wrong-disc errors,
-and the recorded field layout. A layout change must increase the version.
+consumer, the OSD configuration for each language setting, exact snapshot
+round-trips, the old-format and wrong-disc errors, and the recorded field
+layout. A layout change must increase the version.
 It also checks a VIF1 interrupt-bit stall that fills the FIFO and holds the
 DMA channel until a stall cancel (also across a snapshot), the VU busy
 window, and DMAC stall control with fromSPR as source and VIF1 as drain. It

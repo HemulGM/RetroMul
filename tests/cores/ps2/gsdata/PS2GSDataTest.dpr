@@ -309,6 +309,8 @@ begin
       begin
         B.Threads := 0;
         if N and 1 <> 0 then B.Threads := 4;
+        // (Cases 2, 3, 6, 7: drawing on B's own thread.)
+        B.Async := N and 2 <> 0;
         A.Reset; B.Reset;
         var P := PCardinal(MA.Data);
         for var I := 0 to PS2GSMemorySize div 4 - 1 do P[I] := Cardinal(I) * 1664525 + Cardinal(N) * 1013904223;

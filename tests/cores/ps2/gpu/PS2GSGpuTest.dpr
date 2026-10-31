@@ -17,10 +17,13 @@ begin
   Raster.WriteRegister(GSRegXYZ2, UInt64(V.X) or (UInt64(V.Y) shl 16) or (UInt64(V.Z) shl 32));
 end;
 
-procedure EnableVulkan(Raster: TPS2GSRaster);
+// (-async: drawing on the raster's own thread, unless the test writes GS
+// memory itself between draws: Synchronous.)
+procedure EnableVulkan(Raster: TPS2GSRaster; Synchronous: Boolean = False);
 begin
   if FindCmdLineSwitch('hybrid') then Raster.Threads := 4;
   Raster.Vulkan := True;
+  if FindCmdLineSwitch('async') and not Synchronous then Raster.Async := True;
 end;
 
 procedure CheckClutSnapshots;
@@ -159,9 +162,12 @@ begin
       R.WriteRegister(GSRegPRIM, 3);
     end;
     RandSeed := 61927;
-    for var Threads in TArray<Integer>.Create(2, 4, 6) do
+    // (-4: four bands drawing on the raster's own thread.)
+    for var Threads in TArray<Integer>.Create(2, 4, 6, -4) do
     begin
-      B.Threads := Threads;
+      B.Threads := Abs(Threads);
+      B.Async := Threads < 0;
+      if B.Async <> (Threads < 0) then raise Exception.Create('Async raster unavailable');
       for var N := 0 to 511 do
       begin
         if N and 1 = 0 then SetRoundMode(rmNearest) else SetRoundMode(rmTruncate);
@@ -220,7 +226,7 @@ begin
     B.Sync;
     if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) then
       raise Exception.Create('Coverage VRAM mismatch');
-    Writeln('1536 clipped/subpixel coverage cases, 2/4/6 bands: VRAM and exact counters OK');
+    Writeln('2048 clipped/subpixel coverage cases, 2/4/6 bands, async: VRAM and exact counters OK');
   finally
     A.Free; B.Free;
   end;
@@ -281,16 +287,23 @@ end;
 procedure CheckHybridRenderers;
 begin
   var Baseline: TBytes;
-  for var Mode := 0 to 3 do
+  // Modes 4 and 5: 4 bands with the GPU, or only the raster's thread, drawing
+  // on the raster's own thread.
+  for var Mode := 0 to 5 do
   begin
     var R := TPS2GSRaster.Create;
     try
-      if Mode > 0 then
+      if Mode in [1..4] then
       begin
-        R.Threads := Mode * 2;
+        R.Threads := Min(Mode, 2) * 2;
         R.Vulkan := True;
         if R.VulkanError <> '' then raise Exception.Create(R.VulkanError);
-        if R.Threads <> Mode * 2 then raise Exception.Create('Vulkan discarded fallback workers');
+        if R.Threads <> Min(Mode, 2) * 2 then raise Exception.Create('Vulkan discarded fallback workers');
+      end;
+      if Mode >= 4 then
+      begin
+        R.Async := True;
+        if not R.Async or (R.VulkanError <> '') then raise Exception.Create('Async raster unavailable');
       end;
       R.WriteRegister(GSRegSCISSOR_1, (UInt64(255) shl 16) or (UInt64(255) shl 48));
       R.WriteRegister(GSRegZBUF_1, UInt64(1) shl 32);
@@ -366,12 +379,12 @@ begin
       finally
         Stream.Free;
       end;
-      if (Mode > 0) and (R.VulkanDraws <> 32) then raise Exception.Create('Hybrid draw did not reach GPU');
+      if (Mode in [1..4]) and (R.VulkanDraws <> 32) then raise Exception.Create('Hybrid draw did not reach GPU');
     finally
       R.Free;
     end;
   end;
-  Writeln('GPU / 2/4/6-band fallback ordering, feedback, palettes, transfers and snapshots: OK');
+  Writeln('GPU / 2/4/6-band / async fallback ordering, feedback, palettes, transfers and snapshots: OK');
 end;
 
 procedure CheckPageBarriers;
@@ -619,7 +632,7 @@ begin
   var A := TPS2GSRaster.Create;
   var B := TPS2GSRaster.Create;
   try
-    EnableVulkan(B);
+    EnableVulkan(B, True);
     if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
     var MA := A.Memory;
     var MB := B.Memory;

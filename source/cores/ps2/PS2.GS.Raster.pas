@@ -275,10 +275,17 @@ type
   end;
 
   TPS2GSBands = class;
+  TPS2GSWorker = class;
 
   TPS2GSRaster = class
   private
     FMemory: TPS2GSMemory;
+    // Async: the worker whose raster draws (this one, Shadow, counts the
+    // pixels and transfers and takes the events); whether the memory is this
+    // raster's (the worker's raster shares its front's).
+    FWorker: TPS2GSWorker;
+    FShadow: Boolean;
+    FOwnsMemory: Boolean;
     FOnSignal, FOnFinish: TProc;
     FSignal, FFinish: Boolean;
     FQueue: array[0..2] of TPS2GSVertex;
@@ -382,6 +389,15 @@ type
     procedure TransferPixel(Value: Cardinal);
     procedure LocalToLocal;
     procedure LocalToHost;
+    // The worker's raster: Front's memory and state, no threads or GPU yet.
+    constructor CreateInner(Front: TPS2GSRaster);
+    // The state a snapshot holds, but the memory (shared).
+    procedure CopyStateFrom(Source: TPS2GSRaster);
+    // The raster that draws: the worker's (its queue taken; Synced: and
+    // drawn) or this one.
+    function Drawing(Synced: Boolean = False): TPS2GSRaster;
+    function GetAsync: Boolean;
+    procedure SetAsync(Value: Boolean);
   public
     // Diagnostics: commands queued for the band threads by operation (next
     // to Regs: what the emulation thread writes, away from what bands read).
@@ -415,6 +431,10 @@ type
     // Band threads drawing (0 or 1: none, everything drawn at once on the
     // caller's thread). The memory and timing are the same either way.
     property Threads: Integer read FThreads write SetThreads;
+    // Drawing on a thread of its own (TPS2GSWorker; x64 Windows, no
+    // diagnostics logs): this thread only counts what the timing needs. The
+    // memory, timing and snapshots are the same either way.
+    property Async: Boolean read GetAsync write SetAsync;
     property Vulkan: Boolean read FVulkan write SetVulkan;
     property VulkanError: string read FVulkanError;
     property VulkanDraws: Int64 read GetVulkanDraws;
@@ -503,6 +523,68 @@ type
     procedure WaitFirst(Value: Int64);
   end;
 
+  // The drawing of an Async raster, on a thread of its own: the register
+  // writes and image quadwords the emulation thread's raster took, in order,
+  // for a raster of its own (Inner) sharing the GS memory. A drawing kick
+  // carries the emulation thread's SSE control word (rounding, flush and
+  // denormal modes), which this thread takes for it, so the arithmetic is
+  // the same as on the emulation thread.
+  TPS2GSWorker = class(TThread)
+  private const
+    RingBits = 16;
+    RingSize = 1 shl RingBits;
+    RingMask = RingSize - 1;
+    SpinRounds = 4000;
+    // Entry kinds besides register numbers (0..127).
+    EntryImage = 128;
+    EntrySync = 129;
+    EntryFence = 130;
+  private type
+    TEntry = record
+      Kind: Integer;
+      Csr: Cardinal;
+      case Integer of
+        0: (Value: UInt64);
+        1: (Data: TPS2Reg128);
+    end;
+    PEntry = ^TEntry;
+  private
+    FInner: TPS2GSRaster;
+    FRing: TArray<TEntry>;
+    // The emulation thread's: entries written, published, consumed as last
+    // seen; nothing queued since the last Drain (2: and Inner synced).
+    FWrite, FPublishedHere, FConsumedSeen: Int64;
+    FDrained: Integer;
+    // Entries published (Ready, by the emulation thread) and consumed (Done,
+    // by the worker), each in a cache line of its own.
+    FLines: record
+      Pad0: array[0..7] of Int64;
+      Ready: Int64;
+      Pad1: array[0..7] of Int64;
+      Done: Int64;
+      Pad2: array[0..7] of Int64;
+    end;
+    FSleeping, FMainWaiting, FFailed: Integer;
+    FWake, FProgress: TEvent;
+    FFailure: string;
+    function Slot: PEntry;
+    procedure Publish;
+    procedure WaitConsumed(Value: Int64);
+    procedure Fail(const Message: string);
+    procedure CheckFailed;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(Inner: TPS2GSRaster);
+    destructor Destroy; override;
+    procedure PutRegister(Index: Integer; Value: UInt64);
+    procedure PutImage(const Data: TPS2Reg128);
+    // Waits until Inner has taken everything queued (Synced: and drawn it,
+    // its Sync).
+    procedure Drain(Synced: Boolean);
+    property Inner: TPS2GSRaster read FInner;
+  end;
+
 // A pixel's LOD from its Q (as the host rounds): log2(1/Q) * 2^L + K (GS
 // User's Manual, texture mapping), or K alone with LCM.
 function PixelLod(const D: TPS2GSDraw; Q: Single): Single;
@@ -541,6 +623,40 @@ procedure SetDrawerRounding(Mode: TRoundingMode);
 begin
   SetExceptionMask(exAllArithmeticExceptions);
   SetRoundMode(Mode);
+end;
+{$ENDIF}
+
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+const
+  GSAsyncSupported = True;
+
+// This thread's SSE control word: MXCSR without its status flags.
+function HostControlWord: Cardinal;
+asm
+  .NOFRAME
+  stmxcsr [rsp + 8]
+  mov eax, [rsp + 8]
+  and eax, $FFC0
+end;
+
+// Loads Value into this thread's MXCSR only (not the RTL's DefaultMXCSR).
+procedure LoadHostControlWord(Value: Cardinal);
+asm
+  .NOFRAME
+  mov [rsp + 8], ecx
+  ldmxcsr [rsp + 8]
+end;
+{$ELSE}
+const
+  GSAsyncSupported = False;
+
+function HostControlWord: Cardinal;
+begin
+  Result := 0;
+end;
+
+procedure LoadHostControlWord(Value: Cardinal);
+begin
 end;
 {$ENDIF}
 
@@ -618,11 +734,105 @@ constructor TPS2GSRaster.Create;
 begin
   inherited Create;
   FMemory := TPS2GSMemory.Create;
+  FOwnsMemory := True;
   FDrawer := TPS2GSDrawer.Create(Self, 0, 1, False);
   FCounter := TPS2GSDrawer.Create(Self, 0, 1, True);
   FClutSlot := -1;
   WatchX := -1;
   Reset;
+end;
+
+constructor TPS2GSRaster.CreateInner(Front: TPS2GSRaster);
+begin
+  inherited Create;
+  FMemory := Front.FMemory;
+  FDrawer := TPS2GSDrawer.Create(Self, 0, 1, False);
+  FCounter := TPS2GSDrawer.Create(Self, 0, 1, True);
+  FClutSlot := -1;
+  WatchX := -1;
+  CopyStateFrom(Front);
+end;
+
+procedure TPS2GSRaster.CopyStateFrom(Source: TPS2GSRaster);
+begin
+  Regs := Source.Regs;
+  SigLblId := Source.SigLblId;
+  FSignal := Source.FSignal;
+  FFinish := Source.FFinish;
+  FQueue := Source.FQueue;
+  FQueueCount := Source.FQueueCount;
+  FStripIndex := Source.FStripIndex;
+  FCurrent := Source.FCurrent;
+  FQ := Source.FQ;
+  FClut := Source.FClut;
+  FCBP0 := Source.FCBP0;
+  FCBP1 := Source.FCBP1;
+  FXferActive := Source.FXferActive;
+  FXferX := Source.FXferX;
+  FXferY := Source.FXferY;
+  FXferBits := Source.FXferBits;
+  FXferBitCount := Source.FXferBitCount;
+  FReadBuffer := Copy(Source.FReadBuffer);
+  FReadPos := Source.FReadPos;
+  FClutChanged := True;
+  FXferGPURevision := -1;
+end;
+
+function TPS2GSRaster.Drawing(Synced: Boolean): TPS2GSRaster;
+begin
+  Result := Self;
+  if FWorker <> nil then
+  begin
+    FWorker.Drain(Synced);
+    Result := FWorker.Inner;
+  end;
+end;
+
+function TPS2GSRaster.GetAsync: Boolean;
+begin
+  Result := FWorker <> nil;
+end;
+
+procedure TPS2GSRaster.SetAsync(Value: Boolean);
+begin
+  if not GSAsyncSupported or (PrimLog <> nil) or (TransferLog <> nil) or (WatchX >= 0) then
+    Value := False;
+  if Value = (FWorker <> nil) then
+    Exit;
+  var Threads := FThreads;
+  var Vulkan := FVulkan;
+  if Value then
+  begin
+    // The worker's raster takes over the drawing (the state, the band
+    // threads and the GPU as set here, which this raster lets go).
+    Sync;
+    SetVulkan(False);
+    SetThreads(0);
+    var Inner := TPS2GSRaster.CreateInner(Self);
+    Inner.Threads := Threads;
+    Inner.Vulkan := Vulkan;
+    FWorker := TPS2GSWorker.Create(Inner);
+    FShadow := True;
+    FThreads := Threads;
+    FVulkan := Vulkan;
+    FVulkanError := Inner.FVulkanError;
+  end
+  else
+  begin
+    // Back here: the CLUT the worker's raster loaded (the rest is the same
+    // on both, or this raster's).
+    var Inner := Drawing(True);
+    FClut := Inner.FClut;
+    FCBP0 := Inner.FCBP0;
+    FCBP1 := Inner.FCBP1;
+    FClutChanged := True;
+    FreeAndNil(FWorker);
+    FShadow := False;
+    FThreads := 0;
+    FVulkan := False;
+    SetThreads(Threads);
+    SetVulkan(Vulkan);
+  end;
 end;
 
 function TPS2GSAccelerator.Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex;
@@ -649,59 +859,75 @@ end;
 
 destructor TPS2GSRaster.Destroy;
 begin
+  FWorker.Free;
   FBands.Free;
   FAccelerator.Free;
   FCounter.Free;
   FDrawer.Free;
-  FMemory.Free;
+  if FOwnsMemory then
+    FMemory.Free;
   inherited;
 end;
 
 function TPS2GSRaster.GetVulkanDraws: Int64;
 begin
   Result := 0;
-  if FAccelerator <> nil then
-    Result := TPS2GSGpu(FAccelerator).Draws;
+  var R := Drawing;
+  if R.FAccelerator <> nil then
+    Result := TPS2GSGpu(R.FAccelerator).Draws;
 end;
 
 function TPS2GSRaster.GetVulkanSubmissions: Int64;
 begin
   Result := 0;
-  if FAccelerator <> nil then
-    Result := TPS2GSGpu(FAccelerator).Submissions;
+  var R := Drawing;
+  if R.FAccelerator <> nil then
+    Result := TPS2GSGpu(R.FAccelerator).Submissions;
 end;
 
 function TPS2GSRaster.GetVulkanTexturedDraws: Int64;
 begin
   Result := 0;
-  if FAccelerator <> nil then
-    Result := TPS2GSGpu(FAccelerator).TexturedDraws;
+  var R := Drawing;
+  if R.FAccelerator <> nil then
+    Result := TPS2GSGpu(R.FAccelerator).TexturedDraws;
 end;
 
 function TPS2GSRaster.GetVulkanTriangles: Int64;
 begin
   Result := 0;
-  if FAccelerator <> nil then
-    Result := TPS2GSGpu(FAccelerator).Triangles;
+  var R := Drawing;
+  if R.FAccelerator <> nil then
+    Result := TPS2GSGpu(R.FAccelerator).Triangles;
 end;
 
 function TPS2GSRaster.GetVulkanRasterizedTriangles: Int64;
 begin
   Result := 0;
-  if FAccelerator <> nil then
-    Result := TPS2GSGpu(FAccelerator).RasterizedTriangles;
+  var R := Drawing;
+  if R.FAccelerator <> nil then
+    Result := TPS2GSGpu(R.FAccelerator).RasterizedTriangles;
 end;
 
 function TPS2GSRaster.GetVulkanTriangleDispatches: Int64;
 begin
   Result := 0;
-  if FAccelerator <> nil then
-    Result := TPS2GSGpu(FAccelerator).TriangleDispatches;
+  var R := Drawing;
+  if R.FAccelerator <> nil then
+    Result := TPS2GSGpu(R.FAccelerator).TriangleDispatches;
 end;
 
 procedure TPS2GSRaster.SetVulkan(Value: Boolean);
 begin
   if Value = FVulkan then Exit;
+  if FWorker <> nil then
+  begin
+    var Inner := Drawing;
+    Inner.Vulkan := Value;
+    FVulkan := Value;
+    FVulkanError := Inner.FVulkanError;
+    Exit;
+  end;
   Sync;
   FreeAndNil(FAccelerator);
   FVulkan := Value;
@@ -728,6 +954,12 @@ begin
     Value := 0;
   if Value = FThreads then
     Exit;
+  if FWorker <> nil then
+  begin
+    Drawing.Threads := Value;
+    FThreads := Value;
+    Exit;
+  end;
   Sync;
   FreeAndNil(FBands);
   FThreads := Value;
@@ -753,6 +985,12 @@ end;
 
 procedure TPS2GSRaster.Sync;
 begin
+  if FWorker <> nil then
+  begin
+    // (And the worker's diagnostics counts, here.)
+    QueuedOps := Drawing(True).QueuedOps;
+    Exit;
+  end;
   if (FAccelerator <> nil) and FAccelerator.Pending then
     FAccelerator.Sync;
   SyncSoftware;
@@ -1601,6 +1839,21 @@ end;
 
 procedure TPS2GSRaster.Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex);
 begin
+  if FShadow then
+  begin
+    // The worker's raster draws it; here only its pixels, for the timing.
+    Inc(FPrimitives);
+    FCommand.Kind := Kind;
+    FCommand.Clut := -1;
+    FCommand.D := FD;
+    FCommand.V[0] := V0;
+    FCommand.V[1] := V1;
+    FCommand.V[2] := V2;
+    var Counted := FCounter.PixelsDrawn;
+    FCounter.Draw(FCommand);
+    Inc(FPixels, FCounter.PixelsDrawn - Counted);
+    Exit;
+  end;
   // CPU primitives must see all earlier GPU writes. Sprites decide after
   // clipping whether they can join the batch or need the software path.
   if (FAccelerator <> nil) and (not (Kind in [gpSprite, gpTriangle]) or (PrimLog <> nil) or (WatchX >= 0)) then
@@ -1706,6 +1959,8 @@ end;
 procedure TPS2GSRaster.Reset;
 begin
   Sync;
+  if FWorker <> nil then
+    FWorker.Inner.Reset;
   FXferGPURevision := -1;
   FillChar(Regs, SizeOf(Regs), 0);
   FSignal := False;
@@ -1753,6 +2008,8 @@ end;
 procedure TPS2GSRaster.WriteRegister(Index: Integer; Value: UInt64);
 begin
   Index := Index and $7F;
+  if FWorker <> nil then
+    FWorker.PutRegister(Index, Value);
   if PrimLog <> nil then
     LogRegister(Index, Value);
   // Queued transferred pixels go with the transfer registers they came with.
@@ -2964,6 +3221,9 @@ end;
 
 procedure TPS2GSRaster.LoadClut(Tex0: UInt64);
 begin
+  // (Async: the worker's raster loads it.)
+  if FShadow then
+    Exit;
   var CLD := Integer((Tex0 shr 61) and 7);
   var CBP := Cardinal((Tex0 shr 37) and $3FFF);
   case CLD of
@@ -3196,7 +3456,9 @@ begin
     FXferActive := False;
     Exit;
   end;
-  if FQueueXfer and (FPending or (FXferRunCount > 0)) then
+  if FShadow then
+    // (Written by the worker's raster.)
+  else if FQueueXfer and (FPending or (FXferRunCount > 0)) then
   begin
     // Drawing is queued: the pixels follow it, through the ring.
     if FXferRunCount = 0 then
@@ -3283,6 +3545,28 @@ end;
 
 procedure TPS2GSRaster.WriteImage(const Data: TPS2Reg128);
 begin
+  if FWorker <> nil then
+  begin
+    FWorker.PutImage(Data);
+    // Where the transfer is, for whole quadwords of the common formats at
+    // once (as FeedWord would leave it); the rest below.
+    if FXferActive and (FXferBitCount = 0) and (FXferBits = 0) then
+    begin
+      var Bits := TransferBits(Cardinal((Regs[GSRegBITBLTBUF] shr 56) and $3F));
+      var Width := Integer(Regs[GSRegTRXREG] and $FFF);
+      var Height := Integer((Regs[GSRegTRXREG] shr 32) and $FFF);
+      if (Bits <> 24) and (Width > 0) and (Height > 0) and (FXferX >= 0) and (FXferX < Width) and
+        (FXferY >= 0) and (FXferY < Height) and (Int64(Height - FXferY) * Width - FXferX >= 128 div Bits) then
+      begin
+        Inc(FXferPixels, 128 div Bits);
+        Inc(FXferX, 128 div Bits);
+        Inc(FXferY, FXferX div Width);
+        FXferX := FXferX mod Width;
+        FXferActive := FXferY < Height;
+        Exit;
+      end;
+    end;
+  end;
   // IMAGE supplies a complete quadword. Unpack ordinary integer formats
   // directly into the software ring, keeping reservation, row progression
   // and barriers per chunk instead of repeating them for 4..32 pixels.
@@ -3329,6 +3613,8 @@ end;
 
 procedure TPS2GSRaster.LocalToLocal;
 begin
+  if FShadow then
+    Exit;
   // The first CPU worker can start the copy as soon as it is published.
   // Its source/destination may alias deferred GPU work, so finish that work
   // even when ordinary software drawing remains queued on the workers.
@@ -3379,6 +3665,13 @@ end;
 
 procedure TPS2GSRaster.LocalToHost;
 begin
+  if FShadow then
+  begin
+    // The worker's raster read it, after drawing everything before.
+    FReadBuffer := Drawing.FReadBuffer;
+    FReadPos := 0;
+    Exit;
+  end;
   Sync;
   var Buf := Regs[GSRegBITBLTBUF];
   var Pos := Regs[GSRegTRXPOS];
@@ -3433,6 +3726,14 @@ end;
 procedure TPS2GSRaster.SerializeState(State: TStateArchive);
 begin
   Sync;
+  if (FWorker <> nil) and not State.Loading then
+  begin
+    // The CLUT is the worker's raster's (as its Sync left it).
+    FClut := FWorker.Inner.FClut;
+    FCBP0 := FWorker.Inner.FCBP0;
+    FCBP1 := FWorker.Inner.FCBP1;
+    FWorker.Inner.FClutChanged := True;
+  end;
   State.Field(Regs, SizeOf(Regs));
   State.Field(SigLblId, SizeOf(SigLblId));
   State.Field(FSignal, SizeOf(FSignal));
@@ -3459,6 +3760,8 @@ begin
   State.Field(FReadPos, SizeOf(FReadPos));
   State.Field(FMemory.Data^, PS2GSMemorySize);
   FClutChanged := True;
+  if (FWorker <> nil) and State.Loading then
+    FWorker.Inner.CopyStateFrom(Self);
 end;
 
 { TPS2GSBands }
@@ -3742,6 +4045,191 @@ end;
 procedure TPS2GSBands.WaitFor(Position: Int64);
 begin
   WaitConsumed(Position);
+end;
+
+{ TPS2GSWorker }
+
+constructor TPS2GSWorker.Create(Inner: TPS2GSRaster);
+begin
+  FInner := Inner;
+  SetLength(FRing, RingSize);
+  FWake := TEvent.Create(nil, False, False, '');
+  FProgress := TEvent.Create(nil, False, False, '');
+  FDrained := 2;
+  inherited Create(False);
+end;
+
+destructor TPS2GSWorker.Destroy;
+begin
+  Terminate;
+  FWake.SetEvent;
+  inherited;
+  FInner.Free;
+  FWake.Free;
+  FProgress.Free;
+end;
+
+procedure TPS2GSWorker.Execute;
+begin
+  var Csr := HostControlWord;
+  var Position: Int64 := 0;
+  while not Terminated do
+  begin
+    var Spins := 0;
+    while (FLines.Ready <= Position) and not Terminated do
+    begin
+      if Spins < SpinRounds then
+      begin
+        Inc(Spins);
+        YieldProcessor;
+        Continue;
+      end;
+      TInterlocked.Exchange(FSleeping, 1);
+      if (FLines.Ready <= Position) and not Terminated then
+        FWake.WaitFor(INFINITE);
+      TInterlocked.Exchange(FSleeping, 0);
+      Spins := 0;
+    end;
+    if Terminated then
+      Break;
+    var Last := FLines.Ready;
+    while Position < Last do
+    begin
+      var E: PEntry := @FRing[Position and RingMask];
+      try
+        case E.Kind of
+          EntryImage:
+            FInner.WriteImage(E.Data);
+          EntrySync:
+            FInner.Sync;
+          EntryFence: ;
+          GSRegXYZF2, GSRegXYZ2, GSRegXYZF3, GSRegXYZ3:
+            begin
+              if E.Csr <> Csr then
+              begin
+                Csr := E.Csr;
+                LoadHostControlWord(Csr);
+              end;
+              FInner.WriteRegister(E.Kind, E.Value);
+            end;
+        else
+          FInner.WriteRegister(E.Kind, E.Value);
+        end;
+        {$IFDEF PS2_CHECKED}
+        if HostControlWord <> Csr then
+          raise Exception.Create('GS worker host control word changed');
+        {$ENDIF}
+      except
+        on X: Exception do
+          Fail(X.Message);
+      end;
+      Inc(Position);
+      TInterlocked.Exchange(FLines.Done, Position);
+      if FMainWaiting <> 0 then
+        FProgress.SetEvent;
+    end;
+  end;
+end;
+
+procedure TPS2GSWorker.Fail(const Message: string);
+begin
+  if TInterlocked.CompareExchange(FFailed, 2, 0) = 0 then
+  begin
+    FFailure := Message;
+    TInterlocked.Exchange(FFailed, 1);
+  end;
+end;
+
+procedure TPS2GSWorker.CheckFailed;
+begin
+  if TInterlocked.CompareExchange(FFailed, 0, 0) = 1 then
+    raise Exception.Create('GS worker thread: ' + FFailure);
+end;
+
+// The next entry (waits for room; published entries only are drawn).
+function TPS2GSWorker.Slot: PEntry;
+begin
+  if FWrite - FConsumedSeen >= RingSize then
+  begin
+    Publish;
+    WaitConsumed(FWrite + 1 - RingSize);
+  end;
+  Result := @FRing[FWrite and RingMask];
+end;
+
+procedure TPS2GSWorker.Publish;
+begin
+  if FPublishedHere = FWrite then
+    Exit;
+  FPublishedHere := FWrite;
+  TInterlocked.Exchange(FLines.Ready, FWrite);
+  if FSleeping <> 0 then
+    FWake.SetEvent;
+end;
+
+procedure TPS2GSWorker.WaitConsumed(Value: Int64);
+begin
+  var Spins := 0;
+  while TInterlocked.Read(FLines.Done) < Value do
+  begin
+    if Spins < SpinRounds then
+    begin
+      Inc(Spins);
+      YieldProcessor;
+      Continue;
+    end;
+    TInterlocked.Exchange(FMainWaiting, 1);
+    if TInterlocked.Read(FLines.Done) < Value then
+      FProgress.WaitFor(5);
+    TInterlocked.Exchange(FMainWaiting, 0);
+  end;
+  FConsumedSeen := TInterlocked.Read(FLines.Done);
+  CheckFailed;
+end;
+
+procedure TPS2GSWorker.PutRegister(Index: Integer; Value: UInt64);
+begin
+  var E := Slot;
+  E.Kind := Index;
+  E.Value := Value;
+  Inc(FWrite);
+  FDrained := 0;
+  // A kick may draw: with this thread's control word, and drawn soon.
+  if (Index = GSRegXYZF2) or (Index = GSRegXYZ2) or (Index = GSRegXYZF3) or (Index = GSRegXYZ3) then
+  begin
+    E.Csr := HostControlWord;
+    Publish;
+  end
+  else if FWrite - FPublishedHere >= 64 then
+    Publish;
+end;
+
+procedure TPS2GSWorker.PutImage(const Data: TPS2Reg128);
+begin
+  var E := Slot;
+  E.Kind := EntryImage;
+  E.Data := Data;
+  Inc(FWrite);
+  FDrained := 0;
+  if FWrite - FPublishedHere >= 64 then
+    Publish;
+end;
+
+procedure TPS2GSWorker.Drain(Synced: Boolean);
+begin
+  if FDrained >= 1 + Ord(Synced) then
+    Exit;
+  var E := Slot;
+  E.Kind := EntryFence;
+  if Synced then
+    E.Kind := EntrySync;
+  Inc(FWrite);
+  Publish;
+  WaitConsumed(FWrite);
+  if Synced then
+    FDrained := 2
+  else if FDrained = 0 then
+    FDrained := 1;
 end;
 
 end.

@@ -13,7 +13,7 @@ of the picture wrongly.
 | `PS2.Types`, `PS2.Scheduler` | Constants, 128-bit registers, checked arithmetic helpers, the event scheduler in EE cycles |
 | `PS2.EE.CPU`, `PS2.EE.Bus` | R5900 block interpreter (MMI, COP0, FPU with the PS2 float range, COP2 macro mode) and its experimental recompiler (`PS2.EE.Jit.inc`), EE memory map, INTC |
 | `PS2.Timers`, `PS2.DMAC`, `PS2.SIF` | EE timers, DMA controller (chain/interleave/MFIFO, stall control through D_STADR), SIF registers and the SIF command/RPC protocol |
-| `PS2.GS`, `PS2.GS.Memory`, `PS2.GS.Raster`, `PS2.GIF` | GS registers, swizzled local memory, software rasterizer (on the emulation thread or in band threads), GIF paths |
+| `PS2.GS`, `PS2.GS.Memory`, `PS2.GS.Raster`, `PS2.GIF` | GS registers, swizzled local memory, software rasterizer (on the emulation thread or in band threads, its front end optionally on a thread of its own), GIF paths |
 | `PS2.VU`, `PS2.VU.Float`, `PS2.VIF` | VU0/VU1 micro mode, the PS2 float product and sum for one or four fields (SSE2 on Win64, checked against the one-field routines by `tests/cores/ps2/vufloat/build.ps1`), VIF0/VIF1 command processing, interrupt-bit/STOP/force-break stalls with the FIFO held (8/16 quadwords), VU busy windows |
 | `PS2.IPU` | IPU MPEG decoder (BDEC/IDEC/VDEC/FDEC/CSC/PACK, FIFOs on DMA channels 3/4) |
 | `PS2.Kernel`, `PS2.ELF` | High-level EE kernel (threads, semaphores, interrupts, alarms, SIF DMA, syscall table) and ELF loading |
@@ -62,6 +62,24 @@ threads touch in commands no barrier orders.
 The timing counter counts exact covered row spans without shading a second
 copy of every pixel. Software pixels rejected by depth skip texture reads;
 coverage/busy counters still include them, so emulated GS timing is unchanged.
+
+With `TPS2GSRaster.Async` (the front end sets it for the multithreaded and
+Vulkan renderers on hosts with four or more logical processors; x64 Windows)
+the GS front end runs on a thread of its own as well (`TPS2GSWorker`). The
+emulation thread's raster keeps the registers, assembles primitives, counts
+their pixels and transfer progress for the timing and raises SIGNAL/FINISH,
+and queues every register write and IMAGE quadword in order. A second raster
+on the worker thread, sharing the GS memory, replays them: CLUT loads,
+transfers, routing between the GPU and the band threads, their barriers and
+waits. Each vertex kick carries the emulation thread's SSE control word
+(rounding, flush-to-zero, denormals-are-zero), which the worker loads before
+drawing, so the arithmetic matches the emulation thread's. The emulation
+thread waits for the worker only when it reads GS memory (the display at
+VBlank, local-to-host transfers, snapshots) or changes the renderer. Frames,
+snapshots and timing are identical with and without it; diagnostics logs
+(primitive, transfer, watched pixel) keep everything on the emulation thread.
+`tests/cores/ps2/gsdata` and `tests/cores/ps2/gpu` (also with `-Async`) cover
+the asynchronous raster against the synchronous one.
 
 ## What works
 

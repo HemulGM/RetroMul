@@ -49,11 +49,15 @@ type
     function ConsoleLanguage: TPS2Language;
     // GS drawing (Video/Renderer): 'threads' (default: band threads beside
     // the emulation), 'single' (on the emulation thread), or experimental
-    // 'vulkan' (supported sprites/triangle pixels on the GPU, other draws on the CPU).
+    // 'vulkan' (supported sprites/triangle pixels on the GPU, other draws on
+    // the band threads). But for 'single' the GS front end runs on a thread
+    // of its own (TPS2GSRaster.Async) on hosts with four logical processors.
     property Renderer: string read FRenderer write FRenderer;
     property Recompiler: Boolean read FRecompiler write FRecompiler;
-    // Band threads for Renderer (0: none).
+    // Band threads for Renderer (0: none; Vulkan's CPU fallbacks use them
+    // too), and whether the GS draws on a thread of its own (not 'single').
     function GSThreads: Integer;
+    function GSAsync: Boolean;
     property Keys: TPS2KeyMap read FKeys;
   end;
 
@@ -96,6 +100,7 @@ type
     FPause, FReset, FAvailable, FAudioEnabled: Boolean;
     FVolume: Single;
     FGSThreads: Integer;
+    FGSAsync: Boolean;
     FRecompiler: Boolean;
     FVulkan: Boolean;
     FAudio: TPS2AudioPlayback;
@@ -125,7 +130,7 @@ type
       const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string);
     destructor Destroy; override;
     procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
-      Recompiler, Vulkan: Boolean);
+      GSAsync, Recompiler, Vulkan: Boolean);
     procedure RequestReset;
     procedure StopAndSave;
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -273,8 +278,13 @@ function TPS2Config.GSThreads: Integer;
 begin
   Result := 0;
   // One per two logical processors (the emulation keeps one), 2..8.
-  if FRenderer = 'threads' then
+  if FRenderer <> 'single' then
     Result := EnsureRange(TThread.ProcessorCount div 2, 2, 8);
+end;
+
+function TPS2Config.GSAsync: Boolean;
+begin
+  Result := (FRenderer <> 'single') and (TThread.ProcessorCount >= 4);
 end;
 
 function TPS2Config.ConsoleLanguage: TPS2Language;
@@ -381,7 +391,7 @@ begin
 end;
 
 procedure TPS2Worker.Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
-  Recompiler, Vulkan: Boolean);
+  GSAsync, Recompiler, Vulkan: Boolean);
 begin
   var Wake: Boolean;
   FLock.Acquire;
@@ -392,6 +402,7 @@ begin
     FAudioEnabled := AudioEnabled;
     FVolume := EnsureRange(Volume, 0.0, 1.0);
     FGSThreads := GSThreads;
+    FGSAsync := GSAsync;
     FRecompiler := Recompiler;
     FVulkan := Vulkan;
   finally
@@ -654,7 +665,7 @@ begin
         var Volume: Single;
         var Inputs: TPS2PadInputs;
         var GSThreads: Integer;
-        var Recompiler, Vulkan: Boolean;
+        var GSAsync, Recompiler, Vulkan: Boolean;
         FLock.Acquire;
         try
           Paused := FPause;
@@ -664,6 +675,7 @@ begin
           Enabled := FAudioEnabled;
           Volume := FVolume;
           GSThreads := FGSThreads;
+          GSAsync := FGSAsync;
           Recompiler := FRecompiler;
           Vulkan := FVulkan;
         finally
@@ -671,6 +683,7 @@ begin
         end;
         FConsole.GS.Raster.Vulkan := Vulkan;
         FConsole.GS.Raster.Threads := GSThreads;
+        FConsole.GS.Raster.Async := GSAsync;
         FConsole.VU1.Core.UseJit := Recompiler;
         FConsole.VU0.Core.UseJit := Recompiler;
         FConsole.CPU.UseJit := Recompiler;
@@ -1058,7 +1071,7 @@ begin
       Inputs[Port].Pressure[K] := 0;
   end;
   FWorker.Configure(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume, FConfigObject.GSThreads,
-    FConfigObject.Recompiler, FConfigObject.Renderer = 'vulkan');
+    FConfigObject.GSAsync, FConfigObject.Recompiler, FConfigObject.Renderer = 'vulkan');
 end;
 
 procedure TPS2CoreAdapter.Start;

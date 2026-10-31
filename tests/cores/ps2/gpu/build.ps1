@@ -1,4 +1,4 @@
-﻿param([string]$Out = 'D:\Work\tmp\ps2-gpu-test', [switch]$Checked, [switch]$Hybrid)
+﻿param([string]$Out = 'D:\Work\tmp\ps2-gpu-test', [switch]$Checked, [switch]$Hybrid, [switch]$Async)
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path "$PSScriptRoot\..\..\..\..").Path
 $studio = 'C:\Program Files (x86)\Embarcadero\Studio\37.0'
@@ -12,5 +12,6 @@ if ($Checked) { $flags += @('-DPS2_CHECKED', '-$Q+', '-$R+') }
 if ($LASTEXITCODE -ne 0) { throw 'build failed' }
 $testArgs = @()
 if ($Hybrid) { $testArgs += '-hybrid' }
+if ($Async) { $testArgs += '-async' }
 & "$Out\PS2GSGpuTest.exe" @testArgs
 if ($LASTEXITCODE -ne 0) { throw 'GPU differential test failed' }

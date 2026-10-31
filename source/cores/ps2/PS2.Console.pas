@@ -14,7 +14,7 @@ uses
 const
   // Serialized layout of TPS2Console.SerializeState. Increase it with every
   // layout change; tests/cores/ps2/system checks the recorded field layout.
-  PS2SnapshotVersion = 5;
+  PS2SnapshotVersion = 6;
 
 type
   TPS2ConsoleConfig = record

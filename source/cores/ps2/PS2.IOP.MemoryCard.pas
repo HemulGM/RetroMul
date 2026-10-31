@@ -1,8 +1,9 @@
 ﻿unit PS2.IOP.MemoryCard;
 
-// Memory cards at the file level: each card is a tree of directories and
-// files kept in memory (TPS2MemoryCard, saved by the front end as one file)
-// and a high-level MCSERV/XMCSERV RPC server (SID 80000400h) for libmc. It
+// Memory cards: each card is its flash with the PS2 card file system on it
+// (TPS2MemoryCard, saved by the front end as one file), and a high-level
+// MCSERV/XMCSERV RPC server (SID 80000400h) for libmc working on that file
+// system. It
 // takes both function sets (70h..80h of MCSERV, 01h..15h, 33h and FEh of
 // XMCSERV), the parameter blocks libmc sends and the result block it reads
 // (result, MCSERV and MCMAN versions), and behaves as MCMAN does on a
@@ -11,11 +12,10 @@
 // ('.' and '..' except in the root) with '*' and '?' patterns, a file
 // created over an existing one replaces it, and file times come from the
 // console clock.
-// Games that bring their own card driver (MCMAN/XMCMAN over SIO2) see the
-// card as flash memory instead (TPS2CardLink): 16384 pages of 512 bytes
-// with 16 spare bytes for ECC, erased in blocks of 16 pages, which the card
-// file keeps next to the file tree (the two views are separate). It is
-// created formatted and empty the first time a driver talks to the card.
+// Games that bring their own card driver (MCMAN/XMCMAN over SIO2) reach the
+// same flash page by page (TPS2CardLink): 16384 pages of 512 bytes with 16
+// spare bytes for ECC, erased in blocks of 16 pages. A new card is
+// formatted and empty.
 // References: ps2sdk libmc, mcserv and mcman (AFL 2.0; interface, data
 // layouts, result codes, the file system structures and the card command
 // set), ps2tek (SIO2 PS2 memory card commands, superblock).
@@ -30,8 +30,10 @@ uses
 
 const
   PS2MCServerSID = $80000400;
-  PS2MemoryCardMagic: array[0..7] of AnsiChar = 'RMPS2MC2';
+  PS2MemoryCardMagic: array[0..7] of AnsiChar = 'RMPS2MC3';
+  PS2MemoryCardMagic2: array[0..7] of AnsiChar = 'RMPS2MC2';
   PS2MemoryCardMagic1: array[0..7] of AnsiChar = 'RMPS2MC1';
+  PS2CardNoCluster = $FFFFFFFF;
   // The card as flash: pages of data and spare bytes, erase blocks.
   PS2CardPageSize = 512;
   PS2CardSpareSize = 16;
@@ -41,43 +43,75 @@ const
   PS2CardFlashSize = PS2CardPages * PS2CardRawPage;
 
 type
-  TPS2MemoryCardEntry = class
-  public
-    Data: TBytes;
-    IsDirectory: Boolean;
+  // A directory entry of the card's file system (512 bytes on the card):
+  // where it is (the first cluster of its directory and its index there)
+  // and its fields. Clusters count from the first allocatable one; a file
+  // without data has no cluster (PS2CardNoCluster).
+  TPS2CardEntry = record
+    DirCluster: Cardinal;
+    Index: Integer;
+    Mode: Word;
+    Length: Cardinal;
     // sceMcStDateTime: unused, second, minute, hour, day, month, year (16).
     Created, Modified: UInt64;
-    // Mode bits (sceMcFileAttr*) and the attribute word.
-    Mode: Word;
-    Attr: Cardinal;
-    // Creation sequence: the order directories list in.
-    Order: Int64;
+    Cluster, DirEntry, Attr: Cardinal;
+    Name: string;
+    function IsDirectory: Boolean;
+    function Exists: Boolean;
   end;
 
-  // A card's contents: absolute paths without the leading '/' ('' is the
-  // root), case-sensitive like the card's file system.
+  // A card: its flash (16384 pages of 512 data and 16 spare bytes) and the
+  // PS2 card file system on it, as MCMAN formats and keeps it (superblock,
+  // indirect FAT, FAT, directories of 512-byte entries in 1 KB clusters).
+  // The high-level MCSERV works on the file system and card drivers over
+  // SIO2 on the pages: both see the same card. Paths are absolute without
+  // the leading '/' ('' is the root) and case-sensitive.
   TPS2MemoryCard = class
   private
-    FEntries: TObjectDictionary<string, TPS2MemoryCardEntry>;
-    FNextOrder: Int64;
+    FMounted, FFormatted: Boolean;
+    FAllocOffset, FIndirect, FMaxClusters: Cardinal;
+    procedure Mount;
+    function Ptr(Cluster: Cardinal; Offset: Integer): PByte;
+    procedure ReadBytes(Cluster: Cardinal; Offset: Integer; Dest: PByte; Count: Integer);
+    procedure WriteBytes(Cluster: Cardinal; Offset: Integer; Src: PByte; Count: Integer);
+    function FAT(N: Cardinal): Cardinal;
+    procedure SetFAT(N, Value: Cardinal);
+    function Chain(First: Cardinal): TArray<Cardinal>;
+    function Allocate: Cardinal;
+    procedure FreeChain(First: Cardinal);
+    function ReadEntry(DirCluster: Cardinal; Index: Integer): TPS2CardEntry;
+    function DirLength(DirCluster: Cardinal): Integer;
+    procedure SetDirLength(DirCluster: Cardinal; Count: Integer);
+    function FindIn(DirCluster: Cardinal; const Name: string; out E: TPS2CardEntry): Boolean;
+    function NewEntry(DirCluster: Cardinal; out E: TPS2CardEntry): Boolean;
+    procedure LoadLegacy(S: TStream; V2: Boolean);
   public
     Dirty: Boolean;
-    // The card as flash pages (PS2CardRawPage bytes each) for drivers that
-    // talk to it over SIO2; empty until one does.
     Flash: TBytes;
     constructor Create;
-    destructor Destroy; override;
+    // A formatted empty card (time 0).
     procedure Clear;
-    // Flash holding a freshly formatted card without files.
+    // Formats the flash as MCMAN does, created at Time.
     procedure FormatFlash(Time: UInt64);
-    function Find(const Path: string): TPS2MemoryCardEntry;
-    function Add(const Path: string; Directory: Boolean; Time: UInt64): TPS2MemoryCardEntry;
-    procedure Remove(const Path: string);
-    procedure Rename(const OldPath, NewPath: string);
-    // Direct children of a directory (names only), in creation order.
-    function Children(const Directory: string): TArray<string>;
-    // Clusters (1 KB) the files and directories take.
-    function UsedClusters: Integer;
+    // A driver changed the pages: the file system is read again.
+    procedure FlashWritten;
+    function Formatted: Boolean;
+    function Lookup(const Path: string; out E: TPS2CardEntry): Boolean;
+    // A directory's entries in card order, deleted slots included.
+    function Entries(const Dir: TPS2CardEntry): TArray<TPS2CardEntry>;
+    function MakeDir(const Path: string; Mode: Word; Time: UInt64): Integer;
+    function MakeFile(const Path: string; Mode: Word; Time: UInt64; out E: TPS2CardEntry): Integer;
+    procedure WriteEntry(const E: TPS2CardEntry);
+    // Frees the data and marks the entry deleted.
+    procedure Remove(var E: TPS2CardEntry);
+    function ReadAt(const E: TPS2CardEntry; Offset, Count: Integer; Dest: PByte): Integer;
+    // Gives E clusters for Size bytes; False (nothing changed) on a full card.
+    function Grow(var E: TPS2CardEntry; Size: Integer): Boolean;
+    // Writes into clusters Grow provided; the length follows (not saved).
+    procedure WriteAt(var E: TPS2CardEntry; Offset: Integer; Data: PByte; Count: Integer);
+    function FreeClusters: Integer;
+    // 'RMPS2MC3' and the deflated flash; Load also takes raw card images
+    // (with or without spare bytes) and the earlier file-tree cards.
     function Image: TBytes;
     procedure Load(const Data: TBytes);
     procedure SerializeState(State: TStateArchive);
@@ -128,7 +162,8 @@ type
     function ChDir(Port: Integer; Table: Cardinal; const Name: string): Integer;
     function SetFileInfo(Port: Integer; Flags: Cardinal; Info: Cardinal; const Name: string): Integer;
     function DeleteEntry(Port: Integer; const Name: string): Integer;
-    procedure Entry(Dest: PByte; const Name: string; E: TPS2MemoryCardEntry);
+    procedure Entry(Dest: PByte; const Name: string; const E: TPS2CardEntry);
+    procedure Touch(C: TPS2MemoryCard; const Dir: string);
   public
     Cards: array[0..1] of TPS2MemoryCard;
     // A card in the second slot (the first always has one).
@@ -353,27 +388,36 @@ begin
     CardChunkECC(@P[K * 128], @P[PS2CardPageSize + K * 3]);
 end;
 
+{ TPS2CardEntry }
+
+function TPS2CardEntry.IsDirectory: Boolean;
+begin
+  Result := (Mode and AttrSubdir) <> 0;
+end;
+
+function TPS2CardEntry.Exists: Boolean;
+begin
+  Result := (Mode and AttrExists) <> 0;
+end;
+
 { TPS2MemoryCard }
+
+const
+  EntrySize = 512;
+  FATPerCluster = ClusterSize div 4;
+  FATAllocated = $80000000;
+  // Raw card images without the spare bytes.
+  PS2CardDataSize = PS2CardPages * PS2CardPageSize;
 
 constructor TPS2MemoryCard.Create;
 begin
   inherited Create;
-  FEntries := TObjectDictionary<string, TPS2MemoryCardEntry>.Create([doOwnsValues]);
   Clear;
-end;
-
-destructor TPS2MemoryCard.Destroy;
-begin
-  FEntries.Free;
-  inherited;
 end;
 
 procedure TPS2MemoryCard.Clear;
 begin
-  FEntries.Clear;
-  FNextOrder := 0;
-  Add('', True, PS2CardTime(0));
-  Flash := nil;
+  FormatFlash(PS2CardTime(0));
   Dirty := False;
 end;
 
@@ -462,162 +506,429 @@ begin
   Cluster[512 + 65] := Ord('.');
   WriteCluster(FlashAllocOffset);
   Dirty := True;
+  FMounted := False;
 end;
 
-function TPS2MemoryCard.Find(const Path: string): TPS2MemoryCardEntry;
+procedure TPS2MemoryCard.FlashWritten;
 begin
-  if not FEntries.TryGetValue(Path, Result) then
-    Result := nil;
-end;
-
-function TPS2MemoryCard.Add(const Path: string; Directory: Boolean; Time: UInt64): TPS2MemoryCardEntry;
-begin
-  Result := TPS2MemoryCardEntry.Create;
-  Result.IsDirectory := Directory;
-  Result.Created := Time;
-  Result.Modified := Time;
-  if Directory then
-    Result.Mode := ModeDir
-  else
-    Result.Mode := ModeFile;
-  Result.Order := FNextOrder;
-  Inc(FNextOrder);
-  FEntries.AddOrSetValue(Path, Result);
+  FMounted := False;
   Dirty := True;
 end;
 
-procedure TPS2MemoryCard.Remove(const Path: string);
+// The superblock of a standard card: magic, 512-byte pages, two per
+// cluster, the root directory in the first allocatable cluster. MCMAN
+// allocates in the first (clusters per card / 1000) * 1000 + 1 clusters.
+procedure TPS2MemoryCard.Mount;
 begin
-  FEntries.Remove(Path);
+  FMounted := True;
+  FFormatted := False;
+  if Length(Flash) <> PS2CardFlashSize then
+    Exit;
+  var SB := PByte(@Flash[0]);
+  if not CompareMem(SB, PAnsiChar(FlashMagic), 28) or (PWord(SB + 40)^ <> PS2CardPageSize) or
+    (PWord(SB + 42)^ <> FlashClusterPages) or (PCardinal(SB + 60)^ <> 0) then
+    Exit;
+  var Clusters := PCardinal(SB + 48)^;
+  FAllocOffset := PCardinal(SB + 52)^;
+  FIndirect := PCardinal(SB + 80)^;
+  if (Clusters = 0) or (Clusters > PS2CardPages div FlashClusterPages) or (FAllocOffset >= Clusters) or
+    (FIndirect >= Clusters) then
+    Exit;
+  FMaxClusters := Min((Clusters div 1000) * 1000 + 1, Clusters - FAllocOffset);
+  FFormatted := True;
+end;
+
+function TPS2MemoryCard.Formatted: Boolean;
+begin
+  if not FMounted then
+    Mount;
+  Result := FFormatted;
+end;
+
+// Data byte Offset (0..1023) of absolute cluster Cluster.
+function TPS2MemoryCard.Ptr(Cluster: Cardinal; Offset: Integer): PByte;
+begin
+  var Page := Integer(Cluster) * FlashClusterPages + Offset div PS2CardPageSize;
+  Result := @Flash[Page * PS2CardRawPage + Offset mod PS2CardPageSize];
+end;
+
+procedure TPS2MemoryCard.ReadBytes(Cluster: Cardinal; Offset: Integer; Dest: PByte; Count: Integer);
+begin
+  while Count > 0 do
+  begin
+    var N := Min(Count, PS2CardPageSize - Offset mod PS2CardPageSize);
+    Move(Ptr(Cluster, Offset)^, Dest^, N);
+    Inc(Offset, N);
+    Inc(Dest, N);
+    Dec(Count, N);
+  end;
+end;
+
+// Changes the data of the pages and programs their ECC again.
+procedure TPS2MemoryCard.WriteBytes(Cluster: Cardinal; Offset: Integer; Src: PByte; Count: Integer);
+var
+  Page: array[0..PS2CardPageSize - 1] of Byte;
+begin
+  while Count > 0 do
+  begin
+    var InPage := Offset mod PS2CardPageSize;
+    var N := Min(Count, PS2CardPageSize - InPage);
+    var Start := Ptr(Cluster, Offset - InPage);
+    Move(Start^, Page[0], PS2CardPageSize);
+    Move(Src^, Page[InPage], N);
+    WriteFlashPage(Flash, Integer(Cluster) * FlashClusterPages + Offset div PS2CardPageSize, @Page[0]);
+    Inc(Offset, N);
+    Inc(Src, N);
+    Dec(Count, N);
+  end;
   Dirty := True;
 end;
 
-procedure TPS2MemoryCard.Rename(const OldPath, NewPath: string);
+// FAT entry of (relative) cluster N, through the indirect FAT clusters
+// the superblock lists.
+function TPS2MemoryCard.FAT(N: Cardinal): Cardinal;
 begin
-  // The entry and, for a directory, everything below it.
-  var Moves := TList<string>.Create;
-  try
-    for var Key in FEntries.Keys do
-      if (Key = OldPath) or Key.StartsWith(OldPath + '/') then
-        Moves.Add(Key);
-    for var Key in Moves do
+  var FC := N div FATPerCluster;
+  var Indirect := PCardinal(Ptr(0, 80 + Integer(FC div FATPerCluster) * 4))^;
+  var FATCluster: Cardinal;
+  ReadBytes(Indirect, Integer(FC mod FATPerCluster) * 4, @FATCluster, 4);
+  ReadBytes(FATCluster, Integer(N mod FATPerCluster) * 4, @Result, 4);
+end;
+
+procedure TPS2MemoryCard.SetFAT(N, Value: Cardinal);
+begin
+  var FC := N div FATPerCluster;
+  var Indirect := PCardinal(Ptr(0, 80 + Integer(FC div FATPerCluster) * 4))^;
+  var FATCluster: Cardinal;
+  ReadBytes(Indirect, Integer(FC mod FATPerCluster) * 4, @FATCluster, 4);
+  WriteBytes(FATCluster, Integer(N mod FATPerCluster) * 4, @Value, 4);
+end;
+
+// The clusters of a chain from First (empty for PS2CardNoCluster).
+function TPS2MemoryCard.Chain(First: Cardinal): TArray<Cardinal>;
+begin
+  Result := nil;
+  var N := First;
+  while (N < FMaxClusters) and (Cardinal(Length(Result)) <= FMaxClusters) do
+  begin
+    Result := Result + [N];
+    var V := FAT(N);
+    if (V = FATChainEnd) or ((V and FATAllocated) = 0) then
+      Break;
+    N := V and not FATAllocated;
+  end;
+end;
+
+// The first free cluster, marked as the end of a chain.
+function TPS2MemoryCard.Allocate: Cardinal;
+begin
+  for var N := 0 to Integer(FMaxClusters) - 1 do
+    if (FAT(N) and FATAllocated) = 0 then
     begin
-      var E := FEntries.ExtractPair(Key).Value;
-      FEntries.AddOrSetValue(NewPath + Key.Substring(Length(OldPath)), E);
+      SetFAT(N, FATChainEnd);
+      Exit(N);
     end;
-  finally
-    Moves.Free;
-  end;
-  Dirty := True;
+  Result := PS2CardNoCluster;
 end;
 
-function TPS2MemoryCard.Children(const Directory: string): TArray<string>;
+procedure TPS2MemoryCard.FreeChain(First: Cardinal);
 begin
-  var L := TList<TPair<Int64, string>>.Create;
-  try
-    for var P in FEntries do
-      if (P.Key <> '') and (Parent(P.Key) = Directory) then
-        L.Add(TPair<Int64, string>.Create(P.Value.Order, BaseName(P.Key)));
-    L.Sort(TComparer<TPair<Int64, string>>.Construct(
-      function(const A, B: TPair<Int64, string>): Integer
-      begin
-        Result := CompareValue(A.Key, B.Key);
-      end));
-    SetLength(Result, L.Count);
-    for var K := 0 to L.Count - 1 do
-      Result[K] := L[K].Value;
-  finally
-    L.Free;
-  end;
+  for var N in Chain(First) do
+    SetFAT(N, FATFree);
 end;
 
-function TPS2MemoryCard.UsedClusters: Integer;
+function TPS2MemoryCard.FreeClusters: Integer;
 begin
   Result := 0;
-  var Counts := TDictionary<string, Integer>.Create;
-  try
-    for var Key in FEntries.Keys do
-      if Key <> '' then
-      begin
-        var Dir := Parent(Key);
-        var N: Integer;
-        if not Counts.TryGetValue(Dir, N) then
-          N := 0;
-        Counts.AddOrSetValue(Dir, N + 1);
-      end;
-    for var P in FEntries do
-      if P.Value.IsDirectory then
-      begin
-        // '.', '..' and the entries, two per cluster; the root's first
-        // cluster belongs to the format.
-        var N: Integer;
-        if not Counts.TryGetValue(P.Key, N) then
-          N := 0;
-        var Clusters := (N + 2 + 1) div 2;
-        if P.Key = '' then
-          Dec(Clusters);
-        Inc(Result, Clusters);
-      end
-      else
-        Inc(Result, (Length(P.Value.Data) + ClusterSize - 1) div ClusterSize);
-  finally
-    Counts.Free;
+  if not Formatted then
+    Exit;
+  for var N := 0 to Integer(FMaxClusters) - 1 do
+    if (FAT(N) and FATAllocated) = 0 then
+      Inc(Result);
+end;
+
+// Entry Index of the directory starting at DirCluster (Mode 0 past its
+// clusters).
+function TPS2MemoryCard.ReadEntry(DirCluster: Cardinal; Index: Integer): TPS2CardEntry;
+var
+  Raw: array[0..EntrySize - 1] of Byte;
+begin
+  Result := Default(TPS2CardEntry);
+  Result.DirCluster := DirCluster;
+  Result.Index := Index;
+  var Clusters := Chain(DirCluster);
+  if (Index < 0) or (Index div 2 >= Length(Clusters)) then
+    Exit;
+  ReadBytes(FAllocOffset + Clusters[Index div 2], (Index mod 2) * EntrySize, @Raw[0], EntrySize);
+  Result.Mode := PWord(@Raw[0])^;
+  Result.Length := PCardinal(@Raw[4])^;
+  Result.Created := PUInt64(@Raw[8])^;
+  Result.Cluster := PCardinal(@Raw[16])^;
+  Result.DirEntry := PCardinal(@Raw[20])^;
+  Result.Modified := PUInt64(@Raw[24])^;
+  Result.Attr := PCardinal(@Raw[32])^;
+  Result.Name := CString(@Raw[64], 32);
+end;
+
+procedure TPS2MemoryCard.WriteEntry(const E: TPS2CardEntry);
+var
+  Raw: array[0..EntrySize - 1] of Byte;
+begin
+  var Clusters := Chain(E.DirCluster);
+  if (E.Index < 0) or (E.Index div 2 >= Length(Clusters)) then
+    Exit;
+  var Cluster := FAllocOffset + Clusters[E.Index div 2];
+  var Offset := (E.Index mod 2) * EntrySize;
+  ReadBytes(Cluster, Offset, @Raw[0], EntrySize);
+  PWord(@Raw[0])^ := E.Mode;
+  PCardinal(@Raw[4])^ := E.Length;
+  PUInt64(@Raw[8])^ := E.Created;
+  PCardinal(@Raw[16])^ := E.Cluster;
+  PCardinal(@Raw[20])^ := E.DirEntry;
+  PUInt64(@Raw[24])^ := E.Modified;
+  PCardinal(@Raw[32])^ := E.Attr;
+  FillChar(Raw[64], 32, 0);
+  var Name := TEncoding.ANSI.GetBytes(E.Name);
+  if Length(Name) > 0 then
+    Move(Name[0], Raw[64], Min(Length(Name), 31));
+  WriteBytes(Cluster, Offset, @Raw[0], EntrySize);
+end;
+
+// A directory's entry count is in its entry in the parent, which its '.'
+// entry points to (the root's '.' points to itself).
+function TPS2MemoryCard.DirLength(DirCluster: Cardinal): Integer;
+begin
+  var Dot := ReadEntry(DirCluster, 0);
+  Result := Integer(ReadEntry(Dot.Cluster, Dot.DirEntry).Length);
+end;
+
+procedure TPS2MemoryCard.SetDirLength(DirCluster: Cardinal; Count: Integer);
+begin
+  var Dot := ReadEntry(DirCluster, 0);
+  var Owner := ReadEntry(Dot.Cluster, Dot.DirEntry);
+  Owner.Length := Cardinal(Count);
+  WriteEntry(Owner);
+end;
+
+function TPS2MemoryCard.FindIn(DirCluster: Cardinal; const Name: string; out E: TPS2CardEntry): Boolean;
+begin
+  var Count := DirLength(DirCluster);
+  for var K := 0 to Count - 1 do
+  begin
+    E := ReadEntry(DirCluster, K);
+    if E.Exists and (E.Name = Name) then
+      Exit(True);
+  end;
+  Result := False;
+end;
+
+function TPS2MemoryCard.Lookup(const Path: string; out E: TPS2CardEntry): Boolean;
+begin
+  E := Default(TPS2CardEntry);
+  if not Formatted then
+    Exit(False);
+  if Path = '' then
+  begin
+    E := ReadEntry(0, 0);
+    E.Name := '';
+    Exit(E.Exists);
+  end;
+  var Parts := Path.Split(['/']);
+  var Dir: Cardinal := 0;
+  for var K := 0 to High(Parts) do
+  begin
+    if not FindIn(Dir, Parts[K], E) then
+      Exit(False);
+    if K < High(Parts) then
+    begin
+      if not E.IsDirectory then
+        Exit(False);
+      Dir := E.Cluster;
+    end;
+  end;
+  Result := True;
+end;
+
+function TPS2MemoryCard.Entries(const Dir: TPS2CardEntry): TArray<TPS2CardEntry>;
+begin
+  SetLength(Result, Dir.Length);
+  for var K := 0 to Integer(Dir.Length) - 1 do
+    Result[K] := ReadEntry(Dir.Cluster, K);
+end;
+
+// A slot for a new entry: the first deleted one after '.' and '..', or a
+// new one at the end (a new cluster when the last is full).
+function TPS2MemoryCard.NewEntry(DirCluster: Cardinal; out E: TPS2CardEntry): Boolean;
+begin
+  var Count := DirLength(DirCluster);
+  for var K := 2 to Count - 1 do
+  begin
+    E := ReadEntry(DirCluster, K);
+    if not E.Exists then
+    begin
+      E := Default(TPS2CardEntry);
+      E.DirCluster := DirCluster;
+      E.Index := K;
+      Exit(True);
+    end;
+  end;
+  var Clusters := Chain(DirCluster);
+  if Count div 2 >= Length(Clusters) then
+  begin
+    var X := Allocate;
+    if X = PS2CardNoCluster then
+      Exit(False);
+    var Zero: array[0..ClusterSize - 1] of Byte;
+    FillChar(Zero, SizeOf(Zero), 0);
+    WriteBytes(FAllocOffset + X, 0, @Zero[0], ClusterSize);
+    SetFAT(Clusters[High(Clusters)], X or FATAllocated);
+  end;
+  SetDirLength(DirCluster, Count + 1);
+  E := Default(TPS2CardEntry);
+  E.DirCluster := DirCluster;
+  E.Index := Count;
+  Result := True;
+end;
+
+function TPS2MemoryCard.MakeDir(const Path: string; Mode: Word; Time: UInt64): Integer;
+var
+  Cluster: array[0..ClusterSize - 1] of Byte;
+begin
+  var P, E: TPS2CardEntry;
+  if (Path = '') or not Lookup(Parent(Path), P) or not P.IsDirectory or FindIn(P.Cluster, BaseName(Path), E) then
+    Exit(ResNoEntry);
+  if FreeClusters < 2 then
+    Exit(ResFullDevice);
+  if not NewEntry(P.Cluster, E) then
+    Exit(ResFullDevice);
+  var X := Allocate;
+  if X = PS2CardNoCluster then
+    Exit(ResFullDevice);
+  // '.' points to the entry in the parent, '..' where the parent's '.'
+  // points.
+  var ParentDot := ReadEntry(P.Cluster, 0);
+  FillChar(Cluster, SizeOf(Cluster), 0);
+  PWord(@Cluster[0])^ := ModeDir;
+  PUInt64(@Cluster[8])^ := Time;
+  PCardinal(@Cluster[16])^ := P.Cluster;
+  PCardinal(@Cluster[20])^ := Cardinal(E.Index);
+  PUInt64(@Cluster[24])^ := Time;
+  Cluster[64] := Ord('.');
+  PWord(@Cluster[EntrySize])^ := ModeDir;
+  PUInt64(@Cluster[EntrySize + 8])^ := ParentDot.Created;
+  PCardinal(@Cluster[EntrySize + 16])^ := ParentDot.Cluster;
+  PCardinal(@Cluster[EntrySize + 20])^ := ParentDot.DirEntry;
+  PUInt64(@Cluster[EntrySize + 24])^ := ParentDot.Created;
+  Cluster[EntrySize + 64] := Ord('.');
+  Cluster[EntrySize + 65] := Ord('.');
+  WriteBytes(FAllocOffset + X, 0, @Cluster[0], ClusterSize);
+  E.Mode := Mode;
+  E.Length := 2;
+  E.Created := Time;
+  E.Modified := Time;
+  E.Cluster := X;
+  E.Name := BaseName(Path);
+  WriteEntry(E);
+  Result := ResSucceed;
+end;
+
+function TPS2MemoryCard.MakeFile(const Path: string; Mode: Word; Time: UInt64; out E: TPS2CardEntry): Integer;
+begin
+  var P: TPS2CardEntry;
+  if (Path = '') or not Lookup(Parent(Path), P) or not P.IsDirectory then
+    Exit(ResNoEntry);
+  if not NewEntry(P.Cluster, E) then
+    Exit(ResFullDevice);
+  E.Mode := Mode;
+  E.Length := 0;
+  E.Created := Time;
+  E.Modified := Time;
+  E.Cluster := PS2CardNoCluster;
+  E.Name := BaseName(Path);
+  WriteEntry(E);
+  Result := ResSucceed;
+end;
+
+procedure TPS2MemoryCard.Remove(var E: TPS2CardEntry);
+begin
+  if E.Cluster < FMaxClusters then
+    FreeChain(E.Cluster);
+  E.Mode := E.Mode and not AttrExists;
+  WriteEntry(E);
+end;
+
+function TPS2MemoryCard.ReadAt(const E: TPS2CardEntry; Offset, Count: Integer; Dest: PByte): Integer;
+begin
+  Count := EnsureRange(Integer(E.Length) - Offset, 0, Max(Count, 0));
+  Result := Count;
+  if Count = 0 then
+    Exit;
+  var Clusters := Chain(E.Cluster);
+  while Count > 0 do
+  begin
+    var K := Offset div ClusterSize;
+    var InCluster := Offset mod ClusterSize;
+    var N := Min(Count, ClusterSize - InCluster);
+    if K < Length(Clusters) then
+      ReadBytes(FAllocOffset + Clusters[K], InCluster, Dest, N)
+    else
+      FillChar(Dest^, N, 0);
+    Inc(Offset, N);
+    Inc(Dest, N);
+    Dec(Count, N);
   end;
 end;
 
-// 'RMPS2MC2', count, then per entry in creation order: kind (0 file, 1
-// directory), name length and UTF-8 name, created and modified times, mode,
-// attribute, data length and data (little endian). 'RMPS2MC1' images have
-// kind, name and data only.
+function TPS2MemoryCard.Grow(var E: TPS2CardEntry; Size: Integer): Boolean;
+begin
+  var Clusters := Chain(E.Cluster);
+  var Need := (Size + ClusterSize - 1) div ClusterSize - Length(Clusters);
+  if Need <= 0 then
+    Exit(True);
+  if Need > FreeClusters then
+    Exit(False);
+  for var K := 1 to Need do
+  begin
+    var X := Allocate;
+    if Length(Clusters) = 0 then
+      E.Cluster := X
+    else
+      SetFAT(Clusters[High(Clusters)], X or FATAllocated);
+    Clusters := Clusters + [X];
+  end;
+  Result := True;
+end;
+
+procedure TPS2MemoryCard.WriteAt(var E: TPS2CardEntry; Offset: Integer; Data: PByte; Count: Integer);
+begin
+  var Clusters := Chain(E.Cluster);
+  var Pos := Offset;
+  var Left := Count;
+  while Left > 0 do
+  begin
+    var K := Pos div ClusterSize;
+    if K >= Length(Clusters) then
+      Break;
+    var InCluster := Pos mod ClusterSize;
+    var N := Min(Left, ClusterSize - InCluster);
+    WriteBytes(FAllocOffset + Clusters[K], InCluster, Data, N);
+    Inc(Pos, N);
+    Inc(Data, N);
+    Dec(Left, N);
+  end;
+  E.Length := Max(E.Length, Cardinal(Pos));
+end;
+
 function TPS2MemoryCard.Image: TBytes;
 begin
   var S := TMemoryStream.Create;
   try
     S.WriteBuffer(PS2MemoryCardMagic, 8);
-    var Keys := FEntries.Keys.ToArray;
-    TArray.Sort<string>(Keys, TComparer<string>.Construct(
-      function(const A, B: string): Integer
-      begin
-        Result := CompareValue(FEntries[A].Order, FEntries[B].Order);
-      end));
-    var Count := Length(Keys);
-    S.WriteBuffer(Count, 4);
-    for var Key in Keys do
-    begin
-      var E := FEntries[Key];
-      var Kind: Byte := Ord(E.IsDirectory);
-      var Name := TEncoding.UTF8.GetBytes(Key);
-      var NameLen := Length(Name);
-      var DataLen := Length(E.Data);
-      S.WriteBuffer(Kind, 1);
-      S.WriteBuffer(NameLen, 4);
-      if NameLen > 0 then
-        S.WriteBuffer(Name[0], NameLen);
-      S.WriteBuffer(E.Created, 8);
-      S.WriteBuffer(E.Modified, 8);
-      S.WriteBuffer(E.Mode, 2);
-      S.WriteBuffer(E.Attr, 4);
-      S.WriteBuffer(DataLen, 4);
-      if DataLen > 0 then
-        S.WriteBuffer(E.Data[0], DataLen);
-    end;
-    if Length(Flash) = PS2CardFlashSize then
-    begin
-      S.WriteBuffer(FlashTag, 4);
-      var Deflated := TMemoryStream.Create;
-      try
-        var Z := TZCompressionStream.Create(Deflated);
-        try
-          Z.WriteBuffer(Flash[0], Length(Flash));
-        finally
-          Z.Free;
-        end;
-        var DeflatedLen := Integer(Deflated.Size);
-        S.WriteBuffer(DeflatedLen, 4);
-        S.WriteBuffer(Deflated.Memory^, DeflatedLen);
-      finally
-        Deflated.Free;
-      end;
+    var Z := TZCompressionStream.Create(S);
+    try
+      Z.WriteBuffer(Flash[0], Length(Flash));
+    finally
+      Z.Free;
     end;
     SetLength(Result, S.Size);
     Move(S.Memory^, Result[0], S.Size);
@@ -631,75 +942,161 @@ begin
   Clear;
   if Length(Data) = 0 then
     Exit;
-  var S := TBytesStream.Create(Data);
-  try
-    var Magic: array[0..7] of AnsiChar;
-    if S.Read(Magic, 8) <> 8 then
-      raise EReadError.Create('Not a RetroMul PS2 memory card');
-    var V2 := CompareMem(@Magic, @PS2MemoryCardMagic, 8);
-    if not V2 and not CompareMem(@Magic, @PS2MemoryCardMagic1, 8) then
-      raise EReadError.Create('Not a RetroMul PS2 memory card');
-    var Count: Integer;
-    S.ReadBuffer(Count, 4);
-    if (Count < 0) or (Count > 100000) then
-      raise EReadError.Create('Damaged PS2 memory card');
-    for var K := 0 to Count - 1 do
-    begin
-      var Kind: Byte;
-      var NameLen, DataLen: Integer;
-      S.ReadBuffer(Kind, 1);
-      S.ReadBuffer(NameLen, 4);
-      if (NameLen < 0) or (NameLen > 4096) then
-        raise EReadError.Create('Damaged PS2 memory card');
-      var Name: TBytes;
-      SetLength(Name, NameLen);
-      if NameLen > 0 then
-        S.ReadBuffer(Name[0], NameLen);
-      var Path := TEncoding.UTF8.GetString(Name);
-      var E := Find(Path);
-      if E = nil then
-        E := Add(Path, Kind <> 0, PS2CardTime(0));
-      E.IsDirectory := Kind <> 0;
-      if V2 then
+  if Length(Data) = PS2CardFlashSize then
+  begin
+    // A raw card with spare bytes (as card dumps and PCSX2 keep them).
+    Flash := Copy(Data);
+    FMounted := False;
+  end
+  else if Length(Data) = PS2CardDataSize then
+  begin
+    for var Page := 0 to PS2CardPages - 1 do
+      WriteFlashPage(Flash, Page, @Data[Page * PS2CardPageSize]);
+    FMounted := False;
+  end
+  else
+  begin
+    var S := TBytesStream.Create(Data);
+    try
+      var Magic: array[0..7] of AnsiChar;
+      if S.Read(Magic, 8) <> 8 then
+        raise EReadError.Create('Not a PS2 memory card');
+      if CompareMem(@Magic, @PS2MemoryCardMagic, 8) then
       begin
-        S.ReadBuffer(E.Created, 8);
-        S.ReadBuffer(E.Modified, 8);
-        S.ReadBuffer(E.Mode, 2);
-        S.ReadBuffer(E.Attr, 4);
-      end;
-      S.ReadBuffer(DataLen, 4);
-      if (DataLen < 0) or (DataLen > S.Size - S.Position) then
-        raise EReadError.Create('Damaged PS2 memory card');
-      SetLength(E.Data, DataLen);
-      if DataLen > 0 then
-        S.ReadBuffer(E.Data[0], DataLen);
-    end;
-    var Tag: array[0..3] of AnsiChar;
-    if (S.Size - S.Position >= 8) and (S.Read(Tag, 4) = 4) and CompareMem(@Tag, @FlashTag, 4) then
-    begin
-      var DeflatedLen: Integer;
-      S.ReadBuffer(DeflatedLen, 4);
-      if (DeflatedLen <= 0) or (DeflatedLen > S.Size - S.Position) then
-        raise EReadError.Create('Damaged PS2 memory card');
-      var Deflated := TMemoryStream.Create;
-      try
-        Deflated.CopyFrom(S, DeflatedLen);
-        Deflated.Position := 0;
-        var Z := TZDecompressionStream.Create(Deflated);
+        var Z := TZDecompressionStream.Create(S);
         try
-          SetLength(Flash, PS2CardFlashSize);
           Z.ReadBuffer(Flash[0], PS2CardFlashSize);
         finally
           Z.Free;
         end;
-      finally
-        Deflated.Free;
-      end;
+        FMounted := False;
+      end
+      else if CompareMem(@Magic, @PS2MemoryCardMagic2, 8) then
+        LoadLegacy(S, True)
+      else if CompareMem(@Magic, @PS2MemoryCardMagic1, 8) then
+        LoadLegacy(S, False)
+      else
+        raise EReadError.Create('Not a PS2 memory card');
+    finally
+      S.Free;
     end;
-  finally
-    S.Free;
   end;
   Dirty := False;
+end;
+
+// Earlier RetroMul cards: a file tree ('RMPS2MC2': count, then per entry in
+// creation order kind, name, created, modified, mode, attribute and data;
+// 'RMPS2MC1': kind, name and data) and, optionally, the flash card drivers
+// used ('FLSH', deflated). The files go onto that flash (or a freshly
+// formatted one) in their creation order; the card is saved in the new form.
+procedure TPS2MemoryCard.LoadLegacy(S: TStream; V2: Boolean);
+type
+  TOld = record
+    Directory: Boolean;
+    Path: string;
+    Created, Modified: UInt64;
+    Mode: Word;
+    Attr: Cardinal;
+    Data: TBytes;
+  end;
+begin
+  var Count: Integer;
+  S.ReadBuffer(Count, 4);
+  if (Count < 0) or (Count > 100000) then
+    raise EReadError.Create('Damaged PS2 memory card');
+  var Old: TArray<TOld>;
+  SetLength(Old, Count);
+  for var K := 0 to Count - 1 do
+  begin
+    var Kind: Byte;
+    var NameLen, DataLen: Integer;
+    S.ReadBuffer(Kind, 1);
+    S.ReadBuffer(NameLen, 4);
+    if (NameLen < 0) or (NameLen > 4096) then
+      raise EReadError.Create('Damaged PS2 memory card');
+    var Name: TBytes;
+    SetLength(Name, NameLen);
+    if NameLen > 0 then
+      S.ReadBuffer(Name[0], NameLen);
+    Old[K].Directory := Kind <> 0;
+    Old[K].Path := TEncoding.UTF8.GetString(Name);
+    if Old[K].Directory then
+      Old[K].Mode := ModeDir
+    else
+      Old[K].Mode := ModeFile;
+    if V2 then
+    begin
+      S.ReadBuffer(Old[K].Created, 8);
+      S.ReadBuffer(Old[K].Modified, 8);
+      S.ReadBuffer(Old[K].Mode, 2);
+      S.ReadBuffer(Old[K].Attr, 4);
+    end;
+    S.ReadBuffer(DataLen, 4);
+    if (DataLen < 0) or (DataLen > S.Size - S.Position) then
+      raise EReadError.Create('Damaged PS2 memory card');
+    SetLength(Old[K].Data, DataLen);
+    if DataLen > 0 then
+      S.ReadBuffer(Old[K].Data[0], DataLen);
+  end;
+  var Tag: array[0..3] of AnsiChar;
+  if (S.Size - S.Position >= 8) and (S.Read(Tag, 4) = 4) and CompareMem(@Tag, @FlashTag, 4) then
+  begin
+    var DeflatedLen: Integer;
+    S.ReadBuffer(DeflatedLen, 4);
+    if (DeflatedLen <= 0) or (DeflatedLen > S.Size - S.Position) then
+      raise EReadError.Create('Damaged PS2 memory card');
+    var Deflated := TMemoryStream.Create;
+    try
+      Deflated.CopyFrom(S, DeflatedLen);
+      Deflated.Position := 0;
+      var Z := TZDecompressionStream.Create(Deflated);
+      try
+        Z.ReadBuffer(Flash[0], PS2CardFlashSize);
+      finally
+        Z.Free;
+      end;
+    finally
+      Deflated.Free;
+    end;
+    FMounted := False;
+    if not Formatted then
+      FormatFlash(PS2CardTime(0));
+  end;
+  for var O in Old do
+  begin
+    var E: TPS2CardEntry;
+    if O.Path = '' then
+    begin
+      if Lookup('', E) then
+      begin
+        E.Modified := O.Modified;
+        WriteEntry(E);
+      end;
+      Continue;
+    end;
+    if Lookup(O.Path, E) then
+      Continue;
+    if O.Directory then
+    begin
+      if (MakeDir(O.Path, O.Mode, O.Created) <> ResSucceed) or not Lookup(O.Path, E) then
+        Continue;
+    end
+    else
+    begin
+      if MakeFile(O.Path, O.Mode, O.Created, E) <> ResSucceed then
+        Continue;
+      if not Grow(E, Length(O.Data)) then
+      begin
+        Remove(E);
+        Continue;
+      end;
+      if Length(O.Data) > 0 then
+        WriteAt(E, 0, @O.Data[0], Length(O.Data));
+    end;
+    E.Modified := O.Modified;
+    E.Attr := O.Attr;
+    WriteEntry(E);
+  end;
 end;
 
 procedure TPS2MemoryCard.SerializeState(State: TStateArchive);
@@ -806,7 +1203,7 @@ begin
         if P >= 0 then
         begin
           Move(Cmd[3], Card.Flash[P], Size);
-          Card.Dirty := True;
+          Card.FlashWritten;
         end;
         Inc(Offset, Size);
         if Len >= 4 then
@@ -844,7 +1241,7 @@ begin
         begin
           var First := Page - Page mod PS2CardBlockPages;
           FillChar(Card.Flash[First * PS2CardRawPage], PS2CardBlockPages * PS2CardRawPage, $FF);
-          Card.Dirty := True;
+          Card.FlashWritten;
         end;
         Close;
       end;
@@ -991,8 +1388,8 @@ begin
     Flags := Flags or AttrWritable;
   var C := Cards[Port];
   var Path := Resolve(Port, Name);
-  var Dir := C.Find(Parent(Path));
-  if (Dir = nil) or not Dir.IsDirectory then
+  var Dir, E: TPS2CardEntry;
+  if (Path = '') or not C.Lookup(Parent(Path), Dir) or not Dir.IsDirectory then
     Exit(ResNoEntry);
   var Slot := -1;
   for var K := 0 to High(FFiles) do
@@ -1003,17 +1400,17 @@ begin
     end;
   if Slot < 0 then
     Exit(ResUpLimit);
-  var E := C.Find(Path);
+  var Found := C.Lookup(Path, E);
   if (Flags and CreateDir) <> 0 then
   begin
-    if E <> nil then
+    if Found then
       Exit(ResNoEntry);
-    E := C.Add(Path, True, CardNow);
-    E.Mode := E.Mode or (Flags and AttrHidden);
-    Dir.Modified := E.Created;
-    Exit(ResSucceed);
+    var R := C.MakeDir(Path, ModeDir or (Flags and AttrHidden), CardNow);
+    if R = ResSucceed then
+      Touch(C, Parent(Path));
+    Exit(R);
   end;
-  if E = nil then
+  if not Found then
   begin
     if (Flags and CreateFile) = 0 then
       Exit(ResNoEntry);
@@ -1039,16 +1436,16 @@ begin
           Exit(ResDenied);
     if (Flags and CreateFile) <> 0 then
     begin
-      C.Remove(Path);
-      E := nil;
+      C.Remove(E);
+      Found := False;
     end;
   end;
-  if E = nil then
+  if not Found then
   begin
-    E := C.Add(Path, False, CardNow);
-    E.Mode := E.Mode or (Flags and AttrHidden);
-    if Dir <> nil then
-      Dir.Modified := E.Created;
+    var R := C.MakeFile(Path, ModeFile or (Flags and AttrHidden), CardNow, E);
+    if R <> ResSucceed then
+      Exit(R);
+    Touch(C, Parent(Path));
   end;
   FFiles[Slot] := Default(TPS2MCFile);
   FFiles[Slot].Port := Port;
@@ -1059,19 +1456,30 @@ begin
   Result := Slot;
 end;
 
+// A directory's modification time becomes the card clock.
+procedure TPS2MCServer.Touch(C: TPS2MemoryCard; const Dir: string);
+begin
+  var D: TPS2CardEntry;
+  if C.Lookup(Dir, D) then
+  begin
+    D.Modified := CardNow;
+    C.WriteEntry(D);
+  end;
+end;
+
 function TPS2MCServer.ReadFile(Fd: Integer; Buffer: Cardinal; Size: Integer): Integer;
 begin
   var H := FileHandle(Fd);
   if (H < 0) or not FFiles[H].CanRead then
     Exit(ResDenied);
-  var E := Cards[FFiles[H].Port].Find(FFiles[H].Path);
-  if (E = nil) or E.IsDirectory then
+  var E: TPS2CardEntry;
+  if not Cards[FFiles[H].Port].Lookup(FFiles[H].Path, E) or E.IsDirectory then
     Exit(ResDenied);
-  var Count := EnsureRange(Length(E.Data) - FFiles[H].Position, 0, Max(Size, 0));
+  var Count := EnsureRange(Integer(E.Length) - FFiles[H].Position, 0, Max(Size, 0));
   var P := EEPtr(Buffer, Count);
   if (P <> nil) and (Count > 0) then
   begin
-    Move(E.Data[FFiles[H].Position], P^, Count);
+    Cards[FFiles[H].Port].ReadAt(E, FFiles[H].Position, Count, P);
     Touched(Buffer, Count);
   end;
   Inc(FFiles[H].Position, Count);
@@ -1086,37 +1494,34 @@ begin
   if (H < 0) or not FFiles[H].CanWrite then
     Exit(ResDenied);
   var C := Cards[FFiles[H].Port];
-  var E := C.Find(FFiles[H].Path);
-  if (E = nil) or E.IsDirectory then
+  var E: TPS2CardEntry;
+  if not C.Lookup(FFiles[H].Path, E) or E.IsDirectory then
     Exit(ResDenied);
   InSize := EnsureRange(InSize, 0, 16);
   Size := Max(Size, 0);
   var Total := InSize + Size;
   var Pos := FFiles[H].Position;
-  var NewLength := Max(Length(E.Data), Pos + Total);
   // Clusters the file grows by must be free.
-  var Grow := (NewLength + ClusterSize - 1) div ClusterSize - (Length(E.Data) + ClusterSize - 1) div ClusterSize;
-  if Grow > CardClusters - C.UsedClusters then
+  if not C.Grow(E, Max(Integer(E.Length), Pos + Total)) then
     Exit(ResFullDevice);
-  SetLength(E.Data, NewLength);
   if InSize > 0 then
-    Move(InData^, E.Data[Pos], InSize);
+    C.WriteAt(E, Pos, InData, InSize);
   var P := EEPtr(Buffer, Size);
   if (P <> nil) and (Size > 0) then
-    Move(P^, E.Data[Pos + InSize], Size);
+    C.WriteAt(E, Pos + InSize, P, Size);
   FFiles[H].Position := Pos + Total;
   E.Modified := CardNow;
-  C.Dirty := True;
+  C.WriteEntry(E);
   Result := Total;
 end;
 
-procedure TPS2MCServer.Entry(Dest: PByte; const Name: string; E: TPS2MemoryCardEntry);
+procedure TPS2MCServer.Entry(Dest: PByte; const Name: string; const E: TPS2CardEntry);
 begin
   FillChar(Dest^, 64, 0);
   PUInt64(Dest)^ := E.Created;
   PUInt64(Dest + 8)^ := E.Modified;
   if not E.IsDirectory then
-    PCardinal(Dest + 16)^ := Cardinal(Length(E.Data));
+    PCardinal(Dest + 16)^ := E.Length;
   PWord(Dest + 20)^ := E.Mode;
   PCardinal(Dest + 24)^ := E.Attr;
   var N := TEncoding.ANSI.GetBytes(Name);
@@ -1126,7 +1531,8 @@ end;
 
 // Flags 0 starts a listing of Name (a directory, then a pattern after the
 // last '/'), other values go on with it; up to MaxEntries entries of 64
-// bytes go to Table.
+// bytes go to Table. Entries list in card order; '.' and '..' show the
+// directory's and its parent's entries.
 function TPS2MCServer.GetDir(Port: Integer; Flags: Cardinal; MaxEntries: Integer; Table: Cardinal;
   const Name: string): Integer;
 begin
@@ -1142,8 +1548,8 @@ begin
       Dir := ''
     else
       Dir := Resolve(Port, Name.Substring(0, Slash));
-    var DE := C.Find(Dir);
-    if (DE = nil) or not DE.IsDirectory then
+    var DE: TPS2CardEntry;
+    if not C.Lookup(Dir, DE) or not DE.IsDirectory then
       Exit(ResNoEntry);
     FListPort := Port;
     FListDir := Dir;
@@ -1156,30 +1562,33 @@ begin
   end
   else if not FListValid or (FListPort <> Port) then
     Exit(ResNoEntry);
-  var Names := C.Children(FListDir);
+  var Dir: TPS2CardEntry;
+  if not C.Lookup(FListDir, Dir) or not Dir.IsDirectory then
+    Exit(ResNoEntry);
+  var List := C.Entries(Dir);
   Result := 0;
-  while (Result < MaxEntries) and (FListPos < Length(Names) + 2) do
+  while (Result < MaxEntries) and (FListPos < Length(List)) do
   begin
     var Pos := FListPos;
     Inc(FListPos);
-    var EntryName: string;
-    var E: TPS2MemoryCardEntry;
+    var E := List[Pos];
+    if not E.Exists then
+      Continue;
+    var EntryName := E.Name;
     case Pos of
       0:
         begin
           EntryName := '.';
-          E := C.Find(FListDir);
+          E := Dir;
         end;
       1:
         begin
           EntryName := '..';
-          E := C.Find(Parent(FListDir));
+          if not C.Lookup(Parent(FListDir), E) then
+            Continue;
         end;
-    else
-      EntryName := Names[Pos - 2];
-      E := C.Find(Join(FListDir, EntryName));
     end;
-    if (E = nil) or ((E.Mode and AttrHidden) <> 0) or not Matches(EntryName, FListPattern) then
+    if ((E.Mode and AttrHidden) <> 0) or not Matches(EntryName, FListPattern) then
       Continue;
     var P := EEPtr(Table + Cardinal(Result) * 64, 64);
     if P <> nil then
@@ -1195,8 +1604,8 @@ end;
 function TPS2MCServer.ChDir(Port: Integer; Table: Cardinal; const Name: string): Integer;
 begin
   var Path := Resolve(Port, Name);
-  var E := Cards[Port].Find(Path);
-  if (E = nil) or not E.IsDirectory then
+  var E: TPS2CardEntry;
+  if not Cards[Port].Lookup(Path, E) or not E.IsDirectory then
     Result := ResNoEntry
   else
   begin
@@ -1219,9 +1628,9 @@ function TPS2MCServer.SetFileInfo(Port: Integer; Flags: Cardinal; Info: Cardinal
 begin
   var C := Cards[Port];
   var Path := Resolve(Port, Name);
-  var E := C.Find(Path);
+  var E: TPS2CardEntry;
   var P := EEPtr(Info, 64);
-  if (E = nil) or (P = nil) then
+  if not C.Lookup(Path, E) or (P = nil) then
     Exit(ResNoEntry);
   if (Flags and AttrFile) <> 0 then
   begin
@@ -1229,11 +1638,12 @@ begin
     if (NewName = '') or (NewName = '.') or (NewName = '..') or NewName.Contains('/') or (Path = '') then
       Exit(ResNoEntry);
     var Target := Join(Parent(Path), NewName);
-    if (Target <> Path) and (C.Find(Target) <> nil) then
+    var Other: TPS2CardEntry;
+    if (Target <> Path) and C.Lookup(Target, Other) then
       Exit(ResDenied);
     if Target <> Path then
     begin
-      C.Rename(Path, Target);
+      E.Name := NewName;
       for var K := 0 to High(FFiles) do
         if FFiles[K].Open and (FFiles[K].Port = Port) and (FFiles[K].Path = Path) then
           FFiles[K].Path := Target;
@@ -1247,7 +1657,7 @@ begin
     E.Created := PUInt64(P)^;
   if (Flags and AttrWritable) <> 0 then
     E.Modified := PUInt64(P + 8)^;
-  C.Dirty := True;
+  C.WriteEntry(E);
   Result := ResSucceed;
 end;
 
@@ -1255,17 +1665,17 @@ function TPS2MCServer.DeleteEntry(Port: Integer; const Name: string): Integer;
 begin
   var C := Cards[Port];
   var Path := Resolve(Port, Name);
-  var E := C.Find(Path);
-  if (E = nil) or (Path = '') then
+  var E: TPS2CardEntry;
+  if (Path = '') or not C.Lookup(Path, E) then
     Exit(ResNoEntry);
   if (E.Mode and AttrWritable) = 0 then
     Exit(ResDenied);
-  if E.IsDirectory and (Length(C.Children(Path)) > 0) then
-    Exit(ResNotEmpty);
-  C.Remove(Path);
-  var Dir := C.Find(Parent(Path));
-  if Dir <> nil then
-    Dir.Modified := CardNow;
+  if E.IsDirectory then
+    for var X in C.Entries(E) do
+      if X.Exists and (X.Index >= 2) then
+        Exit(ResNotEmpty);
+  C.Remove(E);
+  Touch(C, Parent(Path));
   Result := ResSucceed;
 end;
 
@@ -1302,8 +1712,12 @@ begin
         R := Detect(Port, Slot, NewForm);
         var Present := Card(Port, Slot) <> nil;
         var Free := 0;
+        var IsFormatted := False;
         if Present then
-          Free := Max(0, CardClusters - Cards[Port].UsedClusters);
+        begin
+          Free := Cards[Port].FreeClusters;
+          IsFormatted := Cards[Port].Formatted;
+        end;
         var EndSize := 64;
         if NewForm then
           EndSize := 192;
@@ -1329,7 +1743,7 @@ begin
           if WantFree and (R >= ResChangedCard) then
             PInteger(P + 4)^ := Free;
           if WantFormat and (R >= ResChangedCard) then
-            PInteger(P + 144)^ := 1;
+            PInteger(P + 144)^ := Ord(IsFormatted);
           Touched(PCardinal(B + DParam)^, EndSize);
         end;
       end;
@@ -1355,13 +1769,14 @@ begin
         R := Detect(FFiles[Fd].Port, 0);
         if R = ResSucceed then
         begin
-          var E := Cards[FFiles[Fd].Port].Find(FFiles[Fd].Path);
+          var E: TPS2CardEntry;
+          var Found := Cards[FFiles[Fd].Port].Lookup(FFiles[Fd].Path, E);
           var Pos := PInteger(B + DOffset)^;
           case PInteger(B + DOrigin)^ of
             0: ;
             2:
-              if (E <> nil) and not E.IsDirectory then
-                Inc(Pos, Length(E.Data));
+              if Found and not E.IsDirectory then
+                Inc(Pos, Integer(E.Length));
           else
             Inc(Pos, FFiles[Fd].Position);
           end;
@@ -1442,8 +1857,7 @@ begin
           for var K := 0 to High(FFiles) do
             if FFiles[K].Port = Integer(Port) then
               FFiles[K].Open := False;
-          Cards[Port].Clear;
-          Cards[Port].Dirty := True;
+          Cards[Port].FormatFlash(CardNow);
           FCurrent[Port] := '';
           R := ResSucceed;
         end;
@@ -1454,12 +1868,11 @@ begin
         R := Detect(NamePort, NameSlot);
         if R = ResSucceed then
         begin
-          var Path := Resolve(NamePort, Name);
-          var E := Cards[NamePort].Find(Path);
-          if (E = nil) or not E.IsDirectory then
+          var E: TPS2CardEntry;
+          if not Cards[NamePort].Lookup(Resolve(NamePort, Name), E) or not E.IsDirectory then
             R := ResNoEntry
           else
-            R := (Length(Cards[NamePort].Children(Path)) + 2) and 1;
+            R := Integer(E.Length and 1);
         end;
       end;
     $14, $33:

@@ -79,7 +79,11 @@ consumer, exact snapshot round-trips, the old-format and wrong-disc errors,
 and the recorded field layout. A layout change must increase the version.
 It also checks a VIF1 interrupt-bit stall that fills the FIFO and holds the
 DMA channel until a stall cancel (also across a snapshot), the VU busy
-window, and DMAC stall control with fromSPR as source and VIF1 as drain.
+window, and DMAC stall control with fromSPR as source and VIF1 as drain. It
+also tests the card file system: directories, files across clusters, deleted
+slots, free space, image round trips, raw images and earlier card files. It
+also runs libmc's MCSERV calls: info, mkdir, create, write, read, list and
+delete.
 
 ## VU busy windows
 
@@ -266,11 +270,13 @@ It requires a Vulkan device with coherent host-memory import.
 
 - No BIOS boot (OSDSYS); the GS rasterizer is a software renderer without
   upscaling.
-- Memory cards are kept in one file per card in the save folder (not as raw
-  `.ps2` card images). Games using the system card modules see the card at
-  the file level; games bringing their own card driver (MCMAN over SIO2) see
-  it as flash memory, created formatted and empty, which the same file keeps.
-  The two views do not share saves. MagicGate authentication is skipped.
+- Each memory card is kept as one file in the save folder: its 8 MB flash
+  with the PS2 card file system, deflated. The high-level MCSERV works on that
+  file system, and games bringing their own card driver (MCMAN over SIO2)
+  work on the same pages, so both see the same saves. Raw card images, with
+  or without spare bytes (as PCSX2 keeps them), load as they are. Card files
+  of earlier builds (a file tree) are converted, and the old file is kept as
+  `.old`. MagicGate authentication is skipped.
 - HDD, network, USB and i.LINK modules are reported as loaded but do nothing.
 
 ## References and licences

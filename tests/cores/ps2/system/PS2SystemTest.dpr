@@ -10,9 +10,9 @@ uses
 const
   // The recorded TPS2Console.SerializeState field sizes for this version.
   // A layout change must increase PS2SnapshotVersion and record a new pair.
-  RecordedVersion = 5;
+  RecordedVersion = 6;
   RecordedFields = 658;
-  RecordedLayout = '9a71bc0ede74cbcee7c13fb10948994eb19f4bb40e09c0714efa447d9a6a4e10';
+  RecordedLayout = 'aa72aed7ff2636e6a4db6c1d211f9b6d625cbf58b473f8d99ee3d9631f8c1bd2';
 
 procedure Check(Condition: Boolean; const Message: string);
 begin
@@ -335,6 +335,180 @@ begin
   Writeln('VU busy window: MSCAL waits for the running program, VEW/VBS1 follow it: OK');
 end;
 
+// The card file system on the flash: directories, files across clusters,
+// deleted slots reused, free space, image round trips, raw images and the
+// earlier file-tree cards.
+procedure CheckMemoryCard;
+const
+  Dir = 'BESLES-12345';
+  ModeDir = $8427;
+  ModeFile = $8417;
+begin
+  var C := TPS2MemoryCard.Create;
+  var D := TPS2MemoryCard.Create;
+  try
+    var E, F: TPS2CardEntry;
+    Check(C.Formatted and C.Lookup('', E) and E.IsDirectory, 'New card not formatted');
+    Check(C.FreeClusters = 8000, Format('New card has %d free clusters, expected 8000', [C.FreeClusters]));
+    Check(C.MakeDir(Dir, ModeDir, 7) = 0, 'MakeDir failed');
+    Check(C.MakeDir(Dir, ModeDir, 7) < 0, 'MakeDir over an existing directory succeeded');
+    Check(C.FreeClusters = 7998, Format('%d free after a directory, expected 7998', [C.FreeClusters]));
+    var Data: TBytes;
+    SetLength(Data, 2500);
+    for var K := 0 to High(Data) do
+      Data[K] := Byte(K * 7 + 3);
+    Check(C.MakeFile(Dir + '/icon.sys', ModeFile, 9, E) = 0, 'MakeFile failed');
+    Check(C.Grow(E, Length(Data)), 'Grow failed');
+    C.WriteAt(E, 0, @Data[0], Length(Data));
+    C.WriteEntry(E);
+    // Three data clusters and the directory's second cluster (its third entry).
+    Check(C.FreeClusters = 7994, Format('%d free after a 2500-byte file, expected 7994', [C.FreeClusters]));
+    Check(C.Lookup(Dir + '/icon.sys', F) and (F.Length = 2500) and (F.Created = 9), 'File entry not saved');
+    var Back: TBytes;
+    SetLength(Back, Length(Data));
+    Check((C.ReadAt(F, 0, Length(Back), @Back[0]) = 2500) and CompareMem(@Back[0], @Data[0], 2500), 'File data differs');
+    // More entries than one directory cluster holds, then a deleted slot.
+    for var K := 1 to 9 do
+      Check(C.MakeFile(Format('%s/file%d', [Dir, K]), ModeFile, 9, F) = 0, 'MakeFile in a long directory failed');
+    var DE: TPS2CardEntry;
+    Check(C.Lookup(Dir, DE) and (DE.Length = 12), Format('Directory has %d entries, expected 12', [DE.Length]));
+    Check(C.Lookup(Dir + '/file4', F), 'Entry in a later directory cluster not found');
+    var Slot := F.Index;
+    C.Remove(F);
+    Check(not C.Lookup(Dir + '/file4', F), 'Deleted entry still found');
+    Check(C.MakeFile(Dir + '/new', ModeFile, 9, F) = 0, 'MakeFile after a delete failed');
+    Check(F.Index = Slot, 'Deleted slot not reused');
+    var Free := C.FreeClusters;
+    Check(C.Lookup(Dir + '/icon.sys', E), 'icon.sys lost');
+    C.Remove(E);
+    Check(C.FreeClusters = Free + 3, 'Deleting a file did not free its clusters');
+
+    D.Load(C.Image);
+    Check(D.Lookup(Dir + '/file9', F) and D.Lookup(Dir + '/new', F) and not D.Lookup(Dir + '/icon.sys', F),
+      'Card image did not round-trip');
+    Check(CompareMem(@D.Flash[0], @C.Flash[0], Length(C.Flash)), 'Card image flash differs');
+    D.Load(Copy(C.Flash));
+    Check(D.Lookup(Dir + '/file9', F), 'Raw card image with spare bytes not read');
+    var NoSpare: TBytes;
+    SetLength(NoSpare, 16384 * 512);
+    for var Page := 0 to 16383 do
+      Move(C.Flash[Page * 528], NoSpare[Page * 512], 512);
+    D.Load(NoSpare);
+    Check(D.Lookup(Dir + '/new', F) and (D.FreeClusters = C.FreeClusters), 'Raw card image without spare bytes not read');
+
+    // An earlier 'RMPS2MC2' card: root, a directory and a file.
+    var S := TMemoryStream.Create;
+    try
+      S.WriteBuffer(AnsiString('RMPS2MC2')[1], 8);
+      var Count: Integer := 3;
+      S.WriteBuffer(Count, 4);
+      var Put := procedure(Kind: Byte; const Name: string; Created, Modified: UInt64; Mode: Word; Attr: Cardinal;
+        const Body: TBytes)
+        begin
+          var N := TEncoding.UTF8.GetBytes(Name);
+          var NL: Integer := Length(N);
+          var BL: Integer := Length(Body);
+          S.WriteBuffer(Kind, 1);
+          S.WriteBuffer(NL, 4);
+          if NL > 0 then S.WriteBuffer(N[0], NL);
+          S.WriteBuffer(Created, 8);
+          S.WriteBuffer(Modified, 8);
+          S.WriteBuffer(Mode, 2);
+          S.WriteBuffer(Attr, 4);
+          S.WriteBuffer(BL, 4);
+          if BL > 0 then S.WriteBuffer(Body[0], BL);
+        end;
+      Put(1, '', 0, 5, ModeDir, 0, nil);
+      Put(1, Dir, 11, 12, ModeDir, 0, nil);
+      Put(0, Dir + '/save.dat', 13, 14, ModeFile, $55, Data);
+      var Old: TBytes;
+      SetLength(Old, S.Size);
+      Move(S.Memory^, Old[0], S.Size);
+      D.Load(Old);
+    finally
+      S.Free;
+    end;
+    Check(D.Lookup(Dir + '/save.dat', F) and (F.Length = 2500) and (F.Created = 13) and (F.Modified = 14) and
+      (F.Attr = $55), 'Earlier card file not converted');
+    Check((D.ReadAt(F, 0, Length(Back), @Back[0]) = 2500) and CompareMem(@Back[0], @Data[0], 2500),
+      'Earlier card data differs');
+  finally
+    D.Free;
+    C.Free;
+  end;
+  Writeln('Memory card file system: directories, files, deleted slots, free space, images, earlier cards: OK');
+end;
+
+// libmc's calls through MCSERV (the XMCSERV numbers) on the card file system:
+// card info, make a directory, create, write, read, list and delete.
+procedure CheckMCServer;
+const
+  Info = $100000;
+  Src = $110000;
+  Dst = $120000;
+  Table = $130000;
+var
+  Block: array[0..1043] of Byte;
+begin
+  var C := TPS2Console.Create(Default(TPS2ConsoleConfig));
+  try
+    var M := C.MemoryCards;
+    var RAM := C.Bus.RAM;
+    var FileCall := function(Fn: Cardinal; Fd, Size, Offset, Origin, Buffer, Param: Integer): Integer
+      begin
+        FillChar(Block, SizeOf(Block), 0);
+        PInteger(@Block[0])^ := Fd;
+        PInteger(@Block[12])^ := Size;
+        PInteger(@Block[16])^ := Offset;
+        PInteger(@Block[20])^ := Origin;
+        PInteger(@Block[24])^ := Buffer;
+        PInteger(@Block[28])^ := Param;
+        Result := PInteger(@M.Call(Fn, @Block[0], SizeOf(Block), 16)[0])^;
+      end;
+    var NameCall := function(Fn, Flags: Cardinal; Max: Integer; const Name: string): Integer
+      begin
+        FillChar(Block, SizeOf(Block), 0);
+        PCardinal(@Block[8])^ := Flags;
+        PInteger(@Block[12])^ := Max;
+        PCardinal(@Block[16])^ := Table;
+        var N := TEncoding.ANSI.GetBytes(Name);
+        Move(N[0], Block[20], Length(N));
+        Result := PInteger(@M.Call(Fn, @Block[0], SizeOf(Block), 16)[0])^;
+      end;
+    // Card info: type, free clusters and formatted (the first call reports a
+    // new card).
+    Check(FileCall($01, 0, 1, 1, 1, 0, Info) = -1, 'First card info did not report a new card');
+    Check(FileCall($01, 0, 1, 1, 1, 0, Info) = 0, 'Card info failed');
+    Check((PInteger(RAM + Info)^ = 2) and (PInteger(RAM + Info + 4)^ = 8000) and (PInteger(RAM + Info + 144)^ = 1),
+      'Card info fields');
+    Check(NameCall($02, $40, 0, '/BESLES-1') = 0, 'mkdir failed');
+    var Fd := NameCall($02, $202, 0, '/BESLES-1/save.dat');
+    Check(Fd >= 0, 'create failed');
+    for var K := 0 to 2999 do
+      RAM[Src + K] := Byte(K * 13);
+    Check(FileCall($06, Fd, 3000, 0, 0, Src, 0) = 3000, 'write failed');
+    Check(FileCall($03, Fd, 0, 0, 0, 0, 0) = 0, 'close failed');
+    Fd := NameCall($02, $1, 0, '/BESLES-1/save.dat');
+    Check(Fd >= 0, 'open for reading failed');
+    Check(FileCall($05, Fd, 3000, 0, 0, Dst, Info) = 3000, 'read failed');
+    Check(CompareMem(RAM + Src, RAM + Dst, 3000), 'read data differs');
+    FileCall($03, Fd, 0, 0, 0, 0, 0);
+    Check(NameCall($0D, 0, 10, '/BESLES-1/*') = 3, 'listing did not return ., .. and the file');
+    Check((PAnsiChar(RAM + Table + 32) = '.') and (PAnsiChar(RAM + Table + 64 + 32) = '..') and
+      (PAnsiChar(RAM + Table + 128 + 32) = 'save.dat') and (PCardinal(RAM + Table + 128 + 16)^ = 3000),
+      'listing entries');
+    Check(NameCall($0F, 0, 0, '/BESLES-1') = -6, 'deleting a non-empty directory succeeded');
+    Check(NameCall($0F, 0, 0, '/BESLES-1/save.dat') = 0, 'delete file failed');
+    Check(NameCall($0F, 0, 0, '/BESLES-1') = 0, 'delete directory failed');
+    FileCall($01, 0, 1, 1, 1, 0, Info);
+    Check(PInteger(RAM + Info + 4)^ = 7999, Format('%d free after deleting, expected 7999 (root keeps its second cluster)',
+      [PInteger(RAM + Info + 4)^]));
+  finally
+    C.Free;
+  end;
+  Writeln('MCSERV on the card file system: info, mkdir, create, write, read, list, delete: OK');
+end;
+
 // fromSPR as stall source, VIF1 as drain: VIF1 moves whole 8-quadword slices
 // below D_STADR, sets SIS when it waits and finishes once STD is cleared.
 procedure CheckStallControl;
@@ -378,6 +552,8 @@ begin
     CheckVIFStall;
     CheckVUBusy;
     CheckStallControl;
+    CheckMemoryCard;
+    CheckMCServer;
   except
     on E: Exception do
     begin

@@ -212,7 +212,8 @@ implementation
 
 uses
   {$IFDEF MSWINDOWS}Winapi.MMSystem,{$ENDIF}
-  System.Math, System.Diagnostics, System.UITypes, System.Hash, RM.Platforms.PS2, Core.SavePaths, PS2.Types, PS2.ELF;
+  System.Math, System.Diagnostics, System.UITypes, System.Hash, RM.Platforms.PS2, Core.SavePaths, PS2.Types, PS2.ELF,
+  PS2.IOP.MemoryCard;
 
 const
   KeyNames: array[TEmulatorButton] of string =
@@ -522,13 +523,20 @@ begin
   end;
 end;
 
-// Memory cards (file level) live in one file per card; a card file is
-// written only once a game changed the card.
+// Memory cards live in one file per card; a card file is written only once
+// a game changed the card. A card file of an earlier build (a file tree)
+// is copied to '.old' once before the first save in the new form.
 procedure TPS2Worker.LoadCards;
 begin
   for var Port := 0 to 1 do
     if (FCardFiles[Port] <> '') and FStorage.Exists(FCardFiles[Port]) then
-      FConsole.MemoryCards.Cards[Port].Load(FStorage.ReadBytes(FCardFiles[Port]));
+    begin
+      var Data := FStorage.ReadBytes(FCardFiles[Port]);
+      if (Length(Data) >= 8) and (CompareMem(@Data[0], @PS2MemoryCardMagic1, 8) or
+        CompareMem(@Data[0], @PS2MemoryCardMagic2, 8)) and not FStorage.Exists(FCardFiles[Port] + '.old') then
+        FStorage.WriteBytes(FCardFiles[Port] + '.old', Data);
+      FConsole.MemoryCards.Cards[Port].Load(Data);
+    end;
 end;
 
 procedure TPS2Worker.SaveCards;

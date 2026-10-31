@@ -27,6 +27,7 @@ type
     HalfBatch = BatchSize div 2;
     HalfFragments = FragmentCapacity div 2;
     HalfTiles = TileCapacity div 2;
+    LodCapacity = 1024 * 1024; // uints for LOD tables
   private type
     TPages = TPS2GSPages;
     TPush = record
@@ -62,6 +63,11 @@ type
     // precision Q of each mip choice (pairs of Q bits and MipCode).
     FLodKeys: TDictionary<UInt64, Integer>;
     FLodTables: TArray<TArray<Cardinal>>;
+    // The tables as the triangle kernel reads them (count, then the pairs),
+    // each at its offset, appended as they are made.
+    FLodBuffer: TVulkanBuffer;
+    FLodOffsets: TArray<Cardinal>;
+    FLodUsed: Cardinal;
     // The half of the state slots, fragments and tiles being filled (that of
     // the compute's command buffer; the other half's draws may be running):
     // its ends.
@@ -124,9 +130,9 @@ begin
   if FCompute.ExactDouble then
   begin
     FTiles := FCompute.CreateBuffer(TileCapacity * SizeOf(Cardinal), True);
+    FLodBuffer := FCompute.CreateBuffer(LodCapacity * SizeOf(Cardinal), True);
     FTriangleKernel := FCompute.CreateKernel(PS2TriangleSPIRV, 4, SizeOf(TPush));
-    // Triangle slots keep their LOD tables where sprite slots keep coordinates.
-    FCompute.Bind(FTriangleKernel, [FRAM, FState, FTiles, FCoordinates]);
+    FCompute.Bind(FTriangleKernel, [FRAM, FState, FTiles, FLodBuffer]);
   end;
   {$ENDIF}
   TakeHalf;
@@ -571,8 +577,23 @@ begin
     end;
     Start := Hi;
   end;
+  var Size := Cardinal(Length(Entries) + 1);
+  if FLodUsed + Size > LodCapacity then
+  begin
+    // Full: queued draws may read any table; they finish, the tables go.
+    Sync;
+    FLodKeys.Clear;
+    FLodTables := nil;
+    FLodOffsets := nil;
+    FLodUsed := 0;
+  end;
+  var T := PCardinal(FLodBuffer.Data) + FLodUsed;
+  T[0] := Cardinal(Count);
+  Move(Entries[0], T[1], Length(Entries) * SizeOf(Cardinal));
   Result := Length(FLodTables);
   FLodTables := FLodTables + [Entries];
+  FLodOffsets := FLodOffsets + [FLodUsed];
+  Inc(FLodUsed, Size);
   FLodKeys.Add(Key, Result);
 end;
 
@@ -581,23 +602,26 @@ end;
 function TPS2GSGpu.LodLevels(Table: Integer; QLo, QHi: Single): Cardinal;
 begin
   Result := 0;
-  var Entries := FLodTables[Table];
+  // (The host's copy: the buffer's memory may be slow to read.)
+  var E := PCardinal(@FLodTables[Table][0]);
+  var Count := Length(FLodTables[Table]) div 2;
   var Lo := PCardinal(@QLo)^;
   var Hi := PCardinal(@QHi)^;
   if Lo > 0 then Dec(Lo);
   if Hi < $7F800000 then Inc(Hi);
-  var Count := Length(Entries) div 2;
-  for var I := 0 to Count - 1 do
+  // The run holding Lo, then each run up to the one holding Hi.
+  var A := 0;
+  var B := Count - 1;
+  while A < B do
   begin
-    var First := Entries[I * 2];
-    var Last: Cardinal := $FFFFFFFF;
-    if I < Count - 1 then
-      Last := Entries[I * 2 + 2] - 1;
-    if (First <= Hi) and (Last >= Lo) then
-    begin
-      var Code := Entries[I * 2 + 1];
-      Result := Result or (Cardinal(1) shl (Code and 7)) or (Cardinal(1) shl ((Code shr 3) and 7));
-    end;
+    var M := (A + B + 1) shr 1;
+    if E[M * 2] <= Lo then A := M else B := M - 1;
+  end;
+  while (A < Count) and (E[A * 2] <= Hi) do
+  begin
+    var Code := E[A * 2 + 1];
+    Result := Result or (Cardinal(1) shl (Code and 7)) or (Cardinal(1) shl ((Code shr 3) and 7));
+    Inc(A);
   end;
 end;
 
@@ -696,12 +720,7 @@ begin
   P[53] := Ord(D.FST);
   P[78] := Ord(Table >= 0);
   if Table >= 0 then
-  begin
-    var Entries := FLodTables[Table];
-    var T := PCardinal(FCoordinates.Data) + FUsed * 4096;
-    T[0] := Cardinal(Length(Entries) div 2);
-    Move(Entries[0], T[1], Length(Entries) * SizeOf(Cardinal));
-  end;
+    P[79] := FLodOffsets[Table];
   P[54] := Ord(D.IIP);
   P[55] := 0;
   if Rounding = rmTruncate then P[55] := 3;

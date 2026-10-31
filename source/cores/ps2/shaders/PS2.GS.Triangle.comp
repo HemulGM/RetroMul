@@ -9,7 +9,7 @@ layout(set=0,binding=0,std430) buffer VRAM { uint ram[]; };
 struct Draw { uint p[384]; };
 layout(set=0,binding=1,std430) readonly buffer State { Draw draws[]; };
 layout(set=0,binding=2,std430) readonly buffer TileMasks { uint tileMasks[]; };
-// Per draw slot (4096 words): the LOD table of a draw with per-pixel LOD.
+// The LOD tables of draws with per-pixel LOD (each at its draw's p[79]).
 layout(set=0,binding=3,std430) readonly buffer LodTables { uint lodTables[]; };
 layout(push_constant) uniform Bounds { ivec4 bounds; uint slot; uint mode; };
 uint drawIndex;
@@ -123,7 +123,7 @@ uint singleBits(double q) {
 // the slot's table lists the first single-precision Q of each choice.
 uint lodCode(double q) {
   uint bits=singleBits(q);
-  uint base=drawIndex*4096u;
+  uint base=p[79];
   int lo=0,hi=int(lodTables[base])-1;
   while(lo<hi) {
     int mid=(lo+hi+1)>>1;

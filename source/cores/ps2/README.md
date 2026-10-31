@@ -272,8 +272,9 @@ and interpolation on the GPU, per-pixel LOD included: the host's mip choice
 of Q, because `System.Math.Log2` of a Single never decreases as its argument
 grows (`tests/cores/ps2/lod` checks every positive Single under both host
 roundings), so a
-table of those thresholds per LOD setting and rounding (cached on the host,
-kept in the draw's coordinate slot) gives the shader the same choice from
+table of those thresholds per LOD setting and rounding (made once, appended
+to a dedicated buffer that the draw references by offset; when full, queued
+work finishes and the tables start over) gives the shader the same choice from
 the pixel's Q rounded to single precision as the host rounds it. The shader requests
 explicit IEEE FP controls, emulates the host truncation mode and corrects
 device division using exact residuals. It retains the reference depth

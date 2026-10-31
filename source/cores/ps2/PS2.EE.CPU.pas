@@ -19,7 +19,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, System.Generics.Collections, Core.Snapshots, PS2.Types;
+  System.SysUtils, System.Classes, System.Math, System.Generics.Collections, Core.Snapshots, HW.JIT, PS2.Types;
 
 const
   EEExcInterrupt = 0;
@@ -161,6 +161,9 @@ type
     // Only NOPs and an unconditional branch back to PC with a NOP in its
     // delay slot: running it changes nothing but time.
     Spin: Boolean;
+    // Its generated code (UseJit; nil: none yet) and how often it ran before.
+    Native: Pointer;
+    Heat: Integer;
   end;
 
   TEEPageMap = array[0..EEPageCount - 1] of PByte;
@@ -243,6 +246,16 @@ type
     FSingle: array[0..1] of TEEInst;
     FOnSyscall: TEESyscallHook;
     FOnTrap: TEETrapHook;
+    // Blocks as generated code (HW.JIT, UseJit): the writer, whether code is
+    // running (a reset of the code waits for it to return), a reset owed,
+    // the writer full (the blocks are cleared at the next one), no writer to
+    // be had.
+    FJit: TJitAsm;
+    FUseJit, FInJit, FJitResetPending, FJitFull, FJitFailed: Boolean;
+    FJitBlocks, FJitCompiles, FJitResets: Int64;
+    function JitCompile(B: PEEBlock): Pointer;
+    function JitEmitOwn(I: PEEInst; Stop: TJitLabel): Boolean;
+    procedure JitStop(I: PEEInst);
     procedure MapRange(VBase, Size, Phys: Cardinal; Flags: Cardinal);
     procedure UnmapRange(VBase, Size: Cardinal);
     procedure MapTLBEntry(Index: Integer);
@@ -430,6 +443,8 @@ type
     WatchLog: TStrings;
     // Diagnostics: block starts by PC when assigned.
     BlockProfile: TDictionary<Cardinal, Int64>;
+    // Runs of a block before its code is made (UseJit; tests: 1).
+    JitHeat: Integer;
     constructor Create(Bus: TEEBus; Cop2: TEECop2; NowCounter, DeadlineCounter: PInt64);
     destructor Destroy; override;
     procedure Reset;
@@ -465,6 +480,11 @@ type
     property Cop2: TEECop2 read FCop2;
     property Scratchpad: PByte read FScratch;
     property BlocksBuilt: Int64 read FBlocksBuilt;
+    // Experimental: blocks run as generated code where HW.JIT has a backend.
+    property UseJit: Boolean read FUseJit write FUseJit;
+    property JitBlocks: Int64 read FJitBlocks;
+    property JitCompiles: Int64 read FJitCompiles;
+    property JitResets: Int64 read FJitResets;
     property Count: Cardinal read GetCount;
   end;
 
@@ -663,11 +683,13 @@ begin
   FWriteMap := AllocMem(SizeOf(TEEPageMap));
   FGenMap := AllocMem(SizeOf(TEEGenMap));
   FPhys := AllocMem(SizeOf(TEEPhysMap));
+  JitHeat := 2;
   Reset;
 end;
 
 destructor TEECPU.Destroy;
 begin
+  FJit.Free;
   FreeMem(FScratch);
   FreeMem(FReadMap);
   FreeMem(FWriteMap);
@@ -3849,6 +3871,15 @@ end;
 
 procedure TEECPU.ClearBlocks;
 begin
+  // The blocks' code goes too: now, or once the code running returns.
+  if FJit <> nil then
+    if FInJit then
+      FJitResetPending := True
+    else
+    begin
+      FJit.Reset;
+      Inc(FJitResets);
+    end;
   FillChar(FBlockHead, SizeOf(FBlockHead), 0);
   FBlockCount := 0;
   FInstChunk := 0;
@@ -3983,6 +4014,8 @@ begin
   B.Gen2 := B.GenPtr2^;
   B.Link[0] := nil;
   B.Link[1] := nil;
+  B.Native := nil;
+  B.Heat := 0;
   B.Spin := (Count >= 2) and (Code[Count - 1] = 0) and ((Code[Count - 2] and $FFFF0000) = $10000000) and
     (Add32(PC + Cardinal(Count - 2) * 4 + 4, SX16To32(Code[Count - 2] and $FFFF) shl 2) = PC);
   for var K := 0 to Count - 3 do
@@ -4043,6 +4076,8 @@ begin
     SetRoundMode(FHostRoundSaved);
   end;
 end;
+
+{$I PS2.EE.Jit.inc}
 
 // Diagnostics, apart from RunBlocks: no string temporaries there.
 procedure TEECPU.LogWatch(PC: Cardinal);
@@ -4131,7 +4166,33 @@ begin
       end;
       Gen := FBlockGen;
     end;
-    Count := Execute(B.Insts, B.Count, Next);
+    if FUseJit then
+    begin
+      if (B.Native = nil) and (B.Heat < JitHeat) then
+      begin
+        Inc(B.Heat);
+        if B.Heat = JitHeat then
+          B.Native := JitCompile(B);
+      end;
+      if B.Native <> nil then
+      begin
+        FInJit := True;
+        Count := FJit.Invoke(B.Native, NativeUInt(Self), 0, 0, 0);
+        FInJit := False;
+        Inc(FJitBlocks);
+        Next := S.PC;
+        if FJitResetPending then
+        begin
+          FJitResetPending := False;
+          FJit.Reset;
+          Inc(FJitResets);
+        end;
+      end
+      else
+        Count := Execute(B.Insts, B.Count, Next);
+    end
+    else
+      Count := Execute(B.Insts, B.Count, Next);
     S.PC := Next;
     Inc(InstructionsExecuted, Count);
     Inc(Now^, Count);
@@ -4143,6 +4204,14 @@ begin
       Now^ := Deadline^;
     end;
     Prev := B;
+    if FJitFull then
+    begin
+      // (The code writer is full: blocks and code start over.)
+      FJitFull := False;
+      ClearBlocks;
+      Gen := FBlockGen;
+      Prev := nil;
+    end;
     if FExitRequest then
     begin
       FExitRequest := False;
@@ -4167,5 +4236,8 @@ begin
     UpdateInterrupts;
   end;
 end;
+
+initialization
+  EEJitWorkOutOffsets;
 
 end.

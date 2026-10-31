@@ -11,7 +11,7 @@ of the picture wrongly.
 | Unit | Contents |
 | --- | --- |
 | `PS2.Types`, `PS2.Scheduler` | Constants, 128-bit registers, checked arithmetic helpers, the event scheduler in EE cycles |
-| `PS2.EE.CPU`, `PS2.EE.Bus` | R5900 block interpreter (MMI, COP0, FPU with the PS2 float range, COP2 macro mode), EE memory map, INTC |
+| `PS2.EE.CPU`, `PS2.EE.Bus` | R5900 block interpreter (MMI, COP0, FPU with the PS2 float range, COP2 macro mode) and its experimental recompiler (`PS2.EE.Jit.inc`), EE memory map, INTC |
 | `PS2.Timers`, `PS2.DMAC`, `PS2.SIF` | EE timers, DMA controller (chain/interleave/MFIFO, stall control through D_STADR), SIF registers and the SIF command/RPC protocol |
 | `PS2.GS`, `PS2.GS.Memory`, `PS2.GS.Raster`, `PS2.GIF` | GS registers, swizzled local memory, software rasterizer (on the emulation thread or in band threads), GIF paths |
 | `PS2.VU`, `PS2.VU.Float`, `PS2.VIF` | VU0/VU1 micro mode, the PS2 float product and sum for one or four fields (SSE2 on Win64, checked against the one-field routines by `tests/cores/ps2/vufloat/build.ps1`), VIF0/VIF1 command processing, interrupt-bit/STOP/force-break stalls with the FIFO held (8/16 quadwords), VU busy windows |
@@ -162,14 +162,26 @@ PSMT8/PSMT4, retaining coordinate/VRAM wrapping and neighbouring nibbles.
 Other storage formats and race-instrumented builds retain scalar writes.
 The tests run without Vulkan; `-Checked` enables checked core code.
 
-## Experimental VU recompiler
+## Experimental recompilers
 
-`Emulation/Execution=jit` selects the VU block recompiler for VU1 and for VU0
-micro programs (each core with its own code arena); `interpreter` (the
-default) uses the original execution path. This is independent of
-`Video/Renderer` and can change during play. VU0 macro instructions and the EE
-remain interpreted. VU0's spin probes run one pair at a time, which the
-per-pair budget checks keep exact.
+`Emulation/Execution=jit` selects the EE block recompiler and the VU block
+recompiler for VU1 and for VU0 micro programs (each with its own code arena);
+`interpreter` (the default) uses the original execution path. This is
+independent of `Video/Renderer` and can change during play. VU0 macro
+instructions remain interpreted. VU0's spin probes run one pair at a time,
+which the per-pair budget checks keep exact.
+
+The EE recompiler turns a decoded block into host code on its second run.
+Shifts, 32/64-bit integer arithmetic and logic, set-on-less-than, HI/LO moves,
+MOVZ/MOVN, branches and jumps (likely forms included) and the mapped fast path
+of LB/LBU/LW/LWU/LD/LQ and SB/SW/SD/SQ (with the page write generation) are
+emitted inline; every other instruction, and every access the fast path does
+not take, calls its interpreter handler. Timing, interrupts, block
+validation and successor links stay in the run loop, so cycle counts, state
+and frames match the interpreter. Code is dropped with the decoded blocks,
+waiting for running code to return; the arena is bounded to 64 MiB.
+
+## VU recompiler details
 
 The shared `HW.JIT` generator emits pipeline hazard checks, delayed flag
 queues, register commits, VI arithmetic, branches, memory operations and

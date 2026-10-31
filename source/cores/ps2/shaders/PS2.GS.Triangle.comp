@@ -9,6 +9,8 @@ layout(set=0,binding=0,std430) buffer VRAM { uint ram[]; };
 struct Draw { uint p[384]; };
 layout(set=0,binding=1,std430) readonly buffer State { Draw draws[]; };
 layout(set=0,binding=2,std430) readonly buffer TileMasks { uint tileMasks[]; };
+// Per draw slot (4096 words): the LOD table of a draw with per-pixel LOD.
+layout(set=0,binding=3,std430) readonly buffer LodTables { uint lodTables[]; };
 layout(push_constant) uniform Bounds { ivec4 bounds; uint slot; uint mode; };
 uint drawIndex;
 #include "PS2.GS.Pixel.glsl"
@@ -99,6 +101,36 @@ int textureCoordinate(double v) {
   if(v>16777216.0) return 16777216;
   return int(v);
 }
+// Q to single precision as the host rounds (nearest even or toward zero),
+// whatever the device's own conversion does: Q is positive here.
+uint singleBits(double q) {
+  if(!(q>0.0)) return 0u;
+  uint b=floatBitsToUint(float(q));
+  if(p[55]==3) {
+    if(b>0u && double(uintBitsToFloat(b))>q) b--;
+    else if(b<0x7f7fffffu && double(uintBitsToFloat(b+1u))<=q) b++;
+    return b;
+  }
+  uint lo=b,hi=b;
+  if(double(uintBitsToFloat(b))<=q) hi=b+1u; else lo=b-1u;
+  precise double dl=q-double(uintBitsToFloat(lo));
+  precise double dh=double(uintBitsToFloat(hi))-q;
+  if(dl<dh) return lo;
+  if(dh<dl) return hi;
+  return (lo&1u)==0u ? lo : hi;
+}
+// The host's mip choice for a pixel's Q: its LOD only falls as Q rises, so
+// the slot's table lists the first single-precision Q of each choice.
+uint lodCode(double q) {
+  uint bits=singleBits(q);
+  uint base=drawIndex*4096u;
+  int lo=0,hi=int(lodTables[base])-1;
+  while(lo<hi) {
+    int mid=(lo+hi+1)>>1;
+    if(lodTables[base+1u+uint(mid)*2u]<=bits) lo=mid; else hi=mid-1;
+  }
+  return lodTables[base+2u+uint(lo)*2u];
+}
 double vf(uint vertex,uint field) {
   uint raw=p[80+vertex*16+field];
   if(field>=10) return double(uintBitsToFloat(raw));
@@ -133,18 +165,20 @@ void rasterize(ivec2 xy) {
   int a=rounded(interp(w0,w1,w2,vf(i0,6),vf(i1,6),vf(2,6)));
   int fog=p[22]!=0 ? rounded(interp(w0,w1,w2,vf(0,7),vf(1,7),vf(2,7))) : 0;
   int u=0,v=0;
+  uint mip=p[52];
   if(p[47]!=0) {
     if(p[53]!=0) {
       u=textureCoordinate(interp(w0,w1,w2,vf(0,8),vf(1,8),vf(2,8)));
       v=textureCoordinate(interp(w0,w1,w2,vf(0,9),vf(1,9),vf(2,9)));
     } else {
       double q=interp(w0,w1,w2,vf(0,12),vf(1,12),vf(2,12));
+      if(p[78]!=0) mip=lodCode(q);
       if(q==0.0) q=1.0;
       u=textureCoordinate(mulD(divD(interp(w0,w1,w2,vf(0,10),vf(1,10),vf(2,10)),q),double(p[35])*16.0));
       v=textureCoordinate(mulD(divD(interp(w0,w1,w2,vf(0,11),vf(1,11),vf(2,11)),q),double(p[36])*16.0));
     }
   }
-  shadePixel(xy,z,clamp(c,ivec3(0),ivec3(255)),clamp(a,0,255),clamp(fog,0,255),u,v,p[52]);
+  shadePixel(xy,z,clamp(c,ivec3(0),ivec3(255)),clamp(a,0,255),clamp(fog,0,255),u,v,mip);
 }
 
 void main() {

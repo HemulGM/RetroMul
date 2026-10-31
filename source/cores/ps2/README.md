@@ -255,15 +255,23 @@ the 4-bit inter-level weight are computed on the CPU with the same rounding
 as the software path; the GPU samples the chosen levels and blends integers.
 Triangle safety checks conservatively cover all potentially used levels.
 Devices reporting `TVulkanCompute.ExactDouble` can perform triangle coverage
-and interpolation on the GPU for constant-LOD draws. The shader requests
+and interpolation on the GPU, per-pixel LOD included: the host's mip choice
+(`PixelLod`, then `MipCode`) only changes at a few single-precision values
+of Q, because `System.Math.Log2` of a Single never decreases as its argument
+grows (`tests/cores/ps2/lod` checks every positive Single under both host
+roundings), so a
+table of those thresholds per LOD setting and rounding (cached on the host,
+kept in the draw's coordinate slot) gives the shader the same choice from
+the pixel's Q rounded to single precision as the host rounds it. The shader requests
 explicit IEEE FP controls, emulates the host truncation mode and corrects
 device division using exact residuals. It retains the reference depth
 accumulator's four-decimal Currency quantization. Nonfinite/subnormal STQ,
-dynamic per-pixel LOD and unsupported layouts retain host interpolation.
+and unsupported layouts retain host interpolation.
 For those triangles the GPU consumes the exact integer fragments for texture sampling,
 tests, blending and writes. A 65536-fragment arena is split and synchronized
 when full, including in the middle of one triangle.
-The parameter arena holds 2048 draws. Compatible native triangles are binned
+The parameter arena holds 2048 draws (two halves, one filling while the other
+runs). Compatible native triangles are binned
 into ordered 128-draw clusters with 128-bit masks per 8x8 tile; one invocation
 owns a pixel through the cluster and caches its colour/depth until the end.
 Texture dependencies, layout changes and colour/depth aliases end clusters.

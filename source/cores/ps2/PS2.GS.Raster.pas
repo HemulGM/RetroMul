@@ -502,6 +502,10 @@ type
     procedure WaitFirst(Value: Int64);
   end;
 
+// A pixel's LOD from its Q (as the host rounds): log2(1/Q) * 2^L + K (GS
+// User's Manual, texture mapping), or K alone with LCM.
+function PixelLod(const D: TPS2GSDraw; Q: Single): Single;
+
 implementation
 
 uses
@@ -2161,18 +2165,20 @@ end;
 
 // LOD = log2(1/Q) * 2^L + K (GS User's Manual, texture mapping), or K
 // alone with LCM.
+function PixelLod(const D: TPS2GSDraw; Q: Single): Single;
+begin
+  if D.LCM then
+    Exit(D.K);
+  if Q < 0 then
+    Q := -Q;
+  if Q < 1E-30 then
+    Q := 1E-30;
+  Result := -Log2(Q) * (1 shl D.LShift) + D.K;
+end;
+
 procedure TPS2GSDrawer.SetLod(Q: Single);
 begin
-  if FD.LCM then
-    FLod := FD.K
-  else
-  begin
-    if Q < 0 then
-      Q := -Q;
-    if Q < 1E-30 then
-      Q := 1E-30;
-    FLod := -Log2(Q) * (1 shl FD.LShift) + FD.K;
-  end;
+  FLod := PixelLod(FD, Q);
 end;
 
 // One texel of mipmap level Level (U, V in level-0 texels, 4 fraction

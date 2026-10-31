@@ -14,7 +14,8 @@
 interface
 
 uses
-  System.SysUtils, System.Math, PS2.Types, PS2.GS.Raster, PS2.GS.Memory, RM.Vulkan.Compute;
+  System.SysUtils, System.Math, System.Generics.Collections, PS2.Types, PS2.GS.Raster, PS2.GS.Memory,
+  RM.Vulkan.Compute;
 
 type
   TPS2GSGpu = class(TPS2GSAccelerator)
@@ -57,12 +58,18 @@ type
     FNativeReads, FNativeWrites, FNativeTextures: TPages;
     FMaskScratch: TArray<Cardinal>;
     FRecorded: Boolean;
+    // Per-pixel LOD: for each LOD setting and host rounding, the first single
+    // precision Q of each mip choice (pairs of Q bits and MipCode).
+    FLodKeys: TDictionary<UInt64, Integer>;
+    FLodTables: TArray<TArray<Cardinal>>;
     // The half of the state slots, fragments and tiles being filled (that of
     // the compute's command buffer; the other half's draws may be running):
     // its ends.
     FUsedEnd, FFragmentsEnd, FTileWordsEnd: Integer;
     procedure TakeHalf;
     procedure NextHalf;
+    function LodTable(const D: TPS2GSDraw; Rounding: TRoundingMode): Integer;
+    function LodLevels(Table: Integer; QLo, QHi: Single): Cardinal;
     function Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal = $7F;
       SmallAllowed: Boolean = False): Boolean;
     procedure TrackAccess(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal);
@@ -103,6 +110,7 @@ constructor TPS2GSGpu.Create(RAM: Pointer; Clut: PWord);
 begin
   inherited Create;
   FHostClut := Clut;
+  FLodKeys := TDictionary<UInt64, Integer>.Create;
   FCompute := TVulkanCompute.Create;
   FRAM := FCompute.ImportHost(RAM, PS2GSMemorySize);
   if FRAM = nil then
@@ -116,8 +124,9 @@ begin
   if FCompute.ExactDouble then
   begin
     FTiles := FCompute.CreateBuffer(TileCapacity * SizeOf(Cardinal), True);
-    FTriangleKernel := FCompute.CreateKernel(PS2TriangleSPIRV, 3, SizeOf(TPush));
-    FCompute.Bind(FTriangleKernel, [FRAM, FState, FTiles]);
+    FTriangleKernel := FCompute.CreateKernel(PS2TriangleSPIRV, 4, SizeOf(TPush));
+    // Triangle slots keep their LOD tables where sprite slots keep coordinates.
+    FCompute.Bind(FTriangleKernel, [FRAM, FState, FTiles, FCoordinates]);
   end;
   {$ENDIF}
   TakeHalf;
@@ -147,6 +156,7 @@ end;
 destructor TPS2GSGpu.Destroy;
 begin
   Sync;
+  FLodKeys.Free;
   FCompute.Free;
   inherited;
 end;
@@ -516,6 +526,81 @@ begin
   Result := True;
 end;
 
+// Pixels' Q to MipCode as the host decides (PixelLod, then Texel's choice in
+// MipCode), for the rounding the host runs with now: the LOD never rises as
+// Q does (System.Math.Log2 of a Single is monotone, checked over every Single
+// for both roundings), so each choice holds one run of single-precision Qs.
+// -1 when there would be too many runs for a slot.
+function TPS2GSGpu.LodTable(const D: TPS2GSDraw; Rounding: TRoundingMode): Integer;
+
+  function CodeAt(Bits: Cardinal): Cardinal;
+  begin
+    Result := MipCode(D, PixelLod(D, PSingle(@Bits)^));
+  end;
+
+begin
+  var Key := UInt64(PCardinal(@D.K)^) or (UInt64(D.LShift and 3) shl 32) or (UInt64(D.MMIN and 7) shl 34) or
+    (UInt64(D.MXL and 7) shl 37) or (UInt64(Ord(D.Linear)) shl 40) or (UInt64(Ord(Rounding)) shl 41);
+  if FLodKeys.TryGetValue(Key, Result) then
+    Exit;
+  var Entries: TArray<Cardinal>;
+  var Count := 0;
+  var Start: Cardinal := 0;
+  Result := -1;
+  while True do
+  begin
+    if Count = 2000 then
+      Exit;
+    var Code := CodeAt(Start);
+    SetLength(Entries, Count * 2 + 2);
+    Entries[Count * 2] := Start;
+    Entries[Count * 2 + 1] := Code;
+    Inc(Count);
+    // The last Single with this choice, up to +infinity.
+    var Lo := Start;
+    var Hi: Cardinal := $7F800000;
+    if CodeAt(Hi) = Code then
+      Break;
+    while Hi - Lo > 1 do
+    begin
+      var Mid := Lo + (Hi - Lo) div 2;
+      if CodeAt(Mid) = Code then
+        Lo := Mid
+      else
+        Hi := Mid;
+    end;
+    Start := Hi;
+  end;
+  Result := Length(FLodTables);
+  FLodTables := FLodTables + [Entries];
+  FLodKeys.Add(Key, Result);
+end;
+
+// The levels a table's choices take for single-precision Q in QLo..QHi
+// (positive).
+function TPS2GSGpu.LodLevels(Table: Integer; QLo, QHi: Single): Cardinal;
+begin
+  Result := 0;
+  var Entries := FLodTables[Table];
+  var Lo := PCardinal(@QLo)^;
+  var Hi := PCardinal(@QHi)^;
+  if Lo > 0 then Dec(Lo);
+  if Hi < $7F800000 then Inc(Hi);
+  var Count := Length(Entries) div 2;
+  for var I := 0 to Count - 1 do
+  begin
+    var First := Entries[I * 2];
+    var Last: Cardinal := $FFFFFFFF;
+    if I < Count - 1 then
+      Last := Entries[I * 2 + 2] - 1;
+    if (First <= Hi) and (Last >= Lo) then
+    begin
+      var Code := Entries[I * 2 + 1];
+      Result := Result or (Cardinal(1) shl (Code and 7)) or (Cardinal(1) shl ((Code shr 3) and 7));
+    end;
+  end;
+end;
+
 function TPS2GSGpu.Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex;
   X0, Y0, X1, Y1: Integer): Boolean;
 var
@@ -534,12 +619,24 @@ begin
   if FTriangleKernel = nil then Exit;
   var Rounding := GetRoundMode;
   if not (Rounding in [rmNearest, rmTruncate]) then Exit;
-  // Dynamic per-pixel log2/LOD remains on the host. Constant mip decisions
-  // retain the existing host rounding and filtering rules.
-  if D.TME and D.UseLod and not D.LCM and not D.FST then Exit;
-  var Mip := MipCode(D, D.K);
-  if not Supports(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or
-    (Cardinal(1) shl ((Mip shr 3) and 7)), True) then Exit;
+  // A per-pixel LOD takes the host's choice from a table of Q (see
+  // LodTable); a constant one is chosen here.
+  var Table := -1;
+  var Mip: Cardinal := 0;
+  var Levels: Cardinal;
+  if D.TME and D.UseLod and not D.LCM and not D.FST then
+  begin
+    if not ((V0.Q > 0) and (V1.Q > 0) and (V2.Q > 0)) then Exit;
+    Table := LodTable(D, Rounding);
+    if Table < 0 then Exit;
+    Levels := LodLevels(Table, Min(V0.Q, Min(V1.Q, V2.Q)), Max(V0.Q, Max(V1.Q, V2.Q)));
+  end
+  else
+  begin
+    Mip := MipCode(D, D.K);
+    Levels := (Cardinal(1) shl (Mip and 7)) or (Cardinal(1) shl ((Mip shr 3) and 7));
+  end;
+  if not Supports(D, X0, Y0, X1, Y1, Levels, True) then Exit;
   Vertices[0] := V0; Vertices[1] := V1; Vertices[2] := V2;
   for var K := 0 to 2 do
   begin
@@ -553,8 +650,7 @@ begin
     (Int64(V2.X) - V0.X) * (Int64(V1.Y) - V0.Y);
   if Area = 0 then Exit;
   var InvArea: Double := 1.0 / Area;
-  BuildAccess(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or
-    (Cardinal(1) shl ((Mip shr 3) and 7)), Reads, Writes, Textures);
+  BuildAccess(D, X0, Y0, X1, Y1, Levels, Reads, Writes, Textures);
   if Assigned(FBeforeDraw) and not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then Exit;
   if FNativeCount > 0 then
   begin
@@ -598,6 +694,14 @@ begin
   var P := PCardinal(FState.Data) + FUsed * 384;
   P[52] := Mip;
   P[53] := Ord(D.FST);
+  P[78] := Ord(Table >= 0);
+  if Table >= 0 then
+  begin
+    var Entries := FLodTables[Table];
+    var T := PCardinal(FCoordinates.Data) + FUsed * 4096;
+    T[0] := Cardinal(Length(Entries) div 2);
+    Move(Entries[0], T[1], Length(Entries) * SizeOf(Cardinal));
+  end;
   P[54] := Ord(D.IIP);
   P[55] := 0;
   if Rounding = rmTruncate then P[55] := 3;

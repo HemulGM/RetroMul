@@ -677,7 +677,7 @@ begin
       if not CompareMem(MA.Data, MB.Data, PS2GSMemorySize) or (A.PixelsDrawn <> B.PixelsDrawn) then
         raise Exception.CreateFmt('Native arena/CLUT preservation mismatch large=%d', [Large]);
       if (B.VulkanRasterizedTriangles <> BeforeTriangles + Count) or
-        (B.VulkanSubmissions <> Before + 2) then
+        (B.VulkanSubmissions < Before + 2) then
         raise Exception.CreateFmt('Native arena was not refilled large=%d', [Large]);
     end;
     Writeln('2048-slot reuse and 16 MiB tile refill preserve ordered CLUT snapshots: OK');

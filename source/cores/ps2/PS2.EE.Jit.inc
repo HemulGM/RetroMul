@@ -6,8 +6,12 @@
 // rest), the others a call to their handler (Self, the instruction). A handler
 // that stops the block (True) leaves through JitStop, which sets the PC as
 // Execute's ending does; after the last instruction the PC follows the branch
-// state. The code returns the instructions run, as Execute; RunBlocks keeps
-// the time, the interrupts and the block chaining. Code is made for a block
+// state. After its last instruction a block goes on into the next block's
+// code (JitEmitChain) where RunBlocks would run it next: the time counted,
+// no deadline, interrupt, exit or reset due, the next block compiled, valid
+// and not a spin (RunBlocks's to skip); else back to RunBlocks. The code
+// returns the instructions its last block ran (0 after a chain's check), as
+// Execute, the last block in FJitLast. Code is made for a block
 // when it has run JitHeat times, and dropped with the blocks (ClearBlocks,
 // also when the writer is full); a reset asked for while code runs waits for
 // it to return.
@@ -18,6 +22,10 @@ const
 type
   TEEJitOffsets = record
     GPR, HI, LO, PC, BranchTaken, BranchTarget, Stop, ReadMap, WriteMap, GenMap: Integer;
+    Now, Deadline, Executed, IntPending, ExitRequest, JitFull, JitResetPending, WatchPtr, BlockProfile,
+      History, HistoryPos, JitLast: Integer;
+    // TEEBlock's.
+    BPC, BGenPtr, BGenPtr2, BGen, BGen2, BInner: Integer;
   end;
 
 var
@@ -36,6 +44,24 @@ begin
   O.ReadMap := Integer(NativeUInt(@TEECPU(nil).FReadMap));
   O.WriteMap := Integer(NativeUInt(@TEECPU(nil).FWriteMap));
   O.GenMap := Integer(NativeUInt(@TEECPU(nil).FGenMap));
+  O.Now := Integer(NativeUInt(@TEECPU(nil).Now));
+  O.Deadline := Integer(NativeUInt(@TEECPU(nil).Deadline));
+  O.Executed := Integer(NativeUInt(@TEECPU(nil).InstructionsExecuted));
+  O.IntPending := Integer(NativeUInt(@TEECPU(nil).FIntPending));
+  O.ExitRequest := Integer(NativeUInt(@TEECPU(nil).FExitRequest));
+  O.JitFull := Integer(NativeUInt(@TEECPU(nil).FJitFull));
+  O.JitResetPending := Integer(NativeUInt(@TEECPU(nil).FJitResetPending));
+  O.WatchPtr := Integer(NativeUInt(@TEECPU(nil).WatchPtr));
+  O.BlockProfile := Integer(NativeUInt(@TEECPU(nil).BlockProfile));
+  O.History := Integer(NativeUInt(@TEECPU(nil).PCHistory));
+  O.HistoryPos := Integer(NativeUInt(@TEECPU(nil).PCHistoryPos));
+  O.JitLast := Integer(NativeUInt(@TEECPU(nil).FJitLast));
+  O.BPC := Integer(NativeUInt(@PEEBlock(nil).PC));
+  O.BGenPtr := Integer(NativeUInt(@PEEBlock(nil).GenPtr));
+  O.BGenPtr2 := Integer(NativeUInt(@PEEBlock(nil).GenPtr2));
+  O.BGen := Integer(NativeUInt(@PEEBlock(nil).Gen));
+  O.BGen2 := Integer(NativeUInt(@PEEBlock(nil).Gen2));
+  O.BInner := Integer(NativeUInt(@PEEBlock(nil).NativeInner));
   EEJitOff := O;
 end;
 
@@ -71,7 +97,7 @@ begin
     // (The registers first: what most instructions read and write.)
     FJit.AddWindow(EEJitOff.GPR);
   end;
-  if not FJit.Room(4096 + B.Count * 512) then
+  if not FJit.Room(8192 + B.Count * 512) then
   begin
     FJitFull := True;
     Exit;
@@ -83,6 +109,10 @@ begin
   J.Align(16);
   Result := J.Here;
   J.Enter;
+  // Chained blocks come in here.
+  B.NativeInner := J.Here;
+  J.Move(jw64, JT1, JImm(Int64(NativeUInt(B))));
+  J.Move(jw64, JMem(jrSelf, O.JitLast), JT1);
   J.Move(jw8, JMem(jrSelf, O.BranchTaken), JImm(0));
   J.Move(jw8, JMem(jrSelf, O.Stop), JImm(0));
   var Stops: TArray<TJitLabel>;
@@ -105,10 +135,11 @@ begin
   J.BranchTest(jcEq, jw8, JT0, JT0, NotTaken);
   J.Move(jw32, JT0, JMem(jrSelf, O.BranchTarget));
   J.Move(jw32, JMem(jrSelf, O.PC), JT0);
-  J.Leave(JImm(B.Count));
+  JitEmitChain(B, 0);
   J.Bind(NotTaken);
-  J.Move(jw32, JMem(jrSelf, O.PC), JImm(Int64(Integer(Last.Addr + 4))));
-  J.Leave(JImm(B.Count));
+  J.Move(jw32, JT0, JImm(Int64(Integer(Last.Addr + 4))));
+  J.Move(jw32, JMem(jrSelf, O.PC), JT0);
+  JitEmitChain(B, 1);
   // Stopped after instruction K.
   for var K := 0 to B.Count - 1 do
   begin
@@ -119,6 +150,80 @@ begin
   end;
   J.ForgetLabels;
   J.Flush;
+end;
+
+// After B's last instruction, the PC (S.PC) in T0: B's time counted, on into
+// the code of the block RunBlocks would run next, the one in B.Chain[K]
+// (JitLink finds and learns it), as long as RunBlocks would go on to it with
+// nothing else to do first; else back to RunBlocks (all counted: 0).
+procedure TEECPU.JitEmitChain(B: PEEBlock; K: Integer);
+begin
+  var J := FJit;
+  var O := EEJitOff;
+  var Again := J.NewLabel;
+  var Link := J.NewLabel;
+  var Back := J.NewLabel;
+  J.Move(jw64, JT1, JMem(jrSelf, O.Now));
+  J.Alu(jaAdd, jw64, JMem(jrT1, 0), JImm(B.Count));
+  J.Alu(jaAdd, jw64, JMem(jrSelf, O.Executed), JImm(B.Count));
+  J.Move(jw64, JT2, JMem(jrSelf, O.Deadline));
+  J.Move(jw64, JT2, JMem(jrT2, 0));
+  J.Branch(jcGe, jw64, JMem(jrT1, 0), JT2, Back);
+  for var Flag in [O.IntPending, O.ExitRequest, O.JitFull, O.JitResetPending] do
+  begin
+    J.Move(jw8, JT2, JMem(jrSelf, Flag));
+    J.BranchTest(jcNe, jw8, JT2, JT2, Back);
+  end;
+  // (Diagnostics see each block in RunBlocks.)
+  for var Diagnostic in [O.WatchPtr, O.BlockProfile] do
+  begin
+    J.Move(jw64, JT2, JMem(jrSelf, Diagnostic));
+    J.BranchTest(jcNe, jw64, JT2, JT2, Back);
+  end;
+  J.Bind(Again);
+  J.Move(jw64, JT3, JImm(Int64(NativeUInt(@B.Chain[K]))));
+  J.Move(jw64, JT3, JMem(jrT3, 0));
+  J.BranchTest(jcEq, jw64, JT3, JT3, Link);
+  J.Branch(jcNe, jw32, JMem(jrT3, O.BPC), JT0, Link);
+  // Its code pages unchanged since it was found valid (else JitLink checks).
+  J.Move(jw64, JT4, JMem(jrT3, O.BGenPtr));
+  J.Move(jw32, JT4, JMem(jrT4, 0));
+  J.Branch(jcNe, jw32, JT4, JMem(jrT3, O.BGen), Link);
+  J.Move(jw64, JT4, JMem(jrT3, O.BGenPtr2));
+  J.Move(jw32, JT4, JMem(jrT4, 0));
+  J.Branch(jcNe, jw32, JT4, JMem(jrT3, O.BGen2), Link);
+  // RunBlocks's PC history.
+  J.Move(jw32, JT5, JMem(jrSelf, O.HistoryPos));
+  J.Alu(jaAnd, jw32, JT5, JImm(15));
+  J.Shift(jsShl, jw64, jrT5, 2);
+  J.Alu(jaAdd, jw64, JT5, JReg(jrSelf));
+  J.Move(jw32, JMem(jrT5, O.History), JT0);
+  J.Alu(jaAdd, jw32, JMem(jrSelf, O.HistoryPos), JImm(1));
+  J.JumpIndirect(JMem(jrT3, O.BInner));
+  J.Bind(Link);
+  J.Move(jw64, JT1, JImm(Int64(NativeUInt(B))));
+  J.Call(@TEECPU.JitLink, [JSelf, JT1, JImm(K)]);
+  J.BranchTest(jcEq, jw64, JT0, JT0, Back);
+  J.Move(jw32, JT0, JMem(jrSelf, O.PC));
+  J.Jump(Again);
+  J.Bind(Back);
+  J.Leave(JImm(0));
+end;
+
+// The compiled block at S.PC for B's exit K, learned into B.Chain[K] (as
+// RunBlocks would find it: valid, its code made); nil: none (RunBlocks runs
+// what comes next, as without chaining).
+function TEECPU.JitLink(B: PEEBlock; K: Integer): Pointer;
+begin
+  Result := nil;
+  var PC := S.PC;
+  if ((PC and 3) <> 0) or (FReadMap[PC shr 12] = nil) then
+    Exit;
+  var Next := FindBlock(PC);
+  if (Next = nil) or (Next.NativeInner = nil) or Next.Spin then
+    Exit;
+  B.Chain[K] := Next;
+  Result := Next;
 end;
 
 // Instruction I written out as host instructions doing what its handler does

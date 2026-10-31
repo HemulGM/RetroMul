@@ -199,9 +199,13 @@ Shifts, 32/64-bit integer arithmetic and logic, set-on-less-than, HI/LO moves,
 MOVZ/MOVN, branches and jumps (likely forms included) and the mapped fast path
 of LB/LBU/LW/LWU/LD/LQ and SB/SW/SD/SQ (with the page write generation) are
 emitted inline; every other instruction, and every access the fast path does
-not take, calls its interpreter handler. Timing, interrupts, block
-validation and successor links stay in the run loop, so cycle counts, state
-and frames match the interpreter. Code is dropped with the decoded blocks,
+not take, calls its interpreter handler. After its last instruction a block
+counts its time and goes on into the next block's code (learned per exit,
+checked for its PC and code-page generations) only where the run loop would
+run it next with nothing else to do: no deadline, interrupt, exit or code
+reset due, the next block compiled and not a spin, no diagnostics hooks;
+else it returns to the run loop, so cycle counts, state and frames match the
+interpreter. Code is dropped with the decoded blocks,
 waiting for running code to return; the arena is bounded to 64 MiB.
 
 ## VU recompiler details

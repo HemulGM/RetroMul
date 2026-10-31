@@ -161,9 +161,13 @@ type
     // Only NOPs and an unconditional branch back to PC with a NOP in its
     // delay slot: running it changes nothing but time.
     Spin: Boolean;
-    // Its generated code (UseJit; nil: none yet) and how often it ran before.
-    Native: Pointer;
+    // Its generated code (UseJit; nil: none yet), where blocks chained to it
+    // enter that code, and how often it ran before.
+    Native, NativeInner: Pointer;
     Heat: Integer;
+    // The compiled blocks its code goes on to after its last instruction:
+    // where its branch went (0), past its end (1).
+    Chain: array[0..1] of PEEBlock;
   end;
 
   TEEPageMap = array[0..EEPageCount - 1] of PByte;
@@ -253,7 +257,11 @@ type
     FJit: TJitAsm;
     FUseJit, FInJit, FJitResetPending, FJitFull, FJitFailed: Boolean;
     FJitBlocks, FJitCompiles, FJitResets: Int64;
+    // The block whose code ran last (its predecessors' time is counted).
+    FJitLast: PEEBlock;
     function JitCompile(B: PEEBlock): Pointer;
+    procedure JitEmitChain(B: PEEBlock; K: Integer);
+    function JitLink(B: PEEBlock; K: Integer): Pointer;
     function JitEmitOwn(I: PEEInst; Stop: TJitLabel): Boolean;
     procedure JitStop(I: PEEInst);
     procedure MapRange(VBase, Size, Phys: Cardinal; Flags: Cardinal);
@@ -4015,6 +4023,9 @@ begin
   B.Link[0] := nil;
   B.Link[1] := nil;
   B.Native := nil;
+  B.NativeInner := nil;
+  B.Chain[0] := nil;
+  B.Chain[1] := nil;
   B.Heat := 0;
   B.Spin := (Count >= 2) and (Code[Count - 1] = 0) and ((Code[Count - 2] and $FFFF0000) = $10000000) and
     (Add32(PC + Cardinal(Count - 2) * 4 + 4, SX16To32(Code[Count - 2] and $FFFF) shl 2) = PC);
@@ -4181,6 +4192,9 @@ begin
         FInJit := False;
         Inc(FJitBlocks);
         Next := S.PC;
+        // (Blocks chained to: the last ran Count instructions, the others
+        // are counted.)
+        B := FJitLast;
         if FJitResetPending then
         begin
           FJitResetPending := False;

@@ -96,6 +96,16 @@ const
     (401, 409, 433, 441, 465, 473, 497, 505, 403, 411, 435, 443, 467, 475, 499, 507, 405, 413, 437, 445, 469, 477, 501, 509, 407, 415, 439, 447, 471, 479, 503, 511));
 
 type
+  // The pixel addresses of one buffer (base BP, width BW, format PSM) as
+  // TPS2GSMemory.Locate gives them, from the offsets inside a page.
+  TPS2GSAddressing = record
+    Offsets: PWord;
+    Base, Width, Mask: Cardinal;
+    WShift, HShift, PageShift, WMask, HMask: Cardinal;
+    procedure Init(PSM: Integer; BP, BW: Cardinal);
+    function Addr(X, Y: Cardinal): Cardinal; inline;
+  end;
+
   TPS2GSMemory = class
   private
     FData: PByte;
@@ -142,6 +152,17 @@ implementation
 {$IFDEF GS_RACECHECK}
 uses PS2.GS.RaceCheck;
 
+// The bytes of the word a format's pixel occupies (RaceAccess lanes).
+function RaceLanes(PSM: Integer): Integer; inline;
+begin
+  case PSM of
+    PSMCT24, PSMZ24: Result := 1;
+    PSMT8H, PSMT4HL, PSMT4HH: Result := 2;
+  else
+    Result := 3;
+  end;
+end;
+
 function RaceWord(PSM: Integer; A: Cardinal): Cardinal; inline;
 begin
   case PSM of
@@ -154,15 +175,13 @@ begin
 end;
 {$ENDIF}
 
-{$IFNDEF GS_RACECHECK}
 var
-  // Immutable per-row offsets inside an indexed page. Texture uploads reuse
-  // the same swizzle without rebuilding page/block/column terms per pixel.
-  TransferOffsets8: array[0..63, 0..127] of Word;
-  TransferOffsets4: array[0..127, 0..127] of Word;
-  DisplayOffsets32: array[0..31, 0..63] of Word;
-  DisplayOffsets16, DisplayOffsets16S: array[0..63, 0..63] of Word;
-{$ENDIF}
+  // Immutable offsets of the pixels inside a page (address of the pixel at
+  // the page's X, Y with base and page 0), by row.
+  PageOffsets8: array[0..63, 0..127] of Word;
+  PageOffsets4: array[0..127, 0..127] of Word;
+  PageOffsets32, PageOffsetsZ32: array[0..31, 0..63] of Word;
+  PageOffsets16, PageOffsets16S, PageOffsetsZ16, PageOffsetsZ16S: array[0..63, 0..63] of Word;
 
 function Color16To32(V: Cardinal): Cardinal;
 begin
@@ -176,6 +195,66 @@ function Color32To16(V: Cardinal): Cardinal;
 begin
   Result := ((V shr 3) and $1F) or (((V shr 11) and $1F) shl 5) or (((V shr 19) and $1F) shl 10) or
     (((V shr 31) and 1) shl 15);
+end;
+
+{ TPS2GSAddressing }
+
+procedure TPS2GSAddressing.Init(PSM: Integer; BP, BW: Cardinal);
+begin
+  // The cases of TPS2GSMemory.Locate: page sizes 64x32 (32-bit), 64x64
+  // (16-bit), 128x64 (8-bit) and 128x128 (4-bit) pixels of 2048 words.
+  WShift := 6;
+  HShift := 5;
+  PageShift := 11;
+  Base := BP shl 6;
+  Width := BW;
+  Mask := $FFFFF;
+  Offsets := @PageOffsets32[0, 0];
+  case PSM of
+    PSMZ32, PSMZ24: Offsets := @PageOffsetsZ32[0, 0];
+    PSMCT16, PSMCT16S, PSMZ16, PSMZ16S:
+      begin
+        HShift := 6;
+        PageShift := 12;
+        Base := BP shl 7;
+        Mask := $1FFFFF;
+        case PSM of
+          PSMCT16: Offsets := @PageOffsets16[0, 0];
+          PSMCT16S: Offsets := @PageOffsets16S[0, 0];
+          PSMZ16: Offsets := @PageOffsetsZ16[0, 0];
+        else
+          Offsets := @PageOffsetsZ16S[0, 0];
+        end;
+      end;
+    PSMT8:
+      begin
+        WShift := 7;
+        HShift := 6;
+        PageShift := 13;
+        Base := BP shl 8;
+        Width := (BW + 1) shr 1;
+        Mask := $3FFFFF;
+        Offsets := @PageOffsets8[0, 0];
+      end;
+    PSMT4:
+      begin
+        WShift := 7;
+        HShift := 7;
+        PageShift := 14;
+        Base := BP shl 9;
+        Width := (BW + 1) shr 1;
+        Mask := $7FFFFF;
+        Offsets := @PageOffsets4[0, 0];
+      end;
+  end;
+  WMask := (Cardinal(1) shl WShift) - 1;
+  HMask := (Cardinal(1) shl HShift) - 1;
+end;
+
+function TPS2GSAddressing.Addr(X, Y: Cardinal): Cardinal;
+begin
+  Result := (Base + ((X shr WShift) + (Y shr HShift) * Width) shl PageShift +
+    Offsets[((Y and HMask) shl WShift) + (X and WMask)]) and Mask;
 end;
 
 { TPS2GSMemory }
@@ -275,7 +354,7 @@ end;
 
 function TPS2GSMemory.ReadAt(PSM: Integer; A: Cardinal): Cardinal;
 begin
-  {$IFDEF GS_RACECHECK}RaceAccess(RaceWord(PSM, A), False);{$ENDIF}
+  {$IFDEF GS_RACECHECK}RaceAccess(RaceWord(PSM, A), False, RaceLanes(PSM));{$ENDIF}
   case PSM of
     PSMCT24, PSMZ24: Result := PCardinal(FData)[A] and $FFFFFF;
     PSMCT16, PSMCT16S, PSMZ16, PSMZ16S: Result := PWord(FData)[A];
@@ -291,7 +370,7 @@ end;
 
 procedure TPS2GSMemory.WriteAt(PSM: Integer; A, Value: Cardinal);
 begin
-  {$IFDEF GS_RACECHECK}if RaceBandPlus1 = 0 then RaceMainWrite(RaceWord(PSM, A)) else RaceAccess(RaceWord(PSM, A), True);{$ENDIF}
+  {$IFDEF GS_RACECHECK}if RaceBandPlus1 = 0 then RaceMainWrite(RaceWord(PSM, A)) else RaceAccess(RaceWord(PSM, A), True, RaceLanes(PSM));{$ENDIF}
   case PSM of
     PSMCT32, PSMZ32: PCardinal(FData)[A] := Value;
     PSMCT24, PSMZ24: PCardinal(FData)[A] := (PCardinal(FData)[A] and $FF000000) or (Value and $FFFFFF);
@@ -331,7 +410,7 @@ begin
     begin
       var N := Min(Count, 128 - Integer(X and 127));
       var Base := RowBase + ((X shr 7) shl 13);
-      var Offsets: PWord := @TransferOffsets8[Y and 63, X and 127];
+      var Offsets: PWord := @PageOffsets8[Y and 63, X and 127];
       for var K := 0 to N - 1 do FData[(Base + Offsets[K]) and $3FFFFF] := Byte(Values[K]);
       Inc(Values, N);
       Dec(Count, N);
@@ -342,13 +421,13 @@ begin
   if PSM = PSMT4 then
   begin
     var RowBase := (BP shl 9) + (((Y shr 7) * ((BW + 1) shr 1)) shl 14);
-    var Shift := (TransferOffsets4[Y and 127, 0] and 1) * 4;
+    var Shift := (PageOffsets4[Y and 127, 0] and 1) * 4;
     var Keep := $FF xor ($F shl Shift);
     while Count > 0 do
     begin
       var N := Min(Count, 128 - Integer(X and 127));
       var Base := RowBase + ((X shr 7) shl 14);
-      var Offsets: PWord := @TransferOffsets4[Y and 127, X and 127];
+      var Offsets: PWord := @PageOffsets4[Y and 127, X and 127];
       for var K := 0 to N - 1 do
       begin
         var A := ((Base + Offsets[K]) shr 1) and $3FFFFF;
@@ -398,7 +477,7 @@ begin
       begin
         var N := Min(Count, 64 - (X and 63));
         var Base := RowBase + ((Cardinal(X) shr 6) shl 11);
-        var Offsets: PWord := @DisplayOffsets32[Y and 31, X and 63];
+        var Offsets: PWord := @PageOffsets32[Y and 31, X and 63];
         for var K := 0 to N - 1 do
           Pixels[K] := PCardinal(FData)[(Base + (Offsets[K] xor Depth)) and $FFFFF] or $FF000000;
         Inc(Pixels, N);
@@ -416,8 +495,8 @@ begin
       begin
         var N := Min(Count, 64 - (X and 63));
         var Base := RowBase + ((Cardinal(X) shr 6) shl 12);
-        var Offsets: PWord := @DisplayOffsets16[Y and 63, X and 63];
-        if PSM in [PSMCT16S, PSMZ16S] then Offsets := @DisplayOffsets16S[Y and 63, X and 63];
+        var Offsets: PWord := @PageOffsets16[Y and 63, X and 63];
+        if PSM in [PSMCT16S, PSMZ16S] then Offsets := @PageOffsets16S[Y and 63, X and 63];
         for var K := 0 to N - 1 do
           Pixels[K] := Color16To32(PWord(FData)[(Base + (Offsets[K] xor Depth)) and $1FFFFF]);
         Inc(Pixels, N);
@@ -431,25 +510,27 @@ begin
   for var K := 0 to Count - 1 do Pixels[K] := ReadPixel(PSM, FBP, FBW, X + K, Y);
 end;
 
-{$IFNDEF GS_RACECHECK}
 procedure InitPageOffsets;
 begin
   for var Y := 0 to 63 do
-    for var X := 0 to 127 do TransferOffsets8[Y, X] := Word(TPS2GSMemory.Addr8(0, 0, Cardinal(X), Cardinal(Y)));
+    for var X := 0 to 127 do PageOffsets8[Y, X] := Word(TPS2GSMemory.Addr8(0, 0, Cardinal(X), Cardinal(Y)));
   for var Y := 0 to 127 do
-    for var X := 0 to 127 do TransferOffsets4[Y, X] := Word(TPS2GSMemory.Addr4(0, 0, Cardinal(X), Cardinal(Y)));
+    for var X := 0 to 127 do PageOffsets4[Y, X] := Word(TPS2GSMemory.Addr4(0, 0, Cardinal(X), Cardinal(Y)));
   for var Y := 0 to 31 do
-    for var X := 0 to 63 do DisplayOffsets32[Y, X] := Word(TPS2GSMemory.Addr32(0, 0, Cardinal(X), Cardinal(Y)));
+    for var X := 0 to 63 do PageOffsets32[Y, X] := Word(TPS2GSMemory.Addr32(0, 0, Cardinal(X), Cardinal(Y)));
   for var Y := 0 to 63 do
     for var X := 0 to 63 do
     begin
-      DisplayOffsets16[Y, X] := Word(TPS2GSMemory.Addr16(0, 0, Cardinal(X), Cardinal(Y)));
-      DisplayOffsets16S[Y, X] := Word(TPS2GSMemory.Addr16S(0, 0, Cardinal(X), Cardinal(Y)));
+      PageOffsets16[Y, X] := Word(TPS2GSMemory.Addr16(0, 0, Cardinal(X), Cardinal(Y)));
+      PageOffsets16S[Y, X] := Word(TPS2GSMemory.Addr16S(0, 0, Cardinal(X), Cardinal(Y)));
+      PageOffsetsZ16[Y, X] := Word(TPS2GSMemory.AddrZ16(0, 0, Cardinal(X), Cardinal(Y)));
+      PageOffsetsZ16S[Y, X] := Word(TPS2GSMemory.AddrZ16S(0, 0, Cardinal(X), Cardinal(Y)));
     end;
+  for var Y := 0 to 31 do
+    for var X := 0 to 63 do PageOffsetsZ32[Y, X] := Word(TPS2GSMemory.AddrZ32(0, 0, Cardinal(X), Cardinal(Y)));
 end;
 
 initialization
   InitPageOffsets;
-{$ENDIF}
 
 end.

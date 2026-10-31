@@ -125,6 +125,8 @@ type
     ClutOffset: Integer;
   end;
 
+  PPS2GSDraw = ^TPS2GSDraw;
+
   TPS2GSPrimitive = (gpPoint, gpLine, gpTriangle, gpSprite);
 
   // How the band threads take a command: each draws its own rows (Draw);
@@ -137,6 +139,16 @@ type
   TPS2GSCommandOp = (coDraw, coBarrier, coSoloDraw, coSoloWrite, coSoloCopy, coSoloClut, coClut);
 
   TPS2GSClut = array[0..511] of Word;
+
+  // A set of the 512 pages (8 KiB) of GS memory.
+  TPS2GSPages = array[0..15] of Cardinal;
+
+  // The pages a primitive draws in (frame; depth when it tests or writes it)
+  // and reads as texture; whether it may read what it draws.
+  TPS2GSFootprint = record
+    Frame, Depth, Texture: TPS2GSPages;
+    UsesZ, WritesZ, Feedback: Boolean;
+  end;
 
   // A primitive to draw: its kind, the drawing state and its vertices; the
   // host rounding it was queued with (the EE runs with truncation), which
@@ -186,6 +198,26 @@ type
 
   TPS2GSRaster = class;
 
+  // A texture level of the primitive being drawn: its addresses, size and
+  // clamp region, in its own texels.
+  TPS2GSTexLevel = record
+    Addr: TPS2GSAddressing;
+    W, H, MinU, MaxU, MinV, MaxV: Integer;
+  end;
+  PPS2GSTexLevel = ^TPS2GSTexLevel;
+
+  // A triangle's attributes for TPS2GSDrawer.FillTriangle: per vertex as
+  // doubles, the inverse of its doubled signed area and the texture size
+  // (in 1/16 texels) for S and T.
+  TPS2GSTriangle = record
+    InvArea: Double;
+    R, G, B, A, F, Z, U, V, S, T, Q: array[0..2] of Double;
+    SW, TH: Double;
+    NeedZ: Boolean;
+    // The depth test is done before the other attributes (and not again).
+    EarlyZ: Boolean;
+  end;
+
   // The pixel pipeline of one thread: draws primitives into GS memory. With
   // bands (BandCount > 1) only the rows of its band (8-row stripes taken in
   // turn); counting only (CountOnly), it finds which pixels a primitive
@@ -202,18 +234,32 @@ type
     FPixels: Int64;
     // LOD of the pixel being drawn (K when LCM is set).
     FLod: Single;
+    // The primitive's frame and depth buffer addresses, and its texture
+    // levels (prepared when first sampled: a bit per level in LevelsReady).
+    FFrameAddr, FDepthAddr: TPS2GSAddressing;
+    FLevels: array[0..6] of TPS2GSTexLevel;
+    FLevelsReady: Cardinal;
+    // The pixel passed the depth test already (FillTriangle's early test).
+    FZPassed: Boolean;
+    // DrawSprite's texture U by column.
+    FSpriteU: TArray<Integer>;
+    // A pixel is watched (the raster's WatchX, WatchY).
+    FWatch: Boolean;
     function InBand(Y: Integer): Boolean; inline;
     procedure DrawPoint(const V: TPS2GSVertex);
     procedure DrawLine(const V0, V1: TPS2GSVertex);
     procedure DrawTriangle(const V0, V1, V2: TPS2GSVertex);
+    procedure FillTriangle(const T: TPS2GSTriangle; Y, X0, X1: Integer; E0, E1, Step0, Step1: Int64);
+    procedure PrepareLevel(Level: Integer);
     procedure DrawSprite(const V0, V1: TPS2GSVertex);
     procedure LogWatch(X, Y: Integer; WriteFB, WriteZ: Boolean; R, G, B, A: Integer; Z: Cardinal);
     procedure LogSprite(const V0, V1: TPS2GSVertex);
     procedure LogTriangle(const V0, V1, V2: TPS2GSVertex);
     procedure Pixel(X, Y: Integer; Z: Cardinal; R, G, B, A, F: Integer; U, V: Integer);
+    procedure Shade(X, Y: Integer; Z: Cardinal; R, G, B, A, F: Integer; U, V: Integer);
     function Texel(U, V: Integer): Cardinal;
     function SampleLevel(Level, U, V: Integer; Linear: Boolean): Cardinal;
-    function TexelAt(TBP, TBW: Cardinal; TU, TV: Integer): Cardinal;
+    function TexelAt(const L: TPS2GSTexLevel; TU, TV: Integer): Cardinal; inline;
     procedure SetLod(Q: Single); inline;
     function ClampCoord(C, Size, Mode, MinC, MaxC: Integer): Integer; inline;
   public
@@ -262,7 +308,7 @@ type
     // FPendingWrites has every page written since the last Sync, for reads
     // of GS memory on this thread.
     FPending: Boolean;
-    FWritten, FRead, FPendingWrites: array[0..15] of Cardinal;
+    FWritten, FRead, FPendingWrites: TPS2GSPages;
     FPageOwner: array[0..511] of UInt64;
     // Host-to-local pixels for the band threads (with FQueueXfer): the ring,
     // its next position, the run not queued yet (its start, length and first
@@ -280,9 +326,12 @@ type
     FClutUse: array of Int64;
     FClutSlot: Integer;
     FClutChanged: Boolean;
-    function Hazard(const C: TPS2GSCommand; out Feedback: Boolean): Boolean;
-    procedure MarkQueued(const C: TPS2GSCommand);
-    procedure MarkPendingDraw(const C: TPS2GSCommand);
+    // The pixels of the primitive being queued (the counter's).
+    FCommandPixels: Int64;
+    function OwnedElsewhere(const Pages: TPS2GSPages; Key: UInt64): Boolean;
+    function Hazard(const C: TPS2GSCommand; const F: TPS2GSFootprint): Boolean;
+    procedure MarkQueued(const C: TPS2GSCommand; const F: TPS2GSFootprint);
+    procedure MarkPendingDraw(const F: TPS2GSFootprint);
     procedure MarkPendingArea(const Regs: array of UInt64);
     procedure ClearOverlap;
     function Queueing: Boolean; inline;
@@ -316,6 +365,9 @@ type
     procedure LocalToLocal;
     procedure LocalToHost;
   public
+    // Diagnostics: commands queued for the band threads by operation (next
+    // to Regs: what the emulation thread writes, away from what bands read).
+    QueuedOps: array[0..7] of Int64;
     Regs: array[0..$7F] of UInt64;
     SigLblId: UInt64;
     // Diagnostics: transfers started (BITBLTBUF, TRXPOS, TRXREG, TRXDIR) when assigned.
@@ -372,6 +424,9 @@ type
     RingSize = 1 shl RingBits;
     RingMask = RingSize - 1;
     SpinRounds = 4000;
+  public const
+    WakeWeight = 2048;
+  private
   private type
     TBand = class(TThread)
     private
@@ -402,6 +457,7 @@ type
     FBands: TArray<TBand>;
     FProgress: TEvent;
     FMainWaiting, FFailed, FBandsWaiting: Integer;
+    FUnwoken: Integer;
     FFailure: string;
     function Published: Int64; inline;
     function Slowest: Int64;
@@ -415,9 +471,12 @@ type
   public
     constructor Create(Raster: TPS2GSRaster; Count: Integer);
     destructor Destroy; override;
-    // Room for the next primitive (waits for it); Publish hands it over.
+    // Room for the next primitive (waits for it); Publish hands it over. Bands
+    // asleep for want of work are woken once the commands since the last wake
+    // weigh WakeWeight (about pixels: a wake costs the emulation thread a
+    // system call), or this thread waits for them.
     function Next: PPS2GSCommand;
-    procedure Publish;
+    procedure Publish(Weight: Integer = WakeWeight);
     procedure Sync;
     // Primitives queued so far; waits until the first Position are drawn.
     property Position: Int64 read FWrite;
@@ -510,6 +569,25 @@ begin
   if D > $1000000 then
     Exit($1000000);
   Result := Trunc(D);
+end;
+
+// TexCoord without the run-time library's Trunc: the rounded value (one of the
+// integers around D, whatever the rounding) moved toward zero. Pass a variable
+// (an inlined expression argument is worked out at each use).
+function TexCoordOf(D: Double): Integer; inline;
+begin
+  if not (D > -$1000000) then
+    Exit(-$1000000);
+  if D > $1000000 then
+    Exit($1000000);
+  Result := FastRound(D);
+  if D >= 0 then
+  begin
+    if Result > D then
+      Dec(Result);
+  end
+  else if Result < D then
+    Inc(Result);
 end;
 
 constructor TPS2GSRaster.Create;
@@ -798,30 +876,309 @@ begin
     Bits[(P and 511) shr 5] := Bits[(P and 511) shr 5] or (Cardinal(1) shl (P and 31));
 end;
 
-// The rows and last column a primitive may touch, inside the scissor.
-procedure PrimitiveArea(const C: TPS2GSCommand; out X1, Y0, Y1: Integer);
+// The pixels a primitive may draw (inclusive), inside the scissor: as
+// TPS2GSDrawer draws sprites and triangles, around the vertices for points
+// and lines. False when it draws none.
+function PixelRect(const C: TPS2GSCommand; out X0, Y0, X1, Y1: Integer): Boolean;
 begin
   var N := 3;
   if C.Kind in [gpLine, gpSprite] then
     N := 2
   else if C.Kind = gpPoint then
     N := 1;
-  var MaxX := C.V[0].X;
+  var MinX := C.V[0].X;
+  var MaxX := MinX;
   var MinY := C.V[0].Y;
-  var MaxY := C.V[0].Y;
+  var MaxY := MinY;
   for var K := 1 to N - 1 do
   begin
+    MinX := Min(MinX, C.V[K].X);
     MaxX := Max(MaxX, C.V[K].X);
     MinY := Min(MinY, C.V[K].Y);
     MaxY := Max(MaxY, C.V[K].Y);
   end;
-  X1 := Min(C.D.SX1, Max(0, (MaxX + 15) div 16));
-  Y0 := Max(C.D.SY0, Min(2047, Max(0, MinY div 16)));
-  Y1 := Min(C.D.SY1, Max(0, (MaxY + 15) div 16));
-  if Y1 < Y0 then
-    Y1 := Y0;
+  case C.Kind of
+    gpSprite:
+      begin
+        X0 := Integer(Sar(MinX + 15, 4));
+        X1 := Integer(Sar(MaxX + 15, 4)) - 1;
+        Y0 := Integer(Sar(MinY + 15, 4));
+        Y1 := Integer(Sar(MaxY + 15, 4)) - 1;
+      end;
+    gpTriangle:
+      begin
+        X0 := Integer(Sar(MinX + 15, 4));
+        X1 := Integer(Sar(MaxX, 4));
+        Y0 := Integer(Sar(MinY + 15, 4));
+        Y1 := Integer(Sar(MaxY, 4));
+      end;
+  else
+    X0 := Integer(Sar(MinX, 4)) - 1;
+    X1 := Integer(Sar(MaxX, 4)) + 2;
+    Y0 := Integer(Sar(MinY, 4)) - 1;
+    Y1 := Integer(Sar(MaxY, 4)) + 2;
+  end;
+  X0 := Max(X0, C.D.SX0);
+  X1 := Min(X1, C.D.SX1);
+  Y0 := Max(Y0, C.D.SY0);
+  Y1 := Min(Y1, C.D.SY1);
+  Result := (X0 <= X1) and (Y0 <= Y1);
 end;
 
+procedure AddPages(var Pages: TPS2GSPages; First, Last: Integer);
+begin
+  if Last - First >= 511 then
+    Last := First + 511;
+  for var P := First to Last do
+    Pages[(P and 511) shr 5] := Pages[(P and 511) shr 5] or (Cardinal(1) shl (P and 31));
+end;
+
+// The pages holding pixels X0..X1, Y0..Y1 (not negative) of buffer BP
+// (blocks), BW (64 pixels) in format PSM, as TPS2GSAddressing places them.
+procedure AddRectPages(var Pages: TPS2GSPages; BP, BW, PSM: Cardinal; X0, Y0, X1, Y1: Integer);
+begin
+  var PW := 64;
+  var PH := 32;
+  var Cols := Integer(BW);
+  case PSM of
+    PSMCT16, PSMCT16S, PSMZ16, PSMZ16S:
+      PH := 64;
+    PSMT8:
+      begin
+        PW := 128;
+        PH := 64;
+        Cols := (Cols + 1) shr 1;
+      end;
+    PSMT4:
+      begin
+        PW := 128;
+        PH := 128;
+        Cols := (Cols + 1) shr 1;
+      end;
+  end;
+  var PX0 := X0 div PW;
+  var PX1 := X1 div PW;
+  var PY0 := Y0 div PH;
+  var PY1 := Y1 div PH;
+  if (PX1 - PX0 + 1) * (PY1 - PY0 + 1) >= 512 then
+  begin
+    FillChar(Pages, SizeOf(Pages), $FF);
+    Exit;
+  end;
+  // A base inside a page puts each page of the buffer across two.
+  var Base := Integer(BP shr 5);
+  var Extra := Ord((BP and 31) <> 0);
+  for var PY := PY0 to PY1 do
+    AddPages(Pages, Base + PY * Cols + PX0, Base + PY * Cols + PX1 + Extra);
+end;
+
+function PagesOverlap(const A, B: TPS2GSPages): Boolean;
+begin
+  var PA := PUInt64(@A);
+  var PB := PUInt64(@B);
+  for var I := 0 to SizeOf(A) div 8 - 1 do
+    if (PA[I] and PB[I]) <> 0 then
+      Exit(True);
+  Result := False;
+end;
+
+// Formats whose pixels share one arrangement and address unit
+// (TPS2GSMemory.Locate).
+function AddressClass(PSM: Cardinal): Integer;
+begin
+  case PSM of
+    PSMZ32, PSMZ24: Result := 1;
+    PSMCT16: Result := 2;
+    PSMCT16S: Result := 3;
+    PSMZ16: Result := 4;
+    PSMZ16S: Result := 5;
+    PSMT8: Result := 6;
+    PSMT4: Result := 7;
+  else
+    Result := 0;
+  end;
+end;
+
+// The range of sprite pixels P0..P1's value, interpolated from A at vertex
+// coordinate C0 to B at C1 (12.4) as TPS2GSDrawer.DrawSprite steps it.
+procedure SpriteSpan(A, B: Double; C0, C1, P0, P1: Integer; out Lo, Hi: Double);
+begin
+  var First := A;
+  var Last := A;
+  if C1 <> C0 then
+  begin
+    var Slope := (B - A) / (C1 - C0);
+    First := A + (P0 * 16 - C0) * Slope;
+    Last := A + (P1 * 16 - C0) * Slope;
+  end;
+  if First < Last then
+  begin
+    Lo := First;
+    Hi := Last;
+  end
+  else
+  begin
+    Lo := Last;
+    Hi := First;
+  end;
+end;
+
+// One axis of TexelRect: Lo..Hi in 1/16 texels of level 0 to the texels of
+// level Level that SampleLevel fetches for them.
+procedure TexelAxis(Lo, Hi, Level: Integer; Linear: Boolean; Size, Mode, MinC, MaxC: Integer; out C0, C1: Integer);
+begin
+  Lo := Integer(Sar(Lo, Level));
+  Hi := Integer(Sar(Hi, Level));
+  if Linear then
+  begin
+    C0 := Integer(Sar(Lo - 8, 4));
+    C1 := Integer(Sar(Hi - 8, 4)) + 1;
+  end
+  else
+  begin
+    C0 := Integer(Sar(Lo, 4));
+    C1 := Integer(Sar(Hi, 4));
+  end;
+  case Mode of
+    0:
+      if (C1 - C0 >= Size - 1) or ((C0 and (Size - 1)) > (C1 and (Size - 1))) then
+      begin
+        C0 := 0;
+        C1 := Size - 1;
+      end
+      else
+      begin
+        C0 := C0 and (Size - 1);
+        C1 := C1 and (Size - 1);
+      end;
+    1:
+      begin
+        C0 := EnsureRange(C0, 0, Size - 1);
+        C1 := EnsureRange(C1, 0, Size - 1);
+      end;
+    2:
+      if MinC <= MaxC then
+      begin
+        C0 := EnsureRange(C0, MinC, MaxC);
+        C1 := EnsureRange(C1, MinC, MaxC);
+      end
+      else
+      begin
+        C0 := MaxC;
+        C1 := MinC;
+      end;
+  else
+    // (C and MinC) or MaxC
+    C0 := MaxC;
+    C1 := MinC or MaxC;
+  end;
+end;
+
+// The texels of mipmap level Level a sprite or triangle may sample
+// (inclusive): from the coordinates at its vertices (a triangle's pixels
+// interpolate between them, perspective too when the Qs share a sign) or
+// its first and last pixels (sprites), with a margin for the rounding.
+// False when any texel may be (points, lines, unbounded coordinates).
+function TexelRect(const C: TPS2GSCommand; Level: Integer; out U0, V0, U1, V1: Integer): Boolean;
+var
+  ULo, UHi, VLo, VHi: Double;
+begin
+  Result := False;
+  case C.Kind of
+    gpSprite:
+      begin
+        var X0, Y0, X1, Y1: Integer;
+        if not PixelRect(C, X0, Y0, X1, Y1) then
+          Exit;
+        var A, B, TA, TB: Double;
+        if C.D.FST then
+        begin
+          A := C.V[0].U;
+          B := C.V[1].U;
+          TA := C.V[0].V;
+          TB := C.V[1].V;
+        end
+        else
+        begin
+          var Q0 := C.V[0].Q;
+          var Q1 := C.V[1].Q;
+          if Q0 = 0 then Q0 := 1;
+          if Q1 = 0 then Q1 := 1;
+          A := C.V[0].S / Q0 * (1 shl C.D.TW) * 16;
+          B := C.V[1].S / Q1 * (1 shl C.D.TW) * 16;
+          TA := C.V[0].T / Q0 * (1 shl C.D.TH) * 16;
+          TB := C.V[1].T / Q1 * (1 shl C.D.TH) * 16;
+        end;
+        SpriteSpan(A, B, C.V[0].X, C.V[1].X, X0, X1, ULo, UHi);
+        SpriteSpan(TA, TB, C.V[0].Y, C.V[1].Y, Y0, Y1, VLo, VHi);
+      end;
+    gpTriangle:
+      begin
+        var SW := Double(1 shl C.D.TW) * 16;
+        var TH := Double(1 shl C.D.TH) * 16;
+        if not C.D.FST and not (((C.V[0].Q > 0) and (C.V[1].Q > 0) and (C.V[2].Q > 0)) or
+          ((C.V[0].Q < 0) and (C.V[1].Q < 0) and (C.V[2].Q < 0))) then
+          Exit;
+        for var K := 0 to 2 do
+        begin
+          var U, V: Double;
+          if C.D.FST then
+          begin
+            U := C.V[K].U;
+            V := C.V[K].V;
+          end
+          else
+          begin
+            U := C.V[K].S / C.V[K].Q * SW;
+            V := C.V[K].T / C.V[K].Q * TH;
+          end;
+          // Also false for NaNs.
+          if not ((Abs(U) < 4194304) and (Abs(V) < 4194304)) then
+            Exit;
+          if K = 0 then
+          begin
+            ULo := U;
+            UHi := U;
+            VLo := V;
+            VHi := V;
+          end
+          else
+          begin
+            if U < ULo then ULo := U;
+            if U > UHi then UHi := U;
+            if V < VLo then VLo := V;
+            if V > VHi then VHi := V;
+          end;
+        end;
+      end;
+  else
+    Exit;
+  end;
+  // Also false for NaNs.
+  if not ((ULo > -4194304) and (UHi < 4194304) and (VLo > -4194304) and (VHi < 4194304)) then
+    Exit;
+  var W := Max(1, (1 shl C.D.TW) shr Level);
+  var H := Max(1, (1 shl C.D.TH) shr Level);
+  var MinU := C.D.MINU shr Level;
+  var MaxU := C.D.MAXU shr Level;
+  var MinV := C.D.MINV shr Level;
+  var MaxV := C.D.MAXV shr Level;
+  if C.D.WMS = 3 then
+  begin
+    MinU := C.D.MINU;
+    MaxU := C.D.MAXU;
+  end;
+  if C.D.WMT = 3 then
+  begin
+    MinV := C.D.MINV;
+    MaxV := C.D.MAXV;
+  end;
+  var Linear := C.D.Linear or (C.D.UseLod and (C.D.MMIN in [1, 4, 5]));
+  // FastRound is within one of the value, whatever the rounding.
+  TexelAxis(FastRound(ULo) - 3, FastRound(UHi) + 3, Level, Linear, W, C.D.WMS, MinU, MaxU, U0, U1);
+  TexelAxis(FastRound(VLo) - 3, FastRound(VHi) + 3, Level, Linear, H, C.D.WMT, MinV, MaxV, V0, V1);
+  Result := True;
+end;
 // The pages a primitive's texture levels may be read from.
 procedure TexturePages(const D: TPS2GSDraw; Level: Integer; out First, Last: Integer);
 begin
@@ -845,9 +1202,9 @@ procedure TextureLevels(const C: TPS2GSCommand; out First, Last: Integer);
 begin
   First := 0;
   Last := 0;
-  var D := C.D;
-  if not D.UseLod or (D.MMIN < 2) or (D.MXL = 0) then
+  if not C.D.UseLod or (C.D.MMIN < 2) or (C.D.MXL = 0) then
     Exit;
+  var D: PPS2GSDraw := @C.D;
   var LodMin, LodMax: Double;
   if D.LCM or D.FST then
   begin
@@ -890,95 +1247,243 @@ begin
     Last := Min(D.MXL, Trunc(LodMax) + 2);
 end;
 
-// Whether a primitive must wait for the queued ones: it reads as texture a
-// page they write, writes a page they read as texture, or writes a page they
-// draw through another buffer (another band's rows). Feedback: it reads its
-// own target, so it is drawn alone, on this thread.
-function TPS2GSRaster.Hazard(const C: TPS2GSCommand; out Feedback: Boolean): Boolean;
+// Whether pixels X0..X1 (from 0) of rows up to Y1 of a buffer in format
+// PSM, width BW, are all at different addresses (no column beyond the
+// width, no page twice around the memory).
+function Distinct(PSM, BW: Cardinal; X1, Y1: Integer): Boolean;
 begin
-  Result := False;
-  Feedback := False;
-  var X1, Y0, Y1, F0, F1, Z0, Z1: Integer;
-  PrimitiveArea(C, X1, Y0, Y1);
-  PageSpan(C.D.FBP, C.D.FBW, C.D.FPSM, X1, Y0, Y1, F0, F1);
-  PageSpan(C.D.ZBP, C.D.FBW, C.D.ZPSM, X1, Y0, Y1, Z0, Z1);
-  var WritesZ := not C.D.ZMSK;
-  // The depth test reads the depth buffer.
-  var UsesZ := WritesZ or (C.D.ZTST >= 2);
-  // Depth over the frame's own memory: a word may hold one pixel's colour
-  // and another row's depth.
-  if UsesZ and (Z1 >= F0) and (Z0 <= F1) then
-    Feedback := True;
-  var L0, L1: Integer;
-  TextureLevels(C, L0, L1);
-  if C.D.TME then
-    for var L := L0 to L1 do
-    begin
-      var T0, T1: Integer;
-      TexturePages(C.D, L, T0, T1);
-      if PagesMeet(FWritten, T0, T1) then
-        Result := True;
-      if ((T1 >= F0) and (T0 <= F1)) or (WritesZ and (T1 >= Z0) and (T0 <= Z1)) then
-        Feedback := True;
-    end;
-  if PagesMeet(FRead, F0, F1) or (WritesZ and PagesMeet(FRead, Z0, Z1)) then
-    Result := True;
-  var FKey := UInt64(C.D.FBP) or (UInt64(C.D.FBW) shl 20) or (UInt64(C.D.FPSM) shl 32) or (UInt64(1) shl 40);
-  var ZKey := UInt64(C.D.ZBP) or (UInt64(C.D.FBW) shl 20) or (UInt64(C.D.ZPSM) shl 32) or (UInt64(1) shl 40);
-  for var P := F0 to Min(F1, F0 + 511) do
-    if ((FWritten[(P and 511) shr 5] and (Cardinal(1) shl (P and 31))) <> 0) and (FPageOwner[P and 511] <> FKey) then
-      Exit(True);
-  // Depth tested or written through another buffer than the queued
-  // primitives wrote those pages through: another band's rows.
-  if UsesZ then
-    for var P := Z0 to Min(Z1, Z0 + 511) do
-      if ((FWritten[(P and 511) shr 5] and (Cardinal(1) shl (P and 31))) <> 0) and (FPageOwner[P and 511] <> ZKey) then
-        Exit(True);
+  var PW := 64;
+  var PH := 32;
+  var Cols := Integer(BW);
+  case PSM of
+    PSMCT16, PSMCT16S, PSMZ16, PSMZ16S:
+      PH := 64;
+    PSMT8:
+      begin
+        PW := 128;
+        PH := 64;
+        Cols := (Cols + 1) shr 1;
+      end;
+    PSMT4:
+      begin
+        PW := 128;
+        PH := 128;
+        Cols := (Cols + 1) shr 1;
+      end;
+  end;
+  Result := (X1 < PW * Cols) and ((Y1 div PH + 1) * Cols <= 512);
 end;
 
-procedure TPS2GSRaster.MarkQueued(const C: TPS2GSCommand);
+// One axis of SpriteIdentity: A at vertex coordinate C0 to B at C1 (12.4)
+// step one texel per pixel, under a texel past pixels P0..P1, which the wrap
+// mode leaves alone.
+function IdentityAxis(A, B: Double; C0, C1, P0, P1, Size, Mode, MinC, MaxC: Integer): Boolean;
 begin
-  var X1, Y0, Y1, F0, F1: Integer;
-  PrimitiveArea(C, X1, Y0, Y1);
-  PageSpan(C.D.FBP, C.D.FBW, C.D.FPSM, X1, Y0, Y1, F0, F1);
-  MarkPages(FWritten, F0, F1);
-  var FKey := UInt64(C.D.FBP) or (UInt64(C.D.FBW) shl 20) or (UInt64(C.D.FPSM) shl 32) or (UInt64(1) shl 40);
-  for var P := F0 to Min(F1, F0 + 511) do
-    FPageOwner[P and 511] := FKey;
-  if not C.D.ZMSK then
-  begin
-    var Z0, Z1: Integer;
-    PageSpan(C.D.ZBP, C.D.FBW, C.D.ZPSM, X1, Y0, Y1, Z0, Z1);
-    MarkPages(FWritten, Z0, Z1);
-    var ZKey := UInt64(C.D.ZBP) or (UInt64(C.D.FBW) shl 20) or (UInt64(C.D.ZPSM) shl 32) or (UInt64(1) shl 40);
-    for var P := Z0 to Min(Z1, Z0 + 511) do
-      FPageOwner[P and 511] := ZKey;
+  if (C1 = C0) or (B - A <> C1 - C0) then
+    Exit(False);
+  // The coordinate (1/16 texels) at pixel P is D + 16 P; the drawer's
+  // stepping rounds it by less than 1/1000 unless it is whole.
+  var D := A - C0;
+  if not ((D >= 0) and (D <= 15.999) and ((D = Int(D)) or (D >= 0.001))) then
+    Exit(False);
+  case Mode of
+    0, 1: Result := P1 < Size;
+    2: Result := (P0 >= MinC) and (P1 <= MaxC);
+  else
+    Result := False;
   end;
+end;
+
+// Whether each pixel of a point-sampled sprite (pixels X0..X1, Y0..Y1)
+// reads the texel at its own coordinates.
+function SpriteIdentity(const C: TPS2GSCommand; X0, Y0, X1, Y1: Integer): Boolean;
+begin
+  if (C.Kind <> gpSprite) or C.D.Linear or C.D.UseLod then
+    Exit(False);
+  var A, B, TA, TB: Double;
+  if C.D.FST then
+  begin
+    A := C.V[0].U;
+    B := C.V[1].U;
+    TA := C.V[0].V;
+    TB := C.V[1].V;
+  end
+  else
+  begin
+    var Q0 := C.V[0].Q;
+    var Q1 := C.V[1].Q;
+    if Q0 = 0 then Q0 := 1;
+    if Q1 = 0 then Q1 := 1;
+    A := C.V[0].S / Q0 * (1 shl C.D.TW) * 16;
+    B := C.V[1].S / Q1 * (1 shl C.D.TW) * 16;
+    TA := C.V[0].T / Q0 * (1 shl C.D.TH) * 16;
+    TB := C.V[1].T / Q1 * (1 shl C.D.TH) * 16;
+  end;
+  Result := IdentityAxis(A, B, C.V[0].X, C.V[1].X, X0, X1, 1 shl C.D.TW, C.D.WMS, C.D.MINU, C.D.MAXU) and
+    IdentityAxis(TA, TB, C.V[0].Y, C.V[1].Y, Y0, Y1, 1 shl C.D.TH, C.D.WMT, C.D.MINV, C.D.MAXV);
+end;
+
+// The memory a primitive touches: the pages it draws in (frame, and depth// when tested or written) and reads as texture; Feedback when what it reads
+// may be what it draws (another band's rows, or a pixel drawn before).
+procedure Footprint(const C: TPS2GSCommand; out F: TPS2GSFootprint);
+begin
+  FillChar(F, SizeOf(F), 0);
+  F.WritesZ := not C.D.ZMSK;
+  // The depth test reads the depth buffer.
+  F.UsesZ := F.WritesZ or (C.D.ZTST >= 2);
+  var X0, Y0, X1, Y1: Integer;
+  if not PixelRect(C, X0, Y0, X1, Y1) then
+    Exit;
+  AddRectPages(F.Frame, C.D.FBP, C.D.FBW, C.D.FPSM, X0, Y0, X1, Y1);
+  if F.UsesZ then
+    AddRectPages(F.Depth, C.D.ZBP, C.D.FBW, C.D.ZPSM, X0, Y0, X1, Y1);
+  // Depth over the frame's own memory: a word may hold one pixel's colour
+  // and another row's depth.
+  if F.UsesZ and PagesOverlap(F.Depth, F.Frame) then
+    F.Feedback := True;
+  if not C.D.TME then
+    Exit;
   var L0, L1: Integer;
   TextureLevels(C, L0, L1);
-  if C.D.TME then
-    for var L := L0 to L1 do
+  for var L := L0 to L1 do
+  begin
+    var Pages: TPS2GSPages;
+    FillChar(Pages, SizeOf(Pages), 0);
+    var TBP := C.D.LevelTBP[L];
+    var TBW := C.D.LevelTBW[L];
+    var U0, V0, U1, V1: Integer;
+    var Bounded := TexelRect(C, L, U0, V0, U1, V1);
+    if Bounded then
+      AddRectPages(Pages, TBP, TBW, C.D.TPSM, U0, V0, U1, V1)
+    else
     begin
       var T0, T1: Integer;
       TexturePages(C.D, L, T0, T1);
-      MarkPages(FRead, T0, T1);
+      AddPages(Pages, T0, T1);
     end;
+    for var I := 0 to High(Pages) do
+      F.Texture[I] := F.Texture[I] or Pages[I];
+    // Texels of the very buffer it draws, all at different addresses: only
+    // those of its own pixels' rectangle are drawn, and a pixel reading its
+    // own place reads it before drawing it.
+    var Meet := Bounded and (U0 <= X1) and (U1 >= X0) and (V0 <= Y1) and (V1 >= Y0) and
+      not SpriteIdentity(C, X0, Y0, X1, Y1);
+    // The high byte of words (8H, 4HL, 4HH) the 24-bit formats keep.
+    var HighByte := C.D.TPSM in [PSMT8H, PSMT4HL, PSMT4HH];
+    if Bounded and (TBP = C.D.FBP) and (TBW = C.D.FBW) and (AddressClass(C.D.TPSM) = AddressClass(C.D.FPSM)) and
+      Distinct(C.D.FPSM, TBW, Max(X1, U1), Max(Y1, V1)) then
+      F.Feedback := F.Feedback or Meet
+    else if PagesOverlap(Pages, F.Frame) and not (HighByte and (C.D.FPSM in [PSMCT24, PSMZ24])) then
+      F.Feedback := True;
+    if F.WritesZ then
+      if Bounded and (TBP = C.D.ZBP) and (TBW = C.D.FBW) and (AddressClass(C.D.TPSM) = AddressClass(C.D.ZPSM)) and
+        Distinct(C.D.ZPSM, TBW, Max(X1, U1), Max(Y1, V1)) then
+        F.Feedback := F.Feedback or Meet
+      else if PagesOverlap(Pages, F.Depth) and not (HighByte and (C.D.ZPSM = PSMZ24)) then
+        F.Feedback := True;
+  end;
+end;
+
+function BufferKey(BP, BW, PSM: Cardinal): UInt64; inline;
+begin
+  Result := UInt64(BP) or (UInt64(BW) shl 20) or (UInt64(PSM) shl 32) or (UInt64(1) shl 40);
+end;
+
+// Whether a page of Pages that the queued primitives wrote they drew
+// through another buffer than Key.
+function TPS2GSRaster.OwnedElsewhere(const Pages: TPS2GSPages; Key: UInt64): Boolean;
+begin
+  for var I := 0 to High(Pages) do
+  begin
+    var Bits := Pages[I] and FWritten[I];
+    var P := I * 32;
+    while Bits <> 0 do
+    begin
+      if (Bits and $FF) = 0 then
+      begin
+        Bits := Bits shr 8;
+        Inc(P, 8);
+        Continue;
+      end;
+      if ((Bits and 1) <> 0) and (FPageOwner[P] <> Key) then
+        Exit(True);
+      Bits := Bits shr 1;
+      Inc(P);
+    end;
+  end;
+  Result := False;
+end;
+
+// Whether a primitive must wait for the queued ones: it reads as texture a
+// page they write, writes a page they read as texture, or writes a page they
+// draw through another buffer (another band's rows). (Reading its own
+// target, F.Feedback, it is drawn alone.)
+function TPS2GSRaster.Hazard(const C: TPS2GSCommand; const F: TPS2GSFootprint): Boolean;
+begin
+  if PagesOverlap(F.Texture, FWritten) or PagesOverlap(F.Frame, FRead) or
+    (F.WritesZ and PagesOverlap(F.Depth, FRead)) then
+    Exit(True);
+  // Depth tested or written through another buffer than the queued
+  // primitives wrote those pages through: another band's rows.
+  Result := OwnedElsewhere(F.Frame, BufferKey(C.D.FBP, C.D.FBW, C.D.FPSM)) or
+    (F.UsesZ and OwnedElsewhere(F.Depth, BufferKey(C.D.ZBP, C.D.FBW, C.D.ZPSM)));
+end;
+
+procedure TPS2GSRaster.MarkQueued(const C: TPS2GSCommand; const F: TPS2GSFootprint);
+begin
+  var FKey := BufferKey(C.D.FBP, C.D.FBW, C.D.FPSM);
+  var ZKey := BufferKey(C.D.ZBP, C.D.FBW, C.D.ZPSM);
+  for var I := 0 to High(FWritten) do
+  begin
+    var Bits := F.Frame[I];
+    var P := I * 32;
+    while Bits <> 0 do
+    begin
+      if (Bits and $FF) = 0 then
+      begin
+        Bits := Bits shr 8;
+        Inc(P, 8);
+        Continue;
+      end;
+      if (Bits and 1) <> 0 then
+        FPageOwner[P] := FKey;
+      Bits := Bits shr 1;
+      Inc(P);
+    end;
+    FWritten[I] := FWritten[I] or F.Frame[I];
+    if F.WritesZ then
+    begin
+      Bits := F.Depth[I];
+      P := I * 32;
+      while Bits <> 0 do
+      begin
+        if (Bits and $FF) = 0 then
+        begin
+          Bits := Bits shr 8;
+          Inc(P, 8);
+          Continue;
+        end;
+        if (Bits and 1) <> 0 then
+          FPageOwner[P] := ZKey;
+        Bits := Bits shr 1;
+        Inc(P);
+      end;
+      FWritten[I] := FWritten[I] or F.Depth[I];
+    end;
+    FRead[I] := FRead[I] or F.Texture[I];
+  end;
 end;
 
 // The pages a queued primitive writes, until the next Sync.
-procedure TPS2GSRaster.MarkPendingDraw(const C: TPS2GSCommand);
+procedure TPS2GSRaster.MarkPendingDraw(const F: TPS2GSFootprint);
 begin
-  var X1, Y0, Y1, P0, P1: Integer;
-  PrimitiveArea(C, X1, Y0, Y1);
-  PageSpan(C.D.FBP, C.D.FBW, C.D.FPSM, X1, Y0, Y1, P0, P1);
-  MarkPages(FPendingWrites, P0, P1);
-  if not C.D.ZMSK then
+  for var I := 0 to High(FPendingWrites) do
   begin
-    PageSpan(C.D.ZBP, C.D.FBW, C.D.ZPSM, X1, Y0, Y1, P0, P1);
-    MarkPages(FPendingWrites, P0, P1);
+    FPendingWrites[I] := FPendingWrites[I] or F.Frame[I];
+    if F.WritesZ then
+      FPendingWrites[I] := FPendingWrites[I] or F.Depth[I];
   end;
 end;
-
 // The pages a queued transfer's destination area may cover, until the next
 // Sync.
 procedure TPS2GSRaster.MarkPendingArea(const Regs: array of UInt64);
@@ -1023,7 +1528,8 @@ begin
   end;
   var Before := FCounter.PixelsDrawn;
   FCounter.Draw(FCommand);
-  Inc(FPixels, FCounter.PixelsDrawn - Before);
+  FCommandPixels := FCounter.PixelsDrawn - Before;
+  Inc(FPixels, FCommandPixels);
   QueueDraw;
 end;
 
@@ -1036,7 +1542,8 @@ begin
   if FAccelerator.Pending then FAccelerator.Sync;
   var Before := FCounter.PixelsDrawn;
   FCounter.Draw(FCommand);
-  Inc(Drawer.FPixels, FCounter.PixelsDrawn - Before);
+  FCommandPixels := FCounter.PixelsDrawn - Before;
+  Inc(Drawer.FPixels, FCommandPixels);
   QueueDraw;
 end;
 
@@ -1045,9 +1552,11 @@ begin
   FlushTransfer;
   // Overlapping the queued primitives: the band threads first finish them;
   // reading its own target: the first band thread draws it alone.
-  var Feedback: Boolean;
+  var F: TPS2GSFootprint;
+  Footprint(FCommand, F);
+  var Feedback := F.Feedback;
   FCommand.Op := coDraw;
-  if Hazard(FCommand, Feedback) then
+  if Hazard(FCommand, F) then
     FCommand.Op := coBarrier;
   if Feedback then
     FCommand.Op := coSoloDraw;
@@ -1069,13 +1578,17 @@ begin
   if FCommand.Op = coSoloDraw then RaceBarrier(FBands.Position + 1);
   RaceDescribe(FBands.Position, Format('%d op%d fbp %x/%d/%x tbp %x/%d/%x tme %d zbp %x/%x zmsk %d', [Ord(FCommand.Kind), Ord(FCommand.Op), FCommand.D.FBP, FCommand.D.FBW, FCommand.D.FPSM, FCommand.D.TBP, FCommand.D.TBW, FCommand.D.TPSM, Ord(FCommand.D.TME), FCommand.D.ZBP, FCommand.D.ZPSM, Ord(FCommand.D.ZMSK)]));
   {$ENDIF}
+  Inc(QueuedOps[Ord(FCommand.Op)]);
   FBands.Next^ := FCommand;
-  FBands.Publish;
-  MarkPendingDraw(FCommand);
+  if FCommand.Op = coDraw then
+    FBands.Publish(16 + Integer(Min(FCommandPixels, TPS2GSBands.WakeWeight)))
+  else
+    FBands.Publish;
+  MarkPendingDraw(F);
   if FCommand.Op <> coDraw then
     ClearOverlap;
   if FCommand.Op <> coSoloDraw then
-    MarkQueued(FCommand);
+    MarkQueued(FCommand, F);
   FPending := True;
 end;
 
@@ -1455,6 +1968,13 @@ end;
 procedure TPS2GSDrawer.Draw(const Command: TPS2GSCommand);
 begin
   FD := Command.D;
+  FWatch := (FOwner.WatchX >= 0) and (FOwner.PrimLog <> nil);
+  if not FCountOnly then
+  begin
+    FFrameAddr.Init(Integer(FD.FPSM), FD.FBP, FD.FBW);
+    FDepthAddr.Init(Integer(FD.ZPSM), FD.ZBP, FD.FBW);
+    FLevelsReady := 0;
+  end;
   if Command.Clut < 0 then
     FClut := @FOwner.FClut[0]
   else
@@ -1504,9 +2024,9 @@ begin
   Result := Result or (Cardinal(A) shl 24);
 end;
 
-function TPS2GSDrawer.TexelAt(TBP, TBW: Cardinal; TU, TV: Integer): Cardinal;
+function TPS2GSDrawer.TexelAt(const L: TPS2GSTexLevel; TU, TV: Integer): Cardinal;
 begin
-  var Raw := FMemory.ReadRaw(Integer(FD.TPSM), TBP, TBW, Cardinal(TU), Cardinal(TV));
+  var Raw := FMemory.ReadAt(Integer(FD.TPSM), L.Addr.Addr(Cardinal(TU), Cardinal(TV)));
   case FD.TPSM of
     PSMCT32, PSMZ32:
       Result := Raw;
@@ -1552,55 +2072,79 @@ end;
 
 // One texel of mipmap level Level (U, V in level-0 texels, 4 fraction
 // bits), point sampled or bilinear.
-function TPS2GSDrawer.SampleLevel(Level, U, V: Integer; Linear: Boolean): Cardinal;
+procedure TPS2GSDrawer.PrepareLevel(Level: Integer);
 begin
-  var TBP := FD.LevelTBP[Level];
-  var TBW := FD.LevelTBW[Level];
-  var W := Max(1, (1 shl FD.TW) shr Level);
-  var H := Max(1, (1 shl FD.TH) shr Level);
-  var MinU := FD.MINU shr Level;
-  var MaxU := FD.MAXU shr Level;
-  var MinV := FD.MINV shr Level;
-  var MaxV := FD.MAXV shr Level;
+  var L: PPS2GSTexLevel := @FLevels[Level];
+  L.Addr.Init(Integer(FD.TPSM), FD.LevelTBP[Level], FD.LevelTBW[Level]);
+  L.W := Max(1, (1 shl FD.TW) shr Level);
+  L.H := Max(1, (1 shl FD.TH) shr Level);
+  L.MinU := FD.MINU shr Level;
+  L.MaxU := FD.MAXU shr Level;
+  L.MinV := FD.MINV shr Level;
+  L.MaxV := FD.MAXV shr Level;
   if FD.WMS = 3 then
   begin
-    MinU := FD.MINU;
-    MaxU := FD.MAXU;
+    L.MinU := FD.MINU;
+    L.MaxU := FD.MAXU;
   end;
   if FD.WMT = 3 then
   begin
-    MinV := FD.MINV;
-    MaxV := FD.MAXV;
+    L.MinV := FD.MINV;
+    L.MaxV := FD.MAXV;
   end;
+  FLevelsReady := FLevelsReady or (Cardinal(1) shl Level);
+end;
+
+function TPS2GSDrawer.SampleLevel(Level, U, V: Integer; Linear: Boolean): Cardinal;
+begin
+  if (FLevelsReady and (Cardinal(1) shl Level)) = 0 then
+    PrepareLevel(Level);
+  var L: PPS2GSTexLevel := @FLevels[Level];
   U := Integer(Sar(U, Level));
   V := Integer(Sar(V, Level));
   if not Linear then
   begin
-    var TU := ClampCoord(Integer(Sar(U, 4)), W, FD.WMS, MinU, MaxU);
-    var TV := ClampCoord(Integer(Sar(V, 4)), H, FD.WMT, MinV, MaxV);
-    Exit(TexelAt(TBP, TBW, TU, TV));
+    var TU := ClampCoord(Integer(Sar(U, 4)), L.W, FD.WMS, L.MinU, L.MaxU);
+    var TV := ClampCoord(Integer(Sar(V, 4)), L.H, FD.WMT, L.MinV, L.MaxV);
+    Exit(TexelAt(L^, TU, TV));
   end;
   var U0 := Integer(Sar(U - 8, 4));
   var V0 := Integer(Sar(V - 8, 4));
-  var FU := (U - 8) and 15;
-  var FV := (V - 8) and 15;
-  var CU0 := ClampCoord(U0, W, FD.WMS, MinU, MaxU);
-  var CU1 := ClampCoord(U0 + 1, W, FD.WMS, MinU, MaxU);
-  var CV0 := ClampCoord(V0, H, FD.WMT, MinV, MaxV);
-  var CV1 := ClampCoord(V0 + 1, H, FD.WMT, MinV, MaxV);
-  var A := TexelAt(TBP, TBW, CU0, CV0);
-  var B := TexelAt(TBP, TBW, CU1, CV0);
-  var C := TexelAt(TBP, TBW, CU0, CV1);
-  var D := TexelAt(TBP, TBW, CU1, CV1);
-  Result := 0;
-  for var Shift := 0 to 3 do
+  var FU := Cardinal((U - 8) and 15);
+  var FV := Cardinal((V - 8) and 15);
+  var CU0 := ClampCoord(U0, L.W, FD.WMS, L.MinU, L.MaxU);
+  var CV0 := ClampCoord(V0, L.H, FD.WMT, L.MinV, L.MaxV);
+  var A := TexelAt(L^, CU0, CV0);
+  // On a texel's centre (no fraction) the next column or row weighs nothing.
+  if (FU or FV) = 0 then
+    Exit(A);
+  var B := A;
+  var C := A;
+  var D := A;
+  if FU <> 0 then
   begin
-    var S := Shift * 8;
-    var Top := Integer((A shr S) and $FF) * (16 - FU) + Integer((B shr S) and $FF) * FU;
-    var Bottom := Integer((C shr S) and $FF) * (16 - FU) + Integer((D shr S) and $FF) * FU;
-    var Value := (Top * (16 - FV) + Bottom * FV) shr 8;
-    Result := Result or (Cardinal(Value and $FF) shl S);
+    var CU1 := ClampCoord(U0 + 1, L.W, FD.WMS, L.MinU, L.MaxU);
+    B := TexelAt(L^, CU1, CV0);
+    if FV <> 0 then
+    begin
+      var CV1 := ClampCoord(V0 + 1, L.H, FD.WMT, L.MinV, L.MaxV);
+      C := TexelAt(L^, CU0, CV1);
+      D := TexelAt(L^, CU1, CV1);
+    end;
+  end
+  else
+  begin
+    var CV1 := ClampCoord(V0 + 1, L.H, FD.WMT, L.MinV, L.MaxV);
+    C := TexelAt(L^, CU0, CV1);
   end;
+  // Two channels at a time (R and B, G and A): no channel's sum carries
+  // past its 16 bits.
+  var TopRB := (A and $00FF00FF) * (16 - FU) + (B and $00FF00FF) * FU;
+  var BottomRB := (C and $00FF00FF) * (16 - FU) + (D and $00FF00FF) * FU;
+  var TopGA := ((A shr 8) and $00FF00FF) * (16 - FU) + ((B shr 8) and $00FF00FF) * FU;
+  var BottomGA := ((C shr 8) and $00FF00FF) * (16 - FU) + ((D shr 8) and $00FF00FF) * FU;
+  Result := (((TopRB * (16 - FV) + BottomRB * FV) shr 8) and $00FF00FF) or
+    ((((TopGA * (16 - FV) + BottomGA * FV) shr 8) and $00FF00FF) shl 8);
 end;
 
 // A negative LOD magnifies (MMAG); otherwise MMIN filters level 0 or picks
@@ -1626,24 +2170,40 @@ begin
   if Frac <= 0 then
     Exit(A);
   var B := SampleLevel(L0 + 1, U, V, Bilinear);
-  Result := 0;
-  for var Shift := 0 to 3 do
-  begin
-    var S := Shift * 8;
-    var Value := (Integer((A shr S) and $FF) * (16 - Frac) + Integer((B shr S) and $FF) * Frac) shr 4;
-    Result := Result or (Cardinal(Value and $FF) shl S);
-  end;
+  // Frac is 1..16; two channels at a time as in SampleLevel.
+  var W := Cardinal(Frac);
+  Result := ((((A and $00FF00FF) * (16 - W) + (B and $00FF00FF) * W) shr 4) and $00FF00FF) or
+    ((((((A shr 8) and $00FF00FF) * (16 - W) + ((B shr 8) and $00FF00FF) * W) shr 4) and $00FF00FF) shl 8);
+end;
+
+// One channel of the blend (A - B) * C / 128 + D; A, B and D select the
+// source colour S (0), the destination colour D (1) or zero.
+function BlendTerm(SelA, S, D, SelB, C, SelD: Integer): Integer; inline;
+begin
+  var VA := 0;
+  if SelA = 0 then VA := S else if SelA = 1 then VA := D;
+  var VB := 0;
+  if SelB = 0 then VB := S else if SelB = 1 then VB := D;
+  var VD := 0;
+  if SelD = 0 then VD := S else if SelD = 1 then VD := D;
+  Result := Integer(Sar((VA - VB) * C, 7)) + VD;
 end;
 
 procedure TPS2GSDrawer.Pixel(X, Y: Integer; Z: Cardinal; R, G, B, A, F: Integer; U, V: Integer);
-var
-  Mask: Cardinal;
 begin
   if (X < FD.SX0) or (X > FD.SX1) or (Y < FD.SY0) or (Y > FD.SY1) then
     Exit;
   Inc(FPixels);
   if FCountOnly then
     Exit;
+  Shade(X, Y, Z, R, G, B, A, F, U, V);
+end;
+
+// A pixel inside the scissor, counted already.
+procedure TPS2GSDrawer.Shade(X, Y: Integer; Z: Cardinal; R, G, B, A, F: Integer; U, V: Integer);
+var
+  Mask: Cardinal;
+begin
   if FAccelerating then
   begin
     FOwner.FAccelerator.Fragment(X, Y, Z, R, G, B, A, F, U, V, FLod);
@@ -1659,12 +2219,15 @@ begin
   begin
     if FD.ZTST = 0 then
       Exit;
-    ZA := FMemory.Locate(Integer(FD.ZPSM), FD.ZBP, FD.FBW, Cardinal(X), Cardinal(Y));
-    var Old := FMemory.ReadAt(Integer(FD.ZPSM), ZA);
-    if (FD.ZTST = 2) and (Z < Old) then
-      Exit;
-    if (FD.ZTST = 3) and (Z <= Old) then
-      Exit;
+    ZA := FDepthAddr.Addr(Cardinal(X), Cardinal(Y));
+    if not FZPassed then
+    begin
+      var Old := FMemory.ReadAt(Integer(FD.ZPSM), ZA);
+      if (FD.ZTST = 2) and (Z < Old) then
+        Exit;
+      if (FD.ZTST = 3) and (Z <= Old) then
+        Exit;
+    end;
   end;
   if FD.TME then
   begin
@@ -1747,10 +2310,10 @@ begin
   // With an always-passing test, locate depth only when alpha permits a
   // write; a rejecting alpha test may have disabled it.
   if (FD.ZTST = 1) and WriteZ then
-    ZA := FMemory.Locate(Integer(FD.ZPSM), FD.ZBP, FD.FBW, Cardinal(X), Cardinal(Y));
+    ZA := FDepthAddr.Addr(Cardinal(X), Cardinal(Y));
   // Destination colour.
   var Dst: Cardinal := 0;
-  var FA := FMemory.Locate(Integer(FD.FPSM), FD.FBP, FD.FBW, Cardinal(X), Cardinal(Y));
+  var FA := FFrameAddr.Addr(Cardinal(X), Cardinal(Y));
   if FD.DstRead or not WriteAlpha then
   begin
     var Raw := FMemory.ReadAt(Integer(FD.FPSM), FA);
@@ -1773,36 +2336,18 @@ begin
     var DR := Integer(Dst and $FF);
     var DG := Integer((Dst shr 8) and $FF);
     var DB := Integer((Dst shr 16) and $FF);
-    var DA := Integer(Dst shr 24);
-    var CA, CB, CD: array[0..2] of Integer;
-    case FD.BlendA of
-      0: begin CA[0] := R; CA[1] := G; CA[2] := B; end;
-      1: begin CA[0] := DR; CA[1] := DG; CA[2] := DB; end;
-    else
-      begin CA[0] := 0; CA[1] := 0; CA[2] := 0; end;
-    end;
-    case FD.BlendB of
-      0: begin CB[0] := R; CB[1] := G; CB[2] := B; end;
-      1: begin CB[0] := DR; CB[1] := DG; CB[2] := DB; end;
-    else
-      begin CB[0] := 0; CB[1] := 0; CB[2] := 0; end;
-    end;
-    case FD.BlendD of
-      0: begin CD[0] := R; CD[1] := G; CD[2] := B; end;
-      1: begin CD[0] := DR; CD[1] := DG; CD[2] := DB; end;
-    else
-      begin CD[0] := 0; CD[1] := 0; CD[2] := 0; end;
-    end;
     var CC: Integer;
     case FD.BlendC of
       0: CC := A;
-      1: CC := DA;
+      1: CC := Integer(Dst shr 24);
     else
       CC := FD.BlendFix;
     end;
-    R := Integer(Sar((CA[0] - CB[0]) * CC, 7)) + CD[0];
-    G := Integer(Sar((CA[1] - CB[1]) * CC, 7)) + CD[1];
-    B := Integer(Sar((CA[2] - CB[2]) * CC, 7)) + CD[2];
+    var NR := BlendTerm(FD.BlendA, R, DR, FD.BlendB, CC, FD.BlendD);
+    var NG := BlendTerm(FD.BlendA, G, DG, FD.BlendB, CC, FD.BlendD);
+    B := BlendTerm(FD.BlendA, B, DB, FD.BlendB, CC, FD.BlendD);
+    R := NR;
+    G := NG;
   end;
   if FD.ColClamp then
   begin
@@ -1818,7 +2363,7 @@ begin
   end;
   if FD.FBA then
     A := A or $80;
-  if (FOwner.WatchX >= 0) and (X = FOwner.WatchX) and (Y = FOwner.WatchY) and (FOwner.PrimLog <> nil) then
+  if FWatch and (X = FOwner.WatchX) and (Y = FOwner.WatchY) then
     LogWatch(X, Y, WriteFB, WriteZ and WriteFB or (WriteZ and (FD.AFAIL = 2)), R, G, B, A, Z);
   if WriteFB then
   begin
@@ -2021,17 +2566,26 @@ begin
   var DVDY := 0.0;
   if Y1 <> Y0 then
     DVDY := (TV1 - TV0) / (Y1 - Y0) * 16;
+  var ColumnsReady := False;
   for var Y := PY0 to PY1 - 1 do
   begin
     if not InBand(Y) then
       Continue;
     var VV := TexCoord(TV0 + (Y * 16 - Y0) * DVDY / 16);
-    var UStart := U0 + (PX0 * 16 - X0) * DUDX / 16;
-    for var X := PX0 to PX1 - 1 do
+    if not ColumnsReady then
     begin
-      var UU := TexCoord(UStart + (X - PX0) * DUDX);
-      Pixel(X, Y, V1.Z, V1.R, V1.G, V1.B, V1.A, V1.F, UU, VV);
+      // The columns' U, the same on every row.
+      if Length(FSpriteU) < PX1 - PX0 then
+        SetLength(FSpriteU, PX1 - PX0);
+      var UStart := U0 + (PX0 * 16 - X0) * DUDX / 16;
+      for var X := PX0 to PX1 - 1 do
+        FSpriteU[X - PX0] := TexCoord(UStart + (X - PX0) * DUDX);
+      ColumnsReady := True;
     end;
+    // All inside the scissor.
+    Inc(FPixels, PX1 - PX0);
+    for var X := PX0 to PX1 - 1 do
+      Shade(X, Y, V1.Z, V1.R, V1.G, V1.B, V1.A, V1.F, FSpriteU[X - PX0], VV);
   end;
 end;
 
@@ -2066,6 +2620,87 @@ begin
   end
   else if E < 0 then
     Result := False;
+end;
+
+// Pixels X0..X1 of row Y, all inside the triangle: E0 and E1 are the edge
+// functions of vertices 0 and 1 at X0 (positive inside), stepping by Step0
+// and Step1 per pixel.
+procedure TPS2GSDrawer.FillTriangle(const T: TPS2GSTriangle; Y, X0, X1: Integer; E0, E1, Step0, Step1: Int64);
+begin
+  // All inside the scissor.
+  Inc(FPixels, X1 - X0 + 1);
+  for var X := X0 to X1 do
+  begin
+    var W0 := E0 * T.InvArea;
+    var W1 := E1 * T.InvArea;
+    var W2 := 1.0 - W0 - W1;
+    // The depth goes through a Currency (in 1/10000, rounded as the host
+    // rounds), as it always has; truncating that is its units div 10000
+    // (an integer part cannot be reached by the rounding of the division).
+    var Depth: Cardinal := 0;
+    if T.NeedZ then
+    begin
+      var ZD: Currency := W0 * T.Z[0] + W1 * T.Z[1] + W2 * T.Z[2];
+      if ZD < 0 then
+        ZD := 0;
+      if ZD > 4294967295.0 then
+        ZD := 4294967295.0;
+      Depth := Cardinal(PInt64(@ZD)^ div 10000);
+    end;
+    if T.EarlyZ then
+    begin
+      // Pixel's depth test, before working out the rest: a pixel failing
+      // it is only counted.
+      var Z := Depth;
+      if Z > FD.ZMax then
+        Z := FD.ZMax;
+      var Old := FMemory.ReadAt(Integer(FD.ZPSM), FDepthAddr.Addr(Cardinal(X), Cardinal(Y)));
+      if (Z < Old) or ((FD.ZTST = 3) and (Z = Old)) then
+      begin
+        Inc(E0, Step0);
+        Inc(E1, Step1);
+        Continue;
+      end;
+    end;
+    var R := FastRound(W0 * T.R[0] + W1 * T.R[1] + W2 * T.R[2]);
+    var G := FastRound(W0 * T.G[0] + W1 * T.G[1] + W2 * T.G[2]);
+    var B := FastRound(W0 * T.B[0] + W1 * T.B[1] + W2 * T.B[2]);
+    var A := FastRound(W0 * T.A[0] + W1 * T.A[1] + W2 * T.A[2]);
+    var F := 0;
+    if FD.FGE then
+      F := FastRound(W0 * T.F[0] + W1 * T.F[1] + W2 * T.F[2]);
+    var U, TV: Integer;
+    if FD.TME then
+    begin
+      if FD.FST then
+      begin
+        var UD := W0 * T.U[0] + W1 * T.U[1] + W2 * T.U[2];
+        var VD := W0 * T.V[0] + W1 * T.V[1] + W2 * T.V[2];
+        U := TexCoordOf(UD);
+        TV := TexCoordOf(VD);
+      end
+      else
+      begin
+        var Q := W0 * T.Q[0] + W1 * T.Q[1] + W2 * T.Q[2];
+        if FD.UseLod then
+          SetLod(Q);
+        if Q = 0 then
+          Q := 1;
+        var UD := (W0 * T.S[0] + W1 * T.S[1] + W2 * T.S[2]) / Q * T.SW;
+        var VD := (W0 * T.T[0] + W1 * T.T[1] + W2 * T.T[2]) / Q * T.TH;
+        U := TexCoordOf(UD);
+        TV := TexCoordOf(VD);
+      end;
+    end
+    else
+    begin
+      U := 0;
+      TV := 0;
+    end;
+    Shade(X, Y, Depth, Clamp255(R), Clamp255(G), Clamp255(B), Clamp255(A), Clamp255(F), U, TV);
+    Inc(E0, Step0);
+    Inc(E1, Step1);
+  end;
 end;
 
 procedure TPS2GSDrawer.DrawTriangle(const V0, V1, V2: TPS2GSVertex);
@@ -2142,23 +2777,31 @@ begin
     end;
     Exit;
   end;
-  var InvArea := 1.0 / Area;
+  var T: TPS2GSTriangle;
+  T.InvArea := 1.0 / Area;
   // Attribute values per vertex.
-  var R0 := V0.R; var G0 := V0.G; var BB0 := V0.B; var AA0 := V0.A;
-  var R1 := V1.R; var G1 := V1.G; var BB1 := V1.B; var AA1 := V1.A;
-  var R2 := V2.R; var G2 := V2.G; var BB2 := V2.B; var AA2 := V2.A;
+  T.R[0] := V0.R; T.G[0] := V0.G; T.B[0] := V0.B; T.A[0] := V0.A;
+  T.R[1] := V1.R; T.G[1] := V1.G; T.B[1] := V1.B; T.A[1] := V1.A;
+  T.R[2] := V2.R; T.G[2] := V2.G; T.B[2] := V2.B; T.A[2] := V2.A;
   if not FD.IIP then
   begin
-    R0 := V2.R; R1 := V2.R;
-    G0 := V2.G; G1 := V2.G;
-    BB0 := V2.B; BB1 := V2.B;
-    AA0 := V2.A; AA1 := V2.A;
+    T.R[0] := V2.R; T.R[1] := V2.R;
+    T.G[0] := V2.G; T.G[1] := V2.G;
+    T.B[0] := V2.B; T.B[1] := V2.B;
+    T.A[0] := V2.A; T.A[1] := V2.A;
   end;
-  var SW := Double(1 shl FD.TW) * 16;
-  var TH := Double(1 shl FD.TH) * 16;
+  T.F[0] := V0.F; T.F[1] := V1.F; T.F[2] := V2.F;
+  T.Z[0] := V0.Z; T.Z[1] := V1.Z; T.Z[2] := V2.Z;
+  T.U[0] := V0.U; T.U[1] := V1.U; T.U[2] := V2.U;
+  T.V[0] := V0.V; T.V[1] := V1.V; T.V[2] := V2.V;
+  T.S[0] := V0.S; T.S[1] := V1.S; T.S[2] := V2.S;
+  T.T[0] := V0.T; T.T[1] := V1.T; T.T[2] := V2.T;
+  T.Q[0] := V0.Q; T.Q[1] := V1.Q; T.Q[2] := V2.Q;
+  T.SW := Double(1 shl FD.TW) * 16;
+  T.TH := Double(1 shl FD.TH) * 16;
   // Depth is only read by the test and written unless masked (the watched
   // pixel's line shows it too).
-  var NeedZ := (FD.ZTST >= 2) or not FD.ZMSK or (FOwner.WatchX >= 0);
+  T.NeedZ := (FD.ZTST >= 2) or not FD.ZMSK or (FOwner.WatchX >= 0);
   var Accelerated := False;
   if not FCountOnly and (Self = FOwner.FDrawer) and (FOwner.FAccelerator <> nil) then
   begin
@@ -2171,7 +2814,9 @@ begin
       FOwner.Sync;
     end;
   end;
+  T.EarlyZ := (FD.ZTST >= 2) and not Accelerated;
   FAccelerating := Accelerated;
+  FZPassed := T.EarlyZ;
   try
   for var Y := MinY to MaxY do
   begin
@@ -2183,7 +2828,8 @@ begin
     var E1 := A1 * (PX - X2) + B1 * (PY - Y2);
     var E2 := A2 * (PX - X0) + B2 * (PY - Y0);
     // The covered span of the row from the edge equations (no scan over the
-    // whole bounding box for thin or mostly clipped triangles).
+    // whole bounding box for thin or mostly clipped triangles); every pixel
+    // in it passes all three edge tests.
     var KL: Int64 := 0;
     var KR: Int64 := MaxX - MinX;
     if not EdgeSpan(E0 + Bias0, A0 * 16, KL, KR) or not EdgeSpan(E1 + Bias1, A1 * 16, KL, KR) or
@@ -2191,67 +2837,12 @@ begin
       Continue;
     Inc(E0, A0 * 16 * KL);
     Inc(E1, A1 * 16 * KL);
-    Inc(E2, A2 * 16 * KL);
-    var Started := False;
-    for var X := MinX + Integer(KL) to MinX + Integer(KR) do
-    begin
-      if (E0 + Bias0 >= 0) and (E1 + Bias1 >= 0) and (E2 + Bias2 >= 0) then
-      begin
-        Started := True;
-        var W0 := E0 * Sign * InvArea;
-        var W1 := E1 * Sign * InvArea;
-        var W2 := 1.0 - W0 - W1;
-        var R := FastRound(W0 * R0 + W1 * R1 + W2 * R2);
-        var G := FastRound(W0 * G0 + W1 * G1 + W2 * G2);
-        var B := FastRound(W0 * BB0 + W1 * BB1 + W2 * BB2);
-        var A := FastRound(W0 * AA0 + W1 * AA1 + W2 * AA2);
-        var ZD := 0.0;
-        if NeedZ then
-        begin
-          ZD := W0 * V0.Z + W1 * V1.Z + W2 * V2.Z;
-          if ZD < 0 then
-            ZD := 0;
-          if ZD > 4294967295.0 then
-            ZD := 4294967295.0;
-        end;
-        var F := 0;
-        if FD.FGE then
-          F := FastRound(W0 * V0.F + W1 * V1.F + W2 * V2.F);
-        var U, TV: Integer;
-        if FD.TME then
-        begin
-          if FD.FST then
-          begin
-            U := TexCoord(W0 * V0.U + W1 * V1.U + W2 * V2.U);
-            TV := TexCoord(W0 * V0.V + W1 * V1.V + W2 * V2.V);
-          end
-          else
-          begin
-            var Q := W0 * V0.Q + W1 * V1.Q + W2 * V2.Q;
-            if FD.UseLod then
-              SetLod(Q);
-            if Q = 0 then
-              Q := 1;
-            U := TexCoord((W0 * V0.S + W1 * V1.S + W2 * V2.S) / Q * SW);
-            TV := TexCoord((W0 * V0.T + W1 * V1.T + W2 * V2.T) / Q * TH);
-          end;
-        end
-        else
-        begin
-          U := 0;
-          TV := 0;
-        end;
-        Pixel(X, Y, TruncDepth(ZD), Clamp255(R), Clamp255(G), Clamp255(B), Clamp255(A), Clamp255(F), U, TV);
-      end
-      else if Started then
-        Break;
-      Inc(E0, A0 * 16);
-      Inc(E1, A1 * 16);
-      Inc(E2, A2 * 16);
-    end;
+    FillTriangle(T, Integer(Y), Integer(MinX + KL), Integer(MinX + KR), E0 * Sign, E1 * Sign,
+      A0 * 16 * Sign, A1 * 16 * Sign);
   end;
   finally
     FAccelerating := False;
+    FZPassed := False;
     if Accelerated then FOwner.FAccelerator.EndTriangle;
   end;
 end;
@@ -2915,6 +3506,11 @@ end;
 
 procedure TPS2GSBands.WaitConsumed(Value: Int64);
 begin
+  if FUnwoken > 0 then
+  begin
+    FUnwoken := 0;
+    WakeWaitingBands;
+  end;
   var Spins := 0;
   while Slowest < Value do
   begin
@@ -2980,13 +3576,16 @@ begin
   Result := @FRing[FWrite and RingMask];
 end;
 
-procedure TPS2GSBands.Publish;
+procedure TPS2GSBands.Publish(Weight: Integer);
 begin
   Inc(FWrite);
   TInterlocked.Exchange(FPublished, FWrite);
-  for var I := 0 to High(FSlots) do
-    if FSlots[I].Sleeping <> 0 then
-      FSlots[I].Wake.SetEvent;
+  Inc(FUnwoken, Weight);
+  if FUnwoken >= WakeWeight then
+  begin
+    FUnwoken := 0;
+    WakeWaitingBands;
+  end;
 end;
 
 procedure TPS2GSBands.Sync;

@@ -18,7 +18,9 @@ threadvar
 
 procedure RaceBarrier(Position: Int64);
 procedure RaceDescribe(Position: Int64; const Text: string);
-procedure RaceAccess(WordIndex: Cardinal; Write: Boolean);
+// Lanes: bit 0 for bits 0..23 of the word, bit 1 for bits 24..31 (the 24-bit
+// formats keep the high byte, the 8H/4HL/4HH formats touch only it).
+procedure RaceAccess(WordIndex: Cardinal; Write: Boolean; Lanes: Integer = 3);
 procedure RaceMainWrite(WordIndex: Cardinal);
 function RaceReport: TArray<string>;
 
@@ -80,20 +82,18 @@ begin
   Lock.Enter;
   try
     if Reports.Count < 60 then
-      Reports.Add(Format('%s word %.6x: cmd %d band %d [%s] vs cmd %d band %d [%s]', [Kind, W, C, B,
+      Reports.Add(Format('%s word %.6x lane %d: cmd %d band %d [%s] vs cmd %d band %d [%s]', [Kind, W shr 1, W and 1, C, B,
         Desc[C and $FFFFF], OC, OB, Desc[OC and $FFFFF]]));
   finally
     Lock.Leave;
   end;
 end;
 
-procedure RaceAccess(WordIndex: Cardinal; Write: Boolean);
+procedure RaceLane(WordIndex: Cardinal; Write: Boolean; Lane: Integer);
 begin
   var B := RaceBandPlus1 - 1;
-  if B < 0 then
-    Exit;
   var C := RaceCmd;
-  var W := WordIndex and $FFFFF;
+  var W := (WordIndex and $FFFFF) * 2 + Cardinal(Lane);
   var OB := WriterBand[W];
   var OC := WriterCmd[W];
   if (OB >= 0) and (OB <> B) then
@@ -118,11 +118,23 @@ begin
   end;
 end;
 
+procedure RaceAccess(WordIndex: Cardinal; Write: Boolean; Lanes: Integer);
+begin
+  if RaceBandPlus1 <= 0 then
+    Exit;
+  if (Lanes and 1) <> 0 then
+    RaceLane(WordIndex, Write, 0);
+  if (Lanes and 2) <> 0 then
+    RaceLane(WordIndex, Write, 1);
+end;
+
 procedure RaceMainWrite(WordIndex: Cardinal);
 begin
-  var W := WordIndex and $FFFFF;
+  var W := (WordIndex and $FFFFF) * 2;
   WriterBand[W] := -1;
   ReaderBand[W] := -1;
+  WriterBand[W + 1] := -1;
+  ReaderBand[W + 1] := -1;
 end;
 
 function RaceReport: TArray<string>;
@@ -131,10 +143,10 @@ begin
 end;
 
 initialization
-  SetLength(WriterCmd, 1 shl 20);
-  SetLength(WriterBand, 1 shl 20);
-  SetLength(ReaderCmd, 1 shl 20);
-  SetLength(ReaderBand, 1 shl 20);
+  SetLength(WriterCmd, 1 shl 21);
+  SetLength(WriterBand, 1 shl 21);
+  SetLength(ReaderCmd, 1 shl 21);
+  SetLength(ReaderBand, 1 shl 21);
   FillChar(WriterBand[0], Length(WriterBand), $FF);
   FillChar(ReaderBand[0], Length(ReaderBand), $FF);
   SetLength(Desc, 1 shl 20);

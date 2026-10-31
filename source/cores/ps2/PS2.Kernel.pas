@@ -86,6 +86,9 @@ type
     FBus: TPS2EEBus;
     FScheduler: TPS2Scheduler;
     FThreads: array[0..KernelMaxThreads - 1] of TPS2Thread;
+    // The highest thread that is not free (the loops over threads stop there;
+    // NoteThreads works it out again).
+    FThreadTop: Integer;
     FSemas: array[0..KernelMaxSemas - 1] of TPS2Sema;
     FIntc, FDmac: array[0..127] of TPS2Handler;
     FIntcOrder, FDmacOrder: TList<Integer>;
@@ -122,6 +125,11 @@ type
     FOnTTY: TPS2TTYWrite;
     FOnCrtChange: TProc;
     FUnknown: TStringList;
+    procedure NoteThreads;
+    procedure TraceSyscall(Code: Integer; Index: Cardinal);
+    procedure SyscallLoadExec;
+    procedure SyscallExec;
+    procedure SendTTY(Address: Cardinal);
     procedure SaveContext(var C: TPS2Context);
     procedure LoadContext(const C: TPS2Context);
     procedure WriteTrap(Address, Index: Cardinal);
@@ -293,9 +301,21 @@ begin
   inherited;
 end;
 
+procedure TPS2Kernel.NoteThreads;
+begin
+  FThreadTop := 0;
+  for var K := KernelMaxThreads - 1 downto 1 do
+    if FThreads[K].State <> TPS2ThreadState.Free then
+    begin
+      FThreadTop := K;
+      Break;
+    end;
+end;
+
 procedure TPS2Kernel.Reset;
 begin
   FillChar(FThreads, SizeOf(FThreads), 0);
+  FThreadTop := 0;
   FillChar(FSemas, SizeOf(FSemas), 0);
   FillChar(FIntc, SizeOf(FIntc), 0);
   FillChar(FDmac, SizeOf(FDmac), 0);
@@ -454,6 +474,7 @@ begin
   // Main thread (id 1) at the entry point; SetupThread completes it.
   FThreads[1] := Default(TPS2Thread);
   FThreads[1].State := TPS2ThreadState.Ready;
+  NoteThreads;
   FThreads[1].InitPriority := 0;
   FThreads[1].Priority := 0;
   FThreads[1].Func := Entry;
@@ -496,7 +517,7 @@ end;
 function TPS2Kernel.NextReady: Integer;
 begin
   Result := -1;
-  for var K := 1 to KernelMaxThreads - 1 do
+  for var K := 1 to FThreadTop do
     if FThreads[K].State = TPS2ThreadState.Ready then
       if (Result < 0) or (FThreads[K].Priority < FThreads[Result].Priority) or
         ((FThreads[K].Priority = FThreads[Result].Priority) and (FThreads[K].Seq < FThreads[Result].Seq)) then
@@ -993,6 +1014,7 @@ begin
   T.Attr := ReadU32(P + 28);
   T.Option := ReadU32(P + 32);
   FThreads[Id] := T;
+  NoteThreads;
   Ret(Id);
 end;
 
@@ -1131,7 +1153,7 @@ begin
   end;
   // The first waiter in wait order gets it.
   var Best := -1;
-  for var K := 1 to KernelMaxThreads - 1 do
+  for var K := 1 to FThreadTop do
     if (FThreads[K].State in [TPS2ThreadState.Waiting, TPS2ThreadState.WaitSuspended]) and
       (FThreads[K].WaitKind = 2) and (FThreads[K].WaitId = Id) then
       if (Best < 0) or (FThreads[K].WaitSeq < FThreads[Best].WaitSeq) then
@@ -1156,7 +1178,7 @@ begin
     Exit;
   end;
   var Waiting := 0;
-  for var K := 1 to KernelMaxThreads - 1 do
+  for var K := 1 to FThreadTop do
     if (FThreads[K].State in [TPS2ThreadState.Waiting, TPS2ThreadState.WaitSuspended]) and
       (FThreads[K].WaitKind = 2) and (FThreads[K].WaitId = Id) then
       Inc(Waiting);
@@ -1244,6 +1266,44 @@ begin
   Ret(0);
 end;
 
+// Diagnostics and the syscalls with strings, apart from Syscall: no managed
+// temporaries there.
+procedure TPS2Kernel.TraceSyscall(Code: Integer; Index: Cardinal);
+begin
+  Trace.Add(Format('%d syscall %x a0=%x a1=%x a2=%x pc=%.8x ra=%.8x thread=%d custom=%x w=%.8x', [FScheduler.Now, Code,
+    Arg(0), Arg(1), Arg(2), FCPU.S.PC, Cardinal(FCPU.S.GPR[31].Lo), FCurrent, Custom(Index),
+    PCardinal(FBus.RAM + (WatchAddress and PS2RAMMask and not Cardinal(3)))^]));
+end;
+
+procedure TPS2Kernel.SyscallLoadExec;
+begin
+  var Path := ReadString(Arg(0));
+  var Args: TArray<string>;
+  for var K := 0 to Integer(Arg(1)) - 1 do
+    Args := Args + [ReadString(ReadU32(Arg(2) + Cardinal(K) * 4))];
+  if Assigned(FOnLoadExec) then
+    FOnLoadExec(Path, Args)
+  else
+    Ret(-1);
+end;
+
+procedure TPS2Kernel.SyscallExec;
+begin
+  var Entry := Arg(0);
+  var GP := Arg(1);
+  var Args: TArray<string>;
+  for var K := 0 to Integer(Arg(2)) - 1 do
+    Args := Args + [ReadString(ReadU32(Arg(3) + Cardinal(K) * 4))];
+  var Name := FProgramName;
+  Boot(Entry, Name, Args);
+  FCPU.S.GPR[28].Lo := SX32(GP);
+end;
+
+procedure TPS2Kernel.SendTTY(Address: Cardinal);
+begin
+  FOnTTY(ReadString(Address));
+end;
+
 procedure TPS2Kernel.Syscall(CPU: TEECPU);
 begin
   var Code := Integer(Cardinal(FCPU.S.GPR[3].Lo));
@@ -1252,9 +1312,7 @@ begin
   if (Index = $7C) and (Arg(0) <= 16) then
     Inc(Deci2Counts[Arg(0)]);
   if Trace <> nil then
-    Trace.Add(Format('%d syscall %x a0=%x a1=%x a2=%x pc=%.8x ra=%.8x thread=%d custom=%x w=%.8x', [FScheduler.Now, Code,
-      Arg(0), Arg(1), Arg(2), FCPU.S.PC, Cardinal(FCPU.S.GPR[31].Lo), FCurrent, Custom(Index),
-      PCardinal(FBus.RAM + (WatchAddress and PS2RAMMask and not Cardinal(3)))^]));
+    TraceSyscall(Code, Index);
   if (Custom(Index) <> 0) and not FInCustom then
   begin
     CallCustom(Index);
@@ -1282,27 +1340,9 @@ begin
         FCurrent := -1;
       end;
     $06: // LoadExecPS2(filename, argc, argv)
-      begin
-        var Path := ReadString(Arg(0));
-        var Args: TArray<string>;
-        for var K := 0 to Integer(Arg(1)) - 1 do
-          Args := Args + [ReadString(ReadU32(Arg(2) + Cardinal(K) * 4))];
-        if Assigned(FOnLoadExec) then
-          FOnLoadExec(Path, Args)
-        else
-          Ret(-1);
-      end;
+      SyscallLoadExec;
     $07: // ExecPS2(entry, gp, argc, argv)
-      begin
-        var Entry := Arg(0);
-        var GP := Arg(1);
-        var Args: TArray<string>;
-        for var K := 0 to Integer(Arg(2)) - 1 do
-          Args := Args + [ReadString(ReadU32(Arg(3) + Cardinal(K) * 4))];
-        var Name := FProgramName;
-        Boot(Entry, Name, Args);
-        FCPU.S.GPR[28].Lo := SX32(GP);
-      end;
+      SyscallExec;
     $0D, $0E, $0F: // SetVTLBRefillHandler, SetVCommonHandler, SetVInterruptHandler
       Ret(0);
     $10: AddHandler(0);
@@ -1425,7 +1465,7 @@ begin
       begin
         var Prio := Arg(0);
         var First := -1;
-        for var K := 1 to KernelMaxThreads - 1 do
+        for var K := 1 to FThreadTop do
           if (FThreads[K].State = TPS2ThreadState.Ready) and (FThreads[K].Priority = Prio) then
             if (First < 0) or (FThreads[K].Seq < FThreads[First].Seq) then
               First := K;
@@ -1573,7 +1613,7 @@ begin
         else
         begin
           FSemas[Id].Used := False;
-          for var K := 1 to KernelMaxThreads - 1 do
+          for var K := 1 to FThreadTop do
             if (FThreads[K].State in [TPS2ThreadState.Waiting, TPS2ThreadState.WaitSuspended]) and
               (FThreads[K].WaitKind = 2) and (FThreads[K].WaitId = Id) then
               WakeThread(K, -1);
@@ -1677,7 +1717,7 @@ begin
     $75: // _print
       begin
         if Assigned(FOnTTY) then
-          FOnTTY(ReadString(Arg(0)));
+          SendTTY(Arg(0));
         Ret(0);
       end;
     $76: Ret(-1); // SifDmaStat: transfers complete at once
@@ -1776,7 +1816,7 @@ begin
           $10: // kputs
             begin
               if Assigned(FOnTTY) then
-                FOnTTY(ReadString(ReadU32(P)));
+                SendTTY(ReadU32(P));
               Ret(0);
             end;
         else
@@ -1847,6 +1887,8 @@ procedure TPS2Kernel.SerializeState(State: TStateArchive);
 
 begin
   State.Field(FThreads, SizeOf(FThreads));
+  if State.Loading then
+    NoteThreads;
   State.Field(FSemas, SizeOf(FSemas));
   State.Field(FIntc, SizeOf(FIntc));
   State.Field(FDmac, SizeOf(FDmac));

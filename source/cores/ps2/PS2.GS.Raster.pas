@@ -580,6 +580,8 @@ type
       Pad2: array[0..7] of Int64;
     end;
     FSleeping, FMainWaiting, FFailed: Integer;
+    // The entry count the emulation thread waits for (FMainWaiting).
+    FWaitTarget: Int64;
     FWake, FProgress: TEvent;
     FFailure: string;
     function Slot: PEntry;
@@ -4256,7 +4258,8 @@ begin
         Synced := Min(BandsDone, GpuDone);
         TInterlocked.Exchange(FLines.Synced, Synced);
       end;
-      if FMainWaiting <> 0 then
+      // (Woken once what it waits for is done, not at every entry.)
+      if (FMainWaiting <> 0) and (Position >= TInterlocked.Read(FWaitTarget)) then
         FProgress.SetEvent;
     end;
   end;
@@ -4309,6 +4312,7 @@ begin
       YieldProcessor;
       Continue;
     end;
+    TInterlocked.Exchange(FWaitTarget, Value);
     TInterlocked.Exchange(FMainWaiting, 1);
     if TInterlocked.Read(FLines.Done) < Value then
       FProgress.WaitFor(5);

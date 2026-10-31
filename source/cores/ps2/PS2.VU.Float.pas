@@ -19,7 +19,7 @@
 interface
 
 uses
-  PS2.Types;
+  System.Math, PS2.Types;
 
 type
   TPS2RegisterMath = (vrmAdd, vrmMul);
@@ -42,9 +42,9 @@ function PS2VectorAVX2: Boolean;
 // xmm0 result, return value = MAC-style underflow/overflow groups (8..15).
 // All inputs/rounding modes are supported; the scalar path is unchanged.
 function PS2RegisterMathNative(Kind: TPS2RegisterMath): Pointer;
-// The same for a host rounding mode known to the caller: toward zero
-// (Truncating) or another (the exact routine at once).
-function PS2RegisterMathNativeFor(Kind: TPS2RegisterMath; Truncating: Boolean): Pointer;
+// The same for the host rounding the caller runs under (truncation and
+// rounding to nearest have fast paths, others the exact routine at once).
+function PS2RegisterMathNativeFor(Kind: TPS2RegisterMath; Mode: TRoundingMode): Pointer;
 function PS2RegisterMathModel(Kind: TPS2RegisterMath): Pointer;
 
 implementation
@@ -53,7 +53,7 @@ uses
   PS2.EE.CPU;
 
 var
-  VectorAVX2: Boolean;
+  VectorAVX2, VectorFMA: Boolean;
 
 function PS2VectorAVX2: Boolean;
 begin
@@ -126,6 +126,8 @@ const
   C26: array[0..3] of Integer = (26, 26, 26, 26);
   C255: array[0..3] of Integer = (255, 255, 255, 255);
   C253: array[0..3] of Integer = (253, 253, 253, 253);
+  C252: array[0..3] of Integer = (252, 252, 252, 252);
+  C64: array[0..3] of Integer = (64, 64, 64, 64);
   C254: array[0..3] of Integer = (254, 254, 254, 254);
   C25: array[0..3] of Integer = (25, 25, 25, 25);
   CShift23: array[0..1] of UInt64 = (23, 23);
@@ -906,6 +908,127 @@ asm
   jmp RegisterAddExact
 end;
 
+// MulRegistersRZ and AddRegistersRZ where the host rounds to nearest: the
+// host result, then one unit toward zero where it was rounded away from
+// zero, is the truncated result. Exponents are kept where every value
+// involved is normal and finite whatever FTZ/DAZ say (the rest: the exact
+// routines). The product's error is exact by FMA (MulRegistersRN needs the
+// host's FMA3), the sum's by Fast2Sum (the larger magnitude first).
+function MulRegistersRN(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpcmpeqd xmm4, xmm2, [rip + C255]
+  vpcmpeqd xmm5, xmm3, [rip + C255]
+  vpor xmm4, xmm4, xmm5
+  vptest xmm4, xmm4
+  jnz @@No
+  vpxor xmm4, xmm4, xmm4
+  vpcmpeqd xmm5, xmm2, xmm4
+  vpand xmm4, xmm5, [rip + CAbsMask]
+  vpandn xmm0, xmm4, xmm0
+  vpxor xmm4, xmm4, xmm4
+  vpcmpeqd xmm4, xmm3, xmm4
+  vpor xmm5, xmm5, xmm4
+  vpand xmm4, xmm4, [rip + CAbsMask]
+  vpandn xmm1, xmm4, xmm1
+  vpaddd xmm2, xmm2, xmm3
+  vpsubd xmm2, xmm2, [rip + C127]
+  vmovdqu xmm3, [rip + C64]
+  vpcmpgtd xmm3, xmm3, xmm2
+  vpcmpgtd xmm4, xmm2, [rip + C252]
+  vpor xmm3, xmm3, xmm4
+  vpandn xmm5, xmm5, xmm3
+  vptest xmm5, xmm5
+  jnz @@No
+  vmulps xmm2, xmm0, xmm1
+  vmovaps xmm3, xmm2
+  vfmsub231ps xmm3, xmm0, xmm1         // error: A * B - product, exact
+  vxorps xmm4, xmm3, xmm2
+  vpsrad xmm4, xmm4, 31                // error and product of opposite signs
+  vpand xmm5, xmm3, [rip + CAbsMask]
+  vpxor xmm0, xmm0, xmm0
+  vpcmpeqd xmm5, xmm5, xmm0
+  vpandn xmm4, xmm5, xmm4              // ... and an error at all
+  vpaddd xmm0, xmm2, xmm4              // one unit toward zero there
+  xor eax, eax
+  vzeroupper
+  ret
+@@No:
+  vzeroupper
+  jmp RegisterMulExact
+end;
+
+function AddRegistersRN(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpmaxsd xmm4, xmm2, xmm3
+  vpcmpgtd xmm5, xmm4, [rip + C252]
+  vptest xmm5, xmm5
+  jnz @@No
+  vmovdqu xmm5, [rip + C64]
+  vpcmpgtd xmm5, xmm5, xmm4
+  vpxor xmm4, xmm4, xmm4
+  vpmaxsd xmm2, xmm2, xmm3
+  vpcmpeqd xmm2, xmm2, xmm4
+  vpandn xmm5, xmm2, xmm5
+  vptest xmm5, xmm5
+  jnz @@No
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpcmpeqd xmm2, xmm2, xmm4
+  vpand xmm2, xmm2, [rip + CAbsMask]
+  vpandn xmm0, xmm2, xmm0
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpcmpeqd xmm3, xmm3, xmm4
+  vpand xmm3, xmm3, [rip + CAbsMask]
+  vpandn xmm1, xmm3, xmm1
+  vpand xmm2, xmm0, [rip + CAbsMask]
+  vpand xmm3, xmm1, [rip + CAbsMask]
+  vpcmpgtd xmm3, xmm3, xmm2
+  vpand xmm2, xmm3, xmm1
+  vpandn xmm4, xmm3, xmm0
+  vpor xmm2, xmm2, xmm4
+  vpand xmm4, xmm3, xmm0
+  vpandn xmm3, xmm3, xmm1
+  vpor xmm3, xmm3, xmm4
+  vpslld xmm0, xmm2, 1
+  vpsrld xmm0, xmm0, 24
+  vpslld xmm1, xmm3, 1
+  vpsrld xmm1, xmm1, 24
+  vpsubd xmm0, xmm0, xmm1
+  vpsubd xmm0, xmm0, [rip + COne]
+  vpxor xmm4, xmm4, xmm4
+  vpmaxsd xmm0, xmm0, xmm4
+  vmovdqu xmm1, [rip + COne]
+  vpsllvd xmm1, xmm1, xmm0
+  vpsubd xmm1, xmm4, xmm1
+  vpand xmm3, xmm3, xmm1
+  vpcmpgtd xmm0, xmm0, [rip + C23]
+  vpandn xmm3, xmm0, xmm3
+  vaddps xmm0, xmm2, xmm3              // sum of the larger and the smaller
+  vsubps xmm1, xmm0, xmm2
+  vsubps xmm1, xmm3, xmm1              // error, exact (Fast2Sum)
+  vxorps xmm4, xmm1, xmm0
+  vpsrad xmm4, xmm4, 31
+  vpand xmm5, xmm1, [rip + CAbsMask]
+  vpxor xmm2, xmm2, xmm2
+  vpcmpeqd xmm5, xmm5, xmm2
+  vpandn xmm4, xmm5, xmm4
+  vpaddd xmm0, xmm0, xmm4
+  xor eax, eax
+  vzeroupper
+  ret
+@@No:
+  vzeroupper
+  jmp RegisterAddExact
+end;
 function MulRegisters(Context: Pointer): NativeUInt;
 asm
   .NOFRAME
@@ -1125,6 +1248,19 @@ asm
   mov rbx, r10
 end;
 
+// FMA3 (with AVX2 present).
+function HostFMA: Boolean;
+asm
+  .NOFRAME
+  mov r10, rbx
+  mov eax, 1
+  cpuid
+  shr ecx, 12
+  and ecx, 1
+  mov eax, ecx
+  mov rbx, r10
+end;
+
 type
   TVectorProc = procedure(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
 
@@ -1243,14 +1379,26 @@ begin
   {$ENDIF}
 end;
 
-function PS2RegisterMathNativeFor(Kind: TPS2RegisterMath; Truncating: Boolean): Pointer;
+function PS2RegisterMathNativeFor(Kind: TPS2RegisterMath; Mode: TRoundingMode): Pointer;
 begin
   Result := nil;
   {$IFDEF PS2_VU_SSE}
   if VectorAVX2 then
     case Kind of
-      vrmAdd: if Truncating then Result := @AddRegistersRZ else Result := @RegisterAddExact;
-      vrmMul: if Truncating then Result := @MulRegistersRZ else Result := @RegisterMulExact;
+      vrmAdd:
+        case Mode of
+          rmTruncate: Result := @AddRegistersRZ;
+          rmNearest: Result := @AddRegistersRN;
+        else
+          Result := @RegisterAddExact;
+        end;
+      vrmMul:
+        case Mode of
+          rmTruncate: Result := @MulRegistersRZ;
+          rmNearest: if VectorFMA then Result := @MulRegistersRN else Result := @RegisterMulExact;
+        else
+          Result := @RegisterMulExact;
+        end;
     end;
   {$ENDIF}
 end;
@@ -1271,6 +1419,7 @@ initialization
   Add4Proc := PS2Add4SSE2;
   {$IFNDEF PS2_FORCE_SSE2}
   VectorAVX2 := HostAVX2;
+  VectorFMA := VectorAVX2 and HostFMA;
   if VectorAVX2 then
   begin
     Mul4Proc := PS2Mul4Common;

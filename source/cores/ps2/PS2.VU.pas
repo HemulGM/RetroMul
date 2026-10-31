@@ -154,9 +154,9 @@ type
     FJitOperand, FJitProduct: TPS2Reg128;
     FJitFlags, FJitProductFlags: Cardinal;
     // The register-math routines generated code calls, for the host rounding
-    // of the current Run (toward zero: FMathTruncating).
+    // of the current Run (FMathMode).
     FMath: array[TPS2RegisterMath] of Pointer;
-    FMathTruncating: Boolean;
+    FMathMode: TRoundingMode;
     FJitClip: Cardinal;
     FJitEvents: array[0..15] of TPS2VUFlagEvent;
     FJitFastPairs: Int64;
@@ -3351,12 +3351,12 @@ end;
 function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
 begin
   // (The host rounding stays as it is for the whole run: the routines for it.)
-  var Truncating := GetRoundMode = rmTruncate;
-  if (Truncating <> FMathTruncating) or (FMath[vrmAdd] = nil) then
+  var Mode := GetRoundMode;
+  if (Mode <> FMathMode) or (FMath[vrmAdd] = nil) then
   begin
-    FMathTruncating := Truncating;
-    FMath[vrmAdd] := PS2RegisterMathNativeFor(vrmAdd, Truncating);
-    FMath[vrmMul] := PS2RegisterMathNativeFor(vrmMul, Truncating);
+    FMathMode := Mode;
+    FMath[vrmAdd] := PS2RegisterMathNativeFor(vrmAdd, Mode);
+    FMath[vrmMul] := PS2RegisterMathNativeFor(vrmMul, Mode);
   end;
   var Context := Default(TPS2VURun);
   Context.Limit := MaxPairs;
@@ -3405,7 +3405,7 @@ begin
   if FKickPending then
     TakeKick(True);
   {$IFDEF PS2_CHECKED}
-  if (GetRoundMode = rmTruncate) <> Truncating then
+  if GetRoundMode <> Mode then
     raise Exception.Create('VU run changed the host rounding');
   {$ENDIF}
   Result := not S.Running;

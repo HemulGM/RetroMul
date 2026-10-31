@@ -223,8 +223,13 @@ finite exponent 255, saturation, masks and host conversion rounding retain
 the scalar reference results. CLIP remains a scheduling observation boundary.
 On Win64/AVX2, compiled ADD/SUB/MUL/MADD/MSUB can pass operands and results
 through volatile 128-bit registers. Each run picks the routines for the host
-rounding it runs under (the truncating fast path or the exact one), so no
-operation reads MXCSR; HW.JIT's VectorCallAt calls them through the core. The result stays live through a call-free
+rounding it runs under, so no operation reads MXCSR (HW.JIT's
+VectorCallAt calls them through the core): under truncation the host result
+is the PS2's; under round-to-nearest (VU1 programs started by the scheduler)
+the host result is moved one unit toward zero where its exact error (FMA for
+products, Fast2Sum for sums) shows it was rounded away from zero, within
+exponent ranges where every intermediate is normal whatever FTZ/DAZ say;
+other modes and ranges use the exact integer routines. The result stays live through a call-free
 lower half until the masked commit; Z/S extraction is vectorized and O/U
 groups are returned directly. Every input and rounding mode remains exact,
 using integer normalization outside the guarded common range. MADD/MSUB still

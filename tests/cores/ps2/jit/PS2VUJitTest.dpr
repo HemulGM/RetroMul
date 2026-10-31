@@ -504,6 +504,114 @@ begin
   end;
 end;
 
+{$Q-}{$R-} // (The operand generator wraps on purpose.)
+// The routines a VU run picks for its host rounding (PS2RegisterMathNativeFor):
+// the truncating and round-to-nearest fast paths and their exact fallbacks,
+// with and without FTZ/DAZ, against the scalar reference: random operands
+// over all exponents, close magnitudes and cancellation, and products and
+// sums that are exact or halfway between two floats.
+procedure CheckRoundingKernels;
+type
+  TState = record
+    A, B, R: TPS2Reg128;
+    Status: UInt64;
+  end;
+  PState = ^TState;
+var
+  S: TState;
+  Seed: UInt64;
+
+  function Rnd: Cardinal;
+  begin
+    Seed := Seed xor (Seed shl 13); Seed := Seed xor (Seed shr 7); Seed := Seed xor (Seed shl 17);
+    Result := Cardinal(Seed);
+  end;
+
+  function Operand(Other: Cardinal): Cardinal;
+  begin
+    case Rnd mod 8 of
+      0: Result := Rnd;
+      1: Result := (Rnd and $807FFFFF) or ((Rnd mod 256) shl 23);
+      2: Result := Other xor (Rnd and $80000007);
+      3: Result := (Other and $FF800000) or (Rnd and $7FFFFF);
+      4: Result := ((Other and $7F800000) + ((Rnd mod 50) shl 23) - (25 shl 23)) or (Rnd and $807FFFFF);
+      // Few mantissa bits: exact products and sums, and halfway cases.
+      5: Result := (Rnd and $FF800000) or ((Rnd and $FFF) shl 11);
+      6: Result := (Rnd and $FF800000) or (Rnd and $7) or ((Rnd and 1) shl 22);
+    else
+      Result := (Rnd and $807FFFFF) or ((40 + Rnd mod 200) shl 23);
+    end;
+  end;
+
+begin
+  {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+  var Native := CreateJitAsm(1 shl 20);
+  if (Native = nil) or not Native.HasVectors or (PS2RegisterMathNative(vrmAdd) = nil) then
+  begin
+    Native.Free;
+    Writeln('rounding kernels: no native vector backend, skipped');
+    Exit;
+  end;
+  var SavedControl := GetMXCSR;
+  try
+    Seed := $FEDCBA9876543210;
+    var Count: Int64 := 0;
+    for var Kind := Low(TPS2RegisterMath) to High(TPS2RegisterMath) do
+      for var Mode := Low(TRoundingMode) to High(TRoundingMode) do
+      begin
+        Native.Align(16);
+        var Code := Native.Here;
+        Native.Enter;
+        Native.VectorLoad(jv0, JMem(jrSelf, Integer(NativeUInt(@PState(nil).A))));
+        Native.VectorLoad(jv1, JMem(jrSelf, Integer(NativeUInt(@PState(nil).B))));
+        Native.VectorCall(PS2RegisterMathNativeFor(Kind, Mode), PS2RegisterMathModel(Kind), JImm(0));
+        Native.VectorStore(JMem(jrSelf, Integer(NativeUInt(@PState(nil).R))), jv0);
+        Native.Move(jw64, JMem(jrSelf, Integer(NativeUInt(@PState(nil).Status))), JT0);
+        Native.Leave(JImm(0));
+        Native.Flush;
+        for var Flush := False to True do
+        begin
+          SetMXCSR(SavedControl);
+          SetRoundMode(Mode);
+          if Flush then SetMXCSR(GetMXCSR or $8040);
+          for var Sample := 0 to 399999 do
+          begin
+            for var K := 0 to 3 do
+            begin
+              S.A.UW[K] := Operand(Rnd);
+              S.B.UW[K] := Operand(S.A.UW[K]);
+            end;
+            Native.Invoke(Code, NativeUInt(@S), 0, 0, 0);
+            var Flags: UInt64 := 0;
+            for var K := 0 to 3 do
+            begin
+              var F: Cardinal;
+              var V: Cardinal;
+              if Kind = vrmAdd then V := PS2FloatAdd(S.A.UW[K], S.B.UW[K], F)
+              else V := PS2FloatMul(S.A.UW[K], S.B.UW[K], F);
+              if S.R.UW[K] <> V then
+                raise Exception.CreateFmt('Rounding kernel mismatch kind=%d mode=%d ftz=%d: %.8x, %.8x -> %.8x <> %.8x',
+                  [Ord(Kind), Ord(Mode), Ord(Flush), S.A.UW[K], S.B.UW[K], S.R.UW[K], V]);
+              if F and 1 <> 0 then Flags := Flags or (UInt64(1) shl (15 - K));
+              if F and 2 <> 0 then Flags := Flags or (UInt64(1) shl (11 - K));
+            end;
+            if S.Status <> Flags then
+              raise Exception.CreateFmt('Rounding kernel OU mismatch kind=%d mode=%d', [Ord(Kind), Ord(Mode)]);
+            Inc(Count);
+          end;
+        end;
+      end;
+    Writeln('rounding kernels: per-mode fast paths, ', Count, ' vectors in four rounding modes with/without FTZ/DAZ OK');
+  finally
+    SetMXCSR(SavedControl);
+    Native.Free;
+  end;
+  {$ELSE}
+  Writeln('rounding kernels: no native vector backend, skipped');
+  {$ENDIF}
+end;
+{$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ENDIF}
+
 procedure CheckVectorAliasFallback(Model: Boolean);
 var
   Code0, Code1, Memory0, Memory1: TMemory;
@@ -641,6 +749,7 @@ begin
   try
     SetExceptionMask(exAllArithmeticExceptions);
     CheckRegisterKernels;
+    CheckRoundingKernels;
     SetRoundMode(rmTruncate);
     Check(False);
     Check(True);

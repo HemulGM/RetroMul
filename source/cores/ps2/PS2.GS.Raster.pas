@@ -292,6 +292,15 @@ type
     FPageWritten: array[0..511] of Int64;
     FXferArea: TPS2GSPages;
     FXferAreaEntry: Int64;
+    // The primitives queued since the last FlushMarks drew through one frame
+    // buffer (and depth buffer, MarkZ) within this pixel rectangle; the
+    // entry count after the last of them.
+    FMarking, FMarkZ: Boolean;
+    FMarkFBP, FMarkFBW, FMarkFPSM, FMarkZBP, FMarkZPSM: Cardinal;
+    FMarkX0, FMarkY0, FMarkX1, FMarkY1: Integer;
+    FMarkEntry: Int64;
+    // FD is not what the registers say any more (SetupDraw works it out).
+    FDrawDirty: Boolean;
     FOnSignal, FOnFinish: TProc;
     FSignal, FFinish: Boolean;
     FQueue: array[0..2] of TPS2GSVertex;
@@ -404,9 +413,10 @@ type
     function Drawing(Synced: Boolean = False): TPS2GSRaster;
     function GetAsync: Boolean;
     procedure SetAsync(Value: Boolean);
-    // Async: the pages may be written by the worker's entries so far.
-    procedure MarkWritten(BP, BW, PSM: Cardinal; X0, Y0, X1, Y1: Integer);
+    // Async: the pages may be written by the worker's entries up to Entry.
+    procedure MarkWritten(BP, BW, PSM: Cardinal; X0, Y0, X1, Y1: Integer; Entry: Int64);
     procedure MarkAreaWritten(Buf, Pos, Reg: UInt64; var Pages: TPS2GSPages);
+    procedure FlushMarks;
   public
     // Diagnostics: commands queued for the band threads by operation (next
     // to Regs: what the emulation thread writes, away from what bands read).
@@ -618,6 +628,9 @@ implementation
 uses
   PS2.GS.Gpu{$IFDEF GS_RACECHECK}, PS2.GS.RaceCheck{$ENDIF};
 
+function TriangleCoverage(X0, Y0, X1, Y1, X2, Y2: Int64; SX0, SY0, SX1, SY1: Integer): Int64; forward;
+function SpriteCoverage(X0, Y0, X1, Y1: Integer; SX0, SY0, SX1, SY1: Integer): Int64; forward;
+
 const
   // Transferred pixels queued for the band threads: the ring, and the most
   // one run (one queued command) takes.
@@ -800,6 +813,7 @@ begin
   FReadPos := Source.FReadPos;
   FClutChanged := True;
   FXferGPURevision := -1;
+  FDrawDirty := True;
 end;
 
 function TPS2GSRaster.Drawing(Synced: Boolean): TPS2GSRaster;
@@ -1180,25 +1194,28 @@ end;
 // The pixels a primitive may draw (inclusive), inside the scissor: as
 // TPS2GSDrawer draws sprites and triangles, around the vertices for points
 // and lines. False when it draws none.
-function PixelRect(const C: TPS2GSCommand; out X0, Y0, X1, Y1: Integer): Boolean;
+function PrimRect(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex; SX0, SY0, SX1, SY1: Integer;
+  out X0, Y0, X1, Y1: Integer): Boolean;
 begin
-  var N := 3;
-  if C.Kind in [gpLine, gpSprite] then
-    N := 2
-  else if C.Kind = gpPoint then
-    N := 1;
-  var MinX := C.V[0].X;
+  var MinX := V0.X;
   var MaxX := MinX;
-  var MinY := C.V[0].Y;
+  var MinY := V0.Y;
   var MaxY := MinY;
-  for var K := 1 to N - 1 do
+  if Kind <> gpPoint then
   begin
-    MinX := Min(MinX, C.V[K].X);
-    MaxX := Max(MaxX, C.V[K].X);
-    MinY := Min(MinY, C.V[K].Y);
-    MaxY := Max(MaxY, C.V[K].Y);
+    MinX := Min(MinX, V1.X);
+    MaxX := Max(MaxX, V1.X);
+    MinY := Min(MinY, V1.Y);
+    MaxY := Max(MaxY, V1.Y);
   end;
-  case C.Kind of
+  if Kind = gpTriangle then
+  begin
+    MinX := Min(MinX, V2.X);
+    MaxX := Max(MaxX, V2.X);
+    MinY := Min(MinY, V2.Y);
+    MaxY := Max(MaxY, V2.Y);
+  end;
+  case Kind of
     gpSprite:
       begin
         X0 := Integer(Sar(MinX + 15, 4));
@@ -1219,11 +1236,16 @@ begin
     Y0 := Integer(Sar(MinY, 4)) - 1;
     Y1 := Integer(Sar(MaxY, 4)) + 2;
   end;
-  X0 := Max(X0, C.D.SX0);
-  X1 := Min(X1, C.D.SX1);
-  Y0 := Max(Y0, C.D.SY0);
-  Y1 := Min(Y1, C.D.SY1);
+  X0 := Max(X0, SX0);
+  X1 := Min(X1, SX1);
+  Y0 := Max(Y0, SY0);
+  Y1 := Min(Y1, SY1);
   Result := (X0 <= X1) and (Y0 <= Y1);
+end;
+
+function PixelRect(const C: TPS2GSCommand; out X0, Y0, X1, Y1: Integer): Boolean;
+begin
+  Result := PrimRect(C.Kind, C.V[0], C.V[1], C.V[2], C.D.SX0, C.D.SY0, C.D.SX1, C.D.SY1, X0, Y0, X1, Y1);
 end;
 
 procedure AddPages(var Pages: TPS2GSPages; First, Last: Integer);
@@ -1706,6 +1728,7 @@ function TPS2GSRaster.MemoryFor(const Pages: TPS2GSPages): TPS2GSMemory;
 begin
   if FWorker = nil then
     Exit(GetMemory);
+  FlushMarks;
   var Need: Int64 := 0;
   for var P := 0 to 511 do
     if (Pages[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then
@@ -1721,13 +1744,22 @@ begin
   Result := FMemory;
 end;
 
-procedure TPS2GSRaster.MarkWritten(BP, BW, PSM: Cardinal; X0, Y0, X1, Y1: Integer);
+procedure TPS2GSRaster.FlushMarks;
+begin
+  if not FMarking then
+    Exit;
+  FMarking := False;
+  MarkWritten(FMarkFBP, FMarkFBW, FMarkFPSM, FMarkX0, FMarkY0, FMarkX1, FMarkY1, FMarkEntry);
+  if FMarkZ then
+    MarkWritten(FMarkZBP, FMarkFBW, FMarkZPSM, FMarkX0, FMarkY0, FMarkX1, FMarkY1, FMarkEntry);
+end;
+
+procedure TPS2GSRaster.MarkWritten(BP, BW, PSM: Cardinal; X0, Y0, X1, Y1: Integer; Entry: Int64);
 var
   Pages: TPS2GSPages;
 begin
   FillChar(Pages, SizeOf(Pages), 0);
   AddRectPages(Pages, BP, BW, PSM, X0, Y0, X1, Y1);
-  var Entry := FWorker.Written;
   for var I := 0 to High(Pages) do
   begin
     var Bits := Pages[I];
@@ -1740,7 +1772,7 @@ begin
         Inc(P, 8);
         Continue;
       end;
-      if (Bits and 1) <> 0 then
+      if ((Bits and 1) <> 0) and (FPageWritten[P] < Entry) then
         FPageWritten[P] := Entry;
       Bits := Bits shr 1;
       Inc(P);
@@ -1934,21 +1966,53 @@ begin
   begin
     // The worker's raster draws it; here only its pixels, for the timing.
     Inc(FPrimitives);
-    FCommand.Kind := Kind;
-    FCommand.Clut := -1;
-    FCommand.D := FD;
-    FCommand.V[0] := V0;
-    FCommand.V[1] := V1;
-    FCommand.V[2] := V2;
-    var Counted := FCounter.PixelsDrawn;
-    FCounter.Draw(FCommand);
-    Inc(FPixels, FCounter.PixelsDrawn - Counted);
+    case Kind of
+      gpTriangle:
+        Inc(FPixels, TriangleCoverage(V0.X, V0.Y, V1.X, V1.Y, V2.X, V2.Y, FD.SX0, FD.SY0, FD.SX1, FD.SY1));
+      gpSprite:
+        Inc(FPixels, SpriteCoverage(V0.X, V0.Y, V1.X, V1.Y, FD.SX0, FD.SY0, FD.SX1, FD.SY1));
+    else
+      begin
+        FCommand.Kind := Kind;
+        FCommand.Clut := -1;
+        FCommand.D := FD;
+        FCommand.V[0] := V0;
+        FCommand.V[1] := V1;
+        FCommand.V[2] := V2;
+        var Counted := FCounter.PixelsDrawn;
+        FCounter.Draw(FCommand);
+        Inc(FPixels, FCounter.PixelsDrawn - Counted);
+      end;
+    end;
+    // The pages it may write, gathered while it draws through the same
+    // buffers as the ones before.
     var X0, Y0, X1, Y1: Integer;
-    if PixelRect(FCommand, X0, Y0, X1, Y1) then
+    if PrimRect(Kind, V0, V1, V2, FD.SX0, FD.SY0, FD.SX1, FD.SY1, X0, Y0, X1, Y1) then
     begin
-      MarkWritten(FD.FBP, FD.FBW, FD.FPSM, X0, Y0, X1, Y1);
-      if not FD.ZMSK then
-        MarkWritten(FD.ZBP, FD.FBW, FD.ZPSM, X0, Y0, X1, Y1);
+      if not FMarking or (FMarkFBP <> FD.FBP) or (FMarkFBW <> FD.FBW) or (FMarkFPSM <> FD.FPSM) or
+        (FMarkZ <> not FD.ZMSK) or (FMarkZ and ((FMarkZBP <> FD.ZBP) or (FMarkZPSM <> FD.ZPSM))) then
+      begin
+        FlushMarks;
+        FMarking := True;
+        FMarkFBP := FD.FBP;
+        FMarkFBW := FD.FBW;
+        FMarkFPSM := FD.FPSM;
+        FMarkZ := not FD.ZMSK;
+        FMarkZBP := FD.ZBP;
+        FMarkZPSM := FD.ZPSM;
+        FMarkX0 := X0;
+        FMarkY0 := Y0;
+        FMarkX1 := X1;
+        FMarkY1 := Y1;
+      end
+      else
+      begin
+        if X0 < FMarkX0 then FMarkX0 := X0;
+        if Y0 < FMarkY0 then FMarkY0 := Y0;
+        if X1 > FMarkX1 then FMarkX1 := X1;
+        if Y1 > FMarkY1 then FMarkY1 := Y1;
+      end;
+      FMarkEntry := FWorker.Written;
     end;
     Exit;
   end;
@@ -2078,6 +2142,7 @@ begin
   FReadBuffer := nil;
   FReadPos := 0;
   Regs[GSRegPRMODECONT] := 1;
+  FDrawDirty := True;
   FMemory.Clear;
 end;
 
@@ -2120,6 +2185,8 @@ begin
   if Index in [GSRegBITBLTBUF, GSRegTRXPOS, GSRegTRXREG, GSRegTRXDIR] then
     FXferGPURevision := -1;
   Regs[Index] := Value;
+  if not (Index in [GSRegRGBAQ, GSRegST, GSRegUV, GSRegFOG, GSRegXYZF2, GSRegXYZ2, GSRegXYZF3, GSRegXYZ3, GSRegHWREG]) then
+    FDrawDirty := True;
   case Index of
     GSRegPRIM:
       begin
@@ -2203,6 +2270,10 @@ end;
 
 procedure TPS2GSRaster.SetupDraw;
 begin
+  // (Only after registers other than a vertex's changed.)
+  if not FDrawDirty then
+    Exit;
+  FDrawDirty := False;
   var Attr := Regs[GSRegPRIM];
   if (Regs[GSRegPRMODECONT] and 1) = 0 then
     Attr := (Attr and 7) or (Regs[GSRegPRMODE] and not UInt64(7));
@@ -3094,6 +3165,151 @@ begin
     Result := False;
 end;
 
+// Floor division of N by D (D > 0), with its remainder in 0..D - 1.
+procedure FloorDivMod(N, D: Int64; out Q, R: Int64); inline;
+begin
+  Q := N div D;
+  R := N - Q * D;
+  if R < 0 then
+  begin
+    Inc(R, D);
+    Dec(Q);
+  end;
+end;
+
+// An edge of TriangleCoverage: which bound it gives a row's span (1 the
+// first pixel, -1 the last, 0 every pixel or none), floor(E / |Step|) as Q
+// with remainder R, and their changes from row to row; E itself for a 0.
+type
+  TCoverageEdge = record
+    Kind: Integer;
+    Q, R, DQ, DR, D, E, DE: Int64;
+  end;
+
+procedure InitCoverageEdge(var C: TCoverageEdge; A, B, XA, YA, PX, PY: Int64);
+begin
+  var Bias: Int64 := 0;
+  if not ((A > 0) or ((A = 0) and (B > 0))) then
+    Bias := -1;
+  C.E := A * (PX - XA) + B * (PY - YA) + Bias;
+  C.DE := B * 16;
+  var Step := A * 16;
+  C.Kind := 0;
+  if Step = 0 then
+    Exit;
+  if Step > 0 then
+    C.Kind := 1
+  else
+    C.Kind := -1;
+  C.D := Abs(Step);
+  FloorDivMod(C.E, C.D, C.Q, C.R);
+  FloorDivMod(C.DE, C.D, C.DQ, C.DR);
+end;
+
+// The pixels a triangle covers inside the scissor, as DrawTriangle counts
+// them: each row's span from the edge functions as EdgeSpan narrows it
+// (Step > 0: from -floor(E / Step); Step < 0: up to floor(E / -Step);
+// Step = 0: all or none), the quotients stepped from row to row rather than
+// divided again.
+function TriangleCoverage(X0, Y0, X1, Y1, X2, Y2: Int64; SX0, SY0, SX1, SY1: Integer): Int64;
+var
+  C0, C1, C2: TCoverageEdge;
+begin
+  Result := 0;
+  var Area := (X1 - X0) * (Y2 - Y0) - (X2 - X0) * (Y1 - Y0);
+  if Area = 0 then
+    Exit;
+  var MinX := Sar(Min(X0, Min(X1, X2)) + 15, 4);
+  var MaxX := Sar(Max(X0, Max(X1, X2)), 4);
+  var MinY := Sar(Min(Y0, Min(Y1, Y2)) + 15, 4);
+  var MaxY := Sar(Max(Y0, Max(Y1, Y2)), 4);
+  if MinX < SX0 then MinX := SX0;
+  if MinY < SY0 then MinY := SY0;
+  if MaxX > SX1 then MaxX := SX1;
+  if MaxY > SY1 then MaxY := SY1;
+  if (MinX > MaxX) or (MinY > MaxY) then
+    Exit;
+  var Sign: Int64 := 1;
+  if Area < 0 then
+    Sign := -1;
+  var PX := MinX * 16;
+  var PY := MinY * 16;
+  // Edge K: opposite vertex K, through the next two (as DrawTriangle).
+  InitCoverageEdge(C0, (Y1 - Y2) * Sign, (X2 - X1) * Sign, X1, Y1, PX, PY);
+  InitCoverageEdge(C1, (Y2 - Y0) * Sign, (X0 - X2) * Sign, X2, Y2, PX, PY);
+  InitCoverageEdge(C2, (Y0 - Y1) * Sign, (X1 - X0) * Sign, X0, Y0, PX, PY);
+  var Width := MaxX - MinX;
+  var Q0 := C0.Q; var R0 := C0.R;
+  var Q1 := C1.Q; var R1 := C1.R;
+  var Q2 := C2.Q; var R2 := C2.R;
+  var Rows := MaxY - MinY + 1;
+  while Rows > 0 do
+  begin
+    var KL: Int64 := 0;
+    var KR := Width;
+    var Inside := True;
+    case C0.Kind of
+      1: if -Q0 > KL then KL := -Q0;
+      -1: if Q0 < KR then KR := Q0;
+    else
+      if C0.E < 0 then Inside := False;
+    end;
+    case C1.Kind of
+      1: if -Q1 > KL then KL := -Q1;
+      -1: if Q1 < KR then KR := Q1;
+    else
+      if C1.E < 0 then Inside := False;
+    end;
+    case C2.Kind of
+      1: if -Q2 > KL then KL := -Q2;
+      -1: if Q2 < KR then KR := Q2;
+    else
+      if C2.E < 0 then Inside := False;
+    end;
+    if Inside and (KL <= KR) then
+      Inc(Result, KR - KL + 1);
+    if C0.Kind <> 0 then
+    begin
+      Inc(Q0, C0.DQ);
+      Inc(R0, C0.DR);
+      if R0 >= C0.D then begin Dec(R0, C0.D); Inc(Q0); end;
+    end
+    else
+      Inc(C0.E, C0.DE);
+    if C1.Kind <> 0 then
+    begin
+      Inc(Q1, C1.DQ);
+      Inc(R1, C1.DR);
+      if R1 >= C1.D then begin Dec(R1, C1.D); Inc(Q1); end;
+    end
+    else
+      Inc(C1.E, C1.DE);
+    if C2.Kind <> 0 then
+    begin
+      Inc(Q2, C2.DQ);
+      Inc(R2, C2.DR);
+      if R2 >= C2.D then begin Dec(R2, C2.D); Inc(Q2); end;
+    end
+    else
+      Inc(C2.E, C2.DE);
+    Dec(Rows);
+  end;
+end;
+// The pixels a sprite covers inside the scissor, as DrawSprite counts them.
+function SpriteCoverage(X0, Y0, X1, Y1: Integer; SX0, SY0, SX1, SY1: Integer): Int64;
+begin
+  var PX0 := Integer(Sar(Min(X0, X1) + 15, 4));
+  var PX1 := Integer(Sar(Max(X0, X1) + 15, 4));
+  var PY0 := Integer(Sar(Min(Y0, Y1) + 15, 4));
+  var PY1 := Integer(Sar(Max(Y0, Y1) + 15, 4));
+  if PX0 < SX0 then PX0 := SX0;
+  if PY0 < SY0 then PY0 := SY0;
+  if PX1 > SX1 + 1 then PX1 := SX1 + 1;
+  if PY1 > SY1 + 1 then PY1 := SY1 + 1;
+  if (PX0 >= PX1) or (PY0 >= PY1) then
+    Exit(0);
+  Result := Int64(PX1 - PX0) * (PY1 - PY0);
+end;
 // Pixels X0..X1 of row Y, all inside the triangle: E0 and E1 are the edge
 // functions of vertices 0 and 1 at X0 (positive inside), stepping by Step0
 // and Step1 per pixel.
@@ -3228,11 +3444,16 @@ begin
     (FOwner.PrimLog = nil) and (FOwner.WatchX < 0) then
     CountCoverage := FOwner.FAccelerator.Triangle(FD, V0, V1, V2, Integer(MinX), Integer(MinY),
       Integer(MaxX + 1), Integer(MaxY + 1));
-  if CountCoverage then
+  if CountCoverage and (FBandCount <= 1) then
   begin
     // Count the exact scissored coverage, not a second pixel/render walk.
     // No LOD, attribute interpolation, depth or texture work is needed for
     // the timing counter on the emulation thread.
+    Inc(FPixels, TriangleCoverage(X0, Y0, X1, Y1, X2, Y2, FD.SX0, FD.SY0, FD.SX1, FD.SY1));
+    Exit;
+  end;
+  if CountCoverage then
+  begin
     var PX := Int64(MinX) * 16;
     for var Y := MinY to MaxY do
     begin
@@ -3527,7 +3748,7 @@ begin
     // (The last transfer's pages, as written by its last data so far.)
     for var P := 0 to 511 do
       if (FXferArea[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then
-        FPageWritten[P] := FXferAreaEntry;
+        FPageWritten[P] := Max(FPageWritten[P], FXferAreaEntry);
     MarkAreaWritten(Regs[GSRegBITBLTBUF], Regs[GSRegTRXPOS], Regs[GSRegTRXREG], FXferArea);
     FXferAreaEntry := FWorker.Written;
   end;
@@ -3731,7 +3952,7 @@ begin
     MarkAreaWritten(Regs[GSRegBITBLTBUF], Regs[GSRegTRXPOS], Regs[GSRegTRXREG], Pages);
     for var P := 0 to 511 do
       if (Pages[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then
-        FPageWritten[P] := FWorker.Written;
+        FPageWritten[P] := Max(FPageWritten[P], FWorker.Written);
     Exit;
   end;
   // The first CPU worker can start the copy as soon as it is published.
@@ -3879,6 +4100,7 @@ begin
   State.Field(FReadPos, SizeOf(FReadPos));
   State.Field(FMemory.Data^, PS2GSMemorySize);
   FClutChanged := True;
+  FDrawDirty := True;
   if (FWorker <> nil) and State.Loading then
     FWorker.Inner.CopyStateFrom(Self);
 end;
@@ -4329,13 +4551,11 @@ begin
   E.Value := Value;
   Inc(FWrite);
   FDrained := 0;
-  // A kick may draw: with this thread's control word, and drawn soon.
+  // A kick may draw: with this thread's control word. (Entries are handed
+  // over in groups; Drain hands over the rest.)
   if (Index = GSRegXYZF2) or (Index = GSRegXYZ2) or (Index = GSRegXYZF3) or (Index = GSRegXYZ3) then
-  begin
     E.Csr := HostControlWord;
-    Publish;
-  end
-  else if FWrite - FPublishedHere >= 64 then
+  if FWrite - FPublishedHere >= 64 then
     Publish;
 end;
 

@@ -172,7 +172,7 @@ type
 
   // Called before an accelerated draw with the pages it reads and writes
   // and whether it takes the current CLUT.
-  TPS2GSBeforeDraw = reference to procedure(const Reads, Writes: TPS2GSPages; Palette: Boolean);
+  TPS2GSBeforeDraw = reference to function(const Reads, Writes: TPS2GSPages; Palette: Boolean; Area: Int64): Boolean;
 
   TPS2GSAccelerator = class abstract
   protected
@@ -339,6 +339,10 @@ type
     FClutChanged: Boolean;
     // The pixels of the primitive being queued (the counter's).
     FCommandPixels: Int64;
+    // Where the accelerator's recent primitives went: taken by it, or to
+    // the band threads as it cannot draw them (halved every 4096).
+    FRecentAccepted, FRecentFallbacks: Integer;
+    FRoute: (rtNone, rtAccelerated, rtDeclined, rtUnsupported);
     function OwnedElsewhere(const Pages: TPS2GSPages; Key: UInt64): Boolean;
     function Hazard(const C: TPS2GSCommand; const F: TPS2GSFootprint): Boolean;
     procedure MarkQueued(const C: TPS2GSCommand; const F: TPS2GSFootprint);
@@ -353,7 +357,8 @@ type
     procedure SetupDraw;
     procedure Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex);
     procedure QueueDraw(const F: TPS2GSFootprint);
-    procedure BeforeAccelerated(const Reads, Writes: TPS2GSPages; Palette: Boolean);
+    procedure NoteRoute;
+    function BeforeAccelerated(const Reads, Writes: TPS2GSPages; Palette: Boolean; Area: Int64): Boolean;
     function QueueFallback(Drawer: TPS2GSDrawer): Boolean;
     procedure SyncSoftware;
     procedure CheckPrimLogBreak;
@@ -702,9 +707,9 @@ begin
     try
       FAccelerator := TPS2GSGpu.Create(FMemory.Data, @FClut[0]);
       FAccelerator.BeforeDraw :=
-        procedure(const Reads, Writes: TPS2GSPages; Palette: Boolean)
+        function(const Reads, Writes: TPS2GSPages; Palette: Boolean; Area: Int64): Boolean
         begin
-          BeforeAccelerated(Reads, Writes, Palette);
+          Result := BeforeAccelerated(Reads, Writes, Palette, Area);
         end;
     except
       on E: Exception do FVulkanError := E.Message;
@@ -1514,16 +1519,40 @@ begin
 end;
 
 // Before an accelerated draw: the band threads finish the queued commands
-// when it reads what they write or writes what they touch; a palettized one
-// takes the CLUT the first band thread loaded last.
-procedure TPS2GSRaster.BeforeAccelerated(const Reads, Writes: TPS2GSPages; Palette: Boolean);
+// when it reads what they write or writes what they touch (or, a small one,
+// it is declined: False); a palettized one takes the CLUT the first band
+// thread loaded last.
+procedure TPS2GSRaster.NoteRoute;
+begin
+  case FRoute of
+    rtAccelerated: Inc(FRecentAccepted);
+    rtUnsupported: Inc(FRecentFallbacks);
+  end;
+  if FRecentAccepted + FRecentFallbacks >= 4096 then
+  begin
+    FRecentAccepted := FRecentAccepted div 2;
+    FRecentFallbacks := FRecentFallbacks div 2;
+  end;
+end;
+
+function TPS2GSRaster.BeforeAccelerated(const Reads, Writes: TPS2GSPages; Palette: Boolean; Area: Int64): Boolean;
 begin
   FlushTransfer;
+  Result := True;
+  FRoute := rtAccelerated;
   if not FPending then
     Exit;
   if PagesOverlap(Reads, FPendingWrites) or PagesOverlap(Writes, FPendingWrites) or
     PagesOverlap(Writes, FPendingReads) then
   begin
+    // Mostly software lately (three primitives in four the accelerator
+    // cannot take): a small draw joins the band threads rather than waiting
+    // for them (both paths draw the same pixels).
+    if (Area < 65536) and (FRecentFallbacks >= 3 * FRecentAccepted) then
+    begin
+      FRoute := rtDeclined;
+      Exit(False);
+    end;
     SyncSoftware;
     Exit;
   end;
@@ -1583,8 +1612,11 @@ begin
     // join the software queue after publishing pending GPU writes.
     if FPending and (FAccelerator = nil) then Sync;
     var Before := FDrawer.PixelsDrawn;
+    FRoute := rtNone;
     FDrawer.Draw(FCommand);
     Inc(FPixels, FDrawer.PixelsDrawn - Before);
+    if FAccelerator <> nil then
+      NoteRoute;
     Exit;
   end;
   var Before := FCounter.PixelsDrawn;
@@ -1600,6 +1632,8 @@ function TPS2GSRaster.QueueFallback(Drawer: TPS2GSDrawer): Boolean;
 begin
   Result := (Drawer = FDrawer) and (FAccelerator <> nil) and Queueing;
   if not Result then Exit;
+  if FRoute = rtNone then
+    FRoute := rtUnsupported;
   // Only the emulation thread touches the GPU. Workers receive ordinary
   // software commands; queued GPU work on pages they touch finishes first.
   var F: TPS2GSFootprint;

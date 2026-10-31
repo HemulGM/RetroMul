@@ -465,7 +465,7 @@ begin
     var Reads, Writes, Textures: TPages;
     BuildAccess(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or (Cardinal(1) shl ((Mip shr 3) and 7)),
       Reads, Writes, Textures);
-    FBeforeDraw(Reads, Writes, Palettized(D));
+    if not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then Exit;
   end;
   FlushNative;
   if FUsed = FUsedEnd then NextHalf;
@@ -555,7 +555,7 @@ begin
   var InvArea: Double := 1.0 / Area;
   BuildAccess(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or
     (Cardinal(1) shl ((Mip shr 3) and 7)), Reads, Writes, Textures);
-  if Assigned(FBeforeDraw) then FBeforeDraw(Reads, Writes, Palettized(D));
+  if Assigned(FBeforeDraw) and not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then Exit;
   if FNativeCount > 0 then
   begin
     var Conflict := (FNativeCount = ClusterSize) or
@@ -647,7 +647,7 @@ begin
   begin
     var Reads, Writes, Textures: TPages;
     BuildAccess(D, X0, Y0, X1, Y1, $7F, Reads, Writes, Textures);
-    FBeforeDraw(Reads, Writes, Palettized(D));
+    if not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then Exit(False);
   end;
   FlushNative;
   if FUsed = FUsedEnd then NextHalf;

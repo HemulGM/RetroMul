@@ -74,8 +74,13 @@ transfers, routing between the GPU and the band threads, their barriers and
 waits. Each vertex kick carries the emulation thread's SSE control word
 (rounding, flush-to-zero, denormals-are-zero), which the worker loads before
 drawing, so the arithmetic matches the emulation thread's. The emulation
-thread waits for the worker only when it reads GS memory (the display at
-VBlank, local-to-host transfers, snapshots) or changes the renderer. Frames,
+thread waits for the worker only when it reads GS memory (local-to-host
+transfers, snapshots) or changes the renderer. The display at VBlank
+(`MemoryFor`) waits only when queued work may still write its pages: the
+emulation thread keeps, per page, the last queued entry that may write it
+(primitive rectangles, transfer areas), and the worker publishes how many
+entries have no band or GPU work left; usually the shown buffer was finished
+a frame earlier and the worker goes on drawing the next one meanwhile. Frames,
 snapshots and timing are identical with and without it; diagnostics logs
 (primitive, transfer, watched pixel) keep everything on the emulation thread.
 `tests/cores/ps2/gsdata` and `tests/cores/ps2/gpu` (also with `-Async`) cover

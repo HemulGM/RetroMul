@@ -12,6 +12,9 @@ const
   Formats: array[0..12] of Integer = (PSMCT32, PSMCT24, PSMCT16, PSMCT16S,
     PSMZ32, PSMZ24, PSMZ16, PSMZ16S, PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH);
 
+const
+  AsyncText: array[Boolean] of string = ('', ', async');
+
 function StateBytes(Raster: TPS2GSRaster): TBytes;
 begin
   var S := TMemoryStream.Create;
@@ -36,11 +39,14 @@ begin
   Raster.WriteRegister(GSRegXYZ2, 128 * 16 or (UInt64(128 * 16) shl 16));
 end;
 
-procedure CheckDisplay;
+// (Async: the raster drawing on its own thread; the display waits only for
+// what writes its pages.)
+procedure CheckDisplay(Async: Boolean);
 begin
   var GS := TPS2GS.Create;
   try
     GS.Raster.Threads := 4;
+    GS.Raster.Async := Async;
     var Memory := GS.Raster.Memory;
     for var Format in Formats do
       for var N := 0 to 3 do
@@ -79,7 +85,7 @@ begin
     GS.DISPLAY1 := UInt64(66) shl 32; GS.PMODE := 1; GS.Interlaced := True; GS.SMODE2 := 3;
     GS.BuildFrame;
     if Length(GS.Frame) <> 0 then raise Exception.Create('Zero-height display');
-    Writeln('52 display scans: formats, both circuits, offsets/wrap, zero stride, queued draws: OK');
+    Writeln('52 display scans: formats, both circuits, offsets/wrap, zero stride, queued draws', AsyncText[Async], ': OK');
   finally
     GS.Free;
   end;
@@ -175,7 +181,7 @@ begin
     end;
 end;
 
-procedure CheckComposition;
+procedure CheckComposition(Async: Boolean);
 const
   Colors: array[0..4] of Integer = (PSMCT32, PSMCT24, PSMCT16, PSMCT16S, $1F);
   Alphas: array[0..5] of Integer = (0, 1, 127, 128, 129, 255);
@@ -190,6 +196,7 @@ begin
   var GS := TPS2GS.Create;
   try
     GS.Raster.Threads := 4;
+    GS.Raster.Async := Async;
     var Memory := GS.Raster.Memory;
     for var N := 0 to 511 do
     begin
@@ -220,7 +227,7 @@ begin
         ((Length(Expected) > 0) and not CompareMem(@Expected[0], @GS.Frame[0], Length(Expected) * 4)) then
         raise Exception.CreateFmt('Dual-circuit composition mismatch case=%d', [N]);
     end;
-    Writeln('512 scalar dual-circuit comparisons: shared/distinct surfaces, offsets, magnification, alpha and background: OK');
+    Writeln('512 scalar dual-circuit comparisons: shared/distinct surfaces, offsets, magnification, alpha and background', AsyncText[Async], ': OK');
   finally
     GS.Free;
   end;
@@ -379,8 +386,11 @@ end;
 
 begin
   try
-    CheckDisplay;
-    CheckComposition;
+    for var Async := False to True do
+    begin
+      CheckDisplay(Async);
+      CheckComposition(Async);
+    end;
     CheckDisplayRows;
     CheckRows;
     CheckTransfers;

@@ -286,6 +286,12 @@ type
     FWorker: TPS2GSWorker;
     FShadow: Boolean;
     FOwnsMemory: Boolean;
+    // Async (this raster): for each page, the worker's entry count after the
+    // last entry that may write it; the pages of the host-to-local transfer
+    // last started and the entry count after its last data.
+    FPageWritten: array[0..511] of Int64;
+    FXferArea: TPS2GSPages;
+    FXferAreaEntry: Int64;
     FOnSignal, FOnFinish: TProc;
     FSignal, FFinish: Boolean;
     FQueue: array[0..2] of TPS2GSVertex;
@@ -398,6 +404,9 @@ type
     function Drawing(Synced: Boolean = False): TPS2GSRaster;
     function GetAsync: Boolean;
     procedure SetAsync(Value: Boolean);
+    // Async: the pages may be written by the worker's entries so far.
+    procedure MarkWritten(BP, BW, PSM: Cardinal; X0, Y0, X1, Y1: Integer);
+    procedure MarkAreaWritten(Buf, Pos, Reg: UInt64; var Pages: TPS2GSPages);
   public
     // Diagnostics: commands queued for the band threads by operation (next
     // to Regs: what the emulation thread writes, away from what bands read).
@@ -428,6 +437,9 @@ type
     procedure Sync;
     // GS memory as drawn so far (waits for the band threads).
     property Memory: TPS2GSMemory read GetMemory;
+    // The same where only Pages are read (the display): Async, it waits for
+    // the worker only when what it has not finished drawing may write them.
+    function MemoryFor(const Pages: TPS2GSPages): TPS2GSMemory;
     // Band threads drawing (0 or 1: none, everything drawn at once on the
     // caller's thread). The memory and timing are the same either way.
     property Threads: Integer read FThreads write SetThreads;
@@ -562,6 +574,9 @@ type
       Ready: Int64;
       Pad1: array[0..7] of Int64;
       Done: Int64;
+      // Entries whose drawing is all in GS memory (no band or GPU work of
+      // theirs left).
+      Synced: Int64;
       Pad2: array[0..7] of Int64;
     end;
     FSleeping, FMainWaiting, FFailed: Integer;
@@ -582,12 +597,19 @@ type
     // Waits until Inner has taken everything queued (Synced: and drawn it,
     // its Sync).
     procedure Drain(Synced: Boolean);
+    // Whether the first Count entries are drawn (Lines.Synced).
+    function DrawnThrough(Count: Int64): Boolean;
     property Inner: TPS2GSRaster read FInner;
+    // Entries queued so far.
+    property Written: Int64 read FWrite;
   end;
 
 // A pixel's LOD from its Q (as the host rounds): log2(1/Q) * 2^L + K (GS
 // User's Manual, texture mapping), or K alone with LCM.
 function PixelLod(const D: TPS2GSDraw; Q: Single): Single;
+// Adds the pages holding pixels X0..X1, Y0..Y1 (not negative) of buffer BP
+// (blocks), BW (64 pixels) in format PSM, as TPS2GSAddressing places them.
+procedure AddRectPages(var Pages: TPS2GSPages; BP, BW, PSM: Cardinal; X0, Y0, X1, Y1: Integer);
 
 implementation
 
@@ -1678,6 +1700,73 @@ begin
   Result := UInt64(BP) or (UInt64(BW) shl 20) or (UInt64(PSM) shl 32) or (UInt64(1) shl 40);
 end;
 
+function TPS2GSRaster.MemoryFor(const Pages: TPS2GSPages): TPS2GSMemory;
+begin
+  if FWorker = nil then
+    Exit(GetMemory);
+  var Need: Int64 := 0;
+  for var P := 0 to 511 do
+    if (Pages[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then
+    begin
+      if FPageWritten[P] > Need then
+        Need := FPageWritten[P];
+      if ((FXferArea[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0) and (FXferAreaEntry > Need) then
+        Need := FXferAreaEntry;
+    end;
+  // (What the worker has still to draw writes other pages: it goes on.)
+  if not FWorker.DrawnThrough(Need) then
+    FWorker.Drain(True);
+  Result := FMemory;
+end;
+
+procedure TPS2GSRaster.MarkWritten(BP, BW, PSM: Cardinal; X0, Y0, X1, Y1: Integer);
+var
+  Pages: TPS2GSPages;
+begin
+  FillChar(Pages, SizeOf(Pages), 0);
+  AddRectPages(Pages, BP, BW, PSM, X0, Y0, X1, Y1);
+  var Entry := FWorker.Written;
+  for var I := 0 to High(Pages) do
+  begin
+    var Bits := Pages[I];
+    var P := I * 32;
+    while Bits <> 0 do
+    begin
+      if (Bits and $FF) = 0 then
+      begin
+        Bits := Bits shr 8;
+        Inc(P, 8);
+        Continue;
+      end;
+      if (Bits and 1) <> 0 then
+        FPageWritten[P] := Entry;
+      Bits := Bits shr 1;
+      Inc(P);
+    end;
+  end;
+end;
+
+// The pages a transfer's destination area (BITBLTBUF, TRXPOS, TRXREG) may
+// cover (as MarkPendingArea: rows from TRXPOS's, all columns up to its
+// last; all pages where its coordinates wrap).
+procedure TPS2GSRaster.MarkAreaWritten(Buf, Pos, Reg: UInt64; var Pages: TPS2GSPages);
+begin
+  FillChar(Pages, SizeOf(Pages), 0);
+  var X := Integer((Pos shr 32) and $7FF);
+  var Y := Integer((Pos shr 48) and $7FF);
+  var W := Integer(Reg and $FFF);
+  var H := Integer((Reg shr 32) and $FFF);
+  if (X + W > 2048) or (Y + H > 2048) then
+  begin
+    FillChar(Pages, SizeOf(Pages), $FF);
+    Exit;
+  end;
+  var P0, P1: Integer;
+  PageSpan(Cardinal((Buf shr 32) and $3FFF), Cardinal((Buf shr 48) and $3F), Cardinal((Buf shr 56) and $3F),
+    X + Max(W, 1) - 1, Y, Y + Max(H, 1) - 1, P0, P1);
+  AddPages(Pages, P0, P1);
+end;
+
 // Whether a page of Pages that the queued primitives wrote they drew
 // through another buffer than Key.
 function TPS2GSRaster.OwnedElsewhere(const Pages: TPS2GSPages; Key: UInt64): Boolean;
@@ -1852,6 +1941,13 @@ begin
     var Counted := FCounter.PixelsDrawn;
     FCounter.Draw(FCommand);
     Inc(FPixels, FCounter.PixelsDrawn - Counted);
+    var X0, Y0, X1, Y1: Integer;
+    if PixelRect(FCommand, X0, Y0, X1, Y1) then
+    begin
+      MarkWritten(FD.FBP, FD.FBW, FD.FPSM, X0, Y0, X1, Y1);
+      if not FD.ZMSK then
+        MarkWritten(FD.ZBP, FD.FBW, FD.ZPSM, X0, Y0, X1, Y1);
+    end;
     Exit;
   end;
   // CPU primitives must see all earlier GPU writes. Sprites decide after
@@ -2009,7 +2105,11 @@ procedure TPS2GSRaster.WriteRegister(Index: Integer; Value: UInt64);
 begin
   Index := Index and $7F;
   if FWorker <> nil then
+  begin
     FWorker.PutRegister(Index, Value);
+    if Index = GSRegHWREG then
+      FXferAreaEntry := FWorker.Written;
+  end;
   if PrimLog <> nil then
     LogRegister(Index, Value);
   // Queued transferred pixels go with the transfer registers they came with.
@@ -3420,6 +3520,15 @@ begin
   FXferBits := 0;
   FXferBitCount := 0;
   FQueueXfer := Queueing;
+  if FShadow and (Dir = 0) then
+  begin
+    // (The last transfer's pages, as written by its last data so far.)
+    for var P := 0 to 511 do
+      if (FXferArea[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then
+        FPageWritten[P] := FXferAreaEntry;
+    MarkAreaWritten(Regs[GSRegBITBLTBUF], Regs[GSRegTRXPOS], Regs[GSRegTRXREG], FXferArea);
+    FXferAreaEntry := FWorker.Written;
+  end;
   case Dir of
     0: FXferActive := True;
     1: LocalToHost;
@@ -3548,6 +3657,7 @@ begin
   if FWorker <> nil then
   begin
     FWorker.PutImage(Data);
+    FXferAreaEntry := FWorker.Written;
     // Where the transfer is, for whole quadwords of the common formats at
     // once (as FeedWord would leave it); the rest below.
     if FXferActive and (FXferBitCount = 0) and (FXferBits = 0) then
@@ -3614,7 +3724,14 @@ end;
 procedure TPS2GSRaster.LocalToLocal;
 begin
   if FShadow then
+  begin
+    var Pages: TPS2GSPages;
+    MarkAreaWritten(Regs[GSRegBITBLTBUF], Regs[GSRegTRXPOS], Regs[GSRegTRXREG], Pages);
+    for var P := 0 to 511 do
+      if (Pages[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then
+        FPageWritten[P] := FWorker.Written;
     Exit;
+  end;
   // The first CPU worker can start the copy as soon as it is published.
   // Its source/destination may alias deferred GPU work, so finish that work
   // even when ordinary software drawing remains queued on the workers.
@@ -4073,6 +4190,9 @@ procedure TPS2GSWorker.Execute;
 begin
   var Csr := HostControlWord;
   var Position: Int64 := 0;
+  var BandsDone: Int64 := 0;
+  var GpuDone: Int64 := 0;
+  var Synced: Int64 := 0;
   while not Terminated do
   begin
     var Spins := 0;
@@ -4125,6 +4245,17 @@ begin
       end;
       Inc(Position);
       TInterlocked.Exchange(FLines.Done, Position);
+      // Nothing queued for the band threads or the GPU: everything so far is
+      // in memory on that side.
+      if not FInner.FPending then
+        BandsDone := Position;
+      if (FInner.FAccelerator = nil) or not FInner.FAccelerator.Pending then
+        GpuDone := Position;
+      if Min(BandsDone, GpuDone) <> Synced then
+      begin
+        Synced := Min(BandsDone, GpuDone);
+        TInterlocked.Exchange(FLines.Synced, Synced);
+      end;
       if FMainWaiting <> 0 then
         FProgress.SetEvent;
     end;
@@ -4213,6 +4344,11 @@ begin
   FDrained := 0;
   if FWrite - FPublishedHere >= 64 then
     Publish;
+end;
+
+function TPS2GSWorker.DrawnThrough(Count: Int64): Boolean;
+begin
+  Result := (FDrained = 2) or (TInterlocked.Read(FLines.Synced) >= Count);
 end;
 
 procedure TPS2GSWorker.Drain(Synced: Boolean);

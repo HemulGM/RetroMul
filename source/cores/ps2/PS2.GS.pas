@@ -284,9 +284,14 @@ begin
   var PSM := Integer((FB shr 15) and $1F);
   var DBX := Integer((FB shr 32) and $7FF);
   var DBY := Integer((FB shr 43) and $7FF);
-  // Acquiring VRAM publishes queued CPU/GPU writes. No new GS commands are
-  // issued while this circuit is scanned, so do that once, not per pixel.
-  var Memory := FRaster.Memory;
+  // Acquiring VRAM publishes queued CPU/GPU writes to the circuit's pages.
+  // No new GS commands are issued while this circuit is scanned, so do that
+  // once, not per pixel.
+  var Pages: TPS2GSPages;
+  FillChar(Pages, SizeOf(Pages), 0);
+  AddRectPages(Pages, Cardinal(FB and $1FF) * 32, Cardinal((FB shr 9) and $3F), Cardinal(PSM), DBX, DBY,
+    DBX + W - 1, DBY + H - 1);
+  var Memory := FRaster.MemoryFor(Pages);
   for var Y := 0 to H - 1 do
     Memory.ReadDisplayRow(PSM, FBP, FBW, DBX, DBY + Y, @Pixels[Y * W], W);
 end;

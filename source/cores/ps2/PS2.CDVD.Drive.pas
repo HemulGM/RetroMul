@@ -8,11 +8,16 @@
 // drive, IOP I_STAT bit 2). S commands (MECHACON services) answer at once
 // through the parameter and result FIFOs, with the exact result lengths
 // CDVDMAN expects. The real-time clock follows the emulated console clock
-// plus what the BIOS writes; NVM words and configuration blocks live in the
-// drive's EEPROM (a companion .nvm file of the BIOS when present, blank
-// otherwise).
+// plus what the BIOS writes. NVM words, the configuration blocks, the model
+// name and the i.Link ID live in the MECHACON's 1 KiB EEPROM (a companion
+// .nvm file of the BIOS when present, blank otherwise), laid out as the
+// console's MECHACON keeps it: the configuration areas (EEGS, OSD, DVD
+// player) are 16-byte rows of 15 bytes and a checksum at 280h/300h/200h on
+// the earlier MECHACON and at 270h/2B0h/200h on the Dragon MECHACON of the
+// SCPH-50000 and later consoles.
 // References: ps2tek (CDVD I/O ports, N and S commands, read timing),
-// ps2sdk cdvdman (AFL 2.0; register protocol and result sizes).
+// ps2sdk cdvdman (AFL 2.0; register protocol and result sizes), PS2
+// Developer wiki (MECHACON EEPROM layouts).
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$POINTERMATH ON}
 
@@ -53,13 +58,20 @@ type
     FClockOffset: Int64;
     // MECHACON EEPROM and configuration access.
     FNVM: array[0..1023] of Byte;
+    FDragon: Boolean;
+    FNVMChanged: Boolean;
     FConfigOpen: Boolean;
     FConfigWrite: Boolean;
     FConfigBlock, FConfigCount, FConfigPos: Integer;
-    FConfig: array[0..3, 0..$43, 0..14] of Byte;
     FMechacon: array[0..3] of Byte;
+    // The disc key registers (20h-24h, 28h-2Ch, 30h-34h; 38h which parts
+    // are valid) of the last ReadKey, and the disc's serial they encode.
+    FKey: array[0..15] of Byte;
+    FSerialLetters: AnsiString;
+    FSerialNumber: Integer;
     // Diagnostics: reads per register.
     FReads: array[0..255] of Integer;
+    FLastRead: array[0..255] of Byte;
     procedure Interrupt(Bits: Byte);
     procedure StartN;
     procedure FinishN;
@@ -69,16 +81,30 @@ type
     function BlockTime: Int64;
     function SeekTime(Target: Int64): Int64;
     procedure ClockBytes(out B: array of Byte);
+    procedure ReadKey(Sector: Cardinal);
+    function ClockSeconds: Int64;
+    procedure WriteClock;
     function ReadRegister(Reg: Cardinal): Byte;
+    // EEPROM offset of row Row of configuration area Block (-1 outside it).
+    function ConfigRow(Block, Row: Integer): Integer;
+    function ModelNameAt: Integer;
   public
     OnInterrupt: TProc;
     OnData: TProc;
     Log: TStrings;
     constructor Create(Scheduler: TPS2Scheduler; Image: TDVDImage);
     procedure Reset;
-    // The MECHACON version (4 bytes) and EEPROM (1 KiB) of the console.
+    // The MECHACON version (4 bytes) and EEPROM (1 KiB) of the console, and
+    // whether its MECHACON is the Dragon (EEPROM layout).
     procedure SetMechacon(const Version: TBytes);
-    procedure SetNVM(const Data: TBytes);
+    procedure SetNVM(const Data: TBytes; Dragon: Boolean);
+    function NVM: TBytes;
+    // The BIOS wrote the EEPROM (configuration or NVM words) since the last
+    // ClearNVMChanged.
+    property NVMChanged: Boolean read FNVMChanged;
+    procedure ClearNVMChanged;
+    // Seconds the BIOS moved the clock from the emulated console clock.
+    property ClockOffset: Int64 read FClockOffset write FClockOffset;
     function Read(Reg: Cardinal): Byte;
     procedure Write(Reg: Cardinal; Value: Byte);
     // DMA channel 3 takes up to MaxBytes of read data; returns the bytes.
@@ -86,6 +112,8 @@ type
     // Scheduler event CDVD.
     procedure Event;
     procedure SerializeState(State: TStateArchive);
+    // Diagnostics.
+    function Describe: string;
   end;
 
 implementation
@@ -123,11 +151,48 @@ begin
     Move(Version[0], FMechacon[0], 4);
 end;
 
-procedure TPS2CDVDDrive.SetNVM(const Data: TBytes);
+procedure TPS2CDVDDrive.SetNVM(const Data: TBytes; Dragon: Boolean);
 begin
   FillChar(FNVM, SizeOf(FNVM), 0);
   if Length(Data) > 0 then
     Move(Data[0], FNVM[0], Min(Length(Data), SizeOf(FNVM)));
+  FDragon := Dragon;
+  FNVMChanged := False;
+end;
+
+function TPS2CDVDDrive.NVM: TBytes;
+begin
+  SetLength(Result, SizeOf(FNVM));
+  Move(FNVM[0], Result[0], SizeOf(FNVM));
+end;
+
+procedure TPS2CDVDDrive.ClearNVMChanged;
+begin
+  FNVMChanged := False;
+end;
+
+// Configuration areas: 0 EEGS (4 rows), 1 OSD (7 rows), 2 DVD player (7
+// rows).
+function TPS2CDVDDrive.ConfigRow(Block, Row: Integer): Integer;
+const
+  Rows: array[0..2] of Integer = (4, 7, 7);
+  Old: array[0..2] of Integer = ($280, $300, $200);
+  New: array[0..2] of Integer = ($270, $2B0, $200);
+begin
+  if (Block < 0) or (Block > 2) or (Row < 0) or (Row >= Rows[Block]) then
+    Exit(-1);
+  if FDragon then
+    Result := New[Block] + Row * 16
+  else
+    Result := Old[Block] + Row * 16;
+end;
+
+function TPS2CDVDDrive.ModelNameAt: Integer;
+begin
+  if FDragon then
+    Result := $1B0
+  else
+    Result := $1A0;
 end;
 
 procedure TPS2CDVDDrive.Reset;
@@ -161,9 +226,50 @@ begin
     FStatus := StatPause;
   end;
   FSticky := FStatus;
+  FillChar(FKey, SizeOf(FKey), 0);
+  // The serial from the boot file name (cdrom0:\SLPS_250.88;1: SLPS, 25088).
+  FSerialLetters := '';
+  FSerialNumber := 0;
+  var Info: TPS2DiscInfo;
+  if (FImage <> nil) and ReadPS2DiscInfo(FImage, Info) and (Length(Info.Serial) >= 5) then
+  begin
+    FSerialLetters := AnsiString(Info.Serial.Substring(0, 4));
+    FSerialNumber := StrToIntDef(Info.Serial.Substring(5), 0);
+  end;
   FScheduler.Cancel(TPS2Event.CDVD);
 end;
 
+// The disc key the MECHACON reads from a sector. The key of sector 75 (4Bh)
+// carries the disc's serial as CDVDMAN decodes it (ps2sdk cdvdman,
+// sceCdDeobfuscateUsingUniqueKey): bits 0-39 of key bytes 0-4 hold, from the
+// top, the four letters (7 bits each, first letter highest) between number
+// bits 0-4 (bits 35-39) and number bits 10-16 (bits 0-6); number bits 5-9 are
+// bits 3-7 of key byte 14. Its valid parts (register 38h) are the first and
+// the third; other sectors give the first part.
+procedure TPS2CDVDDrive.ReadKey(Sector: Cardinal);
+begin
+  FillChar(FKey, SizeOf(FKey), 0);
+  if FImage = nil then
+    Exit;
+  var Letters: array[0..3] of UInt64;
+  for var K := 0 to 3 do
+    if K < Length(FSerialLetters) then
+      Letters[K] := Ord(FSerialLetters[K + 1]) and $7F
+    else
+      Letters[K] := 0;
+  var N := UInt64(FSerialNumber and $1FFFF);
+  var V := ((N shr 10) and $7F) or (Letters[3] shl 7) or (Letters[2] shl 14) or (Letters[1] shl 21) or
+    (Letters[0] shl 28) or ((N and $1F) shl 35);
+  for var K := 0 to 4 do
+    FKey[K] := Byte(V shr (K * 8));
+  if Sector = 75 then
+  begin
+    FKey[14] := Byte(((N shr 5) and $1F) shl 3);
+    FKey[15] := 5;
+  end
+  else
+    FKey[15] := 1;
+end;
 procedure TPS2CDVDDrive.Interrupt(Bits: Byte);
 begin
   FIStat := FIStat or Bits;
@@ -208,7 +314,8 @@ begin
   FError := 0;
   var P := PCardinal(@FNParams[0]);
   if (Log <> nil) and (Log.Count < 100000) then
-    Log.Add(Format('cdvd ncmd %.2x params %d: %.8x %.8x %.8x', [FNCmd, FNParamCount, P[0], P[1], P[2]]));
+    Log.Add(Format('cdvd %d ncmd %.2x params %d: %.8x %.8x %.8x', [FScheduler.Now div 4915200, FNCmd, FNParamCount, P[0],
+      P[1], P[2]]));
   case FNCmd of
     $05, $06, $08:
       begin
@@ -250,6 +357,12 @@ begin
         FDue := FScheduler.Now + PS2EEClock div 6;
         FSpinning := False;
         FSector := 0;
+      end;
+    $0C:
+      begin
+        // ReadKey (mode, two flags, sector).
+        ReadKey(PCardinal(@FNParams[3])^);
+        FDue := FScheduler.Now + 10000;
       end;
   else
     // NOP, NOPsync, GetToc and the rest: done shortly.
@@ -375,18 +488,51 @@ begin
   FSResultPos := 0;
 end;
 
+// Seconds since 2004-01-01 00:00:00: the console clock (from 12:00:00 that
+// day, as PS2ClockAt) moved by what the BIOS wrote.
+function TPS2CDVDDrive.ClockSeconds: Int64;
+begin
+  Result := Int64(12 * 3600) + FScheduler.Now div PS2EEClock + FClockOffset;
+end;
+
 procedure TPS2CDVDDrive.ClockBytes(out B: array of Byte);
 begin
-  var Cycles := FScheduler.Now;
-  var T := PS2ClockAt(Cycles + FClockOffset * PS2EEClock);
+  var Secs := ClockSeconds;
+  var Days := Secs div 86400;
+  var Rem := Secs mod 86400;
+  if Rem < 0 then
+  begin
+    Inc(Rem, 86400);
+    Dec(Days);
+  end;
+  var Y, M, D: Word;
+  DecodeDate(Trunc(EncodeDate(2004, 1, 1)) + Days, Y, M, D);
   B[0] := 0;
-  B[1] := PS2BCD(T.Second);
-  B[2] := PS2BCD(T.Minute);
-  B[3] := PS2BCD(T.Hour);
+  B[1] := PS2BCD(Rem mod 60);
+  B[2] := PS2BCD((Rem div 60) mod 60);
+  B[3] := PS2BCD(Rem div 3600);
   B[4] := 0;
-  B[5] := PS2BCD(T.Day);
-  B[6] := PS2BCD(T.Month);
-  B[7] := PS2BCD(T.Year mod 100);
+  B[5] := PS2BCD(D);
+  B[6] := PS2BCD(M);
+  B[7] := PS2BCD(Y mod 100);
+end;
+
+// WriteRTC (second, minute, hour, day, month, year in BCD after an ignored
+// byte each where ReadRTC returns zero): the clock goes on from there.
+procedure TPS2CDVDDrive.WriteClock;
+
+  function FromBCD(B: Byte): Integer;
+  begin
+    Result := (B shr 4) * 10 + (B and $F);
+  end;
+
+begin
+  var Date: TDateTime;
+  if not TryEncodeDate(2000 + FromBCD(FSParams[7]), FromBCD(FSParams[6]), FromBCD(FSParams[5]), Date) then
+    Exit;
+  var Secs := Int64(Trunc(Date) - Trunc(EncodeDate(2004, 1, 1))) * 86400 + FromBCD(FSParams[3]) * 3600 +
+    FromBCD(FSParams[2]) * 60 + FromBCD(FSParams[1]);
+  FClockOffset := FClockOffset + Secs - ClockSeconds;
 end;
 
 procedure TPS2CDVDDrive.SCommand;
@@ -416,8 +562,20 @@ begin
         FSticky := FStatus;
         Result([0]);
       end;
-    $06, $0C, $14, $16, $19, $1B, $1C, $24, $25, $28, $29, $2E, $31, $33, $34, $3B, $3E, $1F, $13, $18, $0B:
+    $06, $0C, $14, $16, $19, $1B, $1C, $24, $25, $28, $29, $2E, $31, $33, $34, $3B, $3E, $1F, $13, $18:
       Result([0]);
+    $0B:
+      begin
+        // WriteNVM: word address and the word (big-endian).
+        var A := ((Integer(P[0]) shl 8) or P[1]) * 2;
+        if A + 1 < Length(FNVM) then
+        begin
+          FNVM[A] := P[3];
+          FNVM[A + 1] := P[2];
+          FNVMChanged := True;
+        end;
+        Result([0]);
+      end;
     $08:
       begin
         ClockBytes(Clock);
@@ -425,8 +583,7 @@ begin
       end;
     $09:
       begin
-        // WriteRTC: the offset between the written time and the clock.
-        ClockBytes(Clock);
+        WriteClock;
         Result([0]);
       end;
     $0A:
@@ -438,18 +595,34 @@ begin
         else
           Result([0, 0, 0]);
       end;
-    $12: Result([0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    $12:
+      begin
+        // The i.Link ID.
+        var A := $1C0;
+        if FDragon then
+          A := $1E0;
+        Result([0, FNVM[A], FNVM[A + 1], FNVM[A + 2], FNVM[A + 3], FNVM[A + 4], FNVM[A + 5], FNVM[A + 6], FNVM[A + 7]]);
+      end;
     $15: Result([5]);
     $17:
       begin
-        // Model name (two halves).
-        var Name := AnsiString('SCPH-50000') + #0#0#0#0#0#0;
+        // Model name (two halves) from the EEPROM, a default without one.
+        var Name: array[0..15] of Byte;
+        Move(FNVM[ModelNameAt], Name[0], 16);
+        if Name[0] = 0 then
+        begin
+          FillChar(Name, SizeOf(Name), 0);
+          var Default := AnsiString('SCPH-50000');
+          Move(Default[1], Name[0], Length(Default));
+        end;
         var Half := P[0] and 8;
-        Result([0, Byte(Name[Half + 1]), Byte(Name[Half + 2]), Byte(Name[Half + 3]), Byte(Name[Half + 4]),
-          Byte(Name[Half + 5]), Byte(Name[Half + 6]), Byte(Name[Half + 7]), Byte(Name[Half + 8])]);
+        Result([0, Name[Half], Name[Half + 1], Name[Half + 2], Name[Half + 3], Name[Half + 4], Name[Half + 5],
+          Name[Half + 6], Name[Half + 7]]);
       end;
     $1A: Result([1]);
     $1D: Result([0, 0, 0, 0, 0]);
+    // Remote control read (RMMAN2): bit 7 of the status, no remote data.
+    $1E: Result([$80, 0, 0, 0, 0]);
     $22: Result([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     $26: Result([0, 0, 0]);
     $27: Result([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
@@ -467,30 +640,28 @@ begin
       end;
     $41:
       begin
-        // ReadConfig: the next 15-byte block and its checksum.
+        // ReadConfig: the next row (15 bytes and the checksum stored with
+        // them).
+        var A := -1;
         if FConfigOpen and not FConfigWrite and (FConfigPos < FConfigCount) then
-        begin
-          var B: array[0..15] of Byte;
-          var Sum: Byte := 0;
-          for var K := 0 to 14 do
-          begin
-            B[K] := FConfig[FConfigBlock, FConfigPos, K];
-            Sum := Byte(Sum + B[K]);
-          end;
-          B[15] := Sum;
-          Inc(FConfigPos);
-          Result(B);
-        end
+          A := ConfigRow(FConfigBlock, FConfigPos);
+        Inc(FConfigPos);
+        if A >= 0 then
+          Result(Slice(PByteArray(@FNVM[A])^, 16))
         else
           Result([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
       end;
     $42:
       begin
+        // WriteConfig: the next row (CDVDMAN sends the checksum).
+        var A := -1;
         if FConfigOpen and FConfigWrite and (FConfigPos < FConfigCount) then
+          A := ConfigRow(FConfigBlock, FConfigPos);
+        Inc(FConfigPos);
+        if A >= 0 then
         begin
-          for var K := 0 to 14 do
-            FConfig[FConfigBlock, FConfigPos, K] := P[K];
-          Inc(FConfigPos);
+          Move(P[0], FNVM[A], 16);
+          FNVMChanged := True;
         end;
         Result([0]);
       end;
@@ -514,9 +685,11 @@ begin
   Result := ReadRegister(Reg);
   if (Log <> nil) and (Log.Count < 100000) and (Reg <> $17) and (Reg <> $18) then
   begin
+    // The first reads of each register, then changed values.
     Inc(FReads[Reg and $FF]);
-    if FReads[Reg and $FF] <= 20 then
-      Log.Add(Format('cdvd r %.2x = %.2x', [Reg, Result]));
+    if (FReads[Reg and $FF] <= 3) or (FLastRead[Reg and $FF] <> Result) then
+      Log.Add(Format('cdvd %d r %.2x = %.2x', [FScheduler.Now div 4915200, Reg, Result]));
+    FLastRead[Reg and $FF] := Result;
   end;
 end;
 
@@ -543,6 +716,12 @@ begin
       end;
     $0B: Result := FSticky;
     $0F: Result := FDiskType;
+    $20..$24: Result := FKey[Reg - $20];
+    $28..$2C: Result := FKey[Reg - $28 + 5];
+    $30..$34: Result := FKey[Reg - $30 + 10];
+    $38: Result := FKey[15];
+    // The value the key bytes are XORed with.
+    $39: Result := 0;
     $16: Result := FSCmd;
     $17:
       begin
@@ -608,6 +787,12 @@ begin
   end;
 end;
 
+function TPS2CDVDDrive.Describe: string;
+begin
+  Result := Format('ncmd %.2x busy %d left %d sector %d buf %d/%d due %d now %d istat %x status %x', [FNCmd, Ord(FNBusy),
+    FLeft, FSector, FBufPos, FBufLen, FDue, FScheduler.Now, FIStat, FStatus]);
+end;
+
 procedure TPS2CDVDDrive.SerializeState(State: TStateArchive);
 begin
   State.Field(FRegs, SizeOf(FRegs));
@@ -642,8 +827,10 @@ begin
   State.Field(FConfigBlock, SizeOf(FConfigBlock));
   State.Field(FConfigCount, SizeOf(FConfigCount));
   State.Field(FConfigPos, SizeOf(FConfigPos));
-  State.Field(FConfig, SizeOf(FConfig));
+  State.Field(FDragon, SizeOf(FDragon));
+  State.Field(FNVMChanged, SizeOf(FNVMChanged));
   State.Field(FMechacon, SizeOf(FMechacon));
+  State.Field(FKey, SizeOf(FKey));
 end;
 
 end.

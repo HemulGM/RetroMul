@@ -409,10 +409,17 @@ type
     // (BIOS boot: the kernel's idle thread), and the cycles that saved.
     SkipSpins: Boolean;
     SpinCycles: Int64;
+    // Diagnostics (BIOS boot): SYSCALLs taken to the guest kernel, interrupts
+    // taken by line state (index: INT1 * 2 + INT0).
+    SyscallLog: TStrings;
+    InterruptsTaken: array[0..3] of Int64;
+    // SifGetReg calls are logged from this cycle on.
+    SyscallLogPolledFrom: Int64;
     // Diagnostics (not serialized): the instruction of the last MMIO access.
     SlowPC: Cardinal;
     ExceptionCount: Int64;
     LastExceptionPC, LastExceptionCode: Cardinal;
+    ExceptionCodes: array[0..31] of Int64;
     // The last block starts (diagnostics).
     PCHistory: array[0..15] of Cardinal;
     PCHistoryPos: Integer;
@@ -982,6 +989,7 @@ begin
   S.COP0[C0Status] := SR or EESREXL;
   S.PC := Vector;
   Inc(ExceptionCount);
+  Inc(ExceptionCodes[Code and 31]);
   LastExceptionPC := PC;
   LastExceptionCode := Code;
   UpdateInterrupts;
@@ -1250,7 +1258,13 @@ end;
 function TEECPU.OpSYSCALL(I: PEEInst): Boolean;
 begin
   if not Assigned(FOnSyscall) then
+  begin
+    // SifGetReg (7Ah) is polled: left out.
+    if (SyscallLog <> nil) and (SyscallLog.Count < 200000) and ((S.GPR[3].UW[0] <> $7A) or (Now^ > SyscallLogPolledFrom)) then
+      SyscallLog.Add(Format('%d syscall %d a0 %.8x a1 %.8x pc %.8x ra %.8x', [Now^ div 4915200,
+        Integer(S.GPR[3].UW[0]), S.GPR[4].UW[0], S.GPR[5].UW[0], I.Addr, S.GPR[31].UW[0]]));
     Exit(Raise_(I, EEExcSyscall));
+  end;
   if ((I.Flags and IFSlot) <> 0) and FBranchTaken then
     S.PC := FBranchTarget
   else
@@ -4049,6 +4063,8 @@ begin
         FIntDelay := False
       else
       begin
+        // Diagnostics: interrupts taken per line.
+        Inc(InterruptsTaken[Ord(FInt1) * 2 + Ord(FInt0)]);
         EnterException(EEExcInterrupt);
         Prev := nil;
       end;

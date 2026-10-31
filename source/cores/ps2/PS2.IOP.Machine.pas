@@ -63,8 +63,10 @@ type
     FTimer: array[0..5] of TPS2IOPTimer;
     FSBus: array[0..1] of Cardinal;
     FRunning, FAgain: array[0..12] of Boolean;
-    // Diagnostics: printable text in SIF1 data.
+    // Diagnostics: printable text in SIF1 data, the SIF1 element in progress.
     FText: string;
+    FPacketAt: Cardinal;
+    FPacketWords: Integer;
     FLineCycles: Int64;
     FOnEEInterrupt: TProc;
     function BusRead(Address: Cardinal; Size: Integer): Cardinal;
@@ -79,6 +81,7 @@ type
     procedure RunChannel(N: Integer);
     procedure RunSIF0;
     procedure RunSIF1;
+    procedure LogPacket(const Dir: string; At: Cardinal; Words: Integer);
     procedure RunCDVD;
     procedure Complete(N: Integer);
     procedure ScheduleDMA;
@@ -87,12 +90,17 @@ type
     function TimerCount(K: Integer): Cardinal;
     procedure SetTimerCount(K: Integer; Value: Cardinal);
     function TimerLimit(K: Integer): Int64;
-    procedure TimerReached(K: Integer);
+    procedure AdvanceTimer(K: Integer; out Reached, Wrapped: Boolean);
+    procedure TimerReached(K: Integer; Reached, Wrapped: Boolean);
     procedure ScheduleTimers;
     function CyclesToTicks(K: Integer; Ticks: Int64): Int64;
   public
     CPU: TIOPCPU;
     Log: TStrings;
+    // Diagnostics: I_STAT bits raised, DMA channel ends.
+    IRQCounts: array[0..31] of Int64;
+    TimerLog: TStrings;
+    DMACounts: array[0..12] of Int64;
     constructor Create(Scheduler: TPS2Scheduler; IOPRAM, BIOS: PByte; Hardware: TPS2IOPHardware;
       SIF: TPS2SIFBridge; Drive: TPS2CDVDDrive);
     destructor Destroy; override;
@@ -113,6 +121,8 @@ type
     procedure CDVDData;
     procedure SetLineCycles(Cycles: Int64);
     procedure SerializeState(State: TStateArchive);
+    // Diagnostics.
+    function Describe: string;
     // The IOP raised the SBUS interrupt (EE INTC bit 1).
     property OnEEInterrupt: TProc read FOnEEInterrupt write FOnEEInterrupt;
   end;
@@ -196,6 +206,7 @@ end;
 
 procedure TPS2IOPMachine.RaiseIRQ(Bit: Integer);
 begin
+  Inc(IRQCounts[Bit and 31]);
   FIStat := FIStat or (Cardinal(1) shl Bit);
   UpdateLine;
 end;
@@ -247,6 +258,7 @@ end;
 // unmasked, and the master flag drives I_STAT bit 3.
 procedure TPS2IOPMachine.ChannelFlag(N: Integer);
 begin
+  Inc(DMACounts[N]);
   if N < 7 then
   begin
     if ((FDICR shr (16 + N)) and 1) <> 0 then
@@ -331,7 +343,10 @@ begin
       else
         FCh[N].TADR := T + 8;
       if (Log <> nil) and (Log.Count < 100000) then
+      begin
         Log.Add(Format('iop sif0 tag %.8x %.8x at %.6x', [W0, W1, T]));
+        LogPacket('sif0', FCh[N].MADR, FCh[N].Left);
+      end;
     end;
     while (FCh[N].Left > 0) and (FSIF.FIFO0.Room > 0) do
     begin
@@ -379,6 +394,8 @@ begin
       // The rest of the last quadword.
       FCh[N].Drop := (4 - (Header + FCh[N].Left) mod 4) mod 4;
       FCh[N].Active := True;
+      FPacketAt := FCh[N].MADR;
+      FPacketWords := FCh[N].Left;
       if (Log <> nil) and (Log.Count < 100000) then
         Log.Add(Format('iop sif1 tag %.8x %.8x', [W0, W1]));
     end;
@@ -408,6 +425,8 @@ begin
     if FCh[N].Drop > 0 then
       Exit;
     FCh[N].Active := False;
+    if Log <> nil then
+      LogPacket('sif1', FPacketAt, FPacketWords);
     if (FCh[N].Flags and $40000000) <> 0 then
       if ((FDICR2 shr N) and 1) <> 0 then
         ChannelFlag(N);
@@ -417,6 +436,35 @@ begin
       Exit;
     end;
   until False;
+end;
+
+// Diagnostics: SIF commands among SIF1 elements (a 16-byte header: sizes,
+// destination, command id, option), RPC binds and calls by server id.
+procedure TPS2IOPMachine.LogPacket(const Dir: string; At: Cardinal; Words: Integer);
+begin
+  if (Words < 4) or (Words > 64) or (Log.Count >= 100000) then
+    Exit;
+  var A := At and PS2IOPRAMMask and not 3;
+  var Cid := PCardinal(FRAM + ((A + 8) and PS2IOPRAMMask))^;
+  if (Cid and $FFFFFF00) <> $80000000 then
+    Exit;
+  var W: array[0..13] of Cardinal;
+  for var K := 0 to 13 do
+    W[K] := PCardinal(FRAM + ((A + Cardinal(K) * 4) and PS2IOPRAMMask))^;
+  case Cid of
+    $80000009: Log.Add(Format('%d %s bind sid %.8x client %.8x', [FScheduler.Now div 4915200, Dir, W[8], W[7]]));
+    $80000008: Log.Add(Format('%d %s rpc end client %.8x cid %.8x', [FScheduler.Now div 4915200, Dir, W[7], W[8]]));
+    $8000000A:
+      begin
+        var Sid: Cardinal := 0;
+        if (W[13] <> 0) and ((W[13] and PS2IOPRAMMask) < PS2IOPRAMSize - 4) then
+          Sid := PCardinal(FRAM + (W[13] and PS2IOPRAMMask and not 3))^;
+        Log.Add(Format('%d %s call sid %.8x fn %d send %d recv %d client %.8x', [FScheduler.Now div 4915200, Dir, Sid,
+          W[8], W[9], W[11], W[7]]));
+      end;
+  else
+    Log.Add(Format('%d %s cmd %.8x size %d', [FScheduler.Now div 4915200, Dir, Cid, Words * 4]));
+  end;
 end;
 
 // CDVD: BCR blocks of BCR.size words from the drive's sector data.
@@ -563,23 +611,43 @@ begin
   ScheduleTimers;
 end;
 
-// The count reached the target (compare) or wrapped (overflow): flags,
-// the interrupt (mode bit 10 enables it; one-shot unless bit 6) and the
-// zero return.
-procedure TPS2IOPMachine.TimerReached(K: Integer);
+// Timer K counted up to now from its base (in whole ticks, so later counts
+// keep the exact rate): whether it reached the target from below and
+// whether it wrapped. With the zero return the count goes back to 0 at the
+// target and the ticks past it carry over; an event handled late still sees
+// the crossing.
+procedure TPS2IOPMachine.AdvanceTimer(K: Integer; out Reached, Wrapped: Boolean);
 begin
-  var Now := FTimer[K].Count;
+  var Ticks := TimerTicks(K, FScheduler.Now - FTimer[K].Base);
+  var Limit := TimerLimit(K);
+  var Target := Int64(FTimer[K].Target);
+  var Cur := Int64(FTimer[K].Count) + Ticks;
+  Reached := (Int64(FTimer[K].Count) < Target) and (Cur >= Target);
+  Wrapped := False;
+  if Reached and ((FTimer[K].Mode and 8) <> 0) then
+    Cur := (Cur - Target) mod Target
+  else if Cur >= Limit then
+  begin
+    Wrapped := True;
+    Cur := Cur mod Limit;
+  end;
+  FTimer[K].Count := Cardinal(Cur);
+  FTimer[K].Base := FTimer[K].Base + CyclesToTicks(K, Ticks);
+end;
+
+// The count reached the target (compare) or wrapped (overflow): the flags
+// and the interrupt (mode bit 10 enables it; one-shot unless bit 6).
+procedure TPS2IOPMachine.TimerReached(K: Integer; Reached, Wrapped: Boolean);
+begin
   var M := FTimer[K].Mode;
   var Irq := False;
-  if Now = FTimer[K].Target then
+  if Reached then
   begin
     M := M or $800;
     if (M and $10) <> 0 then
       Irq := True;
-    if (M and 8) <> 0 then
-      FTimer[K].Count := 0;
   end;
-  if Now = 0 then
+  if Wrapped then
   begin
     M := M or $1000;
     if (M and $20) <> 0 then
@@ -630,16 +698,12 @@ procedure TPS2IOPMachine.TimerEvent;
 begin
   for var K := 0 to 5 do
   begin
-    var M := FTimer[K].Mode;
-    if (M and $38) = 0 then
+    if (FTimer[K].Mode and $38) = 0 then
       Continue;
-    var C := TimerCount(K);
-    if (C = FTimer[K].Target) or (C = 0) then
-    begin
-      FTimer[K].Count := C;
-      FTimer[K].Base := FScheduler.Now;
-      TimerReached(K);
-    end;
+    var Reached, Wrapped: Boolean;
+    AdvanceTimer(K, Reached, Wrapped);
+    if Reached or Wrapped then
+      TimerReached(K, Reached, Wrapped);
   end;
   ScheduleTimers;
 end;
@@ -831,6 +895,9 @@ begin
     K := 3 + Integer((Address - $1F801480) shr 4);
   if K >= 0 then
   begin
+    if (TimerLog <> nil) and (TimerLog.Count < 20000) then
+      TimerLog.Add(Format('%d timer%d w %x = %.8x (count %x mode %x target %x) pc %.8x', [FScheduler.Now div 4915200, K,
+        Address and $C, Value, TimerCount(K), FTimer[K].Mode, FTimer[K].Target, CPU.PC]));
     case Address and $C of
       0: SetTimerCount(K, Value);
       4:
@@ -841,6 +908,11 @@ begin
         end;
       8:
         begin
+          // Crossings up to now count against the old target.
+          var Reached, Wrapped: Boolean;
+          AdvanceTimer(K, Reached, Wrapped);
+          if Reached or Wrapped then
+            TimerReached(K, Reached, Wrapped);
           if K < 3 then
             FTimer[K].Target := Value and $FFFF
           else
@@ -854,6 +926,14 @@ begin
   end;
   if FHW <> nil then
     FHW.Write(Address, Value, Size);
+end;
+
+function TPS2IOPMachine.Describe: string;
+begin
+  Result := Format('istat %x imask %x ictrl %x dicr %.8x dicr2 %.8x', [FIStat, FIMask, FICtrl, FDICR, FDICR2]);
+  for var N in [3, 9, 10] do
+    Result := Result + Format(' | ch%d madr %x bcr %x chcr %x active %d left %d drop %d done %d', [N, FCh[N].MADR, FCh[N].BCR,
+      FCh[N].CHCR, Ord(FCh[N].Active), FCh[N].Left, FCh[N].Drop, FCh[N].DoneAt]);
 end;
 
 procedure TPS2IOPMachine.SerializeState(State: TStateArchive);

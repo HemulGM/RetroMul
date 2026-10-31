@@ -14,7 +14,7 @@ interface
 uses
   System.SysUtils, System.Classes, System.IOUtils, System.Generics.Collections, Core.Snapshots, Core.DVD.Image, PS2.Types, PS2.Scheduler, PS2.EE.CPU,
   PS2.EE.Bus, PS2.Timers, PS2.DMAC, PS2.SIF, PS2.GS, PS2.GIF, PS2.Kernel, PS2.ELF, PS2.IOP.FileIO, PS2.IOP.HLE, PS2.IOP.CDVD, PS2.IOP.Pad, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.VU, PS2.VIF, PS2.IPU,
-  PS2.SIF.Bridge, PS2.CDVD.Drive, PS2.IOP.Machine;
+  PS2.SIF.Bridge, PS2.CDVD.Drive, PS2.IOP.Machine, PS2.BIOS;
 
 const
   // Serialized layout of TPS2Console.SerializeState. Increase it with every
@@ -275,8 +275,21 @@ begin
   DMAC.Ports[DMASIF1] := SIF1Port;
   DMAC.SIF0Chain := True;
   Drive := TPS2CDVDDrive.Create(Scheduler, FConfig.Disc);
+  Bus.CDVD := Drive;
   Drive.SetMechacon(FConfig.Mechacon);
-  Drive.SetNVM(FConfig.NVM);
+  // The Dragon MECHACON (its EEPROM layout) came with the SCPH-50000 and its
+  // BIOS 1.70; earlier consoles have the older MECHACON.
+  var Version := 0;
+  if TPS2BIOS.IsBIOS(FConfig.BIOS) then
+  begin
+    var B := TPS2BIOS.Create(FConfig.BIOS);
+    try
+      Version := StrToIntDef(Copy(B.ROMVER, 1, 4), 0);
+    finally
+      B.Free;
+    end;
+  end;
+  Drive.SetNVM(FConfig.NVM, Version >= 170);
   IOPMachine := TPS2IOPMachine.Create(Scheduler, Bus.IOPRAM, Bus.BIOS, IOP.Hardware, Bridge, Drive);
   Bridge.OnEEData := procedure begin DMAC.Resume(DMASIF0); end;
   Bridge.OnEERoom := procedure begin DMAC.Resume(DMASIF1); end;

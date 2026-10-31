@@ -298,10 +298,23 @@ channels stay in `PS2.IOP.Hardware`), the root counters and the SBUS
 interrupt to the EE. `PS2.SIF.Bridge` holds the SIF mailbox registers and
 the SIF0/SIF1 FIFOs between EE DMA channels 5/6 and IOP channels 9/10.
 `PS2.CDVD.Drive` is the CDVD drive and MECHACON: N commands with spin-up,
-seek and read timing, S commands with the exact result lengths, the clock,
-NVM and configuration blocks. With SCPH-50008 the EE and IOP kernels boot,
-the IOP loads its modules, SIF RPC runs, and OSDSYS shows the Sony and
-PlayStation 2 logos, the first-start setup and the main menu. Disc boot,
+seek and read timing, S commands with the exact result lengths, the clock
+(the BIOS can set it), and the 1 KiB EEPROM. The EEPROM holds NVM words,
+the model name, the i.Link ID and the configuration areas (EEGS, OSD, DVD
+player). Those are 16-byte rows at 280h/300h/200h on the earlier MECHACON
+and at 270h/2B0h/200h on the Dragon MECHACON of BIOS 1.70 and later (layout
+from the PS2 Developer wiki). The EE reaches the drive's registers at
+1F402000h as well: the browser reads the disc type there. ReadKey (N command
+0Ch) returns the disc key, which carries the disc's serial in the encoding
+that ps2sdk's cdvdman decodes. The IOP root counters count in whole ticks
+from their last event, so a compare or overflow event handled late still
+fires and keeps its rate.
+
+With SCPH-50008 and a configured EEPROM (OSD row with the initialized bit),
+the BIOS boots a game disc the way the console does: OSDSYS checks the disc,
+reads its keys and runs PS2LOGO, then the game resets the IOP with its own
+modules and starts (Final Fantasy X reaches its intro). A blank EEPROM gets
+the first-start setup and the main menu instead. Memory cards (MagicGate),
 keeping the console's EEPROM and the front end's BIOS modes are not done
 yet. `PS2Run -bios FILE` boots a BIOS (with `.nvm`/`.mec` files beside it).
 

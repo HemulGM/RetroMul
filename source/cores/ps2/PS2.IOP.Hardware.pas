@@ -42,12 +42,15 @@ type
     procedure FinishSIO2DMA(Base: Cardinal; ToDevice: Boolean);
     procedure SIO2Interrupt;
     procedure ScheduleNext;
+    procedure Fire(Line: Integer);
   public
     SPU2: TPS2SPU2;
     RAM: PByte;
     // IOP cycles (for the root counters).
     IOPCycles: PInt64;
     OnInterrupt: TPS2IOPInterrupt;
+    // Diagnostics: interrupts raised per line.
+    LineCounts: array[0..63] of Int64;
     SIO2: TPS2SIO2;
     Log: TStrings;
     constructor Create(Scheduler: TPS2Scheduler; IOPRAM: PByte; Cycles: PInt64);
@@ -79,7 +82,7 @@ begin
   SPU2.OnInterrupt := procedure
     begin
       if Assigned(OnInterrupt) then
-        OnInterrupt(IOPIntSPU2);
+        Fire(IOPIntSPU2);
     end;
   SPU2.IOPRAM := IOPRAM;
   // AutoDMA: the channel's address follows the blocks the core takes; the
@@ -115,7 +118,7 @@ end;
 procedure TPS2IOPHardware.SIO2Interrupt;
 begin
   if Assigned(OnInterrupt) then
-    OnInterrupt(IOPIntSIO2);
+    Fire(IOPIntSIO2);
 end;
 
 // SIO2 DMA: blocks of BCR.size words, BCR.count blocks. Channel 11 hands
@@ -147,9 +150,9 @@ begin
   SetIO32(Base + 8, IO32(Base + 8) and not $01000000);
   if Assigned(OnInterrupt) then
     if ToDevice then
-      OnInterrupt(IOPIntDMASIO2In)
+      Fire(IOPIntDMASIO2In)
     else
-      OnInterrupt(IOPIntDMASIO2Out);
+      Fire(IOPIntDMASIO2Out);
 end;
 
 procedure TPS2IOPHardware.Reset;
@@ -213,6 +216,13 @@ begin
   ScheduleNext;
 end;
 
+procedure TPS2IOPHardware.Fire(Line: Integer);
+begin
+  Inc(LineCounts[Line and 63]);
+  if Assigned(OnInterrupt) then
+    OnInterrupt(Line);
+end;
+
 procedure TPS2IOPHardware.ScheduleNext;
 begin
   var Next := Min(FDue[0], FDue[1]);
@@ -234,7 +244,7 @@ begin
       SetIO32(Base + 8, IO32(Base + 8) and not $01000000);
       SPU2.DMADone(Core);
       if Assigned(OnInterrupt) then
-        OnInterrupt(FPendingLine[Core]);
+        Fire(FPendingLine[Core]);
     end;
   ScheduleNext;
 end;

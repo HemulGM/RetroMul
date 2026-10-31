@@ -11,7 +11,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Generics.Collections, Core.Snapshots, PS2.Types, PS2.Scheduler, PS2.EE.CPU, PS2.Timers, PS2.DMAC,
-  PS2.SIF, PS2.SIF.Bridge;
+  PS2.SIF, PS2.SIF.Bridge, PS2.CDVD.Drive;
 
 type
   // A register block outside the bus (GIF/GS, VIF, IPU): 32/64-bit
@@ -60,6 +60,11 @@ type
     // with bit 7 completes at once and sets bit 1 (done) of register 6,
     // which writes to register 6 clear.
     CmdRegs: array[0..15] of Word;
+    // The CDVD drive's registers, which the EE reaches at 1F402000h too (the
+    // BIOS browser reads the disc type and drive status there).
+    CDVD: TPS2CDVDDrive;
+    // Diagnostics: INTC causes raised.
+    IRQCounts: array[0..15] of Int64;
     GS, GIF, VIF0, VIF1, IPU: TPS2Device;
     MMIOReads, MMIOWrites: Int64;
     // Diagnostics: accesses per address when assigned (reads; writes with bit 0 set).
@@ -228,6 +233,7 @@ end;
 
 procedure TPS2EEBus.RaiseIRQ(Cause: Integer);
 begin
+  Inc(IRQCounts[Cause and 15]);
   FINTCStat := FINTCStat or (Cardinal(1) shl Cause);
   UpdateINT0;
 end;
@@ -330,6 +336,9 @@ begin
       Exit(MCHRead);
     $1A000000..$1A00FFFF:
       Exit(CmdRegs[(Address shr 1) and 15]);
+    $1F402000..$1F4020FF:
+      if CDVD <> nil then
+        Exit(CDVD.Read(Address and $FF));
     $1000F520:
       Exit(DMAC.ENABLE);
     $12000000..$12001FFF:
@@ -353,6 +362,8 @@ begin
       V := V or (UInt64(FRegs[((Address + 4) and $FFFC) shr 2]) shl 32);
     Exit(V shr ((Address and 3) * 8));
   end;
+  if (RegisterLog <> nil) and (RegisterLog.Count < 4000) then
+    RegisterLog.Add(Format('ee r unmapped %.8x/%d pc %.8x', [Address, Size, CPU.SlowPC]));
   Result := 0;
 end;
 
@@ -453,6 +464,12 @@ begin
           CmdRegs[R] := Word(Value);
         if (R = 0) and ((Value and $80) <> 0) then
           CmdRegs[3] := CmdRegs[3] or 2;
+        Exit;
+      end;
+    $1F402000..$1F4020FF:
+      if CDVD <> nil then
+      begin
+        CDVD.Write(Address and $FF, Byte(Value));
         Exit;
       end;
     $1000F410:

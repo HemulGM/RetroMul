@@ -66,6 +66,7 @@ type
     procedure LogPath3Mask;
     procedure LogUnpack(Cmd: Cardinal; Num, Addr: Integer; Imm: Cardinal);
     procedure UnpackWord(W: Cardinal);
+    function UnpackRun(Data: PCardinal; Count: Integer): Integer;
     procedure WriteVector(const V: TPS2Reg128);
     procedure WriteMasked(const V: TPS2Reg128; P: PPS2Reg128);
     procedure FinishCommand;
@@ -501,15 +502,34 @@ end;
 
 procedure TPS2VIF.WriteMasked(const V: TPS2Reg128; P: PPS2Reg128);
 begin
-  var Mask := S.MASK;
   var R := V;
-  var Masked := ((S.Command and $10) <> 0);
   var Row := Min(S.CycleWritten, 3);
+  // The mask bits of this row (none: every field takes the data).
+  var Bits: Cardinal := 0;
+  if (S.Command and $10) <> 0 then
+    Bits := (S.MASK shr (Row * 8)) and $FF;
+  if Bits = 0 then
+  begin
+    case S.MODE of
+      1:
+        for var K := 0 to 3 do
+          R.UW[K] := Cardinal(UInt64(R.UW[K]) + S.Row[K]);
+      2:
+        for var K := 0 to 3 do
+        begin
+          R.UW[K] := Cardinal(UInt64(R.UW[K]) + S.Row[K]);
+          S.Row[K] := R.UW[K];
+        end;
+      3:
+        for var K := 0 to 3 do
+          S.Row[K] := R.UW[K];
+    end;
+    P^ := R;
+    Exit;
+  end;
   for var K := 0 to 3 do
   begin
-    var M := 0;
-    if Masked then
-      M := Integer((Mask shr (Row * 8 + K * 2)) and 3);
+    var M := Integer((Bits shr (K * 2)) and 3);
     case M of
       0:
         case S.MODE of
@@ -528,6 +548,79 @@ begin
     end;
   end;
   P^ := R;
+end;
+
+// UnpackWord for many words at once where each vector takes whole words
+// (32-bit elements, V2-16, V4-16, V4-8), no fill rows are due and no bits
+// wait from an earlier word (WriteVector masks and offsets them): whole
+// vectors of Data (at most Count words) as UnpackWord would write them, the
+// state as it would leave it. The words taken (0: none, UnpackWord goes on).
+function TPS2VIF.UnpackRun(Data: PCardinal; Count: Integer): Integer;
+begin
+  Result := 0;
+  var Cmd := S.Command;
+  if (S.UnpackBitCount <> 0) or (S.UnpackBits <> 0) then
+    Exit;
+  var VN := Integer((Cmd shr 2) and 3);
+  var VL := Integer(Cmd and 3);
+  var Words: Integer;
+  case VL of
+    0: Words := VN + 1;
+    1: if VN = 1 then Words := 1 else if VN = 3 then Words := 2 else Exit;
+    2: if VN = 3 then Words := 1 else Exit;
+  else
+    Exit;
+  end;
+  var Unsigned := (S.CODE and $4000) <> 0;
+  var CL := Integer(S.CYCLE and $FF);
+  var WL := CycleWL(S.CYCLE);
+  var V: TPS2Reg128;
+  while (Result + Words <= Count) and (S.UnpackCount < Integer(S.NUM)) and
+    not ((WL > CL) and (CL > 0) and (S.CycleWritten >= CL)) do
+  begin
+    var D := Data + Result;
+    case VL of
+      0:
+        case VN of
+          0: begin V.UW[0] := D[0]; V.UW[1] := D[0]; V.UW[2] := D[0]; V.UW[3] := D[0]; end;
+          1: begin V.UW[0] := D[0]; V.UW[1] := D[1]; V.UW[2] := D[0]; V.UW[3] := D[1]; end;
+          2: begin V.UW[0] := D[0]; V.UW[1] := D[1]; V.UW[2] := D[2]; V.UW[3] := 0; end;
+        else
+          begin V.UW[0] := D[0]; V.UW[1] := D[1]; V.UW[2] := D[2]; V.UW[3] := D[3]; end;
+        end;
+      1:
+        begin
+          // Halfwords, sign-extended unless unsigned; V2-16 repeats its two.
+          for var K := 0 to Words * 2 - 1 do
+          begin
+            var Raw := (D[K shr 1] shr ((K and 1) * 16)) and $FFFF;
+            if not Unsigned and ((Raw and $8000) <> 0) then
+              Raw := Raw or $FFFF0000;
+            V.UW[K] := Raw;
+          end;
+          if VN = 1 then
+          begin
+            V.UW[2] := V.UW[0];
+            V.UW[3] := V.UW[1];
+          end;
+        end;
+    else
+      for var K := 0 to 3 do
+      begin
+        var Raw := (D[0] shr (K * 8)) and $FF;
+        if not Unsigned and ((Raw and $80) <> 0) then
+          Raw := Raw or $FFFFFF00;
+        V.UW[K] := Raw;
+      end;
+    end;
+    // (32-bit elements stay in UnpackWords, as UnpackWord leaves them.)
+    if VL = 0 then
+      for var K := 0 to VN do
+        S.UnpackWords[K] := D[K];
+    WriteVector(V);
+    Inc(Result, Words);
+  end;
+  Inc(Self.Words, Result);
 end;
 
 procedure TPS2VIF.UnpackWord(W: Cardinal);
@@ -643,6 +736,15 @@ begin
     begin
       while (Result < Count) and (S.Remaining > 1) do
       begin
+        // (Whole vectors at once where it can, the last word of the command
+        // left to ProcessWord.)
+        var Run := UnpackRun(Data + Result, Min(Count - Result, Integer(S.Remaining) - 1));
+        if Run > 0 then
+        begin
+          Inc(Result, Run);
+          Dec(S.Remaining, Run);
+          Continue;
+        end;
         Inc(Words);
         UnpackWord(Data[Result]);
         Dec(S.Remaining);
@@ -673,6 +775,16 @@ begin
   begin
     if S.HeldCount >= FIFOWords then
       Exit;
+    // Inside an UNPACK nothing stalls before its last word: the quadwords up
+    // to there at once (Feed takes them all, as one at a time).
+    if (S.Remaining > 5) and (S.Command >= $60) and (S.HeldCount = 0) and not CaptureUnfinished and
+      not Stalled and not S.WaitVU then
+    begin
+      var N := Min(Count - Result, (S.Remaining - 1) div 4);
+      Feed(Data + Result * 4, N * 4);
+      Inc(Result, N);
+      Continue;
+    end;
     Feed(Data + Result * 4, 4);
     Inc(Result);
   end;

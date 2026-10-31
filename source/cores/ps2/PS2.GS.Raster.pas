@@ -737,9 +737,11 @@ begin
   if Value > 1 then
   begin
     FBands := TPS2GSBands.Create(Self, Value);
-    SetLength(FClutRing, 64);
-    SetLength(FClutUse, 64);
-    SetLength(FClutLoaded, 64);
+    // Room for the CLUTs of a long queue (a load waits for the slot's last
+    // user to be drawn).
+    SetLength(FClutRing, 256);
+    SetLength(FClutUse, 256);
+    SetLength(FClutLoaded, 256);
     SetLength(FXferRing, XferRingSize);
   end;
 end;

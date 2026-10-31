@@ -1,4 +1,4 @@
-unit RM.Vulkan.Compute;
+﻿unit RM.Vulkan.Compute;
 
 // Compute work on the GPU for any core, independent of FMX: a device of its
 // own (the first with a compute queue, a discrete one preferred), storage
@@ -55,9 +55,15 @@ type
     FFamily: Cardinal;
     FMemory: VkPhysicalDeviceMemoryProperties;
     FPool: VkCommandPool;
+    // The command buffer being recorded and its fence: one of two, the other
+    // possibly running (Submit).
     FCommands: VkCommandBuffer;
     FFence: VkFence;
     FRecording: Boolean;
+    FSlot: Integer;
+    FSlotCommands: array[0..1] of VkCommandBuffer;
+    FSlotFences: array[0..1] of VkFence;
+    FInFlight: array[0..1] of Boolean;
     FName: string;
     FHostImport, FExactFloat, FExactDouble: Boolean;
     FHostAlignment: UInt64;
@@ -102,6 +108,8 @@ type
     procedure SelectDevice;
     procedure CreateDevice;
     procedure Record_;
+    procedure SubmitRecorded;
+    procedure WaitSlot(Slot: Integer);
     function MakeBuffer(Size: UInt64; Usage: Cardinal; out Requirements: VkMemoryRequirements): VkBuffer;
   public
     constructor Create;
@@ -122,8 +130,12 @@ type
     // Recorded in order, each after the work before it is done with memory.
     procedure Launch(Kernel: TVulkanKernel; const Push; GroupsX, GroupsY, GroupsZ: Cardinal);
     procedure Copy(Src, Dst: TVulkanBuffer; SrcOffset, DstOffset, Size: UInt64);
-    // Runs what was recorded and waits for it.
+    // Runs what was recorded and waits for it (and for what Submit started).
     procedure Finish;
+    // Starts what was recorded without waiting for it and goes on in the other
+    // command buffer (Slot 0 or 1), once what that one ran before is done.
+    procedure Submit;
+    property Slot: Integer read FSlot;
     property Name: string read FName;
     property HostImport: Boolean read FHostImport;
     // Kernels may keep denormals, signed zeros, infinities and NaNs and round
@@ -343,8 +355,9 @@ begin
       FAPI.vkFreeMemory(FDevice, B.FMemory, nil);
       B.Free;
     end;
-    if FFence <> 0 then
-      FAPI.vkDestroyFence(FDevice, FFence, nil);
+    for var S := 0 to 1 do
+      if FSlotFences[S] <> 0 then
+        FAPI.vkDestroyFence(FDevice, FSlotFences[S], nil);
     if FPool <> 0 then
       FAPI.vkDestroyCommandPool(FDevice, FPool, nil);
     FAPI.vkDestroyDevice(FDevice, nil);
@@ -552,11 +565,15 @@ begin
   Alloc.sType := VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
   Alloc.commandPool := FPool;
   Alloc.level := VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  Alloc.commandBufferCount := 1;
-  CheckVulkan(FAPI.vkAllocateCommandBuffers(FDevice, @Alloc, @FCommands), 'vkAllocateCommandBuffers');
+  Alloc.commandBufferCount := 2;
+  CheckVulkan(FAPI.vkAllocateCommandBuffers(FDevice, @Alloc, @FSlotCommands[0]), 'vkAllocateCommandBuffers');
   var FenceInfo := Default(VkFenceCreateInfo);
   FenceInfo.sType := VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-  CheckVulkan(FAPI.vkCreateFence(FDevice, @FenceInfo, nil, @FFence), 'vkCreateFence');
+  for var S := 0 to 1 do
+    CheckVulkan(FAPI.vkCreateFence(FDevice, @FenceInfo, nil, @FSlotFences[S]), 'vkCreateFence');
+  FSlot := 0;
+  FCommands := FSlotCommands[0];
+  FFence := FSlotFences[0];
 end;
 
 function TVulkanCompute.MemoryType(Bits, Wanted: Cardinal; out Index: Cardinal): Boolean;
@@ -820,10 +837,8 @@ begin
   vkCmdCopyBuffer(FCommands, Src.FHandle, Dst.FHandle, 1, @Region);
 end;
 
-procedure TVulkanCompute.Finish;
+procedure TVulkanCompute.SubmitRecorded;
 begin
-  if not FRecording then
-    Exit;
   // The host sees what the commands wrote.
   var Barrier := Default(VkMemoryBarrier);
   Barrier.sType := VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -838,9 +853,36 @@ begin
   Submit.commandBufferCount := 1;
   Submit.pCommandBuffers := @FCommands;
   CheckVulkan(FAPI.vkQueueSubmit(FQueue, 1, @Submit, FFence), 'vkQueueSubmit');
-  CheckVulkan(FAPI.vkWaitForFences(FDevice, 1, @FFence, 1, UInt64(-1)), 'vkWaitForFences');
-  CheckVulkan(FAPI.vkResetFences(FDevice, 1, @FFence), 'vkResetFences');
-  CheckVulkan(FAPI.vkResetCommandBuffer(FCommands, 0), 'vkResetCommandBuffer');
+  FInFlight[FSlot] := True;
+end;
+
+procedure TVulkanCompute.WaitSlot(Slot: Integer);
+begin
+  if not FInFlight[Slot] then
+    Exit;
+  CheckVulkan(FAPI.vkWaitForFences(FDevice, 1, @FSlotFences[Slot], 1, UInt64(-1)), 'vkWaitForFences');
+  CheckVulkan(FAPI.vkResetFences(FDevice, 1, @FSlotFences[Slot]), 'vkResetFences');
+  CheckVulkan(FAPI.vkResetCommandBuffer(FSlotCommands[Slot], 0), 'vkResetCommandBuffer');
+  FInFlight[Slot] := False;
+end;
+
+procedure TVulkanCompute.Finish;
+begin
+  if FRecording then
+    SubmitRecorded;
+  // Submission order: the other buffer's work was submitted first.
+  WaitSlot(1 - FSlot);
+  WaitSlot(FSlot);
+end;
+
+procedure TVulkanCompute.Submit;
+begin
+  if FRecording then
+    SubmitRecorded;
+  FSlot := 1 - FSlot;
+  FCommands := FSlotCommands[FSlot];
+  FFence := FSlotFences[FSlot];
+  WaitSlot(FSlot);
 end;
 
 end.

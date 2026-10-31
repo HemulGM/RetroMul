@@ -23,8 +23,11 @@ type
     FragmentCapacity = 65536;
     ClusterSize = 128;
     TileCapacity = 4 * 1024 * 1024; // uints, 16 MiB; masks are 128 bits per tile
+    HalfBatch = BatchSize div 2;
+    HalfFragments = FragmentCapacity div 2;
+    HalfTiles = TileCapacity div 2;
   private type
-    TPages = array[0..15] of Cardinal;
+    TPages = TPS2GSPages;
     TPush = record
       Bounds: array[0..3] of Integer;
       Slot: Cardinal;
@@ -54,6 +57,12 @@ type
     FNativeReads, FNativeWrites, FNativeTextures: TPages;
     FMaskScratch: TArray<Cardinal>;
     FRecorded: Boolean;
+    // The half of the state slots, fragments and tiles being filled (that of
+    // the compute's command buffer; the other half's draws may be running):
+    // its ends.
+    FUsedEnd, FFragmentsEnd, FTileWordsEnd: Integer;
+    procedure TakeHalf;
+    procedure NextHalf;
     function Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal = $7F;
       SmallAllowed: Boolean = False): Boolean;
     procedure TrackAccess(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal);
@@ -68,6 +77,7 @@ type
     procedure Sync; override;
     procedure ReadPages(First, Last: Integer); override;
     procedure WritePages(First, Last: Integer); override;
+    procedure AccessPages(const Reads, Writes: TPS2GSPages); override;
     function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer; Lod: Single): Boolean; override;
     function Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex;
@@ -110,6 +120,28 @@ begin
     FCompute.Bind(FTriangleKernel, [FRAM, FState, FTiles]);
   end;
   {$ENDIF}
+  TakeHalf;
+end;
+
+procedure TPS2GSGpu.TakeHalf;
+begin
+  var H := FCompute.Slot;
+  FUsed := H * HalfBatch;
+  FUsedEnd := FUsed + HalfBatch;
+  FFragmentsUsed := H * HalfFragments;
+  FFragmentsEnd := FFragmentsUsed + HalfFragments;
+  FTileWordsUsed := H * HalfTiles;
+  FTileWordsEnd := FTileWordsUsed + HalfTiles;
+end;
+
+// The recorded draws start; the other half is filled meanwhile. Their pages
+// stay pending until Sync.
+procedure TPS2GSGpu.NextHalf;
+begin
+  FCompute.Submit;
+  if FRecorded then Inc(FSubmissions);
+  FRecorded := False;
+  TakeHalf;
 end;
 
 destructor TPS2GSGpu.Destroy;
@@ -125,9 +157,7 @@ begin
   FlushNative;
   FCompute.Finish;
   FPending := False;
-  FUsed := 0;
-  FFragmentsUsed := 0;
-  FTileWordsUsed := 0;
+  TakeHalf;
   FRecorded := False;
   FillChar(FReads, SizeOf(FReads), 0);
   FillChar(FWrites, SizeOf(FWrites), 0);
@@ -210,6 +240,23 @@ begin
   if FPending and (MeetsRange(FWrites, First, Last) or MeetsRange(FReads, First, Last)) then Sync;
 end;
 
+procedure TPS2GSGpu.AccessPages(const Reads, Writes: TPS2GSPages);
+begin
+  if not FPending then
+    Exit;
+  for var K := 0 to High(Reads) do
+    if ((FWrites[K] and (Reads[K] or Writes[K])) or (FReads[K] and Writes[K])) <> 0 then
+    begin
+      Sync;
+      Exit;
+    end;
+end;
+
+function Palettized(const D: TPS2GSDraw): Boolean; inline;
+begin
+  Result := D.TME and (D.TPSM in [PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]);
+end;
+
 procedure TPS2GSGpu.BuildAccess(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal;
   out Reads, Writes, Textures: TPages);
 begin
@@ -273,21 +320,16 @@ begin
   var Width := TX1 - TX0;
   var Height := TY1 - TY0;
   var Words := Width * Height * 4;
-  if FTileWordsUsed + Words > TileCapacity then
+  if FTileWordsUsed + Words > FTileWordsEnd then
   begin
-    // Finish only recorded work, not this not-yet-dispatched cluster.
-    // Its parameter/palette snapshots survive arena reuse at slot zero.
-    FCompute.Finish;
-    if FRecorded then Inc(FSubmissions);
-    FRecorded := False;
-    Move((PCardinal(FState.Data) + FNativeStart * 384)^, FState.Data^,
+    // Start the recorded work, not this not-yet-dispatched cluster: its
+    // parameter/palette snapshots move to the start of the other half.
+    var Start := FNativeStart;
+    NextHalf;
+    Move((PCardinal(FState.Data) + Start * 384)^, (PCardinal(FState.Data) + FUsed * 384)^,
       FNativeCount * 384 * SizeOf(Cardinal));
-    FNativeStart := 0;
-    FUsed := FNativeCount;
-    FFragmentsUsed := 0;
-    FTileWordsUsed := 0;
-    FReads := FNativeReads;
-    FWrites := FNativeWrites;
+    FNativeStart := FUsed;
+    Inc(FUsed, FNativeCount);
   end;
   if Length(FMaskScratch) < Words then SetLength(FMaskScratch, Words);
   FillChar(FMaskScratch[0], Words * SizeOf(Cardinal), 0);
@@ -418,9 +460,15 @@ begin
   var Mip := MipCode(D, Lod);
   if not Supports(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or
     (Cardinal(1) shl ((Mip shr 3) and 7))) then Exit;
-  if Assigned(FBeforeDraw) then FBeforeDraw();
+  if Assigned(FBeforeDraw) then
+  begin
+    var Reads, Writes, Textures: TPages;
+    BuildAccess(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or (Cardinal(1) shl ((Mip shr 3) and 7)),
+      Reads, Writes, Textures);
+    FBeforeDraw(Reads, Writes, Palettized(D));
+  end;
   FlushNative;
-  if FUsed = BatchSize then Sync;
+  if FUsed = FUsedEnd then NextHalf;
   WriteState(D, V);
   PCardinal(FState.Data)[FUsed * 384 + 52] := Mip;
   if D.TME then
@@ -505,9 +553,9 @@ begin
     (Int64(V2.X) - V0.X) * (Int64(V1.Y) - V0.Y);
   if Area = 0 then Exit;
   var InvArea: Double := 1.0 / Area;
-  if Assigned(FBeforeDraw) then FBeforeDraw();
   BuildAccess(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or
     (Cardinal(1) shl ((Mip shr 3) and 7)), Reads, Writes, Textures);
+  if Assigned(FBeforeDraw) then FBeforeDraw(Reads, Writes, Palettized(D));
   if FNativeCount > 0 then
   begin
     var Conflict := (FNativeCount = ClusterSize) or
@@ -530,7 +578,11 @@ begin
     end;
     if Conflict then FlushNative;
   end;
-  if FUsed = BatchSize then Sync;
+  if FUsed = FUsedEnd then
+  begin
+    FlushNative;
+    NextHalf;
+  end;
   if FNativeCount = 0 then
   begin
     FNativeStart := FUsed;
@@ -591,9 +643,14 @@ function TPS2GSGpu.BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): 
 begin
   Result := Supports(D, X0, Y0, X1, Y1);
   if not Result then Exit;
-  if Assigned(FBeforeDraw) then FBeforeDraw();
+  if Assigned(FBeforeDraw) then
+  begin
+    var Reads, Writes, Textures: TPages;
+    BuildAccess(D, X0, Y0, X1, Y1, $7F, Reads, Writes, Textures);
+    FBeforeDraw(Reads, Writes, Palettized(D));
+  end;
   FlushNative;
-  if FUsed = BatchSize then Sync;
+  if FUsed = FUsedEnd then NextHalf;
   FTriangleState := D;
   FTriangleBounds[0] := X0; FTriangleBounds[1] := Y0;
   FTriangleBounds[2] := X1; FTriangleBounds[3] := Y1;
@@ -623,12 +680,12 @@ end;
 
 procedure TPS2GSGpu.Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer; Lod: Single);
 begin
-  if FFragmentsUsed = FragmentCapacity then
+  if FFragmentsUsed = FFragmentsEnd then
   begin
     FlushFragments;
-    Sync;
+    NextHalf;
     WriteState(FTriangleState, Default(TPS2GSVertex));
-    FFragmentStart := 0;
+    FFragmentStart := FFragmentsUsed;
   end;
   // The software edge walker emits each covered pixel exactly once. It
   // supplies the already rounded attributes, avoiding GPU float differences.

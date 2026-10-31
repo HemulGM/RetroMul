@@ -170,22 +170,28 @@ type
   end;
   PPS2GSCommand = ^TPS2GSCommand;
 
+  // Called before an accelerated draw with the pages it reads and writes
+  // and whether it takes the current CLUT.
+  TPS2GSBeforeDraw = reference to procedure(const Reads, Writes: TPS2GSPages; Palette: Boolean);
+
   TPS2GSAccelerator = class abstract
   protected
     FPending: Boolean;
     FRevision: Int64;
-    FBeforeDraw: TProc;
+    FBeforeDraw: TPS2GSBeforeDraw;
   public
     procedure Sync; virtual; abstract;
     // CPU access to wrapped 8 KiB GS pages; unknown accelerators sync fully.
     procedure ReadPages(First, Last: Integer); virtual;
     procedure WritePages(First, Last: Integer); virtual;
+    // The same for sets of pages read and written.
+    procedure AccessPages(const Reads, Writes: TPS2GSPages); virtual;
     property Pending: Boolean read FPending;
     // Incremented when work is queued; zero disables CPU write-barrier caching.
     property Revision: Int64 read FRevision;
     // Host software queues must publish before an accepted GPU draw reads
     // their targets, textures or the current palette snapshot.
-    property BeforeDraw: TProc read FBeforeDraw write FBeforeDraw;
+    property BeforeDraw: TPS2GSBeforeDraw read FBeforeDraw write FBeforeDraw;
     function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer; Lod: Single): Boolean; virtual; abstract;
     // Optional full coverage/interpolation; False retains the fragment path.
@@ -309,6 +315,9 @@ type
     // of GS memory on this thread.
     FPending: Boolean;
     FWritten, FRead, FPendingWrites: TPS2GSPages;
+    // The pages queued commands read (textures, depth, CLUTs, copy sources)
+    // until the next Sync, for accelerated draws writing them.
+    FPendingReads: TPS2GSPages;
     FPageOwner: array[0..511] of UInt64;
     // Host-to-local pixels for the band threads (with FQueueXfer): the ring,
     // its next position, the run not queued yet (its start, length and first
@@ -324,6 +333,8 @@ type
     // and the queue position after the last primitive using each.
     FClutRing: array of TPS2GSClut;
     FClutUse: array of Int64;
+    // The queue position after the load of each slot's CLUT (0: none).
+    FClutLoaded: array of Int64;
     FClutSlot: Integer;
     FClutChanged: Boolean;
     // The pixels of the primitive being queued (the counter's).
@@ -341,7 +352,8 @@ type
     procedure Kick(DrawingKick: Boolean);
     procedure SetupDraw;
     procedure Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex);
-    procedure QueueDraw;
+    procedure QueueDraw(const F: TPS2GSFootprint);
+    procedure BeforeAccelerated(const Reads, Writes: TPS2GSPages; Palette: Boolean);
     function QueueFallback(Drawer: TPS2GSDrawer): Boolean;
     procedure SyncSoftware;
     procedure CheckPrimLogBreak;
@@ -481,6 +493,8 @@ type
     // Primitives queued so far; waits until the first Position are drawn.
     property Position: Int64 read FWrite;
     procedure WaitFor(Position: Int64);
+    // Waits until the first band thread has taken the commands before Value.
+    procedure WaitFirst(Value: Int64);
   end;
 
 implementation
@@ -617,6 +631,12 @@ begin
   Sync;
 end;
 
+procedure TPS2GSAccelerator.AccessPages(const Reads, Writes: TPS2GSPages);
+begin
+  if FPending then
+    Sync;
+end;
+
 destructor TPS2GSRaster.Destroy;
 begin
   FBands.Free;
@@ -681,7 +701,11 @@ begin
   begin
     try
       FAccelerator := TPS2GSGpu.Create(FMemory.Data, @FClut[0]);
-      FAccelerator.BeforeDraw := procedure begin SyncSoftware; end;
+      FAccelerator.BeforeDraw :=
+        procedure(const Reads, Writes: TPS2GSPages; Palette: Boolean)
+        begin
+          BeforeAccelerated(Reads, Writes, Palette);
+        end;
     except
       on E: Exception do FVulkanError := E.Message;
     end;
@@ -699,6 +723,7 @@ begin
   FThreads := Value;
   FClutRing := nil;
   FClutUse := nil;
+  FClutLoaded := nil;
   FClutSlot := -1;
   FXferRing := nil;
   FQueueXfer := False;
@@ -709,6 +734,7 @@ begin
     FBands := TPS2GSBands.Create(Self, Value);
     SetLength(FClutRing, 64);
     SetLength(FClutUse, 64);
+    SetLength(FClutLoaded, 64);
     SetLength(FXferRing, XferRingSize);
   end;
 end;
@@ -728,6 +754,7 @@ begin
   FPending := False;
   ClearOverlap;
   FillChar(FPendingWrites, SizeOf(FPendingWrites), 0);
+  FillChar(FPendingReads, SizeOf(FPendingReads), 0);
   FBands.Sync;
   {$IFDEF GS_RACECHECK}RaceBarrier(FBands.Position);{$ENDIF}
   // CLUTs loaded on the band threads.
@@ -1384,6 +1411,18 @@ begin
   end;
 end;
 
+// The pages a primitive reads (texture, frame, depth) and writes.
+procedure FootprintAccess(const F: TPS2GSFootprint; out Reads, Writes: TPS2GSPages);
+begin
+  for var I := 0 to High(Reads) do
+  begin
+    Reads[I] := F.Texture[I] or F.Frame[I] or F.Depth[I];
+    Writes[I] := F.Frame[I];
+    if F.WritesZ then
+      Writes[I] := Writes[I] or F.Depth[I];
+  end;
+end;
+
 function BufferKey(BP, BW, PSM: Cardinal): UInt64; inline;
 begin
   Result := UInt64(BP) or (UInt64(BW) shl 20) or (UInt64(PSM) shl 32) or (UInt64(1) shl 40);
@@ -1474,11 +1513,33 @@ begin
   end;
 end;
 
+// Before an accelerated draw: the band threads finish the queued commands
+// when it reads what they write or writes what they touch; a palettized one
+// takes the CLUT the first band thread loaded last.
+procedure TPS2GSRaster.BeforeAccelerated(const Reads, Writes: TPS2GSPages; Palette: Boolean);
+begin
+  FlushTransfer;
+  if not FPending then
+    Exit;
+  if PagesOverlap(Reads, FPendingWrites) or PagesOverlap(Writes, FPendingWrites) or
+    PagesOverlap(Writes, FPendingReads) then
+  begin
+    SyncSoftware;
+    Exit;
+  end;
+  if Palette and (FClutSlot >= 0) and not FClutChanged then
+  begin
+    FBands.WaitFirst(FClutLoaded[FClutSlot]);
+    FClut := FClutRing[FClutSlot];
+  end;
+end;
+
 // The pages a queued primitive writes, until the next Sync.
 procedure TPS2GSRaster.MarkPendingDraw(const F: TPS2GSFootprint);
 begin
   for var I := 0 to High(FPendingWrites) do
   begin
+    FPendingReads[I] := FPendingReads[I] or F.Texture[I] or F.Depth[I];
     FPendingWrites[I] := FPendingWrites[I] or F.Frame[I];
     if F.WritesZ then
       FPendingWrites[I] := FPendingWrites[I] or F.Depth[I];
@@ -1530,7 +1591,9 @@ begin
   FCounter.Draw(FCommand);
   FCommandPixels := FCounter.PixelsDrawn - Before;
   Inc(FPixels, FCommandPixels);
-  QueueDraw;
+  var F: TPS2GSFootprint;
+  Footprint(FCommand, F);
+  QueueDraw(F);
 end;
 
 function TPS2GSRaster.QueueFallback(Drawer: TPS2GSDrawer): Boolean;
@@ -1538,22 +1601,27 @@ begin
   Result := (Drawer = FDrawer) and (FAccelerator <> nil) and Queueing;
   if not Result then Exit;
   // Only the emulation thread touches the GPU. Workers receive ordinary
-  // software commands; dependent switches drain the previous renderer.
-  if FAccelerator.Pending then FAccelerator.Sync;
+  // software commands; queued GPU work on pages they touch finishes first.
+  var F: TPS2GSFootprint;
+  Footprint(FCommand, F);
+  if FAccelerator.Pending then
+  begin
+    var Reads, Writes: TPS2GSPages;
+    FootprintAccess(F, Reads, Writes);
+    FAccelerator.AccessPages(Reads, Writes);
+  end;
   var Before := FCounter.PixelsDrawn;
   FCounter.Draw(FCommand);
   FCommandPixels := FCounter.PixelsDrawn - Before;
   Inc(Drawer.FPixels, FCommandPixels);
-  QueueDraw;
+  QueueDraw(F);
 end;
 
-procedure TPS2GSRaster.QueueDraw;
+procedure TPS2GSRaster.QueueDraw(const F: TPS2GSFootprint);
 begin
   FlushTransfer;
   // Overlapping the queued primitives: the band threads first finish them;
   // reading its own target: the first band thread draws it alone.
-  var F: TPS2GSFootprint;
-  Footprint(FCommand, F);
   var Feedback := F.Feedback;
   FCommand.Op := coDraw;
   if Hazard(FCommand, F) then
@@ -1568,6 +1636,7 @@ begin
       FClutSlot := (FClutSlot + 1) mod Length(FClutRing);
       FBands.WaitFor(FClutUse[FClutSlot]);
       Move(FClut, FClutRing[FClutSlot], SizeOf(FClut));
+      FClutLoaded[FClutSlot] := 0;
       FClutChanged := False;
     end;
     FCommand.Clut := FClutSlot;
@@ -2919,6 +2988,7 @@ begin
       FBands.WaitFor(FClutUse[FClutSlot]);
       Move(FClut, FClutRing[FClutSlot], SizeOf(FClut));
       FClutUse[FClutSlot] := FBands.Position;
+      FClutLoaded[FClutSlot] := 0;
       FClutChanged := False;
     end;
     var Prev := FClutSlot;
@@ -2943,6 +3013,8 @@ begin
       ClearOverlap;
     // Later primitives writing these pages wait for the load.
     MarkPages(FRead, P0, P1);
+    AddPages(FPendingReads, P0, P1);
+    FClutLoaded[FClutSlot] := FBands.Position;
     FPending := True;
     Exit;
   end;
@@ -3229,6 +3301,7 @@ begin
     C.XferRegs[1] := Regs[GSRegTRXPOS];
     C.XferRegs[2] := Regs[GSRegTRXREG];
     MarkPendingArea(C.XferRegs);
+    FillChar(FPendingReads, SizeOf(FPendingReads), $FF);
     FBands.Publish;
     ClearOverlap;
     FPending := True;
@@ -3522,6 +3595,30 @@ begin
     end;
     TInterlocked.Exchange(FMainWaiting, 1);
     if Slowest < Value then
+      FProgress.WaitFor(5);
+    TInterlocked.Exchange(FMainWaiting, 0);
+  end;
+  CheckFailed;
+end;
+
+procedure TPS2GSBands.WaitFirst(Value: Int64);
+begin
+  if FUnwoken > 0 then
+  begin
+    FUnwoken := 0;
+    WakeWaitingBands;
+  end;
+  var Spins := 0;
+  while TInterlocked.Read(FSlots[0].Consumed) < Value do
+  begin
+    if Spins < SpinRounds then
+    begin
+      Inc(Spins);
+      YieldProcessor;
+      Continue;
+    end;
+    TInterlocked.Exchange(FMainWaiting, 1);
+    if TInterlocked.Read(FSlots[0].Consumed) < Value then
       FProgress.WaitFor(5);
     TInterlocked.Exchange(FMainWaiting, 0);
   end;

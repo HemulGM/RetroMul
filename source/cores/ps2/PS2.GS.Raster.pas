@@ -3270,25 +3270,31 @@ begin
       Inc(Result, KR - KL + 1);
     if C0.Kind <> 0 then
     begin
-      Inc(Q0, C0.DQ);
+      // (The carry without a branch: it follows the slope's fraction.)
       Inc(R0, C0.DR);
-      if R0 >= C0.D then begin Dec(R0, C0.D); Inc(Q0); end;
+      var Carry0 := Int64(Ord(R0 >= C0.D));
+      Inc(Q0, C0.DQ + Carry0);
+      Dec(R0, C0.D and -Carry0);
     end
     else
       Inc(C0.E, C0.DE);
     if C1.Kind <> 0 then
     begin
-      Inc(Q1, C1.DQ);
+      // (The carry without a branch: it follows the slope's fraction.)
       Inc(R1, C1.DR);
-      if R1 >= C1.D then begin Dec(R1, C1.D); Inc(Q1); end;
+      var Carry1 := Int64(Ord(R1 >= C1.D));
+      Inc(Q1, C1.DQ + Carry1);
+      Dec(R1, C1.D and -Carry1);
     end
     else
       Inc(C1.E, C1.DE);
     if C2.Kind <> 0 then
     begin
-      Inc(Q2, C2.DQ);
+      // (The carry without a branch: it follows the slope's fraction.)
       Inc(R2, C2.DR);
-      if R2 >= C2.D then begin Dec(R2, C2.D); Inc(Q2); end;
+      var Carry2 := Int64(Ord(R2 >= C2.D));
+      Inc(Q2, C2.DQ + Carry2);
+      Dec(R2, C2.D and -Carry2);
     end
     else
       Inc(C2.E, C2.DE);

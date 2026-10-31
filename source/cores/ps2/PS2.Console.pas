@@ -14,7 +14,7 @@ uses
 const
   // Serialized layout of TPS2Console.SerializeState. Increase it with every
   // layout change; tests/cores/ps2/system checks the recorded field layout.
-  PS2SnapshotVersion = 6;
+  PS2SnapshotVersion = 7;
 
 type
   TPS2ConsoleConfig = record
@@ -209,6 +209,7 @@ begin
   PadMan := TPS2PadMan.Create(Bus.RAM);
   MemoryCards := TPS2MCServer.Create(Bus.RAM);
   MemoryCards.Clock := @Scheduler.Now;
+  IOMan.Cards := TPS2MCDevice.Create(MemoryCards);
   IOP := TPS2IOPKernel.Create(Scheduler, SIF, IOPHeap, IOMan, FDiscFS, Bus.RAM, Bus.IOPRAM);
   IOP.OnTTY := IOPTTY;
   IOP.OnHighLevelModule := procedure(Name: string; Image: TBytes)
@@ -236,6 +237,7 @@ begin
   HeapServer.Free;
   IOPHeap.Free;
   ModuleLog.Free;
+  IOMan.Cards.Free;
   IOMan.Free;
   FCDVD.Free;
   FDiscFS.Free;

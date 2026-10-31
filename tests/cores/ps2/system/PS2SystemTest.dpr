@@ -10,9 +10,9 @@ uses
 const
   // The recorded TPS2Console.SerializeState field sizes for this version.
   // A layout change must increase PS2SnapshotVersion and record a new pair.
-  RecordedVersion = 6;
-  RecordedFields = 658;
-  RecordedLayout = 'aa72aed7ff2636e6a4db6c1d211f9b6d625cbf58b473f8d99ee3d9631f8c1bd2';
+  RecordedVersion = 7;
+  RecordedFields = 722;
+  RecordedLayout = '1efea0bbeae25679af94e53dc9576fbb85bc97c94c6e3a85b7f44439ddee5290';
 
 procedure Check(Condition: Boolean; const Message: string);
 begin
@@ -509,6 +509,51 @@ begin
   Writeln('MCSERV on the card file system: info, mkdir, create, write, read, list, delete: OK');
 end;
 
+// The mc0: ioman device (FILEIO open/mkdir/dopen/getstat on the card): the
+// same card file system MCSERV uses.
+procedure CheckCardDevice;
+begin
+  var C := TPS2Console.Create(Default(TPS2ConsoleConfig));
+  try
+    var IO := C.IOMan;
+    Check(IO.MakeDir('mc0:/PS2DEV') = 0, 'mc0: mkdir failed');
+    Check(IO.MakeDir('mc0:/PS2DEV') < 0, 'mc0: mkdir over an existing directory succeeded');
+    var Fd := IO.Open('mc0:PS2DEV/icon.sys', $202);
+    Check(Fd >= 3, Format('mc0: create returned %d', [Fd]));
+    var Data: TBytes;
+    SetLength(Data, 1500);
+    for var K := 0 to High(Data) do
+      Data[K] := Byte(K);
+    Check(IO.Write(Fd, Data) = 1500, 'mc0: write failed');
+    Check(IO.Seek(Fd, 0, 2) = 1500, 'mc0: seek to the end');
+    Check(IO.Close(Fd) = 0, 'mc0: close failed');
+    var E: TPS2CardEntry;
+    Check(C.MemoryCards.Cards[0].Lookup('PS2DEV/icon.sys', E) and (E.Length = 1500), 'MCSERV does not see the mc0: file');
+    var Stat: TBytes;
+    Check((IO.GetStat('mc0:PS2DEV/icon.sys', Stat) = 0) and (PCardinal(@Stat[0])^ = $17) and
+      (PCardinal(@Stat[8])^ = 1500), 'mc0: getstat');
+    Fd := IO.Open('mc0:PS2DEV/icon.sys', 1);
+    var Back: TBytes;
+    Check((IO.Read(Fd, 2000, Back) = 1500) and CompareMem(@Back[0], @Data[0], 1500), 'mc0: read back');
+    IO.Close(Fd);
+    Fd := IO.DirOpen('mc0:PS2DEV');
+    Check(Fd >= 3, 'mc0: dopen failed');
+    var Names := '';
+    var Dirent: TBytes;
+    while IO.DirRead(Fd, Dirent) > 0 do
+      Names := Names + string(PAnsiChar(@Dirent[40])) + ' ';
+    IO.Close(Fd);
+    Check(Names = '. .. icon.sys ', 'mc0: dread listed ' + Names);
+    Check(IO.Remove('mc0:PS2DEV') < 0, 'mc0: removed a non-empty directory');
+    Check(IO.Remove('mc0:PS2DEV/icon.sys') = 0, 'mc0: remove file failed');
+    Check(IO.Remove('mc0:PS2DEV') = 0, 'mc0: rmdir failed');
+    Check(IO.Open('mc0:PS2DEV/icon.sys', 1) = -2, 'mc0: open of a removed file is not ENOENT');
+  finally
+    C.Free;
+  end;
+  Writeln('mc0: ioman device: mkdir, create, write, seek, getstat, read, dopen/dread, remove on the card: OK');
+end;
+
 // fromSPR as stall source, VIF1 as drain: VIF1 moves whole 8-quadword slices
 // below D_STADR, sets SIS when it waits and finishes once STD is cleared.
 procedure CheckStallControl;
@@ -554,6 +599,7 @@ begin
     CheckStallControl;
     CheckMemoryCard;
     CheckMCServer;
+    CheckCardDevice;
   except
     on E: Exception do
     begin

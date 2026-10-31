@@ -26,7 +26,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Math, System.DateUtils, System.Generics.Collections,
-  System.Generics.Defaults, System.ZLib, Core.Snapshots, PS2.Types, PS2.SIF;
+  System.Generics.Defaults, System.ZLib, Core.Snapshots, PS2.Types, PS2.SIF, PS2.IOP.FileIO;
 
 const
   PS2MCServerSID = $80000400;
@@ -156,8 +156,11 @@ type
     function Resolve(Port: Integer; const Name: string): string;
     function FileHandle(Fd: Integer): Integer;
     function OpenFile(Port: Integer; Flags: Cardinal; const Name: string): Integer;
+    function ReadData(Fd, Size: Integer; out Data: TBytes): Integer;
     function ReadFile(Fd: Integer; Buffer: Cardinal; Size: Integer): Integer;
+    function WriteParts(Fd: Integer; P1: PByte; N1: Integer; P2: PByte; N2: Integer): Integer;
     function WriteFile(Fd: Integer; InData: PByte; InSize: Integer; Buffer: Cardinal; Size: Integer): Integer;
+    function SeekFile(Fd, Offset, Origin: Integer): Integer;
     function GetDir(Port: Integer; Flags: Cardinal; MaxEntries: Integer; Table: Cardinal; const Name: string): Integer;
     function ChDir(Port: Integer; Table: Cardinal; const Name: string): Integer;
     function SetFileInfo(Port: Integer; Flags: Cardinal; Info: Cardinal; const Name: string): Integer;
@@ -186,6 +189,26 @@ type
     function PortCard(Port: Integer): TPS2MemoryCard;
     // The cards' contents (kept across IOP resets).
     procedure SerializeCards(State: TStateArchive);
+  end;
+
+  // The mc0:/mc1: ioman device on MCSERV's card file system and handles
+  // (MCMAN serves both).
+  TPS2MCDevice = class(TPS2CardDevice)
+  private
+    FServer: TPS2MCServer;
+    function Ready(Port: Integer): Integer;
+    function Stat(const E: TPS2CardEntry): TBytes;
+  public
+    constructor Create(Server: TPS2MCServer);
+    function Open(Port: Integer; const Path: string; Flags: Integer): Integer; override;
+    function Close(Handle: Integer): Integer; override;
+    function Read(Handle, Count: Integer; out Data: TBytes): Integer; override;
+    function Write(Handle: Integer; const Data: TBytes): Integer; override;
+    function Seek(Handle, Offset, Whence: Integer): Integer; override;
+    function MakeDir(Port: Integer; const Path: string): Integer; override;
+    function Remove(Port: Integer; const Path: string): Integer; override;
+    function GetStat(Port: Integer; const Path: string; out Stat: TBytes): Integer; override;
+    function DirRead(Handle: Integer; out Dirent: TBytes): Integer; override;
   end;
 
 // The card time EE cycles after power-on (the clock CDVD reports).
@@ -1467,8 +1490,9 @@ begin
   end;
 end;
 
-function TPS2MCServer.ReadFile(Fd: Integer; Buffer: Cardinal; Size: Integer): Integer;
+function TPS2MCServer.ReadData(Fd, Size: Integer; out Data: TBytes): Integer;
 begin
+  Data := nil;
   var H := FileHandle(Fd);
   if (H < 0) or not FFiles[H].CanRead then
     Exit(ResDenied);
@@ -1476,19 +1500,28 @@ begin
   if not Cards[FFiles[H].Port].Lookup(FFiles[H].Path, E) or E.IsDirectory then
     Exit(ResDenied);
   var Count := EnsureRange(Integer(E.Length) - FFiles[H].Position, 0, Max(Size, 0));
-  var P := EEPtr(Buffer, Count);
-  if (P <> nil) and (Count > 0) then
-  begin
-    Cards[FFiles[H].Port].ReadAt(E, FFiles[H].Position, Count, P);
-    Touched(Buffer, Count);
-  end;
+  SetLength(Data, Count);
+  if Count > 0 then
+    Cards[FFiles[H].Port].ReadAt(E, FFiles[H].Position, Count, @Data[0]);
   Inc(FFiles[H].Position, Count);
   Result := Count;
 end;
 
-// InSize bytes from the parameter block, then Size bytes from EE RAM.
-function TPS2MCServer.WriteFile(Fd: Integer; InData: PByte; InSize: Integer; Buffer: Cardinal;
-  Size: Integer): Integer;
+function TPS2MCServer.ReadFile(Fd: Integer; Buffer: Cardinal; Size: Integer): Integer;
+begin
+  var Data: TBytes;
+  Result := ReadData(Fd, Size, Data);
+  var P := EEPtr(Buffer, Length(Data));
+  if (P <> nil) and (Length(Data) > 0) then
+  begin
+    Move(Data[0], P^, Length(Data));
+    Touched(Buffer, Length(Data));
+  end;
+end;
+
+// N1 bytes from P1, then N2 from P2 (nil: counted, not written), at the
+// file position.
+function TPS2MCServer.WriteParts(Fd: Integer; P1: PByte; N1: Integer; P2: PByte; N2: Integer): Integer;
 begin
   var H := FileHandle(Fd);
   if (H < 0) or not FFiles[H].CanWrite then
@@ -1497,22 +1530,46 @@ begin
   var E: TPS2CardEntry;
   if not C.Lookup(FFiles[H].Path, E) or E.IsDirectory then
     Exit(ResDenied);
-  InSize := EnsureRange(InSize, 0, 16);
-  Size := Max(Size, 0);
-  var Total := InSize + Size;
+  var Total := N1 + N2;
   var Pos := FFiles[H].Position;
   // Clusters the file grows by must be free.
   if not C.Grow(E, Max(Integer(E.Length), Pos + Total)) then
     Exit(ResFullDevice);
-  if InSize > 0 then
-    C.WriteAt(E, Pos, InData, InSize);
-  var P := EEPtr(Buffer, Size);
-  if (P <> nil) and (Size > 0) then
-    C.WriteAt(E, Pos + InSize, P, Size);
+  if N1 > 0 then
+    C.WriteAt(E, Pos, P1, N1);
+  if (P2 <> nil) and (N2 > 0) then
+    C.WriteAt(E, Pos + N1, P2, N2);
   FFiles[H].Position := Pos + Total;
   E.Modified := CardNow;
   C.WriteEntry(E);
   Result := Total;
+end;
+
+// InSize bytes from the parameter block, then Size bytes from EE RAM.
+function TPS2MCServer.WriteFile(Fd: Integer; InData: PByte; InSize: Integer; Buffer: Cardinal;
+  Size: Integer): Integer;
+begin
+  InSize := EnsureRange(InSize, 0, 16);
+  Size := Max(Size, 0);
+  Result := WriteParts(Fd, InData, InSize, EEPtr(Buffer, Size), Size);
+end;
+
+// Origin 0 from the start, 1 from the position, 2 from the end.
+function TPS2MCServer.SeekFile(Fd, Offset, Origin: Integer): Integer;
+begin
+  var E: TPS2CardEntry;
+  var Found := Cards[FFiles[Fd].Port].Lookup(FFiles[Fd].Path, E);
+  var Pos := Offset;
+  case Origin of
+    0: ;
+    2:
+      if Found and not E.IsDirectory then
+        Inc(Pos, Integer(E.Length));
+  else
+    Inc(Pos, FFiles[Fd].Position);
+  end;
+  FFiles[Fd].Position := Max(Pos, 0);
+  Result := FFiles[Fd].Position;
 end;
 
 procedure TPS2MCServer.Entry(Dest: PByte; const Name: string; const E: TPS2CardEntry);
@@ -1768,21 +1825,7 @@ begin
       begin
         R := Detect(FFiles[Fd].Port, 0);
         if R = ResSucceed then
-        begin
-          var E: TPS2CardEntry;
-          var Found := Cards[FFiles[Fd].Port].Lookup(FFiles[Fd].Path, E);
-          var Pos := PInteger(B + DOffset)^;
-          case PInteger(B + DOrigin)^ of
-            0: ;
-            2:
-              if Found and not E.IsDirectory then
-                Inc(Pos, Integer(E.Length));
-          else
-            Inc(Pos, FFiles[Fd].Position);
-          end;
-          FFiles[Fd].Position := Max(Pos, 0);
-          R := FFiles[Fd].Position;
-        end;
+          R := SeekFile(Fd, PInteger(B + DOffset)^, PInteger(B + DOrigin)^);
       end;
     $73, $05:
       begin
@@ -1937,6 +1980,170 @@ procedure TPS2MCServer.SerializeCards(State: TStateArchive);
 begin
   Cards[0].SerializeState(State);
   Cards[1].SerializeState(State);
+end;
+
+{ TPS2MCDevice }
+
+const
+  // io_stat_t modes of MCMAN's ioman device (the card attribute bits).
+  StatRead = $01;
+  StatWrite = $02;
+  StatExecute = $04;
+  StatDupProhibit = $08;
+  StatFile = $10;
+  StatDir = $20;
+  StatPDAExec = $0800;
+  StatPS1 = $1000;
+
+// MCMAN's card results as ioman errors.
+function IOError(R: Integer): Integer;
+begin
+  if R >= 0 then
+    Exit(R);
+  case R of
+    -2: Result := -47; // EFORMAT
+    -3: Result := -28; // ENOSPC
+    -4: Result := -2;  // ENOENT
+    -5: Result := -13; // EACCES
+    -6: Result := -17; // EEXIST
+    -7: Result := -24; // EMFILE
+    -8: Result := -5;  // EIO
+  else
+    Result := -6;      // ENXIO
+  end;
+end;
+
+constructor TPS2MCDevice.Create(Server: TPS2MCServer);
+begin
+  inherited Create;
+  FServer := Server;
+end;
+
+// ioman calls go on after a new card (MCMAN's check accepts it).
+function TPS2MCDevice.Ready(Port: Integer): Integer;
+begin
+  Result := FServer.Detect(Cardinal(Port), 0);
+  if Result = ResChangedCard then
+    Result := ResSucceed;
+end;
+
+function TPS2MCDevice.Stat(const E: TPS2CardEntry): TBytes;
+begin
+  SetLength(Result, 40);
+  FillChar(Result[0], Length(Result), 0);
+  var Mode: Cardinal := 0;
+  if (E.Mode and AttrReadable) <> 0 then Mode := Mode or StatRead;
+  if (E.Mode and AttrWritable) <> 0 then Mode := Mode or StatWrite;
+  if (E.Mode and AttrExecutable) <> 0 then Mode := Mode or StatExecute;
+  Mode := Mode or (E.Mode and (StatPS1 or StatPDAExec or StatDupProhibit));
+  if E.IsDirectory then
+    Mode := Mode or StatDir
+  else
+  begin
+    Mode := Mode or StatFile;
+    PCardinal(@Result[8])^ := E.Length;
+  end;
+  PCardinal(@Result[0])^ := Mode;
+  PCardinal(@Result[4])^ := E.Attr;
+  PUInt64(@Result[12])^ := E.Created;
+  PUInt64(@Result[28])^ := E.Modified;
+end;
+
+function TPS2MCDevice.Open(Port: Integer; const Path: string; Flags: Integer): Integer;
+begin
+  Result := Ready(Port);
+  if Result = ResSucceed then
+    Result := FServer.OpenFile(Port, Cardinal(Flags) and (AttrReadable or AttrWritable or CreateFile), '/' + Path);
+  Result := IOError(Result);
+end;
+
+function TPS2MCDevice.Close(Handle: Integer): Integer;
+begin
+  if FServer.FileHandle(Handle) < 0 then
+    Exit(IOError(ResDenied));
+  FServer.FFiles[Handle].Open := False;
+  Result := 0;
+end;
+
+function TPS2MCDevice.Read(Handle, Count: Integer; out Data: TBytes): Integer;
+begin
+  Result := IOError(FServer.ReadData(Handle, Count, Data));
+end;
+
+function TPS2MCDevice.Write(Handle: Integer; const Data: TBytes): Integer;
+begin
+  var P: PByte := nil;
+  if Length(Data) > 0 then
+    P := @Data[0];
+  Result := IOError(FServer.WriteParts(Handle, P, Length(Data), nil, 0));
+end;
+
+function TPS2MCDevice.Seek(Handle, Offset, Whence: Integer): Integer;
+begin
+  if FServer.FileHandle(Handle) < 0 then
+    Exit(IOError(ResDenied));
+  Result := FServer.SeekFile(Handle, Offset, Whence);
+end;
+
+function TPS2MCDevice.MakeDir(Port: Integer; const Path: string): Integer;
+begin
+  Result := Ready(Port);
+  if Result = ResSucceed then
+    Result := FServer.OpenFile(Port, CreateDir, '/' + Path);
+  Result := IOError(Result);
+end;
+
+function TPS2MCDevice.Remove(Port: Integer; const Path: string): Integer;
+begin
+  Result := Ready(Port);
+  if Result = ResSucceed then
+    Result := FServer.DeleteEntry(Port, '/' + Path);
+  Result := IOError(Result);
+end;
+
+function TPS2MCDevice.GetStat(Port: Integer; const Path: string; out Stat: TBytes): Integer;
+begin
+  Stat := nil;
+  Result := Ready(Port);
+  if Result <> ResSucceed then
+    Exit(IOError(Result));
+  var E: TPS2CardEntry;
+  if not FServer.Cards[Port].Lookup(FServer.Resolve(Port, '/' + Path), E) then
+    Exit(IOError(ResNoEntry));
+  Stat := Self.Stat(E);
+  SetLength(Stat, 64);
+  Result := 0;
+end;
+
+// The next existing entry ('.' and '..' too) of an open directory.
+function TPS2MCDevice.DirRead(Handle: Integer; out Dirent: TBytes): Integer;
+begin
+  Dirent := nil;
+  if FServer.FileHandle(Handle) < 0 then
+    Exit(IOError(ResDenied));
+  var C := FServer.Cards[FServer.FFiles[Handle].Port];
+  var Dir: TPS2CardEntry;
+  if not C.Lookup(FServer.FFiles[Handle].Path, Dir) or not Dir.IsDirectory then
+    Exit(IOError(ResNoEntry));
+  var List := C.Entries(Dir);
+  var Pos := FServer.FFiles[Handle].Position;
+  while (Pos < Length(List)) and not List[Pos].Exists do
+    Inc(Pos);
+  if Pos >= Length(List) then
+  begin
+    FServer.FFiles[Handle].Position := Pos;
+    Exit(0);
+  end;
+  FServer.FFiles[Handle].Position := Pos + 1;
+  // io_dirent_t: the stat, the name (256), the private word.
+  SetLength(Dirent, 300);
+  FillChar(Dirent[0], Length(Dirent), 0);
+  var S := Stat(List[Pos]);
+  Move(S[0], Dirent[0], Length(S));
+  var N := TEncoding.ANSI.GetBytes(List[Pos].Name);
+  if Length(N) > 0 then
+    Move(N[0], Dirent[40], Min(Length(N), 32));
+  Result := 1;
 end;
 
 end.

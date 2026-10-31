@@ -83,7 +83,7 @@ window, and DMAC stall control with fromSPR as source and VIF1 as drain. It
 also tests the card file system: directories, files across clusters, deleted
 slots, free space, image round trips, raw images and earlier card files. It
 also runs libmc's MCSERV calls: info, mkdir, create, write, read, list and
-delete.
+delete. It drives the `mc0:` ioman device the same way.
 
 ## VU busy windows
 
@@ -273,7 +273,9 @@ It requires a Vulkan device with coherent host-memory import.
 - Each memory card is kept as one file in the save folder: its 8 MB flash
   with the PS2 card file system, deflated. The high-level MCSERV works on that
   file system, and games bringing their own card driver (MCMAN over SIO2)
-  work on the same pages, so both see the same saves. Raw card images, with
+  work on the same pages, so both see the same saves. FILEIO's `mc0:` and
+  `mc1:` (open, read, write, seek, mkdir, remove, dopen/dread, getstat) reach
+  the same file system and share MCMAN's handles. Raw card images, with
   or without spare bytes (as PCSX2 keeps them), load as they are. Card files
   of earlier builds (a file tree) are converted, and the old file is kept as
   `.old`. MagicGate authentication is skipped.

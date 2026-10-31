@@ -25,18 +25,41 @@ type
     function ReadAt(const Device, Path: string; Offset: Int64; Count: Integer): TBytes; virtual;
   end;
 
+  // The memory card device (mc0:, mc1:) MCMAN registers with ioman: files
+  // and directories on the card file system, MCMAN's handles. Results are
+  // ioman's (negative errno); Stat is an io_stat_t, Dirent an io_dirent_t.
+  TPS2CardDevice = class
+  public
+    function Open(Port: Integer; const Path: string; Flags: Integer): Integer; virtual; abstract;
+    function Close(Handle: Integer): Integer; virtual; abstract;
+    function Read(Handle, Count: Integer; out Data: TBytes): Integer; virtual; abstract;
+    function Write(Handle: Integer; const Data: TBytes): Integer; virtual; abstract;
+    function Seek(Handle, Offset, Whence: Integer): Integer; virtual; abstract;
+    function MakeDir(Port: Integer; const Path: string): Integer; virtual; abstract;
+    function Remove(Port: Integer; const Path: string): Integer; virtual; abstract;
+    function GetStat(Port: Integer; const Path: string; out Stat: TBytes): Integer; virtual; abstract;
+    // 1 and the next entry of an open directory, 0 at its end.
+    function DirRead(Handle: Integer; out Dirent: TBytes): Integer; virtual; abstract;
+  end;
+
   TPS2OpenFile = record
     Used: Boolean;
     Device, Path: string;
     Position, Size: Int64;
     Mode: Integer;
+    // The card device's handle (files on mc0:/mc1:).
+    Handle: Integer;
   end;
 
   TPS2IOMan = class
   private
     FFS: TPS2FileSystem;
+    FCards: TPS2CardDevice;
     FFiles: array[0..63] of TPS2OpenFile;
     FOnTTY: TProc<string>;
+    function CardPort(const Device: string): Integer;
+    function NewFile: Integer;
+    function IsCardFile(Fd: Integer): Boolean;
   public
     constructor Create(FS: TPS2FileSystem);
     procedure Reset;
@@ -49,9 +72,16 @@ type
     function Read(Fd: Integer; Count: Integer; out Data: TBytes): Integer;
     function Write(Fd: Integer; const Data: TBytes): Integer;
     function Seek(Fd: Integer; Offset: Int64; Whence: Integer): Int64;
-    function GetStat(const Name: string; out Size: Int64): Integer;
+    function GetStat(const Name: string; out Size: Int64): Integer; overload;
+    // The io_stat_t of Name (files elsewhere: a regular file of their size).
+    function GetStat(const Name: string; out Stat: TBytes): Integer; overload;
+    function MakeDir(const Name: string): Integer;
+    function Remove(const Name: string): Integer;
+    function DirOpen(const Name: string): Integer;
+    function DirRead(Fd: Integer; out Dirent: TBytes): Integer;
     procedure SerializeState(State: TStateArchive);
     property FileSystem: TPS2FileSystem read FFS write FFS;
+    property Cards: TPS2CardDevice read FCards write FCards;
     property OnTTY: TProc<string> read FOnTTY write FOnTTY;
   end;
 
@@ -83,6 +113,27 @@ function IntBytes(Value: Integer): TBytes;
 begin
   SetLength(Result, 4);
   PInteger(@Result[0])^ := Value;
+end;
+
+const
+  // io_stat_t mode of a regular file.
+  StatFile = $2000;
+
+function IsCardPath(const Name: string): Boolean;
+begin
+  var Device, Path: string;
+  TPS2IOMan.SplitPath(Name, Device, Path);
+  Result := (Device = 'mc') or (Device = 'mc0') or (Device = 'mc1');
+end;
+
+// io_stat_t: mode, attribute, size, three times, high size word.
+function StatRecord(Size: Int64): TBytes;
+begin
+  SetLength(Result, 64);
+  FillChar(Result[0], 64, 0);
+  PCardinal(@Result[0])^ := StatFile;
+  PCardinal(@Result[8])^ := Cardinal(Size);
+  PCardinal(@Result[36])^ := Cardinal(Size shr 32);
 end;
 
 { TPS2FileSystem }
@@ -161,6 +212,31 @@ begin
   Result := (Device = 'hdd') or (Device = 'pfs') or (Device = 'dev9x') or (Device = 'smap') or (Device = 'xhdd');
 end;
 
+// mc0: / mc: is port 0, mc1: port 1; -1 for other devices.
+function TPS2IOMan.CardPort(const Device: string): Integer;
+begin
+  Result := -1;
+  if FCards = nil then
+    Exit;
+  if (Device = 'mc') or (Device = 'mc0') then
+    Result := 0
+  else if Device = 'mc1' then
+    Result := 1;
+end;
+
+function TPS2IOMan.NewFile: Integer;
+begin
+  for var K := 3 to High(FFiles) do
+    if not FFiles[K].Used then
+      Exit(K);
+  Result := -1;
+end;
+
+function TPS2IOMan.IsCardFile(Fd: Integer): Boolean;
+begin
+  Result := (Fd >= 3) and (Fd <= High(FFiles)) and FFiles[Fd].Used and (CardPort(FFiles[Fd].Device) >= 0);
+end;
+
 function TPS2IOMan.Open(const Name: string; Mode: Integer): Integer;
 begin
   if IsAbsentDevice(Name) then
@@ -169,6 +245,23 @@ begin
   SplitPath(Name, Device, Path);
   if (Device = 'tty') or (Device = 'tty0') then
     Exit(1);
+  var Port := CardPort(Device);
+  if Port >= 0 then
+  begin
+    var K := NewFile;
+    if K < 0 then
+      Exit(-24);
+    var H := FCards.Open(Port, Path, Mode);
+    if H < 0 then
+      Exit(H);
+    FFiles[K] := Default(TPS2OpenFile);
+    FFiles[K].Used := True;
+    FFiles[K].Device := Device;
+    FFiles[K].Path := Path;
+    FFiles[K].Mode := Mode;
+    FFiles[K].Handle := H;
+    Exit(K);
+  end;
   if FFS = nil then
     Exit(-2);
   var Size := FFS.FileSize(Device, Path);
@@ -193,6 +286,11 @@ end;
 
 function TPS2IOMan.Close(Fd: Integer): Integer;
 begin
+  if IsCardFile(Fd) then
+  begin
+    FFiles[Fd].Used := False;
+    Exit(FCards.Close(FFiles[Fd].Handle));
+  end;
   if (Fd >= 3) and (Fd <= High(FFiles)) and FFiles[Fd].Used then
   begin
     FFiles[Fd].Used := False;
@@ -206,6 +304,8 @@ end;
 function TPS2IOMan.Read(Fd: Integer; Count: Integer; out Data: TBytes): Integer;
 begin
   Data := nil;
+  if IsCardFile(Fd) then
+    Exit(FCards.Read(FFiles[Fd].Handle, Count, Data));
   if (Fd < 3) or (Fd > High(FFiles)) or not FFiles[Fd].Used then
     Exit(-9);
   if Count <= 0 then
@@ -228,6 +328,8 @@ begin
       FOnTTY(TEncoding.ANSI.GetString(Data));
     Exit(Length(Data));
   end;
+  if IsCardFile(Fd) then
+    Exit(FCards.Write(FFiles[Fd].Handle, Data));
   if (Fd > High(FFiles)) or (Fd < 0) or not FFiles[Fd].Used then
     Exit(-9);
   // Writes go to the file system as a whole file.
@@ -246,6 +348,8 @@ end;
 
 function TPS2IOMan.Seek(Fd: Integer; Offset: Int64; Whence: Integer): Int64;
 begin
+  if IsCardFile(Fd) then
+    Exit(FCards.Seek(FFiles[Fd].Handle, Integer(Offset), Whence));
   if (Fd < 3) or (Fd > High(FFiles)) or not FFiles[Fd].Used then
     Exit(-9);
   case Whence of
@@ -273,6 +377,68 @@ begin
     Result := 0;
 end;
 
+function TPS2IOMan.GetStat(const Name: string; out Stat: TBytes): Integer;
+begin
+  Stat := nil;
+  var Device, Path: string;
+  SplitPath(Name, Device, Path);
+  var Port := CardPort(Device);
+  if Port >= 0 then
+    Exit(FCards.GetStat(Port, Path, Stat));
+  var Size: Int64;
+  Result := GetStat(Name, Size);
+  if Result = 0 then
+    Stat := StatRecord(Size);
+end;
+
+// Directories exist only on the card; elsewhere nothing is done (and
+// directories do not open), unless the device is absent.
+function TPS2IOMan.MakeDir(const Name: string): Integer;
+begin
+  if IsAbsentDevice(Name) then
+    Exit(-19);
+  var Device, Path: string;
+  SplitPath(Name, Device, Path);
+  var Port := CardPort(Device);
+  if Port >= 0 then
+    Result := FCards.MakeDir(Port, Path)
+  else
+    Result := 0;
+end;
+
+function TPS2IOMan.Remove(const Name: string): Integer;
+begin
+  if IsAbsentDevice(Name) then
+    Exit(-19);
+  var Device, Path: string;
+  SplitPath(Name, Device, Path);
+  var Port := CardPort(Device);
+  if Port >= 0 then
+    Result := FCards.Remove(Port, Path)
+  else
+    Result := 0;
+end;
+
+function TPS2IOMan.DirOpen(const Name: string): Integer;
+begin
+  if IsAbsentDevice(Name) then
+    Exit(-19);
+  var Device, Path: string;
+  SplitPath(Name, Device, Path);
+  if CardPort(Device) < 0 then
+    Exit(-2);
+  // A directory opens like a file on the card (MCMAN's dopen).
+  Result := Open(Name, 0);
+end;
+
+function TPS2IOMan.DirRead(Fd: Integer; out Dirent: TBytes): Integer;
+begin
+  Dirent := nil;
+  if not IsCardFile(Fd) then
+    Exit(-9);
+  Result := FCards.DirRead(FFiles[Fd].Handle, Dirent);
+end;
+
 procedure TPS2IOMan.SerializeState(State: TStateArchive);
 begin
   for var K := 0 to High(FFiles) do
@@ -281,6 +447,7 @@ begin
     State.Field(FFiles[K].Position, SizeOf(Int64));
     State.Field(FFiles[K].Size, SizeOf(Int64));
     State.Field(FFiles[K].Mode, SizeOf(Integer));
+    State.Field(FFiles[K].Handle, SizeOf(Integer));
     var S := FFiles[K].Device + '|' + FFiles[K].Path;
     var B := TEncoding.UTF8.GetBytes(S);
     var N := Length(B);
@@ -311,7 +478,12 @@ const
   FnRead = 2;
   FnWrite = 3;
   FnSeek = 4;
+  FnRemove = 6;
+  FnMkdir = 7;
+  FnRmdir = 8;
   FnDOpen = 9;
+  FnDClose = 10;
+  FnDRead = 11;
   FnGetStat = 12;
   FnSeek64 = 22;
   FnInit = $FF;
@@ -320,8 +492,6 @@ const
   ErrNoDevice = -19;
   // Result record command (2200 protocol).
   CmdResult = $80000011;
-  // io_stat_t mode of a regular file.
-  StatFile = $2000;
 
 constructor TPS2FileIOServer.Create(IOMan: TPS2IOMan);
 begin
@@ -372,14 +542,13 @@ begin
   Result := PCardinal(Args + Offset)^;
 end;
 
-// io_stat_t: mode, attribute, size, three times, high size word.
-function StatRecord(Size: Int64): TBytes;
+// The path of a 2200 request without a documented layout: at +0Ch when it
+// names a device there, else at +10h (after a mode word).
+function RecordName(Args: PByte; Size: Integer): string;
 begin
-  SetLength(Result, 64);
-  FillChar(Result[0], 64, 0);
-  PCardinal(@Result[0])^ := StatFile;
-  PCardinal(@Result[8])^ := Cardinal(Size);
-  PCardinal(@Result[36])^ := Cardinal(Size shr 32);
+  Result := ArgString(Args, Size, 12, 1024);
+  if not Result.Contains(':') then
+    Result := ArgString(Args, Size, 16, 1024);
 end;
 
 procedure TPS2FileIOServer.Reset;
@@ -440,20 +609,44 @@ begin
       end;
     FnGetStat:
       begin
-        var FileSize: Int64;
-        R := FIOMan.GetStat(ArgString(Args, Size, 16, 1024), FileSize);
+        var St: TBytes;
+        R := FIOMan.GetStat(ArgString(Args, Size, 16, 1024), St);
         SetLength(Rec, 24 + 64);
         FillChar(Rec[16], Length(Rec) - 16, 0);
         PCardinal(@Rec[20])^ := ArgU32(Args, Size, 12);
         if R = 0 then
         begin
-          var St := StatRecord(FileSize);
-          Move(St[0], Rec[24], 64);
+          Move(St[0], Rec[24], Min(Length(St), 64));
           WriteEE(ArgU32(Args, Size, 12), St);
         end;
       end;
     FnDOpen:
-      R := ErrNoEntry;
+      if IsCardPath(RecordName(Args, Size)) then
+        R := FIOMan.DirOpen(RecordName(Args, Size))
+      else
+        R := ErrNoEntry;
+    FnDClose:
+      R := FIOMan.Close(Fd);
+    FnDRead:
+      begin
+        var Dirent: TBytes;
+        R := FIOMan.DirRead(Fd, Dirent);
+        if R > 0 then
+          WriteEE(ArgU32(Args, Size, 16), Dirent);
+      end;
+    FnMkdir, FnRemove, FnRmdir:
+      if IsCardPath(RecordName(Args, Size)) then
+      begin
+        if Fn = FnMkdir then
+          R := FIOMan.MakeDir(RecordName(Args, Size))
+        else
+          R := FIOMan.Remove(RecordName(Args, Size));
+      end
+      else if TPS2IOMan.IsAbsentDevice(ArgString(Args, Size, 12, 1024)) or
+        TPS2IOMan.IsAbsentDevice(ArgString(Args, Size, 16, 1024)) then
+        R := ErrNoDevice
+      else
+        R := 0;
   else
     // Directories, devices and the rest (mount, devctl, format...): nothing
     // to do, unless the device named first is not there.
@@ -535,14 +728,28 @@ begin
         Integer(ArgU32(Args, Size, 8)))));
     FnGetStat:
       begin
-        var FileSize: Int64;
-        var R := FIOMan.GetStat(ArgString(Args, Size, 4, 256), FileSize);
+        var St: TBytes;
+        var R := FIOMan.GetStat(ArgString(Args, Size, 4, 256), St);
         if R = 0 then
-          WriteEE(ArgU32(Args, Size, 0), StatRecord(FileSize));
+          WriteEE(ArgU32(Args, Size, 0), St);
         Result := IntBytes(R);
       end;
+    FnMkdir:
+      Result := IntBytes(FIOMan.MakeDir(ArgString(Args, Size, 0, 256)));
+    FnRemove, FnRmdir:
+      Result := IntBytes(FIOMan.Remove(ArgString(Args, Size, 0, 256)));
     FnDOpen:
-      Result := IntBytes(ErrNoEntry);
+      Result := IntBytes(FIOMan.DirOpen(ArgString(Args, Size, 0, 256)));
+    FnDClose:
+      Result := IntBytes(FIOMan.Close(Integer(ArgU32(Args, Size, 0))));
+    FnDRead:
+      begin
+        var Dirent: TBytes;
+        var R := FIOMan.DirRead(Integer(ArgU32(Args, Size, 0)), Dirent);
+        if R > 0 then
+          WriteEE(ArgU32(Args, Size, 4), Dirent);
+        Result := IntBytes(R);
+      end;
   else
     Result := IntBytes(ErrNoDevice);
   end;

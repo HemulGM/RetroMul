@@ -230,6 +230,7 @@ type
     // it to its end (at most MaxPairs pairs; False when it is still running).
     procedure Start(Address: Cardinal);
     function Run(MaxPairs: Integer): Boolean;
+    function StraightPairs(StopTPC: Cardinal; Max: Integer): Integer;
     // Runs a started program to its end at EE cycle Now and keeps the VU
     // busy for the cycles it took (Unfinished: still running at the limit).
     procedure RunProgram(Now: Int64; MaxPairs: Integer);
@@ -3315,6 +3316,33 @@ begin
       S.EndPending := True;
 end;
 
+// Pairs from the TPC on, at most Max, after none of which but the last the
+// TPC can be StopTPC or the program end: no branch or end takes effect
+// before the last, and the TPC goes on straight past StopTPC's place. Run
+// of them at once ends where running them one at a time, checking the TPC
+// after each, would first find it at StopTPC (or the program ended).
+function TPS2VUCore.StraightPairs(StopTPC: Cardinal; Max: Integer): Integer;
+begin
+  Result := 1;
+  if S.BranchPending or S.EndPending or FKickPending then
+    Exit;
+  var PC := S.TPC and FCodeMask;
+  StopTPC := StopTPC and FCodeMask;
+  while Result < Max do
+  begin
+    var Lower := PCardinal(FCode + PC)^;
+    var Upper := PCardinal(FCode + PC + 4)^;
+    var Next := (PC + 8) and FCodeMask;
+    if ((Upper and $40000000) <> 0) or (Next = StopTPC) then
+      Exit;
+    // A branch: its delay slot as well, after which the TPC may be anywhere.
+    if ((Upper and $80000000) = 0) and ((Lower shr 25) >= $20) and ((Lower shr 25) <= $2F) then
+      Exit(Min(Result + 1, Max));
+    PC := Next;
+    Inc(Result);
+  end;
+end;
+
 function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
 begin
   var Context := Default(TPS2VURun);
@@ -3491,6 +3519,26 @@ begin
   Result := FCore.Macro(Op);
 end;
 
+// Whether Count 64-bit words at A and B are equal (CompareMem without the
+// call, for the register files the spin checks compare).
+function SameWords(A, B: PUInt64; Count: Integer): Boolean;
+begin
+  var K := 0;
+  while K + 4 <= Count do
+  begin
+    if ((A[K] xor B[K]) or (A[K + 1] xor B[K + 1]) or (A[K + 2] xor B[K + 2]) or (A[K + 3] xor B[K + 3])) <> 0 then
+      Exit(False);
+    Inc(K, 4);
+  end;
+  while K < Count do
+  begin
+    if A[K] <> B[K] then
+      Exit(False);
+    Inc(K);
+  end;
+  Result := True;
+end;
+
 // A micro program runs alongside the EE. Programs wait in loops on
 // registers the EE writes (a VI flag released by CTC2, VF data handed over
 // by QMTC2) and hand results back the same way, so the program runs as far
@@ -3500,8 +3548,8 @@ end;
 // wrote) until the EE changes its registers.
 procedure TPS2VU0.RunUntilBlocked;
 begin
-  if FBlocked and CompareMem(@VF[0], @FBlockVF[0], SizeOf(FBlockVF)) and
-    CompareMem(@VI[0], @FBlockVI[0], SizeOf(FBlockVI)) and Spins then
+  if FBlocked and SameWords(@VF[0], @FBlockVF[0], SizeOf(FBlockVF) div 8) and
+    SameWords(@VI[0], @FBlockVI[0], SizeOf(FBlockVI) div 8) and Spins then
     Exit;
   FBlocked := False;
   // Short runs first: a released program often goes back to waiting soon.
@@ -3535,13 +3583,19 @@ begin
   var P := FCore.S.P;
   Move(VF[0], SavedVF[0], SizeOf(SavedVF));
   Move(VI[0], SavedVI[0], SizeOf(SavedVI));
-  for var K := 1 to 64 do
+  // (Pairs one at a time, but straight-line ones together: the TPC cannot
+  // be back before the last of them.)
+  var Done := 0;
+  while Done < 64 do
   begin
-    FCore.Run(1);
+    var Step := FCore.StraightPairs(TPC, 64 - Done);
+    FCore.Run(Step);
+    Inc(Done, Step);
     if not FCore.S.Running then
       Exit(False);
-    if (FCore.S.TPC = TPC) and (FCore.S.Q = Q) and (FCore.S.P = P) and CompareMem(@FCore.S.ACC, @Acc, SizeOf(Acc))
-      and CompareMem(@VF[0], @SavedVF[0], SizeOf(SavedVF)) and CompareMem(@VI[0], @SavedVI[0], SizeOf(SavedVI)) then
+    if (FCore.S.TPC = TPC) and (FCore.S.Q = Q) and (FCore.S.P = P) and (FCore.S.ACC.Lo = Acc.Lo) and
+      (FCore.S.ACC.Hi = Acc.Hi) and SameWords(@VF[0], @SavedVF[0], SizeOf(SavedVF) div 8) and
+      SameWords(@VI[0], @SavedVI[0], SizeOf(SavedVI) div 8) then
       Exit(True);
   end;
   Result := False;

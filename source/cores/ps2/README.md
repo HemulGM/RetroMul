@@ -191,8 +191,10 @@ The tests run without Vulkan; `-Checked` enables checked core code.
 recompiler for VU1 and for VU0 micro programs (each with its own code arena);
 `interpreter` (the default) uses the original execution path. This is
 independent of `Video/Renderer` and can change during play. VU0 macro
-instructions remain interpreted. VU0's spin probes run one pair at a time,
-which the per-pair budget checks keep exact.
+instructions remain interpreted. VU0's spin probes check the TPC after each
+pair but run straight-line pairs (up to a branch's delay slot, an E bit or the
+loop's start) in one budget, which the per-pair budget checks keep exact;
+the register files are compared without CompareMem calls.
 
 The EE recompiler turns a decoded block into host code on its second run.
 Shifts, 32/64-bit integer arithmetic and logic, set-on-less-than, HI/LO moves,

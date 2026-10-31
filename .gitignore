@@ -42,6 +42,7 @@ __recovery/
 !/tests/cores/ps2/system/
 !/tests/cores/ps2/vufloat/
 !/tests/cores/ps2/lod/
+!/tests/cores/ps2/eemmi/
 /tests/cores/n64/*
 !/tests/cores/n64/hardware/
 !/tests/cores/n64/jit/

@@ -227,6 +227,110 @@ begin
   Result.SA := CPU.S.SA;
 end;
 
+// Random straight-line blocks over a few registers (values passed from one
+// instruction to the next, handler calls between): integer arithmetic, logic, shifts, moves,
+// aligned loads and stores, multimedia kernels, COP2 transfers and handler
+// instructions (MULT, DIV) between them; registers, RAM and VU0 registers
+// after the block against the handlers.
+procedure CheckBlocks(CPU: TEECPU; Bus: TTestBus; Cop2: TEECop2);
+const
+  // SPECIAL functs (rd, rs, rt): ADDU SUBU DADDU DSUBU AND OR XOR NOR SLT SLTU MOVZ MOVN MULT DIV.
+  Specials: array[0..13] of Cardinal = ($21, $23, $2D, $2F, $24, $25, $26, $27, $2A, $2B, $0A, $0B, $18, $1A);
+  // Immediate ops (rt, rs, imm): ADDIU DADDIU SLTI SLTIU ANDI ORI XORI LUI.
+  Immediates: array[0..7] of Cardinal = ($09, $19, $0A, $0B, $0C, $0D, $0E, $0F);
+  // Loads and stores with their alignment: LB LBU LH LHU LW LWU LD LQ SB SH SW SD SQ.
+  Memory: array[0..12] of Cardinal = ($20, $24, $21, $25, $23, $27, $37, $1E, $28, $29, $2B, $3F, $1F);
+  Align: array[0..12] of Cardinal = (1, 1, 2, 2, 4, 4, 8, 16, 1, 2, 4, 8, 16);
+  // SLL SRL SRA DSLL DSRL DSRA.
+  Shifts: array[0..5] of Cardinal = ($00, $02, $03, $38, $3A, $3B);
+begin
+  var Runs := 0;
+  for var Trial := 0 to 5999 do
+  begin
+    var Count := 4 + Rnd mod 20;
+    // Registers 1..6 (and 7, the base: 80001000h).
+    var R := function: Cardinal begin Result := 1 + Rnd mod 6; end;
+    for var K := 0 to Count - 1 do
+    begin
+      var Op: Cardinal;
+      case Rnd mod 9 of
+        0, 1, 2: Op := Specials[Rnd mod 14] or (R() shl 21) or (R() shl 16) or (R() shl 11);
+        3: Op := (R() shl 16) or (R() shl 11) or ((Rnd mod 32) shl 6) or Shifts[Rnd mod 6];
+        4, 5: Op := (Immediates[Rnd mod 8] shl 26) or (R() shl 21) or (R() shl 16) or (Rnd and $FFFF);
+        6, 7:
+          begin
+            var M := Rnd mod 13;
+            Op := (Memory[M] shl 26) or (7 shl 21) or (R() shl 16) or ((Rnd mod 256) * Align[M]);
+          end;
+      else
+        case Rnd mod 3 of
+          0: Op := $70000000 or (R() shl 21) or (R() shl 16) or (R() shl 11) or ($12 shl 6) or $09; // PAND
+          1: Op := $48200000 or (R() shl 16) or ((1 + Rnd mod 31) shl 11); // QMFC2
+        else
+          Op := $48A00000 or (R() shl 16) or ((1 + Rnd mod 31) shl 11); // QMTC2
+        end;
+      end;
+      PCardinal(@Bus.RAM[K * 4])^ := Op;
+    end;
+    PCardinal(@Bus.RAM[Count * 4])^ := $1000FFFF;
+    PCardinal(@Bus.RAM[Count * 4 + 4])^ := 0;
+    var Start: TState;
+    for var K := 0 to 31 do
+    begin
+      for var W := 0 to 3 do
+      begin
+        Start.GPR[K].UW[W] := RndWord(Rnd);
+        Start.VF[K].UW[W] := Rnd;
+      end;
+      Start.FPR[K] := Rnd;
+    end;
+    Start.GPR[0] := Default(TPS2Reg128);
+    Start.GPR[7].Lo := UInt64($FFFFFFFF80001000);
+    for var K := 0 to High(Start.RAM) do Start.RAM[K] := Byte(Rnd);
+    var Expected, Got: TState;
+    for var Jit := False to True do
+    begin
+      Move(Start.RAM, Bus.RAM[4096], SizeOf(Start.RAM));
+      Inc(Bus.Gens[0]);
+      CPU.UseJit := Jit;
+      CPU.JitHeat := 1;
+      CPU.InvalidateBlocks;
+      for var K := 0 to 31 do
+      begin
+        CPU.S.GPR[K] := Start.GPR[K];
+        CPU.S.FPR[K] := Start.FPR[K];
+        Cop2.VF[K] := Start.VF[K];
+      end;
+      CPU.SetPC($80000000);
+      Now := 0;
+      Deadline := 1;
+      CPU.Run;
+      var S: TState;
+      FillChar(S, SizeOf(S), 0);
+      for var K := 0 to 31 do
+      begin
+        S.GPR[K] := CPU.S.GPR[K];
+        S.FPR[K] := CPU.S.FPR[K];
+        S.VF[K] := Cop2.VF[K];
+      end;
+      S.PC := CPU.S.PC;
+      Move(Bus.RAM[4096], S.RAM, SizeOf(S.RAM));
+      if Jit then Got := S else Expected := S;
+    end;
+    if not CompareMem(@Got, @Expected, SizeOf(Got)) then
+    begin
+      for var K := 0 to Count - 1 do Write(IntToHex(PCardinal(@Bus.RAM[K * 4])^, 8), ' ');
+      Writeln;
+      for var K := 0 to 7 do
+        if Got.GPR[K].Lo <> Expected.GPR[K].Lo then
+          Writeln(Format('r%d expected %.16x got %.16x', [K, Expected.GPR[K].Lo, Got.GPR[K].Lo]));
+      raise Exception.CreateFmt('Recompiled block mismatch, trial %d', [Trial]);
+    end;
+    Inc(Runs);
+  end;
+  Writeln(Format('%d random blocks over few registers (recompiler) match the handlers', [Runs]));
+end;
+
 begin
   try
     var Bus := TTestBus.Create;
@@ -291,6 +395,7 @@ begin
         Writeln(Format('%d multimedia kernel instructions, %d runs (interpreter and recompiler) match the general handlers%s',
           [Ops, Runs, Copy(' (recompiler unavailable)', 1, Ord(not JitOK) * 100)]));
       CheckTransfers(CPU, Bus, Cop2);
+      CheckBlocks(CPU, Bus, Cop2);
     finally
       CPU.Free;
       Cop2.Free;

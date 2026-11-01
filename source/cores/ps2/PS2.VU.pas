@@ -171,6 +171,9 @@ type
     // The address of the pair a scheduled run is writing (-1: none), which
     // its branches take as a constant.
     FEmitPC: Integer;
+    // Where that pair's flag reads find the MAC, status and clip flags they
+    // see (offsets in Self; -1: the general path's own fields).
+    FEmitMACSrc, FEmitStatusSrc, FEmitClipSrc: Integer;
     FJitFastPairs: Int64;
     // Code-generation state only. Volatile vector results survive a lower
     // half only when that half has no helper call and data cannot alias us.
@@ -339,9 +342,12 @@ function FastPair(Lower, Upper: Cardinal): Boolean;
 begin
   // (CLIP queues its flags as FMAC operations do: a scheduled run replays
   // them, FinishFastFlags.)
+  // (Flag reads but FSSET/FCSET too: a scheduled run tracks the queues they
+  // read, see TPS2VUQueueSim.)
   if (Upper and $80000000) <> 0 then Exit(True);
   if (Lower and $80000000) = 0 then
-    Exit((Lower shr 25) in [$00, $01, $04, $05, $08, $09, $20, $21, $24, $25, $28, $29, $2C..$2F]);
+    Exit((Lower shr 25) in [$00, $01, $04, $05, $08, $09, $10, $12..$14, $16..$18, $1A..$1C, $20, $21, $24, $25,
+      $28, $29, $2C..$2F]);
   if (Lower and $3F) < $3C then
     Exit((Lower and $3F) in [$30, $31, $32, $34, $35]);
   Result := (((Lower shr 4) and $7C) or (Lower and 3)) in
@@ -410,6 +416,9 @@ begin
   FDataMask := DataSize - 1;
   FEmitClipSlot := -1;
   FEmitPC := -1;
+  FEmitMACSrc := -1;
+  FEmitStatusSrc := -1;
+  FEmitClipSrc := -1;
   FVectorMemorySafe := SeparateBuffers(Data, DataSize, Code, CodeSize) and
     SeparateBuffers(Data, DataSize, VF, SizeOf(TPS2VFArray)) and
     SeparateBuffers(Data, DataSize, VI, SizeOf(TPS2VIArray)) and
@@ -513,6 +522,9 @@ begin
   var J := FJit;
   Inc(FJitCompiles);
   FEmitPC := -1;
+  FEmitMACSrc := -1;
+  FEmitStatusSrc := -1;
+  FEmitClipSrc := -1;
   J.ForgetLabels;
   J.Align(16);
   Result := J.Here;
@@ -731,6 +743,21 @@ begin
   FClipVisible := S.ClipBase;
 end;
 
+type
+  // The flag (or clip) queue through a scheduled run, worked out when it is
+  // compiled for an incoming queue of Count0 entries landing Off[K] cycles
+  // into the run. What each slot and the base hold: -1 the base as it was
+  // (not a slot), K < 4 incoming slot K's entry, 16 + E the run's event E
+  // (landing EvReady[E] cycles in). The run checks the incoming queue is so.
+  TPS2VUQueueSim = record
+    Valid: Boolean;
+    Count0, Count, Base: Integer;
+    Off, Slots: array[0..3] of Integer;
+    // The base each pair's flag reads see (after its pipeline step).
+    Visible: array[0..15] of Integer;
+    EvReady: array[0..15] of Integer;
+  end;
+
 // A scheduled run with no observation inside it. Validate all code and all
 // external dependency deadlines before any guest change. Short budgets,
 // trace capture, pending branches/ends/kicks and unexpected input latencies
@@ -746,6 +773,183 @@ var
   function M(Address: Pointer): TJitOp;
   begin
     Result := JMem(jrSelf, Integer(NativeInt(Address) - NativeInt(Self)));
+  end;
+
+  function IsClip(Upper: Cardinal): Boolean;
+  begin
+    Result := ((Upper and $3F) >= $3C) and ((((Upper shr 4) and $7C) or (Upper and 3)) = $1F);
+  end;
+
+  // The queue as the general path leaves it after each pair: entries
+  // landed by a pair's issue move to the base before it runs; its event
+  // (MAC/status, or CLIP) joins the queue after, unless the queue is full.
+  procedure Simulate(var Q: TPS2VUQueueSim; Clip: Boolean);
+  var
+    Ready: array[0..3] of Integer;
+  begin
+    for var K := 0 to 3 do
+    begin
+      Q.Slots[K] := K;
+      Ready[K] := Q.Off[K];
+    end;
+    Q.Base := -1;
+    Q.Count := Q.Count0;
+    var E := 0;
+    var PC := Block.PC;
+    for var I := 0 to Block.PairCount - 1 do
+    begin
+      var P: PPS2VUPair := @FPairs[PC shr 3];
+      var T := Plan.Issue[I];
+      while (Q.Count > 0) and (Ready[0] <= T) do
+      begin
+        Q.Base := Q.Slots[0];
+        for var K := 1 to Q.Count - 1 do
+        begin
+          Q.Slots[K - 1] := Q.Slots[K];
+          Ready[K - 1] := Ready[K];
+        end;
+        Dec(Q.Count);
+      end;
+      Q.Visible[I] := Q.Base;
+      if (Clip and IsClip(P.Upper)) or (not Clip and P.SetsFlags) then
+      begin
+        Q.EvReady[E] := T + 4;
+        if Q.Count < 4 then
+        begin
+          Q.Slots[Q.Count] := 16 + E;
+          Ready[Q.Count] := T + 4;
+          Inc(Q.Count);
+        end;
+        Inc(E);
+      end;
+      PC := (PC + 8) and FCodeMask;
+    end;
+  end;
+
+  // The incoming queue as it is now (the compiler runs as the block is
+  // entered), if it is one a run can take (see QueueShape).
+  procedure Observed(var Q: TPS2VUQueueSim; Clip: Boolean);
+  begin
+    Q := Default(TPS2VUQueueSim);
+    var Count := S.FlagQCount;
+    if Clip then Count := S.ClipQCount;
+    if (Count < 0) or (Count > 4) then Exit;
+    Q.Count0 := Count;
+    for var K := 0 to Count - 1 do
+    begin
+      var R := S.FlagQReady[K];
+      if Clip then R := S.ClipQReady[K];
+      Dec(R, S.Cycles);
+      if (R < 0) or (R > 3) or ((K > 0) and (R <= Q.Off[K - 1])) then Exit;
+      Q.Off[K] := Integer(R);
+    end;
+    Q.Valid := True;
+    Simulate(Q, Clip);
+  end;
+
+  function SameQueue(const A, B: TPS2VUQueueSim): Boolean;
+  begin
+    Result := A.Count0 = B.Count0;
+    for var K := 0 to A.Count0 - 1 do
+      Result := Result and (A.Off[K] = B.Off[K]);
+  end;
+
+  // The incoming queue is Q's, else on to Fail.
+  procedure CheckQueue(const Q: TPS2VUQueueSim; Clip: Boolean; Fail: TJitLabel);
+  begin
+    var Count := M(@S.FlagQCount);
+    var Ready := M(@S.FlagQReady[0]);
+    if Clip then
+    begin
+      Count := M(@S.ClipQCount);
+      Ready := M(@S.ClipQReady[0]);
+    end;
+    J.Branch(jcNe, jw32, Count, JImm(Q.Count0), Fail);
+    for var K := 0 to Q.Count0 - 1 do
+    begin
+      J.Move(jw64, JT0, JS1);
+      J.Alu(jaAdd, jw64, JT0, JImm(Q.Off[K]));
+      J.Branch(jcNe, jw64, JMem(jrSelf, Ready.Disp + K * 8), JT0, Fail);
+    end;
+  end;
+
+  // Where a symbol's MAC, status or clip flag is (see TPS2VUQueueSim).
+  function SymbolMAC(Sym: Integer): Integer;
+  begin
+    if Sym >= 16 then Result := M(@FJitEvents[Sym - 16].MAC).Disp
+    else if Sym >= 0 then Result := M(@S.FlagQMAC[Sym]).Disp
+    else Result := M(@S.MACBase).Disp;
+  end;
+
+  function SymbolStatus(Sym: Integer): Integer;
+  begin
+    if Sym >= 16 then Result := M(@FJitEvents[Sym - 16].Status).Disp
+    else if Sym >= 0 then Result := M(@S.FlagQStatus[Sym]).Disp
+    else Result := M(@S.StatusBase).Disp;
+  end;
+
+  function SymbolClip(Sym: Integer): Integer;
+  begin
+    if Sym >= 16 then Result := M(@FJitClipEvents[Sym - 16].Value).Disp
+    else if Sym >= 0 then Result := M(@S.ClipQValue[Sym]).Disp
+    else Result := M(@S.ClipBase).Disp;
+  end;
+
+  procedure Copy32(Dst, Src: Integer);
+  begin
+    J.Move(jw32, JT0, JMem(jrSelf, Src));
+    J.Move(jw32, JMem(jrSelf, Dst), JT0);
+  end;
+
+  // The queue as Q leaves it: the base first, then the slots in order (a
+  // slot only takes an entry from one above it, still unwritten).
+  procedure Materialize(const Q: TPS2VUQueueSim; Clip: Boolean);
+  begin
+    if Clip then
+    begin
+      if Q.Base <> -1 then
+        Copy32(M(@S.ClipBase).Disp, SymbolClip(Q.Base));
+      for var K := 0 to 3 do
+      begin
+        var Sym := Q.Slots[K];
+        if Sym = K then Continue;
+        Copy32(M(@S.ClipQValue[K]).Disp, SymbolClip(Sym));
+        if Sym >= 16 then
+        begin
+          J.Move(jw64, JT0, JS1);
+          J.Alu(jaAdd, jw64, JT0, JImm(Q.EvReady[Sym - 16]));
+        end
+        else
+          J.Move(jw64, JT0, M(@S.ClipQReady[Sym]));
+        J.Move(jw64, M(@S.ClipQReady[K]), JT0);
+      end;
+      if Q.Count <> Q.Count0 then
+        J.Move(jw32, M(@S.ClipQCount), JImm(Q.Count));
+      Copy32(M(@FClipVisible).Disp, M(@S.ClipBase).Disp);
+      Exit;
+    end;
+    if Q.Base <> -1 then
+    begin
+      Copy32(M(@S.MACBase).Disp, SymbolMAC(Q.Base));
+      Copy32(M(@S.StatusBase).Disp, SymbolStatus(Q.Base));
+    end;
+    for var K := 0 to 3 do
+    begin
+      var Sym := Q.Slots[K];
+      if Sym = K then Continue;
+      Copy32(M(@S.FlagQMAC[K]).Disp, SymbolMAC(Sym));
+      Copy32(M(@S.FlagQStatus[K]).Disp, SymbolStatus(Sym));
+      if Sym >= 16 then
+      begin
+        J.Move(jw64, JT0, JS1);
+        J.Alu(jaAdd, jw64, JT0, JImm(Q.EvReady[Sym - 16]));
+      end
+      else
+        J.Move(jw64, JT0, M(@S.FlagQReady[Sym]));
+      J.Move(jw64, M(@S.FlagQReady[K]), JT0);
+    end;
+    if Q.Count <> Q.Count0 then
+      J.Move(jw32, M(@S.FlagQCount), JImm(Q.Count));
   end;
 
   // Until a read, a pending Q/P need not be materialized. At the end,
@@ -874,6 +1078,38 @@ begin
   J.Bind(KickOK);
   QueueShape(@S.FlagQCount, @S.FlagQReady[0]);
   QueueShape(@S.ClipQCount, @S.ClipQReady[0]);
+  // Flag reads see the queues through the run as the compiler found them
+  // on entry: such a run needs them so. Other runs check at their end
+  // whether they were so (or empty), to leave them without a replay.
+  var HasFlagReads := False;
+  var PC := Block.PC;
+  for var I := 0 to Block.PairCount - 1 do
+  begin
+    var P: PPS2VUPair := @FPairs[PC shr 3];
+    if ((P.Upper and $80000000) = 0) and ((P.Lower and $80000000) = 0) and
+      ((P.Lower shr 25) in [$10, $12..$14, $16..$18, $1A..$1C]) then
+      HasFlagReads := True;
+    PC := (PC + 8) and FCodeMask;
+  end;
+  var FlagSeen, ClipSeen, FlagEmpty, ClipEmpty: TPS2VUQueueSim;
+  Observed(FlagSeen, False);
+  Observed(ClipSeen, True);
+  FlagEmpty := Default(TPS2VUQueueSim);
+  FlagEmpty.Valid := True;
+  Simulate(FlagEmpty, False);
+  ClipEmpty := Default(TPS2VUQueueSim);
+  ClipEmpty.Valid := True;
+  Simulate(ClipEmpty, True);
+  if HasFlagReads then
+  begin
+    if not (FlagSeen.Valid and ClipSeen.Valid) then
+    begin
+      J.Jump(Slow);
+      Exit;
+    end;
+    CheckQueue(FlagSeen, False, Slow);
+    CheckQueue(ClipSeen, True, Slow);
+  end;
   for var R := 1 to 31 do
   begin
     // A register whose latest result is ready by its first read needs no
@@ -907,7 +1143,7 @@ begin
   end;
   ProfileMark('fast-code-guards');
   J.Move(jw64, JT2, M(@FCode));
-  var PC := Block.PC;
+  PC := Block.PC;
   for var I := 0 to Block.PairCount - 1 do
   begin
     // Both words at once (lower, then upper), in code memory and decoded.
@@ -1015,7 +1251,16 @@ begin
       FEmitClipIssue := Plan.Issue[I];
       Inc(ClipEvents);
     end;
+    if HasFlagReads then
+    begin
+      FEmitMACSrc := SymbolMAC(FlagSeen.Visible[I]);
+      FEmitStatusSrc := SymbolStatus(FlagSeen.Visible[I]);
+      FEmitClipSrc := SymbolClip(ClipSeen.Visible[I]);
+    end;
     EmitPair(P^);
+    FEmitMACSrc := -1;
+    FEmitStatusSrc := -1;
+    FEmitClipSrc := -1;
     FEmitClipSlot := -1;
     EmitCommit(P^);
     if P.SetsFlags then
@@ -1056,6 +1301,61 @@ begin
     Land(@S.QDelay, @S.PendingQ, @S.Q, LastCycle + 1, True);
   Land(@S.PDelay, @S.PendingP, @S.P, LastCycle + 1, True);
   ProfileMark('fast-replay-flags');
+  // The queues as worked out for the incoming ones found (see above), else
+  // replayed at run time.
+  var Tail := J.NewLabel;
+  var Dynamic := J.NewLabel;
+  var FlagDone := J.NewLabel;
+  if HasFlagReads then
+    Materialize(FlagSeen, False)
+  else
+  begin
+    for var V := 0 to 1 do
+    begin
+      var Q := FlagSeen;
+      if V = 1 then
+      begin
+        if FlagSeen.Valid and SameQueue(FlagSeen, FlagEmpty) then Break;
+        Q := FlagEmpty;
+      end;
+      if not Q.Valid then Continue;
+      var Next := J.NewLabel;
+      CheckQueue(Q, False, Next);
+      Materialize(Q, False);
+      J.Jump(FlagDone);
+      J.Bind(Next);
+    end;
+    J.Jump(Dynamic);
+  end;
+  J.Bind(FlagDone);
+  if HasFlagReads then
+    Materialize(ClipSeen, True)
+  else
+  begin
+    for var V := 0 to 1 do
+    begin
+      var Q := ClipSeen;
+      if V = 1 then
+      begin
+        if ClipSeen.Valid and SameQueue(ClipSeen, ClipEmpty) then Break;
+        Q := ClipEmpty;
+      end;
+      if not Q.Valid then Continue;
+      var Next := J.NewLabel;
+      CheckQueue(Q, True, Next);
+      Materialize(Q, True);
+      J.Jump(Tail);
+      J.Bind(Next);
+    end;
+    // (The flag queue is final: no entry of it lands by the last issue.)
+    if ClipEvents > 0 then
+      J.Move(jw32, M(@FJitClipCount), JImm(ClipEvents));
+    J.Move(jw64, JT5, JS1);
+    J.Alu(jaAdd, jw64, JT5, JImm(LastCycle));
+    J.Call(@TPS2VUCore.FinishFastFlags, [JSelf, JImm(0), JT5, JT5]);
+  end;
+  J.Jump(Tail);
+  J.Bind(Dynamic);
   // (The clip queue as the last pair leaves it: drained to its issue.)
   if ClipEvents > 0 then
     J.Move(jw32, M(@FJitClipCount), JImm(ClipEvents));
@@ -1109,6 +1409,7 @@ begin
   end;
   J.Move(jw32, M(@S.FlagQCount), JImm(LiveCount));
   end;
+  J.Bind(Tail);
   J.Move(jw64, JT0, JS1);
   J.Alu(jaAdd, jw64, JT0, JImm(LastCycle + 1));
   J.Move(jw64, M(@S.Cycles), JT0);
@@ -1815,7 +2116,10 @@ begin
         Exit;
       end;
       if (Group = $1C) and (It = 0) then Exit;
-      J.Move(jw32, JT0, M(@FClipVisible));
+      if FEmitClipSrc >= 0 then
+        J.Move(jw32, JT0, JMem(jrSelf, FEmitClipSrc))
+      else
+        J.Move(jw32, JT0, M(@FClipVisible));
       if Group = $1C then
       begin
         J.Alu(jaAnd, jw32, JT0, JImm($FFF));
@@ -1840,6 +2144,60 @@ begin
       end;
       J.Move(jw32, JMem(jrS3, 4), JImm(1));
       J.Bind(Zero);
+      Exit;
+    end;
+    // Status (FSEQ/FSAND/FSOR) and MAC (FMEQ/FMAND/FMOR) reads where a
+    // scheduled run says where the flags they see are.
+    if (FEmitMACSrc >= 0) and (Group in [$14, $16, $17, $18, $1A, $1B]) then
+    begin
+      if It = 0 then Exit;
+      var Imm12 := Integer(((Op shr 10) and $800) or (Op and $7FF));
+      if Group in [$14, $16, $17] then
+        J.Move(jw32, JT0, JMem(jrSelf, FEmitStatusSrc))
+      else
+      begin
+        J.Move(jw32, JT0, JMem(jrSelf, FEmitMACSrc));
+        J.Move(jw32, JT1, JMem(jrS3, Is_ * 4));
+      end;
+      case Group of
+        $14, $18:
+          begin
+            var Differ := J.NewLabel;
+            if Group = $14 then
+              J.Alu(jaAnd, jw32, JT0, JImm($FFF))
+            else
+            begin
+              J.Alu(jaXor, jw32, JT0, JT1);
+              J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+            end;
+            J.Move(jw32, JT2, JImm(0));
+            if Group = $14 then
+              J.Branch(jcNe, jw32, JT0, JImm(Imm12), Differ)
+            else
+              J.Branch(jcNe, jw32, JT0, JImm(0), Differ);
+            J.Move(jw32, JT2, JImm(1));
+            J.Bind(Differ);
+            J.Move(jw32, JMem(jrS3, It * 4), JT2);
+            Exit;
+          end;
+        $16: J.Alu(jaAnd, jw32, JT0, JImm(Imm12));
+        $17:
+          begin
+            J.Alu(jaOr, jw32, JT0, JImm(Imm12));
+            J.Alu(jaAnd, jw32, JT0, JImm($FFF));
+          end;
+        $1A:
+          begin
+            J.Alu(jaAnd, jw32, JT0, JT1);
+            J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+          end;
+        $1B:
+          begin
+            J.Alu(jaOr, jw32, JT0, JT1);
+            J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
+          end;
+      end;
+      J.Move(jw32, JMem(jrS3, It * 4), JT0);
       Exit;
     end;
     Exit(False);
@@ -1964,7 +2322,8 @@ begin
   FAllowVectorResult := False;
   {$IFNDEF PS2_VU_MEMORY_MATH}
   FAllowVectorResult := FVectorMemorySafe and J.HasVectors and
-    (PS2RegisterMathNative(vrmAdd) <> nil) and VectorLowerNoCall(P.Lower, P.Upper);
+    (PS2RegisterMathNative(vrmAdd) <> nil) and (VectorLowerNoCall(P.Lower, P.Upper) or
+    ((FEmitMACSrc >= 0) and ((P.Lower and $80000000) = 0) and ((P.Lower shr 25) in [$14, $16..$18, $1A, $1B])));
   {$ENDIF}
   ProfileMark('upper');
   // Arithmetic calls the PS2 SIMD routines directly, without dispatching

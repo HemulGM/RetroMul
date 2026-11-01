@@ -16,11 +16,16 @@ uses
 
 type
   TPS2GSInterrupt = procedure of object;
+  TPS2GSAccess = procedure of object;
+  TPS2GSRaised = function: Boolean of object;
 
   TPS2GS = class(TPS2Device)
   private
     FRaster: TPS2GSRaster;
     FOnInterrupt: TPS2GSInterrupt;
+    FBeforeAccess: TPS2GSAccess;
+    FInterruptRaised: TPS2GSRaised;
+    FInterruptsQuiet: Boolean;
     FFrame: TArray<Cardinal>;
     FFrameWidth, FFrameHeight: Integer;
     procedure CheckInterrupt;
@@ -45,6 +50,10 @@ type
     procedure Write(Address: Cardinal; Value: UInt64; Size: Integer); override;
     // A general register write from the GIF (A+D or packed/reglist).
     procedure WriteRegister(Index: Integer; Value: UInt64);
+    // Whether WriteRegister raises the interrupt now, whatever it writes (a
+    // SIGNAL or FINISH event is pending and an unmasked event is in CSR), to
+    // any effect (it is not raised already, InterruptRaised).
+    function WriteInterrupts: Boolean;
     // Host-to-local transfer data (IMAGE mode), 128 bits at a time.
     procedure WriteImage(const Data: TPS2Reg128);
     // Local-to-host transfer (BUSDIR=1): next 128 bits.
@@ -59,6 +68,15 @@ type
     property FrameWidth: Integer read FFrameWidth;
     property FrameHeight: Integer read FFrameHeight;
     property OnInterrupt: TPS2GSInterrupt read FOnInterrupt write FOnInterrupt;
+    // Whether OnInterrupt would change nothing now (the interrupt is pending).
+    property InterruptRaised: TPS2GSRaised read FInterruptRaised write FInterruptRaised;
+    // OnInterrupt is not called (the GIF's kick thread: given only what would
+    // raise nothing new, WriteInterrupts).
+    property InterruptsQuiet: Boolean read FInterruptsQuiet write FInterruptsQuiet;
+    // Called before the methods above other than WriteRegister, WriteImage and
+    // WriteInterrupts (the GIF's: it may be giving the GS packets on a thread
+    // of its own).
+    property BeforeAccess: TPS2GSAccess read FBeforeAccess write FBeforeAccess;
   end;
 
 implementation
@@ -79,6 +97,8 @@ end;
 
 procedure TPS2GS.Reset;
 begin
+  if Assigned(FBeforeAccess) then
+    FBeforeAccess;
   PMODE := 0;
   SMODE1 := 0;
   SMODE2 := 0;
@@ -114,12 +134,14 @@ begin
   if FRaster.FinishPending then
     CSR := CSR or 2;
   var Pending := (CSR and $1F) and not ((IMR shr 8) and $1F);
-  if (Pending <> 0) and Assigned(FOnInterrupt) then
+  if (Pending <> 0) and Assigned(FOnInterrupt) and not FInterruptsQuiet then
     FOnInterrupt;
 end;
 
 function TPS2GS.Read(Address: Cardinal; Size: Integer): UInt64;
 begin
+  if Assigned(FBeforeAccess) then
+    FBeforeAccess;
   var Shift := (Address and 7) * 8;
   var V: UInt64;
   case Address and $FFF8 of
@@ -144,6 +166,8 @@ end;
 
 procedure TPS2GS.Write(Address: Cardinal; Value: UInt64; Size: Integer);
 begin
+  if Assigned(FBeforeAccess) then
+    FBeforeAccess;
   if Size = 4 then
   begin
     // 32-bit halves of the 64-bit registers.
@@ -220,6 +244,19 @@ begin
     CheckInterrupt;
 end;
 
+function TPS2GS.WriteInterrupts: Boolean;
+begin
+  if not (FRaster.SignalPending or FRaster.FinishPending) or not Assigned(FOnInterrupt) then
+    Exit(False);
+  var C := CSR;
+  if FRaster.SignalPending then
+    C := C or 1;
+  if FRaster.FinishPending then
+    C := C or 2;
+  Result := (((C and $1F) and not ((IMR shr 8) and $1F)) <> 0) and
+    not (Assigned(FInterruptRaised) and FInterruptRaised());
+end;
+
 procedure TPS2GS.WriteImage(const Data: TPS2Reg128);
 begin
   FRaster.WriteImage(Data);
@@ -227,11 +264,15 @@ end;
 
 function TPS2GS.ReadImage(out Data: TPS2Reg128): Boolean;
 begin
+  if Assigned(FBeforeAccess) then
+    FBeforeAccess;
   Result := FRaster.ReadImage(Data);
 end;
 
 procedure TPS2GS.VBlank;
 begin
+  if Assigned(FBeforeAccess) then
+    FBeforeAccess;
   if Interlaced then
     OddField := not OddField
   else
@@ -243,6 +284,8 @@ end;
 
 procedure TPS2GS.HBlank;
 begin
+  if Assigned(FBeforeAccess) then
+    FBeforeAccess;
   CSR := CSR or 4;
   CheckInterrupt;
 end;
@@ -298,6 +341,8 @@ end;
 
 procedure TPS2GS.BuildFrame;
 begin
+  if Assigned(FBeforeAccess) then
+    FBeforeAccess;
   // Circuit 2 (background) then circuit 1, blended per PMODE.
   var En1 := (PMODE and 1) <> 0;
   var En2 := (PMODE and 2) <> 0;
@@ -415,6 +460,8 @@ end;
 
 procedure TPS2GS.SerializeState(State: TStateArchive);
 begin
+  if Assigned(FBeforeAccess) then
+    FBeforeAccess;
   State.Field(PMODE, SizeOf(PMODE));
   State.Field(SMODE1, SizeOf(SMODE1));
   State.Field(SMODE2, SizeOf(SMODE2));

@@ -62,6 +62,7 @@ type
     procedure IOPTTY(Text: string);
     procedure DMACInterrupt(Active: Boolean);
     procedure GSInterrupt;
+    function GSInterruptRaised: Boolean;
     procedure HandleEvent(Event: TPS2Event; At: Int64);
     procedure SetVideo(PAL: Boolean);
     procedure SetVideoTiming(PAL: Boolean);
@@ -186,6 +187,7 @@ begin
   Bus.SIF := SIF;
   GS := TPS2GS.Create;
   GS.OnInterrupt := GSInterrupt;
+  GS.InterruptRaised := GSInterruptRaised;
   GS.Raster.OnFinish := GSFinishWritten;
   Bus.GS := GS;
   GIF := TPS2GIF.Create(GS);
@@ -398,6 +400,11 @@ begin
   Bus.RaiseIRQ(0);
 end;
 
+function TPS2Console.GSInterruptRaised: Boolean;
+begin
+  Result := Bus.IRQRaised(0);
+end;
+
 // FINISH shows in CSR once the GS has drawn what came before it, and not
 // before GSFinishDelay (programs clear CSR events right after starting a
 // transfer and then wait for FINISH). Each write shows on its own: programs
@@ -425,6 +432,7 @@ begin
     Dec(FFinishCount);
     Move(FFinishDue[1], FFinishDue[0], FFinishCount * SizeOf(Int64));
   end;
+  GIF.Join;
   GS.Raster.SetFinish;
   if FFinishCount > 0 then
     Scheduler.Schedule(TPS2Event.GSSignal, FFinishDue[0]);
@@ -724,7 +732,7 @@ procedure TPS2Console.VU1Kick(Address: Cardinal; Data: PByte);
 begin
   if (GIF.TagLog <> nil) and (GIF.TagLog.Count < 200000) then
     GIF.TagLog.Add(Format('xgkick %x pc %x', [Address, VU1.Core.S.TPC]));
-  GIF.Kick(Data, 0, $3FFF);
+  GIF.KickPacket(Data);
 end;
 
 // The IOP module set an IOP reset loads (IOPRP/DNAS image): its FILEIO

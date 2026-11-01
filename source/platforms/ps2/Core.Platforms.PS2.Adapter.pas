@@ -681,9 +681,12 @@ begin
         finally
           FLock.Release;
         end;
+        // (The GS as the kick thread left it.)
+        FConsole.GIF.Join;
         FConsole.GS.Raster.Vulkan := Vulkan;
         FConsole.GS.Raster.Threads := GSThreads;
         FConsole.GS.Raster.Async := GSAsync;
+        FConsole.GIF.Threaded := GSAsync;
         FConsole.VU1.Core.UseJit := Recompiler;
         FConsole.VU0.Core.UseJit := Recompiler;
         FConsole.CPU.UseJit := Recompiler;

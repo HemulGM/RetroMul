@@ -823,7 +823,7 @@ begin
           FDirectWords := 0;
           if FGIF <> nil then
           begin
-            FGIF.Transfer(2, @FDirectBuf, 1);
+            FGIF.TransferDirect(FDirectBuf);
             FDirectSent := True;
           end;
         end;

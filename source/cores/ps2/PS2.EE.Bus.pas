@@ -89,6 +89,9 @@ type
     function CPCond0: Boolean; override;
     // INTC: devices raise a cause (sets INTC_STAT).
     procedure RaiseIRQ(Cause: Integer);
+    // Whether RaiseIRQ(Cause) would change nothing now (the cause is set and
+    // INT0 is as INTC says).
+    function IRQRaised(Cause: Integer): Boolean;
     procedure AcknowledgeIRQ(Cause: Integer);
     procedure SetINTCMask(Value: Cardinal);
     // An extra INT0 source of the HLE kernel (alarms).
@@ -240,6 +243,12 @@ begin
   Inc(IRQCounts[Cause and 15]);
   FINTCStat := FINTCStat or (Cardinal(1) shl Cause);
   UpdateINT0;
+end;
+
+function TPS2EEBus.IRQRaised(Cause: Integer): Boolean;
+begin
+  Result := ((FINTCStat and (Cardinal(1) shl Cause)) <> 0) and
+    ((CPU = nil) or (CPU.Int0 = (((FINTCStat and FINTCMask) <> 0) or FKernelLine)));
 end;
 
 procedure TPS2EEBus.AcknowledgeIRQ(Cause: Integer);

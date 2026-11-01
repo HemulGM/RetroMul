@@ -13,7 +13,7 @@ of the picture wrongly.
 | `PS2.Types`, `PS2.Scheduler` | Constants, 128-bit registers, checked arithmetic helpers, the event scheduler in EE cycles |
 | `PS2.EE.CPU`, `PS2.EE.Bus` | R5900 block interpreter (MMI, COP0, FPU with the PS2 float range, COP2 macro mode) and its experimental recompiler (`PS2.EE.Jit.inc`), EE memory map, INTC |
 | `PS2.Timers`, `PS2.DMAC`, `PS2.SIF` | EE timers, DMA controller (chain/interleave/MFIFO, stall control through D_STADR), SIF registers and the SIF command/RPC protocol |
-| `PS2.GS`, `PS2.GS.Memory`, `PS2.GS.Raster`, `PS2.GIF` | GS registers, swizzled local memory, software rasterizer (on the emulation thread or in band threads, its front end optionally on a thread of its own), GIF paths |
+| `PS2.GS`, `PS2.GS.Memory`, `PS2.GS.Raster`, `PS2.GIF` | GS registers, swizzled local memory, software rasterizer (on the emulation thread or in band threads, its front end optionally on a thread of its own), GIF paths (VU1 kicks and PATH2 optionally on a thread of their own) |
 | `PS2.VU`, `PS2.VU.Float`, `PS2.VIF` | VU0/VU1 micro mode, the PS2 float product and sum for one or four fields (SSE2 on Win64, checked against the one-field routines by `tests/cores/ps2/vufloat/build.ps1`), VIF0/VIF1 command processing, interrupt-bit/STOP/force-break stalls with the FIFO held (8/16 quadwords), VU busy windows |
 | `PS2.IPU` | IPU MPEG decoder (BDEC/IDEC/VDEC/FDEC/CSC/PACK, FIFOs on DMA channels 3/4) |
 | `PS2.Kernel`, `PS2.ELF` | High-level EE kernel (threads, semaphores, interrupts, alarms, SIF DMA, syscall table) and ELF loading |
@@ -85,6 +85,23 @@ snapshots and timing are identical with and without it; diagnostics logs
 (primitive, transfer, watched pixel) keep everything on the emulation thread.
 `tests/cores/ps2/gsdata` and `tests/cores/ps2/gpu` (also with `-Async`) cover
 the asynchronous raster against the synchronous one.
+
+With `TPS2GIF.Threaded` as well (the front end sets it with `Async`), the
+emulation thread does not run that front raster for VU1's XGKICK packets and
+VIF1 DIRECT (PATH2) quadwords either: it copies them into a ring and a kick
+thread (`TPS2GIFKicker`) feeds them to the GIF and the GS in order, each at the
+EE time it came (the GIF's clock for the drawing timeline) and with the
+emulation thread's SSE control word of that moment, while VU1 and the EE go
+on. Anything else that reaches the GIF or the GS (PATH3, GIF and GS
+registers, the busy time DMA and VIF ask for, VBlank, snapshots, FINISH
+events, renderer changes) first waits for the kick thread to finish what it
+was given (`TPS2GIF.Join`), so the GIF and the GS see the same sequence at the
+same EE times. Only data that cannot reach the EE is handed over: a packet
+must end with EOP inside VU memory with PATH1 between packets, no A+D write may
+go to SIGNAL or FINISH, and no GS event may be pending that a register write
+would raise as an interrupt (`TPS2GS.WriteInterrupts`; one already raised in
+INTC changes nothing); for PATH2 the emulation thread follows the GIF tags
+itself (`NextDirect`). Anything else goes the synchronous way.
 
 ## What works
 

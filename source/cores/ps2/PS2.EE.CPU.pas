@@ -491,6 +491,7 @@ type
     // INTC (INT0, IP2) and DMAC (INT1, IP3) interrupt lines.
     procedure SetInt0(Active: Boolean);
     procedure SetInt1(Active: Boolean);
+    function Int0: Boolean; inline;
     // Holds interrupts off whatever Status says (the HLE kernel while it
     // runs interrupt handlers, which may set EIE or rewrite Status).
     procedure SetIntBlock(Value: Boolean);
@@ -1319,6 +1320,11 @@ begin
     FInt0 := Active;
     UpdateInterrupts;
   end;
+end;
+
+function TEECPU.Int0: Boolean;
+begin
+  Result := FInt0;
 end;
 
 procedure TEECPU.SetInt1(Active: Boolean);

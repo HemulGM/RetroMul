@@ -194,7 +194,8 @@ type
     procedure EmitVIHistory(const P: TPS2VUPair);
     function PlanFast(const Block: TPS2VUCompiledBlock; out Plan: TPS2VUFastPlan): Boolean;
     procedure EmitFast(const Block: TPS2VUCompiledBlock; const Plan: TPS2VUFastPlan;
-      Slow, Stale, Chain: TJitLabel);
+      Slow, Stall, Stale, Chain: TJitLabel);
+    procedure EmitGeneral(PC: Cardinal; Done, Stale: TJitLabel);
     procedure FinishFastFlags(Count: Integer; LastIssue, ClipLast: Int64);
     procedure DrainClip(Cycle: Int64);
     procedure PreparePair(var Run: TPS2VURun); inline;
@@ -457,6 +458,39 @@ begin
   FUseJit := True;
 end;
 
+// One pair the general way, at PC (in the block being compiled).
+procedure TPS2VUCore.EmitGeneral(PC: Cardinal; Done, Stale: TJitLabel);
+begin
+  var J := FJit;
+  ProfileMark('guards');
+  var LowerOp := PCardinal(FCode + PC)^;
+  var UpperOp := PCardinal(FCode + PC + 4)^;
+  var P := DecodedPair(PC, LowerOp, UpperOp);
+  // Guard every pair, not just the block entry. A callback can replace
+  // code while a block is running, and a small budget may end anywhere.
+  J.Move(jw8, JT0, JMem(jrSelf, Integer(NativeInt(@S.Running) - NativeInt(Self))));
+  J.Branch(jcEq, jw32, JT0, JImm(0), Done);
+  J.Move(jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Count))));
+  J.Branch(jcGe, jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Limit))), Done);
+  J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.TPC) - NativeInt(Self))));
+  J.Alu(jaAnd, jw32, JT0, JImm(FCodeMask));
+  J.Branch(jcNe, jw32, JT0, JImm(PC), Done);
+  J.Move(jw64, JT0, JMem(jrSelf, Integer(NativeInt(@FCode) - NativeInt(Self))));
+  J.Branch(jcNe, jw32, JMem(jrT0, Integer(PC)), JImm(LowerOp), Stale);
+  J.Branch(jcNe, jw32, JMem(jrT0, Integer(PC + 4)), JImm(UpperOp), Stale);
+  J.Move(jw64, JT1, JImm(NativeInt(P)));
+  // Another block may have decoded this address since this one was
+  // compiled. Its cached hazard/flag metadata must agree as well.
+  J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Lower))), JImm(LowerOp), Stale);
+  J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Upper))), JImm(UpperOp), Stale);
+  J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))), JImm(PC));
+  J.Move(jw64, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Pair))), JT1);
+  ProfileMark('prepare');
+  EmitPrepare(P^);
+  EmitPair(P^);
+  EmitFinish(P^);
+end;
+
 function TPS2VUCore.CompileBlock(PC: Cardinal): Pointer;
 begin
   Result := nil;
@@ -538,41 +572,26 @@ begin
   var EntryPC := PC;
   var Body := J.Here;
   var Slow := J.NewLabel;
+  var Stall := J.NewLabel;
   var Chain := J.NewLabel;
   var Plan: TPS2VUFastPlan;
   if PlanFast(Block, Plan) then
-    EmitFast(Block, Plan, Slow, Stale, Chain);
+  begin
+    EmitFast(Block, Plan, Slow, Stall, Stale, Chain);
+    // An input still in the pipeline: the first pair alone the general way
+    // (it waits for it, or a later pair does), then on to the successor
+    // (scheduled again once ready).
+    J.Bind(Stall);
+    EmitGeneral(PC, Done, Stale);
+    J.Jump(Chain);
+  end;
   J.Bind(Slow);
   var Last := False;
   for var K := 0 to Block.PairCount - 1 do
   begin
-    ProfileMark('guards');
     var LowerOp := PCardinal(FCode + PC)^;
     var UpperOp := PCardinal(FCode + PC + 4)^;
-    var P := DecodedPair(PC, LowerOp, UpperOp);
-    // Guard every pair, not just the block entry. A callback can replace
-    // code while a block is running, and a small budget may end anywhere.
-    J.Move(jw8, JT0, JMem(jrSelf, Integer(NativeInt(@S.Running) - NativeInt(Self))));
-    J.Branch(jcEq, jw32, JT0, JImm(0), Done);
-    J.Move(jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Count))));
-    J.Branch(jcGe, jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Limit))), Done);
-    J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.TPC) - NativeInt(Self))));
-    J.Alu(jaAnd, jw32, JT0, JImm(FCodeMask));
-    J.Branch(jcNe, jw32, JT0, JImm(PC), Done);
-    J.Move(jw64, JT0, JMem(jrSelf, Integer(NativeInt(@FCode) - NativeInt(Self))));
-    J.Branch(jcNe, jw32, JMem(jrT0, Integer(PC)), JImm(LowerOp), Stale);
-    J.Branch(jcNe, jw32, JMem(jrT0, Integer(PC + 4)), JImm(UpperOp), Stale);
-    J.Move(jw64, JT1, JImm(NativeInt(P)));
-    // Another block may have decoded this address since this one was
-    // compiled. Its cached hazard/flag metadata must agree as well.
-    J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Lower))), JImm(LowerOp), Stale);
-    J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Upper))), JImm(UpperOp), Stale);
-    J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))), JImm(PC));
-    J.Move(jw64, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Pair))), JT1);
-    ProfileMark('prepare');
-    EmitPrepare(P^);
-    EmitPair(P^);
-    EmitFinish(P^);
+    EmitGeneral(PC, Done, Stale);
     if Last then Break;
     // End after the delay pair of a branch or E-bit pair. Conditional
     // branches return to the dispatcher on either outcome.
@@ -763,7 +782,7 @@ type
 // trace capture, pending branches/ends/kicks and unexpected input latencies
 // use the general path. Internal stalls and final ready times are constants.
 procedure TPS2VUCore.EmitFast(const Block: TPS2VUCompiledBlock; const Plan: TPS2VUFastPlan;
-  Slow, Stale, Chain: TJitLabel);
+  Slow, Stall, Stale, Chain: TJitLabel);
 var
   J: TJitAsm;
   EventReady: array[0..15] of Integer;
@@ -1137,7 +1156,7 @@ begin
       begin
         J.Move(jw64, JT0, JS1);
         J.Alu(jaAdd, jw64, JT0, JImm(Plan.ReadAt[R, K]));
-        J.Branch(jcGt, jw64, M(@FReady[R, K]), JT0, Slow);
+        J.Branch(jcGt, jw64, M(@FReady[R, K]), JT0, Stall);
       end;
     J.Bind(Ready);
   end;

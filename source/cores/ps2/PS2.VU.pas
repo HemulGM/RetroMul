@@ -324,6 +324,7 @@ type
     procedure RunStarts; override;
     procedure RunEnds; override;
     function MacroRoutine(Op: Cardinal; out Target: Pointer; out Running: PBoolean): Pointer; override;
+    function RunningFlag: PBoolean; override;
     property Core: TPS2VUCore read FCore;
     property VU1: TPS2VUCore read FVU1 write FVU1;
     // CTC2 to CMSAR1 starts VU1.
@@ -4618,6 +4619,11 @@ begin
   Result := nil;
   if FCore.UseJit then
     Result := FCore.MacroCode(Op);
+end;
+
+function TPS2VU0.RunningFlag: PBoolean;
+begin
+  Result := @FCore.S.Running;
 end;
 
 { TPS2VU1 }

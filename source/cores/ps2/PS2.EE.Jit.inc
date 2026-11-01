@@ -21,7 +21,7 @@ const
 
 type
   TEEJitOffsets = record
-    GPR, HI, LO, PC, BranchTaken, BranchTarget, Stop, ReadMap, WriteMap, GenMap: Integer;
+    GPR, HI, LO, PC, BranchTaken, BranchTarget, Stop, ReadMap, WriteMap, GenMap, FPR: Integer;
     Now, Deadline, Executed, IntPending, ExitRequest, JitFull, JitResetPending, WatchPtr, BlockProfile,
       History, HistoryPos, JitLast: Integer;
     // TEEBlock's.
@@ -44,6 +44,7 @@ begin
   O.ReadMap := Integer(NativeUInt(@TEECPU(nil).FReadMap));
   O.WriteMap := Integer(NativeUInt(@TEECPU(nil).FWriteMap));
   O.GenMap := Integer(NativeUInt(@TEECPU(nil).FGenMap));
+  O.FPR := Integer(NativeUInt(@TEECPU(nil).S.FPR[0]));
   O.Now := Integer(NativeUInt(@TEECPU(nil).Now));
   O.Deadline := Integer(NativeUInt(@TEECPU(nil).Deadline));
   O.Executed := Integer(NativeUInt(@TEECPU(nil).InstructionsExecuted));
@@ -415,6 +416,50 @@ var
     SlowCall(Slow, Done);
   end;
 
+  // A halfword load (LH, LHU): its two bytes, little-endian.
+  procedure Load16(Sign: Boolean);
+  begin
+    var Slow := J.NewLabel;
+    var Done := J.NewLabel;
+    Address(O.ReadMap, 1, $FFFFFFFF, Slow);
+    J.Move(jw8, JT0, JMem(jrT2, 1));
+    J.Shift(jsShl, jw32, jrT0, 8);
+    J.Move(jw8, JT1, JMem(jrT2, 0));
+    J.Alu(jaOr, jw32, JT0, JT1);
+    if Sign then
+    begin
+      J.Shift(jsShl, jw64, jrT0, 48);
+      J.Shift(jsSar, jw64, jrT0, 48);
+    end;
+    J.Move(jw64, G(I.T), JT0);
+    SlowCall(Slow, Done);
+  end;
+
+  // FPR[R] (as the COP1 handlers number it).
+  function F(R: Integer): TJitOp;
+  begin
+    Result := JMem(jrSelf, O.FPR + R * SizeOf(Cardinal));
+  end;
+
+  // To Slow while VU0 runs a micro program (the COP2 handlers wait for it
+  // first): Running is FCop2's flag; False: no such flag, the handler only.
+  function Idle(Slow: TJitLabel): Boolean;
+  begin
+    var Running := FCop2.RunningFlag;
+    Result := Running <> nil;
+    if not Result then
+      Exit;
+    J.Move(jw64, JT1, JImm(Int64(NativeUInt(Running))));
+    J.Move(jw8, JT0, JMem(jrT1, 0));
+    J.BranchTest(jcNe, jw8, JT0, JT0, Slow);
+  end;
+
+  // VF[R]'s address in T1 (a register of VU0, the EE's coprocessor 2).
+  procedure VFAddress(R: Integer);
+  begin
+    J.Move(jw64, JT1, JImm(Int64(NativeUInt(@FCop2.VF[R]))));
+  end;
+
 begin
   J := FJit;
   O := EEJitOff;
@@ -618,6 +663,126 @@ begin
     else
       begin J.Move(jw64, JT0, G(I.S)); J.Move(jw64, JMem(jrSelf, O.LO + 8), JT0); end;
     end;
+  end
+  else if H = @TEECPU.OpLH then
+    Load16(True)
+  else if H = @TEECPU.OpLHU then
+    Load16(False)
+  else if H = @TEECPU.OpSH then
+  begin
+    var Slow := J.NewLabel;
+    var Done := J.NewLabel;
+    Address(O.WriteMap, 1, $FFFFFFFF, Slow);
+    J.Move(jw32, JT3, G(I.T));
+    J.Move(jw8, JMem(jrT2, 0), JT3);
+    J.Shift(jsShr, jw32, jrT3, 8);
+    J.Move(jw8, JMem(jrT2, 1), JT3);
+    Generation;
+    SlowCall(Slow, Done);
+  end
+  else if H = @TEECPU.OpADDI then
+  begin
+    // The 64-bit sum of the sign-extended operands, unless it is not its
+    // own sign extension from 32 bits (overflow: the handler raises it).
+    var Slow := J.NewLabel;
+    var Done := J.NewLabel;
+    J.Move(jw32, JT0, G(I.S));
+    J.SignExtend(jw32, jrT0);
+    J.Alu(jaAdd, jw64, JT0, Imm32);
+    J.Move(jw64, JT1, JT0);
+    J.SignExtend(jw32, jrT1);
+    J.Branch(jcNe, jw64, JT0, JT1, Slow);
+    J.Move(jw64, G(I.T), JT0);
+    SlowCall(Slow, Done);
+  end
+  else if H = @TEECPU.OpLWC1 then
+  begin
+    var Slow := J.NewLabel;
+    var Done := J.NewLabel;
+    Address(O.ReadMap, 3, $FFFFFFFF, Slow);
+    J.Move(jw32, JT0, JMem(jrT2, 0));
+    J.Move(jw32, F((I.Op shr 16) and 31), JT0);
+    SlowCall(Slow, Done);
+  end
+  else if H = @TEECPU.OpSWC1 then
+  begin
+    var Slow := J.NewLabel;
+    var Done := J.NewLabel;
+    Address(O.WriteMap, 3, $FFFFFFFF, Slow);
+    J.Move(jw32, JT3, F((I.Op shr 16) and 31));
+    J.Move(jw32, JMem(jrT2, 0), JT3);
+    Generation;
+    SlowCall(Slow, Done);
+  end
+  else if H = @TEECPU.OpMFC1 then
+  begin
+    J.Move(jw32, JT0, F(I.S));
+    Put32(I.T);
+  end
+  else if H = @TEECPU.OpMTC1 then
+  begin
+    J.Move(jw32, JT0, G(I.T));
+    J.Move(jw32, F(I.S), JT0);
+  end
+  else if H = @TEECPU.OpLQC2 then
+  begin
+    var Slow := J.NewLabel;
+    var Done := J.NewLabel;
+    if not Idle(Slow) then
+      Exit(False);
+    Address(O.ReadMap, 0, not Cardinal(15), Slow);
+    var Ft := Integer((I.Op shr 16) and 31);
+    if Ft <> 0 then
+    begin
+      VFAddress(Ft);
+      J.Move(jw64, JT0, JMem(jrT2, 0));
+      J.Move(jw64, JMem(jrT1, 0), JT0);
+      J.Move(jw64, JT0, JMem(jrT2, 8));
+      J.Move(jw64, JMem(jrT1, 8), JT0);
+    end;
+    SlowCall(Slow, Done);
+  end
+  else if H = @TEECPU.OpSQC2 then
+  begin
+    var Slow := J.NewLabel;
+    var Done := J.NewLabel;
+    if not Idle(Slow) then
+      Exit(False);
+    Address(O.WriteMap, 0, not Cardinal(15), Slow);
+    // (T1, the page index, for Generation: the register through T3.)
+    J.Move(jw64, JT3, JImm(Int64(NativeUInt(@FCop2.VF[(I.Op shr 16) and 31]))));
+    J.Move(jw64, JT0, JMem(jrT3, 0));
+    J.Move(jw64, JMem(jrT2, 0), JT0);
+    J.Move(jw64, JT0, JMem(jrT3, 8));
+    J.Move(jw64, JMem(jrT2, 8), JT0);
+    Generation;
+    SlowCall(Slow, Done);
+  end
+  else if (H = @TEECPU.OpCOP2) and (((I.Op shr 21) and 31) in [1, 5]) then
+  begin
+    // QMFC2, QMTC2: the whole register.
+    var Slow := J.NewLabel;
+    var Done := J.NewLabel;
+    if not Idle(Slow) then
+      Exit(False);
+    var Fs := Integer((I.Op shr 11) and 31);
+    if ((I.Op shr 21) and 31) = 1 then
+    begin
+      VFAddress(Fs);
+      J.Move(jw64, JT0, JMem(jrT1, 0));
+      J.Move(jw64, G(I.T), JT0);
+      J.Move(jw64, JT0, JMem(jrT1, 8));
+      J.Move(jw64, GHi(I.T), JT0);
+    end
+    else if Fs <> 0 then
+    begin
+      VFAddress(Fs);
+      J.Move(jw64, JT0, G(I.T));
+      J.Move(jw64, JMem(jrT1, 0), JT0);
+      J.Move(jw64, JT0, GHi(I.T));
+      J.Move(jw64, JMem(jrT1, 8), JT0);
+    end;
+    SlowCall(Slow, Done);
   end
   else if H = @TEECPU.OpSQ then
   begin

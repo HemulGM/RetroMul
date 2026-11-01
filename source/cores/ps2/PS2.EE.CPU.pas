@@ -132,6 +132,9 @@ type
     // call instead, with Target as its argument, while Running^ is False;
     // nil: none.
     function MacroRoutine(Op: Cardinal; out Target: Pointer; out Running: PBoolean): Pointer; virtual;
+    // True while a micro program runs (the transfers' Sync and Interlock
+    // then wait for it); nil: unknown (the EE's code calls the handlers).
+    function RunningFlag: PBoolean; virtual;
   end;
 
   // Called for SYSCALL with the HLE kernel (PC is already past it), and for
@@ -732,6 +735,11 @@ function TEECop2.MacroRoutine(Op: Cardinal; out Target: Pointer; out Running: PB
 begin
   Target := nil;
   Running := nil;
+  Result := nil;
+end;
+
+function TEECop2.RunningFlag: PBoolean;
+begin
   Result := nil;
 end;
 

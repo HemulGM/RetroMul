@@ -228,13 +228,18 @@ without saturation, compares, min/max, PEXT*/PPAC*, PCPY*, logic and the
 halfword/word shifts) decode to SSE2 kernels on whole registers
 (`EEMMIKernel`) for the interpreter and the recompiler alike;
 `tests/cores/ps2/eemmi` runs each of them, with every shift amount and aliased
-registers, against the general handlers in both.
+registers, against the general handlers in both, and the recompiler's
+halfword, ADDI, COP1 and COP2 transfers (aligned or not, overflowing,
+register 0, aliases) against their handlers.
 
 The EE recompiler turns a decoded block into host code on its second run.
 Shifts, 32/64-bit integer arithmetic and logic, set-on-less-than, HI/LO moves,
-MOVZ/MOVN, branches and jumps (likely forms included) and the mapped fast path
-of LB/LBU/LW/LWU/LD/LQ and SB/SW/SD/SQ (with the page write generation),
-PCPYLD/PCPYUD/PAND/POR/PXOR/PNOR and MFHI1/MTHI1/MFLO1/MTLO1 are emitted
+MOVZ/MOVN, branches and jumps (likely forms included), ADDI (its handler on
+overflow), MFC1/MTC1, the mapped fast path of LB/LBU/LH/LHU/LW/LWU/LD/LQ/LWC1
+and SB/SH/SW/SD/SQ/SWC1 (with the page write generation), LQC2/SQC2 and
+QMFC2/QMTC2 while VU0 runs no micro program (`TEECop2.RunningFlag`; else
+their handlers wait for it), PCPYLD/PCPYUD/PAND/POR/PXOR/PNOR and
+MFHI1/MTHI1/MFLO1/MTLO1 are emitted
 inline, the other multimedia instructions with whole-register kernels (below)
 call them directly; every other instruction, and every access the fast path does
 not take, calls its interpreter handler. After its last instruction a block

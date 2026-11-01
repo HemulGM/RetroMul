@@ -1622,6 +1622,8 @@ type
       BeginAddress, EndAddress, UnwindData: Cardinal;
     end;
     FRegistered: Boolean;
+    // The host has SSE4.1 (BLENDPS for masked stores).
+    FBlend: Boolean;
     FVectorMaskAt: array[0..15] of NativeInt;
     procedure VectorRIP(const Opcode: array of Byte; Reg: Integer; At: NativeInt);
   protected
@@ -1660,10 +1662,24 @@ const
     0, 0);
   Win64CodeStart = 64;
 
+// CPUID leaf 1: ECX bit 19.
+function HostSSE41: Boolean;
+asm
+  .NOFRAME
+  mov r10, rbx                       // CPUID clobbers nonvolatile RBX
+  mov eax, 1
+  cpuid
+  shr ecx, 19
+  and ecx, 1
+  mov eax, ecx
+  mov rbx, r10
+end;
+
 constructor TJitAsmWin64.Create(Size: NativeInt);
 const
   Phys: array[TJitReg] of Byte = (rBX, rSI, rDI, r12, r13, r14, rAX, rCX, rDX, r8, r9, r10, r11, rAX);
 begin
+  FBlend := HostSSE41;
   for var R := Low(TJitReg) to High(TJitReg) do
     FPhys[R] := Phys[R];
   FArgs[0] := rCX;
@@ -1753,7 +1769,16 @@ begin
   Mask := Mask and 15;
   if Mask = 0 then Exit;
   var Reg := Ord(Src);
-  if Mask <> 15 then
+  if (Mask <> 15) and FBlend then
+  begin
+    Emit([$F3]);
+    ModRM(False, [$0F, $6F], 4, False, X(Dst), False);    // movdqu xmm4, old destination
+    Emit([$66]);
+    ModRM(False, [$0F, $3A, $0C], 4, False, X64Reg(Reg), False); // blendps xmm4, src, mask
+    Emit([Mask]);
+    Reg := 4;
+  end
+  else if Mask <> 15 then
   begin
     if FVectorMaskAt[Mask] = 0 then
     begin

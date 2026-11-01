@@ -168,6 +168,9 @@ type
     FJitClipEvents: array[0..15] of record Value: Cardinal; Ready: Int64; end;
     FJitClipCount: Integer;
     FEmitClipSlot, FEmitClipIssue: Integer;
+    // The address of the pair a scheduled run is writing (-1: none), which
+    // its branches take as a constant.
+    FEmitPC: Integer;
     FJitFastPairs: Int64;
     // Code-generation state only. Volatile vector results survive a lower
     // half only when that half has no helper call and data cannot alias us.
@@ -406,6 +409,7 @@ begin
   FCodeMask := CodeSize - 1;
   FDataMask := DataSize - 1;
   FEmitClipSlot := -1;
+  FEmitPC := -1;
   FVectorMemorySafe := SeparateBuffers(Data, DataSize, Code, CodeSize) and
     SeparateBuffers(Data, DataSize, VF, SizeOf(TPS2VFArray)) and
     SeparateBuffers(Data, DataSize, VI, SizeOf(TPS2VIArray)) and
@@ -508,6 +512,7 @@ begin
   end;
   var J := FJit;
   Inc(FJitCompiles);
+  FEmitPC := -1;
   J.ForgetLabels;
   J.Align(16);
   Result := J.Here;
@@ -761,6 +766,21 @@ var
     J.Bind(Done);
   end;
 
+  // An XGKICK in progress takes the quadwords due by the pair issued at
+  // Issue (as the general path does before each pair). Only VU stores
+  // change what it reads: before each of them and after the last pair.
+  procedure KickProgress(Issue: Integer);
+  begin
+    var NoKick := J.NewLabel;
+    J.Move(jw8, JT0, M(@FKickPending));
+    J.Branch(jcEq, jw32, JT0, JImm(0), NoKick);
+    J.Move(jw64, JT0, JS1);
+    J.Alu(jaAdd, jw64, JT0, JImm(Issue));
+    J.Move(jw64, M(@S.Cycles), JT0);
+    J.Call(@TPS2VUCore.TakeKick, [JSelf, JImm(0)]);
+    J.Bind(NoKick);
+  end;
+
   procedure QueueShape(CountAddress, ReadyAddress: Pointer);
   begin
     var Done := J.NewLabel;
@@ -800,10 +820,20 @@ begin
   ProfileMark('fast-entry');
   var Count := JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Count)));
   var Limit := JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Limit)));
+  // The whole block within the budget. A run's last 64 pairs are recorded
+  // in LoopTrace: the block's pairs all (below) or none of them, else the
+  // general path records them pair by pair.
   J.Move(jw32, JT0, Count);
-  J.Alu(jaAdd, jw64, JT0, JImm(Block.PairCount + 64));
+  J.Alu(jaAdd, jw64, JT0, JImm(Block.PairCount));
   J.Move(jw32, JT1, Limit);
-  J.Branch(jcAbove, jw64, JT0, JT1, Slow); // retain exact per-pair LoopTrace
+  J.Branch(jcAbove, jw64, JT0, JT1, Slow);
+  var WholeTrace := J.NewLabel;
+  J.Move(jw32, JT0, Count);
+  J.Alu(jaAdd, jw32, JT0, JImm(64));
+  J.Alu(jaSub, jw32, JT0, Limit);
+  J.Branch(jcGe, jw32, JT0, JImm(0), WholeTrace);
+  J.Branch(jcGe, jw32, JT0, JImm(1 - Block.PairCount), Slow);
+  J.Bind(WholeTrace);
   J.Branch(jcNe, jw64, M(@RunTrace), JImm(0), Slow);
   J.Move(jw8, JT0, M(@S.Running));
   J.Branch(jcEq, jw32, JT0, JImm(0), Slow);
@@ -811,13 +841,37 @@ begin
   J.Branch(jcNe, jw32, JT0, JImm(0), Slow);
   J.Move(jw8, JT0, M(@S.EndPending));
   J.Branch(jcNe, jw32, JT0, JImm(0), Slow);
-  J.Move(jw8, JT0, M(@FKickPending));
-  J.Branch(jcNe, jw32, JT0, JImm(0), Slow);
+  // (A kick in progress takes its quadwords as the general path does, see
+  // KickProgress.)
   J.Move(jw32, JT0, M(@S.TPC));
   J.Alu(jaAnd, jw32, JT0, JImm(FCodeMask));
   J.Branch(jcNe, jw32, JT0, JImm(Block.PC), Slow);
   J.Move(jw64, JS1, M(@S.Cycles));
   ProfileMark('fast-inputs');
+  // A kick in progress must not complete inside the run (its callback may
+  // change the code): its last quadword, or the next GIF tag that could
+  // end it, is due after the last pair's issue.
+  var KickOK := J.NewLabel;
+  var KickEnd := J.NewLabel;
+  var KickDue := J.NewLabel;
+  var KickQuads := Integer((FDataMask + 1) div 16);
+  J.Move(jw8, JT0, M(@FKickPending));
+  J.Branch(jcEq, jw32, JT0, JImm(0), KickOK);
+  J.Move(jw32, JT0, M(@FKickEnd));
+  J.Branch(jcGe, jw32, JT0, JImm(0), KickEnd);
+  J.Move(jw32, JT0, M(@FKickNextTag));
+  J.Alu(jaAdd, jw32, JT0, JImm(1));
+  J.Bind(KickEnd);
+  J.Alu(jaSub, jw32, JT0, JImm(1));
+  J.Branch(jcLe, jw32, JT0, JImm(KickQuads - 1), KickDue);
+  J.Move(jw32, JT0, JImm(KickQuads - 1));
+  J.Bind(KickDue);
+  J.Shift(jsShl, jw64, jrT0, 1);
+  J.Alu(jaAdd, jw64, JT0, M(@FKickStart));
+  J.Move(jw64, JT1, JS1);
+  J.Alu(jaAdd, jw64, JT1, JImm(Plan.Issue[Block.PairCount - 1]));
+  J.Branch(jcLe, jw64, JT0, JT1, Slow);
+  J.Bind(KickOK);
   QueueShape(@S.FlagQCount, @S.FlagQReady[0]);
   QueueShape(@S.ClipQCount, @S.ClipQReady[0]);
   for var R := 1 to 31 do
@@ -863,6 +917,22 @@ begin
     J.Branch(jcNe, jw64, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Lower))), JT3, Stale);
     PC := (PC + 8) and FCodeMask;
   end;
+  // In the trace window (see the budget check): pair K at LoopTrace
+  // [Count + 64 - Limit + K].
+  var NoTrace := J.NewLabel;
+  J.Move(jw32, JT0, Count);
+  J.Alu(jaAdd, jw32, JT0, JImm(64));
+  J.Alu(jaSub, jw32, JT0, Limit);
+  J.Branch(jcLt, jw32, JT0, JImm(0), NoTrace);
+  J.Shift(jsShl, jw64, jrT0, 2);
+  J.Alu(jaAdd, jw64, JT0, JSelf);
+  PC := Block.PC;
+  for var I := 0 to Block.PairCount - 1 do
+  begin
+    J.Move(jw32, JMem(jrT0, M(@LoopTrace[0]).Disp + I * 4), JImm(PC));
+    PC := (PC + 8) and FCodeMask;
+  end;
+  J.Bind(NoTrace);
   EventCount := 0;
   PrefixCount := 0;
   PC := Block.PC;
@@ -915,23 +985,31 @@ begin
     if ((P.Upper and $80000000) = 0) and ((P.Lower and $8000003C) = $8000003C) and
       ((((P.Lower shr 4) and $7C) or (P.Lower and 3)) = $64) then
       Land(@S.PDelay, @S.PendingP, @S.P, Plan.Issue[I] + 1, False);
-    J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))), JImm(PC));
+    // (Branches take the pair's address as a constant. A branch is only in
+    // the last pair but one: the pending flag, clear on entry, is cleared
+    // again only after it.)
+    FEmitPC := Integer(PC);
     if I = Block.PairCount - 1 then
     begin
+      J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))), JImm(PC));
       J.Move(jw8, JT0, M(@S.BranchPending));
       J.Move(jw8, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Branching))), JT0);
       J.Move(jw32, JT0, M(@S.BranchTarget));
       J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Target))), JT0);
+      J.Move(jw8, M(@S.BranchPending), JImm(0));
     end;
-    J.Move(jw8, M(@S.BranchPending), JImm(0));
+    if ((P.Upper and $80000000) = 0) and (((P.Lower shr 25) in [$01, $05]) or
+      (((P.Lower and $8000003C) = $8000003C) and
+      ((((P.Lower shr 4) and $7C) or (P.Lower and 3)) in [$35, $37, $3F]))) then
+      KickProgress(Plan.Issue[I]);
     // (The integer history is read by a branch, at most in the last pair but
     // one, and left as the last two pairs make it: the earlier updates are
     // overwritten unread.)
     if I >= Block.PairCount - 3 then
       EmitVIHistory(P^);
     FEmitClipSlot := -1;
-    if ((P.Upper and $80000000) = 0) and ((P.Upper and $3F) >= $3C) and
-      ((((P.Upper shr 4) and $7C) or (P.Upper and 3)) = $1F) then
+    // (An I-bit pair's upper op is a CLIP all the same.)
+    if ((P.Upper and $3F) >= $3C) and ((((P.Upper shr 4) and $7C) or (P.Upper and 3)) = $1F) then
     begin
       FEmitClipSlot := ClipEvents;
       FEmitClipIssue := Plan.Issue[I];
@@ -956,6 +1034,8 @@ begin
     end;
     PC := (PC + 8) and FCodeMask;
   end;
+  FEmitPC := -1;
+  KickProgress(Plan.Issue[Block.PairCount - 1]);
   ProfileMark('fast-output');
   for var R := 1 to 31 do
     if Plan.WriteAny[R] >= 0 then
@@ -1697,13 +1777,21 @@ begin
       begin
         var Imm := Integer(Op and $7FF);
         if Imm >= $400 then Dec(Imm, $800);
-        J.Move(jw32, JT2, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))));
-        J.Alu(jaAdd, jw32, JT2, JImm(8 + Imm * 8));
-        J.Alu(jaAnd, jw32, JT2, JImm(FCodeMask));
+        if FEmitPC >= 0 then
+          J.Move(jw32, JT2, JImm((FEmitPC + 8 + Imm * 8) and Integer(FCodeMask)))
+        else
+        begin
+          J.Move(jw32, JT2, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))));
+          J.Alu(jaAdd, jw32, JT2, JImm(8 + Imm * 8));
+          J.Alu(jaAnd, jw32, JT2, JImm(FCodeMask));
+        end;
       end;
       if (Group in [$21, $25]) and (It <> 0) then
       begin
-        J.Move(jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))));
+        if FEmitPC >= 0 then
+          J.Move(jw32, JT0, JImm(FEmitPC))
+        else
+          J.Move(jw32, JT0, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).PC))));
         J.Alu(jaAdd, jw32, JT0, JImm(16));
         J.Shift(jsShr, jw32, jrT0, 3);
         J.Alu(jaAnd, jw32, JT0, JImm($FFFF));
@@ -1763,6 +1851,8 @@ begin
   var Mask := (Op shr 21) and $F;
   case Index of
     $30, $31: // MOVE, MR32 (stage before the upper result commits)
+      // (Nothing to stage for VF00 or no fields: the lower NOP is MOVE.)
+      if (Ft <> 0) and (Mask <> 0) then
       begin
         for var K := 0 to 3 do
         begin
@@ -1792,6 +1882,7 @@ begin
         J.Alu(jaAdd, jw64, JT2, JT0);
         if Index in [$34, $36] then
         begin
+          if (Ft <> 0) and (Mask <> 0) then
           for var K := 0 to 1 do
           begin
             J.Move(jw64, JT0, JMem(jrT2, K * 8));
@@ -2043,6 +2134,11 @@ begin
     else if (D < 0) and ((Op shr 25) in [$00, $01, $04, $05]) then
     begin
       var Kind := Op shr 25;
+      // (LQ to VF00 or of no fields, SQ/ISW of no fields, ILW to VI00: no
+      // effect at all.)
+      if ((Kind = $00) and ((((Op shr 16) and 31) = 0) or (((Op shr 21) and 15) = 0))) or
+        ((Kind in [$01, $05]) and (((Op shr 21) and 15) = 0)) or ((Kind = $04) and (It = 0)) then
+        Exit;
       var Base := Is_;
       if Kind = $01 then Base := It;
       var Imm11 := Integer(Op and $7FF);

@@ -223,6 +223,7 @@ type
     procedure DrainClip(Cycle: Int64);
     procedure PreparePair(var Run: TPS2VURun); inline;
     procedure FinishPair(var Run: TPS2VURun); inline;
+    procedure InterpretPair(var Context: TPS2VURun; PC: Cardinal; Pair: PPS2VUPair);
     function DecodedPair(PC, LowerOp, UpperOp: Cardinal): PPS2VUPair; inline;
     procedure DecodePair(var P: TPS2VUPair; LowerOp, UpperOp: Cardinal);
     procedure UpperRegs(Op: Cardinal; out R: TPS2VURegUse);
@@ -4227,12 +4228,30 @@ procedure TPS2VUCore.HoldMath(Held: Boolean);
 begin
   if Held then
   begin
-    if FMathHeld = 0 then
+    // (While the EE runs, FMath is for its rounding already: TPS2VU0.)
+    if (FMathHeld = 0) and not FMacroMathKnown then
       CheckMath;
     Inc(FMathHeld);
   end
   else
     Dec(FMathHeld);
+end;
+
+// One pair interpreted (apart from Run: its frame stays small for the
+// generated code's short runs).
+procedure TPS2VUCore.InterpretPair(var Context: TPS2VURun; PC: Cardinal; Pair: PPS2VUPair);
+begin
+  var LowerOp := Pair.Lower;
+  var UpperOp := Pair.Upper;
+  Context.PC := PC;
+  Context.Pair := Pair;
+  PreparePair(Context);
+  Upper(UpperOp, True);
+  if (UpperOp and $80000000) <> 0 then
+    S.I := LowerOp
+  else
+    Lower(LowerOp);
+  FinishPair(Context);
 end;
 
 function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
@@ -4279,15 +4298,7 @@ begin
       end;
       if Context.Count <> Before then Continue;
     end;
-    Context.PC := PC;
-    Context.Pair := Pair;
-    PreparePair(Context);
-    Upper(UpperOp, True);
-    if (UpperOp and $80000000) <> 0 then
-      S.I := LowerOp
-    else
-      Lower(LowerOp);
-    FinishPair(Context);
+    InterpretPair(Context, PC, Pair);
   end;
   if FKickPending then
     TakeKick(True);

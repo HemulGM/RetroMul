@@ -285,6 +285,9 @@ type
     // raster's (the worker's raster shares its front's).
     FWorker: TPS2GSWorker;
     FShadow: Boolean;
+    // The worker's raster: its pixel count times nothing (the front raster
+    // counts them); queued primitives are weighed by their rectangles.
+    FUncounted: Boolean;
     FOwnsMemory: Boolean;
     // Async (this raster): for each page, the worker's entry count after the
     // last entry that may write it; the pages of the host-to-local transfer
@@ -380,6 +383,7 @@ type
     procedure SetupDraw;
     procedure Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex);
     procedure QueueDraw(const F: TPS2GSFootprint);
+    procedure WeighCommand;
     procedure NoteRoute;
     function BeforeAccelerated(const Reads, Writes: TPS2GSPages; Palette: Boolean; Area: Int64): Boolean;
     function QueueFallback(Drawer: TPS2GSDrawer): Boolean;
@@ -782,6 +786,7 @@ end;
 constructor TPS2GSRaster.CreateInner(Front: TPS2GSRaster);
 begin
   inherited Create;
+  FUncounted := True;
   FMemory := Front.FMemory;
   FDrawer := TPS2GSDrawer.Create(Self, 0, 1, False);
   FCounter := TPS2GSDrawer.Create(Self, 0, 1, True);
@@ -2042,9 +2047,7 @@ begin
       NoteRoute;
     Exit;
   end;
-  var Before := FCounter.PixelsDrawn;
-  FCounter.Draw(FCommand);
-  FCommandPixels := FCounter.PixelsDrawn - Before;
+  WeighCommand;
   Inc(FPixels, FCommandPixels);
   var F: TPS2GSFootprint;
   Footprint(FCommand, F);
@@ -2067,11 +2070,26 @@ begin
     FootprintAccess(F, Reads, Writes);
     FAccelerator.AccessPages(Reads, Writes);
   end;
+  WeighCommand;
+  Inc(Drawer.FPixels, FCommandPixels);
+  QueueDraw(F);
+end;
+
+// The pixels of FCommand for the band threads' wake weight: counted, or (the
+// worker's raster) its rectangle's.
+procedure TPS2GSRaster.WeighCommand;
+begin
+  if FUncounted then
+  begin
+    var X0, Y0, X1, Y1: Integer;
+    FCommandPixels := 0;
+    if PixelRect(FCommand, X0, Y0, X1, Y1) then
+      FCommandPixels := Int64(X1 - X0 + 1) * (Y1 - Y0 + 1);
+    Exit;
+  end;
   var Before := FCounter.PixelsDrawn;
   FCounter.Draw(FCommand);
   FCommandPixels := FCounter.PixelsDrawn - Before;
-  Inc(Drawer.FPixels, FCommandPixels);
-  QueueDraw(F);
 end;
 
 procedure TPS2GSRaster.QueueDraw(const F: TPS2GSFootprint);
@@ -3452,6 +3470,9 @@ begin
       Integer(MaxX + 1), Integer(MaxY + 1));
   if CountCoverage and (FBandCount <= 1) then
   begin
+    // (Taken by the accelerator in the worker's raster: nobody reads its count.)
+    if not FCountOnly and FOwner.FUncounted then
+      Exit;
     // Count the exact scissored coverage, not a second pixel/render walk.
     // No LOD, attribute interpolation, depth or texture work is needed for
     // the timing counter on the emulation thread.

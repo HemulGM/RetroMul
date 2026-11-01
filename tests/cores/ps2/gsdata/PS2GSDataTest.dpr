@@ -384,8 +384,94 @@ begin
   end;
 end;
 
+// Software sprites sampling one texture level take their texels' addresses
+// from column and row parts (SpriteTexels): the same pixels as the general
+// sampler, for every texture format, clamp mode, filter and LOD setting.
+procedure CheckSpriteTexels;
+type
+  TWrite = record
+    Reg: Integer;
+    Value: UInt64;
+  end;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    RandSeed := 6151;
+    for var N := 0 to 799 do
+    begin
+      A.Reset; B.Reset;
+      var PA := PCardinal(A.Memory.Data);
+      for var K := 0 to PS2GSMemorySize div 4 - 1 do PA[K] := Cardinal(K) * 2654435761 + Cardinal(N) * 40503;
+      Move(PA^, B.Memory.Data^, PS2GSMemorySize);
+      var Writes: TArray<TWrite>;
+      var Add := procedure(Reg: Integer; Value: UInt64)
+        begin
+          SetLength(Writes, Length(Writes) + 1);
+          Writes[High(Writes)].Reg := Reg;
+          Writes[High(Writes)].Value := Value;
+        end;
+      var FPSM: UInt64 := Formats[Random(4)];
+      Add(GSRegFRAME_1, UInt64(4 + Random(5)) shl 16 or (FPSM shl 24) or (UInt64(Random(2) * Random(MaxInt)) shl 32));
+      Add(GSRegZBUF_1, 256 or (UInt64(Random(3)) shl 24) or (UInt64(Random(2)) shl 32));
+      Add(GSRegTEST_1, UInt64(Random(2)) or (UInt64(Random(8)) shl 1) or (UInt64(Random(256)) shl 4) or
+        (UInt64(Random(4)) shl 12) or (UInt64(Random(2)) shl 14) or (UInt64(Random(2)) shl 15) or $10000 or
+        (UInt64(Random(4)) shl 17));
+      Add(GSRegALPHA_1, UInt64(Random(256)) or (UInt64(Random(256)) shl 32));
+      Add(GSRegPABE, Random(2));
+      Add(GSRegFBA_1, Random(2));
+      Add(GSRegCOLCLAMP, Random(2));
+      Add(GSRegFOGCOL, Random($1000000));
+      Add(GSRegTEXA, UInt64(Random(256)) or (UInt64(Random(2)) shl 15) or (UInt64(Random(256)) shl 32));
+      Add(GSRegSCISSOR_1, UInt64(Random(32)) or (UInt64(200 + Random(56)) shl 16) or (UInt64(Random(32)) shl 32) or
+        (UInt64(200 + Random(56)) shl 48));
+      // The texture past the frame and depth (blocks 4096 on), its CLUT
+      // loaded with it; mipmap levels anywhere.
+      var TPSM := UInt64(Formats[Random(13)]);
+      Add(GSRegTEX0_1, UInt64(4096 + Random(4096)) or (UInt64(1 + Random(10)) shl 14) or (TPSM shl 20) or
+        (UInt64(Random(11)) shl 26) or (UInt64(Random(11)) shl 30) or (UInt64(Random(2)) shl 34) or
+        (UInt64(Random(4)) shl 35) or (UInt64(8192 + Random(8000)) shl 37) or (UInt64(Random(2) * 2) shl 51) or
+        (UInt64(Random(2)) shl 55) or (UInt64(Random(32)) shl 56) or (UInt64(1) shl 61));
+      Add(GSRegTEXCLUT, Random($400000));
+      Add(GSRegTEX1_1, UInt64(Random(2)) or (UInt64(Random(7)) shl 2) or (UInt64(Random(2)) shl 5) or
+        (UInt64(Random(6)) shl 6) or (UInt64(Random(4)) shl 19) or (UInt64(Random(4096)) shl 32));
+      Add(GSRegMIPTBP1_1, UInt64(Random(16384)) or (UInt64(Random(8)) shl 14) or (UInt64(Random(16384)) shl 20) or
+        (UInt64(Random(8)) shl 34) or (UInt64(Random(16384)) shl 40) or (UInt64(Random(8)) shl 54));
+      Add(GSRegMIPTBP2_1, UInt64(Random(16384)) or (UInt64(Random(8)) shl 14) or (UInt64(Random(16384)) shl 20) or
+        (UInt64(Random(8)) shl 34) or (UInt64(Random(16384)) shl 40) or (UInt64(Random(8)) shl 54));
+      Add(GSRegCLAMP_1, UInt64(Random(4)) or (UInt64(Random(4)) shl 2) or (UInt64(Random(1024)) shl 4) or
+        (UInt64(Random(1024)) shl 14) or (UInt64(Random(1024)) shl 24) or (UInt64(Random(1024)) shl 34));
+      Add(GSRegPRIM, 6 or $10 or (UInt64(Random(2)) shl 5) or (UInt64(Random(2)) shl 6) or (UInt64(Random(2)) shl 8));
+      for var S := 0 to 2 do
+        for var K := 0 to 1 do
+        begin
+          var Q: Single := 0.25 + Random * 3;
+          if Random(8) = 0 then Q := -Q;
+          var SS: Single := Random * 4 - 1;
+          var TT: Single := Random * 4 - 1;
+          Add(GSRegRGBAQ, UInt64(Random(MaxInt)) or (UInt64(PCardinal(@Q)^) shl 32));
+          Add(GSRegST, UInt64(PCardinal(@SS)^) or (UInt64(PCardinal(@TT)^) shl 32));
+          Add(GSRegUV, UInt64(Random($4000)) or (UInt64(Random($4000)) shl 16));
+          Add(GSRegFOG, UInt64(Random(256)) shl 56);
+          Add(GSRegXYZ2, UInt64(Random(300 * 16)) or (UInt64(Random(300 * 16)) shl 16) or (UInt64(Random(MaxInt)) shl 32));
+        end;
+      SpriteTexels := True;
+      for var W in Writes do A.WriteRegister(W.Reg, W.Value);
+      SpriteTexels := False;
+      for var W in Writes do B.WriteRegister(W.Reg, W.Value);
+      SpriteTexels := True;
+      if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) or (A.PixelsDrawn <> B.PixelsDrawn) then
+        raise Exception.CreateFmt('Sprite texels differ, case %d', [N]);
+    end;
+    Writeln('800 software sprites, all texture formats, clamps, filters and LOD settings: column/row texels OK');
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
 begin
   try
+    CheckSpriteTexels;
     for var Async := False to True do
     begin
       CheckDisplay(Async);

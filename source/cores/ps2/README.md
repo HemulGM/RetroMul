@@ -62,6 +62,11 @@ threads touch in commands no barrier orders.
 The timing counter counts exact covered row spans without shading a second
 copy of every pixel. Software pixels rejected by depth skip texture reads;
 coverage/busy counters still include them, so emulated GS timing is unchanged.
+A software sprite sampling one texture level splits its texels' swizzled
+addresses into per-column and per-row parts (clamped coordinates and
+filter weights included), computed once per column and per row;
+`tests/cores/ps2/gsdata` compares 800 random sprites (every texture format,
+clamp mode, filter and LOD setting) against the general sampler.
 
 With `TPS2GSRaster.Async` (the front end sets it for the multithreaded and
 Vulkan renderers on hosts with four or more logical processors; x64 Windows)

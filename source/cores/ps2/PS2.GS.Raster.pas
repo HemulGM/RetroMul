@@ -218,6 +218,12 @@ type
   end;
   PPS2GSTexLevel = ^TPS2GSTexLevel;
 
+  // A sprite column's texels (TPS2GSDrawer.SpriteTexel): the column parts of
+  // their addresses (page, offset index) and the filter's weight.
+  TPS2GSSpriteColumn = record
+    A0, A1, O0, O1, FU: Cardinal;
+  end;
+
   // A triangle's attributes for TPS2GSDrawer.FillTriangle: per vertex as
   // doubles, the inverse of its doubled signed area and the texture size
   // (in 1/16 texels) for S and T.
@@ -255,6 +261,14 @@ type
     FZPassed: Boolean;
     // DrawSprite's texture U by column.
     FSpriteU: TArray<Integer>;
+    // DrawSprite's texels where it samples one level (SpriteFast): their
+    // addresses (TPS2GSAddressing.Addr) as column parts (from SpriteX0) and
+    // the row's, which DrawSprite sets for each row.
+    FSpriteFast, FSpriteLinear: Boolean;
+    FSpriteX0: Integer;
+    FSpriteColumns: TArray<TPS2GSSpriteColumn>;
+    FSpriteOffsets: PWord;
+    FSpriteMask, FRowA0, FRowA1, FRowO0, FRowO1, FRowFV: Cardinal;
     // A pixel is watched (the raster's WatchX, WatchY).
     FWatch: Boolean;
     function InBand(Y: Integer): Boolean; inline;
@@ -272,6 +286,11 @@ type
     function Texel(U, V: Integer): Cardinal;
     function SampleLevel(Level, U, V: Integer; Linear: Boolean): Cardinal;
     function TexelAt(const L: TPS2GSTexLevel; TU, TV: Integer): Cardinal; inline;
+    function TexelFrom(Address: Cardinal): Cardinal; inline;
+    function SingleLevel(out Level: Integer; out Linear: Boolean): Boolean;
+    procedure PrepareSprite(Level, X0, X1: Integer);
+    procedure PrepareSpriteRow(Level, V: Integer);
+    function SpriteTexel(I: Integer): Cardinal; inline;
     procedure SetLod(Q: Single); inline;
     function ClampCoord(C, Size, Mode, MinC, MaxC: Integer): Integer; inline;
   public
@@ -626,6 +645,11 @@ type
     // Entries queued so far.
     property Written: Int64 read FWrite;
   end;
+
+var
+  // Software sprites sampling one texture level take their texels' addresses
+  // from per-column and per-row parts (tests compare both ways).
+  SpriteTexels: Boolean = True;
 
 // A pixel's LOD from its Q (as the host rounds): log2(1/Q) * 2^L + K (GS
 // User's Manual, texture mapping), or K alone with LCM.
@@ -2613,9 +2637,10 @@ begin
   Result := Result or (Cardinal(A) shl 24);
 end;
 
-function TPS2GSDrawer.TexelAt(const L: TPS2GSTexLevel; TU, TV: Integer): Cardinal;
+// The texel at GS address Address (in the texture format's units).
+function TPS2GSDrawer.TexelFrom(Address: Cardinal): Cardinal;
 begin
-  var Raw := FMemory.ReadAt(Integer(FD.TPSM), L.Addr.Addr(Cardinal(TU), Cardinal(TV)));
+  var Raw := FMemory.ReadAt(Integer(FD.TPSM), Address);
   case FD.TPSM of
     PSMCT32, PSMZ32:
       Result := Raw;
@@ -2641,6 +2666,11 @@ begin
         Result := ExpandTexA(FClut[Index and 511], FD.TA0, FD.TA1, FD.AEM);
     end;
   end;
+end;
+
+function TPS2GSDrawer.TexelAt(const L: TPS2GSTexLevel; TU, TV: Integer): Cardinal;
+begin
+  Result := TexelFrom(L.Addr.Addr(Cardinal(TU), Cardinal(TV)));
 end;
 
 // LOD = log2(1/Q) * 2^L + K (GS User's Manual, texture mapping), or K
@@ -2767,6 +2797,132 @@ begin
     ((((((A shr 8) and $00FF00FF) * (16 - W) + ((B shr 8) and $00FF00FF) * W) shr 4) and $00FF00FF) shl 8);
 end;
 
+// Whether Texel samples one level, for the LOD of the primitive (FLod): which
+// one, and whether bilinear (as Texel decides).
+function TPS2GSDrawer.SingleLevel(out Level: Integer; out Linear: Boolean): Boolean;
+begin
+  Result := True;
+  Level := 0;
+  Linear := FD.Linear;
+  if not FD.UseLod then
+    Exit;
+  var Lod := FLod;
+  if Lod < 0 then
+    Exit;
+  Linear := FD.MMIN in [1, 4, 5];
+  if (FD.MMIN <= 1) or (FD.MXL = 0) then
+    Exit;
+  if FD.MMIN in [2, 4] then
+  begin
+    Level := Min(Trunc(Lod + 0.5), FD.MXL);
+    Exit;
+  end;
+  var L0 := Trunc(Lod);
+  if L0 >= FD.MXL then
+  begin
+    Level := FD.MXL;
+    Exit;
+  end;
+  Level := L0;
+  Result := Round((Lod - L0) * 16) <= 0;
+end;
+
+// The columns X0..X1 - 1 of a sprite sampling level Level, U by column in
+// FSpriteU: the column parts of their texels' addresses, as SampleLevel
+// finds the texels (TPS2GSAddressing.Addr: Base + (X div W + Y div H *
+// Width) * page + Offsets[Y mod H, X mod W], all modulo the memory).
+procedure TPS2GSDrawer.PrepareSprite(Level, X0, X1: Integer);
+begin
+  if (FLevelsReady and (Cardinal(1) shl Level)) = 0 then
+    PrepareLevel(Level);
+  var L: PPS2GSTexLevel := @FLevels[Level];
+  FSpriteX0 := X0;
+  FSpriteOffsets := L.Addr.Offsets;
+  FSpriteMask := L.Addr.Mask;
+  if Length(FSpriteColumns) < X1 - X0 then
+    SetLength(FSpriteColumns, X1 - X0);
+  for var X := X0 to X1 - 1 do
+  begin
+    var C: ^TPS2GSSpriteColumn := @FSpriteColumns[X - X0];
+    var U := Integer(Sar(FSpriteU[X - X0], Level));
+    var U0, U1: Integer;
+    C.FU := 0;
+    if FSpriteLinear then
+    begin
+      U0 := ClampCoord(Integer(Sar(U - 8, 4)), L.W, FD.WMS, L.MinU, L.MaxU);
+      U1 := ClampCoord(Integer(Sar(U - 8, 4)) + 1, L.W, FD.WMS, L.MinU, L.MaxU);
+      C.FU := Cardinal((U - 8) and 15);
+    end
+    else
+    begin
+      U0 := ClampCoord(Integer(Sar(U, 4)), L.W, FD.WMS, L.MinU, L.MaxU);
+      U1 := U0;
+    end;
+    C.A0 := (Cardinal(U0) shr L.Addr.WShift) shl L.Addr.PageShift;
+    C.O0 := Cardinal(U0) and L.Addr.WMask;
+    C.A1 := (Cardinal(U1) shr L.Addr.WShift) shl L.Addr.PageShift;
+    C.O1 := Cardinal(U1) and L.Addr.WMask;
+  end;
+end;
+
+// A sprite row's parts of its texels' addresses (PrepareSprite), for its V.
+procedure TPS2GSDrawer.PrepareSpriteRow(Level, V: Integer);
+begin
+  var L: PPS2GSTexLevel := @FLevels[Level];
+  V := Integer(Sar(V, Level));
+  var V0, V1: Integer;
+  FRowFV := 0;
+  if FSpriteLinear then
+  begin
+    V0 := ClampCoord(Integer(Sar(V - 8, 4)), L.H, FD.WMT, L.MinV, L.MaxV);
+    V1 := ClampCoord(Integer(Sar(V - 8, 4)) + 1, L.H, FD.WMT, L.MinV, L.MaxV);
+    FRowFV := Cardinal((V - 8) and 15);
+  end
+  else
+  begin
+    V0 := ClampCoord(Integer(Sar(V, 4)), L.H, FD.WMT, L.MinV, L.MaxV);
+    V1 := V0;
+  end;
+  FRowA0 := L.Addr.Base + ((Cardinal(V0) shr L.Addr.HShift) * L.Addr.Width) shl L.Addr.PageShift;
+  FRowO0 := (Cardinal(V0) and L.Addr.HMask) shl L.Addr.WShift;
+  FRowA1 := L.Addr.Base + ((Cardinal(V1) shr L.Addr.HShift) * L.Addr.Width) shl L.Addr.PageShift;
+  FRowO1 := (Cardinal(V1) and L.Addr.HMask) shl L.Addr.WShift;
+end;
+
+// The texel of sprite column I (from SpriteX0) in the current row, as
+// SampleLevel takes it.
+function TPS2GSDrawer.SpriteTexel(I: Integer): Cardinal;
+begin
+  var C: ^TPS2GSSpriteColumn := @FSpriteColumns[I];
+  var A := TexelFrom((C.A0 + FRowA0 + FSpriteOffsets[FRowO0 + C.O0]) and FSpriteMask);
+  if not FSpriteLinear then
+    Exit(A);
+  var FU := C.FU;
+  var FV := FRowFV;
+  if (FU or FV) = 0 then
+    Exit(A);
+  var B := A;
+  var CC := A;
+  var D := A;
+  if FU <> 0 then
+  begin
+    B := TexelFrom((C.A1 + FRowA0 + FSpriteOffsets[FRowO0 + C.O1]) and FSpriteMask);
+    if FV <> 0 then
+    begin
+      CC := TexelFrom((C.A0 + FRowA1 + FSpriteOffsets[FRowO1 + C.O0]) and FSpriteMask);
+      D := TexelFrom((C.A1 + FRowA1 + FSpriteOffsets[FRowO1 + C.O1]) and FSpriteMask);
+    end;
+  end
+  else
+    CC := TexelFrom((C.A0 + FRowA1 + FSpriteOffsets[FRowO1 + C.O0]) and FSpriteMask);
+  var TopRB := (A and $00FF00FF) * (16 - FU) + (B and $00FF00FF) * FU;
+  var BottomRB := (CC and $00FF00FF) * (16 - FU) + (D and $00FF00FF) * FU;
+  var TopGA := ((A shr 8) and $00FF00FF) * (16 - FU) + ((B shr 8) and $00FF00FF) * FU;
+  var BottomGA := ((CC shr 8) and $00FF00FF) * (16 - FU) + ((D shr 8) and $00FF00FF) * FU;
+  Result := (((TopRB * (16 - FV) + BottomRB * FV) shr 8) and $00FF00FF) or
+    ((((TopGA * (16 - FV) + BottomGA * FV) shr 8) and $00FF00FF) shl 8);
+end;
+
 // One channel of the blend (A - B) * C / 128 + D; A, B and D select the
 // source colour S (0), the destination colour D (1) or zero.
 function BlendTerm(SelA, S, D, SelB, C, SelD: Integer): Integer; inline;
@@ -2822,7 +2978,11 @@ begin
   end;
   if FD.TME then
   begin
-    var T := Texel(U, V);
+    var T: Cardinal;
+    if FSpriteFast then
+      T := SpriteTexel(X - FSpriteX0)
+    else
+      T := Texel(U, V);
     var TR := Integer(T and $FF);
     var TG := Integer((T shr 8) and $FF);
     var TB := Integer((T shr 16) and $FF);
@@ -3158,25 +3318,36 @@ begin
   if Y1 <> Y0 then
     DVDY := (TV1 - TV0) / (Y1 - Y0) * 16;
   var ColumnsReady := False;
-  for var Y := PY0 to PY1 - 1 do
-  begin
-    if not InBand(Y) then
-      Continue;
-    var VV := TexCoord(TV0 + (Y * 16 - Y0) * DVDY / 16);
-    if not ColumnsReady then
+  var Level: Integer;
+  try
+    for var Y := PY0 to PY1 - 1 do
     begin
-      // The columns' U, the same on every row.
-      if Length(FSpriteU) < PX1 - PX0 then
-        SetLength(FSpriteU, PX1 - PX0);
-      var UStart := U0 + (PX0 * 16 - X0) * DUDX / 16;
+      if not InBand(Y) then
+        Continue;
+      var VV := TexCoord(TV0 + (Y * 16 - Y0) * DVDY / 16);
+      if not ColumnsReady then
+      begin
+        // The columns' U, the same on every row.
+        if Length(FSpriteU) < PX1 - PX0 then
+          SetLength(FSpriteU, PX1 - PX0);
+        var UStart := U0 + (PX0 * 16 - X0) * DUDX / 16;
+        for var X := PX0 to PX1 - 1 do
+          FSpriteU[X - PX0] := TexCoord(UStart + (X - PX0) * DUDX);
+        // Their texels' addresses, where one level is sampled.
+        FSpriteFast := FD.TME and SpriteTexels and SingleLevel(Level, FSpriteLinear);
+        if FSpriteFast then
+          PrepareSprite(Level, PX0, PX1);
+        ColumnsReady := True;
+      end;
+      if FSpriteFast then
+        PrepareSpriteRow(Level, VV);
+      // All inside the scissor.
+      Inc(FPixels, PX1 - PX0);
       for var X := PX0 to PX1 - 1 do
-        FSpriteU[X - PX0] := TexCoord(UStart + (X - PX0) * DUDX);
-      ColumnsReady := True;
+        Shade(X, Y, V1.Z, V1.R, V1.G, V1.B, V1.A, V1.F, FSpriteU[X - PX0], VV);
     end;
-    // All inside the scissor.
-    Inc(FPixels, PX1 - PX0);
-    for var X := PX0 to PX1 - 1 do
-      Shade(X, Y, V1.Z, V1.R, V1.G, V1.B, V1.A, V1.F, FSpriteU[X - PX0], VV);
+  finally
+    FSpriteFast := False;
   end;
 end;
 

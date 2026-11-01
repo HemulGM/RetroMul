@@ -17,6 +17,10 @@ interface
 uses
   System.SysUtils, System.Math, System.Generics.Collections, Core.Snapshots, PS2.Types, PS2.EE.CPU, PS2.VU.Float, HW.JIT;
 
+const
+  // The most pairs a compiled block takes.
+  PS2VUBlockPairs = 32;
+
 type
   TPS2VFArray = array[0..31] of TPS2Reg128;
   PPS2VFArray = ^TPS2VFArray;
@@ -94,13 +98,13 @@ type
   TPS2VUCompiledBlock = record
     PC: Cardinal;
     PairCount, Next: Integer;
-    Words: array[0..31] of Cardinal;
+    Words: array[0..PS2VUBlockPairs * 2 - 1] of Cardinal;
     Native, Body: Pointer;
   end;
   PPS2VUCompiledBlock = ^TPS2VUCompiledBlock;
 
   TPS2VUFastPlan = record
-    Issue: array[0..15] of Integer;
+    Issue: array[0..PS2VUBlockPairs - 1] of Integer;
     // First external read's issue time and last internal write's issue time.
     ReadAt, WriteAt: array[0..31, 0..3] of Integer;
     WriteAny: array[0..31] of Integer;
@@ -178,12 +182,12 @@ type
     FMacroJit: TJitAsm;
     // FMath is for the host rounding the EE keeps while it runs (TPS2VU0).
     FMacroMathKnown: Boolean;
-    FJitEvents: array[0..15] of TPS2VUFlagEvent;
+    FJitEvents: array[0..PS2VUBlockPairs - 1] of TPS2VUFlagEvent;
     // CLIP results of a scheduled run (their clip flags and when they land),
     // replayed into the queue by FinishFastFlags; FEmitClipSlot: the one the
     // pair being written makes (-1: not a scheduled run), issued at
     // FEmitClipIssue cycles into it.
-    FJitClipEvents: array[0..15] of record Value: Cardinal; Ready: Int64; end;
+    FJitClipEvents: array[0..PS2VUBlockPairs - 1] of record Value: Cardinal; Ready: Int64; end;
     FJitClipCount: Integer;
     FEmitClipSlot, FEmitClipIssue: Integer;
     // The address of the pair a scheduled run is writing (-1: none), which
@@ -644,7 +648,7 @@ begin
   var Hash := UInt64(PC);
   var Address := PC;
   var EndAfterPair := False;
-  for var K := 0 to 15 do
+  for var K := 0 to PS2VUBlockPairs - 1 do
   begin
     var Lo := PCardinal(FCode + Address)^;
     var Hi := PCardinal(FCode + Address + 4)^;
@@ -684,7 +688,7 @@ begin
     FJit := CreateJitAsm(32 * 1024 * 1024);
   if FJit = nil then
     Exit;
-  if not FJit.Room(16 * 4096) then
+  if not FJit.Room(PS2VUBlockPairs * 4096) then
     ResetJit;
   var J := FJit;
   Inc(FJitCompiles);
@@ -899,16 +903,21 @@ type
   // The flag (or clip) queue through a scheduled run, worked out when it is
   // compiled for an incoming queue of Count0 entries landing Off[K] cycles
   // into the run. What each slot and the base hold: -1 the base as it was
-  // (not a slot), K < 4 incoming slot K's entry, 16 + E the run's event E
+  // (not a slot), K < 4 incoming slot K's entry, EventSym + E the run's event E
   // (landing EvReady[E] cycles in). The run checks the incoming queue is so.
   TPS2VUQueueSim = record
     Valid: Boolean;
     Count0, Count, Base: Integer;
     Off, Slots: array[0..3] of Integer;
     // The base each pair's flag reads see (after its pipeline step).
-    Visible: array[0..15] of Integer;
-    EvReady: array[0..15] of Integer;
+    Visible: array[0..PS2VUBlockPairs - 1] of Integer;
+    EvReady: array[0..PS2VUBlockPairs - 1] of Integer;
   end;
+
+const
+  // Queue symbols (TPS2VUQueueSim) of a run's event E, and of FCSET's value.
+  EventSym = 64;
+  ClipSetSym = 128;
 
 // A scheduled run with no observation inside it. Validate all code and all
 // external dependency deadlines before any guest change. Short budgets,
@@ -918,7 +927,7 @@ procedure TPS2VUCore.EmitFast(const Block: TPS2VUCompiledBlock; const Plan: TPS2
   Slow, Stall, Stale, Chain: TJitLabel);
 var
   J: TJitAsm;
-  EventReady: array[0..15] of Integer;
+  EventReady: array[0..PS2VUBlockPairs - 1] of Integer;
   Slots: array[0..3] of Integer;
   EventCount, PrefixCount, LiveCount, BaseEvent: Integer;
 
@@ -968,7 +977,7 @@ var
         Q.EvReady[E] := T + 4;
         if Q.Count < 4 then
         begin
-          Q.Slots[Q.Count] := 16 + E;
+          Q.Slots[Q.Count] := EventSym + E;
           Ready[Q.Count] := T + 4;
           Inc(Q.Count);
         end;
@@ -978,7 +987,7 @@ var
       // holds it), the queue empty.
       if Clip and ((P.Upper and $80000000) = 0) and ((P.Lower shr 25) = $11) then
       begin
-        Q.Base := 32;
+        Q.Base := ClipSetSym;
         Q.Count := 0;
       end;
       PC := (PC + 8) and FCodeMask;
@@ -1056,22 +1065,22 @@ var
   // Where a symbol's MAC, status or clip flag is (see TPS2VUQueueSim).
   function SymbolMAC(Sym: Integer): Integer;
   begin
-    if Sym >= 16 then Result := M(@FJitEvents[Sym - 16].MAC).Disp
+    if Sym >= EventSym then Result := M(@FJitEvents[Sym - EventSym].MAC).Disp
     else if Sym >= 0 then Result := M(@S.FlagQMAC[Sym]).Disp
     else Result := M(@S.MACBase).Disp;
   end;
 
   function SymbolStatus(Sym: Integer): Integer;
   begin
-    if Sym >= 16 then Result := M(@FJitEvents[Sym - 16].Status).Disp
+    if Sym >= EventSym then Result := M(@FJitEvents[Sym - EventSym].Status).Disp
     else if Sym >= 0 then Result := M(@S.FlagQStatus[Sym]).Disp
     else Result := M(@S.StatusBase).Disp;
   end;
 
   function SymbolClip(Sym: Integer): Integer;
   begin
-    if Sym >= 32 then Result := M(@FJitClipSet).Disp
-    else if Sym >= 16 then Result := M(@FJitClipEvents[Sym - 16].Value).Disp
+    if Sym >= ClipSetSym then Result := M(@FJitClipSet).Disp
+    else if Sym >= EventSym then Result := M(@FJitClipEvents[Sym - EventSym].Value).Disp
     else if Sym >= 0 then Result := M(@S.ClipQValue[Sym]).Disp
     else Result := M(@S.ClipBase).Disp;
   end;
@@ -1095,10 +1104,10 @@ var
         var Sym := Q.Slots[K];
         if Sym = K then Continue;
         Copy32(M(@S.ClipQValue[K]).Disp, SymbolClip(Sym));
-        if Sym >= 16 then
+        if Sym >= EventSym then
         begin
           J.Move(jw64, JT0, JS1);
-          J.Alu(jaAdd, jw64, JT0, JImm(Q.EvReady[Sym - 16]));
+          J.Alu(jaAdd, jw64, JT0, JImm(Q.EvReady[Sym - EventSym]));
         end
         else
           J.Move(jw64, JT0, M(@S.ClipQReady[Sym]));
@@ -1120,10 +1129,10 @@ var
       if Sym = K then Continue;
       Copy32(M(@S.FlagQMAC[K]).Disp, SymbolMAC(Sym));
       Copy32(M(@S.FlagQStatus[K]).Disp, SymbolStatus(Sym));
-      if Sym >= 16 then
+      if Sym >= EventSym then
       begin
         J.Move(jw64, JT0, JS1);
-        J.Alu(jaAdd, jw64, JT0, JImm(Q.EvReady[Sym - 16]));
+        J.Alu(jaAdd, jw64, JT0, JImm(Q.EvReady[Sym - EventSym]));
       end
       else
         J.Move(jw64, JT0, M(@S.FlagQReady[Sym]));

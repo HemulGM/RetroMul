@@ -297,7 +297,7 @@ round the product and sum separately. Callbacks, aliased data/register/code
 buffers and unsupported backends retain the memory-result path. This is not
 a cross-instruction VF register cache. `PS2_VU_MEMORY_MATH` selects the old
 compiled path for build-time differential checks; user options are unchanged.
-Code is generated after 16 visits in blocks of up to 16 pairs, ending after
+Code is generated after 16 visits in blocks of up to 32 pairs (`PS2VUBlockPairs`), ending after
 branch/end delay slots. Compiled successors chain through a table within one
 native frame. The general path checks the budget, PC, both instruction words
 and decoded metadata at every pair; callback changes cannot run a stale pair.

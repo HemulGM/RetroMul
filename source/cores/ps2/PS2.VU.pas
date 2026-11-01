@@ -157,6 +157,8 @@ type
     // of the current Run (FMathMode).
     FMath: array[TPS2RegisterMath] of Pointer;
     FMathMode: TRoundingMode;
+    // Runs between HoldMath(True) and HoldMath(False) take FMathMode as it is.
+    FMathHeld: Integer;
     FJitClip: Cardinal;
     FJitEvents: array[0..15] of TPS2VUFlagEvent;
     // CLIP results of a scheduled run (their clip flags and when they land),
@@ -234,6 +236,7 @@ type
     property JitFastPairs: Int64 read FJitFastPairs;
     property JitVectorOps: Int64 read FJitVectorOps;
     // Select the portable generator model before running a differential test.
+    procedure CheckMath;
     procedure UseJitModel;
     procedure Reset;
     // A macro instruction (VU0 COP2, bit 25 set): True when it is one.
@@ -243,6 +246,9 @@ type
     procedure Start(Address: Cardinal);
     function Run(MaxPairs: Integer): Boolean;
     function StraightPairs(StopTPC: Cardinal; Max: Integer): Integer;
+    // Many runs under one host rounding (VU0's spin probes): the routines for
+    // it chosen once (True), until False.
+    procedure HoldMath(Held: Boolean);
     // Runs a started program to its end at EE cycle Now and keeps the VU
     // busy for the cycles it took (Unfinished: still running at the limit).
     procedure RunProgram(Now: Int64; MaxPairs: Integer);
@@ -268,6 +274,7 @@ type
     FBlockVF: array[0..31] of TPS2Reg128;
     FBlockVI: array[0..15] of Cardinal;
     procedure RunUntilBlocked;
+    procedure RunUntilBlockedHeld;
     function Spins: Boolean;
     function Now: Int64; inline;
   public
@@ -814,6 +821,27 @@ begin
   QueueShape(@S.FlagQCount, @S.FlagQReady[0]);
   QueueShape(@S.ClipQCount, @S.ClipQReady[0]);
   for var R := 1 to 31 do
+  begin
+    // A register whose latest result is ready by its first read needs no
+    // look at its fields (FReadyAny is the latest of them).
+    var First := -1;
+    var Fields := 0;
+    for var K := 0 to 3 do
+      if Plan.ReadAt[R, K] >= 0 then
+      begin
+        Inc(Fields);
+        if (First < 0) or (Plan.ReadAt[R, K] < First) then
+          First := Plan.ReadAt[R, K];
+      end;
+    if First < 0 then
+      Continue;
+    var Ready := J.NewLabel;
+    if Fields > 1 then
+    begin
+      J.Move(jw64, JT0, JS1);
+      J.Alu(jaAdd, jw64, JT0, JImm(First));
+      J.Branch(jcLe, jw64, M(@FReadyAny[R]), JT0, Ready);
+    end;
     for var K := 0 to 3 do
       if Plan.ReadAt[R, K] >= 0 then
       begin
@@ -821,16 +849,18 @@ begin
         J.Alu(jaAdd, jw64, JT0, JImm(Plan.ReadAt[R, K]));
         J.Branch(jcGt, jw64, M(@FReady[R, K]), JT0, Slow);
       end;
+    J.Bind(Ready);
+  end;
   ProfileMark('fast-code-guards');
   J.Move(jw64, JT2, M(@FCode));
   var PC := Block.PC;
   for var I := 0 to Block.PairCount - 1 do
   begin
-    J.Branch(jcNe, jw32, JMem(jrT2, Integer(PC)), JImm(Block.Words[I * 2]), Stale);
-    J.Branch(jcNe, jw32, JMem(jrT2, Integer(PC + 4)), JImm(Block.Words[I * 2 + 1]), Stale);
+    // Both words at once (lower, then upper), in code memory and decoded.
+    J.Move(jw64, JT3, JImm(Int64(UInt64(Block.Words[I * 2]) or (UInt64(Block.Words[I * 2 + 1]) shl 32))));
+    J.Branch(jcNe, jw64, JMem(jrT2, Integer(PC)), JT3, Stale);
     J.Move(jw64, JT1, JImm(NativeInt(@FPairs[PC shr 3])));
-    J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Lower))), JImm(Block.Words[I * 2]), Stale);
-    J.Branch(jcNe, jw32, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Upper))), JImm(Block.Words[I * 2 + 1]), Stale);
+    J.Branch(jcNe, jw64, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Lower))), JT3, Stale);
     PC := (PC + 8) and FCodeMask;
   end;
   EventCount := 0;
@@ -894,7 +924,11 @@ begin
       J.Move(jw32, JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Target))), JT0);
     end;
     J.Move(jw8, M(@S.BranchPending), JImm(0));
-    EmitVIHistory(P^);
+    // (The integer history is read by a branch, at most in the last pair but
+    // one, and left as the last two pairs make it: the earlier updates are
+    // overwritten unread.)
+    if I >= Block.PairCount - 3 then
+      EmitVIHistory(P^);
     FEmitClipSlot := -1;
     if ((P.Upper and $80000000) = 0) and ((P.Upper and $3F) >= $3C) and
       ((((P.Upper shr 4) and $7C) or (P.Upper and 3)) = $1F) then
@@ -1509,20 +1543,14 @@ var
       J.VectorStore(Target, jv0, Lanes);
       Exit;
     end;
-    for var Half := 0 to 1 do
-      if (Mask and (12 shr (Half * 2))) = Cardinal(12 shr (Half * 2)) then
-      begin
-        J.Move(jw64, JT0, JMem(jrSelf, Value.Disp + Half * 8));
-        J.Move(jw64, JMem(Target.Reg, Target.Disp + Half * 8), JT0);
-      end
-      else
-        for var C := 0 to 1 do
-        begin
-          var K := Half * 2 + C;
-          if (Mask and FieldBit(K)) = 0 then Continue;
-          J.Move(jw32, JT0, JMem(jrSelf, Value.Disp + K * 4));
-          J.Move(jw32, JMem(Target.Reg, Target.Disp + K * 4), JT0);
-        end;
+    // (Field by field: the staged value was often just written a field at a
+    // time, and a wider load of it would wait for those stores.)
+    for var K := 0 to 3 do
+    begin
+      if (Mask and FieldBit(K)) = 0 then Continue;
+      J.Move(jw32, JT0, JMem(jrSelf, Value.Disp + K * 4));
+      J.Move(jw32, JMem(Target.Reg, Target.Disp + K * 4), JT0);
+    end;
   end;
 
 begin
@@ -3453,11 +3481,34 @@ begin
 end;
 {$ENDIF}
 
+procedure TPS2VUCore.CheckMath;
+begin
+  var Mode := HostRounding;
+  if (Mode <> FMathMode) or (FMath[vrmAdd] = nil) then
+  begin
+    FMathMode := Mode;
+    FMath[vrmAdd] := PS2RegisterMathNativeFor(vrmAdd, Mode);
+    FMath[vrmMul] := PS2RegisterMathNativeFor(vrmMul, Mode);
+  end;
+end;
+
+procedure TPS2VUCore.HoldMath(Held: Boolean);
+begin
+  if Held then
+  begin
+    if FMathHeld = 0 then
+      CheckMath;
+    Inc(FMathHeld);
+  end
+  else
+    Dec(FMathHeld);
+end;
+
 function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
 begin
   // (The host rounding stays as it is for the whole run: the routines for
   // it, before generated code first runs.)
-  var MathChecked := False;
+  var MathChecked := FMathHeld > 0;
   var Context := Default(TPS2VURun);
   Context.Limit := MaxPairs;
   while S.Running and (Context.Count < Context.Limit) do
@@ -3480,13 +3531,7 @@ begin
       if not MathChecked then
       begin
         MathChecked := True;
-        var Mode := HostRounding;
-        if (Mode <> FMathMode) or (FMath[vrmAdd] = nil) then
-        begin
-          FMathMode := Mode;
-          FMath[vrmAdd] := PS2RegisterMathNativeFor(vrmAdd, Mode);
-          FMath[vrmMul] := PS2RegisterMathNativeFor(vrmMul, Mode);
-        end;
+        CheckMath;
       end;
       var Before := Context.Count;
       Context.Invalid := False;
@@ -3649,8 +3694,40 @@ end;
 
 // Whether Count 64-bit words at A and B are equal (CompareMem without the
 // call, for the register files the spin checks compare).
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+// (A multiple of four: 32 bytes a turn, SSE2.)
+function SameWords4(A, B: PUInt64; Count: Integer): Boolean;
+asm
+  .NOFRAME
+  shr r8d, 2
+@@Loop:
+  movdqu xmm0, [rcx]
+  movdqu xmm1, [rcx + 16]
+  movdqu xmm2, [rdx]
+  movdqu xmm3, [rdx + 16]
+  pcmpeqb xmm0, xmm2
+  pcmpeqb xmm1, xmm3
+  pand xmm0, xmm1
+  pmovmskb eax, xmm0
+  cmp eax, $FFFF
+  jne @@Diff
+  add rcx, 32
+  add rdx, 32
+  sub r8d, 1
+  jnz @@Loop
+  mov eax, 1
+  ret
+@@Diff:
+  xor eax, eax
+end;
+{$ENDIF}
+
 function SameWords(A, B: PUInt64; Count: Integer): Boolean;
 begin
+  {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+  if (Count > 0) and ((Count and 3) = 0) then
+    Exit(SameWords4(A, B, Count));
+  {$ENDIF}
   var K := 0;
   while K + 4 <= Count do
   begin
@@ -3675,6 +3752,16 @@ end;
 // probed again (one turn of the loop, which also sees VU memory the EE
 // wrote) until the EE changes its registers.
 procedure TPS2VU0.RunUntilBlocked;
+begin
+  FCore.HoldMath(True);
+  try
+    RunUntilBlockedHeld;
+  finally
+    FCore.HoldMath(False);
+  end;
+end;
+
+procedure TPS2VU0.RunUntilBlockedHeld;
 begin
   if FBlocked and SameWords(@VF[0], @FBlockVF[0], SizeOf(FBlockVF) div 8) and
     SameWords(@VI[0], @FBlockVI[0], SizeOf(FBlockVI) div 8) and Spins then

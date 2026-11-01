@@ -2474,10 +2474,12 @@ begin
   FEmitVectorResult := False;
   FAllowVectorResult := False;
   {$IFNDEF PS2_VU_MEMORY_MATH}
-  FAllowVectorResult := FVectorMemorySafe and J.HasVectors and
-    (PS2RegisterMathNative(vrmAdd) <> nil) and (VectorLowerNoCall(P.Lower, P.Upper) or
-    ((FEmitMACSrc >= 0) and ((P.Lower and $80000000) = 0) and ((P.Lower shr 25) in [$14, $16..$18, $1A, $1B])));
+  FAllowVectorResult := FVectorMemorySafe and J.HasVectors and (PS2RegisterMathNative(vrmAdd) <> nil);
   {$ENDIF}
+  // A lower half calling a helper (which may change every vector register)
+  // takes a register result from memory.
+  var Spill := not (VectorLowerNoCall(P.Lower, P.Upper) or
+    ((FEmitMACSrc >= 0) and ((P.Lower and $80000000) = 0) and ((P.Lower shr 25) in [$14, $16..$18, $1A, $1B])));
   ProfileMark('upper');
   // Arithmetic calls the PS2 SIMD routines directly, without dispatching
   // an upper opcode on each visit. Both halves still read before commits.
@@ -2490,6 +2492,11 @@ begin
   if EmitUpper(U) then
   begin
     // Upper arithmetic and NOP are fully accounted for.
+    if FEmitVectorResult and Spill then
+    begin
+      J.VectorStore(JMem(jrSelf, Integer(NativeInt(@FUpperValue) - NativeInt(Self))), jv0);
+      FEmitVectorResult := False;
+    end;
   end
   else if (Funct >= $3C) and (Special in [$10..$17]) then
   begin

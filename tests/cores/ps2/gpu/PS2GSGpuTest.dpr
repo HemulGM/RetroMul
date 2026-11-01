@@ -7,6 +7,10 @@
 uses
   System.SysUtils, System.Classes, System.Math, Core.Snapshots, PS2.Types, PS2.GS.Memory, PS2.GS.Raster, PS2.GS.Gpu;
 
+const
+  // 16-bit frames: two pixels to a word, each its own invocation's.
+  Frames16: array[0..3] of Cardinal = (PSMCT16, PSMCT16S, PSMZ16, PSMZ16S);
+
 procedure Vertex(Raster: TPS2GSRaster; const V: TPS2GSVertex);
 begin
   Raster.WriteRegister(GSRegRGBAQ, UInt64(V.R) or (UInt64(V.G) shl 8) or (UInt64(V.B) shl 16) or
@@ -315,6 +319,9 @@ begin
         var CPU := N mod 4 in [1, 2];
         var Frame := UInt64(4) shl 16;
         if CPU then Frame := Frame or 256 or (UInt64(PSMCT16) shl 24);
+        // Half of the untextured 16-bit sprites go to the GPU; the others,
+        // to a depth format the GPU does not draw, to the CPU workers.
+        if N mod 8 = 1 then Frame := (Frame and not (UInt64($3F) shl 24)) or (UInt64(PSMZ32) shl 24);
         R.WriteRegister(GSRegFRAME_1, Frame);
         var Prim: UInt64 := 6;
         if N mod 4 = 2 then Prim := Prim or $110; // CPU self-reading 16-bit sprite, solo worker.
@@ -379,7 +386,7 @@ begin
       finally
         Stream.Free;
       end;
-      if (Mode in [1..4]) and (R.VulkanDraws <> 32) then raise Exception.Create('Hybrid draw did not reach GPU');
+      if (Mode in [1..4]) and (R.VulkanDraws <> 40) then raise Exception.Create('Hybrid draw did not reach GPU');
     finally
       R.Free;
     end;
@@ -749,6 +756,7 @@ begin
       Move(PA^, B.Memory.Data^, PS2GSMemorySize);
       var D := Default(TPS2GSDraw);
       D.FBW := 4; D.FPSM := Cardinal(N and 1);
+      if N mod 3 = 2 then D.FPSM := Frames16[(N div 3) and 3];
       D.ZBP := 8192; D.ZPSM := PSMZ32 + Cardinal((N shr 1) and 1);
       D.ZMSK := Random(2) <> 0;
       D.ATE := Random(2) <> 0; D.ATST := N and 7;
@@ -796,7 +804,16 @@ begin
       begin
         var Temp := V[0]; V[0] := V[1]; V[1] := Temp;
       end;
-      A.WriteRegister(GSRegFRAME_1, (UInt64(D.FBW) shl 16) or (UInt64(D.FPSM) shl 24) or (UInt64(D.FBMSK) shl 32));
+      // A texture past the end of VRAM continues at its start (frame moved
+      // off those pages).
+      var TBP: UInt64 := 4096;
+      var FramePage: UInt64 := 0;
+      if (N mod 8 = 6) and (N <> 255) then
+      begin
+        TBP := 16384 - 64;
+        FramePage := 64;
+      end;
+      A.WriteRegister(GSRegFRAME_1, FramePage or (UInt64(D.FBW) shl 16) or (UInt64(D.FPSM) shl 24) or (UInt64(D.FBMSK) shl 32));
       A.WriteRegister(GSRegZBUF_1, UInt64(D.ZBP div 32) or (UInt64(D.ZPSM and 15) shl 24) or (UInt64(Ord(D.ZMSK)) shl 32));
       A.WriteRegister(GSRegTEST_1, UInt64(Ord(D.ATE)) or (UInt64(D.ATST) shl 1) or
         (UInt64(D.AREF) shl 4) or (UInt64(D.AFAIL) shl 12) or (UInt64(Ord(D.DATE)) shl 14) or
@@ -810,7 +827,7 @@ begin
         (UInt64(D.SY0) shl 32) or (UInt64(D.SY1) shl 48));
       A.WriteRegister(GSRegPRIM, 3 or (UInt64(Ord(D.ABE)) shl 6) or (UInt64(Ord(D.FGE)) shl 5) or
         (UInt64(Ord(D.TME)) shl 4) or (UInt64(Ord(D.IIP)) shl 3) or (UInt64(Ord(D.FST)) shl 8));
-      A.WriteRegister(GSRegTEX0_1, 4096 or (UInt64(2) shl 14) or (UInt64(D.TPSM) shl 20) or
+      A.WriteRegister(GSRegTEX0_1, TBP or (UInt64(2) shl 14) or (UInt64(D.TPSM) shl 20) or
         (UInt64(7) shl 26) or (UInt64(7) shl 30) or (UInt64(Ord(D.TCC)) shl 34) or (UInt64(D.TFX) shl 35));
       A.WriteRegister(GSRegTEX1_1, UInt64(Ord(D.Linear)) * $60);
       A.WriteRegister(GSRegCLAMP_1, UInt64(Random(16)) or (UInt64(Random(128)) shl 4) or
@@ -890,6 +907,7 @@ begin
         D.TA0 := Random(256); D.AEM := Random(2) <> 0;
         D.FBW := 4;
         D.FPSM := Cardinal(N and 1);
+        if N mod 3 = 2 then D.FPSM := Frames16[(N div 3) and 3];
         D.ZBP := 8192;
         D.ZPSM := PSMZ32 + Cardinal((N shr 1) and 1);
         D.ZMSK := Random(2) <> 0;
@@ -967,7 +985,7 @@ begin
         D.ZMSK := False;
         if GPU.Sprite(D, V0, V, 16, 16, 144, 144, 0) then raise Exception.Create('Overlapping surfaces accepted');
         D.ZBP := 8192;
-        D.FPSM := PSMCT16;
+        D.FPSM := PSMZ32;
         if GPU.Sprite(D, V0, V, 16, 16, 144, 144, 0) then raise Exception.Create('Unsupported format accepted');
         if ((Batch = 0) or (N = 255)) and not CompareMem(A.Memory.Data, B.Data, PS2GSMemorySize) then
           raise Exception.Create('Fallback wrote memory');

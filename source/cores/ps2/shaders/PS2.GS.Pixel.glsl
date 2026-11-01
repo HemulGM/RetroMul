@@ -5,13 +5,26 @@
 // Ordered tile clusters own one logical/physical pixel per invocation.
 // Keep its colour/depth in registers across draws, then publish once.
 // Texture dependencies or layout changes end a cluster on the host.
+// A 16-bit frame pixel (frame16) is cached by its halfword address; the
+// other half of its word belongs to another invocation, so it is written
+// with atomics on its own bits only.
 bool pixelCache=false;
-bool frameLoaded=false,depthLoaded=false,frameDirty=false,depthDirty=false;
+bool frameLoaded=false,depthLoaded=false,frameDirty=false,depthDirty=false,frame16=false;
 uint cachedFrame,cachedDepth,cachedFA,cachedZA;
 uint loadFrame(uint a) {
   if(!pixelCache) return ram[a];
   if(!frameLoaded) { cachedFrame=ram[a]; cachedFA=a; frameLoaded=true; }
   return cachedFrame;
+}
+uint loadFrame16(uint a) {
+  if(!pixelCache) return (ram[a>>1]>>((a&1)*16))&0xffff;
+  if(!frameLoaded) { cachedFrame=(ram[a>>1]>>((a&1)*16))&0xffff; cachedFA=a; frameLoaded=true; frame16=true; }
+  return cachedFrame;
+}
+void store16(uint a,uint value) {
+  uint shift=(a&1)*16;
+  atomicAnd(ram[a>>1],~(0xffffu<<shift));
+  atomicOr(ram[a>>1],(value&0xffffu)<<shift);
 }
 uint loadDepth(uint a) {
   if(!pixelCache) return ram[a];
@@ -22,12 +35,16 @@ void storeFrame(uint a,uint value) {
   if(!pixelCache) { ram[a]=value; return; }
   cachedFA=a; cachedFrame=value; frameLoaded=true; frameDirty=true;
 }
+void storeFrame16(uint a,uint value) {
+  if(!pixelCache) { store16(a,value); return; }
+  cachedFA=a; cachedFrame=value; frameLoaded=true; frameDirty=true; frame16=true;
+}
 void storeDepth(uint a,uint value) {
   if(!pixelCache) { ram[a]=value; return; }
   cachedZA=a; cachedDepth=value; depthLoaded=true; depthDirty=true;
 }
 void finishPixelCache() {
-  if(frameDirty) ram[cachedFA]=cachedFrame;
+  if(frameDirty) { if(frame16) store16(cachedFA,cachedFrame); else ram[cachedFA]=cachedFrame; }
   if(depthDirty) ram[cachedZA]=cachedDepth;
 }
 
@@ -48,13 +65,17 @@ int clampCoordinate(int c,uint size,uint mode,uint low,uint high) {
   if(mode==2) return c<int(low) ? int(low) : (c>int(high) ? int(high) : c);
   return (c&int(low))|int(high);
 }
+// The halfword address of a pixel in a 16-bit format.
+uint address16(uint bp,uint bw,uint x,uint y,uint psm) {
+  uint page=(x>>6)+(y>>6)*bw;
+  uint block=(psm==10 || psm==0x3a) ? gsBlock16S[((y>>3)&7)*4+((x>>4)&3)] :
+    gsBlock16[((y>>3)&7)*4+((x>>4)&3)];
+  if(psm>=0x30) block^=24;
+  return ((bp<<7)+(page<<12)+(block<<7)+gsColumn16[(y&7)*16+(x&15)])&0x1fffff;
+}
 uint rawTexel(uint bp,uint bw,uint x,uint y,uint psm) {
   if(psm==2 || psm==10 || psm==0x32 || psm==0x3a) {
-    uint page=(x>>6)+(y>>6)*bw;
-    uint block=(psm==10 || psm==0x3a) ? gsBlock16S[((y>>3)&7)*4+((x>>4)&3)] :
-      gsBlock16[((y>>3)&7)*4+((x>>4)&3)];
-    if(psm>=0x30) block^=24;
-    uint a=((bp<<7)+(page<<12)+(block<<7)+gsColumn16[(y&7)*16+(x&15)])&0x1fffff;
+    uint a=address16(bp,bw,x,y,psm);
     return (ram[a>>1]>>((a&1)*16))&0xffff;
   }
   if(psm==0x13) {
@@ -163,9 +184,13 @@ void shadePixel(ivec2 xy,uint sourceZ,ivec3 c,int a,int f,int u,int v,uint mip) 
   uint za=address(p[4],p[1],x,y,true);
   uint zmask=p[5]==0x31 ? 0xffffff : 0xffffffff;
   uint z=min(sourceZ,zmask);
-  uint fa=address(p[0],p[1],x,y,false);
-  uint raw=loadFrame(fa);
-  uint dst=p[2]==1 ? (raw&0xffffff)|0x80000000 : raw;
+  // A 16-bit frame's pixel as the host expands it (5 bits per colour at the
+  // top of each byte, alpha 128 or 0) and packs it again (Color32To16).
+  bool fb16=p[2]==2 || p[2]==10 || p[2]==0x32 || p[2]==0x3a;
+  uint fa=fb16 ? address16(p[0],p[1],x,y,p[2]) : address(p[0],p[1],x,y,false);
+  uint raw=fb16 ? loadFrame16(fa) : loadFrame(fa);
+  uint dst=fb16 ? ((raw&31)<<3)|(((raw>>5)&31)<<11)|(((raw>>10)&31)<<19)|((raw>>15)<<31) :
+    (p[2]==1 ? (raw&0xffffff)|0x80000000 : raw);
   if(p[10]!=0 && ((dst>>31)!=p[11])) return;
   if(p[21]!=0 && (p[18]==0 || a>=128)) {
     ivec3 d=ivec3(dst&255,(dst>>8)&255,(dst>>16)&255);
@@ -179,7 +204,8 @@ void shadePixel(ivec2 xy,uint sourceZ,ivec3 c,int a,int f,int u,int v,uint mip) 
     uint color=uint(c.r)|(uint(c.g)<<8)|(uint(c.b)<<16)|(uint(a&255)<<24);
     uint mask=p[3]|(writeAlpha?0u:0xff000000u);
     color=(color&~mask)|(dst&mask);
-    storeFrame(fa,p[2]==1 ? (raw&0xff000000)|(color&0xffffff) : color);
+    if(fb16) storeFrame16(fa,((color>>3)&31)|(((color>>11)&31)<<5)|(((color>>19)&31)<<10)|((color>>31)<<15));
+    else storeFrame(fa,p[2]==1 ? (raw&0xff000000)|(color&0xffffff) : color);
   }
   if(writeZ && (writeFB || p[9]==2)) storeDepth(za,(loadDepth(za)&~zmask)|(z&zmask));
 }

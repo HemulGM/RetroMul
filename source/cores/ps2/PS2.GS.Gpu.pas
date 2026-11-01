@@ -1,6 +1,6 @@
 ﻿unit PS2.GS.Gpu;
 
-// GS compute path: 32/24-bit sprites and triangles, with
+// GS compute path: sprites and triangles to 32/24/16-bit frames, with
 // GS direct/palettized textures and mipmapping, disjoint frame/depth
 // surfaces and no texture feedback. Other draws keep the software pipeline.
 // Exact-FP64 devices rasterize constant-LOD triangles on the GPU. Other
@@ -219,24 +219,6 @@ begin
   Result := Cardinal(L0 or (L1 shl 3) or (Weight shl 6) or (Ord(Linear) shl 11));
 end;
 
-procedure MarkRange(var Bits: array of Cardinal; First, Last: Integer);
-begin
-  if Last - First >= 511 then
-  begin
-    for var K := 0 to High(Bits) do Bits[K] := $FFFFFFFF;
-    Exit;
-  end;
-  var P := First;
-  while P <= Last do
-  begin
-    var Stop := Min(Last, P or 31);
-    var Mask := Cardinal($FFFFFFFF) shl (P and 31);
-    if (Stop and 31) <> 31 then Mask := Mask and ((Cardinal(1) shl ((Stop and 31) + 1)) - 1);
-    Bits[(P and 511) shr 5] := Bits[(P and 511) shr 5] or Mask;
-    P := Stop + 1;
-  end;
-end;
-
 function MeetsRange(const Bits: array of Cardinal; First, Last: Integer): Boolean;
 begin
   if Last - First >= 511 then
@@ -271,6 +253,12 @@ begin
     end;
 end;
 
+// The rows of a frame page: 64 in the 16-bit formats, else 32.
+function FrameRows(PSM: Cardinal): Integer; inline;
+begin
+  if PSM in [PSMCT16, PSMCT16S, PSMZ16, PSMZ16S] then Result := 64 else Result := 32;
+end;
+
 function Palettized(const D: TPS2GSDraw): Boolean; inline;
 begin
   Result := D.TME and (D.TPSM in [PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH]);
@@ -282,13 +270,11 @@ begin
   FillChar(Reads, SizeOf(Reads), 0);
   FillChar(Writes, SizeOf(Writes), 0);
   FillChar(Textures, SizeOf(Textures), 0);
-  var F0 := Integer(D.FBP div 32);
-  var F1 := Integer((D.FBP + 31) div 32 + Cardinal((Y1 - 1) div 32) * D.FBW + Cardinal((X1 - 1) div 64));
-  MarkRange(Writes, F0, F1);
-  var Z0 := Integer(D.ZBP div 32);
-  var Z1 := Integer((D.ZBP + 31) div 32 + Cardinal((Y1 - 1) div 32) * D.FBW + Cardinal((X1 - 1) div 64));
-  if not D.ZMSK then MarkRange(Writes, Z0, Z1);
-  if D.ZTST >= 2 then MarkRange(Reads, Z0, Z1);
+  // The pages of the draw's rectangle and of its textures' extents, as the
+  // software path tracks them (not every page up to the last).
+  AddRectPages(Writes, D.FBP, D.FBW, D.FPSM, X0, Y0, X1 - 1, Y1 - 1);
+  if not D.ZMSK then AddRectPages(Writes, D.ZBP, D.FBW, D.ZPSM, X0, Y0, X1 - 1, Y1 - 1);
+  if D.ZTST >= 2 then AddRectPages(Reads, D.ZBP, D.FBW, D.ZPSM, X0, Y0, X1 - 1, Y1 - 1);
   if not D.TME then Exit;
   var Last := 0;
   if D.UseLod and (D.MMIN >= 2) then Last := D.MXL;
@@ -303,15 +289,7 @@ begin
     if D.WMT = 2 then H := (Max(D.MINV, D.MAXV) shr L) + 1;
     if D.WMS = 3 then W := (D.MINU or D.MAXU) + 1;
     if D.WMT = 3 then H := (D.MINV or D.MAXV) + 1;
-    var PW := 64; var PH := 32;
-    if D.TPSM in [PSMCT16, PSMCT16S, PSMZ16, PSMZ16S] then PH := 64;
-    if D.TPSM in [PSMT8, PSMT4] then
-    begin
-      PW := 128; PH := 64; BW := (BW + 1) shr 1;
-      if D.TPSM = PSMT4 then PH := 128;
-    end;
-    MarkRange(Textures, Integer(BP div 32), Integer((BP + 31) div 32) +
-      ((H - 1) div PH) * Integer(BW) + (W - 1) div PW);
+    AddRectPages(Textures, BP, BW, D.TPSM, 0, 0, W - 1, H - 1);
   end;
   for var K := 0 to 15 do Reads[K] := Reads[K] or Textures[K];
 end;
@@ -349,7 +327,7 @@ begin
       var MX := Max(FNativeBounds[2], X1);
       var MY := Max(FNativeBounds[3], Y1);
       var F0 := D.FBP div 32;
-      var F1 := (D.FBP + 31) div 32 + Cardinal((MY - 1) div 32) * D.FBW + Cardinal((MX - 1) div 64);
+      var F1 := (D.FBP + 31) div 32 + Cardinal((MY - 1) div FrameRows(D.FPSM)) * D.FBW + Cardinal((MX - 1) div 64);
       var Z0 := D.ZBP div 32;
       var Z1 := (D.ZBP + 31) div 32 + Cardinal((MY - 1) div 32) * D.FBW + Cardinal((MX - 1) div 64);
       Conflict := (F1 >= 512) or (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0));
@@ -456,19 +434,21 @@ function TPS2GSGpu.Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels
   SmallAllowed: Boolean): Boolean;
 begin
   Result := False;
-  if not (D.FPSM in [PSMCT32, PSMCT24]) or
+  if not (D.FPSM in [PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ16, PSMZ16S]) or
     not (D.ZPSM in [PSMZ32, PSMZ24]) or (X0 < 0) or (Y0 < 0) or
     (X1 <= X0) or (Y1 <= Y0) or (X1 > 2048) or (Y1 > 2048) then Exit;
-  // One invocation must own each word: reject zero stride, row aliases,
-  // VRAM wrapping and colour/depth overlap. Bounds are deliberately broad.
+  // One invocation must own each pixel (a 16-bit one, half of a word):
+  // reject zero stride, row aliases, VRAM wrapping and colour/depth
+  // overlap. Bounds are deliberately broad.
   if (D.FBW = 0) or (Cardinal(X1) > D.FBW * 64) then Exit;
   var F0 := D.FBP div 32;
-  var F1 := (D.FBP + 31) div 32 + Cardinal((Y1 - 1) div 32) * D.FBW + Cardinal((X1 - 1) div 64);
+  var F1 := (D.FBP + 31) div 32 + Cardinal((Y1 - 1) div FrameRows(D.FPSM)) * D.FBW + Cardinal((X1 - 1) div 64);
   var Z0 := D.ZBP div 32;
   var Z1 := (D.ZBP + 31) div 32 + Cardinal((Y1 - 1) div 32) * D.FBW + Cardinal((X1 - 1) div 64);
   if F1 >= 512 then Exit;
   if not D.ZMSK or (D.ZTST <> 1) then
     if (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0)) then Exit;
+  var Overlap := False;
   if D.TME then
   begin
     if (D.TW > 10) or (D.TH > 10) or (D.MXL < 0) or (D.MXL > 6) or
@@ -497,12 +477,18 @@ begin
       end;
       var T0 := BP div 32;
       var T1 := (BP + 31) div 32 + Cardinal((H - 1) div PH) * BW + Cardinal((W - 1) div PW);
-      if (T1 >= 512) or ((T1 >= F0) and (F1 >= T0)) or
-        (not D.ZMSK and (T1 >= Z0) and (Z1 >= T0)) then Exit;
+      // (Past the end of VRAM a texture continues at its start, as on the
+      // host; the range comparisons do not wrap.)
+      Overlap := Overlap or (T1 >= 512) or ((T1 >= F0) and (F1 >= T0)) or (not D.ZMSK and (T1 >= Z0) and (Z1 >= T0));
     end;
   end;
   // Small draws cost more to submit than to draw on the host.
   if not SmallAllowed and (Int64(X1 - X0) * (Y1 - Y0) < 4096) then Exit;
+  // Texture pages that may meet the targets': only where no pixel reads a
+  // texel another pixel of the draw writes (OverlapAllowed). Earlier and
+  // later draws on those pages are kept apart by the clusters' page checks
+  // and barriers.
+  if Overlap and not (Assigned(FOverlapAllowed) and FOverlapAllowed) then Exit;
   Result := True;
 end;
 

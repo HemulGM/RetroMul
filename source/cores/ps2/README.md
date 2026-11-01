@@ -343,10 +343,10 @@ FTZ/DAZ; the default float suite retains the add/multiply checks too.
 ## Experimental Vulkan GS
 
 `Video/Renderer=vulkan` independently selects Vulkan compute for supported
-32/24-bit sprites and triangle pixels, including all GS direct and palettized
-texture formats and mipmapping. This uses `RM.Vulkan.Compute` from the Xbox branch (3f3ce45), with
+sprites and triangle pixels drawn to 32/24/16-bit frames, including all GS
+direct and palettized texture formats and mipmapping. This uses `RM.Vulkan.Compute` from the Xbox branch (3f3ce45), with
 coherent GS VRAM import. Small sprites (where triangles are not rasterized on
-the GPU, below), texture feedback,
+the GPU, below), draws reading pixels they draw (texture feedback),
 overlapping surfaces and unsupported storage
 formats retain the software path. If device creation or host-memory import
 is unavailable, software rendering continues; `VulkanError` reports why.
@@ -359,9 +359,23 @@ local copies first publish GPU work. A full half of the GPU draw slots is
 submitted without waiting while the other half is recorded (two command
 buffers). Workers, including the solo feedback drawer, never call
 Vulkan. Palette loads stay on the host when no CPU work is pending.
+These pages are those of the draw's rectangle and its textures' extents,
+and of a transfer's or local copy's rectangle (all where it wraps), as the
+software queue tracks them.
+A draw whose texture pages may meet its own targets' (in broad page ranges,
+or past the end of VRAM, where textures continue at its start on both
+paths) is accepted only where the software footprint finds that no pixel
+reads a texel another pixel of the draw writes: disjoint texel and pixel
+rectangles in one buffer, a sprite reading its own pixels, or the high byte
+of 24-bit words. A small one meeting queued software work joins that queue
+instead, so that GPU and band threads do not wait for each other at each of
+a series of such primitives between self-reading ones.
 
 The integer shader implements alpha/depth tests, fog, blending, destination
-alpha, masks, texture functions and 24-bit preservation. Sprite UV/STQ
+alpha, masks, texture functions and 24-bit preservation. In 16-bit frames
+(CT16/CT16S/Z16/Z16S) a pixel is half of a word: the invocation owning it
+writes its own 16 bits with atomics, and expands and packs it as the host
+does (5 bits per colour, alpha 128 or 0; `Color32To16`). Sprite UV/STQ
 interpolation stays on the CPU with the software renderer's arithmetic;
 integer coordinates are uploaded per column/row. The GPU performs exact
 integer filtering and sampling, including all clamp/repeat modes and TEXA.
@@ -418,8 +432,10 @@ Regenerate its embedded SPIR-V with `source/cores/ps2/shaders/build.ps1`
 256-draw sequence, with and without textures, against the CPU over all
 4 MiB of VRAM. It checks batch capacity/reuse, texture feedback fallback,
 render-to-texture ordering, transfers, CLUT state and live mode changes.
-Another 256 triangles cover winding, clipping, flat/Gouraud colours, UV/STQ
-(negative Q included), both host rounding modes, varying depth/fog and fragment-arena rollover.
+A third of those draws and of the following 256 triangles go to 16-bit
+frames. The triangles cover winding, clipping, flat/Gouraud colours, UV/STQ
+(negative Q included), textures continuing past the end of VRAM, both host
+rounding modes, varying depth/fog and fragment-arena rollover.
 An additional 312 cases cover all 13 texture formats, CLUT/CSA/CSM/TEXA,
 all minification modes, multiple mip levels, sprites and triangles. A separate
 test mutates the host CLUT while two draws are pending in the same GPU batch.

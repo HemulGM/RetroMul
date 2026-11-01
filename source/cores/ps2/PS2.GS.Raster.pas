@@ -173,12 +173,16 @@ type
   // Called before an accelerated draw with the pages it reads and writes
   // and whether it takes the current CLUT.
   TPS2GSBeforeDraw = reference to function(const Reads, Writes: TPS2GSPages; Palette: Boolean; Area: Int64): Boolean;
+  // Asked when an accelerated draw's texture pages meet its targets':
+  // whether it may take the primitive being drawn.
+  TPS2GSOverlapAllowed = reference to function: Boolean;
 
   TPS2GSAccelerator = class abstract
   protected
     FPending: Boolean;
     FRevision: Int64;
     FBeforeDraw: TPS2GSBeforeDraw;
+    FOverlapAllowed: TPS2GSOverlapAllowed;
   public
     procedure Sync; virtual; abstract;
     // CPU access to wrapped 8 KiB GS pages; unknown accelerators sync fully.
@@ -192,6 +196,8 @@ type
     // Host software queues must publish before an accepted GPU draw reads
     // their targets, textures or the current palette snapshot.
     property BeforeDraw: TPS2GSBeforeDraw read FBeforeDraw write FBeforeDraw;
+    // Unassigned: such draws are declined.
+    property OverlapAllowed: TPS2GSOverlapAllowed read FOverlapAllowed write FOverlapAllowed;
     function Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer; Lod: Single): Boolean; virtual; abstract;
     // Optional full coverage/interpolation; False retains the fragment path.
@@ -386,6 +392,7 @@ type
     procedure WeighCommand;
     procedure NoteRoute;
     function BeforeAccelerated(const Reads, Writes: TPS2GSPages; Palette: Boolean; Area: Int64): Boolean;
+    function CommandOverlapAllowed: Boolean;
     function QueueFallback(Drawer: TPS2GSDrawer): Boolean;
     procedure SyncSoftware;
     procedure CheckPrimLogBreak;
@@ -984,6 +991,11 @@ begin
         function(const Reads, Writes: TPS2GSPages; Palette: Boolean; Area: Int64): Boolean
         begin
           Result := BeforeAccelerated(Reads, Writes, Palette, Area);
+        end;
+      FAccelerator.OverlapAllowed :=
+        function: Boolean
+        begin
+          Result := CommandOverlapAllowed;
         end;
     except
       on E: Exception do FVulkanError := E.Message;
@@ -1724,6 +1736,30 @@ begin
   end;
 end;
 
+// Whether the accelerator may take the primitive being drawn (FCommand),
+// whose texture may be read from its targets' pages: where it reads none
+// of the pixels it draws but its own (as the band threads judge it). A
+// small one meeting queued host drawing joins that instead: such
+// primitives come between self-reading ones the host draws, and the GPU
+// and the band threads would wait for each other at each.
+function TPS2GSRaster.CommandOverlapAllowed: Boolean;
+var
+  F: TPS2GSFootprint;
+begin
+  Footprint(FCommand, F);
+  Result := not F.Feedback;
+  if Result and FPending then
+  begin
+    var X0, Y0, X1, Y1: Integer;
+    var Reads, Writes: TPS2GSPages;
+    FootprintAccess(F, Reads, Writes);
+    if (PagesOverlap(Reads, FPendingWrites) or PagesOverlap(Writes, FPendingWrites) or
+      PagesOverlap(Writes, FPendingReads)) and PixelRect(FCommand, X0, Y0, X1, Y1) and
+      (Int64(X1 - X0 + 1) * (Y1 - Y0 + 1) < 1024) then
+      Result := False;
+  end;
+end;
+
 function BufferKey(BP, BW, PSM: Cardinal): UInt64; inline;
 begin
   Result := UInt64(BP) or (UInt64(BW) shl 20) or (UInt64(PSM) shl 32) or (UInt64(1) shl 40);
@@ -1785,12 +1821,11 @@ begin
   end;
 end;
 
-// The pages a transfer's destination area (BITBLTBUF, TRXPOS, TRXREG) may
-// cover (as MarkPendingArea: rows from TRXPOS's, all columns up to its
-// last; all pages where its coordinates wrap).
-procedure TPS2GSRaster.MarkAreaWritten(Buf, Pos, Reg: UInt64; var Pages: TPS2GSPages);
+// Adds the pages a transfer's or local copy's destination area (BITBLTBUF,
+// TRXPOS, TRXREG) may cover: its rectangle's, all where its coordinates
+// wrap.
+procedure AddAreaPages(var Pages: TPS2GSPages; Buf, Pos, Reg: UInt64);
 begin
-  FillChar(Pages, SizeOf(Pages), 0);
   var X := Integer((Pos shr 32) and $7FF);
   var Y := Integer((Pos shr 48) and $7FF);
   var W := Integer(Reg and $FFF);
@@ -1800,10 +1835,15 @@ begin
     FillChar(Pages, SizeOf(Pages), $FF);
     Exit;
   end;
-  var P0, P1: Integer;
-  PageSpan(Cardinal((Buf shr 32) and $3FFF), Cardinal((Buf shr 48) and $3F), Cardinal((Buf shr 56) and $3F),
-    X + Max(W, 1) - 1, Y, Y + Max(H, 1) - 1, P0, P1);
-  AddPages(Pages, P0, P1);
+  AddRectPages(Pages, Cardinal((Buf shr 32) and $3FFF), Cardinal((Buf shr 48) and $3F), Cardinal((Buf shr 56) and $3F),
+    X, Y, X + Max(W, 1) - 1, Y + Max(H, 1) - 1);
+end;
+
+// The pages a transfer's destination area may cover (AddAreaPages).
+procedure TPS2GSRaster.MarkAreaWritten(Buf, Pos, Reg: UInt64; var Pages: TPS2GSPages);
+begin
+  FillChar(Pages, SizeOf(Pages), 0);
+  AddAreaPages(Pages, Buf, Pos, Reg);
 end;
 
 // Whether a page of Pages that the queued primitives wrote they drew
@@ -1952,17 +1992,7 @@ end;
 // Sync.
 procedure TPS2GSRaster.MarkPendingArea(const Regs: array of UInt64);
 begin
-  var Buf := Regs[0];
-  var Pos := Regs[1];
-  var Reg := Regs[2];
-  var DSAX := Integer((Pos shr 32) and $7FF);
-  var DSAY := Integer((Pos shr 48) and $7FF);
-  var X1 := Min(2047, DSAX + Integer(Reg and $FFF));
-  var Y1 := Min(2047, DSAY + Integer((Reg shr 32) and $FFF));
-  var P0, P1: Integer;
-  PageSpan(Cardinal((Buf shr 32) and $3FFF), Cardinal((Buf shr 48) and $3F), Cardinal((Buf shr 56) and $3F),
-    X1, DSAY, Y1, P0, P1);
-  MarkPages(FPendingWrites, P0, P1);
+  AddAreaPages(FPendingWrites, Regs[0], Regs[1], Regs[2]);
 end;
 
 procedure TPS2GSRaster.Draw(Kind: TPS2GSPrimitive; const V0, V1, V2: TPS2GSVertex);
@@ -3865,22 +3895,13 @@ begin
     FAccelerator.WritePages(0, 511)
   else
   begin
-    var PW := 64;
-    var PH := 32;
-    var PSM := Integer((Buf shr 56) and $3F);
-    case PSM of
-      PSMCT16, PSMCT16S, PSMZ16, PSMZ16S: PH := 64;
-      PSMT8: begin PW := 128; PH := 64; end;
-      PSMT4: begin PW := 128; PH := 128; end;
-    end;
-    var BW := Integer((Buf shr 48) and $3F);
-    if PW = 128 then BW := (BW + 1) shr 1;
-    var BP := Integer((Buf shr 32) and $3FFF);
-    // Use the actual stride, including zero/undersized widths and aliases.
-    // Extents beyond the end of VRAM wrap in ReadPages/WritePages.
-    var First := (BP shr 5) + (Y div PH) * BW;
-    var Last := ((BP + 31) shr 5) + ((Y + H - 1) div PH) * BW + (X + W - 1) div PW;
-    FAccelerator.WritePages(First, Last);
+    // The pages of the area (with the actual stride, zero/undersized widths
+    // and aliases included; wrapping past the end of VRAM).
+    var Pages, None: TPS2GSPages;
+    FillChar(Pages, SizeOf(Pages), 0);
+    FillChar(None, SizeOf(None), 0);
+    AddAreaPages(Pages, Buf, Pos, Reg);
+    FAccelerator.AccessPages(None, Pages);
   end;
   FXferGPURevision := FAccelerator.Revision;
 end;

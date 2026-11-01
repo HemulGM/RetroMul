@@ -5,6 +5,19 @@
 {$R *.res}
 
 uses
+  HW.EEPROM93Cxx in '..\..\source\hardware\HW.EEPROM93Cxx.pas',
+  HW.W65C02 in '..\..\source\hardware\cpu\HW.W65C02.pas',
+  Lynx.Cartridge in '..\..\source\cores\lynx\Lynx.Cartridge.pas',
+  Lynx.Console in '..\..\source\cores\lynx\Lynx.Console.pas',
+  Lynx.Emulation in '..\..\source\cores\lynx\Lynx.Emulation.pas',
+  Lynx.Firmware in '..\..\source\cores\lynx\Lynx.Firmware.pas',
+  Lynx.Mikey in '..\..\source\cores\lynx\Lynx.Mikey.pas',
+  Lynx.Suzy in '..\..\source\cores\lynx\Lynx.Suzy.pas',
+  Lynx.Types in '..\..\source\cores\lynx\Lynx.Types.pas',
+  Core.Platforms.Lynx.Adapter in '..\..\source\platforms\lynx\Core.Platforms.Lynx.Adapter.pas',
+  RM.Platforms.Lynx in '..\..\source\platforms\lynx\RM.Platforms.Lynx.pas',
+  RM.Platforms.Lynx.Settings in '..\..\source\platforms\lynx\RM.Platforms.Lynx.Settings.pas',
+  RM.Platforms.Lynx.Gamepads in '..\..\source\platforms\lynx\RM.Platforms.Lynx.Gamepads.pas',
   NDS.BIOS in '..\..\source\cores\nds\NDS.BIOS.pas',
   NDS.RTC in '..\..\source\cores\nds\NDS.RTC.pas',
   NDS.Geometry in '..\..\source\cores\nds\NDS.Geometry.pas',

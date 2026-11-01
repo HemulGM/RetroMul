@@ -1,4 +1,4 @@
-# RetroMul
+﻿# RetroMul
 
 ![RetroMul](https://github.com/HemulGM/RetroMul/blob/main/screen/screen0.png?raw=true)
 
@@ -8,7 +8,8 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 
 | System | ROM formats |
 | --- | --- |
-| [Atari 5200](source/cores/at5200/README.md) | `.a52`, Atari 5200 `.car`; `.bin`/`.rom` in the system folder; ZIP/7z supported, BIOS embedded |
+| [Atari 5200]| `.a52`, Atari 5200 `.car`; `.bin`/`.rom` in the system folder; ZIP/7z supported, BIOS embedded |
+| [Atari Lynx]| `.lnx`, `.lyx`, BS93 `.o` / `.com` / `.bll`; ZIP/7z/RAR supported, BIOS embedded |
 | NES / Famicom | `.nes` |
 | Game Boy | `.gb`, `.gbx` |
 | Game Boy Color | `.gbc`, `.gbx` |
@@ -24,9 +25,9 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 | Othello Multivision | `.mv` |
 | SEGA Master System / Mark III | `.sms` |
 | SEGA Game Gear | `.gg` |
-| MSX1 / MSX2 / MSX2+ (experimental) | `.rom`, `.mx1`, `.mx2`, `.mxp`, `.dsk`, `.cas`, `.wav`, `.zip` / `.7z` |
+| MSX1 / MSX2 / MSX2+| `.rom`, `.mx1`, `.mx2`, `.mxp`, `.dsk`, `.cas`, `.wav`, `.zip` / `.7z` |
 | SEGA Saturn | `.iso`, `.cue`, `.chd`, `.mds`, `.nrg` |
-| SEGA Dreamcast (experimental) | `.gdi`, `.cdi`, `.chd`, `.cue`, `.iso`, `.mds`, `.nrg`, homebrew `.elf`, multi-disc `.m3u` |
+| SEGA Dreamcast| `.gdi`, `.cdi`, `.chd`, `.cue`, `.iso`, `.mds`, `.nrg`, homebrew `.elf`, multi-disc `.m3u` |
 | Sony PlayStation (PS1) | `.cue`, `.chd`, `.iso`, `.mds`, `.nrg`, raw `.bin`, PS-X `.exe`, disc / executable `.zip`, multi-disc `.m3u` |
 | Sony PSP (experimental) | ELF/PRX/PBP, encrypted executables, ISO9660 `.iso`, CISO v1 `.cso`, single-image `.zip`; commercial compatibility is being validated |
 | ZX Spectrum family / clones | `.sna`, `.z80`, `.tap`, `.tzx`, `.trd`, `.scl`, `.dsk`, `.dck`, `.pro`, `.kdi`, `.ide`, `.mmc`, `.zip` / `.7z` |

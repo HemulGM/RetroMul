@@ -208,6 +208,11 @@ The tests run without Vulkan; `-Checked` enables checked core code.
 recompiler for VU1 and for VU0 micro programs (each with its own code arena);
 `interpreter` (the default) uses the original execution path. This is
 independent of `Video/Renderer` and can change during play. VU0 macro
+ADD/SUB/MUL/MADD/MSUB (broadcast, Q, I and ACC forms) are compiled once per
+opcode into a buffer of their own (operands, register routines, MAC/status
+flags, masked write) and called directly from the EE's generated code while
+no micro program runs; the routines for the host rounding are chosen when the
+EE starts running, which keeps rounding toward zero. Other macro
 instructions remain interpreted. VU0's spin probes check the TPC after each
 pair but run straight-line pairs (up to a branch's delay slot, an E bit or the
 loop's start) in one budget, which the per-pair budget checks keep exact;
@@ -267,8 +272,10 @@ the host result is moved one unit toward zero where its exact error (FMA for
 products, Fast2Sum for sums) shows it was rounded away from zero, within
 exponent ranges where every intermediate is normal whatever FTZ/DAZ say;
 other modes and ranges use the exact integer routines. The result stays live
-through a call-free lower half until the masked commit; Z/S extraction is vectorized and O/U
-groups are returned directly. Every input and rounding mode remains exact,
+through a call-free lower half until the masked commit (beside a lower half
+that calls a helper it is stored first); Z/S extraction is vectorized and O/U
+groups are returned directly. The four-field memory-operand kernels take the
+same corrected host arithmetic under round-to-nearest. Every input and rounding mode remains exact,
 using integer normalization outside the guarded common range. MADD/MSUB still
 round the product and sum separately. Callbacks, aliased data/register/code
 buffers and unsupported backends retain the memory-result path. This is not
@@ -278,18 +285,34 @@ Code is generated after 16 visits in blocks of up to 16 pairs, ending after
 branch/end delay slots. Compiled successors chain through a table within one
 native frame. The general path checks the budget, PC, both instruction words
 and decoded metadata at every pair; callback changes cannot run a stale pair.
+A scheduled span checks its words in code memory (it takes nothing from
+decoded metadata at run time).
 Callback-free spans also have a statically scheduled path: it validates the
 whole span, incoming dependency deadlines and pending queues before changing
-guest state. Internal stalls and final register-ready times are constants;
-flag-queue evolution is compiled symbolically, retaining exact stale tail
-slots; spans shorter than the four cycles flags take to land, and CLIP
-results, are queued at the end at run time as each pair would have queued
-them (FinishFastFlags). Spans have two pairs or more and may end with a
-DIV/SQRT/RSQRT pair, before which the older Q lands as the pair's preparation
-leaves it. Short budgets, trace capture, pending kicks/branches and unusual
-input latencies fall back to per-pair execution. Flag reads, EFU operations,
-division elsewhere in a span and XGKICK are observation boundaries, not
-deferred across such a span.
+guest state. Internal stalls and final register-ready times are constants.
+Pipeline ready times are not saved (a load or reset clears them), so every
+result already issued is ready three cycles into a span: only inputs read
+earlier are checked, and only results issued in a span's last three cycles
+get ready times written. The compiler simulates the MAC/status and clip
+queues through the span for the incoming queues it finds when it compiles
+(and for empty ones): what each slot, including stale tail slots, and the
+base end up holding, and what each pair's flag reads see. At the end the
+queues are written from that when the incoming ones were so; otherwise the
+events are replayed at run time as each pair would have queued them
+(FinishFastFlags). FCEQ/FCAND/FCOR/FCGET/FCSET and FSEQ/FSAND/FSOR/FMEQ/
+FMAND/FMOR may be in a span, which then requires the queues it was compiled
+for on entry: other incoming queues met there are noted once and the span is
+compiled again with a body for each; later mismatches run its first pair the
+general way. Q and P land after their latency counted from the span's start
+or from the DIV/SQRT/RSQRT or EFU op that last produced them (WAITQ/WAITP land
+them at once), so those may be anywhere in a span. Spans have two pairs or
+more. A budget within 64 pairs of its end records the span's LoopTrace
+entries in one go (or takes the general path when only some would be). A
+kick in progress takes its quadwords before each VU store and after the last
+pair, if it cannot complete inside the span. An input still in the pipeline
+on entry runs only the first pair the general way, then the successor.
+Trace capture and pending branches/ends fall back to per-pair execution;
+FSSET and XGKICK are boundaries.
 Re-uploaded block versions are reused only after the entry address and every
 word match (hashes alone are not trusted). The code arena is bounded to
 32 MiB per VU; resetting it clears the version and successor tables too.
@@ -307,6 +330,8 @@ live/unused flag queues. `-Checked` enables checked core code.
 Directed conversion/CLIP cases also cover four host rounding modes, vf0,
 overlapping upper/lower destinations, full/delayed CLIP queues and FCGET/FCSET.
 Scheduled queue tests cross multiple compiled spans in 64-pair programs.
+Random programs include flag reads, FCSET, DIV/WAITQ and EFU/WAITP ops; random
+macro operations are compared compiled and interpreted in every host rounding.
 The JIT build script accepts `-Defines PS2_FORCE_SSE2` for backend comparisons.
 Register kernels are compared against the native backend, Pascal model and
 one-field arithmetic in all rounding modes and FTZ/DAZ. Aliased hardware-buffer

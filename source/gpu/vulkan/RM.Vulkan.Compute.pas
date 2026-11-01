@@ -114,7 +114,8 @@ type
   public
     constructor Create;
     destructor Destroy; override;
-    // A buffer of Size bytes: HostVisible in memory the host maps (Data),
+    // A buffer of Size bytes: HostVisible in memory the host maps (Data; the
+    // device's own where it has such, which the host should only write),
     // else in device-local memory.
     function CreateBuffer(Size: UInt64; HostVisible: Boolean): TVulkanBuffer;
     // A buffer over Size bytes of host memory at Host (aligned to
@@ -612,13 +613,26 @@ begin
   var Wanted: Cardinal := VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
   if HostVisible then
     Wanted := VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT or VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  if not MemoryType(Req.memoryTypeBits, Wanted, TypeIndex) then
-    raise EVulkanError.Create('No Vulkan memory type for a buffer.');
   var Alloc := Default(VkMemoryAllocateInfo);
   Alloc.sType := VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
   Alloc.allocationSize := Req.size;
-  Alloc.memoryTypeIndex := TypeIndex;
-  CheckVulkan(FAPI.vkAllocateMemory(FDevice, @Alloc, nil, @Result.FMemory), 'vkAllocateMemory');
+  // Host-visible: in the device's own memory where the host can map it
+  // (resizable BAR), kernels reading it there rather than across the bus;
+  // else (or when that heap is full) in system memory.
+  Result.FMemory := 0;
+  if HostVisible and MemoryType(Req.memoryTypeBits, Wanted or VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, TypeIndex) then
+  begin
+    Alloc.memoryTypeIndex := TypeIndex;
+    if FAPI.vkAllocateMemory(FDevice, @Alloc, nil, @Result.FMemory) <> VK_SUCCESS then
+      Result.FMemory := 0;
+  end;
+  if Result.FMemory = 0 then
+  begin
+    if not MemoryType(Req.memoryTypeBits, Wanted, TypeIndex) then
+      raise EVulkanError.Create('No Vulkan memory type for a buffer.');
+    Alloc.memoryTypeIndex := TypeIndex;
+    CheckVulkan(FAPI.vkAllocateMemory(FDevice, @Alloc, nil, @Result.FMemory), 'vkAllocateMemory');
+  end;
   CheckVulkan(vkBindBufferMemory(FDevice, Result.FHandle, Result.FMemory, 0), 'vkBindBufferMemory');
   if HostVisible then
     CheckVulkan(vkMapMemory(FDevice, Result.FMemory, 0, Size, 0, @Result.FData), 'vkMapMemory');

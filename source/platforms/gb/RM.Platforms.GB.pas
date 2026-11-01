@@ -93,7 +93,7 @@ class procedure TGBPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('gb', 'Game Boy', 'GB',
     'Nintendo', 'GB DMG MGB', 'gb', ['gb'],
-    ['.gb', '.gbx', '.zip', '.7z'],
+    ['.gb', '.gbx'],
     'GameBoy', 'gb', 1);
 end;
 

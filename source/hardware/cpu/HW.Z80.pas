@@ -76,7 +76,7 @@ type
     Metadata: TZ80InstructionMetadata;
     Literal: Cardinal;
     Address: Cardinal;
-    DoublePrefixMode: Byte;
+    DoublePrefixMode: Byte; // IX/IY mode for DD/FD CB; execution resets State.RegisterMode.
   end;
 
 procedure ConstantInitialise;
@@ -809,7 +809,7 @@ begin
   var Value: Cardinal;
   if Instruction.DoublePrefixMode <> 0 then
   begin
-    if State.RegisterMode = CLOWNZ80_REGISTER_MODE_IX then
+    if Instruction.DoublePrefixMode = CLOWNZ80_REGISTER_MODE_IX then
       Operand := CLOWNZ80_OPERAND_IX_INDIRECT
     else
       Operand := CLOWNZ80_OPERAND_IY_INDIRECT;
@@ -878,7 +878,7 @@ end;
 procedure WriteOperand(var State: TZ80State; var Callbacks: TZ80ReadAndWriteCallbacks; var Instruction: TZ80Instruction; Operand: Integer; Value: Cardinal);
 begin
   var DoublePrefixOperand: Integer;
-  if State.RegisterMode = CLOWNZ80_REGISTER_MODE_IX then
+  if Instruction.DoublePrefixMode = CLOWNZ80_REGISTER_MODE_IX then
     DoublePrefixOperand := CLOWNZ80_OPERAND_IX_INDIRECT
   else
     DoublePrefixOperand := CLOWNZ80_OPERAND_IY_INDIRECT;
@@ -995,7 +995,7 @@ begin
       end
       else
       begin
-        Instruction.DoublePrefixMode := 1;
+        Instruction.DoublePrefixMode := State.RegisterMode;
         Opcode := InstructionMemoryRead(State, Callbacks);
         InternalCycles(State, Callbacks, (State.ProgramCounter + $FFFF) and $FFFF, 2);
         if State.RegisterMode = CLOWNZ80_REGISTER_MODE_IX then
@@ -1647,7 +1647,7 @@ begin
           State.F := Byte(State.F or FLAG_MASK_PARITY_OVERFLOW);
         State.F := State.F or Byte(ResultValue and $28);
         var Temp357 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        var Temp356 := Ord((Temp357 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp356 := Ord((Instruction.DoublePrefixMode <> 0) or (Temp357 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         InternalCycles(State, Callbacks, Instruction.Address, Temp356);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
       end;
@@ -1668,7 +1668,7 @@ begin
           State.F := Byte(State.F or FLAG_MASK_PARITY_OVERFLOW);
         State.F := State.F or Byte(ResultValue and $28);
         var Temp363 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        var Temp362 := Ord((Temp363 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp362 := Ord((Instruction.DoublePrefixMode <> 0) or (Temp363 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         InternalCycles(State, Callbacks, Instruction.Address, Temp362);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
       end;
@@ -1690,7 +1690,7 @@ begin
           State.F := Byte(State.F or FLAG_MASK_PARITY_OVERFLOW);
         State.F := State.F or Byte(ResultValue and $28);
         var Temp369 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        var Temp368 := Ord((Temp369 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp368 := Ord((Instruction.DoublePrefixMode <> 0) or (Temp369 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         InternalCycles(State, Callbacks, Instruction.Address, Temp368);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
       end;
@@ -1712,7 +1712,7 @@ begin
           State.F := Byte(State.F or FLAG_MASK_PARITY_OVERFLOW);
         State.F := State.F or Byte(ResultValue and $28);
         var Temp375 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        var Temp374 := Ord((Temp375 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp374 := Ord((Instruction.DoublePrefixMode <> 0) or (Temp375 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         InternalCycles(State, Callbacks, Instruction.Address, Temp374);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
       end;
@@ -1732,7 +1732,7 @@ begin
           State.F := Byte(State.F or FLAG_MASK_CARRY);
         State.F := State.F or Byte(ResultValue and $28);
         var Temp381 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        var Temp380 := Ord((Temp381 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp380 := Ord((Instruction.DoublePrefixMode <> 0) or (Temp381 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         InternalCycles(State, Callbacks, Instruction.Address, Temp380);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
       end;
@@ -1752,7 +1752,7 @@ begin
           State.F := Byte(State.F or FLAG_MASK_CARRY);
         State.F := State.F or Byte(ResultValue and $28);
         var Temp387 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        var Temp386 := Ord((Temp387 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp386 := Ord((Instruction.DoublePrefixMode <> 0) or (Temp387 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         InternalCycles(State, Callbacks, Instruction.Address, Temp386);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
       end;
@@ -1772,7 +1772,7 @@ begin
           State.F := Byte(State.F or FLAG_MASK_CARRY);
         State.F := State.F or Byte(ResultValue and $28);
         var Temp393 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        var Temp392 := Ord((Temp393 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp392 := Ord((Instruction.DoublePrefixMode <> 0) or (Temp393 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         InternalCycles(State, Callbacks, Instruction.Address, Temp392);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
       end;
@@ -1792,7 +1792,7 @@ begin
           State.F := Byte(State.F or FLAG_MASK_CARRY);
         State.F := State.F or Byte(ResultValue and $28);
         var Temp399 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        var Temp398 := Ord((Temp399 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp398 := Ord((Instruction.DoublePrefixMode <> 0) or (Temp399 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         InternalCycles(State, Callbacks, Instruction.Address, Temp398);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
       end;
@@ -1812,7 +1812,7 @@ begin
         else
           State.F := State.F or Byte(DestinationValue and $28);
         var Temp404 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        var Temp403 := Ord((Temp404 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp403 := Ord((Instruction.DoublePrefixMode <> 0) or (Temp404 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         InternalCycles(State, Callbacks, Instruction.Address, Temp403);
       end;
     CLOWNZ80_OPCODE_RES:
@@ -1820,7 +1820,7 @@ begin
         DestinationValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1]);
         ResultValue := DestinationValue and Cardinal(Instruction.Metadata.EmbeddedLiteral);
         var Temp406 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        var Temp405 := Ord((Temp406 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp405 := Ord((Instruction.DoublePrefixMode <> 0) or (Temp406 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         InternalCycles(State, Callbacks, Instruction.Address, Temp405);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
       end;
@@ -1829,7 +1829,7 @@ begin
         DestinationValue := ReadOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1]);
         ResultValue := DestinationValue or Cardinal(Instruction.Metadata.EmbeddedLiteral);
         var Temp408 := Ord((Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_HL_INDIRECT) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IX_INDIRECT));
-        var Temp407 := Ord((Temp408 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
+        var Temp407 := Ord((Instruction.DoublePrefixMode <> 0) or (Temp408 <> 0) or (Instruction.Metadata.Operands[1] = CLOWNZ80_OPERAND_IY_INDIRECT));
         InternalCycles(State, Callbacks, Instruction.Address, Temp407);
         WriteOperand(State, Callbacks, Instruction, Instruction.Metadata.Operands[1], ResultValue);
       end;

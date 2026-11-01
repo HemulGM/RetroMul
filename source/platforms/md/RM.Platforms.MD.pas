@@ -70,7 +70,7 @@ class procedure TMDPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('md', 'MegaDrive', 'MegaDrive',
     'Sega', 'MD Genesis Sega CD Mega CD 32X', 'megadrive', ['megadrive'],
-    ['.smd', '.bin', '.gen', '.md', '.zip', '.7z'],
+    ['.smd', '.bin', '.gen', '.md'],
     'MegaDrive', 'md', 4);
   TPlatformRegistry.RegisterPlatform('segacd', 'Sega CD', 'Sega CD',
     'Sega', 'Mega CD CD32X 32X CD', 'segacd', ['segacd', 'megacd'],
@@ -78,7 +78,7 @@ begin
     'MegaDrive', 'md', 4);
   TPlatformRegistry.RegisterPlatform('sega32x', 'Sega 32X', 'Sega 32X',
     'Sega', '32X Mars Super 32X', 'sega32x', ['sega32x', '32x'],
-    ['.32x', '.bin', '.gen', '.md', '.smd', '.zip', '.7z'],
+    ['.32x', '.bin', '.gen', '.md', '.smd'],
     'MegaDrive', 'md', 4);
 end;
 

@@ -4,7 +4,7 @@ interface
 
 uses
   System.Classes, System.SysUtils, System.Generics.Collections, Core.Storage,
-  Core.Emulation, Core.CD.Disc;
+  Core.Emulation, Core.CD.Disc, Core.Archive.Container;
 
 type
   TRomFormatInfo = record
@@ -31,7 +31,6 @@ type
 
   TArchiveCandidate = reference to function(Context: TCoreLoadContext; const Name: string; Size: UInt64): Boolean;
 
-  TArchiveVariants = reference to function(Context: TCoreLoadContext): Boolean;
   // -1: no preference; 0: retain OldName; 1: prefer NewName.
 
   TArchivePreference = reference to function(const OldName, NewName: string): Integer;
@@ -56,12 +55,15 @@ type
     FStorage: IStorage;
     FRomName, FSourceName: string;
     FData: TBytes;
+    FSourceHash: TBytes;
     FDataLoaded: Boolean;
     FDisc: TCDDisc;
     FDiscChecked, FDiscSource: Boolean;
-    FConvertedArchive, FArchiveEntry: Boolean;
+    FArchive: IArchiveContainer;
+    FArchiveEntry: Boolean;
     FHeaderRecognized: Boolean;
     function GetData: TBytes;
+    function GetSourceHash: TBytes;
     function GetEffectiveStorage: IStorage;
     function GetDisc: TCDDisc;
   public
@@ -83,9 +85,10 @@ type
     property EffectiveStorage: IStorage read GetEffectiveStorage;
     property RomName: string read FRomName;
     property SourceName: string read FSourceName;
+    property SourceHash: TBytes read GetSourceHash;
     property Data: TBytes read GetData;
     property Disc: TCDDisc read GetDisc;
-    property ConvertedArchive: Boolean read FConvertedArchive;
+    property Archive: IArchiveContainer read FArchive;
     property ArchiveEntry: Boolean read FArchiveEntry;
     property HeaderRecognized: Boolean read FHeaderRecognized;
   end;
@@ -103,7 +106,6 @@ type
     Id: string;
     ArchiveExtensions: TArray<string>;
     ExtraArchiveCandidate: TArchiveCandidate;
-    AllowArchiveVariants: TArchiveVariants;
     ArchivePreference: TArchivePreference;
     ArchiveImageName: TArchiveImageName;
     MaxArchiveImageSize: Int64;
@@ -135,8 +137,8 @@ function ImageMatch(Context: TCoreLoadContext; const Id: string; const Creator: 
 implementation
 
 uses
-  System.StrUtils, System.Zip, System.Math, System.Generics.Defaults,
-  Core.MediaArchive, Core.ArchiveStorage;
+  System.StrUtils, System.Hash, System.Math, System.Generics.Defaults,
+  Core.MediaArchive;
 
 const
   MAX_ARCHIVE_IMAGE_SIZE = 64 * 1024 * 1024;
@@ -261,6 +263,44 @@ begin
     Result := TStorage.Default;
 end;
 
+function TCoreLoadContext.GetSourceHash: TBytes;
+begin
+  if Length(FSourceHash) = 0 then
+  begin
+    var Saved := FStream.Position;
+    var Hash := THashSHA2.Create;
+    var Failed := False;
+    try
+      try
+        FStream.Position := 0;
+        var Buffer: array[0..65535] of Byte;
+        while True do
+        begin
+          TStorage.CheckReadCancelled;
+          var N := FStream.Read(Buffer, SizeOf(Buffer));
+          if N = 0 then
+            Break;
+          if (N < 0) or (N > SizeOf(Buffer)) then
+            raise EReadError.Create('Invalid source hash read');
+          Hash.Update(Buffer, N);
+        end;
+      except
+        Failed := True;
+        raise;
+      end;
+    finally
+      try
+        FStream.Position := Saved;
+      except
+        if not Failed then
+          raise;
+      end;
+    end;
+    FSourceHash := Hash.HashAsBytes;
+  end;
+  Result := Copy(FSourceHash);
+end;
+
 function TCoreLoadContext.GetData: TBytes;
 begin
   if not FDataLoaded then
@@ -273,19 +313,11 @@ end;
 
 procedure TCoreLoadContext.PrepareArchive;
 begin
-  if not IsMediaArchive(FSourceName) or HasExtension(['.zip']) then
+  if FArchiveEntry or (FArchive <> nil) or not IsMediaArchive(FSourceName) then
     Exit;
-  var Bytes := DecodeMediaArchive(FSourceName, Data);
-  FConvertedArchive := True;
-  FSourceName := ChangeFileExt(FSourceName, '.zip');
-
-  // Cores may reopen media after the factory returns (e.g. CD workers).
-  // Retain canonical data through their storage reference, with original paths.
-  FStorage := ArchiveStorage(EffectiveStorage, FRomName, FSourceName, Bytes);
-  FOwnedStream := TBytesStream.Create(Bytes);
+  FArchive := OpenMediaArchive(FStream, FSourceName, EffectiveStorage);
+  FOwnedStream := TArchiveSourceStream.Create(FStream, FArchive);
   FStream := FOwnedStream;
-  FData := Bytes;
-  FDataLoaded := True;
 end;
 
 procedure TCoreLoadContext.LoadArchiveEntry(const Bytes: TBytes; const Name: string);
@@ -298,6 +330,8 @@ begin
   FData := Bytes;
   FDataLoaded := True;
   FSourceName := Name;
+  FSourceHash := nil;
+  FArchive := nil;
   FArchiveEntry := True;
 end;
 
@@ -522,25 +556,22 @@ end;
 
 procedure SelectArchiveImage(Context: TCoreLoadContext);
 begin
-  if not Context.HasExtension(['.zip']) then
+  if Context.Archive = nil then
     Exit;
-  var Archive := TZipFile.Create;
+  var Archive := Context.Archive;
   var Saved := Context.Stream.Position;
   try
-    Archive.Open(Context.Stream, zmRead);
     var Candidate := -1;
-    var AllowVariants := Context.ConvertedArchive;
-    for var Registration in Registrations do
-      if Assigned(Registration.AllowArchiveVariants) and Registration.AllowArchiveVariants(Context) then
-        AllowVariants := True;
-    for var i := 0 to Archive.FileCount - 1 do
+    for var i := 0 to Archive.Count - 1 do
     begin
       TStorage.CheckReadCancelled;
-      var Name := Archive.FileNames[i];
+      if Archive.Entries[i].IsDirectory then
+        Continue;
+      var Name := Archive.Entries[i].Name;
       if Name.Contains('__MACOSX/') or ExtractFileName(Name).StartsWith('._') or
         Name.EndsWith('/') or Name.EndsWith('\') then
         Continue;
-      var Size := Archive.FileInfo[i].UncompressedSize64;
+      var Size := Archive.Entries[i].Size;
       var Suitable := False;
       for var Registration in Registrations do
       begin
@@ -550,7 +581,7 @@ begin
           Break;
       end;
       // No global extension whitelist: every registered image recognizer also
-      // sees unknown entry names, so content detection also works in ZIPs.
+      // sees unknown entry names, so content detection also works in archives.
       if not Suitable and (Size <= MAX_ARCHIVE_IMAGE_SIZE) then
       begin
         var Bytes: TBytes;
@@ -580,23 +611,20 @@ begin
         Continue;
       if Candidate >= 0 then
       begin
-        var OldName := Archive.FileNames[Candidate];
-        if not AllowVariants then
-        begin
-          var Preference := -1;
-          for var Registration in Registrations do
-            if Assigned(Registration.ArchivePreference) then
-            begin
-              Preference := Registration.ArchivePreference(OldName, Name);
-              if Preference >= 0 then
-                Break;
-            end;
-          if Preference = 0 then
-            Continue;
-          if Preference < 0 then
-            raise EReadError.Create('Cartridge ZIP must contain one cartridge or disk image');
-        end
-        else
+        var OldName := Archive.Entries[Candidate].Name;
+        var Preference := -1;
+        for var Registration in Registrations do
+          if Assigned(Registration.ArchivePreference) then
+          begin
+            Preference := Registration.ArchivePreference(OldName, Name);
+            if Preference >= 0 then
+              Break;
+          end;
+        if Preference = 0 then
+          Continue;
+        // Identical archive contents must select the same image. Prefer
+        // verified dumps over alternates/bad dumps, then use a stable name tie.
+        if Preference < 0 then
         begin
           var Score := CartridgeVariantScore(Name);
           var Previous := CartridgeVariantScore(OldName);
@@ -608,25 +636,23 @@ begin
     end;
     if Candidate >= 0 then
     begin
-      var Name := Archive.FileNames[Candidate];
+      var Name := Archive.Entries[Candidate].Name;
       var Limit := Int64(MAX_ARCHIVE_IMAGE_SIZE);
       for var Registration in Registrations do
         if MatchText(ExtractFileExt(Name), Registration.ArchiveExtensions) then
           Limit := Max(Limit, Registration.MaxArchiveImageSize);
-      if Archive.FileInfo[Candidate].UncompressedSize64 > UInt64(Limit) then
+      if Archive.Entries[Candidate].Size > UInt64(Limit) then
         raise EReadError.CreateFmt('Cartridge archive image exceeds %d MiB', [Limit div (1024 * 1024)]);
       for var Registration in Registrations do
         if Assigned(Registration.ArchiveImageName) then
           Name := Registration.ArchiveImageName(Name);
       var Bytes: TBytes;
       Archive.Read(Candidate, Bytes);
-      // Close the archive before replacing its backing stream.
-      Archive.Close;
       Context.LoadArchiveEntry(Bytes, Name);
       Exit;
     end;
   finally
-    Archive.Free;
+    Archive := nil;
     if not Context.ArchiveEntry then
       Context.Stream.Position := Saved;
   end;

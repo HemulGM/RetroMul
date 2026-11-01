@@ -3,7 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Storage, Core.CD.Disc;
+  System.SysUtils, System.Classes, Core.Archive.Container, Core.Storage,
+  Core.CD.Disc;
 
 const
   ROM_SYSTEM_NEOGEO = 'neogeo';
@@ -11,10 +12,6 @@ const
   ROM_SYSTEM_NEOGEOAES = 'neogeoaes';
   ROM_CORE_ID_NEOGEO = 'NEOGEO';
   ROM_CORE_ID_NEOGEOCD = 'NEOGEOCD';
-
-const
-  ROM_EXTENSION_ZIP = '.zip';
-  ROM_EXTENSION_7Z = '.7z';
 
 const
   NEOGEO_ROM_SIGNATURE: AnsiString = 'NEO' + #1;
@@ -33,7 +30,7 @@ type
   TNeoGeoCartridge = class
   private
     procedure LoadNeo(const Data: TBytes);
-    procedure LoadZip(const Data: TBytes; const Storage: IStorage; const Location: string);
+    procedure LoadContainer(const Archive: IArchiveContainer; const Storage: IStorage; const Location: string);
     procedure Validate;
   public
     Disc: TCDDisc;
@@ -46,7 +43,8 @@ type
     SetName: string;
     FixedBankType: Integer;
     Protection: string;
-    constructor Create(const Data: TBytes; const Storage: IStorage = nil; const Location: string = '');
+    constructor Create(Stream: TStream; const Storage: IStorage; const Location: string); overload;
+    constructor Create(const Data: TBytes; const Storage: IStorage = nil; const Location: string = ''); overload;
     constructor CreateCD(Stream: TStream; const Storage: IStorage; const Location: string; const BIOSName: string = ''; const Model: string = 'auto');
     destructor Destroy; override;
     procedure ConfigureHardware(const Storage: IStorage; const Location, Model, Country, BIOSName: string);
@@ -61,7 +59,7 @@ function ReadNeoGeoData(Stream: TStream): TBytes;
 implementation
 
 uses
-  Core.Archive.SevenZip, System.Zip, System.IOUtils, System.Hash, NeoGeo.RomSets,
+  Core.MediaArchive, System.IOUtils, System.Hash, NeoGeo.RomSets,
   NeoGeo.Protection, NeoGeo.Bootleg, NeoGeo.PCB;
 
 {$R NeoGeo.Firmware.res}
@@ -133,7 +131,36 @@ begin
     CompareMem(@Data[0], PAnsiChar(NEOGEO_ROM_SIGNATURE), NEOGEO_ROM_MAGIC_SIZE) then
     LoadNeo(Data)
   else
-    LoadZip(Data, Storage, Location);
+  begin
+    var Input := TBytesStream.Create(Data);
+    try
+      LoadContainer(OpenMediaArchive(Input, Location, Storage), Storage, Location);
+    finally
+      Input.Free;
+    end;
+  end;
+  Validate;
+end;
+
+constructor TNeoGeoCartridge.Create(Stream: TStream; const Storage: IStorage; const Location: string);
+begin
+  inherited Create;
+  Region := 2;
+  CabinetDIPs := $FF;
+  CardSize := 2048;
+  BIOS := ResourceBytes('NG_MVS_BIOS');
+  SwapWords(BIOS);
+  FixedBIOS := ResourceBytes('NG_FIX_BIOS');
+  AudioBIOS := ResourceBytes('NG_AUDIO_BIOS');
+  ZoomROM := ResourceBytes('NG_ZOOM');
+  var Saved := Stream.Position;
+  var Prefix: array[0..3] of AnsiChar;
+  var N := Stream.Read(Prefix, SizeOf(Prefix));
+  Stream.Position := Saved;
+  if (N = SizeOf(Prefix)) and CompareMem(@Prefix[0], PAnsiChar(NEOGEO_ROM_SIGNATURE), NEOGEO_ROM_MAGIC_SIZE) then
+    LoadNeo(ReadNeoGeoData(Stream))
+  else
+    LoadContainer(OpenMediaArchive(Stream, Location, Storage), Storage, Location);
   Validate;
 end;
 
@@ -236,30 +263,22 @@ procedure TNeoGeoCartridge.ConfigureHardware(const Storage: IStorage; const Loca
         if Storage.Exists(TPath.Combine(Folder, Name)) then
           Exit(Storage.ReadBytes(TPath.Combine(Folder, Name)));
 
-        var ZipPath := TPath.Combine(Folder, 'neogeo.zip');
-        if not Storage.Exists(ZipPath) then
-          ZipPath := ChangeFileExt(ZipPath, ROM_EXTENSION_7Z);
-        if not Storage.Exists(ZipPath) then
+        var ArchivePath := FindMediaArchive(Storage, TPath.Combine(Folder, 'neogeo'));
+        if ArchivePath = '' then
           Continue;
 
-        var Input := Storage.OpenRead(ZipPath);
-        var Zip := TZipFile.Create;
+        var Input := Storage.OpenRead(ArchivePath);
+        var Container: IArchiveContainer;
         try
-          if SameText(ExtractFileExt(ZipPath), ROM_EXTENSION_7Z) then
-          begin
-            var PackedData := SevenZipAsZip(ReadNeoGeoData(Input));
-            FreeAndNil(Input);
-            Input := TBytesStream.Create(PackedData);
-          end;
-          Zip.Open(Input, zmRead);
-          for var I := 0 to Zip.FileCount - 1 do
-            if SameText(ExtractFileName(Zip.FileNames[I]), Name) then
+          Container := OpenMediaArchive(Input, ArchivePath, Storage);
+          for var I := 0 to Container.Count - 1 do
+            if not Container.Entries[I].IsDirectory and SameText(ExtractFileName(Container.Entries[I].Name), Name) then
             begin
-              Zip.Read(I, Result);
+              Container.Read(I, Result);
               Exit;
             end;
         finally
-          Zip.Free;
+          Container := nil;
           Input.Free;
         end;
       end;
@@ -398,54 +417,54 @@ begin
   SetName := TEncoding.ASCII.GetString(Data, NEOGEO_ROM_NAME_OFFSET, NEOGEO_ROM_NAME_SIZE).Trim([#0, ' ']);
 end;
 
-procedure TNeoGeoCartridge.LoadZip(const Data: TBytes; const Storage: IStorage; const Location: string);
+procedure TNeoGeoCartridge.LoadContainer(const Archive: IArchiveContainer; const Storage: IStorage; const Location: string);
 var
-  Archive, Parent, Firmware: TZipFile;
-  MainStream, ParentStream, FirmwareStream: TStream;
-  Ancestors: TArray<TZipFile>;
+  Parent, Firmware: IArchiveContainer;
+  ParentStream, FirmwareStream: TStream;
+  Ancestors: TArray<IArchiveContainer>;
   AncestorStreams: TArray<TStream>;
 
-  function FindFile(Zip: TZipFile; const Name: string): Integer;
+  function FindFile(Container: IArchiveContainer; const Name: string): Integer;
   begin
     Result := -1;
-    if Zip = nil then
+    if Container = nil then
       Exit;
 
-    for var i := 0 to Zip.FileCount - 1 do
-      if SameText(ExtractFileName(Zip.FileNames[i]), Name) then
+    for var i := 0 to Container.Count - 1 do
+      if not Container.Entries[i].IsDirectory and SameText(ExtractFileName(Container.Entries[i].Name), Name) then
         Exit(i);
   end;
 
-  function ReadEntry(Zip: TZipFile; Index: Integer): TBytes;
+  function ReadEntry(Container: IArchiveContainer; Index: Integer): TBytes;
   begin
-    var Header := Zip.FileInfo[Index];
-    if Header.UncompressedSize > 64 * 1024 * 1024 then
-      raise EReadError.Create('Neo Geo ZIP member exceeds 64 MiB');
+    var Header := Container.Entries[Index];
+    if Header.Size > 64 * 1024 * 1024 then
+      raise EReadError.Create('Neo Geo archive member exceeds 64 MiB');
 
-    Zip.Read(Index, Result);
+    Container.Read(Index, Result);
   end;
 
   function Chip(const Name, CRC: string): TBytes;
   begin
-    var Zip := Archive;
-    var Index := FindFile(Zip, Name);
+    var Container := Archive;
+    var Index := FindFile(Container, Name);
     if Index < 0 then
     begin
-      Zip := Parent;
-      Index := FindFile(Zip, Name);
+      Container := Parent;
+      Index := FindFile(Container, Name);
     end;
 
-    if (Index < 0) or not SameText(IntToHex(Zip.FileInfo[Index].CRC32, 8), CRC) then
+    if (Index < 0) or not SameText(IntToHex(Container.Checksum(Index), 8), CRC) then
     begin
       // CRC aliases allow older ROM-set filenames, without guessing chip order.
-      var Candidates := TArray<TZipFile>.Create(Archive, Parent);
+      var Candidates := TArray<IArchiveContainer>.Create(Archive, Parent);
       Candidates := Candidates + Ancestors;
       for var Candidate in Candidates do
         if Candidate <> nil then
-          for var i := 0 to Candidate.FileCount - 1 do
-            if SameText(IntToHex(Candidate.FileInfo[i].CRC32, 8), CRC) then
+          for var i := 0 to Candidate.Count - 1 do
+            if SameText(IntToHex(Candidate.Checksum(i), 8), CRC) then
             begin
-              Zip := Candidate;
+              Container := Candidate;
               Index := i;
               Break;
             end;
@@ -454,36 +473,24 @@ var
     if Index < 0 then
       raise EReadError.Create('Missing Neo Geo ROM: ' + Name);
 
-    if not SameText(IntToHex(Zip.FileInfo[Index].CRC32, 8), CRC) then
+    if not SameText(IntToHex(Container.Checksum(Index), 8), CRC) then
       raise EReadError.Create('Incorrect Neo Geo ROM CRC: ' + Name);
 
-    Result := ReadEntry(Zip, Index);
+    Result := ReadEntry(Container, Index);
   end;
 
-  procedure OpenSibling(const Name: string; out Zip: TZipFile; out Stream: TStream);
+  procedure OpenSibling(const Name: string; out Container: IArchiveContainer; out Stream: TStream);
   begin
     if (Storage = nil) or (Location = '') or Location.StartsWith('content://') then
       Exit;
 
-    var Path := TPath.Combine(ExtractFilePath(Location.Replace('/', PathDelim)), Name + ROM_EXTENSION_ZIP);
-    if not Storage.Exists(Path) then
-      Path := ChangeFileExt(Path, ROM_EXTENSION_7Z);
-    if not Storage.Exists(Path) then
+    var Path := FindMediaArchive(Storage,
+      TPath.Combine(ExtractFilePath(Location.Replace('/', PathDelim)), Name));
+    if Path = '' then
       Exit;
 
     Stream := Storage.OpenRead(Path);
-    if SameText(ExtractFileExt(Path), ROM_EXTENSION_7Z) then
-    begin
-      var PackedData: TBytes;
-      try
-        PackedData := SevenZipAsZip(ReadNeoGeoData(Stream));
-      finally
-        FreeAndNil(Stream);
-      end;
-      Stream := TBytesStream.Create(PackedData);
-    end;
-    Zip := TZipFile.Create;
-    Zip.Open(Stream, zmRead);
+    Container := OpenMediaArchive(Stream, Path, Storage);
   end;
 
   procedure OverrideFirmware(const Name: string; var Target: TBytes; Swapped: Boolean);
@@ -546,31 +553,26 @@ var
   end;
 
 begin
-  Archive := nil;
   Parent := nil;
   Firmware := nil;
-  MainStream := nil;
   ParentStream := nil;
   FirmwareStream := nil;
   try
-    MainStream := TBytesStream.Create(Data);
-    Archive := TZipFile.Create;
-    Archive.Open(MainStream, zmRead);
     SetName := ChangeFileExt(ExtractFileName(Location.Replace('/', PathDelim)), '').ToLower;
     var CRCs: TArray<string>;
-    SetLength(CRCs, Archive.FileCount);
-    for var i := 0 to Archive.FileCount - 1 do
-      CRCs[i] := IntToHex(Archive.FileInfo[i].CRC32, 8);
+    SetLength(CRCs, Archive.Count);
+    for var i := 0 to Archive.Count - 1 do
+      CRCs[i] := IntToHex(Archive.Checksum(i), 8);
 
     var Description := SelectNeoGeoSet(SetName, CRCs);
     if Description = '' then
     begin
-      SetName := IdentifyNeoGeoSet(Archive.FileNames);
+      SetName := IdentifyNeoGeoSet(Archive.Names);
       Description := SelectNeoGeoSet(SetName, CRCs);
     end;
 
     if Description = '' then
-      raise EReadError.Create('Unknown Neo Geo ZIP ROM set; use a named MAME set or an unencrypted .neo image');
+      raise EReadError.Create('Unknown Neo Geo archive ROM set; use a named MAME set or an unencrypted .neo image');
 
     var Parts := Description.Split(['|']);
     if Parts[2] <> '1' then
@@ -590,26 +592,26 @@ begin
         Break;
 
       ParentName := ParentParts[1];
-      var Zip: TZipFile := nil;
+      var Container: IArchiveContainer := nil;
       var Stream: TStream := nil;
       try
-        OpenSibling(ParentName, Zip, Stream);
-        if Zip = nil then
+        OpenSibling(ParentName, Container, Stream);
+        if Container = nil then
           Break;
 
-        Ancestors := Ancestors + [Zip];
+        Ancestors := Ancestors + [Container];
         AncestorStreams := AncestorStreams + [Stream];
       except
-        Zip.Free;
+        Container := nil;
         Stream.Free;
         raise;
       end;
     end;
 
-    for var Zip in TArray<TZipFile>.Create(Parent) + Ancestors do
-      if Zip <> nil then
-        for var i := 0 to Zip.FileCount - 1 do
-          CRCs := CRCs + [IntToHex(Zip.FileInfo[i].CRC32, 8)];
+    for var Container in TArray<IArchiveContainer>.Create(Parent) + Ancestors do
+      if Container <> nil then
+        for var i := 0 to Container.Count - 1 do
+          CRCs := CRCs + [IntToHex(Container.Checksum(i), 8)];
 
     Description := SelectNeoGeoSet(SetName, CRCs);
     Parts := Description.Split(['|']);
@@ -863,16 +865,13 @@ begin
     if Length(SamplesB) = 0 then
       SamplesB := SamplesA;
   finally
-    Firmware.Free;
-    for var Zip in Ancestors do
-      Zip.Free;
+    Firmware := nil;
+    Ancestors := nil;
     for var Stream in AncestorStreams do
       Stream.Free;
-    Parent.Free;
-    Archive.Free;
+    Parent := nil;
     FirmwareStream.Free;
     ParentStream.Free;
-    MainStream.Free;
   end;
 end;
 

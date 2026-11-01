@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.UITypes, GW.CPU, GW.Catalog,
-  GW.MGW.Package, GW.Artwork, Core.Emulation.Types;
+  GW.MGW.Package, GW.Artwork, Core.Emulation.Types, Core.Archive.Container;
 
 type
   TGWLayer = GW.Artwork.TGWLayer;
@@ -14,22 +14,26 @@ type
   TGWCartridge = class
   private
     FRenderer: IGWArtworkRenderer;
+    procedure Initialize(const Renderer: IGWArtworkRenderer);
     procedure LoadGW(const Bytes: TBytes);
-    procedure LoadMAME(const Bytes: TBytes; const Name: string);
+    procedure LoadMAME(const Container: IArchiveContainer; const Name: string);
   public
     MGW: TMGWPackage;
     Model: TGWCPUModel;
     RMask, SoundMode, DecayPivot, DecayLength, FixedRow: Integer;
     GWInputFallback: Boolean;
-    ProgramData, MelodyData, IdentityData: TBytes;
+    ProgramData, MelodyData, IdentityData, SnapshotHash: TBytes;
     Keys: TGWKeyMatrix;
     BA, B: Cardinal;
     Title: string;
     Artwork: TGWArtwork;
     destructor Destroy; override;
-    constructor Create(const Bytes: TBytes; const Name: string; const Renderer: IGWArtworkRenderer = nil);
+    constructor Create(const Bytes: TBytes; const Name: string; const Renderer: IGWArtworkRenderer = nil; const Container: IArchiveContainer = nil); overload;
+    constructor Create(const Container: IArchiveContainer; const Name: string; const Renderer: IGWArtworkRenderer = nil); overload;
     function SupportedButtons: TEmulatorButtons;
-    class function Recognizes(const Bytes: TBytes; const Name: string): Boolean; static;
+    class function Recognizes(const Container: IArchiveContainer; const Name: string): Boolean; overload; static;
+    class function Recognizes(const Bytes: TBytes; const Name: string): Boolean; overload; static;
+    class function Recognizes(Stream: TStream; const Name: string): Boolean; overload; static;
   end;
 
 function GWColor565(Value: Word): TAlphaColor;
@@ -37,7 +41,7 @@ function GWColor565(Value: Word): TAlphaColor;
 implementation
 
 uses
-  System.Zip, System.ZLib, System.Math, CHD.LZMA;
+  Core.MediaArchive, System.Hash, System.ZLib, System.Math, CHD.LZMA;
 
 const
   MaxData = 8 * 1024 * 1024;
@@ -205,51 +209,114 @@ end;
 
 class function TGWCartridge.Recognizes(const Bytes: TBytes; const Name: string): Boolean;
 begin
-  Result := SameText(ExtractFileExt(Name), '.mgw') or Magic(Bytes, 'BZh') or SameText(ExtractFileExt(Name), '.gw') or Magic(Bytes, 'SM5') or
-    Magic(Bytes, 'ZLIB') or Magic(Bytes, 'LZMA') or Magic(Bytes, #$04#$22#$4D#$18);
-  if not Result and SameText(ExtractFileExt(Name), '.zip') then
-  begin
-    var Info: TGWModelInfo;
-    Result := FindGWModel(ChangeFileExt(ExtractFileName(Name), ''), Info);
-    if not Result then
-    begin
-      var Stream := TBytesStream.Create(Bytes);
-      var Zip := TZipFile.Create;
-      try
-        Zip.Open(Stream, TZipMode.zmRead);
-        for var Entry in Zip.FileNames do
-          if SameText(ExtractFileExt(Entry), '.gw') or
-            (SameText(ExtractFileExt(Entry), '.svg') and ExtractFileName(Entry).StartsWith('gnw_', True)) then
-            Exit(True);
-      finally
-        Zip.Free;
-        Stream.Free;
-      end;
-    end;
+  var Stream := TBytesStream.Create(Bytes);
+  try
+    Result := Recognizes(Stream, Name);
+  finally
+    Stream.Free;
   end;
 end;
 
-constructor TGWCartridge.Create(const Bytes: TBytes; const Name: string; const Renderer: IGWArtworkRenderer);
+class function TGWCartridge.Recognizes(Stream: TStream; const Name: string): Boolean;
 begin
-  inherited Create;
+  var Saved := Stream.Position;
+  try
+    var Prefix: TBytes;
+    SetLength(Prefix, 4);
+    var Count := 0;
+    while Count < Length(Prefix) do
+    begin
+      var Read := Stream.Read(Prefix[Count], Length(Prefix) - Count);
+      if Read = 0 then
+        Break;
+      if Read < 0 then
+        raise EReadError.Create('Invalid stream read count');
+      Inc(Count, Read);
+    end;
+    SetLength(Prefix, Count);
+    Result := SameText(ExtractFileExt(Name), '.mgw') or Magic(Prefix, 'BZh') or
+      SameText(ExtractFileExt(Name), '.gw') or Magic(Prefix, 'SM5') or
+      Magic(Prefix, 'ZLIB') or Magic(Prefix, 'LZMA') or Magic(Prefix, #$04#$22#$4D#$18);
+    if not Result and IsMediaArchive(Name) then
+    begin
+      Stream.Position := Saved;
+      Result := Recognizes(OpenMediaArchive(Stream, Name), Name);
+    end;
+  finally
+    Stream.Position := Saved;
+  end;
+end;
+
+class function TGWCartridge.Recognizes(const Container: IArchiveContainer; const Name: string): Boolean;
+begin
+  Result := False;
+  if Container = nil then
+    Exit;
+  var Info: TGWModelInfo;
+  if FindGWModel(ChangeFileExt(ExtractFileName(Name), ''), Info) then
+    Exit(True);
+  for var I := 0 to Container.Count - 1 do
+  begin
+    var Entry := Container.Entries[I];
+    if Entry.IsDirectory then
+      Continue;
+    if SameText(ExtractFileExt(Entry.Name), '.gw') or
+      (SameText(ExtractFileExt(Entry.Name), '.svg') and ExtractFileName(Entry.Name).StartsWith('gnw_', True)) then
+      Exit(True);
+  end;
+end;
+
+procedure TGWCartridge.Initialize(const Renderer: IGWArtworkRenderer);
+begin
   FRenderer := Renderer;
   if FRenderer = nil then
     FRenderer := DefaultGWArtworkRenderer;
-  Require((Length(Bytes) > 0) and (Length(Bytes) <= MaxData), 'empty or oversized package');
-  IdentityData := Copy(Bytes);
   FixedRow := -1;
   DecayPivot := 8;
   DecayLength := 17;
   SoundMode := 1;
+end;
+
+constructor TGWCartridge.Create(const Container: IArchiveContainer; const Name: string; const Renderer: IGWArtworkRenderer);
+begin
+  inherited Create;
+  Require(Container <> nil, 'missing archive container');
+  Initialize(Renderer);
+  LoadMAME(Container, Name);
+  var IdentityHash := THashSHA2.Create;
+  IdentityHash.Update(IdentityData);
+  SnapshotHash := IdentityHash.HashAsBytes;
+end;
+
+constructor TGWCartridge.Create(const Bytes: TBytes; const Name: string; const Renderer: IGWArtworkRenderer; const Container: IArchiveContainer);
+begin
+  inherited Create;
+  Initialize(Renderer);
+  Require((Length(Bytes) > 0) and (Length(Bytes) <= MaxData), 'empty or oversized package');
+  IdentityData := Copy(Bytes);
   if Magic(Bytes, 'BZh') then
   begin
     MGW := TMGWPackage.Create(Bytes);
     Title := ChangeFileExt(ExtractFileName(Name), '');
   end
-  else if Magic(Bytes, 'PK' + #$03 + #$04) then
-    LoadMAME(Bytes, Name)
+  else if Container <> nil then
+    LoadMAME(Container, Name)
+  else if Magic(Bytes, 'SM5') or Magic(Bytes, 'ZLIB') or Magic(Bytes, 'LZMA') or Magic(Bytes, #$04#$22#$4D#$18) then
+    LoadGW(Bytes)
+  else if IsMediaArchive(Name) then
+  begin
+    var Input := TBytesStream.Create(Bytes);
+    try
+      LoadMAME(OpenMediaArchive(Input, Name), Name);
+    finally
+      Input.Free;
+    end;
+  end
   else
     LoadGW(Bytes);
+  var IdentityHash := THashSHA2.Create;
+  IdentityHash.Update(Bytes);
+  SnapshotHash := IdentityHash.HashAsBytes;
 end;
 
 destructor TGWCartridge.Destroy;
@@ -430,25 +497,24 @@ begin
   Require(Length(Artwork.Layers) > 0, 'package contains no LCD segments');
 end;
 
-procedure TGWCartridge.LoadMAME(const Bytes: TBytes; const Name: string);
+procedure TGWCartridge.LoadMAME(const Container: IArchiveContainer; const Name: string);
 begin
-  var Input := TBytesStream.Create(Bytes);
-  var Zip := TZipFile.Create;
+  var Archive := Container;
   try
-    Zip.Open(Input, TZipMode.zmRead);
     var Embedded := -1;
-    for var i := 0 to Zip.FileCount - 1 do
-      if SameText(ExtractFileExt(Zip.FileNames[i]), '.gw') then
+    for var i := 0 to Archive.Count - 1 do
+      if not Archive.Entries[i].IsDirectory and SameText(ExtractFileExt(Archive.Entries[i].Name), '.gw') then
       begin
-        Require(Embedded < 0, 'ZIP contains multiple GW packages');
+        Require(Embedded < 0, 'archive contains multiple GW packages');
         Embedded := i;
       end;
 
     if Embedded >= 0 then
     begin
-      Require(Zip.FileInfo[Embedded].UncompressedSize <= MaxData, 'oversized GW entry');
+      Require(Archive.Entries[Embedded].Size <= MaxData, 'oversized GW entry');
       var Data: TBytes;
-      Zip.Read(Embedded, Data);
+      Archive.Read(Embedded, Data);
+      IdentityData := Copy(Data);
       LoadGW(Data);
       Exit;
     end;
@@ -459,7 +525,7 @@ begin
     begin
       var Found := False;
       for var Candidate in GWModels do
-        for var FileName in Zip.FileNames do
+        for var FileName in Archive.Names do
           if SameText(ExtractFileName(FileName), Candidate.Screens.Split([';'])[0]) then
           begin
             Require(not Found, 'ambiguous MAME model');
@@ -472,15 +538,15 @@ begin
       function(Entry: string; Limit: Integer): TBytes
       begin
         var Match := -1;
-        for var i := 0 to Zip.FileCount - 1 do
-          if SameText(ExtractFileName(Zip.FileNames[i]), Entry) then
+        for var i := 0 to Archive.Count - 1 do
+          if not Archive.Entries[i].IsDirectory and SameText(ExtractFileName(Archive.Entries[i].Name), Entry) then
           begin
-            Require(Match < 0, 'duplicate ZIP entry ' + Entry);
+            Require(Match < 0, 'duplicate archive entry ' + Entry);
             Match := i;
           end;
-        Require(Match >= 0, 'missing ' + Entry + ' in MAME ZIP');
-        Require(Zip.FileInfo[Match].UncompressedSize <= Cardinal(Limit), 'oversized ' + Entry);
-        Zip.Read(Match, Result);
+        Require(Match >= 0, 'missing ' + Entry + ' in MAME archive');
+        Require(Archive.Entries[Match].Size <= Cardinal(Limit), 'oversized ' + Entry);
+        Archive.Read(Match, Result);
       end;
     Model := Info.CPU;
     Title := Info.Title;
@@ -500,6 +566,13 @@ begin
     var Screens: TArray<string> := nil;
     for var Entry in Info.Screens.Split([';']) do
       Screens := Screens + [TEncoding.UTF8.GetString(ReadEntry(Entry, 4 * 1024 * 1024))];
+    var Hash := THashSHA2.Create;
+    Hash.Update(TEncoding.UTF8.GetBytes('GW:MAME:' + Info.Id));
+    Hash.Update(ProgramData);
+    Hash.Update(MelodyData);
+    for var Screen in Screens do
+      Hash.Update(TEncoding.UTF8.GetBytes(Screen));
+    IdentityData := Hash.HashAsBytes;
     Require(FRenderer <> nil, 'no SVG renderer supplied by frontend');
     Artwork := FRenderer.Render(Screens, Info.Layout, Model in [TGWCPUModel.SM5A, TGWCPUModel.SM5L, TGWCPUModel.SM500]);
     if Info.Id = 'gnw_tbridge' then
@@ -508,8 +581,7 @@ begin
       DecayLength := 25;
     end;
   finally
-    Zip.Free;
-    Input.Free;
+    Archive := nil;
   end;
 end;
 

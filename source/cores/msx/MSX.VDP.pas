@@ -164,8 +164,6 @@ type
     function BitsPerPixel: Integer;
     function VideoAddress(X, Y: Integer): Integer;
     function PhysicalAddress(Address: Integer): Integer;
-    function Dot(X, Y: Integer): Byte;
-    procedure PutDot(X, Y: Integer; Value, Logic: Byte);
     function CommandDot(X, Y: Integer): Byte;
     procedure CommandPutDot(X, Y: Integer; Value: Byte);
     procedure SetCommandY(Index, Value: Integer);
@@ -2954,29 +2952,6 @@ begin
     Result := (Result shr 1) or ((Result and 1) shl 16);
 end;
 
-function TMSXVDP.Dot(X, Y: Integer): Byte;
-begin
-  var BPP := BitsPerPixel;
-  Result := (FVideo[VideoAddress(X, Y)] shr ((8 div BPP - 1 - (X and (8 div BPP - 1))) * BPP)) and ((1 shl BPP) - 1);
-end;
-
-procedure TMSXVDP.PutDot(X, Y: Integer; Value, Logic: Byte);
-begin
-  var BPP := BitsPerPixel;
-  var A := VideoAddress(X, Y);
-  var Shift := (8 div BPP - 1 - (X and (8 div BPP - 1))) * BPP;
-  var Previous := FVideo[A];
-  if FCachedDestination and (A = FDestAddress) then
-    Previous := FDestByte;
-  var Data: Byte;
-  if not MergePixelByte(Previous, Value, Logic, Shift, BPP, Data) then
-    Exit;
-  FlushRaster;
-  FVideo[A] := Data;
-  if A < $4000 then
-    FVRAM[A] := FVideo[A];
-end;
-
 function TMSXVDP.YJKColor(Address: Integer): TAlphaColor;
 begin
   var X := Address and 255;
@@ -3383,7 +3358,9 @@ begin
         var Index := Integer(Attr and 15);
         if Attr and $40 <> 0 then
         begin
-          Visible := Drawn[X] and (Owners[X] = Group) and (Group >= 0);
+          // CC joins the preceding base sprite's priority group. Its pixels
+          // also remain visible outside that base sprite's pattern.
+          Visible := (Group >= 0) and (not Drawn[X] or (Owners[X] = Group));
           Index := Index or Indices[X];
         end;
         if FShowSprites and Visible then

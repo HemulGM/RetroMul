@@ -48,13 +48,12 @@ type
     FCompressedHash: TBytes;
     FIdentityPending: Boolean;
     FHighDensity, FOverburn: Boolean;
-    FArchiveDirectory: string;
     FSBIInvalidCRC: TArray<Integer>;
     procedure LoadGDI(Stream: TStream; const Storage: IStorage; const Location: string);
     procedure LoadCDI(const Storage: IStorage; const Location: string);
     procedure LoadSBI(const Storage: IStorage; const Location, SourceName: string);
     function SBIInvalidCRC(LBA: Integer): Boolean;
-    procedure LoadZip(Stream: TStream; const Storage: IStorage);
+    procedure LoadContainer(Stream: TStream; const Storage: IStorage; const ArchiveName: string);
     procedure LoadCHD(const Storage: IStorage; const Location: string);
     procedure LoadCue(Stream: TStream; const Storage: IStorage; const Location: string);
     procedure LoadMDS(Stream: TStream; const Storage: IStorage; const Location, FileName: string);
@@ -68,8 +67,8 @@ type
     // DeferIdentity skips reading the whole image here; the first Identity
     // call does it instead, and must come before another thread reads sectors.
     constructor Create(Stream: TStream; const Storage: IStorage; const Location: string; DeferIdentity: Boolean = False; const ImageName: string = '');
-    // Inspect ZIP directory metadata without loading cartridge/disc payloads.
-    class function IsDiscZip(Stream: TStream): Boolean; static;
+    // Inspect archive directory metadata without loading cartridge/disc payloads.
+    class function IsDiscContainer(Stream: TStream; const Name: string = ''): Boolean; static;
     procedure AddTrack(const Track: TCDTrack);
     procedure RequireISO9660;
     // Optional root-directory file; bounded to avoid trusting corrupt extents.
@@ -126,7 +125,7 @@ implementation
 
 uses
   Core.Platforms, System.Hash, System.IOUtils, System.Math, System.StrUtils,
-  System.Zip, System.Generics.Collections, System.Generics.Defaults, Core.CD.CHD
+  Core.Archive.Container, Core.MediaArchive, Core.ArchiveStorage, System.Generics.Collections, System.Generics.Defaults, Core.CD.CHD
   {$IFDEF ANDROID}, Core.Storage.Android{$ENDIF};
 
 var
@@ -157,13 +156,14 @@ end;
 
 function IsCDMediaExtension(const Extension: string): Boolean;
 begin
-  Result := MediaFormats.ContainsKey(Extension);
+  Result := IsMediaArchive('media' + Extension) or MediaFormats.ContainsKey(Extension);
 end;
 
 function IsCDMediaSource(const Name: string; Stream: TStream): Boolean;
 begin
   Result := False;
   var Format: TCDMediaFormat;
+  if IsMediaArchive(Name) then Exit(TCDDisc.IsDiscContainer(Stream, Name));
   if not MediaFormats.TryGetValue(ExtractFileExt(Name), Format) then
     Exit;
   if not Assigned(Format.Probe) then
@@ -185,17 +185,24 @@ end;
 
 function CDSibling(const Storage: IStorage; const Location, Name: string): string;
 begin
-  // A CUE references files beside itself, never absolute paths or parent traversal.
-  if (Name = '') or Name.Contains(':') or Name.Contains('/') or Name.Contains('\') or (Name = '.') or (Name = '..') then
+  // Companions may live in subdirectories; absolute paths and parent traversal
+  // cannot escape the descriptor's folder or its virtual container storage.
+  if (Name = '') or Name.Contains(':') or Name.Contains(#0) or
+    Name.StartsWith('/') or Name.StartsWith('\') or (Name = '.') then
     raise EReadError.Create('Invalid CD companion filename: ' + Name);
+  for var Part in Name.Replace('\', '/').Split(['/']) do
+    if Part = '..' then
+      raise EReadError.Create('Invalid CD companion filename: ' + Name);
 
   if Location.StartsWith('content://', True) then
   begin
+    if Name.Contains('/') or Name.Contains('\') then
+      raise EReadError.Create('Nested CD companions require folder-backed storage: ' + Name);
     // SAF document IDs are opaque. Find the source in the selected system
     // folder, then resolve by display name without constructing a URI.
-    for var platform in TPlatformRegistry.All do
+    for var CorePlatform in TPlatformRegistry.All do
     begin
-      var Folder := Storage.RomFolder(platform.Id);
+      var Folder := Storage.RomFolder(CorePlatform.Id);
       if Folder = '' then
         Continue;
       var Items: TArray<TStorageFile>;
@@ -223,8 +230,7 @@ begin
       var Relative := Items[SourceIndex].RelativePath;
       var Directory := Relative.Substring(0, Length(Relative) - Length(Items[SourceIndex].Name));
       for var Candidate in Items do
-        if SameText(Candidate.Name, Name) and
-          SameText(Candidate.RelativePath, Directory + Name) then
+        if SameText(Candidate.Name, Name) and SameText(Candidate.RelativePath, Directory + Name) then
           Exit(Candidate.Location);
 
       Break;
@@ -232,12 +238,12 @@ begin
     raise EReadError.Create('Missing CD companion in the selected ROM folder: ' + Name);
   end;
 
-  Result := TPath.Combine(ExtractFilePath(Location.Replace('/', PathDelim)), Name);
+  Result := TPath.Combine(ExtractFilePath(Location.Replace('/', PathDelim)), Name.Replace('\', PathDelim).Replace('/', PathDelim));
   if not Storage.Exists(Result) then
   begin
     // CUE filenames often use a different case from a Linux filesystem.
     for var Candidate in Storage.Files(ExtractFilePath(Result)) do
-      if SameText(ExtractFileName(Candidate), Name) then
+      if SameText(ExtractFileName(Candidate), ExtractFileName(Name.Replace('\', PathDelim).Replace('/', PathDelim))) then
         Exit(Candidate);
 
     raise EReadError.Create('Missing CD file: ' + Name);
@@ -328,7 +334,7 @@ begin
         Line := Line.Substring(1, Length(Line) - 2);
       var Ext := ExtractFileExt(Line);
       if not IsCDMediaExtension(Ext) then
-        raise EReadError.Create('M3U expects CUE, CHD, ISO, raw BIN, disc ZIP, GDI, CDI, MDS or NRG: ' + Line);
+        raise EReadError.Create('M3U expects CUE, CHD, ISO, raw BIN, disc archive, GDI, CDI, MDS or NRG: ' + Line);
       if Entries.Count >= 99 then
         raise EReadError.Create('M3U playlist exceeds 99 discs');
       Entries.Add(ResolveEntry(Line));
@@ -416,21 +422,15 @@ begin
     if Location.StartsWith('content://', True) then
       SourceName := Storage.Describe(Location).Name;
   end;
-  var Saved := Stream.Position;
-  var Magic: Cardinal := 0;
-  Stream.Read(Magic, SizeOf(Magic));
-  Stream.Position := Saved;
   var Format: TCDMediaFormat;
-  if (Magic = $04034B50) then
+  if (Stream is TArchiveSourceStream) or IsMediaArchive(SourceName) then
   begin
-    LoadZip(Stream, Storage);
+    LoadContainer(Stream, Storage, SourceName);
     Exit;
   end;
   if not MediaFormats.TryGetValue(ExtractFileExt(SourceName), Format) then
     raise EReadError.Create('Unsupported CD image format: ' + ExtractFileExt(SourceName));
   Format.Loader(Self, Stream, Storage, Location, SourceName);
-  if SameText(ExtractFileExt(SourceName), '.zip') then
-    Exit;
 
   if (FLeadOut = 0) and (Length(FTracks) > 0) then
     FLeadOut := FTracks[High(FTracks)].EndLBA;
@@ -458,16 +458,10 @@ begin
     Item.SubStream.Free;
     Item.Stream.Free;
   end;
-  if (FArchiveDirectory <> '') and TDirectory.Exists(FArchiveDirectory) then
-  try
-    TDirectory.Delete(FArchiveDirectory, True);
-  except
-    // Cache cleanup must not mask a media error or interrupt shutdown.
-  end;
   inherited;
 end;
 
-function DiscZipEntry(const Name: string): Boolean;
+function DiscContainerEntry(const Name: string): Boolean;
 begin
   var Normalized := Name.Replace('\', '/');
   var Leaf := Normalized.Substring(Normalized.LastIndexOf('/') + 1);
@@ -475,33 +469,29 @@ begin
     not Leaf.StartsWith('._') and
     IsCDMediaExtension(ExtractFileExt(Name));
   if Result then
-    Result := not MediaFormats[ExtractFileExt(Name)].Container;
+    Result := not IsMediaArchive(Name) and not MediaFormats[ExtractFileExt(Name)].Container;
 end;
 
-class function TCDDisc.IsDiscZip(Stream: TStream): Boolean;
+class function TCDDisc.IsDiscContainer(Stream: TStream; const Name: string): Boolean;
 begin
   if Stream = nil then
     raise EArgumentNilException.Create('Stream');
   Result := False;
   var Position := Stream.Position;
-  var Zip := TZipFile.Create;
+  var Archive: IArchiveContainer;
   try
     Stream.Position := 0;
-    var Magic: Cardinal;
-    if (Stream.Read(Magic, SizeOf(Magic)) <> SizeOf(Magic)) or (Magic <> $04034B50) then
-      Exit;
-    Stream.Position := 0;
-    Zip.Open(Stream, zmRead);
+    Archive := OpenMediaArchive(Stream, Name);
     // BIN is shared with cartridges. Require a descriptor/container, or raw
-    // sector sync in a lone BIN, rather than routing every cartridge ZIP here.
+    // sector sync in a lone BIN, rather than routing every cartridge archive here.
     var BinIndex := -1;
     var BinCount := 0;
-    for var i := 0 to Zip.FileCount - 1 do
+    for var i := 0 to Archive.Count - 1 do
     begin
       TStorage.CheckReadCancelled;
-      if DiscZipEntry(Zip.FileNames[i]) then
+      if not Archive.Entries[i].IsDirectory and DiscContainerEntry(Archive.Entries[i].Name) then
       begin
-        if not SameText(ExtractFileExt(Zip.FileNames[i]), '.bin') then
+        if not SameText(ExtractFileExt(Archive.Entries[i].Name), '.bin') then
           Exit(True);
         Inc(BinCount);
         BinIndex := i;
@@ -510,8 +500,7 @@ begin
     if BinCount = 1 then
     begin
       var Entry: TStream;
-      var Header: TZipHeader;
-      Zip.Read(BinIndex, Entry, Header);
+      Entry := Archive.OpenRead(BinIndex);
       try
         var Probe: array[0..15] of Byte;
         FillChar(Probe, SizeOf(Probe), 0);
@@ -524,28 +513,26 @@ begin
       end;
     end;
   finally
-    Zip.Free;
+    Archive := nil;
     Stream.Position := Position;
   end;
 end;
 
-procedure TCDDisc.LoadZip(Stream: TStream; const Storage: IStorage);
-const
-  MaxArchiveSize = Int64(1024) * 1024 * 1024;
+procedure TCDDisc.LoadContainer(Stream: TStream; const Storage: IStorage; const ArchiveName: string);
 begin
-  var Zip := TZipFile.Create;
+  var Archive: IArchiveContainer;
   try
     Stream.Position := 0;
-    Zip.Open(Stream, zmRead);
-    if Zip.FileCount > 4096 then
-      raise EReadError.Create('CD ZIP contains too many entries');
+    Archive := OpenMediaArchive(Stream, ArchiveName, Storage);
+    if Archive.Count > 4096 then
+      raise EReadError.Create('CD archive contains too many entries');
     var Selected := -1;
     var DescriptorCount := 0;
     var ImageCount := 0;
-    for var i := 0 to Zip.FileCount - 1 do
-      if DiscZipEntry(Zip.FileNames[i]) then
+    for var i := 0 to Archive.Count - 1 do
+      if not Archive.Entries[i].IsDirectory and DiscContainerEntry(Archive.Entries[i].Name) then
       begin
-        if MediaFormats[ExtractFileExt(Zip.FileNames[i])].Descriptor then
+        if MediaFormats[ExtractFileExt(Archive.Entries[i].Name)].Descriptor then
         begin
           Inc(DescriptorCount);
           Selected := i;
@@ -558,73 +545,13 @@ begin
         end;
       end;
     if (Selected < 0) or (DescriptorCount > 1) or ((DescriptorCount = 0) and (ImageCount <> 1)) then
-      raise EReadError.Create('CD ZIP must contain one disc descriptor or one standalone disc image');
+      raise EReadError.Create('CD archive must contain one disc descriptor or one standalone disc image');
 
-    var SelectedName := Zip.FileNames[Selected].Replace('\', '/');
-    var Separator := SelectedName.LastIndexOf('/');
-    var Prefix := SelectedName.Substring(0, Separator + 1);
-    // Every extracted name is a validated leaf. Archive paths cannot escape
-    // the unique cache directory or overwrite an existing user file.
-    FArchiveDirectory := Storage.TemporaryFile('.disc');
-    var LocalStorage: IStorage := TStorage.Create(Storage.Root);
-    LocalStorage.EnsureFolder(FArchiveDirectory);
-    var Names := TStringList.Create;
-    try
-      Names.CaseSensitive := False;
-      Names.Sorted := True;
-      var Total: Int64 := 0;
-      for var i := 0 to Zip.FileCount - 1 do
-      begin
-        TStorage.CheckReadCancelled;
-        var Name := Zip.FileNames[i].Replace('\', '/');
-        var Split := Name.LastIndexOf('/');
-        if not SameText(Name.Substring(0, Split + 1), Prefix) then
-          Continue;
-        var Leaf := Name.Substring(Split + 1);
-        if (Leaf = '') or Leaf.StartsWith('._') or
-          not (DiscZipEntry(Leaf) or CompanionExtensions.ContainsKey(ExtractFileExt(Leaf))) then
-          Continue;
-        if Leaf.Contains(':') or (Leaf = '.') or (Leaf = '..') then
-          raise EReadError.Create('Invalid CD ZIP filename: ' + Name);
-        if Names.IndexOf(Leaf) >= 0 then
-          raise EReadError.Create('Duplicate CD ZIP filename: ' + Leaf);
-        Names.Add(Leaf);
-        var Size := Zip.FileInfo[i].UncompressedSize64;
-        if Size > UInt64(MaxArchiveSize - Total) then
-          raise EReadError.Create('CD ZIP unpacked data exceeds 1 GiB');
-        Inc(Total, Int64(Size));
-        var Input: TStream;
-        var Header: TZipHeader;
-        Zip.Read(i, Input, Header, True);
-        try
-          var Output := LocalStorage.OpenWrite(TPath.Combine(FArchiveDirectory, Leaf));
-          try
-            var Buffer: array[0..65535] of Byte;
-            var Written: Int64 := 0;
-            while True do
-            begin
-              TStorage.CheckReadCancelled;
-              var Count := Input.Read(Buffer, SizeOf(Buffer));
-              if Count = 0 then
-                Break;
-              Inc(Written, Count);
-              if (Count < 0) or (Written > Int64(Size)) then
-                raise EReadError.Create('CD ZIP entry exceeds its declared size');
-              Output.WriteBuffer(Buffer, Count);
-            end;
-            if Written <> Int64(Size) then
-              raise EReadError.Create('Truncated CD ZIP entry: ' + Leaf);
-          finally
-            Output.Free;
-          end;
-        finally
-          Input.Free;
-        end;
-      end;
-    finally
-      Names.Free;
-    end;
-    var Path := TPath.Combine(FArchiveDirectory, SelectedName.Substring(Separator + 1));
+    // Descriptors and all their relative companions share a read-only view.
+    // Track streams retain the container after the view and factory disappear.
+    var VirtualRoot := Storage.TemporaryFile('.disc-container');
+    var LocalStorage := ContainerStorage(Storage, Archive, VirtualRoot);
+    var Path := TPath.Combine(VirtualRoot, Archive.Entries[Selected].Name.Replace('/', PathDelim).Replace('\', PathDelim));
     var Input := LocalStorage.OpenRead(Path);
     try
       var Disc := TCDDisc.Create(Input, LocalStorage, Path);
@@ -634,6 +561,9 @@ begin
         FLeadOut := Disc.FLeadOut;
         FIdentity := Disc.FIdentity;
         FCompressedHash := Disc.FCompressedHash;
+        FIdentityPending := Disc.FIdentityPending;
+        FHighDensity := Disc.FHighDensity;
+        FOverburn := Disc.FOverburn;
         FSBIInvalidCRC := Disc.FSBIInvalidCRC;
       finally
         Disc.Free;
@@ -642,7 +572,7 @@ begin
       Input.Free;
     end;
   finally
-    Zip.Free;
+    Archive := nil;
   end;
 end;
 
@@ -2515,15 +2445,6 @@ begin
     end;
   Format.Probe := IsCDRawImage;
   RegisterCDMediaFormat('.bin', Format);
-  Format := Default(TCDMediaFormat);
-  Format.Loader :=
-    procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
-    begin
-      Disc.LoadZip(Stream, Storage);
-    end;
-  Format.Probe := TCDDisc.IsDiscZip;
-  Format.Container := True;
-  RegisterCDMediaFormat('.zip', Format);
   RegisterCDCompanionExtension('.raw');
   RegisterCDCompanionExtension('.mdf');
   RegisterCDCompanionExtension('.wav');

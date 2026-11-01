@@ -54,7 +54,7 @@ class procedure TN64Platform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('n64', 'Nintendo 64', 'N64',
     'Nintendo', 'N64', 'n64', ['n64'],
-    ['.z64', '.n64', '.v64', '.zip', '.7z'],
+    ['.z64', '.n64', '.v64'],
     'N64', 'n64', 4);
 end;
 

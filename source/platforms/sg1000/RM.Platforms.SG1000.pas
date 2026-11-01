@@ -117,19 +117,19 @@ class procedure TSG1000Platform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('sg1000', 'SG-1000', 'SG-1000',
     'Sega', 'SG1000 SG-1000 II SK-1100', 'sg1000', ['sg1000'],
-    ['.sg', '.sms', '.zip', '.7z'],
+    ['.sg', '.sms'],
     'SG1000', 'sg1000', 2);
   TPlatformRegistry.RegisterPlatform('sc3000', 'SC-3000', 'SC-3000',
     'Sega', 'SC3000 SC-3000H', 'sc3000', ['sc3000', 'sg1000'],
-    ['.sc', '.zip', '.7z'],
+    ['.sc'],
     'SC3000', 'sc3000', 2);
   TPlatformRegistry.RegisterPlatform('sf7000', 'SF-7000', 'SF-7000',
     'Sega', 'SF7000 floppy', 'sf7000', ['sf7000', 'sg1000'],
-    ['.sf7', '.sf', '.dsk', '.zip', '.7z'],
+    ['.sf7', '.sf', '.dsk'],
     'SF7000', 'sf7000', 2);
   TPlatformRegistry.RegisterPlatform('omv', 'Multivision', 'Multivision',
     'Tsukuda Original', 'OMV Othello Multivision', 'omv', ['omv', 'sg1000'],
-    ['.mv', '.zip', '.7z'],
+    ['.mv'],
     'Multivision', 'omv', 2);
 end;
 

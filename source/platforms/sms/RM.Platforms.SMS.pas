@@ -81,11 +81,11 @@ class procedure TSMSPlatform.RegisterCore;
 begin
   TPlatformRegistry.RegisterPlatform('sms', 'Master System', 'Master System',
     'Sega', 'SMS Mark III', 'mastersystem', ['mastersystem', 'sms'],
-    ['.sms', '.zip', '.7z'],
+    ['.sms'],
     'MasterSystem', 'sms', 2);
   TPlatformRegistry.RegisterPlatform('gg', 'Game Gear', 'Game Gear',
     'Sega', 'GG GameGear', 'gamegear', ['gamegear', 'gg'],
-    ['.gg', '.zip', '.7z'],
+    ['.gg'],
     'GameGear', 'gg', 1);
   RegisterSnapshotPolicy('SMS', TSnapshotPolicy.Create(4));
   RegisterSnapshotPolicy('GG', TSnapshotPolicy.Create(4));

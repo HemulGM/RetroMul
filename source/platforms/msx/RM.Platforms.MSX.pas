@@ -111,15 +111,15 @@ class procedure TMSXPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('msx1', 'MSX1', 'MSX1',
     'ASCII / Microsoft', 'MSX TMS9918 AY Z80', 'msx1', ['msx1', 'msx'],
-    ['.rom', '.mx1', '.dsk', '.cas', '.wav', '.zip', '.7z', '.7z'],
+    ['.rom', '.mx1', '.dsk', '.cas', '.wav'],
     'MSX', 'msx1', 2);
   TPlatformRegistry.RegisterPlatform('msx2', 'MSX2', 'MSX2',
     'ASCII / Microsoft', 'MSX V9938', 'msx2', ['msx2'],
-    ['.rom', '.mx2', '.dsk', '.cas', '.wav', '.zip', '.7z', '.7z'],
+    ['.rom', '.mx2', '.dsk', '.cas', '.wav'],
     'MSX', 'msx2', 2);
   TPlatformRegistry.RegisterPlatform('msx2plus', 'MSX2+', 'MSX2+',
     'ASCII', 'MSX2+ V9958 YJK MSX MUSIC', 'msx2plus', ['msx2plus', 'msx2+'],
-    ['.rom', '.mx2', '.mxp', '.dsk', '.cas', '.wav', '.zip', '.7z', '.7z'],
+    ['.rom', '.mx2', '.mxp', '.dsk', '.cas', '.wav'],
     'MSX', 'msx2plus', 2);
 end;
 
@@ -133,11 +133,6 @@ begin
     function(Context: TCoreLoadContext; const Name: string; Size: UInt64): Boolean
     begin
       Result := (ModelHint(Context) >= 0) and MatchText(ExtractFileExt(Name), ['.rom', '.wav']);
-    end;
-  Registration.AllowArchiveVariants :=
-    function(Context: TCoreLoadContext): Boolean
-    begin
-      Result := ModelHint(Context) >= 0;
     end;
   RegisterEmulationCore(Registration);
 end;

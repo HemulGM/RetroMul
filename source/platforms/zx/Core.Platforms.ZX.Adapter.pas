@@ -322,7 +322,7 @@ begin
     if Stream = nil then
       raise EReadError.Create('CF/SD images require an immutable source stream');
     if not SameText(ExtractFileExt(RomName), ExtractFileExt(FName)) then
-      raise EReadError.Create('Open CF/SD images directly, outside ZIP/7z archives');
+      raise EReadError.Create('Open CF/SD images directly, outside archives');
     FData := TZXBlockImage.Identity(Stream);
     FDivImageFile := RomName;
     // Resolve this image independently of the saved global interface preference.
@@ -460,6 +460,7 @@ end;
 
 procedure TZXCoreAdapter.Reset;
 begin
+  FPaused := False;
   if FThread <> nil then
     FThread.RequestReset;
   ClearInput;

@@ -247,14 +247,14 @@ begin
               end;
             if Loading then
             begin
-              LoadCoreSnapshot(Path, CoreId, FCartridge.IdentityData, Transfer, FStorage);
+              LoadCoreSnapshotHash(Path, CoreId, FCartridge.SnapshotHash, Transfer, FStorage);
               if Audio <> nil then
                 Audio.Clear;
               Publish(Console);
             end
             else
             begin
-              SaveCoreSnapshot(Path, CoreId, FCartridge.IdentityData, Transfer, FStorage);
+              SaveCoreSnapshotHash(Path, CoreId, FCartridge.SnapshotHash, Transfer, FStorage);
               var Frame := Console.Frame;
               SaveSnapshotPreview(Path, Frame.Width, Frame.Height, Frame.Width, @Frame.Pixels[0], FStorage);
             end;

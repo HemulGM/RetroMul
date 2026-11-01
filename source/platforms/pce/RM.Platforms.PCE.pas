@@ -78,11 +78,11 @@ class procedure TPCEPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('pce', 'PC Engine / TurboGrafx-16', 'PCE',
     'NEC', 'PCE CoreGrafx Shuttle GT LT TurboExpress', 'pcengine', ['pcengine', 'pce'],
-    ['.pce', '.zip', '.7z'],
+    ['.pce'],
     'PCE', 'pce', 5);
   TPlatformRegistry.RegisterPlatform('sgx', 'SuperGrafx', 'SuperGrafx',
     'NEC', 'SGX', 'sgx', ['sgx', 'supergrafx', 'pcengine', 'pce'],
-    ['.sgx', '.pce', '.zip', '.7z'],
+    ['.sgx', '.pce'],
     'PCE', 'sgx', 5);
   TPlatformRegistry.RegisterPlatform('pcecd', 'PC Engine CD', 'PCE CD',
     'NEC', 'CD-ROM2 Super CD-ROM2 Duo TurboDuo Arcade Card', 'pcenginecd', ['pcenginecd', 'pcecd'],

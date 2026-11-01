@@ -65,7 +65,7 @@ class procedure TGBAPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('gba', 'Game Boy Advance', 'GBA',
     'Nintendo', 'GBA AGB', 'gba', ['gba'],
-    ['.gba', '.zip', '.7z'],
+    ['.gba'],
     'GBA', 'gba', 1);
 end;
 

@@ -708,6 +708,7 @@
         <DCCReference Include="..\..\source\hardware\cpu\HW.SH7034.pas"/>
         <DCCReference Include="..\..\source\hardware\cpu\HW.SH7604.pas"/>
         <DCCReference Include="..\..\source\hardware\cpu\HW.SH4.pas"/>
+        <DCCReference Include="..\..\source\hardware\cpu\HW.HostFPU.pas"/>
         <DCCReference Include="..\..\source\hardware\cpu\HW.SH4.Periph.pas"/>
         <DCCReference Include="..\..\source\hardware\cpu\HW.TLCS900H.pas"/>
         <DCCReference Include="..\..\source\hardware\cpu\HW.M68k.pas"/>
@@ -1178,6 +1179,19 @@
         <DCCReference Include="..\..\source\hardware\audio\HW.Sound.OPL4.pas"/>
         <DCCReference Include="..\..\source\hardware\audio\HW.Sound.Y8950.pas"/>
         <DCCReference Include="..\..\source\hardware\audio\HW.Sound.OPL.Nuked.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.Archive.RAR.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.Archive.Zip.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.ArchiveStorage.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.MediaArchive.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.RAR.Blake2.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.RAR.FragWindow.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.RAR.GetBits.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.RAR.PPM.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.RAR.SubAlloc.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.RAR.Types.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.RAR.Unpack.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.RAR.VM.pas"/>
+        <DCCReference Include="..\..\source\media\archive\Core.Archive.Container.pas"/>
         <None Include="..\..\source\cores\cps\CPS.RomData.inc"/>
         <None Include="..\..\source\cores\sms\SMS.Region.inc"/>
         <BuildConfiguration Include="Base">

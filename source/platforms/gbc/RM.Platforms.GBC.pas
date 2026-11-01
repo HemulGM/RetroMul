@@ -79,7 +79,7 @@ class procedure TGBCPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('gbc', 'Game Boy Color', 'GBC',
     'Nintendo', 'GBC CGB', 'gbc', ['gbc'],
-    ['.gbc', '.gbx', '.zip', '.7z'],
+    ['.gbc', '.gbx'],
     'GameBoyColor', 'gbc', 1);
 end;
 

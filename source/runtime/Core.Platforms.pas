@@ -28,7 +28,7 @@ type
   public
     class constructor Create;
     class destructor Destroy;
-    // Each core module supplies its complete extension list and platform data.
+    // Core modules supply native extensions; shared archive formats are added.
     class procedure RegisterPlatform(const Id, Name, ShortName, Manufacturer, SearchTerms, Folder: string; const ScanFolders, Extensions: array of string; const SettingsProfile, SettingsCoreId: string; Ports: Integer); static;
     class procedure RegisterAlias(const Alias, PlatformId: string); static;
     // Listeners run synchronously for subsequent registrations and aliases.
@@ -44,13 +44,24 @@ type
 implementation
 
 uses
-  System.Generics.Defaults;
+  System.Generics.Defaults, Core.MediaArchive;
 
 function TPlatformInfo.CopyInfo: TPlatformInfo;
 begin
   Result := Self;
   Result.ScanFolders := Copy(ScanFolders);
-  Result.Extensions := Copy(Extensions);
+  // Resolve shared formats on read so later decoder registrations are visible
+  // to existing platforms, library scans and file-picker filters alike.
+  var Supported := TList<string>.Create;
+  try
+    Supported.AddRange(Extensions);
+    for var Extension in MediaArchiveExtensions do
+      if not Supported.Contains(Extension) then
+        Supported.Add(Extension);
+    Result.Extensions := Supported.ToArray;
+  finally
+    Supported.Free;
+  end;
 end;
 
 class constructor TPlatformRegistry.Create;
@@ -104,7 +115,7 @@ class procedure TPlatformRegistry.RegisterPlatform(const Id, Name, ShortName, Ma
 begin
   if (Id.Trim = '') or (Name = '') or
     (Manufacturer = '') or (Folder = '') or (Length(ScanFolders) = 0) or
-    (Length(Extensions) = 0) or (Ports < 1) or (Ports > EmulatorMaxPlayers) or
+    (Ports < 1) or (Ports > EmulatorMaxPlayers) or
     (SettingsCoreId = '') then
     raise EArgumentException.Create('Invalid platform: ' + Id);
 
@@ -127,9 +138,15 @@ begin
   SetLength(Item.ScanFolders, Length(ScanFolders));
   for var i := 0 to High(ScanFolders) do
     Item.ScanFolders[i] := ScanFolders[i];
-  SetLength(Item.Extensions, Length(Extensions));
-  for var i := 0 to High(Extensions) do
-    Item.Extensions[i] := Extensions[i];
+  var Supported := TList<string>.Create;
+  try
+    for var Extension in Extensions do
+      if not Supported.Contains(Extension) then
+        Supported.Add(Extension);
+    Item.Extensions := Supported.ToArray;
+  finally
+    Supported.Free;
+  end;
   Item.SettingsProfile := SettingsProfile;
   Item.SettingsCoreId := SettingsCoreId;
   Item.Ports := Ports;

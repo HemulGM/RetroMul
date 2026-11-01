@@ -128,7 +128,8 @@ type
 implementation
 
 uses
-  System.Math, System.Classes, System.SyncObjs{$IFDEF PSP_PROFILE}, PSP.Profile
+  HW.HostFPU, System.Math, System.Classes, System.SyncObjs{$IFDEF PSP_PROFILE},
+  PSP.Profile
   {$ENDIF};
 
 function Float24(Value: Cardinal): Single;
@@ -1554,7 +1555,7 @@ begin
   var FlatDepth := (A.Z = B.Z) and (A.Z = C.Z);
   var Textured := (FRegisters[$1E] and 1 <> 0) and (FRegisters[$D3] and 1 = 0);
   var Interpolate := not FlatColor or not FlatDepth or Textured;
-  {$IFDEF PSP_PROFILE}  if PSPProfileCollecting and not FIsRenderWorker then
+  {$IFDEF PSP_PROFILE}                    if PSPProfileCollecting and not FIsRenderWorker then
     Inc(PSPProfileTriangleTypes[Ord(FlatColor) or (Ord(FlatDepth) shl 1) or (Ord(Textured) shl 2)]);{$ENDIF}
   var Area := (B.X - A.X) * (C.Y - A.Y) - (B.Y - A.Y) * (C.X - A.X);
   if Abs(Area) < 1E-8 then
@@ -1915,7 +1916,7 @@ begin
       PreviousY := SampleY;
     end;
     if Blending or AlphaTest or DepthTest then
-      FMemory.ReadInto(Address, Width * PixelBytes, DestData);
+      FMemory.ReadInto(Address, Width * Integer(PixelBytes), DestData);
     if BufferedDepth then
       FMemory.ReadDepthInto(DepthAddress, Width * 2, PixelFormat = 3, DepthData);
     var RowDirty := False;
@@ -1968,7 +1969,7 @@ begin
     end;
     if RowDirty then
     begin
-      FMemory.WriteFrom(Address, Width * PixelBytes, DestData);
+      FMemory.WriteFrom(Address, Width * Integer(PixelBytes), DestData);
       if DepthWrite then
         if BufferedDepth then
           FMemory.WriteDepthFrom(DepthAddress, Width * 2, PixelFormat = 3, DepthData)
@@ -1979,7 +1980,7 @@ begin
     Inc(DepthAddress, DepthStride * 2);
   end;
   Result := True;
-  {$IFDEF PSP_PROFILE}  if PSPProfileCollecting and not FIsRenderWorker then
+  {$IFDEF PSP_PROFILE}                    if PSPProfileCollecting and not FIsRenderWorker then
     Inc(PSPProfileBlitRejects[0]);{$ENDIF}
 end;
 
@@ -2223,7 +2224,7 @@ begin
     if DepthUsed and (UInt64(SourceBase) < UInt64(DepthAddress) + DepthSize) and (UInt64(DepthAddress) < UInt64(SourceBase) + SourceSize) then
       Exit;
   end;
-  {$IFDEF PSP_PROFILE}  var PrepareStarted := PSPProfileStart;{$ENDIF}
+  {$IFDEF PSP_PROFILE}                    var PrepareStarted := PSPProfileStart;{$ENDIF}
   if FRenderPool = nil then
   begin
     FRenderPool := TThreadPool.Create;
@@ -2263,17 +2264,17 @@ begin
   var ThreadIds: TArray<Cardinal>;
   SetLength(ThreadIds, Jobs);
   var ParentCW := Get8087CW;
-  var ParentMXCSR := GetMXCSR;
+  var ParentMXCSR := ReadHostMXCSR;
   TParallel.for (0, Jobs - 1,
     procedure(Index: Integer)
     begin
       {$IFDEF PSP_PROFILE}
       var WorkerStarted := PSPProfileStart;{$ENDIF}
       var SavedCW := Get8087CW;
-      var SavedMXCSR := GetMXCSR;
+      var SavedMXCSR := ReadHostMXCSR;
       try
         Set8087CW(ParentCW);
-        SetMXCSR(ParentMXCSR);
+        WriteHostMXCSR(ParentMXCSR);
         ThreadIds[Index] := TThread.CurrentThread.ThreadID;
         try
           FRenderers[Index].RenderPrimitives(Primitive, Vertices)
@@ -2283,8 +2284,8 @@ begin
         end;
       finally
         Set8087CW(SavedCW);
-        SetMXCSR(SavedMXCSR);
-        {$IFDEF PSP_PROFILE}        WorkerTicks[Index] := PSPProfileStart - WorkerStarted;{$ENDIF}
+        WriteHostMXCSR(SavedMXCSR);
+        {$IFDEF PSP_PROFILE}                                                                                WorkerTicks[Index] := PSPProfileStart - WorkerStarted;{$ENDIF}
           end;
     end, FRenderPool);
   {$IFDEF PSP_PROFILE}
@@ -2307,7 +2308,7 @@ begin
   end;
   for var I := 0 to Jobs - 1 do
     FRenderMemories[I].CommitRenderView;
-  {$IFDEF PSP_PROFILE}  PSPProfileEnd(TPSPProfilePart.GECommit, CommitStarted);{$ENDIF}
+  {$IFDEF PSP_PROFILE}                    PSPProfileEnd(TPSPProfilePart.GECommit, CommitStarted);{$ENDIF}
   var Distinct := 0;
   for var I := 0 to Jobs - 1 do
   begin
@@ -2376,7 +2377,7 @@ begin
   if (FRegisters[$1E] and 1 <> 0) and (FRegisters[$D3] and 1 = 0) then
     ConfigureTexture;
   var VType := FRegisters[$12];
-  {$IFDEF PSP_PROFILE}  var VertexStarted := PSPProfileStart;{$ENDIF}
+  {$IFDEF PSP_PROFILE}                    var VertexStarted := PSPProfileStart;{$ENDIF}
   var Vertices: TArray<TPSPGEVertex>;
   SetLength(Vertices, Count);
   var Stride: Cardinal := 0;

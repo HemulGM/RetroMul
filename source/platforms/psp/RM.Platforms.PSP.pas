@@ -56,8 +56,8 @@ begin
       Context.Stream.Position := Saved;
     end;
   end;
-  if Context.HasExtension(['.zip']) then
-    Suitable := IsPSPArchive(Context.Stream);
+  if (Context.Archive <> nil) then
+    Suitable := IsPSPArchive(Context.Archive);
   if Suitable then
     Result := TCoreMatch.Create('PSP',
       function: IEmulationCore
@@ -89,7 +89,7 @@ class procedure TPSPPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('psp', 'PlayStation Portable (experimental)', 'PSP',
     'Sony', 'PSP PlayStation Portable Allegrex homebrew', 'psp', ['psp'],
-    ['.iso', '.cso', '.pbp', '.elf', '.prx', '.zip'],
+    ['.iso', '.cso', '.pbp', '.elf', '.prx'],
     '', 'psp', 1);
 end;
 

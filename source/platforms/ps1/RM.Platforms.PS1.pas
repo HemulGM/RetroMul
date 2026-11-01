@@ -75,7 +75,7 @@ class procedure TPS1Platform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('ps1', 'PlayStation', 'PS1',
     'Sony', 'PS1 PSX PSone PlayStation', 'ps1', ['ps1', 'psx', 'playstation'],
-    ['.m3u', '.cue', '.chd', '.iso', '.mds', '.nrg', '.bin', '.exe', '.zip'],
+    ['.m3u', '.cue', '.chd', '.iso', '.mds', '.nrg', '.bin', '.exe'],
     'PS1', 'ps1', 2);
 end;
 

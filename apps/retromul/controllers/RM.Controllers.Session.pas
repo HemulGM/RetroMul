@@ -20,6 +20,7 @@ type
     procedure CancelCoreLoading;
     procedure BeginGameLoading(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string);
     procedure InstallCore(const NewEmulation: IEmulationCore; const FileName, DisplayName: string; StartPaused: Boolean);
+    procedure StopCurrentCore;
   public
     destructor Destroy; override;
     procedure DisconnectSession;
@@ -667,7 +668,7 @@ begin
   begin
     if not FState.Session.PreserveOpeningAutosave then
       FView.AutosaveOnExit;
-    FState.Session.Emulation.Stop;
+    StopCurrentCore;
   end;
 
   if FState.Input.Gamepad <> nil then
@@ -750,6 +751,18 @@ begin
   FView.Stop;
 end;
 
+procedure TSessionController.StopCurrentCore;
+begin
+  try
+    FState.Session.Emulation.Stop;
+  except
+    // The worker has joined, but a failed battery write still belongs to this
+    // session. Skip autosaving the stopped worker on a subsequent close/retry.
+    FView.StopOnError;
+    raise;
+  end;
+end;
+
 procedure TSessionController.Stop;
 begin
   CancelCoreLoading;
@@ -763,7 +776,7 @@ begin
   begin
     FView.AutosaveOnExit;
     FView.TimerUpdate.Enabled := False;
-    FState.Session.Emulation.Stop;
+    StopCurrentCore;
     DisconnectSession;
     FView.ImageCanvas.Mode := TBitmapShaderMode.Original;
     FView.ImageCanvas.Bitmap := nil;

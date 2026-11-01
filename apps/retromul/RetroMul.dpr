@@ -714,7 +714,21 @@ uses
   HW.Sound.OPL3 in '..\..\source\hardware\audio\HW.Sound.OPL3.pas',
   HW.Sound.OPL4 in '..\..\source\hardware\audio\HW.Sound.OPL4.pas',
   HW.Sound.Y8950 in '..\..\source\hardware\audio\HW.Sound.Y8950.pas',
-  HW.Sound.OPL.Nuked in '..\..\source\hardware\audio\HW.Sound.OPL.Nuked.pas';
+  HW.Sound.OPL.Nuked in '..\..\source\hardware\audio\HW.Sound.OPL.Nuked.pas',
+  Core.Archive.RAR in '..\..\source\media\archive\Core.Archive.RAR.pas',
+  Core.Archive.Zip in '..\..\source\media\archive\Core.Archive.Zip.pas',
+  Core.ArchiveStorage in '..\..\source\media\archive\Core.ArchiveStorage.pas',
+  Core.MediaArchive in '..\..\source\media\archive\Core.MediaArchive.pas',
+  Core.RAR.Blake2 in '..\..\source\media\archive\Core.RAR.Blake2.pas',
+  Core.RAR.FragWindow in '..\..\source\media\archive\Core.RAR.FragWindow.pas',
+  Core.RAR.GetBits in '..\..\source\media\archive\Core.RAR.GetBits.pas',
+  Core.RAR.PPM in '..\..\source\media\archive\Core.RAR.PPM.pas',
+  Core.RAR.SubAlloc in '..\..\source\media\archive\Core.RAR.SubAlloc.pas',
+  Core.RAR.Types in '..\..\source\media\archive\Core.RAR.Types.pas',
+  Core.RAR.Unpack in '..\..\source\media\archive\Core.RAR.Unpack.pas',
+  Core.RAR.VM in '..\..\source\media\archive\Core.RAR.VM.pas',
+  Core.Archive.Container in '..\..\source\media\archive\Core.Archive.Container.pas',
+  HW.HostFPU in '..\..\source\hardware\cpu\HW.HostFPU.pas';
 
 {$R *.res}
 

@@ -36,6 +36,7 @@ type
     FFrameRateStopwatch: TStopwatch;
     FFramesSinceRateUpdate: Integer;
     FErrorMessage: string;
+    FPendingRAM, FPendingRTC: TBytes;
     FSoundVolume: Single;
     FScreenPalette: Integer;
     FPauseRequested: Boolean;
@@ -44,6 +45,7 @@ type
     FRumbleLevel: Byte;
     FRumbleSamples, FRumbleWeightedLevel: UInt64;
     FAccelerationX, FAccelerationY: Double;
+    procedure PersistPendingBattery;
     procedure PublishRumble(Level: Byte; Clocks: UInt64 = 0);
     procedure ApplyInput(MBC: TGBMBC);
     procedure SetSoundVolume(const Value: Single);
@@ -73,6 +75,7 @@ type
     property SavePath: string read FSavePath write FSavePath;
     property Storage: IStorage read FStorage write FStorage;
     procedure RequestStop;
+    procedure StopAndSave;
     procedure RequestPause;
     procedure RequestResume;
     procedure SetKeyState(Key: TGBKey; Pressed: Boolean);
@@ -266,6 +269,37 @@ begin
   Terminate;
   if Assigned(FStopEvent) then
     FStopEvent.SetEvent;
+end;
+
+procedure TGBEmulationThread.PersistPendingBattery;
+
+  procedure WritePending(const Path: string; var Data: TBytes);
+  begin
+    if Length(Data) = 0 then
+      Exit;
+    var Stream := TBytesStream.Create(Data);
+    try
+      SaveStreamAtomically(Stream, Path, FStorage);
+      Data := nil;
+    finally
+      Stream.Free;
+    end;
+  end;
+
+begin
+  WritePending(FSavePath, FPendingRAM);
+  WritePending(ChangeFileExt(FSavePath, '.rtc'), FPendingRTC);
+end;
+
+procedure TGBEmulationThread.StopAndSave;
+begin
+  RequestStop;
+  if Suspended then
+    Start;
+  WaitFor;
+  // The emulated cartridge is already gone. Keep both pending images until
+  // their individual writes succeed, even if TakeError consumed the error.
+  PersistPendingBattery;
 end;
 
 procedure TGBEmulationThread.RequestPause;
@@ -487,27 +521,31 @@ var
 
   procedure SaveBattery(MBC: TGBMBC);
 
-    procedure SaveChanged(const Path: string; const Data: TBytes; var Last: TBytes);
+    procedure StageChanged(const Data, Last: TBytes; var Pending: TBytes);
     begin
       if (Length(Data) = Length(Last)) and ((Length(Data) = 0) or CompareMem(@Data[0], @Last[0], Length(Data))) then
-        Exit;
-
-      var Stream := TBytesStream.Create(Data);
-      try
-        SaveStreamAtomically(Stream, Path, FStorage);
-        Last := Copy(Data);
-      finally
-        Stream.Free;
-      end;
+        Pending := nil
+      else
+        Pending := Copy(Data);
     end;
 
   begin
     if not BatteryArmed then
       Exit;
 
-    SaveChanged(FSavePath, MBC.SaveMemory, LastRAM);
+    // Stage RAM and RTC before any I/O: failure of the first write must not
+    // discard the other image when Execute releases the cartridge.
+    var RAM := MBC.SaveMemory;
+    var RTC: TBytes := nil;
+    StageChanged(RAM, LastRAM, FPendingRAM);
     if MBC.HasTimer then
-      SaveChanged(ChangeFileExt(FSavePath, '.rtc'), MBC.RTCData, LastRTC);
+    begin
+      RTC := MBC.RTCData;
+      StageChanged(RTC, LastRTC, FPendingRTC);
+    end;
+    PersistPendingBattery;
+    LastRAM := RAM;
+    LastRTC := RTC;
   end;
 
 begin

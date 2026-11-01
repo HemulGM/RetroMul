@@ -103,7 +103,7 @@ begin
     Exit;
   TPlatformRegistry.RegisterPlatform('colecovision', 'ColecoVision', 'ColecoVision',
     'Coleco', 'Coleco Vision CV Super Game Module MegaCart', 'colecovision',
-    ['colecovision', 'coleco'], ['.col', '.cv', '.rom', '.bin', '.zip', '.7z'],
+    ['colecovision', 'coleco'], ['.col', '.cv', '.rom', '.bin'],
     'ColecoVision', 'colecovision', 2);
   TPlatformRegistry.RegisterAlias('coleco', 'colecovision');
   RegisterSnapshotPolicy('COLECO', TSnapshotPolicy.Create(2));

@@ -61,10 +61,10 @@ class procedure TNESPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('nes', 'NES / Famicom', 'NES',
     'Nintendo', 'NES Famicom Dendy Disk System FDS', 'nes', ['nes'],
-    ['.nes', '.fds', '.qd', '.zip', '.7z'], 'NES', 'nes', 2);
+    ['.nes', '.fds', '.qd'], 'NES', 'nes', 2);
   TPlatformRegistry.RegisterPlatform('fds', 'Famicom Disk System', 'FDS',
     'Nintendo', 'FDS Famicom Disk System Twin Famicom', 'fds', ['fds', 'famicomdisksystem'],
-    ['.fds', '.qd', '.zip', '.7z'], 'NES', 'nes', 2);
+    ['.fds', '.qd'], 'NES', 'nes', 2);
 end;
 
 class procedure TNESPlatform.RegisterCore;

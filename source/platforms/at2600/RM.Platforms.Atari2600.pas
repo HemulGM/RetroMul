@@ -32,8 +32,8 @@ uses
   RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.Atari2600.Gamepads,
   RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  System.Classes, System.UITypes, System.Zip, System.IOUtils, Core.Snapshots,
-  Core.InputConfig, System.IniFiles;
+  System.Classes, System.UITypes, Core.Archive.Container, System.IOUtils,
+  Core.Snapshots, Core.InputConfig, System.IniFiles;
 
 procedure ReadA2600InputPorts(Ini: TCustomIniFile; var Ports: TCoreInputPorts);
 begin
@@ -66,18 +66,19 @@ class function TA2600Platform.RecognizeArchive(Context: TCoreLoadContext): TCore
 begin
   Result := nil;
   var Hint := Context.RomName.ToLower.Replace('\', '/');
-  if not Context.HasExtension(['.zip']) or
+  if (Context.Archive = nil) or
     not (Hint.Contains('/at2600/') or Hint.Contains('/atari2600/') or Hint.Contains('/a2600/')) then
     Exit;
-  var Zip := TZipFile.Create;
+  var Archive := Context.Archive;
   try
-    Zip.Open(Context.Stream, zmRead);
     var Best := -1;
     var BestScore := Low(Integer);
     var Base := ChangeFileExt(ExtractFileName(Context.RomName), '').ToLower;
-    for var I := 0 to Zip.FileCount - 1 do
+    for var I := 0 to Archive.Count - 1 do
     begin
-      var Name := Zip.FileNames[I].ToLower;
+      if Archive.Entries[I].IsDirectory then
+        Continue;
+      var Name := Archive.Entries[I].Name.ToLower;
       if not (Name.EndsWith('.a26') or Name.EndsWith('.bin') or Name.EndsWith('.rom')) then
         Continue;
       var Score := 0;
@@ -99,15 +100,14 @@ begin
     if Best < 0 then
       Exit;
     var Data: TBytes;
-    if Zip.FileInfo[Best].UncompressedSize64 > 512 * 1024 then
+    if Archive.Entries[Best].Size > 512 * 1024 then
       raise EReadError.Create('Unsupported Atari 2600 cartridge size');
-    var Name := Zip.FileNames[Best];
-    Zip.Read(Best, Data);
-    Zip.Close;
+    var Name := Archive.Entries[Best].Name;
+    Archive.Read(Best, Data);
     Context.LoadArchiveEntry(Data, Name);
     Result := Recognize(Context);
   finally
-    Zip.Free;
+    Archive := nil;
   end;
 end;
 
@@ -129,7 +129,7 @@ class procedure TA2600Platform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('at2600', 'Atari 2600', '2600',
     'Atari', 'Atari VCS 2600', 'at2600', ['at2600', 'atari2600', 'a2600'],
-    ['.a26', '.bin', '.rom', '.zip', '.7z'], '', 'at2600', 2);
+    ['.a26', '.bin', '.rom'], '', 'at2600', 2);
   TPlatformRegistry.RegisterAlias('a2600', 'at2600');
   TPlatformRegistry.RegisterAlias('atari2600', 'at2600');
 end;

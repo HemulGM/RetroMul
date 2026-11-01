@@ -15,7 +15,7 @@
 interface
 
 uses
-  System.SysUtils, System.Math, Core.Snapshots, HW.JIT;
+  HW.HostFPU, System.SysUtils, System.Math, Core.Snapshots, HW.JIT;
 
 const
   // TSH4TLBPage.Flags: device memory reached through the bus (reads,
@@ -6046,10 +6046,10 @@ end;
 procedure TSH4.Run;
 begin
 {$IFDEF CPUX64}
-  var SavedMXCSR := GetMXCSR;
+  var SavedMXCSR := ReadHostMXCSR;
   // Guest DN is handled explicitly. Host DAZ/FTZ must not change either
   // the arithmetic result or the exception flags observed by the wrapper.
-  SetMXCSR(SavedMXCSR and not Cardinal($8040));
+  WriteHostMXCSR(SavedMXCSR and not Cardinal($8040));
 {$ENDIF}
   FHostMaskSaved := GetExceptionMask;
   FHostRoundSaved := GetRoundMode;
@@ -6062,7 +6062,7 @@ begin
     SetExceptionMask(FHostMaskSaved);
     SetRoundMode(FHostRoundSaved);
 {$IFDEF CPUX64}
-    SetMXCSR(SavedMXCSR and not Cardinal($3F));
+    WriteHostMXCSR(SavedMXCSR and not Cardinal($3F));
 {$ENDIF}
   end;
 end;
@@ -6385,8 +6385,8 @@ procedure TSH4.Step;
 begin
   Inc(FSideEffects);
 {$IFDEF CPUX64}
-  var SavedMXCSR := GetMXCSR;
-  SetMXCSR(SavedMXCSR and not Cardinal($8040));
+  var SavedMXCSR := ReadHostMXCSR;
+  WriteHostMXCSR(SavedMXCSR and not Cardinal($8040));
 {$ENDIF}
   var SavedMask := GetExceptionMask;
   var SavedRound := GetRoundMode;
@@ -6426,7 +6426,7 @@ begin
     SetExceptionMask(SavedMask);
     SetRoundMode(SavedRound);
 {$IFDEF CPUX64}
-    SetMXCSR(SavedMXCSR and not Cardinal($3F));
+    WriteHostMXCSR(SavedMXCSR and not Cardinal($3F));
 {$ENDIF}
   end;
 end;

@@ -781,8 +781,10 @@ end;
 
 procedure TN64CoreAdapter.Reset;
 begin
+  FPaused := False;
   if FWorker <> nil then
-    FWorker.RequestReset
+    FWorker.RequestReset;
+  Configure
 end;
 
 procedure TN64CoreAdapter.ApplyInputPorts(const Ports: TCoreInputPorts);

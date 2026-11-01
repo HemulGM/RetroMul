@@ -4,7 +4,8 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.IniFiles, Core.Storage,
-  Core.Emulation, GW.Cartridge, GW.Emulation, Core.InputConfig;
+  Core.Archive.Container, Core.Emulation, GW.Cartridge, GW.Emulation,
+  Core.InputConfig;
 
 type
   TGWKeyMap = array[TEmulatorButton] of UInt32;
@@ -32,9 +33,11 @@ type
     FPaused: Boolean;
     FError, FSnapshotDirectory, FSaveFile: string;
     procedure ApplySettings;
+    procedure ConfigureCartridge(const RomName: string);
   public
     procedure ApplyLiveSettings;
-    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string);
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string); overload;
+    constructor Create(const Container: IArchiveContainer; const Storage: IStorage; const RomName: string; const SourceHash: TBytes = nil); overload;
     destructor Destroy; override;
     function GetSystemId: string;
     function GetName: string;
@@ -120,11 +123,35 @@ begin
   if RomName.StartsWith('content://', True) then
     SourceName := FStorage.Describe(RomName).Name;
   FCartridge := TGWCartridge.Create(Data, SourceName);
+  ConfigureCartridge(RomName);
+end;
+
+constructor TGWCoreAdapter.Create(const Container: IArchiveContainer; const Storage: IStorage; const RomName: string; const SourceHash: TBytes);
+begin
+  inherited Create;
+  FStorage := Storage;
+  if FStorage = nil then
+    FStorage := TStorage.Default;
+  FCartridge := TGWCartridge.Create(Container, RomName);
+  if Length(SourceHash) <> 0 then
+  begin
+    if Length(SourceHash) <> 32 then
+      raise EArgumentException.Create('G&W source identity must be SHA-256');
+    FCartridge.SnapshotHash := Copy(SourceHash);
+  end;
+  ConfigureCartridge(RomName);
+end;
+
+procedure TGWCoreAdapter.ConfigureCartridge(const RomName: string);
+begin
   FConfigObject := TGWConfig.Create(FStorage.ConfigFile('gw'), FStorage);
   FConfig := FConfigObject;
   FConfig.Load;
-  FSnapshotDirectory := FStorage.GameSnapshots('gw', RomName, SnapshotIdentity(Data));
-  FSaveFile := FStorage.GameSave('gw', RomName, SnapshotIdentity(Data));
+  var Identity := '';
+  for var Value in FCartridge.SnapshotHash do
+    Identity := Identity + IntToHex(Value, 2).ToLower;
+  FSnapshotDirectory := FStorage.GameSnapshots('gw', RomName, Identity);
+  FSaveFile := FStorage.GameSave('gw', RomName, Identity);
 end;
 
 destructor TGWCoreAdapter.Destroy;

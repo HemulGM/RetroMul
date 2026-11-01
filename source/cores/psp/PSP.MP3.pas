@@ -362,8 +362,8 @@ begin
               Value := BadAddress;
               Exit
             end;
-            if (Context.BufferSize < 8192) or (Context.BufferSize > High(Integer)) or
-              (Context.PCMSize < 9216) or (Context.PCMSize > High(Integer)) then
+            if (Context.BufferSize < 8192) or (Context.BufferSize > Cardinal(High(Integer))) or
+              (Context.PCMSize < 9216) or (Context.PCMSize > Cardinal(High(Integer))) then
             begin
               Value := BadSize;
               Exit

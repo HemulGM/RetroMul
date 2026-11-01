@@ -296,9 +296,12 @@ end;
 
 destructor TGBCoreAdapter.Destroy;
 begin
-  Stop;
-  FThread.Free;
-  inherited;
+  try
+    Stop;
+  finally
+    FThread.Free;
+    inherited;
+  end;
 end;
 
 function TGBCoreAdapter.GetInputState: TEmulatorInput;
@@ -381,6 +384,7 @@ procedure TGBCoreAdapter.Reset;
 begin
   // The Game Boy core has no in-place reset path. Recreate its worker so all
   // singleton CPU, GPU and memory state is returned to the power-on state.
+  Stop; // Do not replace a worker while battery data still needs a retry.
   FreeAndNil(FThread);
   CreateThread;
   FFrameNumber := 0;
@@ -468,15 +472,8 @@ end;
 
 procedure TGBCoreAdapter.Stop;
 begin
-  if (FThread <> nil) and not FThread.Finished then
-  begin
-    FThread.RequestStop;
-    // Match other cores: returning from Stop means no further emulation work.
-    // A never-started worker exits immediately once released after termination.
-    if FThread.Suspended then
-      FThread.Start;
-    FThread.WaitFor;
-  end;
+  if FThread <> nil then
+    FThread.StopAndSave;
 end;
 
 function TGBCoreAdapter.TakeError: string;

@@ -42,7 +42,7 @@ type
     FLastBattery: TBytes;
     FInput: TEmulatorButtons;
     FTouchX, FTouchY: Integer;
-    FPen, FPaused, FReset, FAvailable, FAudioEnabled: Boolean;
+    FPen, FPaused, FReset, FAvailable, FAudioEnabled, FFaulted: Boolean;
     FVolume: Single;
     FFrame: TEmulatorFrame;
     FError, FAudioError, FSaveError: string;
@@ -61,6 +61,7 @@ type
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
     function TakeError: string;
     function TakeAudioError: string;
+    function HasFaulted: Boolean;
   end;
 
   TNDSCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationPointerInput, IEmulationMouseInput, IEmulationLiveSettings, IEmulationAudioDiagnostics, IEmulationSnapshotLocation, IEmulationVideoRegions)
@@ -470,6 +471,7 @@ begin
       begin
         FLock.Acquire;
         try
+          FFaulted := True;
           FError := E.ClassName + ': ' + E.Message;
         finally
           FLock.Release;
@@ -532,6 +534,16 @@ begin
   try
     Result := FAudioError;
     FAudioError := '';
+  finally
+    FLock.Release;
+  end;
+end;
+
+function TNDSWorker.HasFaulted: Boolean;
+begin
+  FLock.Acquire;
+  try
+    Result := FFaulted;
   finally
     FLock.Release;
   end;
@@ -616,6 +628,16 @@ end;
 procedure TNDSCoreAdapter.Reset;
 begin
   FPaused := False;
+  if (FWorker <> nil) and (FWorker.Finished or FWorker.HasFaulted) then
+  begin
+    // An error is published before Execute has finished its final save.
+    // Join and persist first; a failed save keeps the old worker for retry.
+    Stop;
+    FError := '';
+    FAudioError := '';
+    Start;
+    Exit;
+  end;
   if FWorker <> nil then
     FWorker.RequestReset;
   Configure;

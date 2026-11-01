@@ -92,7 +92,7 @@ begin
   if FRegistered then
     Exit;
   TPlatformRegistry.RegisterPlatform('nds', 'Nintendo DS (experimental)', 'NDS',
-    'Nintendo', 'Nintendo DS ARM9 ARM7 stylus', 'nds', ['nds'], ['.nds', '.zip', '.7z'], 'NDS', 'nds', 1);
+    'Nintendo', 'Nintendo DS ARM9 ARM7 stylus', 'nds', ['nds'], ['.nds'], 'NDS', 'nds', 1);
   var Registration := TEmulationCoreRegistration.Create('NDS', ['.nds']);
   Registration.MaxArchiveImageSize := NDS_ROM_MAX_SIZE;
   Registration.Add(TCoreLoadStage.Source, 40, Source);

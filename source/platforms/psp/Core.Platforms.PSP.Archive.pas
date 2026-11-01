@@ -3,25 +3,30 @@
 interface
 
 uses
-  System.Classes, Core.Storage, PSP.Media;
+  System.Classes, Core.Archive.Container, Core.Storage, PSP.Media;
 
-// ZIP recognition reads at most a 4 MiB ISO prefix. Full extraction streams to
+// Recognition inspects a 4 MiB ISO prefix; readers may cache the full member.
+// Full extraction streams to
 // storage's temporary area, with cancellation, a size cap and cleanup on error.
-function IsPSPArchive(Stream: TStream): Boolean;
+function IsPSPArchive(const Archive: IArchiveContainer): Boolean;
 
-function ReadPSPArchive(Stream: TStream; const Storage: IStorage; KeepMedia: Boolean = False): TPSPProgram;
+function ReadPSPArchive(const Archive: IArchiveContainer; const Storage: IStorage; KeepMedia: Boolean = False): TPSPProgram;
 
 implementation
 
 uses
-  System.SysUtils, System.Zip;
+  System.SysUtils;
 
-function Candidate(Archive: TZipFile): Integer;
+function Candidate(Archive: IArchiveContainer): Integer;
 begin
   Result := -1;
-  for var I := 0 to Archive.FileCount - 1 do
+  if Archive = nil then
+    Exit;
+  for var i := 0 to Archive.Count - 1 do
   begin
-    var Name := Archive.FileNames[I];
+    if Archive.Entries[i].IsDirectory then
+      Continue;
+    var Name := Archive.Entries[i].Name;
     if Name.Contains('__MACOSX/') or ExtractFileName(Name).StartsWith('._') then
       Continue;
     var Ext := ExtractFileExt(Name).ToLower;
@@ -29,28 +34,24 @@ begin
       Continue;
     if Result >= 0 then
       Exit(-1); // Ambiguous sets retain existing factory handling.
-    Result := I;
+    Result := i;
   end;
 end;
 
-function IsPSPArchive(Stream: TStream): Boolean;
+function IsPSPArchive(const Archive: IArchiveContainer): Boolean;
 begin
   Result := False;
-  var Saved := Stream.Position;
-  var Archive := TZipFile.Create;
-  try
-    Archive.Open(Stream, zmRead);
+  begin
     var Index := Candidate(Archive);
     if Index < 0 then
       Exit;
-    var Ext := ExtractFileExt(Archive.FileNames[Index]).ToLower;
+    var Ext := ExtractFileExt(Archive.Entries[Index].Name).ToLower;
     if (Ext <> '.iso') and (Ext <> '.elf') then
       Exit(True);
-    var Header: TZipHeader;
     var Input: TStream;
-    Archive.Read(Index, Input, Header);
+    Input := Archive.OpenRead(Index);
     try
-      var N := Archive.FileInfo[Index].UncompressedSize64;
+      var N := Archive.Entries[Index].Size;
       if N > 4 * 1024 * 1024 then
         N := 4 * 1024 * 1024;
       var Prefix: TBytes;
@@ -86,32 +87,30 @@ begin
     finally
       Input.Free;
     end;
-  finally
-    Archive.Free;
-    Stream.Position := Saved;
   end;
 end;
 
-function ReadPSPArchive(Stream: TStream; const Storage: IStorage; KeepMedia: Boolean): TPSPProgram;
+function ReadPSPArchive(const Archive: IArchiveContainer; const Storage: IStorage; KeepMedia: Boolean): TPSPProgram;
 begin
-  var Saved := Stream.Position;
-  var Archive := TZipFile.Create;
+  if Archive = nil then
+    raise EArgumentNilException.Create('Archive');
+  if Storage = nil then
+    raise EArgumentNilException.Create('Storage');
   var Temporary := '';
   var Retained := False;
+  var Completed := False;
   try
-    Archive.Open(Stream, zmRead);
     var Index := Candidate(Archive);
     if Index < 0 then
-      raise EPSPFormat.Create('PSP: ZIP must contain exactly one ISO, CSO, PBP or ELF');
-    var Size := Archive.FileInfo[Index].UncompressedSize64;
+      raise EPSPFormat.Create('PSP: Archive must contain exactly one ISO, CSO, PBP or ELF');
+    var Size := Archive.Entries[Index].Size;
     if (Size < 4) or (Size > UInt64(4) * 1024 * 1024 * 1024) then
-      raise EPSPFormat.Create('PSP: ZIP image size exceeds 4 GiB');
+      raise EPSPFormat.Create('PSP: Archive image size exceeds 4 GiB');
     Temporary := Storage.TemporaryFile('.psp-image');
     var Output := Storage.OpenWrite(Temporary);
     try
-      var Header: TZipHeader;
       var Input: TStream;
-      Archive.Read(Index, Input, Header, True);
+      Input := Archive.OpenRead(Index);
       try
         var Buffer: TBytes;
         SetLength(Buffer, 1024 * 1024);
@@ -128,7 +127,7 @@ begin
         end;
         var Extra: Byte;
         if Input.Read(Extra, 1) <> 0 then
-          raise EPSPFormat.Create('PSP: ZIP entry exceeds its declared size');
+          raise EPSPFormat.Create('PSP: Archive entry exceeds its declared size');
       finally
         Input.Free;
       end;
@@ -147,13 +146,14 @@ begin
     finally
       Image.Free;
     end;
+    Completed := True;
   finally
+    if not Retained and (Temporary <> '') and Storage.Exists(Temporary) then
     try
-      if not Retained and (Temporary <> '') and Storage.Exists(Temporary) then
-        Storage.Delete(Temporary);
-    finally
-      Archive.Free;
-      Stream.Position := Saved;
+      Storage.Delete(Temporary);
+    except
+      if Completed then
+        raise;
     end;
   end;
 end;

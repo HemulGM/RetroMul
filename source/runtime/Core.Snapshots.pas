@@ -56,6 +56,12 @@ function SnapshotPolicy(const CoreId: string): TSnapshotPolicy;
 
 function SnapshotIdentity(const ROM: TBytes): string;
 
+// Digest variants preserve the same on-disk format without buffering an entire
+// archive merely to hash its original source bytes.
+procedure SaveCoreSnapshotHash(const Path, platform: string; const ROMHash: TBytes; const Transfer: TStateTransfer; const Storage: IStorage = nil);
+
+procedure LoadCoreSnapshotHash(const Path, platform: string; const ROMHash: TBytes; const Transfer: TStateTransfer; const Storage: IStorage = nil);
+
 // Replace in the same directory without requiring a backup filename.
 procedure SaveStreamAtomically(Stream: TMemoryStream; const Path: string; const Storage: IStorage = nil);
 
@@ -129,8 +135,7 @@ begin
   begin
     FStream.ReadBuffer(StoredSize, SizeOf(StoredSize));
     if (StoredSize <> Size) or (Size < 0) or (Size > FStream.Size - FStream.Position) then
-      raise EReadError.CreateFmt('Incompatible or truncated snapshot (field at %d: stored %d, expected %d)',
-        [FStream.Position - SizeOf(StoredSize), StoredSize, Size]);
+      raise EReadError.CreateFmt('Incompatible or truncated snapshot (field at %d: stored %d, expected %d)', [FStream.Position - SizeOf(StoredSize), StoredSize, Size]);
 
     if Size > 0 then
       FStream.ReadBuffer(Value, Size);
@@ -168,7 +173,7 @@ begin
   Result := Hash.HashAsString;
 end;
 
-function MakeHeader(const PlatformCore: string; const ROM: TBytes): THeader;
+function MakeHeader(const PlatformCore: string; const ROM: TBytes; IsDigest: Boolean = False): THeader;
 begin
   Result := Default(THeader);
   var Magic: AnsiString := 'RMSNAP01';
@@ -188,18 +193,24 @@ begin
     Magic := 'RMSNAP02';
     Move(Magic[1], Result.Magic, 8);
   end;
-  var Hash := THashSHA2.Create;
-  Hash.Update(ROM);
-  var Digest := Hash.HashAsBytes;
+  var Digest := ROM;
+  if not IsDigest then
+  begin
+    var Hash := THashSHA2.Create;
+    Hash.Update(ROM);
+    Digest := Hash.HashAsBytes;
+  end;
+  if Length(Digest) <> 32 then
+    raise EArgumentException.Create('Snapshot ROM digest must be SHA-256');
   Move(Digest[0], Result.ROMHash, 32);
 end;
 
-procedure SaveCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
+procedure SaveCoreSnapshotData(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage; IsDigest: Boolean);
 begin
   var Payload := TMemoryStream.Create;
   var Output := TMemoryStream.Create;
   try
-    var Header := MakeHeader(platform, ROM);
+    var Header := MakeHeader(platform, ROM, IsDigest);
     TransferStream(Payload, False, Transfer, Header.Version);
     Header.PayloadSize := Payload.Size;
     Payload.Position := 0;
@@ -222,7 +233,7 @@ begin
   end;
 end;
 
-procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
+procedure LoadCoreSnapshotData(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage; IsDigest: Boolean);
 begin
   var SourceStorage := Storage;
   if SourceStorage = nil then
@@ -233,7 +244,7 @@ begin
   try
     var Header: THeader;
     Input.ReadBuffer(Header, SizeOf(Header));
-    var Expected := MakeHeader(platform, ROM);
+    var Expected := MakeHeader(platform, ROM, IsDigest);
     var PlatformMatches := True;
     if CompareMem(@Header.Magic, PAnsiChar(AnsiString('RMSNAP02')), 8) then
     begin
@@ -287,6 +298,26 @@ begin
     Payload.Free;
     Input.Free;
   end;
+end;
+
+procedure SaveCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
+begin
+  SaveCoreSnapshotData(Path, platform, ROM, Transfer, Storage, False);
+end;
+
+procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
+begin
+  LoadCoreSnapshotData(Path, platform, ROM, Transfer, Storage, False);
+end;
+
+procedure SaveCoreSnapshotHash(const Path, platform: string; const ROMHash: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
+begin
+  SaveCoreSnapshotData(Path, platform, ROMHash, Transfer, Storage, True);
+end;
+
+procedure LoadCoreSnapshotHash(const Path, platform: string; const ROMHash: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
+begin
+  LoadCoreSnapshotData(Path, platform, ROMHash, Transfer, Storage, True);
 end;
 
 procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer; Pixels: Pointer; const Storage: IStorage);

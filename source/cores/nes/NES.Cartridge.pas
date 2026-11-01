@@ -85,7 +85,7 @@ uses
   {$IFDEF POSIX}
   Posix.Stdio, Posix.Unistd,
   {$ENDIF}
-  System.IOUtils, System.Zip, Core.MediaArchive;
+  System.IOUtils, Core.Archive.Container, Core.MediaArchive;
 
 type
   TInesHeader = packed record
@@ -639,18 +639,24 @@ begin
   var Data := ReadRomData(Stream);
   // The main registry may already have extracted the image while retaining
   // its archive filename. Media replacement also accepts the archive itself.
-  if TFdsMedia.HasSignature(Data) or not IsMediaArchive(FileName) then
-    Exit(TFdsMedia.Create(TByteArray(Data), SameText(ExtractFileExt(FileName), '.qd')));
-  if not SameText(ExtractFileExt(FileName), '.zip') then
-    Data := DecodeMediaArchive(FileName, Data);
-  var Input := TBytesStream.Create(Data);
-  var Archive := TZipFile.Create;
+  var Probe := TBytesStream.Create(Data);
+  var IsPacked: Boolean;
   try
-    Archive.Open(Input, zmRead);
+    IsPacked := HasMediaArchiveSignature(Probe);
+  finally
+    Probe.Free;
+  end;
+  if TFdsMedia.HasSignature(Data) or not IsPacked then
+    Exit(TFdsMedia.Create(TByteArray(Data), SameText(ExtractFileExt(FileName), '.qd')));
+  var Input := TBytesStream.Create(Data);
+  var Archive: IArchiveContainer;
+  try
+    Archive := OpenMediaArchive(Input, FileName, FStorage);
     var Candidate := -1;
-    for var I := 0 to Archive.FileCount - 1 do
-      if SameText(ExtractFileExt(Archive.FileNames[I]), '.fds') or
-        SameText(ExtractFileExt(Archive.FileNames[I]), '.qd') then
+    for var I := 0 to Archive.Count - 1 do
+      if not Archive.Entries[I].IsDirectory and
+        (SameText(ExtractFileExt(Archive.Entries[I].Name), '.fds') or
+        SameText(ExtractFileExt(Archive.Entries[I].Name), '.qd')) then
       begin
         if Candidate >= 0 then
           raise ENesException.Create('FDS archive must contain exactly one disk image');
@@ -658,13 +664,13 @@ begin
       end;
     if Candidate < 0 then
       raise ENesException.Create('FDS archive must contain exactly one disk image');
-    if Archive.FileInfo[Candidate].UncompressedSize64 > 64 * 1024 * 1024 then
+    if Archive.Entries[Candidate].Size > 64 * 1024 * 1024 then
       raise ENesException.Create('FDS archive image exceeds 64 MiB');
-    var Name := Archive.FileNames[Candidate];
+    var Name := Archive.Entries[Candidate].Name;
     Archive.Read(Candidate, Data);
     Result := TFdsMedia.Create(TByteArray(Data), SameText(ExtractFileExt(Name), '.qd'));
   finally
-    Archive.Free;
+    Archive := nil;
     Input.Free;
   end;
 end;

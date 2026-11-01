@@ -32,25 +32,26 @@ uses
   RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.Atari5200.Gamepads,
   RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  System.Classes, System.UITypes, System.Zip, System.IOUtils, Core.Snapshots,
-  RM.Platforms.Atari5200.Input;
+  System.Classes, System.UITypes, Core.Archive.Container, System.IOUtils,
+  Core.Snapshots, RM.Platforms.Atari5200.Input;
 
 class function TA5200Platform.RecognizeArchive(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
   var Hint := Context.RomName.ToLower.Replace('\', '/');
-  if not Context.HasExtension(['.zip']) or
+  if (Context.Archive = nil) or
     not (Hint.Contains('/at5200/') or Hint.Contains('/atari5200/') or Hint.Contains('/a5200/')) then
     Exit;
-  var Zip := TZipFile.Create;
+  var Archive := Context.Archive;
   try
-    Zip.Open(Context.Stream, zmRead);
     var Best := -1;
     var BestScore := Low(Integer);
     var Base := ChangeFileExt(ExtractFileName(Context.RomName), '').ToLower;
-    for var i := 0 to Zip.FileCount - 1 do
+    for var i := 0 to Archive.Count - 1 do
     begin
-      var Name := Zip.FileNames[i].ToLower;
+      if Archive.Entries[i].IsDirectory then
+        Continue;
+      var Name := Archive.Entries[i].Name.ToLower;
       if not (Name.EndsWith('.car') or Name.EndsWith('.a52') or Name.EndsWith('.bin') or Name.EndsWith('.rom')) then
         Continue;
       var Score := 0;
@@ -76,15 +77,14 @@ begin
     if Best < 0 then
       Exit;
     var Data: TBytes;
-    if Zip.FileInfo[Best].UncompressedSize64 > 40976 then
+    if Archive.Entries[Best].Size > 40976 then
       raise EReadError.Create('Unsupported Atari 5200 cartridge size');
-    var Name := Zip.FileNames[Best];
-    Zip.Read(Best, Data);
-    Zip.Close;
+    var Name := Archive.Entries[Best].Name;
+    Archive.Read(Best, Data);
     Context.LoadArchiveEntry(Data, Name);
     Result := Recognize(Context);
   finally
-    Zip.Free;
+    Archive := nil;
   end;
 end;
 
@@ -109,7 +109,7 @@ class procedure TA5200Platform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('at5200', 'Atari 5200', '5200',
     'Atari', 'Atari SuperSystem 5200', 'at5200', ['at5200', 'atari5200', 'a5200'],
-    ['.a52', '.car', '.bin', '.rom', '.zip', '.7z'], '', 'at5200', 4);
+    ['.a52', '.car', '.bin', '.rom'], '', 'at5200', 4);
   TPlatformRegistry.RegisterAlias('a5200', 'at5200');
   TPlatformRegistry.RegisterAlias('atari5200', 'at5200');
 end;

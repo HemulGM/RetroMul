@@ -35,15 +35,15 @@ uses
 class function TCPSPlatform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
-  if not Context.HasExtension(['.zip']) then
+  if (Context.Archive = nil) then
     Exit;
   var RomSet: TCPSRomSet;
-  if TCPSRomSet.IdentifyStream(Context.Stream, Context.SourceName, RomSet) then
+  if TCPSRomSet.Identify(Context.Archive, Context.SourceName, RomSet) then
     Result := TCoreMatch.Create('CPS',
       function: IEmulationCore
       begin
         Context.Stream.Position := 0;
-        Result := TCPSCoreAdapter.Create(Context.Stream, Context.Storage, Context.SourceName);
+        Result := TCPSCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
       end);
 end;
 
@@ -51,15 +51,15 @@ class procedure TCPSPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('cps1', 'Capcom Play System I', 'CPS-1',
     'Capcom', 'CPS CPS1 arcade', 'cps1', ['cps1'],
-    ['.zip', '.7z'],
+    [],
     'CPS1', 'cps1', 4);
   TPlatformRegistry.RegisterPlatform('cps2', 'Capcom Play System II', 'CPS-2',
     'Capcom', 'CPS CPS2 arcade', 'cps2', ['cps2'],
-    ['.zip', '.7z'],
+    [],
     'CPS2', 'cps2', 4);
   TPlatformRegistry.RegisterPlatform('cps3', 'Capcom Play System III', 'CPS-3',
     'Capcom', 'CPS CPS3 arcade SIMM No-CD', 'cps3', ['cps3'],
-    ['.zip', '.7z'],
+    [],
     'CPS3', 'cps3', 2);
 end;
 

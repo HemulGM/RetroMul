@@ -12,6 +12,8 @@ layout(set=0,binding=1,std430) readonly buffer State { Draw draws[]; };
 layout(set=0,binding=2,std430) readonly buffer TileMasks { uint tileMasks[]; };
 // The LOD tables of draws with per-pixel LOD (each at its draw's p[79]).
 layout(set=0,binding=3,std430) readonly buffer LodTables { uint lodTables[]; };
+// Clustered sprites' texture coordinates, the host's per column and row.
+layout(set=0,binding=4,std430) readonly buffer Coordinates { int coords[]; };
 layout(push_constant) uniform Bounds { ivec4 bounds; uint slot; uint mode; };
 uint drawIndex;
 #include "PS2.GS.Pixel.glsl"
@@ -260,6 +262,17 @@ void rasterize(ivec2 xy) {
   shadePixel(xy,z,clamp(c,ivec3(0),ivec3(255)),clamp(a,0,255),clamp(fog,0,255),u,v,mip);
 }
 
+// A sprite in a cluster (p[58] 0) as the sprite kernel draws it: colour,
+// depth and fog flat, the texture coordinates of its column and row.
+void sprite(ivec2 xy) {
+  if(xy.x<int(p[60]) || xy.y<int(p[61]) || xy.x>=int(p[62]) || xy.y>=int(p[63])) return;
+  int u=0,v=0;
+  if(p[47]!=0) {
+    u=coords[drawIndex*4096+uint(xy.x-int(p[60]))];
+    v=coords[drawIndex*4096+2048+uint(xy.y-int(p[61]))];
+  }
+  shadePixel(xy,p[31],ivec3(p[26],p[27],p[28]),int(p[29]),int(p[30]),u,v,p[52]);
+}
 void main() {
   ivec2 xy=bounds.xy+ivec2(gl_GlobalInvocationID.xy);
   if(any(greaterThanEqual(xy,bounds.zw))) return;
@@ -278,7 +291,7 @@ void main() {
       int bit=findLSB(mask);
       mask&=mask-1;
       drawIndex=slot+word*32+uint(bit);
-      rasterize(xy);
+      if(p[58]==0) sprite(xy); else rasterize(xy);
     }
   }
   finishPixelCache();

@@ -82,6 +82,8 @@ type
     procedure BuildAccess(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal;
       out Reads, Writes, Textures: TPages);
     procedure FlushNative;
+    procedure JoinCluster(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; const Writes, Textures: TPages);
+    procedure AddToCluster(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; const Reads, Writes, Textures: TPages);
     procedure WriteState(const D: TPS2GSDraw; const V: TPS2GSVertex);
     procedure FlushFragments;
   public
@@ -132,8 +134,8 @@ begin
   begin
     FTiles := FCompute.CreateBuffer(TileCapacity * SizeOf(Cardinal), True);
     FLodBuffer := FCompute.CreateBuffer(LodCapacity * SizeOf(Cardinal), True);
-    FTriangleKernel := FCompute.CreateKernel(PS2TriangleSPIRV, 4, SizeOf(TPush));
-    FCompute.Bind(FTriangleKernel, [FRAM, FState, FTiles, FLodBuffer]);
+    FTriangleKernel := FCompute.CreateKernel(PS2TriangleSPIRV, 5, SizeOf(TPush));
+    FCompute.Bind(FTriangleKernel, [FRAM, FState, FTiles, FLodBuffer, FCoordinates]);
   end;
   {$ENDIF}
   TakeHalf;
@@ -327,6 +329,72 @@ begin
   Inc(FRevision);
 end;
 
+// Before a draw joins the cluster: the cluster dispatched first when the
+// draw differs in layout, reads what it writes or writes what it reads, or
+// it is full; a new one started in the state slot the draw takes (FUsed).
+procedure TPS2GSGpu.JoinCluster(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; const Writes, Textures: TPages);
+begin
+  if FNativeCount > 0 then
+  begin
+    var Conflict := (FNativeCount = ClusterSize) or
+      (D.FBP <> FNativeLayout.FBP) or (D.FBW <> FNativeLayout.FBW) or (D.FPSM <> FNativeLayout.FPSM) or
+      (D.ZBP <> FNativeLayout.ZBP) or (D.ZPSM <> FNativeLayout.ZPSM);
+    for var K := 0 to 15 do
+      Conflict := Conflict or ((Textures[K] and FNativeWrites[K]) <> 0) or
+        ((Writes[K] and FNativeTextures[K]) <> 0);
+    if not Conflict and (FNativeUsesZ or not D.ZMSK or (D.ZTST <> 1)) then
+    begin
+      // A draw not using depth may extend colour over another draw's
+      // depth rows. Per-pixel ordering is only enough for disjoint layouts.
+      var MX := Max(FNativeBounds[2], X1);
+      var MY := Max(FNativeBounds[3], Y1);
+      var F0 := D.FBP div 32;
+      var F1 := (D.FBP + 31) div 32 + Cardinal((MY - 1) div 32) * D.FBW + Cardinal((MX - 1) div 64);
+      var Z0 := D.ZBP div 32;
+      var Z1 := (D.ZBP + 31) div 32 + Cardinal((MY - 1) div 32) * D.FBW + Cardinal((MX - 1) div 64);
+      Conflict := (F1 >= 512) or (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0));
+    end;
+    if Conflict then FlushNative;
+  end;
+  if FUsed = FUsedEnd then
+  begin
+    FlushNative;
+    NextHalf;
+  end;
+  if FNativeCount = 0 then
+  begin
+    FNativeStart := FUsed;
+    FNativeLayout := D;
+    FNativeUsesZ := False;
+    FNativeBounds[0] := X0; FNativeBounds[1] := Y0;
+    FNativeBounds[2] := X1; FNativeBounds[3] := Y1;
+    FillChar(FNativeReads, SizeOf(FNativeReads), 0);
+    FillChar(FNativeWrites, SizeOf(FNativeWrites), 0);
+    FillChar(FNativeTextures, SizeOf(FNativeTextures), 0);
+  end;
+end;
+
+// The draw in state slot FUsed joins the cluster.
+procedure TPS2GSGpu.AddToCluster(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; const Reads, Writes, Textures: TPages);
+begin
+  FNativeRectangles[FNativeCount, 0] := X0; FNativeRectangles[FNativeCount, 1] := Y0;
+  FNativeRectangles[FNativeCount, 2] := X1; FNativeRectangles[FNativeCount, 3] := Y1;
+  FNativeBounds[0] := Min(FNativeBounds[0], X0); FNativeBounds[1] := Min(FNativeBounds[1], Y0);
+  FNativeBounds[2] := Max(FNativeBounds[2], X1); FNativeBounds[3] := Max(FNativeBounds[3], Y1);
+  for var K := 0 to 15 do
+  begin
+    FReads[K] := FReads[K] or Reads[K]; FWrites[K] := FWrites[K] or Writes[K];
+    FNativeReads[K] := FNativeReads[K] or Reads[K];
+    FNativeWrites[K] := FNativeWrites[K] or Writes[K];
+    FNativeTextures[K] := FNativeTextures[K] or Textures[K];
+  end;
+  Inc(FNativeCount);
+  FNativeUsesZ := FNativeUsesZ or not D.ZMSK or (D.ZTST <> 1);
+  Inc(FRevision);
+  Inc(FUsed);
+  FPending := True;
+end;
+
 procedure TPS2GSGpu.FlushNative;
 begin
   if FNativeCount = 0 then Exit;
@@ -345,6 +413,11 @@ begin
     NextHalf;
     Move((PCardinal(FState.Data) + Start * 384)^, (PCardinal(FState.Data) + FUsed * 384)^,
       FNativeCount * 384 * SizeOf(Cardinal));
+    // (And the clustered sprites' texture coordinates.)
+    for var I := 0 to FNativeCount - 1 do
+      if (PCardinal(FState.Data) + (FUsed + I) * 384)[58] = 0 then
+        Move((PInteger(FCoordinates.Data) + (Start + I) * 4096)^, (PInteger(FCoordinates.Data) + (FUsed + I) * 4096)^,
+          4096 * SizeOf(Integer));
     FNativeStart := FUsed;
     Inc(FUsed, FNativeCount);
   end;
@@ -472,22 +545,30 @@ end;
 
 function TPS2GSGpu.Sprite(const D: TPS2GSDraw; const V0, V: TPS2GSVertex;
   X0, Y0, X1, Y1: Integer; Lod: Single): Boolean;
+var
+  Reads, Writes, Textures: TPages;
 begin
   Result := False;
   var Mip := MipCode(D, Lod);
-  if not Supports(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or
-    (Cardinal(1) shl ((Mip shr 3) and 7))) then Exit;
-  if Assigned(FBeforeDraw) then
+  var Levels := (Cardinal(1) shl (Mip and 7)) or (Cardinal(1) shl ((Mip shr 3) and 7));
+  // Where the triangle kernel runs, sprites join its ordered clusters: a
+  // small one then costs no dispatch of its own.
+  var Clustered := FTriangleKernel <> nil;
+  if not Supports(D, X0, Y0, X1, Y1, Levels, Clustered) then Exit;
+  if Assigned(FBeforeDraw) or Clustered then
+    BuildAccess(D, X0, Y0, X1, Y1, Levels, Reads, Writes, Textures);
+  if Assigned(FBeforeDraw) and not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then
+    Exit;
+  if Clustered then
+    JoinCluster(D, X0, Y0, X1, Y1, Writes, Textures)
+  else
   begin
-    var Reads, Writes, Textures: TPages;
-    BuildAccess(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or (Cardinal(1) shl ((Mip shr 3) and 7)),
-      Reads, Writes, Textures);
-    if not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then Exit;
+    FlushNative;
+    if FUsed = FUsedEnd then NextHalf;
   end;
-  FlushNative;
-  if FUsed = FUsedEnd then NextHalf;
   WriteState(D, V);
-  PCardinal(FState.Data)[FUsed * 384 + 52] := Mip;
+  var P := PCardinal(FState.Data) + FUsed * 384;
+  P[52] := Mip;
   if D.TME then
   begin
     // Keep the CPU's arithmetic and rounding for UV/STQ interpolation.
@@ -518,6 +599,16 @@ begin
     for var X := X0 to X1 - 1 do Coords[X - X0] := TextureCoordinate(UStart + (X - X0) * DUDX);
     for var Y := Y0 to Y1 - 1 do Coords[2048 + Y - Y0] := TextureCoordinate(TV0 + (Y * 16 - V0.Y) * DVDY / 16);
   end;
+  if Clustered then
+  begin
+    // (The kernel's sprite: p[58] 0, its rectangle at p[60..63].)
+    P[58] := 0;
+    P[60] := Cardinal(X0); P[61] := Cardinal(Y0); P[62] := Cardinal(X1); P[63] := Cardinal(Y1);
+    AddToCluster(D, X0, Y0, X1, Y1, Reads, Writes, Textures);
+    Inc(FDraws);
+    if D.TME then Inc(FTexturedDraws);
+    Exit(True);
+  end;
   var Push: TPush;
   Push.Bounds[0] := X0; Push.Bounds[1] := Y0; Push.Bounds[2] := X1; Push.Bounds[3] := Y1;
   Push.Slot := Cardinal(FUsed);
@@ -527,12 +618,10 @@ begin
   Inc(FUsed);
   FPending := True;
   Inc(FDraws);
-  TrackAccess(D, X0, Y0, X1, Y1, (Cardinal(1) shl (Mip and 7)) or
-    (Cardinal(1) shl ((Mip shr 3) and 7)));
+  TrackAccess(D, X0, Y0, X1, Y1, Levels);
   if D.TME then Inc(FTexturedDraws);
   Result := True;
 end;
-
 // Pixels' Q to MipCode as the host decides (PixelLod, then Texel's choice in
 // MipCode), for the rounding the host runs with now: the LOD never rises as
 // Q does (System.Math.Log2 of a Single is monotone, checked over every Single
@@ -667,9 +756,11 @@ begin
   begin
     var V := Vertices[K];
     if (V.X < -65535) or (V.X > 65535) or (V.Y < -65535) or (V.Y > 65535) then Exit;
+    // (Q of one sign: the host's S/Q and T/Q arithmetic is the same either
+    // way; per-pixel LOD, from |Q|, took positive ones only above.)
     if D.TME and not D.FST then
       if not FiniteNormalOrZero(V.S) or not FiniteNormalOrZero(V.T) or
-        not FiniteNormalOrZero(V.Q) or not (V.Q > 0) then Exit;
+        not FiniteNormalOrZero(V.Q) or (V.Q = 0) or ((V.Q > 0) <> (V0.Q > 0)) then Exit;
   end;
   var Area := (Int64(V1.X) - V0.X) * (Int64(V2.Y) - V0.Y) -
     (Int64(V2.X) - V0.X) * (Int64(V1.Y) - V0.Y);
@@ -677,44 +768,7 @@ begin
   var InvArea: Double := 1.0 / Area;
   BuildAccess(D, X0, Y0, X1, Y1, Levels, Reads, Writes, Textures);
   if Assigned(FBeforeDraw) and not FBeforeDraw(Reads, Writes, Palettized(D), Int64(X1 - X0) * (Y1 - Y0)) then Exit;
-  if FNativeCount > 0 then
-  begin
-    var Conflict := (FNativeCount = ClusterSize) or
-      (D.FBP <> FNativeLayout.FBP) or (D.FBW <> FNativeLayout.FBW) or (D.FPSM <> FNativeLayout.FPSM) or
-      (D.ZBP <> FNativeLayout.ZBP) or (D.ZPSM <> FNativeLayout.ZPSM);
-    for var K := 0 to 15 do
-      Conflict := Conflict or ((Textures[K] and FNativeWrites[K]) <> 0) or
-        ((Writes[K] and FNativeTextures[K]) <> 0);
-    if not Conflict and (FNativeUsesZ or not D.ZMSK or (D.ZTST <> 1)) then
-    begin
-      // A draw not using depth may extend colour over another draw's
-      // depth rows. Per-pixel ordering is only enough for disjoint layouts.
-      var MX := Max(FNativeBounds[2], X1);
-      var MY := Max(FNativeBounds[3], Y1);
-      var F0 := D.FBP div 32;
-      var F1 := (D.FBP + 31) div 32 + Cardinal((MY - 1) div 32) * D.FBW + Cardinal((MX - 1) div 64);
-      var Z0 := D.ZBP div 32;
-      var Z1 := (D.ZBP + 31) div 32 + Cardinal((MY - 1) div 32) * D.FBW + Cardinal((MX - 1) div 64);
-      Conflict := (F1 >= 512) or (Z1 >= 512) or ((F1 >= Z0) and (Z1 >= F0));
-    end;
-    if Conflict then FlushNative;
-  end;
-  if FUsed = FUsedEnd then
-  begin
-    FlushNative;
-    NextHalf;
-  end;
-  if FNativeCount = 0 then
-  begin
-    FNativeStart := FUsed;
-    FNativeLayout := D;
-    FNativeUsesZ := False;
-    FNativeBounds[0] := X0; FNativeBounds[1] := Y0;
-    FNativeBounds[2] := X1; FNativeBounds[3] := Y1;
-    FillChar(FNativeReads, SizeOf(FNativeReads), 0);
-    FillChar(FNativeWrites, SizeOf(FNativeWrites), 0);
-    FillChar(FNativeTextures, SizeOf(FNativeTextures), 0);
-  end;
+  JoinCluster(D, X0, Y0, X1, Y1, Writes, Textures);
   WriteState(D, V2);
   var P := PCardinal(FState.Data) + FUsed * 384;
   P[52] := Mip;
@@ -740,22 +794,7 @@ begin
     W[8] := Cardinal(V.U); W[9] := Cardinal(V.V);
     W[10] := PCardinal(@V.S)^; W[11] := PCardinal(@V.T)^; W[12] := PCardinal(@V.Q)^;
   end;
-  FNativeRectangles[FNativeCount, 0] := X0; FNativeRectangles[FNativeCount, 1] := Y0;
-  FNativeRectangles[FNativeCount, 2] := X1; FNativeRectangles[FNativeCount, 3] := Y1;
-  FNativeBounds[0] := Min(FNativeBounds[0], X0); FNativeBounds[1] := Min(FNativeBounds[1], Y0);
-  FNativeBounds[2] := Max(FNativeBounds[2], X1); FNativeBounds[3] := Max(FNativeBounds[3], Y1);
-  for var K := 0 to 15 do
-  begin
-    FReads[K] := FReads[K] or Reads[K]; FWrites[K] := FWrites[K] or Writes[K];
-    FNativeReads[K] := FNativeReads[K] or Reads[K];
-    FNativeWrites[K] := FNativeWrites[K] or Writes[K];
-    FNativeTextures[K] := FNativeTextures[K] or Textures[K];
-  end;
-  Inc(FNativeCount);
-  FNativeUsesZ := FNativeUsesZ or not D.ZMSK or (D.ZTST <> 1);
-  Inc(FRevision);
-  Inc(FUsed);
-  FPending := True;
+  AddToCluster(D, X0, Y0, X1, Y1, Reads, Writes, Textures);
   Inc(FTriangles);
   Inc(FRasterizedTriangles);
   Inc(FDraws);

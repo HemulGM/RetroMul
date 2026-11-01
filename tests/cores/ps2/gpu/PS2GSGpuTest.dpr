@@ -772,6 +772,11 @@ begin
         V[K].F := Random(256); V[K].Z := Cardinal(Random(MaxInt));
         V[K].U := Random(8192); V[K].V := Random(8192);
         V[K].S := Random * 3; V[K].T := Random * 3; V[K].Q := 0.25 + Random * 2;
+        // Negative Q (and S/T of either sign) take the same path.
+        if N mod 5 = 2 then
+        begin
+          V[K].Q := -V[K].Q; V[K].S := V[K].S - 1.5; V[K].T := 1.5 - V[K].T;
+        end;
       end;
       V[0].X := (8 + Random(16)) * 16 + Random(16); V[0].Y := (8 + Random(16)) * 16 + Random(16);
       V[1].X := (216 + Random(16)) * 16 + Random(16); V[1].Y := (16 + Random(16)) * 16 + Random(16);

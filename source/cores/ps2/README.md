@@ -345,7 +345,8 @@ FTZ/DAZ; the default float suite retains the add/multiply checks too.
 `Video/Renderer=vulkan` independently selects Vulkan compute for supported
 32/24-bit sprites and triangle pixels, including all GS direct and palettized
 texture formats and mipmapping. This uses `RM.Vulkan.Compute` from the Xbox branch (3f3ce45), with
-coherent GS VRAM import. Small sprites, texture feedback,
+coherent GS VRAM import. Small sprites (where triangles are not rasterized on
+the GPU, below), texture feedback,
 overlapping surfaces and unsupported storage
 formats retain the software path. If device creation or host-memory import
 is unavailable, software rendering continues; `VulkanError` reports why.
@@ -382,7 +383,9 @@ the pixel's Q rounded to single precision as the host rounds it. The shader requ
 explicit IEEE FP controls, emulates the host truncation mode and corrects
 device division using exact residuals. It retains the reference depth
 accumulator's four-decimal Currency quantization. Nonfinite/subnormal STQ,
-and unsupported layouts retain host interpolation.
+zero Q, Q of mixed sign (any nonpositive Q with per-pixel LOD) and
+unsupported layouts retain host interpolation; all-negative Q is accepted,
+since the host's S/Q and T/Q arithmetic does not depend on the sign.
 The edge functions of the integer coordinates (up to 36 bits) are evaluated in
 64-bit integers (`shaderInt64`), as exact as in FP64 and much cheaper on GPUs
 with slow FP64. Colours, fog and texture coordinates (affine, and S/T over Q
@@ -396,7 +399,8 @@ For those triangles the GPU consumes the exact integer fragments for texture sam
 tests, blending and writes. A 65536-fragment arena is split and synchronized
 when full, including in the middle of one triangle.
 The parameter arena holds 2048 draws (two halves, one filling while the other
-runs). Compatible native triangles are binned
+runs). Compatible native triangles, and on these devices sprites of any size
+(flat colour/depth, the host's per-column/row texture coordinates), are binned
 into ordered 128-draw clusters with 128-bit masks per 8x8 tile; one invocation
 owns a pixel through the cluster and caches its colour/depth until the end.
 Texture dependencies, layout changes and colour/depth aliases end clusters.
@@ -414,8 +418,8 @@ Regenerate its embedded SPIR-V with `source/cores/ps2/shaders/build.ps1`
 256-draw sequence, with and without textures, against the CPU over all
 4 MiB of VRAM. It checks batch capacity/reuse, texture feedback fallback,
 render-to-texture ordering, transfers, CLUT state and live mode changes.
-Another 256 triangles cover winding, clipping, flat/Gouraud colours, UV/STQ,
-both host rounding modes, varying depth/fog and fragment-arena rollover.
+Another 256 triangles cover winding, clipping, flat/Gouraud colours, UV/STQ
+(negative Q included), both host rounding modes, varying depth/fog and fragment-arena rollover.
 An additional 312 cases cover all 13 texture formats, CLUT/CSA/CSM/TEXA,
 all minification modes, multiple mip levels, sprites and triangles. A separate
 test mutates the host CLUT while two draws are pending in the same GPU batch.

@@ -106,6 +106,12 @@ type
     WriteAny: array[0..31] of Integer;
   end;
 
+  TPS2VUMacroCode = record
+    Op: Cardinal;
+    Code: Pointer;
+  end;
+  PPS2VUMacroCode = ^TPS2VUMacroCode;
+
   TPS2VUFlagEvent = record
     Ready: Int64;
     MAC, Status: Cardinal;
@@ -166,6 +172,12 @@ type
     FJitClip: Cardinal;
     // The value of a scheduled run's last FCSET so far.
     FJitClipSet: Cardinal;
+    // Compiled macro operations by opcode (MacroNative; nil: none yet).
+    FMacroCode: array[0..1023] of TPS2VUMacroCode;
+    FMacroMap: TDictionary<Cardinal, Pointer>;
+    FMacroJit: TJitAsm;
+    // FMath is for the host rounding the EE keeps while it runs (TPS2VU0).
+    FMacroMathKnown: Boolean;
     FJitEvents: array[0..15] of TPS2VUFlagEvent;
     // CLIP results of a scheduled run (their clip flags and when they land),
     // replayed into the queue by FinishFastFlags; FEmitClipSlot: the one the
@@ -203,6 +215,10 @@ type
       Slow, Stall, Stale, Chain: TJitLabel);
     procedure EmitGeneral(PC: Cardinal; Done, Stale: TJitLabel);
     procedure NoteQueues(PC: Cardinal; Queues, BlockIndex: Integer);
+    procedure ResetJit;
+    function MacroNative(Op: Cardinal): Boolean;
+    function MacroCode(Op: Cardinal): Pointer;
+    function CompileMacro(Op: Cardinal): Pointer;
     procedure FinishFastFlags(Count: Integer; LastIssue, ClipLast: Int64);
     procedure DrainClip(Cycle: Int64);
     procedure PreparePair(var Run: TPS2VURun); inline;
@@ -304,6 +320,9 @@ type
     procedure Sync; override;
     function Condition: Boolean; override;
     procedure SerializeState(State: TStateArchive); override;
+    procedure RunStarts; override;
+    procedure RunEnds; override;
+    function MacroRoutine(Op: Cardinal; out Target: Pointer; out Running: PBoolean): Pointer; override;
     property Core: TPS2VUCore read FCore;
     property VU1: TPS2VUCore read FVU1 write FVU1;
     // CTC2 to CMSAR1 starts VU1.
@@ -449,6 +468,8 @@ destructor TPS2VUCore.Destroy;
 begin
   FJit.Free;
   FBlockMap.Free;
+  FMacroMap.Free;
+  FMacroJit.Free;
   inherited;
 end;
 
@@ -467,6 +488,108 @@ begin
   FUseJit := True;
 end;
 
+// All generated code dropped (none is running here). Re-uploaded
+// microprograms may replace every pair, so the cache is bounded rather than
+// retaining old code.
+procedure TPS2VUCore.ResetJit;
+begin
+  Inc(FJitResets);
+  FJit.Reset;
+  FBlockMap.Clear;
+  FBlockCount := 0;
+  for var K := 0 to High(FPairs) do
+  begin
+    FPairs[K].Native := nil;
+    FBodies[K] := nil;
+  end;
+end;
+
+// A COP2 macro arithmetic operation (Upper's register arithmetic: ADD,
+// SUB, MUL, MADD, MSUB and their broadcast, Q, I and ACC forms) as generated
+// code of its own (FMacroJit, never dropped: the EE's code calls it too),
+// made once per opcode: the operands, the routines for the host rounding
+// (FMath, which must be for it), the MAC/status flags and the masked write,
+// as Macro does them. The code takes the core as its first argument. nil:
+// not such an operation, or no room or generated code here.
+function TPS2VUCore.MacroCode(Op: Cardinal): Pointer;
+const
+  // A slot's code for an opcode left to Macro's own path.
+  Interpreted = Pointer(1);
+begin
+  var Slot: PPS2VUMacroCode := @FMacroCode[Cardinal(UInt64(Op) * $9E3779B1) shr 22];
+  if (Slot.Op <> Op) or (Slot.Code = nil) then
+  begin
+    // (The table caches the dictionary: each opcode is compiled once.)
+    if FMacroMap = nil then
+      FMacroMap := TDictionary<Cardinal, Pointer>.Create;
+    var Code: Pointer;
+    if not FMacroMap.TryGetValue(Op, Code) then
+    begin
+      Code := Interpreted;
+      var F := Op and $3F;
+      if F >= $3C then F := ((Op shr 4) and $7C) or (Op and 3);
+      // (EmitRegisterUpper's operations.)
+      if FVectorMemorySafe and (PS2RegisterMathNative(vrmAdd) <> nil) and
+        ((F <= $0F) or ((F >= $18) and (F <= $1C)) or (F in [$1E, $20..$2A, $2C, $2D])) then
+      begin
+        if FMacroJit = nil then
+          FMacroJit := CreateJitAsm(1024 * 1024);
+        if (FMacroJit <> nil) and FMacroJit.HasVectors and FMacroJit.Room(4096) then
+          Code := CompileMacro(Op);
+      end;
+      FMacroMap.Add(Op, Code);
+    end;
+    Slot.Op := Op;
+    Slot.Code := Code;
+  end;
+  Result := Slot.Code;
+  if Result = Interpreted then
+    Result := nil;
+end;
+
+function TPS2VUCore.MacroNative(Op: Cardinal): Boolean;
+begin
+  var Code := MacroCode(Op);
+  if Code = nil then
+    Exit(False);
+  if not FMacroMathKnown then
+    CheckMath;
+  FMacroJit.Invoke(Code, NativeUInt(Self), 0, 0, 0);
+  Result := True;
+end;
+
+function TPS2VUCore.CompileMacro(Op: Cardinal): Pointer;
+begin
+  // (The emitters write into FJit.)
+  var Saved := FJit;
+  FJit := FMacroJit;
+  try
+    var J := FJit;
+    // The register written: fd, or ACC for the ACC forms.
+    var Reg := Integer((Op shr 6) and 31);
+    if (Op and $3F) >= $3C then Reg := 32;
+    var Lanes: Byte := 0;
+    for var K := 0 to 3 do
+      if ((Op shr 21) and FieldBit(K)) <> 0 then Lanes := Lanes or (Byte(1) shl K);
+    J.ForgetLabels;
+    J.Align(16);
+    Result := J.Here;
+    J.Enter;
+    J.Move(jw64, JS0, JMem(jrSelf, Integer(NativeInt(@FVF) - NativeInt(Self))));
+    FAllowVectorResult := True;
+    if not EmitRegisterUpper(Op) then
+      raise EInvalidOpException.Create('VU macro: no register arithmetic');
+    if Reg = 32 then
+      J.VectorStore(JMem(jrSelf, Integer(NativeInt(@S.ACC) - NativeInt(Self))), jv0, Lanes)
+    else if Reg > 0 then
+      J.VectorStore(JMem(jrS0, Reg * 16), jv0, Lanes);
+    J.Leave(JImm(0));
+    J.ForgetLabels;
+    J.Flush;
+  finally
+    FJit := Saved;
+  end;
+end;
 // A scheduled run with flag reads at PC found incoming queues it was not
 // compiled for: its version is dropped, to be compiled again for those as
 // well as Queues (once: then it takes the general path, see EmitFast).
@@ -559,19 +682,7 @@ begin
   if FJit = nil then
     Exit;
   if not FJit.Room(16 * 4096) then
-  begin
-    Inc(FJitResets);
-    // No generated function is running here. Re-uploaded microprograms may
-    // replace every pair, so bound the cache rather than retaining old code.
-    FJit.Reset;
-    FBlockMap.Clear;
-    FBlockCount := 0;
-    for var K := 0 to High(FPairs) do
-    begin
-      FPairs[K].Native := nil;
-      FBodies[K] := nil;
-    end;
-  end;
+    ResetJit;
   var J := FJit;
   Inc(FJitCompiles);
   FEmitPC := -1;
@@ -3550,6 +3661,8 @@ function TPS2VUCore.Macro(Op: Cardinal): Boolean;
 begin
   // COP2 macro: upper-style operations and the lower ones VU0 offers.
   Result := True;
+  if FUseJit and MacroNative(Op) then
+    Exit;
   var Funct := Op and $3F;
   FUpperReg := -1;
   FLowerReg := -1;
@@ -4471,6 +4584,29 @@ procedure TPS2VU0.SerializeState(State: TStateArchive);
 begin
   inherited SerializeState(State);
   FCore.SerializeState(State);
+end;
+
+// (Macro operations then find the host rounding as the EE leaves it: the
+// routines for it chosen once, not for each.)
+procedure TPS2VU0.RunStarts;
+begin
+  FCore.CheckMath;
+  FCore.FMacroMathKnown := True;
+end;
+
+procedure TPS2VU0.RunEnds;
+begin
+  FCore.FMacroMathKnown := False;
+end;
+
+// (The EE calls it while it runs: FMath is for its rounding then.)
+function TPS2VU0.MacroRoutine(Op: Cardinal; out Target: Pointer; out Running: PBoolean): Pointer;
+begin
+  Target := FCore;
+  Running := @FCore.S.Running;
+  Result := nil;
+  if FCore.UseJit then
+    Result := FCore.MacroCode(Op);
 end;
 
 { TPS2VU1 }

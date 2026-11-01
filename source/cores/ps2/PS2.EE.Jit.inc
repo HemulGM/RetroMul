@@ -123,9 +123,32 @@ begin
     Stops[K] := J.NewLabel;
     if not JitEmitOwn(I, Stops[K]) then
     begin
+      // A COP2 macro operation the coprocessor has as code: called at once
+      // while no micro program runs (else the handler waits for it), then
+      // the handler's check of an exit request.
+      var Routine: Pointer := nil;
+      var Target: Pointer;
+      var Running: PBoolean;
+      if ((I.Op shr 26) = $12) and ((I.Op and $02000000) <> 0) then
+        Routine := FCop2.MacroRoutine(I.Op, Target, Running);
+      var Done := J.NewLabel;
+      if Routine <> nil then
+      begin
+        var Handler := J.NewLabel;
+        J.Move(jw64, JT1, JImm(Int64(NativeUInt(Running))));
+        J.Move(jw8, JT0, JMem(jrT1, 0));
+        J.BranchTest(jcNe, jw8, JT0, JT0, Handler);
+        J.Call(Routine, [JImm(Int64(NativeUInt(Target)))]);
+        J.Move(jw8, JT0, JMem(jrSelf, O.ExitRequest));
+        J.BranchTest(jcEq, jw8, JT0, JT0, Done);
+        J.Move(jw8, JMem(jrSelf, O.Stop), JImm(StopLeave));
+        J.Jump(Stops[K]);
+        J.Bind(Handler);
+      end;
       J.Move(jw64, JT1, JImm(Int64(NativeUInt(I))));
       J.Call(I.Handler, [JSelf, JT1]);
       J.BranchTest(jcNe, jw8, JT0, JT0, Stops[K]);
+      J.Bind(Done);
     end;
   end;
   // All ran: the PC after the last, or where its branch went.

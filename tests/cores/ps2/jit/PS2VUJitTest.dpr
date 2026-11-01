@@ -667,6 +667,69 @@ begin
   Writeln('model=', Model, ' data/register/code aliasing keeps memory-result fallback: OK');
 end;
 
+// COP2 macro operations: compiled (MacroNative) against the interpreter's,
+// random arithmetic (and others, which fall back) with random masks and
+// registers in every host rounding.
+procedure CheckMacro(Model: Boolean);
+var
+  VF0, VF1: TPS2VFArray;
+  VI0, VI1: TPS2VIArray;
+  Code, Data: TMemory;
+begin
+  FillChar(Code, SizeOf(Code), 0);
+  FillChar(Data, SizeOf(Data), 0);
+  var A := TPS2VUCore.Create(0, @VF0, @VI0, @Code, @Data, SizeOf(Code), SizeOf(Data));
+  var B := TPS2VUCore.Create(0, @VF1, @VI1, @Code, @Data, SizeOf(Code), SizeOf(Data));
+  var SavedMode := GetRoundMode;
+  try
+    if Model then B.UseJitModel else B.UseJit := True;
+    RandSeed := 4242;
+    var Ops := 0;
+    for var Mode := Low(TRoundingMode) to High(TRoundingMode) do
+    begin
+      SetRoundMode(Mode);
+      for var Round := 0 to 199 do
+      begin
+        FillChar(VI0, SizeOf(VI0), 0);
+        for var K := 1 to 31 do
+          for var C := 0 to 3 do
+            if Random(4) = 0 then
+              VF0[K].UW[C] := Cardinal(Random(MaxInt)) xor (Cardinal(Random(2)) shl 31)
+            else
+              VF0[K].UW[C] := (Cardinal(Random($800000))) or (Cardinal(100 + Random(56)) shl 23) or
+                (Cardinal(Random(2)) shl 31);
+        VF1 := VF0;
+        VI1 := VI0;
+        A.S.ACC := VF0[1 + Random(31)];
+        A.S.Q := VF0[1 + Random(31)].UW[Random(4)];
+        A.S.I := VF0[1 + Random(31)].UW[Random(4)];
+        B.S := A.S;
+        for var N := 0 to 63 do
+        begin
+          var Op: Cardinal := $4A000000 or (Cardinal(Random(16)) shl 21) or (Cardinal(Random(32)) shl 16) or
+            (Cardinal(Random(32)) shl 11) or (Cardinal(Random(32)) shl 6);
+          if Random(3) = 0 then
+            Op := Op or $3C or Cardinal(Random(4)) // special forms (ACC, conversions, ...)
+          else
+            Op := Op or Cardinal(Random($30));
+          if (Op and $3F) >= $3C then
+            // Keep the special forms to the upper ones (fd field < 12).
+            Op := (Op and not Cardinal($7C0)) or (Cardinal(Random(12)) shl 6);
+          A.Macro(Op);
+          B.Macro(Op);
+          Inc(Ops);
+          if not CompareMem(@A.S, @B.S, SizeOf(A.S)) or not CompareMem(@VF0, @VF1, SizeOf(VF0)) then
+            raise Exception.CreateFmt('Macro mismatch model=%s mode=%d op=%.8x', [BoolToStr(Model, True), Ord(Mode), Op]);
+        end;
+      end;
+    end;
+    Writeln('model=', Model, ' macro operations=', Ops, ' compiled/interpreted, four rounding modes: OK');
+  finally
+    SetRoundMode(SavedMode);
+    A.Free;
+    B.Free;
+  end;
+end;
 procedure CheckConversionClipPipeline(Model: Boolean);
 const
   Edges: array[0..15] of Cardinal = (0, $80000000, 1, $807FFFFF,
@@ -763,6 +826,8 @@ begin
     CheckConversionClipPipeline(True);
     CheckVectorAliasFallback(False);
     CheckVectorAliasFallback(True);
+    CheckMacro(False);
+    CheckMacro(True);
     SetRoundMode(rmNearest);
     Check(False);
     Check(True);

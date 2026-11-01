@@ -124,6 +124,14 @@ type
     // BC2F/BC2T condition.
     function Condition: Boolean; virtual;
     procedure SerializeState(State: TStateArchive); virtual;
+    // The EE runs (rounding toward zero, which its operations keep) from
+    // RunStarts to RunEnds.
+    procedure RunStarts; virtual;
+    procedure RunEnds; virtual;
+    // A macro operation (Execute's Op) as generated code the EE's code may
+    // call instead, with Target as its argument, while Running^ is False;
+    // nil: none.
+    function MacroRoutine(Op: Cardinal; out Target: Pointer; out Running: PBoolean): Pointer; virtual;
   end;
 
   // Called for SYSCALL with the HLE kernel (PC is already past it), and for
@@ -710,6 +718,21 @@ procedure TEECop2.SerializeState(State: TStateArchive);
 begin
   State.Field(VF, SizeOf(VF));
   State.Field(VI, SizeOf(VI));
+end;
+
+procedure TEECop2.RunStarts;
+begin
+end;
+
+procedure TEECop2.RunEnds;
+begin
+end;
+
+function TEECop2.MacroRoutine(Op: Cardinal; out Target: Pointer; out Running: PBoolean): Pointer;
+begin
+  Target := nil;
+  Running := nil;
+  Result := nil;
 end;
 
 { TEECPU }
@@ -4657,9 +4680,11 @@ begin
   FHostRoundSaved := GetRoundMode;
   SetExceptionMask(exAllArithmeticExceptions);
   SetRoundMode(rmTruncate);
+  FCop2.RunStarts;
   try
     RunBlocks;
   finally
+    FCop2.RunEnds;
     ClearExceptions(False);
     SetExceptionMask(FHostMaskSaved);
     SetRoundMode(FHostRoundSaved);

@@ -358,6 +358,15 @@ explicit IEEE FP controls, emulates the host truncation mode and corrects
 device division using exact residuals. It retains the reference depth
 accumulator's four-decimal Currency quantization. Nonfinite/subnormal STQ,
 and unsupported layouts retain host interpolation.
+The edge functions of the integer coordinates (up to 36 bits) are evaluated in
+64-bit integers (`shaderInt64`), as exact as in FP64 and much cheaper on GPUs
+with slow FP64. Colours, fog and texture coordinates (affine, and S/T over Q
+times the power-of-two texture size) are first estimated in single precision
+from the FP64 weights, with an error bound of 2^-20 of the terms' magnitudes
+(several times the float and double evaluations' worst error, the float
+division's 2.5 ulp included); where that bound decides the integer the FP64
+arithmetic would give (its rounding, truncation, ties to even), the estimate's
+integer is taken, else the exact FP64 path runs. Depth stays in FP64.
 For those triangles the GPU consumes the exact integer fragments for texture sampling,
 tests, blending and writes. A 65536-fragment arena is split and synchronized
 when full, including in the middle of one triangle.

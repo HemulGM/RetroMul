@@ -65,7 +65,7 @@ type
     FSlotFences: array[0..1] of VkFence;
     FInFlight: array[0..1] of Boolean;
     FName: string;
-    FHostImport, FExactFloat, FExactDouble: Boolean;
+    FHostImport, FExactFloat, FExactDouble, FInt64: Boolean;
     FHostAlignment: UInt64;
     FBuffers, FKernels: TArray<TObject>;
     vkGetPhysicalDeviceFeatures: procedure(physicalDevice: VkPhysicalDevice; pFeatures: Pointer);
@@ -145,6 +145,8 @@ type
     property ExactFloat: Boolean read FExactFloat;
     // The same for double precision (shaderFloat64 enabled).
     property ExactDouble: Boolean read FExactDouble;
+    // Kernels may use 64-bit integers (shaderInt64 enabled).
+    property Int64: Boolean read FInt64;
     property HostAlignment: UInt64 read FHostAlignment;
   end;
 
@@ -475,6 +477,8 @@ begin
   FExactDouble := FExactDouble and (Supported.shaderFloat64 <> 0);
   var Features := Default(VkPhysicalDeviceFeatures);
   Features.shaderFloat64 := Ord(FExactDouble);
+  FInt64 := Supported.shaderInt64 <> 0;
+  Features.shaderInt64 := Ord(FInt64);
   if FHostImport then
   begin
     var HostProps := Default(TExternalMemoryHostProperties);

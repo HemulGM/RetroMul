@@ -1,6 +1,7 @@
 ﻿#version 450
 #extension GL_GOOGLE_include_directive : require
 #extension GL_ARB_gpu_shader_fp64 : require
+#extension GL_ARB_gpu_shader_int64 : require
 #include "PS2.GS.Tables.glsl"
 // Full coverage/interpolation on devices with exact FP64. build.ps1 adds
 // explicit RTE, signed-zero and denormal execution modes to the SPIR-V.
@@ -137,45 +138,123 @@ double vf(uint vertex,uint field) {
   if(field==0 || field==1 || field==8 || field==9) return double(int(raw));
   return double(raw);
 }
+// Single-precision estimates: what the FP64 interpolation above gives (the
+// host's arithmetic) lies within e of the returned value. The weights are
+// within 2^-24 of theirs, the attributes exact; the float evaluation and
+// the double one err by under 5*2^-24 of the terms' magnitudes, and e is
+// 2^-20 of them (generous; overflow or NaN fail every test below).
+float est(vec3 w,float a,float b,float c,out float e) {
+  float t0=w.x*a,t1=w.y*b,t2=w.z*c;
+  e=(abs(t0)+abs(t1)+abs(t2))*(1.0/1048576.0)+1e-37;
+  return (t0+t1)+t2;
+}
+// rounded() of the value within e of v, when that decides it.
+bool roundedEst(float v,float e,out int r) {
+  r=0;
+  if(!(abs(v)<1048576.0) || !(e<0.25)) return false;
+  float f=floor(v);
+  float fr=v-f;
+  // (The magic-number addition truncates to floor, or rounds to nearest
+  // even: a value near .5 or an integer is left to the exact path.)
+  if(p[55]==3) {
+    if(fr>e && 1.0-fr>e) { r=int(f); return true; }
+    return false;
+  }
+  if(fr-0.5>e) { r=int(f)+1; return true; }
+  if(0.5-fr>e) { r=int(f); return true; }
+  return false;
+}
+// textureCoordinate() (truncation) of the value within e of v.
+bool truncEst(float v,float e,out int r) {
+  r=0;
+  if(!(abs(v)<1048576.0) || !(e<0.25)) return false;
+  float m=abs(v),f=floor(m);
+  if(f==0.0) return m+e<1.0;
+  if(m-f>e && f+1.0-m>e) { r=v<0.0 ? -int(f) : int(f); return true; }
+  return false;
+}
+float vs(uint vertex,uint field) {
+  uint raw=p[80+vertex*16+field];
+  if(field>=10) return uintBitsToFloat(raw);
+  if(field==8 || field==9) return float(int(raw));
+  return float(raw);
+}
+int colour(vec3 w,double w0,double w1,double w2,uint i0,uint i1,uint field) {
+  float e;
+  int r;
+  if(p[80+i0*16+field]<65536u && p[80+i1*16+field]<65536u && p[112+field]<65536u &&
+    roundedEst(est(w,vs(i0,field),vs(i1,field),vs(2,field),e),e,r)) return r;
+  return rounded(interp(w0,w1,w2,vf(i0,field),vf(i1,field),vf(2,field)));
+}
+// Perspective texture coordinate: textureCoordinate(mulD(divD(s,q),scale))
+// for the interpolated S (field) over q, scale a power of two (exact). From
+// estimates s and q within es and eq: s/q within (es+|t|eq)/(|q|-eq), the
+// float division off by 2.5 ulp, the double one by half an ulp.
+bool perspectiveEst(vec3 w,uint field,float q,float eq,float scale,out int r) {
+  r=0;
+  // (Within the range the float division's error bound holds for.)
+  if(!(abs(q)>4.0*eq) || !(abs(q)>1e-30) || !(abs(q)<1e30)) return false;
+  float es;
+  float s=est(w,vs(0,field),vs(1,field),vs(2,field),es);
+  float t=s/q;
+  float et=((es+abs(t)*eq)/(abs(q)-eq)+abs(t)*(1.0/1048576.0))*1.001;
+  return truncEst(t*scale,et*scale,r);
+}
 void rasterize(ivec2 xy) {
   if(xy.x<int(p[60]) || xy.y<int(p[61]) || xy.x>=int(p[62]) || xy.y>=int(p[63])) return;
-  double x=double(xy.x)*16.0,y=double(xy.y)*16.0;
-  double x0=vf(0,0),y0=vf(0,1),x1=vf(1,0),y1=vf(1,1),x2=vf(2,0),y2=vf(2,1);
-  double sign=double(int(p[58]));
-  // Integer-coordinate products/sums fit in 34 bits and are exact in FP64.
-  double a0=(y1-y2)*sign,b0=(x2-x1)*sign;
-  double a1=(y2-y0)*sign,b1=(x0-x2)*sign;
-  double a2=(y0-y1)*sign,b2=(x1-x0)*sign;
-  precise double e0=a0*(x-x1)+b0*(y-y1);
-  precise double e1=a1*(x-x2)+b1*(y-y2);
-  precise double e2=a2*(x-x0)+b2*(y-y0);
-  double bias0=(a0>0.0 || (a0==0.0 && b0>0.0)) ? 0.0 : -1.0;
-  double bias1=(a1>0.0 || (a1==0.0 && b1>0.0)) ? 0.0 : -1.0;
-  double bias2=(a2>0.0 || (a2==0.0 && b2>0.0)) ? 0.0 : -1.0;
-  if(e0+bias0<0.0 || e1+bias1<0.0 || e2+bias2<0.0) return;
+  // The edge functions of integer coordinates (1/16 pixel) are integers of
+  // up to 36 bits: exact in 64-bit integers, as in FP64 (and cheaper).
+  int64_t x=int64_t(xy.x*16),y=int64_t(xy.y*16);
+  int64_t x0=int64_t(int(p[80])),y0=int64_t(int(p[81]));
+  int64_t x1=int64_t(int(p[96])),y1=int64_t(int(p[97]));
+  int64_t x2=int64_t(int(p[112])),y2=int64_t(int(p[113]));
+  int64_t s=int64_t(int(p[58]));
+  int64_t a0=(y1-y2)*s,b0=(x2-x1)*s;
+  int64_t a1=(y2-y0)*s,b1=(x0-x2)*s;
+  int64_t a2=(y0-y1)*s,b2=(x1-x0)*s;
+  int64_t e0=a0*(x-x1)+b0*(y-y1);
+  int64_t e1=a1*(x-x2)+b1*(y-y2);
+  int64_t e2=a2*(x-x0)+b2*(y-y0);
+  int64_t bias0=(a0>0 || (a0==0 && b0>0)) ? 0 : -1;
+  int64_t bias1=(a1>0 || (a1==0 && b1>0)) ? 0 : -1;
+  int64_t bias2=(a2>0 || (a2==0 && b2>0)) ? 0 : -1;
+  if(e0+bias0<0 || e1+bias1<0 || e2+bias2<0) return;
+  double sign=double(s);
   double inv=packDouble2x32(uvec2(p[56],p[57]));
-  double w0=mulD(e0*sign,inv),w1=mulD(e1*sign,inv),w2=subD(subD(1.0,w0),w1);
+  double w0=mulD(double(e0)*sign,inv),w1=mulD(double(e1)*sign,inv),w2=subD(subD(1.0,w0),w1);
   uint z=p[59]!=0 ? depthValue(interp(w0,w1,w2,vf(0,2),vf(1,2),vf(2,2))) : 0;
   if(!depthPass(xy,z)) return;
+  // Colours, fog and texture coordinates from single-precision estimates
+  // where those decide the integers; the exact FP64 arithmetic otherwise.
+  vec3 w=vec3(float(w0),float(w1),float(w2));
   uint i0=p[54]!=0 ? 0 : 2,i1=p[54]!=0 ? 1 : 2;
-  ivec3 c=ivec3(
-    rounded(interp(w0,w1,w2,vf(i0,3),vf(i1,3),vf(2,3))),
-    rounded(interp(w0,w1,w2,vf(i0,4),vf(i1,4),vf(2,4))),
-    rounded(interp(w0,w1,w2,vf(i0,5),vf(i1,5),vf(2,5))));
-  int a=rounded(interp(w0,w1,w2,vf(i0,6),vf(i1,6),vf(2,6)));
-  int fog=p[22]!=0 ? rounded(interp(w0,w1,w2,vf(0,7),vf(1,7),vf(2,7))) : 0;
+  ivec3 c=ivec3(colour(w,w0,w1,w2,i0,i1,3),colour(w,w0,w1,w2,i0,i1,4),colour(w,w0,w1,w2,i0,i1,5));
+  int a=colour(w,w0,w1,w2,i0,i1,6);
+  int fog=p[22]!=0 ? colour(w,w0,w1,w2,0,1,7) : 0;
   int u=0,v=0;
   uint mip=p[52];
   if(p[47]!=0) {
     if(p[53]!=0) {
-      u=textureCoordinate(interp(w0,w1,w2,vf(0,8),vf(1,8),vf(2,8)));
-      v=textureCoordinate(interp(w0,w1,w2,vf(0,9),vf(1,9),vf(2,9)));
+      float e;
+      if(!truncEst(est(w,vs(0,8),vs(1,8),vs(2,8),e),e,u))
+        u=textureCoordinate(interp(w0,w1,w2,vf(0,8),vf(1,8),vf(2,8)));
+      if(!truncEst(est(w,vs(0,9),vs(1,9),vs(2,9),e),e,v))
+        v=textureCoordinate(interp(w0,w1,w2,vf(0,9),vf(1,9),vf(2,9)));
     } else {
-      double q=interp(w0,w1,w2,vf(0,12),vf(1,12),vf(2,12));
-      if(p[78]!=0) mip=lodCode(q);
-      if(q==0.0) q=1.0;
-      u=textureCoordinate(mulD(divD(interp(w0,w1,w2,vf(0,10),vf(1,10),vf(2,10)),q),double(p[35])*16.0));
-      v=textureCoordinate(mulD(divD(interp(w0,w1,w2,vf(0,11),vf(1,11),vf(2,11)),q),double(p[36])*16.0));
+      // (Per-pixel LOD takes Q exactly.)
+      double qx=0.0;
+      float eq;
+      float qe=est(w,vs(0,12),vs(1,12),vs(2,12),eq);
+      if(p[78]!=0) {
+        qx=interp(w0,w1,w2,vf(0,12),vf(1,12),vf(2,12));
+        mip=lodCode(qx);
+      }
+      if(!perspectiveEst(w,10,qe,eq,float(p[35])*16.0,u) || !perspectiveEst(w,11,qe,eq,float(p[36])*16.0,v)) {
+        double q=p[78]!=0 ? qx : interp(w0,w1,w2,vf(0,12),vf(1,12),vf(2,12));
+        if(q==0.0) q=1.0;
+        u=textureCoordinate(mulD(divD(interp(w0,w1,w2,vf(0,10),vf(1,10),vf(2,10)),q),double(p[35])*16.0));
+        v=textureCoordinate(mulD(divD(interp(w0,w1,w2,vf(0,11),vf(1,11),vf(2,11)),q),double(p[36])*16.0));
+      }
     }
   }
   shadePixel(xy,z,clamp(c,ivec3(0),ivec3(255)),clamp(a,0,255),clamp(fog,0,255),u,v,mip);

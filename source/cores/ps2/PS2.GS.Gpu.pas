@@ -127,7 +127,8 @@ begin
   FKernel := FCompute.CreateKernel(PS2SpriteSPIRV, 4, SizeOf(TPush));
   FCompute.Bind(FKernel, [FRAM, FState, FCoordinates, FFragments]);
   {$IFDEF CPUX64}
-  if FCompute.ExactDouble then
+  // (The triangle kernel's edge functions take 64-bit integers.)
+  if FCompute.ExactDouble and FCompute.Int64 then
   begin
     FTiles := FCompute.CreateBuffer(TileCapacity * SizeOf(Cardinal), True);
     FLodBuffer := FCompute.CreateBuffer(LodCapacity * SizeOf(Cardinal), True);

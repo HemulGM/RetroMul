@@ -41,6 +41,9 @@ const
   LowerSpecial: array[0..29] of Cardinal = ($30, $31, $34, $35, $36, $37, $38, $39,
     $3A, $3B, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $64, $68, $69, $70, $71, $72, $73, $76, $78,
     $79, $7A, $7B);
+  // Lower specials writing a VF register: MOVE MR32 LQI LQD MFIR MFP.
+  VFSpecial: array[0..5] of Cardinal = ($30, $31, $34, $36, $3D, $64);
+  Programs = 120;
 var
   VF0, VF1: TPS2VFArray;
   VI0, VI1: TPS2VIArray;
@@ -59,7 +62,7 @@ begin
   try
     if Model then B.UseJitModel else B.UseJit := True;
     RandSeed := 71831;
-    for var ProgramIndex := 0 to 99 do
+    for var ProgramIndex := 0 to Programs - 1 do
     begin
       // Re-upload at the same addresses: compiled entries must be replaced.
       for var K := 0 to 63 do
@@ -68,6 +71,14 @@ begin
         var Rt := Cardinal(Random(16));
         var Rd := Cardinal(Random(16));
         var Mask := Cardinal(Random(16));
+        // (Programs 100 and up: lower halves writing VF registers, often a
+        // register to itself or the one the upper half writes as well.)
+        var VFLower := (ProgramIndex >= 100) and not Odd(K);
+        if VFLower then
+        begin
+          if Random(2) = 0 then Rs := Rt;
+          if Random(2) = 0 then Rd := Rt;
+        end;
         var Lo: Cardinal;
         case K mod 11 of
           0..4: Lo := $80000000 or LowerFunctions[K mod 11] or (Rs shl 11) or (Rt shl 16) or (Rd shl 6);
@@ -88,6 +99,13 @@ begin
         if (ProgramIndex >= 75) and (K mod 4 = 1) then
           // FC*, FS* and FM*: queues must land before their reads.
           Lo := (Cardinal($10 + Random(13)) shl 25) or (Rt shl 16) or (Rs shl 11) or Cardinal(Random(2048));
+        if VFLower then
+        begin
+          var Special := VFSpecial[Random(Length(VFSpecial))];
+          Lo := $8000003C or ((Special shr 2) shl 6) or (Special and 3) or
+            (Mask shl 21) or (Rs shl 11) or (Rt shl 16);
+          if Random(7) = 0 then Lo := (Mask shl 21) or (Rs shl 11) or (Rt shl 16) or Cardinal(Random(2048)); // LQ
+        end;
         Code0[K * 2] := Lo;
         var Hi := UpperFunctions[Random(Length(UpperFunctions))] or (Rd shl 6) or
           (Rs shl 11) or (Rt shl 16) or (Mask shl 21);
@@ -209,7 +227,7 @@ begin
     if B.JitFastPairs = 0 then raise Exception.Create('No statically scheduled pairs executed');
     if (B.JitBlocks = 0) or (B.JitRuns <= B.JitBlocks) then
       raise Exception.Create('Generated code did not execute multiple pairs per block');
-    Writeln('model=', Model, ' programs=100 generated pairs=', B.JitRuns, ' entries=', B.JitBlocks,
+    Writeln('model=', Model, ' programs=', Programs, ' generated pairs=', B.JitRuns, ' entries=', B.JitBlocks,
       ' compiles=', B.JitCompiles, ' resets=', B.JitResets, ' reused=', B.JitCacheHits, ' kicks=40 OK');
     Writeln('scheduled pairs=', B.JitFastPairs);
     Writeln('register arithmetic sites=', B.JitVectorOps);

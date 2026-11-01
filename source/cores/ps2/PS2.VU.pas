@@ -200,6 +200,8 @@ type
     // Code-generation state only. Volatile vector results survive a lower
     // half only when that half has no helper call and data cannot alias us.
     FVectorMemorySafe, FEmitVectorResult, FAllowVectorResult: Boolean;
+    // The pair's lower half wrote its VF result itself (EmitLowerStore).
+    FLowerDirect: Boolean;
     FJitVectorOps: Int64;
     procedure ProfileMark(const Name: string);
     function CompileBlock(PC: Cardinal): Pointer;
@@ -209,6 +211,7 @@ type
     function EmitRegisterUpper(Op: Cardinal): Boolean;
     procedure EmitRegisterFlags(Mask: Cardinal);
     function EmitLower(Op: Cardinal): Boolean;
+    procedure EmitLowerStore(Ft: Integer; Mask: Cardinal; const Src: TJitOp; Rotate: Boolean);
     procedure EmitFlags(Mask: Cardinal);
     procedure EmitStatus;
     procedure EmitPrepare(const P: TPS2VUPair);
@@ -2157,6 +2160,7 @@ var
     Mask: Cardinal;
     Value: TJitOp;
   begin
+    if not Upper and FLowerDirect then Exit;
     if Upper then
     begin
       Value := M(@FUpperValue);
@@ -2496,20 +2500,8 @@ begin
   var Ft := Integer((Op shr 16) and 31);
   var Mask := (Op shr 21) and $F;
   case Index of
-    $30, $31: // MOVE, MR32 (stage before the upper result commits)
-      // (Nothing to stage for VF00 or no fields: the lower NOP is MOVE.)
-      if (Ft <> 0) and (Mask <> 0) then
-      begin
-        for var K := 0 to 3 do
-        begin
-          var C := K;
-          if Index = $31 then C := (C + 1) and 3;
-          J.Move(jw32, JT0, JMem(jrS0, Fs * 16 + C * 4));
-          J.Move(jw32, JMem(jrSelf, M(@FLowerValue).Disp + K * 4), JT0);
-        end;
-        J.Move(jw32, M(@FLowerReg), JImm(Ft));
-        J.Move(jw32, M(@FLowerMask), JImm(Mask));
-      end;
+    $30, $31: // MOVE, MR32 (nothing written for VF00 or no fields: the lower NOP is MOVE)
+      EmitLowerStore(Ft, Mask, JMem(jrS0, Fs * 16), Index = $31);
     $34..$37, $3E, $3F: // LQI/LQD/SQI/SQD, ILWR/ISWR
       begin
         var Base := Is_;
@@ -2528,14 +2520,7 @@ begin
         J.Alu(jaAdd, jw64, JT2, JT0);
         if Index in [$34, $36] then
         begin
-          if (Ft <> 0) and (Mask <> 0) then
-          for var K := 0 to 1 do
-          begin
-            J.Move(jw64, JT0, JMem(jrT2, K * 8));
-            J.Move(jw64, JMem(jrSelf, M(@FLowerValue).Disp + K * 8), JT0);
-          end;
-          J.Move(jw32, M(@FLowerReg), JImm(Ft));
-          J.Move(jw32, M(@FLowerMask), JImm(Mask));
+          EmitLowerStore(Ft, Mask, JMem(jrT2, 0), False)
         end
         else if Index = $3E then
         begin
@@ -2587,10 +2572,12 @@ begin
           J.Shift(jsShl, jw32, jrT0, 16);
           J.Shift(jsSar, jw32, jrT0, 16);
         end;
-        for var K := 0 to 3 do
-          J.Move(jw32, JMem(jrSelf, M(@FLowerValue).Disp + K * 4), JT0);
-        J.Move(jw32, M(@FLowerReg), JImm(Ft));
-        J.Move(jw32, M(@FLowerMask), JImm(Mask));
+        // (Straight to the register, as EmitLowerStore.)
+        FLowerDirect := True;
+        if Ft > 0 then
+          for var K := 0 to 3 do
+            if (Mask and FieldBit(K)) <> 0 then
+              J.Move(jw32, JMem(jrS0, Ft * 16 + K * 4), JT0);
       end;
     $68, $69: // XTOP, XITOP
       if It > 0 then
@@ -2606,10 +2593,56 @@ begin
   end;
 end;
 
+// A lower half's VF result (Mask's fields of the 16 bytes at Src, rotated one
+// field for MR32) straight to VF[Ft] rather than staged for EmitCommit. Both
+// halves have read their operands by then, and the upper result, still
+// staged, commits after it, winning shared fields. (Every field is read
+// before any is written.)
+procedure TPS2VUCore.EmitLowerStore(Ft: Integer; Mask: Cardinal; const Src: TJitOp; Rotate: Boolean);
+const
+  Temps: array[0..3] of TJitReg = (jrT0, jrT1, jrT4, jrT5);
+var
+  Widths: array[0..3] of TJitWidth;
+  Lanes: array[0..3] of Integer;
+begin
+  var J := FJit;
+  FLowerDirect := True;
+  if (Ft <= 0) or (Mask = 0) then Exit;
+  var Count := 0;
+  var K := 0;
+  while K < 4 do
+  begin
+    if (Mask and FieldBit(K)) = 0 then
+    begin
+      Inc(K);
+      Continue;
+    end;
+    Lanes[Count] := K;
+    if not Rotate and not Odd(K) and ((Mask and FieldBit(K + 1)) <> 0) then
+    begin
+      Widths[Count] := jw64;
+      J.Move(jw64, JReg(Temps[Count]), JMem(Src.Reg, Src.Disp + K * 4));
+      Inc(K, 2);
+    end
+    else
+    begin
+      var C := K;
+      if Rotate then C := (K + 1) and 3;
+      Widths[Count] := jw32;
+      J.Move(jw32, JReg(Temps[Count]), JMem(Src.Reg, Src.Disp + C * 4));
+      Inc(K);
+    end;
+    Inc(Count);
+  end;
+  for var N := 0 to Count - 1 do
+    J.Move(Widths[N], JMem(jrS0, Ft * 16 + Lanes[N] * 4), JReg(Temps[N]));
+end;
+
 procedure TPS2VUCore.EmitPair(const P: TPS2VUPair);
 begin
   var J := FJit;
   FEmitVectorResult := False;
+  FLowerDirect := False;
   FAllowVectorResult := False;
   {$IFNDEF PS2_VU_MEMORY_MATH}
   FAllowVectorResult := FVectorMemorySafe and J.HasVectors and (PS2RegisterMathNative(vrmAdd) <> nil);
@@ -2810,17 +2843,7 @@ begin
       var Mask := (Op shr 21) and 15;
       case Kind of
         $00:
-          begin
-            // LQ stages all lanes, even the masked ones; common commit
-            // code preserves upper/lower overlap and the VF00 constant.
-            for var K := 0 to 3 do
-            begin
-              J.Move(jw32, JT0, JMem(jrT3, K * 4));
-              J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FLowerValue) - NativeInt(Self)) + K * 4), JT0);
-            end;
-            J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FLowerReg) - NativeInt(Self))), JImm((Op shr 16) and 31));
-            J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FLowerMask) - NativeInt(Self))), JImm(Mask));
-          end;
+          EmitLowerStore(Integer((Op shr 16) and 31), Mask, JMem(jrT3, 0), False);
         $01:
           begin
             J.Move(jw64, JT4, JMem(jrSelf, Integer(NativeInt(@FVF) - NativeInt(Self))));

@@ -1058,12 +1058,23 @@ begin
   J.Branch(jcGe, jw32, JT0, JImm(1 - Block.PairCount), Slow);
   J.Bind(WholeTrace);
   J.Branch(jcNe, jw64, M(@RunTrace), JImm(0), Slow);
-  J.Move(jw8, JT0, M(@S.Running));
-  J.Branch(jcEq, jw32, JT0, JImm(0), Slow);
-  J.Move(jw8, JT0, M(@S.BranchPending));
-  J.Branch(jcNe, jw32, JT0, JImm(0), Slow);
-  J.Move(jw8, JT0, M(@S.EndPending));
-  J.Branch(jcNe, jw32, JT0, JImm(0), Slow);
+  // Running, no branch or end pending (adjacent bytes: one look).
+  if (NativeInt(@S.BranchPending) = NativeInt(@S.Running) + 1) and
+    (NativeInt(@S.EndPending) = NativeInt(@S.Running) + 2) then
+  begin
+    J.Move(jw32, JT0, M(@S.Running));
+    J.Alu(jaAnd, jw32, JT0, JImm($FFFFFF));
+    J.Branch(jcNe, jw32, JT0, JImm(1), Slow);
+  end
+  else
+  begin
+    J.Move(jw8, JT0, M(@S.Running));
+    J.Branch(jcEq, jw32, JT0, JImm(0), Slow);
+    J.Move(jw8, JT0, M(@S.BranchPending));
+    J.Branch(jcNe, jw32, JT0, JImm(0), Slow);
+    J.Move(jw8, JT0, M(@S.EndPending));
+    J.Branch(jcNe, jw32, JT0, JImm(0), Slow);
+  end;
   // (A kick in progress takes its quadwords as the general path does, see
   // KickProgress.)
   J.Move(jw32, JT0, M(@S.TPC));
@@ -1132,11 +1143,13 @@ begin
   for var R := 1 to 31 do
   begin
     // A register whose latest result is ready by its first read needs no
-    // look at its fields (FReadyAny is the latest of them).
+    // look at its fields (FReadyAny is the latest of them). Every result
+    // already issued is ready three cycles in (see SerializeState): only
+    // the first reads before need a look.
     var First := -1;
     var Fields := 0;
     for var K := 0 to 3 do
-      if Plan.ReadAt[R, K] >= 0 then
+      if (Plan.ReadAt[R, K] >= 0) and (Plan.ReadAt[R, K] < 3) then
       begin
         Inc(Fields);
         if (First < 0) or (Plan.ReadAt[R, K] < First) then
@@ -1152,7 +1165,7 @@ begin
       J.Branch(jcLe, jw64, M(@FReadyAny[R]), JT0, Ready);
     end;
     for var K := 0 to 3 do
-      if Plan.ReadAt[R, K] >= 0 then
+      if (Plan.ReadAt[R, K] >= 0) and (Plan.ReadAt[R, K] < 3) then
       begin
         J.Move(jw64, JT0, JS1);
         J.Alu(jaAdd, jw64, JT0, JImm(Plan.ReadAt[R, K]));
@@ -1165,11 +1178,11 @@ begin
   PC := Block.PC;
   for var I := 0 to Block.PairCount - 1 do
   begin
-    // Both words at once (lower, then upper), in code memory and decoded.
+    // Both words at once (lower, then upper). (A scheduled run takes all it
+    // knows of its pairs from when it was compiled, not their decoded
+    // metadata, which the general path checks for itself.)
     J.Move(jw64, JT3, JImm(Int64(UInt64(Block.Words[I * 2]) or (UInt64(Block.Words[I * 2 + 1]) shl 32))));
     J.Branch(jcNe, jw64, JMem(jrT2, Integer(PC)), JT3, Stale);
-    J.Move(jw64, JT1, JImm(NativeInt(@FPairs[PC shr 3])));
-    J.Branch(jcNe, jw64, JMem(jrT1, Integer(NativeUInt(@PPS2VUPair(nil).Lower))), JT3, Stale);
     PC := (PC + 8) and FCodeMask;
   end;
   // In the trace window (see the budget check): pair K at LoopTrace
@@ -1301,11 +1314,17 @@ begin
   FEmitPC := -1;
   KickProgress(Plan.Issue[Block.PairCount - 1]);
   ProfileMark('fast-output');
+  // Ready times of results still in the pipeline after the run. One issued
+  // three cycles before the last pair or earlier is ready after it, and so
+  // is what its field held before (ready three cycles into the run, see
+  // SerializeState): that write would change nothing.
+  // (-1: not written at all.)
+  var Pending := Max(LastCycle - 3, -1);
   for var R := 1 to 31 do
-    if Plan.WriteAny[R] >= 0 then
+    if Plan.WriteAny[R] > Pending then
     begin
       for var K := 0 to 3 do
-        if Plan.WriteAt[R, K] >= 0 then
+        if Plan.WriteAt[R, K] > Pending then
         begin
           J.Move(jw64, JT0, JS1);
           J.Alu(jaAdd, jw64, JT0, JImm(Plan.WriteAt[R, K] + 4));
@@ -2580,6 +2599,8 @@ end;
 procedure TPS2VUCore.Reset;
 begin
   S := Default(TPS2VUState);
+  FillChar(FReady, SizeOf(FReady), 0);
+  FillChar(FReadyAny, SizeOf(FReadyAny), 0);
   FKickPending := False;
   S.Q := $3F800000;
   S.R := $3F800000;
@@ -4057,7 +4078,14 @@ procedure TPS2VUCore.SerializeState(State: TStateArchive);
 begin
   State.Field(S, SizeOf(S));
   if State.Loading then
+  begin
     FLoadReg := -1;
+    // (Results in the FMAC pipeline are not saved: none is pending. Every
+    // ready time is then within three cycles of the cycle count, as after
+    // any pair, which scheduled runs rely on.)
+    FillChar(FReady, SizeOf(FReady), 0);
+    FillChar(FReadyAny, SizeOf(FReadyAny), 0);
+  end;
 end;
 
 { TPS2VU0 }

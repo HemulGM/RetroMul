@@ -459,6 +459,129 @@ begin
   Report.Add('vector scratch: masks, shuffles, integer operations, unaligned memory, calls/reset/unwind OK');
 end;
 
+{$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+// Changes the scratch vector registers a vector routine may (XMM0..XMM5).
+function NativeVectorClobber(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  pcmpeqd xmm0, xmm0
+  pcmpeqd xmm1, xmm1
+  pcmpeqd xmm2, xmm2
+  pcmpeqd xmm3, xmm3
+  pcmpeqd xmm4, xmm4
+  pcmpeqd xmm5, xmm5
+  xor eax, eax
+end;
+
+function KeepingInvoke(J: TJitAsm; Code: Pointer; A0, A1: NativeUInt): NativeInt;
+begin
+  Result := J.InvokeKeeping(Code, A0, A1);
+end;
+
+// KeepingInvoke with XMM6..XMM15 from Before[0..9]; what they hold after it
+// to After[0..9].
+procedure KeepingCall(J: TJitAsm; Code: Pointer; A0, A1: NativeUInt; Before, After: Pointer);
+asm
+  .PARAMS 4
+  .SAVENV XMM6
+  .SAVENV XMM7
+  .SAVENV XMM8
+  .SAVENV XMM9
+  .SAVENV XMM10
+  .SAVENV XMM11
+  .SAVENV XMM12
+  .SAVENV XMM13
+  .SAVENV XMM14
+  .SAVENV XMM15
+  mov rax, Before
+  movdqu xmm6, [rax]
+  movdqu xmm7, [rax + 16]
+  movdqu xmm8, [rax + 32]
+  movdqu xmm9, [rax + 48]
+  movdqu xmm10, [rax + 64]
+  movdqu xmm11, [rax + 80]
+  movdqu xmm12, [rax + 96]
+  movdqu xmm13, [rax + 112]
+  movdqu xmm14, [rax + 128]
+  movdqu xmm15, [rax + 144]
+  call KeepingInvoke
+  mov rax, After
+  movdqu [rax], xmm6
+  movdqu [rax + 16], xmm7
+  movdqu [rax + 32], xmm8
+  movdqu [rax + 48], xmm9
+  movdqu [rax + 64], xmm10
+  movdqu [rax + 80], xmm11
+  movdqu [rax + 96], xmm12
+  movdqu [rax + 112], xmm13
+  movdqu [rax + 128], xmm14
+  movdqu [rax + 144], xmm15
+end;
+{$ENDIF}
+
+// The kept vector registers (a backend's own: the model has none): every
+// slot written, then a call and a vector routine changing the scratch ones,
+// then every slot read back; blends of every mask; and the caller's
+// registers as they were after InvokeKeeping.
+function CheckKept(Native: TJitAsm; Report: TStrings): Boolean;
+begin
+  Result := True;
+  if (Native = nil) or (Native.VectorKeepCount = 0) then
+  begin
+    Report.Add('kept vectors: none here');
+    Exit;
+  end;
+  {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+  var Count := Native.VectorKeepCount;
+  var Box: TBytes;
+  SetLength(Box, 4096);
+  for var K := 0 to High(Box) do Box[K] := Byte(K * 7 + 3);
+  Native.Reset;
+  Native.Align(16);
+  var Code := Native.Here;
+  Native.Enter;
+  for var S := 0 to Count - 1 do
+  begin
+    Native.VectorLoad(jv0, JMem(jrSelf, S * 16 + 1));
+    Native.VectorKeep(S, jv0);
+  end;
+  Native.Call(@Echo, [JSelf, JImm(0)]);
+  Native.VectorCall(@NativeVectorClobber, nil, JImm(0));
+  for var S := 0 to Count - 1 do
+  begin
+    Native.VectorTake(jv1, S);
+    Native.VectorStore(JMem(jrSelf, 1024 + S * 16), jv1);
+  end;
+  for var Mask := 0 to 15 do
+  begin
+    Native.VectorLoad(jv2, JMem(jrSelf, 512));
+    Native.VectorLoad(jv3, JMem(jrSelf, 528));
+    Native.VectorBlend(jv2, jv3, Mask);
+    Native.VectorStore(JMem(jrSelf, 2048 + Mask * 16), jv2);
+  end;
+  Native.Leave(JImm(7));
+  Native.ForgetLabels;
+  Native.Flush;
+  var Before, After: array[0..39] of Cardinal;
+  for var K := 0 to High(Before) do Before[K] := Cardinal(K) * $01010101 + $5A;
+  var Expected := Copy(Box);
+  for var S := 0 to Count - 1 do
+    System.Move(Box[S * 16 + 1], Expected[1024 + S * 16], 16);
+  for var Mask := 0 to 15 do
+    for var L := 0 to 3 do
+      if (Mask and (1 shl L)) <> 0 then
+        System.Move(Box[528 + L * 4], Expected[2048 + Mask * 16 + L * 4], 4)
+      else
+        System.Move(Box[512 + L * 4], Expected[2048 + Mask * 16 + L * 4], 4);
+  KeepingCall(Native, Code, NativeUInt(@Box[0]), 0, @Before, @After);
+  if not CompareMem(@Box[0], @Expected[0], Length(Box)) then
+    raise EInvalidOpException.Create('Kept vector registers or blends wrong');
+  if not CompareMem(@Before, @After, SizeOf(Before)) then
+    raise EInvalidOpException.Create('InvokeKeeping changed its caller''s vector registers');
+  Report.Add(Format('kept vectors: %d slots across calls, blends, the caller''s registers kept OK', [Count]));
+  {$ENDIF}
+end;
+
 function RunJitModelTest(Seeds: Integer; Report: TStrings): Boolean;
 const
   Expected = 'call 42, raised 3, shared start 1041, raised 1, sites 1 2, target 1, calls 6';
@@ -532,6 +655,7 @@ begin
       Report.Add(Format('random programs: %d, %d unlike the model%s', [Seeds, Different, FirstDifference]));
     Result := Result and (Different = 0);
     Result := CheckVectors(Model, Native, Report) and Result;
+    Result := CheckKept(Native, Report) and Result;
   finally
     Native.Free;
     Model.Free;

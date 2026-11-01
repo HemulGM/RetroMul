@@ -151,6 +151,13 @@ type
     // As VectorCall, the native routine's address read from memory operand
     // NativeRoutine (its register not the argument's).
     procedure VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp); virtual;
+    // Optional kept vector registers (slots 0..VectorKeepCount - 1): calls
+    // and vector routines leave them, only code run by InvokeKeeping may use
+    // them. VectorBlend: Dst's lanes in Mask (bit K lane K) from Src.
+    function VectorKeepCount: Integer; virtual;
+    procedure VectorKeep(Slot: Integer; Src: TJitVector); virtual;
+    procedure VectorTake(Dst: TJitVector; Slot: Integer); virtual;
+    procedure VectorBlend(Dst, Src: TJitVector; Mask: Byte); virtual;
     // A function's start: the fixed registers saved, Self and Ctx from its
     // two arguments. Its end: Value as its result, the fixed registers as
     // they were, back to its caller.
@@ -189,6 +196,8 @@ type
     // Runs the function at Code (written with Enter or EnterJump) with four
     // pointer-sized arguments (unused ones ignored): its result.
     function Invoke(Code: Pointer; A0, A1, A2, A3: NativeUInt): NativeInt; virtual;
+    // As Invoke, for code that may change the kept vector registers.
+    function InvokeKeeping(Code: Pointer; A0, A1: NativeUInt): NativeInt; virtual;
     property Size: NativeInt read FSize;
     property Base: PByte read FBase;
   end;
@@ -357,6 +366,26 @@ begin
   VectorUnsupported;
 end;
 
+function TJitAsm.VectorKeepCount: Integer;
+begin
+  Result := 0;
+end;
+
+procedure TJitAsm.VectorKeep(Slot: Integer; Src: TJitVector);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorTake(Dst: TJitVector; Slot: Integer);
+begin
+  VectorUnsupported;
+end;
+
+procedure TJitAsm.VectorBlend(Dst, Src: TJitVector; Mask: Byte);
+begin
+  VectorUnsupported;
+end;
+
 function TJitAsm.Room(Bytes: NativeInt): Boolean;
 begin
   Result := (FBase <> nil) and (FUsed + Bytes * FRoomScale <= FSize);
@@ -512,6 +541,11 @@ type
   TJitFunction = function(A0, A1, A2, A3: NativeUInt): NativeInt;
 begin
   Result := TJitFunction(Code)(A0, A1, A2, A3);
+end;
+
+function TJitAsm.InvokeKeeping(Code: Pointer; A0, A1: NativeUInt): NativeInt;
+begin
+  Result := Invoke(Code, A0, A1, 0, 0);
 end;
 
 { x64 }
@@ -1643,6 +1677,11 @@ type
     procedure VectorMask(Op: TJitVectorMask; Dst: TJitReg; Src: TJitVector); override;
     procedure VectorCall(NativeRoutine, ModelRoutine: Pointer; const Context: TJitOp); override;
     procedure VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp); override;
+    function VectorKeepCount: Integer; override;
+    procedure VectorKeep(Slot: Integer; Src: TJitVector); override;
+    procedure VectorTake(Dst: TJitVector; Slot: Integer); override;
+    procedure VectorBlend(Dst, Src: TJitVector; Mask: Byte); override;
+    function InvokeKeeping(Code: Pointer; A0, A1: NativeUInt): NativeInt; override;
   end;
 
 const
@@ -1852,6 +1891,54 @@ end;
 procedure TJitAsmWin64.VectorCallAt(const NativeRoutine: TJitOp; ModelRoutine: Pointer; const Context: TJitOp);
 begin
   CallAt(NativeRoutine, [Context]);
+end;
+
+// The kept vector registers are XMM6..XMM15, which the convention has a
+// callee keep (InvokeKeeping keeps them for its caller).
+function TJitAsmWin64.VectorKeepCount: Integer;
+begin
+  if FBlend then Result := 10 else Result := 0;
+end;
+
+procedure TJitAsmWin64.VectorKeep(Slot: Integer; Src: TJitVector);
+begin
+  ModRM(False, [$0F, $28], 6 + Slot, False, X64Reg(Ord(Src)), False); // movaps xmm(6 + slot), src
+end;
+
+procedure TJitAsmWin64.VectorTake(Dst: TJitVector; Slot: Integer);
+begin
+  ModRM(False, [$0F, $28], Ord(Dst), False, X64Reg(6 + Slot), False); // movaps dst, xmm(6 + slot)
+end;
+
+procedure TJitAsmWin64.VectorBlend(Dst, Src: TJitVector; Mask: Byte);
+begin
+  Emit([$66]);
+  ModRM(False, [$0F, $3A, $0C], Ord(Dst), False, X64Reg(Ord(Src)), False); // blendps dst, src, mask
+  Emit([Mask and 15]);
+end;
+
+function Win64InvokeKeeping(Code: Pointer; A0, A1: NativeUInt): NativeInt;
+asm
+  .PARAMS 4
+  .SAVENV XMM6
+  .SAVENV XMM7
+  .SAVENV XMM8
+  .SAVENV XMM9
+  .SAVENV XMM10
+  .SAVENV XMM11
+  .SAVENV XMM12
+  .SAVENV XMM13
+  .SAVENV XMM14
+  .SAVENV XMM15
+  mov rax, rcx
+  mov rcx, rdx
+  mov rdx, r8
+  call rax
+end;
+
+function TJitAsmWin64.InvokeKeeping(Code: Pointer; A0, A1: NativeUInt): NativeInt;
+begin
+  Result := Win64InvokeKeeping(Code, A0, A1);
 end;
 
 {$ENDIF}

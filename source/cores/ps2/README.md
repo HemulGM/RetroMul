@@ -294,8 +294,13 @@ groups are returned directly. The four-field memory-operand kernels take the
 same corrected host arithmetic under round-to-nearest. Every input and rounding mode remains exact,
 using integer normalization outside the guarded common range. MADD/MSUB still
 round the product and sum separately. Callbacks, aliased data/register/code
-buffers and unsupported backends retain the memory-result path. This is not
-a cross-instruction VF register cache. `PS2_VU_MEMORY_MATH` selects the old
+buffers and unsupported backends retain the memory-result path. In a
+statically scheduled span on Win64, XMM6..XMM15 (kept vector registers, which
+`TJitAsm.InvokeKeeping` saves for its caller) hold copies of the VF registers
+and ACC read or written last, so that reading them again takes no load nor
+waits for the store; memory always has the value too, and any other write to
+a register drops its copy. Lower halves (MOVE, MR32, LQ, LQI, LQD, MFIR, MFP)
+write VF directly, before the staged upper result commits. `PS2_VU_MEMORY_MATH` selects the old
 compiled path for build-time differential checks; user options are unchanged.
 Code is generated after 16 visits in blocks of up to 32 pairs (`PS2VUBlockPairs`), ending after
 branch/end delay slots. Compiled successors chain through a table within one
@@ -312,7 +317,10 @@ earlier are checked, and only results issued in a span's last three cycles
 get ready times written. The compiler simulates the MAC/status and clip
 queues through the span for the incoming queues it finds when it compiles
 (and for empty ones): what each slot, including stale tail slots, and the
-base end up holding, and what each pair's flag reads see. At the end the
+base end up holding, and what each pair's flag reads see. Events nothing
+reads (not a flag read's, the queue's at the end, or the last) only OR their
+MAC flag into an accumulator, whose sticky bits join the status before the
+next one is worked out or a helper may read it. At the end the
 queues are written from that when the incoming ones were so; otherwise the
 events are replayed at run time as each pair would have queued them
 (FinishFastFlags). FCEQ/FCAND/FCOR/FCGET/FCSET and FSEQ/FSAND/FSOR/FMEQ/

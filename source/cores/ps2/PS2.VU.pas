@@ -196,12 +196,24 @@ type
     // Where that pair's flag reads find the MAC, status and clip flags they
     // see (offsets in Self; -1: the general path's own fields).
     FEmitMACSrc, FEmitStatusSrc, FEmitClipSrc: Integer;
+    // In a scheduled run: the MAC flags of the events nothing reads (their
+    // status is not worked out), OR-ed; FEmitLazyFlags: the pair being
+    // written makes such an event; FLazyPending: FJitLazyMAC may hold some
+    // (see EmitLazyFlush).
+    FJitLazyMAC: Cardinal;
+    FEmitLazyFlags, FLazyPending: Boolean;
     FJitFastPairs: Int64;
     // Code-generation state only. Volatile vector results survive a lower
     // half only when that half has no helper call and data cannot alias us.
     FVectorMemorySafe, FEmitVectorResult, FAllowVectorResult: Boolean;
     // The pair's lower half wrote its VF result itself (EmitLowerStore).
     FLowerDirect: Boolean;
+    // In a scheduled run being written: the VF registers (32: ACC) kept
+    // vector registers hold copies of (FKeptReg[slot], FKeptSlot[reg]; -1:
+    // none), FKeepCount slots (0: none kept); see KeepStart.
+    FKeepCount, FKeepClock: Integer;
+    FKeptReg, FKeptUse: array[0..15] of Integer;
+    FKeptSlot: array[0..32] of Integer;
     FJitVectorOps: Int64;
     procedure ProfileMark(const Name: string);
     function CompileBlock(PC: Cardinal): Pointer;
@@ -212,8 +224,15 @@ type
     procedure EmitRegisterFlags(Mask: Cardinal);
     function EmitLower(Op: Cardinal): Boolean;
     procedure EmitLowerStore(Ft: Integer; Mask: Cardinal; const Src: TJitOp; Rotate: Boolean);
+    procedure KeepStart(Count: Integer);
+    procedure KeepForget(Reg: Integer);
+    function KeepSlot(Reg: Integer): Integer;
+    function VFOperand(Reg: Integer): TJitOp;
+    procedure EmitLoadVF(Dst: TJitVector; Reg: Integer);
+    procedure EmitStoreVF(Reg: Integer; Src: TJitVector; Lanes: Byte);
     procedure EmitFlags(Mask: Cardinal);
     procedure EmitStatus;
+    procedure EmitLazyFlush;
     procedure EmitPrepare(const P: TPS2VUPair);
     procedure EmitFinish(const P: TPS2VUPair);
     procedure EmitCommit(const P: TPS2VUPair);
@@ -458,6 +477,7 @@ begin
   FEmitMACSrc := -1;
   FEmitStatusSrc := -1;
   FEmitClipSrc := -1;
+  KeepStart(0);
   FVectorMemorySafe := SeparateBuffers(Data, DataSize, Code, CodeSize) and
     SeparateBuffers(Data, DataSize, VF, SizeOf(TPS2VFArray)) and
     SeparateBuffers(Data, DataSize, VI, SizeOf(TPS2VIArray)) and
@@ -1199,6 +1219,21 @@ var
     J.Bind(Done);
   end;
 
+  // A run's event a queue symbol stands for (see TPS2VUQueueSim) is read.
+  procedure NeedSymbol(var Needed: array of Boolean; Sym: Integer);
+  begin
+    if (Sym >= EventSym) and (Sym < EventSym + Length(Needed)) then
+      Needed[Sym - EventSym] := True;
+  end;
+
+  procedure NeedQueue(var Needed: array of Boolean; const Q: TPS2VUQueueSim);
+  begin
+    if not Q.Valid then Exit;
+    NeedSymbol(Needed, Q.Base);
+    for var K := 0 to 3 do
+      NeedSymbol(Needed, Q.Slots[K]);
+  end;
+
   // Once three cycles have elapsed all incoming events have landed. The
   // remaining queue evolution is entirely compile-time: symbols identify
   // captured MAC/status values, -1 leaves that physical tail slot untouched.
@@ -1256,6 +1291,36 @@ var
     var Generic := LastCycle < 3;
     var WholeQueueKnown := (BaseEvent >= 0) and not Generic;
     for var I := 0 to 3 do WholeQueueKnown := WholeQueueKnown and (Slots[I] >= 0);
+    // The events whose MAC flag and status are read: by flag reads, into the
+    // queue the run leaves (each way it may, see below) and S.MAC/S.Status
+    // (the last). The others' only add sticky status bits (EmitLazyFlush).
+    var Needed: array[0..PS2VUBlockPairs - 1] of Boolean;
+    FillChar(Needed, SizeOf(Needed), Ord(Generic));
+    if EventCount > 0 then Needed[EventCount - 1] := True;
+    NeedQueue(Needed, FlagQ);
+    if not Fixed then NeedQueue(Needed, FlagEmpty);
+    for var K := 0 to 3 do
+      if Slots[K] >= 0 then Needed[Slots[K]] := True;
+    if BaseEvent >= 0 then Needed[BaseEvent] := True;
+    if not WholeQueueKnown then
+      for var E := 0 to PrefixCount - 1 do Needed[E] := True;
+    PC := Block.PC;
+    var Lazy := False;
+    for var I := 0 to Block.PairCount - 1 do
+    begin
+      var P: PPS2VUPair := @FPairs[PC shr 3];
+      if ((P.Upper and $80000000) = 0) and ((P.Lower and $80000000) = 0) and
+        ((P.Lower shr 25) in [$14, $16..$18, $1A, $1B]) then
+        NeedSymbol(Needed, FlagQ.Visible[I]);
+      PC := (PC + 8) and FCodeMask;
+    end;
+    for var K := 0 to EventCount - 1 do
+      Lazy := Lazy or not Needed[K];
+    FLazyPending := False;
+    if Lazy then
+      J.Move(jw32, M(@FJitLazyMAC), JImm(0));
+    if FVectorMemorySafe and J.HasVectors then
+      KeepStart(J.VectorKeepCount);
     var Events := 0;
     var QBase := -1;
     var PBase := -1;
@@ -1321,13 +1386,17 @@ var
         FEmitStatusSrc := SymbolStatus(FlagQ.Visible[I]);
         FEmitClipSrc := SymbolClip(ClipQ.Visible[I]);
       end;
+      FEmitLazyFlags := P.SetsFlags and not Needed[Events];
       EmitPair(P^);
+      FEmitLazyFlags := False;
       FEmitMACSrc := -1;
       FEmitStatusSrc := -1;
       FEmitClipSrc := -1;
       FEmitClipSlot := -1;
       EmitCommit(P^);
-      if P.SetsFlags then
+      if P.SetsFlags and not Needed[Events] then
+        Inc(Events)
+      else if P.SetsFlags then
       begin
         J.Move(jw32, JT0, M(@S.MAC));
         J.Move(jw32, M(@FJitEvents[Events].MAC), JT0);
@@ -1344,6 +1413,9 @@ var
       PC := (PC + 8) and FCodeMask;
     end;
     FEmitPC := -1;
+    KeepStart(0);
+    // (Nothing left: the last event is worked out.)
+    EmitLazyFlush;
     KickProgress(Plan.Issue[Block.PairCount - 1]);
     ProfileMark('fast-output');
     // Ready times of results still in the pipeline after the run. One issued
@@ -1737,10 +1809,10 @@ begin
   var J := FJit;
   var Fs := Integer((Op shr 11) and 31);
   var Ft := Integer((Op shr 16) and 31);
-  J.VectorLoad(jv0, JMem(jrS0, Fs * 16));
+  EmitLoadVF(jv0, Fs);
   if F <= $1B then
   begin
-    J.VectorLoad(jv1, JMem(jrS0, Ft * 16));
+    EmitLoadVF(jv1, Ft);
     J.VectorShuffle(jv1, jv1, Byte((Op and 3) * $55));
   end
   else if F in [$1C, $20, $21, $24, $25] then
@@ -1748,7 +1820,7 @@ begin
   else if F in [$1E, $22, $23, $26, $27] then
     J.VectorBroadcast(jv1, JMem(jrSelf, Integer(NativeInt(@S.I) - NativeInt(Self))))
   else
-    J.VectorLoad(jv1, JMem(jrS0, Ft * 16));
+    EmitLoadVF(jv1, Ft);
   if Kind = rkSub then
   begin
     J.Move(jw32, JT0, JImm($80000000));
@@ -1768,7 +1840,7 @@ begin
       J.VectorAlu(jvaXor, jv0, jv2);
     end;
     J.VectorShuffle(jv1, jv0, $E4); // retain the rounded product, never FMA
-    J.VectorLoad(jv0, JMem(jrSelf, Integer(NativeInt(@S.ACC) - NativeInt(Self))));
+    EmitLoadVF(jv0, 32);
     J.VectorCallAt(JMem(jrSelf, Integer(NativeInt(@FMath[vrmAdd]) - NativeInt(Self))), PS2RegisterMathModel(vrmAdd),
       JImm(0));
     J.Alu(jaOr, jw32, JT0, JMem(jrSelf, Integer(NativeInt(@FJitProductFlags) - NativeInt(Self))));
@@ -1791,6 +1863,13 @@ begin
   J.Shift(jsShl, jw32, jrT1, 4);
   J.Alu(jaOr, jw32, JT3, JT1);
   J.Alu(jaOr, jw32, JT3, JT0);
+  if FEmitLazyFlags then
+  begin
+    // (An event nothing reads: only its sticky bits matter, see EmitLazyFlush.)
+    J.Alu(jaOr, jw32, JMem(jrSelf, Integer(NativeInt(@FJitLazyMAC) - NativeInt(Self))), JT3);
+    FLazyPending := True;
+    Exit;
+  end;
   J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.MAC) - NativeInt(Self))), JT3);
   EmitStatus;
 end;
@@ -1943,6 +2022,12 @@ begin
       J.Shift(jsShl, jw32, jrT1, 7 - 2 * K);
       J.Alu(jaOr, jw32, JT3, JT1);
     end;
+  if FEmitLazyFlags then
+  begin
+    J.Alu(jaOr, jw32, JMem(jrSelf, Integer(NativeInt(@FJitLazyMAC) - NativeInt(Self))), JT3);
+    FLazyPending := True;
+    Exit;
+  end;
   J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.MAC) - NativeInt(Self))), JT3);
   EmitStatus;
 end;
@@ -1956,6 +2041,7 @@ end;
 procedure TPS2VUCore.EmitStatus;
 begin
   var J := FJit;
+  EmitLazyFlush;
   J.Move(jw32, JT1, JT3);
   J.Move(jw32, JT0, JT1);
   J.Shift(jsShr, jw32, jrT0, 1);
@@ -1979,6 +2065,37 @@ begin
   J.Alu(jaOr, jw32, JT0, JT1);
   J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))), JT0);
 end;
+// The sticky bits of the events since the last worked-out status whose own
+// status nothing reads (FJitLazyMAC, see EmitBody) into S.Status: before the
+// next status is worked out or a helper may look at it. Their Z, S, U and O
+// bits are only seen replaced by a later event's, and I and D are DIV's, as
+// those sticky bits are. (T3 and T2 kept.)
+procedure TPS2VUCore.EmitLazyFlush;
+begin
+  if not FLazyPending then Exit;
+  FLazyPending := False;
+  var J := FJit;
+  var Lazy := JMem(jrSelf, Integer(NativeInt(@FJitLazyMAC) - NativeInt(Self)));
+  J.Move(jw32, JT1, Lazy);
+  J.Move(jw32, JT0, JT1);
+  J.Shift(jsShr, jw32, jrT0, 1);
+  J.Alu(jaOr, jw32, JT1, JT0);
+  J.Move(jw32, JT0, JT1);
+  J.Shift(jsShr, jw32, jrT0, 2);
+  J.Alu(jaOr, jw32, JT1, JT0);
+  J.Alu(jaAnd, jw32, JT1, JImm($1111));
+  J.Move(jw32, JT0, JT1);
+  J.Shift(jsShr, jw32, jrT0, 3);
+  J.Alu(jaOr, jw32, JT1, JT0);
+  J.Move(jw32, JT0, JT1);
+  J.Shift(jsShr, jw32, jrT0, 6);
+  J.Alu(jaOr, jw32, JT1, JT0);
+  J.Alu(jaAnd, jw32, JT1, JImm($F));
+  J.Shift(jsShl, jw32, jrT1, 6);
+  J.Alu(jaOr, jw32, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))), JT1);
+  J.Move(jw32, Lazy, JImm(0));
+end;
+
 // Pipeline bookkeeping with the pair's operands already known. Calls only
 // on stalls, an in-flight XGKICK or the diagnostic trace path.
 procedure TPS2VUCore.EmitPrepare(const P: TPS2VUPair);
@@ -2198,16 +2315,16 @@ var
       end;
     end;
     if (Reg <= 0) or (Mask = 0) then Exit;
-    var Target := JMem(jrS0, Reg * 16);
-    if Reg = 32 then Target := M(@S.ACC);
+    var Target := VFOperand(Reg);
     if Upper and FEmitVectorResult then
     begin
       var Lanes: Byte := 0;
       for var K := 0 to 3 do
         if Mask and FieldBit(K) <> 0 then Lanes := Lanes or (Byte(1) shl K);
-      J.VectorStore(Target, jv0, Lanes);
+      EmitStoreVF(Reg, jv0, Lanes);
       Exit;
     end;
+    KeepForget(Reg);
     // (Field by field: the staged value was often just written a field at a
     // time, and a wider load of it would wait for those stores.)
     for var K := 0 to 3 do
@@ -2574,6 +2691,7 @@ begin
         end;
         // (Straight to the register, as EmitLowerStore.)
         FLowerDirect := True;
+        KeepForget(Ft);
         if Ft > 0 then
           for var K := 0 to 3 do
             if (Mask and FieldBit(K)) <> 0 then
@@ -2608,6 +2726,7 @@ begin
   var J := FJit;
   FLowerDirect := True;
   if (Ft <= 0) or (Mask = 0) then Exit;
+  KeepForget(Ft);
   var Count := 0;
   var K := 0;
   while K < 4 do
@@ -2636,6 +2755,113 @@ begin
   end;
   for var N := 0 to Count - 1 do
     J.Move(Widths[N], JMem(jrS0, Ft * 16 + Lanes[N] * 4), JReg(Temps[N]));
+end;
+
+// In a scheduled run, kept vector registers (see TJitAsm.VectorKeep) hold
+// copies of the VF registers and ACC it read or wrote last, so that reading
+// them again takes no load, nor waits for the store before it. Memory has
+// every value too: a write anything else makes to a register drops its copy
+// (KeepForget). Count: the slots (0: none).
+procedure TPS2VUCore.KeepStart(Count: Integer);
+begin
+  FKeepCount := Min(Count, Length(FKeptReg));
+  FKeepClock := 0;
+  for var K := 0 to High(FKeptReg) do
+    FKeptReg[K] := -1;
+  for var R := 0 to High(FKeptSlot) do
+    FKeptSlot[R] := -1;
+end;
+
+procedure TPS2VUCore.KeepForget(Reg: Integer);
+begin
+  if (Reg < 0) or (Reg > High(FKeptSlot)) then Exit;
+  var Slot := FKeptSlot[Reg];
+  if Slot < 0 then Exit;
+  FKeptSlot[Reg] := -1;
+  FKeptReg[Slot] := -1;
+end;
+
+// Reg's slot: its own, else a free one or the least recently used.
+function TPS2VUCore.KeepSlot(Reg: Integer): Integer;
+begin
+  Result := FKeptSlot[Reg];
+  if Result < 0 then
+  begin
+    for var K := 0 to FKeepCount - 1 do
+      if FKeptReg[K] < 0 then
+      begin
+        Result := K;
+        Break;
+      end;
+    if Result < 0 then
+    begin
+      Result := 0;
+      for var K := 1 to FKeepCount - 1 do
+        if FKeptUse[K] < FKeptUse[Result] then
+          Result := K;
+      FKeptSlot[FKeptReg[Result]] := -1;
+    end;
+    FKeptReg[Result] := Reg;
+    FKeptSlot[Reg] := Result;
+  end;
+  Inc(FKeepClock);
+  FKeptUse[Result] := FKeepClock;
+end;
+
+// VF[Reg] in memory (32: ACC).
+function TPS2VUCore.VFOperand(Reg: Integer): TJitOp;
+begin
+  if Reg = 32 then
+    Result := JMem(jrSelf, Integer(NativeInt(@S.ACC) - NativeInt(Self)))
+  else
+    Result := JMem(jrS0, Reg * 16);
+end;
+
+procedure TPS2VUCore.EmitLoadVF(Dst: TJitVector; Reg: Integer);
+begin
+  var J := FJit;
+  if FKeepCount = 0 then
+  begin
+    J.VectorLoad(Dst, VFOperand(Reg));
+    Exit;
+  end;
+  var Slot := FKeptSlot[Reg];
+  if Slot >= 0 then
+  begin
+    Inc(FKeepClock);
+    FKeptUse[Slot] := FKeepClock;
+    J.VectorTake(Dst, Slot);
+  end
+  else
+  begin
+    J.VectorLoad(Dst, VFOperand(Reg));
+    J.VectorKeep(KeepSlot(Reg), Dst);
+  end;
+end;
+
+// Src's lanes in Lanes (bit K: lane K) to VF[Reg] (32: ACC), its copy the
+// whole new value. (Src not jv1, which it may change.)
+procedure TPS2VUCore.EmitStoreVF(Reg: Integer; Src: TJitVector; Lanes: Byte);
+begin
+  var J := FJit;
+  var Target := VFOperand(Reg);
+  if FKeepCount = 0 then
+  begin
+    J.VectorStore(Target, Src, Lanes);
+    Exit;
+  end;
+  if Lanes <> 15 then
+  begin
+    var Slot := FKeptSlot[Reg];
+    if Slot >= 0 then
+      J.VectorTake(jv1, Slot)
+    else
+      J.VectorLoad(jv1, Target);
+    J.VectorBlend(jv1, Src, Lanes);
+    Src := jv1;
+  end;
+  J.VectorStore(Target, Src);
+  J.VectorKeep(KeepSlot(Reg), Src);
 end;
 
 procedure TPS2VUCore.EmitPair(const P: TPS2VUPair);
@@ -2772,7 +2998,12 @@ begin
     J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FUpperMask) - NativeInt(Self))), JImm((U shr 21) and 15));
   end
   else if not ((Funct >= $3C) and (Special = $2F)) then
+  begin
+    // (The helper works out the status from S.Status: an event it makes is
+    // not lazy, see EmitBody.)
+    EmitLazyFlush;
     J.Call(@TPS2VUCore.Upper, [JSelf, JImm(U), JImm(1)]);
+  end;
   ProfileMark('lower');
   if (U and $80000000) <> 0 then
     J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.I) - NativeInt(Self))), JImm(P.Lower))
@@ -2875,7 +3106,11 @@ begin
       end;
     end
     else if D < 0 then
+    begin
+      // (DIV/SQRT/RSQRT change S.Status.)
+      EmitLazyFlush;
       J.Call(@TPS2VUCore.Lower, [JSelf, JImm(Op)]);
+    end;
   end;
 end;
 
@@ -4334,7 +4569,7 @@ begin
       end;
       var Before := Context.Count;
       Context.Invalid := False;
-      FJit.Invoke(Pair.Native, NativeUInt(Self), NativeUInt(@Context), 0, 0);
+      FJit.InvokeKeeping(Pair.Native, NativeUInt(Self), NativeUInt(@Context));
       Inc(FJitBlocks);
       Inc(FJitRuns, Context.Count - Before);
       if Context.Invalid then

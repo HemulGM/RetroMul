@@ -164,6 +164,8 @@ type
     // Runs between HoldMath(True) and HoldMath(False) take FMathMode as it is.
     FMathHeld: Integer;
     FJitClip: Cardinal;
+    // The value of a scheduled run's last FCSET so far.
+    FJitClipSet: Cardinal;
     FJitEvents: array[0..15] of TPS2VUFlagEvent;
     // CLIP results of a scheduled run (their clip flags and when they land),
     // replayed into the queue by FinishFastFlags; FEmitClipSlot: the one the
@@ -348,11 +350,11 @@ function FastPair(Lower, Upper: Cardinal): Boolean;
 begin
   // (CLIP queues its flags as FMAC operations do: a scheduled run replays
   // them, FinishFastFlags.)
-  // (Flag reads but FSSET/FCSET too: a scheduled run tracks the queues they
-  // read, see TPS2VUQueueSim.)
+  // (Flag reads and FCSET but FSSET too: a scheduled run tracks the queues
+  // they read, see TPS2VUQueueSim.)
   if (Upper and $80000000) <> 0 then Exit(True);
   if (Lower and $80000000) = 0 then
-    Exit((Lower shr 25) in [$00, $01, $04, $05, $08, $09, $10, $12..$14, $16..$18, $1A..$1C, $20, $21, $24, $25,
+    Exit((Lower shr 25) in [$00, $01, $04, $05, $08, $09, $10..$14, $16..$18, $1A..$1C, $20, $21, $24, $25,
       $28, $29, $2C..$2F]);
   // (DIV/SQRT/RSQRT, WAITQ, the EFU ops and WAITP too: a scheduled run
   // follows Q and P through it.)
@@ -858,6 +860,13 @@ var
         end;
         Inc(E);
       end;
+      // FCSET (after the pair's CLIP): the base is its value (FJitClipSet
+      // holds it), the queue empty.
+      if Clip and ((P.Upper and $80000000) = 0) and ((P.Lower shr 25) = $11) then
+      begin
+        Q.Base := 32;
+        Q.Count := 0;
+      end;
       PC := (PC + 8) and FCodeMask;
     end;
   end;
@@ -947,7 +956,8 @@ var
 
   function SymbolClip(Sym: Integer): Integer;
   begin
-    if Sym >= 16 then Result := M(@FJitClipEvents[Sym - 16].Value).Disp
+    if Sym >= 32 then Result := M(@FJitClipSet).Disp
+    else if Sym >= 16 then Result := M(@FJitClipEvents[Sym - 16].Value).Disp
     else if Sym >= 0 then Result := M(@S.ClipQValue[Sym]).Disp
     else Result := M(@S.ClipBase).Disp;
   end;
@@ -1446,7 +1456,7 @@ begin
   begin
     var P: PPS2VUPair := @FPairs[PC shr 3];
     if ((P.Upper and $80000000) = 0) and ((P.Lower and $80000000) = 0) and
-      ((P.Lower shr 25) in [$10, $12..$14, $16..$18, $1A..$1C]) then
+      ((P.Lower shr 25) in [$10..$14, $16..$18, $1A..$1C]) then
       HasFlagReads := True;
     PC := (PC + 8) and FCodeMask;
   end;
@@ -2239,6 +2249,14 @@ begin
     // of the immediate, not a register).
     if Group in [$10..$13, $1C] then
     begin
+      if (Group = $11) and (FEmitClipSrc >= 0) then
+      begin
+        // (A scheduled run leaves the clip queue and its base as it worked
+        // them out, see TPS2VUQueueSim.)
+        J.Move(jw32, M(@S.Clip), JImm(Op and $FFFFFF));
+        J.Move(jw32, M(@FJitClipSet), JImm(Op and $FFFFFF));
+        Exit;
+      end;
       if Group = $11 then
       begin
         J.Move(jw32, M(@S.Clip), JImm(Op and $FFFFFF));

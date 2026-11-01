@@ -354,10 +354,12 @@ begin
   if (Lower and $80000000) = 0 then
     Exit((Lower shr 25) in [$00, $01, $04, $05, $08, $09, $10, $12..$14, $16..$18, $1A..$1C, $20, $21, $24, $25,
       $28, $29, $2C..$2F]);
+  // (DIV/SQRT/RSQRT, WAITQ, the EFU ops and WAITP too: a scheduled run
+  // follows Q and P through it.)
   if (Lower and $3F) < $3C then
     Exit((Lower and $3F) in [$30, $31, $32, $34, $35]);
   Result := (((Lower shr 4) and $7C) or (Lower and 3)) in
-    [$30, $31, $34..$37, $3C..$43, $64, $68, $69];
+    [$30, $31, $34..$43, $64, $68, $69, $70..$7E];
 end;
 
 // A pair whose lower op is DIV, SQRT or RSQRT (its upper one as FastPair
@@ -1119,6 +1121,8 @@ var
     var WholeQueueKnown := (BaseEvent >= 0) and not Generic;
     for var I := 0 to 3 do WholeQueueKnown := WholeQueueKnown and (Slots[I] >= 0);
     var Events := 0;
+    var QBase := -1;
+    var PBase := -1;
     var ClipEvents := 0;
     PC := Block.PC;
     for var I := 0 to Block.PairCount - 1 do
@@ -1127,16 +1131,24 @@ var
       var P: PPS2VUPair := @FPairs[PC shr 3];
       var F := P.Upper and $3F;
       if F >= $3C then F := ((P.Upper shr 4) and $7C) or (P.Upper and 3);
-      // A last DIV/SQRT/RSQRT: the older Q lands (or waits less) first, as the
-      // pair's preparation leaves it; the new one is left pending.
-      var QLast := (I = Block.PairCount - 1) and QPair(P.Lower, P.Upper);
-      if QLast then
-        Land(@S.QDelay, @S.PendingQ, @S.Q, Plan.Issue[I] + 1, True)
+      var Special := -1;
+      if ((P.Upper and $80000000) = 0) and ((P.Lower and $8000003C) = $8000003C) then
+        Special := Integer(((P.Lower shr 4) and $7C) or (P.Lower and 3));
+      // Q and P as each pair's preparation leaves them: what was pending
+      // when the run started (Base -1) or since the DIV/SQRT/RSQRT or EFU op
+      // issued at Base lands after its latency; WAITQ/WAITP land it at once.
+      // (A new DIV first lands the older Q itself; a new EFU op replaces a
+      // P still pending.)
+      if Special = $3B then
+        Land(@S.QDelay, @S.PendingQ, @S.Q, MaxInt, False)
       else if F in [$1C, $20, $21, $24, $25] then
-        Land(@S.QDelay, @S.PendingQ, @S.Q, Plan.Issue[I] + 1, False);
-      if ((P.Upper and $80000000) = 0) and ((P.Lower and $8000003C) = $8000003C) and
-        ((((P.Lower shr 4) and $7C) or (P.Lower and 3)) = $64) then
-        Land(@S.PDelay, @S.PendingP, @S.P, Plan.Issue[I] + 1, False);
+        Land(@S.QDelay, @S.PendingQ, @S.Q, Plan.Issue[I] - QBase, False);
+      if Special = $7B then
+        Land(@S.PDelay, @S.PendingP, @S.P, MaxInt, False)
+      else if (Special = $64) or ((Special >= $70) and (Special <= $7E)) then
+        Land(@S.PDelay, @S.PendingP, @S.P, Plan.Issue[I] - PBase, False);
+      if (Special >= $38) and (Special <= $3A) then QBase := Plan.Issue[I];
+      if (Special >= $70) and (Special <= $7E) and (Special <> $7B) then PBase := Plan.Issue[I];
       // (Branches take the pair's address as a constant. A branch is only in
       // the last pair but one: the pending flag, clear on entry, is cleared
       // again only after it.)
@@ -1218,10 +1230,8 @@ var
         J.Alu(jaAdd, jw64, JT0, JImm(Plan.WriteAny[R] + 4));
         J.Move(jw64, M(@FReadyAny[R]), JT0);
       end;
-    var LastWords := Block.PairCount - 1;
-    if not QPair(Block.Words[LastWords * 2], Block.Words[LastWords * 2 + 1]) then
-      Land(@S.QDelay, @S.PendingQ, @S.Q, LastCycle + 1, True);
-    Land(@S.PDelay, @S.PendingP, @S.P, LastCycle + 1, True);
+    Land(@S.QDelay, @S.PendingQ, @S.Q, LastCycle - QBase, True);
+    Land(@S.PDelay, @S.PendingP, @S.P, LastCycle - PBase, True);
     ProfileMark('fast-replay-flags');
     // The queues as worked out for the incoming ones found (see above), else
     // replayed at run time.
@@ -2432,6 +2442,9 @@ begin
         J.Move(jw32, JT0, JMem(jrS3, (26 + Integer(Index - $68)) * 4));
         J.Move(jw32, JMem(jrS3, It * 4), JT0);
       end;
+    $3B, $7B: // WAITQ, WAITP: a scheduled run lands Q/P before the pair
+      if FEmitPC < 0 then
+        Exit(False);
   else
     Exit(False);
   end;

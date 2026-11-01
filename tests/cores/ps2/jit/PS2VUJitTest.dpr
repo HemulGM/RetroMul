@@ -37,8 +37,10 @@ const
   LowerFunctions: array[0..4] of Cardinal = ($30, $31, $32, $34, $35);
   UpperSpecial: array[0..22] of Cardinal = ($00, $04, $08, $0C, $10, $11, $12, $13,
     $14, $15, $16, $17, $18, $1C, $1D, $1E, $1F, $20, $21, $28, $29, $2D, $2E);
-  LowerSpecial: array[0..20] of Cardinal = ($30, $31, $34, $35, $36, $37, $38, $39,
-    $3A, $3B, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $64, $68, $69);
+  // (With the EFU ops and WAITP: P through scheduled runs.)
+  LowerSpecial: array[0..29] of Cardinal = ($30, $31, $34, $35, $36, $37, $38, $39,
+    $3A, $3B, $3C, $3D, $3E, $3F, $40, $41, $42, $43, $64, $68, $69, $70, $71, $72, $73, $76, $78,
+    $79, $7A, $7B);
 var
   VF0, VF1: TPS2VFArray;
   VI0, VI1: TPS2VIArray;

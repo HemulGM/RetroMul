@@ -4,7 +4,7 @@
 {$POINTERMATH ON}
 
 uses
-  System.SysUtils, System.Classes, System.Hash, System.IOUtils, Core.Snapshots,
+  System.SysUtils, System.Classes, System.Hash, System.IOUtils, System.Math, Core.Snapshots,
   PS2.Types, PS2.Scheduler, PS2.Console, PS2.DMAC, PS2.VIF, PS2.IOP.CDVD, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.IOP.Libs;
 
 const
@@ -321,6 +321,81 @@ begin
     C.Free;
   end;
   Writeln('VIF stall: interrupt bit holds the FIFO and the DMA channel, stall cancel resumes, snapshot keeps held words: OK');
+end;
+
+// UNPACK data taken many words at once (PS2VIFRuns) against one word at a
+// time: VU memory and VIF state after random streams of every format, mask,
+// mode and write cycle (skipping and filling), fed in random pieces.
+procedure CheckVIFUnpack;
+var
+  Code: array[0..1, 0..16383] of Byte;
+  Data: array[0..1, 0..16383] of Byte;
+begin
+  var V: array[0..1] of TPS2VIF;
+  V[0] := TPS2VIF.Create(1, nil, nil, @Code[0, 0], @Data[0, 0], 16384, 16384);
+  V[1] := TPS2VIF.Create(1, nil, nil, @Code[1, 0], @Data[1, 0], 16384, 16384);
+  try
+    RandSeed := 9187;
+    for var K := 0 to 16383 do Data[0, K] := Random(256);
+    Data[1] := Data[0];
+    var CL := 0;
+    var WL := 256;
+    for var N := 0 to 2999 do
+    begin
+      var Words: TArray<Cardinal>;
+      for var C := 0 to 7 do
+        case Random(7) of
+          0:
+            begin
+              CL := 1 + Random(4);
+              WL := 1 + Random(4);
+              Words := Words + [$01000000 or Cardinal(CL) or (Cardinal(WL) shl 8)];
+            end;
+          1: Words := Words + [$20000000, Cardinal(Random(MaxInt)) * 2 + Cardinal(Random(2))];
+          2: Words := Words + [$30000000, Cardinal(Random(MaxInt)), Cardinal(Random(MaxInt)), Cardinal(Random(MaxInt)),
+            Cardinal(Random(MaxInt))];
+          3: Words := Words + [$31000000, Cardinal(Random(MaxInt)), Cardinal(Random(MaxInt)), Cardinal(Random(MaxInt)),
+            Cardinal(Random(MaxInt))];
+          4: Words := Words + [$05000000 or Cardinal(Random(4))];
+        else
+          begin
+            var VN := Random(4);
+            var VL := Random(4);
+            if VL = 3 then VN := 3;
+            var Num := 1 + Random(48);
+            var Cmd := Cardinal($60 or (VN shl 2) or VL or (Random(2) shl 4));
+            Words := Words + [(Cmd shl 24) or (Cardinal(Num) shl 16) or Cardinal(Random(1024)) or
+              (Cardinal(Random(2)) shl 14) or (Cardinal(Random(2)) shl 15)];
+            // Its data words (the vectors read from the stream; fill rows none).
+            var Bits := 16;
+            if VL <> 3 then Bits := (32 shr VL) * (VN + 1);
+            var Vectors := Num;
+            if (WL > CL) and (CL > 0) then Vectors := (Num div WL) * CL + Min(Num mod WL, CL);
+            for var K := 1 to (Vectors * Bits + 31) div 32 do
+              Words := Words + [Cardinal(Random(MaxInt)) * 2 + Cardinal(Random(2))];
+          end;
+        end;
+      for var X := 0 to 1 do
+      begin
+        PS2VIFRuns := X = 0;
+        var At := 0;
+        while At < Length(Words) do
+        begin
+          var Piece := Min(Length(Words) - At, 1 + Random(64));
+          var Taken := V[X].Feed(@Words[At], Piece);
+          Check(Taken = Piece, 'VIF held UNPACK words');
+          Inc(At, Piece);
+        end;
+      end;
+      PS2VIFRuns := True;
+      Check(CompareMem(@Data[0], @Data[1], SizeOf(Data[0])), Format('UNPACK runs wrote other VU memory (stream %d)', [N]));
+      Check(CompareMem(@V[0].S, @V[1].S, SizeOf(V[0].S)), Format('UNPACK runs left another VIF state (stream %d)', [N]));
+    end;
+  finally
+    V[0].Free;
+    V[1].Free;
+  end;
+  Writeln('VIF UNPACK: many words at once as one at a time, every format, mask, mode and write cycle: OK');
 end;
 
 // A VU1 program started by MSCAL keeps VU1 busy for the cycles it took: a
@@ -705,6 +780,7 @@ begin
     CheckLanguage;
     CheckSnapshots;
     CheckVIFStall;
+    CheckVIFUnpack;
     CheckVUBusy;
     CheckStallControl;
     CheckMemoryCard;

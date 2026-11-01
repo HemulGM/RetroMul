@@ -122,6 +122,12 @@ type
     procedure Wake;
   end;
 
+var
+  // UNPACK data taken many words at once where it can (tests compare it with
+  // one word at a time).
+  PS2VIFRuns: Boolean = True;
+
+type
   TPS2VIFPort = class(TPS2DMAPort)
   private
     FVIF: TPS2VIF;
@@ -559,7 +565,7 @@ function TPS2VIF.UnpackRun(Data: PCardinal; Count: Integer): Integer;
 begin
   Result := 0;
   var Cmd := S.Command;
-  if (S.UnpackBitCount <> 0) or (S.UnpackBits <> 0) then
+  if (S.UnpackBitCount <> 0) or (S.UnpackBits <> 0) or not PS2VIFRuns then
     Exit;
   var VN := Integer((Cmd shr 2) and 3);
   var VL := Integer(Cmd and 3);

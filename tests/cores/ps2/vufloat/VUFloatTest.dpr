@@ -223,6 +223,80 @@ begin
   Writeln('all exponent pairs, carry/cancellation boundaries: OK');
 end;
 
+// The JIT's register routine Routine: A in xmm0, B in xmm1; the result from
+// xmm0, the O/U groups returned.
+function CallRegisterMath(Routine: Pointer; A, B, R: PPS2Reg128): NativeUInt;
+asm
+  .PARAMS 1
+  .PUSHNV RBX
+  mov rbx, r9
+  movdqu xmm0, [rdx]
+  movdqu xmm1, [r8]
+  mov rax, rcx
+  xor ecx, ecx
+  call rax
+  movdqu [rbx], xmm0
+end;
+
+// The register routines for the host's rounding (with and without AVX-512)
+// against the scalar routines: results and O/U groups.
+procedure CheckRegisterMath;
+const
+  Mantissas: array[0..5] of Cardinal = (0, 1, 3, $3FFFFF, $7FFFFE, $7FFFFF);
+var
+  A, B, R: TPS2Reg128;
+begin
+  var Wide := PS2VectorAVX512;
+  for var UseWide := False to Wide do
+  begin
+    PS2UseAVX512(UseWide);
+    var Add := PS2RegisterMathNativeFor(vrmAdd, GetRoundMode);
+    var Mul := PS2RegisterMathNativeFor(vrmMul, GetRoundMode);
+    for var N := 0 to 2000000 + 256 * 256 * 6 - 1 do
+    begin
+      if N < 2000000 then
+        for var K := 0 to 3 do
+        begin
+          A.UW[K] := RndFloat(Rnd);
+          B.UW[K] := RndFloat(A.UW[K]);
+        end
+      else
+      begin
+        // All exponent pairs, near carry/cancellation boundaries.
+        var M := N - 2000000;
+        A.UW[0] := (Cardinal(M div 1536) shl 23) or Mantissas[M mod 6];
+        B.UW[0] := (Cardinal((M div 6) mod 256) shl 23) or $7FFFFF;
+        A.UW[1] := A.UW[0] or $80000000; B.UW[1] := B.UW[0] or $80000000;
+        A.UW[2] := A.UW[0]; B.UW[2] := B.UW[1];
+        A.UW[3] := A.UW[1]; B.UW[3] := B.UW[0];
+      end;
+      for var Op := 0 to 1 do
+      begin
+        var Routine := Add;
+        if Op = 1 then Routine := Mul;
+        var Flags := CallRegisterMath(Routine, @A, @B, @R);
+        var Want: NativeUInt := 0;
+        for var K := 0 to 3 do
+        begin
+          var SF: Cardinal;
+          var S: Cardinal;
+          if Op = 0 then S := PS2FloatAdd(A.UW[K], B.UW[K], SF) else S := PS2FloatMul(A.UW[K], B.UW[K], SF);
+          if SF and 1 <> 0 then Want := Want or (NativeUInt(1) shl (15 - K));
+          if SF and 2 <> 0 then Want := Want or (NativeUInt(1) shl (11 - K));
+          if S <> R.UW[K] then
+            raise Exception.CreateFmt('Register %s (AVX-512 %s) %.8x, %.8x: %.8x <> %.8x',
+              [Copy('ADDMUL', Op * 3 + 1, 3), BoolToStr(UseWide, True), A.UW[K], B.UW[K], R.UW[K], S]);
+        end;
+        if Flags <> Want then
+          raise Exception.CreateFmt('Register %s (AVX-512 %s) flags %x <> %x',
+            [Copy('ADDMUL', Op * 3 + 1, 3), BoolToStr(UseWide, True), Flags, Want]);
+      end;
+    end;
+  end;
+  PS2UseAVX512(Wide);
+  Writeln('register ADD/MUL (AVX-512 ', Wide, '): random and all exponent pairs OK');
+end;
+
 procedure Time;
 var
   A, B, R: TPS2Reg128;
@@ -276,6 +350,7 @@ begin
       Writeln('rounding=', Ord(Mode));
       CheckConversions;
       if not ConversionOnly then begin Check; Directed; end;
+      if PS2VectorAVX2 and not ConversionOnly then CheckRegisterMath;
     end;
     if PS2VectorAVX2 or ConversionOnly then
     begin
@@ -289,7 +364,7 @@ begin
           SetMXCSR(Saved or $8040);
           Writeln('rounding=', Ord(Mode), ' FTZ/DAZ enabled');
           CheckConversions;
-          if not ConversionOnly then begin Check; Directed; end;
+          if not ConversionOnly then begin Check; Directed; CheckRegisterMath; end;
         finally
           SetMXCSR(Saved);
         end;

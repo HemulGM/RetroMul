@@ -46,6 +46,10 @@ function PS2RegisterMathNative(Kind: TPS2RegisterMath): Pointer;
 // rounding to nearest have fast paths, others the exact routine at once).
 function PS2RegisterMathNativeFor(Kind: TPS2RegisterMath; Mode: TRoundingMode): Pointer;
 function PS2RegisterMathModel(Kind: TPS2RegisterMath): Pointer;
+// Whether the AVX-512 forms of the rounding-to-nearest fast paths are used
+// (AVX-512F/DQ/VL and the OS's ZMM state; tests may turn them off).
+function PS2VectorAVX512: Boolean;
+procedure PS2UseAVX512(Value: Boolean);
 
 implementation
 
@@ -53,11 +57,21 @@ uses
   PS2.EE.CPU;
 
 var
-  VectorAVX2, VectorFMA: Boolean;
+  VectorAVX2, VectorFMA, VectorAVX512, HostHasAVX512: Boolean;
 
 function PS2VectorAVX2: Boolean;
 begin
   Result := VectorAVX2;
+end;
+
+function PS2VectorAVX512: Boolean;
+begin
+  Result := VectorAVX512;
+end;
+
+procedure PS2UseAVX512(Value: Boolean);
+begin
+  VectorAVX512 := Value and HostHasAVX512;
 end;
 
 function PS2FloatMul(A, B: Cardinal; out Flags: Cardinal): Cardinal;
@@ -127,6 +141,9 @@ const
   C255: array[0..3] of Integer = (255, 255, 255, 255);
   C253: array[0..3] of Integer = (253, 253, 253, 253);
   C252: array[0..3] of Integer = (252, 252, 252, 252);
+  // Exponent fields (shifted to bits 23..30).
+  C252Field: array[0..3] of Cardinal = (252 shl 23, 252 shl 23, 252 shl 23, 252 shl 23);
+  C64Field: array[0..3] of Cardinal = (64 shl 23, 64 shl 23, 64 shl 23, 64 shl 23);
   C64: array[0..3] of Integer = (64, 64, 64, 64);
   C254: array[0..3] of Integer = (254, 254, 254, 254);
   C25: array[0..3] of Integer = (25, 25, 25, 25);
@@ -1147,6 +1164,91 @@ asm
   vzeroupper
   jmp RegisterAddExact
 end;
+// MulRegistersRN and AddRegistersRN with AVX-512 (both still for a host
+// rounding to nearest): the same fast-path tests, then the operation rounds
+// toward zero itself (embedded rounding) rather than correcting the host's
+// result; blends and three-input logic for the operand selection.
+function MulRegistersRN512(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpcmpeqd xmm4, xmm2, [rip + CExpMask]
+  vpcmpeqd xmm5, xmm3, [rip + CExpMask]
+  vpor xmm4, xmm4, xmm5
+  vptest xmm4, xmm4                    // an exponent 255
+  jnz @@No
+  vpxor xmm5, xmm5, xmm5
+  vpcmpeqd xmm4, xmm2, xmm5            // exponent 0: zero, its sign kept
+  vpternlogd xmm0, xmm4, [rip + CSignMask], $B0
+  vpcmpeqd xmm5, xmm3, xmm5
+  vpternlogd xmm1, xmm5, [rip + CSignMask], $B0
+  vpor xmm4, xmm4, xmm5                // either operand zero
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpaddd xmm2, xmm2, xmm3
+  vpsubd xmm2, xmm2, [rip + C127]
+  vpcmpgtd xmm3, xmm2, [rip + C252]
+  vmovdqu xmm5, [rip + C64]
+  vpcmpgtd xmm5, xmm5, xmm2
+  vpor xmm3, xmm3, xmm5
+  vpandn xmm3, xmm4, xmm3              // the product's exponent out of range
+  vptest xmm3, xmm3
+  jnz @@No
+  // vmulps zmm0, zmm0, zmm1, {rz-sae} (the assembler omits the rounding).
+  db $62, $F1, $7C, $78, $59, $C1
+  xor eax, eax
+  vzeroupper
+  ret
+@@No:
+  vzeroupper
+  jmp RegisterMulExact
+end;
+
+function AddRegistersRN512(Context: Pointer): NativeUInt;
+asm
+  .NOFRAME
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpmaxud xmm4, xmm2, xmm3
+  vpcmpud k1, xmm4, [rip + C252Field], 6   // the larger exponent above 252
+  vptestmd k2, xmm4, xmm4
+  vpcmpud k3, xmm4, [rip + C64Field], 1    // or below 64 (not both 0)
+  kandw k3, k3, k2
+  korw k1, k1, k3
+  kortestw k1, k1
+  jnz @@No
+  vpxor xmm5, xmm5, xmm5
+  vpcmpeqd xmm4, xmm2, xmm5            // exponent 0: zero, its sign kept
+  vpternlogd xmm0, xmm4, [rip + CSignMask], $B0
+  vpcmpeqd xmm4, xmm3, xmm5
+  vpternlogd xmm1, xmm4, [rip + CSignMask], $B0
+  vpand xmm4, xmm0, [rip + CAbsMask]
+  vpand xmm5, xmm1, [rip + CAbsMask]
+  vpcmpgtd xmm5, xmm5, xmm4            // B the larger magnitude
+  vblendvps xmm4, xmm0, xmm1, xmm5     // the larger, L
+  vblendvps xmm0, xmm1, xmm0, xmm5     // the smaller, S
+  vblendvps xmm1, xmm2, xmm3, xmm5     // their exponent fields
+  vblendvps xmm2, xmm3, xmm2, xmm5
+  vpsubd xmm1, xmm1, xmm2
+  vpsrld xmm1, xmm1, 23
+  vpsubd xmm1, xmm1, [rip + COne]
+  vpxor xmm2, xmm2, xmm2
+  vpmaxsd xmm1, xmm1, xmm2             // D: S's bits below L's guard bit
+  vpcmpgtd xmm2, xmm1, [rip + C23]     // all of S where D > 23
+  vpcmpeqd xmm3, xmm3, xmm3
+  vpsllvd xmm3, xmm3, xmm1
+  vpternlogd xmm0, xmm3, xmm2, $40     // S and (-1 shl D), not where D > 23
+  // vaddps zmm0, zmm4, zmm0, {rz-sae}
+  db $62, $F1, $5C, $78, $58, $C0
+  xor eax, eax
+  vzeroupper
+  ret
+@@No:
+  vzeroupper
+  jmp RegisterAddExact
+end;
+
 function MulRegisters(Context: Pointer): NativeUInt;
 asm
   .NOFRAME
@@ -1366,6 +1468,34 @@ asm
   mov rbx, r10
 end;
 
+// AVX-512 F, DQ and VL, with the OS saving the opmask and ZMM state.
+function HostAVX512: Boolean;
+asm
+  .NOFRAME
+  mov r10, rbx
+  mov eax, 1
+  cpuid
+  and ecx, $08000000                 // OSXSAVE
+  jz @@No
+  xor ecx, ecx
+  xgetbv
+  and eax, $E6                       // XMM, YMM, opmask, ZMM_Hi256, Hi16_ZMM
+  cmp eax, $E6
+  jne @@No
+  mov eax, 7
+  xor ecx, ecx
+  cpuid
+  and ebx, $80030000                 // AVX512F (16), DQ (17), VL (31)
+  cmp ebx, $80030000
+  jne @@No
+  mov eax, 1
+  jmp @@Done
+@@No:
+  xor eax, eax
+@@Done:
+  mov rbx, r10
+end;
+
 // FMA3 (with AVX2 present).
 function HostFMA: Boolean;
 asm
@@ -1506,14 +1636,17 @@ begin
       vrmAdd:
         case Mode of
           rmTruncate: Result := @AddRegistersRZ;
-          rmNearest: Result := @AddRegistersRN;
+          rmNearest: if VectorAVX512 then Result := @AddRegistersRN512 else Result := @AddRegistersRN;
         else
           Result := @RegisterAddExact;
         end;
       vrmMul:
         case Mode of
           rmTruncate: Result := @MulRegistersRZ;
-          rmNearest: if VectorFMA then Result := @MulRegistersRN else Result := @RegisterMulExact;
+          rmNearest:
+            if VectorAVX512 then Result := @MulRegistersRN512
+            else if VectorFMA then Result := @MulRegistersRN
+            else Result := @RegisterMulExact;
         else
           Result := @RegisterMulExact;
         end;
@@ -1538,6 +1671,8 @@ initialization
   {$IFNDEF PS2_FORCE_SSE2}
   VectorAVX2 := HostAVX2;
   VectorFMA := VectorAVX2 and HostFMA;
+  HostHasAVX512 := VectorFMA and HostAVX512;
+  VectorAVX512 := HostHasAVX512;
   if VectorAVX2 then
   begin
     Mul4Proc := PS2Mul4Common;

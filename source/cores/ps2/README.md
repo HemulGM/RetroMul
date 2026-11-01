@@ -276,7 +276,13 @@ is the PS2's; under round-to-nearest (VU1 programs started by the scheduler)
 the host result is moved one unit toward zero where its exact error (FMA for
 products, Fast2Sum for sums) shows it was rounded away from zero, within
 exponent ranges where every intermediate is normal whatever FTZ/DAZ say;
-other modes and ranges use the exact integer routines. The result stays live
+other modes and ranges use the exact integer routines. With AVX-512 (F, DQ,
+VL and the OS's ZMM state) the round-to-nearest routines instead let the
+operation itself round toward zero (EVEX embedded rounding; the bytes are
+written out, as the Delphi assembler drops the rounding operand), with the
+same range tests and blends for the operand order. `tests/cores/ps2/vufloat`
+calls the register routines of every host rounding, with and without
+AVX-512, on random operands and all exponent pairs. The result stays live
 through a call-free lower half until the masked commit (beside a lower half
 that calls a helper it is stored first); Z/S extraction is vectorized and O/U
 groups are returned directly. The four-field memory-operand kernels take the

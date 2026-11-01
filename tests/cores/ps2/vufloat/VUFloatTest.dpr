@@ -281,15 +281,18 @@ begin
     begin
       // The common hardware path must also agree with denormal-input and
       // flush-to-zero host modes: PS2 operands are sanitized explicitly.
-      SetRoundMode(rmTruncate);
-      var Saved := GetMXCSR;
-      try
-        SetMXCSR(Saved or $8040);
-        Writeln('rounding=truncate FTZ/DAZ enabled');
-        CheckConversions;
-        if not ConversionOnly then begin Check; Directed; end;
-      finally
-        SetMXCSR(Saved);
+      for var Mode in [rmTruncate, rmNearest] do
+      begin
+        SetRoundMode(Mode);
+        var Saved := GetMXCSR;
+        try
+          SetMXCSR(Saved or $8040);
+          Writeln('rounding=', Ord(Mode), ' FTZ/DAZ enabled');
+          CheckConversions;
+          if not ConversionOnly then begin Check; Directed; end;
+        finally
+          SetMXCSR(Saved);
+        end;
       end;
     end;
     SetRoundMode(rmTruncate);

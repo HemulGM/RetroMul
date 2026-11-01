@@ -679,8 +679,10 @@ end;
 // operations rounded toward zero are exact PS2 operations once the smaller
 // addend loses all bits below the PS2 guard bit. Coarse exponent guards
 // exclude any possible overflow/underflow; exponent-zero inputs are first
-// made signed zeros. Other cases use the integer kernels above. These are
-// leaf entries, so no nonvolatile vector registers need saving.
+// made signed zeros. Where the host rounds to nearest, the host result is
+// corrected as in MulRegistersRN/AddRegistersRN. Other cases and roundings
+// use the integer kernels above. These are leaf entries, so no nonvolatile
+// vector registers need saving.
 procedure PS2Mul4Common(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
 asm
   .NOFRAME
@@ -688,7 +690,56 @@ asm
   mov eax, [rsp + 8]
   and eax, $6000
   cmp eax, $6000
-  jne @@Slow
+  je @@RZ
+  // Rounding to nearest: as MulRegistersRN (FMA3 for the product's error).
+  test eax, eax
+  jnz @@Slow
+  cmp byte ptr [rip + VectorFMA], 0
+  je @@Slow
+  vmovdqu xmm0, [rcx]
+  vmovdqu xmm1, [rdx]
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpcmpeqd xmm4, xmm2, [rip + C255]
+  vpcmpeqd xmm5, xmm3, [rip + C255]
+  vpor xmm4, xmm4, xmm5
+  vptest xmm4, xmm4
+  jnz @@Slow
+  vpxor xmm4, xmm4, xmm4
+  vpcmpeqd xmm5, xmm2, xmm4
+  vpand xmm4, xmm5, [rip + CAbsMask]
+  vpandn xmm0, xmm4, xmm0
+  vpxor xmm4, xmm4, xmm4
+  vpcmpeqd xmm4, xmm3, xmm4
+  vpor xmm5, xmm5, xmm4
+  vpand xmm4, xmm4, [rip + CAbsMask]
+  vpandn xmm1, xmm4, xmm1
+  vpaddd xmm2, xmm2, xmm3
+  vpsubd xmm2, xmm2, [rip + C127]
+  vmovdqu xmm3, [rip + C64]
+  vpcmpgtd xmm3, xmm3, xmm2
+  vpcmpgtd xmm4, xmm2, [rip + C252]
+  vpor xmm3, xmm3, xmm4
+  vpandn xmm5, xmm5, xmm3
+  vptest xmm5, xmm5
+  jnz @@Slow
+  vmulps xmm2, xmm0, xmm1
+  vmovaps xmm3, xmm2
+  vfmsub231ps xmm3, xmm0, xmm1         // error: A * B - product, exact
+  vxorps xmm4, xmm3, xmm2
+  vpsrad xmm4, xmm4, 31                // error and product of opposite signs
+  vpand xmm5, xmm3, [rip + CAbsMask]
+  vpxor xmm0, xmm0, xmm0
+  vpcmpeqd xmm5, xmm5, xmm0
+  vpandn xmm4, xmm5, xmm4              // ... and an error at all
+  vpaddd xmm0, xmm2, xmm4              // one unit toward zero there
+  vmovdqu [r8], xmm0
+  mov dword ptr [r9], 0
+  vzeroupper
+  ret
+@@RZ:
   vmovdqu xmm0, [rcx]
   vmovdqu xmm1, [rdx]
   vpand xmm2, xmm0, [rip + CExpMask]
@@ -738,7 +789,74 @@ asm
   mov eax, [rsp + 8]
   and eax, $6000
   cmp eax, $6000
-  jne @@Slow
+  je @@RZ
+  // Rounding to nearest: as AddRegistersRN (Fast2Sum for the sum's error).
+  test eax, eax
+  jnz @@Slow
+  vmovdqu xmm0, [rcx]
+  vmovdqu xmm1, [rdx]
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpsrld xmm2, xmm2, 23
+  vpsrld xmm3, xmm3, 23
+  vpmaxsd xmm4, xmm2, xmm3
+  vpcmpgtd xmm5, xmm4, [rip + C252]
+  vptest xmm5, xmm5
+  jnz @@Slow
+  vmovdqu xmm5, [rip + C64]
+  vpcmpgtd xmm5, xmm5, xmm4
+  vpxor xmm4, xmm4, xmm4
+  vpmaxsd xmm2, xmm2, xmm3
+  vpcmpeqd xmm2, xmm2, xmm4
+  vpandn xmm5, xmm2, xmm5
+  vptest xmm5, xmm5
+  jnz @@Slow
+  vpand xmm2, xmm0, [rip + CExpMask]
+  vpcmpeqd xmm2, xmm2, xmm4
+  vpand xmm2, xmm2, [rip + CAbsMask]
+  vpandn xmm0, xmm2, xmm0
+  vpand xmm3, xmm1, [rip + CExpMask]
+  vpcmpeqd xmm3, xmm3, xmm4
+  vpand xmm3, xmm3, [rip + CAbsMask]
+  vpandn xmm1, xmm3, xmm1
+  vpand xmm2, xmm0, [rip + CAbsMask]
+  vpand xmm3, xmm1, [rip + CAbsMask]
+  vpcmpgtd xmm3, xmm3, xmm2
+  vpand xmm2, xmm3, xmm1
+  vpandn xmm4, xmm3, xmm0
+  vpor xmm2, xmm2, xmm4
+  vpand xmm4, xmm3, xmm0
+  vpandn xmm3, xmm3, xmm1
+  vpor xmm3, xmm3, xmm4
+  vpslld xmm0, xmm2, 1
+  vpsrld xmm0, xmm0, 24
+  vpslld xmm1, xmm3, 1
+  vpsrld xmm1, xmm1, 24
+  vpsubd xmm0, xmm0, xmm1
+  vpsubd xmm0, xmm0, [rip + COne]
+  vpxor xmm4, xmm4, xmm4
+  vpmaxsd xmm0, xmm0, xmm4
+  vmovdqu xmm1, [rip + COne]
+  vpsllvd xmm1, xmm1, xmm0
+  vpsubd xmm1, xmm4, xmm1
+  vpand xmm3, xmm3, xmm1
+  vpcmpgtd xmm0, xmm0, [rip + C23]
+  vpandn xmm3, xmm0, xmm3
+  vaddps xmm0, xmm2, xmm3              // sum of the larger and the smaller
+  vsubps xmm1, xmm0, xmm2
+  vsubps xmm1, xmm3, xmm1              // error, exact (Fast2Sum)
+  vxorps xmm4, xmm1, xmm0
+  vpsrad xmm4, xmm4, 31
+  vpand xmm5, xmm1, [rip + CAbsMask]
+  vpxor xmm2, xmm2, xmm2
+  vpcmpeqd xmm5, xmm5, xmm2
+  vpandn xmm4, xmm5, xmm4
+  vpaddd xmm0, xmm0, xmm4
+  vmovdqu [r8], xmm0
+  mov dword ptr [r9], 0
+  vzeroupper
+  ret
+@@RZ:
   vmovdqu xmm0, [rcx]
   vmovdqu xmm1, [rdx]
   vpand xmm2, xmm0, [rip + CExpMask]

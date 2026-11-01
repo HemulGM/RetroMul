@@ -206,6 +206,7 @@ type
     procedure EmitRegisterFlags(Mask: Cardinal);
     function EmitLower(Op: Cardinal): Boolean;
     procedure EmitFlags(Mask: Cardinal);
+    procedure EmitStatus;
     procedure EmitPrepare(const P: TPS2VUPair);
     procedure EmitFinish(const P: TPS2VUPair);
     procedure EmitCommit(const P: TPS2VUPair);
@@ -1779,17 +1780,9 @@ begin
   J.Alu(jaOr, jw32, JT3, JT1);
   J.Alu(jaOr, jw32, JT3, JT0);
   J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.MAC) - NativeInt(Self))), JT3);
-  J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))));
-  J.Alu(jaAnd, jw32, JT0, JImm($FF0));
-  for var K := 0 to 3 do
-  begin
-    var Clear := J.NewLabel;
-    J.BranchTest(jcEq, jw32, JT3, JImm($F shl (K * 4)), Clear);
-    J.Alu(jaOr, jw32, JT0, JImm((1 shl K) or (1 shl (K + 6))));
-    J.Bind(Clear);
-  end;
-  J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))), JT0);
+  EmitStatus;
 end;
+
 
 function TPS2VUCore.EmitScalarUpper(Op: Cardinal): Boolean;
 type
@@ -1939,18 +1932,41 @@ begin
       J.Alu(jaOr, jw32, JT3, JT1);
     end;
   J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.MAC) - NativeInt(Self))), JT3);
-  J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))));
-  J.Alu(jaAnd, jw32, JT0, JImm($FF0));
-  for var K := 0 to 3 do
-  begin
-    var Clear := J.NewLabel;
-    J.BranchTest(jcEq, jw32, JT3, JImm($F shl (K * 4)), Clear);
-    J.Alu(jaOr, jw32, JT0, JImm((1 shl K) or (1 shl (K + 6))));
-    J.Bind(Clear);
-  end;
-  J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))), JT0);
+  EmitStatus;
 end;
 
+
+// S.Status from the MAC flag in T3 (EmitFlags's, EmitRegisterFlags's): each
+// group (Z, S, U, O) with a field set sets its bit and its sticky bit, six
+// above; I, D and the sticky bits stay. Without branches (results' signs and
+// zeros change from one vertex to the next): the groups' nonzero bits come to
+// bits 0, 4, 8, 12 of T1, then to 0..3.
+procedure TPS2VUCore.EmitStatus;
+begin
+  var J := FJit;
+  J.Move(jw32, JT1, JT3);
+  J.Move(jw32, JT0, JT1);
+  J.Shift(jsShr, jw32, jrT0, 1);
+  J.Alu(jaOr, jw32, JT1, JT0);
+  J.Move(jw32, JT0, JT1);
+  J.Shift(jsShr, jw32, jrT0, 2);
+  J.Alu(jaOr, jw32, JT1, JT0);
+  J.Alu(jaAnd, jw32, JT1, JImm($1111));
+  J.Move(jw32, JT0, JT1);
+  J.Shift(jsShr, jw32, jrT0, 3);
+  J.Alu(jaOr, jw32, JT1, JT0);
+  J.Move(jw32, JT0, JT1);
+  J.Shift(jsShr, jw32, jrT0, 6);
+  J.Alu(jaOr, jw32, JT1, JT0);
+  J.Alu(jaAnd, jw32, JT1, JImm($F));
+  J.Move(jw32, JT0, JT1);
+  J.Shift(jsShl, jw32, jrT0, 6);
+  J.Alu(jaOr, jw32, JT1, JT0);
+  J.Move(jw32, JT0, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))));
+  J.Alu(jaAnd, jw32, JT0, JImm($FF0));
+  J.Alu(jaOr, jw32, JT0, JT1);
+  J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))), JT0);
+end;
 // Pipeline bookkeeping with the pair's operands already known. Calls only
 // on stalls, an in-flight XGKICK or the diagnostic trace path.
 procedure TPS2VUCore.EmitPrepare(const P: TPS2VUPair);

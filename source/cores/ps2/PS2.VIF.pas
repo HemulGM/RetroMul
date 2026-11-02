@@ -123,8 +123,8 @@ type
   end;
 
 var
-  // UNPACK data taken many words at once where it can (tests compare it with
-  // one word at a time).
+  // UNPACK and DIRECT data taken many words at once where it can (tests
+  // compare it with one word at a time).
   PS2VIFRuns: Boolean = True;
 
 type
@@ -747,6 +747,33 @@ begin
       end;
       Continue;
     end;
+    // Inside DIRECT/DIRECTHL the same: whole quadwords go to the GIF as
+    // ProcessWord would hand them over (through FDirectBuf), the last word
+    // of the command left to it.
+    if ((S.Command = $50) or (S.Command = $51)) and (S.Remaining > 1) and (S.HeldCount = 0) and
+      not CaptureUnfinished and not Stalled and not S.WaitVU and PS2VIFRuns then
+    begin
+      while (Result < Count) and (S.Remaining > 1) do
+      begin
+        if (FDirectWords = 0) and (FGIF <> nil) and (Count - Result >= 4) and (S.Remaining > 4) then
+        begin
+          var D := Data + Result;
+          FDirectBuf.UW[0] := D[0];
+          FDirectBuf.UW[1] := D[1];
+          FDirectBuf.UW[2] := D[2];
+          FDirectBuf.UW[3] := D[3];
+          FGIF.TransferDirect(FDirectBuf);
+          FDirectSent := True;
+          Inc(Words, 4);
+          Inc(Result, 4);
+          Dec(S.Remaining, 4);
+          Continue;
+        end;
+        ProcessWord(Data[Result]);
+        Inc(Result);
+      end;
+      Continue;
+    end;
     var W := Data[Result];
     if (S.HeldCount > 0) or Waits(W) then
     begin
@@ -770,10 +797,10 @@ begin
   begin
     if S.HeldCount >= FIFOWords then
       Exit;
-    // Inside an UNPACK nothing stalls before its last word: the quadwords up
-    // to there at once (Feed takes them all, as one at a time).
-    if (S.Remaining > 5) and (S.Command >= $60) and (S.HeldCount = 0) and not CaptureUnfinished and
-      not Stalled and not S.WaitVU then
+    // Inside an UNPACK or DIRECT nothing stalls before its last word: the
+    // quadwords up to there at once (Feed takes them all, as one at a time).
+    if (S.Remaining > 5) and ((S.Command >= $60) or (((S.Command = $50) or (S.Command = $51)) and PS2VIFRuns)) and
+      (S.HeldCount = 0) and not CaptureUnfinished and not Stalled and not S.WaitVU then
     begin
       var N := Min(Count - Result, (S.Remaining - 1) div 4);
       Feed(Data + Result * 4, N * 4);

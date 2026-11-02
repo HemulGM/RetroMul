@@ -5,7 +5,7 @@
 
 uses
   System.SysUtils, System.Classes, System.Hash, System.IOUtils, System.Math, Core.Snapshots,
-  PS2.Types, PS2.Scheduler, PS2.Console, PS2.DMAC, PS2.VIF, PS2.IOP.CDVD, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.IOP.Libs;
+  PS2.Types, PS2.Scheduler, PS2.Console, PS2.DMAC, PS2.VIF, PS2.GS, PS2.GIF, PS2.GS.Memory, PS2.IOP.CDVD, PS2.IOP.MemoryCard, PS2.IOP.Kernel, PS2.IOP.Libs;
 
 const
   // The recorded TPS2Console.SerializeState field sizes for this version.
@@ -396,6 +396,105 @@ begin
     V[1].Free;
   end;
   Writeln('VIF UNPACK: many words at once as one at a time, every format, mask, mode and write cycle: OK');
+end;
+
+// DIRECT and DIRECTHL streams (A+D register writes, host-to-local IMAGE
+// uploads, tags split across commands, odd lengths, NOPs between) through
+// VIF1 to a GIF and GS, fed by quadwords and by words in random pieces,
+// taken many words at once (PS2VIFRuns) and one at a time: GS memory, GIF
+// PATH2 and VIF state the same.
+procedure CheckVIFDirect;
+var
+  GS: array[0..1] of TPS2GS;
+  GIF: array[0..1] of TPS2GIF;
+  V: array[0..1] of TPS2VIF;
+  Code, Data: array[0..1, 0..16383] of Byte;
+begin
+  for var X := 0 to 1 do
+  begin
+    GS[X] := TPS2GS.Create;
+    GIF[X] := TPS2GIF.Create(GS[X]);
+    V[X] := TPS2VIF.Create(1, nil, GIF[X], @Code[X, 0], @Data[X, 0], 16384, 16384);
+  end;
+  try
+    RandSeed := 7321;
+    var Quads := 0;
+    for var N := 0 to 299 do
+    begin
+      // The GIF data: an A+D tag setting up a transfer, then IMAGE tags.
+      var G: TArray<Cardinal>;
+      var Width := 1 + Random(40);
+      var Height := 1 + Random(12);
+      var PSM := 0;
+      case Random(3) of
+        1: PSM := $02;
+        2: PSM := $13;
+      end;
+      var Bits := 32;
+      if PSM = $02 then Bits := 16 else if PSM = $13 then Bits := 8;
+      G := G + [4, $10000000, $E, 0];
+      G := G + [0, Cardinal(Random(64)) or (Cardinal(1 + Random(4)) shl 16) or (Cardinal(PSM) shl 24), $50, 0];
+      G := G + [0, Cardinal(Random(512)) or (Cardinal(Random(512)) shl 16), $51, 0];
+      G := G + [Cardinal(Width), Cardinal(Height), $52, 0];
+      G := G + [0, 0, $53, 0];
+      var Left := (Width * Height * Bits + 127) div 128;
+      while Left > 0 do
+      begin
+        var K := Min(Left, 1 + Random(20));
+        Dec(Left, K);
+        G := G + [Cardinal(K) or (Cardinal(Ord(Left = 0)) shl 15), $08000000, 0, 0];
+        for var Q := 1 to K * 4 do
+          G := G + [Cardinal(Random(MaxInt)) * 2 + Cardinal(Random(2))];
+      end;
+      // In DIRECT/DIRECTHL commands of random lengths, each command word
+      // ending a quadword (NOPs before it).
+      var Words: TArray<Cardinal>;
+      var At := 0;
+      while At < Length(G) do
+      begin
+        var K := Min((Length(G) - At) div 4, 1 + Random(30));
+        Words := Words + [0, 0, 0, (Cardinal($50 + Random(2)) shl 24) or Cardinal(K)];
+        for var Q := 0 to K * 4 - 1 do
+          Words := Words + [G[At + Q]];
+        Inc(At, K * 4);
+        Inc(Quads, K);
+      end;
+      var ByQuads := Random(2) = 0;
+      for var X := 0 to 1 do
+      begin
+        PS2VIFRuns := X = 0;
+        var P := 0;
+        while P < Length(Words) do
+        begin
+          var Piece := Min(Length(Words) - P, 4 * (1 + Random(24)));
+          var Taken: Integer;
+          if ByQuads then
+            Taken := V[X].FeedQuads(@Words[P], Piece div 4) * 4
+          else
+            Taken := V[X].Feed(@Words[P], Piece);
+          Check(Taken = Piece, 'VIF held DIRECT words');
+          Inc(P, Piece);
+        end;
+      end;
+      PS2VIFRuns := True;
+      Check(CompareMem(GS[0].Raster.Memory.Data, GS[1].Raster.Memory.Data, PS2GSMemorySize),
+        Format('DIRECT runs drew other GS memory (stream %d)', [N]));
+      Check(CompareMem(@GIF[0].Path[2], @GIF[1].Path[2], SizeOf(TPS2GIFPathState)),
+        Format('DIRECT runs left another PATH2 state (stream %d)', [N]));
+      Check(CompareMem(@V[0].S, @V[1].S, SizeOf(V[0].S)), Format('DIRECT runs left another VIF state (stream %d)', [N]));
+      Check(V[0].Words = V[1].Words, Format('DIRECT runs counted other words (stream %d)', [N]));
+    end;
+    Check(GS[0].Raster.PixelsTransferred > 0, 'No DIRECT upload reached the GS');
+    Writeln(Format('VIF DIRECT: %d quadwords in 300 streams, by quadwords and words, at once as one at a time: OK',
+      [Quads]));
+  finally
+    for var X := 0 to 1 do
+    begin
+      V[X].Free;
+      GIF[X].Free;
+      GS[X].Free;
+    end;
+  end;
 end;
 
 // V4-32 UNPACKs with random masks, modes, rows, columns and skipping write
@@ -871,6 +970,7 @@ begin
     CheckVIFStall;
     CheckVIFUnpack;
     CheckVIFMasked;
+    CheckVIFDirect;
     CheckVUBusy;
     CheckStallControl;
     CheckMemoryCard;

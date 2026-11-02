@@ -167,7 +167,11 @@ round-trips, the old-format and wrong-disc errors, and the recorded field
 layout. A layout change must increase the version.
 It also checks a VIF1 interrupt-bit stall that fills the FIFO and holds the
 DMA channel until a stall cancel (also across a snapshot), the VU busy
-window, and DMAC stall control with fromSPR as source and VIF1 as drain. It
+window, and DMAC stall control with fromSPR as source and VIF1 as drain.
+UNPACK and DIRECT data are taken many words at once inside a command
+(`PS2VIFRuns`: whole vectors, whole quadwords to the GIF); the test compares
+both with one word at a time (DIRECT through a GIF and GS: memory, PATH2 and
+VIF state), and the masked write with a model for V4-32 streams. It
 also tests the card file system: directories, files across clusters, deleted
 slots, free space, image round trips, raw images and earlier card files. It
 also runs libmc's MCSERV calls: info, mkdir, create, write, read, list and

@@ -562,10 +562,63 @@ begin
   end;
 end;
 
+// Local-to-local transfers with addresses from row and column parts
+// (CopyRows): the same memory as pixel by pixel, for every pair of formats,
+// strides (zero and narrow ones included), coordinate wrap and overlapping
+// source and destination (copied in order).
+procedure CheckCopyRows;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    RandSeed := 2357;
+    var Cases := 0;
+    for var N := 0 to 799 do
+    begin
+      A.Reset; B.Reset;
+      var PA := PCardinal(A.Memory.Data);
+      for var K := 0 to PS2GSMemorySize div 4 - 1 do PA[K] := Cardinal(K) * 2246822519 + Cardinal(N) * 3266489917;
+      Move(PA^, B.Memory.Data^, PS2GSMemorySize);
+      var SPSM := UInt64(Formats[Random(13)]);
+      var DPSM := SPSM;
+      if Random(3) = 0 then DPSM := UInt64(Formats[Random(13)]);
+      var SBP := UInt64(Random($4000));
+      var DBP := SBP + UInt64(Random(64)) - 32;
+      if Random(2) = 0 then DBP := UInt64(Random($4000));
+      DBP := DBP and $3FFF;
+      var SBW := UInt64(Random(11));
+      var DBW := SBW;
+      if Random(2) = 0 then DBW := UInt64(Random(11));
+      var Buf := SBP or (SBW shl 16) or (SPSM shl 24) or (DBP shl 32) or (DBW shl 48) or (DPSM shl 56);
+      var Pos := UInt64(Random($800)) or (UInt64(Random($800)) shl 16) or (UInt64(Random($800)) shl 32) or
+        (UInt64(Random($800)) shl 48);
+      if Random(2) = 0 then
+        Pos := UInt64(Random(64)) or (UInt64(Random(64)) shl 16) or (UInt64(Random(64)) shl 32) or (UInt64(Random(64)) shl 48);
+      var Reg := UInt64(1 + Random(200)) or (UInt64(1 + Random(120)) shl 32);
+      for var R in TArray<TPS2GSRaster>.Create(A, B) do
+      begin
+        CopyRows := R = A;
+        R.WriteRegister(GSRegBITBLTBUF, Buf);
+        R.WriteRegister(GSRegTRXPOS, Pos);
+        R.WriteRegister(GSRegTRXREG, Reg);
+        R.WriteRegister(GSRegTRXDIR, 2);
+      end;
+      CopyRows := True;
+      if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) then
+        raise Exception.CreateFmt('Local copy rows differ, case %d', [N]);
+      Inc(Cases);
+    end;
+    Writeln(Format('%d local-to-local transfers, all format pairs, strides, wrap and overlap: rows OK', [Cases]));
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
 begin
   try
     CheckSpriteTexels;
     CheckSpriteRows;
+    CheckCopyRows;
     for var Async := False to True do
     begin
       CheckDisplay(Async);

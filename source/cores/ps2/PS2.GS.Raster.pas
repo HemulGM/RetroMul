@@ -656,6 +656,9 @@ var
   // Such sprites of 32-bit frames and textures and 32/24-bit depth are
   // shaded a row at a time (ShadeSpriteRow; tests compare both ways).
   SpriteRows: Boolean = True;
+  // Local-to-local transfers take their pixels' addresses from row and
+  // column parts (TPS2GSAddressing; tests compare both ways).
+  CopyRows: Boolean = True;
 
 // A pixel's LOD from its Q (as the host rounds): log2(1/Q) * 2^L + K (GS
 // User's Manual, texture mapping), or K alone with LCM.
@@ -4583,6 +4586,40 @@ begin
   var DSAY := Integer((Pos shr 48) and $7FF);
   var RRW := Integer(Reg and $FFF);
   var RRH := Integer((Reg shr 32) and $FFF);
+  {$IFNDEF GS_RACECHECK}
+  if CopyRows then
+  begin
+    // The same pixels in the same order (source and destination may
+    // overlap), their addresses as Locate gives them; 32-bit to 32-bit
+    // words moved as they are.
+    var SA, DA: TPS2GSAddressing;
+    SA.Init(SPSM, SBP, SBW);
+    DA.Init(DPSM, DBP, DBW);
+    var Words := ((SPSM = PSMCT32) or (SPSM = PSMZ32)) and ((DPSM = PSMCT32) or (DPSM = PSMZ32));
+    var Data := PCardinal(FMemory.Data);
+    for var Y := 0 to RRH - 1 do
+    begin
+      var SY := Cardinal((SSAY + Y) and $7FF);
+      var DY := Cardinal((DSAY + Y) and $7FF);
+      var SRowA := SA.Base + ((SY shr SA.HShift) * SA.Width) shl SA.PageShift;
+      var SRowO := (SY and SA.HMask) shl SA.WShift;
+      var DRowA := DA.Base + ((DY shr DA.HShift) * DA.Width) shl DA.PageShift;
+      var DRowO := (DY and DA.HMask) shl DA.WShift;
+      for var X := 0 to RRW - 1 do
+      begin
+        var SX := Cardinal((SSAX + X) and $7FF);
+        var DX := Cardinal((DSAX + X) and $7FF);
+        var S := (SRowA + (SX shr SA.WShift) shl SA.PageShift + SA.Offsets[SRowO + (SX and SA.WMask)]) and SA.Mask;
+        var D := (DRowA + (DX shr DA.WShift) shl DA.PageShift + DA.Offsets[DRowO + (DX and DA.WMask)]) and DA.Mask;
+        if Words then
+          Data[D] := Data[S]
+        else
+          FMemory.WriteAt(DPSM, D, FMemory.ReadAt(SPSM, S));
+      end;
+    end;
+    Exit;
+  end;
+  {$ENDIF}
   for var Y := 0 to RRH - 1 do
     for var X := 0 to RRW - 1 do
     begin

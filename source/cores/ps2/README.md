@@ -75,7 +75,10 @@ a time (`SpriteRows`): the frame's and depth buffer's addresses from parts
 as well, the same steps per pixel in the same order (a pixel may read what
 the ones before it wrote: self-reading blur passes, drawn by one band thread
 alone). The test compares 1200 such sprites, half textured from their own
-frame, both ways.
+frame, both ways. Local-to-local transfers take their addresses from row
+and column parts too (`CopyRows`; 32-bit words moved as they are), the same
+pixels in the same order; the test compares 800 of them (all format pairs,
+strides, wrap, overlapping source and destination) both ways.
 
 With `TPS2GSRaster.Async` (the front end sets it for the multithreaded and
 Vulkan renderers on hosts with four or more logical processors; x64 Windows)

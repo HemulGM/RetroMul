@@ -291,6 +291,8 @@ type
     procedure PrepareSprite(Level, X0, X1: Integer);
     procedure PrepareSpriteRow(Level, V: Integer);
     function SpriteTexel(I: Integer): Cardinal; inline;
+    function SpriteRowsFit: Boolean;
+    procedure ShadeSpriteRow(Y, X0, X1: Integer; Z: Cardinal; R0, G0, B0, A0, F: Integer);
     procedure SetLod(Q: Single); inline;
     function ClampCoord(C, Size, Mode, MinC, MaxC: Integer): Integer; inline;
   public
@@ -650,6 +652,9 @@ var
   // Software sprites sampling one texture level take their texels' addresses
   // from per-column and per-row parts (tests compare both ways).
   SpriteTexels: Boolean = True;
+  // Such sprites of 32-bit frames and textures and 32/24-bit depth are
+  // shaded a row at a time (ShadeSpriteRow; tests compare both ways).
+  SpriteRows: Boolean = True;
 
 // A pixel's LOD from its Q (as the host rounds): log2(1/Q) * 2^L + K (GS
 // User's Manual, texture mapping), or K alone with LCM.
@@ -2977,6 +2982,213 @@ begin
   Result := Integer(Sar((VA - VB) * C, 7)) + VD;
 end;
 
+// Whether a sprite taking its texels by parts (FSpriteFast) may be shaded a
+// row at a time: 32-bit frame and texture, 32/24-bit depth, no diagnostics.
+function TPS2GSDrawer.SpriteRowsFit: Boolean;
+begin
+  {$IFDEF GS_RACECHECK}
+  Result := False;
+  {$ELSE}
+  Result := SpriteRows and not FAccelerating and not FWatch and (FD.FPSM = PSMCT32) and (FD.TPSM = PSMCT32) and
+    ((FD.ZPSM = PSMZ32) or (FD.ZPSM = PSMZ24));
+  {$ENDIF}
+end;
+
+// Shade for pixels X0..X1 - 1 of row Y of such a sprite (its texels by
+// column and row parts, PrepareSpriteRow done), the same steps in the same
+// order a pixel at a time (each may read the texel the one before wrote):
+// the frame's and depth buffer's addresses from parts as the texels', the
+// 32-bit reads and writes without the format's case.
+procedure TPS2GSDrawer.ShadeSpriteRow(Y, X0, X1: Integer; Z: Cardinal; R0, G0, B0, A0, F: Integer);
+var
+  Mask: Cardinal;
+begin
+  var Data := PCardinal(FMemory.Data);
+  if Z > FD.ZMax then
+    Z := FD.ZMax;
+  if FD.ZTST = 0 then
+    Exit;
+  var ZKeep: Cardinal := 0;
+  if FD.ZPSM = PSMZ24 then
+    ZKeep := $FF000000;
+  // The rows' parts of the frame's and depth buffer's addresses.
+  var FRowA := FFrameAddr.Base + ((Cardinal(Y) shr FFrameAddr.HShift) * FFrameAddr.Width) shl FFrameAddr.PageShift;
+  var FRowO := (Cardinal(Y) and FFrameAddr.HMask) shl FFrameAddr.WShift;
+  var ZRowA := FDepthAddr.Base + ((Cardinal(Y) shr FDepthAddr.HShift) * FDepthAddr.Width) shl FDepthAddr.PageShift;
+  var ZRowO := (Cardinal(Y) and FDepthAddr.HMask) shl FDepthAddr.WShift;
+  for var X := X0 to X1 - 1 do
+  begin
+    var R := R0;
+    var G := G0;
+    var B := B0;
+    var A := A0;
+    var CX := Cardinal(X);
+    var ZA := (ZRowA + (CX shr FDepthAddr.WShift) shl FDepthAddr.PageShift +
+      FDepthAddr.Offsets[ZRowO + (CX and FDepthAddr.WMask)]) and FDepthAddr.Mask;
+    if FD.ZTST <> 1 then
+    begin
+      var Old := Data[ZA] and not ZKeep;
+      if (FD.ZTST = 2) and (Z < Old) then
+        Continue;
+      if (FD.ZTST = 3) and (Z <= Old) then
+        Continue;
+    end;
+    // SpriteTexel for 32-bit texels.
+    var C: ^TPS2GSSpriteColumn := @FSpriteColumns[X - FSpriteX0];
+    var T := Data[(C.A0 + FRowA0 + FSpriteOffsets[FRowO0 + C.O0]) and FSpriteMask];
+    if FSpriteLinear and ((C.FU or FRowFV) <> 0) then
+    begin
+      var FU := C.FU;
+      var FV := FRowFV;
+      var TB := T;
+      var TC := T;
+      var TD := T;
+      if FU <> 0 then
+      begin
+        TB := Data[(C.A1 + FRowA0 + FSpriteOffsets[FRowO0 + C.O1]) and FSpriteMask];
+        if FV <> 0 then
+        begin
+          TC := Data[(C.A0 + FRowA1 + FSpriteOffsets[FRowO1 + C.O0]) and FSpriteMask];
+          TD := Data[(C.A1 + FRowA1 + FSpriteOffsets[FRowO1 + C.O1]) and FSpriteMask];
+        end;
+      end
+      else
+        TC := Data[(C.A0 + FRowA1 + FSpriteOffsets[FRowO1 + C.O0]) and FSpriteMask];
+      var TopRB := (T and $00FF00FF) * (16 - FU) + (TB and $00FF00FF) * FU;
+      var BottomRB := (TC and $00FF00FF) * (16 - FU) + (TD and $00FF00FF) * FU;
+      var TopGA := ((T shr 8) and $00FF00FF) * (16 - FU) + ((TB shr 8) and $00FF00FF) * FU;
+      var BottomGA := ((TC shr 8) and $00FF00FF) * (16 - FU) + ((TD shr 8) and $00FF00FF) * FU;
+      T := (((TopRB * (16 - FV) + BottomRB * FV) shr 8) and $00FF00FF) or
+        ((((TopGA * (16 - FV) + BottomGA * FV) shr 8) and $00FF00FF) shl 8);
+    end;
+    var TR := Integer(T and $FF);
+    var TG := Integer((T shr 8) and $FF);
+    var TBl := Integer((T shr 16) and $FF);
+    var TA := Integer(T shr 24);
+    case FD.TFX of
+      0:
+        begin
+          R := (R * TR) shr 7;
+          G := (G * TG) shr 7;
+          B := (B * TBl) shr 7;
+          if FD.TCC then
+            A := (A * TA) shr 7;
+        end;
+      1:
+        begin
+          R := TR;
+          G := TG;
+          B := TBl;
+          if FD.TCC then
+            A := TA;
+        end;
+      2, 3:
+        begin
+          R := ((R * TR) shr 7) + A;
+          G := ((G * TG) shr 7) + A;
+          B := ((B * TBl) shr 7) + A;
+          if FD.TCC then
+          begin
+            if FD.TFX = 2 then
+              A := TA + A
+            else
+              A := TA;
+          end;
+        end;
+    end;
+    if R > 255 then R := 255;
+    if G > 255 then G := 255;
+    if B > 255 then B := 255;
+    if A > 255 then A := 255;
+    if FD.FGE then
+    begin
+      R := (F * R + (255 - F) * FD.FogR) shr 8;
+      G := (F * G + (255 - F) * FD.FogG) shr 8;
+      B := (F * B + (255 - F) * FD.FogB) shr 8;
+    end;
+    var WriteFB := True;
+    var WriteZ := not FD.ZMSK;
+    var WriteAlpha := True;
+    if FD.ATE then
+    begin
+      var Pass: Boolean;
+      case FD.ATST of
+        0: Pass := False;
+        1: Pass := True;
+        2: Pass := A < FD.AREF;
+        3: Pass := A <= FD.AREF;
+        4: Pass := A = FD.AREF;
+        5: Pass := A >= FD.AREF;
+        6: Pass := A > FD.AREF;
+      else
+        Pass := A <> FD.AREF;
+      end;
+      if not Pass then
+        case FD.AFAIL of
+          0: Continue;
+          1: WriteZ := False;
+          2: WriteFB := False;
+        else
+          begin
+            WriteZ := False;
+            WriteAlpha := False;
+          end;
+        end;
+    end;
+    var FA := (FRowA + (CX shr FFrameAddr.WShift) shl FFrameAddr.PageShift +
+      FFrameAddr.Offsets[FRowO + (CX and FFrameAddr.WMask)]) and FFrameAddr.Mask;
+    var Dst: Cardinal := 0;
+    if FD.DstRead or not WriteAlpha then
+      Dst := Data[FA];
+    if FD.DATE and (((Dst shr 31) <> 0) <> FD.DATM) then
+      Continue;
+    if FD.ABE and (not FD.PABE or (A >= 128)) then
+    begin
+      var DR := Integer(Dst and $FF);
+      var DG := Integer((Dst shr 8) and $FF);
+      var DB := Integer((Dst shr 16) and $FF);
+      var CC: Integer;
+      case FD.BlendC of
+        0: CC := A;
+        1: CC := Integer(Dst shr 24);
+      else
+        CC := FD.BlendFix;
+      end;
+      var NR := BlendTerm(FD.BlendA, R, DR, FD.BlendB, CC, FD.BlendD);
+      var NG := BlendTerm(FD.BlendA, G, DG, FD.BlendB, CC, FD.BlendD);
+      B := BlendTerm(FD.BlendA, B, DB, FD.BlendB, CC, FD.BlendD);
+      R := NR;
+      G := NG;
+    end;
+    if FD.ColClamp then
+    begin
+      R := Clamp255(R);
+      G := Clamp255(G);
+      B := Clamp255(B);
+    end
+    else
+    begin
+      R := R and $FF;
+      G := G and $FF;
+      B := B and $FF;
+    end;
+    if FD.FBA then
+      A := A or $80;
+    if WriteFB then
+    begin
+      var Color := Cardinal(R) or (Cardinal(G) shl 8) or (Cardinal(B) shl 16) or (Cardinal(A and $FF) shl 24);
+      Mask := FD.FBMSK;
+      if not WriteAlpha then
+        Mask := Mask or $FF000000;
+      if Mask <> 0 then
+        Color := (Color and not Mask) or (Dst and Mask);
+      Data[FA] := Color;
+    end;
+    if WriteZ and WriteFB or (WriteZ and (FD.AFAIL = 2)) then
+      Data[ZA] := (Data[ZA] and ZKeep) or (Z and not ZKeep);
+  end;
+end;
+
 procedure TPS2GSDrawer.Pixel(X, Y: Integer; Z: Cardinal; R, G, B, A, F: Integer; U, V: Integer);
 begin
   if (X < FD.SX0) or (X > FD.SX1) or (Y < FD.SY0) or (Y > FD.SY1) then
@@ -3384,8 +3596,11 @@ begin
         PrepareSpriteRow(Level, VV);
       // All inside the scissor.
       Inc(FPixels, PX1 - PX0);
-      for var X := PX0 to PX1 - 1 do
-        Shade(X, Y, V1.Z, V1.R, V1.G, V1.B, V1.A, V1.F, FSpriteU[X - PX0], VV);
+      if FSpriteFast and SpriteRowsFit then
+        ShadeSpriteRow(Y, PX0, PX1, V1.Z, V1.R, V1.G, V1.B, V1.A, V1.F)
+      else
+        for var X := PX0 to PX1 - 1 do
+          Shade(X, Y, V1.Z, V1.R, V1.G, V1.B, V1.A, V1.F, FSpriteU[X - PX0], VV);
     end;
   finally
     FSpriteFast := False;

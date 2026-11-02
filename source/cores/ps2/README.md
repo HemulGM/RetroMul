@@ -69,7 +69,13 @@ A software sprite sampling one texture level splits its texels' swizzled
 addresses into per-column and per-row parts (clamped coordinates and
 filter weights included), computed once per column and per row;
 `tests/cores/ps2/gsdata` compares 800 random sprites (every texture format,
-clamp mode, filter and LOD setting) against the general sampler.
+clamp mode, filter and LOD setting) against the general sampler. Such
+sprites of 32-bit frames and textures (32/24-bit depth) are shaded a row at
+a time (`SpriteRows`): the frame's and depth buffer's addresses from parts
+as well, the same steps per pixel in the same order (a pixel may read what
+the ones before it wrote: self-reading blur passes, drawn by one band thread
+alone). The test compares 1200 such sprites, half textured from their own
+frame, both ways.
 
 With `TPS2GSRaster.Async` (the front end sets it for the multithreaded and
 Vulkan renderers on hosts with four or more logical processors; x64 Windows)

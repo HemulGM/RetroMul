@@ -5,7 +5,7 @@
 {$Q-} // Deliberately wrapping VRAM/input patterns.
 
 uses
-  System.SysUtils, System.Classes, System.Math, Core.Snapshots,
+  System.SysUtils, System.Classes, System.Math, System.Generics.Collections, Core.Snapshots,
   PS2.Types, PS2.GS, PS2.GS.Memory, PS2.GS.Raster;
 
 const
@@ -469,9 +469,93 @@ begin
   end;
 end;
 
+// Software sprites of 32-bit frames and textures shaded a row at a time
+// (SpriteRows): the same pixels as one at a time, for textures elsewhere
+// and in the frame itself (each pixel then reading texels the ones before
+// it in the row and the rows before wrote), every test, blend and filter.
+procedure CheckSpriteRows;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    RandSeed := 8317;
+    var Rows := 0;
+    for var N := 0 to 1199 do
+    begin
+      A.Reset; B.Reset;
+      var PA := PCardinal(A.Memory.Data);
+      for var K := 0 to PS2GSMemorySize div 4 - 1 do PA[K] := Cardinal(K) * 2654435761 + Cardinal(N) * 40503;
+      Move(PA^, B.Memory.Data^, PS2GSMemorySize);
+      var Writes: TArray<TPair<Integer, UInt64>>;
+      var Add := procedure(Reg: Integer; Value: UInt64)
+        begin
+          Writes := Writes + [TPair<Integer, UInt64>.Create(Reg, Value)];
+        end;
+      var FBP := Random(64);
+      var FBW := 4 + Random(5);
+      Add(GSRegFRAME_1, UInt64(FBP) or (UInt64(FBW) shl 16) or (UInt64(Random(2) * Random(MaxInt)) shl 32));
+      Add(GSRegZBUF_1, 256 or (UInt64(Random(2)) shl 24) or (UInt64(Random(2)) shl 32));
+      Add(GSRegTEST_1, UInt64(Random(2)) or (UInt64(Random(8)) shl 1) or (UInt64(Random(256)) shl 4) or
+        (UInt64(Random(4)) shl 12) or (UInt64(Random(2)) shl 14) or (UInt64(Random(2)) shl 15) or $10000 or
+        (UInt64(Random(4)) shl 17));
+      Add(GSRegALPHA_1, UInt64(Random(256)) or (UInt64(Random(256)) shl 32));
+      Add(GSRegPABE, Random(2));
+      Add(GSRegFBA_1, Random(2));
+      Add(GSRegCOLCLAMP, Random(2));
+      Add(GSRegFOGCOL, Random($1000000));
+      Add(GSRegSCISSOR_1, UInt64(Random(32)) or (UInt64(200 + Random(56)) shl 16) or (UInt64(Random(32)) shl 32) or
+        (UInt64(200 + Random(56)) shl 48));
+      // A texture in the frame itself (half the cases) or past it.
+      var TBP := 4096 + Random(4096);
+      var TBW := 1 + Random(10);
+      if Random(2) = 0 then
+      begin
+        TBP := FBP * 32;
+        TBW := FBW;
+      end;
+      Add(GSRegTEX0_1, UInt64(TBP) or (UInt64(TBW) shl 14) or (UInt64(8 + Random(3)) shl 26) or
+        (UInt64(8 + Random(3)) shl 30) or (UInt64(Random(2)) shl 34) or (UInt64(Random(4)) shl 35));
+      Add(GSRegTEX1_1, UInt64(Random(2)) * $60);
+      Add(GSRegCLAMP_1, UInt64(Random(3)) or (UInt64(Random(3)) shl 2) or (UInt64(Random(256)) shl 4) or
+        (UInt64(256 + Random(768)) shl 14) or (UInt64(Random(256)) shl 24) or (UInt64(256 + Random(768)) shl 34));
+      Add(GSRegPRIM, 6 or $10 or (UInt64(Random(2)) shl 5) or (UInt64(Random(2)) shl 6) or $100);
+      // UV near each pixel's own place (a texel or less away), or anywhere.
+      var X0 := Random(250 * 16);
+      var Y0 := Random(250 * 16);
+      var X1 := X0 + 16 + Random(120 * 16);
+      var Y1 := Y0 + 16 + Random(120 * 16);
+      var Near := Random(3) <> 0;
+      for var K := 0 to 1 do
+      begin
+        var X := X0; var Y := Y0;
+        if K = 1 then begin X := X1; Y := Y1; end;
+        var U := X + Random(33) - 16;
+        var V := Y + Random(33) - 16;
+        if not Near then begin U := Random($4000); V := Random($4000); end;
+        Add(GSRegRGBAQ, UInt64(Random(MaxInt)));
+        Add(GSRegUV, UInt64(U and $3FFF) or (UInt64(V and $3FFF) shl 16));
+        Add(GSRegFOG, UInt64(Random(256)) shl 56);
+        Add(GSRegXYZ2, UInt64(X) or (UInt64(Y) shl 16) or (UInt64(Random(MaxInt)) shl 32));
+      end;
+      SpriteRows := True;
+      for var W in Writes do A.WriteRegister(W.Key, W.Value);
+      SpriteRows := False;
+      for var W in Writes do B.WriteRegister(W.Key, W.Value);
+      SpriteRows := True;
+      if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) or (A.PixelsDrawn <> B.PixelsDrawn) then
+        raise Exception.CreateFmt('Sprite rows differ, case %d', [N]);
+      Inc(Rows);
+    end;
+    Writeln(Format('%d software 32-bit sprites, own frame textures, tests, blends, filters: rows OK', [Rows]));
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
 begin
   try
     CheckSpriteTexels;
+    CheckSpriteRows;
     for var Async := False to True do
     begin
       CheckDisplay(Async);

@@ -281,7 +281,8 @@ begin
     var P := PCardinal(A.Data);
     for var I := 0 to PS2GSMemorySize div 4 - 1 do P[I] := Cardinal(I) * 1664525 + 1013904223;
     Move(A.Data^, B.Data^, PS2GSMemorySize);
-    for var Format in TArray<Integer>.Create(PSMT8, PSMT4) do
+    var Rows := 0;
+    for var Format in Formats do
       for var N := 0 to 127 do
       begin
         var BP := Cardinal(1 + N * 127);
@@ -295,9 +296,10 @@ begin
         B.WriteRow(Format, BP, BW, X, Y, @Values[0], Count);
         B.WriteRow(Format, BP, BW, X, Y, nil, 0);
         if not CompareMem(A.Data, B.Data, PS2GSMemorySize) then
-          raise Exception.CreateFmt('Indexed row mismatch format=%x case=%d', [Format, N]);
+          raise Exception.CreateFmt('Transfer row mismatch format=%x case=%d', [Format, N]);
+        Inc(Rows);
       end;
-    Writeln('256 indexed rows: every row phase, page/coordinate/VRAM wrap and masked nibble neighbours: OK');
+    Writeln(Rows, ' transfer rows, all formats: every row phase, page/coordinate/VRAM wrap and masked neighbours: OK');
   finally
     A.Free; B.Free;
   end;

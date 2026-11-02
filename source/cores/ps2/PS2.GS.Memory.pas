@@ -403,6 +403,77 @@ begin
   X := X and $7FF;
   Y := Y and $7FF;
   {$IFNDEF GS_RACECHECK}
+  // Word-addressed formats: a page row's words through its offset table.
+  if PSM in [PSMCT32, PSMZ32, PSMCT24, PSMZ24, PSMT8H, PSMT4HL, PSMT4HH] then
+  begin
+    var RowBase := (BP shl 6) + (((Y shr 5) * BW) shl 11);
+    var Table: PWord := @PageOffsets32[Y and 31, 0];
+    if PSM in [PSMZ32, PSMZ24] then
+      Table := @PageOffsetsZ32[Y and 31, 0];
+    var Words := PCardinal(FData);
+    while Count > 0 do
+    begin
+      var N := Min(Count, 64 - Integer(X and 63));
+      var Base := RowBase + ((X shr 6) shl 11);
+      var Offsets := Table + (X and 63);
+      case PSM of
+        PSMCT32, PSMZ32:
+          for var K := 0 to N - 1 do Words[(Base + Offsets[K]) and $FFFFF] := Values[K];
+        PSMCT24, PSMZ24:
+          for var K := 0 to N - 1 do
+          begin
+            var A := (Base + Offsets[K]) and $FFFFF;
+            Words[A] := (Words[A] and $FF000000) or (Values[K] and $FFFFFF);
+          end;
+        PSMT8H:
+          for var K := 0 to N - 1 do
+          begin
+            var A := (Base + Offsets[K]) and $FFFFF;
+            Words[A] := (Words[A] and $00FFFFFF) or (Values[K] shl 24);
+          end;
+        PSMT4HL:
+          for var K := 0 to N - 1 do
+          begin
+            var A := (Base + Offsets[K]) and $FFFFF;
+            Words[A] := (Words[A] and $F0FFFFFF) or ((Values[K] and $F) shl 24);
+          end;
+      else
+        for var K := 0 to N - 1 do
+        begin
+          var A := (Base + Offsets[K]) and $FFFFF;
+          Words[A] := (Words[A] and $0FFFFFFF) or ((Values[K] and $F) shl 28);
+        end;
+      end;
+      Inc(Values, N);
+      Dec(Count, N);
+      X := (X + Cardinal(N)) and $7FF;
+    end;
+    Exit;
+  end;
+  if PSM in [PSMCT16, PSMCT16S, PSMZ16, PSMZ16S] then
+  begin
+    var RowBase := (BP shl 7) + (((Y shr 6) * BW) shl 12);
+    var Table: PWord;
+    case PSM of
+      PSMCT16: Table := @PageOffsets16[Y and 63, 0];
+      PSMCT16S: Table := @PageOffsets16S[Y and 63, 0];
+      PSMZ16: Table := @PageOffsetsZ16[Y and 63, 0];
+    else
+      Table := @PageOffsetsZ16S[Y and 63, 0];
+    end;
+    var Halves := PWord(FData);
+    while Count > 0 do
+    begin
+      var N := Min(Count, 64 - Integer(X and 63));
+      var Base := RowBase + ((X shr 6) shl 12);
+      var Offsets := Table + (X and 63);
+      for var K := 0 to N - 1 do Halves[(Base + Offsets[K]) and $1FFFFF] := Word(Values[K]);
+      Inc(Values, N);
+      Dec(Count, N);
+      X := (X + Cardinal(N)) and $7FF;
+    end;
+    Exit;
+  end;
   if PSM = PSMT8 then
   begin
     var RowBase := (BP shl 8) + (((Y shr 6) * ((BW + 1) shr 1)) shl 13);

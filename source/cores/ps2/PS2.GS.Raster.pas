@@ -4589,6 +4589,55 @@ begin
       end;
     end;
   end;
+  // Written at once (nothing queued for it to follow): a whole quadword of
+  // the same formats a row at a time, as TransferPixel writes its pixels.
+  if FXferActive and not FShadow and not (FQueueXfer and (FPending or (FXferRunCount > 0))) and
+    (FXferBitCount = 0) and (FXferBits = 0) then
+  begin
+    var Buf := Regs[GSRegBITBLTBUF];
+    var PSM := Integer((Buf shr 56) and $3F);
+    var Bits := TransferBits(Cardinal(PSM));
+    var Count := 128 div Bits;
+    var Reg := Regs[GSRegTRXREG];
+    var Width := Integer(Reg and $FFF);
+    var Height := Integer((Reg shr 32) and $FFF);
+    if (Bits <> 24) and (Width > 0) and (Height > 0) and (FXferX >= 0) and (FXferX < Width) and
+      (FXferY >= 0) and (FXferY < Height) and (Int64(Height - FXferY) * Width - FXferX >= Count) then
+    begin
+      CheckGPUTransfer;
+      if FPending then
+        Sync;
+      var Values: array[0..31] of Cardinal;
+      case Bits of
+        32: for var K := 0 to 3 do Values[K] := Data.UW[K];
+        16: for var K := 0 to 7 do Values[K] := Data.UH[K];
+        8: for var K := 0 to 15 do Values[K] := Data.UB[K];
+        4: for var K := 0 to 31 do Values[K] := (Data.UB[K shr 1] shr ((K and 1) * 4)) and 15;
+      end;
+      var Pos := Regs[GSRegTRXPOS];
+      var DBP := Cardinal((Buf shr 32) and $3FFF);
+      var DBW := Cardinal((Buf shr 48) and $3F);
+      var DSAX := Integer((Pos shr 32) and $7FF);
+      var DSAY := Integer((Pos shr 48) and $7FF);
+      var I := 0;
+      while I < Count do
+      begin
+        var N := Min(Count - I, Width - FXferX);
+        FMemory.WriteRow(PSM, DBP, DBW, Cardinal((DSAX + FXferX) and $7FF), Cardinal((DSAY + FXferY) and $7FF),
+          @Values[I], N);
+        Inc(I, N);
+        Inc(FXferX, N);
+        if FXferX >= Width then
+        begin
+          FXferX := 0;
+          Inc(FXferY);
+        end;
+      end;
+      Inc(FXferPixels, Count);
+      FXferActive := FXferY < Height;
+      Exit;
+    end;
+  end;
   for var K := 0 to 3 do
     FeedWord(Data.UW[K]);
 end;

@@ -222,9 +222,15 @@ instrumentation retain scalar pixel reads.
 Queued whole-quadword IMAGE uploads unpack integer formats into the transfer
 ring in chunks; 24-bit streams, partial tails and unusual state retain the
 scalar path. Reservation, row progression and barriers keep the same order.
-The worker writes indexed rows through immutable per-page offsets for
-PSMT8/PSMT4, retaining coordinate/VRAM wrapping and neighbouring nibbles.
-Other storage formats and race-instrumented builds retain scalar writes.
+Uploads with nothing queued before them (the GPU drew the rest, or the
+bands are idle) write each whole quadword at once, a row at a time, instead
+of pixel by pixel (24-bit streams keep the scalar path); Metal Gear Solid 2,
+God of War and Ratchet & Clank gain 7-11% (MGS2's GS worker spent about a
+third of its time there). Transfer rows (`WriteRow`, also the band threads' queued
+uploads) go through immutable per-page offsets for every storage format, retaining
+coordinate/VRAM wrapping and the bits a format leaves alone (24-bit, high
+8/4-bit and nibble neighbours); the test compares 1664 rows over all formats
+with scalar writes. Race-instrumented builds retain scalar writes.
 The tests run without Vulkan; `-Checked` enables checked core code.
 
 ## Experimental recompilers

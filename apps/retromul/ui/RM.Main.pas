@@ -142,7 +142,7 @@ type
     procedure DragDrop(const Data: TDragObject; const Point: TPointF); override;
     procedure SaveSnapshot(const Name: string); override;
     procedure LoadSnapshot(const Name: string); override;
-    procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False; const SnapshotName: string = ''); override;
+    procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False; const SnapshotName: string = ''; const LibraryPlatformId: string = ''); override;
     procedure ResetConsole(Hard: Boolean); override;
     procedure ResetClick(Sender: TObject); override;
     procedure HardRestart; override;
@@ -589,9 +589,9 @@ begin
   FSessionController.HardRestart;
 end;
 
-procedure TFormMain.LoadRom(const FileName: string; const DisplayName: string; StartPaused: Boolean; const SnapshotName: string);
+procedure TFormMain.LoadRom(const FileName: string; const DisplayName: string; StartPaused: Boolean; const SnapshotName, LibraryPlatformId: string);
 begin
-  FSessionController.LoadRom(FileName, DisplayName, StartPaused, SnapshotName);
+  FSessionController.LoadRom(FileName, DisplayName, StartPaused, SnapshotName, LibraryPlatformId);
 end;
 
 procedure TFormMain.ButtonCloseRomClick(Sender: TObject);

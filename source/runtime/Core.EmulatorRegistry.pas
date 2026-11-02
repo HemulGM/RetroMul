@@ -19,6 +19,23 @@ type
 
   TCoreLoadStage = (Source, Container, Image, Header, OverrideHint);
 
+  TCoreMatchConfidence = (Fallback, Hint, Signature);
+
+  TCorePlatformOption = record
+    Id, Name: string;
+  end;
+
+  ECoreSelectionRequired = class(EReadError)
+  private
+    FPlatforms: TArray<TCorePlatformOption>;
+    FFailedPlatformId, FLoadError: string;
+  public
+    constructor Create(const Platforms: TArray<TCorePlatformOption>; const FailedPlatformId: string = ''; const LoadError: string = '');
+    property Platforms: TArray<TCorePlatformOption> read FPlatforms;
+    property FailedPlatformId: string read FFailedPlatformId;
+    property LoadError: string read FLoadError;
+  end;
+
   TCoreLoadContext = class;
 
   TCoreMatch = class;
@@ -44,6 +61,8 @@ type
     Id: string;
     Format: TRomFormatInfo;
     ArchiveCandidate: Boolean;
+    Confidence: TCoreMatchConfidence;
+    function PlatformId: string;
     constructor Create(const CoreId: string; const Creator: TCoreCreator);
     function CreateCore: IEmulationCore;
   end;
@@ -62,6 +81,7 @@ type
     FArchive: IArchiveContainer;
     FArchiveEntry: Boolean;
     FHeaderRecognized: Boolean;
+    FSelectedPlatform: string;
     function GetData: TBytes;
     function GetSourceHash: TBytes;
     function GetEffectiveStorage: IStorage;
@@ -80,6 +100,7 @@ type
     function DiscSignature(const Text: string; Offset: Integer = 0): Boolean;
     function TakeDisc: TCDDisc;
     function FirstPlaylistEntry: string;
+    function PlaylistDisc(const SystemId: string): TCDDisc;
     property Stream: TStream read FStream;
     property Storage: IStorage read FStorage;
     property EffectiveStorage: IStorage read GetEffectiveStorage;
@@ -91,6 +112,7 @@ type
     property Archive: IArchiveContainer read FArchive;
     property ArchiveEntry: Boolean read FArchiveEntry;
     property HeaderRecognized: Boolean read FHeaderRecognized;
+    property SelectedPlatform: string read FSelectedPlatform;
   end;
 
   TCoreRecognitionRule = record
@@ -99,9 +121,15 @@ type
     Recognize: TCoreRecognizer;
   end;
 
+  TCoreDiscPlatform = record
+    PlatformId: string;
+    Match: TCoreRecognizer;
+  end;
+
   TEmulationCoreRegistration = class
   private
     FRules: TList<TCoreRecognitionRule>;
+    FDiscPlatforms: TList<TCoreDiscPlatform>;
   public
     Id: string;
     ArchiveExtensions: TArray<string>;
@@ -112,6 +140,7 @@ type
     constructor Create(const CoreId: string; const Extensions: array of string);
     destructor Destroy; override;
     procedure Add(Stage: TCoreLoadStage; Priority: Integer; const Recognizer: TCoreRecognizer);
+    procedure AddDiscPlatform(const PlatformId: string; const Match: TCoreRecognizer);
   end;
 
 // Registration is static, in initialization sections. The registry owns it.
@@ -124,7 +153,10 @@ function RecognizeEmulationCore(Context: TCoreLoadContext; Stage: TCoreLoadStage
 function ResolveEmulationImage(Context: TCoreLoadContext): TCoreMatch;
 // The caller owns the returned match and must keep Context alive through CreateCore.
 
-function ResolveEmulationCore(Context: TCoreLoadContext): TCoreMatch;
+function ResolveEmulationCore(Context: TCoreLoadContext; const PlatformId: string = ''): TCoreMatch;
+
+// Enumerates compatible targets without constructing an emulator.
+function EmulationPlatformOptions(Context: TCoreLoadContext): TArray<TCorePlatformOption>;
 
 procedure SelectArchiveImage(Context: TCoreLoadContext);
 
@@ -138,7 +170,7 @@ implementation
 
 uses
   System.StrUtils, System.Hash, System.Math, System.Generics.Defaults,
-  Core.MediaArchive;
+  Core.MediaArchive, Core.Platforms;
 
 const
   MAX_ARCHIVE_IMAGE_SIZE = 64 * 1024 * 1024;
@@ -201,6 +233,32 @@ begin
   Id := CoreId;
   FCreate := Creator;
   ArchiveCandidate := True;
+  Confidence := TCoreMatchConfidence.Signature;
+end;
+
+constructor ECoreSelectionRequired.Create(const Platforms: TArray<TCorePlatformOption>; const FailedPlatformId, LoadError: string);
+begin
+  FPlatforms := Copy(Platforms);
+  FFailedPlatformId := FailedPlatformId;
+  FLoadError := LoadError;
+  var Names: TArray<string>;
+  SetLength(Names, Length(Platforms));
+  for var I := 0 to High(Platforms) do
+    Names[I] := Platforms[I].Name;
+  var Detail := 'Choose a target platform: ' + string.Join(', ', Names);
+  if LoadError <> '' then
+    Detail := LoadError + sLineBreak + Detail;
+  inherited Create(Detail);
+end;
+
+function TCoreMatch.PlatformId: string;
+begin
+  Result := Format.SystemId;
+  if Result = '' then
+    Result := Id.ToLower;
+  var Info: TPlatformInfo;
+  if TPlatformRegistry.Find(Result, Info) then
+    Result := Info.Id;
 end;
 
 function TCoreMatch.CreateCore: IEmulationCore;
@@ -389,6 +447,8 @@ end;
 
 function TCoreLoadContext.TakeDisc: TCDDisc;
 begin
+  if HasExtension(['.m3u']) then
+    Exit(nil);
   Result := Disc;
   FDisc := nil;
 end;
@@ -413,6 +473,27 @@ begin
   Result := (Length(Sector) >= Length(Text)) and (TEncoding.ASCII.GetString(Sector, 0, Length(Text)) = Text);
 end;
 
+function TCoreLoadContext.PlaylistDisc(const SystemId: string): TCDDisc;
+begin
+  if FDisc = nil then
+  begin
+    var Position := Stream.Position;
+    var Names: TArray<string>;
+    try
+      Names := ReadCDPlaylist(Stream, EffectiveStorage, RomName, SystemId);
+    finally
+      Stream.Position := Position;
+    end;
+    var Input := EffectiveStorage.OpenRead(Names[0]);
+    try
+      FDisc := TCDDisc.Create(Input, EffectiveStorage, Names[0], True);
+    finally
+      Input.Free;
+    end;
+  end;
+  Result := FDisc;
+end;
+
 function TCoreLoadContext.FirstPlaylistEntry: string;
 begin
   Result := '';
@@ -430,6 +511,7 @@ begin
   Id := CoreId;
   MaxArchiveImageSize := MAX_ARCHIVE_IMAGE_SIZE;
   FRules := TList<TCoreRecognitionRule>.Create;
+  FDiscPlatforms := TList<TCoreDiscPlatform>.Create;
   SetLength(ArchiveExtensions, Length(Extensions));
   for var i := 0 to High(Extensions) do
     ArchiveExtensions[i] := Extensions[i];
@@ -437,6 +519,7 @@ end;
 
 destructor TEmulationCoreRegistration.Destroy;
 begin
+  FDiscPlatforms.Free;
   FRules.Free;
   inherited;
 end;
@@ -450,6 +533,16 @@ begin
   Rule.Priority := Priority;
   Rule.Recognize := Recognizer;
   FRules.Add(Rule);
+end;
+
+procedure TEmulationCoreRegistration.AddDiscPlatform(const PlatformId: string; const Match: TCoreRecognizer);
+begin
+  if (PlatformId = '') or not Assigned(Match) then
+    raise EArgumentException.Create('Invalid disc platform loader');
+  var Item: TCoreDiscPlatform;
+  Item.PlatformId := PlatformId;
+  Item.Match := Match;
+  FDiscPlatforms.Add(Item);
 end;
 
 procedure RegisterEmulationCore(Registration: TEmulationCoreRegistration);
@@ -515,40 +608,254 @@ begin
   end;
 end;
 
-function ResolveEmulationImage(Context: TCoreLoadContext): TCoreMatch;
+function AcceptsSelectedPlatform(Context: TCoreLoadContext; Match: TCoreMatch): Boolean;
 begin
-  Result := RecognizeEmulationCore(Context, TCoreLoadStage.Image);
-  if Result <> nil then
+  Result := (Context.SelectedPlatform = '') or SameText(Context.SelectedPlatform, Match.PlatformId);
+  if Result then
     Exit;
-  Result := RecognizeEmulationCore(Context, TCoreLoadStage.Header);
-  Context.FHeaderRecognized := Result <> nil;
-  Context.HeaderFormat := Default(TRomFormatInfo);
-  if Result <> nil then
-    Context.HeaderFormat := Result.Format;
+  // Some adapters determine a machine variant from the cartridge itself
+  // (32X, SuperGrafx, WonderSwan Color). A category can select that same core.
+  var Info: TPlatformInfo;
+  Result := not Context.IsDiscSource and not Context.HasExtension(['.m3u']) and
+    TPlatformRegistry.Find(Context.SelectedPlatform, Info) and
+    SameText(Info.CoreId, Match.Id) and Context.HasExtension(Info.Extensions);
+end;
+
+function ChooseCoreMatch(Context: TCoreLoadContext; Matches: TObjectList<TCoreMatch>; Minimum: TCoreMatchConfidence = TCoreMatchConfidence.Fallback): TCoreMatch;
+begin
+  Result := nil;
+  var Best := Minimum;
+  var Choices := TList<TCoreMatch>.Create;
   try
-    var override := RecognizeEmulationCore(Context, TCoreLoadStage.OverrideHint);
-    if override <> nil then
+    for var Match in Matches do
     begin
-      Result.Free;
-      Result := override;
+      if not AcceptsSelectedPlatform(Context, Match) then
+        Continue;
+      if Match.Confidence < Best then
+        Continue;
+      if Match.Confidence > Best then
+      begin
+        Choices.Clear;
+        Best := Match.Confidence;
+      end;
+      var Duplicate := False;
+      for var Existing in Choices do
+        Duplicate := Duplicate or SameText(Existing.PlatformId, Match.PlatformId);
+      if not Duplicate then
+        Choices.Add(Match);
     end;
+    if Choices.Count > 1 then
+    begin
+      var Platforms: TArray<TCorePlatformOption>;
+      SetLength(Platforms, Choices.Count);
+      for var I := 0 to Choices.Count - 1 do
+      begin
+        Platforms[I].Id := Choices[I].PlatformId;
+        var Info: TPlatformInfo;
+        if TPlatformRegistry.Find(Platforms[I].Id, Info) then
+          Platforms[I].Name := Info.Name
+        else
+          Platforms[I].Name := Choices[I].Id;
+      end;
+      TArray.Sort<TCorePlatformOption>(Platforms, TComparer<TCorePlatformOption>.Construct(
+        function(const Left, Right: TCorePlatformOption): Integer
+        begin
+          Result := CompareText(Left.Name, Right.Name);
+        end));
+      raise ECoreSelectionRequired.Create(Platforms);
+    end;
+    if Choices.Count = 1 then
+      Result := Matches.Extract(Choices[0]);
+  finally
+    Choices.Free;
+  end;
+end;
+
+function CollectCoreMatches(Context: TCoreLoadContext; Stage: TCoreLoadStage): TObjectList<TCoreMatch>;
+begin
+  Result := TObjectList<TCoreMatch>.Create(True);
+  try
+    // Container rules can replace the stream and retain their original resolver.
+    // Source/image/header probes are non-owning and must all report evidence.
+    for var Registration in Registrations do
+      for var Rule in Registration.FRules do
+        if Rule.Stage = Stage then
+        begin
+          TStorage.CheckReadCancelled;
+          var Saved := Context.Stream.Position;
+          try
+            var Match := Rule.Recognize(Context);
+            if Match <> nil then
+              Result.Add(Match);
+          finally
+            Context.Stream.Position := Saved;
+          end;
+        end;
   except
     Result.Free;
     raise;
   end;
 end;
 
-function ResolveEmulationCore(Context: TCoreLoadContext): TCoreMatch;
+function SelectRecognizedCore(Context: TCoreLoadContext; Stage: TCoreLoadStage; Minimum: TCoreMatchConfidence = TCoreMatchConfidence.Fallback): TCoreMatch;
+begin
+  var Matches := CollectCoreMatches(Context, Stage);
+  try
+    Result := ChooseCoreMatch(Context, Matches, Minimum);
+  finally
+    Matches.Free;
+  end;
+end;
+
+function SelectDiscPlatform(Context: TCoreLoadContext): TCoreMatch;
+begin
+  var Matches := TObjectList<TCoreMatch>.Create(True);
+  try
+    var Hint := ('/' + Context.RomName + ' ' + Context.SourceName).ToLower.Replace('\', '/');
+    for var Registration in Registrations do
+      for var Loader in Registration.FDiscPlatforms do
+      begin
+        var Info := TPlatformRegistry.Require(Loader.PlatformId);
+        if Context.HasExtension(['.m3u']) and not MatchText('.m3u', Info.Extensions) then
+          Continue;
+        var Match := Loader.Match(Context);
+        if Match = nil then
+          Continue;
+        Matches.Add(Match);
+        Match.Format.SystemId := Info.Id;
+        Match.Confidence := TCoreMatchConfidence.Fallback;
+        for var Folder in Info.ScanFolders do
+          if Hint.Contains('/' + Folder.ToLower + '/') then
+            Match.Confidence := TCoreMatchConfidence.Hint;
+      end;
+    Result := ChooseCoreMatch(Context, Matches);
+  finally
+    Matches.Free;
+  end;
+end;
+
+function EmulationPlatformOptions(Context: TCoreLoadContext): TArray<TCorePlatformOption>;
 begin
   Context.PrepareArchive;
-  Result := RecognizeEmulationCore(Context, TCoreLoadStage.Source);
+  var Optical := Context.IsDiscSource or Context.HasExtension(['.m3u']);
+  if not Optical then
+    SelectArchiveImage(Context);
+  var Options := TList<TCorePlatformOption>.Create;
+  try
+    for var Info in TPlatformRegistry.All do
+    begin
+      var Suitable := not Optical and Context.HasExtension(Info.Extensions);
+      if Optical then
+        for var Registration in Registrations do
+          for var Loader in Registration.FDiscPlatforms do
+            if SameText(Loader.PlatformId, Info.Id) then
+              Suitable := not Context.HasExtension(['.m3u']) or MatchText('.m3u', Info.Extensions);
+      if Suitable then
+      begin
+        var Choice: TCorePlatformOption;
+        Choice.Id := Info.Id;
+        Choice.Name := Info.Name;
+        Options.Add(Choice);
+      end;
+    end;
+    if not Optical then
+      for var Stage in [TCoreLoadStage.Source, TCoreLoadStage.Image, TCoreLoadStage.Header] do
+      begin
+        var Matches := CollectCoreMatches(Context, Stage);
+        try
+          for var Match in Matches do
+          begin
+            var Duplicate := False;
+            for var Choice in Options do
+              Duplicate := Duplicate or SameText(Choice.Id, Match.PlatformId);
+            if not Duplicate then
+            begin
+              var Choice: TCorePlatformOption;
+              Choice.Id := Match.PlatformId;
+              var Info: TPlatformInfo;
+              if TPlatformRegistry.Find(Choice.Id, Info) then
+                Choice.Name := Info.Name
+              else
+                Choice.Name := Match.Id;
+              Options.Add(Choice);
+            end;
+          end;
+        finally
+          Matches.Free;
+        end;
+      end;
+    Options.Sort(TComparer<TCorePlatformOption>.Construct(
+      function(const Left, Right: TCorePlatformOption): Integer
+      begin
+        Result := CompareText(Left.Name, Right.Name);
+      end));
+    Result := Options.ToArray;
+  finally
+    Options.Free;
+  end;
+end;
+
+function ResolveEmulationImage(Context: TCoreLoadContext): TCoreMatch;
+begin
+  Result := SelectRecognizedCore(Context, TCoreLoadStage.Image);
+  if Result <> nil then
+    Exit;
+  var Matches := CollectCoreMatches(Context, TCoreLoadStage.Header);
+  try
+    Context.FHeaderRecognized := Matches.Count > 0;
+    Context.HeaderFormat := Default(TRomFormatInfo);
+    for var Match in Matches do
+      if AcceptsSelectedPlatform(Context, Match) then
+      begin
+        Context.HeaderFormat := Match.Format;
+        Break;
+      end;
+    var Overrides := CollectCoreMatches(Context, TCoreLoadStage.OverrideHint);
+    try
+      while Overrides.Count > 0 do
+      begin
+        var OverrideMatch := Overrides.Extract(Overrides[0]);
+        // A same-platform override can refine normalization. A different
+        // platform is additional evidence, not permission to silently replace it.
+        for var I := Matches.Count - 1 downto 0 do
+          if SameText(Matches[I].PlatformId, OverrideMatch.PlatformId) then
+            Matches.Delete(I);
+        Matches.Add(OverrideMatch);
+      end;
+    finally
+      Overrides.Free;
+    end;
+    Result := ChooseCoreMatch(Context, Matches);
+  finally
+    Matches.Free;
+  end;
+end;
+
+function ResolveEmulationCore(Context: TCoreLoadContext; const PlatformId: string): TCoreMatch;
+begin
+  Context.FSelectedPlatform := PlatformId.Trim.ToLower;
+  var Info: TPlatformInfo;
+  if TPlatformRegistry.Find(PlatformId, Info) then
+    Context.FSelectedPlatform := Info.Id;
+  Context.PrepareArchive;
+  if (Context.SelectedPlatform <> '') and (Context.IsDiscSource or Context.HasExtension(['.m3u'])) then
+    Exit(SelectDiscPlatform(Context));
+  Result := SelectRecognizedCore(Context, TCoreLoadStage.Source, TCoreMatchConfidence.Hint);
+  if (Result = nil) and (Context.IsDiscSource or Context.HasExtension(['.m3u'])) then
+    Exit(SelectDiscPlatform(Context));
   if Result = nil then
+  begin
     Result := RecognizeEmulationCore(Context, TCoreLoadStage.Container);
+    if (Result <> nil) and not AcceptsSelectedPlatform(Context, Result) then
+      FreeAndNil(Result);
+  end;
   if Result = nil then
   begin
     SelectArchiveImage(Context);
     if Context.ArchiveEntry then
-      Result := RecognizeEmulationCore(Context, TCoreLoadStage.Source);
+      Result := SelectRecognizedCore(Context, TCoreLoadStage.Source, TCoreMatchConfidence.Hint);
+    if (Result = nil) and (Context.IsDiscSource or Context.HasExtension(['.m3u'])) then
+      Exit(SelectDiscPlatform(Context));
     if Result = nil then
       Result := ResolveEmulationImage(Context);
   end;
@@ -594,9 +901,14 @@ begin
             if Match = nil then
               Match := RecognizeEmulationCore(Probe, TCoreLoadStage.Container);
             if Match = nil then
-              Match := ResolveEmulationImage(Probe);
             try
-              Suitable := (Match <> nil) and Match.ArchiveCandidate;
+              Match := ResolveEmulationImage(Probe);
+            except
+              on E: ECoreSelectionRequired do
+                Suitable := True;
+            end;
+            try
+              Suitable := Suitable or ((Match <> nil) and Match.ArchiveCandidate);
             finally
               Match.Free;
             end;

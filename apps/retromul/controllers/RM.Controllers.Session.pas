@@ -6,19 +6,22 @@ interface
 
 uses
   RM.BitmapShaders, RM.Platforms.Presentation, System.SysUtils, FMX.Types,
-  Core.Emulation, RM.Controllers.Base, RM.Session.Runtime;
+  Core.Emulation, Core.EmulatorRegistry, RM.Controllers.Base, RM.Session.Runtime;
 
 type
   TSessionController = class(TMainController)
   private
     FLoadingCore: Boolean;
+    FSelectingPlatform: Boolean;
+    FLaunchPlatform: string;
     FLoadGeneration: Integer;
     FCancelLoad: TProc;
     function RuntimeContext: TSessionRuntimeContext;
     procedure UpdateVirtualButtons;
     procedure EndCoreLoading;
     procedure CancelCoreLoading;
-    procedure BeginGameLoading(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string);
+    procedure BeginGameLoading(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const PlatformId: string = ''; const PreferredPlatformId: string = '');
+    procedure ChoosePlatform(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const Platforms: TArray<TCorePlatformOption>; const FailedPlatformId, LoadError: string);
     procedure InstallCore(const NewEmulation: IEmulationCore; const FileName, DisplayName: string; StartPaused: Boolean);
     procedure StopCurrentCore;
   public
@@ -36,7 +39,7 @@ type
     procedure SelectDocument(ForCassette: Boolean; const FileName: string = '');
     procedure FinishFileSelection;
     function CanAcceptRomDrop(const Data: TDragObject): Boolean;
-    procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False; const SnapshotName: string = '');
+    procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False; const SnapshotName: string = ''; const LibraryPlatformId: string = '');
     procedure ResetConsole(Hard: Boolean);
     procedure HardRestart;
     procedure ButtonCloseRomClick(Sender: TObject);
@@ -418,7 +421,7 @@ end;
 
 procedure TSessionController.FinishFileSelection;
 begin
-  if FLoadingCore or FState.Session.PendingAutosaveChoice then
+  if FLoadingCore or FSelectingPlatform or FState.Session.PendingAutosaveChoice then
     Exit;
 
   {$IFDEF ANDROID}
@@ -444,7 +447,7 @@ begin
   FCancelLoad := nil;
   FState.Session.PreserveOpeningAutosave := False;
   FLoadingCore := False;
-  FState.Session.OpeningRom := FState.Session.PendingAutosaveChoice;
+  FState.Session.OpeningRom := FState.Session.PendingAutosaveChoice or FSelectingPlatform;
   CloseRetroLoading(FView);
   FView.FinishFileSelection;
 end;
@@ -460,9 +463,9 @@ begin
   EndCoreLoading;
 end;
 
-procedure TSessionController.LoadRom(const FileName: string; const DisplayName: string; StartPaused: Boolean; const SnapshotName: string);
+procedure TSessionController.LoadRom(const FileName: string; const DisplayName: string; StartPaused: Boolean; const SnapshotName, LibraryPlatformId: string);
 begin
-  if FLoadingCore or FState.Session.PendingAutosaveChoice then
+  if FLoadingCore or FSelectingPlatform or FState.Session.PendingAutosaveChoice then
     Exit;
   Inc(FLoadGeneration);
   // The explicit snapshot is already a launch choice. Otherwise consult only
@@ -472,7 +475,7 @@ begin
     Path := FindRecordedAutosave(FState.Session.Storage, FileName);
   if Path = '' then
   begin
-    BeginGameLoading(FileName, DisplayName, StartPaused, SnapshotName);
+    BeginGameLoading(FileName, DisplayName, StartPaused, SnapshotName, '', LibraryPlatformId);
     Exit;
   end;
 
@@ -509,7 +512,7 @@ begin
             if Choice = TRetroDialogChoice.Accept then
               Snapshot := Path;
             // Restored games wait for an explicit Resume after the dialog closes.
-            BeginGameLoading(FileName, DisplayName, StartPaused or (Choice = TRetroDialogChoice.Accept), Snapshot);
+            BeginGameLoading(FileName, DisplayName, StartPaused or (Choice = TRetroDialogChoice.Accept), Snapshot, '', LibraryPlatformId);
           except
             on E: Exception do
               ShowRetroMessage(FView, Translate('Unable to open game: ') + TranslateCoreMessage(E.Message));
@@ -528,7 +531,7 @@ end;
 procedure TSessionController.ResetConsole(Hard: Boolean);
 begin
   if (FState.Session.Emulation = nil) or FState.Session.OpeningRom or
-    FLoadingCore or FState.Session.PendingAutosaveChoice or FState.Browser.ViewingLibrary or
+    FLoadingCore or FSelectingPlatform or FState.Session.PendingAutosaveChoice or FState.Browser.ViewingLibrary or
     (FState.Settings.View <> nil) or (FState.Help.View <> nil) then
     Exit;
   if Hard then
@@ -558,29 +561,78 @@ end;
 procedure TSessionController.HardRestart;
 begin
   if (FState.Session.Emulation = nil) or FState.Session.OpeningRom or
-    FLoadingCore or FState.Session.PendingAutosaveChoice then
+    FLoadingCore or FSelectingPlatform or FState.Session.PendingAutosaveChoice then
     Exit;
 
   // Use the normal replacement path to preserve battery RAM and rebuild
   // peripherals, video and timing. Bypass the autosave prompt/restoration:
   // a hard restart must start a fresh machine with the saved configuration.
-  BeginGameLoading(FState.Session.RomLocation, FState.Session.RomDisplayName, False, '');
+  BeginGameLoading(FState.Session.RomLocation, FState.Session.RomDisplayName, False, '', FLaunchPlatform);
   FState.Input.SuppressInputUntilRelease := True;
 end;
 
-procedure TSessionController.BeginGameLoading(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string);
+procedure TSessionController.ChoosePlatform(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const Platforms: TArray<TCorePlatformOption>; const FailedPlatformId, LoadError: string);
+begin
+  var IsAlive := FState.Session.CallbackAlive;
+  var Generation := FLoadGeneration;
+  var Choices := Copy(Platforms);
+  var Names: TArray<string>;
+  SetLength(Names, Length(Choices));
+  for var I := 0 to High(Choices) do
+    Names[I] := Choices[I].Name;
+  var PreserveAutosave := FState.Session.PreserveOpeningAutosave;
+  FSelectingPlatform := True;
+  EndCoreLoading;
+  FState.Session.PreserveOpeningAutosave := PreserveAutosave;
+  var Text := Translate('This image matches more than one platform. Select the target platform to continue.');
+  if LoadError <> '' then
+  begin
+    var Info: TPlatformInfo;
+    var PlatformName := FailedPlatformId;
+    if TPlatformRegistry.Find(FailedPlatformId, Info) then
+      PlatformName := Info.Name;
+    Text := PlatformName + ': ' + TranslateCoreMessage(LoadError) + sLineBreak + sLineBreak +
+      Translate('Select the target platform to continue.');
+  end;
+  var Title := DisplayName;
+  if Title = '' then
+    Title := ExtractFileName(FileName);
+  try
+    ShowRetroPlatformChoice(FView, Text + sLineBreak + sLineBreak + Title, Names,
+      procedure(Index: Integer)
+      begin
+        if not IsAlive() then
+          Exit;
+        if Generation <> FLoadGeneration then
+          Exit;
+        FSelectingPlatform := False;
+        try
+          if (Index >= 0) and (Index < Length(Choices)) then
+            BeginGameLoading(FileName, DisplayName, StartPaused, SnapshotName, Choices[Index].Id)
+          else
+            FState.Session.PreserveOpeningAutosave := False;
+        except
+          on E: Exception do
+            ShowRetroMessage(FView, Translate('Unable to open game: ') + TranslateCoreMessage(E.Message));
+        end;
+        FView.FinishFileSelection;
+        FView.SyncActivity;
+      end);
+  except
+    FSelectingPlatform := False;
+    FState.Session.PreserveOpeningAutosave := False;
+    FView.FinishFileSelection;
+    raise;
+  end;
+end;
+
+procedure TSessionController.BeginGameLoading(const FileName, DisplayName: string; StartPaused: Boolean; const SnapshotName: string; const PlatformId, PreferredPlatformId: string);
 begin
   var SourceName := FileName;
   if FileName.StartsWith('content://', True) then
     SourceName := FState.Session.Storage.Describe(FileName).Name;
-  if not LoadMediaInBackground(SourceName) then
-  begin
-    InstallCore(FView.NewCore(FileName), FileName, DisplayName, StartPaused);
-    if SnapshotName <> '' then
-      FView.LoadSnapshot(SnapshotName);
-    Exit;
-  end;
-
+  // Recognition can open large discs or unpack archives regardless of the
+  // filename extension. Keep the entire load off the UI thread for every core.
   // Capture only immutable arguments and storage for the worker. All form/core
   // replacement and lifetime checks run on the main thread.
   var Storage := FState.Session.Storage;
@@ -589,6 +641,8 @@ begin
   var Title := DisplayName;
   var Snapshot := SnapshotName;
   var Paused := StartPaused;
+  var TargetPlatform := PlatformId;
+  var PreferredPlatform := PreferredPlatformId;
   var Generation := FLoadGeneration;
   var CheckCancelled := NewLoadCancellation(FCancelLoad);
   FLoadingCore := True;
@@ -606,18 +660,26 @@ begin
       var
         Core: IEmulationCore;
         ErrorText: string;
+        Platforms: TArray<TCorePlatformOption>;
+        FailedPlatformId, LoadError: string;
       begin
         var Scope := TStorage.BeginReadCancellation(CheckCancelled);
         try
           CheckCancelled();
           var Stream := Storage.OpenRead(Path);
           try
-            Core := CreateEmulationCore(Stream, Storage, Path);
+            Core := CreateEmulationCore(Stream, Storage, Path, TargetPlatform, PreferredPlatform);
             CheckCancelled();
           finally
             Stream.Free;
           end;
         except
+          on E: ECoreSelectionRequired do
+          begin
+            Platforms := Copy(E.Platforms);
+            FailedPlatformId := E.FailedPlatformId;
+            LoadError := E.LoadError;
+          end;
           on E: Exception do
             ErrorText := E.Message;
         end;
@@ -637,12 +699,20 @@ begin
             if Generation <> FLoadGeneration then
               Exit;
 
+            if Length(Platforms) > 0 then
+            begin
+              ChoosePlatform(Path, Title, Paused, Snapshot, Platforms, FailedPlatformId, LoadError);
+              Exit;
+            end;
             try
               if ErrorText <> '' then
                 ShowRetroMessage(FView, Translate('Unable to open game: ') + TranslateCoreMessage(ErrorText))
               else
               try
                 InstallCore(Core, Path, Title, Paused);
+                FLaunchPlatform := TargetPlatform;
+                if FLaunchPlatform = '' then
+                  FLaunchPlatform := PreferredPlatform;
                 if Snapshot <> '' then
                   FView.LoadSnapshot(Snapshot);
               except

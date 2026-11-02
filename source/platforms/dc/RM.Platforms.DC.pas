@@ -12,6 +12,7 @@ const
 type
   TDCPlatform = class
   strict private
+    class function LoadDisc(Context: TCoreLoadContext): TCoreMatch; static;
     class var
       FRegistered: Boolean;
     class function Source(Context: TCoreLoadContext): TCoreMatch; static;
@@ -43,6 +44,17 @@ uses
 const
   DC_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
 
+class function TDCPlatform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
+begin
+  Result := TCoreMatch.Create('DC',
+    function: IEmulationCore
+    begin
+      Context.Stream.Position := 0;
+      Result := TDCCoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName, Context.TakeDisc);
+    end);
+  Result.Format.SystemId := 'dc';
+end;
+
 class function TDCPlatform.Source(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
@@ -58,12 +70,21 @@ begin
   if NativeDisc then
   begin
     if NativeDisc and not TDCCoreAdapter.IsDCDisc(Context.Disc) then
-      raise EReadError.Create('Not a Dreamcast disc: the boot track lacks the SEGA SEGAKATANA identifier');
+      Exit;
     Exit(TCoreMatch.Create('DC',
       function: IEmulationCore
       begin
         Result := TDCCoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName, Context.TakeDisc);
       end));
+  end;
+  if Playlist then
+  begin
+    try
+      Playlist := TDCCoreAdapter.IsDCDisc(Context.PlaylistDisc('dc'));
+    except
+      on E: EReadError do
+        Playlist := False;
+    end;
   end;
   if ELF or Playlist then
     Result := TCoreMatch.Create('DC',
@@ -77,11 +98,7 @@ class function TDCPlatform.Disc(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
   if Context.IsDiscSource and TDCCoreAdapter.IsDCDisc(Context.Disc) then
-    Result := TCoreMatch.Create('DC',
-      function: IEmulationCore
-      begin
-        Result := TDCCoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName, Context.TakeDisc);
-      end);
+    Result := LoadDisc(Context);
 end;
 
 class function TDCPlatform.Header(Context: TCoreLoadContext): TCoreMatch;
@@ -111,6 +128,7 @@ begin
   Registration.Add(TCoreLoadStage.Source, 10, Source);
   Registration.Add(TCoreLoadStage.Source, 40, Disc);
   Registration.Add(TCoreLoadStage.Header, 30, Header);
+  Registration.AddDiscPlatform('dc', LoadDisc);
   RegisterEmulationCore(Registration);
 end;
 

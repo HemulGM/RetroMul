@@ -125,7 +125,8 @@ implementation
 
 uses
   Core.Platforms, System.Hash, System.IOUtils, System.Math, System.StrUtils,
-  Core.Archive.Container, Core.MediaArchive, Core.ArchiveStorage, System.Generics.Collections, System.Generics.Defaults, Core.CD.CHD
+  Core.Archive.Container, Core.MediaArchive, Core.ArchiveStorage,
+  System.Generics.Collections, System.Generics.Defaults, Core.CD.CHD
   {$IFDEF ANDROID}, Core.Storage.Android{$ENDIF};
 
 var
@@ -163,7 +164,8 @@ function IsCDMediaSource(const Name: string; Stream: TStream): Boolean;
 begin
   Result := False;
   var Format: TCDMediaFormat;
-  if IsMediaArchive(Name) then Exit(TCDDisc.IsDiscContainer(Stream, Name));
+  if IsMediaArchive(Name) then
+    Exit(TCDDisc.IsDiscContainer(Stream, Name));
   if not MediaFormats.TryGetValue(ExtractFileExt(Name), Format) then
     Exit;
   if not Assigned(Format.Probe) then
@@ -313,7 +315,8 @@ function ReadCDPlaylist(Stream: TStream; const Storage: IStorage; const Location
     var NativeName := Name.Replace('\', PathDelim).Replace('/', PathDelim);
     if NativeName.Contains('://') then
       raise EReadError.Create('M3U expects a local disc image: ' + Name);
-    Result := TPath.GetFullPath(TPath.Combine(ExtractFilePath(Location), NativeName));
+    var NativeLocation := Location.Replace('\', PathDelim).Replace('/', PathDelim);
+    Result := TPath.GetFullPath(TPath.Combine(TPath.GetDirectoryName(NativeLocation), NativeName));
     if not Storage.Exists(Result) then
       raise EReadError.Create('Missing M3U disc: ' + Name);
   end;
@@ -823,6 +826,14 @@ begin
 
     FTracks[i].FileSector := Index1[i];
     FTracks[i].PregapLBA := Cursor;
+    if (i = 0) and (Index0[i] >= 0) then
+    begin
+      // Track 1 INDEX 01 defines LBA 0. Its stored INDEX 00 is negative LBA,
+      // just as for CDI; do not discard hidden audio before the first track.
+      FTracks[i].StoredPregap := Index1[i] - Index0[i];
+      FTracks[i].PregapAudio := FTracks[i].Audio;
+      FTracks[i].PregapLBA := -FTracks[i].StoredPregap;
+    end;
     if i > 0 then
     begin
       Inc(Cursor, PostGaps[i - 1]);
@@ -1124,7 +1135,9 @@ begin
         Item.ByteOffset := DataPosition;
         Item.FileSector := Pregap;
         // CDI start addresses include the 150-sector lead-in offset.
-        Item.PregapLBA := StartLBA;
+        Item.PregapLBA := StartLBA - 150;
+        Item.StoredPregap := Pregap;
+        Item.PregapAudio := Item.Audio;
         Item.StartLBA := StartLBA + Pregap - 150;
         if Item.StartLBA < 0 then
           Item.StartLBA := 0;

@@ -12,6 +12,7 @@ const
 type
   TPS1Platform = class
   strict private
+    class function LoadDisc(Context: TCoreLoadContext): TCoreMatch; static;
     class var
       FRegistered: Boolean;
     class function Source(Context: TCoreLoadContext): TCoreMatch; static;
@@ -43,21 +44,37 @@ uses
 const
   PS1_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
 
+class function TPS1Platform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
+begin
+  Result := TCoreMatch.Create('PS1',
+    function: IEmulationCore
+    begin
+      Context.Stream.Position := 0;
+      Result := TPS1CoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName, Context.TakeDisc);
+    end);
+  Result.Format.SystemId := 'ps1';
+end;
+
 class function TPS1Platform.Source(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
   if Context.HasExtension(['.m3u']) then
+  begin
+    try
+      if not TPS1CoreAdapter.IsPS1Disc(Context.PlaylistDisc('ps1')) then
+        Exit;
+    except
+      on E: EReadError do
+        Exit;
+    end;
     Exit(TCoreMatch.Create('PS1',
       function: IEmulationCore
       begin
         Result := TPS1CoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
       end));
+  end;
   if Context.IsDiscSource and TPS1CoreAdapter.IsPS1Disc(Context.Disc) then
-    Result := TCoreMatch.Create('PS1',
-      function: IEmulationCore
-      begin
-        Result := TPS1CoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName, Context.TakeDisc);
-      end);
+    Result := LoadDisc(Context);
 end;
 
 class function TPS1Platform.Header(Context: TCoreLoadContext): TCoreMatch;
@@ -85,6 +102,7 @@ begin
   var Registration := TEmulationCoreRegistration.Create('PS1', ['.exe']);
   Registration.Add(TCoreLoadStage.Source, 80, Source);
   Registration.Add(TCoreLoadStage.Header, 20, Header);
+  Registration.AddDiscPlatform('ps1', LoadDisc);
   RegisterEmulationCore(Registration);
 end;
 
@@ -99,7 +117,6 @@ class procedure TPS1Platform.RegisterRuntimeServices;
 begin
   var Service := Default(TPlatformServices);
   Service.LibraryFeatures := [TLibraryFeature.Playlists, TLibraryFeature.CueTracks];
-  Service.BackgroundExtensions := ['.m3u', '.cue', '.iso', '.chd', '.mds', '.nrg'];
   RegisterPlatformServices('ps1', Service);
 end;
 

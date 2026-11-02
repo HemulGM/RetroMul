@@ -5,10 +5,10 @@ interface
 uses
   System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Types,
   FMX.Controls, FMX.Forms, FMX.Layouts, FMX.Objects, FMX.StdCtrls,
-  FMX.Controls.Presentation;
+  FMX.Controls.Presentation, FMX.ListBox;
 
 type
-  TRetroDialogKind = (Information, Warning, Error, Confirmation, Loading);
+  TRetroDialogKind = (Information, Warning, Error, Confirmation, Loading, PlatformChoice);
 
   TRetroDialogChoice = (Accept, Alternative, Cancel);
 
@@ -19,12 +19,16 @@ type
     CircleBadge: TCircle;
     LabelBadge, LabelTitle, LabelMessage: TLabel;
     VertScrollBoxMessage: TVertScrollBox;
+    LayoutPlatform: TLayout;
+    LabelPlatform: TLabel;
+    ComboBoxPlatform: TComboBox;
     ButtonClose, ButtonCancel, ButtonAccept, ButtonAlternative: TButton;
   private
     FReady, FConfirmation, FLoading, FCustomActions, FArranging: Boolean;
     FBusyIndicator: TAniIndicator;
     FOnResult: TProc<Boolean>;
     FOnAlternative: TProc;
+    procedure PlatformChanged(Sender: TObject);
     procedure AcceptClick(Sender: TObject);
     procedure CancelClick(Sender: TObject);
     procedure AlternativeClick(Sender: TObject);
@@ -34,6 +38,7 @@ type
   public
     constructor Create(AOwner: TComponent); override;
     procedure Configure(const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>; const AcceptText: string = ''; const CancelText: string = ''; const AlternativeText: string = ''; const OnAlternative: TProc = nil);
+    procedure ConfigurePlatforms(const Names: TArray<string>);
     procedure FocusDefault;
     procedure HandleKey(var Key: Word; var KeyChar: WideChar);
   end;
@@ -48,6 +53,8 @@ function TranslateCoreMessage(const Text: string): string;
 procedure ShowRetroConfirmation(Owner: TComponent; const Text: string; const OnResult: TProc<Boolean>; const AcceptText: string = ''; const CancelText: string = '');
 
 procedure ShowRetroChoice(Owner: TComponent; const Text: string; const OnResult: TProc<TRetroDialogChoice>; const AcceptText, AlternativeText, CancelText: string);
+
+procedure ShowRetroPlatformChoice(Owner: TComponent; const Text: string; const Platforms: TArray<string>; const OnResult: TProc<Integer>);
 
 procedure ShowRetroLoading(Owner: TComponent; const Text: string; const OnCancel: TProc);
 
@@ -73,6 +80,8 @@ type
     Text: string;
     AcceptText, CancelText, AlternativeText: string;
     OnAlternative: TProc;
+    Platforms: TArray<string>;
+    OnPlatform: TProc<Integer>;
     Kind: TRetroDialogKind;
     OnResult: TProc<Boolean>;
   end;
@@ -96,7 +105,7 @@ type
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
-    procedure Enqueue(Requester: TComponent; const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>; const AcceptText: string = ''; const CancelText: string = ''; const AlternativeText: string = ''; const OnAlternative: TProc = nil);
+    procedure Enqueue(Requester: TComponent; const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>; const AcceptText: string = ''; const CancelText: string = ''; const AlternativeText: string = ''; const OnAlternative: TProc = nil; const Platforms: TArray<string> = nil; const OnPlatform: TProc<Integer> = nil);
   end;
 
 function FindHost(Form: TCustomForm; CreateIfMissing: Boolean): TRetroDialogHost;
@@ -152,8 +161,10 @@ begin
     begin
       Inc(Count);
       case UpCase(Token.Value[Length(Token.Value)]) of
-        'D', 'U': Pattern := Pattern + '( *[+-]?[0-9]+)';
-        'X': Pattern := Pattern + '( *[0-9A-Fa-f]+)';
+        'D', 'U':
+          Pattern := Pattern + '( *[+-]?[0-9]+)';
+        'X':
+          Pattern := Pattern + '( *[0-9A-Fa-f]+)';
       else
         Pattern := Pattern + '([^\r\n]*)';
       end;
@@ -233,9 +244,7 @@ begin
         Exit;
 
   // These prefixes wrap another error, rather than a filename or other data.
-  for var Prefix in TArray<string>.Create('Unable to open game: ', 'Autosave failed: ',
-    'Input error: ', 'Snapshot: ', 'CPS audio: ', 'CPS save: ', 'N64 save: ',
-    'PS1 audio: ', 'PS1 save: ', 'Dreamcast audio: ', 'Dreamcast save: ', 'NDS raster: ') do
+  for var Prefix in TArray<string>.Create('Unable to open game: ', 'Autosave failed: ', 'Input error: ', 'Snapshot: ', 'CPS audio: ', 'CPS save: ', 'N64 save: ', 'PS1 audio: ', 'PS1 save: ', 'Dreamcast audio: ', 'Dreamcast save: ', 'NDS raster: ', 'A7800: ', 'JAGUAR: ', 'A7800 audio: ', 'JAGUAR audio: ', 'Jaguar EEPROM: ') do
     if Text.StartsWith(Prefix) then
       Exit(Translate(Prefix) + TranslateCoreMessage(Text.Substring(Prefix.Length)));
 
@@ -296,6 +305,14 @@ begin
   var Host := FindHost(Owner, True);
   if Host <> nil then
     Host.FOnActivity := OnActivity;
+end;
+
+procedure ShowRetroPlatformChoice(Owner: TComponent; const Text: string; const Platforms: TArray<string>; const OnResult: TProc<Integer>);
+begin
+  var Host := FindHost(OwnerForm(Owner), True);
+  if Host <> nil then
+    Host.Enqueue(Owner, Text, TRetroDialogKind.PlatformChoice, nil,
+      'Continue', 'Cancel launch', '', nil, Platforms, OnResult);
 end;
 
 procedure ShowRetroLoading(Owner: TComponent; const Text: string; const OnCancel: TProc);
@@ -360,12 +377,18 @@ end;
 
 procedure TRetroDialog.Configure(const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>; const AcceptText, CancelText, AlternativeText: string; const OnAlternative: TProc);
 const
-  Titles: array[TRetroDialogKind] of string = ('Information', 'Warning', 'Error', 'Confirmation', 'Loading...');
-  Symbols: array[TRetroDialogKind] of string = ('i', '!', '!', '?', '');
+  Titles: array[TRetroDialogKind] of string = ('Information', 'Warning', 'Error', 'Confirmation', 'Loading...', 'Choose target platform');
+  Symbols: array[TRetroDialogKind] of string = ('i', '!', '!', '?', '', '?');
 begin
   FOnResult := OnResult;
   FOnAlternative := OnAlternative;
-  FConfirmation := Kind = TRetroDialogKind.Confirmation;
+  FConfirmation := Kind in [TRetroDialogKind.Confirmation, TRetroDialogKind.PlatformChoice];
+  LayoutPlatform.Visible := Kind = TRetroDialogKind.PlatformChoice;
+  ComboBoxPlatform.Items.Clear;
+  ComboBoxPlatform.ItemIndex := -1;
+  ComboBoxPlatform.OnChange := PlatformChanged;
+  LabelPlatform.Text := Translate('Target platform');
+  ButtonAccept.Enabled := not LayoutPlatform.Visible;
   FLoading := Kind = TRetroDialogKind.Loading;
   FCustomActions := (AcceptText <> '') or (CancelText <> '');
   FBusyIndicator.Visible := FLoading;
@@ -395,8 +418,27 @@ begin
   Arrange;
 end;
 
+procedure TRetroDialog.ConfigurePlatforms(const Names: TArray<string>);
+begin
+  for var Name in Names do
+    ComboBoxPlatform.Items.Add(Name);
+  ComboBoxPlatform.ItemIndex := -1;
+  ButtonAccept.Enabled := False;
+  Arrange;
+end;
+
+procedure TRetroDialog.PlatformChanged(Sender: TObject);
+begin
+  ButtonAccept.Enabled := not LayoutPlatform.Visible or (ComboBoxPlatform.ItemIndex >= 0);
+end;
+
 procedure TRetroDialog.FocusDefault;
 begin
+  if LayoutPlatform.Visible then
+  begin
+    ComboBoxPlatform.SetFocus;
+    Exit;
+  end;
   if FConfirmation or FLoading then
     ButtonCancel.SetFocus
   else
@@ -405,6 +447,8 @@ end;
 
 procedure TRetroDialog.AcceptClick(Sender: TObject);
 begin
+  if not ButtonAccept.Enabled then
+    Exit;
   var Callback := FOnResult;
   if Assigned(Callback) then
     Callback(True);
@@ -428,6 +472,27 @@ procedure TRetroDialog.HandleKey(var Key: Word; var KeyChar: WideChar);
 begin
   if (Key = vkEscape) {$IFDEF ANDROID} or (Key = vkHardwareBack){$ENDIF} then
     CancelClick(Self)
+  else if LayoutPlatform.Visible and ComboBoxPlatform.IsFocused and
+    (Key in [vkUp, vkDown, vkHome, vkEnd]) then
+  begin
+    case Key of
+      vkUp:
+        ComboBoxPlatform.ItemIndex := Max(0, ComboBoxPlatform.ItemIndex - 1);
+      vkDown:
+        ComboBoxPlatform.ItemIndex := Min(ComboBoxPlatform.Count - 1, ComboBoxPlatform.ItemIndex + 1);
+      vkHome:
+        ComboBoxPlatform.ItemIndex := 0;
+      vkEnd:
+        ComboBoxPlatform.ItemIndex := ComboBoxPlatform.Count - 1;
+    end;
+  end
+  else if (Key = vkReturn) and LayoutPlatform.Visible then
+  begin
+    if ButtonCancel.IsFocused or ButtonClose.IsFocused then
+      CancelClick(Self)
+    else
+      AcceptClick(Self);
+  end
   else if Key = vkReturn then
   begin
     if ButtonAlternative.Visible and ButtonAlternative.IsFocused then
@@ -483,8 +548,21 @@ begin
     var Stacked := ButtonAlternative.Visible and (W < 480);
     if Stacked then
       ActionHeight := 160;
-    var FixedHeight := Padding * 2 + 44 + 16 + 16 + ActionHeight;
-    var BodyHeight := Min(TextHeight, Max(0, Height - 32 - FixedHeight));
+    var HeaderHeight: Single := 44;
+    LabelTitle.TextSettings.WordWrap := LayoutPlatform.Visible and (W < 480);
+    if LabelTitle.TextSettings.WordWrap then
+    begin
+      HeaderHeight := 64;
+      LabelTitle.TextSettings.Font.Size := 18;
+    end
+    else
+      LabelTitle.TextSettings.Font.Size := 21;
+    TControl(LabelTitle.Parent).Height := HeaderHeight;
+    var FixedHeight := Padding * 2 + HeaderHeight + 16 + 16 + ActionHeight;
+    var ContentHeight := TextHeight;
+    if LayoutPlatform.Visible then
+      ContentHeight := ContentHeight + LayoutPlatform.Height;
+    var BodyHeight := Min(ContentHeight, Max(0, Height - 32 - FixedHeight));
     var H := FixedHeight + BodyHeight;
     // Center alignment places the card; its rows own all child geometry.
     PanelCard.BeginUpdate;
@@ -551,6 +629,7 @@ begin
     VertScrollBoxMessage.Content.BeginUpdate;
     try
       LabelMessage.Width := TextWidth;
+      LayoutPlatform.Width := TextWidth;
       VertScrollBoxMessage.Content.Width := Max(1, W - Padding * 2);
     finally
       VertScrollBoxMessage.Content.EndUpdate;
@@ -674,6 +753,8 @@ begin
     begin
       Complete(False, True, True);
     end);
+  if FActive.Kind = TRetroDialogKind.PlatformChoice then
+    FDialog.ConfigurePlatforms(FActive.Platforms);
   FDialog.Visible := True;
   FDialog.BringToFront;
   FDialog.FocusDefault;
@@ -686,11 +767,17 @@ begin
 
   var Callback := FActive.OnResult;
   var AlternativeCallback := FActive.OnAlternative;
+  var PlatformCallback := FActive.OnPlatform;
+  var PlatformIndex := -1;
+  if Confirmed then
+    PlatformIndex := FDialog.ComboBoxPlatform.ItemIndex;
   FreeAndNil(FActive);
   FCompleting := True;
   try
     if InvokeCallback then
-      if Alternative then
+      if Assigned(PlatformCallback) then
+        PlatformCallback(PlatformIndex)
+      else if Alternative then
       begin
         if Assigned(AlternativeCallback) then
           AlternativeCallback();
@@ -703,9 +790,9 @@ begin
   end;
 end;
 
-procedure TRetroDialogHost.Enqueue(Requester: TComponent; const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>; const AcceptText, CancelText, AlternativeText: string; const OnAlternative: TProc);
+procedure TRetroDialogHost.Enqueue(Requester: TComponent; const Text: string; Kind: TRetroDialogKind; const OnResult: TProc<Boolean>; const AcceptText, CancelText, AlternativeText: string; const OnAlternative: TProc; const Platforms: TArray<string>; const OnPlatform: TProc<Integer>);
 begin
-  if not Assigned(OnResult) then
+  if not Assigned(OnResult) and not Assigned(OnPlatform) then
   begin
     if (FActive <> nil) and (FActive.Text = Text) and (FActive.Kind = Kind) then
       Exit;
@@ -724,6 +811,8 @@ begin
   Request.CancelText := CancelText;
   Request.AlternativeText := AlternativeText;
   Request.OnAlternative := OnAlternative;
+  Request.Platforms := Copy(Platforms);
+  Request.OnPlatform := OnPlatform;
   if Requester <> nil then
     Requester.FreeNotification(Self);
   FQueue.Add(Request);

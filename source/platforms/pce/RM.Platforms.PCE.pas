@@ -8,6 +8,7 @@ uses
 type
   TPCEPlatform = class
   strict private
+    class function LoadDisc(Context: TCoreLoadContext): TCoreMatch; static;
     class var
       FRegistered: Boolean;
     class function DiscMatch(Context: TCoreLoadContext): TCoreMatch; static;
@@ -28,12 +29,23 @@ implementation
 
 uses
   RM.Settings.Catalog, Core.PlatformServices, System.StrUtils, Core.Emulation,
-  Core.Platforms, Core.Platforms.PCE.Adapter,
-  RM.Platforms.PCE.Settings, RM.Platforms.Presentation, RM.Platforms.PCE.Icons,
-  RM.Gamepad.Factory, RM.Platforms.PCE.Gamepads, RM.Input.Runtime,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.Platforms.PCE.SettingsHandler, RM.ControlsHelp.Content,
-  RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
+  Core.Platforms, Core.Platforms.PCE.Adapter, RM.Platforms.PCE.Settings,
+  RM.Platforms.Presentation, RM.Platforms.PCE.Icons, RM.Gamepad.Factory,
+  RM.Platforms.PCE.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
+  RM.Window.Layout, RM.Settings.Runtime, RM.Platforms.PCE.SettingsHandler,
+  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
+  System.Classes;
+
+class function TPCEPlatform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
+begin
+  Result := TCoreMatch.Create('PCECD',
+    function: IEmulationCore
+    begin
+      Context.Stream.Position := 0;
+      Result := TPCECoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName, Context.TakeDisc);
+    end);
+  Result.Format.SystemId := 'pcecd';
+end;
 
 class function TPCEPlatform.DiscMatch(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -60,18 +72,26 @@ begin
     Exit;
   var Folder := ExtractFileName(ExcludeTrailingPathDelimiter(ExtractFilePath(Context.SourceName)));
   if SameText(Folder, 'pcecd') or SameText(Folder, 'pcenginecd') then
+  begin
     Result := DiscMatch(Context);
+    Result.Confidence := TCoreMatchConfidence.Hint;
+  end;
 end;
 
 class function TPCEPlatform.Image(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
   if Context.HasExtension(['.pce', '.sgx']) then
+  begin
     Result := ImageMatch(Context, 'PCE',
       function(const Data: TBytes; Input: TStream): IEmulationCore
       begin
         Result := TPCECoreAdapter.Create(Input, Context.Storage, Context.RomName, nil, Context.SourceName);
       end);
+    Result.Format.SystemId := 'pce';
+    if Context.HasExtension(['.sgx']) or (Context.SelectedPlatform = 'sgx') then
+      Result.Format.SystemId := 'sgx';
+  end;
 end;
 
 class procedure TPCEPlatform.RegisterPlatforms;
@@ -97,6 +117,7 @@ begin
   Registration.Add(TCoreLoadStage.Source, 70, Disc);
   Registration.Add(TCoreLoadStage.Source, 90, FolderHint);
   Registration.Add(TCoreLoadStage.Image, 20, Image);
+  Registration.AddDiscPlatform('pcecd', LoadDisc);
   RegisterEmulationCore(Registration);
 end;
 

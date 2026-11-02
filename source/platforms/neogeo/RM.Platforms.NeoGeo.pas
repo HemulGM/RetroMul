@@ -8,6 +8,7 @@ uses
 type
   TNeoGeoPlatform = class
   strict private
+    class function LoadDisc(Context: TCoreLoadContext): TCoreMatch; static;
     class var
       FRegistered: Boolean;
     class function Header(Context: TCoreLoadContext): TCoreMatch; static;
@@ -33,6 +34,17 @@ uses
   RM.Platforms.NeoGeo.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
   RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
   RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
+
+class function TNeoGeoPlatform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
+begin
+  Result := TCoreMatch.Create('NeoGeoCD',
+    function: IEmulationCore
+    begin
+      Context.Stream.Position := 0;
+      Result := TNeoGeoCoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName, True);
+    end);
+  Result.Format.SystemId := 'neogeocd';
+end;
 
 class function TNeoGeoPlatform.Header(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -93,13 +105,9 @@ end;
 class function TNeoGeoPlatform.Disc(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
-  if Context.IsDiscSource then
-    Result := TCoreMatch.Create('NeoGeoCD',
-      function: IEmulationCore
-      begin
-        Context.Stream.Position := 0;
-        Result := TNeoGeoCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName, True);
-      end);
+  if Context.IsDiscSource and not Context.Disc.Track(1).Audio and
+    (Length(Context.Disc.ReadISOFile('IPL.TXT', 65536)) > 0) then
+    Result := LoadDisc(Context);
 end;
 
 class procedure TNeoGeoPlatform.RegisterPlatforms;
@@ -123,6 +131,7 @@ begin
   Registration.Add(TCoreLoadStage.Header, 80, Header);
   Registration.Add(TCoreLoadStage.Container, 30, Container);
   Registration.Add(TCoreLoadStage.Source, 100, Disc);
+  Registration.AddDiscPlatform('neogeocd', LoadDisc);
   RegisterEmulationCore(Registration);
 end;
 

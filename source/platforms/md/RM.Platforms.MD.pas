@@ -13,6 +13,7 @@ const
 type
   TMDPlatform = class
   strict private
+    class function LoadDisc(Context: TCoreLoadContext): TCoreMatch; static;
     class var
       FRegistered: Boolean;
     class function Header(Context: TCoreLoadContext): TCoreMatch; static;
@@ -32,14 +33,26 @@ implementation
 
 uses
   MD.Cartridge, RM.Settings.Catalog, MD.RomFormat, Core.Snapshots,
-  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.MD.Adapter, RM.Platforms.MD.Settings, RM.Platforms.Presentation,
-  RM.Platforms.MD.Icons, RM.Gamepad.Factory, RM.Platforms.MD.Gamepads,
-  MD.Console, RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout,
-  RM.Settings.Runtime, RM.ControlsHelp.Content, RM.Settings.Callouts,
-  RM.Settings.Devices, System.Classes;
+  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.MD.Adapter,
+  RM.Platforms.MD.Settings, RM.Platforms.Presentation, RM.Platforms.MD.Icons,
+  RM.Gamepad.Factory, RM.Platforms.MD.Gamepads, MD.Console, RM.Input.Runtime,
+  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
+  System.Classes;
 
 const
   MD_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
+
+class function TMDPlatform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
+begin
+  Result := TCoreMatch.Create('MDCD',
+    function: IEmulationCore
+    begin
+      Context.Stream.Position := 0;
+      Result := TMDCoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName, True);
+    end);
+  Result.Format.SystemId := 'segacd';
+end;
 
 class function TMDPlatform.Header(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -58,12 +71,7 @@ class function TMDPlatform.Disc(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
   if Context.IsDiscSource and Context.DiscSignature('SEGADISCSYSTEM') then
-    Result := TCoreMatch.Create('MDCD',
-      function: IEmulationCore
-      begin
-        Context.Stream.Position := 0;
-        Result := TMDCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName, True);
-      end);
+    Result := LoadDisc(Context);
 end;
 
 class procedure TMDPlatform.RegisterPlatforms;
@@ -88,6 +96,7 @@ begin
   var Registration := TEmulationCoreRegistration.Create('MD', ['.smd', '.gen', '.md', '.32x']);
   Registration.Add(TCoreLoadStage.Header, 120, Header);
   Registration.Add(TCoreLoadStage.Source, 60, Disc);
+  Registration.AddDiscPlatform('segacd', LoadDisc);
   RegisterEmulationCore(Registration);
 end;
 

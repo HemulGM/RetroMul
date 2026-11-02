@@ -1,0 +1,4 @@
+JAGUAR_BIOS RCDATA "firmware/jaguar.rom"
+JAGUAR_CD_BIOS RCDATA "firmware/jaguarcd.rom"
+JAGUAR_NVM_BIOS RCDATA "firmware/nvmrom.bin"
+JAGUAR_WAVE_ROM RCDATA "firmware/jerry-wave.rom"

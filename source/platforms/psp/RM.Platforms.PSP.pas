@@ -25,10 +25,10 @@ implementation
 
 uses
   RM.Settings.Catalog, RM.Settings.Platform, System.StrUtils, Core.Emulation,
-  Core.Platforms, Core.Platforms.PSP.Adapter,
-  Core.Platforms.PSP.Archive, PSP.Media, RM.Platforms.Presentation,
-  RM.Platforms.GBA.Icons, RM.Gamepad.Factory, RM.Platforms.PSP.Gamepads,
-  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  Core.Platforms, Core.Platforms.PSP.Adapter, Core.Platforms.PSP.Archive,
+  PSP.Media, RM.Platforms.Presentation, RM.Platforms.GBA.Icons,
+  RM.Gamepad.Factory, RM.Platforms.PSP.Gamepads, RM.Input.Runtime,
+  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
   System.Classes;
 
@@ -47,12 +47,20 @@ begin
   if Context.HasExtension(['.iso']) and TPSPDisc.Recognizes(Context.Stream) then
   begin
     var Saved := Context.Stream.Position;
-    var Disc := TPSPDisc.Create(Context.Stream);
     try
-      Suitable := Disc.IsPSP;
-      RestorePosition := Suitable;
+      try
+        var Disc := TPSPDisc.Create(Context.Stream);
+        try
+          Suitable := Disc.IsPSP;
+          RestorePosition := Suitable;
+        finally
+          Disc.Free;
+        end;
+      except
+        on E: EPSPFormat do
+          Suitable := False;
+      end;
     finally
-      Disc.Free;
       Context.Stream.Position := Saved;
     end;
   end;

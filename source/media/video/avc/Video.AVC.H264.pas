@@ -22,25 +22,34 @@ type
 
       TMotionBlock = array[0..15] of TMotion;
 
+      TBytePlanes = array[0..2] of TBytes;
+      TMotionPlanes = array[0..1] of TArray<TMotion>;
+      TSequences = array[0..31] of TH264SPS;
+      TPictureParams = array[0..255] of TH264PPS;
+      TPlaneIntegers = array[0..2] of Integer;
+      TNonZeroPlanes = array[0..2] of TArray<Integer>;
+
       TPicture = class
-        Pixels: array[0..2] of TBytes;
-        Half: array[0..2] of TBytes;
+        Pixels: TBytePlanes;
+        Half: TBytePlanes;
         HalfStride, HalfHeight: Integer;
         HalfReady: TBytes;
         FrameNum, POC: Integer;
         LongIndex: Integer;
         LongTerm: Boolean;
         Identity: NativeUInt;
-        Motion: array[0..1] of TArray<TMotion>;
+        Motion: TMotionPlanes;
         Intra: TArray<Boolean>;
       end;
 
       TWeight = record
         Value, Offset: Integer
       end;
+
+      TWeights = array[0..15, 0..2] of TWeight;
   private
-    FSPS: array[0..31] of TH264SPS;
-    FPPS: array[0..255] of TH264PPS;
+    FSPS: TSequences;
+    FPPS: TPictureParams;
     FS: TH264SPS;
     FP: TH264PPS;
     FRefs: TObjectList<TPicture>;
@@ -73,15 +82,15 @@ type
     FSkipped, FIs16, FTransform8: TArray<Boolean>;
     FPattern, FChromaMode, FCABACRefs: TArray<Integer>;
     FDifference: TArray<TMotion>;
-    FWeights: array[0..15, 0..2] of TWeight;
-    FWeights1: array[0..15, 0..2] of TWeight;
-    FWeightDenom: array[0..2] of Integer;
+    FWeights: TWeights;
+    FWeights1: TWeights;
+    FWeightDenom: TPlaneIntegers;
     FMotion: TArray<TMotion>;
     FMotion1, FDifference1: TArray<TMotion>;
     FCABACRefs1: TArray<Integer>;
     FDirect, FDirectBlocks: TArray<Boolean>;
     FMode: TArray<Integer>;
-    FNonZero: array[0..2] of TArray<Integer>;
+    FNonZero: TNonZeroPlanes;
     FIntra: TArray<Boolean>;
     FSlice, FQuant, FFilter, FFilterAlpha, FFilterBeta: TArray<Integer>;
     procedure NAL(const Data: TBytes; const Packet: TMediaPacket);

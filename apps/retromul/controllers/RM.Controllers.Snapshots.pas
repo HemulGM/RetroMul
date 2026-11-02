@@ -5,11 +5,21 @@
 interface
 
 uses
-  RM.Controllers.Base;
+  RM.Controllers.Base, Core.Emulation, System.Classes, FMX.Types;
 
 type
   TSnapshotsController = class(TMainController)
+  private
+    FSnapshotOperation: IEmulationSnapshotOperation;
+    FSnapshotCore: IEmulationCore;
+    FSnapshotTimer: TTimer;
+    FSnapshotOwner: TComponent;
+    FSnapshotLoading, FSnapshotCancelled: Boolean;
+    FSnapshotName: string;
+    function StartSnapshot(const Name: string; Loading: Boolean): Boolean;
+    procedure SnapshotTick(Sender: TObject);
   public
+    destructor Destroy; override;
     function GameSnapshotDirectory: string;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
@@ -30,10 +40,90 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.UITypes, FMX.Types, System.IOUtils,
+  System.SysUtils, System.UITypes, System.IOUtils,
   System.Math, System.Generics.Collections, System.Generics.Defaults,
-  FMX.Graphics, FMX.Dialogs, FMX.Menus, Core.Emulation, Core.Storage,
-  Core.SavePaths, RM.Dialogs, RM.Styles;
+  FMX.Graphics, FMX.Dialogs, FMX.Menus, Core.Storage,
+  Core.SavePaths, FMX.Image, RM.Dialogs, RM.Styles;
+
+destructor TSnapshotsController.Destroy;
+begin
+  if FSnapshotOperation <> nil then
+    FSnapshotOperation.CancelSnapshot;
+  FSnapshotTimer.Free;
+  if FSnapshotOwner <> nil then
+    CloseRetroLoading(FSnapshotOwner);
+  FSnapshotOwner.Free;
+  FSnapshotOperation := nil;
+  FSnapshotCore := nil;
+  inherited;
+end;
+
+function TSnapshotsController.StartSnapshot(const Name: string; Loading: Boolean): Boolean;
+begin
+  var Operation: IEmulationSnapshotOperation;
+  Result := Supports(FState.Session.Emulation, IEmulationSnapshotOperation, Operation);
+  if not Result then
+    Exit;
+  if FSnapshotOperation <> nil then
+    raise EInvalidOpException.Create(Translate('A snapshot operation is already running'));
+  Operation.BeginSnapshot(Name, Loading);
+  FSnapshotOperation := Operation;
+  FSnapshotCore := FState.Session.Emulation;
+  FSnapshotName := Name;
+  FSnapshotLoading := Loading;
+  FSnapshotCancelled := False;
+  // Controllers are freed after the form's owned components.
+  if FSnapshotOwner = nil then
+    FSnapshotOwner := TComponent.Create(nil);
+  if FSnapshotTimer = nil then
+  begin
+    FSnapshotTimer := TTimer.Create(nil);
+    FSnapshotTimer.Interval := 50;
+    FSnapshotTimer.OnTimer := SnapshotTick;
+  end;
+  FSnapshotTimer.Enabled := True;
+  var Text := Translate('Saving snapshot');
+  if Loading then
+    Text := Translate('Loading snapshot');
+  ShowRetroLoading(FSnapshotOwner, Text,
+    procedure
+    begin
+      FSnapshotCancelled := True;
+      Operation.CancelSnapshot;
+    end);
+end;
+
+procedure TSnapshotsController.SnapshotTick(Sender: TObject);
+begin
+  if FSnapshotOperation = nil then
+    Exit;
+  var Done, Total: UInt64;
+  var Error: string;
+  var SameSession := FState.Session.Emulation = FSnapshotCore;
+  if not SameSession then
+    FSnapshotOperation.CancelSnapshot;
+  if FSnapshotOperation.SnapshotStatus(Done, Total, Error) then
+  begin
+    if SameSession and (Total > 0) then
+      FView.SetStatus(Translate('Loading snapshot') + Format(' %d%%', [Done * 100 div Total]));
+    Exit;
+  end;
+  FSnapshotTimer.Enabled := False;
+  FSnapshotOperation := nil;
+  FSnapshotCore := nil;
+  CloseRetroLoading(FSnapshotOwner);
+  if not SameSession then
+    Exit;
+  if (Error <> '') and not FSnapshotCancelled then
+    ShowRetroMessage(FView, Error)
+  else if FSnapshotLoading and not FSnapshotCancelled then
+  begin
+    FState.Session.EmulationFaulted := False;
+    if not FView.UpdateFrame then
+      FView.LoadSnapshotPreview(FSnapshotName);
+  end;
+  FView.SyncActivity;
+end;
 
 function TSnapshotsController.GameSnapshotDirectory: string;
 begin
@@ -51,7 +141,8 @@ begin
   if not FState.Session.Emulation.SupportsSnapshots then
     raise ENotSupportedException.Create(Translate('Snapshots are not implemented by this core'));
 
-  FState.Session.Emulation.SaveSnapshot(Name);
+  if not StartSnapshot(Name, False) then
+    FState.Session.Emulation.SaveSnapshot(Name);
 end;
 
 procedure TSnapshotsController.LoadSnapshot(const Name: string);
@@ -62,6 +153,8 @@ begin
   if not FState.Session.Emulation.SupportsSnapshots then
     raise ENotSupportedException.Create(Translate('Snapshots are not implemented by this core'));
 
+  if StartSnapshot(Name, True) then
+    Exit;
   FState.Session.Emulation.LoadSnapshot(Name);
   FState.Session.EmulationFaulted := False;
   FView.SyncActivity;
@@ -321,15 +414,20 @@ end;
 
 procedure TSnapshotsController.AutosaveOnExit;
 begin
+  // Do not replace an autosave with the pre-load machine while reconstruction runs.
+  if FSnapshotOperation <> nil then
+    Exit;
   if FState.Autosave.OnExit and (FState.Session.Emulation <> nil) and
     not FState.Session.PendingAutosaveChoice and not FState.Session.PreserveOpeningAutosave and
     not FState.Session.EmulationFaulted and
     FState.Session.Emulation.SupportsSnapshots then
-    FView.SaveSnapshot(SNAPSHOT_AUTOSAVE);
+    FState.Session.Emulation.SaveSnapshot(SNAPSHOT_AUTOSAVE);
 end;
 
 procedure TSnapshotsController.PollAutosave;
 begin
+  if FSnapshotOperation <> nil then
+    Exit;
   if not FState.Autosave.Periodic or (FState.Session.Emulation = nil) or FState.Session.EmulationFaulted or
     FState.Session.OpeningRom or FState.Session.PendingAutosaveChoice or FState.Browser.ViewingLibrary or
     (FState.Settings.View <> nil) or (FState.Help.View <> nil) or

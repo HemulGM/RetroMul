@@ -20,6 +20,9 @@ uses
 const
   // The most pairs a compiled block takes.
   PS2VUBlockPairs = 32;
+  // An entry is compiled (or its compiled version reused) the second time
+  // a run starts a block there: re-uploaded microcode starts cold again.
+  PS2VUCompileHeat = 2;
 
 var
   // A blocked VU0 program's known spin loop takes its turns' cycles without
@@ -4610,7 +4613,7 @@ begin
       if Pair.Native = nil then
       begin
         Inc(Pair.Heat);
-        if Pair.Heat >= 16 then
+        if Pair.Heat >= PS2VUCompileHeat then
           Pair.Native := CompileBlock(PC);
       end;
     end;

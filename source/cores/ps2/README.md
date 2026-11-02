@@ -288,6 +288,11 @@ waiting for running code to return; the arena is bounded to 64 MiB.
 
 ## VU recompiler details
 
+A block is compiled (or a cached version of the same words reused) the
+second time a run starts at its entry (`PS2VUCompileHeat`): games that upload
+microcode often (Jak and Daxter) otherwise interpret millions of pairs a
+minute before an entry warms up again.
+
 The shared `HW.JIT` generator emits pipeline hazard checks, delayed flag
 queues, register commits, VI arithmetic, branches, memory operations and
 CLIP flag reads. Upper ADD/SUB/MUL/MADD/MSUB and cross products call the exact

@@ -259,8 +259,8 @@ begin
   if ((PC and 3) <> 0) or (FReadMap[PC shr 12] = nil) then
     Exit;
   var Next := FindBlock(PC);
-  if (Next = nil) or (Next.NativeInner = nil) or Next.Spin or Next.Poll or PollsWith(B, Next) or
-    PollsWith(Next, B) then
+  if (Next = nil) or (Next.NativeInner = nil) or Next.Spin or Next.Poll or (Next.CountKind <> 0) or
+    PollsWith(B, Next) or PollsWith(Next, B) then
     Exit;
   B.Chain[K] := Next;
   Result := Next;

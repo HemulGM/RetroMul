@@ -283,7 +283,16 @@ an event changes memory (devices only run at events). The run loop passes the
 turns up to the next event at once: as many whole turns as would run (for two
 blocks those ending before the event; the last runs as usual), with the same
 cycle and instruction counts. Jak and Daxter and Ratchet & Clank spend much
-of their idle time in such loops on INTC_STAT. Code is dropped with the decoded blocks,
+of their idle time in such loops on INTC_STAT. Delay loops are passed the
+same way (`SkipCountdowns`, `FindCountdown`): a block that branches back to
+its start by BNE (with zero or a register it does not write) or BGTZ and
+otherwise only counts down, a register by ADDIU/DADDIU -1 (before the branch
+or in its delay slot) or a RAM word by LW/ADDIU -1/SW/LW, with NOPs: the
+turns before the next event, but its last, take their cycles and leave the
+counter (and the word, its page's write generation) as they would; FFX and
+God of War spend millions of turns a minute so. `tests/cores/ps2/eemmi`
+compares 4000 such loops and near misses in deadline slices with and without
+it. Code is dropped with the decoded blocks,
 waiting for running code to return; the arena is bounded to 64 MiB.
 
 ## VU recompiler details

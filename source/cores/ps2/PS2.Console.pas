@@ -258,6 +258,9 @@ begin
   SIF.OnGuestCommand := IOP.GuestCommand;
   LoadFile.ImageReader := IOP.ImageAt;
   RunIOPModules := True;
+  // (As polling loops: the turns of a loop that only counts down pass at
+  // once, BIOS boot or not.)
+  CPU.SkipCountdowns := True;
   if Length(Config.BIOS) = PS2BIOSSize then
     CreateMachine;
   Reset;

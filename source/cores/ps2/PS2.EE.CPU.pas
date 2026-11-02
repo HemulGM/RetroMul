@@ -196,6 +196,16 @@ type
     PollFirst: PEEBlock;
     PollLoadCount: Integer;
     PollLoads: array[0..3] of TEEPollLoad;
+    // Only counts down to its exit (FindCountdown): CountKind 1, a register
+    // (CountReg) by ADDIU or DADDIU (CountWide) of -1, before its branch or
+    // in the delay slot (CountAfter); 2, a word at GPR[CountBase] +
+    // CountOffset, loaded into CountReg, decremented, stored and loaded into
+    // CountReg2 (ADDIU, before the branch). The branch goes on while the
+    // counter (or CountReg2) is not GPR[CountCmp] (BNE), or is above zero
+    // (BGTZ, CountCmp 255).
+    CountKind, CountReg, CountReg2, CountBase, CountCmp: Byte;
+    CountWide, CountAfter: Boolean;
+    CountOffset: Cardinal;
   end;
 
   TEEPageMap = array[0..EEPageCount - 1] of PByte;
@@ -298,6 +308,8 @@ type
     function PollCode(const Blocks: array of PEEBlock; LoopPC: Cardinal; var Loads: array of TEEPollLoad;
       out LoadCount: Integer): Boolean;
     procedure FindPoll(B: PEEBlock);
+    procedure FindCountdown(B: PEEBlock);
+    procedure SkipCountdown(B: PEEBlock);
     function PollsWith(First, Second: PEEBlock): Boolean;
     function PollQuiet(B: PEEBlock): Boolean;
     function JitEmitOwn(I: PEEInst; Stop: TJitLabel): Boolean;
@@ -473,6 +485,10 @@ type
     // Diagnostics: the cycles polling blocks were passed over in (exactly as
     // their turns would have run, see FindPoll).
     PollCycles: Int64;
+    // Turns of counting-down loops are passed over (SkipCountdown), and the
+    // cycles that took.
+    SkipCountdowns: Boolean;
+    CountdownCycles: Int64;
     // Diagnostics (BIOS boot): SYSCALLs taken to the guest kernel, interrupts
     // taken by line state (index: INT1 * 2 + INT0).
     SyscallLog: TStrings;
@@ -4639,6 +4655,7 @@ begin
   B.Chain[1] := nil;
   B.Heat := 0;
   FindPoll(B);
+  FindCountdown(B);
   B.Spin := (Count >= 2) and (Code[Count - 1] = 0) and ((Code[Count - 2] and $FFFF0000) = $10000000) and
     (Add32(PC + Cardinal(Count - 2) * 4 + 4, SX16To32(Code[Count - 2] and $FFFF) shl 2) = PC);
   for var K := 0 to Count - 3 do
@@ -4869,6 +4886,11 @@ begin
         end;
       end;
     end;
+    // A loop that only counts down: its turns before the deadline (or before
+    // its last one) pass at once, the counter as they would leave it.
+    if (B.CountKind <> 0) and SkipCountdowns and (Next = B.PC) and not FIntPending and not FExitRequest and
+      (Now^ < Deadline^) and (WatchPtr = nil) and (BlockProfile = nil) then
+      SkipCountdown(B);
     // A spin that only waits: nothing changes until the next event, so the
     // time up to the deadline passes at once.
     if B.Spin and SkipSpins and (Next = B.PC) and not FIntPending and not FExitRequest and (Now^ < Deadline^) then
@@ -5046,6 +5068,192 @@ begin
   B.PollFirst := nil;
   B.PollPair := False;
   B.Poll := PollCode([B], B.PC, B.PollLoads, B.PollLoadCount);
+end;
+
+// Whether B is a loop that only counts down to its exit (see TEEBlock's
+// Count fields): back to its start by its non-likely BNE or BGTZ, its other
+// instructions NOPs and the counter's; registers it compares with that it
+// does not write.
+procedure TEECPU.FindCountdown(B: PEEBlock);
+var
+  Others: array[0..3] of Integer;
+begin
+  B.CountKind := 0;
+  if (B.Count < 2) or ((B.Insts[B.Count - 1].Flags and IFSlot) = 0) then
+    Exit;
+  var Br := B.Insts + (B.Count - 2);
+  if (Br.Imm <> B.PC) or ((Br.Handler <> @TEECPU.OpBNE) and (Br.Handler <> @TEECPU.OpBGTZ)) then
+    Exit;
+  var OtherCount := 0;
+  for var K := 0 to B.Count - 1 do
+    if (K <> B.Count - 2) and (B.Insts[K].Handler <> @TEECPU.OpNOP) then
+    begin
+      if OtherCount > High(Others) then
+        Exit;
+      Others[OtherCount] := K;
+      Inc(OtherCount);
+    end;
+  // The register the branch tests (and the one it compares with).
+  var Tested, Cmp: Integer;
+  if Br.Handler = @TEECPU.OpBGTZ then
+  begin
+    Tested := Br.S;
+    Cmp := 255;
+  end
+  else
+  begin
+    Tested := Br.S;
+    Cmp := Br.T;
+  end;
+  if OtherCount = 1 then
+  begin
+    var I := B.Insts + Others[0];
+    if ((I.Handler <> @TEECPU.OpADDIU) and (I.Handler <> @TEECPU.OpDADDIU)) or (I.Imm <> $FFFFFFFF) or
+      (I.S <> I.T) or (I.T = 0) or (I.T > 31) then
+      Exit;
+    var C := Integer(I.T);
+    if (Cmp <> 255) and (Tested <> C) then
+    begin
+      // BNE x, counter.
+      Cmp := Tested;
+      Tested := Br.T;
+    end;
+    if (Tested <> C) or (Cmp = C) or ((Cmp <> 255) and (Cmp > 31)) then
+      Exit;
+    B.CountKind := 1;
+    B.CountReg := C;
+    B.CountCmp := Cmp;
+    B.CountWide := I.Handler = @TEECPU.OpDADDIU;
+    B.CountAfter := Others[0] = B.Count - 1;
+    Exit;
+  end;
+  if OtherCount <> 4 then
+    Exit;
+  var L1 := B.Insts + Others[0];
+  var Add := B.Insts + Others[1];
+  var St := B.Insts + Others[2];
+  var L2 := B.Insts + Others[3];
+  if (L1.Handler <> @TEECPU.OpLW) or (Add.Handler <> @TEECPU.OpADDIU) or (St.Handler <> @TEECPU.OpSW) or
+    (L2.Handler <> @TEECPU.OpLW) or (Others[3] > B.Count - 3) then
+    Exit;
+  var A := Integer(L1.T);
+  var V := Integer(L2.T);
+  var Base := Integer(L1.S);
+  if (A = 0) or (A > 31) or (V = 0) or (V > 31) or (Add.S <> A) or (Add.T <> A) or (Add.Imm <> $FFFFFFFF) or
+    (St.T <> A) or (St.S <> Base) or (L2.S <> Base) or (Base = A) or (Base = V) or (L1.Imm <> St.Imm) or
+    (L1.Imm <> L2.Imm) then
+    Exit;
+  if (Cmp <> 255) and (Tested <> V) then
+  begin
+    Cmp := Tested;
+    Tested := Br.T;
+  end;
+  if (Tested <> V) or ((Cmp <> 255) and ((Cmp > 31) or (Cmp = A) or (Cmp = V))) then
+    Exit;
+  B.CountKind := 2;
+  B.CountReg := A;
+  B.CountReg2 := V;
+  B.CountBase := Base;
+  B.CountOffset := L1.Imm;
+  B.CountCmp := Cmp;
+  B.CountWide := False;
+  B.CountAfter := False;
+end;
+
+// B (FindCountdown) about to turn again, nothing due before the deadline:
+// the turns that would start before it, but its last one, pass at once.
+// Turn J leaves the counter C0 - J; the branch goes on while it (before the
+// decrement where that is in the delay slot) is not the compared register
+// (equal as 64 bits: never unless that is a 32-bit value sign-extended, for
+// a 32-bit counter) or above zero.
+procedure TEECPU.SkipCountdown(B: PEEBlock);
+const
+  Never = High(Int64);
+begin
+  var Allowed := (Deadline^ - Now^ + B.Count - 1) div B.Count;
+  var C0: Int64;
+  var P: PByte := nil;
+  var A: Cardinal := 0;
+  if B.CountKind = 2 then
+  begin
+    A := Add32(Cardinal(S.GPR[B.CountBase].Lo), B.CountOffset);
+    P := FReadMap[A shr 12];
+    // (Not a word of the loop itself: its stores would change its code.)
+    if (P = nil) or (FWriteMap[A shr 12] <> P) or ((A and 3) <> 0) or
+      ((A - B.PC) < Cardinal(B.Count) * 4) then
+      Exit;
+    C0 := Integer(PCardinal(P + (A and $FFF))^);
+  end
+  else if B.CountWide then
+    C0 := Int64(S.GPR[B.CountReg].Lo)
+  else
+  begin
+    C0 := Integer(Cardinal(S.GPR[B.CountReg].Lo));
+    if UInt64(C0) <> S.GPR[B.CountReg].Lo then
+      Exit;
+  end;
+  // Turns up to and with the one that leaves the loop.
+  var Turns: Int64;
+  if B.CountCmp = 255 then
+  begin
+    if B.CountAfter then
+    begin
+      if C0 < 0 then
+        Exit;
+      Turns := C0 + 1;
+    end
+    else
+    begin
+      if C0 < 1 then
+        Exit;
+      Turns := C0;
+    end;
+  end
+  else
+  begin
+    var X := Int64(S.GPR[B.CountCmp].Lo);
+    if not B.CountWide and (X <> Integer(Cardinal(X))) then
+      Turns := Never
+    else
+    begin
+      var D: UInt64;
+      if B.CountWide then
+        D := UInt64(C0) - UInt64(X)
+      else
+        D := Cardinal(Cardinal(C0) - Cardinal(X));
+      if B.CountAfter then
+        Turns := Int64(Min(D, UInt64(Never - 1))) + 1
+      else if D = 0 then
+      begin
+        if B.CountWide then Turns := Never else Turns := Int64(1) shl 32;
+      end
+      else
+        Turns := Int64(Min(D, UInt64(Never)));
+    end;
+  end;
+  var K := Min(Turns - 1, Allowed);
+  if K <= 0 then
+    Exit;
+  if B.CountKind = 2 then
+  begin
+    var C := Cardinal(C0) - Cardinal(K);
+    PCardinal(P + (A and $FFF))^ := C;
+    Inc(FGenMap[A shr 12]^, Cardinal(K));
+    S.GPR[B.CountReg].Lo := SX32(C);
+    S.GPR[B.CountReg2].Lo := SX32(C);
+  end
+  else if B.CountWide then
+    S.GPR[B.CountReg].Lo := UInt64(C0 - K)
+  else
+    S.GPR[B.CountReg].Lo := SX32(Cardinal(C0) - Cardinal(K));
+  Inc(Now^, K * B.Count);
+  Inc(InstructionsExecuted, K * B.Count);
+  Inc(CountdownCycles, K * B.Count);
+  for var J := 1 to Min(K, Length(PCHistory)) do
+  begin
+    PCHistory[PCHistoryPos and 15] := B.PC;
+    Inc(PCHistoryPos);
+  end;
 end;
 
 // Whether First then Second (the next block where First runs on past its

@@ -331,6 +331,175 @@ begin
   Writeln(Format('%d random blocks over few registers (recompiler) match the handlers', [Runs]));
 end;
 
+// Loops that count down a register (ADDIU/DADDIU -1 before the branch or in
+// its delay slot, NOPs, BNE with zero or another register, BGTZ) or a word
+// (LW, ADDIU, SW, LW, BNE), and near misses (another step, offset, branch or
+// a compared register the loop writes), run in deadline slices with
+// SkipCountdowns and without (handlers and recompiler): registers, RAM, PC,
+// time, instructions and the last blocks' history the same.
+procedure CheckCountdowns(CPU: TEECPU; Bus: TTestBus; Cop2: TEECop2);
+type
+  TRun = record
+    GPR: array[0..31] of TPS2Reg128;
+    PC: Cardinal;
+    Time, Executed: Int64;
+    History: array[0..15] of Cardinal;
+    RAM: array[0..8191] of Byte;
+  end;
+const
+  Edges: array[0..9] of UInt64 = (0, 1, 2, UInt64(-1), $7FFFFFFF, $80000000, UInt64($FFFFFFFF80000000),
+    $100000005, UInt64($FFFFFFFF), 3000);
+var
+  Code: array[0..15] of Cardinal;
+  Start: array[0..31] of TPS2Reg128;
+  StartRAM: array[0..8191] of Byte;
+begin
+  var Skipped: Int64 := 0;
+  var Runs := 0;
+  for var Trial := 0 to 3999 do
+  begin
+    FillChar(Code, SizeOf(Code), 0);
+    var C := 1 + Rnd mod 6;         // counter
+    var X := 1 + Rnd mod 6;         // compared register
+    while X = C do X := 1 + Rnd mod 6;
+    var Nops := Rnd mod 4;
+    var N := 0;
+    var Step: Cardinal := $FFFF;  // -1
+    if Rnd mod 8 = 0 then Step := $FFFE;
+    var Wide := Rnd mod 3 = 0;
+    var AddOp: Cardinal := $09;
+    if Wide then AddOp := $19;
+    var Branch: Cardinal;
+    var Tested := C;
+    if Rnd mod 2 = 0 then
+    begin
+      // Register counter: the decrement first or in the delay slot.
+      var After := Rnd mod 2 = 0;
+      var Add := (AddOp shl 26) or (Cardinal(C) shl 21) or (Cardinal(C) shl 16) or Step;
+      if not After then begin Code[N] := Add; Inc(N); end;
+      Inc(N, Nops);
+      case Rnd mod 5 of
+        0: Branch := ($05 shl 26) or (Cardinal(C) shl 21);                         // BNE c, zero
+        1: Branch := ($05 shl 26) or (Cardinal(C) shl 16);                         // BNE zero, c
+        2: Branch := ($05 shl 26) or (Cardinal(C) shl 21) or (Cardinal(X) shl 16); // BNE c, x
+        3: Branch := ($07 shl 26) or (Cardinal(C) shl 21);                         // BGTZ c
+      else
+        Branch := ($01 shl 26) or (Cardinal(C) shl 21) or ($01 shl 16);            // BGEZ c (not one)
+      end;
+      Code[N] := Branch or (Cardinal(-(N + 1)) and $FFFF);
+      Inc(N);
+      if After then Code[N] := (AddOp shl 26) or (Cardinal(C) shl 21) or (Cardinal(C) shl 16) or Step;
+      Inc(N);
+      // Near miss: the loop writes the compared register too.
+      if Rnd mod 10 = 0 then Code[0] := ($09 shl 26) or (Cardinal(X) shl 21) or (Cardinal(X) shl 16) or 1;
+    end
+    else
+    begin
+      // A word at Offset(r7): LW c; ADDIU c; SW c; LW t; NOPs; BNE t, x.
+      var Offset := Cardinal(Rnd mod 64) * 4;
+      Tested := 1 + Rnd mod 6;
+      while (Tested = C) or (Tested = X) do Tested := 1 + Rnd mod 6;
+      Code[0] := ($23 shl 26) or (7 shl 21) or (Cardinal(C) shl 16) or Offset;
+      Code[1] := ($09 shl 26) or (Cardinal(C) shl 21) or (Cardinal(C) shl 16) or Step;
+      Code[2] := ($2B shl 26) or (7 shl 21) or (Cardinal(C) shl 16) or Offset;
+      if Rnd mod 12 = 0 then Code[2] := Code[2] + 4; // another word
+      Code[3] := ($23 shl 26) or (7 shl 21) or (Cardinal(Tested) shl 16) or Offset;
+      N := 4 + Nops;
+      Branch := ($05 shl 26) or (Cardinal(Tested) shl 21) or (Cardinal(X) shl 16);
+      if Rnd mod 3 = 0 then Branch := ($05 shl 26) or (Cardinal(Tested) shl 21); // BNE t, zero
+      Code[N] := Branch or (Cardinal(-(N + 1)) and $FFFF);
+      Inc(N, 2);
+    end;
+    // After the loop: a mark, then a branch to itself.
+    Code[N] := ($09 shl 26) or (8 shl 21) or (8 shl 16) or 1;
+    Code[N + 1] := $1000FFFF;
+    for var K := 0 to 31 do
+      for var W := 0 to 3 do
+        Start[K].UW[W] := Rnd;
+    Start[0] := Default(TPS2Reg128);
+    Start[7].Lo := UInt64($FFFFFFFF80001000);
+    Start[8].Lo := 0;
+    // Counters and compared values: small, edges, a little apart.
+    var Small := UInt64(Rnd mod 3000);
+    case Rnd mod 4 of
+      0: Start[C].Lo := Small;
+      1: Start[C].Lo := Edges[Rnd mod Length(Edges)];
+      2: Start[C].Lo := UInt64(Int64(Integer(Rnd mod 5000)));
+    else
+      Start[C].Lo := Start[C].Lo; // random 64 bits
+    end;
+    case Rnd mod 3 of
+      0: Start[X].Lo := 0;
+      1: Start[X].Lo := Start[C].Lo - Rnd mod 2000;
+    else
+      Start[X].Lo := Edges[Rnd mod Length(Edges)];
+    end;
+    for var K := 0 to High(StartRAM) do StartRAM[K] := Byte(Rnd);
+    if Rnd mod 2 = 0 then
+      PCardinal(@StartRAM[(Code[0] and $FFFF) mod 8192 and not 3])^ := Rnd mod 3000;
+    var Slices := 1 + Rnd mod 4;
+    var Slice := 1 + Int64(Rnd mod 20000);
+    var Runs3: array[0..2] of TRun;
+    for var Mode := 0 to 2 do
+    begin
+      for var K := 0 to N + 1 do PCardinal(@Bus.RAM[K * 4])^ := Code[K];
+      Move(StartRAM, Bus.RAM[4096], SizeOf(StartRAM));
+      Inc(Bus.Gens[0]);
+      Inc(Bus.Gens[1]);
+      CPU.UseJit := Mode = 2;
+      CPU.JitHeat := 1;
+      CPU.SkipCountdowns := Mode > 0;
+      CPU.InvalidateBlocks;
+      for var K := 0 to 31 do CPU.S.GPR[K] := Start[K];
+      CPU.SetPC($80000000);
+      FillChar(CPU.PCHistory, SizeOf(CPU.PCHistory), 0);
+      CPU.PCHistoryPos := 0;
+      Now := 0;
+      var Before := CPU.InstructionsExecuted;
+      var CyclesBefore := CPU.CountdownCycles;
+      for var K := 1 to Slices do
+      begin
+        Deadline := Now + Slice;
+        CPU.Run;
+      end;
+      if Mode > 0 then Inc(Skipped, CPU.CountdownCycles - CyclesBefore);
+      FillChar(Runs3[Mode], SizeOf(TRun), 0);
+      for var K := 0 to 31 do Runs3[Mode].GPR[K] := CPU.S.GPR[K];
+      Runs3[Mode].PC := CPU.S.PC;
+      Runs3[Mode].Time := Now;
+      Runs3[Mode].Executed := CPU.InstructionsExecuted - Before;
+      for var K := 0 to 15 do
+        Runs3[Mode].History[K] := CPU.PCHistory[(CPU.PCHistoryPos - 1 - K) and 15];
+      Move(Bus.RAM[4096], Runs3[Mode].RAM, SizeOf(StartRAM));
+    end;
+    for var Mode := 1 to 2 do
+      if not CompareMem(@Runs3[Mode], @Runs3[0], SizeOf(TRun)) then
+      begin
+        for var K := 0 to N + 1 do Write(IntToHex(Code[K], 8), ' ');
+        Writeln;
+        Writeln(Format('counter r%d %.16x compared r%d %.16x slices %d x %d', [C, Start[C].Lo, X, Start[X].Lo, Slices, Slice]));
+        Writeln(Format('pc %.8x/%.8x time %d/%d executed %d/%d', [Runs3[0].PC, Runs3[Mode].PC, Runs3[0].Time,
+          Runs3[Mode].Time, Runs3[0].Executed, Runs3[Mode].Executed]));
+        for var K := 0 to 31 do
+          if (Runs3[0].GPR[K].Lo <> Runs3[Mode].GPR[K].Lo) or (Runs3[0].GPR[K].Hi <> Runs3[Mode].GPR[K].Hi) then
+            Writeln(Format('r%d %.16x/%.16x', [K, Runs3[0].GPR[K].Lo, Runs3[Mode].GPR[K].Lo]));
+        for var K := 0 to 2047 do
+          if PCardinal(@Runs3[0].RAM[K * 4])^ <> PCardinal(@Runs3[Mode].RAM[K * 4])^ then
+            Writeln(Format('ram %x %.8x/%.8x', [K * 4, PCardinal(@Runs3[0].RAM[K * 4])^, PCardinal(@Runs3[Mode].RAM[K * 4])^]));
+        for var K := 0 to 15 do
+          if Runs3[0].History[K] <> Runs3[Mode].History[K] then
+            Writeln(Format('history %d %.8x/%.8x', [K, Runs3[0].History[K], Runs3[Mode].History[K]]));
+        raise Exception.CreateFmt('Countdown loop mismatch, trial %d mode %d', [Trial, Mode]);
+      end;
+    Inc(Runs);
+  end;
+  if Skipped = 0 then
+    raise Exception.Create('No countdown turns passed over');
+  CPU.SkipCountdowns := False;
+  Writeln(Format('%d countdown loops and near misses in deadline slices (handlers, recompiler): ' +
+    '%d cycles passed over, state the same', [Runs, Skipped]));
+end;
+
 begin
   try
     var Bus := TTestBus.Create;
@@ -396,6 +565,7 @@ begin
           [Ops, Runs, Copy(' (recompiler unavailable)', 1, Ord(not JitOK) * 100)]));
       CheckTransfers(CPU, Bus, Cop2);
       CheckBlocks(CPU, Bus, Cop2);
+    CheckCountdowns(CPU, Bus, Cop2);
     finally
       CPU.Free;
       Cop2.Free;

@@ -63,6 +63,7 @@ type
     // cycle: its start plus the cycles it took (VUs run at the EE clock).
     BusyUntil: Int64;
   end;
+  PPS2VUState = ^TPS2VUState;
 
   // The VF registers an instruction writes and reads, with field masks.
   TPS2VURegUse = record
@@ -4935,6 +4936,17 @@ begin
   Result := False;
 end;
 
+// Whether A and B are the same but for the cycle count (the words before and
+// after it, their padding included).
+function SameState(const A, B: TPS2VUState): Boolean;
+begin
+  // (Cycles is aligned to 8 bytes, the record's size a multiple of 8.)
+  var Head := Integer(NativeInt(@PPS2VUState(nil).Cycles));
+  var Tail := Head + SizeOf(Int64);
+  Result := SameWords(PUInt64(@A), PUInt64(@B), Head div 8) and
+    SameWords(PUInt64(PByte(@A) + Tail), PUInt64(PByte(@B) + Tail), (SizeOf(TPS2VUState) - Tail) div 8);
+end;
+
 // Spins' turn of Pairs pairs (FSpinPC) from state Before (and those integer
 // unit fields) came back: a known loop (FSpinValid) if it left everything
 // as it found it but the cycle count, with nothing pending before or after
@@ -4950,9 +4962,7 @@ begin
     C.S.EndPending or C.FKickPending or (C.FLoadReg <> LoadReg) or
     (C.FBranchReg <> BranchReg) or (C.FLoadOld <> LoadOld) or (C.FBranchOld <> BranchOld) then
     Exit;
-  var Same := Before;
-  Same.Cycles := C.S.Cycles;
-  if not CompareMem(@Same, @C.S, SizeOf(Same)) then
+  if not SameState(Before, C.S) then
     Exit;
   // (No VF result was pending at the start; the latest ones the same after:
   // the turn wrote none.)
@@ -4984,19 +4994,13 @@ end;
 // with nothing pending and the loop's code unchanged: a turn now takes the
 // same pairs and cycles back to the same state.
 function TPS2VU0.SpinKnown: Boolean;
-var
-  Here: TPS2VUState;
 begin
   Result := False;
   if not FSpinValid then
     Exit;
   var C := FCore;
   if C.FKickPending or (C.FLoadReg <> FSpinLoadReg) or (C.FBranchReg <> FSpinBranchReg) or
-    (C.FLoadOld <> FSpinLoadOld) or (C.FBranchOld <> FSpinBranchOld) then
-    Exit;
-  Here := C.S;
-  Here.Cycles := FSpinState.Cycles;
-  if not CompareMem(@Here, @FSpinState, SizeOf(Here)) then
+    (C.FLoadOld <> FSpinLoadOld) or (C.FBranchOld <> FSpinBranchOld) or not SameState(C.S, FSpinState) then
     Exit;
   for var R := 0 to 31 do
     if C.FReadyAny[R] > C.S.Cycles then

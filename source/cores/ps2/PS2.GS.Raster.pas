@@ -293,6 +293,7 @@ type
     function SpriteTexel(I: Integer): Cardinal; inline;
     function SpriteRowsFit: Boolean;
     procedure ShadeSpriteRow(Y, X0, X1: Integer; Z: Cardinal; R0, G0, B0, A0, F: Integer);
+    procedure ShadeSpriteRowPlain(Y, X0, X1: Integer; Z: Cardinal; R0, G0, B0, A0: Integer);
     procedure SetLod(Q: Single); inline;
     function ClampCoord(C, Size, Mode, MinC, MaxC: Integer): Integer; inline;
   public
@@ -2969,6 +2970,110 @@ begin
     ((((TopGA * (16 - FV) + BottomGA * FV) shr 8) and $00FF00FF) shl 8);
 end;
 
+// ShadeSpriteRow where the colour is the texture function's (modulate or
+// decal) alone and every pixel passing the depth test is written (as its
+// steps leave the rest: the values of 0..255 the clamp keeps).
+procedure TPS2GSDrawer.ShadeSpriteRowPlain(Y, X0, X1: Integer; Z: Cardinal; R0, G0, B0, A0: Integer);
+begin
+  var Data := PCardinal(FMemory.Data);
+  if Z > FD.ZMax then
+    Z := FD.ZMax;
+  var ZTest := FD.ZTST;
+  if ZTest = 0 then
+    Exit;
+  var ZKeep: Cardinal := 0;
+  if FD.ZPSM = PSMZ24 then
+    ZKeep := $FF000000;
+  var WriteZ := not FD.ZMSK;
+  var Modulate := FD.TFX = 0;
+  var TCC := FD.TCC;
+  var Linear := FSpriteLinear;
+  var Offsets := FSpriteOffsets;
+  var TexMask := FSpriteMask;
+  var RowA0 := FRowA0;
+  var RowA1 := FRowA1;
+  var RowO0 := FRowO0;
+  var RowO1 := FRowO1;
+  var FV := FRowFV;
+  var FRowA := FFrameAddr.Base + ((Cardinal(Y) shr FFrameAddr.HShift) * FFrameAddr.Width) shl FFrameAddr.PageShift;
+  var FRowO := (Cardinal(Y) and FFrameAddr.HMask) shl FFrameAddr.WShift;
+  var ZRowA := FDepthAddr.Base + ((Cardinal(Y) shr FDepthAddr.HShift) * FDepthAddr.Width) shl FDepthAddr.PageShift;
+  var ZRowO := (Cardinal(Y) and FDepthAddr.HMask) shl FDepthAddr.WShift;
+  var FOffsets := FFrameAddr.Offsets;
+  var ZOffsets := FDepthAddr.Offsets;
+  var FWShift := FFrameAddr.WShift; var FPageShift := FFrameAddr.PageShift;
+  var FWMask := FFrameAddr.WMask; var FMask := FFrameAddr.Mask;
+  var ZWShift := FDepthAddr.WShift; var ZPageShift := FDepthAddr.PageShift;
+  var ZWMask := FDepthAddr.WMask; var ZMask := FDepthAddr.Mask;
+  var C: ^TPS2GSSpriteColumn := @FSpriteColumns[X0 - FSpriteX0];
+  for var X := X0 to X1 - 1 do
+  begin
+    var CX := Cardinal(X);
+    var ZA := (ZRowA + (CX shr ZWShift) shl ZPageShift + ZOffsets[ZRowO + (CX and ZWMask)]) and ZMask;
+    if ZTest <> 1 then
+    begin
+      var Old := Data[ZA] and not ZKeep;
+      if (Z < Old) or ((ZTest = 3) and (Z = Old)) then
+      begin
+        Inc(C);
+        Continue;
+      end;
+    end;
+    var T := Data[(C.A0 + RowA0 + Offsets[RowO0 + C.O0]) and TexMask];
+    if Linear and ((C.FU or FV) <> 0) then
+    begin
+      var FU := C.FU;
+      var TB := T;
+      var TC := T;
+      var TD := T;
+      if FU <> 0 then
+      begin
+        TB := Data[(C.A1 + RowA0 + Offsets[RowO0 + C.O1]) and TexMask];
+        if FV <> 0 then
+        begin
+          TC := Data[(C.A0 + RowA1 + Offsets[RowO1 + C.O0]) and TexMask];
+          TD := Data[(C.A1 + RowA1 + Offsets[RowO1 + C.O1]) and TexMask];
+        end;
+      end
+      else
+        TC := Data[(C.A0 + RowA1 + Offsets[RowO1 + C.O0]) and TexMask];
+      var TopRB := (T and $00FF00FF) * (16 - FU) + (TB and $00FF00FF) * FU;
+      var BottomRB := (TC and $00FF00FF) * (16 - FU) + (TD and $00FF00FF) * FU;
+      var TopGA := ((T shr 8) and $00FF00FF) * (16 - FU) + ((TB shr 8) and $00FF00FF) * FU;
+      var BottomGA := ((TC shr 8) and $00FF00FF) * (16 - FU) + ((TD shr 8) and $00FF00FF) * FU;
+      T := (((TopRB * (16 - FV) + BottomRB * FV) shr 8) and $00FF00FF) or
+        ((((TopGA * (16 - FV) + BottomGA * FV) shr 8) and $00FF00FF) shl 8);
+    end;
+    var R, G, B, A: Integer;
+    A := A0;
+    if Modulate then
+    begin
+      R := (R0 * Integer(T and $FF)) shr 7;
+      G := (G0 * Integer((T shr 8) and $FF)) shr 7;
+      B := (B0 * Integer((T shr 16) and $FF)) shr 7;
+      if TCC then
+        A := (A0 * Integer(T shr 24)) shr 7;
+      if R > 255 then R := 255;
+      if G > 255 then G := 255;
+      if B > 255 then B := 255;
+      if A > 255 then A := 255;
+    end
+    else
+    begin
+      R := Integer(T and $FF);
+      G := Integer((T shr 8) and $FF);
+      B := Integer((T shr 16) and $FF);
+      if TCC then
+        A := Integer(T shr 24);
+    end;
+    var FA := (FRowA + (CX shr FWShift) shl FPageShift + FOffsets[FRowO + (CX and FWMask)]) and FMask;
+    Data[FA] := Cardinal(R) or (Cardinal(G) shl 8) or (Cardinal(B) shl 16) or (Cardinal(A and $FF) shl 24);
+    if WriteZ then
+      Data[ZA] := (Data[ZA] and ZKeep) or (Z and not ZKeep);
+    Inc(C);
+  end;
+end;
+
 // One channel of the blend (A - B) * C / 128 + D; A, B and D select the
 // source colour S (0), the destination colour D (1) or zero.
 function BlendTerm(SelA, S, D, SelB, C, SelD: Integer): Integer; inline;
@@ -3003,6 +3108,14 @@ procedure TPS2GSDrawer.ShadeSpriteRow(Y, X0, X1: Integer; Z: Cardinal; R0, G0, B
 var
   Mask: Cardinal;
 begin
+  // (Without an alpha test that can fail, fog, blending, destination alpha
+  // test, mask or FBA: the plain loop.)
+  if (not FD.ATE or (FD.ATST = 1)) and not FD.FGE and not FD.ABE and not FD.DATE and (FD.FBMSK = 0) and
+    not FD.FBA and (FD.TFX <= 1) then
+  begin
+    ShadeSpriteRowPlain(Y, X0, X1, Z, R0, G0, B0, A0);
+    Exit;
+  end;
   var Data := PCardinal(FMemory.Data);
   if Z > FD.ZMax then
     Z := FD.ZMax;

@@ -493,14 +493,22 @@ begin
         end;
       var FBP := Random(64);
       var FBW := 4 + Random(5);
-      Add(GSRegFRAME_1, UInt64(FBP) or (UInt64(FBW) shl 16) or (UInt64(Random(2) * Random(MaxInt)) shl 32));
+      // A third of them plain: colour from the texture function alone (no
+      // alpha test that fails, fog, blending, destination alpha test, mask
+      // or FBA).
+      var Plain := N mod 3 = 0;
+      var Masked := UInt64(Random(2) * Random(MaxInt));
+      if Plain then Masked := 0;
+      Add(GSRegFRAME_1, UInt64(FBP) or (UInt64(FBW) shl 16) or (Masked shl 32));
       Add(GSRegZBUF_1, 256 or (UInt64(Random(2)) shl 24) or (UInt64(Random(2)) shl 32));
-      Add(GSRegTEST_1, UInt64(Random(2)) or (UInt64(Random(8)) shl 1) or (UInt64(Random(256)) shl 4) or
+      var Test := UInt64(Random(2)) or (UInt64(Random(8)) shl 1) or (UInt64(Random(256)) shl 4) or
         (UInt64(Random(4)) shl 12) or (UInt64(Random(2)) shl 14) or (UInt64(Random(2)) shl 15) or $10000 or
-        (UInt64(Random(4)) shl 17));
+        (UInt64(Random(4)) shl 17);
+      if Plain then Test := (Test and not UInt64($C00F)) or (UInt64(Random(2)) * 3);
+      Add(GSRegTEST_1, Test);
       Add(GSRegALPHA_1, UInt64(Random(256)) or (UInt64(Random(256)) shl 32));
       Add(GSRegPABE, Random(2));
-      Add(GSRegFBA_1, Random(2));
+      Add(GSRegFBA_1, Random(2) * Ord(not Plain));
       Add(GSRegCOLCLAMP, Random(2));
       Add(GSRegFOGCOL, Random($1000000));
       Add(GSRegSCISSOR_1, UInt64(Random(32)) or (UInt64(200 + Random(56)) shl 16) or (UInt64(Random(32)) shl 32) or
@@ -513,12 +521,14 @@ begin
         TBP := FBP * 32;
         TBW := FBW;
       end;
+      var TFX := UInt64(Random(4));
+      if Plain then TFX := TFX and 1;
       Add(GSRegTEX0_1, UInt64(TBP) or (UInt64(TBW) shl 14) or (UInt64(8 + Random(3)) shl 26) or
-        (UInt64(8 + Random(3)) shl 30) or (UInt64(Random(2)) shl 34) or (UInt64(Random(4)) shl 35));
+        (UInt64(8 + Random(3)) shl 30) or (UInt64(Random(2)) shl 34) or (TFX shl 35));
       Add(GSRegTEX1_1, UInt64(Random(2)) * $60);
       Add(GSRegCLAMP_1, UInt64(Random(3)) or (UInt64(Random(3)) shl 2) or (UInt64(Random(256)) shl 4) or
         (UInt64(256 + Random(768)) shl 14) or (UInt64(Random(256)) shl 24) or (UInt64(256 + Random(768)) shl 34));
-      Add(GSRegPRIM, 6 or $10 or (UInt64(Random(2)) shl 5) or (UInt64(Random(2)) shl 6) or $100);
+      Add(GSRegPRIM, 6 or $10 or (UInt64(Random(2) * Ord(not Plain)) shl 5) or (UInt64(Random(2) * Ord(not Plain)) shl 6) or $100);
       // UV near each pixel's own place (a texel or less away), or anywhere.
       var X0 := Random(250 * 16);
       var Y0 := Random(250 * 16);

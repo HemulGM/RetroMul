@@ -1,0 +1,1186 @@
+#version 450
+// The GE's rasterizer and pixel pipeline, the same arithmetic as
+// PSP.GE.Raster and PSP.GE.Texture on the CPU, bit for bit. A pass is a run
+// of primitives with one render target, binned by 16x16 pixel tiles: one
+// workgroup per tile, one invocation per pixel walks the tile's primitives in
+// order, so each pixel sees them as the CPU draws them.
+//
+// Delphi semantics kept: Integer is int, Cardinal is uint, `div` truncates,
+// `shr` on an Integer is a logical shift. Single op Single and Integer op
+// Single are single precision; anything with a Double or a real literal is
+// double precision. Round is round-half-even to Int64, Trunc truncates, and
+// both give Low(Int64) for NaN or out of range; Floor is Integer(Trunc(x))
+// minus one for negative non-integers.
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float64 : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_8bit_storage : require
+#include "FloatControls.glsl"
+#include "SoftDouble.glsl"
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, binding = 0) buffer Vram32 { uint vram32[]; };
+layout(std430, binding = 1) buffer Vram16 { uint16_t vram16[]; };
+layout(std430, binding = 2) readonly buffer Vram8 { uint8_t vram8[]; };
+layout(std430, binding = 3) readonly buffer Prims { uint prims[]; };
+layout(std430, binding = 4) readonly buffer States { uint states[]; };
+layout(std430, binding = 5) readonly buffer Data8 { uint8_t data8[]; };
+layout(std430, binding = 6) readonly buffer Data32 { uint data32[]; };
+// Per pass: (first, count) of every tile, row by row, into a list of primitive indices.
+layout(std430, binding = 7) readonly buffer Bins { uint bins[]; };
+
+layout(push_constant) uniform Pass
+{
+  uint table, tilesX;
+  int x1, y1, x2, y2;
+} pc;
+
+#include "PSPGEState.glsl"
+
+const uint VramMask = 0x1FFFFFu;
+
+// ---- Delphi numerics ------------------------------------------------------
+
+const double Int64Limit = 9223372036854775808.0lf;
+
+int64_t truncD(double x)
+{
+  if (!(abs(x) < Int64Limit))
+    return int64_t(0x8000000000000000ul);
+  return int64_t(x);
+}
+
+int64_t roundD(double x)
+{
+  if (!(abs(x) < Int64Limit))
+    return int64_t(0x8000000000000000ul);
+  return int64_t(roundEven(x));
+}
+
+int roundRasterD(double x)
+{
+  precise double r = roundEven(x);
+  if (!(r >= -2147483648.0lf && r < 2147483648.0lf))
+    return int(0x80000000u);
+  return int(r);
+}
+
+int floorD(double x)
+{
+  int r = int(truncD(x));
+  if (!isnan(x) && !isinf(x) && x < 0.0lf && x != trunc(x))
+    r--;
+  return r;
+}
+
+int floorF(float x)
+{
+  return floorD(double(x));
+}
+
+int clamp255(int v)
+{
+  return v < 0 ? 0 : (v > 255 ? 255 : v);
+}
+
+int shr(int v, uint n)
+{
+  return int(uint(v) >> n);
+}
+
+// ---- Guest memory as the texture unit reads it ----------------------------
+
+uint g_texSource, g_texBase, g_texData, g_clutData;
+int g_vramShift;
+
+// PSP.Memory.PSPDepthOffset: logical depth mirror to physical EDRAM bytes.
+uint depthOffset(uint i, int shift)
+{
+  if (shift == 0)
+  {
+    uint bank = i & 0x600u;
+    if (bank == 0u || bank == 0x600u)
+      i ^= 0x600u;
+  }
+  else
+  {
+    uint mask = (1u << uint(shift)) - 0x20u;
+    uint bits = ((i & (mask >> 1) & ~0x3Fu) << 1) | (((~i) & 0x20u) << 1) |
+      ((i >> uint(shift - 6)) & 0x20u);
+    i = ((i ^ (1u << uint(shift + 3))) & ~mask) | bits;
+  }
+  return i & VramMask;
+}
+
+uint texAddress(uint address)
+{
+  if (g_texSource != 0u)
+    return g_texData + (address - g_texBase);
+  uint i = address & VramMask;
+  if ((address & 0x1FA00000u) == 0x04200000u)
+  {
+    if ((address & 0x400000u) != 0u)
+      i = depthOffset(i, g_vramShift);
+    else
+      i ^= g_vramShift == 0 ? 0x600u : ((1u << uint(g_vramShift + 3)) | 0x40u);
+  }
+  return i;
+}
+
+uint texRead8(uint address)
+{
+  uint p = texAddress(address);
+  return g_texSource == 0u ? uint(vram8[p]) : uint(data8[p]);
+}
+
+// The CPU maps the starting address, then reads a contiguous halfword/word.
+uint texRead16(uint address)
+{
+  uint p = texAddress(address);
+  if (g_texSource == 0u)
+    return uint(vram8[p]) | (uint(vram8[p + 1u]) << 8);
+  return uint(data8[p]) | (uint(data8[p + 1u]) << 8);
+}
+
+uint texRead32(uint address)
+{
+  uint p = texAddress(address);
+  if (g_texSource == 0u)
+    return uint(vram8[p]) | (uint(vram8[p + 1u]) << 8) | (uint(vram8[p + 2u]) << 16) | (uint(vram8[p + 3u]) << 24);
+  return uint(data8[p]) | (uint(data8[p + 1u]) << 8) | (uint(data8[p + 2u]) << 16) | (uint(data8[p + 3u]) << 24);
+}
+
+uint clutByte(uint offset)
+{
+  return uint(data8[g_clutData + offset]);
+}
+
+// ---- PSP.GE.Texture -------------------------------------------------------
+
+uint decode16(int format, uint p)
+{
+  if (format == 0)
+  {
+    uint r = p & 0x1Fu, g = (p >> 5) & 0x3Fu, b = (p >> 11) & 0x1Fu;
+    return 0xFF000000u | ((r << 3) | (r >> 2)) | (((g << 2) | (g >> 4)) << 8) | (((b << 3) | (b >> 2)) << 16);
+  }
+  if (format == 1)
+  {
+    uint r = p & 0x1Fu, g = (p >> 5) & 0x1Fu, b = (p >> 10) & 0x1Fu;
+    uint result = ((r << 3) | (r >> 2)) | (((g << 3) | (g >> 2)) << 8) | (((b << 3) | (b >> 2)) << 16);
+    if ((p & 0x8000u) != 0u)
+      result |= 0xFF000000u;
+    return result;
+  }
+  uint r = p & 0xFu, g = (p >> 4) & 0xFu, b = (p >> 8) & 0xFu, a = (p >> 12) & 0xFu;
+  return (r * 17u) | ((g * 17u) << 8) | ((b * 17u) << 16) | ((a * 17u) << 24);
+}
+
+uint clutLookup(uint s, uint index, int level)
+{
+  uint i = ((index >> uint(stInt(s, ST_CLUTSHIFT))) & uint(stInt(s, ST_CLUTMASK))) | (uint(stInt(s, ST_CLUTOFFSET)) & 0x1FFu);
+  i += (uint(level) * states[s + ST_CLUTSTEP]) & 0x1FFu;
+  if (stInt(s, ST_CLUTFORMAT) == 3)
+  {
+    uint o = (i & 0xFFu) * 4u;
+    return clutByte(o) | (clutByte(o + 1u) << 8) | (clutByte(o + 2u) << 16) | (clutByte(o + 3u) << 24);
+  }
+  uint o = (i & 0x1FFu) * 2u;
+  return decode16(stInt(s, ST_CLUTFORMAT), clutByte(o) | (clutByte(o + 1u) << 8));
+}
+
+uint texelOffset(bool swizzle, int bufWidth, int x, int y, int bits)
+{
+  int rowBytes = (bufWidth * bits) / 8;
+  int byteX = (x * bits) / 8;
+  if (swizzle)
+  {
+    int blockX = byteX >> 4;
+    int blockY = y >> 3;
+    int blocksPerRow = rowBytes >> 4;
+    return uint(((blockY * blocksPerRow + blockX) << 7) + ((y & 7) << 4) + (byteX & 15));
+  }
+  return uint(y * rowBytes + byteX);
+}
+
+void splitDXT(uint c, out int r, out int g, out int b)
+{
+  r = int((c >> 11) & 0x1Fu) << 3;
+  g = int((c >> 5) & 0x3Fu) << 2;
+  b = int(c & 0x1Fu) << 3;
+}
+
+uint dxtColor(uint c0, uint c1, uint index)
+{
+  int r0, g0, b0, r1, g1, b1;
+  splitDXT(c0, r0, g0, b0);
+  splitDXT(c1, r1, g1, b1);
+  if (index == 0u)
+    return uint(r0) | (uint(g0) << 8) | (uint(b0) << 16) | 0xFF000000u;
+  if (index == 1u)
+    return uint(r1) | (uint(g1) << 8) | (uint(b1) << 16) | 0xFF000000u;
+  if (index == 2u)
+  {
+    if (c0 > c1)
+      return uint((2 * r0 + r1) / 3) | (uint((2 * g0 + g1) / 3) << 8) | (uint((2 * b0 + b1) / 3) << 16) | 0xFF000000u;
+    return uint((r0 + r1) / 2) | (uint((g0 + g1) / 2) << 8) | (uint((b0 + b1) / 2) << 16) | 0xFF000000u;
+  }
+  if (c0 > c1)
+    return uint((r0 + 2 * r1) / 3) | (uint((g0 + 2 * g1) / 3) << 8) | (uint((b0 + 2 * b1) / 3) << 16) | 0xFF000000u;
+  return 0u;
+}
+
+uint fetchTexel(uint s, int level, int x, int y)
+{
+  uint addr = stLevelAddr(s, level);
+  // Each level comes from VRAM or from the batch's copy of its guest bytes.
+  uint data = states[s + ST_LEVELDATA + uint(level)];
+  g_texSource = data == NO_DATA ? 0u : 1u;
+  g_texBase = addr;
+  g_texData = data;
+  int bufWidth = stLevelBufWidth(s, level);
+  bool swizzle = stInt(s, ST_TEXSWIZZLE) != 0;
+  int format = stInt(s, ST_TEXFORMAT);
+  if (format <= 2)
+    return decode16(format, texRead16(addr + texelOffset(swizzle, bufWidth, x, y, 16)));
+  if (format == 3)
+    return texRead32(addr + texelOffset(swizzle, bufWidth, x, y, 32));
+  if (format == 4)
+  {
+    uint b = texRead8(addr + texelOffset(swizzle, bufWidth, x, y, 4));
+    if ((x & 1) != 0)
+      b = b >> 4;
+    else
+      b = b & 0xFu;
+    return clutLookup(s, b, level);
+  }
+  if (format == 5)
+    return clutLookup(s, texRead8(addr + texelOffset(swizzle, bufWidth, x, y, 8)), level);
+  if (format == 6)
+    return clutLookup(s, texRead16(addr + texelOffset(swizzle, bufWidth, x, y, 16)), level);
+  if (format == 7)
+    return clutLookup(s, texRead32(addr + texelOffset(swizzle, bufWidth, x, y, 32)), level);
+  if (format <= 10)
+  {
+    int blockBytes = format == 8 ? 8 : 16;
+    int blocksPerRow = bufWidth / 4;
+    uint block = addr + uint(((y >> 2) * blocksPerRow + (x >> 2)) * blockBytes);
+    uint colorBlock = block;
+    uint bits = texRead32(colorBlock);
+    uint c0 = texRead16(colorBlock + 4u);
+    uint c1 = texRead16(colorBlock + 6u);
+    uint index = (bits >> uint(((y & 3) * 4 + (x & 3)) * 2)) & 3u;
+    uint result = dxtColor(c0, c1, index);
+    if (format == 9)
+    {
+      uint aw = texRead16(block + 8u + uint((y & 3) * 2));
+      uint a = (aw >> uint((x & 3) * 4)) & 0xFu;
+      result = (result & 0xFFFFFFu) | ((a << 4) << 24);
+    }
+    else if (format == 10)
+    {
+      uint a0 = texRead8(block + 14u);
+      uint a1 = texRead8(block + 15u);
+      uint64_t aBits = uint64_t(texRead32(block + 8u)) | (uint64_t(texRead16(block + 12u)) << 32);
+      uint ai = uint((aBits >> uint(((y & 3) * 4 + (x & 3)) * 3)) & 7ul);
+      uint a;
+      if (a0 > a1)
+      {
+        if (ai == 0u) a = a0;
+        else if (ai == 1u) a = a1;
+        else a = ((8u - ai) * a0 + (ai - 1u) * a1) / 7u;
+      }
+      else
+      {
+        if (ai == 0u) a = a0;
+        else if (ai == 1u) a = a1;
+        else if (ai == 6u) a = 0u;
+        else if (ai == 7u) a = 255u;
+        else a = ((6u - ai) * a0 + (ai - 1u) * a1) / 5u;
+      }
+      result = (result & 0xFFFFFFu) | (a << 24);
+    }
+    return result;
+  }
+  return 0u;
+}
+
+int wrapCoord(int v, int size, bool clampIt)
+{
+  if (clampIt)
+  {
+    if (v < 0)
+      return 0;
+    if (v >= size)
+      return size - 1;
+    return v;
+  }
+  return v & (size - 1);
+}
+
+// SampleLevel: S and T in texels of the level.
+uint sampleLevel(uint s, int level, float fs, float ft, bool linear)
+{
+  int width = stLevelWidth(s, level);
+  int height = stLevelHeight(s, level);
+  bool clampU = stInt(s, ST_TEXCLAMPU) != 0;
+  bool clampV = stInt(s, ST_TEXCLAMPV) != 0;
+  int xa, xb, ya, yb;
+  int64_t fracX = 0l, fracY = 0l;
+  if (!linear)
+  {
+    xa = wrapCoord(floorF(fs), width, clampU);
+    ya = wrapCoord(floorF(ft), height, clampV);
+    xb = xa;
+    yb = ya;
+  }
+  else
+  {
+    precise double ds = double(fs) - 0.5lf;
+    precise double dt = double(ft) - 0.5lf;
+    int x0 = floorF(float(ds));
+    int y0 = floorF(float(dt));
+    precise double fx = (ds - double(x0)) * 16.0lf;
+    precise double fy = (dt - double(y0)) * 16.0lf;
+    fracX = truncD(fx);
+    fracY = truncD(fy);
+    xa = wrapCoord(x0, width, clampU);
+    xb = wrapCoord(x0 + 1, width, clampU);
+    ya = wrapCoord(y0, height, clampV);
+    yb = wrapCoord(y0 + 1, height, clampV);
+  }
+  uint taps[4];
+  int count = linear ? 4 : 1;
+  for (int i = 0; i < count; i++)
+    taps[i] = fetchTexel(s, level, (i & 1) != 0 ? xb : xa, (i & 2) != 0 ? yb : ya);
+  if (!linear)
+    return taps[0];
+  uint c00 = taps[0];
+  uint c10 = taps[1];
+  uint c01 = taps[2];
+  uint c11 = taps[3];
+  uint result = 0u;
+  for (uint shift = 0u; shift < 32u; shift += 8u)
+  {
+    int64_t a = int64_t((c00 >> shift) & 0xFFu);
+    int64_t b = int64_t((c10 >> shift) & 0xFFu);
+    int64_t c = int64_t((c01 >> shift) & 0xFFu);
+    int64_t d = int64_t((c11 >> shift) & 0xFFu);
+    // The rows are truncated before the column mix, as the CPU sampler.
+    int64_t top = int64_t(uint64_t(a * (16l - fracX) + b * fracX) >> 4);
+    int64_t bottom = int64_t(uint64_t(c * (16l - fracX) + d * fracX) >> 4);
+    uint64_t v = uint64_t(top * (16l - fracY) + bottom * fracY) >> 4;
+    result |= uint(v) << shift;
+  }
+  return result;
+}
+
+float powerRecip(int size)
+{
+  return uintBitsToFloat(uint(127 - findMSB(size)) << 23);
+}
+
+// GESampleTexture, or GESampleTextureLod for a texture that needs the level
+// of detail: up to level 0 the magnification filter; past it the
+// minification one, from the nearest level or two levels mixed by 1/16.
+// Levels past 0 take level 0 texels times their size over level 0's, in
+// single precision (powers of two: dividing is multiplying by the exact
+// reciprocal). One sampling site, for the size of the kernel.
+uint sampleTexture(uint s, float fs, float ft, int lod)
+{
+  int levels[2];
+  levels[0] = stInt(s, ST_TEXLEVEL);
+  levels[1] = 0;
+  int count = 1;
+  int frac = 0;
+  bool linear = stInt(s, ST_TEXLINEAR) != 0;
+  if (stFlag(s, SF_NEEDLOD))
+  {
+    levels[0] = 0;
+    if (lod > 0)
+    {
+      int minFilter = stInt(s, ST_MINFILTER);
+      int maxLevel = stInt(s, ST_MAXLEVEL);
+      linear = (minFilter & 1) != 0;
+      if (minFilter >= 4 && maxLevel != 0)
+      {
+        if (lod > maxLevel * 16)
+          lod = maxLevel * 16;
+        int level = lod >> 4;
+        frac = lod & 15;
+        if (minFilter < 6)
+        {
+          if (frac >= 8)
+            level++;
+          if (level > maxLevel)
+            level = maxLevel;
+        }
+        else if (frac != 0 && level < maxLevel)
+        {
+          levels[1] = level + 1;
+          count = 2;
+        }
+        levels[0] = level;
+      }
+    }
+  }
+  uint c[2];
+  for (int i = 0; i < count; i++)
+  {
+    int level = levels[i];
+    float ls = fs, lt = ft;
+    if (level > 0 && stFlag(s, SF_NEEDLOD))
+    {
+      precise float su = fs * float(stLevelWidth(s, level));
+      precise float tv = ft * float(stLevelHeight(s, level));
+      precise float ss = su * powerRecip(stLevelWidth(s, 0));
+      precise float tt = tv * powerRecip(stLevelHeight(s, 0));
+      ls = ss;
+      lt = tt;
+    }
+    c[i] = sampleLevel(s, level, ls, lt, linear);
+  }
+  if (count == 1)
+    return c[0];
+  uint result = 0u;
+  for (uint shift = 0u; shift < 32u; shift += 8u)
+  {
+    int v = (int((c[0] >> shift) & 0xFFu) * (16 - frac) + int((c[1] >> shift) & 0xFFu) * frac) >> 4;
+    result |= uint(v) << shift;
+  }
+  return result;
+}
+
+// System.Math.Max for Singles: NaN in A wins, NaN in B is taken, equal values
+// give A when B is negative (-0).
+float delphiMax(float a, float b)
+{
+  if (a != b)
+  {
+    if (!isnan(a))
+      return b < a ? a : b;
+    return a;
+  }
+  return (floatBitsToUint(b) & 0x80000000u) != 0u ? a : b;
+}
+
+// GELog16: the exponent and 4 bits of mantissa, in 1/16.
+int geLog16(float v)
+{
+  if (!(v > 0.0))
+    return -0x10000;
+  uint bits = floatBitsToUint(v);
+  return (int((bits >> 23) & 0xFFu) - 127) * 16 + int((bits >> 19) & 0xFu);
+}
+
+// PSP.GE.Raster.GETexLod.
+int texLod(uint s, float g, float q, float iw)
+{
+  int mode = stInt(s, ST_LEVELMODE);
+  int bias = stInt(s, ST_LODBIAS);
+  if (mode == 0)
+    return geLog16(g) - geLog16(q) + bias;
+  if (mode == 2)
+  {
+    float slope = uintBitsToFloat(stUint(s, ST_SLOPE));
+    if (iw > 0.0)
+      return geLog16(slope) - geLog16(iw) + 16 + bias;
+    float w = 1.0;
+    if (iw != 0.0)
+      w = float(divD(1.0lf, double(iw)));
+    precise float sw = slope * w;
+    return geLog16(sw) + 16 + bias;
+  }
+  return bias;
+}
+
+// ---- PSP.GE.Raster pixel pipeline -----------------------------------------
+
+struct Fragment
+{
+  int r, g, b, a;
+  int sr, sg, sb;
+  int z;
+  float s, t;
+  float fog;
+  // Level of detail in 1/16 levels when the texture needs it.
+  int lod;
+};
+
+bool testFunc(int func, int a, int b)
+{
+  switch (func)
+  {
+    case 0: return false;
+    case 1: return true;
+    case 2: return a == b;
+    case 3: return a != b;
+    case 4: return a < b;
+    case 5: return a <= b;
+    case 6: return a > b;
+    case 7: return a >= b;
+  }
+  return true;
+}
+
+int stencilOf(uint format, uint pixel)
+{
+  if (format == 1u) return ((pixel & 0x8000u) != 0u) ? 255 : 0;
+  if (format == 2u) return int((pixel >> 12) * 17u);
+  if (format == 3u) return int(pixel >> 24);
+  return 0;
+}
+
+int stencilOp(int op, uint format, int old, int ref)
+{
+  int maxValue = format == 1u ? 1 : (format == 2u ? 15 : (format == 3u ? 255 : 0));
+  switch (op)
+  {
+    case 0: return old;
+    case 1: return 0;
+    case 2:
+      if (format == 1u) return shr(ref, 7u);
+      if (format == 2u) return shr(ref, 4u);
+      return ref;
+    case 3: return (~old) & maxValue;
+    case 4: return old < maxValue ? old + 1 : maxValue;
+    case 5: return old > 0 ? old - 1 : 0;
+  }
+  return old;
+}
+
+int rawStencil(uint format, uint pixel)
+{
+  if (format == 1u) return int((pixel >> 15) & 1u);
+  if (format == 2u) return int((pixel >> 12) & 0xFu);
+  if (format == 3u) return int(pixel >> 24);
+  return 0;
+}
+
+// PSP.GE.Raster's BlendMul and BlendTerm.
+int blendMul(int c, int f)
+{
+  return shr((2 * c + 1) * (2 * f + 1), 10u);
+}
+
+int blendTerm(int kind, int c, int other, int sa, int da, int fix)
+{
+  switch (kind)
+  {
+    case 0: return blendMul(c, other);
+    case 1: return blendMul(c, 255 - other);
+    case 2: return blendMul(c, sa);
+    case 3: return blendMul(c, 255 - sa);
+    case 4: return blendMul(c, da);
+    case 5: return blendMul(c, 255 - da);
+    case 6: return blendMul(c, sa) * 2;
+    case 7: return blendMul(c, max(0, 255 - 2 * sa));
+    case 8: return blendMul(c, da) * 2;
+    case 9: return blendMul(c, max(0, 255 - 2 * da));
+  }
+  return blendMul(c, fix);
+}
+
+int blendChannel(uint s, int sc, int dc, int sa, int da, uint shift)
+{
+  int op = stInt(s, ST_BLENDOP);
+  if (op <= 2)
+  {
+    int a = blendTerm(stInt(s, ST_BLENDSRC), sc, dc, sa, da, int((stUint(s, ST_FIXA) >> shift) & 0xFFu));
+    int b = blendTerm(stInt(s, ST_BLENDDST), dc, sc, sa, da, int((stUint(s, ST_FIXB) >> shift) & 0xFFu));
+    if (op == 0) return a + b;
+    if (op == 1) return a - b;
+    return b - a;
+  }
+  if (op == 3) return min(sc, dc);
+  if (op == 4) return max(sc, dc);
+  return abs(sc - dc);
+}
+
+void decodePixel(uint format, uint p, out int r, out int g, out int b, out int a)
+{
+  if (format == 0u)
+  {
+    r = int(p & 0x1Fu); r = (r << 3) | (r >> 2);
+    g = int((p >> 5) & 0x3Fu); g = (g << 2) | (g >> 4);
+    b = int((p >> 11) & 0x1Fu); b = (b << 3) | (b >> 2);
+    a = 0;
+  }
+  else if (format == 1u)
+  {
+    r = int(p & 0x1Fu); r = (r << 3) | (r >> 2);
+    g = int((p >> 5) & 0x1Fu); g = (g << 3) | (g >> 2);
+    b = int((p >> 10) & 0x1Fu); b = (b << 3) | (b >> 2);
+    a = (p & 0x8000u) != 0u ? 255 : 0;
+  }
+  else if (format == 2u)
+  {
+    r = int(p & 0xFu) * 17;
+    g = int((p >> 4) & 0xFu) * 17;
+    b = int((p >> 8) & 0xFu) * 17;
+    a = int((p >> 12) & 0xFu) * 17;
+  }
+  else
+  {
+    r = int(p & 0xFFu);
+    g = int((p >> 8) & 0xFFu);
+    b = int((p >> 16) & 0xFFu);
+    a = int(p >> 24);
+  }
+}
+
+uint encodeColor(uint format, int r, int g, int b)
+{
+  if (format == 0u) return (uint(r) >> 3) | ((uint(g) >> 2) << 5) | ((uint(b) >> 3) << 11);
+  if (format == 1u) return (uint(r) >> 3) | ((uint(g) >> 3) << 5) | ((uint(b) >> 3) << 10);
+  if (format == 2u) return (uint(r) >> 4) | ((uint(g) >> 4) << 4) | ((uint(b) >> 4) << 8);
+  return uint(r) | (uint(g) << 8) | (uint(b) << 16);
+}
+
+uint stencilBits(uint format, int v)
+{
+  if (format == 1u) return uint(v & 1) << 15;
+  if (format == 2u) return uint(v & 0xF) << 12;
+  if (format == 3u) return uint(v & 0xFF) << 24;
+  return 0u;
+}
+
+uint pixelKeepMask(uint s)
+{
+  return stUint(s, ST_KEEPMASK);
+}
+
+int texLerp(int a, int b, int t, int dbl)
+{
+  return clamp255(shr((a * (255 - t) + b * t + 255) * dbl, 8u));
+}
+
+int texMul(int c, int t, int dbl)
+{
+  return clamp255(shr((c + 1) * t * dbl, 8u));
+}
+
+void applyTexture(uint s, inout Fragment f)
+{
+  uint c = sampleTexture(s, f.s, f.t, f.lod);
+  int tr = int(c & 0xFFu);
+  int tg = int((c >> 8) & 0xFFu);
+  int tb = int((c >> 16) & 0xFFu);
+  int ta = int(c >> 24);
+  int dbl = stFlag(s, SF_COLORDOUBLE) ? 2 : 1;
+  bool texAlpha = stFlag(s, SF_TEXALPHA);
+  int func = stInt(s, ST_TEXFUNC);
+  if (func == 0)
+  {
+    f.r = texMul(f.r, tr, dbl);
+    f.g = texMul(f.g, tg, dbl);
+    f.b = texMul(f.b, tb, dbl);
+    if (texAlpha)
+      f.a = texMul(f.a, ta, 1);
+  }
+  else if (func == 1)
+  {
+    if (texAlpha)
+    {
+      f.r = texLerp(f.r, tr, ta, dbl);
+      f.g = texLerp(f.g, tg, ta, dbl);
+      f.b = texLerp(f.b, tb, ta, dbl);
+    }
+    else
+    {
+      f.r = clamp255(tr * dbl);
+      f.g = clamp255(tg * dbl);
+      f.b = clamp255(tb * dbl);
+    }
+  }
+  else if (func == 2)
+  {
+    f.r = texLerp(f.r, stInt(s, ST_ENVR), tr, dbl);
+    f.g = texLerp(f.g, stInt(s, ST_ENVG), tg, dbl);
+    f.b = texLerp(f.b, stInt(s, ST_ENVB), tb, dbl);
+    if (texAlpha)
+      f.a = texMul(f.a, ta, 1);
+  }
+  else if (func == 3)
+  {
+    f.r = clamp255(tr * dbl);
+    f.g = clamp255(tg * dbl);
+    f.b = clamp255(tb * dbl);
+    if (texAlpha)
+      f.a = ta;
+  }
+  else
+  {
+    f.r = clamp255((f.r + tr) * dbl);
+    f.g = clamp255((f.g + tg) * dbl);
+    f.b = clamp255((f.b + tb) * dbl);
+    if (texAlpha)
+      f.a = texMul(f.a, ta, 1);
+  }
+}
+
+uint readPixel(uint addr, bool wide)
+{
+  return wide ? vram32[addr >> 2] : uint(vram16[addr >> 1]);
+}
+
+void writePixel(uint addr, bool wide, uint value)
+{
+  if (wide)
+    vram32[addr >> 2] = value;
+  else
+    vram16[addr >> 1] = uint16_t(value);
+}
+
+void plotPixel(uint s, int x, int y, Fragment f)
+{
+  if (x < stInt(s, ST_SCISSORX1) || x > stInt(s, ST_SCISSORX2) || y < stInt(s, ST_SCISSORY1) || y > stInt(s, ST_SCISSORY2))
+    return;
+  if (y < stInt(s, ST_BANDY1) || y > stInt(s, ST_BANDY2))
+    return;
+  uint format = stUint(s, ST_FBFORMAT);
+  bool wide = format == 3u;
+  uint bpp = wide ? 4u : 2u;
+  uint pAddr = (stUint(s, ST_FBADDR) + (uint(y) * stUint(s, ST_FBSTRIDE) + uint(x)) * bpp) & VramMask;
+  uint zAddr = depthOffset(stUint(s, ST_ZADDR) + (uint(y) * stUint(s, ST_ZSTRIDE) + uint(x)) * 2u,
+    stInt(s, ST_ZPERMUTATION));
+  uint old = readPixel(pAddr, wide);
+  int z = f.z;
+  if (z < 0) z = 0;
+  if (z > 65535) z = 65535;
+
+  if (stFlag(s, SF_CLEARMODE))
+  {
+    uint newP = old;
+    uint keep = pixelKeepMask(s);
+    if (stFlag(s, SF_CLEARCOLOR))
+    {
+      int cr = f.r, cg = f.g, cb = f.b;
+      if (stFlag(s, SF_DITHER))
+      {
+        int d = stDither(s, (y & 3) * 4 + (x & 3));
+        cr = clamp255(cr + d); cg = clamp255(cg + d); cb = clamp255(cb + d);
+      }
+      newP = (newP & ~encodeColor(format, 255, 255, 255)) | encodeColor(format, cr, cg, cb);
+    }
+    if (stFlag(s, SF_CLEARSTENCIL))
+    {
+      int sv;
+      if (format == 1u) sv = shr(f.a, 7u);
+      else if (format == 2u) sv = shr(f.a, 4u);
+      else sv = f.a;
+      newP = (newP & ~stencilBits(format, 0xFF)) | stencilBits(format, sv);
+    }
+    newP = (newP & ~keep) | (old & keep);
+    writePixel(pAddr, wide, newP);
+    if (stFlag(s, SF_CLEARDEPTH))
+      vram16[zAddr >> 1] = uint16_t(z);
+    return;
+  }
+
+  if (!stFlag(s, SF_THROUGH))
+  {
+    int rangeZ = stFlag(s, SF_DEPTHCLAMP) ? z : f.z;
+    if (rangeZ < stInt(s, ST_MINZ) || rangeZ > stInt(s, ST_MAXZ))
+      return;
+  }
+
+  if (stFlag(s, SF_TEXTURED))
+    applyTexture(s, f);
+
+  f.r = clamp255(f.r + f.sr);
+  f.g = clamp255(f.g + f.sg);
+  f.b = clamp255(f.b + f.sb);
+
+  if (stFlag(s, SF_FOGENABLED))
+  {
+    float fg = f.fog;
+    if (!(fg > 0.0)) fg = 0.0;
+    if (fg > 1.0) fg = 1.0;
+    precise float scaled = fg * 255.0;
+    int fi = int(truncD(double(scaled)));
+    f.r = texLerp(stInt(s, ST_FOGR), f.r, fi, 1);
+    f.g = texLerp(stInt(s, ST_FOGG), f.g, fi, 1);
+    f.b = texLerp(stInt(s, ST_FOGB), f.b, fi, 1);
+  }
+
+  if (stFlag(s, SF_COLORTEST))
+  {
+    uint c = uint(f.r) | (uint(f.g) << 8) | (uint(f.b) << 16);
+    uint mask = stUint(s, ST_COLORMASK);
+    int func = stInt(s, ST_COLORTESTFUNC);
+    bool pass;
+    if (func == 0) pass = false;
+    else if (func == 1) pass = true;
+    else if (func == 2) pass = (c & mask) == (stUint(s, ST_COLORREF) & mask);
+    else pass = (c & mask) != (stUint(s, ST_COLORREF) & mask);
+    if (!pass)
+      return;
+  }
+
+  if (stFlag(s, SF_ALPHATEST))
+    if (!testFunc(stInt(s, ST_ALPHAFUNC), f.a & stInt(s, ST_ALPHAMASK), stInt(s, ST_ALPHAREF) & stInt(s, ST_ALPHAMASK)))
+      return;
+
+  int stencil = rawStencil(format, old);
+  int newStencil = stencil;
+  bool stencilWrite = false;
+  if (stFlag(s, SF_STENCILTEST) && format != 0u)
+  {
+    int st8 = stencilOf(format, old);
+    int ref = stInt(s, ST_STENCILREF);
+    int mask = stInt(s, ST_STENCILMASK);
+    if (!testFunc(stInt(s, ST_STENCILFUNC), ref & mask, st8 & mask))
+    {
+      newStencil = stencilOp(stInt(s, ST_STENCILFAIL), format, stencil, ref);
+      if (newStencil != stencil)
+      {
+        uint keep = pixelKeepMask(s);
+        uint newP = (old & ~stencilBits(format, 0xFF)) | stencilBits(format, newStencil);
+        newP = (newP & ~keep) | (old & keep);
+        writePixel(pAddr, wide, newP);
+      }
+      return;
+    }
+    stencilWrite = true;
+  }
+
+  if (stFlag(s, SF_DEPTHTEST))
+  {
+    int oldZ = int(vram16[zAddr >> 1]);
+    if (!testFunc(stInt(s, ST_DEPTHFUNC), z, oldZ))
+    {
+      if (stencilWrite)
+      {
+        newStencil = stencilOp(stInt(s, ST_STENCILZFAIL), format, stencil, stInt(s, ST_STENCILREF));
+        if (newStencil != stencil)
+        {
+          uint keep = pixelKeepMask(s);
+          uint newP = (old & ~stencilBits(format, 0xFF)) | stencilBits(format, newStencil);
+          newP = (newP & ~keep) | (old & keep);
+          writePixel(pAddr, wide, newP);
+        }
+      }
+      return;
+    }
+  }
+  if (stencilWrite)
+    newStencil = stencilOp(stInt(s, ST_STENCILZPASS), format, stencil, stInt(s, ST_STENCILREF));
+  if (stFlag(s, SF_DEPTHWRITE) && stFlag(s, SF_DEPTHTEST))
+    vram16[zAddr >> 1] = uint16_t(z);
+
+  int r = f.r, g = f.g, b = f.b;
+  if (stFlag(s, SF_BLEND))
+  {
+    int dr, dg, db, da;
+    decodePixel(format, old, dr, dg, db, da);
+    if (format == 0u)
+      da = 0;
+    r = blendChannel(s, f.r, dr, f.a, da, 0u);
+    g = blendChannel(s, f.g, dg, f.a, da, 8u);
+    b = blendChannel(s, f.b, db, f.a, da, 16u);
+  }
+
+  if (stFlag(s, SF_DITHER))
+  {
+    int d = stDither(s, (y & 3) * 4 + (x & 3));
+    r += d;
+    g += d;
+    b += d;
+  }
+  r = clamp255(r);
+  g = clamp255(g);
+  b = clamp255(b);
+
+  uint newP = (old & stencilBits(format, 0xFF)) | encodeColor(format, r, g, b);
+  if (stencilWrite)
+    newP = (newP & ~stencilBits(format, 0xFF)) | stencilBits(format, newStencil);
+  if (stFlag(s, SF_LOGICOP))
+  {
+    uint src = newP;
+    switch (stInt(s, ST_LOGICFUNC))
+    {
+      case 0: newP = 0u; break;
+      case 1: newP = src & old; break;
+      case 2: newP = src & ~old; break;
+      case 3: newP = src; break;
+      case 4: newP = ~src & old; break;
+      case 5: newP = old; break;
+      case 6: newP = src ^ old; break;
+      case 7: newP = src | old; break;
+      case 8: newP = ~(src | old); break;
+      case 9: newP = ~(src ^ old); break;
+      case 10: newP = ~old; break;
+      case 11: newP = src | ~old; break;
+      case 12: newP = ~src; break;
+      case 13: newP = ~src | old; break;
+      case 14: newP = ~(src & old); break;
+      default: newP = 0xFFFFFFFFu; break;
+    }
+    newP = (newP & ~stencilBits(format, 0xFF)) | (src & stencilBits(format, 0xFF));
+  }
+  uint keep = pixelKeepMask(s);
+  newP = (newP & ~keep) | (old & keep);
+  writePixel(pAddr, wide, newP);
+}
+
+// ---- Primitives -----------------------------------------------------------
+
+// Vertex fields as packed by PSP.GE.VulkanLLE: X, Y, Z, W, R, G, B, A, SR, SG, SB, S, T, Fog.
+int vInt(uint p, uint v, uint field)
+{
+  return int(prims[p + v + field]);
+}
+
+float vFloat(uint p, uint v, uint field)
+{
+  return uintBitsToFloat(prims[p + v + field]);
+}
+
+const uint V0 = 6u, V1 = 20u, V2 = 34u;
+
+void setupFragment(uint p, uint v, out Fragment f)
+{
+  f.r = vInt(p, v, 4u); f.g = vInt(p, v, 5u); f.b = vInt(p, v, 6u); f.a = vInt(p, v, 7u);
+  f.sr = vInt(p, v, 8u); f.sg = vInt(p, v, 9u); f.sb = vInt(p, v, 10u);
+  f.z = vInt(p, v, 2u);
+  f.s = vFloat(p, v, 11u); f.t = vFloat(p, v, 12u);
+  f.fog = vFloat(p, v, 13u);
+  f.lod = 0;
+}
+
+int64_t primInt64(uint o)
+{
+  return int64_t(packUint2x32(uvec2(prims[o], prims[o + 1u])));
+}
+
+// A colour or fog plane (PSP.GE.Raster's GEMakeValuePlane) at (dx, dy) 1/16
+// pixels from its vertex.
+int planeAt(uint o, int64_t dx, int64_t dy)
+{
+  int64_t v = primInt64(o) + primInt64(o + 2u) * dx + primInt64(o + 4u) * dy;
+  if (v < 0l)
+    return 0;
+  int result = int(uint64_t(v) >> 14);
+  return result > 255 ? 255 : result;
+}
+
+// Where a primitive has them (word 125 bit 0), S and T from the planes of
+// PSP.GE.Raster's GEUVPlanes, in texels floored to 1/16.
+void uvPlanes(uint p, int px, int py, inout float fs, inout float ft)
+{
+  uint uvf = prims[p + 125u];
+  if ((uvf & 1u) == 0u)
+    return;
+  int64_t udx = int64_t(px) * 16l + 8l - int64_t(int(prims[p + 123u]));
+  int64_t udy = int64_t(py) * 16l + 8l - int64_t(int(prims[p + 124u]));
+  int ks = int((uvf >> 8) & 0xFFu), kt = int((uvf >> 16) & 0xFFu);
+  int64_t us = (primInt64(p + 111u) + primInt64(p + 113u) * udx + primInt64(p + 115u) * udy) >> (10 + ks);
+  int64_t ut = (primInt64(p + 117u) + primInt64(p + 119u) * udx + primInt64(p + 121u) * udy) >> (10 + kt);
+  fs = float(us) / 16.0;
+  ft = float(ut) / 16.0;
+}
+
+bool triangleFragment(uint p, uint s, int px, int py, out Fragment f)
+{
+  int64_t x0 = vInt(p, V0, 0u), y0 = vInt(p, V0, 1u);
+  int64_t x1 = vInt(p, V1, 0u), y1 = vInt(p, V1, 1u);
+  int64_t x2 = vInt(p, V2, 0u), y2 = vInt(p, V2, 1u);
+  int64_t sx = int64_t(px) * 16l + 8l;
+  int64_t sy = int64_t(py) * 16l + 8l;
+  int64_t e0 = -((sx - x1) * (y2 - y1) - (sy - y1) * (x2 - x1));
+  int64_t e1 = -((sx - x2) * (y0 - y2) - (sy - y2) * (x0 - x2));
+  int64_t e2 = -((sx - x0) * (y1 - y0) - (sy - y0) * (x1 - x0));
+  uint bias = prims[p + 59u];
+  if (e0 + ((bias & 1u) != 0u ? -1l : 0l) < 0l || e1 + ((bias & 2u) != 0u ? -1l : 0l) < 0l ||
+      e2 + ((bias & 4u) != 0u ? -1l : 0l) < 0l)
+    return false;
+  int64_t area = int64_t(packUint2x32(uvec2(prims[p + 55u], prims[p + 56u])));
+  double farea = packDouble2x32(uvec2(prims[p + 57u], prims[p + 58u]));
+  precise double w0 = double(e0) * farea;
+  precise double w1 = double(e1) * farea;
+  precise double w2 = double(e2) * farea;
+  if (stFlag(s, SF_FLAT) || !stFlag(s, SF_GOURAUD))
+  {
+    f.r = int(prims[p + 48u]); f.g = int(prims[p + 49u]); f.b = int(prims[p + 50u]); f.a = int(prims[p + 51u]);
+    f.sr = int(prims[p + 52u]); f.sg = int(prims[p + 53u]); f.sb = int(prims[p + 54u]);
+  }
+  else
+  {
+    int64_t dx = sx - int64_t(int(prims[p + 64u]));
+    int64_t dy = sy - int64_t(int(prims[p + 65u]));
+    f.r = planeAt(p + 66u, dx, dy);
+    f.g = planeAt(p + 72u, dx, dy);
+    f.b = planeAt(p + 78u, dx, dy);
+    f.a = planeAt(p + 84u, dx, dy);
+    precise double sr = double(vInt(p, V0, 8u)) * w0 + double(vInt(p, V1, 8u)) * w1 + double(vInt(p, V2, 8u)) * w2;
+    precise double sg = double(vInt(p, V0, 9u)) * w0 + double(vInt(p, V1, 9u)) * w1 + double(vInt(p, V2, 9u)) * w2;
+    precise double sb = double(vInt(p, V0, 10u)) * w0 + double(vInt(p, V1, 10u)) * w1 + double(vInt(p, V2, 10u)) * w2;
+    f.sr = roundRasterD(sr);
+    f.sg = roundRasterD(sg);
+    f.sb = roundRasterD(sb);
+  }
+  // The depth plane (PSP.GE.Raster's GEMakeDepthPlane) where the depths differ.
+  if (prims[p + 110u] != 0u)
+  {
+    int64_t zdx = sx - int64_t(int(prims[p + 102u]));
+    int64_t zdy = sy - int64_t(int(prims[p + 103u]));
+    f.z = int((primInt64(p + 104u) + primInt64(p + 106u) * zdx + primInt64(p + 108u) * zdy) >> 14);
+  }
+  else
+  {
+    precise double zz = double(vInt(p, V0, 2u)) * w0 + double(vInt(p, V1, 2u)) * w1 + double(vInt(p, V2, 2u)) * w2;
+    f.z = roundRasterD(zz);
+  }
+  f.s = 0.0;
+  f.t = 0.0;
+  f.lod = 0;
+  if (stFlag(s, SF_TEXTURED))
+  {
+    float aw0 = vFloat(p, V0, 3u), aw1 = vFloat(p, V1, 3u), aw2 = vFloat(p, V2, 3u);
+    precise float aq0 = uintBitsToFloat(prims[p + 60u]) * aw0;
+    precise float aq1 = uintBitsToFloat(prims[p + 61u]) * aw1;
+    precise float aq2 = uintBitsToFloat(prims[p + 62u]) * aw2;
+    precise double q = double(aq0) * w0 + double(aq1) * w1 + double(aq2) * w2;
+    precise double iw = double(aw0) * w0 + double(aw1) * w1 + double(aw2) * w2;
+    if (q != 0.0lf && ((q > 0.0lf) == (iw > 0.0lf)))
+    {
+      float st[2];
+      for (uint i = 0u; i < 2u; i++)
+      {
+        precise float c0 = vFloat(p, V0, 11u + i) * aw0;
+        precise float c1 = vFloat(p, V1, 11u + i) * aw1;
+        precise float c2 = vFloat(p, V2, 11u + i) * aw2;
+        precise double n = double(c0) * w0 + double(c1) * w1 + double(c2) * w2;
+        st[i] = float(divD(n, q));
+      }
+      f.s = st[0];
+      f.t = st[1];
+      // Through mode: the planes of PSP.GE.Raster's GEUVPlanes.
+      uvPlanes(p, px, py, f.s, f.t);
+      if (stFlag(s, SF_NEEDLOD))
+      {
+        // The largest step of S/w and T/w per pixel (GETexLod's G) from the steps
+        // the host packed.
+        float nsx = uintBitsToFloat(prims[p + 90u]), nsy = uintBitsToFloat(prims[p + 91u]);
+        float ntx = uintBitsToFloat(prims[p + 92u]), nty = uintBitsToFloat(prims[p + 93u]);
+        float lodG = delphiMax(delphiMax(abs(nsx), abs(nsy)), delphiMax(abs(ntx), abs(nty)));
+        // One level of detail for 4 pixels of a row, at the second of them
+        // (PSP.GE.Raster's GEDrawTriangle).
+        int64_t lsx = int64_t((px & ~3) + 1) * 16l + 8l;
+        int64_t le0 = -((lsx - x1) * (y2 - y1) - (sy - y1) * (x2 - x1));
+        int64_t le1 = -((lsx - x2) * (y0 - y2) - (sy - y2) * (x0 - x2));
+        int64_t le2 = -((lsx - x0) * (y1 - y0) - (sy - y0) * (x1 - x0));
+        precise double lw0 = double(le0) * farea;
+        precise double lw1 = double(le1) * farea;
+        precise double lw2 = double(le2) * farea;
+        precise double lq = double(aq0) * lw0 + double(aq1) * lw1 + double(aq2) * lw2;
+        precise double liw = double(aw0) * lw0 + double(aw1) * lw1 + double(aw2) * lw2;
+        f.lod = texLod(s, lodG, float(abs(lq)), float(liw));
+      }
+    }
+    else
+    {
+      f.s = float(double(stLevelWidth(s, 0)) - 0.5lf);
+      f.t = float(double(stLevelHeight(s, 0)) - 0.5lf);
+    }
+  }
+  // The fog factor is a plane like the colours (PSP.GE.Raster), at half a step
+  // above the 8-bit value the pixel truncates.
+  if (stFlag(s, SF_FOGENABLED))
+  {
+    int64_t fdx = sx - int64_t(int(prims[p + 64u]));
+    int64_t fdy = sy - int64_t(int(prims[p + 65u]));
+    precise float fv = float(planeAt(p + 96u, fdx, fdy)) + 0.5;
+    f.fog = fv / 255.0;
+  }
+  else
+    f.fog = 0.0;
+  return true;
+}
+
+void spriteFragment(uint p, uint s, int px, int py, out Fragment f)
+{
+  setupFragment(p, V1, f);
+  if (stFlag(s, SF_TEXTURED))
+  {
+    // The sprite's level of detail, as the host computed it.
+    f.lod = int(prims[p + 42u]);
+    int x0 = vInt(p, V0, 0u), y0 = vInt(p, V0, 1u);
+    precise double u = double(px * 16 + 8 - x0) * 0.0625lf;
+    precise double v = double(py * 16 + 8 - y0) * 0.0625lf;
+    precise double ss = double(vFloat(p, V0, 11u)) + double(uintBitsToFloat(prims[p + 34u])) * u +
+      double(uintBitsToFloat(prims[p + 35u])) * v;
+    precise double tt = double(vFloat(p, V0, 12u)) + double(uintBitsToFloat(prims[p + 36u])) * u +
+      double(uintBitsToFloat(prims[p + 37u])) * v;
+    f.s = float(ss);
+    f.t = float(tt);
+    uvPlanes(p, px, py, f.s, f.t);
+    if (prims[p + 41u] != 0u)
+    {
+      precise double q = double(uintBitsToFloat(prims[p + 40u])) + double(uintBitsToFloat(prims[p + 38u])) * u +
+        double(uintBitsToFloat(prims[p + 39u])) * v;
+      if (q != 0.0lf)
+      {
+        f.s = float(divD(double(f.s), q));
+        f.t = float(divD(double(f.t), q));
+      }
+    }
+  }
+}
+
+// Fragments made on the CPU (lines, points): one per position on the major axis.
+bool listFragment(uint p, int px, int py, out Fragment f)
+{
+  int count = int(prims[p + 6u]);
+  int first = int(prims[p + 7u]);
+  bool xMajor = prims[p + 8u] != 0u;
+  int index = (xMajor ? px : py) - first;
+  if (index < 0 || index >= count)
+    return false;
+  uint o = prims[p + 9u] + uint(index) * 16u;
+  if (int(data32[o]) != px || int(data32[o + 1u]) != py)
+    return false;
+  f.r = int(data32[o + 2u]); f.g = int(data32[o + 3u]); f.b = int(data32[o + 4u]); f.a = int(data32[o + 5u]);
+  f.sr = int(data32[o + 6u]); f.sg = int(data32[o + 7u]); f.sb = int(data32[o + 8u]);
+  f.z = int(data32[o + 9u]);
+  f.s = uintBitsToFloat(data32[o + 10u]);
+  f.t = uintBitsToFloat(data32[o + 11u]);
+  f.fog = uintBitsToFloat(data32[o + 12u]);
+  f.lod = 0;
+  return true;
+}
+
+void main()
+{
+  uint tile = pc.table + (gl_WorkGroupID.y * pc.tilesX + gl_WorkGroupID.x) * 2u;
+  uint first = bins[tile];
+  uint count = bins[tile + 1u];
+  int px = ((pc.x1 >> 4) + int(gl_WorkGroupID.x)) * 16 + int(gl_LocalInvocationID.x);
+  int py = ((pc.y1 >> 4) + int(gl_WorkGroupID.y)) * 16 + int(gl_LocalInvocationID.y);
+  if (px < pc.x1 || py < pc.y1 || px > pc.x2 || py > pc.y2)
+    return;
+  for (uint i = 0u; i < count; i++)
+  {
+    uint p = bins[first + i] * 128u;
+    if (px < int(prims[p + 2u]) || py < int(prims[p + 3u]) || px > int(prims[p + 4u]) || py > int(prims[p + 5u]))
+      continue;
+    uint s = prims[p + 1u] * 128u;
+    g_clutData = stUint(s, ST_CLUTDATA);
+    g_vramShift = stInt(s, ST_VRAMSHIFT);
+    uint kind = prims[p];
+    Fragment f;
+    bool covered = true;
+    if (kind == 0u)
+      covered = triangleFragment(p, s, px, py, f);
+    else if (kind == 1u)
+      spriteFragment(p, s, px, py, f);
+    else
+      covered = listFragment(p, px, py, f);
+    if (covered)
+      plotPixel(s, px, py, f);
+  }
+}

@@ -280,9 +280,11 @@ begin
     B.Sync;
     if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) or (A.PixelsDrawn <> B.PixelsDrawn) then
       raise Exception.Create('Ordered tiled triangle batch mismatch');
-    if (B.VulkanRasterizedTriangles <> 256) or (B.VulkanTriangleDispatches <> 2) then
-      raise Exception.Create('Triangles were not grouped into 128-draw tile clusters');
-    Writeln('256 ordered blended triangles, mixed rounding, 2 tiled dispatches: OK');
+    // (Clusters of up to 128 draws and 65536 draw-tile entries: these 256
+    // triangles of about 800 tiles each take three.)
+    if (B.VulkanRasterizedTriangles <> 256) or (B.VulkanTriangleDispatches <> 3) then
+      raise Exception.Create('Triangles were not grouped into tile clusters');
+    Writeln('256 ordered blended triangles, mixed rounding, 3 tiled clusters: OK');
   finally
     A.Free; B.Free;
   end;
@@ -1072,17 +1074,24 @@ begin
       A.Free;
     end;
     CheckCoverageCounter;
-    CheckTiledTriangles;
-    CheckHybridRenderers;
+    // Clustered draws in two passes for every cluster, in one for every
+    // cluster, then as chosen by the tiles' draws.
+    for var TwoPhase in [1, MaxInt, 8] do
+    begin
+      PS2GSTwoPhaseDraws := TwoPhase;
+      Writeln('-- clusters in two passes from ', TwoPhase, ' draws in a tile');
+      CheckTiledTriangles;
+      CheckHybridRenderers;
+      CheckClusterDependencies;
+      CheckNativeArenas;
+      CheckTriangles;
+      CheckTextureFormats;
+    end;
     CheckPageBarriers;
     CheckTransferBarriers;
     CheckTransferRevision;
     CheckPaletteBarriers;
-    CheckClusterDependencies;
-    CheckNativeArenas;
     CheckFragmentRollover;
-    CheckTriangles;
-    CheckTextureFormats;
     CheckClutSnapshots;
   except
     on E: Exception do

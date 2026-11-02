@@ -9,12 +9,17 @@ layout(local_size_x=8, local_size_y=8) in;
 layout(set=0,binding=0,std430) buffer VRAM { uint ram[]; };
 struct Draw { uint p[384]; };
 layout(set=0,binding=1,std430) readonly buffer State { Draw draws[]; };
-layout(set=0,binding=2,std430) readonly buffer TileMasks { uint tileMasks[]; };
+// Each cluster's tile table (first entry, count per tile) and entries.
+layout(set=0,binding=2,std430) readonly buffer Tiles { uint tiles[]; };
 // The LOD tables of draws with per-pixel LOD (each at its draw's p[79]).
 layout(set=0,binding=3,std430) readonly buffer LodTables { uint lodTables[]; };
 // Clustered sprites' texture coordinates, the host's per column and row.
 layout(set=0,binding=4,std430) readonly buffer Coordinates { int coords[]; };
-layout(push_constant) uniform Bounds { ivec4 bounds; uint slot; uint mode; };
+// Phase A's results: per entry 64 pixels' depth and colour, then (from
+// maskBase) per entry the pixels covered.
+layout(set=0,binding=5,std430) buffer Results { uint results[]; };
+layout(push_constant) uniform Push { ivec4 bounds; uint slot; uint mode; uint tileBase; uint entryBase;
+  uint resultBase; uint count; uint width; uint maskBase; };
 uint drawIndex;
 #include "PS2.GS.Pixel.glsl"
 
@@ -202,8 +207,17 @@ bool perspectiveEst(vec3 w,uint field,float q,float eq,float scale,out int r) {
   float et=((es+abs(t)*eq)/(abs(q)-eq)+abs(t)*(1.0/1048576.0))*1.001;
   return truncEst(t*scale,et*scale,r);
 }
-void rasterize(ivec2 xy) {
-  if(xy.x<int(p[60]) || xy.y<int(p[61]) || xy.x>=int(p[62]) || xy.y>=int(p[63])) return;
+// Phase A of a cluster (mode 0): one workgroup per entry (a draw meeting a
+// tile), each invocation a pixel. Whether the draw covers it, its depth and
+// its source colour (texture, texture function, fog): nothing here reads the
+// frame or depth buffer, and no draw of a cluster writes what another one's
+// texture reads (the host ends clusters there). Phase B (mode 1) then takes
+// each tile's entries in draw order per pixel: depth test, alpha tests,
+// blending, writes, the pixel's colour and depth kept in registers.
+// Whether the triangle covers the pixel: its depth and weights.
+bool triangleCover(ivec2 xy,out uint z,out double w0,out double w1,out double w2) {
+  z=0u; w0=0.0; w1=0.0; w2=0.0;
+  if(xy.x<int(p[60]) || xy.y<int(p[61]) || xy.x>=int(p[62]) || xy.y>=int(p[63])) return false;
   // The edge functions of integer coordinates (1/16 pixel) are integers of
   // up to 36 bits: exact in 64-bit integers, as in FP64 (and cheaper).
   int64_t x=int64_t(xy.x*16),y=int64_t(xy.y*16);
@@ -220,12 +234,15 @@ void rasterize(ivec2 xy) {
   int64_t bias0=(a0>0 || (a0==0 && b0>0)) ? 0 : -1;
   int64_t bias1=(a1>0 || (a1==0 && b1>0)) ? 0 : -1;
   int64_t bias2=(a2>0 || (a2==0 && b2>0)) ? 0 : -1;
-  if(e0+bias0<0 || e1+bias1<0 || e2+bias2<0) return;
+  if(e0+bias0<0 || e1+bias1<0 || e2+bias2<0) return false;
   double sign=double(s);
   double inv=packDouble2x32(uvec2(p[56],p[57]));
-  double w0=mulD(double(e0)*sign,inv),w1=mulD(double(e1)*sign,inv),w2=subD(subD(1.0,w0),w1);
-  uint z=p[59]!=0 ? depthValue(interp(w0,w1,w2,vf(0,2),vf(1,2),vf(2,2))) : 0;
-  if(!depthPass(xy,z)) return;
+  w0=mulD(double(e0)*sign,inv); w1=mulD(double(e1)*sign,inv); w2=subD(subD(1.0,w0),w1);
+  z=p[59]!=0 ? depthValue(interp(w0,w1,w2,vf(0,2),vf(1,2),vf(2,2))) : 0;
+  return true;
+}
+// A covered pixel's source colour (see sourceColor), packed.
+uint triangleColor(double w0,double w1,double w2) {
   // Colours, fog and texture coordinates from single-precision estimates
   // where those decide the integers; the exact FP64 arithmetic otherwise.
   vec3 w=vec3(float(w0),float(w1),float(w2));
@@ -259,40 +276,100 @@ void rasterize(ivec2 xy) {
       }
     }
   }
-  shadePixel(xy,z,clamp(c,ivec3(0),ivec3(255)),clamp(a,0,255),clamp(fog,0,255),u,v,mip);
+  c=clamp(c,ivec3(0),ivec3(255));
+  a=clamp(a,0,255);
+  sourceColor(c,a,clamp(fog,0,255),u,v,mip);
+  return uint(c.r)|(uint(c.g)<<8)|(uint(c.b)<<16)|(uint(a)<<24);
 }
 
 // A sprite in a cluster (p[58] 0) as the sprite kernel draws it: colour,
 // depth and fog flat, the texture coordinates of its column and row.
-void sprite(ivec2 xy) {
-  if(xy.x<int(p[60]) || xy.y<int(p[61]) || xy.x>=int(p[62]) || xy.y>=int(p[63])) return;
+bool spriteCover(ivec2 xy) {
+  return !(xy.x<int(p[60]) || xy.y<int(p[61]) || xy.x>=int(p[62]) || xy.y>=int(p[63]));
+}
+uint spriteColor(ivec2 xy) {
   int u=0,v=0;
   if(p[47]!=0) {
     u=coords[drawIndex*4096+uint(xy.x-int(p[60]))];
     v=coords[drawIndex*4096+2048+uint(xy.y-int(p[61]))];
   }
-  shadePixel(xy,p[31],ivec3(p[26],p[27],p[28]),int(p[29]),int(p[30]),u,v,p[52]);
+  ivec3 c=ivec3(p[26],p[27],p[28]);
+  int a=int(p[29]);
+  sourceColor(c,a,int(p[30]),u,v,p[52]);
+  return uint(c.r)|(uint(c.g)<<8)|(uint(c.b)<<16)|(uint(a)<<24);
 }
+
+// Whether the draw at drawIndex covers the pixel, its depth and weights.
+bool cover(ivec2 xy,out uint z,out double w0,out double w1,out double w2) {
+  if(p[58]==0) {
+    w0=0.0; w1=0.0; w2=0.0;
+    z=p[31];
+    return spriteCover(xy);
+  }
+  return triangleCover(xy,z,w0,w1,w2);
+}
+uint color(ivec2 xy,double w0,double w1,double w2) {
+  return p[58]==0 ? spriteColor(xy) : triangleColor(w0,w1,w2);
+}
+
+shared uint coveredBits[2];
+
 void main() {
-  ivec2 xy=bounds.xy+ivec2(gl_GlobalInvocationID.xy);
-  if(any(greaterThanEqual(xy,bounds.zw))) return;
+  uint li=gl_LocalInvocationIndex;
   if(mode==0) {
-    drawIndex=slot;
-    rasterize(xy);
+    // Phase A: entry e (tile index | draw << 16), its 64 results (depth,
+    // colour) and which of its pixels the draw covers.
+    uint e=gl_WorkGroupID.y*32768u+gl_WorkGroupID.x;
+    if(li<2u) coveredBits[li]=0u;
+    barrier();
+    bool valid=e<count;
+    bool covered=false;
+    uint z=0u,rgba=0u;
+    if(valid) {
+      uint entry=tiles[entryBase+e];
+      uint tile=entry&0xffffu;
+      drawIndex=slot+(entry>>16);
+      ivec2 xy=bounds.xy+ivec2(int((tile%width)*8u),int((tile/width)*8u))+ivec2(gl_LocalInvocationID.xy);
+      double w0,w1,w2;
+      covered=cover(xy,z,w0,w1,w2);
+      if(covered) rgba=color(xy,w0,w1,w2);
+    }
+    if(covered) atomicOr(coveredBits[li>>5],1u<<(li&31u));
+    barrier();
+    if(valid) {
+      uint r=resultBase+e;
+      if(covered) {
+        results[r*128u+li*2u]=z;
+        results[r*128u+li*2u+1u]=rgba;
+      }
+      if(li<2u) results[maskBase+r*2u+li]=coveredBits[li];
+    }
     return;
   }
-  // One invocation owns this pixel through the whole ordered cluster.
-  // Four mask words identify only triangles intersecting this 8x8 tile.
+  // Phase B: one invocation owns this pixel through the whole ordered
+  // cluster: the tile's entries (from the table) in draw order. (Mode 2:
+  // both phases in one, for clusters whose tiles each meet few draws.)
+  ivec2 xy=bounds.xy+ivec2(gl_GlobalInvocationID.xy);
   pixelCache=true;
-  uint base=mode-1+(gl_WorkGroupID.y*gl_NumWorkGroups.x+gl_WorkGroupID.x)*4;
-  for(uint word=0;word<4;word++) {
-    uint mask=tileMasks[base+word];
-    while(mask!=0) {
-      int bit=findLSB(mask);
-      mask&=mask-1;
-      drawIndex=slot+word*32+uint(bit);
-      if(p[58]==0) sprite(xy); else rasterize(xy);
+  uint t=gl_WorkGroupID.y*gl_NumWorkGroups.x+gl_WorkGroupID.x;
+  uint first=tiles[tileBase+t*2u],n=tiles[tileBase+t*2u+1u];
+  for(uint i=0u;i<n;i++) {
+    uint e=first+i;
+    uint r=resultBase+e;
+    uint z,rgba;
+    drawIndex=slot+(tiles[entryBase+e]>>16);
+    if(mode==2) {
+      // (The depth test before the colour, as the software path draws.)
+      double w0,w1,w2;
+      if(!cover(xy,z,w0,w1,w2) || !depthPass(xy,z)) continue;
+      rgba=color(xy,w0,w1,w2);
+    } else {
+      if(((results[maskBase+r*2u+(li>>5)]>>(li&31u))&1u)==0u) continue;
+      z=results[r*128u+li*2u];
+      if(!depthPass(xy,z)) continue;
+      rgba=results[r*128u+li*2u+1u];
     }
+    writePixel(xy,z,ivec3(int(rgba&255u),int((rgba>>8)&255u),int((rgba>>16)&255u)),int(rgba>>24));
   }
   finishPixelCache();
 }

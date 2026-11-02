@@ -439,8 +439,16 @@ when full, including in the middle of one triangle.
 The parameter arena holds 2048 draws (two halves, one filling while the other
 runs). Compatible native triangles, and on these devices sprites of any size
 (flat colour/depth, the host's per-column/row texture coordinates), are binned
-into ordered 128-draw clusters with 128-bit masks per 8x8 tile; one invocation
-owns a pixel through the cluster and caches its colour/depth until the end.
+into ordered clusters of up to 128 draws and 65536 entries (a draw meeting an
+8x8 tile), listed per tile in draw order. One invocation owns a pixel through
+the cluster and caches its colour/depth until the end. Where a tile meets 8
+draws or more (`PS2GSTwoPhaseDraws`) a cluster takes two passes: first one
+workgroup per entry works out coverage, depth and the source colour
+(texture, texture function, fog: nothing a cluster draws is read as its
+texture), then each pixel takes its entries in order for the depth test,
+alpha tests, blending and writes; the serial chain per pixel then holds no
+texture reads, which the GPU waited on before. Clusters of few draws per tile
+take both steps in one pass.
 Texture dependencies, layout changes and colour/depth aliases end clusters.
 The 16 MiB tile arena can refill while preserving undispatched parameter and
 CLUT snapshots. Other dispatches are ordered by compute memory barriers.
@@ -463,7 +471,8 @@ rounding modes, varying depth/fog and fragment-arena rollover.
 An additional 312 cases cover all 13 texture formats, CLUT/CSA/CSM/TEXA,
 all minification modes, multiple mip levels, sprites and triangles. A separate
 test mutates the host CLUT while two draws are pending in the same GPU batch.
-Tile tests cover 256 ordered blended triangles in two dispatches, mixed host
+Tile tests (with clusters in two passes, in one, and as chosen) cover 256
+ordered blended triangles in three clusters, mixed host
 rounding, texture/layout/depth cluster breaks, 2048-slot reuse, tile-arena
 refill with preserved palettes, 70000 prepared fragments, selective page
 hazards and zero-stride/wrapped transfers and palettes. The `-coverageonly`

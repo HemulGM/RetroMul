@@ -23,7 +23,15 @@ type
     BatchSize = 2048;
     FragmentCapacity = 65536;
     ClusterSize = 128;
-    TileCapacity = 4 * 1024 * 1024; // uints, 16 MiB; masks are 128 bits per tile
+    // (uints, 16 MiB: per cluster its tile table, two words a tile, and its
+    // entries, a word each.)
+    TileCapacity = 4 * 1024 * 1024;
+    // The most entries (a draw meeting a tile) a cluster takes: at least a
+    // 2048 x 2048 draw's tiles. Phase A's results hold one cluster's: each
+    // dispatch waits for the work recorded before it (TVulkanCompute), in
+    // this command buffer and those submitted earlier, so every cluster
+    // takes them from the start.
+    ClusterEntries = 65536;
     HalfBatch = BatchSize div 2;
     HalfFragments = FragmentCapacity div 2;
     HalfTiles = TileCapacity div 2;
@@ -35,10 +43,18 @@ type
       Slot: Cardinal;
       Mode: Cardinal;
     end;
+    // The triangle kernel's (PS2.GS.Triangle.comp): a cluster's tile-aligned
+    // bounds, first state slot, phase (0 A, 1 B), its table and entries in
+    // the tile buffer, its first entry in the results, entries, tiles across,
+    // where the coverage masks start in the results.
+    TTrianglePush = record
+      Bounds: array[0..3] of Integer;
+      Slot, Mode, TileBase, EntryBase, ResultBase, Count, Width, MaskBase: Cardinal;
+    end;
   private
     FCompute: TVulkanCompute;
     FKernel, FTriangleKernel: TVulkanKernel;
-    FRAM, FState, FCoordinates, FFragments, FTiles: TVulkanBuffer;
+    FRAM, FState, FCoordinates, FFragments, FTiles, FResults: TVulkanBuffer;
     FDraws: Int64;
     FTexturedDraws: Int64;
     FUsed: Integer;
@@ -52,6 +68,8 @@ type
     FReads, FWrites: TPages;
     FTriangleBounds: array[0..3] of Integer;
     FNativeStart, FNativeCount, FTileWordsUsed: Integer;
+    // The cluster's entries so far.
+    FNativeEntries: Integer;
     FNativeBounds: array[0..3] of Integer;
     FNativeRectangles: array[0..ClusterSize - 1, 0..3] of Integer;
     FNativeLayout: TPS2GSDraw;
@@ -108,6 +126,11 @@ type
     property TriangleDispatches: Int64 read FTriangleDispatches;
   end;
 
+var
+  // Clusters with a tile meeting at least this many draws take two passes
+  // (see PS2.GS.Triangle.comp; tests set it to try both).
+  PS2GSTwoPhaseDraws: Integer = 8;
+
 implementation
 
 const
@@ -134,8 +157,10 @@ begin
   begin
     FTiles := FCompute.CreateBuffer(TileCapacity * SizeOf(Cardinal), True);
     FLodBuffer := FCompute.CreateBuffer(LodCapacity * SizeOf(Cardinal), True);
-    FTriangleKernel := FCompute.CreateKernel(PS2TriangleSPIRV, 5, SizeOf(TPush));
-    FCompute.Bind(FTriangleKernel, [FRAM, FState, FTiles, FLodBuffer, FCoordinates]);
+    // (Each entry's 64 depths and colours, then each entry's coverage mask.)
+    FResults := FCompute.CreateBuffer(UInt64(ClusterEntries) * 130 * SizeOf(Cardinal), False);
+    FTriangleKernel := FCompute.CreateKernel(PS2TriangleSPIRV, 6, SizeOf(TTrianglePush));
+    FCompute.Bind(FTriangleKernel, [FRAM, FState, FTiles, FLodBuffer, FCoordinates, FResults]);
   end;
   {$ENDIF}
   TakeHalf;
@@ -314,7 +339,8 @@ procedure TPS2GSGpu.JoinCluster(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; co
 begin
   if FNativeCount > 0 then
   begin
-    var Conflict := (FNativeCount = ClusterSize) or
+    var DrawTiles := ((X1 + 7) shr 3 - X0 shr 3) * ((Y1 + 7) shr 3 - Y0 shr 3);
+    var Conflict := (FNativeCount = ClusterSize) or (FNativeEntries + DrawTiles > ClusterEntries) or
       (D.FBP <> FNativeLayout.FBP) or (D.FBW <> FNativeLayout.FBW) or (D.FPSM <> FNativeLayout.FPSM) or
       (D.ZBP <> FNativeLayout.ZBP) or (D.ZPSM <> FNativeLayout.ZPSM);
     for var K := 0 to 15 do
@@ -367,6 +393,7 @@ begin
     FNativeTextures[K] := FNativeTextures[K] or Textures[K];
   end;
   Inc(FNativeCount);
+  Inc(FNativeEntries, ((X1 + 7) shr 3 - X0 shr 3) * ((Y1 + 7) shr 3 - Y0 shr 3));
   FNativeUsesZ := FNativeUsesZ or not D.ZMSK or (D.ZTST <> 1);
   Inc(FRevision);
   Inc(FUsed);
@@ -382,7 +409,9 @@ begin
   var TY1 := (FNativeBounds[3] + 7) shr 3;
   var Width := TX1 - TX0;
   var Height := TY1 - TY0;
-  var Words := Width * Height * 4;
+  var Tiles := Width * Height;
+  var Entries := FNativeEntries;
+  var Words := Tiles * 2 + Entries;
   if FTileWordsUsed + Words > FTileWordsEnd then
   begin
     // Start the recorded work, not this not-yet-dispatched cluster: its
@@ -399,35 +428,65 @@ begin
     FNativeStart := FUsed;
     Inc(FUsed, FNativeCount);
   end;
+  // The tile table (first entry, count) and the entries (tile | draw shl
+  // 16), each tile's in draw order: counted, placed, then filled draw by
+  // draw. Built in cached CPU memory, then streamed once to the mapped
+  // buffer (read/modify/write there is needlessly expensive).
   if Length(FMaskScratch) < Words then SetLength(FMaskScratch, Words);
-  FillChar(FMaskScratch[0], Words * SizeOf(Cardinal), 0);
-  // Bin in cached CPU memory, then stream once to mapped GPU memory.
-  // Read/modify/write on a write-combined mapping is needlessly expensive.
+  FillChar(FMaskScratch[0], Tiles * 2 * SizeOf(Cardinal), 0);
   for var I := 0 to FNativeCount - 1 do
+    for var Y := FNativeRectangles[I, 1] shr 3 to (FNativeRectangles[I, 3] + 7) shr 3 - 1 do
+      for var X := FNativeRectangles[I, 0] shr 3 to (FNativeRectangles[I, 2] + 7) shr 3 - 1 do
+        Inc(FMaskScratch[((Y - TY0) * Width + X - TX0) * 2 + 1]);
+  var First: Cardinal := 0;
+  var Most: Cardinal := 0;
+  for var T := 0 to Tiles - 1 do
   begin
-    var X0 := FNativeRectangles[I, 0] shr 3;
-    var Y0 := FNativeRectangles[I, 1] shr 3;
-    var X1 := (FNativeRectangles[I, 2] + 7) shr 3;
-    var Y1 := (FNativeRectangles[I, 3] + 7) shr 3;
-    var Bit := Cardinal(1) shl (I and 31);
-    for var Y := Y0 to Y1 - 1 do
-      for var X := X0 to X1 - 1 do
-      begin
-        var Index := ((Y - TY0) * Width + X - TX0) * 4 + (I shr 5);
-        FMaskScratch[Index] := FMaskScratch[Index] or Bit;
-      end;
+    if FMaskScratch[T * 2 + 1] > Most then Most := FMaskScratch[T * 2 + 1];
+    FMaskScratch[T * 2] := First;
+    Inc(First, FMaskScratch[T * 2 + 1]);
+    FMaskScratch[T * 2 + 1] := 0;
   end;
+  if Integer(First) <> Entries then
+    raise Exception.Create('GS GPU: cluster entries miscounted');
+  for var I := 0 to FNativeCount - 1 do
+    for var Y := FNativeRectangles[I, 1] shr 3 to (FNativeRectangles[I, 3] + 7) shr 3 - 1 do
+      for var X := FNativeRectangles[I, 0] shr 3 to (FNativeRectangles[I, 2] + 7) shr 3 - 1 do
+      begin
+        var T := (Y - TY0) * Width + X - TX0;
+        FMaskScratch[Tiles * 2 + Integer(FMaskScratch[T * 2] + FMaskScratch[T * 2 + 1])] :=
+          Cardinal(T) or (Cardinal(I) shl 16);
+        Inc(FMaskScratch[T * 2 + 1]);
+      end;
   Move(FMaskScratch[0], (PCardinal(FTiles.Data) + FTileWordsUsed)^, Words * SizeOf(Cardinal));
-  var Push := Default(TPush);
+  var Push := Default(TTrianglePush);
   Push.Bounds[0] := TX0 * 8; Push.Bounds[1] := TY0 * 8;
   Push.Bounds[2] := TX1 * 8; Push.Bounds[3] := TY1 * 8;
   Push.Slot := Cardinal(FNativeStart);
-  Push.Mode := Cardinal(FTileWordsUsed + 1);
+  Push.TileBase := Cardinal(FTileWordsUsed);
+  Push.EntryBase := Cardinal(FTileWordsUsed + Tiles * 2);
+  Push.ResultBase := 0;
+  Push.Count := Cardinal(Entries);
+  Push.Width := Cardinal(Width);
+  Push.MaskBase := ClusterEntries * 128;
+  // Phase A over the entries (rows of 32768 workgroups), then phase B over
+  // the tiles; where no tile meets many draws, both in one pass over the
+  // tiles (the serial work per pixel is short then, and no results are kept).
+  var TwoPhases := Integer(Most) >= PS2GSTwoPhaseDraws;
+  if TwoPhases then
+  begin
+    Push.Mode := 0;
+    FCompute.Launch(FTriangleKernel, Push, Cardinal(Min(Entries, 32768)), Cardinal((Entries + 32767) div 32768), 1);
+    Push.Mode := 1;
+  end
+  else
+    Push.Mode := 2;
   FCompute.Launch(FTriangleKernel, Push, Cardinal(Width), Cardinal(Height), 1);
   FRecorded := True;
   Inc(FTriangleDispatches);
   Inc(FTileWordsUsed, Words);
   FNativeCount := 0;
+  FNativeEntries := 0;
 end;
 
 function TPS2GSGpu.Supports(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer; Levels: Cardinal;

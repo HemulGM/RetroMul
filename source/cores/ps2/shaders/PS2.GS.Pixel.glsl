@@ -141,9 +141,10 @@ bool depthPass(ivec2 xy,uint sourceZ) {
   uint z=min(sourceZ,mask),old=loadDepth(za)&mask;
   return !((p[12]==2 && z<old)||(p[12]==3 && z<=old));
 }
-void shadePixel(ivec2 xy,uint sourceZ,ivec3 c,int a,int f,int u,int v,uint mip) {
-  uint x=uint(xy.x),y=uint(xy.y);
-  if(!depthPass(xy,sourceZ)) return;
+// The source colour of a pixel: its texture, the texture function and fog
+// (each component 0..255 for interpolated or clamped inputs). Reads no frame
+// or depth buffer.
+void sourceColor(inout ivec3 c,inout int a,int f,int u,int v,uint mip) {
   if(p[47]!=0) {
     uint l0=mip&7,l1=(mip>>3)&7,weight=(mip>>6)&31;
     bool linear=(mip&2048)!=0;
@@ -161,6 +162,11 @@ void shadePixel(ivec2 xy,uint sourceZ,ivec3 c,int a,int f,int u,int v,uint mip) 
     c=min(c,ivec3(255)); a=min(a,255);
   }
   if(p[22]!=0) c=(f*c+(255-f)*ivec3(p[23],p[24],p[25]))>>8;
+}
+// The rest for a source colour that passed the depth test: alpha test,
+// destination alpha test, blending and the masked writes.
+void writePixel(ivec2 xy,uint sourceZ,ivec3 c,int a) {
+  uint x=uint(xy.x),y=uint(xy.y);
   bool writeFB=true,writeZ=p[6]==0,writeAlpha=true;
   bool pass=false;
   switch(p[7]) {
@@ -208,4 +214,9 @@ void shadePixel(ivec2 xy,uint sourceZ,ivec3 c,int a,int f,int u,int v,uint mip) 
     else storeFrame(fa,p[2]==1 ? (raw&0xff000000)|(color&0xffffff) : color);
   }
   if(writeZ && (writeFB || p[9]==2)) storeDepth(za,(loadDepth(za)&~zmask)|(z&zmask));
+}
+void shadePixel(ivec2 xy,uint sourceZ,ivec3 c,int a,int f,int u,int v,uint mip) {
+  if(!depthPass(xy,sourceZ)) return;
+  sourceColor(c,a,f,u,v,mip);
+  writePixel(xy,sourceZ,c,a);
 }

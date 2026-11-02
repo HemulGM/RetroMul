@@ -6,16 +6,25 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 
 ## Supported systems and ROM formats
 
+The table covers all 45 registered systems. Supported images and ROM sets can also be loaded from `.zip`, `.7z`, and `.rar` archives. Disc images must retain their required companion files and tracks.
+
 | System | ROM formats |
 | --- | --- |
-| [Atari 5200]| `.a52`, Atari 5200 `.car`; `.bin`/`.rom` in the system folder; ZIP/7z supported, BIOS embedded |
-| [Atari Lynx]| `.lnx`, `.lyx`, BS93 `.o` / `.com` / `.bll`; ZIP/7z/RAR supported, BIOS embedded |
-| NES / Famicom | `.nes` |
+| Atari 2600 | `.a26`; `.bin`, `.rom` in the system folder |
+| Atari 5200 | `.a52`, Atari 5200 `.car`; `.bin`, `.rom` in the system folder; BIOS embedded |
+| Atari 7800 | `.a78`, `.bin`, `.rom` |
+| Atari Jaguar | `.j64`, `.bin`, `.rom` |
+| Atari Jaguar CD | `.cue`, `.chd`, `.cdi`, `.mds`, `.nrg`, `.ccd`, multi-disc `.m3u` |
+| Atari Lynx | `.lnx`, `.lyx`, BS93 `.o` / `.com` / `.bll`; BIOS embedded |
+| ColecoVision | `.col`, `.cv`, `.rom`, `.bin` |
+| NES / Famicom | `.nes`; Famicom Disk System `.fds`, `.qd` |
+| Famicom Disk System | `.fds`, `.qd` |
 | Game Boy | `.gb`, `.gbx` |
 | Game Boy Color | `.gbc`, `.gbx` |
 | Game & Watch | `.gw`, `.mgw`, catalogued MAME `.zip` sets with SVG screens |
 | Game Boy Advance | `.gba` |
 | Nintendo 64 (experimental) | `.z64`, `.n64`, `.v64` |
+| Nintendo DS (experimental) | `.nds` |
 | SEGA Mega Drive / Genesis | `.md`, `.bin`, `.gen`, `.smd` |
 | SEGA CD / Mega-CD | `.cue`, `.iso`, `.chd`, `.mds`, `.nrg` |
 | SEGA 32X | `.32x`, `.bin`, `.gen`, `.md`, `.smd` |
@@ -25,24 +34,26 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 | Othello Multivision | `.mv` |
 | SEGA Master System / Mark III | `.sms` |
 | SEGA Game Gear | `.gg` |
-| MSX1 / MSX2 / MSX2+| `.rom`, `.mx1`, `.mx2`, `.mxp`, `.dsk`, `.cas`, `.wav`, `.zip` / `.7z` |
-| SEGA Saturn | `.iso`, `.cue`, `.chd`, `.mds`, `.nrg` |
-| SEGA Dreamcast| `.gdi`, `.cdi`, `.chd`, `.cue`, `.iso`, `.mds`, `.nrg`, homebrew `.elf`, multi-disc `.m3u` |
-| Sony PlayStation (PS1) | `.cue`, `.chd`, `.iso`, `.mds`, `.nrg`, raw `.bin`, PS-X `.exe`, disc / executable `.zip`, multi-disc `.m3u` |
-| Sony PSP (experimental) | ELF/PRX/PBP, encrypted executables, ISO9660 `.iso`, CISO v1 `.cso`, single-image `.zip`; commercial compatibility is being validated |
-| ZX Spectrum family / clones | `.sna`, `.z80`, `.tap`, `.tzx`, `.trd`, `.scl`, `.dsk`, `.dck`, `.pro`, `.kdi`, `.ide`, `.mmc`, `.zip` / `.7z` |
+| MSX1 | `.rom`, `.mx1`, `.dsk`, `.cas`, `.wav` |
+| MSX2 | `.rom`, `.mx2`, `.dsk`, `.cas`, `.wav` |
+| MSX2+ | `.rom`, `.mx2`, `.mxp`, `.dsk`, `.cas`, `.wav` |
+| SEGA Saturn | `.iso`, `.cue`, `.chd`, `.mds`, `.nrg`; BIOS images `.bin`, `.rom`, `.bios` |
+| SEGA Dreamcast | `.gdi`, `.cdi`, `.chd`, `.cue`, `.iso`, `.mds`, `.nrg`, homebrew `.elf`, multi-disc `.m3u` |
+| Sony PlayStation (PS1) | `.cue`, `.chd`, `.iso`, `.mds`, `.nrg`, raw `.bin`, PS-X `.exe`, multi-disc `.m3u` |
+| Sony PSP (experimental) | `.elf`, `.prx`, `.pbp`, encrypted executables, ISO9660 `.iso`, CISO v1 `.cso`; single-image archives; commercial compatibility is being validated |
+| ZX Spectrum family / clones | `.sna`, `.z80`, `.tap`, `.tzx`, `.trd`, `.scl`, `.dsk`, `.dck`, `.pro`, `.kdi`, `.ide`, `.mmc` |
 | Super Nintendo / Super Famicom | `.sfc`, `.smc`, `.swc`, `.fig` |
-| Neo Geo MVS / AES | Named MAME ROM sets in `.zip`, unencrypted NeoSD `.neo` images |
+| Neo Geo MVS / AES | Named MAME ROM sets in `.zip`, `.7z`, `.rar`; unencrypted NeoSD `.neo` images |
 | Neo Geo CD / CDZ | `.iso`, `.cue` with BIN/PCM WAV tracks, `.chd`, `.mds`, `.nrg` |
-| Neo Geo Pocket | `.ngp`, `.ngc`, `.zip` |
-| Neo Geo Pocket Color | `.ngp`, `.ngc`, `.zip` |
-| WonderSwan | `.ws` |
+| Neo Geo Pocket | `.ngp`, `.ngc` |
+| Neo Geo Pocket Color | `.ngp`, `.ngc` |
+| WonderSwan | `.ws`, `.wsc` (model detected from the image) |
 | WonderSwan Color | `.wsc`, `.ws` |
-| Capcom Play System I (CPS-1) | Named arcade ROM sets in `.zip` |
-| Capcom Play System II (CPS-2) | Named arcade ROM sets in `.zip` |
-| Capcom Play System III (CPS-3) | Supported SIMM / No-CD ROM sets in `.zip` |
-| PC Engine / TurboGrafx-16 | `.pce`, single-HuCard `.zip` |
-| SuperGrafx | `.sgx`, `.pce`, single-HuCard `.zip` |
+| Capcom Play System I (CPS-1) | Named arcade ROM sets in `.zip`, `.7z`, `.rar` |
+| Capcom Play System II (CPS-2) | Named arcade ROM sets in `.zip`, `.7z`, `.rar` |
+| Capcom Play System III (CPS-3) | Supported SIMM / No-CD ROM sets in `.zip`, `.7z`, `.rar` |
+| PC Engine / TurboGrafx-16 | `.pce`, single-HuCard archives |
+| SuperGrafx | `.sgx`, `.pce`, single-HuCard archives |
 | PC Engine CD / Duo / Arcade Card | `.cue`, `.iso`, `.chd`, `.mds`, `.nrg` (built-in System Cards 1/2/3) |
 
 ## Features

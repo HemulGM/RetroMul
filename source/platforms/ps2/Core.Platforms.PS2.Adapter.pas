@@ -118,6 +118,7 @@ type
     procedure Boot;
     procedure TransferSnapshot(const Name: string; Loading: Boolean);
     procedure Publish(Console: TPS2Console);
+    procedure PublishPixels(const Source: TArray<Cardinal>; Width, Height: Integer; Number: Int64);
     procedure LoadCards;
     procedure SaveCards;
     procedure SaveNVM;
@@ -515,15 +516,25 @@ procedure TPS2Worker.Restart;
 begin
   FDeadline := TStopwatch.GetTimeStamp;
   FClockGuest := FConsole.Scheduler.Now;
-  FRate.Reset(FConsole.FrameCount, TStopwatch.GetTimeStamp);
+  FLock.Acquire;
+  try
+    FRate.Reset(FConsole.FrameCount, TStopwatch.GetTimeStamp);
+  finally
+    FLock.Release;
+  end;
 end;
 
-// A stable picture: a field (half height) is shown with doubled lines.
+// The console's last picture (after a snapshot load: the GS shows each
+// picture it builds itself, OnFrame).
 procedure TPS2Worker.Publish(Console: TPS2Console);
 begin
-  var Width := Console.GS.FrameWidth;
-  var Height := Console.GS.FrameHeight;
-  var Source := Console.GS.Frame;
+  PublishPixels(Console.GS.Frame, Console.GS.FrameWidth, Console.GS.FrameHeight, Console.FrameCount);
+end;
+
+// A stable picture: a field (half height) is shown with doubled lines. (On
+// the GS worker's thread too.)
+procedure TPS2Worker.PublishPixels(const Source: TArray<Cardinal>; Width, Height: Integer; Number: Int64);
+begin
   if (Width <= 0) or (Height <= 0) or (Length(Source) < Width * Height) then
     Exit;
   var Lines := 1;
@@ -543,10 +554,10 @@ begin
       Move(Source[Y * Width], Frame.Pixels[(Y * 2 + 1) * Width], Width * 4);
     end;
   end;
-  Frame.FrameNumber := Console.FrameCount;
-  Frame.FramesPerSecond := FRate.Update(Frame.FrameNumber, TStopwatch.GetTimeStamp, TStopwatch.Frequency);
+  Frame.FrameNumber := Number;
   FLock.Acquire;
   try
+    Frame.FramesPerSecond := FRate.Update(Frame.FrameNumber, TStopwatch.GetTimeStamp, TStopwatch.Frequency);
     FFrame := Frame;
     FAvailable := True;
   finally
@@ -651,6 +662,11 @@ begin
       if FBase.Disc = nil then
         Config.HostDirectory := ExtractFilePath(FProgramName);
       FConsole := TPS2Console.Create(Config);
+      FConsole.GS.OnFrame :=
+        procedure(const Pixels: TArray<Cardinal>; Width, Height: Integer; Number: Int64)
+        begin
+          PublishPixels(Pixels, Width, Height, Number);
+        end;
       LoadCards;
       Boot;
       Restart;
@@ -755,7 +771,7 @@ begin
           on E: Exception do
             AudioFailure(E);
         end;
-        Publish(FConsole);
+        // (The picture was shown as the GS built it.)
         if not Enabled or FAudioFailed then
         begin
           // Without sound, pace the emulated time.

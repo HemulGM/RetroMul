@@ -176,6 +176,8 @@ type
   // Asked when an accelerated draw's texture pages meet its targets':
   // whether it may take the primitive being drawn.
   TPS2GSOverlapAllowed = reference to function: Boolean;
+  // Reads GS memory (QueueRead).
+  TPS2GSRead = reference to procedure(Memory: TPS2GSMemory);
 
   TPS2GSAccelerator = class abstract
   protected
@@ -483,6 +485,15 @@ type
     // The same where only Pages are read (the display): Async, it waits for
     // the worker only when what it has not finished drawing may write them.
     function MemoryFor(const Pages: TPS2GSPages): TPS2GSMemory;
+    function PagesNeed(const Pages: TPS2GSPages): Int64;
+    // Whether MemoryFor(Pages) would not wait.
+    function PagesDrawn(const Pages: TPS2GSPages): Boolean;
+    // Read with GS memory as everything queued so far draws Pages: Async, on
+    // the worker's thread once it gets there, in order (syncing its band
+    // threads and GPU first only where MemoryFor would wait), else at once.
+    procedure QueueRead(const Pages: TPS2GSPages; const Read: TPS2GSRead);
+    // Waits until the reads queued have run.
+    procedure FinishReads;
     // Band threads drawing (0 or 1: none, everything drawn at once on the
     // caller's thread). The memory and timing are the same either way.
     property Threads: Integer read FThreads write SetThreads;
@@ -594,6 +605,9 @@ type
     EntryImage = 128;
     EntrySync = 129;
     EntryFence = 130;
+    // A queued read (Value: its slot).
+    EntryRead = 131;
+    ReadSlots = 8;
   private type
     TEntry = record
       Kind: Integer;
@@ -627,6 +641,12 @@ type
     FWaitTarget: Int64;
     FWake, FProgress: TEvent;
     FFailure: string;
+    // Queued reads by slot: what each runs, the entries drawn before it that
+    // write its pages (it syncs Inner unless they are in memory), and the
+    // entry each was queued as (the slot is not taken again before then).
+    FReads: array[0..ReadSlots - 1] of TPS2GSRead;
+    FReadNeed, FReadAt: array[0..ReadSlots - 1] of Int64;
+    FReadCount: Int64;
     function Slot: PEntry;
     procedure Publish;
     procedure WaitConsumed(Value: Int64);
@@ -639,6 +659,8 @@ type
     destructor Destroy; override;
     procedure PutRegister(Index: Integer; Value: UInt64);
     procedure PutImage(const Data: TPS2Reg128);
+    // Read after what is queued (Need: see FReadNeed), handed over at once.
+    procedure PutRead(const Read: TPS2GSRead; Need: Int64);
     // Waits until Inner has taken everything queued (Synced: and drawn it,
     // its Sync).
     procedure Drain(Synced: Boolean);
@@ -1857,6 +1879,42 @@ begin
   if not FWorker.DrawnThrough(Need) then
     FWorker.Drain(True);
   Result := FMemory;
+end;
+
+// The last queued entry that writes Pages (MemoryFor's).
+function TPS2GSRaster.PagesNeed(const Pages: TPS2GSPages): Int64;
+begin
+  FlushMarks;
+  Result := 0;
+  for var P := 0 to 511 do
+    if (Pages[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0 then
+    begin
+      if FPageWritten[P] > Result then
+        Result := FPageWritten[P];
+      if ((FXferArea[P shr 5] and (Cardinal(1) shl (P and 31))) <> 0) and (FXferAreaEntry > Result) then
+        Result := FXferAreaEntry;
+    end;
+end;
+
+function TPS2GSRaster.PagesDrawn(const Pages: TPS2GSPages): Boolean;
+begin
+  Result := (FWorker = nil) or FWorker.DrawnThrough(PagesNeed(Pages));
+end;
+
+procedure TPS2GSRaster.QueueRead(const Pages: TPS2GSPages; const Read: TPS2GSRead);
+begin
+  if FWorker = nil then
+  begin
+    Read(MemoryFor(Pages));
+    Exit;
+  end;
+  FWorker.PutRead(Read, PagesNeed(Pages));
+end;
+
+procedure TPS2GSRaster.FinishReads;
+begin
+  if FWorker <> nil then
+    FWorker.Drain(False);
 end;
 
 procedure TPS2GSRaster.FlushMarks;
@@ -5072,6 +5130,17 @@ begin
           EntrySync:
             FInner.Sync;
           EntryFence: ;
+          EntryRead:
+            begin
+              var K := Integer(E.Value);
+              try
+                if Synced < FReadNeed[K] then
+                  FInner.Sync;
+                FReads[K](FInner.FMemory);
+              finally
+                FReads[K] := nil;
+              end;
+            end;
           GSRegXYZF2, GSRegXYZ2, GSRegXYZF3, GSRegXYZ3:
             begin
               if E.Csr <> Csr then
@@ -5193,6 +5262,26 @@ begin
   FDrained := 0;
   if FWrite - FPublishedHere >= 64 then
     Publish;
+end;
+
+procedure TPS2GSWorker.PutRead(const Read: TPS2GSRead; Need: Int64);
+begin
+  var K := Integer(FReadCount mod ReadSlots);
+  if FReadCount >= ReadSlots then
+  begin
+    Publish;
+    WaitConsumed(FReadAt[K] + 1);
+  end;
+  var E := Slot;
+  FReads[K] := Read;
+  FReadNeed[K] := Need;
+  FReadAt[K] := FWrite;
+  E.Kind := EntryRead;
+  E.Value := UInt64(K);
+  Inc(FWrite);
+  Inc(FReadCount);
+  FDrained := 0;
+  Publish;
 end;
 
 function TPS2GSWorker.DrawnThrough(Count: Int64): Boolean;

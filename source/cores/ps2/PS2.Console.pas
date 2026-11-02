@@ -536,6 +536,7 @@ begin
       begin
         FInVBlank := True;
         Bus.RaiseIRQ(2);
+        GS.FrameNumber := FFrameCount + 1;
         GS.VBlank;
         IOPMachine.VBlank(True);
         Scheduler.Schedule(TPS2Event.VBlankEnd, FFieldStart + FFieldCycles);
@@ -866,6 +867,7 @@ begin
       begin
         FInVBlank := True;
         Bus.RaiseIRQ(2);
+        GS.FrameNumber := FFrameCount + 1;
         GS.VBlank;
         PadMan.Update;
         IOP.VBlank(True);

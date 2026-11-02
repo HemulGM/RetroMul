@@ -97,7 +97,15 @@ transfers, snapshots) or changes the renderer. The display at VBlank
 emulation thread keeps, per page, the last queued entry that may write it
 (primitive rectangles, transfer areas), and the worker publishes how many
 entries have no band or GPU work left; usually the shown buffer was finished
-a frame earlier and the worker goes on drawing the next one meanwhile. Frames,
+a frame earlier and the worker goes on drawing the next one meanwhile. The
+picture itself is built off the emulation thread (`TPS2GS.BuildFrame`): the
+display registers are taken at VBlank, the shown pages are copied into one of
+two snapshots of GS memory (by the emulation thread when they are drawn
+already, else by the worker once it gets there, a read entry in its queue
+that syncs the bands and GPU only where `MemoryFor` would wait), and a
+composer thread (`TPS2GSComposer`) merges the circuits from the snapshot and
+hands the picture to `OnFrame` (the front end shows it from there). `Frame`
+waits for the last picture asked for. FFX gains 15%, Colossus 6%. Frames,
 snapshots and timing are identical with and without it; diagnostics logs
 (primitive, transfer, watched pixel) keep everything on the emulation thread.
 `tests/cores/ps2/gsdata` and `tests/cores/ps2/gpu` (also with `-Async`) cover

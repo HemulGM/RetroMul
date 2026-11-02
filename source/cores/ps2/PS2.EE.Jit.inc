@@ -11,7 +11,7 @@
 // no deadline, interrupt, exit or reset due, the next block compiled, valid
 // and not a spin or a polling block (RunBlocks's to pass over); else back to RunBlocks. The code
 // returns the instructions its last block ran (0 after a chain's check), as
-// Execute, the last block in FJitLast. Code is made for a block
+// Execute, the last block in FJitLast (set as it leaves). Code is made for a block
 // when it has run JitHeat times, and dropped with the blocks (ClearBlocks,
 // also when the writer is full); a reset asked for while code runs waits for
 // it to return.
@@ -26,6 +26,9 @@ type
       History, HistoryPos, JitLast: Integer;
     // TEEBlock's.
     BPC, BGenPtr, BGenPtr2, BGen, BGen2, BInner: Integer;
+    // IntPending, ExitRequest, JitFull and JitResetPending are four bytes in
+    // a row (one look at all of them).
+    Attention: Boolean;
   end;
 
 var
@@ -63,6 +66,8 @@ begin
   O.BGen := Integer(NativeUInt(@PEEBlock(nil).Gen));
   O.BGen2 := Integer(NativeUInt(@PEEBlock(nil).Gen2));
   O.BInner := Integer(NativeUInt(@PEEBlock(nil).NativeInner));
+  O.Attention := (O.ExitRequest = O.IntPending + 1) and (O.JitFull = O.IntPending + 2) and
+    (O.JitResetPending = O.IntPending + 3);
   EEJitOff := O;
 end;
 
@@ -112,8 +117,6 @@ begin
   J.Enter;
   // Chained blocks come in here.
   B.NativeInner := J.Here;
-  J.Move(jw64, JT1, JImm(Int64(NativeUInt(B))));
-  J.Move(jw64, JMem(jrSelf, O.JitLast), JT1);
   J.Move(jw8, JMem(jrSelf, O.BranchTaken), JImm(0));
   J.Move(jw8, JMem(jrSelf, O.Stop), JImm(0));
   var Stops: TArray<TJitLabel>;
@@ -170,6 +173,8 @@ begin
     J.Bind(Stops[K]);
     J.Move(jw64, JT1, JImm(Int64(NativeUInt(B.Insts + K))));
     J.Call(@TEECPU.JitStop, [JSelf, JT1]);
+    J.Move(jw64, JT1, JImm(Int64(NativeUInt(B))));
+    J.Move(jw64, JMem(jrSelf, O.JitLast), JT1);
     J.Leave(JImm(K + 1));
   end;
   J.ForgetLabels;
@@ -193,17 +198,25 @@ begin
   J.Move(jw64, JT2, JMem(jrSelf, O.Deadline));
   J.Move(jw64, JT2, JMem(jrT2, 0));
   J.Branch(jcGe, jw64, JMem(jrT1, 0), JT2, Back);
-  for var Flag in [O.IntPending, O.ExitRequest, O.JitFull, O.JitResetPending] do
+  if O.Attention then
   begin
-    J.Move(jw8, JT2, JMem(jrSelf, Flag));
-    J.BranchTest(jcNe, jw8, JT2, JT2, Back);
-  end;
-  // (Diagnostics see each block in RunBlocks.)
-  for var Diagnostic in [O.WatchPtr, O.BlockProfile] do
-  begin
-    J.Move(jw64, JT2, JMem(jrSelf, Diagnostic));
-    J.BranchTest(jcNe, jw64, JT2, JT2, Back);
-  end;
+    J.Move(jw32, JT2, JMem(jrSelf, O.IntPending));
+    J.BranchTest(jcNe, jw32, JT2, JT2, Back);
+  end
+  else
+    for var Flag in [O.IntPending, O.ExitRequest, O.JitFull, O.JitResetPending] do
+    begin
+      J.Move(jw8, JT2, JMem(jrSelf, Flag));
+      J.BranchTest(jcNe, jw8, JT2, JT2, Back);
+    end;
+  // (Diagnostics see each block in RunBlocks: code made while they are on,
+  // see RunBlocks.)
+  if FJitDiagnostics then
+    for var Diagnostic in [O.WatchPtr, O.BlockProfile] do
+    begin
+      J.Move(jw64, JT2, JMem(jrSelf, Diagnostic));
+      J.BranchTest(jcNe, jw64, JT2, JT2, Back);
+    end;
   J.Bind(Again);
   J.Move(jw64, JT3, JImm(Int64(NativeUInt(@B.Chain[K]))));
   J.Move(jw64, JT3, JMem(jrT3, 0));
@@ -231,6 +244,8 @@ begin
   J.Move(jw32, JT0, JMem(jrSelf, O.PC));
   J.Jump(Again);
   J.Bind(Back);
+  J.Move(jw64, JT1, JImm(Int64(NativeUInt(B))));
+  J.Move(jw64, JMem(jrSelf, O.JitLast), JT1);
   J.Leave(JImm(0));
 end;
 

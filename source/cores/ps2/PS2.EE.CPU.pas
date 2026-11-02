@@ -256,13 +256,16 @@ type
     FGenMap: PEEGenMap;
     FPhys: PEEPhysMap;
     FDummyGen: Cardinal;
-    FIntPending: Boolean;
+    // An interrupt pending, an exit asked for, the code writer full (the
+    // blocks are cleared at the next one) and a reset of the code owed (it
+    // waits for the code running to return): together, which generated code
+    // looks at after each block at once.
+    FIntPending, FExitRequest, FJitFull, FJitResetPending: Boolean;
     // A newly pending interrupt is taken after one more block (code polling
     // INTC_STAT sees the cause bit before the handler acknowledges it).
     FIntDelay: Boolean;
     FInt0, FInt1: Boolean;
     FIntBlock: Boolean;
-    FExitRequest: Boolean;
     FStop: Byte;
     FBranchTaken: Boolean;
     FBranchTarget: Cardinal;
@@ -279,11 +282,11 @@ type
     FOnSyscall: TEESyscallHook;
     FOnTrap: TEETrapHook;
     // Blocks as generated code (HW.JIT, UseJit): the writer, whether code is
-    // running (a reset of the code waits for it to return), a reset owed,
-    // the writer full (the blocks are cleared at the next one), no writer to
-    // be had.
+    // running (a reset of the code waits for it to return), no writer to be
+    // had; whether the code made since the last reset leaves to RunBlocks
+    // after each block for the diagnostics (WatchPtr, BlockProfile).
     FJit: TJitAsm;
-    FUseJit, FInJit, FJitResetPending, FJitFull, FJitFailed: Boolean;
+    FUseJit, FInJit, FJitFailed, FJitDiagnostics: Boolean;
     // Multimedia operations decoded to their kernels (EEMMIKernel).
     FMMIKernels: Boolean;
     FJitBlocks, FJitCompiles, FJitResets: Int64;
@@ -4718,6 +4721,14 @@ var
   Gen: Cardinal;
 begin
   // Kept apart from Run's exception frame so its variables stay in registers.
+  // (Code made without the diagnostics' checks, or with them, is made again
+  // when they are switched.)
+  var Diagnostics := (WatchPtr <> nil) or (BlockProfile <> nil);
+  if Diagnostics <> FJitDiagnostics then
+  begin
+    ClearBlocks;
+    FJitDiagnostics := Diagnostics;
+  end;
   FExitRequest := False;
   UpdateInterrupts;
   FExitRequest := False;

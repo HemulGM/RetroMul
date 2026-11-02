@@ -1,6 +1,25 @@
 ﻿program RetroMul;
 
 uses
+  System.SysUtils,
+  System.StartUpCopy,
+  FMX.Forms,
+  {$IF Defined(ANDROID) or Defined(IOS)}
+  FMX.Skia,
+  {$ENDIF }
+  HW.V30MZ in '..\..\source\hardware\cpu\HW.V30MZ.pas',
+  WS.Cartridge in '..\..\source\cores\ws\WS.Cartridge.pas',
+  WS.Console in '..\..\source\cores\ws\WS.Console.pas',
+  WS.EEPROM in '..\..\source\cores\ws\WS.EEPROM.pas',
+  WS.Emulation in '..\..\source\cores\ws\WS.Emulation.pas',
+  WS.Sound in '..\..\source\cores\ws\WS.Sound.pas',
+  WS.Types in '..\..\source\cores\ws\WS.Types.pas',
+  WS.Video in '..\..\source\cores\ws\WS.Video.pas',
+  Core.Platforms.WS.Adapter in '..\..\source\platforms\ws\Core.Platforms.WS.Adapter.pas',
+  RM.Platforms.WS.Gamepads in '..\..\source\platforms\ws\RM.Platforms.WS.Gamepads.pas',
+  RM.Platforms.WS.Help in '..\..\source\platforms\ws\RM.Platforms.WS.Help.pas',
+  RM.Platforms.WS in '..\..\source\platforms\ws\RM.Platforms.WS.pas',
+  RM.Platforms.WS.Settings in '..\..\source\platforms\ws\RM.Platforms.WS.Settings.pas',
   HW.EEPROM93Cxx in '..\..\source\hardware\HW.EEPROM93Cxx.pas',
   HW.W65C02 in '..\..\source\hardware\cpu\HW.W65C02.pas',
   Lynx.Cartridge in '..\..\source\cores\lynx\Lynx.Cartridge.pas',
@@ -58,12 +77,6 @@ uses
   A2600.Palette in '..\..\source\cores\at2600\A2600.Palette.pas',
   A2600.TIA in '..\..\source\cores\at2600\A2600.TIA.pas',
   A2600.State in '..\..\source\cores\at2600\A2600.State.pas',
-  System.SysUtils,
-  System.StartUpCopy,
-  FMX.Forms,
-  {$IF Defined(ANDROID) or Defined(IOS)}
-  FMX.Skia,
-  {$ENDIF }
   RM.Platforms.Atari2600.Settings in '..\..\source\platforms\at2600\RM.Platforms.Atari2600.Settings.pas',
   A2600.Console in '..\..\source\cores\at2600\A2600.Console.pas',
   A2600.Emulation in '..\..\source\cores\at2600\A2600.Emulation.pas',
@@ -750,10 +763,6 @@ begin
   GlobalUseSkia := True;
   {$ENDIF}
   Application.Initialize;
-  if FindCmdLineSwitch('virtual-controller-test', ['-', '/'], True) or
-    FindCmdLineSwitch('-virtual-controller-test', ['-'], True) then
-    Application.CreateForm(TVirtualControllerTestForm, VirtualControllerTestForm)
-  else
-    Application.CreateForm(TFormMain, FormMain);
+  Application.CreateForm(TFormMain, FormMain);
   Application.Run;
 end.

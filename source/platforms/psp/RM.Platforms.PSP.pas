@@ -27,9 +27,9 @@ uses
   RM.Settings.Catalog, RM.Settings.Platform, System.StrUtils, Core.Emulation,
   Core.Platforms, Core.Platforms.PSP.Adapter,
   Core.Platforms.PSP.Archive, PSP.Media, RM.Platforms.Presentation,
-  RM.Platforms.GBA.Icons, RM.Gamepad.Factory, RM.Platforms.PSP.Gamepads,
+  RM.Platforms.GBA.Icons, RM.Gamepad.Factory, RM.Platforms.PSP.Gamepads, RM.Platforms.PSP.Settings,
   RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
+  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices, RM.Platforms.PSP.Input,
   System.Classes;
 
 class function TPSPPlatform.Source(Context: TCoreLoadContext): TCoreMatch;
@@ -133,14 +133,14 @@ end;
 
 class procedure TPSPPlatform.RegisterClient;
 begin
-  RegisterSettingsPlatform('psp', TSettingsPlatform);
-  RegisterPlatformSettingsDevices('psp', TPlatformSettingsDevices);
+  RegisterSettingsPlatform('psp', TPSPSettings);
+  RegisterPlatformSettingsDevices('psp', TPSPSettingsDevices);
   RegisterPlatformDeviceCallouts('psp', TPlatformDeviceCallouts);
-  RegisterPlatformControlsHelp('psp', TPlatformControlsHelp);
+  RegisterPlatformControlsHelp('psp', TPSPControlsHelp);
   RegisterPlatformSettingsHandler('psp', TPlatformSettingsHandler);
   RegisterPlatformWindowLayout('psp', TPlatformWindowLayout);
   RegisterPlatformSessionHandler('psp', TPlatformSessionHandler);
-  RegisterPlatformInputHandler('psp', TPlatformInputHandler);
+  RegisterPlatformInputHandler('psp', TPSPInputHandler);
   RegisterInput;
   RegisterPlatformGamepads('psp', TGamepadPSP, []);
   RegisterPlatformPresentation('psp', 'psp', PlatformIconGBA);

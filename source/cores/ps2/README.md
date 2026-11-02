@@ -349,7 +349,9 @@ that calls a helper it is stored first); Z/S extraction is vectorized and O/U
 groups are returned directly. The four-field memory-operand kernels take the
 same corrected host arithmetic under round-to-nearest. Every input and rounding mode remains exact,
 using integer normalization outside the guarded common range. MADD/MSUB still
-round the product and sum separately. Callbacks, aliased data/register/code
+round the product and sum separately. OPMULA and OPMSUB take the same
+register routines (operands shuffled to Fs.yzx and Ft.zxy, w cleared; x, y
+and z written), as the memory path builds them; FFX gains 4%. Callbacks, aliased data/register/code
 buffers and unsupported backends retain the memory-result path. In a
 statically scheduled span on Win64, XMM6..XMM15 (kept vector registers, which
 `TJitAsm.InvokeKeeping` saves for its caller) hold copies of the VF registers

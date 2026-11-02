@@ -176,6 +176,8 @@ type
     // Temporary operands/results of generated arithmetic (not guest state).
     FJitOperand, FJitProduct: TPS2Reg128;
     FJitFlags, FJitProductFlags: Cardinal;
+    // All ones in x, y and z, zero in w (the outer product's operand lanes).
+    FLanesXYZ: TPS2Reg128;
     // The register-math routines generated code calls, for the host rounding
     // of the current Run (FMathMode).
     FMath: array[TPS2RegisterMath] of Pointer;
@@ -523,6 +525,10 @@ constructor TPS2VUCore.Create(Index: Integer; VF: PPS2VFArray; VI: PPS2VIArray; 
 begin
   inherited Create;
   FIndex := Index;
+  FLanesXYZ.UW[0] := $FFFFFFFF;
+  FLanesXYZ.UW[1] := $FFFFFFFF;
+  FLanesXYZ.UW[2] := $FFFFFFFF;
+  FLanesXYZ.UW[3] := 0;
   FVF := VF;
   FVI := VI;
   FCode := Code;
@@ -1847,27 +1853,42 @@ end;
 
 function TPS2VUCore.EmitRegisterUpper(Op: Cardinal): Boolean;
 type
-  TKind = (rkAdd, rkSub, rkMul, rkMadd, rkMsub);
+  TKind = (rkAdd, rkSub, rkMul, rkMadd, rkMsub, rkOpMula, rkOpMsub);
 var
   Kind: TKind;
 begin
   Result := False;
   var F := Op and $3F;
-  if F >= $3C then F := ((Op shr 4) and $7C) or (Op and 3);
+  var Acc := F >= $3C;
+  if Acc then F := ((Op shr 4) and $7C) or (Op and 3);
   case F of
     $00..$03, $20, $22, $28: Kind := rkAdd;
     $04..$07, $24, $26, $2C: Kind := rkSub;
     $08..$0B, $21, $23, $29: Kind := rkMadd;
     $0C..$0F, $25, $27, $2D: Kind := rkMsub;
     $18..$1C, $1E, $2A: Kind := rkMul;
+    $2E: if Acc then Kind := rkOpMula else Kind := rkOpMsub;
   else
     Exit;
   end;
   var J := FJit;
   var Fs := Integer((Op shr 11) and 31);
   var Ft := Integer((Op shr 16) and 31);
+  var Mask := (Op shr 21) and 15;
   EmitLoadVF(jv0, Fs);
-  if F <= $1B then
+  if Kind in [rkOpMula, rkOpMsub] then
+  begin
+    // The outer product's operands as EmitScalarUpper builds them: Fs.yzx
+    // times Ft.zxy, w zero in both (it is not written: x, y and z only).
+    J.VectorShuffle(jv0, jv0, $C9);
+    EmitLoadVF(jv1, Ft);
+    J.VectorShuffle(jv1, jv1, $D2);
+    J.VectorLoad(jv2, JMem(jrSelf, Integer(NativeInt(@FLanesXYZ) - NativeInt(Self))));
+    J.VectorAlu(jvaAnd, jv0, jv2);
+    J.VectorAlu(jvaAnd, jv1, jv2);
+    Mask := Mask and $E;
+  end
+  else if F <= $1B then
   begin
     EmitLoadVF(jv1, Ft);
     J.VectorShuffle(jv1, jv1, Byte((Op and 3) * $55));
@@ -1885,12 +1906,12 @@ begin
     J.VectorAlu(jvaXor, jv1, jv2);
   end;
   var Math := vrmAdd;
-  if Kind in [rkMul, rkMadd, rkMsub] then Math := vrmMul;
+  if Kind in [rkMul, rkMadd, rkMsub, rkOpMula, rkOpMsub] then Math := vrmMul;
   J.VectorCallAt(JMem(jrSelf, Integer(NativeInt(@FMath[Math]) - NativeInt(Self))), PS2RegisterMathModel(Math), JImm(0));
-  if Kind in [rkMadd, rkMsub] then
+  if Kind in [rkMadd, rkMsub, rkOpMsub] then
   begin
     J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@FJitProductFlags) - NativeInt(Self))), JT0);
-    if Kind = rkMsub then
+    if Kind in [rkMsub, rkOpMsub] then
     begin
       J.Move(jw32, JT1, JImm($80000000));
       J.VectorBroadcast(jv2, JT1);
@@ -1902,7 +1923,7 @@ begin
       JImm(0));
     J.Alu(jaOr, jw32, JT0, JMem(jrSelf, Integer(NativeInt(@FJitProductFlags) - NativeInt(Self))));
   end;
-  EmitRegisterFlags((Op shr 21) and 15);
+  EmitRegisterFlags(Mask);
   Inc(FJitVectorOps);
   Result := True;
 end;

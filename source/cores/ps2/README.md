@@ -52,7 +52,10 @@ others wait. These decisions use the pages a primitive can actually touch:
 its pixel rectangle and the texels its UV/STQ range reaches through the wrap
 modes. Reading its own buffer counts as feedback only where the texel and
 pixel rectangles meet (same layout, distinct addresses), not for sprites
-whose pixels each read their own place, nor for 8H/4HL/4HH texels under a
+whose pixels each read their own place, nor for point-sampled triangles whose
+UV (or STQ of one Q) lies within (0.01, 0.99) of a texel past each vertex
+(every pixel's coordinate is a convex combination of those: its own texel),
+nor for 8H/4HL/4HH texels under a
 24-bit frame or depth buffer (which keep the high byte). Idle band threads are
 woken in batches (by queued pixels) rather than per command. Each queued primitive keeps its CLUT in a ring. The emulation
 thread only waits for the bands when it reads GS memory itself (local-to-host
@@ -390,7 +393,7 @@ A draw whose texture pages may meet its own targets' (in broad page ranges,
 or past the end of VRAM, where textures continue at its start on both
 paths) is accepted only where the software footprint finds that no pixel
 reads a texel another pixel of the draw writes: disjoint texel and pixel
-rectangles in one buffer, a sprite reading its own pixels, or the high byte
+rectangles in one buffer, a sprite or triangle reading its own pixels, or the high byte
 of 24-bit words. A small one meeting queued software work joins that queue
 instead, so that GPU and band threads do not wait for each other at each of
 a series of such primitives between self-reading ones.

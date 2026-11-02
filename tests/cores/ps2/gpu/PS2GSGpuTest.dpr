@@ -290,6 +290,76 @@ begin
   end;
 end;
 
+// Triangles textured from their own frame, point-sampled with UV a fraction
+// of a texel past each vertex (every pixel reads its own texel: the GPU may
+// take them), between ones that read neighbouring pixels (drawn in order on
+// the host): VRAM against the CPU.
+procedure CheckSelfReadingTriangles;
+const
+  // Offsets (1/16 texel) that read another pixel: the left one, the next,
+  // a texel boundary.
+  Others: array[0..3] of Integer = (-10, 16, 0, 18);
+var
+  V: array[0..2] of TPS2GSVertex;
+begin
+  var A := TPS2GSRaster.Create;
+  var B := TPS2GSRaster.Create;
+  try
+    EnableVulkan(B);
+    if B.VulkanError <> '' then raise Exception.Create(B.VulkanError);
+    for var K := 0 to PS2GSMemorySize div 4 - 1 do
+      PCardinal(A.Memory.Data)[K] := Cardinal(K) * 2654435761;
+    Move(A.Memory.Data^, B.Memory.Data^, PS2GSMemorySize);
+    for var R in TArray<TPS2GSRaster>.Create(A, B) do
+    begin
+      R.WriteRegister(GSRegFRAME_1, UInt64(4) shl 16);
+      R.WriteRegister(GSRegZBUF_1, (UInt64(16) shl 0) or (UInt64(1) shl 32));
+      R.WriteRegister(GSRegTEST_1, $30000);
+      R.WriteRegister(GSRegSCISSOR_1, (UInt64(255) shl 16) or (UInt64(255) shl 48));
+      // The texture is the frame: base 0, 256 pixels wide, 256 x 256, RGBA,
+      // modulated; clamped.
+      R.WriteRegister(GSRegTEX0_1, (UInt64(4) shl 14) or (UInt64(8) shl 26) or (UInt64(8) shl 30) or (UInt64(1) shl 34));
+      R.WriteRegister(GSRegCLAMP_1, 1 or 4);
+      R.WriteRegister(GSRegALPHA_1, $44 or (UInt64(96) shl 32));
+      R.WriteRegister(GSRegPRIM, 3 or 8 or $10 or $40 or $100);
+    end;
+    RandSeed := 51791;
+    var Own := 0;
+    for var N := 0 to 299 do
+    begin
+      var DU := 1 + Random(15);
+      var DV := 1 + Random(15);
+      var Reads := N mod 4 = 3;
+      if Reads then
+        if Random(2) = 0 then DU := Others[Random(4)] else DV := Others[Random(4)];
+      for var K := 0 to 2 do
+      begin
+        V[K] := Default(TPS2GSVertex);
+        V[K].X := (8 + Random(240)) * 16 + Random(16);
+        V[K].Y := (8 + Random(240)) * 16 + Random(16);
+        V[K].U := V[K].X + DU;
+        V[K].V := V[K].Y + DV;
+        V[K].R := Random(256); V[K].G := Random(256); V[K].B := Random(256); V[K].A := Random(256);
+        V[K].Q := 1;
+      end;
+      if not Reads then Inc(Own);
+      for var K := 0 to 2 do Vertex(A, V[K]);
+      for var K := 0 to 2 do Vertex(B, V[K]);
+    end;
+    B.Sync;
+    if not CompareMem(A.Memory.Data, B.Memory.Data, PS2GSMemorySize) then
+      raise Exception.Create('Self-reading triangle mismatch');
+    // (Some have no area.)
+    if B.VulkanRasterizedTriangles < Own * 9 div 10 then
+      raise Exception.CreateFmt('Self-reading triangles kept on the host (%d of %d on the GPU)',
+        [B.VulkanRasterizedTriangles, Own]);
+    Writeln(Format('%d triangles reading their own pixels (%d on the GPU) among others reading neighbours: OK',
+      [Own, B.VulkanRasterizedTriangles]));
+  finally
+    A.Free; B.Free;
+  end;
+end;
+
 procedure CheckHybridRenderers;
 begin
   var Baseline: TBytes;
@@ -1081,6 +1151,7 @@ begin
       PS2GSTwoPhaseDraws := TwoPhase;
       Writeln('-- clusters in two passes from ', TwoPhase, ' draws in a tile');
       CheckTiledTriangles;
+      CheckSelfReadingTriangles;
       CheckHybridRenderers;
       CheckClusterDependencies;
       CheckNativeArenas;

@@ -1638,6 +1638,17 @@ begin
   Result := (X1 < PW * Cols) and ((Y1 div PH + 1) * Cols <= 512);
 end;
 
+// Whether the wrap mode leaves texels P0..P1 (of a texture Size wide) alone.
+function IdentityRange(P0, P1, Size, Mode, MinC, MaxC: Integer): Boolean;
+begin
+  case Mode of
+    0, 1: Result := P1 < Size;
+    2: Result := (P0 >= MinC) and (P1 <= MaxC);
+  else
+    Result := False;
+  end;
+end;
+
 // One axis of SpriteIdentity: A at vertex coordinate C0 to B at C1 (12.4)
 // step one texel per pixel, under a texel past pixels P0..P1, which the wrap
 // mode leaves alone.
@@ -1650,12 +1661,7 @@ begin
   var D := A - C0;
   if not ((D >= 0) and (D <= 15.999) and ((D = Int(D)) or (D >= 0.001))) then
     Exit(False);
-  case Mode of
-    0, 1: Result := P1 < Size;
-    2: Result := (P0 >= MinC) and (P1 <= MaxC);
-  else
-    Result := False;
-  end;
+  Result := IdentityRange(P0, P1, Size, Mode, MinC, MaxC);
 end;
 
 // Whether each pixel of a point-sampled sprite (pixels X0..X1, Y0..Y1)
@@ -1685,6 +1691,41 @@ begin
   end;
   Result := IdentityAxis(A, B, C.V[0].X, C.V[1].X, X0, X1, 1 shl C.D.TW, C.D.WMS, C.D.MINU, C.D.MAXU) and
     IdentityAxis(TA, TB, C.V[0].Y, C.V[1].Y, Y0, Y1, 1 shl C.D.TH, C.D.WMT, C.D.MINV, C.D.MAXV);
+end;
+
+// Whether each pixel of a point-sampled triangle (pixels X0..X1, Y0..Y1)
+// reads the texel at its own coordinates. A pixel's texture coordinate (UV,
+// or STQ with one Q) less its position is a convex combination of the
+// vertices' (its weights): with all of theirs within 1/100 of a texel of
+// [0, 1) (in 1/16), every pixel's truncates to its own texel (the drawer's
+// arithmetic errs by far less); and the wrap mode leaves those alone.
+function TriangleIdentity(const C: TPS2GSCommand; X0, Y0, X1, Y1: Integer): Boolean;
+begin
+  if (C.Kind <> gpTriangle) or C.D.Linear or C.D.UseLod then
+    Exit(False);
+  for var K := 0 to 2 do
+  begin
+    var U, V: Double;
+    if C.D.FST then
+    begin
+      U := C.V[K].U;
+      V := C.V[K].V;
+    end
+    else
+    begin
+      if (C.V[K].Q <> C.V[0].Q) or (C.V[K].Q = 0) then
+        Exit(False);
+      U := C.V[K].S / C.V[K].Q * (1 shl C.D.TW) * 16;
+      V := C.V[K].T / C.V[K].Q * (1 shl C.D.TH) * 16;
+    end;
+    var DU := U - C.V[K].X;
+    var DV := V - C.V[K].Y;
+    // (Also false for NaNs.)
+    if not ((DU >= 0.16) and (DU <= 15.84) and (DV >= 0.16) and (DV <= 15.84)) then
+      Exit(False);
+  end;
+  Result := IdentityRange(X0, X1, 1 shl C.D.TW, C.D.WMS, C.D.MINU, C.D.MAXU) and
+    IdentityRange(Y0, Y1, 1 shl C.D.TH, C.D.WMT, C.D.MINV, C.D.MAXV);
 end;
 
 // The memory a primitive touches: the pages it draws in (frame, and depth// when tested or written) and reads as texture; Feedback when what it reads
@@ -1731,7 +1772,7 @@ begin
     // those of its own pixels' rectangle are drawn, and a pixel reading its
     // own place reads it before drawing it.
     var Meet := Bounded and (U0 <= X1) and (U1 >= X0) and (V0 <= Y1) and (V1 >= Y0) and
-      not SpriteIdentity(C, X0, Y0, X1, Y1);
+      not SpriteIdentity(C, X0, Y0, X1, Y1) and not TriangleIdentity(C, X0, Y0, X1, Y1);
     // The high byte of words (8H, 4HL, 4HH) the 24-bit formats keep.
     var HighByte := C.D.TPSM in [PSMT8H, PSMT4HL, PSMT4HH];
     if Bounded and (TBP = C.D.FBP) and (TBW = C.D.FBW) and (AddressClass(C.D.TPSM) = AddressClass(C.D.FPSM)) and

@@ -398,6 +398,95 @@ begin
   Writeln('VIF UNPACK: many words at once as one at a time, every format, mask, mode and write cycle: OK');
 end;
 
+// V4-32 UNPACKs with random masks, modes, rows, columns and skipping write
+// cycles against a model of the masked write (each field: the data, plus the
+// row in mode 1 and 2, which mode 2 and 3 load; the row; the cycle's column;
+// the old value), with and without PS2VIFRuns.
+procedure CheckVIFMasked;
+var
+  Code: array[0..16383] of Byte;
+  Data, Model: array[0..1023] of TPS2Reg128;
+begin
+  var V := TPS2VIF.Create(1, nil, nil, @Code[0], @Data[0], 16384, 16384);
+  try
+    RandSeed := 4411;
+    for var K := 0 to 1023 do
+      for var L := 0 to 3 do
+        Data[K].UW[L] := Cardinal(Random(MaxInt)) * 2 + Cardinal(Random(2));
+    Model := Data;
+    var Row, Col: array[0..3] of Cardinal;
+    for var N := 0 to 1999 do
+    begin
+      var CL := 1 + Random(4);
+      var WL := 1 + Random(CL);
+      var Mask := Cardinal(Random(MaxInt)) * 2 + Cardinal(Random(2));
+      if Random(4) = 0 then Mask := 0;
+      var Mode := Random(4);
+      for var L := 0 to 3 do
+      begin
+        Row[L] := Cardinal(Random(MaxInt)) * 2 + Cardinal(Random(2));
+        Col[L] := Cardinal(Random(MaxInt)) * 2 + Cardinal(Random(2));
+      end;
+      var Masked := Random(2) = 0;
+      var Num := 1 + Random(48);
+      var Start := Random(1024);
+      var Words: TArray<Cardinal> := [$01000000 or Cardinal(CL) or (Cardinal(WL) shl 8), $20000000, Mask,
+        $30000000, Row[0], Row[1], Row[2], Row[3], $31000000, Col[0], Col[1], Col[2], Col[3],
+        $05000000 or Cardinal(Mode),
+        (Cardinal($6C or (Ord(Masked) shl 4)) shl 24) or (Cardinal(Num) shl 16) or Cardinal(Start)];
+      var Addr := Start;
+      var Written := 0;
+      for var I := 0 to Num - 1 do
+      begin
+        var D: TPS2Reg128;
+        for var L := 0 to 3 do
+        begin
+          D.UW[L] := Cardinal(Random(MaxInt)) * 2 + Cardinal(Random(2));
+          Words := Words + [D.UW[L]];
+        end;
+        var R := Min(Written, 3);
+        var Bits: Cardinal := 0;
+        if Masked then Bits := (Mask shr (R * 8)) and $FF;
+        var P: PPS2Reg128 := @Model[Addr and 1023];
+        for var L := 0 to 3 do
+          case (Bits shr (L * 2)) and 3 of
+            0:
+              begin
+                var W := D.UW[L];
+                if Mode in [1, 2] then W := Cardinal(UInt64(W) + Row[L]);
+                if Mode in [2, 3] then Row[L] := W;
+                P.UW[L] := W;
+              end;
+            1: P.UW[L] := Row[L];
+            2: P.UW[L] := Col[R];
+          end;
+        Inc(Written);
+        if Written >= WL then
+        begin
+          Written := 0;
+          Inc(Addr, CL - WL + 1);
+        end
+        else
+          Inc(Addr);
+      end;
+      PS2VIFRuns := N mod 2 = 0;
+      var At := 0;
+      while At < Length(Words) do
+      begin
+        var Piece := Min(Length(Words) - At, 1 + Random(64));
+        Check(V.Feed(@Words[At], Piece) = Piece, 'VIF held masked UNPACK words');
+        Inc(At, Piece);
+      end;
+      PS2VIFRuns := True;
+      Check(CompareMem(@Data, @Model, SizeOf(Data)), Format('Masked UNPACK wrote other VU memory (case %d)', [N]));
+      Check(CompareMem(@V.S.Row, @Row, SizeOf(Row)), Format('Masked UNPACK left another row (case %d)', [N]));
+    end;
+  finally
+    V.Free;
+  end;
+  Writeln('VIF masked UNPACK: 2000 V4-32 streams, masks, modes, rows, columns and skipping cycles as modelled: OK');
+end;
+
 // A VU1 program started by MSCAL keeps VU1 busy for the cycles it took: a
 // second MSCAL waits (VIF1 STAT.VEW, VPU-STAT.VBS1) until the window passes.
 procedure CheckVUBusy;
@@ -781,6 +870,7 @@ begin
     CheckSnapshots;
     CheckVIFStall;
     CheckVIFUnpack;
+    CheckVIFMasked;
     CheckVUBusy;
     CheckStallControl;
     CheckMemoryCard;

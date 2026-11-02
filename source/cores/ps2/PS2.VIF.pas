@@ -364,7 +364,7 @@ begin
 end;
 
 // STCYCL write length; 0 stands for 256.
-function CycleWL(Cycle: Cardinal): Integer;
+function CycleWL(Cycle: Cardinal): Integer; inline;
 begin
   Result := Integer((Cycle shr 8) and $FF);
   if Result = 0 then
@@ -487,8 +487,13 @@ begin
   var WL := CycleWL(S.CYCLE);
   var P := PPS2Reg128(FData + ((Cardinal(S.UnpackAddr) * 16) and FDataMask));
   if ((S.Command and $10) = 0) and (S.MODE = 0) then
-    // No mask, no row: the data as it is.
-    P^ := V
+  begin
+    // No mask, no row: the data as it is (by words: V was written so).
+    P.UW[0] := V.UW[0];
+    P.UW[1] := V.UW[1];
+    P.UW[2] := V.UW[2];
+    P.UW[3] := V.UW[3];
+  end
   else
     WriteMasked(V, P);
   Inc(S.UnpackCount);
@@ -508,52 +513,36 @@ end;
 
 procedure TPS2VIF.WriteMasked(const V: TPS2Reg128; P: PPS2Reg128);
 begin
-  var R := V;
+  // (Word by word: V was written so, and each field's value depends on its
+  // own only.)
   var Row := Min(S.CycleWritten, 3);
   // The mask bits of this row (none: every field takes the data).
   var Bits: Cardinal := 0;
   if (S.Command and $10) <> 0 then
     Bits := (S.MASK shr (Row * 8)) and $FF;
-  if Bits = 0 then
-  begin
-    case S.MODE of
-      1:
-        for var K := 0 to 3 do
-          R.UW[K] := Cardinal(UInt64(R.UW[K]) + S.Row[K]);
-      2:
-        for var K := 0 to 3 do
-        begin
-          R.UW[K] := Cardinal(UInt64(R.UW[K]) + S.Row[K]);
-          S.Row[K] := R.UW[K];
-        end;
-      3:
-        for var K := 0 to 3 do
-          S.Row[K] := R.UW[K];
-    end;
-    P^ := R;
-    Exit;
-  end;
+  var Mode := S.MODE;
   for var K := 0 to 3 do
   begin
-    var M := Integer((Bits shr (K * 2)) and 3);
-    case M of
+    var W := V.UW[K];
+    case (Bits shr (K * 2)) and 3 of
       0:
-        case S.MODE of
-          1: R.UW[K] := Cardinal(UInt64(R.UW[K]) + S.Row[K]);
+        case Mode of
+          1: W := Cardinal(UInt64(W) + S.Row[K]);
           2:
             begin
-              R.UW[K] := Cardinal(UInt64(R.UW[K]) + S.Row[K]);
-              S.Row[K] := R.UW[K];
+              W := Cardinal(UInt64(W) + S.Row[K]);
+              S.Row[K] := W;
             end;
           // Mode 3 keeps the data and loads it into the row.
-          3: S.Row[K] := R.UW[K];
+          3: S.Row[K] := W;
         end;
-      1: R.UW[K] := S.Row[K];
-      2: R.UW[K] := S.Col[Min(S.CycleWritten, 3)];
-      3: R.UW[K] := P.UW[K];
+      1: W := S.Row[K];
+      2: W := S.Col[Row];
+    else
+      W := P.UW[K];
     end;
+    P.UW[K] := W;
   end;
-  P^ := R;
 end;
 
 // UnpackWord for many words at once where each vector takes whole words

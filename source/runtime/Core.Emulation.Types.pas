@@ -135,6 +135,15 @@ type
     function GetSnapshotDirectory: string;
   end;
 
+  // Optional nonblocking transport for cores whose state reconstruction is slow.
+  // Status returns True while pending/running. All methods are frontend-thread safe.
+  IEmulationSnapshotOperation = interface
+    ['{A17F341E-C6D0-42BC-ACD5-BB427632C9B8}']
+    procedure BeginSnapshot(const Name: string; Loading: Boolean);
+    function SnapshotStatus(out Done, Total: UInt64; out Error: string): Boolean;
+    procedure CancelSnapshot;
+  end;
+
   // Optional, thread-safe metadata for controls actually used by a loaded game.
   // Settings use the platform's complete control set instead.
   IEmulationVirtualControls = interface

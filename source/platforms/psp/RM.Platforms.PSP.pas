@@ -27,10 +27,10 @@ uses
   RM.Settings.Catalog, RM.Settings.Platform, System.StrUtils, Core.Emulation,
   Core.Platforms, Core.Platforms.PSP.Adapter, Core.Platforms.PSP.Archive,
   PSP.Media, RM.Platforms.Presentation, RM.Platforms.GBA.Icons,
-  RM.Gamepad.Factory, RM.Platforms.PSP.Gamepads, RM.Input.Runtime,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.Gamepad.Factory, RM.Platforms.PSP.Gamepads, RM.Platforms.PSP.Settings,
+  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  System.Classes;
+  RM.Platforms.PSP.Input, System.Classes;
 
 class function TPSPPlatform.Source(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -107,6 +107,8 @@ begin
   var Registration := TEmulationCoreRegistration.Create('PSP', ['.pbp', '.elf', '.prx', '.cso']);
   Registration.Add(TCoreLoadStage.Source, 20, Source);
   Registration.Add(TCoreLoadStage.Header, 31, Header);
+  // Library platform selection routes ISO/ZIP media through disc loaders.
+  Registration.AddDiscPlatform('psp', Source);
   RegisterEmulationCore(Registration);
 end;
 
@@ -141,14 +143,14 @@ end;
 
 class procedure TPSPPlatform.RegisterClient;
 begin
-  RegisterSettingsPlatform('psp', TSettingsPlatform);
-  RegisterPlatformSettingsDevices('psp', TPlatformSettingsDevices);
+  RegisterSettingsPlatform('psp', TPSPSettings);
+  RegisterPlatformSettingsDevices('psp', TPSPSettingsDevices);
   RegisterPlatformDeviceCallouts('psp', TPlatformDeviceCallouts);
-  RegisterPlatformControlsHelp('psp', TPlatformControlsHelp);
+  RegisterPlatformControlsHelp('psp', TPSPControlsHelp);
   RegisterPlatformSettingsHandler('psp', TPlatformSettingsHandler);
   RegisterPlatformWindowLayout('psp', TPlatformWindowLayout);
   RegisterPlatformSessionHandler('psp', TPlatformSessionHandler);
-  RegisterPlatformInputHandler('psp', TPlatformInputHandler);
+  RegisterPlatformInputHandler('psp', TPSPInputHandler);
   RegisterInput;
   RegisterPlatformGamepads('psp', TGamepadPSP, []);
   RegisterPlatformPresentation('psp', 'psp', PlatformIconGBA);

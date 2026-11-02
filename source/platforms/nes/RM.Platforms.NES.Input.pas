@@ -607,7 +607,9 @@ end;
 
 class procedure TNesInputHandler.DoSaveTapeAs(const Context: TInputRuntimeContext);
 begin
+  {$IFNDEF ANDROID}
   var Devices := NesInputState(Context);
+  {$ENDIF}
   var Tape: INesTapeCore;
   if not Supports(Context.State.Session.Emulation, INesTapeCore, Tape) or not Tape.UsesDataRecorder then
     Exit;

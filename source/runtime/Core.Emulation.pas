@@ -36,6 +36,7 @@ type
   IEmulationDiscControl = Core.Emulation.Types.IEmulationDiscControl;
 
   IEmulationSnapshotLocation = Core.Emulation.Types.IEmulationSnapshotLocation;
+  IEmulationSnapshotOperation = Core.Emulation.Types.IEmulationSnapshotOperation;
 
   IEmulationVirtualControls = Core.Emulation.Types.IEmulationVirtualControls;
 

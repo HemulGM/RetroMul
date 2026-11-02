@@ -712,7 +712,7 @@ begin
                 InstallCore(Core, Path, Title, Paused);
                 FLaunchPlatform := TargetPlatform;
                 if FLaunchPlatform = '' then
-                  FLaunchPlatform := PreferredPlatform;
+                  FLaunchPlatform := Core.SystemId;
                 if Snapshot <> '' then
                   FView.LoadSnapshot(Snapshot);
               except

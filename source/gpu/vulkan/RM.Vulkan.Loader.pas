@@ -77,6 +77,60 @@ type
     vkWaitForFences: PFN_vkWaitForFences;
     vkQueueSubmit: PFN_vkQueueSubmit;
     vkDeviceWaitIdle: PFN_vkDeviceWaitIdle;
+    // Compute
+    vkEnumerateInstanceVersion: PFN_vkEnumerateInstanceVersion;
+    vkGetPhysicalDeviceProperties: PFN_vkGetPhysicalDeviceProperties;
+    vkGetPhysicalDeviceFeatures2: PFN_vkGetPhysicalDeviceFeatures2;
+    vkCreateBuffer: PFN_vkCreateBuffer;
+    vkDestroyBuffer: PFN_vkDestroyBuffer;
+    vkGetBufferMemoryRequirements: PFN_vkGetBufferMemoryRequirements;
+    vkBindBufferMemory: PFN_vkBindBufferMemory;
+    vkMapMemory: PFN_vkMapMemory;
+    vkUnmapMemory: PFN_vkUnmapMemory;
+    vkFlushMappedMemoryRanges: PFN_vkFlushMappedMemoryRanges;
+    vkInvalidateMappedMemoryRanges: PFN_vkInvalidateMappedMemoryRanges;
+    vkCreateDescriptorSetLayout: PFN_vkCreateDescriptorSetLayout;
+    vkDestroyDescriptorSetLayout: PFN_vkDestroyDescriptorSetLayout;
+    vkCreateDescriptorPool: PFN_vkCreateDescriptorPool;
+    vkDestroyDescriptorPool: PFN_vkDestroyDescriptorPool;
+    vkResetDescriptorPool: PFN_vkResetDescriptorPool;
+    vkAllocateDescriptorSets: PFN_vkAllocateDescriptorSets;
+    vkFreeDescriptorSets: PFN_vkFreeDescriptorSets;
+    vkUpdateDescriptorSets: PFN_vkUpdateDescriptorSets;
+    vkCreateComputePipelines: PFN_vkCreateComputePipelines;
+    vkCmdBindDescriptorSets: PFN_vkCmdBindDescriptorSets;
+    vkCmdDispatch: PFN_vkCmdDispatch;
+    vkCmdDispatchIndirect: PFN_vkCmdDispatchIndirect;
+    vkCmdCopyBuffer: PFN_vkCmdCopyBuffer;
+    vkCmdFillBuffer: PFN_vkCmdFillBuffer;
+    vkCmdUpdateBuffer: PFN_vkCmdUpdateBuffer;
+    vkFreeCommandBuffers: PFN_vkFreeCommandBuffers;
+    vkResetCommandPool: PFN_vkResetCommandPool;
+    vkGetFenceStatus: PFN_vkGetFenceStatus;
+    vkQueueWaitIdle: PFN_vkQueueWaitIdle;
+    vkCreateQueryPool: PFN_vkCreateQueryPool;
+    vkDestroyQueryPool: PFN_vkDestroyQueryPool;
+    vkCmdResetQueryPool: PFN_vkCmdResetQueryPool;
+    vkCmdWriteTimestamp: PFN_vkCmdWriteTimestamp;
+    vkGetQueryPoolResults: PFN_vkGetQueryPoolResults;
+    // Graphics rendering into images
+    vkGetPhysicalDeviceFormatProperties: PFN_vkGetPhysicalDeviceFormatProperties;
+    vkCreateSampler: PFN_vkCreateSampler;
+    vkDestroySampler: PFN_vkDestroySampler;
+    vkCmdBindVertexBuffers: PFN_vkCmdBindVertexBuffers;
+    vkCmdCopyBufferToImage: PFN_vkCmdCopyBufferToImage;
+    vkCmdCopyImageToBuffer: PFN_vkCmdCopyImageToBuffer;
+    vkCmdBlitImage: PFN_vkCmdBlitImage;
+    vkCmdCopyImage: PFN_vkCmdCopyImage;
+    vkCmdSetBlendConstants: PFN_vkCmdSetBlendConstants;
+    vkCmdSetStencilReference: PFN_vkCmdSetStencilReference;
+    vkCmdSetStencilCompareMask: PFN_vkCmdSetStencilCompareMask;
+    vkCmdSetStencilWriteMask: PFN_vkCmdSetStencilWriteMask;
+    vkCmdClearAttachments: PFN_vkCmdClearAttachments;
+    // Vulkan 1.2 (nil on 1.1 devices)
+    vkWaitSemaphores: PFN_vkWaitSemaphores;
+    vkSignalSemaphore: PFN_vkSignalSemaphore;
+    vkGetSemaphoreCounterValue: PFN_vkGetSemaphoreCounterValue;
     constructor Create;
     destructor Destroy; override;
     procedure LoadInstance(Instance: VkInstance);
@@ -111,6 +165,7 @@ begin
   if not Assigned(vkGetInstanceProcAddr) then
     raise EVulkanError.Create('The system Vulkan loader has no vkGetInstanceProcAddr.');
   vkCreateInstance := PFN_vkCreateInstance(InstanceProc(nil, 'vkCreateInstance'));
+  vkEnumerateInstanceVersion := PFN_vkEnumerateInstanceVersion(vkGetInstanceProcAddr(nil, 'vkEnumerateInstanceVersion'));
 end;
 
 destructor TVulkanAPI.Destroy;
@@ -145,12 +200,17 @@ begin
   vkGetPhysicalDeviceImageFormatProperties2 := PFN_vkGetPhysicalDeviceImageFormatProperties2(InstanceProc(Instance, 'vkGetPhysicalDeviceImageFormatProperties2'));
   vkCreateDevice := PFN_vkCreateDevice(InstanceProc(Instance, 'vkCreateDevice'));
   vkGetDeviceProcAddr := PFN_vkGetDeviceProcAddr(InstanceProc(Instance, 'vkGetDeviceProcAddr'));
+  vkGetPhysicalDeviceProperties := PFN_vkGetPhysicalDeviceProperties(InstanceProc(Instance, 'vkGetPhysicalDeviceProperties'));
+  vkGetPhysicalDeviceFeatures2 := PFN_vkGetPhysicalDeviceFeatures2(InstanceProc(Instance, 'vkGetPhysicalDeviceFeatures2'));
+  vkGetPhysicalDeviceFormatProperties := PFN_vkGetPhysicalDeviceFormatProperties(
+    InstanceProc(Instance, 'vkGetPhysicalDeviceFormatProperties'));
   {$IF Defined(LINUX) or Defined(ANDROID)}
   vkGetPhysicalDeviceExternalSemaphoreProperties := PFN_vkGetPhysicalDeviceExternalSemaphoreProperties(
     InstanceProc(Instance, 'vkGetPhysicalDeviceExternalSemaphoreProperties'));
   {$ENDIF}
 end;
 
+// Extension functions are nil when the device was created without the extension.
 procedure TVulkanAPI.LoadDevice(Device: VkDevice);
 begin
   vkDestroyDevice := PFN_vkDestroyDevice(DeviceProc(Device, 'vkDestroyDevice'));
@@ -159,17 +219,17 @@ begin
   vkDestroyImage := PFN_vkDestroyImage(DeviceProc(Device, 'vkDestroyImage'));
   vkGetImageMemoryRequirements := PFN_vkGetImageMemoryRequirements(DeviceProc(Device, 'vkGetImageMemoryRequirements'));
   {$IFDEF MSWINDOWS}
-  vkGetMemoryWin32HandlePropertiesKHR := PFN_vkGetMemoryWin32HandlePropertiesKHR(DeviceProc(Device, 'vkGetMemoryWin32HandlePropertiesKHR'));
+  vkGetMemoryWin32HandlePropertiesKHR := PFN_vkGetMemoryWin32HandlePropertiesKHR(vkGetDeviceProcAddr(Device, 'vkGetMemoryWin32HandlePropertiesKHR'));
   {$ELSEIF Defined(LINUX) or Defined(ANDROID)}
   vkCreateSemaphore := PFN_vkCreateSemaphore(DeviceProc(Device, 'vkCreateSemaphore'));
   vkDestroySemaphore := PFN_vkDestroySemaphore(DeviceProc(Device, 'vkDestroySemaphore'));
-  vkGetSemaphoreFdKHR := PFN_vkGetSemaphoreFdKHR(DeviceProc(Device, 'vkGetSemaphoreFdKHR'));
+  vkGetSemaphoreFdKHR := PFN_vkGetSemaphoreFdKHR(vkGetDeviceProcAddr(Device, 'vkGetSemaphoreFdKHR'));
   {$IFDEF ANDROID}
-  vkImportSemaphoreFdKHR := PFN_vkImportSemaphoreFdKHR(DeviceProc(Device, 'vkImportSemaphoreFdKHR'));
+  vkImportSemaphoreFdKHR := PFN_vkImportSemaphoreFdKHR(vkGetDeviceProcAddr(Device, 'vkImportSemaphoreFdKHR'));
   vkGetAndroidHardwareBufferPropertiesANDROID := PFN_vkGetAndroidHardwareBufferPropertiesANDROID(
-    DeviceProc(Device, 'vkGetAndroidHardwareBufferPropertiesANDROID'));
+    vkGetDeviceProcAddr(Device, 'vkGetAndroidHardwareBufferPropertiesANDROID'));
   {$ELSE}
-  vkGetMemoryFdKHR := PFN_vkGetMemoryFdKHR(DeviceProc(Device, 'vkGetMemoryFdKHR'));
+  vkGetMemoryFdKHR := PFN_vkGetMemoryFdKHR(vkGetDeviceProcAddr(Device, 'vkGetMemoryFdKHR'));
   {$ENDIF}
   {$ENDIF}
   vkAllocateMemory := PFN_vkAllocateMemory(DeviceProc(Device, 'vkAllocateMemory'));
@@ -207,6 +267,55 @@ begin
   vkWaitForFences := PFN_vkWaitForFences(DeviceProc(Device, 'vkWaitForFences'));
   vkQueueSubmit := PFN_vkQueueSubmit(DeviceProc(Device, 'vkQueueSubmit'));
   vkDeviceWaitIdle := PFN_vkDeviceWaitIdle(DeviceProc(Device, 'vkDeviceWaitIdle'));
+  vkCreateSemaphore := PFN_vkCreateSemaphore(DeviceProc(Device, 'vkCreateSemaphore'));
+  vkDestroySemaphore := PFN_vkDestroySemaphore(DeviceProc(Device, 'vkDestroySemaphore'));
+  vkCreateBuffer := PFN_vkCreateBuffer(DeviceProc(Device, 'vkCreateBuffer'));
+  vkDestroyBuffer := PFN_vkDestroyBuffer(DeviceProc(Device, 'vkDestroyBuffer'));
+  vkGetBufferMemoryRequirements := PFN_vkGetBufferMemoryRequirements(DeviceProc(Device, 'vkGetBufferMemoryRequirements'));
+  vkBindBufferMemory := PFN_vkBindBufferMemory(DeviceProc(Device, 'vkBindBufferMemory'));
+  vkMapMemory := PFN_vkMapMemory(DeviceProc(Device, 'vkMapMemory'));
+  vkUnmapMemory := PFN_vkUnmapMemory(DeviceProc(Device, 'vkUnmapMemory'));
+  vkFlushMappedMemoryRanges := PFN_vkFlushMappedMemoryRanges(DeviceProc(Device, 'vkFlushMappedMemoryRanges'));
+  vkInvalidateMappedMemoryRanges := PFN_vkInvalidateMappedMemoryRanges(DeviceProc(Device, 'vkInvalidateMappedMemoryRanges'));
+  vkCreateDescriptorSetLayout := PFN_vkCreateDescriptorSetLayout(DeviceProc(Device, 'vkCreateDescriptorSetLayout'));
+  vkDestroyDescriptorSetLayout := PFN_vkDestroyDescriptorSetLayout(DeviceProc(Device, 'vkDestroyDescriptorSetLayout'));
+  vkCreateDescriptorPool := PFN_vkCreateDescriptorPool(DeviceProc(Device, 'vkCreateDescriptorPool'));
+  vkDestroyDescriptorPool := PFN_vkDestroyDescriptorPool(DeviceProc(Device, 'vkDestroyDescriptorPool'));
+  vkResetDescriptorPool := PFN_vkResetDescriptorPool(DeviceProc(Device, 'vkResetDescriptorPool'));
+  vkAllocateDescriptorSets := PFN_vkAllocateDescriptorSets(DeviceProc(Device, 'vkAllocateDescriptorSets'));
+  vkFreeDescriptorSets := PFN_vkFreeDescriptorSets(DeviceProc(Device, 'vkFreeDescriptorSets'));
+  vkUpdateDescriptorSets := PFN_vkUpdateDescriptorSets(DeviceProc(Device, 'vkUpdateDescriptorSets'));
+  vkCreateComputePipelines := PFN_vkCreateComputePipelines(DeviceProc(Device, 'vkCreateComputePipelines'));
+  vkCmdBindDescriptorSets := PFN_vkCmdBindDescriptorSets(DeviceProc(Device, 'vkCmdBindDescriptorSets'));
+  vkCmdDispatch := PFN_vkCmdDispatch(DeviceProc(Device, 'vkCmdDispatch'));
+  vkCmdDispatchIndirect := PFN_vkCmdDispatchIndirect(DeviceProc(Device, 'vkCmdDispatchIndirect'));
+  vkCmdCopyBuffer := PFN_vkCmdCopyBuffer(DeviceProc(Device, 'vkCmdCopyBuffer'));
+  vkCmdFillBuffer := PFN_vkCmdFillBuffer(DeviceProc(Device, 'vkCmdFillBuffer'));
+  vkCmdUpdateBuffer := PFN_vkCmdUpdateBuffer(DeviceProc(Device, 'vkCmdUpdateBuffer'));
+  vkFreeCommandBuffers := PFN_vkFreeCommandBuffers(DeviceProc(Device, 'vkFreeCommandBuffers'));
+  vkResetCommandPool := PFN_vkResetCommandPool(DeviceProc(Device, 'vkResetCommandPool'));
+  vkGetFenceStatus := PFN_vkGetFenceStatus(DeviceProc(Device, 'vkGetFenceStatus'));
+  vkQueueWaitIdle := PFN_vkQueueWaitIdle(DeviceProc(Device, 'vkQueueWaitIdle'));
+  vkCreateQueryPool := PFN_vkCreateQueryPool(DeviceProc(Device, 'vkCreateQueryPool'));
+  vkDestroyQueryPool := PFN_vkDestroyQueryPool(DeviceProc(Device, 'vkDestroyQueryPool'));
+  vkCmdResetQueryPool := PFN_vkCmdResetQueryPool(DeviceProc(Device, 'vkCmdResetQueryPool'));
+  vkCmdWriteTimestamp := PFN_vkCmdWriteTimestamp(DeviceProc(Device, 'vkCmdWriteTimestamp'));
+  vkGetQueryPoolResults := PFN_vkGetQueryPoolResults(DeviceProc(Device, 'vkGetQueryPoolResults'));
+  vkCreateSampler := PFN_vkCreateSampler(DeviceProc(Device, 'vkCreateSampler'));
+  vkDestroySampler := PFN_vkDestroySampler(DeviceProc(Device, 'vkDestroySampler'));
+  vkCmdBindVertexBuffers := PFN_vkCmdBindVertexBuffers(DeviceProc(Device, 'vkCmdBindVertexBuffers'));
+  vkCmdCopyBufferToImage := PFN_vkCmdCopyBufferToImage(DeviceProc(Device, 'vkCmdCopyBufferToImage'));
+  vkCmdCopyImageToBuffer := PFN_vkCmdCopyImageToBuffer(DeviceProc(Device, 'vkCmdCopyImageToBuffer'));
+  vkCmdBlitImage := PFN_vkCmdBlitImage(DeviceProc(Device, 'vkCmdBlitImage'));
+  vkCmdCopyImage := PFN_vkCmdCopyImage(DeviceProc(Device, 'vkCmdCopyImage'));
+  vkCmdSetBlendConstants := PFN_vkCmdSetBlendConstants(DeviceProc(Device, 'vkCmdSetBlendConstants'));
+  vkCmdSetStencilReference := PFN_vkCmdSetStencilReference(DeviceProc(Device, 'vkCmdSetStencilReference'));
+  vkCmdSetStencilCompareMask := PFN_vkCmdSetStencilCompareMask(DeviceProc(Device, 'vkCmdSetStencilCompareMask'));
+  vkCmdSetStencilWriteMask := PFN_vkCmdSetStencilWriteMask(DeviceProc(Device, 'vkCmdSetStencilWriteMask'));
+  vkCmdClearAttachments := PFN_vkCmdClearAttachments(DeviceProc(Device, 'vkCmdClearAttachments'));
+  vkWaitSemaphores := PFN_vkWaitSemaphores(vkGetDeviceProcAddr(Device, 'vkWaitSemaphores'));
+  vkSignalSemaphore := PFN_vkSignalSemaphore(vkGetDeviceProcAddr(Device, 'vkSignalSemaphore'));
+  vkGetSemaphoreCounterValue := PFN_vkGetSemaphoreCounterValue(vkGetDeviceProcAddr(Device, 'vkGetSemaphoreCounterValue'));
 end;
 
 end.

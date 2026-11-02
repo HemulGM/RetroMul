@@ -1469,7 +1469,8 @@ begin
           CopyString(LongWord(I) + 4, 1);
           Continue;
         end;
-        // I=1 means literal escape char
+        // I=1 means literal escape char, not the control byte itself.
+        I := FPPMEscChar;
       end;
       FWindow[FUnpPtr] := Byte(I);
       Inc(FUnpPtr);

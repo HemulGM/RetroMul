@@ -512,19 +512,19 @@ begin
               end;
               case NumMinDif of
                 1:
-                  if K1 > -16 then
+                  if K1 >= -16 then
                     Dec(K1);
                 2:
                   if K1 < 16 then
                     Inc(K1);
                 3:
-                  if K2 > -16 then
+                  if K2 >= -16 then
                     Dec(K2);
                 4:
                   if K2 < 16 then
                     Inc(K2);
                 5:
-                  if K3 > -16 then
+                  if K3 >= -16 then
                     Dec(K3);
                 6:
                   if K3 < 16 then

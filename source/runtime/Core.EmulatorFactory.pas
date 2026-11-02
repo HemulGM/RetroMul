@@ -32,8 +32,8 @@ end;
 
 function CreateEmulationCore(Stream: TStream; const Storage: IStorage; const RomName, PlatformId, PreferredPlatformId: string): IEmulationCore;
 begin
-  // A library category is an explicit first attempt. Do not auto-detect a
-  // competing core or ask the user before that platform reports a load error.
+  // Try the library platform first, then auto-detect among the other platforms.
+  // Ask the user only when recognition cannot choose a single alternative.
   if (PreferredPlatformId <> '') and (PlatformId = '') then
   begin
     var Position := Stream.Position;
@@ -45,6 +45,26 @@ begin
         raise;
       on E: Exception do
         LoadError := E.Message;
+    end;
+    Stream.Position := Position;
+    var AutoContext := TCoreLoadContext.Create(Stream, Storage, RomName);
+    try
+      var Match: TCoreMatch;
+      try
+        Match := ResolveEmulationCore(AutoContext, '', PreferredPlatformId);
+      except
+        on E: ECoreSelectionRequired do
+          Match := nil;
+      end;
+      if Match <> nil then
+      try
+        // A definite match's load error is not a platform ambiguity.
+        Exit(Match.CreateCore);
+      finally
+        Match.Free;
+      end;
+    finally
+      AutoContext.Free;
     end;
     Stream.Position := Position;
     var Probe := TCoreLoadContext.Create(Stream, Storage, RomName);

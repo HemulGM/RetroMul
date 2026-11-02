@@ -39,12 +39,15 @@ begin
     Exit;
   var RomSet: TCPSRomSet;
   if TCPSRomSet.Identify(Context.Archive, Context.SourceName, RomSet) then
+  begin
     Result := TCoreMatch.Create('CPS',
       function: IEmulationCore
       begin
         Context.Stream.Position := 0;
         Result := TCPSCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
       end);
+    Result.Format.SystemId := 'cps' + IntToStr(Ord(RomSet.Generation));
+  end;
 end;
 
 class procedure TCPSPlatform.RegisterPlatforms;

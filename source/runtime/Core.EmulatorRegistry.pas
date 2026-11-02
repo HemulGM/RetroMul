@@ -81,7 +81,7 @@ type
     FArchive: IArchiveContainer;
     FArchiveEntry: Boolean;
     FHeaderRecognized: Boolean;
-    FSelectedPlatform: string;
+    FSelectedPlatform, FExcludedPlatform: string;
     function GetData: TBytes;
     function GetSourceHash: TBytes;
     function GetEffectiveStorage: IStorage;
@@ -153,7 +153,7 @@ function RecognizeEmulationCore(Context: TCoreLoadContext; Stage: TCoreLoadStage
 function ResolveEmulationImage(Context: TCoreLoadContext): TCoreMatch;
 // The caller owns the returned match and must keep Context alive through CreateCore.
 
-function ResolveEmulationCore(Context: TCoreLoadContext; const PlatformId: string = ''): TCoreMatch;
+function ResolveEmulationCore(Context: TCoreLoadContext; const PlatformId: string = ''; const ExcludedPlatformId: string = ''): TCoreMatch;
 
 // Enumerates compatible targets without constructing an emulator.
 function EmulationPlatformOptions(Context: TCoreLoadContext): TArray<TCorePlatformOption>;
@@ -569,6 +569,25 @@ begin
     Result[i] := Registrations[i].Id;
 end;
 
+function ProbeCore(Context: TCoreLoadContext; const Recognizer: TCoreRecognizer): TCoreMatch;
+begin
+  try
+    Result := Recognizer(Context);
+  except
+    on E: EAbort do
+      raise;
+    on E: Exception do
+    begin
+      // A failed library attempt must not let one recognizer prevent the
+      // fallback search from considering other platforms. Explicit loads
+      // and ordinary auto-detection retain their original error reporting.
+      if Context.FExcludedPlatform = '' then
+        raise;
+      Result := nil;
+    end;
+  end;
+end;
+
 function RecognizeEmulationCore(Context: TCoreLoadContext; Stage: TCoreLoadStage): TCoreMatch;
 begin
   Result := nil;
@@ -594,12 +613,15 @@ begin
     begin
       var Saved := Context.Stream.Position;
       try
-        Result := Rule.Value.Recognize(Context);
+        Result := ProbeCore(Context, Rule.Value.Recognize);
       finally
         // Loading the lazy byte view consumes the stream, as before; a probe
         // must not change the start position seen by subsequent recognizers.
         Context.Stream.Position := Saved;
       end;
+      if (Result <> nil) and (Context.FExcludedPlatform <> '') and
+        SameText(Result.PlatformId, Context.FExcludedPlatform) then
+        FreeAndNil(Result);
       if Result <> nil then
         Exit;
     end;
@@ -610,6 +632,8 @@ end;
 
 function AcceptsSelectedPlatform(Context: TCoreLoadContext; Match: TCoreMatch): Boolean;
 begin
+  if (Context.FExcludedPlatform <> '') and SameText(Context.FExcludedPlatform, Match.PlatformId) then
+    Exit(False);
   Result := (Context.SelectedPlatform = '') or SameText(Context.SelectedPlatform, Match.PlatformId);
   if Result then
     Exit;
@@ -684,7 +708,7 @@ begin
           TStorage.CheckReadCancelled;
           var Saved := Context.Stream.Position;
           try
-            var Match := Rule.Recognize(Context);
+            var Match := ProbeCore(Context, Rule.Recognize);
             if Match <> nil then
               Result.Add(Match);
           finally
@@ -716,9 +740,11 @@ begin
       for var Loader in Registration.FDiscPlatforms do
       begin
         var Info := TPlatformRegistry.Require(Loader.PlatformId);
+        if SameText(Info.Id, Context.FExcludedPlatform) then
+          Continue;
         if Context.HasExtension(['.m3u']) and not MatchText('.m3u', Info.Extensions) then
           Continue;
-        var Match := Loader.Match(Context);
+        var Match := ProbeCore(Context, Loader.Match);
         if Match = nil then
           Continue;
         Matches.Add(Match);
@@ -831,8 +857,9 @@ begin
   end;
 end;
 
-function ResolveEmulationCore(Context: TCoreLoadContext; const PlatformId: string): TCoreMatch;
+function ResolveEmulationCore(Context: TCoreLoadContext; const PlatformId, ExcludedPlatformId: string): TCoreMatch;
 begin
+  Context.FExcludedPlatform := TPlatformRegistry.CanonicalId(ExcludedPlatformId);
   Context.FSelectedPlatform := PlatformId.Trim.ToLower;
   var Info: TPlatformInfo;
   if TPlatformRegistry.Find(PlatformId, Info) then
@@ -897,6 +924,7 @@ begin
         try
           var Probe := TCoreLoadContext.Create(Input, Context.Storage, Context.RomName, Name, True);
           try
+            Probe.FExcludedPlatform := Context.FExcludedPlatform;
             var Match := RecognizeEmulationCore(Probe, TCoreLoadStage.Source);
             if Match = nil then
               Match := RecognizeEmulationCore(Probe, TCoreLoadStage.Container);

@@ -828,6 +828,202 @@ begin
   end;
 end;
 
+// VU0 programs waiting in loops for the EE (on VI1, through a VF register,
+// a data word, with flags, I-bit pairs, R or a VF result; 2, 3 and 4 pairs a
+// turn) under a random EE: VF/VI/data/code/control writes, macro operations,
+// VCALLMS and syncs. Known loops' turns taken without running them
+// (SpinSkips) leave every register, memory and cycle count as running them
+// does.
+procedure CheckSpinSkips(Jit: Boolean);
+const
+  LowerNop = $8000033C;
+  UpperNop = $000002FF;
+  Loops: array[0..9] of Cardinal = ($100, $200, $300, $400, $500, $600, $700, $800, $900, $A00);
+var
+  CodeA, CodeB, DataA, DataB, Original: TMemory;
+
+  function Branch(Op, It, Source: Cardinal; Imm: Integer): Cardinal;
+  begin
+    Result := (Op shl 25) or (It shl 16) or (Source shl 11) or (Cardinal(Imm) and $7FF);
+  end;
+
+  procedure Pair(Address, Lower, Upper: Cardinal);
+  begin
+    CodeA[Address div 4] := Lower;
+    CodeA[Address div 4 + 1] := Upper;
+  end;
+
+  // After a loop: clear VI1, add VF1 into VF4 and store it, then back to the
+  // loop at Loop if VI3 is set (clearing it), else the end.
+  procedure Tail(Address, Loop: Cardinal);
+  begin
+    Pair(Address, $80000032 or (1 shl 16), $01E00128 or (1 shl 16) or (4 shl 11) or (4 shl 6));
+    Pair(Address + 8, (1 shl 25) or ($F shl 21) or (4 shl 11) or 8, UpperNop);
+    Pair(Address + 16, Branch($29, 3, 0, (Integer(Loop) - Integer(Address + 16) - 8) div 8), UpperNop);
+    Pair(Address + 24, $80000032 or (3 shl 16), UpperNop);
+    Pair(Address + 32, LowerNop, UpperNop or $40000000);
+    Pair(Address + 40, LowerNop, UpperNop);
+  end;
+
+begin
+  FillChar(CodeA, SizeOf(CodeA), 0);
+  FillChar(DataA, SizeOf(DataA), 0);
+  // 4 pairs on VI1, as games do: IBNE out, B back.
+  Pair($100, Branch($29, 1, 0, 3), UpperNop);
+  Pair($108, LowerNop, UpperNop);
+  Pair($110, Branch($20, 0, 0, -3), UpperNop);
+  Pair($118, LowerNop, UpperNop);
+  Tail($120, $100);
+  // 2 pairs: IBEQ to itself.
+  Pair($200, Branch($28, 1, 0, -1), UpperNop);
+  Pair($208, LowerNop, UpperNop);
+  Tail($210, $200);
+  // 3 pairs.
+  Pair($300, LowerNop, UpperNop);
+  Pair($308, Branch($28, 1, 0, -2), UpperNop);
+  Pair($310, LowerNop, UpperNop);
+  Tail($318, $300);
+  // On a data word (ILW.x vi1, 0(vi0)): never skipped.
+  Pair($400, (4 shl 25) or (8 shl 21) or (1 shl 16), UpperNop);
+  Pair($408, Branch($28, 1, 0, -2), UpperNop);
+  Pair($410, LowerNop, UpperNop);
+  Tail($418, $400);
+  // (4 pairs from here on: VF data handed over may skip them.)
+  // On VF5.x (MTIR vi1, vf5x): VF data releases it.
+  Pair($500, $800003FC or (1 shl 16) or (5 shl 11), UpperNop);
+  Pair($508, LowerNop, UpperNop);
+  Pair($510, Branch($28, 1, 0, -3), UpperNop);
+  Pair($518, LowerNop, UpperNop);
+  Tail($520, $500);
+  // ADDA.xyzw ACC, vf6, vf0 each turn, 8 pairs (its flags land in the turn).
+  Pair($600, LowerNop, $01E0003C or (6 shl 11) or ($0A shl 6));
+  for var K := 1 to 5 do
+    Pair($600 + Cardinal(K) * 8, LowerNop, UpperNop);
+  Pair($630, Branch($28, 1, 0, -7), UpperNop);
+  Pair($638, LowerNop, UpperNop);
+  Tail($640, $600);
+  // An I-bit pair (I := 1.0).
+  Pair($700, $3F800000, UpperNop or $80000000);
+  Pair($708, LowerNop, UpperNop);
+  Pair($710, Branch($28, 1, 0, -3), UpperNop);
+  Pair($718, LowerNop, UpperNop);
+  Tail($720, $700);
+  // RNEXT with no fields (R moves on each turn).
+  Pair($800, $8000043C, UpperNop);
+  Pair($808, LowerNop, UpperNop);
+  Pair($810, Branch($28, 1, 0, -3), UpperNop);
+  Pair($818, LowerNop, UpperNop);
+  Tail($820, $800);
+  // MOVE.x vf1, vf2 (a VF result each turn, which the tail reads).
+  Pair($900, $8000033C or (8 shl 21) or (1 shl 16) or (2 shl 11), UpperNop);
+  Pair($908, LowerNop, UpperNop);
+  Pair($910, Branch($28, 1, 0, -3), UpperNop);
+  Pair($918, LowerNop, UpperNop);
+  Tail($920, $900);
+  // MULi.x vf3, vf2, I (reads VF2, writes VF3 and the flags).
+  Pair($A00, LowerNop, $0100001E or (2 shl 11) or (3 shl 6));
+  Pair($A08, LowerNop, UpperNop);
+  Pair($A10, Branch($28, 1, 0, -3), UpperNop);
+  Pair($A18, LowerNop, UpperNop);
+  Tail($A20, $A00);
+  Original := CodeA;
+  CodeB := CodeA;
+  DataB := DataA;
+  var A := TPS2VU0.Create(@CodeA, @DataA);
+  var B := TPS2VU0.Create(@CodeB, @DataB);
+  try
+    A.Core.UseJit := Jit;
+    B.Core.UseJit := Jit;
+    RandSeed := 7919;
+    var Ops := 0;
+    for var Round := 0 to 299 do
+    begin
+      var Loop := Loops[Random(Length(Loops))];
+      for var N := 0 to 299 do
+      begin
+        // (Everything drawn before either core takes it.)
+        var R := Random(100);
+        if N = 0 then R := 0;
+        var NewLoop := Loops[Random(Length(Loops))];
+        var Again := Cardinal(Random(2));
+        // (VF5.x and data word 0 are what two of the loops wait on; VF2 and
+        // VF6 what others read.)
+        var Reg := 1 + Random(7);
+        case Random(5) of
+          0: Reg := 5;
+          1: Reg := 2;
+          2: Reg := 6;
+        end;
+        var Field := Random(4);
+        if Random(2) = 0 then Field := 0;
+        var Value := Cardinal(Random(MaxInt));
+        if Random(2) = 0 then Value := Cardinal(Random(2));
+        var Word := Random(2) * Random(64);
+        var Control := Random(6);
+        var Macro: Cardinal := $4A000000 or ($F shl 21) or (Cardinal(Random(8)) shl 16) or
+          (Cardinal(Random(8)) shl 11) or (Cardinal(1 + Random(7)) shl 6) or $28;
+        var CodeWord := (Loop + Cardinal(Random(3)) * 8) div 4 + 1;
+        // Back to the original, else an upper NOP or ADD.x vf7, vf0, vf7.
+        var NewUpper: Cardinal := Original[CodeWord];
+        case Random(3) of
+          0: NewUpper := UpperNop;
+          1: NewUpper := $01000028 or (7 shl 16) or (7 shl 6);
+        end;
+        if R < 4 then Loop := NewLoop;
+        for var V in TArray<TPS2VU0>.Create(A, B) do
+        begin
+          SpinSkips := V = A;
+          var Code: ^TMemory := @CodeA;
+          var Data: ^TMemory := @DataA;
+          if V = B then begin Code := @CodeB; Data := @DataB; end;
+          case R of
+            0..3:
+              begin
+                // VCALLMS at a loop (VI1 clear: it waits; VI3 set: it waits
+                // again after the tail).
+                V.WriteControl(1, 0);
+                V.WriteControl(3, Again);
+                V.Execute($4A000038 or ((Loop shr 3) shl 6));
+              end;
+            4..33: V.VF[Reg].UW[Field] := Value;
+            34..47: V.WriteControl(1 + Reg mod 3, Value and 1);
+            48..57: Data^[Word] := Value;
+            58..60: Code^[CodeWord] := NewUpper;
+            61..64:
+              case Control of
+                0: V.WriteControl(16, Value);
+                1: V.WriteControl(18, Value);
+                2: V.WriteControl(20, Value);
+                3: V.WriteControl(21, Value);
+                4: V.WriteControl(22, Value);
+              else
+                V.WriteControl(4, Value);
+              end;
+            65..68: V.Execute(Macro);
+          else
+            V.Sync;
+          end;
+        end;
+        SpinSkips := True;
+        Inc(Ops);
+        if not CompareMem(@A.Core.S, @B.Core.S, SizeOf(A.Core.S)) or not CompareMem(@A.VF, @B.VF, SizeOf(A.VF)) or
+          not CompareMem(@A.VI, @B.VI, SizeOf(A.VI)) or not CompareMem(@DataA, @DataB, SizeOf(DataA)) or
+          not CompareMem(@CodeA, @CodeB, SizeOf(CodeA)) or (A.Core.Executed <> B.Core.Executed) then
+          raise Exception.CreateFmt('Spin skip mismatch jit=%s round=%d op=%d loop=%x r=%d',
+            [BoolToStr(Jit, True), Round, N, Loop, R]);
+      end;
+    end;
+    if (A.SkippedTurns = 0) or (B.SkippedTurns <> 0) then
+      raise Exception.CreateFmt('Spin loops not skipped (%d, %d)', [A.SkippedTurns, B.SkippedTurns]);
+    Writeln(Format('jit=%s %d EE operations on waiting VU0 programs (%d pairs), %d loop turns skipped: OK',
+      [BoolToStr(Jit, True), Ops, A.Core.Executed, A.SkippedTurns]));
+  finally
+    SpinSkips := True;
+    A.Free;
+    B.Free;
+  end;
+end;
+
 begin
   try
     SetExceptionMask(exAllArithmeticExceptions);
@@ -846,6 +1042,8 @@ begin
     CheckVectorAliasFallback(True);
     CheckMacro(False);
     CheckMacro(True);
+    CheckSpinSkips(False);
+    CheckSpinSkips(True);
     SetRoundMode(rmNearest);
     Check(False);
     Check(True);

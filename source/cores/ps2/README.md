@@ -233,7 +233,19 @@ EE starts running, which keeps rounding toward zero. Other macro
 instructions remain interpreted. VU0's spin probes check the TPC after each
 pair but run straight-line pairs (up to a branch's delay slot, an E bit or the
 loop's start) in one budget, which the per-pair budget checks keep exact;
-the register files are compared without CompareMem calls.
+the register files are compared without CompareMem calls. A probe's turn
+that touches no memory (no load, store, XGKICK or XTOP/XITOP; no E/M/D/T
+bit) and comes back to the very same core state but the cycle count, with
+no flag, clip, Q/P, VF result, end or XGKICK pending, makes the loop known
+(`TPS2VU0.SpinKnown`): while the state, the integer unit's last write and
+the loop's code words stay so, later probes only add that turn's cycles and
+pairs (`SpinSkips`), and VF data the EE hands over to a loop of whole turns
+in 16 pairs that reads and writes no VF register (an upper NOP and integer,
+branch, flag or empty MOVE lower ops) adds the 16-pair run's and the
+probe's. Ratchet & Clank's VU0 waits this way about 150000 times a field.
+`tests/cores/ps2/jit` runs 90000 random EE operations (VF/VI/data/code and
+control writes, macro operations, VCALLMS, syncs) on programs waiting on
+VI1, VF5, a data word, flags, I, R or a VF result, with and without skips.
 
 On Win64, common multimedia instructions (parallel add/subtract with and
 without saturation, compares, min/max, PEXT*/PPAC*, PCPY*, logic and the

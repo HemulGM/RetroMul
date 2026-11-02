@@ -21,6 +21,11 @@ const
   // The most pairs a compiled block takes.
   PS2VUBlockPairs = 32;
 
+var
+  // A blocked VU0 program's known spin loop takes its turns' cycles without
+  // running them (TPS2VU0.SpinKnown; tests compare both ways).
+  SpinSkips: Boolean = True;
+
 type
   TPS2VFArray = array[0..31] of TPS2Reg128;
   PPS2VFArray = ^TPS2VFArray;
@@ -331,9 +336,27 @@ type
     FBlocked: Boolean;
     FBlockVF: array[0..31] of TPS2Reg128;
     FBlockVI: array[0..15] of Cardinal;
+    // The loop it spins in, where Spins' turn came back to the same state
+    // without touching memory or anything pending (SpinKnown): the turn's
+    // pairs (addresses, then words), their count and cycles, the core's
+    // state after it (cycle count aside) and whether it neither reads nor
+    // writes a VF register (VF00 aside).
+    FSpinValid, FSpinVFFree: Boolean;
+    FSpinPairs: Integer;
+    FSpinCycles: Int64;
+    FSpinState: TPS2VUState;
+    FSpinLoadReg, FSpinBranchReg: Integer;
+    FSpinLoadOld, FSpinBranchOld: Cardinal;
+    FSpinPC: array[0..63] of Cardinal;
+    FSpinWords: array[0..127] of Cardinal;
+    FSkippedTurns: Int64;
     procedure RunUntilBlocked;
     procedure RunUntilBlockedHeld;
     function Spins: Boolean;
+    procedure NoteSpin(Pairs: Integer; const Before: TPS2VUState; LoadReg, BranchReg: Integer;
+      LoadOld, BranchOld: Cardinal);
+    function SpinKnown: Boolean;
+    procedure SkipSpin(Turns: Integer);
     function Now: Int64; inline;
   public
     // EE time, for the VUs' busy windows (VPU-STAT, CPCOND2).
@@ -353,6 +376,8 @@ type
     function MacroRoutine(Op: Cardinal; out Target: Pointer; out Running: PBoolean): Pointer; override;
     function RunningFlag: PBoolean; override;
     property Core: TPS2VUCore read FCore;
+    // Turns of known spin loops taken without running them (diagnostics).
+    property SkippedTurns: Int64 read FSkippedTurns;
     property VU1: TPS2VUCore read FVU1 write FVU1;
     // CTC2 to CMSAR1 starts VU1.
     property OnStartVU1: TProc<Cardinal> read FCMSAR1Start write FCMSAR1Start;
@@ -420,6 +445,34 @@ begin
   Result := ((Upper and $80000000) = 0) and ((Lower and $8000003C) = $8000003C) and
     ((((Lower shr 4) and $7C) or (Lower and 3)) in [$38..$3A]) and FastPair(0, Upper) and
     ((Upper and $40000000) = 0);
+end;
+
+// A pair a known spin loop may hold (TPS2VU0.SpinKnown): none touching
+// memory or the VIF, ending the program or breaking. VFFree goes False for
+// one that may read or write a VF register but VF00 (anything but an upper
+// NOP and a lower integer, branch or flag op or an empty MOVE/MR32).
+function SpinPair(Lower, Upper: Cardinal; var VFFree: Boolean): Boolean;
+begin
+  if (Upper and $78000000) <> 0 then
+    Exit(False);
+  if (Upper and $7FFFFFF) <> $2FF then
+    VFFree := False;
+  if (Upper and $80000000) <> 0 then
+    Exit(True);
+  if (Lower and $80000000) = 0 then
+    Exit((Lower shr 25) in [$08, $09, $10..$18, $1A..$1C, $20, $21, $24, $25, $28, $29, $2C..$2F]);
+  if (Lower and $3F) < $3C then
+    Exit((Lower and $3F) in [$30, $31, $32, $34, $35]);
+  case ((Lower shr 4) and $7C) or (Lower and 3) of
+    $30, $31:
+      if ((Lower shr 21) and $F) <> 0 then
+        VFFree := False;
+    $38..$3D, $40..$43, $64, $70..$7E:
+      VFFree := False;
+  else
+    Exit(False);
+  end;
+  Result := True;
 end;
 
 function VectorLowerNoCall(Lower, Upper: Cardinal): Boolean;
@@ -4639,6 +4692,7 @@ begin
   if FCore <> nil then
     FCore.Reset;
   FBlocked := False;
+  FSpinValid := False;
 end;
 
 function TPS2VU0.ReadControl(Index: Integer): Cardinal;
@@ -4783,7 +4837,10 @@ end;
 // as it can whenever the EE starts it or looks at VU0: to its end, or until
 // it spins without changing anything (Spins). Once it spins, it is only
 // probed again (one turn of the loop, which also sees VU memory the EE
-// wrote) until the EE changes its registers.
+// wrote) until the EE changes its registers. A loop that touches no memory
+// and came back to the very same state (SpinKnown) is not run for that:
+// its turns only take their cycles (SkipSpin), and VF data handed over
+// cannot release one that reads no VF register either.
 procedure TPS2VU0.RunUntilBlocked;
 begin
   FCore.HoldMath(True);
@@ -4796,9 +4853,25 @@ end;
 
 procedure TPS2VU0.RunUntilBlockedHeld;
 begin
-  if FBlocked and SameWords(@VF[0], @FBlockVF[0], SizeOf(FBlockVF) div 8) and
-    SameWords(@VI[0], @FBlockVI[0], SizeOf(FBlockVI) div 8) and Spins then
-    Exit;
+  if FBlocked and SameWords(@VI[0], @FBlockVI[0], SizeOf(FBlockVI) div 8) then
+    if SameWords(@VF[0], @FBlockVF[0], SizeOf(FBlockVF) div 8) then
+    begin
+      // The probe's one turn.
+      if SpinSkips and SpinKnown then
+      begin
+        SkipSpin(1);
+        Exit;
+      end;
+      if Spins then
+        Exit;
+    end
+    else if SpinSkips and FSpinValid and FSpinVFFree and (16 mod FSpinPairs = 0) and SpinKnown then
+    begin
+      // The loop below's first run (16 pairs: whole turns) and Spins' turn.
+      SkipSpin(16 div FSpinPairs + 1);
+      Move(VF[0], FBlockVF[0], SizeOf(FBlockVF));
+      Exit;
+    end;
   FBlocked := False;
   // Short runs first: a released program often goes back to waiting soon.
   var Chunk := 16;
@@ -4824,19 +4897,29 @@ function TPS2VU0.Spins: Boolean;
 var
   SavedVF: array[0..31] of TPS2Reg128;
   SavedVI: array[0..15] of Cardinal;
+  Before: TPS2VUState;
 begin
+  FSpinValid := False;
   var TPC := FCore.S.TPC;
   var Acc := FCore.S.ACC;
   var Q := FCore.S.Q;
   var P := FCore.S.P;
   Move(VF[0], SavedVF[0], SizeOf(SavedVF));
   Move(VI[0], SavedVI[0], SizeOf(SavedVI));
+  Before := FCore.S;
+  var LoadReg := FCore.FLoadReg;
+  var BranchReg := FCore.FBranchReg;
+  var LoadOld := FCore.FLoadOld;
+  var BranchOld := FCore.FBranchOld;
   // (Pairs one at a time, but straight-line ones together: the TPC cannot
-  // be back before the last of them.)
+  // be back before the last of them. Those of a run are the pairs from the
+  // TPC on, see StraightPairs.)
   var Done := 0;
   while Done < 64 do
   begin
     var Step := FCore.StraightPairs(TPC, 64 - Done);
+    for var K := 0 to Step - 1 do
+      FSpinPC[Done + K] := (FCore.S.TPC + Cardinal(K) * 8) and FCore.FCodeMask;
     FCore.Run(Step);
     Inc(Done, Step);
     if not FCore.S.Running then
@@ -4844,9 +4927,93 @@ begin
     if (FCore.S.TPC = TPC) and (FCore.S.Q = Q) and (FCore.S.P = P) and (FCore.S.ACC.Lo = Acc.Lo) and
       (FCore.S.ACC.Hi = Acc.Hi) and SameWords(@VF[0], @SavedVF[0], SizeOf(SavedVF) div 8) and
       SameWords(@VI[0], @SavedVI[0], SizeOf(SavedVI) div 8) then
+    begin
+      NoteSpin(Done, Before, LoadReg, BranchReg, LoadOld, BranchOld);
       Exit(True);
+    end;
   end;
   Result := False;
+end;
+
+// Spins' turn of Pairs pairs (FSpinPC) from state Before (and those integer
+// unit fields) came back: a known loop (FSpinValid) if it left everything
+// as it found it but the cycle count, with nothing pending before or after
+// (flag, clip or Q/P results, end, XGKICK, VF results; a branch taken in
+// the state is) and none of its pairs touching memory (SpinPair). Every
+// turn from that state, at any cycle, then takes the same pairs and cycles
+// back to it.
+procedure TPS2VU0.NoteSpin(Pairs: Integer; const Before: TPS2VUState; LoadReg, BranchReg: Integer;
+  LoadOld, BranchOld: Cardinal);
+begin
+  var C := FCore;
+  if (C.S.FlagQCount <> 0) or (C.S.ClipQCount <> 0) or (C.S.QDelay <> 0) or (C.S.PDelay <> 0) or
+    C.S.EndPending or C.FKickPending or (C.FLoadReg <> LoadReg) or
+    (C.FBranchReg <> BranchReg) or (C.FLoadOld <> LoadOld) or (C.FBranchOld <> BranchOld) then
+    Exit;
+  var Same := Before;
+  Same.Cycles := C.S.Cycles;
+  if not CompareMem(@Same, @C.S, SizeOf(Same)) then
+    Exit;
+  // (No VF result was pending at the start; the latest ones the same after:
+  // the turn wrote none.)
+  for var R := 0 to 31 do
+    if C.FReadyAny[R] > Before.Cycles then
+      Exit;
+  var VFFree := True;
+  for var K := 0 to Pairs - 1 do
+  begin
+    var Lower := PCardinal(C.FCode + FSpinPC[K])^;
+    var Upper := PCardinal(C.FCode + FSpinPC[K] + 4)^;
+    if not SpinPair(Lower, Upper, VFFree) then
+      Exit;
+    FSpinWords[K * 2] := Lower;
+    FSpinWords[K * 2 + 1] := Upper;
+  end;
+  FSpinPairs := Pairs;
+  FSpinCycles := C.S.Cycles - Before.Cycles;
+  FSpinState := C.S;
+  FSpinLoadReg := LoadReg;
+  FSpinBranchReg := BranchReg;
+  FSpinLoadOld := LoadOld;
+  FSpinBranchOld := BranchOld;
+  FSpinVFFree := VFFree;
+  FSpinValid := True;
+end;
+
+// The core is where the known loop's turn left it (the cycle count aside),
+// with nothing pending and the loop's code unchanged: a turn now takes the
+// same pairs and cycles back to the same state.
+function TPS2VU0.SpinKnown: Boolean;
+var
+  Here: TPS2VUState;
+begin
+  Result := False;
+  if not FSpinValid then
+    Exit;
+  var C := FCore;
+  if C.FKickPending or (C.FLoadReg <> FSpinLoadReg) or (C.FBranchReg <> FSpinBranchReg) or
+    (C.FLoadOld <> FSpinLoadOld) or (C.FBranchOld <> FSpinBranchOld) then
+    Exit;
+  Here := C.S;
+  Here.Cycles := FSpinState.Cycles;
+  if not CompareMem(@Here, @FSpinState, SizeOf(Here)) then
+    Exit;
+  for var R := 0 to 31 do
+    if C.FReadyAny[R] > C.S.Cycles then
+      Exit;
+  for var K := 0 to FSpinPairs - 1 do
+    if (PCardinal(C.FCode + FSpinPC[K])^ <> FSpinWords[K * 2]) or
+      (PCardinal(C.FCode + FSpinPC[K] + 4)^ <> FSpinWords[K * 2 + 1]) then
+      Exit;
+  Result := True;
+end;
+
+// Turns of the known loop: their cycles and pairs (the state stays).
+procedure TPS2VU0.SkipSpin(Turns: Integer);
+begin
+  Inc(FCore.S.Cycles, Turns * FSpinCycles);
+  Inc(FCore.Executed, Turns * FSpinPairs);
+  Inc(FSkippedTurns, Turns);
 end;
 
 procedure TPS2VU0.Interlock;

@@ -4358,13 +4358,16 @@ begin
   while ((FKickEnd < 0) or (FKickCount < FKickEnd)) and (FKickCount < Limit) and
     (All or (FKickStart + 2 * FKickCount <= S.Cycles)) do
   begin
-    var Q := PPS2Reg128(FData + ((FKickAddress + Cardinal(FKickCount) * 16) and FDataMask))^;
-    FKickBuf[FKickCount] := Q;
+    // (By halves: a 16-byte record copy is two string moves here.)
+    var Src := PUInt64(FData + ((FKickAddress + Cardinal(FKickCount) * 16) and FDataMask));
+    var Lo := Src[0];
+    FKickBuf[FKickCount].Lo := Lo;
+    FKickBuf[FKickCount].Hi := Src[1];
     if FKickCount = FKickNextTag then
     begin
-      var NLoop := Integer(Q.UW[0] and $7FFF);
-      var Flg := (Q.UW[1] shr 26) and 3;
-      var NReg := Integer(Q.UW[1] shr 28);
+      var NLoop := Integer(Lo and $7FFF);
+      var Flg := Cardinal(Lo shr 58) and 3;
+      var NReg := Integer(Lo shr 60);
       if NReg = 0 then
         NReg := 16;
       var Size: Integer;
@@ -4375,7 +4378,7 @@ begin
         Size := NLoop;
       end;
       FKickNextTag := FKickCount + 1 + Size;
-      if (Q.UW[0] and $8000) <> 0 then
+      if (Lo and $8000) <> 0 then
         FKickEnd := FKickNextTag;
     end;
     Inc(FKickCount);

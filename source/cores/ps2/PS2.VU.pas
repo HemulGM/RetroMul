@@ -228,6 +228,9 @@ type
     FKeptReg, FKeptUse: array[0..15] of Integer;
     FKeptSlot: array[0..32] of Integer;
     FJitVectorOps: Int64;
+    // Scheduled runs compiled to go round again within their code, and the
+    // turns taken so (diagnostics).
+    FJitSelfLoops, FJitLoopTurns: Int64;
     // Code memory's generation (NoteCodeWritten), and each compiled block's
     // as its code guards last found its pairs there (by block index): a
     // scheduled run compares its words with the code only after a change.
@@ -316,6 +319,8 @@ type
     property JitCacheHits: Int64 read FJitCacheHits;
     property JitFastPairs: Int64 read FJitFastPairs;
     property JitVectorOps: Int64 read FJitVectorOps;
+    property JitSelfLoops: Int64 read FJitSelfLoops;
+    property JitLoopTurns: Int64 read FJitLoopTurns;
     // Code memory was written (by anything but this core: the VIF, the EE,
     // a snapshot, a test). Compiled blocks look at their pairs again.
     procedure NoteCodeWritten; inline;
@@ -1341,9 +1346,29 @@ var
 
   // The run's pairs and its end, for incoming queues FlagQ and ClipQ: known
   // on entry (Fixed: checked there), else checked at the end.
+  // The queue Q (simulated through the run) leaves, as offsets from the
+  // next run's start (the run ends after LastCycle) equal to the ones it
+  // was simulated from.
+  function LeavesAsFound(const Q: TPS2VUQueueSim; LastCycle: Integer): Boolean;
+  begin
+    Result := Q.Valid and (Q.Count = Q.Count0);
+    for var K := 0 to Q.Count - 1 do
+    begin
+      if not Result then
+        Exit;
+      var Sym := Q.Slots[K];
+      Result := (Sym >= EventSym) and (Sym < ClipSetSym) and
+        (Q.EvReady[Sym - EventSym] - (LastCycle + 1) = Q.Off[K]);
+    end;
+  end;
+
   procedure EmitBody(const FlagQ, ClipQ: TPS2VUQueueSim; Fixed: Boolean);
   begin
+    // (Where a run that branches back to its start goes round again.)
+    var BodyStart := J.NewLabel;
+    J.Bind(BodyStart);
     var Count := JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Count)));
+    var Limit := JMem(jrCtx, Integer(NativeUInt(@PPS2VURun(nil).Limit)));
     var FlagEmpty := Default(TPS2VUQueueSim);
     FlagEmpty.Valid := True;
     Simulate(FlagEmpty, False);
@@ -1381,6 +1406,37 @@ var
     // A run shorter than the four cycles events take to land leaves incoming
     // events in the queue: every event is replayed at run time (Generic).
     var Generic := LastCycle < 3;
+    // A run whose branch (in its last pair but one) goes back to its own start
+    // may go round again within its code, without the entry's checks, where
+    // they would all pass then: no end, its pipeline inputs ready again (the
+    // results its last cycles issue too), the queues it leaves the ones it was
+    // compiled for (with flag reads; any otherwise, and incoming entries all
+    // landed, not Generic), and nothing else changed (no callback runs inside
+    // a scheduled run). The branch, the budget and its trace window, and a kick
+    // are looked at each time.
+    var SelfLoop := not Generic and
+      ((Block.Words[(Block.PairCount - 2) * 2 + 1] and $40000000) = 0) and
+      ((Block.Words[(Block.PairCount - 1) * 2 + 1] and $40000000) = 0);
+    if SelfLoop then
+    begin
+      var BranchLo := Block.Words[(Block.PairCount - 2) * 2];
+      var BranchHi := Block.Words[(Block.PairCount - 2) * 2 + 1];
+      SelfLoop := ((BranchHi and $80000000) = 0) and ((BranchLo shr 25) in [$20, $21, $28, $29, $2C..$2F]);
+      if SelfLoop then
+      begin
+        var Imm := Integer(BranchLo and $7FF);
+        if Imm >= $400 then
+          Dec(Imm, $800);
+        SelfLoop := (Cardinal(Integer(Block.PC) + (Block.PairCount - 2) * 8 + 8 + Imm * 8) and FCodeMask) = Block.PC;
+      end;
+      for var R := 1 to 31 do
+        for var K := 0 to 3 do
+          if (Plan.ReadAt[R, K] >= 0) and (Plan.ReadAt[R, K] < 3) and (Plan.WriteAt[R, K] >= 0) and
+            (Plan.WriteAt[R, K] + 4 > LastCycle + 1 + Plan.ReadAt[R, K]) then
+            SelfLoop := False;
+      if Fixed and not (LeavesAsFound(FlagQ, LastCycle) and LeavesAsFound(ClipQ, LastCycle)) then
+        SelfLoop := False;
+    end;
     var WholeQueueKnown := (BaseEvent >= 0) and not Generic;
     for var I := 0 to 3 do WholeQueueKnown := WholeQueueKnown and (Slots[I] >= 0);
     // The events whose MAC flag and status are read: by flag reads, into the
@@ -1664,6 +1720,21 @@ var
     end
     else if (Block.Words[(Block.PairCount - 1) * 2 + 1] and $40000000) <> 0 then
       J.Move(jw8, M(@S.EndPending), JImm(1));
+    if SelfLoop then
+    begin
+      // Round again: back to the start (T0: TPC), the whole run within the
+      // budget and before its trace window, no kick in progress.
+      J.Branch(jcNe, jw32, JT0, JImm(Block.PC), Chain);
+      J.Move(jw32, JT1, Count);
+      J.Alu(jaAdd, jw32, JT1, JImm(Block.PairCount + 64));
+      J.Branch(jcGt, jw32, JT1, Limit, Chain);
+      J.Move(jw8, JT1, M(@FKickPending));
+      J.Branch(jcNe, jw32, JT1, JImm(0), Chain);
+      Inc(FJitSelfLoops);
+      J.Alu(jaAdd, jw64, M(@FJitLoopTurns), JImm(1));
+      J.Move(jw64, JS1, M(@S.Cycles));
+      J.Jump(BodyStart);
+    end;
     J.Jump(Chain);
   end;
 

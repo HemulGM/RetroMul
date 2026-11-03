@@ -409,7 +409,13 @@ kick in progress takes its quadwords before each VU store and after the last
 pair, if it cannot complete inside the span. An input still in the pipeline
 on entry runs only the first pair the general way, then the successor.
 Trace capture and pending branches/ends fall back to per-pair execution;
-FSSET and XGKICK are boundaries.
+FSSET and XGKICK are boundaries. A span whose branch goes back to its own
+start goes round again within its code where the entry's checks would all
+pass then, as the compiler can tell: no end, the pipeline inputs its first
+cycles read ready again after its last cycles' results, the queues it leaves
+the ones it was compiled for (with flag reads; incoming entries all landed
+otherwise). Each turn still looks at the branch, the budget and its trace
+window, and a kick in progress.
 Re-uploaded block versions are reused only after the entry address and every
 word match (hashes alone are not trusted). The code arena is bounded to
 32 MiB per VU; resetting it clears the version and successor tables too.

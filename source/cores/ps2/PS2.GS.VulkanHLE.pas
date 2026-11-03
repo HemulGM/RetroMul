@@ -1834,16 +1834,56 @@ begin
   Request.H := 1 shl D.TH;
   FPartW := 0;
   // A part, unless the whole texture is there already; grown to take in the
-  // part before (FGrow, Emit).
+  // part before (FGrow, Emit). Whole GS pages when that is small enough (and
+  // a page more on each side a grown part went beyond the last): the same
+  // parts for primitives reading the same pages, and a few for primitives
+  // crossing a texture in turn.
   var BU0, BV0, BU1, BV1: Integer;
   var Box := (Levels = 1) and (Request.W * Request.H >= 65536) and (FindTexture(Key) = nil) and
     TexelBox(D, V, Count, BU0, BV0, BU1, BV1);
-  if Box and FGrow then
+  if Box then
   begin
-    BU0 := Min(BU0, FGrowU0);
-    BV0 := Min(BV0, FGrowV0);
-    BU1 := Max(BU1, FGrowU1);
-    BV1 := Max(BV1, FGrowV1);
+    var PW := 64;
+    var PH := 32;
+    case D.TPSM of
+      PSMCT16, PSMCT16S, PSMZ16, PSMZ16S: PH := 64;
+      PSMT8:
+        begin
+          PW := 128;
+          PH := 64;
+        end;
+      PSMT4:
+        begin
+          PW := 128;
+          PH := 128;
+        end;
+    end;
+    var GU0 := BU0 div PW * PW;
+    var GV0 := BV0 div PH * PH;
+    var GU1 := (BU1 div PW + 1) * PW - 1;
+    var GV1 := (BV1 div PH + 1) * PH - 1;
+    if FGrow then
+    begin
+      GU0 := Min(GU0, FGrowU0) - Ord(BU0 < FGrowU0) * PW;
+      GV0 := Min(GV0, FGrowV0) - Ord(BV0 < FGrowV0) * PH;
+      GU1 := Max(GU1, FGrowU1) + Ord(BU1 > FGrowU1) * PW;
+      GV1 := Max(GV1, FGrowV1) + Ord(BV1 > FGrowV1) * PH;
+      BU0 := Min(BU0, FGrowU0);
+      BV0 := Min(BV0, FGrowV0);
+      BU1 := Max(BU1, FGrowU1);
+      BV1 := Max(BV1, FGrowV1);
+    end;
+    GU0 := Max(GU0, 0);
+    GV0 := Max(GV0, 0);
+    GU1 := Min(GU1, Request.W - 1);
+    GV1 := Min(GV1, Request.H - 1);
+    if (GU1 - GU0 + 1) * (GV1 - GV0 + 1) * 16 <= Request.W * Request.H then
+    begin
+      BU0 := GU0;
+      BV0 := GV0;
+      BU1 := GU1;
+      BV1 := GV1;
+    end;
   end;
   if Box and not FWhole and ((BU1 - BU0 + 1) * (BV1 - BV0 + 1) * 16 <= Request.W * Request.H) then
   begin

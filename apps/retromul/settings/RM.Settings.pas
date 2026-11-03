@@ -23,6 +23,9 @@ const
   SETTINGS_CATEGORY_PERIPHERALS = RM.Settings.platform.SETTINGS_CATEGORY_PERIPHERALS;
 
 const
+  SETTINGS_SWITCH_WIDTH = 48;
+  SETTINGS_SWITCH_HEIGHT = 24;
+
   AUTOSAVE_DEFAULT_MINUTES = 10;
   AUTOSAVE_MAX_MINUTES = 1440;
 
@@ -1098,7 +1101,6 @@ begin
       var Minutes := FContext.AddInteger('AutosaveMinutes', 'Autosave interval', '',
         'General', 'AutosaveMinutes', AUTOSAVE_DEFAULT_MINUTES, AUTOSAVE_MAX_MINUTES);
       Minutes.Min := 1;
-      Periodic.Align := TAlignLayout.Right;
       FAutosaveMinutes.Align := TAlignLayout.Client;
       FAutosaveMinutes.Enabled := Periodic.IsChecked;
       Minutes.EnabledWhen := PeriodicDefinition.IsTrue();
@@ -1670,11 +1672,23 @@ begin
       TControl(C.Parent).Margins.Rect := TRectF.Empty;
     C.Align := TAlignLayout.Client;
   end;
-  if Definition.Kind = TSettingsFieldKind.BooleanValue then
+  if C is TSwitch then
+  begin
+    C.Align := TAlignLayout.Center;
+    C.Size.PlatformDefault := False;
+    C.Size.Size := TSizeF.Create(SETTINGS_SWITCH_WIDTH, SETTINGS_SWITCH_HEIGHT);
     if not (R.Template is TSettingsIntervalTemplate) then
-      R.Editors.Width := 64;
+    begin
+      R.Editors.Width := SETTINGS_SWITCH_WIDTH;
+      var Slot := TControl(C.Parent);
+      Slot.Align := TAlignLayout.Right;
+      Slot.Width := SETTINGS_SWITCH_WIDTH;
+    end;
+  end;
   if R.Editor = nil then
     R.Editor := C;
+  if R.Template is TSettingsIntervalTemplate then
+    R.Editor := TSettingsIntervalTemplate(R.Template).LayoutAutosaveInterval;
   if R.Template is TSettingsVolumeTemplate then
     R.Editor := TSettingsVolumeTemplate(R.Template).LayoutVolumeEditor;
   if C.Name = '' then
@@ -1963,10 +1977,10 @@ end;
 procedure TSettingsView.EditorResize(Sender: TObject);
 begin
   var C := TControl(Sender);
-  if C.Height > 32 then
+  if C is TSwitch then
+    C.Size.Size := TSizeF.Create(SETTINGS_SWITCH_WIDTH, SETTINGS_SWITCH_HEIGHT)
+  else if C.Height > 32 then
     C.Height := 32;
-  if (C is TSwitch) and (C.Width > 64) then
-    C.Width := 64;
 end;
 
 procedure TSettingsView.ComboResize(Sender: TObject);
@@ -2027,16 +2041,17 @@ begin
   begin
     var Editor := R.Editor;
     if Editor is TSwitch then
-      W := 64
-    else if Editor is TLayout then
-      W := 268;
-    if Narrow and (Editor is TSwitch) then
     begin
-      Editor.Align := TAlignLayout.Right;
-      Editor.Width := 64;
+      W := SETTINGS_SWITCH_WIDTH;
+      Editor.Align := TAlignLayout.Center;
+      Editor.Size.Size := TSizeF.Create(SETTINGS_SWITCH_WIDTH, SETTINGS_SWITCH_HEIGHT);
     end
     else
+    begin
+      if Editor is TLayout then
+        W := 268;
       Editor.Align := TAlignLayout.Client;
+    end;
     Editor.Margins.Rect := TRectF.Empty;
   end;
   if Narrow then

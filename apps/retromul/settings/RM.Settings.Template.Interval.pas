@@ -15,6 +15,7 @@ type
     LabelSettingDetail: TLabel;
     LayoutSettingEditorContainer: TLayout;
     LayoutAutosaveInterval: TLayout;
+    LayoutAutosaveSwitchSlot: TLayout;
     SwitchAutosavePeriodic: TSwitch;
     LayoutAutosaveMinutesSlot: TLayout;
   end;

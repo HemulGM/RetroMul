@@ -6,6 +6,14 @@ uses
   NES.State, NES.Types, NES.Consts, NES.Mapper;
 
 type
+  // Sprite lanes need not be aligned. A packed word lets the compiler select
+  // a fixed-width unaligned access instead of calling the general RTL Move.
+  TPpuSpriteWord = packed record
+    Value: UInt32;
+  end;
+
+  PPpuSpriteWord = ^TPpuSpriteWord;
+
   TOamEvaluation = record
     Secondary: array[0..31] of UInt8;
     BufferValue, CorruptRow: UInt8;
@@ -36,14 +44,8 @@ type
     FCustomPalette: TArray<UInt32>;
     FPreRenderLine: Integer;
     FMapper: TMapper;
-    FNameTable: array[0..4095] of UInt8;
-    FPaletteRam: array[0..31] of UInt8;
-    FOam: array[0..255] of UInt8;
     FLineSprites: array[0..63] of UInt8;
     FLineSpriteCount: Integer;
-    FFrame: TFrameBuffer;
-    FDrawingFrame: TFrameBuffer;
-    FZapperMask: TNesZapperMask;
     FZapperMaskValid: Boolean;
     FRenderingLine: Boolean;
     FCycle: Integer;
@@ -95,6 +97,14 @@ type
     FMapperSpriteScanline: Integer;
     FMapperSpriteAddresses: array[0..7] of UInt16;
     FMapperSpriteAddressValid: Boolean;
+    // Keep per-dot state within short ARM load/store offsets. Bulk pixel and
+    // memory buffers follow it; snapshot field order is defined separately.
+    FPaletteRam: array[0..31] of UInt8;
+    FOam: array[0..255] of UInt8;
+    FNameTable: array[0..4095] of UInt8;
+    FFrame: TFrameBuffer;
+    FDrawingFrame: TFrameBuffer;
+    FZapperMask: TNesZapperMask;
     procedure ClockMapperAddress;
     procedure RefreshOpenBus(Value, Mask: UInt8);
     procedure ClockOam;
@@ -865,7 +875,7 @@ end;
 function TPPU.AdvanceWaitingSprites(Offset: Integer): Boolean;
 begin
   var Counters: UInt32;
-  Move(FPixel.SpriteX[Offset], Counters, SizeOf(Counters));
+  Counters := PPpuSpriteWord(@FPixel.SpriteX[Offset]).Value;
   var Bits := Counters and $FEFEFEFE;
   // Each byte must be at least two: no output this dot, no counter expiry,
   // and subtracting one from all four bytes cannot borrow across lanes.
@@ -873,24 +883,24 @@ begin
   if Result then
   begin
     Counters := Counters - $01010101;
-    Move(Counters, FPixel.SpriteX[Offset], SizeOf(Counters));
+    PPpuSpriteWord(@FPixel.SpriteX[Offset]).Value := Counters;
   end;
 end;
 
 procedure TPPU.ShiftSpriteGroup(Offset: Integer);
 begin
   var Attributes, Low, High: UInt32;
-  Move(FPixel.SpriteAttr[Offset], Attributes, SizeOf(Attributes));
-  Move(FPixel.SpriteLow[Offset], Low, SizeOf(Low));
-  Move(FPixel.SpriteHigh[Offset], High, SizeOf(High));
+  Attributes := PPpuSpriteWord(@FPixel.SpriteAttr[Offset]).Value;
+  Low := PPpuSpriteWord(@FPixel.SpriteLow[Offset]).Value;
+  High := PPpuSpriteWord(@FPixel.SpriteHigh[Offset]).Value;
 
   // Expand each horizontal-flip bit to a byte mask. Strip cross-byte carries
   // so all four shifters advance independently, including transparent ones.
   var Reverse := ((Attributes and $40404040) shr 6) * $FF;
   Low := ((Low shl 1) and $FEFEFEFE and not Reverse) or ((Low shr 1) and $7F7F7F7F and Reverse);
   High := ((High shl 1) and $FEFEFEFE and not Reverse) or ((High shr 1) and $7F7F7F7F and Reverse);
-  Move(Low, FPixel.SpriteLow[Offset], SizeOf(Low));
-  Move(High, FPixel.SpriteHigh[Offset], SizeOf(High));
+  PPpuSpriteWord(@FPixel.SpriteLow[Offset]).Value := Low;
+  PPpuSpriteWord(@FPixel.SpriteHigh[Offset]).Value := High;
 end;
 
 procedure TPPU.ClockPixels;
@@ -914,18 +924,28 @@ begin
       ((FStatus and $40) = 0) and ((FMask and $18) = $18) and
       ((X >= 8) or ((FMask and 6) = 6)) and (X <> 255);
 
-    // Active groups can shift together once sprite-zero overlap is impossible.
-    if Rendering and not HitPossible then
+    // Groups without sprite zero can shift together even while a hit is
+    // possible elsewhere. Keep every shifter clock and the scalar hit path.
+    if Rendering then
     begin
+      var ZeroFlags: UInt32;
       if (FPixel.Counting and $0F) = 0 then
       begin
-        ShiftSpriteGroup(0);
-        FirstSprite := 4;
+        ZeroFlags := PPpuSpriteWord(@FPixel.SpriteZero[0]).Value;
+        if not HitPossible or (ZeroFlags = 0) then
+        begin
+          ShiftSpriteGroup(0);
+          FirstSprite := 4;
+        end;
       end;
       if (FPixel.Counting and $F0) = 0 then
       begin
-        ShiftSpriteGroup(4);
-        LastSprite := 3;
+        ZeroFlags := PPpuSpriteWord(@FPixel.SpriteZero[4]).Value;
+        if not HitPossible or (ZeroFlags = 0) then
+        begin
+          ShiftSpriteGroup(4);
+          LastSprite := 3;
+        end;
       end;
     end;
     // The skipped odd-frame dot makes waiting sprites output at X=0.

@@ -12,7 +12,8 @@
 // the VRAM pages they draw into are held (TPSPMemory.HoldVRAM) and the pages
 // their textures come from are watched (TPSPMemory.WatchPage): any access to
 // a held page, or a write to a watched one, first draws everything (Sync)
-// and copies the drawn pages back into guest memory. The GPU's copy of a page
+// and copies requested drawn pages back into guest memory (Sync returns all).
+// The GPU's copy of a page
 // is compared with guest memory when a batch first uses it in an epoch;
 // textures in main memory are copied into the batch. Mipmapped textures and
 // the level of detail are sampled as GESampleTextureLod does. What the
@@ -55,6 +56,8 @@ type
   end;
 
   TGEVulkanLLEMessage = reference to procedure(const Text: string);
+  TGEVulkanLLEPageMask = array[0..VRAMPageCount - 1] of Boolean;
+  PGEVulkanLLEPageMask = ^TGEVulkanLLEPageMask;
 
   TGEVulkanLLESpan = record
     Lo, Len: Int64; // VRAM offset and length, may run past the end (wraps)
@@ -173,7 +176,8 @@ type
     procedure Bind(Slot: Integer);
     // Sends the batch to the GPU; with ReadBack, also every page drawn since
     // the last read back, to be put into guest memory when it completes.
-    procedure Submit(ReadBack: Boolean);
+    procedure Submit(ReadBack: Boolean; ReadPages: PGEVulkanLLEPageMask = nil);
+    procedure SyncRange(Address, Size: Cardinal);
     procedure Complete(Slot: Integer);
     procedure Split(const Why: string);
     function BinPass(const P: TGEVulkanLLEPass; out TilesX, TilesY: Integer): Cardinal;
@@ -948,6 +952,8 @@ begin
   FVerified[Page] := True;
   FVerifiedList[FVerifiedCount] := Page;
   Inc(FVerifiedCount);
+  // A still-held page is authoritative on the GPU, not in guest memory.
+  if FHeld[Page] then Exit;
   Inc(FStats.ComparedPages);
   var Guest := @FMemory.VRAM[Page * PageSize];
   if not SameBytes(Guest, @FShadow[Page * PageSize], PageSize) then
@@ -1057,7 +1063,8 @@ end;
 procedure TGEVulkanLLEBackend.VRAMFault;
 begin
   Inc(FStats.AccessSyncs);
-  Sync;
+  if FCheck or FQueued or (FMemory.SyncSize = 0) then Sync
+  else SyncRange(FMemory.SyncAddress, FMemory.SyncSize);
 end;
 
 procedure TGEVulkanLLEBackend.Split(const Why: string);
@@ -1829,43 +1836,7 @@ var
 begin
   BeginPrim;
   // The set-up of GEDrawTriangle.
-  var X0 := Int64(V0.X);
-  var Y0 := Int64(V0.Y);
-  var X1 := Int64(V1.X);
-  var Y1 := Int64(V1.Y);
-  var X2 := Int64(V2.X);
-  var Y2 := Int64(V2.Y);
-  var Area := (X1 - X0) * (Y2 - Y0) - (Y1 - Y0) * (X2 - X0);
-  if Area = 0 then
-    Exit;
-  var A0, A1, A2: PGEVertex;
-  A0 := @V0;
-  A1 := @V1;
-  A2 := @V2;
-  if Area < 0 then
-  begin
-    A1 := @V2;
-    A2 := @V1;
-    X1 := V2.X;
-    Y1 := V2.Y;
-    X2 := V1.X;
-    Y2 := V1.Y;
-    Area := -Area;
-  end;
-  var MinX := Min(X0, Min(X1, X2));
-  var MaxX := Max(X0, Max(X1, X2));
-  var MinY := Min(Y0, Min(Y1, Y2));
-  var MaxY := Max(Y0, Max(Y1, Y2));
-  var PX1 := Integer((MinX - 8 + 15 + $100000) div 16) - $10000;
-  var PX2 := Integer((MaxX - 8 + $100000) div 16) - $10000;
-  var PY1 := Integer((MinY - 8 + 15 + $100000) div 16) - $10000;
-  var PY2 := Integer((MaxY - 8 + $100000) div 16) - $10000;
-  PX1 := Max(PX1, S.ScissorX1);
-  PY1 := Max(PY1, Max(S.ScissorY1, S.BandY1));
-  PX2 := Min(PX2, S.ScissorX2);
-  PY2 := Min(PY2, Min(S.ScissorY2, S.BandY2));
-  if (PX1 > PX2) or (PY1 > PY2) then
-    Exit;
+{$I PSP.GE.TriangleSetup.inc}
   if OnCPU(Int64(PX2 - PX1 + 1) * (PY2 - PY1 + 1)) then
   begin
     Enqueue(KindTriangle, S, V0, V1, V2);
@@ -2303,7 +2274,7 @@ begin
   Record_(KindPoint, S, V, V, V);
 end;
 
-procedure TGEVulkanLLEBackend.Submit(ReadBack: Boolean);
+procedure TGEVulkanLLEBackend.Submit(ReadBack: Boolean; ReadPages: PGEVulkanLLEPageMask);
 var
   Push: TGEVulkanLLEPush;
 begin
@@ -2394,11 +2365,16 @@ begin
         Cmd.Barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT or VK_PIPELINE_STAGE_TRANSFER_BIT,
           VK_ACCESS_SHADER_WRITE_BIT or VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
           VK_ACCESS_TRANSFER_READ_BIT);
-      Move(FDrawn, Slot.Pages, SizeOf(FDrawn));
-      Slot.PageCount := FDrawnCount;
-      Inc(FStats.ReadbackPages, FDrawnCount);
-      FillChar(FDrawn, SizeOf(FDrawn), 0);
-      FDrawnCount := 0;
+      FillChar(Slot.Pages, SizeOf(Slot.Pages), 0);
+      for var Page := 0 to VRAMPages - 1 do
+        if FDrawn[Page] and ((ReadPages = nil) or ReadPages[Page]) then
+        begin
+          Slot.Pages[Page] := True;
+          FDrawn[Page] := False;
+          Inc(Slot.PageCount);
+          Dec(FDrawnCount);
+        end;
+      Inc(FStats.ReadbackPages, Slot.PageCount);
       var Run := -1;
       for var Page := 0 to VRAMPages do
       begin
@@ -2482,6 +2458,53 @@ begin
   Result := (FPrimCount > 0) or (FDrawnCount > 0) or (FUploadCount > 0) or (FVerifiedCount > 0) or FWatchedRAM;
   for var I := 0 to High(FSlots) do
     Result := Result or FSlots[I].Busy;
+end;
+
+procedure TGEVulkanLLEBackend.SyncRange(Address, Size: Cardinal);
+var
+  Pages: TGEVulkanLLEPageMask;
+begin
+  if FSyncing then Exit;
+  FSyncing := True;
+  try
+    FillChar(Pages, SizeOf(Pages), 0);
+    var Lo := Max(UInt64(Address and $1FFFFFFF), UInt64(PSPVRAMBase));
+    var Hi := Min(UInt64(Address and $1FFFFFFF) + Size, UInt64(PSPVRAMBase + 4 * PSPVRAMSize));
+    var ReadBack := False;
+    if Hi > Lo then
+      for var Guest := Lo shr PSPPageShift to (Hi - 1) shr PSPPageShift do
+      begin
+        var Page := FMemory.VRAMPageAt(Cardinal(Guest shl PSPPageShift));
+        if Page >= 0 then
+        begin
+          Pages[Page] := True;
+          ReadBack := ReadBack or FDrawn[Page];
+        end;
+      end;
+    if Pending then Inc(FStats.Syncs);
+    // All preceding commands retain queue order, but only the requested
+    // pages cross to the CPU. RAM texture snapshots need no GPU wait.
+    Submit(ReadBack, @Pages);
+    if ReadBack then
+    begin
+      var First := FNextSlot;
+      for var I := 0 to High(FSlots) do Complete((First + I) mod Length(FSlots));
+    end;
+    for var Page := 0 to VRAMPages - 1 do
+      if Pages[Page] and FHeld[Page] and not FDrawn[Page] then
+      begin
+        FHeld[Page] := False;
+        FMemory.ReleaseVRAMPage(Page);
+      end;
+    // Submitted RAM snapshots are immutable. New uses validate unheld pages;
+    // the other dirty VRAM pages stay held and authoritative on the GPU.
+    FMemory.ReleaseWatches;
+    for var I := 0 to FVerifiedCount - 1 do FVerified[FVerifiedList[I]] := False;
+    FVerifiedCount := 0;
+    FWatchedRAM := False;
+    FillChar(FWatched, SizeOf(FWatched), 0);
+    FillChar(FWatchedBanks, SizeOf(FWatchedBanks), 0);
+  finally FSyncing := False end;
 end;
 
 procedure TGEVulkanLLEBackend.Sync;

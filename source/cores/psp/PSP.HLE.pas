@@ -253,10 +253,6 @@ begin
   if Assigned(F.Handler) then
   begin
     F.Handler();
-    // The kernel leaves the caller-saved registers clobbered (unless the call
-    // went on into guest code, a callback or a thread switch).
-    if (FCPU.Ctx.PC = ReturnPC) and not NoClobber then
-      Clobber;
   end
   else
   begin
@@ -273,19 +269,14 @@ begin
     else
       FCPU.Ctx.GPR[2] := SCE_KERNEL_ERROR_LIBRARY_NOT_YET_LINKED;
   end;
+  if (FCPU.Ctx.PC = ReturnPC) and not NoClobber then
+    Clobber;
   Result := True;
 end;
 
 procedure TPSPHLE.Clobber;
 begin
-  var C: PPSPContext := @FCPU.Ctx;
-  C.GPR[1] := $DEADBEEF;
-  for var R := 4 to 15 do
-    C.GPR[R] := $DEADBEEF;
-  C.GPR[24] := $DEADBEEF;
-  C.GPR[25] := $DEADBEEF;
-  C.HI := $DEADBEEF;
-  C.LO := $DEADBEEF;
+  PSPClobberCallerSaved(FCPU.Ctx);
 end;
 
 procedure TPSPHLE.Log(const Text: string);

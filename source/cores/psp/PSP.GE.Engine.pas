@@ -155,11 +155,13 @@ type
     FTexCache: TGETexCache;
     FTexEpoch: Cardinal;
     // Threads that decode and transform the vertices of large primitives
-    // (TGEVertexPool, Windows x64; nil elsewhere, on few cores or with
+    // (TGEVertexPool on 64-bit hosts; nil on few cores or with
     // PSP_GE_VERTEX_THREADS=0), the vertices' indices and the results.
     FVertexPool: TObject;
     FParIndex: TArray<Integer>;
     FParOut: TArray<TGEAsmVertex>;
+    FVertexFormatKey: Cardinal;
+    FVertexFormatValid: Boolean;
     procedure PrepareLight;
     procedure PrepareGeometry;
     procedure PrepareBones(Count: Integer);
@@ -167,7 +169,7 @@ type
     procedure DecodeVertex(Addr, VType: Cardinal; out V: TGEInVertex);
     procedure DecodeVertexWith(Addr, VType: Cardinal; out V: TGEInVertex; var LastU, LastV: Single; var LastN: TGEVec3);
     function TransformInParallel(Count: Integer; VType: Cardinal): Boolean;
-{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFDEF CPU64BITS}
     procedure TransformRange(VType: Cardinal; First, Last: Integer; LastU, LastV: Single; const LastN: TGEVec3);
 {$ENDIF}
     function ReadVertex(Index: Integer; VType: Cardinal; out V: TGEInVertex): Boolean;
@@ -233,7 +235,7 @@ implementation
 uses
   HW.HostFPU;
 
-{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFDEF CPU64BITS}
 type
   // Workers that decode and transform ranges of a primitive's vertices
   // (TPSPGEEngine.TransformRange) while the GE's thread does its own share.
@@ -251,6 +253,8 @@ type
     FLastU, FLastV: Single;
     FLastN: TGEVec3;
     FMXCSR: Cardinal;
+    FRound: TRoundingMode;
+    FMask: TArithmeticExceptionMask;
     FFailed: Boolean;
     procedure Work;
     procedure Share;
@@ -264,6 +268,15 @@ type
 const
   // Vertices a worker takes at a time.
   VertexChunk = 32;
+
+procedure VertexYield; inline;
+begin
+{$IFDEF MSWINDOWS}
+  YieldProcessor;
+{$ELSE}
+  TThread.Yield;
+{$ENDIF}
+end;
 
 constructor TGEVertexPool.Create(Threads: Integer);
 begin
@@ -318,7 +331,7 @@ begin
       // A while spinning (jobs come in bursts), then asleep until the next.
       Inc(Idle);
       if Idle < 4000 then
-        YieldProcessor
+        VertexYield
       else
       begin
         FWake.WaitFor(2);
@@ -331,6 +344,8 @@ begin
     AtomicIncrement(FActive);
     if AtomicCmpExchange(FGen, 0, 0) = G then
     begin
+      SetExceptionMask(FMask);
+      SetRoundMode(FRound);
       WriteHostMXCSR(FMXCSR);
       Share;
     end;
@@ -342,7 +357,7 @@ function TGEVertexPool.Run(Engine: TPSPGEEngine; VType: Cardinal; Count: Integer
 begin
   AtomicIncrement(FGen);
   while AtomicCmpExchange(FActive, 0, 0) <> 0 do
-    YieldProcessor;
+    VertexYield;
   FEngine := Engine;
   FVType := VType;
   FCount := Count;
@@ -351,13 +366,15 @@ begin
   FLastN := LastN;
   // The workers compute in this thread's floating-point modes.
   FMXCSR := ReadHostMXCSR;
+  FRound := GetRoundMode;
+  FMask := GetExceptionMask;
   FFailed := False;
   FNext := 0;
   AtomicIncrement(FGen);
   FWake.SetEvent;
   Share;
   while AtomicCmpExchange(FActive, 0, 0) <> 0 do
-    YieldProcessor;
+    VertexYield;
   FWake.ResetEvent;
   Result := not FFailed;
 end;
@@ -378,7 +395,7 @@ begin
       end;
   end;
   FWorkers := TGEWorkers.Create(FMemory);
-{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFDEF CPU64BITS}
   // Up to three workers, leaving the emulation, its sound and the front end
   // their cores.
   var Threads := Min(TThread.ProcessorCount - 3, 3);
@@ -419,6 +436,7 @@ end;
 
 procedure TPSPGEEngine.Restored;
 begin
+  FVertexFormatValid := False;
   FGeomValid := False;
   FGeomCached := False;
   FLightValid := False;
@@ -434,6 +452,7 @@ end;
 
 procedure TPSPGEEngine.Reset;
 begin
+  FVertexFormatValid := False;
   Regs := Default(TPSPGERegs);
   for var I := 0 to 255 do
     Regs.Cmd[I] := Cardinal(I) shl 24;
@@ -579,6 +598,10 @@ const
 
 procedure TPSPGEEngine.SetupVertexFormat(VType: Cardinal);
 begin
+  if FVertexFormatValid and (FVertexFormatKey = VType) then
+    Exit;
+  FVertexFormatKey := VType;
+  FVertexFormatValid := True;
   var Tc := VType and 3;
   var Col := (VType shr 2) and 7;
   var Nrm := (VType shr 5) and 3;
@@ -1514,245 +1537,8 @@ asm
   // RCX Row (kept in RSI), XMM1..XMM3 X, Y, Z. Terms in R8..R11, quanta in
   // EBX, EDI, R12D, R13D.
         MOV     RSI, RCX
-  // Product 0: the row's factor times X; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 0]
-        MOVQ    RDX, XMM1
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero0
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero0
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     EBX, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 0]
-        MULSD   XMM0, XMM1
-        MOVQ    R8, XMM0
-        MOV     RAX, R8
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R8, CL
-        SHL     R8, CL
-        JMP     @@Done0
-
-@@Zero0:
-        XOR     R8, R8
-        XOR     EBX, EBX
-
-@@Done0:
-  // Product 1: the row's factor times Y; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 8]
-        MOVQ    RDX, XMM2
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero1
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero1
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     EDI, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 8]
-        MULSD   XMM0, XMM2
-        MOVQ    R9, XMM0
-        MOV     RAX, R9
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R9, CL
-        SHL     R9, CL
-        JMP     @@Done1
-
-@@Zero1:
-        XOR     R9, R9
-        XOR     EDI, EDI
-
-@@Done1:
-  // Product 2: the row's factor times Z; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 16]
-        MOVQ    RDX, XMM3
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero2
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero2
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     R12D, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 16]
-        MULSD   XMM0, XMM3
-        MOVQ    R10, XMM0
-        MOV     RAX, R10
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R10, CL
-        SHL     R10, CL
-        JMP     @@Done2
-
-@@Zero2:
-        XOR     R10, R10
-        XOR     R12D, R12D
-
-@@Done2:
-  // The term added, its quantum 16 bits below its leading one (zero: 0).
-        MOV     R11, [RSI + 24]
-        XOR     R13D, R13D
-        MOV     RAX, R11
-        ADD     RAX, RAX
-        JZ      @@TermZero
-        MOV     RAX, R11
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        LEA     R13D, [RAX - 1038]
-
-@@TermZero:
-  // The largest magnitude, the first of equal ones, gives the quantum (R14D).
-        MOV     RDX, $7FFFFFFFFFFFFFFF
-        MOV     RAX, R8
-        AND     RAX, RDX
-        MOV     R14D, EBX
-        MOV     RCX, R9
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, EDI
-        MOV     RCX, R10
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, R12D
-        MOV     RCX, R11
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, R13D
-        TEST    RAX, RAX
-        JZ      @@ZeroSum
-  // Term 0 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R8
-        ADD     RAX, RAX
-        JZ      @@Cut0
-        MOV     RAX, R8
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign0
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R8, CL
-        SHL     R8, CL
-        JMP     @@Cut0
-
-@@Sign0:
-        MOV     RAX, $8000000000000000
-        AND     R8, RAX
-
-@@Cut0:
-  // Term 1 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R9
-        ADD     RAX, RAX
-        JZ      @@Cut1
-        MOV     RAX, R9
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign1
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R9, CL
-        SHL     R9, CL
-        JMP     @@Cut1
-
-@@Sign1:
-        MOV     RAX, $8000000000000000
-        AND     R9, RAX
-
-@@Cut1:
-  // Term 2 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R10
-        ADD     RAX, RAX
-        JZ      @@Cut2
-        MOV     RAX, R10
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign2
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R10, CL
-        SHL     R10, CL
-        JMP     @@Cut2
-
-@@Sign2:
-        MOV     RAX, $8000000000000000
-        AND     R10, RAX
-
-@@Cut2:
-  // Term 3 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R11
-        ADD     RAX, RAX
-        JZ      @@Cut3
-        MOV     RAX, R11
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign3
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R11, CL
-        SHL     R11, CL
-        JMP     @@Cut3
-
-@@Sign3:
-        MOV     RAX, $8000000000000000
-        AND     R11, RAX
-
-@@Cut3:
-        MOVQ    XMM0, R8
-        MOVQ    XMM4, R9
-        ADDSD   XMM0, XMM4
-        MOVQ    XMM4, R10
-        ADDSD   XMM0, XMM4
-        MOVQ    XMM4, R11
-        ADDSD   XMM0, XMM4
-  // T24 of the sum: a zero kept, a normal one cut to 16 bits.
-        MOVQ    RAX, XMM0
-        MOV     RCX, RAX
-        SHR     RCX, 52
-        AND     ECX, $7FF
-        JZ      @@Exit
-        MOV     RCX, $FFFFFFE000000000
-        AND     RAX, RCX
-        MOVQ    XMM0, RAX
-        JMP     @@Exit
-
-@@ZeroSum:
-        XORPD   XMM0, XMM0
-
-@@Exit:
+{$I PSP.GE.Row24.inc}
+@@RowResult:
 end;
 
 // Rows24's fast path for Count rows, X, Y and Z at XYZ: Row24Asm's steps,
@@ -1778,245 +1564,8 @@ asm
         MOVSD   XMM3, [R9 + 16]
 
 @@Row:
-  // Product 0: the row's factor times X; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 0]
-        MOVQ    RDX, XMM1
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero0
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero0
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     EBX, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 0]
-        MULSD   XMM0, XMM1
-        MOVQ    R8, XMM0
-        MOV     RAX, R8
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R8, CL
-        SHL     R8, CL
-        JMP     @@Done0
-
-@@Zero0:
-        XOR     R8, R8
-        XOR     EBX, EBX
-
-@@Done0:
-  // Product 1: the row's factor times Y; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 8]
-        MOVQ    RDX, XMM2
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero1
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero1
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     EDI, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 8]
-        MULSD   XMM0, XMM2
-        MOVQ    R9, XMM0
-        MOV     RAX, R9
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R9, CL
-        SHL     R9, CL
-        JMP     @@Done1
-
-@@Zero1:
-        XOR     R9, R9
-        XOR     EDI, EDI
-
-@@Done1:
-  // Product 2: the row's factor times Z; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 16]
-        MOVQ    RDX, XMM3
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero2
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero2
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     R12D, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 16]
-        MULSD   XMM0, XMM3
-        MOVQ    R10, XMM0
-        MOV     RAX, R10
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R10, CL
-        SHL     R10, CL
-        JMP     @@Done2
-
-@@Zero2:
-        XOR     R10, R10
-        XOR     R12D, R12D
-
-@@Done2:
-  // The term added, its quantum 16 bits below its leading one (zero: 0).
-        MOV     R11, [RSI + 24]
-        XOR     R13D, R13D
-        MOV     RAX, R11
-        ADD     RAX, RAX
-        JZ      @@TermZero
-        MOV     RAX, R11
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        LEA     R13D, [RAX - 1038]
-
-@@TermZero:
-  // The largest magnitude, the first of equal ones, gives the quantum (R14D).
-        MOV     RDX, $7FFFFFFFFFFFFFFF
-        MOV     RAX, R8
-        AND     RAX, RDX
-        MOV     R14D, EBX
-        MOV     RCX, R9
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, EDI
-        MOV     RCX, R10
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, R12D
-        MOV     RCX, R11
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, R13D
-        TEST    RAX, RAX
-        JZ      @@ZeroSum
-  // Term 0 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R8
-        ADD     RAX, RAX
-        JZ      @@Cut0
-        MOV     RAX, R8
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign0
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R8, CL
-        SHL     R8, CL
-        JMP     @@Cut0
-
-@@Sign0:
-        MOV     RAX, $8000000000000000
-        AND     R8, RAX
-
-@@Cut0:
-  // Term 1 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R9
-        ADD     RAX, RAX
-        JZ      @@Cut1
-        MOV     RAX, R9
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign1
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R9, CL
-        SHL     R9, CL
-        JMP     @@Cut1
-
-@@Sign1:
-        MOV     RAX, $8000000000000000
-        AND     R9, RAX
-
-@@Cut1:
-  // Term 2 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R10
-        ADD     RAX, RAX
-        JZ      @@Cut2
-        MOV     RAX, R10
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign2
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R10, CL
-        SHL     R10, CL
-        JMP     @@Cut2
-
-@@Sign2:
-        MOV     RAX, $8000000000000000
-        AND     R10, RAX
-
-@@Cut2:
-  // Term 3 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R11
-        ADD     RAX, RAX
-        JZ      @@Cut3
-        MOV     RAX, R11
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign3
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R11, CL
-        SHL     R11, CL
-        JMP     @@Cut3
-
-@@Sign3:
-        MOV     RAX, $8000000000000000
-        AND     R11, RAX
-
-@@Cut3:
-        MOVQ    XMM0, R8
-        MOVQ    XMM4, R9
-        ADDSD   XMM0, XMM4
-        MOVQ    XMM4, R10
-        ADDSD   XMM0, XMM4
-        MOVQ    XMM4, R11
-        ADDSD   XMM0, XMM4
-  // T24 of the sum: a zero kept, a normal one cut to 16 bits.
-        MOVQ    RAX, XMM0
-        MOV     RCX, RAX
-        SHR     RCX, 52
-        AND     ECX, $7FF
-        JZ      @@Store
-        MOV     RCX, $FFFFFFE000000000
-        AND     RAX, RCX
-        MOVQ    XMM0, RAX
-        JMP     @@Store
-
-@@ZeroSum:
-        XORPD   XMM0, XMM0
-
-@@Store:
+{$I PSP.GE.Row24.inc}
+@@RowResult:
         MOVSD   [R15], XMM0
         ADD     R15, 8
         ADD     RSI, 32
@@ -2497,8 +2046,31 @@ procedure TPSPGEEngine.PrepareLight;
 var
   C: PGECmds;
   Now: TGELightRegs;
+  Mode, Control: Cardinal;
 begin
   C := @Regs.Cmd;
+{$IF Defined(MSWINDOWS)}
+  {$WARN SYMBOL_PLATFORM OFF}
+  Mode := GetMXCSR and $FFC0; // sticky exception flags do not affect setup
+  {$WARN SYMBOL_PLATFORM ON}
+{$ELSE}
+  Mode := Ord(GetRoundMode);
+{$ENDIF}
+{$IFDEF CPUX86}
+  Control := Get8087CW;
+{$ELSE}
+  Control := 0;
+{$ENDIF}
+  if FLightRegsValid and
+    CompareMem(@C[GE_LIGHTENABLE0], @FLightRegs[0], 4 * SizeOf(Cardinal)) and
+    CompareMem(@C[GE_MATERIALEMISSIVE], @FLightRegs[4],
+      (GE_LAC0 + 12 - GE_MATERIALEMISSIVE) * SizeOf(Cardinal)) and
+    (FLightRegs[75] = Regs.View[2]) and (FLightRegs[76] = Regs.View[5]) and
+    (FLightRegs[77] = Regs.View[8]) and (FLightRegs[78] = Mode) and (FLightRegs[79] = Control) then
+  begin
+    FLightValid := True;
+    Exit;
+  end;
   // What it reads: LIGHTENABLE0..3, the material and light registers from
   // MATERIALEMISSIVE to the last light's colours, the view's z axis and the
   // floating-point modes its divisions run in. The same ones give the same
@@ -2510,23 +2082,8 @@ begin
   Now[75] := Regs.View[2];
   Now[76] := Regs.View[5];
   Now[77] := Regs.View[8];
-{$IF Defined(MSWINDOWS)}
-  {$WARN SYMBOL_PLATFORM OFF}
-  Now[78] := GetMXCSR;
-  {$WARN SYMBOL_PLATFORM ON}
-{$ELSE}
-  Now[78] := Ord(GetRoundMode);
-{$ENDIF}
-{$IFDEF CPUX86}
-  Now[79] := Get8087CW;
-{$ELSE}
-  Now[79] := 0;
-{$ENDIF}
-  if FLightRegsValid and CompareMem(@Now, @FLightRegs, SizeOf(Now)) then
-  begin
-    FLightValid := True;
-    Exit;
-  end;
+  Now[78] := Mode;
+  Now[79] := Control;
   FLightRegs := Now;
   FLightRegsValid := True;
   for var Ch := 0 to 2 do
@@ -3063,13 +2620,13 @@ begin
   for var R := 0 to High(GERasterRuns) do
   begin
     var P: PCardinal := @C[GERasterRuns[R, 0]];
-    for var I := 0 to GERasterRuns[R, 1] - 1 do
+    var Bytes := GERasterRuns[R, 1] * SizeOf(Cardinal);
+    if not FRasterKeyValid or not CompareMem(P, K, Bytes) then
     begin
-      Diff := Diff or (P^ xor K^);
-      K^ := P^;
-      Inc(P);
-      Inc(K);
+      Diff := 1;
+      Move(P^, K^, Bytes);
     end;
+    Inc(K, GERasterRuns[R, 1]);
   end;
   var Extra: array[0..2] of Cardinal;
   Extra[0] := Cardinal(FMemory.VRAMShift);
@@ -3077,8 +2634,11 @@ begin
   Extra[2] := Cardinal(UInt64(NativeUInt(@FMemory.VRAM[0])) shr 32);
   for var I := 0 to 2 do
   begin
-    Diff := Diff or (Extra[I] xor K^);
-    K^ := Extra[I];
+    if K^ <> Extra[I] then
+    begin
+      Diff := 1;
+      K^ := Extra[I];
+    end;
     Inc(K);
   end;
   var Same := FRasterKeyValid and (Diff = 0);
@@ -3621,7 +3181,7 @@ end;
 function TPSPGEEngine.TransformInParallel(Count: Integer; VType: Cardinal): Boolean;
 begin
   Result := False;
-{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFDEF CPU64BITS}
   if (FRAMBase = nil) or (((VType shr 18) and 7) <> 0) then
     Exit;
   if Length(FParIndex) < Count then
@@ -3651,7 +3211,7 @@ begin
 {$ENDIF}
 end;
 
-{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFDEF CPU64BITS}
 // Vertices First..Last of TransformInParallel's primitive, on a pool thread.
 procedure TPSPGEEngine.TransformRange(VType: Cardinal; First, Last: Integer; LastU, LastV: Single; const LastN: TGEVec3);
 var

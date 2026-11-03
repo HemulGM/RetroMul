@@ -49,7 +49,12 @@ type
     SizeShift, WidthShift, Base, PalBase, LowPriority, HighPriority: Integer;
     OriginX, OriginY: Integer;
     MosaicEnabled, Hires: Boolean;
+    CachedX, CachedY: Integer;
+    CachedEntry: Word;
+    CachedPixels: UInt64;
   end;
+
+  TSnesBackgroundRow = array[0..255] of Cardinal;
 
   TSnesPPU = class
   private
@@ -69,11 +74,13 @@ type
     procedure UpdateOutputMode;
     procedure UpdateMosaic(V: Integer);
     function TilePixel(Base, Tile, BPP, X, Y: Integer): Integer; inline;
+    function TileRow(Base, Tile, BPP, Y: Integer): UInt64;
     function MapEntry(Layer, Column, Row: Integer): Word; inline;
     function OffsetEntry(Column: Integer; Vertical: Boolean): Word;
     function Palette(Index: Integer): Word; inline;
     procedure PrepareBackground(Layer, Y: Integer; out Context: TSnesBackgroundContext);
-    function Background(const Context: TSnesBackgroundContext; X: Integer; out Priority: Integer): Integer;
+    procedure PrepareBackgroundRow(const Context: TSnesBackgroundContext; FirstX, LastX: Integer; DirectColor: Boolean; var Pixels: TSnesBackgroundRow);
+    function Background(var Context: TSnesBackgroundContext; X: Integer; out Priority: Integer): Integer;
     function Window(Layer, X: Integer): Boolean;
     function Color(Value: Word): TAlphaColor;
   public
@@ -101,12 +108,25 @@ uses
 
 var
   Brightness: array[0..15, 0..31] of Byte;
+  DisplayColors: array[0..15, 0..$7FFF] of TAlphaColor;
+  PlanePixels: array[0..255] of UInt64;
 
 procedure InitBrightness;
 begin
+  for var Value := 0 to 255 do
+    for var X := 0 to 7 do
+      PlanePixels[Value] := PlanePixels[Value] or
+        (UInt64((Value shr (7 - X)) and 1) shl (X * 8));
   for var B := 0 to 15 do
     for var C := 0 to 31 do
       Brightness[B, C] := C * 255 * B div (31 * 15);
+  // Shared immutable 2 MiB lookup, using exactly the same channel rounding.
+  for var B := 0 to 15 do
+    for var Value := 0 to $7FFF do
+      DisplayColors[B, Value] := $FF000000 or
+        (Cardinal(Brightness[B, Value and 31]) shl 16) or
+        (Cardinal(Brightness[B, (Value shr 5) and 31]) shl 8) or
+        Cardinal(Brightness[B, (Value shr 10) and 31]);
 end;
 
 constructor TSnesPPU.Create;
@@ -679,6 +699,21 @@ begin
       (((State.VRAM[(Base + 49) and $FFFF] shr Shift) and 1) shl 7);
 end;
 
+function TSnesPPU.TileRow(Base, Tile, BPP, Y: Integer): UInt64;
+begin
+  Base := Base + Tile * BPP * 8 + Y * 2;
+  Result := PlanePixels[State.VRAM[Base and $FFFF]] or
+    (PlanePixels[State.VRAM[(Base + 1) and $FFFF]] shl 1);
+  if BPP >= 4 then
+    Result := Result or (PlanePixels[State.VRAM[(Base + 16) and $FFFF]] shl 2) or
+      (PlanePixels[State.VRAM[(Base + 17) and $FFFF]] shl 3);
+  if BPP = 8 then
+    Result := Result or (PlanePixels[State.VRAM[(Base + 32) and $FFFF]] shl 4) or
+      (PlanePixels[State.VRAM[(Base + 33) and $FFFF]] shl 5) or
+      (PlanePixels[State.VRAM[(Base + 48) and $FFFF]] shl 6) or
+      (PlanePixels[State.VRAM[(Base + 49) and $FFFF]] shl 7);
+end;
+
 function TSnesPPU.MapEntry(Layer, Column, Row: Integer): Word;
 begin
   var Map := State.Regs[7 + Layer];
@@ -735,6 +770,7 @@ const
   HighPrio: array[0..7, 0..3] of Integer = ((11, 10, 5, 4), (9, 8, 3, 0), (7, 5, 0, 0), (7, 5, 0, 0), (7, 5, 0, 0), (7, 5, 0, 0), (5, 0, 0, 0), (2, 0, 0, 0));
 begin
   Context := Default(TSnesBackgroundContext);
+  Context.CachedX := -1;
   Context.Layer := Layer;
   Context.Mode := State.Regs[5] and 7;
   var Mode := Context.Mode;
@@ -790,7 +826,59 @@ begin
     Context.PalBase := Layer * 32;
 end;
 
-function TSnesPPU.Background(const Context: TSnesBackgroundContext; X: Integer; out Priority: Integer): Integer;
+procedure TSnesPPU.PrepareBackgroundRow(const Context: TSnesBackgroundContext; FirstX, LastX: Integer; DirectColor: Boolean; var Pixels: TSnesBackgroundRow);
+begin
+  // A synchronous span has immutable VRAM/registers. Decode each eight-pixel
+  // row once, retaining palette indices for the original per-pixel CGRAM reads.
+  var Y := (Context.Y + Context.VScroll) and $3FF;
+  var Size := 1 shl Context.SizeShift;
+  var ScreenX := FirstX;
+  while ScreenX <= LastX do
+  begin
+    var X := (ScreenX + Context.HScroll) and $3FF;
+    var Entry := MapEntry(Context.Layer, X shr Context.WidthShift, Y shr Context.SizeShift);
+    var PX := X and (Size - 1);
+    var PY := Y and (Size - 1);
+    if Entry and $4000 <> 0 then
+      PX := Size - 1 - PX;
+    if Entry and $8000 <> 0 then
+      PY := Size - 1 - PY;
+    var Tile := (Entry and $3FF) + PX div 8 + PY div 8 * 16;
+    var Row := TileRow(Context.Base, Tile and $3FF, Context.BPP, PY and 7);
+    var Priority := Context.LowPriority;
+    if Entry and $2000 <> 0 then
+      Priority := Context.HighPriority;
+    var Pal := (Entry shr 10) and 7;
+    var PaletteBase := Context.PalBase;
+    if Context.BPP <> 8 then
+      Inc(PaletteBase, Pal shl Context.BPP);
+    var Flip := 0;
+    if Entry and $4000 <> 0 then
+      Flip := 7;
+    var Count := 8 - (X and 7);
+    if Count > LastX - ScreenX + 1 then
+      Count := LastX - ScreenX + 1;
+    for var I := 0 to Count - 1 do
+    begin
+      var Pixel := Integer((Row shr ((((X + I) and 7) xor Flip) * 8)) and $FF);
+      var Value: Cardinal := 0;
+      if Pixel <> 0 then
+      begin
+        if DirectColor then
+          Value := ((Pixel and 7) shl 2) or ((Pal and 1) shl 1) or
+            ((Pixel and $38) shl 4) or ((Pal and 2) shl 5) or
+            ((Pixel and $C0) shl 7) or ((Pal and 4) shl 10)
+        else
+          Value := PaletteBase + Pixel;
+        Value := Value or (Cardinal(Priority) shl 16);
+      end;
+      Pixels[ScreenX + I] := Value;
+    end;
+    Inc(ScreenX, Count);
+  end;
+end;
+
+function TSnesPPU.Background(var Context: TSnesBackgroundContext; X: Integer; out Priority: Integer): Integer;
 begin
   Result := -1;
   Priority := 0;
@@ -876,21 +964,35 @@ begin
     X := (X + HScroll) and $3FF;
   Y := (Y + VScroll) and $3FF;
 
-  // X and Y have already been masked to nonnegative VRAM coordinates.
-  var TY := Y shr SizeShift;
-  var WidthShift := Context.WidthShift;
-  var TX := X shr WidthShift;
-  var Entry := MapEntry(Layer, TX, TY);
-  var TileWidth := 1 shl WidthShift;
-  var Size := 1 shl SizeShift;
-  var PX := X and (TileWidth - 1);
-  var PY := Y and (Size - 1);
-  if (Entry and $4000) <> 0 then
-    PX := TileWidth - 1 - PX;
-  if (Entry and $8000) <> 0 then
-    PY := Size - 1 - PY;
-  var Tile := (Entry and $3FF) + PX div 8 + PY div 8 * 16;
-  var Pixel := TilePixel(Context.Base, Tile and $3FF, BPP, PX and 7, PY and 7);
+  // VRAM and registers are immutable inside this synchronous span. Cache
+  // only the fetched tile row; palette reads still occur for every pixel,
+  // preserving the internal CGRAM address and direct-color bus behavior.
+  var TileX := X shr 3;
+  if (Context.CachedX <> TileX) or (Context.CachedY <> Y) then
+  begin
+    var TY := Y shr SizeShift;
+    var WidthShift := Context.WidthShift;
+    var TX := X shr WidthShift;
+    var Entry := MapEntry(Layer, TX, TY);
+    var TileWidth := 1 shl WidthShift;
+    var Size := 1 shl SizeShift;
+    var PX := X and (TileWidth - 1);
+    var PY := Y and (Size - 1);
+    if (Entry and $4000) <> 0 then
+      PX := TileWidth - 1 - PX;
+    if (Entry and $8000) <> 0 then
+      PY := Size - 1 - PY;
+    var Tile := (Entry and $3FF) + PX div 8 + PY div 8 * 16;
+    Context.CachedPixels := TileRow(Context.Base, Tile and $3FF, BPP, PY and 7);
+    Context.CachedEntry := Entry;
+    Context.CachedX := TileX;
+    Context.CachedY := Y;
+  end;
+  var Entry := Context.CachedEntry;
+  var PixelX := X and 7;
+  if Entry and $4000 <> 0 then
+    PixelX := PixelX xor 7;
+  var Pixel := Integer((Context.CachedPixels shr (PixelX * 8)) and $FF);
   if Pixel = 0 then
     Exit;
 
@@ -914,6 +1016,8 @@ end;
 function TSnesPPU.Window(Layer, X: Integer): Boolean;
 begin
   var Settings := State.Regs[$23 + Layer div 2] shr ((Layer and 1) * 4);
+  if Settings and $A = 0 then
+    Exit(False);
   var W1 := (X >= State.Regs[$26]) and (X <= State.Regs[$27]);
   var W2 := (X >= State.Regs[$28]) and (X <= State.Regs[$29]);
   if (Settings and 1) <> 0 then
@@ -946,11 +1050,7 @@ end;
 
 function TSnesPPU.Color(Value: Word): TAlphaColor;
 begin
-  var Bright := State.Regs[0] and 15;
-  var R := Brightness[Bright, Value and 31];
-  var G := Brightness[Bright, Value shr 5 and 31];
-  var B := Brightness[Bright, Value shr 10 and 31];
-  Result := $FF000000 or (Cardinal(R) shl 16) or (Cardinal(G) shl 8) or Cardinal(B);
+  Result := DisplayColors[State.Regs[0] and 15, Value and $7FFF];
 end;
 
 procedure TSnesPPU.RenderSpan(Y, FirstX, LastX: Integer; Odd: Boolean);
@@ -961,6 +1061,8 @@ const
     (2, 4, 6, 8), (2, 4, 6, 8), (2, 4, 6, 8), (2, 4, 6, 8), (2, 3, 4, 6), (2, 4, 6, 7));
 var
   Backgrounds: array[0..3] of TSnesBackgroundContext;
+  BackgroundRows: array[0..3] of TSnesBackgroundRow;
+  RowKind: array[0..3] of Byte; // 0: general fetch, 1: palette, 2: direct color.
   ObjColor, ObjPriority: array[0..255] of Integer;
   ObjAddress: array[0..255] of Integer;
   ObjMath: array[0..255] of Boolean;
@@ -1068,8 +1170,21 @@ begin
   var W := Width;
   var Hires := ((State.Regs[5] and 7) in [5, 6]) or ((State.Regs[$33] and 8) <> 0);
   for var L := 0 to 3 do
+  begin
+    RowKind[L] := 0;
     if ((State.Regs[$2C] or State.Regs[$2D]) and (1 shl L)) <> 0 then
+    begin
       PrepareBackground(L, Y + 1, Backgrounds[L]);
+      if (LastX - FirstX >= 7) and (Backgrounds[L].Mode in [0, 1, 3]) and
+        not Backgrounds[L].MosaicEnabled and (Backgrounds[L].BPP <> 0) then
+      begin
+        RowKind[L] := 1;
+        if (Backgrounds[L].BPP = 8) and (State.Regs[$30] and 1 <> 0) then
+          RowKind[L] := 2;
+        PrepareBackgroundRow(Backgrounds[L], FirstX, LastX, RowKind[L] = 2, BackgroundRows[L]);
+      end;
+    end;
+  end;
   for var ScreenX := FirstX to LastX do
   begin
     var BGX := ScreenX;
@@ -1096,7 +1211,20 @@ begin
       // BG fetches use the physical scanline (1..224); OBJ was evaluated on the
       // preceding line and therefore keeps the zero-based output Y above.
       var Priority: Integer;
-      var Pixel := Background(Backgrounds[L], BGX, Priority);
+      var Pixel: Integer;
+      if RowKind[L] <> 0 then
+      begin
+        var Sample := BackgroundRows[L, ScreenX];
+        Priority := Sample shr 16;
+        Pixel := -1;
+        if Priority <> 0 then
+          if RowKind[L] = 1 then
+            Pixel := Palette(Sample and $FFFF)
+          else
+            Pixel := Sample and $FFFF;
+      end
+      else
+        Pixel := Background(Backgrounds[L], BGX, Priority);
       if (Pixel >= 0) and ((State.Regs[$2C] and (1 shl L)) <> 0) and (Priority > MainPrio) and
         not (((State.Regs[$2E] and (1 shl L)) <> 0) and Window(L, ScreenX)) then
       begin
@@ -1144,18 +1272,25 @@ begin
       if ((State.Regs[$30] and 2) = 0) or (SubPrio = 0) then
         Operand := State.FixedColor;
       var Combined := 0;
+      // These controls apply to all three channels of the same pixel.
+      var Subtract := (State.Regs[$31] and $80) <> 0;
+      var Half := ((State.Regs[$31] and $40) <> 0) and not Clipped and
+        (((State.Regs[$30] and 2) = 0) or (SubPrio > 0));
       for var Component := 0 to 2 do
       begin
         var V := (Main shr (Component * 5)) and 31;
         var S := (Operand shr (Component * 5)) and 31;
-        if (State.Regs[$31] and $80) <> 0 then
+        if Subtract then
           V := V - S
         else
           V := V + S;
-        if ((State.Regs[$31] and $40) <> 0) and not Clipped and
-          (((State.Regs[$30] and 2) = 0) or (SubPrio > 0)) then
+        if Half then
           V := V div 2;
-        Combined := Combined or (EnsureRange(V, 0, 31) shl (Component * 5));
+        if V < 0 then
+          V := 0
+        else if V > 31 then
+          V := 31;
+        Combined := Combined or (V shl (Component * 5));
       end;
       Main := Combined;
     end;

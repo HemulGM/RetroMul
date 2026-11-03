@@ -64,6 +64,7 @@ type
     FTextureScale: Integer;
     FTextureFilter: TTexScaleFilter;
     FRendererStatus: string;
+    FStatusRequested: Boolean;
     FRate: TEmulationFrameRate;
     FSnapshotDone: TEvent;
     FSnapshotPending, FSnapshotBusy, FSnapshotLoading, FSnapshotCancel: Boolean;
@@ -134,9 +135,9 @@ type
 implementation
 
 uses
-{$IFDEF MSWINDOWS}
+  {$IFDEF MSWINDOWS}
   Winapi.MMSystem,
-{$ENDIF}
+  {$ENDIF}
   Core.MediaArchive, System.UITypes, System.Diagnostics, System.Math,
   Core.Platforms, Core.Platforms.PSP.Archive, PSP.Settings, Core.Snapshots,
   Core.SavePaths;
@@ -457,9 +458,11 @@ begin
           var Volume: Single;
           var Input: TEmulatorInput;
           var Recompiler: Boolean;
+          var RefreshStatus: Boolean;
           FLock.Acquire;
           try
             Recompiler := FRecompiler;
+            RefreshStatus := FStatusRequested;
             Paused := FPaused;
             Reset := FReset;
             FReset := False;
@@ -511,6 +514,7 @@ begin
             FConsole.Recompiler.Enabled := Recompiler;
           FConsole.Input := Input;
           var Frame: TEmulatorFrame;
+          FConsole.AudioOutputEnabled := AudioEnabled and not AudioFailed;
           FConsole.RunFrame(Frame);
           // Frames emulated per host second, not the PSP's nominal refresh rate.
           Frame.FramesPerSecond := FRate.Update(Frame.FrameNumber, TStopwatch.GetTimeStamp, TStopwatch.Frequency);
@@ -522,11 +526,18 @@ begin
           except
             AudioFailed := True;
           end;
+          var Status: string;
+          if RefreshStatus then
+            Status := Renderer.Status;
           FLock.Acquire;
           try
             FFrame := Frame;
             FAvailable := True;
-            FRendererStatus := Renderer.Status;
+            if RefreshStatus then
+            begin
+              FRendererStatus := Status;
+              FStatusRequested := False;
+            end;
           finally
             FLock.Release;
           end;
@@ -763,6 +774,7 @@ function TPSPWorker.RendererStatus: string;
 begin
   FLock.Acquire;
   try
+    FStatusRequested := True;
     Result := FRendererStatus;
   finally
     FLock.Release;

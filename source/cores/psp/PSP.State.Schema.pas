@@ -129,6 +129,8 @@ begin
       end);
     Result.AddClass(TPSPCPU, ['FDecoded', 'FPages', 'FOnSyscall', 'FOnBreak', 'Runner']);
     Result.AddClass(TPSPHLE, ['FOnLog']);
+    Result.AddClass(TPSPDisplay, ['FFrames']);
+    Result.AddClass(TPSPAudio, ['FSamplePool']);
     Result.AddClass(TPSPKernel, ['FOnExit', 'FOnSyncTime']);
     Result.AddClass(TPSPIO,
       ['FOnOutput', 'FOnScreenshot', 'FOnHostChange', 'FMemstickRoot', 'FFlashRoot', 'FHostRoot', 'FDisc']);

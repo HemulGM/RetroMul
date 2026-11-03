@@ -376,6 +376,7 @@ type
     function Decode(Op: Word; Address, AMode: Cardinal; Slot: Boolean; out I: TSH4Inst): Boolean;
     function Execute(Insts: PSH4Inst; Count: Integer; out Next: Cardinal): Integer;
     // Operation handlers (SH4Ops); True stops the block.
+    function TryFiniteFPU(I: PSH4Inst): Boolean;
     function OpFPUChecked(I: PSH4Inst): Boolean;
     function OpNOP(I: PSH4Inst): Boolean;
     function OpMOV(I: PSH4Inst): Boolean;
@@ -4994,6 +4995,83 @@ begin
   S.FR.U[N] := S.FPUL;
 end;
 
+// Common finite single-precision arithmetic has no operand normalization or
+// enabled traps. Keep its destination local instead of copying both FP banks.
+// Exceptional inputs/results still use the complete atomic exception path.
+function TSH4.TryFiniteFPU(I: PSH4Inst): Boolean;
+var
+  Saved: array[0..3] of Cardinal;
+  Dest, Count: Integer;
+
+  function NormalOrZero(Value: Cardinal): Boolean; inline;
+  begin
+    var Magnitude := Value and $7FFFFFFF;
+    Result := (Magnitude = 0) or ((Magnitude >= $00800000) and (Magnitude < $7F800000));
+  end;
+
+begin
+  Result := False;
+  var OldFPSCR := S.FPSCR;
+  if (OldFPSCR and $F80) <> 0 then
+    Exit;
+  var K := TOp(I.Kind);
+  Dest := I.N;
+  Count := 1;
+  case K of
+    oFADD, oFSUB, oFMUL, oFDIV, oFCMPEQ, oFCMPGT:
+      if not NormalOrZero(S.FR.U[I.N]) or not NormalOrZero(S.FR.U[I.M]) then
+        Exit;
+    oFMAC:
+      if not NormalOrZero(S.FR.U[I.N]) or not NormalOrZero(S.FR.U[I.M]) or not NormalOrZero(S.FR.U[1]) then
+        Exit;
+    oFIPR:
+      begin
+        for var J := 0 to 3 do
+          if not NormalOrZero(S.FR.U[I.N + J]) or not NormalOrZero(S.FR.U[I.M + J]) then
+            Exit;
+        Dest := (I.N + 3) xor 1;
+      end;
+    oFTRV:
+      begin
+        for var J := 0 to 3 do
+          if not NormalOrZero(S.FR.U[I.N + J]) then
+            Exit;
+        for var J := 0 to 15 do
+          if not NormalOrZero(S.XF.U[J]) then
+            Exit;
+        Count := 4;
+      end;
+  else
+    Exit;
+  end;
+  if K in [oFCMPEQ, oFCMPGT] then
+  begin
+    SH4FPOps[K](Self, I);
+    S.FPSCR := OldFPSCR and not Cardinal($3F000);
+    Exit(True);
+  end;
+  for var J := 0 to Count - 1 do
+    Saved[J] := S.FR.U[Dest + J];
+  S.FPSCR := OldFPSCR and not Cardinal(FPSCRDN);
+  FSetExceptFlag(0);
+  SH4FPOps[K](Self, I);
+  var HostFlags := FGetExceptFlag;
+  S.FPSCR := OldFPSCR;
+  var Ordinary := (HostFlags and (feeINVALID or feeDIVBYZERO or feeOVERFLOW or feeUNDERFLOW)) = 0;
+  for var J := 0 to Count - 1 do
+    Ordinary := Ordinary and NormalOrZero(S.FR.U[Dest + J]);
+  if Ordinary then
+  begin
+    var Events: Cardinal := Ord((HostFlags and feeINEXACT) <> 0);
+    if K in [oFIPR, oFTRV] then
+      Events := 1;
+    S.FPSCR := (OldFPSCR and not Cardinal($3F000)) or (Events shl 12) or (Events shl 2);
+    Exit(True);
+  end;
+  for var J := 0 to Count - 1 do
+    S.FR.U[Dest + J] := Saved[J];
+end;
+
 function TSH4.OpFPUChecked(I: PSH4Inst): Boolean;
 const
   EventI = 1;
@@ -5064,6 +5142,8 @@ var
   end;
 
 begin
+  if TryFiniteFPU(I) then
+    Exit(False);
   var K := TOp(I.Kind);
   var OldFPSCR := S.FPSCR;
   var SavedFR := S.FR;

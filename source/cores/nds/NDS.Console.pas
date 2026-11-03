@@ -77,8 +77,8 @@ type
     function Read9(Address: Cardinal; Size: Integer): Cardinal;
     function Read7(Address: Cardinal; Size: Integer): Cardinal;
     function ReadAudio(Address: Cardinal; Size: Integer): Cardinal;
-    function ReadCode9(Address: Cardinal; Size: Integer): Cardinal;
-    function ReadCode7(Address: Cardinal; Size: Integer): Cardinal;
+    function ReadCode9(Address: Cardinal; Size: Integer; Sequential: Boolean): Cardinal;
+    function ReadCode7(Address: Cardinal; Size: Integer; Sequential: Boolean): Cardinal;
     function CodePage9(Address: Cardinal): PByte;
     function CodePage7(Address: Cardinal): PByte;
     function DataPage9(Address: Cardinal; Writing: Boolean): PByte;
@@ -196,7 +196,7 @@ begin
   Result := ReadCPU(0, Address, Size);
 end;
 
-function TNDSConsole.ReadCode9(Address: Cardinal; Size: Integer): Cardinal;
+function TNDSConsole.ReadCode9(Address: Cardinal; Size: Integer; Sequential: Boolean): Cardinal;
 begin
   FCodeAccess[0] := True;
   if (Address shr 24 = 2) and (Size in [2, 4]) and (Address and Cardinal(Size - 1) = 0) then
@@ -228,7 +228,7 @@ begin
   Result := ReadBus(1, Address, Size);
 end;
 
-function TNDSConsole.ReadCode7(Address: Cardinal; Size: Integer): Cardinal;
+function TNDSConsole.ReadCode7(Address: Cardinal; Size: Integer; Sequential: Boolean): Cardinal;
 begin
   FCodeAccess[1] := True;
   if (Address and $FF800000 = $03800000) and (Size in [2, 4]) and (Address and Cardinal(Size - 1) = 0) then

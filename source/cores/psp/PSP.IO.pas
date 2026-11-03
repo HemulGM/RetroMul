@@ -12,11 +12,11 @@ interface
   vcPublished]) PROPERTIES([vcPublic, vcPublished])}
 
 uses
-  {$IFDEF MSWINDOWS}Winapi.Windows,{$ENDIF}
-  {$IFDEF POSIX}Posix.Unistd, Posix.Stdio,{$ENDIF}
-  System.SysUtils, System.Classes, System.Generics.Collections, System.IOUtils,
-  PSP.Types, PSP.Memory, PSP.CPU, PSP.HLE, PSP.Kernel, PSP.Media,
-  PSP.State.Action;
+  System.Classes,
+  {$IFDEF MSWINDOWS}Winapi.Windows, {$ENDIF}
+  {$IFDEF POSIX}Posix.Unistd, Posix.Stdio, {$ENDIF}
+  System.SysUtils, System.Generics.Collections, System.IOUtils, PSP.Types,
+  PSP.Memory, PSP.CPU, PSP.HLE, PSP.Kernel, PSP.Media, PSP.State.Action;
 
 type
   TPSPIoDriver = record
@@ -388,8 +388,11 @@ end;
 function TPSPIO.HostPath(const Device, Rest: string): string;
 begin
   var Root := HostRoot(Device);
-  if Root = '' then
+  // A second device/drive separator must never reach TPath.Combine. Guest
+  // absolute paths begin with '/', but are always relative to this mount.
+  if (Root = '') or Rest.Contains(':') or Rest.Contains(#0) then
     Exit('');
+  Root := IncludeTrailingPathDelimiter(TPath.GetFullPath(Root));
   Result := TPath.Combine(Root, NormalizeRest(Rest).Substring(1).Replace('/', PathDelim));
   if not ((Device = 'ms0') or (Device = 'ms') or (Device = 'fatms0') or (Device = 'fatms') or (Device = 'ef0')) then
     Exit;
@@ -413,6 +416,10 @@ begin
     Result := TPath.Combine(Result, Actual);
     Dir := Dir + '/' + Actual;
   end;
+  Result := TPath.GetFullPath(Result);
+  if not SameText(Copy(Result, 1, Length(Root)), Root) and
+    not SameText(Result, ExcludeTrailingPathDelimiter(Root)) then
+    Result := '';
 end;
 
 function TPSPIO.FatName(const Rest, Name: string): string;
@@ -562,13 +569,13 @@ begin
   try
     var A := TFile.GetAttributes(Name);
     if ReadOnly then
-{$WARN SYMBOL_PLATFORM OFF} // IOUtils attributes are selected for this host below.
+    {$WARN SYMBOL_PLATFORM OFF} // IOUtils attributes are selected for this host below.
       A := A - [TFileAttribute.faOwnerWrite, TFileAttribute.faGroupWrite, TFileAttribute.faOthersWrite]
-{$WARN SYMBOL_PLATFORM ON}
+    {$WARN SYMBOL_PLATFORM ON}
     else
-{$WARN SYMBOL_PLATFORM OFF} // IOUtils attributes are selected for this host below.
+    {$WARN SYMBOL_PLATFORM OFF} // IOUtils attributes are selected for this host below.
       A := A + [TFileAttribute.faOwnerWrite];
-{$WARN SYMBOL_PLATFORM ON}
+    {$WARN SYMBOL_PLATFORM ON}
     TFile.SetAttributes(Name, A);
   except
   end;
@@ -876,12 +883,17 @@ begin
           Exit(0);
         if not FMemory.Valid(Address, Size) then
           Exit(Int64(Integer(SCE_KERNEL_ERROR_ILLEGAL_ADDR)));
+        var P := FMemory.ReadPtr(Address, Size);
         var Buf: TBytes;
-        SetLength(Buf, Size);
-        FMemory.ReadBytes(Address, Buf[0], Size);
+        if P = nil then
+        begin
+          SetLength(Buf, Size);
+          FMemory.ReadBytes(Address, Buf[0], Size);
+          P := @Buf[0];
+        end;
         if (F.Flags and PSP_O_APPEND) <> 0 then
           F.Stream.Position := F.Stream.Size;
-        Result := F.Stream.Write(Buf[0], Size);
+        Result := F.Stream.Write(P^, Size);
         HostChanged(HostFileName(F.Path));
       end;
     dkEmulator:

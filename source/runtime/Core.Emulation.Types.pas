@@ -191,7 +191,27 @@ type
     function IsPaused: Boolean;
   end;
 
+// The pool may overwrite an array only while no consumer owns it.
+function EmulationBufferReferences(Data: Pointer): Integer; inline;
+
 implementation
+
+function EmulationBufferReferences(Data: Pointer): Integer;
+type
+  THeader = packed record
+{$IFDEF CPU64BITS}
+    Padding: Integer;
+{$ENDIF}
+    RefCount: Integer;
+    Length: NativeInt;
+  end;
+
+  PHeader = ^THeader;
+begin
+  if Data = nil then
+    Exit(0);
+  Result := PHeader(PByte(Data) - SizeOf(THeader))^.RefCount;
+end;
 
 end.
 

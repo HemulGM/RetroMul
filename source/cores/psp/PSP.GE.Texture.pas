@@ -114,28 +114,36 @@ function GELog16(V: Single): Integer;
 
 function GEFetchTexel(const T: TGETexture; Level, X, Y: Integer): Cardinal;
 
+type
+  TGEDXTBlock = array[0..15] of Cardinal;
+
+  PGEDXTBlock = ^TGEDXTBlock;
+
+// False for noncontiguous or partial source blocks: retain scalar fault semantics.
+function GEReadDXTBlock(const T: TGETexture; Level, BX, BY: Integer; out Colors: TGEDXTBlock): Boolean;
+
 function GEDecode16(Format: Integer; P: Cardinal): Cardinal;
+
 // One past the furthest byte from a level's start the sampler may read
 // (texel coordinates are wrapped or clamped into the level).
-
 function GELevelReach(const T: TGETexture; const L: TGETexLevel): UInt64;
-// Sets L.Fits.
 
+// Sets L.Fits.
 procedure GEFitLevel(const T: TGETexture; var L: TGETexLevel);
+
 // Fills Pal from the CLUT and the index transform for formats 4 and 5 (sets
 // PalValid; other formats leave it False).
-
 procedure GEPreparePalette(var T: TGETexture);
-// Sets Sampler from the format, the filter, level 0's Fits and PalValid.
 
+// Sets Sampler from the format, the filter, level 0's Fits and PalValid.
 procedure GEPrepareSampler(var T: TGETexture);
+
 // A primitive starts: blocks loaded before the TEXFLUSH count Epoch go, what
 // earlier ones wrote is in memory.
-
 procedure GETexCacheStart(var C: TGETexCache; Epoch: Cardinal; VRAM: PByte);
+
 // The pixel in row Y, column X, at VRAM offset Addr (Bytes long), is about
 // to be drawn; then the clock passes it (C.Clock goes up by one).
-
 procedure GETexCachePixel(var C: TGETexCache; Addr: Cardinal; Bytes, X, Y: Integer);
 
 const
@@ -543,6 +551,101 @@ begin
   Result := FetchTexel(T, L, X, Y);
 end;
 
+type
+  TGEDXTLast = record
+    Valid: Boolean;
+    Format: Integer;
+    Low, High: UInt64;
+    Colors: TGEDXTBlock;
+  end;
+
+threadvar
+  DXTEntries: array[0..255] of TGEDXTLast;
+
+function ReadDXT(const T: TGETexture; L: PGETexLevel; BX, BY: Integer): PGEDXTBlock;
+var
+  Words: array[0..3] of Cardinal;
+  Palette: array[0..3] of Cardinal;
+  Alpha: array[0..7] of Cardinal;
+begin
+  Result := nil;
+  if not (T.Format in [8, 9, 10]) or (L.Ptr = nil) or (BX < 0) or (BY < 0) then
+    Exit;
+  var Bytes := 16;
+  if T.Format = 8 then
+    Bytes := 8;
+  var Offset := UInt64(Cardinal(BY)) * Cardinal(L.BufWidth div 4) + Cardinal(BX);
+  Offset := Offset * Cardinal(Bytes);
+  if Offset + Cardinal(Bytes) > L.Size then
+    Exit;
+  var Source := L.Ptr + NativeInt(Offset);
+  var Shift := 4;
+  if Bytes = 8 then
+    Shift := 3;
+  var Index := ((NativeUInt(Source) shr Shift) xor (NativeUInt(Source) shr 12)) and 255;
+  var Cached: ^TGEDXTLast := @DXTEntries[Index];
+  var Low := PUInt64(Source)^;
+  var High: UInt64 := 0;
+  if Bytes = 16 then
+    High := PUInt64(Source + 8)^;
+  // Validate compressed bytes on every access, including texture feedback;
+  // no invalidation hook or persistent decoded copy of mutable VRAM is needed.
+  if not Cached.Valid or (Cached.Format <> T.Format) or (Cached.Low <> Low) or (Cached.High <> High) then
+  begin
+    Words[0] := Cardinal(Low);
+    Words[1] := Cardinal(Low shr 32);
+    Words[2] := Cardinal(High);
+    Words[3] := Cardinal(High shr 32);
+    var C0 := Words[1] and $FFFF;
+    var C1 := Words[1] shr 16;
+    for var I := 0 to 3 do
+      Palette[I] := DXTColor(C0, C1, I);
+    var A0 := Words[3] shr 16 and $FF;
+    var A1 := Words[3] shr 24;
+    if T.Format = 10 then
+    begin
+      Alpha[0] := A0;
+      Alpha[1] := A1;
+      if A0 > A1 then
+        for var I := 2 to 7 do
+          Alpha[I] := ((8 - Cardinal(I)) * A0 + (Cardinal(I) - 1) * A1) div 7
+      else
+      begin
+        for var I := 2 to 5 do
+          Alpha[I] := ((6 - Cardinal(I)) * A0 + (Cardinal(I) - 1) * A1) div 5;
+        Alpha[6] := 0;
+        Alpha[7] := 255;
+      end;
+    end;
+    var AlphaBits := UInt64(Words[2]) or (UInt64(Words[3] and $FFFF) shl 32);
+    for var I := 0 to 15 do
+    begin
+      var Color := Palette[(Words[0] shr (I * 2)) and 3];
+      if T.Format = 9 then
+      begin
+        var A := (Words[2 + I div 8] shr ((I and 7) * 4)) and $F;
+        Color := (Color and $FFFFFF) or (A shl 28);
+      end
+      else if T.Format = 10 then
+        Color := (Color and $FFFFFF) or (Alpha[(AlphaBits shr (I * 3)) and 7] shl 24);
+      Cached.Colors[I] := Color;
+    end;
+    Cached.Low := Low;
+    Cached.High := High;
+    Cached.Format := T.Format;
+    Cached.Valid := True;
+  end;
+  Result := @Cached.Colors;
+end;
+
+function GEReadDXTBlock(const T: TGETexture; Level, BX, BY: Integer; out Colors: TGEDXTBlock): Boolean;
+begin
+  var P := ReadDXT(T, @T.Levels[Level], BX, BY);
+  Result := P <> nil;
+  if Result then
+    Colors := P^;
+end;
+
 function FetchTexel(const T: TGETexture; L: PGETexLevel; X, Y: Integer): Cardinal;
 begin
   if (T.Cache <> nil) and (T.Format <= 7) then
@@ -570,6 +673,9 @@ begin
       Result := ClutLookup(T, TexR32(L^, M, TexelOffset(T, L^, X, Y, 32)), L.ClutAdd);
     8, 9, 10:
       begin
+        var Colors := ReadDXT(T, L, X shr 2, Y shr 2);
+        if Colors <> nil then
+          Exit(Colors[(Y and 3) * 4 + (X and 3)]);
         // 4x4 blocks in rows of BufWidth/4 blocks: the colour block (indices,
         // then the two colours), and for DXT3/5 the alpha data after it.
         var BlockBytes := 16;

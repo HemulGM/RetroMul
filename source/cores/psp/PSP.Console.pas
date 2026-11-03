@@ -40,6 +40,7 @@ type
     FDisc: TPSPDisc;
     FInput: TEmulatorInput;
     FAudioSamples: TArray<SmallInt>;
+    FAudioOutputEnabled: Boolean;
     FFrameNumber: UInt64;
     FRunDeadline: Int64;
     FLog: TStringList;
@@ -48,7 +49,7 @@ type
     FOutput: TStringBuilder;
     FMemstickRoot, FHostRoot, FFlashRoot: string;
     FPendingExec: string;
-    FPendingExecArgs: TBytes;
+    FPendingExecArgs, FPendingExecImage: TBytes;
     FBooted: Boolean;
     FStopAtFrame: Boolean;
     FExecuted: Int64;
@@ -71,10 +72,10 @@ type
     procedure SyncTime;
     procedure HandleLog(const Text: string);
     procedure HandleOutput(const Text: RawByteString);
-    procedure HandleLoadExec(const Path: string; ArgSize, ArgPtr: Cardinal);
+    function HandleLoadExec(const Path: string; ArgSize, ArgPtr: Cardinal): Cardinal;
     procedure DispatchEvent(E: TPSPEvent);
     procedure MountDisc;
-    procedure Boot(const Executable: TBytes; const Path: string);
+    procedure Boot(const Executable: TBytes; const Path: string; const Arguments: TBytes = nil; UseArguments: Boolean = False);
   public
     constructor Create(const ProgramData: TPSPProgram; const Storage: IStorage = nil; const HostRoot: string = ''; const MemstickRoot: string = ''; const FontDirectory: string = ''; TrackSnapshots: Boolean = False; Seed: TPSPReplayState = nil; BootProgram: Boolean = True);
     destructor Destroy; override;
@@ -102,6 +103,7 @@ type
     property System: TPSPSystem read FSystem;
     property Scheduler: TPSPScheduler read FScheduler;
     property AudioSamples: TArray<SmallInt> read FAudioSamples;
+    property AudioOutputEnabled: Boolean read FAudioOutputEnabled write FAudioOutputEnabled;
     property FrameNumber: UInt64 read FFrameNumber;
     // CPU cycles run (instructions plus HLE costs), for speed measurements.
     property Executed: Int64 read FExecuted;
@@ -122,6 +124,7 @@ constructor TPSPConsole.Create(const ProgramData: TPSPProgram; const Storage: IS
 begin
   inherited Create;
   FState := Seed;
+  FAudioOutputEnabled := True;
   FReplaying := Seed <> nil;
   FSettings := PSPSettings;
   if FState = nil then
@@ -246,9 +249,17 @@ begin
   FLog.Clear;
 end;
 
-procedure TPSPConsole.HandleLoadExec(const Path: string; ArgSize, ArgPtr: Cardinal);
+function TPSPConsole.HandleLoadExec(const Path: string; ArgSize, ArgPtr: Cardinal): Cardinal;
 begin
+  var Image: TBytes;
+  Result := FIO.ReadAll(Path, Image);
+  if Result <> 0 then
+    Exit;
+  Result := FLoader.Validate(Image, Path, ArgSize);
+  if Result <> 0 then
+    Exit;
   FPendingExec := Path;
+  FPendingExecImage := Image;
   SetLength(FPendingExecArgs, ArgSize);
   if ArgSize > 0 then
     FMemory.ReadBytes(ArgPtr, FPendingExecArgs[0], ArgSize);
@@ -283,6 +294,8 @@ begin
   FDisplay.Register;
   ResetServices;
   FPendingExec := '';
+  FPendingExecArgs := nil;
+  FPendingExecImage := nil;
   FBooted := False;
 end;
 
@@ -304,7 +317,7 @@ begin
   Boot(FProgram.Executable, Path);
 end;
 
-procedure TPSPConsole.Boot(const Executable: TBytes; const Path: string);
+procedure TPSPConsole.Boot(const Executable: TBytes; const Path: string; const Arguments: TBytes; UseArguments: Boolean);
 begin
   var M: TPSPModule;
   var Err := FLoader.Load(Executable, Path, M);
@@ -317,7 +330,7 @@ begin
   if Slash > 0 then
     Dir := Dir.Substring(0, Slash);
   FIO.Cwd := Dir;
-  FLoader.StartMain(M, Path);
+  FLoader.StartMain(M, Path, Arguments, UseArguments);
   FBooted := True;
 end;
 
@@ -339,14 +352,8 @@ begin
     FKernel.Trap(Code)
   else
   begin
-    var Caller := FKernel.Current;
-    var Back := C.Ctx.PC;
     if not FHLE.Call(Code) then
       raise EPSPGuestFault.CreateFmt('PSP: unknown syscall %x at %.8x', [Code, C.CurPC]);
-    // A call that returns straight to its caller hands back the caller-saved
-    // registers scrambled, as the kernel does.
-    if (Caller <> nil) and (FKernel.Current = Caller) and (C.Ctx.PC = Back) then
-      FKernel.ScrambleCallerSaved;
   end;
   FKernel.AfterSyscall;
   // Call costs count toward the slice too: a loop of calls must not run past
@@ -396,16 +403,12 @@ begin
     if FPendingExec <> '' then
     begin
       var Path := FPendingExec;
-      FPendingExec := '';
-      var Data: TBytes;
-      if FIO.ReadAll(Path, Data) = 0 then
-      begin
-        // The new program starts on a freshly reset machine; time goes on.
-        ResetMachine(True);
-        Boot(Data, Path);
-      end
-      else
-        HandleLog('loadexec: cannot read ' + Path);
+      var Data := FPendingExecImage;
+      var Args := FPendingExecArgs;
+      // The image and arguments were checked and copied before stopping the
+      // caller; host files cannot change between validation and this boot.
+      ResetMachine(True);
+      Boot(Data, Path, Args, True);
       Continue;
     end;
     FKernel.ProcessInterrupts;
@@ -450,7 +453,7 @@ begin
     FDisplay.Render(Frame);
   Frame.FrameNumber := FFrameNumber;
   Frame.FramesPerSecond := PSPFrameRate;
-  FAudioSamples := FAudio.TakeSamples;
+  FAudioSamples := FAudio.TakeSamples(FAudioOutputEnabled);
   FSettings := PSPSettings;
 end;
 
@@ -617,9 +620,10 @@ begin
       Result := FIO.StateStreamMode(Stream);
     end);
   try
+    Schema.Optional(TPSPConsole, ['FPendingExecImage']);
     Result.Bind('console', Self,
       ['FFrameNumber', 'FPendingExec', 'FPendingExecArgs', 'FBooted', 'FExecuted', 'FInput', 'FAudioSamples',
-        'FSettings']);
+        'FSettings', 'FPendingExecImage']);
     Result.Bind('memory', FMemory, []);
     Result.Bind('cpu', FCPU, ['*']);
     Result.Bind('scheduler', FScheduler, ['*']);

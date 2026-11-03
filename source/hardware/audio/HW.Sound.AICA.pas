@@ -49,6 +49,7 @@ type
     procedure PutWord(Address, Value: Integer);
     procedure KeyOn(Channel: Integer);
     procedure Envelope(Channel: Integer);
+    procedure StopVoice(Channel: Integer; var Voice: TAICAVoice);
     function Voice(Channel: Integer): Double;
     function PCM(Address, Kind, Position: Integer): Integer;
     procedure DecodeADPCM(Channel, Position: Integer);
@@ -195,7 +196,10 @@ begin
       Value := $900;
     $2810:
       begin
-        Value := ((1023 - (FVoices[Selected].EGVolume shr 16)) shr 1) or (FVoices[Selected].EGState shl 13);
+        // AICA User's Manual, common data: AEG attenuation occupies
+        // EG[12:3], with EG[2:0] always zero. Sound drivers use this
+        // range to retire silent slots.
+        Value := ((1023 - (FVoices[Selected].EGVolume shr 16)) shl 3) or (FVoices[Selected].EGState shl 13);
         if FVoices[Selected].LoopEnded then
           Value := Value or $8000;
         if Address and 1 <> 0 then
@@ -296,6 +300,19 @@ begin
   FVoices[Channel] := V;
 end;
 
+// A completed slot is in Release at maximum attenuation. Clear KYONB as
+// well: KYONEX evaluates every slot, so a stale key bit restarts old effects
+// whenever an unrelated channel starts.
+procedure TAICA.StopVoice(Channel: Integer; var Voice: TAICAVoice);
+begin
+  Voice.Active := False;
+  Voice.LoopEnded := True;
+  Voice.Phase := 0;
+  Voice.EGVolume := 0;
+  Voice.EGState := 3;
+  PutWord(Channel * 128, WordAt(Channel * 128) and not $4000);
+end;
+
 procedure TAICA.Envelope(Channel: Integer);
 begin
   var V := FVoices[Channel];
@@ -313,10 +330,7 @@ begin
     if (V.EGState = 1) and (V.EGVolume shr 21 <= 31 - ((WordAt(Base + $14) shr 5) and 31)) then
       V.EGState := 2;
     if (V.EGState = 3) and (V.EGVolume = 0) then
-    begin
-      V.Active := False;
-      V.LoopEnded := True;
-    end;
+      StopVoice(Channel, V);
   end;
   var FRate: Integer;
   var E := WordAt(Base + $40);
@@ -398,6 +412,7 @@ begin
   if Kind = 3 then
     LE := (LE + 3) and $FFFC;
   LE := Max(1, LE);
+  var Ended := False;
   var Next := Pos + 1;
   if (Next >= LE) and (Control and $200 <> 0) then
     Next := LS;
@@ -445,7 +460,7 @@ begin
       end;
     end
     else
-      FVoices[Channel].Active := False;
+      Ended := True;
   end;
   var Attack := FVoices[Channel].EGState = 0;
   Envelope(Channel);
@@ -464,6 +479,8 @@ begin
     Result := FVoices[Channel].Filter2;
   end;
   Result := Result * FLevels[(Filter shr 8) and 255];
+  if Ended then
+    StopVoice(Channel, FVoices[Channel]);
 end;
 
 function TAICA.Gain(Level, Pan, Side: Integer): Double;
@@ -528,6 +545,13 @@ begin
   Archive.Field(FNoise, SizeOf(FNoise));
   Archive.Field(FDC, SizeOf(FDC));
   FDSP.SerializeState(Archive);
+  if Archive.Loading then
+    for var C := 0 to 63 do
+      // Older states stopped non-looping playback without retiring its
+      // envelope/key. Do not clear a pending key-on of a fresh Release slot.
+      if not FVoices[C].Active and (FVoices[C].EGState <> 3) and
+        (FVoices[C].Phase shr 12 >= Max(1, WordAt(C * 128 + $C))) then
+        StopVoice(C, FVoices[C]);
 end;
 
 function TAICA.FIQ: Boolean;

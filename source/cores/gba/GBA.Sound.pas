@@ -1,5 +1,9 @@
 ﻿unit GBA.Sound;
 
+{$IF Defined(ANDROID) and Defined(CPUARM64) and not Defined(RETROMUL_GBA_NO_NATIVE_QUIET)}
+{$DEFINE RETROMUL_GBA_NATIVE_QUIET}
+{$ENDIF}
+
 interface
 
 uses
@@ -58,6 +62,9 @@ type
     procedure ClearFIFO(Index: Integer);
     function SweepValue: Integer;
   public
+    {$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+    procedure NativeQuietOffsets(out Pending, Event: Integer);
+    {$ENDIF}
     constructor Create;
     procedure Reset;
     procedure BeginFrame;
@@ -72,6 +79,13 @@ type
   end;
 
 implementation
+{$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+procedure TGBASound.NativeQuietOffsets(out Pending, Event: Integer);
+begin
+  Pending := Integer(NativeUInt(@FPendingCycles)-NativeUInt(Self));
+  Event := Integer(NativeUInt(@FEventCycles)-NativeUInt(Self));
+end;
+{$ENDIF}
 
 var
   GBAImpulse: array[0..63, 0..31] of Double;

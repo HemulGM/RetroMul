@@ -1,4 +1,4 @@
-object SettingsIntervalTemplate: TSettingsIntervalTemplate
+﻿object SettingsIntervalTemplate: TSettingsIntervalTemplate
   Size.Width = 900.000000000000000000
   Size.Height = 72.000000000000000000
   Size.PlatformDefault = False
@@ -56,18 +56,25 @@ object SettingsIntervalTemplate: TSettingsIntervalTemplate
         Size.Width = 268.000000000000000000
         Size.Height = 32.000000000000000000
         Size.PlatformDefault = False
-        object SwitchAutosavePeriodic: TSwitch
+        object LayoutAutosaveSwitchSlot: TLayout
           Align = Right
-          IsChecked = False
-          Position.X = 204.000000000000000000
-          Size.Width = 64.000000000000000000
+          Position.X = 220.000000000000000000
+          Size.Width = 48.000000000000000000
           Size.Height = 32.000000000000000000
           Size.PlatformDefault = False
+          object SwitchAutosavePeriodic: TSwitch
+            Align = Center
+            IsChecked = False
+            Position.Y = 4.000000000000000000
+            Size.Width = 48.000000000000000000
+            Size.Height = 24.000000000000000000
+            Size.PlatformDefault = False
+          end
         end
         object LayoutAutosaveMinutesSlot: TLayout
           Align = Client
           Margins.Right = 12.000000000000000000
-          Size.Width = 192.000000000000000000
+          Size.Width = 208.000000000000000000
           Size.Height = 32.000000000000000000
           Size.PlatformDefault = False
         end

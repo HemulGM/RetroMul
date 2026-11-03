@@ -86,6 +86,7 @@ type
     Fog: Single;
     Box: TGEHLEBox;
   end;
+
   PGEHLEVertex = ^TGEHLEVertex;
 
   TGEHLEStencil = array[0..2] of Cardinal;
@@ -203,6 +204,7 @@ type
     procedure StoreTarget(T: TVulkanHLETarget); override;
     function TargetNewer(T: TVulkanHLETarget): Boolean; override;
     procedure NewRun; override;
+    procedure WatchSource(T: TVulkanHLETexture); override;
     procedure DescribeTexture(Request: Pointer; out Width, Height, Levels, Scale: Integer); override;
     function TextureMatches(T: TVulkanHLETexture; Request: Pointer): Boolean; override;
     procedure DecodeTexture(T: TVulkanHLETexture; Request: Pointer); override;
@@ -215,6 +217,7 @@ type
     procedure WatchMemory(Addr, Size: Cardinal); override;
     procedure ReleaseWatches; override;
     procedure RecordFrame(T: TVulkanHLETarget; W, H: Integer); override;
+    function RecordFrameRegion(T: TVulkanHLETarget; X, Y, W, H: Integer): Boolean; override;
   public
     // ShaderBlend: blend in the shader where the device can (else always the
     // fixed function's).
@@ -238,8 +241,7 @@ type
 // An HLE backend on a Vulkan device with a graphics queue, or False with the
 // reason. Scale: the internal resolution in multiples of the PSP's (1 to 8).
 // ShaderBlend: blending in the shader where the device can.
-function CreateGEVulkanHLEBackend(Memory: TPSPMemory; out Backend: TGEVulkanHLEBackend; out Error: string;
-  const DeviceName: string = ''; Scale: Integer = 1; ShaderBlend: Boolean = True): Boolean;
+function CreateGEVulkanHLEBackend(Memory: TPSPMemory; out Backend: TGEVulkanHLEBackend; out Error: string; const DeviceName: string = ''; Scale: Integer = 1; ShaderBlend: Boolean = True): Boolean;
 
 implementation
 
@@ -251,11 +253,9 @@ const
   // Texture bytes compared with their source at most (larger ones are
   // compared in their first bytes).
   MaxSource = 4 shl 20;
-
   KindTriangle = 0;
   KindLine = 1;
   KindPoint = 2;
-
   FLAG_TEXTURED = 1;
   FLAG_FOG = 2;
   FLAG_COLORTEST = 4;
@@ -296,6 +296,7 @@ type
     S: PGERaster;
     First, Count: Integer;
   end;
+
   PGEHLETexRequest = ^TGEHLETexRequest;
 
 function Bpp(Format: Cardinal): Cardinal; inline;
@@ -460,8 +461,7 @@ end;
 
 { TGEVulkanHLEBackend }
 
-function CreateGEVulkanHLEBackend(Memory: TPSPMemory; out Backend: TGEVulkanHLEBackend; out Error: string;
-  const DeviceName: string; Scale: Integer; ShaderBlend: Boolean): Boolean;
+function CreateGEVulkanHLEBackend(Memory: TPSPMemory; out Backend: TGEVulkanHLEBackend; out Error: string; const DeviceName: string; Scale: Integer; ShaderBlend: Boolean): Boolean;
 var
   Compute: TVulkanCompute;
 begin
@@ -486,8 +486,7 @@ begin
   end;
 end;
 
-constructor TGEVulkanHLEBackend.Create(Memory: TPSPMemory; Compute: TVulkanCompute; Scale: Integer;
-  ShaderBlend: Boolean);
+constructor TGEVulkanHLEBackend.Create(Memory: TPSPMemory; Compute: TVulkanCompute; Scale: Integer; ShaderBlend: Boolean);
 var
   Props: VkFormatProperties;
 begin
@@ -606,7 +605,7 @@ var
   DepthStencil: VkPipelineDepthStencilStateCreateInfo;
   Blend: VkPipelineColorBlendAttachmentState;
   BlendState: VkPipelineColorBlendStateCreateInfo;
-  Dynamic: VkPipelineDynamicStateCreateInfo;
+  dynamic: VkPipelineDynamicStateCreateInfo;
   DynamicStates: array[0..5] of VkDynamicState;
   Info: VkGraphicsPipelineCreateInfo;
 begin
@@ -628,28 +627,28 @@ begin
   Binding.stride := SizeOf(TGEHLEVertex);
   Binding.inputRate := VK_VERTEX_INPUT_RATE_VERTEX;
   Attributes[0].location := 0;
-  Attributes[0].binding := 0;
-  Attributes[0].format := VK_FORMAT_R32G32B32_SFLOAT;
+  Attributes[0].Binding := 0;
+  Attributes[0].Format := VK_FORMAT_R32G32B32_SFLOAT;
   Attributes[0].offset := 0;
   Attributes[1].location := 1;
-  Attributes[1].binding := 0;
-  Attributes[1].format := VK_FORMAT_R8G8B8A8_UNORM;
+  Attributes[1].Binding := 0;
+  Attributes[1].Format := VK_FORMAT_R8G8B8A8_UNORM;
   Attributes[1].offset := 12;
   Attributes[2].location := 2;
-  Attributes[2].binding := 0;
-  Attributes[2].format := VK_FORMAT_R8G8B8A8_UNORM;
+  Attributes[2].Binding := 0;
+  Attributes[2].Format := VK_FORMAT_R8G8B8A8_UNORM;
   Attributes[2].offset := 16;
   Attributes[3].location := 3;
-  Attributes[3].binding := 0;
-  Attributes[3].format := VK_FORMAT_R32G32B32A32_SFLOAT;
+  Attributes[3].Binding := 0;
+  Attributes[3].Format := VK_FORMAT_R32G32B32A32_SFLOAT;
   Attributes[3].offset := 20;
   Attributes[4].location := 4;
-  Attributes[4].binding := 0;
-  Attributes[4].format := VK_FORMAT_R32_SFLOAT;
+  Attributes[4].Binding := 0;
+  Attributes[4].Format := VK_FORMAT_R32_SFLOAT;
   Attributes[4].offset := 36;
   Attributes[5].location := 5;
-  Attributes[5].binding := 0;
-  Attributes[5].format := VK_FORMAT_R32G32B32A32_SFLOAT;
+  Attributes[5].Binding := 0;
+  Attributes[5].Format := VK_FORMAT_R32G32B32A32_SFLOAT;
   Attributes[5].offset := 40;
   VertexInput := Default(VkPipelineVertexInputStateCreateInfo);
   VertexInput.sType := VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -716,10 +715,10 @@ begin
   DynamicStates[3] := VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK;
   DynamicStates[4] := VK_DYNAMIC_STATE_STENCIL_WRITE_MASK;
   DynamicStates[5] := VK_DYNAMIC_STATE_STENCIL_REFERENCE;
-  Dynamic := Default(VkPipelineDynamicStateCreateInfo);
-  Dynamic.sType := VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-  Dynamic.dynamicStateCount := 6;
-  Dynamic.pDynamicStates := @DynamicStates[0];
+  dynamic := Default(VkPipelineDynamicStateCreateInfo);
+  dynamic.sType := VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  dynamic.dynamicStateCount := 6;
+  dynamic.pDynamicStates := @DynamicStates[0];
   Info := Default(VkGraphicsPipelineCreateInfo);
   Info.sType := VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
   Info.stageCount := 2;
@@ -731,7 +730,7 @@ begin
   Info.pMultisampleState := @Multisample;
   Info.pDepthStencilState := @DepthStencil;
   Info.pColorBlendState := @BlendState;
-  Info.pDynamicState := @Dynamic;
+  Info.pDynamicState := @dynamic;
   Info.layout := FLayout;
   Info.renderPass := FRenderPass;
   if Blended then
@@ -777,7 +776,7 @@ begin
   for var I := 0 to 4 do
   begin
     Bindings[I] := Default(VkDescriptorSetLayoutBinding);
-    Bindings[I].binding := I;
+    Bindings[I].Binding := I;
     Bindings[I].descriptorType := VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     Bindings[I].descriptorCount := 1;
     Bindings[I].stageFlags := VK_SHADER_STAGE_COMPUTE_BIT;
@@ -844,7 +843,7 @@ begin
   for var I := 0 to 2 do
   begin
     Bindings[I] := Default(VkDescriptorSetLayoutBinding);
-    Bindings[I].binding := I;
+    Bindings[I].Binding := I;
     Bindings[I].descriptorType := VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     Bindings[I].descriptorCount := 1;
     Bindings[I].stageFlags := VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -1017,6 +1016,7 @@ begin
     Inc(A, PSPPageSize);
   end;
 end;
+
 function DepthHeld(M: TPSPMemory; ZAddr, Bytes: Cardinal; Perm: Integer): Boolean;
 begin
   if M.HeldVRAMPages = 0 then
@@ -1579,8 +1579,10 @@ end;
 // reach is Stale outside its rows. The other targets are watched again.
 procedure TGEVulkanHLEBackend.WatchFault;
 begin
+  var Bytes := Max(FMemory.WatchSize, 1);
+  var Data := FMemory.HostPtr(FMemory.WatchAddress, Bytes);
   FMemory.ReleaseWatches;
-  NewRun;
+  NewRunForWrite(Data, Bytes);
   Inc(FStats.WatchFaults);
   var A := FMemory.WatchAddress and $1FFFFFFF;
   if (A < PSPVRAMBase) or (A >= PSPVRAMBase + 4 * PSPVRAMSize) then
@@ -1642,9 +1644,9 @@ const
   VRAMPages = PSPVRAMSize shr PSPPageShift;
   BankPages = $10000 shr PSPPageShift;
   Linear0 = PSPVRAMBase shr PSPPageShift;
-  Linear2 = (PSPVRAMBase + 2 * PSPVRAMSize) shr PSPPageShift;
-  Odd1 = (PSPVRAMBase + PSPVRAMSize) shr PSPPageShift;
-  Odd3 = (PSPVRAMBase + 3 * PSPVRAMSize) shr PSPPageShift;
+  Linear2 = ( PSPVRAMBase + 2 * PSPVRAMSize) shr PSPPageShift;
+  Odd1 = ( PSPVRAMBase + PSPVRAMSize) shr PSPPageShift;
+  Odd3 = ( PSPVRAMBase + 3 * PSPVRAMSize) shr PSPPageShift;
 begin
   var A := Address and $1FFFFFFF;
   if Size = 0 then
@@ -1802,12 +1804,32 @@ begin
     var W := Max(X.Levels[Level].Width, 1);
     var H := Max(X.Levels[Level].Height, 1);
     var P := LevelTexels(T, W, H);
-    for var Y := 0 to H - 1 do
-      for var XX := 0 to W - 1 do
-      begin
-        P^ := GEFetchTexel(X^, Level, XX, Y);
-        Inc(P);
-      end;
+    if X.Format in [8, 9, 10] then
+    begin
+      for var BY := 0 to (H + 3) div 4 - 1 do
+        for var BX := 0 to (W + 3) div 4 - 1 do
+        begin
+          var Block: TGEDXTBlock;
+          var Decoded := GEReadDXTBlock(X^, Level, BX, BY, Block);
+          for var DY := 0 to Min(3, H - BY * 4 - 1) do
+            for var DX := 0 to Min(3, W - BX * 4 - 1) do
+            begin
+              var Pixel: Cardinal;
+              if Decoded then
+                Pixel := Block[DY * 4 + DX]
+              else
+                Pixel := GEFetchTexel(X^, Level, BX * 4 + DX, BY * 4 + DY);
+              PCardinal(PByte(P) + ((BY * 4 + DY) * W + BX * 4 + DX) * 4)^ := Pixel;
+            end;
+        end;
+    end
+    else
+      for var Y := 0 to H - 1 do
+        for var XX := 0 to W - 1 do
+        begin
+          P^ := GEFetchTexel(X^, Level, XX, Y);
+          Inc(P);
+        end;
     UploadLevel(T, I, W, H);
   end;
 end;
@@ -1820,6 +1842,27 @@ begin
   Height := Max(X.Levels[R.First].Height, 1);
   Levels := R.Count;
   Scale := TextureScaleFor(X^, R.First, R.Count);
+end;
+
+procedure TGEVulkanHLEBackend.WatchSource(T: TVulkanHLETexture);
+begin
+  for var I := 0 to High(T.SourceData) do
+  begin
+    var P := NativeUInt(T.SourceData[I]);
+    var Size := Cardinal(T.SourceSizes[I]);
+    if Size = 0 then
+      Continue;
+    var RAM := NativeUInt(@FMemory.RAM[0]);
+    var VRAM := NativeUInt(@FMemory.VRAM[0]);
+    var Scratch := NativeUInt(@FMemory.Scratch[0]);
+    if (P >= RAM) and (P - RAM < PSPRAMSize) and (Size <= PSPRAMSize - (P - RAM)) then
+      WatchBytes(FMemory, PSPRAMBase + Cardinal(P - RAM), Size)
+    else if (P >= VRAM) and (P - VRAM < PSPVRAMSize) and (Size <= PSPVRAMSize - (P - VRAM)) then
+      WatchBytes(FMemory, PSPVRAMBase + Cardinal(P - VRAM), Size)
+    else if (P >= Scratch) and (P - Scratch < PSPScratchSize) and (Size <= PSPScratchSize - (P - Scratch)) then
+      WatchBytes(FMemory, PSPScratchBase + Cardinal(P - Scratch), Size);
+    // The CLUT lives in the engine, not guest memory; its key changes on load.
+  end;
 end;
 
 procedure TGEVulkanHLEBackend.WatchTexture(T: TVulkanHLETexture; Request: Pointer);
@@ -1896,7 +1939,7 @@ begin
       if X.LevelCount > 0 then
         Last := Min(Last, X.LevelCount - 1);
       while (Count <= Last) and (X.Levels[Count].Width = Max(1, X.Levels[0].Width shr Count)) and
-        (X.Levels[Count].Height = Max(1, X.Levels[0].Height shr Count)) do
+          (X.Levels[Count].Height = Max(1, X.Levels[0].Height shr Count)) do
         Inc(Count);
     end;
   end
@@ -2054,8 +2097,7 @@ end;
 function PartialMask(Format, Keep: Cardinal): Boolean;
 begin
   Result := False;
-  for var Bits in [EncodeColorOf(Format, 255, 0, 0), EncodeColorOf(Format, 0, 255, 0),
-    EncodeColorOf(Format, 0, 0, 255)] do
+  for var Bits in [EncodeColorOf(Format, 255, 0, 0), EncodeColorOf(Format, 0, 255, 0), EncodeColorOf(Format, 0, 0, 255)] do
     if ((Keep and Bits) <> 0) and ((Keep and Bits) <> Bits) then
       Exit(True);
 end;
@@ -2240,7 +2282,7 @@ begin
     begin
       Key := Cardinal(Kind) or (UInt64(1) shl 43);
       Push.Blend := Cardinal(S.BlendSrc and 15) or (Cardinal(S.BlendDst and 15) shl 4) or (Cardinal(S.BlendOp and
-        7) shl 8) or (Cardinal(Ord(S.Blend)) shl 11) or (Cardinal(S.LogicFunc and 15) shl 12) or
+          7) shl 8) or (Cardinal(Ord(S.Blend)) shl 11) or (Cardinal(S.LogicFunc and 15) shl 12) or
         (Cardinal(Ord(S.LogicOp)) shl 16) or (Cardinal(S.DepthFunc and 7) shl 20) or
         (Cardinal(Ord(DepthTest)) shl 23) or (Cardinal(S.StencilFunc and 7) shl 24) or
         (Cardinal(Ord(StencilTest)) shl 27);
@@ -2268,7 +2310,7 @@ begin
       Key := Key or (UInt64(1) shl 20) or (UInt64(S.LogicFunc and 15) shl 21);
     if DepthTest and not Blended then
       Key := Key or (UInt64(1) shl 25) or (UInt64(Ord(S.DepthWrite)) shl 26) or (UInt64(CompareOps[S.DepthFunc and
-        7]) shl 27);
+            7]) shl 27);
     if StencilTest and not Blended then
       Key := Key or (UInt64(1) shl 30) or (UInt64(CompareOps[S.StencilFunc and 7]) shl 31) or
         (UInt64(StencilOps[S.StencilFail and 7]) shl 34) or (UInt64(StencilOps[S.StencilZFail and 7]) shl 37) or
@@ -2386,8 +2428,7 @@ begin
   FStencilValid := True;
 end;
 
-procedure TGEVulkanHLEBackend.Emit(Kind: Integer; const S: TGERaster; V: PGEHLEVertex; Count: Integer;
-  X1, Y1, X2, Y2: Integer);
+procedure TGEVulkanHLEBackend.Emit(Kind: Integer; const S: TGERaster; V: PGEHLEVertex; Count: Integer; X1, Y1, X2, Y2: Integer);
 begin
   X1 := Max(X1, Max(S.ScissorX1, 0));
   Y1 := Max(Y1, Max(S.ScissorY1, 0));
@@ -2631,7 +2672,7 @@ begin
       FloorDiv16(Max(V0.X, V1.X) + 7) - 1, FloorDiv16(Max(V0.Y, V1.Y) + 7) - 1)
   else
     Emit(KindTriangle, S, @V[0], 6, FloorDiv16(Min(V0.X, V1.X)), FloorDiv16(Min(V0.Y, V1.Y)), FloorDiv16(Max(V0.X,
-      V1.X) - 1), FloorDiv16(Max(V0.Y, V1.Y) - 1));
+          V1.X) - 1), FloorDiv16(Max(V0.Y, V1.Y) - 1));
 end;
 
 // The GE's lines differ from the GPU's in which pixels they cover: they are
@@ -2752,6 +2793,12 @@ begin
 end;
 
 // Opaque ARGB in the target format's precision, by the kernel.
+function TGEVulkanHLEBackend.RecordFrameRegion(T: TVulkanHLETarget; X, Y, W, H: Integer): Boolean;
+begin
+  DownSample(TGEHLETarget(T), X, Y, W, H, 0, 3, 1);
+  Result := True;
+end;
+
 procedure TGEVulkanHLEBackend.RecordFrame(T: TVulkanHLETarget; W, H: Integer);
 begin
   DownSample(TGEHLETarget(T), 0, 0, W, H, 0, 3, 1);
@@ -2788,3 +2835,4 @@ begin
 end;
 
 end.
+

@@ -74,6 +74,8 @@ type
     TextureUploads, TextureHits, TargetTextures, Pipelines, Presents, WatchFaults: Int64;
     // Uploads scaled (texture scaling), and the time scaling them.
     TextureScales: Int64;
+    TextureCheckBytes: Int64;
+    PresentBytes: Int64;
     ScaleSeconds: Double;
     // In flushes: waiting for the GPU, and everything (waiting and storing).
     WaitSeconds, FlushSeconds: Double;
@@ -115,6 +117,10 @@ type
     // Changes whenever the colour image may change (made, loaded, drawn):
     // unique among the renderer's targets.
     Version: Int64;
+    // Colour modified since this target was last presented. Loads/growth
+    // invalidate partial reuse; drawing accumulates a native-pixel box.
+    PresentPartial: Boolean;
+    PresentX1, PresentY1, PresentX2, PresentY2: Integer;
     function Bytes: Cardinal;
   end;
 
@@ -131,6 +137,8 @@ type
     // The bytes it was decoded from (KeepSource). Without them all in host
     // memory it cannot be compared and is decoded again in every run.
     Source: TBytes;
+    SourceData: TArray<Pointer>;
+    SourceSizes: TArray<Integer>;
     Checkable: Boolean;
     // The run it was last compared or decoded in.
     Verified: Int64;
@@ -160,6 +168,7 @@ type
     Upload: TVulkanBuffer;
     UploadUsed: Int64;
   end;
+
   PVulkanHLESlot = ^TVulkanHLESlot;
 
   TVulkanHLERenderer = class
@@ -273,8 +282,7 @@ type
     // Targets.
     // The target of Stride x NeedHeight pixels at Addr in Format: a new one
     // MinHeight tall at least (twice as tall when it grows), MaxHeight at most.
-    function FindTarget(Addr, Format, Stride, PixelBytes: Cardinal;
-      NeedHeight, MinHeight, MaxHeight: Integer): TVulkanHLETarget;
+    function FindTarget(Addr, Format, Stride, PixelBytes: Cardinal; NeedHeight, MinHeight, MaxHeight: Integer): TVulkanHLETarget;
     function NewTarget: TVulkanHLETarget; virtual;
     // A new target has its images and framebuffer.
     procedure InitTarget(T: TVulkanHLETarget); virtual;
@@ -330,6 +338,8 @@ type
     // Every newer target stored, holds and watches released, a new run.
     procedure FlushAll;
     procedure NewRun; virtual;
+    procedure NewRunForWrite(Data: Pointer; Size: NativeUInt);
+    procedure WatchSource(T: TVulkanHLETexture); virtual;
     // Console memory, in the subclass's address space (wrapping as the
     // console's does).
     function MemoryEquals(Addr: Cardinal; Data: PByte; Size: Cardinal): Boolean; virtual; abstract;
@@ -346,6 +356,7 @@ type
     // W x H pixels of the target's colour image as the emulator shows them
     // (TAlphaColor, rows packed), from word 0 of FReadback.
     procedure RecordFrame(T: TVulkanHLETarget; W, H: Integer); virtual; abstract;
+    function RecordFrameRegion(T: TVulkanHLETarget; X, Y, W, H: Integer): Boolean; virtual;
     // The target's colour image changes (Drawn and loading do this).
     procedure Changed(T: TVulkanHLETarget); inline;
     procedure ReadFrame(T: TVulkanHLETarget; W, H: Integer; var Frame: TEmulatorFrame);
@@ -404,8 +415,7 @@ end;
 
 { TVulkanHLERenderer }
 
-constructor TVulkanHLERenderer.Create(Compute: TVulkanCompute;
-  Scale, VertexSize, PushSize, FrameWidth, FrameHeight: Integer);
+constructor TVulkanHLERenderer.Create(Compute: TVulkanCompute; Scale, VertexSize, PushSize, FrameWidth, FrameHeight: Integer);
 var
   Props: VkFormatProperties;
 begin
@@ -441,7 +451,7 @@ begin
   begin
     FSlots[I].Cmd := Compute.CreateCommands;
     FSlots[I].Vertices := Compute.CreateBuffer(HLEVertexCapacity * Int64(VertexSize), vbkShared,
-      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     FSlots[I].Upload := Compute.CreateBuffer(HLEUploadCapacity, vbkUpload, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
   end;
   // Also the frames shown at the scale.
@@ -513,8 +523,7 @@ begin
     FAPI.vkDestroyRenderPass(FDevice, FRenderPass, nil);
 end;
 
-function TVulkanHLERenderer.CreateImage(Format: VkFormat; Width, Height, Levels: Integer;
-  Usage, Aspect: Cardinal): TVulkanHLEImage;
+function TVulkanHLERenderer.CreateImage(Format: VkFormat; Width, Height, Levels: Integer; Usage, Aspect: Cardinal): TVulkanHLEImage;
 var
   Info: VkImageCreateInfo;
   Req: VkMemoryRequirements;
@@ -611,7 +620,7 @@ var
   Info: VkRenderPassCreateInfo;
 begin
   Attachments[0] := Default(VkAttachmentDescription);
-  Attachments[0].format := VK_FORMAT_R8G8B8A8_UNORM;
+  Attachments[0].Format := VK_FORMAT_R8G8B8A8_UNORM;
   Attachments[0].samples := VK_SAMPLE_COUNT_1_BIT;
   Attachments[0].loadOp := VK_ATTACHMENT_LOAD_OP_LOAD;
   Attachments[0].storeOp := VK_ATTACHMENT_STORE_OP_STORE;
@@ -620,7 +629,7 @@ begin
   Attachments[0].initialLayout := VK_IMAGE_LAYOUT_GENERAL;
   Attachments[0].finalLayout := VK_IMAGE_LAYOUT_GENERAL;
   Attachments[1] := Attachments[0];
-  Attachments[1].format := FDepthFormat;
+  Attachments[1].Format := FDepthFormat;
   Attachments[1].stencilLoadOp := VK_ATTACHMENT_LOAD_OP_LOAD;
   Attachments[1].stencilStoreOp := VK_ATTACHMENT_STORE_OP_STORE;
   ColorRef.attachment := 0;
@@ -972,8 +981,7 @@ end;
 
 { Targets }
 
-function TVulkanHLERenderer.FindTarget(Addr, Format, Stride, PixelBytes: Cardinal;
-  NeedHeight, MinHeight, MaxHeight: Integer): TVulkanHLETarget;
+function TVulkanHLERenderer.FindTarget(Addr, Format, Stride, PixelBytes: Cardinal; NeedHeight, MinHeight, MaxHeight: Integer): TVulkanHLETarget;
 var
   Info: VkFramebufferCreateInfo;
   Views: array[0..1] of VkImageView;
@@ -1115,11 +1123,21 @@ procedure TVulkanHLERenderer.Changed(T: TVulkanHLETarget);
 begin
   Inc(FVersion);
   T.Version := FVersion;
+  T.PresentPartial := False;
 end;
 
 procedure TVulkanHLERenderer.Drawn(T: TVulkanHLETarget; X1, Y1, X2, Y2: Integer);
 begin
-  Changed(T);
+  // Drawing preserves the loaded pixels outside its rectangle.
+  Inc(FVersion);
+  T.Version := FVersion;
+  if T.PresentPartial then
+  begin
+    T.PresentX1 := Min(T.PresentX1, X1);
+    T.PresentY1 := Min(T.PresentY1, Y1);
+    T.PresentX2 := Max(T.PresentX2, X2);
+    T.PresentY2 := Max(T.PresentY2, Y2);
+  end;
   T.X1 := Min(T.X1, X1);
   T.Y1 := Min(T.Y1, Y1);
   T.X2 := Max(T.X2, X2);
@@ -1214,8 +1232,7 @@ begin
   Result.LastUse := FUseCounter;
 end;
 
-function TVulkanHLERenderer.AddTexture(Key: UInt64; Width, Height, Levels, Scale: Integer;
-  Request: Pointer): TVulkanHLETexture;
+function TVulkanHLERenderer.AddTexture(Key: UInt64; Width, Height, Levels, Scale: Integer; Request: Pointer): TVulkanHLETexture;
 begin
   Result := TVulkanHLETexture.Create;
   Result.Key := Key;
@@ -1257,6 +1274,7 @@ begin
   var Off := 0;
   for var B in Bytes do
   begin
+    Inc(FStats.TextureCheckBytes, B.Size);
     if (B.Data = nil) or (Off + B.Size > Length(T.Source)) or ((B.Size > 0) and
       not CompareMem(B.Data, @T.Source[Off], B.Size)) then
       Exit(False);
@@ -1279,7 +1297,16 @@ begin
   if not T.Checkable then
   begin
     T.Source := nil;
+    T.SourceData := nil;
+    T.SourceSizes := nil;
     Exit;
+  end;
+  SetLength(T.SourceData, Length(Bytes));
+  SetLength(T.SourceSizes, Length(Bytes));
+  for var I := 0 to High(Bytes) do
+  begin
+    T.SourceData[I] := Bytes[I].Data;
+    T.SourceSizes[I] := Bytes[I].Size;
   end;
   SetLength(T.Source, Total);
   var Off := 0;
@@ -1404,7 +1431,10 @@ begin
     begin
       var List := FTextures.Values.ToArray;
       TArray.Sort<TVulkanHLETexture>(List, TComparer<TVulkanHLETexture>.Construct(
-          function(const A, B: TVulkanHLETexture): Integer begin Result := CompareValue(A.LastUse, B.LastUse); end));
+        function(const A, B: TVulkanHLETexture): Integer
+        begin
+          Result := CompareValue(A.LastUse, B.LastUse);
+        end));
       for var I := 0 to Length(List) - MaxTextures * 3 div 4 - 1 do
       begin
         FTextures.Remove(List[I].Key);
@@ -1419,6 +1449,43 @@ end;
 procedure TVulkanHLERenderer.NewRun;
 begin
   Inc(FRun);
+end;
+
+procedure TVulkanHLERenderer.WatchSource(T: TVulkanHLETexture);
+begin
+end;
+
+procedure TVulkanHLERenderer.NewRunForWrite(Data: Pointer; Size: NativeUInt);
+begin
+  var Previous := FRun;
+  NewRun;
+  if (Data = nil) or (Size = 0) then
+    Exit;
+  var Lo := NativeUInt(Data);
+  if Size > High(NativeUInt) - Lo then
+    Exit;
+  var Hi := Lo + Size;
+  for var T in FTextures.Values do
+    if T.Checkable and (T.Verified = Previous) then
+    begin
+      var Changed := False;
+      for var I := 0 to High(T.SourceData) do
+      begin
+        var First := NativeUInt(T.SourceData[I]);
+        var Bytes := NativeUInt(T.SourceSizes[I]);
+        if (Bytes > 0) and (First < Hi) and ((First >= Lo) or (Bytes > Lo - First)) then
+        begin
+          Changed := True;
+          Break
+        end;
+      end;
+      if not Changed then
+      begin
+        // These immutable GPU copies still match their untouched source.
+        WatchSource(T);
+        T.Verified := FRun;
+      end;
+    end;
 end;
 
 procedure TVulkanHLERenderer.Sync;
@@ -1440,21 +1507,9 @@ end;
 
 { Frames }
 
-// The references to a dynamic array (System's header before its data).
-function DynArrayRefs(const A: TArray<TAlphaColor>): Integer;
-type
-  THeader = packed record
-{$IFDEF CPU64BITS}
-    Padding: Integer;
-{$ENDIF}
-    RefCount: Integer;
-    Length: NativeInt;
-  end;
-  PHeader = ^THeader;
+function TVulkanHLERenderer.RecordFrameRegion(T: TVulkanHLETarget; X, Y, W, H: Integer): Boolean;
 begin
-  if A = nil then
-    Exit(0);
-  Result := PHeader(PByte(Pointer(A)) - SizeOf(THeader))^.RefCount;
+  Result := False;
 end;
 
 procedure TVulkanHLERenderer.ReadFrame(T: TVulkanHLETarget; W, H: Integer; var Frame: TEmulatorFrame);
@@ -1470,20 +1525,59 @@ begin
     Exit;
   end;
   var Watch := TStopwatch.StartNew;
+  var Partial := (T = FFrameTarget) and T.PresentPartial and
+    (W = FFrameWidth) and (H = FFrameHeight) and (Length(FFramePixels) = W * H);
+  var X := 0;
+  var Y := 0;
+  var RW := W;
+  var RH := H;
+  if Partial then
+  begin
+    X := Max(0, T.PresentX1 * FScale);
+    Y := Max(0, T.PresentY1 * FScale);
+    RW := Min(W, (T.PresentX2 + 1) * FScale) - X;
+    RH := Min(H, (T.PresentY2 + 1) * FScale) - Y;
+    // Changes entirely outside the displayed area do not change the frame.
+    if (RW <= 0) or (RH <= 0) then
+    begin
+      Frame.Width := W;
+      Frame.Height := H;
+      Frame.Pixels := FFramePixels;
+      FFrameVersion := T.Version;
+      T.PresentX1 := High(Integer) div FScale;
+      T.PresentY1 := T.PresentX1;
+      T.PresentX2 := -1;
+      T.PresentY2 := -1;
+      Inc(FStats.Presents);
+      Exit;
+    end;
+  end;
   Record_;
   EndPass;
   ImageBarrier;
-  RecordFrame(T, W, H);
+  if Partial then
+    Partial := RecordFrameRegion(T, X, Y, RW, RH);
+  if not Partial then
+  begin
+    X := 0;
+    Y := 0;
+    RW := W;
+    RH := H;
+    RecordFrame(T, W, H);
+  end;
   HostReadBarrier;
-  WaitAll;
-  FReadback.Invalidate(0, UInt64(W * H) * 4);
+  var FrameCommands := Slot.Cmd;
+  Submit;
+  FrameCommands.Wait;
+  FReadback.Invalidate(0, UInt64(RW * RH) * 4);
+  Inc(FStats.PresentBytes, Int64(RW) * RH * 4);
   Frame.Width := W;
   Frame.Height := H;
   // A buffer of the pool that only the pool holds (the frames before may
   // still be read), else a new one: no allocation and clearing each frame.
   var Pick := -1;
   for var I := 0 to High(FFrames) do
-    if (Length(FFrames[I]) = W * H) and (DynArrayRefs(FFrames[I]) = 1) then
+    if (Length(FFrames[I]) = W * H) and (EmulationBufferReferences(Pointer(FFrames[I])) = 1) then
     begin
       Pick := I;
       Break;
@@ -1492,7 +1586,7 @@ begin
   begin
     Pick := 0;
     for var I := 0 to High(FFrames) do
-      if (FFrames[I] = nil) or (DynArrayRefs(FFrames[I]) = 1) then
+      if (FFrames[I] = nil) or (EmulationBufferReferences(Pointer(FFrames[I])) = 1) then
       begin
         Pick := I;
         Break;
@@ -1501,7 +1595,21 @@ begin
     SetLength(FFrames[Pick], W * H);
   end;
   Frame.Pixels := FFrames[Pick];
-  Move(FReadback.Data^, Frame.Pixels[0], W * H * 4);
+  if Partial then
+  begin
+    // The previous output may still be read by the UI: copy it to a free
+    // pool buffer, then patch only the tightly packed GPU rectangle.
+    Move(FFramePixels[0], Frame.Pixels[0], W * H * 4);
+    for var Row := 0 to RH - 1 do
+      Move((FReadback.Data + Row * RW * 4)^, Frame.Pixels[(Y + Row) * W + X], RW * 4);
+  end
+  else
+    Move(FReadback.Data^, Frame.Pixels[0], W * H * 4);
+  T.PresentPartial := True;
+  T.PresentX1 := High(Integer) div FScale;
+  T.PresentY1 := T.PresentX1;
+  T.PresentX2 := -1;
+  T.PresentY2 := -1;
   FFrameTarget := T;
   FFrameVersion := T.Version;
   FFrameWidth := W;
@@ -1512,3 +1620,4 @@ begin
 end;
 
 end.
+

@@ -1,11 +1,16 @@
 ﻿unit GBA.Console;
 
+{$IF Defined(ANDROID) and Defined(CPUARM64) and not Defined(RETROMUL_GBA_NO_NATIVE_QUIET)}
+{$DEFINE RETROMUL_GBA_NATIVE_QUIET}
+{$ENDIF}
+
 interface
 
 uses
   System.SysUtils, System.Classes, System.UITypes, System.Math, System.Hash,
   Core.InputConfig, Core.Emulation.Types, Core.Snapshots, HW.ARM, GBA.Firmware,
-  GBA.Video, GBA.Sound, GBA.Cartridge;
+  GBA.Video, GBA.Sound, GBA.Cartridge
+  {$IFDEF RETROMUL_GBA_NATIVE_QUIET}, GBA.NativeClock{$ENDIF};
 
 const
   GBA_CLOCK = 16777216;
@@ -43,14 +48,24 @@ type
 
   PGBACPUAccess = ^TGBACPUAccess;
 
+  // A packed view preserves the four-byte alignment and snapshot layout.
+  PGBACPUAccessWords = ^TGBACPUAccessWords;
+  TGBACPUAccessWords = packed record
+    AddressValue, Metadata: UInt64;
+  end;
+
   TGBAConsole = class
   private
     FCPU: TARMProcessor;
     FVideo: TGBAVideo;
     FSound: TGBASound;
     FCartridge: TGBACartridge;
+    // Borrowed after cartridge mirror expansion; ROM storage never resizes.
+    FROMData: PByte;
+    FROMSize: Cardinal;
     FTimers: array[0..3] of TGBATimer;
     FTimerPendingCycles: Integer;
+    FQuietCycles: Integer; // Derived safe distance; invalidated by timing/control changes.
     FTimerEventCycles: Integer; // Derived distance to the next timer edge/write.
     FTimerWorkMask: Byte; // Enabled timers or pending control/reload writes.
     FDMA: array[0..3] of TGBADMA;
@@ -64,6 +79,10 @@ type
     FHaltIRQDelay: Integer;
     FIRQPipeline: Byte;
     FCPUCheckpoint: TARMCheckpoint;
+    // Transient speculative CPU tail: no bus operation may run after a yield.
+    FCPUYieldRequested: Boolean;
+    FCPUYieldState: TARMCheckpoint;
+    FCPUYieldBusSequential, FCPUYieldBusCode, FCPUYieldBusLocked: Boolean;
     FCPUCheckpointGeneration: UInt64;
     FCPUAccesses: array[0..63] of TGBACPUAccess;
     FCPUAccessCount, FCPUAccessPosition: Integer;
@@ -96,23 +115,29 @@ type
     FEWRAM: array[0..$3FFFF] of Byte;
     FIWRAM: array[0..$7FFF] of Byte;
     FBIOS: array[0..$3FFF] of Byte;
+    {$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+    FNativeQuiet: TGBANativeQuiet;
+    procedure CreateNativeQuiet;
+    {$ENDIF}
     function ReadByteRaw(Address: Cardinal): Byte;
     function ReadBusInternal(Address: Cardinal; Size: Integer; RotateValue: Boolean): Cardinal;
     procedure WriteByteRaw(Address: Cardinal; Value: Byte);
     function ReadIO(Offset: Integer): Byte;
     procedure WriteIO(Offset: Integer; Value: Byte);
-    procedure Access(Address: Cardinal; Size: Integer);
+    procedure Access(Address, Region: Cardinal; Size: Integer);
     procedure IRQ(Bit: Integer; Delay: Integer = 0);
     procedure UpdateIRQ;
     procedure BusState(Sequential, Code: Boolean);
     procedure Idle(Cycles: Integer);
     function SampleIRQ: Boolean;
     procedure LockBus(Locked: Boolean);
-    procedure CheckDMAStart(IdleCycle: Boolean = False);
+    function CheckDMAStart(IdleCycle: Boolean = False): Boolean;
     procedure RecordCPUAccess(Address, Value: Cardinal; Size: Integer; Kind: Byte); inline;
+    function ReadAlignedROM(Address: Cardinal; Size: Integer): Cardinal; inline;
     function CPURead(Address: Cardinal; Size: Integer): Cardinal;
+    function CPUReadCode(Address: Cardinal; Size: Integer; Sequential: Boolean): Cardinal;
     function CPUReadUnrotated(Address: Cardinal; Size: Integer): Cardinal;
-    function CPUReadInternal(Address: Cardinal; Size: Integer; Kind: Byte): Cardinal;
+    function CPUReadInternal(Address: Cardinal; Size: Integer; Kind: Byte): Cardinal; inline;
     procedure CPUWrite(Address, Value: Cardinal; Size: Integer);
     procedure ExecuteCPU;
     procedure ExecuteSWI(Number: Byte);
@@ -129,12 +154,15 @@ type
     procedure UpdateTimerDeadline;
     procedure FlushTimers;
     procedure AdvanceTimers(N: Integer; OldClock: UInt64);
-    procedure Tick(Cycles: Integer); inline;
+    // QuietOnly consumes nothing when an event boundary requires TickEvents.
+    // True means the whole slice ran on the event-free path.
+    function Tick(Cycles: Integer; QuietOnly: Boolean = False): Boolean; inline;
     procedure TickEvents(Cycles: Integer);
     procedure SoftwareInterrupt(Number: Byte);
     function IsEEPROM(Address: Cardinal): Boolean; inline;
     procedure InstallHLEBIOS;
   public
+    {$IFDEF RETROMUL_GBA_NATIVE_QUIET_TEST}function NativeQuietSelfTest: string;{$ENDIF}
     constructor Create(const Data: TBytes; const BIOS: TBytes = nil; LegacyHLE: Boolean = False);
     destructor Destroy; override;
     procedure Reset;
@@ -172,18 +200,18 @@ implementation
 uses
   GBA.Peripherals; // Required for cross-unit expansion of cartridge/IRQ helpers.
 
-type
-  EGBABusYield = class(Exception);
-
 constructor TGBAConsole.Create(const Data, BIOS: TBytes; LegacyHLE: Boolean);
 begin
   inherited Create;
   FCartridge := TGBACartridge.Create(Data);
+  FROMData := @FCartridge.Data[0];
+  FROMSize := Length(FCartridge.Data);
   FVideo := TGBAVideo.Create;
   FVideo.Clocked := not LegacyHLE;
   FSound := TGBASound.Create;
   FCPU := TARMProcessor.Create(CPURead, CPUWrite);
   FCPU.MemoryReadUnrotated := CPUReadUnrotated;
+  FCPU.MemoryReadCode := CPUReadCode;
   FCPU.BusState := BusState;
   FCPU.Idle := Idle;
   FCPU.IRQSample := SampleIRQ;
@@ -209,10 +237,12 @@ begin
   end;
   FPadEnabled := True;
   Reset;
+  {$IFDEF RETROMUL_GBA_NATIVE_QUIET}CreateNativeQuiet;{$ENDIF}
 end;
 
 destructor TGBAConsole.Destroy;
 begin
+  {$IFDEF RETROMUL_GBA_NATIVE_QUIET}FNativeQuiet.Free;{$ENDIF}
   FCPU.Free;
   FSound.Free;
   FVideo.Free;
@@ -243,6 +273,7 @@ end;
 
 procedure TGBAConsole.Reset;
 begin
+  FQuietCycles := 0;
   FWaitControl := $FFFFFFFF;
   FVideoPendingCycles := 0;
   FillChar(FEWRAM, SizeOf(FEWRAM), 0);
@@ -365,6 +396,127 @@ begin
   FBusCode := Code;
 end;
 
+{$IFDEF RETROMUL_GBA_NATIVE_QUIET_TEST}
+function TGBAConsole.NativeQuietSelfTest: string;
+begin
+  Result := FNativeQuiet.SelfTest;
+end;
+{$ENDIF}
+
+{$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+procedure TGBAConsole.CreateNativeQuiet;
+begin
+  var L: TGBANativeQuietLayout;
+  L.QuietCycles := Integer(NativeUInt(@FQuietCycles)-NativeUInt(Self));
+  L.InDMA := Integer(NativeUInt(@FInDMA)-NativeUInt(Self));
+  L.CPUResuming := Integer(NativeUInt(@FCPUResuming)-NativeUInt(Self));
+  L.CPUYieldIdle := Integer(NativeUInt(@FCPUYieldIdle)-NativeUInt(Self));
+  L.Halted := Integer(NativeUInt(@FHalted)-NativeUInt(Self));
+  L.Cartridge := Integer(NativeUInt(@FCartridge)-NativeUInt(Self));
+  L.Sound := Integer(NativeUInt(@FSound)-NativeUInt(Self));
+  L.GamePakBusy := Integer(NativeUInt(@FGamePakBusy)-NativeUInt(Self));
+  L.PrefetchValid := Integer(NativeUInt(@FPrefetchValid)-NativeUInt(Self));
+  L.MasterClock := Integer(NativeUInt(@FMasterClock)-NativeUInt(Self));
+  L.TimerMask := Integer(NativeUInt(@FTimerWorkMask)-NativeUInt(Self));
+  L.TimerEvent := Integer(NativeUInt(@FTimerEventCycles)-NativeUInt(Self));
+  L.TimerPending := Integer(NativeUInt(@FTimerPendingCycles)-NativeUInt(Self));
+  L.LineCycle := Integer(NativeUInt(@FLineCycle)-NativeUInt(Self));
+  L.VideoPending := Integer(NativeUInt(@FVideoPendingCycles)-NativeUInt(Self));
+  L.Video := Integer(NativeUInt(@FVideo)-NativeUInt(Self));
+  L.WaitControl := Integer(NativeUInt(@FWaitControl)-NativeUInt(Self));
+  L.WaitSequential := Integer(NativeUInt(@FWaitSequential)-NativeUInt(Self));
+  L.PrefetchNext := Integer(NativeUInt(@FPrefetchNext)-NativeUInt(Self));
+  L.PrefetchPhase := Integer(NativeUInt(@FPrefetchPhase)-NativeUInt(Self));
+  L.PrefetchCount := Integer(NativeUInt(@FPrefetchCount)-NativeUInt(Self));
+  L.WaitPort := Integer(NativeUInt(@FVideo.IO[$204])-NativeUInt(FVideo));
+  FSound.NativeQuietOffsets(L.SoundPending,L.SoundEvent);
+  FCartridge.NativeQuietOffsets(L.Hardware,L.TickRequired);
+  L.IRQPending := FCartridge.Hardware.NativeQuietIRQOffset;
+  FNativeQuiet := TGBANativeQuiet.Create(L);
+end;
+{$ENDIF}
+
+function TGBAConsole.Tick(Cycles: Integer; QuietOnly: Boolean): Boolean;
+begin
+  Result := False;
+  {$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+  {$IFDEF RETROMUL_VERIFY_QUIET_CACHE}
+  var NativeAllowed := (Cycles > 0) and ((FTimerWorkMask = 0) or (Cycles < FTimerEventCycles)) and
+    (FIRQDelay = 0) and (FHaltIRQDelay = 0) and (FIRQReadDelay = 0) and
+    (FNextIRQDue = 0) and not FSerialActive and
+    not FCartridge.Hardware.HasRTC and not FCartridge.Hardware.IRQPending and
+    (Cycles < 1232 - FLineCycle) and
+    ((FLineCycle >= 1007) or (Cycles < 1006 - FLineCycle)) and
+    not (FFrameBoundaryActive and (FFrameNumber >= FFrameTarget)) and
+    not (FInDMA and FCPUResuming and FCPUYieldIdle and not FHalted);
+  {$ENDIF}
+  if (FNativeQuiet <> nil) and FNativeQuiet.TryTick(Self,Cycles) then
+  begin
+    {$IFDEF RETROMUL_VERIFY_QUIET_CACHE}
+    if not NativeAllowed then raise EInvalidOp.Create('Stale native GBA quiet window');
+    {$ENDIF}
+    Exit(True);
+  end;
+  {$ENDIF}
+  // Control writes and event processing invalidate this derived window.
+  // Within it, retain every device clock and the original bus-slice boundaries.
+  // With no enabled timer or pending timer write, there is no timer deadline;
+  // the derived counter can still be zero after reset or snapshot loading.
+  if (FQuietCycles = 0) and (Cycles > 0) and ((FTimerWorkMask = 0) or (Cycles < FTimerEventCycles)) and
+    (FIRQDelay = 0) and (FHaltIRQDelay = 0) and (FIRQReadDelay = 0) and
+    (FNextIRQDue = 0) and not FSerialActive and
+    not FCartridge.Hardware.HasRTC and not FCartridge.Hardware.IRQPending and
+    (Cycles < 1232 - FLineCycle) and
+    ((FLineCycle >= 1007) or (Cycles < 1006 - FLineCycle)) and
+    not (FFrameBoundaryActive and (FFrameNumber >= FFrameTarget)) and
+    not (FInDMA and FCPUResuming and FCPUYieldIdle and not FHalted) then
+  begin
+    FQuietCycles := 1232 - FLineCycle;
+    if (FLineCycle < 1007) and (1006 - FLineCycle < FQuietCycles) then
+      FQuietCycles := 1006 - FLineCycle;
+    if (FTimerWorkMask <> 0) and (FTimerEventCycles < FQuietCycles) then
+      FQuietCycles := FTimerEventCycles;
+  end;
+  // GPIO is exposed to peripheral clients; check its IRQ directly. DMA can
+  // also switch between ordinary transfers and overlapping CPU idle clocks.
+  if (Cycles > 0) and (Cycles < FQuietCycles) and
+    not FCartridge.Hardware.IRQPending and
+    not (FInDMA and FCPUResuming and FCPUYieldIdle and not FHalted) then
+  begin
+    {$IFDEF RETROMUL_VERIFY_QUIET_CACHE}
+    // Diagnostic builds verify the cached decision against the original guard.
+    if not ((Cycles > 0) and ((FTimerWorkMask = 0) or (Cycles < FTimerEventCycles)) and
+    (FIRQDelay = 0) and (FHaltIRQDelay = 0) and (FIRQReadDelay = 0) and
+    (FNextIRQDue = 0) and not FSerialActive and
+    not FCartridge.Hardware.HasRTC and not FCartridge.Hardware.IRQPending and
+    (Cycles < 1232 - FLineCycle) and
+    ((FLineCycle >= 1007) or (Cycles < 1006 - FLineCycle)) and
+    not (FFrameBoundaryActive and (FFrameNumber >= FFrameTarget)) and
+    not (FInDMA and FCPUResuming and FCPUYieldIdle and not FHalted)) then
+      raise EInvalidOp.Create('Stale GBA quiet timing window');
+    {$ENDIF}
+    Dec(FQuietCycles, Cycles);
+    FSound.Tick(Cycles);
+    FCartridge.Tick(Cycles);
+    PrefetchTick(Cycles);
+    Inc(FMasterClock, Cycles);
+    if FTimerWorkMask <> 0 then
+    begin
+      Dec(FTimerEventCycles, Cycles);
+      Inc(FTimerPendingCycles, Cycles);
+    end;
+    Inc(FLineCycle, Cycles);
+    Inc(FVideoPendingCycles, Cycles);
+    Result := True;
+  end
+  else
+  begin
+    FQuietCycles := 0;
+    if not QuietOnly then
+      TickEvents(Cycles);
+  end;
+end;
+
 procedure TGBAConsole.Idle(Cycles: Integer);
 begin
   FBusCode := False;
@@ -381,9 +533,11 @@ begin
       Continue;
     end;
 
-    CheckDMAStart(True);
+    if not CheckDMAStart(True) then
+      Exit;
     if FParallelPosition < FParallelCount then
     begin
+      FQuietCycles := 0;
       // CPU internal cycles can overlap DMA, unlike a read or write.
       // Advance its IRQ synchronizer using the original DMA clock history.
       FIRQPipeline := ((FIRQPipeline shl 1) or FParallelIRQ[FParallelPosition]) and 7;
@@ -410,8 +564,11 @@ begin
   FBusLocked := Locked;
 end;
 
-procedure TGBAConsole.CheckDMAStart(IdleCycle: Boolean);
+function TGBAConsole.CheckDMAStart(IdleCycle: Boolean): Boolean;
 begin
+  Result := not FCPUYieldRequested;
+  if not Result then
+    Exit;
   if (FNextDMAReady = 0) or (FNextDMAReady > FMasterClock) or FBusLocked or Assigned(FCPU.SoftwareInterrupt) then
     Exit;
 
@@ -421,7 +578,15 @@ begin
       FCPUYieldIdle := IdleCycle;
       FParallelCount := 0;
       FParallelPosition := 0;
-      raise EGBABusYield.Create('GBA CPU bus suspended for DMA');
+      // Capture the same partial CPU state previously left by unwinding.
+      // The remainder of Step is speculative: callbacks return no bus data
+      // and perform no clocks, reads, writes or journal entries.
+      FCPU.Capture(FCPUYieldState);
+      FCPUYieldBusSequential := FBusSequential;
+      FCPUYieldBusCode := FBusCode;
+      FCPUYieldBusLocked := FBusLocked;
+      FCPUYieldRequested := True;
+      Exit(False);
     end;
 end;
 
@@ -430,25 +595,34 @@ begin
   if FCPUAccessCount = Length(FCPUAccesses) then
     raise EInvalidOp.Create('GBA CPU instruction exceeds bus transaction capacity');
 
-  var A: PGBACPUAccess := @FCPUAccesses[FCPUAccessCount];
-  A.Reserved := 0;
-  A.Address := Address;
-  A.Value := Value;
-  A.Size := Size;
-  A.Kind := Kind;
-  A.IRQSample := FIRQSample;
+  var A: PGBACPUAccessWords := @FCPUAccesses[FCPUAccessCount];
+  A.AddressValue := UInt64(Address) or (UInt64(Value) shl 32);
+  // Size is a 32-bit field; the upper two bytes remain zero padding.
+  A.Metadata := UInt64(Cardinal(Size)) or (UInt64(Kind) shl 32) or
+    (UInt64(Ord(FIRQSample)) shl 40);
   Inc(FCPUAccessCount);
   Inc(FCPUAccessPosition);
 end;
 
-function TGBAConsole.CPURead(Address: Cardinal; Size: Integer): Cardinal;
+function TGBAConsole.ReadAlignedROM(Address: Cardinal; Size: Integer): Cardinal;
 begin
-  Result := CPUReadInternal(Address, Size, 0);
-end;
-
-function TGBAConsole.CPUReadUnrotated(Address: Cardinal; Size: Integer): Cardinal;
-begin
-  Result := CPUReadInternal(Address, Size, 1);
+  var Offset := Address and $1FFFFFF;
+  // Callers provide aligned halfword/word reads in ROM regions08-0C.
+  // Keep GPIO and unmapped ROM on the cartridge's original byte path.
+  if (Offset + Cardinal(Size) <= FROMSize) and
+    ((Address < $080000C4) or (Address > $080000C9)) then
+  begin
+    if Size = 4 then
+      Result := PCardinal(FROMData + Offset)^
+    else
+      Result := PWord(FROMData + Offset)^;
+  end
+  else
+    Result := FCartridge.ReadROMBus(Address, Size);
+  if Size = 4 then
+    FOpenBus := Result
+  else
+    FOpenBus := Result or (Result shl 16);
 end;
 
 function TGBAConsole.CPUReadInternal(Address: Cardinal; Size: Integer; Kind: Byte): Cardinal;
@@ -464,10 +638,44 @@ begin
     Exit(A.Value);
   end;
 
-  CheckDMAStart;
+  if not CheckDMAStart then
+    Exit(0);
   Result := ReadBusInternal(Address, Size, Kind = 0);
   FCPUSequenceBroken := False;
   RecordCPUAccess(Address, Result, Size, Kind);
+end;
+
+function TGBAConsole.CPURead(Address: Cardinal; Size: Integer): Cardinal;
+begin
+  Result := CPUReadInternal(Address, Size, 0);
+end;
+
+function TGBAConsole.CPUReadCode(Address: Cardinal; Size: Integer; Sequential: Boolean): Cardinal;
+begin
+  // Keep the same bus state before replay checks and DMA arbitration.
+  FBusSequential := Sequential and not FCPUSequenceBroken;
+  FBusCode := True;
+  // Instruction ROM reads keep the same arbitration, clocks and bus latch,
+  // but do not enter the general memory decoder. Replayed reads retain the
+  // original recorded value and perform no device work.
+  if (FCPUAccessPosition >= FCPUAccessCount) and
+    (Address >= $08000000) and (Address < $0D000000) and
+    ((Size = 2) or (Size = 4)) and (Address and Cardinal(Size - 1) = 0) then
+  begin
+    if not CheckDMAStart then
+      Exit(0);
+    Access(Address, Address shr 24, Size);
+    Result := ReadAlignedROM(Address, Size);
+    FCPUSequenceBroken := False;
+    RecordCPUAccess(Address, Result, Size, 0);
+  end
+  else
+    Result := CPUReadInternal(Address, Size, 0);
+end;
+
+function TGBAConsole.CPUReadUnrotated(Address: Cardinal; Size: Integer): Cardinal;
+begin
+  Result := CPUReadInternal(Address, Size, 1);
 end;
 
 procedure TGBAConsole.CPUWrite(Address, Value: Cardinal; Size: Integer);
@@ -483,7 +691,8 @@ begin
     Exit;
   end;
 
-  CheckDMAStart;
+  if not CheckDMAStart then
+    Exit;
   WriteBus(Address, Value, Size);
   FCPUSequenceBroken := False;
   RecordCPUAccess(Address, Value, Size, 2);
@@ -505,21 +714,29 @@ begin
     FParallelPosition := 0;
   end;
   FCPUAccessPosition := 0;
-  try
-    FCPU.Step(FIRQLevel);
-    FCPUResuming := False;
+  FCPUYieldRequested := False;
+  FCPU.Step(FIRQLevel);
+  FCPUResuming := FCPUYieldRequested;
+  if FCPUYieldRequested then
+  begin
+    FCPU.Restore(FCPUYieldState);
+    FBusSequential := FCPUYieldBusSequential;
+    FBusCode := FCPUYieldBusCode;
+    FBusLocked := FCPUYieldBusLocked;
+    FCPUYieldRequested := False;
+  end
+  else
+  begin
     FCPUAccessCount := 0;
     FCPUYieldIdle := False;
     FParallelCount := 0;
     FParallelPosition := 0;
-  except
-    on E: EGBABusYield do
-      FCPUResuming := True;
   end;
 end;
 
 procedure TGBAConsole.ExecuteSWI(Number: Byte);
 begin
+  FQuietCycles := 0;
   var Before := FAccessCycles;
   var Clocking := FClockBus;
   FClockBus := False;
@@ -586,89 +803,103 @@ begin
     FPrefetchPhase := 0;
 end;
 
-procedure TGBAConsole.Access(Address: Cardinal; Size: Integer);
+procedure TGBAConsole.Access(Address, Region: Cardinal; Size: Integer);
 begin
-  var Region := Address shr 24;
   var W: Word := 0;
   if Region and $F8 = 8 then
     W := WaitControl;
   var Prefetched := False;
   var Cost := 1;
-  var CancelPenalty := 0;
-  if (Region and $F8 = 8) and FPrefetchValid and (FPrefetchCount < 8) then
+  // An existing CPU prefetch stream does not pay the new-access or
+  // cancellation cost, even when its next ROM word is still being fetched.
+  if (Region >= 8) and (Region <= 13) and FBusCode and not FInDMA and
+    (W and $4000 <> 0) and FPrefetchValid and (Address = FPrefetchAddress) then
   begin
-    var PrefetchBank := Integer(((FPrefetchNext shr 24) - 8) div 2);
-    if ((PrefetchBank >= 0) and (PrefetchBank <= 2)) then
+    var Words := 1 + Ord(Size = 4);
+    if FPrefetchCount >= Words then
     begin
-      var Period := FWaitSequential[PrefetchBank];
-      if FPrefetchPhase = Period - 1 then
-        CancelPenalty := 1;
+      Dec(FPrefetchCount, Words);
+      Prefetched := True;
+    end
+    else
+    begin
+      var SeqCost := FWaitSequential[(Region - 8) div 2];
+      Cost := SeqCost - FPrefetchPhase;
+      if Cost < 1 then
+        Cost := 1;
+      Inc(Cost, (Words - FPrefetchCount - 1) * SeqCost);
+      FPrefetchCount := 0;
+      FPrefetchPhase := 0;
     end;
-  end;
-  if Region = 2 then
-    Cost := 3 * (1 + Ord(Size = 4));
-  if ((Region = 5) or (Region = 6)) then
-    Cost := 1 + Ord(Size = 4);
-  if ((Region >= 8) and (Region <= 13)) then
+    FPrefetchAddress := ARMAdd(Address, Size);
+    if FPrefetchCount = 0 then
+      FPrefetchNext := FPrefetchAddress;
+  end
+  else
   begin
-    var Bank := (Region - 8) div 2;
-    var N := FWaitFirst[Bank];
-    var SeqCost := FWaitSequential[Bank];
-    var Sequential := FBusSequential and (Address and $1FFFF <> 0);
-    Cost := N;
-    if Sequential then
-      Cost := SeqCost;
-    if Size = 4 then
-      Inc(Cost, SeqCost);
-    if FBusCode and not FInDMA and (W and $4000 <> 0) then
+    var CancelPenalty := 0;
+    if (Region and $F8 = 8) and FPrefetchValid and (FPrefetchCount < 8) then
     begin
-      var Words := 1 + Ord(Size = 4);
-      if FPrefetchValid and (Address = FPrefetchAddress) then
+      var PrefetchBank := Integer(((FPrefetchNext shr 24) - 8) div 2);
+      if ((PrefetchBank >= 0) and (PrefetchBank <= 2)) then
       begin
-        var Available := Min(Words, FPrefetchCount);
-        Dec(FPrefetchCount, Available);
-        if Available = Words then
-        begin
-          Cost := 1;
-          Prefetched := True;
-        end
-        else
-        begin
-          // A CPU data access breaks CPU bus sequencing, but an already
-          // running prefetch stream still finishes its sequential ROM read.
-          Cost := Max(1, SeqCost - FPrefetchPhase) + (Words - Available - 1) * SeqCost;
-          FPrefetchPhase := 0;
-        end;
-      end
-      else
+        var Period := FWaitSequential[PrefetchBank];
+        if FPrefetchPhase = Period - 1 then
+          CancelPenalty := 1;
+      end;
+    end;
+    if Region = 2 then
+      Cost := 3 * (1 + Ord(Size = 4));
+    if ((Region = 5) or (Region = 6)) then
+      Cost := 1 + Ord(Size = 4);
+    if ((Region >= 8) and (Region <= 13)) then
+    begin
+      var Bank := (Region - 8) div 2;
+      var N := FWaitFirst[Bank];
+      var SeqCost := FWaitSequential[Bank];
+      var Sequential := FBusSequential and (Address and $1FFFF <> 0);
+      Cost := N;
+      if Sequential then
+        Cost := SeqCost;
+      if Size = 4 then
+        Inc(Cost, SeqCost);
+      if FBusCode and not FInDMA and (W and $4000 <> 0) then
       begin
         Inc(Cost, CancelPenalty);
         FPrefetchCount := 0;
         FPrefetchPhase := 0;
-      end;
-      FPrefetchAddress := ARMAdd(Address, Size);
-      if FPrefetchCount = 0 then
+        FPrefetchAddress := ARMAdd(Address, Size);
         FPrefetchNext := FPrefetchAddress;
-      FPrefetchValid := True;
-    end
-    else
-    begin
-      Inc(Cost, CancelPenalty);
-      FPrefetchValid := False;
-      FPrefetchCount := 0;
-      FPrefetchPhase := 0;
+        FPrefetchValid := True;
+      end
+      else
+      begin
+        Inc(Cost, CancelPenalty);
+        FPrefetchValid := False;
+        FPrefetchCount := 0;
+        FPrefetchPhase := 0;
+      end;
     end;
-  end;
-  if (Region shr 1 = 7) then
-  begin
-    Cost := FWaitSave + CancelPenalty;
-    FPrefetchValid := False;
+    if (Region shr 1 = 7) then
+    begin
+      Cost := FWaitSave + CancelPenalty;
+      FPrefetchValid := False;
+    end;
   end;
   FLastAddress := ARMAdd(Address, Size);
   if FClockBus then
   begin
     FGamePakBusy := ((Region and $F8 = 8)) and not Prefetched;
     try
+      // No IRQ can change inside a quiet slice, so its first-cycle sample
+      // equals the final level. Video-port contention still clocks each beat.
+      if (Cost > 1) and ((Region < 5) or (Region > 7) or not FVideo.Clocked) and
+        Tick(Cost, True) then
+      begin
+        if not FInDMA then
+          FIRQSample := FIRQLevel;
+        Exit;
+      end;
       Tick(1);
       if not FInDMA then
         FIRQSample := FIRQLevel;
@@ -780,7 +1011,15 @@ end;
 
 function TGBAConsole.ReadBusInternal(Address: Cardinal; Size: Integer; RotateValue: Boolean): Cardinal;
 begin
-  Access(Address, Size);
+  Access(Address, Address shr 24, Size);
+  // Aligned ROM reads have no video-port, BIOS-latch or EEPROM handling.
+  // Charge the same access first; GPIO and unmapped ROM stay in ReadROMBus.
+  if (Address >= $08000000) and (Address < $0D000000) and
+    ((Size = 2) or (Size = 4)) and (Address and Cardinal(Size - 1) = 0) then
+  begin
+    Exit(ReadAlignedROM(Address, Size));
+  end;
+
   if (Address and $FC000000 = $04000000) then
     FlushVideo;
   if FInDMA and ((Address < $02000000) or (Address shr 24 >= $10)) then
@@ -910,7 +1149,7 @@ end;
 
 procedure TGBAConsole.WriteBus(Address, Value: Cardinal; Size: Integer);
 begin
-  Access(Address, Size);
+  Access(Address, Address shr 24, Size);
   if Address = $FFFFFFFF then
   begin
     FOpenBus := Value;
@@ -1048,6 +1287,7 @@ end;
 
 procedure TGBAConsole.WriteIO(Offset: Integer; Value: Byte);
 begin
+  FQuietCycles := 0;
   if (Offset >= $100) and (Offset < $110) then
     FlushTimers;
   if (Offset = 6) or (Offset = 7) or (Offset = $130) or (Offset = $131) then
@@ -1255,6 +1495,7 @@ end;
 
 procedure TGBAConsole.UpdateIRQ;
 begin
+  FQuietCycles := 0;
   if FIRQReadLatch <> FVideo.Reg16($202) then
     FIRQReadDelay := 1;
 
@@ -1274,6 +1515,7 @@ end;
 
 procedure TGBAConsole.IRQ(Bit: Integer; Delay: Integer);
 begin
+  FQuietCycles := 0;
   if Delay > 0 then
   begin
     if FIRQDue[Bit] = 0 then
@@ -1437,6 +1679,7 @@ end;
 
 procedure TGBAConsole.TickSleep;
 begin
+  FQuietCycles := 0;
   // Host publications continue, but CPU, LCD, timers and APU keep their phase.
   if FStopFrameCycles = 0 then
   begin
@@ -1460,6 +1703,7 @@ procedure TGBAConsole.UpdateTimerDeadline;
 const
   Prescales: array[0..3] of Integer = (1, 64, 256, 1024);
 begin
+  FQuietCycles := 0;
   FTimerEventCycles := MaxInt;
   for var i := 0 to 3 do
   begin
@@ -1614,37 +1858,9 @@ begin
     end;
 end;
 
-procedure TGBAConsole.Tick(Cycles: Integer);
-begin
-  // A bus slice that ends before every scheduler edge needs no event walk.
-  // Keep the full scheduler for IRQ synchronization, timer edges and DMA replay.
-  if (Cycles > 0) and (Cycles < FTimerEventCycles) and
-    (FIRQDelay = 0) and (FHaltIRQDelay = 0) and (FIRQReadDelay = 0) and
-    (FNextIRQDue = 0) and not FSerialActive and
-    not FCartridge.Hardware.HasRTC and not FCartridge.Hardware.IRQPending and
-    (Cycles < 1232 - FLineCycle) and
-    ((FLineCycle >= 1007) or (Cycles < 1006 - FLineCycle)) and
-    not (FFrameBoundaryActive and (FFrameNumber >= FFrameTarget)) and
-    not (FInDMA and FCPUResuming and FCPUYieldIdle and not FHalted) then
-  begin
-    FSound.Tick(Cycles);
-    FCartridge.Tick(Cycles);
-    PrefetchTick(Cycles);
-    Inc(FMasterClock, Cycles);
-    if FTimerWorkMask <> 0 then
-    begin
-      Dec(FTimerEventCycles, Cycles);
-      Inc(FTimerPendingCycles, Cycles);
-    end;
-    Inc(FLineCycle, Cycles);
-    Inc(FVideoPendingCycles, Cycles);
-  end
-  else
-    TickEvents(Cycles);
-end;
-
 procedure TGBAConsole.TickEvents(Cycles: Integer);
 begin
+  FQuietCycles := 0;
   // Bound event slices to preserve timer/FIFO ordering while a DMA blocks the CPU.
   while Cycles > 0 do
   begin
@@ -1926,6 +2142,7 @@ end;
 
 procedure TGBAConsole.RunFrame;
 begin
+  FQuietCycles := 0;
   FSound.BeginFrame;
   FFrameTarget := FFrameNumber + 1;
   FFrameBoundaryActive := True;
@@ -1934,6 +2151,7 @@ begin
       StepInternal;
   finally
     FFrameBoundaryActive := False;
+    FQuietCycles := 0;
   end;
 end;
 
@@ -2019,6 +2237,7 @@ procedure TGBAConsole.SerializeState(State: TStateArchive);
 const
   TimerMasks: array[0..3] of Integer = (0, 63, 255, 1023);
 begin
+  FQuietCycles := 0;
   if State.Loading then
   begin
     FWaitControl := $FFFFFFFF;

@@ -20,6 +20,10 @@ type
     FOriginalCpuMask, FFastCpuMask: TEmulationCpuMask;
     FAffinityPrepared, FAffinityAttempted, FAffinityApplied: Boolean;
     FSlowSince: Int64;
+    {$IFDEF RETROMUL_PERF_TRACE}
+    FTraceStart, FTraceWork: Int64;
+    FTraceFrames: Integer;
+    {$ENDIF}
     {$ENDIF}
     {$IFDEF MSWINDOWS}
     FTimer: NativeUInt;
@@ -318,6 +322,16 @@ begin
   var Text := UTF8String(FName + ': ' + Message);
   __android_log_write(android_LogPriority.ANDROID_LOG_INFO,
     'RetroMul.Hints', MarshaledAString(Text));
+  {$IFDEF RETROMUL_PERF_TRACE}
+  // Persist opt-in diagnostics for offline comparisons without a logcat stream.
+  try
+    TFile.AppendAllText(TPath.Combine(TPath.GetDocumentsPath, 'retromul-performance.log'),
+      FormatDateTime('hh:nn:ss.zzz', Now) + ' ' + FName + ': ' + Message + sLineBreak,
+      TEncoding.UTF8);
+  except
+    // Diagnostic output must never stop emulation.
+  end;
+  {$ENDIF}
 end;
 
 procedure TEmulationPerformanceHints.Disable(const Reason: string);
@@ -421,6 +435,11 @@ begin
   {$IFDEF ANDROID}
   FWorking := False;
   FWorkTicks := 0;
+  {$IFDEF RETROMUL_PERF_TRACE}
+  FTraceStart := 0;
+  FTraceWork := 0;
+  FTraceFrames := 0;
+  {$ENDIF}
   FSlowSince := 0;
   if FAffinityApplied then
   begin
@@ -504,6 +523,23 @@ begin
     on E: Exception do
       Disable('work report failed: ' + E.Message);
   end;
+  {$IFDEF RETROMUL_PERF_TRACE}
+  // Opt-in Android diagnostics: real throughput and active work, excluding waits.
+  var TraceNow := TStopwatch.GetTimeStamp;
+  if FTraceStart = 0 then
+    FTraceStart := FStart;
+  Inc(FTraceWork, WorkNanos);
+  Inc(FTraceFrames);
+  if TraceNow - FTraceStart >= TStopwatch.Frequency * 2 then
+  begin
+    Log(Format('perf frames=%d fps=%.2f work_ms=%.3f target_ms=%.3f',
+        [FTraceFrames, FTraceFrames * (TStopwatch.Frequency / Double(TraceNow - FTraceStart)),
+          FTraceWork / (FTraceFrames * 1000000.0), FTargetNanos / 1000000.0]));
+    FTraceStart := TraceNow;
+    FTraceWork := 0;
+    FTraceFrames := 0;
+  end;
+  {$ENDIF}
   ObserveWork(WorkNanos);
   {$ENDIF}
 end;

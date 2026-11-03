@@ -64,7 +64,7 @@ object SettingsPathTemplate: TSettingsPathTemplate
           CanFocus = False
           Cursor = crArrow
           Hint = 'Choose translation file'
-          Size.Width = 32.000000000000000000
+          Size.Width = 28.000000000000000000
           Size.Height = 28.000000000000000000
           Size.PlatformDefault = False
           TabOrder = 0
@@ -81,12 +81,12 @@ object SettingsPathTemplate: TSettingsPathTemplate
               9A99B54100006041020000000000A041000060410200000066668A4100006041
               0200000066668A4100002041020000000000A04100002041030000000000A041
               00002041}
-            Fill.Kind = None
+            Fill.Color = xFFE8ECF1
             HitTest = False
-            Size.Width = 16.000000000000000000
-            Size.Height = 16.000000000000000000
+            Size.Width = 14.000000000000000000
+            Size.Height = 14.000000000000000000
             Size.PlatformDefault = False
-            Stroke.Color = xFFE8ECF1
+            Stroke.Kind = None
             Stroke.Thickness = 1.600000023841858000
             WrapMode = Fit
           end
@@ -124,12 +124,39 @@ object SettingsPathTemplate: TSettingsPathTemplate
           CanFocus = False
           Cursor = crArrow
           Hint = 'Clear'
-          Position.X = 32.000000000000000000
-          Size.Width = 32.000000000000000000
+          Position.X = 28.000000000000000000
+          Size.Width = 28.000000000000000000
           Size.Height = 28.000000000000000000
           Size.PlatformDefault = False
           TabOrder = 1
-          Text = #215
+          object PathCloseIcon: TPath
+            Align = Center
+            Data.Path = {
+              2A0000000000000052B886404E628C4001000000426089404260894002000000
+              CFC69440F5F37B400200000095E0A64039AD794002000000B39DB34052B88640
+              01000000BF9FB640426089400100000000004041295C29410100000010589241
+              4260894002000000435A9441AA0E814002000000B753974128717B4002000000
+              C31F9A4145A6804002000000CFEB9C41F693834002000000021B9F41C2508C40
+              020000006ED69F41F180974002000000DA91A04120B1A2400200000055BC9F41
+              F396AE4002000000EFA79D41BF9FB64001000000D7A356410000404101000000
+              F0A79D4110589241020000008281A041B33195410200000059CAA04125B89941
+              02000000EC519E416CE79C4101000000F0A79D41EFA79D41020000004DCE9A41
+              8181A04102000000DB47964158CAA0410200000094189341EB519E4101000000
+              11589241EFA79D410100000000004041D7A3564101000000BE9FB640F0A79D41
+              020000005E11AA4010B0A04102000000021C9640F5A4A0410200000018C48940
+              FB8E9D41020000005DD87A4001799A4102000000847F7A40A97B954102000000
+              416089401158924101000000295C2941000040410100000042608940BE9FB640
+              02000000F5F37B403139AB40020000003AAD79406A1F99400200000052B88640
+              4D628C400100000042608940416089400300000052B886404E628C40}
+            Fill.Color = xFFE8ECF1
+            HitTest = False
+            Size.Width = 12.000000000000000000
+            Size.Height = 12.000000000000000000
+            Size.PlatformDefault = False
+            Stroke.Kind = None
+            Stroke.Thickness = 1.600000023841858000
+            WrapMode = Fit
+          end
         end
       end
     end

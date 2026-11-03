@@ -3,6 +3,10 @@
 // Cartridge GPIO, S-3511A RTC and the documented Boktai/Yoshi/Wario sensors.
 // Hardware protocol: https://mgba-emu.github.io/gbatek/#gbacartioportgpio
 
+{$IF Defined(ANDROID) and Defined(CPUARM64) and not Defined(RETROMUL_GBA_NO_NATIVE_QUIET)}
+{$DEFINE RETROMUL_GBA_NATIVE_QUIET}
+{$ENDIF}
+
 interface
 
 uses
@@ -27,6 +31,9 @@ type
     function RTCDate(IncludeDate: Boolean): UInt64;
     procedure WritePins(Value: Byte);
   public
+    {$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+    function NativeQuietIRQOffset: Integer;
+    {$ENDIF}
     constructor Create(const Code: AnsiString; HasRTC: Boolean);
     procedure Reset;
     procedure Tick(Cycles: Integer); inline;
@@ -51,9 +58,12 @@ type
   end;
 
 implementation
-
-uses
-  GBA.Cartridge;
+{$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+function TGBAHardware.NativeQuietIRQOffset: Integer;
+begin
+  Result := Integer(NativeUInt(@FIRQPending)-NativeUInt(Self));
+end;
+{$ENDIF}
 
 function BCD(Value: Integer): Byte;
 begin

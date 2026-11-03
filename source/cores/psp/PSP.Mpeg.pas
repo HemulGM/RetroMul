@@ -1792,7 +1792,7 @@ begin
     var Size := FMemory.Read32(Lli + 12) and $FFF;
     if (Src <> 0) and (Dst <> 0) and (Size > 0) then
     begin
-      var S := FMemory.Ptr(Src, Size);
+      var S := FMemory.ReadPtr(Src, Size);
       var D := FMemory.Ptr(Dst, Size);
       if D <> nil then
         FMemory.Touched(Dst, Size)

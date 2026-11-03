@@ -1,5 +1,9 @@
 ﻿unit GBA.Cartridge;
 
+{$IF Defined(ANDROID) and Defined(CPUARM64) and not Defined(RETROMUL_GBA_NO_NATIVE_QUIET)}
+{$DEFINE RETROMUL_GBA_NATIVE_QUIET}
+{$ENDIF}
+
 interface
 
 uses
@@ -20,16 +24,21 @@ type
     FData, FSave: TBytes;
     FKind: TGBASaveKind;
     FFixedEEPROMBits: Integer;
+    FSRAMPatchedEEPROM: Boolean; // Derived from the ROM; preserves the 8 KiB snapshot payload.
     FDirty, FFlashID, FFlashErase, FFlashProgram, FFlashBankSelect: Boolean;
     FFlashState, FFlashBank, FEEPROMBits, FEEPROMCount, FEEPROMRead, FEEPROMAddress: Integer;
     FHardware: TGBAHardware;
     FFlashBusy, FEEPROMBusy: Integer;
+    FTimedHardware, FTickRequired: Boolean; // Derived; never serialized.
     FEEPROMCommand: array[0..81] of Byte;
     function ReadROMBusSlow(Address: Cardinal; Size: Integer): Cardinal; inline;
   public
+    {$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+    procedure NativeQuietOffsets(out Hardware, Required: Integer);
+    {$ENDIF}
     constructor Create(const Data: TBytes);
     destructor Destroy; override;
-    procedure Tick(Cycles: Integer); //inline;
+    procedure Tick(Cycles: Integer); inline;
     procedure OverrideSaveKind(Kind: TGBASaveKind);
     procedure WriteROM(Address: Cardinal; Value: Byte);
     function ReadROM(Address: Cardinal): Byte;
@@ -53,6 +62,13 @@ type
 function IsGBAROM(const Data: TBytes): Boolean;
 
 implementation
+{$IFDEF RETROMUL_GBA_NATIVE_QUIET}
+procedure TGBACartridge.NativeQuietOffsets(out Hardware, Required: Integer);
+begin
+  Hardware := Integer(NativeUInt(@FHardware)-NativeUInt(Self));
+  Required := Integer(NativeUInt(@FTickRequired)-NativeUInt(Self));
+end;
+{$ENDIF}
 
 function IsGBAROM(const Data: TBytes): Boolean;
 begin
@@ -60,6 +76,37 @@ begin
     CompareMem(@Data[4], @GBA_LOGO_PREFIX[0], SizeOf(GBA_LOGO_PREFIX));
 end;
 
+// A flashcart patch replaces EEPROM dword reads/writes with reverse byte
+// copies on the SRAM bus, but leaves EEPROM_V in the ROM. Require both
+// complete routines so a library marker or isolated instruction is not enough.
+function HasEEPROMToSRAMPatch(const Data: TBytes): Boolean;
+const
+  ReadCode: array[0..39] of Byte = (
+    $70,$B5,$00,$04,$0A,$1C,$40,$0B,$E0,$21,$09,$05,$41,$18,$07,$31,
+    $00,$23,$08,$78,$10,$70,$01,$33,$01,$32,$01,$39,$07,$2B,$F8,$D9,
+    $00,$20,$70,$BC,$02,$BC,$08,$47);
+  WriteCode: array[0..39] of Byte = (
+    $70,$B5,$00,$04,$0A,$1C,$40,$0B,$E0,$21,$09,$05,$41,$18,$07,$31,
+    $00,$23,$10,$78,$08,$70,$01,$33,$01,$32,$01,$39,$07,$2B,$F8,$D9,
+    $00,$20,$70,$BC,$02,$BC,$08,$47);
+var
+  HasRead, HasWrite: Boolean;
+begin
+  HasRead := False;
+  HasWrite := False;
+  var I := 0;
+  while I <= Length(Data) - SizeOf(ReadCode) do
+  begin
+    if Data[I] = $70 then
+    begin
+      HasRead := HasRead or CompareMem(@Data[I], @ReadCode[0], SizeOf(ReadCode));
+      HasWrite := HasWrite or CompareMem(@Data[I], @WriteCode[0], SizeOf(WriteCode));
+      if HasRead and HasWrite then Exit(True);
+    end;
+    Inc(I, 2);
+  end;
+  Result := False;
+end;
 constructor TGBACartridge.Create(const Data: TBytes);
 
   function Has(const Signature: AnsiString): Boolean;
@@ -79,6 +126,7 @@ begin
   var Code := AnsiString('    ');
   Move(Data[$AC], Code[1], 4);
   FHardware := TGBAHardware.Create(Code, Has('SIIRTC_V'));
+  FTimedHardware := FHardware.HasRTC or FHardware.HasRumble;
 
   // Classic NES/Famicom mini cartridges decode mirrors up to 4 MiB.
   if (Code[1] = 'F') and (Length(FData) = $100000) then
@@ -88,8 +136,12 @@ begin
       Move(FData[0], FData[i * $100000], $100000);
   end;
 
-  // Game-code exceptions override misleading or absent SDK save markers.
-  if (Code = 'A2YE') or (Code = 'AI2E') then
+  FSRAMPatchedEEPROM := HasEEPROMToSRAMPatch(Data);
+
+  // Actual replacement routines take precedence over retained SDK markers.
+  if FSRAMPatchedEEPROM then
+    FKind := TGBASaveKind.SRAM
+  else if (Code = 'A2YE') or (Code = 'AI2E') then
     FKind := TGBASaveKind.None
   else if Code = 'BR4J' then
     FKind := TGBASaveKind.Flash64
@@ -118,6 +170,8 @@ begin
     TGBASaveKind.EEPROM:
       SetLength(FSave, $2000);
   end;
+  if FSRAMPatchedEEPROM then
+    SetLength(FSave, $2000); // The patched EEPROM API addresses at most 8 KiB.
   if Length(FSave) > 0 then
     FillChar(FSave[0], Length(FSave), $FF);
   Reset;
@@ -131,11 +185,18 @@ end;
 
 procedure TGBACartridge.Tick(Cycles: Integer);
 begin
+  // With no RTC, motor or pending save write, no cartridge state can advance.
+  // The unused motor averaging counters are private and not serialized;
+  // TakeRumbleLevel always returns zero for cartridges without a motor.
+  if not FTickRequired then
+    Exit;
+
   FHardware.Tick(Cycles);
   if FFlashBusy > 0 then
     FFlashBusy := Max(0, FFlashBusy - Cycles);
   if FEEPROMBusy > 0 then
     FEEPROMBusy := Max(0, FEEPROMBusy - Cycles);
+  FTickRequired := FTimedHardware or (FFlashBusy > 0) or (FEEPROMBusy > 0);
 end;
 
 procedure TGBACartridge.OverrideSaveKind(Kind: TGBASaveKind);
@@ -144,6 +205,7 @@ begin
     Exit;
 
   FKind := Kind;
+  FSRAMPatchedEEPROM := False;
   FFixedEEPROMBits := 0;
   FEEPROMBits := 6;
   var Size := 0;
@@ -173,6 +235,7 @@ begin
   FHardware.Reset;
   FFlashBusy := 0;
   FEEPROMBusy := 0;
+  FTickRequired := FTimedHardware;
   FFlashState := 0;
   FFlashBank := 0;
   FFlashID := False;
@@ -231,13 +294,15 @@ end;
 
 function TGBACartridge.ReadSave(Address: Cardinal): Byte;
 begin
-  Result := $FF;
   if FHardware.ReadTilt(Address, Result) then
     Exit;
 
+  // An absent sensor may clear its out parameter even when it does not
+  // decode this address. Unpopulated SRAM/Flash buses still read as FF.
+  Result := $FF;
   Address := Address and $FFFF;
   if FKind = TGBASaveKind.SRAM then
-    Exit(FSave[Address and $7FFF]);
+    Exit(FSave[Address and Cardinal(Length(FSave) - 1)]);
 
   if not (FKind in [TGBASaveKind.Flash64, TGBASaveKind.Flash128]) then
     Exit;
@@ -269,7 +334,7 @@ begin
   Address := Address and $FFFF;
   if FKind = TGBASaveKind.SRAM then
   begin
-    FSave[Address and $7FFF] := Value;
+    FSave[Address and Cardinal(Length(FSave) - 1)] := Value;
     FDirty := True;
     Exit;
   end;
@@ -283,6 +348,7 @@ begin
     FFlashProgram := False;
     FDirty := True;
     FFlashBusy := 85;
+    FTickRequired := True;
     if Value = $FF then
       FFlashBusy := 17;
     Exit;
@@ -325,12 +391,14 @@ begin
             FillChar(FSave[0], Length(FSave), $FF);
             FDirty := True;
             FFlashBusy := 2000000 * (Length(FSave) div $1000);
+            FTickRequired := True;
           end
           else if Value = $30 then
           begin
             FillChar(FSave[(Address and $F000) + Cardinal(FFlashBank * $10000)], $1000, $FF);
             FDirty := True;
             FFlashBusy := 2000000;
+            FTickRequired := True;
           end;
           FFlashErase := False;
         end
@@ -403,6 +471,7 @@ begin
     end;
     FDirty := True;
     FEEPROMBusy := 108368;
+    FTickRequired := True;
   end;
   FEEPROMCount := 0;
 end;
@@ -425,7 +494,14 @@ end;
 
 procedure TGBACartridge.LoadBattery(const Data: TBytes);
 begin
-  if (FKind = TGBASaveKind.EEPROM) and ((Length(Data) = 512) or (Length(Data) = 8192)) then
+  if FSRAMPatchedEEPROM and ((Length(Data) = 512) or (Length(Data) = 8192) or (Length(Data) = 32768)) then
+  begin
+    // Accept saves produced by the former EEPROM misdetection or an explicit
+    // SRAM override. The EEPROM patch only addresses the first 8 KiB.
+    FillChar(FSave[0], Length(FSave), $FF);
+    Move(Data[0], FSave[0], Min(Length(Data), Length(FSave)));
+  end
+  else if (FKind = TGBASaveKind.EEPROM) and ((Length(Data) = 512) or (Length(Data) = 8192)) then
   begin
     Move(Data[0], FSave[0], Length(Data));
     if FFixedEEPROMBits <> 0 then
@@ -493,6 +569,7 @@ begin
       (FEEPROMAddress > $1FF8) then
       raise EReadError.Create('Invalid GBA cartridge state');
 
+    FTickRequired := FTimedHardware or (FFlashBusy > 0) or (FEEPROMBusy > 0);
     MarkBatteryDirty;
   end;
 end;

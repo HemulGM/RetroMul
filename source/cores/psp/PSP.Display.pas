@@ -63,6 +63,7 @@ type
     FFrameDone: Boolean;
     FHandlersRan: Boolean;
     FWakeAt, FSampleAt: Int64;
+    FFrames: array[0..2] of TArray<TAlphaColor>;
     // Controller
     FInput: Cardinal;
     FAnalogX, FAnalogY: Byte;
@@ -557,16 +558,44 @@ procedure TPSPDisplay.Render(var Frame: TEmulatorFrame);
 begin
   Frame.Width := PSPFrameWidth;
   Frame.Height := PSPFrameHeight;
-  if Length(Frame.Pixels) <> PSPFrameWidth * PSPFrameHeight then
-    SetLength(Frame.Pixels, PSPFrameWidth * PSPFrameHeight);
+  var Pick := -1;
+  for var I := 0 to High(FFrames) do
+    if (Length(FFrames[I]) = PSPFrameWidth * PSPFrameHeight) and
+      (EmulationBufferReferences(Pointer(FFrames[I])) = 1) then
+    begin
+      Pick := I;
+      Break
+    end;
+  if Pick < 0 then
+  begin
+    Pick := 0;
+    for var I := 0 to High(FFrames) do
+      if EmulationBufferReferences(Pointer(FFrames[I])) <= 1 then
+      begin
+        Pick := I;
+        Break
+      end;
+    // Dropping our reference never overwrites a frame still used by the UI.
+    FFrames[Pick] := nil;
+    SetLength(FFrames[Pick], PSPFrameWidth * PSPFrameHeight);
+  end;
+  Frame.Pixels := FFrames[Pick];
   var Bpp: Cardinal := 2;
   if FFormat = 3 then
     Bpp := 4;
+  // Resolve all displayed held pages in one range. Row-at-a-time faults
+  // would turn a selective GPU readback into many small submissions.
+  var Source: PByte := nil;
+  var Span := (UInt64(PSPFrameHeight - 1) * FWidth + PSPFrameWidth) * Bpp;
+  if (FCurrentAddr <> 0) and (Span <= High(Cardinal)) then
+    Source := FMemory.ReadPtr(FCurrentAddr, Cardinal(Span));
   for var Y := 0 to PSPFrameHeight - 1 do
   begin
     var Row: PByte := nil;
-    if FCurrentAddr <> 0 then
-      // Read only: drawn pages are brought back, watched ones need not be.
+    if Source <> nil then
+      Row := Source + Cardinal(Y) * FWidth * Bpp
+    else if FCurrentAddr <> 0 then
+      // Preserve partial mappings and nonlinear-view fallback.
       Row := FMemory.ReadPtr(FCurrentAddr + Cardinal(Y) * FWidth * Bpp, PSPFrameWidth * Bpp);
     var Dest := PCardinal(@Frame.Pixels[Y * PSPFrameWidth]);
     if Row = nil then

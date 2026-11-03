@@ -520,12 +520,70 @@ end;
 
 procedure TSnesConsole.Advance(Clocks: Integer);
 begin
+  // Between line events, a disabled comparator only advances its H counter.
+  // No CPU access or coprocessor synchronization occurs inside this slice.
+  // Keep the scalar event path for the first dots, refresh, rendering, joypad
+  // edges and a pending IRQ pipeline, including snapshots with unusual counters.
+  var EndClock := FState.HClock + Clocks;
+  if (Clocks > 0) and (FState.HClock >= 10) and (EndClock < 1096) and
+    ((FState.HClock >= FState.RefreshPosition) or (EndClock < FState.RefreshPosition)) and
+    ((FState.Line <> 0) or (FState.HClock >= FState.HDMAInitPosition) or
+    (EndClock < FState.HDMAInitPosition)) and
+    (FState.NMITIMEN and $30 = 0) and (FState.IRQDelay = 0) and
+    FState.AutoJoyDisabled and not FState.AutoJoyStrobe then
+  begin
+    var Edges := ((EndClock + 2) shr 2) - ((FState.HClock + 2) shr 2);
+    if Edges <= High(Word) - FState.IRQHCounter then
+    begin
+      Inc(FState.Clock, Clocks);
+      FState.HClock := EndClock;
+      if Edges > 0 then
+      begin
+        Inc(FState.IRQHCounter, Edges);
+        FState.IRQLevel := False;
+        FCPU.State.IRQ := FState.IRQSignal or FCartridge.CoprocessorIRQ;
+      end;
+      Exit;
+    end;
+  end;
   var Remaining := Clocks;
+  var LineLimit := LineClocks;
   while Remaining > 0 do
   begin
-    Dec(Remaining);
-    Inc(FState.Clock);
-    Inc(FState.HClock);
+    // Stop at every observable clock edge. Between them only the two master
+    // counters change; CPU bus accesses and coprocessor synchronization remain
+    // outside this routine, in their original order.
+    var EndH := FState.HClock + Remaining;
+    var IRQEdge := FState.HClock + ((1 - FState.HClock) and 3) + 1;
+    if EndH > IRQEdge then
+      EndH := IRQEdge;
+    if (FState.HClock < FState.RefreshPosition) and (EndH > FState.RefreshPosition) then
+      EndH := FState.RefreshPosition;
+    if (FState.HClock < 1096) and (EndH > 1096) then
+      EndH := 1096;
+    if (FState.HClock < 1104) and (EndH > 1104) then
+      EndH := 1104;
+    if (FState.Line = 0) and (FState.HClock < FState.HDMAInitPosition) and
+      (EndH > FState.HDMAInitPosition) then
+      EndH := FState.HDMAInitPosition;
+    if EndH > LineLimit then
+      EndH := LineLimit;
+    var N := EndH - FState.HClock;
+    // SETINI can shorten line 240 after its new endpoint has already passed.
+    // The scalar scheduler handled that boundary on the next master clock.
+    if N < 1 then
+      N := 1;
+    if not FState.AutoJoyDisabled or FState.AutoJoyStrobe then
+    begin
+      var UntilJoy := FState.AutoJoyNext - FState.Clock;
+      if UntilJoy < 1 then
+        UntilJoy := 1;
+      if UntilJoy < N then
+        N := Integer(UntilJoy);
+    end;
+    Dec(Remaining, N);
+    Inc(FState.Clock, N);
+    Inc(FState.HClock, N);
     if FState.HClock = FState.RefreshPosition then
       Inc(Remaining, 40);
     if FState.HClock = 1096 then
@@ -551,7 +609,7 @@ begin
       FState.HDMAInitPending := True;
       FState.DMAStartDelay := True;
     end;
-    if FState.HClock >= LineClocks then
+    if FState.HClock >= LineLimit then
     begin
       FPPU.EndScanline(FState.Line, (FState.FrameNumber and 1) <> 0);
       FState.HClock := 0;
@@ -576,6 +634,7 @@ begin
         FPPU.BeginFrame;
         FState.HDMAInitPosition := 12 + (FState.Clock and 7);
       end;
+      LineLimit := LineClocks;
     end;
     ProcessAutoJoy;
     if (FState.HClock and 3) = 2 then

@@ -63,6 +63,7 @@ type
     procedure CallKernel(const Lib: string; NID: Cardinal);
     // Utils
     procedure hDcacheNop;
+    procedure hIcacheInvalidate;
     procedure hDcacheWritebackRange;
     procedure hDcacheInvalidateRange;
     procedure hLibcTime;
@@ -449,22 +450,36 @@ begin
   M.WriteBytes(Address + 32, Buf[0], 64);
 end;
 
-function GuestBytes(M: TPSPMemory; Address, Size: Cardinal): TBytes;
+procedure HashGuest(var C: THashCtx; M: TPSPMemory; Address, Size: Cardinal);
+var
+  Buffer: array[0..4095] of Byte;
 begin
-  SetLength(Result, Size);
-  if Size > 0 then
-    M.ReadBytes(Address, Result[0], Size);
+  if Size = 0 then
+    Exit;
+  var P := M.ReadPtr(Address, Size);
+  if P <> nil then
+  begin
+    C.Update(P, Size);
+    Exit;
+  end;
+  // Nonlinear mirrors and unmapped tails retain ReadBytes' exact semantics.
+  while Size > 0 do
+  begin
+    var Count := Min(Size, Cardinal(SizeOf(Buffer)));
+    M.ReadBytes(Address, Buffer, Count);
+    C.Update(@Buffer[0], Count);
+    Inc(Address, Count);
+    Dec(Size, Count);
+  end;
 end;
 
 procedure HashOneShot(S: TPSPSysLibs; Kind: THashKind);
 begin
   var H := S.System.HLE;
   var M := S.System.Memory;
-  var Data := GuestBytes(M, H.Arg(0), H.Arg(1));
   var C: THashCtx;
   C.Init(Kind);
-  if Length(Data) > 0 then
-    C.Update(@Data[0], Length(Data));
+  HashGuest(C, M, H.Arg(0), H.Arg(1));
   var D := C.Final;
   M.WriteBytes(H.Arg(2), D[0], Length(D));
   H.Result(0);
@@ -504,9 +519,7 @@ begin
   end;
   var C: THashCtx;
   C.Load(M, P, Kind);
-  var Data := GuestBytes(M, H.Arg(1), H.Arg(2));
-  if Length(Data) > 0 then
-    C.Update(@Data[0], Length(Data));
+  HashGuest(C, M, H.Arg(1), H.Arg(2));
   C.Store(M, P);
   H.Result(0);
 end;
@@ -1713,6 +1726,12 @@ end;
 
 { Utils }
 
+procedure TPSPSysLibs.hIcacheInvalidate;
+begin
+  FHLE.CPU.FlushDecoded;
+  FHLE.Result(0);
+end;
+
 procedure TPSPSysLibs.hDcacheNop;
 begin
   FHLE.Result(0);
@@ -2122,8 +2141,10 @@ const
   S = 'sceSuspendForUser';
 begin
   var H := FHLE;
-  for var NID in [Cardinal($79D1C3FA), $B435DEC5, $920F104A, $C2DF770E, $80001C4C, $16641D70, $4FD31C9D, $FB05FAD0] do
+  for var NID in [Cardinal($79D1C3FA), $B435DEC5, $80001C4C, $16641D70, $4FD31C9D, $FB05FAD0] do
     H.Register(U, NID, Format('sceKernelCache_%.8X', [NID]), hDcacheNop);
+  H.Register(U, $920F104A, 'sceKernelIcacheInvalidateAll', hIcacheInvalidate);
+  H.Register(U, $C2DF770E, 'sceKernelIcacheInvalidateRange', hIcacheInvalidate);
   H.Register(U, $3EE30821, 'sceKernelDcacheWritebackRange', hDcacheWritebackRange);
   H.Register(U, $34B9FA9E, 'sceKernelDcacheWritebackInvalidateRange', hDcacheWritebackRange);
   H.Register(U, $BFA98062, 'sceKernelDcacheInvalidateRange', hDcacheInvalidateRange);

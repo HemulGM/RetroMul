@@ -22,17 +22,16 @@
 interface
 
 uses
-{$IFDEF MSWINDOWS}
-  Winapi.Windows,
-{$ENDIF}
-  System.SysUtils, System.Classes, System.Math, System.Diagnostics, PSP.Types,
-  PSP.Memory, PSP.GE.Texture, PSP.GE.Raster, HW.HostFPU;
+  System.SysUtils, System.Classes, System.Math, System.Diagnostics,
+  System.SyncObjs, PSP.Types, PSP.Memory, PSP.GE.Texture, PSP.GE.Raster,
+  HW.HostFPU;
 
 type
   TGEJobKind = (gjTriangle, gjSprite, gjLine, gjPoint);
 
   TGEJob = record
     State: Integer;
+    Prepared: Integer;
     Kind: TGEJobKind;
     Y1, Y2: Integer;
     V: array[0..2] of TGEVertex;
@@ -66,6 +65,8 @@ type
     FPUControl: Word;
     BandTop, BandRows, Bands: Integer;
     NextBand: Integer;
+    BandOffsets, BandJobs: TArray<Integer>;
+    Prepared: TArray<TGEPreparedTriangle>;
   end;
 
   PGEBatch = ^TGEBatch;
@@ -87,11 +88,10 @@ type
 
   TGEWorkers = class;
 
-{$IFDEF MSWINDOWS}
   TGEWorker = class(TThread)
   private
     FOwner: TGEWorkers;
-    FStart, FDone: THandle;
+    FStart, FDone: TEvent;
     FError: Exception;
     FBusy: Int64;
   protected
@@ -100,7 +100,6 @@ type
     constructor Create(Owner: TGEWorkers);
     destructor Destroy; override;
   end;
-{$ENDIF}
 
   TGEWorkers = class
   private
@@ -119,9 +118,7 @@ type
     FBatches: array[0..1] of TGEBatch;
     FBatch: PGEBatch;
     FFlight: PGEBatch;
-{$IFDEF MSWINDOWS}
     FFlightThreads: Integer;
-{$ENDIF}
     FStateDirty: Boolean;
     FLastSource: Pointer;
     FClutIndex: Integer;
@@ -154,10 +151,8 @@ type
     FSerialTicks: Int64;
     // Of the waits: drawing bands on the emulator thread.
     FHelpTicks: Int64;
-{$IFDEF MSWINDOWS}
     FWorkers: array of TGEWorker;
     procedure StartWorkers;
-{$ENDIF}
     procedure Add(const S: TGERaster; Kind: TGEJobKind; const A, B, C: TGEVertex);
     procedure DrawAlone(const S: TGERaster; Kind: TGEJobKind; const A, B, C: TGEVertex; Why: Integer);
     procedure Attach;
@@ -169,11 +164,10 @@ type
     // Starts drawing the filling batch (in the background when large enough)
     // and begins the next one.
     procedure Kick;
+    procedure PrepareBands(B: PGEBatch);
     procedure WaitFlight;
     procedure DrawSerial(B: PGEBatch);
-{$IFDEF MSWINDOWS}
     procedure WorkBands(B: PGEBatch);
-{$ENDIF}
   public
     constructor Create(Memory: TPSPMemory);
     destructor Destroy; override;
@@ -205,26 +199,28 @@ const
   AloneNames: array[0..6] of string = ('stride', 'wrap', 'depth layout', 'depth on colour', 'texture layout',
     'texture beyond its level', 'own texture');
 
-// The pool exists on Windows only; elsewhere every primitive is drawn at once.
+// FP state inherited by portable workers, including ARM64's round/mask.
 function GetModes(out Control: Word): UInt32; inline;
 begin
 {$IFDEF MSWINDOWS}
   Control := Get8087CW;
-  Result := ReadHostMXCSR;
 {$ELSE}
-  Control := 0;
-  Result := 0;
+  Control := Ord(GetRoundMode) or (Word(Byte(GetExceptionMask)) shl 8);
 {$ENDIF}
+  Result := ReadHostMXCSR;
 end;
 
 procedure SetModes(MXCSR: UInt32; Control: Word); inline;
 begin
 {$IFDEF MSWINDOWS}
-  // Keep RTL DefaultMXCSR and its exception-status handling in sync.
-{$WARN SYMBOL_PLATFORM OFF} // This worker branch is Windows-specific.
+  {$WARN SYMBOL_PLATFORM OFF}
   SetMXCSR(MXCSR);
-{$WARN SYMBOL_PLATFORM ON}
+  {$WARN SYMBOL_PLATFORM ON}
   Set8087CW(Control);
+{$ELSE}
+  SetExceptionMask(TArithmeticExceptionMask(Byte(Control shr 8)));
+  SetRoundMode(TRoundingMode(Control and 3));
+  WriteHostMXCSR(MXCSR);
 {$ENDIF}
 end;
 
@@ -252,27 +248,22 @@ begin
   Result := (A.Base = B.Base) and (A.Stride = B.Stride) and (A.Bytes = B.Bytes) and (A.Permutation = B.Permutation);
 end;
 
-{$IFDEF MSWINDOWS}
 constructor TGEWorker.Create(Owner: TGEWorkers);
 begin
   FOwner := Owner;
-  FStart := CreateEvent(nil, False, False, nil);
-  FDone := CreateEvent(nil, False, False, nil);
-  if (FStart = 0) or (FDone = 0) then
-    RaiseLastOSError;
+  FStart := TEvent.Create(nil, False, False, '');
+  FDone := TEvent.Create(nil, False, False, '');
   inherited Create(False);
 end;
 
 destructor TGEWorker.Destroy;
 begin
   Terminate;
-  if FStart <> 0 then
-    SetEvent(FStart);
+  if FStart <> nil then
+    FStart.SetEvent;
   WaitFor;
-  if FStart <> 0 then
-    CloseHandle(FStart);
-  if FDone <> 0 then
-    CloseHandle(FDone);
+  FStart.Free;
+  FDone.Free;
   FError.Free;
   inherited;
 end;
@@ -281,7 +272,7 @@ procedure TGEWorker.Execute;
 begin
   while True do
   begin
-    WaitForSingleObject(FStart, INFINITE);
+    FStart.WaitFor(INFINITE);
     if Terminated then
       Exit;
     try
@@ -293,21 +284,18 @@ begin
     except
       FError := Exception(AcquireExceptionObject);
     end;
-    SetEvent(FDone);
+    FDone.SetEvent;
   end;
 end;
-{$ENDIF}
 
 constructor TGEWorkers.Create(Memory: TPSPMemory);
 begin
   inherited Create;
   FMemory := Memory;
   FThreads := 1;
-{$IFDEF MSWINDOWS}
   // The pool draws while the emulator thread goes on: leave it and one more.
   FThreads := EnsureRange(StrToIntDef(GetEnvironmentVariable('PSP_GE_THREADS'),
       Min(10, TThread.ProcessorCount - 2)), 1, 16);
-{$ENDIF}
   if FMemory = nil then
     FThreads := 1;
   if FThreads > 1 then
@@ -337,14 +325,11 @@ destructor TGEWorkers.Destroy;
 begin
   if FHolding or (FBatch.Count > 0) or (FFlight <> nil) then
     Sync;
-{$IFDEF MSWINDOWS}
   for var W in FWorkers do
     W.Free;
-{$ENDIF}
   inherited;
 end;
 
-{$IFDEF MSWINDOWS}
 procedure TGEWorkers.StartWorkers;
 begin
   if Length(FWorkers) <> 0 then
@@ -353,7 +338,6 @@ begin
   for var I := 0 to High(FWorkers) do
     FWorkers[I] := TGEWorker.Create(Self);
 end;
-{$ENDIF}
 
 procedure TGEWorkers.StateChanged;
 begin
@@ -479,7 +463,6 @@ end;
 
 procedure TGEWorkers.WaitFlight;
 begin
-{$IFDEF MSWINDOWS}
   if FFlight = nil then
     Exit;
   var B := FFlight;
@@ -501,7 +484,7 @@ begin
     end;
   finally
     for var I := 0 to FFlightThreads - 1 do
-      WaitForSingleObject(FWorkers[I].FDone, INFINITE);
+      FWorkers[I].FDone.WaitFor(INFINITE);
   end;
   Inc(FWaitTicks[FWaitReason], TStopwatch.GetTimeStamp - T);
   FFlight := nil;
@@ -516,7 +499,59 @@ begin
       FWorkers[I].FError := nil;
       raise E;
     end;
-{$ENDIF}
+end;
+
+procedure TGEWorkers.PrepareBands(B: PGEBatch);
+var
+  Heads: array[0..256] of Integer;
+begin
+  if Length(B.BandOffsets) < B.Bands + 1 then
+    SetLength(B.BandOffsets, B.Bands + 1);
+  FillChar(B.BandOffsets[0], (B.Bands + 1) * SizeOf(Integer), 0);
+  for var I := 0 to B.Count - 1 do
+  begin
+    var J: PGEJob := @B.Jobs[I];
+    var First := EnsureRange((J.Y1 - B.BandTop) div B.BandRows, 0, B.Bands - 1);
+    var Last := EnsureRange((J.Y2 - B.BandTop) div B.BandRows, First, B.Bands - 1);
+    for var Band := First to Last do
+      Inc(B.BandOffsets[Band + 1]);
+  end;
+  for var Band := 0 to B.Bands - 1 do
+  begin
+    Inc(B.BandOffsets[Band + 1], B.BandOffsets[Band]);
+    Heads[Band] := B.BandOffsets[Band];
+  end;
+  var Need := B.BandOffsets[B.Bands];
+  if Length(B.BandJobs) < Need then
+    SetLength(B.BandJobs, Max(Need, Length(B.BandJobs) * 2));
+  var PreparedCount := 0;
+  var SavedControl: Word;
+  var SavedMXCSR := GetModes(SavedControl);
+  SetModes(B.MXCSR, B.FPUControl);
+  try
+    for var I := 0 to B.Count - 1 do
+    begin
+      var J: PGEJob := @B.Jobs[I];
+      var First := EnsureRange((J.Y1 - B.BandTop) div B.BandRows, 0, B.Bands - 1);
+      var Last := EnsureRange((J.Y2 - B.BandTop) div B.BandRows, First, B.Bands - 1);
+      J.Prepared := -1;
+      if (J.Kind = gjTriangle) and (Last > First) then
+      begin
+        if PreparedCount = Length(B.Prepared) then
+          SetLength(B.Prepared, Max(64, PreparedCount * 2));
+        GEPrepareTriangle(B.States[J.State], J.V[0], J.V[1], J.V[2], B.Prepared[PreparedCount]);
+        J.Prepared := PreparedCount;
+        Inc(PreparedCount);
+      end;
+      for var Band := First to Last do
+      begin
+        B.BandJobs[Heads[Band]] := I;
+        Inc(Heads[Band]);
+      end;
+    end;
+  finally
+    SetModes(SavedMXCSR, SavedControl)
+  end;
 end;
 
 procedure TGEWorkers.Kick;
@@ -536,22 +571,21 @@ begin
   B.BandRows := Max(4, Rows div (FThreads * GBandsPerThread));
   B.Bands := (Rows + B.BandRows - 1) div B.BandRows;
   B.NextBand := 0;
-{$IFDEF MSWINDOWS}
   if (B.Area >= ParallelArea) and (B.Bands > 1) then
   begin
+    PrepareBands(B);
     Inc(FBackground);
     StartWorkers;
     FFlight := B;
     FFlightThreads := Min(FThreads, B.Bands);
     for var I := 0 to FFlightThreads - 1 do
-      SetEvent(FWorkers[I].FStart);
+      FWorkers[I].FStart.SetEvent;
     if FBatch = @FBatches[0] then
       FBatch := @FBatches[1]
     else
       FBatch := @FBatches[0];
     Exit;
   end;
-{$ENDIF}
   try
     DrawSerial(B);
   finally
@@ -580,7 +614,6 @@ begin
   end;
 end;
 
-{$IFDEF MSWINDOWS}
 procedure TGEWorkers.WorkBands(B: PGEBatch);
 var
   local: TGERaster;
@@ -593,9 +626,9 @@ begin
     var Y1 := B.BandTop + Band * B.BandRows;
     var Y2 := Y1 + B.BandRows - 1;
     var Current := -1;
-    for var I := 0 to B.Count - 1 do
+    for var At := B.BandOffsets[Band] to B.BandOffsets[Band + 1] - 1 do
     begin
-      var J: PGEJob := @B.Jobs[I];
+      var J: PGEJob := @B.Jobs[B.BandJobs[At]];
       if (J.Y2 < Y1) or (J.Y1 > Y2) then
         Continue;
       if J.State <> Current then
@@ -605,12 +638,13 @@ begin
         local.BandY1 := Max(local.BandY1, Y1);
         local.BandY2 := Min(local.BandY2, Y2);
       end;
-      DrawJob(local, J.Kind, J.V[0], J.V[1], J.V[2]);
+      if J.Prepared >= 0 then
+        GEDrawPreparedTriangle(local, J.V[0], J.V[1], J.V[2], B.Prepared[J.Prepared])
+      else
+        DrawJob(local, J.Kind, J.V[0], J.V[1], J.V[2]);
     end;
   end;
 end;
-
-{$ENDIF}
 
 procedure TGEWorkers.AnalyseTexture(const S: TGERaster);
 begin
@@ -965,6 +999,7 @@ begin
 
   var J: PGEJob := @Batch.Jobs[Batch.Count];
   J.State := Batch.StateCount - 1;
+  J.Prepared := -1;
   J.Kind := Kind;
   J.Y1 := Y1;
   J.Y2 := Y2;
@@ -1008,10 +1043,8 @@ begin
       Result := Result + Format(', %s %d', [AloneNames[I], FAloneWhy[I]]);
   var F := TStopwatch.Frequency;
   var Busy: Int64 := 0;
-{$IFDEF MSWINDOWS}
   for var W in FWorkers do
     Inc(Busy, W.FBusy);
-{$ENDIF}
   Result := Result + Format('; pool busy %.2fs', [Busy / F]);
 
   Result := Result + Format('; waited %.2fs (GE stop %.2f, split %.2f, access %.2f, alone %.2f, other %.2f), ' +

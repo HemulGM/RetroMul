@@ -1899,32 +1899,27 @@ end;
 
 procedure TGBCPU.ProcessInterrupts;
 begin
-  var Interrupts: TGBInterruptArray := FMemory.InterruptManager.GetAllInterrupts;
-  // The manager stores Joypad first and VBlank last.
-  for var i := High(Interrupts) downto 0 do
-  begin
-    var Interrupt := Interrupts[i];
-    if not (Interrupt.IsRaised and Interrupt.IsEnabled) then
-      Continue;
-
-    FIsHalted := False;
-    if not FMemory.InterruptManager.IsMasterEnabled then
-      Exit;
-
-    FMemory.InterruptManager.ClearInterruptByIndex(i);
-    FMemory.InterruptManager.MasterDisable;
-    FPendingInterruptEnable := 0;
-    if FSuppressPCIncrement then
-    begin
-      // EI; HALT with a pending interrupt returns to HALT, not its successor.
-      ProgramCounter := (ProgramCounter - 1) and $FFFF;
-      FSuppressPCIncrement := False;
-    end;
-    PushWord(ProgramCounter);
-    ProgramCounter := Interrupt.Handler;
-    ConsumeClockCycles(20);
+  var Index, Handler: Integer;
+  var Manager := FMemory.InterruptManager;
+  if not Manager.TryGetPendingInterrupt(Index, Handler) then
     Exit;
+
+  FIsHalted := False;
+  if not Manager.IsMasterEnabled then
+    Exit;
+
+  Manager.ClearInterruptByIndex(Index);
+  Manager.MasterDisable;
+  FPendingInterruptEnable := 0;
+  if FSuppressPCIncrement then
+  begin
+    // EI; HALT with a pending interrupt returns to HALT, not its successor.
+    ProgramCounter := (ProgramCounter - 1) and $FFFF;
+    FSuppressPCIncrement := False;
   end;
+  PushWord(ProgramCounter);
+  ProgramCounter := Handler;
+  ConsumeClockCycles(20);
 end;
 
 procedure TGBCPU.PushWord(Value: Integer);

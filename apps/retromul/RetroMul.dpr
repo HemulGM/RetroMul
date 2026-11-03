@@ -515,6 +515,7 @@ uses
   GBA.Sound in '..\..\source\cores\gba\GBA.Sound.pas',
   GBA.Video in '..\..\source\cores\gba\GBA.Video.pas',
   GBA.Cartridge in '..\..\source\cores\gba\GBA.Cartridge.pas',
+  GBA.NativeClock in '..\..\source\cores\gba\GBA.NativeClock.pas',
   GBA.Console in '..\..\source\cores\gba\GBA.Console.pas',
   GBA.Emulation in '..\..\source\cores\gba\GBA.Emulation.pas',
   GBC.EmulationThread in '..\..\source\cores\gbc\GBC.EmulationThread.pas',

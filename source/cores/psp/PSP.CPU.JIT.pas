@@ -42,6 +42,16 @@ const
   PSPJitMaxBlock = 128;
 
 type
+  TPSPJitDecoded = record
+    Op: Cardinal;
+    Kind: Integer;
+    Handler: Pointer;
+  end;
+
+  TPSPJitDecodedBlock = array[0..PSPJitMaxBlock - 1] of TPSPJitDecoded;
+
+  PPSPJitDecodedBlock = ^TPSPJitDecodedBlock;
+
   PPSPJitBlock = ^TPSPJitBlock;
 
   PPSPJitExit = ^TPSPJitExit;
@@ -144,9 +154,17 @@ type
     FHitExits: TList<TPSPJitHitExit>;
     FStatic: TList<PPSPJitExit>;
     FBlock: PPSPJitBlock;
+    // Block-local GPRs in T3..T5. Every outgoing edge commits them; calls
+    // commit and reload them. The budget check precedes their initial load.
+    FRegisters: array[0..2] of Cardinal;
+    FRegisterCount: Integer;
+    FWrittenGPRs: Cardinal;
+    function G(R: Cardinal): TJitOp;
+    procedure LoadRegisters;
+    procedure FlushRegisters;
     function PageOf(PC: Cardinal): PPSPJitPage;
     function Lookup(PC: Cardinal): PPSPJitBlock;
-    function Scan(PC: Cardinal): Integer;
+    function Scan(PC: Cardinal; Decoded: PPSPJitDecodedBlock = nil): Integer;
     procedure Kill(B: PPSPJitBlock);
     procedure KillAll;
     procedure ResetCode;
@@ -156,6 +174,7 @@ type
     procedure Execute(B: PPSPJitBlock);
     procedure RunBlocks(C: TPSPCPU);
     procedure Interpret(Steps: Integer);
+    procedure InterpretRun;
     procedure SetEnabled(Value: Boolean);
     procedure Cover(Page: PPSPJitPage; B: PPSPJitBlock);
     procedure Recover(Page: PPSPJitPage);
@@ -256,6 +275,8 @@ var
   KindHandler: array[jkSLL..jkBGEZALL] of Pointer;
   EndHandler: array[0..2] of Pointer;
   PureHandler: array[0..High(PureSample)] of Pointer;
+  KindKeys: array[0..255] of Pointer;
+  KindValues: array[0..255] of TJitKind;
   KindsReady: Boolean;
   OffGPR, OffFPR, OffHI, OffLO, OffPC, OffNPC, OffCurPC, OffCOP0, OffStopping, OffRemaining, OffHit, OffLastExit, OffBlockPC, OffBlockCode, OffSlotPC, OffSlotBlock, OffV: Integer;
 
@@ -265,7 +286,27 @@ begin
   Result := @H;
 end;
 
+function KindIndex(Handler: Pointer): Integer; inline;
+begin
+  var P := NativeUInt(Handler);
+  Result := Integer(((P shr 4) xor (P shr 12)) and 255);
+end;
+
 procedure PrepareKinds;
+
+  procedure Add(Handler: Pointer; Kind: TJitKind);
+  begin
+    var I := KindIndex(Handler);
+    while (KindKeys[I] <> nil) and (KindKeys[I] <> Handler) do
+      I := (I + 1) and 255;
+    // Preserve the original end/native/pure precedence for shared handlers.
+    if KindKeys[I] = nil then
+    begin
+      KindKeys[I] := Handler;
+      KindValues[I] := Kind;
+    end;
+  end;
+
 begin
   if KindsReady then
     Exit;
@@ -275,6 +316,12 @@ begin
     EndHandler[I] := HandlerOf(EndSample[I]);
   for var I := 0 to High(PureSample) do
     PureHandler[I] := HandlerOf(PureSample[I]);
+  for var H in EndHandler do
+    Add(H, jkEnd);
+  for var K := Low(KindHandler) to High(KindHandler) do
+    Add(KindHandler[K], K);
+  for var H in PureHandler do
+    Add(H, jkPure);
   OffGPR := Integer(NativeUInt(@TPSPCPU(nil).Ctx.GPR[0]));
   OffFPR := Integer(NativeUInt(@TPSPCPU(nil).Ctx.FPR[0]));
   OffHI := Integer(NativeUInt(@TPSPCPU(nil).Ctx.HI));
@@ -302,18 +349,20 @@ begin
     Exit(jkNop);
   if Handler = @OpReserved then
     Exit(jkEnd);
-  for var I := 0 to High(EndHandler) do
-    if Handler = EndHandler[I] then
-      Exit(jkEnd);
-  for var K := Low(KindHandler) to High(KindHandler) do
-    if Handler = KindHandler[K] then
-      Exit(K);
+  var I := KindIndex(Handler);
+  while KindKeys[I] <> nil do
+  begin
+    if KindKeys[I] = Handler then
+    begin
+      if (KindValues[I] = jkPure) and ((Op shr 26) in [$11, $12]) and (((Op shr 21) and 31) = 8) then
+        Exit(jkHBranch);
+      Exit(KindValues[I]);
+    end;
+    I := (I + 1) and 255;
+  end;
   // COP1 and VFPU branches (BC1x, BVx): their handlers decide.
   if ((Op shr 26) in [$11, $12]) and (((Op shr 21) and 31) = 8) then
     Exit(jkHBranch);
-  for var I := 0 to High(PureHandler) do
-    if Handler = PureHandler[I] then
-      Exit(jkPure);
   // Only the installed VFPU decoder: tests and other users may install
   // handlers of their own, which must remain calls.
   var Decoder: TPSPVFPUDecoder := PSPVFPUDecoder;
@@ -393,11 +442,34 @@ end;
 
 { Writing a block's code. Registers: Self the CPU, Ctx the recompiler, S0
   the memory's page table, S1 its code marks, S2 a jump's target (JR, JALR, a
-  handler's branch) across its delay slot, S3 RAM's host buffer. }
+  handler's branch) across its delay slot, S3 RAM's host buffer. T0..T2 are
+  instruction temporaries; T3..T5 keep block-local GPRs. A slow store spills
+  them before using T5 for its argument. T6 is the indirect exit's slot. }
 
-function G(R: Cardinal): TJitOp; inline;
+function RawG(R: Cardinal): TJitOp; inline;
 begin
   Result := JMem(jrSelf, OffGPR + Integer(R) * 4);
+end;
+
+function TPSPRecompiler.G(R: Cardinal): TJitOp;
+begin
+  for var I := 0 to FRegisterCount - 1 do
+    if FRegisters[I] = R then
+      Exit(JReg(TJitReg(Ord(jrT3) + I)));
+  Result := RawG(R);
+end;
+
+procedure TPSPRecompiler.LoadRegisters;
+begin
+  for var I := 0 to FRegisterCount - 1 do
+    FJ.Move(jw32, JReg(TJitReg(Ord(jrT3) + I)), RawG(FRegisters[I]));
+end;
+
+procedure TPSPRecompiler.FlushRegisters;
+begin
+  for var I := 0 to FRegisterCount - 1 do
+    if (FWrittenGPRs and (Cardinal(1) shl FRegisters[I])) <> 0 then
+      FJ.Move(jw32, RawG(FRegisters[I]), JReg(TJitReg(Ord(jrT3) + I)));
 end;
 
 function F(R: Cardinal): TJitOp; inline;
@@ -479,12 +551,14 @@ procedure TPSPRecompiler.EmitCall(const At: TPSPJitAt; Op: Cardinal; Handler: Po
 begin
   // The handler: as the interpreter runs it (State) or a handler of
   // registers and memory alone.
+  FlushRegisters;
   if not State then
   begin
     // (A handler of registers and memory, CurPC as every handler sees it:
     // where it stored into a block.)
     FJ.Move(jw32, JMem(jrSelf, OffCurPC), JImm(At.Addr));
     FJ.Call(Handler, [JSelf, JImm(Op)]);
+    LoadRegisters;
     if MayStore(Op) then
       FJ.BranchTest(jcNe, jw8, JMem(jrCtx, OffHit), JImm($FF), HitExit(At));
     Exit;
@@ -497,6 +571,7 @@ begin
   if Rest <> 0 then
     FJ.Alu(jaAdd, jw32, Remaining, JImm(Rest));
   FJ.Call(Handler, [JSelf, JImm(Op)]);
+  LoadRegisters;
   // Where it stopped the run, used up the cycles left, rewrote a block or
   // moved PC or NPC as a kernel call would: back to Run, from where the
   // handler left them.
@@ -570,6 +645,15 @@ begin
   J.BranchTest(jcEq, JPtr, JT1, JT1, S.Slow);
   J.Move(jw32, JT2, JT0);
   J.Alu(jaAnd, jw32, JT2, JImm(PSPPageMask));
+  var Bytes := 4;
+  case TJitKind(S.Kind) of
+    jkLB, jkLBU, jkSB:
+      Bytes := 1;
+    jkLH, jkLHU, jkSH:
+      Bytes := 2;
+  end;
+  if Bytes > 1 then
+    J.Branch(jcAbove, jw32, JT2, JImm(PSPPageSize - Bytes), S.Slow);
   J.Alu(jaAdd, jw64, JT1, JT2);
   EmitHost(S.Kind, S.Store, S.Reg);
 end;
@@ -588,6 +672,13 @@ begin
     J.Alu(jaAdd, jw32, JT0, JImm(FieldSImm(Op)));
   if S.Store then
   begin
+    if not (TJitKind(S.Kind) in [jkSB]) then
+    begin
+      var Alignment := 3;
+      if TJitKind(S.Kind) = jkSH then
+        Alignment := 1;
+      J.BranchTest(jcNe, jw32, JT0, JImm(Alignment), S.Slow);
+    end;
     J.Move(jw32, JT2, JT0);
     J.Alu(jaAnd, jw32, JT2, JImm($1FFFF000));
     J.Shift(jsShr, jw32, jrT2, PSPPageShift);
@@ -601,7 +692,14 @@ begin
     J.Move(jw32, JT1, JT0);
     J.Alu(jaAnd, jw32, JT1, JImm($1FFFFFFF));
     J.Alu(jaSub, jw32, JT1, JImm(PSPRAMBase));
-    J.Branch(jcAboveEq, jw32, JT1, JImm(PSPRAMSize), S.Table);
+    var Bytes := 4;
+    case TJitKind(S.Kind) of
+      jkLB, jkLBU, jkSB:
+        Bytes := 1;
+      jkLH, jkLHU, jkSH:
+        Bytes := 2;
+    end;
+    J.Branch(jcAboveEq, jw32, JT1, JImm(PSPRAMSize - Bytes + 1), S.Table);
     J.Alu(jaAdd, jw64, JT1, JRAM);
     EmitHost(S.Kind, S.Store, S.Reg);
   end
@@ -734,9 +832,24 @@ var
 
   procedure Three(A: TJitAlu);
   begin
-    J.Move(jw32, JT0, G(FieldRS(Op)));
-    J.Alu(A, jw32, JT0, G(FieldRT(Op)));
-    J.Move(jw32, G(FieldRD(Op)), JT0);
+    var D := G(FieldRD(Op));
+    // A cached destination can be the accumulator. Preserve RT when it
+    // aliases RD and subtraction still needs the original right operand.
+    if (D.Kind = okReg) and (FieldRD(Op) = FieldRS(Op)) then
+      J.Alu(A, jw32, D, G(FieldRT(Op)))
+    else if (D.Kind = okReg) and (FieldRD(Op) = FieldRT(Op)) and (A <> jaSub) then
+      J.Alu(A, jw32, D, G(FieldRS(Op)))
+    else if (D.Kind = okReg) and (FieldRD(Op) <> FieldRT(Op)) then
+    begin
+      J.Move(jw32, D, G(FieldRS(Op)));
+      J.Alu(A, jw32, D, G(FieldRT(Op)));
+    end
+    else
+    begin
+      J.Move(jw32, JT0, G(FieldRS(Op)));
+      J.Alu(A, jw32, JT0, G(FieldRT(Op)));
+      J.Move(jw32, D, JT0);
+    end;
   end;
 
   // GPR[T] := GPR[S] op a constant.
@@ -744,6 +857,11 @@ var
   begin
     if FieldRS(Op) = FieldRT(Op) then
       J.Alu(A, jw32, G(FieldRT(Op)), JImm(Value))
+    else if G(FieldRT(Op)).Kind = okReg then
+    begin
+      J.Move(jw32, G(FieldRT(Op)), G(FieldRS(Op)));
+      J.Alu(A, jw32, G(FieldRT(Op)), JImm(Value));
+    end
     else
     begin
       J.Move(jw32, JT0, G(FieldRS(Op)));
@@ -767,10 +885,21 @@ var
   // GPR[D] := GPR[T] shifted.
   procedure ShiftBy(S: TJitShift);
   begin
-    J.Move(jw32, JT0, G(FieldRT(Op)));
-    if FieldSA(Op) <> 0 then
-      J.Shift(S, jw32, jrT0, FieldSA(Op));
-    J.Move(jw32, G(FieldRD(Op)), JT0);
+    var D := G(FieldRD(Op));
+    if D.Kind = okReg then
+    begin
+      if FieldRD(Op) <> FieldRT(Op) then
+        J.Move(jw32, D, G(FieldRT(Op)));
+      if FieldSA(Op) <> 0 then
+        J.Shift(S, jw32, D.Reg, FieldSA(Op));
+    end
+    else
+    begin
+      J.Move(jw32, JT0, G(FieldRT(Op)));
+      if FieldSA(Op) <> 0 then
+        J.Shift(S, jw32, jrT0, FieldSA(Op));
+      J.Move(jw32, D, JT0);
+    end;
   end;
 
   // GPR[D] := GPR[S] where GPR[T] meets Cond with 0.
@@ -796,8 +925,13 @@ var
 
   procedure Copy(const Dst, Src: TJitOp);
   begin
-    J.Move(jw32, JT0, Src);
-    J.Move(jw32, Dst, JT0);
+    if (Dst.Kind = okReg) or (Src.Kind = okReg) then
+      J.Move(jw32, Dst, Src)
+    else
+    begin
+      J.Move(jw32, JT0, Src);
+      J.Move(jw32, Dst, JT0);
+    end;
   end;
 
 begin
@@ -810,6 +944,7 @@ begin
       ;
     jkEnd:
       begin
+        FlushRegisters;
         WriteState(At);
         J.Call(Handler, [JSelf, JImm(Op)]);
         J.JumpTo(FExit);
@@ -1001,6 +1136,7 @@ procedure TPSPRecompiler.EmitStatic(Target, Last: Cardinal; Refund: Integer);
 begin
   // The block's end towards Target (Last the instruction that ran last): a
   // jump that goes to its stub until linked.
+  FlushRegisters;
   if Refund <> 0 then
     FJ.Alu(jaAdd, jw32, JMem(jrSelf, OffRemaining), JImm(Refund));
   FJ.Move(jw32, JMem(jrSelf, OffCurPC), JImm(Last));
@@ -1030,6 +1166,7 @@ begin
   if dynamic then
   begin
     // The block it went to last time (its slot), else the look-up.
+    FlushRegisters;
     var J := FJ;
     J.Move(jw32, JMem(jrSelf, OffCurPC), JImm(A));
     var Slot: PPSPJitSlot;
@@ -1121,7 +1258,7 @@ begin
   end;
 end;
 
-function TPSPRecompiler.Scan(PC: Cardinal): Integer;
+function TPSPRecompiler.Scan(PC: Cardinal; Decoded: PPSPJitDecodedBlock): Integer;
 begin
   // A block's instructions from PC: up to a branch and its delay slot (not
   // where the slot is on the next page or is a branch too: the block ends
@@ -1143,13 +1280,28 @@ begin
   Result := 0;
   while (Result < Words) and (Result < PSPJitMaxBlock) do
   begin
-    var K := Classify(FCPU.Decoded(PC + Cardinal(Result) * 4).Op, H);
+    var Op := FCPU.Decoded(PC + Cardinal(Result) * 4).Op;
+    var K := Classify(Op, H);
+    if Decoded <> nil then
+    begin
+      Decoded[Result].Op := Op;
+      Decoded[Result].Kind := Ord(K);
+      Decoded[Result].Handler := H;
+    end;
     if IsBranch(K) then
     begin
       if (Result + 1 >= Words) or (Result + 2 > PSPJitMaxBlock) then
         Exit;
-      if IsBranch(Classify(FCPU.Decoded(PC + Cardinal(Result + 1) * 4).Op, H)) then
+      Op := FCPU.Decoded(PC + Cardinal(Result + 1) * 4).Op;
+      K := Classify(Op, H);
+      if IsBranch(K) then
         Exit;
+      if Decoded <> nil then
+      begin
+        Decoded[Result + 1].Op := Op;
+        Decoded[Result + 1].Kind := Ord(K);
+        Decoded[Result + 1].Handler := H;
+      end;
       Exit(Result + 2);
     end;
     Inc(Result);
@@ -1355,7 +1507,112 @@ var
   Ops: array[0..PSPJitMaxBlock - 1] of Cardinal;
   Kinds: array[0..PSPJitMaxBlock - 1] of TJitKind;
   Handlers: array[0..PSPJitMaxBlock - 1] of Pointer;
+  Decoded: TPSPJitDecodedBlock;
   J: TJitAsm;
+
+  procedure SelectRegisters(Count: Integer);
+  var
+    Frequency: array[0..31] of Integer;
+    Calls: Integer;
+
+    procedure Use(R: Cardinal);
+    begin
+      if R <> 0 then
+        Inc(Frequency[R]);
+    end;
+
+    procedure Written(R: Cardinal);
+    begin
+      Use(R);
+      FWrittenGPRs := FWrittenGPRs or (Cardinal(1) shl R);
+    end;
+
+  begin
+    FRegisterCount := 0;
+    FWrittenGPRs := 0;
+    FillChar(Frequency, SizeOf(Frequency), 0);
+    Calls := 0;
+    // Calls spill/reload the cache. Charge those costs instead of rejecting
+    // every native instruction in a mixed integer/FPU/VFPU block.
+    for var I := 0 to Count - 1 do
+    begin
+      var Op := Ops[I];
+      case Kinds[I] of
+        jkHandler, jkPure, jkEnd, jkHBranch:
+          begin
+            Inc(Calls);
+            // A handler may change any GPR; reloads make its writes visible.
+            FWrittenGPRs := $FFFFFFFF;
+          end;
+        jkMOVZ, jkMOVN, jkADDU..jkMIN:
+          begin
+            Use(FieldRS(Op));
+            Use(FieldRT(Op));
+            Written(FieldRD(Op))
+          end;
+        jkSLL..jkROTR, jkWSBH..jkSEH:
+          begin
+            Use(FieldRT(Op));
+            Written(FieldRD(Op))
+          end;
+        jkADDIU..jkXORI, jkEXT, jkINS:
+          begin
+            Use(FieldRS(Op));
+            Written(FieldRT(Op))
+          end;
+        jkLB..jkLHU:
+          begin
+            Use(FieldRS(Op));
+            Written(FieldRT(Op))
+          end;
+        jkSB..jkSW:
+          begin
+            Use(FieldRS(Op));
+            Use(FieldRT(Op))
+          end;
+        jkLVS, jkSVS, jkLVQ, jkSVQ, jkLWC1, jkSWC1, jkMTHI, jkMTLO, jkJR:
+          Use(FieldRS(Op));
+        jkMFHI, jkMFLO:
+          Written(FieldRD(Op));
+        jkMFV, jkLUI, jkMFC0, jkMFC1:
+          Written(FieldRT(Op));
+        jkMTV, jkMTC1:
+          Use(FieldRT(Op));
+        jkJALR:
+          begin
+            Use(FieldRS(Op));
+            Written(FieldRD(Op))
+          end;
+        jkJAL:
+          Written(31);
+        jkBEQ, jkBNE, jkBEQL, jkBNEL:
+          begin
+            Use(FieldRS(Op));
+            Use(FieldRT(Op))
+          end;
+        jkBLTZAL, jkBGEZAL, jkBLTZALL, jkBGEZALL:
+          begin
+            Use(FieldRS(Op));
+            Written(31)
+          end;
+        jkBLEZ, jkBGTZ, jkBLTZ, jkBGEZ, jkBLEZL, jkBGTZL, jkBLTZL, jkBGEZL:
+          Use(FieldRS(Op));
+      end;
+    end;
+    for var I := 0 to High(FRegisters) do
+    begin
+      var Best := 0;
+      for var R := 1 to 31 do
+        if Frequency[R] > Frequency[Best] then
+          Best := R;
+      // Pay for the load and every exit's store only with repeated uses.
+      if Frequency[Best] < 6 + Calls * 2 then
+        Break;
+      FRegisters[I] := Best;
+      Inc(FRegisterCount);
+      Frequency[Best] := 0;
+    end;
+  end;
 
   procedure Cond(K: TJitKind; Op, A: Cardinal; Taken: TJitLabel);
   begin
@@ -1430,8 +1687,10 @@ var
           At.Next := Slot;
           At.dynamic := False;
           At.Refund := 1;
+          FlushRegisters;
           WriteState(At);
           J.Call(Handlers[I], [JSelf, JImm(Op)]);
+          LoadRegisters;
           var Nullified := J.NewLabel;
           J.Branch(jcNe, jw32, JMem(jrSelf, OffPC), JImm(Slot), Nullified);
           J.Move(jw32, JTarget, JMem(jrSelf, OffNPC));
@@ -1460,7 +1719,7 @@ var
 
 begin
   // B's code (the room for it there).
-  var Count := Scan(B.PC);
+  var Count := Scan(B.PC, @Decoded);
   B.Count := Count;
   if Count = 0 then
   begin
@@ -1469,9 +1728,11 @@ begin
   end;
   for var I := 0 to Count - 1 do
   begin
-    Ops[I] := FCPU.Decoded(B.PC + Cardinal(I) * 4).Op;
-    Kinds[I] := Classify(Ops[I], Handlers[I]);
+    Ops[I] := Decoded[I].Op;
+    Kinds[I] := TJitKind(Decoded[I].Kind);
+    Handlers[I] := Decoded[I].Handler;
   end;
+  SelectRegisters(Count);
   J := FJ;
   FBlock := B;
   FSlow.Clear;
@@ -1483,6 +1744,7 @@ begin
   var NoBudget := J.NewLabel;
   J.Branch(jcLt, jw32, JMem(jrSelf, OffRemaining), JImm(Count), NoBudget);
   J.Alu(jaSub, jw32, JMem(jrSelf, OffRemaining), JImm(Count));
+  LoadRegisters;
   var Branchy := (Count >= 2) and IsBranch(Kinds[Count - 2]);
   var Body := Count;
   if Branchy then
@@ -1521,19 +1783,26 @@ begin
       J.Jump(S.Back);
     end;
     J.Bind(S.Slow);
+    FlushRegisters;
     if S.Store then
     begin
+      // T5 is also a cached GPR: repurpose it only after the spill.
       J.Move(jw32, JT5, S.Reg);
       J.Call(S.Routine, [JCtx, JT0, JT5]);
+      LoadRegisters;
       J.BranchTest(jcNe, jw32, JT0, JT0, S.Hit);
     end
     else
+    begin
       J.Call(S.Routine, [JImm(Int64(NativeUInt(FMemory))), JT0]);
+      LoadRegisters;
+    end;
     J.Jump(S.Back);
   end;
   for var H in FHitExits do
   begin
     J.Bind(H.L);
+    FlushRegisters;
     WriteState(H.At);
     if H.At.Refund <> 0 then
       J.Alu(jaAdd, jw32, JMem(jrSelf, OffRemaining), JImm(H.At.Refund));
@@ -1588,21 +1857,24 @@ end;
 
 procedure TPSPRecompiler.Interpret(Steps: Integer);
 begin
-  // The interpreter's loop (TPSPCPU.Run), Steps instructions at most.
   var C := FCPU;
-  while (C.FRemaining > 0) and (Steps > 0) do
+{$DEFINE PSP_DISPATCH_STEPS}
+{$I PSP.CPU.Dispatch.inc}
+{$UNDEF PSP_DISPATCH_STEPS}
+end;
+
+procedure TPSPRecompiler.InterpretRun;
+begin
+  var C := FCPU;
+  if joStats in FOptions then
   begin
-    var PC := C.Ctx.PC;
-    var Entry := C.Decoded(PC);
-    C.CurPC := PC;
-    C.Ctx.PC := C.Ctx.NPC;
-    C.Ctx.NPC := C.Ctx.NPC + 4;
-    Dec(C.FRemaining);
-    Inc(FInterpreted);
-    Entry.Handler(C, Entry.Op);
-    if C.Stopping then
-      Break;
-    Dec(Steps);
+{$DEFINE PSP_DISPATCH_COUNT}
+{$I PSP.CPU.Dispatch.inc}
+{$UNDEF PSP_DISPATCH_COUNT}
+  end
+  else
+  begin
+{$I PSP.CPU.Dispatch.inc}
   end;
 end;
 
@@ -1610,7 +1882,7 @@ procedure TPSPRecompiler.Run(C: TPSPCPU);
 begin
   if not FEnabled then
   begin
-    Interpret(MaxInt);
+    InterpretRun;
     Exit;
   end;
   if FResetPending then
@@ -1777,6 +2049,10 @@ begin
   if Result.FJ = nil then
     FreeAndNil(Result);
 end;
+
+initialization
+  // Publish the immutable handler map before any console worker can start.
+  PrepareKinds;
 
 end.
 

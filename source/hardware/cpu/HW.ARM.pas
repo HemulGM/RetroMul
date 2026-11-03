@@ -6,10 +6,13 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Math, Core.Snapshots;
+  System.SysUtils, System.Classes, System.Math, Core.Snapshots
+  {$IFDEF RETROMUL_ARM_THUMB_NATIVE}, ARM.NativeThumbPrototype, HW.JIT{$ENDIF};
 
 type
   TARMRead = function(Address: Cardinal; Size: Integer): Cardinal of object;
+
+  TARMFetch = function(Address: Cardinal; Size: Integer; Sequential: Boolean): Cardinal of object;
 
   TARMWrite = procedure(Address, Value: Cardinal; Size: Integer) of object;
 
@@ -24,6 +27,14 @@ type
   TARMIRQSample = function: Boolean of object;
 
   TARMBusLock = procedure(Locked: Boolean) of object;
+
+  // Visible to the compiler when expanding CaptureCached across units.
+  // Checkpoints can start at a four-byte boundary. A packed view retains
+  // that alignment contract while copying two adjacent registers at once.
+  TARMRegisterPair = packed record
+    Value: UInt64;
+  end;
+  PARMRegisterPair = ^TARMRegisterPair;
 
   TARMCheckpoint = record
     Registers: array[0..15] of Cardinal;
@@ -51,7 +62,7 @@ $56AA, $6A6A, $55A6, $6966, $66A9, $6A69, $66A5, $6A65,
 $6A9A, $565A, $6996, $5556, $6A99, $6659, $6A95, $6655);
   private
     FRead: TARMRead;
-    FReadCode: TARMRead;
+    FReadCode: TARMFetch;
     FCodePageRead: TARMCodePage;
     FCodeAccessFlag: PBoolean;
     FCodePage: PByte;
@@ -88,9 +99,12 @@ $6A9A, $565A, $6996, $5556, $6A99, $6659, $6A95, $6655);
     procedure Refill;
     function Reg(Index: Integer): Cardinal; inline;
     function StepARM(Op: Cardinal): Integer;
-    function StepThumb(Op: Word): Integer;
+    function StepThumb(Op: Word): Integer; {$IFDEF RETROMUL_ARM_THUMB_NATIVE}inline;{$ENDIF}
+    {$IFDEF RETROMUL_ARM_THUMB_NATIVE}
+    function StepThumbInterpreted(Op: Word): Integer;
+    {$ENDIF}
     function StepARMv5(Op: Cardinal): Boolean;
-    function StepTwoStage(IRQ: Boolean): Integer; inline;
+    function StepTwoStage(IRQ: Boolean): Integer;
     function AddFlags(A, B, Carry: Cardinal): Cardinal;
     procedure BranchExchange(Value: Cardinal);
     function Condition(Code: Integer): Boolean; inline;
@@ -102,7 +116,16 @@ $6A9A, $565A, $6996, $5556, $6A99, $6659, $6A95, $6655);
   public
     R: array[0..15] of Cardinal;
     PSR, SPSR: Cardinal;
+    {$IFDEF RETROMUL_ARM_THUMB_NATIVE}
+  private
+    FNativeThumb: TObject;
+  public
+    {$ENDIF}
     constructor Create(Read: TARMRead; Write: TARMWrite);
+    {$IFDEF RETROMUL_ARM_THUMB_NATIVE}
+    destructor Destroy; override;
+    function NativeThumbCompiled: Integer;
+    {$ENDIF}
     procedure Reset;
     procedure InvalidateInstructionPage;
     procedure InvalidateMemoryPages;
@@ -119,9 +142,9 @@ $6A9A, $565A, $6996, $5556, $6A99, $6659, $6A95, $6655);
     property BusLock: TARMBusLock read FBusLock write FBusLock;
     property SoftwareInterrupt: TSoftwareInterrupt read FSWI write FSWI;
     property MemoryRead: TARMRead read FRead write FRead;
-    // Optional combined code-bus callback. Other buses retain separate
-    // BusState/MemoryRead calls, including their exact access ordering.
-    property MemoryReadCode: TARMRead read FReadCode write FReadCode;
+    // Optional combined code-bus callback, including non/sequential timing.
+    // Other buses retain separate BusState/MemoryRead calls and ordering.
+    property MemoryReadCode: TARMFetch read FReadCode write FReadCode;
     // Optional borrowed 16 KiB instruction page. The bus invalidates this
     // derived pointer when its mapping changes; fetched pipeline words survive.
     property InstructionPageRead: TARMCodePage read FCodePageRead write SetCodePageRead;
@@ -150,6 +173,7 @@ function ARMShift(Value: Cardinal; Kind, Count: Integer; Immediate: Boolean; var
 procedure ARM7MultiplyCarry(Multiplicand, Multiplier: Cardinal; Accumulator: UInt64; LongResult, SignedResult: Boolean; out Carry: Cardinal; out Cycles: Integer);
 
 implementation
+
 
 function ARMRotateRight(Value: Cardinal; Count: Integer): Cardinal; inline;
 begin
@@ -393,8 +417,32 @@ begin
   FRead := Read;
   FWrite := Write;
   FDataPageLimit := $FFFFFFFF;
+  {$IFDEF RETROMUL_ARM_THUMB_NATIVE}
+  if JitSupported then
+  begin
+    var Layout: TNativeThumbLayout;
+    Layout.Registers := NativeInt(@R[0]) - NativeInt(Self);
+    Layout.Status := NativeInt(@PSR) - NativeInt(Self);
+    FNativeThumb := TNativeThumbCache.TryCreate(Layout);
+  end;
+  {$ENDIF}
   Reset;
 end;
+
+{$IFDEF RETROMUL_ARM_THUMB_NATIVE}
+destructor TARMProcessor.Destroy;
+begin
+  FNativeThumb.Free;
+  inherited;
+end;
+
+function TARMProcessor.NativeThumbCompiled: Integer;
+begin
+  Result := 0;
+  if FNativeThumb <> nil then
+    Result := TNativeThumbCache(FNativeThumb).CompiledCount;
+end;
+{$ENDIF}
 
 procedure TARMProcessor.Reset;
 begin
@@ -1355,8 +1403,9 @@ begin
     Dec(FLDMGlitch);
   if Assigned(FReadCode) then
   begin
-    var Memory: PByte := nil;
-    if Assigned(FCodePageRead) then
+    if not Assigned(FCodePageRead) then
+      Result := FReadCode(Address, Size, Sequential)
+    else
     begin
       if FCodeAccessFlag <> nil then
         FCodeAccessFlag^ := True;
@@ -1369,18 +1418,18 @@ begin
         else
           FCodePageTag := $FFFFFFFF;
       end;
-      Memory := FCodePage;
-    end;
-    if Memory <> nil then
-    begin
-      Inc(Memory, Address and $3FFF);
-      if Size = 4 then
-        Result := PCardinal(Memory)^
+      var Memory := FCodePage;
+      if Memory <> nil then
+      begin
+        Inc(Memory, Address and $3FFF);
+        if Size = 4 then
+          Result := PCardinal(Memory)^
+        else
+          Result := PWord(Memory)^;
+      end
       else
-        Result := PWord(Memory)^;
-    end
-    else
-      Result := FReadCode(Address, Size);
+        Result := FReadCode(Address, Size, Sequential);
+    end;
   end
   else
   begin
@@ -1474,6 +1523,15 @@ begin
   FPipelineValid := True;
   FFetchSequential := True;
 end;
+
+{$IFDEF RETROMUL_ARM_THUMB_NATIVE}
+function TARMProcessor.StepThumb(Op: Word): Integer;
+begin
+  if (FNativeThumb <> nil) and TNativeThumbCache(FNativeThumb).TryRun(Self, Op) then
+    Exit(1);
+  Result := StepThumbInterpreted(Op);
+end;
+{$ENDIF}
 
 function TARMProcessor.StepTwoStage(IRQ: Boolean): Integer;
 begin
@@ -1608,7 +1666,11 @@ begin
   Result := ColdCycles + FBusCount + FInternalCycles;
 end;
 
+{$IFDEF RETROMUL_ARM_THUMB_NATIVE}
+function TARMProcessor.StepThumbInterpreted(Op: Word): Integer;
+{$ELSE}
 function TARMProcessor.StepThumb(Op: Word): Integer;
+{$ENDIF}
 begin
   Result := 1;
   var PC := R[15];
@@ -2036,26 +2098,16 @@ procedure TARMProcessor.CaptureCached(var State: TARMCheckpoint; var Generation:
 begin
   State.Reserved := 0;
 
-  // Fixed-size copies let the ARM compiler emit register-pair loads/stores
-  // instead of calling the general RTL Move for every CPU instruction.
-  State.Registers[0] := R[0];
-  State.Registers[1] := R[1];
-  State.Registers[2] := R[2];
-  State.Registers[3] := R[3];
-  State.Registers[4] := R[4];
-  State.Registers[5] := R[5];
-  State.Registers[6] := R[6];
-  State.Registers[7] := R[7];
-  State.Registers[8] := R[8];
-  State.Registers[9] := R[9];
-  State.Registers[10] := R[10];
-  State.Registers[11] := R[11];
-  State.Registers[12] := R[12];
-  State.Registers[13] := R[13];
-  State.Registers[14] := R[14];
-  State.Registers[15] := R[15];
-  State.Status := PSR;
-  State.SavedStatus := SPSR;
+  // Pair copies avoid sixteen separate address reloads on ARM64.
+  PARMRegisterPair(@State.Registers[0]).Value := PARMRegisterPair(@R[0]).Value;
+  PARMRegisterPair(@State.Registers[2]).Value := PARMRegisterPair(@R[2]).Value;
+  PARMRegisterPair(@State.Registers[4]).Value := PARMRegisterPair(@R[4]).Value;
+  PARMRegisterPair(@State.Registers[6]).Value := PARMRegisterPair(@R[6]).Value;
+  PARMRegisterPair(@State.Registers[8]).Value := PARMRegisterPair(@R[8]).Value;
+  PARMRegisterPair(@State.Registers[10]).Value := PARMRegisterPair(@R[10]).Value;
+  PARMRegisterPair(@State.Registers[12]).Value := PARMRegisterPair(@R[12]).Value;
+  PARMRegisterPair(@State.Registers[14]).Value := PARMRegisterPair(@R[14]).Value;
+  PARMRegisterPair(@State.Status).Value := PARMRegisterPair(@PSR).Value;
 
   // The caller retains this checkpoint between instructions. Banked registers
   // change only on mode switches, reset, restore or snapshot load.
@@ -2065,10 +2117,8 @@ begin
     Move(FSaved, State.Saved, SizeOf(FSaved));
     Generation := FBankGeneration;
   end;
-  State.Pipeline[0] := FPipeline[0];
-  State.Pipeline[1] := FPipeline[1];
-  State.Pipeline[2] := FPipeline[2];
-  State.PipelinePC := FPipelinePC;
+  PARMRegisterPair(@State.Pipeline[0]).Value := PARMRegisterPair(@FPipeline[0]).Value;
+  PARMRegisterPair(@State.Pipeline[2]).Value := PARMRegisterPair(@FPipeline[2]).Value;
   State.PipelineThumb := FPipelineThumb;
   State.PipelineValid := FPipelineValid;
   State.FetchSequential := FFetchSequential;

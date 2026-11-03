@@ -19,6 +19,7 @@ type
     PathSettingBrowseIcon: TPath;
     PathFolderBrowseIcon: TPath;
     EditButtonSettingClear: TEditButton;
+    PathCloseIcon: TPath;
   end;
 
 implementation

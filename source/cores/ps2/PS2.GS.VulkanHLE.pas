@@ -2475,13 +2475,14 @@ begin
   // The state's texture is a part: set up again when this primitive reads
   // beyond it, with the part grown once to take in both (a neighbouring
   // strip), then with the whole texture (one state's primitives reading an
-  // atlas in turn).
-  if not FStateValid or not SameState(D) then
+  // atlas in turn). (The state is compared once: nothing here changes it.)
+  var Same := FStateValid and SameState(D);
+  if not Same then
   begin
     FGrow := False;
     FWhole := False;
   end;
-  if FStateValid and (FPartW > 0) and SameState(D) then
+  if Same and (FPartW > 0) then
   begin
     var BU0, BV0, BU1, BV1: Integer;
     if not TexelBox(D, V, Count, BU0, BV0, BU1, BV1) or (BU0 < FPartU0) or (BV0 < FPartV0) or
@@ -2496,7 +2497,7 @@ begin
       FGrowV1 := FPartV0 + FPartH - 1;
     end;
   end;
-  if not FStateValid or not SameState(D) or ((Y2 >= T.Height) and (T.Height < T.MaxHeight)) then
+  if not FStateValid or not Same or ((Y2 >= T.Height) and (T.Height < T.MaxHeight)) then
   begin
     FNeedY := Y2;
     SetupState(D);

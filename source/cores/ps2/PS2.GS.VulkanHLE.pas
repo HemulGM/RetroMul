@@ -978,23 +978,26 @@ begin
     var Offset: Int64;
     var P := PCardinal(StageUpload(Int64(T.Width) * N * 4, Offset));
     for var Y := Y0 to Y0 + N - 1 do
+    begin
+      var RB := A.RowBase(Cardinal(Y));
+      var RO := A.RowOffsets(Cardinal(Y));
       case T.Format of
         PSMCT32, PSMZ32:
           for var X := 0 to T.Width - 1 do
           begin
-            P^ := Words[A.Addr(Cardinal(X), Cardinal(Y))];
+            P^ := Words[A.InRow(RB, RO, Cardinal(X))];
             Inc(P);
           end;
         PSMCT24, PSMZ24:
           for var X := 0 to T.Width - 1 do
           begin
-            P^ := (Words[A.Addr(Cardinal(X), Cardinal(Y))] and $FFFFFF) or $80000000;
+            P^ := (Words[A.InRow(RB, RO, Cardinal(X))] and $FFFFFF) or $80000000;
             Inc(P);
           end;
       else
         for var X := 0 to T.Width - 1 do
         begin
-          var V: Cardinal := Halves[A.Addr(Cardinal(X), Cardinal(Y))];
+          var V: Cardinal := Halves[A.InRow(RB, RO, Cardinal(X))];
           var C := ((V and $1F) shl 3) or (((V shr 5) and $1F) shl 11) or (((V shr 10) and $1F) shl 19);
           if (V and $8000) <> 0 then
             C := C or $FF000000;
@@ -1002,6 +1005,7 @@ begin
           Inc(P);
         end;
       end;
+    end;
     CopyToImage(T.Color.Image, VK_IMAGE_ASPECT_COLOR_BIT, Offset, 0, 0, Y0, T.Width, N);
     Inc(Y0, N);
   end;
@@ -1039,11 +1043,15 @@ begin
     var Offset: Int64;
     var P := PCardinal(StageUpload(Int64(T.Width) * N * 4, Offset));
     for var Y := Y0 to Y0 + N - 1 do
+    begin
+      var RB := A.RowBase(Cardinal(Y));
+      var RO := A.RowOffsets(Cardinal(Y));
       for var X := 0 to T.Width - 1 do
       begin
-        P^ := DepthBits(FMemory.ReadAt(Integer(T.ZPSM), A.Addr(Cardinal(X), Cardinal(Y))));
+        P^ := DepthBits(FMemory.ReadAt(Integer(T.ZPSM), A.InRow(RB, RO, Cardinal(X))));
         Inc(P);
       end;
+    end;
     CopyToImage(T.Depth.Image, VK_IMAGE_ASPECT_DEPTH_BIT, Offset, 0, 0, Y0, T.Width, N);
     Inc(Y0, N);
   end;
@@ -1210,27 +1218,31 @@ begin
     A.Init(Integer(T.Format), T.Addr shr 8, T.Stride shr 6);
     var C := PCardinal(FReadback.Data);
     for var Y := T.Y1 to T.Y2 do
+    begin
+      var RB := A.RowBase(Cardinal(Y));
+      var RO := A.RowOffsets(Cardinal(Y));
       case T.Format of
         PSMCT32, PSMZ32:
           for var X := T.X1 to T.X2 do
           begin
-            Words[A.Addr(Cardinal(X), Cardinal(Y))] := C^;
+            Words[A.InRow(RB, RO, Cardinal(X))] := C^;
             Inc(C);
           end;
         PSMCT24, PSMZ24:
           for var X := T.X1 to T.X2 do
           begin
-            var I := A.Addr(Cardinal(X), Cardinal(Y));
+            var I := A.InRow(RB, RO, Cardinal(X));
             Words[I] := (Words[I] and $FF000000) or (C^ and $FFFFFF);
             Inc(C);
           end;
       else
         for var X := T.X1 to T.X2 do
         begin
-          Halves[A.Addr(Cardinal(X), Cardinal(Y))] := Word(Color32To16(C^));
+          Halves[A.InRow(RB, RO, Cardinal(X))] := Word(Color32To16(C^));
           Inc(C);
         end;
       end;
+    end;
   end;
   if ZW * ZH > 0 then
   begin
@@ -1239,6 +1251,9 @@ begin
     var ZMax: Double := Scale - 1;
     var Z := PCardinal(FReadback.Data + ColorBytes);
     for var Y := T.ZY1 to T.ZY2 do
+    begin
+      var RB := A.RowBase(Cardinal(Y));
+      var RO := A.RowOffsets(Cardinal(Y));
       for var X := T.ZX1 to T.ZX2 do
       begin
         var F: Double;
@@ -1255,8 +1270,9 @@ begin
           V := Cardinal(Trunc(ZMax))
         else
           V := Cardinal(Trunc(F + 0.5));
-        FMemory.WriteAt(Integer(T.ZPSM), A.Addr(Cardinal(X), Cardinal(Y)), V);
+        FMemory.WriteAt(Integer(T.ZPSM), A.InRow(RB, RO, Cardinal(X)), V);
       end;
+    end;
   end;
   if Depth then
   begin

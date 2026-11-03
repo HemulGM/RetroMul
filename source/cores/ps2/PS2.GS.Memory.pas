@@ -104,6 +104,11 @@ type
     WShift, HShift, PageShift, WMask, HMask: Cardinal;
     procedure Init(PSM: Integer; BP, BW: Cardinal);
     function Addr(X, Y: Cardinal): Cardinal; inline;
+    // Addr for the pixels of one row: RowBase and RowOffsets of Y once, then
+    // InRow with them for each X (the same address).
+    function RowBase(Y: Cardinal): Cardinal; inline;
+    function RowOffsets(Y: Cardinal): PWord; inline;
+    function InRow(RowAt: Cardinal; RowOffs: PWord; X: Cardinal): Cardinal; inline;
   end;
 
   TPS2GSMemory = class
@@ -255,6 +260,21 @@ function TPS2GSAddressing.Addr(X, Y: Cardinal): Cardinal;
 begin
   Result := (Base + ((X shr WShift) + (Y shr HShift) * Width) shl PageShift +
     Offsets[((Y and HMask) shl WShift) + (X and WMask)]) and Mask;
+end;
+
+function TPS2GSAddressing.RowBase(Y: Cardinal): Cardinal;
+begin
+  Result := Base + ((Y shr HShift) * Width) shl PageShift;
+end;
+
+function TPS2GSAddressing.RowOffsets(Y: Cardinal): PWord;
+begin
+  Result := Offsets + ((Y and HMask) shl WShift);
+end;
+
+function TPS2GSAddressing.InRow(RowAt: Cardinal; RowOffs: PWord; X: Cardinal): Cardinal;
+begin
+  Result := (RowAt + (X shr WShift) shl PageShift + RowOffs[X and WMask]) and Mask;
 end;
 
 { TPS2GSMemory }

@@ -262,6 +262,13 @@ type
     property Renderer: TPS2GSVulkanHLE read FRenderer;
   end;
 
+// CPU-side HLE transfers, exposed for comparison with the original scalar
+// addressing/conversion without creating a Vulkan device.
+procedure PS2HLELoadColorRow(Memory: TPS2GSMemory; const A: TPS2GSAddressing;
+  Format: Cardinal; Y, X, Count: Integer; Target: PCardinal);
+procedure PS2HLEStoreColorRow(Memory: TPS2GSMemory; const A: TPS2GSAddressing;
+  Format: Cardinal; Y, X, Count: Integer; Source: PCardinal);
+
 implementation
 
 const
@@ -291,6 +298,132 @@ type
     U0, V0, W, H: Integer;
   end;
   PPS2HLETexRequest = ^TPS2HLETexRequest;
+
+procedure PS2HLELoadColorRow(Memory: TPS2GSMemory; const A: TPS2GSAddressing;
+  Format: Cardinal; Y, X, Count: Integer; Target: PCardinal);
+begin
+  if Count <= 0 then Exit;
+  var RB := A.RowBase(Cardinal(Y));
+  var RO := A.RowOffsets(Cardinal(Y));
+  var Words := PCardinal(Memory.Data);
+  var Halves := PWord(Memory.Data);
+  var Last := X + Count;
+  var Separate := (NativeUInt(Target) >= NativeUInt(Memory.Data) + PS2GSMemorySize) or
+    (NativeUInt(Memory.Data) >= NativeUInt(Target) + NativeUInt(Count * 4));
+  if Format in [PSMCT32, PSMZ32, PSMCT24, PSMZ24] then
+  begin
+    var Is24 := Format in [PSMCT24, PSMZ24];
+    // Each even-x 32-bit pixel is followed by x+1 at the adjacent word,
+    // including page/VRAM boundaries. Do not reorder aliased synthetic I/O.
+    while X < Last do
+    begin
+      var At := A.InRow(RB, RO, Cardinal(X));
+      if Separate and ((X and 1) = 0) and (X + 1 < Last) then
+      begin
+        var Pair := PUInt64(Words + At)^;
+        if Is24 then Pair := (Pair and $00FFFFFF00FFFFFF) or $8000000080000000;
+        PUInt64(Target)^ := Pair;
+        Inc(Target, 2);
+        Inc(X, 2);
+      end
+      else
+      begin
+        var Pixel := Words[At];
+        if Is24 then Pixel := (Pixel and $FFFFFF) or $80000000;
+        Target^ := Pixel;
+        Inc(Target);
+        Inc(X);
+      end;
+    end;
+  end
+  else
+    while X < Last do
+    begin
+      var At := A.InRow(RB, RO, Cardinal(X));
+      if Separate and ((X and 1) = 0) and (X + 1 < Last) then
+      begin
+        // The next 16-bit pixel is two halfwords away, with independent
+        // colour lanes in a UInt64. Scalar reads avoid overreading at wrap.
+        var Pair := UInt64(Halves[At]) or (UInt64(Halves[At + 2]) shl 32);
+        PUInt64(Target)^ := ((Pair and $0000001F0000001F) shl 3) or
+          ((Pair and $000003E0000003E0) shl 6) or
+          ((Pair and $00007C0000007C00) shl 9) or
+          (((Pair and $0000800000008000) shr 15) * $FF000000);
+        Inc(Target, 2);
+        Inc(X, 2);
+      end
+      else
+      begin
+        var V: Cardinal := Halves[At];
+        var C := ((V and $1F) shl 3) or (((V shr 5) and $1F) shl 11) or (((V shr 10) and $1F) shl 19);
+        if (V and $8000) <> 0 then C := C or $FF000000;
+        Target^ := C;
+        Inc(Target);
+        Inc(X);
+      end;
+    end;
+end;
+
+procedure PS2HLEStoreColorRow(Memory: TPS2GSMemory; const A: TPS2GSAddressing;
+  Format: Cardinal; Y, X, Count: Integer; Source: PCardinal);
+begin
+  if Count <= 0 then Exit;
+  var RB := A.RowBase(Cardinal(Y));
+  var RO := A.RowOffsets(Cardinal(Y));
+  var Words := PCardinal(Memory.Data);
+  var Halves := PWord(Memory.Data);
+  var Last := X + Count;
+  var Separate := (NativeUInt(Source) >= NativeUInt(Memory.Data) + PS2GSMemorySize) or
+    (NativeUInt(Memory.Data) >= NativeUInt(Source) + NativeUInt(Count * 4));
+  if Format in [PSMCT32, PSMZ32, PSMCT24, PSMZ24] then
+  begin
+    var Is24 := Format in [PSMCT24, PSMZ24];
+    while X < Last do
+    begin
+      var At := A.InRow(RB, RO, Cardinal(X));
+      if Separate and ((X and 1) = 0) and (X + 1 < Last) then
+      begin
+        if Is24 then
+          PUInt64(Words + At)^ := (PUInt64(Words + At)^ and $FF000000FF000000) or
+            (PUInt64(Source)^ and $00FFFFFF00FFFFFF)
+        else
+          PUInt64(Words + At)^ := PUInt64(Source)^;
+        Inc(Source, 2);
+        Inc(X, 2);
+      end
+      else
+      begin
+        if Is24 then Words[At] := (Words[At] and $FF000000) or (Source^ and $FFFFFF)
+        else Words[At] := Source^;
+        Inc(Source);
+        Inc(X);
+      end;
+    end;
+  end
+  else
+    while X < Last do
+    begin
+      var At := A.InRow(RB, RO, Cardinal(X));
+      if Separate and ((X and 1) = 0) and (X + 1 < Last) then
+      begin
+        var Pair := PUInt64(Source)^;
+        var V := ((Pair shr 3) and $0000001F0000001F) or
+          ((Pair shr 6) and $000003E0000003E0) or
+          ((Pair shr 9) and $00007C0000007C00) or
+          ((Pair shr 16) and $0000800000008000);
+        Halves[At] := Word(V and $FFFF);
+        Halves[At + 2] := Word(V shr 32);
+        Inc(Source, 2);
+        Inc(X, 2);
+      end
+      else
+      begin
+        Halves[At] := Word(Color32To16(Source^));
+        Inc(Source);
+        Inc(X);
+      end;
+    end;
+end;
 
 function Is16(PSM: Cardinal): Boolean; inline;
 begin
@@ -968,8 +1101,6 @@ var
   A: TPS2GSAddressing;
 begin
   A.Init(Integer(T.Format), T.Addr shr 8, T.Stride shr 6);
-  var Words := PCardinal(FMemory.Data);
-  var Halves := PWord(FMemory.Data);
   var Rows := BandRows(T);
   var Y0 := 0;
   while Y0 < T.Height do
@@ -979,32 +1110,8 @@ begin
     var P := PCardinal(StageUpload(Int64(T.Width) * N * 4, Offset));
     for var Y := Y0 to Y0 + N - 1 do
     begin
-      var RB := A.RowBase(Cardinal(Y));
-      var RO := A.RowOffsets(Cardinal(Y));
-      case T.Format of
-        PSMCT32, PSMZ32:
-          for var X := 0 to T.Width - 1 do
-          begin
-            P^ := Words[A.InRow(RB, RO, Cardinal(X))];
-            Inc(P);
-          end;
-        PSMCT24, PSMZ24:
-          for var X := 0 to T.Width - 1 do
-          begin
-            P^ := (Words[A.InRow(RB, RO, Cardinal(X))] and $FFFFFF) or $80000000;
-            Inc(P);
-          end;
-      else
-        for var X := 0 to T.Width - 1 do
-        begin
-          var V: Cardinal := Halves[A.InRow(RB, RO, Cardinal(X))];
-          var C := ((V and $1F) shl 3) or (((V shr 5) and $1F) shl 11) or (((V shr 10) and $1F) shl 19);
-          if (V and $8000) <> 0 then
-            C := C or $FF000000;
-          P^ := C;
-          Inc(P);
-        end;
-      end;
+      PS2HLELoadColorRow(FMemory, A, T.Format, Y, 0, T.Width, P);
+      Inc(P, T.Width);
     end;
     CopyToImage(T.Color.Image, VK_IMAGE_ASPECT_COLOR_BIT, Offset, 0, 0, Y0, T.Width, N);
     Inc(Y0, N);
@@ -1211,37 +1318,14 @@ begin
   WaitAll;
   if (CW * CH > 0) or (ZW * ZH > 0) then
     FReadback.Invalidate;
-  var Words := PCardinal(FMemory.Data);
-  var Halves := PWord(FMemory.Data);
   if CW * CH > 0 then
   begin
     A.Init(Integer(T.Format), T.Addr shr 8, T.Stride shr 6);
     var C := PCardinal(FReadback.Data);
     for var Y := T.Y1 to T.Y2 do
     begin
-      var RB := A.RowBase(Cardinal(Y));
-      var RO := A.RowOffsets(Cardinal(Y));
-      case T.Format of
-        PSMCT32, PSMZ32:
-          for var X := T.X1 to T.X2 do
-          begin
-            Words[A.InRow(RB, RO, Cardinal(X))] := C^;
-            Inc(C);
-          end;
-        PSMCT24, PSMZ24:
-          for var X := T.X1 to T.X2 do
-          begin
-            var I := A.InRow(RB, RO, Cardinal(X));
-            Words[I] := (Words[I] and $FF000000) or (C^ and $FFFFFF);
-            Inc(C);
-          end;
-      else
-        for var X := T.X1 to T.X2 do
-        begin
-          Halves[A.InRow(RB, RO, Cardinal(X))] := Word(Color32To16(C^));
-          Inc(C);
-        end;
-      end;
+      PS2HLEStoreColorRow(FMemory, A, T.Format, Y, T.X1, CW, C);
+      Inc(C, CW);
     end;
   end;
   if ZW * ZH > 0 then

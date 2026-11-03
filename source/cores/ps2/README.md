@@ -635,6 +635,16 @@ GS buffers are render targets (RGBA8 images; 24-bit frames keep alpha 0x80,
 16-bit ones bit 15 as 0 or 255), their depth buffers the targets' depth
 images. A target's rows map to GS memory a page row at a time, so targets are
 whole page rows tall and their drawn rows are held a page row at a time.
+CPU uploads/readbacks process even-x colour pairs with integer operations:
+32/24-bit pixels occupy adjacent words; 16/16S pixels are two halfwords
+apart. Odd edges and overlapping linear/GS buffers retain scalar order.
+The 24-bit high byte and the existing 16-bit alpha expansion are unchanged;
+neither the D24 nor the D32 depth conversion formula changes.
+`tests/cores/ps2/gsdata/build-hle.ps1 -Checked` checks the pure CPU helpers
+without a Vulkan device: all base/page pair layouts, crops, VRAM wrap,
+untouched bytes and aliased source/destination against the former loops.
+Its executable also accepts `-bench` for alternating scalar/paired timings.
+
 Textures are decoded on the CPU (CLUT, TEXA, mipmap levels) and compared with
 the GS blocks they came from (a large one that primitives read little of in
 parts of whole GS pages); a drawn target read in its own format and width

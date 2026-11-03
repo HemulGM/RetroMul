@@ -180,7 +180,6 @@ type
     FSlots: array[0..1] of TVulkanHLESlot;
     FSlot: Integer;
     FSetCount: Integer;
-    FDrawFirst, FDrawCount: Integer;
     FPassRenderPass: VkRenderPass;
     // The shown frames' pixels (ReadFrame), reused once their reader let go.
     FFrames: array[0..2] of TArray<TAlphaColor>;
@@ -227,6 +226,8 @@ type
     // The texture of untextured draws: one opaque white texel.
     FBlank: TVulkanHLETexture;
     FStats: TVulkanHLEStats;
+    // The draw being built: its first vertex in the slot and its vertices.
+    FDrawFirst, FDrawCount: Integer;
 
     // Images.
     function CreateImage(Format: VkFormat; Width, Height, Levels: Integer; Usage, Aspect: Cardinal): TVulkanHLEImage;
@@ -253,7 +254,9 @@ type
     // Batches.
     procedure BeginPass(T: TVulkanHLETarget; Pass: VkRenderPass; Framebuffer: VkFramebuffer);
     procedure EndPass;
-    procedure FlushDraw;
+    // Draws the vertices added since the last one (a subclass may draw them
+    // again with other bindings).
+    procedure FlushDraw; virtual;
     // Room for Count more vertices in the slot (submitting it when full).
     procedure ReserveVertices(Count: Integer);
     // Count vertices after the draw being built.

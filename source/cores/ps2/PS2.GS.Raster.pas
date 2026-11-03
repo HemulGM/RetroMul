@@ -186,6 +186,9 @@ type
     FBeforeDraw: TPS2GSBeforeDraw;
     FOverlapAllowed: TPS2GSOverlapAllowed;
   public
+    // The raster's reads of GS memory (the display, local copies and reads)
+    // need only the pages they touch (AccessPages), not a Sync.
+    PageReads: Boolean;
     procedure Sync; virtual; abstract;
     // CPU access to wrapped 8 KiB GS pages; unknown accelerators sync fully.
     procedure ReadPages(First, Last: Integer); virtual;
@@ -206,6 +209,9 @@ type
     function Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex;
       X0, Y0, X1, Y1: Integer): Boolean; virtual;
     function BeginTriangle(const D: TPS2GSDraw; X0, Y0, X1, Y1: Integer): Boolean; virtual; abstract;
+    // A point or line (V1 unused for points) drawn by the accelerator; False
+    // (the default) leaves it to the software renderer after a Sync.
+    function PointOrLine(const D: TPS2GSDraw; Kind: TPS2GSPrimitive; const V0, V1: TPS2GSVertex): Boolean; virtual;
     procedure Fragment(X, Y: Integer; Z: Cardinal; R, G, B, A, F, U, V: Integer; Lod: Single); virtual; abstract;
     procedure EndTriangle; virtual; abstract;
   end;
@@ -360,7 +366,7 @@ type
     FThreads: Integer;
     FBands: TPS2GSBands;
     FAccelerator: TPS2GSAccelerator;
-    FVulkan: Boolean;
+    FVulkan, FHLE: Boolean;
     FVulkanError: string;
     // Something queued since the last Sync; the 8 KiB pages queued
     // primitives write and read as texture, and the buffer (base, width,
@@ -426,6 +432,8 @@ type
     function GetMemory: TPS2GSMemory;
     procedure SetThreads(Value: Integer);
     procedure SetVulkan(Value: Boolean);
+    procedure SetHLE(Value: Boolean);
+    function GetHLEReport: string;
     function GetVulkanDraws: Int64;
     function GetVulkanSubmissions: Int64;
     function GetVulkanTexturedDraws: Int64;
@@ -502,6 +510,13 @@ type
     // memory, timing and snapshots are the same either way.
     property Async: Boolean read GetAsync write SetAsync;
     property Vulkan: Boolean read FVulkan write SetVulkan;
+    // Drawing with the Vulkan HLE renderer (TPS2GSHLE, PS2.GS.VulkanHLE): not
+    // the software renderer's pixels, the timing the same. On this thread
+    // (no Async), without band threads or Vulkan; VulkanError says why it
+    // could not start.
+    property HLE: Boolean read FHLE write SetHLE;
+    // Its counts, for diagnostics.
+    property HLEReport: string read GetHLEReport;
     property VulkanError: string read FVulkanError;
     property VulkanDraws: Int64 read GetVulkanDraws;
     property VulkanSubmissions: Int64 read GetVulkanSubmissions;
@@ -692,7 +707,7 @@ procedure AddRectPages(var Pages: TPS2GSPages; BP, BW, PSM: Cardinal; X0, Y0, X1
 implementation
 
 uses
-  PS2.GS.Gpu{$IFDEF GS_RACECHECK}, PS2.GS.RaceCheck{$ENDIF};
+  PS2.GS.Gpu, PS2.GS.VulkanHLE{$IFDEF GS_RACECHECK}, PS2.GS.RaceCheck{$ENDIF};
 
 function TriangleCoverage(X0, Y0, X1, Y1, X2, Y2: Int64; SX0, SY0, SX1, SY1: Integer): Int64; forward;
 function SpriteCoverage(X0, Y0, X1, Y1: Integer; SX0, SY0, SX1, SY1: Integer): Int64; forward;
@@ -900,7 +915,7 @@ end;
 
 procedure TPS2GSRaster.SetAsync(Value: Boolean);
 begin
-  if not GSAsyncSupported or (PrimLog <> nil) or (TransferLog <> nil) or (WatchX >= 0) then
+  if not GSAsyncSupported or (PrimLog <> nil) or (TransferLog <> nil) or (WatchX >= 0) or FHLE then
     Value := False;
   if Value = (FWorker <> nil) then
     Exit;
@@ -942,6 +957,12 @@ end;
 
 function TPS2GSAccelerator.Triangle(const D: TPS2GSDraw; const V0, V1, V2: TPS2GSVertex;
   X0, Y0, X1, Y1: Integer): Boolean;
+begin
+  Result := False;
+end;
+
+function TPS2GSAccelerator.PointOrLine(const D: TPS2GSDraw; Kind: TPS2GSPrimitive;
+  const V0, V1: TPS2GSVertex): Boolean;
 begin
   Result := False;
 end;
@@ -1022,9 +1043,45 @@ begin
     Result := TPS2GSGpu(R.FAccelerator).TriangleDispatches;
 end;
 
+procedure TPS2GSRaster.SetHLE(Value: Boolean);
+begin
+  if Value = FHLE then Exit;
+  // It draws on this thread, with nothing else drawing.
+  if Value then
+  begin
+    SetAsync(False);
+    SetVulkan(False);
+    SetThreads(0);
+  end;
+  Sync;
+  FreeAndNil(FAccelerator);
+  FHLE := Value;
+  FVulkanError := '';
+  FXferGPURevision := -1;
+  if Value then
+    try
+      FAccelerator := TPS2GSHLE.Create(FMemory, @FClut[0]);
+    except
+      on E: Exception do
+      begin
+        FVulkanError := E.Message;
+        FHLE := False;
+      end;
+    end;
+end;
+
+function TPS2GSRaster.GetHLEReport: string;
+begin
+  Result := '';
+  if FHLE and (FAccelerator <> nil) then
+    Result := TPS2GSHLE(FAccelerator).Renderer.Describe;
+end;
+
 procedure TPS2GSRaster.SetVulkan(Value: Boolean);
 begin
   if Value = FVulkan then Exit;
+  if Value and FHLE then
+    SetHLE(False);
   if FWorker <> nil then
   begin
     var Inner := Drawing;
@@ -1060,7 +1117,8 @@ end;
 
 procedure TPS2GSRaster.SetThreads(Value: Integer);
 begin
-  if Value <= 1 then
+  // (The HLE renderer draws everything on this thread.)
+  if (Value <= 1) or FHLE then
     Value := 0;
   if Value = FThreads then
     Exit;
@@ -1863,6 +1921,17 @@ end;
 
 function TPS2GSRaster.MemoryFor(const Pages: TPS2GSPages): TPS2GSMemory;
 begin
+  if (FWorker = nil) and (FAccelerator <> nil) and FAccelerator.PageReads then
+  begin
+    if FAccelerator.Pending then
+    begin
+      var None: TPS2GSPages;
+      FillChar(None, SizeOf(None), 0);
+      FAccelerator.AccessPages(Pages, None);
+    end;
+    SyncSoftware;
+    Exit(FMemory);
+  end;
   if FWorker = nil then
     Exit(GetMemory);
   FlushMarks;
@@ -2186,7 +2255,25 @@ begin
   // CPU primitives must see all earlier GPU writes. Sprites decide after
   // clipping whether they can join the batch or need the software path.
   if (FAccelerator <> nil) and (not (Kind in [gpSprite, gpTriangle]) or (PrimLog <> nil) or (WatchX >= 0)) then
+  begin
+    // An accelerator drawing points and lines itself takes them here (their
+    // pixels are counted as the software renderer would draw them).
+    if (Kind in [gpPoint, gpLine]) and (PrimLog = nil) and (WatchX < 0) and FAccelerator.PointOrLine(FD, Kind, V0, V1) then
+    begin
+      Inc(FPrimitives);
+      FCommand.Kind := Kind;
+      FCommand.Clut := -1;
+      FCommand.D := FD;
+      FCommand.V[0] := V0;
+      FCommand.V[1] := V1;
+      FCommand.V[2] := V2;
+      var Counted := FCounter.PixelsDrawn;
+      FCounter.Draw(FCommand);
+      Inc(FPixels, FCounter.PixelsDrawn - Counted);
+      Exit;
+    end;
     Sync;
+  end;
   Inc(FPrimitives);
   FCommand.Kind := Kind;
   FCommand.Rounding := GetRoundMode;
@@ -4656,7 +4743,20 @@ begin
   // The first CPU worker can start the copy as soon as it is published.
   // Its source/destination may alias deferred GPU work, so finish that work
   // even when ordinary software drawing remains queued on the workers.
-  if (FAccelerator <> nil) and FAccelerator.Pending then FAccelerator.Sync;
+  if (FAccelerator <> nil) and FAccelerator.Pending then
+    if FAccelerator.PageReads then
+    begin
+      // The source's and destination's pages (the source's fields moved to
+      // where AddAreaPages takes the destination's).
+      var Reads, Writes: TPS2GSPages;
+      FillChar(Reads, SizeOf(Reads), 0);
+      FillChar(Writes, SizeOf(Writes), 0);
+      AddAreaPages(Reads, Regs[GSRegBITBLTBUF] shl 32, Regs[GSRegTRXPOS] shl 32, Regs[GSRegTRXREG]);
+      AddAreaPages(Writes, Regs[GSRegBITBLTBUF], Regs[GSRegTRXPOS], Regs[GSRegTRXREG]);
+      FAccelerator.AccessPages(Reads, Writes);
+    end
+    else
+      FAccelerator.Sync;
   if Queueing then
   begin
     // After the queued drawing, on the first band thread.
@@ -4675,7 +4775,10 @@ begin
     FPending := True;
     Exit;
   end;
-  Sync;
+  if (FAccelerator <> nil) and FAccelerator.PageReads then
+    SyncSoftware
+  else
+    Sync;
   CopyLocal(Regs[GSRegBITBLTBUF], Regs[GSRegTRXPOS], Regs[GSRegTRXREG]);
 end;
 
@@ -4744,7 +4847,20 @@ begin
     FReadPos := 0;
     Exit;
   end;
-  Sync;
+  if (FAccelerator <> nil) and FAccelerator.PageReads then
+  begin
+    if FAccelerator.Pending then
+    begin
+      var Reads, None: TPS2GSPages;
+      FillChar(Reads, SizeOf(Reads), 0);
+      FillChar(None, SizeOf(None), 0);
+      AddAreaPages(Reads, Regs[GSRegBITBLTBUF] shl 32, Regs[GSRegTRXPOS] shl 32, Regs[GSRegTRXREG]);
+      FAccelerator.AccessPages(Reads, None);
+    end;
+    SyncSoftware;
+  end
+  else
+    Sync;
   var Buf := Regs[GSRegBITBLTBUF];
   var Pos := Regs[GSRegTRXPOS];
   var Reg := Regs[GSRegTRXREG];

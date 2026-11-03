@@ -555,6 +555,49 @@ also checks two/four/six bands, self-reading 16-bit draws, local copies, palette
 loads, host transfers, mode switching and serialized state equivalence.
 It requires a Vulkan device with coherent host-memory import.
 
+## Experimental Vulkan HLE GS
+
+`Video/Renderer=vulkan-hle` (the settings' Vulkan HLE) draws every sprite,
+triangle, line and point with Vulkan graphics pipelines in the host GPU's
+arithmetic (`PS2.GS.VulkanHLE`, on the common `RM.Vulkan.HLE` base the PSP's
+HLE renderer uses): fast and light on the CPU, but not pixel for pixel as the
+software renderer. The raster still counts the pixels each primitive covers,
+so the timing is the same; it runs on the emulation thread (no band threads,
+no GS worker) and needs a device with a graphics queue and dual-source
+blending (else the software renderer draws, single-threaded, and
+`VulkanError` says why).
+
+GS buffers are render targets (RGBA8 images; 24-bit frames keep alpha 0x80,
+16-bit ones bit 15 as 0 or 255), their depth buffers the targets' depth
+images. A target's rows map to GS memory a page row at a time, so targets are
+whole page rows tall and their drawn rows are held a page row at a time.
+Textures are decoded on the CPU (CLUT, TEXA, mipmap levels) and compared with
+the GS blocks they came from; a drawn target read in its own format and width
+is sampled from its image (a draw reading the target it draws reads a copy,
+brought up to date before a primitive reads what was drawn since). The
+shaders do the GS's texture addressing (wrap modes, 4-bit bilinear weights,
+LOD and mipmaps), texture function, fog and alpha test in its integer
+arithmetic; blending is the fixed function's with the source side weighed in
+the shader and the destination weight as the second source (dual-source
+blending); depth is the fixed function's (GEQUAL/GREATER over the buffer's
+range, clamped). The alpha test's failing pixels (AFAIL) are a second pass of
+the batch.
+
+The raster reports its own accesses to GS memory (transfers, CLUT loads,
+local copies and reads, the display) by pages: targets newer there are stored
+first, writes to pages textures or targets came from are seen. Only the
+targets the display shows are read back each frame. 8H/4HL/4HH textures in a
+24-bit buffer's high byte do not wait for it.
+
+Not yet as the GS draws: the destination alpha test (DATE), FBMSK masking
+part of a channel, destination alpha above 0x80 in blending (32-bit frames
+weigh Ad / 255 instead of Ad / 128) and weights above one, COLCLAMP off
+(wrapping), dithering, and buffers read through another format (texture
+shuffles, depth as colour, palettized views of colour) other than by storing
+them and decoding GS memory. Resolution scaling is not offered yet. Shaders
+are in `source/cores/ps2/shaders` (`PS2.GS.HLE.*`); `shaders/build.ps1 -Only HLE`
+regenerates their includes. `PS2_GSVULKAN=hle` selects it in the test
+runner, `PS2_HLEVALIDATE=1` the Khronos validation layer.
 ## BIOS boot (in progress)
 
 With a BIOS image in `TPS2ConsoleConfig.BIOS` the console boots it instead

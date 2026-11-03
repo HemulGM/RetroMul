@@ -51,7 +51,9 @@ type
     // the emulation), 'single' (on the emulation thread), or experimental
     // 'vulkan' (Vulkan LLE, also read as 'vulkan-lle': supported
     // sprites/triangle pixels on the GPU, bit exact, other draws on the band
-    // threads). But for 'single' the GS front end runs on a thread
+    // threads), or experimental 'vulkan-hle' (Vulkan HLE: every primitive on the
+    // GPU's own pipelines, fast but not bit exact, on the emulation thread).
+    // But for 'single' and 'vulkan-hle' the GS front end runs on a thread
     // of its own (TPS2GSRaster.Async) on hosts with four logical processors.
     property Renderer: string read FRenderer write FRenderer;
     property Recompiler: Boolean read FRecompiler write FRecompiler;
@@ -103,7 +105,7 @@ type
     FGSThreads: Integer;
     FGSAsync: Boolean;
     FRecompiler: Boolean;
-    FVulkan: Boolean;
+    FVulkan, FHLE: Boolean;
     FAudio: TPS2AudioPlayback;
     FAudioFailed: Boolean;
     FAudioError: string;
@@ -132,7 +134,7 @@ type
       const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string);
     destructor Destroy; override;
     procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
-      GSAsync, Recompiler, Vulkan: Boolean);
+      GSAsync, Recompiler, Vulkan, HLE: Boolean);
     procedure RequestReset;
     procedure StopAndSave;
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -280,13 +282,13 @@ function TPS2Config.GSThreads: Integer;
 begin
   Result := 0;
   // One per two logical processors (the emulation keeps one), 2..8.
-  if FRenderer <> 'single' then
+  if (FRenderer <> 'single') and (FRenderer <> 'vulkan-hle') then
     Result := EnsureRange(TThread.ProcessorCount div 2, 2, 8);
 end;
 
 function TPS2Config.GSAsync: Boolean;
 begin
-  Result := (FRenderer <> 'single') and (TThread.ProcessorCount >= 4);
+  Result := (FRenderer <> 'single') and (FRenderer <> 'vulkan-hle') and (TThread.ProcessorCount >= 4);
 end;
 
 function TPS2Config.ConsoleLanguage: TPS2Language;
@@ -325,7 +327,7 @@ begin
   FRecompiler := SameText(Ini.ReadString('Emulation', 'Execution', 'interpreter'), 'jit');
   if FRenderer = 'vulkan-lle' then
     FRenderer := 'vulkan';
-  if (FRenderer <> 'single') and (FRenderer <> 'vulkan') then
+  if (FRenderer <> 'single') and (FRenderer <> 'vulkan') and (FRenderer <> 'vulkan-hle') then
     FRenderer := 'threads';
   for var P := 0 to 1 do
   begin
@@ -395,7 +397,7 @@ begin
 end;
 
 procedure TPS2Worker.Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
-  GSAsync, Recompiler, Vulkan: Boolean);
+  GSAsync, Recompiler, Vulkan, HLE: Boolean);
 begin
   var Wake: Boolean;
   FLock.Acquire;
@@ -409,6 +411,7 @@ begin
     FGSAsync := GSAsync;
     FRecompiler := Recompiler;
     FVulkan := Vulkan;
+    FHLE := HLE;
   finally
     FLock.Release;
   end;
@@ -684,7 +687,7 @@ begin
         var Volume: Single;
         var Inputs: TPS2PadInputs;
         var GSThreads: Integer;
-        var GSAsync, Recompiler, Vulkan: Boolean;
+        var GSAsync, Recompiler, Vulkan, HLE: Boolean;
         FLock.Acquire;
         try
           Paused := FPause;
@@ -697,11 +700,13 @@ begin
           GSAsync := FGSAsync;
           Recompiler := FRecompiler;
           Vulkan := FVulkan;
+          HLE := FHLE;
         finally
           FLock.Release;
         end;
         // (The GS as the kick thread left it.)
         FConsole.GIF.Join;
+        FConsole.GS.Raster.HLE := HLE;
         FConsole.GS.Raster.Vulkan := Vulkan;
         FConsole.GS.Raster.Threads := GSThreads;
         FConsole.GS.Raster.Async := GSAsync;
@@ -1093,7 +1098,8 @@ begin
       Inputs[Port].Pressure[K] := 0;
   end;
   FWorker.Configure(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume, FConfigObject.GSThreads,
-    FConfigObject.GSAsync, FConfigObject.Recompiler, FConfigObject.Renderer = 'vulkan');
+    FConfigObject.GSAsync, FConfigObject.Recompiler, FConfigObject.Renderer = 'vulkan',
+    FConfigObject.Renderer = 'vulkan-hle');
 end;
 
 procedure TPS2CoreAdapter.Start;

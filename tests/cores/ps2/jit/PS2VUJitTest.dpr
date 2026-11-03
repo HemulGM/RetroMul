@@ -985,7 +985,12 @@ begin
                 V.WriteControl(3, Again);
                 V.Execute($4A000038 or ((Loop shr 3) shl 6));
               end;
-            4..33: V.VF[Reg].UW[Field] := Value;
+            4..33:
+              begin
+                // (As the EE's QMTC2 and LQC2: marked.)
+                V.VF[Reg].UW[Field] := Value;
+                V.VFWritten := V.VFWritten or (Cardinal(1) shl Reg);
+              end;
             34..47: V.WriteControl(1 + Reg mod 3, Value and 1);
             48..57: Data^[Word] := Value;
             58..60: Code^[CodeWord] := NewUpper;

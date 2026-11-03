@@ -110,6 +110,9 @@ type
   public
     VF: array[0..31] of TPS2Reg128;
     VI: array[0..31] of Cardinal;
+    // The VF registers written from outside the coprocessor's methods (the
+    // EE's LQC2 and QMTC2: bit N for VF[N]) since it last cleared them.
+    VFWritten: Cardinal;
     constructor Create;
     procedure Reset; virtual;
     function ReadControl(Index: Integer): Cardinal; virtual;
@@ -2786,6 +2789,7 @@ begin
   begin
     FCop2.Sync;
     FCop2.VF[I.Op shr 16 and 31] := V;
+    FCop2.VFWritten := FCop2.VFWritten or (Cardinal(1) shl (I.Op shr 16 and 31));
   end;
 end;
 
@@ -3358,7 +3362,10 @@ begin
         else
           FCop2.Sync;
         if Fs <> 0 then
+        begin
           FCop2.VF[Fs] := S.GPR[I.T];
+          FCop2.VFWritten := FCop2.VFWritten or (Cardinal(1) shl Fs);
+        end;
       end;
     6:
       begin

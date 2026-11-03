@@ -284,6 +284,9 @@ type
     S: TPS2VUState;
     // Micro instructions executed (diagnostics).
     Executed: Int64;
+    // Counts what may change the state (Reset, Start, Run, Macro, a
+    // snapshot): VU0's probes (TPS2VU0) know nothing changed while it stays.
+    Touched: UInt64;
     // Diagnostics: the last pairs of a run that hit its limit.
     LoopTrace: array[0..63] of Cardinal;
     // Diagnostics: when assigned, the PC and VI1-15 before each of the first
@@ -356,6 +359,15 @@ type
     FSpinPC: array[0..63] of Cardinal;
     FSpinWords: array[0..127] of Cardinal;
     FSkippedTurns: Int64;
+    // The last probe found the known loop with VF as blocked (skipping its
+    // turns; VFWritten cleared then), and the core's Touched and Touches
+    // then. While neither changed, only VI and the VF registers written
+    // since can differ from then (the loop's code aside).
+    FProbeKnown: Boolean;
+    FProbeTouched, FTouches, FProbeTouches: UInt64;
+    procedure NoteProbe;
+    function SpinCodeSame: Boolean;
+    function KnownProbe: Boolean;
     procedure RunUntilBlocked;
     procedure RunUntilBlockedHeld;
     function Spins: Boolean;
@@ -3194,6 +3206,7 @@ end;
 
 procedure TPS2VUCore.Reset;
 begin
+  Inc(Touched);
   S := Default(TPS2VUState);
   FillChar(FReady, SizeOf(FReady), 0);
   FillChar(FReadyAny, SizeOf(FReadyAny), 0);
@@ -4023,6 +4036,7 @@ end;
 function TPS2VUCore.Macro(Op: Cardinal): Boolean;
 begin
   // COP2 macro: upper-style operations and the lower ones VU0 offers.
+  Inc(Touched);
   Result := True;
   if FUseJit and MacroNative(Op) then
     Exit;
@@ -4393,6 +4407,7 @@ end;
 
 procedure TPS2VUCore.Start(Address: Cardinal);
 begin
+  Inc(Touched);
   FLoadReg := -1;
   S.TPC := Address and FCodeMask;
   S.Running := True;
@@ -4623,6 +4638,7 @@ function TPS2VUCore.Run(MaxPairs: Integer): Boolean;
 begin
   // (The host rounding stays as it is for the whole run: the routines for
   // it, before generated code first runs.)
+  Inc(Touched);
   var MathChecked := FMathHeld > 0;
   var Context := Default(TPS2VURun);
   Context.Limit := MaxPairs;
@@ -4688,6 +4704,7 @@ end;
 
 procedure TPS2VUCore.SerializeState(State: TStateArchive);
 begin
+  Inc(Touched);
   State.Field(S, SizeOf(S));
   if State.Loading then
   begin
@@ -4716,6 +4733,7 @@ end;
 
 procedure TPS2VU0.Reset;
 begin
+  Inc(FTouches);
   inherited Reset;
   if FCore <> nil then
     FCore.Reset;
@@ -4749,6 +4767,9 @@ end;
 
 procedure TPS2VU0.WriteControl(Index: Integer; Value: Cardinal);
 begin
+  // (VI too: compared whole by the probes.)
+  if not (Index in [1..15]) then
+    Inc(FTouches);
   case Index of
     0: ;
     1..15: VI[Index] := Value and $FFFF;
@@ -4783,6 +4804,7 @@ end;
 
 function TPS2VU0.Execute(Op: Cardinal): Boolean;
 begin
+  Inc(FTouches);
   case Op and $3F of
     $38, $39:
       begin
@@ -4881,6 +4903,8 @@ end;
 
 procedure TPS2VU0.RunUntilBlockedHeld;
 begin
+  if KnownProbe then
+    Exit;
   if FBlocked and SameWords(@VI[0], @FBlockVI[0], SizeOf(FBlockVI) div 8) then
     if SameWords(@VF[0], @FBlockVF[0], SizeOf(FBlockVF) div 8) then
     begin
@@ -4888,6 +4912,7 @@ begin
       if SpinSkips and SpinKnown then
       begin
         SkipSpin(1);
+        NoteProbe;
         Exit;
       end;
       if Spins then
@@ -4898,6 +4923,7 @@ begin
       // The loop below's first run (16 pairs: whole turns) and Spins' turn.
       SkipSpin(16 div FSpinPairs + 1);
       Move(VF[0], FBlockVF[0], SizeOf(FBlockVF));
+      NoteProbe;
       Exit;
     end;
   FBlocked := False;
@@ -5032,10 +5058,70 @@ begin
   for var R := 0 to 31 do
     if C.FReadyAny[R] > C.S.Cycles then
       Exit;
+  if not SpinCodeSame then
+    Exit;
+  Result := True;
+end;
+
+// The known loop's code as it was.
+function TPS2VU0.SpinCodeSame: Boolean;
+begin
+  var Code := FCore.FCode;
   for var K := 0 to FSpinPairs - 1 do
-    if (PCardinal(C.FCode + FSpinPC[K])^ <> FSpinWords[K * 2]) or
-      (PCardinal(C.FCode + FSpinPC[K] + 4)^ <> FSpinWords[K * 2 + 1]) then
-      Exit;
+    if (PCardinal(Code + FSpinPC[K])^ <> FSpinWords[K * 2]) or
+      (PCardinal(Code + FSpinPC[K] + 4)^ <> FSpinWords[K * 2 + 1]) then
+      Exit(False);
+  Result := True;
+end;
+
+procedure TPS2VU0.NoteProbe;
+begin
+  FProbeKnown := True;
+  FProbeTouched := FCore.Touched;
+  FProbeTouches := FTouches;
+  VFWritten := 0;
+end;
+
+// RunUntilBlockedHeld's probe where nothing but VI and VF registers the EE
+// wrote can have changed since the last probe found the known loop (the
+// core's state then, cycles aside, the known loop's): what the probe below
+// would do when they leave it known, comparing VI and those registers only.
+// False: the probe below runs.
+function TPS2VU0.KnownProbe: Boolean;
+begin
+  Result := False;
+  if not FProbeKnown or not FBlocked or not SpinSkips or not FSpinValid or (FProbeTouched <> FCore.Touched) or
+    (FProbeTouches <> FTouches) or not SameWords(@VI[0], @FBlockVI[0], SizeOf(FBlockVI) div 8) or
+    not SpinCodeSame then
+    Exit;
+  var Written := VFWritten;
+  var Same := True;
+  var R := 0;
+  var Bits := Written;
+  while Bits <> 0 do
+  begin
+    if (Bits and 1) <> 0 then
+      if (VF[R].Lo <> FBlockVF[R].Lo) or (VF[R].Hi <> FBlockVF[R].Hi) then
+      begin
+        Same := False;
+        Break;
+      end;
+    Bits := Bits shr 1;
+    Inc(R);
+  end;
+  if Same then
+    SkipSpin(1)
+  else if FSpinVFFree and (16 mod FSpinPairs = 0) then
+  begin
+    SkipSpin(16 div FSpinPairs + 1);
+    // (The others are as blocked.)
+    for var K := 0 to 31 do
+      if ((Written shr K) and 1) <> 0 then
+        FBlockVF[K] := VF[K];
+  end
+  else
+    Exit;
+  VFWritten := 0;
   Result := True;
 end;
 
@@ -5075,6 +5161,7 @@ end;
 
 procedure TPS2VU0.SerializeState(State: TStateArchive);
 begin
+  Inc(FTouches);
   inherited SerializeState(State);
   FCore.SerializeState(State);
 end;

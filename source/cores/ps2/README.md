@@ -266,6 +266,12 @@ pairs (`SpinSkips`), and VF data the EE hands over to a loop of whole turns
 in 16 pairs that reads and writes no VF register (an upper NOP and integer,
 branch, flag or empty MOVE lower ops) adds the 16-pair run's and the
 probe's. Ratchet & Clank's VU0 waits this way about 150000 times a field.
+Once a probe has found the known loop, the next ones compare only VI and the
+VF registers the EE wrote since (`TEECop2.VFWritten`, marked by LQC2 and
+QMTC2) while nothing else could have changed: the core untouched
+(`TPS2VUCore.Touched`: runs, starts, macro operations, resets, snapshots)
+and no other control write or COP2 operation (`KnownProbe`); R&C's main
+thread -5.7%.
 `tests/cores/ps2/jit` runs 90000 random EE operations (VF/VI/data/code and
 control writes, macro operations, VCALLMS, syncs) on programs waiting on
 VI1, VF5, a data word, flags, I, R or a VF result, with and without skips.

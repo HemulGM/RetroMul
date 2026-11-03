@@ -3,68 +3,72 @@
 interface
 
 uses
-  System.SysUtils;
+  System.Classes, Core.Storage, Core.Archive.Container;
 
-// Bridges the file-based native 7z reader to existing stream-based ZIP consumers.
-// Names remain archive metadata and are never used as filesystem paths.
-function SevenZipAsZip(const Data: TBytes): TBytes;
+function IsSevenZipArchive(Input: TStream): Boolean;
+
+function OpenSevenZip(Input: TStream; const Storage: IStorage): IArchiveContainer;
 
 implementation
 
 uses
-  System.Classes, System.IOUtils, System.Zip, System.StrUtils, Z7.Archive;
+  System.SysUtils, Z7.Archive;
 
-function SevenZipAsZip(const Data: TBytes): TBytes;
-begin
-  var TempName := TPath.GetTempFileName;
-  try
-    TFile.WriteAllBytes(TempName, Data);
-    var Archive := TSevenZipArchive.Create(TempName);
-    try
-      var Entries := Archive.Entries;
-      var Total: Int64 := 0;
-      for var Entry in Entries do
-      begin
-        if (Entry.Size < 0) or (Entry.Size > 256 * 1024 * 1024 - Total) then
-          raise EReadError.Create('7z unpacked data exceeds 256 MiB');
-
-        Inc(Total, Entry.Size);
-      end;
-      var Output := TBytesStream.Create;
-      try
-        var Zip := TZipFile.Create;
-        try
-          Zip.Open(Output, zmWrite);
-          for var i := 0 to High(Entries) do
-          begin
-            if Entries[i].IsDirectory then
-              Continue;
-
-            var Item := TMemoryStream.Create;
-            try
-              Archive.Extract(i, Item);
-              Item.Position := 0;
-              Zip.Add(Item, Entries[i].Name, zcStored);
-            finally
-              Item.Free;
-            end;
-          end;
-          Zip.Close;
-          SetLength(Result, Output.Size);
-          if Output.Size > 0 then
-            Move(Output.Bytes[0], Result[0], Output.Size);
-        finally
-          Zip.Free;
-        end;
-      finally
-        Output.Free;
-      end;
-    finally
-      Archive.Free;
-    end;
-  finally
-    TFile.Delete(TempName);
+type
+  TSevenZipContainer = class(TArchiveContainer)
+  private
+    FPacked: string;
+    FArchive: TSevenZipArchive;
+  protected
+    procedure Extract(Index: Integer; Output: TStream); override;
+  public
+    constructor Create(Input: TStream; const Storage: IStorage);
+    destructor Destroy; override;
   end;
+
+function IsSevenZipArchive(Input: TStream): Boolean;
+begin
+  Result := ArchiveSignatureMatches(Input, [$37, $7A, $BC, $AF, $27, $1C]);
+end;
+
+constructor TSevenZipContainer.Create(Input: TStream; const Storage: IStorage);
+begin
+  inherited Create(Storage);
+  FPacked := CacheArchiveInput(Input, FStorage,
+    procedure(Path: string)
+    begin TrackCacheFile(Path); end);
+  FArchive := TSevenZipArchive.Create(FPacked,
+    function: Boolean
+    begin
+      TStorage.CheckReadCancelled;
+      Result := False;
+    end, MaxArchiveEntries);
+  for var E in FArchive.Entries do
+  begin
+    var Info := Default(TArchiveEntry);
+    Info.Name := E.Name;
+    Info.Size := E.Size;
+    Info.CRC32 := E.CRC;
+    Info.HasCRC := E.HasCRC;
+    Info.IsDirectory := E.IsDirectory;
+    AddEntry(Info);
+  end;
+end;
+
+destructor TSevenZipContainer.Destroy;
+begin
+  FArchive.Free;
+  inherited;
+end;
+
+procedure TSevenZipContainer.Extract(Index: Integer; Output: TStream);
+begin
+  FArchive.Extract(Index, Output);
+end;
+
+function OpenSevenZip(Input: TStream; const Storage: IStorage): IArchiveContainer;
+begin
+  Result := TSevenZipContainer.Create(Input, Storage);
 end;
 
 end.

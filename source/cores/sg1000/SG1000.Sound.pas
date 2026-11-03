@@ -27,6 +27,7 @@ type
     procedure Reset;
     procedure Write(Value: Byte);
     procedure Advance(Cycles: Integer);
+    function ClocksUntilTick: Integer;
     function Sample: SmallInt;
     procedure SampleStereo(out Left, Right: SmallInt);
     procedure SetStereo(Value: Byte);
@@ -145,12 +146,19 @@ begin
       FCounter[3] := TonePeriod(2) * 2
     else
       FCounter[3] := 32 shl (FNoise and 3);
-    var Feedback := FLFSR and 1;
+    // The TI 17-bit representation has two output-delay stages. Periodic
+    // noise recirculates tap 2, giving the measured 15-shift ring period.
+    var Feedback := (FLFSR shr 2) and 1;
     if FNoise and 4 <> 0 then
       Feedback := ((FLFSR shr 2) xor (FLFSR shr 3)) and 1;
     FLFSR := (FLFSR shr 1) or (Feedback shl 16);
     FOutput[3] := FLFSR and 1 <> 0;
   end;
+end;
+
+function TSGSound.ClocksUntilTick: Integer;
+begin
+  Result := 16 - FDivider;
 end;
 
 procedure TSGSound.Advance(Cycles: Integer);

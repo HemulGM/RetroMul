@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.CD.Disc, Core.Snapshots, MD.M68k;
+  System.SysUtils, System.Classes, Core.CD.Disc, Core.Snapshots, HW.M68k;
 
 type
   TMDMegaCD = class

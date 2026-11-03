@@ -6,7 +6,7 @@ implementation
 
 uses
   System.SysUtils, RetroTune.Decoder, RetroTune.Binary, RetroTune.TFM.Stream,
-  RetroTune.TFM.MusicMaker, ZX.Sound.YM2203;
+  RetroTune.TFM.MusicMaker, HW.Sound.YM2203;
 
 type
   TTurboFMDecoder = class(TInterfacedObject, ITuneDecoder)

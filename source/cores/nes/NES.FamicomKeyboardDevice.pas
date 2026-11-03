@@ -6,9 +6,8 @@ uses
   NES.State;
 
 type
-  TFamicomKey = (FkNone,
-    FkA, FkB, FkC, FkD, FkE, FkF, FkG, FkH, FkI, FkJ, FkK, FkL, FkM,
-    FkN, FkO, FkP, FkQ, FkR, FkS, FkT, FkU, FkV, FkW, FkX, FkY, FkZ,
+  TFamicomKey = (FkNone, FkA, FkB, FkC, FkD, FkE, FkF, FkG, FkH, FkI, FkJ, FkK, FkL,
+    FkM, FkN, FkO, FkP, FkQ, FkR, FkS, FkT, FkU, FkV, FkW, FkX, FkY, FkZ,
     FkNum0, FkNum1, FkNum2, FkNum3, FkNum4, FkNum5, FkNum6, FkNum7, FkNum8, FkNum9,
     FkReturn, FkSpace, FkDel, FkIns, FkEsc, FkCtrl, FkRightShift, FkLeftShift,
     FkRightBracket, FkLeftBracket, FkUp, FkDown, FkLeft, FkRight,

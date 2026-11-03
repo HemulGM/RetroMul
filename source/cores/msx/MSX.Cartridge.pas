@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, Core.Snapshots, MSX.Sound.SCC, MSX.Sound.OPLL,
+  System.SysUtils, System.Classes, Core.Snapshots, HW.Sound.SCC, HW.Sound.OPLL,
   MSX.AudioBoard;
 
 type
@@ -205,6 +205,10 @@ const
     (Hash: 'fd71df03b0e9f3caf701ecfc6d5232060cab3b13'; Mapper: Konami) { Ganbare Goemon - Samurai },
     (Hash: 'fe4bd35e87dd50fddd255172129b9bec38691188'; Mapper: Konami) { King Kong 2 },
     (Hash: 'ff72a1788d47f9876d9fabd720f6a289fb409090'; Mapper: KonamiSCC)
+
+
+
+
 
 
 

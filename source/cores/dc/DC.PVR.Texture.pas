@@ -230,7 +230,7 @@ begin
   var PalKey: Cardinal := 0;
   if (Format = TexPal4) or (Format = TexPal8) then
     PalKey := ((TCW shr 21) and $3F) or (PalFormat shl 8);
-  var Key := (UInt64(TCW) shl 32) or (UInt64(TSP and $3F) shl 16) or (UInt64(Stride and $FF) shl 8) or (PalKey and $FF) or
+  var Key := (UInt64(TCW) shl 32) or (UInt64(TSP and $3F) shl 16) or (UInt64((Stride div 32) and $1F) shl 8) or (PalKey and $FF) or
     (UInt64(PalKey shr 8) shl 14);
   // Polygons in a row often share a texture.
   if (FLast <> nil) and (Key = FLastKey) then
@@ -306,8 +306,11 @@ begin
   var Base := (TCW and $1FFFFF) shl 3;
   var USize := 8 shl ((T.SizeBits shr 3) and 7);
   var VSize := 8 shl (T.SizeBits and 7);
+  // Normalized UVs still use the TSP dimensions. Texture control changes
+  // only the distance between source rows (e.g. 320 within a 512-wide texture).
+  var RowStride := USize;
   if StrideSelect and (Stride > 0) then
-    USize := Stride;
+    RowStride := Stride;
   if ScanOrder then
     Mipmapped := False;
   if Mipmapped then
@@ -430,7 +433,7 @@ begin
         begin
           var Index: Integer;
           if ScanOrder then
-            Index := Y * W + X
+            Index := Y * RowStride + X
           else
             Index := Twiddle(X, Y, W, H);
           case Format of
@@ -452,7 +455,7 @@ begin
                 var I0, I1: Integer;
                 if ScanOrder then
                 begin
-                  I0 := Y * W + PairX;
+                  I0 := Y * RowStride + PairX;
                   I1 := I0 + 1;
                 end
                 else

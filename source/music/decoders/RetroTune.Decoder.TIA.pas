@@ -6,7 +6,7 @@ implementation
 
 uses
   System.SysUtils, RetroTune.Decoder, RetroTune.Binary, RetroTune.TIATracker,
-  A2600.Sound.TIA, A2600.AudioMachine;
+  HW.Sound.TIA, A2600.AudioMachine;
 
 type
   TTIADecoder = class(TInterfacedObject, ITuneDecoder)

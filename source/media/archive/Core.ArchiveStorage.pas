@@ -3,18 +3,29 @@
 interface
 
 uses
-  System.Classes, System.SysUtils, System.IniFiles, Core.Storage;
-function ArchiveStorage(const Base: IStorage; const Location, Name: string; const Data: TBytes): IStorage;
+  System.Classes, System.SysUtils, System.IniFiles, Core.Storage,
+  Core.Archive.Container;
+
+// Read-only virtual media paths. Config/save paths stay on the base storage.
+function ContainerStorage(const Base: IStorage; const Container: IArchiveContainer; const Root: string): IStorage;
+
 implementation
+
+uses
+  System.IOUtils, System.Generics.Collections, System.Generics.Defaults;
+
 type
-  // For decoded archives only. All paths, configuration and save identities
-  // remain attached to the original storage and original archive location.
+  // Members are streams; archive names are never extracted as disk paths.
   TArchiveStorage = class(TInterfacedObject, IStorage)
   private
     FBase: IStorage;
-    FLocation, FName: string;
-    FData: TBytes;
+    FContainer: IArchiveContainer;
+    FMediaRoot: string;
+    FMembers: TDictionary<string, Integer>;
+    procedure CheckWritable(const Location: string);
+    function MediaPath(const Location: string): string;
   public
+    destructor Destroy; override;
     function GetRoot: string;
     function RomFolder(const SystemId: string): string;
     procedure SetRomFolder(const SystemId, Value: string);
@@ -53,14 +64,65 @@ type
     procedure SelectRom(const Callback: TStorageSelectionCallback);
   end;
 
-function ArchiveStorage(const Base: IStorage; const Location, Name: string; const Data: TBytes): IStorage;
+function ContainerStorage(const Base: IStorage; const Container: IArchiveContainer; const Root: string): IStorage;
 begin
+  if (Base = nil) or (Container = nil) or (Root = '') then
+    raise EArgumentException.Create('Container storage needs a base, container and virtual root');
   var Value := TArchiveStorage.Create;
-  Value.FBase := Base;
-  Value.FLocation := Location;
-  Value.FName := Name;
-  Value.FData := Data;
+  try
+    Value.FBase := Base;
+    Value.FContainer := Container;
+    Value.FMediaRoot := IncludeTrailingPathDelimiter(TPath.GetFullPath(Root));
+    Value.FMembers := TDictionary<string, Integer>.Create(TIStringComparer.Ordinal);
+    for var I := 0 to Container.Count - 1 do
+    begin
+      var Info := Container.Entries[I];
+      if Info.IsDirectory then
+        Continue;
+      var Name := Info.Name.Replace('\', '/');
+      if (Name = '') or Name.StartsWith('/') or Name.Contains(':') or Name.Contains(#0) then
+        raise EReadError.Create('Invalid container media path: ' + Name);
+      for var Part in Name.Split(['/']) do
+        if Part = '..' then
+          raise EReadError.Create('Invalid container media path: ' + Name);
+      var Path := Value.MediaPath(TPath.Combine(Value.FMediaRoot, Name.Replace('/', PathDelim)));
+      if Path = '' then
+        raise EReadError.Create('Invalid container media path: ' + Name);
+      if Value.FMembers.ContainsKey(Path) then
+        raise EReadError.Create('Duplicate container media path: ' + Name);
+      Value.FMembers.Add(Path, I);
+    end;
+  except
+    Value.Free;
+    raise;
+  end;
   Result := Value;
+end;
+
+destructor TArchiveStorage.Destroy;
+begin
+  FMembers.Free;
+  inherited;
+end;
+
+function TArchiveStorage.MediaPath(const Location: string): string;
+begin
+  Result := '';
+  if (Location = '') or Location.Contains(#0) then Exit;
+  try
+    Result := TPath.GetFullPath(Location.Replace('/', PathDelim));
+    if SameText(ExcludeTrailingPathDelimiter(Result), ExcludeTrailingPathDelimiter(FMediaRoot)) then
+      Result := FMediaRoot
+    else if not Result.StartsWith(FMediaRoot, True) then
+      Result := '';
+  except
+    on E: EArgumentException do Result := '';
+  end;
+end;
+
+procedure TArchiveStorage.CheckWritable(const Location: string);
+begin
+  raise EWriteError.Create('Container media storage is read-only: ' + Location);
 end;
 
 function TArchiveStorage.GetRoot: string;
@@ -105,74 +167,132 @@ end;
 
 function TArchiveStorage.OpenRead(const Location: string): TStream;
 begin
-  if Location = FLocation then Exit(TBytesStream.Create(FData));
-  Result := FBase.OpenRead(Location);
+  var Index: Integer;
+  if not FMembers.TryGetValue(MediaPath(Location), Index) then
+    raise EReadError.Create('Missing container member: ' + Location);
+  Result := FContainer.OpenRead(Index);
 end;
 
 function TArchiveStorage.OpenWrite(const Location: string): TStream;
 begin
+  CheckWritable(Location);
   Result := FBase.OpenWrite(Location);
 end;
 
 function TArchiveStorage.Exists(const Location: string): Boolean;
 begin
-  Result := FBase.Exists(Location);
+  Result := FMembers.ContainsKey(MediaPath(Location));
 end;
 
 function TArchiveStorage.ModifiedTime(const Location: string): TDateTime;
 begin
-  Result := FBase.ModifiedTime(Location);
+  Result := 0;
 end;
 
 function TArchiveStorage.FolderExists(const Location: string): Boolean;
 begin
-  Result := FBase.FolderExists(Location);
+  Result := False;
+  var Prefix := MediaPath(Location);
+  if Prefix = '' then Exit;
+  Prefix := IncludeTrailingPathDelimiter(Prefix);
+  if SameText(Prefix, FMediaRoot) then Exit(True);
+  for var Path in FMembers.Keys do
+    if Path.StartsWith(Prefix, True) then
+      Exit(True);
 end;
 
 procedure TArchiveStorage.EnsureFolder(const Location: string);
 begin
-  FBase.EnsureFolder(Location);
+  if not FolderExists(Location) then CheckWritable(Location);
 end;
 
 function TArchiveStorage.Files(const Location: string; Recursive: Boolean): TArray<string>;
 begin
-  Result := FBase.Files(Location, Recursive);
+  Result := nil;
+  var Prefix := MediaPath(Location);
+  if Prefix = '' then Exit;
+  Prefix := IncludeTrailingPathDelimiter(Prefix);
+  for var Path in FMembers.Keys do
+    if Path.StartsWith(Prefix, True) and
+      (Recursive or not Path.Substring(Length(Prefix)).Contains(PathDelim)) then
+      Result := Result + [Path];
 end;
 
 function TArchiveStorage.Folders(const Location: string): TArray<string>;
 begin
-  Result := FBase.Folders(Location);
+  Result := nil;
+  var Prefix := MediaPath(Location);
+  if Prefix = '' then Exit;
+  Prefix := IncludeTrailingPathDelimiter(Prefix);
+  var Seen := TStringList.Create;
+  try
+    Seen.CaseSensitive := False;
+    for var Path in FMembers.Keys do
+      if Path.StartsWith(Prefix, True) then
+      begin
+        var Tail := Path.Substring(Length(Prefix));
+        var Split := Tail.IndexOf(PathDelim);
+        if Split >= 0 then
+        begin
+          var Folder := Prefix + Tail.Substring(0, Split);
+          if Seen.IndexOf(Folder) < 0 then
+          begin
+            Seen.Add(Folder);
+            Result := Result + [Folder];
+          end;
+        end;
+      end;
+  finally
+    Seen.Free;
+  end;
 end;
 
 procedure TArchiveStorage.Delete(const Location: string);
 begin
+  CheckWritable(Location);
   FBase.Delete(Location);
 end;
 
 procedure TArchiveStorage.Replace(const Source, Target: string);
 begin
+  CheckWritable(Source);
+  CheckWritable(Target);
   FBase.Replace(Source, Target);
 end;
 
 procedure TArchiveStorage.WriteAtomic(const Location: string; Stream: TStream);
 begin
+  CheckWritable(Location);
   FBase.WriteAtomic(Location, Stream);
 end;
 
 function TArchiveStorage.ReadBytes(const Location: string): TBytes;
 begin
-  if Location = FLocation then Exit(Copy(FData));
-  Result := FBase.ReadBytes(Location);
+  var Input := OpenRead(Location);
+  try
+    if Input.Size > 256 * 1024 * 1024 then
+      raise EReadError.Create('Container byte read exceeds 256 MiB');
+    SetLength(Result, Input.Size);
+    if Length(Result) <> 0 then
+      Input.ReadBuffer(Result[0], Length(Result));
+  finally
+    Input.Free;
+  end;
 end;
 
 procedure TArchiveStorage.WriteBytes(const Location: string; const Data: TBytes);
 begin
+  CheckWritable(Location);
   FBase.WriteBytes(Location, Data);
 end;
 
 function TArchiveStorage.ReadText(const Location: string): string;
 begin
-  Result := FBase.ReadText(Location);
+  var Data := ReadBytes(Location);
+  var Offset := 0;
+  if (Length(Data) >= 3) and (Data[0] = $EF) and (Data[1] = $BB) and (Data[2] = $BF) then
+    Offset := 3;
+  Result := TEncoding.UTF8.GetString(Data, Offset, Length(Data) - Offset);
 end;
 
 function TArchiveStorage.ConfigFile(const SystemId: string): string;
@@ -237,8 +357,15 @@ end;
 
 function TArchiveStorage.Describe(const Location: string): TStorageFile;
 begin
-  Result := FBase.Describe(Location);
-  if Location = FLocation then begin Result.Name := FName; Result.Size := Length(FData); end;
+  var Index: Integer;
+  if not FMembers.TryGetValue(MediaPath(Location), Index) then
+    raise EReadError.Create('Missing container member: ' + Location);
+  var Info := FContainer.Entries[Index];
+  Result := Default(TStorageFile);
+  Result.Name := ExtractFileName(Info.Name.Replace('/', PathDelim));
+  Result.Location := MediaPath(Location);
+  Result.RelativePath := Info.Name;
+  Result.Size := Info.Size;
 end;
 
 procedure TArchiveStorage.SelectRom(const Callback: TStorageSelectionCallback);

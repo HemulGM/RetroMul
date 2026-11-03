@@ -89,6 +89,13 @@ screenshots or frame hashes.
   run again. SingleStepTests/sh4 pass
   except TRAPA (treated as a no-op by the test generator) and two double NaN
   payload cases.
+- The recompiler (Dreamcast settings, CPU: Recompiler or Interpreter; where
+  HW.JIT has a code generator, on by default) turns blocks into generated
+  code: the common integer, branch and memory instructions written out (host
+  memory accesses only), the others calling the interpreter's handlers, and
+  blocks going on into the next one as the interpreter takes it. It runs the
+  same emulation, bit for bit, so it may be switched during play;
+  tests/cores/dc/jit compares it with the interpreter on random programs.
 - PowerVR2: the tile accelerator decodes display lists into contexts; the
   software renderer draws opaque, punch-through and translucent lists
   (per-pixel sorting), modifier volumes, fog, textures (twiddled, strided, VQ,

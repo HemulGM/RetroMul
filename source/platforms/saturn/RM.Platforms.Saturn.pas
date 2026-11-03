@@ -11,6 +11,7 @@ const
 type
   TSaturnPlatform = class
   strict private
+    class function LoadDisc(Context: TCoreLoadContext): TCoreMatch; static;
     class var
       FRegistered: Boolean;
     class function Recognize(Context: TCoreLoadContext): TCoreMatch; static;
@@ -29,15 +30,25 @@ implementation
 
 uses
   RM.Settings.Catalog, Core.Snapshots, System.StrUtils, Core.Emulation,
-  Core.Platforms, Core.Platforms.Saturn.Adapter,
-  RM.Platforms.Saturn.Settings, RM.Platforms.Presentation,
-  RM.Platforms.Saturn.Icons, RM.Gamepad.Factory, RM.Platforms.Saturn.Gamepads,
-  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  System.Classes;
+  Core.Platforms, Core.Platforms.Saturn.Adapter, RM.Platforms.Saturn.Settings,
+  RM.Platforms.Presentation, RM.Platforms.Saturn.Icons, RM.Gamepad.Factory,
+  RM.Platforms.Saturn.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
+  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
+  RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
 
 const
   SATURN_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
+
+class function TSaturnPlatform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
+begin
+  Result := TCoreMatch.Create('Saturn',
+    function: IEmulationCore
+    begin
+      Context.Stream.Position := 0;
+      Result := TSaturnCoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName, Context.TakeDisc);
+    end);
+  Result.Format.SystemId := 'saturn';
+end;
 
 class function TSaturnPlatform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -55,11 +66,7 @@ class function TSaturnPlatform.Disc(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
   if Context.IsDiscSource and Context.DiscSignature('SEGA SEGASATURN ') then
-    Result := TCoreMatch.Create('Saturn',
-      function: IEmulationCore
-      begin
-        Result := TSaturnCoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName, Context.TakeDisc);
-      end);
+    Result := LoadDisc(Context);
 end;
 
 class procedure TSaturnPlatform.RegisterPlatforms;
@@ -76,6 +83,7 @@ begin
   var Registration := TEmulationCoreRegistration.Create('Saturn', []);
   Registration.Add(TCoreLoadStage.Header, 40, Recognize);
   Registration.Add(TCoreLoadStage.Source, 50, Disc);
+  Registration.AddDiscPlatform('saturn', LoadDisc);
   RegisterEmulationCore(Registration);
 end;
 

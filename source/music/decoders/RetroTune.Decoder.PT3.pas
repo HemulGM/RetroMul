@@ -6,7 +6,7 @@ implementation
 
 uses
   System.SysUtils, RetroTune.Decoder, RetroTune.Binary, RetroTune.PT3.Engine,
-  ZX.Sound.YM2149;
+  HW.Sound.YM2149;
 
 type
   TPT3Decoder = class(TInterfacedObject, ITuneDecoder)

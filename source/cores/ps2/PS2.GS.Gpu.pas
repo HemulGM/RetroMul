@@ -15,7 +15,7 @@ interface
 
 uses
   System.SysUtils, System.Math, System.Generics.Collections, PS2.Types, PS2.GS.Raster, PS2.GS.Memory,
-  RM.Vulkan.Compute;
+  PS2.Vulkan.Compute;
 
 type
   TPS2GSGpu = class(TPS2GSAccelerator)

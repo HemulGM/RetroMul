@@ -622,9 +622,9 @@ begin
       begin
         for var I := 0 to 2 do
           Rebase(I);
+        // Rebase preserves each running channel's last prescaler edge.
+        // Changing another channel's start bit must not move that edge.
         S.TSTR := Value and 7;
-        for var I := 0 to 2 do
-          S.Timers[I].BaseTime := FNow^;
         Reschedule;
       end;
     $FFD80008, $FFD80014, $FFD80020:
@@ -646,10 +646,13 @@ begin
       begin
         var I := (Address - $FFD80010) div 12;
         Rebase(I);
+        var OldClock := S.Timers[I].TCR and 7;
         // UNF/ICPF clear by writing 0.
         var Flags := S.Timers[I].TCR and Value and $300;
         S.Timers[I].TCR := (Value and $3FF and not Cardinal($300)) or Flags;
-        S.Timers[I].BaseTime := FNow^;
+        // A flag acknowledgement does not restart the prescaler.
+        if OldClock <> (Value and 7) then
+          S.Timers[I].BaseTime := FNow^;
         UpdateInterrupts;
         Reschedule;
       end;

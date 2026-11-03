@@ -40,7 +40,7 @@ type
 implementation
 
 uses
-  Core.Emulation.Types, CPS.Video, MD.M68k;
+  Core.Emulation.Types, CPS.Video, HW.M68k;
 
 constructor TCPS1BoardConsole.Create(Cart: TCPSCartridge);
 begin

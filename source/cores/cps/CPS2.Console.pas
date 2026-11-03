@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, CPS1.Console, CPS.Cartridge, MD.M68k,
+  System.SysUtils, System.Classes, CPS1.Console, CPS.Cartridge, HW.M68k,
   Core.Snapshots, CPS.QSound;
 
 type
@@ -51,7 +51,7 @@ type
 implementation
 
 uses
-  CPS.RomSets, CPS.Crypto, MD.Z80, CPS.Video, CPS1.Sound, Core.Emulation.Types;
+  CPS.RomSets, CPS.Crypto, HW.Z80, CPS.Video, CPS1.Sound, Core.Emulation.Types;
 
 function Fetch(User: Pointer; Address: Cardinal; HighByte, LowByte: Byte; Cycle: Cardinal; var Terminate: Byte): Cardinal;
 begin

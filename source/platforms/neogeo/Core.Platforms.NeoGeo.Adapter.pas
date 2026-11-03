@@ -185,7 +185,7 @@ begin
   if CD then
     FCartridge := TNeoGeoCartridge.CreateCD(Stream, FStorage, RomName, Config.FBIOS, Config.FModel)
   else
-    FCartridge := TNeoGeoCartridge.Create(ReadNeoGeoData(Stream), FStorage, RomName);
+    FCartridge := TNeoGeoCartridge.Create(Stream, FStorage, RomName);
 
   FCartridge.ConfigureHardware(FStorage, RomName, Config.FModel, Config.FCountry, Config.FBIOS);
   FCartridge.PAL := Config.FPAL and FCartridge.AES;

@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, DC.CPU.ARM7, DC.Sound.AICA;
+  System.SysUtils, DC.CPU.ARM7, HW.Sound.AICA;
 
 type
   TDSFAudio = class

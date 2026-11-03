@@ -24,9 +24,17 @@ type
     {$IFDEF MSWINDOWS}
     FTimer: NativeUInt;
     FTimerPeriodActive: Boolean;
+    FPreferFastCore, FFastCorePrepared, FFastCoreAvailable, FFastCoreApplied: Boolean;
+    FPreviousIdeal, FFastIdeal: array[0..3] of Byte;
+    FFastCoreSlot: Integer;
     {$ENDIF}
     FName: string;
     FTargetNanos: Int64;
+    {$IFDEF MSWINDOWS}
+    procedure PrepareFastCore;
+    procedure ApplyFastCore;
+    procedure RestoreFastCore;
+    {$ENDIF}
     {$IFDEF ANDROID}
     procedure Log(const Message: string);
     procedure Disable(const Reason: string);
@@ -38,7 +46,7 @@ type
     // Pair a successful begin with end using the same period. No-op outside Windows.
     class function BeginTimerPeriod(Period: Cardinal = 1): Boolean; static;
     class procedure EndTimerPeriod(Period: Cardinal = 1); static;
-    constructor Create(TargetNanos: Int64; const Name: string);
+    constructor Create(TargetNanos: Int64; const Name: string; PreferFastCore: Boolean = False; FastCoreSlot: Integer = 0);
     destructor Destroy; override;
     // True means a command/stop woke the worker before the deadline.
     function WaitUntil(Wake: TEvent; Deadline: Int64): Boolean;
@@ -119,12 +127,117 @@ begin
   {$ENDIF}
 end;
 
-constructor TEmulationPerformanceHints.Create(TargetNanos: Int64; const Name: string);
+{$IFDEF MSWINDOWS}
+// Use the pointer ABI explicitly: some Delphi Windows headers declare the
+// new ideal processor by value, whereas the native API accepts a pointer.
+function SetIdealProcessor(Thread: THandle; Ideal, Previous: Pointer): BOOL; stdcall; external 'kernel32.dll' name 'SetThreadIdealProcessorEx';
+
+procedure TEmulationPerformanceHints.PrepareFastCore;
+begin
+  FFastCorePrepared := True;
+  var Affinity: TGroupAffinity;
+  if not GetThreadGroupAffinity(GetCurrentThread, Affinity) then
+    Exit;
+  var Bytes: DWORD := 0;
+  GetLogicalProcessorInformationEx(RelationProcessorCore, nil, Bytes);
+  if (Bytes < 48) or (Bytes > 1024 * 1024) then
+    Exit;
+  var Data: TBytes;
+  SetLength(Data, Bytes);
+  if not GetLogicalProcessorInformationEx(RelationProcessorCore,
+    PSYSTEM_LOGICAL_PROCESSOR_INFORMATION(@Data[0]), Bytes) then
+    Exit;
+  var Lowest := 255;
+  var Highest := 0;
+  var FastMask: NativeUInt := 0;
+  var Offset: Cardinal := 0;
+  while Offset + 32 <= Bytes do
+  begin
+    var Size := PCardinal(@Data[Offset + 4])^;
+    if (Size < 32) or (Size > Bytes - Offset) then
+      Exit;
+    var GroupCount := PWord(@Data[Offset + 30])^;
+    if Size < 32 + Cardinal(GroupCount) * SizeOf(TGroupAffinity) then
+      Exit;
+    // PROCESSOR_RELATIONSHIP.EfficiencyClass is byte 1 after the header.
+    // Higher classes denote greater performance on heterogeneous CPUs.
+    var Efficiency := Integer(Data[Offset + 9]);
+    for var G := 0 to Integer(GroupCount) - 1 do
+    begin
+      var Group := PGroupAffinity(@Data[Offset + 32 + Cardinal(G * SizeOf(TGroupAffinity))]);
+      if Group.Group <> Affinity.Group then
+        Continue;
+      var Mask := Group.Mask and Affinity.Mask;
+      if Mask = 0 then
+        Continue;
+      Lowest := Min(Lowest, Efficiency);
+      if Efficiency > Highest then
+      begin
+        Highest := Efficiency;
+        FastMask := 0;
+      end;
+      if Efficiency = Highest then
+        FastMask := FastMask or Mask;
+    end;
+    Inc(Offset, Size);
+  end;
+  if (Lowest >= Highest) or (FastMask = 0) then
+    Exit;
+  var Ideal: TProcessorNumber;
+  var Count := 0;
+  for var N := 0 to SizeOf(NativeUInt) * 8 - 1 do
+    if FastMask and (NativeUInt(1) shl N) <> 0 then
+      Inc(Count);
+  var Slot := FFastCoreSlot mod Count;
+  for var N := 0 to SizeOf(NativeUInt) * 8 - 1 do
+    if FastMask and (NativeUInt(1) shl N) <> 0 then
+    begin
+      if Slot = 0 then
+      begin
+        Ideal.Group := Affinity.Group;
+        Ideal.Number := N;
+        Ideal.Reserved := 0;
+        Break;
+      end;
+      Dec(Slot);
+    end;
+  Move(Ideal, FFastIdeal, SizeOf(Ideal));
+  FFastCoreAvailable := True;
+end;
+
+procedure TEmulationPerformanceHints.ApplyFastCore;
+begin
+  if FFastCoreApplied then
+    Exit;
+  if not FFastCorePrepared then
+    PrepareFastCore;
+  if not FFastCoreAvailable then
+    Exit;
+  var Previous: TProcessorNumber;
+  if not GetThreadIdealProcessorEx(GetCurrentThread, Previous) then
+    Exit;
+  if SetIdealProcessor(GetCurrentThread, @FFastIdeal, nil) then
+  begin
+    Move(Previous, FPreviousIdeal, SizeOf(Previous));
+    FFastCoreApplied := True;
+  end;
+end;
+
+procedure TEmulationPerformanceHints.RestoreFastCore;
+begin
+  if FFastCoreApplied and SetIdealProcessor(GetCurrentThread, @FPreviousIdeal, nil) then
+    FFastCoreApplied := False;
+end;
+{$ENDIF}
+
+constructor TEmulationPerformanceHints.Create(TargetNanos: Int64; const Name: string; PreferFastCore: Boolean; FastCoreSlot: Integer);
 begin
   inherited Create;
   FName := Name;
   SetTargetDurationNanos(TargetNanos);
   {$IFDEF MSWINDOWS}
+  FPreferFastCore := PreferFastCore;
+  FFastCoreSlot := Max(0, FastCoreSlot);
   // High-resolution waitable timers do not rely on message processing or the
   // system clock tick. The flag is supported since Windows 10 version 1803.
   FTimer := CreateWaitableTimerEx(nil, nil,
@@ -302,6 +415,9 @@ end;
 
 procedure TEmulationPerformanceHints.Pause;
 begin
+  {$IFDEF MSWINDOWS}
+  RestoreFastCore;
+  {$ENDIF}
   {$IFDEF ANDROID}
   FWorking := False;
   FWorkTicks := 0;
@@ -333,6 +449,10 @@ end;
 
 procedure TEmulationPerformanceHints.BeginWork;
 begin
+  {$IFDEF MSWINDOWS}
+  if FPreferFastCore then
+    ApplyFastCore;
+  {$ENDIF}
   {$IFDEF ANDROID}
   if FWorking then
     Exit;

@@ -3,7 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Generics.Collections, CPS.RomSets;
+  System.SysUtils, System.Classes, System.Generics.Collections, CPS.RomSets,
+  Core.Storage;
 
 type
   ECPSRom = class(EReadError);
@@ -14,7 +15,7 @@ type
     FRegions: TDictionary<string, TBytes>;
     function GetRegion(const Name: string): TBytes;
   public
-    constructor Create(Stream: TStream; const Name: string);
+    constructor Create(Stream: TStream; const Name: string; const Storage: IStorage = nil);
     destructor Destroy; override;
     property RomSet: TCPSRomSet read FSet;
     property Regions[const Name: string]: TBytes read GetRegion; default;
@@ -27,7 +28,7 @@ function CPSCRC32(const Data: TBytes): Cardinal;
 implementation
 
 uses
-  System.Zip, System.Hash;
+  Core.Archive.Container, System.Hash, Core.MediaArchive;
 
 var
   CRCTable: array[0..255] of Cardinal;
@@ -40,45 +41,50 @@ begin
   Result := Result xor $FFFFFFFF;
 end;
 
-constructor TCPSCartridge.Create(Stream: TStream; const Name: string);
+constructor TCPSCartridge.Create(Stream: TStream; const Name: string; const Storage: IStorage);
+var
+  S: IStorage;
+  Parents: TList<IArchiveContainer>;
+
+  procedure OpenSibling(const BaseName: string);
+  begin
+    var Path := FindMediaArchive(S, IncludeTrailingPathDelimiter(ExtractFilePath(
+          StringReplace(Name, '/', PathDelim, [rfReplaceAll]))) + BaseName);
+    if Path = '' then
+      Exit;
+    var Input := S.OpenRead(Path);
+    try
+      Parents.Add(OpenMediaArchive(Input, Path, S));
+    finally
+      Input.Free;
+    end;
+  end;
+
 begin
   inherited Create;
   FRegions := TDictionary<string, TBytes>.Create;
-  var Archive := TZipFile.Create;
+  var Archive: IArchiveContainer;
   var Cache := TDictionary<Cardinal, TBytes>.Create;
-  var Parents := TObjectList<TZipFile>.Create(True);
+  S := Storage;
+  if S = nil then
+    S := TStorage.Default;
+  Parents := TList<IArchiveContainer>.Create;
   try
-    Archive.Open(Stream, zmRead);
+    Archive := OpenMediaArchive(Stream, Name, S);
     if not TCPSRomSet.Identify(Archive, Name, FSet) then
       raise ECPSRom.Create('Unrecognized CPS ROM set: ' + Name);
 
-    // Resolve declared parent ZIPs beside the selected archive. Content still
+    // Resolve declared parent archives beside the selected archive. Content still
     // receives the exact same size and actual CRC validation as the child.
     var ParentName := FSet.Parent;
     if FSet.Machine = 'punipic' then
-    begin
-      var Firmware := IncludeTrailingPathDelimiter(ExtractFilePath(
-          StringReplace(Name, '/', PathDelim, [rfReplaceAll]))) + 'cps1pic.zip';
-      if FileExists(Firmware) then
-      begin
-        var FirmwareZIP := TZipFile.Create;
-        Parents.Add(FirmwareZIP);
-        FirmwareZIP.Open(Firmware, zmRead);
-      end;
-    end;
+      OpenSibling('cps1pic');
     var Seen := TList<string>.Create;
     try
       while (ParentName <> '') and not Seen.Contains(ParentName) do
       begin
         Seen.Add(ParentName);
-        var FileName := IncludeTrailingPathDelimiter(ExtractFilePath(
-            StringReplace(Name, '/', PathDelim, [rfReplaceAll]))) + ParentName + '.zip';
-        if FileExists(FileName) then
-        begin
-          var ParentZip := TZipFile.Create;
-          Parents.Add(ParentZip);
-          ParentZip.Open(FileName, zmRead);
-        end;
+        OpenSibling(ParentName);
         var ParentSet: TCPSRomSet;
         if not TCPSRomSet.Find(ParentName, ParentSet) then
           Break;
@@ -135,20 +141,20 @@ begin
         var Index := -1;
         var SourceArchive := Archive;
         var SameName := -1;
-        for var i := 0 to Archive.FileCount - 1 do
+        for var i := 0 to Archive.Count - 1 do
         begin
-          if SameText(ExtractFileName(Archive.FileNames[i]), F.Name) then
+          if SameText(ExtractFileName(Archive.Entries[i].Name), F.Name) then
             SameName := i;
-          if Archive.FileInfo[i].CRC32 = F.CRC then
+          if not Archive.Entries[i].IsDirectory and (Archive.Checksum(i) = F.CRC) then
             Index := i;
         end;
         if Index < 0 then
-          for var ParentZip in Parents do
+          for var ParentArchive in Parents do
           begin
-            for var i := 0 to ParentZip.FileCount - 1 do
-              if ParentZip.FileInfo[i].CRC32 = F.CRC then
+            for var i := 0 to ParentArchive.Count - 1 do
+              if not ParentArchive.Entries[i].IsDirectory and (ParentArchive.Checksum(i) = F.CRC) then
               begin
-                SourceArchive := ParentZip;
+                SourceArchive := ParentArchive;
                 Index := i;
                 Break;
               end;
@@ -172,12 +178,12 @@ begin
           end;
 
           if SameName >= 0 then
-            raise ECPSRom.CreateFmt('%s: CRC mismatch for %s (expected %.8x, archive %.8x)', [FSet.Name, F.Name, F.CRC, Archive.FileInfo[SameName].CRC32]);
+            raise ECPSRom.CreateFmt('%s: CRC mismatch for %s (expected %.8x, archive %.8x)', [FSet.Name, F.Name, F.CRC, Archive.Checksum(SameName)]);
 
-          raise ECPSRom.CreateFmt('%s: missing ROM %s (CRC %.8x). Supply the complete set or its parent ZIP beside it.', [FSet.Name, F.Name, F.CRC]);
+          raise ECPSRom.CreateFmt('%s: missing ROM %s (CRC %.8x). Supply the complete set or its parent archive beside it.', [FSet.Name, F.Name, F.CRC]);
         end;
 
-        if SourceArchive.FileInfo[Index].UncompressedSize > 64 * 1024 * 1024 then
+        if SourceArchive.Entries[Index].Size > 64 * 1024 * 1024 then
           raise ECPSRom.Create('CPS ROM member exceeds 64 MiB');
 
         SourceArchive.Read(Index, Bytes);
@@ -205,7 +211,7 @@ begin
   finally
     Cache.Free;
     Parents.Free;
-    Archive.Free;
+    Archive := nil;
   end;
 end;
 

@@ -62,11 +62,11 @@ class procedure TNGPPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('ngp', 'Neo Geo Pocket', 'NGP',
     'SNK', 'NGP Pocket monochrome', 'ngp', ['ngp', 'neogeopocket'],
-    ['.ngp', '.ngc', '.zip', '.7z'],
+    ['.ngp', '.ngc'],
     'NeoGeoPocket', 'ngp', 1);
   TPlatformRegistry.RegisterPlatform('ngpc', 'Neo Geo Pocket Color', 'NGPC',
     'SNK', 'NGPC Pocket Color', 'ngpc', ['ngpc', 'neogeopocketcolor'],
-    ['.ngp', '.ngc', '.zip', '.7z'],
+    ['.ngp', '.ngc'],
     'NeoGeoPocket', 'ngpc', 1);
 end;
 

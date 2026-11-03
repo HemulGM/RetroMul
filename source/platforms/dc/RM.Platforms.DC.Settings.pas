@@ -10,6 +10,7 @@ type
   public
     procedure PrepareSave(Draft: TMemIniFile); override;
   public
+    procedure Configuration(Context: TSettingsPageBuilder); override;
     procedure Video(Context: TSettingsPageBuilder); override;
     procedure Peripherals(Context: TSettingsPageBuilder); override;
     function PortOptions(Port: Integer): TSettingsPortOptions; override;
@@ -18,7 +19,18 @@ type
 implementation
 
 uses
-  System.SysUtils;
+  FMX.Types, System.SysUtils, HW.JIT;
+
+procedure TDCSettings.Configuration(Context: TSettingsPageBuilder);
+begin
+  // (First on the page; only where there is a code generator: elsewhere
+  // always the interpreter.)
+  if JitSupported then
+  begin
+    Context.Heading('GroupDCEmulation', 'Dreamcast emulation');
+    Context.AddChoice('RowDCExecution', 'CPU (SH-4)', 'The recompiler runs the game''s code as native code; the interpreter runs it instruction by instruction. Both give the same emulation; the recompiler is faster. Applies during play.', 'Emulation', 'Execution', SettingChoices([Translate('Recompiler (JIT)'), Translate('Interpreter')], ['jit', 'interpreter']), 'jit', True);
+  end;
+end;
 
 procedure TDCSettings.Video(Context: TSettingsPageBuilder);
 begin

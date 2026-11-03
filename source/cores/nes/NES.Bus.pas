@@ -37,6 +37,7 @@ type
     FDataBus: UInt8;
     FInternalDataBus: UInt8;
     FHaltedCpuAddress: UInt16;
+    FCpuAddress: UInt16;
     FTimedIo: Boolean;
     FPendingStrobe: UInt8;
     FStrobeDirty: Boolean;
@@ -69,6 +70,8 @@ type
     procedure ClockDma(CpuCycleOdd: Boolean);
     procedure ClockIo; inline;
     function DebugCpuRead(Address: UInt16): UInt8;
+    function PeekInternalRam(Address: Word): Byte;
+    property CpuAddress: UInt16 read FCpuAddress write FCpuAddress;
     property CpuCycle: UInt64 read FCpuCycle write FCpuCycle;
     property DmaWritePending: Boolean read FDmaHaveData;
     property HaltedCpuAddress: UInt16 read FHaltedCpuAddress write FHaltedCpuAddress;
@@ -81,7 +84,7 @@ type
 implementation
 
 uses
-  NES.Mapper;
+  NES.Mapper, NES.DiskSystem;
 
 function TNesBus.GetHasCoinAcceptor: Boolean;
 begin
@@ -284,6 +287,16 @@ end;
 
 function TNesBus.CpuRead(Address: UInt16): UInt8;
 begin
+  FCpuAddress := Address;
+  if ((Address = $4032) or (Address = $E445)) and (FCartridge <> nil) then
+  begin
+    var Disk := FCartridge.DiskSystem;
+    if Disk <> nil then
+      if Address = $4032 then
+        Disk.ObserveDiskStatusRead
+      else
+        Disk.CheckBiosDiskRequest;
+  end;
   if Address < $2000 then
     Result := FRam[Address and $07FF]
   else
@@ -296,6 +309,7 @@ end;
 
 function TNesBus.DmaRead(Address: UInt16): UInt8;
 begin
+  FCpuAddress := Address;
   // DMA drives the external bus without replacing the CPU's internal latch.
   Result := ReadDevice(Address);
   if Address <> $4015 then
@@ -304,6 +318,7 @@ end;
 
 function TNesBus.DmaTransferRead(Address: UInt16): UInt8;
 begin
+  FCpuAddress := Address;
   // The CPU's held address enables the internal I/O decoder; DMA supplies
   // the low five address bits. External memory remains selected in parallel.
   if (FHaltedCpuAddress and $FFE0) <> $4000 then
@@ -402,6 +417,7 @@ end;
 
 procedure TNesBus.CpuWrite(Address: UInt16; Value: UInt8);
 begin
+  FCpuAddress := Address;
   FDataBus := Value;
   FInternalDataBus := Value;
   if (FCartridge <> nil) and (FCartridge.Mapper <> nil) then
@@ -502,6 +518,7 @@ begin
     FDmaHaveData := False;
     FDataBus := FDmaData;
     FInternalDataBus := FDmaData;
+    FCpuAddress := $2004;
     FPpu.WriteOamDma(FDmaAddress, FDmaData);
     FDmaAddress := (FDmaAddress + 1) and $FF;
     if FDmaAddress = 0 then
@@ -540,12 +557,21 @@ begin
   end;
 end;
 
+function TNesBus.PeekInternalRam(Address: Word): Byte;
+begin
+  Result := FRam[Address and $7FF];
+end;
+
 function TNesBus.DebugCpuRead(Address: UInt16): UInt8;
 begin
   // Inspecting RAM must not drive the emulated CPU data bus.
   if Address < $2000 then
     Exit(FRam[Address and $07FF]);
 
+  // Debugger inspection is not evidence of a game requesting a new side.
+  if ((Address = $4032) or (Address = $E445)) and (FCartridge <> nil) and
+    (FCartridge.DiskSystem <> nil) then
+    Exit(ReadDevice(Address));
   Result := CpuRead(Address);
 end;
 

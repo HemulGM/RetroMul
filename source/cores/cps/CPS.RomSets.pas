@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Zip;
+  System.SysUtils, System.Classes, Core.Archive.Container;
 
 type
   TCPSGeneration = (CPS1 = 1, CPS2 = 2, CPS3 = 3);
@@ -52,13 +52,16 @@ type
     DIPs: array[0..2] of Byte;
     class function Find(const Name: string; out RomSet: TCPSRomSet): Boolean; static;
     // Central-directory metadata only. Loading verifies the actual content.
-    class function Identify(Archive: TZipFile; const Hint: string; out RomSet: TCPSRomSet): Boolean; static;
+    class function Identify(Archive: IArchiveContainer; const Hint: string; out RomSet: TCPSRomSet): Boolean; static;
     class function IdentifyStream(Stream: TStream; const Hint: string; out RomSet: TCPSRomSet): Boolean; static;
   end;
 
   PCPSBoard = ^TCPSBoard;
 
 implementation
+
+uses
+  Core.MediaArchive;
 
 {$I CPS.RomData.inc}
 
@@ -192,7 +195,7 @@ begin
   Result := False;
 end;
 
-class function TCPSRomSet.Identify(Archive: TZipFile; const Hint: string; out RomSet: TCPSRomSet): Boolean;
+class function TCPSRomSet.Identify(Archive: IArchiveContainer; const Hint: string; out RomSet: TCPSRomSet): Boolean;
 
   function HasProgram(const Candidate: TCPSRomSet): Boolean;
   begin
@@ -202,8 +205,8 @@ class function TCPSRomSet.Identify(Archive: TZipFile; const Hint: string; out Ro
         F.Region.StartsWith('simm1.') or F.Region.StartsWith('simm2.')) then
       begin
         var Found := False;
-        for var i := 0 to Archive.FileCount - 1 do
-          if Archive.FileInfo[i].CRC32 = F.CRC then
+        for var i := 0 to Archive.Count - 1 do
+          if not Archive.Entries[i].IsDirectory and (Archive.Checksum(i) = F.CRC) then
           begin
             Found := True;
             Break;
@@ -217,7 +220,7 @@ class function TCPSRomSet.Identify(Archive: TZipFile; const Hint: string; out Ro
   end;
 
 begin
-  // Prefer content over the ZIP label (some old collections name US BIOSes
+  // Prefer content over the archive label (some old collections name US BIOSes
   // after the parent). A named incomplete set still receives a useful error.
   var HintSet: TCPSRomSet;
   var HasHint := Find(ChangeFileExt(ExtractFileName(StringReplace(Hint, '/', PathDelim, [rfReplaceAll])), ''), HintSet);
@@ -230,8 +233,8 @@ begin
       var Score: Int64 := 0;
       for var F in Candidate.Files do
         if not F.Name.StartsWith('#') then
-          for var i := 0 to Archive.FileCount - 1 do
-            if Archive.FileInfo[i].CRC32 = F.CRC then
+          for var i := 0 to Archive.Count - 1 do
+            if not Archive.Entries[i].IsDirectory and (Archive.Checksum(i) = F.CRC) then
             begin
               Inc(Score, F.Size);
               Break;
@@ -261,21 +264,7 @@ end;
 
 class function TCPSRomSet.IdentifyStream(Stream: TStream; const Hint: string; out RomSet: TCPSRomSet): Boolean;
 begin
-  var Position := Stream.Position;
-  var Archive := TZipFile.Create;
-  try
-    Stream.Position := 0;
-    try
-      Archive.Open(Stream, zmRead);
-      Result := Identify(Archive, Hint, RomSet);
-    except
-      on E: EZipException do
-        Result := False;
-    end;
-  finally
-    Archive.Free;
-    Stream.Position := Position;
-  end;
+  Result := Identify(OpenMediaArchive(Stream, Hint), Hint, RomSet);
 end;
 
 end.

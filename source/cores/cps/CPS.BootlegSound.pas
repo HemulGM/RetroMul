@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, ZX.Sound.YM2203, HW.MSM5205, MD.Z80, Core.Snapshots;
+  System.SysUtils, HW.Sound.YM2203, HW.Sound.MSM5205, HW.Z80, Core.Snapshots;
 
 type
   TCPSBootlegSound = class

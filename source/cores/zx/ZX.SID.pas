@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, C64.Sound.SID, Core.Snapshots;
+  System.SysUtils, HW.Sound.SID, Core.Snapshots;
 
 type
   // One MOS SID through either eLeMeNt ZX / MB03+ or HardSID / ZX-TSid xxCF.

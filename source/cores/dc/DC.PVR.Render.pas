@@ -632,11 +632,12 @@ end;
 
 procedure TDCRenderer.ReadRegions;
 begin
-  // Region array (32-bit VRAM view): control word then five list pointers,
-  // or six with FPU_PARAM_CFG bit 21. Repeated tiles are further passes.
+  // Region array (32-bit VRAM view): control plus four list pointers for
+  // Type 1, or five (including punch-through) for Type 2. See Sega's
+  // Dev.Box System Architecture, Region Array and FPU_PARAM_CFG.
   SetLength(FEntries, 0);
   var Address := FPVR.R[PVRRegionBase shr 2] and $7FFFFC;
-  var Words := 6;
+  var Words := 5;
   if (FPVR.R[PVRFPUParamCfg shr 2] and $200000) <> 0 then
     Words := 6;
   var Seen: TArray<Integer>;
@@ -646,8 +647,14 @@ begin
   begin
     var Control := FMemory.VRAMRead32(Address);
     var E: TRegionEntry;
+    // Type 1 takes translucency sorting from ISP_FEED_CFG, whereas Type 2
+    // selects it per tile. Normalize the mode for the tile workers.
+    if Words = 5 then
+      Control := (Control and not Cardinal($20000000)) or
+        ((FPVR.R[$098 shr 2] and 1) shl 29);
     E.Control := Control;
-    for var L := 0 to 4 do
+    E.Lists[4] := $80000000;
+    for var L := 0 to Words - 2 do
       E.Lists[L] := FMemory.VRAMRead32(Address + Cardinal(4 + L * 4));
     var TX := Integer((Control shr 2) and $3F);
     var TY := Integer((Control shr 8) and $3F);

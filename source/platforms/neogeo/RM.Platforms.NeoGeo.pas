@@ -5,15 +5,14 @@ interface
 uses
   Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
-const
-  NEOGEO_ZIP_ROM_SIGNATURE: AnsiString = 'PK' + #3 + #4;
-
 type
   TNeoGeoPlatform = class
   strict private
+    class function LoadDisc(Context: TCoreLoadContext): TCoreMatch; static;
     class var
       FRegistered: Boolean;
     class function Header(Context: TCoreLoadContext): TCoreMatch; static;
+    class function Container(Context: TCoreLoadContext): TCoreMatch; static;
     class function Disc(Context: TCoreLoadContext): TCoreMatch; static;
     class procedure RegisterPlatforms; static;
     class procedure RegisterCore; static;
@@ -28,45 +27,94 @@ type
 implementation
 
 uses
-  NeoGeo.Cartridge, RM.Settings.Catalog, Core.Snapshots, System.StrUtils, Core.Emulation,
-  Core.Platforms, Core.Platforms.NeoGeo.Adapter,
-  RM.Platforms.NeoGeo.Settings, RM.Platforms.Presentation,
-  RM.Platforms.NeoGeo.Icons, RM.Gamepad.Factory, RM.Platforms.NeoGeo.Gamepads,
-  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  System.Classes;
+  NeoGeo.Cartridge, NeoGeo.RomSets, Core.Archive.Container, RM.Settings.Catalog,
+  Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
+  Core.Platforms.NeoGeo.Adapter, RM.Platforms.NeoGeo.Settings,
+  RM.Platforms.Presentation, RM.Platforms.NeoGeo.Icons, RM.Gamepad.Factory,
+  RM.Platforms.NeoGeo.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
+  RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
+  RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
+
+class function TNeoGeoPlatform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
+begin
+  Result := TCoreMatch.Create('NeoGeoCD',
+    function: IEmulationCore
+    begin
+      Context.Stream.Position := 0;
+      Result := TNeoGeoCoreAdapter.Create(Context.Stream, Context.EffectiveStorage, Context.RomName, True);
+    end);
+  Result.Format.SystemId := 'neogeocd';
+end;
 
 class function TNeoGeoPlatform.Header(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
-  if Context.Signature(0, NEOGEO_ROM_SIGNATURE) or Context.Signature(0, NEOGEO_ZIP_ROM_SIGNATURE) then
+  if Context.Signature(0, NEOGEO_ROM_SIGNATURE) then
   begin
     Result := ImageMatch(Context, 'NeoGeo',
       function(const Data: TBytes; Input: TStream): IEmulationCore
       begin
         Result := TNeoGeoCoreAdapter.Create(Input, Context.Storage, Context.RomName);
       end, True, 'neogeo', '', 0);
-    Result.ArchiveCandidate := not Context.Signature(0, NEOGEO_ZIP_ROM_SIGNATURE);
+  end;
+end;
+
+class function TNeoGeoPlatform.Container(Context: TCoreLoadContext): TCoreMatch;
+begin
+  Result := nil;
+  if (Context.Archive = nil) then
+    Exit;
+  var Archive := Context.Archive;
+  try
+    var CRCs: TArray<string>;
+    SetLength(CRCs, Archive.Count);
+    for var i := 0 to Archive.Count - 1 do
+      CRCs[i] := IntToHex(Archive.Checksum(i), 8);
+    var SetName := ChangeFileExt(ExtractFileName(Context.RomName), '').ToLower;
+    var Description := SelectNeoGeoSet(SetName, CRCs);
+    if Description = '' then
+      Description := SelectNeoGeoSet(IdentifyNeoGeoSet(Archive.Names), CRCs);
+    if Description = '' then
+      Exit;
+    // A filename alone is insufficient: unrelated cartridge archives may
+    // have the same title. Require a program ROM from the identified set.
+    var Parts := Description.Split(['|']);
+    for var Row in Parts[9].Split([';']) do
+    begin
+      var Fields := Row.Split([',']);
+      if (Length(Fields) <> 7) or (Fields[0] <> 'P') then
+        Continue;
+      for var CRC in CRCs do
+        if SameText(CRC, Fields[6]) then
+        begin
+          Result := TCoreMatch.Create('NeoGeo',
+            function: IEmulationCore
+            begin
+              Context.Stream.Position := 0;
+              Result := TNeoGeoCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
+            end);
+          Result.ArchiveCandidate := False;
+          Exit;
+        end;
+    end;
+  finally
+    Archive := nil;
   end;
 end;
 
 class function TNeoGeoPlatform.Disc(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
-  if Context.IsDiscSource then
-    Result := TCoreMatch.Create('NeoGeoCD',
-      function: IEmulationCore
-      begin
-        Context.Stream.Position := 0;
-        Result := TNeoGeoCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName, True);
-      end);
+  if Context.IsDiscSource and not Context.Disc.Track(1).Audio and
+    (Length(Context.Disc.ReadISOFile('IPL.TXT', 65536)) > 0) then
+    Result := LoadDisc(Context);
 end;
 
 class procedure TNeoGeoPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('neogeo', 'Neo Geo', 'NG',
     'SNK', 'NG NeoGeo MVS AES Advanced Entertainment System', 'neogeo', ['neogeo', 'neogeoaes', 'aes'],
-    ['.zip', '.neo', '.7z'],
+    ['.neo'],
     'NeoGeo', 'neogeo', 2);
   TPlatformRegistry.RegisterPlatform('neogeocd', 'Neo Geo CD', 'NG CD',
     'SNK', 'NG NeoGeo CD', 'neogeocd', ['neogeocd'],
@@ -81,7 +129,9 @@ begin
   RegisterPlatforms;
   var Registration := TEmulationCoreRegistration.Create('NeoGeo', ['.neo']);
   Registration.Add(TCoreLoadStage.Header, 80, Header);
+  Registration.Add(TCoreLoadStage.Container, 30, Container);
   Registration.Add(TCoreLoadStage.Source, 100, Disc);
+  Registration.AddDiscPlatform('neogeocd', LoadDisc);
   RegisterEmulationCore(Registration);
 end;
 

@@ -4,8 +4,8 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Math, System.UITypes,
-  Core.Emulation.Types, Core.Snapshots, Core.AudioFilter, MD.Z80, MSX.Machine,
-  MSX.Cartridge, MSX.VDP, MSX.Sound.OPLL, ZX.Sound.YM2149, MSX.RTC, MSX.Cassette,
+  Core.Emulation.Types, Core.Snapshots, Core.AudioFilter, HW.Z80, MSX.Machine,
+  MSX.Cartridge, MSX.VDP, HW.Sound.OPLL, HW.Sound.YM2149, MSX.RTC, MSX.Cassette,
   MSX.Floppy, MSX.Peripherals;
 
 type
@@ -610,7 +610,7 @@ procedure TMSXConsole.CompleteVDPIO;
 begin
   if not FVDPWaitConnected then
     Exit;
-  // MD.Z80 delivers the port operation at the end of its I/O bus cycle.
+  // HW.Z80 delivers the port operation at the end of its I/O bus cycle.
   // Retain every added CPU T-state in peripherals, raster and Step's result.
   // Pin assertion/Tw sample phase is not calibrated by this callback model.
   while FVDP.CPUWaitAsserted do
@@ -798,7 +798,7 @@ begin
 end;
 
 initialization
-  MD.Z80.ConstantInitialise;
+  HW.Z80.ConstantInitialise;
 
 end.
 

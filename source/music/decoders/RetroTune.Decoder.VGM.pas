@@ -5,7 +5,7 @@ interface
 uses
   System.SysUtils, RetroTune.Decoder, MD.Sound, NES.APU, GB.Sound, GB.GPU,
   GB.Timer, GB.InterruptManager, GB.Joypad, RetroTune.Decoder.GBS,
-  Core.AudioFilter, PC.Sound.OPL, PC.Sound.OPL2, PC.Sound.OPL3, ZX.Sound.YM2149;
+  Core.AudioFilter, HW.Sound.OPL, HW.Sound.OPL2, HW.Sound.OPL3, HW.Sound.YM2149;
 
 type
   TVGMDataBank = record

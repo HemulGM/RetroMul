@@ -38,6 +38,7 @@ type
     FBIOSMode, FBIOSFile, FFlashFile, FRegion, FLanguage, FCable, FVideo, FVMUScreen: string;
     FShowVMU: Boolean;
     FRumble: Boolean;
+    FRecompiler: Boolean;
   protected
     procedure LoadCoreSettings(Ini: TCustomIniFile); override;
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
@@ -65,6 +66,9 @@ type
     property VMUScreen: string read FVMUScreen write FVMUScreen;
     property ShowVMU: Boolean read FShowVMU write FShowVMU;
     property Rumble: Boolean read FRumble write FRumble;
+    // The SH-4's blocks as generated code where there is a code generator
+    // (Emulation/Execution jit), else interpreted (interpreter).
+    property Recompiler: Boolean read FRecompiler write FRecompiler;
     property Keys: TDCKeyMap read FKeys;
   end;
 
@@ -108,7 +112,7 @@ type
     FFlashSave: string;
     FSnapshotDirectory, FError, FAudioError: string;
     FInputs: TDCPadInputs;
-    FPause, FReset, FAudioEnabled, FAvailable, FRumbleEnabled: Boolean;
+    FPause, FReset, FAudioEnabled, FAvailable, FRumbleEnabled, FRecompiler: Boolean;
     FVolume: Single;
     FFrame: TEmulatorFrame;
     FRumbleLevel: Byte;
@@ -150,7 +154,7 @@ type
   public
     constructor Create(const Config: TDCConsoleConfig; const ProgramData, Identity: TBytes; Disc: TCDDisc; const Storage: IStorage; const VMUFiles: array of string; const FlashSave, SnapshotDirectory: string; Rumble: Boolean);
     destructor Destroy; override;
-    procedure Configure(const Inputs: TDCPadInputs; Paused, AudioEnabled: Boolean; Volume: Single);
+    procedure Configure(const Inputs: TDCPadInputs; Paused, AudioEnabled: Boolean; Volume: Single; Recompiler: Boolean);
     procedure SetPeripherals(const Value: TDCHostPeripherals);
     // Relative host mouse movement, queued for the next frame.
     procedure AddMouseDelta(DX, DY: Integer);
@@ -302,6 +306,7 @@ begin
   FVideo := 'auto';
   FVMUScreen := 'top-right';
   FRumble := True;
+  FRecompiler := True;
 end;
 
 class function TDCConfig.ExtraKeyName(Extra: TDCExtra): string;
@@ -342,6 +347,7 @@ begin
   FVMUScreen := OneOf(Ini.ReadString('Peripherals', 'VMUScreen', 'top-right'),
     ['top-left', 'top-right', 'bottom-left', 'bottom-right'], 'top-right');
   FRumble := Ini.ReadBool('Peripherals', 'Rumble', True);
+  FRecompiler := not SameText(Ini.ReadString('Emulation', 'Execution', 'jit'), 'interpreter');
   for var P := 0 to 3 do
   begin
     var Section := 'Keys';
@@ -366,6 +372,10 @@ begin
   Ini.WriteBool('Peripherals', 'ShowVMU', FShowVMU);
   Ini.WriteString('Peripherals', 'VMUScreen', FVMUScreen);
   Ini.WriteBool('Peripherals', 'Rumble', FRumble);
+  if FRecompiler then
+    Ini.WriteString('Emulation', 'Execution', 'jit')
+  else
+    Ini.WriteString('Emulation', 'Execution', 'interpreter');
   for var P := 0 to 3 do
   begin
     var Section := 'Keys';
@@ -488,7 +498,7 @@ begin
   FInputPortsCommand.Apply(Self, Ports, FWake);
 end;
 
-procedure TDCWorker.Configure(const Inputs: TDCPadInputs; Paused, AudioEnabled: Boolean; Volume: Single);
+procedure TDCWorker.Configure(const Inputs: TDCPadInputs; Paused, AudioEnabled: Boolean; Volume: Single; Recompiler: Boolean);
 begin
   var Wake: Boolean;
   FLock.Acquire;
@@ -498,6 +508,7 @@ begin
     FPause := Paused;
     FAudioEnabled := AudioEnabled;
     FVolume := EnsureRange(Volume, 0.0, 1.0);
+    FRecompiler := Recompiler;
   finally
     FLock.Release;
   end;
@@ -892,7 +903,7 @@ begin
         ProcessMediaChange;
 
         var Inputs: TDCPadInputs;
-        var Paused, Enabled, ResetRequested: Boolean;
+        var Paused, Enabled, ResetRequested, Recompiler: Boolean;
         var Volume: Single;
         var Host: TDCHostPeripherals;
         var MouseDX, MouseDY: Integer;
@@ -907,11 +918,14 @@ begin
           Paused := FPause;
           Enabled := FAudioEnabled;
           Volume := FVolume;
+          Recompiler := FRecompiler;
           ResetRequested := FReset;
           FReset := False;
         finally
           FLock.Release;
         end;
+        // (The same emulation either way: it may change at any time.)
+        FConsole.CPU.Recompiler := Recompiler;
 
         if ResetRequested then
         begin
@@ -1405,7 +1419,7 @@ begin
     Pad.RightTrigger := Byte(EnsureRange(RT, 0, 255));
     Inputs[Port] := Pad;
   end;
-  FWorker.Configure(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume);
+  FWorker.Configure(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume, FConfigObject.Recompiler);
 end;
 
 procedure TDCCoreAdapter.Start;

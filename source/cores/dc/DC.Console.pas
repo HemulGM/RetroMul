@@ -238,7 +238,7 @@ begin
   Holly := TDCHolly.Create(Memory, Scheduler, Interrupts, Periph, PVR, GDROM, AICA, Maple);
   Holly.OnSoftReset := RequestSoftReset;
   Boot := TDCBoot.Create(CPU, Memory, Periph, PVR);
-  GDROMHLE := TDCGDROMHLE.Create(GDROM, Memory, Interrupts, ReadBus, WriteBus);
+  GDROMHLE := TDCGDROMHLE.Create(GDROM, Memory, Interrupts, ReadBus, WriteBus, Scheduler);
   Boot.GDROM := GDROMHLE;
   Flash := TDCFlash.Create(Memory.Flash);
   AICA.GDROM := GDROM;
@@ -560,7 +560,12 @@ begin
         Interrupts.RaiseNormal(HollyRenderDoneTSP);
         Interrupts.RaiseNormal(HollyRenderDoneVideo);
       end;
-    TDCEvent.Ch2DMA, TDCEvent.SortDMA, TDCEvent.PVRDMA, TDCEvent.MapleDMA, TDCEvent.GDDMA, TDCEvent.G2DMA:
+    TDCEvent.GDDMA:
+      begin
+        GDROMHLE.DMAReadComplete;
+        Holly.Event(Event);
+      end;
+    TDCEvent.Ch2DMA, TDCEvent.SortDMA, TDCEvent.PVRDMA, TDCEvent.MapleDMA, TDCEvent.G2DMA:
       Holly.Event(Event);
     TDCEvent.GDROM:
       GDROM.Event;

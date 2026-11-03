@@ -39,7 +39,7 @@ type
 implementation
 
 uses
-  MD.Z80, MD.M68k, CPS1.Sound;
+  HW.Z80, HW.M68k, CPS1.Sound;
 
 constructor TCPSFcrashConsole.Create(Cart: TCPSCartridge);
 begin

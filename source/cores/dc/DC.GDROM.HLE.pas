@@ -12,7 +12,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, Core.Snapshots, HW.SH4, DC.Types, DC.Memory,
-  DC.Interrupts, DC.Disc, DC.GDROM, DC.Boot;
+  DC.Interrupts, DC.Disc, DC.GDROM, DC.Boot, DC.Scheduler;
 
 type
   TDCBusReader = function(Address: Cardinal; Size: Integer): UInt64 of object;
@@ -46,6 +46,10 @@ type
     FRead: TDCBusReader;
     FWrite: TDCBusWriter;
     FCPU: TSH4;
+    FDMAEndPending: Boolean;
+    FDMAReadPending: Boolean;
+    FScheduler: TDCScheduler;
+    procedure CancelDMARead;
     procedure Store32(Address, Value: Cardinal);
     function Load32(Address: Cardinal): Cardinal;
     // DMA writes physical memory; the CPU's (PIO) view goes through the MMU.
@@ -57,8 +61,9 @@ type
     function DiscPresent: Boolean;
   public
     S: TDCGDROMHLEState;
-    constructor Create(Drive: TDCGDROM; Memory: TDCMemory; Interrupts: TDCInterrupts; Read: TDCBusReader; Write: TDCBusWriter);
+    constructor Create(Drive: TDCGDROM; Memory: TDCMemory; Interrupts: TDCInterrupts; Read: TDCBusReader; Write: TDCBusWriter; Scheduler: TDCScheduler);
     procedure Reset; override;
+    procedure DMAReadComplete;
     function Call(CPU: TSH4; Memory: TDCMemory): Boolean; override;
     procedure SerializeState(Archive: TStateArchive); override;
     // The lid opened: a command in progress ends with "not ready".
@@ -85,6 +90,7 @@ const
   CMD_RELEASE = 23;
   CMD_INIT = 24;
   CMD_SEEK = 27;
+  CMD_DMAREAD_STREAM = 28;
   CMD_REQ_MODE = 30;
   CMD_SET_MODE = 31;
   CMD_STOP = 33;
@@ -97,7 +103,7 @@ const
   // Pseudo command: a PIO transfer queued by REQ_PIO_TRANS.
   CMD_PIO_TRANSFER = $100;
 
-constructor TDCGDROMHLE.Create(Drive: TDCGDROM; Memory: TDCMemory; Interrupts: TDCInterrupts; Read: TDCBusReader; Write: TDCBusWriter);
+constructor TDCGDROMHLE.Create(Drive: TDCGDROM; Memory: TDCMemory; Interrupts: TDCInterrupts; Read: TDCBusReader; Write: TDCBusWriter; Scheduler: TDCScheduler);
 begin
   inherited Create;
   FDrive := Drive;
@@ -105,12 +111,31 @@ begin
   FInterrupts := Interrupts;
   FRead := Read;
   FWrite := Write;
+  FScheduler := Scheduler;
   Reset;
+end;
+
+procedure TDCGDROMHLE.CancelDMARead;
+begin
+  if FDMAReadPending then
+    FScheduler.Cancel(TDCEvent.GDDMA);
+  FDMAReadPending := False;
+end;
+
+procedure TDCGDROMHLE.DMAReadComplete;
+begin
+  if not FDMAReadPending then
+    Exit;
+  FDMAReadPending := False;
+  S.Result[2] := S.Params[1] * 2048;
+  S.Status := GDC_COMPLETE;
 end;
 
 procedure TDCGDROMHLE.Reset;
 begin
+  CancelDMARead;
   S := Default(TDCGDROMHLEState);
+  FDMAEndPending := False;
   S.RequestId := $FFFFFFFF;
   S.NextId := 1;
   S.SectorMode[1] := 8192;
@@ -124,6 +149,8 @@ end;
 
 procedure TDCGDROMHLE.LidOpened;
 begin
+  CancelDMARead;
+  FDMAEndPending := False;
   S.StreamBytes := 0;
   if (S.Status = GDC_BUSY) or (S.Status = GDC_CONTINUE) then
   begin
@@ -216,6 +243,7 @@ procedure TDCGDROMHLE.StreamTransfer(Address, Count: Cardinal; DMA: Boolean);
 var
   Buffer: array[0..2047] of Byte;
 begin
+  var BytesBefore := S.StreamBytes;
   // Continues a stream at byte granularity across sectors.
   if Count > S.StreamBytes then
     Count := S.StreamBytes;
@@ -246,8 +274,15 @@ begin
   S.Result[2] := S.StreamTotal - S.StreamBytes;
   if DMA then
   begin
+    // Each DMA request completes separately; its status reports this
+    // transfer's length, not a growing total across earlier requests.
+    S.Result[2] := BytesBefore - S.StreamBytes;
     if S.StreamBytes = 0 then
       S.Status := GDC_COMPLETE;
+    // IRQ wait while the stream has more data, internal wait at its end.
+    // Delivering the callback does not change this guest-visible status.
+    S.Result[3] := Ord(S.StreamBytes <> 0);
+    FDMAEndPending := True;
     FInterrupts.RaiseNormal(HollyGDDMA);
   end
   else if S.PIOCallback <> 0 then
@@ -279,8 +314,13 @@ begin
         if S.Command = CMD_DMAREAD then
         begin
           ReadSectors(P[0] and $FFFFFF, P[1], P[2], True);
-          S.Result[2] := P[1] * 2048;
-          FInterrupts.RaiseNormal(HollyGDDMA);
+          // As with Holly DMA, data moves at the start and completion is
+          // delivered later. A BIOS poll must be able to observe BUSY.
+          FDMAReadPending := True;
+          S.Result[2] := 0;
+          FScheduler.Schedule(TDCEvent.GDDMA, FScheduler.Now +
+            Int64(P[1]) * DCCPUClock div (75 * 12) + Int64(P[1]) * 2048 * 12 + 256);
+          Exit;
         end
         else
           // Sector by sector with the parameters following the progress, so
@@ -416,7 +456,7 @@ begin
         Store32(P[3], 1);
         S.Result[2] := 10;
       end;
-    CMD_DMAREAD_STREAM_EX, CMD_PIOREAD_STREAM_EX:
+    CMD_DMAREAD_STREAM, CMD_DMAREAD_STREAM_EX, CMD_PIOREAD_STREAM_EX:
       begin
         FDrive.StopCDDA;
         S.Status := GDC_CONTINUE;
@@ -487,6 +527,7 @@ begin
         S.Status := GDC_BUSY;
         S.Command := R[4];
         S.StreamBytes := 0;
+        FDMAEndPending := False;
       end;
     1:
       begin
@@ -514,7 +555,8 @@ begin
         // EXEC_SERVER: queued commands run here. The boot ROM reads the
         // drive status, which acknowledges its interrupt.
         FDrive.SetInterrupt(False);
-        if (S.Status = GDC_BUSY) or ((S.Status = GDC_CONTINUE) and (S.Command = CMD_PIO_TRANSFER)) then
+        if not FDMAReadPending and ((S.Status = GDC_BUSY) or
+          ((S.Status = GDC_CONTINUE) and (S.Command = CMD_PIO_TRANSFER))) then
           Execute;
       end;
     3:
@@ -528,7 +570,7 @@ begin
         if DiscPresent then
         begin
           var Status := FDrive.DriveStatus;
-          if S.Status = GDC_CONTINUE then
+          if FDMAReadPending or (S.Status = GDC_CONTINUE) then
             Status := 3;
           Store32(R[4], Status);
           Store32(R[4] + 4, FDrive.Disc.DiscType);
@@ -547,6 +589,16 @@ begin
         S.DMAArgument := R[5];
         FInterrupts.AcknowledgeNormal(Cardinal(1) shl HollyGDDMA);
         R[0] := 0;
+        if FDMAEndPending and
+          (S.Command in [CMD_DMAREAD_STREAM, CMD_DMAREAD_STREAM_EX]) then
+        begin
+          FDMAEndPending := False;
+          if S.DMACallback <> 0 then
+          begin
+            R[4] := S.DMAArgument;
+            FCPU.S.PC := S.DMACallback;
+          end;
+        end;
       end;
     6:
       begin
@@ -576,16 +628,20 @@ begin
       // ABORT_COMMAND.
       if (R[4] = S.RequestId) and (S.Status in [GDC_BUSY, GDC_COMPLETE, GDC_CONTINUE]) then
       begin
+        CancelDMARead;
         S.StreamBytes := 0;
         S.Status := GDC_OK;
+        FDMAEndPending := False;
         R[0] := 0;
       end
       else
         R[0] := Cardinal(GDC_ERR);
     9:
       begin
+        CancelDMARead;
         S.RequestId := $FFFFFFFF;
         S.Status := GDC_OK;
+        FDMAEndPending := False;
       end;
     10:
       begin
@@ -629,7 +685,23 @@ end;
 
 procedure TDCGDROMHLE.SerializeState(Archive: TStateArchive);
 begin
-  Archive.Field(S, SizeOf(S));
+  // StreamOffset only uses 11 bits. Reserve two high bits for DMA state
+  // without changing the existing snapshot layout.
+  // Old snapshots have these bits clear; old readers reject the flagged
+  // offset rather than silently losing a newly saved pending completion.
+  var State := S;
+  if not Archive.Loading and FDMAEndPending then
+    State.StreamOffset := State.StreamOffset or $80000000;
+  if not Archive.Loading and FDMAReadPending then
+    State.StreamOffset := State.StreamOffset or $40000000;
+  Archive.Field(State, SizeOf(State));
+  if Archive.Loading then
+  begin
+    FDMAEndPending := (State.StreamOffset and $80000000) <> 0;
+    FDMAReadPending := (State.StreamOffset and $40000000) <> 0;
+    State.StreamOffset := State.StreamOffset and $3FFFFFFF;
+    S := State;
+  end;
   if Archive.Loading and ((S.Status < -1) or (S.Status > 3) or (S.StreamOffset > 2048)) then
     raise EReadError.Create('Dreamcast snapshot GD-ROM system call state');
 end;

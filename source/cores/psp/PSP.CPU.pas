@@ -1,797 +1,2193 @@
 ﻿unit PSP.CPU;
 
-{$Q-}{$R-}{$POINTERMATH ON}
+// Allegrex interpreter. Instructions are decoded once per address into a page
+// of (handler, opcode) pairs; stores into a decoded page re-decode the touched
+// words. Every handler is a plain procedure of (CPU, opcode): a recompiler
+// calls the same routines, so it cannot disagree with the interpreter.
+// Delay slots: PC is the next instruction, NPC the one after; a taken branch
+// replaces NPC.
+{$IFDEF PSP_CHECKED}{$Q-}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
+{$EXCESSPRECISION OFF}
+{$POINTERMATH ON}
 
 interface
 
 uses
-  System.SysUtils, PSP.Memory, PSP.VFPU;
+  System.SysUtils, System.Math, PSP.Types, PSP.Memory;
+
+const
+  // VFPU control registers 128..143 as indices into TPSPContext.VC.
+  VFPU_PFXS = 0;
+  VFPU_PFXT = 1;
+  VFPU_PFXD = 2;
+  VFPU_CC = 3;
+  VFPU_INF4 = 4;
+  VFPU_REV = 7;
+  VFPU_RCX0 = 8;
+
+  FCR31_C = 1 shl 23;
 
 type
-  EPSPInstruction = class(Exception);
+  TPSPCPU = class;
+  TPSPOpHandler = procedure(C: TPSPCPU; Op: Cardinal);
+  TPSPSyscallEvent = procedure(C: TPSPCPU; Code: Cardinal) of object;
 
-  TPSPCPUContext = record
-    R: array[0..31] of Cardinal;
+  // Everything a thread switch saves and restores.
+  TPSPContext = record
+    GPR: array[0..31] of Cardinal;
+    HI, LO: Cardinal;
+    PC, NPC: Cardinal;
     FPR: array[0..31] of Cardinal;
     FCR31: Cardinal;
-    VFPU: TPSPVFPU;
-    PC, NextPC, Hi, Lo: Cardinal;
-    PendingDelay, InDelay: Boolean;
+    LLBit: Cardinal;
+    V: array[0..127] of Cardinal;
+    VC: array[0..15] of Cardinal;
+    // Prefix state the VFPU keeps decoded between a prefix and its consumer.
+    VPrefix: array[0..3] of Cardinal;
+  end;
+  PPSPContext = ^TPSPContext;
+
+  TPSPDecoded = record
+    Handler: TPSPOpHandler;
+    Op: Cardinal;
+  end;
+  PPSPDecoded = ^TPSPDecoded;
+  TPSPDecodedPage = array[0..(PSPPageSize div 4) - 1] of TPSPDecoded;
+  PPSPDecodedPage = ^TPSPDecodedPage;
+
+  // A recompiler (PSP.CPU.JIT) that Run hands its budget to, told when
+  // decoded code is rewritten or dropped.
+  TPSPRunner = class abstract
+  public
+    procedure Run(C: TPSPCPU); virtual; abstract;
+    procedure CodeWritten(Address, Size: Cardinal); virtual; abstract;
+    procedure Flushed; virtual; abstract;
   end;
 
-  TPSPCPU = class;
-
-  TPSPSyscall = procedure(CPU: TPSPCPU; Code: Cardinal) of object;
-
-  // Allegrex scalar interpreter. No R3000 load delay; branches have one slot.
-  // Unsupported coprocessors/instructions stop with PC/opcode diagnostics.
   TPSPCPU = class
   private
-    FMemory: TPSPMemory;
-    FR: array[0..31] of Cardinal;
-    FFPR: array[0..31] of Cardinal;
-    FFCR31: Cardinal;
-    FVFPU: TPSPVFPU;
-    FPC, FNextPC, FCurrentPC, FHi, FLo: Cardinal;
-    FInDelay, FPendingDelay, FYielded, FHalted: Boolean;
-    FInstructions: UInt64;
-    FInterruptEnabled: Boolean;
-    FOnSyscall: TPSPSyscall;
-    FLinked: Boolean;
-    FLinkedAddress: Cardinal;
-    FLinkedGeneration: UInt64;
-    procedure SetRegister(Index: Integer; Value: Cardinal); inline;
-    function GetRegister(Index: Integer): Cardinal; inline;
-    procedure Branch(Taken: Boolean; Target: Cardinal; Likely: Boolean = False); inline;
-    procedure Unsupported(Op: Cardinal);
-    procedure Special(Op: Cardinal);
-    procedure Special3(Op: Cardinal);
-    procedure Cop1(Op: Cardinal);
-    procedure Execute(Op: Cardinal);
-    function Address(Op: Cardinal): Cardinal; inline;
-    procedure CheckAlignment(Value, Mask: Cardinal); inline;
+    FDecoded: array of PPSPDecodedPage;
+    FPages: TArray<PPSPDecodedPage>;
+    FOnSyscall: TPSPSyscallEvent;
+    FOnBreak: TPSPSyscallEvent;
+    // The last FPU compare and the condition before it, for the branch behind it.
+    FCmpPC, FCmpOld: Cardinal;
+    function DecodePage(PC: Cardinal): PPSPDecodedPage;
+    procedure CodeWrite(Address, Size: Cardinal);
+    procedure Interpret;
   public
-    constructor Create(Memory: TPSPMemory);
-    procedure Reset(Entry, Stack, GP: Cardinal);
-    procedure Step; inline;
-    procedure Run(Budget: Cardinal);
-    procedure Yield;
-    procedure Halt;
-    procedure SetFloatResult(Value: Single);
-    procedure SetPC(Value: Cardinal);
-    function SaveContext: TPSPCPUContext;
-    procedure LoadContext(const Context: TPSPCPUContext);
-    property Registers[Index: Integer]: Cardinal read GetRegister write SetRegister;
-    property PC: Cardinal read FPC;
-    property CurrentPC: Cardinal read FCurrentPC;
-    property Hi: Cardinal read FHi;
-    property Lo: Cardinal read FLo;
-    property Instructions: UInt64 read FInstructions;
-    property Halted: Boolean read FHalted;
-    property OnSyscall: TPSPSyscall read FOnSyscall write FOnSyscall;
-    property InterruptEnabled: Boolean read FInterruptEnabled write FInterruptEnabled;
+    // The run's budget (Run, TakeCycles, AddCycles), for a runner.
+    FRunLength, FRemaining, FAccounted: Integer;
+    Runner: TPSPRunner;
+    Ctx: TPSPContext;
+    // System control coprocessor registers, as kernel-mode code reads and writes them.
+    COP0: array[0..31] of Cardinal;
+    // VFPU condition hazards: where the last mtvc to CC and the last vcmp were, and the CC before each.
+    VccWritePC, VccWriteOld, VcmpPC, VcmpOld: Cardinal;
+    // The last value the VFPU's S prefix stage produced in each lane, which an
+    // out-of-range swizzle replays for the integer unpack instructions.
+    VLatch: array[0..3] of Cardinal;
+    Memory: TPSPMemory;
+    CurPC: Cardinal;
+    Stopping: Boolean;
+    ExtraCycles: Integer;
+    InterruptsEnabled: Boolean;
+    constructor Create(AMemory: TPSPMemory);
+    destructor Destroy; override;
+    procedure Reset;
+    procedure FlushDecoded;
+    // The entry the interpreter runs at PC (its page decoded first).
+    function Decoded(PC: Cardinal): PPSPDecoded; inline;
+    // Executes until MaxCycles have been used or Stop is called; returns the cycles used.
+    function Run(MaxCycles: Integer): Integer;
+    // Cycles used in the current run since the last call (HLE time sync).
+    function TakeCycles: Integer;
+    // Single instruction, for tests and differential runs.
+    procedure Step;
+    procedure Stop; inline;
+    procedure AddCycles(Cycles: Integer); inline;
+    procedure SetPC(Address: Cardinal); inline;
+    function FPRSingle(Index: Integer): Single; inline;
+    procedure SetFPRSingle(Index: Integer; Value: Single); inline;
+    property OnSyscall: TPSPSyscallEvent read FOnSyscall write FOnSyscall;
+    property OnBreak: TPSPSyscallEvent read FOnBreak write FOnBreak;
   end;
+
+  // Installed by PSP.VFPU: returns the handler for a VFPU/COP2 opcode.
+  TPSPVFPUDecoder = function(Op: Cardinal): TPSPOpHandler;
+
+var
+  PSPVFPUDecoder: TPSPVFPUDecoder = nil;
+
+function DecodeOp(Op: Cardinal): TPSPOpHandler;
+procedure OpReserved(C: TPSPCPU; Op: Cardinal);
+procedure OpNop(C: TPSPCPU; Op: Cardinal);
 
 implementation
 
-uses
-  N64.SoftFloat{$IFDEF PSP_PROFILE}, PSP.Profile{$ENDIF};
+{ Field helpers }
 
-// Wrap only guest arithmetic, independently of host compiler check settings.
-{$IFOPT Q+}{$DEFINE PSP_RESTORE_Q}{$ENDIF}
-{$IFOPT R+}{$DEFINE PSP_RESTORE_R}{$ENDIF}
-{$Q-}{$R-}
-function Add32(A, B: Cardinal): Cardinal; inline;
+function Sar32(V, S: Cardinal): Cardinal; inline;
 begin
-  Result := A + B;
+  if (V and $80000000) <> 0 then
+    Result := not ((not V) shr S)
+  else
+    Result := V shr S;
 end;
 
-function Sub32(A, B: Cardinal): Cardinal; inline;
+function RS(Op: Cardinal): Cardinal; inline;
 begin
-  Result := A - B;
+  Result := (Op shr 21) and 31;
 end;
 
-function Signed16(Value: Cardinal): Cardinal; inline;
+function RT(Op: Cardinal): Cardinal; inline;
 begin
-  Result := Cardinal(Integer(SmallInt(Value and $FFFF)));
+  Result := (Op shr 16) and 31;
 end;
 
-function ASR32(Value: Cardinal; Shift: Integer): Cardinal; inline;
+function RD(Op: Cardinal): Cardinal; inline;
 begin
-  Shift := Shift and 31;
-  Result := Value shr Shift;
-  if (Shift <> 0) and (Value and $80000000 <> 0) then
-    Result := Result or ($FFFFFFFF shl (32 - Shift));
+  Result := (Op shr 11) and 31;
 end;
 
-function ROR32(Value: Cardinal; Shift: Integer): Cardinal; inline;
+function SA(Op: Cardinal): Cardinal; inline;
 begin
-  Shift := Shift and 31;
-  if Shift = 0 then
-    Exit(Value);
-  Result := (Value shr Shift) or (Value shl (32 - Shift));
-end;
-{$IFDEF PSP_RESTORE_Q}{$Q+}{$ENDIF}
-{$IFDEF PSP_RESTORE_R}{$R+}{$ENDIF}
-
-constructor TPSPCPU.Create(Memory: TPSPMemory);
-begin
-  inherited Create;
-  if Memory = nil then
-    raise EArgumentNilException.Create('Memory');
-  FMemory := Memory;
+  Result := (Op shr 6) and 31;
 end;
 
-procedure TPSPCPU.Reset(Entry, Stack, GP: Cardinal);
+function SImm(Op: Cardinal): Cardinal; inline;
 begin
-  FillChar(FR, SizeOf(FR), 0);
-  FillChar(FFPR, SizeOf(FFPR), 0);
-  FFCR31 := $0E00;
-  FVFPU.Reset;
-  FInterruptEnabled := True;
-  FLinked := False;
-  FHi := 0;
-  FLo := 0;
-  FInstructions := 0;
-  FHalted := False;
-  FYielded := False;
-  FR[29] := Stack;
-  FR[28] := GP;
-  SetPC(Entry);
+  Result := Cardinal(Integer(SmallInt(Word(Op))));
 end;
 
-procedure TPSPCPU.SetFloatResult(Value: Single);
+function UImm(Op: Cardinal): Cardinal; inline;
 begin
-  Move(Value, FFPR[0], 4);
+  Result := Op and $FFFF;
 end;
 
-procedure TPSPCPU.SetPC(Value: Cardinal);
+// Targets count from the branch's own address: a branch in the delay slot of
+// a taken one (compilers emit runs of bvt to one label) still reaches its label.
+procedure Branch(C: TPSPCPU; Op: Cardinal; Taken: Boolean); inline;
 begin
-  CheckAlignment(Value, 3);
-  FPC := Value;
-  FNextPC := Add32(Value, 4);
-  FPendingDelay := False;
-  FInDelay := False;
-end;
-
-function TPSPCPU.GetRegister(Index: Integer): Cardinal;
-begin
-  if (Index < 0) or (Index > 31) then
-    raise EArgumentOutOfRangeException.Create('Register');
-  Result := FR[Index];
-end;
-
-procedure TPSPCPU.SetRegister(Index: Integer; Value: Cardinal);
-begin
-  if (Index < 0) or (Index > 31) then
-    raise EArgumentOutOfRangeException.Create('Register');
-  if Index <> 0 then
-    FR[Index] := Value;
-end;
-
-procedure TPSPCPU.CheckAlignment(Value, Mask: Cardinal);
-begin
-  if Value and Mask <> 0 then
-    raise EPSPInstruction.CreateFmt('PSP: unaligned access %.8x at PC %.8x', [Value, FCurrentPC]);
-end;
-
-procedure TPSPCPU.Unsupported(Op: Cardinal);
-begin
-  raise EPSPInstruction.CreateFmt('PSP: unsupported Allegrex opcode %.8x at PC %.8x', [Op, FCurrentPC]);
-end;
-
-procedure TPSPCPU.Branch(Taken: Boolean; Target: Cardinal; Likely: Boolean);
-begin
-  if FInDelay then
-    raise EPSPInstruction.CreateFmt('PSP: branch in delay slot at %.8x is not implemented', [FCurrentPC]);
   if Taken then
-  begin
-    FNextPC := Target;
-    FPendingDelay := True;
-  end
-  else if Likely then
-  begin
-    FPC := FNextPC;
-    FNextPC := Add32(FNextPC, 4);
-  end
-  else
-    FPendingDelay := True;
+    C.Ctx.NPC := C.CurPC + 4 + (SImm(Op) shl 2);
 end;
 
-procedure TPSPCPU.Special(Op: Cardinal);
-var
-  Product: Int64;
-  UProduct: UInt64;
+procedure BranchLikely(C: TPSPCPU; Op: Cardinal; Taken: Boolean); inline;
 begin
-  var S := Integer((Op shr 21) and 31);
-  var T := Integer((Op shr 16) and 31);
-  var D := Integer((Op shr 11) and 31);
-  var Shift := Integer((Op shr 6) and 31);
-  var A := FR[S];
-  var B := FR[T];
-  case Op and 63 of
-    0:
-      SetRegister(D, B shl Shift);
+  if Taken then
+    C.Ctx.NPC := C.CurPC + 4 + (SImm(Op) shl 2)
+  else
+  begin
+    // Not taken: the delay slot is nullified.
+    C.Ctx.PC := C.Ctx.NPC;
+    C.Ctx.NPC := C.Ctx.NPC + 4;
+  end;
+end;
+
+{ Generic }
+
+procedure OpNop(C: TPSPCPU; Op: Cardinal);
+begin
+end;
+
+procedure OpReserved(C: TPSPCPU; Op: Cardinal);
+begin
+  raise EPSPGuestFault.CreateFmt('PSP: reserved instruction %.8x at %.8x', [Op, C.CurPC]);
+end;
+
+procedure OpDecode(C: TPSPCPU; Op: Cardinal); forward;
+
+{ SPECIAL }
+
+procedure OpSLL(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := C.Ctx.GPR[RT(Op)] shl SA(Op);
+end;
+
+procedure OpSRL(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := C.Ctx.GPR[RT(Op)] shr SA(Op);
+end;
+
+procedure OpROTR(C: TPSPCPU; Op: Cardinal);
+begin
+  var V := C.Ctx.GPR[RT(Op)];
+  var S := SA(Op);
+  if S = 0 then
+    C.Ctx.GPR[RD(Op)] := V
+  else
+    C.Ctx.GPR[RD(Op)] := (V shr S) or (V shl (32 - S));
+end;
+
+procedure OpSRA(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := Sar32(C.Ctx.GPR[RT(Op)], SA(Op));
+end;
+
+procedure OpSLLV(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := C.Ctx.GPR[RT(Op)] shl (C.Ctx.GPR[RS(Op)] and 31);
+end;
+
+procedure OpSRLV(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := C.Ctx.GPR[RT(Op)] shr (C.Ctx.GPR[RS(Op)] and 31);
+end;
+
+procedure OpROTRV(C: TPSPCPU; Op: Cardinal);
+begin
+  var V := C.Ctx.GPR[RT(Op)];
+  var S := C.Ctx.GPR[RS(Op)] and 31;
+  if S = 0 then
+    C.Ctx.GPR[RD(Op)] := V
+  else
+    C.Ctx.GPR[RD(Op)] := (V shr S) or (V shl (32 - S));
+end;
+
+procedure OpSRAV(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := Sar32(C.Ctx.GPR[RT(Op)], C.Ctx.GPR[RS(Op)] and 31);
+end;
+
+// The low two bits of a register jump target are ignored.
+procedure OpJR(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.NPC := C.Ctx.GPR[RS(Op)] and $FFFFFFFC;
+end;
+
+procedure OpJALR(C: TPSPCPU; Op: Cardinal);
+begin
+  var Target := C.Ctx.GPR[RS(Op)] and $FFFFFFFC;
+  var D := RD(Op);
+  if D <> 0 then
+    C.Ctx.GPR[D] := C.Ctx.NPC;
+  C.Ctx.NPC := Target;
+end;
+
+procedure OpMOVZ(C: TPSPCPU; Op: Cardinal);
+begin
+  if C.Ctx.GPR[RT(Op)] = 0 then
+    C.Ctx.GPR[RD(Op)] := C.Ctx.GPR[RS(Op)];
+end;
+
+procedure OpMOVN(C: TPSPCPU; Op: Cardinal);
+begin
+  if C.Ctx.GPR[RT(Op)] <> 0 then
+    C.Ctx.GPR[RD(Op)] := C.Ctx.GPR[RS(Op)];
+end;
+
+procedure OpSYSCALL(C: TPSPCPU; Op: Cardinal);
+begin
+  // The exception return breaks a pending ll/sc.
+  C.Ctx.LLBit := 0;
+  if Assigned(C.FOnSyscall) then
+    C.FOnSyscall(C, (Op shr 6) and $FFFFF)
+  else
+    raise EPSPGuestFault.CreateFmt('PSP: syscall %.5x without a kernel', [(Op shr 6) and $FFFFF]);
+  C.Ctx.GPR[0] := 0;
+end;
+
+procedure OpBREAK(C: TPSPCPU; Op: Cardinal);
+begin
+  if Assigned(C.FOnBreak) then
+    C.FOnBreak(C, (Op shr 6) and $FFFFF)
+  else
+    raise EPSPGuestFault.CreateFmt('PSP: break %.5x at %.8x', [(Op shr 6) and $FFFFF, C.CurPC]);
+end;
+
+procedure OpMFHI(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := C.Ctx.HI;
+end;
+
+procedure OpMTHI(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.HI := C.Ctx.GPR[RS(Op)];
+end;
+
+procedure OpMFLO(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := C.Ctx.LO;
+end;
+
+procedure OpMTLO(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.LO := C.Ctx.GPR[RS(Op)];
+end;
+
+function LeadingZeros(V: Cardinal): Cardinal;
+{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+asm
+  BSR EAX, ECX
+  JNZ @Found
+  MOV EAX, 63
+@Found:
+  XOR EAX, 31
+end;
+{$ELSEIF Defined(CPUX86)}
+asm
+  BSR EAX, EAX
+  JNZ @Found
+  MOV EAX, 63
+@Found:
+  XOR EAX, 31
+end;
+{$ELSE}
+begin
+  if V = 0 then
+    Exit(32);
+  Result := 31;
+  if V >= $10000 then
+  begin
+    V := V shr 16;
+    Dec(Result, 16);
+  end;
+  if V >= $100 then
+  begin
+    V := V shr 8;
+    Dec(Result, 8);
+  end;
+  if V >= $10 then
+  begin
+    V := V shr 4;
+    Dec(Result, 4);
+  end;
+  if V >= 4 then
+  begin
+    V := V shr 2;
+    Dec(Result, 2);
+  end;
+  if V >= 2 then
+    Dec(Result);
+end;
+{$ENDIF}
+
+procedure OpCLZ(C: TPSPCPU; Op: Cardinal);
+begin
+  var V := C.Ctx.GPR[RS(Op)];
+  if (V and $80000000) <> 0 then
+    C.Ctx.GPR[RD(Op)] := 0
+  else
+    C.Ctx.GPR[RD(Op)] := LeadingZeros(V);
+end;
+
+procedure OpCLO(C: TPSPCPU; Op: Cardinal);
+begin
+  var V := C.Ctx.GPR[RS(Op)];
+  var N: Cardinal := 0;
+  while (N < 32) and ((V and ($80000000 shr N)) <> 0) do
+    Inc(N);
+  C.Ctx.GPR[RD(Op)] := N;
+end;
+
+procedure OpMULT(C: TPSPCPU; Op: Cardinal);
+begin
+  var R := Int64(Integer(C.Ctx.GPR[RS(Op)])) * Int64(Integer(C.Ctx.GPR[RT(Op)]));
+  C.Ctx.LO := Cardinal(R);
+  C.Ctx.HI := Cardinal(UInt64(R) shr 32);
+end;
+
+procedure OpMULTU(C: TPSPCPU; Op: Cardinal);
+begin
+  var R := UInt64(C.Ctx.GPR[RS(Op)]) * UInt64(C.Ctx.GPR[RT(Op)]);
+  C.Ctx.LO := Cardinal(R);
+  C.Ctx.HI := Cardinal(R shr 32);
+end;
+
+procedure OpDIV(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := Integer(C.Ctx.GPR[RS(Op)]);
+  var B := Integer(C.Ctx.GPR[RT(Op)]);
+  if B = 0 then
+  begin
+    C.Ctx.HI := Cardinal(A);
+    if A < 0 then
+      C.Ctx.LO := 1
+    else
+      C.Ctx.LO := $FFFFFFFF;
+  end
+  else if (A = Integer($80000000)) and (B = -1) then
+  begin
+    C.Ctx.LO := $80000000;
+    C.Ctx.HI := 0;
+  end
+  else
+  begin
+    C.Ctx.LO := Cardinal(A div B);
+    C.Ctx.HI := Cardinal(A mod B);
+  end;
+end;
+
+procedure OpDIVU(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := C.Ctx.GPR[RS(Op)];
+  var B := C.Ctx.GPR[RT(Op)];
+  if B = 0 then
+  begin
+    C.Ctx.HI := A;
+    if A <= $FFFF then
+      C.Ctx.LO := $FFFF
+    else
+      C.Ctx.LO := $FFFFFFFF;
+  end
+  else
+  begin
+    C.Ctx.LO := A div B;
+    C.Ctx.HI := A mod B;
+  end;
+end;
+
+procedure OpMADD(C: TPSPCPU; Op: Cardinal);
+begin
+  var Acc := Int64((UInt64(C.Ctx.HI) shl 32) or C.Ctx.LO);
+  Acc := Acc + Int64(Integer(C.Ctx.GPR[RS(Op)])) * Int64(Integer(C.Ctx.GPR[RT(Op)]));
+  C.Ctx.LO := Cardinal(Acc);
+  C.Ctx.HI := Cardinal(UInt64(Acc) shr 32);
+end;
+
+procedure OpMADDU(C: TPSPCPU; Op: Cardinal);
+begin
+  var Acc := (UInt64(C.Ctx.HI) shl 32) or C.Ctx.LO;
+  Acc := Acc + UInt64(C.Ctx.GPR[RS(Op)]) * UInt64(C.Ctx.GPR[RT(Op)]);
+  C.Ctx.LO := Cardinal(Acc);
+  C.Ctx.HI := Cardinal(Acc shr 32);
+end;
+
+procedure OpMSUB(C: TPSPCPU; Op: Cardinal);
+begin
+  var Acc := Int64((UInt64(C.Ctx.HI) shl 32) or C.Ctx.LO);
+  Acc := Acc - Int64(Integer(C.Ctx.GPR[RS(Op)])) * Int64(Integer(C.Ctx.GPR[RT(Op)]));
+  C.Ctx.LO := Cardinal(Acc);
+  C.Ctx.HI := Cardinal(UInt64(Acc) shr 32);
+end;
+
+procedure OpMSUBU(C: TPSPCPU; Op: Cardinal);
+begin
+  var Acc := (UInt64(C.Ctx.HI) shl 32) or C.Ctx.LO;
+  Acc := Acc - UInt64(C.Ctx.GPR[RS(Op)]) * UInt64(C.Ctx.GPR[RT(Op)]);
+  C.Ctx.LO := Cardinal(Acc);
+  C.Ctx.HI := Cardinal(Acc shr 32);
+end;
+
+procedure OpADDU(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := C.Ctx.GPR[RS(Op)] + C.Ctx.GPR[RT(Op)];
+end;
+
+procedure OpSUBU(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := C.Ctx.GPR[RS(Op)] - C.Ctx.GPR[RT(Op)];
+end;
+
+procedure OpAND(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := C.Ctx.GPR[RS(Op)] and C.Ctx.GPR[RT(Op)];
+end;
+
+procedure OpOR(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := C.Ctx.GPR[RS(Op)] or C.Ctx.GPR[RT(Op)];
+end;
+
+procedure OpXOR(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := C.Ctx.GPR[RS(Op)] xor C.Ctx.GPR[RT(Op)];
+end;
+
+procedure OpNOR(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := not (C.Ctx.GPR[RS(Op)] or C.Ctx.GPR[RT(Op)]);
+end;
+
+procedure OpSLT(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := Ord(Integer(C.Ctx.GPR[RS(Op)]) < Integer(C.Ctx.GPR[RT(Op)]));
+end;
+
+procedure OpSLTU(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := Ord(C.Ctx.GPR[RS(Op)] < C.Ctx.GPR[RT(Op)]);
+end;
+
+procedure OpMAX(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := Integer(C.Ctx.GPR[RS(Op)]);
+  var B := Integer(C.Ctx.GPR[RT(Op)]);
+  if A > B then
+    C.Ctx.GPR[RD(Op)] := Cardinal(A)
+  else
+    C.Ctx.GPR[RD(Op)] := Cardinal(B);
+end;
+
+procedure OpMIN(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := Integer(C.Ctx.GPR[RS(Op)]);
+  var B := Integer(C.Ctx.GPR[RT(Op)]);
+  if A < B then
+    C.Ctx.GPR[RD(Op)] := Cardinal(A)
+  else
+    C.Ctx.GPR[RD(Op)] := Cardinal(B);
+end;
+
+{ REGIMM }
+
+procedure OpBLTZ(C: TPSPCPU; Op: Cardinal);
+begin
+  Branch(C, Op, Integer(C.Ctx.GPR[RS(Op)]) < 0);
+end;
+
+procedure OpBGEZ(C: TPSPCPU; Op: Cardinal);
+begin
+  Branch(C, Op, Integer(C.Ctx.GPR[RS(Op)]) >= 0);
+end;
+
+procedure OpBLTZL(C: TPSPCPU; Op: Cardinal);
+begin
+  BranchLikely(C, Op, Integer(C.Ctx.GPR[RS(Op)]) < 0);
+end;
+
+procedure OpBGEZL(C: TPSPCPU; Op: Cardinal);
+begin
+  BranchLikely(C, Op, Integer(C.Ctx.GPR[RS(Op)]) >= 0);
+end;
+
+procedure OpBLTZAL(C: TPSPCPU; Op: Cardinal);
+begin
+  var Taken := Integer(C.Ctx.GPR[RS(Op)]) < 0;
+  C.Ctx.GPR[31] := C.Ctx.NPC;
+  Branch(C, Op, Taken);
+end;
+
+procedure OpBGEZAL(C: TPSPCPU; Op: Cardinal);
+begin
+  var Taken := Integer(C.Ctx.GPR[RS(Op)]) >= 0;
+  C.Ctx.GPR[31] := C.Ctx.NPC;
+  Branch(C, Op, Taken);
+end;
+
+procedure OpBLTZALL(C: TPSPCPU; Op: Cardinal);
+begin
+  var Taken := Integer(C.Ctx.GPR[RS(Op)]) < 0;
+  C.Ctx.GPR[31] := C.Ctx.NPC;
+  BranchLikely(C, Op, Taken);
+end;
+
+procedure OpBGEZALL(C: TPSPCPU; Op: Cardinal);
+begin
+  var Taken := Integer(C.Ctx.GPR[RS(Op)]) >= 0;
+  C.Ctx.GPR[31] := C.Ctx.NPC;
+  BranchLikely(C, Op, Taken);
+end;
+
+{ Primary }
+
+procedure OpJ(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.NPC := ((C.CurPC + 4) and $F0000000) or ((Op and $03FFFFFF) shl 2);
+end;
+
+procedure OpJAL(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[31] := C.Ctx.NPC;
+  C.Ctx.NPC := ((C.CurPC + 4) and $F0000000) or ((Op and $03FFFFFF) shl 2);
+end;
+
+procedure OpBEQ(C: TPSPCPU; Op: Cardinal);
+begin
+  Branch(C, Op, C.Ctx.GPR[RS(Op)] = C.Ctx.GPR[RT(Op)]);
+end;
+
+procedure OpB(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.NPC := C.CurPC + 4 + (SImm(Op) shl 2);
+end;
+
+procedure OpBNE(C: TPSPCPU; Op: Cardinal);
+begin
+  Branch(C, Op, C.Ctx.GPR[RS(Op)] <> C.Ctx.GPR[RT(Op)]);
+end;
+
+procedure OpBLEZ(C: TPSPCPU; Op: Cardinal);
+begin
+  Branch(C, Op, Integer(C.Ctx.GPR[RS(Op)]) <= 0);
+end;
+
+procedure OpBGTZ(C: TPSPCPU; Op: Cardinal);
+begin
+  Branch(C, Op, Integer(C.Ctx.GPR[RS(Op)]) > 0);
+end;
+
+procedure OpBEQL(C: TPSPCPU; Op: Cardinal);
+begin
+  BranchLikely(C, Op, C.Ctx.GPR[RS(Op)] = C.Ctx.GPR[RT(Op)]);
+end;
+
+procedure OpBNEL(C: TPSPCPU; Op: Cardinal);
+begin
+  BranchLikely(C, Op, C.Ctx.GPR[RS(Op)] <> C.Ctx.GPR[RT(Op)]);
+end;
+
+procedure OpBLEZL(C: TPSPCPU; Op: Cardinal);
+begin
+  BranchLikely(C, Op, Integer(C.Ctx.GPR[RS(Op)]) <= 0);
+end;
+
+procedure OpBGTZL(C: TPSPCPU; Op: Cardinal);
+begin
+  BranchLikely(C, Op, Integer(C.Ctx.GPR[RS(Op)]) > 0);
+end;
+
+procedure OpADDIU(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := C.Ctx.GPR[RS(Op)] + SImm(Op);
+end;
+
+procedure OpSLTI(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := Ord(Integer(C.Ctx.GPR[RS(Op)]) < Integer(SImm(Op)));
+end;
+
+procedure OpSLTIU(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := Ord(C.Ctx.GPR[RS(Op)] < SImm(Op));
+end;
+
+procedure OpANDI(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := C.Ctx.GPR[RS(Op)] and UImm(Op);
+end;
+
+procedure OpORI(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := C.Ctx.GPR[RS(Op)] or UImm(Op);
+end;
+
+procedure OpXORI(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := C.Ctx.GPR[RS(Op)] xor UImm(Op);
+end;
+
+procedure OpLUI(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := Op shl 16;
+end;
+
+procedure OpLB(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := SignExtend8(C.Memory.Read8(C.Ctx.GPR[RS(Op)] + SImm(Op)));
+end;
+
+procedure OpLH(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := SignExtend16(C.Memory.Read16(C.Ctx.GPR[RS(Op)] + SImm(Op)));
+end;
+
+procedure OpLW(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := C.Memory.Read32(C.Ctx.GPR[RS(Op)] + SImm(Op));
+end;
+
+procedure OpLBU(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := C.Memory.Read8(C.Ctx.GPR[RS(Op)] + SImm(Op));
+end;
+
+procedure OpLHU(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := C.Memory.Read16(C.Ctx.GPR[RS(Op)] + SImm(Op));
+end;
+
+procedure OpLWL(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := C.Ctx.GPR[RS(Op)] + SImm(Op);
+  var Shift := (A and 3) * 8;
+  var W := C.Memory.Read32(A and not Cardinal(3));
+  var T := RT(Op);
+  C.Ctx.GPR[T] := (C.Ctx.GPR[T] and ($00FFFFFF shr Shift)) or (W shl (24 - Shift));
+end;
+
+procedure OpLWR(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := C.Ctx.GPR[RS(Op)] + SImm(Op);
+  var Shift := (A and 3) * 8;
+  var W := C.Memory.Read32(A and not Cardinal(3));
+  var T := RT(Op);
+  C.Ctx.GPR[T] := (C.Ctx.GPR[T] and not ($FFFFFFFF shr Shift)) or (W shr Shift);
+end;
+
+procedure OpSB(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Memory.Write8(C.Ctx.GPR[RS(Op)] + SImm(Op), C.Ctx.GPR[RT(Op)]);
+end;
+
+procedure OpSH(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Memory.Write16(C.Ctx.GPR[RS(Op)] + SImm(Op), C.Ctx.GPR[RT(Op)]);
+end;
+
+procedure OpSW(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Memory.Write32(C.Ctx.GPR[RS(Op)] + SImm(Op), C.Ctx.GPR[RT(Op)]);
+end;
+
+procedure OpSWL(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := C.Ctx.GPR[RS(Op)] + SImm(Op);
+  var Shift := (A and 3) * 8;
+  var Aligned := A and not Cardinal(3);
+  var W := C.Memory.Read32(Aligned);
+  C.Memory.Write32(Aligned, (W and not ($FFFFFFFF shr (24 - Shift))) or (C.Ctx.GPR[RT(Op)] shr (24 - Shift)));
+end;
+
+procedure OpSWR(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := C.Ctx.GPR[RS(Op)] + SImm(Op);
+  var Shift := (A and 3) * 8;
+  var Aligned := A and not Cardinal(3);
+  var W := C.Memory.Read32(Aligned);
+  C.Memory.Write32(Aligned, (W and not ($FFFFFFFF shl Shift)) or (C.Ctx.GPR[RT(Op)] shl Shift));
+end;
+
+procedure OpLL(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := C.Memory.Read32(C.Ctx.GPR[RS(Op)] + SImm(Op));
+  C.Ctx.LLBit := 1;
+end;
+
+// A successful sc leaves the link set: only an exception clears it.
+procedure OpSC(C: TPSPCPU; Op: Cardinal);
+begin
+  var T := RT(Op);
+  if C.Ctx.LLBit <> 0 then
+    C.Memory.Write32(C.Ctx.GPR[RS(Op)] + SImm(Op), C.Ctx.GPR[T]);
+  if T <> 0 then
+    C.Ctx.GPR[T] := C.Ctx.LLBit;
+end;
+
+procedure OpLWC1(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.FPR[RT(Op)] := C.Memory.Read32(C.Ctx.GPR[RS(Op)] + SImm(Op));
+end;
+
+procedure OpSWC1(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Memory.Write32(C.Ctx.GPR[RS(Op)] + SImm(Op), C.Ctx.FPR[RT(Op)]);
+end;
+
+{ SPECIAL3 }
+
+procedure OpEXT(C: TPSPCPU; Op: Cardinal);
+begin
+  var Pos := SA(Op);
+  var Size := RD(Op) + 1;
+  var V := C.Ctx.GPR[RS(Op)] shr Pos;
+  if Size < 32 then
+    V := V and ((Cardinal(1) shl Size) - 1);
+  C.Ctx.GPR[RT(Op)] := V;
+end;
+
+procedure OpINS(C: TPSPCPU; Op: Cardinal);
+begin
+  var Lsb := SA(Op);
+  var Msb := RD(Op);
+  if Msb < Lsb then
+    Exit;
+  var Size := Msb - Lsb + 1;
+  var Mask: Cardinal;
+  if Size >= 32 then
+    Mask := $FFFFFFFF
+  else
+    Mask := ((Cardinal(1) shl Size) - 1) shl Lsb;
+  var T := RT(Op);
+  C.Ctx.GPR[T] := (C.Ctx.GPR[T] and not Mask) or ((C.Ctx.GPR[RS(Op)] shl Lsb) and Mask);
+end;
+
+procedure OpWSBH(C: TPSPCPU; Op: Cardinal);
+begin
+  var V := C.Ctx.GPR[RT(Op)];
+  C.Ctx.GPR[RD(Op)] := ((V and $00FF00FF) shl 8) or ((V and $FF00FF00) shr 8);
+end;
+
+procedure OpWSBW(C: TPSPCPU; Op: Cardinal);
+begin
+  var V := C.Ctx.GPR[RT(Op)];
+  C.Ctx.GPR[RD(Op)] := (V shl 24) or ((V and $FF00) shl 8) or ((V shr 8) and $FF00) or (V shr 24);
+end;
+
+procedure OpSEB(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := SignExtend8(C.Ctx.GPR[RT(Op)]);
+end;
+
+procedure OpSEH(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RD(Op)] := SignExtend16(C.Ctx.GPR[RT(Op)]);
+end;
+
+procedure OpBITREV(C: TPSPCPU; Op: Cardinal);
+begin
+  var V := C.Ctx.GPR[RT(Op)];
+  V := ((V shr 1) and $55555555) or ((V and $55555555) shl 1);
+  V := ((V shr 2) and $33333333) or ((V and $33333333) shl 2);
+  V := ((V shr 4) and $0F0F0F0F) or ((V and $0F0F0F0F) shl 4);
+  V := ((V shr 8) and $00FF00FF) or ((V and $00FF00FF) shl 8);
+  C.Ctx.GPR[RD(Op)] := (V shr 16) or (V shl 16);
+end;
+
+{ SPECIAL2 (Allegrex) }
+
+procedure OpMFIC(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := Ord(C.InterruptsEnabled);
+end;
+
+procedure OpMTIC(C: TPSPCPU; Op: Cardinal);
+begin
+  // Only bit 0 is the enable flag.
+  C.InterruptsEnabled := (C.Ctx.GPR[RT(Op)] and 1) <> 0;
+end;
+
+procedure OpHALT(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Stop;
+end;
+
+{ COP0 }
+
+const
+  COP0_STATUS = 12;
+  COP0_EPC = 14;
+  COP0_ERROREPC = 30;
+
+procedure OpMFC0(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := C.COP0[RD(Op)];
+end;
+
+procedure OpMTC0(C: TPSPCPU; Op: Cardinal);
+begin
+  C.COP0[RD(Op)] := C.Ctx.GPR[RT(Op)];
+end;
+
+// eret has no delay slot: ERL returns to ErrorEPC, otherwise EXL to EPC.
+procedure OpERET(C: TPSPCPU; Op: Cardinal);
+begin
+  var S := C.COP0[COP0_STATUS];
+  var Target: Cardinal;
+  if (S and 4) <> 0 then
+  begin
+    Target := C.COP0[COP0_ERROREPC];
+    C.COP0[COP0_STATUS] := S and not Cardinal(4);
+  end
+  else
+  begin
+    Target := C.COP0[COP0_EPC];
+    C.COP0[COP0_STATUS] := S and not Cardinal(2);
+  end;
+  C.Ctx.LLBit := 0;
+  C.Ctx.PC := Target;
+  C.Ctx.NPC := Target + 4;
+end;
+
+{ COP1 }
+
+// The FPU is IEEE single precision with gradual underflow, the four rounding
+// modes of FCR31 and its flags. Each result is first rounded to nearest by the
+// host, then corrected for the guest's mode from the sign of the error, which
+// is computed exactly in double precision. With FCR31.FS set, results that are
+// tiny before rounding become zero; denormal operands are still used.
+
+const
+  FCR31_FS = 1 shl 24;
+  FCR31_WRITABLE = $0181FFFF;
+  FX_I = 1;
+  FX_U = 2;
+  FX_O = 4;
+  FX_Z = 8;
+  FX_V = 16;
+  FPU_NAN = $7FC00000;
+  FLT_MIN_D: Double = 1.1754943508222875E-38;
+
+function FS(Op: Cardinal): Cardinal; inline;
+begin
+  Result := (Op shr 11) and 31;
+end;
+
+function FT(Op: Cardinal): Cardinal; inline;
+begin
+  Result := (Op shr 16) and 31;
+end;
+
+function FD(Op: Cardinal): Cardinal; inline;
+begin
+  Result := (Op shr 6) and 31;
+end;
+
+function F(C: TPSPCPU; Index: Cardinal): Single; inline;
+begin
+  Result := PSingle(@C.Ctx.FPR[Index])^;
+end;
+
+function BitsOf(X: Single): Cardinal; inline;
+begin
+  Result := PCardinal(@X)^;
+end;
+
+function IsNaNBits(X: Cardinal): Boolean; inline;
+begin
+  Result := (X and $7FFFFFFF) > $7F800000;
+end;
+
+function IsInfBits(X: Cardinal): Boolean; inline;
+begin
+  Result := (X and $7FFFFFFF) = $7F800000;
+end;
+
+function IsZeroBits(X: Cardinal): Boolean; inline;
+begin
+  Result := (X and $7FFFFFFF) = 0;
+end;
+
+// A NaN operand comes out quieted, the first one if both are; a signalling one is invalid.
+function NaNOut(A, B: Cardinal; var Flags: Cardinal): Cardinal; inline;
+begin
+  Flags := 0;
+  if IsNaNBits(A) then
+  begin
+    if (A and $400000) = 0 then
+      Flags := FX_V;
+    Result := A or $400000;
+    if IsNaNBits(B) and ((B and $400000) = 0) then
+      Flags := FX_V;
+  end
+  else
+  begin
+    if (B and $400000) = 0 then
+      Flags := FX_V;
+    Result := B or $400000;
+  end;
+end;
+
+procedure FpuDone(C: TPSPCPU; D, Bits, Flags: Cardinal); inline;
+begin
+  C.Ctx.FPR[D] := Bits;
+  C.Ctx.FCR31 := (C.Ctx.FCR31 and not Cardinal($3F000)) or (Flags shl 12) or (Flags shl 2);
+end;
+
+function NextUp(R: Cardinal): Cardinal; inline;
+begin
+  if (R and $80000000) = 0 then
+  begin
+    if R < $7F800000 then
+      Result := R + 1
+    else
+      Result := R;
+  end
+  else if R = $80000000 then
+    Result := 1
+  else
+    Result := R - 1;
+end;
+
+function NextDown(R: Cardinal): Cardinal; inline;
+begin
+  if (R and $80000000) <> 0 then
+  begin
+    if R < $FF800000 then
+      Result := R + 1
+    else
+      Result := R;
+  end
+  else if R = 0 then
+    Result := $80000001
+  else
+    Result := R - 1;
+end;
+
+// R is the nearest single to the exact result; Dir is the sign of exact - R.
+function FpuRound(R: Cardinal; Dir: Integer; Mode: Cardinal): Cardinal; inline;
+begin
+  Result := R;
+  if Dir = 0 then
+    Exit;
+  case Mode of
+    1:
+      if (((R and $80000000) = 0) and (Dir < 0)) or (((R and $80000000) <> 0) and (Dir > 0)) then
+        if (R and $7FFFFFFF) <> 0 then
+          Result := R - 1;
     2:
-      if S = 1 then
-        SetRegister(D, ROR32(B, Shift))
-      else if S = 0 then
-        SetRegister(D, B shr Shift)
-      else
-        Unsupported(Op);
+      if Dir > 0 then
+        Result := NextUp(R);
     3:
-      SetRegister(D, ASR32(B, Shift));
-    4:
-      SetRegister(D, B shl (A and 31));
-    6:
-      if Shift = 1 then
-        SetRegister(D, ROR32(B, A and 31))
-      else if Shift = 0 then
-        SetRegister(D, B shr (A and 31))
-      else
-        Unsupported(Op);
-    7:
-      SetRegister(D, ASR32(B, A and 31));
-    8:
-      Branch(True, A);
-    9:
-      begin
-        SetRegister(D, Add32(FCurrentPC, 8));
-        Branch(True, A);
-      end;
-    10:
-      if B = 0 then
-        SetRegister(D, A);
-    11:
-      if B <> 0 then
-        SetRegister(D, A);
-    12:
-      if Assigned(FOnSyscall) then
-        FOnSyscall(Self, (Op shr 6) and $FFFFF)
-      else
-        raise EPSPInstruction.CreateFmt('PSP: syscall without HLE at %.8x', [FCurrentPC]);
-    13:
-      raise EPSPInstruction.CreateFmt('PSP: guest BREAK at %.8x', [FCurrentPC]);
-    15:
-      ; // SYNC: bus stores complete synchronously.
-      16:
-      SetRegister(D, FHi);
-    17:
-      FHi := A;
-    18:
-      SetRegister(D, FLo);
-    19:
-      FLo := A;
-    22, 23:
-      begin
-        var Value := A;
-        if Op and 63 = 23 then
-          Value := not Value;
-        var Count := 0;
-        while (Count < 32) and (Value and $80000000 = 0) do
-        begin
-          Inc(Count);
-          Value := Value shl 1;
-        end;
-        SetRegister(D, Count);
-      end;
-    24:
-      begin
-        Product := Int64(Integer(A)) * Integer(B);
-        FLo := Cardinal(UInt64(Product) and $FFFFFFFF);
-        FHi := Cardinal(UInt64(Product) shr 32);
-      end;
-    25:
-      begin
-        UProduct := UInt64(A) * B;
-        FLo := Cardinal(UProduct and $FFFFFFFF);
-        FHi := Cardinal(UProduct shr 32);
-      end;
-    26:
-      if B = 0 then
-      begin
-        FHi := A;
-        if Integer(A) < 0 then
-          FLo := 1
-        else
-          FLo := $FFFFFFFF;
-      end
-      else if (A = $80000000) and (B = $FFFFFFFF) then
-      begin
-        FLo := $80000000;
-        FHi := 0;
-      end
-      else
-      begin
-        FLo := Cardinal(Integer(A) div Integer(B));
-        FHi := Cardinal(Integer(A) mod Integer(B));
-      end;
-    27:
-      begin
-        FHi := A;
-        FLo := $FFFFFFFF;
-        if B <> 0 then
-        begin
-          FLo := A div B;
-          FHi := A mod B;
-        end;
-      end;
-    28, 29, 46, 47:
-      begin
-        var Accumulator := (UInt64(FHi) shl 32) or FLo;
-        if Op and 1 = 0 then
-          UProduct := UInt64(Int64(Integer(A)) * Integer(B))
-        else
-          UProduct := UInt64(A) * B;
-        {$Q-}
-        if Op and 63 < 32 then
-          Accumulator := Accumulator + UProduct
-        else
-          Accumulator := Accumulator - UProduct;
-        {$IFDEF PSP_RESTORE_Q}{$Q+}{$ENDIF}
-        FHi := Cardinal(Accumulator shr 32);
-        FLo := Cardinal(Accumulator and $FFFFFFFF);
-      end;
-    32, 33:
-      SetRegister(D, Add32(A, B));
-    34, 35:
-      SetRegister(D, Sub32(A, B));
-    36:
-      SetRegister(D, A and B);
-    37:
-      SetRegister(D, A or B);
-    38:
-      SetRegister(D, A xor B);
-    39:
-      SetRegister(D, not (A or B));
-    42:
-      SetRegister(D, Ord(Integer(A) < Integer(B)));
-    43:
-      SetRegister(D, Ord(A < B));
-    44:
-      if Integer(A) > Integer(B) then
-        SetRegister(D, A)
-      else
-        SetRegister(D, B);
-    45:
-      if Integer(A) < Integer(B) then
-        SetRegister(D, A)
-      else
-        SetRegister(D, B);
-  else
-    Unsupported(Op);
+      if Dir < 0 then
+        Result := NextDown(R);
   end;
 end;
 
-procedure TPSPCPU.Special3(Op: Cardinal);
+function SignOf(D: Double): Integer; inline;
 begin
-  var S := Integer((Op shr 21) and 31);
-  var T := Integer((Op shr 16) and 31);
-  var D := Integer((Op shr 11) and 31);
-  var Shift := Integer((Op shr 6) and 31);
-  case Op and 63 of
-    0:
-      begin
-        if Shift + D + 1 > 32 then
-          Unsupported(Op);
-        var Mask := $FFFFFFFF shr (31 - D);
-        SetRegister(T, (FR[S] shr Shift) and Mask);
-      end;
-    4:
-      begin
-        if D < Shift then
-          Unsupported(Op);
-        var Mask := ($FFFFFFFF shr (31 - (D - Shift))) shl Shift;
-        SetRegister(T, (FR[T] and not Mask) or ((FR[S] shl Shift) and Mask));
-      end;
-    24:
-      ; // Allegrex SPECIAL3 nop encoding.
-      32:
-      case Shift of
-        2:
-          SetRegister(D, ((FR[T] and $00FF00FF) shl 8) or ((FR[T] and $FF00FF00) shr 8));
-        3:
-          SetRegister(D, (FR[T] shl 24) or ((FR[T] and $FF00) shl 8) or
-            ((FR[T] shr 8) and $FF00) or (FR[T] shr 24));
-        16:
-          SetRegister(D, Cardinal(Integer(ShortInt(FR[T] and $FF))));
-        20:
-          begin
-            var V := FR[T];
-            var Reversed: Cardinal := 0;
-            for var I := 0 to 31 do
-            begin
-              Reversed := (Reversed shl 1) or (V and 1);
-              V := V shr 1;
-            end;
-            SetRegister(D, Reversed);
-          end;
-        24:
-          SetRegister(D, Signed16(FR[T]));
-      else
-        Unsupported(Op);
-      end;
+  if D > 0 then
+    Result := 1
+  else if D < 0 then
+    Result := -1
   else
-    Unsupported(Op);
+    Result := 0;
+end;
+
+// Flags for a non-flushed result; Nearest is the result before the mode's correction.
+function ResultFlags(Nearest, R: Cardinal; Dir: Integer; Tiny: Boolean): Cardinal; inline;
+begin
+  Result := 0;
+  if Dir <> 0 then
+  begin
+    Result := FX_I;
+    if Tiny then
+      Result := Result or FX_U;
   end;
+  if IsInfBits(Nearest) or IsInfBits(R) then
+    Result := Result or FX_O or FX_I;
 end;
 
-function TPSPCPU.Address(Op: Cardinal): Cardinal;
+procedure FpuAdd(C: TPSPCPU; Op: Cardinal; NegB: Cardinal);
 begin
-  Result := Add32(FR[(Op shr 21) and 31], Signed16(Op));
+  var A := C.Ctx.FPR[FS(Op)];
+  var B := C.Ctx.FPR[FT(Op)];
+  var D := FD(Op);
+  if IsNaNBits(A) or IsNaNBits(B) then
+  begin
+    var NF: Cardinal;
+    var N := NaNOut(A, B, NF);
+    FpuDone(C, D, N, NF);
+    Exit;
+  end;
+  B := B xor NegB;
+  if IsInfBits(A) or IsInfBits(B) then
+  begin
+    if IsInfBits(A) and IsInfBits(B) and (((A xor B) and $80000000) <> 0) then
+      FpuDone(C, D, FPU_NAN, FX_V)
+    else if IsInfBits(A) then
+      FpuDone(C, D, A, 0)
+    else
+      FpuDone(C, D, B, 0);
+    Exit;
+  end;
+  var Mode := C.Ctx.FCR31 and 3;
+  var Flush := (C.Ctx.FCR31 and FCR31_FS) <> 0;
+  if IsZeroBits(A) or IsZeroBits(B) then
+  begin
+    // A zero operand passes the other one through untouched.
+    if IsZeroBits(A) and IsZeroBits(B) then
+    begin
+      if (A xor B) and $80000000 = 0 then
+        FpuDone(C, D, A, 0)
+      else if Mode = 3 then
+        FpuDone(C, D, $80000000, 0)
+      else
+        FpuDone(C, D, 0, 0);
+    end
+    else if IsZeroBits(A) then
+      FpuDone(C, D, B, 0)
+    else
+      FpuDone(C, D, A, 0);
+    Exit;
+  end;
+  var X: Single := PSingle(@A)^;
+  var Y: Single := PSingle(@B)^;
+  var RS: Single := X + Y;
+  var R := BitsOf(RS);
+  var S: Double := Double(X) + Double(Y);
+  if (R and $7FFFFFFF) = 0 then
+  begin
+    if Mode = 3 then
+      FpuDone(C, D, $80000000, 0)
+    else
+      FpuDone(C, D, 0, 0);
+    Exit;
+  end;
+  var Gap := Integer(A and $7F800000) - Integer(B and $7F800000);
+  var E := R and $7F800000;
+  if (Mode = 0) and (E <> 0) and (E <> $7F800000) then
+  begin
+    FpuDone(C, D, R, Ord((S <> Double(RS)) or (Abs(Gap) >= (30 shl 23))));
+    Exit;
+  end;
+  var Dir := SignOf(S - Double(RS));
+  // With at most 29 exponent bits between operands the double sum is exact.
+  // Otherwise the single is the larger operand and the error has the smaller's sign.
+  if Dir = 0 then
+    if Gap >= (30 shl 23) then
+      Dir := 1 - Integer(B shr 31) * 2
+    else if Gap <= -(30 shl 23) then
+      Dir := 1 - Integer(A shr 31) * 2;
+  var Tiny := ((R and $7F800000) = 0) and ((R and $7FFFFF) <> 0);
+  if Tiny and Flush then
+  begin
+    FpuDone(C, D, R and $80000000, FX_U or FX_I);
+    Exit;
+  end;
+  var RN := R;
+  R := FpuRound(R, Dir, Mode);
+  FpuDone(C, D, R, ResultFlags(RN, R, Dir, Tiny));
 end;
 
-procedure TPSPCPU.Cop1(Op: Cardinal);
+procedure OpADDS(C: TPSPCPU; Op: Cardinal);
 begin
-  var Fmt := (Op shr 21) and 31;
-  var T := (Op shr 16) and 31;
-  var S := (Op shr 11) and 31;
-  var D := (Op shr 6) and 31;
-  case Fmt of
-    0:
-      SetRegister(T, FFPR[S]);
-    2:
-      case S of
+  FpuAdd(C, Op, 0);
+end;
+
+procedure OpSUBS(C: TPSPCPU; Op: Cardinal);
+begin
+  FpuAdd(C, Op, $80000000);
+end;
+
+procedure OpMULS(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := C.Ctx.FPR[FS(Op)];
+  var B := C.Ctx.FPR[FT(Op)];
+  var D := FD(Op);
+  var Sign := (A xor B) and $80000000;
+  if IsNaNBits(A) or IsNaNBits(B) then
+  begin
+    var NF: Cardinal;
+    var N := NaNOut(A, B, NF);
+    FpuDone(C, D, N, NF);
+    Exit;
+  end;
+  if IsInfBits(A) or IsInfBits(B) then
+  begin
+    if IsZeroBits(A) or IsZeroBits(B) then
+      FpuDone(C, D, FPU_NAN, FX_V)
+    else
+      FpuDone(C, D, Sign or $7F800000, 0);
+    Exit;
+  end;
+  if IsZeroBits(A) or IsZeroBits(B) then
+  begin
+    FpuDone(C, D, Sign, 0);
+    Exit;
+  end;
+  var X: Single := PSingle(@A)^;
+  var Y: Single := PSingle(@B)^;
+  var P: Double := Double(X) * Double(Y);
+  var RS: Single := P;
+  var R := BitsOf(RS);
+  var E := R and $7F800000;
+  if (C.Ctx.FCR31 and 3 = 0) and (E > $00800000) and (E <> $7F800000) then
+  begin
+    FpuDone(C, D, R, Ord(P <> Double(RS)));
+    Exit;
+  end;
+  var Dir := SignOf(P - Double(RS));
+  var Tiny := Abs(P) < FLT_MIN_D;
+  if Tiny and ((C.Ctx.FCR31 and FCR31_FS) <> 0) then
+  begin
+    FpuDone(C, D, Sign, FX_U or FX_I);
+    Exit;
+  end;
+  var RN := R;
+  R := FpuRound(R, Dir, C.Ctx.FCR31 and 3);
+  FpuDone(C, D, R, ResultFlags(RN, R, Dir, Tiny));
+end;
+
+procedure OpDIVS(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := C.Ctx.FPR[FS(Op)];
+  var B := C.Ctx.FPR[FT(Op)];
+  var D := FD(Op);
+  var Sign := (A xor B) and $80000000;
+  if IsNaNBits(A) or IsNaNBits(B) then
+  begin
+    var NF: Cardinal;
+    var N := NaNOut(A, B, NF);
+    FpuDone(C, D, N, NF);
+    Exit;
+  end;
+  if IsInfBits(A) then
+  begin
+    if IsInfBits(B) then
+      FpuDone(C, D, FPU_NAN, FX_V)
+    else
+      FpuDone(C, D, Sign or $7F800000, 0);
+    Exit;
+  end;
+  if IsInfBits(B) then
+  begin
+    FpuDone(C, D, Sign, 0);
+    Exit;
+  end;
+  if IsZeroBits(B) then
+  begin
+    if IsZeroBits(A) then
+      FpuDone(C, D, FPU_NAN, FX_V)
+    else
+      FpuDone(C, D, Sign or $7F800000, FX_Z);
+    Exit;
+  end;
+  if IsZeroBits(A) then
+  begin
+    FpuDone(C, D, Sign, 0);
+    Exit;
+  end;
+  var X: Single := PSingle(@A)^;
+  var Y: Single := PSingle(@B)^;
+  var RS: Single := X / Y;
+  var R := BitsOf(RS);
+  var Dir: Integer;
+  if IsInfBits(R) then
+  begin
+    if Sign = 0 then
+      Dir := -1
+    else
+      Dir := 1;
+  end
+  else
+  begin
+    var Diff: Double := Double(X) - Double(RS) * Double(Y);
+    Dir := SignOf(Diff);
+    if Y < 0 then
+      Dir := -Dir;
+  end;
+  var Tiny := Abs(Double(X)) < Abs(Double(Y)) * FLT_MIN_D;
+  if Tiny and ((C.Ctx.FCR31 and FCR31_FS) <> 0) then
+  begin
+    FpuDone(C, D, Sign, FX_U or FX_I);
+    Exit;
+  end;
+  var RN := R;
+  R := FpuRound(R, Dir, C.Ctx.FCR31 and 3);
+  FpuDone(C, D, R, ResultFlags(RN, R, Dir, Tiny));
+end;
+
+procedure OpSQRTS(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := C.Ctx.FPR[FS(Op)];
+  var D := FD(Op);
+  if IsNaNBits(A) then
+  begin
+    var NF: Cardinal;
+    var N := NaNOut(A, A, NF);
+    FpuDone(C, D, N, NF);
+    Exit;
+  end;
+  if IsZeroBits(A) then
+  begin
+    FpuDone(C, D, A, 0);
+    Exit;
+  end;
+  if (A and $80000000) <> 0 then
+  begin
+    FpuDone(C, D, FPU_NAN, FX_V);
+    Exit;
+  end;
+  if A = $7F800000 then
+  begin
+    FpuDone(C, D, A, 0);
+    Exit;
+  end;
+  var X: Single := PSingle(@A)^;
+  var RS: Single := Sqrt(Double(X));
+  var Dir := SignOf(Double(X) - Double(RS) * Double(RS));
+  var R := FpuRound(BitsOf(RS), Dir, C.Ctx.FCR31 and 3);
+  FpuDone(C, D, R, ResultFlags(R, R, Dir, False));
+end;
+
+procedure OpABSS(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.FPR[FD(Op)] := C.Ctx.FPR[FS(Op)] and $7FFFFFFF;
+end;
+
+procedure OpMOVS(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.FPR[FD(Op)] := C.Ctx.FPR[FS(Op)];
+end;
+
+procedure OpNEGS(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.FPR[FD(Op)] := C.Ctx.FPR[FS(Op)] xor $80000000;
+end;
+
+// Float to word with the given rounding: 0 nearest even, 1 toward zero,
+// 2 toward +inf, 3 toward -inf. NaN and positive overflow give 7FFFFFFF,
+// negative overflow 80000000, both invalid.
+function FloatToWord(X: Cardinal; Mode: Cardinal; var Flags: Cardinal): Cardinal;
+begin
+  Flags := 0;
+  if IsNaNBits(X) then
+  begin
+    Flags := FX_V;
+    Exit($7FFFFFFF);
+  end;
+  var Neg := (X and $80000000) <> 0;
+  var E := Integer((X shr 23) and $FF);
+  var M := UInt64(X and $7FFFFF);
+  if E <> 0 then
+    M := M or $800000
+  else
+    E := 1;
+  if M = 0 then
+    Exit(0);
+  // Value = M * 2^(E - 150).
+  var K := E - 150;
+  var Mag: UInt64;
+  if K >= 8 then
+    Mag := UInt64(1) shl 32
+  else if K >= 0 then
+    Mag := M shl K
+  else
+  begin
+    var Rem: UInt64;
+    var Half: UInt64;
+    if -K >= 40 then
+    begin
+      Mag := 0;
+      Rem := M;
+      Half := UInt64(1) shl 39;
+    end
+    else
+    begin
+      Mag := M shr (-K);
+      Rem := M and ((UInt64(1) shl (-K)) - 1);
+      Half := UInt64(1) shl (-K - 1);
+    end;
+    if Rem <> 0 then
+    begin
+      Flags := FX_I;
+      case Mode of
         0:
-          SetRegister(T, $3351);
-        31:
-          SetRegister(T, FFCR31);
+          if (Rem > Half) or ((Rem = Half) and ((Mag and 1) <> 0)) then
+            Inc(Mag);
+        2:
+          if not Neg then
+            Inc(Mag);
+        3:
+          if Neg then
+            Inc(Mag);
+      end;
+    end;
+  end;
+  if Neg then
+  begin
+    if Mag > UInt64($80000000) then
+    begin
+      Flags := FX_V;
+      Exit($80000000);
+    end;
+    Result := Cardinal(-Int64(Mag));
+  end
+  else
+  begin
+    if Mag > UInt64($7FFFFFFF) then
+    begin
+      Flags := FX_V;
+      Exit($7FFFFFFF);
+    end;
+    Result := Cardinal(Mag);
+  end;
+end;
+
+procedure DoToWord(C: TPSPCPU; Op, Mode: Cardinal); inline;
+begin
+  var Flags: Cardinal;
+  var R := FloatToWord(C.Ctx.FPR[FS(Op)], Mode, Flags);
+  FpuDone(C, FD(Op), R, Flags);
+end;
+
+procedure OpROUNDWS(C: TPSPCPU; Op: Cardinal);
+begin
+  DoToWord(C, Op, 0);
+end;
+
+procedure OpTRUNCWS(C: TPSPCPU; Op: Cardinal);
+begin
+  DoToWord(C, Op, 1);
+end;
+
+procedure OpCEILWS(C: TPSPCPU; Op: Cardinal);
+begin
+  DoToWord(C, Op, 2);
+end;
+
+procedure OpFLOORWS(C: TPSPCPU; Op: Cardinal);
+begin
+  DoToWord(C, Op, 3);
+end;
+
+procedure OpCVTWS(C: TPSPCPU; Op: Cardinal);
+begin
+  DoToWord(C, Op, C.Ctx.FCR31 and 3);
+end;
+
+procedure OpCVTSW(C: TPSPCPU; Op: Cardinal);
+begin
+  var I := Integer(C.Ctx.FPR[FS(Op)]);
+  var RS: Single := I;
+  var Dir := SignOf(Double(I) - Double(RS));
+  var R := FpuRound(BitsOf(RS), Dir, C.Ctx.FCR31 and 3);
+  var Flags: Cardinal := 0;
+  if Dir <> 0 then
+    Flags := FX_I;
+  FpuDone(C, FD(Op), R, Flags);
+end;
+
+procedure OpCCOND(C: TPSPCPU; Op: Cardinal);
+begin
+  var A := C.Ctx.FPR[FS(Op)];
+  var B := C.Ctx.FPR[FT(Op)];
+  var Cond := Op and 15;
+  var R: Boolean;
+  var Flags: Cardinal := 0;
+  if IsNaNBits(A) or IsNaNBits(B) then
+  begin
+    R := (Cond and 1) <> 0;
+    if (Cond and 8) <> 0 then
+      Flags := FX_V;
+  end
+  else
+  begin
+    var X: Single := PSingle(@A)^;
+    var Y: Single := PSingle(@B)^;
+    R := (((Cond and 2) <> 0) and (X = Y)) or (((Cond and 4) <> 0) and (X < Y));
+  end;
+  // A branch right behind the compare still sees the old condition.
+  C.FCmpPC := C.CurPC;
+  C.FCmpOld := C.Ctx.FCR31 and FCR31_C;
+  var V := C.Ctx.FCR31 and not Cardinal($3F000);
+  if R then
+    V := V or FCR31_C
+  else
+    V := V and not FCR31_C;
+  C.Ctx.FCR31 := V or (Flags shl 12) or (Flags shl 2);
+end;
+
+function FpuCond(C: TPSPCPU): Boolean; inline;
+begin
+  if C.CurPC = C.FCmpPC + 4 then
+    Result := C.FCmpOld <> 0
+  else
+    Result := (C.Ctx.FCR31 and FCR31_C) <> 0;
+end;
+
+procedure OpMFC1(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.GPR[RT(Op)] := C.Ctx.FPR[FS(Op)];
+end;
+
+procedure OpCFC1(C: TPSPCPU; Op: Cardinal);
+begin
+  case FS(Op) of
+    0:
+      C.Ctx.GPR[RT(Op)] := $00003351;
+    31:
+      C.Ctx.GPR[RT(Op)] := C.Ctx.FCR31;
+  else
+    C.Ctx.GPR[RT(Op)] := 0;
+  end;
+end;
+
+procedure OpMTC1(C: TPSPCPU; Op: Cardinal);
+begin
+  C.Ctx.FPR[FS(Op)] := C.Ctx.GPR[RT(Op)];
+end;
+
+procedure OpCTC1(C: TPSPCPU; Op: Cardinal);
+begin
+  if FS(Op) = 31 then
+  begin
+    C.Ctx.FCR31 := C.Ctx.GPR[RT(Op)] and FCR31_WRITABLE;
+    C.FCmpPC := 0;
+  end;
+end;
+
+procedure OpBC1F(C: TPSPCPU; Op: Cardinal);
+begin
+  Branch(C, Op, not FpuCond(C));
+end;
+
+procedure OpBC1T(C: TPSPCPU; Op: Cardinal);
+begin
+  Branch(C, Op, FpuCond(C));
+end;
+
+procedure OpBC1FL(C: TPSPCPU; Op: Cardinal);
+begin
+  BranchLikely(C, Op, not FpuCond(C));
+end;
+
+procedure OpBC1TL(C: TPSPCPU; Op: Cardinal);
+begin
+  BranchLikely(C, Op, FpuCond(C));
+end;
+
+procedure OpCACHE(C: TPSPCPU; Op: Cardinal);
+begin
+end;
+
+{ Decoder }
+
+function DecodeSpecial(Op: Cardinal): TPSPOpHandler;
+begin
+  var D := RD(Op);
+  case Op and $3F of
+    $00:
+      if D = 0 then
+        Result := OpNop
       else
-        SetRegister(T, 0);
-      end;
-    4:
-      FFPR[S] := FR[T];
-    6:
-      if S = 31 then
-        FFCR31 := FR[T] and $0181FFFF;
-    8:
+        Result := OpSLL;
+    $02:
+      if D = 0 then
+        Result := OpNop
+      else if (RS(Op) and 1) <> 0 then
+        Result := OpROTR
+      else
+        Result := OpSRL;
+    $03:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpSRA;
+    $04:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpSLLV;
+    $06:
+      if D = 0 then
+        Result := OpNop
+      else if (SA(Op) and 1) <> 0 then
+        Result := OpROTRV
+      else
+        Result := OpSRLV;
+    $07:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpSRAV;
+    $08:
+      Result := OpJR;
+    $09:
+      Result := OpJALR;
+    $0A:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpMOVZ;
+    $0B:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpMOVN;
+    $0C:
+      Result := OpSYSCALL;
+    $0D:
+      Result := OpBREAK;
+    $0F:
+      Result := OpNop;
+    $10:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpMFHI;
+    $11:
+      Result := OpMTHI;
+    $12:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpMFLO;
+    $13:
+      Result := OpMTLO;
+    $16:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpCLZ;
+    $17:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpCLO;
+    $18:
+      Result := OpMULT;
+    $19:
+      Result := OpMULTU;
+    $1A:
+      Result := OpDIV;
+    $1B:
+      Result := OpDIVU;
+    $1C:
+      Result := OpMADD;
+    $1D:
+      Result := OpMADDU;
+    $20, $21:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpADDU;
+    $22, $23:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpSUBU;
+    $24:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpAND;
+    $25:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpOR;
+    $26:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpXOR;
+    $27:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpNOR;
+    $2A:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpSLT;
+    $2B:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpSLTU;
+    $2C:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpMAX;
+    $2D:
+      if D = 0 then
+        Result := OpNop
+      else
+        Result := OpMIN;
+    $2E:
+      Result := OpMSUB;
+    $2F:
+      Result := OpMSUBU;
+  else
+    Result := OpReserved;
+  end;
+end;
+
+function DecodeRegImm(Op: Cardinal): TPSPOpHandler;
+begin
+  case RT(Op) of
+    $00:
+      Result := OpBLTZ;
+    $01:
+      Result := OpBGEZ;
+    $02:
+      Result := OpBLTZL;
+    $03:
+      Result := OpBGEZL;
+    $10:
+      Result := OpBLTZAL;
+    $11:
+      Result := OpBGEZAL;
+    $12:
+      Result := OpBLTZALL;
+    $13:
+      Result := OpBGEZALL;
+  else
+    Result := OpReserved;
+  end;
+end;
+
+function DecodeSpecial3(Op: Cardinal): TPSPOpHandler;
+begin
+  var Dest := RT(Op);
+  case Op and $3F of
+    $00:
+      if Dest = 0 then
+        Result := OpNop
+      else
+        Result := OpEXT;
+    $04:
+      if Dest = 0 then
+        Result := OpNop
+      else
+        Result := OpINS;
+    $20:
       begin
-        if T > 3 then
-          Unsupported(Op);
-        var Condition := FFCR31 and $800000 <> 0;
-        Branch(Condition = (T and 1 <> 0), Add32(Add32(FCurrentPC, 4), Signed16(Op) shl 2), T and 2 <> 0);
-      end;
-    16, 20:
-      begin
-        var FunctionCode := Op and 63;
-        var A := FFPR[S];
-        var B := FFPR[T];
-        var Rounding := Integer(FFCR31 and 3);
-        if Fmt = 20 then
+        if RD(Op) = 0 then
         begin
-          if FunctionCode <> 32 then
-            Unsupported(Op);
-          var Converted: TSoftFloatResult;
-          if not SFHostReady or not SFQuickConvert(A, 20, 16, Rounding, Converted) then
-            Converted := SFConvert(A, 20, 16, Rounding);
-          FFPR[D] := Cardinal(Converted.Bits);
+          Result := OpNop;
           Exit;
         end;
-        if FunctionCode >= 48 then
+        // The op is the sa field; only some of its bits are decoded.
+        var S := SA(Op);
+        if (S and $10) = 0 then
         begin
-          var Unordered, Equal, Less: Boolean;
-          SFCompare(A, B, 16, Unordered, Equal, Less);
-          var Condition := ((FunctionCode and 1 <> 0) and Unordered) or
-            ((FunctionCode and 2 <> 0) and Equal) or ((FunctionCode and 4 <> 0) and Less);
-          FFCR31 := (FFCR31 and not Cardinal($800000)) or (Cardinal(Ord(Condition)) shl 23);
+          if (S and 1) = 0 then
+            Result := OpWSBH
+          else
+            Result := OpWSBW;
         end
         else
-          case FunctionCode of
-            0..4:
-              begin
-                var Value: TSoftFloatResult;
-                if (Rounding <> 0) or not SFHostReady or not SFQuick(A, B, 16, FunctionCode, Value) then
-                  Value := SFCalculate(A, B, 16, FunctionCode, Rounding);
-                FFPR[D] := Cardinal(Value.Bits);
-                if SFIsNaN(Value.Bits, 16) then
-                  FFPR[D] := $7FC00000;
-                FFCR31 := (FFCR31 and not Cardinal($1F000)) or (Value.Events shl 12) or (Value.Events shl 2);
-                if (FFCR31 and $1000000 <> 0) and SFIsSubnormal(FFPR[D], 16) then
-                  FFPR[D] := FFPR[D] and $80000000;
-              end;
-            5:
-              FFPR[D] := A and $7FFFFFFF;
-            6:
-              FFPR[D] := A;
-            7:
-              FFPR[D] := A xor $80000000;
-            12..15, 36:
-              begin
-                if FunctionCode <> 36 then
-                  Rounding := FunctionCode - 12;
-                if (FFCR31 and $1000000 <> 0) and SFIsSubnormal(A, 16) then
-                  A := A and $80000000;
-                var Value: TSoftFloatResult;
-                if not SFHostReady or not SFQuickConvert(A, 16, 20, Rounding, Value) then
-                  Value := SFConvert(A, 16, 20, Rounding);
-                FFPR[D] := Cardinal(Value.Bits);
-              // Allegrex saturates integer conversion, unlike R4300's indefinite result.
-                if Value.Events and sfInvalid <> 0 then
-                  if SFIsNaN(A, 16) or (A and $80000000 = 0) then
-                    FFPR[D] := $7FFFFFFF
-                  else
-                    FFPR[D] := $80000000;
-              end;
+          case (S shr 2) and 3 of
+            0:
+              Result := OpSEB;
+            2:
+              Result := OpSEH;
           else
-            Unsupported(Op);
+            Result := OpBITREV;
           end;
       end;
+    $18:
+      Result := OpNop;
   else
-    Unsupported(Op);
+    Result := OpReserved;
   end;
 end;
 
-procedure TPSPCPU.Execute(Op: Cardinal);
+function DecodeCOP1(Op: Cardinal): TPSPOpHandler;
 begin
-  {$IFDEF PSP_PROFILE}
-  if PSPProfileCollecting then
-  begin
-    Inc(PSPProfileOpcode[Op shr 26]);
-    if Op shr 26 = 17 then
-      Inc(PSPProfileCOP1[Op and 63]);
-  end;
-  {$ENDIF}
-  var S := Integer((Op shr 21) and 31);
-  var T := Integer((Op shr 16) and 31);
-  var A := FR[S];
-  var B := FR[T];
-  var Imm := Op and $FFFF;
-  var Target := Add32(Add32(FCurrentPC, 4), Signed16(Op) shl 2);
-  case Op shr 26 of
-    0:
-      Special(Op);
-    1:
-      begin
-        if not (T in [0, 1, 2, 3, 16, 17, 18, 19]) then
-          Unsupported(Op);
-        var Taken := Integer(A) < 0;
-        if T and 1 <> 0 then
-          Taken := not Taken;
-        if T and 16 <> 0 then
-          SetRegister(31, Add32(FCurrentPC, 8));
-        Branch(Taken, Target, T and 2 <> 0);
-      end;
-    2, 3:
-      begin
-        if Op shr 26 = 3 then
-          SetRegister(31, Add32(FCurrentPC, 8));
-        Branch(True, (Add32(FCurrentPC, 4) and $F0000000) or ((Op and $03FFFFFF) shl 2));
-      end;
-    4, 20:
-      Branch(A = B, Target, Op shr 26 = 20);
-    5, 21:
-      Branch(A <> B, Target, Op shr 26 = 21);
-    6, 22:
-      Branch(Integer(A) <= 0, Target, Op shr 26 = 22);
-    7, 23:
-      Branch(Integer(A) > 0, Target, Op shr 26 = 23);
-    8, 9:
-      SetRegister(T, Add32(A, Signed16(Op)));
-    10:
-      SetRegister(T, Ord(Integer(A) < Integer(Signed16(Op))));
-    11:
-      SetRegister(T, Ord(A < Signed16(Op)));
-    12:
-      SetRegister(T, A and Imm);
-    13:
-      SetRegister(T, A or Imm);
-    14:
-      SetRegister(T, A xor Imm);
-    15:
-      SetRegister(T, Imm shl 16);
-    17:
-      Cop1(Op);
-    18:
-      case (Op shr 21) and 31 of
-        3:
-          begin
-            var Index := Op and $FF;
-            if Index < 128 then
-              SetRegister(T, FVFPU.Registers[Index])
-            else if Index < 144 then
-              SetRegister(T, FVFPU.Control[Index - 128]);
-          end;
-        7:
-          begin
-            var Index := Op and $FF;
-            if Index < 128 then
-              FVFPU.Registers[Index] := B
-            else if Index < 144 then
-              FVFPU.Control[Index - 128] := B;
-          end;
-        8:
-          begin
-            var Condition := (FVFPU.Control[3] shr ((Op shr 18) and 7)) and 1 <> 0;
-            Branch(Condition = (T and 1 <> 0), Target, T and 2 <> 0);
-          end;
+  case RS(Op) of
+    $00:
+      if RT(Op) = 0 then
+        Result := OpNop
       else
-        Unsupported(Op);
-      end;
-    28:
-      case Op and 63 of
-        36:
-          SetRegister(T, Ord(FInterruptEnabled));
-        38:
-          FInterruptEnabled := B and 1 <> 0;
+        Result := OpMFC1;
+    $02:
+      if RT(Op) = 0 then
+        Result := OpNop
       else
-        Unsupported(Op);
+        Result := OpCFC1;
+    $04:
+      Result := OpMTC1;
+    $06:
+      Result := OpCTC1;
+    $08:
+      case RT(Op) and 3 of
+        0:
+          Result := OpBC1F;
+        1:
+          Result := OpBC1T;
+        2:
+          Result := OpBC1FL;
+      else
+        Result := OpBC1TL;
       end;
-    31:
-      Special3(Op);
-    32:
-      SetRegister(T, Cardinal(Integer(ShortInt(FMemory.Read8(Address(Op))))));
-    33:
-      begin
-        var P := Address(Op);
-        CheckAlignment(P, 1);
-        SetRegister(T, Cardinal(Integer(SmallInt(FMemory.Read16(P)))));
+    $10:
+      case Op and $3F of
+        $00:
+          Result := OpADDS;
+        $01:
+          Result := OpSUBS;
+        $02:
+          Result := OpMULS;
+        $03:
+          Result := OpDIVS;
+        $04:
+          Result := OpSQRTS;
+        $05:
+          Result := OpABSS;
+        $06:
+          Result := OpMOVS;
+        $07:
+          Result := OpNEGS;
+        $0C:
+          Result := OpROUNDWS;
+        $0D:
+          Result := OpTRUNCWS;
+        $0E:
+          Result := OpCEILWS;
+        $0F:
+          Result := OpFLOORWS;
+        $24:
+          Result := OpCVTWS;
+        $30..$3F:
+          Result := OpCCOND;
+      else
+        Result := OpReserved;
       end;
-    34:
-      begin
-        var P := Address(Op);
-        var N := Integer(P and 3);
-        var V := FMemory.Read32(P and $FFFFFFFC);
-        var Mask := $00FFFFFF shr (N * 8);
-        SetRegister(T, (B and Mask) or (V shl ((3 - N) * 8)));
-      end;
-    35:
-      begin
-        var P := Address(Op);
-        CheckAlignment(P, 3);
-        SetRegister(T, FMemory.Read32(P));
-      end;
-    36:
-      SetRegister(T, FMemory.Read8(Address(Op)));
-    37:
-      begin
-        var P := Address(Op);
-        CheckAlignment(P, 1);
-        SetRegister(T, FMemory.Read16(P));
-      end;
-    38:
-      begin
-        var P := Address(Op);
-        var N := Integer(P and 3);
-        var Mask: Cardinal := 0;
-        if N <> 0 then
-          Mask := $FFFFFFFF shl ((4 - N) * 8);
-        SetRegister(T, (B and Mask) or (FMemory.Read32(P and $FFFFFFFC) shr (N * 8)));
-      end;
-    40:
-      FMemory.Write8(Address(Op), Byte(B and $FF));
-    41:
-      begin
-        var P := Address(Op);
-        CheckAlignment(P, 1);
-        FMemory.Write16(P, Word(B and $FFFF));
-      end;
-    42:
-      begin
-        var P := Address(Op);
-        var N := Integer(P and 3);
-        for var I := 0 to N do
-          FMemory.Write8((P and $FFFFFFFC) + Cardinal(I), Byte((B shr ((3 - N + I) * 8)) and $FF));
-      end;
-    43:
-      begin
-        var P := Address(Op);
-        CheckAlignment(P, 3);
-        FMemory.Write32(P, B);
-      end;
-    46:
-      begin
-        var P := Address(Op);
-        var N := Integer(P and 3);
-        for var I := N to 3 do
-          FMemory.Write8((P and $FFFFFFFC) + Cardinal(I), Byte((B shr ((I - N) * 8)) and $FF));
-      end;
-    47:
-      ; // CACHE: no instruction/data cache is modelled yet.
-      48:
-      begin
-        var P := Address(Op);
-        CheckAlignment(P, 3);
-        SetRegister(T, FMemory.Read32(P));
-        FLinkedAddress := P and $3FFFFFFF;
-        FLinkedGeneration := FMemory.WriteGeneration;
-        FLinked := True;
-      end;
-    56:
-      begin
-        var P := Address(Op);
-        CheckAlignment(P, 3);
-        var Success := FLinked and (FLinkedAddress = P and $3FFFFFFF) and (FLinkedGeneration = FMemory.WriteGeneration);
-        FLinked := False;
-        if Success then
-          FMemory.Write32(P, B);
-        SetRegister(T, Ord(Success));
-      end;
-    49:
-      begin
-        var P := Address(Op);
-        CheckAlignment(P, 3);
-        FFPR[T] := FMemory.Read32(P);
-      end;
-    57:
-      begin
-        var P := Address(Op);
-        CheckAlignment(P, 3);
-        FMemory.Write32(P, FFPR[T]);
-      end;
+    $14:
+      if (Op and $3F) = $20 then
+        Result := OpCVTSW
+      else
+        Result := OpReserved;
   else
-    if not FVFPU.Execute(Op, FMemory, A) then
-      Unsupported(Op);
+    Result := OpReserved;
   end;
+end;
+
+function DecodeVFPU(Op: Cardinal): TPSPOpHandler;
+begin
+  if Assigned(PSPVFPUDecoder) then
+    Result := PSPVFPUDecoder(Op)
+  else
+    Result := OpReserved;
+end;
+
+function DecodeOp(Op: Cardinal): TPSPOpHandler;
+begin
+  var T := RT(Op);
+  case Op shr 26 of
+    $00:
+      Result := DecodeSpecial(Op);
+    $01:
+      Result := DecodeRegImm(Op);
+    $02:
+      Result := OpJ;
+    $03:
+      Result := OpJAL;
+    $04:
+      if (RS(Op) = 0) and (T = 0) then
+        Result := OpB
+      else
+        Result := OpBEQ;
+    $05:
+      Result := OpBNE;
+    $06:
+      Result := OpBLEZ;
+    $07:
+      Result := OpBGTZ;
+    $08, $09:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpADDIU;
+    $0A:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpSLTI;
+    $0B:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpSLTIU;
+    $0C:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpANDI;
+    $0D:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpORI;
+    $0E:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpXORI;
+    $0F:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpLUI;
+    $10:
+      case RS(Op) of
+        $00:
+          if T = 0 then
+            Result := OpNop
+          else
+            Result := OpMFC0;
+        $04:
+          Result := OpMTC0;
+        $10:
+          if (Op and $3F) = $18 then
+            Result := OpERET
+          else
+            Result := OpNop;
+      else
+        Result := OpNop;
+      end;
+    $11:
+      Result := DecodeCOP1(Op);
+    $12, $18, $19, $1B, $32, $34, $35, $36, $37, $3A, $3C, $3D, $3E, $3F:
+      Result := DecodeVFPU(Op);
+    $14:
+      Result := OpBEQL;
+    $15:
+      Result := OpBNEL;
+    $16:
+      Result := OpBLEZL;
+    $17:
+      Result := OpBGTZL;
+    $1C:
+      case Op and $3F of
+        $00:
+          Result := OpHALT;
+        $24:
+          if T = 0 then
+            Result := OpNop
+          else
+            Result := OpMFIC;
+        $26:
+          Result := OpMTIC;
+      else
+        Result := OpReserved;
+      end;
+    $1F:
+      Result := DecodeSpecial3(Op);
+    $20:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpLB;
+    $21:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpLH;
+    $22:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpLWL;
+    $23:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpLW;
+    $24:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpLBU;
+    $25:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpLHU;
+    $26:
+      if T = 0 then
+        Result := OpNop
+      else
+        Result := OpLWR;
+    $28:
+      Result := OpSB;
+    $29:
+      Result := OpSH;
+    $2A:
+      Result := OpSWL;
+    $2B:
+      Result := OpSW;
+    $2E:
+      Result := OpSWR;
+    $2F:
+      Result := OpCACHE;
+    $30:
+      Result := OpLL;
+    $31:
+      Result := OpLWC1;
+    $38:
+      Result := OpSC;
+    $39:
+      Result := OpSWC1;
+  else
+    Result := OpReserved;
+  end;
+end;
+
+procedure OpDecode(C: TPSPCPU; Op: Cardinal);
+begin
+  var PC := C.CurPC;
+  var Page := C.FDecoded[(PC and $1FFFFFFF) shr PSPPageShift];
+  var Entry: PPSPDecoded := @Page[(PC and PSPPageMask) shr 2];
+  var Handler := DecodeOp(Op);
+  Entry.Handler := Handler;
+  Handler(C, Op);
+end;
+
+{ TPSPCPU }
+
+constructor TPSPCPU.Create(AMemory: TPSPMemory);
+begin
+  inherited Create;
+  Memory := AMemory;
+  SetLength(FDecoded, PSPPageCount);
+  Memory.OnCodeWrite := CodeWrite;
+  Reset;
+end;
+
+destructor TPSPCPU.Destroy;
+begin
+  FlushDecoded;
+  if (Memory <> nil) and (TMethod(Memory.OnCodeWrite).Data = Self) then
+    Memory.OnCodeWrite := nil;
+  inherited;
+end;
+
+procedure TPSPCPU.FlushDecoded;
+begin
+  for var P in FPages do
+    Dispose(P);
+  FPages := nil;
+  if Length(FDecoded) > 0 then
+    FillChar(FDecoded[0], Length(FDecoded) * SizeOf(Pointer), 0);
+  if Memory <> nil then
+    Memory.ClearCodeMarks;
+  if Runner <> nil then
+    Runner.Flushed;
+end;
+
+function TPSPCPU.Decoded(PC: Cardinal): PPSPDecoded;
+begin
+  var Page := FDecoded[(PC and $1FFFFFFF) shr PSPPageShift];
+  if Page = nil then
+    Page := DecodePage(PC);
+  Result := @Page[(PC and PSPPageMask) shr 2];
+end;
+
+procedure TPSPCPU.Reset;
+begin
+  FlushDecoded;
+  Ctx := Default(TPSPContext);
+  FillChar(COP0, SizeOf(COP0), 0);
+  FCmpPC := 0;
+  VccWritePC := 0;
+  VcmpPC := 0;
+  FillChar(VLatch, SizeOf(VLatch), 0);
+  Ctx.VC[VFPU_PFXS] := $E4;
+  Ctx.VC[VFPU_PFXT] := $E4;
+  Ctx.VC[VFPU_CC] := $3F;
+  Ctx.VC[VFPU_INF4] := 0;
+  Ctx.VC[VFPU_REV] := $7772CEAB;
+  Ctx.VC[VFPU_RCX0] := $3F800001;
+  for var I := 1 to 7 do
+    Ctx.VC[VFPU_RCX0 + I] := $3F800000;
+  CurPC := 0;
+  Stopping := False;
+  ExtraCycles := 0;
+  InterruptsEnabled := True;
+end;
+
+function TPSPCPU.DecodePage(PC: Cardinal): PPSPDecodedPage;
+begin
+  var Index := (PC and $1FFFFFFF) shr PSPPageShift;
+  var Source := Memory.PageBase(PC);
+  if Source = nil then
+    raise EPSPGuestFault.CreateFmt('PSP: execution outside memory at %.8x', [PC]);
+  New(Result);
+  for var I := 0 to High(TPSPDecodedPage) do
+  begin
+    Result[I].Handler := OpDecode;
+    Result[I].Op := PCardinal(Source + I * 4)^;
+  end;
+  FDecoded[Index] := Result;
+  FPages := FPages + [Result];
+  Memory.MarkCode(PC);
+end;
+
+procedure TPSPCPU.CodeWrite(Address, Size: Cardinal);
+begin
+  var First := Address and not Cardinal(3);
+  var Last := (Address + Size - 1) and not Cardinal(3);
+  var A := First;
+  while True do
+  begin
+    var Page := FDecoded[(A and $1FFFFFFF) shr PSPPageShift];
+    if Page <> nil then
+    begin
+      var Entry: PPSPDecoded := @Page[(A and PSPPageMask) shr 2];
+      Entry.Op := PCardinal(Memory.PageBase(A) + (A and PSPPageMask))^;
+      Entry.Handler := OpDecode;
+    end;
+    if A >= Last then
+      Break;
+    Inc(A, 4);
+  end;
+  if Runner <> nil then
+    Runner.CodeWritten(Address, Size);
+end;
+
+// Outside Run's FP-environment try/finally, the dispatch loop can keep its locals in registers.
+procedure TPSPCPU.Interpret;
+begin
+  while FRemaining > 0 do
+  begin
+    var PC := Ctx.PC;
+    var Page := FDecoded[(PC and $1FFFFFFF) shr PSPPageShift];
+    if Page = nil then
+      Page := DecodePage(PC);
+    var Entry: PPSPDecoded := @Page[(PC and PSPPageMask) shr 2];
+    CurPC := PC;
+    Ctx.PC := Ctx.NPC;
+    Ctx.NPC := Ctx.NPC + 4;
+    Dec(FRemaining);
+    Entry.Handler(Self, Entry.Op);
+    if Stopping then
+      Break;
+  end;
+end;
+
+function TPSPCPU.Run(MaxCycles: Integer): Integer;
+begin
+  Stopping := False;
+  ExtraCycles := 0;
+  FRunLength := MaxCycles;
+  FRemaining := MaxCycles;
+  FAccounted := 0;
+  // Guest float code needs IEEE defaults: no traps, round to nearest.
+  var SavedMask := GetExceptionMask;
+  var SavedRound := GetRoundMode;
+  SetExceptionMask(exAllArithmeticExceptions);
+  SetRoundMode(rmNearest);
+  try
+    if Runner <> nil then
+      Runner.Run(Self)
+    else
+      Interpret;
+  finally
+    SetExceptionMask(SavedMask);
+    SetRoundMode(SavedRound);
+  end;
+  Result := TakeCycles;
+  FRunLength := 0;
+  FRemaining := 0;
+  FAccounted := 0;
+  ExtraCycles := 0;
+end;
+
+function TPSPCPU.TakeCycles: Integer;
+begin
+  var Done := FRunLength - FRemaining;
+  Result := Done - FAccounted;
+  FAccounted := Done;
 end;
 
 procedure TPSPCPU.Step;
 begin
-  if FHalted then
-    Exit;
-  FCurrentPC := FPC;
-  CheckAlignment(FPC, 3);
-  var Op := FMemory.ReadInstruction(FPC);
-  FInDelay := FPendingDelay;
-  FPendingDelay := False;
-  FPC := FNextPC;
-  FNextPC := Add32(FNextPC, 4);
-  Execute(Op);
-  FR[0] := 0;
-  Inc(FInstructions);
+  Run(1);
 end;
 
-procedure TPSPCPU.Run(Budget: Cardinal);
+procedure TPSPCPU.Stop;
 begin
-  FYielded := False;
-  while (Budget <> 0) and not FHalted and not FYielded do
-  begin
-    Step;
-    Dec(Budget);
-  end;
+  Stopping := True;
 end;
 
-procedure TPSPCPU.Yield;
+procedure TPSPCPU.AddCycles(Cycles: Integer);
 begin
-  FYielded := True;
+  // Extra cost of the current instruction (HLE calls): it uses the run's budget.
+  Dec(FRemaining, Cycles);
 end;
 
-procedure TPSPCPU.Halt;
+procedure TPSPCPU.SetPC(Address: Cardinal);
 begin
-  FHalted := True;
+  Ctx.PC := Address;
+  Ctx.NPC := Address + 4;
 end;
 
-function TPSPCPU.SaveContext: TPSPCPUContext;
+function TPSPCPU.FPRSingle(Index: Integer): Single;
 begin
-  Result := Default(TPSPCPUContext);
-  Move(FR, Result.R, SizeOf(FR));
-  Move(FFPR, Result.FPR, SizeOf(FFPR));
-  Result.FCR31 := FFCR31;
-  Result.VFPU := FVFPU;
-  Result.PC := FPC;
-  Result.NextPC := FNextPC;
-  Result.Hi := FHi;
-  Result.Lo := FLo;
-  Result.PendingDelay := FPendingDelay;
-  Result.InDelay := FInDelay;
+  Result := PSingle(@Ctx.FPR[Index])^;
 end;
 
-procedure TPSPCPU.LoadContext(const Context: TPSPCPUContext);
+procedure TPSPCPU.SetFPRSingle(Index: Integer; Value: Single);
 begin
-  FLinked := False;
-  Move(Context.R, FR, SizeOf(FR));
-  Move(Context.FPR, FFPR, SizeOf(FFPR));
-  FFCR31 := Context.FCR31;
-  FVFPU := Context.VFPU;
-  FR[0] := 0;
-  FPC := Context.PC;
-  FNextPC := Context.NextPC;
-  FHi := Context.Hi;
-  FLo := Context.Lo;
-  FPendingDelay := Context.PendingDelay;
-  FInDelay := Context.InDelay;
-  FHalted := False;
-  FYielded := False;
+  PSingle(@Ctx.FPR[Index])^ := Value;
 end;
 
 end.
-

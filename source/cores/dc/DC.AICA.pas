@@ -13,7 +13,7 @@ interface
 
 uses
   System.SysUtils, System.Math, Core.Snapshots, DC.Types, DC.Memory,
-  DC.Scheduler, DC.Interrupts, DC.CPU.ARM7, DC.Sound.AICA, DC.GDROM;
+  DC.Scheduler, DC.Interrupts, DC.CPU.ARM7, HW.Sound.AICA, DC.GDROM;
 
 const
   AICASampleRate = 44100;
@@ -31,8 +31,8 @@ type
     RTCSubsecond: Int64;   // SH-4 clocks into the current RTC second
     // SH-4 side interrupt enable/pending (MCIEB/MCIPD).
     MCIEB, MCIPD: Cardinal;
-    // Timer bits of the ARM side pending register at the last sync; a rising
-    // bit is pending for the SH-4 too.
+    // Last observed ARM timer bits, retained in the legacy snapshot layout.
+    // Delivery to the SH-4 follows each sample's newly generated sources.
     TimerPending: Cardinal;
   end;
 
@@ -231,6 +231,10 @@ begin
   end;
   var L, R: SmallInt;
   FAICA.Sample(L, R);
+  // Each overflow latches independently for both CPUs. Testing only a
+  // rising SCIPD bit would lose later MCPU requests while the SCPU keeps
+  // its earlier request pending.
+  S.MCIPD := S.MCIPD or FAICA.SampleInterrupts;
   if FSampleCount + 2 > Length(FSamples) then
     SetLength(FSamples, FSampleCount * 2 + 4096);
   FSamples[FSampleCount] := L;
@@ -268,9 +272,8 @@ end;
 
 procedure TDCAICA.UpdateSH4Interrupt;
 begin
-  // Timer A/B/C overflows (bits 6..8) are pending for both processors.
+  // Keep the historical observation for snapshot compatibility only.
   var Timers := (Cardinal(FAICA.ReadRegister(RegSCIPD)) or (Cardinal(FAICA.ReadRegister(RegSCIPD + 1)) shl 8)) and $1C0;
-  S.MCIPD := S.MCIPD or (Timers and not S.TimerPending);
   S.TimerPending := Timers;
   FInterrupts.SetExternal(HollyExtAICA, (S.MCIEB and S.MCIPD) <> 0);
 end;

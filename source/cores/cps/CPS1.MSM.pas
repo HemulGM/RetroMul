@@ -34,7 +34,7 @@ type
 implementation
 
 uses
-  CPS1.Sound, MD.Z80, MD.M68k;
+  CPS1.Sound, HW.Z80, HW.M68k;
 
 constructor TCPSMSMConsole.Create(Cart: TCPSCartridge);
 begin

@@ -43,6 +43,34 @@ object RetroDialog: TRetroDialog
         TextSettings.Trimming = None
         TabOrder = 0
       end
+      object LayoutPlatform: TLayout
+        Align = Top
+        Position.Y = 80.000000000000000000
+        Size.Width = 496.000000000000000000
+        Size.Height = 80.000000000000000000
+        Size.PlatformDefault = False
+        Visible = False
+        TabOrder = 1
+        object LabelPlatform: TLabel
+          Align = Top
+          StyledSettings = []
+          Size.Width = 496.000000000000000000
+          Size.Height = 28.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.Font.Size = 14.000000000000000000
+          TextSettings.FontColor = xFFE8ECF1
+          Text = 'Target platform'
+        end
+        object ComboBoxPlatform: TComboBox
+          Align = Top
+          Margins.Top = 4.000000000000000000
+          Position.Y = 32.000000000000000000
+          Size.Width = 496.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          TabOrder = 0
+        end
+      end
     end
     object LayoutDialogHeader: TLayout
       Align = Top

@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.UITypes;
+  System.UITypes, System.Types;
 
 {$SCOPEDENUMS ON}
 
@@ -59,6 +59,13 @@ type
     Pixels: TArray<TAlphaColor>;
     FrameNumber: UInt64;
     FramesPerSecond: Double;
+  end;
+
+  // Independent display regions in the most recently published frame.
+  // Post-processing must isolate their source pixels and temporal histories.
+  IEmulationVideoRegions = interface
+    ['{AF85F329-1830-4EBA-A4A7-76BE777F360E}']
+    function GetVideoRegions: TArray<TRect>;
   end;
 
   // Device warnings do not stop emulation; frontends may report them once.
@@ -126,6 +133,15 @@ type
   IEmulationSnapshotLocation = interface
     ['{E6C77DB0-6B7D-43F9-9C16-C9985DA992E9}']
     function GetSnapshotDirectory: string;
+  end;
+
+  // Optional nonblocking transport for cores whose state reconstruction is slow.
+  // Status returns True while pending/running. All methods are frontend-thread safe.
+  IEmulationSnapshotOperation = interface
+    ['{A17F341E-C6D0-42BC-ACD5-BB427632C9B8}']
+    procedure BeginSnapshot(const Name: string; Loading: Boolean);
+    function SnapshotStatus(out Done, Total: UInt64; out Error: string): Boolean;
+    procedure CancelSnapshot;
   end;
 
   // Optional, thread-safe metadata for controls actually used by a loaded game.

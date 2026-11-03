@@ -175,7 +175,7 @@ type
     {$ENDIF}
     procedure SaveSnapshot(const Name: string); virtual; abstract;
     procedure LoadSnapshot(const Name: string); virtual; abstract;
-    procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False; const SnapshotName: string = ''); virtual; abstract;
+    procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False; const SnapshotName: string = ''; const LibraryPlatformId: string = ''); virtual; abstract;
     procedure ResetConsole(Hard: Boolean); virtual; abstract;
     procedure ResetClick(Sender: TObject); virtual; abstract;
     procedure HardRestart; virtual; abstract;

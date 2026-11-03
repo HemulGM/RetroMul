@@ -4,7 +4,7 @@ interface
 
 uses
   System.Classes, System.SysUtils, System.UITypes, System.DateUtils, HW.TLCS900H,
-  MD.Z80, NGP.Cartridge, NGP.Video, NGP.Sound, Core.Emulation.Types,
+  HW.Z80, NGP.Cartridge, NGP.Video, NGP.Sound, Core.Emulation.Types,
   Core.Snapshots;
 
 const
@@ -697,7 +697,7 @@ begin
 end;
 
 initialization
-  MD.Z80.ConstantInitialise;
+  HW.Z80.ConstantInitialise;
 
 end.
 

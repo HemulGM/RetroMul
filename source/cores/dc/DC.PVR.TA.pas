@@ -68,7 +68,7 @@ type
     // Polygon index ranges per list in submission order.
     ListOrder: TArray<Integer>;
     Used: Int64;
-    // TA_OL_BASE..TA_OL_LIMIT at list init (not saved): where the region
+    // TA_OL_BASE..TA_OL_LIMIT at list init: where the region
     // array of a render with another parameter base points.
     OLBase, OLLimit: Cardinal;
     procedure Clear;
@@ -403,8 +403,10 @@ begin
   FTSP := P[2];
   FTCW := P[3];
   FStripOpen := False;
-  // User clip mode applies to the following objects.
-  FClipMode := (PCW shr 16) and 3;
+  // Group control is latched only when Group_En is set; otherwise the
+  // previous user clip mode continues to apply to subsequent objects.
+  if (PCW and $00800000) <> 0 then
+    FClipMode := (PCW shr 16) and 3;
   var Mod_ := (FList = TAListOpaqueMod) or (FList = TAListTranslucentMod);
   if (PCW shr 29) = 4 then
   begin
@@ -739,7 +741,19 @@ begin
   var PCW := Data[0];
   case PCW shr 29 of
     0:
-      EndList;
+      begin
+        // Standalone EOL packets also complete empty lists. An active
+        // list keeps the type selected by its first global parameter;
+        // without one, use the type in the completion packet itself.
+        if FList < 0 then
+        begin
+          var List := Integer((PCW shr 24) and 7);
+          if List > TAListPunchThrough then
+            Exit;
+          FList := List;
+        end;
+        EndList;
+      end;
     1:
       begin
         // User tile clip: tile coordinates in words 4..7.
@@ -858,6 +872,16 @@ begin
   for var C in FContexts do
   begin
     Archive.Field(C.Base, SizeOf(C.Base));
+    if Archive.Version <> 1 then
+    begin
+      Archive.Field(C.OLBase, SizeOf(C.OLBase));
+      Archive.Field(C.OLLimit, SizeOf(C.OLLimit));
+    end
+    else if Archive.Loading then
+    begin
+      C.OLBase := 0;
+      C.OLLimit := 0;
+    end;
     Archive.Field(C.Used, SizeOf(C.Used));
     Archive.Field(C.PolyCount, SizeOf(C.PolyCount));
     Archive.Field(C.VertexCount, SizeOf(C.VertexCount));
@@ -933,6 +957,13 @@ begin
     FCurrent := nil;
     if Current >= 0 then
       FCurrent := FContexts[Current];
+    // Version 1 omitted context ranges. Recover the active list's range
+    // from saved PVR registers; historical ranges cannot be reconstructed.
+    if (Archive.Version = 1) and (FCurrent <> nil) then
+    begin
+      FCurrent.OLBase := FPVR.R[PVRTAOLBase shr 2] and $7FFFFF;
+      FCurrent.OLLimit := FPVR.R[PVRTAOLLimit shr 2] and $7FFFFF;
+    end;
     Rendering := nil;
     if RenderingIndex >= 0 then
       Rendering := FContexts[RenderingIndex];

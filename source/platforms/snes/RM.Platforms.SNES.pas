@@ -59,7 +59,7 @@ class procedure TSNESPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('snes', 'Super Nintendo', 'SNES',
     'Nintendo', 'SNES Super Famicom', 'snes', ['snes'],
-    ['.sfc', '.smc', '.swc', '.fig', '.zip', '.7z'],
+    ['.sfc', '.smc', '.swc', '.fig'],
     'SNES', 'snes', 2);
 end;
 

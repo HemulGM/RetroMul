@@ -38,7 +38,17 @@ uses
 class function TGWPlatform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
-  if TGWCartridge.Recognizes(Context.Data, Context.SourceName) then
+  if Context.Archive <> nil then
+  begin
+    if TGWCartridge.Recognizes(Context.Archive, Context.SourceName) then
+      Result := TCoreMatch.Create('GW',
+        function: IEmulationCore
+        begin
+          Result := TGWCoreAdapter.Create(Context.Archive, Context.Storage, Context.RomName, Context.SourceHash);
+        end);
+    Exit;
+  end;
+  if TGWCartridge.Recognizes(Context.Stream, Context.SourceName) then
     Result := ImageMatch(Context, 'GW',
       function(const Data: TBytes; Input: TStream): IEmulationCore
       begin
@@ -50,7 +60,7 @@ class procedure TGWPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('gw', 'Game && Watch', 'G&&W',
     'Nintendo', 'GW MGW LCD Micro Vs', 'gw', ['gw'],
-    ['.gw', '.mgw', '.zip', '.7z'], '', 'gw', 2);
+    ['.gw', '.mgw'], '', 'gw', 2);
 end;
 
 class procedure TGWPlatform.RegisterCore;

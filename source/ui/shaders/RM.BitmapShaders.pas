@@ -57,6 +57,7 @@ type
     FHistorySource: TBitmap;
     FResponseWeight: Single;
     FLCDPass: Integer;
+    procedure SetCustomShader(const Value: TContextShader);
   protected
     procedure CalcSize(var W, H: Integer); override;
     procedure LoadShaders; override;
@@ -66,7 +67,7 @@ type
     destructor Destroy; override;
     procedure ResetHistory; virtual;
     procedure LoadCustomShader(const FileName: string);
-    property CustomShader: TContextShader read FCustomShader;
+    property CustomShader: TContextShader read FCustomShader write SetCustomShader;
     // Borrowed result, valid until the next Render or destruction. UI thread only.
     // Rebinds Input even when the same TBitmap has been updated in place.
     function Render(const Source: TBitmap; Width, Height: Integer; Mode: TBitmapShaderMode; const Settings: TBitmapShaderSettings; DeltaMilliseconds: Single = 16.666667): TBitmap;
@@ -184,6 +185,14 @@ procedure TBitmapShaderFilter.ResetHistory;
 begin
   FHistoryValid := False;
   FHistorySource := nil;
+end;
+
+procedure TBitmapShaderFilter.SetCustomShader(const Value: TContextShader);
+begin
+  if FCustomShader = Value then
+    Exit;
+  FCustomShader := Value;
+  ResetHistory;
 end;
 
 procedure TBitmapShaderFilter.LoadCustomShader(const FileName: string);

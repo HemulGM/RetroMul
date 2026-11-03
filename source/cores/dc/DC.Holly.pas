@@ -127,12 +127,12 @@ end;
 
 function TDCHolly.Reg(Address: Cardinal): Cardinal;
 begin
-  Result := S.Regs[((Address - SBBase) shr 2) and $5FF];
+  Result := S.Regs[(Address - SBBase) shr 2];
 end;
 
 procedure TDCHolly.SetReg(Address, Value: Cardinal);
 begin
-  S.Regs[((Address - SBBase) shr 2) and $5FF] := Value;
+  S.Regs[(Address - SBBase) shr 2] := Value;
 end;
 
 function TDCHolly.RAMPointer(Address: Cardinal): PByte;
@@ -145,7 +145,7 @@ end;
 procedure TDCHolly.WriteArea4(Address: Cardinal; Data: PCardinal; Count: Integer);
 begin
   Address := Address and $03FFFFFF;
-  if Address < $01000000 then
+  if (Address and $01000000) = 0 then
   begin
     // 10000000: polygon FIFO; 10800000: YUV converter (both mirrored at 12000000).
     if (Address and $00800000) = 0 then
@@ -154,13 +154,10 @@ begin
       FPVR.WriteYUV(Data, Count);
     Exit;
   end;
-  if (Address and $02000000) <> 0 then
-    Exit;
   // 11000000/13000000: direct texture path, 64- or 32-bit by LMMODE0/1.
   var Mode := Reg(SB_LMMODE0);
-  if (Address and $01000000) <> 0 then
-    if (Address shr 25) and 1 <> 0 then
-      Mode := Reg(SB_LMMODE1);
+  if (Address and $02000000) <> 0 then
+    Mode := Reg(SB_LMMODE1);
   var Offset := Address and $00FFFFFF;
   for var I := 0 to Count - 1 do
   begin
@@ -317,6 +314,15 @@ begin
     begin
       for var I := 0 to Moved div 4 - 1 do
         FAICA.WriteRAM(Address - $00800000 + Cardinal(I) * 4, PCardinal(@Buffer[I * 4])^, 4);
+    end
+    else if (Address and $1C000000) = $04000000 then
+    begin
+      // G1 DMA can target either VRAM view, including its area-1 mirror.
+      for var I := 0 to Moved div 4 - 1 do
+        if (Address and $01000000) <> 0 then
+          FMemory.VRAMWrite32(Address + Cardinal(I) * 4, PCardinal(@Buffer[I * 4])^)
+        else
+          FMemory.VRAMWrite64Path(Address + Cardinal(I) * 4, PCardinal(@Buffer[I * 4])^, 4);
     end
     else
     begin
@@ -554,6 +560,11 @@ end;
 procedure TDCHolly.SerializeState(Archive: TStateArchive);
 begin
   Archive.Field(S, SizeOf(S));
+  // Old snapshots used the aliased register decoder: G1 values lived in
+  // the lower slots. Seed the now-independent bank with those old values.
+  if Archive.Loading and (Archive.Version = 1) then
+    for var I := $200 to $3FF do
+      S.Regs[I] := S.Regs[I and $1FF];
   if Archive.Loading then
     for var I := 0 to 3 do
       if S.G2Due[I] < 0 then

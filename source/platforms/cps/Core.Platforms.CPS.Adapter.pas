@@ -670,7 +670,7 @@ end;
 constructor TCPSCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
 begin
   inherited Create;
-  FCart := TCPSCartridge.Create(Stream, RomName);
+  FCart := TCPSCartridge.Create(Stream, RomName, Storage);
 
   var S := Storage;
   if S = nil then
@@ -711,7 +711,7 @@ begin
       end;
     end;
     if Location = '' then
-      raise ECPSRom.Create('CPS3 CD image missing: place ' + DiscName + '.chd beside the BIOS ZIP or in its sibling game folder, or set [CPS3] DiscImage in the CPS3 configuration.');
+      raise ECPSRom.Create('CPS3 CD image missing: place ' + DiscName + '.chd beside the BIOS archive or in its sibling game folder, or set [CPS3] DiscImage in the CPS3 configuration.');
 
     var CDStream := S.OpenRead(Location);
     try

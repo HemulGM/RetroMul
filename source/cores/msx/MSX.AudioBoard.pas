@@ -4,7 +4,7 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Math, Core.Snapshots, Core.AudioFilter,
-  Yamaha.Sound.Y8950;
+  HW.Sound.Y8950;
 
 type
   TMSXAudioBoard = class

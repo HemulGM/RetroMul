@@ -81,7 +81,6 @@ begin
   RegisterSnapshotPolicy(ROM_CORE_ID_PS2, TPS2Console.SnapshotPolicy);
   var Service := Default(TPlatformServices);
   Service.LibraryFeatures := [TLibraryFeature.CueTracks];
-  Service.BackgroundExtensions := ['.iso', '.chd', '.cue', '.mds'];
   RegisterPlatformServices('ps2', Service);
   RegisterPlatformPresentation('ps2', 'ps2', PlatformIconPS2);
   RegisterSettingsProfile('PS2', TPS2Settings);

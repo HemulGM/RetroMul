@@ -6,7 +6,7 @@ implementation
 
 uses
   System.SysUtils, System.Math, RetroTune.Decoder, RetroTune.Binary,
-  RetroTune.ZXTracker.Engine, ZX.Sound.YM2149;
+  RetroTune.ZXTracker.Engine, HW.Sound.YM2149;
 
 type
   TZXTrackerDecoder = class(TInterfacedObject, ITuneDecoder)

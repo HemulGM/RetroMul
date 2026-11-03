@@ -70,7 +70,7 @@ object SettingsVolumeTemplate: TSettingsVolumeTemplate
           TextSettings.Font.Size = 13.000000000000000000
           TextSettings.HorzAlign = Trailing
           TextSettings.WordWrap = False
-          Text = '50%'
+          Text = '100%'
         end
       end
     end

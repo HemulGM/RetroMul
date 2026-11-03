@@ -5,7 +5,9 @@ $studio = 'C:\Program Files (x86)\Embarcadero\Studio\37.0'
 New-Item -ItemType Directory -Force $Out, "$Out\dcu" | Out-Null
 $sources = Get-ChildItem "$root\source" -Recurse -Directory |
   Where-Object { $_.FullName -notmatch '\\ui(\\|$)' } | ForEach-Object FullName
-$paths = @($PSScriptRoot) + $sources + @("$root\source", "$studio\lib\win64\release")
+$dependencies = @(Get-ChildItem "$root\dependencies\Delphi7z" -Recurse -Directory -ErrorAction SilentlyContinue |
+  Where-Object { $_.FullName -notmatch '\\\.git' } | ForEach-Object FullName) + @("$root\dependencies\Delphi7z")
+$paths = @($PSScriptRoot) + $sources + $dependencies + @("$root\source", "$studio\lib\win64\release")
 $flags = @('-B', '-Q', '-$O+', '-NSSystem;Winapi', "-E$Out", "-NU$Out\dcu")
 $defs = @()
 if ($Checked) { $defs += 'PS2_CHECKED'; $flags += @('-$Q+', '-$R+') }

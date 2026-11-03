@@ -6,7 +6,7 @@ implementation
 
 uses
   System.SysUtils, System.Math, System.Generics.Collections, RetroTune.Decoder,
-  RetroTune.Binary, RetroTune.ETracker, SAM.Sound.SAA1099;
+  RetroTune.Binary, RetroTune.ETracker, HW.Sound.SAA1099;
 
 type
   TSAAStreamDecoder = class(TInterfacedObject, ITuneDecoder)

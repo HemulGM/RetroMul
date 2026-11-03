@@ -34,9 +34,9 @@ type
   TMSXCPUAccessTrace = procedure(Time: Int64; Dummy, Write: Boolean; Address: Integer; Value: Byte);
 
   TMSXCommandAccessTrace = procedure(RAS, Data: Int64; Write, Enabled: Boolean; Address: Integer; Value: Byte);
+
   // Keep physical VRAM banks stable across mode switches. G6/G7 interleave
   // logical CPU, display and command addresses across the two 64 KiB banks.
-
   TMSXVDP = class(TSGVDP)
   private
     FModel: TMSXModel;
@@ -164,8 +164,6 @@ type
     function BitsPerPixel: Integer;
     function VideoAddress(X, Y: Integer): Integer;
     function PhysicalAddress(Address: Integer): Integer;
-    function Dot(X, Y: Integer): Byte;
-    procedure PutDot(X, Y: Integer; Value, Logic: Byte);
     function CommandDot(X, Y: Integer): Byte;
     procedure CommandPutDot(X, Y: Integer; Value: Byte);
     procedure SetCommandY(Index, Value: Integer);
@@ -493,7 +491,7 @@ function TMSXVDP.CommandStartDelay(Command: Integer): Integer;
 const
   Delay: array[4..15] of Byte = (45, 70, 70, 94, 70, 46, 58, 70, 94, 82, 82, 94);
 begin
-  // /CSW-to-first-request delays measured in the h/i captures. MD.Z80 calls
+  // /CSW-to-first-request delays measured in the h/i captures. HW.Z80 calls
   // the port at I/O completion: do not add openMSX's 18-clock T2-to-/CSW term.
   Result := 0;
   if Command in [4..15] then
@@ -1337,7 +1335,7 @@ begin
     Index := FR[15] and 15;
   if Index > 1 then
     Exit(ReadStatus);
-  // MD.Z80 calls the port after the entire four-T-state I/O cycle. The
+  // HW.Z80 calls the port after the entire four-T-state I/O cycle. The
   // falling T3 data sample precedes that callback by half a T (3 master
   // ticks). Acknowledge at the callback, but return the sampled byte.
   // This bounded digital aperture follows the observed read/clear ordering:
@@ -2954,29 +2952,6 @@ begin
     Result := (Result shr 1) or ((Result and 1) shl 16);
 end;
 
-function TMSXVDP.Dot(X, Y: Integer): Byte;
-begin
-  var BPP := BitsPerPixel;
-  Result := (FVideo[VideoAddress(X, Y)] shr ((8 div BPP - 1 - (X and (8 div BPP - 1))) * BPP)) and ((1 shl BPP) - 1);
-end;
-
-procedure TMSXVDP.PutDot(X, Y: Integer; Value, Logic: Byte);
-begin
-  var BPP := BitsPerPixel;
-  var A := VideoAddress(X, Y);
-  var Shift := (8 div BPP - 1 - (X and (8 div BPP - 1))) * BPP;
-  var Previous := FVideo[A];
-  if FCachedDestination and (A = FDestAddress) then
-    Previous := FDestByte;
-  var Data: Byte;
-  if not MergePixelByte(Previous, Value, Logic, Shift, BPP, Data) then
-    Exit;
-  FlushRaster;
-  FVideo[A] := Data;
-  if A < $4000 then
-    FVRAM[A] := FVideo[A];
-end;
-
 function TMSXVDP.YJKColor(Address: Integer): TAlphaColor;
 begin
   var X := Address and 255;
@@ -3383,7 +3358,9 @@ begin
         var Index := Integer(Attr and 15);
         if Attr and $40 <> 0 then
         begin
-          Visible := Drawn[X] and (Owners[X] = Group) and (Group >= 0);
+          // CC joins the preceding base sprite's priority group. Its pixels
+          // also remain visible outside that base sprite's pattern.
+          Visible := (Group >= 0) and (not Drawn[X] or (Owners[X] = Group));
           Index := Index or Indices[X];
         end;
         if FShowSprites and Visible then
@@ -3709,7 +3686,7 @@ begin
     end;
     Exit;
   end;
-  // Measured pin-to-request delay: 10.9 +/- 0.2 master clocks. MD.Z80's
+  // Measured pin-to-request delay: 10.9 +/- 0.2 master clocks. HW.Z80's
   // callback is at the end of the I/O cycle, rather than openMSX's T2 anchor.
   var Request := FVideoClock + 11;
   if not CPURequestAllowed(Request) then

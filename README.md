@@ -2,19 +2,30 @@
 
 ![RetroMul](https://github.com/HemulGM/RetroMul/blob/main/screen/screen0.png?raw=true)
 
-RetroMul is a multi-system retro game emulator written in Delphi with a FireMonkey interface. It runs games for NES / Famicom, Game Boy, Game Boy Color, Game Boy Advance, SEGA Mega Drive / Genesis, SEGA CD / Mega-CD, SEGA 32X, SEGA SG-1000 / SC-3000 / SF-7000, Othello Multivision, SEGA Master System / Mark III, SEGA Game Gear, Super Nintendo, Neo Geo MVS / AES, Neo Geo CD, Neo Geo Pocket / Pocket Color, Sony PlayStation, Capcom Play System I / II / III, and the PC Engine / TurboGrafx / SuperGrafx family. The repository also includes RetroTune, a companion music player, and RetromulTerm, a Windows console frontend.
+RetroMul is a multi-system retro game emulator written in Delphi with a FireMonkey interface. It runs games for NES / Famicom, Game Boy, Game Boy Color, Game Boy Advance, SEGA Mega Drive / Genesis, SEGA CD / Mega-CD, SEGA 32X, SEGA SG-1000 / SC-3000 / SF-7000, Othello Multivision, SEGA Master System / Mark III, SEGA Game Gear, Super Nintendo, Neo Geo MVS / AES, Neo Geo CD, Neo Geo Pocket / Pocket Color, Bandai WonderSwan / WonderSwan Color, Sony PlayStation, Capcom Play System I / II / III, and the PC Engine / TurboGrafx / SuperGrafx family. The repository also includes RetroTune, a companion music player, and RetromulTerm, a Windows console frontend.
 
 ## Supported systems and ROM formats
 
+The table covers all 45 registered systems. Supported images and ROM sets can also be loaded from `.zip`, `.7z`, and `.rar` archives. Disc images must retain their required companion files and tracks.
+
 | System | ROM formats |
 | --- | --- |
-| NES / Famicom | `.nes` |
+| Atari 2600 | `.a26`; `.bin`, `.rom` in the system folder |
+| Atari 5200 | `.a52`, Atari 5200 `.car`; `.bin`, `.rom` in the system folder; BIOS embedded |
+| Atari 7800 | `.a78`, `.bin`, `.rom` |
+| Atari Jaguar | `.j64`, `.bin`, `.rom` |
+| Atari Jaguar CD | `.cue`, `.chd`, `.cdi`, `.mds`, `.nrg`, `.ccd`, multi-disc `.m3u` |
+| Atari Lynx | `.lnx`, `.lyx`, BS93 `.o` / `.com` / `.bll`; BIOS embedded |
+| ColecoVision | `.col`, `.cv`, `.rom`, `.bin` |
+| NES / Famicom | `.nes`; Famicom Disk System `.fds`, `.qd` |
+| Famicom Disk System | `.fds`, `.qd` |
 | Game Boy | `.gb`, `.gbx` |
 | Game Boy Color | `.gbc`, `.gbx` |
 | Game & Watch | `.gw`, `.mgw`, catalogued MAME `.zip` sets with SVG screens |
 | Game Boy Advance | `.gba` |
 | Nintendo 64 (experimental) | `.z64`, `.n64`, `.v64` |
 | PlayStation 2 (experimental, no BIOS needed; see [PS2 core](source/cores/ps2/README.md)) | `.iso`, `.mds`/`.mdf`, DVD `.chd`, `.elf` (homebrew) |
+| Nintendo DS (experimental) | `.nds` |
 | SEGA Mega Drive / Genesis | `.md`, `.bin`, `.gen`, `.smd` |
 | SEGA CD / Mega-CD | `.cue`, `.iso`, `.chd`, `.mds`, `.nrg` |
 | SEGA 32X | `.32x`, `.bin`, `.gen`, `.md`, `.smd` |
@@ -24,22 +35,26 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 | Othello Multivision | `.mv` |
 | SEGA Master System / Mark III | `.sms` |
 | SEGA Game Gear | `.gg` |
-| MSX1 / MSX2 / MSX2+ (experimental) | `.rom`, `.mx1`, `.mx2`, `.mxp`, `.dsk`, `.cas`, `.wav`, `.zip` / `.7z` |
-| SEGA Saturn | `.iso`, `.cue`, `.chd`, `.mds`, `.nrg` |
-| SEGA Dreamcast (experimental) | `.gdi`, `.cdi`, `.chd`, `.cue`, `.iso`, `.mds`, `.nrg`, homebrew `.elf`, multi-disc `.m3u` |
-| Sony PlayStation (PS1) | `.cue`, `.chd`, `.iso`, `.mds`, `.nrg`, raw `.bin`, PS-X `.exe`, disc / executable `.zip`, multi-disc `.m3u` |
-| Sony PSP (experimental) | ELF/PRX/PBP, encrypted executables, ISO9660 `.iso`, CISO v1 `.cso`, single-image `.zip`; commercial compatibility is being validated |
-| ZX Spectrum family / clones | `.sna`, `.z80`, `.tap`, `.tzx`, `.trd`, `.scl`, `.dsk`, `.dck`, `.pro`, `.kdi`, `.ide`, `.mmc`, `.zip` / `.7z` |
+| MSX1 | `.rom`, `.mx1`, `.dsk`, `.cas`, `.wav` |
+| MSX2 | `.rom`, `.mx2`, `.dsk`, `.cas`, `.wav` |
+| MSX2+ | `.rom`, `.mx2`, `.mxp`, `.dsk`, `.cas`, `.wav` |
+| SEGA Saturn | `.iso`, `.cue`, `.chd`, `.mds`, `.nrg`; BIOS images `.bin`, `.rom`, `.bios` |
+| SEGA Dreamcast | `.gdi`, `.cdi`, `.chd`, `.cue`, `.iso`, `.mds`, `.nrg`, homebrew `.elf`, multi-disc `.m3u` |
+| Sony PlayStation (PS1) | `.cue`, `.chd`, `.iso`, `.mds`, `.nrg`, raw `.bin`, PS-X `.exe`, multi-disc `.m3u` |
+| Sony PSP (experimental) | `.elf`, `.prx`, `.pbp`, encrypted executables, ISO9660 `.iso`, CISO v1 `.cso`; single-image archives; commercial compatibility is being validated |
+| ZX Spectrum family / clones | `.sna`, `.z80`, `.tap`, `.tzx`, `.trd`, `.scl`, `.dsk`, `.dck`, `.pro`, `.kdi`, `.ide`, `.mmc` |
 | Super Nintendo / Super Famicom | `.sfc`, `.smc`, `.swc`, `.fig` |
-| Neo Geo MVS / AES | Named MAME ROM sets in `.zip`, unencrypted NeoSD `.neo` images |
+| Neo Geo MVS / AES | Named MAME ROM sets in `.zip`, `.7z`, `.rar`; unencrypted NeoSD `.neo` images |
 | Neo Geo CD / CDZ | `.iso`, `.cue` with BIN/PCM WAV tracks, `.chd`, `.mds`, `.nrg` |
-| Neo Geo Pocket | `.ngp`, `.ngc`, `.zip` |
-| Neo Geo Pocket Color | `.ngp`, `.ngc`, `.zip` |
-| Capcom Play System I (CPS-1) | Named arcade ROM sets in `.zip` |
-| Capcom Play System II (CPS-2) | Named arcade ROM sets in `.zip` |
-| Capcom Play System III (CPS-3) | Supported SIMM / No-CD ROM sets in `.zip` |
-| PC Engine / TurboGrafx-16 | `.pce`, single-HuCard `.zip` |
-| SuperGrafx | `.sgx`, `.pce`, single-HuCard `.zip` |
+| Neo Geo Pocket | `.ngp`, `.ngc` |
+| Neo Geo Pocket Color | `.ngp`, `.ngc` |
+| WonderSwan | `.ws`, `.wsc` (model detected from the image) |
+| WonderSwan Color | `.wsc`, `.ws` |
+| Capcom Play System I (CPS-1) | Named arcade ROM sets in `.zip`, `.7z`, `.rar` |
+| Capcom Play System II (CPS-2) | Named arcade ROM sets in `.zip`, `.7z`, `.rar` |
+| Capcom Play System III (CPS-3) | Supported SIMM / No-CD ROM sets in `.zip`, `.7z`, `.rar` |
+| PC Engine / TurboGrafx-16 | `.pce`, single-HuCard archives |
+| SuperGrafx | `.sgx`, `.pce`, single-HuCard archives |
 | PC Engine CD / Duo / Arcade Card | `.cue`, `.iso`, `.chd`, `.mds`, `.nrg` (built-in System Cards 1/2/3) |
 
 ## Features
@@ -61,114 +76,18 @@ Compatibility depends on the game's cartridge hardware, protection, and peripher
 
 ## Getting started
 
-Open a ROM directly, or select the library root folder in Settings. The library uses these system subdirectories:
-
-```text
-ROMS/
-  nes/
-  gb/
-  gbc/
-  gw/
-  gba/
-  n64/
-  ps2/
-  megadrive/
-  segacd/
-  sega32x/
-  sg1000/
-  sc3000/
-  msx1/
-  msx2/
-  msx2plus/
-  zxspectrum/
-  sf7000/
-  omv/
-  sms/
-  gg/
-  snes/
-  neogeo/
-  ngp/
-  ngpc/
-  cps1/
-  cps2/
-  cps3/
-  ps1/
-  psp/
-  saturn/
-  dc/
-  neogeocd/
-  pcengine/
-  sgx/
-  pcecd/
-```
-
-Place ROMs in the corresponding folders. On desktop, an optional `gamelist.xml` in each system folder supplies titles, descriptions, cover paths, and other metadata; games without metadata use their filenames. On Android, choose the ROM folder through the system folder picker.
-
 Desktop shortcuts during gameplay:
 
 | Key | Action |
 | --- | --- |
 | `P` | Pause / resume |
 | `R` | Reset |
+| `F1` | Help |
 | `F5` | Save the quick state |
 | `F6` | Load the quick state |
 | `F8` | Take a screenshot |
 
 These shortcuts are suspended while an emulated NES or Subor keyboard is active.
-
-## Building from source
-
-The main application uses Delphi / RAD Studio and FireMonkey. Its Windows sources currently reference the Delphi 13 platform fixes in the DelphiWinUI3 submodule. Initialize the repository's submodules before building:
-
-```sh
-git submodule update --init --recursive
-```
-
-Open `RetromulGroup.groupproj` for the project group, or open an individual project:
-
-| Project | Purpose |
-| --- | --- |
-| `apps/retromul/RetroMul.dproj` | FireMonkey emulator |
-| `apps/retrotune/RetroTune.dproj` | FireMonkey music player |
-| `apps/terminal/RetromulTerm.dproj` | Windows console emulator with ASCII video output |
-
-`BuildReleases.ps1` builds and packages RetroMul for Windows 32/64-bit, Linux 64-bit, and Android 32/64-bit. Install and configure the corresponding RAD Studio platform SDKs and toolchains. For example, build only the Windows packages from the repository root:
-
-```powershell
-.\BuildReleases.ps1 -Platforms win32,win64
-```
-
-## Building a Microsoft Store package
-
-After building the Windows application, run:
-
-```powershell
-.\BuildStorePackage.ps1
-```
-
-The script packages the existing `Win64 / Release` build as an unsigned MSIX in `releases`, using `MakeAppx.exe` from the Windows SDK. It reads the selected configuration's effective MSBuild properties from `apps/retromul/RetroMul.dproj`: `PF_UWPPackageName`, `PF_UWPPublisher`, `PF_UWPPackageDisplayName`, and `PF_UWPPublisherDisplayName`. Configure those values in RAD Studio using the identities from Partner Center. The script does not modify the project, compile the application, install the package, or submit it to the Store.
-
-Output filenames are `RetroMul-x64.msix` and `RetroMul-x86.msix`; the version is stored inside the package manifest. The package version defaults to the executable's file version. Use `-Version` to set a new four-part Store version with a final component of zero:
-
-```powershell
-.\BuildStorePackage.ps1 -Version 1.2.0.0
-```
-
-`-Platform Win32` selects the 32-bit build and that platform's project settings; the default is `Win64`. `-Configuration` defaults to `Release`. Missing Store identity settings produce an error; they are not borrowed from a different platform or configuration. Optional `-PackageName`, `-Publisher`, `-PublisherDisplayName`, and `-DisplayName` parameters override project values.
-
-The payload contains the project executable, adjacent DLLs, the build's `Lang` directory if present, and the project's Windows logos. `-InputDirectory` selects another build directory; `-ContentDirectory` adds runtime resources from another directory. Build intermediates and release ZIPs are not copied by default. `-MakeAppxPath` overrides SDK tool discovery, and `-OutputDirectory` overrides the output location. All staging files and evaluated settings remain in `codex-work/build/store-package`.
-
-The unsigned `.msix` is intended for Store submission; local installation requires a separate signing or development deployment step. Packaging success does not replace installation testing or Microsoft Store certification.
-
-To Authenticode-sign the executable before packaging, install a code-signing certificate with its private key in the Windows Personal certificate store, then pass its thumbprint:
-
-```powershell
-.\BuildStorePackage.ps1 -SigningCertificateThumbprint '0123456789ABCDEF0123456789ABCDEF01234567'
-```
-
-The script signs and verifies the staged EXE using SignTool and SHA-256, with an RFC 3161 timestamp. The original build executable is preserved. `-SigningCertificateStore LocalMachine` selects the machine's Personal store instead of the current user's store. `-SignToolPath` and `-TimestampUrl` override the SDK tool path and timestamp server. Signing or verification errors stop packaging. The MSIX itself remains unsigned for Store submission. Without `-SigningCertificateThumbprint`, executable signing is skipped.
-
-`CreateRelease.ps1 -Tag v1.0.0` uploads the seven platform ZIPs and `releases/RetroMul-x64.msix` by default. Build the MSIX before creating the release. Use `-StoreArchitectures x86,x64` to include both Windows packages or `-StoreArchitectures @()` to upload only the ZIPs. Missing or empty selected packages stop release creation before contacting GitHub.
 
 ## Source layout
 

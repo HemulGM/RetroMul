@@ -25,12 +25,12 @@ implementation
 
 uses
   RM.Settings.Catalog, RM.Settings.Platform, System.StrUtils, Core.Emulation,
-  Core.Platforms, Core.Platforms.PSP.Adapter,
-  Core.Platforms.PSP.Archive, PSP.Media, RM.Platforms.Presentation,
-  RM.Platforms.GBA.Icons, RM.Gamepad.Factory, RM.Platforms.PSP.Gamepads,
+  Core.Platforms, Core.Platforms.PSP.Adapter, Core.Platforms.PSP.Archive,
+  PSP.Media, RM.Platforms.Presentation, RM.Platforms.GBA.Icons,
+  RM.Gamepad.Factory, RM.Platforms.PSP.Gamepads, RM.Platforms.PSP.Settings,
   RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  System.Classes;
+  RM.Platforms.PSP.Input, System.Classes;
 
 class function TPSPPlatform.Source(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -47,17 +47,25 @@ begin
   if Context.HasExtension(['.iso']) and TPSPDisc.Recognizes(Context.Stream) then
   begin
     var Saved := Context.Stream.Position;
-    var Disc := TPSPDisc.Create(Context.Stream);
     try
-      Suitable := Disc.IsPSP;
-      RestorePosition := Suitable;
+      try
+        var Disc := TPSPDisc.Create(Context.Stream);
+        try
+          Suitable := Disc.IsPSP;
+          RestorePosition := Suitable;
+        finally
+          Disc.Free;
+        end;
+      except
+        on E: EPSPFormat do
+          Suitable := False;
+      end;
     finally
-      Disc.Free;
       Context.Stream.Position := Saved;
     end;
   end;
-  if Context.HasExtension(['.zip']) then
-    Suitable := IsPSPArchive(Context.Stream);
+  if (Context.Archive <> nil) then
+    Suitable := IsPSPArchive(Context.Archive);
   if Suitable then
     Result := TCoreMatch.Create('PSP',
       function: IEmulationCore
@@ -89,7 +97,7 @@ class procedure TPSPPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('psp', 'PlayStation Portable (experimental)', 'PSP',
     'Sony', 'PSP PlayStation Portable Allegrex homebrew', 'psp', ['psp'],
-    ['.iso', '.cso', '.pbp', '.elf', '.prx', '.zip'],
+    ['.iso', '.cso', '.pbp', '.elf', '.prx'],
     '', 'psp', 1);
 end;
 
@@ -99,6 +107,8 @@ begin
   var Registration := TEmulationCoreRegistration.Create('PSP', ['.pbp', '.elf', '.prx', '.cso']);
   Registration.Add(TCoreLoadStage.Source, 20, Source);
   Registration.Add(TCoreLoadStage.Header, 31, Header);
+  // Library platform selection routes ISO/ZIP media through disc loaders.
+  Registration.AddDiscPlatform('psp', Source);
   RegisterEmulationCore(Registration);
 end;
 
@@ -133,14 +143,14 @@ end;
 
 class procedure TPSPPlatform.RegisterClient;
 begin
-  RegisterSettingsPlatform('psp', TSettingsPlatform);
-  RegisterPlatformSettingsDevices('psp', TPlatformSettingsDevices);
+  RegisterSettingsPlatform('psp', TPSPSettings);
+  RegisterPlatformSettingsDevices('psp', TPSPSettingsDevices);
   RegisterPlatformDeviceCallouts('psp', TPlatformDeviceCallouts);
-  RegisterPlatformControlsHelp('psp', TPlatformControlsHelp);
+  RegisterPlatformControlsHelp('psp', TPSPControlsHelp);
   RegisterPlatformSettingsHandler('psp', TPlatformSettingsHandler);
   RegisterPlatformWindowLayout('psp', TPlatformWindowLayout);
   RegisterPlatformSessionHandler('psp', TPlatformSessionHandler);
-  RegisterPlatformInputHandler('psp', TPlatformInputHandler);
+  RegisterPlatformInputHandler('psp', TPSPInputHandler);
   RegisterInput;
   RegisterPlatformGamepads('psp', TGamepadPSP, []);
   RegisterPlatformPresentation('psp', 'psp', PlatformIconGBA);

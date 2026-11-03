@@ -81,7 +81,7 @@ class procedure TZXPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('zx', 'ZX Spectrum', 'ZX',
     'Sinclair', 'ZX Spectrum 48K 128K +2 Pentagon 128K TR-DOS', 'zxspectrum', ['zxspectrum', 'zx', 'spectrum'],
-    ['.sna', '.z80', '.tap', '.tzx', '.trd', '.scl', '.dsk', '.mmc', '.ide', '.dck', '.pro', '.kdi', '.zip', '.7z'],
+    ['.sna', '.z80', '.tap', '.tzx', '.trd', '.scl', '.dsk', '.mmc', '.ide', '.dck', '.pro', '.kdi'],
     'ZXSpectrum', 'zx', 2);
 end;
 

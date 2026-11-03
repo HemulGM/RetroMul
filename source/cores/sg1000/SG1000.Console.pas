@@ -4,9 +4,9 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.UITypes, System.Math,
-  Core.Emulation.Types, Core.Snapshots, MD.Z80, SG1000.Cartridge, SG1000.VDP,
+  Core.Emulation.Types, Core.Snapshots, HW.Z80, SG1000.Cartridge, SG1000.VDP,
   SG1000.Sound, SG1000.SF7000, SG1000.Cassette, SMS.Cartridge, SMS.VDP,
-  MSX.Sound.OPLL, Core.AudioFilter;
+  HW.Sound.OPLL, Core.AudioFilter;
 
 type
   TSGHostKeys = array[0..255] of Boolean;
@@ -893,7 +893,7 @@ begin
 end;
 
 initialization
-  MD.Z80.ConstantInitialise;
+  HW.Z80.ConstantInitialise;
 
 end.
 

@@ -31,13 +31,13 @@ implementation
 uses
   RM.Settings.Catalog, RM.Platforms.MSX.Keyboard, Core.PlatformServices,
   Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
-  Core.Platforms.MSX.Adapter, MSX.Cartridge,
-  RM.Platforms.MSX.Settings, RM.Platforms.Presentation,
-  RM.Platforms.SG1000.Icons, RM.Gamepad.Factory, RM.Platforms.SG1000.Gamepads,
-  System.UITypes, RM.Input.Runtime, RM.Keyboard.Input, RM.Session.Runtime,
-  RM.Keyboard.Session, RM.Window.Layout, RM.Keyboard.Window, RM.Settings.Runtime,
-  RM.Keyboard.Settings, RM.ControlsHelp.Content, RM.Settings.Callouts,
-  RM.Settings.Devices, System.Classes;
+  Core.Platforms.MSX.Adapter, MSX.Cartridge, RM.Platforms.MSX.Settings,
+  RM.Platforms.Presentation, RM.Platforms.SG1000.Icons, RM.Gamepad.Factory,
+  RM.Platforms.SG1000.Gamepads, System.UITypes, RM.Input.Runtime,
+  RM.Keyboard.Input, RM.Session.Runtime, RM.Keyboard.Session, RM.Window.Layout,
+  RM.Keyboard.Window, RM.Settings.Runtime, RM.Keyboard.Settings,
+  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
+  System.Classes;
 
 class function TMSXPlatform.ModelHint(Context: TCoreLoadContext): Integer;
 begin
@@ -53,11 +53,25 @@ end;
 
 class function TMSXPlatform.Match(Context: TCoreLoadContext; Model: TMSXModel; Media: TMSXMediaKind): TCoreMatch;
 begin
+  if Context.SelectedPlatform = 'msx1' then
+    Model := MSX1;
+  if Context.SelectedPlatform = 'msx2' then
+    Model := MSX2;
+  if Context.SelectedPlatform = 'msx2plus' then
+    Model := MSX2Plus;
   Result := ImageMatch(Context, 'MSX',
     function(const Data: TBytes; Input: TStream): IEmulationCore
     begin
       Result := TMSXCoreAdapter.Create(Data, Model, Context.Storage, Context.RomName, Media);
     end);
+  case Model of
+    MSX1:
+      Result.Format.SystemId := 'msx1';
+    MSX2:
+      Result.Format.SystemId := 'msx2';
+    MSX2Plus:
+      Result.Format.SystemId := 'msx2plus';
+  end;
 end;
 
 class function TMSXPlatform.Image(Context: TCoreLoadContext): TCoreMatch;
@@ -103,7 +117,6 @@ begin
     (Context.Signature(0, 'AB') or ((Length(Bytes) >= $4010) and Context.Signature($4000, 'AB'))) then
   begin
     Result := Match(Context, MSX1, CartridgeMedia);
-    Result.Format.SystemId := 'msx1';
   end;
 end;
 
@@ -111,15 +124,15 @@ class procedure TMSXPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('msx1', 'MSX1', 'MSX1',
     'ASCII / Microsoft', 'MSX TMS9918 AY Z80', 'msx1', ['msx1', 'msx'],
-    ['.rom', '.mx1', '.dsk', '.cas', '.wav', '.zip', '.7z', '.7z'],
+    ['.rom', '.mx1', '.dsk', '.cas', '.wav'],
     'MSX', 'msx1', 2);
   TPlatformRegistry.RegisterPlatform('msx2', 'MSX2', 'MSX2',
     'ASCII / Microsoft', 'MSX V9938', 'msx2', ['msx2'],
-    ['.rom', '.mx2', '.dsk', '.cas', '.wav', '.zip', '.7z', '.7z'],
+    ['.rom', '.mx2', '.dsk', '.cas', '.wav'],
     'MSX', 'msx2', 2);
   TPlatformRegistry.RegisterPlatform('msx2plus', 'MSX2+', 'MSX2+',
     'ASCII', 'MSX2+ V9958 YJK MSX MUSIC', 'msx2plus', ['msx2plus', 'msx2+'],
-    ['.rom', '.mx2', '.mxp', '.dsk', '.cas', '.wav', '.zip', '.7z', '.7z'],
+    ['.rom', '.mx2', '.mxp', '.dsk', '.cas', '.wav'],
     'MSX', 'msx2plus', 2);
 end;
 
@@ -133,11 +146,6 @@ begin
     function(Context: TCoreLoadContext; const Name: string; Size: UInt64): Boolean
     begin
       Result := (ModelHint(Context) >= 0) and MatchText(ExtractFileExt(Name), ['.rom', '.wav']);
-    end;
-  Registration.AllowArchiveVariants :=
-    function(Context: TCoreLoadContext): Boolean
-    begin
-      Result := ModelHint(Context) >= 0;
     end;
   RegisterEmulationCore(Registration);
 end;

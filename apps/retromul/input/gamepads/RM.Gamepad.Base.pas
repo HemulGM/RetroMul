@@ -67,6 +67,8 @@ type
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     procedure ReleaseAll; override;
+    // Called when the UI language changes; input state and geometry stay intact.
+    procedure ApplyLanguage; virtual;
     function ButtonBounds(Button: TEmulatorButton): TRectF;
     function AuxiliaryButtonBounds(Index: Integer): TRectF;
     property AuxiliaryButtons: Cardinal read FAuxiliaryButtons;
@@ -222,6 +224,10 @@ begin
   AttachToForm(nil);
   FreeAndNil(FBindings);
   inherited;
+end;
+
+procedure TPlatformGamepad.ApplyLanguage;
+begin
 end;
 
 procedure TPlatformGamepad.Bind(Element: TVirtualElement; Part: Integer; Button: TEmulatorButton);

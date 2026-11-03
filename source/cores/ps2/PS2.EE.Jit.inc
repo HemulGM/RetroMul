@@ -115,9 +115,11 @@ begin
   J.Align(16);
   Result := J.Here;
   J.Enter;
-  // Chained blocks come in here.
+  // Chained blocks come in here. (BranchTaken is read in delay slots and
+  // after them only, see below: a block without one leaves it.)
   B.NativeInner := J.Here;
-  J.Move(jw8, JMem(jrSelf, O.BranchTaken), JImm(0));
+  if (B.Insts[B.Count - 1].Flags and IFSlot) <> 0 then
+    J.Move(jw8, JMem(jrSelf, O.BranchTaken), JImm(0));
   J.Move(jw8, JMem(jrSelf, O.Stop), JImm(0));
   var Stops: TArray<TJitLabel>;
   SetLength(Stops, B.Count);
@@ -155,14 +157,18 @@ begin
       J.Bind(Done);
     end;
   end;
-  // All ran: the PC after the last, or where its branch went.
+  // All ran: the PC after the last, or where its branch went. (A block whose
+  // last is no delay slot has no branch: BranchTaken stays as it starts.)
   var Last := B.Insts + (B.Count - 1);
   var NotTaken := J.NewLabel;
-  J.Move(jw8, JT0, JMem(jrSelf, O.BranchTaken));
-  J.BranchTest(jcEq, jw8, JT0, JT0, NotTaken);
-  J.Move(jw32, JT0, JMem(jrSelf, O.BranchTarget));
-  J.Move(jw32, JMem(jrSelf, O.PC), JT0);
-  JitEmitChain(B, 0);
+  if (Last.Flags and IFSlot) <> 0 then
+  begin
+    J.Move(jw8, JT0, JMem(jrSelf, O.BranchTaken));
+    J.BranchTest(jcEq, jw8, JT0, JT0, NotTaken);
+    J.Move(jw32, JT0, JMem(jrSelf, O.BranchTarget));
+    J.Move(jw32, JMem(jrSelf, O.PC), JT0);
+    JitEmitChain(B, 0);
+  end;
   J.Bind(NotTaken);
   J.Move(jw32, JT0, JImm(Int64(Integer(Last.Addr + 4))));
   J.Move(jw32, JMem(jrSelf, O.PC), JT0);
@@ -192,10 +198,12 @@ begin
   var Again := J.NewLabel;
   var Link := J.NewLabel;
   var Back := J.NewLabel;
-  J.Move(jw64, JT1, JMem(jrSelf, O.Now));
+  // (The time counters are where the constructor was given them: their
+  // addresses as constants.)
+  J.Move(jw64, JT1, JImm(Int64(NativeUInt(Now))));
   J.Alu(jaAdd, jw64, JMem(jrT1, 0), JImm(B.Count));
   J.Alu(jaAdd, jw64, JMem(jrSelf, O.Executed), JImm(B.Count));
-  J.Move(jw64, JT2, JMem(jrSelf, O.Deadline));
+  J.Move(jw64, JT2, JImm(Int64(NativeUInt(Deadline))));
   J.Move(jw64, JT2, JMem(jrT2, 0));
   J.Branch(jcGe, jw64, JMem(jrT1, 0), JT2, Back);
   if O.Attention then

@@ -135,7 +135,12 @@ itself (`NextDirect`). Anything else goes the synchronous way.
   and interrupts). The IOP tests (`.irx`) start on the IOP alone
   (`TPS2Console.LoadIOPModule`). All 23 pass: the IOP CPU and the
   high-level kernel's threads, event flags, message boxes, interrupt handlers,
-  variable pools and libc.
+  variable pools and libc. The IOP interpreter finds each instruction's
+  procedure through a table by opcode, reaches RAM at once in loads and
+  stores, and runs a loop of its own without what only BIOS boot has
+  (interrupts, address errors, BIOS fetches); `tests/cores/ps2/iopcpu`
+  compares it over 3000 random programs (HLE and BIOS mode, delay slots,
+  mirrors, devices, traps) with a copy of the core as it was.
 - The high-level IOP kernel follows those hardware results. That covers
   thread call errors and rules, wait types, waiters released with
   KE_WAIT_DELETE or KE_RELEASE_WAIT, and message boxes as the kernel's ring of

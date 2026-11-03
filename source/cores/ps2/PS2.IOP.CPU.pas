@@ -1,7 +1,8 @@
 ﻿unit PS2.IOP.CPU;
 
 // The IOP's R3000A-compatible core for IOP modules (IRX) running under the
-// high-level IOP kernel: a plain interpreter with branch and load delay
+// high-level IOP kernel (or the BIOS's, Hardware): an interpreter (a table
+// of procedures by opcode) with branch and load delay
 // slots, 2 MiB of RAM (mirrored), the 1 KiB scratchpad and hardware
 // registers through OnRead/OnWrite. Kernel services are reached through HLE
 // trap words (major opcode 3Bh, an unused coprocessor 3 store) that the
@@ -70,8 +71,6 @@ type
     procedure SetR(Index: Integer; Value: Cardinal); inline;
     procedure LoadDelayed(Index: Integer; Value: Cardinal); inline;
     procedure Jump(Target: Cardinal); inline;
-    procedure Execute(Op: Cardinal);
-    procedure ExecuteSpecial(Op: Cardinal);
   public
     R: TIOPRegs;
     HI, LO: Cardinal;
@@ -360,252 +359,616 @@ begin
   FBranch := True;
 end;
 
-procedure TIOPCPU.ExecuteSpecial(Op: Cardinal);
+// The instructions, each a procedure of its own found through a table by
+// its opcode (SPECIAL's by its function), as one case would decode them.
+type
+  TIOPOp = procedure(C: TIOPCPU; Op: Cardinal);
+
+var
+  IOPMain, IOPSpecial: array[0..63] of TIOPOp;
+
+function OpRs(Op: Cardinal): Integer; inline;
 begin
-  var Rs := (Op shr 21) and 31;
-  var Rt := (Op shr 16) and 31;
-  var Rd := (Op shr 11) and 31;
-  var Sa := (Op shr 6) and 31;
-  case Op and 63 of
-    $00: SetR(Rd, R[Rt] shl Sa);
-    $02: SetR(Rd, R[Rt] shr Sa);
-    $03: SetR(Rd, Sar32(R[Rt], Sa));
-    $04: SetR(Rd, R[Rt] shl (R[Rs] and 31));
-    $06: SetR(Rd, R[Rt] shr (R[Rs] and 31));
-    $07: SetR(Rd, Sar32(R[Rt], R[Rs] and 31));
-    $08: Jump(R[Rs]);
-    $09:
-      begin
-        var Target := R[Rs];
-        SetR(Rd, Add32(FCurrentPC, 8));
-        Jump(Target);
-      end;
-    $0C:
-      if Hardware then
-        Enter(8, FCurrentPC, FInDelay)
-      else if Assigned(OnException) then
-        OnException(8, FCurrentPC);
-    $0D:
-      if Hardware then
-        Enter(9, FCurrentPC, FInDelay)
-      else if Assigned(OnException) then
-        OnException(9, FCurrentPC);
-    $10: SetR(Rd, HI);
-    $11: HI := R[Rs];
-    $12: SetR(Rd, LO);
-    $13: LO := R[Rs];
-    $18:
-      begin
-        var P := Int64(Integer(R[Rs])) * Int64(Integer(R[Rt]));
-        LO := Cardinal(P and $FFFFFFFF);
-        HI := Cardinal((P shr 32) and $FFFFFFFF);
-      end;
-    $19:
-      begin
-        var P := UInt64(R[Rs]) * UInt64(R[Rt]);
-        LO := Cardinal(P and $FFFFFFFF);
-        HI := Cardinal(P shr 32);
-      end;
-    $1A:
-      begin
-        var N := Integer(R[Rs]);
-        var D := Integer(R[Rt]);
-        if D = 0 then
-        begin
-          HI := Cardinal(N);
-          if N >= 0 then
-            LO := $FFFFFFFF
-          else
-            LO := 1;
-        end
-        else if (Cardinal(N) = $80000000) and (D = -1) then
-        begin
-          LO := $80000000;
-          HI := 0;
-        end
-        else
-        begin
-          LO := Cardinal(N div D);
-          HI := Cardinal(N mod D);
-        end;
-      end;
-    $1B:
-      begin
-        var N := R[Rs];
-        var D := R[Rt];
-        if D = 0 then
-        begin
-          LO := $FFFFFFFF;
-          HI := N;
-        end
-        else
-        begin
-          LO := N div D;
-          HI := N mod D;
-        end;
-      end;
-    $20:
-      if Hardware and AddOverflows(R[Rs], R[Rt]) then
-        Enter(12, FCurrentPC, FInDelay)
-      else
-        SetR(Rd, Add32(R[Rs], R[Rt]));
-    $21: SetR(Rd, Add32(R[Rs], R[Rt]));
-    $22:
-      if Hardware and SubOverflows(R[Rs], R[Rt]) then
-        Enter(12, FCurrentPC, FInDelay)
-      else
-        SetR(Rd, Sub32(R[Rs], R[Rt]));
-    $23: SetR(Rd, Sub32(R[Rs], R[Rt]));
-    $24: SetR(Rd, R[Rs] and R[Rt]);
-    $25: SetR(Rd, R[Rs] or R[Rt]);
-    $26: SetR(Rd, R[Rs] xor R[Rt]);
-    $27: SetR(Rd, not (R[Rs] or R[Rt]));
-    $2A: SetR(Rd, Ord(Integer(R[Rs]) < Integer(R[Rt])));
-    $2B: SetR(Rd, Ord(R[Rs] < R[Rt]));
+  Result := Integer((Op shr 21) and 31);
+end;
+
+function OpRt(Op: Cardinal): Integer; inline;
+begin
+  Result := Integer((Op shr 16) and 31);
+end;
+
+function OpRd(Op: Cardinal): Integer; inline;
+begin
+  Result := Integer((Op shr 11) and 31);
+end;
+
+function OpSa(Op: Cardinal): Integer; inline;
+begin
+  Result := Integer((Op shr 6) and 31);
+end;
+
+function OpSImm(Op: Cardinal): Cardinal; inline;
+begin
+  Result := SX16To32(Op and $FFFF);
+end;
+
+// A branch's target (the delay slot's address plus the offset).
+function BranchTarget(C: TIOPCPU; Op: Cardinal): Cardinal; inline;
+begin
+  Result := Add32(Add32(C.FCurrentPC, 4), OpSImm(Op) shl 2);
+end;
+
+procedure OpReserved(C: TIOPCPU; Op: Cardinal);
+begin
+  // COP2 and the rest: not present on the IOP.
+  if C.Hardware then
+    C.Enter(10, C.FCurrentPC, C.FInDelay)
+  else if Assigned(C.OnException) then
+    C.OnException(10, C.FCurrentPC);
+end;
+
+{ SPECIAL }
+
+procedure OpSLL(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), C.R[OpRt(Op)] shl OpSa(Op));
+end;
+
+procedure OpSRL(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), C.R[OpRt(Op)] shr OpSa(Op));
+end;
+
+procedure OpSRA(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), Sar32(C.R[OpRt(Op)], OpSa(Op)));
+end;
+
+procedure OpSLLV(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), C.R[OpRt(Op)] shl (C.R[OpRs(Op)] and 31));
+end;
+
+procedure OpSRLV(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), C.R[OpRt(Op)] shr (C.R[OpRs(Op)] and 31));
+end;
+
+procedure OpSRAV(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), Sar32(C.R[OpRt(Op)], C.R[OpRs(Op)] and 31));
+end;
+
+procedure OpJR(C: TIOPCPU; Op: Cardinal);
+begin
+  C.Jump(C.R[OpRs(Op)]);
+end;
+
+procedure OpJALR(C: TIOPCPU; Op: Cardinal);
+begin
+  var Target := C.R[OpRs(Op)];
+  C.SetR(OpRd(Op), Add32(C.FCurrentPC, 8));
+  C.Jump(Target);
+end;
+
+procedure OpSYSCALL(C: TIOPCPU; Op: Cardinal);
+begin
+  if C.Hardware then
+    C.Enter(8, C.FCurrentPC, C.FInDelay)
+  else if Assigned(C.OnException) then
+    C.OnException(8, C.FCurrentPC);
+end;
+
+procedure OpBREAK(C: TIOPCPU; Op: Cardinal);
+begin
+  if C.Hardware then
+    C.Enter(9, C.FCurrentPC, C.FInDelay)
+  else if Assigned(C.OnException) then
+    C.OnException(9, C.FCurrentPC);
+end;
+
+procedure OpMFHI(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), C.HI);
+end;
+
+procedure OpMTHI(C: TIOPCPU; Op: Cardinal);
+begin
+  C.HI := C.R[OpRs(Op)];
+end;
+
+procedure OpMFLO(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), C.LO);
+end;
+
+procedure OpMTLO(C: TIOPCPU; Op: Cardinal);
+begin
+  C.LO := C.R[OpRs(Op)];
+end;
+
+procedure OpMULT(C: TIOPCPU; Op: Cardinal);
+begin
+  var P := Int64(Integer(C.R[OpRs(Op)])) * Int64(Integer(C.R[OpRt(Op)]));
+  C.LO := Cardinal(P and $FFFFFFFF);
+  C.HI := Cardinal((P shr 32) and $FFFFFFFF);
+end;
+
+procedure OpMULTU(C: TIOPCPU; Op: Cardinal);
+begin
+  var P := UInt64(C.R[OpRs(Op)]) * UInt64(C.R[OpRt(Op)]);
+  C.LO := Cardinal(P and $FFFFFFFF);
+  C.HI := Cardinal(P shr 32);
+end;
+
+procedure OpDIV(C: TIOPCPU; Op: Cardinal);
+begin
+  var N := Integer(C.R[OpRs(Op)]);
+  var D := Integer(C.R[OpRt(Op)]);
+  if D = 0 then
+  begin
+    C.HI := Cardinal(N);
+    if N >= 0 then
+      C.LO := $FFFFFFFF
+    else
+      C.LO := 1;
+  end
+  else if (Cardinal(N) = $80000000) and (D = -1) then
+  begin
+    C.LO := $80000000;
+    C.HI := 0;
+  end
   else
-    if Hardware then
-      Enter(10, FCurrentPC, FInDelay)
-    else if Assigned(OnException) then
-      OnException(10, FCurrentPC);
+  begin
+    C.LO := Cardinal(N div D);
+    C.HI := Cardinal(N mod D);
   end;
 end;
 
-procedure TIOPCPU.Execute(Op: Cardinal);
+procedure OpDIVU(C: TIOPCPU; Op: Cardinal);
 begin
-  var Rs := (Op shr 21) and 31;
-  var Rt := (Op shr 16) and 31;
-  var Imm := Op and $FFFF;
-  var SImm := SX16To32(Imm);
-  case Op shr 26 of
-    $00: ExecuteSpecial(Op);
-    $01:
-      begin
-        var Taken: Boolean;
-        if (Rt and 1) = 0 then
-          Taken := Integer(R[Rs]) < 0
-        else
-          Taken := Integer(R[Rs]) >= 0;
-        // BLTZAL/BGEZAL link even when not taken.
-        if (Rt and $1E) = $10 then
-          SetR(31, Add32(FCurrentPC, 8));
-        if Taken then
-          Jump(Add32(Add32(FCurrentPC, 4), SImm shl 2));
-      end;
-    $02: Jump((Add32(FCurrentPC, 4) and $F0000000) or ((Op and $3FFFFFF) shl 2));
-    $03:
-      begin
-        SetR(31, Add32(FCurrentPC, 8));
-        Jump((Add32(FCurrentPC, 4) and $F0000000) or ((Op and $3FFFFFF) shl 2));
-      end;
-    $04: if R[Rs] = R[Rt] then Jump(Add32(Add32(FCurrentPC, 4), SImm shl 2));
-    $05: if R[Rs] <> R[Rt] then Jump(Add32(Add32(FCurrentPC, 4), SImm shl 2));
-    $06: if Integer(R[Rs]) <= 0 then Jump(Add32(Add32(FCurrentPC, 4), SImm shl 2));
-    $07: if Integer(R[Rs]) > 0 then Jump(Add32(Add32(FCurrentPC, 4), SImm shl 2));
-    $08:
-      if Hardware and AddOverflows(R[Rs], SImm) then
-        Enter(12, FCurrentPC, FInDelay)
-      else
-        SetR(Rt, Add32(R[Rs], SImm));
-    $09: SetR(Rt, Add32(R[Rs], SImm));
-    $0A: SetR(Rt, Ord(Integer(R[Rs]) < Integer(SImm)));
-    $0B: SetR(Rt, Ord(R[Rs] < SImm));
-    $0C: SetR(Rt, R[Rs] and Imm);
-    $0D: SetR(Rt, R[Rs] or Imm);
-    $0E: SetR(Rt, R[Rs] xor Imm);
-    $0F: SetR(Rt, Imm shl 16);
-    $10:
-      begin
-        // COP0: MFC0, MTC0, RFE.
-        var Rd := (Op shr 11) and 31;
-        case Rs of
-          0:
-            case Rd of
-              3, 5, 6, 7, 9, 11: LoadDelayed(Rt, Debug[Rd]);
-              8: LoadDelayed(Rt, BadVAddr);
-              12: LoadDelayed(Rt, SR);
-              13: LoadDelayed(Rt, Cause or (Cardinal(Ord(IntLine and Hardware)) shl 10));
-              14: LoadDelayed(Rt, EPC);
-              15: LoadDelayed(Rt, $1F);
-            else
-              LoadDelayed(Rt, 0);
-            end;
-          4:
-            case Rd of
-              3, 5, 6, 7, 9, 11: Debug[Rd] := R[Rt];
-              12: SR := R[Rt];
-              13: Cause := (Cause and not $300) or (R[Rt] and $300);
-              14: EPC := R[Rt];
-            end;
-          16:
-            if (Op and 63) = $10 then
-              SR := (SR and not $F) or ((SR shr 2) and $F);
-        end;
-      end;
-    $20: LoadDelayed(Rt, Cardinal(Integer(ShortInt(Byte(ReadMem(Add32(R[Rs], SImm), 1))))));
-    $21:
-      if Hardware and Misaligned(Add32(R[Rs], SImm), 1, 4) then
-      else
-        LoadDelayed(Rt, SX16To32(ReadMem(Add32(R[Rs], SImm) and not 1, 2)));
-    $22, $26:
-      begin
-        // LWL/LWR merge with a value still in the load delay slot.
-        var A := Add32(R[Rs], SImm);
-        var Cur := R[Rt];
-        if FDelayReg = Integer(Rt) then
-          Cur := FDelayValue;
-        var W := ReadMem(A and not 3, 4);
-        var Sh := (A and 3) * 8;
-        var V: Cardinal;
-        if (Op shr 26) = $22 then
-          V := (Cur and ($00FFFFFF shr Sh)) or (W shl (24 - Sh))
-        else
-          V := (Cur and not ($FFFFFFFF shr Sh)) or (W shr Sh);
-        LoadDelayed(Rt, V);
-      end;
-    $23:
-      if Hardware and Misaligned(Add32(R[Rs], SImm), 3, 4) then
-      else
-        LoadDelayed(Rt, ReadMem(Add32(R[Rs], SImm) and not 3, 4));
-    $24: LoadDelayed(Rt, ReadMem(Add32(R[Rs], SImm), 1));
-    $25:
-      if Hardware and Misaligned(Add32(R[Rs], SImm), 1, 4) then
-      else
-        LoadDelayed(Rt, ReadMem(Add32(R[Rs], SImm) and not 1, 2));
-    $28: WriteMem(Add32(R[Rs], SImm), R[Rt] and $FF, 1);
-    $29:
-      if Hardware and Misaligned(Add32(R[Rs], SImm), 1, 5) then
-      else
-        WriteMem(Add32(R[Rs], SImm) and not 1, R[Rt] and $FFFF, 2);
-    $2A, $2E:
-      begin
-        var A := Add32(R[Rs], SImm);
-        var W := ReadMem(A and not 3, 4);
-        var Sh := (A and 3) * 8;
-        if (Op shr 26) = $2A then
-          W := (W and not ($FFFFFFFF shr (24 - Sh))) or (R[Rt] shr (24 - Sh))
-        else
-          W := (W and not ($FFFFFFFF shl Sh)) or (R[Rt] shl Sh);
-        WriteMem(A and not 3, W, 4);
-      end;
-    $2B:
-      if Hardware and Misaligned(Add32(R[Rs], SImm), 3, 5) then
-      else
-        WriteMem(Add32(R[Rs], SImm) and not 3, R[Rt], 4);
-    IOPTrapOpcode:
-      if Assigned(OnTrap) then
-        OnTrap(Op and $3FFFFFF);
+  var N := C.R[OpRs(Op)];
+  var D := C.R[OpRt(Op)];
+  if D = 0 then
+  begin
+    C.LO := $FFFFFFFF;
+    C.HI := N;
+  end
   else
-    // COP2 and the rest: not present on the IOP.
-    if Hardware then
-      Enter(10, FCurrentPC, FInDelay)
-    else if Assigned(OnException) then
-      OnException(10, FCurrentPC);
+  begin
+    C.LO := N div D;
+    C.HI := N mod D;
   end;
+end;
+
+procedure OpADD(C: TIOPCPU; Op: Cardinal);
+begin
+  if C.Hardware and C.AddOverflows(C.R[OpRs(Op)], C.R[OpRt(Op)]) then
+    C.Enter(12, C.FCurrentPC, C.FInDelay)
+  else
+    C.SetR(OpRd(Op), Add32(C.R[OpRs(Op)], C.R[OpRt(Op)]));
+end;
+
+procedure OpADDU(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), Add32(C.R[OpRs(Op)], C.R[OpRt(Op)]));
+end;
+
+procedure OpSUB(C: TIOPCPU; Op: Cardinal);
+begin
+  if C.Hardware and C.SubOverflows(C.R[OpRs(Op)], C.R[OpRt(Op)]) then
+    C.Enter(12, C.FCurrentPC, C.FInDelay)
+  else
+    C.SetR(OpRd(Op), Sub32(C.R[OpRs(Op)], C.R[OpRt(Op)]));
+end;
+
+procedure OpSUBU(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), Sub32(C.R[OpRs(Op)], C.R[OpRt(Op)]));
+end;
+
+procedure OpAND(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), C.R[OpRs(Op)] and C.R[OpRt(Op)]);
+end;
+
+procedure OpOR(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), C.R[OpRs(Op)] or C.R[OpRt(Op)]);
+end;
+
+procedure OpXOR(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), C.R[OpRs(Op)] xor C.R[OpRt(Op)]);
+end;
+
+procedure OpNOR(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), not (C.R[OpRs(Op)] or C.R[OpRt(Op)]));
+end;
+
+procedure OpSLT(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), Ord(Integer(C.R[OpRs(Op)]) < Integer(C.R[OpRt(Op)])));
+end;
+
+procedure OpSLTU(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRd(Op), Ord(C.R[OpRs(Op)] < C.R[OpRt(Op)]));
+end;
+
+{ Primary }
+
+procedure OpSPECIAL(C: TIOPCPU; Op: Cardinal);
+begin
+  IOPSpecial[Op and 63](C, Op);
+end;
+
+procedure OpREGIMM(C: TIOPCPU; Op: Cardinal);
+begin
+  var Rs := OpRs(Op);
+  var Rt := OpRt(Op);
+  var Taken: Boolean;
+  if (Rt and 1) = 0 then
+    Taken := Integer(C.R[Rs]) < 0
+  else
+    Taken := Integer(C.R[Rs]) >= 0;
+  // BLTZAL/BGEZAL link even when not taken.
+  if (Rt and $1E) = $10 then
+    C.SetR(31, Add32(C.FCurrentPC, 8));
+  if Taken then
+    C.Jump(BranchTarget(C, Op));
+end;
+
+procedure OpJ(C: TIOPCPU; Op: Cardinal);
+begin
+  C.Jump((Add32(C.FCurrentPC, 4) and $F0000000) or ((Op and $3FFFFFF) shl 2));
+end;
+
+procedure OpJAL(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(31, Add32(C.FCurrentPC, 8));
+  C.Jump((Add32(C.FCurrentPC, 4) and $F0000000) or ((Op and $3FFFFFF) shl 2));
+end;
+
+procedure OpBEQ(C: TIOPCPU; Op: Cardinal);
+begin
+  if C.R[OpRs(Op)] = C.R[OpRt(Op)] then C.Jump(BranchTarget(C, Op));
+end;
+
+procedure OpBNE(C: TIOPCPU; Op: Cardinal);
+begin
+  if C.R[OpRs(Op)] <> C.R[OpRt(Op)] then C.Jump(BranchTarget(C, Op));
+end;
+
+procedure OpBLEZ(C: TIOPCPU; Op: Cardinal);
+begin
+  if Integer(C.R[OpRs(Op)]) <= 0 then C.Jump(BranchTarget(C, Op));
+end;
+
+procedure OpBGTZ(C: TIOPCPU; Op: Cardinal);
+begin
+  if Integer(C.R[OpRs(Op)]) > 0 then C.Jump(BranchTarget(C, Op));
+end;
+
+procedure OpADDI(C: TIOPCPU; Op: Cardinal);
+begin
+  if C.Hardware and C.AddOverflows(C.R[OpRs(Op)], OpSImm(Op)) then
+    C.Enter(12, C.FCurrentPC, C.FInDelay)
+  else
+    C.SetR(OpRt(Op), Add32(C.R[OpRs(Op)], OpSImm(Op)));
+end;
+
+procedure OpADDIU(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRt(Op), Add32(C.R[OpRs(Op)], OpSImm(Op)));
+end;
+
+procedure OpSLTI(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRt(Op), Ord(Integer(C.R[OpRs(Op)]) < Integer(OpSImm(Op))));
+end;
+
+procedure OpSLTIU(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRt(Op), Ord(C.R[OpRs(Op)] < OpSImm(Op)));
+end;
+
+procedure OpANDI(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRt(Op), C.R[OpRs(Op)] and (Op and $FFFF));
+end;
+
+procedure OpORI(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRt(Op), C.R[OpRs(Op)] or (Op and $FFFF));
+end;
+
+procedure OpXORI(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRt(Op), C.R[OpRs(Op)] xor (Op and $FFFF));
+end;
+
+procedure OpLUI(C: TIOPCPU; Op: Cardinal);
+begin
+  C.SetR(OpRt(Op), (Op and $FFFF) shl 16);
+end;
+
+procedure OpCOP0(C: TIOPCPU; Op: Cardinal);
+begin
+  // MFC0, MTC0, RFE.
+  var Rt := OpRt(Op);
+  var Rd := OpRd(Op);
+  case OpRs(Op) of
+    0:
+      case Rd of
+        3, 5, 6, 7, 9, 11: C.LoadDelayed(Rt, C.Debug[Rd]);
+        8: C.LoadDelayed(Rt, C.BadVAddr);
+        12: C.LoadDelayed(Rt, C.SR);
+        13: C.LoadDelayed(Rt, C.Cause or (Cardinal(Ord(C.IntLine and C.Hardware)) shl 10));
+        14: C.LoadDelayed(Rt, C.EPC);
+        15: C.LoadDelayed(Rt, $1F);
+      else
+        C.LoadDelayed(Rt, 0);
+      end;
+    4:
+      case Rd of
+        3, 5, 6, 7, 9, 11: C.Debug[Rd] := C.R[Rt];
+        12: C.SR := C.R[Rt];
+        13: C.Cause := (C.Cause and not $300) or (C.R[Rt] and $300);
+        14: C.EPC := C.R[Rt];
+      end;
+    16:
+      if (Op and 63) = $10 then
+        C.SR := (C.SR and not $F) or ((C.SR shr 2) and $F);
+  end;
+end;
+
+// Loads and stores reach RAM at once (KUSEG, KSEG0/1 and the mirrors below
+// 8 MiB), the rest through ReadMem and WriteMem; misaligned ones fault as
+// before with Hardware.
+
+procedure OpLB(C: TIOPCPU; Op: Cardinal);
+begin
+  var A := Add32(C.R[OpRs(Op)], OpSImm(Op));
+  var P := A and $1FFFFFFF;
+  var V: Cardinal;
+  if P < $00800000 then
+    V := C.FRAM[P and PS2IOPRAMMask]
+  else
+    V := C.ReadMem(A, 1);
+  C.LoadDelayed(OpRt(Op), Cardinal(Integer(ShortInt(Byte(V)))));
+end;
+
+procedure OpLH(C: TIOPCPU; Op: Cardinal);
+begin
+  var A := Add32(C.R[OpRs(Op)], OpSImm(Op));
+  if C.Hardware and C.Misaligned(A, 1, 4) then
+    Exit;
+  var P := A and $1FFFFFFE;
+  var V: Cardinal;
+  if P < $00800000 then
+    V := PWord(C.FRAM + (P and PS2IOPRAMMask))^
+  else
+    V := C.ReadMem(A and not 1, 2);
+  C.LoadDelayed(OpRt(Op), SX16To32(V));
+end;
+
+procedure OpLWLR(C: TIOPCPU; Op: Cardinal);
+begin
+  // LWL/LWR merge with a value still in the load delay slot.
+  var Rt := OpRt(Op);
+  var A := Add32(C.R[OpRs(Op)], OpSImm(Op));
+  var Cur := C.R[Rt];
+  if C.FDelayReg = Rt then
+    Cur := C.FDelayValue;
+  var W := C.ReadMem(A and not 3, 4);
+  var Sh := (A and 3) * 8;
+  var V: Cardinal;
+  if (Op shr 26) = $22 then
+    V := (Cur and ($00FFFFFF shr Sh)) or (W shl (24 - Sh))
+  else
+    V := (Cur and not ($FFFFFFFF shr Sh)) or (W shr Sh);
+  C.LoadDelayed(Rt, V);
+end;
+
+procedure OpLW(C: TIOPCPU; Op: Cardinal);
+begin
+  var A := Add32(C.R[OpRs(Op)], OpSImm(Op));
+  if C.Hardware and C.Misaligned(A, 3, 4) then
+    Exit;
+  var P := A and $1FFFFFFC;
+  var V: Cardinal;
+  if P < $00800000 then
+    V := PCardinal(C.FRAM + (P and PS2IOPRAMMask))^
+  else
+    V := C.ReadMem(A and not 3, 4);
+  C.LoadDelayed(OpRt(Op), V);
+end;
+
+procedure OpLBU(C: TIOPCPU; Op: Cardinal);
+begin
+  var A := Add32(C.R[OpRs(Op)], OpSImm(Op));
+  var P := A and $1FFFFFFF;
+  var V: Cardinal;
+  if P < $00800000 then
+    V := C.FRAM[P and PS2IOPRAMMask]
+  else
+    V := C.ReadMem(A, 1);
+  C.LoadDelayed(OpRt(Op), V);
+end;
+
+procedure OpLHU(C: TIOPCPU; Op: Cardinal);
+begin
+  var A := Add32(C.R[OpRs(Op)], OpSImm(Op));
+  if C.Hardware and C.Misaligned(A, 1, 4) then
+    Exit;
+  var P := A and $1FFFFFFE;
+  var V: Cardinal;
+  if P < $00800000 then
+    V := PWord(C.FRAM + (P and PS2IOPRAMMask))^
+  else
+    V := C.ReadMem(A and not 1, 2);
+  C.LoadDelayed(OpRt(Op), V);
+end;
+
+procedure OpSB(C: TIOPCPU; Op: Cardinal);
+begin
+  var A := Add32(C.R[OpRs(Op)], OpSImm(Op));
+  var V := C.R[OpRt(Op)] and $FF;
+  // (Writes with the cache isolated go nowhere: WriteMem.)
+  var P := A and $1FFFFFFF;
+  if (P < $00800000) and ((C.SR and $10000) = 0) then
+    C.FRAM[P and PS2IOPRAMMask] := Byte(V)
+  else
+    C.WriteMem(A, V, 1);
+end;
+
+procedure OpSH(C: TIOPCPU; Op: Cardinal);
+begin
+  var A := Add32(C.R[OpRs(Op)], OpSImm(Op));
+  if C.Hardware and C.Misaligned(A, 1, 5) then
+    Exit;
+  var V := C.R[OpRt(Op)] and $FFFF;
+  var P := A and $1FFFFFFE;
+  if (P < $00800000) and ((C.SR and $10000) = 0) then
+    PWord(C.FRAM + (P and PS2IOPRAMMask))^ := Word(V)
+  else
+    C.WriteMem(A and not 1, V, 2);
+end;
+
+procedure OpSWLR(C: TIOPCPU; Op: Cardinal);
+begin
+  var Rt := OpRt(Op);
+  var A := Add32(C.R[OpRs(Op)], OpSImm(Op));
+  var W := C.ReadMem(A and not 3, 4);
+  var Sh := (A and 3) * 8;
+  if (Op shr 26) = $2A then
+    W := (W and not ($FFFFFFFF shr (24 - Sh))) or (C.R[Rt] shr (24 - Sh))
+  else
+    W := (W and not ($FFFFFFFF shl Sh)) or (C.R[Rt] shl Sh);
+  C.WriteMem(A and not 3, W, 4);
+end;
+
+procedure OpSW(C: TIOPCPU; Op: Cardinal);
+begin
+  var A := Add32(C.R[OpRs(Op)], OpSImm(Op));
+  if C.Hardware and C.Misaligned(A, 3, 5) then
+    Exit;
+  var V := C.R[OpRt(Op)];
+  var P := A and $1FFFFFFC;
+  if (P < $00800000) and ((C.SR and $10000) = 0) then
+    PCardinal(C.FRAM + (P and PS2IOPRAMMask))^ := V
+  else
+    C.WriteMem(A and not 3, V, 4);
+end;
+
+procedure OpTrap(C: TIOPCPU; Op: Cardinal);
+begin
+  if Assigned(C.OnTrap) then
+    C.OnTrap(Op and $3FFFFFF);
+end;
+
+procedure InitIOPOps;
+begin
+  for var K := 0 to 63 do
+  begin
+    IOPMain[K] := OpReserved;
+    IOPSpecial[K] := OpReserved;
+  end;
+  IOPSpecial[$00] := OpSLL;
+  IOPSpecial[$02] := OpSRL;
+  IOPSpecial[$03] := OpSRA;
+  IOPSpecial[$04] := OpSLLV;
+  IOPSpecial[$06] := OpSRLV;
+  IOPSpecial[$07] := OpSRAV;
+  IOPSpecial[$08] := OpJR;
+  IOPSpecial[$09] := OpJALR;
+  IOPSpecial[$0C] := OpSYSCALL;
+  IOPSpecial[$0D] := OpBREAK;
+  IOPSpecial[$10] := OpMFHI;
+  IOPSpecial[$11] := OpMTHI;
+  IOPSpecial[$12] := OpMFLO;
+  IOPSpecial[$13] := OpMTLO;
+  IOPSpecial[$18] := OpMULT;
+  IOPSpecial[$19] := OpMULTU;
+  IOPSpecial[$1A] := OpDIV;
+  IOPSpecial[$1B] := OpDIVU;
+  IOPSpecial[$20] := OpADD;
+  IOPSpecial[$21] := OpADDU;
+  IOPSpecial[$22] := OpSUB;
+  IOPSpecial[$23] := OpSUBU;
+  IOPSpecial[$24] := OpAND;
+  IOPSpecial[$25] := OpOR;
+  IOPSpecial[$26] := OpXOR;
+  IOPSpecial[$27] := OpNOR;
+  IOPSpecial[$2A] := OpSLT;
+  IOPSpecial[$2B] := OpSLTU;
+  IOPMain[$00] := OpSPECIAL;
+  IOPMain[$01] := OpREGIMM;
+  IOPMain[$02] := OpJ;
+  IOPMain[$03] := OpJAL;
+  IOPMain[$04] := OpBEQ;
+  IOPMain[$05] := OpBNE;
+  IOPMain[$06] := OpBLEZ;
+  IOPMain[$07] := OpBGTZ;
+  IOPMain[$08] := OpADDI;
+  IOPMain[$09] := OpADDIU;
+  IOPMain[$0A] := OpSLTI;
+  IOPMain[$0B] := OpSLTIU;
+  IOPMain[$0C] := OpANDI;
+  IOPMain[$0D] := OpORI;
+  IOPMain[$0E] := OpXORI;
+  IOPMain[$0F] := OpLUI;
+  IOPMain[$10] := OpCOP0;
+  IOPMain[$20] := OpLB;
+  IOPMain[$21] := OpLH;
+  IOPMain[$22] := OpLWLR;
+  IOPMain[$23] := OpLW;
+  IOPMain[$24] := OpLBU;
+  IOPMain[$25] := OpLHU;
+  IOPMain[$26] := OpLWLR;
+  IOPMain[$28] := OpSB;
+  IOPMain[$29] := OpSH;
+  IOPMain[$2A] := OpSWLR;
+  IOPMain[$2B] := OpSW;
+  IOPMain[$2E] := OpSWLR;
+  IOPMain[IOPTrapOpcode] := OpTrap;
 end;
 
 procedure TIOPCPU.Run(Target: Int64);
 begin
   FStop := False;
+  if not Hardware then
+  begin
+    // The loop below without what only Hardware has: interrupts, the BIOS,
+    // the idle loop, address errors (an instruction then always completes).
+    while (Cycles < Target) and not FStop do
+    begin
+      var A := PC and $1FFFFFFF;
+      if A >= $00800000 then
+      begin
+        if Assigned(OnException) then
+          OnException(4, PC);
+        Break;
+      end;
+      var Op := PCardinal(FRAM + (A and (PS2IOPRAMMask and not 3)))^;
+      FCurrentPC := PC;
+      FInDelay := FBranch;
+      FBranch := False;
+      PC := NextPC;
+      NextPC := Add32(PC, 4);
+      IOPMain[Op shr 26](Self, Op);
+      if FDelayReg <> 0 then
+        R[FDelayReg] := FDelayValue;
+      FDelayReg := FLoadReg;
+      FDelayValue := FLoadValue;
+      FLoadReg := 0;
+      Inc(Cycles);
+      Inc(Instructions);
+    end;
+    Exit;
+  end;
   while (Cycles < Target) and not FStop do
   begin
     // A pending interrupt (I_CTRL and I_STAT and I_MASK) is taken before the
@@ -659,7 +1022,7 @@ begin
     PC := NextPC;
     NextPC := Add32(PC, 4);
     FExcepted := False;
-    Execute(Op);
+    IOPMain[Op shr 26](Self, Op);
     if FExcepted then
     begin
       // The faulting instruction does not complete; the exception already
@@ -699,5 +1062,8 @@ begin
   State.Field(FBranch, SizeOf(FBranch));
   State.Field(Scratchpad, SizeOf(Scratchpad));
 end;
+
+initialization
+  InitIOPOps;
 
 end.

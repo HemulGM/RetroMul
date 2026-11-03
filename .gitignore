@@ -28,6 +28,9 @@ __recovery/
 /source/cores/md/README.md
 /apps/terminal/Win32/*
 /tests/*
+!/tests/runtime/
+/tests/runtime/*
+!/tests/runtime/recognition/
 !/tests/hardware/
 /tests/hardware/*
 !/tests/hardware/jit/

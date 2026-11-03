@@ -77,6 +77,9 @@ begin
   var Registration := TEmulationCoreRegistration.Create('PS2', ['.elf']);
   // Before PSP's generic MIPS ELF route; the PS2 probe checks RAM entry bounds.
   Registration.Add(TCoreLoadStage.Source, 5, Source);
+  // Disc images launched as PlayStation 2 (library, recent games, the platform
+  // choice) are resolved among the disc platforms only.
+  Registration.AddDiscPlatform('ps2', Source);
   RegisterEmulationCore(Registration);
   RegisterSnapshotPolicy(ROM_CORE_ID_PS2, TPS2Console.SnapshotPolicy);
   var Service := Default(TPlatformServices);

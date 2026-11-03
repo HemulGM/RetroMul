@@ -1997,7 +1997,8 @@ begin
   FPassCount := 0;
   FZScale := DepthRange(D.ZPSM);
   var DepthTest := D.ZTST >= 2;
-  FDepthWrites := not D.ZMSK;
+  // (An alpha test no pixel passes writes depth only with AFAIL ZB_ONLY.)
+  FDepthWrites := not D.ZMSK and not (D.ATE and (D.ATST = 0) and (D.AFAIL <> 2));
   FDepthUsed := DepthTest or FDepthWrites;
   var T := TargetFor(D);
   FPageRows := PageRowsOf(T.Format);

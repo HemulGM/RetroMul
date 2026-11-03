@@ -28,7 +28,7 @@ type
     FKeys: TPS2KeyMap;
     FExtraKeys: TPS2ExtraKeyMap;
     FBIOSMode, FBIOSFile, FRegion, FVideo, FLanguage, FRenderer: string;
-    FRecompiler: Boolean;
+    FRecompiler, FFastFloat: Boolean;
   protected
     procedure LoadCoreSettings(Ini: TCustomIniFile); override;
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
@@ -57,6 +57,9 @@ type
     // of its own (TPS2GSRaster.Async) on hosts with four logical processors.
     property Renderer: string read FRenderer write FRenderer;
     property Recompiler: Boolean read FRecompiler write FRecompiler;
+    // The recompiled VU sums and products in the host's arithmetic, inexact
+    // (Emulation/VUFloat 'fast'; 'exact' by default).
+    property FastFloat: Boolean read FFastFloat write FFastFloat;
     // Band threads for Renderer (0: none; Vulkan's CPU fallbacks use them
     // too), and whether the GS draws on a thread of its own (not 'single').
     function GSThreads: Integer;
@@ -104,7 +107,7 @@ type
     FVolume: Single;
     FGSThreads: Integer;
     FGSAsync: Boolean;
-    FRecompiler: Boolean;
+    FRecompiler, FFastFloat: Boolean;
     FVulkan, FHLE: Boolean;
     FAudio: TPS2AudioPlayback;
     FAudioFailed: Boolean;
@@ -134,7 +137,7 @@ type
       const Storage: IStorage; const SnapshotDirectory, CardFile1, CardFile2: string);
     destructor Destroy; override;
     procedure Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
-      GSAsync, Recompiler, Vulkan, HLE: Boolean);
+      GSAsync, Recompiler, FastFloat, Vulkan, HLE: Boolean);
     procedure RequestReset;
     procedure StopAndSave;
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -325,6 +328,7 @@ begin
   FLanguage := Ini.ReadString('System', 'Language', 'auto').ToLower;
   FRenderer := Ini.ReadString('Video', 'Renderer', 'threads').ToLower;
   FRecompiler := SameText(Ini.ReadString('Emulation', 'Execution', 'interpreter'), 'jit');
+  FFastFloat := SameText(Ini.ReadString('Emulation', 'VUFloat', 'exact'), 'fast');
   if FRenderer = 'vulkan-lle' then
     FRenderer := 'vulkan';
   if (FRenderer <> 'single') and (FRenderer <> 'vulkan') and (FRenderer <> 'vulkan-hle') then
@@ -353,6 +357,10 @@ begin
     Ini.WriteString('Emulation', 'Execution', 'jit')
   else
     Ini.WriteString('Emulation', 'Execution', 'interpreter');
+  if FFastFloat then
+    Ini.WriteString('Emulation', 'VUFloat', 'fast')
+  else
+    Ini.WriteString('Emulation', 'VUFloat', 'exact');
   for var P := 0 to 1 do
   begin
     var Section := 'Keys';
@@ -397,7 +405,7 @@ begin
 end;
 
 procedure TPS2Worker.Configure(const Inputs: TPS2PadInputs; Paused, AudioEnabled: Boolean; Volume: Single; GSThreads: Integer;
-  GSAsync, Recompiler, Vulkan, HLE: Boolean);
+  GSAsync, Recompiler, FastFloat, Vulkan, HLE: Boolean);
 begin
   var Wake: Boolean;
   FLock.Acquire;
@@ -410,6 +418,7 @@ begin
     FGSThreads := GSThreads;
     FGSAsync := GSAsync;
     FRecompiler := Recompiler;
+    FFastFloat := FastFloat;
     FVulkan := Vulkan;
     FHLE := HLE;
   finally
@@ -687,7 +696,7 @@ begin
         var Volume: Single;
         var Inputs: TPS2PadInputs;
         var GSThreads: Integer;
-        var GSAsync, Recompiler, Vulkan, HLE: Boolean;
+        var GSAsync, Recompiler, FastFloat, Vulkan, HLE: Boolean;
         FLock.Acquire;
         try
           Paused := FPause;
@@ -699,6 +708,7 @@ begin
           GSThreads := FGSThreads;
           GSAsync := FGSAsync;
           Recompiler := FRecompiler;
+          FastFloat := FFastFloat;
           Vulkan := FVulkan;
           HLE := FHLE;
         finally
@@ -719,6 +729,8 @@ begin
         FConsole.VU1.Core.UseJit := Recompiler;
         FConsole.VU0.Core.UseJit := Recompiler;
         FConsole.CPU.UseJit := Recompiler;
+        FConsole.VU1.Core.FastFloat := FastFloat;
+        FConsole.VU0.Core.FastFloat := FastFloat;
         for var Port := 0 to 1 do
         begin
           FConsole.PadMan.Pads[Port].Buttons := Inputs[Port].Buttons;
@@ -1103,7 +1115,7 @@ begin
       Inputs[Port].Pressure[K] := 0;
   end;
   FWorker.Configure(Inputs, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume, FConfigObject.GSThreads,
-    FConfigObject.GSAsync, FConfigObject.Recompiler, FConfigObject.Renderer = 'vulkan',
+    FConfigObject.GSAsync, FConfigObject.Recompiler, FConfigObject.FastFloat, FConfigObject.Renderer = 'vulkan',
     FConfigObject.Renderer = 'vulkan-hle');
 end;
 

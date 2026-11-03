@@ -2045,6 +2045,26 @@ begin
   var J := FJit;
   ProfileMark('register-mac-status');
   J.Alu(jaAnd, jw32, JT0, JImm((Mask shl 8) or (Mask shl 12)));
+  if FEmitLazyFlags then
+  begin
+    // (An event nothing reads: only its groups' sticky bits matter, see
+    // EmitLazyFlush, so which lane is which within a group does not: the lanes
+    // in register order, x the lowest, the field mask turned round to match.)
+    var Lanes := ((Mask and 8) shr 3) or ((Mask and 4) shr 1) or ((Mask and 2) shl 1) or ((Mask and 1) shl 3);
+    J.VectorMask(jvmSign, jrT1, jv0);
+    J.VectorMask(jvmZero, jrT3, jv0);
+    if Lanes <> $F then
+    begin
+      J.Alu(jaAnd, jw32, JT1, JImm(Lanes));
+      J.Alu(jaAnd, jw32, JT3, JImm(Lanes));
+    end;
+    J.Shift(jsShl, jw32, jrT1, 4);
+    J.Alu(jaOr, jw32, JT3, JT1);
+    J.Alu(jaOr, jw32, JT3, JT0);
+    J.Alu(jaOr, jw32, JMem(jrSelf, Integer(NativeInt(@FJitLazyMAC) - NativeInt(Self))), JT3);
+    FLazyPending := True;
+    Exit;
+  end;
   J.VectorShuffle(jv2, jv0, $1B); // MAC field order is w,z,y,x
   J.VectorMask(jvmSign, jrT1, jv2);
   J.VectorMask(jvmZero, jrT3, jv2);
@@ -2053,13 +2073,6 @@ begin
   J.Shift(jsShl, jw32, jrT1, 4);
   J.Alu(jaOr, jw32, JT3, JT1);
   J.Alu(jaOr, jw32, JT3, JT0);
-  if FEmitLazyFlags then
-  begin
-    // (An event nothing reads: only its sticky bits matter, see EmitLazyFlush.)
-    J.Alu(jaOr, jw32, JMem(jrSelf, Integer(NativeInt(@FJitLazyMAC) - NativeInt(Self))), JT3);
-    FLazyPending := True;
-    Exit;
-  end;
   J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.MAC) - NativeInt(Self))), JT3);
   EmitStatus;
 end;

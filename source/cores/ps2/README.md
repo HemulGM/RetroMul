@@ -398,7 +398,8 @@ queues through the span for the incoming queues it finds when it compiles
 (and for empty ones): what each slot, including stale tail slots, and the
 base end up holding, and what each pair's flag reads see. Events nothing
 reads (not a flag read's, the queue's at the end, or the last) only OR their
-MAC flag into an accumulator, whose sticky bits join the status before the
+MAC flag into an accumulator (its lanes in any order: only each group's
+sticky bit counts), whose sticky bits join the status before the
 next one is worked out or a helper may read it. At the end the
 queues are written from that when the incoming ones were so; otherwise the
 events are replayed at run time as each pair would have queued them

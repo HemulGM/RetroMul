@@ -30,6 +30,14 @@ layout(push_constant) uniform Push {
   float lodK;
   // A target texture's texels start there in its image: x | y << 16.
   uint texOffset;
+  // PS2.GS.HLEBlend.frag: ALPHA's A, B, C, D in bits 0-7 (two each), FIX in
+  // bits 8-15, blending on in bit 16, PABE in bit 17, COLCLAMP in bit 18,
+  // DATE in bit 19, DATM in bit 20, the frame format in bits 21-22 (0 32-bit,
+  // 1 24-bit, 2 16-bit), AFAIL in bits 23-24, the alpha test on in bit 25,
+  // FBA in bit 26.
+  uint pixel;
+  // FBMSK: the frame bits kept (32-bit layout).
+  uint fbmsk;
 } pc;
 
 const uint FLAG_TEXTURED = 1u;

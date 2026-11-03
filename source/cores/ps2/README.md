@@ -583,7 +583,15 @@ arithmetic; blending is the fixed function's with the source side weighed in
 the shader and the destination weight as the second source (dual-source
 blending); depth is the fixed function's (GEQUAL/GREATER over the buffer's
 range, clamped). The alpha test's failing pixels (AFAIL) are a second pass of
-the batch.
+the batch. Where the device has VK_EXT_fragment_shader_interlock, draws the
+fixed function cannot do as the GS (any blend weighed by an alpha, weights
+above one, wrapping colours, DATE, FBMSK masking part of a channel) are drawn
+by `PS2.GS.HLEBlend.frag` instead: the alpha test with AFAIL, DATE, the blend,
+PABE, COLCLAMP, FBA and FBMSK in the GS's integer arithmetic and the frame
+format's bits, in primitive order (the colour as a storage image, depth tested
+before the shader; such draws write depth only when they leave no pixel out,
+else the fixed function's approximation stands). `PS2_HLESHADERBLEND=0` turns it
+off.
 
 The raster reports its own accesses to GS memory (transfers, CLUT loads,
 local copies and reads, the display) by pages: targets newer there are stored
@@ -591,12 +599,12 @@ first, writes to pages textures or targets came from are seen. Only the
 targets the display shows are read back each frame. 8H/4HL/4HH textures in a
 24-bit buffer's high byte do not wait for it.
 
-Not yet as the GS draws: the destination alpha test (DATE), FBMSK masking
-part of a channel, destination alpha above 0x80 in blending (32-bit frames
-weigh Ad / 255 instead of Ad / 128) and weights above one, COLCLAMP off
-(wrapping), dithering, and buffers read through another format (texture
-shuffles, depth as colour, palettized views of colour) other than by storing
-them and decoding GS memory. Resolution scaling is not offered yet. Shaders
+Not yet as the GS draws: without shader blending, DATE, FBMSK masking part
+of a channel, destination alpha (32-bit frames weigh Ad / 255 instead of
+Ad / 128), weights above one and COLCLAMP off; DATE with depth writes and an
+alpha test in any case; dithering, and buffers read through another format
+(texture shuffles, depth as colour, palettized views of colour) other than by
+storing them and decoding GS memory. Resolution scaling is not offered yet. Shaders
 are in `source/cores/ps2/shaders` (`PS2.GS.HLE.*`); `shaders/build.ps1 -Only HLE`
 regenerates their includes. `PS2_GSVULKAN=hle` selects it in the test
 runner, `PS2_HLEVALIDATE=1` the Khronos validation layer.

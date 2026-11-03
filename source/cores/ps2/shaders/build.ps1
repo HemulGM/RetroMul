@@ -25,13 +25,14 @@ if ($Only -ne 'LLE') {
   Get-ChildItem $PSScriptRoot -File | Where-Object { $_.Name -like 'PS2.GS.HLE*' } | ForEach-Object {
     [IO.File]::WriteAllText((Join-Path $sourceDir $_.Name), [IO.File]::ReadAllText($_.FullName), [Text.UTF8Encoding]::new($false))
   }
-  foreach ($stage in @(@('vert', 'Vert'), @('frag', 'Frag'))) {
+  # (Source file, the constant's and the include's name.)
+  foreach ($stage in @(@('PS2.GS.HLE.vert', 'Vert'), @('PS2.GS.HLE.frag', 'Frag'), @('PS2.GS.HLEBlend.frag', 'BlendFrag'))) {
     $spv = Join-Path $Out "PS2.GS.HLE$($stage[1]).spv"
-    & $compiler --target-env=vulkan1.1 -O "$sourceDir\PS2.GS.HLE.$($stage[0])" -o $spv
-    if ($LASTEXITCODE -ne 0) { throw "HLE $($stage[0]) shader compilation failed" }
+    & $compiler --target-env=vulkan1.1 -O "$sourceDir\$($stage[0])" -o $spv
+    if ($LASTEXITCODE -ne 0) { throw "$($stage[0]) compilation failed" }
     & "$env:VULKAN_SDK\Bin\spirv-val.exe" --target-env vulkan1.1 $spv
-    if ($LASTEXITCODE -ne 0) { throw "HLE $($stage[0]) SPIR-V validation failed" }
-    Write-SpirvInclude $spv "PS2HLE$($stage[1])SPIRV" "PS2.GS.HLE.$($stage[0])" "$PSScriptRoot\PS2.GS.HLE$($stage[1]).inc"
+    if ($LASTEXITCODE -ne 0) { throw "$($stage[0]) SPIR-V validation failed" }
+    Write-SpirvInclude $spv "PS2HLE$($stage[1])SPIRV" $stage[0] "$PSScriptRoot\PS2.GS.HLE$($stage[1]).inc"
   }
   if ($Only -eq 'HLE') { return }
 }

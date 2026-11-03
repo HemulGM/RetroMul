@@ -56,6 +56,10 @@ type
     ZStale: Boolean;
     // The colour image copied, for draws sampling the target they draw.
     Copy: TVulkanHLETexture;
+    // Shader blending: the colour as a storage image (set 1), and a
+    // framebuffer of the depth alone.
+    BlendSet: VkDescriptorSet;
+    BlendFramebuffer: VkFramebuffer;
     constructor Create;
     function ZRowBytes: Cardinal;
     // The depth buffer's bytes: the target's rows, whole page rows.
@@ -79,6 +83,7 @@ type
     Flags, Tex, ClampU, ClampV, TexA, FogColor, AlphaTest, Blend: Cardinal;
     LodK: Single;
     TexOffset: Cardinal;
+    Pixel, FbMsk: Cardinal;
   end;
 
   // Why everything went back to GS memory (diagnostics): another target's
@@ -89,6 +94,7 @@ type
   // A draw's pass: the alpha test's passing pixels, or its failing ones.
   TPS2HLEPass = record
     Pipeline: VkPipeline;
+    Layout: VkPipelineLayout;
     Push: TPS2HLEPush;
   end;
 
@@ -97,6 +103,19 @@ type
     FMemory: TPS2GSMemory;
     FClut: PWord;
     FVertexModule, FFragmentModule: VkShaderModule;
+    // Shader blending (VK_EXT_fragment_shader_interlock): the GS's pixel
+    // operations exactly, for the draws the fixed function cannot do (and
+    // that write depth only when they discard nothing).
+    FShaderBlend: Boolean;
+    FBlendModule: VkShaderModule;
+    FBlendSetLayout: VkDescriptorSetLayout;
+    FBlendLayout: VkPipelineLayout;
+    FBlendPool: VkDescriptorPool;
+    FBlendPass: VkRenderPass;
+    // The state set up blends in the shader.
+    FBlended: Boolean;
+    FBoundTargetSet: VkDescriptorSet;
+    FBlendSetups: Int64;
     FHeld, FWatched: TPS2GSPages;
     FRevision: Int64;
     // The state the draw being built was set up for, with its CLUT.
@@ -162,6 +181,8 @@ type
     procedure ApplyBindings;
     procedure BindPass(Index: Integer);
     procedure Emit(const D: TPS2GSDraw; V: PPS2HLEVertex; Count: Integer; X1, Y1, X2, Y2: Integer);
+    procedure CreateBlend;
+    procedure CreateBlendTarget(T: TPS2HLETarget);
     function DepthOf(const D: TPS2GSDraw; Z: Cardinal): Single; inline;
   protected
     procedure Unbound; override;
@@ -169,6 +190,7 @@ type
     procedure FreeDevice; override;
     function PipelineFor(Key: UInt64): VkPipeline; override;
     function NewTarget: TVulkanHLETarget; override;
+    procedure InitTarget(T: TVulkanHLETarget); override;
     procedure DestroyTarget(T: TVulkanHLETarget); override;
     procedure LoadTarget(T: TVulkanHLETarget); override;
     procedure StoreTarget(T: TVulkanHLETarget); override;
@@ -248,6 +270,7 @@ const
 
 {$I shaders\PS2.GS.HLEVert.inc}
 {$I shaders\PS2.GS.HLEFrag.inc}
+{$I shaders\PS2.GS.HLEBlendFrag.inc}
 
 type
   // A texture as EnsureTexture looks it up (CachedTexture's request).
@@ -486,6 +509,8 @@ end;
 { TPS2GSVulkanHLE }
 
 constructor TPS2GSVulkanHLE.Create(Memory: TPS2GSMemory; Clut: PWord; Compute: TVulkanCompute);
+var
+  Props: VkFormatProperties;
 begin
   FMemory := Memory;
   FClut := Clut;
@@ -494,6 +519,16 @@ begin
   FDepthClamp := Compute.Features.DepthClamp;
   FVertexModule := Compute.CreateShaderModule(PS2HLEVertSPIRV);
   FFragmentModule := Compute.CreateShaderModule(PS2HLEFragSPIRV);
+  // Shader blending writes the colour as a storage image (RGBA8 storage is
+  // required of every device) where the device orders fragments for it.
+  FAPI.vkGetPhysicalDeviceFormatProperties(Compute.PhysicalDevice, VK_FORMAT_R8G8B8A8_UNORM, @Props);
+  FShaderBlend := Compute.Features.PixelInterlock and ((Props.optimalTilingFeatures and
+    VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) <> 0) and (GetEnvironmentVariable('PS2_HLESHADERBLEND') <> '0');
+  if FShaderBlend then
+  begin
+    FColorUsage := FColorUsage or VK_IMAGE_USAGE_STORAGE_BIT;
+    CreateBlend;
+  end;
 end;
 
 destructor TPS2GSVulkanHLE.Destroy;
@@ -504,6 +539,16 @@ end;
 
 procedure TPS2GSVulkanHLE.FreeDevice;
 begin
+  if FBlendModule <> 0 then
+    FAPI.vkDestroyShaderModule(FDevice, FBlendModule, nil);
+  if FBlendPool <> 0 then
+    FAPI.vkDestroyDescriptorPool(FDevice, FBlendPool, nil);
+  if FBlendLayout <> 0 then
+    FAPI.vkDestroyPipelineLayout(FDevice, FBlendLayout, nil);
+  if FBlendSetLayout <> 0 then
+    FAPI.vkDestroyDescriptorSetLayout(FDevice, FBlendSetLayout, nil);
+  if FBlendPass <> 0 then
+    FAPI.vkDestroyRenderPass(FDevice, FBlendPass, nil);
   if FVertexModule <> 0 then
     FAPI.vkDestroyShaderModule(FDevice, FVertexModule, nil);
   if FFragmentModule <> 0 then
@@ -514,6 +559,7 @@ end;
 procedure TPS2GSVulkanHLE.Unbound;
 begin
   FBoundPass := -1;
+  FBoundTargetSet := 0;
   FScissorValid := False;
 end;
 
@@ -522,9 +568,139 @@ begin
   Result := TPS2HLETarget.Create;
 end;
 
+procedure TPS2GSVulkanHLE.InitTarget(T: TVulkanHLETarget);
+begin
+  if FShaderBlend then
+    CreateBlendTarget(TPS2HLETarget(T));
+end;
+
+// Set 1 of the shader-blending pipelines (the colour as a storage image, in
+// FBlendPool) and their framebuffer (the depth alone, FBlendPass).
+procedure TPS2GSVulkanHLE.CreateBlend;
+var
+  Binding: VkDescriptorSetLayoutBinding;
+  SetInfo: VkDescriptorSetLayoutCreateInfo;
+  Layouts: array[0..1] of VkDescriptorSetLayout;
+  Push: VkPushConstantRange;
+  Info: VkPipelineLayoutCreateInfo;
+  Size: VkDescriptorPoolSize;
+  PoolInfo: VkDescriptorPoolCreateInfo;
+  Attachment: VkAttachmentDescription;
+  DepthRef: VkAttachmentReference;
+  Subpass: VkSubpassDescription;
+  Deps: array[0..1] of VkSubpassDependency;
+  PassInfo: VkRenderPassCreateInfo;
+begin
+  FBlendModule := FCompute.CreateShaderModule(PS2HLEBlendFragSPIRV);
+  Binding := Default(VkDescriptorSetLayoutBinding);
+  Binding.binding := 0;
+  Binding.descriptorType := VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  Binding.descriptorCount := 1;
+  Binding.stageFlags := VK_SHADER_STAGE_FRAGMENT_BIT;
+  SetInfo := Default(VkDescriptorSetLayoutCreateInfo);
+  SetInfo.sType := VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  SetInfo.bindingCount := 1;
+  SetInfo.pBindings := @Binding;
+  CheckVulkan(FAPI.vkCreateDescriptorSetLayout(FDevice, @SetInfo, nil, @FBlendSetLayout),
+    'vkCreateDescriptorSetLayout');
+  Layouts[0] := FSetLayout;
+  Layouts[1] := FBlendSetLayout;
+  Push.stageFlags := VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT;
+  Push.offset := 0;
+  Push.size := SizeOf(TPS2HLEPush);
+  Info := Default(VkPipelineLayoutCreateInfo);
+  Info.sType := VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  Info.setLayoutCount := 2;
+  Info.pSetLayouts := @Layouts[0];
+  Info.pushConstantRangeCount := 1;
+  Info.pPushConstantRanges := @Push;
+  CheckVulkan(FAPI.vkCreatePipelineLayout(FDevice, @Info, nil, @FBlendLayout), 'vkCreatePipelineLayout');
+  Size.&type := VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  Size.descriptorCount := HLEMaxTargets + 8;
+  PoolInfo := Default(VkDescriptorPoolCreateInfo);
+  PoolInfo.sType := VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  PoolInfo.flags := VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+  PoolInfo.maxSets := HLEMaxTargets + 8;
+  PoolInfo.poolSizeCount := 1;
+  PoolInfo.pPoolSizes := @Size;
+  CheckVulkan(FAPI.vkCreateDescriptorPool(FDevice, @PoolInfo, nil, @FBlendPool), 'vkCreateDescriptorPool');
+  Attachment := Default(VkAttachmentDescription);
+  Attachment.format := FDepthFormat;
+  Attachment.samples := VK_SAMPLE_COUNT_1_BIT;
+  Attachment.loadOp := VK_ATTACHMENT_LOAD_OP_LOAD;
+  Attachment.storeOp := VK_ATTACHMENT_STORE_OP_STORE;
+  Attachment.stencilLoadOp := VK_ATTACHMENT_LOAD_OP_LOAD;
+  Attachment.stencilStoreOp := VK_ATTACHMENT_STORE_OP_STORE;
+  Attachment.initialLayout := VK_IMAGE_LAYOUT_GENERAL;
+  Attachment.finalLayout := VK_IMAGE_LAYOUT_GENERAL;
+  DepthRef.attachment := 0;
+  DepthRef.layout := VK_IMAGE_LAYOUT_GENERAL;
+  Subpass := Default(VkSubpassDescription);
+  Subpass.pipelineBindPoint := VK_PIPELINE_BIND_POINT_GRAPHICS;
+  Subpass.pDepthStencilAttachment := @DepthRef;
+  Deps[0] := Default(VkSubpassDependency);
+  Deps[0].srcSubpass := VK_SUBPASS_EXTERNAL;
+  Deps[0].dstSubpass := 0;
+  Deps[0].srcStageMask := VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+  Deps[0].dstStageMask := VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+  Deps[0].srcAccessMask := VK_ACCESS_MEMORY_WRITE_BIT;
+  Deps[0].dstAccessMask := VK_ACCESS_MEMORY_READ_BIT or VK_ACCESS_MEMORY_WRITE_BIT;
+  Deps[1] := Deps[0];
+  Deps[1].srcSubpass := 0;
+  Deps[1].dstSubpass := VK_SUBPASS_EXTERNAL;
+  PassInfo := Default(VkRenderPassCreateInfo);
+  PassInfo.sType := VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+  PassInfo.attachmentCount := 1;
+  PassInfo.pAttachments := @Attachment;
+  PassInfo.subpassCount := 1;
+  PassInfo.pSubpasses := @Subpass;
+  PassInfo.dependencyCount := 2;
+  PassInfo.pDependencies := @Deps[0];
+  CheckVulkan(FAPI.vkCreateRenderPass(FDevice, @PassInfo, nil, @FBlendPass), 'vkCreateRenderPass');
+end;
+
+procedure TPS2GSVulkanHLE.CreateBlendTarget(T: TPS2HLETarget);
+var
+  Alloc: VkDescriptorSetAllocateInfo;
+  Image: VkDescriptorImageInfo;
+  Write: VkWriteDescriptorSet;
+  Info: VkFramebufferCreateInfo;
+begin
+  Alloc := Default(VkDescriptorSetAllocateInfo);
+  Alloc.sType := VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  Alloc.descriptorPool := FBlendPool;
+  Alloc.descriptorSetCount := 1;
+  Alloc.pSetLayouts := @FBlendSetLayout;
+  CheckVulkan(FAPI.vkAllocateDescriptorSets(FDevice, @Alloc, @T.BlendSet), 'vkAllocateDescriptorSets');
+  Image.sampler := 0;
+  Image.imageView := T.Color.View;
+  Image.imageLayout := VK_IMAGE_LAYOUT_GENERAL;
+  Write := Default(VkWriteDescriptorSet);
+  Write.sType := VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  Write.dstSet := T.BlendSet;
+  Write.dstBinding := 0;
+  Write.descriptorCount := 1;
+  Write.descriptorType := VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  Write.pImageInfo := @Image;
+  FAPI.vkUpdateDescriptorSets(FDevice, 1, @Write, 0, nil);
+  Info := Default(VkFramebufferCreateInfo);
+  Info.sType := VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+  Info.renderPass := FBlendPass;
+  Info.attachmentCount := 1;
+  Info.pAttachments := @T.Depth.View;
+  Info.width := T.Width * FScale;
+  Info.height := T.Height * FScale;
+  Info.layers := 1;
+  CheckVulkan(FAPI.vkCreateFramebuffer(FDevice, @Info, nil, @T.BlendFramebuffer), 'vkCreateFramebuffer');
+end;
+
 procedure TPS2GSVulkanHLE.DestroyTarget(T: TVulkanHLETarget);
 begin
   var G := TPS2HLETarget(T);
+  if G.BlendSet <> 0 then
+    FAPI.vkFreeDescriptorSets(FDevice, FBlendPool, 1, @G.BlendSet);
+  if G.BlendFramebuffer <> 0 then
+    FAPI.vkDestroyFramebuffer(FDevice, G.BlendFramebuffer, nil);
   if G.Copy <> nil then
   begin
     FreeSets(G.Copy);
@@ -549,7 +725,7 @@ end;
 
 // Key bits: 0 blend, 1-5 source factor, 6-10 destination factor, 11-12 blend
 // operation, 13-16 colour write mask, 17 depth test, 18 depth write, 19-21
-// depth compare.
+// depth compare, 22 shader blending (no colour attachment: bits 0-16 unused).
 function TPS2GSVulkanHLE.PipelineFor(Key: UInt64): VkPipeline;
 var
   Stages: array[0..1] of VkPipelineShaderStageCreateInfo;
@@ -577,6 +753,9 @@ begin
   Stages[0].module := FVertexModule;
   Stages[1].stage := VK_SHADER_STAGE_FRAGMENT_BIT;
   Stages[1].module := FFragmentModule;
+  var Blended := ((Key shr 22) and 1) <> 0;
+  if Blended then
+    Stages[1].module := FBlendModule;
   Binding.binding := 0;
   Binding.stride := SizeOf(TPS2HLEVertex);
   Binding.inputRate := VK_VERTEX_INPUT_RATE_VERTEX;
@@ -660,6 +839,13 @@ begin
   Info.pDynamicState := @Dynamic;
   Info.layout := FLayout;
   Info.renderPass := FRenderPass;
+  if Blended then
+  begin
+    BlendState.attachmentCount := 0;
+    BlendState.pAttachments := nil;
+    Info.layout := FBlendLayout;
+    Info.renderPass := FBlendPass;
+  end;
   Info.basePipelineIndex := -1;
   CheckVulkan(FAPI.vkCreateGraphicsPipelines(FDevice, 0, 1, @Info, nil, @Result), 'vkCreateGraphicsPipelines');
 end;
@@ -1792,6 +1978,16 @@ begin
   // the source's applied in the shader, the destination's as the second
   // source's alpha, or both the fixed function's destination alpha for C = Ad.
   var BlendKey: UInt64 := 0;
+  // What the fixed function draws otherwise than the GS (the shader's then).
+  var Inexact := D.DATE;
+  var Channels: array[0..3] of Cardinal;
+  Channels[0] := RB;
+  Channels[1] := GB;
+  Channels[2] := BB;
+  Channels[3] := AB;
+  for var I := 0 to 3 - Ord(Is24T) do
+    if ((D.FBMSK and Channels[I]) <> 0) and ((D.FBMSK and Channels[I]) <> Channels[I]) then
+      Inexact := True;
   if D.ABE then
   begin
     var CSel := D.BlendC;
@@ -1815,6 +2011,11 @@ begin
         Op := VK_BLEND_OP_SUBTRACT;
       var SCode := WeightCode(SC, S1);
       var DCode := WeightCode(DC, D1);
+      // Destination alpha (Ad / 128), source alpha (may be above 0x80),
+      // weights above one, PABE on a reversed subtraction, wrapping colours.
+      if ((CSel <> 2) or (SCode = 4) or (DCode = 4) or (Fix > 128) or
+        (D.PABE and (Op = VK_BLEND_OP_REVERSE_SUBTRACT)) or not D.ColClamp) then
+        Inexact := True;
       var SF, DF: Integer;
       if CSel <> 1 then
       begin
@@ -1897,6 +2098,34 @@ begin
       Compare := VK_COMPARE_OP_GREATER
     else
       Compare := VK_COMPARE_OP_GREATER_OR_EQUAL;
+  // In the shader where the fixed function is not the GS: one pass, the
+  // alpha test's and DATE's pixels left out there (depth is tested before,
+  // so such draws may write depth only when they leave out nothing).
+  FBlended := FShaderBlend and Inexact and (WM <> 0) and not (FDepthWrites and (Test or D.DATE));
+  if FBlended then
+  begin
+    Count := 0;
+    Inc(FBlendSetups);
+    var Format: Cardinal := 0;
+    if Is24T then
+      Format := 1
+    else if Is16T then
+      Format := 2;
+    Push.Flags := Push.Flags and not Cardinal(FLAG_BLEND);
+    Push.Pixel := Cardinal(D.BlendA) or (Cardinal(D.BlendB) shl 2) or (Cardinal(D.BlendC) shl 4) or
+      (Cardinal(D.BlendD) shl 6) or (Cardinal(D.BlendFix) shl 8) or (Cardinal(Ord(D.ABE)) shl 16) or
+      (Cardinal(Ord(D.PABE)) shl 17) or (Cardinal(Ord(D.ColClamp)) shl 18) or (Cardinal(Ord(D.DATE)) shl 19) or
+      (Cardinal(Ord(D.DATM)) shl 20) or (Format shl 21) or (Cardinal(D.AFAIL) shl 23) or
+      (Cardinal(Ord(Test)) shl 25) or (Cardinal(Ord(D.FBA)) shl 26);
+    Push.FbMsk := D.FBMSK;
+    Push.AlphaTest := Cardinal(D.AREF) or (Cardinal(D.ATST) shl 8);
+    var Key := (UInt64(1) shl 22) or (UInt64(Ord(DepthTest or FDepthWrites)) shl 17) or
+      (UInt64(Ord(FDepthWrites)) shl 18) or (UInt64(Compare) shl 19);
+    FPasses[0].Pipeline := Pipeline(Key);
+    FPasses[0].Layout := FBlendLayout;
+    FPasses[0].Push := Push;
+    FPassCount := 1;
+  end;
   for var I := 0 to Count - 1 do
   begin
     if (Kinds[I].WriteMask = 0) and not Kinds[I].WritesZ then
@@ -1905,6 +2134,7 @@ begin
       (UInt64(Ord(DepthTest or Kinds[I].WritesZ)) shl 17) or (UInt64(Ord(Kinds[I].WritesZ)) shl 18) or
       (UInt64(Compare) shl 19);
     FPasses[FPassCount].Pipeline := Pipeline(Key);
+    FPasses[FPassCount].Layout := FLayout;
     FPasses[FPassCount].Push := Push;
     FPasses[FPassCount].Push.AlphaTest := Cardinal(D.AREF) or (Cardinal(D.ATST) shl 8) or (Kinds[I].Mode shl 12);
     Inc(FPassCount);
@@ -1933,12 +2163,22 @@ end;
 // render pass may be new since).
 procedure TPS2GSVulkanHLE.ApplyBindings;
 begin
-  BeginPass(FTarget, FRenderPass, FTarget.Framebuffer);
+  var T := TPS2HLETarget(FTarget);
+  if FBlended then
+    BeginPass(T, FBlendPass, T.BlendFramebuffer)
+  else
+    BeginPass(T, FRenderPass, T.Framebuffer);
   var Cmd := Slot.Cmd.Handle;
+  // (Set 0 and the push constants are alike in both layouts.)
   if FTexSet <> FBoundSet then
   begin
     FAPI.vkCmdBindDescriptorSets(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, FLayout, 0, 1, @FTexSet, 0, nil);
     FBoundSet := FTexSet;
+  end;
+  if FBlended and (T.BlendSet <> FBoundTargetSet) then
+  begin
+    FAPI.vkCmdBindDescriptorSets(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, FBlendLayout, 1, 1, @T.BlendSet, 0, nil);
+    FBoundTargetSet := T.BlendSet;
   end;
   if not FScissorValid or not CompareMem(@FScissor, @FBoundScissor, SizeOf(VkRect2D)) then
   begin
@@ -1974,7 +2214,7 @@ begin
     FAPI.vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, FPasses[Index].Pipeline);
     FBoundPipeline := FPasses[Index].Pipeline;
   end;
-  FAPI.vkCmdPushConstants(Cmd, FLayout, VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+  FAPI.vkCmdPushConstants(Cmd, FPasses[Index].Layout, VK_SHADER_STAGE_VERTEX_BIT or VK_SHADER_STAGE_FRAGMENT_BIT, 0,
     SizeOf(TPS2HLEPush), @FPasses[Index].Push);
   FBoundPass := Index;
 end;
@@ -2298,10 +2538,11 @@ end;
 function TPS2GSVulkanHLE.Describe: string;
 begin
   Result := Format('hle prims=%d draws=%d submits=%d flushes=%d partial=%d loads=%d zloads=%d readbacks=%d ' +
-    'textures=%d hits=%d targettex=%d copies=%d pipelines=%d watchfaults=%d setup=%.0fms wait=%.0fms flush=%.0fms',
-    [FStats.Prims, FStats.Draws, FStats.Submits, FStats.Flushes, FPartialStores, FStats.TargetLoads, FDepthLoads,
+    'textures=%d hits=%d targettex=%d copies=%d pipelines=%d watchfaults=%d setup=%.0fms wait=%.0fms flush=%.0fms ' +
+    'shaderblend=%d/%d', [FStats.Prims, FStats.Draws, FStats.Submits, FStats.Flushes, FPartialStores, FStats.TargetLoads, FDepthLoads,
     FStats.Readbacks, FStats.TextureUploads, FStats.TextureHits, FTargetTextures, FCopies, FStats.Pipelines,
-    FStats.WatchFaults, FStats.SetupSeconds * 1000, FStats.WaitSeconds * 1000, FStats.FlushSeconds * 1000]) +
+    FStats.WatchFaults, FStats.SetupSeconds * 1000, FStats.WaitSeconds * 1000, FStats.FlushSeconds * 1000, FBlendSetups,
+    Ord(FShaderBlend)]) +
     Format(' setups=%d flush: others=%d texture=%d depth=%d stale=%d sync=%d', [FSetups, FFlushes[frOthers],
     FFlushes[frTexture], FFlushes[frDepth], FFlushes[frStale], FFlushes[frSync]]);
   for var T in FTargets do

@@ -115,6 +115,17 @@ snapshots and timing are identical with and without it; diagnostics logs
 `tests/cores/ps2/gsdata` and `tests/cores/ps2/gpu` (also with `-Async`) cover
 the asynchronous raster against the synchronous one.
 
+The front end uses the SPU2 playback queue as its real-time clock. Where the
+audio backend reports its playback position, the budget includes both the
+submitted frames not yet played and the partial device block still pending
+on the host. A field can then advance at the sample rate, not only when a
+whole 1024-frame block finishes (about 21 ms, which made frames arrive in
+bursts). Devices without a position keep the block-count fallback. Clear and
+underrun reset the position origin; 32-bit position wrap is tracked without
+changing any samples or emulated time. `tests/cores/ps2/playback/build.ps1`
+checks pacing, partial blocks, wrap, underrun recovery and unknown/reset
+device counters with a deterministic backend.
+
 With `TPS2GIF.Threaded` as well (the front end sets it with `Async`), the
 emulation thread does not run that front raster for VU1's XGKICK packets and
 VIF1 DIRECT (PATH2) quadwords either: it copies them into a ring and a kick

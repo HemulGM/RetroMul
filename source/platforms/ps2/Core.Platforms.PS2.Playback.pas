@@ -20,7 +20,12 @@ type
     FPending: TArray<SmallInt>;
     FCount: Integer;
     FPriming, FCanPause: Boolean;
+    FClockKnown: Boolean;
+    FClockClears, FLastPlayed: Cardinal;
+    FSubmittedBase, FPlayed: UInt64;
     function State: TPCMAudioQueueState;
+    procedure ResetClock(const S: TPCMAudioQueueState);
+    function QueuedFrames(const S: TPCMAudioQueueState; out Frames: UInt64): Boolean;
     procedure SubmitBlock(Frames: Integer);
   public
     constructor Create(const Backend: IPCMAudioBackend = nil);
@@ -53,7 +58,7 @@ begin
     FAudio := TPCMAudio.Create(AudioFormat)
   else
     FAudio := TPCMAudio.Create(AudioFormat, Backend);
-  State;
+  ResetClock(State);
   FCanPause := FAudio.SetPaused(True);
   FPriming := True;
 end;
@@ -73,11 +78,56 @@ begin
     raise EInOutError.Create('PS2 audio output is unavailable');
 end;
 
+procedure TPS2AudioPlayback.ResetClock(const S: TPCMAudioQueueState);
+begin
+  // All buffers are ours. Capture the lifetime-submission and device-position
+  // origins together while the queue is empty (construction, Clear or underrun).
+  FClockKnown := S.PositionKnown and (S.QueuedBlocks = 0);
+  FClockClears := S.Clears;
+  FLastPlayed := S.PlayedSamples;
+  FSubmittedBase := S.SubmittedSamples;
+  FPlayed := 0;
+end;
+
+function TPS2AudioPlayback.QueuedFrames(const S: TPCMAudioQueueState; out Frames: UInt64): Boolean;
+begin
+  Result := False;
+  if not FClockKnown or not S.PositionKnown then Exit;
+  // Unexpected device resets/counter changes retain the old block-count
+  // fallback until an empty queue establishes a fresh origin. A normal
+  // 32-bit wrap is a small forward delta, not a reset.
+  if (S.Clears <> FClockClears) or (S.SubmittedSamples < FSubmittedBase) then
+  begin
+    FClockKnown := False;
+    Exit;
+  end;
+  var Delta := (UInt64(S.PlayedSamples) + UInt64($100000000) - FLastPlayed) and $FFFFFFFF;
+  if Delta > $7FFFFFFF then
+  begin
+    FClockKnown := False;
+    Exit;
+  end;
+  FLastPlayed := S.PlayedSamples;
+  Inc(FPlayed, Delta);
+  var Submitted := S.SubmittedSamples - FSubmittedBase;
+  if FPlayed > Submitted then
+  begin
+    FClockKnown := False;
+    Exit;
+  end;
+  // Pending samples count too: a field produces about 800 stereo frames,
+  // not a whole 1024-frame device block. Ignoring that fraction releases
+  // fields in bursts at block boundaries instead of at the playback rate.
+  Frames := Submitted - FPlayed + UInt64(FCount div 2);
+  Result := True;
+end;
+
 procedure TPS2AudioPlayback.Clear;
 begin
   State;
   FCount := 0;
   FAudio.Clear;
+  ResetClock(State);
   FCanPause := FAudio.SetPaused(True);
   FPriming := True;
 end;
@@ -113,6 +163,7 @@ begin
     FPriming := True;
     if FCanPause then
       FAudio.SetPaused(True);
+    ResetClock(State);
   end;
   while (FCount >= BlockFrames * 2) and (S.QueuedBlocks < BlockCount) do
   begin
@@ -130,7 +181,14 @@ end;
 function TPS2AudioPlayback.CanAdvance: Boolean;
 begin
   Pump;
-  Result := (FCount < BlockFrames * 2) and (FPriming or (State.QueuedBlocks < TargetBlocks));
+  if FCount >= BlockFrames * 2 then Exit(False);
+  if FPriming then Exit(True);
+  var S := State;
+  var Frames: UInt64;
+  if QueuedFrames(S, Frames) then
+    Result := Frames < TargetBlocks * BlockFrames
+  else
+    Result := S.QueuedBlocks < TargetBlocks;
 end;
 
 end.

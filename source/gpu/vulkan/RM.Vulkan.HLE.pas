@@ -16,9 +16,10 @@
 //   console's memory, keyed by address, format and stride: a colour image
 //   (RGBA8) and a depth/stencil image (32-bit float or 24-bit depth, 8-bit
 //   stencil), both Scale times the surface's size. FindTarget finds or makes
-//   one (growing it, dropping the least recently used). The subclass loads a
-//   surface into its images (LoadTarget) and stores them back (StoreTarget)
-//   in the console's formats.
+//   one (growing it, dropping the least recently used; a dropped target's
+//   images and framebuffer are kept for a new one of the size). The subclass
+//   loads a surface into its images (LoadTarget) and stores them back
+//   (StoreTarget) in the console's formats.
 // - Coherence. Console memory is the reference whenever the console itself
 //   looks at it. A target is either equal to memory (Loaded; Shadow holds
 //   the bytes it was loaded from and is compared before each use) or newer
@@ -85,6 +86,13 @@ type
     Image: VkImage;
     Memory: VkDeviceMemory;
     View: VkImageView;
+  end;
+
+  // A target's images and framebuffer kept for reuse (FTargetPool).
+  TVulkanHLEPooledTarget = record
+    Color, Depth: TVulkanHLEImage;
+    Framebuffer: VkFramebuffer;
+    Width, Height: Integer;
   end;
 
   TVulkanHLETexture = class;
@@ -172,6 +180,10 @@ type
     // Textures replaced while the GPU may still read them: destroyed once it
     // has finished (DestroyRetired).
     FRetired: TList<TVulkanHLETexture>;
+    // The images of targets dropped (the GPU done with them), kept for new
+    // targets of the size: making images is slow, and a new target's pixels
+    // are loaded before any use.
+    FTargetPool: TList<TVulkanHLEPooledTarget>;
     FTextureScale: Integer;
     FTextureFilter: TTexScaleFilter;
     // The texels of a level being scaled, and the larger ones.
@@ -425,6 +437,7 @@ begin
   FTargets := TList<TVulkanHLETarget>.Create;
   FTextures := TObjectDictionary<UInt64, TVulkanHLETexture>.Create([]);
   FRetired := TList<TVulkanHLETexture>.Create;
+  FTargetPool := TList<TVulkanHLEPooledTarget>.Create;
   FAPI.vkGetPhysicalDeviceFormatProperties(Compute.PhysicalDevice, VK_FORMAT_D32_SFLOAT_S8_UINT, @Props);
   if (Props.optimalTilingFeatures and VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) <> 0 then
     FDepthFormat := VK_FORMAT_D32_SFLOAT_S8_UINT
@@ -485,6 +498,15 @@ begin
     FRetired.Free;
     if FBlank <> nil then
       DestroyTexture(FBlank);
+    if FTargetPool <> nil then
+      for var I := 0 to FTargetPool.Count - 1 do
+      begin
+        var E := FTargetPool[I];
+        FAPI.vkDestroyFramebuffer(FDevice, E.Framebuffer, nil);
+        DestroyImage(E.Color);
+        DestroyImage(E.Depth);
+      end;
+    FTargetPool.Free;
     if FPipelines <> nil then
       for var P in FPipelines.Values do
         FAPI.vkDestroyPipeline(FDevice, P, nil);
@@ -1028,21 +1050,35 @@ begin
   Result.Width := W;
   Result.Height := H;
   Result.MaxHeight := MaxHeight;
-  Result.Color := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, W * FScale, H * FScale, 1, FColorUsage,
-    VK_IMAGE_ASPECT_COLOR_BIT);
-  Result.Depth := CreateImage(FDepthFormat, W * FScale, H * FScale, 1, FDepthUsage, VK_IMAGE_ASPECT_DEPTH_BIT or
-    VK_IMAGE_ASPECT_STENCIL_BIT);
-  Views[0] := Result.Color.View;
-  Views[1] := Result.Depth.View;
-  Info := Default(VkFramebufferCreateInfo);
-  Info.sType := VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-  Info.renderPass := FRenderPass;
-  Info.attachmentCount := 2;
-  Info.pAttachments := @Views[0];
-  Info.width := W * FScale;
-  Info.height := H * FScale;
-  Info.layers := 1;
-  CheckVulkan(FAPI.vkCreateFramebuffer(FDevice, @Info, nil, @Result.Framebuffer), 'vkCreateFramebuffer');
+  // (A dropped target's images of the size: its pixels are loaded before any
+  // use.)
+  for var I := FTargetPool.Count - 1 downto 0 do
+    if (FTargetPool[I].Width = W * FScale) and (FTargetPool[I].Height = H * FScale) then
+    begin
+      Result.Color := FTargetPool[I].Color;
+      Result.Depth := FTargetPool[I].Depth;
+      Result.Framebuffer := FTargetPool[I].Framebuffer;
+      FTargetPool.Delete(I);
+      Break;
+    end;
+  if Result.Framebuffer = 0 then
+  begin
+    Result.Color := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, W * FScale, H * FScale, 1, FColorUsage,
+      VK_IMAGE_ASPECT_COLOR_BIT);
+    Result.Depth := CreateImage(FDepthFormat, W * FScale, H * FScale, 1, FDepthUsage, VK_IMAGE_ASPECT_DEPTH_BIT or
+      VK_IMAGE_ASPECT_STENCIL_BIT);
+    Views[0] := Result.Color.View;
+    Views[1] := Result.Depth.View;
+    Info := Default(VkFramebufferCreateInfo);
+    Info.sType := VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    Info.renderPass := FRenderPass;
+    Info.attachmentCount := 2;
+    Info.pAttachments := @Views[0];
+    Info.width := W * FScale;
+    Info.height := H * FScale;
+    Info.layers := 1;
+    CheckVulkan(FAPI.vkCreateFramebuffer(FDevice, @Info, nil, @Result.Framebuffer), 'vkCreateFramebuffer');
+  end;
   Changed(Result);
   InitTarget(Result);
   FTargets.Add(Result);
@@ -1061,13 +1097,26 @@ procedure TVulkanHLERenderer.DestroyTarget(T: TVulkanHLETarget);
 begin
   if FFrameTarget = T then
     FFrameTarget := nil;
-  if T.Framebuffer <> 0 then
-    FAPI.vkDestroyFramebuffer(FDevice, T.Framebuffer, nil);
   if T.AsTexture <> nil then
   begin
     FreeSets(T.AsTexture);
     T.AsTexture.Free;
   end;
+  // (Callers have the GPU done with it: kept for a new target of the size.)
+  if (FTargetPool <> nil) and (T.Framebuffer <> 0) and (FTargetPool.Count < 16) then
+  begin
+    var E: TVulkanHLEPooledTarget;
+    E.Color := T.Color;
+    E.Depth := T.Depth;
+    E.Framebuffer := T.Framebuffer;
+    E.Width := T.Width * FScale;
+    E.Height := T.Height * FScale;
+    FTargetPool.Add(E);
+    T.Free;
+    Exit;
+  end;
+  if T.Framebuffer <> 0 then
+    FAPI.vkDestroyFramebuffer(FDevice, T.Framebuffer, nil);
   DestroyImage(T.Color);
   DestroyImage(T.Depth);
   T.Free;

@@ -26,6 +26,7 @@ begin
   // Rewrite an interior pair after it has already been compiled. The next
   // guard must leave the block before executing that pair's stale code.
   Code[12] := $10020000 or Cardinal(1 + (Count and 1));
+  Core.NoteCodeWritten;
   if Count = RaiseAt then
     raise EInvalidOpException.Create('XGKICK unwind probe');
 end;
@@ -157,6 +158,8 @@ begin
           Code0[28] := $12010017;
           Code1[28] := Code0[28];
         end;
+        A.NoteCodeWritten;
+        B.NoteCodeWritten;
         A.Start(0);
         B.Start(0);
         while A.S.Running do
@@ -201,7 +204,7 @@ begin
       B.UseJit := True;
       for var K := 0 to 39 do
       begin
-        A.Start(0); B.Start(0);
+        A.NoteCodeWritten; B.NoteCodeWritten; A.Start(0); B.Start(0);
         var RaisedA := False;
         var RaisedB := False;
         try A.Run(128); except on E: EInvalidOpException do
@@ -273,7 +276,7 @@ begin
       Code1 := Code0;
       for var RepeatIndex := 0 to 31 do
       begin
-        A.Start(0); B.Start(0);
+        A.NoteCodeWritten; B.NoteCodeWritten; A.Start(0); B.Start(0);
         A.Run(256); B.Run(256);
         if not CompareMem(@A.S, @B.S, SizeOf(A.S)) or not CompareMem(@VF0, @VF1, SizeOf(VF0)) then
           raise Exception.CreateFmt('Version collision model=%s round=%d repeat=%d',
@@ -306,7 +309,7 @@ begin
     Code1 := Code0;
     for var RepeatIndex := 0 to 63 do
     begin
-      A.Start(0); B.Start(0);
+      A.NoteCodeWritten; B.NoteCodeWritten; A.Start(0); B.Start(0);
       while A.S.Running do
       begin
         var Budget := 2 + (RepeatIndex mod 9);
@@ -355,7 +358,7 @@ begin
       Code1 := Code0;
       for var RepeatIndex := 0 to 63 do
       begin
-        A.Start(0); B.Start(0);
+        A.NoteCodeWritten; B.NoteCodeWritten; A.Start(0); B.Start(0);
         var Base := A.S.Cycles;
         A.S.QDelay := 1 + RepeatIndex mod 13;
         A.S.PDelay := 1 + RepeatIndex mod 19;
@@ -670,7 +673,7 @@ begin
         for var R := 1 to 31 do
           for var K := 0 to 3 do VA[R].UW[K] := $3F000000 + Cardinal((R * 16 + K + RepeatIndex) shl 8);
         VB^ := VA^;
-        A.Start(0); B.Start(0);
+        A.NoteCodeWritten; B.NoteCodeWritten; A.Start(0); B.Start(0);
         A.Run(128); B.Run(128);
         if not CompareMem(@A.S, @B.S, SizeOf(A.S)) or not CompareMem(VA, VB, SizeOf(VF0)) or
           not CompareMem(IA, IB, SizeOf(VI0)) or not CompareMem(DA, DB, SizeOf(Memory0)) then
@@ -796,7 +799,7 @@ begin
           VF1 := VF0;
           for var K := 0 to High(Data0) do Data0[K] := Edges[(K + RepeatIndex) mod Length(Edges)];
           Data1 := Data0;
-          A.Start(0); B.Start(0);
+          A.NoteCodeWritten; B.NoteCodeWritten; A.Start(0); B.Start(0);
           A.S.Clip := $123456; A.S.ClipBase := $ABCDEF;
           A.S.ClipQCount := RepeatIndex mod 5;
           for var K := 0 to 3 do
@@ -993,7 +996,11 @@ begin
               end;
             34..47: V.WriteControl(1 + Reg mod 3, Value and 1);
             48..57: Data^[Word] := Value;
-            58..60: Code^[CodeWord] := NewUpper;
+            58..60:
+              begin
+                Code^[CodeWord] := NewUpper;
+                V.Core.NoteCodeWritten;
+              end;
             61..64:
               case Control of
                 0: V.WriteControl(16, Value);

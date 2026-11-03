@@ -84,6 +84,7 @@ type
     procedure ResetMachine;
     procedure HandleMachineEvent(Event: TPS2Event; At: Int64);
     procedure RunMachine;
+    procedure VUCodeWritten(Index: Integer);
   public
     Scheduler: TPS2Scheduler;
     Bus: TPS2EEBus;
@@ -175,6 +176,7 @@ begin
   VU1.Core.OnKick := VU1Kick;
   CPU := TEECPU.Create(Bus, VU0, @Scheduler.Now, @Scheduler.Deadline);
   Bus.CPU := CPU;
+  Bus.OnCodeWritten := VUCodeWritten;
   Bus.OnTTY := TTYWrite;
   Timers := TPS2Timers.Create(Scheduler, Bus.RaiseIRQ);
   Bus.Timers := Timers;
@@ -723,6 +725,14 @@ end;
 procedure TPS2Console.ModuleDone(const Token: TBytes; ModuleId, Result: Integer);
 begin
   LoadFile.FinishModule(Token, ModuleId, Result);
+end;
+
+procedure TPS2Console.VUCodeWritten(Index: Integer);
+begin
+  if Index = 0 then
+    VU0.Core.NoteCodeWritten
+  else
+    VU1.Core.NoteCodeWritten;
 end;
 
 procedure TPS2Console.StartVU1(Address: Cardinal);

@@ -604,6 +604,7 @@ begin
       Code[K * 2 + 1] := UpperNop;
     end;
     Code[9 * 2 + 1] := UpperNop or EBit;
+    C.VU1.Core.NoteCodeWritten;
     var Packet := PCardinal(C.Bus.RAM + Base);
     Packet[0] := $14000000; // MSCAL 0
     Packet[1] := $14000000; // MSCAL 0 again: waits for the first program

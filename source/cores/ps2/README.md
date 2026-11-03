@@ -375,8 +375,12 @@ Code is generated after 16 visits in blocks of up to 32 pairs (`PS2VUBlockPairs`
 branch/end delay slots. Compiled successors chain through a table within one
 native frame. The general path checks the budget, PC, both instruction words
 and decoded metadata at every pair; callback changes cannot run a stale pair.
-A scheduled span checks its words in code memory (it takes nothing from
-decoded metadata at run time).
+A scheduled span checks its words in code memory only when code memory
+changed since it last found them there (it takes nothing from decoded
+metadata at run time): whatever writes micro memory (VIF MPG, the EE, whose
+accesses there go through the bus for it, snapshots, resets, tests) calls
+`TPS2VUCore.NoteCodeWritten`, and each compiled block keeps the generation
+its words were last found at.
 Callback-free spans also have a statically scheduled path: it validates the
 whole span, incoming dependency deadlines and pending queues before changing
 guest state. Internal stalls and final register-ready times are constants.

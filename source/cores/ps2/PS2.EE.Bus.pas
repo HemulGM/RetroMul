@@ -48,6 +48,9 @@ type
   public
     RAM, BIOS, IOPRAM: PByte;
     VU0Code, VU0Data, VU1Code, VU1Data: PByte;
+    // VU0 (0) or VU1 (1) micro memory written by the EE (its pages are not
+    // mapped for direct access): the core's compiled code looks again.
+    OnCodeWritten: procedure(Index: Integer) of object;
     CPU: TEECPU;
     Timers: TPS2Timers;
     DMAC: TPS2DMAC;
@@ -203,9 +206,11 @@ begin
   if A < PS2RAMSize then
     Exit(RAM + A);
   case A of
-    $11000000: Exit(VU0Code);
+    // (Micro memory: not mapped at all, else the CPU takes the page for ROM;
+    // Read and Write.)
+    $11000000: Exit(nil);
     $11004000: Exit(VU0Data);
-    $11008000..$1100B000: Exit(VU1Code + (A - $11008000));
+    $11008000..$1100B000: Exit(nil);
     $1100C000..$1100F000: Exit(VU1Data + (A - $1100C000));
     $1C000000..$1C1FF000: Exit(IOPRAM + (A - $1C000000));
     $1FC00000..$1FFFF000:
@@ -322,6 +327,20 @@ end;
 
 function TPS2EEBus.Read(Address: Cardinal; Size: Integer): UInt64;
 begin
+  // Micro memory, whose pages are not mapped (not counted as MMIO).
+  if ((Address >= $11000000) and (Address <= $11000FFF)) or ((Address >= $11008000) and (Address <= $1100BFFF)) then
+  begin
+    var P := VU0Code + (Address and $FFF);
+    if Address >= $11008000 then
+      P := VU1Code + (Address and $3FFF);
+    case Size of
+      1: Exit(P^);
+      2: Exit(PWord(P)^);
+      4: Exit(PCardinal(P)^);
+    else
+      Exit(PUInt64(P)^);
+    end;
+  end;
   Inc(MMIOReads);
   if MMIOCounts <> nil then
   begin
@@ -397,6 +416,27 @@ end;
 
 procedure TPS2EEBus.Write(Address: Cardinal; Value: UInt64; Size: Integer);
 begin
+  // Micro memory (not counted as MMIO): compiled code looks at it again.
+  if ((Address >= $11000000) and (Address <= $11000FFF)) or ((Address >= $11008000) and (Address <= $1100BFFF)) then
+  begin
+    var Index := 0;
+    var P := VU0Code + (Address and $FFF);
+    if Address >= $11008000 then
+    begin
+      Index := 1;
+      P := VU1Code + (Address and $3FFF);
+    end;
+    case Size of
+      1: P^ := Byte(Value);
+      2: PWord(P)^ := Word(Value);
+      4: PCardinal(P)^ := Cardinal(Value);
+    else
+      PUInt64(P)^ := Value;
+    end;
+    if Assigned(OnCodeWritten) then
+      OnCodeWritten(Index);
+    Exit;
+  end;
   Inc(MMIOWrites);
   if MMIOCounts <> nil then
   begin

@@ -834,6 +834,7 @@ begin
     $4A:
       begin
         PCardinal(FCode + (S.MPGAddr and FCodeMask))^ := W;
+        FVU.NoteCodeWritten;
         S.MPGAddr := S.MPGAddr + 4;
       end;
     $50, $51:

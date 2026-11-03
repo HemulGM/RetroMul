@@ -23,6 +23,8 @@ const
   // An entry is compiled (or its compiled version reused) the second time
   // a run starts a block there: re-uploaded microcode starts cold again.
   PS2VUCompileHeat = 2;
+  // Compiled blocks a JIT generation holds at most (their code guards' slots).
+  PS2VUMaxBlocks = 16384;
 
 var
   // A blocked VU0 program's known spin loop takes its turns' cycles without
@@ -226,6 +228,11 @@ type
     FKeptReg, FKeptUse: array[0..15] of Integer;
     FKeptSlot: array[0..32] of Integer;
     FJitVectorOps: Int64;
+    // Code memory's generation (NoteCodeWritten), and each compiled block's
+    // as its code guards last found its pairs there (by block index): a
+    // scheduled run compares its words with the code only after a change.
+    FCodeGen: Cardinal;
+    FBlockGens: TArray<Cardinal>;
     procedure ProfileMark(const Name: string);
     function CompileBlock(PC: Cardinal): Pointer;
     procedure EmitPair(const P: TPS2VUPair);
@@ -295,6 +302,8 @@ type
     RunTraceCount: Integer;
     // Optional host-profiler symbols for generated code (compile time only).
     JitProfile: TProc<Pointer, string>;
+    // Diagnostics: called as RunProgram runs a started program (captures).
+    OnRunProgram: TProc;
     constructor Create(Index: Integer; VF: PPS2VFArray; VI: PPS2VIArray; Code, Data: PByte;
       CodeSize, DataSize: Cardinal);
     destructor Destroy; override;
@@ -307,6 +316,9 @@ type
     property JitCacheHits: Int64 read FJitCacheHits;
     property JitFastPairs: Int64 read FJitFastPairs;
     property JitVectorOps: Int64 read FJitVectorOps;
+    // Code memory was written (by anything but this core: the VIF, the EE,
+    // a snapshot, a test). Compiled blocks look at their pairs again.
+    procedure NoteCodeWritten; inline;
     // Select the portable generator model before running a differential test.
     procedure CheckMath;
     procedure UseJitModel;
@@ -596,6 +608,11 @@ end;
 // All generated code dropped (none is running here). Re-uploaded
 // microprograms may replace every pair, so the cache is bounded rather than
 // retaining old code.
+procedure TPS2VUCore.NoteCodeWritten;
+begin
+  Inc(FCodeGen);
+end;
+
 procedure TPS2VUCore.ResetJit;
 begin
   Inc(FJitResets);
@@ -786,7 +803,7 @@ begin
     FJit := CreateJitAsm(32 * 1024 * 1024);
   if FJit = nil then
     Exit;
-  if not FJit.Room(PS2VUBlockPairs * 4096) then
+  if not FJit.Room(PS2VUBlockPairs * 4096) or (FBlockCount >= PS2VUMaxBlocks) then
     ResetJit;
   var J := FJit;
   Inc(FJitCompiles);
@@ -1809,6 +1826,16 @@ begin
     J.Bind(Ready);
   end;
   ProfileMark('fast-code-guards');
+  // The pairs as compiled, looked at only when code memory changed since
+  // they were found so (this block's generation slot, FBlockGens).
+  var CodeKnown := J.NewLabel;
+  if Length(FBlockGens) = 0 then
+    SetLength(FBlockGens, PS2VUMaxBlocks);
+  FBlockGens[FBlockCount] := FCodeGen;
+  J.Move(jw64, JT1, M(@FBlockGens));
+  var GenSlot := JMem(jrT1, FBlockCount * 4);
+  J.Move(jw32, JT0, M(@FCodeGen));
+  J.Branch(jcEq, jw32, JT0, GenSlot, CodeKnown);
   J.Move(jw64, JT2, M(@FCode));
   PC := Block.PC;
   for var I := 0 to Block.PairCount - 1 do
@@ -1820,6 +1847,8 @@ begin
     J.Branch(jcNe, jw64, JMem(jrT2, Integer(PC)), JT3, Stale);
     PC := (PC + 8) and FCodeMask;
   end;
+  J.Move(jw32, GenSlot, JT0);
+  J.Bind(CodeKnown);
   // In the trace window (see the budget check): pair K at LoopTrace
   // [Count + 64 - Limit + K].
   var NoTrace := J.NewLabel;
@@ -3206,6 +3235,7 @@ end;
 
 procedure TPS2VUCore.Reset;
 begin
+  NoteCodeWritten;
   Inc(Touched);
   S := Default(TPS2VUState);
   FillChar(FReady, SizeOf(FReady), 0);
@@ -4692,6 +4722,8 @@ end;
 
 procedure TPS2VUCore.RunProgram(Now: Int64; MaxPairs: Integer);
 begin
+  if Assigned(OnRunProgram) then
+    OnRunProgram();
   var Before := S.Cycles;
   Run(MaxPairs);
   S.BusyUntil := Now + (S.Cycles - Before);
@@ -4704,6 +4736,8 @@ end;
 
 procedure TPS2VUCore.SerializeState(State: TStateArchive);
 begin
+  // (Code memory may come with the snapshot.)
+  NoteCodeWritten;
   Inc(Touched);
   State.Field(S, SizeOf(S));
   if State.Loading then

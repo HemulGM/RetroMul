@@ -182,7 +182,6 @@ type
     // of the current Run (FMathMode).
     FMath: array[TPS2RegisterMath] of Pointer;
     FMathMode: TRoundingMode;
-    FFastFloat: Boolean;
     // Runs between HoldMath(True) and HoldMath(False) take FMathMode as it is.
     FMathHeld: Integer;
     FJitClip: Cardinal;
@@ -228,9 +227,6 @@ type
     FKeptSlot: array[0..32] of Integer;
     FJitVectorOps: Int64;
     procedure ProfileMark(const Name: string);
-    // FMath for FMathMode and FFastFloat.
-    procedure ChooseMath;
-    procedure SetFastFloat(Value: Boolean);
     function CompileBlock(PC: Cardinal): Pointer;
     procedure EmitPair(const P: TPS2VUPair);
     function EmitUpper(Op: Cardinal): Boolean;
@@ -304,9 +300,6 @@ type
     destructor Destroy; override;
     // Experimental block compiler; the interpreter remains the reference.
     property UseJit: Boolean read FUseJit write FUseJit;
-    // Generated code's vector sums and products in the host's arithmetic
-    // (PS2RegisterMathFast): inexact, an option; the interpreter stays exact.
-    property FastFloat: Boolean read FFastFloat write SetFastFloat;
     property JitRuns: Int64 read FJitRuns;
     property JitBlocks: Int64 read FJitBlocks;
     property JitCompiles: Int64 read FJitCompiles;
@@ -4606,29 +4599,9 @@ begin
   if (Mode <> FMathMode) or (FMath[vrmAdd] = nil) then
   begin
     FMathMode := Mode;
-    ChooseMath;
+    FMath[vrmAdd] := PS2RegisterMathNativeFor(vrmAdd, Mode);
+    FMath[vrmMul] := PS2RegisterMathNativeFor(vrmMul, Mode);
   end;
-end;
-
-procedure TPS2VUCore.ChooseMath;
-begin
-  FMath[vrmAdd] := PS2RegisterMathNativeFor(vrmAdd, FMathMode);
-  FMath[vrmMul] := PS2RegisterMathNativeFor(vrmMul, FMathMode);
-  if FFastFloat and (PS2RegisterMathFast(vrmAdd) <> nil) then
-  begin
-    FMath[vrmAdd] := PS2RegisterMathFast(vrmAdd);
-    FMath[vrmMul] := PS2RegisterMathFast(vrmMul);
-  end;
-end;
-
-procedure TPS2VUCore.SetFastFloat(Value: Boolean);
-begin
-  if Value = FFastFloat then
-    Exit;
-  FFastFloat := Value;
-  // (For the rounding chosen already; none chosen: at the next run.)
-  if FMath[vrmAdd] <> nil then
-    ChooseMath;
 end;
 
 procedure TPS2VUCore.HoldMath(Held: Boolean);

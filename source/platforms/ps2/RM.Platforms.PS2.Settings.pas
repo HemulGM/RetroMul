@@ -26,8 +26,6 @@ begin
     Context.AddChoice('RowPS2Execution', 'CPU/VU execution', 'Experimental block recompilers for the EE and for VU1 and VU0 micro programs with native pipeline bookkeeping, chained blocks and exact SIMD arithmetic. Uncommon operations retain interpreter helpers. Applies during play. Speed depends on the game.',
       'Emulation', 'Execution', SettingChoices(['Interpreter', 'Recompiler (JIT, experimental)'],
       ['interpreter', 'jit']), 'interpreter', True);
-    Context.AddChoice('RowPS2VUFloat', 'VU float arithmetic', 'Exact computes the recompiled VU sums and products bit for bit as the PS2 does. Fast uses the host''s own arithmetic with values kept finite: quicker, but results may differ in the last bit and some effects may look different. The interpreter stays exact. Applies during play.',
-      'Emulation', 'VUFloat', SettingChoices(['Exact', 'Fast (inexact, experimental)'], ['exact', 'fast']), 'exact', True);
   end;
   Context.Heading('GroupPS2Rendering', 'PS2 rendering');
   Context.AddChoice('RowPS2Renderer', 'Graphics Synthesizer', 'Software rendering; Vulkan LLE: the same pixels drawn by compute shaders for 32/24-bit targets, direct/palettized textures and mipmapping (unsupported draws and devices use the CPU; it may be slower); or Vulkan HLE: every primitive drawn by the GPU''s own pipelines, fast, not pixel for pixel (some effects are not right yet). Applies during play.', 'Video', 'Renderer', SettingChoices(['Software, multithreaded', 'Software, one thread', 'Vulkan LLE (experimental)', 'Vulkan HLE (experimental)'], ['threads', 'single', 'vulkan', 'vulkan-hle']), 'threads', True);

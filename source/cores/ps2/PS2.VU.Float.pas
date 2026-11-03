@@ -46,12 +46,6 @@ function PS2RegisterMathNative(Kind: TPS2RegisterMath): Pointer;
 // rounding to nearest have fast paths, others the exact routine at once).
 function PS2RegisterMathNativeFor(Kind: TPS2RegisterMath; Mode: TRoundingMode): Pointer;
 function PS2RegisterMathModel(Kind: TPS2RegisterMath): Pointer;
-// The inexact register math (an option, TPS2VUCore.FastFloat): the host's own
-// sum or product in its rounding, operands and results kept finite (exponent
-// 255 as the largest magnitude, denormals as zero) and no overflow or
-// underflow flags; nil without AVX2. Results may differ from the PS2's in the
-// last bit (rounding, the guard bit) and where it saturates.
-function PS2RegisterMathFast(Kind: TPS2RegisterMath): Pointer;
 // Whether the AVX-512 forms of the rounding-to-nearest fast paths are used
 // (AVX-512F/DQ/VL and the OS's ZMM state; tests may turn them off).
 function PS2VectorAVX512: Boolean;
@@ -153,7 +147,6 @@ const
   C64: array[0..3] of Integer = (64, 64, 64, 64);
   C254: array[0..3] of Integer = (254, 254, 254, 254);
   C25: array[0..3] of Integer = (25, 25, 25, 25);
-  CMaxFinite: array[0..3] of Cardinal = ($7F7FFFFF, $7F7FFFFF, $7F7FFFFF, $7F7FFFFF);
   CShift23: array[0..1] of UInt64 = (23, 23);
   CIntMin: array[0..1] of Double = (-2147483648.0, -2147483648.0);
   CIntMax: array[0..1] of Double = (2147483647.0, 2147483647.0);
@@ -1256,69 +1249,6 @@ asm
   jmp RegisterAddExact
 end;
 
-// PS2RegisterMathFast's: xmm0 op xmm1, each kept finite before and after.
-function AddRegistersFast(Context: Pointer): NativeUInt;
-asm
-  .NOFRAME
-  vpxor xmm5, xmm5, xmm5
-  vpand xmm2, xmm0, [rip + CAbsMask]
-  vpminud xmm2, xmm2, [rip + CMaxFinite]
-  vpand xmm4, xmm0, [rip + CExpMask]
-  vpcmpeqd xmm4, xmm4, xmm5
-  vpandn xmm2, xmm4, xmm2
-  vpand xmm0, xmm0, [rip + CSignMask]
-  vpor xmm0, xmm0, xmm2
-  vpand xmm3, xmm1, [rip + CAbsMask]
-  vpminud xmm3, xmm3, [rip + CMaxFinite]
-  vpand xmm4, xmm1, [rip + CExpMask]
-  vpcmpeqd xmm4, xmm4, xmm5
-  vpandn xmm3, xmm4, xmm3
-  vpand xmm1, xmm1, [rip + CSignMask]
-  vpor xmm1, xmm1, xmm3
-  vaddps xmm0, xmm0, xmm1
-  vpand xmm2, xmm0, [rip + CAbsMask]
-  vpminud xmm2, xmm2, [rip + CMaxFinite]
-  vpand xmm4, xmm0, [rip + CExpMask]
-  vpcmpeqd xmm4, xmm4, xmm5
-  vpandn xmm2, xmm4, xmm2
-  vpand xmm0, xmm0, [rip + CSignMask]
-  vpor xmm0, xmm0, xmm2
-  xor eax, eax
-  vzeroupper
-  ret
-end;
-
-function MulRegistersFast(Context: Pointer): NativeUInt;
-asm
-  .NOFRAME
-  vpxor xmm5, xmm5, xmm5
-  vpand xmm2, xmm0, [rip + CAbsMask]
-  vpminud xmm2, xmm2, [rip + CMaxFinite]
-  vpand xmm4, xmm0, [rip + CExpMask]
-  vpcmpeqd xmm4, xmm4, xmm5
-  vpandn xmm2, xmm4, xmm2
-  vpand xmm0, xmm0, [rip + CSignMask]
-  vpor xmm0, xmm0, xmm2
-  vpand xmm3, xmm1, [rip + CAbsMask]
-  vpminud xmm3, xmm3, [rip + CMaxFinite]
-  vpand xmm4, xmm1, [rip + CExpMask]
-  vpcmpeqd xmm4, xmm4, xmm5
-  vpandn xmm3, xmm4, xmm3
-  vpand xmm1, xmm1, [rip + CSignMask]
-  vpor xmm1, xmm1, xmm3
-  vmulps xmm0, xmm0, xmm1
-  vpand xmm2, xmm0, [rip + CAbsMask]
-  vpminud xmm2, xmm2, [rip + CMaxFinite]
-  vpand xmm4, xmm0, [rip + CExpMask]
-  vpcmpeqd xmm4, xmm4, xmm5
-  vpandn xmm2, xmm4, xmm2
-  vpand xmm0, xmm0, [rip + CSignMask]
-  vpor xmm0, xmm0, xmm2
-  xor eax, eax
-  vzeroupper
-  ret
-end;
-
 function MulRegisters(Context: Pointer): NativeUInt;
 asm
   .NOFRAME
@@ -1720,18 +1650,6 @@ begin
         else
           Result := @RegisterMulExact;
         end;
-    end;
-  {$ENDIF}
-end;
-
-function PS2RegisterMathFast(Kind: TPS2RegisterMath): Pointer;
-begin
-  Result := nil;
-  {$IFDEF PS2_VU_SSE}
-  if VectorAVX2 then
-    case Kind of
-      vrmAdd: Result := @AddRegistersFast;
-      vrmMul: Result := @MulRegistersFast;
     end;
   {$ENDIF}
 end;

@@ -33,18 +33,6 @@ after explicit PS2 operand/guard-bit sanitization. Anything that could
 underflow, overflow or use the PS2-only exponent range stays on integer AVX2;
 other host rounding modes do too. This is not an approximate-math option.
 
-`TPS2VUCore.FastFloat` (the front end's `Emulation/VUFloat=fast`, off by
-default; `PS2_FASTFLOAT=1` in the test runner) is one: the recompiled register
-ADD/SUB/MUL/MADD/MSUB and outer products call `PS2RegisterMathFast` instead,
-the host's own sum or product in the rounding it runs under, operands and
-results kept finite (exponent 255 as the largest host magnitude, denormals as
-zero), without O/U flags. Results may differ in the last bit and where the
-PS2's wider range saturates; the interpreter, the memory-operand kernels and
-the EE FPU stay exact. It gains little, as the exact routines already take
-the host's arithmetic in the common range: with the HLE renderer the two
-routines' share of the samples goes from 13.5% to 8.3% in FFX and from 7.5% to
-5.7% in Jak; frames over 600 fields look the same.
-
 Disc images come from `source/media/dvd/Core.DVD.Image.pas` (ISO, MDS/MDF,
 DVD CHD, CD images through the CD layer). The front end lives in
 `source/platforms/ps2/Core.Platforms.PS2.Adapter.pas` and

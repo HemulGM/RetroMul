@@ -197,10 +197,18 @@ begin
           var Bytes := 4;
           if PSM in [PSMCT16, PSMCT16S, PSMZ16, PSMZ16S] then Bytes := 2;
           var Offset := Integer(A.Addr(Cardinal(X), 31)) * Bytes + Delta * 4;
+          // Earlier overlapping probes can homogenize their source region.
+          // Start each load and store with distinct words independently, so
+          // reading both lanes before the first write is always observable.
+          for var I := 0 to PS2GSMemorySize div 4 - 1 do
+            PCardinal(M0.Data)[I] := Cardinal(I) xor $925A830D;
           Move(M0.Data^, M1.Data^, PS2GSMemorySize);
           LoadReference(M0, A, PSM, 31, X, 129, PCardinal(M0.Data + Offset));
           PS2HLELoadColorRow(M1, A, PSM, 31, X, 129, PCardinal(M1.Data + Offset));
           if not CompareMem(M0.Data, M1.Data, PS2GSMemorySize) then raise Exception.Create('Aliased row load reordered');
+          for var I := 0 to PS2GSMemorySize div 4 - 1 do
+            PCardinal(M0.Data)[I] := Cardinal(I) xor $B53C0719;
+          Move(M0.Data^, M1.Data^, PS2GSMemorySize);
           StoreReference(M0, A, PSM, 31, X, 129, PCardinal(M0.Data + Offset));
           PS2HLEStoreColorRow(M1, A, PSM, 31, X, 129, PCardinal(M1.Data + Offset));
           if not CompareMem(M0.Data, M1.Data, PS2GSMemorySize) then raise Exception.Create('Aliased row store reordered');

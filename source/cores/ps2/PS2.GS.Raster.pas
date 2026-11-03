@@ -195,6 +195,8 @@ type
     procedure WritePages(First, Last: Integer); virtual;
     // The same for sets of pages read and written.
     procedure AccessPages(const Reads, Writes: TPS2GSPages); virtual;
+    // Something it drew is not in GS memory yet (Pending by default).
+    function Newer: Boolean; virtual;
     property Pending: Boolean read FPending;
     // Incremented when work is queued; zero disables CPU write-barrier caching.
     property Revision: Int64 read FRevision;
@@ -460,6 +462,9 @@ type
     procedure MarkWritten(BP, BW, PSM: Cardinal; X0, Y0, X1, Y1: Integer; Entry: Int64);
     procedure MarkAreaWritten(Buf, Pos, Reg: UInt64; var Pages: TPS2GSPages);
     procedure FlushMarks;
+    // GS memory holds what is drawn in Pages (everything, unless the
+    // accelerator takes reads by pages).
+    procedure SyncPages(const Pages: TPS2GSPages);
   public
     // Diagnostics: commands queued for the band threads by operation (next
     // to Regs: what the emulation thread writes, away from what bands read).
@@ -511,9 +516,9 @@ type
     property Async: Boolean read GetAsync write SetAsync;
     property Vulkan: Boolean read FVulkan write SetVulkan;
     // Drawing with the Vulkan HLE renderer (TPS2GSHLE, PS2.GS.VulkanHLE): not
-    // the software renderer's pixels, the timing the same. On this thread
-    // (no Async), without band threads or Vulkan; VulkanError says why it
-    // could not start.
+    // the software renderer's pixels, the timing the same. On the drawing
+    // raster's thread (the worker's when Async), without band threads or
+    // Vulkan LLE; VulkanError says why it could not start.
     property HLE: Boolean read FHLE write SetHLE;
     // Its counts, for diagnostics.
     property HLEReport: string read GetHLEReport;
@@ -660,6 +665,7 @@ type
     // write its pages (it syncs Inner unless they are in memory), and the
     // entry each was queued as (the slot is not taken again before then).
     FReads: array[0..ReadSlots - 1] of TPS2GSRead;
+    FReadPages: array[0..ReadSlots - 1] of TPS2GSPages;
     FReadNeed, FReadAt: array[0..ReadSlots - 1] of Int64;
     FReadCount: Int64;
     function Slot: PEntry;
@@ -675,7 +681,7 @@ type
     procedure PutRegister(Index: Integer; Value: UInt64);
     procedure PutImage(const Data: TPS2Reg128);
     // Read after what is queued (Need: see FReadNeed), handed over at once.
-    procedure PutRead(const Read: TPS2GSRead; Need: Int64);
+    procedure PutRead(const Read: TPS2GSRead; Need: Int64; const Pages: TPS2GSPages);
     // Waits until Inner has taken everything queued (Synced: and drawn it,
     // its Sync).
     procedure Drain(Synced: Boolean);
@@ -915,26 +921,30 @@ end;
 
 procedure TPS2GSRaster.SetAsync(Value: Boolean);
 begin
-  if not GSAsyncSupported or (PrimLog <> nil) or (TransferLog <> nil) or (WatchX >= 0) or FHLE then
+  if not GSAsyncSupported or (PrimLog <> nil) or (TransferLog <> nil) or (WatchX >= 0) then
     Value := False;
   if Value = (FWorker <> nil) then
     Exit;
   var Threads := FThreads;
   var Vulkan := FVulkan;
+  var HLE := FHLE;
   if Value then
   begin
     // The worker's raster takes over the drawing (the state, the band
     // threads and the GPU as set here, which this raster lets go).
     Sync;
     SetVulkan(False);
+    SetHLE(False);
     SetThreads(0);
     var Inner := TPS2GSRaster.CreateInner(Self);
+    Inner.HLE := HLE;
     Inner.Threads := Threads;
     Inner.Vulkan := Vulkan;
     FWorker := TPS2GSWorker.Create(Inner);
     FShadow := True;
     FThreads := Threads;
     FVulkan := Vulkan;
+    FHLE := Inner.FHLE;
     FVulkanError := Inner.FVulkanError;
   end
   else
@@ -950,6 +960,8 @@ begin
     FShadow := False;
     FThreads := 0;
     FVulkan := False;
+    FHLE := False;
+    SetHLE(HLE);
     SetThreads(Threads);
     SetVulkan(Vulkan);
   end;
@@ -975,6 +987,11 @@ end;
 procedure TPS2GSAccelerator.WritePages(First, Last: Integer);
 begin
   Sync;
+end;
+
+function TPS2GSAccelerator.Newer: Boolean;
+begin
+  Result := FPending;
 end;
 
 procedure TPS2GSAccelerator.AccessPages(const Reads, Writes: TPS2GSPages);
@@ -1046,10 +1063,23 @@ end;
 procedure TPS2GSRaster.SetHLE(Value: Boolean);
 begin
   if Value = FHLE then Exit;
-  // It draws on this thread, with nothing else drawing.
+  if FWorker <> nil then
+  begin
+    // (The worker's raster draws: no band threads or Vulkan LLE there.)
+    var Inner := Drawing;
+    Inner.HLE := Value;
+    FHLE := Inner.FHLE;
+    FVulkanError := Inner.FVulkanError;
+    if FHLE then
+    begin
+      FVulkan := False;
+      FThreads := 0;
+    end;
+    Exit;
+  end;
+  // It draws on this raster's thread, with nothing else drawing.
   if Value then
   begin
-    SetAsync(False);
     SetVulkan(False);
     SetThreads(0);
   end;
@@ -1073,8 +1103,9 @@ end;
 function TPS2GSRaster.GetHLEReport: string;
 begin
   Result := '';
-  if FHLE and (FAccelerator <> nil) then
-    Result := TPS2GSHLE(FAccelerator).Renderer.Describe;
+  var R := Drawing;
+  if R.FHLE and (R.FAccelerator <> nil) then
+    Result := TPS2GSHLE(R.FAccelerator).Renderer.Describe;
 end;
 
 procedure TPS2GSRaster.SetVulkan(Value: Boolean);
@@ -1919,7 +1950,7 @@ begin
   Result := UInt64(BP) or (UInt64(BW) shl 20) or (UInt64(PSM) shl 32) or (UInt64(1) shl 40);
 end;
 
-function TPS2GSRaster.MemoryFor(const Pages: TPS2GSPages): TPS2GSMemory;
+procedure TPS2GSRaster.SyncPages(const Pages: TPS2GSPages);
 begin
   if (FWorker = nil) and (FAccelerator <> nil) and FAccelerator.PageReads then
   begin
@@ -1930,10 +1961,18 @@ begin
       FAccelerator.AccessPages(Pages, None);
     end;
     SyncSoftware;
+  end
+  else
+    Sync;
+end;
+
+function TPS2GSRaster.MemoryFor(const Pages: TPS2GSPages): TPS2GSMemory;
+begin
+  if FWorker = nil then
+  begin
+    SyncPages(Pages);
     Exit(FMemory);
   end;
-  if FWorker = nil then
-    Exit(GetMemory);
   FlushMarks;
   var Need: Int64 := 0;
   for var P := 0 to 511 do
@@ -1977,7 +2016,7 @@ begin
     Read(MemoryFor(Pages));
     Exit;
   end;
-  FWorker.PutRead(Read, PagesNeed(Pages));
+  FWorker.PutRead(Read, PagesNeed(Pages), Pages);
 end;
 
 procedure TPS2GSRaster.FinishReads;
@@ -2267,9 +2306,13 @@ begin
       FCommand.V[0] := V0;
       FCommand.V[1] := V1;
       FCommand.V[2] := V2;
-      var Counted := FCounter.PixelsDrawn;
-      FCounter.Draw(FCommand);
-      Inc(FPixels, FCounter.PixelsDrawn - Counted);
+      // (The worker's raster: the front raster counts them.)
+      if not FUncounted then
+      begin
+        var Counted := FCounter.PixelsDrawn;
+        FCounter.Draw(FCommand);
+        Inc(FPixels, FCounter.PixelsDrawn - Counted);
+      end;
       Exit;
     end;
     Sync;
@@ -5300,7 +5343,7 @@ begin
               var K := Integer(E.Value);
               try
                 if Synced < FReadNeed[K] then
-                  FInner.Sync;
+                  FInner.SyncPages(FReadPages[K]);
                 FReads[K](FInner.FMemory);
               finally
                 FReads[K] := nil;
@@ -5332,7 +5375,7 @@ begin
       // in memory on that side.
       if not FInner.FPending then
         BandsDone := Position;
-      if (FInner.FAccelerator = nil) or not FInner.FAccelerator.Pending then
+      if (FInner.FAccelerator = nil) or not FInner.FAccelerator.Newer then
         GpuDone := Position;
       if Min(BandsDone, GpuDone) <> Synced then
       begin
@@ -5429,7 +5472,7 @@ begin
     Publish;
 end;
 
-procedure TPS2GSWorker.PutRead(const Read: TPS2GSRead; Need: Int64);
+procedure TPS2GSWorker.PutRead(const Read: TPS2GSRead; Need: Int64; const Pages: TPS2GSPages);
 begin
   var K := Integer(FReadCount mod ReadSlots);
   if FReadCount >= ReadSlots then
@@ -5440,6 +5483,7 @@ begin
   var E := Slot;
   FReads[K] := Read;
   FReadNeed[K] := Need;
+  FReadPages[K] := Pages;
   FReadAt[K] := FWrite;
   E.Kind := EntryRead;
   E.Value := UInt64(K);

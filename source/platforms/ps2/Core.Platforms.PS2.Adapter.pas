@@ -52,8 +52,8 @@ type
     // 'vulkan' (Vulkan LLE, also read as 'vulkan-lle': supported
     // sprites/triangle pixels on the GPU, bit exact, other draws on the band
     // threads), or experimental 'vulkan-hle' (Vulkan HLE: every primitive on the
-    // GPU's own pipelines, fast but not bit exact, on the emulation thread).
-    // But for 'single' and 'vulkan-hle' the GS front end runs on a thread
+    // GPU's own pipelines, fast but not bit exact). But for 'single' the GS
+    // front end and its renderer run on a thread
     // of its own (TPS2GSRaster.Async) on hosts with four logical processors.
     property Renderer: string read FRenderer write FRenderer;
     property Recompiler: Boolean read FRecompiler write FRecompiler;
@@ -288,7 +288,7 @@ end;
 
 function TPS2Config.GSAsync: Boolean;
 begin
-  Result := (FRenderer <> 'single') and (FRenderer <> 'vulkan-hle') and (TThread.ProcessorCount >= 4);
+  Result := (FRenderer <> 'single') and (TThread.ProcessorCount >= 4);
 end;
 
 function TPS2Config.ConsoleLanguage: TPS2Language;
@@ -706,10 +706,15 @@ begin
         end;
         // (The GS as the kick thread left it.)
         FConsole.GIF.Join;
-        FConsole.GS.Raster.HLE := HLE;
+        // HLE goes before the rest when it stops, after them when it starts
+        // (on the GS worker once there is one).
+        if not HLE then
+          FConsole.GS.Raster.HLE := False;
         FConsole.GS.Raster.Vulkan := Vulkan;
         FConsole.GS.Raster.Threads := GSThreads;
         FConsole.GS.Raster.Async := GSAsync;
+        if HLE then
+          FConsole.GS.Raster.HLE := True;
         FConsole.GIF.Threaded := GSAsync;
         FConsole.VU1.Core.UseJit := Recompiler;
         FConsole.VU0.Core.UseJit := Recompiler;

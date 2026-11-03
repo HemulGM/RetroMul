@@ -562,10 +562,12 @@ triangle, line and point with Vulkan graphics pipelines in the host GPU's
 arithmetic (`PS2.GS.VulkanHLE`, on the common `RM.Vulkan.HLE` base the PSP's
 HLE renderer uses): fast and light on the CPU, but not pixel for pixel as the
 software renderer. The raster still counts the pixels each primitive covers,
-so the timing is the same; it runs on the emulation thread (no band threads,
-no GS worker) and needs a device with a graphics queue and dual-source
-blending (else the software renderer draws, single-threaded, and
-`VulkanError` says why).
+so the timing is the same. It draws on the GS worker's thread (where the host
+has four logical processors; else on the emulation thread), without band
+threads, and needs a device with a graphics queue and dual-source blending
+(else the software renderer draws, without band threads, and `VulkanError`
+says why). The display's reads go to the worker, which stores only the
+targets they meet.
 
 GS buffers are render targets (RGBA8 images; 24-bit frames keep alpha 0x80,
 16-bit ones bit 15 as 0 or 255), their depth buffers the targets' depth

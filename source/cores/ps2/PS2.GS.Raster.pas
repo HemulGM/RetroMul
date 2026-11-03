@@ -5370,7 +5370,14 @@ begin
           Fail(X.Message);
       end;
       Inc(Position);
-      TInterlocked.Exchange(FLines.Done, Position);
+      // The count goes out every 64 entries, after the last one ready and at
+      // every entry while the emulation thread waits (each locked write moves
+      // the cache line between the threads). After the last one ready, this
+      // write and the read of FMainWaiting below pair with WaitConsumed's
+      // write of it and read of the count: it sees the count or this thread
+      // sees it waiting.
+      if ((Position and 63) = 0) or (Position = Last) or (FMainWaiting <> 0) then
+        TInterlocked.Exchange(FLines.Done, Position);
       // Nothing queued for the band threads or the GPU: everything so far is
       // in memory on that side.
       if not FInner.FPending then
@@ -5404,13 +5411,15 @@ begin
     raise Exception.Create('GS worker thread: ' + FFailure);
 end;
 
-// The next entry (waits for room; published entries only are drawn).
+// The next entry (waits for room; published entries only are drawn). A full
+// ring waits for a sixteenth of it, not an entry: one at a time, both threads
+// would hand the counters' cache lines to each other for every entry.
 function TPS2GSWorker.Slot: PEntry;
 begin
   if FWrite - FConsumedSeen >= RingSize then
   begin
     Publish;
-    WaitConsumed(FWrite + 1 - RingSize);
+    WaitConsumed(FWrite + 1 - RingSize + RingSize div 16);
   end;
   Result := @FRing[FWrite and RingMask];
 end;
@@ -5428,7 +5437,9 @@ end;
 procedure TPS2GSWorker.WaitConsumed(Value: Int64);
 begin
   var Spins := 0;
-  while TInterlocked.Read(FLines.Done) < Value do
+  // (Spinning on a plain read, an aligned 64-bit one: a locked one would take
+  // the cache line from the worker each round.)
+  while FLines.Done < Value do
   begin
     if Spins < SpinRounds then
     begin

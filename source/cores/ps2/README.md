@@ -90,7 +90,11 @@ on the worker thread, sharing the GS memory, replays them: CLUT loads,
 transfers, routing between the GPU and the band threads, their barriers and
 waits. Each vertex kick carries the emulation thread's SSE control word
 (rounding, flush-to-zero, denormals-are-zero), which the worker loads before
-drawing, so the arithmetic matches the emulation thread's. The emulation
+drawing, so the arithmetic matches the emulation thread's. The worker
+publishes its progress every 64 entries, after the last one queued and at
+every entry while the emulation thread waits; a full queue waits for a
+sixteenth of it to drain (counters handed back and forth per entry cost both
+threads a cache line each time). The emulation
 thread waits for the worker only when it reads GS memory (local-to-host
 transfers, snapshots) or changes the renderer. The display at VBlank
 (`MemoryFor`) waits only when queued work may still write its pages: the
@@ -586,7 +590,8 @@ GS buffers are render targets (RGBA8 images; 24-bit frames keep alpha 0x80,
 images. A target's rows map to GS memory a page row at a time, so targets are
 whole page rows tall and their drawn rows are held a page row at a time.
 Textures are decoded on the CPU (CLUT, TEXA, mipmap levels) and compared with
-the GS blocks they came from; a drawn target read in its own format and width
+the GS blocks they came from (a large one that primitives read little of in
+parts of whole GS pages); a drawn target read in its own format and width
 is sampled from its image (a draw reading the target it draws reads a copy,
 brought up to date before a primitive reads what was drawn since). The
 shaders do the GS's texture addressing (wrap modes, 4-bit bilinear weights,

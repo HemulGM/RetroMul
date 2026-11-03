@@ -30,6 +30,8 @@ var
   // A blocked VU0 program's known spin loop takes its turns' cycles without
   // running them (TPS2VU0.SpinKnown; tests compare both ways).
   SpinSkips: Boolean = True;
+  // XGKICK payload spans at once; tests compare with one quadword at a time.
+  PS2VUKickRuns: Boolean = True;
 
 type
   TPS2VFArray = array[0..31] of TPS2Reg128;
@@ -253,6 +255,7 @@ type
     procedure EmitStoreVF(Reg: Integer; Src: TJitVector; Lanes: Byte);
     procedure EmitFlags(Mask: Cardinal);
     procedure EmitStatus;
+    procedure EmitMACGroups;
     procedure EmitLazyFlush;
     procedure EmitPrepare(const P: TPS2VUPair);
     procedure EmitFinish(const P: TPS2VUPair);
@@ -444,6 +447,11 @@ const
   // to the packet in the next two pairs goes out with it, one in the third
   // pair does not.
   KickLatency = 3;
+
+var
+  // Four independent MAC nibbles reduced to the status Z/S/U/O bits. Kept
+  // outside guest state; every possible 16-bit MAC value has an exact entry.
+  MACGroups: array[0..65535] of Byte;
 
 function FieldBit(K: Integer): Cardinal; inline;
 begin
@@ -1054,6 +1062,16 @@ var
   function M(Address: Pointer): TJitOp;
   begin
     Result := JMem(jrSelf, Integer(NativeInt(Address) - NativeInt(Self)));
+  end;
+
+  function InputDeadline(Cycle: Integer): TJitOp;
+  begin
+    case Cycle of
+      1: Result := JT4;
+      2: Result := JT5;
+    else
+      Result := JS1;
+    end;
   end;
 
   function IsClip(Upper: Cardinal): Boolean;
@@ -1806,8 +1824,6 @@ begin
   J.Alu(jaAdd, jw64, JT1, JImm(Plan.Issue[Block.PairCount - 1]));
   J.Branch(jcLe, jw64, JT0, JT1, Slow);
   J.Bind(KickOK);
-  QueueShape(@S.FlagQCount, @S.FlagQReady[0]);
-  QueueShape(@S.ClipQCount, @S.ClipQReady[0]);
   // Flag reads see the queues through the run as the compiler found them
   // on entry: such a run needs them so. Other runs check at their end
   // whether they were so (or empty), to leave them without a replay.
@@ -1853,6 +1869,10 @@ begin
     end;
     // Others: noted once (this version is dropped, its successor takes
     // both), then the general path.
+    // The exact incoming-queue checks above already prove shape on a hit.
+    // Only a miss needs the general shape validation before it is noted.
+    QueueShape(@S.FlagQCount, @S.FlagQReady[0]);
+    QueueShape(@S.ClipQCount, @S.ClipQReady[0]);
     if (Hint and $100) = 0 then
     begin
       J.Call(@TPS2VUCore.NoteQueues, [JSelf, JImm(Block.PC), JImm(QueueMask(FlagSeen) or (QueueMask(ClipSeen) shl 4)),
@@ -1862,6 +1882,32 @@ begin
     else
       J.Jump(Stall);
     J.Bind(Known);
+  end
+  else
+  begin
+    QueueShape(@S.FlagQCount, @S.FlagQReady[0]);
+    QueueShape(@S.ClipQCount, @S.ClipQReady[0]);
+  end;
+  // All external dependencies are first read at cycle 0, 1 or 2. Work out
+  // those deadlines once rather than reloading/adding the same cycle for
+  // every field. No call runs between here and the last dependency check.
+  var NeedCycle1 := False;
+  var NeedCycle2 := False;
+  for var R := 1 to 31 do
+    for var K := 0 to 3 do
+    begin
+      NeedCycle1 := NeedCycle1 or (Plan.ReadAt[R, K] = 1);
+      NeedCycle2 := NeedCycle2 or (Plan.ReadAt[R, K] = 2);
+    end;
+  if NeedCycle1 then
+  begin
+    J.Move(jw64, JT4, JS1);
+    J.Alu(jaAdd, jw64, JT4, JImm(1));
+  end;
+  if NeedCycle2 then
+  begin
+    J.Move(jw64, JT5, JS1);
+    J.Alu(jaAdd, jw64, JT5, JImm(2));
   end;
   for var R := 1 to 31 do
   begin
@@ -1883,16 +1929,12 @@ begin
     var Ready := J.NewLabel;
     if Fields > 1 then
     begin
-      J.Move(jw64, JT0, JS1);
-      J.Alu(jaAdd, jw64, JT0, JImm(First));
-      J.Branch(jcLe, jw64, M(@FReadyAny[R]), JT0, Ready);
+      J.Branch(jcLe, jw64, M(@FReadyAny[R]), InputDeadline(First), Ready);
     end;
     for var K := 0 to 3 do
       if (Plan.ReadAt[R, K] >= 0) and (Plan.ReadAt[R, K] < 3) then
       begin
-        J.Move(jw64, JT0, JS1);
-        J.Alu(jaAdd, jw64, JT0, JImm(Plan.ReadAt[R, K]));
-        J.Branch(jcGt, jw64, M(@FReady[R, K]), JT0, Stall);
+        J.Branch(jcGt, jw64, M(@FReady[R, K]), InputDeadline(Plan.ReadAt[R, K]), Stall);
       end;
     J.Bind(Ready);
   end;
@@ -2239,27 +2281,14 @@ end;
 // S.Status from the MAC flag in T3 (EmitFlags's, EmitRegisterFlags's): each
 // group (Z, S, U, O) with a field set sets its bit and its sticky bit, six
 // above; I, D and the sticky bits stay. Without branches (results' signs and
-// zeros change from one vertex to the next): the groups' nonzero bits come to
-// bits 0, 4, 8, 12 of T1, then to 0..3.
+// zeros change from one vertex to the next): the exact MAC lookup gives
+// each group's nonzero bit in bits 0..3 of T1.
 procedure TPS2VUCore.EmitStatus;
 begin
   var J := FJit;
   EmitLazyFlush;
   J.Move(jw32, JT1, JT3);
-  J.Move(jw32, JT0, JT1);
-  J.Shift(jsShr, jw32, jrT0, 1);
-  J.Alu(jaOr, jw32, JT1, JT0);
-  J.Move(jw32, JT0, JT1);
-  J.Shift(jsShr, jw32, jrT0, 2);
-  J.Alu(jaOr, jw32, JT1, JT0);
-  J.Alu(jaAnd, jw32, JT1, JImm($1111));
-  J.Move(jw32, JT0, JT1);
-  J.Shift(jsShr, jw32, jrT0, 3);
-  J.Alu(jaOr, jw32, JT1, JT0);
-  J.Move(jw32, JT0, JT1);
-  J.Shift(jsShr, jw32, jrT0, 6);
-  J.Alu(jaOr, jw32, JT1, JT0);
-  J.Alu(jaAnd, jw32, JT1, JImm($F));
+  EmitMACGroups;
   J.Move(jw32, JT0, JT1);
   J.Shift(jsShl, jw32, jrT0, 6);
   J.Alu(jaOr, jw32, JT1, JT0);
@@ -2267,6 +2296,17 @@ begin
   J.Alu(jaAnd, jw32, JT0, JImm($FF0));
   J.Alu(jaOr, jw32, JT0, JT1);
   J.Move(jw32, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))), JT0);
+end;
+
+// JT1's four MAC groups to status bits 0..3. Only JT0 is clobbered; mask the
+// index as the old reduction did, including synthetic aliased callers.
+procedure TPS2VUCore.EmitMACGroups;
+begin
+  var J := FJit;
+  J.Alu(jaAnd, jw32, JT1, JImm($FFFF));
+  J.Move(jw64, JT0, JImm(NativeInt(@MACGroups[0])));
+  J.Alu(jaAdd, jw64, JT0, JT1);
+  J.Move(jw8, JT1, JMem(jrT0, 0));
 end;
 // The sticky bits of the events since the last worked-out status whose own
 // status nothing reads (FJitLazyMAC, see EmitBody) into S.Status: before the
@@ -2280,20 +2320,7 @@ begin
   var J := FJit;
   var Lazy := JMem(jrSelf, Integer(NativeInt(@FJitLazyMAC) - NativeInt(Self)));
   J.Move(jw32, JT1, Lazy);
-  J.Move(jw32, JT0, JT1);
-  J.Shift(jsShr, jw32, jrT0, 1);
-  J.Alu(jaOr, jw32, JT1, JT0);
-  J.Move(jw32, JT0, JT1);
-  J.Shift(jsShr, jw32, jrT0, 2);
-  J.Alu(jaOr, jw32, JT1, JT0);
-  J.Alu(jaAnd, jw32, JT1, JImm($1111));
-  J.Move(jw32, JT0, JT1);
-  J.Shift(jsShr, jw32, jrT0, 3);
-  J.Alu(jaOr, jw32, JT1, JT0);
-  J.Move(jw32, JT0, JT1);
-  J.Shift(jsShr, jw32, jrT0, 6);
-  J.Alu(jaOr, jw32, JT1, JT0);
-  J.Alu(jaAnd, jw32, JT1, JImm($F));
+  EmitMACGroups;
   J.Shift(jsShl, jw32, jrT1, 6);
   J.Alu(jaOr, jw32, JMem(jrSelf, Integer(NativeInt(@S.Status) - NativeInt(Self))), JT1);
   J.Move(jw32, Lazy, JImm(0));
@@ -4483,9 +4510,43 @@ end;
 procedure TPS2VUCore.TakeKick(All: Boolean);
 begin
   var Limit := Length(FKickBuf);
+  var Due := Limit;
+  if PS2VUKickRuns and not All then
+  begin
+    if S.Cycles < FKickStart then Due := 0
+    else
+    begin
+      var N := (S.Cycles - FKickStart) div 2 + 1;
+      if N < Limit then Due := Integer(N);
+    end;
+  end;
   while ((FKickEnd < 0) or (FKickCount < FKickEnd)) and (FKickCount < Limit) and
     (All or (FKickStart + 2 * FKickCount <= S.Cycles)) do
   begin
+    if PS2VUKickRuns and (FKickCount < FKickNextTag) then
+    begin
+      // Only payload: stop before the next tag, the due time, the packet's
+      // end and a VU-memory wrap. Stores/callbacks cannot run inside this
+      // copy; their observation points are still the caller's original ones.
+      var Last := Min(Due, FKickNextTag);
+      if FKickEnd >= 0 then Last := Min(Last, FKickEnd);
+      var At := (FKickAddress + Cardinal(FKickCount) * 16) and FDataMask;
+      var N := Min(Last - FKickCount, Integer((FDataMask + 1 - At) div 16));
+      if N > 1 then
+      begin
+        var Source := FData + At;
+        var Target := @FKickBuf[FKickCount];
+        var Bytes := NativeUInt(N * 16);
+        // Aliased synthetic callers retain the old read/write order.
+        if (NativeUInt(Source) >= NativeUInt(Target) + Bytes) or
+          (NativeUInt(Target) >= NativeUInt(Source) + Bytes) then
+        begin
+          Move(Source^, Target^, N * 16);
+          Inc(FKickCount, N);
+          Continue;
+        end;
+      end;
+    end;
     // (By halves: a 16-byte record copy is two string moves here.)
     var Src := PUInt64(FData + ((FKickAddress + Cardinal(FKickCount) * 16) and FDataMask));
     var Lo := Src[0];
@@ -5340,5 +5401,26 @@ begin
   State.Field(FVI, SizeOf(FVI));
   FCore.SerializeState(State);
 end;
+
+initialization
+  for var MAC := 0 to High(MACGroups) do
+  begin
+    MACGroups[MAC] := Ord((MAC and $000F) <> 0) or
+      (Ord((MAC and $00F0) <> 0) shl 1) or
+      (Ord((MAC and $0F00) <> 0) shl 2) or
+      (Ord((MAC and $F000) <> 0) shl 3);
+    {$IFDEF PS2_CHECKED}
+    // Exhaustively check against the former generated shift/OR reduction.
+    var Fold := Cardinal(MAC);
+    Fold := Fold or (Fold shr 1);
+    Fold := Fold or (Fold shr 2);
+    Fold := Fold and $1111;
+    Fold := Fold or (Fold shr 3);
+    Fold := Fold or (Fold shr 6);
+    Fold := Fold and $F;
+    if MACGroups[MAC] <> Fold then
+      raise Exception.Create('MAC/status lookup differs from the reference reduction');
+    {$ENDIF}
+  end;
 
 end.

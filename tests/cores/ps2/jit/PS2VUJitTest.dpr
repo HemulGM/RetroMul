@@ -17,6 +17,26 @@ type
     procedure Kick(Address: Cardinal; Data: PByte);
   end;
 
+  TFullKickProbe = class
+    Core: TPS2VUCore;
+    Address: Cardinal;
+    Bytes: Integer;
+    Packets: TArray<TBytes>;
+    Times: TArray<Int64>;
+    procedure Kick(At: Cardinal; Data: PByte);
+  end;
+
+procedure TFullKickProbe.Kick(At: Cardinal; Data: PByte);
+begin
+  if At <> Address then raise Exception.Create('Wrong bulk XGKICK address');
+  var Index := Length(Packets);
+  SetLength(Packets, Index + 1);
+  SetLength(Times, Index + 1);
+  SetLength(Packets[Index], Bytes);
+  Move(Data^, Packets[Index][0], Bytes);
+  Times[Index] := Core.S.Cycles;
+end;
+
 procedure TKickProbe.Kick(Address: Cardinal; Data: PByte);
 begin
   if (Address <> 0) or (PCardinal(Data)^ <> $8000) then
@@ -763,6 +783,104 @@ begin
   end;
 end;
 
+// Full kicked payloads and callback cycles against the original one-quadword
+// reader. Includes chained PACKED/REGLIST/IMAGE tags, RAM wrap, writes before
+// and after payload deadlines, a second kick forcing completion, and the
+// VU-memory packet limit (with an EOP beyond that limit).
+procedure CheckKickRuns(Model: Boolean);
+const
+  UpperNop = $000002FF;
+  LowerNop = $8000033C;
+var
+  VF0, VF1, InitialVF: TPS2VFArray;
+  VI0, VI1, InitialVI: TPS2VIArray;
+  Code0, Code1, Data0, Data1, InitialData: TMemory;
+begin
+  var A := TPS2VUCore.Create(1, @VF0, @VI0, @Code0, @Data0, SizeOf(Code0), SizeOf(Data0));
+  var B := TPS2VUCore.Create(1, @VF1, @VI1, @Code1, @Data1, SizeOf(Code1), SizeOf(Data1));
+  var KA := TFullKickProbe.Create;
+  var KB := TFullKickProbe.Create;
+  try
+    if Model then B.UseJitModel else B.UseJit := True;
+    KA.Core := A;
+    KB.Core := B;
+    A.OnKick := KA.Kick;
+    B.OnKick := KB.Kick;
+    RandSeed := 91537;
+    var Cases := 0;
+    for var Payload in TArray<Integer>.Create(0, 1, 7, 64, 900, 1007, 1020) do
+      for var StartQuad in TArray<Integer>.Create(0, 511, 1022) do
+      begin
+        FillChar(InitialVF, SizeOf(InitialVF), 0);
+        FillChar(InitialVI, SizeOf(InitialVI), 0);
+        for var K := 0 to High(InitialData) do
+          InitialData[K] := (Cardinal(Random(65536)) shl 16) or Cardinal(Random(65536));
+        for var K := 0 to 3 do InitialVF[2].UW[K] := $12345000 + Cardinal(K);
+        InitialVI[1] := Cardinal(StartQuad);
+        var Addr := Cardinal(StartQuad * 16);
+        var Tag := PPS2Reg128(PByte(@InitialData) + Addr);
+        Tag.Lo := 3 or (UInt64(2) shl 60); // 6 PACKED payload quadwords.
+        Tag.Hi := $0E;
+        Tag := PPS2Reg128(PByte(@InitialData) + ((Addr + 7 * 16) and $3FFF));
+        Tag.Lo := 5 or (UInt64(1) shl 58) or (UInt64(3) shl 60); // 8 REGLIST quadwords.
+        Tag.Hi := $531;
+        Tag := PPS2Reg128(PByte(@InitialData) + ((Addr + 16 * 16) and $3FFF));
+        Tag.Lo := UInt64(Payload) or $8000 or (UInt64(2) shl 58); // IMAGE and EOP.
+        Tag.Hi := 0;
+        var Pairs := Min(1200, Max(80, (17 + Payload) * 2 + 32));
+        FillChar(Code0, SizeOf(Code0), 0);
+        for var I := 0 to Pairs - 1 do
+        begin
+          Code0[I * 2] := LowerNop;
+          Code0[I * 2 + 1] := UpperNop;
+          if (I mod 11 = 2) and (I < Pairs - 2) then
+            Code0[I * 2] := (1 shl 25) or ($F shl 21) or (1 shl 16) or (2 shl 11) or
+              Cardinal(1 + (I div 11) mod 6); // SQ vf2 into the first tag's payload.
+        end;
+        Code0[0] := $800006FC or (1 shl 11);
+        Code0[17 * 2] := $800006FC or (1 shl 11);
+        Code0[(Pairs - 2) * 2 + 1] := UpperNop or $40000000;
+        Code1 := Code0;
+        KA.Address := Addr;
+        KB.Address := Addr;
+        KA.Bytes := Min(17 + Payload, 1024) * 16;
+        KB.Bytes := KA.Bytes;
+        for var Repeat_ := 0 to 2 do
+        begin
+          Data0 := InitialData; Data1 := InitialData;
+          VF0 := InitialVF; VF1 := InitialVF;
+          VI0 := InitialVI; VI1 := InitialVI;
+          A.Reset; B.Reset;
+          KA.Packets := nil; KB.Packets := nil;
+          KA.Times := nil; KB.Times := nil;
+          A.Start(0); B.Start(0);
+          PS2VUKickRuns := False;
+          if not A.Run(4000000) then raise Exception.Create('Reference kick program did not end');
+          PS2VUKickRuns := True;
+          if not B.Run(4000000) then raise Exception.Create('Bulk kick program did not end');
+          if (Length(KA.Packets) <> 2) or (Length(KB.Packets) <> 2) then
+            raise Exception.Create('Missing full-payload kick callbacks');
+          for var K := 0 to 1 do
+            if (KA.Times[K] <> KB.Times[K]) or
+              not CompareMem(@KA.Packets[K][0], @KB.Packets[K][0], KA.Bytes) then
+              raise Exception.CreateFmt('Bulk XGKICK differs: payload=%d start=%d packet=%d', [Payload, StartQuad, K]);
+          if not CompareMem(@A.S, @B.S, SizeOf(A.S)) or
+            not CompareMem(@VF0, @VF1, SizeOf(VF0)) or
+            not CompareMem(@VI0, @VI1, SizeOf(VI0)) or
+            not CompareMem(@Data0, @Data1, SizeOf(Data0)) then
+            raise Exception.Create('Bulk XGKICK left different state');
+          Inc(Cases);
+        end;
+      end;
+    Writeln('model=', Model, ' XGKICK payload runs: ', Cases,
+      ' tags/wrap/stores/second-kick/limit cases, full payloads and callback cycles: OK');
+  finally
+    PS2VUKickRuns := True;
+    KA.Free; KB.Free;
+    A.Free; B.Free;
+  end;
+end;
+
 procedure CheckVectorAliasFallback(Model: Boolean);
 var
   Code0, Code1, Memory0, Memory1: TMemory;
@@ -1170,6 +1288,8 @@ begin
     CheckRegisterKernels;
     CheckRoundingKernels;
     CheckMultiplierLostBit;
+    CheckKickRuns(False);
+    CheckKickRuns(True);
     SetRoundMode(rmTruncate);
     Check(False);
     Check(True);

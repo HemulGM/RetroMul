@@ -374,6 +374,11 @@ queues, register commits, VI arithmetic, branches, memory operations and
 CLIP flag reads. Upper ADD/SUB/MUL/MADD/MSUB and cross products call the exact
 four-field PS2 SIMD routines directly; uncommon operations retain interpreter
 helpers. XGKICK still uses the shared packet reader with its original timing.
+Payload quadwords already due can be copied in runs up to the next tag,
+packet end or RAM wrap; stores and callbacks retain their observation cycles.
+The JIT test compares full packets and callback times with the original
+one-quadword reader (`PS2VUKickRuns=False`), including chained GIF formats,
+stores during transfer, a second kick and the VU-memory packet limit.
 ITOF/FTOI0/4/12/15 use packed exact conversion helpers, and CLIP uses integer
 comparisons plus the original four-cycle flag queue. Exponent-zero inputs,
 finite exponent 255, saturation, masks and host conversion rounding retain
@@ -434,7 +439,13 @@ base end up holding, and what each pair's flag reads see. Events nothing
 reads (not a flag read's, the queue's at the end, or the last) only OR their
 MAC flag into an accumulator (its lanes in any order: only each group's
 sticky bit counts), whose sticky bits join the status before the
-next one is worked out or a helper may read it. At the end the
+next one is worked out or a helper may read it. MAC groups are reduced
+through an exact 65536-entry byte table rather than
+a dependent shift/OR sequence (checked builds verify every entry against
+that sequence). Incoming queues that match the compiled shape need no second
+shape validation; other shapes retain the original checks. External input
+deadlines at cycles 0/1/2 are shared across field checks within an entry. At
+the end the
 queues are written from that when the incoming ones were so; otherwise the
 events are replayed at run time as each pair would have queued them
 (FinishFastFlags). FCEQ/FCAND/FCOR/FCGET/FCSET and FSEQ/FSAND/FSOR/FMEQ/

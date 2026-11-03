@@ -3805,6 +3805,16 @@ begin
   Result := False;
 end;
 
+// A halfword product added to (taken from) a LO/HI word, as PMADDH/PMSUBH.
+function MulAccHalf(Old: Cardinal; A, B: SmallInt; Sub: Boolean): Cardinal; inline;
+begin
+  var P := Cardinal(Integer(A) * Integer(B));
+  if Sub then
+    Result := Sub32(Old, P)
+  else
+    Result := Add32(Old, P);
+end;
+
 function TEECPU.OpMMI2(I: PEEInst): Boolean;
 var
   R: TPS2Reg128;
@@ -3858,28 +3868,25 @@ begin
       end;
     16, 20:
       begin
+        // Halfword k accumulates into LO/HI word slots 0,1 (LO), 0,1 (HI),
+        // 2,3 (LO), 2,3 (HI). (Words put together into 64-bit halves: what
+        // reads them next reads those.)
         var Sub := I.Sa = 20;
-        // Halfword k accumulates into LO/HI word slots 0,1 (LO), 0,1 (HI), 2,3 (LO), 2,3 (HI).
-        for var K := 0 to 7 do
-        begin
-          var P := Integer(A.SH[K]) * Integer(B.SH[K]);
-          var Slot := (K and 1) + (K shr 2) * 2;
-          if ((K shr 1) and 1) = 0 then
-          begin
-            if Sub then
-              S.LO.UW[Slot] := Sub32(S.LO.UW[Slot], Cardinal(P))
-            else
-              S.LO.UW[Slot] := Add32(S.LO.UW[Slot], Cardinal(P));
-          end
-          else if Sub then
-            S.HI.UW[Slot] := Sub32(S.HI.UW[Slot], Cardinal(P))
-          else
-            S.HI.UW[Slot] := Add32(S.HI.UW[Slot], Cardinal(P));
-        end;
-        R.UW[0] := S.LO.UW[0];
-        R.UW[1] := S.HI.UW[0];
-        R.UW[2] := S.LO.UW[2];
-        R.UW[3] := S.HI.UW[2];
+        var L0 := MulAccHalf(S.LO.UW[0], A.SH[0], B.SH[0], Sub);
+        var L1 := MulAccHalf(S.LO.UW[1], A.SH[1], B.SH[1], Sub);
+        var H0 := MulAccHalf(S.HI.UW[0], A.SH[2], B.SH[2], Sub);
+        var H1 := MulAccHalf(S.HI.UW[1], A.SH[3], B.SH[3], Sub);
+        var L2 := MulAccHalf(S.LO.UW[2], A.SH[4], B.SH[4], Sub);
+        var L3 := MulAccHalf(S.LO.UW[3], A.SH[5], B.SH[5], Sub);
+        var H2 := MulAccHalf(S.HI.UW[2], A.SH[6], B.SH[6], Sub);
+        var H3 := MulAccHalf(S.HI.UW[3], A.SH[7], B.SH[7], Sub);
+        S.LO.Lo := UInt64(L0) or (UInt64(L1) shl 32);
+        S.LO.Hi := UInt64(L2) or (UInt64(L3) shl 32);
+        S.HI.Lo := UInt64(H0) or (UInt64(H1) shl 32);
+        S.HI.Hi := UInt64(H2) or (UInt64(H3) shl 32);
+        S.GPR[I.D].Lo := UInt64(L0) or (UInt64(H0) shl 32);
+        S.GPR[I.D].Hi := UInt64(L2) or (UInt64(H2) shl 32);
+        Exit(False);
       end;
     17, 21:
       begin
@@ -3950,21 +3957,21 @@ begin
       end;
     28:
       begin
-        var P: array[0..7] of Cardinal;
-        for var K := 0 to 7 do
-          P[K] := Cardinal(Integer(A.SH[K]) * Integer(B.SH[K]));
-        S.LO.UW[0] := P[0];
-        S.LO.UW[1] := P[1];
-        S.HI.UW[0] := P[2];
-        S.HI.UW[1] := P[3];
-        S.LO.UW[2] := P[4];
-        S.LO.UW[3] := P[5];
-        S.HI.UW[2] := P[6];
-        S.HI.UW[3] := P[7];
-        R.UW[0] := P[0];
-        R.UW[1] := P[2];
-        R.UW[2] := P[4];
-        R.UW[3] := P[6];
+        var P0 := Cardinal(Integer(A.SH[0]) * Integer(B.SH[0]));
+        var P1 := Cardinal(Integer(A.SH[1]) * Integer(B.SH[1]));
+        var P2 := Cardinal(Integer(A.SH[2]) * Integer(B.SH[2]));
+        var P3 := Cardinal(Integer(A.SH[3]) * Integer(B.SH[3]));
+        var P4 := Cardinal(Integer(A.SH[4]) * Integer(B.SH[4]));
+        var P5 := Cardinal(Integer(A.SH[5]) * Integer(B.SH[5]));
+        var P6 := Cardinal(Integer(A.SH[6]) * Integer(B.SH[6]));
+        var P7 := Cardinal(Integer(A.SH[7]) * Integer(B.SH[7]));
+        S.LO.Lo := UInt64(P0) or (UInt64(P1) shl 32);
+        S.LO.Hi := UInt64(P4) or (UInt64(P5) shl 32);
+        S.HI.Lo := UInt64(P2) or (UInt64(P3) shl 32);
+        S.HI.Hi := UInt64(P6) or (UInt64(P7) shl 32);
+        S.GPR[I.D].Lo := UInt64(P0) or (UInt64(P2) shl 32);
+        S.GPR[I.D].Hi := UInt64(P4) or (UInt64(P6) shl 32);
+        Exit(False);
       end;
     29:
       begin

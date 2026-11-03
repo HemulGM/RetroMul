@@ -331,6 +331,72 @@ begin
   Writeln(Format('%d random blocks over few registers (recompiler) match the handlers', [Runs]));
 end;
 
+// PMADDH, PMSUBH and PMULTH (no kernels) through the handlers against a
+// model of each halfword's product and the LO/HI words it goes to, with
+// edge lanes, rd 0 and registers aliased.
+procedure CheckHalfwordProducts(CPU: TEECPU; Bus: TTestBus);
+const
+  // Halfword K's LO (False) or HI word and the word there.
+  ToHI: array[0..7] of Boolean = (False, False, True, True, False, False, True, True);
+  Slot: array[0..7] of Integer = (0, 1, 0, 1, 2, 3, 2, 3);
+  Functs: array[0..2] of Cardinal = (16, 20, 28);
+begin
+  var Cases := 0;
+  for var Trial := 0 to 5999 do
+  begin
+    var F := Functs[Trial mod 3];
+    var Rs := Rnd mod 32;
+    var Rt := Rnd mod 32;
+    var Rd := Rnd mod 32;
+    case Trial mod 7 of
+      0: Rd := Rs;
+      1: Rd := Rt;
+      2: Rs := Rt;
+      3: Rd := 0;
+    end;
+    var Op := ($1C shl 26) or (Rs shl 21) or (Rt shl 16) or (Rd shl 11) or (F shl 6) or $09;
+    var Start: TSnapshot;
+    FillChar(Start, SizeOf(Start), 0);
+    for var K := 1 to 31 do
+      for var W := 0 to 3 do
+        Start.GPR[K].UW[W] := RndWord(Rnd);
+    for var W := 0 to 3 do
+    begin
+      Start.HI.UW[W] := RndWord(Rnd);
+      Start.LO.UW[W] := RndWord(Rnd);
+    end;
+    var Expected := Start;
+    var A := Start.GPR[Rs];
+    var B := Start.GPR[Rt];
+    for var K := 0 to 7 do
+    begin
+      var P := Cardinal(Integer(A.SH[K]) * Integer(B.SH[K]));
+      var Target: PPS2Reg128 := @Expected.LO;
+      if ToHI[K] then Target := @Expected.HI;
+      case F of
+        16: Target.UW[Slot[K]] := Target.UW[Slot[K]] + P;
+        20: Target.UW[Slot[K]] := Target.UW[Slot[K]] - P;
+      else
+        Target.UW[Slot[K]] := P;
+      end;
+    end;
+    if Rd <> 0 then
+    begin
+      Expected.GPR[Rd].UW[0] := Expected.LO.UW[0];
+      Expected.GPR[Rd].UW[1] := Expected.HI.UW[0];
+      Expected.GPR[Rd].UW[2] := Expected.LO.UW[2];
+      Expected.GPR[Rd].UW[3] := Expected.HI.UW[2];
+    end;
+    var Got := RunOne(CPU, Bus, Op, Start, True, False);
+    Got.SA := 0;
+    Expected.SA := 0;
+    if not CompareMem(@Got, @Expected, SizeOf(Got)) then
+      raise Exception.CreateFmt('Halfword product mismatch op=%.8x', [Op]);
+    Inc(Cases);
+  end;
+  Writeln(Format('%d PMADDH/PMSUBH/PMULTH (handlers) as the halfword model: OK', [Cases]));
+end;
+
 // Loops that count down a register (ADDIU/DADDIU -1 before the branch or in
 // its delay slot, NOPs, BNE with zero or another register, BGTZ) or a word
 // (LW, ADDIU, SW, LW, BNE), and near misses (another step, offset, branch or
@@ -566,6 +632,7 @@ begin
       CheckTransfers(CPU, Bus, Cop2);
       CheckBlocks(CPU, Bus, Cop2);
     CheckCountdowns(CPU, Bus, Cop2);
+    CheckHalfwordProducts(CPU, Bus);
     finally
       CPU.Free;
       Cop2.Free;

@@ -211,9 +211,25 @@ the result, without ACC. EFU sums and squares chain the PS2 adder and
 multiplier. EFU roots and reciprocals round to nearest, and a zero divisor
 gives the largest value.
 
+The FPU's and the VUs' multiplier loses a bit in some products (the VU
+manuals: 1 * X may differ from X, X * 1 not). Every product measured on a
+console that we have (ps2autotests' `cpu/ee_fpu/muldiv` and
+`vu/games/triace`, the list of 1 * X for X = 0.5 .. 249.5 on fobes.dev, PCSX2
+issue 10519 from Monster Hunter) fits a radix-4 Booth multiplier that drops
+the partial products' columns below 15 or 16: a negative digit of the
+multiplier ft among its eight lowest loses what reaches the low columns.
+Where fs is a power of two, that loss is the whole difference: such a
+product (both operands nonzero, exponent 1..255) is one unit less than the
+truncated one (`PS2MulLosesBit`, MUL/MULA/MADD/MSUB on the FPU, every VU
+multiply in the interpreter and the JIT). With other multiplicands the loss
+depends on how the hardware sums its partial products, which these data do
+not show: those products stay truncated. `PS2MulLostBit` False (test runner:
+`PS2_MULBIT=0`) turns it off.
+
 Known gaps:
-- The multiplier gives one unit less for 1.0 times an all-ones mantissa. No
-  public rule describes this, so it is not modelled.
+- Products whose multiplicand is not a power of two never lose the bit (the
+  models that fit the data differ there; about one product in a hundred
+  would).
 - 9 of the 96 EFU root/reciprocal vectors differ by one unit in the last place.
 - EATAN, ESIN and EEXP use host functions instead of the EFU's series.
 
@@ -358,7 +374,9 @@ other modes and ranges use the exact integer routines. With AVX-512 (F, DQ,
 VL and the OS's ZMM state) the round-to-nearest routines instead let the
 operation itself round toward zero (EVEX embedded rounding; the bytes are
 written out, as the Delphi assembler drops the rounding operand), with the
-same range tests and blends for the operand order. `tests/cores/ps2/vufloat`
+same range tests and blends for the operand order. The multiply routines
+look for a multiplicand with mantissa 0 in a lane and only then work out the
+lanes losing the multiplier's bit (`MulLostBitLanes`). `tests/cores/ps2/vufloat`
 calls the register routines of every host rounding, with and without
 AVX-512, on random operands and all exponent pairs. The result stays live
 through a call-free lower half until the masked commit (beside a lower half

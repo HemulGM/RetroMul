@@ -475,6 +475,9 @@ begin
               S.A.UW[K] := (Rnd and $807FFFFF) or ((96 + Rnd mod 64) shl 23);
               S.B.UW[K] := (Rnd and $807FFFFF) or ((96 + Rnd mod 64) shl 23);
             end;
+            // A power of two as fs (PS2MulLosesBit).
+            if Sample mod 8 = 6 then
+              S.A.UW[K] := S.A.UW[K] and $FF800000;
             var FM: Cardinal;
             var Product := PS2FloatMul(S.A.UW[K], S.B.UW[K], FM);
             S.Acc.UW[K] := Rnd;
@@ -552,8 +555,10 @@ var
 
   function Operand(Other: Cardinal): Cardinal;
   begin
-    case Rnd mod 8 of
+    case Rnd mod 9 of
       0: Result := Rnd;
+      // A power of two (as fs: PS2MulLosesBit).
+      7: Result := Rnd and $FF800000;
       1: Result := (Rnd and $807FFFFF) or ((Rnd mod 256) shl 23);
       2: Result := Other xor (Rnd and $80000007);
       3: Result := (Other and $FF800000) or (Rnd and $7FFFFF);
@@ -634,6 +639,129 @@ begin
   {$ENDIF}
 end;
 {$IFDEF PS2_CHECKED}{$Q+}{$R+}{$ENDIF}
+
+// The multiplier's lost bit against products measured on a console: 1 * X for
+// X = 0.5 .. 249.5 in steps of 0.5 (fobes.dev: the X.5 from 128.5 up lose a
+// bit, nothing below), ps2autotests' cpu/ee_fpu muldiv and vu/games/triace,
+// PCSX2 issue 10519. The one-field, four-field and register routines (each
+// host rounding) give them; with PS2MulLostBit off, the truncated product.
+procedure CheckMultiplierLostBit;
+type
+  TCase = record
+    A, B, Product: Cardinal;
+  end;
+  TState = record
+    A, B, R: TPS2Reg128;
+    Status: UInt64;
+  end;
+  PState = ^TState;
+const
+  Fixed: array[0..11] of TCase = (
+    (A: $3F800000; B: $3FFFFFFF; Product: $3FFFFFFE), (A: $3FFFFFFF; B: $3F800000; Product: $3FFFFFFF),
+    (A: $3F800000; B: $7FFFFFFF; Product: $7FFFFFFE), (A: $7FFFFFFF; B: $3F800000; Product: $7FFFFFFF),
+    (A: $3F800000; B: $FFFFFFFF; Product: $FFFFFFFE), (A: $FFFFFFFF; B: $3F800000; Product: $FFFFFFFF),
+    (A: $3F800000; B: $3E4CCCCD; Product: $3E4CCCCC), (A: $40400000; B: $40400000; Product: $41100000),
+    (A: $B063B75B; B: $42FECCCD; Product: $B3E2A618), (A: $8701CE82; B: $43D80D3E; Product: $8B5B19E9),
+    (A: $46FCC888; B: $43A0DA10; Product: $4B1ED4A7), (A: $793CC535; B: $43546E14; Product: $7D1CA47B));
+var
+  Cases: TArray<TCase>;
+  S: TState;
+begin
+  Cases := nil;
+  for var C in Fixed do
+    Cases := Cases + [C];
+  for var K := 1 to 499 do
+  begin
+    var X: Single := K / 2;
+    var C: TCase;
+    C.A := $3F800000;
+    C.B := PCardinal(@X)^;
+    C.Product := C.B;
+    if Odd(K) and (K >= 257) then
+      Dec(C.Product);
+    Cases := Cases + [C];
+  end;
+  {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+  var Native := CreateJitAsm(1 shl 20);
+  if (Native <> nil) and (not Native.HasVectors or (PS2RegisterMathNative(vrmMul) = nil)) then
+    FreeAndNil(Native);
+  var SavedControl := GetMXCSR;
+  {$ENDIF}
+  var SavedMode := GetRoundMode;
+  try
+    for var Lost := True downto False do
+    begin
+      PS2MulLostBit := Lost;
+      for var C in Cases do
+      begin
+        var Want := C.Product;
+        // (Without it: the truncated product, which only these differ from.)
+        if not Lost and (C.A = $3F800000) then
+          Want := C.B;
+        var F: Cardinal;
+        if PS2FloatMul(C.A, C.B, F) <> Want then
+          raise Exception.CreateFmt('PS2FloatMul %.8x * %.8x = %.8x, console %.8x (lost bit %s)',
+            [C.A, C.B, PS2FloatMul(C.A, C.B, F), Want, BoolToStr(Lost, True)]);
+        var A, B, R: TPS2Reg128;
+        for var K := 0 to 3 do
+        begin
+          A.UW[K] := C.A;
+          B.UW[K] := C.B;
+        end;
+        // (Other lanes: zero and a normal value.)
+        A.UW[1] := 0;
+        B.UW[3] := $3F800000;
+        PS2Mul4(A, B, R, F);
+        if (R.UW[0] <> Want) or (R.UW[2] <> Want) or (R.UW[1] <> (C.B and $80000000)) or
+          (R.UW[3] <> PS2FloatMul(C.A, $3F800000, F)) then
+          raise Exception.CreateFmt('PS2Mul4 %.8x * %.8x = %.8x, console %.8x', [C.A, C.B, R.UW[0], Want]);
+      end;
+      {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+      if Native <> nil then
+        for var Mode := Low(TRoundingMode) to High(TRoundingMode) do
+        begin
+          Native.Align(16);
+          var Code := Native.Here;
+          Native.Enter;
+          Native.VectorLoad(jv0, JMem(jrSelf, Integer(NativeUInt(@PState(nil).A))));
+          Native.VectorLoad(jv1, JMem(jrSelf, Integer(NativeUInt(@PState(nil).B))));
+          Native.VectorCall(PS2RegisterMathNativeFor(vrmMul, Mode), PS2RegisterMathModel(vrmMul), JImm(0));
+          Native.VectorStore(JMem(jrSelf, Integer(NativeUInt(@PState(nil).R))), jv0);
+          Native.Move(jw64, JMem(jrSelf, Integer(NativeUInt(@PState(nil).Status))), JT0);
+          Native.Leave(JImm(0));
+          Native.Flush;
+          SetMXCSR(SavedControl);
+          SetRoundMode(Mode);
+          for var C in Cases do
+          begin
+            var Want := C.Product;
+            if not Lost and (C.A = $3F800000) then
+              Want := C.B;
+            for var K := 0 to 3 do
+            begin
+              S.A.UW[K] := C.A;
+              S.B.UW[K] := C.B;
+            end;
+            S.B.UW[2] := $3F800000;
+            Native.Invoke(Code, NativeUInt(@S), 0, 0, 0);
+            var F: Cardinal;
+            if (S.R.UW[0] <> Want) or (S.R.UW[3] <> Want) or (S.R.UW[2] <> PS2FloatMul(C.A, $3F800000, F)) then
+              raise Exception.CreateFmt('Register multiply (rounding %d) %.8x * %.8x = %.8x, console %.8x',
+                [Ord(Mode), C.A, C.B, S.R.UW[0], Want]);
+          end;
+        end;
+      {$ENDIF}
+    end;
+    Writeln('multiplier lost bit: ', Length(Cases), ' console products, one-, four-field and register routines OK');
+  finally
+    PS2MulLostBit := True;
+    SetRoundMode(SavedMode);
+    {$IF DEFINED(CPUX64) AND DEFINED(MSWINDOWS)}
+    SetMXCSR(SavedControl);
+    Native.Free;
+    {$ENDIF}
+  end;
+end;
 
 procedure CheckVectorAliasFallback(Model: Boolean);
 var
@@ -1041,6 +1169,7 @@ begin
     SetExceptionMask(exAllArithmeticExceptions);
     CheckRegisterKernels;
     CheckRoundingKernels;
+    CheckMultiplierLostBit;
     SetRoundMode(rmTruncate);
     Check(False);
     Check(True);

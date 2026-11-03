@@ -572,6 +572,21 @@ function PS2FloatNearest(D: Double): Cardinal;
 // Orders PS2 floats like the MAX/MIN instructions do.
 function PS2FloatKey(V: Cardinal): Integer; inline;
 
+// The bit the FPU's and the VUs' multiplier loses (the VU manuals: 1 * X may
+// differ from X, X * 1 not). Hardware results (ps2autotests' cpu/ee_fpu muldiv,
+// fobes.dev's list of 1 * X for X = 0.5 .. 249.5, PCSX2 issue 10519) all fit
+// a radix-4 Booth multiplier that drops the low columns of its partial
+// products: a negative digit of the multiplier B in its eight lowest places
+// (bits 0..15 of B's mantissa) loses what reaches the product's low bits.
+// Where the multiplicand A (fs) is a power of two that is all the product
+// misses: A * B, both nonzero, in range (exponent 1..255), with such a digit
+// is one unit less than the truncated product. With other multiplicands the
+// loss also depends on how the partial products sum, which the data do not
+// show: those products stay truncated. PS2MulLostBit False: always truncated.
+var
+  PS2MulLostBit: Boolean = True;
+function PS2MulLosesBit(A, B: Cardinal): Boolean; inline;
+
 // The kernel of MMI instruction Op (opcode $1C) where the host has one (nil:
 // the general handler runs it).
 function EEMMIKernel(Op: Cardinal): TEEMMIKernel;
@@ -591,6 +606,21 @@ begin
   else
     B := (UInt64(V and $80000000) shl 32) or (UInt64(E + (1023 - 127)) shl 52) or (UInt64(V and $7FFFFF) shl 29);
   Result := PDouble(@B)^;
+end;
+
+function PS2MulLosesBit(A, B: Cardinal): Boolean;
+begin
+  Result := False;
+  if not PS2MulLostBit or ((A and $7FFFFF) <> 0) then
+    Exit;
+  var EA := Integer((A shr 23) and $FF);
+  var EB := Integer((B shr 23) and $FF);
+  if (EA = 0) or (EB = 0) or (EA + EB - 127 < 1) or (EA + EB - 127 > 255) then
+    Exit;
+  // Digit I (bits 2I+1, 2I, 2I-1) is negative where bit 2I+1 is set and not
+  // both bits below it.
+  var X := B and $FFFF;
+  Result := (X and not ((X and (X shl 1)) shl 1) and $AAAA) <> 0;
 end;
 
 // The FPU/VU adder aligns the smaller operand with a single guard bit and
@@ -3152,7 +3182,12 @@ end;
 function TEECPU.OpFMUL(I: PEEInst): Boolean;
 begin
   S.FCR31 := S.FCR31 and not Cardinal(FlagsOU);
-  S.FPR[I.D] := FPUResult(EEFloatIn(S.FPR[I.S]) * EEFloatIn(S.FPR[I.T]), SetO, SetU);
+  var Fs := S.FPR[I.S];
+  var Ft := S.FPR[I.T];
+  var P := FPUResult(EEFloatIn(Fs) * EEFloatIn(Ft), SetO, SetU);
+  if PS2MulLosesBit(Fs, Ft) then
+    Dec(P);
+  S.FPR[I.D] := P;
   Result := False;
 end;
 
@@ -3174,6 +3209,8 @@ function TEECPU.MultiplyAdd(I: PEEInst; Op: Cardinal): Boolean;
 begin
   S.FCR31 := S.FCR31 and not Cardinal(FlagsOU);
   var P := FPUResult(EEFloatIn(S.FPR[I.S]) * EEFloatIn(S.FPR[I.T]), SetO, SetU);
+  if PS2MulLosesBit(S.FPR[I.S], S.FPR[I.T]) then
+    Dec(P);
   if (Op and 1) <> 0 then
     P := P xor $80000000;
   var R: Cardinal;
@@ -3276,6 +3313,8 @@ begin
       begin
         S.FCR31 := S.FCR31 and not Cardinal(FlagsOU);
         S.ACC := FPUResult(EEFloatIn(Fs) * EEFloatIn(Ft), SetO, SetU);
+        if PS2MulLosesBit(Fs, Ft) then
+          Dec(S.ACC);
       end;
     $1C: Exit(MultiplyAdd(I, 0));
     $1D: Exit(MultiplyAdd(I, 1));

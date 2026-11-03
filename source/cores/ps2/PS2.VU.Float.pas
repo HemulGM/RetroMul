@@ -2,8 +2,9 @@
 
 // PS2 float arithmetic of the VU upper instructions, one field (PS2FloatMul;
 // PS2FloatAdd is the FPU's, in PS2.EE.CPU) or four at once (PS2Mul4,
-// PS2Add4) with the same results: products of the 24-bit mantissas and sums
-// with the adder's single guard bit, both truncated; exponent 0 reads as
+// PS2Add4) with the same results: products of the 24-bit mantissas (less the
+// multiplier's lost bit, PS2MulLosesBit) and sums with the adder's single
+// guard bit, both truncated; exponent 0 reads as
 // zero, exponent 255 as an ordinary binade; overflow gives the largest value,
 // underflow a signed zero. Win64 uses AVX2 when CPU and OS support it:
 // guarded normal-range operations can use hardware round-to-zero floats,
@@ -94,6 +95,8 @@ begin
     Exit(Sign);
   end;
   Result := Sign or (Cardinal(E) shl 23) or (Cardinal(Bits shr 29) and $7FFFFF);
+  if PS2MulLosesBit(A, B) then
+    Dec(Result);
 end;
 
 procedure PS2Clip3(const A, B: TPS2Reg128; out Bits: Cardinal);
@@ -147,6 +150,9 @@ const
   C64: array[0..3] of Integer = (64, 64, 64, 64);
   C254: array[0..3] of Integer = (254, 254, 254, 254);
   C25: array[0..3] of Integer = (25, 25, 25, 25);
+  // A mantissa's bits 0..15, and the odd ones among them.
+  CLow16: array[0..3] of Cardinal = ($FFFF, $FFFF, $FFFF, $FFFF);
+  COddBits: array[0..3] of Cardinal = ($AAAA, $AAAA, $AAAA, $AAAA);
   CShift23: array[0..1] of UInt64 = (23, 23);
   CIntMin: array[0..1] of Double = (-2147483648.0, -2147483648.0);
   CIntMax: array[0..1] of Double = (2147483647.0, 2147483647.0);
@@ -943,6 +949,39 @@ end;
 function RegisterMulExact(Context: Pointer): NativeUInt; forward;
 function RegisterAddExact(Context: Pointer): NativeUInt; forward;
 
+// The register routines' lanes that lose the multiplier's bit (PS2MulLosesBit
+// but for the product's range, which the callers check): xmm0 = A, xmm1 = B;
+// xmm4 = all ones in those lanes (to add to the truncated product), else 0.
+// Only xmm3 and xmm5 change besides.
+procedure MulLostBitLanes;
+asm
+  .NOFRAME
+  vpxor xmm4, xmm4, xmm4
+  cmp byte ptr [rip + PS2MulLostBit], 0
+  je @@Done
+  vpxor xmm3, xmm3, xmm3
+  vpand xmm4, xmm0, [rip + CMantissa]
+  vpcmpeqd xmm4, xmm4, xmm3            // A's mantissa 0
+  vpand xmm5, xmm0, [rip + CExpMask]
+  vpcmpeqd xmm5, xmm5, xmm3
+  vpandn xmm4, xmm5, xmm4              // ... A not zero
+  vpand xmm5, xmm1, [rip + CExpMask]
+  vpcmpeqd xmm5, xmm5, xmm3
+  vpandn xmm4, xmm5, xmm4              // ... B not zero
+  vptest xmm4, xmm4
+  jz @@Done
+  vpand xmm5, xmm1, [rip + CLow16]     // X: B's bits 0..15
+  vpslld xmm3, xmm5, 1
+  vpand xmm3, xmm3, xmm5
+  vpslld xmm3, xmm3, 1                 // where bits 2I and 2I-1 are both set
+  vpandn xmm3, xmm3, xmm5
+  vpand xmm3, xmm3, [rip + COddBits]   // negative digits
+  vpxor xmm5, xmm5, xmm5
+  vpcmpeqd xmm3, xmm3, xmm5
+  vpandn xmm4, xmm3, xmm4              // ... any
+@@Done:
+end;
+
 // MulRegisters and AddRegisters where the host rounds toward zero (the
 // caller has checked): the fast path's host arithmetic rounds as the PS2's.
 function MulRegistersRZ(Context: Pointer): NativeUInt;
@@ -975,7 +1014,20 @@ asm
   vpandn xmm5, xmm5, xmm3
   vptest xmm5, xmm5
   jnz @@No
+  // A lane of A with mantissa 0 may lose the multiplier's bit.
+  vpand xmm2, xmm0, [rip + CMantissa]
+  vpxor xmm3, xmm3, xmm3
+  vpcmpeqd xmm2, xmm2, xmm3
+  vptest xmm2, xmm2
+  jnz @@Lost
   vmulps xmm0, xmm0, xmm1
+  xor eax, eax
+  vzeroupper
+  ret
+@@Lost:
+  call MulLostBitLanes
+  vmulps xmm0, xmm0, xmm1
+  vpaddd xmm0, xmm0, xmm4
   xor eax, eax
   vzeroupper
   ret
@@ -1085,10 +1137,22 @@ asm
   vxorps xmm4, xmm3, xmm2
   vpsrad xmm4, xmm4, 31                // error and product of opposite signs
   vpand xmm5, xmm3, [rip + CAbsMask]
-  vpxor xmm0, xmm0, xmm0
-  vpcmpeqd xmm5, xmm5, xmm0
+  vpxor xmm3, xmm3, xmm3
+  vpcmpeqd xmm5, xmm5, xmm3
   vpandn xmm4, xmm5, xmm4              // ... and an error at all
-  vpaddd xmm0, xmm2, xmm4              // one unit toward zero there
+  vpaddd xmm2, xmm2, xmm4              // one unit toward zero there
+  // A lane of A with mantissa 0 may lose the multiplier's bit.
+  vpand xmm4, xmm0, [rip + CMantissa]
+  vpcmpeqd xmm4, xmm4, xmm3
+  vptest xmm4, xmm4
+  jnz @@Lost
+  vmovdqa xmm0, xmm2
+  xor eax, eax
+  vzeroupper
+  ret
+@@Lost:
+  call MulLostBitLanes
+  vpaddd xmm0, xmm2, xmm4
   xor eax, eax
   vzeroupper
   ret
@@ -1195,8 +1259,32 @@ asm
   vpandn xmm3, xmm4, xmm3              // the product's exponent out of range
   vptest xmm3, xmm3
   jnz @@No
+  // A lane of A with mantissa 0 (neither operand zero) may lose the
+  // multiplier's bit.
+  vptestnmd k1, xmm0, [rip + CMantissa]
+  vptestnmd k2, xmm4, xmm4
+  kandw k1, k1, k2
+  kortestw k1, k1
+  jnz @@Lost
+@@Plain:
   // vmulps zmm0, zmm0, zmm1, {rz-sae} (the assembler omits the rounding).
   db $62, $F1, $7C, $78, $59, $C1
+  xor eax, eax
+  vzeroupper
+  ret
+@@Lost:
+  // (MulLostBitLanes with mask registers; the range is checked above.)
+  cmp byte ptr [rip + PS2MulLostBit], 0
+  je @@Plain
+  vpslld xmm3, xmm1, 1
+  vpand xmm3, xmm3, xmm1
+  vpslld xmm3, xmm3, 1                 // where bits 2I and 2I-1 are both set
+  vpternlogd xmm3, xmm1, [rip + COddBits], $08  // B and not that, odd bits 1..15
+  vptestmd k2, xmm3, xmm3              // a negative digit
+  kandw k1, k1, k2
+  vpmovm2d xmm4, k1
+  db $62, $F1, $7C, $78, $59, $C1
+  vpaddd xmm0, xmm0, xmm4
   xor eax, eax
   vzeroupper
   ret
@@ -1281,6 +1369,10 @@ asm
   .SAVENV XMM7
   .SAVENV XMM8
   .SAVENV XMM9
+  .SAVENV XMM10
+  // (The lanes losing the multiplier's bit, from A and B as they come.)
+  call MulLostBitLanes
+  vmovdqa xmm10, xmm4
   vpxor xmm9, xmm9, xmm9
   vpand xmm2, xmm0, [rip + CExpMask]
   vpand xmm3, xmm1, [rip + CExpMask]
@@ -1324,6 +1416,10 @@ asm
   vpor xmm9, xmm8, xmm4
   vpandn xmm6, xmm9, xmm6
   vpor xmm6, xmm6, xmm5
+  // One unit less where the bit is lost and the product is in range.
+  vpor xmm3, xmm7, xmm8
+  vpandn xmm10, xmm3, xmm10
+  vpaddd xmm6, xmm6, xmm10
   vpandn xmm7, xmm4, xmm7
   vpandn xmm8, xmm4, xmm8
   vmovdqa xmm0, xmm6
@@ -1516,9 +1612,18 @@ var
   Mul4Proc, Add4Proc: TVectorProc;
 
 procedure PS2Mul4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);
-asm
-  .NOFRAME
-  jmp qword ptr [rip + Mul4Proc]
+begin
+  // (The four-field routines truncate: the multiplier's lost bit here, the
+  // lanes found before R, which may be A or B, is written.)
+  var Lost: Cardinal := 0;
+  for var K := 0 to 3 do
+    if PS2MulLosesBit(A.UW[K], B.UW[K]) then
+      Lost := Lost or (Cardinal(1) shl K);
+  Mul4Proc(A, B, R, Flags);
+  if Lost <> 0 then
+    for var K := 0 to 3 do
+      if (Lost and (Cardinal(1) shl K)) <> 0 then
+        Dec(R.UW[K]);
 end;
 
 procedure PS2Add4(const A, B: TPS2Reg128; out R: TPS2Reg128; out Flags: Cardinal);

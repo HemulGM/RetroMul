@@ -67,6 +67,7 @@ type
     procedure LogUnpack(Cmd: Cardinal; Num, Addr: Integer; Imm: Cardinal);
     procedure UnpackWord(W: Cardinal);
     function UnpackRun(Data: PCardinal; Count: Integer): Integer;
+    function UnpackContiguous(Data: PCardinal; Count, WordsPerVector: Integer): Integer;
     function UnpackGroups(Data: PCardinal; Count: Integer): Integer;
     procedure WriteVector(const V: TPS2Reg128);
     procedure WriteMasked(const V: TPS2Reg128; P: PPS2Reg128);
@@ -558,6 +559,113 @@ begin
   end;
 end;
 
+// Whole vectors in a contiguous part of VU memory, with no row arithmetic
+// and either no mask or a fixed row in z/w. No callback observes progress
+// within the run: update the write-cycle counters once for all its vectors.
+function TPS2VIF.UnpackContiguous(Data: PCardinal; Count, WordsPerVector: Integer): Integer;
+begin
+  Result := 0;
+  var Kind := S.Command and $F;
+  var WL := CycleWL(S.CYCLE);
+  var Mask: Cardinal := 0;
+  if (S.Command and $10) <> 0 then
+  begin
+    Mask := S.MASK and $FF;
+    // Only mask rows actually selected by this write cycle need agree.
+    for var Row := 1 to Min(WL - 1, 3) do
+      if ((S.MASK shr (Row * 8)) and $FF) <> Mask then Exit;
+  end;
+  case Kind of
+    $C, $E: if Mask <> 0 then Exit;
+    $5: if Mask <> $50 then Exit;
+    $8: if (Mask <> 0) and (Mask <> $40) then Exit;
+  else
+    Exit;
+  end;
+  if (S.CycleWritten < 0) or (S.CycleWritten >= WL) then Exit;
+  var N := Min(Count div WordsPerVector, Integer(S.NUM) - S.UnpackCount);
+  if N < 2 then Exit;
+  var At := (Cardinal(S.UnpackAddr) * 16) and FDataMask;
+  if Cardinal(N * 16) > FDataMask + 1 - At then Exit;
+  var Target := PPS2Reg128(FData + At);
+  // Preserve the word-at-a-time semantics when source and destination alias.
+  var SourceEnd := NativeUInt(Data) + NativeUInt(N * WordsPerVector * 4);
+  var TargetEnd := NativeUInt(Target) + NativeUInt(N * 16);
+  if (NativeUInt(Data) < TargetEnd) and (NativeUInt(Target) < SourceEnd) then Exit;
+  var Unsigned := (S.CODE and $4000) <> 0;
+  case Kind of
+    $C: Move(Data^, Target^, N * 16);
+    $8:
+      begin
+        var W: Cardinal := 0;
+        if Mask <> 0 then W := S.Row[3];
+        for var I := 0 to N - 1 do
+        begin
+          Target.UW[0] := Data[0];
+          Target.UW[1] := Data[1];
+          Target.UW[2] := Data[2];
+          Target.UW[3] := W;
+          Inc(Data, 3);
+          Inc(Target);
+        end;
+      end;
+    $5:
+      begin
+        var R2 := S.Row[2];
+        var R3 := S.Row[3];
+        for var I := 0 to N - 1 do
+        begin
+          if Unsigned then
+          begin
+            Target.UW[0] := PWord(Data)[0];
+            Target.UW[1] := PWord(Data)[1];
+          end
+          else
+          begin
+            Target.SW[0] := PSmallInt(Data)[0];
+            Target.SW[1] := PSmallInt(Data)[1];
+          end;
+          Target.UW[2] := R2;
+          Target.UW[3] := R3;
+          Inc(Data);
+          Inc(Target);
+        end;
+      end;
+    $E:
+      for var I := 0 to N - 1 do
+      begin
+        if Unsigned then
+        begin
+          Target.UW[0] := PByte(Data)[0];
+          Target.UW[1] := PByte(Data)[1];
+          Target.UW[2] := PByte(Data)[2];
+          Target.UW[3] := PByte(Data)[3];
+        end
+        else
+        begin
+          Target.SW[0] := PShortInt(Data)[0];
+          Target.SW[1] := PShortInt(Data)[1];
+          Target.SW[2] := PShortInt(Data)[2];
+          Target.SW[3] := PShortInt(Data)[3];
+        end;
+        Inc(Data);
+        Inc(Target);
+      end;
+  end;
+  // For 32-bit elements the last vector remains in UnpackWords as usual.
+  if (Kind and 3) = 0 then
+  begin
+    if Kind = $C then Inc(Data, N * WordsPerVector);
+    Dec(Data, WordsPerVector);
+    for var K := 0 to WordsPerVector - 1 do S.UnpackWords[K] := Data[K];
+  end;
+  Inc(S.UnpackAddr, N);
+  Inc(S.UnpackCount, N);
+  S.CycleWritten := (S.CycleWritten + N) mod WL;
+  Result := N * WordsPerVector;
+  Inc(Self.Words, Result);
+end;
+
 // UnpackWord for many words at once where each vector takes whole words
 // (32-bit elements, V2-16, V4-16, V4-8), no fill rows are due and no bits
 // wait from an earlier word (WriteVector masks and offsets them): whole
@@ -583,6 +691,11 @@ begin
   var CL := Integer(S.CYCLE and $FF);
   var WL := CycleWL(S.CYCLE);
   var V: TPS2Reg128;
+  if (S.MODE = 0) and (CL = WL) then
+  begin
+    Result := UnpackContiguous(Data, Count, Words);
+    if Result > 0 then Exit;
+  end;
   while (Result + Words <= Count) and (S.UnpackCount < Integer(S.NUM)) and
     not ((WL > CL) and (CL > 0) and (S.CycleWritten >= CL)) do
   begin

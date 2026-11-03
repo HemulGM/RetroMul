@@ -398,6 +398,72 @@ begin
   Writeln('VIF UNPACK: many words at once as one at a time, every format, mask, mode and write cycle: OK');
 end;
 
+// The contiguous UNPACK paths, including their exact final counters and
+// UnpackWords, wrapping destinations and input inside VU memory. When source
+// and destination overlap the same per-vector reads/writes must still occur.
+procedure CheckVIFContiguous;
+var
+  Code, Data: array[0..1, 0..16383] of Byte;
+begin
+  var V: array[0..1] of TPS2VIF;
+  V[0] := TPS2VIF.Create(1, nil, nil, @Code[0, 0], @Data[0, 0], 16384, 16384);
+  V[1] := TPS2VIF.Create(1, nil, nil, @Code[1, 0], @Data[1, 0], 16384, 16384);
+  try
+    RandSeed := 71231;
+    var Cases := 0;
+    for var Cmd in TArray<Cardinal>.Create($6C, $6E, $68, $75, $78) do
+      for var Unsigned := False to True do
+        for var WL in [1, 2, 4, 16] do
+          for var Num in TArray<Integer>.Create(2, 7, 32, 256) do
+            for var Dest in TArray<Integer>.Create(0, 4, 1020) do
+              for var Source in TArray<Integer>.Create(0, 64, 4096) do
+                for var Chunk in TArray<Integer>.Create(1, 7, 1024) do
+                begin
+                  for var K := 0 to High(Data[0]) do Data[0, K] := Random(256);
+                  Data[1] := Data[0];
+                  var Mask: Cardinal := 0;
+                  if Cmd = $75 then Mask := $50505050;
+                  if Cmd = $78 then Mask := $40404040;
+                  if Num = 7 then Mask := Mask and $FF;
+                  var Header: TArray<Cardinal> := [$01000000 or Cardinal(WL) or (Cardinal(WL) shl 8),
+                    $05000000, $20000000, Mask, $30000000, $FFFFFFFF, $80000000, $12345678, $FEDCBA98,
+                    (Cmd shl 24) or ((Cardinal(Num) and $FF) shl 16) or Cardinal(Dest) or
+                    (Cardinal(Ord(Unsigned)) shl 14)];
+                  var Words := 1;
+                  if Cmd = $6C then Words := 4;
+                  if (Cmd = $68) or (Cmd = $78) then Words := 3;
+                  for var X := 0 to 1 do
+                  begin
+                    V[X].Reset;
+                    PS2VIFRuns := X = 0;
+                    Check(V[X].Feed(@Header[0], Length(Header)) = Length(Header), 'Contiguous header stalled');
+                  end;
+                  var At := 0;
+                  while At < Num * Words do
+                  begin
+                    var Piece := Min(Chunk, Num * Words - At);
+                    for var X := 0 to 1 do
+                    begin
+                      PS2VIFRuns := X = 0;
+                      Check(V[X].Feed(PCardinal(@Data[X, Source]) + At, Piece) = Piece,
+                        'Contiguous input stalled');
+                    end;
+                    Check(CompareMem(@Data[0], @Data[1], SizeOf(Data[0])),
+                      Format('Contiguous memory mismatch cmd=%x source=%d dest=%d chunk=%d',
+                        [Cmd, Source, Dest, Chunk]));
+                    Check(CompareMem(@V[0].S, @V[1].S, SizeOf(V[0].S)), 'Contiguous VIF state mismatch');
+                    Inc(At, Piece);
+                  end;
+                  Inc(Cases);
+                end;
+    Writeln('VIF contiguous UNPACK: ', Cases, ' signed/unsigned, row masks, cycles, splits, wrap and alias cases: OK');
+  finally
+    PS2VIFRuns := True;
+    V[0].Free;
+    V[1].Free;
+  end;
+end;
+
 // DIRECT and DIRECTHL streams (A+D register writes, host-to-local IMAGE
 // uploads, tags split across commands, odd lengths, NOPs between) through
 // VIF1 to a GIF and GS, fed by quadwords and by words in random pieces,
@@ -970,6 +1036,7 @@ begin
     CheckSnapshots;
     CheckVIFStall;
     CheckVIFUnpack;
+    CheckVIFContiguous;
     CheckVIFMasked;
     CheckVIFDirect;
     CheckVUBusy;

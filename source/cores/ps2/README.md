@@ -181,8 +181,13 @@ UNPACK and DIRECT data are taken many words at once inside a command
 (`PS2VIFRuns`: whole vectors, groups of words ending with a vector for the
 formats whose vectors share words outside fill mode, whole quadwords to the
 GIF), also as held words are released after a stall; the test compares
-both with one word at a time (DIRECT through a GIF and GS: memory, PATH2 and
-VIF state), and the masked write with a model for V4-32 streams. It
+both with one word at a time. With equal read/write cycles and no row
+arithmetic, contiguous V4-32/V4-8, V3-32 (optionally row w) and V2-16 with
+row z/w runs write their vectors without per-vector counter updates; wrapping
+or overlapping input/output keeps the original path. Directed cases cover
+signed/unsigned values, fixed row masks, splits, wrap and source aliasing. It
+also compares DIRECT through a GIF and GS (memory, PATH2 and VIF state), and
+the masked write with a model for V4-32 streams. It
 also tests the card file system: directories, files across clusters, deleted
 slots, free space, image round trips, raw images and earlier card files. It
 also runs libmc's MCSERV calls: info, mkdir, create, write, read, list and

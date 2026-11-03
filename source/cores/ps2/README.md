@@ -174,7 +174,9 @@ It also checks a VIF1 interrupt-bit stall that fills the FIFO and holds the
 DMA channel until a stall cancel (also across a snapshot), the VU busy
 window, and DMAC stall control with fromSPR as source and VIF1 as drain.
 UNPACK and DIRECT data are taken many words at once inside a command
-(`PS2VIFRuns`: whole vectors, whole quadwords to the GIF); the test compares
+(`PS2VIFRuns`: whole vectors, groups of words ending with a vector for the
+formats whose vectors share words outside fill mode, whole quadwords to the
+GIF), also as held words are released after a stall; the test compares
 both with one word at a time (DIRECT through a GIF and GS: memory, PATH2 and
 VIF state), and the masked write with a model for V4-32 streams. It
 also tests the card file system: directories, files across clusters, deleted

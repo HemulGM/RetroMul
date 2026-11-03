@@ -67,6 +67,7 @@ type
     procedure LogUnpack(Cmd: Cardinal; Num, Addr: Integer; Imm: Cardinal);
     procedure UnpackWord(W: Cardinal);
     function UnpackRun(Data: PCardinal; Count: Integer): Integer;
+    function UnpackGroups(Data: PCardinal; Count: Integer): Integer;
     procedure WriteVector(const V: TPS2Reg128);
     procedure WriteMasked(const V: TPS2Reg128; P: PPS2Reg128);
     procedure FinishCommand;
@@ -349,6 +350,18 @@ begin
   var Taken := 0;
   while (Taken < S.HeldCount) and not Waits(S.Held[Taken]) do
   begin
+    // Inside an UNPACK nothing stalls before its last word: whole vectors of
+    // the held words at once (as Feed takes them).
+    if (S.Remaining > 1) and (S.Command >= $60) and not CaptureUnfinished and not Stalled and not S.WaitVU then
+    begin
+      var Run := UnpackRun(@S.Held[Taken], Min(S.HeldCount - Taken, Integer(S.Remaining) - 1));
+      if Run > 0 then
+      begin
+        Inc(Taken, Run);
+        Dec(S.Remaining, Run);
+        Continue;
+      end;
+    end;
     var W := S.Held[Taken];
     Inc(Taken);
     ProcessWord(W);
@@ -561,8 +574,8 @@ begin
   var Words: Integer;
   case VL of
     0: Words := VN + 1;
-    1: if VN = 1 then Words := 1 else if VN = 3 then Words := 2 else Exit;
-    2: if VN = 3 then Words := 1 else Exit;
+    1: if VN = 1 then Words := 1 else if VN = 3 then Words := 2 else Exit(UnpackGroups(Data, Count));
+    2: if VN = 3 then Words := 1 else Exit(UnpackGroups(Data, Count));
   else
     Exit;
   end;
@@ -614,6 +627,108 @@ begin
         S.UnpackWords[K] := D[K];
     WriteVector(V);
     Inc(Result, Words);
+  end;
+  Inc(Self.Words, Result);
+end;
+
+// UnpackRun for the formats whose vectors share words (S-16, V3-16, S-8, V2-8,
+// V3-8, V4-5): whole groups of words that end with a vector (the bits as
+// UnpackWord gathers them, none left over), every vector of a group within
+// NUM, outside fill mode.
+function TPS2VIF.UnpackGroups(Data: PCardinal; Count: Integer): Integer;
+begin
+  Result := 0;
+  var Cmd := S.Command;
+  var VN := Integer((Cmd shr 2) and 3);
+  var VL := Integer(Cmd and 3);
+  // Words and vectors per group, and the vector's bits.
+  var Group, Vectors, VecBits: Integer;
+  case VL of
+    1:
+      case VN of
+        0: begin Group := 1; Vectors := 2; VecBits := 16; end;
+        2: begin Group := 3; Vectors := 2; VecBits := 48; end;
+      else
+        Exit;
+      end;
+    2:
+      case VN of
+        0: begin Group := 1; Vectors := 4; VecBits := 8; end;
+        1: begin Group := 1; Vectors := 2; VecBits := 16; end;
+        2: begin Group := 3; Vectors := 4; VecBits := 24; end;
+      else
+        Exit;
+      end;
+    3:
+      begin
+        Group := 1;
+        Vectors := 2;
+        VecBits := 16;
+      end;
+  else
+    Exit;
+  end;
+  var CL := Integer(S.CYCLE and $FF);
+  var WL := CycleWL(S.CYCLE);
+  if (WL > CL) and (CL > 0) then
+    Exit;
+  var Unsigned := (S.CODE and $4000) <> 0;
+  var ElemBits := 32 shr VL;
+  var Mask := (Cardinal(1) shl ElemBits) - 1;
+  var Sign := Cardinal(1) shl (ElemBits - 1);
+  var V: TPS2Reg128;
+  while (Result + Group <= Count) and (S.UnpackCount + Vectors <= Integer(S.NUM)) do
+  begin
+    var D := Data + Result;
+    for var N := 0 to Vectors - 1 do
+    begin
+      var At := N * VecBits;
+      if VL = 3 then
+      begin
+        var X := (D[At shr 5] shr (At and 31)) and $FFFF;
+        V.UW[0] := (X and $1F) shl 3;
+        V.UW[1] := ((X shr 5) and $1F) shl 3;
+        V.UW[2] := ((X shr 10) and $1F) shl 3;
+        V.UW[3] := ((X shr 15) and 1) shl 7;
+      end
+      else
+      begin
+        var E: array[0..2] of Cardinal;
+        for var K := 0 to VN do
+        begin
+          var B := At + K * ElemBits;
+          var Raw := (D[B shr 5] shr (B and 31)) and Mask;
+          if not Unsigned and ((Raw and Sign) <> 0) then
+            Raw := Raw or not Mask;
+          E[K] := Raw;
+        end;
+        case VN of
+          0:
+            begin
+              V.UW[0] := E[0];
+              V.UW[1] := E[0];
+              V.UW[2] := E[0];
+              V.UW[3] := E[0];
+            end;
+          1:
+            begin
+              V.UW[0] := E[0];
+              V.UW[1] := E[1];
+              V.UW[2] := E[0];
+              V.UW[3] := E[1];
+            end;
+        else
+          begin
+            V.UW[0] := E[0];
+            V.UW[1] := E[1];
+            V.UW[2] := E[2];
+            V.UW[3] := 0;
+          end;
+        end;
+      end;
+      WriteVector(V);
+    end;
+    Inc(Result, Group);
   end;
   Inc(Self.Words, Result);
 end;

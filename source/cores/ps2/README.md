@@ -433,11 +433,14 @@ tests verify that register-result generation is not used for synthetic aliases.
 helpers against scalar arithmetic, including aliases, unaligned values and
 FTZ/DAZ; the default float suite retains the add/multiply checks too.
 
-## Experimental Vulkan GS
+## Experimental Vulkan GS (Vulkan LLE)
 
-`Video/Renderer=vulkan` independently selects Vulkan compute for supported
+`Video/Renderer=vulkan` (the settings' Vulkan LLE; `vulkan-lle` is read as
+the same) independently selects Vulkan compute for supported
 sprites and triangle pixels drawn to 32/24/16-bit frames, including all GS
-direct and palettized texture formats and mipmapping. This uses `RM.Vulkan.Compute` from the Xbox branch (3f3ce45), with
+direct and palettized texture formats and mipmapping, pixel for pixel as the
+software renderer draws them. Its compute context is `PS2.Vulkan.Compute`
+(from the Xbox branch, 3f3ce45; `RM.Vulkan.Compute` is the other cores'), with
 coherent GS VRAM import. Small sprites (where triangles are not rasterized on
 the GPU, below), draws reading pixels they draw (texture feedback),
 overlapping surfaces and unsupported storage

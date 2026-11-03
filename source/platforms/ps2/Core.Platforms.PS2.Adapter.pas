@@ -49,8 +49,9 @@ type
     function ConsoleLanguage: TPS2Language;
     // GS drawing (Video/Renderer): 'threads' (default: band threads beside
     // the emulation), 'single' (on the emulation thread), or experimental
-    // 'vulkan' (supported sprites/triangle pixels on the GPU, other draws on
-    // the band threads). But for 'single' the GS front end runs on a thread
+    // 'vulkan' (Vulkan LLE, also read as 'vulkan-lle': supported
+    // sprites/triangle pixels on the GPU, bit exact, other draws on the band
+    // threads). But for 'single' the GS front end runs on a thread
     // of its own (TPS2GSRaster.Async) on hosts with four logical processors.
     property Renderer: string read FRenderer write FRenderer;
     property Recompiler: Boolean read FRecompiler write FRecompiler;
@@ -322,6 +323,8 @@ begin
   FLanguage := Ini.ReadString('System', 'Language', 'auto').ToLower;
   FRenderer := Ini.ReadString('Video', 'Renderer', 'threads').ToLower;
   FRecompiler := SameText(Ini.ReadString('Emulation', 'Execution', 'interpreter'), 'jit');
+  if FRenderer = 'vulkan-lle' then
+    FRenderer := 'vulkan';
   if (FRenderer <> 'single') and (FRenderer <> 'vulkan') then
     FRenderer := 'threads';
   for var P := 0 to 1 do

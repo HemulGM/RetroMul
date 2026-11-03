@@ -25,13 +25,16 @@ int wrapCoord(int c, int size, uint mode, int minC, int maxC) {
 
 // A texel of a level, as the GS reads it (RGBA, 0..255).
 ivec4 texel(ivec2 p, int level) {
+  // Where the texels start in the image (signed: a part of a texture
+  // decoded alone starts at minus its corner).
+  ivec2 offset = ivec2(int(pc.texOffset << 16) >> 16, int(pc.texOffset) >> 16);
   if ((pc.flags & FLAG_TARGET) == 0u) {
     ivec2 size = textureSize(uTexture, level);
-    return ivec4(round(texelFetch(uTexture, clamp(p, ivec2(0), size - 1), level) * 255.0));
+    return ivec4(round(texelFetch(uTexture, clamp(p + offset, ivec2(0), size - 1), level) * 255.0));
   }
   // A render target's image: its pixels as the texture format reads them.
   ivec2 size = textureSize(uTexture, 0);
-  p += ivec2(int(pc.texOffset & 0xFFFFu), int(pc.texOffset >> 16));
+  p += offset;
   ivec4 t = ivec4(round(texelFetch(uTexture, clamp(p, ivec2(0), size - 1), 0) * 255.0));
   uint format = (pc.tex >> 19) & 3u;
   if (format == 0u)

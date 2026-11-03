@@ -153,6 +153,14 @@ type
     FClutCopy: array[0..511] of Word;
     FClutCount: Integer;
     FFlushes: array[TPS2HLEFlush] of Int64;
+    // The primitive the state is set up for (its texels may be all a texture
+    // decodes), and the part decoded of the state's texture (FPartW 0: all).
+    FSetupV: PPS2HLEVertex;
+    FSetupCount: Integer;
+    FPartU0, FPartV0, FPartW, FPartH: Integer;
+    FGrow, FWhole: Boolean;
+    FGrowU0, FGrowV0, FGrowU1, FGrowV1: Integer;
+    FPartials: Int64;
     FVertices: array[0..5] of TPS2HLEVertex;
     FDepthLoads, FTargetTextures, FCopies, FPartialStores, FSetups: Int64;
     function TargetFor(const D: TPS2GSDraw): TPS2HLETarget;
@@ -164,7 +172,8 @@ type
     procedure CopyClut(const D: TPS2GSDraw);
     procedure GatherTexture(Request: Pointer);
     procedure Flush(Reason: TPS2HLEFlush);
-    function EnsureTexture(const D: TPS2GSDraw): TVulkanHLETexture;
+    function EnsureTexture(const D: TPS2GSDraw; V: PPS2HLEVertex; Count: Integer): TVulkanHLETexture;
+    function TexelBox(const D: TPS2GSDraw; V: PPS2HLEVertex; Count: Integer; out U0, V0, U1, V1: Integer): Boolean;
     procedure EnsureDepth(T: TPS2HLETarget; const D: TPS2GSDraw);
     procedure LoadDepth(T: TPS2HLETarget);
     procedure WatchDepth(T: TPS2HLETarget);
@@ -277,6 +286,9 @@ type
   TPS2HLETexRequest = record
     D: PPS2GSDraw;
     Levels: Integer;
+    // The texels decoded (level 0's, all of them but for a part): U0..U0 + W
+    // - 1, V0..V0 + H - 1.
+    U0, V0, W, H: Integer;
   end;
   PPS2HLETexRequest = ^TPS2HLETexRequest;
 
@@ -1603,11 +1615,20 @@ begin
   end;
   for var L := 0 to Levels - 1 do
   begin
-    var W := Max(1, (1 shl D.TW) shr L);
-    var H := Max(1, (1 shl D.TH) shr L);
+    var X0 := 0;
+    var Y0 := 0;
+    var X1 := Max(1, (1 shl D.TW) shr L) - 1;
+    var Y1 := Max(1, (1 shl D.TH) shr L) - 1;
+    if L = 0 then
+    begin
+      X0 := R.U0;
+      Y0 := R.V0;
+      X1 := R.U0 + R.W - 1;
+      Y1 := R.V0 + R.H - 1;
+    end;
     A.Init(Integer(D.TPSM), D.LevelTBP[L], D.LevelTBW[L]);
-    for var BY := 0 to (H + BH - 1) div BH - 1 do
-      for var BX := 0 to (W + BW - 1) div BW - 1 do
+    for var BY := Y0 div BH to Y1 div BH do
+      for var BX := X0 div BW to X1 div BW do
       begin
         var U := A.Addr(Cardinal(BX * BW), Cardinal(BY * BH));
         var Block: Cardinal;
@@ -1680,22 +1701,101 @@ begin
   end;
 end;
 
+// The coordinates C0..C1 through region repeat ((C and MinC) or MaxC): the
+// lowest and highest; False over more than a texture's width.
+function RegionRepeatSpan(var C0, C1: Integer; MinC, MaxC: Integer): Boolean;
+begin
+  Result := C1 - C0 <= 1024;
+  if not Result then
+    Exit;
+  var Lo := MaxInt;
+  var Hi := -MaxInt;
+  for var C := C0 to C1 do
+  begin
+    var R := (C and MinC) or MaxC;
+    Lo := Min(Lo, R);
+    Hi := Max(Hi, R);
+  end;
+  C0 := Lo;
+  C1 := Hi;
+end;
+
+// The texels of level 0 the Count vertices' coordinates reach (a texel around
+// for filtering), where the wrap modes keep them inside a box: False where
+// they may reach any (wrapping, Q of either sign).
+function TPS2GSVulkanHLE.TexelBox(const D: TPS2GSDraw; V: PPS2HLEVertex; Count: Integer;
+  out U0, V0, U1, V1: Integer): Boolean;
+begin
+  Result := False;
+  U0 := MaxInt;
+  V0 := MaxInt;
+  U1 := -MaxInt;
+  V1 := -MaxInt;
+  if Count <= 0 then
+    Exit;
+  var Positive := V[0].Q > 0;
+  for var I := 0 to Count - 1 do
+  begin
+    var Q := V[I].Q;
+    if (Q = 0) or ((Q > 0) <> Positive) then
+      Exit;
+    var S := V[I].S / Q / 16;
+    var T := V[I].T / Q / 16;
+    if not ((Abs(S) < 65536) and (Abs(T) < 65536)) then
+      Exit;
+    U0 := Min(U0, Floor(S) - 1);
+    V0 := Min(V0, Floor(T) - 1);
+    U1 := Max(U1, Floor(S) + 1);
+    V1 := Max(V1, Floor(T) + 1);
+  end;
+  var W := 1 shl D.TW;
+  var H := 1 shl D.TH;
+  // Repeat: only where nothing wraps; clamps keep the box inside; region
+  // repeat maps it.
+  case D.WMS of
+    0:
+      if (U0 < -1) or (U1 > W) then
+        Exit;
+    2:
+      begin
+        U0 := EnsureRange(U0, D.MINU, D.MAXU);
+        U1 := EnsureRange(U1, D.MINU, D.MAXU);
+      end;
+    3:
+      if not RegionRepeatSpan(U0, U1, D.MINU, D.MAXU) then
+        Exit;
+  end;
+  case D.WMT of
+    0:
+      if (V0 < -1) or (V1 > H) then
+        Exit;
+    2:
+      begin
+        V0 := EnsureRange(V0, D.MINV, D.MAXV);
+        V1 := EnsureRange(V1, D.MINV, D.MAXV);
+      end;
+    3:
+      if not RegionRepeatSpan(V0, V1, D.MINV, D.MAXV) then
+        Exit;
+  end;
+  U0 := EnsureRange(U0, 0, W - 1);
+  U1 := EnsureRange(U1, 0, W - 1);
+  V0 := EnsureRange(V0, 0, H - 1);
+  V1 := EnsureRange(V1, 0, H - 1);
+  Result := (U0 <= U1) and (V0 <= V1);
+end;
+
 // D's texture (its levels when the LOD picks them), decoded, compared with
-// its bytes, uploaded.
-function TPS2GSVulkanHLE.EnsureTexture(const D: TPS2GSDraw): TVulkanHLETexture;
+// its bytes, uploaded. A large texture of one level that the primitive
+// (Count vertices at V) reads a small part of is decoded in that part alone
+// (FPartW and the rest: the push constants' offset).
+function TPS2GSVulkanHLE.EnsureTexture(const D: TPS2GSDraw; V: PPS2HLEVertex; Count: Integer): TVulkanHLETexture;
 var
   Request: TPS2HLETexRequest;
 begin
   var Levels := 1;
   if D.UseLod and (D.MMIN >= 2) and (D.MXL > 0) then
     Levels := Min(D.MXL + 1, Integer(Max(D.TW, D.TH)) + 1);
-  // A target's newer pixels there go back to GS memory first.
-  FillChar(FTexPages, SizeOf(FTexPages), 0);
-  for var L := 0 to Levels - 1 do
-    AddRectPages(FTexPages, D.LevelTBP[L], D.LevelTBW[L], D.TPSM, 0, 0, Max(1, (1 shl D.TW) shr L) - 1,
-      Max(1, (1 shl D.TH) shr L) - 1);
-  if Meets(FTexPages, FHeld) and Meets(FTexPages, HeldFor(D.TPSM)) then
-    Flush(frTexture);
   if IsPalettized(D.TPSM) then
     CopyClut(D);
   var Key := FNV($CBF29CE484222325, UInt64(D.TPSM) or (UInt64(D.TW) shl 8) or (UInt64(D.TH) shl 12) or
@@ -1712,6 +1812,47 @@ begin
     for var I := 0 to FClutCount div 4 - 1 do
       Key := FNV(Key, P[I]);
   end;
+  Request.U0 := 0;
+  Request.V0 := 0;
+  Request.W := 1 shl D.TW;
+  Request.H := 1 shl D.TH;
+  FPartW := 0;
+  // A part, unless the whole texture is there already; grown to take in the
+  // part before (FGrow, Emit).
+  var BU0, BV0, BU1, BV1: Integer;
+  var Box := (Levels = 1) and (Request.W * Request.H >= 65536) and (FindTexture(Key) = nil) and
+    TexelBox(D, V, Count, BU0, BV0, BU1, BV1);
+  if Box and FGrow then
+  begin
+    BU0 := Min(BU0, FGrowU0);
+    BV0 := Min(BV0, FGrowV0);
+    BU1 := Max(BU1, FGrowU1);
+    BV1 := Max(BV1, FGrowV1);
+  end;
+  if Box and not FWhole and ((BU1 - BU0 + 1) * (BV1 - BV0 + 1) * 16 <= Request.W * Request.H) then
+  begin
+    Request.U0 := BU0;
+    Request.V0 := BV0;
+    Request.W := BU1 - BU0 + 1;
+    Request.H := BV1 - BV0 + 1;
+    FPartU0 := BU0;
+    FPartV0 := BV0;
+    FPartW := Request.W;
+    FPartH := Request.H;
+    Key := FNV(Key, UInt64(BU0) or (UInt64(BV0) shl 16) or (UInt64(Request.W) shl 32) or (UInt64(Request.H) shl 48));
+    Inc(FPartials);
+  end;
+  // A target's newer pixels there go back to GS memory first.
+  FillChar(FTexPages, SizeOf(FTexPages), 0);
+  if FPartW > 0 then
+    AddRectPages(FTexPages, D.TBP, D.TBW, D.TPSM, Request.U0, Request.V0, Request.U0 + Request.W - 1,
+      Request.V0 + Request.H - 1)
+  else
+    for var L := 0 to Levels - 1 do
+      AddRectPages(FTexPages, D.LevelTBP[L], D.LevelTBW[L], D.TPSM, 0, 0, Max(1, (1 shl D.TW) shr L) - 1,
+        Max(1, (1 shl D.TH) shr L) - 1);
+  if Meets(FTexPages, FHeld) and Meets(FTexPages, HeldFor(D.TPSM)) then
+    Flush(frTexture);
   Request.D := @D;
   Request.Levels := Levels;
   FTexGathered := False;
@@ -1721,8 +1862,8 @@ end;
 procedure TPS2GSVulkanHLE.DescribeTexture(Request: Pointer; out Width, Height, Levels, Scale: Integer);
 begin
   var R := PPS2HLETexRequest(Request);
-  Width := 1 shl R.D.TW;
-  Height := 1 shl R.D.TH;
+  Width := R.W;
+  Height := R.H;
   Levels := R.Levels;
   Scale := 1;
 end;
@@ -1746,10 +1887,19 @@ begin
   begin
     var W := Max(1, (1 shl D.TW) shr L);
     var H := Max(1, (1 shl D.TH) shr L);
+    var X0 := 0;
+    var Y0 := 0;
+    if L = 0 then
+    begin
+      X0 := R.U0;
+      Y0 := R.V0;
+      W := R.W;
+      H := R.H;
+    end;
     A.Init(PSM, D.LevelTBP[L], D.LevelTBW[L]);
     var P := LevelTexels(T, W, H);
-    for var Y := 0 to H - 1 do
-      for var X := 0 to W - 1 do
+    for var Y := Y0 to Y0 + H - 1 do
+      for var X := X0 to X0 + W - 1 do
       begin
         // As TPS2GSDrawer.TexelFrom.
         var Raw := FMemory.ReadAt(PSM, A.Addr(Cardinal(X), Cardinal(Y)));
@@ -1863,11 +2013,12 @@ begin
   var Source: TPS2HLETarget := nil;
   var OffX := 0;
   var OffY := 0;
+  FPartW := 0;
   if D.TME then
   begin
     Source := TargetTexture(D, OffX, OffY);
     if Source = nil then
-      Tex := EnsureTexture(D)
+      Tex := EnsureTexture(D, FSetupV, FSetupCount)
     else if Source <> T then
       Tex := TargetAsTexture(Source);
   end;
@@ -1927,7 +2078,12 @@ begin
       Push.TexOffset := Cardinal(OffX) or (Cardinal(OffY) shl 16);
     end
     else
+    begin
       MXL := Min(D.MXL, Tex.Levels - 1);
+      // A part decoded alone: texel (U, V) is at (U - U0, V - V0) in its image.
+      if FPartW > 0 then
+        Push.TexOffset := Cardinal((-FPartU0) and $FFFF) or (Cardinal((-FPartV0) and $FFFF) shl 16);
+    end;
     Push.Tex := Cardinal(D.TFX) or (Cardinal(Ord(D.TCC)) shl 2) or (Cardinal(D.WMS) shl 3) or
       (Cardinal(D.WMT) shl 5) or (Cardinal(Ord(D.Linear)) shl 7) or (Cardinal(D.MMIN) shl 8) or
       (Cardinal(MXL) shl 11) or (Cardinal(Ord(D.LCM)) shl 14) or (Cardinal(D.LShift) shl 15) or
@@ -2226,6 +2382,32 @@ begin
     Exit;
   ReserveVertices(Count);
   var T := TPS2HLETarget(FTarget);
+  FSetupV := V;
+  FSetupCount := Count;
+  // The state's texture is a part: set up again when this primitive reads
+  // beyond it, with the part grown once to take in both (a neighbouring
+  // strip), then with the whole texture (one state's primitives reading an
+  // atlas in turn).
+  if not FStateValid or not SameState(D) then
+  begin
+    FGrow := False;
+    FWhole := False;
+  end;
+  if FStateValid and (FPartW > 0) and SameState(D) then
+  begin
+    var BU0, BV0, BU1, BV1: Integer;
+    if not TexelBox(D, V, Count, BU0, BV0, BU1, BV1) or (BU0 < FPartU0) or (BV0 < FPartV0) or
+      (BU1 >= FPartU0 + FPartW) or (BV1 >= FPartV0 + FPartH) then
+    begin
+      FStateValid := False;
+      FWhole := FGrow;
+      FGrow := not FWhole;
+      FGrowU0 := FPartU0;
+      FGrowV0 := FPartV0;
+      FGrowU1 := FPartU0 + FPartW - 1;
+      FGrowV1 := FPartV0 + FPartH - 1;
+    end;
+  end;
   if not FStateValid or not SameState(D) or ((Y2 >= T.Height) and (T.Height < T.MaxHeight)) then
   begin
     FNeedY := Y2;
@@ -2539,10 +2721,10 @@ function TPS2GSVulkanHLE.Describe: string;
 begin
   Result := Format('hle prims=%d draws=%d submits=%d flushes=%d partial=%d loads=%d zloads=%d readbacks=%d ' +
     'textures=%d hits=%d targettex=%d copies=%d pipelines=%d watchfaults=%d setup=%.0fms wait=%.0fms flush=%.0fms ' +
-    'shaderblend=%d/%d', [FStats.Prims, FStats.Draws, FStats.Submits, FStats.Flushes, FPartialStores, FStats.TargetLoads, FDepthLoads,
+    'shaderblend=%d/%d parts=%d', [FStats.Prims, FStats.Draws, FStats.Submits, FStats.Flushes, FPartialStores, FStats.TargetLoads, FDepthLoads,
     FStats.Readbacks, FStats.TextureUploads, FStats.TextureHits, FTargetTextures, FCopies, FStats.Pipelines,
     FStats.WatchFaults, FStats.SetupSeconds * 1000, FStats.WaitSeconds * 1000, FStats.FlushSeconds * 1000, FBlendSetups,
-    Ord(FShaderBlend)]) +
+    Ord(FShaderBlend), FPartials]) +
     Format(' setups=%d flush: others=%d texture=%d depth=%d stale=%d sync=%d', [FSetups, FFlushes[frOthers],
     FFlushes[frTexture], FFlushes[frDepth], FFlushes[frStale], FFlushes[frSync]]);
   for var T in FTargets do

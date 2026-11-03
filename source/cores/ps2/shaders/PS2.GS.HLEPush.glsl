@@ -28,7 +28,8 @@ layout(push_constant) uniform Push {
   uint blend;
   // K of the LOD.
   float lodK;
-  // A target texture's texels start there in its image: x | y << 16.
+  // The texels start there in the image (a target's, or a part of a texture
+  // decoded alone): x | y << 16, signed 16-bit each.
   uint texOffset;
   // PS2.GS.HLEBlend.frag: ALPHA's A, B, C, D in bits 0-7 (two each), FIX in
   // bits 8-15, blending on in bit 16, PABE in bit 17, COLCLAMP in bit 18,

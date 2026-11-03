@@ -308,6 +308,8 @@ type
     // bytes (TextureMatches), or decoded (DecodeTexture). Request is the
     // subclass's, handed to those.
     function CachedTexture(Key: UInt64; Request: Pointer): TVulkanHLETexture;
+    // The texture of Key if there is one (nothing compared or decoded), else nil.
+    function FindTexture(Key: UInt64): TVulkanHLETexture;
     // A new texture's size, levels and scale (ScaleFor, or 1).
     procedure DescribeTexture(Request: Pointer; out Width, Height, Levels, Scale: Integer); virtual; abstract;
     // The texture's source bytes are still what console memory holds (SameSource).
@@ -1215,6 +1217,12 @@ begin
     Result := AddTexture(Key, W, H, Levels, Scale, Request);
   end;
   Result.LastUse := FUseCounter;
+end;
+
+function TVulkanHLERenderer.FindTexture(Key: UInt64): TVulkanHLETexture;
+begin
+  if not FTextures.TryGetValue(Key, Result) then
+    Result := nil;
 end;
 
 function TVulkanHLERenderer.AddTexture(Key: UInt64; Width, Height, Levels, Scale: Integer;

@@ -1877,12 +1877,33 @@ end;
 procedure TPS2GSVulkanHLE.DecodeTexture(T: TVulkanHLETexture; Request: Pointer);
 var
   A: TPS2GSAddressing;
+  Pal: array[0..255] of Cardinal;
 begin
   var R := PPS2HLETexRequest(Request);
   var D := R.D;
   GatherTexture(R);
   KeepSource(T, FTexBytes);
   var PSM := Integer(D.TPSM);
+  // A palettized texture's indices as colours (as TPS2GSDrawer.TexelFrom).
+  var Indices := 0;
+  case D.TPSM of
+    PSMT8, PSMT8H: Indices := 256;
+    PSMT4, PSMT4HL, PSMT4HH: Indices := 16;
+  end;
+  for var I := 0 to Indices - 1 do
+  begin
+    var Index := I + D.ClutOffset;
+    if D.Clut32 then
+    begin
+      Index := Index and 255;
+      Pal[I] := Cardinal(FClut[Index]) or (Cardinal(FClut[Index + 256]) shl 16);
+    end
+    else
+      Pal[I] := ExpandTexA(FClut[Index and 511], D.TA0, D.TA1, D.AEM);
+  end;
+  var Words := PCardinal(FMemory.Data);
+  var Halves := PWord(FMemory.Data);
+  var Bytes := FMemory.Data;
   for var L := 0 to T.Levels - 1 do
   begin
     var W := Max(1, (1 shl D.TW) shr L);
@@ -1899,38 +1920,88 @@ begin
     A.Init(PSM, D.LevelTBP[L], D.LevelTBW[L]);
     var P := LevelTexels(T, W, H);
     for var Y := Y0 to Y0 + H - 1 do
-      for var X := X0 to X0 + W - 1 do
-      begin
-        // As TPS2GSDrawer.TexelFrom.
-        var Raw := FMemory.ReadAt(PSM, A.Addr(Cardinal(X), Cardinal(Y)));
-        var C: Cardinal;
-        case D.TPSM of
-          PSMCT32, PSMZ32:
-            C := Raw;
-          PSMCT24, PSMZ24:
-            begin
-              var Alpha := D.TA0;
-              if D.AEM and ((Raw and $FFFFFF) = 0) then
-                Alpha := 0;
-              C := (Raw and $FFFFFF) or (Cardinal(Alpha) shl 24);
-            end;
-          PSMCT16, PSMCT16S, PSMZ16, PSMZ16S:
-            C := ExpandTexA(Raw, D.TA0, D.TA1, D.AEM);
-        else
+    begin
+      // A.Addr with the row's part once: (Base + (column + row * Width) shl
+      // PageShift + offset) and Mask, the shifted sum split.
+      var RowBase := A.Base + ((Cardinal(Y) shr A.HShift) * A.Width) shl A.PageShift;
+      var Offsets := A.Offsets + ((Cardinal(Y) and A.HMask) shl A.WShift);
+      // As TPS2GSDrawer.TexelFrom (TPS2GSMemory.ReadAt).
+      case D.TPSM of
+        PSMCT32, PSMZ32:
+          for var X := X0 to X0 + W - 1 do
           begin
-            var Index := Integer(Raw) + D.ClutOffset;
-            if D.Clut32 then
-            begin
-              Index := Index and 255;
-              C := Cardinal(FClut[Index]) or (Cardinal(FClut[Index + 256]) shl 16);
-            end
-            else
-              C := ExpandTexA(FClut[Index and 511], D.TA0, D.TA1, D.AEM);
+            P^ := Words[(RowBase + (Cardinal(X) shr A.WShift) shl A.PageShift + Offsets[Cardinal(X) and A.WMask]) and A.Mask];
+            Inc(P);
           end;
+        PSMCT24, PSMZ24:
+          for var X := X0 to X0 + W - 1 do
+          begin
+            var Raw := Words[(RowBase + (Cardinal(X) shr A.WShift) shl A.PageShift + Offsets[Cardinal(X) and A.WMask]) and
+              A.Mask] and $FFFFFF;
+            var Alpha := D.TA0;
+            if D.AEM and (Raw = 0) then
+              Alpha := 0;
+            P^ := Raw or (Cardinal(Alpha) shl 24);
+            Inc(P);
+          end;
+        PSMCT16, PSMCT16S, PSMZ16, PSMZ16S:
+          for var X := X0 to X0 + W - 1 do
+          begin
+            P^ := ExpandTexA(Halves[(RowBase + (Cardinal(X) shr A.WShift) shl A.PageShift + Offsets[Cardinal(X) and A.WMask]) and
+              A.Mask], D.TA0, D.TA1, D.AEM);
+            Inc(P);
+          end;
+        PSMT8:
+          for var X := X0 to X0 + W - 1 do
+          begin
+            P^ := Pal[Bytes[(RowBase + (Cardinal(X) shr A.WShift) shl A.PageShift + Offsets[Cardinal(X) and A.WMask]) and A.Mask]];
+            Inc(P);
+          end;
+        PSMT4:
+          for var X := X0 to X0 + W - 1 do
+          begin
+            var Ad := (RowBase + (Cardinal(X) shr A.WShift) shl A.PageShift + Offsets[Cardinal(X) and A.WMask]) and A.Mask;
+            P^ := Pal[(Bytes[Ad shr 1] shr ((Ad and 1) * 4)) and $F];
+            Inc(P);
+          end;
+        PSMT8H:
+          for var X := X0 to X0 + W - 1 do
+          begin
+            P^ := Pal[Words[(RowBase + (Cardinal(X) shr A.WShift) shl A.PageShift + Offsets[Cardinal(X) and A.WMask]) and
+              A.Mask] shr 24];
+            Inc(P);
+          end;
+        PSMT4HL:
+          for var X := X0 to X0 + W - 1 do
+          begin
+            P^ := Pal[(Words[(RowBase + (Cardinal(X) shr A.WShift) shl A.PageShift + Offsets[Cardinal(X) and A.WMask]) and
+              A.Mask] shr 24) and $F];
+            Inc(P);
+          end;
+        PSMT4HH:
+          for var X := X0 to X0 + W - 1 do
+          begin
+            P^ := Pal[Words[(RowBase + (Cardinal(X) shr A.WShift) shl A.PageShift + Offsets[Cardinal(X) and A.WMask]) and
+              A.Mask] shr 28];
+            Inc(P);
+          end;
+      else
+        for var X := X0 to X0 + W - 1 do
+        begin
+          // (Any other format: ReadAt's word as an index.)
+          var Index := Integer(FMemory.ReadAt(PSM, (RowBase + (Cardinal(X) shr A.WShift) shl A.PageShift +
+            Offsets[Cardinal(X) and A.WMask]) and A.Mask)) + D.ClutOffset;
+          if D.Clut32 then
+          begin
+            Index := Index and 255;
+            P^ := Cardinal(FClut[Index]) or (Cardinal(FClut[Index + 256]) shl 16);
+          end
+          else
+            P^ := ExpandTexA(FClut[Index and 511], D.TA0, D.TA1, D.AEM);
+          Inc(P);
         end;
-        P^ := C;
-        Inc(P);
       end;
+    end;
     UploadLevel(T, L, W, H);
   end;
 end;

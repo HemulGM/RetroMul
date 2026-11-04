@@ -984,6 +984,63 @@ void uvPlanes(uint p, int px, int py, inout float fs, inout float ft)
   ft = float(ut) / 16.0;
 }
 
+// PSP.GE.Raster's GEPerspRecip: 128 segments of 512 mantissa steps, a node in
+// half units down by a drop per segment.
+const int perspNode[128] = int[128](
+  131073, 130056, 129055, 128072, 127100, 126144, 125204, 124275, 123362, 122462, 121575, 120701,
+  119837, 118987, 118151, 117324, 116509, 115705, 114914, 114131, 113359, 112600, 111848, 111108,
+  110376, 109655, 108944, 108240, 107546, 106862, 106185, 105518, 104859, 104207, 103564, 102928,
+  102301, 101681, 101068, 100464, 99866, 99274, 98690, 98114, 97543, 96978, 96422, 95870,
+  95327, 94787, 94256, 93728, 93207, 92692, 92183, 91681, 91181, 90689, 90202, 89718,
+  89241, 88770, 88303, 87839, 87382, 86929, 86482, 86038, 85600, 85165, 84733, 84308,
+  83886, 83469, 83056, 82647, 82242, 81840, 81443, 81050, 80660, 80276, 79893, 79514,
+  79139, 78767, 78399, 78034, 77674, 77316, 76961, 76609, 76261, 75915, 75575, 75235,
+  74899, 74565, 74237, 73909, 73585, 73265, 72945, 72629, 72317, 72006, 71698, 71394,
+  71091, 70790, 70494, 70198, 69907, 69616, 69328, 69043, 68760, 68480, 68201, 67926,
+  67651, 67379, 67110, 66842, 66578, 66313, 66053, 65793);
+const int perspDrop[128] = int[128](
+  508, 500, 492, 486, 478, 470, 464, 456, 450, 444, 438, 432, 424, 418, 414, 408,
+  402, 396, 392, 386, 380, 376, 370, 366, 360, 356, 352, 346, 342, 338, 334, 330,
+  326, 322, 318, 314, 310, 306, 302, 300, 296, 292, 288, 286, 282, 278, 276, 272,
+  270, 266, 264, 260, 257, 254, 252, 250, 246, 244, 242, 238, 236, 234, 232, 228,
+  226, 224, 222, 220, 218, 216, 212, 210, 208, 206, 204, 202, 200, 198, 196, 194,
+  192, 192, 190, 188, 186, 184, 182, 180, 180, 178, 176, 174, 172, 170, 170, 168,
+  166, 164, 164, 162, 160, 160, 158, 156, 156, 154, 152, 152, 150, 148, 148, 146,
+  146, 144, 142, 142, 140, 140, 138, 138, 136, 134, 134, 132, 132, 129, 130, 128);
+
+// Truncated toward zero, as PSP.GE.Raster's GEPerspAt.
+int64_t perspScaled(int64_t v, int sh)
+{
+  if (sh < 0)
+    return v << (-sh);
+  return v >= 0l ? (v >> sh) : -((-v) >> sh);
+}
+
+// Where a primitive has them (word 151 bit 0), S and T from the planes of
+// PSP.GE.Raster's GEPerspPlanes (128..133 S, 134..139 T, 140..145 Q, 146, 147
+// their vertex, 148..150 their fraction bits), in texels floored to 1/16;
+// left as they are where Q's plane is not positive.
+void perspPlanes(uint p, int px, int py, inout float fs, inout float ft)
+{
+  if ((prims[p + 151u] & 1u) == 0u)
+    return;
+  int64_t dx = int64_t(px) * 16l + 8l - int64_t(int(prims[p + 146u]));
+  int64_t dy = int64_t(py) * 16l + 8l - int64_t(int(prims[p + 147u]));
+  int64_t d = (primInt64(p + 140u) + primInt64(p + 142u) * dx + primInt64(p + 144u) * dy) >> 14;
+  if (d <= 0l || d >= 65536l)
+    return;
+  int e = findMSB(uint(d));
+  int m16 = int((d << (16 - e)) - 65536l);
+  int j = m16 >> 9;
+  int64_t r = (256l * int64_t(perspNode[j]) - 1l - int64_t(perspDrop[j]) * int64_t(m16 & 511)) >> 9;
+  int64_t ns = (primInt64(p + 128u) + primInt64(p + 130u) * dx + primInt64(p + 132u) * dy) >> 14;
+  int64_t nt = (primInt64(p + 134u) + primInt64(p + 136u) * dx + primInt64(p + 138u) * dy) >> 14;
+  int ks = int(prims[p + 148u]), kt = int(prims[p + 149u]), kq = int(prims[p + 150u]);
+  // As the host's Int64 / 16 (exact in a double) made a single.
+  fs = float(double(perspScaled(ns * r, 12 + e + ks - kq)) / 16.0lf);
+  ft = float(double(perspScaled(nt * r, 12 + e + kt - kq)) / 16.0lf);
+}
+
 bool triangleFragment(uint p, uint s, int px, int py, out Fragment f)
 {
   int64_t x0 = vInt(p, V0, 0u), y0 = vInt(p, V0, 1u);
@@ -1059,8 +1116,10 @@ bool triangleFragment(uint p, uint s, int px, int py, out Fragment f)
       }
       f.s = st[0];
       f.t = st[1];
-      // Through mode: the planes of PSP.GE.Raster's GEUVPlanes.
+      // Through mode: the planes of PSP.GE.Raster's GEUVPlanes; transform
+      // mode: GEPerspPlanes'.
       uvPlanes(p, px, py, f.s, f.t);
+      perspPlanes(p, px, py, f.s, f.t);
       if (stFlag(s, SF_NEEDLOD))
       {
         // The largest step of S/w and T/w per pixel (GETexLod's G) from the steps
@@ -1068,18 +1127,39 @@ bool triangleFragment(uint p, uint s, int px, int py, out Fragment f)
         float nsx = uintBitsToFloat(prims[p + 90u]), nsy = uintBitsToFloat(prims[p + 91u]);
         float ntx = uintBitsToFloat(prims[p + 92u]), nty = uintBitsToFloat(prims[p + 93u]);
         float lodG = delphiMax(delphiMax(abs(nsx), abs(nsy)), delphiMax(abs(ntx), abs(nty)));
-        // One level of detail for 4 pixels of a row, at the second of them
-        // (PSP.GE.Raster's GEDrawTriangle).
-        int64_t lsx = int64_t((px & ~3) + 1) * 16l + 8l;
-        int64_t le0 = -((lsx - x1) * (y2 - y1) - (sy - y1) * (x2 - x1));
-        int64_t le1 = -((lsx - x2) * (y0 - y2) - (sy - y2) * (x0 - x2));
-        int64_t le2 = -((lsx - x0) * (y1 - y0) - (sy - y0) * (x1 - x0));
+        // One level of detail for 4 pixels of a row, at PSP.GE.Raster's
+        // GELodPixel (152) moved into the row's span: the first covered pixel
+        // from it toward this one.
+        int lx = (px & ~3) + int(prims[p + 152u]);
+        int ldir = lx > px ? -1 : 1;
+        int64_t le0, le1, le2;
+        for (;;)
+        {
+          int64_t lsx = int64_t(lx) * 16l + 8l;
+          le0 = -((lsx - x1) * (y2 - y1) - (sy - y1) * (x2 - x1));
+          le1 = -((lsx - x2) * (y0 - y2) - (sy - y2) * (x0 - x2));
+          le2 = -((lsx - x0) * (y1 - y0) - (sy - y0) * (x1 - x0));
+          if (lx == px || (lx >= int(prims[p + 2u]) && lx <= int(prims[p + 4u]) &&
+              le0 + ((bias & 1u) != 0u ? -1l : 0l) >= 0l && le1 + ((bias & 2u) != 0u ? -1l : 0l) >= 0l &&
+              le2 + ((bias & 4u) != 0u ? -1l : 0l) >= 0l))
+            break;
+          lx += ldir;
+        }
         precise double lw0 = double(le0) * farea;
         precise double lw1 = double(le1) * farea;
         precise double lw2 = double(le2) * farea;
         precise double lq = double(aq0) * lw0 + double(aq1) * lw1 + double(aq2) * lw2;
         precise double liw = double(aw0) * lw0 + double(aw1) * lw1 + double(aw2) * lw2;
-        f.lod = texLod(s, lodG, float(abs(lq)), float(liw));
+        float lqf = float(abs(lq));
+        // With the perspective planes: Q's plane there, floored to its units.
+        if ((prims[p + 151u] & 1u) != 0u)
+        {
+          int64_t qd = (primInt64(p + 140u) + primInt64(p + 142u) * (int64_t(lx) * 16l + 8l - int64_t(int(prims[p + 146u]))) +
+            primInt64(p + 144u) * (sy - int64_t(int(prims[p + 147u])))) >> 14;
+          if (qd > 0l)
+            lqf = float(ldexp(double(qd), -int(prims[p + 150u])));
+        }
+        f.lod = texLod(s, lodG, lqf, float(liw));
       }
     }
     else
@@ -1129,6 +1209,8 @@ void spriteFragment(uint p, uint s, int px, int py, out Fragment f)
         f.t = float(divD(double(f.t), q));
       }
     }
+    // Transform mode: PSP.GE.Raster's GESpritePerspPlanes.
+    perspPlanes(p, px, py, f.s, f.t);
   }
 }
 
@@ -1165,7 +1247,7 @@ void main()
     return;
   for (uint i = 0u; i < count; i++)
   {
-    uint p = bins[first + i] * 128u;
+    uint p = bins[first + i] * 160u;
     if (px < int(prims[p + 2u]) || py < int(prims[p + 3u]) || px > int(prims[p + 4u]) || py > int(prims[p + 5u]))
       continue;
     uint s = prims[p + 1u] * 128u;

@@ -564,7 +564,11 @@ begin
             RequireBytes(Data, Start, Len);
             while (Len > 1) and (B(Start + Len - 1) = 0) do
               Dec(Len);
-            Sample(I, Start, Len, Max(0, W(P + 12) - Addr), 0);
+            // A loop address below the sample start marks a one-shot sample.
+            var Loop := Len;
+            if W(P + 12) >= Addr then
+              Loop := W(P + 12) - Addr;
+            Sample(I, Start, Len, Loop, 0);
           end;
         end;
     dkSQD:

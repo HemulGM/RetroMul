@@ -186,6 +186,7 @@ type
     procedure BuildRaster;
     procedure RasterChanged; inline;
     function ScissoredArea(X1, Y1, X2, Y2: Integer): Int64;
+    function FillCost(Pixels: Int64): Int64;
     procedure EmitTriangle(const A, B, C: TGEVertex; Odd: Boolean);
     procedure ClipTriangle(const A, B, C: TGEAsmVertex; Odd: Boolean);
     procedure ClipLine(const A, B: TGEAsmVertex);
@@ -2837,6 +2838,22 @@ const
   ParallelVertices = 96;
 
 // Pixels of a 1/16 pixel box inside the scissor, for the drawing cost.
+// ns the GE takes to fill Pixels pixels of the current primitive (probe
+// ge_fill): 4.77 a pixel into a 32-bit target, 7.19 with its depth written,
+// 3.17 into a 16-bit one either way; blending adds nothing.
+function TPSPGEEngine.FillCost(Pixels: Int64): Int64;
+begin
+  var Depth := (FRaster.ClearMode and FRaster.ClearDepth) or
+    (not FRaster.ClearMode and FRaster.DepthTest and FRaster.DepthWrite);
+  var PerPixel: Int64 := 317;
+  if FRaster.FBFormat = 3 then
+    if Depth then
+      PerPixel := 719
+    else
+      PerPixel := 477;
+  Result := Pixels * PerPixel div 100;
+end;
+
 function TPSPGEEngine.ScissoredArea(X1, Y1, X2, Y2: Integer): Int64;
 begin
   var W := Min(X2 div 16, FRaster.ScissorX2 + 1) - Max(X1 div 16, FRaster.ScissorX1);
@@ -2863,10 +2880,9 @@ begin
     Backend.DrawTriangle(FRaster, A, B, C)
   else
     FWorkers.Triangle(FRaster, A, B, C);
-  Inc(FPrimCost, 100 + Min(Abs(Int64(B.X - A.X) * (C.Y - A.Y) - Int64(B.Y - A.Y) * (C.X - A.X)) div 512,
-      ScissoredArea(Min(A.X, Min(B.X, C.X)), Min(A.Y, Min(B.Y, C.Y)), Max(A.X, Max(B.X, C.X)),
-        Max(A.Y, Max(B.Y, C.Y)))) *
-    3);
+  Inc(FPrimCost, 100 + FillCost(Min(Abs(Int64(B.X - A.X) * (C.Y - A.Y) - Int64(B.Y - A.Y) * (C.X - A.X)) div 512,
+    ScissoredArea(Min(A.X, Min(B.X, C.X)), Min(A.Y, Min(B.Y, C.Y)), Max(A.X, Max(B.X, C.X)),
+    Max(A.Y, Max(B.Y, C.Y))))));
 end;
 
 type
@@ -3058,7 +3074,8 @@ begin
     Backend.DrawSprite(FRaster, A.V, B.V)
   else
     FWorkers.Sprite(FRaster, A.V, B.V);
-  Inc(FPrimCost, 100 + ScissoredArea(Min(A.V.X, B.V.X), Min(A.V.Y, B.V.Y), Max(A.V.X, B.V.X), Max(A.V.Y, B.V.Y)) * 3);
+  Inc(FPrimCost, 100 + FillCost(ScissoredArea(Min(A.V.X, B.V.X), Min(A.V.Y, B.V.Y), Max(A.V.X, B.V.X),
+    Max(A.V.Y, B.V.Y))));
 end;
 
 procedure TPSPGEEngine.AddVertex(const A: TGEAsmVertex);
@@ -3831,6 +3848,19 @@ begin
     M.WriteBytes($04000000, PByte(@Buf)[N], Size - N);
 end;
 
+const
+  // What a block transfer costs, ns per 10 bytes moved, by whether its
+  // source and destination are in VRAM (probe ge_transfer): main RAM to RAM
+  // is slowest, and RAM is slower to read than to write. Besides a start.
+  GETransferCost: array[Boolean, Boolean] of Integer = ((81, 57), (34, 42));
+  GETransferStartNs = 3000;
+
+function InVRAM(A: Cardinal): Boolean; inline;
+begin
+  var P := A and $1FFFFFFF;
+  Result := (P >= $04000000) and (P < $08000000);
+end;
+
 // TRANSFERSTART: a rectangle copy. The buffer addresses lose their low 4
 // bits, and each row moves in 64-byte pieces, each read before it is
 // written, so an overlapping copy repeats what it has just written once the
@@ -3869,7 +3899,7 @@ begin
       Inc(Done, N);
     end;
   end;
-  FPrimCost := Int64(W) * H * Bpp * 2;
+  FPrimCost := GETransferStartNs + Int64(W) * H * Bpp * GETransferCost[InVRAM(Src), InVRAM(Dst)] div 10;
 end;
 
 { Context }

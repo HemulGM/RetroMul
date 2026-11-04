@@ -25,6 +25,7 @@ const
   ERROR_MPEG_AVC_INVALID_VALUE = Cardinal($806201FE);
   ERROR_MPEG_AVC_DECODE_FATAL = Cardinal($80628002);
   ERROR_MPEG_ATRAC_NO_DATA = Cardinal($807F00FD);
+  ERROR_MPEG_ATRAC_NOT_INIT = Cardinal($807F0001);
 
 const
   MpegRingPacketCost = 2048 + 104;
@@ -60,6 +61,10 @@ type
     Atrac: TATRAC3PlusDecoder;
     EsBufs: array[1..2] of TPSPMpegEsBuf;
     RingRead: Integer;
+    // Packets the demuxer has taken from the ring and not freed yet.
+    RingPending: Integer;
+    // sceMpegAtracDecode has been told to start its decoder.
+    AtracInit: Boolean;
     Pictures: Integer;
     LastPicture: TPSPPicture;
     HasDetail: Boolean;
@@ -82,6 +87,8 @@ type
     procedure WriteCodecContext(Inst: TPSPMpegInstance);
     procedure UpdateCodecContext(Inst: TPSPMpegInstance; AuSize: Cardinal; const Pictures: TArray<TPSPPicture>);
     procedure FreePackets(Inst: TPSPMpegInstance);
+    procedure ScanRing(Rb: Cardinal);
+    function RingPending(Rb: Cardinal): Integer;
     function FillQueue(Inst: TPSPMpegInstance; Q: TPSPEsQueue): Boolean;
     procedure WriteAu(Address: Cardinal; const Au: TPSPAccessUnit; EsBuffer: Cardinal; WriteEs: Boolean);
     procedure PutStep(Rb, Remaining, Done: Cardinal);
@@ -154,6 +161,8 @@ type
     procedure Reset; override;
     procedure Register; override;
     property Instances: TObjectList<TPSPMpegInstance> read FInstances;
+    // sceMpegInit called (and not sceMpegFinish since).
+    property Initialized: Boolean read FInit;
   end;
 
 implementation
@@ -508,6 +517,7 @@ begin
   var Callback := FMemory.Read32(Rb + $18);
   if (Remaining = 0) or (Callback = 0) or (Total <= 0) then
   begin
+    ScanRing(Rb);
     FHLE.CPU.Ctx.GPR[2] := Done;
     Exit;
   end;
@@ -532,6 +542,7 @@ begin
   var Done := Cardinal(Action.Arg(2));
   if R = 0 then
   begin
+    ScanRing(Cardinal(Action.Arg(0)));
     FHLE.CPU.Ctx.GPR[2] := Done;
     Exit;
   end;
@@ -557,7 +568,7 @@ begin
   if Num = 0 then
     Exit;
   var Total := Integer(FMemory.Read32(Rb));
-  var Free := Total - Integer(FMemory.Read32(Rb + $0C));
+  var Free := Total - Integer(FMemory.Read32(Rb + $0C)) - RingPending(Rb);
   if Num > Free then
     Num := Free;
   if (Avail >= 0) and (Num > Avail) then
@@ -579,7 +590,7 @@ begin
     Exit;
   end;
   FreePackets(Inst);
-  FHLE.Result(FMemory.Read32(Rb) - FMemory.Read32(Rb + $0C));
+  FHLE.Result(Cardinal(Integer(FMemory.Read32(Rb)) - Integer(FMemory.Read32(Rb + $0C)) - Inst.RingPending));
 end;
 
 { Streams }
@@ -701,6 +712,7 @@ begin
   end;
   Inst.Demux.Reset;
   Inst.RingRead := 0;
+  Inst.RingPending := 0;
   if Inst.Ring <> 0 then
   begin
     FMemory.Write32(Inst.Ring + 4, 0);
@@ -787,16 +799,36 @@ begin
   var N := Inst.Demux.TakeFreed;
   if (N = 0) or (Inst.Ring = 0) then
     Exit;
-  var Rb := Inst.Ring;
-  var Total := Integer(FMemory.Read32(Rb));
-  var Filled := Integer(FMemory.Read32(Rb + $0C));
-  Dec(Filled, N);
-  if Filled < 0 then
-    Filled := 0;
-  FMemory.Write32(Rb + $0C, Cardinal(Filled));
+  var Total := Integer(FMemory.Read32(Inst.Ring));
+  Dec(Inst.RingPending, N);
+  if Inst.RingPending < 0 then
+    Inst.RingPending := 0;
   if Total > 0 then
     Inst.RingRead := (Inst.RingRead + N) mod Total;
-  FMemory.Write32(Rb + 4, Cardinal(Inst.RingRead));
+end;
+
+// The demuxer takes what a put wrote at once: the ring's read position moves
+// to the write position and its count of packets to read drops to 0, while
+// the packets keep their room until their data is used (video/pmf_simple).
+procedure TPSPMpeg.ScanRing(Rb: Cardinal);
+begin
+  var Inst := InstanceOf(FMemory.Read32(Rb + $28));
+  if (Inst = nil) or (Inst.Ring <> Rb) then
+    Exit;
+  var N := Integer(FMemory.Read32(Rb + $0C));
+  if N <= 0 then
+    Exit;
+  Inc(Inst.RingPending, N);
+  FMemory.Write32(Rb + $0C, 0);
+  FMemory.Write32(Rb + 4, FMemory.Read32(Rb + 8));
+end;
+
+function TPSPMpeg.RingPending(Rb: Cardinal): Integer;
+begin
+  var Inst := InstanceOf(FMemory.Read32(Rb + $28));
+  if (Inst = nil) or (Inst.Ring <> Rb) then
+    Exit(0);
+  Result := Inst.RingPending;
 end;
 
 function TPSPMpeg.FillQueue(Inst: TPSPMpegInstance; Q: TPSPEsQueue): Boolean;
@@ -811,9 +843,10 @@ begin
     Exit;
   var Base := FMemory.Read32(Rb + $14);
   var Pack: array[0..PSMFPacketSize - 1] of Byte;
+  ScanRing(Rb);
   while not Result do
   begin
-    var Filled := Integer(FMemory.Read32(Rb + $0C));
+    var Filled := Inst.RingPending;
     var Held := Inst.Demux.Held;
     if Held >= Filled then
       Break;
@@ -1377,6 +1410,17 @@ begin
   begin
     FHLE.Result(ERROR_MPEG_INVALID_VALUE);
     Exit;
+  end;
+  // Until a call's init argument is 1 the decoder is not started, whatever
+  // the call brings (probe mpeg_atrac).
+  if not Inst.AtracInit and (Inst.Atrac = nil) then
+  begin
+    if FHLE.Arg(3) <> 1 then
+    begin
+      Delay(200, ERROR_MPEG_ATRAC_NOT_INIT);
+      Exit;
+    end;
+    Inst.AtracInit := True;
   end;
   var Es := FMemory.Read32(AuPtr + 16);
   var Size := FMemory.Read32(AuPtr + 20);

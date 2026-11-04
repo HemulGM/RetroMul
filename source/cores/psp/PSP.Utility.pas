@@ -67,6 +67,11 @@ type
     FWorkStub: Cardinal;
     FWorkThread: TPSPThread;
     FWorkUntil: Int64;
+    // A savedata dialog shutting down on that thread, and the steps it has
+    // left (the last stretch at 0, -1 when it is done).
+    FShutdownDialog: TPSPDialog;
+    FShutdownSteps: Integer;
+    procedure WakeWorker(Prio: Integer);
     function Interactive: Boolean;
     function ConfirmButton: Cardinal;
     function CancelButton: Cardinal;
@@ -174,7 +179,17 @@ const
   DialogShutdownNs = 25000000;
   DialogShutdownWorkNs = 8000000;
   SavedataInitNs = 33000000;
-  SavedataShutdownNs = 500000;
+  // Savedata shuts down on the utility's thread (probe dialog_shutdown):
+  // ShutdownStart takes 140 us, then 220 steps of 14 us, each handing the CPU
+  // to a ready thread of its priority, and a last stretch of 730 us that does
+  // not: 3.8 ms for a caller that sleeps (one that wakes in the last stretch
+  // waits for its end), never for a caller of its priority that keeps the
+  // CPU, a step for each moment one waits (a line written to host0:). A
+  // worse caller never sees it.
+  SavedataShutdownStartNs = 140000;
+  SavedataShutdownSteps = 220;
+  SavedataShutdownStepNs = 11000;
+  SavedataShutdownLastNs = 730000;
   // The utility's own thread runs at this priority: a caller below it never sees SHUTDOWN.
   UtilityThreadPriority = 32;
   HeadlessAnswerNs: Int64 = 3000000000;
@@ -2263,6 +2278,8 @@ begin
   FWorkStub := FKernel.AllocKernel(16, 'utility thread');
   FWorkThread := nil;
   FWorkUntil := 0;
+  FShutdownDialog := nil;
+  FShutdownSteps := 0;
 end;
 
 procedure TPSPUtility.Work(D: TPSPDialog; Ns: Int64);
@@ -2279,6 +2296,11 @@ begin
   if Prio = 0 then
     Exit;
   FWorkUntil := FKernel.Scheduler.Now + Ns;
+  WakeWorker(Prio);
+end;
+
+procedure TPSPUtility.WakeWorker(Prio: Integer);
+begin
   if (FWorkThread = nil) or (FKernel.ThreadById(FWorkThread.UID) <> FWorkThread) then
   begin
     // The thread loops on: syscall; j loop.
@@ -2298,6 +2320,23 @@ end;
 
 procedure TPSPUtility.hDialogThread;
 begin
+  if FShutdownDialog <> nil then
+  begin
+    Dec(FShutdownSteps);
+    if FShutdownSteps > 0 then
+    begin
+      FKernel.SpendPreemptible(SavedataShutdownStepNs, True);
+      Exit;
+    end;
+    if FShutdownSteps = 0 then
+    begin
+      FKernel.SpendPreemptible(SavedataShutdownLastNs);
+      Exit;
+    end;
+    if FShutdownDialog.Status = PSPDialogShutdown then
+      FShutdownDialog.Status := PSPDialogNone;
+    FShutdownDialog := nil;
+  end;
   var Left := FWorkUntil - FKernel.Scheduler.Now;
   if Left > 0 then
     // Busy: a slice of computing, then round again.
@@ -2474,13 +2513,12 @@ begin
   var Delay: Int64 := DialogShutdownNs;
   if Kind = dtSavedata then
   begin
-    // Savedata shuts down on the utility thread; a caller it preempts finds it done.
-    if (FKernel.Current <> nil) and (FKernel.Current.Priority > UtilityThreadPriority) then
-    begin
-      D.Status := PSPDialogNone;
-      Exit;
-    end;
-    Delay := SavedataShutdownNs;
+    // On the utility's thread: a caller it preempts finds it done.
+    FKernel.Spend(SavedataShutdownStartNs);
+    FShutdownDialog := D;
+    FShutdownSteps := SavedataShutdownSteps + 1;
+    WakeWorker(UtilityThreadPriority);
+    Exit;
   end
   else
     // Its threads spend part of the shutdown computing.

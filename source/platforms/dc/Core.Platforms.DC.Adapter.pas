@@ -794,6 +794,7 @@ begin
             VMU.Data := Image;
         end;
         VMU.Dirty := False;
+        VMU.RepairLegacyFormat;
       except
         VMU.Free;
         raise;
@@ -834,6 +835,13 @@ begin
   if Loading then
   begin
     LoadCoreSnapshot(Path, ROM_CORE_ID_DC, FIdentity, Transfer, FStorage);
+    // Old snapshots also contain the VMU image, including the legacy header.
+    for var Port := 0 to 3 do
+    begin
+      var VMU := Console.Maple.Devices[Port, 1];
+      if VMU is TDCVMU then
+        TDCVMU(VMU).RepairLegacyFormat;
+    end;
     Console.AICA.TakeSamples;
     ClearAudio;
     Publish;

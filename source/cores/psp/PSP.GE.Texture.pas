@@ -5,6 +5,7 @@
 // layout, wrap and clamp, nearest and bilinear.
 {$IFDEF PSP_CHECKED}{$Q+}{$R+}{$ELSE}{$O+}{$Q-}{$R-}{$ENDIF}
 {$EXCESSPRECISION OFF}
+{$POINTERMATH ON}
 
 interface
 
@@ -121,6 +122,10 @@ type
 
 // False for noncontiguous or partial source blocks: retain scalar fault semantics.
 function GEReadDXTBlock(const T: TGETexture; Level, BX, BY: Integer; out Colors: TGEDXTBlock): Boolean;
+
+// Every texel of a level (at least 1 x 1), row by row, into Dst: what
+// GEFetchTexel gives for each.
+procedure GEDecodeLevel(const T: TGETexture; Level: Integer; Dst: PCardinal);
 
 function GEDecode16(Format: Integer; P: Cardinal): Cardinal;
 
@@ -508,6 +513,111 @@ end;
 function GEFetchTexel(const T: TGETexture; Level, X, Y: Integer): Cardinal;
 begin
   Result := FetchTexel(T, @T.Levels[Level], X, Y);
+end;
+
+procedure GEDecodeLevel(const T: TGETexture; Level: Integer; Dst: PCardinal);
+var
+  // The colour of every CLUT index (after the index transform), and of every
+  // CLUT4/CLUT8 texel.
+  Colors: array[0..511] of Cardinal;
+  Pal: array[0..255] of Cardinal;
+  Row: TBytes;
+begin
+  var L: PGETexLevel := @T.Levels[Level];
+  var W := Max(L.Width, 1);
+  var H := Max(L.Height, 1);
+  // Decode each compressed block once for HLE uploads; keep scalar reads
+  // where a block is partial or unavailable, or texture-cache timing applies.
+  if (T.Format in [8, 9, 10]) and (T.Cache = nil) then
+  begin
+    for var BY := 0 to (H + 3) div 4 - 1 do
+      for var BX := 0 to (W + 3) div 4 - 1 do
+      begin
+        var Block: TGEDXTBlock;
+        var Decoded := GEReadDXTBlock(T, Level, BX, BY, Block);
+        for var DY := 0 to Min(3, H - BY * 4 - 1) do
+          for var DX := 0 to Min(3, W - BX * 4 - 1) do
+          begin
+            var Pixel: Cardinal;
+            if Decoded then
+              Pixel := Block[DY * 4 + DX]
+            else
+              Pixel := GEFetchTexel(T, Level, BX * 4 + DX, BY * 4 + DY);
+            Dst[(BY * 4 + DY) * W + BX * 4 + DX] := Pixel;
+          end;
+      end;
+    Exit;
+  end;
+  // Whole rows from contiguous host memory; anything else texel by texel.
+  if (T.Cache <> nil) or (T.Format > 7) or (L.Ptr = nil) or (L.BufWidth < 0) or ((T.Format >= 4) and (T.Clut = nil)) or
+    (GELevelReach(T, L^) > L.Size) then
+  begin
+    for var Y := 0 to H - 1 do
+      for var X := 0 to W - 1 do
+      begin
+        Dst^ := FetchTexel(T, L, X, Y);
+        Inc(Dst);
+      end;
+    Exit;
+  end;
+  var Bits := TexBits[T.Format];
+  // The CLUT index transform.
+  var Shift := T.ClutShift;
+  var Mask := Cardinal(T.ClutMask);
+  var Base := Cardinal(T.ClutOffset) and $1FF;
+  var Add := Cardinal(L.ClutAdd);
+  if T.Format >= 4 then
+  begin
+    for var I := 0 to 511 do
+      if T.ClutFormat = 3 then
+        Colors[I] := PCardinal(T.Clut + (I and $FF) * 4)^
+      else
+        Colors[I] := Decode16(T.ClutFormat, PWord(T.Clut + I * 2)^);
+    if T.Format <= 5 then
+      for var I := 0 to 255 do
+        Pal[I] := Colors[((((Cardinal(I) shr Shift) and Mask) or Base) + Add) and $1FF];
+  end;
+  var RowBytes := (L.BufWidth * Bits) div 8;
+  var LastByte := ((W - 1) * Bits) div 8 + Max(1, Bits div 8) - 1;
+  if T.Swizzle then
+    SetLength(Row, (LastByte shr 4 + 1) * 16);
+  for var Y := 0 to H - 1 do
+  begin
+    var R: PByte;
+    if T.Swizzle then
+    begin
+      // The row's 16 bytes in each block of 8 rows, side by side.
+      var Blocks := L.Ptr + (Y shr 3) * (RowBytes shr 4) * 128 + (Y and 7) * 16;
+      for var C := 0 to LastByte shr 4 do
+        Move(Blocks[C * 128], Row[C * 16], 16);
+      R := @Row[0];
+    end
+    else
+      R := L.Ptr + Y * RowBytes;
+    case T.Format of
+      0, 1, 2:
+        for var X := 0 to W - 1 do
+          Dst[X] := Decode16(T.Format, PWord(R + X * 2)^);
+      3:
+        Move(R^, Dst^, W * 4);
+      4:
+        for var X := 0 to W - 1 do
+          if (X and 1) <> 0 then
+            Dst[X] := Pal[R[X shr 1] shr 4]
+          else
+            Dst[X] := Pal[R[X shr 1] and $F];
+      5:
+        for var X := 0 to W - 1 do
+          Dst[X] := Pal[R[X]];
+      6:
+        for var X := 0 to W - 1 do
+          Dst[X] := Colors[((((Cardinal(PWord(R + X * 2)^) shr Shift) and Mask) or Base) + Add) and $1FF];
+    else
+      for var X := 0 to W - 1 do
+        Dst[X] := Colors[((((PCardinal(R + X * 4)^ shr Shift) and Mask) or Base) + Add) and $1FF];
+    end;
+    Inc(Dst, W);
+  end;
 end;
 
 // The common formats from a level's contiguous bytes, inline in the sampler.

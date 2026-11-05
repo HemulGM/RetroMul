@@ -123,6 +123,25 @@ type
     procedure Release; override;
   end;
 
+  // Textures made in one place (TextureScaleFor): the frame shown when one
+  // last was, and how many were made there since a second passed without one.
+  TGEHLETextureSite = record
+    Shown, Count: Integer;
+  end;
+
+  // A target read as a CLUT texture (ClutTargetTexture): the colours looked
+  // up from its image on the GPU, at its scale, made again when the target
+  // or the CLUT changed. Params: the index transform and the texel's bytes.
+  TGEHLEClutTexture = class(TVulkanHLETexture)
+  public
+    From: TGEHLETarget;
+    Params: UInt64;
+    LookupSet: VkDescriptorSet;
+    // The target's version and the CLUT's colours it was made from.
+    Version: Int64;
+    Colors: UInt64;
+  end;
+
   TGEVulkanHLEBackend = class(TVulkanHLERenderer)
   private
     FMemory: TPSPMemory;
@@ -144,6 +163,15 @@ type
     FBlendLayout: VkPipelineLayout;
     FBlendPool: VkDescriptorPool;
     FBlendPass: VkRenderPass;
+    // The kernel that reads targets as CLUT textures, the CLUT's colours it
+    // looks up (an image of 512 texels), the textures it made.
+    FClutSetLayout: VkDescriptorSetLayout;
+    FClutLayout: VkPipelineLayout;
+    FClutModule: VkShaderModule;
+    FClutPipeline: VkPipeline;
+    FClutPool: VkDescriptorPool;
+    FClutImage: TVulkanHLEImage;
+    FClutTextures: TList<TGEHLEClutTexture>;
     // Recording: what is bound besides the pipeline and the texture.
     FBoundScissor: VkRect2D;
     FBoundBlend: Cardinal;
@@ -157,6 +185,8 @@ type
     FLast: TGERaster;
     FLastClut: array[0..1023] of Byte;
     FLastKind: Integer;
+    // Where textures were made: level address, format and size.
+    FTextureSites: TDictionary<UInt64, TGEHLETextureSite>;
     // The engine's RasterSerial when FLast was last found current.
     FLastSerial: UInt64;
     FStateValid: Boolean;
@@ -186,6 +216,8 @@ type
     function EnsureTexture(const S: TGERaster): TVulkanHLETexture;
     function TextureScaleFor(const X: TGETexture; First, Count: Integer): Integer;
     function TargetTexture(const S: TGERaster): TVulkanHLETexture;
+    procedure CreateClut;
+    function ClutTargetTexture(const S: TGERaster): TVulkanHLETexture;
     procedure VRAMFault;
     procedure WatchFault;
     function SameState(const S: TGERaster; Kind: Integer): Boolean;
@@ -246,7 +278,7 @@ function CreateGEVulkanHLEBackend(Memory: TPSPMemory; out Backend: TGEVulkanHLEB
 implementation
 
 uses
-  SPV.PSPGEHLEVert, SPV.PSPGEHLEFrag, SPV.PSPGEHLEBlendFrag, SPV.PSPGEHLEDown;
+  SPV.PSPGEHLEVert, SPV.PSPGEHLEFrag, SPV.PSPGEHLEBlendFrag, SPV.PSPGEHLEDown, SPV.PSPGEHLEClut;
 
 const
   VRAMMask = PSPVRAMSize - 1;
@@ -493,6 +525,8 @@ begin
   FMemory := Memory;
   inherited Create(Compute, Scale, SizeOf(TGEHLEVertex), SizeOf(TGEHLEPush), PSPFrameWidth, PSPFrameHeight);
   FEngineBackend := TGEHLEEngineBackend.Create(Self);
+  FTextureSites := TDictionary<UInt64, TGEHLETextureSite>.Create;
+  FClutTextures := TList<TGEHLEClutTexture>.Create;
   // The shader-blending pipelines and the down-sampling kernel write the
   // colour as a storage image (RGBA8 storage is required of every device);
   // the kernel samples the depth.
@@ -522,10 +556,23 @@ begin
   end;
   inherited;
   FEngineBackend.Free;
+  FTextureSites.Free;
+  FClutTextures.Free;
 end;
 
 procedure TGEVulkanHLEBackend.FreeDevice;
 begin
+  if FClutPipeline <> 0 then
+    FAPI.vkDestroyPipeline(FDevice, FClutPipeline, nil);
+  if FClutModule <> 0 then
+    FAPI.vkDestroyShaderModule(FDevice, FClutModule, nil);
+  if FClutPool <> 0 then
+    FAPI.vkDestroyDescriptorPool(FDevice, FClutPool, nil);
+  if FClutLayout <> 0 then
+    FAPI.vkDestroyPipelineLayout(FDevice, FClutLayout, nil);
+  if FClutSetLayout <> 0 then
+    FAPI.vkDestroyDescriptorSetLayout(FDevice, FClutSetLayout, nil);
+  DestroyImage(FClutImage);
   if FDownPipeline <> 0 then
     FAPI.vkDestroyPipeline(FDevice, FDownPipeline, nil);
   if FDownModule <> 0 then
@@ -748,6 +795,15 @@ end;
 procedure TGEVulkanHLEBackend.DestroyTarget(T: TVulkanHLETarget);
 begin
   var G := TGEHLETarget(T);
+  // The GPU is done with it (FindTarget, Destroy): so with what was made from it.
+  for var I := FClutTextures.Count - 1 downto 0 do
+    if FClutTextures[I].From = G then
+    begin
+      var C := FClutTextures[I];
+      FClutTextures.Delete(I);
+      FAPI.vkFreeDescriptorSets(FDevice, FClutPool, 1, @C.LookupSet);
+      DestroyTexture(C);
+    end;
   if G.DownSet <> 0 then
     FAPI.vkFreeDescriptorSets(FDevice, FDownPool, 1, @G.DownSet);
   if G.BlendSet <> 0 then
@@ -821,6 +877,72 @@ begin
   Pipe.layout := FDownLayout;
   Pipe.basePipelineIndex := -1;
   CheckVulkan(FAPI.vkCreateComputePipelines(FDevice, 0, 1, @Pipe, nil, @FDownPipeline), 'vkCreateComputePipelines');
+end;
+
+const
+  // CLUT textures made from targets at a time.
+  ClutTexturesMax = 32;
+
+// The kernel that reads targets as CLUT textures
+// (source/gpu/shaders/PSPGEHLEClut.comp): the target's colour and the CLUT's
+// colours sampled, the texture written as a storage image.
+procedure TGEVulkanHLEBackend.CreateClut;
+var
+  Bindings: array[0..2] of VkDescriptorSetLayoutBinding;
+  SetInfo: VkDescriptorSetLayoutCreateInfo;
+  Push: VkPushConstantRange;
+  Info: VkPipelineLayoutCreateInfo;
+  Sizes: array[0..1] of VkDescriptorPoolSize;
+  PoolInfo: VkDescriptorPoolCreateInfo;
+  Pipe: VkComputePipelineCreateInfo;
+begin
+  for var I := 0 to 2 do
+  begin
+    Bindings[I] := Default(VkDescriptorSetLayoutBinding);
+    Bindings[I].binding := I;
+    Bindings[I].descriptorType := VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    Bindings[I].descriptorCount := 1;
+    Bindings[I].stageFlags := VK_SHADER_STAGE_COMPUTE_BIT;
+  end;
+  Bindings[2].descriptorType := VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  SetInfo := Default(VkDescriptorSetLayoutCreateInfo);
+  SetInfo.sType := VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  SetInfo.bindingCount := 3;
+  SetInfo.pBindings := @Bindings[0];
+  CheckVulkan(FAPI.vkCreateDescriptorSetLayout(FDevice, @SetInfo, nil, @FClutSetLayout), 'vkCreateDescriptorSetLayout');
+  Push.stageFlags := VK_SHADER_STAGE_COMPUTE_BIT;
+  Push.offset := 0;
+  Push.size := 40;
+  Info := Default(VkPipelineLayoutCreateInfo);
+  Info.sType := VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  Info.setLayoutCount := 1;
+  Info.pSetLayouts := @FClutSetLayout;
+  Info.pushConstantRangeCount := 1;
+  Info.pPushConstantRanges := @Push;
+  CheckVulkan(FAPI.vkCreatePipelineLayout(FDevice, @Info, nil, @FClutLayout), 'vkCreatePipelineLayout');
+  Sizes[0].&type := VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  Sizes[0].descriptorCount := 2 * ClutTexturesMax;
+  Sizes[1].&type := VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+  Sizes[1].descriptorCount := ClutTexturesMax;
+  PoolInfo := Default(VkDescriptorPoolCreateInfo);
+  PoolInfo.sType := VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  PoolInfo.flags := VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+  PoolInfo.maxSets := ClutTexturesMax;
+  PoolInfo.poolSizeCount := 2;
+  PoolInfo.pPoolSizes := @Sizes[0];
+  CheckVulkan(FAPI.vkCreateDescriptorPool(FDevice, @PoolInfo, nil, @FClutPool), 'vkCreateDescriptorPool');
+  FClutModule := FCompute.CreateShaderModule(PSPGEHLEClutSPV);
+  Pipe := Default(VkComputePipelineCreateInfo);
+  Pipe.sType := VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  Pipe.stage.sType := VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  Pipe.stage.stage := VK_SHADER_STAGE_COMPUTE_BIT;
+  Pipe.stage.module := FClutModule;
+  Pipe.stage.pName := 'main';
+  Pipe.layout := FClutLayout;
+  Pipe.basePipelineIndex := -1;
+  CheckVulkan(FAPI.vkCreateComputePipelines(FDevice, 0, 1, @Pipe, nil, @FClutPipeline), 'vkCreateComputePipelines');
+  FClutImage := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, 512, 1, 1, VK_IMAGE_USAGE_SAMPLED_BIT or
+    VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 end;
 
 // The shader-blending pipelines' fragment shader (PSPGEHLEBlend.frag), set 1
@@ -1760,6 +1882,54 @@ begin
   end;
 end;
 
+// The bytes of the CLUT that the texels of levels First.. can read: from the
+// first entry an index reaches through the index transform to the last. The
+// rest of the CLUT may hold other textures' colours, changing meanwhile.
+procedure ClutRange(const X: TGETexture; First, Count: Integer; out Offset, Size: Integer);
+begin
+  var Wrap: Cardinal := 511;
+  var EntryBytes := 2;
+  if X.ClutFormat = 3 then
+  begin
+    Wrap := 255;
+    EntryBytes := 4;
+  end;
+  // The indices a texel holds: all of them for 4 and 8 bits; for wider ones
+  // those the mask lets through.
+  var Indices := 0;
+  case X.Format of
+    4:
+      Indices := 16;
+    5:
+      Indices := 256;
+  end;
+  var Shift := X.ClutShift;
+  var Mask := Cardinal(X.ClutMask) and $FF;
+  var Base := Cardinal(X.ClutOffset) and $1FF;
+  var Lo := Wrap;
+  var Hi: Cardinal := 0;
+  for var L := First to First + Count - 1 do
+  begin
+    var Add := Cardinal(X.Levels[L].ClutAdd);
+    if Indices > 0 then
+      for var I := 0 to Indices - 1 do
+      begin
+        var E := ((((Cardinal(I) shr Shift) and Mask) or Base) + Add) and Wrap;
+        Lo := Min(Lo, E);
+        Hi := Max(Hi, E);
+      end
+    else
+      for var I := 0 to Integer(Mask) do
+      begin
+        var E := ((Cardinal(I) or Base) + Add) and Wrap;
+        Lo := Min(Lo, E);
+        Hi := Max(Hi, E);
+      end;
+  end;
+  Offset := Integer(Lo) * EntryBytes;
+  Size := Integer(Hi - Lo + 1) * EntryBytes;
+end;
+
 // The bytes a texture's texels come from: its levels', then the CLUT's.
 function SourceBytes(const R: TGEHLETexRequest; out Bytes: array of TVulkanHLEBytes): Integer;
 begin
@@ -1773,8 +1943,10 @@ begin
   end;
   if IsClutFormat(X.Format) and (X.Clut <> nil) then
   begin
-    Bytes[Result].Data := X.Clut;
-    Bytes[Result].Size := 1024;
+    var Offset, Size: Integer;
+    ClutRange(X^, R.First, R.Count, Offset, Size);
+    Bytes[Result].Data := X.Clut + Offset;
+    Bytes[Result].Size := Size;
     Inc(Result);
   end;
 end;
@@ -1804,32 +1976,7 @@ begin
     var W := Max(X.Levels[Level].Width, 1);
     var H := Max(X.Levels[Level].Height, 1);
     var P := LevelTexels(T, W, H);
-    if X.Format in [8, 9, 10] then
-    begin
-      for var BY := 0 to (H + 3) div 4 - 1 do
-        for var BX := 0 to (W + 3) div 4 - 1 do
-        begin
-          var Block: TGEDXTBlock;
-          var Decoded := GEReadDXTBlock(X^, Level, BX, BY, Block);
-          for var DY := 0 to Min(3, H - BY * 4 - 1) do
-            for var DX := 0 to Min(3, W - BX * 4 - 1) do
-            begin
-              var Pixel: Cardinal;
-              if Decoded then
-                Pixel := Block[DY * 4 + DX]
-              else
-                Pixel := GEFetchTexel(X^, Level, BX * 4 + DX, BY * 4 + DY);
-              PCardinal(PByte(P) + ((BY * 4 + DY) * W + BX * 4 + DX) * 4)^ := Pixel;
-            end;
-        end;
-    end
-    else
-      for var Y := 0 to H - 1 do
-        for var XX := 0 to W - 1 do
-        begin
-          P^ := GEFetchTexel(X^, Level, XX, Y);
-          Inc(P);
-        end;
+    GEDecodeLevel(X^, Level, P);
     UploadLevel(T, I, W, H);
   end;
 end;
@@ -1922,6 +2069,168 @@ begin
   Result.Height := Max(L.Height, 1);
 end;
 
+// A CLUT texture (8, 16 or 32 bits an index) whose level is a target's pixels,
+// each texel in one pixel (a row of texels the bytes of a row of pixels): its
+// colours looked up from the target's image on the GPU, at its scale, the
+// texels past the target's rows those of its last. Nil when the texture is
+// not one, under the conditions of TargetTexture.
+function TGEVulkanHLEBackend.ClutTargetTexture(const S: TGERaster): TVulkanHLETexture;
+var
+  Colors: array[0..511] of Cardinal;
+  Push: array[0..9] of Cardinal;
+  Images: array[0..2] of VkDescriptorImageInfo;
+  Writes: array[0..2] of VkWriteDescriptorSet;
+  Alloc: VkDescriptorSetAllocateInfo;
+begin
+  Result := nil;
+  var X: PGETexture := @S.Tex;
+  if X.Swizzle or (X.Format < 5) or (X.Format > 7) or (X.Clut = nil) then
+    Exit;
+  var Level := 0;
+  if X.NeedLod then
+  begin
+    if (X.MinFilter >= 4) and (X.MaxLevel > 0) then
+      Exit;
+  end
+  else
+    Level := X.Level;
+  var L: PGETexLevel := @X.Levels[Level];
+  var A := L.Addr and $1FFFFFFF;
+  if (A < PSPVRAMBase) or (A >= PSPVRAMBase + 4 * PSPVRAMSize) or ((A and PSPVRAMSize) <> 0) then
+    Exit;
+  var TexelBytes: Cardinal := 1;
+  if X.Format = 6 then
+    TexelBytes := 2
+  else if X.Format = 7 then
+    TexelBytes := 4;
+  var W := Max(L.Width, 1);
+  var H := Max(L.Height, 1);
+  if W > L.BufWidth then
+    Exit;
+  var T: TGEHLETarget := nil;
+  for var U in FTargets do
+    if (U.Addr = A and VRAMMask) and (U.Stride * U.PixelBytes = Cardinal(L.BufWidth) * TexelBytes) and
+      (TexelBytes <= U.PixelBytes) then
+    begin
+      T := TGEHLETarget(U);
+      Break;
+    end;
+  if T = nil then
+    Exit;
+  var DrawBytes := Max(S.FBStride, 1) * Bpp(S.FBFormat and 3) * Cardinal(T.Height);
+  if Overlaps(T.Addr, T.Bytes, S.FBAddr and VRAMMask, DrawBytes) then
+    Exit;
+  if T.Dirty then
+  begin
+    if T.Stale then
+      Exit;
+  end
+  else if not T.Loaded or MemoryHeld(T.Addr, T.Bytes) or not ShadowMatches(T) then
+    Exit;
+  var Params := UInt64(X.ClutShift) or (UInt64(X.ClutMask and $FF) shl 8) or (UInt64(X.ClutOffset and $1FF) shl 16) or
+    (UInt64(Cardinal(L.ClutAdd) and $1FF) shl 32) or (UInt64(TexelBytes) shl 48);
+  var C: TGEHLEClutTexture := nil;
+  for var V in FClutTextures do
+    if (V.From = T) and (V.Params = Params) and (V.Width = W) and (V.Height = H) then
+    begin
+      C := V;
+      Break;
+    end;
+  var Rows := Min(H, T.Height);
+  if C = nil then
+  begin
+    if FClutTextures.Count >= ClutTexturesMax then
+      Exit;
+    if FClutPipeline = 0 then
+      CreateClut;
+    C := TGEHLEClutTexture.Create;
+    C.From := T;
+    C.Params := Params;
+    C.Width := W;
+    C.Height := H;
+    C.Levels := 1;
+    C.Scale := FScale;
+    C.Version := -1;
+    C.Image := CreateImage(VK_FORMAT_R8G8B8A8_UNORM, W * FScale, Rows * FScale, 1, VK_IMAGE_USAGE_SAMPLED_BIT or
+      VK_IMAGE_USAGE_STORAGE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    Alloc := Default(VkDescriptorSetAllocateInfo);
+    Alloc.sType := VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    Alloc.descriptorPool := FClutPool;
+    Alloc.descriptorSetCount := 1;
+    Alloc.pSetLayouts := @FClutSetLayout;
+    CheckVulkan(FAPI.vkAllocateDescriptorSets(FDevice, @Alloc, @C.LookupSet), 'vkAllocateDescriptorSets');
+    var Nearest := Sampler(0);
+    Images[0].sampler := Nearest;
+    Images[0].imageView := T.Color.View;
+    Images[0].imageLayout := VK_IMAGE_LAYOUT_GENERAL;
+    Images[1].sampler := Nearest;
+    Images[1].imageView := FClutImage.View;
+    Images[1].imageLayout := VK_IMAGE_LAYOUT_GENERAL;
+    Images[2].sampler := Nearest;
+    Images[2].imageView := C.Image.View;
+    Images[2].imageLayout := VK_IMAGE_LAYOUT_GENERAL;
+    for var I := 0 to 2 do
+    begin
+      Writes[I] := Default(VkWriteDescriptorSet);
+      Writes[I].sType := VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      Writes[I].dstSet := C.LookupSet;
+      Writes[I].dstBinding := I;
+      Writes[I].descriptorCount := 1;
+      Writes[I].descriptorType := VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      Writes[I].pImageInfo := @Images[I];
+    end;
+    Writes[2].descriptorType := VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    FAPI.vkUpdateDescriptorSets(FDevice, 3, @Writes[0], 0, nil);
+    FClutTextures.Add(C);
+  end;
+  // The CLUT's colours, its 32-bit entries repeated after 256.
+  var Hash: UInt64 := $CBF29CE484222325;
+  for var I := 0 to 511 do
+  begin
+    if X.ClutFormat = 3 then
+      Colors[I] := PCardinal(X.Clut + (I and $FF) * 4)^
+    else
+      Colors[I] := GEDecode16(X.ClutFormat, PWord(X.Clut + I * 2)^);
+    Hash := FNV(Hash, Colors[I]);
+  end;
+  // Its alpha is its stencil.
+  if T.AlphaStale then
+    RefreshAlpha(T);
+  if (C.Version <> T.Version) or (C.Colors <> Hash) then
+  begin
+    var Offset: Int64;
+    Move(Colors[0], StageUpload(SizeOf(Colors), Offset)^, SizeOf(Colors));
+    CopyToImage(FClutImage.Image, VK_IMAGE_ASPECT_COLOR_BIT, Offset, 0, 0, 0, 512, 1);
+    Record_;
+    EndPass;
+    ImageBarrier;
+    var Cmd := Slot.Cmd.Handle;
+    FAPI.vkCmdBindPipeline(Cmd, VK_PIPELINE_BIND_POINT_COMPUTE, FClutPipeline);
+    FAPI.vkCmdBindDescriptorSets(Cmd, VK_PIPELINE_BIND_POINT_COMPUTE, FClutLayout, 0, 1, @C.LookupSet, 0, nil);
+    Push[0] := Cardinal(W * FScale);
+    Push[1] := Cardinal(Rows * FScale);
+    Push[2] := Cardinal(FScale);
+    Push[3] := T.Format;
+    Push[4] := TexelBytes;
+    Push[5] := T.PixelBytes;
+    Push[6] := Cardinal(X.ClutShift);
+    Push[7] := Cardinal(X.ClutMask) and $FF;
+    Push[8] := Cardinal(X.ClutOffset) and $1FF;
+    Push[9] := Cardinal(L.ClutAdd) and $1FF;
+    FAPI.vkCmdPushConstants(Cmd, FClutLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, SizeOf(Push), @Push[0]);
+    FAPI.vkCmdDispatch(Cmd, Cardinal(W * FScale + 7) div 8, Cardinal(Rows * FScale + 7) div 8, 1);
+    ImageBarrier;
+    // The draws' pipeline, texture and push constants are bound again.
+    FBoundPipeline := 0;
+    FBoundSet := 0;
+    FPushValid := False;
+    C.Version := T.Version;
+    C.Colors := Hash;
+  end;
+  Inc(FStats.TargetTextures);
+  Result := C;
+end;
+
 // The texture of S's level (or of its levels, halving in size, when the level
 // of detail picks one), decoded, compared with its bytes, uploaded.
 function TGEVulkanHLEBackend.EnsureTexture(const S: TGERaster): TVulkanHLETexture;
@@ -1964,8 +2273,24 @@ begin
     Key := FNV(Key, UInt64(Cardinal(X.ClutFormat)) or (UInt64(Cardinal(X.ClutShift)) shl 8) or
       (UInt64(Cardinal(X.ClutMask)) shl 16) or (UInt64(Cardinal(X.ClutOffset)) shl 32));
     if X.Clut <> nil then
-      for var J := 0 to 127 do
-        Key := FNV(Key, PUInt64(X.Clut)[J]);
+    begin
+      // The colours the texture can read, and where they are.
+      var Offset, Size: Integer;
+      ClutRange(X^, First, Count, Offset, Size);
+      Key := FNV(Key, UInt64(Offset) or (UInt64(Size) shl 16));
+      var P := X.Clut + Offset;
+      var K := 0;
+      while K + 8 <= Size do
+      begin
+        Key := FNV(Key, PUInt64(P + K)^);
+        Inc(K, 8);
+      end;
+      while K < Size do
+      begin
+        Key := FNV(Key, P[K]);
+        Inc(K);
+      end;
+    end;
   end;
   for var I := First to First + Count - 1 do
   begin
@@ -1980,8 +2305,10 @@ begin
 end;
 
 // The scale a new texture is made at (ScaleFor); 1 for textures that are
-// decoded again in every GE run and levels that do not halve in both
-// directions.
+// decoded again in every GE run, levels that do not halve in both
+// directions, and from the third texture made in one place with less than a
+// second (60 frames shown) between them: palettes animated, render targets
+// drawn from through memory, textures streamed through one place.
 function TGEVulkanHLEBackend.TextureScaleFor(const X: TGETexture; First, Count: Integer): Integer;
 begin
   Result := 1;
@@ -1989,6 +2316,17 @@ begin
   var H := Max(X.Levels[First].Height, 1);
   var F := ScaleFor(W, H);
   if F < 2 then
+    Exit;
+  var Site := FNV(FNV($CBF29CE484222325, X.Levels[First].Addr), UInt64(X.Format) or (UInt64(W) shl 8) or
+    (UInt64(H) shl 24));
+  var Made: TGEHLETextureSite;
+  if FTextureSites.TryGetValue(Site, Made) and (Stats.Presents - Made.Shown <= 60) then
+    Inc(Made.Count)
+  else
+    Made.Count := 1;
+  Made.Shown := Stats.Presents;
+  FTextureSites.AddOrSetValue(Site, Made);
+  if Made.Count >= 3 then
     Exit;
   for var I := First to First + Count - 1 do
     if (X.Levels[I].Ptr = nil) or ((W shr (I - First)) = 0) or ((H shr (I - First)) = 0) then
@@ -2148,6 +2486,8 @@ begin
   begin
     Tex := TargetTexture(S);
     if Tex = nil then
+      Tex := ClutTargetTexture(S);
+    if Tex = nil then
       Tex := EnsureTexture(S);
   end;
   var T := TargetFor(S);
@@ -2238,6 +2578,9 @@ begin
         (Cardinal(Ord(S.Tex.ClampV)) shl 12) or (Cardinal(Tex.Levels - 1) shl 13);
       if Tex.Target <> nil then
         Push.TexFunc := Push.TexFunc or (Cardinal(1) shl 16) or (Cardinal(FScale) shl 17) or (Tex.Target.Format shl 21)
+      else if Tex is TGEHLEClutTexture then
+        // Like a target's image whose colours an 8888 target keeps.
+        Push.TexFunc := Push.TexFunc or (Cardinal(1) shl 16) or (Cardinal(FScale) shl 17) or (Cardinal(3) shl 21)
       else if Tex.Scale > 1 then
         Push.TexFunc := Push.TexFunc or (Cardinal(Tex.Scale) shl 17);
       Push.Env := PackColor(S.EnvR, S.EnvG, S.EnvB, 0);

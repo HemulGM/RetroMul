@@ -1,0 +1,60 @@
+#version 450
+// The HLE renderer's targets read as CLUT textures (formats 5 to 7): every
+// texel of the texture, at the target's scale, takes the bits of the target's
+// pixel it lies in as memory would hold them (the stencil in the format's
+// alpha bits), and through the CLUT's index transform its colour.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// The target's colour, the stencil in its alpha.
+layout(set = 0, binding = 0) uniform sampler2D uColor;
+// The CLUT's 512 entries as colours (32-bit entries repeated after 256).
+layout(set = 0, binding = 1) uniform sampler2D uClut;
+layout(set = 0, binding = 2, rgba8) uniform writeonly image2D uOut;
+
+layout(push_constant) uniform Push {
+  // The texture image's size.
+  ivec2 size;
+  // Image pixels per PSP pixel.
+  int scale;
+  // The target format.
+  uint format;
+  // The bytes of a texel and of a target pixel (no fewer).
+  uint texelBytes;
+  uint pixelBytes;
+  // The index transform: shift, mask, the entry ORed in, and what is added.
+  uint shift;
+  uint mask;
+  uint base;
+  uint add;
+} pc;
+
+// A pixel as the target format keeps it in memory.
+uint encode(uvec4 c) {
+  if (pc.format == 0u)
+    return (c.r >> 3) | ((c.g >> 2) << 5) | ((c.b >> 3) << 11);
+  if (pc.format == 1u)
+    return (c.r >> 3) | ((c.g >> 3) << 5) | ((c.b >> 3) << 10) | (c.a >= 128u ? 0x8000u : 0u);
+  if (pc.format == 2u)
+    return (c.r >> 4) | ((c.g >> 4) << 4) | ((c.b >> 4) << 8) | ((c.a >> 4) << 12);
+  return c.r | (c.g << 8) | (c.b << 16) | (c.a << 24);
+}
+
+void main() {
+  ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+  if (p.x >= pc.size.x || p.y >= pc.size.y)
+    return;
+  int s = pc.scale;
+  // The texel's first byte in its row, the pixel holding it and where in it;
+  // a pixel's texels share its image pixels between them.
+  uint b = uint(p.x / s) * pc.texelBytes;
+  int px = int(b / pc.pixelBytes);
+  uint part = b % pc.pixelBytes;
+  int x = px * s + (int(part) * s + (p.x % s) * int(pc.texelBytes)) / int(pc.pixelBytes);
+  uvec4 c = uvec4(round(texelFetch(uColor, ivec2(x, p.y), 0) * 255.0));
+  uint v = encode(c) >> (part * 8u);
+  if (pc.texelBytes < 4u)
+    v &= (1u << (pc.texelBytes * 8u)) - 1u;
+  uint i = ((((v >> pc.shift) & pc.mask) | pc.base) + pc.add) & 511u;
+  imageStore(uOut, p, texelFetch(uClut, ivec2(int(i), 0), 0));
+}

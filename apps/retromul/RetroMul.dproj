@@ -1182,6 +1182,7 @@
         <DCCReference Include="..\..\source\gpu\shaders\SPV.PSPGEHLEFrag.pas"/>
         <DCCReference Include="..\..\source\gpu\shaders\SPV.PSPGEHLEBlendFrag.pas"/>
         <DCCReference Include="..\..\source\gpu\shaders\SPV.PSPGEHLEDown.pas"/>
+        <DCCReference Include="..\..\source\gpu\shaders\SPV.PSPGEHLEClut.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.VFPU.Math.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Net.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Videocodec.pas"/>

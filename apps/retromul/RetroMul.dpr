@@ -719,6 +719,7 @@ uses
   SPV.PSPGEHLEFrag in '..\..\source\gpu\shaders\SPV.PSPGEHLEFrag.pas',
   SPV.PSPGEHLEBlendFrag in '..\..\source\gpu\shaders\SPV.PSPGEHLEBlendFrag.pas',
   SPV.PSPGEHLEDown in '..\..\source\gpu\shaders\SPV.PSPGEHLEDown.pas',
+  SPV.PSPGEHLEClut in '..\..\source\gpu\shaders\SPV.PSPGEHLEClut.pas',
   PSP.VFPU.Math in '..\..\source\cores\psp\PSP.VFPU.Math.pas',
   PSP.Net in '..\..\source\cores\psp\PSP.Net.pas',
   PSP.Videocodec in '..\..\source\cores\psp\PSP.Videocodec.pas',

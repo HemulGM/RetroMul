@@ -102,6 +102,9 @@ type
     Dirty, LCDChanged: Boolean;
     constructor Create;
     procedure Format;
+    // Complete the system-area fields omitted by older versions. Files,
+    // allocation chains and non-legacy card images are left unchanged.
+    procedure RepairLegacyFormat;
     function Handle(Command, Address: Byte; Data_: PCardinal; Words: Integer; Reply: PCardinal; out Response: Byte): Integer; override;
     procedure SerializeState(Archive: TStateArchive); override;
   end;
@@ -333,11 +336,14 @@ begin
   var Root := 255 * 512;
   for var I := 0 to 15 do
     Data[Root + I] := $55;
+  PWord(@Data[Root + $40])^ := 255;
+  PWord(@Data[Root + $44])^ := 255;
   PWord(@Data[Root + $46])^ := 254;
   PWord(@Data[Root + $48])^ := 1;
   PWord(@Data[Root + $4A])^ := 253;
   PWord(@Data[Root + $4C])^ := 13;
   PWord(@Data[Root + $50])^ := 200;
+  PWord(@Data[Root + $52])^ := 31;
   var FAT := 254 * 512;
   for var B := 0 to 255 do
     PWord(@Data[FAT + B * 2])^ := $FFFC;
@@ -346,6 +352,29 @@ begin
   for var B := 242 to 253 do
     PWord(@Data[FAT + B * 2])^ := Word(B - 1);
   PWord(@Data[FAT + 241 * 2])^ := $FFFA;
+  Dirty := True;
+end;
+
+procedure TDCVMU.RepairLegacyFormat;
+begin
+  if Length(Data) <> 128 * 1024 then
+    Exit;
+  var Root := 255 * 512;
+  for var I := 0 to 15 do
+    if Data[Root + I] <> $55 then
+      Exit;
+  // Only our old layout: a valid signature and filesystem locations, but
+  // no last block, system-area block or executable-area size. Windows CE
+  // rejects this header before reading the FAT and reports no memory card.
+  if (PWord(@Data[Root + $40])^ <> 0) or (PWord(@Data[Root + $42])^ <> 0) or
+    (PWord(@Data[Root + $44])^ <> 0) or (PWord(@Data[Root + $46])^ <> 254) or
+    (PWord(@Data[Root + $48])^ <> 1) or (PWord(@Data[Root + $4A])^ <> 253) or
+    (PWord(@Data[Root + $4C])^ <> 13) or (PWord(@Data[Root + $50])^ <> 200) or
+    (PWord(@Data[Root + $52])^ <> 0) then
+    Exit;
+  PWord(@Data[Root + $40])^ := 255;
+  PWord(@Data[Root + $44])^ := 255;
+  PWord(@Data[Root + $52])^ := 31;
   Dirty := True;
 end;
 
@@ -409,6 +438,16 @@ begin
         W[9] := 31;
         Response := 8;
         Exit(7);
+      end
+      else if Func = MapleFuncLCD then
+      begin
+        // LCD: 48x32 dots (each less one), one colour without contrast levels.
+        // Windows CE games poll this; an error reply drops the controller
+        // on the same port for a few frames.
+        Reply[0] := MapleFuncLCD;
+        Reply[1] := $02101F2F;
+        Response := 8;
+        Exit(2);
       end;
     11:
       if (Func = MapleFuncStorage) and (Words >= 2) then

@@ -7,8 +7,8 @@ uses
 
 type
   // One owner (the emulation worker). The AICA produces 44100 Hz stereo, the
-  // device's native rate, so samples pass through unchanged; the queue is the
-  // real-time clock: the worker runs the next frame only while CanAdvance.
+  // device's native rate, so samples pass through unchanged. The worker keeps
+  // its own field cadence and follows QueuedFrames toward TargetBlocks.
   TDCAudioPlayback = class
   public
     const
@@ -31,7 +31,10 @@ type
     procedure Clear;
     procedure Enqueue(const Samples: array of SmallInt; Volume: Single);
     procedure Pump;
-    function CanAdvance: Boolean;
+    // Frames queued on the device or waiting for a block.
+    function QueuedFrames: Integer;
+    // A block is waiting for room on the device (it is not consuming).
+    function Overfull: Boolean;
   end;
 
 implementation
@@ -129,10 +132,15 @@ begin
   end;
 end;
 
-function TDCAudioPlayback.CanAdvance: Boolean;
+function TDCAudioPlayback.QueuedFrames: Integer;
+begin
+  Result := State.QueuedBlocks * BlockFrames + FCount div 2;
+end;
+
+function TDCAudioPlayback.Overfull: Boolean;
 begin
   Pump;
-  Result := (FCount < BlockFrames * 2) and (FPriming or (State.QueuedBlocks < TargetBlocks));
+  Result := not FPriming and (FCount >= BlockFrames * 2);
 end;
 
 end.

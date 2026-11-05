@@ -180,6 +180,8 @@ begin
   Definition.Devices := TArray<TInputDeviceVariant>.Create(TInputDeviceVariant.Create('none', []));
   Definition.ButtonNames[TEmulatorButton.Select] := 'L';
   Definition.ButtonNames[TEmulatorButton.Mode] := 'R';
+  // The controller's L and R are analog triggers (ReadDCPad).
+  Definition.AnalogButtons := [TEmulatorButton.Select, TEmulatorButton.Mode];
   Definition.LegacyPorts := 4;
   Definition.LegacySection := 'Keys';
   Definition.AfterLegacyBindings := LoadSharedLegacyBindings;

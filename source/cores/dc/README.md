@@ -86,9 +86,15 @@ screenshots or frame hashes.
   translation (UTLB, with translated 4 KiB pages cached until the TLB
   changes), INTC, TMU, DMAC, SCIF, BSC and RTC. High-level system calls reach
   the caller's memory through the MMU and let the CPU take TLB misses, then
-  run again. SingleStepTests/sh4 pass
-  except TRAPA (treated as a no-op by the test generator) and two double NaN
-  payload cases.
+  run again. SingleStepTests/sh4 exercises basic instruction behavior, but is
+  Reicast-generated rather than a hardware oracle (notably for exceptions,
+  FPSCR and the special floating-point instructions).
+- FIPR, FTRV, FSCA and FSRRA use a native integer model of the shared SH-4
+  truncated multiplier/rounding pipeline, including measured DN/PR behavior,
+  sticky flags, rewritten causes and atomic traps. `HW.SH4.VectorFPU` is
+  derived from Stefanos Kornilios Mitsis Poiitidis's MIT-licensed model,
+  validated by its author against Dreamcast captures; its license is retained
+  in the unit. The original C model is a test oracle, not a runtime dependency.
 - The recompiler (Dreamcast settings, CPU: Recompiler or Interpreter; where
   HW.JIT has a code generator, on by default) turns blocks into generated
   code: the common integer, branch and memory instructions written out (host
@@ -101,6 +107,8 @@ screenshots or frame hashes.
   (per-pixel sorting), modifier volumes, fog, textures (twiddled, strided, VQ,
   palettes, mipmaps, bilinear filtering, bump maps) on worker threads,
   overlapped with the emulated CPU. Results do not depend on the thread count.
+  Only 8 MiB of each VRAM bus view is populated: the upper halves read as all
+  ones and ignore writes, including through the CPU's fast page maps.
 - Wait loops (a short loop that only polls memory, possibly counting down a
   timeout) are recognised after two identical iterations and run ahead to the
   next scheduler event with exactly the state the iterations would leave, with

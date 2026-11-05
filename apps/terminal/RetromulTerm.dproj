@@ -478,6 +478,7 @@
         <DCCReference Include="..\..\source\cores\dc\DC.Boot.pas"/>
         <DCCReference Include="..\..\source\cores\dc\DC.Console.pas"/>
         <DCCReference Include="..\..\source\hardware\cpu\HW.SH4.pas"/>
+        <DCCReference Include="..\..\source\hardware\cpu\HW.SH4.VectorFPU.pas"/>
         <DCCReference Include="..\..\source\hardware\cpu\HW.SH4.Periph.pas"/>
         <DCCReference Include="..\..\source\platforms\dc\Core.Platforms.DC.Playback.pas"/>
         <DCCReference Include="..\..\source\platforms\dc\Core.Platforms.DC.Adapter.pas"/>

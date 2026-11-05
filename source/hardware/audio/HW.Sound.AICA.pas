@@ -45,8 +45,8 @@ type
     FNoise: Cardinal;
     FDC: array[0..1] of TPCMDCBlocker;
     FExternal: array[0..1] of Integer;
-    function WordAt(Address: Integer): Integer;
-    procedure PutWord(Address, Value: Integer);
+    function WordAt(Address: Integer): Integer; inline;
+    procedure PutWord(Address, Value: Integer); inline;
     procedure KeyOn(Channel: Integer);
     procedure Envelope(Channel: Integer);
     procedure StopVoice(Channel: Integer; var Voice: TAICAVoice);
@@ -98,6 +98,19 @@ const
   AmpDepth: array[0..7] of Double = (0, 0.4, 0.8, 1.5, 3, 6, 12, 24);
   Att: array[0..7] of Double = (0.4, 0.8, 1.5, 3, 6, 12, 24, 48);
   ADScale: array[0..7] of Integer = ($E6, $E6, $E6, $E6, $133, $199, $200, $266);
+
+type
+  PAICAVoice = ^TAICAVoice;
+
+// EnsureRange, inline for the per-sample paths.
+function Clamp(Value, Low, High: Int64): Int64; inline;
+begin
+  Result := Value;
+  if Result < Low then
+    Result := Low
+  else if Result > High then
+    Result := High;
+end;
 
 class constructor TAICA.Create;
 begin
@@ -245,7 +258,7 @@ begin
         PutWord(C * 128, WordAt(C * 128) and $7FFF);
       end;
     if Offset in [$14, $15] then
-      FVoices[C].Rates[3] := FDecay[EnsureRange((WordAt(C * 128 + $14) and 31) * 2, 0, 63)];
+      FVoices[C].Rates[3] := FDecay[Clamp((WordAt(C * 128 + $14) and 31) * 2, 0, 63)];
   end
   else
     case Address and $7FFC of
@@ -291,7 +304,7 @@ begin
   Rates[3] := WordAt(Base + $14) and 31;
   for var i := 0 to 3 do
   begin
-    var R := EnsureRange(Rate + Rates[i] * 2, 0, 63);
+    var R := Clamp(Rate + Rates[i] * 2, 0, 63);
     if i = 0 then
       V.Rates[i] := FAttack[R]
     else
@@ -315,7 +328,7 @@ end;
 
 procedure TAICA.Envelope(Channel: Integer);
 begin
-  var V := FVoices[Channel];
+  var V: PAICAVoice := @FVoices[Channel];
   var Base := Channel * 128;
   if V.EGState = 0 then
   begin
@@ -330,7 +343,7 @@ begin
     if (V.EGState = 1) and (V.EGVolume shr 21 <= 31 - ((WordAt(Base + $14) shr 5) and 31)) then
       V.EGState := 2;
     if (V.EGState = 3) and (V.EGVolume = 0) then
-      StopVoice(Channel, V);
+      StopVoice(Channel, V^);
   end;
   var FRate: Integer;
   var E := WordAt(Base + $40);
@@ -353,7 +366,6 @@ begin
     V.FilterVolume := Max(Target, V.FilterVolume - Delta)
   else if V.FilterState < 3 then
     Inc(V.FilterState);
-  FVoices[Channel] := V;
 end;
 
 function TAICA.PCM(Address, Kind, Position: Integer): Integer;
@@ -376,37 +388,39 @@ end;
 
 procedure TAICA.DecodeADPCM(Channel, Position: Integer);
 begin
+  var V: PAICAVoice := @FVoices[Channel];
   var Base := Channel * 128;
   var Start := ((WordAt(Base) and 127) shl 16) or WordAt(Base + 4);
   var LoopStart := WordAt(Base + 8);
-  while FVoices[Channel].ADPosition < Position do
+  while V.ADPosition < Position do
   begin
-    var Index := FVoices[Channel].ADPosition;
+    var Index := V.ADPosition;
     var N := (FRead((Start + Index div 2) and $7FFFFF) shr ((Index and 1) * 4)) and 15;
-    FVoices[Channel].ADCurrent := FVoices[Channel].ADSignal;
-    var Diff := Min(32767, FVoices[Channel].ADStep * ((N and 7) * 2 + 1) div 8);
+    V.ADCurrent := V.ADSignal;
+    var Diff := Min(32767, V.ADStep * ((N and 7) * 2 + 1) div 8);
     if N and 8 <> 0 then
       Diff := -Diff;
-    FVoices[Channel].ADSignal := EnsureRange(FVoices[Channel].ADSignal + Diff, -32768, 32767);
-    FVoices[Channel].ADStep := EnsureRange(FVoices[Channel].ADStep * ADScale[N and 7] div 256, $7F, $6000);
-    Inc(FVoices[Channel].ADPosition);
-    if FVoices[Channel].ADPosition = LoopStart then
+    V.ADSignal := Clamp(V.ADSignal + Diff, -32768, 32767);
+    V.ADStep := Clamp(V.ADStep * ADScale[N and 7] div 256, $7F, $6000);
+    Inc(V.ADPosition);
+    if V.ADPosition = LoopStart then
     begin
-      FVoices[Channel].LoopSignal := FVoices[Channel].ADSignal;
-      FVoices[Channel].LoopStep := FVoices[Channel].ADStep;
+      V.LoopSignal := V.ADSignal;
+      V.LoopStep := V.ADStep;
     end;
   end;
-  FVoices[Channel].ADNext := FVoices[Channel].ADSignal;
+  V.ADNext := V.ADSignal;
 end;
 
 function TAICA.Voice(Channel: Integer): Double;
 begin
+  var V: PAICAVoice := @FVoices[Channel];
   var Base := Channel * 128;
   var Control := WordAt(Base);
   var Kind := (Control shr 7) and 3;
   var Start := ((Control and 127) shl 16) or WordAt(Base + 4);
-  var Pos := FVoices[Channel].Phase shr 12;
-  var Fraction := (FVoices[Channel].Phase and 4095) / 4096.0;
+  var Pos := V.Phase shr 12;
+  var Fraction: Extended := (V.Phase and 4095) / 4096.0;
   var LE := WordAt(Base + $C);
   var LS := WordAt(Base + 8);
   if Kind = 3 then
@@ -421,10 +435,10 @@ begin
   else
   begin
     DecodeADPCM(Channel, Pos + 1);
-    Result := FVoices[Channel].ADCurrent * (1 - Fraction) + FVoices[Channel].ADNext * Fraction;
+    Result := V.ADCurrent * (1 - Fraction) + V.ADNext * Fraction;
   end;
   var LFO := WordAt(Base + $1C);
-  var LF := FVoices[Channel].LFOPhase;
+  var LF: Double := V.LFOPhase;
   var Wave: array[0..3] of Double;
   FNoise := Cardinal((UInt64(FNoise) * 1664525 + 1013904223) and $FFFFFFFF);
   Wave[0] := LF * 2 - 1;
@@ -433,54 +447,54 @@ begin
     Wave[1] := -1;
   Wave[2] := 1 - 4 * Abs(LF - 0.5);
   Wave[3] := (FNoise shr 16) / 32767.5 - 1;
-  FVoices[Channel].LFOPhase := Frac(LF + LFOFrequency[(LFO shr 10) and 31] / 44100);
+  V.LFOPhase := Frac(LF + LFOFrequency[(LFO shr 10) and 31] / 44100);
   var Pitch := WordAt(Base + $18);
   var Oct := ((Pitch shr 11) and 15) xor 8;
   Dec(Oct, 8);
   var Step: Double := (1024 + (Pitch and 1023)) * 4 * FOctaves[Oct];
   if (LFO shr 5) and 7 <> 0 then
     Step := Step * Power(2, Wave[(LFO shr 8) and 3] * PitchDepth[(LFO shr 5) and 7] / 1200);
-  FVoices[Channel].Phase := FVoices[Channel].Phase + Max(0, Trunc(Step));
-  if (FVoices[Channel].Phase shr 12 >= LS) and (WordAt(Base + $14) and $4000 <> 0) and (FVoices[Channel].EGState = 0) then
-    FVoices[Channel].EGState := 1;
-  if FVoices[Channel].Phase shr 12 >= LE then
+  V.Phase := V.Phase + Max(0, Trunc(Step));
+  if (V.Phase shr 12 >= LS) and (WordAt(Base + $14) and $4000 <> 0) and (V.EGState = 0) then
+    V.EGState := 1;
+  if V.Phase shr 12 >= LE then
   begin
-    FVoices[Channel].LoopEnded := True;
+    V.LoopEnded := True;
     if (Control and $200 <> 0) and (LS < LE) then
     begin
-      FVoices[Channel].Phase := LS * 4096 + (FVoices[Channel].Phase - LE * 4096) mod ((LE - LS) * 4096);
+      V.Phase := LS * 4096 + (V.Phase - LE * 4096) mod ((LE - LS) * 4096);
       if Kind >= 2 then
       begin
-        FVoices[Channel].ADPosition := LS;
+        V.ADPosition := LS;
         if Kind = 2 then
         begin
-          FVoices[Channel].ADSignal := FVoices[Channel].LoopSignal;
-          FVoices[Channel].ADStep := FVoices[Channel].LoopStep;
+          V.ADSignal := V.LoopSignal;
+          V.ADStep := V.LoopStep;
         end;
       end;
     end
     else
       Ended := True;
   end;
-  var Attack := FVoices[Channel].EGState = 0;
+  var Attack := V.EGState = 0;
   Envelope(Channel);
   if Attack then
-    Result := Result * (FVoices[Channel].EGVolume / (1023.0 * 65536))
+    Result := Result * (V.EGVolume / (1023.0 * 65536))
   else
-    Result := Result * FEnvelope[EnsureRange(FVoices[Channel].EGVolume shr 16, 0, 1023)];
+    Result := Result * FEnvelope[Clamp(V.EGVolume shr 16, 0, 1023)];
   if LFO and 7 <> 0 then
     Result := Result * Power(10, -((Wave[(LFO shr 3) and 3] + 1) / 2) * AmpDepth[LFO and 7] / 20);
   var Filter := WordAt(Base + $28);
   if Filter and $20 = 0 then
   begin
-    var Cut := FCutoffs[FVoices[Channel].FilterVolume and 8191];
-    FVoices[Channel].Filter1 := FVoices[Channel].Filter1 + Cut * (Result - FVoices[Channel].Filter1);
-    FVoices[Channel].Filter2 := FVoices[Channel].Filter2 + Cut * (FVoices[Channel].Filter1 - FVoices[Channel].Filter2);
-    Result := FVoices[Channel].Filter2;
+    var Cut: Extended := FCutoffs[V.FilterVolume and 8191];
+    V.Filter1 := V.Filter1 + Cut * (Result - V.Filter1);
+    V.Filter2 := V.Filter2 + Cut * (V.Filter1 - V.Filter2);
+    Result := V.Filter2;
   end;
   Result := Result * FLevels[(Filter shr 8) and 255];
   if Ended then
-    StopVoice(Channel, FVoices[Channel]);
+    StopVoice(Channel, V^);
 end;
 
 function TAICA.Gain(Level, Pan, Side: Integer): Double;
@@ -576,7 +590,7 @@ begin
     begin
       var V := Voice(C);
       var Send := WordAt(C * 128 + $20);
-      FDSP.Mix(Send and 15, EnsureRange(Round(V * Gain((Send shr 4) and 15, 0, 0) * 4), -$80000, $7FFFF));
+      FDSP.Mix(Send and 15, Clamp(Round(V * Gain((Send shr 4) and 15, 0, 0) * 4), -$80000, $7FFFF));
       var Pan := WordAt(C * 128 + $24);
       var Level := (Pan shr 8) and 15;
       var Position := Pan and 31;
@@ -600,8 +614,8 @@ begin
       R := R + FExternal[E] * Gain((Pan shr 8) and 15, Pan and 31, 1);
     end;
   var Master := Gain(WordAt($2800) and 15, 0, 0);
-  Left := EnsureRange(Round(FDC[0].Process(L * Master / 2)), -32768, 32767);
-  Right := EnsureRange(Round(FDC[1].Process(R * Master / 2)), -32768, 32767);
+  Left := Clamp(Round(FDC[0].Process(L * Master / 2)), -32768, 32767);
+  Right := Clamp(Round(FDC[1].Process(R * Master / 2)), -32768, 32767);
 end;
 
 end.

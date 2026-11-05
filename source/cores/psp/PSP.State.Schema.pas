@@ -113,7 +113,7 @@ begin
     Result.Optional(TPSPMpegInstance, ['RingPending', 'AtracInit']);
     Result.Optional(TPSPOpenFile, ['AsyncWorker', 'AsyncPriority', 'AsyncLatency', 'AsyncTask']);
     Result.Optional(TPSPAudio, ['FO2WaitFailed']);
-    Result.Optional(TPSPThread, ['BusyYieldEqual']);
+    Result.Optional(TPSPThread, ['BusyYieldEqual', 'BusyWaitNs', 'BusyWaitResult', 'BusyThen', 'BusyResumeNs']);
     Result.Optional(TPSPAtracSlot, ['Decoded']);
     Result.Optional(TPSPUtility, ['FShutdownDialog', 'FShutdownSteps']);
     Result.AddClass(TMemoryStream, []);

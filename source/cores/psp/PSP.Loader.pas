@@ -84,6 +84,7 @@ type
     procedure ScheduleThreadDelete(Id: Cardinal);
     procedure StateThreadDelete(Action: TPSPStateAction; Value: Cardinal);
     procedure StateThreadExited(Action: TPSPStateAction; Value: Cardinal);
+    procedure StateLoadWait(Action: TPSPStateAction; Value: Cardinal);
     procedure StateLoad(Action: TPSPStateAction; Value: Cardinal);
     procedure LoadForCaller(const Data: TBytes; const Path: string);
     procedure hKprintf;
@@ -997,6 +998,27 @@ begin
   end;
   // The file is read while the caller waits; the module reaches memory at the end.
   var Caller := FKernel.Current;
+  var Host: Boolean;
+  if FIO.CostedDevice(Path, Host) then
+  begin
+    // The driver's open, read and close, then relocating and linking on the
+    // caller's time (probe io_cost; threads/scheduling/callcosts).
+    var Busy: Int64 := 1860000 + Int64(Length(Data)) * 264 div 10;
+    var Wait: Int64 := 0;
+    for var C in [icOpen, icRead, icClose] do
+    begin
+      var B, W: Int64;
+      TPSPIO.DeviceCost(Host, C, Length(Data), 0, B, W);
+      Inc(Busy, B);
+      Inc(Wait, W);
+    end;
+    FHLE.Result(0);
+    var Next := TPSPStateAction.Create(StateLoadWait, [], [Caller.UID, Wait]);
+    Next.Data := Data;
+    Next.Text := Path;
+    FKernel.SpendThen(Busy, Next);
+    Exit;
+  end;
   var Latency := Int64(2000000) + Int64(Length(Data)) * 1000000000 div (8 * 1024 * 1024);
   FHLE.Result(0);
   FKernel.BeginWait(PSPWaitEventFlag, nil, 0, 0, False, NoRetry, nil, 'loadmodule');
@@ -1004,6 +1026,18 @@ begin
   A.Data := Data;
   A.Text := Path;
   FKernel.AddStateTimer(FKernel.Scheduler.Now + Latency, Caller, A);
+end;
+
+procedure TPSPLoader.StateLoadWait(Action: TPSPStateAction; Value: Cardinal);
+begin
+  var Caller := FKernel.Current;
+  if (Caller = nil) or (Caller.UID <> Cardinal(Action.Arg(0))) then
+    Exit;
+  FKernel.BeginWait(PSPWaitEventFlag, nil, 0, 0, False, NoRetry, nil, 'loadmodule');
+  var A := TPSPStateAction.Create(StateLoad, [], [Caller.UID]);
+  A.Data := Action.Data;
+  A.Text := Action.Text;
+  FKernel.AddStateTimer(FKernel.Scheduler.Now + Action.Arg(1), Caller, A);
 end;
 
 procedure TPSPLoader.StateLoad(Action: TPSPStateAction; Value: Cardinal);
@@ -1186,7 +1220,7 @@ begin
   // Higher-priority threads can preempt it. The manager's completion handoff
   // lets an equal-priority ready thread run, without donating CPU time to a
   // lower-priority spinner while the manager works.
-  FKernel.SpendPreemptible(300000 + FillTime, True);
+  FKernel.SpendPreemptible(245000 + FillTime, True);
 end;
 
 procedure TPSPLoader.hStopUnloadSelfModule;

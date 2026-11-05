@@ -103,7 +103,8 @@ type
     procedure MixTick;
     procedure MixChannel(var C: TPSPAudioChannel);
     procedure Arm(Index: Integer; Buffer: Cardinal);
-    procedure InstallWaiter(Index: Integer);
+    // WakeAt: when its thread runs again.
+    procedure InstallWaiter(Index: Integer; WakeAt: Int64);
     procedure RenderDescriptor(const D: TPSPAudioDescriptor);
     // SetupUs: for an idle DMA, how far into the call playback starts.
     procedure ArmDescriptor(Buffer: Cardinal; Volume: Integer; SetupUs: Integer = 0);
@@ -177,6 +178,16 @@ const
   RingMask = RingFrames - 1;
   // The descriptor DMA keeps running briefly after its last descriptor retires.
   Output2StopNs = 500000;
+  // A buffer handed to an idle mixer has its first block mixed at once and
+  // the next ones from 87 us into the call (probe audio_null).
+  AudioStartNs = 87000;
+  // The driver's interrupt for each later block takes the CPU from every
+  // thread, longer with more channels to mix (probe audio_isr); a thread
+  // whose buffer it took runs 19 us after it (probe audio_null).
+  AudioMixBaseNs = 51600;
+  AudioMixChannelNs = 7300;
+  AudioWakeNs = 19000;
+
   SCE_ERROR_NOT_INIT_INPUT = Cardinal($80000001);
   SCE_ERROR_NOT_SUPPORTED_3 = Cardinal($80000003);
   SCE_ERROR_BUSY = Cardinal($80000021);
@@ -337,7 +348,7 @@ end;
 procedure TPSPAudio.StartMixer;
 begin
   FMixRunning := True;
-  FMixStart := FScheduler.Now;
+  FMixStart := FScheduler.Now + AudioStartNs;
   FMixStartPos := SamplePos(FMixStart);
   FMixTick := 0;
   MixTick;
@@ -380,12 +391,13 @@ end;
 
 procedure TPSPAudio.MixTick;
 begin
-  var Any := False;
+  var Mixed := 0;
+  var Woken: TArray<Integer> := nil;
   FillChar(FBlock, SizeOf(FBlock), 0);
   for var Ch := 0 to High(FCh) do
     if FCh[Ch].Playing then
     begin
-      Any := True;
+      Inc(Mixed);
       MixChannel(FCh[Ch]);
       if FCh[Ch].Rest <= 0 then
       begin
@@ -393,14 +405,25 @@ begin
         FCh[Ch].Playing := False;
         FCh[Ch].Buffer := 0;
         if FCh[Ch].Waiter <> nil then
-          InstallWaiter(Ch);
+          Woken := Woken + [Ch];
       end;
     end;
-  if not Any then
+  if Mixed = 0 then
   begin
     FMixRunning := False;
     Exit;
   end;
+  // The first block is mixed in the call that starts the mixer.
+  var WakeAt := FScheduler.Now;
+  if FMixTick > 0 then
+  begin
+    var Busy := TickTime(FMixTick) + AudioMixBaseNs + Mixed * AudioMixChannelNs;
+    if Busy > FKernel.BusyUntil then
+      FKernel.BusyUntil := Busy;
+    WakeAt := Busy + AudioWakeNs;
+  end;
+  for var Ch in Woken do
+    InstallWaiter(Ch, WakeAt);
   var Pos := FMixStartPos + FMixTick * PSPAudioBlock;
   for var i := 0 to PSPAudioBlock - 1 do
     AddRing(Pos + i, FBlock[i * 2], FBlock[i * 2 + 1]);
@@ -426,7 +449,7 @@ begin
     StartMixer;
 end;
 
-procedure TPSPAudio.InstallWaiter(Index: Integer);
+procedure TPSPAudio.InstallWaiter(Index: Integer; WakeAt: Int64);
 begin
   var C: PPSPAudioChannel := @FCh[Index];
   var T := C.Waiter;
@@ -443,8 +466,12 @@ begin
     C.PlayFormat := C.Format;
     C.Playing := True;
   end;
-  if T.IsWaiting and (T.Wait.HLETag = 'audio') then
-    FKernel.EndWait(T, Cardinal(C.SampleCount));
+  if not T.IsWaiting or (T.Wait.HLETag <> 'audio') then
+    Exit;
+  if WakeAt <= FScheduler.Now then
+    FKernel.EndWait(T, Cardinal(C.SampleCount))
+  else
+    FKernel.AddWakeTimer(WakeAt, T, 'audio', Cardinal(C.SampleCount));
 end;
 
 { Output2 / SRC }
@@ -684,10 +711,13 @@ begin
     C.VolRight := Right;
   var Starts := (Buffer <> 0) and not FMixRunning;
   Arm(Ch, Buffer);
+  // Probe audio_null.
   if Starts then
-    Cost(150)
+    Cost(122)
+  else if Buffer <> 0 then
+    Cost(4)
   else
-    Cost(10);
+    Cost(1);
   FHLE.Result(Cardinal(C.SampleCount));
 end;
 

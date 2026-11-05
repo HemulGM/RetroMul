@@ -160,6 +160,14 @@ type
     BusyNs, BusyAt: Int64;
     BusyYieldEqual: Boolean;
     BusyPC, BusyNPC: Cardinal;
+    // A device call's wait, begun when its CPU work is done, and what the
+    // call returns.
+    BusyWaitNs: Int64;
+    BusyWaitResult: Cardinal;
+    // What picking the work up again after a preemption costs (0: PSPBusyResumeNs).
+    BusyResumeNs: Int64;
+    // Or what the call does when its CPU work is done (SpendThen).
+    BusyThen: IPSPStateAction;
     constructor Create;
     destructor Destroy; override;
     class function IdType: Integer; override;
@@ -327,6 +335,8 @@ type
     procedure RegisterAll;
     procedure RegisterKernelAliases;
     function InternalWait(T: TPSPThread): Boolean;
+    procedure DeviceWait(T: TPSPThread; WaitNs: Int64; Value: Cardinal);
+    function DeviceWaitRetry(T: TPSPThread): Boolean;
     procedure hKernelBusy;
     procedure StateWake(Action: TPSPStateAction; Value: Cardinal);
     procedure StateAlarmFire(Action: TPSPStateAction; Value: Cardinal);
@@ -625,6 +635,14 @@ type
     // CPU work can be interrupted by a better thread, but does not yield to a
     // worse one. Its ordinary continuation is stored on the guest thread.
     procedure SpendPreemptible(Ns: Int64; YieldEqual: Boolean = False);
+    // A device call: the CPU work the driver does on the caller's time
+    // (preemptible, as SpendPreemptible), then the caller's wait for the
+    // device, which lets any thread run; the call returns Value. Where the
+    // caller cannot wait, only the result.
+    procedure SpendThenWait(BusyNs, WaitNs: Int64; Value: Cardinal);
+    // CPU work as SpendPreemptible, then Next runs on the caller's thread
+    // (it may begin a wait).
+    procedure SpendThen(BusyNs: Int64; const Next: IPSPStateAction);
     class function MemoryFillTime(Bytes: Cardinal): Int64; static;
     // Timers in guest ns. Returns a handle (sequence number) for CancelTimer.
     function AddTimer(At: Int64; Owner: TObject; const Event: TPSPTimerEvent): Int64;
@@ -713,6 +731,8 @@ const
   // Long calls are spent in slices this long.
   PSPBusyChunkNs = 10000;
   PSPBusyResumeNs = 20000;
+  // A device driver's work (the memory stick's protocol) costs more to resume.
+  PSPDriverResumeNs = 34000;
   PSPNotifyWakeNs = 8000;
   // Leaving an interrupt that ran a handler, and handing the CPU to another
   // thread from there.
@@ -1086,6 +1106,60 @@ begin
   FCPU.Ctx.NPC := FBusyStub + 4;
 end;
 
+procedure TPSPKernel.SpendThenWait(BusyNs, WaitNs: Int64; Value: Cardinal);
+begin
+  FHLE.Result(Value);
+  var T := FCurrent;
+  if (T = nil) or not CanWait then
+    Exit;
+  // Without a wait the driver's completion still hands the CPU to a ready
+  // thread of the caller's priority (threads/scheduling/dispatch).
+  if BusyNs > PSPBusyChunkNs then
+  begin
+    // The busy stub begins the wait when the work is done.
+    T.BusyWaitNs := WaitNs;
+    T.BusyWaitResult := Value;
+    T.BusyResumeNs := PSPDriverResumeNs;
+    SpendPreemptible(BusyNs, WaitNs <= 0);
+    Exit;
+  end;
+  Spend(BusyNs);
+  if WaitNs > 0 then
+    DeviceWait(T, WaitNs, Value)
+  else
+    YieldCurrent;
+end;
+
+procedure TPSPKernel.SpendThen(BusyNs: Int64; const Next: IPSPStateAction);
+begin
+  var T := FCurrent;
+  if (T <> nil) and not InInterrupt and (BusyNs > PSPBusyChunkNs) then
+  begin
+    T.BusyThen := Next;
+    T.BusyResumeNs := PSPDriverResumeNs;
+    SpendPreemptible(BusyNs);
+    Exit;
+  end;
+  Spend(BusyNs);
+  Next.Run(0);
+end;
+
+procedure TPSPKernel.DeviceWait(T: TPSPThread; WaitNs: Int64; Value: Cardinal);
+begin
+  if WaitNs <= 0 then
+    Exit;
+  BeginWait(PSPWaitEventFlag, nil, 0, 0, False, DeviceWaitRetry, nil, 'iodev');
+  if T.Wait.HLETag <> 'iodev' then
+    Exit;
+  T.Wait.Data[0] := Value;
+  AddWakeTimer(FScheduler.Now + WaitNs, T, 'iodev', Value, 0);
+end;
+
+function TPSPKernel.DeviceWaitRetry(T: TPSPThread): Boolean;
+begin
+  Result := False;
+end;
+
 class function TPSPKernel.MemoryFillTime(Bytes: Cardinal): Int64;
 begin
   Result := ((Int64(Bytes) + 255) and not Int64(255)) * 42 div 10;
@@ -1099,7 +1173,10 @@ begin
     Exit;
   // Taken off the CPU in the middle, the call costs more to pick up again.
   if FScheduler.Now > T.BusyAt + 2000 then
-    Spend(PSPBusyResumeNs);
+    if T.BusyResumeNs > 0 then
+      Spend(T.BusyResumeNs)
+    else
+      Spend(PSPBusyResumeNs);
   var Chunk := T.BusyNs;
   if Chunk > PSPBusyChunkNs then
     Chunk := PSPBusyChunkNs;
@@ -1117,7 +1194,19 @@ begin
     FCPU.Ctx.NPC := T.BusyNPC;
     var Handoff := T.BusyYieldEqual;
     T.BusyYieldEqual := False;
-    if Handoff then
+    var WaitNs := T.BusyWaitNs;
+    T.BusyWaitNs := 0;
+    T.BusyResumeNs := 0;
+    var Next := T.BusyThen;
+    T.BusyThen := nil;
+    if Next <> nil then
+      Next.Run(0)
+    else if WaitNs > 0 then
+    begin
+      FHLE.Result(T.BusyWaitResult);
+      DeviceWait(T, WaitNs, T.BusyWaitResult);
+    end
+    else if Handoff then
       YieldCurrent;
   end;
 end;

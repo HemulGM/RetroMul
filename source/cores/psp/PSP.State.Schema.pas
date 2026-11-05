@@ -113,6 +113,7 @@ begin
     Result.Optional(TPSPAudio, ['FO2WaitFailed']);
     Result.Optional(TPSPThread, ['BusyYieldEqual']);
     Result.Optional(TPSPAtracSlot, ['Decoded']);
+    Result.Optional(TPSPUtility, ['FShutdownDialog', 'FShutdownSteps']);
     Result.AddClass(TMemoryStream, []);
     Result.AddClass(TFileStream, []);
     Result.AddClass(TStringBuilder, []);

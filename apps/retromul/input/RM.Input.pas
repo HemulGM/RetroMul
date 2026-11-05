@@ -43,6 +43,10 @@ type
     LegacyPorts: Integer;
     LegacySection: string;
     LegacyButtons: TEmulatorButtons;
+    // Pad buttons read as travel (0..1) when bound to an axis. Digital
+    // buttons and keys press them fully. Capture prefers the axis of a
+    // controller trigger that also reports a digital button.
+    AnalogButtons: TEmulatorButtons;
     // Existing profiles opt into shared historical codecs. New profiles are independent.
     UseSharedBindingRules: Boolean;
     SharedBindingOrder: Integer;
@@ -69,6 +73,17 @@ function HostKeyToHid(Code: Word): Integer;
 
 function PadAction(Port: Integer; Button: TEmulatorButton): Integer;
 
+function IsAnalogInputAction(const SystemId: string; Action: Integer): Boolean;
+
+// Rest positions of the current controller axes, as binding capture records
+// them (NaN: deflected at the start, never chosen).
+function AxisOrigins(Input: TInputManager): TArray<TInputValue>;
+
+// The axis of DeviceId that has moved furthest from its origin, by at least
+// MinimumTravel of its range, as a binding for Action.
+function FindMovedAxis(const Origins, Values: TArray<TInputValue>; Action: Integer; const DeviceId: string;
+  MinimumTravel: Single; out Binding: TInputBinding): Boolean;
+
 // Generic axis travel, including calibrated trigger origins and digital fallback.
 function ActionAmount(Input: TInputManager; const Bindings: TArray<TInputBinding>; const Values: TArray<TInputValue>; Action: Integer): Single;
 
@@ -82,7 +97,7 @@ procedure SaveInputBindings(Input: TInputManager; Ini: TCustomIniFile);
 
 procedure FilterInputBindings(Input: TInputManager; Ini: TCustomIniFile; const SystemId: string = '');
 
-function BindingCaption(Input: TInputManager; Action: Integer): string;
+function BindingCaption(Input: TInputManager; Action: Integer; const SystemId: string = ''): string;
 
 // First available rumble controller bound to this player's pad buttons.
 function RumbleDeviceId(Input: TInputManager; Port: Integer): string;
@@ -268,6 +283,73 @@ begin
     Result := ExtraPadAction + (Port - 4) * 32 + Ord(Button);
 end;
 
+function IsAnalogInputAction(const SystemId: string; Action: Integer): Boolean;
+begin
+  Result := False;
+  var Definition: TPlatformInputDefinition;
+  if (Action < 0) or not FindPlatformInput(SystemId, Definition) or (Definition.AnalogButtons = []) then
+    Exit;
+  var Base := Action;
+  if Action >= ExtraPadAction then
+    Base := Action - ExtraPadAction + 4 * 32;
+  var Slot := Base mod 32;
+  if (Base div 32 >= 12) or (Slot > Ord(High(TEmulatorButton))) then
+    Exit;
+  Result := TEmulatorButton(Slot) in Definition.AnalogButtons;
+end;
+
+function AxisOrigins(Input: TInputManager): TArray<TInputValue>;
+begin
+  Result := nil;
+  if Input = nil then
+    Exit;
+  for var V in Input.Values do
+    if V.Kind = TInputElementKind.Axis then
+    begin
+      // As FMXInput's capture: triggers rest at an end, sticks at the center.
+      var Origin := V;
+      Origin.Value := 0;
+      if V.Value <= -0.9 then
+        Origin.Value := -1
+      else if V.Value >= 0.9 then
+        Origin.Value := 1
+      else if Abs(V.Value) > 0.25 then
+        Origin.Value := NaN;
+      Result := Result + [Origin];
+    end;
+end;
+
+function FindMovedAxis(const Origins, Values: TArray<TInputValue>; Action: Integer; const DeviceId: string;
+  MinimumTravel: Single; out Binding: TInputBinding): Boolean;
+begin
+  Result := False;
+  var Best: Single := MinimumTravel;
+  for var O in Origins do
+  begin
+    if (O.DeviceId <> DeviceId) or IsNan(O.Value) then
+      Continue;
+    for var V in Values do
+      if (V.DeviceId = O.DeviceId) and (V.Kind = TInputElementKind.Axis) and (V.Code = O.Code) then
+      begin
+        var Direction := 1;
+        if V.Value < O.Value then
+          Direction := -1;
+        var Range: Extended := 1.0 - O.Value * Direction;
+        if Range <= 0 then
+          Continue;
+        var Travel: Extended := Abs(V.Value - O.Value) / Range;
+        if Travel >= Best then
+        begin
+          Best := Travel;
+          Binding := TInputBinding.Create(Action, V);
+          Binding.AxisOrigin := O.Value;
+          Binding.Direction := Direction;
+          Result := True;
+        end;
+      end;
+  end;
+end;
+
 // 0..1: the deflection of an axis bound to the action, else 1 while pressed.
 function ActionAmount(Input: TInputManager; const Bindings: TArray<TInputBinding>; const Values: TArray<TInputValue>; Action: Integer): Single;
 begin
@@ -371,7 +453,8 @@ begin
     Definition.AfterLoadBindings(Input, Ini);
 end;
 
-function BindingCaption(Input: TInputManager; Action: Integer): string;
+// The element of the action's first binding.
+function PlainBindingCaption(Input: TInputManager; Action: Integer): string;
 begin
   Result := Translate('Unassigned');
   if Input = nil then
@@ -396,6 +479,22 @@ begin
           for var E in D.Elements do
             if (E.Kind = B.Kind) and (E.Code = B.Code) then
               Exit(E.Name);
+      Exit;
+    end;
+end;
+
+function BindingCaption(Input: TInputManager; Action: Integer; const SystemId: string): string;
+begin
+  Result := PlainBindingCaption(Input, Action);
+  if (Input = nil) or not IsAnalogInputAction(SystemId, Action) then
+    Exit;
+
+  // An analog action bound to an axis reads its travel.
+  for var B in Input.Bindings do
+    if B.Action = Action then
+    begin
+      if B.Kind = TInputElementKind.Axis then
+        Result := Result + ' · ' + Translate('Analog');
       Exit;
     end;
 end;

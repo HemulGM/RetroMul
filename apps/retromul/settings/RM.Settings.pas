@@ -162,7 +162,14 @@ type
     FCaptureAction: Integer;
     FCaptureDeadline: UInt64;
     FCaptureButton: TButton;
+    // Analog actions: axis rest positions at capture start, and a captured
+    // digital button held back briefly while its trigger axis may follow.
+    FCaptureOrigins: TArray<TInputValue>;
+    FPendingButton: TInputBinding;
+    FPendingButtonSet: Boolean;
+    FPendingDeadline: UInt64;
     FOnApply, FOnClose: TNotifyEvent;
+    procedure StoreCapturedBinding(const Binding: TInputBinding);
     procedure InitializeRuntimeControls;
     procedure RefreshPlatformList;
     procedure SyncPlatformSelection;
@@ -549,7 +556,7 @@ begin
     if L = nil then
       Continue;
 
-    var Assignment := BindingCaption(FInput, L.Tag);
+    var Assignment := BindingCaption(FInput, L.Tag, FCalloutContext.SystemId);
     L.Text := Item.Definition.Name + ' · ' + Assignment;
     if Width < 460 then
       L.Text := Assignment;
@@ -2479,7 +2486,7 @@ begin
     begin
       var Template := TSettingsBindingTemplate(R.Template);
       Capture := Template.ButtonBindingEditorsCapture;
-      Capture.Text := Translate('Assign · ') + BindingCaption(FInput, Action);
+      Capture.Text := Translate('Assign · ') + BindingCaption(FInput, Action, CurrentCoreId);
       Capture.Tag := Action;
       Capture.TagString := IntToStr(Port);
       Capture.OnClick := CaptureClick;
@@ -2504,7 +2511,7 @@ begin
   Binding.Tag := Action;
   FBindingDevices.Add(Binding, Device);
   Binding.TagString := Caption;
-  Binding.Text := Translate(Caption) + '   ·   ' + BindingCaption(FInput, Action);
+  Binding.Text := Translate(Caption) + '   ·   ' + BindingCaption(FInput, Action, CurrentCoreId);
   Binding.OnClick := AssignmentClick;
   Binding.Enabled := FInput <> nil;
 end;
@@ -2605,10 +2612,10 @@ begin
         if D.AssignmentList.Children[i] is TButton then
         begin
           var B := TButton(D.AssignmentList.Children[i]);
-          B.Text := Translate(B.TagString) + '   ·   ' + BindingCaption(FInput, B.Tag);
+          B.Text := Translate(B.TagString) + '   ·   ' + BindingCaption(FInput, B.Tag, CurrentCoreId);
         end;
     if (D.Capture.Tag >= 0) and (D.Capture <> FCaptureButton) then
-      D.Capture.Text := Translate('Assign · ') + BindingCaption(FInput, D.Capture.Tag);
+      D.Capture.Text := Translate('Assign · ') + BindingCaption(FInput, D.Capture.Tag, CurrentCoreId);
   end;
 end;
 
@@ -2618,7 +2625,7 @@ begin
   Device.Capture.Tag := Action;
   Device.Clear.Tag := Action;
   Device.Caption.Text := Caption;
-  Device.Capture.Text := Translate('Assign · ') + BindingCaption(FInput, Action);
+  Device.Capture.Text := Translate('Assign · ') + BindingCaption(FInput, Action, CurrentCoreId);
   Device.Capture.Visible := True;
   Device.Clear.Visible := True;
   CaptureClick(Device.Capture);
@@ -2699,6 +2706,9 @@ begin
   var Port := StrToIntDef(FCaptureButton.TagString, 0);
   FHostInput.Poll;
   FInput.BeginCapture(FCaptureAction, FDeviceIds[Port]);
+  FCaptureOrigins := nil;
+  if IsAnalogInputAction(CurrentCoreId, FCaptureAction) then
+    FCaptureOrigins := AxisOrigins(FInput);
   FCaptureDeadline := TThread.GetTickCount64 + 10000;
   LabelStatus.Text := Translate('Press a button or direction. Esc cancels. Waiting: 10 seconds.');
   FCaptureButton.Text := Translate('Waiting for input…');
@@ -2720,8 +2730,10 @@ procedure TSettingsView.CancelCapture;
 begin
   if FInput <> nil then
     FInput.CancelCapture;
+  FCaptureOrigins := nil;
+  FPendingButtonSet := False;
   if FCaptureButton <> nil then
-    FCaptureButton.Text := Translate('Assign · ') + BindingCaption(FInput, FCaptureAction);
+    FCaptureButton.Text := Translate('Assign · ') + BindingCaption(FInput, FCaptureAction, CurrentCoreId);
   FCaptureButton := nil;
   if ButtonCancelCapture <> nil then
     ButtonCancelCapture.Visible := False;
@@ -2759,6 +2771,22 @@ begin
     Exit;
 
   var Binding: TInputBinding;
+  if FPendingButtonSet then
+  begin
+    // A trigger reporting both a digital button and an axis keeps its axis.
+    // The button is kept when the axis does not follow (a plain button).
+    var Held := False;
+    for var V in FInput.Values do
+      if (V.DeviceId = FPendingButton.DeviceId) and (V.Kind = TInputElementKind.Button) and
+        (V.Code = FPendingButton.Code) and (V.Value > 0.5) then
+        Held := True;
+    if FindMovedAxis(FCaptureOrigins, FInput.Values, FCaptureAction, FPendingButton.DeviceId, 0.3, Binding) then
+      StoreCapturedBinding(Binding)
+    else if not Held or (TThread.GetTickCount64 >= FPendingDeadline) then
+      StoreCapturedBinding(FPendingButton);
+    Exit;
+  end;
+
   if FInput.TakeCaptured(Binding) then
   begin
     if (Binding.Kind = TInputElementKind.Key) and (Binding.Code = 41) then
@@ -2767,15 +2795,27 @@ begin
       Exit;
     end;
 
-    FInput.RemoveBindings(FCaptureAction);
-    FInput.AddBinding(Binding);
-    CancelCapture;
-    RefreshBindings;
-    LabelStatus.Text := Translate('Binding saved in the draft. Click Apply.');
-    Resize;
+    if (Length(FCaptureOrigins) > 0) and (Binding.Kind = TInputElementKind.Button) then
+    begin
+      FPendingButton := Binding;
+      FPendingButtonSet := True;
+      FPendingDeadline := TThread.GetTickCount64 + 1500;
+      Exit;
+    end;
+    StoreCapturedBinding(Binding);
   end
   else if TThread.GetTickCount64 >= FCaptureDeadline then
     CancelCaptureClick(Self);
+end;
+
+procedure TSettingsView.StoreCapturedBinding(const Binding: TInputBinding);
+begin
+  FInput.RemoveBindings(FCaptureAction);
+  FInput.AddBinding(Binding);
+  CancelCapture;
+  RefreshBindings;
+  LabelStatus.Text := Translate('Binding saved in the draft. Click Apply.');
+  Resize;
 end;
 
 procedure TSettingsView.VolumeChange(Sender: TObject);

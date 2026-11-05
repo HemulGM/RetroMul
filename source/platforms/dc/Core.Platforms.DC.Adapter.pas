@@ -262,7 +262,7 @@ uses
   RM.Platforms.DC, Core.Platforms.DC.Keyboard,
   {$IFDEF MSWINDOWS}Winapi.MMSystem, {$ENDIF}
   System.Math, System.Diagnostics, System.UITypes, System.IOUtils,
-  System.DateUtils, Core.SavePaths, DC.Disc, DC.ELF;
+  System.DateUtils, Core.SavePaths, Core.PerformanceHints, DC.Disc, DC.ELF;
 
 const
   KeyNames: array[TEmulatorButton] of string =
@@ -882,6 +882,11 @@ begin
   {$IFDEF MSWINDOWS}
   var TimerSet := timeBeginPeriod(1) = TIMERR_NOERROR;
   {$ENDIF}
+  // Precise waits for the field cadence (a high-resolution timer on Windows).
+  var FieldRate: Double := 59.94;
+  if FConfig.PAL then
+    FieldRate := 50;
+  var Hints := TEmulationPerformanceHints.Create(Round(1000000000.0 / FieldRate), 'dc');
   try
     try
       ApplyPorts(InputPorts);
@@ -959,10 +964,11 @@ begin
         end;
         WasEnabled := Enabled;
 
-        // The audio queue is the real-time clock.
+        // Fields keep their own cadence (below); a device that has stopped
+        // taking audio still holds them back.
         if Enabled and not FAudioFailed and (FAudio <> nil) then
         try
-          if not FAudio.CanAdvance then
+          if FAudio.Overfull then
           begin
             FWake.WaitFor(1);
             Continue;
@@ -1027,23 +1033,27 @@ begin
           if FAudio = nil then
             FAudio := TDCAudioPlayback.Create;
           FAudio.Enqueue(Samples, Volume);
+          // The device's clock drifts from the host's: follow it slowly, by
+          // at most 1.5% a field, so the queue stays near its cushion.
+          var Cushion := TDCAudioPlayback.TargetBlocks * TDCAudioPlayback.BlockFrames;
+          var AheadMs: Double := (FAudio.QueuedFrames - Cushion) * (1000 / TDCAudioPlayback.SampleRate);
+          FDeadline := FDeadline + EnsureRange(AheadMs * 0.01, -0.25, 0.25) * (TStopwatch.Frequency / 1000);
         except
           on E: Exception do
             AudioFailure(E);
         end;
         Publish;
 
-        if not Enabled or FAudioFailed then
+        // Each field ends on the emulated clock, waited for precisely, so the
+        // fields arrive evenly (not in bursts as audio blocks free up).
+        var Target: Double := FDeadline + (FConsole.Scheduler.Now - FClockGuest) * (TStopwatch.Frequency / DCCPUClock);
+        var Remaining: Double := (Target - TStopwatch.GetTimeStamp) * 1000 / TStopwatch.Frequency;
+        if Remaining > 0 then
+          Hints.WaitUntil(FWake, Round(Target))
+        else if Remaining < -250 then
         begin
-          var Target := FDeadline + (FConsole.Scheduler.Now - FClockGuest) * (TStopwatch.Frequency / DCCPUClock);
-          var Remaining := (Target - TStopwatch.GetTimeStamp) * 1000 / TStopwatch.Frequency;
-          if Remaining > 0 then
-            FWake.WaitFor(Min(100, Ceil(Remaining)))
-          else if Remaining < -250 then
-          begin
-            FDeadline := TStopwatch.GetTimeStamp;
-            FClockGuest := FConsole.Scheduler.Now;
-          end;
+          FDeadline := TStopwatch.GetTimeStamp;
+          FClockGuest := FConsole.Scheduler.Now;
         end;
       end;
     except
@@ -1057,6 +1067,7 @@ begin
         ReportError('Dreamcast memory card: ' + E.Message);
     end;
   finally
+    Hints.Free;
     FreeAndNil(FAudio);
     FreeAndNil(FConsole);
     {$IFDEF MSWINDOWS}

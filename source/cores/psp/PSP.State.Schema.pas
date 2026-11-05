@@ -109,6 +109,7 @@ begin
     RegisterPSPKernelStateTypes(Result);
     Result.Optional(TPSPStateAction, ['Failure', 'Arrays', 'Buffers', 'Texts', 'Results', 'Owned']);
     Result.Optional(TPSPIO, ['FFatNames', 'FAsyncStub', 'FAsyncPriority', 'FMemstickInserted', 'FMemstickCallbacks']);
+    Result.Optional(TPSPMpegInstance, ['RingPending', 'AtracInit']);
     Result.Optional(TPSPOpenFile, ['AsyncWorker', 'AsyncPriority', 'AsyncLatency', 'AsyncTask']);
     Result.Optional(TPSPAudio, ['FO2WaitFailed']);
     Result.Optional(TPSPThread, ['BusyYieldEqual']);

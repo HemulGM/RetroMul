@@ -292,6 +292,7 @@ uses
   HW.SH7034 in '..\..\source\hardware\cpu\HW.SH7034.pas',
   HW.SH7604 in '..\..\source\hardware\cpu\HW.SH7604.pas',
   HW.SH4 in '..\..\source\hardware\cpu\HW.SH4.pas',
+  HW.SH4.VectorFPU in '..\..\source\hardware\cpu\HW.SH4.VectorFPU.pas',
   HW.SH4.Periph in '..\..\source\hardware\cpu\HW.SH4.Periph.pas',
   HW.TLCS900H in '..\..\source\hardware\cpu\HW.TLCS900H.pas',
   HW.M68k in '..\..\source\hardware\cpu\HW.M68k.pas',

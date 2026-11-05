@@ -222,7 +222,7 @@ begin
   CPU := TSH4.Create(Bus, @Scheduler.Now, @Scheduler.NextDue);
   // The 32-bit VRAM view, withdrawn over a render in flight (SetRenderPages).
   for var Area in [$0500, $0700] do
-    for var P := 0 to 255 do
+    for var P := 0 to 127 do
       CPU.SetVolatile(Area + P);
   Periph := TSH4Periph.Create(CPU, @Scheduler.Now, DMACopy, PeriphSchedule, Self);
   Interrupts := TDCInterrupts.Create(IRLChanged, Self);
@@ -424,7 +424,10 @@ begin
           Result := AICA.ReadRAM(A - $00800000, Size);
       end;
     1:
-      if (Address and $01000000) = 0 then
+      // Retail Dreamcast has only the lower 8 MiB of each VRAM view.
+      if (Address and $00800000) <> 0 then
+        Result := $FFFFFFFF
+      else if (Address and $01000000) = 0 then
         Result := Memory.VRAMRead64Path(Address and $7FFFFF, Size)
       else
       begin
@@ -481,6 +484,9 @@ begin
     Exit;
   end;
   Address := Address and $1FFFFFFF;
+  // Writes to the unpopulated upper halves must not alias installed VRAM.
+  if ((Address shr 26) = 1) and ((Address and $00800000) <> 0) then
+    Exit;
   case Address shr 26 of
     0:
       begin
@@ -579,8 +585,7 @@ begin
   Memory.MapVRAMPages(FRenderFirst, FRenderLast, Direct);
   for var P := Integer(FRenderFirst shr 16) to Integer((FRenderLast - 1) shr 16) and $7F do
     for var Area in [$0500, $0700] do
-      for var Mirror in [0, 128] do
-        CPU.RemapPhysical(Area + Mirror + P);
+      CPU.RemapPhysical(Area + P);
 end;
 
 procedure TDCConsole.JoinForMemory;

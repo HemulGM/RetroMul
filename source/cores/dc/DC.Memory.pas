@@ -89,14 +89,15 @@ begin
     for var P := 0 to 1 do
       ReadPages[Base + $20 + P] := Flash + P * 65536;
   end;
-  // Area 1: the 32-bit VRAM view at 05000000 and 07000000, mirrored every 8 MiB.
+  // Area 1: the installed 8 MiB of each 32-bit VRAM view. The upper
+  // halves at 05800000 and 07800000 are unpopulated, not mirrors.
   for var Area in [$0500, $0700] do
-    for var P := 0 to 255 do
+    for var P := 0 to 127 do
     begin
-      var Offset := (P and $7F) * 65536;
+      var Offset := P * 65536;
       ReadPages[Area + P] := VRAM + Offset;
       WritePages[Area + P] := VRAM + Offset;
-      Gens[Area + P] := @VRAMGens[(P and $7F) * 16];
+      Gens[Area + P] := @VRAMGens[P * 16];
     end;
   // Area 3: 16 MiB system RAM mirrored four times.
   for var P := $0C00 to $0FFF do
@@ -120,20 +121,19 @@ begin
     Exit;
   for var P := Integer(First shr 16) to Integer((Last - 1) shr 16) and $7F do
     for var Area in [$0500, $0700] do
-      for var Mirror in [0, 128] do
+    begin
+      var Page := Area + P;
+      if Direct then
       begin
-        var Page := Area + Mirror + P;
-        if Direct then
-        begin
-          ReadPages[Page] := VRAM + P * 65536;
-          WritePages[Page] := VRAM + P * 65536;
-        end
-        else
-        begin
-          ReadPages[Page] := nil;
-          WritePages[Page] := nil;
-        end;
+        ReadPages[Page] := VRAM + P * 65536;
+        WritePages[Page] := VRAM + P * 65536;
+      end
+      else
+      begin
+        ReadPages[Page] := nil;
+        WritePages[Page] := nil;
       end;
+    end;
 end;
 
 class function TDCMemory.VRAM64(Offset: Cardinal): Cardinal;

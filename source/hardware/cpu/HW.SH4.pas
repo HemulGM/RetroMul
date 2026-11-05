@@ -291,8 +291,12 @@ type
     FTLBEpoch: Cardinal;
     FMapStale: Boolean;
     // The UTLB as Address and Mask = Key per entry (invalid: Mask 0, Key 1),
-    // updated with the array, for a quick search.
+    // updated with the array, for a quick search: valid entries of 1 and
+    // 4 KiB pages are in the set (bit per entry) for bits 12..17 of their
+    // address, larger pages in FUTLBLarge.
     FUTLBKey, FUTLBMask: array[0..63] of Cardinal;
+    FUTLBSets: array[0..63] of UInt64;
+    FUTLBLarge: UInt64;
     // Physical 64 KiB pages marked by SetVolatile.
     FVolatile: array[0..8191] of Boolean;
     // Readable and writable pages of P0 as TLBPage found them, per processor
@@ -376,8 +380,21 @@ type
     function Decode(Op: Word; Address, AMode: Cardinal; Slot: Boolean; out I: TSH4Inst): Boolean;
     function Execute(Insts: PSH4Inst; Count: Integer; out Next: Cardinal): Integer;
     // Operation handlers (SH4Ops); True stops the block.
-    function TryFiniteFPU(I: PSH4Inst): Boolean;
+    function OpFPUCheckedSlow(I: PSH4Inst): Boolean;
     function OpFPUChecked(I: PSH4Inst): Boolean;
+    {$IF Defined(CPUX64) or Defined(CPUARM64)}
+    function FinishChecked(I: PSH4Inst; OldFPSCR: Cardinal; Value: Single; Inexact: Boolean): Boolean; inline;
+    function OpFADDChecked(I: PSH4Inst): Boolean;
+    function OpFSUBChecked(I: PSH4Inst): Boolean;
+    function OpFMULChecked(I: PSH4Inst): Boolean;
+    function OpFDIVChecked(I: PSH4Inst): Boolean;
+    function OpFMACChecked(I: PSH4Inst): Boolean;
+    function OpFCMPEQChecked(I: PSH4Inst): Boolean;
+    function OpFCMPGTChecked(I: PSH4Inst): Boolean;
+    function OpFSQRTChecked(I: PSH4Inst): Boolean;
+    function OpFLOATChecked(I: PSH4Inst): Boolean;
+    function OpFTRCChecked(I: PSH4Inst): Boolean;
+    {$ENDIF}
     function OpNOP(I: PSH4Inst): Boolean;
     function OpMOV(I: PSH4Inst): Boolean;
     function OpMOVI(I: PSH4Inst): Boolean;
@@ -578,6 +595,8 @@ type
     function BuildBlock(PC, AMode: Cardinal): PSH4Block;
     function BlockValid(B: PSH4Block): Boolean;
     procedure RunBlocks;
+    // Step in the host floating-point state Run sets up.
+    procedure StepInstruction;
     procedure KeepIdleStart;
     procedure JournalWrite(A: Cardinal; Size: Integer);
     procedure JournalHost(A: Cardinal; Host: PByte; Gen: PCardinal; Phys: Cardinal; Size: Integer);
@@ -671,6 +690,9 @@ type
   end;
 
 implementation
+
+uses
+  HW.SH4.VectorFPU;
 
 // Guest integer arithmetic wraps modulo 2^32 by definition; DC_CHECKED keeps
 // range checks for host indexing.
@@ -912,6 +934,19 @@ begin
     WriteMiss(A, V, 8);
 end;
 
+// The index of the lowest set bit of V (not 0): the bits below it, counted.
+function LowestSetBit(V: UInt64): Integer; inline;
+begin
+  var X := (V and (not V + 1)) - 1;
+  X := X - ((X shr 1) and $5555555555555555);
+  X := (X and $3333333333333333) + ((X shr 2) and $3333333333333333);
+  X := (X + (X shr 4)) and $0F0F0F0F0F0F0F0F;
+  X := X + (X shr 8);
+  X := X + (X shr 16);
+  X := X + (X shr 32);
+  Result := X and 127;
+end;
+
 function TSH4.Translate(Address: Cardinal; Writing: Boolean; out Physical: Cardinal): Boolean;
 begin
   // UTLB search (ITLB shares it). Without AT, P0..P3 map to the low 29 bits.
@@ -930,8 +965,12 @@ begin
   var ASID := S.PTEH and $FF;
   var Shared := (S.MMUCR and $100) <> 0; // SV: single virtual memory
   var Found := -1;
-  for var I := 0 to 63 do
+  // Only the entries in the address's set and the large pages can match.
+  var Candidates := FUTLBSets[(Address shr 12) and 63] or FUTLBLarge;
+  while Candidates <> 0 do
   begin
+    var I := LowestSetBit(Candidates);
+    Candidates := Candidates and (Candidates - 1);
     if (Address and FUTLBMask[I]) <> FUTLBKey[I] then
       Continue;
     var E := S.UTLB[I];
@@ -986,6 +1025,10 @@ end;
 
 procedure TSH4.UpdateUTLBKey(Index: Integer);
 begin
+  var Bit := UInt64(1) shl Index;
+  var OldSet := (FUTLBKey[Index] shr 12) and 63;
+  FUTLBSets[OldSet] := FUTLBSets[OldSet] and not Bit;
+  FUTLBLarge := FUTLBLarge and not Bit;
   var Flags := S.UTLB[Index].Flags;
   if (Flags and $100) = 0 then
   begin
@@ -1006,6 +1049,13 @@ begin
   end;
   FUTLBMask[Index] := Mask;
   FUTLBKey[Index] := S.UTLB[Index].VPN and Mask;
+  if Mask >= $FFFFF000 then
+  begin
+    var NewSet := (FUTLBKey[Index] shr 12) and 63;
+    FUTLBSets[NewSet] := FUTLBSets[NewSet] or Bit;
+  end
+  else
+    FUTLBLarge := FUTLBLarge or Bit;
 end;
 
 procedure TSH4.UpdateUTLBKeys;
@@ -4995,84 +5045,246 @@ begin
   S.FR.U[N] := S.FPUL;
 end;
 
-// Common finite single-precision arithmetic has no operand normalization or
-// enabled traps. Keep its destination local instead of copying both FP banks.
-// Exceptional inputs/results still use the complete atomic exception path.
-function TSH4.TryFiniteFPU(I: PSH4Inst): Boolean;
-var
-  Saved: array[0..3] of Cardinal;
-  Dest, Count: Integer;
-
-  function NormalOrZero(Value: Cardinal): Boolean; inline;
-  begin
-    var Magnitude := Value and $7FFFFFFF;
-    Result := (Magnitude = 0) or ((Magnitude >= $00800000) and (Magnitude < $7F800000));
-  end;
-
+function NormalOrZero(Value: Cardinal): Boolean; inline;
 begin
+  var Magnitude := Value and $7FFFFFFF;
+  Result := (Magnitude = 0) or ((Magnitude >= $00800000) and (Magnitude < $7F800000));
+end;
+
+{$IF Defined(CPUX64) or Defined(CPUARM64)}
+// Common finite single-precision arithmetic, one handler per instruction: no
+// enabled traps and no denormal, infinite or NaN operands. Its only status is
+// inexact, known exactly without host status where arithmetic is binary64
+// (no extended intermediates): products of single operands, the check of a
+// quotient and sums of operands at most 28 binades apart are exact in double
+// precision. Results near the range limits, underflows to zero and division
+// by zero take the complete atomic path.
+function TSH4.OpFPUChecked(I: PSH4Inst): Boolean;
+begin
+  // Double precision and conversions; single precision has its own handlers.
+  Result := OpFPUCheckedSlow(I);
+end;
+
+function TSH4.FinishChecked(I: PSH4Inst; OldFPSCR: Cardinal; Value: Single; Inexact: Boolean): Boolean;
+begin
+  var Bits := SingleBits(Value);
+  var Exponent := (Bits shr 23) and $FF;
+  if ((Bits and $7FFFFFFF) <> 0) and ((Exponent < 2) or (Exponent > 253)) then
+    Exit(OpFPUCheckedSlow(I));
+  S.FR.U[I.N] := Bits;
+  var Events := Cardinal(Ord(Inexact));
+  S.FPSCR := (OldFPSCR and not Cardinal($3F000)) or (Events shl 12) or (Events shl 2);
   Result := False;
+end;
+
+// Further apart than 28 binades, normal operands never sum exactly in single
+// precision; closer ones sum exactly in double precision.
+function SumInexact(X, Y: Cardinal; Value: Single; Exact: Double): Boolean; inline;
+begin
+  if ((X and $7FFFFFFF) <> 0) and ((Y and $7FFFFFFF) <> 0) and
+    (Abs(Integer((X shr 23) and $FF) - Integer((Y shr 23) and $FF)) > 28) then
+    Result := True
+  else
+    Result := Double(Value) <> Exact;
+end;
+
+function TSH4.OpFADDChecked(I: PSH4Inst): Boolean;
+begin
+  var OldFPSCR := S.FPSCR;
+  var X := S.FR.U[I.N];
+  var Y := S.FR.U[I.M];
+  if ((OldFPSCR and $F80) <> 0) or not NormalOrZero(X) or not NormalOrZero(Y) then
+    Exit(OpFPUCheckedSlow(I));
+  var A: Single := BitsSingle(X);
+  var B: Single := BitsSingle(Y);
+  var Value: Single := A + B;
+  Result := FinishChecked(I, OldFPSCR, Value, SumInexact(X, Y, Value, Double(A) + Double(B)));
+end;
+
+function TSH4.OpFSUBChecked(I: PSH4Inst): Boolean;
+begin
+  var OldFPSCR := S.FPSCR;
+  var X := S.FR.U[I.N];
+  var Y := S.FR.U[I.M];
+  if ((OldFPSCR and $F80) <> 0) or not NormalOrZero(X) or not NormalOrZero(Y) then
+    Exit(OpFPUCheckedSlow(I));
+  var A: Single := BitsSingle(X);
+  var B: Single := BitsSingle(Y);
+  var Value: Single := A - B;
+  Result := FinishChecked(I, OldFPSCR, Value, SumInexact(X, Y, Value, Double(A) - Double(B)));
+end;
+
+function TSH4.OpFMULChecked(I: PSH4Inst): Boolean;
+begin
+  var OldFPSCR := S.FPSCR;
+  var X := S.FR.U[I.N];
+  var Y := S.FR.U[I.M];
+  if ((OldFPSCR and $F80) <> 0) or not NormalOrZero(X) or not NormalOrZero(Y) then
+    Exit(OpFPUCheckedSlow(I));
+  var A: Single := BitsSingle(X);
+  var B: Single := BitsSingle(Y);
+  var Value: Single := A * B;
+  if (Value = 0) and (A <> 0) and (B <> 0) then
+    Exit(OpFPUCheckedSlow(I));
+  Result := FinishChecked(I, OldFPSCR, Value, Double(Value) <> Double(A) * Double(B));
+end;
+
+function TSH4.OpFDIVChecked(I: PSH4Inst): Boolean;
+begin
+  var OldFPSCR := S.FPSCR;
+  var X := S.FR.U[I.N];
+  var Y := S.FR.U[I.M];
+  if ((OldFPSCR and $F80) <> 0) or not NormalOrZero(X) or not NormalOrZero(Y) or ((Y and $7FFFFFFF) = 0) then
+    Exit(OpFPUCheckedSlow(I));
+  var A: Single := BitsSingle(X);
+  var B: Single := BitsSingle(Y);
+  var Value: Single := A / B;
+  if (Value = 0) and (A <> 0) then
+    Exit(OpFPUCheckedSlow(I));
+  Result := FinishChecked(I, OldFPSCR, Value, Double(Value) * Double(B) <> Double(A));
+end;
+
+function TSH4.OpFMACChecked(I: PSH4Inst): Boolean;
+begin
+  var OldFPSCR := S.FPSCR;
+  var X := S.FR.U[I.N];
+  var Y := S.FR.U[I.M];
+  if ((OldFPSCR and $F80) <> 0) or not NormalOrZero(X) or not NormalOrZero(Y) or not NormalOrZero(S.FR.U[1]) then
+    Exit(OpFPUCheckedSlow(I));
+  // The exact product's sum rounds to double, then to single. Typed:
+  // inferred variables would be Extended on Linux x64.
+  var Product: Double := Double(S.FR.S[1]) * Double(BitsSingle(Y));
+  var Addend: Double := BitsSingle(X);
+  var Sum: Double := Product + Addend;
+  var Value: Single := RoundToSingle(Sum);
+  if (Value = 0) and (Sum <> 0) then
+    Exit(OpFPUCheckedSlow(I));
+  // In either rounding mode an inexact Sum differs from the exact sum by a
+  // nonzero multiple of the finer operand's unit, so subtracting the other
+  // operand cannot give the finer one back.
+  var Exact := (Sum - Product = Addend) and (Sum - Addend = Product);
+  Result := FinishChecked(I, OldFPSCR, Value, not Exact or (Double(Value) <> Sum));
+end;
+
+function TSH4.OpFCMPEQChecked(I: PSH4Inst): Boolean;
+begin
+  var OldFPSCR := S.FPSCR;
+  var X := S.FR.U[I.N];
+  var Y := S.FR.U[I.M];
+  if ((OldFPSCR and $F80) <> 0) or not NormalOrZero(X) or not NormalOrZero(Y) then
+    Exit(OpFPUCheckedSlow(I));
+  S.T := Cardinal(Ord(BitsSingle(X) = BitsSingle(Y)));
+  S.FPSCR := OldFPSCR and not Cardinal($3F000);
+  Result := False;
+end;
+
+function TSH4.OpFCMPGTChecked(I: PSH4Inst): Boolean;
+begin
+  var OldFPSCR := S.FPSCR;
+  var X := S.FR.U[I.N];
+  var Y := S.FR.U[I.M];
+  if ((OldFPSCR and $F80) <> 0) or not NormalOrZero(X) or not NormalOrZero(Y) then
+    Exit(OpFPUCheckedSlow(I));
+  S.T := Cardinal(Ord(BitsSingle(X) > BitsSingle(Y)));
+  S.FPSCR := OldFPSCR and not Cardinal($3F000);
+  Result := False;
+end;
+
+function TSH4.OpFSQRTChecked(I: PSH4Inst): Boolean;
+begin
+  var OldFPSCR := S.FPSCR;
+  var X := S.FR.U[I.N];
+  if ((OldFPSCR and $F80) <> 0) or not NormalOrZero(X) or (X > $80000000) then
+    Exit(OpFPUCheckedSlow(I));
+  var F: Single := BitsSingle(X);
+  var Value: Single := RoundToSingle(Sqrt(Double(F)));
+  Result := FinishChecked(I, OldFPSCR, Value, Double(Value) * Double(Value) <> Double(F));
+end;
+
+function TSH4.OpFLOATChecked(I: PSH4Inst): Boolean;
+begin
   var OldFPSCR := S.FPSCR;
   if (OldFPSCR and $F80) <> 0 then
-    Exit;
+    Exit(OpFPUCheckedSlow(I));
+  var Source := Integer(S.FPUL);
+  var Value: Single := Source;
+  Result := FinishChecked(I, OldFPSCR, Value, Double(Value) <> Double(Source));
+end;
+
+function TSH4.OpFTRCChecked(I: PSH4Inst): Boolean;
+begin
+  var OldFPSCR := S.FPSCR;
+  var F: Single := S.FR.S[I.N];
+  if ((OldFPSCR and $F80) <> 0) or not ((F >= -2147483648.0) and (F < 2147483648.0)) then
+    Exit(OpFPUCheckedSlow(I));
+  // In range FTRC signals nothing (denormal operands truncate to zero).
+  S.FPUL := Cardinal(Integer(Trunc(F)));
+  S.FPSCR := OldFPSCR and not Cardinal($3F000);
+  Result := False;
+end;
+{$ELSE}
+// Common finite single-precision arithmetic has no operand normalization or
+// enabled traps. Keep its destination local instead of copying the FP bank.
+// Exceptional inputs/results still use the complete atomic exception path.
+function TSH4.OpFPUChecked(I: PSH4Inst): Boolean;
+begin
+  var OldFPSCR := S.FPSCR;
+  if (OldFPSCR and $F80) <> 0 then
+    Exit(OpFPUCheckedSlow(I));
   var K := TOp(I.Kind);
-  Dest := I.N;
-  Count := 1;
   case K of
     oFADD, oFSUB, oFMUL, oFDIV, oFCMPEQ, oFCMPGT:
       if not NormalOrZero(S.FR.U[I.N]) or not NormalOrZero(S.FR.U[I.M]) then
-        Exit;
+        Exit(OpFPUCheckedSlow(I));
     oFMAC:
       if not NormalOrZero(S.FR.U[I.N]) or not NormalOrZero(S.FR.U[I.M]) or not NormalOrZero(S.FR.U[1]) then
-        Exit;
-    oFIPR:
-      begin
-        for var J := 0 to 3 do
-          if not NormalOrZero(S.FR.U[I.N + J]) or not NormalOrZero(S.FR.U[I.M + J]) then
-            Exit;
-        Dest := (I.N + 3) xor 1;
-      end;
-    oFTRV:
-      begin
-        for var J := 0 to 3 do
-          if not NormalOrZero(S.FR.U[I.N + J]) then
-            Exit;
-        for var J := 0 to 15 do
-          if not NormalOrZero(S.XF.U[J]) then
-            Exit;
-        Count := 4;
-      end;
+        Exit(OpFPUCheckedSlow(I));
   else
-    Exit;
+    Exit(OpFPUCheckedSlow(I));
   end;
   if K in [oFCMPEQ, oFCMPGT] then
   begin
-    SH4FPOps[K](Self, I);
+    if K = oFCMPEQ then
+      S.T := Cardinal(Ord(S.FR.S[I.N] = S.FR.S[I.M]))
+    else
+      S.T := Cardinal(Ord(S.FR.S[I.N] > S.FR.S[I.M]));
     S.FPSCR := OldFPSCR and not Cardinal($3F000);
-    Exit(True);
+    Exit(False);
   end;
-  for var J := 0 to Count - 1 do
-    Saved[J] := S.FR.U[Dest + J];
-  S.FPSCR := OldFPSCR and not Cardinal(FPSCRDN);
+  var Saved := S.FR.U[I.N];
   FSetExceptFlag(0);
-  SH4FPOps[K](Self, I);
+  // The guarded operands need no DN flushing. Use the same Pascal arithmetic
+  // directly, without an indirect raw-handler call or temporary FPSCR writes.
+  case K of
+    oFADD:
+      S.FR.S[I.N] := S.FR.S[I.N] + S.FR.S[I.M];
+    oFSUB:
+      S.FR.S[I.N] := S.FR.S[I.N] - S.FR.S[I.M];
+    oFMUL:
+      S.FR.S[I.N] := S.FR.S[I.N] * S.FR.S[I.M];
+    oFDIV:
+      S.FR.S[I.N] := S.FR.S[I.N] / S.FR.S[I.M];
+    oFMAC:
+      begin
+        var V: Extended := Double(S.FR.S[1]) * Double(S.FR.S[I.M]) + Double(S.FR.S[I.N]);
+        S.FR.S[I.N] := RoundToSingle(V);
+      end;
+  end;
   var HostFlags := FGetExceptFlag;
-  S.FPSCR := OldFPSCR;
   var Ordinary := (HostFlags and (feeINVALID or feeDIVBYZERO or feeOVERFLOW or feeUNDERFLOW)) = 0;
-  for var J := 0 to Count - 1 do
-    Ordinary := Ordinary and NormalOrZero(S.FR.U[Dest + J]);
+  Ordinary := Ordinary and NormalOrZero(S.FR.U[I.N]);
   if Ordinary then
   begin
     var Events: Cardinal := Ord((HostFlags and feeINEXACT) <> 0);
-    if K in [oFIPR, oFTRV] then
-      Events := 1;
     S.FPSCR := (OldFPSCR and not Cardinal($3F000)) or (Events shl 12) or (Events shl 2);
-    Exit(True);
+    Exit(False);
   end;
-  for var J := 0 to Count - 1 do
-    S.FR.U[Dest + J] := Saved[J];
+  S.FR.U[I.N] := Saved;
+  Result := OpFPUCheckedSlow(I);
 end;
+{$ENDIF}
 
-function TSH4.OpFPUChecked(I: PSH4Inst): Boolean;
+function TSH4.OpFPUCheckedSlow(I: PSH4Inst): Boolean;
 const
   EventI = 1;
   EventU = 2;
@@ -5081,11 +5293,10 @@ const
   EventV = 16;
   EventE = 32;
 var
-  DN, AnyNaN, AnySNaN, AnyDenormal, AnyInfinity: Boolean;
+  DN, AnyNaN, AnySNaN, AnyDenormal: Boolean;
 
   procedure InputSingle(var Bits: Cardinal);
   begin
-    AnyInfinity := AnyInfinity or ((Bits and $7FFFFFFF) = $7F800000);
     if IsNaNBits(Bits) then
     begin
       AnyNaN := True;
@@ -5104,7 +5315,6 @@ var
 
   procedure InputDouble(var Bits: UInt64);
   begin
-    AnyInfinity := AnyInfinity or ((Bits and $7FFFFFFFFFFFFFFF) = $7FF0000000000000);
     if IsNaN64(Bits) then
     begin
       AnyNaN := True;
@@ -5142,21 +5352,15 @@ var
   end;
 
 begin
-  if TryFiniteFPU(I) then
-    Exit(False);
   var K := TOp(I.Kind);
   var OldFPSCR := S.FPSCR;
   var SavedFR := S.FR;
-  var SavedXF: TSH4FPBank;
-  if K = oFTRV then
-    SavedXF := S.XF;
   var SavedFPUL := S.FPUL;
   var SavedT := S.T;
   DN := (OldFPSCR and FPSCRDN) <> 0;
   AnyNaN := False;
   AnySNaN := False;
   AnyDenormal := False;
-  AnyInfinity := False;
   var DoubleInput := K in [oDADD, oDSUB, oDMUL, oDDIV, oDSQRT,
       oDCMPEQ, oDCMPGT, oDFTRC, oFCNVDS];
   var DoubleOutput := K in [oDADD, oDSUB, oDMUL, oDDIV, oDSQRT, oDFLOAT, oFCNVSD];
@@ -5170,34 +5374,16 @@ begin
       InputMask := (Cardinal(1) shl I.N) or (Cardinal(1) shl I.M);
     oFMAC:
       InputMask := (Cardinal(1) shl I.N) or (Cardinal(1) shl I.M) or 2;
-    oFSQRT, oFSRRA, oFTRC, oDSQRT, oDFTRC, oFCNVDS:
+    oFSQRT, oFTRC, oDSQRT, oDFTRC, oFCNVDS:
       InputMask := Cardinal(1) shl I.N;
     oFCNVSD:
       InputSingle(S.FPUL);
-    oFIPR:
-      begin
-        InputMask := ($F shl I.N) or ($F shl I.M);
-        OutputMask := Cardinal(1) shl ((I.N + 3) xor 1);
-      end;
-    oFTRV:
-      begin
-        InputMask := $F shl I.N;
-        OutputMask := InputMask;
-        for var J := 0 to 15 do
-          InputSingle(S.XF.U[J]);
-      end;
   end;
   if DoubleInput then
   begin
     InputDouble(S.FR.Q[I.N shr 1]);
     if (K in [oDADD, oDSUB, oDMUL, oDDIV, oDCMPEQ, oDCMPGT]) and (I.M <> I.N) then
       InputDouble(S.FR.Q[I.M shr 1]);
-  end
-  else if K in [oFIPR, oFTRV] then
-  begin
-    for var J := 0 to 15 do
-      if (InputMask and (Cardinal(1) shl J)) <> 0 then
-        InputSingle(S.FR.U[J]);
   end
   else if InputMask <> 0 then
   begin
@@ -5225,10 +5411,15 @@ begin
     Events := Events or EventZ;
   if ((HostFlags and feeINVALID) <> 0) or AnySNaN then
     Events := Events or EventV;
-  // The vector instructions are approximate: even an exact finite dot
-  // product signals inexact (SH-4 Core Architecture, FIPR special cases).
-  if (K in [oFIPR, oFTRV]) and not AnyNaN and not AnyInfinity then
-    Events := Events or EventI;
+  // Some host Sqrt helpers return NaN without preserving FE_INVALID (Linux
+  // Delphi RTL). Classify negative normal/infinite inputs explicitly; guest
+  // exception semantics must not depend on the host math library's flags.
+  if (K = oFSQRT) and ((SavedFR.U[I.N] and $80000000) <> 0) and
+    ((SavedFR.U[I.N] and $7FFFFFFF) >= $00800000) and not IsNaNBits(SavedFR.U[I.N]) then
+    Events := Events or EventV;
+  if (K = oDSQRT) and ((SavedFR.Q[I.N shr 1] and $8000000000000000) <> 0) and
+    ((SavedFR.Q[I.N shr 1] and $7FFFFFFFFFFFFFFF) >= $0010000000000000) and not IsNaN64(SavedFR.Q[I.N shr 1]) then
+    Events := Events or EventV;
   if Compare then
   begin
     Events := Events and EventV;
@@ -5270,23 +5461,19 @@ begin
   else if (Events and EventZ) <> 0 then
     Events := EventZ
   else if not DN and AnyDenormal and not AnyNaN and
-    not (K in [oFIPR, oFTRV, oFTRC, oDFTRC]) then
+    not (K in [oFTRC, oDFTRC]) then
     Events := EventE;
   S.FR := SavedFR;
-  if K = oFTRV then
-    S.XF := SavedXF;
   S.FPUL := SavedFPUL;
   S.T := SavedT;
   S.FPSCR := (OldFPSCR and not Cardinal($3F000)) or (Events shl 12) or ((Events and 31) shl 2);
 
   var Potential: Cardinal := 0;
   case K of
-    oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oFSRRA, oFIPR, oDADD, oDSUB, oDMUL, oDDIV, oFCNVDS:
+    oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oDADD, oDSUB, oDMUL, oDDIV, oFCNVDS:
       Potential := 7;
     oFSQRT, oDSQRT, oFLOAT:
       Potential := EventI;
-    oFTRV:
-      Potential := EventV or 7;
   end;
   Result := ((Events and EventE) <> 0) or
     (((Events and 31) and (OldFPSCR shr 7)) <> 0) or
@@ -5417,21 +5604,13 @@ begin
 end;
 
 function TSH4.OpFSRRA(I: PSH4Inst): Boolean;
-var
-  N: Integer;
-  F: Single;
-  DN: Boolean;
 begin
-  Result := False;
-  N := I.N;
-  DN := (S.FPSCR and FPSCRDN) <> 0;
-  F := S.FR.S[N];
-  if DN then
-    F := FlushSingle(F);
-  F := RoundToSingle(1.0 / Sqrt(Double(F)));
-  if DN then
-    F := FlushSingle(F);
-  S.FR.S[N] := F;
+  Result := SH4FSRRA(S.FR.U[I.N], S.FPSCR);
+  if Result then
+  begin
+    S.EXPEVT := SH4ExcFPU;
+    FExcepted := True;
+  end;
 end;
 
 function TSH4.OpFCMPEQ(I: PSH4Inst): Boolean;
@@ -5480,64 +5659,36 @@ begin
   S.FPUL := SingleToInt(S.FR.S[N]);
 end;
 
+// FVm, FVn and XMTRX straight from the banks, as stored (FR(n + 3) is stored
+// at n + 2).
 function TSH4.OpFIPR(I: PSH4Inst): Boolean;
-var
-  N, M: Integer;
-  F: Single;
-  DN: Boolean;
 begin
-  Result := False;
-  N := I.N;
-  M := I.M;
-  DN := (S.FPSCR and FPSCRDN) <> 0;
-  // FIPR/FTRV: a rounded first product, then fused multiply-adds with one
-  // rounding each (the order matches SingleStepTests): as SingleProduct and
-  // FusedSingle, written out.
-  F := S.FR.S[N xor 1] * S.FR.S[M xor 1];
-  F := Double(S.FR.S[(N + 1) xor 1]) * Double(S.FR.S[(M + 1) xor 1]) + Double(F);
-  F := Double(S.FR.S[(N + 2) xor 1]) * Double(S.FR.S[(M + 2) xor 1]) + Double(F);
-  F := Double(S.FR.S[(N + 3) xor 1]) * Double(S.FR.S[(M + 3) xor 1]) + Double(F);
-  if DN then
-    F := FlushSingle(F);
-  S.FR.S[(N + 3) xor 1] := F;
+  Result := SH4FIPRBanks(PSH4Vector(@S.FR.U[I.M])^, PSH4Vector(@S.FR.U[I.N])^, S.FPSCR, S.FR.U[I.N + 2]);
+  if Result then
+  begin
+    S.EXPEVT := SH4ExcFPU;
+    FExcepted := True;
+  end;
 end;
 
 function TSH4.OpFTRV(I: PSH4Inst): Boolean;
-var
-  N: Integer;
-  F: Single;
-  DN: Boolean;
 begin
-  Result := False;
-  N := I.N;
-  DN := (S.FPSCR and FPSCRDN) <> 0;
-  var X0: Double := S.FR.S[N xor 1];
-  var X1: Single := S.FR.S[(N + 1) xor 1];
-  var X2: Double := S.FR.S[(N + 2) xor 1];
-  var X3: Double := S.FR.S[(N + 3) xor 1];
-  // As FIPR (SingleProduct, then FusedSingle), per row.
-  for var Row := 0 to 3 do
+  Result := SH4FTRVBanks(PSH4Matrix(@S.XF.U[0])^, PSH4Vector(@S.FR.U[I.N])^, S.FPSCR);
+  if Result then
   begin
-    F := S.XF.S[(Row + 4) xor 1] * X1;
-    F := Double(S.XF.S[Row xor 1]) * X0 + Double(F);
-    F := Double(S.XF.S[(Row + 8) xor 1]) * X2 + Double(F);
-    F := Double(S.XF.S[(Row + 12) xor 1]) * X3 + Double(F);
-    if DN then
-      F := FlushSingle(F);
-    S.FR.S[(N + Row) xor 1] := F;
+    S.EXPEVT := SH4ExcFPU;
+    FExcepted := True;
   end;
 end;
 
 function TSH4.OpFSCA(I: PSH4Inst): Boolean;
-var
-  N: Integer;
-  DV: Double;
 begin
-  Result := False;
-  N := I.N;
-  DV := (S.FPUL and $FFFF) * (2 * Pi / 65536);
-  S.FR.S[N + 1] := RoundToSingle(Sin(DV));
-  S.FR.S[N] := RoundToSingle(Cos(DV));
+  Result := SH4FSCA(S.FPUL, S.FPSCR, S.FR.U[I.N + 1], S.FR.U[I.N]);
+  if Result then
+  begin
+    S.EXPEVT := SH4ExcFPU;
+    FExcepted := True;
+  end;
 end;
 
 function TSH4.OpFSCHG(I: PSH4Inst): Boolean;
@@ -6451,7 +6602,7 @@ begin
       end;
     end
     else
-      Step;
+      StepInstruction;
     Prev := B;
     if FExitRequest then
     begin
@@ -6463,7 +6614,6 @@ end;
 
 procedure TSH4.Step;
 begin
-  Inc(FSideEffects);
 {$IFDEF CPUX64}
   var SavedMXCSR := ReadHostMXCSR;
   WriteHostMXCSR(SavedMXCSR and not Cardinal($8040));
@@ -6473,34 +6623,7 @@ begin
   SetExceptionMask(exAllArithmeticExceptions);
   ApplyHostRounding;
   try
-    if (FIRQLevel > Integer((S.SR shr 4) and 15)) and ((S.SR and SRBL) = 0) and not S.DelaySlot then
-    begin
-      S.INTEVT := FIRQCode;
-      if S.Sleeping then
-        S.PC := S.PC + 2;
-      EnterException(0, $600, S.PC);
-    end;
-    Inc(Now^);
-    if S.Sleeping then
-      Exit;
-    if Assigned(FStepHook) then
-      FStepHook(FStepUser, S.PC);
-    var Op: Word;
-    var Slot := S.DelaySlot;
-    if not FetchWord(S.PC, Op) then
-    begin
-      FScratch[0].Addr := S.PC;
-      FScratch[0].Flags := 0;
-      if Slot then
-        FScratch[0].Flags := IFSlot;
-      Fault(S.EXPEVT, FScratch[0], Slot);
-      Exit;
-    end;
-    Decode(Op, S.PC, Mode, Slot, FScratch[0]);
-    var Next: Cardinal;
-    var Count := Execute(@FScratch[0], 1, Next);
-    S.PC := Next;
-    Inc(InstructionsExecuted, Count);
+    StepInstruction;
   finally
     ClearExceptions(False);
     SetExceptionMask(SavedMask);
@@ -6509,6 +6632,39 @@ begin
     WriteHostMXCSR(SavedMXCSR and not Cardinal($3F));
 {$ENDIF}
   end;
+end;
+
+procedure TSH4.StepInstruction;
+begin
+  Inc(FSideEffects);
+  if (FIRQLevel > Integer((S.SR shr 4) and 15)) and ((S.SR and SRBL) = 0) and not S.DelaySlot then
+  begin
+    S.INTEVT := FIRQCode;
+    if S.Sleeping then
+      S.PC := S.PC + 2;
+    EnterException(0, $600, S.PC);
+  end;
+  Inc(Now^);
+  if S.Sleeping then
+    Exit;
+  if Assigned(FStepHook) then
+    FStepHook(FStepUser, S.PC);
+  var Op: Word;
+  var Slot := S.DelaySlot;
+  if not FetchWord(S.PC, Op) then
+  begin
+    FScratch[0].Addr := S.PC;
+    FScratch[0].Flags := 0;
+    if Slot then
+      FScratch[0].Flags := IFSlot;
+    Fault(S.EXPEVT, FScratch[0], Slot);
+    Exit;
+  end;
+  Decode(Op, S.PC, Mode, Slot, FScratch[0]);
+  var Next: Cardinal;
+  var Count := Execute(@FScratch[0], 1, Next);
+  S.PC := Next;
+  Inc(InstructionsExecuted, Count);
 end;
 
 { Recompiler }
@@ -6548,6 +6704,7 @@ type
     BPhys, BNext, PRead, PPhys, PFlags, PASID: Integer;
     R, T, FR, XF, GBR, PR, MACH, MACL, FPUL: Integer;
     ReadMap, WriteMap, GenMap, FastRead, FastWrite, JournalOn, PWrite, PGen: Integer;
+    SQ, SideEffects, Lenient: Integer;
     // A cached page's size as a shift (0: not a power of two).
     PageShift: Integer;
   end;
@@ -6633,6 +6790,9 @@ begin
   O.FastRead := At(@TSH4(nil).FFastRead);
   O.FastWrite := At(@TSH4(nil).FFastWrite);
   O.JournalOn := At(@TSH4(nil).FJournalOn);
+  O.SQ := At(@TSH4(nil).S.SQ[0, 0]);
+  O.SideEffects := At(@TSH4(nil).FSideEffects);
+  O.Lenient := At(@TSH4(nil).FLenient);
   O.PWrite := At(@PSH4TLBPage(nil).Write);
   O.PGen := At(@PSH4TLBPage(nil).Gen);
   O.PageShift := 0;
@@ -7220,8 +7380,8 @@ var
   // The Size bytes of T4 to address T0 where Write8, Write32 or Write64
   // writes them
   // to host memory without more (no probe's journal; FWriteMap, else
-  // TranslatedWrite's page of FFastWrite), with its write generation;
-  // else the handler.
+  // TranslatedWrite's page of FFastWrite), with its write generation, or
+  // as WriteMiss to a store queue (32 and 64 bits); else the handler.
   procedure Store(Size: Integer);
   begin
     UseSlow;
@@ -7249,6 +7409,24 @@ var
     J.Alu(jaAdd, jw32, JMem(jrT3, 0), JImm(1));
     J.Jump(Done);
     J.Bind(Translated);
+    if Size >= 4 then
+    begin
+      // The word of the queue at bit 5, index at bits 4..2: S.SQ's byte
+      // offset is the address's bits 5..2.
+      var NotQueue := J.NewLabel;
+      J.Move(jw32, JT3, JT0);
+      J.Alu(jaAnd, jw32, JT3, Imm($FC000000));
+      J.Branch(jcNe, jw32, JT3, Imm($E0000000), NotQueue);
+      J.BranchTest(jcNe, jw8, Field(O.Lenient), JImm($FF), SlowL);
+      J.BranchTest(jcNe, jw32, JT0, JImm(Size - 1), SlowL);
+      J.Move(jw32, JT3, JT0);
+      J.Alu(jaAnd, jw32, JT3, JImm($3C));
+      J.Alu(jaAdd, jw64, JT3, JSelf);
+      J.Move(Width(Size), JMem(jrT3, O.SQ), JT4);
+      J.Alu(jaAdd, jw32, Field(O.SideEffects), JImm(1));
+      J.Jump(Done);
+      J.Bind(NotQueue);
+    end;
     J.Branch(jcEq, jw64, Field(O.TLBChunks), JImm(0), SlowL);
     J.Branch(jcAboveEq, jw32, JT0, Imm($80000000), SlowL);
     J.Move(jw64, JT1, Field(O.FastWrite));
@@ -8316,11 +8494,25 @@ begin
   @SH4Ops[oXTRCT] := @TSH4.OpXTRCT;
   // Share guest FPU exception handling with the generated-code call path.
   // Register and memory moves leave the arithmetic status unchanged.
-  for var K in [oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oFSQRT, oFSRRA, oFCMPEQ, oFCMPGT, oFLOAT, oFTRC, oFIPR, oFTRV, oDADD, oDSUB, oDMUL, oDDIV, oDSQRT, oDCMPEQ, oDCMPGT, oDFLOAT, oDFTRC, oFCNVSD, oFCNVDS] do
+  // The special vector/approximation handlers implement their own measured
+  // status and trap rules, shared unchanged with JIT through SH4Ops.
+  for var K in [oFADD, oFSUB, oFMUL, oFDIV, oFMAC, oFSQRT, oFCMPEQ, oFCMPGT, oFLOAT, oFTRC, oDADD, oDSUB, oDMUL, oDDIV, oDSQRT, oDCMPEQ, oDCMPGT, oDFLOAT, oDFTRC, oFCNVSD, oFCNVDS] do
   begin
     SH4FPOps[K] := SH4Ops[K];
     @SH4Ops[K] := @TSH4.OpFPUChecked;
   end;
+  {$IF Defined(CPUX64) or Defined(CPUARM64)}
+  @SH4Ops[oFADD] := @TSH4.OpFADDChecked;
+  @SH4Ops[oFSUB] := @TSH4.OpFSUBChecked;
+  @SH4Ops[oFMUL] := @TSH4.OpFMULChecked;
+  @SH4Ops[oFDIV] := @TSH4.OpFDIVChecked;
+  @SH4Ops[oFMAC] := @TSH4.OpFMACChecked;
+  @SH4Ops[oFCMPEQ] := @TSH4.OpFCMPEQChecked;
+  @SH4Ops[oFCMPGT] := @TSH4.OpFCMPGTChecked;
+  @SH4Ops[oFSQRT] := @TSH4.OpFSQRTChecked;
+  @SH4Ops[oFLOAT] := @TSH4.OpFLOATChecked;
+  @SH4Ops[oFTRC] := @TSH4.OpFTRCChecked;
+  {$ENDIF}
 end;
 
 initialization

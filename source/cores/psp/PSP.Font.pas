@@ -49,8 +49,11 @@ type
     HeaderSize, Revision: Integer;
     CharMapLength, CharPtrLength, CharMapBpe, CharPtrBpe: Integer;
     ShadowMapLength, ShadowMapBpe: Integer;
+    // Revision 3 (kr0.pgf): the charmap covers only the code ranges of the
+    // first compression table, (first code, count) pairs in that order.
+    CompBpe, CompLength: array[0..1] of Integer;
     TableLength: array[0..3] of Integer;
-    ShadowMapPos, CharMapPos, CharPtrPos, GlyphPos: Int64;
+    ShadowMapPos, CompPos, CharMapPos, CharPtrPos, GlyphPos: Int64;
     // What a font opened in mode 0 keeps, in the order the library allocates
     // it: the four metric tables, the shadow map, two charmap compression
     // tables, the charmap and the glyph pointers.
@@ -89,6 +92,8 @@ type
     FData: TBytes;
     FLayout: TPGFLayout;
     FCharMap, FCharPtr, FShadowMap: TArray<Integer>;
+    // Revision 3: (first code, count) pairs the charmap's entries follow.
+    FCharRanges: TArray<Integer>;
     FTables: array[0..3] of TArray<TPGFMetric>;
     function Bits(BitPos: Int64; N: Integer): Cardinal;
     function SBits(BitPos: Int64; N: Integer): Integer;
@@ -320,6 +325,18 @@ begin
     Exit;
   if (ShadowMapLength > 0) and ((ShadowMapBpe < 1) or (ShadowMapBpe > 32)) then
     Exit;
+  for var K := 0 to 1 do
+  begin
+    CompBpe[K] := 0;
+    CompLength[K] := 0;
+    if (Revision >= 3) and (HeaderSize >= $188 + 16) and (Length(Header) >= $188 + 16) then
+    begin
+      CompBpe[K] := PInteger(@Header[$188 + K * 8])^;
+      CompLength[K] := PWord(@Header[$18C + K * 8])^;
+      if (CompBpe[K] < 1) or (CompBpe[K] > 32) then
+        Exit;
+    end;
+  end;
   var Pos: Int64 := HeaderSize;
   for var K := 0 to 3 do
   begin
@@ -330,8 +347,12 @@ begin
   ShadowMapPos := Pos;
   Parts[4] := Align32(ShadowMapLength, ShadowMapBpe);
   Inc(Pos, Parts[4]);
-  Parts[5] := 0;
-  Parts[6] := 0;
+  CompPos := Pos;
+  for var K := 0 to 1 do
+  begin
+    Parts[5 + K] := Align32(CompLength[K] * 2, CompBpe[K]);
+    Inc(Pos, Parts[5 + K]);
+  end;
   CharMapPos := Pos;
   Parts[7] := Align32(CharMapLength, CharMapBpe);
   Inc(Pos, Parts[7]);
@@ -443,6 +464,8 @@ begin
     end;
   end;
   F.FShadowMap := F.ReadMap(L.ShadowMapPos, L.ShadowMapLength, L.ShadowMapBpe);
+  if L.CompLength[0] > 0 then
+    F.FCharRanges := F.ReadMap(L.CompPos, L.CompLength[0] * 2, L.CompBpe[0]);
   F.FCharMap := F.ReadMap(L.CharMapPos, L.CharMapLength, L.CharMapBpe);
   F.FCharPtr := F.ReadMap(L.CharPtrPos, L.CharPtrLength, L.CharPtrBpe);
 end;
@@ -483,7 +506,26 @@ begin
   if Code < FirstCode then
     Exit(PGFBelow);
   var I := Code - FirstCode;
-  if (Code > LastCode) or (I >= Length(FCharMap)) then
+  if FCharRanges <> nil then
+  begin
+    // The charmap lists the ranges' codes one after the other.
+    I := -1;
+    var Base := 0;
+    var K := 0;
+    while K + 1 < Length(FCharRanges) do
+    begin
+      if (Code >= FCharRanges[K]) and (Code < FCharRanges[K] + FCharRanges[K + 1]) then
+      begin
+        I := Base + Code - FCharRanges[K];
+        Break;
+      end;
+      Inc(Base, FCharRanges[K + 1]);
+      Inc(K, 2);
+    end;
+    if (I < 0) or (I >= Length(FCharMap)) then
+      Exit(PGFMissing);
+  end
+  else if (Code > LastCode) or (I >= Length(FCharMap)) then
     Exit(PGFMissing);
   Result := FCharMap[I];
   if (Result < 0) or (Result >= GlyphCount) then
@@ -2250,6 +2292,10 @@ begin
       Inc(Pos, L.Parts[K]);
     end;
     FMemory.ReadBytes(Addrs[4], Data[L.ShadowMapPos], L.Parts[4]);
+    if L.Parts[5] > 0 then
+      FMemory.ReadBytes(Addrs[5], Data[L.CompPos], L.Parts[5]);
+    if L.Parts[6] > 0 then
+      FMemory.ReadBytes(Addrs[6], Data[L.CompPos + L.Parts[5]], L.Parts[6]);
     FMemory.ReadBytes(Addrs[7], Data[L.CharMapPos], L.Parts[7]);
     FMemory.ReadBytes(Addrs[8], Data[L.CharPtrPos], L.Parts[8]);
     Font := TPGFFile.Parse(Data);

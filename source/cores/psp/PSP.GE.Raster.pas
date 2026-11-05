@@ -94,6 +94,11 @@ procedure GEDrawTriangle(const S: TGERaster; const V0, V1, V2: TGEVertex);
 procedure GEDrawSprite(const S: TGERaster; const V0, V1: TGEVertex);
 procedure GEDrawLine(const S: TGERaster; const V0, V1: TGEVertex);
 procedure GEDrawPoint(const S: TGERaster; const V: TGEVertex);
+// A point's texture coordinates: the vertex's S/w, T/w and Q/w in 15-bit
+// units and the perspective reciprocal, cut toward zero to 1/16 texel.
+// Periodic coordinates are reduced before conversion to Single so large
+// values keep their low bits (recorded on a PSP-E1000).
+procedure GEPointUV(const S: TGERaster; const V: TGEVertex; out SS, TT: Single);
 // A sprite's texture coordinate step per pixel: the difference over the
 // length (in 1/16 pixels), truncated toward zero to single precision
 // (recorded on a PSP-E1000: 12 texels over 7 pixels steps a hair under 12/7).
@@ -162,6 +167,45 @@ function GEUVPlanes(const S: TGERaster; const V0, V1, V2: TGEVertex; out P: TGEU
 function GESpriteUVPlanes(const S: TGERaster; const V0, V1: TGEVertex; out P: TGEUVPlanes): Boolean;
 // A pixel's S and T (in texels, floored to 1/16) from GEUVPlanes'.
 procedure GEUVAt(const P: TGEUVPlanes; PX, PY: Integer; out SS, TT: Single); inline;
+
+type
+  // A triangle's perspective texture coordinates as the GE makes them
+  // (recorded on a PSP-E1000, probes ge_persp3, ge_stq2 and ge_persp: every
+  // pixel where q or w differ from 1 with w at 1, 99.9% with w not 1): S and
+  // T cut to 16 bits times 1/w, and Q times 1/w, are planes like the depth's
+  // (GEMakeValuePlane) of the vertices' values in fixed point with 15 bits
+  // up to the largest of each (truncated, K the fraction bits); at a pixel
+  // each plane's value is floored to those units and S and T are multiplied
+  // by the reciprocal of Q's (GEPerspRecip of its mantissa).
+  TGEPerspPlanes = record
+    S, T, Q: TGEDepthPlane;
+    KS, KT, KQ: Integer;
+  end;
+
+function GEPerspPlanes(const V0, V1, V2: TGEVertex; out P: TGEPerspPlanes): Boolean;
+// A transform-mode sprite's (recorded on a PSP-E1000, probe ge_stqs: every
+// pixel of 512 sprites, q and w random): the triangle of V0's corner and the
+// corners beside it, the one along S's axis with V1's S and Q (times V1's
+// 1/w) and V0's T, the other with V1's T.
+function GESpritePerspPlanes(const V0, V1: TGEVertex; out P: TGEPerspPlanes): Boolean;
+// A pixel's S and T (in texels, floored to 1/16) from GEPerspPlanes'; False
+// where Q's plane is not positive there.
+function GEPerspAt(const P: TGEPerspPlanes; PX, PY: Integer; out SS, TT: Single): Boolean;
+// The automatic level of detail's G from GEPerspPlanes': the largest step of
+// S and T's planes per pixel, in texels.
+function GEPerspLodG(const P: TGEPerspPlanes): Single;
+// Its Q at a pixel: Q's plane floored to its units.
+function GEPerspLodQ(const P: TGEPerspPlanes; PX, PY: Integer): Single;
+// The pixel of each 4 in a row (x aligned to 4) whose Q and 1/w give the
+// four their level of detail, as the GE walks a triangle (recorded on a
+// PSP-E1000, probe ge_alod): the second from the left (1) where the middle
+// vertex by y lies right of the long edge, else the second from the right
+// (2); moved into the row's span where that pixel is outside it.
+function GELodPixel(const V0, V1, V2: TGEVertex): Integer;
+// The perspective divide's reciprocal of a mantissa 1 + M16 / 2^16 in 2^-16
+// (recorded on a PSP-E1000, probe ge_persp3: 4,256 mantissas): 128 segments
+// of 512, each a node in half units down by a drop per segment.
+function GEPerspRecip(M16: Integer): Int64;
 // A colour plane's channel where N (P.C0 plus the steps) is, 0..255.
 function GEPlaneByte(N: Int64): Integer; inline;
 
@@ -213,8 +257,8 @@ type
 // The level of detail (recorded on a PSP-E1000): both modes take two
 // logarithms apart, each the exponent and 4 mantissa bits of its float. The
 // automatic mode: log(G) - log(Q), G the primitive's largest step of S/w or
-// T/w per pixel and Q the pixel's Q/w (gpu/exact's auto lod job: 85% exact,
-// the rest one off from the vertex arithmetic); the slope mode: log(slope) -
+// T/w per pixel and Q the Q/w of GELodPixel's pixel (probe ge_alod: every
+// pixel, through mode and perspective); the slope mode: log(slope) -
 // log(1/w) (probe ge_lod: every sample), where 1/w is not
 // positive slope times w.
 function GETexLod(const S: TGERaster; G, Q, IW: Single): Integer;
@@ -1600,6 +1644,188 @@ begin
   TT := FloorShr(P.T.C0 + P.T.GX * DX + P.T.GY * DY, 10 + P.KT) / 16;
 end;
 
+const
+  // The last segment also takes ge_persp3's boundary mantissa (65024):
+  // node 65793 and drop 128, where the interior samples alone allowed
+  // 65792 and 127. The full probe then matches in every RGB pixel.
+  GEPerspRecipNode: array[0..127] of Integer = (
+    131073, 130056, 129055, 128072, 127100, 126144, 125204, 124275, 123362, 122462, 121575, 120701,
+    119837, 118987, 118151, 117324, 116509, 115705, 114914, 114131, 113359, 112600, 111848, 111108,
+    110376, 109655, 108944, 108240, 107546, 106862, 106185, 105518, 104859, 104207, 103564, 102928,
+    102301, 101681, 101068, 100464, 99866, 99274, 98690, 98114, 97543, 96978, 96422, 95870,
+    95327, 94787, 94256, 93728, 93207, 92692, 92183, 91681, 91181, 90689, 90202, 89718,
+    89241, 88770, 88303, 87839, 87382, 86929, 86482, 86038, 85600, 85165, 84733, 84308,
+    83886, 83469, 83056, 82647, 82242, 81840, 81443, 81050, 80660, 80276, 79893, 79514,
+    79139, 78767, 78399, 78034, 77674, 77316, 76961, 76609, 76261, 75915, 75575, 75235,
+    74899, 74565, 74237, 73909, 73585, 73265, 72945, 72629, 72317, 72006, 71698, 71394,
+    71091, 70790, 70494, 70198, 69907, 69616, 69328, 69043, 68760, 68480, 68201, 67926,
+    67651, 67379, 67110, 66842, 66578, 66313, 66053, 65793);
+  GEPerspRecipDrop: array[0..127] of SmallInt = (
+    508, 500, 492, 486, 478, 470, 464, 456, 450, 444, 438, 432, 424, 418, 414, 408,
+    402, 396, 392, 386, 380, 376, 370, 366, 360, 356, 352, 346, 342, 338, 334, 330,
+    326, 322, 318, 314, 310, 306, 302, 300, 296, 292, 288, 286, 282, 278, 276, 272,
+    270, 266, 264, 260, 257, 254, 252, 250, 246, 244, 242, 238, 236, 234, 232, 228,
+    226, 224, 222, 220, 218, 216, 212, 210, 208, 206, 204, 202, 200, 198, 196, 194,
+    192, 192, 190, 188, 186, 184, 182, 180, 180, 178, 176, 174, 172, 170, 170, 168,
+    166, 164, 164, 162, 160, 160, 158, 156, 156, 154, 152, 152, 150, 148, 148, 146,
+    146, 144, 142, 142, 140, 140, 138, 138, 136, 134, 134, 132, 132, 129, 130, 128);
+
+function GEPerspRecip(M16: Integer): Int64;
+begin
+  var J := M16 shr 9;
+  Result := (256 * Int64(GEPerspRecipNode[J]) - 1 - Int64(GEPerspRecipDrop[J]) * (M16 and 511)) shr 9;
+end;
+
+// V cut to 16 significant bits (toward zero).
+function GEPerspCut16(V: Double): Double;
+begin
+  if V = 0 then
+    Exit(0);
+  var M: Extended;
+  var E: Integer;
+  Frexp(V, M, E);
+  Result := Ldexp(Trunc(M * 65536), E - 16);
+end;
+
+// One of GEPerspPlanes' planes: A, B, C in fixed point with K fraction bits,
+// the largest in magnitude taking 15 bits.
+function GEPerspPlane(const V0, V1, V2: TGEVertex; A, B, C: Double; out P: TGEDepthPlane; out K: Integer): Boolean;
+begin
+  var Top := Max(Abs(A), Max(Abs(B), Abs(C)));
+  K := 0;
+  if Top = 0 then
+    GEMakeValuePlane(V0, V1, V2, 0, 0, 0, P)
+  else
+  begin
+    var M: Extended;
+    var E: Integer;
+    Frexp(Top, M, E);
+    K := 15 - E;
+    // Truncated toward zero (gpu/texmtx/negq's negative S and T).
+    GEMakeValuePlane(V0, V1, V2, Trunc(Ldexp(A, K)), Trunc(Ldexp(B, K)), Trunc(Ldexp(C, K)), P);
+  end;
+  Result := P.Valid;
+end;
+
+function GEPerspPlanes(const V0, V1, V2: TGEVertex; out P: TGEPerspPlanes): Boolean;
+begin
+  // The products are exact in a Double (16 bits by 1/w's 17, Q's 24 by 17).
+  Result := GEPerspPlane(V0, V1, V2, Double(V0.Q) * V0.W, Double(V1.Q) * V1.W, Double(V2.Q) * V2.W, P.Q, P.KQ) and
+    GEPerspPlane(V0, V1, V2, GEPerspCut16(V0.S) * V0.W, GEPerspCut16(V1.S) * V1.W, GEPerspCut16(V2.S) * V2.W, P.S,
+    P.KS) and GEPerspPlane(V0, V1, V2, GEPerspCut16(V0.T) * V0.W, GEPerspCut16(V1.T) * V1.W,
+    GEPerspCut16(V2.T) * V2.W, P.T, P.KT);
+end;
+
+function GESpritePerspPlanes(const V0, V1: TGEVertex; out P: TGEPerspPlanes): Boolean;
+begin
+  Result := (V0.X <> V1.X) and (V0.Y <> V1.Y);
+  if not Result then
+    Exit;
+  // A: V0's corner, B along x, C along y, as GESpriteUVPlanes.
+  var A := V0;
+  var B := V0;
+  var C := V0;
+  B.X := V1.X;
+  C.Y := V1.Y;
+  var SW0 := GEPerspCut16(V0.S) * V0.W;
+  var SW1 := GEPerspCut16(V1.S) * V1.W;
+  var TW0 := GEPerspCut16(V0.T) * V0.W;
+  var TW1 := GEPerspCut16(V1.T) * V1.W;
+  var QW0 := Double(V0.Q) * V0.W;
+  var QW1 := Double(V1.Q) * V1.W;
+  // The corner along S's axis takes V1's S and Q (each times its own 1/w),
+  // the one along T's V1's T.
+  if (V0.X > V1.X) <> (V0.Y > V1.Y) then
+    Result := GEPerspPlane(A, B, C, SW0, SW0, SW1, P.S, P.KS) and GEPerspPlane(A, B, C, TW0, TW1, TW0, P.T, P.KT) and
+      GEPerspPlane(A, B, C, QW0, QW0, QW1, P.Q, P.KQ)
+  else
+    Result := GEPerspPlane(A, B, C, SW0, SW1, SW0, P.S, P.KS) and GEPerspPlane(A, B, C, TW0, TW0, TW1, P.T, P.KT) and
+      GEPerspPlane(A, B, C, QW0, QW1, QW0, P.Q, P.KQ);
+end;
+
+function GEPerspAt(const P: TGEPerspPlanes; PX, PY: Integer; out SS, TT: Single): Boolean;
+
+  // N R 2^-Sh, truncated toward zero (gpu/texmtx/negq; Sh may be negative).
+  function Scaled(N: Int64; Sh: Integer): Int64;
+  begin
+    if Sh < 0 then
+      Result := N shl (-Sh)
+    else if N >= 0 then
+      Result := N shr Sh
+    else
+      Result := -((-N) shr Sh);
+  end;
+
+begin
+  var DX := Int64(PX) * 16 + 8 - P.Q.AX;
+  var DY := Int64(PY) * 16 + 8 - P.Q.AY;
+  var D := FloorShr(P.Q.C0 + P.Q.GX * DX + P.Q.GY * DY, 14);
+  Result := (D > 0) and (D < 65536);
+  if not Result then
+    Exit;
+  var E := 0;
+  while (D shr (E + 1)) <> 0 do
+    Inc(E);
+  var R := GEPerspRecip(Integer((D shl (16 - E)) - 65536));
+  var NS := FloorShr(P.S.C0 + P.S.GX * (Int64(PX) * 16 + 8 - P.S.AX) + P.S.GY * (Int64(PY) * 16 + 8 - P.S.AY), 14);
+  var NT := FloorShr(P.T.C0 + P.T.GX * (Int64(PX) * 16 + 8 - P.T.AX) + P.T.GY * (Int64(PY) * 16 + 8 - P.T.AY), 14);
+  // In texels: N R 2^(KQ - K - 16 - E), floored to 1/16.
+  SS := Scaled(NS * R, 12 + E + P.KS - P.KQ) / 16;
+  TT := Scaled(NT * R, 12 + E + P.KT - P.KQ) / 16;
+end;
+
+function GEPerspLodG(const P: TGEPerspPlanes): Single;
+begin
+  // A step is 2^-14 units per 1/16 pixel.
+  Result := Max(Ldexp(Max(Abs(P.S.GX), Abs(P.S.GY)), -10 - P.KS), Ldexp(Max(Abs(P.T.GX), Abs(P.T.GY)), -10 - P.KT));
+end;
+
+function GEPerspLodQ(const P: TGEPerspPlanes; PX, PY: Integer): Single;
+begin
+  var D := FloorShr(P.Q.C0 + P.Q.GX * (Int64(PX) * 16 + 8 - P.Q.AX) + P.Q.GY * (Int64(PY) * 16 + 8 - P.Q.AY), 14);
+  Result := Ldexp(D, -P.KQ);
+end;
+
+function GELodPixel(const V0, V1, V2: TGEVertex): Integer;
+
+  // Whether A comes before B by y, then x.
+  function Before(const A, B: TGEVertex): Boolean;
+  begin
+    Result := (A.Y < B.Y) or ((A.Y = B.Y) and (A.X < B.X));
+  end;
+
+var
+  T, M, B, C: PGEVertex;
+begin
+  T := @V0;
+  M := @V1;
+  B := @V2;
+  if Before(M^, T^) then
+  begin
+    C := T;
+    T := M;
+    M := C;
+  end;
+  if Before(B^, M^) then
+  begin
+    C := M;
+    M := B;
+    B := C;
+  end;
+  if Before(M^, T^) then
+  begin
+    C := T;
+    T := M;
+    M := C;
+  end;
+  // Negative: the middle vertex is left of the long edge (y down).
+  var Side := (Int64(M.X) - T.X) * (Int64(B.Y) - T.Y) - (Int64(M.Y) - T.Y) * (Int64(B.X) - T.X);
+  if Side < 0 then
+    Result := 2
+  else
+    Result := 1;
+end;
+
 function GEPlaneByte(N: Int64): Integer;
 begin
   if N < 0 then
@@ -1815,24 +2041,20 @@ begin
     Result := 255;
 end;
 
-// Recorded on a PSP-E1000 (ge_line's antialiased set: 98.9% of the pixels,
-// the rest one off; gpu/exact's antialiased jobs): the line's position on the
-// minor axis comes from the first pixel drawn and a step per pixel, both with
-// 14 fraction bits (in 1/16 pixel) truncated toward zero; X, its offset into
-// the pixel in 1/256 pixel rounded up, gives the coverage X up to the middle
-// and 256 - X past it.
+// Recorded on a PSP-E1000 (ge_line's antialiased set: every one of 21,297
+// pixels; gpu/exact's antialiased jobs): the line's position on the minor
+// axis comes from the first vertex and a step per major 1/16 pixel, both in
+// 2^-18 of 1/16 pixel, the step rounded up; X, its offset into the pixel in
+// 1/256 pixel rounded up, gives the coverage X up to the middle and 256 - X
+// past it.
 function GELineCoverage(const W: TGELineWalk; PX, PY: Integer): Integer;
 begin
   // The slope (minor per major 1/16 pixel) in 2^-18 from the length's
-  // reciprocal, truncated toward zero; the position at the pixel centre.
+  // reciprocal, rounded toward +infinity; the position at the pixel centre.
   var E: Integer;
   var R := LineRecip(Abs(W.DM), E);
   var V := W.DN * R * (1 shl 18);
-  var Step: Int64;
-  if V >= 0 then
-    Step := V shr (16 + E)
-  else
-    Step := -((-V) shr (16 + E));
+  var Step := -FloorShr(-V, 16 + E);
   var C: Int64;
   var Q: Int64;
   if W.XMajor then
@@ -1917,6 +2139,10 @@ begin
   var PF := Prepared.Fog;
   var UV := Prepared.UV;
   var UVPlanes := Prepared.HasUV;
+  // Transform mode: retain the perspective planes alongside the shared
+  // band-independent colour, fog, depth and through-mode UV setup.
+  var Persp: TGEPerspPlanes;
+  var PerspPlanes := S.Textured and not S.Through and GEPerspPlanes(V0, V1, V2, Persp);
   // For the level of detail: the steps of S/w and T/w per pixel along x and
   // y, from the steps of the weights, and the largest of them (GETexLod's G).
   var NeedLod := S.Textured and S.Tex.NeedLod;
@@ -1927,8 +2153,10 @@ begin
   NTY := 0;
   LodG := 0;
   F.Lod := 0;
+  var LodPixel := 1;
   if NeedLod then
   begin
+    LodPixel := GELodPixel(V0, V1, V2);
     var LA: Double := FArea;
     var BX0 := -16 * DY0 * LA;
     var BY0 := 16 * DX0 * LA;
@@ -1941,6 +2169,8 @@ begin
     NTX := A0.T * A0.W * BX0 + A1.T * A1.W * BX1 + A2.T * A2.W * BX2;
     NTY := A0.T * A0.W * BY0 + A1.T * A1.W * BY1 + A2.T * A2.W * BY2;
     LodG := Max(Max(Abs(NSX), Abs(NSY)), Max(Abs(NTX), Abs(NTY)));
+    if PerspPlanes then
+      LodG := GEPerspLodG(Persp);
   end;
   var Step0 := -16 * DY0;
   var Step1 := -16 * DY1;
@@ -2109,7 +2339,7 @@ begin
         begin
           if UVPlanes then
             GEUVAt(UV, PX, PY, F.S, F.T)
-          else
+          else if not PerspPlanes or not GEPerspAt(Persp, PX, PY, F.S, F.T) then
           begin
             F.S := (SW0 * W0 + SW1 * W1 + SW2 * W2) / Q;
             F.T := (TW0 * W0 + TW1 * W1 + TW2 * W2) / Q;
@@ -2117,16 +2347,21 @@ begin
           if NeedLod then
           begin
             // One level of detail for 4 pixels of a row (x aligned to 4), at
-            // the second of them (recorded on a PSP-E1000,
-            // probe ge_alod: 85% of perspective pixels exact
-            // where each pixel's own was 75%; through mode all).
-            var Off: Int64 := (PX and not 3) + 1 - PX;
+            // GELodPixel's.
+            var LX := Min(Max((PX and not 3) + LodPixel, Lo), Hi);
+            var Off: Int64 := LX - PX;
             var WL0 := (E0 + Step0 * Off) * FArea;
             var WL1 := (E1 + Step1 * Off) * FArea;
             var WL2 := (E2 + Step2 * Off) * FArea;
-            var QL := QW0 * WL0 + QW1 * WL1 + QW2 * WL2;
+            var QL := Abs(QW0 * WL0 + QW1 * WL1 + QW2 * WL2);
             var IWL := IW0 * WL0 + IW1 * WL1 + IW2 * WL2;
-            F.Lod := GETexLod(S, LodG, Abs(QL), IWL);
+            if PerspPlanes then
+            begin
+              var QP := GEPerspLodQ(Persp, LX, PY);
+              if QP > 0 then
+                QL := QP;
+            end;
+            F.Lod := GETexLod(S, LodG, QL, IWL);
           end;
         end
         else
@@ -2170,8 +2405,9 @@ begin
   var X2 := Max(V0.X, V1.X);
   var Y1 := Min(V0.Y, V1.Y);
   var Y2 := Max(V0.Y, V1.Y);
-  // Pixels whose centre lies in [x1, x2) x [y1, y2).
-  var PX1 := (X1 - 8 + 15 + 65536) div 16 - 4096;
+  // Pixels whose centre lies in [x1, x2) x [y1, y2), the left edge taking a
+  // centre a sixteenth of a pixel before it too (probe ge_round).
+  var PX1 := (X1 - 9 + 15 + 65536) div 16 - 4096;
   var PX2 := (X2 - 8 + 15 + 65536) div 16 - 4096 - 1;
   var PY1 := (Y1 - 8 + 15 + 65536) div 16 - 4096;
   var PY2 := (Y2 - 8 + 15 + 65536) div 16 - 4096 - 1;
@@ -2230,7 +2466,9 @@ begin
   SetupFragment(F, V1);
   F.Lod := Lod;
   var UV: TGEUVPlanes;
-  var UVPlanes := S.Textured and GESpriteUVPlanes(S, V0, V1, UV);
+  var UVPlanes := S.Textured and S.Through and GESpriteUVPlanes(S, V0, V1, UV);
+  var Persp: TGEPerspPlanes;
+  var PerspPlanes := S.Textured and not S.Through and GESpritePerspPlanes(V0, V1, Persp);
   for var PY := PY1 to PY2 do
   begin
     // The per row terms of S = V0.S + SX * FX + SY * FY (and T, Q), in the
@@ -2249,7 +2487,7 @@ begin
       F.A := V1.A;
       if UVPlanes then
         GEUVAt(UV, PX, PY, F.S, F.T)
-      else if S.Textured then
+      else if S.Textured and not (PerspPlanes and GEPerspAt(Persp, PX, PY, F.S, F.T)) then
       begin
         var FX: Extended := (PX * 16 + 8 - V0.X) * 0.0625;
         F.S := V0.S + SX * FX + SYFY;
@@ -2305,16 +2543,72 @@ begin
   end;
 end;
 
+procedure GEPointUV(const S: TGERaster; const V: TGEVertex; out SS, TT: Single);
+
+  function Significant(X: Double; Bits: Integer): Double;
+  var
+    M: Extended;
+    E: Integer;
+  begin
+    if (X = 0) or IsNan(X) or IsInfinite(X) then
+      Exit(X);
+    Frexp(X, M, E);
+    Result := Ldexp(Trunc(M * (1 shl Bits)), E - Bits);
+  end;
+
+  function Coordinate(X: Double; Clamp: Boolean; Size: Integer): Single;
+  begin
+    if IsNan(X) or IsInfinite(X) then
+      Exit(X);
+    // Int returns a floating-point integer, avoiding Int64 overflow.
+    X := Int(X * 16) / 16;
+    if Clamp then
+      X := Max(0.0, Min(X, Max(Size, 1) - 0.5))
+    else
+    begin
+      // Every valid level's width/height divides this period. Keep the
+      // low fixed-point bits before narrowing a very large coordinate.
+      X := Frac(X / 65536) * 65536;
+      if X < 0 then
+        X := X + 65536;
+    end;
+    Result := X;
+  end;
+
+begin
+  if V.Q <= 0 then
+  begin
+    // All bits set in 16.4, including the fraction: distinct from the
+    // last texel's centre with a linear, repeating filter.
+    SS := 65535.9375;
+    TT := 65535.9375;
+    Exit;
+  end;
+  if (PCardinal(@V.Q)^ and $7F800000) = $7F800000 then
+  begin
+    SS := Coordinate(V.S / V.Q, S.Tex.ClampU, S.Tex.Levels[0].Width);
+    TT := Coordinate(V.T / V.Q, S.Tex.ClampV, S.Tex.Levels[0].Height);
+    Exit;
+  end;
+  var IW: Double := 1;
+  if not S.Through and (V.W > 0) and not IsInfinite(V.W) then
+    IW := V.W;
+  var QW := Significant(Significant(V.Q, 16) * IW, 15);
+  var M: Extended;
+  var E: Integer;
+  Frexp(QW, M, E);
+  var R := Ldexp(GEPerspRecip(Trunc((M * 2 - 1) * 65536)), -15 - E);
+  SS := Coordinate(Significant(Significant(V.S, 16) * IW, 15) * R, S.Tex.ClampU, S.Tex.Levels[0].Width);
+  TT := Coordinate(Significant(Significant(V.T, 16) * IW, 15) * R, S.Tex.ClampV, S.Tex.Levels[0].Height);
+end;
+
 procedure GEDrawPoint(const S: TGERaster; const V: TGEVertex);
 var
   F: TGEFragment;
 begin
   SetupFragment(F, V);
-  if (V.Q <> 1) and (V.Q <> 0) then
-  begin
-    F.S := V.S / V.Q;
-    F.T := V.T / V.Q;
-  end;
+  if S.Textured then
+    GEPointUV(S, V, F.S, F.T);
   PlotPixel(S, (V.X + $100000) div 16 - $10000, (V.Y + $100000) div 16 - $10000, F);
 end;
 

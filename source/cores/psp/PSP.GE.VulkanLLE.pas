@@ -229,7 +229,7 @@ uses
   SPV.PSPGERaster, SPV.PSPGESelfTest;
 
 const
-  PrimWords = 128;
+  PrimWords = 160;
   StateWords = 128;
   FragWords = 16;
   PageSize = 4096;
@@ -769,6 +769,11 @@ begin
   var MaxS: Double := 0;
   var MinT: Double := 0;
   var MaxT: Double := 0;
+  // Transform mode's planes (GEPerspPlanes) round as SpritePerspTexels'.
+  var Top: Double := 0;
+  var TopW: Double := 0;
+  var MinQW: Double := 0;
+  var MaxQW: Double := 0;
   for var I := 0 to 2 do
   begin
     var V: PGEVertex := @V0;
@@ -782,6 +787,19 @@ begin
     var CT: Double := V.T / V.Q;
     if not ((Abs(CS) < TexelLimit) and (Abs(CT) < TexelLimit)) then
       Exit;
+    var QW: Double := Double(V.Q) * V.W;
+    Top := Max(Top, Max(Abs(CS), Abs(CT)));
+    TopW := Max(TopW, Max(Abs(V.S), Abs(V.T)) * V.W);
+    if I = 0 then
+    begin
+      MinQW := QW;
+      MaxQW := QW;
+    end
+    else
+    begin
+      MinQW := Min(MinQW, QW);
+      MaxQW := Max(MaxQW, QW);
+    end;
     if I = 0 then
     begin
       MinS := CS;
@@ -797,12 +815,22 @@ begin
       MaxT := Max(MaxT, CT);
     end;
   end;
+  if not S.Through then
+  begin
+    var Err := (TopW + Top * MaxQW) / MinQW / 8192 + 1;
+    if not (Err < TexelLimit) then
+      Exit;
+    MinS := MinS - Err;
+    MaxS := MaxS + Err;
+    MinT := MinT - Err;
+    MaxT := MaxT + Err;
+  end;
   Result := TexelWindow(S, MinS, MaxS, MinT, MaxT, Full);
 end;
 
-// The texels an unprojected sprite (box PX1..PX2, PY1..PY2) can sample. S
-// and T are linear across the box, so every pixel's lie between their values
-// at the corner pixels (GEDrawSprite).
+// The texels an unprojected through-mode sprite (box PX1..PX2, PY1..PY2) can
+// sample. S and T are linear across the box, so every pixel's lie between
+// their values at the corner pixels (GEDrawSprite).
 function SpriteTexels(const S: TGERaster; const V0: TGEVertex; SX, SY, TX, TY: Single; PX1, PY1, PX2, PY2: Integer;
   const Full: TGEVulkanLLESpan): TGEVulkanLLESpan;
 begin
@@ -841,6 +869,60 @@ begin
     end;
   end;
   Result := TexelWindow(S, MinS, MaxS, MinT, MaxT, Full);
+end;
+
+// The texels a transform-mode sprite can sample (GEDrawSprite). With positive
+// Q and w its S runs between the vertices' S/Q and T between either one's T
+// over either one's Q, through GESpritePerspPlanes (S W and T W over Q W) or
+// its fallback (S and T over Q), widened by the planes' rounding: values with
+// 15 significant bits, so S/Q within 2^-13 of the largest S W and S/Q times Q W
+// over the smallest Q W.
+function SpritePerspTexels(const S: TGERaster; const V0, V1: TGEVertex; const Full: TGEVulkanLLESpan): TGEVulkanLLESpan;
+var
+  MinS, MaxS, MinT, MaxT, Top: Double;
+  First: Boolean;
+
+  procedure Take(CS, CT: Double);
+  begin
+    if First then
+    begin
+      MinS := CS;
+      MaxS := CS;
+      MinT := CT;
+      MaxT := CT;
+      First := False;
+    end;
+    MinS := Min(MinS, CS);
+    MaxS := Max(MaxS, CS);
+    MinT := Min(MinT, CT);
+    MaxT := Max(MaxT, CT);
+    Top := Max(Top, Max(Abs(CS), Abs(CT)));
+  end;
+
+begin
+  Result := Full;
+  if not ((V0.Q >= 1E-15) and (V1.Q >= 1E-15) and (V0.W >= 1E-15) and (V1.W >= 1E-15)) then
+    Exit;
+  var QW0: Double := Double(V0.Q) * V0.W;
+  var QW1: Double := Double(V1.Q) * V1.W;
+  First := True;
+  Top := 0;
+  Take(V0.S / V0.Q, V0.T / V0.Q);
+  Take(V1.S / V1.Q, V1.T / V1.Q);
+  Take(V0.S / V0.Q, V0.T / V1.Q);
+  Take(V1.S / V1.Q, V1.T / V0.Q);
+  Take(V0.S / V0.Q, Double(V0.T) * V0.W / QW0);
+  Take(V0.S / V0.Q, Double(V0.T) * V0.W / QW1);
+  Take(V0.S / V0.Q, Double(V1.T) * V1.W / QW0);
+  Take(V0.S / V0.Q, Double(V1.T) * V1.W / QW1);
+  // Also not NaNs (which Min and Max drop).
+  if not (Top < TexelLimit) then
+    Exit;
+  var TopW := Max(Max(Abs(V0.S), Abs(V0.T)) * V0.W, Max(Abs(V1.S), Abs(V1.T)) * V1.W);
+  var Err := (TopW + Top * Max(QW0, QW1)) / Min(QW0, QW1) / 8192 + 1;
+  if not (Err < TexelLimit) then
+    Exit;
+  Result := TexelWindow(S, MinS - Err, MaxS + Err, MinT - Err, MaxT + Err, Full);
 end;
 
 // Whether Size bytes from Address all lie in VRAM's mirrors.
@@ -1813,6 +1895,29 @@ begin
   Anchor[1] := Cardinal(Integer(VP.AY));
 end;
 
+// Perspective texture coordinate planes (GEPerspPlanes) in a triangle's
+// words: 128..133 S, 134..139 T, 140..145 Q (start and steps), 146, 147 their
+// vertex, 148..150 their fraction bits, 151 bit 0 whether they are used (152:
+// the level of detail's pixel, GELodPixel).
+procedure PutPerspPlanes(P: PCardinal; const PP: TGEPerspPlanes);
+begin
+  PInt64(P + 128)^ := PP.S.C0;
+  PInt64(P + 130)^ := PP.S.GX;
+  PInt64(P + 132)^ := PP.S.GY;
+  PInt64(P + 134)^ := PP.T.C0;
+  PInt64(P + 136)^ := PP.T.GX;
+  PInt64(P + 138)^ := PP.T.GY;
+  PInt64(P + 140)^ := PP.Q.C0;
+  PInt64(P + 142)^ := PP.Q.GX;
+  PInt64(P + 144)^ := PP.Q.GY;
+  P[146] := Cardinal(Integer(PP.Q.AX));
+  P[147] := Cardinal(Integer(PP.Q.AY));
+  P[148] := Cardinal(PP.KS);
+  P[149] := Cardinal(PP.KT);
+  P[150] := Cardinal(PP.KQ);
+  P[151] := 1;
+end;
+
 // Texture coordinate planes (GEUVPlanes) in a triangle's or a sprite's words:
 // 111..116 S, 117..122 T (start and steps), 123, 124 their vertex, 125 bit 0
 // whether they are used, bits 8.. and 16.. their fraction bits.
@@ -1924,6 +2029,10 @@ begin
   P[125] := 0;
   if S.Textured and S.Through and GEUVPlanes(S, V0, V1, V2, UV) then
     PutUVPlanes(P, UV);
+  // Transform mode: the perspective planes (GEPerspPlanes).
+  var PP: TGEPerspPlanes;
+  if S.Textured and not S.Through and GEPerspPlanes(V0, V1, V2, PP) then
+    PutPerspPlanes(P, PP);
   // The fog plane, from the vertices' 8-bit fog factors (GEFogByte).
   if S.FogEnabled then
     PutPlane(P + 96, P + 64, V0, V1, V2, GEFogByte(V0.Fog), GEFogByte(V1.Fog), GEFogByte(V2.Fog));
@@ -1957,10 +2066,20 @@ begin
     NSY := A0.S * A0.W * BY0 + A1.S * A1.W * BY1 + A2.S * A2.W * BY2;
     NTX := A0.T * A0.W * BX0 + A1.T * A1.W * BX1 + A2.T * A2.W * BX2;
     NTY := A0.T * A0.W * BY0 + A1.T * A1.W * BY1 + A2.T * A2.W * BY2;
+    // With the perspective planes: their G (GEPerspLodG) alone.
+    if P[151] and 1 <> 0 then
+    begin
+      NSX := GEPerspLodG(PP);
+      NSY := 0;
+      NTX := 0;
+      NTY := 0;
+    end;
     P[90] := PCardinal(@NSX)^;
     P[91] := PCardinal(@NSY)^;
     P[92] := PCardinal(@NTX)^;
     P[93] := PCardinal(@NTY)^;
+    // 152: GELodPixel.
+    P[152] := Cardinal(GELodPixel(V0, V1, V2));
   end;
   Record_(KindTriangle, S, V0, V1, V2);
 end;
@@ -1976,7 +2095,7 @@ begin
   var X2 := Max(V0.X, V1.X);
   var Y1 := Min(V0.Y, V1.Y);
   var Y2 := Max(V0.Y, V1.Y);
-  var PX1 := (X1 - 8 + 15 + 65536) div 16 - 4096;
+  var PX1 := (X1 - 9 + 15 + 65536) div 16 - 4096;
   var PX2 := (X2 - 8 + 15 + 65536) div 16 - 4096 - 1;
   var PY1 := (Y1 - 8 + 15 + 65536) div 16 - 4096;
   var PY2 := (Y2 - 8 + 15 + 65536) div 16 - 4096 - 1;
@@ -2021,8 +2140,11 @@ begin
 
   var State := PackState(S, Tex, Ok);
   // Only the texels it samples: it may draw beside them in the same buffer.
-  if Ok and (Tex.Count = 1) and Tex.OneLevel and (Tex.Spans[0].Stride > 0) and (V0.Q = 1) and (V1.Q = 1) then
-    Tex.Spans[0] := SpriteTexels(S, V0, SX, SY, TX, TY, PX1, PY1, PX2, PY2, Tex.Spans[0]);
+  if Ok and (Tex.Count = 1) and Tex.OneLevel and (Tex.Spans[0].Stride > 0) then
+    if not S.Through then
+      Tex.Spans[0] := SpritePerspTexels(S, V0, V1, Tex.Spans[0])
+    else if (V0.Q = 1) and (V1.Q = 1) then
+      Tex.Spans[0] := SpriteTexels(S, V0, SX, SY, TX, TY, PX1, PY1, PX2, PY2, Tex.Spans[0]);
   if not Ok or not Place(S, State, Tex, PX1, PY1, PX2, PY2) then
   begin
     Fallback;
@@ -2056,11 +2178,15 @@ begin
     Lod := GETexLod(S, Max(Max(Abs(SX), Abs(SY)), Max(Abs(TX), Abs(TY))), 1, IW);
   end;
   P[42] := Cardinal(Lod);
-  // The texture coordinates' planes (GESpriteUVPlanes), as a triangle's.
+  // The texture coordinates' planes as a triangle's: through mode
+  // GESpriteUVPlanes, transform mode GESpritePerspPlanes.
   var UV: TGEUVPlanes;
   P[125] := 0;
-  if S.Textured and GESpriteUVPlanes(S, V0, V1, UV) then
+  if S.Textured and S.Through and GESpriteUVPlanes(S, V0, V1, UV) then
     PutUVPlanes(P, UV);
+  var PP: TGEPerspPlanes;
+  if S.Textured and not S.Through and GESpritePerspPlanes(V0, V1, PP) then
+    PutPerspPlanes(P, PP);
   Record_(KindSprite, S, V0, V1, V1);
 end;
 
@@ -2252,11 +2378,8 @@ begin
   Q[9] := Cardinal(V.Z);
   var FS: Single := V.S;
   var FT: Single := V.T;
-  if (V.Q <> 1) and (V.Q <> 0) then
-  begin
-    FS := V.S / V.Q;
-    FT := V.T / V.Q;
-  end;
+  if S.Textured then
+    GEPointUV(S, V, FS, FT);
   Q[10] := PCardinal(@FS)^;
   Q[11] := PCardinal(@FT)^;
   Q[12] := PCardinal(@V.Fog)^;

@@ -680,6 +680,7 @@ uses
   PSP.GE in '..\..\source\cores\psp\PSP.GE.pas',
   PSP.Kernel in '..\..\source\cores\psp\PSP.Kernel.pas',
   PSP.Media in '..\..\source\cores\psp\PSP.Media.pas',
+  PSP.UMDVideo in '..\..\source\cores\psp\PSP.UMDVideo.pas',
   PSP.Memory in '..\..\source\cores\psp\PSP.Memory.pas',
   PSP.MP3 in '..\..\source\cores\psp\PSP.MP3.pas',
   PSP.Mpeg in '..\..\source\cores\psp\PSP.Mpeg.pas',

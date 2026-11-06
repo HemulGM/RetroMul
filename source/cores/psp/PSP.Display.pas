@@ -159,8 +159,7 @@ uses
   System.Math;
 
 const
-  ButtonBits: array[TEmulatorButton] of Cardinal = ($10, $40, $80, $20, $4000, $2000, $1, $8, $100, $8000,
-    $1000, $200, 0);
+  ButtonBits: array[TEmulatorButton] of Cardinal = ($10, $40, $80, $20, $4000, $2000, $1, $8, $100, $8000, $1000, $200, 0);
 
 constructor TPSPDisplay.Create(Kernel: TPSPKernel);
 begin
@@ -203,13 +202,13 @@ begin
   FHcountAdjust := 0;
   // The driver has been sampling since power-on.
   FillChar(FSamples, SizeOf(FSamples), 0);
-  for var I := 0 to High(FSamples) do
+  for var i := 0 to High(FSamples) do
   begin
-    var At := FFieldStart - Int64(High(FSamples) - I) * PSPFrameNs + PSPCtrlSampleNs;
+    var At := FFieldStart - Int64(High(FSamples) - i) * PSPFrameNs + PSPCtrlSampleNs;
     if At > 0 then
-      FSamples[I].Time := Cardinal(At div 1000);
-    FSamples[I].LX := 128;
-    FSamples[I].LY := 128;
+      FSamples[i].Time := Cardinal(At div 1000);
+    FSamples[i].LX := 128;
+    FSamples[i].LY := 128;
   end;
   FSampleHead := 0;
   FSampleIndex := Length(FSamples);
@@ -301,10 +300,10 @@ begin
   // Better threads first, otherwise in the order they began to wait.
   for var T in FWaiters do
   begin
-    var I := FReleaseQueue.Count;
-    while (I > 0) and (FReleaseQueue[I - 1].Priority > T.Priority) do
-      Dec(I);
-    FReleaseQueue.Insert(I, T);
+    var i := FReleaseQueue.Count;
+    while (i > 0) and (FReleaseQueue[i - 1].Priority > T.Priority) do
+      Dec(i);
+    FReleaseQueue.Insert(i, T);
   end;
   FWakeAt := FKernel.BusyUntil + PSPWakeLatencyNs;
   SchedulePhase(dpWake, FWakeAt);
@@ -464,12 +463,12 @@ end;
 
 procedure TPSPDisplay.ReadSamples(Address: Cardinal; Count: Integer; Negative: Boolean; FromIndex: Int64);
 begin
-  for var I := 0 to Count - 1 do
+  for var i := 0 to Count - 1 do
   begin
-    var Age := Integer(FSampleIndex - (FromIndex + I));
+    var Age := Integer(FSampleIndex - (FromIndex + i));
     var Slot := (FSampleHead - Age + Length(FSamples) * 2) mod Length(FSamples);
     var S := FSamples[Slot];
-    var A := Address + Cardinal(I) * 16;
+    var A := Address + Cardinal(i) * 16;
     FMemory.Write32(A, S.Time);
     if Negative then
       FMemory.Write32(A + 4, not S.Buttons)
@@ -547,10 +546,10 @@ var
 procedure InitDisplayColours;
 begin
   for var F := 0 to 2 do
-    for var I := 0 to 255 do
+    for var i := 0 to 255 do
     begin
-      GDisplayLo[F, I] := DisplayColour16(F, I);
-      GDisplayHi[F, I] := DisplayColour16(F, Cardinal(I) shl 8);
+      GDisplayLo[F, i] := DisplayColour16(F, i);
+      GDisplayHi[F, i] := DisplayColour16(F, Cardinal(i) shl 8);
     end;
 end;
 
@@ -559,20 +558,19 @@ begin
   Frame.Width := PSPFrameWidth;
   Frame.Height := PSPFrameHeight;
   var Pick := -1;
-  for var I := 0 to High(FFrames) do
-    if (Length(FFrames[I]) = PSPFrameWidth * PSPFrameHeight) and
-      (EmulationBufferReferences(Pointer(FFrames[I])) = 1) then
+  for var i := 0 to High(FFrames) do
+    if (Length(FFrames[i]) = PSPFrameWidth * PSPFrameHeight) and (EmulationBufferReferences(Pointer(FFrames[i])) = 1) then
     begin
-      Pick := I;
+      Pick := i;
       Break
     end;
   if Pick < 0 then
   begin
     Pick := 0;
-    for var I := 0 to High(FFrames) do
-      if EmulationBufferReferences(Pointer(FFrames[I])) <= 1 then
+    for var i := 0 to High(FFrames) do
+      if EmulationBufferReferences(Pointer(FFrames[i])) <= 1 then
       begin
-        Pick := I;
+        Pick := i;
         Break
       end;
     // Dropping our reference never overwrites a frame still used by the UI.
@@ -1149,6 +1147,7 @@ procedure TPSPDisplay.Register;
 const
   D = 'sceDisplay';
   C = 'sceCtrl';
+  R = 'sceCtrl_driver';
 begin
   var H := FHLE;
   H.Register(D, $0E20F177, 'sceDisplaySetMode', hSetMode);
@@ -1179,6 +1178,8 @@ begin
   H.Register(C, $1F4011E6, 'sceCtrlSetSamplingMode', hCtrlSetSamplingMode);
   H.Register(C, $DA6B76A1, 'sceCtrlGetSamplingMode', hCtrlGetSamplingMode);
   H.Register(C, $3A622550, 'sceCtrlPeekBufferPositive', hCtrlPeekBufferPositive);
+  H.Register(R, $C4AAD55F, 'sceCtrlPeekBufferPositive371', hCtrlPeekBufferPositive);
+  H.Register(R, $2BA616AF, 'sceCtrlPeekBufferPositive660', hCtrlPeekBufferPositive);
   H.Register(C, $C152080A, 'sceCtrlPeekBufferNegative', hCtrlPeekBufferNegative);
   H.Register(C, $1F803938, 'sceCtrlReadBufferPositive', hCtrlReadBufferPositive);
   H.Register(C, $60B81F86, 'sceCtrlReadBufferNegative', hCtrlReadBufferNegative);

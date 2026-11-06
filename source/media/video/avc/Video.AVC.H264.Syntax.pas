@@ -18,9 +18,11 @@ type
     Valid: Boolean;
     ID, Profile, Level, LogFrameNum, POCType, LogPOC, MaxRefs: Integer;
     MBWidth, MBHeight, Width, Height, CropLeft, CropTop: Integer;
+    TimeScale, UnitsInTick: Cardinal;
+    AspectNumerator, AspectDenominator: Integer;
     MaxReorder, OffsetNonRef, OffsetTopBottom, POCCycleCount: Integer;
     POCCycle: array[0..254] of Integer;
-    FrameOnly, DeltaPOCAlwaysZero, FullRange, Direct8Inference: Boolean;
+    FrameOnly, AdaptiveFields, DeltaPOCAlwaysZero, FullRange, Direct8Inference: Boolean;
     Matrix: TColorMatrix;
     ScalingPresent: Boolean;
     Scaling: TH264Scaling;
@@ -129,12 +131,23 @@ var
   var
     Aspect, J: Integer;
     A, C: Boolean;
+  const
+    AspectN: array[0..16] of Integer = (0, 1, 12, 10, 16, 40, 24, 20, 32, 80, 18, 15, 64, 160, 4, 3, 2);
+    AspectD: array[0..16] of Integer = (0, 1, 11, 11, 11, 33, 11, 11, 11, 33, 11, 11, 33, 99, 3, 2, 1);
   begin
     if B.ReadBit then
     begin
       Aspect := B.ReadBits(8);
       if Aspect = 255 then
-        B.Skip(32);
+      begin
+        SPS.AspectNumerator := B.ReadBits(16);
+        SPS.AspectDenominator := B.ReadBits(16);
+      end
+      else if Aspect <= High(AspectN) then
+      begin
+        SPS.AspectNumerator := AspectN[Aspect];
+        SPS.AspectDenominator := AspectD[Aspect];
+      end;
     end;
     if B.ReadBit then
       B.Skip(1);
@@ -156,7 +169,11 @@ var
       B.ReadUE
     end;
     if B.ReadBit then
-      B.Skip(65);
+    begin
+      SPS.UnitsInTick := B.ReadBits(32);
+      SPS.TimeScale := B.ReadBits(32);
+      B.Skip(1);
+    end;
     A := B.ReadBit;
     if A then
       HRD;
@@ -237,7 +254,7 @@ begin
     raise EPlayerUnsupported.Create('H.264 dimensions exceed 8192');
   SPS.FrameOnly := B.ReadBit;
   if not SPS.FrameOnly then
-    raise EPlayerUnsupported.Create('Interlaced H.264 is not supported yet');
+    SPS.AdaptiveFields := B.ReadBit;
   SPS.Direct8Inference := B.ReadBit;
   L := 0;
   R := 0;
@@ -253,9 +270,9 @@ begin
   if (Int64(L) + R >= SPS.MBWidth * 8) or (Int64(T) + D >= SPS.MBHeight * 8) then
     raise EPlayerFormat.Create('Invalid H.264 crop bounds');
   SPS.Width := SPS.MBWidth * 16 - (L + R) * 2;
-  SPS.Height := SPS.MBHeight * 16 - (T + D) * 2;
+  SPS.Height := (SPS.MBHeight * 16 - (T + D) * 2) * (2 - Ord(SPS.FrameOnly));
   SPS.CropLeft := L * 2;
-  SPS.CropTop := T * 2;
+  SPS.CropTop := T * 2 * (2 - Ord(SPS.FrameOnly));
   if (SPS.Width <= 0) or (SPS.Height <= 0) then
     raise EPlayerFormat.Create('Invalid H.264 crop');
   if B.ReadBit then

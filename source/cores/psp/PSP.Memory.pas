@@ -19,6 +19,9 @@ const
   // Page marks (CodeMarks): decoded code, and pages a device reads later.
   PSPPageCode = 1;
   PSPPageWatched = 2;
+  PSPBootRAMBase = $1FC00000;
+  PSPBootRAMSize = $1000;
+  PSPMediaRAMSize = $200000;
 
 type
   TPSPCodeWrite = procedure(Address, Size: Cardinal) of object;
@@ -30,6 +33,8 @@ type
     FRAM: TBytes;
     FVRAM: TBytes;
     FScratch: TBytes;
+    FBootRAM, FMediaRAM: TBytes;
+    FSharedMemory, FMediaView: TPSPMemory;
     FPages: array[0..PSPPageCount - 1] of PByte;
     FCodePages: array[0..PSPPageCount - 1] of Byte;
     FOnCodeWrite: TPSPCodeWrite;
@@ -54,10 +59,12 @@ type
     procedure MapRange(Physical, Size: Cardinal; Base: PByte);
     function Unmapped(Address: Cardinal; Write: Boolean): Cardinal;
     procedure CodeWrite(Address, Size: Cardinal);
+    procedure NotifyCodeWrite(Address, Size: Cardinal);
     function Fault(Address: Cardinal): PByte;
     procedure FaultRange(Address, Size: Cardinal);
   public
-    constructor Create;
+    constructor Create(SharedMemory: TPSPMemory = nil);
+    destructor Destroy; override;
     procedure Reset;
     procedure SetVRAMTranslation(Width: Cardinal);
     function Read8(Address: Cardinal): Cardinal; inline;
@@ -123,57 +130,90 @@ type
     property RAM: TBytes read FRAM;
     property VRAM: TBytes read FVRAM;
     property Scratch: TBytes read FScratch;
+    property BootRAM: TBytes read FBootRAM;
+    property MediaRAM: TBytes read FMediaRAM;
     property FaultAddress: Cardinal read FFaultAddress;
     property Faults: Integer read FFaults;
     property VRAMShift: Integer read FVRAMShift;
   end;
 
 // Depth's linear CPU view (mirror 3) to physical EDRAM bytes.
-function PSPDepthOffset(I: Cardinal; Shift: Integer): Cardinal; inline;
+function PSPDepthOffset(i: Cardinal; Shift: Integer): Cardinal; inline;
 
 implementation
 
-function PSPDepthOffset(I: Cardinal; Shift: Integer): Cardinal;
+function PSPDepthOffset(i: Cardinal; Shift: Integer): Cardinal;
 begin
   if Shift = 0 then
   begin
-    if (I and $600 = 0) or (I and $600 = $600) then
-      I := I xor $600;
+    if (i and $600 = 0) or (i and $600 = $600) then
+      i := i xor $600;
   end
   else
   begin
     var Mask := (Cardinal(1) shl Shift) - $20;
-    var Bits := ((I and (Mask shr 1) and not Cardinal($3F)) shl 1) or (((not I) and $20) shl 1) or
-      ((I shr (Shift - 6)) and $20);
-    I := ((I xor (Cardinal(1) shl (Shift + 3))) and not Mask) or Bits;
+    var Bits := ((i and (Mask shr 1) and not Cardinal($3F)) shl 1) or (((not i) and $20) shl 1) or
+      ((i shr (Shift - 6)) and $20);
+    i := ((i xor (Cardinal(1) shl (Shift + 3))) and not Mask) or Bits;
   end;
-  Result := I and (PSPVRAMSize - 1);
+  Result := i and (PSPVRAMSize - 1);
 end;
 
-constructor TPSPMemory.Create;
+constructor TPSPMemory.Create(SharedMemory: TPSPMemory);
 begin
   inherited Create;
-  SetLength(FRAM, PSPRAMSize);
-  SetLength(FVRAM, PSPVRAMSize);
-  SetLength(FScratch, PSPScratchSize);
+  FSharedMemory := SharedMemory;
+  if SharedMemory = nil then
+  begin
+    SetLength(FRAM, PSPRAMSize);
+    SetLength(FVRAM, PSPVRAMSize);
+    SetLength(FScratch, PSPScratchSize);
+    SetLength(FBootRAM, PSPBootRAMSize);
+  end
+  else
+  begin
+    if SharedMemory.FMediaView <> nil then
+      raise EInvalidOpException.Create('PSP: the Media Engine memory is already attached');
+    FRAM := SharedMemory.FRAM;
+    FVRAM := SharedMemory.FVRAM;
+    FScratch := SharedMemory.FScratch;
+    FBootRAM := SharedMemory.FBootRAM;
+    SetLength(FMediaRAM, PSPMediaRAMSize);
+    MapRange(0, PSPMediaRAMSize, @FMediaRAM[0]);
+    SharedMemory.FMediaView := Self;
+  end;
   MapRange(PSPRAMBase, PSPRAMSize, @FRAM[0]);
-  // Even mirrors are linear. Odd mirrors also permute bytes within pages,
-  // so their nil entries send the CPU/JIT through Read/Write instead.
+  MapRange(PSPBootRAMBase, PSPBootRAMSize, @FBootRAM[0]);
+  // ME shares system RAM and boot SRAM, but its low 2 MiB belongs to ME only.
   MapRange(PSPVRAMBase, PSPVRAMSize, @FVRAM[0]);
   MapRange(PSPVRAMBase + 2 * PSPVRAMSize, PSPVRAMSize, @FVRAM[0]);
   SetVRAMTranslation($400);
-  MapRange(PSPScratchBase, PSPScratchSize, @FScratch[0]);
+  if SharedMemory = nil then
+    MapRange(PSPScratchBase, PSPScratchSize, @FScratch[0]);
+end;
+
+destructor TPSPMemory.Destroy;
+begin
+  if (FSharedMemory <> nil) and (FSharedMemory.FMediaView = Self) then
+    FSharedMemory.FMediaView := nil;
+  inherited;
 end;
 
 procedure TPSPMemory.MapRange(Physical, Size: Cardinal; Base: PByte);
 begin
   var Page := Physical shr PSPPageShift;
-  for var I := 0 to Integer(Size shr PSPPageShift) - 1 do
-    FPages[Page + Cardinal(I)] := Base + NativeUInt(I) * PSPPageSize;
+  for var i := 0 to Integer(Size shr PSPPageShift) - 1 do
+    FPages[Page + Cardinal(i)] := Base + NativeUInt(i) * PSPPageSize;
 end;
 
 procedure TPSPMemory.Reset;
 begin
+  if FSharedMemory <> nil then
+  begin
+    FillChar(FMediaRAM[0], Length(FMediaRAM), 0);
+    ClearCodeMarks;
+    Exit;
+  end;
   if (FHeldCount > 0) or (FWatchCount > 0) then
   begin
     // Reset replaces every bank, independent of the previous access range.
@@ -184,6 +224,7 @@ begin
   FillChar(FRAM[0], Length(FRAM), 0);
   FillChar(FVRAM[0], Length(FVRAM), 0);
   FillChar(FScratch[0], Length(FScratch), 0);
+  FillChar(FBootRAM[0], Length(FBootRAM), 0);
   ClearCodeMarks;
   FFaults := 0;
   FFaultAddress := 0;
@@ -229,14 +270,14 @@ begin
   Result := nil;
   if (Address and $1FA00000) <> $04200000 then
     Exit;
-  var I := VRAMOffset(Address);
-  if FHeld[I shr PSPPageShift] then
+  var i := VRAMOffset(Address);
+  if FHeld[i shr PSPPageShift] then
   begin
     FSyncAddress := Address;
     FSyncSize := 1;
     FOnVRAMFault();
   end;
-  Result := @FVRAM[I];
+  Result := @FVRAM[i];
 end;
 
 function TPSPMemory.Unmapped(Address: Cardinal; Write: Boolean): Cardinal;
@@ -247,6 +288,15 @@ begin
 end;
 
 procedure TPSPMemory.CodeWrite(Address, Size: Cardinal);
+begin
+  NotifyCodeWrite(Address, Size);
+  if FMediaView <> nil then
+    FMediaView.NotifyCodeWrite(Address, Size);
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+    FSharedMemory.NotifyCodeWrite(Address, Size);
+end;
+
+procedure TPSPMemory.NotifyCodeWrite(Address, Size: Cardinal);
 begin
   if not Assigned(FOnCodeWrite) then
     Exit;
@@ -278,6 +328,8 @@ end;
 
 function TPSPMemory.PageBase(Address: Cardinal): PByte;
 begin
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+    Exit(FSharedMemory.PageBase(Address));
   Result := FPages[(Address and $1FFFFFFF) shr PSPPageShift];
   if Result = nil then
     Result := Fault(Address);
@@ -316,7 +368,8 @@ begin
     begin
       FSyncAddress := Address;
       FSyncSize := Size;
-      if FSyncSize = 0 then FSyncSize := 1;
+      if FSyncSize = 0 then
+        FSyncSize := 1;
       FOnVRAMFault();
       Exit;
     end;
@@ -336,7 +389,8 @@ end;
 
 procedure TPSPMemory.ReleaseVRAMPage(Page: Integer);
 begin
-  if not FHeld[Page] then Exit;
+  if not FHeld[Page] then
+    Exit;
   FHeld[Page] := False;
   Dec(FHeldCount);
   // Odd views remain nonlinear and continue through MirrorPtr.
@@ -347,14 +401,17 @@ end;
 
 procedure TPSPMemory.ReleaseVRAM;
 begin
-  if FHeldCount = 0 then Exit;
-  for var Page := 0 to High(FHeld) do ReleaseVRAMPage(Page);
+  if FHeldCount = 0 then
+    Exit;
+  for var Page := 0 to High(FHeld) do
+    ReleaseVRAMPage(Page);
 end;
 
 function TPSPMemory.VRAMPageAt(Address: Cardinal): Integer;
 begin
   var A := Address and $1FFFFFFF;
-  if (A < PSPVRAMBase) or (A >= PSPVRAMBase + 4 * PSPVRAMSize) then Exit(-1);
+  if (A < PSPVRAMBase) or (A >= PSPVRAMBase + 4 * PSPVRAMSize) then
+    Exit(-1);
   Result := Integer(VRAMOffset(A) shr PSPPageShift);
 end;
 
@@ -365,6 +422,8 @@ end;
 
 function TPSPMemory.Read8(Address: Cardinal): Cardinal;
 begin
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+    Exit(FSharedMemory.Read8(Address));
   var P := FPages[(Address and $1FFFFFFF) shr PSPPageShift];
   if P = nil then
   begin
@@ -384,8 +443,8 @@ end;
 function TPSPMemory.ReadCrossing(Address, Bytes: Cardinal): Cardinal;
 begin
   Result := 0;
-  for var I := 0 to Bytes - 1 do
-    Result := Result or (Read8(Address + I) shl (I * 8));
+  for var i := 0 to Bytes - 1 do
+    Result := Result or (Read8(Address + i) shl (i * 8));
 end;
 
 procedure TPSPMemory.WriteCrossing(Address, Value, Bytes: Cardinal);
@@ -396,12 +455,14 @@ begin
     WatchRange(Address, Bytes);
   if FHeldCount > 0 then
     FaultRange(Address, Bytes);
-  for var I := 0 to Bytes - 1 do
-    Write8(Address + I, Value shr (I * 8));
+  for var i := 0 to Bytes - 1 do
+    Write8(Address + i, Value shr (i * 8));
 end;
 
 function TPSPMemory.Read16(Address: Cardinal): Cardinal;
 begin
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+    Exit(FSharedMemory.Read16(Address));
   var P := FPages[(Address and $1FFFFFFF) shr PSPPageShift];
   if P = nil then
   begin
@@ -426,6 +487,8 @@ end;
 
 function TPSPMemory.Read32(Address: Cardinal): Cardinal;
 begin
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+    Exit(FSharedMemory.Read32(Address));
   var P := FPages[(Address and $1FFFFFFF) shr PSPPageShift];
   if P = nil then
   begin
@@ -450,6 +513,11 @@ end;
 
 procedure TPSPMemory.Write8(Address, Value: Cardinal);
 begin
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+  begin
+    FSharedMemory.Write8(Address, Value);
+    Exit;
+  end;
   var Page := (Address and $1FFFFFFF) shr PSPPageShift;
   if (FCodePages[Page] and PSPPageWatched) <> 0 then
     WatchFault(Address, 1);
@@ -478,6 +546,11 @@ end;
 
 procedure TPSPMemory.Write16(Address, Value: Cardinal);
 begin
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+  begin
+    FSharedMemory.Write16(Address, Value);
+    Exit;
+  end;
   var Page := (Address and $1FFFFFFF) shr PSPPageShift;
   if (FCodePages[Page] and PSPPageWatched) <> 0 then
     WatchFault(Address, 2);
@@ -516,6 +589,11 @@ end;
 
 procedure TPSPMemory.Write32(Address, Value: Cardinal);
 begin
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+  begin
+    FSharedMemory.Write32(Address, Value);
+    Exit;
+  end;
   var Page := (Address and $1FFFFFFF) shr PSPPageShift;
   if (FCodePages[Page] and PSPPageWatched) <> 0 then
     WatchFault(Address, 4);
@@ -585,7 +663,8 @@ begin
   FWatchSize := Size;
   FSyncAddress := Address;
   FSyncSize := Size;
-  if FSyncSize = 0 then FSyncSize := 1;
+  if FSyncSize = 0 then
+    FSyncSize := 1;
   if Assigned(FOnWatchFault) then
     FOnWatchFault()
   else
@@ -605,13 +684,15 @@ end;
 
 procedure TPSPMemory.ReleaseWatches;
 begin
-  for var I := 0 to FWatchCount - 1 do
-    FCodePages[FWatched[I]] := FCodePages[FWatched[I]] and not PSPPageWatched;
+  for var i := 0 to FWatchCount - 1 do
+    FCodePages[FWatched[i]] := FCodePages[FWatched[i]] and not PSPPageWatched;
   FWatchCount := 0;
 end;
 
 function TPSPMemory.Ptr(Address: Cardinal; Size: Cardinal): PByte;
 begin
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+    Exit(FSharedMemory.Ptr(Address, Size));
   if FWatchCount > 0 then
     WatchRange(Address, Size);
   Result := ReadPtr(Address, Size);
@@ -619,6 +700,8 @@ end;
 
 function TPSPMemory.ReadPtr(Address: Cardinal; Size: Cardinal): PByte;
 begin
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+    Exit(FSharedMemory.ReadPtr(Address, Size));
   if FHeldCount > 0 then
     FaultRange(Address, Size);
   Result := LinearPtr(Address, Size);
@@ -646,6 +729,8 @@ end;
 
 function TPSPMemory.HostPtr(Address: Cardinal; Size: Cardinal): PByte;
 begin
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+    Exit(FSharedMemory.HostPtr(Address, Size));
   var Physical := Address and $1FFFFFFF;
   if (Physical >= PSPVRAMBase) and (Physical < PSPVRAMBase + 4 * PSPVRAMSize) then
   begin
@@ -677,8 +762,8 @@ begin
   if P <> nil then
     Move(P^, Buffer, Size)
   else
-    for var I := 0 to Size - 1 do
-      PByte(@Buffer)[I] := Read8(Address + I);
+    for var i := 0 to Size - 1 do
+      PByte(@Buffer)[i] := Read8(Address + i);
 end;
 
 procedure TPSPMemory.WriteBytes(Address: Cardinal; const Buffer; Size: Cardinal);
@@ -699,8 +784,8 @@ begin
       end;
   end
   else
-    for var I := 0 to Size - 1 do
-      Write8(Address + I, PByte(@Buffer)[I]);
+    for var i := 0 to Size - 1 do
+      Write8(Address + i, PByte(@Buffer)[i]);
 end;
 
 procedure TPSPMemory.Fill(Address: Cardinal; Value: Byte; Size: Cardinal);
@@ -721,8 +806,8 @@ begin
       end;
   end
   else
-    for var I := 0 to Size - 1 do
-      Write8(Address + I, Value);
+    for var i := 0 to Size - 1 do
+      Write8(Address + i, Value);
 end;
 
 procedure TPSPMemory.Touched(Address, Size: Cardinal);
@@ -760,8 +845,8 @@ begin
       end;
   end
   else
-    for var I := 0 to Size - 1 do
-      Write8(Dest + I, Read8(Source + I));
+    for var i := 0 to Size - 1 do
+      Write8(Dest + i, Read8(Source + i));
 end;
 
 function TPSPMemory.ReadAnsi(Address: Cardinal; MaxLength: Integer): RawByteString;
@@ -772,12 +857,14 @@ begin
   // Most names and paths fit in one linear page. Scan its bytes once,
   // retaining the scalar path for strings crossing pages/nonlinear views.
   var Span := Integer(PSPPageSize - (Address and PSPPageMask));
-  if Span > MaxLength then Span := MaxLength;
+  if Span > MaxLength then
+    Span := MaxLength;
   var P := ReadPtr(Address, Span);
   if P <> nil then
   begin
     var Count := 0;
-    while (Count < Span) and (P[Count] <> 0) do Inc(Count);
+    while (Count < Span) and (P[Count] <> 0) do
+      Inc(Count);
     if (Count < Span) or (Span = MaxLength) then
     begin
       SetString(Result, PAnsiChar(P), Count);
@@ -813,6 +900,10 @@ procedure TPSPMemory.MarkCode(Address: Cardinal);
 begin
   var Page := (Address and $1FFFFFFF) shr PSPPageShift;
   FCodePages[Page] := FCodePages[Page] or PSPPageCode;
+  if FMediaView <> nil then
+    FMediaView.FCodePages[Page] := FMediaView.FCodePages[Page] or PSPPageCode;
+  if (FSharedMemory <> nil) and ((Address and $1FFFFFFF) >= PSPMediaRAMSize) then
+    FSharedMemory.FCodePages[Page] := FSharedMemory.FCodePages[Page] or PSPPageCode;
   var Physical := Address and $1FFFFFFF;
   if (Physical >= PSPVRAMBase) and (Physical < PSPVRAMBase + 4 * PSPVRAMSize) then
   begin
@@ -822,19 +913,28 @@ begin
       var Linear := (PSPVRAMBase + Cardinal(M) * 2 * PSPVRAMSize + Offset) shr PSPPageShift;
       FCodePages[Linear] := FCodePages[Linear] or PSPPageCode;
       var Odd := (PSPVRAMBase + Cardinal(M * 2 + 1) * PSPVRAMSize + (Offset and not Cardinal($FFFF))) shr PSPPageShift;
-      for var I := 0 to 15 do
-        FCodePages[Odd + Cardinal(I)] := FCodePages[Odd + Cardinal(I)] or PSPPageCode;
+      for var i := 0 to 15 do
+        FCodePages[Odd + Cardinal(i)] := FCodePages[Odd + Cardinal(i)] or PSPPageCode;
     end;
   end;
 end;
 
 procedure TPSPMemory.ClearCodeMarks;
 begin
-  if FWatchCount = 0 then
-    FillChar(FCodePages, SizeOf(FCodePages), 0)
-  else
-    for var Page := 0 to High(FCodePages) do
-      FCodePages[Page] := FCodePages[Page] and not PSPPageCode;
+  var Peer := FMediaView;
+  if FSharedMemory <> nil then
+    Peer := FSharedMemory;
+  if (Peer = nil) and (FWatchCount = 0) then
+  begin
+    FillChar(FCodePages, SizeOf(FCodePages), 0);
+    Exit;
+  end;
+  for var Page := 0 to High(FCodePages) do
+  begin
+    FCodePages[Page] := FCodePages[Page] and not PSPPageCode;
+    if Peer <> nil then
+      FCodePages[Page] := FCodePages[Page] or (Peer.FCodePages[Page] and PSPPageCode);
+  end;
 end;
 
 function TPSPMemory.IsCode(Address: Cardinal): Boolean;

@@ -519,6 +519,7 @@
         <DCCReference Include="..\..\source\media\rom\Core.RomHashes.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Memory.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Media.pas"/>
+        <DCCReference Include="..\..\source\cores\psp\PSP.UMDVideo.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.CPU.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Executable.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Console.pas"/>

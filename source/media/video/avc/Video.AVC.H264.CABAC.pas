@@ -19,6 +19,7 @@ type
     procedure RefillNormalized;
     function Coefficients(Category, MaxCoeff, CBFContext: Integer; var Block: array of Integer): Integer;
   public
+    FieldPicture: Boolean;
     procedure Init(var Bits: TBitReader; QP, InitID: Integer; Intra: Boolean);
     function Decode(Context: Integer): Integer; inline;
     function Bypass: Integer; inline;
@@ -192,7 +193,7 @@ const
   Scan: array[0..15] of Integer = (0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15);
 var
   Index: array[0..63] of Integer;
-  I, Node, Value, K, Position, SigOffset, LastOffset: Integer;
+  I, Node, Value, K, Position, SigOffset, LastOffset, SigBase, LastBase: Integer;
   FoundLast: Boolean;
 begin
   for I := 0 to High(Block) do
@@ -202,6 +203,21 @@ begin
   if CBFContext >= 0 then
     if Decode(CBFContext) = 0 then
       Exit;
+  SigBase := Significant[Category];
+  LastBase := Last[Category];
+  if FieldPicture then
+  begin
+    if Category = 5 then
+    begin
+      SigBase := 436;
+      LastBase := 451;
+    end
+    else
+    begin
+      Inc(SigBase, 172);
+      Inc(LastBase, 172);
+    end;
+  end;
   FoundLast := False;
   for I := 0 to MaxCoeff - 2 do
   begin
@@ -209,14 +225,14 @@ begin
     LastOffset := I;
     if Category = 5 then
     begin
-      SigOffset := significant_coeff_flag_offset_8x8[0][I];
+      SigOffset := significant_coeff_flag_offset_8x8[Ord(FieldPicture)][I];
       LastOffset := ff_h264_cabac_tables[1280 + I];
     end;
-    if Decode(Significant[Category] + SigOffset) <> 0 then
+    if Decode(SigBase + SigOffset) <> 0 then
     begin
       Index[Result] := I;
       Inc(Result);
-      if Decode(Last[Category] + LastOffset) <> 0 then
+      if Decode(LastBase + LastOffset) <> 0 then
       begin
         FoundLast := True;
         Break
@@ -264,10 +280,16 @@ begin
     Position := Index[I];
     if Abs(Value) > 32767 then
       raise EPlayerFormat.Create('CABAC coefficient exceeds 8-bit decoder range');
-    if MaxCoeff = 64 then
+    if FieldPicture and (MaxCoeff = 64) then
+      Block[FieldScan8[Position]] := Value
+    else if MaxCoeff = 64 then
       Block[Scan8[Position]] := Value
     else if MaxCoeff = 4 then
       Block[Position] := Value
+    else if FieldPicture and (MaxCoeff = 15) then
+      Block[FieldScan4[Position + 1]] := Value
+    else if FieldPicture then
+      Block[FieldScan4[Position]] := Value
     else if MaxCoeff = 15 then
       Block[Scan[Position + 1]] := Value
     else

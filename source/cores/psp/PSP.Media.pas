@@ -6,7 +6,7 @@
 interface
 
 uses
-  System.Classes, System.SysUtils, System.Generics.Collections;
+  System.Classes, System.SysUtils, System.Generics.Collections, Core.Archive.Container;
 
 type
   EPSPFormat = class(EReadError);
@@ -56,6 +56,7 @@ type
     function HasFile(const Path: string): Boolean;
     function ReadFile(const Path: string; Limit: Cardinal = 64 * 1024 * 1024): TBytes;
     function IsPSP: Boolean;
+    function IsUMDVideo: Boolean;
     function OpenFile(const Path: string): TStream;
     function OpenRaw: TStream;
     function FileInfo(const Path: string; out FileSize: Int64; out Directory: Boolean): Boolean;
@@ -69,9 +70,14 @@ type
   TPSPProgram = record
     Executable, Parameters: TBytes;
     Title, DiscId, MediaPath, BootPath: string;
-    TemporaryMedia: Boolean;
+    TemporaryMedia, UMDVideo: Boolean;
+    Archive: IArchiveContainer;
+    procedure AttachArchive(const Container: IArchiveContainer; const MemberName: string);
     class function Read(Stream: TStream): TPSPProgram; static;
   end;
+
+const
+  PSPArchiveMount = '/PSP/GAME/APP';
 
 function PSPLE16(const Data: TBytes; Offset: Int64): Word;
 
@@ -501,7 +507,12 @@ end;
 
 function TPSPDisc.IsPSP: Boolean;
 begin
-  Result := HasFile('PSP_GAME/PARAM.SFO') or HasFile('PSP_GAME/SYSDIR/EBOOT.BIN');
+  Result := HasFile('PSP_GAME/PARAM.SFO') or HasFile('PSP_GAME/SYSDIR/EBOOT.BIN') or IsUMDVideo;
+end;
+
+function TPSPDisc.IsUMDVideo: Boolean;
+begin
+  Result := HasFile('UMD_VIDEO/PLAYLIST.UMD') and HasFile('UMD_VIDEO/PARAM.SFO');
 end;
 
 function TPSPDisc.OpenFile(const Path: string): TStream;
@@ -568,6 +579,25 @@ begin
     (Data[3] = Ord('E'))));
 end;
 
+procedure TPSPProgram.AttachArchive(const Container: IArchiveContainer; const MemberName: string);
+begin
+  if (Container = nil) or (BootPath <> '') then
+    Exit;
+  // Preserve the package tree: relative opens and explicit ms0: paths refer to
+  // the same files. Member names never become native filesystem paths.
+  for var Name in Container.Names do
+  begin
+    var Path := Name.Replace('\', '/');
+    if Path.StartsWith('/') or Path.Contains(':') or Path.Contains(#0) then
+      raise EPSPFormat.Create('PSP: invalid archive path: ' + Name);
+    for var Part in Path.Split(['/']) do
+      if (Part = '..') or (Part = '.') then
+        raise EPSPFormat.Create('PSP: invalid archive path: ' + Name);
+  end;
+  Archive := Container;
+  BootPath := 'ms0:' + PSPArchiveMount + '/' + MemberName.Replace('\', '/');
+end;
+
 class function TPSPProgram.Read(Stream: TStream): TPSPProgram;
 begin
   Result := Default(TPSPProgram);
@@ -576,27 +606,36 @@ begin
     var Disc := TPSPDisc.Create(Stream);
     try
       if not Disc.IsPSP then
-        raise EPSPFormat.Create('PSP: the image holds no PSP game');
-      if Disc.HasFile('PSP_GAME/PARAM.SFO') then
-        Result.Parameters := Disc.ReadFile('PSP_GAME/PARAM.SFO');
-      Result.BootPath := 'disc0:/PSP_GAME/SYSDIR/EBOOT.BIN';
-      if Disc.HasFile('PSP_GAME/SYSDIR/EBOOT.BIN') then
-        Result.Executable := Disc.ReadFile('PSP_GAME/SYSDIR/EBOOT.BIN');
-      // Discs patched to boot through a custom-firmware loader keep the
-      // game's own executable as EBOOT.OLD.
-      if Disc.HasFile('PSP_GAME/SYSDIR/EBOOT.OLD') then
+        raise EPSPFormat.Create('PSP: the image holds no PSP game or UMD Video');
+      Result.UMDVideo := Disc.IsUMDVideo;
+      if Result.UMDVideo then
       begin
-        var Old := Disc.ReadFile('PSP_GAME/SYSDIR/EBOOT.OLD');
-        if IsExecutable(Old) then
-          Result.Executable := Old;
-      end;
-      if not IsExecutable(Result.Executable) and Disc.HasFile('PSP_GAME/SYSDIR/BOOT.BIN') then
+        Result.Parameters := Disc.ReadFile('UMD_VIDEO/PARAM.SFO');
+        Result.BootPath := 'disc0:/UMD_VIDEO/PLAYLIST.UMD';
+      end
+      else
       begin
-        var Boot := Disc.ReadFile('PSP_GAME/SYSDIR/BOOT.BIN');
-        if IsExecutable(Boot) then
+        if Disc.HasFile('PSP_GAME/PARAM.SFO') then
+          Result.Parameters := Disc.ReadFile('PSP_GAME/PARAM.SFO');
+        Result.BootPath := 'disc0:/PSP_GAME/SYSDIR/EBOOT.BIN';
+        if Disc.HasFile('PSP_GAME/SYSDIR/EBOOT.BIN') then
+          Result.Executable := Disc.ReadFile('PSP_GAME/SYSDIR/EBOOT.BIN');
+        // Discs patched to boot through a custom-firmware loader keep the
+        // game's own executable as EBOOT.OLD.
+        if Disc.HasFile('PSP_GAME/SYSDIR/EBOOT.OLD') then
         begin
-          Result.Executable := Boot;
-          Result.BootPath := 'disc0:/PSP_GAME/SYSDIR/BOOT.BIN';
+          var Old := Disc.ReadFile('PSP_GAME/SYSDIR/EBOOT.OLD');
+          if IsExecutable(Old) then
+            Result.Executable := Old;
+        end;
+        if not IsExecutable(Result.Executable) and Disc.HasFile('PSP_GAME/SYSDIR/BOOT.BIN') then
+        begin
+          var Boot := Disc.ReadFile('PSP_GAME/SYSDIR/BOOT.BIN');
+          if IsExecutable(Boot) then
+          begin
+            Result.Executable := Boot;
+            Result.BootPath := 'disc0:/PSP_GAME/SYSDIR/BOOT.BIN';
+          end;
         end;
       end;
     finally
@@ -619,6 +658,8 @@ begin
       Result.Executable := Data;
     if not IsExecutable(Result.Executable) then
       raise EPSPFormat.Create('PSP: no executable');
+    if Stream is TArchiveImageStream then
+      Result.AttachArchive(TArchiveImageStream(Stream).Container, TArchiveImageStream(Stream).MemberName);
   end;
   if Length(Result.Parameters) > 0 then
   begin

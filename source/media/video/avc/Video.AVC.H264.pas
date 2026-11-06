@@ -23,10 +23,15 @@ type
       TMotionBlock = array[0..15] of TMotion;
 
       TBytePlanes = array[0..2] of TBytes;
+
       TMotionPlanes = array[0..1] of TArray<TMotion>;
+
       TSequences = array[0..31] of TH264SPS;
+
       TPictureParams = array[0..255] of TH264PPS;
+
       TPlaneIntegers = array[0..2] of Integer;
+
       TNonZeroPlanes = array[0..2] of TArray<Integer>;
 
       TPicture = class
@@ -34,7 +39,8 @@ type
         Half: TBytePlanes;
         HalfStride, HalfHeight: Integer;
         HalfReady: TBytes;
-        FrameNum, POC: Integer;
+        FrameNum, POC, Width, Height: Integer;
+        FieldPicture, BottomField: Boolean;
         LongIndex: Integer;
         LongTerm: Boolean;
         Identity: NativeUInt;
@@ -64,6 +70,9 @@ type
     FDelayed: TList<TVideoFrame>;
     FDelayedPOC: TList<Integer>;
     FOrderByPOC: Boolean;
+    FFillTimestampGaps, FHaveTimestampBase: Boolean;
+    FTimestampBase: Int64;
+    FTimestampPOC: Integer;
     FPictureID: NativeUInt;
     FPOC, FPOCLSB, FPOCMSB, FPrevPOCLSB, FPrevPOCMSB, FPrevFrameNum, FFrameOffset, FPrevFrameOffset: Integer;
     FSliceType: Integer;
@@ -74,7 +83,7 @@ type
     FActiveRefs1: Integer;
     FLengths, FWidth, FHeight, FGridWidth, FFrameNum, FSliceID, FMB, FQP: Integer;
     FDeblock, FAlpha, FBeta, FActiveRefs: Integer;
-    FRefNAL, FIDR: Boolean;
+    FRefNAL, FIDR, FFieldPicture, FBottomField: Boolean;
     FBits: TBitReader;
     FCABAC: TH264CABAC;
     FUseCABAC: Boolean;
@@ -132,6 +141,7 @@ type
     procedure Flush;
     procedure Reset;
     function Kind: TDecoderKind;
+    property FillTimestampGaps: Boolean read FFillTimestampGaps write FFillTimestampGaps;
   end;
 
 {$IFDEF PLAYER_TEST_STATS}
@@ -275,6 +285,7 @@ begin
   FPrevFrameNum := 0;
   FPrevFrameOffset := 0;
   FSliceID := 0;
+  FHaveTimestampBase := False;
 end;
 
 procedure TH264Decoder.Flush;
@@ -349,7 +360,11 @@ begin
   FGridWidth := FS.MBWidth * 4;
   FCurrent := TPicture.Create;
   FHasBiPrediction := False;
+  FCurrent.Width := FWidth;
+  FCurrent.Height := FHeight;
   FCurrent.FrameNum := FFrameNum;
+  FCurrent.FieldPicture := FFieldPicture;
+  FCurrent.BottomField := FBottomField;
   FCurrent.LongTerm := FCurrentLongIndex >= 0;
   FCurrent.LongIndex := FCurrentLongIndex;
   FCurrent.POC := FPOC;
@@ -444,16 +459,29 @@ begin
   FClearRefs := False;
   Frame := Default(TVideoFrame);
   Frame.Width := FS.Width;
-  Frame.Height := FS.Height;
+  Frame.SampleAspectNumerator := FS.AspectNumerator;
+  Frame.SampleAspectDenominator := FS.AspectDenominator;
+  Frame.Height := FS.Height * (1 + Ord(FFieldPicture));
   Frame.PTS := Packet.PTS;
   Frame.Duration := Packet.Duration;
+  if FFillTimestampGaps and (FS.TimeScale <> 0) and (FS.UnitsInTick <> 0) then
+  begin
+    if (Packet.PTS >= 0) or not FHaveTimestampBase then
+    begin
+      FTimestampBase := Max(Packet.PTS, Int64(0));
+      FTimestampPOC := FPOC;
+      FHaveTimestampBase := True;
+    end;
+    Frame.PTS := FTimestampBase + Int64(FPOC - FTimestampPOC) * FS.UnitsInTick * PlayerTimeBase div FS.TimeScale;
+    Frame.Duration := Int64(2 - Ord(FFieldPicture)) * FS.UnitsInTick * PlayerTimeBase div FS.TimeScale;
+  end;
   Frame.Format := TPixelFormat.YUV420P;
   Frame.Matrix := FS.Matrix;
   Frame.FullRange := FS.FullRange;
   for P := 0 to 2 do
   begin
     W := FS.Width;
-    H := FS.Height;
+    H := Frame.Height;
     X0 := FS.CropLeft;
     Y0 := FS.CropTop;
     Stride := FWidth;
@@ -468,7 +496,7 @@ begin
     Frame.Strides[P] := W;
     SetLength(Frame.Planes[P], W * H);
     for Y := 0 to H - 1 do
-      Move(FCurrent.Pixels[P][(Y + Y0) * Stride + X0], Frame.Planes[P][Y * W], W);
+      Move(FCurrent.Pixels[P][(Y div (1 + Ord(FFieldPicture)) + Y0) * Stride + X0], Frame.Planes[P][Y * W], W);
   end;
   FDelayed.Add(Frame);
   FDelayedPOC.Add(FPOC);
@@ -497,7 +525,7 @@ begin
     FCurrent.Intra := Copy(FIntra);
     FRefs.Insert(0, FCurrent);
     FCurrent := nil;
-    while FRefs.Count > Max(FS.MaxRefs, 1) do
+    while FRefs.Count > Max(FS.MaxRefs, 1) * (1 + Ord(FFieldPicture)) do
     begin
       Oldest := -1;
       for P := FRefs.Count - 1 downto 0 do
@@ -519,7 +547,7 @@ procedure TH264Decoder.OutputDelayed(All: Boolean);
 var
   I, Smallest: Integer;
 begin
-  while (FDelayed.Count > 0) and (All or (FDelayed.Count > FS.MaxReorder)) do
+  while (FDelayed.Count > 0) and (All or (FDelayed.Count > FS.MaxReorder * (1 + Ord(FFieldPicture)))) do
   begin
     Smallest := 0;
     for I := 1 to FDelayed.Count - 1 do
@@ -544,6 +572,21 @@ var
   P: TPicture;
   MMCO: Cardinal;
   LongIndex: Integer;
+
+  function CurrentPicNum: Integer;
+  begin
+    Result := FFrameNum * (1 + Ord(FFieldPicture)) + Ord(FFieldPicture);
+  end;
+
+  function ReferencePicNum(Picture: TPicture; LongTerm: Boolean): Integer;
+  begin
+    if LongTerm then
+      Result := Picture.LongIndex
+    else
+      Result := Picture.FrameNum;
+    if FFieldPicture then
+      Result := Result * 2 + Ord(Picture.BottomField = FBottomField);
+  end;
 
   function Before(A, B: TPicture; ListIndex: Integer): Boolean;
   var
@@ -580,6 +623,9 @@ var
     Temp: TPicture;
   begin
     Result := FRefs.ToArray;
+    for var Reference in Result do
+      if (Reference.Width <> FS.MBWidth * 16) or (Reference.Height <> FS.MBHeight * 16) then
+        raise EPlayerUnsupported.Create('Mixed H.264 frame/field references are not supported');
     for A := 1 to High(Result) do
     begin
       B := A;
@@ -589,6 +635,32 @@ var
         Result[B] := Result[B - 1];
         Result[B - 1] := Temp;
         Dec(B)
+      end;
+    end;
+    if FFieldPicture then
+    begin
+      var Ordered := Copy(Result);
+      var Same := 0;
+      var Other := 0;
+      var Count := 0;
+      while Count < Length(Result) do
+      begin
+        while (Same < Length(Ordered)) and (Ordered[Same].BottomField <> FBottomField) do
+          Inc(Same);
+        while (Other < Length(Ordered)) and (Ordered[Other].BottomField = FBottomField) do
+          Inc(Other);
+        if Same < Length(Ordered) then
+        begin
+          Result[Count] := Ordered[Same];
+          Inc(Count);
+          Inc(Same);
+        end;
+        if Other < Length(Ordered) then
+        begin
+          Result[Count] := Ordered[Other];
+          Inc(Count);
+          Inc(Other);
+        end;
       end;
     end;
   end;
@@ -618,7 +690,7 @@ var
     try
       for var Item in Items do
         List.Add(Item);
-      PicNum := FFrameNum;
+      PicNum := CurrentPicNum;
       Index := 0;
       repeat
         ID := FBits.ReadUE;
@@ -632,14 +704,14 @@ var
         begin
           Diff := FBits.ReadUE + 1;
           if ID = 0 then
-            PicNum := (PicNum - Diff) and ((1 shl FS.LogFrameNum) - 1)
+            PicNum := (PicNum - Diff) and ((1 shl (FS.LogFrameNum + Ord(FFieldPicture))) - 1)
           else
-            PicNum := (PicNum + Diff) and ((1 shl FS.LogFrameNum) - 1);
+            PicNum := (PicNum + Diff) and ((1 shl (FS.LogFrameNum + Ord(FFieldPicture))) - 1);
         end;
         P := nil;
         for Q := 0 to FRefs.Count - 1 do
-          if ((ID = 2) and FRefs[Q].LongTerm and (FRefs[Q].LongIndex = LongIndex)) or
-            ((ID <> 2) and not FRefs[Q].LongTerm and (FRefs[Q].FrameNum = PicNum)) then
+          if ((ID = 2) and FRefs[Q].LongTerm and (ReferencePicNum(FRefs[Q], True) = LongIndex)) or
+            ((ID <> 2) and not FRefs[Q].LongTerm and (ReferencePicNum(FRefs[Q], False) = PicNum)) then
             P := FRefs[Q];
         if (P = nil) or (Index >= Active) or (Index > List.Count) then
           raise EPlayerFormat.Create('Invalid reference list modification');
@@ -713,6 +785,26 @@ begin
   if not (SliceType in [0, 1, 2]) then
     raise EPlayerUnsupported.Create('H.264 SP/SI slices are not supported');
   FFrameNum := FBits.ReadBits(FS.LogFrameNum);
+  FFieldPicture := False;
+  FBottomField := False;
+  if not FS.FrameOnly then
+  begin
+    FFieldPicture := FBits.ReadBit;
+    if FFieldPicture then
+      FBottomField := FBits.ReadBit;
+    if FFieldPicture then
+    begin
+      FS.Height := FS.Height div 2;
+      FS.CropTop := FS.CropTop div 2;
+    end
+    else
+    begin
+      if FS.AdaptiveFields then
+        raise EPlayerUnsupported.Create('MBAFF H.264 frames are not supported');
+      FS.MBHeight := FS.MBHeight * 2;
+    end;
+  end;
+  FCABAC.FieldPicture := FFieldPicture;
   FCurrentLongIndex := -1;
   if FIDR then
   begin
@@ -733,7 +825,7 @@ begin
   if FS.POCType = 0 then
   begin
     FPOCLSB := FBits.ReadBits(FS.LogPOC);
-    if FP.BottomPOC then
+    if FP.BottomPOC and not FFieldPicture then
       BottomDelta := FBits.ReadSE;
     MaxPOC := 1 shl FS.LogPOC;
     if not FIDR then
@@ -751,7 +843,7 @@ begin
     if not FS.DeltaPOCAlwaysZero then
     begin
       Delta0 := FBits.ReadSE;
-      if FP.BottomPOC then
+      if FP.BottomPOC and not FFieldPicture then
         Delta1 := FBits.ReadSE
     end;
     AbsFrame := 0;
@@ -772,7 +864,10 @@ begin
     end;
     if not FRefNAL then
       Inc(Expected, FS.OffsetNonRef);
-    FPOC := Expected + Delta0 + Min(FS.OffsetTopBottom + Delta1, 0);
+    if FFieldPicture then
+      FPOC := Expected + Delta0 + Ord(FBottomField) * FS.OffsetTopBottom
+    else
+      FPOC := Expected + Delta0 + Min(FS.OffsetTopBottom + Delta1, 0);
   end
   else if FIDR then
     FPOC := 0
@@ -878,10 +973,10 @@ begin
             Break;
           1, 3:
             begin
-              PicNum := (FFrameNum - Integer(FBits.ReadUE) - 1) and ((1 shl FS.LogFrameNum) - 1);
+              PicNum := (CurrentPicNum - Integer(FBits.ReadUE) - 1) and ((1 shl (FS.LogFrameNum + Ord(FFieldPicture))) - 1);
               P := nil;
               for Q := 0 to FRefs.Count - 1 do
-                if (EffectiveLong(FRefs[Q]) = -1) and (FRefs[Q].FrameNum = PicNum) then
+                if (EffectiveLong(FRefs[Q]) = -1) and (ReferencePicNum(FRefs[Q], False) = PicNum) then
                   P := FRefs[Q];
               if P = nil then
                 raise EPlayerFormat.Create('Missing picture in reference removal');
@@ -896,7 +991,8 @@ begin
                 if LongIndex > FMaxLongIndex then
                   raise EPlayerFormat.Create('Long-term reference index exceeds MMCO limit');
                 for Q := 0 to FRefs.Count - 1 do
-                  if EffectiveLong(FRefs[Q]) = LongIndex then
+                  if (EffectiveLong(FRefs[Q]) = LongIndex) and
+                    (not FFieldPicture or (FRefs[Q].BottomField = P.BottomField)) then
                     FRemoveRefs.Add(FRefs[Q]);
                 if not FPromoteRefs.Contains(P) then
                 begin
@@ -910,7 +1006,8 @@ begin
               LongIndex := FBits.ReadUE;
               P := nil;
               for Q := 0 to FRefs.Count - 1 do
-                if EffectiveLong(FRefs[Q]) = LongIndex then
+                if (EffectiveLong(FRefs[Q]) >= 0) and
+                  (ReferencePicNum(FRefs[Q], True) = LongIndex) then
                   P := FRefs[Q];
               if P = nil then
                 raise EPlayerFormat.Create('Missing long-term picture in MMCO removal');
@@ -934,7 +1031,8 @@ begin
               if FCurrentLongIndex > FMaxLongIndex then
                 raise EPlayerFormat.Create('Current long-term reference index exceeds MMCO limit');
               for Q := 0 to FRefs.Count - 1 do
-                if EffectiveLong(FRefs[Q]) = FCurrentLongIndex then
+                if (EffectiveLong(FRefs[Q]) = FCurrentLongIndex) and
+                  (not FFieldPicture or (FRefs[Q].BottomField = FBottomField)) then
                   FRemoveRefs.Add(FRefs[Q]);
             end;
         else
@@ -1208,6 +1306,7 @@ begin
           Result := Value
       end;
 
+
     begin
       for Y := First to Last do
       begin
@@ -1243,6 +1342,7 @@ begin
         else
           Result := Value
       end;
+
 
     begin
       for Y := First to Last do
@@ -1582,9 +1682,12 @@ var
     else
     begin
       SX := PX + ASR(Motion.X, 3);
-      SY := PY + ASR(Motion.Y, 3);
+      SY := Motion.Y;
+      if FFieldPicture then
+        Inc(SY, 2 * (Ord(FBottomField) - Ord(Reference.BottomField)));
+      FY := SY and 7;
+      SY := PY + ASR(SY, 3);
       FX := Motion.X and 7;
-      FY := Motion.Y and 7;
       WA := (8 - FX) * (8 - FY);
       WB := FX * (8 - FY);
       WC := (8 - FX) * FY;
@@ -2041,7 +2144,7 @@ begin
   GroupCount := 0;
   HaveDirect := False;
   DCT8Allowed := FP.Transform8x8Mode;
-  {$IFDEF PLAYER_TEST_STATS}   Inc(H264TestBTypes[TypeCode]); {$ENDIF}
+  {$IFDEF PLAYER_TEST_STATS}     Inc(H264TestBTypes[TypeCode]); {$ENDIF}
   FDirect[FMB] := TypeCode = 0;
   if TypeCode = 0 then
   begin
@@ -2093,7 +2196,7 @@ begin
         Sub[I] := FBits.ReadUE;
       if Sub[I] > 12 then
         raise EPlayerFormat.Create('Invalid B subpartition');
-      {$IFDEF PLAYER_TEST_STATS}       Inc(H264TestBSubTypes[Sub[I]]); {$ENDIF}
+      {$IFDEF PLAYER_TEST_STATS}             Inc(H264TestBSubTypes[Sub[I]]); {$ENDIF}
     end;
     GroupCount := 4;
     for I := 0 to 3 do
@@ -2872,7 +2975,10 @@ begin
           // Four CAVLC streams interleave every fourth position of the 8x8
           // zigzag. Their individual counts remain available for nC.
           for K := 0 to 15 do
-            B8[Scan8[4 * K + J]] := B[Scan4[K]];
+            if FFieldPicture then
+              B8[FieldScan8[4 * K + J]] := B[FieldScan4[K]]
+            else
+              B8[Scan8[4 * K + J]] := B[Scan4[K]];
         end;
         FNonZero[0][CY * FGridWidth + CX] := N;
         Inc(Total, N);
@@ -2945,7 +3051,16 @@ var
   A, B, W, MB, Mask: Integer;
 begin
   if not FUseCABAC then
-    Exit(DecodeResidual(FBits, NeighborCount(Plane, X, Y), MaxCoeff, Block));
+  begin
+    Result := DecodeResidual(FBits, NeighborCount(Plane, X, Y), MaxCoeff, Block);
+    if FFieldPicture and (MaxCoeff <> 4) then
+    begin
+      var CopyBlock := Block;
+      for var K := 0 to 15 do
+        Block[FieldScan4[K]] := CopyBlock[Scan4[K]];
+    end;
+    Exit;
+  end;
   A := Ord(FIntra[FMB]);
   B := A;
   Mask := 0;
@@ -3003,7 +3118,7 @@ var
   function SameMotion(const A, B: TMotion): Boolean;
   begin
     Result := (A.RefIdentity = B.RefIdentity) and ((A.RefIdentity = 0) or
-      ((Abs(A.X - B.X) < 4) and (Abs(A.Y - B.Y) < 4)));
+      ((Abs(A.X - B.X) < 4) and (Abs(A.Y - B.Y) < 4 - 2 * Ord(FFieldPicture))));
   end;
 
   function MotionBoundary(P, Q: Integer): Boolean;
@@ -3157,7 +3272,7 @@ begin
           IndexQ := GY * FGridWidth + GX;
           Strength := 0;
           if IntraEdge then
-            Strength := 3 + Ord(Edge = 0)
+            Strength := 3 + Ord((Edge = 0) and not (FFieldPicture and (Direction = 1)))
           else if (FNonZero[0][IndexP] > 0) or (FNonZero[0][IndexQ] > 0) then
             Strength := 2
           else

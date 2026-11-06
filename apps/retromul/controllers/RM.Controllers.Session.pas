@@ -579,7 +579,7 @@ begin
   var Names: TArray<string>;
   SetLength(Names, Length(Choices));
   for var I := 0 to High(Choices) do
-    Names[I] := Choices[I].Name;
+    Names[I] := Translate(Choices[I].Name);
   var PreserveAutosave := FState.Session.PreserveOpeningAutosave;
   FSelectingPlatform := True;
   EndCoreLoading;
@@ -590,7 +590,7 @@ begin
     var Info: TPlatformInfo;
     var PlatformName := FailedPlatformId;
     if TPlatformRegistry.Find(FailedPlatformId, Info) then
-      PlatformName := Info.Name;
+      PlatformName := Translate(Info.Name);
     Text := PlatformName + ': ' + TranslateCoreMessage(LoadError) + sLineBreak + sLineBreak +
       Translate('Select the target platform to continue.');
   end;

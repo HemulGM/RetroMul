@@ -11,7 +11,7 @@ interface
 
 uses
   System.SysUtils, System.Generics.Collections, PSP.Types, PSP.Memory, PSP.CPU,
-  PSP.HLE, PSP.Kernel, PSP.Scheduler, PSP.Service, PSP.State.Action;
+  PSP.HLE, PSP.Kernel, PSP.Scheduler, PSP.Service, PSP.State.Action, PSP.CPU.JIT;
 
 type
   // The UMD drive state as the threads waiting on it see it (an event flag in the firmware).
@@ -43,6 +43,15 @@ type
     FPllN: Integer;
     FCpuK: Integer;
     FDmacUntil: Int64;
+    FMediaMemory: TPSPMemory;
+    FMediaCPU: TPSPCPU;
+    FMediaRunner: TPSPRecompiler;
+    FMediaReset, FMediaClock, FMediaHalted: Boolean;
+    FMediaAt, FMediaFraction, FMediaCycles: Int64;
+    procedure hMeResetEnable;
+    procedure hMeResetDisable;
+    procedure hMeBusClockEnable;
+    procedure hMeBusClockDisable;
     function EpochTicks: UInt64;
     function NowTicks: UInt64;
     function LocalOffsetTicks: Int64;
@@ -180,6 +189,11 @@ type
     destructor Destroy; override;
     procedure Reset; override;
     procedure Register; override;
+    procedure RunMediaEngine(Now: Int64);
+    function MediaRunning: Boolean;
+    property MediaCPU: TPSPCPU read FMediaCPU;
+    property MediaMemory: TPSPMemory read FMediaMemory;
+    property MediaCycles: Int64 read FMediaCycles;
   end;
 
 // Calendar on the proleptic Gregorian calendar; days count from 0001-01-01.
@@ -1688,10 +1702,16 @@ begin
   FUmd := TPSPUmdDrive.Create;
   FUmd.Name := 'SceUmdDriveStat';
   FVolatileWaiters := TList<TPSPThread>.Create;
+  FMediaMemory := TPSPMemory.Create(FMemory);
+  FMediaCPU := TPSPCPU.Create(FMediaMemory);
+  FMediaRunner := CreatePSPRecompiler(FMediaCPU);
 end;
 
 destructor TPSPSysLibs.Destroy;
 begin
+  FMediaRunner.Free;
+  FMediaCPU.Free;
+  FMediaMemory.Free;
   FUmd.Free;
   FVolatileWaiters.Free;
   inherited;
@@ -1699,6 +1719,15 @@ end;
 
 procedure TPSPSysLibs.Reset;
 begin
+  FMediaMemory.Reset;
+  FMediaCPU.Reset;
+  FMediaCPU.COP0[22] := 1; // Allegrex CPU ID: the Media Engine.
+  FMediaReset := True;
+  FMediaClock := False;
+  FMediaHalted := False;
+  FMediaAt := FSystem.Scheduler.Now;
+  FMediaFraction := 0;
+  FMediaCycles := 0;
   FDmacUntil := 0;
   FUmdCallback := 0;
   // A game booted from its disc finds the drive activated by the system
@@ -1713,6 +1742,77 @@ begin
   FVolatileWaiters.Clear;
   FPllN := 6;
   FCpuK := 511;
+end;
+
+function TPSPSysLibs.MediaRunning: Boolean;
+begin
+  Result := FMediaClock and not FMediaReset and not FMediaHalted;
+end;
+
+procedure TPSPSysLibs.RunMediaEngine(Now: Int64);
+begin
+  var Elapsed := Now - FMediaAt;
+  FMediaAt := Now;
+  if not MediaRunning or (Elapsed <= 0) then
+    Exit;
+  if FMediaRunner <> nil then
+    FMediaRunner.Enabled := (FSystem.CPU.Runner is TPSPRecompiler) and
+      TPSPRecompiler(FSystem.CPU.Runner).Enabled;
+  // Concurrent processor time: ME execution never advances the main scheduler.
+  var Clocks := Elapsed * FSystem.Scheduler.MHz + FMediaFraction;
+  var Cycles := Clocks div 1000;
+  FMediaFraction := Clocks mod 1000;
+  while Cycles > 0 do
+  begin
+    var Budget := Integer(Min(Cycles, Int64(65536)));
+    var Used := FMediaCPU.Run(Budget);
+    Inc(FMediaCycles, Used);
+    Dec(Cycles, Budget);
+    if FMediaCPU.Stopping then
+    begin
+      FMediaHalted := True;
+      Break;
+    end;
+  end;
+end;
+
+procedure TPSPSysLibs.hMeResetEnable;
+begin
+  RunMediaEngine(FSystem.Scheduler.Now);
+  FMediaReset := True;
+  FMediaHalted := False;
+  FMediaCPU.Reset;
+  FMediaCPU.COP0[22] := 1;
+  FHLE.Result(0);
+end;
+
+procedure TPSPSysLibs.hMeResetDisable;
+begin
+  RunMediaEngine(FSystem.Scheduler.Now);
+  if FMediaReset then
+  begin
+    // PSPSDK's ME bootstrap is installed in the shared boot SRAM at BFC00040.
+    FMediaCPU.SetPC($BFC00040);
+    FMediaCPU.COP0[12] := $00400004;
+    FMediaReset := False;
+    FMediaHalted := False;
+    FMediaFraction := 0;
+  end;
+  FHLE.Result(0);
+end;
+
+procedure TPSPSysLibs.hMeBusClockEnable;
+begin
+  RunMediaEngine(FSystem.Scheduler.Now);
+  FMediaClock := True;
+  FHLE.Result(0);
+end;
+
+procedure TPSPSysLibs.hMeBusClockDisable;
+begin
+  RunMediaEngine(FSystem.Scheduler.Now);
+  FMediaClock := False;
+  FHLE.Result(0);
 end;
 
 procedure TPSPSysLibs.CallKernel(const Lib: string; NID: Cardinal);
@@ -2164,6 +2264,17 @@ begin
   H.Register(U, $37FB5C42, 'sceKernelGetGPI', hGetGPI);
   H.Register('Kernel_Library', $A089ECA4, 'sceKernelMemset', hKernelMemset);
   H.Register('Kernel_Library', $1839852A, 'sceKernelMemcpy', hKernelMemcpy);
+  H.Register('SysclibForKernel', $AB7592FF, 'memcpy', hKernelMemcpy);
+  H.Register('SysclibForKernel', $10F3BB61, 'memset', hKernelMemset);
+  // PSPSDK and firmware 3.71 import names for the same ME reset/clock gates.
+  for var NID in [Cardinal($DE59DACB), $457FEBA9, $A9997109] do
+    H.Register('sceSysreg_driver', NID, 'sceSysregMeResetEnable', hMeResetEnable);
+  for var NID in [Cardinal($2DB0EB28), $48F1C4AD, $76220E94] do
+    H.Register('sceSysreg_driver', NID, 'sceSysregMeResetDisable', hMeResetDisable);
+  for var NID in [Cardinal($44F6CDA7), $38527743, $3199CF1C] do
+    H.Register('sceSysreg_driver', NID, 'sceSysregMeBusClockEnable', hMeBusClockEnable);
+  for var NID in [Cardinal($158AD4FC), $C4C21CAB, $07881A0B] do
+    H.Register('sceSysreg_driver', NID, 'sceSysregMeBusClockDisable', hMeBusClockDisable);
   H.Register(U, $6AD345D7, 'sceKernelSetGPO', hZero);
 
   H.Register(P, $FDB5BFE9, 'scePowerGetCpuClockFrequencyInt', hPowerGetCpu);

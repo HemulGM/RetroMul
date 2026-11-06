@@ -180,10 +180,8 @@ type
 implementation
 
 uses
-  RM.Platforms.PS1, {$IFDEF MSWINDOWS}
-  Winapi.MMSystem, {$ENDIF}
-  System.Math, System.Diagnostics, System.UITypes, System.IOUtils,
-  Core.SavePaths, PS1.Types, PS1.Firmware;
+  RM.Platforms.PS1, Core.PerformanceHints, System.Math, System.Diagnostics,
+  System.UITypes, System.IOUtils, Core.SavePaths, PS1.Types, PS1.Firmware;
 
 const
   KeyNames: array[TEmulatorButton] of string =
@@ -562,7 +560,7 @@ begin
     if FError = '' then
       FError := Text
     else
-      FError := FError + #13#10 + Text;
+      FError := FError + sLineBreak + Text;
   finally
     FLock.Release;
   end;
@@ -657,9 +655,7 @@ begin
   FAudioFailed := False;
   var WasPaused := False;
   var WasEnabled := False;
-  {$IFDEF MSWINDOWS}
-  var TimerSet := timeBeginPeriod(1) = TIMERR_NOERROR;
-  {$ENDIF}
+  var TimerSet := TEmulationPerformanceHints.BeginTimerPeriod(1);
   try
     try
       ApplyPorts(InputPorts);
@@ -799,10 +795,8 @@ begin
   finally
     FreeAndNil(FAudio);
     FreeAndNil(FConsole);
-    {$IFDEF MSWINDOWS}
     if TimerSet then
-      timeEndPeriod(1);
-    {$ENDIF}
+      TEmulationPerformanceHints.EndTimerPeriod(1);
   end;
 end;
 

@@ -65,6 +65,18 @@ type
     procedure Read(Index: Integer; out Data: TBytes);
   end;
 
+  // A selected executable keeps its enclosing media available after the load
+  // context and the caller's original archive stream have been destroyed.
+  TArchiveImageStream = class(TBytesStream)
+  private
+    FContainer: IArchiveContainer;
+    FMemberName: string;
+  public
+    constructor Create(const Data: TBytes; const Container: IArchiveContainer; const MemberName: string);
+    property Container: IArchiveContainer read FContainer;
+    property MemberName: string read FMemberName;
+  end;
+
   // A read-only view of the original source with an already opened container.
   // The source remains caller-owned; entry streams independently retain caches.
   TArchiveSourceStream = class(TStream)
@@ -505,6 +517,13 @@ end;
 function TArchiveEntryStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
 begin
   Result := FInput.Seek(Offset, Origin);
+end;
+
+constructor TArchiveImageStream.Create(const Data: TBytes; const Container: IArchiveContainer; const MemberName: string);
+begin
+  inherited Create(Data);
+  FContainer := Container;
+  FMemberName := MemberName;
 end;
 
 constructor TArchiveSourceStream.Create(Source: TStream; const Container: IArchiveContainer);

@@ -1849,7 +1849,10 @@ begin
   if FMachine.Model = zmSpectrumPlus3 then
     FPlus3FDC.Advance(1);
   FetchULA;
-  if FPentagon or ((FTime and 3) = 0) then
+  var BorderPhase := 0;
+  if FMachine.Model in [zmSpectrum16, zmSpectrum48, zmSpectrum128, zmSpectrumPlus2] then
+    BorderPhase := (FDisplayStart + 2) and 3;
+  if FPentagon or ((FTime and 3) = BorderPhase) then
     FBorder := FULA and 7;
   if ExtendedHardware then
     FCMOS.Tick;
@@ -3118,12 +3121,36 @@ end;
 
 procedure TZXConsole.DrawCompatibleVideo;
 begin
+  // The ULA samples the border two T states after the corresponding pixel
+  // position: OUTs ending at 14339..14342 all affect the 14340 cell (48K),
+  // and 14365..14368 affect the 14366 cell (128K/+2). Render only the border
+  // at that delayed position; bitmap/attribute fetch timing stays unchanged.
+  var DelayedBorder := FMachine.Model in
+    [zmSpectrum16, zmSpectrum48, zmSpectrum128, zmSpectrumPlus2];
+  if DelayedBorder then
+  begin
+    var BT := FTime - 2 - (VideoDisplayStart - 24 * FLineCycles - 16);
+    if BT >= 0 then
+    begin
+      var BY := BT div FLineCycles;
+      var BX := (BT mod FLineCycles) * 2;
+      if (BY < 240) and (BX < 320) and
+        ((BY < 24) or (BY >= 216) or (BX < 32) or (BX >= 288)) then
+      begin
+        FPixels[BY * FWidth + BX] := BorderColor;
+        FPixels[BY * FWidth + BX + 1] := BorderColor;
+      end;
+    end;
+  end;
   var T := FTime - (VideoDisplayStart - 24 * FLineCycles - 16);
   if T < 0 then
     Exit;
   var Y := T div FLineCycles;
   var X := (T mod FLineCycles) * 2;
   if (Y >= 240) or (X >= 320) then
+    Exit;
+  if DelayedBorder and
+    ((Y < 24) or (Y >= 216) or (X < 32) or (X >= 288)) then
     Exit;
   var Scale := 1;
   // Keep a stable 640x480 surface for mixed Timex screen modes within a frame.

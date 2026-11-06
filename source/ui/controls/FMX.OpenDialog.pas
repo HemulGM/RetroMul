@@ -45,7 +45,7 @@ type
 implementation
 
 uses
-  FMX.Dialogs, FMX.Platform,
+  FMX.Dialogs, FMX.Platform, FMX.Types,
   {$IFDEF ANDROID}
   System.Messaging, Androidapi.Helpers, Androidapi.JNI.App,
   Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.Net,
@@ -122,7 +122,7 @@ end;
 constructor TFMXOpenDialog.Create(AOwner: TComponent);
 begin
   inherited;
-  FFilter := 'All files|*';
+  FFilter := Translate('All files|*');
   FMimeType := '*/*';
   FMultipleSelection := True;
   FFileMustExist := True;
@@ -401,7 +401,7 @@ begin
         // GTK treats *.* literally: it excludes names without a dot, including
         // directories. Folder selection must ignore any file-extension filter.
         if FFolder then
-          Dialog.Filter := 'Folders|*'
+          Dialog.Filter := Translate('Folders|*')
         else
           Dialog.Filter := FFilter;
         Dialog.InitialDir := FDirectory;

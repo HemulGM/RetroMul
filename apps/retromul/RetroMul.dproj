@@ -1143,6 +1143,7 @@
         <DCCReference Include="..\..\source\cores\psp\PSP.GE.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Kernel.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Media.pas"/>
+        <DCCReference Include="..\..\source\cores\psp\PSP.UMDVideo.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Memory.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.MP3.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Mpeg.pas"/>

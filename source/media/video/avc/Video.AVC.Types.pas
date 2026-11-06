@@ -56,6 +56,7 @@ type
 
   TVideoFrame = record
     Width, Height: Integer;
+    SampleAspectNumerator, SampleAspectDenominator: Integer;
     PTS, Duration: Int64;
     Format: TPixelFormat;
     Matrix: TColorMatrix;

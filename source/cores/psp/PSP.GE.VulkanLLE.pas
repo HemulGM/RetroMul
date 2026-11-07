@@ -1,7 +1,7 @@
 ﻿unit PSP.GE.VulkanLLE;
 
 // The GE's rasterizer and pixel pipeline on a Vulkan compute device, with the
-// arithmetic of PSP.GE.Raster bit for bit (source/gpu/shaders/PSPGERaster.comp).
+// arithmetic of PSP.GE.Raster bit for bit (source/gpu/shaders/PSPGERaster.pasm).
 //
 // Primitives are set up here exactly as PSP.GE.Raster sets them up and go
 // with their packed raster state into a batch of passes: runs of primitives
@@ -219,14 +219,17 @@ type
     property OnMessage: TGEVulkanLLEMessage read FOnMessage write FOnMessage;
   end;
 
+// Features and startup arithmetic qualification, without allocating a backend.
+function QualifyGEVulkanLLE(Compute: TVulkanCompute; out Error: string): Boolean;
+
 // A GPU backend, or False with the reason when there is no suitable device.
 function CreateGEVulkanLLEBackend(Memory: TPSPMemory; Check: Boolean; out Backend: TGEVulkanLLEBackend;
-  out Error: string; const DeviceName: string = ''): Boolean;
+  out Error: string; const DeviceName: string = ''; MaxAPIVersion: Cardinal = VK_API_VERSION_1_2): Boolean;
 
 implementation
 
 uses
-  SPV.PSPGERaster, SPV.PSPGESelfTest;
+  PSP.GE.PascalShaders;
 
 const
   PrimWords = 160;
@@ -352,7 +355,7 @@ begin
   try
     Src := Compute.CreateBuffer(N * 16, vbkUpload);
     Dst := Compute.CreateBuffer(N * Stride * 4, vbkReadback);
-    K := Compute.CreateKernel(PSPGESelfTestSPV, 2, 4);
+    K := Compute.CreateKernel(PSPGEKernelCode(TPSPGEKernel.SelfTest), 2, 4, PSPGEEntryPoint);
     Cmd := Compute.CreateCommands;
     Src.Write(0, Inputs[0], N * 16);
     K.Bind(0, Src);
@@ -435,8 +438,23 @@ begin
   end;
 end;
 
+function QualifyGEVulkanLLE(Compute: TVulkanCompute; out Error: string): Boolean;
+begin
+  var F := Compute.Features;
+  if not (F.Int64 and F.Int16 and F.Int8 and F.Float64 and F.Storage8 and F.Storage16 and F.DenormPreserve32 and
+    F.DenormPreserve64 and F.RoundEven32 and F.RoundEven64 and F.SignedZeroInfNan32 and F.SignedZeroInfNan64) then
+  begin
+    Error := Compute.Name + ' lacks 64/16/8-bit integers, doubles, small storage or IEEE float controls.';
+    Exit(False);
+  end;
+  Error := SelfTest(Compute);
+  if Error <> '' then
+    Error := Compute.Name + ': ' + Error;
+  Result := Error = '';
+end;
+
 function CreateGEVulkanLLEBackend(Memory: TPSPMemory; Check: Boolean; out Backend: TGEVulkanLLEBackend;
-  out Error: string; const DeviceName: string): Boolean;
+  out Error: string; const DeviceName: string; MaxAPIVersion: Cardinal): Boolean;
 var
   Compute: TVulkanCompute;
   Taken: Boolean;
@@ -452,21 +470,11 @@ begin
   Error := 'The Win32/x87 raster reference is not qualified for GPU rendering; use Win64.';
   Exit(False);
 {$ENDIF}
-  if not TryCreateVulkanCompute(Compute, Error, DeviceName) then
+  if not TryCreateVulkanCompute(Compute, Error, DeviceName, False, False, MaxAPIVersion) then
     Exit(False);
-  var F := Compute.Features;
-  if not (F.Int64 and F.Int16 and F.Int8 and F.Float64 and F.Storage8 and F.Storage16 and F.DenormPreserve32 and
-    F.DenormPreserve64 and F.RoundEven32 and F.RoundEven64 and F.SignedZeroInfNan32 and F.SignedZeroInfNan64) then
-  begin
-    Error := Compute.Name + ' lacks 64/16/8-bit integers, doubles, small storage or IEEE float controls.';
-    Compute.Free;
-    Exit(False);
-  end;
   try
-    Error := SelfTest(Compute);
-    if Error <> '' then
+    if not QualifyGEVulkanLLE(Compute, Error) then
     begin
-      Error := Compute.Name + ': ' + Error;
       Compute.Free;
       Exit(False);
     end;
@@ -954,7 +962,8 @@ begin
   FSnapshots := TDictionary<UInt64, Integer>.Create;
   SetLength(FShadow, PSPVRAMSize);
   FVRAM := Compute.CreateBuffer(PSPVRAMSize + 256, vbkDevice);
-  FKernel := Compute.CreateKernel(PSPGERasterSPV, 8, SizeOf(TGEVulkanLLEPush), [], Length(FSlots));
+  FKernel := Compute.CreateKernel(PSPGEKernelCode(TPSPGEKernel.Raster), 8,
+    SizeOf(TGEVulkanLLEPush), [], Length(FSlots), PSPGEEntryPoint);
   for var I := 0 to High(FSlots) do
   begin
     var S: PGEVulkanLLESlot := @FSlots[I];

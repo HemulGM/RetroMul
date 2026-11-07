@@ -56,5 +56,6 @@ __recovery/
 /apps/retrotune/soundfonts/*
 /apps/retrotune/Win64/*
 /apps/retromul/Lang/*
+/apps/retromul/PSPGE.Pascal.res
 /fpc/*
 /apps/gpu_tests/*

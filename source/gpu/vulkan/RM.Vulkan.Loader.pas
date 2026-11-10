@@ -316,6 +316,12 @@ begin
   vkWaitSemaphores := PFN_vkWaitSemaphores(vkGetDeviceProcAddr(Device, 'vkWaitSemaphores'));
   vkSignalSemaphore := PFN_vkSignalSemaphore(vkGetDeviceProcAddr(Device, 'vkSignalSemaphore'));
   vkGetSemaphoreCounterValue := PFN_vkGetSemaphoreCounterValue(vkGetDeviceProcAddr(Device, 'vkGetSemaphoreCounterValue'));
+  if not Assigned(vkWaitSemaphores) then
+    vkWaitSemaphores := PFN_vkWaitSemaphores(vkGetDeviceProcAddr(Device, 'vkWaitSemaphoresKHR'));
+  if not Assigned(vkSignalSemaphore) then
+    vkSignalSemaphore := PFN_vkSignalSemaphore(vkGetDeviceProcAddr(Device, 'vkSignalSemaphoreKHR'));
+  if not Assigned(vkGetSemaphoreCounterValue) then
+    vkGetSemaphoreCounterValue := PFN_vkGetSemaphoreCounterValue(vkGetDeviceProcAddr(Device, 'vkGetSemaphoreCounterValueKHR'));
 end;
 
 end.

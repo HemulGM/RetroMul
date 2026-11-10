@@ -1290,6 +1290,15 @@ begin
   end
   else if F.AsyncPending and (F.AsyncDone = 0) then
   begin
+    if F.Kind = dkUMD then
+    begin
+      // Issue the UMD transfer on its worker; only notification waits below.
+      // Otherwise completion can overwrite a buffer the caller has released.
+      var Task := F.AsyncTask;
+      F.AsyncTask := nil;
+      if Task <> nil then
+        Task.Run;
+    end;
     F.AsyncDone := FKernel.Scheduler.Now + F.AsyncLatency;
     FKernel.BeginWait(PSPWaitEventFlag, nil, 0, 0, False, nil, nil, 'ioasyncdelay');
     F.AsyncTimer := FKernel.AddStateTimer(F.AsyncDone, F, TPSPStateAction.Create(StateAsyncDone, [F], []));

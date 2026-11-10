@@ -3,8 +3,8 @@
 // A headless Vulkan compute context: its own instance and device (no window,
 // no FMX), one compute queue, buffers in device-local or host-visible memory,
 // compute kernels from SPIR-V words and command buffers with a fence.
-// Vulkan 1.2 is required (timeline semaphores, float controls, 8/16-bit
-// storage are core there); what the device supports is in Features.
+// Vulkan 1.2 uses its core features; Vulkan 1.1 enables the equivalent optional
+// extensions where available. What the device supports is in Features.
 interface
 
 uses
@@ -76,7 +76,7 @@ type
     FPushSize: Cardinal;
   public
     constructor Create(Owner: TVulkanCompute; const Code: array of Cardinal; Buffers: Integer; PushSize: Cardinal;
-      const Spec: array of Cardinal; Sets: Integer = 1);
+      const Spec: array of Cardinal; Sets: Integer = 1; const EntryPoint: AnsiString = 'main');
     destructor Destroy; override;
     // Not while a command buffer using the set is pending.
     procedure Bind(Binding: Integer; Buffer: TVulkanBuffer; Offset: UInt64 = 0; Size: UInt64 = VK_WHOLE_SIZE); overload;
@@ -144,13 +144,15 @@ type
     FName: string;
     FValidation: Boolean;
     FGraphics: Boolean;
-    procedure CreateInstance(Validation: Boolean);
+    FInstanceVersion, FAPIVersion: Cardinal;
+    procedure CreateInstance(Validation: Boolean; MaxAPIVersion: Cardinal);
     procedure SelectDevice(const DeviceName: string);
     procedure CreateDevice;
     function HasExtension(const Name: AnsiString): Boolean;
   public
     // Graphics: the queue also renders (a family with graphics and compute).
-    constructor Create(const DeviceName: string = ''; Validation: Boolean = False; Graphics: Boolean = False);
+    constructor Create(const DeviceName: string = ''; Validation: Boolean = False; Graphics: Boolean = False;
+      MaxAPIVersion: Cardinal = VK_API_VERSION_1_2);
     destructor Destroy; override;
     // A memory type index with all Required flags, trying each preference in order; -1 if none.
     function FindMemory(TypeBits, Required: Cardinal; const Preferred: array of Cardinal): Integer;
@@ -160,9 +162,9 @@ type
         VK_BUFFER_USAGE_TRANSFER_DST_BIT): TVulkanBuffer;
     function CreateShaderModule(const Code: array of Cardinal): VkShaderModule;
     function CreateKernel(const Code: array of Cardinal; Buffers: Integer;
-      PushSize: Cardinal = 0): TVulkanKernel; overload;
+      PushSize: Cardinal = 0; const EntryPoint: AnsiString = 'main'): TVulkanKernel; overload;
     function CreateKernel(const Code: array of Cardinal; Buffers: Integer; PushSize: Cardinal;
-      const Spec: array of Cardinal; Sets: Integer = 1): TVulkanKernel; overload;
+      const Spec: array of Cardinal; Sets: Integer = 1; const EntryPoint: AnsiString = 'main'): TVulkanKernel; overload;
     function CreateCommands(Timestamps: Cardinal = 0): TVulkanCommands;
     function CreateTimeline(Initial: UInt64 = 0): VkSemaphore;
     procedure DestroyTimeline(Semaphore: VkSemaphore);
@@ -182,21 +184,22 @@ type
     // The Khronos validation layer is active (it reports to stdout).
     property Validation: Boolean read FValidation;
     property Graphics: Boolean read FGraphics;
+    property APIVersion: Cardinal read FAPIVersion;
   end;
 
 // A compute context, or nil (with the reason) when there is no usable Vulkan device.
 function TryCreateVulkanCompute(out Compute: TVulkanCompute; out Error: string; const DeviceName: string = '';
-  Validation: Boolean = False; Graphics: Boolean = False): Boolean;
+  Validation: Boolean = False; Graphics: Boolean = False; MaxAPIVersion: Cardinal = VK_API_VERSION_1_2): Boolean;
 
 implementation
 
 function TryCreateVulkanCompute(out Compute: TVulkanCompute; out Error: string; const DeviceName: string;
-  Validation, Graphics: Boolean): Boolean;
+  Validation, Graphics: Boolean; MaxAPIVersion: Cardinal): Boolean;
 begin
   Compute := nil;
   Error := '';
   try
-    Compute := TVulkanCompute.Create(DeviceName, Validation, Graphics);
+    Compute := TVulkanCompute.Create(DeviceName, Validation, Graphics, MaxAPIVersion);
   except
     on E: Exception do
       Error := E.Message;
@@ -206,12 +209,12 @@ end;
 
 { TVulkanCompute }
 
-constructor TVulkanCompute.Create(const DeviceName: string; Validation, Graphics: Boolean);
+constructor TVulkanCompute.Create(const DeviceName: string; Validation, Graphics: Boolean; MaxAPIVersion: Cardinal);
 begin
   inherited Create;
   FGraphics := Graphics;
   FAPI := TVulkanAPI.Create;
-  CreateInstance(Validation);
+  CreateInstance(Validation, MaxAPIVersion);
   SelectDevice(DeviceName);
   CreateDevice;
 end;
@@ -235,7 +238,7 @@ begin
   inherited;
 end;
 
-procedure TVulkanCompute.CreateInstance(Validation: Boolean);
+procedure TVulkanCompute.CreateInstance(Validation: Boolean; MaxAPIVersion: Cardinal);
 const
   ValidationLayer: PAnsiChar = 'VK_LAYER_KHRONOS_validation';
 var
@@ -244,16 +247,21 @@ var
   Version: Cardinal;
   Layers: array[0..0] of PAnsiChar;
 begin
-  Version := VK_API_VERSION_1_1;
+  Version := 1 shl 22;
   if Assigned(FAPI.vkEnumerateInstanceVersion) then
-    FAPI.vkEnumerateInstanceVersion(@Version);
-  if Version < VK_API_VERSION_1_2 then
-    raise EVulkanError.Create('The Vulkan loader does not support Vulkan 1.2.');
+    CheckVulkan(FAPI.vkEnumerateInstanceVersion(@Version), 'vkEnumerateInstanceVersion');
+  if (Version < VK_API_VERSION_1_1) or (MaxAPIVersion < VK_API_VERSION_1_1) then
+    raise EVulkanError.Create('The Vulkan loader must support at least Vulkan 1.1.');
+  if Version > VK_API_VERSION_1_2 then
+    Version := VK_API_VERSION_1_2;
+  if Version > MaxAPIVersion then
+    Version := MaxAPIVersion;
+  FInstanceVersion := Version;
   ApplicationInfo := Default(VkApplicationInfo);
   ApplicationInfo.sType := VK_STRUCTURE_TYPE_APPLICATION_INFO;
   ApplicationInfo.pApplicationName := 'RetroMul compute';
   ApplicationInfo.pEngineName := 'RetroMul';
-  ApplicationInfo.apiVersion := VK_API_VERSION_1_2;
+  ApplicationInfo.apiVersion := FInstanceVersion;
   InstanceInfo := Default(VkInstanceCreateInfo);
   InstanceInfo.sType := VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   InstanceInfo.pApplicationInfo := @ApplicationInfo;
@@ -271,7 +279,7 @@ begin
     InstanceInfo.enabledLayerCount := 0;
     InstanceInfo.ppEnabledLayerNames := nil;
   end;
-  CheckVulkan(FAPI.vkCreateInstance(@InstanceInfo, nil, @FInstance), 'vkCreateInstance (Vulkan 1.2)');
+  CheckVulkan(FAPI.vkCreateInstance(@InstanceInfo, nil, @FInstance), 'vkCreateInstance (Vulkan compute)');
   FAPI.LoadInstance(FInstance);
 end;
 
@@ -311,7 +319,7 @@ begin
   for var Device in Devices do
   begin
     FAPI.vkGetPhysicalDeviceProperties(Device, @P);
-    if P.apiVersion < VK_API_VERSION_1_2 then
+    if P.apiVersion < VK_API_VERSION_1_1 then
       Continue;
     var DeviceText := string(UTF8String(PAnsiChar(@P.deviceName[0])));
     if (DeviceName <> '') and (Pos(DeviceName.ToLower, DeviceText.ToLower) = 0) then
@@ -321,6 +329,9 @@ begin
     var Score := 0;
     if (P.deviceType >= 0) and (P.deviceType <= High(Rank)) then
       Score := Rank[P.deviceType];
+    // Preserve the previous device choice when a 1.2 device is available.
+    if P.apiVersion >= VK_API_VERSION_1_2 then
+      Inc(Score, 8);
     if Score > Best then
     begin
       Best := Score;
@@ -331,11 +342,14 @@ begin
   end;
   if FPhysicalDevice = nil then
     if DeviceName <> '' then
-      raise EVulkanError.Create('No Vulkan 1.2 compute device matches "' + DeviceName + '".')
+      raise EVulkanError.Create('No Vulkan 1.1+ compute device matches "' + DeviceName + '".')
     else if FGraphics then
-      raise EVulkanError.Create('No Vulkan 1.2 device with a graphics and compute queue.')
+      raise EVulkanError.Create('No Vulkan 1.1+ device with a graphics and compute queue.')
     else
-      raise EVulkanError.Create('No Vulkan 1.2 device with a compute queue.');
+      raise EVulkanError.Create('No Vulkan 1.1+ device with a compute queue.');
+  FAPIVersion := FInstanceVersion;
+  if FProperties.apiVersion < FAPIVersion then
+    FAPIVersion := FProperties.apiVersion;
   FQueueFamily := ComputeFamily(FAPI, FPhysicalDevice, FGraphics);
   FAPI.vkGetPhysicalDeviceMemoryProperties(FPhysicalDevice, @FMemory);
 end;
@@ -359,6 +373,11 @@ begin
 end;
 
 procedure TVulkanCompute.CreateDevice;
+const
+  Storage8Extension: PAnsiChar = 'VK_KHR_8bit_storage';
+  Int8Extension: PAnsiChar = 'VK_KHR_shader_float16_int8';
+  TimelineExtension: PAnsiChar = 'VK_KHR_timeline_semaphore';
+  ControlsExtension: PAnsiChar = 'VK_KHR_shader_float_controls';
 var
   Features: VkPhysicalDeviceFeatures2;
   Storage16: VkPhysicalDevice16BitStorageFeatures;
@@ -372,21 +391,57 @@ var
   QueueInfo: VkDeviceQueueCreateInfo;
   DeviceInfo: VkDeviceCreateInfo;
   PoolInfo: VkCommandPoolCreateInfo;
+  Core12, HasStorage8, HasInt8, HasTimeline, HasControls: Boolean;
+  Extensions: array[0..4] of PAnsiChar;
+  ExtensionCount: Cardinal;
+
+  procedure EnableExtension(Name: PAnsiChar);
+  begin
+    Extensions[ExtensionCount] := Name;
+    Inc(ExtensionCount);
+  end;
 begin
+  Core12 := FAPIVersion >= VK_API_VERSION_1_2;
+  if Core12 then
+  begin
+    HasStorage8 := True;
+    HasInt8 := True;
+    HasTimeline := True;
+    HasControls := True;
+  end
+  else
+  begin
+    HasStorage8 := HasExtension(AnsiString(Storage8Extension));
+    HasInt8 := HasExtension(AnsiString(Int8Extension));
+    HasTimeline := HasExtension(AnsiString(TimelineExtension));
+    HasControls := HasExtension(AnsiString(ControlsExtension));
+  end;
   Storage16 := Default(VkPhysicalDevice16BitStorageFeatures);
   Storage16.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES;
   Storage8 := Default(VkPhysicalDevice8BitStorageFeatures);
   Storage8.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
-  Storage8.pNext := @Storage16;
   Int8 := Default(VkPhysicalDeviceShaderFloat16Int8Features);
   Int8.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
-  Int8.pNext := @Storage8;
   Timeline := Default(VkPhysicalDeviceTimelineSemaphoreFeatures);
   Timeline.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
-  Timeline.pNext := @Int8;
   Features := Default(VkPhysicalDeviceFeatures2);
   Features.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-  Features.pNext := @Timeline;
+  Features.pNext := @Storage16;
+  if HasStorage8 then
+  begin
+    Storage8.pNext := Features.pNext;
+    Features.pNext := @Storage8;
+  end;
+  if HasInt8 then
+  begin
+    Int8.pNext := Features.pNext;
+    Features.pNext := @Int8;
+  end;
+  if HasTimeline then
+  begin
+    Timeline.pNext := Features.pNext;
+    Features.pNext := @Timeline;
+  end;
   Interlock := Default(VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT);
   Interlock.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT;
   var HasInterlock := FGraphics and HasExtension(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
@@ -400,7 +455,8 @@ begin
   Controls.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES;
   Properties := Default(VkPhysicalDeviceProperties2);
   Properties.sType := VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-  Properties.pNext := @Controls;
+  if HasControls then
+    Properties.pNext := @Controls;
   FAPI.vkGetPhysicalDeviceProperties2(FPhysicalDevice, @Properties);
 
   FFeatures.Int64 := Features.features.shaderInt64 <> 0;
@@ -462,13 +518,23 @@ begin
   DeviceInfo.pNext := @Features;
   DeviceInfo.queueCreateInfoCount := 1;
   DeviceInfo.pQueueCreateInfos := @QueueInfo;
-  var Extensions: array[0..0] of PAnsiChar;
-  if FFeatures.PixelInterlock then
+  ExtensionCount := 0;
+  if not Core12 then
   begin
-    Extensions[0] := VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME;
-    DeviceInfo.enabledExtensionCount := 1;
-    DeviceInfo.ppEnabledExtensionNames := @Extensions[0];
+    if HasStorage8 then
+      EnableExtension(Storage8Extension);
+    if HasInt8 then
+      EnableExtension(Int8Extension);
+    if HasTimeline then
+      EnableExtension(TimelineExtension);
+    if HasControls then
+      EnableExtension(ControlsExtension);
   end;
+  if FFeatures.PixelInterlock then
+    EnableExtension(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
+  DeviceInfo.enabledExtensionCount := ExtensionCount;
+  if ExtensionCount > 0 then
+    DeviceInfo.ppEnabledExtensionNames := @Extensions[0];
   CheckVulkan(FAPI.vkCreateDevice(FPhysicalDevice, @DeviceInfo, nil, @FDevice), 'vkCreateDevice');
   FAPI.LoadDevice(FDevice);
   FAPI.vkGetDeviceQueue(FDevice, FQueueFamily, 0, @FQueue);
@@ -514,15 +580,15 @@ begin
 end;
 
 function TVulkanCompute.CreateKernel(const Code: array of Cardinal; Buffers: Integer;
-  PushSize: Cardinal): TVulkanKernel;
+  PushSize: Cardinal; const EntryPoint: AnsiString): TVulkanKernel;
 begin
-  Result := TVulkanKernel.Create(Self, Code, Buffers, PushSize, []);
+  Result := TVulkanKernel.Create(Self, Code, Buffers, PushSize, [], 1, EntryPoint);
 end;
 
 function TVulkanCompute.CreateKernel(const Code: array of Cardinal; Buffers: Integer; PushSize: Cardinal;
-  const Spec: array of Cardinal; Sets: Integer): TVulkanKernel;
+  const Spec: array of Cardinal; Sets: Integer; const EntryPoint: AnsiString): TVulkanKernel;
 begin
-  Result := TVulkanKernel.Create(Self, Code, Buffers, PushSize, Spec, Sets);
+  Result := TVulkanKernel.Create(Self, Code, Buffers, PushSize, Spec, Sets, EntryPoint);
 end;
 
 function TVulkanCompute.CreateCommands(Timestamps: Cardinal): TVulkanCommands;
@@ -709,7 +775,7 @@ end;
 { TVulkanKernel }
 
 constructor TVulkanKernel.Create(Owner: TVulkanCompute; const Code: array of Cardinal; Buffers: Integer;
-  PushSize: Cardinal; const Spec: array of Cardinal; Sets: Integer);
+  PushSize: Cardinal; const Spec: array of Cardinal; Sets: Integer; const EntryPoint: AnsiString);
 var
   Layouts: TArray<VkDescriptorSetLayout>;
   Bindings: TArray<VkDescriptorSetLayoutBinding>;
@@ -725,6 +791,8 @@ var
 begin
   inherited Create;
   FOwner := Owner;
+  if EntryPoint = '' then
+    raise EVulkanError.Create('A compute entry point name is required.');
   FBuffers := Buffers;
   FPushSize := PushSize;
   var API := Owner.API;
@@ -765,7 +833,7 @@ begin
     PipelineInfo.stage.sType := VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     PipelineInfo.stage.stage := VK_SHADER_STAGE_COMPUTE_BIT;
     PipelineInfo.stage.module := Module;
-    PipelineInfo.stage.pName := 'main';
+    PipelineInfo.stage.pName := PAnsiChar(EntryPoint);
     if Length(Spec) > 0 then
     begin
       SetLength(Entries, Length(Spec));

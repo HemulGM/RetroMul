@@ -346,9 +346,11 @@ procedure TInputController.InitializeHostInput;
 begin
   // Before the first game there is no platform profile to load.
   FState.Input.SystemId := '';
+  FState.Input.PrimarySourceId := '';
   FState.Input.Ports := TCoreInputPorts.Defaults;
   FState.Input.GamepadInput := Default(TEmulatorInput);
   FState.Input.PollingFailed := False;
+  FState.Input.HostStartDown := False;
   FState.Input.SuppressInputUntilRelease := True;
   FillChar(FState.Input.KeysDown, SizeOf(FState.Input.KeysDown), 0);
   if FState.Input.Manager <> nil then
@@ -377,13 +379,13 @@ begin
     InitializeHostInput;
     Exit;
   end;
-  if FState.Input.Manager = nil then
-    Exit;
-
   // Assignments belong to the active game, independently of the settings page.
   // Connection changes are applied separately on the owning emulation thread.
   var Ini := FState.Session.Storage.ReadConfig(FState.Session.Storage.ConfigFile(FState.Input.SystemId));
   try
+    FState.Input.PrimarySourceId := Ini.ReadString('Ports', 'Source1', '');
+    if FState.Input.Manager = nil then
+      Exit;
     LoadInputBindings(FState.Input.Manager, Ini, FState.Input.SystemId);
     FilterInputBindings(FState.Input.Manager, Ini, FState.Input.SystemId);
     FState.Input.PollingFailed := False;
@@ -437,9 +439,22 @@ begin
     Exit;
   end;
 
+  // Bindings have already been filtered to each port's selected host source.
+  // Poll the logical action, so buttons, axes and hats all work alike.
+  var StartPressed := False;
+  for var Port := 0 to High(FState.Input.Ports.Devices) do
+    if ((FState.Input.Ports.Devices[Port] = 'auto') or FState.Input.Ports.Devices[Port].StartsWith('pad')) and
+      FState.Input.Manager.IsPressed(PadAction(Port, TEmulatorButton.Start)) then
+      StartPressed := True;
+  var StartJustPressed := StartPressed and not FState.Input.HostStartDown;
+  FState.Input.HostStartDown := StartPressed;
+
   var Keys := ReadHostKeys(FState.Input.Manager);
   if FState.Input.SuppressInputUntilRelease then
   begin
+    // Also wait for Start when it is assigned to an axis or a hat.
+    if StartPressed then
+      Exit;
     for var V in FState.Input.Manager.Values do
       if (V.Kind in [TInputElementKind.Key, TInputElementKind.Button]) and (V.Value > 0.5) then
         Exit;
@@ -469,6 +484,20 @@ begin
       end;
   finally
     FState.Input.DispatchingInput := False;
+  end;
+
+  if StartJustPressed and (FState.Session.UserPaused or FState.Session.AutoPaused) and
+    (FState.Session.Emulation <> nil) and FState.Session.Emulation.IsPaused and
+    not FState.Session.EmulationFaulted and not FState.Session.Reporting and
+    (FState.Help.View = nil) and not FView.GameActionsPopup.IsOpen
+    {$IFDEF ISMOBILE} and not FState.Mobile.InBackground{$ENDIF} then
+  begin
+    FView.SwitchPause;
+    // Consume the resume press: the game must not immediately pause itself.
+    FState.Input.SuppressInputUntilRelease := True;
+    FState.Input.GamepadInput := Default(TEmulatorInput);
+    FState.Session.Emulation.ClearInput;
+    Exit;
   end;
 
   if (FState.Help.View <> nil) or (FState.Session.Emulation = nil) or FState.Session.Emulation.IsPaused or FState.Session.EmulationFaulted then
@@ -505,6 +534,8 @@ end;
 
 procedure TInputController.FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
+  if FState.Session.Reporting then
+    Exit;
   if RetroDialogVisible(FView) then
     Exit;
 
@@ -619,6 +650,8 @@ end;
 
 procedure TInputController.FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
+  if FState.Session.Reporting then
+    Exit;
   if RetroDialogVisible(FView) then
   begin
     {$IFDEF ANDROID}

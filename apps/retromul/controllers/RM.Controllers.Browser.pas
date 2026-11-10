@@ -344,6 +344,7 @@ begin
     and (FState.Settings.View = nil) and (FState.Help.View = nil));
   {$ENDIF}
   Add(Menu, 'Settings', FView.SettingsClick, not FState.Session.OpeningRom);
+  Add(Menu, 'Report a bug', FView.ReportBugClick, not FState.Session.OpeningRom).Name := 'MenuItemReportBug';
   {$IFDEF ISMOBILE}
   Add(Menu, 'Controls and shortcuts', FView.ControlsHelpClick, Ready and not FState.Help.Closing);
   {$ENDIF}
@@ -470,6 +471,7 @@ begin
   if (FState.Browser.View.Selected = nil) or FState.Session.OpeningRom then
     Exit;
 
+  FState.Session.ReportLaunchSource := 'library';
   var Game := FState.Browser.View.Selected;
   var Snapshot := FState.Browser.View.SnapshotName;
   try

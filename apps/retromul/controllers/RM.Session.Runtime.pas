@@ -328,9 +328,10 @@ begin
   {$IFDEF ISMOBILE}
   if Context.State.Input.Gamepad <> nil then
   begin
-    Context.State.Input.Gamepad.Visible := not ExclusiveInput(Context);
-    Context.State.Input.Gamepad.Enabled := (Context.State.Session.Emulation <> nil) and
-      not Context.State.Session.EmulationFaulted and not Context.State.Session.OpeningRom and not ExclusiveInput(Context);
+    var ShowGamepad := not ExclusiveInput(Context) and (Context.State.Input.PrimarySourceId = '');
+    Context.State.Input.Gamepad.Visible := ShowGamepad;
+    Context.State.Input.Gamepad.Enabled := ShowGamepad and (Context.State.Session.Emulation <> nil) and
+      not Context.State.Session.EmulationFaulted and not Context.State.Session.OpeningRom;
   end;
   {$ENDIF}
 end;

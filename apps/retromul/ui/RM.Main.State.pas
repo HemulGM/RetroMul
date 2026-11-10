@@ -32,7 +32,10 @@ type
     SoundErrorShown: Boolean;
     RomDisplayName: string;
     RomLocation: string;
+    LastReportError, LastReportRom, LastReportFilename, LastReportPlatform: string;
+    LastReportLaunch, LastReportLaunchState, ReportLaunchSource: string;
     OpeningRom: Boolean;
+    Reporting: Boolean;
     PendingAutosaveChoice: Boolean;
     PreserveOpeningAutosave: Boolean;
     EmulationFaulted: Boolean;
@@ -85,8 +88,10 @@ type
     Manager: TInputManager;
     Ports: TCoreInputPorts;
     SystemId: string;
+    PrimarySourceId: string; // Explicit host source for player one; empty allows touch.
     BottomInset: Integer;
     DispatchingInput, SuppressInputUntilRelease, PollingFailed: Boolean;
+    HostStartDown: Boolean;
     Gamepad: TScreenGamepad;
     Rumble: TRumblePlayer;
     RumbleDeviceId: string;

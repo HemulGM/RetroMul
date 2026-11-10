@@ -1,4 +1,4 @@
-object FormMain: TFormMain
+﻿object FormMain: TFormMain
   Left = 0
   Top = 0
   Caption = 'RetroMul'
@@ -45,7 +45,7 @@ object FormMain: TFormMain
     Size.Height = 771.000000000000000000
     Size.PlatformDefault = False
     TabHeight = 48.000000000000000000
-    TabIndex = 1
+    TabIndex = 2
     TabOrder = 1
     TabStop = False
     TabPosition = None
@@ -74,7 +74,7 @@ object FormMain: TFormMain
       CustomIcon = <
         item
         end>
-      IsSelected = True
+      IsSelected = False
       Size.Width = 16.000000000000000000
       Size.Height = 16.000000000000000000
       Size.PlatformDefault = False
@@ -83,8 +83,641 @@ object FormMain: TFormMain
       Text = 'Game'
       ExplicitSize.cx = 1143.000000000000000000
       ExplicitSize.cy = 769.000000000000000000
+      object LayoutHead: TLayout
+        Align = Top
+        Padding.Left = 9.000000000000000000
+        Padding.Top = 9.000000000000000000
+        Padding.Right = 9.000000000000000000
+        Padding.Bottom = 9.000000000000000000
+        Size.Width = 1105.000000000000000000
+        Size.Height = 50.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 2
+        object ToolbarBackground: TPanel
+          Align = Contents
+          HitTest = False
+          Size.Width = 1105.000000000000000000
+          Size.Height = 50.000000000000000000
+          Size.PlatformDefault = False
+          StyleLookup = 'retromul_sidebar'
+        end
+        object LayoutGameIdentity: TLayout
+          Align = Client
+          Size.Width = 487.000000000000000000
+          Size.Height = 32.000000000000000000
+          Size.PlatformDefault = False
+          object ButtonCloseRom: TButton
+            Align = Left
+            Hint = 'Close game'
+            Margins.Right = 10.000000000000000000
+            Size.Width = 32.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            TabOrder = 1
+            OnClick = ButtonCloseRomClick
+            object CloseRomIcon: TPath
+              Align = Center
+              Data.Path = {
+                05000000000000000000C0410000504101000000000000400000504100000000
+                000020410000A04001000000000000400000504101000000000020410000A841}
+              Fill.Kind = None
+              HitTest = False
+              Size.Width = 20.000000000000000000
+              Size.Height = 20.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Color = xFFE8ECF1
+              Stroke.Thickness = 1.600000023841858000
+              WrapMode = Fit
+            end
+          end
+          object ButtonLibrary: TButton
+            Align = Left
+            CanFocus = False
+            StyledSettings = []
+            Hint = 'Back to library'
+            Margins.Right = 20.000000000000000000
+            Position.X = 42.000000000000000000
+            Size.Width = 132.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            Text = 'Library'
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.Trimming = Character
+            ParentShowHint = False
+            ShowHint = True
+            object ButtonLibraryIcon: TPath
+              Align = LeftCenter
+              Data.Path = {
+                05000000000000000000C0410000504101000000000000400000504100000000
+                000020410000A04001000000000000400000504101000000000020410000A841}
+              Fill.Kind = None
+              HitTest = False
+              Margins.Left = 12.000000000000000000
+              Position.X = 12.000000000000000000
+              Position.Y = 6.000000000000000000
+              Size.Width = 20.000000000000000000
+              Size.Height = 20.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Color = xFFB9C2CC
+              Stroke.Thickness = 1.600000023841858000
+              WrapMode = Fit
+            end
+          end
+          object ButtonHidePanel: TButton
+            Align = Left
+            CanFocus = False
+            StyledSettings = []
+            Hint = 'Hide panel'
+            Margins.Right = 10.000000000000000000
+            Position.X = 42.000000000000000000
+            Size.Width = 32.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            Visible = False
+            ParentShowHint = False
+            ShowHint = True
+            object HidePanelIcon: TPath
+              Align = Center
+              Data.Path = {
+                140000000000000042608940DF4F7B41020000003ADF954070C7804102000000
+                C420AA4070C7804102000000BE9FB640DF4F7B410100000000004041BE9F1641
+                0100000010589241DF4F7B4102000000A77B954112B080410200000001799A41
+                F9A4804102000000FD8E9D41FA1D7B4102000000F9A4A04102F2744102000000
+                12B0A0414FF76A4102000000EFA79D4120B0644101000000DE4F4B414060E940
+                02000000611045413DE2DC40020000009DEF3A413DE2DC400200000020B03441
+                3F60E940010000004060894020B06441020000007DC479409DEF6A4102000000
+                7DC47940611075410200000040608940DE4F7B41}
+              Fill.Color = xFFE8ECF1
+              HitTest = False
+              Size.Width = 20.000000000000000000
+              Size.Height = 12.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Kind = None
+              WrapMode = Fit
+            end
+          end
+          object LayoutGameText: TLayout
+            Align = Client
+            Size.Width = 293.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            object LabelStatus: TLabel
+              Align = Top
+              StyledSettings = []
+              Size.Width = 293.000000000000000000
+              Size.Height = 30.000000000000000000
+              Size.PlatformDefault = False
+              TextSettings.Font.Size = 17.000000000000000000
+              TextSettings.Font.StyleExt = {00070000000000000004000000}
+              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.WordWrap = False
+              Text = 'RetroMul - Open ROM'
+              TabOrder = 0
+            end
+            object GamePlatform: TLabel
+              Align = Client
+              StyledSettings = []
+              Opacity = 0.600000023841857900
+              Size.Width = 293.000000000000000000
+              Size.Height = 2.000000000000000000
+              Size.PlatformDefault = False
+              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.WordWrap = False
+            end
+          end
+        end
+        object LayoutGameActions: TLayout
+          Align = Right
+          Position.X = 496.000000000000000000
+          Position.Y = 9.000000000000000000
+          Size.Width = 600.000000000000000000
+          Size.Height = 32.000000000000000000
+          Size.PlatformDefault = False
+          object ButtonReset: TButton
+            Align = Left
+            CanFocus = False
+            StyledSettings = []
+            Hint = 'Reset; hold Shift for hard restart'
+            Margins.Right = 8.000000000000000000
+            Size.Width = 130.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            Text = 'Reset'
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.Trimming = Character
+            ParentShowHint = False
+            ShowHint = True
+            object PathResetIcon: TPath
+              Align = LeftCenter
+              Data.Path = {
+                39000000000000000000404100009040020000009773FB400000904002000000
+                000090409773FB40020000000000904000004041020000000000904005238141
+                020000009773FB4000009C41020000000000404100009C410200000005238141
+                00009C410200000000009C41052381410200000000009C410000404102000000
+                00009C4144FA39410200000045C79B41910F344102000000B4599B41DC462E41
+                02000000DFCF9A41DE02274102000000A1789D410000204102000000A924A141
+                0000204102000000431CA441000020410200000046B6A6416519244102000000
+                9329A741FDF6294102000000AEB6A74118263141020000000000A841D8813841
+                020000000000A84100004041020000000000A841CAC3874102000000CAC38741
+                0000A84102000000000040410000A841020000002CF1E0400000A84102000000
+                00004040CAC3874102000000000040400000404102000000000040402CF1E040
+                020000002CF1E0400000404002000000000040410000404002000000B1E16441
+                0000404002000000F8428341B875774002000000000090417155A94001000000
+                00009041000088400200000000009041957D754002000000B8AF924100006040
+                0200000000009641000060400200000048509941000060400200000000009C41
+                957D75400200000000009C41000088400100000000009C410000E84002000000
+                00009C413541F540020000004850994100000041020000000000964100000041
+                0100000000007C410000004102000000705F7541000000410200000000007041
+                3541F54002000000000070410000E8400200000000007041CBBEDA4002000000
+                705F75410000D0400200000000007C410000D04001000000F5CA88410000D040
+                02000000A52C7C415648A840020000006F815F41000090400200000000004041
+                00009040030000000000404100009040}
+              Fill.Color = xFFE8ECF1
+              HitTest = False
+              Margins.Left = 12.000000000000000000
+              Position.X = 12.000000000000000000
+              Position.Y = 6.000000000000000000
+              Size.Width = 20.000000000000000000
+              Size.Height = 20.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Kind = None
+              WrapMode = Fit
+            end
+          end
+          object GamePause: TButton
+            Align = Left
+            CanFocus = False
+            StyledSettings = []
+            Hint = 'Pause / resume '#183' P'
+            Margins.Right = 8.000000000000000000
+            Position.X = 138.000000000000000000
+            Size.Width = 132.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            Text = 'Pause'
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.Trimming = Character
+            ParentShowHint = False
+            ShowHint = True
+            object GamePauseIcon: TPath
+              Align = LeftCenter
+              Data.Path = {
+                48000000000000000000A0400000004002000000BA4E79400000004002000000
+                00004040BA4E3940020000000000404000008040010000000000404000008041
+                020000000000404039D6884102000000BA4E794000009041020000000000A040
+                00009041010000000000E040000090410200000052AC01410000904102000000
+                0000104139D68841020000000000104100008041010000000000104100008040
+                0200000000001041BA4E39400200000052AC014100000040020000000000E040
+                00000040010000000000A04000000040030000000000A0400000004000000000
+                0000804000008040020000000000804072A75C4002000000B9538E4000004040
+                020000000000A04000004040010000000000E040000040400200000047ACF140
+                00004040020000000000004172A75C4002000000000000410000804001000000
+                000000410000804102000000000000411C6B84410200000047ACF14000008841
+                020000000000E04000008841010000000000A0400000884102000000B9538E40
+                0000884102000000000080401C6B844102000000000080400000804101000000
+                0000804000008040030000000000804000008040000000000000504100000040
+                020000008F533E41000000400200000000003041BA4E39400200000000003041
+                00008040010000000000304100008041020000000000304139D6884102000000
+                8F533E4100009041020000000000504100009041010000000000704100009041
+                0200000039D6804100009041020000000000884139D688410200000000008841
+                000080410100000000008841000080400200000000008841BA4E394002000000
+                39D6804100000040020000000000704100000040010000000000504100000040
+                0300000000005041000000400000000000004041000080400200000000004041
+                72A75C4002000000C72947410000404002000000000050410000404001000000
+                00007041000040400200000039D6784100004040020000000000804172A75C40
+                0200000000008041000080400100000000008041000080410200000000008041
+                1C6B84410200000039D678410000884102000000000070410000884101000000
+                000050410000884102000000C72947410000884102000000000040411C6B8441
+                0200000000004041000080410100000000004041000080400300000000004041
+                00008040}
+              Fill.Color = xFFE8ECF1
+              HitTest = False
+              Margins.Left = 12.000000000000000000
+              Position.X = 12.000000000000000000
+              Position.Y = 6.000000000000000000
+              Size.Width = 20.000000000000000000
+              Size.Height = 20.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Kind = None
+              WrapMode = Fit
+            end
+            object GameResumeIcon: TPath
+              Align = LeftCenter
+              Data.Path = {
+                1C0000000000000061C3894113FE0A4102000000E10B9241131B144102000000
+                E10B9241F7E42B410200000061C389410C023541010000001826E740FA7E8641
+                02000000A228C74060E58A41020000000000A040491D8541020000000000A040
+                50FC7741010000000000A0409E079040020000000000A0406215574002000000
+                A228C740D0D52840020000001826E7405F074C400100000061C3894113FE0A41
+                0300000061C3894113FE0A4100000000A1E78541D20027410200000099AA8841
+                FDF623410200000099AA884103091C4102000000A1E7854158FF184101000000
+                56B7D7404F06824002000000840DCD406E517840020000000000C040ECDD8340
+                020000000000C0409E079040010000000000C04050FC7741020000000000C040
+                34117E4102000000840DCD40C3F58041020000006BB7D740B9FC7E4101000000
+                A1E78541D200274103000000A1E78541D2002741}
+              Fill.Color = xFF1B2026
+              HitTest = False
+              Margins.Left = 12.000000000000000000
+              Position.X = 12.000000000000000000
+              Position.Y = 6.000000000000000000
+              Size.Width = 20.000000000000000000
+              Size.Height = 20.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Kind = None
+              Visible = False
+              WrapMode = Fit
+            end
+          end
+          object GameFullscreen: TButton
+            Align = Left
+            CanFocus = False
+            StyledSettings = []
+            Hint = 'Full screen '#183' F11'
+            Margins.Right = 8.000000000000000000
+            Position.X = 278.000000000000000000
+            Size.Width = 132.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.Trimming = Character
+            ParentShowHint = False
+            ShowHint = True
+            object GameFullscreenIcon: TPath
+              Align = LeftCenter
+              Data.Path = {
+                0C000000000000000000803F00001041010000000000803F0000803F01000000
+                000010410000803F00000000000098410000803F010000000000D8410000803F
+                010000000000D84100001041000000000000D84100009841010000000000D841
+                0000D84101000000000098410000D84100000000000010410000D84101000000
+                0000803F0000D841010000000000803F00009841}
+              Fill.Kind = None
+              HitTest = False
+              Margins.Left = 12.000000000000000000
+              Position.X = 12.000000000000000000
+              Position.Y = 6.000000000000000000
+              Size.Width = 20.000000000000000000
+              Size.Height = 20.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Color = xFFB9C2CC
+              Stroke.Thickness = 1.600000023841858000
+              WrapMode = Fit
+            end
+          end
+          object GameSettings: TButton
+            Align = Left
+            CanFocus = False
+            StyledSettings = []
+            Hint = 'Settings'
+            Margins.Right = 8.000000000000000000
+            Position.X = 418.000000000000000000
+            Size.Width = 132.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.Trimming = Character
+            ParentShowHint = False
+            ShowHint = True
+            object GameSettingsIcon: TPath
+              Align = LeftCenter
+              Data.Path = {
+                2100000000000000000020410000803F01000000000080410000803F01000000
+                000088410000A040010000000000A8410000E040010000000000C8410000C040
+                010000000000E04100003041010000000000C84100006041010000000000C841
+                00009041010000000000E0410000A841010000000000C8410000D04101000000
+                0000A8410000C84101000000000088410000D84101000000000080410000F841
+                01000000000020410000F84101000000000010410000D841010000000000A040
+                0000C841010000000000803F0000D04101000000000000C00000A84101000000
+                0000803F00009041010000000000803F0000604101000000000000C000003041
+                010000000000803F0000C040010000000000A0400000E0400100000000001041
+                0000A04003000000000020410000803F00000000000050410000204102000000
+                0000A84100002041020000000000A8410000B04102000000000050410000B041
+                020000000000A0400000B041020000000000A040000020410200000000005041
+                00002041030000000000504100002041}
+              Fill.Kind = None
+              HitTest = False
+              Margins.Left = 12.000000000000000000
+              Position.X = 12.000000000000000000
+              Position.Y = 6.000000000000000000
+              Size.Width = 20.000000000000000000
+              Size.Height = 20.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Color = xFFB9C2CC
+              Stroke.Thickness = 1.600000023841858000
+              WrapMode = Fit
+            end
+          end
+          object GameInsertCoin: TButton
+            Align = Left
+            CanFocus = False
+            StyledSettings = []
+            Hint = 'Insert coin '#183' F9'
+            Margins.Right = 8.000000000000000000
+            Size.Width = 132.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            Text = 'Insert coin'
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.Trimming = Character
+            Visible = False
+            ParentShowHint = False
+            ShowHint = True
+            object GameInsertCoinIcon: TPath
+              Align = LeftCenter
+              Data.Path = {
+                1200000000000000000060410000803F020000000000F8410000803F02000000
+                0000F8410000D84102000000000060410000D84102000000000040C00000D841
+                02000000000040C00000803F02000000000060410000803F0300000000006041
+                0000803F00000000000060410000A040020000000000C8410000A04002000000
+                0000C8410000B84102000000000060410000B84102000000000040400000B841
+                02000000000040400000A04002000000000060410000A0400300000000006041
+                0000A040000000000000604100001041010000000000604100009841}
+              Fill.Kind = None
+              HitTest = False
+              Margins.Left = 12.000000000000000000
+              Position.X = 12.000000000000000000
+              Position.Y = 10.000000000000000000
+              Size.Width = 20.000000000000000000
+              Size.Height = 20.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Color = xFFB9C2CC
+              Stroke.Thickness = 1.600000023841858000
+              WrapMode = Fit
+            end
+          end
+          object GameControlsHelp: TButton
+            Align = Left
+            CanFocus = False
+            StyledSettings = []
+            Hint = 'Controls and shortcuts '#183' F1'
+            Margins.Right = 8.000000000000000000
+            Position.X = 558.000000000000000000
+            Size.Width = 132.000000000000000000
+            Size.Height = 32.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            Text = 'F1'
+            TextSettings.Font.Size = 13.000000000000000000
+            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.Trimming = Character
+            ParentShowHint = False
+            ShowHint = True
+            object GameControlsHelpIcon: TPath
+              Align = LeftCenter
+              Data.Path = {
+                1C00000000000000000020410000C040010000000000C0410000C04002000000
+                0000E0410000C040020000000000F04100000041020000000000F84100005041
+                01000000000008420000D0410200000000000C420000F041020000000000F841
+                00000042020000000000E0410000E841010000000000B8410000C04101000000
+                000030410000C041010000000000C0400000E841020000000000404000000042
+                02000000000000000000F041020000000000803F0000D0410100000000008040
+                00005041020000000000A04000000041020000000000C0400000C04002000000
+                000020410000C04003000000000020410000C040000000000000104100004041
+                01000000000010410000A841000000000000A040000080410100000000005041
+                00008041000000000000C04100005041010000000000C0410000704100000000
+                0000E04100009041010000000000E0410000A041}
+              Fill.Kind = None
+              HitTest = False
+              Margins.Left = 12.000000000000000000
+              Position.X = 12.000000000000000000
+              Position.Y = 6.000000000000000000
+              Size.Width = 20.000000000000000000
+              Size.Height = 20.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Color = xFFB9C2CC
+              Stroke.Thickness = 1.600000023841858000
+              WrapMode = Fit
+            end
+            object HelpBorder: TRectangle
+              Align = Contents
+              Fill.Kind = None
+              HitTest = False
+              Size.Width = 132.000000000000000000
+              Size.Height = 32.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Color = xFFFFB43B
+              XRadius = 8.000000000000000000
+              YRadius = 8.000000000000000000
+            end
+          end
+          object GameActionsButton: TButton
+            Align = Right
+            CanFocus = False
+            StyledSettings = []
+            Hint = 'More actions'
+            Size.Width = 60.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            Visible = False
+            ParentShowHint = False
+            ShowHint = True
+            object GameActionsIcon: TPath
+              Align = Center
+              Data.Path = {
+                2A000000000000000000404100000041020000008F532E410000004102000000
+                00002041A358E34002000000000020410000C04002000000000020415DA79C40
+                020000008F532E41000080400200000000004041000080400200000071AC5141
+                0000804002000000000060415DA79C4002000000000060410000C04002000000
+                00006041A358E3400200000071AC514100000041020000000000404100000041
+                030000000000404100000041000000000000404100006041020000008F532E41
+                00006041020000000000204171AC514102000000000020410000404102000000
+                000020418F532E41020000008F532E4100002041020000000000404100002041
+                0200000071AC51410000204102000000000060418F532E410200000000006041
+                00004041020000000000604171AC51410200000071AC51410000604102000000
+                0000404100006041030000000000404100006041000000000000204100009041
+                020000000000204139D69841020000008F532E410000A0410200000000004041
+                0000A0410200000071AC51410000A041020000000000604139D6984102000000
+                00006041000090410200000000006041C72987410200000071AC514100008041
+                020000000000404100008041020000008F532E41000080410200000000002041
+                C7298741020000000000204100009041030000000000204100009041}
+              Fill.Color = xFFE8ECF1
+              HitTest = False
+              Size.Width = 4.000000000000000000
+              Size.Height = 20.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Kind = None
+              WrapMode = Fit
+            end
+          end
+        end
+      end
+      object GameStatus: TPanel
+        Align = Bottom
+        Position.Y = 741.000000000000000000
+        Size.Width = 1105.000000000000000000
+        Size.Height = 30.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'retromul_sidebar'
+        object StatusDot: TCircle
+          Align = Left
+          Fill.Color = xFFFF6B6B
+          HitTest = False
+          Margins.Left = 14.000000000000000000
+          Margins.Top = 11.000000000000000000
+          Margins.Right = 14.000000000000000000
+          Margins.Bottom = 11.000000000000000000
+          Position.X = 14.000000000000000000
+          Position.Y = 11.000000000000000000
+          Size.Width = 8.000000000000000000
+          Size.Height = 8.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Kind = None
+        end
+        object GameFPS: TLabel
+          Align = Client
+          StyledSettings = []
+          Size.Width = 948.000000000000000000
+          Size.Height = 30.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.WordWrap = False
+        end
+        object GameAudio: TLabel
+          Align = Right
+          AutoSize = True
+          StyledSettings = []
+          Margins.Left = 48.000000000000000000
+          Margins.Right = 12.000000000000000000
+          Position.X = 1032.000000000000000000
+          Size.Width = 61.000000000000000000
+          Size.Height = 30.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.HorzAlign = Trailing
+          TextSettings.WordWrap = False
+          Text = 'Audio state'
+          object AudioIcon: TPath
+            Align = Left
+            Data.Path = {
+              0F000000000000000000803F00002041010000000000E0400000204101000000
+              000070410000404001000000000070410000C841010000000000E04000009041
+              010000000000803F00009041030000000000803F00002041000000000000A041
+              00000041020000000000D84100003041020000000000D8410000884102000000
+              0000A0410000A041000000000000C04100004040020000000000104200000041
+              02000000000010420000A041020000000000C0410000C841}
+            Fill.Kind = None
+            HitTest = False
+            Margins.Left = -20.000000000000000000
+            Margins.Top = 7.000000000000000000
+            Margins.Right = 8.000000000000000000
+            Margins.Bottom = 7.000000000000000000
+            Position.X = -20.000000000000000000
+            Position.Y = 7.000000000000000000
+            Size.Width = 16.000000000000000000
+            Size.Height = 16.000000000000000000
+            Size.PlatformDefault = False
+            Stroke.Color = xFFB9C2CC
+            Stroke.Thickness = 1.600000023841858000
+            WrapMode = Fit
+          end
+        end
+      end
+      object LayoutShowPanel: TLayout
+        Align = Top
+        Size.Height = 48.000000000000000000
+        Size.PlatformDefault = False
+        Visible = False
+        object LayoutShowPanelTop: TLayout
+          Align = Top
+          Padding.Left = 8.000000000000000000
+          Padding.Top = 8.000000000000000000
+          Size.Width = 50.000000000000000000
+          Size.Height = 48.000000000000000000
+          Size.PlatformDefault = False
+          object ButtonShowPanel: TButton
+            Align = Left
+            CanFocus = False
+            StyledSettings = []
+            Hint = 'Show panel'
+            Position.X = 8.000000000000000000
+            Position.Y = 8.000000000000000000
+            Size.Width = 44.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            ParentShowHint = False
+            ShowHint = True
+            object ShowPanelIcon: TPath
+              Align = Center
+              Data.Path = {
+                140000000000000042608940DF4F7B41020000003ADF954070C7804102000000
+                C420AA4070C7804102000000BE9FB640DF4F7B410100000000004041BE9F1641
+                0100000010589241DF4F7B4102000000A77B954112B080410200000001799A41
+                F9A4804102000000FD8E9D41FA1D7B4102000000F9A4A04102F2744102000000
+                12B0A0414FF76A4102000000EFA79D4120B0644101000000DE4F4B414060E940
+                02000000611045413DE2DC40020000009DEF3A413DE2DC400200000020B03441
+                3F60E940010000004060894020B06441020000007DC479409DEF6A4102000000
+                7DC47940611075410200000040608940DE4F7B41}
+              Fill.Color = xFFE8ECF1
+              HitTest = False
+              RotationAngle = 180.000000000000000000
+              Size.Width = 20.000000000000000000
+              Size.Height = 12.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Kind = None
+              WrapMode = Fit
+            end
+          end
+        end
+      end
       object LayoutClient: TLayout
         Align = Client
+        ClipChildren = True
+        Position.Y = 50.000000000000000000
         HitTest = True
         Size.Width = 1105.000000000000000000
         Size.Height = 771.000000000000000000
@@ -28174,642 +28807,13 @@ object FormMain: TFormMain
             TabOrder = 1
           end
         end
-        object LayoutHead: TLayout
-          Align = Top
-          Padding.Left = 9.000000000000000000
-          Padding.Top = 9.000000000000000000
-          Padding.Right = 9.000000000000000000
-          Padding.Bottom = 9.000000000000000000
-          Size.Width = 1105.000000000000000000
-          Size.Height = 50.000000000000000000
-          Size.PlatformDefault = False
-          TabOrder = 2
-          object ToolbarBackground: TPanel
-            Align = Contents
-            HitTest = False
-            Size.Width = 1105.000000000000000000
-            Size.Height = 50.000000000000000000
-            Size.PlatformDefault = False
-            StyleLookup = 'retromul_sidebar'
-          end
-          object LayoutGameIdentity: TLayout
-            Align = Client
-            Size.Width = 487.000000000000000000
-            Size.Height = 32.000000000000000000
-            Size.PlatformDefault = False
-            object ButtonCloseRom: TButton
-              Align = Left
-              Hint = 'Close game'
-              Margins.Right = 10.000000000000000000
-              Size.Width = 32.000000000000000000
-              Size.Height = 32.000000000000000000
-              Size.PlatformDefault = False
-              StyleLookup = 'buttonstyle'
-              TabOrder = 1
-              OnClick = ButtonCloseRomClick
-              object CloseRomIcon: TPath
-                Align = Center
-                Data.Path = {
-                  05000000000000000000C0410000504101000000000000400000504100000000
-                  000020410000A04001000000000000400000504101000000000020410000A841}
-                Fill.Kind = None
-                HitTest = False
-                Size.Width = 20.000000000000000000
-                Size.Height = 20.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Color = xFFE8ECF1
-                Stroke.Thickness = 1.600000023841858000
-                WrapMode = Fit
-              end
-            end
-            object ButtonLibrary: TButton
-              Align = Left
-              CanFocus = False
-              StyledSettings = []
-              Hint = 'Back to library'
-              Margins.Right = 20.000000000000000000
-              Position.X = 42.000000000000000000
-              Size.Width = 132.000000000000000000
-              Size.Height = 32.000000000000000000
-              Size.PlatformDefault = False
-              StyleLookup = 'buttonstyle'
-              Text = 'Library'
-              TextSettings.Font.Size = 13.000000000000000000
-              TextSettings.FontColor = xFFE8ECF1
-              TextSettings.Trimming = Character
-              ParentShowHint = False
-              ShowHint = True
-              object ButtonLibraryIcon: TPath
-                Align = LeftCenter
-                Data.Path = {
-                  05000000000000000000C0410000504101000000000000400000504100000000
-                  000020410000A04001000000000000400000504101000000000020410000A841}
-                Fill.Kind = None
-                HitTest = False
-                Margins.Left = 12.000000000000000000
-                Position.X = 12.000000000000000000
-                Position.Y = 6.000000000000000000
-                Size.Width = 20.000000000000000000
-                Size.Height = 20.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Color = xFFB9C2CC
-                Stroke.Thickness = 1.600000023841858000
-                WrapMode = Fit
-              end
-            end
-            object ButtonHidePanel: TButton
-              Align = Left
-              CanFocus = False
-              StyledSettings = []
-              Hint = 'Hide panel'
-              Margins.Right = 10.000000000000000000
-              Position.X = 42.000000000000000000
-              Size.Width = 32.000000000000000000
-              Size.Height = 40.000000000000000000
-              Size.PlatformDefault = False
-              StyleLookup = 'buttonstyle'
-              Visible = False
-              ParentShowHint = False
-              ShowHint = True
-              object HidePanelIcon: TPath
-                Align = Center
-                Data.Path = {
-                  140000000000000042608940DF4F7B41020000003ADF954070C7804102000000
-                  C420AA4070C7804102000000BE9FB640DF4F7B410100000000004041BE9F1641
-                  0100000010589241DF4F7B4102000000A77B954112B080410200000001799A41
-                  F9A4804102000000FD8E9D41FA1D7B4102000000F9A4A04102F2744102000000
-                  12B0A0414FF76A4102000000EFA79D4120B0644101000000DE4F4B414060E940
-                  02000000611045413DE2DC40020000009DEF3A413DE2DC400200000020B03441
-                  3F60E940010000004060894020B06441020000007DC479409DEF6A4102000000
-                  7DC47940611075410200000040608940DE4F7B41}
-                Fill.Color = xFFE8ECF1
-                HitTest = False
-                Size.Width = 20.000000000000000000
-                Size.Height = 12.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Kind = None
-                WrapMode = Fit
-              end
-            end
-            object LayoutGameText: TLayout
-              Align = Client
-              Size.Width = 293.000000000000000000
-              Size.Height = 32.000000000000000000
-              Size.PlatformDefault = False
-              object LabelStatus: TLabel
-                Align = Top
-                StyledSettings = []
-                Size.Width = 293.000000000000000000
-                Size.Height = 30.000000000000000000
-                Size.PlatformDefault = False
-                TextSettings.Font.Size = 17.000000000000000000
-                TextSettings.Font.StyleExt = {00070000000000000004000000}
-                TextSettings.FontColor = xFFE8ECF1
-                TextSettings.WordWrap = False
-                Text = 'RetroMul - Open ROM'
-                TabOrder = 0
-              end
-              object GamePlatform: TLabel
-                Align = Client
-                StyledSettings = []
-                Opacity = 0.600000023841857900
-                Size.Width = 293.000000000000000000
-                Size.Height = 2.000000000000000000
-                Size.PlatformDefault = False
-                TextSettings.FontColor = xFFE8ECF1
-                TextSettings.WordWrap = False
-              end
-            end
-          end
-          object LayoutGameActions: TLayout
-            Align = Right
-            Position.X = 496.000000000000000000
-            Position.Y = 9.000000000000000000
-            Size.Width = 600.000000000000000000
-            Size.Height = 32.000000000000000000
-            Size.PlatformDefault = False
-            object ButtonReset: TButton
-              Align = Left
-              CanFocus = False
-              StyledSettings = []
-              Hint = 'Reset; hold Shift for hard restart'
-              Margins.Right = 8.000000000000000000
-              Size.Width = 130.000000000000000000
-              Size.Height = 32.000000000000000000
-              Size.PlatformDefault = False
-              StyleLookup = 'buttonstyle'
-              Text = 'Reset'
-              TextSettings.Font.Size = 13.000000000000000000
-              TextSettings.FontColor = xFFE8ECF1
-              TextSettings.Trimming = Character
-              ParentShowHint = False
-              ShowHint = True
-              object PathResetIcon: TPath
-                Align = LeftCenter
-                Data.Path = {
-                  39000000000000000000404100009040020000009773FB400000904002000000
-                  000090409773FB40020000000000904000004041020000000000904005238141
-                  020000009773FB4000009C41020000000000404100009C410200000005238141
-                  00009C410200000000009C41052381410200000000009C410000404102000000
-                  00009C4144FA39410200000045C79B41910F344102000000B4599B41DC462E41
-                  02000000DFCF9A41DE02274102000000A1789D410000204102000000A924A141
-                  0000204102000000431CA441000020410200000046B6A6416519244102000000
-                  9329A741FDF6294102000000AEB6A74118263141020000000000A841D8813841
-                  020000000000A84100004041020000000000A841CAC3874102000000CAC38741
-                  0000A84102000000000040410000A841020000002CF1E0400000A84102000000
-                  00004040CAC3874102000000000040400000404102000000000040402CF1E040
-                  020000002CF1E0400000404002000000000040410000404002000000B1E16441
-                  0000404002000000F8428341B875774002000000000090417155A94001000000
-                  00009041000088400200000000009041957D754002000000B8AF924100006040
-                  0200000000009641000060400200000048509941000060400200000000009C41
-                  957D75400200000000009C41000088400100000000009C410000E84002000000
-                  00009C413541F540020000004850994100000041020000000000964100000041
-                  0100000000007C410000004102000000705F7541000000410200000000007041
-                  3541F54002000000000070410000E8400200000000007041CBBEDA4002000000
-                  705F75410000D0400200000000007C410000D04001000000F5CA88410000D040
-                  02000000A52C7C415648A840020000006F815F41000090400200000000004041
-                  00009040030000000000404100009040}
-                Fill.Color = xFFE8ECF1
-                HitTest = False
-                Margins.Left = 12.000000000000000000
-                Position.X = 12.000000000000000000
-                Position.Y = 6.000000000000000000
-                Size.Width = 20.000000000000000000
-                Size.Height = 20.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Kind = None
-                WrapMode = Fit
-              end
-            end
-            object GamePause: TButton
-              Align = Left
-              CanFocus = False
-              StyledSettings = []
-              Hint = 'Pause / resume '#183' P'
-              Margins.Right = 8.000000000000000000
-              Position.X = 138.000000000000000000
-              Size.Width = 132.000000000000000000
-              Size.Height = 32.000000000000000000
-              Size.PlatformDefault = False
-              StyleLookup = 'buttonstyle'
-              Text = 'Pause'
-              TextSettings.Font.Size = 13.000000000000000000
-              TextSettings.FontColor = xFFE8ECF1
-              TextSettings.Trimming = Character
-              ParentShowHint = False
-              ShowHint = True
-              object GamePauseIcon: TPath
-                Align = LeftCenter
-                Data.Path = {
-                  48000000000000000000A0400000004002000000BA4E79400000004002000000
-                  00004040BA4E3940020000000000404000008040010000000000404000008041
-                  020000000000404039D6884102000000BA4E794000009041020000000000A040
-                  00009041010000000000E040000090410200000052AC01410000904102000000
-                  0000104139D68841020000000000104100008041010000000000104100008040
-                  0200000000001041BA4E39400200000052AC014100000040020000000000E040
-                  00000040010000000000A04000000040030000000000A0400000004000000000
-                  0000804000008040020000000000804072A75C4002000000B9538E4000004040
-                  020000000000A04000004040010000000000E040000040400200000047ACF140
-                  00004040020000000000004172A75C4002000000000000410000804001000000
-                  000000410000804102000000000000411C6B84410200000047ACF14000008841
-                  020000000000E04000008841010000000000A0400000884102000000B9538E40
-                  0000884102000000000080401C6B844102000000000080400000804101000000
-                  0000804000008040030000000000804000008040000000000000504100000040
-                  020000008F533E41000000400200000000003041BA4E39400200000000003041
-                  00008040010000000000304100008041020000000000304139D6884102000000
-                  8F533E4100009041020000000000504100009041010000000000704100009041
-                  0200000039D6804100009041020000000000884139D688410200000000008841
-                  000080410100000000008841000080400200000000008841BA4E394002000000
-                  39D6804100000040020000000000704100000040010000000000504100000040
-                  0300000000005041000000400000000000004041000080400200000000004041
-                  72A75C4002000000C72947410000404002000000000050410000404001000000
-                  00007041000040400200000039D6784100004040020000000000804172A75C40
-                  0200000000008041000080400100000000008041000080410200000000008041
-                  1C6B84410200000039D678410000884102000000000070410000884101000000
-                  000050410000884102000000C72947410000884102000000000040411C6B8441
-                  0200000000004041000080410100000000004041000080400300000000004041
-                  00008040}
-                Fill.Color = xFFE8ECF1
-                HitTest = False
-                Margins.Left = 12.000000000000000000
-                Position.X = 12.000000000000000000
-                Position.Y = 6.000000000000000000
-                Size.Width = 20.000000000000000000
-                Size.Height = 20.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Kind = None
-                WrapMode = Fit
-              end
-              object GameResumeIcon: TPath
-                Align = LeftCenter
-                Data.Path = {
-                  1C0000000000000061C3894113FE0A4102000000E10B9241131B144102000000
-                  E10B9241F7E42B410200000061C389410C023541010000001826E740FA7E8641
-                  02000000A228C74060E58A41020000000000A040491D8541020000000000A040
-                  50FC7741010000000000A0409E079040020000000000A0406215574002000000
-                  A228C740D0D52840020000001826E7405F074C400100000061C3894113FE0A41
-                  0300000061C3894113FE0A4100000000A1E78541D20027410200000099AA8841
-                  FDF623410200000099AA884103091C4102000000A1E7854158FF184101000000
-                  56B7D7404F06824002000000840DCD406E517840020000000000C040ECDD8340
-                  020000000000C0409E079040010000000000C04050FC7741020000000000C040
-                  34117E4102000000840DCD40C3F58041020000006BB7D740B9FC7E4101000000
-                  A1E78541D200274103000000A1E78541D2002741}
-                Fill.Color = xFF1B2026
-                HitTest = False
-                Margins.Left = 12.000000000000000000
-                Position.X = 12.000000000000000000
-                Position.Y = 6.000000000000000000
-                Size.Width = 20.000000000000000000
-                Size.Height = 20.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Kind = None
-                Visible = False
-                WrapMode = Fit
-              end
-            end
-            object GameFullscreen: TButton
-              Align = Left
-              CanFocus = False
-              StyledSettings = []
-              Hint = 'Full screen '#183' F11'
-              Margins.Right = 8.000000000000000000
-              Position.X = 278.000000000000000000
-              Size.Width = 132.000000000000000000
-              Size.Height = 32.000000000000000000
-              Size.PlatformDefault = False
-              StyleLookup = 'buttonstyle'
-              TextSettings.Font.Size = 13.000000000000000000
-              TextSettings.FontColor = xFFE8ECF1
-              TextSettings.Trimming = Character
-              ParentShowHint = False
-              ShowHint = True
-              object GameFullscreenIcon: TPath
-                Align = LeftCenter
-                Data.Path = {
-                  0C000000000000000000803F00001041010000000000803F0000803F01000000
-                  000010410000803F00000000000098410000803F010000000000D8410000803F
-                  010000000000D84100001041000000000000D84100009841010000000000D841
-                  0000D84101000000000098410000D84100000000000010410000D84101000000
-                  0000803F0000D841010000000000803F00009841}
-                Fill.Kind = None
-                HitTest = False
-                Margins.Left = 12.000000000000000000
-                Position.X = 12.000000000000000000
-                Position.Y = 6.000000000000000000
-                Size.Width = 20.000000000000000000
-                Size.Height = 20.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Color = xFFB9C2CC
-                Stroke.Thickness = 1.600000023841858000
-                WrapMode = Fit
-              end
-            end
-            object GameSettings: TButton
-              Align = Left
-              CanFocus = False
-              StyledSettings = []
-              Hint = 'Settings'
-              Margins.Right = 8.000000000000000000
-              Position.X = 418.000000000000000000
-              Size.Width = 132.000000000000000000
-              Size.Height = 32.000000000000000000
-              Size.PlatformDefault = False
-              StyleLookup = 'buttonstyle'
-              TextSettings.Font.Size = 13.000000000000000000
-              TextSettings.FontColor = xFFE8ECF1
-              TextSettings.Trimming = Character
-              ParentShowHint = False
-              ShowHint = True
-              object GameSettingsIcon: TPath
-                Align = LeftCenter
-                Data.Path = {
-                  2100000000000000000020410000803F01000000000080410000803F01000000
-                  000088410000A040010000000000A8410000E040010000000000C8410000C040
-                  010000000000E04100003041010000000000C84100006041010000000000C841
-                  00009041010000000000E0410000A841010000000000C8410000D04101000000
-                  0000A8410000C84101000000000088410000D84101000000000080410000F841
-                  01000000000020410000F84101000000000010410000D841010000000000A040
-                  0000C841010000000000803F0000D04101000000000000C00000A84101000000
-                  0000803F00009041010000000000803F0000604101000000000000C000003041
-                  010000000000803F0000C040010000000000A0400000E0400100000000001041
-                  0000A04003000000000020410000803F00000000000050410000204102000000
-                  0000A84100002041020000000000A8410000B04102000000000050410000B041
-                  020000000000A0400000B041020000000000A040000020410200000000005041
-                  00002041030000000000504100002041}
-                Fill.Kind = None
-                HitTest = False
-                Margins.Left = 12.000000000000000000
-                Position.X = 12.000000000000000000
-                Position.Y = 6.000000000000000000
-                Size.Width = 20.000000000000000000
-                Size.Height = 20.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Color = xFFB9C2CC
-                Stroke.Thickness = 1.600000023841858000
-                WrapMode = Fit
-              end
-            end
-            object GameInsertCoin: TButton
-              Align = Left
-              CanFocus = False
-              StyledSettings = []
-              Hint = 'Insert coin '#183' F9'
-              Margins.Right = 8.000000000000000000
-              Size.Width = 132.000000000000000000
-              Size.Height = 40.000000000000000000
-              Size.PlatformDefault = False
-              StyleLookup = 'buttonstyle'
-              Text = 'Insert coin'
-              TextSettings.Font.Size = 13.000000000000000000
-              TextSettings.FontColor = xFFE8ECF1
-              TextSettings.Trimming = Character
-              Visible = False
-              ParentShowHint = False
-              ShowHint = True
-              object GameInsertCoinIcon: TPath
-                Align = LeftCenter
-                Data.Path = {
-                  1200000000000000000060410000803F020000000000F8410000803F02000000
-                  0000F8410000D84102000000000060410000D84102000000000040C00000D841
-                  02000000000040C00000803F02000000000060410000803F0300000000006041
-                  0000803F00000000000060410000A040020000000000C8410000A04002000000
-                  0000C8410000B84102000000000060410000B84102000000000040400000B841
-                  02000000000040400000A04002000000000060410000A0400300000000006041
-                  0000A040000000000000604100001041010000000000604100009841}
-                Fill.Kind = None
-                HitTest = False
-                Margins.Left = 12.000000000000000000
-                Position.X = 12.000000000000000000
-                Position.Y = 10.000000000000000000
-                Size.Width = 20.000000000000000000
-                Size.Height = 20.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Color = xFFB9C2CC
-                Stroke.Thickness = 1.600000023841858000
-                WrapMode = Fit
-              end
-            end
-            object GameControlsHelp: TButton
-              Align = Left
-              CanFocus = False
-              StyledSettings = []
-              Hint = 'Controls and shortcuts '#183' F1'
-              Margins.Right = 8.000000000000000000
-              Position.X = 558.000000000000000000
-              Size.Width = 132.000000000000000000
-              Size.Height = 32.000000000000000000
-              Size.PlatformDefault = False
-              StyleLookup = 'buttonstyle'
-              Text = 'F1'
-              TextSettings.Font.Size = 13.000000000000000000
-              TextSettings.FontColor = xFFE8ECF1
-              TextSettings.Trimming = Character
-              ParentShowHint = False
-              ShowHint = True
-              object GameControlsHelpIcon: TPath
-                Align = LeftCenter
-                Data.Path = {
-                  1C00000000000000000020410000C040010000000000C0410000C04002000000
-                  0000E0410000C040020000000000F04100000041020000000000F84100005041
-                  01000000000008420000D0410200000000000C420000F041020000000000F841
-                  00000042020000000000E0410000E841010000000000B8410000C04101000000
-                  000030410000C041010000000000C0400000E841020000000000404000000042
-                  02000000000000000000F041020000000000803F0000D0410100000000008040
-                  00005041020000000000A04000000041020000000000C0400000C04002000000
-                  000020410000C04003000000000020410000C040000000000000104100004041
-                  01000000000010410000A841000000000000A040000080410100000000005041
-                  00008041000000000000C04100005041010000000000C0410000704100000000
-                  0000E04100009041010000000000E0410000A041}
-                Fill.Kind = None
-                HitTest = False
-                Margins.Left = 12.000000000000000000
-                Position.X = 12.000000000000000000
-                Position.Y = 6.000000000000000000
-                Size.Width = 20.000000000000000000
-                Size.Height = 20.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Color = xFFB9C2CC
-                Stroke.Thickness = 1.600000023841858000
-                WrapMode = Fit
-              end
-              object HelpBorder: TRectangle
-                Align = Contents
-                Fill.Kind = None
-                HitTest = False
-                Size.Width = 132.000000000000000000
-                Size.Height = 32.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Color = xFFFFB43B
-                XRadius = 8.000000000000000000
-                YRadius = 8.000000000000000000
-              end
-            end
-            object GameActionsButton: TButton
-              Align = Right
-              CanFocus = False
-              StyledSettings = []
-              Hint = 'More actions'
-              Size.Width = 60.000000000000000000
-              Size.Height = 40.000000000000000000
-              Size.PlatformDefault = False
-              StyleLookup = 'buttonstyle'
-              Visible = False
-              ParentShowHint = False
-              ShowHint = True
-              object GameActionsIcon: TPath
-                Align = Center
-                Data.Path = {
-                  2A000000000000000000404100000041020000008F532E410000004102000000
-                  00002041A358E34002000000000020410000C04002000000000020415DA79C40
-                  020000008F532E41000080400200000000004041000080400200000071AC5141
-                  0000804002000000000060415DA79C4002000000000060410000C04002000000
-                  00006041A358E3400200000071AC514100000041020000000000404100000041
-                  030000000000404100000041000000000000404100006041020000008F532E41
-                  00006041020000000000204171AC514102000000000020410000404102000000
-                  000020418F532E41020000008F532E4100002041020000000000404100002041
-                  0200000071AC51410000204102000000000060418F532E410200000000006041
-                  00004041020000000000604171AC51410200000071AC51410000604102000000
-                  0000404100006041030000000000404100006041000000000000204100009041
-                  020000000000204139D69841020000008F532E410000A0410200000000004041
-                  0000A0410200000071AC51410000A041020000000000604139D6984102000000
-                  00006041000090410200000000006041C72987410200000071AC514100008041
-                  020000000000404100008041020000008F532E41000080410200000000002041
-                  C7298741020000000000204100009041030000000000204100009041}
-                Fill.Color = xFFE8ECF1
-                HitTest = False
-                Size.Width = 4.000000000000000000
-                Size.Height = 20.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Kind = None
-                WrapMode = Fit
-              end
-            end
-          end
-        end
-        object GameStatus: TPanel
-          Align = Bottom
-          Position.Y = 741.000000000000000000
-          Size.Width = 1105.000000000000000000
-          Size.Height = 30.000000000000000000
-          Size.PlatformDefault = False
-          StyleLookup = 'retromul_sidebar'
-          object StatusDot: TCircle
-            Align = Left
-            Fill.Color = xFFFF6B6B
-            HitTest = False
-            Margins.Left = 14.000000000000000000
-            Margins.Top = 11.000000000000000000
-            Margins.Right = 14.000000000000000000
-            Margins.Bottom = 11.000000000000000000
-            Position.X = 14.000000000000000000
-            Position.Y = 11.000000000000000000
-            Size.Width = 8.000000000000000000
-            Size.Height = 8.000000000000000000
-            Size.PlatformDefault = False
-            Stroke.Kind = None
-          end
-          object GameFPS: TLabel
-            Align = Client
-            StyledSettings = []
-            Size.Width = 948.000000000000000000
-            Size.Height = 30.000000000000000000
-            Size.PlatformDefault = False
-            TextSettings.FontColor = xFFE8ECF1
-            TextSettings.WordWrap = False
-          end
-          object GameAudio: TLabel
-            Align = Right
-            AutoSize = True
-            StyledSettings = []
-            Margins.Left = 48.000000000000000000
-            Margins.Right = 12.000000000000000000
-            Position.X = 1032.000000000000000000
-            Size.Width = 61.000000000000000000
-            Size.Height = 30.000000000000000000
-            Size.PlatformDefault = False
-            TextSettings.FontColor = xFFE8ECF1
-            TextSettings.HorzAlign = Trailing
-            TextSettings.WordWrap = False
-            Text = 'Audio state'
-            object AudioIcon: TPath
-              Align = Left
-              Data.Path = {
-                0F000000000000000000803F00002041010000000000E0400000204101000000
-                000070410000404001000000000070410000C841010000000000E04000009041
-                010000000000803F00009041030000000000803F00002041000000000000A041
-                00000041020000000000D84100003041020000000000D8410000884102000000
-                0000A0410000A041000000000000C04100004040020000000000104200000041
-                02000000000010420000A041020000000000C0410000C841}
-              Fill.Kind = None
-              HitTest = False
-              Margins.Left = -20.000000000000000000
-              Margins.Top = 7.000000000000000000
-              Margins.Right = 8.000000000000000000
-              Margins.Bottom = 7.000000000000000000
-              Position.X = -20.000000000000000000
-              Position.Y = 7.000000000000000000
-              Size.Width = 16.000000000000000000
-              Size.Height = 16.000000000000000000
-              Size.PlatformDefault = False
-              Stroke.Color = xFFB9C2CC
-              Stroke.Thickness = 1.600000023841858000
-              WrapMode = Fit
-            end
-          end
-        end
-        object LayoutShowPanel: TLayout
-          Align = Contents
-          Visible = False
-          object LayoutShowPanelTop: TLayout
-            Align = Top
-            Padding.Left = 8.000000000000000000
-            Padding.Top = 8.000000000000000000
-            Size.Width = 50.000000000000000000
-            Size.Height = 48.000000000000000000
-            Size.PlatformDefault = False
-            object ButtonShowPanel: TButton
-              Align = Left
-              CanFocus = False
-              StyledSettings = []
-              Hint = 'Show panel'
-              Position.X = 8.000000000000000000
-              Position.Y = 8.000000000000000000
-              Size.Width = 44.000000000000000000
-              Size.Height = 40.000000000000000000
-              Size.PlatformDefault = False
-              StyleLookup = 'buttonstyle'
-              ParentShowHint = False
-              ShowHint = True
-              object ShowPanelIcon: TPath
-                Align = Center
-                Data.Path = {
-                  140000000000000042608940DF4F7B41020000003ADF954070C7804102000000
-                  C420AA4070C7804102000000BE9FB640DF4F7B410100000000004041BE9F1641
-                  0100000010589241DF4F7B4102000000A77B954112B080410200000001799A41
-                  F9A4804102000000FD8E9D41FA1D7B4102000000F9A4A04102F2744102000000
-                  12B0A0414FF76A4102000000EFA79D4120B0644101000000DE4F4B414060E940
-                  02000000611045413DE2DC40020000009DEF3A413DE2DC400200000020B03441
-                  3F60E940010000004060894020B06441020000007DC479409DEF6A4102000000
-                  7DC47940611075410200000040608940DE4F7B41}
-                Fill.Color = xFFE8ECF1
-                HitTest = False
-                RotationAngle = 180.000000000000000000
-                Size.Width = 20.000000000000000000
-                Size.Height = 12.000000000000000000
-                Size.PlatformDefault = False
-                Stroke.Kind = None
-                WrapMode = Fit
-              end
-            end
-          end
-        end
       end
     end
     object SettingsScreen: TTabItem
       CustomIcon = <
         item
         end>
-      IsSelected = False
+      IsSelected = True
       Size.Width = 16.000000000000000000
       Size.Height = 16.000000000000000000
       Size.PlatformDefault = False

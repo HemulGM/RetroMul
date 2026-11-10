@@ -58,6 +58,7 @@ type
     LabelContinueCaption, LabelContinuePlatform, LabelContinueLastPlayed, LabelContinueSave: TLabel;
     PathPlayIcon: TPath;
     VertScrollBoxPlatforms: TVertScrollBox;
+    Path1: TPath;
   private
     FLoadThread: TLibraryLoader;
     FReloadPending, FClosing: Boolean;

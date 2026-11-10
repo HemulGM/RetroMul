@@ -100,6 +100,10 @@ type
     FBitmapLatch, FAttributeLatch: array[0..31] of Byte;
     FFloatingBus, FBorder: Byte;
     FRefreshAddress: Integer;
+    FSnowRow, FSnowBank: Integer;
+    FSnowActive: Boolean;
+    FEarCharge: Double;
+    FEarTime: UInt64;
     FFrameNumber: UInt64;
     FChip, FChip2: TYM2149F;
     FSAA: TSAA1099;
@@ -155,9 +159,14 @@ type
     procedure DACLevels(out Left, Right: Double);
     function PaletteColor(Index: Byte): TAlphaColor; inline;
     function BorderColor: TAlphaColor;
+    function AnalogEAR: Boolean; inline;
+    procedure UpdateEAR;
+    function ReadEAR: Boolean;
+    procedure ResetULALatches;
     function DisplayColor(Attr: Byte; Ink: Boolean): TAlphaColor;
     function FlashActive: Boolean; inline;
     function VideoDisplayStart: Integer; inline;
+    function BorderOutputDelay: Integer; inline;
     procedure DrawCompatibleVideo;
     procedure UpdatePalette(Index: Integer);
     function TimexHiRes: Boolean; inline;
@@ -191,6 +200,7 @@ type
     procedure ClockBus(Kind: TZ80BusCycle; Address, Count: Cardinal);
     procedure Contend(Address: Word; Force: Boolean = False);
     procedure FetchULA;
+    procedure LatchULARow;
     procedure Tick;
     procedure LoadSNA(const Data: TBytes);
     procedure LoadZ80(const Data: TBytes);
@@ -610,6 +620,7 @@ begin
   FFloatingBus := $FF;
   FBorder := 7;
   FRefreshAddress := -1;
+  ResetULALatches;
   FTapePhase := 0;
   FSampleCount := 0;
   FSampleFrames := 0;
@@ -1093,7 +1104,12 @@ begin
   if not (Force or ContendedRAM(Address)) then
     Exit;
   var T := FTime - FContentionStart;
-  if (T >= 0) and (T div FLineCycles < 192) and (T mod FLineCycles < 128) then
+  // The gate array has one final one-T WAIT at offset 128. Ferranti ULA
+  // contention ends at offset 127; using that limit for +2A/+3 drops it.
+  var Window := 128;
+  if ASICMachine then
+    Window := 129;
+  if (T >= 0) and (T div FLineCycles < 192) and (T mod FLineCycles < Window) then
     if ASICMachine then
       AdvanceTStates(ASICDelay[T mod FLineCycles mod 8])
     else
@@ -1144,7 +1160,9 @@ begin
       zbcInternal:
         if ASICMachine then
         begin
-          Contend(Address);
+          // Amstrad gates WAIT with MREQ. Operand reads have already been
+          // contended in zbcMemory; the internal tail of JR/ADD/etc. has no
+          // MREQ and must not start another memory arbitration cycle.
           AdvanceTStates(Count);
         end
         else
@@ -1262,14 +1280,51 @@ begin
         if (X and 1) <> 0 then
           Offset := Bitmap or $2000;
     end;
-  // NMOS refresh in contended RAM interferes with the ULA's row address.
-  if not BetaMachine and not ASICMachine and not FMachine.Timex and not FMachine.ByteFamily and not FMachine.TK and (FRefreshAddress >= $4000) and (FRefreshAddress < $8000) then
-    Offset := (Offset and $3F80) or (FRefreshAddress and $7F);
+  if FSnowActive then
+  begin
+    Offset := (Offset and $3F80) or FSnowRow;
+    Bank := FSnowBank;
+  end;
   FFloatingBus := FRAM[Bank, Offset];
   if (X and 1) = 0 then
     FBitmapLatch[Col] := FFloatingBus
   else
     FAttributeLatch[Col] := FFloatingBus;
+end;
+
+procedure TZXConsole.LatchULARow;
+begin
+  // RAS captures the row one T before CAS returns the bitmap byte. The
+  // following attribute read shares that row. Updating after FetchULA lets
+  // attribute1 finish before preparing the second burst's row.
+  var T := FTime - (FFetchStart - 1);
+  if (T < 0) or (T div FLineCycles >= 192) then
+    Exit;
+  var X := T mod FLineCycles;
+  if (X >= 128) or ((X and 7) >= 4) or ((X and 1) <> 0) then
+    Exit;
+  var Bank := 5;
+  if F128 and ((FPaging and 8) <> 0) then
+    Bank := 7;
+  var Snow := not BetaMachine and not ASICMachine and not FMachine.Timex and
+    not FMachine.ByteFamily and not FMachine.TK and (FRefreshAddress >= 0) and
+    ContendedRAM(FRefreshAddress);
+  if ((X and 3) = 0) or not Snow then
+  begin
+    var Y := T div FLineCycles;
+    var Col := (X div 8) * 2 + ((X and 3) div 2);
+    FSnowRow := (((Y and $38) shl 2) or Col) and $7F;
+    FSnowBank := Bank;
+  end;
+  FSnowActive := Snow;
+  if Snow and ((X and 3) = 0) then
+  begin
+    FSnowRow := FRefreshAddress and $7F;
+    // Refresh RAM group supplies A16; screen select supplies A15.
+    if F128 then
+      FSnowBank := (RAMBank(FRefreshAddress) and 4) or (Bank and 2) or 1;
+  end;
+  // A refresh on the second RAS holds the previous row and bank: "double".
 end;
 
 function TZXConsole.GamaPortC(Status: Boolean): Byte;
@@ -1533,7 +1588,7 @@ begin
     end
     else
       Result := $BF;
-    if not FMachine.TK and (FTape.Level or (not ASICMachine and not FHasTape and ((FULA and $10) <> 0))) then
+    if not FMachine.TK and ReadEAR then
       Result := Result or $40;
     for var Row := 0 to 7 do
       if (Address and (1 shl (8 + Row))) = 0 then
@@ -1761,6 +1816,8 @@ begin
   begin
     if FMachine.Profi and ProfiGraphics and ((FProfiPaging and $20) <> 0) and ((FPaging and $20) <> 0) and ((Address and $80) = 0) then
       WriteProfiPalette(Address);
+    if ((FULA xor Value) and $18) <> 0 then
+      UpdateEAR;
     FULA := Value;
     Notify(1);
   end;
@@ -1849,9 +1906,10 @@ begin
   if FMachine.Model = zmSpectrumPlus3 then
     FPlus3FDC.Advance(1);
   FetchULA;
+  LatchULARow;
   var BorderPhase := 0;
-  if FMachine.Model in [zmSpectrum16, zmSpectrum48, zmSpectrum128, zmSpectrumPlus2] then
-    BorderPhase := (FDisplayStart + 2) and 3;
+  if BorderOutputDelay <> 0 then
+    BorderPhase := (FDisplayStart + BorderOutputDelay) and 3;
   if FPentagon or ((FTime and 3) = BorderPhase) then
     FBorder := FULA and 7;
   if ExtendedHardware then
@@ -2180,8 +2238,12 @@ begin
   State.Field(FPaletteSelect, SizeOf(FPaletteSelect));
   State.Field(FPaletteMode, SizeOf(FPaletteMode));
   State.Field(FMachine.ByteCompatibility, SizeOf(FMachine.ByteCompatibility));
-  var TKMode := Ord(FMachine.TKTiming);
+  var TKMode: Integer := Ord(FMachine.TKTiming);
   State.Field(TKMode, 4);
+  // v28 wrote a byte ordinal with a four-byte field; its upper bytes were
+  // stack padding. Read into a full integer and retain only that ordinal.
+  if State.Loading and (State.Version = 28) then
+    TKMode := TKMode and $FF;
   if (TKMode < 0) or (TKMode > Ord(High(TZXTKTiming))) then
     raise EReadError.Create('Invalid TK video timing state');
   if State.Loading then
@@ -2351,6 +2413,28 @@ begin
   State.Field(FLevel2R, SizeOf(FLevel2R));
   FTape.SerializeState(State);
   State.Field(FPixels[0], Length(FPixels) * SizeOf(TAlphaColor));
+  // Preserve the v28 payload and append the circuit latches in v29.
+  if (State.Version = 0) or (State.Version >= 29) then
+  begin
+    if not State.Loading then
+      UpdateEAR;
+    State.Field(FMachine.Issue2, SizeOf(FMachine.Issue2));
+    State.Field(FSnowRow, SizeOf(FSnowRow));
+    State.Field(FSnowBank, SizeOf(FSnowBank));
+    State.Field(FSnowActive, SizeOf(FSnowActive));
+    State.Field(FEarCharge, SizeOf(FEarCharge));
+    State.Field(FEarTime, SizeOf(FEarTime));
+    if State.Loading and ((FSnowRow < 0) or (FSnowRow > 127) or
+      (FSnowBank < 0) or (FSnowBank > 7) or IsNan(FEarCharge) or
+      IsInfinite(FEarCharge) or (FEarCharge < 0) or (FEarCharge > 1) or
+      (FEarTime > FAbsoluteTStates)) then
+      raise EReadError.Create('Invalid ULA snow/EAR state');
+  end
+  else if State.Loading then
+  begin
+    FMachine.Issue2 := False;
+    ResetULALatches;
+  end;
 end;
 
 procedure TZXConsole.Load(const Data: TBytes; const Name: string; Tape128, Pentagon: Boolean; PentagonRAMKB: Integer);
@@ -2482,6 +2566,7 @@ begin
     RestoreZ80Timing(Data);
   FAbsoluteTStates := FTime;
   FBorder := FULA and 7;
+  ResetULALatches;
   ApplyOptions(FOptions);
 end;
 
@@ -3070,6 +3155,70 @@ begin
   Result := FPaletteColors[Index and 63];
 end;
 
+function TZXConsole.AnalogEAR: Boolean;
+begin
+  Result := FMachine.Model in [zmSpectrum16, zmSpectrum48, zmSpectrum128, zmSpectrumPlus2];
+end;
+
+procedure TZXConsole.ResetULALatches;
+begin
+  FSnowRow := 0;
+  FSnowBank := 5;
+  FSnowActive := False;
+  FEarCharge := Ord((FULA and $10) <> 0);
+  FEarTime := FAbsoluteTStates;
+end;
+
+procedure TZXConsole.UpdateEAR;
+begin
+  if AnalogEAR and (FAbsoluteTStates > FEarTime) then
+  begin
+    var Elapsed := (FAbsoluteTStates - FEarTime) / FClock;
+    var High := (FULA and $10) <> 0;
+    // Nominal RC response calibrated to the measured Issue 3 range: a
+    // 25-T high pulse leaves about 180 T of hold; a long high about 2800 T
+    // when falling to MIC=1. The input comparator's rising edge is immediate.
+    if Elapsed >= 0.02 then
+      FEarCharge := Ord(High)
+    else if High then
+      FEarCharge := 1 - (1 - FEarCharge) * Exp(-Elapsed / 0.000400)
+    else
+    begin
+      // MIC=0 provides the faster discharge path. The nominal 75 us path
+      // also matches FE Delay's roughly 20..23 input-loop samples on Issue 3;
+      // MIC=1 gives the much longer near-threshold tail measured above.
+      var Tau := 0.000075;
+      if (FULA and 8) <> 0 then
+        Tau := 0.000185;
+      FEarCharge := FEarCharge * Exp(-Elapsed / Tau);
+    end;
+  end;
+  FEarTime := FAbsoluteTStates;
+end;
+
+function TZXConsole.ReadEAR: Boolean;
+begin
+  if not AnalogEAR then
+    Exit(FTape.Level or (not ASICMachine and not FHasTape and ((FULA and $10) <> 0)));
+  // A running tape is externally driven. Mounting a TAP, or reaching its
+  // end, must not permanently disconnect the EAR/MIC feedback circuit.
+  if FHasTape and not FTape.Stopped then
+    Exit(FTape.Level);
+  UpdateEAR;
+  if (FULA and $10) <> 0 then
+    Exit(True);
+  var Issue2 := FMachine.Issue2 and (FMachine.Model in [zmSpectrum16, zmSpectrum48]);
+  var Base := 0.34;
+  if Issue2 then
+    Base := 0.39;
+  if (FULA and 8) <> 0 then
+    if Issue2 then
+      Base := 0.73
+    else
+      Base := 0.66;
+  Result := Base + 3.04 * FEarCharge > 0.70;
+end;
+
 function TZXConsole.BorderColor: TAlphaColor;
 begin
   if TimexHiRes then
@@ -3119,17 +3268,35 @@ begin
     Inc(Result, 5);
 end;
 
+function TZXConsole.BorderOutputDelay: Integer;
+begin
+  case FMachine.Model of
+    zmSpectrum16, zmSpectrum48, zmSpectrum128, zmSpectrumPlus2:
+      Result := 2;
+    // The Amstrad gate array's border output is one character cell ahead
+    // of a port write timestamp taken at the end of the CPU I/O cycle.
+      zmSpectrumPlus2b, zmSpectrumPlus3:
+      Result := 4;
+  else
+    Result := 0;
+  end;
+end;
+
 procedure TZXConsole.DrawCompatibleVideo;
 begin
-  // The ULA samples the border two T states after the corresponding pixel
-  // position: OUTs ending at 14339..14342 all affect the 14340 cell (48K),
-  // and 14365..14368 affect the 14366 cell (128K/+2). Render only the border
-  // at that delayed position; bitmap/attribute fetch timing stays unchanged.
-  var DelayedBorder := FMachine.Model in
-    [zmSpectrum16, zmSpectrum48, zmSpectrum128, zmSpectrumPlus2];
-  if DelayedBorder then
+  // Port callbacks are timestamped at the end of the CPU I/O cycle. Project
+  // the border latch onto its earlier raster position: OUTs ending at
+  // 14339..14342 affect the 14340 cell (48K); 14365..14368 affect the 14366
+  // cell (128K/+2) or 14364 cell (+2A/+3). Delay only border drawing so that
+  // bitmap/attribute fetches and the paper raster keep their own timing.
+  var Delay := BorderOutputDelay;
+  var Scale := 1;
+  // Keep a stable 640x480 surface for mixed Timex screen modes within a frame.
+  if FMachine.VideoTimex then
+    Scale := 2;
+  if Delay <> 0 then
   begin
-    var BT := FTime - 2 - (VideoDisplayStart - 24 * FLineCycles - 16);
+    var BT := FTime - Delay - (VideoDisplayStart - 24 * FLineCycles - 16);
     if BT >= 0 then
     begin
       var BY := BT div FLineCycles;
@@ -3137,8 +3304,13 @@ begin
       if (BY < 240) and (BX < 320) and
         ((BY < 24) or (BY >= 216) or (BX < 32) or (BX >= 288)) then
       begin
-        FPixels[BY * FWidth + BX] := BorderColor;
-        FPixels[BY * FWidth + BX + 1] := BorderColor;
+        var C := BorderColor;
+        for var I := 0 to 2 * Scale - 1 do
+        begin
+          FPixels[BY * Scale * FWidth + BX * Scale + I] := C;
+          if Scale = 2 then
+            FPixels[(BY * 2 + 1) * FWidth + BX * 2 + I] := C;
+        end;
       end;
     end;
   end;
@@ -3149,13 +3321,9 @@ begin
   var X := (T mod FLineCycles) * 2;
   if (Y >= 240) or (X >= 320) then
     Exit;
-  if DelayedBorder and
+  if (Delay <> 0) and
     ((Y < 24) or (Y >= 216) or (X < 32) or (X >= 288)) then
     Exit;
-  var Scale := 1;
-  // Keep a stable 640x480 surface for mixed Timex screen modes within a frame.
-  if FMachine.VideoTimex then
-    Scale := 2;
   for var i := 0 to 2 * Scale - 1 do
   begin
     var SX := X * Scale + i - 32 * Scale;
@@ -3448,6 +3616,7 @@ begin
   FCPU.InterruptsEnabled := Ord(Data[27] <> 0);
   FCPU.IFF2 := Ord(Data[28] <> 0);
   FCPU.InterruptMode := Data[29] and 3;
+  FMachine.Issue2 := (Data[29] and 4) <> 0;
   if FCPU.InterruptMode > 2 then
     raise EReadError.Create('Invalid Z80 interrupt mode');
   if FCPU.ProgramCounter <> 0 then

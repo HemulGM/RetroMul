@@ -173,6 +173,7 @@ uses
   RM.Gamepad.Base in 'input\gamepads\RM.Gamepad.Base.pas',
   RM.Gamepad.Factory in 'input\gamepads\RM.Gamepad.Factory.pas',
   RM.TouchInput.Android in 'platform\RM.TouchInput.Android.pas',
+  RM.Feedback in 'ui\RM.Feedback.pas' {FeedbackView: TFrame},
   RM.Main in 'ui\RM.Main.pas' {FormMain},
   RM.Main.View in 'ui\RM.Main.View.pas',
   RM.Main.State in 'ui\RM.Main.State.pas',

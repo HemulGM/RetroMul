@@ -97,7 +97,9 @@ end;
 
 class procedure TZXPlatform.RegisterServices;
 begin
-  RegisterSnapshotPolicy('ZX', TSnapshotPolicy.Create(28));
+  var Policy := TSnapshotPolicy.Create(29);
+  Policy.AcceptedVersions := [28];
+  RegisterSnapshotPolicy('ZX', Policy);
 end;
 
 class procedure TZXPlatform.RegisterTerminalInput;

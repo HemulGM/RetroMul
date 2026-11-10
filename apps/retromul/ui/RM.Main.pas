@@ -7,7 +7,7 @@ interface
 uses
   System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Types,
   FMX.Platform, FMX.Dialogs, Core.Emulation, Core.Storage, FMXInput,
-  RM.Main.View, RM.Main.State, RM.Controllers.Browser, RM.ShaderBitmap,
+  RM.Main.View, RM.Main.State, RM.Controllers.Browser, RM.ShaderBitmap, RM.Feedback,
   RM.Controllers.Window, RM.Controllers.Settings, RM.Controllers.Snapshots,
   RM.Controllers.Input, RM.Controllers.Mobile, RM.Controllers.Session, FMX.Menus,
   FMX.Objects, FMX.StdCtrls, FMX.Controls.Presentation, FMX.Layouts,
@@ -36,6 +36,7 @@ type
     procedure ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single); override;
     procedure ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single); override;
   private
+    FFeedbackView: TFeedbackView;
     FBrowserController: TBrowserController;
     FWindowController: TWindowController;
     FSettingsController: TSettingsController;
@@ -44,6 +45,8 @@ type
     FMobileController: TMobileController;
     FSessionController: TSessionController;
   public
+    procedure ReportBugClick(Sender: TObject); override;
+    procedure ApplyFeedbackLanguage(const PreviousLanguage: string); override;
     procedure PollRumble; override;
     procedure SyncMotionSensor; override;
     procedure PollMotionSensor; override;
@@ -219,10 +222,8 @@ begin
     begin
       Alive := False;
     end;
-  {$IF Defined(MSWINDOWS) or Defined(LINUX) or (Defined(MACOS) and not Defined(IOS))}
-  {$IFNDEF ISMOBILE}
+  {$IF Defined(ANDROID) or ((Defined(MSWINDOWS) or Defined(LINUX) or (Defined(MACOS) and not Defined(IOS))) and not Defined(ISMOBILE))}
   State.Input.Manager := CreateHostInput;
-  {$ENDIF}
   {$ENDIF}
   State.Session.FileDialog := TFMXOpenDialog.Create(Self);
   State.Session.FileDialog.MultipleSelection := False;
@@ -261,6 +262,23 @@ begin
   SyncActivity;
 end;
 
+procedure TFormMain.ReportBugClick(Sender: TObject);
+begin
+  if State.Session.OpeningRom then Exit;
+  if FFeedbackView = nil then
+  begin
+    FFeedbackView := TFeedbackView.Create(Self);
+    FFeedbackView.Parent := Self;
+    FFeedbackView.Align := TAlignLayout.Contents;
+  end;
+  FFeedbackView.OpenReport(Self);
+end;
+
+procedure TFormMain.ApplyFeedbackLanguage(const PreviousLanguage: string);
+begin
+  if FFeedbackView <> nil then FFeedbackView.ApplyLanguage(PreviousLanguage);
+end;
+
 procedure TFormMain.InitializeScreenshotTool;
 begin
   FBrowserController.InitializeScreenshotTool;
@@ -274,6 +292,8 @@ end;
 procedure TFormMain.InitializeLibrary;
 begin
   FBrowserController.InitializeLibrary;
+  (State.Browser.View.FindComponent('ButtonReportBug') as TButton).OnClick := ReportBugClick;
+  (State.Browser.View.FindComponent('ButtonCompactReportBug') as TButton).OnClick := ReportBugClick;
 end;
 
 {$IFNDEF ISMOBILE}
@@ -375,7 +395,7 @@ end;
 
 function TFormMain.CreateHostInput: TInputManager;
 begin
-  {$IF Defined(MSWINDOWS) or (Defined(LINUX) and not Defined(ANDROID)) or (Defined(MACOS) and not Defined(IOS))}
+  {$IF Defined(ANDROID) or Defined(MSWINDOWS) or (Defined(LINUX) and not Defined(ANDROID)) or (Defined(MACOS) and not Defined(IOS))}
   Result := TInputManager.Create(CreateFMXInputBackend);
   {$ELSE}
   Result := nil;
@@ -468,7 +488,7 @@ end;
 
 function TFormMain.HostInputHasFocus: Boolean;
 begin
-  Result := Active and not RetroDialogVisible(Self);
+  Result := Active and not RetroDialogVisible(Self) and not State.Session.Reporting;
 end;
 
 procedure TFormMain.ApplicationException(Sender: TObject; E: Exception);
@@ -549,6 +569,7 @@ begin
   if not CanAcceptRomDrop(Data) then
     Exit;
   try
+    State.Session.ReportLaunchSource := 'drag_and_drop';
     SelectDocument(False, Data.Files[0]);
   except
     on E: Exception do
@@ -614,8 +635,8 @@ procedure TFormMain.ChooseMotionSensor(Sender: TObject; const Sensors: TSensorAr
 begin
   FInputController.ChooseMotionSensor(Sender, Sensors, ChoseSensorIndex);
 end;
-
 {$ENDIF}
+
 procedure TFormMain.SyncMotionSensor;
 begin
   FInputController.SyncMotionSensor;
@@ -643,6 +664,7 @@ end;
 
 procedure TFormMain.ReportAudioError(const MessageText: string);
 begin
+  State.Session.LastReportError := MessageText;
   ShowRetroMessage(Self, Translate('Sound unavailable; the game will continue without audio.') + SLineBreak + TranslateCoreMessage(MessageText), TRetroDialogKind.Warning);
 end;
 
@@ -871,6 +893,11 @@ begin
       inherited;
     Exit;
   end;
+  if State.Session.Reporting then
+  begin
+    inherited;
+    Exit;
+  end;
   // Intercept before FMX dispatches to focused controls and handles Tab.
   if (State.Settings.View <> nil) and State.Settings.View.HandleCaptureKeyDown(Key, KeyChar) then
     Exit;
@@ -932,9 +959,10 @@ function TFormMain.ApplicationStateChanged(Sender: TObject; const AAppEvent: TAp
 begin
   Result := FMobileController.ApplicationStateChanged(Sender, AAppEvent, AContext);
 end;
-
 {$ENDIF}
+
 {$IFDEF ANDROID}
+
 procedure TFormMain.PollDocumentTransfer;
 begin
   FMobileController.PollDocumentTransfer;

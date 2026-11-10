@@ -640,7 +640,7 @@ begin
       begin
         FLock.Acquire;
         try
-          FError := FError + #13#10 + 'N64 save: ' + E.Message
+          FError := FError + sLineBreak + 'N64 save: ' + E.Message
         finally
           FLock.Release
         end

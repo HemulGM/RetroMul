@@ -602,6 +602,11 @@
         <DCCReference Include="input\gamepads\RM.Gamepad.Base.pas"/>
         <DCCReference Include="input\gamepads\RM.Gamepad.Factory.pas"/>
         <DCCReference Include="platform\RM.TouchInput.Android.pas"/>
+        <DCCReference Include="ui\RM.Feedback.pas">
+            <Form>FeedbackView</Form>
+            <FormType>fmx</FormType>
+            <DesignClass>TFrame</DesignClass>
+        </DCCReference>
         <DCCReference Include="ui\RM.Main.pas">
             <Form>FormMain</Form>
         </DCCReference>

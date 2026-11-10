@@ -1,0 +1,473 @@
+object FeedbackView: TFeedbackView
+  Align = Contents
+  Size.Width = 640.000000000000000000
+  Size.Height = 760.000000000000000000
+  Size.PlatformDefault = False
+  Visible = False
+  object RectangleBackdrop: TRectangle
+    Align = Contents
+    Fill.Color = claBlack
+    Opacity = 0.649999976158142100
+    Size.Width = 640.000000000000000000
+    Size.Height = 760.000000000000000000
+    Size.PlatformDefault = False
+    Stroke.Kind = None
+  end
+  object PanelFeedback: TPanel
+    Align = Center
+    Padding.Left = 16.000000000000000000
+    Padding.Top = 12.000000000000000000
+    Padding.Right = 16.000000000000000000
+    Padding.Bottom = 12.000000000000000000
+    Size.Width = 680.000000000000000000
+    Size.Height = 760.000000000000000000
+    Size.PlatformDefault = False
+    StyleLookup = 'retromul_sidebar'
+    object LayoutHeader: TLayout
+      Align = Top
+      Position.X = 16.000000000000000000
+      Position.Y = 12.000000000000000000
+      Size.Width = 648.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      object LabelTitle: TLabel
+        Align = Client
+        StyledSettings = [Family, Style, FontColor]
+        Size.Width = 648.000000000000000000
+        Size.Height = 48.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 22.000000000000000000
+        Text = 'Report a bug'
+      end
+    end
+    object LayoutFooter: TLayout
+      Align = Bottom
+      Margins.Top = 8.000000000000000000
+      Position.X = 16.000000000000000000
+      Position.Y = 704.000000000000000000
+      Size.Width = 648.000000000000000000
+      Size.Height = 44.000000000000000000
+      Size.PlatformDefault = False
+      object ButtonSend: TButton
+        Align = Right
+        Position.X = 488.000000000000000000
+        Size.Width = 160.000000000000000000
+        Size.Height = 44.000000000000000000
+        Size.PlatformDefault = False
+        Text = 'Send report'
+        OnClick = SendClick
+      end
+      object ButtonCancel: TButton
+        Align = Client
+        Margins.Right = 8.000000000000000000
+        Size.Width = 480.000000000000000000
+        Size.Height = 44.000000000000000000
+        Size.PlatformDefault = False
+        Text = 'Close'
+        OnClick = CancelClick
+      end
+    end
+    object LayoutSuccess: TLayout
+      Align = Client
+      Padding.Left = 16.000000000000000000
+      Padding.Top = 64.000000000000000000
+      Padding.Right = 16.000000000000000000
+      Size.Width = 600.000000000000000000
+      Size.Height = 650.000000000000000000
+      Size.PlatformDefault = False
+      Visible = False
+      object LabelSuccessTitle: TLabel
+        Align = Top
+        StyledSettings = [Family, Style, FontColor]
+        Position.X = 16.000000000000000000
+        Position.Y = 64.000000000000000000
+        Size.Width = 568.000000000000000000
+        Size.Height = 60.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 24.000000000000000000
+        TextSettings.HorzAlign = Center
+        Text = 'Report sent'
+      end
+      object LabelSuccessMessage: TLabel
+        Align = Client
+        Size.Width = 568.000000000000000000
+        Size.Height = 526.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.HorzAlign = Center
+        TextSettings.VertAlign = Leading
+      end
+    end
+    object VertScrollBoxContent: TVertScrollBox
+      Align = Client
+      Size.Width = 648.000000000000000000
+      Size.Height = 636.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 1
+      ScrollAnimation = True
+      Viewport.Width = 632.000000000000000000
+      Viewport.Height = 636.000000000000000000
+      object CheckBoxSystem: TCheckBox
+        Align = Top
+        IsChecked = True
+        Size.Width = 632.000000000000000000
+        Size.Height = 44.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 0
+        Text = 'Include system information'
+        OnChange = SystemChanged
+      end
+      object LayoutSystemInformation: TLayout
+        Align = Top
+        Position.Y = 44.000000000000000000
+        Size.Width = 632.000000000000000000
+        Size.Height = 230.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 1
+        object LayoutOperatingSystem: TLayout
+          Align = Top
+          Margins.Bottom = 6.000000000000000000
+          Size.Width = 632.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          object LabelOperatingSystem: TLabel
+            Align = Left
+            Margins.Right = 8.000000000000000000
+            Size.Width = 150.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'Operating system'
+          end
+          object EditOperatingSystem: TEdit
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            Align = Client
+            ReadOnly = True
+            Size.Width = 474.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+          end
+        end
+        object LayoutArchitecture: TLayout
+          Align = Top
+          Margins.Bottom = 6.000000000000000000
+          Position.Y = 46.000000000000000000
+          Size.Width = 632.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          object LabelArchitecture: TLabel
+            Align = Left
+            Margins.Right = 8.000000000000000000
+            Size.Width = 150.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'Architecture'
+          end
+          object EditArchitecture: TEdit
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            Align = Client
+            ReadOnly = True
+            Size.Width = 474.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+          end
+        end
+        object LayoutProcessBits: TLayout
+          Align = Top
+          Margins.Bottom = 6.000000000000000000
+          Position.Y = 92.000000000000000000
+          Size.Width = 632.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          object LabelProcessBits: TLabel
+            Align = Left
+            Margins.Right = 8.000000000000000000
+            Size.Width = 150.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'Application bitness'
+          end
+          object EditProcessBits: TEdit
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            Align = Client
+            ReadOnly = True
+            Size.Width = 474.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+          end
+        end
+        object LayoutProcessorCount: TLayout
+          Align = Top
+          Margins.Bottom = 6.000000000000000000
+          Position.Y = 138.000000000000000000
+          Size.Width = 632.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          object LabelProcessorCount: TLabel
+            Align = Left
+            Margins.Right = 8.000000000000000000
+            Size.Width = 150.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'Logical processors'
+          end
+          object EditProcessorCount: TEdit
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            Align = Client
+            ReadOnly = True
+            Size.Width = 474.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+          end
+        end
+        object LayoutScreen: TLayout
+          Align = Top
+          Margins.Bottom = 6.000000000000000000
+          Position.Y = 184.000000000000000000
+          Size.Width = 632.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          object LabelScreen: TLabel
+            Align = Left
+            Margins.Right = 8.000000000000000000
+            Size.Width = 150.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'Screen resolution'
+          end
+          object EditScreen: TEdit
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            Align = Client
+            ReadOnly = True
+            Size.Width = 474.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+          end
+        end
+      end
+      object LayoutSessionInformation: TLayout
+        Align = Top
+        Position.Y = 274.000000000000000000
+        Size.Width = 632.000000000000000000
+        Size.Height = 230.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 2
+        object LayoutVersion: TLayout
+          Align = Top
+          Margins.Bottom = 6.000000000000000000
+          Size.Width = 632.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          object LabelVersion: TLabel
+            Align = Left
+            Margins.Right = 8.000000000000000000
+            Size.Width = 150.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'Application version'
+          end
+          object EditVersion: TEdit
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            Align = Client
+            ReadOnly = True
+            Size.Width = 474.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+          end
+        end
+        object LayoutPlatform: TLayout
+          Align = Top
+          Margins.Bottom = 6.000000000000000000
+          Position.Y = 46.000000000000000000
+          Size.Width = 632.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          object LabelPlatform: TLabel
+            Align = Left
+            Margins.Right = 8.000000000000000000
+            Size.Width = 150.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'Emulation platform'
+          end
+          object EditPlatform: TEdit
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            Align = Client
+            ReadOnly = True
+            Size.Width = 474.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+          end
+        end
+        object LayoutLaunchMethod: TLayout
+          Align = Top
+          Margins.Bottom = 6.000000000000000000
+          Position.Y = 92.000000000000000000
+          Size.Width = 632.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          object LabelLaunchMethod: TLabel
+            Align = Left
+            Margins.Right = 8.000000000000000000
+            Size.Width = 150.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'Launch method'
+          end
+          object EditLaunchMethod: TEdit
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            Align = Client
+            ReadOnly = True
+            Size.Width = 474.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+          end
+        end
+        object LayoutRom: TLayout
+          Align = Top
+          Margins.Bottom = 6.000000000000000000
+          Position.Y = 138.000000000000000000
+          Size.Width = 632.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          object LabelRom: TLabel
+            Align = Left
+            Margins.Right = 8.000000000000000000
+            Size.Width = 150.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'ROM file'
+          end
+          object EditRom: TEdit
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            Align = Client
+            ReadOnly = True
+            Size.Width = 474.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+          end
+        end
+        object LayoutRomCRC: TLayout
+          Align = Top
+          Margins.Bottom = 6.000000000000000000
+          Position.Y = 184.000000000000000000
+          Size.Width = 632.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          object LabelRomCRC: TLabel
+            Align = Left
+            Margins.Right = 8.000000000000000000
+            Size.Width = 150.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'ROM CRC32'
+          end
+          object EditRomCRC: TEdit
+            Touch.InteractiveGestures = [LongTap, DoubleTap]
+            Align = Client
+            ReadOnly = True
+            Size.Width = 474.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+          end
+        end
+      end
+      object LabelError: TLabel
+        Align = Top
+        Position.Y = 504.000000000000000000
+        Size.Width = 600.000000000000000000
+        Size.Height = 80.000000000000000000
+        Size.PlatformDefault = False
+        Visible = False
+        TabOrder = 3
+      end
+      object LabelAttachment: TLabel
+        Align = Top
+        Position.Y = 504.000000000000000000
+        Size.Width = 632.000000000000000000
+        Size.Height = 52.000000000000000000
+        Size.PlatformDefault = False
+        Text = 'No attachment'
+        TabOrder = 4
+      end
+      object LayoutAttachmentActions: TLayout
+        Align = Top
+        Position.Y = 556.000000000000000000
+        Size.Width = 632.000000000000000000
+        Size.Height = 40.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 5
+        object ButtonChooseAttachment: TButton
+          Align = Left
+          Size.Width = 160.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          Text = 'Choose file...'
+          OnClick = ChooseAttachmentClick
+        end
+        object ButtonRemoveAttachment: TButton
+          Align = Client
+          Margins.Left = 8.000000000000000000
+          Size.Width = 464.000000000000000000
+          Size.Height = 40.000000000000000000
+          Size.PlatformDefault = False
+          Text = 'Remove attachment'
+          OnClick = RemoveAttachmentClick
+        end
+      end
+      object CheckBoxScreenshot: TCheckBox
+        Align = Top
+        Position.Y = 596.000000000000000000
+        Size.Width = 632.000000000000000000
+        Size.Height = 44.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 6
+        Text = 'Include emulation screenshot'
+      end
+      object ImageScreenshot: TImage
+        MultiResBitmap = <
+          item
+          end>
+        Align = Top
+        HitTest = False
+        Position.Y = 640.000000000000000000
+        Size.Width = 632.000000000000000000
+        Size.Height = 160.000000000000000000
+        Size.PlatformDefault = False
+      end
+      object LabelDescription: TLabel
+        Align = Top
+        Position.Y = 800.000000000000000000
+        Size.Width = 632.000000000000000000
+        Size.Height = 44.000000000000000000
+        Size.PlatformDefault = False
+        Text = 'Describe the problem (optional)'
+        TabOrder = 8
+      end
+      object MemoDescription: TMemo
+        Touch.InteractiveGestures = [Pan, LongTap, DoubleTap]
+        DataDetectorTypes = []
+        TextSettings.WordWrap = True
+        Align = Top
+        Position.Y = 844.000000000000000000
+        Size.Width = 632.000000000000000000
+        Size.Height = 200.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 9
+        Viewport.Width = 632.000000000000000000
+        Viewport.Height = 200.000000000000000000
+      end
+      object LabelStatus: TLabel
+        Align = Top
+        Position.Y = 1044.000000000000000000
+        Size.Width = 632.000000000000000000
+        Size.Height = 100.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 10
+      end
+    end
+  end
+  object TimerSnapshot: TTimer
+    Enabled = False
+    Interval = 50
+    OnTimer = SnapshotTick
+  end
+end

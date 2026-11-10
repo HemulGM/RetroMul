@@ -78,6 +78,8 @@ type
     function RunSnapshotDialog(Dialog: TOpenDialog): Boolean;
     procedure ShowDirectory(const Directory: string);
     property State: TMainState read FState;
+    procedure ReportBugClick(Sender: TObject); virtual; abstract;
+    procedure ApplyFeedbackLanguage(const PreviousLanguage: string); virtual; abstract;
     procedure FormActivate(Sender: TObject); virtual; abstract;
     procedure FormResize(Sender: TObject); virtual; abstract;
     procedure FormDeactivate(Sender: TObject); virtual; abstract;

@@ -1178,18 +1178,13 @@
         <DCCReference Include="..\..\source\cores\psp\PSP.State.Direct.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.State.Graph.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.State.Schema.pas"/>
-        <DCCReference Include="..\..\source\gpu\shaders\SPV.PSPGERaster.pas"/>
-        <DCCReference Include="..\..\source\gpu\shaders\SPV.PSPGESelfTest.pas"/>
-        <DCCReference Include="..\..\source\gpu\shaders\SPV.PSPGEHLEVert.pas"/>
-        <DCCReference Include="..\..\source\gpu\shaders\SPV.PSPGEHLEFrag.pas"/>
-        <DCCReference Include="..\..\source\gpu\shaders\SPV.PSPGEHLEBlendFrag.pas"/>
-        <DCCReference Include="..\..\source\gpu\shaders\SPV.PSPGEHLEDown.pas"/>
-        <DCCReference Include="..\..\source\gpu\shaders\SPV.PSPGEHLEClut.pas"/>
+        <DCCReference Include="..\..\source\gpu\shaders\PSP.GE.PascalShaders.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.VFPU.Math.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Net.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.Videocodec.pas"/>
         <DCCReference Include="..\..\source\platforms\psp\Core.Platforms.PSP.Playback.pas"/>
         <DCCReference Include="..\..\source\platforms\psp\Core.Platforms.PSP.Renderer.pas"/>
+        <DCCReference Include="..\..\source\platforms\psp\Core.Platforms.PSP.RendererCaps.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.GE.Backend.pas"/>
         <DCCReference Include="..\..\source\cores\psp\PSP.GE.Workers.pas"/>
         <DCCReference Include="..\..\source\platforms\psp\RM.Platforms.PSP.Settings.pas"/>
@@ -3909,6 +3904,13 @@
         </BorlandProject>
         <ProjectFileVersion>12</ProjectFileVersion>
     </ProjectExtensions>
+    <PropertyGroup>
+        <DCC_UnitSearchPath>$(DCC_UnitSearchPath);..\..\dependencies\PasToSPIRV\source</DCC_UnitSearchPath>
+        <BRCC_IncludePath>$(BRCC_IncludePath);..\..\source\gpu\shaders</BRCC_IncludePath>
+    </PropertyGroup>
+    <ItemGroup>
+        <RcCompile Include="..\..\source\gpu\shaders\PSPGE.Pascal.rc"/>
+    </ItemGroup>
     <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')"/>
     <Import Project="$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj" Condition="Exists('$(APPDATA)\Embarcadero\$(BDSAPPDATABASEDIR)\$(PRODUCTVERSION)\UserTools.proj')"/>
     <Import Project="$(MSBuildProjectName).deployproj" Condition="Exists('$(MSBuildProjectName).deployproj')"/>

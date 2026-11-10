@@ -273,12 +273,14 @@ type
 // An HLE backend on a Vulkan device with a graphics queue, or False with the
 // reason. Scale: the internal resolution in multiples of the PSP's (1 to 8).
 // ShaderBlend: blending in the shader where the device can.
-function CreateGEVulkanHLEBackend(Memory: TPSPMemory; out Backend: TGEVulkanHLEBackend; out Error: string; const DeviceName: string = ''; Scale: Integer = 1; ShaderBlend: Boolean = True): Boolean;
+function CreateGEVulkanHLEBackend(Memory: TPSPMemory; out Backend: TGEVulkanHLEBackend; out Error: string;
+  const DeviceName: string = ''; Scale: Integer = 1; ShaderBlend: Boolean = True;
+  MaxAPIVersion: Cardinal = VK_API_VERSION_1_2): Boolean;
 
 implementation
 
 uses
-  SPV.PSPGEHLEVert, SPV.PSPGEHLEFrag, SPV.PSPGEHLEBlendFrag, SPV.PSPGEHLEDown, SPV.PSPGEHLEClut;
+  PSP.GE.PascalShaders;
 
 const
   VRAMMask = PSPVRAMSize - 1;
@@ -308,7 +310,7 @@ const
     VK_STENCIL_OP_KEEP);
 
 type
-  // As source/gpu/shaders/PSPGEHLEPush.glsl declares it.
+  // As PSPGEHLEPush.pasm declares it.
   TGEHLEPush = packed record
     NdcX, NdcY: Single;
     Flags, TexFunc, Env, FogColor, AlphaTest, ColorRef, ColorMask: Cardinal;
@@ -493,7 +495,8 @@ end;
 
 { TGEVulkanHLEBackend }
 
-function CreateGEVulkanHLEBackend(Memory: TPSPMemory; out Backend: TGEVulkanHLEBackend; out Error: string; const DeviceName: string; Scale: Integer; ShaderBlend: Boolean): Boolean;
+function CreateGEVulkanHLEBackend(Memory: TPSPMemory; out Backend: TGEVulkanHLEBackend; out Error: string;
+  const DeviceName: string; Scale: Integer; ShaderBlend: Boolean; MaxAPIVersion: Cardinal): Boolean;
 var
   Compute: TVulkanCompute;
 begin
@@ -503,7 +506,7 @@ begin
     Error := 'This memory already has a VRAM device.';
     Exit(False);
   end;
-  if not TryCreateVulkanCompute(Compute, Error, DeviceName, False, True) then
+  if not TryCreateVulkanCompute(Compute, Error, DeviceName, False, True, MaxAPIVersion) then
     Exit(False);
   try
     Backend := TGEVulkanHLEBackend.Create(Memory, Compute, Scale, ShaderBlend);
@@ -512,7 +515,7 @@ begin
     on E: Exception do
     begin
       Error := E.Message;
-      Compute.Free;
+      // A failed backend constructor already releases its compute context.
       Result := False;
     end;
   end;
@@ -532,8 +535,8 @@ begin
   // the kernel samples the depth.
   FColorUsage := FColorUsage or VK_IMAGE_USAGE_STORAGE_BIT;
   FDepthUsage := FDepthUsage or VK_IMAGE_USAGE_SAMPLED_BIT;
-  FVertexModule := Compute.CreateShaderModule(PSPGEHLEVertSPV);
-  FFragmentModule := Compute.CreateShaderModule(PSPGEHLEFragSPV);
+  FVertexModule := Compute.CreateShaderModule(PSPGEKernelCode(TPSPGEKernel.HLEVertex));
+  FFragmentModule := Compute.CreateShaderModule(PSPGEKernelCode(TPSPGEKernel.HLEFragment));
   CreateDown;
   FAPI.vkGetPhysicalDeviceFormatProperties(Compute.PhysicalDevice, VK_FORMAT_R8G8B8A8_UNORM, @Props);
   FShaderBlend := ShaderBlend and Compute.Features.PixelInterlock and ((Props.optimalTilingFeatures and
@@ -817,7 +820,7 @@ begin
   inherited;
 end;
 
-// The down-sampling kernel (source/gpu/shaders/PSPGEHLEDown.comp): the
+// The down-sampling kernel (PSPGEHLEDown.pasm): the
 // colour, depth and stencil of a target, the read-back buffer.
 procedure TGEVulkanHLEBackend.CreateDown;
 var
@@ -867,7 +870,7 @@ begin
   PoolInfo.poolSizeCount := 3;
   PoolInfo.pPoolSizes := @Sizes[0];
   CheckVulkan(FAPI.vkCreateDescriptorPool(FDevice, @PoolInfo, nil, @FDownPool), 'vkCreateDescriptorPool');
-  FDownModule := FCompute.CreateShaderModule(PSPGEHLEDownSPV);
+  FDownModule := FCompute.CreateShaderModule(PSPGEKernelCode(TPSPGEKernel.HLEDown));
   Pipe := Default(VkComputePipelineCreateInfo);
   Pipe.sType := VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   Pipe.stage.sType := VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -884,7 +887,7 @@ const
   ClutTexturesMax = 32;
 
 // The kernel that reads targets as CLUT textures
-// (source/gpu/shaders/PSPGEHLEClut.comp): the target's colour and the CLUT's
+// (PSPGEHLEClut.pasm): the target's colour and the CLUT's
 // colours sampled, the texture written as a storage image.
 procedure TGEVulkanHLEBackend.CreateClut;
 var
@@ -931,7 +934,7 @@ begin
   PoolInfo.poolSizeCount := 2;
   PoolInfo.pPoolSizes := @Sizes[0];
   CheckVulkan(FAPI.vkCreateDescriptorPool(FDevice, @PoolInfo, nil, @FClutPool), 'vkCreateDescriptorPool');
-  FClutModule := FCompute.CreateShaderModule(PSPGEHLEClutSPV);
+  FClutModule := FCompute.CreateShaderModule(PSPGEKernelCode(TPSPGEKernel.HLEClut));
   Pipe := Default(VkComputePipelineCreateInfo);
   Pipe.sType := VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   Pipe.stage.sType := VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -945,7 +948,7 @@ begin
     VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 end;
 
-// The shader-blending pipelines' fragment shader (PSPGEHLEBlend.frag), set 1
+// The shader-blending pipelines' fragment shader (PSPGEHLEBlendFrag.pasm), set 1
 // (the target's colour as a storage image, its depth and stencil sampled),
 // layout and render pass without attachments.
 procedure TGEVulkanHLEBackend.CreateBlend;
@@ -961,7 +964,7 @@ var
   Deps: array[0..1] of VkSubpassDependency;
   PassInfo: VkRenderPassCreateInfo;
 begin
-  FBlendModule := FCompute.CreateShaderModule(PSPGEHLEBlendFragSPV);
+  FBlendModule := FCompute.CreateShaderModule(PSPGEKernelCode(TPSPGEKernel.HLEBlendFragment));
   for var I := 0 to 2 do
   begin
     Bindings[I] := Default(VkDescriptorSetLayoutBinding);

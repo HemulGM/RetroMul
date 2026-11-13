@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.Input.Keyboard, Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.Input.Keyboard, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 type
   TZXPlatform = class
@@ -20,6 +20,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -27,6 +28,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   RM.Settings.Catalog, RM.Platforms.ZX.Keyboard, Core.PlatformServices,
   Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
   Core.Platforms.ZX.Adapter, RM.Platforms.ZX.Settings,
@@ -36,6 +38,17 @@ uses
   RM.Window.Layout, RM.Keyboard.Window, RM.Settings.Runtime,
   RM.Keyboard.Settings, RM.ControlsHelp.Content, RM.Platforms.ZX.Help,
   RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
+
+class procedure TZXPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Mode), TGamepadButton.RightShoulder);
+end;
 
 class function TZXPlatform.Source(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -146,6 +159,7 @@ begin
   Definition.AfterLegacyBindings := LoadSharedLegacyBindings;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('zx', Definition);
 end;
 

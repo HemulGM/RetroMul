@@ -6,7 +6,7 @@ interface
 
 uses
   System.Classes, System.UITypes, Core.Emulation, RM.Controllers.Base,
-  RM.Input.Runtime
+  RM.Input.Runtime, RM.LibraryNavigation
   {$IF not Defined(LINUX)}
     , System.Sensors
   {$ENDIF};
@@ -14,6 +14,8 @@ uses
 type
   TInputController = class(TMainController)
   private
+    FMenuShortcut: TGamepadMenuShortcut;
+    F11Down: Boolean;
     function RuntimeContext: TInputRuntimeContext;
     procedure PeripheralChanged(Sender: TObject);
   public
@@ -45,16 +47,41 @@ implementation
 
 uses
   System.SysUtils, System.Types, System.IOUtils, System.Math, FMX.Types,
-  FMX.Forms, FMX.Objects, FMX.Dialogs, FMX.Platform, FMX.Edit, FMX.OpenDialog,
+  FMX.Forms, FMX.Objects, FMX.Dialogs, FMX.Platform, FMX.VirtualKeyboard, FMX.Edit, FMX.OpenDialog,
   FMXInput, RM.Input, RM.Rumble, Core.InputConfig, RM.Gamepad, RM.Dialogs,
   RM.Styles
   {$IF not Defined(LINUX)}
     , System.Sensors.Components
   {$ENDIF}
   {$IFDEF ANDROID}
-    , Androidapi.Helpers, Androidapi.JNI.GraphicsContentViewText,
+    , Androidapi.Helpers, Androidapi.JNI.App, Androidapi.JNI.GraphicsContentViewText,
+    Androidapi.JNI.Embarcadero, Androidapi.Input,
     RM.DocumentTransfer.Android
   {$ENDIF};
+
+function IsPhysicalLibraryKeyboard(Key: Word): Boolean;
+begin
+  {$IFDEF ANDROID}
+  Result := False;
+  var Event := TJFMXNativeActivity.Wrap(TAndroidHelper.Activity).getLastEvent;
+  if Event = nil then Exit;
+  var Device := Event.getDevice;
+  if (Device = nil) or Device.isVirtual or
+    (Device.getKeyboardType <> TJInputDevice.JavaClass.KEYBOARD_TYPE_ALPHABETIC) then Exit;
+  var Source := Event.getSource;
+  Result := ((Source and AINPUT_SOURCE_GAMEPAD) <> AINPUT_SOURCE_GAMEPAD) and
+    ((Source and AINPUT_SOURCE_JOYSTICK) <> AINPUT_SOURCE_JOYSTICK);
+  {$ELSEIF Defined(IOS)}
+  // UIKit text insertion can also synthesize Return/Tab. Never select
+  // keyboard hints while the on-screen keyboard is supplying text.
+  var Keyboard: IFMXVirtualKeyboardService;
+  Result := Key <> 0;
+  if TPlatformServices.Current.SupportsPlatformService(IFMXVirtualKeyboardService, Keyboard) then
+    Result := Result and not (TVirtualKeyboardState.Visible in Keyboard.VirtualKeyboardState);
+  {$ELSE}
+  Result := True;
+  {$ENDIF}
+end;
 
 function HostKeyCode(Key: Word; KeyChar: WideChar): Word;
 begin
@@ -400,6 +427,9 @@ end;
 
 procedure TInputController.PollHostInput;
 begin
+  if (FState.Browser.View <> nil) and
+    (not FView.InputHasFocus or RetroDialogVisible(FView) or (FState.Settings.View <> nil)) then
+    FState.Browser.View.PollLibraryInput(nil, False);
   var MouseInput: IEmulationMouseInput;
   var HasMouse := Supports(FState.Session.Emulation, IEmulationMouseInput, MouseInput);
   if HasMouse and ((FState.Input.Manager = nil) or FState.Input.PollingFailed or not FView.InputHasFocus or
@@ -410,13 +440,35 @@ begin
   if (FState.Input.Manager = nil) or FState.Input.PollingFailed then
     Exit;
 
-  FState.Input.Manager.Enabled := FView.InputHasFocus and not FState.Session.OpeningRom;
+  var DialogActive := RetroDialogVisible(FView);
+  FState.Input.Manager.Enabled := (FView.InputHasFocus or (DialogActive and FView.Active)) and
+    (not FState.Session.OpeningRom or DialogActive);
   if not FState.Input.Manager.Enabled then
+  begin
+    FMenuShortcut.Reset;
+    PollRetroDialogInput(FView, nil, False);
     Exit;
+  end;
 
   FState.Input.Manager.Poll;
-  if RetroDialogVisible(FView) then
+  var Keys := ReadHostKeys(FState.Input.Manager);
+  var MenuActive := not DialogActive and not FState.Browser.ViewingLibrary and
+    (FState.Settings.View = nil) and (FState.Help.View = nil) and
+    not FState.Session.Reporting and not FState.Session.OpeningRom and (FState.Session.Emulation <> nil) and
+    not ((FView.Focused <> nil) and (FView.Focused.GetObject is TCustomEdit));
+  if FMenuShortcut.Poll(FState.Input.Manager.Devices, FState.Input.Manager.Values,
+    TThread.GetTickCount64, MenuActive) then
+  begin
+    FView.LibraryBack(FView);
+    FState.Input.SuppressInputUntilRelease := True;
     Exit;
+  end;
+  if DialogActive then
+  begin
+    FState.Input.SuppressInputUntilRelease := True;
+    PollRetroDialogInput(FView, FState.Input.Manager);
+    Exit;
+  end;
 
   if FState.Settings.View <> nil then
   begin
@@ -428,7 +480,14 @@ begin
     Exit;
 
   if FState.Browser.ViewingLibrary then
+    FState.Input.SuppressInputUntilRelease := True;
+  if FState.Browser.View <> nil then
+    FState.Browser.View.PollLibraryInput(FState.Input.Manager, FState.Browser.ViewingLibrary);
+  if FState.Browser.ViewingLibrary then
+  begin
+    FState.Input.SuppressInputUntilRelease := True;
     Exit;
+  end;
 
   if (FView.Focused <> nil) and (FView.Focused.GetObject is TCustomEdit) then
   begin
@@ -449,7 +508,6 @@ begin
   var StartJustPressed := StartPressed and not FState.Input.HostStartDown;
   FState.Input.HostStartDown := StartPressed;
 
-  var Keys := ReadHostKeys(FState.Input.Manager);
   if FState.Input.SuppressInputUntilRelease then
   begin
     // Also wait for Start when it is assigned to an axis or a hat.
@@ -473,7 +531,8 @@ begin
   FState.Input.DispatchingInput := True;
   try
     for var i := 1 to High(Keys) do
-      if Keys[i] <> FState.Input.KeysDown[i] then
+      // Native F11 is handled before focused controls; never replay it as game input.
+      if (i <> vkF11) and (Keys[i] <> FState.Input.KeysDown[i]) then
       begin
         var Code := Word(i);
         var Ch: WideChar := #0;
@@ -534,13 +593,37 @@ end;
 
 procedure TInputController.FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
+  // Do not consume system volume keys in gameplay, dialogs or capture.
+  if HostKeyCode(Key, KeyChar) in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
+    Exit;
   if FState.Session.Reporting then
     Exit;
   if RetroDialogVisible(FView) then
     Exit;
 
-  if (FState.Settings.View <> nil) or FState.Browser.ViewingLibrary then
+  if HostKeyCode(Key, KeyChar) = vkF11 then
+  begin
+    if not F11Down then
+    begin
+      F11Down := True;
+      FState.Input.KeysDown[vkF11] := True;
+      FView.SwitchFullScreen;
+    end;
+    Key := 0;
+    KeyChar := #0;
     Exit;
+  end;
+  if FState.Settings.View <> nil then Exit;
+  if FState.Browser.ViewingLibrary then
+  begin
+    if (FState.Browser.View <> nil) and
+      FState.Browser.View.LibraryKey(HostKeyCode(Key, KeyChar), IsPhysicalLibraryKeyboard(Key)) then
+    begin
+      Key := 0;
+      KeyChar := #0;
+    end;
+    Exit;
+  end;
 
   if (FState.Input.Manager <> nil) and (FState.Session.Emulation <> nil) and not FState.Input.DispatchingInput then
   begin
@@ -553,8 +636,6 @@ begin
   end;
 
   Key := HostKeyCode(Key, KeyChar);
-  if Key in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
-    Exit;
 
   if Key = 0 then
   begin
@@ -595,8 +676,6 @@ begin
       if FView.FullScreen then
         FView.SwitchFullScreen
     end
-    else if (Code = vkF11) then
-      FView.SwitchFullScreen
     else if (Code = vkO) and (ssCtrl in Shift) and not KeyboardActive then
       FView.OpenRom
     else if (Code = vkR) and (FState.Session.Emulation <> nil) and not KeyboardActive then
@@ -650,6 +729,18 @@ end;
 
 procedure TInputController.FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
+  // Do not consume system volume keys in gameplay, dialogs or capture.
+  if HostKeyCode(Key, KeyChar) in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
+    Exit;
+  if HostKeyCode(Key, KeyChar) = vkF11 then
+  begin
+    F11Down := False;
+    FState.Input.KeysDown[vkF11] := False;
+    Key := 0;
+    KeyChar := #0;
+    Exit;
+  end;
+
   if FState.Session.Reporting then
     Exit;
   if RetroDialogVisible(FView) then
@@ -672,6 +763,10 @@ begin
       FView.SettingsClose(FView)
     else if not FState.Browser.ViewingLibrary then
       FView.LibraryBack(FView)
+    else if (FState.Browser.View <> nil) and FState.Browser.View.LibraryKey(vkEscape, False) then
+    begin
+      // System Back leaves the gamepad presentation before leaving the app.
+    end
     else if (FState.Browser.View <> nil) and FState.Browser.View.CloseDetails then
     begin
       // Close the compact game details before leaving the library.
@@ -706,8 +801,6 @@ begin
   end;
 
   Key := HostKeyCode(Key, KeyChar);
-  if Key in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
-    Exit;
 
   if Key = 0 then
   begin

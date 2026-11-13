@@ -57,5 +57,6 @@ __recovery/
 /apps/retrotune/Win64/*
 /apps/retromul/Lang/*
 /apps/retromul/PSPGE.Pascal.res
+/apps/terminal/PSPGE.Pascal.res
 /fpc/*
 /apps/gpu_tests/*

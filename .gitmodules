@@ -15,4 +15,4 @@
 	url = https://github.com/HemulGM/Delphi7z
 [submodule "dependencies/PasToSPIRV"]
 	path = dependencies/PasToSPIRV
-	url = https://github.com/Fasday/PasToSPIRV.git
+	url = https://github.com/HemulGM/PasToSPIRV.git

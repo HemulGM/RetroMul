@@ -2134,7 +2134,7 @@ var
   Mode, Control: Cardinal;
 begin
   C := @Regs.Cmd;
-{$IF Defined(MSWINDOWS)}
+{$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}
   {$WARN SYMBOL_PLATFORM OFF}
   Mode := GetMXCSR and $FFC0; // sticky exception flags do not affect setup
   {$WARN SYMBOL_PLATFORM ON}

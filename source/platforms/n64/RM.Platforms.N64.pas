@@ -20,6 +20,7 @@ type
     class procedure RegisterServices; static;
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure LoadLegacyExtras(Input: TInputManager; Ini: TCustomIniFile); static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
   public
@@ -29,13 +30,14 @@ type
 implementation
 
 uses
-  RM.Settings.Catalog, N64.RomFormat, Core.Snapshots,
-  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.N64.Adapter, RM.Platforms.N64.Settings,
-  RM.Platforms.Presentation, RM.Platforms.N64.Icons, RM.Gamepad.Factory,
-  RM.Platforms.N64.Gamepads, RM.Input.Runtime, RM.Platforms.N64.Input,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Platforms.N64.Help, RM.Settings.Callouts,
-  RM.Platforms.N64.Devices, RM.Settings.Devices, System.Classes;
+  RM.Input.Gamepads, RM.Settings.Catalog, N64.RomFormat, Core.Snapshots,
+  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.N64.Adapter,
+  RM.Platforms.N64.Settings, RM.Platforms.Presentation, RM.Platforms.N64.Icons,
+  RM.Gamepad.Factory, RM.Platforms.N64.Gamepads, RM.Input.Runtime,
+  RM.Platforms.N64.Input, RM.Session.Runtime, RM.Window.Layout,
+  RM.Settings.Runtime, RM.ControlsHelp.Content, RM.Platforms.N64.Help,
+  RM.Settings.Callouts, RM.Platforms.N64.Devices, RM.Settings.Devices,
+  System.Classes;
 
 class function TN64Platform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -100,6 +102,25 @@ begin
   end;
 end;
 
+class procedure TN64Platform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), False);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.West);
+  AddStandardTrigger(Input, Port, PadAction(Port, TEmulatorButton.Select), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardAxis(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadAxis.RightY, 1);
+  AddStandardAxis(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadAxis.RightX, -1);
+  AddStandardAxis(Input, Port, PadAction(Port, TEmulatorButton.Y), TGamepadAxis.RightY, -1);
+  AddStandardAxis(Input, Port, PadAction(Port, TEmulatorButton.Z), TGamepadAxis.RightX, 1);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Mode), TGamepadButton.RightShoulder);
+  AddStandardButton(Input, Port, N64LAction + Port, TGamepadButton.LeftShoulder);
+  AddStandardStick(Input, Port, False, [
+      N64StickActionOf(Port, TN64StickDirection.Up), N64StickActionOf(Port, TN64StickDirection.Down),
+      N64StickActionOf(Port, TN64StickDirection.Left), N64StickActionOf(Port, TN64StickDirection.Right)]);
+end;
+
 class procedure TN64Platform.RegisterInput;
 begin
   var Definition := TPlatformInputDefinition.Create([TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left,
@@ -123,6 +144,8 @@ begin
   Definition.LegacyKeyNames[TEmulatorButton.Z] := 'CRight';
   Definition.LegacyKeyNames[TEmulatorButton.Mode] := 'R';
   Definition.BeforeLegacyBindings := LoadLegacyExtras;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
+  Definition.SharedFilterBinding := FilterN64Binding;
   RegisterPlatformInput('n64', Definition);
 end;
 

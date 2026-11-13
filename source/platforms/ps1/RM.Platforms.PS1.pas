@@ -23,6 +23,7 @@ type
     class procedure RegisterRuntimeServices; static;
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure LoadLegacyExtras(Input: TInputManager; Ini: TCustomIniFile); static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
   public
@@ -31,7 +32,9 @@ type
 
 implementation
 
+
 uses
+  RM.Input.Gamepads,
   RM.Settings.Catalog, Core.PlatformServices, Core.Snapshots, System.StrUtils,
   Core.Emulation, Core.Platforms, Core.Platforms.PS1.Adapter,
   RM.Platforms.PS1.Settings, RM.Platforms.Presentation, RM.Platforms.PS1.Icons,
@@ -149,6 +152,31 @@ begin
   end;
 end;
 
+class procedure TPS1Platform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), False);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadButton.LeftShoulder);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Y), TGamepadButton.North);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Z), TGamepadButton.RightShoulder);
+  AddStandardTrigger(Input, Port, PadAction(Port, TEmulatorButton.Mode), False);
+  AddStandardTrigger(Input, Port, PS1Action(Port, TPS1Extra.L2), True);
+  AddStandardButton(Input, Port, PS1Action(Port, TPS1Extra.L3), TGamepadButton.LeftStick);
+  AddStandardButton(Input, Port, PS1Action(Port, TPS1Extra.R3), TGamepadButton.RightStick);
+  AddStandardButton(Input, Port, PS1Action(Port, TPS1Extra.Analog), TGamepadButton.Home);
+  AddStandardStick(Input, Port, False, [
+    PS1Action(Port, TPS1Extra.LeftUp), PS1Action(Port, TPS1Extra.LeftDown),
+    PS1Action(Port, TPS1Extra.LeftLeft), PS1Action(Port, TPS1Extra.LeftRight)]);
+  AddStandardStick(Input, Port, True, [
+    PS1Action(Port, TPS1Extra.RightUp), PS1Action(Port, TPS1Extra.RightDown),
+    PS1Action(Port, TPS1Extra.RightLeft), PS1Action(Port, TPS1Extra.RightRight)]);
+end;
+
 class procedure TPS1Platform.RegisterInput;
 begin
   var Definition := TPlatformInputDefinition.Create([TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left,
@@ -176,6 +204,7 @@ begin
   Definition.BeforeLegacyBindings := LoadLegacyExtras;
   Definition.SharedFilterBinding := FilterPS1CompatibilityBinding;
   Definition.SharedBindingOrder := 20;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('ps1', Definition);
 end;
 

@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 const
   ROM_SYSTEM_LYNX = 'lynx';
@@ -16,6 +16,7 @@ type
     class function Recognize(Context: TCoreLoadContext): TCoreMatch; static;
     class function RecognizeRaw(Context: TCoreLoadContext): TCoreMatch; static;
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -23,6 +24,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   System.Classes, Core.Emulation, Core.Platforms, Core.Snapshots,
   Core.Platforms.Lynx.Adapter, RM.Platforms.Lynx.Settings,
   RM.Platforms.Lynx.Gamepads, RM.Settings.Catalog, RM.Platforms.Presentation,
@@ -35,6 +37,17 @@ const
   PlatformIconLynx = 'M4,0 H60 Q64,0 64,4 V28 Q64,32 60,32 H4 Q0,32 0,28 V4 Q0,0 4,0 Z ' +
     'M20,5 V27 H44 V5 Z M8,10 V14 H4 V18 H8 V22 H12 V18 H16 V14 H12 V10 Z ' +
     'M50,20 A3,3 0 1 0 56,20 A3,3 0 1 0 50,20 Z M56,12 A3,3 0 1 0 62,12 A3,3 0 1 0 56,12 Z';
+
+class procedure TLynxPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadButton.LeftShoulder);
+end;
 
 class function TLynxPlatform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -98,6 +111,7 @@ begin
   Definition.ButtonNames[TEmulatorButton.C] := 'Option 2';
   Definition.ButtonNames[TEmulatorButton.Start] := 'Pause';
   Definition.LoadLegacyKeys := LoadLegacyKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('lynx', Definition);
   RegisterPlatformGamepads('lynx', TGamepadLynxStandard, []);
   RegisterPlatformPresentation('lynx', 'lynx', PlatformIconLynx);

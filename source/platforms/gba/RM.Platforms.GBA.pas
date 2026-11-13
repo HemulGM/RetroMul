@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 const
   ROM_SYSTEM_GBA = 'gba';
@@ -21,6 +21,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -28,6 +29,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   RM.Settings.Catalog, Core.Snapshots, System.StrUtils, Core.Emulation,
   Core.Platforms, Core.Platforms.GBA.Adapter, GBA.Cartridge,
   RM.Platforms.GBA.Settings, RM.Platforms.Presentation, RM.Platforms.GBA.Icons,
@@ -38,6 +40,18 @@ uses
 
 const
   GBA_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
+
+class procedure TGBAPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadButton.LeftShoulder);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Z), TGamepadButton.RightShoulder);
+end;
 
 class function TGBAPlatform.Header(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -107,6 +121,7 @@ begin
   Definition.LoadLegacyKeys := LoadLegacyKeys;
   Definition.LegacyKeyNames[TEmulatorButton.C] := 'L';
   Definition.LegacyKeyNames[TEmulatorButton.Z] := 'R';
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('gba', Definition);
 end;
 

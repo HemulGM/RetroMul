@@ -1,4 +1,4 @@
-// Float arithmetic required by the LLE rasterizer, compared with the CPU
+﻿// Float arithmetic required by the LLE rasterizer, compared with the CPU
 // before the device is used. The embedded source is compiled at context startup.
 uses SoftDouble;
 

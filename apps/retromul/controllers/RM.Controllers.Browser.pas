@@ -411,12 +411,14 @@ begin
   FState.Browser.View := TLibraryView.CreateLibrary(FView, FState.Session.Storage);
   FState.Browser.View.Parent := FView.LibraryScreen;
   FState.Browser.View.Align := TAlignLayout.Client;
+  FState.Browser.View.OnPresentationChanged := FView.FormResize;
   FState.Browser.View.OnPlay := FView.LibraryPlay;
   FState.Browser.View.OnSettings := FView.SettingsClick;
   FState.Browser.View.OnOpen := FView.ButtonOpenClick;
   FView.LayoutClient.Visible := False;
   FState.Browser.ViewingLibrary := True;
   FView.ScreenTabs.ActiveTab := FView.LibraryScreen;
+  FView.FormResize(FView);
 end;
 
 {$IFNDEF ISMOBILE}
@@ -494,8 +496,6 @@ begin
     if not FState.Browser.ViewingLibrary then
       FView.AutosaveOnExit;
   end;
-  if FView.FullScreen then
-    FView.SwitchFullScreen;
   FView.LayoutClient.Visible := False;
   FView.ScreenTabs.ActiveTab := FView.LibraryScreen;
   FState.Browser.View.Visible := True;
@@ -590,9 +590,10 @@ begin
     if FState.Help.View <> nil then
       Color := $FF1B2026;
     FState.Browser.HelpTool.TextSettings.FontColor := Color;
-    for var Child in FState.Browser.HelpTool.Children do
-      if Child is FMX.Objects.TPath then
-        FMX.Objects.TPath(Child).Stroke.Color := Color;
+    if FState.Browser.HelpTool.Children <> nil then
+      for var Child in FState.Browser.HelpTool.Children do
+        if Child is FMX.Objects.TPath then
+          FMX.Objects.TPath(Child).Stroke.Color := Color;
   end;
 
   {$IFNDEF ISMOBILE}
@@ -600,9 +601,10 @@ begin
   begin
     // SyncActivity and frame/status updates can make controls visible again.
     // Hide game chrome while retaining the pause overlay.
-    for var Child in FView.LayoutClient.Children do
-      if (Child is TControl) and (Child <> FView.ImageCanvas) and (Child <> FView.RectangleBG) and (Child <> FView.LabelPaused) then
-        TControl(Child).Visible := False;
+    if FView.LayoutClient.Children <> nil then
+      for var Child in FView.LayoutClient.Children do
+        if (Child is TControl) and (Child <> FView.ImageCanvas) and (Child <> FView.RectangleBG) and (Child <> FView.LabelPaused) then
+          TControl(Child).Visible := False;
     FView.ImageLogo.Visible := False;
   end;
   {$ENDIF}

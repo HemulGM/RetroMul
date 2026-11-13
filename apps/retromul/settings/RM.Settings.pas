@@ -87,6 +87,7 @@ type
   end;
 
   TSettingsView = class(TFrame)
+    ScaledLayoutSettings: TScaledLayout;
     PanelSidebar: TPanel;
     PanelPlatforms: TPanel;
     LayoutPlatformSearchSlot: TLayout;
@@ -171,6 +172,7 @@ type
     FOnApply, FOnClose: TNotifyEvent;
     procedure StoreCapturedBinding(const Binding: TInputBinding);
     procedure InitializeRuntimeControls;
+    procedure UpdateContentScale;
     procedure RefreshPlatformList;
     procedure SyncPlatformSelection;
     procedure PlatformSearchChange(Sender: TObject);
@@ -290,6 +292,7 @@ uses
 
 type
   TSettingsLayoutAccess = class(TLayout);
+  TSettingsScaledLayoutAccess = class(TScaledLayout);
 
   TSettingsInputBackend = class(TInputBackend)
   private
@@ -1356,7 +1359,7 @@ begin
     Layout.EndUpdate;
     LabelConfigurationNotice.Height := Max(24, Ceil(Layout.TextHeight) + 8);
     PanelConfigurationNotice.Height := Min(Max(64, LabelConfigurationNotice.Height + 16),
-      Max(64, Min(180, Height * 0.25)));
+      Max(64, Min(180, ScaledLayoutSettings.OriginalHeight * 0.25)));
   finally
     Layout.Free;
   end;
@@ -1773,6 +1776,20 @@ begin
   Result := TEdit(FFields.Last.Control);
 end;
 
+procedure TSettingsView.UpdateContentScale;
+begin
+  // Keep FMX's density handling and scale only the settings content. Both
+  // original dimensions use the same factor, preserving text and icon shapes.
+  var ContentScale: Single := 1;
+  {$IFDEF ISMOBILE}
+  if (Width >= 600) and (Width > Height) and (Height > 0) then
+    ContentScale := RoundTo(EnsureRange(Min(Width / 1100, Height / 520), 0.65, 1.0), -3);
+  {$ENDIF}
+  ScaledLayoutSettings.OriginalWidth := Max(1, Width / ContentScale);
+  ScaledLayoutSettings.OriginalHeight := Max(1, Height / ContentScale);
+  TSettingsScaledLayoutAccess(ScaledLayoutSettings).Realign;
+end;
+
 procedure TSettingsView.Resize;
 begin
   if (csLoading in ComponentState) or FBuilding or (csDestroying in ComponentState) then
@@ -1803,9 +1820,10 @@ begin
 
   FArranging := True;
   try
-    PanelSidebar.Visible := Width >= 1050;
+    UpdateContentScale;
+    PanelSidebar.Visible := ScaledLayoutSettings.OriginalWidth >= 1050;
     PanelSidebar.Width := 264;
-    PanelPlatforms.Visible := (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and (Width >= 760);
+    PanelPlatforms.Visible := (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and (ScaledLayoutSettings.OriginalWidth >= 760);
     PanelPlatforms.Width := 216;
     PanelSidebar.Align := TAlignLayout.MostLeft;
     PanelPlatforms.Align := TAlignLayout.Left;
@@ -1816,6 +1834,7 @@ begin
     // Settle the sidebar widths before using the header's available width.
     // During a window-state transition the parent can still be realigning.
     Realign;
+    TSettingsScaledLayoutAccess(ScaledLayoutSettings).Realign;
     TSettingsLayoutAccess(LayoutBody).Realign;
     LabelTitle.Text := Translate(SettingsCategoryNames[FCategory]);
     if FCategory = SETTINGS_CATEGORY_GENERAL then

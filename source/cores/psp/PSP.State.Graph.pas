@@ -521,7 +521,15 @@ function TPSPGraph.ObjectID(O: TObject): Cardinal;
 begin
   if O = nil then
     Exit(0);
-  if (NativeUInt(O) < $10000) or (NativeUInt(O) > NativeUInt(High(NativeInt))) then
+  var Address := NativeUInt(O);
+  var MaxAddress := NativeUInt(High(NativeInt));
+  {$IF Defined(ANDROID) and Defined(CPUARM64)}
+  // Android heap pointers can carry a tag in their top byte (ARM TBI).
+  // Inspect only the address here; retain the tagged pointer for all accesses.
+  Address := Address and $00FFFFFFFFFFFFFF;
+  MaxAddress := MaxAddress shr 8;
+  {$ENDIF}
+  if (Address < $10000) or (Address > MaxAddress) then
     raise EPSPStateOpaque.Create('Invalid transient object reference at ' + FPath);
   if FIDs.TryGetValue(O, Result) then
     Exit;

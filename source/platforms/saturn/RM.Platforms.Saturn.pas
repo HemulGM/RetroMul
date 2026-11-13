@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 const
   ROM_SYSTEM_SATURN = 'saturn';
@@ -22,6 +22,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -29,6 +30,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   RM.Settings.Catalog, Core.Snapshots, System.StrUtils, Core.Emulation,
   Core.Platforms, Core.Platforms.Saturn.Adapter, RM.Platforms.Saturn.Settings,
   RM.Platforms.Presentation, RM.Platforms.Saturn.Icons, RM.Gamepad.Factory,
@@ -38,6 +40,21 @@ uses
 
 const
   SATURN_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
+
+class procedure TSaturnPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardTrigger(Input, Port, PadAction(Port, TEmulatorButton.Select), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.LeftShoulder);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Y), TGamepadButton.North);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Z), TGamepadButton.RightShoulder);
+  AddStandardTrigger(Input, Port, PadAction(Port, TEmulatorButton.Mode), False);
+end;
 
 class function TSaturnPlatform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -119,6 +136,7 @@ begin
   Definition.AfterLegacyBindings := LoadSharedLegacyBindings;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('saturn', Definition);
 end;
 

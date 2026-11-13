@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 const
   ROM_SYSTEM_SNES = 'snes';
@@ -21,6 +21,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -28,6 +29,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   RM.Settings.Catalog, SNES.RomFormat, Core.Snapshots,
   System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.SNES.Adapter, SNES.Cartridge, RM.Platforms.SNES.Settings,
   RM.Platforms.Presentation, RM.Platforms.SNES.Icons, RM.Gamepad.Factory,
@@ -38,6 +40,20 @@ uses
 
 const
   SNES_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
+
+class procedure TSNESPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadButton.LeftShoulder);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.North);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Y), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Z), TGamepadButton.RightShoulder);
+end;
 
 class function TSNESPlatform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -111,6 +127,7 @@ begin
   Definition.LoadLegacyKeys := LoadLegacyKeys;
   Definition.LegacyKeyNames[TEmulatorButton.C] := 'L';
   Definition.LegacyKeyNames[TEmulatorButton.Z] := 'R';
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('snes', Definition);
 end;
 

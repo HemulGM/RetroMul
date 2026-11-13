@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 const
   ROM_SYSTEM_A5200 = 'at5200';
@@ -20,6 +20,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -27,6 +28,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   RM.Platforms.Atari5200.Settings, RM.Settings.Catalog, RM.Settings.Platform,
   Core.Emulation, Core.Platforms, Core.Platforms.Atari5200.Adapter,
   RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.Atari5200.Gamepads,
@@ -34,6 +36,17 @@ uses
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
   System.Classes, System.UITypes, Core.Archive.Container, System.IOUtils,
   Core.Snapshots, RM.Platforms.Atari5200.Input;
+
+class procedure TA5200Platform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Mode), TGamepadButton.RightShoulder);
+end;
 
 class function TA5200Platform.RecognizeArchive(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -153,6 +166,7 @@ begin
   Definition.FilterBinding := FilterAtari5200Binding;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('at5200', Definition);
 end;
 

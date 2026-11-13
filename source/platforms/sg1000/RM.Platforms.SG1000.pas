@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.Input.Keyboard, Core.EmulatorRegistry, RM.Input,
+  FMXInput, Core.Input.Keyboard, Core.EmulatorRegistry, RM.Input,
   System.SysUtils;
 
 const
@@ -28,6 +28,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -35,6 +36,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   RM.Settings.Catalog, RM.Platforms.SG1000.Keyboard, Core.PlatformServices,
   Core.Platforms.SG1000.Adapter, Core.Snapshots, System.StrUtils, Core.Emulation,
   Core.Platforms, SG1000.Console, RM.Platforms.SG1000.Settings,
@@ -44,6 +46,15 @@ uses
   RM.Keyboard.Window, RM.Settings.Runtime, RM.Keyboard.Settings,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
   System.Classes;
+
+class procedure TSG1000Platform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+end;
 
 class function TSG1000Platform.Match(Context: TCoreLoadContext; const SystemId: string; const Encoding: string): TCoreMatch;
 begin
@@ -209,6 +220,7 @@ begin
   Definition.AfterLegacyBindings := LoadSharedLegacyBindings;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('sg1000', Definition);
   Definition.LegacyButtons := [];
   RegisterPlatformInput('sc3000', Definition);

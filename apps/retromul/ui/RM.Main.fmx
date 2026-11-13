@@ -1,4 +1,4 @@
-﻿object FormMain: TFormMain
+object FormMain: TFormMain
   Left = 0
   Top = 0
   Caption = 'RetroMul'
@@ -92,7 +92,7 @@
         Size.Width = 1105.000000000000000000
         Size.Height = 50.000000000000000000
         Size.PlatformDefault = False
-        TabOrder = 2
+        TabOrder = 3
         object ToolbarBackground: TPanel
           Align = Contents
           HitTest = False
@@ -602,6 +602,7 @@
         Size.Height = 30.000000000000000000
         Size.PlatformDefault = False
         StyleLookup = 'retromul_sidebar'
+        TabOrder = 4
         object StatusDot: TCircle
           Align = Left
           Fill.Color = xFFFF6B6B
@@ -668,9 +669,11 @@
       end
       object LayoutShowPanel: TLayout
         Align = Top
+        Size.Width = 50.000000000000000000
         Size.Height = 48.000000000000000000
         Size.PlatformDefault = False
         Visible = False
+        TabOrder = 5
         object LayoutShowPanelTop: TLayout
           Align = Top
           Padding.Left = 8.000000000000000000
@@ -717,10 +720,9 @@
       object LayoutClient: TLayout
         Align = Client
         ClipChildren = True
-        Position.Y = 50.000000000000000000
         HitTest = True
         Size.Width = 1105.000000000000000000
-        Size.Height = 771.000000000000000000
+        Size.Height = 691.000000000000000000
         Size.PlatformDefault = False
         TabOrder = 2
         OnClick = LayoutClientClick
@@ -730,7 +732,7 @@
           Fill.Color = claBlack
           HitTest = False
           Size.Width = 1105.000000000000000000
-          Size.Height = 771.000000000000000000
+          Size.Height = 691.000000000000000000
           Size.PlatformDefault = False
           Stroke.Kind = None
         end

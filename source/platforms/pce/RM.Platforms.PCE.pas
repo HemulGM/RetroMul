@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 type
   TPCEPlatform = class
@@ -21,6 +21,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -28,6 +29,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   RM.Settings.Catalog, Core.PlatformServices, System.StrUtils, Core.Emulation,
   Core.Platforms, Core.Platforms.PCE.Adapter, RM.Platforms.PCE.Settings,
   RM.Platforms.Presentation, RM.Platforms.PCE.Icons, RM.Gamepad.Factory,
@@ -35,6 +37,20 @@ uses
   RM.Window.Layout, RM.Settings.Runtime, RM.Platforms.PCE.SettingsHandler,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
   System.Classes;
+
+class procedure TPCEPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadButton.LeftShoulder);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.North);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Y), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Z), TGamepadButton.RightShoulder);
+end;
 
 class function TPCEPlatform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -173,6 +189,7 @@ begin
   Definition.LegacyButtons := [TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left,
       TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Select, TEmulatorButton.Start,
       TEmulatorButton.C, TEmulatorButton.X, TEmulatorButton.Y, TEmulatorButton.Z];
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('pce', Definition);
   RegisterPlatformInput('sgx', Definition);
   RegisterPlatformInput('pcecd', Definition);

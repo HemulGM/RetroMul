@@ -5,14 +5,23 @@
 interface
 
 uses
-  System.Types, RM.Controllers.Base, RM.Window.Layout;
+  System.Types, FMX.Forms, RM.Controllers.Base, RM.Window.Layout;
 
 type
   TWindowController = class(TMainController)
   private
+    FApplyingLibraryUi: Boolean;
+    {$IFDEF ISMOBILE}
+    FLibraryUiOwned: Boolean;
+    FLibraryPreviousFullscreen: Boolean;
+    {$IFDEF ANDROID}
+    FLibraryPreviousStatusVisible: Boolean;
+    {$ENDIF}
+    {$ENDIF}
     function LayoutContext: TWindowLayoutContext;
   public
     procedure FormResize(Sender: TObject);
+    procedure SyncLibrarySystemUI;
     procedure ApplyControlInset;
     procedure FormSafeAreaChanged(Sender: TObject; const AInsets: TRectF);
     {$IFDEF MSWINDOWS}
@@ -29,7 +38,10 @@ implementation
 
 uses
   System.SysUtils, System.Classes, System.Math, System.UITypes, FMX.Types,
-  FMX.Forms, FMX.Objects, FMX.StdCtrls, FMX.Layouts, RM.Toolbar, RM.Styles
+  FMX.Objects, FMX.StdCtrls, FMX.Layouts, FMX.Platform, RM.Toolbar, RM.Styles
+  {$IFDEF ANDROID}
+    , Androidapi.Helpers, Androidapi.JNI.App, Androidapi.JNI.Embarcadero
+  {$ENDIF}
   {$IFDEF MSWINDOWS}
     , Winapi.Windows, Winapi.MultiMon, FMX.Platform.Win, FMX.Helpers.Win
   {$ENDIF};
@@ -41,10 +53,77 @@ begin
   Result.State := FState;
 end;
 
+procedure TWindowController.SyncLibrarySystemUI;
+begin
+  if FApplyingLibraryUi or (csDestroying in FView.ComponentState) then
+    Exit;
+  {$IFDEF ISMOBILE}
+  FApplyingLibraryUi := True;
+  try
+    // Browsing and application screens stay landscape. Gameplay follows the
+    // user's system rotation preference (FMX maps all orientations to USER).
+    var Playing := (FState.Session.Emulation <> nil) and
+      not FState.Session.EmulationFaulted and not FState.Session.OpeningRom and
+      not FState.Browser.ViewingLibrary and (FState.Settings.View = nil) and
+      (FState.Help.View = nil) and not FState.Session.Reporting;
+    var Orientations: TFormOrientations;
+    if Playing then
+      Orientations := [TFormOrientation.Portrait, TFormOrientation.Landscape,
+          TFormOrientation.InvertedPortrait, TFormOrientation.InvertedLandscape]
+    else
+      Orientations := [TFormOrientation.Landscape, TFormOrientation.InvertedLandscape];
+    if Application.FormFactor.Orientations <> Orientations then
+      Application.FormFactor.Orientations := Orientations;
+    if not FView.Visible or not FView.IsHandleAllocated then
+      Exit;
+    var Wanted := FState.Browser.ViewingLibrary and (FState.Browser.View <> nil) and
+      FState.Browser.View.GamepadMode and (FState.Settings.View = nil) and
+      (FState.Help.View = nil) and not FState.Session.Reporting;
+    var Restoring := FLibraryUiOwned and not Wanted;
+    if Wanted and not FLibraryUiOwned then
+    begin
+      FLibraryPreviousFullscreen := FView.FullScreen;
+      {$IFDEF ANDROID}
+      FLibraryPreviousStatusVisible := TJFMXNativeActivity.Wrap(TAndroidHelper.Activity).getFullScreenManager.getStatusBarVisibility;
+      {$ENDIF}
+      FLibraryUiOwned := True;
+    end;
+    // FullScreen updates the native system UI without recreating the form.
+    // Safe-area callbacks retain any remaining bar or display-cutout insets.
+    if Wanted then
+      FView.FullScreen := True
+    else if Restoring then
+    begin
+      FLibraryUiOwned := False;
+      FView.FullScreen := FLibraryPreviousFullscreen;
+    end;
+    {$IFDEF ANDROID}
+    var Manager := TJFMXNativeActivity.Wrap(TAndroidHelper.Activity).getFullScreenManager;
+    if Wanted then
+    begin
+      if Manager.getStatusBarVisibility then
+        Manager.setStatusBarVisibility(False);
+    end
+    else if Restoring then
+      Manager.setStatusBarVisibility(FLibraryPreviousStatusVisible and not FView.FullScreen);
+    {$ENDIF}
+    if Wanted or Restoring then
+    begin
+      var SafeArea: IFMXWindowSafeAreaService;
+      if TPlatformServices.Current.SupportsPlatformService(IFMXWindowSafeAreaService, SafeArea) then
+        FView.Padding.Rect := SafeArea.GetSafeAreaInsets(FView);
+    end;
+  finally
+    FApplyingLibraryUi := False;
+  end;
+  {$ENDIF}
+end;
+
 procedure TWindowController.FormResize(Sender: TObject);
 begin
   if csDestroying in FView.ComponentState then
     Exit;
+  SyncLibrarySystemUI;
 
   {$IFDEF ISMOBILE}
   if FState.Browser.ActionsTool <> nil then
@@ -63,12 +142,13 @@ begin
     FView.ButtonReset.Width := 60;
     FView.ButtonReset.Text := '';
     FView.ButtonReset.Margins.Rect := TRectF.Create(0, 0, 8, 0);
-    for var Child in FView.ButtonReset.Children do
-      if Child is TPath then
-      begin
-        TPath(Child).Align := TAlignLayout.Center;
-        TPath(Child).Margins.Rect := TRectF.Empty;
-      end;
+    if FView.ButtonReset.Children <> nil then
+      for var Child in FView.ButtonReset.Children do
+        if Child is TPath then
+        begin
+          TPath(Child).Align := TAlignLayout.Center;
+          TPath(Child).Margins.Rect := TRectF.Empty;
+        end;
     FView.LabelStatus.Align := TAlignLayout.Client;
   end;
   {$ENDIF}
@@ -164,27 +244,28 @@ begin
     begin
       if Compact or ((Actions[i] = FState.Browser.CoinTool) and (Actions[i].Width < 180)) then
         Actions[i].Text := '';
-      for var Child in Actions[i].Children do
-        if Child is FMX.Objects.TPath then
-        begin
-          var Icon := FMX.Objects.TPath(Child);
-          Icon.BeginUpdate;
-          try
-            Icon.Margins.Rect := TRectF.Empty;
-            if Actions[i].Text = '' then
-              // Right-aligned menu arrows already reserve their own width.
-              Icon.Align := TAlignLayout.Center
-            else
-            begin
-              Icon.Align := TAlignLayout.LeftCenter;
-              Icon.Margins.Left := 12;
+      if Actions[i].Children <> nil then
+        for var Child in Actions[i].Children do
+          if Child is FMX.Objects.TPath then
+          begin
+            var Icon := FMX.Objects.TPath(Child);
+            Icon.BeginUpdate;
+            try
+              Icon.Margins.Rect := TRectF.Empty;
+              if Actions[i].Text = '' then
+                // Right-aligned menu arrows already reserve their own width.
+                Icon.Align := TAlignLayout.Center
+              else
+              begin
+                Icon.Align := TAlignLayout.LeftCenter;
+                Icon.Margins.Left := 12;
+              end;
+              Icon.Width := 20;
+              Icon.Height := 20;
+            finally
+              Icon.EndUpdate;
             end;
-            Icon.Width := 20;
-            Icon.Height := 20;
-          finally
-            Icon.EndUpdate;
           end;
-        end;
     end;
   end;
   ResizePlatformControls(LayoutContext);
@@ -307,7 +388,8 @@ end;
 
 procedure TWindowController.SwitchFullScreen;
 begin
-  if (FState.Session.Emulation = nil) or FState.Browser.ViewingLibrary or (FState.Settings.View <> nil) or (FState.Help.View <> nil) then
+  if (not FState.Browser.ViewingLibrary and (FState.Session.Emulation = nil)) or
+    (FState.Settings.View <> nil) or (FState.Help.View <> nil) then
     Exit;
   {$IFNDEF ISMOBILE}
   if not FView.FullScreen then
@@ -355,7 +437,7 @@ begin
   FView.LayoutClient.Visible := True;
   {$ENDIF}
 
-  if FView.FullScreen then
+  if FView.FullScreen and not FState.Browser.ViewingLibrary then
   begin
     FView.LayoutClient.Cursor := crNone;
     FView.LayoutClient.SetFocus;

@@ -27,6 +27,8 @@ class function TN64SettingsDevices.Assignments(const Context: TSettingsDeviceCon
 begin
   Result := inherited Assignments(Context);
   Result := Result + [TSettingsDeviceBinding.Create(N64LAction + Context.Port, 'L')];
+  for var Direction := Low(TN64StickDirection) to High(TN64StickDirection) do
+    Result := Result + [TSettingsDeviceBinding.Create(N64StickActionOf(Context.Port, Direction), N64StickName(Direction))];
 end;
 
 class function TN64SettingsDevices.Selection(const Context: TSettingsDeviceContext; Control: TControl): TSettingsDeviceBinding;

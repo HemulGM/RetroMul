@@ -53,14 +53,14 @@ begin
   var Item: TGamepadRegistration;
   Item.DefaultClass := DefaultClass;
   SetLength(Item.Variants, Length(Variants));
-  for var I := 0 to High(Variants) do
+  for var i := 0 to High(Variants) do
   begin
-    if (Variants[I].DeviceId = '') or (Variants[I].GamepadClass = nil) then
+    if (Variants[i].DeviceId = '') or (Variants[i].GamepadClass = nil) then
       raise EArgumentException.Create('Invalid gamepad device variant: ' + Id);
-    for var J := 0 to I - 1 do
-      if Variants[J].DeviceId = Variants[I].DeviceId then
-        raise EArgumentException.Create('Duplicate gamepad device variant: ' + Variants[I].DeviceId);
-    Item.Variants[I] := Variants[I];
+    for var j := 0 to i - 1 do
+      if Variants[j].DeviceId = Variants[i].DeviceId then
+        raise EArgumentException.Create('Duplicate gamepad device variant: ' + Variants[i].DeviceId);
+    Item.Variants[i] := Variants[i];
   end;
   Registrations.Add(Id, Item);
 end;

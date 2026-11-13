@@ -52,12 +52,16 @@ end;
 
 class function TKeyboardSessionHandler.TouchControl(const Context: TSessionRuntimeContext): TSessionInputControl;
 begin
+  {$IFNDEF IOS}
   var Devices := KeyboardInputState(Context);
+  {$ENDIF}
   Result := inherited TouchControl(Context);
   if ExclusiveInput(Context) then
     {$IFDEF IOS}
-    Result := Default(TSessionInputControl);{$ELSE}
-  Result := SessionControl(Devices.Keyboard);{$ENDIF}
+    Result := Default(TSessionInputControl);
+    {$ELSE}
+    Result := SessionControl(Devices.Keyboard);
+    {$ENDIF}
 end;
 
 class procedure TKeyboardSessionHandler.SyncActivity(const Context: TSessionRuntimeContext);

@@ -32,10 +32,12 @@ type
       FCachePath: string;
       FCacheExpire: Double;
       FNextRequestId: Int64;
+      FShuttingDown: Integer;
   private
     class function UrlToCacheName(const Url: string): string;
     class procedure AddCallback(Callback: TCallbackObject);
     class function IsPending(RequestId: Int64): Boolean; static;
+    class function IsShuttingDown: Boolean; static;
     class procedure Ready(RequestId: Int64; Surface: TBitmapSurface);
     class function Get(const URL: string): TMemoryStream; static;
     class function GetBitmap(const URL: string): TBitmapSurface; static;
@@ -50,6 +52,8 @@ type
   public
     class procedure RemoveCallback(const AOwner: TComponent);
     class procedure CancelAll;
+    // Terminal operation: stop workers before destroying application UI/resources.
+    class procedure ShutdownAsyncLoads;
     procedure LoadFromUrl(const Url: string; UseCache: Boolean = True);
     procedure LoadFromUrlAsync(AOwner: TComponent; const Url: string; Cache: Boolean = True; OnDone: TProc<Boolean> = nil); overload;
     // Cache first check
@@ -74,6 +78,31 @@ uses
   FMX.Types, FMX.Consts, System.Hash, System.IOUtils, System.SyncObjs,
   System.Math;
 
+{$IF Defined(ANDROID) and Defined(CPUARM64)}
+type
+  // The RTL's TTask cache packs pointers into 48 bits and loses Android heap
+  // tags. This private task class is not registered in that cache, so the
+  // inherited allocator and deallocator preserve the complete heap pointer.
+  TBitmapLoadTask = class(TTask)
+  public
+    constructor CreateBitmap(const Proc: TProc; APool: TThreadPool);
+  end;
+
+constructor TBitmapLoadTask.CreateBitmap(const Proc: TProc; APool: TThreadPool);
+begin
+  inherited Create(nil, TNotifyEvent(nil), Proc, APool, nil);
+end;
+{$ENDIF}
+
+function CreateBitmapTask(const Proc: TProc; APool: TThreadPool): ITask;
+begin
+  {$IF Defined(ANDROID) and Defined(CPUARM64)}
+  Result := TBitmapLoadTask.CreateBitmap(Proc, APool);
+  {$ELSE}
+  Result := TTask.Create(Proc, APool);
+  {$ENDIF}
+end;
+
 { TBitmapHelper }
 
 class procedure TBitmapHelper.AddCallback(Callback: TCallbackObject);
@@ -82,9 +111,16 @@ begin
   FCallbackList.Add(Callback);
 end;
 
+class function TBitmapHelper.IsShuttingDown: Boolean;
+begin
+  Result := TInterlocked.CompareExchange(FShuttingDown, 0, 0) <> 0;
+end;
+
 class function TBitmapHelper.IsPending(RequestId: Int64): Boolean;
 begin
   Result := False;
+  if IsShuttingDown then
+    Exit;
   var List := FCallbackList.LockList;
   try
     for var Item in List do
@@ -97,14 +133,33 @@ end;
 
 class procedure TBitmapHelper.CancelAll;
 begin
+  if FCallbackList = nil then
+    Exit;
+  var Tasks: TArray<ITask>;
   var List := FCallbackList.LockList;
   try
-    for var i := List.Count - 1 downto 0 do
-      List[i].Task.Cancel;
+    SetLength(Tasks, List.Count);
+    for var I := 0 to List.Count - 1 do
+      Tasks[I] := List[I].Task;
     List.Clear;
   finally
     FCallbackList.UnlockList;
   end;
+  for var Task in Tasks do
+    Task.Cancel;
+end;
+
+class procedure TBitmapHelper.ShutdownAsyncLoads;
+begin
+  if TInterlocked.Exchange(FShuttingDown, 1) <> 0 then
+    Exit;
+  // Pool destruction can pump queued UI work while waiting for workers.
+  // Mark closed first, so neither those deliveries nor later ones touch UI.
+  CancelAll;
+  FreeAndNil(Pool);
+  FreeAndNil(FObjectOwner);
+  FreeAndNil(FCallbackList);
+  FreeAndNil(FClient);
 end;
 
 class function TBitmapHelper.CreateFromResource(ResName, Url: string): TBitmap;
@@ -131,6 +186,8 @@ end;
 
 procedure TBitmapHelper.LoadFromFileAsync(AOwner: TComponent; const FileName: string; const AFitWidth, AFitHeight: Single; OnDone: TProc<Boolean>; const Storage: IStorage);
 begin
+  if IsShuttingDown or ((AOwner <> nil) and (csDestroying in AOwner.ComponentState)) then
+    Exit;
   if AOwner = nil then
     raise Exception.Create('You must specify an owner (responsible) who will ensure that the Bitmap is not destroyed before the owner');
   var RequestId := TInterlocked.Increment(FNextRequestId);
@@ -140,7 +197,7 @@ begin
   Callback.Bitmap := Self;
   Callback.Url := FileName;
   Callback.OnDone := OnDone;
-  Callback.Task := TTask.Create(
+  Callback.Task := CreateBitmapTask(
     procedure
     begin
       try
@@ -395,6 +452,8 @@ end;
 
 procedure TBitmapHelper.LoadFromUrlAsync(AOwner: TComponent; const Url: string; Cache: Boolean; OnDone: TProc<Boolean>);
 begin
+  if IsShuttingDown or ((AOwner <> nil) and (csDestroying in AOwner.ComponentState)) then
+    Exit;
   if Url.IsEmpty then
   begin
     if Assigned(OnDone) then
@@ -410,7 +469,7 @@ begin
   Callback.Bitmap := Self;
   Callback.Url := Url;
   Callback.OnDone := OnDone;
-  Callback.Task := TTask.Create(
+  Callback.Task := CreateBitmapTask(
     procedure
     begin
       try
@@ -447,6 +506,8 @@ end;
 
 procedure TBitmapHelper.LoadFromUrlAsyncCF(AOwner: TComponent; const Url, CachedFileName: string; OnDone: TProc<Boolean>);
 begin
+  if IsShuttingDown or ((AOwner <> nil) and (csDestroying in AOwner.ComponentState)) then
+    Exit;
   var Stream: TBitmapSurface;
   if FindCachedFileName(CachedFileName, Stream) then
   try
@@ -471,7 +532,7 @@ begin
   Callback.Bitmap := Self;
   Callback.Url := Url;
   Callback.OnDone := OnDone;
-  Callback.Task := TTask.Create(
+  Callback.Task := CreateBitmapTask(
     procedure
     begin
       try
@@ -504,6 +565,8 @@ end;
 
 procedure TBitmapHelper.LoadFromUrlAsyncCF(AOwner: TComponent; const Url: string; Cache: Boolean; OnDone: TProc<Boolean>);
 begin
+  if IsShuttingDown or ((AOwner <> nil) and (csDestroying in AOwner.ComponentState)) then
+    Exit;
   if Url.IsEmpty then
   begin
     if Assigned(OnDone) then
@@ -531,28 +594,40 @@ begin
 end;
 
 class procedure TBitmapHelper.Ready(RequestId: Int64; Surface: TBitmapSurface);
-begin
-  try
-    var Found := False;
-    var Item: TCallbackObject;
+var
+  Item: TCallbackObject;
+
+  function FindRequest(Remove: Boolean): Boolean;
+  begin
+    Result := False;
+    if IsShuttingDown then
+      Exit;
     var List := FCallbackList.LockList;
     try
-      for var i := List.Count - 1 downto 0 do
-      begin
-        if List[i].RequestId <> RequestId then
-          Continue;
-        Item := List[i];
-        Found := True;
-        // Remove before Assign/OnDone: either can trigger another request or
-        // destroy owners. Never iterate a list while delivering notifications.
-        List.Delete(i);
-        Break;
-      end;
+      for var I := List.Count - 1 downto 0 do
+        if List[I].RequestId = RequestId then
+        begin
+          Item := List[I];
+          if Remove then
+            List.Delete(I);
+          Exit(True);
+        end;
     finally
       FCallbackList.UnlockList;
     end;
-    if not Found then
-      Exit; // Cancelled or destroyed owner; discard stale pixels.
+  end;
+
+begin
+  try
+    if not FindRequest(False) then
+      Exit;
+    // TComponent free notifications arrive after descendant destructors.
+    // Do not touch an image whose bitmap teardown has already started.
+    if (Item.Owner = nil) or (csDestroying in Item.Owner.ComponentState) then
+    begin
+      RemoveCallback(Item.Owner);
+      Exit;
+    end;
     var Success := False;
     try
       if Surface <> nil then
@@ -563,7 +638,12 @@ begin
     except
       Success := False;
     end;
-    Item.Done(Success);
+    // Assign/OnChange can destroy the owner or cancel/replace this request.
+    // Keep it registered during Assign and recheck before invoking user code.
+    if not FindRequest(True) then
+      Exit;
+    if not (csDestroying in Item.Owner.ComponentState) then
+      Item.Done(Success);
   finally
     Surface.Free;
   end;
@@ -571,6 +651,8 @@ end;
 
 class procedure TBitmapHelper.RemoveCallback(const AOwner: TComponent);
 begin
+  if IsShuttingDown then
+    Exit;
   var List := FCallbackList.LockList;
   try
     for var i := List.Count - 1 downto 0 do
@@ -636,7 +718,7 @@ end;
 procedure TObjectOwner.Notification(AComponent: TComponent; Operation: TOperation);
 begin
   inherited;
-  if Operation <> TOperation.opRemove then
+  if (Operation <> TOperation.opRemove) or TBitmap.IsShuttingDown then
     Exit;
   var List := TBitmap.FCallbackList.LockList;
   try
@@ -671,10 +753,7 @@ initialization
   TBitmap.FClient := nil;
 
 finalization
-  TBitmap.Pool.Free;
-  TBitmap.FCallbackList.Free;
-  TBitmap.FObjectOwner.Free;
-  TBitmap.FClient.Free;
+  TBitmap.ShutdownAsyncLoads;
 
 end.
 

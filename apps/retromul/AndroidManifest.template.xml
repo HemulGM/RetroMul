@@ -58,7 +58,8 @@
         -->
         <activity
             android:name="com.embarcadero.firemonkey.FMXNativeActivity"
-            android:configChanges="orientation|keyboard|keyboardHidden|screenSize|screenLayout|uiMode"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|keyboard|keyboardHidden|navigation|screenSize|screenLayout|uiMode"
             android:exported="true"
             android:label="%activityLabel%"
             android:launchMode="singleTask" >

@@ -113,16 +113,28 @@ function SuggestProcessor(CPU: Integer): Integer;
 begin
   Result := -1;
   {$IFDEF MSWINDOWS}
-  // 64 removes an existing group-0 preference (MAXIMUM_PROCESSORS).
+  // 64 queries the existing group-0 preference (MAXIMUM_PROCESSORS).
   if (CPU >= 0) and (CPU <= 64) then
     Result := Integer(SetThreadIdealProcessor(GetCurrentThread, DWORD(CPU)));
   {$ENDIF}
 end;
 
+{$IF Defined(MSWINDOWS) and Defined(CPUX86)}
+// DCC32 can fail with F2084 when optimizing the discarded function result.
+// Keep the workaround local to this scheduler hint, outside emulation loops.
+{$IFOPT O+}
+{$DEFINE N64_HOST_RESTORE_HINT_OPTIMIZATION}
+{$O-}
+{$ENDIF}
+{$ENDIF}
 procedure PreferProcessor(CPU: Integer);
 begin
   SuggestProcessor(CPU);
 end;
+{$IFDEF N64_HOST_RESTORE_HINT_OPTIMIZATION}
+{$O+}
+{$UNDEF N64_HOST_RESTORE_HINT_OPTIMIZATION}
+{$ENDIF}
 
 procedure SortCores(var Cores: TArray<TN64HostCore>);
 begin

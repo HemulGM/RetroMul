@@ -2,6 +2,8 @@
 
 uses
   System.SysUtils,
+  RM.LibraryNavigation in 'input\RM.LibraryNavigation.pas',
+  RM.Input.Gamepads in 'input\RM.Input.Gamepads.pas',
   System.StartUpCopy,
   FMX.Forms,
   {$IF Defined(ANDROID) or Defined(IOS)}
@@ -716,7 +718,6 @@ uses
   PSP.State.Direct in '..\..\source\cores\psp\PSP.State.Direct.pas',
   PSP.State.Graph in '..\..\source\cores\psp\PSP.State.Graph.pas',
   PSP.State.Schema in '..\..\source\cores\psp\PSP.State.Schema.pas',
-  PSP.GE.PascalShaders in '..\..\source\gpu\shaders\PSP.GE.PascalShaders.pas',
   PSP.VFPU.Math in '..\..\source\cores\psp\PSP.VFPU.Math.pas',
   PSP.Net in '..\..\source\cores\psp\PSP.Net.pas',
   PSP.Videocodec in '..\..\source\cores\psp\PSP.Videocodec.pas',
@@ -732,6 +733,7 @@ uses
   PSP.Crypto.Keys in '..\..\source\cores\psp\PSP.Crypto.Keys.pas',
   PSP.Crypto.Kirk in '..\..\source\cores\psp\PSP.Crypto.Kirk.pas',
   {$IF (Defined(MSWINDOWS) or Defined(LINUX) or Defined(ANDROID)) and not Defined(CPUX86)}
+  PSP.GE.PascalShaders in '..\..\source\gpu\shaders\PSP.GE.PascalShaders.pas',
   PSP.GE.VulkanLLE in '..\..\source\cores\psp\PSP.GE.VulkanLLE.pas',
   PSP.GE.VulkanHLE in '..\..\source\cores\psp\PSP.GE.VulkanHLE.pas',
   RM.Vulkan.TexScale in '..\..\source\gpu\vulkan\RM.Vulkan.TexScale.pas',

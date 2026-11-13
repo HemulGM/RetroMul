@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 type
   TNESPlatform = class
@@ -17,6 +17,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -24,6 +25,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   NES.Cartridge, NES.DiskSystem, RM.Settings.Catalog, Core.InputConfig,
   System.IniFiles, Core.PlatformServices, System.StrUtils, Core.Emulation,
   Core.Platforms, Core.Platforms.NES.Adapter, RM.Platforms.NES.Settings,
@@ -37,6 +39,18 @@ uses
 
 const
   NES_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
+
+class procedure TNESPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Y), TGamepadButton.North);
+end;
 
 class function TNESPlatform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -134,6 +148,7 @@ begin
   Definition.SharedLegacyBindings := LoadNesLegacyAuxiliaries;
   Definition.SharedFilterBinding := FilterNesCompatibilityBinding;
   Definition.SharedBindingOrder := 10;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('nes', Definition);
 end;
 

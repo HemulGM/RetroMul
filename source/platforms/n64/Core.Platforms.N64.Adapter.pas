@@ -36,7 +36,7 @@ type
   // Frontends with analog axes may supply the full N64 controller directly.
   IN64ControllerInput = interface
     ['{AC64141A-8A13-4833-A0A7-19386373C596}']
-    procedure SetN64Controller(Port: Integer; const Pad: TN64Pad);
+    procedure SetN64Controller(Port: Integer; const Pad: TN64Pad; IndependentStick: Boolean = False);
   end;
 
   TN64Worker = class(TThread)
@@ -80,6 +80,7 @@ type
     FKeyboard, FGamepad: array[0..3] of TEmulatorButtons;
     FLPressed: array[0..3] of Boolean;
     FAnalog: TN64Pads;
+    FIndependentStick: array[0..3] of Boolean;
     FPaused: Boolean;
     FSavePath, FSnapshotDirectory, FError: string;
     procedure Configure;
@@ -102,7 +103,7 @@ type
     procedure ClearInput;
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
-    procedure SetN64Controller(Port: Integer; const Pad: TN64Pad);
+    procedure SetN64Controller(Port: Integer; const Pad: TN64Pad; IndependentStick: Boolean = False);
     function GetInputState: TEmulatorInput;
     function GetSnapshotDirectory: string;
     procedure SaveSnapshot(const Name: string);
@@ -710,13 +711,18 @@ begin
       Pads[P].Buttons := Pads[P].Buttons or $20;
     for var B in Buttons do
       Pads[P].Buttons := Pads[P].Buttons or Masks[B];
-    if TEmulatorButton.Left in Buttons then
+    // New profiles bind stick and D-pad independently. Historical profiles
+    // retain their keyboard/gamepad direction-to-stick compatibility.
+    var StickButtons := Buttons;
+    if FIndependentStick[P] then
+      StickButtons := FKeyboard[P];
+    if TEmulatorButton.Left in StickButtons then
       Pads[P].StickX := -80;
-    if TEmulatorButton.Right in Buttons then
+    if TEmulatorButton.Right in StickButtons then
       Pads[P].StickX := 80;
-    if TEmulatorButton.Up in Buttons then
+    if TEmulatorButton.Up in StickButtons then
       Pads[P].StickY := 80;
-    if TEmulatorButton.Down in Buttons then
+    if TEmulatorButton.Down in StickButtons then
       Pads[P].StickY := -80;
   end;
   FWorker.Configure(Pads, FPaused, FConfig);
@@ -801,6 +807,7 @@ begin
     FKeyboard[i] := [];
     FGamepad[i] := [];
     FLPressed[i] := False;
+    FIndependentStick[i] := False;
     FAnalog[i] := Default(TN64Pad)
   end;
   Configure
@@ -824,12 +831,13 @@ begin
   Configure;
 end;
 
-procedure TN64CoreAdapter.SetN64Controller(Port: Integer; const Pad: TN64Pad);
+procedure TN64CoreAdapter.SetN64Controller(Port: Integer; const Pad: TN64Pad; IndependentStick: Boolean);
 begin
   if (Port < 0) or (Port > 3) then
     raise EArgumentOutOfRangeException.Create('N64 controller port');
 
   FAnalog[Port] := Pad;
+  FIndependentStick[Port] := IndependentStick;
   Configure;
 end;
 

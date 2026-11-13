@@ -21,6 +21,8 @@ type
 
   TInputBindingsSetup = reference to procedure(Input: TInputManager; Ini: TCustomIniFile);
 
+  TInputGamepadPreset = reference to procedure(Input: TInputManager; Port: Integer);
+
   TInputBindingPolicy = record
     Enabled: Boolean;
     SourceKey: string;
@@ -53,6 +55,9 @@ type
     SharedLegacyBindings: TInputBindingsSetup;
     SharedFilterBinding, FilterBinding: TInputBindingFilter;
     LoadLegacyKeys: TInputKeyMapLoader;
+    // The owning platform contributes its full standard layout for one port.
+    // Called only on first initialization or an explicit Controls reset.
+    LoadGamepadPreset: TInputGamepadPreset;
     BeforeLegacyBindings, AfterLegacyBindings, AfterLoadBindings: TInputBindingsSetup;
     class function Create(const Buttons: TEmulatorButtons): TPlatformInputDefinition; static;
   end;
@@ -81,8 +86,7 @@ function AxisOrigins(Input: TInputManager): TArray<TInputValue>;
 
 // The axis of DeviceId that has moved furthest from its origin, by at least
 // MinimumTravel of its range, as a binding for Action.
-function FindMovedAxis(const Origins, Values: TArray<TInputValue>; Action: Integer; const DeviceId: string;
-  MinimumTravel: Single; out Binding: TInputBinding): Boolean;
+function FindMovedAxis(const Origins, Values: TArray<TInputValue>; Action: Integer; const DeviceId: string; MinimumTravel: Single; out Binding: TInputBinding): Boolean;
 
 // Generic axis travel, including calibrated trigger origins and digital fallback.
 function ActionAmount(Input: TInputManager; const Bindings: TArray<TInputBinding>; const Values: TArray<TInputValue>; Action: Integer): Single;
@@ -113,7 +117,7 @@ implementation
 
 uses
   System.Generics.Collections, System.Generics.Defaults, Core.Platforms,
-  System.Math, FMX.Types;
+  System.Math, FMX.Types, RM.Input.Gamepads;
 
 var
   PlatformInputs: TDictionary<string, TPlatformInputDefinition>;
@@ -270,7 +274,7 @@ begin
     for var Button := Low(TEmulatorButton) to High(TEmulatorButton) do
       if Binding.Action = PadAction(Port, Button) then
         for var Device in Devices do
-          if (Device.Id = Binding.DeviceId) and (Device.Kind = TInputDeviceKind.Controller) and Device.Available and
+          if (Device.Id = ResolveGamepadSource(Input, Binding.DeviceId)) and (Device.Kind = TInputDeviceKind.Controller) and Device.Available and
             Device.RumbleSupported then
             Exit(Device.Id);
 end;
@@ -319,8 +323,7 @@ begin
     end;
 end;
 
-function FindMovedAxis(const Origins, Values: TArray<TInputValue>; Action: Integer; const DeviceId: string;
-  MinimumTravel: Single; out Binding: TInputBinding): Boolean;
+function FindMovedAxis(const Origins, Values: TArray<TInputValue>; Action: Integer; const DeviceId: string; MinimumTravel: Single; out Binding: TInputBinding): Boolean;
 begin
   Result := False;
   var Best: Single := MinimumTravel;
@@ -448,6 +451,9 @@ begin
       end;
     if Assigned(Definition.AfterLegacyBindings) then
       Definition.AfterLegacyBindings(Input, Ini);
+    if Assigned(Definition.LoadGamepadPreset) then
+      for var Port := 0 to Definition.LegacyPorts - 1 do
+        Definition.LoadGamepadPreset(Input, Port);
   end;
   if Registered and Assigned(Definition.AfterLoadBindings) then
     Definition.AfterLoadBindings(Input, Ini);
@@ -463,6 +469,13 @@ begin
   for var B in Input.Bindings do
     if B.Action = Action then
     begin
+      if IsStandardGamepadId(B.DeviceId) then
+      begin
+        var Port := StandardGamepadPort(B.DeviceId);
+        if Port >= 0 then
+          Exit(Format('%s %d · %s', [Translate('Gamepad'), Port + 1, StandardGamepadCaption(B)]));
+        Exit(Translate('Gamepad') + ' · ' + StandardGamepadCaption(B));
+      end;
       if B.Kind = TInputElementKind.Key then
         Exit(InputKeyName(B.Code));
 
@@ -486,6 +499,22 @@ end;
 function BindingCaption(Input: TInputManager; Action: Integer; const SystemId: string): string;
 begin
   Result := PlainBindingCaption(Input, Action);
+  if Input <> nil then
+    for var B in Input.Bindings do
+      if B.Action = Action then
+      begin
+        if IsStandardGamepadId(B.DeviceId) then
+          Break;
+        // The first legacy keyboard binding remains visible. Add one concise
+        // standard mapping; redundant hat/button/axis alternatives stay hidden.
+        for var Standard in Input.Bindings do
+          if (Standard.Action = Action) and IsStandardGamepadId(Standard.DeviceId) then
+          begin
+            Result := Result + ' / ' + StandardGamepadCaption(Standard);
+            Break;
+          end;
+        Break;
+      end;
   if (Input = nil) or not IsAnalogInputAction(SystemId, Action) then
     Exit;
 
@@ -550,6 +579,8 @@ begin
     var Port := Binding.Action div 32;
     if Binding.Action >= ExtraPadAction then
       Port := 4 + (Binding.Action - ExtraPadAction) div 32;
+    if StandardGamepadPort(Binding.DeviceId) >= 0 then
+      Port := StandardGamepadPort(Binding.DeviceId);
     if (Port >= 0) and (Port < 12) then
       Policy.SourceKey := 'Source' + IntToStr(Port + 1);
     if not Registered or Definition.UseSharedBindingRules then
@@ -566,7 +597,18 @@ begin
     var Source := '';
     if Policy.SourceKey <> '' then
       Source := Ini.ReadString('Ports', Policy.SourceKey, '');
-    if (Source = '') or (Source = Binding.DeviceId) then
+    if (Source <> '') and (StandardGamepadPort(Binding.DeviceId) >= 0) then
+    begin
+      // A chosen physical source gets its own normalized stream, independently
+      // of its current player slot. Keyboard/mouse selection excludes gamepads.
+      if (Source = SystemKeyboardId) or (Source = SystemMouseId) then
+        Continue;
+      var Selected := Binding;
+      Selected.DeviceId := StandardGamepadSource(Source);
+      Input.AddBinding(Selected);
+    end
+    else if (Source = '') or (Source = Binding.DeviceId) or
+      (IsStandardGamepadId(Binding.DeviceId) and (Binding.DeviceId = StandardGamepadSource(Source))) then
       Input.AddBinding(Binding);
   end;
 end;

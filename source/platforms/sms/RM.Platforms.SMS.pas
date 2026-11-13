@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 const
   ROM_SYSTEM_SMS = 'sms';
@@ -21,6 +21,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -28,6 +29,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   RM.Settings.Catalog, RM.Platforms.SMS.Keyboard, Core.Emulation, Core.Platforms,
   Core.PlatformServices, Core.Snapshots, Core.Platforms.SMS.Adapter,
   SG1000.Console, RM.Platforms.SMS.Settings, RM.Platforms.Presentation,
@@ -39,6 +41,15 @@ uses
 
 const
   SMS_ROM_COPIER_HEADER_SIZE = 512;
+
+class procedure TSMSPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+end;
 
 class function TSMSPlatform.Match(Context: TCoreLoadContext; const SystemId: string; const Encoding: string): TCoreMatch;
 begin
@@ -122,6 +133,7 @@ begin
   Definition.AfterLegacyBindings := LoadSharedLegacyBindings;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('sms', Definition);
   RegisterPlatformInput('gg', Definition);
 end;

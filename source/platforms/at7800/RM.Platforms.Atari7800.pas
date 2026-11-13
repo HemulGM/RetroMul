@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input;
+  FMXInput, Core.EmulatorRegistry, RM.Input;
 
 type
   TA7800Platform = class
@@ -13,6 +13,7 @@ type
     class function Recognize(Context: TCoreLoadContext): TCoreMatch; static;
     class function RecognizeArchive(Context: TCoreLoadContext): TCoreMatch; static;
     class procedure LoadKeys(var Keys: TPlatformInputKeyMap); static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -20,12 +21,24 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   System.SysUtils, System.Classes, System.UITypes, Core.Emulation,
   Core.Platforms, Core.Platforms.Atari7800.Adapter, A7800.Cartridge,
   Core.Snapshots, RM.Settings.Catalog, RM.Platforms.Atari7800.Settings,
   RM.Platforms.Atari7800.Gamepads, RM.Platforms.Presentation, RM.Gamepad.Factory,
   RM.Input.Runtime, RM.Session.Runtime, RM.Settings.Runtime, RM.Window.Layout,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices;
+
+class procedure TA7800Platform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Mode), TGamepadButton.RightShoulder);
+end;
 
 class function TA7800Platform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -134,6 +147,7 @@ begin
   Definition.AfterLegacyBindings := LoadSharedLegacyBindings;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('at7800', Definition);
   FRegistered := True;
 end;

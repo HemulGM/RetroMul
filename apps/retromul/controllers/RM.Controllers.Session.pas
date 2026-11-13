@@ -276,14 +276,21 @@ begin
       else if not FState.Session.EmulationFaulted then
         FState.Session.Emulation.Resume;
   end;
-  FView.TimerUpdate.Enabled := not FState.Mobile.InBackground and (FState.Session.OpeningRom or ((FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted));
+  var DialogInput := RetroDialogVisible(FView) and (FView.Active or FView.InputHasFocus);
+  var LibraryInput := (FState.Input.Manager <> nil) and not FState.Input.PollingFailed and
+    (FView.InputHasFocus or DialogInput) and not FState.Session.Reporting and
+    (FState.Browser.ViewingLibrary or (FState.Settings.View <> nil) or DialogInput);
+  FView.TimerUpdate.Enabled := not FState.Mobile.InBackground and
+    (LibraryInput or FState.Session.OpeningRom or ((FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted));
   {$ELSE}
 
-  // Idle windows use native key events. Keep polling for gameplay and settings
-  // capture; background rendering is only needed while a core is running.
-  var NeedsInput := (FState.Input.Manager <> nil) and not FState.Input.PollingFailed and FView.InputHasFocus and
-    not FState.Session.OpeningRom and not FState.Session.Reporting and
-    ((FState.Settings.View <> nil) or (FState.Session.Emulation <> nil));
+  // Library controllers and settings capture need polling even before a core
+  // is started. Frame rendering remains limited to a running core.
+  var DialogInput := RetroDialogVisible(FView) and (FView.Active or FView.InputHasFocus);
+  var NeedsInput := (FState.Input.Manager <> nil) and not FState.Input.PollingFailed and
+    (FView.InputHasFocus or DialogInput) and (not FState.Session.OpeningRom or DialogInput) and
+    not FState.Session.Reporting and ((FState.Settings.View <> nil) or FState.Browser.ViewingLibrary or
+    (FState.Session.Emulation <> nil) or DialogInput);
   var NeedsFrames := (FState.Session.Emulation <> nil) and
     not FState.Session.EmulationFaulted and not FState.Session.Emulation.IsPaused;
   FView.TimerUpdate.Enabled := NeedsInput or NeedsFrames;

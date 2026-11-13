@@ -51,10 +51,10 @@ begin
     TImage(Screen).WrapMode := TImageWrapMode.Fit;
   // Bring forward only the highest-priority visible controller, as before.
   if Landscape then
-    for var I := High(Controls) downto 0 do
-      if (Controls[I].Control <> nil) and Controls[I].Control.Visible then
+    for var i := High(Controls) downto 0 do
+      if (Controls[i].Control <> nil) and Controls[i].Control.Visible then
       begin
-        Controls[I].Control.BringToFront;
+        Controls[i].Control.BringToFront;
         Break;
       end;
 end;

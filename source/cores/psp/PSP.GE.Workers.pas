@@ -202,7 +202,7 @@ const
 // FP state inherited by portable workers, including ARM64's round/mask.
 function GetModes(out Control: Word): UInt32; inline;
 begin
-{$IFDEF MSWINDOWS}
+{$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}
   Control := Get8087CW;
 {$ELSE}
   Control := Ord(GetRoundMode) or (Word(Byte(GetExceptionMask)) shl 8);
@@ -212,7 +212,7 @@ end;
 
 procedure SetModes(MXCSR: UInt32; Control: Word); inline;
 begin
-{$IFDEF MSWINDOWS}
+{$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}
   {$WARN SYMBOL_PLATFORM OFF}
   SetMXCSR(MXCSR);
   {$WARN SYMBOL_PLATFORM ON}

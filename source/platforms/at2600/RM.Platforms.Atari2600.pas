@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 const
   ROM_SYSTEM_A2600 = 'at2600';
@@ -20,6 +20,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -27,6 +28,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   RM.Platforms.Atari2600.Settings, RM.Settings.Catalog, RM.Settings.Platform,
   Core.Emulation, Core.Platforms, Core.Platforms.Atari2600.Adapter,
   RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.Atari2600.Gamepads,
@@ -60,6 +62,16 @@ begin
       end;
     end;
   end;
+end;
+
+class procedure TA2600Platform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
 end;
 
 class function TA2600Platform.RecognizeArchive(Context: TCoreLoadContext): TCoreMatch;
@@ -177,6 +189,7 @@ begin
   Definition.AfterLegacyBindings := LoadSharedLegacyBindings;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('at2600', Definition);
 end;
 

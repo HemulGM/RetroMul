@@ -4,8 +4,8 @@
         <ProjectFileVersion>12</ProjectFileVersion>
     </ProjectExtensions>
     <PropertyGroup>
-        <DeviceId Condition="'$(Platform)'=='Android'"/>
-        <DeviceId Condition="'$(Platform)'=='Android64'"/>
+        <DeviceId Condition="'$(Platform)'=='Android'">A7QXVB1A05007328</DeviceId>
+        <DeviceId Condition="'$(Platform)'=='Android64'">A7QXVB1A05007328</DeviceId>
         <DeviceId Condition="'$(Platform)'=='iOSDevice64'"/>
         <DeviceId Condition="'$(Platform)'=='iOSSimARM64'"/>
     </PropertyGroup>
@@ -604,6 +604,15 @@
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
         </DeployFile>
+        <DeployFile Include="..\..\source\cores\sms\SMS.Region.inc" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\assets\internal\</RemoteDir>
+            <RemoteName>SMS.Region.inc</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
         <DeployFile Include="Android64\Debug\strings.xml" Condition="'$(Config)'=='Debug'">
             <RemoteDir>RetroMul\res\values\</RemoteDir>
             <RemoteName>strings.xml</RemoteName>
@@ -726,6 +735,15 @@
             <RemoteName>splash_vector.xml</RemoteName>
             <DeployClass>Android_VectorizedSplashV31Dark</DeployClass>
             <Operation>1</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\cores\cps\CPS.RomData.inc" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\assets\internal\</RemoteDir>
+            <RemoteName>CPS.RomData.inc</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
             <LocalCommand/>
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
@@ -1105,6 +1123,15 @@
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
         </DeployFile>
+        <DeployFile Include="..\..\source\cores\cps\CPS.RomData.inc" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\assets\internal\</RemoteDir>
+            <RemoteName>CPS.RomData.inc</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
         <DeployFile Include="$(ProjectName).Artwork\Android\FM_LauncherIcon_48x48.png" Condition="'$(Config)'=='Debug'">
             <RemoteDir>RetroMul\res\drawable-mdpi\</RemoteDir>
             <RemoteName>ic_launcher.png</RemoteName>
@@ -1317,6 +1344,15 @@
             <RemoteName>libRetroMul.so</RemoteName>
             <DeployClass>AndroidLibnativeMipsFile</DeployClass>
             <Operation>1</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\cores\sms\SMS.Region.inc" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\assets\internal\</RemoteDir>
+            <RemoteName>SMS.Region.inc</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
             <LocalCommand/>
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
@@ -1598,6 +1634,15 @@
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
         </DeployFile>
+        <DeployFile Include="..\..\source\cores\sms\SMS.Region.inc" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>SMS.Region.inc</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
         <DeployFile Include="Win64\Release\RetroMul.exe" Condition="'$(Config)'=='Release'">
             <RemoteDir>RetroMul\</RemoteDir>
             <RemoteName>RetroMul.exe</RemoteName>
@@ -1613,6 +1658,15 @@
             <RemoteName>AppxManifest.xml</RemoteName>
             <DeployClass>ProjectUWPManifest</DeployClass>
             <Operation>1</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\cores\cps\CPS.RomData.inc" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>CPS.RomData.inc</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
             <LocalCommand/>
             <RemoteCommand/>
             <Overwrite>True</Overwrite>

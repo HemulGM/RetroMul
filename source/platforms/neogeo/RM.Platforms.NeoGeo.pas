@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 type
   TNeoGeoPlatform = class
@@ -20,6 +20,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -27,13 +28,25 @@ type
 implementation
 
 uses
-  NeoGeo.Cartridge, NeoGeo.RomSets, Core.Archive.Container, RM.Settings.Catalog,
-  Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
-  Core.Platforms.NeoGeo.Adapter, RM.Platforms.NeoGeo.Settings,
+  RM.Input.Gamepads, NeoGeo.Cartridge, NeoGeo.RomSets, Core.Archive.Container,
+  RM.Settings.Catalog, Core.Snapshots, System.StrUtils, Core.Emulation,
+  Core.Platforms, Core.Platforms.NeoGeo.Adapter, RM.Platforms.NeoGeo.Settings,
   RM.Platforms.Presentation, RM.Platforms.NeoGeo.Icons, RM.Gamepad.Factory,
   RM.Platforms.NeoGeo.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
   RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
   RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
+
+class procedure TNeoGeoPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadButton.North);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.East);
+end;
 
 class function TNeoGeoPlatform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -166,6 +179,7 @@ begin
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
   Definition.LegacyKeyNames[TEmulatorButton.X] := 'D';
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('neogeo', Definition);
   RegisterPlatformInput('neogeoaes', Definition);
   RegisterPlatformInput('neogeocd', Definition);

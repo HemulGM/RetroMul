@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 const
   ROM_SYSTEM_GBC = 'gbc';
@@ -22,6 +22,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -29,6 +30,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   GB.Cartridge, RM.Settings.Catalog, RM.Platforms.GB.RomFormat, GB.RomFormat, Core.Snapshots,
   System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.GBC.Adapter, RM.Platforms.GBC.Settings,
   RM.Platforms.Presentation, RM.Platforms.GBC.Icons, RM.Gamepad.Factory,
@@ -39,6 +41,16 @@ uses
 
 const
   GBC_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
+
+class procedure TGBCPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+end;
 
 class function TGBCPlatform.GBX(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -129,6 +141,7 @@ begin
   Definition.AfterLegacyBindings := LoadSharedLegacyBindings;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('gbc', Definition);
 end;
 

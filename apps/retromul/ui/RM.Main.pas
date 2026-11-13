@@ -7,11 +7,11 @@ interface
 uses
   System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Types,
   FMX.Platform, FMX.Dialogs, Core.Emulation, Core.Storage, FMXInput,
-  RM.Main.View, RM.Main.State, RM.Controllers.Browser, RM.ShaderBitmap, RM.Feedback,
-  RM.Controllers.Window, RM.Controllers.Settings, RM.Controllers.Snapshots,
-  RM.Controllers.Input, RM.Controllers.Mobile, RM.Controllers.Session, FMX.Menus,
-  FMX.Objects, FMX.StdCtrls, FMX.Controls.Presentation, FMX.Layouts,
-  FMX.Controls, FMX.TabControl
+  RM.Main.View, RM.Main.State, RM.Controllers.Browser, RM.ShaderBitmap,
+  RM.Feedback, RM.Controllers.Window, RM.Controllers.Settings,
+  RM.Controllers.Snapshots, RM.Controllers.Input, RM.Controllers.Mobile,
+  RM.Controllers.Session, FMX.Menus, FMX.Objects, FMX.StdCtrls,
+  FMX.Controls.Presentation, FMX.Layouts, FMX.Controls, FMX.TabControl
   {$IF not Defined(LINUX)}
     , System.Sensors
   {$ENDIF}
@@ -136,9 +136,7 @@ type
     function ExecuteSnapshotDialog(Dialog: TOpenDialog): Boolean; override;
     procedure OpenDirectory(const Directory: string); override;
     procedure DoOnSettingChange; override;
-    {$IFDEF MSWINDOWS}
     procedure DoShow; override;
-    {$ENDIF}
   public
     procedure KeyDown(var Key: Word; var KeyChar: WideChar; Shift: TShiftState); override;
     procedure DragOver(const Data: TDragObject; const Point: TPointF; var Operation: TDragOperation); override;
@@ -166,7 +164,7 @@ implementation
 uses
   System.IOUtils, System.Messaging, FMX.Forms, FMX.Graphics, FMX.OpenDialog,
   WinUI3.Form, WinUI3.Style, Core.EmulatorFactory, RM.Storage.Dialogs,
-  RM.Dialogs, RM.Styles, RM.Rumble
+  RM.Dialogs, RM.Styles, RM.Rumble, FMX.Image, RM.Input.Gamepads
   {$IF not Defined(LINUX)}
     , System.Sensors.Components
   {$ENDIF}
@@ -264,7 +262,8 @@ end;
 
 procedure TFormMain.ReportBugClick(Sender: TObject);
 begin
-  if State.Session.OpeningRom then Exit;
+  if State.Session.OpeningRom then
+    Exit;
   if FFeedbackView = nil then
   begin
     FFeedbackView := TFeedbackView.Create(Self);
@@ -276,7 +275,8 @@ end;
 
 procedure TFormMain.ApplyFeedbackLanguage(const PreviousLanguage: string);
 begin
-  if FFeedbackView <> nil then FFeedbackView.ApplyLanguage(PreviousLanguage);
+  if FFeedbackView <> nil then
+    FFeedbackView.ApplyLanguage(PreviousLanguage);
 end;
 
 procedure TFormMain.InitializeScreenshotTool;
@@ -341,6 +341,8 @@ begin
   except
     Application.HandleException(Self);
   end;
+  // Finish image workers while FMX codecs and all bitmap owners still exist.
+  FMX.Graphics.TBitmap.ShutdownAsyncLoads;
   FreeAndNil(State.Settings.View);
   FreeAndNil(State.Help.View);
   FreeAndNil(State.Browser.View);
@@ -396,7 +398,7 @@ end;
 function TFormMain.CreateHostInput: TInputManager;
 begin
   {$IF Defined(ANDROID) or Defined(MSWINDOWS) or (Defined(LINUX) and not Defined(ANDROID)) or (Defined(MACOS) and not Defined(IOS))}
-  Result := TInputManager.Create(CreateFMXInputBackend);
+  Result := TGamepadInputManager.Create(CreateFMXInputBackend);
   {$ELSE}
   Result := nil;
   {$ENDIF}
@@ -434,19 +436,21 @@ begin
   TMessageManager.DefaultManager.SendMessage(Self, TInternalSettingChangedMessage.Create(StyleBook, Self), True);
 end;
 
-{$IFDEF MSWINDOWS}
 procedure TFormMain.DoShow;
 begin
+  {$IFDEF MSWINDOWS}
   // Apply once, after FMX has positioned and created the native window.
   if not State.Window.WindowStateRestored then
   begin
     State.Window.WindowStateRestored := True;
     RestoreWindowState;
   end;
+  {$ENDIF}
   inherited;
+  if FWindowController <> nil then
+    FWindowController.SyncLibrarySystemUI;
 end;
 
-{$ENDIF}
 {$IFDEF MSWINDOWS}
 procedure TFormMain.RestoreWindowState;
 begin
@@ -508,6 +512,7 @@ end;
 
 procedure TFormMain.SyncActivity;
 begin
+  FWindowController.SyncLibrarySystemUI;
   FSessionController.SyncActivity;
 end;
 
@@ -901,6 +906,20 @@ begin
   // Intercept before FMX dispatches to focused controls and handles Tab.
   if (State.Settings.View <> nil) and State.Settings.View.HandleCaptureKeyDown(Key, KeyChar) then
     Exit;
+  if Key = vkF11 then
+  begin
+    FInputController.FormKeyDown(Self, Key, KeyChar, Shift);
+    if (Key = 0) and (KeyChar = #0) then
+      Exit;
+  end;
+  if (State.Settings.View = nil) and State.Browser.ViewingLibrary and
+    (State.Browser.View <> nil) and State.Browser.View.GamepadMode then
+  begin
+    // Library shortcuts and their input-source hints must precede focused edits/buttons.
+    FInputController.FormKeyDown(Self, Key, KeyChar, Shift);
+    if (Key = 0) and (KeyChar = #0) then
+      Exit;
+  end;
   inherited;
 end;
 

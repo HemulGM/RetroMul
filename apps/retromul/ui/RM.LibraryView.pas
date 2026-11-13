@@ -4056,7 +4056,11 @@ procedure TLibraryView.UpdatePadHints;
       Circle.Stroke.Kind := TBrushKind.None;
     end;
     if Key = 'Enter' then
-      Path.Data.Data := 'M17,2 L17,11 L3,11 M7,6 L2,11 L7,16'
+    begin
+      Path.Width := 10;
+      Path.Height := 10;
+      Path.Data.Data := 'M17,2 L17,11 L3,11 M7,6 L2,11 L7,16';
+    end
     else if Key = 'Space' then
       Path.Data.Data := 'M3,6 L3,14 L17,14 L17,6'
     else if Key = 'Cross' then

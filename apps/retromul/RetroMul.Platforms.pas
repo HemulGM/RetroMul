@@ -5,16 +5,17 @@ interface
 implementation
 
 uses
-  RM.Platforms.Atari7800, RM.Platforms.Jaguar, RM.Platforms.Lynx,
-  RM.Platforms.Atari5200, RM.Platforms.Atari2600, RM.Platforms.CPS,
-  RM.Platforms.DC, RM.Platforms.GameWatch, RM.Platforms.GB, RM.Platforms.NDS,
-  RM.Platforms.GBA, RM.Platforms.GBC, RM.Platforms.MD, RM.Platforms.MSX,
-  RM.Platforms.N64, RM.Platforms.NeoGeo, RM.Platforms.NES, RM.Platforms.WS,
-  RM.Platforms.NGP, RM.Platforms.PCE, RM.Platforms.PS1, RM.Platforms.PSP,
-  RM.Platforms.Saturn, RM.Platforms.SG1000, RM.Platforms.SMS, RM.Platforms.SNES,
-  RM.Platforms.ZX, RM.Platforms.ColecoVision;
+  RM.Platforms.System16, RM.Platforms.Atari7800, RM.Platforms.Jaguar,
+  RM.Platforms.Lynx, RM.Platforms.Atari5200, RM.Platforms.Atari2600,
+  RM.Platforms.CPS, RM.Platforms.DC, RM.Platforms.GameWatch, RM.Platforms.GB,
+  RM.Platforms.NDS, RM.Platforms.GBA, RM.Platforms.GBC, RM.Platforms.MD,
+  RM.Platforms.MSX, RM.Platforms.N64, RM.Platforms.NeoGeo, RM.Platforms.NES,
+  RM.Platforms.WS, RM.Platforms.NGP, RM.Platforms.PCE, RM.Platforms.PS1,
+  RM.Platforms.PSP, RM.Platforms.Saturn, RM.Platforms.SG1000, RM.Platforms.SMS,
+  RM.Platforms.SNES, RM.Platforms.ZX, RM.Platforms.ColecoVision;
 
 initialization
+  TSystem16Platform.RegisterPlatform;
   TA7800Platform.RegisterPlatform;
   TJaguarPlatform.RegisterPlatform;
   TLynxPlatform.RegisterPlatform;

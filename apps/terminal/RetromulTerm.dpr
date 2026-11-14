@@ -5,6 +5,17 @@
 {$R *.res}
 
 uses
+  S16.Crypto in '..\..\source\cores\system16\S16.Crypto.pas',
+  S16.I8751 in '..\..\source\cores\system16\S16.I8751.pas',
+  S16.UPD7751 in '..\..\source\cores\system16\S16.UPD7751.pas',
+  S16.Cartridge in '..\..\source\cores\system16\S16.Cartridge.pas',
+  S16.Console in '..\..\source\cores\system16\S16.Console.pas',
+  S16.RomSets in '..\..\source\cores\system16\S16.RomSets.pas',
+  S16.Sound in '..\..\source\cores\system16\S16.Sound.pas',
+  S16.Video in '..\..\source\cores\system16\S16.Video.pas',
+  Core.Platforms.System16.Adapter in '..\..\source\platforms\system16\Core.Platforms.System16.Adapter.pas',
+  RM.Platforms.System16.Gamepads in '..\..\source\platforms\system16\RM.Platforms.System16.Gamepads.pas',
+  RM.Platforms.System16 in '..\..\source\platforms\system16\RM.Platforms.System16.pas',
   A7800.Cartridge in '..\..\source\cores\at7800\A7800.Cartridge.pas',
   A7800.Console in '..\..\source\cores\at7800\A7800.Console.pas',
   A7800.Emulation in '..\..\source\cores\at7800\A7800.Emulation.pas',

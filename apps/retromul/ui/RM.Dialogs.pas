@@ -248,7 +248,7 @@ begin
         Exit;
 
   // These prefixes wrap another error, rather than a filename or other data.
-  for var Prefix in TArray<string>.Create('Unable to open game: ', 'Autosave failed: ', 'Input error: ', 'Snapshot: ', 'CPS audio: ', 'CPS save: ', 'System 16 audio: ', 'System 16 save: ', 'N64 save: ', 'PS1 audio: ', 'PS1 save: ', 'Dreamcast audio: ', 'Dreamcast save: ', 'NDS raster: ', 'A7800: ', 'JAGUAR: ', 'A7800 audio: ', 'JAGUAR audio: ', 'Jaguar EEPROM: ') do
+  for var Prefix in TArray<string>.Create('Uncaught ', 'Unable to open game: ', 'Autosave failed: ', 'Input error: ', 'Snapshot: ', 'CPS audio: ', 'CPS save: ', 'System 16 audio: ', 'System 16 save: ', 'System 32 audio: ', 'System 32 save: ', 'N64 save: ', 'PS1 audio: ', 'PS1 save: ', 'Dreamcast audio: ', 'Dreamcast save: ', 'NDS raster: ', 'A7800: ', 'JAGUAR: ', 'A7800 audio: ', 'JAGUAR audio: ', 'Jaguar EEPROM: ') do
     if Text.StartsWith(Prefix) then
       Exit(Translate(Prefix) + TranslateCoreMessage(Text.Substring(Prefix.Length)));
 
@@ -256,6 +256,12 @@ begin
   var ExceptionText := TRegEx.Match(Text, '\A(E[A-Za-z][A-Za-z0-9_.]*): ([\s\S]+)\z');
   if ExceptionText.Success then
     Exit(ExceptionText.Groups[1].Value + ': ' + TranslateCoreMessage(ExceptionText.Groups[2].Value));
+
+  // Preserve the Java exception class and stack frames; translate the reason at
+  // the presentation boundary, without changing messages seen by MIDlet code.
+  var JavaException := TRegEx.Match(Text, '\A([A-Za-z_$][A-Za-z0-9_$/]*/[A-Za-z0-9_$]+): ([\s\S]+)\z');
+  if JavaException.Success then
+    Exit(JavaException.Groups[1].Value + ': ' + TranslateCoreMessage(JavaException.Groups[2].Value));
 
   var BreakAt := Text.IndexOf(#10);
   if BreakAt >= 0 then

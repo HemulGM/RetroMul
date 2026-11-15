@@ -1138,7 +1138,7 @@ begin
       Check('RowLetternavigation', 'Letter navigation', 'Filter ROMs by their first letter using the column on the left.', 'Library', 'ShowLetters', False);
       Heading('GroupMetadata', 'Metadata');
       FContext.AddInformation('RowCoversanddescriptions', 'Covers and descriptions',
-        'Files with known ROM extensions from all platforms are listed. Optional gamelist.xml adds descriptions and artwork.', '');
+        'Each platform folder lists only formats supported by that platform. Optional gamelist.xml adds descriptions and artwork.', '');
     end
     else
     begin

@@ -8,6 +8,10 @@ uses
 // Existing decoders retain the immutable bank when another is selected.
 procedure SetMidiSoundFont(const Path: string);
 
+// Optional lazy fallback supplied by an application/core. External SF2 files and
+// an explicitly selected bank take precedence; registration never loads the bank.
+procedure SetDefaultMidiSoundFontResource(Module: THandle; const Name: string);
+
 function MidiSoundFontName: string;
 
 function MidiSoundFontPath: string;
@@ -52,6 +56,29 @@ var
   BankLock: TCriticalSection;
   CurrentBank: ISoundFont;
   CurrentBankPath: string;
+  DefaultBankModule: THandle;
+  DefaultBankResource: string;
+
+procedure SetDefaultMidiSoundFontResource(Module: THandle; const Name: string);
+begin
+  BankLock.Enter;
+  try
+    DefaultBankModule := Module;
+    DefaultBankResource := Name;
+  finally
+    BankLock.Leave;
+  end;
+end;
+
+function ReadSoundFont(Stream: TStream): ISoundFont;
+begin
+  if (Stream.Size > 256 * 1024 * 1024) or (Stream.Size < 12) then
+    raise EArgumentException.Create('SoundFont size must be between 12 bytes and 256 MiB');
+  var Data: TBytes;
+  SetLength(Data, Integer(Stream.Size));
+  Stream.ReadBuffer(Data[0], Length(Data));
+  Result := TSoundFont.Create(Data);
+end;
 
 procedure SetMidiSoundFont(const Path: string);
 begin
@@ -69,17 +96,13 @@ begin
     if FileName = '' then
       raise EArgumentException.Create('Unknown standard SoundFont');
   end;
-  var Data: TBytes;
+  var Bank: ISoundFont;
   var Stream := TFileStream.Create(FileName, fmOpenRead or fmShareDenyWrite);
   try
-    if (Stream.Size > 256 * 1024 * 1024) or (Stream.Size < 12) then
-      raise EArgumentException.Create('SoundFont size must be between 12 bytes and 256 MiB');
-    SetLength(Data, Integer(Stream.Size));
-    Stream.ReadBuffer(Data[0], Length(Data));
+    Bank := ReadSoundFont(Stream);
   finally
     Stream.Free;
   end;
-  var Bank: ISoundFont := TSoundFont.Create(Data);
   BankLock.Enter;
   try
     CurrentBank := Bank;
@@ -90,10 +113,15 @@ begin
 end;
 
 function GetBank: ISoundFont;
+var
+  ResourceModule: THandle;
+  ResourceName: string;
 begin
   BankLock.Enter;
   try
     Result := CurrentBank;
+    ResourceModule := DefaultBankModule;
+    ResourceName := DefaultBankResource;
   finally
     BankLock.Leave;
   end;
@@ -114,11 +142,33 @@ begin
     if Length(Files) <> 0 then
       Path := Files[0];
   end;
-  if Path = '' then
+  var Stream: TStream;
+  if Path <> '' then
+  begin
+    Stream := TFileStream.Create(Path, fmOpenRead or fmShareDenyWrite);
+    Path := ExpandFileName(Path);
+  end
+  else if ResourceName <> '' then
+  begin
+    Stream := TResourceStream.Create(ResourceModule, ResourceName, PChar(10));
+    Path := 'resource:' + ResourceName;
+  end
+  else
     raise EArgumentException.Create('MIDI requires a SoundFont: place SF2 files in the sf2 folder beside the executable or select a custom SF2');
-  SetMidiSoundFont(Path);
+  var Bank: ISoundFont;
+  try
+    Bank := ReadSoundFont(Stream);
+  finally
+    Stream.Free;
+  end;
   BankLock.Enter;
   try
+    // A custom selection may have completed while the default was loading.
+    if CurrentBank = nil then
+    begin
+      CurrentBank := Bank;
+      CurrentBankPath := Path;
+    end;
     Result := CurrentBank;
   finally
     BankLock.Leave;

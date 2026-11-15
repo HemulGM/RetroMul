@@ -6,7 +6,7 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 
 ## Supported systems and ROM formats
 
-The table covers all 45 registered systems. Supported images and ROM sets can also be loaded from `.zip`, `.7z`, and `.rar` archives. Disc images must retain their required companion files and tracks.
+The table lists registered systems. Supported images and ROM sets can also be loaded from `.zip`, `.7z`, and `.rar` archives. Disc images must retain their required companion files and tracks.
 
 | System | ROM formats |
 | --- | --- |
@@ -25,9 +25,11 @@ The table covers all 45 registered systems. Supported images and ROM sets can al
 | Game Boy Advance | `.gba` |
 | Nintendo 64 (experimental) | `.z64`, `.n64`, `.v64` |
 | Nintendo DS (experimental) | `.nds` |
+| Java ME / J2ME (initial implementation) | `.jar`, optional adjacent `.jad`; |
 | SEGA Mega Drive / Genesis | `.md`, `.bin`, `.gen`, `.smd` |
 | SEGA CD / Mega-CD | `.cue`, `.iso`, `.chd`, `.mds`, `.nrg` |
 | SEGA 32X | `.32x`, `.bin`, `.gen`, `.md`, `.smd` |
+| SEGA System 32 (experimental) | Catalogued MAME `.zip`, `.7z`, `.rar` sets |
 | SEGA SG-1000 | `.sg` (legacy `.sms` images in `sg1000/`) |
 | SEGA SC-3000 | `.sc` |
 | SEGA SF-7000 | `.sf7`, `.sf`, `.dsk` (external IPL required) |
@@ -40,7 +42,7 @@ The table covers all 45 registered systems. Supported images and ROM sets can al
 | SEGA Saturn | `.iso`, `.cue`, `.chd`, `.mds`, `.nrg`; BIOS images `.bin`, `.rom`, `.bios` |
 | SEGA Dreamcast | `.gdi`, `.cdi`, `.chd`, `.cue`, `.iso`, `.mds`, `.nrg`, homebrew `.elf`, multi-disc `.m3u` |
 | Sony PlayStation (PS1) | `.cue`, `.chd`, `.iso`, `.mds`, `.nrg`, raw `.bin`, PS-X `.exe`, multi-disc `.m3u` |
-| Sony PSP (experimental) | `.elf`, `.prx`, `.pbp`, encrypted executables, ISO9660 `.iso`, CISO v1 `.cso`; single-image archives; commercial compatibility is being validated |
+| Sony PSP (experimental) | `.elf`, `.prx`, `.pbp`, encrypted executables, ISO9660 `.iso`, CISO v1 `.cso` |
 | ZX Spectrum family / clones | `.sna`, `.z80`, `.tap`, `.tzx`, `.trd`, `.scl`, `.dsk`, `.dck`, `.pro`, `.kdi`, `.ide`, `.mmc` |
 | Super Nintendo / Super Famicom | `.sfc`, `.smc`, `.swc`, `.fig` |
 | Neo Geo MVS / AES | Named MAME ROM sets in `.zip`, `.7z`, `.rar`; unencrypted NeoSD `.neo` images |

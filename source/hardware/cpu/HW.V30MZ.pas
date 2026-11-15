@@ -25,6 +25,8 @@ type
 
   TV30Write = procedure(Address: Cardinal; Value: Byte) of object;
 
+  TV30OpcodeDecoder = function(Value: Byte): Byte of object;
+
   TV30PortRead = function(Address: Cardinal; WordAccess: Boolean): Byte of object;
 
   TV30PortWrite = procedure(Address: Cardinal; Value: Byte; WordAccess: Boolean) of object;
@@ -97,6 +99,7 @@ type
     PortBusInfo: TV30BusInfo;
     PortReadEvent: TV30PortRead;
     PortWriteEvent: TV30PortWrite;
+    OpcodeDecoder: TV30OpcodeDecoder; // Optional opcode-only substitution; operands remain raw.
     constructor Create(ReadMemory: TV30Read; WriteMemory: TV30Write; ReadPort: TV30Read; WritePort: TV30Write);
     procedure Reset;
     function Step: Integer;
@@ -974,6 +977,8 @@ begin
     State.RepeatActive := False;
     repeat
       Op := Fetch8;
+      if Assigned(OpcodeDecoder) then
+        Op := OpcodeDecoder(Op);
       Inc(Count);
       case Op of
         $26:

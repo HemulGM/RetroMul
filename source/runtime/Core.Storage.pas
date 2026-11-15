@@ -155,7 +155,6 @@ begin
   end;
 end;
 
-
 constructor TReadCancellationScope.Create(const Check: TProc);
 begin
   inherited Create;
@@ -877,13 +876,12 @@ begin
     CueNames.CaseSensitive := False;
     CueNames.Sorted := True;
     CueNames.Duplicates := dupIgnore;
-    // Accept known ROM extensions from every platform, regardless of folder.
+    // Each configured folder only contributes formats supported by its platform.
     Extensions.CaseSensitive := False;
     Extensions.Sorted := True;
     Extensions.Duplicates := dupIgnore;
-    for var platform in TPlatformRegistry.All do
-      for var Extension in platform.Extensions do
-        Extensions.Add(Extension);
+    for var Extension in TPlatformRegistry.Require(SystemId).Extensions do
+      Extensions.Add(Extension);
     var Candidates: TArray<TStorageFile>;
     {$IFDEF ANDROID}
     if Folder.StartsWith('content://', True) then

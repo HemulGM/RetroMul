@@ -16,6 +16,8 @@ type
     FHead, FCount: Integer;
     FSubmit: array[0..1023] of SmallInt;
     FPrimeSince, FLastAppend: UInt64;
+    FProgressAt, FLastSubmitted, FLastPlayed: UInt64;
+    FLastQueued: Integer;
     FPriming, FCanPause: Boolean;
     procedure Check;
     procedure StartPrimed;
@@ -69,8 +71,24 @@ procedure TJ2MEAudioPlayback.Check;
 begin
   if FAudio.Error <> '' then
     raise EInOutError.Create(FAudio.Error);
-  if not FAudio.QueueState.DeviceOpen then
+  var State := FAudio.QueueState;
+  if not State.DeviceOpen then
     raise EInOutError.Create('Java ME audio output is unavailable');
+  var Now := TThread.GetTickCount64;
+  // Backpressure may pause the VM while a bounded device queue drains. If an
+  // open driver never completes buffers, report failure instead of freezing
+  // Java forever. Submitted counts also support backends without positions.
+  if FPriming or (State.QueuedBlocks = 0) or
+    (State.SubmittedSamples <> FLastSubmitted) or
+    (State.PositionKnown and (State.PlayedSamples <> FLastPlayed)) or (State.QueuedBlocks < FLastQueued) or
+    (FProgressAt = 0) then
+    FProgressAt := Now;
+  FLastSubmitted := State.SubmittedSamples;
+  if State.PositionKnown then
+    FLastPlayed := State.PlayedSamples;
+  FLastQueued := State.QueuedBlocks;
+  if not FPriming and (State.QueuedBlocks >= AudioFormat.BlockCount) and (Now - FProgressAt >= 1000) then
+    raise EInOutError.Create('Java ME audio output stalled');
 end;
 
 procedure TJ2MEAudioPlayback.Clear;

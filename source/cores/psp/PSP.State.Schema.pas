@@ -22,7 +22,7 @@ uses
   PSP.Atrac, PSP.Mpeg, PSP.MpegDemux, PSP.MpegVideo, PSP.Jpeg, PSP.Net,
   PSP.Utility, PSP.Videocodec, Audio.MP3.Layer3, Core.Snapshots,
   PSP.State.Action, Video.AVC.H264, Video.AVC.H264.Syntax, Video.AVC.Types,
-  FMXAudio.Transform;
+  Audio.Transform;
 
 type
   TU32x2 = array[0..1] of Cardinal;
@@ -121,7 +121,8 @@ begin
     Result.AddClass(TMemoryStream, []);
     Result.AddClass(TFileStream, []);
     Result.AddClass(TStringBuilder, []);
-    Result.AddClass(TInverseMDCT, []);
+    // Keep the snapshot wire name stable across the audio unit reorganization.
+    Result.AddClass(TInverseMDCT, [], 'FMXAudio.Transform.TInverseMDCT');
     Result.AddClass(TObjectDictionary<string, TDictionary<Cardinal, Cardinal>>, []);
     Result.Native(TMP3Layer3Decoder,
       function: TObject

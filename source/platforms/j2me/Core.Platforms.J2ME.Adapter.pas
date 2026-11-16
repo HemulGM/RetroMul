@@ -718,18 +718,10 @@ begin
           for Event in Events do
             Runtime.KeyEvent(Event.Code, Event.Pressed);
         end;
-        var CanExecute := True;
-        if (Playback <> nil) and not Paused then
-        try
-          CanExecute := Playback.AvailableFrames > 0;
-        except
-          on E: Exception do
-            AudioFailure(E.Message);
-        end;
-        if CanExecute then
-          Runtime.Tick(2000)
-        else
-          TThread.Sleep(1);
+        // Device backpressure applies only to advancing the mixer below.
+        // A full PCM FIFO may stay full while healthy playback continues;
+        // gating Java here can starve it forever until pause clears the FIFO.
+        Runtime.Tick(2000);
         if TThread.CheckTerminated then
           Break;
         var Rumble := Runtime.TakeVibrationSample;

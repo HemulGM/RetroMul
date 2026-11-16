@@ -3,8 +3,9 @@
 interface
 
 uses
-  System.Classes, JVM.StateIO, System.SysUtils, System.Generics.Collections,
-  JVM.Types, JVM.ClassFile, JVM.Runtime, Music.Decoder;
+  Audio.Types, System.Classes, JVM.StateIO, System.SysUtils,
+  System.Generics.Collections, JVM.Types, JVM.ClassFile, JVM.Runtime,
+  Audio.Decoder;
 
 type
   TJ2MEMediaEvent = record
@@ -17,8 +18,8 @@ type
     Muted, Decoding, Rooted, Streaming: Boolean;
     ContentType: string;
     Data: TBytes;
-    Decoder: ITuneDecoder;
-    Info: TTuneInfo;
+    Decoder: IAudioSource;
+    Info: TAudioInfo;
     PCM: TArray<SmallInt>;
     SampleCount: Integer;
     FrameCount, CacheFrame, DecoderFrame: Int64;
@@ -73,8 +74,8 @@ type
 implementation
 
 uses
-  J2ME.Audio.State, System.Math, Java.Classes, Java.Bootstrap, Music.Decoder.WAV,
-  Music.Decoder.MIDI;
+  J2ME.Audio.State, System.Math, Java.Classes, Java.Bootstrap, Audio.Format.WAV,
+  Audio.Format.MIDI;
 
 {$R 'J2ME.SoundFont.res' 'J2ME.SoundFont.rc'}
 
@@ -460,7 +461,7 @@ begin
         P.Decoder := OpenMidi(P.Data)
       else
         P.Decoder := OpenWav(P.Data);
-      P.Info := P.Decoder.GetInfo;
+      P.Info := GetAudioInfo(P.Decoder);
       if (P.Info.SampleRate < 1) or (P.Info.SampleRate > 384000) or not (P.Info.Channels in [1, 2]) then
         raise EArgumentException.Create('Unsupported PCM format');
       // Finite long resources are decoded on demand rather than expanded in
@@ -546,19 +547,19 @@ begin
   var Samples: TArray<SmallInt>;
   SetLength(FDecodeBuffer, 4096 * P.Info.Channels);
   Samples := FDecodeBuffer;
-  var Seeker: ITuneSeekDecoder;
-  if (P.Decoder = nil) or ((P.DecoderFrame > Start) and not Supports(P.Decoder, ITuneSeekDecoder, Seeker)) then
+  var Seeker: IAudioSeekSource;
+  if (P.Decoder = nil) or ((P.DecoderFrame > Start) and not Supports(P.Decoder, IAudioSeekSource, Seeker)) then
   begin
     if P.ContentType = 'audio/midi' then
       P.Decoder := OpenMidi(P.Data)
     else
       P.Decoder := OpenWav(P.Data);
     P.DecoderFrame := 0;
-    var Info := P.Decoder.GetInfo;
+    var Info := GetAudioInfo(P.Decoder);
     if (Info.SampleRate <> P.Info.SampleRate) or (Info.Channels <> P.Info.Channels) then
       raise EJVMError.Create('Incompatible streaming audio format');
   end;
-  if (P.DecoderFrame <> Start) and Supports(P.Decoder, ITuneSeekDecoder, Seeker) then
+  if (P.DecoderFrame <> Start) and Supports(P.Decoder, IAudioSeekSource, Seeker) then
   begin
     P.DecoderFrame := Seeker.SeekFrame(Start,
       function: Boolean

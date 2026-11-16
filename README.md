@@ -102,7 +102,7 @@ These shortcuts are suspended while an emulated NES or Subor keyboard is active.
 | `source/cores` | System-specific emulation, cartridges, audio machines and firmware |
 | `source/hardware` | Shared CPU, audio-chip and video implementations |
 | `source/media` | ROM identification, CD access and native CHD decoding |
-| `source/music` | Reusable decoders, trackers, playback, synthesis and export |
+| `source/media/audio` | Native audio codecs, file formats, trackers, synthesis, processing and export |
 | `source/ui` | Shared FMX controls, SVG rendering and shaders |
 | `apps/*/*.dproj` | Explicit relative unit search paths and module references |
 | `source/platforms/RetroMul.Platforms.pas` | Explicit platform composition and calls to platform class registration methods |
@@ -190,9 +190,9 @@ MiniDSF needs its referenced library files beside the source file. MD1 needs the
 
 ### Using the player in another Delphi application
 
-`TTunePlayer` in `source/music/playback/Music.Player.pas` owns the playback thread and PCM device; it does not depend on FireMonkey or `RetroTune.Main`. Add `source/music/decoders`, `source/music/common`, `source/music/synthesis`, `source/music/playback`, and `dependencies/PCMAudio` to your project's unit search path. Other decoders can additionally require `source/music/trackers` (including its `amiga` directory), `source/runtime`, the relevant `source/hardware` directories and system-specific core directories. The complete decoder set's paths are listed in `apps/retrotune/RetroTune.dproj`.
+`TAudioPlayer` in `source/runtime/audio/Core.Audio.Player.pas` owns the playback thread and PCM device; it does not depend on FireMonkey or `RetroTune.Main`. Add `source/media/audio`, `source/media/audio/common`, `source/media/audio/synthesis/soundfont`, `source/runtime/audio`, the relevant format subdirectories, `source/media/common`, `source/media/audio/processing`, and `dependencies/PCMAudio` to your project's unit search path. Other decoders can additionally require `source/media/audio/music/trackers` (including its `amiga` directory), `source/runtime`, the relevant `source/hardware` directories and system-specific core directories. The complete decoder set's paths are listed in `apps/retrotune/RetroTune.dproj`.
 
-Shared decoder units expose factories and do not register formats automatically. Each application registers its own formats before starting playback. RetroTune calls `RegisterRetroTuneFormats` from `apps/retrotune/RetroTune.Formats.pas`; RetroMul's J2ME core directly creates only WAV and MIDI decoders. This standalone example explicitly registers WAV and MIDI. Container users must also register the formats they decode internally. For MIDI, prepare `sf2` beside your application's EXE, or call `SetMidiSoundFont` with a custom SF2 path.
+Shared decoder units expose factories and do not register formats automatically. `Audio.Types` separates PCM (`IAudioSource`) from optional metadata, track selection and seeking. `Audio.Registry` provides independent registry instances; each application populates its own instance before starting playback. RetroTune calls `RegisterRetroTuneFormats` from `apps/retrotune/RetroTune.Formats.pas`; RetroMul's J2ME core directly creates only WAV and MIDI decoders. This standalone example explicitly registers WAV and MIDI. Container factories receive an `IAudioResolver` for their embedded formats. Export workers retain the resolver supplied by their caller; reusable modules never import RetroTune. For MIDI, prepare `sf2` beside your application's EXE, or call `SetMidiSoundFont` with a custom SF2 path.
 
 The example plays the default track for up to ten seconds, checks asynchronous playback errors, and releases the player even if playback fails:
 
@@ -202,21 +202,22 @@ program StandaloneTune;
 {$APPTYPE CONSOLE}
 
 uses
-  System.SysUtils, System.Classes,
-  Music.Decoder, Music.Player,
-  Music.Decoder.WAV, Music.Decoder.MIDI;
+  Audio.Registry, Audio.Types, System.SysUtils, System.Classes,
+  Audio.Decoder, Core.Audio.Player,
+  Audio.Format.WAV, Audio.Format.MIDI;
 
 begin
   try
+    var Formats: IAudioRegistry := TAudioRegistry.Create;
     if ParamCount <> 1 then
       raise Exception.Create('Usage: StandaloneTune <music.wav|music.mid>');
 
-    TTuneDecoders.RegisterFormat('.wav', 'Wave audio', OpenWav);
-    TTuneDecoders.RegisterFormat('.mid', 'Standard MIDI File', OpenMidi);
+    Formats.RegisterFormat('.wav', 'Wave audio', OpenWav);
+    Formats.RegisterFormat('.mid', 'Standard MIDI File', OpenMidi);
     // Optional for MIDI: SetMidiSoundFont('C:\Music\MyBank.sf2');
-    var Decoder := TTuneDecoders.Open(ParamStr(1));
-    var Info := Decoder.GetInfo;
-    var Player := TTunePlayer.Create(Decoder);
+    var Decoder := Formats.Open(ParamStr(1));
+    var Info := GetAudioInfo(Decoder);
+    var Player := TAudioPlayer.Create(Decoder);
     try
       Player.SetVolume(80); // 0..100
       Player.SelectTrack(Info.DefaultTrack); // Track indexes start at zero.
@@ -226,7 +227,7 @@ begin
         var State := Player.Status;
         if State.Error <> '' then
           raise Exception.Create(State.Error);
-        if State.State = TTunePlayerState.Finished then
+        if State.State = TAudioPlayerState.Finished then
           Break;
         TThread.Sleep(20);
       until TThread.GetTickCount64 - Started >= 10000;

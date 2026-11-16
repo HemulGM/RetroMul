@@ -770,15 +770,14 @@ object LibraryView: TLibraryView
         Size.PlatformDefault = False
         object LayoutHeaderTools: TLayout
           Align = Right
-          Position.X = 296.000000000000000000
-          Size.Width = 201.000000000000000000
+          Position.X = 305.000000000000000000
+          Size.Width = 192.000000000000000000
           Size.Height = 50.000000000000000000
           Size.PlatformDefault = False
           object ButtonGamepadView: TButton
             Align = Right
             Margins.Top = 8.000000000000000000
             Margins.Bottom = 8.000000000000000000
-            Position.X = 9.000000000000000000
             Position.Y = 8.000000000000000000
             Size.Width = 42.000000000000000000
             Size.Height = 34.000000000000000000
@@ -814,7 +813,7 @@ object LibraryView: TLibraryView
             Margins.Left = 8.000000000000000000
             Margins.Top = 8.000000000000000000
             Margins.Bottom = 8.000000000000000000
-            Position.X = 109.000000000000000000
+            Position.X = 100.000000000000000000
             Position.Y = 8.000000000000000000
             Size.Width = 42.000000000000000000
             Size.Height = 34.000000000000000000
@@ -845,7 +844,7 @@ object LibraryView: TLibraryView
             Margins.Left = 8.000000000000000000
             Margins.Top = 8.000000000000000000
             Margins.Bottom = 8.000000000000000000
-            Position.X = 159.000000000000000000
+            Position.X = 150.000000000000000000
             Position.Y = 8.000000000000000000
             Size.Width = 42.000000000000000000
             Size.Height = 34.000000000000000000
@@ -881,7 +880,7 @@ object LibraryView: TLibraryView
             Margins.Left = 8.000000000000000000
             Margins.Top = 8.000000000000000000
             Margins.Bottom = 8.000000000000000000
-            Position.X = 59.000000000000000000
+            Position.X = 50.000000000000000000
             Position.Y = 8.000000000000000000
             Size.Width = 42.000000000000000000
             Size.Height = 34.000000000000000000
@@ -927,7 +926,7 @@ object LibraryView: TLibraryView
         object LayoutSearchHost: TLayout
           Align = Client
           Margins.Right = 12.000000000000000000
-          Size.Width = 284.000000000000000000
+          Size.Width = 293.000000000000000000
           Size.Height = 50.000000000000000000
           Size.PlatformDefault = False
         end

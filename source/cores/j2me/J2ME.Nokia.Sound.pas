@@ -3,8 +3,9 @@
 interface
 
 uses
-  System.Classes, JVM.StateIO, System.SysUtils, System.Generics.Collections,
-  JVM.Types, JVM.ClassFile, JVM.Runtime, Music.Decoder, J2ME.Nokia.OTA;
+  Audio.Types, System.Classes, JVM.StateIO, System.SysUtils,
+  System.Generics.Collections, JVM.Types, JVM.ClassFile, JVM.Runtime,
+  Audio.Decoder, J2ME.Nokia.OTA;
 
 type
   TNokiaSoundEvent = record
@@ -17,8 +18,8 @@ type
     Rooted, HasPlayed, Decoding, SimpleTone: Boolean;
     Order: UInt64;
     Data: TBytes;
-    Decoder: ITuneDecoder;
-    Info: TTuneInfo;
+    Decoder: IAudioSource;
+    Info: TAudioInfo;
     PCM: TArray<SmallInt>;
     SampleCount, FrameCount: Integer;
     Position: Int64;
@@ -63,7 +64,7 @@ type
 implementation
 
 uses
-  J2ME.Audio.State, System.Math, Java.Classes, Music.Decoder.WAV;
+  J2ME.Audio.State, System.Math, Java.Classes, Audio.Format.WAV;
 
 const
   SoundName = 'com/nokia/mid/sound/Sound';
@@ -323,7 +324,7 @@ begin
   if V.Decoder = nil then
   begin
     V.Decoder := OpenWav(V.Data);
-    V.Info := V.Decoder.GetInfo;
+    V.Info := GetAudioInfo(V.Decoder);
     if (V.Info.SampleRate < 1) or (V.Info.SampleRate > 384000) or not (V.Info.Channels in [1, 2]) then
       raise ENokiaToneFormat.Create('Unsupported Nokia WAV PCM format');
   end;

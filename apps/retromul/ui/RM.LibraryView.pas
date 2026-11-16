@@ -1763,7 +1763,15 @@ begin
         Tools.Align := TAlignLayout.Bottom
       else
         Tools.Align := TAlignLayout.Right;
-      Tools.Width := 294;
+      var ToolsWidth: Single := Tools.Padding.Left + Tools.Padding.Right;
+      for var i := 0 to Tools.ChildrenCount - 1 do
+        if Tools.Children[i] is TControl then
+        begin
+          var Tool := TControl(Tools.Children[i]);
+          if Tool.Visible and (Tool.Align = TAlignLayout.Right) then
+            ToolsWidth := ToolsWidth + Tool.Width + Tool.Margins.Left + Tool.Margins.Right;
+        end;
+      Tools.Width := ToolsWidth;
       Tools.Height := 50;
       (FindComponent('LayoutSearchHost') as TLayout).Margins.Right := IfThen(NarrowToolbar, 0, 12);
       var PrimaryActions := FindComponent('LayoutCompactPrimaryActions') as TLayout;

@@ -11,9 +11,9 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, PSP.Types, PSP.Memory, PSP.CPU,
-  PSP.HLE, PSP.Kernel, PSP.Scheduler, PSP.Service, Audio.ATRAC3,
-  Audio.ATRAC3Plus, FMXAudio.Types, FMXAudio.AAC, PSP.MP3;
+  Audio.Types, System.SysUtils, System.Generics.Collections, PSP.Types,
+  PSP.Memory, PSP.CPU, PSP.HLE, PSP.Kernel, PSP.Scheduler, PSP.Service,
+  Audio.ATRAC3, Audio.ATRAC3Plus, Media.Types, Audio.AAC, PSP.MP3;
 
 type
   TPSPAudioCodecState = class

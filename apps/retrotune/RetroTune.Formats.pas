@@ -2,107 +2,116 @@
 
 interface
 
+uses
+  Audio.Registry;
+
+var
+  RetroTuneDecoders: IAudioRegistry;
+
+function CreateRetroTuneFormats: IAudioRegistry;
+
 // Called by the application before creating forms or starting playback.
 procedure RegisterRetroTuneFormats;
 
 implementation
 
 uses
-  Music.Decoder, Music.Decoder.AHX, Music.Decoder.Atari, Music.Decoder.AY,
-  Music.Decoder.AYDumps, Music.Decoder.Containers, Music.Decoder.Digital,
-  Music.Decoder.DSF, Music.Decoder.GBS, Music.Decoder.GYM, Music.Decoder.HES,
-  Music.Decoder.KSS, Music.Decoder.MIDI, Music.Decoder.NSF, Music.Decoder.NSFe,
-  Music.Decoder.OPLDumps, Music.Decoder.ProTracker, Music.Decoder.PT3,
-  Music.Decoder.SAA, Music.Decoder.SID, Music.Decoder.SPC, Music.Decoder.TIA,
-  Music.Decoder.TRDOS, Music.Decoder.TurboFM, Music.Decoder.VGM,
-  Music.Decoder.WAV, Music.Decoder.XGM, Music.Decoder.ZXTrackers;
+  Audio.Types, Audio.Decoder, Audio.Music.AHX, Audio.Music.Atari, Audio.Music.AY,
+  Audio.Music.AYDumps, Audio.Music.Containers, Audio.Music.Digital,
+  Audio.Music.DSF, Audio.Music.GBS, Audio.Music.GYM, Audio.Music.HES,
+  Audio.Music.KSS, Audio.Format.MIDI, Audio.Music.NSF, Audio.Music.NSFe,
+  Audio.Music.OPLDumps, Audio.Music.ProTracker, Audio.Music.PT3, Audio.Music.SAA,
+  Audio.Music.SID, Audio.Music.SPC, Audio.Music.TIA, Audio.Music.TRDOS,
+  Audio.Music.TurboFM, Audio.Music.VGM, Audio.Format.WAV, Audio.Music.XGM,
+  Audio.Music.ZXTrackers;
 
-var
-  FormatsRegistered: Boolean;
+function CreateRetroTuneFormats: IAudioRegistry;
+begin
+  Result := TAudioRegistry.Create;
+  Result.RegisterFormat('.ahx', 'Amiga AHX', Audio.Music.AHX.OpenAHX);
+  Result.RegisterFormat('.hvl', 'HivelyTracker', Audio.Music.AHX.OpenAHX);
+  Result.RegisterFormat('.d15', 'Atari MPT 15 kHz sample bank', Audio.Music.Atari.D15);
+  Result.RegisterFormat('.md1', 'Atari Music ProTracker with samples', Audio.Music.Atari.MD1);
+  Result.RegisterDataLoader('.md1', Audio.Music.Atari.ResolveMD1);
+  Result.RegisterFormat('.sap', 'Atari SAP', Audio.Music.Atari.SAP);
+  Result.RegisterFormat('.rmt', 'Raster Music Tracker', Audio.Music.Atari.RMT);
+  Result.RegisterFormat('.ay', 'AY / ZX Spectrum / CPC', Audio.Music.AY.OpenAY);
+  Result.RegisterFormat('.debugay', 'AY text register dump', Audio.Music.AYDumps.DebugAY);
+  Result.RegisterFormat('.psg', 'AY register log', Audio.Music.AYDumps.PSG);
+  Result.RegisterFormat('.ym', 'ST Sound YM', Audio.Music.AYDumps.YM);
+  Result.RegisterFormat('.vtx', 'VTX AY/YM', Audio.Music.AYDumps.VTX);
+  Result.RegisterFormat('.ayc', 'CPC AYC', Audio.Music.AYDumps.AYC);
+  Result.RegisterFormat('.txt', 'Vortex Tracker text module', Audio.Music.Containers.OpenTXT);
+  Result.RegisterFormat('.ts', 'TurboSound container', Audio.Music.Containers.OpenTS);
+  Result.RegisterFormat('.mtc', 'Multitrack audio container', Audio.Music.Containers.OpenMTC);
+  Result.RegisterFormat('.chi', 'Chip Tracker', Audio.Music.Digital.OpenCHI);
+  Result.RegisterFormat('.dmm', 'Digital Music Maker', Audio.Music.Digital.OpenDMM);
+  Result.RegisterFormat('.dst', 'Digital Studio', Audio.Music.Digital.OpenDST);
+  Result.RegisterFormat('.sqd', 'SQ Digital Tracker', Audio.Music.Digital.OpenSQD);
+  Result.RegisterFormat('.str', 'Sample Tracker', Audio.Music.Digital.OpenSTR);
+  Result.RegisterFormat('.et1', 'Extreme Tracker', Audio.Music.Digital.OpenET1);
+  Result.RegisterFormat('.pdt', 'ProDigiTracker', Audio.Music.Digital.OpenPDT);
+  Result.RegisterFormat('.d', 'Extreme Tracker', Audio.Music.Digital.OpenET1);
+  Result.RegisterFormat('.m', 'Extreme / ProDigiTracker', Audio.Music.Digital.OpenM);
+  Result.RegisterFormat('.dsf', 'Dreamcast Sound Format', Audio.Music.DSF.OpenDSF);
+  Result.RegisterFormat('.minidsf', 'Dreamcast Sound Format (shared libraries)', Audio.Music.DSF.OpenDSF);
+  Result.RegisterDataLoader('.dsf', Audio.Music.DSF.ResolveDSF);
+  Result.RegisterDataLoader('.minidsf', Audio.Music.DSF.ResolveDSF);
+  Result.RegisterFormat('.gbs', 'Game Boy Sound', Audio.Music.GBS.CreateGBS);
+  Result.RegisterFormat('.gym', 'Mega Drive GYM', Audio.Music.GYM.CreateGYM);
+  Result.RegisterFormat('.hes', 'PC Engine HES', Audio.Music.HES.OpenHES);
+  Result.RegisterFormat('.kss', 'MSX / Sega Master System KSS', Audio.Music.KSS.OpenKSS);
+  Result.RegisterFormat('.mid', 'Standard MIDI File / General MIDI', Audio.Format.MIDI.OpenMidi);
+  Result.RegisterFormat('.midi', 'Standard MIDI File / General MIDI', Audio.Format.MIDI.OpenMidi);
+  Result.RegisterFormat('.rmi', 'RIFF MIDI / General MIDI', Audio.Format.MIDI.OpenMidi);
+  Result.RegisterFormat('.kar', 'MIDI karaoke (audio)', Audio.Format.MIDI.OpenMidi);
+  Result.RegisterFormat('.nsf', 'Nintendo Sound Format', Audio.Music.NSF.CreateNSF);
+  Result.RegisterFormat('.nsf2', 'Nintendo Sound Format 2', Audio.Music.NSF.CreateNSF);
+  Result.RegisterFormat('.nsfe', 'Extended Nintendo Sound Format', Audio.Music.NSFe.CreateNSFe);
+  Result.RegisterFormat('.imf', 'id Software AdLib IMF (700 Hz)', Audio.Music.OPLDumps.OpenIMF);
+  Result.RegisterFormat('.dro', 'DOSBox RAW OPL', Audio.Music.OPLDumps.OpenDRO);
+  Result.RegisterFormat('.mod', 'Amiga SoundTracker / ProTracker MOD', Audio.Music.ProTracker.OpenMOD);
+  Result.RegisterFormat('.pt3', 'Pro Tracker 3 / TurboSound', Audio.Music.PT3.CreatePT3);
+  Result.RegisterFormat('.sng', 'SAM Coupe E-Tracker / SAA1099', Audio.Music.SAA.OpenSNG);
+  Result.RegisterFormat('.cop', 'E-Tracker / SAA1099', Audio.Music.SAA.OpenCOP);
+  Result.RegisterFormat('.etc', 'E-Tracker / SAA1099', Audio.Music.SAA.OpenCOP);
+  Result.RegisterFormat('.tap', 'Spectrum tape with E-Tracker music', Audio.Music.SAA.OpenTAP);
+  Result.RegisterFormat('.sid', 'SID / Commodore 64 (PSID)', Audio.Music.SID.OpenSID);
+  Result.RegisterFormat('.spc', 'Super Nintendo SPC', Audio.Music.SPC.CreateSPC);
+  Result.RegisterFormat('.ttt', 'TIATracker / Atari 2600', Audio.Music.TIA.OpenTTT);
+  Result.RegisterFormat('.a26', 'Atari 2600 cartridge music', Audio.Music.TIA.OpenA26);
+  Result.RegisterFormat('.trd', 'TR-DOS disk image', Audio.Music.TRDOS.OpenTRD);
+  Result.RegisterFormat('.scl', 'SINCLAIR disk archive', Audio.Music.TRDOS.OpenSCL);
+  Result.RegisterFormat('.tf0', 'TFM Music Maker 0.1–1.2', Audio.Music.TurboFM.OpenTF0);
+  Result.RegisterFormat('.tfe', 'TFM Music Maker 1.3+', Audio.Music.TurboFM.OpenTFE);
+  Result.RegisterFormat('.tfc', 'TurboFM Compiled', Audio.Music.TurboFM.OpenTFC);
+  Result.RegisterFormat('.tfd', 'TurboFM Dump', Audio.Music.TurboFM.OpenTFD);
+  Result.RegisterFormat('.vgm', 'Video Game Music', Audio.Music.VGM.CreateVGM);
+  Result.RegisterFormat('.vgz', 'Compressed Video Game Music', Audio.Music.VGM.CreateVGM);
+  Result.RegisterFormat('.wav', 'Wave audio (PCM / IEEE Float)', Audio.Format.WAV.OpenWav);
+  Result.RegisterFormat('.xgm', 'Mega Drive XGM / XGM2', Audio.Music.XGM.OpenXGM);
+  Result.RegisterFormat('.xgm2', 'Mega Drive XGM2', Audio.Music.XGM.OpenXGM);
+  Result.RegisterFormat('.xgc', 'Compiled Mega Drive XGM2', Audio.Music.XGM.OpenXGM);
+  Result.RegisterFormat('.as0', 'ASC Sound Master 0', Audio.Music.ZXTrackers.OpenAS0);
+  Result.RegisterFormat('.asc', 'ASC Sound Master', Audio.Music.ZXTrackers.OpenASC);
+  Result.RegisterFormat('.ftc', 'Fast Tracker', Audio.Music.ZXTrackers.OpenFTC);
+  Result.RegisterFormat('.gtr', 'Global Tracker', Audio.Music.ZXTrackers.OpenGTR);
+  Result.RegisterFormat('.psc', 'Pro Sound Creator', Audio.Music.ZXTrackers.OpenPSC);
+  Result.RegisterFormat('.psm', 'Pro Sound Maker', Audio.Music.ZXTrackers.OpenPSM);
+  Result.RegisterFormat('.pt1', 'Pro Tracker 1', Audio.Music.ZXTrackers.OpenPT1);
+  Result.RegisterFormat('.pt2', 'Pro Tracker 2', Audio.Music.ZXTrackers.OpenPT2);
+  Result.RegisterFormat('.sqt', 'SQ-Tracker', Audio.Music.ZXTrackers.OpenSQT);
+  Result.RegisterFormat('.st1', 'Sound Tracker editor', Audio.Music.ZXTrackers.OpenST1);
+  Result.RegisterFormat('.st3', 'Sound Tracker 3 compilation', Audio.Music.ZXTrackers.OpenST3);
+  Result.RegisterFormat('.stc', 'Sound Tracker', Audio.Music.ZXTrackers.OpenSTC);
+  Result.RegisterFormat('.stp', 'Sound Tracker Pro', Audio.Music.ZXTrackers.OpenSTP);
+  Result.RegisterFormat('.s', 'Sound Tracker editor', Audio.Music.ZXTrackers.OpenS);
+end;
 
 procedure RegisterRetroTuneFormats;
 begin
-  if FormatsRegistered then
-    Exit;
-  TTuneDecoders.RegisterFormat('.ahx', 'Amiga AHX', Music.Decoder.AHX.OpenAHX);
-  TTuneDecoders.RegisterFormat('.hvl', 'HivelyTracker', Music.Decoder.AHX.OpenAHX);
-  TTuneDecoders.RegisterFormat('.d15', 'Atari MPT 15 kHz sample bank', Music.Decoder.Atari.D15);
-  TTuneDecoders.RegisterFormat('.md1', 'Atari Music ProTracker with samples', Music.Decoder.Atari.MD1);
-  TTuneDecoders.RegisterDataLoader('.md1', Music.Decoder.Atari.ResolveMD1);
-  TTuneDecoders.RegisterFormat('.sap', 'Atari SAP', Music.Decoder.Atari.SAP);
-  TTuneDecoders.RegisterFormat('.rmt', 'Raster Music Tracker', Music.Decoder.Atari.RMT);
-  TTuneDecoders.RegisterFormat('.ay', 'AY / ZX Spectrum / CPC', Music.Decoder.AY.OpenAY);
-  TTuneDecoders.RegisterFormat('.debugay', 'AY text register dump', Music.Decoder.AYDumps.DebugAY);
-  TTuneDecoders.RegisterFormat('.psg', 'AY register log', Music.Decoder.AYDumps.PSG);
-  TTuneDecoders.RegisterFormat('.ym', 'ST Sound YM', Music.Decoder.AYDumps.YM);
-  TTuneDecoders.RegisterFormat('.vtx', 'VTX AY/YM', Music.Decoder.AYDumps.VTX);
-  TTuneDecoders.RegisterFormat('.ayc', 'CPC AYC', Music.Decoder.AYDumps.AYC);
-  TTuneDecoders.RegisterFormat('.txt', 'Vortex Tracker text module', Music.Decoder.Containers.OpenTXT);
-  TTuneDecoders.RegisterFormat('.ts', 'TurboSound container', Music.Decoder.Containers.OpenTS);
-  TTuneDecoders.RegisterFormat('.mtc', 'Multitrack audio container', Music.Decoder.Containers.OpenMTC);
-  TTuneDecoders.RegisterFormat('.chi', 'Chip Tracker', Music.Decoder.Digital.OpenCHI);
-  TTuneDecoders.RegisterFormat('.dmm', 'Digital Music Maker', Music.Decoder.Digital.OpenDMM);
-  TTuneDecoders.RegisterFormat('.dst', 'Digital Studio', Music.Decoder.Digital.OpenDST);
-  TTuneDecoders.RegisterFormat('.sqd', 'SQ Digital Tracker', Music.Decoder.Digital.OpenSQD);
-  TTuneDecoders.RegisterFormat('.str', 'Sample Tracker', Music.Decoder.Digital.OpenSTR);
-  TTuneDecoders.RegisterFormat('.et1', 'Extreme Tracker', Music.Decoder.Digital.OpenET1);
-  TTuneDecoders.RegisterFormat('.pdt', 'ProDigiTracker', Music.Decoder.Digital.OpenPDT);
-  TTuneDecoders.RegisterFormat('.d', 'Extreme Tracker', Music.Decoder.Digital.OpenET1);
-  TTuneDecoders.RegisterFormat('.m', 'Extreme / ProDigiTracker', Music.Decoder.Digital.OpenM);
-  TTuneDecoders.RegisterFormat('.dsf', 'Dreamcast Sound Format', Music.Decoder.DSF.OpenDSF);
-  TTuneDecoders.RegisterFormat('.minidsf', 'Dreamcast Sound Format (shared libraries)', Music.Decoder.DSF.OpenDSF);
-  TTuneDecoders.RegisterDataLoader('.dsf', Music.Decoder.DSF.ResolveDSF);
-  TTuneDecoders.RegisterDataLoader('.minidsf', Music.Decoder.DSF.ResolveDSF);
-  TTuneDecoders.RegisterFormat('.gbs', 'Game Boy Sound', Music.Decoder.GBS.CreateGBS);
-  TTuneDecoders.RegisterFormat('.gym', 'Mega Drive GYM', Music.Decoder.GYM.CreateGYM);
-  TTuneDecoders.RegisterFormat('.hes', 'PC Engine HES', Music.Decoder.HES.OpenHES);
-  TTuneDecoders.RegisterFormat('.kss', 'MSX / Sega Master System KSS', Music.Decoder.KSS.OpenKSS);
-  TTuneDecoders.RegisterFormat('.mid', 'Standard MIDI File / General MIDI', Music.Decoder.MIDI.OpenMidi);
-  TTuneDecoders.RegisterFormat('.midi', 'Standard MIDI File / General MIDI', Music.Decoder.MIDI.OpenMidi);
-  TTuneDecoders.RegisterFormat('.rmi', 'RIFF MIDI / General MIDI', Music.Decoder.MIDI.OpenMidi);
-  TTuneDecoders.RegisterFormat('.kar', 'MIDI karaoke (audio)', Music.Decoder.MIDI.OpenMidi);
-  TTuneDecoders.RegisterFormat('.nsf', 'Nintendo Sound Format', Music.Decoder.NSF.CreateNSF);
-  TTuneDecoders.RegisterFormat('.nsf2', 'Nintendo Sound Format 2', Music.Decoder.NSF.CreateNSF);
-  TTuneDecoders.RegisterFormat('.nsfe', 'Extended Nintendo Sound Format', Music.Decoder.NSFe.CreateNSFe);
-  TTuneDecoders.RegisterFormat('.imf', 'id Software AdLib IMF (700 Hz)', Music.Decoder.OPLDumps.OpenIMF);
-  TTuneDecoders.RegisterFormat('.dro', 'DOSBox RAW OPL', Music.Decoder.OPLDumps.OpenDRO);
-  TTuneDecoders.RegisterFormat('.mod', 'Amiga SoundTracker / ProTracker MOD', Music.Decoder.ProTracker.OpenMOD);
-  TTuneDecoders.RegisterFormat('.pt3', 'Pro Tracker 3 / TurboSound', Music.Decoder.PT3.CreatePT3);
-  TTuneDecoders.RegisterFormat('.sng', 'SAM Coupe E-Tracker / SAA1099', Music.Decoder.SAA.OpenSNG);
-  TTuneDecoders.RegisterFormat('.cop', 'E-Tracker / SAA1099', Music.Decoder.SAA.OpenCOP);
-  TTuneDecoders.RegisterFormat('.etc', 'E-Tracker / SAA1099', Music.Decoder.SAA.OpenCOP);
-  TTuneDecoders.RegisterFormat('.tap', 'Spectrum tape with E-Tracker music', Music.Decoder.SAA.OpenTAP);
-  TTuneDecoders.RegisterFormat('.sid', 'SID / Commodore 64 (PSID)', Music.Decoder.SID.OpenSID);
-  TTuneDecoders.RegisterFormat('.spc', 'Super Nintendo SPC', Music.Decoder.SPC.CreateSPC);
-  TTuneDecoders.RegisterFormat('.ttt', 'TIATracker / Atari 2600', Music.Decoder.TIA.OpenTTT);
-  TTuneDecoders.RegisterFormat('.a26', 'Atari 2600 cartridge music', Music.Decoder.TIA.OpenA26);
-  TTuneDecoders.RegisterFormat('.trd', 'TR-DOS disk image', Music.Decoder.TRDOS.OpenTRD);
-  TTuneDecoders.RegisterFormat('.scl', 'SINCLAIR disk archive', Music.Decoder.TRDOS.OpenSCL);
-  TTuneDecoders.RegisterFormat('.tf0', 'TFM Music Maker 0.1–1.2', Music.Decoder.TurboFM.OpenTF0);
-  TTuneDecoders.RegisterFormat('.tfe', 'TFM Music Maker 1.3+', Music.Decoder.TurboFM.OpenTFE);
-  TTuneDecoders.RegisterFormat('.tfc', 'TurboFM Compiled', Music.Decoder.TurboFM.OpenTFC);
-  TTuneDecoders.RegisterFormat('.tfd', 'TurboFM Dump', Music.Decoder.TurboFM.OpenTFD);
-  TTuneDecoders.RegisterFormat('.vgm', 'Video Game Music', Music.Decoder.VGM.CreateVGM);
-  TTuneDecoders.RegisterFormat('.vgz', 'Compressed Video Game Music', Music.Decoder.VGM.CreateVGM);
-  TTuneDecoders.RegisterFormat('.wav', 'Wave audio (PCM / IEEE Float)', Music.Decoder.WAV.OpenWav);
-  TTuneDecoders.RegisterFormat('.xgm', 'Mega Drive XGM / XGM2', Music.Decoder.XGM.OpenXGM);
-  TTuneDecoders.RegisterFormat('.xgm2', 'Mega Drive XGM2', Music.Decoder.XGM.OpenXGM);
-  TTuneDecoders.RegisterFormat('.xgc', 'Compiled Mega Drive XGM2', Music.Decoder.XGM.OpenXGM);
-  TTuneDecoders.RegisterFormat('.as0', 'ASC Sound Master 0', Music.Decoder.ZXTrackers.OpenAS0);
-  TTuneDecoders.RegisterFormat('.asc', 'ASC Sound Master', Music.Decoder.ZXTrackers.OpenASC);
-  TTuneDecoders.RegisterFormat('.ftc', 'Fast Tracker', Music.Decoder.ZXTrackers.OpenFTC);
-  TTuneDecoders.RegisterFormat('.gtr', 'Global Tracker', Music.Decoder.ZXTrackers.OpenGTR);
-  TTuneDecoders.RegisterFormat('.psc', 'Pro Sound Creator', Music.Decoder.ZXTrackers.OpenPSC);
-  TTuneDecoders.RegisterFormat('.psm', 'Pro Sound Maker', Music.Decoder.ZXTrackers.OpenPSM);
-  TTuneDecoders.RegisterFormat('.pt1', 'Pro Tracker 1', Music.Decoder.ZXTrackers.OpenPT1);
-  TTuneDecoders.RegisterFormat('.pt2', 'Pro Tracker 2', Music.Decoder.ZXTrackers.OpenPT2);
-  TTuneDecoders.RegisterFormat('.sqt', 'SQ-Tracker', Music.Decoder.ZXTrackers.OpenSQT);
-  TTuneDecoders.RegisterFormat('.st1', 'Sound Tracker editor', Music.Decoder.ZXTrackers.OpenST1);
-  TTuneDecoders.RegisterFormat('.st3', 'Sound Tracker 3 compilation', Music.Decoder.ZXTrackers.OpenST3);
-  TTuneDecoders.RegisterFormat('.stc', 'Sound Tracker', Music.Decoder.ZXTrackers.OpenSTC);
-  TTuneDecoders.RegisterFormat('.stp', 'Sound Tracker Pro', Music.Decoder.ZXTrackers.OpenSTP);
-  TTuneDecoders.RegisterFormat('.s', 'Sound Tracker editor', Music.Decoder.ZXTrackers.OpenS);
-  FormatsRegistered := True;
+  if RetroTuneDecoders = nil then
+    RetroTuneDecoders := CreateRetroTuneFormats;
 end;
 
 end.

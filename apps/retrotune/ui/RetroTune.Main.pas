@@ -5,10 +5,10 @@ interface
 uses
   System.SysUtils, System.Types, System.UITypes, System.Classes, System.Variants,
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, FMX.StdCtrls,
-  FMX.Filter.Effects, FMX.ListBox, FMX.Controls.Presentation, RetroTune.Decoder,
-  RetroTune.Player, RetroTune.Spectrum, RetroTune.Export.WAV, FMX.Layouts,
+  FMX.Filter.Effects, FMX.ListBox, FMX.Controls.Presentation, Music.Decoder,
+  Music.Player, Music.Spectrum, Music.Export.WAV, FMX.Layouts,
   FMX.Objects, RetroTune.InfoForm, RetroTune.FormatsForm, FMX.Menus,
-  RetroTune.SoundFontCatalog;
+  Music.SoundFont.Catalog;
 
 type
   TFormMain = class(TForm)
@@ -129,16 +129,7 @@ implementation
 
 uses
   System.IOUtils, System.Math, System.StrUtils, FMX.DialogService,
-  FMX.Platform, FMX.BehaviorManager, RetroTune.Decoder.TIA, RetroTune.Decoder.KSS,
-  RetroTune.Decoder.HES, RetroTune.Decoder.AHX, RetroTune.Decoder.DSF,
-  RetroTune.Decoder.TRDOS, RetroTune.Decoder.NSF, RetroTune.Decoder.NSFe,
-  RetroTune.Decoder.SPC, RetroTune.Decoder.GBS, RetroTune.Decoder.VGM,
-  RetroTune.Decoder.GYM, RetroTune.Decoder.OPLDumps, RetroTune.Decoder.XGM,
-  RetroTune.Decoder.ProTracker, RetroTune.Decoder.PT3,
-  RetroTune.Decoder.ZXTrackers, RetroTune.Decoder.AYDumps,
-  RetroTune.Decoder.Atari, RetroTune.Decoder.TurboFM,
-  RetroTune.Decoder.Containers, RetroTune.Decoder.Digital, RetroTune.Decoder.SAA,
-  RetroTune.Decoder.WAV, RetroTune.Decoder.MIDI, System.IniFiles;
+  FMX.Platform, FMX.BehaviorManager, Music.Decoder.MIDI, System.IniFiles;
 
 {$R *.fmx}
 

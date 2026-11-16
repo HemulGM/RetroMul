@@ -4,8 +4,8 @@
         <ProjectVersion>20.4</ProjectVersion>
         <FrameworkType>FMX</FrameworkType>
         <Base>True</Base>
-        <Config Condition="'$(Config)'==''">Debug</Config>
-        <Platform Condition="'$(Platform)'==''">Win64</Platform>
+        <Config Condition="'$(Config)'==''">Release</Config>
+        <Platform Condition="'$(Platform)'==''">Win32</Platform>
         <TargetedPlatforms>2790547</TargetedPlatforms>
         <AppType>Application</AppType>
         <MainSource>RetroTune.dpr</MainSource>
@@ -360,6 +360,7 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="RetroTune.Formats.pas"/>
         <DCCReference Include="..\..\source\cores\at5200\A5200.Arithmetic.pas"/>
         <DCCReference Include="..\..\source\cores\at5200\A5200.ASAP.CPU.pas"/>
         <DCCReference Include="..\..\source\cores\at5200\A5200.ASAP.Info.pas"/>
@@ -395,13 +396,13 @@
         <DCCReference Include="..\..\source\cores\pce\PCE.CPU.pas"/>
         <DCCReference Include="..\..\source\cores\pce\PCE.Sound.HuC6280.pas"/>
         <DCCReference Include="..\..\source\hardware\audio\HW.Sound.SN76489.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.TIA.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.KSS.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.HES.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.AHX.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.DSF.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.TRDOS.pas"/>
-        <DCCReference Include="..\..\source\music\trackers\RetroTune.TIATracker.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.TIA.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.KSS.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.HES.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.AHX.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.DSF.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.TRDOS.pas"/>
+        <DCCReference Include="..\..\source\music\trackers\Music.TIATracker.pas"/>
         <DCCReference Include="..\..\source\cores\c64\C64.CPU.pas"/>
         <DCCReference Include="..\..\source\hardware\audio\HW.Sound.SID.pas"/>
         <DCCReference Include="..\..\source\cores\c64\C64.AudioMachine.pas"/>
@@ -415,52 +416,52 @@
             <Form>FormMain</Form>
             <FormType>fmx</FormType>
         </DCCReference>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.NSF.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.NSFe.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.SPC.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.GBS.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.VGM.pas"/>
-        <DCCReference Include="..\..\source\music\trackers\RetroTune.PT3.Engine.pas"/>
-        <DCCReference Include="..\..\source\music\trackers\RetroTune.ZXTracker.Engine.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.ZXTrackers.pas"/>
-        <DCCReference Include="..\..\source\music\common\RetroTune.Compression.LH5.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.AYDumps.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.Atari.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.NSF.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.NSFe.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.SPC.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.GBS.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.VGM.pas"/>
+        <DCCReference Include="..\..\source\music\trackers\Music.PT3.Engine.pas"/>
+        <DCCReference Include="..\..\source\music\trackers\Music.ZXTracker.Engine.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.ZXTrackers.pas"/>
+        <DCCReference Include="..\..\source\music\common\Music.Compression.LH5.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.AYDumps.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.Atari.pas"/>
         <DCCReference Include="..\..\source\cores\at5200\A5200.ASAP.pas"/>
         <DCCReference Include="..\..\source\cores\at5200\A5200.Audio.MPT.pas"/>
         <DCCReference Include="..\..\source\cores\at5200\A5200.AudioMachine.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.AY.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.SID.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.PT3.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.GYM.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.OPLDumps.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.XGM.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.ProTracker.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.MIDI.pas"/>
-        <DCCReference Include="..\..\source\music\synthesis\RetroTune.SoundFont.pas"/>
-        <DCCReference Include="..\..\source\music\common\RetroTune.SoundFontCatalog.pas"/>
-        <DCCReference Include="..\..\source\music\trackers\RetroTune.TFM.Stream.pas"/>
-        <DCCReference Include="..\..\source\music\trackers\RetroTune.TFM.MusicMaker.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.TurboFM.pas"/>
-        <DCCReference Include="..\..\source\music\trackers\RetroTune.VortexText.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.Containers.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.AY.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.SID.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.PT3.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.GYM.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.OPLDumps.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.XGM.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.ProTracker.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.MIDI.pas"/>
+        <DCCReference Include="..\..\source\music\synthesis\Music.SoundFont.pas"/>
+        <DCCReference Include="..\..\source\music\synthesis\Music.SoundFont.Catalog.pas"/>
+        <DCCReference Include="..\..\source\music\trackers\Music.TFM.Stream.pas"/>
+        <DCCReference Include="..\..\source\music\trackers\Music.TFM.MusicMaker.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.TurboFM.pas"/>
+        <DCCReference Include="..\..\source\music\trackers\Music.VortexText.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.Containers.pas"/>
         <DCCReference Include="..\..\source\hardware\audio\HW.Sound.YM2203.pas"/>
-        <DCCReference Include="..\..\source\music\trackers\RetroTune.Digital.Module.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.Digital.pas"/>
-        <DCCReference Include="..\..\source\music\trackers\RetroTune.ETracker.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.SAA.pas"/>
+        <DCCReference Include="..\..\source\music\trackers\Music.Digital.Module.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.Digital.pas"/>
+        <DCCReference Include="..\..\source\music\trackers\Music.ETracker.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.SAA.pas"/>
         <DCCReference Include="..\..\source\hardware\audio\HW.Sound.DAC.pas"/>
         <DCCReference Include="..\..\source\hardware\audio\HW.Sound.SAA1099.pas"/>
-        <DCCReference Include="..\..\source\music\common\RetroTune.Binary.pas"/>
-        <DCCReference Include="..\..\source\music\playback\RetroTune.Player.pas"/>
-        <DCCReference Include="..\..\source\music\export\RetroTune.Export.WAV.pas"/>
-        <DCCReference Include="..\..\source\music\decoders\RetroTune.Decoder.WAV.pas"/>
+        <DCCReference Include="..\..\source\music\common\Music.Binary.pas"/>
+        <DCCReference Include="..\..\source\music\playback\Music.Player.pas"/>
+        <DCCReference Include="..\..\source\music\export\Music.Export.WAV.pas"/>
+        <DCCReference Include="..\..\source\music\decoders\Music.Decoder.WAV.pas"/>
         <DCCReference Include="ui\RetroTune.InfoForm.pas"/>
         <DCCReference Include="ui\RetroTune.ReferenceForm.pas"/>
         <DCCReference Include="ui\RetroTune.FormatsForm.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.Audio.FDS.pas"/>
-        <DCCReference Include="..\..\source\music\playback\RetroTune.Spectrum.pas"/>
+        <DCCReference Include="..\..\source\music\playback\Music.Spectrum.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
@@ -1500,6 +1501,6 @@
             <MidiSoundFontOutput Condition="'$(DCC_ExeOutput)' == ''">$(MSBuildProjectDirectory)\sf2</MidiSoundFontOutput>
             <MidiSoundFontOutput Condition="'$(DCC_ExeOutput)' != ''">$(DCC_ExeOutput)\sf2</MidiSoundFontOutput>
         </PropertyGroup>
-        <Exec WorkingDirectory="$(MSBuildProjectDirectory)" Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\soundfonts\PrepareSoundFonts.ps1&quot; -DestinationDirectory &quot;$(MidiSoundFontOutput)&quot;"/>
+        <Exec WorkingDirectory="$(MSBuildProjectDirectory)" Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\assets\music\soundfonts\PrepareSoundFonts.ps1&quot; -DestinationDirectory &quot;$(MidiSoundFontOutput)&quot;"/>
     </Target>
 </Project>

@@ -115,7 +115,7 @@ Initialize dependencies with `git submodule update --init --recursive`. Their re
 <details>
 <summary>RetroTune features, supported music formats, and Delphi integration</summary>
 
-RetroTune is the companion player for retro game music, chiptunes, tracker modules, MIDI / General MIDI, and WAV audio. Its decoder registry and threaded PCM player can also be used in another Delphi application without the RetroTune interface.
+RetroTune is the companion player for retro game music, chiptunes, tracker modules, MIDI / General MIDI, and WAV audio. RetroMul's shared decoder registry and threaded PCM player can also be used in another Delphi application without the RetroTune interface.
 
 - Play NES NSF/NSFe, SNES SPC, Game Boy GBS, Commodore SID, Atari music, VGM/VGZ, and a wide range of Spectrum tracker and chip-dump formats.
 - Listen to MSX / Master System KSS, PC Engine HES, Amiga AHX/HVL/MOD, Dreamcast DSF/MiniDSF, TIATracker, TurboSound, TurboFM, IMF/DRO, XGM/XGM2, and digital tracker music.
@@ -190,9 +190,9 @@ MiniDSF needs its referenced library files beside the source file. MD1 needs the
 
 ### Using the player in another Delphi application
 
-`TTunePlayer` in `source/music/playback/RetroTune.Player.pas` owns the playback thread and PCM device; it does not depend on FireMonkey or `RetroTune.Main`. Add `source/music/decoders`, `source/music/common`, `source/music/chips`, `source/music/playback`, and `dependencies/PCMAudio` to your project's unit search path. Other decoders can additionally require `source/music/trackers` (including its `amiga` directory), `source/runtime`, `source/runtime`, the relevant `source/hardware` directories and system-specific core directories. The complete decoder set's paths are listed in `apps/retrotune/RetroTune.dproj`.
+`TTunePlayer` in `source/music/playback/Music.Player.pas` owns the playback thread and PCM device; it does not depend on FireMonkey or `RetroTune.Main`. Add `source/music/decoders`, `source/music/common`, `source/music/synthesis`, `source/music/playback`, and `dependencies/PCMAudio` to your project's unit search path. Other decoders can additionally require `source/music/trackers` (including its `amiga` directory), `source/runtime`, the relevant `source/hardware` directories and system-specific core directories. The complete decoder set's paths are listed in `apps/retrotune/RetroTune.dproj`.
 
-Decoder units register their formats in their `initialization` sections. This standalone console example enables WAV and MIDI; add the other `RetroTune.Decoder.*` units used by [RetroTune.dpr](apps/retrotune/RetroTune.dpr) to enable their formats. Keep dependent decoder units when using containers. For MIDI, prepare the `sf2` directory beside **your application's** EXE, or call `SetMidiSoundFont` with a custom SF2 path before opening the MIDI file.
+Shared decoder units expose factories and do not register formats automatically. Each application registers its own formats before starting playback. RetroTune calls `RegisterRetroTuneFormats` from `apps/retrotune/RetroTune.Formats.pas`; RetroMul's J2ME core directly creates only WAV and MIDI decoders. This standalone example explicitly registers WAV and MIDI. Container users must also register the formats they decode internally. For MIDI, prepare `sf2` beside your application's EXE, or call `SetMidiSoundFont` with a custom SF2 path.
 
 The example plays the default track for up to ten seconds, checks asynchronous playback errors, and releases the player even if playback fails:
 
@@ -203,14 +203,16 @@ program StandaloneTune;
 
 uses
   System.SysUtils, System.Classes,
-  RetroTune.Decoder, RetroTune.Player,
-  RetroTune.Decoder.WAV, RetroTune.Decoder.MIDI;
+  Music.Decoder, Music.Player,
+  Music.Decoder.WAV, Music.Decoder.MIDI;
 
 begin
   try
     if ParamCount <> 1 then
       raise Exception.Create('Usage: StandaloneTune <music.wav|music.mid>');
 
+    TTuneDecoders.RegisterFormat('.wav', 'Wave audio', OpenWav);
+    TTuneDecoders.RegisterFormat('.mid', 'Standard MIDI File', OpenMidi);
     // Optional for MIDI: SetMidiSoundFont('C:\Music\MyBank.sf2');
     var Decoder := TTuneDecoders.Open(ParamStr(1));
     var Info := Decoder.GetInfo;

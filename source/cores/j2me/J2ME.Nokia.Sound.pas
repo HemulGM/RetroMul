@@ -4,7 +4,7 @@ interface
 
 uses
   System.Classes, JVM.StateIO, System.SysUtils, System.Generics.Collections,
-  JVM.Types, JVM.ClassFile, JVM.Runtime, RetroTune.Decoder, J2ME.Nokia.OTA;
+  JVM.Types, JVM.ClassFile, JVM.Runtime, Music.Decoder, J2ME.Nokia.OTA;
 
 type
   TNokiaSoundEvent = record
@@ -63,7 +63,7 @@ type
 implementation
 
 uses
-  J2ME.Audio.State, System.Math, Java.Classes, RetroTune.Decoder.WAV;
+  J2ME.Audio.State, System.Math, Java.Classes, Music.Decoder.WAV;
 
 const
   SoundName = 'com/nokia/mid/sound/Sound';
@@ -322,7 +322,7 @@ begin
   Result := True;
   if V.Decoder = nil then
   begin
-    V.Decoder := TTuneDecoders.OpenData(V.Data, '.wav');
+    V.Decoder := OpenWav(V.Data);
     V.Info := V.Decoder.GetInfo;
     if (V.Info.SampleRate < 1) or (V.Info.SampleRate > 384000) or not (V.Info.Channels in [1, 2]) then
       raise ENokiaToneFormat.Create('Unsupported Nokia WAV PCM format');

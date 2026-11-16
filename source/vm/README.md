@@ -851,7 +851,7 @@ activation and MMS/JSR-205 remain pending.
   callbacks continue. VM destruction, guest destruction, faults and stop release
   leases; stopping a yielding RMS callback does not discard committed records.
 - Initial MMAPI Player/Manager/Controllable, player listeners, VolumeControl and
-  the system TimeBase. WAV and MIDI reuse the existing native Delphi RetroTune
+  the system TimeBase. WAV and MIDI reuse the existing native Delphi music
   decoders; MIDI uses its SoundFont synthesizer. Realize/prefetch/start/stop/
   deallocate/close, seek, finite/infinite loop counts, stereo mixing/resampling,
   volume/mute, type sniffing and resource: locators are implemented. InputStream
@@ -867,7 +867,7 @@ activation and MMS/JSR-205 remain pending.
   existing PCMAudio backends, applying master volume/mute. Global pause freezes
   media time and clears device audio. Device failures use
   IEmulationAudioDiagnostics and do not stop Java execution. RenderAudio supplies
-  deterministic headless PCM. J2ME.Media embeds the existing RetroTune TimGM6mb
+  deterministic headless PCM. J2ME.Media embeds the shared TimGM6mb
   bank and its full license/attribution as RCDATA, shared by all target platforms.
   The bank is parsed lazily for the first MIDI, only when no SF2 is found beside
   the executable. An explicit SetMidiSoundFont selection has priority; existing
@@ -1572,10 +1572,10 @@ the leading-plus and Unicode-version differences required by CLDC. Resource chun
 stay inside the VM's normal array limit. Declaration checks inspect the real Long
 class/field flags; guest comparisons run through GC and the normal bytecode engine.
 J2ME.Media links `source/cores/j2me/J2ME.SoundFont.res`, with the unmodified
-RetroTune TimGM6mb bank and complete license as named RCDATA resources. Its source
+shared TimGM6mb bank and complete license as named RCDATA resources. Its source
 is `J2ME.SoundFont.rc`; rebuild from that directory with
 `brcc32 '-foJ2ME.SoundFont.res' J2ME.SoundFont.rc` after changing either original asset
-in `apps/retrotune/soundfonts`. The resource follows the existing firmware-resource
+in `assets/music/soundfonts`. The resource follows the existing firmware-resource
 build convention. GUI, terminal and probes all link the same resource; no extra
 SF2 copy target is needed. Optional external SF2 files and explicit custom bank
 selection still take precedence. The shared MIDI decoder's

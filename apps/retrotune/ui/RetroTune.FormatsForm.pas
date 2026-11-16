@@ -14,7 +14,7 @@ type
 implementation
 
 uses
-  System.SysUtils, FMX.Types, RetroTune.Decoder;
+  System.SysUtils, FMX.Types, Music.Decoder;
 
 constructor TTuneFormatsForm.Create(AOwner: TComponent);
 begin

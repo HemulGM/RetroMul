@@ -250,13 +250,13 @@ implementation
 uses
   System.Math, System.SyncObjs, JVM.Verifier;
 
+// Java integer arithmetic wraps. Guest indices and lengths are checked explicitly.
+{$Q-}{$R-}
+
 function TJVMHost.AllowEmptySnapshotFields(C: TJVMClass): Boolean;
 begin
   Result := False;
 end;
-
-// Java integer arithmetic wraps. Guest indices and lengths are checked explicitly.
-{$Q-}{$R-}
 
 type
   EJVMExitSignal = class(Exception);
@@ -937,8 +937,7 @@ function TJVM.IsAssignable(const Actual, Expected: string): Boolean;
       Exit(False);
     if A[1] = '[' then
     begin
-      if (E = 'java/lang/Object') or (E = 'java/lang/Cloneable') or
-        (E = 'java/io/Serializable') then
+      if (E = 'java/lang/Object') or (E = 'java/lang/Cloneable') or (E = 'java/io/Serializable') then
         Exit(True);
       if E[1] <> '[' then
         Exit(False);
@@ -1601,8 +1600,7 @@ begin
   C := Frame.Initializing;
   if Frame.InitPhase = 0 then
   begin
-    if ((C.Access and $0200) = 0) and (C.SuperName <> '') and
-      not InitializeClass(LoadClass(C.SuperName)) then
+    if ((C.Access and $0200) = 0) and (C.SuperName <> '') and not InitializeClass(LoadClass(C.SuperName)) then
       Exit;
     Frame.InitPhase := 1;
     M := C.FindMethod('<clinit>', '()V');
@@ -1933,31 +1931,40 @@ var
   OldMask: TArithmeticExceptionMask;
   OldRound: TRoundingMode;
   C: TJVMClass;
-  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}                                 OldCW: Word;
-  OldMXCSR: UInt32; {$ENDIF}
+  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}
+  OldCW: Word;
+  OldMXCSR: UInt32;
+  {$ENDIF}
   {$IF Defined(CPUARM)}
-  OldFPSCR: UInt32; {$ENDIF}
+  OldFPSCR: UInt32;
+  {$ENDIF}
   Next: TJVMThreadContext;
 begin
   if Budget < 0 then
     raise EJVMError.Create('Negative instruction budget');
-  if (Budget > 0) and (FOutOfMemoryRef = 0) and
-    FClasses.ContainsKey('java/lang/OutOfMemoryError') then
+  if (Budget > 0) and (FOutOfMemoryRef = 0) and FClasses.ContainsKey('java/lang/OutOfMemoryError') then
     PrepareOutOfMemory;
   OldMask := GetExceptionMask;
   OldRound := GetRoundMode;
-  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}                                 OldCW := Get8087CW;
-  OldMXCSR := GetMXCSR; {$ENDIF}
+  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}
+  OldCW := Get8087CW;
+  OldMXCSR := GetMXCSR;
+  {$ENDIF}
   {$IF Defined(CPUARM)}
-  OldFPSCR := GetFPSCR; {$ENDIF}
+  OldFPSCR := GetFPSCR;
+  {$ENDIF}
   SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
   SetRoundMode(rmNearest);
-  {$IF Defined(MSWINDOWS) and Defined(CPUX86)}                                 SetPrecisionMode(pmDouble); {$ENDIF}
+  {$IF Defined(MSWINDOWS) and Defined(CPUX86)}
+  SetPrecisionMode(pmDouble);
+  {$ENDIF}
   {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}
   // Java uses gradual underflow; an embedding renderer may have enabled DAZ/FTZ.
   SetMXCSR((GetMXCSR or $1F80) and not UInt32($E040));
   {$ENDIF}
-  {$IF Defined(CPUARM)}                                 SetFPSCR(GetFPSCR and not UInt32($01080000)); {$ENDIF}
+  {$IF Defined(CPUARM)}
+  SetFPSCR(GetFPSCR and not UInt32($01080000));
+  {$ENDIF}
   try
     try
       FNow := FHost.MonotonicMillis;
@@ -2023,10 +2030,13 @@ begin
   finally
     SetRoundMode(OldRound);
     SetExceptionMask(OldMask);
-    {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}                                                                 Set8087CW(OldCW);
-    SetMXCSR(OldMXCSR); {$ENDIF}
+    {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}
+    Set8087CW(OldCW);
+    SetMXCSR(OldMXCSR);
+    {$ENDIF}
     {$IF Defined(CPUARM)}
-    SetFPSCR(OldFPSCR); {$ENDIF}
+    SetFPSCR(OldFPSCR);
+    {$ENDIF}
   end;
   Result := FState;
 end;

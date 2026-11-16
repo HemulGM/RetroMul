@@ -4,7 +4,7 @@ interface
 
 uses
   System.Classes, JVM.StateIO, System.SysUtils, System.Generics.Collections,
-  JVM.Types, JVM.ClassFile, JVM.Runtime, RetroTune.Decoder;
+  JVM.Types, JVM.ClassFile, JVM.Runtime, Music.Decoder;
 
 type
   TJ2MEMediaEvent = record
@@ -73,8 +73,8 @@ type
 implementation
 
 uses
-  J2ME.Audio.State, System.Math, Java.Classes, Java.Bootstrap,
-  RetroTune.Decoder.WAV, RetroTune.Decoder.MIDI;
+  J2ME.Audio.State, System.Math, Java.Classes, Java.Bootstrap, Music.Decoder.WAV,
+  Music.Decoder.MIDI;
 
 {$R 'J2ME.SoundFont.res' 'J2ME.SoundFont.rc'}
 
@@ -456,10 +456,10 @@ begin
   try
     if P.Decoder = nil then
     begin
-      var Ext := '.wav';
       if P.ContentType = 'audio/midi' then
-        Ext := '.mid';
-      P.Decoder := TTuneDecoders.OpenData(P.Data, Ext);
+        P.Decoder := OpenMidi(P.Data)
+      else
+        P.Decoder := OpenWav(P.Data);
       P.Info := P.Decoder.GetInfo;
       if (P.Info.SampleRate < 1) or (P.Info.SampleRate > 384000) or not (P.Info.Channels in [1, 2]) then
         raise EArgumentException.Create('Unsupported PCM format');
@@ -549,10 +549,10 @@ begin
   var Seeker: ITuneSeekDecoder;
   if (P.Decoder = nil) or ((P.DecoderFrame > Start) and not Supports(P.Decoder, ITuneSeekDecoder, Seeker)) then
   begin
-    var Ext := '.wav';
     if P.ContentType = 'audio/midi' then
-      Ext := '.mid';
-    P.Decoder := TTuneDecoders.OpenData(P.Data, Ext);
+      P.Decoder := OpenMidi(P.Data)
+    else
+      P.Decoder := OpenWav(P.Data);
     P.DecoderFrame := 0;
     var Info := P.Decoder.GetInfo;
     if (Info.SampleRate <> P.Info.SampleRate) or (Info.Channels <> P.Info.Channels) then
@@ -1213,7 +1213,7 @@ begin
 end;
 
 initialization
-  // The existing RetroTune bank is available on every target, even when no
+  // The shared TimGM6mb bank is available on every target, even when no
   // beside-executable sf2 directory is deployed (notably mobile applications).
   SetDefaultMidiSoundFontResource(HInstance, 'RETROMUL_J2ME_SOUNDFONT');
 

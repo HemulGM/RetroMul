@@ -3,7 +3,7 @@
 interface
 
 uses
-  RetroTune.ReferenceForm, RetroTune.Decoder;
+  RetroTune.ReferenceForm, Music.Decoder;
 
 type
   TTuneInfoForm = class(TTuneReferenceForm)

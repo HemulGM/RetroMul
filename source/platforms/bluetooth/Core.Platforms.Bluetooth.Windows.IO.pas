@@ -252,7 +252,7 @@ begin
         S.Wake.WaitFor(5);
       until False;
       S.Lock.Acquire;
-      var Socket := INVALID_SOCKET;
+      var Socket: TSocket;
       try
         Socket := S.Socket;
         S.Socket := INVALID_SOCKET;

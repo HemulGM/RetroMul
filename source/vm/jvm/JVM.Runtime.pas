@@ -17,6 +17,8 @@ type
     function InvokeNative(VM: TJVM; Method: TJVMMethod; const Arguments: TArray<TJVMValue>): TJVMValue; virtual; abstract;
     function TimeMillis: Int64; virtual; abstract;
     function MonotonicMillis: Int64; virtual; abstract;
+    // Opt-in migration for a host library class whose old schema had no fields.
+    function AllowEmptySnapshotFields(C: TJVMClass): Boolean; virtual;
   end;
 
   TJVMState = (Idle, Running, Completed, Stopped, Faulted);
@@ -35,11 +37,28 @@ type
   end;
 
   TJVMObject = class
+  private
+    FElements: TArray<TJVMValue>;
+    FPrimitiveData: TBytes;
+    FElementWidth, FArrayCount: Integer;
+    function GetElements: TArray<TJVMValue>;
+    procedure SetElements(const Value: TArray<TJVMValue>);
+    function GetElement(Index: Integer): TJVMValue;
+    procedure SetElement(Index: Integer; const Value: TJVMValue);
+    function GetElementCount: Integer;
+  public
+    procedure InitializeArray(Count: Integer);
+    procedure ResizeElements(Count: Integer);
+    procedure CopyArrayElementsTo(Target: TJVMObject; SourceIndex, TargetIndex, Count: Integer);
+    function ArrayStorageBytes: Int64;
+    function TryIntData(out Data: PInteger): Boolean;
+    property Elements: TArray<TJVMValue> read GetElements write SetElements;
+    property ElementValues[Index: Integer]: TJVMValue read GetElement write SetElement;
+    property ElementCount: Integer read GetElementCount;
   public
     ClassName, Text, ThrowableTrace: string;
     HasThrowableTrace: Boolean;
     Fields: TDictionary<string, TJVMValue>;
-    Elements: TArray<TJVMValue>;
     IsArray, Marked: Boolean;
     constructor Create(const Name: string);
     destructor Destroy; override;
@@ -102,6 +121,9 @@ type
     FExitRequested: Boolean;
     FExitStatus: Integer;
     FHeapCapacity: Int64;
+    FOutOfMemoryRef: Integer;
+    FPreparingOOM: Boolean;
+    FGCGeneration: UInt64;
     FYieldToHost: Boolean;
     FState: TJVMState;
     FResult: TJVMValue;
@@ -110,6 +132,7 @@ type
     FOutputHead, FOutputCount: Integer;
     FOutputDropped: UInt64;
     FInstructions: UInt64;
+    procedure SetMaxObjects(Value: Integer);
     function Allocate(Obj: TJVMObject): Integer;
     procedure Mark(Ref: Integer; Pending: TList<Integer>);
     function ResolveField(C: TJVMClass; const Name, Descriptor: string; out Owner: TJVMClass): TJVMField;
@@ -144,6 +167,9 @@ type
     function GetObject(Ref: Integer): TJVMObject;
     procedure AddRoot(Ref: Integer);
     procedure RemoveRoot(Ref: Integer);
+    procedure PrepareOutOfMemory;
+    procedure ThrowOutOfMemory(const Message: string);
+    property GCGeneration: UInt64 read FGCGeneration;
     procedure CollectGarbage;
     procedure CaptureThrowableTrace(Ref: Integer; SkipConstructors: Boolean = False);
     procedure QueueOutput(const Data: TBytes; StandardError: Boolean);
@@ -207,23 +233,206 @@ type
     property ReturnValue: TJVMValue read FResult;
     property Error: string read FError;
     property Instructions: UInt64 read FInstructions;
-    property MaxObjects: Integer read FMaxObjects write FMaxObjects;
+    property MaxObjects: Integer read FMaxObjects write SetMaxObjects;
     property MaxArrayLength: Integer read FMaxArrayLength write FMaxArrayLength;
     property QuantumScale: Integer read FQuantumScale write FQuantumScale;
     function HeapCount: Integer;
     function IsObjectAlive(Reference: Integer): Boolean;
   end;
 
+// Shared JVM narrowing semantics for bytecode and native numeric wrappers.
+function RealToJavaLong(X: Double): Int64;
+
+function RealToJavaInt(X: Double): Integer;
+
 implementation
 
 uses
   System.Math, System.SyncObjs, JVM.Verifier;
+
+function TJVMHost.AllowEmptySnapshotFields(C: TJVMClass): Boolean;
+begin
+  Result := False;
+end;
 
 // Java integer arithmetic wraps. Guest indices and lengths are checked explicitly.
 {$Q-}{$R-}
 
 type
   EJVMExitSignal = class(Exception);
+
+procedure TJVMObject.InitializeArray(Count: Integer);
+begin
+  FElements := nil;
+  FPrimitiveData := nil;
+  FElementWidth := 0;
+  FArrayCount := Count;
+  if IsArray and (Length(ClassName) = 2) then
+    case ClassName[2] of
+      'Z', 'B':
+        FElementWidth := 1;
+      'C', 'S':
+        FElementWidth := 2;
+      'I', 'F':
+        FElementWidth := 4;
+      'J', 'D':
+        FElementWidth := 8;
+    end;
+  if FElementWidth <> 0 then
+    SetLength(FPrimitiveData, NativeInt(Count) * FElementWidth)
+  else
+  begin
+    SetLength(FElements, Count);
+    var V := TJVMValue.Ref(0);
+    if not IsArray then
+      V := Default(TJVMValue);
+    for var I := 0 to Count - 1 do
+      FElements[I] := V;
+  end;
+end;
+
+function TJVMObject.GetElementCount: Integer;
+begin
+  if FElementWidth <> 0 then
+    Result := FArrayCount
+  else
+    Result := Length(FElements);
+end;
+
+function TJVMObject.GetElement(Index: Integer): TJVMValue;
+var
+  Bits: Int64;
+begin
+  if Cardinal(Index) >= Cardinal(ElementCount) then
+    raise EJVMError.Create('Array view index outside storage');
+  if FElementWidth = 0 then
+  begin
+    Result := FElements[Index];
+    // Legacy native views can hold unsigned byte/short bits in tagged ints.
+    // Canonicalize both bytecode reads and snapshot values to Java widths.
+    if IsArray and (Length(ClassName) = 2) and (Result.Kind = TJVMKind.Int) then
+      case ClassName[2] of
+        'B':
+          Result := TJVMValue.Int(ShortInt(Result.Bits));
+        'S':
+          Result := TJVMValue.Int(SmallInt(Result.Bits));
+        'C':
+          Result := TJVMValue.Int(Word(Result.Bits));
+        'Z':
+          Result := TJVMValue.Int(Result.Bits and 1);
+      end;
+    Exit;
+  end;
+  Bits := 0;
+  Move(FPrimitiveData[NativeInt(Index) * FElementWidth], Bits, FElementWidth);
+  Result.Kind := TJVMKind.Int;
+  case ClassName[2] of
+    'B':
+      Bits := ShortInt(Bits);
+    'S':
+      Bits := SmallInt(Bits);
+    'I':
+      Bits := Integer(Bits);
+    'F':
+      Result.Kind := TJVMKind.Float;
+    'J':
+      Result.Kind := TJVMKind.Long;
+    'D':
+      Result.Kind := TJVMKind.Double;
+  end;
+  Result.Bits := Bits;
+end;
+
+procedure TJVMObject.SetElement(Index: Integer; const Value: TJVMValue);
+begin
+  if Cardinal(Index) >= Cardinal(ElementCount) then
+    raise EJVMError.Create('Array view index outside storage');
+  if FElementWidth = 0 then
+  begin
+    FElements[Index] := Value;
+    Exit;
+  end;
+  var Kind := TJVMKind.Int;
+  case ClassName[2] of
+    'F':
+      Kind := TJVMKind.Float;
+    'J':
+      Kind := TJVMKind.Long;
+    'D':
+      Kind := TJVMKind.Double;
+  end;
+  if Value.Kind <> Kind then
+    raise EJVMFormatError.Create('Invalid primitive array value');
+  var Bits := Value.Bits;
+  if ClassName = '[Z' then
+    Bits := Bits and 1;
+  Move(Bits, FPrimitiveData[NativeInt(Index) * FElementWidth], FElementWidth);
+end;
+
+function TJVMObject.GetElements: TArray<TJVMValue>;
+begin
+  // Compatibility view for native APIs needing a Delphi dynamic array. Once
+  // exposed it stays authoritative, so indexed writes through that view work.
+  if FElementWidth <> 0 then
+  begin
+    SetLength(FElements, FArrayCount);
+    for var I := 0 to FArrayCount - 1 do
+      FElements[I] := GetElement(I);
+    FPrimitiveData := nil;
+    FElementWidth := 0;
+  end;
+  Result := FElements;
+end;
+
+procedure TJVMObject.SetElements(const Value: TArray<TJVMValue>);
+begin
+  FPrimitiveData := nil;
+  FElementWidth := 0;
+  FElements := Value;
+  FArrayCount := Length(Value);
+end;
+
+procedure TJVMObject.ResizeElements(Count: Integer);
+begin
+  var Values := GetElements;
+  SetLength(Values, Count);
+  SetElements(Values);
+end;
+
+function TJVMObject.TryIntData(out Data: PInteger): Boolean;
+begin
+  Data := nil;
+  Result := (ClassName = '[I') and (FElementWidth = 4);
+  if Result and (FArrayCount <> 0) then
+    Data := PInteger(@FPrimitiveData[0]);
+end;
+
+function TJVMObject.ArrayStorageBytes: Int64;
+begin
+  if FElementWidth <> 0 then
+    Result := Length(FPrimitiveData)
+  else
+    Result := Int64(Length(FElements)) * SizeOf(TJVMValue);
+end;
+
+procedure TJVMObject.CopyArrayElementsTo(Target: TJVMObject; SourceIndex, TargetIndex, Count: Integer);
+begin
+  if (SourceIndex < 0) or (TargetIndex < 0) or (Count < 0) or
+    (Int64(SourceIndex) + Count > ElementCount) or (Int64(TargetIndex) + Count > Target.ElementCount) then
+    raise EJVMError.Create('Array copy outside storage');
+  if Count = 0 then
+    Exit;
+  if (FElementWidth <> 0) and (FElementWidth = Target.FElementWidth) and (ClassName = Target.ClassName) then
+    Move(FPrimitiveData[NativeInt(SourceIndex) * FElementWidth], Target.FPrimitiveData[NativeInt(TargetIndex) * FElementWidth], NativeInt(Count) * FElementWidth)
+  else if (FElementWidth = 0) and (Target.FElementWidth = 0) then
+    Move(FElements[SourceIndex], Target.FElements[TargetIndex], NativeInt(Count) * SizeOf(TJVMValue))
+  else if (Self = Target) and (TargetIndex > SourceIndex) then
+    for var I := Count - 1 downto 0 do
+      Target.SetElement(TargetIndex + I, GetElement(SourceIndex + I))
+  else
+    for var I := 0 to Count - 1 do
+      Target.SetElement(TargetIndex + I, GetElement(SourceIndex + I));
+end;
 
 constructor TJVMObject.Create(const Name: string);
 begin
@@ -766,11 +975,42 @@ begin
   Result := C.Name + '.' + F.Name + ':' + F.Descriptor;
 end;
 
+procedure TJVM.SetMaxObjects(Value: Integer);
+begin
+  FMaxObjects := Value;
+  FNextGC := Min(FNextGC, Value);
+end;
+
+procedure TJVM.PrepareOutOfMemory;
+begin
+  if FOutOfMemoryRef <> 0 then
+    Exit;
+  FPreparingOOM := True;
+  try
+    FOutOfMemoryRef := NewObject('java/lang/OutOfMemoryError');
+    GetObject(FOutOfMemoryRef).Fields.Add('$vm.oom.reserve', TJVMValue.Int(1));
+    AddRoot(FOutOfMemoryRef);
+  finally
+    FPreparingOOM := False;
+  end;
+end;
+
+procedure TJVM.ThrowOutOfMemory(const Message: string);
+begin
+  if FOutOfMemoryRef = 0 then
+    raise EJVMError.Create(Message);
+  var O := GetObject(FOutOfMemoryRef);
+  O.Text := Message;
+  O.ThrowableTrace := '';
+  O.HasThrowableTrace := False;
+  raise EJVMThrown.Create(FOutOfMemoryRef);
+end;
+
 function TJVM.Allocate(Obj: TJVMObject): Integer;
 begin
   try
-    if (FHeap.Count >= FMaxObjects) or (FNextRef = MaxInt) then
-      raise EJVMError.Create('Java heap object limit exceeded');
+    if ((FHeap.Count >= FMaxObjects) and not FPreparingOOM) or (FNextRef = MaxInt) then
+      ThrowOutOfMemory('Java heap object limit exceeded');
     Result := FNextRef;
     FHeap.Add(Result, Obj);
     Inc(FNextRef);
@@ -816,8 +1056,6 @@ end;
 function TJVM.NewArray(const Descriptor: string; Count: Integer): Integer;
 var
   O: TJVMObject;
-  I: Integer;
-  V: TJVMValue;
 begin
   JVMFieldType(Descriptor);
   if Descriptor[1] <> '[' then
@@ -825,14 +1063,11 @@ begin
   if Count < 0 then
     RaiseJava('java/lang/NegativeArraySizeException');
   if Count > FMaxArrayLength then
-    raise EJVMError.Create('Java array length limit exceeded');
-  V := JVMDefaultValue(Copy(Descriptor, 2, MaxInt));
+    ThrowOutOfMemory('Java array length limit exceeded');
   O := TJVMObject.Create(Descriptor);
   try
     O.IsArray := True;
-    SetLength(O.Elements, Count);
-    for I := 0 to Count - 1 do
-      O.Elements[I] := V;
+    O.InitializeArray(Count);
   except
     O.Free;
     raise;
@@ -871,7 +1106,8 @@ begin
     CopyObject.Text := Source.Text;
     CopyObject.ThrowableTrace := Source.ThrowableTrace;
     CopyObject.HasThrowableTrace := Source.HasThrowableTrace;
-    CopyObject.Elements := Copy(Source.Elements);
+    CopyObject.InitializeArray(Source.ElementCount);
+    Source.CopyArrayElementsTo(CopyObject, 0, 0, Source.ElementCount);
     for var Pair in Source.Fields do
       CopyObject.Fields.Add(Pair.Key, Pair.Value);
   except
@@ -894,8 +1130,8 @@ begin
   Result := GetObject(Ref);
   if not Result.IsArray then
     raise EJVMFormatError.Create('Expected Java array');
-  if (Index < 0) or (Index >= Length(Result.Elements)) then
-    RaiseJava('java/lang/ArrayIndexOutOfBoundsException', 'Index ' + IntToStr(Index) + ' for length ' + IntToStr(Length(Result.Elements)));
+  if (Index < 0) or (Index >= Result.ElementCount) then
+    RaiseJava('java/lang/ArrayIndexOutOfBoundsException', 'Index ' + IntToStr(Index) + ' for length ' + IntToStr(Result.ElementCount));
 end;
 
 procedure TJVM.CheckValue(const Value: TJVMValue; const Descriptor: string);
@@ -1020,7 +1256,8 @@ begin
       O := FHeap[Ref];
       for V in O.Fields.Values do
         MarkValue(V);
-      for V in O.Elements do
+      // Primitive backing stores contain no guest references.
+      for V in O.FElements do
         MarkValue(V);
     end;
     for Ref in FHeap.Keys do
@@ -1041,7 +1278,9 @@ begin
       FScheduler.ForgetObject(Ref);
       FHeap.Remove(Ref);
     end;
-    FNextGC := Min(FHeap.Count + 1024, FMaxObjects);
+    // At a fully rooted quota, avoid collecting again on every instruction.
+    FNextGC := Max(FHeap.Count + 1, Min(FHeap.Count + 1024, FMaxObjects));
+    Inc(FGCGeneration);
   finally
     Dead.Free;
     Pending.Free;
@@ -1547,7 +1786,7 @@ begin
     // Stable interpreter storage estimate. Count shared strings conservatively
     // per object; allocator slack, class metadata, frames and host services are
     // outside this guest-heap estimate. Array values occupy tagged VM slots.
-    Inc(Result.UsedBytes, 64 + Int64(Length(O.Elements)) * SizeOf(TJVMValue) +
+    Inc(Result.UsedBytes, 64 + O.ArrayStorageBytes +
       (Int64(Length(O.Text)) + Length(O.ThrowableTrace)) * SizeOf(Char));
     for var Pair in O.Fields do
       Inc(Result.UsedBytes, 32 + Int64(Length(Pair.Key)) * SizeOf(Char));
@@ -1603,7 +1842,7 @@ begin
             if (Value.AsRef = 0) or not IsObjectAlive(Value.AsRef) then
               Continue;
             var O := GetObject(Value.AsRef);
-            Result := Result + Format('    local%d ref=%d %s elements=%d textUnits=%d', [J, Value.AsRef, Copy(O.ClassName, 1, 256), Length(O.Elements), Length(O.Text)]) + #10;
+            Result := Result + Format('    local%d ref=%d %s elements=%d textUnits=%d', [J, Value.AsRef, Copy(O.ClassName, 1, 256), O.ElementCount, Length(O.Text)]) + #10;
             var FieldCount := 0;
             for var Pair in O.Fields do
             begin
@@ -1694,7 +1933,7 @@ var
   OldMask: TArithmeticExceptionMask;
   OldRound: TRoundingMode;
   C: TJVMClass;
-  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}         OldCW: Word;
+  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}                                 OldCW: Word;
   OldMXCSR: UInt32; {$ENDIF}
   {$IF Defined(CPUARM)}
   OldFPSCR: UInt32; {$ENDIF}
@@ -1702,20 +1941,23 @@ var
 begin
   if Budget < 0 then
     raise EJVMError.Create('Negative instruction budget');
+  if (Budget > 0) and (FOutOfMemoryRef = 0) and
+    FClasses.ContainsKey('java/lang/OutOfMemoryError') then
+    PrepareOutOfMemory;
   OldMask := GetExceptionMask;
   OldRound := GetRoundMode;
-  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}         OldCW := Get8087CW;
+  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}                                 OldCW := Get8087CW;
   OldMXCSR := GetMXCSR; {$ENDIF}
   {$IF Defined(CPUARM)}
   OldFPSCR := GetFPSCR; {$ENDIF}
   SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
   SetRoundMode(rmNearest);
-  {$IF Defined(MSWINDOWS) and Defined(CPUX86)}         SetPrecisionMode(pmDouble); {$ENDIF}
+  {$IF Defined(MSWINDOWS) and Defined(CPUX86)}                                 SetPrecisionMode(pmDouble); {$ENDIF}
   {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}
   // Java uses gradual underflow; an embedding renderer may have enabled DAZ/FTZ.
   SetMXCSR((GetMXCSR or $1F80) and not UInt32($E040));
   {$ENDIF}
-  {$IF Defined(CPUARM)}         SetFPSCR(GetFPSCR and not UInt32($01080000)); {$ENDIF}
+  {$IF Defined(CPUARM)}                                 SetFPSCR(GetFPSCR and not UInt32($01080000)); {$ENDIF}
   try
     try
       FNow := FHost.MonotonicMillis;
@@ -1744,6 +1986,8 @@ begin
           try
             Step;
           except
+            on E: EOutOfMemory do
+              ThrowOutOfMemory('Host allocation failed');
             on E: EJVMVerifyError do
               RaiseJava('java/lang/VerifyError', E.Message);
             on E: EJVMClassFormatError do
@@ -1779,7 +2023,7 @@ begin
   finally
     SetRoundMode(OldRound);
     SetExceptionMask(OldMask);
-    {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}                 Set8087CW(OldCW);
+    {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}                                                                 Set8087CW(OldCW);
     SetMXCSR(OldMXCSR); {$ENDIF}
     {$IF Defined(CPUARM)}
     SetFPSCR(OldFPSCR); {$ENDIF}
@@ -1815,7 +2059,7 @@ var
   F: TJVMFrame;
   Op, SubOp: Byte;
   A, B, V, W: TJVMValue;
-  I, J, K, Offset, LowKey, HighKey: Integer;
+  I, J, K, Offset, LowKey, HighKey, FieldIndex: Integer;
   L, R: Int64;
   X, Y, Z: Double;
   S: Single;
@@ -2007,7 +2251,7 @@ begin
         I := F.Pop.AsInt;
         O := ArrayObject(F.Pop.AsRef, I);
         CheckArrayOpcode(Op, O);
-        F.Push(O.Elements[I]);
+        F.Push(O.ElementValues[I]);
       end;
     $36..$3A:
       begin
@@ -2051,9 +2295,9 @@ begin
           $56:
             V := TJVMValue.Int(SmallInt(V.AsInt));
         end;
-        if V.Kind <> O.Elements[I].Kind then
+        if V.Kind <> O.ElementValues[I].Kind then
           raise EJVMFormatError.Create('Incorrect array value type');
-        O.Elements[I] := V;
+        O.ElementValues[I] := V;
       end;
     $57:
       begin
@@ -2532,11 +2776,10 @@ begin
           HighKey := F.S4;
           if (HighKey < LowKey) or (Int64(HighKey) - LowKey + 1 > (Length(F.Method.Code) - F.PC) div 4) then
             raise EJVMFormatError.Create('Invalid tableswitch');
-          for J := LowKey to HighKey do
+          if (I >= LowKey) and (I <= HighKey) then
           begin
-            K := F.S4;
-            if I = J then
-              Offset := K;
+            F.PC := F.PC + Integer((Int64(I) - LowKey) * 4);
+            Offset := F.S4;
           end;
         end
         else
@@ -2544,16 +2787,25 @@ begin
           J := F.S4;
           if (J < 0) or (J > (Length(F.Method.Code) - F.PC) div 8) then
             raise EJVMFormatError.Create('Invalid lookupswitch');
-          LowKey := Low(Integer);
-          for K := 1 to J do
+          var TableStart := F.PC;
+          var Left := 0;
+          var Right := J - 1;
+          // Structural/type verification already checked ordered keys and all
+          // destinations. Read only log2(N) pairs during execution.
+          while Left <= Right do
           begin
-            HighKey := F.S4;
-            if (K > 1) and (HighKey <= LowKey) then
-              raise EJVMFormatError.Create('Unsorted lookupswitch');
-            LowKey := HighKey;
-            HighKey := F.S4;
-            if I = LowKey then
-              Offset := HighKey;
+            var Middle := Left + (Right - Left) div 2;
+            F.PC := TableStart + Middle * 8;
+            K := F.S4;
+            if I = K then
+            begin
+              Offset := F.S4;
+              Break;
+            end;
+            if I < K then
+              Right := Middle - 1
+            else
+              Left := Middle + 1;
           end;
         end;
         F.Jump(Int64(F.InstructionPC) + Offset);
@@ -2568,10 +2820,27 @@ begin
     $B2..$B5:
       begin
         O := nil;
-        F.Method.Owner.MemberRef(F.U2, ClassName, Name, Descriptor);
-        C := FLinker.ResolveClass(ClassName, F.Method.Owner);
-        Field := ResolveField(C, Name, Descriptor, Owner);
-        FLinker.MemberAccess(F.Method.Owner, Owner, Field.Access);
+        FieldIndex := F.U2;
+        C := F.Method.Owner;
+        if Length(C.ResolvedFields) = 0 then
+          SetLength(C.ResolvedFields, Length(C.Constants));
+        // MemberRef checks the index/tag on a miss, before indexing the cache.
+        Field := nil;
+        if FieldIndex < Length(C.ResolvedFields) then
+          Field := C.ResolvedFields[FieldIndex].Field;
+        if Field = nil then
+        begin
+          C.MemberRef(FieldIndex, ClassName, Name, Descriptor);
+          var ReferencedClass := FLinker.ResolveClass(ClassName, C);
+          Field := ResolveField(ReferencedClass, Name, Descriptor, Owner);
+          FLinker.MemberAccess(C, Owner, Field.Access);
+          C.ResolvedFields[FieldIndex].Owner := Owner;
+          C.ResolvedFields[FieldIndex].Key := FieldKey(Owner, Field);
+          // Publish only after resolution and access checks have succeeded.
+          C.ResolvedFields[FieldIndex].Field := Field;
+        end
+        else
+          Owner := C.ResolvedFields[FieldIndex].Owner;
         if ((Field.Access and JVM_ACC_STATIC) <> 0) <> (Op in [$B2, $B3]) then
           JVMLinkFailure('IncompatibleClassChangeError', 'Incorrect field access opcode');
         if (Op in [$B3, $B5]) and ((Field.Access and JVM_ACC_FINAL) <> 0) then
@@ -2617,9 +2886,9 @@ begin
           $B3:
             Field.Value := V;
           $B4:
-            F.Push(O.Fields[FieldKey(Owner, Field)]);
+            F.Push(O.Fields[C.ResolvedFields[FieldIndex].Key]);
           $B5:
-            O.Fields[FieldKey(Owner, Field)] := V;
+            O.Fields[C.ResolvedFields[FieldIndex].Key] := V;
         end;
       end;
     $B6..$B9:
@@ -2718,7 +2987,7 @@ begin
         O := GetObject(F.Pop.AsRef);
         if not O.IsArray then
           raise EJVMFormatError.Create('Expected arraylength receiver');
-        F.Push(TJVMValue.Int(Length(O.Elements)));
+        F.Push(TJVMValue.Int(O.ElementCount));
       end;
     $BF:
       begin
@@ -3004,6 +3273,8 @@ begin
     S.Int(C.InitFailure);
     var Fields := C.Fields.Count;
     S.Count(Fields, 65536);
+    if S.Loading and (Fields = 0) and (C.Fields.Count <> 0) and FHost.AllowEmptySnapshotFields(C) then
+      Continue;
     if Fields <> C.Fields.Count then
       raise EReadError.Create('Incompatible snapshot class fields');
     for var F in C.Fields do
@@ -3038,7 +3309,19 @@ begin
       S.Text(O.ThrowableTrace);
       S.Bool(O.HasThrowableTrace);
       S.Bool(O.IsArray);
-      S.Values(O.Elements);
+      var ElementCount := O.ElementCount;
+      S.Count(ElementCount);
+      if S.Loading then
+        O.InitializeArray(ElementCount);
+      for var ElementIndex := 0 to ElementCount - 1 do
+      begin
+        var Element := Default(TJVMValue);
+        if not S.Loading then
+          Element := O.ElementValues[ElementIndex];
+        S.Value(Element);
+        if S.Loading then
+          O.ElementValues[ElementIndex] := Element;
+      end;
       ValueMap(O.Fields);
       if S.Loading then
       begin
@@ -3191,6 +3474,11 @@ begin
   if S.Loading then
   begin
     FStopRequested := 0;
+    FOutOfMemoryRef := 0;
+    for var Pair in FHeap do
+      if (Pair.Value.ClassName = 'java/lang/OutOfMemoryError') and Pair.Value.Fields.ContainsKey('$vm.oom.reserve') then
+        FOutOfMemoryRef := Pair.Key;
+    Inc(FGCGeneration);
     for var Ref in FHeap.Keys do
       if Ref >= FNextRef then
         raise EReadError.Create('Invalid snapshot heap allocation cursor');

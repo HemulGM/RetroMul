@@ -3,11 +3,12 @@
 interface
 
 uses
-  Core.Snapshots, System.Diagnostics, System.Hash, System.SysUtils,
-  System.Classes, System.IniFiles, System.SyncObjs, System.Generics.Collections,
-  Core.Storage, Core.Emulation, J2ME.Suite, J2ME.Runtime,
-  Core.Platforms.J2ME.Playback, Core.Bluetooth.Types, Core.Messaging.Types,
-  J2ME.Device, J2ME.Screen, J2ME.Display, Core.RomMetadata, J2ME.Input;
+  System.UITypes, Core.Snapshots, System.Diagnostics, System.Hash,
+  System.SysUtils, System.Classes, System.IniFiles, System.SyncObjs,
+  System.Generics.Collections, Core.Storage, Core.Emulation, J2ME.Suite,
+  J2ME.Runtime, Core.Platforms.J2ME.Playback, Core.Bluetooth.Types,
+  Core.Messaging.Types, J2ME.Device, J2ME.Screen, J2ME.Display, Core.RomMetadata,
+  J2ME.Input;
 
 type
   TJ2MEConfig = class(TEmulatorConfigBase)
@@ -47,6 +48,7 @@ type
     FVirtualKeypad: Word;
     FFrame: TEmulatorFrame;
     FFrameReady, FPaused: Boolean;
+    FInputResync: Boolean;
     FError, FAudioError: string;
     FRumbleArea: Double;
     FRumbleMillis: Int64;
@@ -209,9 +211,7 @@ begin
   Frame.Width := Size.Width;
   Frame.Height := Size.Height;
   Frame.FramesPerSecond := 60;
-  SetLength(Frame.Pixels, Length(Raster));
-  if Length(Raster) > 0 then
-    Move(Raster[0], Frame.Pixels[0], Length(Raster) * SizeOf(UInt32));
+  Frame.Pixels := TArray<TAlphaColor>(Raster);
   FLock.Acquire;
   try
     FFrame := Frame;
@@ -387,8 +387,12 @@ begin
   end;
   Event.Code := Code;
   Event.Pressed := Pressed;
-  if FEvents.Count < 1024 then
-    FEvents.Enqueue(Event);
+  if FEvents.Count >= 1024 then
+  begin
+    FEvents.Clear;
+    FInputResync := True;
+  end;
+  FEvents.Enqueue(Event);
 end;
 
 procedure TJ2MECoreAdapter.ClearInput;
@@ -631,12 +635,13 @@ var
   Runtime: TJ2MERuntime;
   Events: TArray<TJ2MEKeyEvent>;
   Event: TJ2MEKeyEvent;
-  Paused, WasPaused, AudioFailed, Enabled, WasEnabled: Boolean;
+  Paused, WasPaused, AudioFailed, Enabled, WasEnabled, Resync: Boolean;
+  DesiredKeys: TArray<Integer>;
   Frame: TEmulatorFrame;
   Pixels: TArray<UInt32>;
   Playback: TJ2MEAudioPlayback;
   Watch: TStopwatch;
-  LastMillis, Millis, Due, Remainder: Int64;
+  LastMillis, Millis, Due, Remainder, AudioRetryAt: Int64;
   Samples: TArray<SmallInt>;
   Volume: Single;
   MotorReset, SeenMotorReset: UInt64;
@@ -651,6 +656,7 @@ var
     end;
     FreeAndNil(Playback);
     AudioFailed := True;
+    AudioRetryAt := Watch.ElapsedMilliseconds + 1000;
   end;
 
 begin
@@ -661,6 +667,7 @@ begin
   AudioFailed := False;
   SeenMotorReset := 0;
   Remainder := 0;
+  AudioRetryAt := 0;
   Watch := TStopwatch.StartNew;
   LastMillis := 0;
   try
@@ -673,8 +680,21 @@ begin
         ProcessSnapshots(Runtime, Playback, AudioFailed, WasPaused, Watch, LastMillis, Remainder);
         FLock.Acquire;
         try
-          Events := FEvents.ToArray;
-          FEvents.Clear;
+          Resync := FInputResync;
+          FInputResync := False;
+          DesiredKeys := nil;
+          if Resync then
+          begin
+            DesiredKeys := FHeld.Keys.ToArray;
+            FEvents.Clear;
+            Events := nil;
+          end
+          else
+          begin
+            SetLength(Events, Min(32, FEvents.Count));
+            for var I := 0 to High(Events) do
+              Events[I] := FEvents.Dequeue;
+          end;
           Paused := FPaused;
           MotorReset := FMotorResetGeneration;
         finally
@@ -686,15 +706,30 @@ begin
           SeenMotorReset := MotorReset;
         end;
         if Paused <> WasPaused then
+          Runtime.SetExecutionPaused(Paused);
+        if not Paused then
         begin
-          if Paused then
-            Runtime.Pause
-          else
-            Runtime.Resume;
+          if Resync then
+          begin
+            Runtime.ReleasePhysicalKeys;
+            for var Key in DesiredKeys do
+              Runtime.KeyEvent(Key, True);
+          end;
+          for Event in Events do
+            Runtime.KeyEvent(Event.Code, Event.Pressed);
         end;
-        for Event in Events do
-          Runtime.KeyEvent(Event.Code, Event.Pressed);
-        Runtime.Tick(2000);
+        var CanExecute := True;
+        if (Playback <> nil) and not Paused then
+        try
+          CanExecute := Playback.AvailableFrames > 0;
+        except
+          on E: Exception do
+            AudioFailure(E.Message);
+        end;
+        if CanExecute then
+          Runtime.Tick(2000)
+        else
+          TThread.Sleep(1);
         if TThread.CheckTerminated then
           Break;
         var Rumble := Runtime.TakeVibrationSample;
@@ -717,6 +752,8 @@ begin
         if LifecycleError <> '' then
           raise Exception.Create(LifecycleError);
         Millis := Watch.ElapsedMilliseconds;
+        if AudioFailed and (Millis >= AudioRetryAt) then
+          AudioFailed := False;
         Enabled := FConfig.AudioEnabled;
         Volume := FConfig.AudioVolume;
         if (Paused <> WasPaused) or (Enabled <> WasEnabled) then
@@ -735,10 +772,24 @@ begin
         begin
           Due := Min(Int64(250), Max(Int64(0), Millis - LastMillis)) * 44100 + Remainder;
           Remainder := Due mod 1000;
-          Due := Due div 1000;
+          Due := Min(Int64(11025), Due div 1000);
           while Due > 0 do
           begin
             var Count := Integer(Min(Int64(2048), Due));
+            if Enabled and not AudioFailed and (Playback <> nil) then
+            try
+              Count := Min(Count, Playback.AvailableFrames);
+            except
+              on E: Exception do
+                AudioFailure(E.Message);
+            end;
+            if Count = 0 then
+            begin
+              // Keep unrendered source audio for a later pump. Do not advance
+              // a short voice and then silently discard its only PCM block.
+              Inc(Remainder, Due * 1000);
+              Break;
+            end;
             Samples := Runtime.RenderAudio(Count);
             Dec(Due, Count);
             if Enabled and not AudioFailed then
@@ -751,13 +802,16 @@ begin
                     Break;
                   end;
               if Playback <> nil then
-                Playback.Enqueue(Samples, Volume);
+                if Playback.Enqueue(Samples, Volume) <> Count then
+                  raise EInvalidOpException.Create('Audio producer exceeded available capacity');
             except
               on E: Exception do
                 AudioFailure(E.Message);
             end;
           end;
         end;
+        if Paused or WasPaused then
+          Remainder := 0;
         LastMillis := Millis;
         WasPaused := Paused;
         WasEnabled := Enabled;
@@ -808,7 +862,8 @@ begin
       begin
         FLock.Acquire;
         try
-          FError := E.ClassName + ': ' + E.Message;
+          if not TThread.CheckTerminated then
+            FError := E.ClassName + ': ' + E.Message;
         finally
           FLock.Release;
         end;
@@ -903,10 +958,11 @@ begin
           finally
             FLock.Release;
           end;
-          if LocalWasPaused then
-            LocalRuntime.Pause
-          else
+          // Previous adapter versions serialized emulator pause as a MIDlet
+          // lifecycle request. Retain their resume path for those legacy states.
+          if LocalRuntime.LifecyclePauseRequested then
             LocalRuntime.Resume;
+          LocalRuntime.SetExecutionPaused(LocalWasPaused);
           var Pixels: TArray<UInt32>;
           var Frame: TEmulatorFrame;
           if LocalRuntime.TakeFrame(Pixels, Frame.FrameNumber) then

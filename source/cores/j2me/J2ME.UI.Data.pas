@@ -102,7 +102,7 @@ begin
     Exit;
   Result := J2MENewMutableImage(VM, View.Width, View.Height);
   var Snapshot := J2MEImageView(VM, Result);
-  Snapshot.Pixels.Elements := Copy(View.Pixels.Elements);
+  View.Pixels.CopyArrayElementsTo(Snapshot.Pixels, 0, 0, View.Pixels.ElementCount);
   Snapshot.Image.Fields[J2MEUI + 'Image.$mutable:Z'] := TJVMValue.Int(0);
 end;
 

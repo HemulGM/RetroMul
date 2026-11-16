@@ -36,7 +36,14 @@ type
     Title: string;
   end;
 
-  TMidiDecoder = class(TInterfacedObject, ITuneDecoder)
+  TMidiCheckpoint = record
+    Frame: Int64;
+    Event: Integer;
+    Released: Boolean;
+    State: TSoundFontSynthState;
+  end;
+
+  TMidiDecoder = class(TInterfacedObject, ITuneDecoder, ITuneSeekDecoder)
   private
     FInfo: TTuneInfo;
     FTracks: TArray<TMidiTrack>;
@@ -44,9 +51,13 @@ type
     FTrack, FEvent: Integer;
     FPosition: Int64;
     FReleased: Boolean;
+    FCheckpoints: TArray<TMidiCheckpoint>;
+    FNextCheckpoint: Int64;
+    procedure Checkpoint;
   public
     constructor Create(const Input: TBytes);
     destructor Destroy; override;
+    function SeekFrame(Frame: Int64; const Cancelled: TFunc<Boolean>): Int64;
     function GetInfo: TTuneInfo;
     procedure SelectTrack(Index: Integer);
     function Render(var Samples: array of SmallInt; Frames: Integer): Integer;
@@ -531,7 +542,64 @@ begin
   FEvent := 0;
   FPosition := 0;
   FReleased := False;
+  FCheckpoints := nil;
+  FNextCheckpoint := 44100 * 5;
   FSynth.Reset;
+end;
+
+procedure TMidiDecoder.Checkpoint;
+begin
+  if FPosition < FNextCheckpoint then
+    Exit;
+  var Count := Length(FCheckpoints);
+  if Count = 4 then
+  begin
+    for var I := 1 to 3 do
+      FCheckpoints[I - 1] := FCheckpoints[I];
+    Count := 3;
+  end
+  else
+    SetLength(FCheckpoints, Count + 1);
+  FCheckpoints[Count].Frame := FPosition;
+  FCheckpoints[Count].Event := FEvent;
+  FCheckpoints[Count].Released := FReleased;
+  FCheckpoints[Count].State := FSynth.CaptureState;
+  FNextCheckpoint := FPosition + 44100 * 5;
+end;
+
+function TMidiDecoder.SeekFrame(Frame: Int64; const Cancelled: TFunc<Boolean>): Int64;
+begin
+  Frame := EnsureRange(Frame, Int64(0), FTracks[FTrack].Frames);
+  if Frame < FPosition then
+  begin
+    var Best := -1;
+    for var I := 0 to High(FCheckpoints) do
+      if (FCheckpoints[I].Frame <= Frame) and ((Best < 0) or (FCheckpoints[I].Frame > FCheckpoints[Best].Frame)) then
+        Best := I;
+    if Best < 0 then
+      SelectTrack(FTrack)
+    else
+    begin
+      FPosition := FCheckpoints[Best].Frame;
+      FEvent := FCheckpoints[Best].Event;
+      FReleased := FCheckpoints[Best].Released;
+      FSynth.RestoreState(FCheckpoints[Best].State);
+      SetLength(FCheckpoints, Best + 1);
+      FNextCheckpoint := FPosition + 44100 * 5;
+    end;
+  end;
+  var Buffer: TArray<SmallInt>;
+  SetLength(Buffer, 8192);
+  while FPosition < Frame do
+  begin
+    if Assigned(Cancelled) and Cancelled() then
+      raise EAbort.Create('Audio seek cancelled');
+    if Render(Buffer, Integer(Min(Int64(4096), Frame - FPosition))) = 0 then
+      Break;
+  end;
+  if Assigned(Cancelled) and Cancelled() then
+    raise EAbort.Create('Audio seek cancelled');
+  Result := FPosition;
 end;
 
 function TMidiDecoder.Render(var Samples: array of SmallInt; Frames: Integer): Integer;
@@ -559,6 +627,7 @@ begin
     Inc(Result);
     Inc(FPosition);
   end;
+  Checkpoint;
 end;
 
 function OpenMidi(const Data: TBytes): ITuneDecoder;

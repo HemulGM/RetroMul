@@ -530,7 +530,6 @@ begin
       UIPutRef(VM.GetObject(Added), 'imageSnapshot', Snapshot);
     end;
     Unowned(Added);
-    Index := Count;
     SetLength(Values, Count + 1);
     Values[Count] := TJVMValue.Ref(Added);
     Result := TJVMValue.Int(Count);

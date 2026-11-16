@@ -5,9 +5,10 @@ interface
 uses
   System.Classes, JVM.StateIO, System.Math, System.SysUtils,
   System.Generics.Collections, JVM.Types, JVM.ClassFile, JVM.Runtime,
-  Java.Bootstrap, J2ME.Suite, J2ME.Media, J2ME.RMS, J2ME.LCDUI, J2ME.Network,
-  Core.Bluetooth.Types, Core.Messaging.Types, J2ME.Messaging, J2ME.Bluetooth,
-  J2ME.Nokia.UI, J2ME.Nokia.Sound, J2ME.Effects, J2ME.Siemens.Game;
+  Java.Bootstrap, J2ME.Input, J2ME.Suite, J2ME.Media, J2ME.RMS, J2ME.LCDUI,
+  J2ME.Network, Core.Bluetooth.Types, Core.Messaging.Types, J2ME.Messaging,
+  J2ME.Bluetooth, J2ME.Nokia.UI, J2ME.Nokia.Sound, J2ME.Effects,
+  J2ME.Siemens.Game;
 
 {$SCOPEDENUMS ON}
 
@@ -26,7 +27,11 @@ type
   TJ2MEHost = class(TJavaHost)
   private
     FSuite: TJ2MESuite;
+    FDefaultEncoding: string;
+    FKeyLayout: TJ2MEKeyLayout;
     FWallOffset, FMonotonicOffset: Int64;
+    FExecutionPaused: Boolean;
+    FExecutionWall, FExecutionMono: Int64;
     FVM: TJVM;
     FDisplay, FScreen: Integer;
     FWidth, FHeight: Integer;
@@ -36,6 +41,7 @@ type
     FMIDletStarted, FGuestPaused, FResumeRequested: Boolean;
     FLifecycleError: string;
     FPhysicalKeys: TDictionary<Integer, Boolean>;
+    FKnownPhysicalKeys: TDictionary<Integer, Boolean>;
     FDisplayChanges: TQueue<TJ2MEDisplayChange>;
     FFlushCount: UInt64;
     FMedia: TJ2MEMedia;
@@ -55,6 +61,7 @@ type
     function DisplayGraphics(Screen: Integer): Integer;
     procedure QueueUI(const ClassName, Name, Descriptor: string; const Args: array of TJVMValue);
     procedure QueuePaint;
+    function AutomaticPaintReady: Boolean;
     procedure ChangeScreen(Screen: Integer);
     procedure PostAlertTimeout(Screen, Generation: Integer);
   public
@@ -65,6 +72,7 @@ type
     function LoadResource(const Name: string; out Data: TBytes): Boolean; override;
     function LoadClassResource(const ClassName, Name: string; out Data: TBytes): Boolean; override;
     function GetProperty(const Name: string; out Value: string): Boolean; override;
+    function DefaultEncoding: string; override;
     function TimeMillis: Int64; override;
     function MonotonicMillis: Int64; override;
     function InvokeNative(VM: TJVM; Method: TJVMMethod; const Arguments: TArray<TJVMValue>): TJVMValue; override;
@@ -88,6 +96,7 @@ type
     FMediaContext: Integer;
     FMediaCallRunning: Boolean;
     FMediaError, FRMSError: string;
+    FMixBuffer: TArray<Int64>;
     FRMSContext: Integer;
     FRMSCallRunning: Boolean;
     FBluetoothContext: Integer;
@@ -97,6 +106,7 @@ type
     FMessagingCallRunning: Boolean;
     FMessagingError: string;
     procedure Enqueue(const ClassName, Name, Descriptor: string; const Args: array of TJVMValue);
+    procedure CoalesceKeyEvents;
     procedure ClearQueue;
     procedure TransferState(S: TJVMStateIO);
     function GetBluetoothProvider: IBluetoothProvider;
@@ -116,6 +126,8 @@ type
     procedure Start(MIDletIndex: Integer = 0);
     procedure Tick(InstructionBudget: Integer);
     function NeedsExecution: Boolean;
+    // Emulator suspension freezes execution/clocks without MIDlet callbacks.
+    procedure SetExecutionPaused(Value: Boolean);
     procedure Pause;
     procedure Resume;
     procedure DestroyApp;
@@ -133,6 +145,7 @@ type
     function TakeMessagingError: string;
     property State: TJ2MEState read FState;
     property Error: string read FError;
+    property LifecyclePauseRequested: Boolean read FHostPaused;
     property VM: TJVM read FVM;
     property BluetoothProvider: IBluetoothProvider read GetBluetoothProvider;
     property MessagingProvider: IMessagingProvider read GetMessagingProvider;
@@ -144,7 +157,8 @@ uses
   System.DateUtils, System.Diagnostics, Java.Classes, J2ME.Graphics, J2ME.Image,
   J2ME.Font, J2ME.GameCanvas, J2ME.Game.Layers, Core.Bluetooth, Core.Messaging,
   J2ME.Bluetooth.Data, J2ME.Siemens.Graphics, J2ME.Resources,
-  J2ME.Vodafone.Device;
+  J2ME.Vodafone.Device, J2ME.M3G, J2ME.M3G.Graphics, J2ME.M3G.Loader,
+  J2ME.Compatibility;
 
 constructor TJ2MEHost.Create(Suite: TJ2MESuite; Width, Height: Integer; const Bluetooth: IBluetoothProvider; const Messaging: IMessagingProvider);
 begin
@@ -154,6 +168,9 @@ begin
   if (Width < 1) or (Width > 1024) or (Height < 1) or (Height > 1024) then
     raise EArgumentOutOfRangeException.Create('Java ME screen dimensions');
   FSuite := Suite;
+  FKeyLayout := J2MECompatibilityKeyLayout(Suite);
+  if not TryJ2MECompatibilityEncoding(Suite, FDefaultEncoding) then
+    FDefaultEncoding := inherited DefaultEncoding;
   FWidth := Width;
   FHeight := Height;
   FBluetooth := Bluetooth;
@@ -163,6 +180,7 @@ begin
   if FMessagingProvider = nil then
     FMessagingProvider := CreateUnavailableMessagingProvider;
   FPhysicalKeys := TDictionary<Integer, Boolean>.Create;
+  FKnownPhysicalKeys := TDictionary<Integer, Boolean>.Create;
   FDisplayChanges := TQueue<TJ2MEDisplayChange>.Create;
   FUIJobs := TQueue<TJ2MEInvocation>.Create;
   FLayoutHeight := Height;
@@ -190,6 +208,7 @@ begin
   FMedia.Free;
   FDisplayChanges.Free;
   FPhysicalKeys.Free;
+  FKnownPhysicalKeys.Free;
   inherited;
 end;
 
@@ -349,6 +368,7 @@ begin
     begin
       QueueUI('javax/microedition/lcdui/Form', '$drain', '()V', [TJVMValue.Ref(Screen)]);
     end);
+  FUI.CanvasKeyLayout := FKeyLayout;
   FUI.Install;
   B := TJavaClassBuilder.Create('javax/microedition/lcdui/Canvas', 'javax/microedition/lcdui/Displayable');
   try
@@ -410,6 +430,19 @@ begin
     // the same time. A reentrant monitor still permits repaint from paint.
     B.Finish('$deliverPaint', '(Ljavax/microedition/lcdui/Graphics;)V',
       JVM_ACC_PRIVATE or JVM_ACC_SYNCHRONIZED, 2, 2);
+    // Key callbacks share the paint monitor. A background serviceRepaints
+    // must not let paint overwrite input arriving halfway through that paint.
+    B.Start;
+    B.Emit([$1C]);
+    B.Jump($99, 'released');
+    B.Emit([$2A, $1B]);
+    B.Ref($B6, B.Member(C.Name, 'keyPressed', '(I)V'));
+    B.Emit([$B1]);
+    B.Mark('released');
+    B.Emit([$2A, $1B]);
+    B.Ref($B6, B.Member(C.Name, 'keyReleased', '(I)V'));
+    B.Emit([$B1]);
+    B.Finish('$deliverKey', '(IZ)V', JVM_ACC_PRIVATE or JVM_ACC_SYNCHRONIZED, 2, 3);
     VM.DefineClass(B.Detach);
   finally
     B.Free;
@@ -435,6 +468,7 @@ begin
   InstallJ2MEGameCanvas(VM, True);
   InstallJ2MEGameLayers(VM, True);
   InstallJ2MEVodafoneDevice(VM);
+  InstallJ2MEM3G(VM);
   FNokiaUI := TJ2MENokiaUI.Create(VM, FEffects);
   FNokiaUI.Install;
   FNokiaSound := TJ2MENokiaSound.Create(VM);
@@ -478,8 +512,15 @@ function TJ2MEHost.TimeMillis: Int64;
 var
   Current: TDateTime;
 begin
+  if FExecutionPaused then
+    Exit(FExecutionWall);
   Current := Now;
   Result := DateTimeToUnix(TTimeZone.local.ToUniversalTime(Current), True) * 1000 + MilliSecondOf(Current) + FWallOffset;
+end;
+
+function TJ2MEHost.DefaultEncoding: string;
+begin
+  Result := FDefaultEncoding;
 end;
 
 function TJ2MEHost.GetProperty(const Name: string; out Value: string): Boolean;
@@ -505,6 +546,8 @@ function TJ2MEHost.MonotonicMillis: Int64;
 var
   Stamp, Frequency: Int64;
 begin
+  if FExecutionPaused then
+    Exit(FExecutionMono);
   Stamp := TStopwatch.GetTimeStamp;
   Frequency := TStopwatch.Frequency;
   Result := (Stamp div Frequency) * 1000 + ((Stamp mod Frequency) * 1000) div Frequency + FMonotonicOffset;
@@ -526,6 +569,12 @@ begin
   C := Method.Owner.Name;
   N := Method.Name;
   Result := Default(TJVMValue);
+  if C = 'javax/microedition/m3g/Loader' then
+    Exit(InvokeM3GLoader(VM, FSuite, Method, Arguments));
+  if C = 'javax/microedition/m3g/Graphics3D' then
+    Exit(InvokeM3GGraphics(VM, Method, Arguments, FContentPixels, FWidth, FUI.ContentHeight(FScreen)));
+  if J2MEM3GHandles(C) then
+    Exit(InvokeJ2MEM3G(VM, Method, Arguments));
   if HandlesJ2MEVodafoneDevice(C) then
     Exit(InvokeJ2MEVodafoneDevice(VM, FEffects, Method, Arguments));
   if FSiemens.Handles(C) then
@@ -809,6 +858,9 @@ begin
         Exit;
       end;
       VM.GetObject(Arg(1).AsRef).Fields['$displayHeight'] := TJVMValue.Int(H);
+      // Automatic requests coalesce at the virtual display cadence. Measure
+      // from the start, so a slow paint does not acquire an extra idle interval.
+      O.Fields.AddOrSetValue('$canvasPaintAfter', TJVMValue.Long(MonotonicMillis + 16));
       FRepaint := False;
       Exit(TJVMValue.Int(1));
     end;
@@ -853,7 +905,7 @@ begin
       Exit(TJVMValue.Int(0));
     if N = 'getKeyName' then
     begin
-      I := Arg(1).AsInt;
+      I := J2MECanonicalKeyCode(FKeyLayout, Arg(1).AsInt);
       S := '';
       if (I >= 48) and (I <= 57) then
         S := Char(I)
@@ -888,7 +940,7 @@ begin
     end;
     if N = 'getGameAction' then
     begin
-      I := J2MEGameAction(Arg(1).AsInt);
+      I := J2MEGameAction(J2MECanonicalKeyCode(FKeyLayout, Arg(1).AsInt));
       Exit(TJVMValue.Int(I));
     end;
     if N = 'getKeyCode' then
@@ -916,7 +968,7 @@ begin
         VM.RaiseJava('java/lang/IllegalArgumentException');
         I := 0;
       end;
-      Exit(TJVMValue.Int(I));
+      Exit(TJVMValue.Int(J2MEDeviceKeyCode(FKeyLayout, I)));
     end;
   end;
   if C = 'com/nokia/mid/ui/DirectUtils' then
@@ -959,6 +1011,8 @@ begin
   FHasContent := False;
   FLayoutHeight := FUI.ContentHeight(Screen);
   FRepaint := Screen <> 0;
+  if (Screen <> 0) and FUI.IsCanvas(Screen) then
+    FVM.GetObject(Screen).Fields.AddOrSetValue('$canvasPaintAfter', TJVMValue.Long(MonotonicMillis + 16));
   if Screen = 0 then
   begin
     for var I := 0 to High(FPixels) do
@@ -995,6 +1049,23 @@ begin
   if (FScreen <> 0) and FUI.IsCanvas(FScreen) then
     QueueUI('javax/microedition/lcdui/Canvas', '$deliverPaint', '(Ljavax/microedition/lcdui/Graphics;)V',
       [TJVMValue.Ref(FScreen), TJVMValue.Ref(DisplayGraphics(FScreen))]);
+end;
+
+function TJ2MEHost.AutomaticPaintReady: Boolean;
+begin
+  Result := False;
+  if (FScreen = 0) or not FUI.IsCanvas(FScreen) then
+    Exit;
+  var O := FVM.GetObject(FScreen);
+  var Deadline: TJVMValue;
+  if not O.Fields.TryGetValue('$canvasPaintAfter', Deadline) then
+  begin
+    // Older states have no display cadence yet. Initialize a fresh interval;
+    // ordinary guest fields preserve it through GC and clock-restored states.
+    O.Fields.AddOrSetValue('$canvasPaintAfter', TJVMValue.Long(MonotonicMillis + 16));
+    Exit;
+  end;
+  Result := MonotonicMillis >= Deadline.AsLong;
 end;
 
 constructor TJ2MERuntime.Create(Suite: TJ2MESuite; Width, Height: Integer; const Bluetooth: IBluetoothProvider; const Messaging: IMessagingProvider);
@@ -1128,6 +1199,8 @@ begin
     Exit;
   if FStopPending then
     Exit(True);
+  if FHost.FExecutionPaused then
+    Exit;
   if FSuspendedStartup or (FState in [TJ2MEState.Created, TJ2MEState.Destroyed, TJ2MEState.Faulted]) then
     Exit;
   if FHostPaused and (FState = TJ2MEState.Paused) and (FPendingLifecycle = '') then
@@ -1149,6 +1222,8 @@ var
   NokiaSoundEvent: TNokiaSoundEvent;
 begin
   if FState in [TJ2MEState.Destroyed, TJ2MEState.Faulted] then
+    Exit;
+  if FHost.FExecutionPaused and not FStopPending then
     Exit;
   if (FState = TJ2MEState.Created) and not FStopPending then
     Exit;
@@ -1402,7 +1477,7 @@ begin
     if FState in [TJ2MEState.Starting, TJ2MEState.Active] then
       FHost.FUI.PollAlert(FHost.MonotonicMillis);
     if (FEventQueue.Count = 0) and (FVM.ExecutionContextState(FEventContext) <> TJVMState.Running) and
-      (FState in [TJ2MEState.Starting, TJ2MEState.Active]) and FHost.FRepaint and FHost.FUI.IsShown(FHost.FScreen) and FHost.FUI.IsCanvas(FHost.FScreen) then
+      (FState in [TJ2MEState.Starting, TJ2MEState.Active]) and FHost.FRepaint and FHost.FUI.IsShown(FHost.FScreen) and FHost.AutomaticPaintReady then
     begin
       Enqueue('javax/microedition/lcdui/Canvas', '$deliverPaint', '(Ljavax/microedition/lcdui/Graphics;)V',
         [TJVMValue.Ref(FHost.FScreen), TJVMValue.Ref(FHost.DisplayGraphics(FHost.FScreen))]);
@@ -1465,6 +1540,26 @@ begin
   end;
 end;
 
+procedure TJ2MERuntime.SetExecutionPaused(Value: Boolean);
+begin
+  if Value = FHost.FExecutionPaused then
+    Exit;
+  if Value then
+  begin
+    ReleasePhysicalKeys;
+    CancelVibration;
+    FHost.FExecutionWall := FHost.TimeMillis;
+    FHost.FExecutionMono := FHost.MonotonicMillis;
+    FHost.FExecutionPaused := True;
+  end
+  else
+  begin
+    FHost.FExecutionPaused := False;
+    Inc(FHost.FWallOffset, FHost.FExecutionWall - FHost.TimeMillis);
+    Inc(FHost.FMonotonicOffset, FHost.FExecutionMono - FHost.MonotonicMillis);
+  end;
+end;
+
 procedure TJ2MERuntime.Pause;
 begin
   FHostPaused := True;
@@ -1516,18 +1611,53 @@ procedure TJ2MERuntime.DestroyApp;
 begin
   if FState in [TJ2MEState.Destroyed, TJ2MEState.Faulted, TJ2MEState.Created] then
     Exit;
+  SetExecutionPaused(False);
   FSuspendedStartup := False;
   ClearQueue;
   FPendingLifecycle := 'destroyApp';
   Enqueue(FClassName, 'destroyApp', '(Z)V', [TJVMValue.Ref(FMIDlet), TJVMValue.Int(1)]);
 end;
 
+procedure TJ2MERuntime.CoalesceKeyEvents;
+begin
+  var Jobs := FEventQueue.ToArray;
+  var Latest := TDictionary<string, Integer>.Create;
+  try
+    for var I := 0 to High(Jobs) do
+      if (Jobs[I].Name = '$key') and (Length(Jobs[I].Arguments) = 3) then
+        Latest.AddOrSetValue(IntToStr(Jobs[I].Arguments[0].AsRef) + ':' + IntToStr(Jobs[I].Arguments[1].AsInt), I);
+    FEventQueue.Clear;
+    for var I := 0 to High(Jobs) do
+    begin
+      var Keep := True;
+      if (Jobs[I].Name = '$key') and (Length(Jobs[I].Arguments) = 3) then
+        Keep := Latest[IntToStr(Jobs[I].Arguments[0].AsRef) + ':' + IntToStr(Jobs[I].Arguments[1].AsInt)] = I;
+      if Keep then
+        FEventQueue.Enqueue(Jobs[I])
+      else
+        for var V in Jobs[I].Arguments do
+          if V.Kind = TJVMKind.Reference then
+            FVM.RemoveRoot(V.AsRef);
+    end;
+  finally
+    Latest.Free;
+  end;
+end;
+
 procedure TJ2MERuntime.KeyEvent(KeyCode: Integer; Pressed: Boolean);
 var
   FreshPress: Boolean;
 begin
-  if not (FState in [TJ2MEState.Active, TJ2MEState.Starting]) or (FHost.FScreen = 0) then
+  if FHost.FExecutionPaused or not (FState in [TJ2MEState.Active, TJ2MEState.Starting]) or (FHost.FScreen = 0) then
     Exit;
+  // Host key sources use a finite phone alphabet. Bound even a malformed
+  // producer sending arbitrary distinct integers, without losing known releases.
+  if not FHost.FKnownPhysicalKeys.ContainsKey(KeyCode) then
+  begin
+    if FHost.FKnownPhysicalKeys.Count >= 256 then
+      Exit;
+    FHost.FKnownPhysicalKeys.Add(KeyCode, True);
+  end;
   FreshPress := Pressed and not FHost.FPhysicalKeys.ContainsKey(KeyCode);
   if Pressed then
     FHost.FPhysicalKeys.AddOrSetValue(KeyCode, True)
@@ -1543,17 +1673,19 @@ begin
     else
       J2MEClearGameKeys(FVM.GetObject(FHost.FScreen));
   end;
-  if FEventQueue.Count >= 256 then
-    raise EJVMError.Create('MIDlet input queue overflow');
   if Pressed and not FreshPress then
     Exit;
+  // Normal input preserves every transition. On a burst retain the latest
+  // transition for each screen/key, including releases, rather than faulting.
+  if FEventQueue.Count >= 256 then
+    CoalesceKeyEvents;
   Enqueue('javax/microedition/lcdui/Displayable', '$key', '(IZ)V',
     [TJVMValue.Ref(FHost.FScreen), TJVMValue.Int(KeyCode), TJVMValue.Int(Ord(Pressed))]);
 end;
 
 procedure TJ2MERuntime.TextInput(const Text: string);
 begin
-  if not (FState in [TJ2MEState.Active, TJ2MEState.Starting]) or (FHost.FScreen = 0) or (Text = '') then
+  if FHost.FExecutionPaused or not (FState in [TJ2MEState.Active, TJ2MEState.Starting]) or (FHost.FScreen = 0) or (Text = '') then
     Exit;
   if Length(Text) > FVM.MaxArrayLength then
     raise EArgumentOutOfRangeException.Create('Text input size');
@@ -1577,7 +1709,7 @@ end;
 
 function TJ2MERuntime.TakeVibrationSample: TJ2MEVibrationSample;
 begin
-  if FHostPaused or (FState in [TJ2MEState.Paused, TJ2MEState.Destroyed, TJ2MEState.Faulted]) then
+  if FHost.FExecutionPaused or FHostPaused or (FState in [TJ2MEState.Paused, TJ2MEState.Destroyed, TJ2MEState.Faulted]) then
   begin
     CancelVibration;
     Exit(Default(TJ2MEVibrationSample));
@@ -1612,13 +1744,14 @@ function TJ2MERuntime.RenderAudio(Frames: Integer): TArray<SmallInt>;
 begin
   if (Frames < 0) or (Frames > 8192) then
     raise EArgumentOutOfRangeException.Create('Media render block');
-  if FState in [TJ2MEState.Created, TJ2MEState.Paused, TJ2MEState.Destroyed, TJ2MEState.Faulted] then
+  if FHost.FExecutionPaused or (FState in [TJ2MEState.Created, TJ2MEState.Paused, TJ2MEState.Destroyed, TJ2MEState.Faulted]) then
   begin
     Result := nil;
     SetLength(Result, Frames * 2);
     Exit;
   end;
-  var Mix := FHost.FMedia.RenderMix(Frames);
+  FHost.FMedia.RenderMixInto(FMixBuffer, Frames);
+  var Mix := FMixBuffer;
   FHost.FNokiaSound.MixInto(Mix, Frames);
   FHost.FSiemens.MixInto(Mix, Frames);
   SetLength(Result, Length(Mix));

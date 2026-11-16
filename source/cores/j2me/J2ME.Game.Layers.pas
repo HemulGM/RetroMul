@@ -196,7 +196,7 @@ begin
   Result.Transform := Get(O, 'transform');
   Frame := Get(O, 'frame');
   if Ref(O, 'sequence') <> 0 then
-    Frame := VM.GetObject(Ref(O, 'sequence')).Elements[Frame].AsInt;
+    Frame := VM.GetObject(Ref(O, 'sequence')).ElementValues[Frame].AsInt;
   // Siemens exposes protected image replacement independently of sprite frames.
   // Reject an incompatible image before calculating a source-column modulus.
   if (Result.FrameWidth <= 0) or (Result.FrameHeight <= 0) or
@@ -215,14 +215,14 @@ begin
   if (X < 0) or (Y < 0) or (X >= Get(S.O, 'w')) or (Y >= Get(S.O, 'h')) then
     Exit(False);
   J2METransformSource(Integer(X), Integer(Y), S.FrameWidth, S.FrameHeight, S.Transform, SX, SY);
-  Result := UInt32(S.Image.Pixels.Elements[(S.SourceY + SY) * S.Image.Width + S.SourceX + SX].AsInt) shr 24 = 255;
+  Result := UInt32(S.Image.Pixels.ElementValues[(S.SourceY + SY) * S.Image.Width + S.SourceX + SX].AsInt) shr 24 = 255;
 end;
 
 function TileAt(VM: TJVM; O: TJVMObject; Col, Row: Integer): Integer;
 begin
-  Result := VM.GetObject(Ref(O, 'cells')).Elements[Row * Get(O, 'cols') + Col].AsInt;
+  Result := VM.GetObject(Ref(O, 'cells')).ElementValues[Row * Get(O, 'cols') + Col].AsInt;
   if Result < 0 then
-    Result := VM.GetObject(Ref(O, 'animated')).Elements[-Result - 1].AsInt;
+    Result := VM.GetObject(Ref(O, 'animated')).ElementValues[-Result - 1].AsInt;
 end;
 
 function SpriteCollision(VM: TJVM; O, Other: TJVMObject; OtherRef: Integer; const Descriptor: string; X, Y: Integer; PixelLevel: Boolean): Boolean;
@@ -252,7 +252,7 @@ begin
     S := SpriteView(VM, O);
     for YY := Area.T to Area.B - 1 do
       for XX := Area.L to Area.R - 1 do
-        if OpaqueSpritePixel(S, XX, YY) and (UInt32(Img.Pixels.Elements[Integer(YY - Y) * Img.Width + Integer(XX - X)].AsInt) shr 24 = 255) then
+        if OpaqueSpritePixel(S, XX, YY) and (UInt32(Img.Pixels.ElementValues[Integer(YY - Y) * Img.Width + Integer(XX - X)].AsInt) shr 24 = 255) then
           Exit(True);
     Exit(False);
   end;
@@ -302,7 +302,7 @@ begin
         Dec(Tile);
         SX := (Tile mod (Img.Width div TW)) * TW + Integer((XX - Get(Other, 'x')) mod TW);
         SY := (Tile div (Img.Width div TW)) * TH + Integer((YY - Get(Other, 'y')) mod TH);
-        if UInt32(Img.Pixels.Elements[SY * Img.Width + SX].AsInt) shr 24 = 255 then
+        if UInt32(Img.Pixels.ElementValues[SY * Img.Width + SX].AsInt) shr 24 = 255 then
           Exit(True);
       end;
   Result := False;
@@ -693,8 +693,8 @@ begin
         if Ref(O, 'sequence') <> 0 then
         begin
           Sequence := VM.GetObject(Ref(O, 'sequence'));
-          NewRef := VM.NewArray('[I', Length(Sequence.Elements));
-          VM.GetObject(NewRef).Elements := Copy(Sequence.Elements);
+          NewRef := VM.NewArray('[I', Sequence.ElementCount);
+          Sequence.CopyArrayElementsTo(VM.GetObject(NewRef), 0, 0, Sequence.ElementCount);
           PutRef(O, 'sequence', NewRef);
         end;
         Exit;
@@ -780,11 +780,11 @@ begin
       if Args[1].AsRef <> 0 then
       begin
         Sequence := VM.GetObject(Args[1].AsRef);
-        Check(Length(Sequence.Elements) > 0);
+        Check(Sequence.ElementCount > 0);
         for V in Sequence.Elements do
           Check((V.AsInt >= 0) and (V.AsInt < Get(O, 'rawCount')), 'java/lang/ArrayIndexOutOfBoundsException');
-        NewRef := VM.NewArray('[I', Length(Sequence.Elements));
-        VM.GetObject(NewRef).Elements := Copy(Sequence.Elements);
+        NewRef := VM.NewArray('[I', Sequence.ElementCount);
+        Sequence.CopyArrayElementsTo(VM.GetObject(NewRef), 0, 0, Sequence.ElementCount);
       end;
       PutRef(O, 'sequence', NewRef);
       Put(O, 'frame', 0);
@@ -903,9 +903,9 @@ begin
       ArrayObject := VM.GetObject(Ref(O, 'cells'));
       I := Row * Get(O, 'cols') + Col;
       if N = 'getCell' then
-        Exit(ArrayObject.Elements[I]);
+        Exit(ArrayObject.ElementValues[I]);
       AnyTile(Arg(3));
-      ArrayObject.Elements[I] := Args[3];
+      ArrayObject.ElementValues[I] := Args[3];
       Exit;
     end;
     if N = 'fillCells' then
@@ -923,7 +923,7 @@ begin
       ArrayObject := VM.GetObject(Ref(O, 'cells'));
       for J := Row to Row + H - 1 do
         for I := Col to Col + W - 1 do
-          ArrayObject.Elements[J * Get(O, 'cols') + I] := Args[5];
+          ArrayObject.ElementValues[J * Get(O, 'cols') + I] := Args[5];
       Exit;
     end;
     if N = 'createAnimatedTile' then
@@ -936,11 +936,11 @@ begin
         ArrayObject := nil
       else
         ArrayObject := VM.GetObject(Ref(O, 'animated'));
-      if (ArrayObject = nil) or (Count = Length(ArrayObject.Elements)) then
+      if (ArrayObject = nil) or (Count = ArrayObject.ElementCount) then
       begin
         I := 4;
         if ArrayObject <> nil then
-          I := Length(ArrayObject.Elements) * 2;
+          I := ArrayObject.ElementCount * 2;
         I := Min(I, VM.MaxArrayLength);
         if SiemensColor then
           I := Min(I, 32767);
@@ -949,11 +949,11 @@ begin
         NewArray := VM.GetObject(NewRef);
         if ArrayObject <> nil then
           for J := 0 to Count - 1 do
-            NewArray.Elements[J] := ArrayObject.Elements[J];
+            NewArray.ElementValues[J] := ArrayObject.ElementValues[J];
         ArrayObject := NewArray;
         PutRef(O, 'animated', NewRef);
       end;
-      ArrayObject.Elements[Count] := Args[1];
+      ArrayObject.ElementValues[Count] := Args[1];
       Put(O, 'animatedCount', Count + 1);
       Exit(TJVMValue.Int(-Count - 1));
     end;
@@ -963,9 +963,9 @@ begin
       Check((I < 0) and (-Int64(I) <= Get(O, 'animatedCount')), 'java/lang/IndexOutOfBoundsException');
       ArrayObject := VM.GetObject(Ref(O, 'animated'));
       if N = 'getAnimatedTile' then
-        Exit(ArrayObject.Elements[-I - 1]);
+        Exit(ArrayObject.ElementValues[-I - 1]);
       StaticTile(Arg(2));
-      ArrayObject.Elements[-I - 1] := Args[2];
+      ArrayObject.ElementValues[-I - 1] := Args[2];
       Exit;
     end;
     if N = 'setStaticTileSet' then
@@ -977,8 +977,8 @@ begin
       if Count < Get(O, 'rawCount') then
       begin
         ArrayObject := VM.GetObject(Ref(O, 'cells'));
-        for I := 0 to High(ArrayObject.Elements) do
-          ArrayObject.Elements[I] := TJVMValue.Int(0);
+        for I := 0 to (ArrayObject.ElementCount - 1) do
+          ArrayObject.ElementValues[I] := TJVMValue.Int(0);
         PutRef(O, 'animated', 0);
         Put(O, 'animatedCount', 0);
       end;
@@ -1058,13 +1058,13 @@ begin
       Exit;
     end;
     ArrayObject := VM.GetObject(Ref(O, 'layers'));
-    Count := Length(ArrayObject.Elements);
+    Count := ArrayObject.ElementCount;
     if N = 'getSize' then
       Exit(TJVMValue.Int(Count));
     if N = 'getLayerAt' then
     begin
       Check((Arg(1) >= 0) and (Arg(1) < Count), 'java/lang/IndexOutOfBoundsException');
-      Exit(ArrayObject.Elements[Arg(1)]);
+      Exit(ArrayObject.ElementValues[Arg(1)]);
     end;
     if (N = 'append') or (N = 'insert') or (N = 'remove') or (N = 'removeLayer') then
     begin
@@ -1083,7 +1083,7 @@ begin
       end;
       K := -1;
       for I := 0 to Count - 1 do
-        if ArrayObject.Elements[I].AsRef = V.AsRef then
+        if ArrayObject.ElementValues[I].AsRef = V.AsRef then
         begin
           K := I;
           Break;
@@ -1101,11 +1101,11 @@ begin
         begin
           if (N <> 'remove') and (J = Index) then
             Inc(J);
-          NewArray.Elements[J] := ArrayObject.Elements[I];
+          NewArray.ElementValues[J] := ArrayObject.ElementValues[I];
           Inc(J);
         end;
       if N <> 'remove' then
-        NewArray.Elements[Index] := V;
+        NewArray.ElementValues[Index] := V;
       PutRef(O, 'layers', NewRef);
       Exit;
     end;
@@ -1122,14 +1122,14 @@ begin
       begin
         if Other.Fields.TryGetValue(Key, V) then
         begin
-          State.Elements[I] := V;
-          State.Elements[6] := TJVMValue.Int(State.Elements[6].AsInt or (1 shl I));
+          State.ElementValues[I] := V;
+          State.ElementValues[6] := TJVMValue.Int(State.ElementValues[6].AsInt or (1 shl I));
         end;
         Inc(I);
       end;
-      Snapshot.Elements[0] := TJVMValue.Ref(G);
+      Snapshot.ElementValues[0] := TJVMValue.Ref(G);
       for I := 0 to Count - 1 do
-        Snapshot.Elements[I + 1] := ArrayObject.Elements[I];
+        Snapshot.ElementValues[I + 1] := ArrayObject.ElementValues[I];
       Graphic('clipRect', '(IIII)V', [Args[1], Args[2], Args[3], TJVMValue.Int(Get(O, 'vw')), TJVMValue.Int(Get(O, 'vh'))]);
       Graphic('translate', '(II)V', [Args[1], TJVMValue.Int(Arg(2) - Get(O, 'vx')), TJVMValue.Int(Arg(3) - Get(O, 'vy'))]);
       Exit(TJVMValue.Ref(NewRef));
@@ -1138,14 +1138,14 @@ begin
     begin
       Other := VM.GetObject(Args[1].AsRef);
       Snapshot := VM.GetObject(Args[2].AsRef);
-      State := VM.GetObject(Snapshot.Elements[0].AsRef);
+      State := VM.GetObject(Snapshot.ElementValues[0].AsRef);
       I := 0;
       for var Key in TArray<string>.Create('$tx', '$ty', '$clipL', '$clipT', '$clipR', '$clipB') do
       begin
-        if (State.Elements[6].AsInt and (1 shl I)) = 0 then
+        if (State.ElementValues[6].AsInt and (1 shl I)) = 0 then
           Other.Fields.Remove(Key)
         else
-          Other.Fields.AddOrSetValue(Key, State.Elements[I]);
+          Other.Fields.AddOrSetValue(Key, State.ElementValues[I]);
         Inc(I);
       end;
       Exit;

@@ -85,6 +85,8 @@ function RememberIOSDocumentURL(const URL: NSURL): string;
 
 function ReadRomData(Stream: TStream): TBytes;
 
+function NativeStoragePath(const Location: string): string;
+
 implementation
 
 uses

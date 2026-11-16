@@ -871,7 +871,7 @@ begin
           J.Fail(NativeError(Code, 'Publish Bluetooth SDP'));
           Exit;
         end;
-        var Discard := False;
+        var Discard: Boolean;
         This.Lock.Acquire;
         J.Lock.Acquire;
         try

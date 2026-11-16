@@ -51,12 +51,21 @@ type
     VerificationState: Integer;
   end;
 
+  // Successful symbolic field resolution belongs to the referring class's
+  // constant pool. It contains no guest object references or mutable values.
+  TJVMResolvedField = record
+    Field: TJVMField;
+    Owner: TJVMClass;
+    Key: string;
+  end;
+
   TJVMClass = class
   public
     Name, SuperName: string;
     Interfaces: TArray<string>;
     Major, Minor, Access: Word;
     Constants: TArray<TJVMConstant>;
+    ResolvedFields: TArray<TJVMResolvedField>;
     Fields: TObjectList<TJVMField>;
     Methods: TObjectList<TJVMMethod>;
     InitState: Integer; // 0=uninitialized, 1=initializing, 2=ready, 3=failed.

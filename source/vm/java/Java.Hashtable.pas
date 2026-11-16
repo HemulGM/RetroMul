@@ -9,10 +9,14 @@ procedure InstallJavaHashtable(VM: TJVM);
 
 function InvokeJavaHashtable(VM: TJVM; Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
 
+// Native producers use ordinary Integer keys and guest references as values.
+// Keys must be unique; callers retain ownership of the supplied value roots.
+function JavaNewIntegerKeyTable(VM: TJVM; const Keys, Values: TArray<Integer>): Integer;
+
 implementation
 
 uses
-  System.SysUtils, Java.Classes;
+  System.SysUtils, System.Generics.Collections, Java.Classes, Java.Numbers;
 
 {$Q-}{$R-}
 
@@ -515,6 +519,41 @@ begin
     raise EJVMError.Create('Hashtable selected entry disappeared');
   end;
   raise EJVMUnsupported.Create('Hashtable native method: ' + N);
+end;
+
+function JavaNewIntegerKeyTable(VM: TJVM; const Keys, Values: TArray<Integer>): Integer;
+begin
+  if Length(Keys) <> Length(Values) then
+    raise EJVMFormatError.Create('Integer-key table lengths');
+  for var Value in Values do
+    VM.GetObject(Value); // Hashtable values cannot be null.
+  var Seen := TDictionary<Integer, Boolean>.Create;
+  try
+    for var K in Keys do
+    begin
+      if Seen.ContainsKey(K) then
+        VM.RaiseJava('java/lang/IllegalArgumentException', 'Duplicate integer table key');
+      Seen.Add(K, True);
+    end;
+  finally
+    Seen.Free;
+  end;
+  Result := VM.NewObject(TableName);
+  VM.AddRoot(Result);
+  try
+    var C := VM.LoadClass(TableName);
+    var Number := VM.LoadClass('java/lang/Integer');
+    InvokeJavaHashtable(VM, C.FindMethod('<init>', '(I)V'), [TJVMValue.Ref(Result), TJVMValue.Int(Length(Keys) * 2 + 1)]);
+    for var K := 0 to High(Keys) do
+    begin
+      var Key := VM.NewObject(Number.Name);
+      InvokeJavaInteger(VM, Number.FindMethod('<init>', '(I)V'), [TJVMValue.Ref(Key), TJVMValue.Int(Keys[K])]);
+      InvokeJavaHashtable(VM, C.FindMethod('$add', '(Ljava/lang/Object;Ljava/lang/Object;I)Ljava/lang/Object;'),
+        [TJVMValue.Ref(Result), TJVMValue.Ref(Key), TJVMValue.Ref(Values[K]), TJVMValue.Int(Keys[K])]);
+    end;
+  finally
+    VM.RemoveRoot(Result);
+  end;
 end;
 
 end.

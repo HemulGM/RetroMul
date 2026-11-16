@@ -37,6 +37,8 @@ type
     FVoices: TObjectDictionary<Integer, TNokiaSoundVoice>;
     FEvents: TQueue<TNokiaSoundEvent>;
     FOrder: UInt64;
+    FSeenGC: UInt64;
+    FDecodeBuffer: TArray<SmallInt>;
     function Voice(Ref: Integer): TNokiaSoundVoice;
     procedure ChangeState(V: TNokiaSoundVoice; State: Integer; Notify: Boolean = True);
     procedure ReleaseVoice(V: TNokiaSoundVoice; Notify: Boolean = True);
@@ -178,6 +180,7 @@ constructor TJ2MENokiaSound.Create(VM: TJVM);
 begin
   inherited Create;
   FVM := VM;
+  FSeenGC := High(UInt64);
   FVoices := TObjectDictionary<Integer, TNokiaSoundVoice>.Create([doOwnsValues]);
   FEvents := TQueue<TNokiaSoundEvent>.Create;
 end;
@@ -242,6 +245,9 @@ end;
 
 procedure TJ2MENokiaSound.Sweep;
 begin
+  if FSeenGC = FVM.GCGeneration then
+    Exit;
+  FSeenGC := FVM.GCGeneration;
   for var Ref in FVoices.Keys.ToArray do
     if not FVM.IsObjectAlive(Ref) then
       FVoices.Remove(Ref);
@@ -321,7 +327,8 @@ begin
     if (V.Info.SampleRate < 1) or (V.Info.SampleRate > 384000) or not (V.Info.Channels in [1, 2]) then
       raise ENokiaToneFormat.Create('Unsupported Nokia WAV PCM format');
   end;
-  SetLength(Samples, 4096 * V.Info.Channels);
+  SetLength(FDecodeBuffer, 4096 * V.Info.Channels);
+  Samples := FDecodeBuffer;
   Count := V.Decoder.Render(Samples, 4096);
   if (Count < 0) or (Count > 4096) then
     raise ENokiaToneFormat.Create('Invalid WAV decoder result');
@@ -416,8 +423,8 @@ begin
   if N = 'getSupportedFormats' then
   begin
     var Ref := FVM.NewArray('[I', 2);
-    FVM.GetObject(Ref).Elements[0] := TJVMValue.Int(1);
-    FVM.GetObject(Ref).Elements[1] := TJVMValue.Int(5);
+    FVM.GetObject(Ref).ElementValues[0] := TJVMValue.Int(1);
+    FVM.GetObject(Ref).ElementValues[1] := TJVMValue.Int(5);
     Exit(TJVMValue.Ref(Ref));
   end;
   if N = 'getConcurrentSoundCount' then
@@ -498,11 +505,11 @@ begin
         var Format := Args[2].AsInt;
         if (Format <> 1) and (Format <> 5) then
           FVM.RaiseJava('java/lang/IllegalArgumentException', 'Nokia sound format');
-        if Length(ArrayObject.Elements) > 16 * 1024 * 1024 then
+        if ArrayObject.ElementCount > 16 * 1024 * 1024 then
           FVM.RaiseJava('java/lang/OutOfMemoryError', 'Nokia encoded clip limit');
-        SetLength(V.Data, Length(ArrayObject.Elements));
+        SetLength(V.Data, ArrayObject.ElementCount);
         for var I := 0 to High(V.Data) do
-          V.Data[I] := Byte(ArrayObject.Elements[I].AsInt);
+          V.Data[I] := Byte(ArrayObject.ElementValues[I].AsInt);
         V.Format := Format;
         if Format = 1 then
         begin

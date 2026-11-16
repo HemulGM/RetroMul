@@ -20,6 +20,18 @@ begin
   var Info := Result.GetInfo;
   if (Info.SampleRate <> SampleRate) or (Info.Channels <> Channels) then
     raise EReadError.Create('Incompatible snapshot audio format');
+  var Seeker: ITuneSeekDecoder;
+  if Supports(Result, ITuneSeekDecoder, Seeker) then
+  begin
+    var Frame := Int64(Samples div Channels);
+    if Seeker.SeekFrame(Frame,
+      function: Boolean
+      begin
+        Result := TThread.CheckTerminated;
+      end) <> Frame then
+      raise EReadError.Create('Invalid snapshot decoder position');
+    Exit;
+  end;
   var Remaining := Samples div Channels;
   var PCM: TArray<SmallInt>;
   SetLength(PCM, 4096 * Channels);

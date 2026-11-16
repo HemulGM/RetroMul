@@ -20,7 +20,7 @@ uses
   System.Generics.Defaults, Java.Classes, J2ME.Image, J2ME.Font,
   Media.Raster.Shapes;
 
-{$Q-}{$R-}
+{$Q-}{$R-}{$POINTERMATH ON}
 
 const
   DirectName = 'com/nokia/mid/ui/DirectGraphics';
@@ -67,8 +67,8 @@ begin
   begin
     var Ref := J2MENewMutableImage(VM, Args[0].AsInt, Args[1].AsInt);
     var Image := J2MEImageView(VM, Ref);
-    for var I := 0 to High(Image.Pixels.Elements) do
-      Image.Pixels.Elements[I] := Args[2];
+    for var I := 0 to (Image.Pixels.ElementCount - 1) do
+      Image.Pixels.ElementValues[I] := Args[2];
     Exit(TJVMValue.Ref(Ref));
   end;
   var M := VM.LoadClass(ImageName).FindMethod('createImage', '([BII)Ljavax/microedition/lcdui/Image;');
@@ -291,7 +291,7 @@ var
     if TargetPixels = nil then
       Result := Pixels[Index]
     else
-      Result := UInt32(TargetPixels.Elements[Index].AsInt);
+      Result := UInt32(TargetPixels.ElementValues[Index].AsInt);
   end;
 
   procedure WritePixel(Index: Integer; Value: UInt32);
@@ -299,7 +299,7 @@ var
     if TargetPixels = nil then
       Pixels[Index] := Value
     else
-      TargetPixels.Elements[Index] := TJVMValue.Int(Integer(Value));
+      TargetPixels.ElementValues[Index] := TJVMValue.Int(Integer(Value));
   end;
 
   procedure Blend(X, Y: Int64; Value: UInt32);
@@ -436,7 +436,7 @@ var
       Shift: Integer;
     begin
       var At := ByteLocation(X, Y, Shift);
-      Result := (A.Elements[At].AsInt shr Shift) and ((1 shl Bits) - 1);
+      Result := (A.ElementValues[At].AsInt shr Shift) and ((1 shl Bits) - 1);
     end;
 
     procedure StorePacked(A: TJVMObject; X, Y, V: Integer);
@@ -445,7 +445,7 @@ var
     begin
       var At := ByteLocation(X, Y, Shift);
       var BitMask := ((1 shl Bits) - 1) shl Shift;
-      A.Elements[At] := TJVMValue.Int(ShortInt((A.Elements[At].AsInt and not BitMask) or ((V shl Shift) and BitMask)));
+      A.ElementValues[At] := TJVMValue.Int(ShortInt((A.ElementValues[At].AsInt and not BitMask) or ((V shl Shift) and BitMask)));
     end;
 
     function Expand(V, MaxValue: Integer): UInt32;
@@ -618,7 +618,7 @@ var
         Hi := Hi div (8 div Bits);
       end;
     end;
-    if (Lo < 0) or (Hi >= Length(Data.Elements)) or ((Mask <> nil) and (Hi >= Length(Mask.Elements))) then
+    if (Lo < 0) or (Hi >= Data.ElementCount) or ((Mask <> nil) and (Hi >= Mask.ElementCount)) then
       VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
     if ReadBack then
     begin
@@ -639,9 +639,9 @@ var
           begin
             Index := Int64(Base) + Int64(Y) * Scan + X;
             if Data.ClassName = '[S' then
-              Data.Elements[Integer(Index)] := TJVMValue.Int(SmallInt(Encode(Value)))
+              Data.ElementValues[Integer(Index)] := TJVMValue.Int(SmallInt(Encode(Value)))
             else
-              Data.Elements[Integer(Index)] := TJVMValue.Int(Integer(Encode(Value)));
+              Data.ElementValues[Integer(Index)] := TJVMValue.Int(Integer(Encode(Value)));
           end;
         end;
       Exit;
@@ -665,7 +665,7 @@ var
             Value := (Value and $FFFFFF) or (Expand(ReadPacked(Mask, SX, SY), (1 shl Bits) - 1) shl 24);
         end
         else
-          Value := Decode(UInt32(Data.Elements[Integer(Int64(Base) + Int64(SY) * Scan + SX)].AsInt));
+          Value := Decode(UInt32(Data.ElementValues[Integer(Int64(Base) + Int64(SY) * Scan + SX)].AsInt));
         Blend(X, Y, Value);
       end;
   end;
@@ -696,14 +696,14 @@ var
       YO := Arg(4);
       Count := Arg(5);
       Color := UInt32(Arg(6));
-      if (XO < 0) or (YO < 0) or (Count < 0) or (Int64(XO) + Count > Length(XA.Elements)) or (Int64(YO) + Count > Length(YA.Elements)) then
+      if (XO < 0) or (YO < 0) or (Count < 0) or (Int64(XO) + Count > XA.ElementCount) or (Int64(YO) + Count > YA.ElementCount) then
         VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
       SetLength(PX, Count);
       SetLength(PY, Count);
       for var I := 0 to Count - 1 do
       begin
-        PX[I] := Int64(XA.Elements[XO + I].AsInt) + TX;
-        PY[I] := Int64(YA.Elements[YO + I].AsInt) + TY;
+        PX[I] := Int64(XA.ElementValues[XO + I].AsInt) + TX;
+        PY[I] := Int64(YA.ElementValues[YO + I].AsInt) + TY;
       end;
     end;
     if (Count = 0) or (CL >= CR) or (CT >= CB) or (Color shr 24 = 0) then
@@ -895,11 +895,11 @@ begin
       RGB := VM.GetObject(Args[1].AsRef);
       Offset := Arg(2);
       I := Arg(3);
-      if (Offset < 0) or (I < 0) or (Offset > Length(RGB.Elements)) or (I > Length(RGB.Elements) - Offset) then
+      if (Offset < 0) or (I < 0) or (Offset > RGB.ElementCount) or (I > RGB.ElementCount - Offset) then
         VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
       SetLength(Text, I);
       for var J := 0 to I - 1 do
-        Text[J + 1] := Char(RGB.Elements[Offset + J].AsInt);
+        Text[J + 1] := Char(RGB.ElementValues[Offset + J].AsInt);
       X1 := Int64(Arg(4)) + TX;
       Y1 := Int64(Arg(5)) + TY;
       TextAnchor := Arg(6);
@@ -966,7 +966,7 @@ begin
     for YY := Max(Int64(CT), Y1) to Min(Int64(CB) - 1, Y1 + SH - 1) do
       for XX := Max(Int64(CL), X1) to Min(Int64(CR) - 1, X1 + SW - 1) do
       begin
-        var Value := UInt32(RGB.Elements[Integer(Int64(Offset) + (YY - Y1) * Stride + XX - X1)].AsInt);
+        var Value := UInt32(RGB.ElementValues[Integer(Int64(Offset) + (YY - Y1) * Stride + XX - X1)].AsInt);
         if Arg(8) = 0 then
           Value := Value or $FF000000;
         Blend(XX, YY, Value);
@@ -1024,9 +1024,59 @@ begin
     Anchor(X1, Y1, DW, DH, I);
     if Source.Pixels = TargetPixels then
     begin
-      SetLength(Snapshot, Length(Source.Pixels.Elements));
+      SetLength(Snapshot, Source.Pixels.ElementCount);
       for I := 0 to High(Snapshot) do
-        Snapshot[I] := UInt32(Source.Pixels.Elements[I].AsInt);
+        Snapshot[I] := UInt32(Source.Pixels.ElementValues[I].AsInt);
+    end;
+    // No transform/aliasing: copy opaque runs, skip binary transparency, and
+    // invoke general source-over only for actually translucent pixels.
+    if (Transform = 0) and (Length(Snapshot) = 0) then
+    begin
+      var SourceData, TargetData: PInteger;
+      var DirectTarget := TargetPixels = nil;
+      if DirectTarget then
+      begin
+        TargetData := nil;
+        if Length(Pixels) <> 0 then
+          TargetData := PInteger(@Pixels[0]);
+      end
+      else
+        DirectTarget := TargetPixels.TryIntData(TargetData);
+      if DirectTarget and Source.Pixels.TryIntData(SourceData) then
+      begin
+        var Left := Integer(Max(Int64(CL), X1));
+        var Right := Integer(Min(Int64(CR), X1 + DW));
+        if Left < Right then
+          for YY := Max(Int64(CT), Y1) to Min(Int64(CB) - 1, Y1 + DH - 1) do
+          begin
+            var SourceIndex := (SrcY + Integer(YY - Y1)) * Source.Width + SrcX + Integer(Int64(Left) - X1);
+            var TargetIndex := Integer(YY) * Width + Left;
+            var Remaining := Right - Left;
+            while Remaining > 0 do
+            begin
+              var Value := UInt32(SourceData[SourceIndex]);
+              if Value shr 24 = 255 then
+              begin
+                var Count := 1;
+                while (Count < Remaining) and (UInt32(SourceData[SourceIndex + Count]) shr 24 = 255) do
+                  Inc(Count);
+                Move(SourceData[SourceIndex], TargetData[TargetIndex], Count * 4);
+                Inc(SourceIndex, Count);
+                Inc(TargetIndex, Count);
+                Dec(Remaining, Count);
+              end
+              else
+              begin
+                if Value shr 24 <> 0 then
+                  TargetData[TargetIndex] := Integer(J2MECompositeColor(UInt32(TargetData[TargetIndex]), Value));
+                Inc(SourceIndex);
+                Inc(TargetIndex);
+                Dec(Remaining);
+              end;
+            end;
+          end;
+        Exit;
+      end;
     end;
     for YY := Max(Int64(CT), Y1) to Min(Int64(CB) - 1, Y1 + DH - 1) do
       for XX := Max(Int64(CL), X1) to Min(Int64(CR) - 1, X1 + DW - 1) do
@@ -1039,7 +1089,7 @@ begin
         if Length(Snapshot) <> 0 then
           Blend(XX, YY, Snapshot[I])
         else
-          Blend(XX, YY, UInt32(Source.Pixels.Elements[I].AsInt));
+          Blend(XX, YY, UInt32(Source.Pixels.ElementValues[I].AsInt));
       end;
     Exit;
   end;
@@ -1110,7 +1160,7 @@ begin
           if TargetPixels = nil then
             ShapePixels[Row * Width + Col] := J2MECompositeColor(ShapePixels[Row * Width + Col], Color)
           else
-            TargetPixels.Elements[Row * Width + Col] := TJVMValue.Int(Integer(J2MECompositeColor(UInt32(TargetPixels.Elements[Row * Width + Col].AsInt), Color)));
+            TargetPixels.ElementValues[Row * Width + Col] := TJVMValue.Int(Integer(J2MECompositeColor(UInt32(TargetPixels.ElementValues[Row * Width + Col].AsInt), Color)));
       end);
     if (N = 'drawArc') or (N = 'fillArc') then
       Raster.Arc(X1, Y1, Integer(W), Integer(H), Arg(5), Arg(6), N = 'fillArc', Stroke <> 0)

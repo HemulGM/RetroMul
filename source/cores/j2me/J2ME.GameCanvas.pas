@@ -207,7 +207,7 @@ begin
     for Row := T to B - 1 do
       for Col := L to R - 1 do
       begin
-        V := View.Pixels.Elements[Row * View.Width + Col];
+        V := View.Pixels.ElementValues[Row * View.Width + Col];
         Pixels[Row * Width + Col] := UInt32(V.AsInt);
       end;
     Flushed := True;

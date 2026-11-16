@@ -4,12 +4,13 @@ interface
 
 uses
   System.Classes, JVM.StateIO, System.SysUtils, JVM.Types, JVM.ClassFile,
-  JVM.Runtime, J2ME.Alert.Layout, J2ME.Form.Layout, J2ME.Item.Layout;
+  JVM.Runtime, J2ME.Input, J2ME.Alert.Layout, J2ME.Form.Layout, J2ME.Item.Layout;
 
 type
   TJ2MELCDUI = class
   private
     FVM: TJVM;
+    FCanvasKeyLayout: TJ2MEKeyLayout;
     FWidth, FHeight, FCurrent: Integer;
     FDirty: Boolean;
     FMenu, FScrollText: Boolean;
@@ -40,6 +41,7 @@ type
     procedure Key(Screen, Code: Integer; Pressed: Boolean);
     function ChoiceInvoke(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
   public
+    property CanvasKeyLayout: TJ2MEKeyLayout read FCanvasKeyLayout write FCanvasKeyLayout;
     procedure TransferState(S: TJVMStateIO);
     constructor Create(VM: TJVM; Width, Height: Integer; const ChangeScreen: TProc<Integer>; const PostTimeout: TProc<Integer, Integer>; const PostItemChanged: TProc<Integer>);
     destructor Destroy; override;
@@ -1141,10 +1143,8 @@ begin
   end;
   if IsCanvas(Screen) then
   begin
-    var Name := 'keyReleased';
-    if Pressed then
-      Name := 'keyPressed';
-    FVM.InvokeGuest(FVM.ResolveMethod(FVM.LoadClass(O.ClassName), Name, '(I)V'), [TJVMValue.Ref(Screen), TJVMValue.Int(Code)]);
+    FVM.InvokeGuest(FVM.LoadClass('javax/microedition/lcdui/Canvas').FindMethod('$deliverKey', '(IZ)V'),
+      [TJVMValue.Ref(Screen), TJVMValue.Int(J2MEDeviceKeyCode(FCanvasKeyLayout, Code)), TJVMValue.Int(Ord(Pressed))]);
   end;
 end;
 
@@ -1163,7 +1163,7 @@ var
       begin
         Snapshot := J2MENewMutableImage(FVM, View.Width, View.Height);
         var Copy := J2MEImageView(FVM, Snapshot);
-        Copy.Pixels.Elements := System.Copy(View.Pixels.Elements);
+        View.Pixels.CopyArrayElementsTo(Copy.Pixels, 0, 0, View.Pixels.ElementCount);
         Copy.Image.Fields[UI + 'Image.$mutable:Z'] := TJVMValue.Int(0);
       end;
     end;
@@ -1288,7 +1288,7 @@ var
       Exit;
     Result := J2MENewMutableImage(FVM, View.Width, View.Height);
     var Snapshot := J2MEImageView(FVM, Result);
-    Snapshot.Pixels.Elements := Copy(View.Pixels.Elements);
+    View.Pixels.CopyArrayElementsTo(Snapshot.Pixels, 0, 0, View.Pixels.ElementCount);
     Snapshot.Image.Fields[UI + 'Image.$mutable:Z'] := TJVMValue.Int(0);
   end;
 
@@ -1463,7 +1463,7 @@ begin
     if (Count >= 65536) or (Count >= FVM.MaxArrayLength) then
       FVM.RaiseJava('java/lang/OutOfMemoryError', 'Choice element limit');
     var R := NewRow(Args[TextArg].AsRef, Args[TextArg + 1].AsRef);
-    SetLength(Rows.Elements, Count + 1);
+    Rows.ResizeElements(Count + 1);
     for var I := Count downto Index + 1 do
       Rows.Elements[I] := Rows.Elements[I - 1];
     Rows.Elements[Index] := TJVMValue.Ref(R);
@@ -1477,7 +1477,7 @@ begin
   begin
     for var I := Index to Count - 2 do
       Rows.Elements[I] := Rows.Elements[I + 1];
-    SetLength(Rows.Elements, Count - 1);
+    Rows.ResizeElements(Count - 1);
     Normalize;
     Exit;
   end;

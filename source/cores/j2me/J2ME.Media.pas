@@ -14,13 +14,14 @@ type
   TJ2MEMediaPlayer = class
   public
     Reference, State, Volume, LoopCount, LoopsLeft, Generation: Integer;
-    Muted, Decoding, Rooted: Boolean;
+    Muted, Decoding, Rooted, Streaming: Boolean;
     ContentType: string;
     Data: TBytes;
     Decoder: ITuneDecoder;
     Info: TTuneInfo;
     PCM: TArray<SmallInt>;
-    SampleCount, FrameCount: Integer;
+    SampleCount: Integer;
+    FrameCount, CacheFrame, DecoderFrame: Int64;
     Position: Int64; // Source-frame position in 1/44100 frame units.
     procedure DiscardDecodedAudio;
     function MediaTime: Int64;
@@ -42,9 +43,12 @@ type
     FTones: TList<TJ2METone>;
     FClockFrames: Int64;
     FTimeBase: Integer;
+    FSeenGC: UInt64;
+    FDecodeBuffer: TArray<SmallInt>;
     function Player(Ref: Integer; AllowClosed: Boolean = False): TJ2MEMediaPlayer;
     function CreatePlayer(const Data: TBytes; const ContentType: string): Integer;
     function RealizeStep(P: TJ2MEMediaPlayer; Generation: Integer): Boolean;
+    procedure ReadStream(P: TJ2MEMediaPlayer; Source, Next: Int64);
     procedure PostEvent(P: TJ2MEMediaPlayer; const Name: string; Data: Integer);
     procedure TimeEvent(P: TJ2MEMediaPlayer; const Name: string; Time: Int64);
     procedure SetStarted(P: TJ2MEMediaPlayer; Started: Boolean);
@@ -58,6 +62,7 @@ type
     function Handles(const Owner: string): Boolean;
     function Invoke(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
     function Render(Frames: Integer): TArray<SmallInt>;
+    procedure RenderMixInto(var Mix: TArray<Int64>; Frames: Integer);
     function RenderMix(Frames: Integer): TArray<Int64>;
     function TakeEvent(out Event: TJ2MEMediaEvent): Boolean;
     procedure ReleaseEvent(const Event: TJ2MEMediaEvent);
@@ -100,6 +105,9 @@ begin
   FrameCount := 0;
   Position := 0;
   Decoding := False;
+  Streaming := False;
+  CacheFrame := 0;
+  DecoderFrame := 0;
 end;
 
 function TJ2MEMediaPlayer.MediaTime: Int64;
@@ -120,6 +128,7 @@ constructor TJ2MEMedia.Create(VM: TJVM);
 begin
   inherited Create;
   FVM := VM;
+  FSeenGC := High(UInt64);
   FPlayers := TObjectDictionary<Integer, TJ2MEMediaPlayer>.Create([doOwnsValues]);
   FEvents := TQueue<TJ2MEMediaEvent>.Create;
   FTones := TList<TJ2METone>.Create;
@@ -370,6 +379,9 @@ end;
 
 procedure TJ2MEMedia.Sweep;
 begin
+  if FSeenGC = FVM.GCGeneration then
+    Exit;
+  FSeenGC := FVM.GCGeneration;
   for var Ref in FPlayers.Keys.ToArray do
     if not FVM.IsObjectAlive(Ref) then
       FPlayers.Remove(Ref);
@@ -451,8 +463,28 @@ begin
       P.Info := P.Decoder.GetInfo;
       if (P.Info.SampleRate < 1) or (P.Info.SampleRate > 384000) or not (P.Info.Channels in [1, 2]) then
         raise EArgumentException.Create('Unsupported PCM format');
+      // Finite long resources are decoded on demand rather than expanded in
+      // full during realize. Short clips retain the existing PCM path.
+      if Length(P.Info.TrackDurations) > 0 then
+      begin
+        var Seconds := P.Info.TrackDurations[0];
+        if not IsNan(Seconds) and not IsInfinite(Seconds) and (Seconds >= 0) and (Seconds <= 86402) then
+        begin
+          var Frames := Round(Seconds * P.Info.SampleRate);
+          if Frames > MaxClipSamples div P.Info.Channels then
+          begin
+            P.Streaming := True;
+            P.FrameCount := Frames;
+            P.Decoding := False;
+            P.State := 200;
+            TimeEvent(P, 'durationUpdated', P.Duration);
+            Exit;
+          end;
+        end;
+      end;
     end;
-    SetLength(Samples, 4096 * P.Info.Channels);
+    SetLength(FDecodeBuffer, 4096 * P.Info.Channels);
+    Samples := FDecodeBuffer;
     Read := P.Decoder.Render(Samples, 4096);
     if (Read < 0) or (Read > 4096) then
       raise EArgumentException.Create('Invalid decoder result');
@@ -496,6 +528,71 @@ begin
       FVM.RaiseJava(Media + 'MediaException', E.Message);
     end;
   end;
+end;
+
+procedure TJ2MEMedia.ReadStream(P: TJ2MEMediaPlayer; Source, Next: Int64);
+begin
+  if (Source >= P.CacheFrame) and (Next < P.CacheFrame + P.SampleCount div P.Info.Channels) then
+    Exit;
+  var Prefix := 0;
+  var Tail: array[0..1] of SmallInt;
+  if (P.SampleCount > 0) and (Source = P.CacheFrame + P.SampleCount div P.Info.Channels - 1) then
+  begin
+    Prefix := 1;
+    for var C := 0 to P.Info.Channels - 1 do
+      Tail[C] := P.PCM[P.SampleCount - P.Info.Channels + C];
+  end;
+  var Start := Source + Prefix;
+  var Samples: TArray<SmallInt>;
+  SetLength(FDecodeBuffer, 4096 * P.Info.Channels);
+  Samples := FDecodeBuffer;
+  var Seeker: ITuneSeekDecoder;
+  if (P.Decoder = nil) or ((P.DecoderFrame > Start) and not Supports(P.Decoder, ITuneSeekDecoder, Seeker)) then
+  begin
+    var Ext := '.wav';
+    if P.ContentType = 'audio/midi' then
+      Ext := '.mid';
+    P.Decoder := TTuneDecoders.OpenData(P.Data, Ext);
+    P.DecoderFrame := 0;
+    var Info := P.Decoder.GetInfo;
+    if (Info.SampleRate <> P.Info.SampleRate) or (Info.Channels <> P.Info.Channels) then
+      raise EJVMError.Create('Incompatible streaming audio format');
+  end;
+  if (P.DecoderFrame <> Start) and Supports(P.Decoder, ITuneSeekDecoder, Seeker) then
+  begin
+    P.DecoderFrame := Seeker.SeekFrame(Start,
+      function: Boolean
+      begin
+        Result := FVM.StopRequested or TThread.CheckTerminated;
+      end);
+    if P.DecoderFrame <> Start then
+      raise EJVMError.Create('Invalid streaming audio seek');
+  end;
+  while P.DecoderFrame < Start do
+  begin
+    if FVM.StopRequested or TThread.CheckTerminated then
+      raise EAbort.Create('Media seek cancelled');
+    var Count := Integer(Min(Int64(4096), Start - P.DecoderFrame));
+    var Read := P.Decoder.Render(Samples, Count);
+    if (Read <= 0) or (Read > Count) then
+      raise EJVMError.Create('Invalid streaming audio seek');
+    Inc(P.DecoderFrame, Read);
+  end;
+  if FVM.StopRequested or TThread.CheckTerminated then
+    raise EAbort.Create('Media render cancelled');
+  var Count := Integer(Min(Int64(4096), P.FrameCount - Start));
+  var Read := P.Decoder.Render(Samples, Count);
+  if (Read < 0) or (Read > Count) or (Source + Prefix + Read <= Next) then
+    raise EJVMError.Create('Invalid streaming audio block');
+  Inc(P.DecoderFrame, Read);
+  P.CacheFrame := Source;
+  P.SampleCount := (Prefix + Read) * P.Info.Channels;
+  SetLength(P.PCM, P.SampleCount);
+  if Prefix <> 0 then
+    for var C := 0 to P.Info.Channels - 1 do
+      P.PCM[C] := Tail[C];
+  if Read <> 0 then
+    Move(Samples[0], P.PCM[Prefix * P.Info.Channels], Read * P.Info.Channels * SizeOf(SmallInt));
 end;
 
 procedure TJ2MEMedia.PostEvent(P: TJ2MEMediaPlayer; const Name: string; Data: Integer);
@@ -607,7 +704,7 @@ var
   begin
     var R := FVM.NewArray('[Ljava/lang/String;', Length(Values));
     for var I := 0 to High(Values) do
-      FVM.GetObject(R).Elements[I] := TJVMValue.Ref(FVM.InternString(Values[I]));
+      FVM.GetObject(R).ElementValues[I] := TJVMValue.Ref(FVM.InternString(Values[I]));
     Result := TJVMValue.Ref(R);
   end;
 
@@ -628,9 +725,9 @@ begin
     if N = '$create' then
     begin
       A := FVM.GetObject(Args[0].AsRef);
-      SetLength(Data, Length(A.Elements));
+      SetLength(Data, A.ElementCount);
       for var I := 0 to High(Data) do
-        Data[I] := Byte(A.Elements[I].AsInt);
+        Data[I] := Byte(A.ElementValues[I].AsInt);
       Name := '';
       if Args[1].AsRef <> 0 then
         Name := FVM.GetObject(Args[1].AsRef).Text;
@@ -777,6 +874,14 @@ begin
       end;
       if P.State >= 300 then
         P.State := 200;
+      if P.Streaming then
+      begin
+        P.Decoder := nil;
+        P.PCM := nil;
+        P.SampleCount := 0;
+        P.CacheFrame := 0;
+        P.DecoderFrame := 0;
+      end;
     end;
     if N = 'close' then
     begin
@@ -825,7 +930,7 @@ begin
   if N = 'getControls' then
   begin
     ArrayRef := FVM.NewArray('[Ljavax/microedition/media/Control;', 1);
-    FVM.GetObject(ArrayRef).Elements[0] := FVM.GetObject(Ref).Fields[PlayerImpl + '.$volume:' + VolumeDesc];
+    FVM.GetObject(ArrayRef).ElementValues[0] := FVM.GetObject(Ref).Fields[PlayerImpl + '.$volume:' + VolumeDesc];
     Exit(TJVMValue.Ref(ArrayRef));
   end;
   if N = 'getTimeBase' then
@@ -850,9 +955,9 @@ begin
     if Value.AsRef <> 0 then
     begin
       A := FVM.GetObject(Value.AsRef);
-      V := Length(A.Elements);
+      V := A.ElementCount;
       for var I := 0 to V - 1 do
-        if A.Elements[I].AsRef = Ref then
+        if A.ElementValues[I].AsRef = Ref then
           Index := I;
     end;
     if ((N = 'addPlayerListener') and (Index >= 0)) or ((N = 'removePlayerListener') and (Index < 0)) then
@@ -865,25 +970,25 @@ begin
     for var I := 0 to V - 1 do
       if Adding or (I <> Index) then
       begin
-        FVM.GetObject(ArrayRef).Elements[J] := A.Elements[I];
+        FVM.GetObject(ArrayRef).ElementValues[J] := A.ElementValues[I];
         Inc(J);
       end;
     if Adding then
-      FVM.GetObject(ArrayRef).Elements[J] := TJVMValue.Ref(Ref);
+      FVM.GetObject(ArrayRef).ElementValues[J] := TJVMValue.Ref(Ref);
     FVM.GetObject(P.Reference).Fields[PlayerImpl + '.$listeners:[Ljavax/microedition/media/PlayerListener;'] := TJVMValue.Ref(ArrayRef);
     Exit;
   end;
   raise EJVMUnsupported.Create('Unimplemented media native ' + C + '.' + N);
 end;
 
-function TJ2MEMedia.RenderMix(Frames: Integer): TArray<Int64>;
-var
-  Mix: TArray<Int64>;
+procedure TJ2MEMedia.RenderMixInto(var Mix: TArray<Int64>; Frames: Integer);
 begin
   if (Frames < 0) or (Frames > 8192) then
     raise EArgumentOutOfRangeException.Create('Media render block');
   Sweep;
   SetLength(Mix, Frames * 2);
+  if Length(Mix) <> 0 then
+    FillChar(Mix[0], Length(Mix) * SizeOf(Int64), 0);
   for var P in FPlayers.Values do
     if P.State = 400 then
     begin
@@ -891,20 +996,26 @@ begin
       begin
         if P.State <> 400 then
           Break;
-        if P.FrameCount = 0 then
+        if (P.FrameCount = 0) or (P.Position >= P.FrameCount * 44100) then
         begin
           EndOfMedia(P);
-          Break;
+          if P.State <> 400 then
+            Break;
         end;
-        var Source := Integer(P.Position div 44100);
+        var Source := P.Position div 44100;
         var Fraction := P.Position mod 44100;
         var Next := Min(Source + 1, P.FrameCount - 1);
+        if P.Streaming then
+          ReadStream(P, Source, Next);
+        var Offset := Int64(0);
+        if P.Streaming then
+          Offset := P.CacheFrame;
         for var C := 0 to 1 do
           if not P.Muted then
           begin
             var Channel := Min(C, P.Info.Channels - 1);
-            var A := P.PCM[Source * P.Info.Channels + Channel];
-            var B := P.PCM[Next * P.Info.Channels + Channel];
+            var A := P.PCM[(Source - Offset) * P.Info.Channels + Channel];
+            var B := P.PCM[(Next - Offset) * P.Info.Channels + Channel];
             var Sample := (Int64(A) * (44100 - Fraction) + Int64(B) * Fraction) div 44100;
             Inc(Mix[I * 2 + C], Sample * P.Volume div 100);
           end;
@@ -936,8 +1047,12 @@ begin
     else
       FTones[T] := Tone;
   end;
-  Result := Mix;
   Inc(FClockFrames, Frames);
+end;
+
+function TJ2MEMedia.RenderMix(Frames: Integer): TArray<Int64>;
+begin
+  RenderMixInto(Result, Frames);
 end;
 
 function TJ2MEMedia.Render(Frames: Integer): TArray<SmallInt>;
@@ -950,7 +1065,18 @@ end;
 
 procedure TJ2MEMedia.TransferState(S: TJVMStateIO);
 begin
-  S.Tag('J2ME.Media-1');
+  var Tag := 'J2ME.Media-1';
+  if not S.Loading then
+    for var P in FPlayers.Values do
+      if P.Streaming then
+      begin
+        Tag := 'J2ME.Media-2';
+        Break;
+      end;
+  S.Text(Tag);
+  if (Tag <> 'J2ME.Media-1') and (Tag <> 'J2ME.Media-2') then
+    raise EReadError.Create('Unsupported media snapshot version');
+  var Version2 := Tag = 'J2ME.Media-2';
   S.Int64Value(FClockFrames);
   S.Int(FTimeBase);
   var Keys := FPlayers.Keys.ToArray;
@@ -980,7 +1106,15 @@ begin
       S.Int(P.LoopsLeft);
       S.Int(P.Generation);
       S.Int(P.SampleCount);
-      S.Int(P.FrameCount);
+      if Version2 then
+        S.Int64Value(P.FrameCount)
+      else
+      begin
+        var Frames := Integer(P.FrameCount);
+        S.Int(Frames);
+        if S.Loading then
+          P.FrameCount := Frames;
+      end;
       S.Int(P.Info.SampleRate);
       S.Int(P.Info.Channels);
       S.Bool(P.Muted);
@@ -990,6 +1124,23 @@ begin
       S.Bytes(P.Data);
       S.PCM(P.PCM);
       S.Int64Value(P.Position);
+      if Version2 then
+      begin
+        S.Bool(P.Streaming);
+        if P.Streaming then
+          S.Int64Value(P.CacheFrame);
+      end;
+      if P.Streaming then
+      begin
+        if not (P.Info.Channels in [1, 2]) or (P.Info.SampleRate < 1) or (P.Info.SampleRate > 384000) or
+          P.Decoding or ((P.State <> 200) and (P.State <> 300) and (P.State <> 400)) or (P.FrameCount <= 0) or
+          (P.FrameCount > Int64(P.Info.SampleRate) * 86402) or
+          (P.SampleCount < 0) or (P.SampleCount mod P.Info.Channels <> 0) or
+          (Length(P.PCM) > 4097 * P.Info.Channels) or (P.CacheFrame < 0) or (P.CacheFrame > P.FrameCount) or
+          (P.CacheFrame + P.SampleCount div P.Info.Channels > P.FrameCount) or
+          (P.Position < 0) or (P.Position > P.FrameCount * 44100) then
+          raise EReadError.Create('Invalid snapshot streaming audio');
+      end;
       if (P.SampleCount < 0) or (P.FrameCount < 0) then
         raise EReadError.Create('Invalid snapshot media PCM');
       // Version 1 originally retained counters after close had freed the PCM.
@@ -1000,6 +1151,11 @@ begin
         P.DiscardDecodedAudio;
       if P.SampleCount > Length(P.PCM) then
         raise EReadError.Create('Invalid snapshot media PCM');
+      if not P.Streaming and not P.Decoding and (P.State >= 200) then
+        if not (P.Info.Channels in [1, 2]) or (P.Info.SampleRate < 1) or (P.Info.SampleRate > 384000) or
+          (P.SampleCount mod P.Info.Channels <> 0) or (P.FrameCount <> P.SampleCount div P.Info.Channels) or
+          (P.Position < 0) or (P.Position > P.FrameCount * 44100) then
+          raise EReadError.Create('Invalid snapshot media frame count');
       if S.Loading and P.Decoding and (P.SampleCount > 0) then
       begin
         var Ext := '.wav';

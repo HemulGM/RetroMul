@@ -7,6 +7,10 @@ type
 
   TM3GVector = array[0..3] of Single;
 
+  TM3GDoubleVector = array[0..3] of Double;
+
+function M3GDoubleTransform(const M: TM3GMatrix; const V: TM3GDoubleVector): TM3GDoubleVector;
+
 function M3GIdentity: TM3GMatrix;
 
 function M3GMultiply(const A, B: TM3GMatrix): TM3GMatrix;
@@ -29,6 +33,16 @@ implementation
 
 uses
   System.Math;
+
+function M3GDoubleTransform(const M: TM3GMatrix; const V: TM3GDoubleVector): TM3GDoubleVector;
+begin
+  for var K := 0 to 3 do
+  begin
+    Result[K] := 0;
+    for var J := 0 to 3 do
+      Result[K] := Result[K] + M[K * 4 + J] * V[J];
+  end;
+end;
 
 function M3GIdentity: TM3GMatrix;
 begin

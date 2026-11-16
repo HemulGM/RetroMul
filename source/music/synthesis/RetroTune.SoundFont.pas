@@ -62,13 +62,23 @@ type
 
   PSFRegion = ^TSFRegion;
 
+  TSFVoiceArray = array[0..255] of TSFVoice;
+
+  TSFChannelArray = array[0..15] of TSFChannel;
+
+  TSoundFontSynthState = record
+    Voices: TSFVoiceArray;
+    Channels: TSFChannelArray;
+    Age: Int64;
+  end;
+
   TSoundFontSynth = class
   private
     FBank: ISoundFont;
     FRegions: TArray<TSFRegion>;
     FSamples: TArray<SmallInt>;
-    FVoices: array[0..255] of TSFVoice;
-    FChannels: array[0..15] of TSFChannel;
+    FVoices: TSFVoiceArray;
+    FChannels: TSFChannelArray;
     FAge: Int64;
     procedure StartStage(var V: TSFVoice; Stage: Integer);
     procedure StartModStage(var V: TSFVoice; Stage: Integer);
@@ -80,6 +90,8 @@ type
     procedure Control(Channel, Number, Value: Integer);
   public
     constructor Create(const Bank: ISoundFont);
+    function CaptureState: TSoundFontSynthState;
+    procedure RestoreState(const State: TSoundFontSynthState);
     procedure Reset;
     procedure Message(Status, A, B: Byte);
     procedure ReleaseAll;
@@ -369,6 +381,20 @@ begin
   FRegions := Bank.Regions;
   FSamples := Bank.Samples;
   Reset;
+end;
+
+function TSoundFontSynth.CaptureState: TSoundFontSynthState;
+begin
+  Result.Voices := FVoices;
+  Result.Channels := FChannels;
+  Result.Age := FAge;
+end;
+
+procedure TSoundFontSynth.RestoreState(const State: TSoundFontSynthState);
+begin
+  FVoices := State.Voices;
+  FChannels := State.Channels;
+  FAge := State.Age;
 end;
 
 procedure TSoundFontSynth.Reset;

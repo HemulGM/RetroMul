@@ -12,7 +12,7 @@ function InvokeJavaBuilder(VM: TJVM; Method: TJVMMethod; const Args: TArray<TJVM
 implementation
 
 uses
-  System.SysUtils, System.Math;
+  System.SysUtils, System.Math, Java.Floating.Text;
 
 {$Q-}{$R-}
 
@@ -273,9 +273,9 @@ begin
         TJVMKind.Long:
           S := IntToStr(V.AsLong);
         TJVMKind.Float:
-          S := FloatToStr(V.AsFloat, TFormatSettings.Invariant);
+          S := JavaFloatingText(UInt64(V.Bits), True);
         TJVMKind.Double:
-          S := FloatToStr(V.AsDouble, TFormatSettings.Invariant);
+          S := JavaFloatingText(UInt64(V.Bits), False);
       else
         raise EJVMError.Create('Unsupported string buffer argument');
       end;

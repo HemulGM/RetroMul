@@ -14,6 +14,7 @@ type
     function GetProperty(const Name: string; out Value: string): Boolean; virtual;
     function DefaultEncoding: string; virtual;
     function DefaultTimeZoneID: string; virtual;
+    function AllowEmptySnapshotFields(C: TJVMClass): Boolean; override;
     function InvokeNative(VM: TJVM; Method: TJVMMethod; const Arguments: TArray<TJVMValue>): TJVMValue; override;
   end;
 
@@ -29,7 +30,8 @@ uses
   System.Math, JVM.Threading, Java.Random, Java.IO, Java.Strings, Java.Timers,
   Java.Collections, Java.Numbers, Java.Characters, Java.Booleans, Java.Math,
   Java.Hashtable, Java.Readers, Java.Writers, Java.Diagnostics, Java.Builders,
-  Java.Reflection, Java.Environment, Java.TimeZones, Java.Calendars;
+  Java.Reflection, Java.Environment, Java.TimeZones, Java.Calendars,
+  Java.Floating;
 
 {$Q-}{$R-}
 
@@ -128,7 +130,9 @@ begin
   AddException('ExceptionInInitializerError', 'LinkageError');
   AddException('NoClassDefFoundError', 'LinkageError');
   VM.LoadClass('java/lang/ExceptionInInitializerError').AddNative('getException', '()Ljava/lang/Throwable;');
-  AddException('OutOfMemoryError', 'Error');
+  AddException('VirtualMachineError', 'Error');
+  VM.LoadClass('java/lang/VirtualMachineError').Access := JVM_ACC_PUBLIC or JVM_ACC_ABSTRACT or $0020;
+  AddException('OutOfMemoryError', 'VirtualMachineError');
   C := AddClass('java/io/IOException', 'java/lang/Exception');
   C.AddNative('<init>', '()V');
   C.AddNative('<init>', '(Ljava/lang/String;)V');
@@ -169,12 +173,7 @@ begin
   InstallJavaSystem(VM);
   InstallJavaEnvironment(VM);
   InstallJavaMath(VM);
-  C := AddClass('java/lang/Float', 'java/lang/Object');
-  C.AddNative('floatToIntBits', '(F)I', True);
-  C.AddNative('intBitsToFloat', '(I)F', True);
-  C := AddClass('java/lang/Double', 'java/lang/Object');
-  C.AddNative('doubleToLongBits', '(D)J', True);
-  C.AddNative('longBitsToDouble', '(J)D', True);
+  InstallJavaFloating(VM);
   InstallJavaRandom(VM);
   InstallJavaNumbers(VM);
   InstallJavaCharacters(VM);
@@ -188,6 +187,7 @@ begin
   InstallJavaReaders(VM);
   InstallJavaWriters(VM);
   InstallJavaPrintStreams(VM);
+  VM.PrepareOutOfMemory;
 end;
 
 function NewJavaLong(VM: TJVM; Value: Int64): Integer;
@@ -228,6 +228,11 @@ begin
   Result := False;
 end;
 
+function TJavaHost.AllowEmptySnapshotFields(C: TJVMClass): Boolean;
+begin
+  Result := IsLegacyEmptyFloatingClass(C);
+end;
+
 function TJavaHost.DefaultEncoding: string;
 begin
   Result := 'UTF-8';
@@ -243,7 +248,6 @@ var
   C, N, D, S, T, Component: string;
   O, Source, Dest: TJVMObject;
   I, J, K, Count, Hash: Integer;
-  Temp: TArray<TJVMValue>;
   V: TJVMValue;
   Thread: TJVMThreadContext;
   Timeout: Int64;
@@ -601,58 +605,33 @@ begin
       T := Copy(Dest.ClassName, 2, MaxInt);
       if ((Length(S) = 1) or (Length(T) = 1)) and (S <> T) then
         VM.RaiseJava('java/lang/ArrayStoreException');
-      if (I < 0) or (J < 0) or (Count < 0) or (Int64(I) + Count > Length(Source.Elements)) or
-        (Int64(J) + Count > Length(Dest.Elements)) then
+      if (I < 0) or (J < 0) or (Count < 0) or (Int64(I) + Count > Source.ElementCount) or
+        (Int64(J) + Count > Dest.ElementCount) then
         VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
-      Temp := Copy(Source.Elements, I, Count);
-      Component := T;
-      if T.StartsWith('L') then
-        Component := Copy(T, 2, Length(T) - 2);
-      for K := 0 to Count - 1 do
+      if (Length(S) = 1) or (Source = Dest) or VM.IsAssignable(Source.ClassName, Dest.ClassName) then
+        Source.CopyArrayElementsTo(Dest, I, J, Count)
+      else
       begin
-        V := Temp[K];
-        if (V.Kind = TJVMKind.Reference) and (V.AsRef <> 0) and
-          not VM.IsAssignable(VM.GetObject(V.AsRef).ClassName, Component) then
-          VM.RaiseJava('java/lang/ArrayStoreException');
-        Dest.Elements[J + K] := V;
+        Component := T;
+        if T.StartsWith('L') then
+          Component := Copy(T, 2, Length(T) - 2);
+        // Distinct reference arrays may fail after a compatible prefix. Preserve
+        // Java's partial-copy behavior, without an intermediate tagged array.
+        for K := 0 to Count - 1 do
+        begin
+          V := Source.ElementValues[I + K];
+          if (V.AsRef <> 0) and not VM.IsAssignable(VM.GetObject(V.AsRef).ClassName, Component) then
+            VM.RaiseJava('java/lang/ArrayStoreException');
+          Dest.ElementValues[J + K] := V;
+        end;
       end;
       Exit;
     end;
   end;
   if C = 'java/lang/Math' then
     Exit(InvokeJavaMath(VM, Method, Arguments));
-  if C = 'java/lang/Float' then
-  begin
-    if N = 'floatToIntBits' then
-    begin
-      V := Arg(0);
-      if IsNan(V.AsFloat) then
-        Exit(TJVMValue.Int($7FC00000));
-      Exit(TJVMValue.Int(Integer(V.Bits)));
-    end;
-    if N = 'intBitsToFloat' then
-    begin
-      Result.Kind := TJVMKind.Float;
-      Result.Bits := UInt32(Arg(0).AsInt);
-      Exit;
-    end;
-  end;
-  if C = 'java/lang/Double' then
-  begin
-    if N = 'doubleToLongBits' then
-    begin
-      V := Arg(0);
-      if IsNan(V.AsDouble) then
-        Exit(TJVMValue.Long($7FF8000000000000));
-      Exit(TJVMValue.Long(V.Bits));
-    end;
-    if N = 'longBitsToDouble' then
-    begin
-      Result.Kind := TJVMKind.Double;
-      Result.Bits := Arg(0).AsLong;
-      Exit;
-    end;
-  end;
+  if (C = 'java/lang/Float') or (C = 'java/lang/Double') then
+    Exit(InvokeJavaFloating(VM, Method, Arguments));
   raise EJVMUnsupported.Create('Native method not implemented: ' + C + '.' + N + D);
 end;
 

@@ -228,6 +228,28 @@
         <Debugger_RunParams>&quot;H:\ROMS\nes\Adventure Island 2.nes&quot;</Debugger_RunParams>
     </PropertyGroup>
     <ItemGroup>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Morph.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Picking.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Skin.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Animation.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Keyframe.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Sprite.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Lighting.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Environment.pas" />
+        <DCCReference Include="..\..\source\media\image\Media.Image.Types.pas" />
+        <DCCReference Include="..\..\source\media\image\Media.Image.GIF.pas" />
+        <DCCReference Include="..\..\source\media\image\Media.Image.JPEG.pas" />
+        <DCCReference Include="..\..\source\media\image\Media.Image.Decode.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Loader.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Texture.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Format.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Graphics.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Raster.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Mesh.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Scene.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Math.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Geometry.pas" />
         <DCCReference Include="..\..\source\runtime\Core.RomMetadata.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Metadata.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Screen.pas"/>
@@ -281,6 +303,8 @@
         <DCCReference Include="..\..\source\vm\java\Java.Readers.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Hashtable.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Numbers.pas"/>
+        <DCCReference Include="..\..\source\vm\java\Java.Floating.pas"/>
+        <DCCReference Include="..\..\source\vm\java\Java.Floating.Text.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Collections.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Timers.pas"/>
         <DCCReference Include="..\..\source\media\image\Media.Raster.Shapes.pas"/>

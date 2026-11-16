@@ -246,8 +246,7 @@ activation and MMS/JSR-205 remain pending.
   exceptions propagate. Nested streams, protected setError, serialized println
   and reentrant close use ordinary guest calls and monitors. Closing releases
   the underlying stream, including on callback errors. Float/double overloads
-  currently reuse existing builder formatting; exact Java floating text remains
-  pending and is not established by the ordinary-value printing tests.
+  use the same native Java floating-text converter as builders and numeric wrappers.
   Standard output/error bytes are retained in a bounded 64 KiB ring per VM.
   TakeOutput returns ordered channel-tagged chunks up to 4096 bytes; a host must
   decode each channel incrementally because chunk boundaries can split a character.
@@ -262,12 +261,12 @@ activation and MMS/JSR-205 remain pending.
   Tracing defaults off and does not change guest catch/Throwable behavior.
 - Object.toString uses the binary class name and lowercase unsigned hash text,
   calling the guest's virtual hashCode through a resumable callback. String.valueOf
-  supports int/long, boolean, char, char arrays/slices and objects; object conversion
+  supports int/long, float/double, boolean, char, char arrays/slices and objects; object conversion
   preserves virtual toString, null results, GC/yield and callback exceptions.
   StringBuffer/StringBuilder append(Object) use the same conversion path.
   StringBuffer methods keep its monitor across callbacks, and String(StringBuffer)
-  obtains a synchronized immutable snapshot. Floating-point valueOf overloads and
-  exact Java floating text formatting remain pending.
+  obtains a synchronized immutable snapshot. Floating-point valueOf overloads use
+  the shared integer-based converter described below.
 - `Java.Builders` implements mutable UTF-16 buffers with reserved character
   storage and a separate logical length. StringBuffer/StringBuilder support
   charAt/setCharAt/getChars, setLength with zero filling, capacity/ensureCapacity,
@@ -1751,3 +1750,818 @@ and432 boundary cases derived from140-octet payload budgets and UDH bit lengths.
 It includes the currency sign, extension escapes, port0, UCS-2 and the255-part
 protocol boundary. These are arithmetic and runtime regressions, not WMA
 certification or carrier interoperability tests.
+
+### M3G geometry foundation
+
+The J2ME host installs native `Transform`, `VertexArray`, `VertexBuffer`,
+`IndexBuffer`, `TriangleStripArray`, `Node`, `Group`, `Camera`, `World` and `Light`
+objects. Matrices use row-major storage
+and column vectors. Vertex buffers retain shared attributes, copy scale/bias
+values and validate component types and vertex counts before replacing state.
+Two texture-coordinate slots are available. Triangle-strip expansion preserves
+winding across odd/even triangles and restarts parity for each strip.
+
+Geometry is stored in the guest heap, including internal vertex/index arrays,
+so ordinary GC and snapshots preserve it. Non-node duplication copies internal
+storage and scalar state while retaining shared Object3D attributes and user
+objects. Reference enumeration includes duplicate attribute references and
+excludes application user objects; `find` follows those Object3D references.
+
+The abstract `Transformable` layer implements independent translation, scale,
+orientation and general matrix components. Its composite is `T R S M`;
+`preRotate` and `postRotate` change orientation in opposite multiplication
+orders. General matrices are copied, with null resetting that component to
+identity. Orientation queries reconstruct an equivalent angle/axis, including
+half turns. Native subclasses inherit identity defaults without heap allocations
+for unused components. There is no guest-accessible constructor. The fixture
+uses an internally allocated test subclass to exercise this layer before scene
+nodes and textures exist. Its scalar/matrix fields support ordinary snapshots.
+
+Groups maintain bidirectional parent/child links, prohibit cycles and multiple
+parents, and detach children without modifying absent children. Relative node
+transforms follow the path through the lowest common ancestor, excluding that
+ancestor's own transformation. Node matrices must be affine. Branch duplication
+rebuilds the descendant hierarchy and its parent links; parent references are
+excluded from Object3D enumeration/find. Camera supports copied generic matrices,
+perspective/parallel parameters, reversed clipping planes and deferred errors for
+empty view volumes. Camera and hierarchy state use ordinary guest heap storage.
+
+`Mesh` retains shared vertex/index/appearance objects while copying constructor
+array containers into independent slots. Submesh index errors are deferred to
+future rendering/picking, while constructors reject null/empty index buffers.
+Mesh duplication keeps shared geometry and appearances; replacing one appearance
+slot in a duplicate does not modify the source. Object3D traversal includes these
+references, with duplicates, without treating them as child nodes.
+
+`Appearance` retains its component objects, two texture slots and a layer in
+[-63,63]. `Material` stores the four lighting colors, validated color masks,
+shininess and vertex color tracking. Only diffuse color retains alpha in getters.
+These objects have working state/copy/GC/snapshot behavior and now drive native
+vertex lighting through `J2ME.M3G.Lighting`.
+
+`World` retains active camera/background references separately from child links.
+World nodes, including user subclasses, cannot be added as children. Duplication
+remaps the active camera when it is in the copied subtree, retaining external
+camera references otherwise. Setting a null active camera raises the documented
+exception; a newly created World still starts with no active camera.
+`Light` stores its mode, RGB color, intensity (including negative intensity),
+attenuation and spot parameters with API validation. Light state is preserved
+by duplication and snapshots and is read by the lighting stage on each draw.
+`Background` stores color/image, crop, BORDER/REPEAT modes and independent color
+and depth clear flags. Clearing maps the source crop by nearest pixel-center
+sampling to the captured viewport/clip, including repeated negative offsets,
+zero crops, mutable images and aliased source/target storage. RGB/RGBA format
+compatibility is validated before clearing. State and image references survive
+duplication, GC and snapshots.
+`Fog` supports LINEAR and EXPONENTIAL modes, RGB color, density and near/far
+planes. The rasterizer interpolates camera distance with perspective correction,
+applies fog to RGB before compositing and preserves alpha. Equal linear planes
+have undefined API results; this implementation chooses unchanged source color.
+
+The `Graphics3D` renderer draws lit or unlit triangle strips with flat/smooth colors and textures
+into MIDP Graphics targets, including Canvas and mutable Image, and mutable RGB
+or RGBA `Image2D` targets. It clips in homogeneous camera space before dividing
+by W, performs configured face culling/winding, half-open pixel coverage, alpha
+testing, five compositing modes, channel/depth masks and depth testing/writing,
+and captures Graphics clipping
+and origin at bind time. Camera/viewport/depth-range state and a bound target's
+depth array are guest heap state and survive snapshots. Release discards depth.
+The partial implementation continues to leave the package version unadvertised.
+
+`render(World)` uses the active camera's hierarchy transform, clears the World
+background and updates current camera/light state. `render(Node,Transform)`
+ignores root/ancestor transforms and attributes, retaining the current camera,
+lights and target contents. Descendant transforms, rendering enables, multiplied
+alpha factors, local mesh/camera scope masks, null appearances, ascending layers
+and opaque-before-blended ordering within layers are respected. Traversal uses
+an iterative stack. The current light array supports add/set/get/reset, nullable
+slots, copied transforms and snapshots.
+Camera transforms are validated for invertibility when assigned.
+
+Material lighting combines emissive, ambient, diffuse and specular terms, with
+no global ambient term. Ambient lights affect only the ambient material;
+directional/omni/spot lights contribute diffuse/specular terms. Scope masks,
+rendering enables, copied world-to-camera light transforms, negative intensity,
+distance attenuation, spotlight cutoff/exponent and local viewer highlights
+are respected. Normal components use the signed mapping `(2n+1)/(2^bits-1)`,
+then inverse-transpose model-view transformation and normalization. The divisor
+cancels when normalizing; the bias does not. Vertex color tracking replaces
+ambient/diffuse colors, with alpha taken from diffuse or the tracked color and
+multiplied by effective node alpha. Front/back colors are calculated separately
+for two-sided lighting, and flat shading retains the original provoking vertex
+through clipping. Missing normals and singular normal transforms have undefined
+API results; deterministic defaults are used without rejecting rasterizable
+geometry. Native loops observe VM cancellation. State is rebuilt from guest
+objects after snapshot restoration, without changing the snapshot format.
+
+`Image2D` implements all five pixel formats, byte/palette/MIDP image input,
+mutable rectangle updates, independent pixel storage on duplicate and guest
+heap snapshots. Pixel conversion uses the package rules, including the distinct
+RGB-to-alpha treatment for mutable MIDP sources. Missing palette entries use
+opaque white; their contents are unspecified by the API. `Texture2D` validates
+power-of-two image dimensions (up to 1024), wrapping/filtering/blending state,
+retains its image reference and uses the existing Transformable components.
+Two texture units support all five image formats and texture blending modes,
+CLAMP/REPEAT, nearest/bilinear base-level filtering and homogeneous projective
+STQ interpolation. Three-component coordinates and Texture2D transforms are
+applied before projection. Filtering between mip levels remains an unimplemented
+quality hint. Flat/smooth RGB/RGBA vertex colors are unsigned, and texture color
+is fogged before framebuffer compositing. `CompositingMode` and `PolygonMode` state is
+now connected to the renderer, including two-sided lighting and local viewer
+highlights. Depth offset units use an increment of 2^-24.
+
+`Sprite3D` implements scaled/unscaled state, shared image/appearance references,
+signed crop rectangles, independent duplication and snapshot restoration. Crop
+dimensions are limited to 1024 in absolute value; setImage resets the crop, and
+initial crops are clamped to that limit. Source images may be non-power-of-two
+and mutable. The renderer projects the sprite origin at constant depth and
+computes scaled dimensions from the documented camera-space reference-point
+distances. Unscaled sprites retain an integral pixel footprint during subpixel
+movement. Negative crop dimensions reflect the image without moving the source
+rectangle; out-of-image samples are discarded before depth writes. Only layer,
+Fog and CompositingMode are used from Appearance. Material, textures and polygon
+attributes are ignored. Effective node alpha is applied directly to the image
+alpha to avoid premature quantization. Immediate, grouped and World rendering
+share scope/enables, sorting, viewport clipping, depth and composition behavior.
+
+`J2ME.M3G.Format` reads bounded M3G sections and primitive values, validates
+Adler-32/zlib lengths, UTF-8, Float32 and header/external-section sequencing.
+Four Windows configurations test malformed inputs and all eight real NFS model
+containers. The separate Loader interprets object payloads after these checks.
+
+`J2ME.M3G.Loader` now deserializes Appearance, Camera, CompositingMode, PolygonMode,
+Group, Image2D, TriangleStripArray, Light, Material, Mesh, Texture2D, VertexArray,
+VertexBuffer, World, Background, Fog and Sprite3D (type 18). It follows typed backward references, decodes raw/delta
+vertices and index encodings, builds parent links through the native APIs, and
+returns only root objects. Immediate construction errors become IOException;
+deferred rendering validation stays deferred. User parameters become ordinary
+guest Hashtables with Integer keys and byte[] values, using a reusable native
+factory in Java.Hashtable. Duplicate IDs are rejected.
+
+Named resources and relative dependencies are resolved case-sensitively within
+the JAR; explicit resource: URIs also work from byte arrays. Per-load caching
+preserves shared external references, cycles/depth/byte limits are checked and
+all temporary roots are released on success or error. HTTP and other download
+protocols remain unimplemented. PNG input uses the shared native decoder, with
+the Image2D format selected by PNG color type and tRNS; byte-array offsets can
+select packed M3G/PNG assets followed by other data. The first root of an external
+M3G file is retained, as specified by the format.
+
+All eight real NFS models now load as one Group/Mesh/World root each with their
+expected reachable graph sizes. NFS's 2D image blocker is fixed: splash1.png is
+GIF and menucar.png is JPEG despite their names, and MIDP Image now recognizes
+the formats by content. The current loader-game trace passes Background setup
+and the sound prompt. A 30-second input probe now renders a textured car/road
+scene and produces audio, with no missing world-render method or duplicate-ID
+cast fault. The JAR lacks optional racecharacter.png, which the game catches.
+This is bounded scene execution, not a full playthrough or compatibility claim.
+
+`Media.Image.Decode` shares PNG/GIF/JPEG bitmap decoding with J2ME. GIF87a/89a
+supports global/local palettes, transparent indices, offsets on the logical
+screen, interlacing and bounded 12-bit LZW (including a full dictionary without
+Clear). Static Image uses the first frame; later animation frames are checked
+structurally and are not animated. Plain Text extensions remain unsupported.
+`Media.Image.JPEG` shares RetroMul's original PSP IDCT with the PSP adapter and
+adds bounded sequential 8-bit grayscale, YCbCr/RGB, quantization/Huffman tables,
+interleaved and separate scans, restart markers, and centered chroma upsampling.
+Progressive/lossless/arithmetic/CMYK JPEG remain unsupported. The PSP adapter
+keeps its existing 4:2:0 policy and error mapping. Valid 4:2:0 decoded planes are
+compared byte-for-byte against the prior native implementation, alongside the
+full PSP regression suite.
+
+Image tests use 42 independently decoded JDK ImageIO files, including all five
+GIF/JPEG resources disguised as PNG in this NFS JAR. GIF pixels match exactly;
+the largest JPEG difference in these fixtures is 5/255 on a channel. Explicit
+fixtures also cover logical screen offsets, first-frame selection, LZW KwKwK,
+deferred Clear, multiple JPEG scans, Adobe RGB and restarts. Truncation, mutation
+and quotas are checked, and MIDP resource/byte[]/stream overloads preserve the
+required error classes, immutable pixels, GC and snapshot behavior. This is a
+bounded implementation check, not a JPEG/GIF conformance certification.
+Format references: [GIF89a](https://www.w3.org/Graphics/GIF/spec-gif89a.txt),
+[ITU T.81](https://www.w3.org/Graphics/JPEG/itu-t81.pdf), and
+[MIDP Image](https://docs.oracle.com/javame/config/cldc/ref-impl/midp2.0/jsr118/javax/microedition/lcdui/Image.html).
+
+The raster oracle uses exact rational sample tests on the original plane for
+64 orthographic scenes and independent exact ray/triangle intersections for
+32 perspective scenes. These compare 24576 pixels in all four Windows builds.
+Separate tests cover depth, clipping/origin, a bound-frame snapshot and the real
+MIDlet/Canvas publication path. Pixel artifacts are in the M3G check build folders.
+An additional 49 cases compare 436 image/conversion/compositing/culling pixels
+both before and after GC/snapshot restoration. Full-screen two-triangle quads
+also check that a shared edge is blended once, without holes or overlap.
+Another 192 scenes compare 12288 exact background/fog pixels before and after
+GC/snapshot restoration. Background expectations use independent rational
+pixel-center mapping; fog uses camera rays intersecting the original plane.
+Binary fixtures cover Background/Fog references, both fog modes and malformed
+mode, crop and density values.
+Six more scenes compare 1536 hierarchy/alpha/layer/blending pixels; 128 original
+plane/ray scenes compare 8192 textured pixels, including all format/blend pairs,
+two texture units, wrapping/filtering, flat/smooth colors, projective coordinates
+and fog. These pixel arrays are retained and checked after GC/snapshot restore.
+Another 128 lighting scenes compare 8192 pixels against a 70-digit Decimal
+lighting oracle and exact Fraction ray intersections with original triangles.
+They cover 8/16-bit biased normals, nonuniform/sheared/reflected models, camera
+transforms, all four light modes, tracking, diffuse alpha, negative intensities,
+scope/enables, attenuation, spotlights, specular powers, front/back flat/smooth
+colors and texture/fog composition. A restored World/material/light graph is
+rendered anew and checked against 64 expected pixels.
+128 further projected-rectangle sprite scenes compare 32768 pixels against an
+independent 75-digit Decimal oracle, including signed crops, both scaling modes,
+all five source formats, viewport clipping, generic/perspective projection,
+projective immediate model transforms, ignored appearance attributes, fog,
+alpha/blending and scope/enables. Separate tests check mutable images, MIDP
+origin/clip, border samples not writing depth, binary Sprite3D objects, malformed
+crop/reference payloads and graph state. A restored Sprite3D is redrawn and
+compared against 256 expected pixels.
+
+Asphalt3StreetRules3D now reaches a rendered race in a 30-second input probe.
+BMW Racing's exact SHA-256 has a verified 320x240 launch profile: its sizeChanged
+handler suspends the game at any other width. JAR/JAD attributes and manual
+selection keep their priority. A real adapter run with auto size saves/loads and
+reaches a 320x240 3D start scene. This profile does not migrate old wrongly-sized
+GameCanvas buffers; Biplanes-specific migration is restricted to its own hash.
+These are bounded scenarios, not full playthroughs. Beach Ping Pong now loads
+KeyframeSequence (type 19) and controllers/tracks, and SkinnedMesh, and reaches the bounded match described below.
+The reviewed Bimmer resources use the exact compatibility profiles described
+below. Scaled sprites now participate in camera-based picking, as described below.
+Object3D.find follows reference/child insertion order; duplicate IDs remain legal
+and any matching object is allowed by the API. This deterministic choice avoids
+returning the car's VertexBuffer instead of the track Appearance for NFS ID 51.
+
+Object3D duplication now strips user subclasses to their nearest implemented
+M3G API base class and copies M3G attributes, excluding application instance
+fields. This follows the API contract, rather than cloning the application class.
+
+This is a partial M3G implementation. Mipmapping quality hints and Loader download
+protocols remain to be implemented. Missing methods/classes fail explicitly. The host does not advertise
+`microedition.m3g.version`. The supplied Need for Speed: Most Wanted edition
+reaches the textured car/road scene described above.
+
+`codex-work/jvm-j2me/m3g/prepare.py` creates a guest fixture without bundled SDK
+classes and an exact-rational oracle for 128 matrix products/vectors and 64
+inverses. `build-checks.ps1` checks geometry dispatch, errors, copies, references,
+GC and snapshot restoration on Windows; these are bounded implementation tests,
+not M3G certification or evidence of 3D game playability.
+The contracts follow Nokia's preserved M3G 1.1 documentation:
+[Transform](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Transform.html),
+[Transformable](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Transformable.html),
+[Node](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Node.html),
+[Group](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Group.html),
+[Camera](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Camera.html),
+[World](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/World.html),
+[Light](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Light.html),
+[Object3D](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Object3D.html),
+[Mesh](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Mesh.html),
+[Appearance](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Appearance.html),
+[Material](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Material.html),
+[Image2D](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Image2D.html),
+[Texture2D](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Texture2D.html),
+[CompositingMode](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/CompositingMode.html),
+[PolygonMode](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/PolygonMode.html),
+[Loader](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Loader.html),
+[Graphics3D](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Graphics3D.html),
+[VertexArray](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/VertexArray.html),
+[VertexBuffer](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/VertexBuffer.html),
+[TriangleStripArray](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/TriangleStripArray.html).
+
+
+The native KeyframeSequence module adds timestamp/vector storage, all five
+interpolation modes, looping/constant sampling, wrapped valid ranges,
+coincident keys, nonuniform tangent timing and the three binary encodings.
+Internal arrays are copied independently by duplicate and restored through the
+ordinary guest heap. Deferred sequence validity checks also run during loading.
+SLERP keeps quaternion signs; stable perpendicular-direction evaluation avoids
+roundoff amplification close to opposed keys. Zero or exactly opposed
+quaternions have undefined interpolation in the API. Sampling is an internal
+foundation used by Object3D.animate, controllers, track binding and MorphingMesh weights.
+
+`prepare-sequences.py` follows `prepare.py`, and `build-sequences.ps1` checks
+86 independent sequence cases, 4240 sample vectors / 11428 components per pass,
+before and after GC/snapshot restoration. Rational scalar polynomial and complex
+SU(2) matrix oracles cover every interpolation mode. 2867 guest API/Loader
+assertions include all 22 original keyframe payloads from Beach Ping Pong;
+2877 assertions include restored state checks. A bounded game probe still
+now loads all six models including SkinnedMesh and reaches a bounded match.
+Menu frames and PCM from this probe do not establish gameplay. These tests are
+not M3G certification.
+
+
+Native AnimationController/AnimationTrack and Object3D.animate now connect the
+keyframe evaluator to implemented scene/component properties. Controller speed
+changes preserve position, signed world-time subtraction avoids integer wrap,
+active intervals include start/exclude end (equal endpoints mean always active),
+and zero weights disable contribution. Tracks validate property/vector size and
+attachment compatibility, including consistent sizes per target. Bindings use
+copy-on-write guest arrays, so duplicate Nodes/components share tracks but can
+independently add/remove them. Native references/find include track/sequence/
+controller graphs; animation visits all reachable components once, including
+Backgrounds and materials behind appearances. Render enable does not suppress
+animation traversal. Samples are summed with their weights without dividing by
+total weight. Final values are clamped/rounded to legal target values; camera
+generic projections ignore parameter animation. MorphingMesh weights use property 266.
+
+Quaternion inputs are normalized only when set for SLERP/SQUAD; the normalized
+values are retained in internal guest double arrays to avoid another normalization
+on sampling. getKeyframe still returns float vectors. Old guest float arrays
+remain supported. Weighted orientation samples normalize only at application;
+LINEAR quaternion samples are not normalized before weighting. The ordinary
+snapshot heap stores controller data, bindings and precise/legacy key arrays.
+
+Loader types 1/2 and common animation references are implemented. Four complete
+Beach Ping Pong resources 0/1/2/5 and the two SkinnedMesh models 3/4 load.
+A bounded match with save/load is checked below; a full playthrough remains unverified. Varying active tracks return a
+conservative zero validity, while inactive/frozen graphs can return an interval
+before another update is needed; STEP validity is not yet optimized.
+
+The additional prepare-animation.py/build-animation.ps1 fixture checks 6355
+assertions, including 128 rational blend/timing scenes (1536 time samples),
+property compatibility/clamps, sharing/duplicates, malformed Loader records and
+real models. After GC/snapshot it reaches 6368 assertions and compares 256 pixels
+rendered at a new animation time to an independent expected rectangle. This
+preserves explicit distinction between tested data/API behavior and full mobile
+game/device compatibility. The same four Windows configurations retain all
+keyframe/graphics/model regression checks.
+
+Animation contracts follow Nokia's preserved [AnimationController](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/AnimationController.html),
+[AnimationTrack](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/AnimationTrack.html) and
+[Object3D](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Object3D.html) documentation.
+
+
+Native SkinnedMesh adds an immutable skeleton child, weighted bone ranges and
+captured mesh-to-bone rest transforms. Overlapping calls for the same bone are
+aggregated before selecting the four strongest per-vertex bones; ties use stable
+bone insertion order. Selected integer weights are normalized per vertex, and
+vertices with no selected bones retain their ordinary Mesh transformation.
+At-rest matrices are captured by addTransform; repeated calls keep the first
+valid capture (permitted by the API), but every call still verifies invertibility.
+The render palette is computed from current bone-to-mesh paths times those rest
+matrices. Normals follow the inverse transpose of the blended matrix, composed
+with ordinary model-view lighting; this adopts a permitted matrix-palette path
+from [Khronos OES_matrix_palette](https://registry.khronos.org/OpenGL/extensions/OES/OES_matrix_palette.txt).
+Singular normal maps are undefined and use an identity fallback. Picking includes
+skinned geometry and skeleton attachments; this is not a claim of complete M3G support.
+
+The skeleton and its renderable descendants traverse as part of the scene;
+mesh scope does not suppress independently scoped skeleton attachments. Render
+disable still suppresses descendants. Range checks are deferred until the skin
+is rendered; getBoneVertices can query valid 16-bit vertex ranges even before a
+VertexBuffer contains those vertices. Object3D references include bones and
+skeletons, and Node duplication remaps copied skeleton/bone references. Internal
+range/bind arrays extend by copy, while current node poses remain guest fields;
+all state therefore uses existing GC/snapshot machinery without a format change.
+
+Graphics3D.getProperties now returns a fresh String-keyed guest Hashtable with
+all 14 standard capability entries. It reports four transforms per vertex,
+two texture units, 1024 viewport/texture/crop limits and 64 concurrent matching
+lights. Immediate/world light arrays can contain more lights; shading selects
+the first 64 enabled matching entries deterministically. True color, perspective
+correction and local camera lighting are supported; antialiasing, dithering and
+mipmapping are not advertised. The M3G package version remains unadvertised while
+other required APIs remain incomplete.
+
+prepare-skin.py/build-skin.ps1 checks 4072 guest assertions / 4075 after restore,
+128 exact rational inverse-bind/pose/blend cases (8192 matrix components per pass),
+1616 expected normalized weights, deferred/atomic errors, duplicate remapping,
+normal lighting and 256 independent triangle pixels before/after restore.
+Both real Beach Ping Pong skins load and recover the rest pose of 366 vertices.
+Combined fixtures load all six original models. A 20-second input probe reaches
+a rendered 3D match; an isolated 45-second normal adapter run saves/loads and
+pauses/resumes, with post-load character/ball/score progression visually checked.
+This is bounded evidence, not a full playthrough or mobile hardware validation.
+The contracts follow Nokia's preserved [SkinnedMesh](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/SkinnedMesh.html)
+and [Graphics3D](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/Graphics3D.html) documentation.
+
+### M3G morphing meshes
+
+Native MorphingMesh implements both constructors, target access and copied weight
+arrays. Targets remain shared components; duplicate Nodes can change weights
+independently through copy-on-write guest arrays. Object references, GC and
+snapshots retain targets, weights and animation tracks without native side tables.
+Loader type 15 reads target buffers and initial weights; all 22 scene object types
+now have native readers. This does not imply full M3G API support.
+
+Rendering validates target layouts when a visible submesh is actually drawn.
+Positions, normals, colors and both texture units use B + sum(w * (T - B));
+weights are not normalized or constrained to [0,1]. Base-only arrays and base
+scale/bias are retained. Default vertex color also morphs. Intermediate components
+retain fractional precision; normals enter the ordinary lighting normalization
+after interpolation. MORPH_WEIGHTS tracks zero missing vector components and
+ignore surplus components.
+
+The morph fixture checks 128 exact-rational cases, 3712 attribute components,
+128 default colors and 256 animated pixels before and after GC/snapshot.
+Independent pixel cases cover RGBA/node alpha, normal interpolation, two projective
+texture units, default colors and base-only arrays. The original Snake III model loads with its relative external PNG. Together with
+Golden Warrior's reviewed fountain it passes 3654 endpoint component checks.
+The fountain uses the exact-resource compatibility profile described below;
+unknown files retain strict file-format validation.
+Neither the synthetic tests nor a startup probe establish handset rendering parity
+or full game playability. Picking and alignment have their own tests below.
+
+References: Nokia's preserved [MorphingMesh API](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/MorphingMesh.html)
+and [M3G file format](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/file-format.html).
+
+### Long J2ME audio resources
+
+Finite MIDI/WAV resources whose expanded PCM would exceed the short-clip budget
+use on-demand decoding. The player retains encoded data and a window of at most
+4097 source frames, including the sample carried across an interpolation boundary.
+Duration, seeking, loop counts, volume/mute and the ordinary resampling/mixing path
+continue to operate on the complete resource. Small clips retain their original
+PCM path. This removes the former roughly 95-second stereo/44.1-kHz clip limit
+without increasing the whole-clip PCM allocation budget.
+
+The original Snake III music resource is 108 seconds according to JDK MIDI timing;
+the native decoder adds its existing two-second release tail. Its 110-second clip
+now realizes and produces sound without the previous decoded-clip exception and
+consequent game-side String-to-Player casts.
+
+Snapshots containing a streaming player use J2ME.Media-2, with 64-bit frame counts,
+stream flags and cache origins. Short-clip-only states retain J2ME.Media-1; old
+media states remain readable. Streaming snapshots retain a bounded PCM window;
+decoder state beyond that window is reconstructed from encoded data on demand.
+Forward/backward seeking and cache reconstruction check the VM stop request every
+4096 source frames. Reconstruction cost grows with the requested position;
+there is no serialized synthesizer state or constant-time MIDI seeking yet.
+Malformed frame/cache ranges are rejected before audio rendering.
+
+Tests under codex-work/jvm-j2me/stream-audio compare long MIDI PCM with a separate
+instance of the existing decoder and long WAV PCM with independent integer
+resampling expectations. They cover cache boundaries, snapshot continuation,
+seeking past the old limit, stop/deallocate/resume, looping and final EOF.
+The MIDI comparison checks integration with the existing synthesizer; it is not
+an independent sound synthesis oracle or physical handset audio comparison.
+
+### Reviewed M3G resource profiles
+
+Golden Warrior and Bimmer contain M3G exports with a nonzero third texture bias
+on two-component arrays. The file format requires zero, although the component
+is unused by the vertex API. Exact SHA-256 profiles for 24 reviewed models allow
+normalizing only this unused component. Profiles identify the complete M3G asset
+within its declared byte range, including when embedded at a byte-array offset.
+They do not depend on resource names, title strings, JAR packaging or scene IDs.
+
+Three exact Bimmer PNG resources contain complete images followed by stale bytes
+from a replaced image. M3G Loader recognizes their full resource hashes and decodes
+the validated PNG prefix. These exceptions do not alter the shared PNG decoder or
+relax other texture, vertex, checksum, scalar or object validations. A changed
+model UID or an altered trailing PNG byte loses the profile and remains rejected.
+Original library JARs are not rewritten.
+
+A test-only container holds original resources and independently normalized copies
+from four installed JAR editions. All 50 model pairs produce identical complete
+heap graphs: object classes, attributes, primitive arrays, user parameters, shared
+references and cycles. Checks include GC and selected complete-state restores;
+this validates the limited normalization, not hardware rendering parity.
+Golden Warrior now reaches a textured dungeon scene. A Bimmer TimerTask reads the
+game's cleared Bimmer.c field during a screen switch and terminates. The original
+diagnostic probe stopped on any child-thread error; the ordinary runtime lets
+other threads continue. The opt-in test option `--continue-child-errors` records
+these faults while following the production behavior. Both Bimmer editions reach
+a rendered race in a direct runtime probe after RayIntersection is available.
+The game constructs this class but does not call Group.pick. Earlier adapter
+runs ended on the sound menu after emulator pause invoked startApp again. The
+separate suspension path described below preserves both editions' races through
+pause and repeated save/load. These are bounded runs, not full playthroughs.
+Timer behavior has not been changed to hide game errors.
+
+### M3G picking and node alignment
+
+Group supports both pick overloads and native RayIntersection results. Mesh,
+MorphingMesh and SkinnedMesh triangles use the actual transformed geometry,
+submesh appearances, scopes, inherited picking flags and polygon culling.
+The ray parameter is not restricted to a unit segment. Hit normals stay in local
+node coordinates; texture coordinates include both texture units and projective
+texture transforms. Scaled Sprite3D picking uses the same projected extent helper
+as rendering and checks image alpha before applying node alpha. Unscaled sprites
+and the three-dimensional ray overload do not pick sprites. A missed pick leaves
+the supplied result unchanged. RayIntersection is not an Object3D/Loader object.
+
+Node exposes setAlignment, align and the two alignment queries. Alignment changes
+only R in T*R*S*M and ignores the old R/S/M during target computation. Origin
+targets transform as points and axis targets as vectors. Z has priority; Y then
+minimizes its angle about the new Z axis. A single enabled axis uses the shortest
+rotation. Antiparallel single-axis targets use a deterministic half-turn about X;
+undefined zero-length origin targets and parallel secondary constraints use a
+deterministic identity rotation for that step. Alignment is explicit, including
+all descendants and skeletons, regardless of render/pick enables or scope.
+Graph/path errors and required singular inverses raise the specified Java errors.
+
+Alignment references are retained through ordinary guest fields and snapshots,
+but are excluded from Object3D.getReferences/find/animate traversal. Node branch
+duplication remaps references within the copied branch and preserves outside
+references. Loader reads the alignment flag, targets and typed node references,
+with malformed fields reported as IOException; it does not apply alignment.
+
+The picking fixture uses 128 exact-Fraction intersection scenes with independent
+texture and normal expectations, plus API, sprite, morph, skin and GC/state tests.
+The alignment fixture uses 128 independent Fraction/70-digit Decimal cases:
+exact parent/reference paths, projection onto the perpendicular plane for two
+axes, and two Householder reflections for single-axis expectations. Eight binary
+fixtures exercise Loader alignment fields and errors. Checks also cover branch
+duplication, ignored old transforms, explicit updates, graph errors, actual pick
+results after alignment and continued alignment after GC/state restoration.
+These checks are not handset parity, certification or full game playthroughs.
+
+### Reviewed orphan World camera resources
+
+Six exact FastAndFurious resources declare an active Camera but omit it from the
+World hierarchy. The game's render loop catches the resulting IllegalStateException
+each frame, leaving the race HUD over a black surface. For these six SHA-256 model
+identities, Loader appends only the unparented active camera to its World. An unused
+second camera in the intro stays unchanged. Resource identity covers the declared
+M3G byte range; names, object IDs and JAR title strings do not select the repair.
+The JARs are not rewritten, and neither setActiveCamera nor render(World) silently
+attaches arbitrary cameras. Unknown resources retain ordinary validation, including
+the [World camera contract](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/javax/microedition/m3g/World.html).
+
+Independent test files add the same missing edge in the serialized child list and
+rebuild container lengths/compression/checksums. All other decoded object bytes
+are compared unchanged. Native-loaded original/profiled graphs exactly match
+these independently serialized files, including every attribute, array, shared
+reference and parent link before/after GC and state restoration. Mutating a model
+UID removes the profile, leaves the camera orphaned and preserves the rendering
+error. The six models pass 570931 graph/API checks in each Windows configuration.
+
+The original game reaches a visible race in a 70-second ordinary adapter test with
+steering/acceleration, save/load and pause/resume; the post-load car/road scene was
+visually checked. This does not prove full race completion or handset parity.
+Older untagged snapshots that already contain a broken orphan-camera graph are
+not automatically migrated; newly loaded repaired graphs persist normally.
+Airburster's separate startup/timing and text issues are described below.
+
+### Automatic Canvas display cadence
+
+Automatic Canvas repaint delivery now coalesces requests at a 16-ms display
+interval, measured from the beginning of a paint so that a slow frame does not
+incur another idle interval afterward. Newly visible canvases wait for their first
+interval. This is an emulator display scheduling choice; MIDP does not require a
+particular refresh rate. Explicit serviceRepaints and callSerially's pending-paint
+flush retain their synchronous behavior. GameCanvas.flushGraphics is unaffected.
+Java clock values, arithmetic and guest exception propagation are unchanged.
+
+The next automatic paint deadline is an optional ordinary guest field. GC/state
+restoration retains it along with the restored monotonic clock; an older state
+without that field initializes a fresh interval. No snapshot format change is
+needed. The cadence fixture checks automatic request coalescing, explicit painting,
+unchanged catchable paint exceptions, GC/state restore and legacy missing fields
+on Win32/Win64 Debug/Release. Pixel checks now wait for an asynchronous frame using
+wall-clock deadlines rather than assuming a fixed instruction count is enough.
+
+Airburster's initial paint had occurred within the constructor's clock millisecond,
+causing its uninitialized duration to become a zero divisor. Deferring that first
+automatic paint removes this specific failure. The subsequent language-resource
+failure is addressed by the reviewed default-encoding profile described below.
+A 16-title priority matrix retains initial frames in eight-second runs; this is
+startup coverage, not full game validation. Rodent Panic reaches a 3D scene in a
+separate 25-second input probe without child-thread errors.
+
+### Legacy default encoding and decimal floating-point parsing
+
+Airburster reads its six language names with String(byte[],offset,length), without
+an explicit encoding. The resources contain Latin-1 bytes for French, Spanish and
+Portuguese. UTF-8 replacement characters then exceed its bitmap font table. The
+J2ME host now selects ISO-8859-1 when both consuming classfiles and all six reviewed
+language resources match their SHA-256 identities. A changed or missing resource
+leaves the ordinary UTF-8 default. This is a device compatibility profile, not
+per-string encoding detection or a change to UTF-8 decoding rules. It uses the
+existing reusable TJavaHost.DefaultEncoding hook, so String/getBytes, readers,
+writers, PrintStream, ByteArrayOutputStream and microedition.encoding agree.
+The choice is recomputed from the same suite on state restore; existing guest
+decoder/writer state uses the ordinary snapshot graph. No format change is needed.
+Old states already containing replacement characters or a failed game thread are
+not repaired by this launch-time profile.
+
+Java.Floating implements Float.parseFloat and Double.parseDouble for CLDC 1.1
+decimal strings. It validates ASCII grammar and Java trim semantics, decimal point,
+exponent and f/F/d/D suffixes, null and invalid inputs, signed zero, subnormals,
+overflow, underflow, NaN and signed Infinity. Integer arithmetic compares the
+decimal significand with exact dyadic rounding boundaries and rounds ties to even.
+There is no intermediate host floating-point conversion, locale dependency,
+double rounding or reliance on the caller's rounding mode. Java 5 hexadecimal
+floating-point syntax is outside this CLDC 1.1 decimal parser's contract. These two
+methods do not imply completion of the Float/Double wrapper API.
+
+The focused fixtures cover 18 resource/profile variants and Reader/Writer
+continuation before/after GC and state restore. Floating-point vectors use an
+independent Fraction quotient/remainder oracle, separately checked with JDK 17;
+339 valid strings include exact midpoint neighbours and the normal/subnormal and
+finite/infinite boundaries, and 26 invalid strings exercise lexical rejection.
+All four Win32/Win64 Debug/Release configurations pass. The original Airburster
+JAR reaches a visible 3D race in a 60-second input probe without child errors;
+this is bounded scene coverage, not a full playthrough or handset comparison.
+The ordinary adapter also completes a 100-second race/save/load run. At this
+milestone, host pause invoked the MIDlet lifecycle; a separate new-core restore
+used Java * to close the resulting game-owned pause menu and saved/restored again.
+The suspension change described below now keeps that race running directly after
+emulator resume. Initial sparse input only reached an opponent-selection menu;
+that earlier diagnostic is not counted as gameplay evidence.
+
+Focused artifacts: codex-work/jvm-j2me/airburster-encoding/.
+References: [Sun Wireless Toolkit default encoding](https://docs.oracle.com/javame/dev-tools/wtk-cldc-2.5.2-01/UserGuide-html/internationalization.html),
+[CLDC 1.1 Float](https://docs.oracle.com/javame/config/cldc/ref-impl/cldc1.1/jsr139/java/lang/Float.html),
+[CLDC 1.1 Double](https://docs.oracle.com/javame/config/cldc/ref-impl/cldc1.1/jsr139/java/lang/Double.html).
+
+### Emulator suspension and MIDlet lifecycle
+
+IEmulationCore.Pause/Resume now use TJ2MERuntime.SetExecutionPaused. This freezes
+the interpreter, virtual wall/monotonic clocks and PCM position, releases held
+guest keys, cancels vibration and ignores new input while suspended. Resume
+continues the same guest frames and deadlines. The generic emulator pause does
+not invoke MIDlet.pauseApp/startApp. Explicit TJ2MERuntime.Pause/Resume still
+model the MIDP application-manager lifecycle, including a MIDlet's own paused
+state and resumeRequest. Resuming the emulator does not implicitly activate a
+lifecycle-paused MIDlet. Destroy and stop requests can terminate a suspended VM.
+
+Emulator suspension is outside the serialized guest state. SaveState records the
+frozen virtual clocks; the adapter applies its current pause choice after load.
+No snapshot format change is needed. Legacy states that contain a host-requested
+MIDlet pause retain the previous lifecycle-resume path; this may call startApp
+for those older states. New paused snapshots do not create that lifecycle request.
+
+Bimmer.startApp unconditionally constructs the initial menu and schedules its
+timer. The old emulator pause therefore restarted the game after resume, and
+final-frame-only diagnostics misidentified that menu as an initial input failure.
+A lifecycle-resetting fixture reproduces starts=2 before this change. The new
+adapter and runtime fixtures pass on Win32/Win64 Debug/Release: no extra startApp
+or pauseApp, frozen guest execution/clocks/input, exact nonzero PCM continuation,
+active/paused snapshots, new-core restore, preserved explicit lifecycle callbacks
+and stop/destroy from suspension.
+
+Both original Bimmer editions complete 80-second adapter races with acceleration,
+steering, emulator pause and two save/load cycles, with race scenes viewed after
+the final restore. Original Asphalt Urban GT 2 and Airburster each complete a
+100-second race/save/load/pause/resume check and retain their game scenes. This is
+bounded gameplay evidence; known Bimmer TimerTask faults during screen changes
+are not suppressed, and full playthroughs/device comparisons remain outstanding.
+
+Focused artifacts: codex-work/jvm-j2me/bimmer-adapter-input/.
+Lifecycle reference: [MIDP MIDlet state callbacks](https://docs.oracle.com/javame/config/cldc/ref-impl/midp2.0/jsr118/javax/microedition/midlet/MIDlet.html).
+
+### Float and Double numeric objects
+
+Java.Floating now supplies final CLDC Float/Double classes with typed private
+value fields, the five primitive constants, Float(float/double) and Double(double)
+constructors, String valueOf, numeric getters, static/instance isNaN/isInfinite,
+canonical-NaN hashCode and value equality that distinguishes the two signed zeros.
+Byte/short getters first use JVM int narrowing; int/long getters share the same
+NaN-to-zero, saturation and truncation helpers used by the bytecode interpreter.
+The existing exact decimal parsers and bit conversion methods remain available.
+Ordinary guest fields retain wrapper values through GC and complete state restore.
+
+Decimal Float/Double toString is implemented by the subsequent floating-text stage
+described below, using native integer arithmetic rather than OS/RTL formatting.
+A constant-pool scan of 1877 top-level library JARs finds 12 distinct floating
+method signatures; all 12 now resolve to native bindings, including
+Float.toString(float). Static references are potential API demand,
+not proof those paths execute or that the games are fully playable. Five files
+with a .jar extension were not ZIP archives and were left unchanged.
+
+JDK-generated vectors cover 282 float and 282 double bit patterns, including
+signed zeros, infinities, signaling/quiet NaNs, subnormal boundaries, integer
+saturation limits and deterministic random values. There are 8195 guest checks
+per configuration, plus native metadata/constants/signature checks, Hashtable
+key equality and GC/state continuation. The 30-second original-JAR input probes
+retain a Pool Dreams bet menu, Snake III Game Over, Tankzors startup/settings and
+an NFS Carbon loading screen. These probes do not prove gameplay improvements;
+Carbon still reports rejected unused 2D texture bias Z in its M3G resources.
+
+The new primitive fields are an explicit old-state schema upgrade. The reusable
+VM offers an opt-in host hook for a saved class with exactly zero fields; its
+default rejects the mismatch. TJavaHost permits this only for the reviewed current
+six-field Float/Double schemas, including exact names, types, flags and default
+bits. Other counts, descriptors and classes remain strict. The hook retains new
+primitive defaults while reading the old empty layout, without changing the state
+format or adding Java-library knowledge to the VM. Tests cover Float-only,
+Double-only and both empty legacy schemas, successful guest/GC continuation, and
+rejection of partial, foreign, changed-descriptor and changed-default schemas.
+This schema migration does not change the legacy MIDlet-pause behavior described
+above; past pauseApp side effects cannot be universally undone from that format.
+
+Focused artifacts: codex-work/jvm-j2me/floating-api/.
+
+### Native Java floating-point text
+
+Java.Floating.Text supplies Float/Double static and instance toString, primitive
+String.valueOf(float/double), StringBuffer/StringBuilder append/insert and the
+PrintStream floating overloads with one shared converter. It handles signed zero,
+NaN/Infinity, decimal/exponent thresholds, mandatory fractional digits, uppercase
+E and exponent signs without host locale or floating-point conversion routines.
+The Float/Double public CLDC 1.1 member set is now present; this does not imply
+completion of the wider Java/JSR library or complete game compatibility.
+
+The converter derives a decimal scale from an integer fixed-point log tangent,
+then extracts digits using nonnegative integer numerator/denominator/margin
+arithmetic. An internal base-2^32 record handles wider intermediates. Integral
+values and bounded margin decisions preserve classic Java spelling, including
+cases where another shortest-roundtrip convention would choose different digits.
+All arithmetic, including scale selection, is integer-only; there are no global
+mutable caches, host code-page choices or dependencies on caller FPU controls.
+
+Independent JDK 17 strings cover 14317 float and 29248 double bit patterns: every
+binade's neighbours, subnormal and special values, powers-of-ten neighbours,
+deterministic random bits, and adversarial scale-selector boundaries. Exact
+Fraction intervals independently verify 43492 finite strings and format thresholds.
+Each Win32/Win64 Debug/Release native run performs 45503 comparisons, including
+alternate host rounding modes, unmasked exceptions and comma locale. The guest
+fixture checks 5115 assertions across all public string paths, native-parser
+roundtrips, boxed objects and continued buffers after GC/state restore. The numeric
+wrapper regression retains 8195 guest checks and now verifies all 12 library-used
+signatures. Common J2ME/snapshot and real previous-executable state import pass.
+
+Thirty-second original-JAR input probes retain an Airburster race, an Epos 3D
+character/terrain scene and the NFS Most Wanted sound-selection prompt. Those
+paths do not prove execution of Float.toString or full playability; a static
+constant-pool reference is not execution evidence. Remaining rendering/resource
+issues, other APIs/protocols and full game/device validation are still outstanding.
+
+Focused artifacts: codex-work/jvm-j2me/floating-text/.
+Formatting contracts: [CLDC 1.1 Float](https://docs.oracle.com/javame/config/cldc/ref-impl/cldc1.1/jsr139/java/lang/Float.html),
+[CLDC 1.1 Double](https://docs.oracle.com/javame/config/cldc/ref-impl/cldc1.1/jsr139/java/lang/Double.html).
+
+
+## NFS Carbon reviewed resource compatibility
+
+The original NeedForSpeedCarbon.jar (SHA256
+2b43fb9d5f9832e11ea597f329d451312ca019a6296299463679bb04403f540d,
+JAMDAT build 1.1.70.efigs.sek750i) contains ten M3G resources with 59 nonzero
+unused third texture-bias components on two-component texture-coordinate arrays.
+The binary-format rule requires these fields to be zero. The existing exact
+resource compatibility registry now recognizes the ten reviewed SHA256 values;
+only those unused components are normalized. The JAR is not rewritten and other
+format checks and the public VertexBuffer API remain unchanged.
+
+An independent container/object decoder constructs reference copies that alter
+only those fields and the resulting header size/compression/checksums. Native
+Win32/Win64 Debug/Release tests perform 3490496 full graph comparisons per
+configuration (3141 compared heap objects), including GC and state restoration
+for all ten models. All ten models with changed user IDs and original invalid
+bias values still fail strict validation. Existing Golden Warrior/Bimmer graph
+and invalid-resource checks remain green.
+
+Before/after 45-second original-JAR probes change from a black loading bar with
+M3G IOExceptions and dependent ClassCastException to a rendered garage and car.
+The trace still includes caught first-launch RMS-not-found/cleanup exceptions;
+they are not suppressed. The probe alone is not a complete gameplay test.
+
+This exact JAR also has fixed 176x220 menu clipping/layout in aa/p bytecode, even
+though its race viewport can grow. Its reviewed launch profile now selects
+176x220 in auto mode. JAR/JAD dimensions and manual choices retain their priority;
+changed identities do not receive the profile. Old states retain their stored
+viewport; this change does not rewrite or resize them.
+
+An additional 100-second isolated adapter run at auto-selected 176x220 reaches
+the 3D race, saves/loads the race, pauses/resumes and continues steering. Frames
+were visually checked after load/resume. This is bounded testing, not a full
+playthrough or physical handset validation. Additional Java/JSR APIs, protocols,
+rendering/audio fidelity and broader game/device validation remain outstanding.
+
+Focused artifacts: codex-work/jvm-j2me/nfs-carbon/.
+File-format reference: [JSR-184 VertexBuffer](https://nikita36078.github.io/J2ME_Docs/docs/jsr184/file-format.html).
+
+
+## Popular-library scenes and Diamond Rush orientation
+
+Eight original popular-library JARs were probed for 30 seconds with scripted
+softkey/fire/down input, retaining frames and exception traces. Active frames
+proved insufficient: Diamond Rush rendered only an orientation warning. Worms
+reached a quit dialog and destruction; this is not a gameplay pass or an emulator
+crash. Other reviewed frames include a Doom RPG menu, Sims interior, Angry Birds
+slingshot, Doodle Jump level and Ancient Empires tutorial/map. They are bounded
+scene observations, not full compatibility claims. Angry Birds probes unsupported
+key names and requests two images absent from its JAR; its bounded trace also
+omitted exceptions, so absence of further caught faults remains unproven.
+
+Diamondrush.jar SHA256
+1a27a721a4440e8bdf63aa456732d71cb4e0cbd00054899dd233b0f69fd96b00
+(version 1.1.6) rejects width < height before its actual paint path, despite
+contradictory wording in the warning. Its real clip and layout are fixed at
+320x240. The reviewed exact-JAR automatic profile now uses that size. Portrait
+and landscape probes show the warning versus an actual level with PCM output.
+JAD and manual choices retain priority; changed JAR identities do not receive
+this profile.
+
+The same exact port also supports restoring states created with the old
+240x320 fallback: in automatic mode, the existing ordinary-Canvas resize updates
+the saved viewport to the selected profile/JAD size before state commit. Manual
+mode preserves the saved viewport. No guest fields, game assets, exception rules
+or generic Canvas behavior are rewritten. All nine Canvas dimension queries are
+in i.paint's orientation-warning branch; actual game image/layout sizes are
+fixed. Other titles retain their existing snapshot viewport policy.
+
+Four Windows configurations verify portrait-state restore, repeated restore,
+manual mode and JAD priority. A 90-second fresh adapter run reaches the level's
+tutorial and preserves it through save/load and emulator pause. A 50-second
+restored continuation skips the tutorial, moves the hero and repeats save/load;
+that quiet restored scene opens no audio device, so it provides no proof about
+sound after restore. An additional 80-second adapter run starts from a portrait
+viewport fixture and migrates it in automatic mode; scripted input reaches Help.
+Explicit 7/12-second restored follow-ups return to New Game and the level, then
+20 seconds verify movement, another state roundtrip and emulator pause/resume.
+User save files are not modified by these tests.
+
+SplinterCell.jar's existing code-based detection selects 96x65. Rendering that
+size removes the repeated/cropped menu regions seen in the forced 240x320 probe;
+only its menu was verified, so no new profile or full-playability claim is added.
+Additional APIs/protocols, rendering/audio fidelity and full game/device coverage
+remain. Focused evidence: codex-work/jvm-j2me/library-scenes/.

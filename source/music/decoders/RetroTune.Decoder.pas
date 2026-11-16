@@ -30,6 +30,13 @@ type
     function Render(var Samples: array of SmallInt; Frames: Integer): Integer;
   end;
 
+  // Optional exact source-frame seeking; cancellation is checked during any
+  // decode-forward work. Existing decoder implementations keep their interface.
+  ITuneSeekDecoder = interface
+    ['{6D281F3A-1EF3-4A47-9B57-70C5244218C2}']
+    function SeekFrame(Frame: Int64; const Cancelled: TFunc<Boolean>): Int64;
+  end;
+
   TTuneDataLoader = function(const Path: string; const Data: TBytes): TBytes;
 
   TTuneDecoderFactory = function(const Data: TBytes): ITuneDecoder;

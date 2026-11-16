@@ -523,7 +523,6 @@ begin
   begin
     if Phase = 2 then
       Exit;
-    Phase := 0;
   end;
   Offset := 0;
   Count := 0;

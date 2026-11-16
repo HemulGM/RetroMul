@@ -31,7 +31,8 @@ procedure J2MECheckRGBBounds(VM: TJVM; Data: TJVMObject; Offset, Stride, Width, 
 implementation
 
 uses
-  System.SysUtils, System.Math, Java.Classes, Java.Bootstrap, Media.Image.PNG;
+  System.SysUtils, System.Math, Java.Classes, Java.Bootstrap, Media.Image.Types,
+  Media.Image.Decode;
 
 {$Q-}{$R-}
 
@@ -50,7 +51,7 @@ begin
   var PixelRef := VM.NewArray('[I', Length(Pixels));
   var A := VM.GetObject(PixelRef);
   for var I := 0 to High(Pixels) do
-    A.Elements[I] := TJVMValue.Int(Integer(Pixels[I]));
+    A.ElementValues[I] := TJVMValue.Int(Integer(Pixels[I]));
   Result := VM.NewObject(ImageClass);
   var O := VM.GetObject(Result);
   O.Fields.AddOrSetValue(ImageClass + '.$pixels:[I', TJVMValue.Ref(PixelRef));
@@ -66,14 +67,14 @@ begin
   if Int64(Width) * Height > VM.MaxArrayLength then
     VM.RaiseJava('java/lang/OutOfMemoryError', 'Image pixel limit');
   var Stride := (Int64(Width) + 7) div 8;
-  if Stride * Height > Length(Data.Elements) then
+  if Stride * Height > Data.ElementCount then
     VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
   var Pixels: TArray<UInt32>;
   SetLength(Pixels, Width * Height);
   for var Y := 0 to Height - 1 do
     for var X := 0 to Width - 1 do
     begin
-      var Black := (Data.Elements[Y * Integer(Stride) + X div 8].AsInt shr (7 - (X and 7))) and 1;
+      var Black := (Data.ElementValues[Y * Integer(Stride) + X div 8].AsInt shr (7 - (X and 7))) and 1;
       Pixels[Y * Width + X] := $FFFFFFFF;
       if Black <> 0 then
         Pixels[Y * Width + X] := $FF000000;
@@ -93,8 +94,8 @@ begin
     VM.RaiseJava('java/lang/OutOfMemoryError', 'Image pixel limit');
   Ref := VM.NewArray('[I', Width * Height);
   Pixels := VM.GetObject(Ref);
-  for var I := 0 to High(Pixels.Elements) do
-    Pixels.Elements[I] := TJVMValue.Int(-1);
+  for var I := 0 to (Pixels.ElementCount - 1) do
+    Pixels.ElementValues[I] := TJVMValue.Int(-1);
   Result := VM.NewObject(ImageClass);
   O := VM.GetObject(Result);
   O.Fields.AddOrSetValue(ImageClass + '.$pixels:[I', TJVMValue.Ref(Ref));
@@ -235,16 +236,16 @@ begin
   LastRow := Int64(Offset) + Int64(Height - 1) * Stride;
   First := Min(Int64(Offset), LastRow);
   Last := Max(Int64(Offset), LastRow) + Width - 1;
-  if (First < 0) or (Last >= Length(Data.Elements)) then
+  if (First < 0) or (Last >= Data.ElementCount) then
     VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
 end;
 
 function InvokeJ2MEImage(VM: TJVM; Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
 var
   N, D, Resource, ErrorClass: string;
-  A, O, Dest: TJVMObject;
+  A, Dest: TJVMObject;
   Source: TJ2MEImageView;
-  Decoded: TPNGImage;
+  Decoded: TRasterImage;
   Pixels: TArray<UInt32>;
   Bytes: TBytes;
   W, H, X, Y, Transform, Ref, I, J, SX, SY, Offset, Stride, Width, Height: Integer;
@@ -302,7 +303,7 @@ begin
     J2MECheckRGBBounds(VM, Dest, Offset, Stride, W, H);
     for J := 0 to H - 1 do
       for I := 0 to W - 1 do
-        Dest.Elements[Integer(Int64(Offset) + Int64(J) * Stride + I)] := Source.Pixels.Elements[(Y + J) * Source.Width + X + I];
+        Dest.ElementValues[Integer(Int64(Offset) + Int64(J) * Stride + I)] := Source.Pixels.ElementValues[(Y + J) * Source.Width + X + I];
     Exit;
   end;
   Mutable := False;
@@ -327,7 +328,7 @@ begin
     SetLength(Pixels, W * H);
     for I := 0 to High(Pixels) do
     begin
-      Pixels[I] := UInt32(A.Elements[I].AsInt);
+      Pixels[I] := UInt32(A.ElementValues[I].AsInt);
       if not Alpha then
         Pixels[I] := Pixels[I] or $FF000000;
     end;
@@ -364,7 +365,7 @@ begin
       for I := 0 to W - 1 do
       begin
         J2METransformSource(I, J, Width, Height, Transform, SX, SY);
-        Pixels[J * W + I] := UInt32(Source.Pixels.Elements[(Y + SY) * Source.Width + X + SX].AsInt);
+        Pixels[J * W + I] := UInt32(Source.Pixels.ElementValues[(Y + SY) * Source.Width + X + SX].AsInt);
       end;
   end
   else
@@ -386,18 +387,18 @@ begin
       A := VM.GetObject(Args[0].AsRef);
       Offset := Arg(1);
       I := Arg(2);
-      if (Offset < 0) or (I < 0) or ((I = 0) and (N <> '$decodeStream')) or (Offset > Length(A.Elements)) or (I > Length(A.Elements) - Offset) then
+      if (Offset < 0) or (I < 0) or ((I = 0) and (N <> '$decodeStream')) or (Offset > A.ElementCount) or (I > A.ElementCount - Offset) then
         VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
       SetLength(Bytes, I);
       for J := 0 to I - 1 do
-        Bytes[J] := Byte(A.Elements[Offset + J].AsInt);
+        Bytes[J] := Byte(A.ElementValues[Offset + J].AsInt);
     end;
     try
-      Decoded := DecodePNG(Bytes, VM.MaxArrayLength);
+      Decoded := DecodeRasterImage(Bytes, VM.MaxArrayLength);
     except
-      on E: EPNGResourceLimit do
+      on E: EImageResourceLimit do
         VM.RaiseJava('java/lang/OutOfMemoryError', E.Message);
-      on E: EPNGFormat do
+      on E: EImageFormat do
         VM.RaiseJava(ErrorClass, E.Message);
     end;
     W := Decoded.Width;

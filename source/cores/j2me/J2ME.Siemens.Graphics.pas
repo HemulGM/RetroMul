@@ -132,16 +132,16 @@ end;
 
 function ReadRaw(Data: TJVMObject; Stride, X, Y, BPP: Integer): Integer;
 begin
-  Result := (Data.Elements[Y * Stride + X * BPP div 8].AsInt shr (8 - BPP - (X * BPP and 7))) and ((1 shl BPP) - 1);
+  Result := (Data.ElementValues[Y * Stride + X * BPP div 8].AsInt shr (8 - BPP - (X * BPP and 7))) and ((1 shl BPP) - 1);
 end;
 
 procedure WriteRaw(Data: TJVMObject; Stride, X, Y, BPP, Code: Integer);
 begin
   var Index := Y * Stride + X * BPP div 8;
   var Shift := 8 - BPP - (X * BPP and 7);
-  var Value := Byte(Data.Elements[Index].AsInt);
+  var Value := Byte(Data.ElementValues[Index].AsInt);
   Value := (Value and not (((1 shl BPP) - 1) shl Shift)) or (Code shl Shift);
-  Data.Elements[Index] := TJVMValue.Int(ShortInt(Value));
+  Data.ElementValues[Index] := TJVMValue.Int(ShortInt(Value));
 end;
 
 function Shadow(VM: TJVM; const I: TJ2MEImageView; Create: Boolean): TJVMObject;
@@ -158,13 +158,13 @@ begin
   Result := VM.GetObject(R);
   for var Y := 0 to I.Height - 1 do
     for var X := 0 to I.Width - 1 do
-      WriteRaw(Result, Stride, X, Y, 2, ColorCode(UInt32(I.Pixels.Elements[Y * I.Width + X].AsInt), 2));
+      WriteRaw(Result, Stride, X, Y, 2, ColorCode(UInt32(I.Pixels.ElementValues[Y * I.Width + X].AsInt), 2));
   I.Image.Fields.AddOrSetValue('$siemens.raw2', TJVMValue.Ref(R));
 end;
 
 function ReadCode(VM: TJVM; const I: TJ2MEImageView; X, Y, BPP: Integer): Integer;
 begin
-  var Pixel := UInt32(I.Pixels.Elements[Y * I.Width + X].AsInt);
+  var Pixel := UInt32(I.Pixels.ElementValues[Y * I.Width + X].AsInt);
   Result := ColorCode(Pixel, BPP);
   if BPP <> 2 then
     Exit;
@@ -183,7 +183,7 @@ begin
   var Raw: TJVMObject := nil;
   if BPP = 2 then
     Raw := Shadow(VM, I, True);
-  I.Pixels.Elements[Y * I.Width + X] := TJVMValue.Int(Integer(PixelColor(Code, BPP)));
+  I.Pixels.ElementValues[Y * I.Width + X] := TJVMValue.Int(Integer(PixelColor(Code, BPP)));
   if Raw <> nil then
     WriteRaw(Raw, (I.Width + 3) div 4, X, Y, 2, Code);
 end;
@@ -195,7 +195,7 @@ begin
   Dimensions(VM, W, H);
   var Stride := (W + 3) div 4;
   var Count := Stride * H;
-  if Count > Length(Data.Elements) then
+  if Count > Data.ElementCount then
     VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
   var Pixels: TArray<UInt32>;
   SetLength(Pixels, W * H);
@@ -208,7 +208,7 @@ begin
   var R := VM.NewArray('[B', Count);
   var A := VM.GetObject(R);
   for var I := 0 to Count - 1 do
-    A.Elements[I] := Data.Elements[I];
+    A.ElementValues[I] := Data.ElementValues[I];
   O.Fields.AddOrSetValue('$siemens.raw2', TJVMValue.Ref(R));
 end;
 
@@ -219,13 +219,13 @@ begin
   if (W <= 0) or (H <= 0) then
     VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
   Dimensions(VM, W, H);
-  if Int64(W) * H > Length(Data.Elements) then
+  if Int64(W) * H > Data.ElementCount then
     VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
   var Pixels: TArray<UInt32>;
   SetLength(Pixels, W * H);
   for var I := 0 to High(Pixels) do
   begin
-    var V := Byte(Data.Elements[I].AsInt);
+    var V := Byte(Data.ElementValues[I].AsInt);
     if V = $C0 then
       Pixels[I] := 0
     else
@@ -250,17 +250,17 @@ begin
   var Pixels: TArray<UInt32>;
   SetLength(Pixels, I.Width * I.Height);
   for var P := 0 to High(Pixels) do
-    Pixels[P] := UInt32(I.Pixels.Elements[P].AsInt);
+    Pixels[P] := UInt32(I.Pixels.ElementValues[P].AsInt);
   Result := J2MENewRasterImage(VM, I.Width, I.Height, Pixels, I.Mutable);
   var O := VM.GetObject(Result);
   O.Fields.AddOrSetValue('$siemens.bpp', TJVMValue.Int(Packing(I)));
   var Raw := Shadow(VM, I, False);
   if Raw <> nil then
   begin
-    var R := VM.NewArray('[B', Length(Raw.Elements));
+    var R := VM.NewArray('[B', Raw.ElementCount);
     var A := VM.GetObject(R);
-    for var P := 0 to High(Raw.Elements) do
-      A.Elements[P] := Raw.Elements[P];
+    for var P := 0 to (Raw.ElementCount - 1) do
+      A.ElementValues[P] := Raw.ElementValues[P];
     O.Fields.AddOrSetValue('$siemens.raw2', TJVMValue.Ref(R));
   end;
 end;
@@ -313,8 +313,8 @@ var
   begin
     if (Length(Masks) <> 0) and (ColorCode(UInt32(Masks[Src].AsInt), 1) = 0) then
       Exit;
-    Target.Pixels.Elements[Dest] := TJVMValue.Int(Integer(J2MECompositeColor(
-            UInt32(Target.Pixels.Elements[Dest].AsInt), UInt32(Pixels[Src].AsInt))));
+    Target.Pixels.ElementValues[Dest] := TJVMValue.Int(Integer(J2MECompositeColor(
+            UInt32(Target.Pixels.ElementValues[Dest].AsInt), UInt32(Pixels[Src].AsInt))));
   end;
 
 begin
@@ -355,14 +355,14 @@ begin
       for var DX := Max(0, OriginX) to Target.Width - 1 do
       begin
         var SX := Modulo(Int64(DX) - OriginX + Get(O, 'mapX'), W * 8);
-        var Tile := Map.Elements[(SY div 8) * W + SX div 8].AsInt and 255;
+        var Tile := Map.ElementValues[(SY div 8) * W + SX div 8].AsInt and 255;
         case Tile of
           0:
             Continue;
           1:
-            Target.Pixels.Elements[DY * Target.Width + DX] := TJVMValue.Int(-1);
+            Target.Pixels.ElementValues[DY * Target.Width + DX] := TJVMValue.Int(-1);
           2:
-            Target.Pixels.Elements[DY * Target.Width + DX] := TJVMValue.Int(Integer($FF000000));
+            Target.Pixels.ElementValues[DY * Target.Width + DX] := TJVMValue.Int(Integer($FF000000));
         else
           Draw(DY * Target.Width + DX, ((Tile - 3) * 8 + SY mod 8) * 8 + SX mod 8);
         end;
@@ -476,7 +476,7 @@ var
   begin
     var Data := VM.GetObject(DataRef);
     Result := InvokeJ2MEImage(VM, VM.LoadClass(ImageName).FindMethod('createImage', '([BII)' + ImageD),
-      [TJVMValue.Ref(DataRef), TJVMValue.Int(0), TJVMValue.Int(Length(Data.Elements))]).AsRef;
+      [TJVMValue.Ref(DataRef), TJVMValue.Int(0), TJVMValue.Int(Data.ElementCount)]).AsRef;
   end;
 
   function Resource(NameRef: Integer; Scale: Boolean): Integer;
@@ -497,7 +497,7 @@ var
     SetLength(Pixels, W * H);
     for var Y := 0 to H - 1 do
       for var X := 0 to W - 1 do
-        Pixels[Y * W + X] := UInt32(Image.Pixels.Elements[Integer(Int64(Y) * Image.Height div H) * Image.Width + Integer(Int64(X) * Image.Width div W)].AsInt);
+        Pixels[Y * W + X] := UInt32(Image.Pixels.ElementValues[Integer(Int64(Y) * Image.Height div H) * Image.Width + Integer(Int64(X) * Image.Width div W)].AsInt);
     Result := J2MENewRasterImage(VM, W, H, Pixels, False);
   end;
 
@@ -567,9 +567,9 @@ begin
           var BIndex := SY * I.Width + SX;
           if AIndex >= BIndex then
             Continue;
-          var V := I.Pixels.Elements[AIndex];
-          I.Pixels.Elements[AIndex] := I.Pixels.Elements[BIndex];
-          I.Pixels.Elements[BIndex] := V;
+          var V := I.Pixels.ElementValues[AIndex];
+          I.Pixels.ElementValues[AIndex] := I.Pixels.ElementValues[BIndex];
+          I.Pixels.ElementValues[BIndex] := V;
           if Raw <> nil then
           begin
             var Stride := (I.Width + 3) div 4;
@@ -616,14 +616,14 @@ begin
     var H := Arg(1);
     A := VM.GetObject(Args[2].AsRef);
     Dimensions(VM, W, H);
-    if Int64(W) * H > Length(A.Elements) then
+    if Int64(W) * H > A.ElementCount then
       VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
     var Stride := (W + 7) div 8;
     R := VM.NewArray('[B', Stride * H);
     var Bits := VM.GetObject(R);
     for var Y := 0 to H - 1 do
       for var X := 0 to W - 1 do
-        WriteRaw(Bits, Stride, X, Y, 1, Ord(A.Elements[Y * W + X].AsInt <> 0));
+        WriteRaw(Bits, Stride, X, Y, 1, Ord(A.ElementValues[Y * W + X].AsInt <> 0));
     Exit(TJVMValue.Ref(R));
   end;
   O := VM.GetObject(Args[0].AsRef);
@@ -679,12 +679,12 @@ begin
         (Int64(X) + W > I.Width) or (Int64(Y) + H > I.Height)) then
         VM.RaiseJava('java/lang/IllegalArgumentException', 'ExtendedImage read rectangle');
       var Stride := (W div 8) * BPP;
-      if Int64(Stride) * H > Length(A.Elements) then
+      if Int64(Stride) * H > A.ElementCount then
         VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
       if N = 'getPixelBytes' then
       begin
         for var J := 0 to Stride * H - 1 do
-          A.Elements[J] := TJVMValue.Int(0);
+          A.ElementValues[J] := TJVMValue.Int(0);
         for var DY := 0 to H - 1 do
           for var DX := 0 to W - 1 do
             WriteRaw(A, Stride, DX, DY, BPP, ReadCode(VM, I, X + DX, Y + DY, BPP));
@@ -731,7 +731,7 @@ begin
         for var DX := Integer(Left) to Integer(Right) - 1 do
         begin
           var Index := DY * ScreenWidth + DX;
-          Screen[Index] := J2MECompositeColor(Screen[Index], UInt32(I.Pixels.Elements[Integer(DY - Y) * I.Width + Integer(DX - X)].AsInt));
+          Screen[Index] := J2MECompositeColor(Screen[Index], UInt32(I.Pixels.ElementValues[Integer(DY - Y) * I.Width + Integer(DX - X)].AsInt));
         end;
       end;
       Flushed := (Left < Right) and (Top < Bottom);
@@ -772,7 +772,7 @@ begin
         if Count > VM.MaxArrayLength div (W * H) then
           VM.RaiseJava('java/lang/OutOfMemoryError', 'Siemens sprite frame limit');
         var Required := W * H * Count div 8;
-        if (Length(Data.Elements) <> Required) or ((Bits <> nil) and (Length(Bits.Elements) <> Required)) then
+        if (Data.ElementCount <> Required) or ((Bits <> nil) and (Bits.ElementCount <> Required)) then
           VM.RaiseJava('java/lang/IllegalArgumentException', 'Siemens sprite bitmap length');
         PixelRef := J2MENewBitmapImage(VM, Data, W, H * Count);
         PutRef(O, 'pixels', PixelRef);
@@ -875,7 +875,7 @@ begin
     var W := Arg(4);
     var H := Arg(5);
     Dimensions(VM, W, H);
-    if Int64(W) * H <> Length(Map.Elements) then
+    if Int64(W) * H <> Map.ElementCount then
       VM.RaiseJava('java/lang/IllegalArgumentException', 'Siemens map length');
     if D.StartsWith('([B') then
     begin
@@ -883,15 +883,15 @@ begin
       var Bits: TJVMObject := nil;
       if Args[2].AsRef <> 0 then
         Bits := VM.GetObject(Args[2].AsRef);
-      if (Length(Data.Elements) mod 8 <> 0) or ((Bits <> nil) and (Length(Bits.Elements) <> Length(Data.Elements))) then
+      if (Data.ElementCount mod 8 <> 0) or ((Bits <> nil) and (Bits.ElementCount <> Data.ElementCount)) then
         VM.RaiseJava('java/lang/IllegalArgumentException', 'Siemens tile bitmap length');
-      Count := Length(Data.Elements) div 8;
+      Count := Data.ElementCount div 8;
       if Count > 0 then
       begin
-        PixelRef := J2MENewBitmapImage(VM, Data, 8, Length(Data.Elements));
+        PixelRef := J2MENewBitmapImage(VM, Data, 8, Data.ElementCount);
         PutRef(O, 'pixels', PixelRef);
         if Bits <> nil then
-          MaskRef := J2MENewBitmapImage(VM, Bits, 8, Length(Bits.Elements));
+          MaskRef := J2MENewBitmapImage(VM, Bits, 8, Bits.ElementCount);
       end;
     end
     else
@@ -932,13 +932,13 @@ begin
       Exit;
     end;
     var List := VM.GetObject(Ref(O, 'objects'));
-    var Count := Length(List.Elements);
+    var Count := List.ElementCount;
     var Index := -1;
     if (N = 'getObjectPosition') or ((N = 'deleteObject') and D.StartsWith('(' + ObjectD)) then
     begin
       VM.GetObject(Args[1].AsRef);
       for var J := 0 to Count - 1 do
-        if List.Elements[J].AsRef = Args[1].AsRef then
+        if List.ElementValues[J].AsRef = Args[1].AsRef then
         begin
           Index := J;
           Break;
@@ -951,7 +951,7 @@ begin
       Index := Arg(1);
       if (Index < 0) or (Index >= Count) then
         VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
-      Exit(List.Elements[Index]);
+      Exit(List.ElementValues[Index]);
     end;
     if N = 'paint' then
     begin
@@ -987,10 +987,10 @@ begin
       R := VM.NewArray('[' + ObjectD, Count + 1);
       A := VM.GetObject(R);
       for var J := 0 to Index - 1 do
-        A.Elements[J] := List.Elements[J];
-      A.Elements[Index] := Args[1];
+        A.ElementValues[J] := List.ElementValues[J];
+      A.ElementValues[Index] := Args[1];
       for var J := Index to Count - 1 do
-        A.Elements[J + 1] := List.Elements[J];
+        A.ElementValues[J + 1] := List.ElementValues[J];
       PutRef(O, 'objects', R);
       Exit;
     end;
@@ -1007,9 +1007,9 @@ begin
       R := VM.NewArray('[' + ObjectD, Count - 1);
       A := VM.GetObject(R);
       for var J := 0 to Index - 1 do
-        A.Elements[J] := List.Elements[J];
+        A.ElementValues[J] := List.ElementValues[J];
       for var J := Index + 1 to Count - 1 do
-        A.Elements[J - 1] := List.Elements[J];
+        A.ElementValues[J - 1] := List.ElementValues[J];
       PutRef(O, 'objects', R);
       Exit;
     end;

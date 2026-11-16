@@ -12,7 +12,7 @@ function TryInvokeJavaString(VM: TJVM; Method: TJVMMethod; const Args: TArray<TJ
 implementation
 
 uses
-  System.SysUtils, System.Math, Java.Charsets, Java.Unicode;
+  System.SysUtils, System.Math, Java.Charsets, Java.Unicode, Java.Floating.Text;
 
 {$Q-}{$R-}
 
@@ -24,7 +24,7 @@ begin
   C.AddNative('getChars', '(II[CI)V');
   for var D in ['([B)V', '([BII)V', '([BLjava/lang/String;)V', '([BIILjava/lang/String;)V', '(Ljava/lang/StringBuffer;)V'] do
     C.AddNative('<init>', D);
-  for var D in ['I', 'J', 'Z', 'C', '[C', '[CII', 'Ljava/lang/Object;'] do
+  for var D in ['I', 'J', 'F', 'D', 'Z', 'C', '[C', '[CII', 'Ljava/lang/Object;'] do
     C.AddNative('valueOf', '(' + D + ')Ljava/lang/String;', True);
   C.AddNative('getBytes', '()[B');
   C.AddNative('getBytes', '(Ljava/lang/String;)[B');
@@ -170,6 +170,10 @@ begin
           Text := IntToStr(Args[0].AsInt);
         'J':
           Text := IntToStr(Args[0].AsLong);
+        'F':
+          Text := JavaFloatingText(UInt64(Args[0].Bits), True);
+        'D':
+          Text := JavaFloatingText(UInt64(Args[0].Bits), False);
         'C':
           Text := Char(Args[0].AsInt);
         'Z':

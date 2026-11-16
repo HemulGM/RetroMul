@@ -6,7 +6,7 @@ uses
   System.SysUtils, RetroTune.Decoder;
 
 type
-  TWavDecoder = class(TInterfacedObject, ITuneDecoder)
+  TWavDecoder = class(TInterfacedObject, ITuneDecoder, ITuneSeekDecoder)
   private
     FInfo: TTuneInfo;
     FData: TBytes;
@@ -15,6 +15,7 @@ type
     function ReadSample(Offset: Integer): SmallInt;
   public
     constructor Create(const Data: TBytes);
+    function SeekFrame(Frame: Int64; const Cancelled: TFunc<Boolean>): Int64;
     function GetInfo: TTuneInfo;
     procedure SelectTrack(Index: Integer);
     function Render(var Samples: array of SmallInt; Frames: Integer): Integer;
@@ -189,6 +190,14 @@ begin
   else
     FInfo.Details := Format('PCM %d-bit', [FBits]);
   SelectTrack(0);
+end;
+
+function TWavDecoder.SeekFrame(Frame: Int64; const Cancelled: TFunc<Boolean>): Int64;
+begin
+  if Assigned(Cancelled) and Cancelled() then
+    raise EAbort.Create('Audio seek cancelled');
+  FPosition := Integer(EnsureRange(Frame, Int64(0), Int64(FFrameCount)));
+  Result := FPosition;
 end;
 
 function TWavDecoder.GetInfo: TTuneInfo;

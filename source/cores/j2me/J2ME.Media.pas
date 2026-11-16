@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, JVM.Types, JVM.ClassFile,
-  JVM.Runtime, RetroTune.Decoder;
+  System.Classes, JVM.StateIO, System.SysUtils, System.Generics.Collections,
+  JVM.Types, JVM.ClassFile, JVM.Runtime, RetroTune.Decoder;
 
 type
   TJ2MEMediaEvent = record
@@ -22,6 +22,7 @@ type
     PCM: TArray<SmallInt>;
     SampleCount, FrameCount: Integer;
     Position: Int64; // Source-frame position in 1/44100 frame units.
+    procedure DiscardDecodedAudio;
     function MediaTime: Int64;
     function Duration: Int64;
   end;
@@ -50,6 +51,7 @@ type
     procedure EndOfMedia(P: TJ2MEMediaPlayer);
     procedure Sweep;
   public
+    procedure TransferState(S: TJVMStateIO);
     constructor Create(VM: TJVM);
     destructor Destroy; override;
     procedure Install;
@@ -66,8 +68,8 @@ type
 implementation
 
 uses
-  System.Math, Java.Classes, Java.Bootstrap, RetroTune.Decoder.WAV,
-  RetroTune.Decoder.MIDI;
+  J2ME.Audio.State, System.Math, Java.Classes, Java.Bootstrap,
+  RetroTune.Decoder.WAV, RetroTune.Decoder.MIDI;
 
 {$R 'J2ME.SoundFont.res' 'J2ME.SoundFont.rc'}
 
@@ -89,6 +91,16 @@ const
   VolumeDesc = 'Ljavax/microedition/media/control/VolumeControl;';
   MaxClipSamples = 8 * 1024 * 1024;
   MaxTotalSamples = 32 * 1024 * 1024;
+
+procedure TJ2MEMediaPlayer.DiscardDecodedAudio;
+begin
+  Decoder := nil;
+  PCM := nil;
+  SampleCount := 0;
+  FrameCount := 0;
+  Position := 0;
+  Decoding := False;
+end;
 
 function TJ2MEMediaPlayer.MediaTime: Int64;
 begin
@@ -480,10 +492,7 @@ begin
       raise;
     on E: Exception do
     begin
-      P.Decoder := nil;
-      P.PCM := nil;
-      P.SampleCount := 0;
-      P.Decoding := False;
+      P.DiscardDecodedAudio;
       FVM.RaiseJava(Media + 'MediaException', E.Message);
     end;
   end;
@@ -579,10 +588,8 @@ begin
   begin
     SetStarted(P, False);
     P.State := 0;
-    P.Decoder := nil;
-    P.PCM := nil;
+    P.DiscardDecodedAudio;
     P.Data := nil;
-    P.Decoding := False;
     Inc(P.Generation);
   end;
 end;
@@ -766,10 +773,7 @@ begin
       if P.Decoding then
       begin
         Inc(P.Generation);
-        P.Decoding := False;
-        P.Decoder := nil;
-        P.PCM := nil;
-        P.SampleCount := 0;
+        P.DiscardDecodedAudio;
       end;
       if P.State >= 300 then
         P.State := 200;
@@ -778,9 +782,7 @@ begin
     begin
       Inc(P.Generation);
       P.State := 0;
-      P.Decoding := False;
-      P.Decoder := nil;
-      P.PCM := nil;
+      P.DiscardDecodedAudio;
       P.Data := nil;
       PostEvent(P, 'closed', 0);
       FVM.GetObject(Ref).Fields[PlayerImpl + '.$listeners:[Ljavax/microedition/media/PlayerListener;'] := TJVMValue.Ref(0);
@@ -944,6 +946,114 @@ begin
   SetLength(Result, Length(Mix));
   for var I := 0 to High(Result) do
     Result[I] := SmallInt(EnsureRange(Mix[I], Int64(-32768), Int64(32767)));
+end;
+
+procedure TJ2MEMedia.TransferState(S: TJVMStateIO);
+begin
+  S.Tag('J2ME.Media-1');
+  S.Int64Value(FClockFrames);
+  S.Int(FTimeBase);
+  var Keys := FPlayers.Keys.ToArray;
+  var N: Integer := Length(Keys);
+  S.Count(N, 256);
+  if S.Loading then
+    FPlayers.Clear
+  else
+    TArray.Sort<Integer>(Keys);
+  for var I := 0 to N - 1 do
+  begin
+    var Key := 0;
+    var P: TJ2MEMediaPlayer;
+    if S.Loading then
+      P := TJ2MEMediaPlayer.Create
+    else
+    begin
+      Key := Keys[I];
+      P := FPlayers[Key];
+    end;
+    try
+      S.Int(Key);
+      S.Int(P.Reference);
+      S.Int(P.State);
+      S.Int(P.Volume);
+      S.Int(P.LoopCount);
+      S.Int(P.LoopsLeft);
+      S.Int(P.Generation);
+      S.Int(P.SampleCount);
+      S.Int(P.FrameCount);
+      S.Int(P.Info.SampleRate);
+      S.Int(P.Info.Channels);
+      S.Bool(P.Muted);
+      S.Bool(P.Decoding);
+      S.Bool(P.Rooted);
+      S.Text(P.ContentType);
+      S.Bytes(P.Data);
+      S.PCM(P.PCM);
+      S.Int64Value(P.Position);
+      if (P.SampleCount < 0) or (P.FrameCount < 0) then
+        raise EReadError.Create('Invalid snapshot media PCM');
+      // Version 1 originally retained counters after close had freed the PCM.
+      // Accept that old closed-player representation without weakening checks
+      // for live/decoding players or changing the on-disk layout.
+      if S.Loading and (P.State = 0) and not P.Decoding and not P.Rooted and
+        (Length(P.PCM) = 0) and (Length(P.Data) = 0) then
+        P.DiscardDecodedAudio;
+      if P.SampleCount > Length(P.PCM) then
+        raise EReadError.Create('Invalid snapshot media PCM');
+      if S.Loading and P.Decoding and (P.SampleCount > 0) then
+      begin
+        var Ext := '.wav';
+        if P.ContentType = 'audio/midi' then
+          Ext := '.mid';
+        P.Decoder := RestoreJ2MEDecoder(P.Data, Ext, P.SampleCount, P.Info.SampleRate, P.Info.Channels);
+      end;
+
+      if S.Loading then
+      begin
+        FPlayers.Add(Key, P);
+        P := nil;
+      end;
+    finally
+      if S.Loading then
+        P.Free;
+    end;
+  end;
+
+  var Events := FEvents.ToArray;
+  N := Length(Events);
+  S.Count(N, 65536);
+  if S.Loading then
+  begin
+    FEvents.Clear;
+    SetLength(Events, N);
+  end;
+  for var I := 0 to N - 1 do
+  begin
+    S.Int(Events[I].Listener);
+    S.Int(Events[I].Player);
+    S.Int(Events[I].EventName);
+    S.Int(Events[I].Data);
+    if S.Loading then
+      FEvents.Enqueue(Events[I]);
+  end;
+
+  var Tones := FTones.ToArray;
+  N := Length(Tones);
+  S.Count(N, 65536);
+  if S.Loading then
+  begin
+    FTones.Clear;
+    SetLength(Tones, N);
+  end;
+  for var I := 0 to N - 1 do
+  begin
+    S.Int64Value(Tones[I].Remaining);
+    S.RealValue(Tones[I].Phase);
+    S.RealValue(Tones[I].Increment);
+    S.Int(Tones[I].Volume);
+    if S.Loading then
+      FTones.Add(Tones[I]);
+  end;
 end;
 
 initialization

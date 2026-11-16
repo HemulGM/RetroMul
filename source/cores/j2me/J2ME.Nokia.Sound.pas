@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, JVM.Types, JVM.ClassFile,
-  JVM.Runtime, RetroTune.Decoder, J2ME.Nokia.OTA;
+  System.Classes, JVM.StateIO, System.SysUtils, System.Generics.Collections,
+  JVM.Types, JVM.ClassFile, JVM.Runtime, RetroTune.Decoder, J2ME.Nokia.OTA;
 
 type
   TNokiaSoundEvent = record
@@ -45,6 +45,7 @@ type
     function EndCycle(V: TNokiaSoundVoice): Boolean;
     procedure Sweep;
   public
+    procedure TransferState(S: TJVMStateIO);
     constructor Create(VM: TJVM);
     destructor Destroy; override;
     procedure Install;
@@ -60,7 +61,7 @@ type
 implementation
 
 uses
-  System.Math, Java.Classes, RetroTune.Decoder.WAV;
+  J2ME.Audio.State, System.Math, Java.Classes, RetroTune.Decoder.WAV;
 
 const
   SoundName = 'com/nokia/mid/sound/Sound';
@@ -648,6 +649,116 @@ begin
     ReleaseEvent(FEvents.Dequeue);
   for var V in FVoices.Values do
     ReleaseVoice(V, False);
+end;
+
+procedure TJ2MENokiaSound.TransferState(S: TJVMStateIO);
+begin
+  S.Tag('J2ME.Nokia.Sound-1');
+  S.UInt64Value(FOrder);
+  var Keys := FVoices.Keys.ToArray;
+  var N: Integer := Length(Keys);
+  S.Count(N, 128);
+  if S.Loading then
+    FVoices.Clear
+  else
+    TArray.Sort<Integer>(Keys);
+  for var I := 0 to N - 1 do
+  begin
+    var Key := 0;
+    var P: TNokiaSoundVoice;
+    if S.Loading then
+      P := TNokiaSoundVoice.Create
+    else
+    begin
+      Key := Keys[I];
+      P := FVoices[Key];
+    end;
+    try
+      S.Int(Key);
+      S.Int(P.Reference);
+      S.Int(P.State);
+      S.Int(P.Gain);
+      S.Int(P.Format);
+      S.Int(P.Generation);
+      S.Int(P.Loops);
+      S.Int(P.LoopsLeft);
+      S.Int(P.SampleCount);
+      S.Int(P.FrameCount);
+      S.Int(P.Info.SampleRate);
+      S.Int(P.Info.Channels);
+      S.Int(P.Pattern);
+      S.Int(P.Instruction);
+      S.Int(P.Repetition);
+      S.Int(P.Scale);
+      S.Int(P.Style);
+      S.Int(P.Tempo);
+      S.Int(P.Volume);
+      S.Bool(P.Rooted);
+      S.Bool(P.HasPlayed);
+      S.Bool(P.Decoding);
+      S.Bool(P.SimpleTone);
+      S.UInt64Value(P.Order);
+      S.Bytes(P.Data);
+      S.PCM(P.PCM);
+      S.Int64Value(P.Position);
+      S.Int64Value(P.ToneLength);
+      S.Int64Value(P.SegmentLength);
+      S.Int64Value(P.SegmentPosition);
+      S.Int64Value(P.SegmentOn);
+      S.RealValue(P.Frequency);
+      S.RealValue(P.Increment);
+      S.RealValue(P.Phase);
+      var Patterns: Integer := Length(P.Song);
+      S.Count(Patterns, 1024);
+      if S.Loading then
+        SetLength(P.Song, Patterns);
+      for var J := 0 to Patterns - 1 do
+      begin
+        S.Int(P.Song[J].Repeats);
+        var Notes: Integer := Length(P.Song[J].Instructions);
+        S.Count(Notes, 65536);
+        if S.Loading then
+          SetLength(P.Song[J].Instructions, Notes);
+        for var K := 0 to Notes - 1 do
+        begin
+          S.Int(P.Song[J].Instructions[K].Kind);
+          S.Int(P.Song[J].Instructions[K].Value);
+          S.Int(P.Song[J].Instructions[K].Duration);
+          S.Int(P.Song[J].Instructions[K].Modifier);
+        end;
+      end;
+      if S.Loading and P.Decoding and (P.SampleCount > 0) then
+        P.Decoder := RestoreJ2MEDecoder(P.Data, '.wav', P.SampleCount, P.Info.SampleRate, P.Info.Channels);
+      if (P.SampleCount < 0) or (P.SampleCount > Length(P.PCM)) or (P.FrameCount < 0) then
+        raise EReadError.Create('Invalid snapshot Nokia PCM');
+
+      if S.Loading then
+      begin
+        FVoices.Add(Key, P);
+        P := nil;
+      end;
+    finally
+      if S.Loading then
+        P.Free;
+    end;
+  end;
+
+  var Events := FEvents.ToArray;
+  N := Length(Events);
+  S.Count(N, 65536);
+  if S.Loading then
+  begin
+    FEvents.Clear;
+    SetLength(Events, N);
+  end;
+  for var I := 0 to N - 1 do
+  begin
+    S.Int(Events[I].Listener);
+    S.Int(Events[I].Sound);
+    S.Int(Events[I].State);
+    if S.Loading then
+      FEvents.Enqueue(Events[I]);
+  end;
 end;
 
 end.

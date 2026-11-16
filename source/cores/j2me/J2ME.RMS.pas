@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, JVM.Types, JVM.ClassFile,
-  JVM.Runtime, Core.Storage, J2ME.RMS.Store;
+  System.Classes, JVM.StateIO, System.SysUtils, System.Generics.Collections,
+  JVM.Types, JVM.ClassFile, JVM.Runtime, Core.Storage, J2ME.RMS.Store;
 
 type
   TRMSHandle = class
@@ -24,6 +24,7 @@ type
   TJ2MERMS = class
   private
     FVM: TJVM;
+    FStateStores: TDictionary<string, TBytes>;
     FDatabase: TRMSDatabase;
     FVendor, FSuite: string;
     FHandles: TObjectDictionary<Integer, TRMSHandle>;
@@ -40,6 +41,8 @@ type
     procedure Notify(H: TRMSHandle; Kind, ID: Integer);
     procedure Sweep;
   public
+    procedure TransferState(S: TJVMStateIO);
+    procedure ApplyRestoredState;
     constructor Create(VM: TJVM; const Storage: IStorage; const Vendor, Suite: string);
     destructor Destroy; override;
     procedure Install;
@@ -52,7 +55,7 @@ type
 implementation
 
 uses
-  System.Math, System.Classes, Java.Classes;
+  System.Math, Java.Classes;
 
 {$Q-}{$R-}
 
@@ -132,6 +135,7 @@ end;
 destructor TJ2MERMS.Destroy;
 begin
   Shutdown;
+  FStateStores.Free;
   FEnums.Free;
   FOpen.Free;
   FHandles.Free;
@@ -993,6 +997,158 @@ begin
     on X: Exception do
       FVM.RaiseJava(RMS + 'RecordStoreException', X.ClassName + ': ' + X.Message);
   end;
+end;
+
+procedure TJ2MERMS.TransferState(S: TJVMStateIO);
+begin
+  S.Tag('RMS-1');
+  S.Tag(FVendor);
+  S.Tag(FSuite);
+  var Stores: TDictionary<string, TBytes>;
+  if S.Loading then
+  begin
+    FreeAndNil(FStateStores);
+    FStateStores := TDictionary<string, TBytes>.Create;
+    Stores := FStateStores;
+  end
+  else
+    Stores := FDatabase.CaptureStateStores;
+  try
+    var Names := Stores.Keys.ToArray;
+    var Count: Integer := Length(Names);
+    S.Count(Count, 1024);
+    if not S.Loading then
+      TArray.Sort<string>(Names);
+    var Total := Int64(0);
+    for var I := 0 to Count - 1 do
+    begin
+      var Name := '';
+      var Data: TBytes;
+      if not S.Loading then
+      begin
+        Name := Names[I];
+        Data := Stores[Name];
+      end;
+      S.Text(Name);
+      S.Bytes(Data, TRMSDatabase.MaxStoreBytes);
+      Inc(Total, Length(Data));
+      if Total > TRMSDatabase.MaxSuiteBytes then
+        raise EReadError.Create('Snapshot RMS quota');
+      if S.Loading then
+      begin
+        var State := TRMSSnapshot.Decode(Data);
+        try
+          if (State.Vendor <> FVendor) or (State.Suite <> FSuite) or (State.Name <> Name) then
+            raise EReadError.Create('Snapshot RMS identity mismatch');
+        finally
+          State.Free;
+        end;
+        Stores.Add(Name, Data);
+      end;
+    end;
+    var Keys := FHandles.Keys.ToArray;
+    var N: Integer := Length(Keys);
+    S.Count(N, 1024);
+    if S.Loading then
+    begin
+      FHandles.Clear;
+      FOpen.Clear;
+    end
+    else
+      TArray.Sort<Integer>(Keys);
+    for var I := 0 to N - 1 do
+    begin
+      var H: TRMSHandle;
+      if S.Loading then
+        H := TRMSHandle.Create
+      else
+        H := FHandles[Keys[I]];
+      try
+        S.Int(H.Reference);
+        S.Int(H.Opens);
+        if H.Opens < 0 then
+          raise EReadError.Create('Invalid snapshot record store handle');
+        if H.Opens > 0 then
+        begin
+          if S.Loading then
+            H.Lease := TRMSLease.Create;
+          H.Lease.TransferState(S);
+          if (H.Lease.Vendor <> FVendor) or (H.Lease.Suite <> FSuite) or not H.Lease.Owner then
+            raise EReadError.Create('Java ME snapshots do not support shared foreign record stores');
+          if not Stores.ContainsKey(H.Lease.Name) then
+            raise EReadError.Create('Snapshot record store is missing');
+        end;
+        if S.Loading then
+        begin
+          FHandles.Add(H.Reference, H);
+          H := nil;
+        end;
+      finally
+        if S.Loading then
+          H.Free;
+      end;
+    end;
+  finally
+    if not S.Loading then
+      Stores.Free;
+  end;
+  var Keys := FEnums.Keys.ToArray;
+  var N: Integer := Length(Keys);
+  S.Count(N, 65536);
+  if S.Loading then
+    FEnums.Clear
+  else
+    TArray.Sort<Integer>(Keys);
+  for var I := 0 to N - 1 do
+  begin
+    var E: TRMSIterator;
+    if S.Loading then
+      E := TRMSIterator.Create
+    else
+      E := FEnums[Keys[I]];
+    try
+      S.Int(E.Reference);
+      S.Int(E.Store);
+      S.Int(E.Cursor);
+      S.Int64Value(E.Version);
+      S.Bool(E.Built);
+      S.Bool(E.KeepUpdated);
+      S.Bool(E.Destroyed);
+      S.Bool(E.Gap);
+      if S.Loading then
+      begin
+        FEnums.Add(E.Reference, E);
+        E := nil;
+      end;
+    finally
+      if S.Loading then
+        E.Free;
+    end;
+  end;
+end;
+
+procedure TJ2MERMS.ApplyRestoredState;
+begin
+  if FStateStores = nil then
+    Exit;
+  var Previous := FDatabase.CaptureStateStores;
+  try
+    try
+      FDatabase.ReplaceStateStores(FStateStores);
+      for var H in FHandles.Values do
+        if H.Opens > 0 then
+        begin
+          FDatabase.AttachStateLease(H.Lease);
+          FOpen.Add(H.Lease.FileName, H.Reference);
+        end;
+    except
+      FDatabase.ReplaceStateStores(Previous);
+      raise;
+    end;
+  finally
+    Previous.Free;
+  end;
+  FreeAndNil(FStateStores);
 end;
 
 end.

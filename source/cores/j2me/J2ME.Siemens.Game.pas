@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, JVM.Types, JVM.ClassFile,
-  JVM.Runtime, J2ME.Effects;
+  System.Classes, JVM.StateIO, System.SysUtils, System.Generics.Collections,
+  JVM.Types, JVM.ClassFile, JVM.Runtime, J2ME.Effects;
 
 type
   TSiemensNote = record
@@ -51,6 +51,7 @@ type
     procedure StopMelody;
     procedure ValidateNote(Note, Length: Integer);
   public
+    procedure TransferState(S: TJVMStateIO);
     constructor Create(VM: TJVM; Effects: TJ2MEDeviceEffects);
     destructor Destroy; override;
     procedure Install;
@@ -574,6 +575,143 @@ procedure TJ2MESiemensGame.Shutdown;
 begin
   StopMelody;
   FToneRemaining := 0;
+end;
+
+procedure TJ2MESiemensGame.TransferState(S: TJVMStateIO);
+begin
+  S.Tag('J2ME.Siemens.Game-1');
+  begin
+
+    var Keys := FComposers.Keys.ToArray;
+    var N: Integer := Length(Keys);
+    S.Count(N, 256);
+    if S.Loading then
+      FComposers.Clear
+    else
+      TArray.Sort<Integer>(Keys);
+    for var I := 0 to N - 1 do
+    begin
+      var Key := 0;
+      var P: TSiemensComposer;
+      if S.Loading then
+        P := TSiemensComposer.Create
+      else
+      begin
+        Key := Keys[I];
+        P := FComposers[Key];
+      end;
+      try
+        S.Int(Key);
+        S.Int(P.BPM);
+        var Notes := P.Notes.ToArray;
+        var Count: Integer := Length(Notes);
+        S.Count(Count, 4096);
+        if S.Loading then
+        begin
+          P.Notes.Clear;
+          SetLength(Notes, Count);
+        end;
+        for var J := 0 to Count - 1 do
+        begin
+          S.Int(Notes[J].Note);
+          S.Int(Notes[J].Length);
+          S.Int(Notes[J].Target);
+          S.Bool(Notes[J].TimedBody);
+          if S.Loading then
+            P.Notes.Add(Notes[J]);
+        end;
+
+        if S.Loading then
+        begin
+          FComposers.Add(Key, P);
+          P := nil;
+        end;
+      finally
+        if S.Loading then
+          P.Free;
+      end;
+    end;
+  end;
+  begin
+
+    var Keys := FMelodies.Keys.ToArray;
+    var N: Integer := Length(Keys);
+    S.Count(N, 256);
+    if S.Loading then
+      FMelodies.Clear
+    else
+      TArray.Sort<Integer>(Keys);
+    for var I := 0 to N - 1 do
+    begin
+      var Key := 0;
+      var P: TSiemensMelody;
+      if S.Loading then
+        P := TSiemensMelody.Create
+      else
+      begin
+        Key := Keys[I];
+        P := FMelodies[Key];
+      end;
+      try
+        S.Int(Key);
+        S.Int(P.Reference);
+        S.Int(P.BPM);
+        S.Int(P.Cursor);
+        S.Bool(P.Rooted);
+        S.Bool(P.Silent);
+        S.Int64Value(P.Remaining);
+        S.Int64Value(P.Remainder);
+        S.RealValue(P.Phase);
+        S.RealValue(P.Increment);
+        var Count: Integer := Length(P.Notes);
+        S.Count(Count, 4096);
+        if S.Loading then
+          SetLength(P.Notes, Count);
+        for var J := 0 to Count - 1 do
+        begin
+          S.Int(P.Notes[J].Note);
+          S.Int(P.Notes[J].Length);
+          S.Int(P.Notes[J].Target);
+          S.Bool(P.Notes[J].TimedBody);
+        end;
+        Count := Length(P.Repeats);
+        S.Count(Count, 4096);
+        if S.Loading then
+          SetLength(P.Repeats, Count);
+        for var J := 0 to Count - 1 do
+          S.Int(P.Repeats[J]);
+        Count := Length(P.RepeatActive);
+        S.Count(Count, 4096);
+        if S.Loading then
+          SetLength(P.RepeatActive, Count);
+        for var J := 0 to Count - 1 do
+          S.Bool(P.RepeatActive[J]);
+
+        if S.Loading then
+        begin
+          FMelodies.Add(Key, P);
+          P := nil;
+        end;
+      finally
+        if S.Loading then
+          P.Free;
+      end;
+    end;
+  end;
+  S.Int64Value(FToneRemaining);
+  S.RealValue(FTonePhase);
+  S.RealValue(FToneIncrement);
+  S.Bool(FSilentTone);
+  var Current := 0;
+  if FCurrent <> nil then
+    Current := FCurrent.Reference;
+  S.Int(Current);
+  if S.Loading then
+  begin
+    FCurrent := nil;
+    if (Current <> 0) and not FMelodies.TryGetValue(Current, FCurrent) then
+      raise EReadError.Create('Invalid snapshot Siemens melody');
+  end;
 end;
 
 end.

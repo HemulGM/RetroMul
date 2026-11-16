@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, JVM.Types, JVM.ClassFile,
-  JVM.Runtime, Core.Bluetooth.Types, J2ME.Bluetooth.Transport;
+  System.Classes, System.SysUtils, System.Generics.Collections, JVM.Types,
+  JVM.ClassFile, JVM.Runtime, Core.Bluetooth.Types, J2ME.Bluetooth.Transport;
 
 type
   TJ2MEBluetoothEvent = record
@@ -72,6 +72,7 @@ type
     function NewRecord(const Service: TBluetoothService; Origin: Integer): Integer;
     function InvokeRecord(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
   public
+    procedure RequireSnapshotIdle;
     constructor Create(VM: TJVM; const Provider: IBluetoothProvider);
     destructor Destroy; override;
     procedure Install;
@@ -1640,6 +1641,13 @@ begin
     end;
   end;
   raise EJVMUnsupported.Create('Bluetooth API: ' + Owner + '.' + N);
+end;
+
+procedure TJ2MEBluetooth.RequireSnapshotIdle;
+begin
+  if (FJobs.Count <> 0) or (FEvents.Count <> 0) or (FRecords.Count <> 0) or (FCache.Count <> 0) or (FSelections.Count <> 0) or (FDiscoverable <> nil) or (FNameQuery.Count <> 0) then
+    raise EInvalidOpException.Create('Java ME snapshots require inactive network, Bluetooth and messaging connections');
+  FTransport.RequireSnapshotIdle;
 end;
 
 end.

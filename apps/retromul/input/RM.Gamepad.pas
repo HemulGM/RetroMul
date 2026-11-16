@@ -139,7 +139,7 @@ begin
     Exit;
   // Scale relative to the fitted default size, including on small screens.
   // The child caps the result to the available space for drawing and input.
-  var Fit := Min(1.0, Min(Width / (2 * FPad.DesignSideSize.Width),
+  var Fit := Min(1.0, Min(Width / FPad.DesignWidth,
       Height / FPad.DesignSideSize.Height));
   FPad.LayoutScale := Max(0.001, Fit * FLayoutScale);
 end;

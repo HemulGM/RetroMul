@@ -2,6 +2,9 @@
 
 interface
 
+uses
+  JVM.StateIO;
+
 type
   // Emulated motor duty, independent of any physical actuator or frontend.
   TJ2MEVibrationSample = record
@@ -19,6 +22,7 @@ type
     FPending: TJ2MEVibrationSample;
     procedure Advance(Now: Int64);
   public
+    procedure TransferState(S: TJVMStateIO);
     constructor Create(Now: Int64);
     procedure SetBacklight(Level: Integer; CancelFlash: Boolean = False);
     procedure FlashBacklight(Duration, Now: Int64);
@@ -32,7 +36,7 @@ type
 implementation
 
 uses
-  System.Math, System.SysUtils;
+  System.Classes, System.Math, System.SysUtils;
 
 function Deadline(Now, Duration: Int64): Int64;
 begin
@@ -157,6 +161,20 @@ begin
   SetVibration(0, 0, Now);
   FPending := Default(TJ2MEVibrationSample);
   SetBacklight(100, True);
+end;
+
+procedure TJ2MEDeviceEffects.TransferState(S: TJVMStateIO);
+begin
+  S.Tag('J2ME.Effects-1');
+  S.Int(FBacklight);
+  S.Int(FPresented);
+  S.Int(FVibration);
+  S.Int64Value(FFlashStart);
+  S.Int64Value(FFlashUntil);
+  S.Int64Value(FVibrationUntil);
+  S.Int64Value(FLastNow);
+  S.Int64Value(FPending.Millis);
+  S.RealValue(FPending.Area);
 end;
 
 end.

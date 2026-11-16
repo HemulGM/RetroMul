@@ -783,14 +783,16 @@ begin
     Height := Target.Height;
   end;
   if TargetPixels = nil then
-    Height := Get('displayHeight', Height);
+    Height := Min(Height, Get('displayHeight', Height));
   Color := (UInt32(Get('color')) and $FFFFFF) or (UInt32(Get('alpha', 255)) shl 24);
   TX := Get('tx');
   TY := Get('ty');
-  CL := Get('clipL');
-  CT := Get('clipT');
-  CR := Get('clipR', Width);
-  CB := Get('clipB', Height);
+  // A retained display Graphics may predate a viewport resize. Its clip must
+  // remain inside the physical raster, including during a restored paint call.
+  CL := EnsureRange(Get('clipL'), 0, Width);
+  CT := EnsureRange(Get('clipT'), 0, Height);
+  CR := EnsureRange(Get('clipR', Width), CL, Width);
+  CB := EnsureRange(Get('clipB', Height), CT, Height);
   Stroke := Get('stroke');
   if N = 'setARGBColor' then
   begin

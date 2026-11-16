@@ -3,7 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, Core.Storage;
+  System.Classes, JVM.StateIO, System.SysUtils, System.Generics.Collections,
+  Core.Storage;
 
 type
   ERMS = class(Exception)
@@ -37,6 +38,7 @@ type
   public
     FileName, Vendor, Suite, Name: string;
     Owner, CanWrite: Boolean;
+    procedure TransferState(S: TJVMStateIO);
     destructor Destroy; override;
     function TakeChange(out Change: TRMSChange): Boolean;
     procedure SetNotifications(Enabled: Boolean);
@@ -65,6 +67,9 @@ type
     function SuiteFolder(const Vendor, Suite: string): string;
     function StoreFile(const Vendor, Suite, Name: string): string;
     function Open(const Vendor, Suite, Name: string; CreateIfMissing: Boolean; AuthMode: Integer; Writable: Boolean; Now: Int64): TRMSLease;
+    function CaptureStateStores: TDictionary<string, TBytes>;
+    procedure ReplaceStateStores(Stores: TDictionary<string, TBytes>);
+    procedure AttachStateLease(Lease: TRMSLease);
     function Read(Lease: TRMSLease): TRMSSnapshot;
     function Modify(Lease: TRMSLease; Kind, ID: Integer; const Data: TBytes; Now: Int64): Integer;
     procedure SetMode(Lease: TRMSLease; AuthMode: Integer; Writable: Boolean; Now: Int64);
@@ -76,7 +81,7 @@ type
 implementation
 
 uses
-  System.Classes, System.IOUtils, System.Hash, System.SyncObjs,
+  System.IOUtils, System.Hash, System.SyncObjs,
   {$IFDEF MSWINDOWS}
   Winapi.Windows,
   {$ELSE}
@@ -801,6 +806,116 @@ begin
     Result := Integer(Max(Int64(0), Min(Int64(MaxStoreBytes) - Size, Int64(MaxSuiteBytes) - SuiteBytes(Lease.Vendor, Lease.Suite))));
   finally
     Leave(Lock);
+  end;
+end;
+
+procedure TRMSLease.TransferState(S: TJVMStateIO);
+begin
+  Gate.Acquire;
+  try
+    S.Text(Vendor);
+    S.Text(Suite);
+    S.Text(Name);
+    S.Bool(Owner);
+    S.Bool(CanWrite);
+    S.Bool(FNotifications);
+    if FPending = nil then
+      FPending := TQueue<TRMSChange>.Create;
+    var Changes := FPending.ToArray;
+    var N: Integer := Length(Changes);
+    S.Count(N, 65536);
+    if S.Loading then
+    begin
+      FPending.Clear;
+      SetLength(Changes, N);
+    end;
+    for var I := 0 to N - 1 do
+    begin
+      S.Int(Changes[I].Kind);
+      S.Int(Changes[I].ID);
+      if S.Loading then
+        FPending.Enqueue(Changes[I]);
+    end;
+  finally
+    Gate.Release;
+  end;
+end;
+
+function TRMSDatabase.CaptureStateStores: TDictionary<string, TBytes>;
+begin
+  Result := TDictionary<string, TBytes>.Create;
+  try
+    var Lock := Enter;
+    try
+      var Folder := SuiteFolder(FVendor, FSuite);
+      if FStorage.FolderExists(Folder) then
+        for var FileName in FStorage.Files(Folder) do
+          if SameText(ExtractFileExt(FileName), '.rms') then
+          begin
+            var Data := FStorage.ReadBytes(FileName);
+            var State := TRMSSnapshot.Decode(Data);
+            try
+              if (State.Vendor <> FVendor) or (State.Suite <> FSuite) or not SameFileName(FileName, StoreFile(FVendor, FSuite, State.Name)) then
+                raise EReadError.Create('Invalid snapshot RMS identity');
+              Result.Add(State.Name, Data);
+            finally
+              State.Free;
+            end;
+          end;
+    finally
+      Leave(Lock);
+    end;
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+procedure TRMSDatabase.ReplaceStateStores(Stores: TDictionary<string, TBytes>);
+begin
+  var Lock := Enter;
+  try
+    EnsureFolder(SuiteFolder(FVendor, FSuite));
+    for var Pair in Stores do
+    begin
+      var Input := TBytesStream.Create(Pair.Value);
+      try
+        FStorage.WriteAtomic(StoreFile(FVendor, FSuite, Pair.Key), Input);
+      finally
+        Input.Free;
+      end;
+    end;
+    for var FileName in FStorage.Files(SuiteFolder(FVendor, FSuite)) do
+      if SameText(ExtractFileExt(FileName), '.rms') then
+      begin
+        var State := TRMSSnapshot.Decode(FStorage.ReadBytes(FileName));
+        try
+          if (State.Vendor <> FVendor) or (State.Suite <> FSuite) then
+            raise EReadError.Create('Invalid snapshot RMS identity');
+          if not Stores.ContainsKey(State.Name) then
+            FStorage.Delete(FileName);
+        finally
+          State.Free;
+        end;
+      end;
+  finally
+    Leave(Lock);
+  end;
+end;
+
+procedure TRMSDatabase.AttachStateLease(Lease: TRMSLease);
+begin
+  if (Lease.Vendor <> FVendor) or (Lease.Suite <> FSuite) or not Lease.Owner then
+    raise EReadError.Create('Java ME snapshots do not support shared foreign record stores');
+  Lease.FileName := StoreFile(Lease.Vendor, Lease.Suite, Lease.Name);
+  var State := Read(Lease);
+  State.Free;
+  Lease.FLock := TRMSFileLock.Create(Lease.FileName + '.open', False, 0);
+  Gate.Acquire;
+  try
+    Leases.Add(Lease);
+  finally
+    Gate.Release;
   end;
 end;
 

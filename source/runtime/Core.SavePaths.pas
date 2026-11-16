@@ -31,6 +31,8 @@ function FindRecordedAutosave(const Storage: IStorage; const RomLocation: string
 
 procedure RecordGameSnapshotDirectory(const Storage: IStorage; const RomLocation, Directory: string);
 
+function SnapshotDirectoryHasFiles(const Storage: IStorage; const Directory: string): Boolean;
+
 implementation
 
 uses
@@ -85,13 +87,32 @@ begin
   var Ini := Storage.ReadConfig(Storage.ConfigFile('sessions'));
   try
     var Key := SessionKey(RomLocation);
-    if Ini.ValueExists('Snapshots', Key) and (Ini.ReadString('Snapshots', Key, '') = Directory) then
-      Exit;
-    Ini.WriteString('Snapshots', Key, Directory);
+    if SnapshotDirectoryHasFiles(Storage, Directory) then
+    begin
+      if Ini.ReadString('Snapshots', Key, '') = Directory then
+        Exit;
+      Ini.WriteString('Snapshots', Key, Directory);
+    end
+    else
+    begin
+      if not Ini.ValueExists('Snapshots', Key) then
+        Exit;
+      Ini.DeleteKey('Snapshots', Key);
+    end;
     Storage.WriteConfig(Ini);
   finally
     Ini.Free;
   end;
+end;
+
+function SnapshotDirectoryHasFiles(const Storage: IStorage; const Directory: string): Boolean;
+begin
+  Result := False;
+  if (Directory = '') or not Storage.FolderExists(Directory) then
+    Exit;
+  for var FileName in Storage.Files(Directory) do
+    if SameText(ExtractFileExt(FileName), SNAPSHOT_EXTENSION) and Storage.Exists(FileName) then
+      Exit(True);
 end;
 
 procedure ValidateSnapshotName(const Name: string);

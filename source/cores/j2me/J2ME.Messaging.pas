@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, JVM.Types, JVM.ClassFile,
-  JVM.Runtime, Core.Messaging.Types;
+  System.Classes, System.SysUtils, System.Generics.Collections, JVM.Types,
+  JVM.ClassFile, JVM.Runtime, Core.Messaging.Types;
 
 type
   TJ2MEMessageConnection = class
@@ -31,6 +31,7 @@ type
     procedure Error(Code: TMessagingError);
     function NewMessage(Kind: TMessagingPayload; Address: Integer; Protocol: TMessagingProtocol): Integer;
   public
+    procedure RequireSnapshotIdle;
     constructor Create(VM: TJVM; const Provider: IMessagingProvider);
     destructor Destroy; override;
     procedure Install;
@@ -682,6 +683,12 @@ begin
     Exit(TJVMValue.Ref(M));
   end;
   raise EJVMUnsupported.Create(Impl + '.' + N);
+end;
+
+procedure TJ2MEMessaging.RequireSnapshotIdle;
+begin
+  if FConnections.Count <> 0 then
+    raise EInvalidOpException.Create('Java ME snapshots require inactive network, Bluetooth and messaging connections');
 end;
 
 end.

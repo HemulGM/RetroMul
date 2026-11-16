@@ -1,4 +1,4 @@
-﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
         <ProjectGuid>{4490F9E7-DA81-458B-A9BF-211F6E8C70C0}</ProjectGuid>
         <ProjectVersion>20.4</ProjectVersion>
@@ -228,6 +228,14 @@
         <Debugger_RunParams>&quot;H:\ROMS\nes\Adventure Island 2.nes&quot;</Debugger_RunParams>
     </PropertyGroup>
     <ItemGroup>
+        <DCCReference Include="..\..\source\runtime\Core.RomMetadata.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Metadata.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Screen.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Display.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Screen.Code.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Vodafone.Device.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Audio.State.pas"/>
+        <DCCReference Include="..\..\source\vm\jvm\JVM.StateIO.pas"/>
         <DCCReference Include="..\..\source\platforms\bluetooth\Core.Platforms.Bluetooth.pas"/>
         <DCCReference Include="..\..\source\platforms\bluetooth\Core.Platforms.Bluetooth.Windows.IO.pas"/>
         <DCCReference Include="..\..\source\platforms\bluetooth\Core.Platforms.Bluetooth.Windows.pas"/>
@@ -247,6 +255,7 @@
         <DCCReference Include="..\..\source\vm\java\Java.Unicode.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Writers.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Device.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Input.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Nokia.OTA.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Nokia.Sound.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Nokia.UI.pas"/>
@@ -312,6 +321,7 @@
         <DCCReference Include="..\..\source\vm\jvm\JVM.Runtime.pas"/>
         <DCCReference Include="..\..\source\vm\jvm\JVM.Types.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Runtime.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Compatibility.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Suite.pas"/>
         <DCCReference Include="..\..\source\platforms\j2me\Core.Platforms.J2ME.Adapter.pas"/>
         <DCCReference Include="..\..\source\platforms\j2me\RM.Platforms.J2ME.pas"/>

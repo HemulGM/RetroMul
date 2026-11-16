@@ -324,7 +324,8 @@ begin
   if TMethod(Application.OnException).Data = Self then
     Application.OnException := State.Session.PreviousExceptionHandler;
   {$IFDEF MSWINDOWS}
-  if State.Window.WindowStateRestored and not State.Window.WindowStateSaved then
+  if State.Window.WindowStateRestored and not State.Window.WindowStateSaved and
+    not State.Window.WindowStateSaveAttempted then
   try
     SaveWindowState;
   except

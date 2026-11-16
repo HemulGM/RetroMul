@@ -269,8 +269,13 @@ begin
     end;
   end;
   ResizePlatformControls(LayoutContext);
+  {$IFNDEF ISMOBILE}
+  if PlatformWindowLayout(FState.Input.SystemId).UseDesktopViewport or
+    ((FState.Input.Gamepad <> nil) and FState.Input.Gamepad.Visible) then
+    PlatformWindowLayout(FState.Input.SystemId).Arrange(LayoutContext);
+  {$ENDIF}
   {$IFDEF ISMOBILE}
-  ArrangePlatformWindowControls(LayoutContext);
+  PlatformWindowLayout(FState.Input.SystemId).Arrange(LayoutContext);
   if FView.LayoutShowPanel.Visible then
     FView.LayoutShowPanel.BringToFront;
   if FView.GameActionsPopup.IsOpen then

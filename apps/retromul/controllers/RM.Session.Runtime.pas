@@ -64,7 +64,7 @@ implementation
 uses
   System.SysUtils, System.Math, System.Generics.Collections,
   System.Generics.Defaults, Core.Platforms, RM.Input, RM.Dialogs,
-  RM.Window.Layout;
+  RM.Window.Layout, RM.Main.State;
 
 var
   Handlers: TDictionary<string, TPlatformSessionHandlerClass>;
@@ -325,33 +325,38 @@ end;
 
 class procedure TPlatformSessionHandler.SyncActivity(const Context: TSessionRuntimeContext);
 begin
-  {$IFDEF ISMOBILE}
   if Context.State.Input.Gamepad <> nil then
   begin
-    var ShowGamepad := not ExclusiveInput(Context) and (Context.State.Input.PrimarySourceId = '');
+    var ShowGamepad := Context.State.Preferences.VirtualGamepadVisibility = TVirtualGamepadVisibility.Show;
+    {$IFDEF ISMOBILE}
+    if Context.State.Preferences.VirtualGamepadVisibility = TVirtualGamepadVisibility.Automatic then
+      ShowGamepad := Context.State.Input.PrimarySourceId = '';
+    {$ENDIF}
+    ShowGamepad := ShowGamepad and not ExclusiveInput(Context) and
+      (Context.State.Session.Emulation <> nil) and not Context.State.Browser.ViewingLibrary and
+      (Context.State.Settings.View = nil) and (Context.State.Help.View = nil);
     Context.State.Input.Gamepad.Visible := ShowGamepad;
     Context.State.Input.Gamepad.Enabled := ShowGamepad and (Context.State.Session.Emulation <> nil) and
-      not Context.State.Session.EmulationFaulted and not Context.State.Session.OpeningRom;
+      not Context.State.Session.EmulationFaulted and not Context.State.Session.OpeningRom and
+      not Context.State.Session.UserPaused and not Context.State.Session.AutoPaused and
+      not Context.State.Session.Reporting;
   end;
-  {$ENDIF}
 end;
 
 class procedure TPlatformSessionHandler.ApplyActivityGate(const Context: TSessionRuntimeContext);
 begin
-  {$IFDEF ISMOBILE}
-  var Allowed := not Context.State.Mobile.InBackground and not Context.View.GameActionsPopup.IsOpen and
+  var Allowed := {$IFDEF ISMOBILE}not Context.State.Mobile.InBackground and {$ENDIF}not Context.View.GameActionsPopup.IsOpen and
     not RetroDialogVisible(Context.View);
   if Context.State.Input.Gamepad <> nil then
     Context.State.Input.Gamepad.Enabled := Context.State.Input.Gamepad.Enabled and Allowed;
   for var Item in InputControls(Context) do
     if Item.Control <> nil then
       Item.Control.Enabled := Item.Control.Enabled and Allowed;
-  {$ENDIF}
 end;
 
 class procedure TPlatformSessionHandler.LayoutControls(const Context: TSessionRuntimeContext);
 begin
-  ArrangePlatformWindowControls(Context);
+  PlatformWindowLayout(Context.State.Input.SystemId).Arrange(Context);
 end;
 
 class procedure TPlatformSessionHandler.FrameStatus(const Context: TSessionRuntimeContext);

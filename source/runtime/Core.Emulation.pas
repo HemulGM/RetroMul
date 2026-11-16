@@ -9,6 +9,8 @@ uses
   Core.Emulation.Timing;
 
 type
+  IEmulationRomMetadata = Core.Emulation.Types.IEmulationRomMetadata;
+
   TEmulatorButton = Core.Emulation.Types.TEmulatorButton;
 
   TEmulatorButtons = Core.Emulation.Types.TEmulatorButtons;
@@ -36,6 +38,7 @@ type
   IEmulationDiscControl = Core.Emulation.Types.IEmulationDiscControl;
 
   IEmulationSnapshotLocation = Core.Emulation.Types.IEmulationSnapshotLocation;
+
   IEmulationSnapshotOperation = Core.Emulation.Types.IEmulationSnapshotOperation;
 
   IEmulationVirtualControls = Core.Emulation.Types.IEmulationVirtualControls;

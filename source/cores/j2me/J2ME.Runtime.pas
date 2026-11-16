@@ -3,11 +3,11 @@
 interface
 
 uses
-  System.Math, System.SysUtils, System.Generics.Collections, JVM.Types,
-  JVM.ClassFile, JVM.Runtime, Java.Bootstrap, J2ME.Suite, J2ME.Media, J2ME.RMS,
-  J2ME.LCDUI, J2ME.Network, Core.Bluetooth.Types, Core.Messaging.Types,
-  J2ME.Messaging, J2ME.Bluetooth, J2ME.Nokia.UI, J2ME.Nokia.Sound, J2ME.Effects,
-  J2ME.Siemens.Game;
+  System.Classes, JVM.StateIO, System.Math, System.SysUtils,
+  System.Generics.Collections, JVM.Types, JVM.ClassFile, JVM.Runtime,
+  Java.Bootstrap, J2ME.Suite, J2ME.Media, J2ME.RMS, J2ME.LCDUI, J2ME.Network,
+  Core.Bluetooth.Types, Core.Messaging.Types, J2ME.Messaging, J2ME.Bluetooth,
+  J2ME.Nokia.UI, J2ME.Nokia.Sound, J2ME.Effects, J2ME.Siemens.Game;
 
 {$SCOPEDENUMS ON}
 
@@ -26,6 +26,7 @@ type
   TJ2MEHost = class(TJavaHost)
   private
     FSuite: TJ2MESuite;
+    FWallOffset, FMonotonicOffset: Int64;
     FVM: TJVM;
     FDisplay, FScreen: Integer;
     FWidth, FHeight: Integer;
@@ -97,11 +98,21 @@ type
     FMessagingError: string;
     procedure Enqueue(const ClassName, Name, Descriptor: string; const Args: array of TJVMValue);
     procedure ClearQueue;
+    procedure TransferState(S: TJVMStateIO);
     function GetBluetoothProvider: IBluetoothProvider;
     function GetMessagingProvider: IMessagingProvider;
   public
     constructor Create(Suite: TJ2MESuite; Width: Integer = 240; Height: Integer = 320; const Bluetooth: IBluetoothProvider = nil; const Messaging: IMessagingProvider = nil);
     destructor Destroy; override;
+    procedure SaveState(Stream: TStream);
+    class function LoadState(Suite: TJ2MESuite; Stream: TStream; const Bluetooth: IBluetoothProvider = nil; const Messaging: IMessagingProvider = nil): TJ2MERuntime; static;
+    procedure CommitRestoredState;
+    procedure ReleasePhysicalKeys;
+    // On the VM owner thread. Compatibility migrations of ordinary Canvas saves.
+    procedure ResizeCanvas(Width, Height: Integer);
+    function ScreenWidth: Integer;
+    function ScreenHeight: Integer;
+    function IsFullscreenCanvas: Boolean;
     procedure Start(MIDletIndex: Integer = 0);
     procedure Tick(InstructionBudget: Integer);
     function NeedsExecution: Boolean;
@@ -132,7 +143,8 @@ implementation
 uses
   System.DateUtils, System.Diagnostics, Java.Classes, J2ME.Graphics, J2ME.Image,
   J2ME.Font, J2ME.GameCanvas, J2ME.Game.Layers, Core.Bluetooth, Core.Messaging,
-  J2ME.Bluetooth.Data, J2ME.Siemens.Graphics, J2ME.Resources;
+  J2ME.Bluetooth.Data, J2ME.Siemens.Graphics, J2ME.Resources,
+  J2ME.Vodafone.Device;
 
 constructor TJ2MEHost.Create(Suite: TJ2MESuite; Width, Height: Integer; const Bluetooth: IBluetoothProvider; const Messaging: IMessagingProvider);
 begin
@@ -394,7 +406,10 @@ begin
     B.Ref($B7, B.Member(C.Name, '$painted', '()V'));
     B.Mark('done');
     B.Emit([$B1]);
-    B.Finish('$deliverPaint', '(Ljavax/microedition/lcdui/Graphics;)V', JVM_ACC_PRIVATE, 2, 2);
+    // UI delivery and background serviceRepaints must not enter paint at
+    // the same time. A reentrant monitor still permits repaint from paint.
+    B.Finish('$deliverPaint', '(Ljavax/microedition/lcdui/Graphics;)V',
+      JVM_ACC_PRIVATE or JVM_ACC_SYNCHRONIZED, 2, 2);
     VM.DefineClass(B.Detach);
   finally
     B.Free;
@@ -419,6 +434,7 @@ begin
   InstallJ2MEGameLayers(VM);
   InstallJ2MEGameCanvas(VM, True);
   InstallJ2MEGameLayers(VM, True);
+  InstallJ2MEVodafoneDevice(VM);
   FNokiaUI := TJ2MENokiaUI.Create(VM, FEffects);
   FNokiaUI.Install;
   FNokiaSound := TJ2MENokiaSound.Create(VM);
@@ -463,7 +479,7 @@ var
   Current: TDateTime;
 begin
   Current := Now;
-  Result := DateTimeToUnix(TTimeZone.local.ToUniversalTime(Current), True) * 1000 + MilliSecondOf(Current);
+  Result := DateTimeToUnix(TTimeZone.local.ToUniversalTime(Current), True) * 1000 + MilliSecondOf(Current) + FWallOffset;
 end;
 
 function TJ2MEHost.GetProperty(const Name: string; out Value: string): Boolean;
@@ -491,7 +507,7 @@ var
 begin
   Stamp := TStopwatch.GetTimeStamp;
   Frequency := TStopwatch.Frequency;
-  Result := (Stamp div Frequency) * 1000 + ((Stamp mod Frequency) * 1000) div Frequency;
+  Result := (Stamp div Frequency) * 1000 + ((Stamp mod Frequency) * 1000) div Frequency + FMonotonicOffset;
 end;
 
 function TJ2MEHost.InvokeNative(VM: TJVM; Method: TJVMMethod; const Arguments: TArray<TJVMValue>): TJVMValue;
@@ -510,6 +526,8 @@ begin
   C := Method.Owner.Name;
   N := Method.Name;
   Result := Default(TJVMValue);
+  if HandlesJ2MEVodafoneDevice(C) then
+    Exit(InvokeJ2MEVodafoneDevice(VM, FEffects, Method, Arguments));
   if FSiemens.Handles(C) then
     Exit(FSiemens.Invoke(Method, Arguments));
   if HandlesJ2MESiemensGraphics(C) then
@@ -1584,6 +1602,12 @@ begin
   FFrameReady := False;
 end;
 
+function TJ2MERuntime.IsFullscreenCanvas: Boolean;
+begin
+  Result := (FHost.FScreen <> 0) and FHost.FUI.IsCanvas(FHost.FScreen) and
+    (LCDInt(FVM.GetObject(FHost.FScreen), 'full') <> 0);
+end;
+
 function TJ2MERuntime.RenderAudio(Frames: Integer): TArray<SmallInt>;
 begin
   if (Frames < 0) or (Frames > 8192) then
@@ -1618,6 +1642,229 @@ function TJ2MERuntime.TakeRMSError: string;
 begin
   Result := FRMSError;
   FRMSError := '';
+end;
+
+procedure TransferJ2MEInvocation(S: TJVMStateIO; var Call: TJ2MEInvocation);
+begin
+  S.Text(Call.ClassName);
+  S.Text(Call.Name);
+  S.Text(Call.Descriptor);
+  S.Values(Call.Arguments);
+end;
+
+procedure TransferJ2MEQueue(S: TJVMStateIO; Queue: TQueue<TJ2MEInvocation>);
+begin
+  var Items := Queue.ToArray;
+  var N: Integer := Length(Items);
+  S.Count(N, 65536);
+  if S.Loading then
+  begin
+    Queue.Clear;
+    SetLength(Items, N);
+  end;
+  for var I := 0 to N - 1 do
+  begin
+    TransferJ2MEInvocation(S, Items[I]);
+    if S.Loading then
+      Queue.Enqueue(Items[I]);
+  end;
+end;
+
+procedure TJ2MERuntime.TransferState(S: TJVMStateIO);
+begin
+  FVM.TransferState(S);
+  var State: Integer := Ord(FState);
+  S.Count(State, Ord(High(TJ2MEState)));
+  FState := TJ2MEState(State);
+  S.Int(FMIDlet);
+  S.Text(FClassName);
+  S.Text(FError);
+  S.Text(FPendingLifecycle);
+  TransferJ2MEQueue(S, FQueue);
+  TransferJ2MEQueue(S, FEventQueue);
+  TransferJ2MEInvocation(S, FCurrentCall);
+  TransferJ2MEInvocation(S, FCurrentEvent);
+  S.Int(FEventContext);
+  S.UInt64Value(FFrameNumber);
+  S.UInt64Value(FConsumedFlushes);
+  S.Bool(FFrameReady);
+  S.Bool(FSuspendedStartup);
+  S.Bool(FHostPaused);
+  S.Bool(FStopPending);
+  S.Int(FMediaContext);
+  S.Bool(FMediaCallRunning);
+  S.Text(FMediaError);
+  S.Text(FRMSError);
+  S.Int(FRMSContext);
+  S.Bool(FRMSCallRunning);
+  S.Int(FBluetoothContext);
+  S.Bool(FBluetoothCallRunning);
+  S.Text(FBluetoothError);
+  S.Int(FMessagingContext);
+  S.Bool(FMessagingCallRunning);
+  S.Text(FMessagingError);
+  S.Int(FHost.FDisplay);
+  S.Int(FHost.FScreen);
+  S.Pixels(FHost.FPixels);
+  S.Pixels(FHost.FContentPixels);
+  S.Bool(FHost.FRepaint);
+  S.Bool(FHost.FNotifyDestroyed);
+  S.Bool(FHost.FNotifyPaused);
+  S.Bool(FHost.FHasContent);
+  S.Int(FHost.FRootMIDlet);
+  S.Bool(FHost.FMIDletStarted);
+  S.Bool(FHost.FGuestPaused);
+  S.Bool(FHost.FResumeRequested);
+  S.Text(FHost.FLifecycleError);
+  S.UInt64Value(FHost.FFlushCount);
+  S.Int(FHost.FLayoutHeight);
+  var Keys := FHost.FPhysicalKeys.Keys.ToArray;
+  var N: Integer := Length(Keys);
+  S.Count(N, 1024);
+  if S.Loading then
+    FHost.FPhysicalKeys.Clear
+  else
+    TArray.Sort<Integer>(Keys);
+  for var I := 0 to N - 1 do
+  begin
+    var Key := 0;
+    var Pressed := False;
+    if not S.Loading then
+    begin
+      Key := Keys[I];
+      Pressed := FHost.FPhysicalKeys[Key];
+    end;
+    S.Int(Key);
+    S.Bool(Pressed);
+    if S.Loading then
+      FHost.FPhysicalKeys.Add(Key, Pressed);
+  end;
+  var Changes := FHost.FDisplayChanges.ToArray;
+  N := Length(Changes);
+  S.Count(N, 65536);
+  if S.Loading then
+  begin
+    FHost.FDisplayChanges.Clear;
+    SetLength(Changes, N);
+  end;
+  for var I := 0 to N - 1 do
+  begin
+    S.Int(Changes[I].Previous);
+    S.Int(Changes[I].Current);
+    if S.Loading then
+      FHost.FDisplayChanges.Enqueue(Changes[I]);
+  end;
+  TransferJ2MEQueue(S, FHost.FUIJobs);
+  FHost.FUI.TransferState(S);
+  FHost.FEffects.TransferState(S);
+  FHost.FMedia.TransferState(S);
+  FHost.FNokiaSound.TransferState(S);
+  FHost.FSiemens.TransferState(S);
+  FHost.FRMS.TransferState(S);
+  S.Tag('end-J2ME-1');
+  if S.Loading then
+  begin
+    if (Length(FHost.FPixels) <> FHost.FWidth * FHost.FHeight) or (Length(FHost.FContentPixels) <> Length(FHost.FPixels)) then
+      raise EReadError.Create('Invalid snapshot screen pixels');
+    FFrameReady := True;
+  end;
+end;
+
+procedure TJ2MERuntime.SaveState(Stream: TStream);
+begin
+  FHost.FNetwork.RequireSnapshotIdle;
+  FHost.FBluetoothAPI.RequireSnapshotIdle;
+  FHost.FMessaging.RequireSnapshotIdle;
+  var S := TJVMStateIO.Create(Stream, False);
+  try
+    S.Tag('RetroMul-J2ME-1');
+    var Width := FHost.FWidth;
+    var Height := FHost.FHeight;
+    S.Int(Width);
+    S.Int(Height);
+    var Wall := FHost.TimeMillis;
+    var Mono := FHost.MonotonicMillis;
+    S.Int64Value(Wall);
+    S.Int64Value(Mono);
+    TransferState(S);
+  finally
+    S.Free;
+  end;
+end;
+
+class function TJ2MERuntime.LoadState(Suite: TJ2MESuite; Stream: TStream; const Bluetooth: IBluetoothProvider; const Messaging: IMessagingProvider): TJ2MERuntime;
+begin
+  Result := nil;
+  var S := TJVMStateIO.Create(Stream, True);
+  try
+    S.Tag('RetroMul-J2ME-1');
+    var Width := 0;
+    var Height := 0;
+    S.Int(Width);
+    S.Int(Height);
+    var Wall := Int64(0);
+    var Mono := Int64(0);
+    S.Int64Value(Wall);
+    S.Int64Value(Mono);
+    Result := TJ2MERuntime.Create(Suite, Width, Height, Bluetooth, Messaging);
+    try
+      Result.FHost.FWallOffset := Wall - Result.FHost.TimeMillis;
+      Result.FHost.FMonotonicOffset := Mono - Result.FHost.MonotonicMillis;
+      Result.TransferState(S);
+      S.Finish;
+    except
+      FreeAndNil(Result);
+      raise;
+    end;
+  finally
+    S.Free;
+  end;
+end;
+
+procedure TJ2MERuntime.CommitRestoredState;
+begin
+  FHost.FRMS.ApplyRestoredState;
+end;
+
+procedure TJ2MERuntime.ReleasePhysicalKeys;
+begin
+  var Keys := FHost.FPhysicalKeys.Keys.ToArray;
+  for var Key in Keys do
+    KeyEvent(Key, False);
+end;
+
+function TJ2MERuntime.ScreenWidth: Integer;
+begin
+  Result := FHost.FWidth;
+end;
+
+function TJ2MERuntime.ScreenHeight: Integer;
+begin
+  Result := FHost.FHeight;
+end;
+
+procedure TJ2MERuntime.ResizeCanvas(Width, Height: Integer);
+begin
+  if (Width < 1) or (Width > 1024) or (Height < 1) or (Height > 1024) then
+    raise EArgumentOutOfRangeException.Create('Java ME screen dimensions');
+  if (Width = FHost.FWidth) and (Height = FHost.FHeight) then
+    Exit;
+  if (FHost.FScreen <> 0) and J2MEIsGameCanvas(FVM, FHost.FScreen) then
+    raise ENotSupportedException.Create('GameCanvas buffer resize');
+  FHost.FWidth := Width;
+  FHost.FHeight := Height;
+  FHost.FUI.Resize(Width, Height);
+  SetLength(FHost.FPixels, Width * Height);
+  SetLength(FHost.FContentPixels, Width * Height);
+  for var I := 0 to Width * Height - 1 do
+  begin
+    FHost.FPixels[I] := $FF000000;
+    FHost.FContentPixels[I] := $FF000000;
+  end;
+  FHost.FLayoutHeight := FHost.FUI.ContentHeight(FHost.FScreen);
+  FHost.FRepaint := True;
+  FHost.FHasContent := False;
+  FFrameReady := True;
 end;
 
 end.

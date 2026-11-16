@@ -54,7 +54,7 @@ const
     'M1.5 0 L12 10.5 L22.5 0 L24 1.5 L13.5 12 L24 22.5 L22.5 24 L12 13.5 L1.5 24 L0 22.5 L10.5 12 L0 1.5 Z';
 
 type
-  TVirtualSide = (Left, Right);
+  TVirtualSide = (Left, Right, Center);
 
   TVirtualController = class;
 
@@ -216,6 +216,7 @@ type
     procedure GeometryChanged;
     function Find(const Id: string): TVirtualElement;
     function EffectiveScale: Single;
+    function DesignWidth: Single;
     function SideBounds(Side: TVirtualSide): TRectF;
     function ElementBounds(Element: TVirtualElement): TRectF;
     function PartBounds(Element: TVirtualElement; Part: Integer): TRectF;
@@ -705,7 +706,18 @@ end;
 
 function TVirtualController.EffectiveScale: Single;
 begin
-  Result := Max(0.001, Min(FScale, Min(Width / (2 * FDesignSideSize.Width), Height / FDesignSideSize.Height)));
+  Result := Max(0.001, Min(FScale, Min(Width / DesignWidth, Height / FDesignSideSize.Height)));
+end;
+
+function TVirtualController.DesignWidth: Single;
+begin
+  Result := FDesignSideSize.Width * 2;
+  if Count = 0 then
+    Exit;
+  for var E in FElements do
+    if E.Side <> TVirtualSide.Center then
+      Exit;
+  Result := FDesignSideSize.Width;
 end;
 
 function TVirtualController.SideBounds(Side: TVirtualSide): TRectF;
@@ -714,6 +726,8 @@ begin
   var X: Single := 0;
   if Side = TVirtualSide.Right then
     X := Width - FDesignSideSize.Width * S;
+  if Side = TVirtualSide.Center then
+    X := (Width - FDesignSideSize.Width * S) / 2;
   var Y := Height - FDesignSideSize.Height * S;
   Result := RectF(X, Y, X + FDesignSideSize.Width * S, Height);
 end;

@@ -1,5 +1,7 @@
 ﻿unit RM.Platforms.J2ME;
 
+{$I RM.Mobile.inc}
+
 interface
 
 uses
@@ -17,28 +19,360 @@ type
     class procedure RegisterPlatform; static;
   end;
 
+function J2MEKeypadAction(Key: Integer): Integer;
+
 implementation
 
 uses
-  System.SysUtils, System.UITypes, Core.Platforms, Core.Emulation,
-  Core.Archive.Container, Core.Archive.Zip, Core.PlatformServices,
-  RM.Input.Gamepads, Core.Platforms.J2ME.Adapter, J2ME.Device,
-  RM.Platforms.Presentation, RM.Platforms.CPS.Icons, RM.Settings.Catalog,
-  RM.Settings.Platform, RM.Settings.Builder, RM.Settings.Devices,
-  RM.Settings.Callouts, RM.Settings.Runtime, RM.ControlsHelp.Content,
-  RM.Session.Runtime, RM.Window.Layout, RM.Gamepad.Factory,
-  RM.Platforms.GB.Gamepads;
+  System.SysUtils, System.UITypes, System.IniFiles, System.Math, Core.Platforms,
+  Core.Emulation, Core.Archive.Container, Core.Archive.Zip,
+  Core.PlatformServices, RM.Input.Gamepads, Core.Platforms.J2ME.Adapter,
+  J2ME.Device, RM.Platforms.Presentation, RM.Platforms.CPS.Icons,
+  RM.Settings.Catalog, RM.Settings.Platform, RM.Settings.Builder,
+  RM.Settings.Devices, RM.Settings.Callouts, RM.Settings.Runtime,
+  RM.ControlsHelp.Content, RM.Session.Runtime, RM.Window.Layout,
+  RM.Gamepad.Factory, RM.Platforms.J2ME.Gamepads, RM.Gamepad, J2ME.Input,
+  RM.Dialogs, FMX.Types, FMX.Controls, FMX.Objects;
 
 type
   TJ2MEInputHandler = class(TPlatformInputHandler)
   public
     class function KeyPolicy(const Context: TInputRuntimeContext): TInputKeyPolicy; override;
+    class function ForwardKey(const Context: TInputRuntimeContext; Code: Word; Pressed: Boolean): Boolean; override;
+    class procedure CombineInput(const Context: TInputRuntimeContext; var Input: TEmulatorInput); override;
   end;
 
   TJ2MESettings = class(TSettingsPlatform)
   public
     procedure Video(Context: TSettingsPageBuilder); override;
+    procedure Peripherals(Context: TSettingsPageBuilder); override;
+    procedure PrepareSave(Draft: TMemIniFile); override;
   end;
+
+  TJ2MESettingsDevices = class(TPlatformSettingsDevices)
+  public
+    class function Assignments(const Context: TSettingsDeviceContext): TArray<TSettingsDeviceBinding>; override;
+    class function Selection(const Context: TSettingsDeviceContext; Control: TControl): TSettingsDeviceBinding; override;
+  end;
+
+  TJ2MEDeviceCallouts = class(TPlatformDeviceCallouts)
+  public
+    class function Definitions(const Context: TDeviceCalloutContext): TArray<TDeviceCalloutDefinition>; override;
+  end;
+
+  IJ2MEKeypadOptions = interface
+    ['{2603032D-5F9D-40B0-A992-0DDBB8D5B20B}']
+    function IsShown: Boolean;
+  end;
+
+  TJ2MEKeypadOptions = class(TInterfacedObject, IJ2MEKeypadOptions)
+  public
+    Shown: Boolean;
+    function IsShown: Boolean;
+  end;
+
+  TJ2MESessionHandler = class(TPlatformSessionHandler)
+  public
+    class procedure Connect(const Context: TSessionRuntimeContext); override;
+    class procedure Disconnect(const Context: TSessionRuntimeContext); override;
+    class procedure SyncActivity(const Context: TSessionRuntimeContext); override;
+  end;
+
+  TJ2MESettingsHandler = class(TPlatformSettingsHandler)
+  public
+    class procedure Apply(const Context: TSettingsRuntimeContext; Ini: TCustomIniFile); override;
+  end;
+
+  TJ2MEWindowLayout = class(TPlatformWindowLayout)
+  public
+    class procedure Arrange(const Context: TWindowLayoutContext); override;
+  end;
+
+  TJ2MEControlsHelp = class(TPlatformControlsHelp)
+  public
+    class function Info(const Context: TControlsHelpContext): TControlsHelpInfo; override;
+    class function Assignments(const Context: TControlsHelpContext): TArray<TControlsHelpAssignment>; override;
+    class function StandardShortcutAvailable(const Context: TControlsHelpContext; const Id: string): Boolean; override;
+  end;
+
+const
+  J2MEKeypadActionBase = 2560;
+
+function J2MEKeypadAction(Key: Integer): Integer;
+begin
+  // Keep the existing, assignable 0 action and its saved bindings.
+  if Key = 0 then
+    Result := PadAction(0, TEmulatorButton.B)
+  else
+    Result := J2MEKeypadActionBase + Key;
+end;
+
+function IsJ2MEKeypadAction(Action: Integer): Boolean;
+begin
+  Result := (Action > J2MEKeypadActionBase) and (Action <= J2MEKeypadActionBase + 11);
+end;
+
+procedure LoadJ2MEKeypadBindings(Input: TInputManager; Ini: TCustomIniFile);
+begin
+  for var Key := 1 to 9 do
+  begin
+    AddLegacyInputKey(Input, J2MEKeypadAction(Key), vk0 + Key);
+    AddLegacyInputKey(Input, J2MEKeypadAction(Key), vkNumpad0 + Key);
+  end;
+  AddLegacyInputKey(Input, J2MEKeypadAction(10), vkF3);
+  AddLegacyInputKey(Input, J2MEKeypadAction(10), vkMultiply);
+  AddLegacyInputKey(Input, J2MEKeypadAction(11), vkF4);
+  AddLegacyInputKey(Input, J2MEKeypadAction(11), vkDivide);
+end;
+
+procedure LoadJ2MELegacyBindings(Input: TInputManager; Ini: TCustomIniFile);
+begin
+  LoadJ2MEKeypadBindings(Input, Ini);
+  AddLegacyInputKey(Input, J2MEKeypadAction(0), vkNumpad0);
+  AddLegacyInputKey(Input, PadAction(0, TEmulatorButton.A), vkSpace);
+end;
+
+procedure MigrateJ2MEKeypadBindings(Input: TInputManager; Ini: TCustomIniFile);
+begin
+  if Ini.ReadInteger('FMXInput', 'J2MEKeypadVersion', 0) >= 1 then
+    Exit;
+  var HasKeypad := False;
+  for var Binding in Input.Bindings do
+    HasKeypad := HasKeypad or IsJ2MEKeypadAction(Binding.Action);
+  // Older profiles received digits outside the binding manager. Mark the
+  // draft immediately so switching pages cannot restore cleared assignments.
+  if not HasKeypad and (Ini.ReadString('FMXInput', 'Bindings', '') <> '') then
+    LoadJ2MEKeypadBindings(Input, Ini);
+  Ini.WriteInteger('FMXInput', 'J2MEKeypadVersion', 1);
+end;
+
+procedure FilterJ2MEKeypadBinding(const Binding: TInputBinding; Ini: TCustomIniFile; var Policy: TInputBindingPolicy);
+begin
+  if not IsJ2MEKeypadAction(Binding.Action) then
+    Exit;
+  Policy.SourceKey := 'Source1';
+  Policy.Enabled := not SameText(Ini.ReadString('Ports', 'Port1', 'auto'), 'none');
+end;
+
+function TJ2MEKeypadOptions.IsShown: Boolean;
+begin
+  Result := Shown;
+end;
+
+class procedure TJ2MEWindowLayout.Arrange(const Context: TWindowLayoutContext);
+begin
+  var Pad := Context.State.Input.Gamepad;
+  if (Pad = nil) or not Pad.Visible or (Pad.PlatformPad = nil) or not (Pad.Parent is TControl) then
+  begin
+    inherited;
+    Exit;
+  end;
+  var Host := TControl(Pad.Parent);
+  // A complete phone panel uses a separate area. Split controls overlay only
+  // the sides; they keep the central game picture available in landscape.
+  if Pad.PlatformPad.DesignWidth = Pad.PlatformPad.DesignSideSize.Width then
+  begin
+    Context.View.ImageCanvas.Margins.Left := 0;
+    Context.View.ImageCanvas.Margins.Right := 0;
+    Context.View.ImageCanvas.WrapMode := TImageWrapMode.Fit;
+    if Host.Width > Host.Height then
+    begin
+      Pad.Align := TAlignLayout.Right;
+      Pad.Width := Min(280.0, Host.Width * 0.4);
+    end
+    else
+    begin
+      Pad.Align := TAlignLayout.Bottom;
+      Pad.Height := TScreenGamepad.PreferredHeight(Host.Width, Host.Height);
+    end;
+    Pad.BringToFront;
+  end
+  else
+    inherited;
+end;
+
+procedure ConfigureJ2MEKeypad(const Context: TInputRuntimeContext; Ini: TCustomIniFile);
+begin
+  var Options := TJ2MEKeypadOptions.Create;
+  Options.Shown := Ini.ReadBool('Phone', 'ShowKeypad', True);
+  Context.SetData('j2me.keypad.options', Options);
+  var Pad := Context.State.Input.Gamepad;
+  if Pad = nil then
+    Exit;
+  var Layout := NormalizeJ2MEKeypadLayout(Ini.ReadString('Phone', 'KeypadLayout', 'arrows-numbers'));
+  Pad.Configure('j2me', Layout, CoreButtons('j2me', 'auto'));
+  Pad.PlatformPad.InkOpacity := EnsureRange(Ini.ReadInteger('Phone', 'KeypadOpacity', 85), 10, 100) / 100;
+end;
+
+class procedure TJ2MESessionHandler.Connect(const Context: TSessionRuntimeContext);
+begin
+  inherited;
+  var Ini := Context.State.Session.Storage.ReadConfig(Context.State.Session.Emulation.Config.FileName);
+  try
+    ConfigureJ2MEKeypad(Context, Ini);
+  finally
+    Ini.Free;
+  end;
+end;
+
+class procedure TJ2MESessionHandler.SyncActivity(const Context: TSessionRuntimeContext);
+begin
+  inherited;
+  var Pad := Context.State.Input.Gamepad;
+  if Pad = nil then
+    Exit;
+  var Options := Context.Data('j2me.keypad.options') as IJ2MEKeypadOptions;
+  Pad.Visible := Pad.Visible and ((Options = nil) or Options.IsShown) and
+    (Context.State.Session.Emulation <> nil) and not Context.State.Browser.ViewingLibrary and
+    (Context.State.Settings.View = nil) and (Context.State.Help.View = nil);
+  Pad.Enabled := Pad.Enabled and Pad.Visible and not Context.State.Session.EmulationFaulted and
+    not Context.State.Session.OpeningRom and not Context.State.Session.Reporting and
+    not Context.State.Session.UserPaused and not Context.State.Session.AutoPaused and
+    not RetroDialogVisible(Context.View);
+  LayoutControls(Context);
+end;
+
+class procedure TJ2MESessionHandler.Disconnect(const Context: TSessionRuntimeContext);
+begin
+  if Context.State.Input.Gamepad <> nil then
+  begin
+    Context.State.Input.Gamepad.ReleaseAll;
+    Context.State.Input.Gamepad.Enabled := False;
+    Context.State.Input.Gamepad.Visible := False;
+  end;
+  var Phone: IJ2MEPhoneInput;
+  if Supports(Context.State.Session.Emulation, IJ2MEPhoneInput, Phone) then
+    Phone.SetVirtualKeypad(0);
+  Context.SetData('j2me.keypad.options', nil);
+  inherited;
+end;
+
+class procedure TJ2MESettingsHandler.Apply(const Context: TSettingsRuntimeContext; Ini: TCustomIniFile);
+begin
+  inherited;
+  ConfigureJ2MEKeypad(Context, Ini);
+end;
+
+class procedure TJ2MEInputHandler.CombineInput(const Context: TInputRuntimeContext; var Input: TEmulatorInput);
+begin
+  var Phone: IJ2MEPhoneInput;
+  if not Supports(Context.State.Session.Emulation, IJ2MEPhoneInput, Phone) then
+    Exit;
+  var Mask: Word := 0;
+  var Pad := Context.State.Input.Gamepad;
+  if (Context.State.Input.Ports.Devices[0] <> 'none') and
+    not Context.State.Session.EmulationFaulted and not Context.State.Session.Emulation.IsPaused then
+  begin
+    var Manager := Context.State.Input.Manager;
+    if Manager <> nil then
+      for var Key := 0 to 11 do
+        if Manager.IsPressed(J2MEKeypadAction(Key)) then
+          Mask := Mask or (Word(1) shl Key);
+    if (Pad <> nil) and Pad.Visible and Pad.Enabled then
+      Mask := Mask or (Pad.AuxiliaryButtons and J2MEKeypadMask);
+  end;
+  Phone.SetVirtualKeypad(Mask);
+end;
+
+class function TJ2MEInputHandler.ForwardKey(const Context: TInputRuntimeContext; Code: Word; Pressed: Boolean): Boolean;
+begin
+  Result := False;
+  var Manager := Context.State.Input.Manager;
+  if Manager = nil then
+    Exit;
+  // Binding changes replace default keys rather than add a hard-coded route.
+  // Other text/navigation keys still reach the MIDlet.
+  if Code in [vk0..vk9, vkNumpad0..vkNumpad9, vkUp, vkDown, vkLeft, vkRight,
+      vkReturn, vkSpace, vkF1..vkF4, vkMultiply, vkDivide] then
+    Exit(True);
+  var Hid := HostKeyToHid(Code);
+  for var Binding in Manager.Bindings do
+    if (Binding.Kind = TInputElementKind.Key) and (Binding.Code = Hid) and
+      ((Binding.Action in [0..7]) or IsJ2MEKeypadAction(Binding.Action)) then
+      Exit(True);
+end;
+
+class function TJ2MEControlsHelp.Info(const Context: TControlsHelpContext): TControlsHelpInfo;
+begin
+  Result := inherited;
+  Result.ControllerTitle := Translate('Phone keypad');
+  Result.Note := Translate('L/R: soft keys. OK: Fire. Digits, * and # keep their phone key codes; arrows are separate keys.') + ' ' +
+    Translate('Change bindings in the controls settings.');
+end;
+
+class function TJ2MEControlsHelp.Assignments(const Context: TControlsHelpContext): TArray<TControlsHelpAssignment>;
+begin
+  Result := inherited;
+  if (Context.Player <> 0) or (Length(Result) = 0) then
+    Exit;
+  for var Key := 1 to 11 do
+    Result := Result + [TControlsHelpAssignment.Create(Char(J2MEKeypadCodes[Key]), J2MEKeypadAction(Key))];
+end;
+
+class function TJ2MESettingsDevices.Assignments(const Context: TSettingsDeviceContext): TArray<TSettingsDeviceBinding>;
+begin
+  Result := inherited;
+  if (Context.Port <> 0) or (Length(Result) = 0) then
+    Exit;
+  for var Key := 1 to 11 do
+    Result := Result + [TSettingsDeviceBinding.Create(J2MEKeypadAction(Key), Char(J2MEKeypadCodes[Key]))];
+end;
+
+class function TJ2MESettingsDevices.Selection(const Context: TSettingsDeviceContext; Control: TControl): TSettingsDeviceBinding;
+begin
+  Result := inherited;
+  if (Context.Port <> 0) or not (Control is TScreenGamepad) then
+    Exit;
+  for var Key := 0 to 11 do
+    if (TScreenGamepad(Control).AuxiliaryButtons and (Cardinal(1) shl Key)) <> 0 then
+      Exit(TSettingsDeviceBinding.Create(J2MEKeypadAction(Key), Char(J2MEKeypadCodes[Key])));
+end;
+
+class function TJ2MEDeviceCallouts.Definitions(const Context: TDeviceCalloutContext): TArray<TDeviceCalloutDefinition>;
+begin
+  Result := inherited;
+  if (Context.Port <> 0) or not (Context.Device is TScreenGamepad) then
+    Exit;
+  for var Key := 0 to 11 do
+    if not ButtonBounds(Context, -1 - Key).IsEmpty then
+      Result := Result + [TDeviceCalloutDefinition.Create(-1 - Key, J2MEKeypadAction(Key),
+        Char(J2MEKeypadCodes[Key]), Char(J2MEKeypadCodes[Key]), False)];
+  for var I := 0 to High(Result) do
+    Result[I].Left := ButtonBounds(Context, Result[I].Button).CenterPoint.X < Context.Device.Width / 2;
+end;
+
+procedure TJ2MESettings.PrepareSave(Draft: TMemIniFile);
+begin
+  inherited;
+  Draft.WriteInteger('FMXInput', 'J2MEKeypadVersion', 1);
+end;
+
+class function TJ2MEControlsHelp.StandardShortcutAvailable(const Context: TControlsHelpContext; const Id: string): Boolean;
+begin
+  Result := inherited;
+  if Id = 'pause' then
+    Result := False;
+end;
+
+procedure TJ2MESettings.Peripherals(Context: TSettingsPageBuilder);
+begin
+  Context.Heading('GroupJ2MEKeypad', 'Phone keypad');
+  Context.AddBoolean('RowJ2MEShowKeypad', 'On-screen phone keypad',
+    'Show phone buttons during emulation. Supports mouse and simultaneous touches.', 'Phone', 'ShowKeypad', True);
+  Context.AddChoice('RowJ2MEKeypadLayout', 'Keypad layout',
+    'Choose phone keys, arrows or both. The split layouts keep the centre clear.',
+    'Phone', 'KeypadLayout', [
+      SettingChoice('Arrows and numbers', 'arrows-numbers'),
+      SettingChoice('Numbers and arrows', 'numbers-arrows'),
+      SettingChoice('Phone', 'phone'),
+      SettingChoice('Phone with arrows', 'phone-arrows'),
+      SettingChoice('Numbers', 'numbers'),
+      SettingChoice('Arrows', 'arrows')], 'arrows-numbers');
+  var Opacity := Context.AddInteger('RowJ2MEKeypadOpacity', 'Keypad opacity (%)',
+    'Button size and bottom offset use the general on-screen button settings.',
+    'Phone', 'KeypadOpacity', 85, 100);
+  Opacity.Min := 10;
+end;
 
 class function TJ2MEInputHandler.KeyPolicy(const Context: TInputRuntimeContext): TInputKeyPolicy;
 begin
@@ -52,10 +386,15 @@ end;
 procedure TJ2MESettings.Video(Context: TSettingsPageBuilder);
 begin
   Context.Heading('GroupJ2MEPhone', 'Java ME phone');
-  var Sizes: TArray<TSettingsChoiceItem> := [SettingChoice('Custom width and height', 'custom')];
+  var Sizes: TArray<TSettingsChoiceItem> := [SettingChoice('Automatic', 'auto'), SettingChoice('Custom width and height', 'custom')];
   for var Size in TJ2MEScreenSize.Presets do
     Sizes := Sizes + [SettingChoice(IntToStr(Size.Width) + ' × ' + IntToStr(Size.Height), Size.ToString)];
-  var Preset := Context.AddChoice('RowJ2MEScreenSize', 'Screen size', 'Match the resolution of this game version. Reopen the game to apply.', 'Phone', 'ScreenSize', Sizes, 'custom');
+  var DefaultSize := 'auto';
+  if (Context.Draft <> nil) and not Context.Draft.ValueExists('Phone', 'ScreenSize') and
+    (Context.Draft.ValueExists('Phone', 'Width') or
+    Context.Draft.ValueExists('Phone', 'Height')) then
+    DefaultSize := 'custom';
+  var Preset := Context.AddChoice('RowJ2MEScreenSize', 'Virtual Canvas size', 'Automatic selects a compatible Canvas and applies JAR/JAD scaling. Manual sizes take priority. Reopen the game to apply.', 'Phone', 'ScreenSize', Sizes, DefaultSize);
   Preset.ApplyMode := TSettingsApplyMode.OnNextLoad;
   var W := Context.AddInteger('RowJ2MEWidth', 'Screen width', 'Reopen the game to apply.', 'Phone', 'Width', 240, 1024);
   W.Min := 1;
@@ -152,12 +491,12 @@ begin
     end;
   RegisterPlatformServices('j2me', Services);
   RegisterSettingsPlatform('j2me', TJ2MESettings);
-  RegisterPlatformSettingsDevices('j2me', TPlatformSettingsDevices);
-  RegisterPlatformDeviceCallouts('j2me', TPlatformDeviceCallouts);
-  RegisterPlatformControlsHelp('j2me', TPlatformControlsHelp);
-  RegisterPlatformSettingsHandler('j2me', TPlatformSettingsHandler);
-  RegisterPlatformWindowLayout('j2me', TPlatformWindowLayout);
-  RegisterPlatformSessionHandler('j2me', TPlatformSessionHandler);
+  RegisterPlatformSettingsDevices('j2me', TJ2MESettingsDevices);
+  RegisterPlatformDeviceCallouts('j2me', TJ2MEDeviceCallouts);
+  RegisterPlatformControlsHelp('j2me', TJ2MEControlsHelp);
+  RegisterPlatformSettingsHandler('j2me', TJ2MESettingsHandler);
+  RegisterPlatformWindowLayout('j2me', TJ2MEWindowLayout);
+  RegisterPlatformSessionHandler('j2me', TJ2MESessionHandler);
   RegisterPlatformInputHandler('j2me', TJ2MEInputHandler);
   var Definition := TPlatformInputDefinition.Create([TEmulatorButton.Up, TEmulatorButton.Down,
       TEmulatorButton.Left, TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B,
@@ -169,11 +508,19 @@ begin
   Definition.LegacyPorts := 1;
   Definition.LegacySection := 'Keys';
   Definition.LoadLegacyKeys := LoadKeys;
+  Definition.AfterLegacyBindings := LoadJ2MELegacyBindings;
+  Definition.AfterLoadBindings := MigrateJ2MEKeypadBindings;
+  Definition.FilterBinding := FilterJ2MEKeypadBinding;
   Definition.UseSharedBindingRules := True;
   Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('j2me', Definition);
-  // Existing controls and Fluent Games icon are reused for the initial frontend.
-  RegisterPlatformGamepads('j2me', TGamepadGBStandart, []);
+  RegisterPlatformGamepads('j2me', TGamepadJ2MEArrowsNumbers, [
+      TGamepadDeviceVariant.Create('numbers-arrows', TGamepadJ2ME),
+      TGamepadDeviceVariant.Create('arrows-numbers', TGamepadJ2MEArrowsNumbers),
+      TGamepadDeviceVariant.Create('phone', TGamepadJ2MEPhone),
+      TGamepadDeviceVariant.Create('phone-arrows', TGamepadJ2MEPhoneArrows),
+      TGamepadDeviceVariant.Create('numbers', TGamepadJ2MENumbers),
+      TGamepadDeviceVariant.Create('arrows', TGamepadJ2MEArrows)]);
   RegisterPlatformPresentation('j2me', 'j2me', PlatformIconCPS);
   FRegistered := True;
 end;

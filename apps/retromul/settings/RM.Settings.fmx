@@ -1,14 +1,14 @@
-﻿object SettingsView: TSettingsView
+object SettingsView: TSettingsView
   Size.Width = 1228.000000000000000000
   Size.Height = 796.000000000000000000
   Size.PlatformDefault = False
   object ScaledLayoutSettings: TScaledLayout
     Align = Client
+    OriginalWidth = 1228.000000000000000000
+    OriginalHeight = 796.000000000000000000
     Size.Width = 1228.000000000000000000
     Size.Height = 796.000000000000000000
     Size.PlatformDefault = False
-    OriginalWidth = 1228.000000000000000000
-    OriginalHeight = 796.000000000000000000
     object PanelBackground: TPanel
       Align = Contents
       HitTest = False

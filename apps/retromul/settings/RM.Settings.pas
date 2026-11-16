@@ -25,7 +25,6 @@ const
 const
   SETTINGS_SWITCH_WIDTH = 48;
   SETTINGS_SWITCH_HEIGHT = 24;
-
   AUTOSAVE_DEFAULT_MINUTES = 10;
   AUTOSAVE_MAX_MINUTES = 1440;
 
@@ -292,6 +291,7 @@ uses
 
 type
   TSettingsLayoutAccess = class(TLayout);
+
   TSettingsScaledLayoutAccess = class(TScaledLayout);
 
   TSettingsInputBackend = class(TInputBackend)
@@ -1115,6 +1115,9 @@ begin
       FAutosaveMinutes.Enabled := Periodic.IsChecked;
       Minutes.EnabledWhen := PeriodicDefinition.IsTrue();
       Heading('GroupOnscreenbuttons', 'On-screen buttons');
+      Combo('RowVirtualGamepadVisibility', 'Virtual gamepad',
+        'Automatic hides the gamepad on desktop and follows the selected input device on mobile. Show and Hide override automatic display.',
+        'General', 'VirtualGamepadVisibility', ['Automatic', 'Show', 'Hide'], ['auto', 'show', 'hide'], 'auto');
       var PadScale := Number('RowGamepadscale', 'Gamepad scale (%)', '50-200%. Limited by available screen space.', 'General', 'GamepadScale', 100, 200);
       TIntegerSetting(FFields.Last.Definition).Min := 50;
       PadScale.Min := 50;

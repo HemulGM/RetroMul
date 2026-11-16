@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, System.Net.URLClient, JVM.Types,
-  JVM.ClassFile, JVM.Runtime, J2ME.Network.HTTP;
+  System.Classes, System.SysUtils, System.Generics.Collections,
+  System.Net.URLClient, JVM.Types, JVM.ClassFile, JVM.Runtime, J2ME.Network.HTTP;
 
 type
   TJ2MEHTTPConnection = class
@@ -31,6 +31,7 @@ type
     function Open(const URL: string; Mode: Integer; Timeouts: Boolean): Integer;
     function OpenStream(Connection: TJ2MEHTTPConnection; Reading: Boolean): Integer;
   public
+    procedure RequireSnapshotIdle;
     constructor Create(VM: TJVM);
     destructor Destroy; override;
     // -1 means unhandled;0 is a handled call that yielded and requested retry.
@@ -918,6 +919,12 @@ begin
   if N = 'getHeaderFieldDate' then
     DefaultDate := Args[2].AsLong;
   Exit(TJVMValue.Long(HTTPDate(Value, DefaultDate)));
+end;
+
+procedure TJ2MENetwork.RequireSnapshotIdle;
+begin
+  if (FConnections.Count <> 0) or (FRetired.Count <> 0) then
+    raise EInvalidOpException.Create('Java ME snapshots require inactive network, Bluetooth and messaging connections');
 end;
 
 end.

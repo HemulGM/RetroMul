@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.UITypes, System.Types;
+  System.UITypes, System.Types, Core.RomMetadata;
 
 {$SCOPEDENUMS ON}
 
@@ -11,6 +11,12 @@ const
   EmulatorMaxPlayers = 12;
 
 type
+  IEmulationRomMetadata = interface
+    ['{EA16F7EE-6D7B-410D-96ED-0F0F05EAFC59}']
+    function GetRomMetadata: IRomMetadata;
+    property RomMetadata: IRomMetadata read GetRomMetadata;
+  end;
+
   // Every frontend supplies the same logical pad.  A core can ignore buttons
   // which do not exist on its hardware.
   TEmulatorButton = (Up, Down, Left, Right, A, B, Select, Start, C, X, Y, Z, Mode);

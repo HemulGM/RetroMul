@@ -9,7 +9,7 @@ uses
   System.Generics.Collections, System.IniFiles, FMX.Types, FMX.Controls,
   FMX.Forms, FMX.Layouts, FMX.StdCtrls, FMX.Edit, FMX.Objects, Core.Storage,
   FMX.Controls.Presentation, FMX.ListBox, FMXInput, RM.LibraryNavigation,
-  FMX.Ani;
+  FMX.Ani, Core.RomMetadata;
 
 type
   TLibraryGame = class
@@ -190,6 +190,7 @@ type
     FSaveImages: array[0..2] of TImage;
     FPlatformButtons: TList<TButton>;
     FConfiguredPlatforms: TList<string>;
+    FMetadataCache: TDictionary<string, IRomMetadata>;
     LayoutLibraryEmptyState, LayoutEmptyMessage: TLayout;
     ButtonConfigureLibrary: TButton;
     FSidebarPlatformBorders: TList<TRectangle>;
@@ -263,8 +264,9 @@ type
     procedure Reload;
     procedure ApplyPreferences;
     procedure ApplyLanguage(const PreviousLanguage: string);
-    procedure RecordSession(const FileName, SnapshotDirectory: string; const SystemId: string = ''; const DisplayName: string = '');
+    procedure RecordSession(const FileName, SnapshotDirectory: string; const SystemId: string = ''; const DisplayName: string = ''; const Metadata: IRomMetadata = nil);
     procedure RefreshSnapshots;
+    procedure RecordSnapshotDirectory(const FileName, Directory: string);
     function CloseDetails: Boolean;
     property Selected: TLibraryGame read GetSelected;
     property SnapshotName: string read FSnapshotName;
@@ -283,7 +285,7 @@ implementation
 {$R *.fmx}
 
 uses
-  {$IFDEF ANDROID}  Core.Storage.Android, {$ENDIF}
+  {$IFDEF ANDROID}    Core.Storage.Android, {$ENDIF}
   System.IOUtils, System.Math, System.Math.Vectors, System.Hash,
   System.Character, System.Generics.Defaults, FMX.Graphics, FMX.BehaviorManager,
   Core.GameList, FMX.Image, Core.Platforms, Core.SavePaths, RM.Icons,
@@ -456,7 +458,7 @@ begin
   var IsMobile := True;
   {$ELSE}
   var IsMobile := False;
-  {$ENDIF}            ;
+  {$ENDIF}              ;
   FNavigation := TLibraryNavigation.Create(IsMobile);
   FPadGames := TList<TLibraryGame>.Create;
   FGames := TObjectList<TLibraryGame>.Create;
@@ -464,6 +466,7 @@ begin
   FLetterButtons := TList<TButton>.Create;
   FPlatformButtons := TList<TButton>.Create;
   FConfiguredPlatforms := TList<string>.Create;
+  FMetadataCache := TDictionary<string, IRomMetadata>.Create;
   FSidebarPlatformBorders := TList<TRectangle>.Create;
   FState := FStorage.ReadConfig(FStorage.ConfigFile('library'));
   FLimit := 48;
@@ -703,6 +706,7 @@ begin
     FCards.Free;
     FLetterButtons.Free;
     FConfiguredPlatforms.Free;
+    FMetadataCache.Free;
     FPlatformButtons.Free;
     FSidebarPlatformBorders.Free;
     FGames.Free;
@@ -1074,6 +1078,7 @@ begin
     // Session history and favorites may have changed while scanning.
     for var Game in FGames do
     begin
+      FMetadataCache.TryGetValue(Game.FileInfo.Location, Game.FileInfo.Metadata);
       Game.Favorite := FState.ReadBool('Favorites', Game.Key, Game.Favorite);
       Game.LastPlayed := FState.ReadFloat('Recent', Game.Key, 0);
     end;
@@ -1194,7 +1199,7 @@ begin
   end;
 end;
 
-procedure TLibraryView.RecordSession(const FileName, SnapshotDirectory, SystemId, DisplayName: string);
+procedure TLibraryView.RecordSession(const FileName, SnapshotDirectory, SystemId, DisplayName: string; const Metadata: IRomMetadata);
 begin
   var Game := FindGame(FileName);
   if Game = nil then
@@ -1213,14 +1218,21 @@ begin
     Game.Title := TPath.GetFileNameWithoutExtension(Game.FileInfo.Name);
     Game.Favorite := FState.ReadBool('Favorites', Game.Key, False);
   end;
+  Game.FileInfo.Metadata := Metadata;
+  if Metadata <> nil then
+    FMetadataCache.AddOrSetValue(Game.FileInfo.Location, Metadata)
+  else
+    FMetadataCache.Remove(Game.FileInfo.Location);
   Game.LastPlayed := Now;
   var Key := Game.Key;
   FState.WriteFloat('Recent', Key, Game.LastPlayed);
   FState.WriteString('RecentLocations', Key, Game.FileInfo.Location);
   FState.WriteString('RecentSystems', Key, Game.SystemId);
   FState.WriteString('RecentNames', Key, Game.FileInfo.Name);
-  if SnapshotDirectory <> '' then
-    FState.WriteString('Snapshots', Key, SnapshotDirectory);
+  if SnapshotDirectoryHasFiles(FStorage, SnapshotDirectory) then
+    FState.WriteString('Snapshots', Key, SnapshotDirectory)
+  else
+    FState.DeleteKey('Snapshots', Key);
   SaveState;
   if FLoadThread <> nil then
     FReloadPending := True;
@@ -1256,6 +1268,12 @@ begin
   var Directory := FState.ReadString('Snapshots', Game.Key, '');
   if Directory = '' then
     Exit;
+  if not SnapshotDirectoryHasFiles(FStorage, Directory) then
+  begin
+    FState.DeleteKey('Snapshots', Game.Key);
+    SaveState;
+    Exit;
+  end;
 
   var Items := TList<TStorageSnapshot>.Create;
   try
@@ -1305,6 +1323,29 @@ begin
   else
     UpdatePadView;
   Resize;
+end;
+
+procedure TLibraryView.RecordSnapshotDirectory(const FileName, Directory: string);
+begin
+  if FileName = '' then
+    Exit;
+  var Key := THashSHA2.GetHashString(FileName);
+  var Game := FindGame(FileName);
+  if Game <> nil then
+    Key := Game.Key;
+  if SnapshotDirectoryHasFiles(FStorage, Directory) then
+  begin
+    if FState.ReadString('Snapshots', Key, '') = Directory then
+      Exit;
+    FState.WriteString('Snapshots', Key, Directory);
+  end
+  else
+  begin
+    if not FState.ValueExists('Snapshots', Key) then
+      Exit;
+    FState.DeleteKey('Snapshots', Key);
+  end;
+  SaveState;
 end;
 
 procedure TLibraryView.BuildCards(AppendOnly: Boolean);

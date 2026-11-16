@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, JVM.Types, JVM.ClassFile, JVM.Runtime, J2ME.Alert.Layout,
-  J2ME.Form.Layout, J2ME.Item.Layout;
+  System.Classes, JVM.StateIO, System.SysUtils, JVM.Types, JVM.ClassFile,
+  JVM.Runtime, J2ME.Alert.Layout, J2ME.Form.Layout, J2ME.Item.Layout;
 
 type
   TJ2MELCDUI = class
@@ -40,6 +40,7 @@ type
     procedure Key(Screen, Code: Integer; Pressed: Boolean);
     function ChoiceInvoke(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
   public
+    procedure TransferState(S: TJVMStateIO);
     constructor Create(VM: TJVM; Width, Height: Integer; const ChangeScreen: TProc<Integer>; const PostTimeout: TProc<Integer, Integer>; const PostItemChanged: TProc<Integer>);
     destructor Destroy; override;
     procedure Install;
@@ -59,6 +60,7 @@ type
     function ContentWidth(Screen: Integer): Integer;
     procedure Current(Screen: Integer);
     procedure Invalidate;
+    procedure Resize(Width, Height: Integer);
     function NeedsRender(Now: Int64): Boolean;
     procedure Render(var Pixels: TArray<UInt32>; const Content: TArray<UInt32>; Now: Int64);
     property CurrentRef: Integer read FCurrent;
@@ -545,6 +547,17 @@ end;
 procedure TJ2MELCDUI.Invalidate;
 begin
   FDirty := True;
+end;
+
+procedure TJ2MELCDUI.Resize(Width, Height: Integer);
+begin
+  FWidth := Width;
+  FHeight := Height;
+  FAlertLayout.Clear;
+  FFormLayout.Clear;
+  FEditorLines := nil;
+  FEditorWidth := 0;
+  Invalidate;
 end;
 
 function TJ2MELCDUI.NeedsRender(Now: Int64): Boolean;
@@ -2488,6 +2501,45 @@ begin
       end;
       Text(CommandLabel(Values[I], True), 7, Y + 3, Color);
     end;
+  end;
+end;
+
+procedure TJ2MELCDUI.TransferState(S: TJVMStateIO);
+begin
+  S.Tag('J2ME.LCDUI-1');
+  S.Int(FWidth);
+  S.Int(FHeight);
+  S.Int(FCurrent);
+  S.Int(FMenuIndex);
+  S.Int(FEditorRef);
+  S.Int(FEditorText);
+  S.Int(FEditorConstraints);
+  S.Int(FEditorWidth);
+  S.Int(FEditorNegative);
+  S.Bool(FDirty);
+  S.Bool(FMenu);
+  S.Bool(FScrollText);
+  S.Bool(FAlertStarted);
+  S.Bool(FAlertQueued);
+  S.Bool(FAlertFired);
+  S.Bool(FPaused);
+  S.Int64Value(FTickerStep);
+  S.Int64Value(FAlertStart);
+  S.Int64Value(FPausedAt);
+  var N: Integer := Length(FEditorLines);
+  S.Count(N);
+  if S.Loading then
+    SetLength(FEditorLines, N);
+  for var I := 0 to N - 1 do
+  begin
+    S.Text(FEditorLines[I].Text);
+    S.Int(FEditorLines[I].Start);
+    S.Int(FEditorLines[I].Count);
+  end;
+  if S.Loading then
+  begin
+    FAlertLayout.Clear;
+    FFormLayout.Clear;
   end;
 end;
 

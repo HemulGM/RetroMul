@@ -24,6 +24,8 @@ type
   TPlatformWindowLayout = class
   public
     class function Controls(const Context: TWindowLayoutContext): TArray<TWindowControlLayout>; virtual;
+    class function UseDesktopViewport: Boolean; virtual;
+    class procedure Arrange(const Context: TWindowLayoutContext); virtual;
   end;
 
   TPlatformWindowLayoutClass = class of TPlatformWindowLayout;
@@ -62,6 +64,16 @@ end;
 class function TPlatformWindowLayout.Controls(const Context: TWindowLayoutContext): TArray<TWindowControlLayout>;
 begin
   Result := nil;
+end;
+
+class function TPlatformWindowLayout.UseDesktopViewport: Boolean;
+begin
+  Result := False;
+end;
+
+class procedure TPlatformWindowLayout.Arrange(const Context: TWindowLayoutContext);
+begin
+  ArrangePlatformWindowControls(Context);
 end;
 
 procedure RegisterPlatformWindowLayout(const PlatformId: string; Layout: TPlatformWindowLayoutClass);

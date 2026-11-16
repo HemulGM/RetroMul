@@ -485,6 +485,8 @@ begin
 end;
 
 procedure TBrowserController.LibraryBack(Sender: TObject);
+var
+  PauseError: string;
 begin
   if FState.Browser.View = nil then
     Exit;
@@ -492,7 +494,17 @@ begin
   FView.FormDeactivate(FView);
   if FState.Session.Emulation <> nil then
   begin
-    FState.Session.Emulation.Pause;
+    if not FState.Session.EmulationFaulted then
+    try
+      FState.Session.Emulation.Pause;
+    except
+      on E: Exception do
+      begin
+        PauseError := E.Message;
+        FState.Session.LastReportError := E.Message;
+        FState.Session.EmulationFaulted := True;
+      end;
+    end;
     if not FState.Browser.ViewingLibrary then
       FView.AutosaveOnExit;
   end;
@@ -517,6 +529,8 @@ begin
   FState.Browser.View.BringToFront;
   FState.Browser.ViewingLibrary := True;
   FView.SyncActivity;
+  if PauseError <> '' then
+    ShowRetroMessage(FView, TranslateCoreMessage(PauseError));
 end;
 
 procedure TBrowserController.UpdateGameChrome;

@@ -16,8 +16,9 @@ type
     FArchive: IArchiveContainer;
     FStorage: IStorage;
     FEntries: TDictionary<string, Integer>;
-    FProperties: TDictionary<string, string>;
+    FProperties, FManifestProperties, FJADProperties: TDictionary<string, string>;
     FMIDlets: TArray<TJ2MEMIDlet>;
+    FManifestText, FJADText: string;
     procedure ReadProperties(const Data: TBytes; MainSection: Boolean);
     procedure ReadMIDlets;
   public
@@ -29,6 +30,10 @@ type
     function LoadClass(const Name: string): TBytes;
     function GetProperty(const Name: string): string;
     function HasProperty(const Name: string): Boolean;
+    function Properties(const Source: string = ''): TArray<TPair<string, string>>;
+    function PropertySource(const Name: string): string;
+    function ClassNames: TArray<string>;
+    function SourceText(const Source: string): string;
     function MIDletCount: Integer;
     function MIDlet(Index: Integer): TJ2MEMIDlet;
     property Storage: IStorage read FStorage;
@@ -81,6 +86,8 @@ begin
   end;
   SetLength(Unfolded, N);
   Lines := TEncoding.UTF8.GetString(Unfolded).Replace(#13#10, #10).Replace(#13, #10).Split([#10]);
+  if (Length(Lines) > 0) and Lines[0].StartsWith(Char($FEFF)) then
+    Delete(Lines[0], 1, 1);
   for Line in Lines do
   begin
     if Line = '' then
@@ -96,6 +103,10 @@ begin
     Key := Copy(Line, 1, P - 1);
     Value := TrimAttribute(Copy(Line, P + 1, MaxInt));
     FProperties.AddOrSetValue(Key, Value);
+    if MainSection then
+      FManifestProperties.AddOrSetValue(Key, Value)
+    else
+      FJADProperties.AddOrSetValue(Key, Value);
   end;
 end;
 
@@ -115,6 +126,8 @@ begin
   FArchive := Archive;
   FEntries := TDictionary<string, Integer>.Create;
   FProperties := TDictionary<string, string>.Create;
+  FManifestProperties := TDictionary<string, string>.Create;
+  FJADProperties := TDictionary<string, string>.Create;
   Total := 0;
   for I := 0 to Archive.Count - 1 do
   begin
@@ -134,6 +147,8 @@ begin
   if Archive.Entries[Index].Size > 1024 * 1024 then
     raise EReadError.Create('Manifest exceeds 1 MiB');
   Archive.Read(Index, Data);
+  FManifestText := TEncoding.UTF8.GetString(Data);
+  FJADText := TEncoding.UTF8.GetString(JAD);
   ReadProperties(Data, True);
   if Length(JAD) <> 0 then
     ReadProperties(JAD, False);
@@ -149,6 +164,8 @@ end;
 
 destructor TJ2MESuite.Destroy;
 begin
+  FManifestProperties.Free;
+  FJADProperties.Free;
   FProperties.Free;
   FEntries.Free;
   inherited;
@@ -197,6 +214,47 @@ begin
   if ResourceName.StartsWith('/') then
     Delete(ResourceName, 1, 1);
   Result := FEntries.ContainsKey(ResourceName);
+end;
+
+function TJ2MESuite.Properties(const Source: string): TArray<TPair<string, string>>;
+begin
+  if Source = 'manifest' then
+    Exit(FManifestProperties.ToArray);
+  if Source = 'jad' then
+    Exit(FJADProperties.ToArray);
+  Result := FProperties.ToArray;
+end;
+
+function TJ2MESuite.PropertySource(const Name: string): string;
+begin
+  if FJADProperties.ContainsKey(Name) then
+    Exit('jad');
+  if FManifestProperties.ContainsKey(Name) then
+    Exit('manifest');
+  Result := '';
+end;
+
+function TJ2MESuite.ClassNames: TArray<string>;
+begin
+  var List := TList<string>.Create;
+  try
+    for var Name in FEntries.Keys do
+      if Name.EndsWith('.class') then
+        List.Add(Name.Substring(0, Length(Name) - 6));
+    Result := List.ToArray;
+  finally
+    List.Free;
+  end;
+  TArray.Sort<string>(Result);
+end;
+
+function TJ2MESuite.SourceText(const Source: string): string;
+begin
+  Result := '';
+  if Source = 'manifest' then
+    Result := FManifestText;
+  if Source = 'jad' then
+    Result := FJADText;
 end;
 
 function TJ2MESuite.ReadResource(const Name: string): TBytes;

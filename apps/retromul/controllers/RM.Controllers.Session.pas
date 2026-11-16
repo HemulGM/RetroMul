@@ -13,6 +13,7 @@ type
   private
     FLoadingCore: Boolean;
     FSelectingPlatform: Boolean;
+    FStopping: Boolean;
     FLaunchPlatform: string;
     FLoadGeneration: Integer;
     FCancelLoad: TProc;
@@ -128,10 +129,18 @@ begin
   {$IFNDEF ISMOBILE}
   if FState.Preferences.PauseOnFocusLoss and not FView.InputHasFocus and not FState.Browser.ViewingLibrary and not FState.Session.Reporting and
     not RetroDialogVisible(FView) and (FState.Settings.View = nil) and
-    (FState.Session.Emulation <> nil) and not FState.Session.Emulation.IsPaused then
+    (FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted and not FState.Session.Emulation.IsPaused then
   begin
     FState.Session.AutoPaused := True;
-    FState.Session.Emulation.Pause;
+    try
+      FState.Session.Emulation.Pause;
+    except
+      on E: Exception do
+      begin
+        FState.Session.LastReportError := E.Message;
+        FState.Session.EmulationFaulted := True;
+      end;
+    end;
   end;
   {$ENDIF}
 
@@ -146,7 +155,15 @@ begin
     FState.Input.Gamepad.ReleaseAll;
   ReleaseSessionInputs(RuntimeContext);
   if FState.Session.Emulation <> nil then
+  try
     FState.Session.Emulation.ClearInput;
+  except
+    on E: Exception do
+    begin
+      FState.Session.LastReportError := E.Message;
+      FState.Session.EmulationFaulted := True;
+    end;
+  end;
   FState.Input.GamepadInput := Default(TEmulatorInput);
   {$IFNDEF ISMOBILE}
   if not (csDestroying in FView.ComponentState) then
@@ -210,7 +227,8 @@ end;
 procedure TSessionController.SyncActivity;
 begin
   UpdateVirtualButtons;
-  if RetroDialogVisible(FView) and (FState.Session.Emulation <> nil) and (FState.Session.DialogCore <> FState.Session.Emulation) then
+  if RetroDialogVisible(FView) and (FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted and
+    (FState.Session.DialogCore <> FState.Session.Emulation) then
   begin
     // A queued message may survive loading a new session.
     FState.Session.DialogCore := FState.Session.Emulation;
@@ -257,7 +275,17 @@ begin
     FState.Browser.ScreenshotTool.Enabled := (FState.Session.Emulation <> nil) and not FState.Session.OpeningRom;
   if FState.Browser.ActionsTool <> nil then
     FState.Browser.ActionsTool.Enabled := not FState.Session.OpeningRom;
+  {$IFNDEF ISMOBILE}
+  var HadGamepad := (FState.Input.Gamepad <> nil) and FState.Input.Gamepad.Visible;
+  {$ENDIF}
   PlatformSessionHandler(FState.Input.SystemId).SyncActivity(RuntimeContext);
+  {$IFNDEF ISMOBILE}
+  if HadGamepad or ((FState.Input.Gamepad <> nil) and FState.Input.Gamepad.Visible) then
+  begin
+    PlatformSessionHandler(FState.Input.SystemId).LayoutControls(RuntimeContext);
+    PlatformSessionHandler(FState.Input.SystemId).ApplyActivityGate(RuntimeContext);
+  end;
+  {$ENDIF}
   {$IFDEF ISMOBILE}
   SyncSessionTouch(RuntimeContext);
   PlatformSessionHandler(FState.Input.SystemId).LayoutControls(RuntimeContext);
@@ -302,18 +330,29 @@ end;
 
 procedure TSessionController.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
 begin
+  if not CanClose then
+    Exit;
+  {$IFDEF MSWINDOWS}
+  FState.Window.WindowStateSaveAttempted := True;
   try
-    {$IFDEF MSWINDOWS}
     FView.SaveWindowState;
-    {$ENDIF}
+  except
+    on E: Exception do
+    begin
+      FState.Window.WindowStateSaved := False;
+      FState.Session.LastReportError := E.Message;
+      ShowRetroMessage(FView, E.Message);
+    end;
+  end;
+  {$ENDIF}
+  // A preferences write must not bypass joining the emulation worker.
+  try
     FView.Stop;
   except
     on E: Exception do
     begin
-      CanClose := False;
-      {$IFDEF MSWINDOWS}
-      FState.Window.WindowStateSaved := False;
-      {$ENDIF}
+      CanClose := FState.Session.Emulation = nil;
+      FState.Session.LastReportError := E.Message;
       ShowRetroMessage(FView, E.Message);
     end;
   end;
@@ -800,6 +839,10 @@ begin
   FView.ImageCanvas.DisableInterpolation := SameText(FState.Session.Emulation.Config.Filter, 'nearest');
   FillChar(FState.Input.KeysDown, SizeOf(FState.Input.KeysDown), 0);
   FState.Session.RomLocation := FileName;
+  FState.Session.RomMetadata := nil;
+  var MetadataCore: IEmulationRomMetadata;
+  if Supports(FState.Session.Emulation, IEmulationRomMetadata, MetadataCore) then
+    FState.Session.RomMetadata := MetadataCore.RomMetadata;
   FState.Session.RomDisplayName := DisplayName;
   if FState.Session.RomDisplayName = '' then
     FState.Session.RomDisplayName := ExtractFileName(FileName);
@@ -823,7 +866,7 @@ begin
     RecordGameSnapshotDirectory(FState.Session.Storage, FileName, Directory);
     if FState.Browser.View <> nil then
     begin
-      FState.Browser.View.RecordSession(FileName, Directory, platform.Id, DisplayName);
+      FState.Browser.View.RecordSession(FileName, Directory, platform.Id, DisplayName, FState.Session.RomMetadata);
       FState.Browser.View.Visible := False;
       FView.ScreenTabs.ActiveTab := FView.GameScreen;
       FView.LayoutClient.Visible := True;
@@ -857,37 +900,100 @@ begin
   except
     // The worker has joined, but a failed battery write still belongs to this
     // session. Skip autosaving the stopped worker on a subsequent close/retry.
-    FView.StopOnError;
+    FState.Session.EmulationFaulted := True;
+    FView.TimerUpdate.Enabled := False;
     raise;
   end;
 end;
 
 procedure TSessionController.Stop;
-begin
-  CancelCoreLoading;
-  Inc(FLoadGeneration);
+var
+  ErrorText: string;
 
-  if FView.FullScreen then
-    FView.SwitchFullScreen;
-
-  FView.FormDeactivate(FView);
-  if FState.Session.Emulation <> nil then
+  procedure RememberError(E: Exception);
   begin
-    FView.AutosaveOnExit;
-    FView.TimerUpdate.Enabled := False;
-    StopCurrentCore;
-    DisconnectSession;
-    FView.ImageCanvas.Mode := TBitmapShaderMode.Original;
-    FView.ImageCanvas.Bitmap := nil;
-    FView.ImageLogo.Visible := True;
-    FState.Session.Emulation := nil;
+    if ErrorText <> '' then
+      ErrorText := ErrorText + sLineBreak;
+    ErrorText := ErrorText + E.Message;
   end;
-  if FState.Browser.View <> nil then
-    FView.LibraryBack(FView);
-  FState.Session.PendingAutosaveChoice := False;
-  FState.Session.OpeningRom := False;
-  FState.Session.RomLocation := '';
-  FView.SyncActivity;
+
+begin
+  if FStopping then
+    Exit;
+  FStopping := True;
+  try
+    CancelCoreLoading;
+    Inc(FLoadGeneration);
+
+    if FView.FullScreen then
+    try
+      FView.SwitchFullScreen;
+    except
+      on E: Exception do
+        RememberError(E);
+    end;
+
+    try
+      FView.FormDeactivate(FView);
+    except
+      on E: Exception do
+        RememberError(E);
+    end;
+    if FState.Session.Emulation <> nil then
+    begin
+      try
+        FView.AutosaveOnExit;
+      except
+        on E: Exception do
+          RememberError(E);
+      end;
+      FView.TimerUpdate.Enabled := False;
+      try
+        StopCurrentCore;
+      except
+        on E: Exception do
+          RememberError(E);
+      end;
+      try
+        DisconnectSession;
+      except
+        on E: Exception do
+          RememberError(E);
+      end;
+      FView.ImageCanvas.Mode := TBitmapShaderMode.Original;
+      FView.ImageCanvas.Bitmap := nil;
+      FView.ImageLogo.Visible := True;
+      try
+        FState.Session.Emulation := nil;
+      except
+        on E: Exception do
+          RememberError(E);
+      end;
+    end;
+    if FState.Browser.View <> nil then
+      FView.LibraryBack(FView);
+    FState.Session.PendingAutosaveChoice := False;
+    FState.Session.OpeningRom := False;
+    FState.Session.RomLocation := '';
+    FState.Session.RomMetadata := nil;
+    FState.Session.EmulationFaulted := False;
+    FState.Session.UserPaused := False;
+    FState.Session.AutoPaused := False;
+    try
+      FState.Session.DialogCore := nil;
+    except
+      on E: Exception do
+        RememberError(E);
+    end;
+    FView.SyncActivity;
+    if ErrorText <> '' then
+    begin
+      FState.Session.LastReportError := ErrorText;
+      ShowRetroMessage(FView, TranslateCoreMessage(ErrorText));
+    end;
+  finally
+    FStopping := False;
+  end;
 end;
 
 procedure TSessionController.StopOnError;
@@ -895,7 +1001,12 @@ begin
   FState.Session.EmulationFaulted := True;
   FView.TimerUpdate.Enabled := False;
   if FState.Session.Emulation <> nil then
+  try
     FState.Session.Emulation.Pause;
+  except
+    on E: Exception do
+      FState.Session.LastReportError := E.Message;
+  end;
   FView.FormDeactivate(FView);
   FView.SetStatus(Translate('Stopped after error - ') + FState.Session.RomDisplayName);
   FView.SyncActivity;

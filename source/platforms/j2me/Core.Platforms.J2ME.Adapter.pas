@@ -3,10 +3,11 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles, System.SyncObjs,
-  System.Generics.Collections, Core.Storage, Core.Emulation, J2ME.Suite,
-  J2ME.Runtime, Core.Platforms.J2ME.Playback, Core.Bluetooth.Types,
-  Core.Messaging.Types, J2ME.Device;
+  Core.Snapshots, System.Diagnostics, System.Hash, System.SysUtils,
+  System.Classes, System.IniFiles, System.SyncObjs, System.Generics.Collections,
+  Core.Storage, Core.Emulation, J2ME.Suite, J2ME.Runtime,
+  Core.Platforms.J2ME.Playback, Core.Bluetooth.Types, Core.Messaging.Types,
+  J2ME.Device, J2ME.Screen, J2ME.Display, Core.RomMetadata, J2ME.Input;
 
 type
   TJ2MEConfig = class(TEmulatorConfigBase)
@@ -25,10 +26,16 @@ type
     Pressed: Boolean;
   end;
 
-  TJ2MECoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationAudioDiagnostics, IEmulationBluetooth, IEmulationMessaging, IEmulationRumbleOutput)
+  TJ2MECoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationAudioDiagnostics, IEmulationBluetooth, IEmulationMessaging, IEmulationRumbleOutput, IEmulationSnapshotLocation, IEmulationRomMetadata, IJ2MEPhoneInput)
   private
+    FSnapshotCommands: TSnapshotQueue;
+    FSnapshotHash: TBytes;
+    FSnapshotDirectory: string;
     FStorage: IStorage;
     FSuite: TJ2MESuite;
+    FMetadata: IRomMetadata;
+    FScreenDecision: TJ2MEScreenDecision;
+    FDisplayPlan: TJ2MEDisplayPlan;
     FConfig: IEmulatorConfig;
     FSettings: TJ2MEConfig;
     FWorker: TThread;
@@ -37,6 +44,7 @@ type
     FKeyboard: TDictionary<UInt32, Integer>;
     FHeld: TDictionary<Integer, Integer>;
     FInput: TEmulatorInput;
+    FVirtualKeypad: Word;
     FFrame: TEmulatorFrame;
     FFrameReady, FPaused: Boolean;
     FError, FAudioError: string;
@@ -46,6 +54,9 @@ type
     FAudioFactory: TJ2MEAudioFactory;
     FBluetooth: IBluetoothProvider;
     FMessaging: IMessagingProvider;
+    function ConfiguredScreen: TJ2MEScreenSize;
+    procedure PublishFrame(Runtime: TJ2MERuntime; const Pixels: TArray<UInt32>; Number: UInt64);
+    procedure ProcessSnapshots(var Runtime: TJ2MERuntime; var Playback: TJ2MEAudioPlayback; var AudioFailed, WasPaused: Boolean; const Watch: TStopwatch; var LastMillis, Remainder: Int64);
     procedure ExecuteVM;
     procedure ChangeHeld(Code: Integer; Pressed: Boolean);
   public
@@ -53,6 +64,7 @@ type
     destructor Destroy; override;
     function GetSystemId: string;
     function GetName: string;
+    function GetRomMetadata: IRomMetadata;
     function GetSupportsSnapshots: Boolean;
     function GetHasRumble: Boolean;
     function GetRumbleLevel: Byte;
@@ -67,7 +79,9 @@ type
     procedure ClearInput;
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
+    procedure SetVirtualKeypad(Keys: Word);
     function GetInputState: TEmulatorInput;
+    function GetSnapshotDirectory: string;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -84,8 +98,8 @@ type
 implementation
 
 uses
-  System.IOUtils, System.Math, System.Diagnostics, JVM.Types, Core.Bluetooth,
-  Core.Platforms.Bluetooth, Core.Messaging;
+  System.IOUtils, System.Math, Core.SavePaths, JVM.Types, Core.Bluetooth,
+  Core.Platforms.Bluetooth, Core.Messaging, J2ME.Compatibility, J2ME.Metadata;
 
 const
   PadCodes: array[TEmulatorButton] of Integer = (-1, -2, -3, -4, -5, 48, -6, -7, 49, 51, 55, 57, 53);
@@ -95,7 +109,7 @@ begin
   inherited Create(FileName, Storage);
   Width := 240;
   Height := 320;
-  ScreenSize := 'custom';
+  ScreenSize := 'auto';
 end;
 
 procedure TJ2MEConfig.LoadCoreSettings(Ini: TCustomIniFile);
@@ -103,8 +117,12 @@ begin
   Width := EnsureRange(Ini.ReadInteger('Phone', 'Width', 240), 1, 1024);
   Height := EnsureRange(Ini.ReadInteger('Phone', 'Height', 320), 1, 1024);
   MIDletIndex := EnsureRange(Ini.ReadInteger('Phone', 'MIDletIndex', 0), 0, 1023);
-  ScreenSize := LowerCase(Trim(Ini.ReadString('Phone', 'ScreenSize', 'custom')));
-  var Valid := ScreenSize = 'custom';
+  var DefaultSize := 'auto';
+  // Width/height-only configurations predate presets and are explicit choices.
+  if Ini.ValueExists('Phone', 'Width') or Ini.ValueExists('Phone', 'Height') then
+    DefaultSize := 'custom';
+  ScreenSize := LowerCase(Trim(Ini.ReadString('Phone', 'ScreenSize', DefaultSize)));
+  var Valid := (ScreenSize = 'custom') or (ScreenSize = 'auto');
   for var Size in TJ2MEScreenSize.Presets do
     if ScreenSize = Size.ToString then
       Valid := True;
@@ -126,13 +144,19 @@ begin
     Result := TJ2MEScreenSize.Create(Width, Height);
 end;
 
+function TJ2MECoreAdapter.ConfiguredScreen: TJ2MEScreenSize;
+begin
+  Result := FScreenDecision.Size;
+end;
+
 constructor TJ2MECoreAdapter.Create(Input: TStream; const Storage: IStorage; const RomName: string; const AudioFactory: TJ2MEAudioFactory);
 var
   JAD: TBytes;
-  JADName: string;
+  JADName, JADError: string;
 begin
   inherited Create;
   FLock := TCriticalSection.Create;
+  FSnapshotCommands := TSnapshotQueue.Create;
   FAudioFactory := AudioFactory;
   FBluetooth := CreatePlatformBluetoothProvider;
   FMessaging := CreateUnavailableMessagingProvider;
@@ -145,17 +169,67 @@ begin
   FSettings := TJ2MEConfig.Create(FStorage.ConfigFile('j2me'), FStorage);
   FConfig := FSettings;
   FConfig.Load;
-  JADName := ChangeFileExt(RomName, '.jad');
-  if FStorage.Exists(JADName) then
-    JAD := FStorage.ReadBytes(JADName);
+  JAD := ReadJ2MEJAD(Input, FStorage, RomName, JADName, JADError);
+  var Position := Input.Position;
+  try
+    Input.Position := 0;
+    FSnapshotHash := THashSHA2.GetHashBytes(Input);
+  finally
+    Input.Position := Position;
+  end;
+  FSnapshotDirectory := FStorage.GameSnapshots('j2me', RomName, THash.DigestAsString(FSnapshotHash));
   FSuite := TJ2MESuite.Open(Input, FStorage, JAD);
   if FSettings.MIDletIndex >= FSuite.MIDletCount then
     raise EReadError.Create('Configured MIDlet index is not present in this suite');
+  if FSettings.ScreenSize = 'auto' then
+    FScreenDecision := DetectJ2MEScreen(FSuite, THash.DigestAsString(FSnapshotHash),
+      FSettings.MIDletIndex, FSettings.EffectiveScreen)
+  else
+  begin
+    FScreenDecision.Size := FSettings.EffectiveScreen;
+    FScreenDecision.Source := 'manual';
+    FScreenDecision.Evidence := [FSettings.ScreenSize];
+  end;
+  FDisplayPlan := J2MEDisplayPlan(FSuite, FScreenDecision, FSettings.EffectiveScreen, FSettings.ScreenSize = 'auto');
+  FMetadata := J2MERomMetadata(FSuite, RomName, THash.DigestAsString(FSnapshotHash),
+    JADName, JADError, FSettings.ScreenSize, FScreenDecision, FDisplayPlan);
+end;
+
+procedure TJ2MECoreAdapter.PublishFrame(Runtime: TJ2MERuntime; const Pixels: TArray<UInt32>; Number: UInt64);
+begin
+  var Size := TJ2MEScreenSize.Create(Runtime.ScreenWidth, Runtime.ScreenHeight);
+  var Raster := Pixels;
+  if FDisplayPlan.Scaling and Runtime.IsFullscreenCanvas then
+  begin
+    Raster := J2MEFitDisplay(Pixels, Size, FDisplayPlan.Size);
+    Size := FDisplayPlan.Size;
+  end;
+  var Frame: TEmulatorFrame;
+  Frame.FrameNumber := Number;
+  Frame.Width := Size.Width;
+  Frame.Height := Size.Height;
+  Frame.FramesPerSecond := 60;
+  SetLength(Frame.Pixels, Length(Raster));
+  if Length(Raster) > 0 then
+    Move(Raster[0], Frame.Pixels[0], Length(Raster) * SizeOf(UInt32));
+  FLock.Acquire;
+  try
+    FFrame := Frame;
+    FFrameReady := True;
+  finally
+    FLock.Release;
+  end;
+end;
+
+function TJ2MECoreAdapter.GetRomMetadata: IRomMetadata;
+begin
+  Result := FMetadata;
 end;
 
 destructor TJ2MECoreAdapter.Destroy;
 begin
   Stop;
+  FSnapshotCommands.Free;
   FSuite.Free;
   FHeld.Free;
   FKeyboard.Free;
@@ -178,7 +252,7 @@ end;
 
 function TJ2MECoreAdapter.GetSupportsSnapshots: Boolean;
 begin
-  Result := False;
+  Result := True;
 end;
 
 function TJ2MECoreAdapter.GetHasRumble: Boolean;
@@ -334,6 +408,7 @@ begin
     FHeld.Clear;
     FKeyboard.Clear;
     FInput := Default(TEmulatorInput);
+    FVirtualKeypad := 0;
   finally
     FLock.Release;
   end;
@@ -399,6 +474,20 @@ begin
   end;
 end;
 
+procedure TJ2MECoreAdapter.SetVirtualKeypad(Keys: Word);
+begin
+  Keys := Keys and J2MEKeypadMask;
+  FLock.Acquire;
+  try
+    for var I := Low(J2MEKeypadCodes) to High(J2MEKeypadCodes) do
+      if ((Keys xor FVirtualKeypad) and (Word(1) shl I)) <> 0 then
+        ChangeHeld(J2MEKeypadCodes[I], (Keys and (Word(1) shl I)) <> 0);
+    FVirtualKeypad := Keys;
+  finally
+    FLock.Release;
+  end;
+end;
+
 procedure TJ2MECoreAdapter.SetGamepadInput(const Input: TEmulatorInput);
 var
   B: TEmulatorButton;
@@ -429,12 +518,12 @@ end;
 
 procedure TJ2MECoreAdapter.SaveSnapshot(const Name: string);
 begin
-  raise ENotSupportedException.Create('J2ME state snapshots are not implemented');
+  FSnapshotCommands.Execute(FWorker, Name, False);
 end;
 
 procedure TJ2MECoreAdapter.LoadSnapshot(const Name: string);
 begin
-  raise ENotSupportedException.Create('J2ME state snapshots are not implemented');
+  FSnapshotCommands.Execute(FWorker, Name, True);
 end;
 
 function TJ2MECoreAdapter.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -576,11 +665,12 @@ begin
   LastMillis := 0;
   try
     try
-      var Screen := FSettings.EffectiveScreen;
+      var Screen := ConfiguredScreen;
       Runtime := TJ2MERuntime.Create(FSuite, Screen.Width, Screen.Height, FBluetooth, FMessaging);
       Runtime.Start(FSettings.MIDletIndex);
       while not TThread.CurrentThread.CheckTerminated do
       begin
+        ProcessSnapshots(Runtime, Playback, AudioFailed, WasPaused, Watch, LastMillis, Remainder);
         FLock.Acquire;
         try
           Events := FEvents.ToArray;
@@ -709,21 +799,7 @@ begin
         if Runtime.State = TJ2MEState.Destroyed then
           Break;
         if Runtime.TakeFrame(Pixels, Frame.FrameNumber) then
-        begin
-          SetLength(Frame.Pixels, Length(Pixels));
-          if Length(Pixels) <> 0 then
-            Move(Pixels[0], Frame.Pixels[0], Length(Pixels) * SizeOf(UInt32));
-          Frame.Width := Screen.Width;
-          Frame.Height := Screen.Height;
-          Frame.FramesPerSecond := 60;
-          FLock.Acquire;
-          try
-            FFrame := Frame;
-            FFrameReady := True;
-          finally
-            FLock.Release;
-          end;
-        end;
+          PublishFrame(Runtime, Pixels, Frame.FrameNumber);
         if not Runtime.NeedsExecution then
           TThread.Sleep(1);
       end;
@@ -750,6 +826,120 @@ begin
     Runtime.Free;
   end;
 end;
+
+function TJ2MECoreAdapter.GetSnapshotDirectory: string;
+begin
+  Result := FSnapshotDirectory;
+end;
+
+procedure TJ2MECoreAdapter.ProcessSnapshots(var Runtime: TJ2MERuntime; var Playback: TJ2MEAudioPlayback; var AudioFailed, WasPaused: Boolean; const Watch: TStopwatch; var LastMillis, Remainder: Int64);
+begin
+  var LocalRuntime := Runtime;
+  var LocalPlayback := Playback;
+  var LocalAudioFailed := AudioFailed;
+  var LocalWasPaused := WasPaused;
+  var LocalWatch := Watch;
+  var LocalLastMillis := LastMillis;
+  var LocalRemainder := Remainder;
+  FSnapshotCommands.Process(
+    procedure(const Name: string; Loading: Boolean)
+    var
+      Candidate: TJ2MERuntime;
+    begin
+      Candidate := nil;
+      try
+        var Path := ResolveSnapshotPath(FSnapshotDirectory, Name);
+        var Transfer: TStateTransfer :=
+          procedure(State: TStateArchive)
+          begin
+            var Buffer := TMemoryStream.Create;
+            try
+              var Size := 0;
+              if not State.Loading then
+              begin
+                LocalRuntime.SaveState(Buffer);
+                Size := Buffer.Size;
+              end;
+              State.Field(Size, SizeOf(Size));
+              if (Size <= 0) or (Size > 256 * 1024 * 1024 - 8) then
+                raise EReadError.Create('Java ME snapshot size limit');
+              if State.Loading then
+                Buffer.Size := Size;
+              State.Field(Buffer.Memory^, Size);
+              if State.Loading then
+              begin
+                Buffer.Position := 0;
+                FreeAndNil(Candidate);
+                Candidate := TJ2MERuntime.LoadState(FSuite, Buffer, FBluetooth, FMessaging);
+              end;
+            finally
+              Buffer.Free;
+            end;
+          end;
+        if Loading then
+        begin
+          LoadCoreSnapshotHash(Path, 'J2ME', FSnapshotHash, Transfer, FStorage);
+          if FSettings.ScreenSize = 'auto' then
+            MigrateJ2MECompatibilityScreen(THash.DigestAsString(FSnapshotHash), Candidate, FScreenDecision.Size);
+          // Reconstruction and checksum validation have finished. Only now may
+          // the game/RMS state change; a rejected file leaves the old VM alive.
+          Candidate.CommitRestoredState;
+          var Previous := LocalRuntime;
+          LocalRuntime := Candidate;
+          Candidate := nil;
+          Previous.Free;
+          FreeAndNil(LocalPlayback);
+          LocalAudioFailed := False;
+          ClearInput;
+          LocalRuntime.ReleasePhysicalKeys;
+          FLock.Acquire;
+          try
+            FEvents.Clear;
+            FAudioError := '';
+            FError := '';
+            FRumbleArea := 0;
+            FRumbleMillis := 0;
+            LocalWasPaused := FPaused;
+          finally
+            FLock.Release;
+          end;
+          if LocalWasPaused then
+            LocalRuntime.Pause
+          else
+            LocalRuntime.Resume;
+          var Pixels: TArray<UInt32>;
+          var Frame: TEmulatorFrame;
+          if LocalRuntime.TakeFrame(Pixels, Frame.FrameNumber) then
+            PublishFrame(LocalRuntime, Pixels, Frame.FrameNumber);
+          LocalLastMillis := LocalWatch.ElapsedMilliseconds;
+          LocalRemainder := 0;
+        end
+        else
+        begin
+          SaveCoreSnapshotHash(Path, 'J2ME', FSnapshotHash, Transfer, FStorage);
+          FLock.Acquire;
+          try
+            if Length(FFrame.Pixels) > 0 then
+              SaveSnapshotPreview(Path, FFrame.Width, FFrame.Height, FFrame.Width, @FFrame.Pixels[0], FStorage);
+          finally
+            FLock.Release;
+          end;
+          LocalLastMillis := LocalWatch.ElapsedMilliseconds;
+        end;
+      finally
+        Candidate.Free;
+      end;
+    end);
+  Runtime := LocalRuntime;
+  Playback := LocalPlayback;
+  AudioFailed := LocalAudioFailed;
+  WasPaused := LocalWasPaused;
+  LastMillis := LocalLastMillis;
+  Remainder := LocalRemainder;
+end;
+
+initialization
+  RegisterSnapshotPolicy('J2ME', TSnapshotPolicy.Create(1, 256 * 1024 * 1024));
 
 end.
 

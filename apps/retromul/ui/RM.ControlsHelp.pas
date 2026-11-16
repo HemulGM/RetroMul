@@ -12,7 +12,7 @@ type
   TControlsHelpView = class(TFrame)
     RectangleSurface: TRectangle;
     LayoutHeader, LayoutFooter, LayoutContent, LayoutLeft, LayoutRight: TLayout;
-    VertScrollBoxScroll: TVertScrollBox;
+    VertScrollBoxScroll, VertScrollBoxController, VertScrollBoxFunctions: TVertScrollBox;
     LabelTitle, LabelSubtitle, LabelNote, LabelDevice: TLabel;
     ButtonSettings, ButtonFooterClose: TButton;
     LayoutPlayerTabs, LayoutDiagram, LayoutAssignments, LayoutFunctions: TLayout;
@@ -386,17 +386,19 @@ begin
     var ColumnW := ContentW;
     if TwoColumns then
       ColumnW := (ContentW - 48) * 0.56;
-    LayoutLeft.Align := TAlignLayout.Top;
-    LayoutRight.Align := TAlignLayout.Top;
-    LayoutRight.Margins.Rect := RectF(0, 24, 0, 0);
+    VertScrollBoxController.Align := TAlignLayout.Top;
+    VertScrollBoxFunctions.Align := TAlignLayout.Top;
+    VertScrollBoxFunctions.Margins.Rect := RectF(0, 24, 0, 0);
     RectangleDivider.Visible := TwoColumns;
     if TwoColumns then
     begin
-      LayoutLeft.Align := TAlignLayout.Left;
-      LayoutLeft.Width := ColumnW;
-      LayoutRight.Align := TAlignLayout.Client;
-      LayoutRight.Margins.Rect := RectF(24, 0, 0, 0);
+      VertScrollBoxController.Align := TAlignLayout.Left;
+      VertScrollBoxController.Width := ColumnW;
+      VertScrollBoxFunctions.Align := TAlignLayout.Client;
+      VertScrollBoxFunctions.Margins.Rect := RectF(24, 0, 0, 0);
     end;
+    var PanelWidth := ColumnW;
+    ColumnW := Max(1, ColumnW - 14); // Leave room for the column's scrollbar.
     var TabColumns := Max(1, Trunc(ColumnW / 108));
     var TabRows := Ceil(FPlayers / TabColumns);
     LayoutPlayerTabs.BeginUpdate;
@@ -458,7 +460,7 @@ begin
     if LayoutDiagram.Visible then
       LayoutLeft.Height := LayoutLeft.Height + 10 + 180;
     LayoutRight.Height := LayoutFunctions.Height + 70;
-    var CaptionWidth := Max(120, IfThen(TwoColumns, ContentW - ColumnW - 48, ContentW) - 128);
+    var CaptionWidth := Max(120, IfThen(TwoColumns, ContentW - PanelWidth - 49, ContentW) - 14 - 128);
     if LayoutFunctions.ChildrenCount > 0 then
       for var Child in LayoutFunctions.Children do
         if Child is TControlsHelpShortcutView then
@@ -466,9 +468,20 @@ begin
         else if (Child is TControl) and (Child.ChildrenCount > 0) then
           TControl(Child.Children[0]).Width := CaptionWidth;
     if TwoColumns then
-      LayoutContent.Height := Max(LayoutLeft.Height, LayoutRight.Height)
+    begin
+      // Column viewports fill the available height; their top-aligned
+      // content keeps its complete height and scrolls independently.
+      LayoutContent.Height := Max(1, VertScrollBoxScroll.Height);
+      VertScrollBoxScroll.ViewportPosition := PointF(0, 0);
+    end
     else
+    begin
+      VertScrollBoxController.Height := LayoutLeft.Height;
+      VertScrollBoxFunctions.Height := LayoutRight.Height;
+      VertScrollBoxController.ViewportPosition := PointF(0, 0);
+      VertScrollBoxFunctions.ViewportPosition := PointF(0, 0);
       LayoutContent.Height := LayoutLeft.Height + 24 + LayoutRight.Height;
+    end;
   finally
     FArranging := False;
   end;
@@ -478,6 +491,7 @@ procedure TControlsHelpView.PlayerClick(Sender: TObject);
 begin
   FPlayer := TButton(Sender).Tag;
   BuildPlayer;
+  VertScrollBoxController.ViewportPosition := PointF(0, 0);
 end;
 
 procedure TControlsHelpView.CloseClick(Sender: TObject);

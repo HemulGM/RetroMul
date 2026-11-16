@@ -3,12 +3,13 @@
 interface
 
 uses
-  System.SysUtils, System.Classes, System.IniFiles;
+  System.SysUtils, System.Classes, System.IniFiles, Core.RomMetadata;
 
 type
   TStorageFile = record
     Name, Location, RelativePath: string;
     Size: Int64;
+    Metadata: IRomMetadata;
   end;
 
   TStorageSnapshot = record

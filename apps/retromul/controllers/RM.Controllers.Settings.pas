@@ -28,7 +28,7 @@ implementation
 uses
   System.SysUtils, System.Classes, System.Math, System.UITypes, FMX.Types,
   RM.Gamepad, RM.Settings, RM.ControlsHelp, RM.Styles, RM.Dialogs,
-  RM.Gamepad.Base;
+  RM.Gamepad.Base, RM.Main.State;
 
 function TSettingsController.RuntimeContext: TSettingsRuntimeContext;
 begin
@@ -86,6 +86,12 @@ begin
     TVirtualGamepadControl.TouchHapticsEnabled := Ini.ReadBool('General', 'TouchHaptics', True);
     FState.Preferences.PauseOnFocusLoss := Ini.ReadBool('General', 'PauseOnFocusLoss', True);
     FState.Preferences.StartFullscreen := Ini.ReadBool('General', 'StartFullscreen', False);
+    var GamepadVisibility := Ini.ReadString('General', 'VirtualGamepadVisibility', 'auto').Trim.ToLower;
+    FState.Preferences.VirtualGamepadVisibility := TVirtualGamepadVisibility.Automatic;
+    if GamepadVisibility = 'show' then
+      FState.Preferences.VirtualGamepadVisibility := TVirtualGamepadVisibility.Show
+    else if GamepadVisibility = 'hide' then
+      FState.Preferences.VirtualGamepadVisibility := TVirtualGamepadVisibility.Hide;
     FState.Autosave.OnExit := Ini.ReadBool('General', 'AutosaveOnExit', True);
     FState.Autosave.Periodic := Ini.ReadBool('General', 'AutosavePeriodic', False);
     FState.Autosave.Minutes := EnsureRange(Ini.ReadInteger('General', 'AutosaveMinutes',

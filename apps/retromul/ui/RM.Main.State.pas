@@ -8,7 +8,7 @@ uses
   System.SysUtils, System.Types, System.UITypes, FMX.Forms, FMX.StdCtrls,
   FMX.Menus, Core.Emulation, Core.Storage, Core.InputConfig, FMX.OpenDialog,
   RM.LibraryView, RM.Settings, RM.ControlsHelp, RM.Input, FMXInput, RM.Rumble,
-  RM.Gamepad
+  RM.Gamepad, Core.RomMetadata
   {$IFDEF MSWINDOWS}
     , Winapi.Windows
   {$ENDIF}
@@ -32,6 +32,7 @@ type
     SoundErrorShown: Boolean;
     RomDisplayName: string;
     RomLocation: string;
+    RomMetadata: IRomMetadata;
     LastReportError, LastReportRom, LastReportFilename, LastReportPlatform: string;
     LastReportLaunch, LastReportLaunchState, ReportLaunchSource: string;
     OpeningRom: Boolean;
@@ -61,8 +62,11 @@ type
     FullScreenPadding: TRectF;
   end;
 
+  TVirtualGamepadVisibility = (Automatic, Show, Hide);
+
   TMainPreferencesState = record
     PauseOnFocusLoss, StartFullscreen: Boolean;
+    VirtualGamepadVisibility: TVirtualGamepadVisibility;
   end;
 
   TMainHelpState = record
@@ -109,6 +113,7 @@ type
     FullScreenWindowState: TWindowState;
     FullScreenPlacement: TWindowPlacement;
     WindowStateRestored, WindowStateSaved: Boolean;
+    WindowStateSaveAttempted: Boolean;
     {$ENDIF}
   end;
 

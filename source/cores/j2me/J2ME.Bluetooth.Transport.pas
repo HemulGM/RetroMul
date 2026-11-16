@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, JVM.Types, JVM.ClassFile,
-  JVM.Runtime, Core.Bluetooth.Types;
+  System.Classes, System.SysUtils, System.Generics.Collections, JVM.Types,
+  JVM.ClassFile, JVM.Runtime, Core.Bluetooth.Types;
 
 type
   TBTConnection = class
@@ -49,6 +49,7 @@ type
     function Prefetch(C: TBTConnection): Boolean;
     procedure Validate(C: TBTConnection);
   public
+    procedure RequireSnapshotIdle;
     constructor Create(VM: TJVM; const Provider: IBluetoothProvider);
     destructor Destroy; override;
     procedure Install;
@@ -1087,6 +1088,12 @@ begin
     Exit;
   end;
   raise EJVMUnsupported.Create('Bluetooth transport ' + N);
+end;
+
+procedure TJ2MEBluetoothTransport.RequireSnapshotIdle;
+begin
+  if (FConnections.Count <> 0) or (FWork.Count <> 0) then
+    raise EInvalidOpException.Create('Java ME snapshots require inactive network, Bluetooth and messaging connections');
 end;
 
 end.

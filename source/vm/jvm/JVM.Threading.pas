@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections;
+  System.Classes, JVM.StateIO, System.SysUtils, System.Generics.Collections;
 
 {$SCOPEDENUMS ON}
 
@@ -34,6 +34,7 @@ type
     function Monitor(Ref: Integer): TJVMMonitor;
     procedure WakeWaiter(Thread: TJVMThreadContext);
   public
+    procedure TransferState(S: TJVMStateIO);
     constructor Create;
     destructor Destroy; override;
     function NewThread: TJVMThreadContext;
@@ -331,6 +332,72 @@ begin
   for I := FThreads.Count - 1 downto 0 do
     if (FThreads[I].JavaObject = Ref) and (FThreads[I].State in [TJVMThreadState.New, TJVMThreadState.Terminated]) then
       FThreads.Delete(I);
+end;
+
+procedure TJVMScheduler.TransferState(S: TJVMStateIO);
+begin
+  S.Tag('scheduler-1');
+  S.Int(FNextID);
+  var N := FThreads.Count;
+  S.Count(N, 65536);
+  if S.Loading then
+  begin
+    FThreads.Clear;
+    FMonitors.Clear;
+  end;
+  for var I := 0 to N - 1 do
+  begin
+    if S.Loading then
+      FThreads.Add(TJVMThreadContext.Create(0));
+    var T := FThreads[I];
+    S.Int(T.ID);
+    S.Int(T.JavaObject);
+    S.Int(T.Target);
+    S.Int(T.Priority);
+    S.Int(T.Quantum);
+    var State: Integer := Ord(T.State);
+    S.Count(State, Ord(High(TJVMThreadState)));
+    T.State := TJVMThreadState(State);
+    S.Bool(T.Interrupted);
+    S.Bool(T.PendingInterrupted);
+    S.Int64Value(T.WakeAt);
+    S.Int(T.WaitMonitor);
+    S.Int(T.WaitDepth);
+    S.Text(T.WaitClass);
+    if (T.ID <= 0) or (T.ID >= FNextID) then
+      raise EReadError.Create('Invalid snapshot thread identifier');
+    for var J := 0 to I - 1 do
+      if FThreads[J].ID = T.ID then
+        raise EReadError.Create('Duplicate snapshot thread identifier');
+  end;
+  var Refs := FMonitors.Keys.ToArray;
+  N := Length(Refs);
+  S.Count(N);
+  if not S.Loading then
+    TArray.Sort<Integer>(Refs);
+  for var I := 0 to N - 1 do
+  begin
+    var M: TJVMMonitor;
+    if S.Loading then
+      M := TJVMMonitor.Create
+    else
+      M := FMonitors[Refs[I]];
+    try
+      S.Int(M.Reference);
+      S.Int(M.Owner);
+      S.Int(M.Depth);
+      if S.Loading then
+      begin
+        if (M.Depth < 0) or ((M.Owner <> 0) and (ThreadByID(M.Owner) = nil)) then
+          raise EReadError.Create('Invalid snapshot monitor');
+        FMonitors.Add(M.Reference, M);
+        M := nil;
+      end;
+    finally
+      if S.Loading then
+        M.Free;
+    end;
+  end;
 end;
 
 end.

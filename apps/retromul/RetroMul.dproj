@@ -5,10 +5,11 @@
         <FrameworkType>FMX</FrameworkType>
         <Base>True</Base>
         <Config Condition="'$(Config)'==''">Release</Config>
-        <Platform Condition="'$(Platform)'==''">Linux64</Platform>
+        <Platform Condition="'$(Platform)'==''">Win64</Platform>
         <TargetedPlatforms>2790547</TargetedPlatforms>
         <AppType>Application</AppType>
         <MainSource>RetroMul.dpr</MainSource>
+        <ProjectName Condition="'$(ProjectName)'==''">RetroMul</ProjectName>
     </PropertyGroup>
     <ItemGroup>
         <DelphiCompile Include="$(MainSource)">
@@ -33,9 +34,14 @@
         <DCCReference Include="..\..\source\vm\java\Java.Unicode.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Writers.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Device.pas"/>
+        <DCCReference Include="..\..\source\platforms\j2me\RM.Platforms.J2ME.Gamepads.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Input.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Screen.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Display.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Nokia.OTA.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Nokia.Sound.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Nokia.UI.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Vodafone.Device.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Environment.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Builders.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Reflection.pas"/>
@@ -65,6 +71,7 @@
         <DCCReference Include="..\..\source\cores\j2me\J2ME.RMS.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.RMS.Store.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Media.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Audio.State.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Effects.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Siemens.Game.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Siemens.Graphics.pas"/>
@@ -93,12 +100,16 @@
         <DCCReference Include="..\..\source\vm\jvm\JVM.Verifier.pas"/>
         <DCCReference Include="..\..\source\vm\jvm\JVM.Threading.pas"/>
         <DCCReference Include="..\..\source\vm\jvm\JVM.Bytecode.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Screen.Code.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Bootstrap.pas"/>
         <DCCReference Include="..\..\source\vm\jvm\JVM.ClassFile.pas"/>
         <DCCReference Include="..\..\source\vm\jvm\JVM.Runtime.pas"/>
+        <DCCReference Include="..\..\source\vm\jvm\JVM.StateIO.pas"/>
         <DCCReference Include="..\..\source\vm\jvm\JVM.Types.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Runtime.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Compatibility.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Suite.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Metadata.pas"/>
         <DCCReference Include="..\..\source\platforms\j2me\Core.Platforms.J2ME.Adapter.pas"/>
         <DCCReference Include="..\..\source\platforms\j2me\RM.Platforms.J2ME.pas"/>
         <DCCReference Include="..\..\source\cores\system32\S32.Protection.pas"/>
@@ -283,6 +294,7 @@
         </DCCReference>
         <DCCReference Include="..\..\source\ui\controls\FMX.OpenDialog.pas"/>
         <DCCReference Include="..\..\source\runtime\Core.Storage.pas"/>
+        <DCCReference Include="..\..\source\runtime\Core.RomMetadata.pas"/>
         <DCCReference Include="..\..\source\runtime\Core.Platforms.pas"/>
         <DCCReference Include="..\..\source\media\archive\Core.Archive.SevenZip.pas"/>
         <DCCReference Include="..\..\dependencies\Delphi7z\Z7.Archive.pas"/>

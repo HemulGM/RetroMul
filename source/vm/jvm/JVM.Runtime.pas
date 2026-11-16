@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, JVM.Types, JVM.ClassFile,
-  JVM.Threading, JVM.Linker;
+  System.Classes, JVM.StateIO, System.SysUtils, System.Generics.Collections,
+  JVM.Types, JVM.ClassFile, JVM.Threading, JVM.Linker;
 
 {$SCOPEDENUMS ON}
 
@@ -114,7 +114,7 @@ type
     procedure Mark(Ref: Integer; Pending: TList<Integer>);
     function ResolveField(C: TJVMClass; const Name, Descriptor: string; out Owner: TJVMClass): TJVMField;
     procedure PushCall(M: TJVMMethod; const Args: TArray<TJVMValue>);
-    procedure ReturnFromCall(const Value: TJVMValue; HasValue: Boolean);
+    procedure ReturnFromCall(Value: TJVMValue; HasValue: Boolean);
     function InitializeClass(C: TJVMClass): Boolean;
     procedure DispatchException(Ref: Integer);
     procedure Step;
@@ -128,6 +128,7 @@ type
     procedure VerifyClass(C: TJVMClass);
     procedure StopExecution;
   public
+    procedure TransferState(S: TJVMStateIO);
     constructor Create(Host: TJVMHost);
     destructor Destroy; override;
     procedure DefineClass(C: TJVMClass); // Takes ownership on success.
@@ -1261,7 +1262,7 @@ begin
   end;
 end;
 
-procedure TJVM.ReturnFromCall(const Value: TJVMValue; HasValue: Boolean);
+procedure TJVM.ReturnFromCall(Value: TJVMValue; HasValue: Boolean);
 var
   Frame: TJVMFrame;
   Context: TJVMExecutionContext;
@@ -1271,6 +1272,8 @@ begin
     CheckValue(Value, Frame.Method.Signature.ReturnType)
   else if Frame.Method.Signature.ReturnType <> 'V' then
     raise EJVMFormatError.Create('Missing Java return value');
+  // Native callers pass Frame.NativeResult. Keep a value copy across deletion
+  // of its owning frame before publishing the result to the caller or context.
   ReleaseFrameMonitor(Frame);
   FFrames.Delete(FFrames.Count - 1);
   if FFrames.Count = 0 then
@@ -1691,7 +1694,7 @@ var
   OldMask: TArithmeticExceptionMask;
   OldRound: TRoundingMode;
   C: TJVMClass;
-  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}     OldCW: Word;
+  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}         OldCW: Word;
   OldMXCSR: UInt32; {$ENDIF}
   {$IF Defined(CPUARM)}
   OldFPSCR: UInt32; {$ENDIF}
@@ -1701,18 +1704,18 @@ begin
     raise EJVMError.Create('Negative instruction budget');
   OldMask := GetExceptionMask;
   OldRound := GetRoundMode;
-  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}     OldCW := Get8087CW;
+  {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}         OldCW := Get8087CW;
   OldMXCSR := GetMXCSR; {$ENDIF}
   {$IF Defined(CPUARM)}
   OldFPSCR := GetFPSCR; {$ENDIF}
   SetExceptionMask([exInvalidOp, exDenormalized, exZeroDivide, exOverflow, exUnderflow, exPrecision]);
   SetRoundMode(rmNearest);
-  {$IF Defined(MSWINDOWS) and Defined(CPUX86)}     SetPrecisionMode(pmDouble); {$ENDIF}
+  {$IF Defined(MSWINDOWS) and Defined(CPUX86)}         SetPrecisionMode(pmDouble); {$ENDIF}
   {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}
   // Java uses gradual underflow; an embedding renderer may have enabled DAZ/FTZ.
   SetMXCSR((GetMXCSR or $1F80) and not UInt32($E040));
   {$ENDIF}
-  {$IF Defined(CPUARM)}     SetFPSCR(GetFPSCR and not UInt32($01080000)); {$ENDIF}
+  {$IF Defined(CPUARM)}         SetFPSCR(GetFPSCR and not UInt32($01080000)); {$ENDIF}
   try
     try
       FNow := FHost.MonotonicMillis;
@@ -1776,7 +1779,7 @@ begin
   finally
     SetRoundMode(OldRound);
     SetExceptionMask(OldMask);
-    {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}         Set8087CW(OldCW);
+    {$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}                 Set8087CW(OldCW);
     SetMXCSR(OldMXCSR); {$ENDIF}
     {$IF Defined(CPUARM)}
     SetFPSCR(OldFPSCR); {$ENDIF}
@@ -2836,6 +2839,362 @@ end;
 procedure TJVM.YieldToHost;
 begin
   FYieldToHost := True;
+end;
+
+procedure TJVM.TransferState(S: TJVMStateIO);
+
+  procedure ValueMap(Map: TDictionary<string, TJVMValue>);
+  begin
+    var Keys := Map.Keys.ToArray;
+    var N: Integer := Length(Keys);
+    S.Count(N);
+    if S.Loading then
+      Map.Clear
+    else
+      TArray.Sort<string>(Keys);
+    for var I := 0 to N - 1 do
+    begin
+      var Key := '';
+      var V := Default(TJVMValue);
+      if not S.Loading then
+      begin
+        Key := Keys[I];
+        V := Map[Key];
+      end;
+      S.Text(Key);
+      S.Value(V);
+      if S.Loading then
+        Map.Add(Key, V);
+    end;
+  end;
+
+  procedure StringRefs(Map: TDictionary<string, Integer>);
+  begin
+    var Keys := Map.Keys.ToArray;
+    var N: Integer := Length(Keys);
+    S.Count(N);
+    if S.Loading then
+      Map.Clear
+    else
+      TArray.Sort<string>(Keys);
+    for var I := 0 to N - 1 do
+    begin
+      var Key := '';
+      var Ref := 0;
+      if not S.Loading then
+      begin
+        Key := Keys[I];
+        Ref := Map[Key];
+      end;
+      S.Text(Key);
+      S.Int(Ref);
+      if S.Loading then
+        Map.Add(Key, Ref);
+    end;
+  end;
+
+  procedure ClassRef(var C: TJVMClass);
+  begin
+    var Name := '';
+    if C <> nil then
+      Name := C.Name;
+    S.Text(Name);
+    if S.Loading then
+    begin
+      C := nil;
+      if Name <> '' then
+        C := LoadClass(Name);
+    end;
+  end;
+
+  procedure FrameState(F: TJVMFrame);
+  begin
+    var Owner := '';
+    var Name := '';
+    var Desc := '';
+    if not S.Loading and (F.Method <> nil) then
+    begin
+      Owner := F.Method.Owner.Name;
+      Name := F.Method.Name;
+      Desc := F.Method.Descriptor;
+    end;
+    S.Text(Owner);
+    S.Text(Name);
+    S.Text(Desc);
+    if S.Loading then
+    begin
+      F.Method := nil;
+      if Owner <> '' then
+      begin
+        F.Method := LoadClass(Owner).FindMethod(Name, Desc);
+        if F.Method = nil then
+          raise EReadError.Create('Snapshot JVM method is unavailable');
+        // Active frames bypass PushCall on restore, so rebuild its verifier
+        // metadata (including branch boundaries) before resuming bytecode.
+        VerifyClass(F.Method.Owner);
+      end;
+    end;
+    S.Values(F.Locals);
+    S.Values(F.Stack);
+    S.Int(F.PC);
+    S.Int(F.InstructionPC);
+    S.Int(F.SP);
+    S.Int(F.StackSlots);
+    ClassRef(F.Initializing);
+    S.Values(F.NativeArguments);
+    S.Value(F.NativeResult);
+    S.Value(F.NativeContinuation);
+    S.Value(F.NativeGuestResult);
+    S.Bool(F.NativeEntered);
+    S.Bool(F.NativeRetry);
+    S.Bool(F.NativeAwaitingGuest);
+    S.Bool(F.NativeGuestReady);
+    S.Bool(F.DeadlineSet);
+    S.Int64Value(F.NativeDeadline);
+    S.Text(F.NativeInterruptClass);
+    S.Bool(F.NativeRetryInterrupted);
+    S.Int(F.SyncMonitor);
+    S.Bool(F.SyncAcquired);
+    ClassRef(F.EntryInitialization);
+    S.Int(F.InitPhase);
+    if (F.SP < 0) or (F.SP > Length(F.Stack)) or (F.PC < 0) or ((F.Method <> nil) and (F.PC > Length(F.Method.Code))) then
+      raise EReadError.Create('Invalid snapshot JVM frame');
+  end;
+
+  procedure StringQueue(Queue: TQueue<string>);
+  begin
+    var Items := Queue.ToArray;
+    var N: Integer := Length(Items);
+    S.Count(N);
+    if S.Loading then
+    begin
+      Queue.Clear;
+      SetLength(Items, N);
+    end;
+    for var I := 0 to N - 1 do
+    begin
+      S.Text(Items[I]);
+      if S.Loading then
+        Queue.Enqueue(Items[I]);
+    end;
+  end;
+
+begin
+  S.Tag('JVM-1');
+  // Recreate class definitions from the current host/JAR, then restore only
+  // mutable fields. Method references are symbolic, independent of addresses.
+  var Classes := FClasses.Keys.ToArray;
+  var N: Integer := Length(Classes);
+  S.Count(N, 65536);
+  if S.Loading then
+    SetLength(Classes, N)
+  else
+    TArray.Sort<string>(Classes);
+  for var I := 0 to N - 1 do
+  begin
+    S.Text(Classes[I]);
+    if S.Loading then
+      LoadClass(Classes[I]);
+  end;
+  for var Name in Classes do
+  begin
+    var C := LoadClass(Name);
+    S.Int(C.InitState);
+    S.Int(C.InitOwner);
+    S.Int(C.InitFailure);
+    var Fields := C.Fields.Count;
+    S.Count(Fields, 65536);
+    if Fields <> C.Fields.Count then
+      raise EReadError.Create('Incompatible snapshot class fields');
+    for var F in C.Fields do
+    begin
+      S.Tag(F.Name);
+      S.Tag(F.Descriptor);
+      S.Value(F.Value);
+    end;
+  end;
+  var Refs := FHeap.Keys.ToArray;
+  N := Length(Refs);
+  S.Count(N);
+  if S.Loading then
+    FHeap.Clear
+  else
+    TArray.Sort<Integer>(Refs);
+  for var I := 0 to N - 1 do
+  begin
+    var Ref := 0;
+    var O: TJVMObject;
+    if S.Loading then
+      O := TJVMObject.Create('')
+    else
+    begin
+      Ref := Refs[I];
+      O := FHeap[Ref];
+    end;
+    try
+      S.Int(Ref);
+      S.Text(O.ClassName);
+      S.Text(O.Text);
+      S.Text(O.ThrowableTrace);
+      S.Bool(O.HasThrowableTrace);
+      S.Bool(O.IsArray);
+      S.Values(O.Elements);
+      ValueMap(O.Fields);
+      if S.Loading then
+      begin
+        if Ref <= 0 then
+          raise EReadError.Create('Invalid snapshot object reference');
+        FHeap.Add(Ref, O);
+        O := nil;
+      end;
+    finally
+      if S.Loading then
+        O.Free;
+    end;
+  end;
+  var Roots := FRoots.Keys.ToArray;
+  N := Length(Roots);
+  S.Count(N);
+  if S.Loading then
+    FRoots.Clear
+  else
+    TArray.Sort<Integer>(Roots);
+  for var I := 0 to N - 1 do
+  begin
+    var Ref := 0;
+    var Count := 0;
+    if not S.Loading then
+    begin
+      Ref := Roots[I];
+      Count := FRoots[Ref];
+    end;
+    S.Int(Ref);
+    S.Int(Count);
+    if S.Loading then
+      FRoots.Add(Ref, Count);
+  end;
+  StringRefs(FInterned);
+  StringRefs(FClassObjects);
+  if S.Loading then
+  begin
+    FThreadFrames.Clear;
+    FContexts.Clear;
+  end;
+  FScheduler.TransferState(S);
+  var Threads := FThreadFrames.Keys.ToArray;
+  N := Length(Threads);
+  S.Count(N, 65536);
+  if not S.Loading then
+    TArray.Sort<Integer>(Threads);
+  for var I := 0 to N - 1 do
+  begin
+    var ID := 0;
+    if not S.Loading then
+      ID := Threads[I];
+    S.Int(ID);
+    var Thread := FScheduler.ThreadByID(ID);
+    if Thread = nil then
+      raise EReadError.Create('Unknown snapshot JVM thread');
+    var Frames := FramesFor(Thread);
+    var Count := Frames.Count;
+    S.Count(Count, 65536);
+    for var J := 0 to Count - 1 do
+    begin
+      if S.Loading then
+        Frames.Add(TJVMFrame.Create);
+      FrameState(Frames[J]);
+    end;
+  end;
+  var Contexts := FContexts.Keys.ToArray;
+  N := Length(Contexts);
+  S.Count(N, 65536);
+  if not S.Loading then
+    TArray.Sort<Integer>(Contexts);
+  for var I := 0 to N - 1 do
+  begin
+    var ID := 0;
+    var C: TJVMExecutionContext;
+    if S.Loading then
+      C := TJVMExecutionContext.Create
+    else
+    begin
+      ID := Contexts[I];
+      C := FContexts[ID];
+    end;
+    try
+      S.Int(ID);
+      var ThreadID := 0;
+      if C.Thread <> nil then
+        ThreadID := C.Thread.ID;
+      S.Int(ThreadID);
+      var State: Integer := Ord(C.State);
+      S.Count(State, Ord(High(TJVMState)));
+      C.State := TJVMState(State);
+      S.Value(C.Value);
+      S.Text(C.Error);
+      S.Int(C.ExceptionRef);
+      if S.Loading then
+      begin
+        C.Thread := FScheduler.ThreadByID(ThreadID);
+        if C.Thread = nil then
+          raise EReadError.Create('Invalid snapshot JVM context');
+        FContexts.Add(ID, C);
+        C := nil;
+      end;
+    finally
+      if S.Loading then
+        C.Free;
+    end;
+  end;
+  var MainID := 0;
+  var CurrentID := 0;
+  if not S.Loading then
+  begin
+    MainID := FMainThread.ID;
+    CurrentID := FCurrent.ID;
+  end;
+  S.Int(MainID);
+  S.Int(CurrentID);
+  if S.Loading then
+  begin
+    FMainThread := FScheduler.ThreadByID(MainID);
+    FCurrent := FScheduler.ThreadByID(CurrentID);
+    if (FMainThread = nil) or (FCurrent = nil) then
+      raise EReadError.Create('Invalid snapshot active JVM thread');
+    FFrames := FramesFor(FCurrent);
+  end;
+  S.Int64Value(FNow);
+  S.Int(FNextRef);
+  S.Int(FNextGC);
+  S.Int(FMaxObjects);
+  S.Int(FMaxArrayLength);
+  S.Int(FQuantumScale);
+  S.Bool(FExitRequested);
+  S.Int(FExitStatus);
+  S.Int64Value(FHeapCapacity);
+  S.Bool(FYieldToHost);
+  var State: Integer := Ord(FState);
+  S.Count(State, Ord(High(TJVMState)));
+  FState := TJVMState(State);
+  S.Value(FResult);
+  S.Text(FError);
+  S.Bytes(FOutputData);
+  S.Bytes(FOutputChannels);
+  S.Int(FOutputHead);
+  S.Int(FOutputCount);
+  S.UInt64Value(FOutputDropped);
+  S.UInt64Value(FInstructions);
+  StringQueue(FThreadErrors);
+  StringQueue(FExceptionDiagnostics);
+  S.Bool(FTraceExceptionDiagnostics);
+  S.UInt64Value(FExceptionDiagnosticsDropped);
+  if S.Loading then
+  begin
+    FStopRequested := 0;
+    for var Ref in FHeap.Keys do
+      if Ref >= FNextRef then
+        raise EReadError.Create('Invalid snapshot heap allocation cursor');
+  end;
 end;
 
 end.

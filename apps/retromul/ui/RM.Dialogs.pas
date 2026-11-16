@@ -23,6 +23,8 @@ type
     LabelPlatform: TLabel;
     ComboBoxPlatform: TComboBox;
     ButtonClose, ButtonCancel, ButtonAccept, ButtonAlternative: TButton;
+    ButtonCopyError: TButton;
+    PathCopyErrorIcon: TPath;
   private
     FReady, FConfirmation, FLoading, FCustomActions, FArranging: Boolean;
     FBusyIndicator: TAniIndicator;
@@ -32,6 +34,7 @@ type
     procedure AcceptClick(Sender: TObject);
     procedure CancelClick(Sender: TObject);
     procedure AlternativeClick(Sender: TObject);
+    procedure CopyErrorClick(Sender: TObject);
     procedure Arrange;
   protected
     procedure Resize; override;
@@ -73,7 +76,8 @@ implementation
 
 uses
   System.Math, System.Generics.Collections, FMX.TextLayout, FMX.Graphics,
-  RM.Icons, RM.Styles, System.RegularExpressions, RM.LibraryNavigation;
+  FMX.Platform, RM.Icons, RM.Styles, System.RegularExpressions,
+  RM.LibraryNavigation;
 
 {$R *.fmx}
 
@@ -388,6 +392,7 @@ begin
   ButtonCancel.OnClick := CancelClick;
   ButtonAlternative.OnClick := AlternativeClick;
   ButtonClose.OnClick := CancelClick;
+  ButtonCopyError.OnClick := CopyErrorClick;
   AddButtonIcon(ButtonClose, IconClose, 16);
 
   FBusyIndicator := TAniIndicator.Create(Self);
@@ -424,6 +429,10 @@ begin
   LabelTitle.Text := Translate(Titles[Kind]);
   LabelBadge.Text := Symbols[Kind];
   LabelMessage.Text := Text;
+  ButtonCopyError.Visible := Kind = TRetroDialogKind.Error;
+  ButtonCopyError.Hint := Translate('Copy');
+  var Clipboard: IFMXClipboardService;
+  ButtonCopyError.Enabled := TPlatformServices.Current.SupportsPlatformService(IFMXClipboardService, Clipboard);
   ButtonClose.Hint := Translate('Close');
   ButtonCancel.Text := Translate('Cancel');
   if FConfirmation then
@@ -456,6 +465,13 @@ end;
 procedure TRetroDialog.PlatformChanged(Sender: TObject);
 begin
   ButtonAccept.Enabled := not LayoutPlatform.Visible or (ComboBoxPlatform.ItemIndex >= 0);
+end;
+
+procedure TRetroDialog.CopyErrorClick(Sender: TObject);
+begin
+  var Clipboard: IFMXClipboardService;
+  if TPlatformServices.Current.SupportsPlatformService(IFMXClipboardService, Clipboard) then
+    Clipboard.SetClipboard(LabelMessage.Text);
 end;
 
 procedure TRetroDialog.FocusDefault;
@@ -521,7 +537,9 @@ begin
   end
   else if Key = vkReturn then
   begin
-    if ButtonAlternative.Visible and ButtonAlternative.IsFocused then
+    if ButtonCopyError.Visible and ButtonCopyError.IsFocused then
+      CopyErrorClick(Self)
+    else if ButtonAlternative.Visible and ButtonAlternative.IsFocused then
       AlternativeClick(Self)
     else if FLoading or (FConfirmation and not ButtonAccept.IsFocused) or ButtonClose.IsFocused then
       CancelClick(Self)
@@ -574,7 +592,7 @@ begin
   var Controls: TArray<TControl> := nil;
   if LayoutPlatform.Visible and ComboBoxPlatform.Enabled then
     Controls := Controls + [ComboBoxPlatform];
-  for var Button in [ButtonAccept, ButtonAlternative, ButtonCancel] do
+  for var Button in [ButtonAccept, ButtonAlternative, ButtonCancel, ButtonCopyError] do
     if Button.Visible and Button.Enabled then
       Controls := Controls + [Button];
   if Length(Controls) = 0 then

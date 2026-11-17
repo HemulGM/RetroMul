@@ -27,7 +27,7 @@ type
     Pressed: Boolean;
   end;
 
-  TJ2MECoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationAudioDiagnostics, IEmulationBluetooth, IEmulationMessaging, IEmulationRumbleOutput, IEmulationSnapshotLocation, IEmulationRomMetadata, IJ2MEPhoneInput)
+  TJ2MECoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationCompletion, IEmulationGameActions, IEmulationAudioDiagnostics, IEmulationBluetooth, IEmulationMessaging, IEmulationRumbleOutput, IEmulationSnapshotLocation, IEmulationRomMetadata, IJ2MEPhoneInput)
   private
     FSnapshotCommands: TSnapshotQueue;
     FSnapshotHash: TBytes;
@@ -47,7 +47,8 @@ type
     FInput: TEmulatorInput;
     FVirtualKeypad: Word;
     FFrame: TEmulatorFrame;
-    FFrameReady, FPaused: Boolean;
+    FDisplayQuarterTurns: Integer;
+    FFrameReady, FPaused, FFinished: Boolean;
     FInputResync: Boolean;
     FError, FAudioError: string;
     FRumbleArea: Double;
@@ -56,6 +57,7 @@ type
     FAudioFactory: TJ2MEAudioFactory;
     FBluetooth: IBluetoothProvider;
     FMessaging: IMessagingProvider;
+    function DisplayFrame: TEmulatorFrame; // FLock must be held.
     function ConfiguredScreen: TJ2MEScreenSize;
     procedure PublishFrame(Runtime: TJ2MERuntime; const Pixels: TArray<UInt32>; Number: UInt64);
     procedure ProcessSnapshots(var Runtime: TJ2MERuntime; var Playback: TJ2MEAudioPlayback; var AudioFailed, WasPaused: Boolean; const Watch: TStopwatch; var LastMillis, Remainder: Int64);
@@ -91,6 +93,9 @@ type
     function TakeAudioError: string;
     function GetConfig: IEmulatorConfig;
     function IsPaused: Boolean;
+    function IsFinished: Boolean;
+    function GetGameActions: TArray<TEmulationGameAction>;
+    procedure ExecuteGameAction(const Id: string);
     procedure SetMessagingProvider(const Provider: IMessagingProvider);
     function GetMessagingProvider: IMessagingProvider;
     procedure SetBluetoothProvider(const Provider: IBluetoothProvider);
@@ -292,6 +297,7 @@ begin
   if FWorker <> nil then
     Exit;
   FPaused := False;
+  FFinished := False;
   FError := '';
   FAudioError := '';
   FFrameReady := False;
@@ -530,6 +536,41 @@ begin
   FSnapshotCommands.Execute(FWorker, Name, True);
 end;
 
+function TJ2MECoreAdapter.DisplayFrame: TEmulatorFrame;
+begin
+  Result := FFrame;
+  if Length(Result.Pixels) = 0 then
+    Exit;
+  Result.Pixels := TArray<TAlphaColor>(J2MERotateDisplay(TArray<UInt32>(FFrame.Pixels), FFrame.Width, FFrame.Height, FDisplayQuarterTurns));
+  if Odd(FDisplayQuarterTurns) then
+  begin
+    Result.Width := FFrame.Height;
+    Result.Height := FFrame.Width;
+  end;
+end;
+
+function TJ2MECoreAdapter.GetGameActions: TArray<TEmulationGameAction>;
+begin
+  SetLength(Result, 1);
+  Result[0].Id := 'rotate-screen';
+  Result[0].Caption := 'Rotate screen';
+  Result[0].Enabled := True;
+end;
+
+procedure TJ2MECoreAdapter.ExecuteGameAction(const Id: string);
+begin
+  if Id <> 'rotate-screen' then
+    raise EArgumentException.Create('Unknown Java ME game action');
+  FLock.Acquire;
+  try
+    FDisplayQuarterTurns := (FDisplayQuarterTurns + 1) mod 4;
+    // Republish the current raster even when the VM is paused or finished.
+    FFrameReady := Length(FFrame.Pixels) > 0;
+  finally
+    FLock.Release;
+  end;
+end;
+
 function TJ2MECoreAdapter.TryGetFrame(out Frame: TEmulatorFrame): Boolean;
 begin
   FLock.Acquire;
@@ -537,7 +578,7 @@ begin
     Result := FFrameReady;
     if Result then
     begin
-      Frame := FFrame;
+      Frame := DisplayFrame;
       FFrameReady := False;
     end;
   finally
@@ -576,7 +617,17 @@ function TJ2MECoreAdapter.IsPaused: Boolean;
 begin
   FLock.Acquire;
   try
-    Result := FPaused;
+    Result := FPaused or FFinished;
+  finally
+    FLock.Release;
+  end;
+end;
+
+function TJ2MECoreAdapter.IsFinished: Boolean;
+begin
+  FLock.Acquire;
+  try
+    Result := FFinished;
   finally
     FLock.Release;
   end;
@@ -678,6 +729,12 @@ begin
       while not TThread.CurrentThread.CheckTerminated do
       begin
         ProcessSnapshots(Runtime, Playback, AudioFailed, WasPaused, Watch, LastMillis, Remainder);
+        // Keep servicing save/load requests after a normal guest exit.
+        if Runtime.State = TJ2MEState.Destroyed then
+        begin
+          TThread.Sleep(10);
+          Continue;
+        end;
         FLock.Acquire;
         try
           Resync := FInputResync;
@@ -724,6 +781,23 @@ begin
         Runtime.Tick(2000);
         if TThread.CheckTerminated then
           Break;
+        if Runtime.State = TJ2MEState.Destroyed then
+        begin
+          var ExitError := Runtime.TakeLifecycleError;
+          if ExitError <> '' then
+            raise Exception.Create(ExitError);
+          FreeAndNil(Playback);
+          ClearInput;
+          FLock.Acquire;
+          try
+            FFinished := True;
+            FRumbleArea := 0;
+            FRumbleMillis := 0;
+          finally
+            FLock.Release;
+          end;
+          Continue;
+        end;
         var Rumble := Runtime.TakeVibrationSample;
         FLock.Acquire;
         try
@@ -842,8 +916,6 @@ begin
         end;
         if Runtime.State = TJ2MEState.Faulted then
           raise EJVMError.Create(Runtime.Error);
-        if Runtime.State = TJ2MEState.Destroyed then
-          Break;
         if Runtime.TakeFrame(Pixels, Frame.FrameNumber) then
           PublishFrame(Runtime, Pixels, Frame.FrameNumber);
         if not Runtime.NeedsExecution then
@@ -904,7 +976,21 @@ begin
               var Size := 0;
               if not State.Loading then
               begin
-                LocalRuntime.SaveState(Buffer);
+                if LocalRuntime.State = TJ2MEState.Destroyed then
+                begin
+                  // Rebuild before the first instruction, with current persistent
+                  // RMS data. Never serialize the dead VM or start the game here.
+                  var Screen := ConfiguredScreen;
+                  var Fresh := TJ2MERuntime.Create(FSuite, Screen.Width, Screen.Height, FBluetooth, FMessaging);
+                  try
+                    Fresh.Start(FSettings.MIDletIndex);
+                    Fresh.SaveState(Buffer);
+                  finally
+                    Fresh.Free;
+                  end;
+                end
+                else
+                  LocalRuntime.SaveState(Buffer);
                 Size := Buffer.Size;
               end;
               State.Field(Size, SizeOf(Size));
@@ -944,6 +1030,7 @@ begin
             FEvents.Clear;
             FAudioError := '';
             FError := '';
+            FFinished := LocalRuntime.State = TJ2MEState.Destroyed;
             FRumbleArea := 0;
             FRumbleMillis := 0;
             LocalWasPaused := FPaused;
@@ -967,8 +1054,9 @@ begin
           SaveCoreSnapshotHash(Path, 'J2ME', FSnapshotHash, Transfer, FStorage);
           FLock.Acquire;
           try
-            if Length(FFrame.Pixels) > 0 then
-              SaveSnapshotPreview(Path, FFrame.Width, FFrame.Height, FFrame.Width, @FFrame.Pixels[0], FStorage);
+            var Preview := DisplayFrame;
+            if Length(Preview.Pixels) > 0 then
+              SaveSnapshotPreview(Path, Preview.Width, Preview.Height, Preview.Width, @Preview.Pixels[0], FStorage);
           finally
             FLock.Release;
           end;

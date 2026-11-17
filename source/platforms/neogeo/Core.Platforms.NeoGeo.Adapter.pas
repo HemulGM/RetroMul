@@ -251,7 +251,7 @@ begin
       FThread.MemoryCardPath := FStorage.SaveRoot + PathDelim + 'neogeo-memorycard.bin';
   end;
   FThread.SnapshotDirectory := FSnapshotDirectory;
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, GetSystemId);
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, GetSystemId, GetConfig.FileName);
   ApplySettings;
   FThread.Start;
 end;

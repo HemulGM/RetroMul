@@ -429,6 +429,43 @@ object SettingsView: TSettingsView
       Size.Width = 964.000000000000000000
       Size.Height = 796.000000000000000000
       Size.PlatformDefault = False
+      object PanelGameSettings: TPanel
+        Align = Top
+        Margins.Bottom = 12.000000000000000000
+        Size.Width = 916.000000000000000000
+        Size.Height = 56.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'retromul_card'
+        Visible = False
+        object LayoutGameSettingsActions: TLayout
+          Align = Client
+          Padding.Left = 12.000000000000000000
+          Padding.Top = 8.000000000000000000
+          Padding.Right = 12.000000000000000000
+          Padding.Bottom = 8.000000000000000000
+          Size.Width = 916.000000000000000000
+          Size.Height = 56.000000000000000000
+          Size.PlatformDefault = False
+          object CheckBoxSaveForGame: TCheckBox
+            Align = Client
+            Size.Width = 892.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'Save only for %s'
+            TextSettings.WordWrap = True
+          end
+          object ButtonResetGameSettings: TButton
+            Align = Client
+            Size.Width = 892.000000000000000000
+            Size.Height = 40.000000000000000000
+            Size.PlatformDefault = False
+            StyleLookup = 'buttonstyle'
+            Text = 'Reset for %s'
+            TextSettings.WordWrap = True
+            Visible = False
+          end
+        end
+      end
       object LayoutHeader: TLayout
         Align = Top
         Position.X = 24.000000000000000000

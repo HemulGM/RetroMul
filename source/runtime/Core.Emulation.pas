@@ -17,11 +17,17 @@ type
 
   TEmulatorInput = Core.Emulation.Types.TEmulatorInput;
 
+  TEmulatorAnalogButtons = Core.Emulation.Types.TEmulatorAnalogButtons;
+
   IEmulatorConfig = Core.Emulation.Types.IEmulatorConfig;
+
+  IEmulatorConfigLocation = Core.Emulation.Types.IEmulatorConfigLocation;
 
   TEmulatorFrame = Core.Emulation.Types.TEmulatorFrame;
 
   IEmulationVideoRegions = Core.Emulation.Types.IEmulationVideoRegions;
+
+  IEmulationCompletion = Core.Emulation.Types.IEmulationCompletion;
 
   IEmulationAudioDiagnostics = Core.Emulation.Types.IEmulationAudioDiagnostics;
 
@@ -45,6 +51,10 @@ type
 
   IEmulationLiveSettings = Core.Emulation.Types.IEmulationLiveSettings;
 
+  TEmulationGameAction = Core.Emulation.Types.TEmulationGameAction;
+
+  IEmulationGameActions = Core.Emulation.Types.IEmulationGameActions;
+
   IEmulationCore = Core.Emulation.Types.IEmulationCore;
 
   TEmulatorConfigBase = Core.Emulation.Config.TEmulatorConfigBase;
@@ -52,6 +62,7 @@ type
   TEmulationFrameRate = Core.Emulation.Timing.TEmulationFrameRate;
 
 const
+  EmulatorMaxPlayers = Core.Emulation.Types.EmulatorMaxPlayers;
   DEFAULT_AUDIO_VOLUME = Core.Emulation.Config.DEFAULT_AUDIO_VOLUME;
 
 function EmulatorConfigFileName(const EmulatorId: string): string;

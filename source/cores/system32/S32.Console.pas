@@ -39,9 +39,16 @@ type
     FRandom: Cardinal;
     FRandomSeed: Word;
     FADCValue: Byte;
+    FSteeringValue: Byte;
+    FSteeringDigital: Boolean;
+    FSteeringRelative: Boolean;
+    FSteeringPhysicalValue: Byte;
+    FSteeringPhysicalValid: Boolean;
     FADCBit: Integer;
     FTrack: array[0..2, 0..1] of Word;
     FGearHigh: Boolean;
+    function UsesSteeringWheel: Boolean;
+    function AnalogAxisValue(PlayerIndex: Integer; Vertical: Boolean): Byte;
     procedure BeginFrame;
     procedure RunUntil(Target: Int64);
     procedure AdvanceCPUClock(Cycles: Integer);
@@ -209,6 +216,11 @@ begin
   FFrame := 0;
   SeedRandom($9BDF);
   FADCValue := $80;
+  FSteeringValue := $80;
+  FSteeringDigital := False;
+  FSteeringRelative := False;
+  FSteeringPhysicalValue := $80;
+  FSteeringPhysicalValid := False;
   FADCBit := 0;
   FCPU.Reset;
   FVideo.Reset;
@@ -721,30 +733,26 @@ begin
           case (Off shr 1) and 3 of
             0:
               begin
-                if FInput.Analog[0].Valid then
-                  FADCValue := EnsureRange(128 + FInput.Analog[0].X div 256, 0, 255);
-                if TEmulatorButton.Left in P then
-                  FADCValue := $20;
-                if TEmulatorButton.Right in P then
-                  FADCValue := $E0;
+                FADCValue := AnalogAxisValue(0, False);
               end;
             1:
               begin
                 FADCValue := 0;
                 if FInput.Analog[0].Valid then
                   FADCValue := FInput.Analog[0].RightTrigger;
-                if TEmulatorButton.A in P then
-                  FADCValue := $FF;
+                FADCValue := Max(FADCValue, Round(255 * FInput.ButtonAmount(0, TEmulatorButton.A)));
               end;
             2:
               begin
                 FADCValue := 0;
                 if FInput.Analog[0].Valid then
                   FADCValue := FInput.Analog[0].LeftTrigger;
-                if TEmulatorButton.B in P then
-                  FADCValue := $FF;
+                FADCValue := Max(FADCValue, Round(255 * FInput.ButtonAmount(0, TEmulatorButton.B)));
               end;
           end;
+          if UsesSteeringWheel and ((FCart.RomSet.Inputs = 'radm') or FSteeringRelative) and
+            ((Off shr 1) and 3 = 0) then
+            FADCValue := FSteeringValue;
           if (FCart.RomSet.Inputs = 'alien3') or (FCart.RomSet.Inputs = 'jpark') or (FCart.RomSet.Inputs = 'arescue') then
           begin
             var Axis := (Off shr 1) and 3;
@@ -752,27 +760,7 @@ begin
             if FCart.RomSet.Inputs = 'arescue' then
               PIndex := 0;
             var Analog := FInput.Analog[PIndex];
-            FADCValue := $80;
-            var Buttons := Pad(FInput, PIndex);
-            if Analog.Valid then
-              if Axis and 1 = 0 then
-                FADCValue := EnsureRange(128 + Analog.X div 256, 0, 255)
-              else
-                FADCValue := EnsureRange(128 + Analog.Y div 256, 0, 255);
-            if Axis and 1 = 0 then
-            begin
-              if TEmulatorButton.Left in Buttons then
-                FADCValue := $20;
-              if TEmulatorButton.Right in Buttons then
-                FADCValue := $E0;
-            end
-            else
-            begin
-              if TEmulatorButton.Up in Buttons then
-                FADCValue := $20;
-              if TEmulatorButton.Down in Buttons then
-                FADCValue := $E0;
-            end;
+            FADCValue := AnalogAxisValue(PIndex, Axis and 1 <> 0);
           end;
           if FCart.RomSet.Inputs = 'arescue' then
           begin
@@ -796,16 +784,14 @@ begin
                   FADCValue := 0;
                   if FInput.Analog[0].Valid then
                     FADCValue := FInput.Analog[0].RightTrigger;
-                  if TEmulatorButton.C in P then
-                    FADCValue := $FF;
+                  FADCValue := Max(FADCValue, Round(255 * FInput.ButtonAmount(0, TEmulatorButton.C)));
                 end;
               2:
                 begin
                   FADCValue := 0;
                   if FInput.Analog[0].Valid then
                     FADCValue := FInput.Analog[0].LeftTrigger;
-                  if TEmulatorButton.X in P then
-                    FADCValue := $FF;
+                  FADCValue := Max(FADCValue, Round(255 * FInput.ButtonAmount(0, TEmulatorButton.X)));
                 end;
             end;
           end;
@@ -845,6 +831,8 @@ begin
     SubInput.Buttons := Input.Buttons2;
     SubInput.Buttons2 := [];
     SubInput.Analog[0] := Input.Analog[1];
+    SubInput.AnalogButtons[0] := Input.AnalogButtons[1];
+    SubInput.RelativeButtons[0] := Input.RelativeButtons[1];
     FSubBoard.SetInput(SubInput);
   end;
 end;
@@ -862,8 +850,89 @@ begin
   end;
 end;
 
+function TS32Console.UsesSteeringWheel: Boolean;
+begin
+  Result := (FCart.RomSet.Inputs = 'radm') or (FCart.RomSet.Inputs = 'radr') or
+    (FCart.RomSet.Inputs = 'f1en') or (FCart.RomSet.Inputs = 'f1lap') or
+    (FCart.RomSet.Inputs = 'slipstrm');
+end;
+
+function TS32Console.AnalogAxisValue(PlayerIndex: Integer; Vertical: Boolean): Byte;
+begin
+  var Negative := TEmulatorButton.Left;
+  var Positive := TEmulatorButton.Right;
+  if Vertical then
+  begin
+    Negative := TEmulatorButton.Up;
+    Positive := TEmulatorButton.Down;
+  end;
+  var Digital := FInput.DigitalButton(PlayerIndex, Negative) or FInput.DigitalButton(PlayerIndex, Positive);
+  if FInput.Analog[PlayerIndex].Valid and not Digital then
+  begin
+    var V := FInput.Analog[PlayerIndex].X;
+    if Vertical then
+      V := FInput.Analog[PlayerIndex].Y;
+    Exit(EnsureRange(128 + V div 256, 0, 255));
+  end;
+  Result := EnsureRange(128 + Round(96 * (FInput.ButtonAmount(PlayerIndex, Positive) -
+      FInput.ButtonAmount(PlayerIndex, Negative))), 0, 255);
+end;
+
 procedure TS32Console.BeginFrame;
 begin
+  if UsesSteeringWheel then
+  begin
+    var Left := TEmulatorButton.Left in FInput.RelativeButtons[0];
+    var Right := TEmulatorButton.Right in FInput.RelativeButtons[0];
+    if Left or Right then
+    begin
+      // One persistent angle: each emulated frame turns it by two ADC units.
+      // Button release does not change the angle; opposing commands cancel.
+      FSteeringRelative := True;
+      FSteeringDigital := False;
+      FSteeringValue := EnsureRange(Integer(FSteeringValue) + 2 * (Ord(Right) - Ord(Left)),
+        Min($20, Integer(FSteeringValue)), Max($E0, Integer(FSteeringValue)));
+    end
+    else
+    begin
+      var Target := AnalogAxisValue(0, False);
+      var Metadata := FInput.AnalogButtons[0];
+      var Digital := FInput.DigitalButton(0, TEmulatorButton.Left) or
+        FInput.DigitalButton(0, TEmulatorButton.Right);
+      var Physical := FInput.Analog[0].Valid or (TEmulatorButton.Left in Metadata.Axes) or
+        (TEmulatorButton.Right in Metadata.Axes);
+      // An idle connected axis must not erase a keyboard-set angle. An actual
+      // axis change or real device button immediately selects absolute input.
+      var AbsoluteChanged := Digital or (Physical and
+        ((FSteeringPhysicalValid and (Target <> FSteeringPhysicalValue)) or
+        (not FSteeringPhysicalValid and (Target <> $80))));
+      if FSteeringRelative and not AbsoluteChanged then
+      begin
+        if FInput.SteeringAutoCenter then
+          FSteeringValue := EnsureRange(128, Max(0, Integer(FSteeringValue) - 2),
+            Min(255, Integer(FSteeringValue) + 2));
+      end
+      else
+      begin
+        FSteeringRelative := False;
+        if (FCart.RomSet.Inputs <> 'radm') or
+          (Physical and not Digital and not FSteeringDigital) then
+          FSteeringValue := Target // preserve direct absolute input for each board
+        else
+        begin
+          // Preserve the existing real-button path and ROM sample protection.
+          var Step := 31;
+          if Metadata.Valid = [] then
+            Step := 10;
+          FSteeringValue := EnsureRange(Integer(Target), Max(0, Integer(FSteeringValue) - Step),
+            Min(255, Integer(FSteeringValue) + Step));
+        end;
+        FSteeringDigital := Digital or (FSteeringDigital and (FSteeringValue <> Target));
+      end;
+      FSteeringPhysicalValue := Target;
+      FSteeringPhysicalValid := Physical;
+    end;
+  end;
   FSound.BeginFrame;
   FVideo.BeginFrame;
   if FCart.RomSet.Inputs = 'sonic' then
@@ -877,14 +946,12 @@ begin
         DX := FInput.Analog[P].X div 1100;
         DY := FInput.Analog[P].Y div 1100;
       end;
-      if TEmulatorButton.Left in B then
-        DX := -30;
-      if TEmulatorButton.Right in B then
-        DX := 30;
-      if TEmulatorButton.Up in B then
-        DY := -30;
-      if TEmulatorButton.Down in B then
-        DY := 30;
+      if not FInput.Analog[P].Valid or FInput.DigitalButton(P, TEmulatorButton.Left) or
+        FInput.DigitalButton(P, TEmulatorButton.Right) then
+        DX := Round(30 * (FInput.ButtonAmount(P, TEmulatorButton.Right) - FInput.ButtonAmount(P, TEmulatorButton.Left)));
+      if not FInput.Analog[P].Valid or FInput.DigitalButton(P, TEmulatorButton.Up) or
+        FInput.DigitalButton(P, TEmulatorButton.Down) then
+        DY := Round(30 * (FInput.ButtonAmount(P, TEmulatorButton.Down) - FInput.ButtonAmount(P, TEmulatorButton.Up)));
       FTrack[P, 0] := Word((Integer(FTrack[P, 0]) - DX) and $FFF);
       FTrack[P, 1] := Word((Integer(FTrack[P, 1]) + DY) and $FFF);
     end;
@@ -1092,7 +1159,18 @@ begin
   State.Field(FCount, SizeOf(FCount));
   State.Field(FTime, SizeOf(FTime));
   State.Field(FFrame, SizeOf(FFrame));
-  State.Field(FInput, SizeOf(FInput));
+  if State.Version = 8 then
+  begin
+    // Explicit v8 output remains useful for migration fixtures.
+    if State.Loading then
+      State.CompatibleField(FInput, SizeOf(FInput), TEmulatorInput.LegacySize, TEmulatorInput.TravelSize)
+    else
+      State.Field(FInput, TEmulatorInput.LegacySize);
+  end
+  else if (State.Version = 9) and not State.Loading then
+    State.Field(FInput, TEmulatorInput.TravelSize)
+  else
+    State.CompatibleField(FInput, SizeOf(FInput), TEmulatorInput.LegacySize, TEmulatorInput.TravelSize);
   State.Field(FCoins, SizeOf(FCoins));
   State.Field(FRandom, SizeOf(FRandom));
   State.Field(FADCValue, SizeOf(FADCValue));
@@ -1102,6 +1180,28 @@ begin
   State.Field(DIP, SizeOf(DIP));
   State.Field(CDPrinterReady, SizeOf(CDPrinterReady));
   State.Field(FGearHigh, SizeOf(FGearHigh));
+  if (State.Version = 0) or (State.Version >= 9) then
+  begin
+    State.Field(FSteeringValue, SizeOf(FSteeringValue));
+    State.Field(FSteeringDigital, SizeOf(FSteeringDigital));
+  end
+  else if State.Loading then
+  begin
+    FSteeringValue := $80; // v8 had no moving host wheel state
+    FSteeringDigital := False;
+  end;
+  if (State.Version = 0) or (State.Version >= 10) then
+  begin
+    State.Field(FSteeringRelative, SizeOf(FSteeringRelative));
+    State.Field(FSteeringPhysicalValue, SizeOf(FSteeringPhysicalValue));
+    State.Field(FSteeringPhysicalValid, SizeOf(FSteeringPhysicalValid));
+  end
+  else if State.Loading then
+  begin
+    FSteeringRelative := False;
+    FSteeringPhysicalValue := $80;
+    FSteeringPhysicalValid := False;
+  end;
   ComposeFrame;
   if (FFrame < 0) or (FTime < 0) then
     raise EReadError.Create('Invalid System 32 scheduler state');

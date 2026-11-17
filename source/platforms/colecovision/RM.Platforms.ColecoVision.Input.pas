@@ -35,7 +35,7 @@ implementation
 
 uses
   System.SysUtils, FMX.Types, Core.Platforms.ColecoVision.Adapter, RM.Gamepad,
-  RM.Input;
+  RM.Input, RM.Input.Gamepads;
 
 class function TColecoInputHandler.KeyPolicy(const Context: TInputRuntimeContext): TInputKeyPolicy;
 begin
@@ -52,10 +52,18 @@ begin
   var Mask: Cardinal := 0;
   if Context.State.Input.Gamepad <> nil then
     Mask := Context.State.Input.Gamepad.AuxiliaryButtons;
+  var Negative := Single(Ord(Mask and $1000 <> 0));
+  var Positive := Single(Ord(Mask and $2000 <> 0));
+  if Context.State.Input.Manager is TGamepadInputManager then
+  begin
+    var Manager := TGamepadInputManager(Context.State.Input.Manager);
+    Negative := Manager.DigitalAnalogAmount($21000, Negative <> 0);
+    Positive := Manager.DigitalAnalogAmount($21001, Positive <> 0);
+  end;
   if Mask and $3000 <> 0 then
   begin
     Input.Analog[0].Valid := True;
-    Input.Analog[0].X := (Ord(Mask and $2000 <> 0) - Ord(Mask and $1000 <> 0)) * 24576;
+    Input.Analog[0].X := Round((Positive - Negative) * 24576);
   end;
   var Keypad: IColecoKeypadInput;
   if Supports(Context.State.Session.Emulation, IColecoKeypadInput, Keypad) then

@@ -251,7 +251,7 @@ begin
   FThread := TGBAWorker.Create(FData, FSavePath, FStorage, FBIOS, FCoreConfig.SaveOverride, FCoreConfig.SolarLevel);
   FThread.SetMotion(FMotionX, FMotionY, FRotation);
   FThread.SnapshotDirectory := FSnapshotDirectory;
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_GBA);
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_GBA, GetConfig.FileName);
   ApplySettings;
   FThread.Start;
 end;

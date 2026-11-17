@@ -379,7 +379,7 @@ begin
   finally
     Console.Free;
   end;
-  FPorts := LoadCoreInputPorts(FStorage, 'zx');
+  FPorts := LoadCoreInputPorts(FStorage, 'zx', GetConfig.FileName);
   FSnapshotDirectory := FStorage.GameSnapshots('zx', RomName, SnapshotIdentity(FData));
 end;
 

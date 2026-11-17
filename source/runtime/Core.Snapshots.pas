@@ -16,6 +16,8 @@ type
   public
     constructor Create(Stream: TStream; Loading: Boolean; Version: Cardinal = 0);
     procedure Field(var Value; Size: Integer);
+    // Self-sized append-only records can read their earlier prefix layout.
+    procedure CompatibleField(var Value; Size, PreviousSize: Integer; IntermediateSize: Integer = -1);
     property Loading: Boolean read FLoading;
     // The core payload version; zero for direct, current-layout archives.
     property Version: Cardinal read FVersion;
@@ -146,6 +148,24 @@ begin
     if Size > 0 then
       FStream.WriteBuffer(Value, Size);
   end;
+end;
+
+procedure TStateArchive.CompatibleField(var Value; Size, PreviousSize: Integer; IntermediateSize: Integer);
+begin
+  if not FLoading then
+  begin
+    Field(Value, Size);
+    Exit;
+  end;
+  var StoredSize: Integer;
+  FStream.ReadBuffer(StoredSize, SizeOf(StoredSize));
+  if ((StoredSize <> Size) and (StoredSize <> PreviousSize) and (StoredSize <> IntermediateSize)) or
+    (StoredSize < 0) or (IntermediateSize > Size) or
+    (PreviousSize < 0) or (PreviousSize > Size) or (StoredSize > FStream.Size - FStream.Position) then
+    raise EReadError.Create('Incompatible or truncated extended snapshot field');
+  FillChar(Value, Size, 0);
+  if StoredSize > 0 then
+    FStream.ReadBuffer(Value, StoredSize);
 end;
 
 procedure TransferStream(Stream: TStream; Loading: Boolean; const Transfer: TStateTransfer; Version: Cardinal);

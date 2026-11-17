@@ -12,6 +12,7 @@ type
   private
     FSnapshotOperation: IEmulationSnapshotOperation;
     FSnapshotCore: IEmulationCore;
+    FFinishedAutosaveCore: IEmulationCore;
     FSnapshotTimer: TTimer;
     FSnapshotOwner: TComponent;
     FSnapshotLoading, FSnapshotCancelled: Boolean;
@@ -173,6 +174,7 @@ begin
   if StartSnapshot(Name, True) then
     Exit;
   FState.Session.Emulation.LoadSnapshot(Name);
+  FFinishedAutosaveCore := nil;
   FState.Session.EmulationFaulted := False;
   FView.SyncActivity;
   if not FView.UpdateFrame then
@@ -454,6 +456,26 @@ end;
 
 procedure TSnapshotsController.PollAutosave;
 begin
+  var Completion: IEmulationCompletion;
+  var Finished := Supports(FState.Session.Emulation, IEmulationCompletion, Completion) and Completion.IsFinished;
+  if not Finished then
+    FFinishedAutosaveCore := nil;
+  if Finished and (FSnapshotOperation = nil) and (FFinishedAutosaveCore <> FState.Session.Emulation) and
+    (FState.Autosave.OnExit or FState.Autosave.Periodic) and
+    not FState.Session.EmulationFaulted and not FState.Session.OpeningRom and
+    not FState.Session.PendingAutosaveChoice and not FState.Session.PreserveOpeningAutosave then
+  begin
+    // Save once at guest exit, even though the completed core is paused.
+    // Remember the attempt so a storage error does not open a dialog every tick.
+    FFinishedAutosaveCore := FState.Session.Emulation;
+    try
+      FView.SaveSnapshot(SNAPSHOT_AUTOSAVE);
+    except
+      on E: Exception do
+        ShowRetroMessage(FView, Translate('Autosave failed: ') + TranslateCoreMessage(E.Message));
+    end;
+    Exit;
+  end;
   if FSnapshotOperation <> nil then
     Exit;
   if not FState.Autosave.Periodic or (FState.Session.Emulation = nil) or FState.Session.EmulationFaulted or

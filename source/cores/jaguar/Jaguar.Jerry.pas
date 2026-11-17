@@ -456,10 +456,11 @@ begin
     begin
       var Buttons := PlayerButtons(Port);
       var Velocity := 0;
-      if TEmulatorButton.Left in Buttons then
-        Dec(Velocity, 200);
-      if TEmulatorButton.Right in Buttons then
-        Inc(Velocity, 200);
+      if not FInput.Analog[Port].Valid or
+        ((FInput.AnalogButtons[Port].Valid * [TEmulatorButton.Left, TEmulatorButton.Right]) = []) or
+        FInput.DigitalButton(Port, TEmulatorButton.Left) or FInput.DigitalButton(Port, TEmulatorButton.Right) then
+        Velocity := Round(200 * (FInput.ButtonAmount(Port, TEmulatorButton.Right) -
+          FInput.ButtonAmount(Port, TEmulatorButton.Left)));
       if FInput.Analog[Port].Valid then
         Inc(Velocity, FInput.Analog[Port].X div 128);
       Inc(FRotaryClock[Port], Cycles * Velocity);

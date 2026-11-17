@@ -40,7 +40,7 @@ type
   protected
     procedure Resize; override;
   public
-    constructor CreateHelp(AOwner: TComponent; Input: TInputManager; const SystemId: string; const Ports: TCoreInputPorts; Players: Integer; KeyboardPeripheral: Boolean; const Storage: IStorage; HasCoinAcceptor: Boolean = False);
+    constructor CreateHelp(AOwner: TComponent; Input: TInputManager; const SystemId: string; const Ports: TCoreInputPorts; Players: Integer; KeyboardPeripheral: Boolean; const Storage: IStorage; HasCoinAcceptor: Boolean = False; const ConfigFileName: string = '');
     destructor Destroy; override;
     property Player: Integer read FPlayer;
     property OnClose: TNotifyEvent read FOnClose write FOnClose;
@@ -85,7 +85,7 @@ begin
   Result.HitTest := False;
 end;
 
-constructor TControlsHelpView.CreateHelp(AOwner: TComponent; Input: TInputManager; const SystemId: string; const Ports: TCoreInputPorts; Players: Integer; KeyboardPeripheral: Boolean; const Storage: IStorage; HasCoinAcceptor: Boolean);
+constructor TControlsHelpView.CreateHelp(AOwner: TComponent; Input: TInputManager; const SystemId: string; const Ports: TCoreInputPorts; Players: Integer; KeyboardPeripheral: Boolean; const Storage: IStorage; HasCoinAcceptor: Boolean; const ConfigFileName: string);
 begin
   FInfo.AssignmentColumns := 2;
   FInfo.AssignmentRowHeight := 34;
@@ -97,7 +97,10 @@ begin
   begin
     FInput := TInputManager.Create(THelpInputBackend.Create);
     FOwnsInput := True;
-    var Ini := Storage.ReadConfig(Storage.ConfigFile(SystemId));
+    var Path := ConfigFileName;
+    if Path = '' then
+      Path := Storage.ConfigFile(SystemId);
+    var Ini := Storage.ReadConfig(Path);
     try
       LoadInputBindings(FInput, Ini, SystemId);
       FilterInputBindings(FInput, Ini, SystemId);

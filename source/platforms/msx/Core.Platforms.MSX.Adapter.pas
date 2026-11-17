@@ -172,7 +172,7 @@ begin
   var Config := TMSXConfig.Create(FStorage.ConfigFile(GetSystemId), FStorage);
   FConfig := Config;
   Config.Load;
-  FPorts := LoadCoreInputPorts(FStorage, GetSystemId);
+  FPorts := LoadCoreInputPorts(FStorage, GetSystemId, GetConfig.FileName);
   var OriginalMain, OriginalSub, OriginalDisk, OriginalMusic, OriginalKanji, OriginalKanjiBasic: TBytes;
   LoadMSXOriginalFirmware(Model, OriginalMain, OriginalSub, OriginalDisk, OriginalMusic, OriginalKanji, OriginalKanjiBasic);
   var FMPACPrimary := (Length(Data) = $10000) and

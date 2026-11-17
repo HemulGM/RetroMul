@@ -588,7 +588,7 @@ begin
   FOptions := TS32Config.Create(S.ConfigFile(GetSystemId), S);
   FConfig := FOptions;
   FConfig.Load;
-  FPorts := LoadCoreInputPorts(S, GetSystemId);
+  FPorts := LoadCoreInputPorts(S, GetSystemId, GetConfig.FileName);
   if FCart.RomSet.Name.StartsWith('kokoro') then
   begin
     var Location := FOptions.DiscImage;
@@ -775,6 +775,7 @@ begin
   if FPorts.KeyboardEnabled then
   begin
     Result.Buttons := Result.Buttons + FKeyboard.Buttons;
+    Result.RelativeButtons[0] := Result.RelativeButtons[0] + FKeyboard.Buttons;
     Result.Buttons2 := Result.Buttons2 + FKeyboard.Buttons2;
     Result.Buttons3 := Result.Buttons3 + FKeyboard.Buttons3;
     Result.Buttons4 := Result.Buttons4 + FKeyboard.Buttons4;
@@ -796,21 +797,37 @@ begin
   begin
     Result.Buttons := [];
     Result.Analog[0].Valid := False;
+    Result.AnalogButtons[0] := Default(TEmulatorAnalogButtons);
+    Result.RelativeButtons[0] := [];
   end;
   if FPorts.Devices[1] = 'none' then
   begin
     Result.Buttons2 := [];
     Result.Analog[1].Valid := False;
+    Result.AnalogButtons[1] := Default(TEmulatorAnalogButtons);
+    Result.RelativeButtons[1] := [];
   end;
   if FPorts.Devices[2] = 'none' then
   begin
     Result.Buttons3 := [];
     Result.Analog[2].Valid := False;
+    Result.AnalogButtons[2] := Default(TEmulatorAnalogButtons);
+    Result.RelativeButtons[2] := [];
   end;
   if FPorts.Devices[3] = 'none' then
   begin
     Result.Buttons4 := [];
     Result.Analog[3].Valid := False;
+    Result.AnalogButtons[3] := Default(TEmulatorAnalogButtons);
+    Result.RelativeButtons[3] := [];
+  end;
+  if FCart.RomSet.Inputs = 'radm' then
+  begin
+    // Rad Mobile has a wheel and two pedals, not an up/down joystick.
+    // Resolve directional aliases after merging/filtering input so releases,
+    // custom keys, virtual controls and disabled ports keep their semantics.
+    Result.AliasButton(TEmulatorButton.Up, TEmulatorButton.A);
+    Result.AliasButton(TEmulatorButton.Down, TEmulatorButton.B);
   end;
 end;
 

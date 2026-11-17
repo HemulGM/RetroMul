@@ -103,7 +103,7 @@ begin
         FPosition[Index] := (Axis + 32768.0) / 65535.0
       else
       begin
-        var Direction := Ord(Increase[Knob] in Buttons) - Ord(Decrease[Knob] in Buttons);
+        var Direction := FInput.ButtonAmount(Port,Increase[Knob]) - FInput.ButtonAmount(Port,Decrease[Knob]);
         FPosition[Index] := EnsureRange(FPosition[Index] + Direction * Seconds * FSpeed[Port] / 100, 0.0, 1.0);
       end;
       FPreviousAxis[Index] := Axis;

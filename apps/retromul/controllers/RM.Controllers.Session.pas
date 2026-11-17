@@ -1158,6 +1158,13 @@ end;
 procedure TSessionController.UpdatePauseOverlay;
 begin
   var Paused := (FState.Session.Emulation <> nil) and (FState.Session.UserPaused or FState.Session.AutoPaused or FState.Session.Emulation.IsPaused);
+  var Completion: IEmulationCompletion;
+  var Finished := Supports(FState.Session.Emulation, IEmulationCompletion, Completion) and Completion.IsFinished;
+  if Finished then
+    FView.LabelPaused.Text := Translate('Emulation finished')
+  else
+    FView.LabelPaused.Text := Translate('Paused');
+  Paused := Paused or Finished;
   FView.ImageCanvas.Opacity := IfThen(Paused, 0.5, 1);
   FView.LabelPaused.Visible := Paused and not FState.Browser.ViewingLibrary and (FState.Help.View = nil) and (FState.Settings.View = nil);
   if FView.LabelPaused.Visible then

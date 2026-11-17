@@ -1442,7 +1442,7 @@ begin
     Exit;
   FWorker := TDCWorker.Create(FMachine, FProgram, FIdentity, FDisc, FStorage, FVMUFiles, FFlashSave,
     FSnapshotDirectory, FConfigObject.Rumble);
-  FPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_DC);
+  FPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_DC, GetConfig.FileName);
   FWorker.InputPorts := FPorts;
   Configure;
   PushPeripherals;

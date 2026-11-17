@@ -13,6 +13,7 @@ type
     FMenuParent: TMenuItem;
     FMenuPointerDown, FMenuDragged: Boolean;
     FMenuPointerY, FMenuScrollY: Single;
+    procedure CoreGameActionClick(Sender: TObject);
     procedure DiscMenuClick(Sender: TObject);
     procedure OpenDiscClick(Sender: TObject);
     procedure MobileMenuDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
@@ -308,13 +309,25 @@ begin
     PauseText := 'Resume';
   Add(Menu, PauseText, FView.PauseClick, Ready);
   {$ENDIF}
-  if (FState.Session.Emulation <> nil) and FState.Session.Emulation.HasCoinAcceptor then
-    Add(Menu, 'Insert coin', FView.InsertCoinClick, Ready and not FState.Browser.ViewingLibrary
-      and (FState.Settings.View = nil) and (FState.Help.View = nil));
+  var Actions: IEmulationGameActions;
+  var Commands: TArray<TEmulationGameAction>;
+  if Ready and Supports(FState.Session.Emulation, IEmulationGameActions, Actions) then
+    Commands := Actions.GetGameActions;
+  var Game := Add(Menu, 'Game', nil, Ready);
+  Game.Name := 'MenuItemGame';
+  for var Command in Commands do
+  begin
+    var Item := Add(Game, Command.Caption, CoreGameActionClick, Command.Enabled);
+    Item.Name := 'MenuItemCoreAction' + IntToStr(Game.ItemsCount);
+    Item.TagString := Command.Id;
+  end;
+  if Ready and FState.Session.Emulation.HasCoinAcceptor then
+    Add(Game, 'Insert coin', FView.InsertCoinClick, Ready and not FState.Browser.ViewingLibrary
+      and (FState.Settings.View = nil) and (FState.Help.View = nil)).Name := 'MenuItemInsertCoin';
   var Discs: IEmulationDiscControl;
   if Ready and Supports(FState.Session.Emulation, IEmulationDiscControl, Discs) and (Discs.GetDiscCount > 0) then
   begin
-    var DiscMenu := Add(Menu, 'Change disc', nil);
+    var DiscMenu := Add(Game, 'Change disc', nil);
     DiscMenu.Name := 'MenuItemChangeDisc';
     for var I := 0 to Discs.GetDiscCount - 1 do
     begin
@@ -330,6 +343,7 @@ begin
     Eject.Name := 'MenuItemEjectDisc';
     Eject.Tag := -1;
   end;
+  Game.Enabled := Ready and (Game.ItemsCount > 0);
   var Save := Add(Menu, 'Save', nil, Snapshots);
   Add(Save, 'Quick save · F5', FView.SaveStateClick);
   AddOptions(Save, FState.Browser.SaveMenu);
@@ -348,6 +362,29 @@ begin
   {$IFDEF ISMOBILE}
   Add(Menu, 'Controls and shortcuts', FView.ControlsHelpClick, Ready and not FState.Help.Closing);
   {$ENDIF}
+end;
+
+procedure TBrowserController.CoreGameActionClick(Sender: TObject);
+begin
+  var Actions: IEmulationGameActions;
+  if FState.Session.OpeningRom or FState.Session.EmulationFaulted or
+    not Supports(FState.Session.Emulation, IEmulationGameActions, Actions) then
+    Exit;
+  var Id := TMenuItem(Sender).TagString;
+  for var Command in Actions.GetGameActions do
+    if (Command.Id = Id) and Command.Enabled then
+    begin
+      try
+        FState.Session.Emulation.ClearInput;
+        Actions.ExecuteGameAction(Id);
+        FView.UpdateFrame;
+        FView.SyncActivity;
+      except
+        on E: Exception do
+          ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
+      end;
+      Exit;
+    end;
 end;
 
 procedure TBrowserController.DiscMenuClick(Sender: TObject);

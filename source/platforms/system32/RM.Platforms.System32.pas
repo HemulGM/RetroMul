@@ -109,7 +109,9 @@ begin
   var Registration := TEmulationCoreRegistration.Create('System32', []);
   Registration.Add(TCoreLoadStage.Container, 20, Recognize);
   RegisterEmulationCore(Registration);
-  RegisterSnapshotPolicy('system32', TSnapshotPolicy.Create(8));
+  var Policy := TSnapshotPolicy.Create(10);
+  Policy.AcceptedVersions := [8, 9];
+  RegisterSnapshotPolicy('system32', Policy);
   RegisterSettingsPlatform('system32', TSystem32Settings);
   RegisterPlatformSettingsDevices('system32', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('system32', TPlatformDeviceCallouts);

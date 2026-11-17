@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, System.Generics.Collections, FMXInput;
+  System.SysUtils, System.Generics.Collections, System.IniFiles, FMXInput;
 
 {$SCOPEDENUMS ON}
 // Enum ordinals are persisted by the existing binding JSON. Append new controls;
@@ -35,11 +35,26 @@ type
     procedure StopRumble(const DeviceId: string = ''); override;
   end;
 
+  TAnalogButtonRamp = record
+    Started: UInt64;
+    Down: Boolean;
+  end;
+
   TGamepadInputManager = class(TInputManager)
   private
     FGamepads: TGamepadBackend;
+    FRamps: TDictionary<Integer, TAnalogButtonRamp>;
+    FRampDuration: Integer;
+  protected
+    function AnalogTick: UInt64; virtual;
   public
+    AnalogRampMilliseconds: Integer;
+    SteeringAutoCenter: Boolean;
     constructor Create(Native: TInputBackend);
+    destructor Destroy; override;
+    procedure ResetAnalogRamps;
+    procedure LoadAnalogSettings(Ini: TCustomIniFile);
+    function DigitalAnalogAmount(Action: Integer; Down: Boolean): Single;
     function ResolveSource(const Id: string): string;
   end;
 
@@ -74,7 +89,7 @@ procedure AddStandardDirection(Input: TInputManager; Port, Action: Integer; Dire
 implementation
 
 uses
-  System.Math;
+  System.Math, System.Classes;
 
 procedure AddStandardButton(Input: TInputManager; Port, Action: Integer; Button: TGamepadButton);
 begin
@@ -618,6 +633,64 @@ constructor TGamepadInputManager.Create(Native: TInputBackend);
 begin
   FGamepads := TGamepadBackend.Create(Native);
   inherited Create(FGamepads);
+  FRamps := TDictionary<Integer, TAnalogButtonRamp>.Create;
+  LoadAnalogSettings(nil);
+end;
+
+destructor TGamepadInputManager.Destroy;
+begin
+  FRamps.Free;
+  inherited;
+end;
+
+function TGamepadInputManager.AnalogTick: UInt64;
+begin
+  Result := TThread.GetTickCount64;
+end;
+
+procedure TGamepadInputManager.LoadAnalogSettings(Ini: TCustomIniFile);
+begin
+  AnalogRampMilliseconds := 160;
+  SteeringAutoCenter := False;
+  if Ini <> nil then
+  begin
+    AnalogRampMilliseconds := EnsureRange(Ini.ReadInteger('AnalogControls', 'ButtonRampMs', 160), 0, 5000);
+    SteeringAutoCenter := Ini.ReadBool('AnalogControls', 'SteeringAutoCenter', False);
+  end;
+  ResetAnalogRamps;
+end;
+
+procedure TGamepadInputManager.ResetAnalogRamps;
+begin
+  FRamps.Clear;
+end;
+
+function TGamepadInputManager.DigitalAnalogAmount(Action: Integer; Down: Boolean): Single;
+begin
+  var Duration := EnsureRange(AnalogRampMilliseconds, 0, 5000);
+  if (FRampDuration <> Duration) or not Enabled or Capturing then
+  begin
+    FRamps.Clear;
+    FRampDuration := Duration;
+  end;
+  if not Enabled or Capturing then
+    Down := False;
+  if not Down then
+  begin
+    FRamps.Remove(Action);
+    Exit(0);
+  end;
+  if Duration = 0 then
+    Exit(1);
+  var Tick := AnalogTick;
+  var Ramp: TAnalogButtonRamp;
+  if not FRamps.TryGetValue(Action, Ramp) then
+  begin
+    Ramp.Started := Tick;
+    Ramp.Down := True;
+    FRamps.Add(Action, Ramp);
+  end;
+  Result := Min(1.0, (Tick - Ramp.Started) / Duration);
 end;
 
 function TGamepadInputManager.ResolveSource(const Id: string): string;

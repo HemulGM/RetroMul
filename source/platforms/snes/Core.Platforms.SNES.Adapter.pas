@@ -224,8 +224,8 @@ begin
 
   FThread := TSnesWorker.Create(FData, FSavePath, FStorage, FFirmware);
   FThread.SnapshotDirectory := FSnapshotDirectory;
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_SNES);
-  var Ini := FStorage.ReadConfig(FStorage.ConfigFile(ROM_SYSTEM_SNES));
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_SNES, GetConfig.FileName);
+  var Ini := FStorage.ReadConfig(GetConfig.FileName);
   try
     FCropOverscan := Ini.ReadBool('Video', 'CropOverscan', False);
   finally

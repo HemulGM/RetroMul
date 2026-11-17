@@ -906,7 +906,7 @@ begin
   State.Field(FHistory, SizeOf(FHistory));
   State.Field(FMapper, SizeOf(FMapper));
   State.Field(FPPI, SizeOf(FPPI));
-  State.Field(FInput, SizeOf(FInput));
+  State.CompatibleField(FInput, SizeOf(FInput), TEmulatorInput.LegacySize, TEmulatorInput.TravelSize);
   State.Field(FCoins, SizeOf(FCoins));
   State.Field(FTime, SizeOf(FTime));
   State.Field(FFrameNumber, SizeOf(FFrameNumber));

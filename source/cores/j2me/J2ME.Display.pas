@@ -19,10 +19,34 @@ function J2MEDisplayPlan(Suite: TJ2MESuite; const Screen: TJ2MEScreenDecision; c
 
 function J2MEFitDisplay(const Pixels: TArray<UInt32>; const Canvas, Display: TJ2MEScreenSize): TArray<UInt32>;
 
+// Clockwise presentation rotation. VM geometry and guest coordinates stay intact.
+function J2MERotateDisplay(const Pixels: TArray<UInt32>; Width, Height, QuarterTurns: Integer): TArray<UInt32>;
+
 implementation
 
 uses
   System.SysUtils, System.Math;
+
+function J2MERotateDisplay(const Pixels: TArray<UInt32>; Width, Height, QuarterTurns: Integer): TArray<UInt32>;
+begin
+  TJ2MEScreenSize.Create(Width, Height);
+  if Length(Pixels) <> Width * Height then
+    raise EArgumentException.Create('Java ME display raster size');
+  QuarterTurns := ((QuarterTurns mod 4) + 4) mod 4;
+  if QuarterTurns = 0 then
+    Exit(Pixels);
+  SetLength(Result, Length(Pixels));
+  for var Y := 0 to Height - 1 do
+    for var X := 0 to Width - 1 do
+      case QuarterTurns of
+        1:
+          Result[X * Height + Height - 1 - Y] := Pixels[Y * Width + X];
+        2:
+          Result[(Height - 1 - Y) * Width + Width - 1 - X] := Pixels[Y * Width + X];
+        3:
+          Result[(Width - 1 - X) * Height + Y] := Pixels[Y * Width + X];
+      end;
+end;
 
 function DisplayAttribute(const Text: string; out Size: TJ2MEScreenSize): Boolean;
 begin

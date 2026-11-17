@@ -1095,7 +1095,7 @@ begin
 
   FWorker := TPS1Worker.Create(FBIOS, FExe, FIdentity, FPAL, FDisc, FStorage, FCardFiles[0], FCardFiles[1],
     FSnapshotDirectory);
-  FPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_PS1);
+  FPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_PS1, GetConfig.FileName);
   FWorker.InputPorts := FPorts;
   Configure;
   FWorker.Start;

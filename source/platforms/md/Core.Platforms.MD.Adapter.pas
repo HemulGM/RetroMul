@@ -255,7 +255,7 @@ begin
     FMicrophone.Clear;
   FThread := TMDWorker.Create(FData, FSavePath, FStorage, FDiscLocation);
   FThread.SnapshotDirectory := FSnapshotDirectory;
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_MD);
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_MD, GetConfig.FileName);
   ApplySettings;
   FThread.Start;
 end;

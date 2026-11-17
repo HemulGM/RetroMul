@@ -100,6 +100,10 @@ type
     LayoutSettingsMainColumn, LayoutSettingsPreviewColumn: TLayout;
     VertScrollBoxScroll: TVertScrollBox;
     LabelTitle, LabelStatus: TLabel;
+    PanelGameSettings: TPanel;
+    LayoutGameSettingsActions: TLayout;
+    CheckBoxSaveForGame: TCheckBox;
+    ButtonResetGameSettings: TButton;
     PanelConfigurationNotice: TPanel;
     VertScrollBoxConfigurationNotice: TVertScrollBox;
     LabelConfigurationNotice: TLabel;
@@ -114,6 +118,7 @@ type
     PathBrandIcon: TPath;
   private
     FStorage: IStorage;
+    FGameName: string;
     FPicker: TSettingsLocationPicker;
     FTemplatePicker: TSettingsTemplatePicker;
     FPickingFilter, FPickingTitle: string;
@@ -169,6 +174,8 @@ type
     FPendingButtonSet: Boolean;
     FPendingDeadline: UInt64;
     FOnApply, FOnClose: TNotifyEvent;
+    procedure UpdateGameSettingsPanel;
+    procedure ResetGameSettingsClick(Sender: TObject);
     procedure StoreCapturedBinding(const Binding: TInputBinding);
     procedure InitializeRuntimeControls;
     procedure UpdateContentScale;
@@ -252,7 +259,7 @@ type
     procedure PickLocation(Folder: Boolean; const Current: string; const Callback: TStorageSelectionCallback); virtual;
     procedure PickTemplateLocation(const Callback: TStorageSelectionCallback); virtual;
   public
-    constructor CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager);
+    constructor CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName: string = ''; const GameRomName: string = ''; const GameSettingsId: string = '');
     destructor Destroy; override;
     procedure SelectCategory(Index: Integer);
     procedure SelectCore(const PageId: string; PreserveCategory: Boolean = False);
@@ -659,7 +666,7 @@ begin
   end;
 end;
 
-constructor TSettingsView.CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager);
+constructor TSettingsView.CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName, GameRomName, GameSettingsId: string);
 begin
   FBuilding := True;
   inherited Create(AOwner);
@@ -675,6 +682,7 @@ begin
       FCorePage := 'main';
   end;
   FStorage := Storage;
+  FGameName := GameName;
   FHostInput := Input;
   if Input <> nil then
     FInput := TInputManager.Create(TSettingsInputBackend.Create(Input));
@@ -696,7 +704,7 @@ begin
     begin
       Alive := False;
     end;
-  FSession := TSettingsSession.Create(FStorage);
+  FSession := TSettingsSession.Create(FStorage, GameRomName, GameSettingsId);
   FSession.Open('main', 'config');
   for var SettingsPlatform in SettingsPlatforms.Items do
     FSession.Open(SettingsPlatform.PageId, SettingsPlatform.CoreId);
@@ -754,6 +762,8 @@ begin
   ButtonApply.OnClick := ApplyClick;
   ButtonBack.OnClick := BackClick;
   ButtonReset.OnClick := ResetClick;
+  ButtonResetGameSettings.OnClick := ResetGameSettingsClick;
+  UpdateGameSettingsPanel;
   ButtonRefresh.OnClick := RefreshDevicesClick;
   ButtonRefresh.Enabled := FInput <> nil;
   ButtonCancelCapture.OnClick := CancelCaptureClick;
@@ -1219,6 +1229,13 @@ begin
         FContext.AddSelection('RowPlayer', 'Player', 'Bindings are saved separately for each player.',
           Players, FPlayer, PlayerChange);
         BuildPort(FPlayer, Translate('Bindings · player ') + IntToStr(FPlayer + 1));
+        Heading('GroupAnalogControls', 'Analog controls');
+        Number('RowAnalogButtonRamp', 'Analog button ramp (ms)',
+          'Time for keyboard and on-screen buttons to reach full analog travel. 0 is immediate. Physical device buttons and axes are unaffected.',
+          'AnalogControls', 'ButtonRampMs', 160, 5000);
+        Check('RowSteeringAutoCenter', 'Steering auto-center',
+          'Return the wheel to center after releasing keyboard or on-screen steering buttons. Physical device bindings are unaffected.',
+          'AnalogControls', 'SteeringAutoCenter', False);
       end
       else if PlatformSettingsDevices(CurrentCoreId).HasPortSettings then
       begin
@@ -3084,7 +3101,8 @@ begin
     end;
 
     // Config writes are per core and retain all settings that this UI does not expose.
-    FSession.Save;
+    FSession.Save(CheckBoxSaveForGame.IsChecked);
+    UpdateGameSettingsPanel;
     if Assigned(FOnApply) then
       FOnApply(Self);
     LabelStatus.Text := Translate('Saved. Runtime settings applied. Hardware and boot options apply when you next open a ROM.');
@@ -3093,6 +3111,33 @@ begin
       LabelStatus.Text := Translate('Unable to save settings: ') + E.Message;
   end;
   UpdateConfigurationNotice;
+end;
+
+procedure TSettingsView.UpdateGameSettingsPanel;
+begin
+  PanelGameSettings.Visible := FGameName <> '';
+  CheckBoxSaveForGame.Text := Format(Translate('Save only for %s'), [FGameName]);
+  ButtonResetGameSettings.Text := Format(Translate('Reset for %s'), [FGameName]);
+  var Specific := FSession.HasGameSettings;
+  CheckBoxSaveForGame.Visible := PanelGameSettings.Visible and not Specific;
+  ButtonResetGameSettings.Visible := PanelGameSettings.Visible and Specific;
+end;
+
+procedure TSettingsView.ResetGameSettingsClick(Sender: TObject);
+begin
+  try
+    CancelCapture;
+    FSession.ResetGameSettings;
+    CheckBoxSaveForGame.IsChecked := False;
+    UpdateGameSettingsPanel;
+    BuildPage(True);
+    if Assigned(FOnApply) then
+      FOnApply(Self);
+    LabelStatus.Text := Translate('Game settings reset. Shared platform settings restored.');
+  except
+    on E: Exception do
+      LabelStatus.Text := Translate('Unable to save settings: ') + E.Message;
+  end;
 end;
 
 procedure TSettingsView.ApplyLanguage(const PreviousLanguage: string);
@@ -3104,6 +3149,7 @@ begin
     FBuilding := False;
   end;
   RefreshPlatformList;
+  UpdateGameSettingsPanel;
   BuildPage(True);
 end;
 

@@ -47,16 +47,16 @@ implementation
 
 uses
   System.SysUtils, System.Types, System.IOUtils, System.Math, FMX.Types,
-  FMX.Forms, FMX.Objects, FMX.Dialogs, FMX.Platform, FMX.VirtualKeyboard, FMX.Edit, FMX.OpenDialog,
-  FMXInput, RM.Input, RM.Rumble, Core.InputConfig, RM.Gamepad, RM.Dialogs,
-  RM.Styles
+  FMX.Forms, FMX.Objects, FMX.Dialogs, FMX.Platform, FMX.VirtualKeyboard,
+  FMX.Edit, FMX.OpenDialog, FMXInput, RM.Input, RM.Input.Gamepads, RM.Rumble,
+  Core.InputConfig, RM.Gamepad, RM.Dialogs, RM.Styles
   {$IF not Defined(LINUX)}
     , System.Sensors.Components
   {$ENDIF}
   {$IFDEF ANDROID}
-    , Androidapi.Helpers, Androidapi.JNI.App, Androidapi.JNI.GraphicsContentViewText,
-    Androidapi.JNI.Embarcadero, Androidapi.Input,
-    RM.DocumentTransfer.Android
+    , Androidapi.Helpers, Androidapi.JNI.App,
+    Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.Embarcadero,
+    Androidapi.Input, RM.DocumentTransfer.Android
   {$ENDIF};
 
 function IsPhysicalLibraryKeyboard(Key: Word): Boolean;
@@ -64,10 +64,12 @@ begin
   {$IFDEF ANDROID}
   Result := False;
   var Event := TJFMXNativeActivity.Wrap(TAndroidHelper.Activity).getLastEvent;
-  if Event = nil then Exit;
+  if Event = nil then
+    Exit;
   var Device := Event.getDevice;
   if (Device = nil) or Device.isVirtual or
-    (Device.getKeyboardType <> TJInputDevice.JavaClass.KEYBOARD_TYPE_ALPHABETIC) then Exit;
+    (Device.getKeyboardType <> TJInputDevice.JavaClass.KEYBOARD_TYPE_ALPHABETIC) then
+    Exit;
   var Source := Event.getSource;
   Result := ((Source and AINPUT_SOURCE_GAMEPAD) <> AINPUT_SOURCE_GAMEPAD) and
     ((Source and AINPUT_SOURCE_JOYSTICK) <> AINPUT_SOURCE_JOYSTICK);
@@ -384,6 +386,8 @@ begin
   begin
     FState.Input.Manager.CancelCapture;
     FState.Input.Manager.ClearBindings;
+    if FState.Input.Manager is TGamepadInputManager then
+      TGamepadInputManager(FState.Input.Manager).LoadAnalogSettings(nil);
   end;
 end;
 
@@ -408,11 +412,21 @@ begin
   end;
   // Assignments belong to the active game, independently of the settings page.
   // Connection changes are applied separately on the owning emulation thread.
-  var Ini := FState.Session.Storage.ReadConfig(FState.Session.Storage.ConfigFile(FState.Input.SystemId));
+  var ConfigPath := FState.Session.Storage.ConfigFile(FState.Input.SystemId);
+  if FState.Session.Emulation <> nil then
+    ConfigPath := FState.Session.Emulation.Config.FileName;
+  var Ini := FState.Session.Storage.ReadConfig(ConfigPath);
   try
     FState.Input.PrimarySourceId := Ini.ReadString('Ports', 'Source1', '');
     if FState.Input.Manager = nil then
       Exit;
+    var Legacy := FState.Session.Storage.ReadConfig(FState.Session.Storage.ConfigFile('config'));
+    try
+      if MigrateAnalogControlSettings(Ini, Legacy) then
+        FState.Session.Storage.WriteConfig(Ini);
+    finally
+      Legacy.Free;
+    end;
     LoadInputBindings(FState.Input.Manager, Ini, FState.Input.SystemId);
     FilterInputBindings(FState.Input.Manager, Ini, FState.Input.SystemId);
     FState.Input.PollingFailed := False;
@@ -613,7 +627,8 @@ begin
     KeyChar := #0;
     Exit;
   end;
-  if FState.Settings.View <> nil then Exit;
+  if FState.Settings.View <> nil then
+    Exit;
   if FState.Browser.ViewingLibrary then
   begin
     if (FState.Browser.View <> nil) and
@@ -841,6 +856,7 @@ end;
 function TInputController.CombinedGamepadInput: TEmulatorInput;
 begin
   Result := FState.Input.GamepadInput;
+  var VirtualPad := Result;
   if FState.Input.Manager <> nil then
   begin
     var Host := ReadPadInput(FState.Input.Manager, FState.Input.Ports);
@@ -858,6 +874,10 @@ begin
     Result.Buttons12 := Host.Buttons12;
     var VirtualAnalog := Result.Analog[0];
     Result.Analog := Host.Analog;
+    Result.AnalogButtons := Host.AnalogButtons;
+    Result.RelativeButtons := Host.RelativeButtons;
+    Result.SteeringAutoCenter := Host.SteeringAutoCenter;
+    MergeVirtualAnalogButtons(FState.Input.Manager, VirtualPad, Result);
     if VirtualAnalog.Valid then
       Result.Analog[0] := VirtualAnalog;
   end;
@@ -866,6 +886,8 @@ begin
   begin
     Result.Buttons := [];
     Result.Analog[0].Valid := False;
+    Result.AnalogButtons[0] := Default(TEmulatorAnalogButtons);
+    Result.RelativeButtons[0] := [];
   end;
 
   PlatformInputHandler(FState.Input.SystemId).CombineInput(RuntimeContext, Result);

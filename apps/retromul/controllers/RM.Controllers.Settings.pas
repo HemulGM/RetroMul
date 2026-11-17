@@ -28,7 +28,7 @@ implementation
 uses
   System.SysUtils, System.Classes, System.Math, System.UITypes, FMX.Types,
   RM.Gamepad, RM.Settings, RM.ControlsHelp, RM.Styles, RM.Dialogs,
-  RM.Gamepad.Base, RM.Main.State;
+  RM.Gamepad.Base, RM.Main.State, Core.Emulation, Core.Storage;
 
 function TSettingsController.RuntimeContext: TSettingsRuntimeContext;
 begin
@@ -139,7 +139,18 @@ begin
   if FState.Session.Emulation <> nil then
     FState.Session.Emulation.Pause;
   FState.Settings.ClientVisible := FView.LayoutClient.Visible;
-  FState.Settings.View := TSettingsView.CreateSettings(FView, FState.Session.Storage, FState.Input.Manager);
+  var GameName, GameLocation, GameSettingsId: string;
+  var Completion: IEmulationCompletion;
+  var Finished := Supports(FState.Session.Emulation, IEmulationCompletion, Completion) and Completion.IsFinished;
+  if (FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted and
+    not FState.Browser.ViewingLibrary and not Finished then
+  begin
+    GameName := FState.Session.RomDisplayName;
+    GameLocation := FState.Session.RomLocation;
+    GameSettingsId := FState.Session.Emulation.SystemId;
+  end;
+  FState.Settings.View := TSettingsView.CreateSettings(FView, FState.Session.Storage, FState.Input.Manager,
+    GameName, GameLocation, GameSettingsId);
   if (FState.Browser.View <> nil) and
     (Sender = FState.Browser.View.FindComponent('ButtonConfigureLibrary')) then
     FState.Settings.View.SelectCategory(SETTINGS_CATEGORY_LIBRARY)
@@ -164,6 +175,14 @@ begin
   if FState.Session.Emulation <> nil then
   begin
     var Config := FState.Session.Emulation.Config;
+    var Location: IEmulatorConfigLocation;
+    if Supports(Config, IEmulatorConfigLocation, Location) then
+    begin
+      var Path := GameConfigFile(FState.Session.Storage, FState.Session.Emulation.SystemId, FState.Session.RomLocation);
+      if not FState.Session.Storage.Exists(Path) then
+        Path := FState.Session.Storage.ConfigFile(FState.Session.Emulation.SystemId);
+      Location.SetConfigFileName(Path);
+    end;
     var Ini := FState.Session.Storage.ReadConfig(Config.FileName);
     try
       PlatformSettingsHandler(FState.Input.SystemId).Apply(RuntimeContext, Ini);
@@ -262,7 +281,7 @@ begin
   FState.Session.Emulation.Pause;
   var HelpInfo := PlatformSettingsHandler(FState.Input.SystemId).HelpInfo(RuntimeContext);
   try
-    FState.Help.View := TControlsHelpView.CreateHelp(FView, FState.Input.Manager, FState.Input.SystemId, FState.Input.Ports, HelpInfo.Players, HelpInfo.KeyboardPeripheral, FState.Session.Storage, FState.Session.Emulation.HasCoinAcceptor);
+    FState.Help.View := TControlsHelpView.CreateHelp(FView, FState.Input.Manager, FState.Input.SystemId, FState.Input.Ports, HelpInfo.Players, HelpInfo.KeyboardPeripheral, FState.Session.Storage, FState.Session.Emulation.HasCoinAcceptor, FState.Session.Emulation.Config.FileName);
     FState.Help.View.Parent := FView;
     FState.Help.View.Align := TAlignLayout.Contents;
     FState.Help.View.OnClose := FView.ControlsHelpClose;

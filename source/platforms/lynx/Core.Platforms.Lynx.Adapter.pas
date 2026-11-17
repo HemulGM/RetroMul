@@ -157,7 +157,7 @@ begin
     Exit;
 
   FThread := TLynxWorker.Create(FCartridgeROM, FBIOS, FIdentity, FStorage, FSystemId);
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, FSystemId);
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, FSystemId, GetConfig.FileName);
   FThread.SnapshotDirectory := FSnapshotDirectory;
   FThread.SaveFile := FSaveFile;
   ApplySettings;

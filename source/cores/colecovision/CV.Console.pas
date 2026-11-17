@@ -247,17 +247,13 @@ begin
           Buttons := Input.Buttons2;
         if Roller and (Port = 1) then
         begin
-          if TEmulatorButton.Up in Buttons then
-            Dec(Value, 24576);
-          if TEmulatorButton.Down in Buttons then
-            Inc(Value, 24576);
+          Value := Round(24576 * (Input.ButtonAmount(AnalogPort, TEmulatorButton.Down) -
+            Input.ButtonAmount(AnalogPort, TEmulatorButton.Up)));
         end
         else
         begin
-          if TEmulatorButton.Left in Buttons then
-            Dec(Value, 24576);
-          if TEmulatorButton.Right in Buttons then
-            Inc(Value, 24576);
+          Value := Round(24576 * (Input.ButtonAmount(AnalogPort, TEmulatorButton.Right) -
+            Input.ButtonAmount(AnalogPort, TEmulatorButton.Left)));
         end;
       end;
     end;

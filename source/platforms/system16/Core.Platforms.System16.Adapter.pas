@@ -561,7 +561,7 @@ begin
   FOptions := TS16Config.Create(S.ConfigFile(GetSystemId), S);
   FConfig := FOptions;
   FConfig.Load;
-  FPorts := LoadCoreInputPorts(S, GetSystemId);
+  FPorts := LoadCoreInputPorts(S, GetSystemId, GetConfig.FileName);
   var IdentityHash := SnapshotIdentity(FIdentity);
   FSavePath := S.GameSave(GetSystemId, RomName, IdentityHash);
   FSnapshotDirectory := S.GameSnapshots(GetSystemId, RomName, IdentityHash);

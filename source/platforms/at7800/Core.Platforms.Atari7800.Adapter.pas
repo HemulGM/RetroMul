@@ -149,7 +149,7 @@ begin
     Exit;
 
   FThread := TA7800Worker.Create(FCartridge, FStorage);
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'at7800');
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'at7800', GetConfig.FileName);
   FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplySettings;
   FThread.Start;

@@ -43,6 +43,8 @@ type
     // Keep the returned scope alive on the calling thread during loading.
     class function BeginReadCancellation(const CheckCancelled: TProc): IInterface; static;
     class procedure CheckReadCancelled; static;
+    // Construction-only, thread-local scope. Retained config paths outlive it.
+    class function BeginGameSettings(const Storage: IStorage; const RomName: string): IInterface; static;
     function RomFolder(const SystemId: string): string;
     procedure SetRomFolder(const SystemId, Value: string);
     function DetectRomFolder(const Location, SystemId: string): string;
@@ -85,6 +87,8 @@ function RememberIOSDocumentURL(const URL: NSURL): string;
 
 function ReadRomData(Stream: TStream): TBytes;
 
+function GameConfigFile(const Storage: IStorage; const SystemId, RomName: string): string;
+
 function NativeStoragePath(const Location: string): string;
 
 implementation
@@ -94,14 +98,23 @@ uses
   System.Generics.Collections, Core.Platforms, Core.CD.Disc,
   {$IFDEF ANDROID}
   Core.Storage.Android, {$ENDIF}
-  {$IFDEF IOS} Macapi.Helpers, System.Hash, {$ENDIF}
+  {$IFDEF IOS} Macapi.Helpers, {$ENDIF}
   {$IFDEF MSWINDOWS} Winapi.Windows, {$ELSE} Posix.Stdio, Posix.Unistd, {$ENDIF}
-  System.Types;
+  System.Types, System.Hash;
 
 const
   DEFAULT_MAX_ROM_FILE_SIZE = 64 * 1024 * 1024;
 
 type
+  TGameSettingsScope = class(TInterfacedObject)
+  private
+    FPrevious: TGameSettingsScope;
+  public
+    Root, RomName: string;
+    constructor Create(const Storage: IStorage; const Game: string);
+    destructor Destroy; override;
+  end;
+
   TReadCancellationScope = class(TInterfacedObject)
   private
     FPrevious: TReadCancellationScope;
@@ -127,6 +140,43 @@ type
 
 threadvar
   ReadCancellationScope: TReadCancellationScope;
+  GameSettingsScope: TGameSettingsScope;
+
+function GameConfigPath(const Root, ConfigPath, RomName: string): string;
+begin
+  var Identity := THashSHA2.GetHashString(RomName);
+  Result := TPath.Combine(TPath.Combine(TPath.Combine(Root, 'game-settings'), Identity), TPath.GetFileName(ConfigPath));
+end;
+
+function GameConfigFile(const Storage: IStorage; const SystemId, RomName: string): string;
+begin
+  if RomName = '' then
+    raise EArgumentException.Create('Game location is empty');
+  Result := GameConfigPath(Storage.Root, Storage.ConfigFile(SystemId), RomName);
+end;
+
+constructor TGameSettingsScope.Create(const Storage: IStorage; const Game: string);
+begin
+  inherited Create;
+  var ActualStorage := Storage;
+  if ActualStorage = nil then
+    ActualStorage := TStorage.Default;
+  Root := ActualStorage.Root;
+  RomName := Game;
+  FPrevious := GameSettingsScope;
+  GameSettingsScope := Self;
+end;
+
+destructor TGameSettingsScope.Destroy;
+begin
+  GameSettingsScope := FPrevious;
+  inherited;
+end;
+
+class function TStorage.BeginGameSettings(const Storage: IStorage; const RomName: string): IInterface;
+begin
+  Result := TGameSettingsScope.Create(Storage, RomName);
+end;
 
 function ReadRomData(Stream: TStream): TBytes;
 const
@@ -706,6 +756,13 @@ begin
   if TPlatformRegistry.Find(SystemId, platform) then
     SettingsId := platform.SettingsCoreId;
   Result := TPath.Combine(FRoot, SafeName(SettingsId) + '.ini');
+  if (GameSettingsScope <> nil) and (GameSettingsScope.RomName <> '') and
+    SameText(GameSettingsScope.Root, FRoot) and not SameText(SettingsId, 'config') then
+  begin
+    var Specific := GameConfigPath(FRoot, Result, GameSettingsScope.RomName);
+    if Exists(Specific) then
+      Result := Specific;
+  end;
 end;
 
 function TStorage.ReadConfig(const Location: string): TMemIniFile;

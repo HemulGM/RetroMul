@@ -187,7 +187,7 @@ begin
     Exit;
 
   FThread := TNGPWorker.Create(FCartridgeROM, FBIOS, FIdentity, FStorage, FColor, FSystemId);
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, FSystemId);
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, FSystemId, GetConfig.FileName);
   FThread.SaveFile := FSaveFile;
   FThread.SystemSaveFile := TPath.Combine(FStorage.SaveRoot,
     FSystemId + '-system-' + SnapshotIdentity(FBIOS).Substring(0, 16) + '.bin');

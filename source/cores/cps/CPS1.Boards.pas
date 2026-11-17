@@ -134,10 +134,9 @@ begin
         Buttons := FInput.Buttons2;
       if FInput.Analog[P].Valid then
         FDial[P] := (Integer(FDial[P]) + FInput.Analog[P].X div 1024 + $1000) and $FFF;
-      if TEmulatorButton.X in Buttons then
-        FDial[P] := (FDial[P] + $FF8) and $FFF;
-      if TEmulatorButton.Y in Buttons then
-        FDial[P] := (FDial[P] + 8) and $FFF;
+      var Digital := Round(8 * (FInput.ButtonAmount(P, TEmulatorButton.Y) -
+        FInput.ButtonAmount(P, TEmulatorButton.X)));
+      FDial[P] := (Integer(FDial[P]) + Digital + $1000) and $FFF;
     end;
   Video.FrameNumber := FFrameNumber;
 end;

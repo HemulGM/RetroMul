@@ -11,7 +11,7 @@ const
 type
   // Common settings are persisted by every core in its own INI file. Descendants
   // add hardware-specific options in LoadCoreSettings / SaveCoreSettings.
-  TEmulatorConfigBase = class(TInterfacedObject, IEmulatorConfig)
+  TEmulatorConfigBase = class(TInterfacedObject, IEmulatorConfig, IEmulatorConfigLocation)
   private
     FFileName: string;
     FStorage: IStorage;
@@ -33,6 +33,7 @@ type
     function GetFileName: string;
   public
     constructor Create(const AFileName: string; const Storage: IStorage = nil);
+    procedure SetConfigFileName(const Value: string);
     procedure Load;
     procedure Save;
   end;
@@ -98,6 +99,13 @@ end;
 function TEmulatorConfigBase.GetScale: Integer;
 begin
   Result := FScale;
+end;
+
+procedure TEmulatorConfigBase.SetConfigFileName(const Value: string);
+begin
+  if Value = '' then
+    raise EArgumentException.Create('Config file name is empty');
+  FFileName := Value;
 end;
 
 procedure TEmulatorConfigBase.Load;

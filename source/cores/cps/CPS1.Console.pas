@@ -516,7 +516,7 @@ begin
   State.Field(FCommand, SizeOf(FCommand));
   State.Field(FFade, SizeOf(FFade));
   State.Field(FBank, SizeOf(FBank));
-  State.Field(FInput, SizeOf(FInput));
+  State.CompatibleField(FInput, SizeOf(FInput), TEmulatorInput.LegacySize, TEmulatorInput.TravelSize);
   State.Field(FCoins, SizeOf(FCoins));
   State.Field(FTime, SizeOf(FTime));
   State.Field(FNextIRQ, SizeOf(FNextIRQ));

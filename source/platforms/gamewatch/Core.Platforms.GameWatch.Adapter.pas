@@ -173,7 +173,7 @@ begin
     Exit;
 
   FThread := TGWWorker.Create(FCartridge, FStorage);
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'gw');
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'gw', GetConfig.FileName);
   FThread.SaveFile := FSaveFile;
   FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplySettings;

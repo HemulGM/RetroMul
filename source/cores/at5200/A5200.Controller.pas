@@ -68,22 +68,22 @@ begin
   begin
     // Host axis bindings also generate digital directions. Keep their measured
     // position; keyboard/D-pad input remains available when the axis is neutral.
-    if not FInput.Analog[Port].Valid or (FInput.Analog[Port].X = 0) then
+    if not FInput.Analog[Port].Valid or (FInput.Analog[Port].X = 0) or
+      ((TEmulatorButton.Left in FInput.AnalogButtons[Port].Digital) or
+      (TEmulatorButton.Right in FInput.AnalogButtons[Port].Digital)) then
     begin
-      if TEmulatorButton.Left in B then
-        V := 6;
-      if TEmulatorButton.Right in B then
-        V := 220;
+      V := 114 - Round(108 * FInput.ButtonAmount(Port, TEmulatorButton.Left)) +
+        Round(106 * FInput.ButtonAmount(Port, TEmulatorButton.Right));
     end;
   end
   else
   begin
-    if not FInput.Analog[Port].Valid or (FInput.Analog[Port].Y = 0) then
+    if not FInput.Analog[Port].Valid or (FInput.Analog[Port].Y = 0) or
+      ((TEmulatorButton.Up in FInput.AnalogButtons[Port].Digital) or
+      (TEmulatorButton.Down in FInput.AnalogButtons[Port].Digital)) then
     begin
-      if TEmulatorButton.Up in B then
-        V := 6;
-      if TEmulatorButton.Down in B then
-        V := 220;
+      V := 114 - Round(108 * FInput.ButtonAmount(Port, TEmulatorButton.Up)) +
+        Round(106 * FInput.ButtonAmount(Port, TEmulatorButton.Down));
     end;
   end;
   Result := EnsureRange(V, 1, 228);

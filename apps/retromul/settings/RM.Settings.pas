@@ -123,6 +123,7 @@ type
     FPlatformPicker: TComboBox;
     FCategoryIcons: array[SETTINGS_CATEGORY_GENERAL..SETTINGS_CATEGORY_PERIPHERALS] of TControl;
     FPage: string;
+    FFixedPlatformPage: string;
     FPageBuildError: string;
     FGroup: TPanel;
     FPreview: TControl;
@@ -228,7 +229,7 @@ type
     procedure PickLocation(Folder: Boolean; const Current: string; const Callback: TStorageSelectionCallback); virtual;
     procedure PickTemplateLocation(const Callback: TStorageSelectionCallback); virtual;
   public
-    constructor CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName: string = ''; const GameRomName: string = ''; const GameSettingsId: string = '');
+    constructor CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName: string = ''; const GameRomName: string = ''; const GameSettingsId: string = ''; const FixedPlatformPage: string = '');
     destructor Destroy; override;
     procedure SelectCategory(Index: Integer);
     procedure SelectCore(const PageId: string; PreserveCategory: Boolean = False);
@@ -259,8 +260,8 @@ uses
   RM.Settings.Template.Volume, RM.Settings.Template.Track,
   RM.Settings.Template.Preview, RM.Settings.Template.Binding, System.Math,
   System.StrUtils, RM.Input, FMX.OpenDialog, FMX.BehaviorManager, FMX.Graphics,
-  FMX.SpinBox.Style, FMX.Presentation.Style, FMX.Presentation.Factory,
-  RM.LibraryView, RM.Icons, RM.SearchEdit, RM.Styles, RM.Dialogs, FMX.TextLayout
+  FMX.SpinBox.Style, FMX.Presentation.Style, FMX.Presentation.Factory, RM.Icons,
+  RM.SearchEdit, RM.Styles, RM.Dialogs, FMX.TextLayout
   {$IFDEF ANDROID}, Core.Storage.Android{$ENDIF};
 
 {$R *.fmx}
@@ -477,13 +478,20 @@ begin
   // TStyledEditBox increments even when Handled is true; bypass that implementation.
 end;
 
-constructor TSettingsView.CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName, GameRomName, GameSettingsId: string);
+constructor TSettingsView.CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName, GameRomName, GameSettingsId, FixedPlatformPage: string);
 begin
   FBuilding := True;
   inherited Create(AOwner);
   FCategory := SETTINGS_CATEGORY_GENERAL;
   FPage := 'main';
   FCorePage := '';
+  if FixedPlatformPage <> '' then
+  begin
+    FFixedPlatformPage := SettingsPlatforms.Require(FixedPlatformPage).PageId;
+    FCorePage := FFixedPlatformPage;
+    FPage := FFixedPlatformPage;
+    FCategory := SETTINGS_CATEGORY_VIDEO_AUDIO;
+  end;
   if SettingsPlatforms.Find(FCorePage) = nil then
   begin
     var Available := SettingsPlatforms.Matching('');
@@ -518,7 +526,8 @@ begin
   FSession := TSettingsSession.Create(FStorage, GameRomName, GameSettingsId);
   FSession.Open('main', 'config');
   for var SettingsPlatform in SettingsPlatforms.Items do
-    FSession.Open(SettingsPlatform.PageId, SettingsPlatform.CoreId);
+    if (FFixedPlatformPage = '') or SameText(SettingsPlatform.PageId, FFixedPlatformPage) then
+      FSession.Open(SettingsPlatform.PageId, SettingsPlatform.CoreId);
   FContext := TSettingsPageBuilder.Create;
   FContext.OnRebuild := PortChange;
   FContext.OnGroup :=
@@ -548,6 +557,13 @@ begin
     end;
   InitializeRuntimeControls;
   FormStyles.RelocalizeUI(Self, 'en');
+  if FFixedPlatformPage <> '' then
+  begin
+    ButtonSidebarBack.Text := Translate('Back');
+    ButtonBack.Text := Translate('Back');
+    ListBoxNavigation.ListItems[SETTINGS_CATEGORY_GENERAL].Visible := False;
+    ListBoxNavigation.ListItems[SETTINGS_CATEGORY_LIBRARY].Visible := False;
+  end;
   ButtonSidebarBack.OnClick := BackClick;
   ButtonSidebarBack.StylesData['text.Margins.Left'] := 36;
   ButtonSidebarBack.StylesData['text.Margins.Right'] := 10;
@@ -799,8 +815,8 @@ begin
   FSearch := TEdit(CreateInSlot(LayoutSettingsSearchSlot, TSearchEdit));
   FSearch.TextPrompt := Translate('Search this section');
   FPagePicker := TComboBox(CreateInSlot(LayoutSettingsPagePickerSlot, TSettingsComboBox));
-  for var Caption in SettingsCategoryNames do
-    FPagePicker.Items.Add(Translate(Caption));
+  for var Category := Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO to High(SettingsCategoryNames) do
+    FPagePicker.Items.Add(Translate(SettingsCategoryNames[Category]));
   FPlatformSearch := TEdit(CreateInSlot(LayoutPlatformSearchSlot, TSearchEdit));
   FPlatformPicker := TComboBox(CreateInSlot(LayoutPlatformPickerSlot, TSettingsComboBox));
   FCategoryIcons[0] := PathCategoryGeneral;
@@ -888,7 +904,7 @@ begin
   LayoutSettingsMainColumn.BeginUpdate;
   LayoutSettingsPreviewColumn.BeginUpdate;
   try
-    FPagePicker.ItemIndex := FCategory;
+    FPagePicker.ItemIndex := FCategory - Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO;
     CancelCapture;
     FAutosaveMinutes := nil;
     FVolumeValue := nil;
@@ -1654,14 +1670,21 @@ begin
     UpdateContentScale;
     PanelSidebar.Visible := ScaledLayoutSettings.OriginalWidth >= 1050;
     PanelSidebar.Width := 264;
-    PanelPlatforms.Visible := (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and (ScaledLayoutSettings.OriginalWidth >= 760);
+    if FFixedPlatformPage <> '' then
+    begin
+      PanelSidebar.Visible := ScaledLayoutSettings.OriginalWidth >= 760;
+      PanelSidebar.Width := 220;
+    end;
+    PanelPlatforms.Visible := (FFixedPlatformPage = '') and (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and
+      (ScaledLayoutSettings.OriginalWidth >= 760);
     PanelPlatforms.Width := 216;
     PanelSidebar.Align := TAlignLayout.MostLeft;
     PanelPlatforms.Align := TAlignLayout.Left;
     LayoutBody.Align := TAlignLayout.Client;
     ListBoxNavigation.Visible := PanelSidebar.Visible;
     FPagePicker.Visible := not PanelSidebar.Visible;
-    FPlatformPicker.Visible := (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and not PanelPlatforms.Visible;
+    FPlatformPicker.Visible := (FFixedPlatformPage = '') and (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and
+      not PanelPlatforms.Visible;
     // Settle the sidebar widths before using the header's available width.
     // During a window-state transition the parent can still be realigning.
     Realign;
@@ -2027,7 +2050,8 @@ end;
 
 procedure TSettingsView.SelectCategory(Index: Integer);
 begin
-  if FBuilding or (Index < Low(SettingsCategoryNames)) or (Index > High(SettingsCategoryNames)) or (Index = FCategory) then
+  if FBuilding or (Index < Low(SettingsCategoryNames)) or (Index > High(SettingsCategoryNames)) or (Index = FCategory) or
+    ((FFixedPlatformPage <> '') and (Index < SETTINGS_CATEGORY_VIDEO_AUDIO)) then
     Exit;
 
   StorePage;
@@ -2039,7 +2063,7 @@ begin
   FBuilding := True;
   try
     ListBoxNavigation.ItemIndex := Index;
-    FPagePicker.ItemIndex := Index;
+    FPagePicker.ItemIndex := Index - Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO;
   finally
     FBuilding := False;
   end;
@@ -2049,7 +2073,8 @@ end;
 
 procedure TSettingsView.SelectCore(const PageId: string; PreserveCategory: Boolean);
 begin
-  if FBuilding or (SettingsPlatforms.Find(PageId) = nil) then
+  if FBuilding or (SettingsPlatforms.Find(PageId) = nil) or
+    ((FFixedPlatformPage <> '') and not SameText(FFixedPlatformPage, PageId)) then
     Exit;
 
   StorePage;
@@ -2064,7 +2089,7 @@ begin
   FBuilding := True;
   try
     ListBoxNavigation.ItemIndex := FCategory;
-    FPagePicker.ItemIndex := FCategory;
+    FPagePicker.ItemIndex := FCategory - Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO;
   finally
     FBuilding := False;
   end;
@@ -2080,7 +2105,8 @@ end;
 
 procedure TSettingsView.PagePickerChange(Sender: TObject);
 begin
-  SelectCategory(FPagePicker.ItemIndex);
+  if FPagePicker.ItemIndex >= 0 then
+    SelectCategory(FPagePicker.ItemIndex + Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO);
 end;
 
 function PlatformItemName(const PageId: string): string;
@@ -2905,6 +2931,8 @@ begin
 
     for var SettingsPlatform in SettingsPlatforms.Items do
     begin
+      if (FFixedPlatformPage <> '') and not SameText(SettingsPlatform.PageId, FFixedPlatformPage) then
+        Continue;
       var Draft := FSession.Drafts[SettingsPlatform.PageId];
       Draft.DeleteKey('Audio', 'Enabled');
       SettingsPlatform.PrepareSave(Draft);

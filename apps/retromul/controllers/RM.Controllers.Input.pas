@@ -5,7 +5,7 @@
 interface
 
 uses
-  System.Classes, System.UITypes, Core.Emulation, RM.Controllers.Base,
+  System.Classes, System.UITypes, FMX.Types, Core.Emulation, RM.Controllers.Base,
   RM.Input.Runtime, RM.LibraryNavigation
   {$IF not Defined(LINUX)}
     , System.Sensors
@@ -31,6 +31,7 @@ type
     procedure LoadHostInput(const SystemId: string);
     procedure ReloadHostInputBindings;
     procedure PollHostInput;
+    procedure FormTouch(Sender: TObject; const Touches: TTouches; const Action: TTouchAction);
     procedure FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
     procedure FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
     procedure ForwardKeyState(Code: Word; Pressed: Boolean);
@@ -39,6 +40,7 @@ type
     procedure UpdatePeripheralInput;
     procedure UpdatePeripheralFeedback;
     procedure ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
+    procedure ImageCanvasMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
     procedure ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
     procedure SelectTapeFile(const FileName: string);
   end;
@@ -46,9 +48,9 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Types, System.IOUtils, System.Math, FMX.Types,
-  FMX.Forms, FMX.Objects, FMX.Dialogs, FMX.Platform, FMX.VirtualKeyboard,
-  FMX.Edit, FMX.OpenDialog, FMXInput, RM.Input, RM.Input.Gamepads, RM.Rumble,
+  System.SysUtils, System.Types, System.IOUtils, System.Math, FMX.Forms,
+  FMX.Objects, FMX.Dialogs, FMX.Platform, FMX.VirtualKeyboard, FMX.Edit,
+  FMX.OpenDialog, FMXInput, RM.Input, RM.Input.Gamepads, RM.Rumble,
   Core.InputConfig, RM.Gamepad, RM.Dialogs, RM.Styles
   {$IF not Defined(LINUX)}
     , System.Sensors.Components
@@ -441,6 +443,7 @@ end;
 
 procedure TInputController.PollHostInput;
 begin
+  ValidateScreenTouch(RuntimeContext);
   if (FState.Browser.View <> nil) and
     (not FView.InputHasFocus or RetroDialogVisible(FView) or (FState.Settings.View <> nil)) then
     FState.Browser.View.PollLibraryInput(nil, False);
@@ -905,15 +908,43 @@ begin
   PlatformInputHandler(FState.Input.SystemId).UpdateFeedback(RuntimeContext);
 end;
 
+procedure TInputController.FormTouch(Sender: TObject; const Touches: TTouches; const Action: TTouchAction);
+var
+  Touch: TTouch;
+begin
+  // FMX may synthesize MouseUp after a cancelled gesture. Android reports
+  // Cancel for the event, whereas iOS reports it on the individual touches.
+  if Action = TTouchAction.Cancel then
+  begin
+    CancelScreenTouch(RuntimeContext);
+    Exit;
+  end;
+  for Touch in Touches do
+    if Touch.Action = TTouchAction.Cancel then
+    begin
+      CancelScreenTouch(RuntimeContext);
+      Exit;
+    end;
+end;
+
 procedure TInputController.ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
+  if (Button = TMouseButton.mbLeft) and DispatchScreenTouch(RuntimeContext, TEmulationTouchPhase.Down, X, Y) then
+    Exit;
   if (FState.Input.Manager <> nil) or (Button <> TMouseButton.mbLeft) then
     Exit;
   PlatformInputHandler(FState.Input.SystemId).PointerButton(RuntimeContext, X, Y, True);
 end;
 
+procedure TInputController.ImageCanvasMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
+begin
+  DispatchScreenTouch(RuntimeContext, TEmulationTouchPhase.Move, X, Y);
+end;
+
 procedure TInputController.ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
+  if (Button = TMouseButton.mbLeft) and DispatchScreenTouch(RuntimeContext, TEmulationTouchPhase.Up, X, Y) then
+    Exit;
   if (FState.Input.Manager <> nil) or (Button <> TMouseButton.mbLeft) then
     Exit;
   PlatformInputHandler(FState.Input.SystemId).PointerButton(RuntimeContext, X, Y, False);

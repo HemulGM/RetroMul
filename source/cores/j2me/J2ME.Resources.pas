@@ -10,7 +10,7 @@ function J2MECanonicalResourceName(const Name: string; out Key: string): Boolean
 
 procedure InstallJ2MEResources(VM: TJVM);
 
-function OpenJ2MEResource(VM: TJVM; const URL: string; Mode: Integer): Integer;
+function OpenJ2MEResource(VM: TJVM; const URL: string; Mode: Integer; Siemens: Boolean = False): Integer;
 
 function HandlesJ2MEResources(const Owner: string): Boolean;
 
@@ -116,7 +116,7 @@ begin
   end;
 end;
 
-function OpenJ2MEResource(VM: TJVM; const URL: string; Mode: Integer): Integer;
+function OpenJ2MEResource(VM: TJVM; const URL: string; Mode: Integer; Siemens: Boolean): Integer;
 var
   Bytes: TBytes;
   Found: Boolean;
@@ -126,6 +126,8 @@ begin
   // The legacy Siemens spelling uses package\file separators. This translation
   // applies only to resource: URLs, never to ordinary Class resource names.
   var Name := Copy(URL, Pos(':', URL) + 1, MaxInt).Replace('\', '/');
+  if Siemens and Name.StartsWith('//') then
+    Delete(Name, 1, 2);
   Found := False;
   try
     Found := (VM.Host is TJavaHost) and TJavaHost(VM.Host).LoadResource(Name, Bytes);

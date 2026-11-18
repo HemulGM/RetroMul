@@ -277,8 +277,11 @@ procedure ValidateMap(VM: TJVM; O: TJVMObject);
 begin
   var Map := VM.GetObject(Ref(O, 'map'));
   var Limit := Get(O, 'tiles') + 2;
-  for var V in Map.Elements do
-    if (V.AsInt and 255) > Limit then
+  // The backing buffer can be larger than the active map. Its tail may
+  // contain tiles from a previous level and is never read by the renderer.
+  var Count := Get(O, 'cols') * Get(O, 'rows');
+  for var Index := 0 to Count - 1 do
+    if (Map.ElementValues[Index].AsInt and 255) > Limit then
       VM.RaiseJava('java/lang/IllegalArgumentException', 'Siemens tile index');
 end;
 
@@ -652,7 +655,9 @@ begin
     begin
       var Code := Arg(1);
       if N = 'setPixel' then
-        Code := Arg(3);
+        Code := Arg(3)
+      else if Code = -1 then
+        Code := (1 shl BPP) - 1; // Packed solid-black fill used by Siemens games.
       if (Code < 0) or (Code >= 1 shl BPP) then
         VM.RaiseJava('java/lang/IllegalArgumentException', 'Siemens pixel color');
       if N = 'setPixel' then
@@ -679,10 +684,10 @@ begin
         (Int64(X) + W > I.Width) or (Int64(Y) + H > I.Height)) then
         VM.RaiseJava('java/lang/IllegalArgumentException', 'ExtendedImage read rectangle');
       var Stride := (W div 8) * BPP;
-      if Int64(Stride) * H > A.ElementCount then
-        VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
       if N = 'getPixelBytes' then
       begin
+        if Int64(Stride) * H > A.ElementCount then
+          VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
         for var J := 0 to Stride * H - 1 do
           A.ElementValues[J] := TJVMValue.Int(0);
         for var DY := 0 to H - 1 do
@@ -700,6 +705,11 @@ begin
         var Bottom := Min(Int64(I.Height), Int64(Y) + H);
         if (Left >= Right) or (Top >= Bottom) then
           Exit;
+        // The buffer must cover every visible pixel. Rayman Golf requests
+        // 80 rows for a 64-row surface and supplies only the visible rows.
+        var LastByte := (Bottom - 1 - Y) * Stride + (Right - 1 - X) div (8 div BPP);
+        if LastByte >= A.ElementCount then
+          VM.RaiseJava('java/lang/ArrayIndexOutOfBoundsException');
         var Bytes := Copy(A.Elements);
         for var DY := Integer(Top) to Integer(Bottom) - 1 do
         begin
@@ -875,7 +885,7 @@ begin
     var W := Arg(4);
     var H := Arg(5);
     Dimensions(VM, W, H);
-    if Int64(W) * H <> Map.ElementCount then
+    if Int64(W) * H > Map.ElementCount then
       VM.RaiseJava('java/lang/IllegalArgumentException', 'Siemens map length');
     if D.StartsWith('([B') then
     begin

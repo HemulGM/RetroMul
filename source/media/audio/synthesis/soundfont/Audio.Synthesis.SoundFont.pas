@@ -17,23 +17,36 @@ type
     Gen: TSFZone;
   end;
 
+  TSFPresetInfo = record
+    Bank, ProgramNumber: Integer;
+    Name: string;
+  end;
+
   ISoundFont = interface
     ['{58BA70D6-AFD3-49B0-A04E-5401C4B742D2}']
     function Regions: TArray<TSFRegion>;
+    function Presets: TArray<TSFPresetInfo>;
     function Samples: TArray<SmallInt>;
     function Name: string;
+    function Fingerprint: string;
+    function TryGetKeyName(Bank, ProgramNumber, Key: Integer; out KeyName: string): Boolean;
   end;
 
   TSoundFont = class(TInterfacedObject, ISoundFont)
   private
     FRegions: TArray<TSFRegion>;
     FSamples: TArray<SmallInt>;
-    FName: string;
+    FPresets: TArray<TSFPresetInfo>;
+    FDrumRegionNames: TArray<string>;
+    FName, FFingerprint: string;
   public
     constructor Create(const Data: TBytes);
     function Regions: TArray<TSFRegion>;
+    function Presets: TArray<TSFPresetInfo>;
     function Samples: TArray<SmallInt>;
     function Name: string;
+    function Fingerprint: string;
+    function TryGetKeyName(Bank, ProgramNumber, Key: Integer; out KeyName: string): Boolean;
   end;
 
   TSFChannel = record
@@ -78,8 +91,11 @@ type
     FRegions: TArray<TSFRegion>;
     FSamples: TArray<SmallInt>;
     FVoices: TSFVoiceArray;
+    FActiveSlots: array[0..High(TSFVoiceArray)] of Integer;
+    FActiveCount: Integer;
     FChannels: TSFChannelArray;
     FAge: Int64;
+    procedure RebuildActiveSlots;
     procedure StartStage(var V: TSFVoice; Stage: Integer);
     procedure StartModStage(var V: TSFVoice; Stage: Integer);
     procedure ReleaseVoice(var V: TSFVoice);
@@ -90,6 +106,12 @@ type
     procedure Control(Channel, Number, Value: Integer);
   public
     constructor Create(const Bank: ISoundFont);
+    function BankFingerprint: string;
+    function ChannelVolume(Channel: Integer): Integer;
+    procedure ChannelProgram(Channel: Integer; out Bank, ProgramNumber: Integer);
+    function Presets: TArray<TSFPresetInfo>;
+    function TryGetKeyName(Bank, ProgramNumber, Key: Integer; out KeyName: string): Boolean;
+    procedure ValidateState(const State: TSoundFontSynthState);
     function CaptureState: TSoundFontSynthState;
     procedure RestoreState(const State: TSoundFontSynthState);
     procedure Reset;
@@ -101,7 +123,7 @@ type
 implementation
 
 uses
-  System.Math, Audio.Binary;
+  System.Math, System.Hash, Audio.Binary;
 
 function Signed16(V: Word): Integer;
 begin
@@ -288,6 +310,10 @@ var
 
 begin
   inherited Create;
+  var Hash := THashSHA2.Create;
+  if Length(Data) <> 0 then
+    Hash.Update(Data[0], Length(Data));
+  FFingerprint := Hash.HashAsString;
   RequireBytes(Data, 0, 12);
   if (Tag(0) <> 'RIFF') or (Tag(8) <> 'sfbk') or
     (Int64(LE32(Data, 4)) + 8 <> Length(Data)) then
@@ -308,12 +334,17 @@ begin
     var IB := Table('ibag', 4);
     var IG := Table('igen', 4);
     var SH := Table('shdr', 46);
+    SetLength(FPresets, Length(PH) div 38 - 1);
+    var PresetCount := 0;
     for var P := 0 to Length(PH) div 38 - 2 do
     begin
       var First := LE16(PH, P * 38 + 24);
       var Last := LE16(PH, (P + 1) * 38 + 24);
       if (First > Last) or (Last >= Length(PB) div 4) then
         raise EArgumentException.Create('Invalid SoundFont preset bags');
+      var Bank := LE16(PH, P * 38 + 22);
+      var ProgramNumber := LE16(PH, P * 38 + 20);
+      var RegionCount := List.Count;
       var GlobalP := Default(TSFZone);
       for var B := First to Last - 1 do
       begin
@@ -344,13 +375,30 @@ begin
             GlobalI := LocalI;
             Continue;
           end;
-          AddRegion(PZ, Overlay(GlobalI, LocalI), SH, LE16(PH, P * 38 + 22), LE16(PH, P * 38 + 20));
+          AddRegion(PZ, Overlay(GlobalI, LocalI), SH, Bank, ProgramNumber);
         end;
       end;
+      if (List.Count > RegionCount) and (Bank <= 16383) and (ProgramNumber <= 127) then
+      begin
+        FPresets[PresetCount].Bank := Bank;
+        FPresets[PresetCount].ProgramNumber := ProgramNumber;
+        FPresets[PresetCount].Name := TextField(PH, P * 38, 20);
+        Inc(PresetCount);
+      end;
     end;
+    SetLength(FPresets, PresetCount);
     if List.Count = 0 then
       raise EArgumentException.Create('SoundFont contains no playable presets');
     FRegions := List.ToArray;
+    // The region keeps the validated shdr sample index in generator 53.
+    // Keep names off the region record used by the audio renderer.
+    for var I := 0 to High(FRegions) do
+      if FRegions[I].Bank = 128 then
+      begin
+        if FDrumRegionNames = nil then
+          SetLength(FDrumRegionNames, Length(FRegions));
+        FDrumRegionNames[I] := TextField(SH, FRegions[I].Gen.Value[53] * 46, 20);
+      end;
     if FName = '' then
       FName := 'SoundFont2';
   finally
@@ -364,6 +412,11 @@ begin
   Result := FRegions;
 end;
 
+function TSoundFont.Presets: TArray<TSFPresetInfo>;
+begin
+  Result := FPresets;
+end;
+
 function TSoundFont.Samples: TArray<SmallInt>;
 begin
   Result := FSamples;
@@ -374,6 +427,29 @@ begin
   Result := FName;
 end;
 
+function TSoundFont.Fingerprint: string;
+begin
+  Result := FFingerprint;
+end;
+
+function TSoundFont.TryGetKeyName(Bank, ProgramNumber, Key: Integer; out KeyName: string): Boolean;
+begin
+  KeyName := '';
+  Result := False;
+  if Bank <> 128 then
+    Exit;
+  // When several velocity layers cover a key, use the first named region.
+  for var I := 0 to High(FDrumRegionNames) do
+    if (FRegions[I].Bank = Bank) and (FRegions[I].Preset = ProgramNumber) and
+      InRange(Key, FRegions[I].KeyLow, FRegions[I].KeyHigh) then
+    begin
+      Result := True;
+      KeyName := FDrumRegionNames[I];
+      if KeyName <> '' then
+        Exit;
+    end;
+end;
+
 constructor TSoundFontSynth.Create(const Bank: ISoundFont);
 begin
   inherited Create;
@@ -381,6 +457,39 @@ begin
   FRegions := Bank.Regions;
   FSamples := Bank.Samples;
   Reset;
+end;
+
+function TSoundFontSynth.BankFingerprint: string;
+begin
+  Result := FBank.Fingerprint;
+end;
+
+function TSoundFontSynth.ChannelVolume(Channel: Integer): Integer;
+begin
+  Result := FChannels[Channel].Volume;
+end;
+
+procedure TSoundFontSynth.ValidateState(const State: TSoundFontSynthState);
+begin
+  if State.Age < 0 then
+    raise EArgumentException.Create('Invalid SoundFont voice age');
+  for var Channel in State.Channels do
+    if not InRange(Channel.Preset, 0, 127) or not InRange(Channel.BankMSB, 0, 127) or
+      not InRange(Channel.BankLSB, 0, 127) or not InRange(Channel.Volume, 0, 127) or
+      not InRange(Channel.Expression, 0, 127) or not InRange(Channel.Pan, 0, 127) or
+      not InRange(Channel.Bend, 0, 16383) then
+      raise EArgumentException.Create('Invalid SoundFont channel state');
+  for var Voice in State.Voices do
+    if Voice.Active then
+    begin
+      if not InRange(Voice.Channel, 0, 15) or not InRange(Voice.Key, 0, 127) or
+        not InRange(Voice.Velocity, 0, 127) or not InRange(Voice.Region, 0, High(FRegions)) or
+        not InRange(Voice.Stage, 0, 6) or not InRange(Voice.ModStage, 0, 6) or
+        (Voice.Age < 0) or (Voice.Age > State.Age) or (Voice.Clock < 0) or
+        (Voice.Position < FRegions[Voice.Region].Start) or (Voice.Step <= 0) or
+        (Voice.BaseStep <= 0) or (Voice.PitchStep < 0) then
+        raise EArgumentException.Create('Invalid SoundFont voice state');
+    end;
 end;
 
 function TSoundFontSynth.CaptureState: TSoundFontSynthState;
@@ -395,12 +504,25 @@ begin
   FVoices := State.Voices;
   FChannels := State.Channels;
   FAge := State.Age;
+  RebuildActiveSlots;
+end;
+
+procedure TSoundFontSynth.RebuildActiveSlots;
+begin
+  FActiveCount := 0;
+  for var I := 0 to High(FVoices) do
+    if FVoices[I].Active then
+    begin
+      FActiveSlots[FActiveCount] := I;
+      Inc(FActiveCount);
+    end;
 end;
 
 procedure TSoundFontSynth.Reset;
 begin
   for var I := 0 to High(FVoices) do
     FVoices[I] := Default(TSFVoice);
+  FActiveCount := 0;
   FAge := 0;
   for var I := 0 to 15 do
   begin
@@ -539,15 +661,20 @@ begin
       UpdateVoice(FVoices[I]);
 end;
 
-procedure TSoundFontSynth.NoteOn(Channel, Key, Velocity: Integer);
+function TSoundFontSynth.Presets: TArray<TSFPresetInfo>;
 begin
-  if Velocity = 0 then
-  begin
-    NoteOff(Channel, Key);
-    Exit;
-  end;
+  Result := FBank.Presets;
+end;
+
+function TSoundFontSynth.TryGetKeyName(Bank, ProgramNumber, Key: Integer; out KeyName: string): Boolean;
+begin
+  Result := FBank.TryGetKeyName(Bank, ProgramNumber, Key, KeyName);
+end;
+
+procedure TSoundFontSynth.ChannelProgram(Channel: Integer; out Bank, ProgramNumber: Integer);
+begin
   var C := FChannels[Channel];
-  var Bank := C.BankMSB * 128 + C.BankLSB;
+  Bank := C.BankMSB * 128 + C.BankLSB;
   if Channel = 9 then
     Bank := 128;
   var Found := False;
@@ -574,7 +701,7 @@ begin
       if Found then
         Break;
     end;
-  var ProgramNumber := C.Preset;
+  ProgramNumber := C.Preset;
   if not Found then
   begin
     if Channel = 9 then
@@ -582,6 +709,18 @@ begin
     else
       Bank := 0;
   end;
+end;
+
+procedure TSoundFontSynth.NoteOn(Channel, Key, Velocity: Integer);
+begin
+  if Velocity = 0 then
+  begin
+    NoteOff(Channel, Key);
+    Exit;
+  end;
+  var Bank, ProgramNumber: Integer;
+  ChannelProgram(Channel, Bank, ProgramNumber);
+  var C := FChannels[Channel];
   Inc(FAge);
   for var RI := 0 to High(FRegions) do
   begin
@@ -643,6 +782,7 @@ begin
     StartModStage(V, 0);
     FVoices[Slot] := V;
   end;
+  RebuildActiveSlots;
 end;
 
 procedure TSoundFontSynth.NoteOff(Channel, Key: Integer);
@@ -713,9 +853,12 @@ begin
           end;
       end;
     120:
-      for var I := 0 to High(FVoices) do
-        if FVoices[I].Channel = Channel then
-          FVoices[I].Active := False;
+      begin
+        for var I := 0 to High(FVoices) do
+          if FVoices[I].Channel = Channel then
+            FVoices[I].Active := False;
+        RebuildActiveSlots;
+      end;
     123, 124, 125, 126, 127:
       for var I := 0 to High(FVoices) do
         if FVoices[I].Active and (FVoices[I].Channel = Channel) then
@@ -768,15 +911,27 @@ begin
     ReleaseVoice(FVoices[I]);
 end;
 
+function ClampSample(Value, Minimum, Maximum: Double): Double; inline;
+begin
+  if Value < Minimum then
+    Exit(Minimum);
+  if Value > Maximum then
+    Exit(Maximum);
+  Result := Value;
+end;
+
 procedure TSoundFontSynth.Sample(out Left, Right: SmallInt);
 begin
   var L := 0.0;
   var ROut := 0.0;
-  for var I := 0 to High(FVoices) do
+  var Remaining := 0;
+  // Iterate only sounding voices, retaining the slot order of the mixer.
+  for var Index := 0 to FActiveCount - 1 do
   begin
-    if not FVoices[I].Active then
+    var Slot := FActiveSlots[Index];
+    var V: PSFVoice := @FVoices[Slot];
+    if not V.Active then
       Continue;
-    var V: PSFVoice := @FVoices[I];
     var R: PSFRegion := @FRegions[V.Region];
     var Looping := (R.Gen.Value[54] and 1 <> 0) and
       ((R.Gen.Value[54] and 3 <> 3) or not V.Released);
@@ -787,12 +942,13 @@ begin
       V.Active := False;
       Continue;
     end;
-    var At := Floor(V.Position);
-    var Next := Min(At + 1, R.Finish - 1);
+    var At := Integer(Trunc(V.Position));
+    var Next := At + 1;
+    if Next >= R.Finish then
+      Next := R.Finish - 1;
     if Looping and (Next >= R.LoopEnd) then
       Next := R.LoopStart;
-    var S := FSamples[At] + (FSamples[Next] - FSamples[At]) * Frac(V.Position);
-    var C := FChannels[V.Channel];
+    var S := FSamples[At] + (FSamples[Next] - FSamples[At]) * (V.Position - At);
     if V.Clock >= V.LFODelay then
     begin
       V.LFOPhase := V.LFOPhase + V.LFOIncrement;
@@ -809,32 +965,36 @@ begin
     begin
       var ModLFO := Sin(V.LFOPhase);
       var Cents := ModLFO * R.Gen.Value[5] + V.ModEnvelope * R.Gen.Value[7] +
-        Sin(V.VibPhase) * (R.Gen.Value[6] + C.Modulation / 127 * 50);
+        Sin(V.VibPhase) * (R.Gen.Value[6] + FChannels[V.Channel].Modulation / 127 * 50);
       V.PitchStep := V.Step * Power(2, EnsureRange(Cents, -24000.0, 24000.0) / 1200);
       V.ModGain := Power(10, EnsureRange(ModLFO * R.Gen.Value[13], -960.0, 960.0) / 200);
-      var CutoffCents := EnsureRange(R.Gen.Value[8] + ModLFO * R.Gen.Value[10] + V.ModEnvelope * R.Gen.Value[11], 1500.0, 13500.0);
-      var Cutoff := Min(20000.0, 8.176 * Power(2, CutoffCents / 1200));
-      var Omega := 2 * Pi * Cutoff / 44100;
-      var Q := Sqrt(0.5) * Power(10, EnsureRange(R.Gen.Value[9], 0, 960) / 200);
-      var Alpha := Sin(Omega) / (2 * Q);
-      var A0 := 1 + Alpha;
-      V.B0 := (1 - Cos(Omega)) / (2 * A0);
-      V.B1 := 2 * V.B0;
-      V.B2 := V.B0;
-      V.A1 := -2 * Cos(Omega) / A0;
-      V.A2 := (1 - Alpha) / A0;
+      // Unmodulated filters use the same coefficients for the whole voice.
+      if (V.Clock = 0) or (R.Gen.Value[10] <> 0) or (R.Gen.Value[11] <> 0) then
+      begin
+        var CutoffCents := EnsureRange(R.Gen.Value[8] + ModLFO * R.Gen.Value[10] + V.ModEnvelope * R.Gen.Value[11], 1500.0, 13500.0);
+        var Cutoff := Min(20000.0, 8.176 * Power(2, CutoffCents / 1200));
+        var Omega := 2 * Pi * Cutoff / 44100;
+        var Q := Sqrt(0.5) * Power(10, EnsureRange(R.Gen.Value[9], 0, 960) / 200);
+        var Alpha := Sin(Omega) / (2 * Q);
+        var A0 := 1 + Alpha;
+        V.B0 := (1 - Cos(Omega)) / (2 * A0);
+        V.B1 := 2 * V.B0;
+        V.B2 := V.B0;
+        V.A1 := -2 * Cos(Omega) / A0;
+        V.A2 := (1 - Alpha) / A0;
+      end;
       V.UpdateCounter := 64;
     end;
     Dec(V.UpdateCounter);
-    var Filtered := EnsureRange(V.B0 * S + V.Z1, -1.0E9, 1.0E9);
-    V.Z1 := EnsureRange(V.B1 * S - V.A1 * Filtered + V.Z2, -1.0E9, 1.0E9);
-    V.Z2 := EnsureRange(V.B2 * S - V.A2 * Filtered, -1.0E9, 1.0E9);
+    var Filtered := ClampSample(V.B0 * S + V.Z1, -1.0E9, 1.0E9);
+    V.Z1 := ClampSample(V.B1 * S - V.A1 * Filtered + V.Z2, -1.0E9, 1.0E9);
+    V.Z2 := ClampSample(V.B2 * S - V.A2 * Filtered, -1.0E9, 1.0E9);
     var G := V.Gain * V.Envelope * V.ModGain;
     L := L + Filtered * G * V.Left;
     ROut := ROut + Filtered * G * V.Right;
     V.Position := V.Position + V.PitchStep;
     Inc(V.Clock);
-    V.ModEnvelope := EnsureRange(V.ModEnvelope + V.ModStep, 0.0, 1.0);
+    V.ModEnvelope := ClampSample(V.ModEnvelope + V.ModStep, 0.0, 1.0);
     if V.ModStage <> 4 then
     begin
       Dec(V.ModRemaining);
@@ -851,7 +1011,14 @@ begin
       if V.StageRemaining <= 0 then
         StartStage(V^, V.Stage + 1);
     end;
+    if V.Active then
+    begin
+      if Remaining <> Index then
+        FActiveSlots[Remaining] := Slot;
+      Inc(Remaining);
+    end;
   end;
+  FActiveCount := Remaining;
   Left := Round(EnsureRange(L, -32768.0, 32767.0));
   Right := Round(EnsureRange(ROut, -32768.0, 32767.0));
 end;

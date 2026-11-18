@@ -53,7 +53,7 @@ type
     Pos, Count, Buffer: Integer;
     function Bit: Integer;
     function Bits(N: Integer): Integer;
-    procedure Align;
+    procedure Align(AllowZeroPadding: Boolean = False);
   end;
 
 const
@@ -99,9 +99,11 @@ begin
     Result := (Result shl 1) or Bit;
 end;
 
-procedure TBits.Align;
+procedure TBits.Align(AllowZeroPadding: Boolean);
 begin
-  if (Buffer and ((1 shl Count) - 1)) <> (1 shl Count) - 1 then
+  var Mask := (1 shl Count) - 1;
+  var Padding := Buffer and Mask;
+  if (Padding <> Mask) and not (AllowZeroPadding and (Padding = 0)) then
     Bad;
   Count := 0;
 end;
@@ -222,13 +224,15 @@ begin
 end;
 
 function ReadJPEG(const Data: TBytes; HeaderOnly, Restrict420: Boolean; out Image: TJPEGPlanes; MaxPixels: Integer): TJPEGStatus;
+const
+  ZeroPaddingEncoder: UTF8String = 'JPEG Encoder Copyright 1998, James R. Weeks and BioElectroMech.';
 var
   Quant: array[0..3, 0..63] of Integer;
   QuantValid: array[0..3] of Boolean;
   DC, AC: array[0..3] of THuffTable;
   Comps: array[0..2] of TComponent;
   At, EndSegment, NComp, Restart, HMax, VMax, Adobe: Integer;
-  Frame: Boolean;
+  Frame, LegacyZeroPadding: Boolean;
 
   procedure Need(Count: Integer);
   begin
@@ -512,7 +516,10 @@ var
         end;
         Inc(Number);
       end;
-    B.Align;
+    // This legacy encoder writes zero padding before the final EOI marker.
+    // Only accept it after all declared blocks have been decoded.
+    var FinalEOI := (B.Pos = Length(Data) - 2) and (Data[B.Pos] = $FF) and (Data[B.Pos + 1] = $D9);
+    B.Align(LegacyZeroPadding and FinalEOI);
     At := B.Pos;
     for var S := 0 to NS - 1 do
       Comps[Selected[S]].Decoded := True;
@@ -530,6 +537,7 @@ begin
   for var C := 0 to 2 do
     Comps[C] := Default(TComponent);
   Frame := False;
+  LegacyZeroPadding := False;
   NComp := 0;
   Restart := 0;
   Adobe := -1;
@@ -573,7 +581,10 @@ begin
         if (EndSegment - At >= 12) and (Data[At] = Ord('A')) and (Data[At + 1] = Ord('d')) and
           (Data[At + 2] = Ord('o')) and (Data[At + 3] = Ord('b')) and (Data[At + 4] = Ord('e')) then
           Adobe := Data[At + 11];
-      $E0..$ED, $EF, $FE:
+      $FE:
+        if EndSegment - At = Length(ZeroPaddingEncoder) then
+          LegacyZeroPadding := LegacyZeroPadding or CompareMem(@Data[At], PAnsiChar(ZeroPaddingEncoder), Length(ZeroPaddingEncoder));
+      $E0..$ED, $EF:
         ;
     else
       Bad(jpegUnsupportedColorSpace);

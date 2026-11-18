@@ -10,10 +10,10 @@ type
   TM3GClipVertex = array[0..19] of Double;
 
   TM3GRasterTexture = record
-    Pixels: TJVMObject;
+    Pixels, Palette: TJVMObject;
     Width, Height, Format, WrapS, WrapT, Blending, Filter: Integer;
     BlendColor: UInt32;
-    BorderDiscard: Boolean;
+    BorderDiscard, ColorKey: Boolean;
   end;
 
   TM3GRasterTarget = record
@@ -42,6 +42,40 @@ uses
 
 type
   TPolygon = array[0..11] of TM3GClipVertex;
+
+  TRasterEdge = record
+    X, Y, DX, DY, BoundX, BoundY, ErrorScale, MaxError: Double;
+    Inclusive: Boolean;
+  end;
+
+const
+  EdgeEpsilon = 64 * 2.2204460492503131E-16;
+
+function RasterEdge(const U, V: TM3GClipVertex; MaxX, MaxY: Double): TRasterEdge;
+begin
+  Result.X := U[0];
+  Result.Y := U[1];
+  Result.DX := V[0] - U[0];
+  Result.DY := V[1] - U[1];
+  Result.BoundX := Max(Abs(U[0]), Abs(V[0]));
+  Result.BoundY := Max(Abs(U[1]), Abs(V[1]));
+  Result.ErrorScale := Abs(Result.DX) + Abs(Result.DY) + 1;
+  Result.MaxError := EdgeEpsilon * (Max(MaxX, Result.BoundX) + Max(MaxY, Result.BoundY) + 1) * Result.ErrorScale;
+  Result.Inclusive := (V[1] < U[1]) or ((V[1] = U[1]) and (V[0] > U[0]));
+end;
+
+function EdgeValue(const Edge: TRasterEdge; X, Y: Double): Double; inline;
+begin
+  Result := Edge.DX * (Y - Edge.Y) - Edge.DY * (X - Edge.X);
+  // Away from the edge the triangle-wide bound rules out a rounding tie.
+  // Near it, retain the per-sample tolerance and half-open coverage rule.
+  if Abs(Result) <= Edge.MaxError then
+  begin
+    var Magnitude := Max(Abs(X), Edge.BoundX) + Max(Abs(Y), Edge.BoundY) + 1;
+    if Abs(Result) <= EdgeEpsilon * Magnitude * Edge.ErrorScale then
+      Result := 0;
+  end;
+end;
 
 function RoundedChannel(Value: Double): UInt32;
 begin
@@ -76,7 +110,13 @@ function Sample(const Texture: TM3GRasterTexture; S, T: Double): UInt32;
       Y := ((Y mod Texture.Height) + Texture.Height) mod Texture.Height
     else
       Y := EnsureRange(Y, 0, Texture.Height - 1);
-    Result := UInt32(Texture.Pixels.ElementValues[Y * Texture.Width + X].AsInt);
+    var Value := Texture.Pixels.ElementValues[Y * Texture.Width + X].AsInt;
+    if Texture.Palette = nil then
+      Exit(UInt32(Value));
+    var PaletteIndex := Value and 255;
+    Result := UInt32(Texture.Palette.ElementValues[PaletteIndex].AsInt);
+    if Texture.ColorKey and (PaletteIndex = 0) then
+      Result := Result and $FFFFFF;
   end;
 
 begin
@@ -156,25 +196,6 @@ var
 
   procedure Raster(V0, V1, V2: TM3GClipVertex);
 
-    function Edge(const U, V: TM3GClipVertex; X, Y: Double): Double;
-    begin
-      var DX := V[0] - U[0];
-      var DY := V[1] - U[1];
-      Result := DX * (Y - U[1]) - DY * (X - U[0]);
-      // Clipping reconstructs points on an existing edge. Account for rounding
-      // in that reconstruction, projection and the cross product, so a sample
-      // on the edge still follows the same half-open coverage convention.
-      var Magnitude := Max(Abs(X), Max(Abs(U[0]), Abs(V[0]))) + Max(Abs(Y), Max(Abs(U[1]), Abs(V[1]))) + 1;
-      var ErrorBound := 64 * 2.2204460492503131E-16 * Magnitude * (Abs(DX) + Abs(DY) + 1);
-      if Abs(Result) <= ErrorBound then
-        Result := 0;
-    end;
-
-    function Inclusive(const U, V: TM3GClipVertex): Boolean;
-    begin
-      Result := (V[1] < U[1]) or ((V[1] = U[1]) and (V[0] > U[0]));
-    end;
-
     procedure Project(var V: TM3GClipVertex);
     begin
       V[0] := Target.ViewX + (V[0] / V[3] + 1) * Target.ViewWidth / 2;
@@ -188,7 +209,8 @@ var
     Project(V0);
     Project(V1);
     Project(V2);
-    var Area := Edge(V0, V1, V2[0], V2[1]);
+    var AreaEdge := RasterEdge(V0, V1, Abs(V2[0]), Abs(V2[1]));
+    var Area := EdgeValue(AreaEdge, V2[0], V2[1]);
     if IsNan(Area) or IsInfinite(Area) or (Area = 0) then
       Exit;
     // Window Y is down, so CCW front faces have a negative screen-space area.
@@ -223,20 +245,34 @@ var
     var B := Min(Double(Target.Bottom - 1), Floor(Max(V0[1], Max(V1[1], V2[1])) - 0.5));
     if (L > R) or (T > B) then
       Exit;
-    var I0 := Inclusive(V1, V2);
-    var I1 := Inclusive(V2, V0);
-    var I2 := Inclusive(V0, V1);
+    var MaxX := Max(Abs(L + 0.5), Abs(R + 0.5));
+    var MaxY := Max(Abs(T + 0.5), Abs(B + 0.5));
+    var Edge0 := RasterEdge(V1, V2, MaxX, MaxY);
+    var Edge1 := RasterEdge(V2, V0, MaxX, MaxY);
+    var Edge2 := RasterEdge(V0, V1, MaxX, MaxY);
+    var DepthTest := Target.DepthEnabled and Target.DepthTest;
+    var DepthWrite := Target.DepthEnabled and Target.DepthWrite;
+    var ReplacePixel := (Target.Blending = 68) and Target.ColorWrite and Target.AlphaWrite;
     for var Y := Integer(Trunc(T)) to Integer(Trunc(B)) do
     begin
       if VM.StopRequested then
         Exit;
       for var X := Integer(Trunc(L)) to Integer(Trunc(R)) do
       begin
-        var E0 := Edge(V1, V2, X + 0.5, Y + 0.5);
-        var E1 := Edge(V2, V0, X + 0.5, Y + 0.5);
-        var E2 := Edge(V0, V1, X + 0.5, Y + 0.5);
-        if (E0 < 0) or ((E0 = 0) and not I0) or (E1 < 0) or ((E1 = 0) and not I1) or
-          (E2 < 0) or ((E2 = 0) and not I2) then
+        var E0 := EdgeValue(Edge0, X + 0.5, Y + 0.5);
+        if (E0 < 0) or ((E0 = 0) and not Edge0.Inclusive) then
+          Continue;
+        var E1 := EdgeValue(Edge1, X + 0.5, Y + 0.5);
+        if (E1 < 0) or ((E1 = 0) and not Edge1.Inclusive) then
+          Continue;
+        var E2 := EdgeValue(Edge2, X + 0.5, Y + 0.5);
+        if (E2 < 0) or ((E2 = 0) and not Edge2.Inclusive) then
+          Continue;
+        var Index := Y * Target.Width + X;
+        var Z: Single := 0;
+        if DepthTest or DepthWrite then
+          Z := EnsureRange((E0 * V0[2] + E1 * V1[2] + E2 * V2[2]) / Area + DepthOffset, 0.0, 1.0);
+        if DepthTest and (Z > Target.Depth.ElementValues[Index].AsFloat) then
           Continue;
         var Fragment := FlatColor;
         var W0 := E0 / V0[3];
@@ -314,41 +350,40 @@ var
         end;
         if (Fragment shr 24) / 255 < Target.AlphaThreshold then
           Continue;
-        var Z: Single := EnsureRange((E0 * V0[2] + E1 * V1[2] + E2 * V2[2]) / Area + DepthOffset, 0.0, 1.0);
-        var Index := Y * Target.Width + X;
-        if Target.DepthEnabled then
+        if DepthWrite then
+          Target.Depth.ElementValues[Index] := TJVMValue.Float(Z);
+        var Blended := Fragment;
+        if not ReplacePixel then
         begin
-          if Target.DepthTest and (Z > Target.Depth.ElementValues[Index].AsFloat) then
-            Continue;
-          if Target.DepthWrite then
-            Target.Depth.ElementValues[Index] := TJVMValue.Float(Z);
-        end;
-        var Destination: UInt32;
-        if Target.Pixels <> nil then
-          Destination := UInt32(Target.Pixels.ElementValues[Index].AsInt)
-        else
-          Destination := HostPixels[Index];
-        var Blended: UInt32 := 0;
-        var Alpha := Integer(Fragment shr 24);
-        for var Channel := 0 to 3 do
-        begin
-          var Shift := Channel * 8;
-          var Source := Integer((Fragment shr Shift) and 255);
-          var Dest := Integer((Destination shr Shift) and 255);
-          var Value := Source;
-          case Target.Blending of
-            64:
-              Value := (Source * Alpha + Dest * (255 - Alpha) + 127) div 255;
-            65:
-              Value := Min(255, (Source * Alpha + 127) div 255 + Dest);
-            66:
-              Value := (Source * Dest + 127) div 255;
-            67:
-              Value := Min(255, (2 * Source * Dest + 127) div 255);
+          var Destination: UInt32;
+          if Target.Pixels <> nil then
+            Destination := UInt32(Target.Pixels.ElementValues[Index].AsInt)
+          else
+            Destination := HostPixels[Index];
+          Blended := 0;
+          var Alpha := Integer(Fragment shr 24);
+          for var Channel := 0 to 3 do
+          begin
+            var Shift := Channel * 8;
+            var Source := Integer((Fragment shr Shift) and 255);
+            var Dest := Integer((Destination shr Shift) and 255);
+            var Value := Source;
+            case Target.Blending of
+              64:
+                Value := (Source * Alpha + Dest * (255 - Alpha) + 127) div 255;
+              65:
+                Value := Min(255, (Source * Alpha + 127) div 255 + Dest);
+              66:
+                Value := (Source * Dest + 127) div 255;
+              256:
+                Value := Max(0, Dest - (Source * Alpha + 127) div 255);
+              67:
+                Value := Min(255, (2 * Source * Dest + 127) div 255);
+            end;
+            if ((Channel = 3) and not Target.AlphaWrite) or ((Channel <> 3) and not Target.ColorWrite) then
+              Value := Dest;
+            Blended := Blended or (UInt32(Value) shl Shift);
           end;
-          if ((Channel = 3) and not Target.AlphaWrite) or ((Channel <> 3) and not Target.ColorWrite) then
-            Value := Dest;
-          Blended := Blended or (UInt32(Value) shl Shift);
         end;
         if not Target.PreserveAlpha then
           Blended := Blended or $FF000000;

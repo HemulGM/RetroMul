@@ -96,7 +96,7 @@
         <DCC_K>false</DCC_K>
         <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
         <SanitizedProjectName>RetromulTerm</SanitizedProjectName>
-        <DCC_UnitSearchPath>..\..\source\media\audio\formats\midi;..\..\source\media\audio\formats\wav;..\..\source\media\audio\music\containers;..\..\source\media\audio\music\dumps;..\..\source\media\audio\music\formats;..\..\source\media\audio\processing;..\..\source\media\image;..\..\source\vm\jvm;..\..\source\vm\java;..\..\source\cores\j2me;..\..\source\platforms\j2me;..\..\source\cores\system32;..\..\source\platforms\system32;..\..\source\cores\system16;..\..\source\platforms\system16;..\..\source\cores\at7800;..\..\source\platforms\at7800;..\..\source\cores\jaguar;..\..\source\platforms\jaguar;..\..\source\platforms\at5200;..\..\source\cores\at2600;..\..\source\platforms\at2600;..\..\source\cores\at5200;..\..\source\cores\c64;..\..\source\cores\cps;..\..\source\cores\dc;..\..\source\cores\gamewatch;..\..\source\cores\gb;..\..\source\cores\gba;..\..\source\cores\gba\firmware;..\..\source\cores\gbc;..\..\source\cores\md;..\..\source\cores\md\firmware;..\..\source\cores\msx;..\..\source\cores\msx\firmware;..\..\source\cores\n64;..\..\source\cores\neogeo;..\..\source\cores\neogeo\firmware;..\..\source\cores\nes;..\..\source\cores\nes\mappers;..\..\source\cores\ngp;..\..\source\cores\ngp\firmware;..\..\source\cores\pce;..\..\source\cores\pce\firmware;..\..\source\cores\ps1;..\..\source\cores\ps1\firmware;..\..\source\cores\psp;..\..\source\cores\saturn;..\..\source\cores\saturn\firmware;..\..\source\cores\sg1000;..\..\source\cores\sms;..\..\source\cores\sms\firmware;..\..\source\cores\snes;..\..\source\cores\snes\firmware;..\..\source\cores\zx;..\..\source\cores\zx\firmware;..\..\source\platforms;..\..\source\platforms\cps;..\..\source\platforms\dc;..\..\source\platforms\gamewatch;..\..\source\platforms\gb;..\..\source\platforms\gba;..\..\source\platforms\gbc;..\..\source\platforms\md;..\..\source\platforms\msx;..\..\source\platforms\n64;..\..\source\platforms\neogeo;..\..\source\platforms\nes;..\..\source\platforms\ngp;..\..\source\platforms\pce;..\..\source\platforms\ps1;..\..\source\platforms\psp;..\..\source\platforms\saturn;..\..\source\platforms\sg1000;..\..\source\platforms\sms;..\..\source\platforms\snes;..\..\source\platforms\zx;..\..\dependencies\Delphi7z;..\..\dependencies\DelphiWinUI3\DelphiWindowStyle;..\..\dependencies\DelphiWinUI3\FMXWindowsDispatch;..\..\dependencies\DelphiWinUI3\FMXWindowsHint;..\..\dependencies\DelphiWinUI3\Sources;..\..\dependencies\DelphiWinUI3\WindowsNotificationManager;..\..\dependencies\FMXInput;..\..\dependencies\FMXVibration;..\..\dependencies\PCMAudio;..\..\source\hardware\audio;..\..\source\hardware\audio\opl;..\..\source\hardware\cpu;..\..\source\hardware\jit;..\..\source\media;..\..\source\media\cd;..\..\source\media\chd;..\..\source\media\audio\common;..\..\source\media\audio;..\..\source\media\audio\export;..\..\source\runtime\audio;..\..\source\media\audio\music\trackers;..\..\source\media\audio\music\trackers\amiga;..\..\source\runtime;..\..\source\ui\controls;..\..\source\ui\shaders;..\..\source\ui\svg;..\..\source\cores\colecovision;..\..\source\platforms\colecovision;..\retromul\ui;..\retromul\input;..\retromul\input\keyboard;..\retromul\input\gamepads;..\retromul\controllers;..\retromul\platform;..\retromul\settings;..\retromul;..\..\source\runtime\audio;..\..\source\media\audio\codecs\atrac3;..\..\source\media\audio\codecs\atrac3plus;..\..\source\media\audio\codecs\aac;..\..\source\media\audio\common;..\..\source\media\common;..\..\source\media\audio\codecs\mp3;..\..\source\media\video\avc;..\..\source\media\archive;..\..\source\media\audio\synthesis\soundfont;..\..\source\cores\nds;..\..\source\platforms\nds;..\..\source\cores\lynx;..\..\source\platforms\lynx;..\..\source\hardware;..\..\source\cores\ws;..\..\source\platforms\ws;..\..\source\gpu\vulkan;..\..\source\gpu\shaders;..\..\dependencies\PasToSPIRV\source;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>..\..\source\media\swf;..\..\source\vm\avm1;..\..\source\cores\flash;..\..\source\platforms\flash;..\..\source\media\audio\formats\midi;..\..\source\media\audio\formats\wav;..\..\source\media\audio\music\containers;..\..\source\media\audio\music\dumps;..\..\source\media\audio\music\formats;..\..\source\media\audio\processing;..\..\source\media\image;..\..\source\vm\jvm;..\..\source\vm\java;..\..\source\cores\j2me;..\..\source\platforms\j2me;..\..\source\cores\system32;..\..\source\platforms\system32;..\..\source\cores\system16;..\..\source\platforms\system16;..\..\source\cores\at7800;..\..\source\platforms\at7800;..\..\source\cores\jaguar;..\..\source\platforms\jaguar;..\..\source\platforms\at5200;..\..\source\cores\at2600;..\..\source\platforms\at2600;..\..\source\cores\at5200;..\..\source\cores\c64;..\..\source\cores\cps;..\..\source\cores\dc;..\..\source\cores\gamewatch;..\..\source\cores\gb;..\..\source\cores\gba;..\..\source\cores\gba\firmware;..\..\source\cores\gbc;..\..\source\cores\md;..\..\source\cores\md\firmware;..\..\source\cores\msx;..\..\source\cores\msx\firmware;..\..\source\cores\n64;..\..\source\cores\neogeo;..\..\source\cores\neogeo\firmware;..\..\source\cores\nes;..\..\source\cores\nes\mappers;..\..\source\cores\ngp;..\..\source\cores\ngp\firmware;..\..\source\cores\pce;..\..\source\cores\pce\firmware;..\..\source\cores\ps1;..\..\source\cores\ps1\firmware;..\..\source\cores\psp;..\..\source\cores\saturn;..\..\source\cores\saturn\firmware;..\..\source\cores\sg1000;..\..\source\cores\sms;..\..\source\cores\sms\firmware;..\..\source\cores\snes;..\..\source\cores\snes\firmware;..\..\source\cores\zx;..\..\source\cores\zx\firmware;..\..\source\platforms;..\..\source\platforms\cps;..\..\source\platforms\dc;..\..\source\platforms\gamewatch;..\..\source\platforms\gb;..\..\source\platforms\gba;..\..\source\platforms\gbc;..\..\source\platforms\md;..\..\source\platforms\msx;..\..\source\platforms\n64;..\..\source\platforms\neogeo;..\..\source\platforms\nes;..\..\source\platforms\ngp;..\..\source\platforms\pce;..\..\source\platforms\ps1;..\..\source\platforms\psp;..\..\source\platforms\saturn;..\..\source\platforms\sg1000;..\..\source\platforms\sms;..\..\source\platforms\snes;..\..\source\platforms\zx;..\..\dependencies\Delphi7z;..\..\dependencies\DelphiWinUI3\DelphiWindowStyle;..\..\dependencies\DelphiWinUI3\FMXWindowsDispatch;..\..\dependencies\DelphiWinUI3\FMXWindowsHint;..\..\dependencies\DelphiWinUI3\Sources;..\..\dependencies\DelphiWinUI3\WindowsNotificationManager;..\..\dependencies\FMXInput;..\..\dependencies\FMXVibration;..\..\dependencies\PCMAudio;..\..\source\hardware\audio;..\..\source\hardware\audio\opl;..\..\source\hardware\cpu;..\..\source\hardware\jit;..\..\source\media;..\..\source\media\cd;..\..\source\media\chd;..\..\source\media\audio\common;..\..\source\media\audio;..\..\source\media\audio\export;..\..\source\runtime\audio;..\..\source\media\audio\music\trackers;..\..\source\media\audio\music\trackers\amiga;..\..\source\runtime;..\..\source\ui\controls;..\..\source\ui\shaders;..\..\source\ui\svg;..\..\source\cores\colecovision;..\..\source\platforms\colecovision;..\retromul\ui;..\retromul\input;..\retromul\input\keyboard;..\retromul\input\gamepads;..\retromul\controllers;..\retromul\platform;..\retromul\settings;..\retromul;..\..\source\runtime\audio;..\..\source\media\audio\codecs\atrac3;..\..\source\media\audio\codecs\atrac3plus;..\..\source\media\audio\codecs\aac;..\..\source\media\audio\common;..\..\source\media\common;..\..\source\media\audio\codecs\mp3;..\..\source\media\video\avc;..\..\source\media\archive;..\..\source\media\audio\synthesis\soundfont;..\..\source\cores\nds;..\..\source\platforms\nds;..\..\source\cores\lynx;..\..\source\platforms\lynx;..\..\source\hardware;..\..\source\cores\ws;..\..\source\platforms\ws;..\..\source\gpu\vulkan;..\..\source\gpu\shaders;..\..\dependencies\PasToSPIRV\source;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
         <BRCC_IncludePath>$(BRCC_IncludePath);..\..\source\gpu\shaders</BRCC_IncludePath>
         <VerInfo_Locale>1049</VerInfo_Locale>
         <VerInfo_Keys>CompanyName=;FileDescription=$(MSBuildProjectName);FileVersion=1.0.0.0;InternalName=;LegalCopyright=;LegalTrademarks=;OriginalFilename=;ProgramID=com.embarcadero.$(MSBuildProjectName);ProductName=$(MSBuildProjectName);ProductVersion=1.0.0.0;Comments=</VerInfo_Keys>
@@ -228,6 +228,36 @@
         <Debugger_RunParams>&quot;H:\ROMS\nes\Adventure Island 2.nes&quot;</Debugger_RunParams>
     </PropertyGroup>
     <ItemGroup>
+        <DCCReference Include="..\..\source\runtime\Core.Input.Touch.pas" />
+        <DCCReference Include="..\..\source\media\swf\SWF.Reader.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Geometry.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Bitmap.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Sound.pas"/>
+        <DCCReference Include="..\..\source\media\audio\codecs\mp3\Audio.MP3.Metadata.pas"/>
+        <DCCReference Include="..\..\source\media\audio\codecs\mp3\Audio.MP3.Source.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Movie.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Names.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Numeric.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Coercion.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Runtime.pas"/>
+        <DCCReference Include="..\..\source\vm\avm2\AVM2.ABC.pas"/>
+        <DCCReference Include="..\..\source\vm\avm2\AVM2.Runtime.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Arrays.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Strings.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Dates.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Colors.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Geometry.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Transforms.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Broadcaster.pas" />
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.BitmapOps.pas" />
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.BitmapData.pas" />
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.TextFormat.pas" />
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Trigonometry.pas"/>
+        <DCCReference Include="..\..\source\cores\flash\Flash.Player.pas"/>
+        <DCCReference Include="..\..\source\cores\flash\Flash.Text.pas" />
+        <DCCReference Include="..\..\source\cores\flash\Flash.Audio.pas" />
+        <DCCReference Include="..\..\source\platforms\flash\Core.Platforms.Flash.Adapter.pas"/>
+        <DCCReference Include="..\..\source\platforms\flash\RM.Platforms.Flash.pas"/>
         <DCCReference Include="..\..\source\media\audio\Audio.Types.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Morph.pas" />
         <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Picking.pas" />
@@ -238,6 +268,7 @@
         <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Lighting.pas" />
         <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Environment.pas" />
         <DCCReference Include="..\..\source\media\image\Media.Image.Types.pas" />
+        <DCCReference Include="..\..\source\media\image\Media.Image.PixelBuffer.pas" />
         <DCCReference Include="..\..\source\media\image\Media.Image.GIF.pas" />
         <DCCReference Include="..\..\source\media\image\Media.Image.JPEG.pas" />
         <DCCReference Include="..\..\source\media\image\Media.Image.Decode.pas" />
@@ -250,6 +281,11 @@
         <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Scene.pas" />
         <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.pas" />
         <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Math.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Micro3D.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Micro3D.Texture.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Micro3D.Figure.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Micro3D.Action.pas" />
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Micro3D.Graphics.pas" />
         <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Geometry.pas" />
         <DCCReference Include="..\..\source\runtime\Core.RomMetadata.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Metadata.pas"/>
@@ -257,6 +293,7 @@
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Display.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Screen.Code.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Vodafone.Device.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Vodafone.Micro3D.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Audio.State.pas"/>
         <DCCReference Include="..\..\source\vm\jvm\JVM.StateIO.pas"/>
         <DCCReference Include="..\..\source\platforms\bluetooth\Core.Platforms.Bluetooth.pas"/>
@@ -293,6 +330,8 @@
         <DCCReference Include="..\..\source\runtime\Core.Bluetooth.Types.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Network.HTTP.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Network.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.FileSystem.Store.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.FileSystem.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Form.Layout.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Forms.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Item.Layout.pas"/>
@@ -312,6 +351,7 @@
         <DCCReference Include="..\..\source\cores\j2me\J2ME.LCDUI.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.RMS.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.RMS.Store.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.ToneSequence.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Media.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Effects.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Siemens.Game.pas"/>
@@ -319,6 +359,7 @@
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Resources.pas"/>
         <DCCReference Include="..\..\source\platforms\j2me\Core.Platforms.J2ME.Playback.pas"/>
         <DCCReference Include="..\..\source\media\audio\Audio.Decoder.pas"/>
+        <DCCReference Include="..\..\source\media\audio\formats\wav\Audio.Codec.GSM.pas"/>
         <DCCReference Include="..\..\source\media\audio\formats\wav\Audio.Format.WAV.pas"/>
         <DCCReference Include="..\..\source\media\audio\formats\midi\Audio.Format.MIDI.pas"/>
         <DCCReference Include="..\..\source\media\audio\common\Audio.Binary.pas"/>

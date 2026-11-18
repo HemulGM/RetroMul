@@ -1,8 +1,5 @@
 ﻿unit Video.AVC.H264.CABAC;
 
-// Scalar CABAC arithmetic decoder; FFmpeg n7.1 cabac.c/h264_cabac.c.
-// Copyright (c) 2003 Michael Niedermayer. LGPL-2.1-or-later.
-
 interface
 
 uses

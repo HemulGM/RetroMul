@@ -59,6 +59,12 @@ type
     Key: string;
   end;
 
+  TJVMResolvedMethod = record
+    Method: TJVMMethod;
+    ClassName: string;
+    Opcode: Byte;
+  end;
+
   TJVMClass = class
   public
     Name, SuperName: string;
@@ -66,6 +72,7 @@ type
     Major, Minor, Access: Word;
     Constants: TArray<TJVMConstant>;
     ResolvedFields: TArray<TJVMResolvedField>;
+    ResolvedMethods: TArray<TJVMResolvedMethod>;
     Fields: TObjectList<TJVMField>;
     Methods: TObjectList<TJVMMethod>;
     InitState: Integer; // 0=uninitialized, 1=initializing, 2=ready, 3=failed.

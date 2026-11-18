@@ -12,7 +12,7 @@ type
     FVM: TJVM;
     FCanvasKeyLayout: TJ2MEKeyLayout;
     FWidth, FHeight, FCurrent: Integer;
-    FDirty: Boolean;
+    FDirty, FReserveCanvasFooter: Boolean;
     FMenu, FScrollText: Boolean;
     FMenuIndex: Integer;
     FTickerStep: Int64;
@@ -42,6 +42,7 @@ type
     function ChoiceInvoke(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
   public
     property CanvasKeyLayout: TJ2MEKeyLayout read FCanvasKeyLayout write FCanvasKeyLayout;
+    property ReserveCanvasFooter: Boolean read FReserveCanvasFooter write FReserveCanvasFooter;
     procedure TransferState(S: TJVMStateIO);
     constructor Create(VM: TJVM; Width, Height: Integer; const ChangeScreen: TProc<Integer>; const PostTimeout: TProc<Integer, Integer>; const PostItemChanged: TProc<Integer>);
     destructor Destroy; override;
@@ -508,7 +509,7 @@ begin
   if IsCanvas(Screen) and (LCDInt(O, 'full') <> 0) then
     Exit;
   // Geometry is queried by drawing methods too; it must not sort commands.
-  var Footer := not IsCanvas(Screen);
+  var Footer := FReserveCanvasFooter or not IsCanvas(Screen);
   var CommandRefs := LCDRef(O, 'commands');
   if (CommandRefs <> 0) and (Length(FVM.GetObject(CommandRefs).Elements) > 0) then
     Footer := True;
@@ -1015,9 +1016,12 @@ begin
     FDirty := True;
     Exit;
   end;
-  // Normal-mode softkeys stay reserved even when the command list is empty.
-  var Full := IsCanvas(Screen) and (LCDInt(O, 'full') <> 0);
-  if (Code = -6) or (Code = -7) then
+  // These MIDP 1.0 Siemens games draw and handle their own softkeys even
+  // in normal Canvas mode. Real LCDUI commands keep their usual handling.
+  var Canvas := IsCanvas(Screen);
+  var Full := Canvas and (LCDInt(O, 'full') <> 0);
+  var RawSiemensSoftkeys := Canvas and (FCanvasKeyLayout = TJ2MEKeyLayout.Siemens) and (Length(Values) = 0);
+  if ((Code = -6) or (Code = -7)) and not RawSiemensSoftkeys then
   begin
     if not Pressed then
     begin

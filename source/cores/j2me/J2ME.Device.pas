@@ -13,10 +13,68 @@ type
     function ToString: string;
   end;
 
+  // Evidence from repeated, unclipped screen viewport requests, never assets
+  // or title identities. A candidate must recur in eight completed frames.
+  TJ2MEViewportEvidence = record
+  private
+    FWidth, FHeight, FFrames, FPendingWidth, FPendingHeight: Integer;
+    FConflict: Boolean;
+  public
+    procedure Observe(Width, Height, CanvasWidth, CanvasHeight: Integer);
+    procedure CompleteFrame;
+    function Recommendation(out Size: TJ2MEScreenSize): Boolean;
+  end;
+
+  IJ2MEResolutionAdvice = interface
+    ['{15AAAE94-3A74-46DB-9795-BE7FA0FE4E09}']
+    function TakeResolutionAdvice(out Current, Recommended: TJ2MEScreenSize): Boolean;
+  end;
+
 implementation
 
 uses
   System.SysUtils;
+
+procedure TJ2MEViewportEvidence.Observe(Width, Height, CanvasWidth, CanvasHeight: Integer);
+begin
+  // Oversized images, translated clips, and subregions are not a viewport.
+  // The caller supplies only origin-aligned setClip on the display Graphics.
+  if (Width < CanvasWidth) or (Height < CanvasHeight) or
+    (Width > 1024) or (Height > 1024) or
+    ((Width = CanvasWidth) = (Height = CanvasHeight)) then
+    Exit;
+  if (FPendingWidth <> 0) and
+    ((FPendingWidth <> Width) or (FPendingHeight <> Height)) then
+    FConflict := True;
+  FPendingWidth := Width;
+  FPendingHeight := Height;
+end;
+
+procedure TJ2MEViewportEvidence.CompleteFrame;
+begin
+  if FConflict or (FPendingWidth = 0) then
+    FFrames := 0
+  else
+  begin
+    if (FWidth <> FPendingWidth) or (FHeight <> FPendingHeight) then
+      FFrames := 0;
+    FWidth := FPendingWidth;
+    FHeight := FPendingHeight;
+    if FFrames < 8 then
+      Inc(FFrames);
+  end;
+  FPendingWidth := 0;
+  FPendingHeight := 0;
+  FConflict := False;
+end;
+
+function TJ2MEViewportEvidence.Recommendation(out Size: TJ2MEScreenSize): Boolean;
+begin
+  Size := Default(TJ2MEScreenSize);
+  Result := FFrames >= 8;
+  if Result then
+    Size := TJ2MEScreenSize.Create(FWidth, FHeight);
+end;
 
 class function TJ2MEScreenSize.Create(Width, Height: Integer): TJ2MEScreenSize;
 begin
@@ -56,7 +114,7 @@ end;
 class function TJ2MEScreenSize.Presets: TArray<TJ2MEScreenSize>;
 begin
   Result := [Create(96, 65), Create(101, 80), Create(128, 128), Create(128, 160), Create(176, 208), Create(176, 220),
-      Create(208, 208), Create(240, 320), Create(320, 240), Create(352, 416), Create(360, 640), Create(480, 800)];
+      Create(208, 208), Create(240, 320), Create(240, 400), Create(320, 240), Create(352, 416), Create(360, 640), Create(480, 800)];
 end;
 
 function TJ2MEScreenSize.ToString: string;

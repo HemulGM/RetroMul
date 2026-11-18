@@ -75,8 +75,10 @@ begin
     Delete(Result, 1, 1);
 end;
 
-function QueueKey(const Phone: string; Protocol: TMessagingProtocol; Port: Integer): string;
+function QueueKey(const Phone: string; Protocol: TMessagingProtocol; Port: Integer; ApplicationID: UInt32 = 0): string;
 begin
+  if Protocol = TMessagingProtocol.SiemensSMS then
+    Exit(IntToStr(Ord(Protocol)) + '|' + Digits(Phone) + '|' + UIntToStr(ApplicationID));
   Result := IntToStr(Ord(Protocol)) + '|' + Digits(Phone) + '|' + IntToStr(Port);
 end;
 
@@ -180,16 +182,17 @@ begin
   if not (Mode in [1, 2, 3]) then
     Exit(TMessagingError.InvalidAddress);
   var Parsed: TMessageAddress;
-  if not TMessageAddress.TryParse(Address.ToString, Parsed) or (Parsed.Server <> Address.Server) or (Parsed.Protocol <> Address.Protocol) or (Parsed.Port <> Address.Port) or (Parsed.Phone <> Address.Phone) then
+  if not TMessageAddress.TryParse(Address.ToString, Parsed) or (Parsed.Server <> Address.Server) or (Parsed.Protocol <> Address.Protocol) or (Parsed.Port <> Address.Port) or
+    (Parsed.Phone <> Address.Phone) or (Parsed.ApplicationID <> Address.ApplicationID) then
     Exit(TMessagingError.InvalidAddress);
-  if ((Address.Protocol = TMessagingProtocol.SMS) and not (TMessagingPermission.SMSConnect in Details.Permissions)) or
+  if ((Address.Protocol <> TMessagingProtocol.CBS) and not (TMessagingPermission.SMSConnect in Details.Permissions)) or
     ((Address.Protocol = TMessagingProtocol.CBS) and not (TMessagingPermission.CBSConnect in Details.Permissions)) then
     Exit(TMessagingError.Denied);
   if (Address.Protocol = TMessagingProtocol.CBS) and (not Address.Server or (Mode = 2)) then
     Exit(TMessagingError.InvalidAddress);
   TMonitor.Enter(Network.Lock);
   try
-    var Key := QueueKey(Details.PhoneNumber, Address.Protocol, Address.Port);
+    var Key := QueueKey(Details.PhoneNumber, Address.Protocol, Address.Port, Address.ApplicationID);
     var Inbox: TInbox := nil;
     if Address.Server then
     begin
@@ -267,24 +270,28 @@ begin
       Exit(TMessagingError.Closed);
     if not (TMessagingPermission.SMSSend in Permissions) then
       Exit(TMessagingError.Denied);
-    if ((Mode and 2) = 0) or (Endpoint.Protocol <> TMessagingProtocol.SMS) or (Destination.Protocol <> TMessagingProtocol.SMS) or Destination.Server then
+    if ((Mode and 2) = 0) or (Endpoint.Protocol = TMessagingProtocol.CBS) or
+      (Destination.Protocol <> Endpoint.Protocol) or Destination.Server then
       Exit(TMessagingError.InvalidAddress);
     var Parsed: TMessageAddress;
-    if not TMessageAddress.TryParse(Destination.ToString, Parsed) or Parsed.Server or (Parsed.Phone <> Destination.Phone) or (Parsed.Port <> Destination.Port) then
+    if not TMessageAddress.TryParse(Destination.ToString, Parsed) or Parsed.Server or (Parsed.Phone <> Destination.Phone) or
+      (Parsed.Port <> Destination.Port) or (Parsed.ApplicationID <> Destination.ApplicationID) then
       Exit(TMessagingError.InvalidAddress);
     if SMSRestrictedPort(Destination.Port) then
       Exit(TMessagingError.Denied);
-    var Segments := SMSCountSegments(Message.Text, Length(Message.Data), Message.Kind = TMessagingPayload.Binary, Destination.Port >= 0);
+    var Segments := SMSCountSegments(Message.Text, Length(Message.Data), Message.Kind = TMessagingPayload.Binary,
+      (Destination.Port >= 0) or (Destination.Protocol = TMessagingProtocol.SiemensSMS));
     if (Segments = 0) or (Segments > MaxSMSSegments) then
       Exit(TMessagingError.TooLarge);
-    var Q := Network.GetQueue(QueueKey(Destination.Phone, Destination.Protocol, Destination.Port));
+    var Q := Network.GetQueue(QueueKey(Destination.Phone, Destination.Protocol, Destination.Port, Destination.ApplicationID));
     if Q = nil then
       Exit(TMessagingError.Capacity);
     if (Q.Values.Count >= Network.QueueCapacity) or (Q.Serial = High(UInt64)) then
       Exit(TMessagingError.WouldBlock);
     var CopyOfMessage := Snapshot(Message);
     var Source: TMessageAddress := Default(TMessageAddress);
-    Source.Protocol := TMessagingProtocol.SMS;
+    Source.Protocol := Destination.Protocol;
+    Source.ApplicationID := Destination.ApplicationID;
     Source.Phone := Phone;
     Source.Port := -1;
     if Endpoint.Server and (Destination.Port >= 0) then
@@ -313,7 +320,7 @@ begin
       Exit(TMessagingError.Closed);
     if (Inbox = nil) or ((Mode and 1) = 0) then
       Exit(TMessagingError.InvalidAddress);
-    if ((Endpoint.Protocol = TMessagingProtocol.SMS) and not (TMessagingPermission.SMSReceive in Permissions)) or
+    if ((Endpoint.Protocol <> TMessagingProtocol.CBS) and not (TMessagingPermission.SMSReceive in Permissions)) or
       ((Endpoint.Protocol = TMessagingProtocol.CBS) and not (TMessagingPermission.CBSReceive in Permissions)) then
       Exit(TMessagingError.Denied);
     if Inbox.Values.Count = 0 then

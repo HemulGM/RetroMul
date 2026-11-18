@@ -6,8 +6,7 @@ interface
 {$BOOLEVAL OFF}
 
 type
-  TPSPGEKernel = (Raster, SelfTest, HLEVertex, HLEFragment, HLEBlendFragment,
-    HLEDown, HLEClut);
+  TPSPGEKernel = (Raster, SelfTest, HLEVertex, HLEFragment, HLEBlendFragment, HLEDown, HLEClut);
 
 const
   PSPGEEntryPoint: AnsiString = 'main';
@@ -17,8 +16,8 @@ function PSPGEKernelCode(Kernel: TPSPGEKernel): TArray<Cardinal>;
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs, PTS.Component,
-  PTS.Compiler, PTS.Source, PTS.Diagnostics, RM.Vulkan.Loader;
+  System.SysUtils, System.Classes, System.SyncObjs, PTS.Component, PTS.Compiler,
+  PTS.Source, PTS.Diagnostics, RM.Vulkan.Loader;
 
 {$R 'PSPGE.Pascal.res' 'PSPGE.Pascal.rc'}
 
@@ -71,14 +70,13 @@ begin
     var Compiled: TCompilationResult;
     try
       Compiled := Compiler.Compile(ResourceText(ResourceNames[Kernel]), [
-        TSourceText.Create('SoftDouble.pasm', ResourceText('PSP_GE_SOFT_DOUBLE')),
-        TSourceText.Create('PSPGEHLEPush.pasm', ResourceText('PSP_GE_HLE_PUSH')),
-        TSourceText.Create('PSPGEHLEFragment.pasm', ResourceText('PSP_GE_HLE_SHADE')),
-        TSourceText.Create('PSPGEHLEBlend.pasm', ResourceText('PSP_GE_HLE_BLEND'))]);
+          TSourceText.Create('SoftDouble.pasm', ResourceText('PSP_GE_SOFT_DOUBLE')),
+          TSourceText.Create('PSPGEHLEPush.pasm', ResourceText('PSP_GE_HLE_PUSH')),
+          TSourceText.Create('PSPGEHLEFragment.pasm', ResourceText('PSP_GE_HLE_SHADE')),
+          TSourceText.Create('PSPGEHLEBlend.pasm', ResourceText('PSP_GE_HLE_BLEND'))]);
     except
       on E: EShaderError do
-        raise EVulkanError.CreateFmt('%s(%d,%d): %s',
-          [E.Position.FileName, E.Position.Line, E.Position.Column, E.Message]);
+        raise EVulkanError.CreateFmt('%s(%d,%d): %s', [E.Position.FileName, E.Position.Line, E.Position.Column, E.Message]);
     end;
     if (Length(Compiled.SPIRV) < 20) or (Length(Compiled.SPIRV) mod SizeOf(Cardinal) <> 0) then
       raise EVulkanError.Create('Invalid SPIR-V from Pascal shader: ' + SourceNames[Kernel]);
@@ -109,3 +107,4 @@ finalization
   CacheLock.Free;
 
 end.
+

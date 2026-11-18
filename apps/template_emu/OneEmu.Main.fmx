@@ -1,0 +1,11 @@
+object FormMain: TFormMain
+  Left = 0
+  Top = 0
+  Caption = 'Form8'
+  ClientHeight = 637
+  ClientWidth = 1009
+  FormFactor.Width = 320
+  FormFactor.Height = 480
+  FormFactor.Devices = [Desktop]
+  DesignerMasterStyle = 0
+end

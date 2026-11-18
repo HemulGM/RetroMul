@@ -27,12 +27,12 @@ uses
   System.SysUtils, System.UITypes, System.IniFiles, System.Math, Core.Platforms,
   Core.Emulation, Core.Archive.Container, Core.Archive.Zip,
   Core.PlatformServices, RM.Input.Gamepads, Core.Platforms.J2ME.Adapter,
-  J2ME.Device, RM.Platforms.Presentation, RM.Platforms.CPS.Icons,
-  RM.Settings.Catalog, RM.Settings.Platform, RM.Settings.Builder,
-  RM.Settings.Devices, RM.Settings.Callouts, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Session.Runtime, RM.Window.Layout,
-  RM.Gamepad.Factory, RM.Platforms.J2ME.Gamepads, RM.Gamepad, J2ME.Input,
-  RM.Dialogs, FMX.Types, FMX.Controls, FMX.Objects;
+  J2ME.Device, J2ME.Suite, J2ME.Metadata, RM.Platforms.Presentation,
+  RM.Platforms.CPS.Icons, RM.Settings.Catalog, RM.Settings.Platform,
+  RM.Settings.Builder, RM.Settings.Devices, RM.Settings.Callouts,
+  RM.Settings.Runtime, RM.ControlsHelp.Content, RM.Session.Runtime,
+  RM.Window.Layout, RM.Gamepad.Factory, RM.Platforms.J2ME.Gamepads, RM.Gamepad,
+  J2ME.Input, RM.Dialogs, FMX.Types, FMX.Controls, FMX.Objects;
 
 type
   TJ2MEInputHandler = class(TPlatformInputHandler)
@@ -76,6 +76,7 @@ type
     class procedure Connect(const Context: TSessionRuntimeContext); override;
     class procedure Disconnect(const Context: TSessionRuntimeContext); override;
     class procedure SyncActivity(const Context: TSessionRuntimeContext); override;
+    class procedure FramePresented(const Context: TSessionRuntimeContext); override;
   end;
 
   TJ2MESettingsHandler = class(TPlatformSettingsHandler)
@@ -213,6 +214,23 @@ begin
   finally
     Ini.Free;
   end;
+end;
+
+class procedure TJ2MESessionHandler.FramePresented(const Context: TSessionRuntimeContext);
+begin
+  inherited;
+  if Context.State.Session.OpeningRom or Context.State.Browser.ViewingLibrary or
+    RetroDialogVisible(Context.View) or (Context.State.Settings.View <> nil) then
+    Exit;
+  var Advice: IJ2MEResolutionAdvice;
+  var Current, Recommended: TJ2MEScreenSize;
+  if Supports(Context.State.Session.Emulation, IJ2MEResolutionAdvice, Advice) and
+    Advice.TakeResolutionAdvice(Current, Recommended) then
+    ShowRetroMessage(Context.View,
+      Format(Translate('The game repeatedly requests a %d × %d screen. The current size is %d × %d, so part of the image may be clipped.'),
+        [Recommended.Width, Recommended.Height, Current.Width, Current.Height]) + sLineBreak + sLineBreak +
+      Translate('Set this size in the Java ME platform video settings, then restart the game from the beginning.'),
+      TRetroDialogKind.Information);
 end;
 
 class procedure TJ2MESessionHandler.SyncActivity(const Context: TSessionRuntimeContext);
@@ -412,6 +430,9 @@ begin
     begin
       Result := Preset.Value = 'custom';
     end;
+  Context.AddBoolean('RowJ2MEResolutionRecommendations', 'Show resolution recommendations',
+    'Suggest a screen size detected during emulation. Shown only when starting a game from the beginning.',
+    'Phone', 'ShowResolutionRecommendations', True);
   var M := Context.AddInteger('RowJ2MEMIDlet', 'MIDlet index', 'Zero selects the first application in the suite.', 'Phone', 'MIDletIndex', 0, 1023);
   M.Min := 0;
   M.ApplyMode := TSettingsApplyMode.OnNextLoad;
@@ -439,8 +460,17 @@ begin
       Context.Stream.Position := Saved;
     end;
   end;
-  if (Archive = nil) or (Archive.FindName('META-INF/MANIFEST.MF') < 0) then
+  if Archive = nil then
     Exit;
+  if Archive.FindName(J2MEManifestName) < 0 then
+  begin
+    var Location, Error: string;
+    var JAD := ReadJ2MEJAD(Context.Stream, Context.EffectiveStorage, Context.RomName, Location, Error);
+    if Length(JAD) = 0 then
+      Exit;
+    // The archive has no manifest. Verify the companion before claiming J2ME.
+    TJ2MESuite.Create(Archive, JAD, Context.EffectiveStorage, Context.Stream.Size).Free;
+  end;
   Result := TCoreMatch.Create('J2ME',
     function: IEmulationCore
     begin

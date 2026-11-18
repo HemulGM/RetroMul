@@ -96,6 +96,7 @@ uses
   Audio.Binary in '..\..\source\media\audio\common\Audio.Binary.pas',
   Core.Audio.Player in '..\..\source\runtime\audio\Core.Audio.Player.pas',
   Audio.Export.WAV in '..\..\source\media\audio\export\Audio.Export.WAV.pas',
+  Audio.Codec.GSM in '..\..\source\media\audio\formats\wav\Audio.Codec.GSM.pas',
   Audio.Format.WAV in '..\..\source\media\audio\formats\wav\Audio.Format.WAV.pas',
   RetroTune.InfoForm in 'ui\RetroTune.InfoForm.pas',
   RetroTune.ReferenceForm in 'ui\RetroTune.ReferenceForm.pas',

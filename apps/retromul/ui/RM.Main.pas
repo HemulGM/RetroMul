@@ -34,6 +34,7 @@ type
     procedure FormSaveState(Sender: TObject); override;
     procedure ButtonCloseRomClick(Sender: TObject); override;
     procedure ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single); override;
+    procedure ImageCanvasMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
     procedure ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single); override;
   private
     FFeedbackView: TFeedbackView;
@@ -192,6 +193,7 @@ begin
   FSessionController := TSessionController.Create(Self);
   FormStyles := TFormStyles.Create(Application);
   inherited;
+  OnTouch := FInputController.FormTouch;
   ImageCanvas := TShaderBitmap.Create(Self);
   ImageCanvas.Name := 'ImageCanvas';
   ImageCanvas.Parent := LayoutVideoOutput.Parent;
@@ -199,6 +201,8 @@ begin
   ImageCanvas.Align := TAlignLayout.Client;
   ImageCanvas.OnMouseDown := ImageCanvasMouseDown;
   ImageCanvas.OnMouseUp := ImageCanvasMouseUp;
+  ImageCanvas.OnMouseMove := ImageCanvasMouseMove;
+  ImageCanvas.AutoCapture := True;
   ImageLogo.Parent := ImageCanvas;
   LabelPaused.Parent := ImageCanvas;
   FreeAndNil(LayoutVideoOutput);
@@ -962,6 +966,11 @@ end;
 procedure TFormMain.ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
   FInputController.ImageCanvasMouseDown(Sender, Button, Shift, X, Y);
+end;
+
+procedure TFormMain.ImageCanvasMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
+begin
+  FInputController.ImageCanvasMouseMove(Sender, Shift, X, Y);
 end;
 
 procedure TFormMain.ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);

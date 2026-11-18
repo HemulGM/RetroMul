@@ -6,6 +6,9 @@ uses
   System.SysUtils, System.Classes, System.Generics.Collections, Core.Storage,
   Core.Archive.Container;
 
+const
+  J2MEManifestName = 'META-INF/MANIFEST.MF';
+
 type
   TJ2MEMIDlet = record
     Name, Icon, ClassName: string;
@@ -18,11 +21,13 @@ type
     FEntries: TDictionary<string, Integer>;
     FProperties, FManifestProperties, FJADProperties: TDictionary<string, string>;
     FMIDlets: TArray<TJ2MEMIDlet>;
-    FManifestText, FJADText: string;
+    FManifestName, FManifestText, FJADText: string;
+    procedure ValidateStandaloneJAD(JarSize: Int64);
+    function HasMIDletAncestor(const ClassName: string): Boolean;
     procedure ReadProperties(const Data: TBytes; MainSection: Boolean);
     procedure ReadMIDlets;
   public
-    constructor Create(const Archive: IArchiveContainer; const JAD: TBytes = nil; const Storage: IStorage = nil);
+    constructor Create(const Archive: IArchiveContainer; const JAD: TBytes = nil; const Storage: IStorage = nil; JarSize: Int64 = -1);
     destructor Destroy; override;
     class function Open(Input: TStream; const Storage: IStorage; const JAD: TBytes = nil): TJ2MESuite; static;
     function ReadResource(const Name: string): TBytes;
@@ -38,12 +43,13 @@ type
     function MIDlet(Index: Integer): TJ2MEMIDlet;
     property Storage: IStorage read FStorage;
     property Archive: IArchiveContainer read FArchive;
+    property ManifestName: string read FManifestName;
   end;
 
 implementation
 
 uses
-  Core.Archive.Zip;
+  Core.Archive.Zip, JVM.ClassFile;
 
 function TrimAttribute(const S: string): string;
 var
@@ -97,6 +103,9 @@ begin
       else
         Continue;
     end;
+    // Some archival JAD editors leave full-line comments in descriptors.
+    if not MainSection and Line.StartsWith('#') then
+      Continue;
     P := Pos(':', Line);
     if P < 2 then
       raise EReadError.Create('Invalid J2ME descriptor attribute');
@@ -110,7 +119,7 @@ begin
   end;
 end;
 
-constructor TJ2MESuite.Create(const Archive: IArchiveContainer; const JAD: TBytes; const Storage: IStorage);
+constructor TJ2MESuite.Create(const Archive: IArchiveContainer; const JAD: TBytes; const Storage: IStorage; JarSize: Int64);
 var
   I, Index: Integer;
   Entry: TArchiveEntry;
@@ -142,16 +151,26 @@ begin
       raise EReadError.Create('Invalid or duplicate JAR member: ' + Entry.Name);
     FEntries.Add(Entry.Name, I);
   end;
-  if not FEntries.TryGetValue('META-INF/MANIFEST.MF', Index) then
-    raise EReadError.Create('JAR has no META-INF/MANIFEST.MF');
-  if Archive.Entries[Index].Size > 1024 * 1024 then
-    raise EReadError.Create('Manifest exceeds 1 MiB');
-  Archive.Read(Index, Data);
-  FManifestText := TEncoding.UTF8.GetString(Data);
-  FJADText := TEncoding.UTF8.GetString(JAD);
-  ReadProperties(Data, True);
+  Index := Archive.FindName(J2MEManifestName);
+  if Index >= 0 then
+  begin
+    if Archive.Entries[Index].Size > 1024 * 1024 then
+      raise EReadError.Create('Manifest exceeds 1 MiB');
+    Archive.Read(Index, Data);
+    ReadProperties(Data, True);
+    FManifestName := Archive.Entries[Index].Name;
+    FManifestText := TEncoding.UTF8.GetString(Data);
+  end
+  else if Length(JAD) = 0 then
+    raise EReadError.Create('JAR has no manifest or companion JAD');
+
   if Length(JAD) <> 0 then
+  begin
     ReadProperties(JAD, False);
+    FJADText := TEncoding.UTF8.GetString(JAD);
+  end;
+  if Index < 0 then
+    ValidateStandaloneJAD(JarSize);
   if (GetProperty('MicroEdition-Configuration') <> '') and
     (GetProperty('MicroEdition-Configuration') <> 'CLDC-1.0') and
     (GetProperty('MicroEdition-Configuration') <> 'CLDC-1.1') then
@@ -160,6 +179,57 @@ begin
     if (Profile <> 'MIDP-1.0') and (Profile <> 'MIDP-2.0') then
       raise EReadError.Create('Unsupported Java ME profile: ' + Profile);
   ReadMIDlets;
+  if Index < 0 then
+    for var Item in FMIDlets do
+      if not HasMIDletAncestor(Item.ClassName) then
+        raise EReadError.Create('JAD entry class does not extend MIDlet: ' + Item.ClassName);
+end;
+
+procedure TJ2MESuite.ValidateStandaloneJAD(JarSize: Int64);
+begin
+  for var Key in ['MIDlet-Name', 'MIDlet-Vendor', 'MIDlet-Version', 'MIDlet-Jar-URL', 'MIDlet-1'] do
+    if GetProperty(Key) = '' then
+      raise EReadError.Create('JAD required attribute is missing: ' + Key);
+  var Size := GetProperty('MIDlet-Jar-Size');
+  for var Digit in Size do
+    if not CharInSet(Digit, ['0'..'9']) then
+      raise EReadError.Create('Invalid MIDlet-Jar-Size in standalone JAD');
+  var DeclaredSize: Int64;
+  if (JarSize <= 0) or not TryStrToInt64(Size, DeclaredSize) or (DeclaredSize <> JarSize) then
+    raise EReadError.Create('MIDlet-Jar-Size in standalone JAD does not match the JAR');
+end;
+
+function TJ2MESuite.HasMIDletAncestor(const ClassName: string): Boolean;
+const
+  MIDletBase = 'javax/microedition/midlet/MIDlet';
+begin
+  Result := False;
+  var Name := ClassName;
+  var Seen := TDictionary<string, Boolean>.Create;
+  try
+    for var Depth := 0 to 255 do
+    begin
+      TStorage.CheckReadCancelled;
+      if (Name = '') or (Name = 'java/lang/Object') or Seen.ContainsKey(Name) then
+        Exit;
+      var Data := LoadClass(Name);
+      if Length(Data) = 0 then
+        Exit;
+      Seen.Add(Name, True);
+      var C := TJVMClass.Parse(Data);
+      try
+        if C.Name <> Name then
+          Exit;
+        if C.SuperName = MIDletBase then
+          Exit(True);
+        Name := C.SuperName;
+      finally
+        C.Free;
+      end;
+    end;
+  finally
+    Seen.Free;
+  end;
 end;
 
 destructor TJ2MESuite.Destroy;
@@ -175,7 +245,8 @@ class function TJ2MESuite.Open(Input: TStream; const Storage: IStorage; const JA
 begin
   if not IsZipArchive(Input) then
     raise EReadError.Create('J2ME application must be a JAR archive');
-  Result := TJ2MESuite.Create(OpenZip(Input, Storage), JAD, Storage);
+  var JarSize := Input.Size;
+  Result := TJ2MESuite.Create(OpenZip(Input, Storage), JAD, Storage, JarSize);
 end;
 
 procedure TJ2MESuite.ReadMIDlets;

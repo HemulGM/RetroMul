@@ -8,7 +8,7 @@ uses
 {$SCOPEDENUMS ON}
 
 type
-  TMessagingProtocol = (SMS, CBS);
+  TMessagingProtocol = (SMS, CBS, SiemensSMS);
 
   TMessagingPayload = (Text, Binary);
 
@@ -25,6 +25,7 @@ type
     Phone: string;
     Port: Integer; // -1 means no application port; port0 is distinct.
     Server: Boolean;
+    ApplicationID: UInt32; // The Siemens SMS application identifier is independent of the WMA port.
     class function TryParse(const URL: string; out Address: TMessageAddress): Boolean; static;
     function ToString: string;
   end;
@@ -88,16 +89,21 @@ begin
   Address := Default(TMessageAddress);
   Address.Port := -1;
   Result := False;
-  if (Length(URL) < 7) or (Length(URL) > 16384) or (Copy(URL, 4, 3) <> '://') then
+  if Length(URL) > 16384 then
     Exit;
-  var Scheme := Copy(URL, 1, 3);
+  var Separator := Pos('://', URL);
+  if Separator = 0 then
+    Exit;
+  var Scheme := Copy(URL, 1, Separator - 1);
   if SameText(Scheme, 'sms') then
     Address.Protocol := TMessagingProtocol.SMS
   else if SameText(Scheme, 'cbs') then
     Address.Protocol := TMessagingProtocol.CBS
+  else if SameText(Scheme, 'siemens-sms') then
+    Address.Protocol := TMessagingProtocol.SiemensSMS
   else
     Exit;
-  var Tail := Copy(URL, 7, MaxInt);
+  var Tail := Copy(URL, Separator + 3, MaxInt);
   var Colon := Pos(':', Tail);
   var Phone := Tail;
   var PortText := '';
@@ -127,6 +133,23 @@ begin
       if not CharInSet(Phone[I], ['0'..'9']) then
         Exit;
   end;
+  if Address.Protocol = TMessagingProtocol.SiemensSMS then
+  begin
+    if (Length(PortText) = 0) or (Length(PortText) > 10) then
+      Exit;
+    var ID: UInt64 := 0;
+    for var C in PortText do
+    begin
+      if not CharInSet(C, ['0'..'9']) then
+        Exit;
+      ID := ID * 10 + Ord(C) - Ord('0');
+    end;
+    if ID > High(UInt32) then
+      Exit;
+    Address.ApplicationID := UInt32(ID);
+    Address.Phone := Phone;
+    Exit(True);
+  end;
   if Colon <> 0 then
   begin
     var Port := 0;
@@ -146,6 +169,8 @@ end;
 
 function TMessageAddress.ToString: string;
 begin
+  if Protocol = TMessagingProtocol.SiemensSMS then
+    Exit('siemens-sms://' + Phone + ':' + UIntToStr(ApplicationID));
   Result := 'sms://';
   if Protocol = TMessagingProtocol.CBS then
     Result := 'cbs://';

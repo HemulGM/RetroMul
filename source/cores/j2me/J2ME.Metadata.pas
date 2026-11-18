@@ -156,6 +156,7 @@ begin
     Document.AddPair('location', JarName);
     Document.AddPair('sha256', JarHash.ToLower);
     Document.AddPair('manifest', Attributes('manifest'));
+    Document.AddPair('manifest_location', Suite.ManifestName);
     Document.AddPair('jad', Attributes('jad'));
     Document.AddPair('properties', Attributes(''));
     // Includes folded lines and named manifest sections that must not become

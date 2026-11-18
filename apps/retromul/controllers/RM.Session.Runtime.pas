@@ -63,8 +63,8 @@ implementation
 
 uses
   System.SysUtils, System.Math, System.Generics.Collections,
-  System.Generics.Defaults, Core.Platforms, RM.Input, RM.Dialogs,
-  RM.Window.Layout, RM.Main.State;
+  Core.Emulation.Types, System.Generics.Defaults, Core.Platforms, RM.Input,
+  RM.Dialogs, RM.Window.Layout, RM.Main.State;
 
 var
   Handlers: TDictionary<string, TPlatformSessionHandlerClass>;
@@ -227,6 +227,7 @@ end;
 
 procedure ReleaseSessionInputs(const Context: TSessionRuntimeContext);
 begin
+  CancelScreenTouch(Context);
   var Classes := TList<TPlatformSessionHandlerClass>.Create;
   var Released := TList<TControl>.Create;
   try
@@ -289,6 +290,17 @@ begin
   Context.View.ImageCanvas.HitTest := False;
   Context.View.ImageCanvas.CanFocus := False;
   Context.View.ImageCanvas.DisableFocusEffect := True;
+  var Touch: IEmulationTouchInput;
+  if Supports(Context.State.Session.Emulation, IEmulationTouchInput, Touch) then
+  begin
+    // Core capabilities are available before the first guest frame. Keep the
+    // real picture above the parent fullscreen DblClick surface, as for NES.
+    Context.View.ImageCanvas.HitTest := True;
+    Context.View.ImageCanvas.CanFocus := True;
+    Context.View.ImageCanvas.CanParentFocus := True;
+    Context.View.ImageCanvas.OnKeyDown := Context.View.FormKeyDown;
+    Context.View.ImageCanvas.OnKeyUp := Context.View.FormKeyUp;
+  end;
 end;
 
 class procedure TPlatformSessionHandler.Disconnect(const Context: TSessionRuntimeContext);
@@ -347,6 +359,8 @@ class procedure TPlatformSessionHandler.ApplyActivityGate(const Context: TSessio
 begin
   var Allowed := {$IFDEF ISMOBILE}not Context.State.Mobile.InBackground and {$ENDIF}not Context.View.GameActionsPopup.IsOpen and
     not RetroDialogVisible(Context.View);
+  if not Allowed or not ScreenTouchAllowed(Context) then
+    CancelScreenTouch(Context);
   if Context.State.Input.Gamepad <> nil then
     Context.State.Input.Gamepad.Enabled := Context.State.Input.Gamepad.Enabled and Allowed;
   for var Item in InputControls(Context) do

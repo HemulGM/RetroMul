@@ -8,13 +8,14 @@ uses
   System.Generics.Collections, Core.Storage, Core.Emulation, J2ME.Suite,
   J2ME.Runtime, Core.Platforms.J2ME.Playback, Core.Bluetooth.Types,
   Core.Messaging.Types, J2ME.Device, J2ME.Screen, J2ME.Display, Core.RomMetadata,
-  J2ME.Input;
+  J2ME.Input, Core.Input.Touch;
 
 type
   TJ2MEConfig = class(TEmulatorConfigBase)
   public
     Width, Height, MIDletIndex: Integer;
     ScreenSize: string;
+    ShowResolutionRecommendations: Boolean;
     function EffectiveScreen: TJ2MEScreenSize;
     constructor Create(const FileName: string; const Storage: IStorage);
   protected
@@ -27,7 +28,7 @@ type
     Pressed: Boolean;
   end;
 
-  TJ2MECoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationCompletion, IEmulationGameActions, IEmulationAudioDiagnostics, IEmulationBluetooth, IEmulationMessaging, IEmulationRumbleOutput, IEmulationSnapshotLocation, IEmulationRomMetadata, IJ2MEPhoneInput)
+  TJ2MECoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationCompletion, IEmulationGameActions, IEmulationAudioDiagnostics, IEmulationBluetooth, IEmulationMessaging, IEmulationRumbleOutput, IEmulationSnapshotLocation, IEmulationRomMetadata, IJ2MEPhoneInput, IJ2MEResolutionAdvice, IEmulationTouchInput)
   private
     FSnapshotCommands: TSnapshotQueue;
     FSnapshotHash: TBytes;
@@ -42,12 +43,18 @@ type
     FWorker: TThread;
     FLock: TCriticalSection;
     FEvents: TQueue<TJ2MEKeyEvent>;
+    FTouchEvents: TList<TEmulationTouchEvent>;
+    FTouchTracker: TEmulationTouchTracker;
+    FUsesTouch, FTouchOverflow, FTouchFit: Boolean;
+    FCanvasWidth, FCanvasHeight: Integer;
     FKeyboard: TDictionary<UInt32, Integer>;
     FHeld: TDictionary<Integer, Integer>;
     FInput: TEmulatorInput;
     FVirtualKeypad: Word;
     FFrame: TEmulatorFrame;
     FDisplayQuarterTurns: Integer;
+    FAdviceCurrent, FAdviceRecommended: TJ2MEScreenSize;
+    FAdviceReady, FAdviceShown, FAdviceSuppressed: Boolean;
     FFrameReady, FPaused, FFinished: Boolean;
     FInputResync: Boolean;
     FError, FAudioError: string;
@@ -84,6 +91,8 @@ type
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
     procedure SetVirtualKeypad(Keys: Word);
+    function GetUsesTouch: Boolean;
+    procedure SendTouch(const Event: TEmulationTouchEvent);
     function GetInputState: TEmulatorInput;
     function GetSnapshotDirectory: string;
     procedure SaveSnapshot(const Name: string);
@@ -91,6 +100,7 @@ type
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
     function TakeError: string;
     function TakeAudioError: string;
+    function TakeResolutionAdvice(out Current, Recommended: TJ2MEScreenSize): Boolean;
     function GetConfig: IEmulatorConfig;
     function IsPaused: Boolean;
     function IsFinished: Boolean;
@@ -117,10 +127,12 @@ begin
   Width := 240;
   Height := 320;
   ScreenSize := 'auto';
+  ShowResolutionRecommendations := True;
 end;
 
 procedure TJ2MEConfig.LoadCoreSettings(Ini: TCustomIniFile);
 begin
+  ShowResolutionRecommendations := Ini.ReadBool('Phone', 'ShowResolutionRecommendations', True);
   Width := EnsureRange(Ini.ReadInteger('Phone', 'Width', 240), 1, 1024);
   Height := EnsureRange(Ini.ReadInteger('Phone', 'Height', 320), 1, 1024);
   MIDletIndex := EnsureRange(Ini.ReadInteger('Phone', 'MIDletIndex', 0), 0, 1023);
@@ -139,6 +151,7 @@ end;
 
 procedure TJ2MEConfig.SaveCoreSettings(Ini: TCustomIniFile);
 begin
+  Ini.WriteBool('Phone', 'ShowResolutionRecommendations', ShowResolutionRecommendations);
   Ini.WriteInteger('Phone', 'Width', Width);
   Ini.WriteInteger('Phone', 'Height', Height);
   Ini.WriteInteger('Phone', 'MIDletIndex', MIDletIndex);
@@ -149,6 +162,25 @@ function TJ2MEConfig.EffectiveScreen: TJ2MEScreenSize;
 begin
   if not TJ2MEScreenSize.TryParse(ScreenSize, Result) then
     Result := TJ2MEScreenSize.Create(Width, Height);
+end;
+
+function TJ2MECoreAdapter.TakeResolutionAdvice(out Current, Recommended: TJ2MEScreenSize): Boolean;
+begin
+  Current := Default(TJ2MEScreenSize);
+  Recommended := Default(TJ2MEScreenSize);
+  FLock.Acquire;
+  try
+    Result := FSettings.ShowResolutionRecommendations and FAdviceReady and
+      not FAdviceShown and not FAdviceSuppressed;
+    if Result then
+    begin
+      Current := FAdviceCurrent;
+      Recommended := FAdviceRecommended;
+      FAdviceShown := True;
+    end;
+  finally
+    FLock.Release;
+  end;
 end;
 
 function TJ2MECoreAdapter.ConfiguredScreen: TJ2MEScreenSize;
@@ -168,6 +200,7 @@ begin
   FBluetooth := CreatePlatformBluetoothProvider;
   FMessaging := CreateUnavailableMessagingProvider;
   FEvents := TQueue<TJ2MEKeyEvent>.Create;
+  FTouchEvents := TList<TEmulationTouchEvent>.Create;
   FKeyboard := TDictionary<UInt32, Integer>.Create;
   FHeld := TDictionary<Integer, Integer>.Create;
   FStorage := Storage;
@@ -219,8 +252,17 @@ begin
   Frame.Pixels := TArray<TAlphaColor>(Raster);
   FLock.Acquire;
   try
+    FUsesTouch := Runtime.HasTouchCanvas;
+    FTouchFit := FDisplayPlan.Scaling and Runtime.IsFullscreenCanvas;
+    FCanvasWidth := Runtime.ScreenWidth;
+    FCanvasHeight := Runtime.ScreenHeight;
     FFrame := Frame;
     FFrameReady := True;
+    if not FAdviceSuppressed and not FAdviceShown then
+    begin
+      FAdviceReady := Runtime.ScreenRecommendation(FAdviceRecommended);
+      FAdviceCurrent := TJ2MEScreenSize.Create(Runtime.ScreenWidth, Runtime.ScreenHeight);
+    end;
   finally
     FLock.Release;
   end;
@@ -239,6 +281,7 @@ begin
   FHeld.Free;
   FKeyboard.Free;
   FEvents.Free;
+  FTouchEvents.Free;
   FLock.Free;
   inherited;
 end;
@@ -306,6 +349,13 @@ begin
     FRumbleArea := 0;
     FRumbleMillis := 0;
     FMotorResetGeneration := 0;
+    FUsesTouch := False;
+    FTouchEvents.Clear;
+    FTouchTracker := Default(TEmulationTouchTracker);
+    FTouchOverflow := False;
+    FAdviceReady := False;
+    FAdviceShown := False;
+    FAdviceSuppressed := False;
   finally
     FLock.Release;
   end;
@@ -338,6 +388,7 @@ end;
 
 procedure TJ2MECoreAdapter.Pause;
 begin
+  ClearInput;
   FLock.Acquire;
   try
     FPaused := True;
@@ -401,6 +452,55 @@ begin
   FEvents.Enqueue(Event);
 end;
 
+function TJ2MECoreAdapter.GetUsesTouch: Boolean;
+begin
+  FLock.Acquire;
+  try
+    Result := FUsesTouch;
+  finally
+    FLock.Release;
+  end;
+end;
+
+procedure TJ2MECoreAdapter.SendTouch(const Event: TEmulationTouchEvent);
+begin
+  if Event.Contact <> 0 then
+    Exit;
+  FLock.Acquire;
+  try
+    if FTouchOverflow then
+    begin
+      if Event.Phase in [TEmulationTouchPhase.Up, TEmulationTouchPhase.Cancel] then
+        FTouchOverflow := False;
+      Exit;
+    end;
+    var X := 0;
+    var Y := 0;
+    var Valid := FUsesTouch and not FPaused and
+      MapEmulationTouch(Event.X, Event.Y, FFrame.Width, FFrame.Height, FDisplayQuarterTurns,
+      FCanvasWidth, FCanvasHeight, FTouchFit, X, Y);
+    var Mapped: TEmulationTouchEvent;
+    if not FTouchTracker.Update(Event.Phase, X, Y, Valid, Mapped) then
+      Exit;
+    if (Mapped.Phase = TEmulationTouchPhase.Move) and (FTouchEvents.Count > 0) and
+      (FTouchEvents.Last.Phase = TEmulationTouchPhase.Move) then
+      FTouchEvents[FTouchEvents.Count - 1] := Mapped
+    else if FTouchEvents.Count < 256 then
+      FTouchEvents.Add(Mapped)
+    else
+    begin
+      // Bound hostile producers without dropping a release and sticking down.
+      FTouchEvents.Clear;
+      FTouchTracker := Default(TEmulationTouchTracker);
+      Mapped.Phase := TEmulationTouchPhase.Cancel;
+      FTouchEvents.Add(Mapped);
+      FTouchOverflow := not (Event.Phase in [TEmulationTouchPhase.Up, TEmulationTouchPhase.Cancel]);
+    end;
+  finally
+    FLock.Release;
+  end;
+end;
+
 procedure TJ2MECoreAdapter.ClearInput;
 var
   Event: TJ2MEKeyEvent;
@@ -409,6 +509,12 @@ begin
   FLock.Acquire;
   try
     FEvents.Clear;
+    FTouchEvents.Clear;
+    FTouchTracker := Default(TEmulationTouchTracker);
+    FTouchOverflow := False;
+    var Cancel := Default(TEmulationTouchEvent);
+    Cancel.Phase := TEmulationTouchPhase.Cancel;
+    FTouchEvents.Add(Cancel);
     for Code in FHeld.Keys do
     begin
       Event.Code := Code;
@@ -533,6 +639,14 @@ end;
 
 procedure TJ2MECoreAdapter.LoadSnapshot(const Name: string);
 begin
+  // Suppress before the worker can publish any frame of the restored run.
+  FLock.Acquire;
+  try
+    FAdviceSuppressed := True;
+    FAdviceReady := False;
+  finally
+    FLock.Release;
+  end;
   FSnapshotCommands.Execute(FWorker, Name, True);
 end;
 
@@ -561,6 +675,7 @@ procedure TJ2MECoreAdapter.ExecuteGameAction(const Id: string);
 begin
   if Id <> 'rotate-screen' then
     raise EArgumentException.Create('Unknown Java ME game action');
+  ClearInput;
   FLock.Acquire;
   try
     FDisplayQuarterTurns := (FDisplayQuarterTurns + 1) mod 4;
@@ -685,6 +800,7 @@ procedure TJ2MECoreAdapter.ExecuteVM;
 var
   Runtime: TJ2MERuntime;
   Events: TArray<TJ2MEKeyEvent>;
+  TouchEvents: TArray<TEmulationTouchEvent>;
   Event: TJ2MEKeyEvent;
   Paused, WasPaused, AudioFailed, Enabled, WasEnabled, Resync: Boolean;
   DesiredKeys: TArray<Integer>;
@@ -752,6 +868,8 @@ begin
             for var I := 0 to High(Events) do
               Events[I] := FEvents.Dequeue;
           end;
+          TouchEvents := FTouchEvents.ToArray;
+          FTouchEvents.Clear;
           Paused := FPaused;
           MotorReset := FMotorResetGeneration;
         finally
@@ -762,8 +880,22 @@ begin
           Runtime.CancelVibration;
           SeenMotorReset := MotorReset;
         end;
+        // A cancellation is also delivered while host-paused. Its Java release
+        // stays queued until execution resumes, before any fresh press.
+        for var Touch in TouchEvents do
+          if not Paused or (Touch.Phase = TEmulationTouchPhase.Cancel) then
+            Runtime.PointerEvent(Touch);
         if Paused <> WasPaused then
+        begin
           Runtime.SetExecutionPaused(Paused);
+          if Playback <> nil then
+          try
+            Playback.SetPaused(Paused);
+          except
+            on E: Exception do
+              AudioFailure(E.Message);
+          end;
+        end;
         if not Paused then
         begin
           if Resync then
@@ -822,10 +954,9 @@ begin
           AudioFailed := False;
         Enabled := FConfig.AudioEnabled;
         Volume := FConfig.AudioVolume;
-        if (Paused <> WasPaused) or (Enabled <> WasEnabled) then
+        if Enabled <> WasEnabled then
         begin
-          if Enabled <> WasEnabled then
-            AudioFailed := False;
+          AudioFailed := False;
           if Playback <> nil then
           try
             Playback.Clear;
@@ -839,9 +970,18 @@ begin
           Due := Min(Int64(250), Max(Int64(0), Millis - LastMillis)) * 44100 + Remainder;
           Remainder := Due mod 1000;
           Due := Min(Int64(11025), Due div 1000);
-          while Due > 0 do
+          var Batch := 1;
+          {$IFDEF ANDROID}
+          if Enabled and not AudioFailed then
+            Batch := TJ2MEAudioPlayback.AudioFormat.BlockFrames;
+          {$ENDIF}
+          while Due >= Batch do
           begin
             var Count := Integer(Min(Int64(2048), Due));
+            {$IFDEF ANDROID}
+            if Batch > 1 then
+              Count := Batch;
+            {$ENDIF}
             if Enabled and not AudioFailed and (Playback <> nil) then
             try
               Count := Min(Count, Playback.AvailableFrames);
@@ -849,13 +989,9 @@ begin
               on E: Exception do
                 AudioFailure(E.Message);
             end;
+            Count := Count div Batch * Batch;
             if Count = 0 then
-            begin
-              // Keep unrendered source audio for a later pump. Do not advance
-              // a short voice and then silently discard its only PCM block.
-              Inc(Remainder, Due * 1000);
               Break;
-            end;
             Samples := Runtime.RenderAudio(Count);
             Dec(Due, Count);
             if Enabled and not AudioFailed then
@@ -874,7 +1010,15 @@ begin
               on E: Exception do
                 AudioFailure(E.Message);
             end;
+            {$IFDEF ANDROID}
+            // Give the VM another slice during catch-up instead of rendering
+            // an entire accumulated backlog in one turn.
+            if (Batch > 1) and (Watch.ElapsedMilliseconds - Millis >= 10) then
+              Break;
+            {$ENDIF}
           end;
+          // Retain partially accumulated blocks and PCM deferred by buffer pressure.
+          Inc(Remainder, Due * 1000);
         end;
         if Paused or WasPaused then
           Remainder := 0;
@@ -1003,7 +1147,7 @@ begin
               begin
                 Buffer.Position := 0;
                 FreeAndNil(Candidate);
-                Candidate := TJ2MERuntime.LoadState(FSuite, Buffer, FBluetooth, FMessaging);
+                Candidate := TJ2MERuntime.LoadState(FSuite, Buffer, FBluetooth, FMessaging, True);
               end;
             finally
               Buffer.Free;
@@ -1041,11 +1185,12 @@ begin
           // lifecycle request. Retain their resume path for those legacy states.
           if LocalRuntime.LifecyclePauseRequested then
             LocalRuntime.Resume;
-          LocalRuntime.SetExecutionPaused(LocalWasPaused);
           var Pixels: TArray<UInt32>;
           var Frame: TEmulatorFrame;
           if LocalRuntime.TakeFrame(Pixels, Frame.FrameNumber) then
             PublishFrame(LocalRuntime, Pixels, Frame.FrameNumber);
+          // Storage, display migration and frame publication are host work.
+          LocalRuntime.SetExecutionPaused(LocalWasPaused);
           LocalLastMillis := LocalWatch.ElapsedMilliseconds;
           LocalRemainder := 0;
         end

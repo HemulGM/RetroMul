@@ -12,23 +12,28 @@ type
     Endpoint: TMessageAddress;
     URL: string;
     Channel: IMessagingChannel;
-    Closed, Timeouts, ListenerRoot: Boolean;
+    Closed, Timeouts, ListenerRoot, Siemens: Boolean;
     Seen, Notifications: UInt64;
     destructor Destroy; override;
   end;
 
   TJ2MEMessageEvent = record
     Connection, Generation: Integer;
+    Siemens: Boolean;
   end;
 
   TJ2MEMessaging = class
   private
     FVM: TJVM;
-    FProvider: IMessagingProvider;
+    FProvider, FLoopback: IMessagingProvider;
     FConnections: TObjectDictionary<Integer, TJ2MEMessageConnection>;
     FStopped: Boolean;
     procedure Close(C: TJ2MEMessageConnection);
     procedure Error(Code: TMessagingError);
+    procedure InstallSiemens;
+    function SiemensProvider(const Endpoint: string; out Address: TMessageAddress): IMessagingProvider;
+    function InvokeSiemens(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
+    function TakeSiemensData(Connection, Generation: Integer): TJVMValue;
     function NewMessage(Kind: TMessagingPayload; Address: Integer; Protocol: TMessagingProtocol): Integer;
   public
     procedure RequireSnapshotIdle;
@@ -43,13 +48,14 @@ type
     function Invoke(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
     function TakeEvent(out Event: TJ2MEMessageEvent): Boolean;
     procedure ReleaseEvent(const Event: TJ2MEMessageEvent);
+    procedure BeginEvent(Context: Integer; const Event: TJ2MEMessageEvent);
     function GetProperty(const Name: string; out Value: string): Boolean;
   end;
 
 implementation
 
 uses
-  Java.Classes;
+  Java.Classes, Core.Messaging.Virtual;
 
 {$Q-}{$R-}
 
@@ -62,6 +68,16 @@ const
   Listener = WMA + 'MessageListener';
   Impl = WMA + 'MessageConnection$Native';
   Dispatcher = WMA + 'MessageConnection$Dispatcher';
+  SiemensConnection = 'com/siemens/mp/io/Connection';
+  SiemensListener = 'com/siemens/mp/io/ConnectionListener';
+  SiemensError = 'com/siemens/mp/NotAllowedException';
+  SiemensDispatch = 'org/retromul/messaging/SiemensDispatcher';
+  SiemensListenerDesc = 'L' + SiemensListener + ';';
+  SiemensArgs = '(L' + SiemensConnection + ';I)';
+  SiemensDispatchDesc = SiemensArgs + 'V';
+  SiemensTakeDesc = SiemensArgs + '[Ljava/lang/Object;';
+  SiemensEndpointKey = '$siemens.endpoint';
+  SiemensGenerationKey = '$siemens.generation';
   AddressKey = '$message.address';
   PayloadKey = '$message.payload';
   TimestampKey = '$message.timestamp';
@@ -303,6 +319,59 @@ begin
   finally
     B.Free;
   end;
+  InstallSiemens;
+end;
+
+procedure TJ2MEMessaging.InstallSiemens;
+var
+  B: TJavaClassBuilder;
+begin
+  B := TJavaClassBuilder.Create(SiemensListener, 'java/lang/Object', JVM_ACC_PUBLIC or $0200 or JVM_ACC_ABSTRACT);
+  try
+    B.JavaClass.AddNative('receiveData', '([B)V').Access := JVM_ACC_PUBLIC or JVM_ACC_ABSTRACT;
+    FVM.DefineClass(B.Detach);
+  finally
+    B.Free;
+  end;
+  B := TJavaClassBuilder.Create(SiemensError, 'java/lang/Exception');
+  try
+    B.JavaClass.AddNative('<init>', '()V');
+    B.JavaClass.AddNative('<init>', '(Ljava/lang/String;)V');
+    FVM.DefineClass(B.Detach);
+  finally
+    B.Free;
+  end;
+  B := TJavaClassBuilder.Create(SiemensConnection, 'java/lang/Object');
+  try
+    B.JavaClass.AddNative('<init>', '(Ljava/lang/String;)V');
+    B.JavaClass.AddNative('getListener', '()' + SiemensListenerDesc);
+    B.JavaClass.AddNative('setListener', '(' + SiemensListenerDesc + ')V');
+    B.JavaClass.AddNative('send', '([B)V');
+    FVM.DefineClass(B.Detach);
+  finally
+    B.Free;
+  end;
+  B := TJavaClassBuilder.Create(SiemensDispatch, 'java/lang/Object', JVM_ACC_PUBLIC or JVM_ACC_FINAL or $20);
+  try
+    B.JavaClass.AddNative('$take', SiemensTakeDesc, True).Access := JVM_ACC_PRIVATE or JVM_ACC_STATIC or JVM_ACC_NATIVE;
+    B.Start;
+    B.Emit([$2A, $1B]);
+    B.Ref($B8, B.Member(SiemensDispatch, '$take', SiemensTakeDesc));
+    B.Emit([$59]);
+    B.Jump($C6, 'empty');
+    B.Emit([$59, $03, $32]);
+    B.Ref($C0, B.ClassRef(SiemensListener));
+    B.Emit([$5F, $04, $32]);
+    B.Ref($C0, B.ClassRef('[B'));
+    B.Ref($B9, B.Member(SiemensListener, 'receiveData', '([B)V', 11));
+    B.Emit([$02, $00, $B1]);
+    B.Mark('empty');
+    B.Emit([$57, $B1]);
+    B.Finish('$deliver', SiemensDispatchDesc, JVM_ACC_PUBLIC or JVM_ACC_STATIC, 3, 2);
+    FVM.DefineClass(B.Detach);
+  finally
+    B.Free;
+  end;
 end;
 
 function TJ2MEMessaging.GetProperty(const Name: string; out Value: string): Boolean;
@@ -341,7 +410,7 @@ begin
   if FStopped then
     FVM.RaiseJava('java/io/IOException', 'Messaging stopped');
   var A: TMessageAddress;
-  if not TMessageAddress.TryParse(URL, A) or not (Mode in [1, 2, 3]) then
+  if not TMessageAddress.TryParse(URL, A) or (A.Protocol = TMessagingProtocol.SiemensSMS) or not (Mode in [1, 2, 3]) then
     Error(TMessagingError.InvalidAddress);
   var Channel: IMessagingChannel;
   Error(FProvider.Open(A, Mode, Channel));
@@ -410,9 +479,23 @@ begin
       Dec(C.Notifications);
       Event.Connection := C.Ref;
       Event.Generation := C.Generation;
+      Event.Siemens := C.Siemens;
       FVM.AddRoot(C.Ref);
       Exit(True);
     end;
+end;
+
+procedure TJ2MEMessaging.BeginEvent(Context: Integer; const Event: TJ2MEMessageEvent);
+begin
+  var Owner := Dispatcher;
+  var Desc := '(Ljavax/wireless/messaging/MessageConnection;I)V';
+  if Event.Siemens then
+  begin
+    Owner := SiemensDispatch;
+    Desc := SiemensDispatchDesc;
+  end;
+  FVM.BeginContextCall(Context, Owner, '$deliver', Desc,
+    [TJVMValue.Ref(Event.Connection), TJVMValue.Int(Event.Generation)]);
 end;
 
 procedure TJ2MEMessaging.ReleaseEvent(const Event: TJ2MEMessageEvent);
@@ -422,7 +505,164 @@ end;
 
 function TJ2MEMessaging.Handles(const Owner: string): Boolean;
 begin
-  Result := (Owner = Impl) or (Owner = TextMsg + '$Native') or (Owner = BinaryMsg + '$Native') or (Owner = Dispatcher);
+  Result := (Owner = SiemensConnection) or (Owner = SiemensDispatch) or
+    (Owner = Impl) or (Owner = TextMsg + '$Native') or (Owner = BinaryMsg + '$Native') or (Owner = Dispatcher);
+end;
+
+function TJ2MEMessaging.SiemensProvider(const Endpoint: string; out Address: TMessageAddress): IMessagingProvider;
+begin
+  Result := nil;
+  if Endpoint = 'IRDA:' then
+    Exit;
+  if Endpoint = 'INTERNAL:' then
+  begin
+    if FLoopback = nil then
+      FLoopback := CreateVirtualMessagingNetwork.Provider('0', [TMessagingPermission.SMSConnect,
+          TMessagingPermission.SMSSend, TMessagingPermission.SMSReceive]);
+    TMessageAddress.TryParse('siemens-sms://0:0', Address);
+    Exit(FLoopback);
+  end;
+  if TMessageAddress.TryParse(Endpoint, Address) then
+    Result := FProvider;
+end;
+
+function TJ2MEMessaging.TakeSiemensData(Connection, Generation: Integer): TJVMValue;
+begin
+  Result := TJVMValue.Ref(0);
+  var C: TJ2MEMessageConnection;
+  if not FConnections.TryGetValue(Connection, C) or C.Closed or not C.Siemens or (C.Generation <> Generation) then
+    Exit;
+  var ListenerRef := Ref(FVM.GetObject(Connection), ListenerKey);
+  if ListenerRef = 0 then
+    Exit;
+  var Packet: TWirelessMessage;
+  if C.Channel.Receive(Packet) <> TMessagingError.None then
+    Exit;
+  if Packet.Kind = TMessagingPayload.Text then
+    Packet.Data := TEncoding.UTF8.GetBytes(Packet.Text);
+  var Pair := FVM.NewArray('[Ljava/lang/Object;', 2);
+  FVM.AddRoot(Pair);
+  try
+    var Bytes := FVM.NewArray('[B', Length(Packet.Data));
+    var Payload := FVM.GetObject(Bytes);
+    for var I := 0 to High(Packet.Data) do
+      Payload.Elements[I] := TJVMValue.Int(ShortInt(Packet.Data[I]));
+    FVM.GetObject(Pair).Elements[0] := TJVMValue.Ref(ListenerRef);
+    FVM.GetObject(Pair).Elements[1] := TJVMValue.Ref(Bytes);
+    Result := TJVMValue.Ref(Pair);
+  finally
+    FVM.RemoveRoot(Pair);
+  end;
+end;
+
+function TJ2MEMessaging.InvokeSiemens(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
+begin
+  Result := Default(TJVMValue);
+  var Connection := Args[0].AsRef;
+  var O := FVM.GetObject(Connection);
+  if Method.Name = '<init>' then
+  begin
+    var URL := FVM.GetObject(Args[1].AsRef).Text;
+    var Endpoint := UpperCase(URL);
+    if SameText(Copy(URL, 1, 4), 'SMS:') then
+    begin
+      var Tail := Copy(URL, 5, MaxInt);
+      if Tail.StartsWith('//') then
+        Delete(Tail, 1, 2);
+      var Address: TMessageAddress;
+      if not TMessageAddress.TryParse('siemens-sms://' + Tail, Address) or Address.Server then
+        FVM.RaiseJava('java/lang/IllegalArgumentException', 'Invalid Siemens SMS destination');
+      Endpoint := Address.ToString;
+    end
+    else if (Endpoint <> 'INTERNAL:') and (Endpoint <> 'IRDA:') then
+      FVM.RaiseJava('java/lang/IllegalArgumentException', 'Unsupported Siemens connection');
+    Put(O, SiemensEndpointKey, TJVMValue.Ref(FVM.NewString(Endpoint)));
+    Exit;
+  end;
+  if Method.Name = 'getListener' then
+    Exit(TJVMValue.Ref(Ref(O, ListenerKey)));
+
+  var Address: TMessageAddress;
+  var Provider := SiemensProvider(FVM.GetObject(Ref(O, SiemensEndpointKey)).Text, Address);
+  if Method.Name = 'setListener' then
+  begin
+    var Generation := Int(O, SiemensGenerationKey) + 1;
+    Put(O, SiemensGenerationKey, TJVMValue.Int(Generation));
+    var C: TJ2MEMessageConnection;
+    if FConnections.TryGetValue(Connection, C) then
+    begin
+      Close(C);
+      FConnections.Remove(Connection);
+    end;
+    Put(O, ListenerKey, Args[1]);
+    // The Java registration is valid even when the handset has no SMS service.
+    // In that case it is only guest state and can be saved with the game.
+    if (Args[1].AsRef = 0) or FStopped or (Provider = nil) then
+      Exit;
+    var Info := Provider.Info;
+    if (Info.State <> TMessagingState.Ready) or not (TMessagingPermission.SMSReceive in Info.Permissions) then
+      Exit;
+    Address.Server := True;
+    Address.Phone := '';
+    var Channel: IMessagingChannel;
+    if (Provider.Open(Address, 1, Channel) <> TMessagingError.None) or (Channel = nil) then
+      Exit;
+    var Pending: Integer;
+    var Seen: UInt64;
+    if Channel.Status(Pending, Seen) <> TMessagingError.None then
+    begin
+      Channel.Close;
+      Exit;
+    end;
+    C := TJ2MEMessageConnection.Create;
+    try
+      C.Ref := Connection;
+      C.Endpoint := Address;
+      C.Mode := 1;
+      C.Channel := Channel;
+      C.Generation := Generation;
+      C.Seen := Seen;
+      C.Notifications := Pending;
+      C.Siemens := True;
+      FConnections.Add(Connection, C);
+      FVM.AddRoot(Connection);
+      C.ListenerRoot := True;
+      C := nil;
+    finally
+      C.Free;
+    end;
+    Exit;
+  end;
+  if Method.Name = 'send' then
+  begin
+    var Data := FVM.GetObject(Args[1].AsRef);
+    if FStopped or (Provider = nil) then
+      FVM.RaiseJava(SiemensError, 'Siemens transport unavailable');
+    var Info := Provider.Info;
+    if (Info.State <> TMessagingState.Ready) or not (TMessagingPermission.SMSSend in Info.Permissions) then
+      FVM.RaiseJava(SiemensError, 'Siemens send not allowed');
+    var Segments := SMSCountSegments('', Data.ElementCount, True, True);
+    if (Segments = 0) or (Segments > Info.MaxSMSSegments) then
+      FVM.RaiseJava(SiemensError, 'Message exceeds transport capacity');
+    var Channel: IMessagingChannel;
+    if (Provider.Open(Address, 2, Channel) <> TMessagingError.None) or (Channel = nil) then
+      FVM.RaiseJava(SiemensError, 'Unable to open Siemens SMS channel');
+    try
+      var Packet := Default(TWirelessMessage);
+      Packet.Kind := TMessagingPayload.Binary;
+      Packet.HasTimestamp := True;
+      Packet.Timestamp := FVM.Host.TimeMillis;
+      SetLength(Packet.Data, Data.ElementCount);
+      for var I := 0 to High(Packet.Data) do
+        Packet.Data[I] := Byte(Data.Elements[I].AsInt);
+      if Channel.Send(Address, Packet) <> TMessagingError.None then
+        FVM.RaiseJava(SiemensError, 'Siemens transport rejected the message');
+    finally
+      Channel.Close;
+    end;
+    Exit;
+  end;
+  raise EJVMUnsupported.Create(SiemensConnection + '.' + Method.Name);
 end;
 
 function TJ2MEMessaging.Invoke(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
@@ -525,6 +765,10 @@ var
 begin
   Result := Default(TJVMValue);
   N := Method.Name;
+  if Method.Owner.Name = SiemensDispatch then
+    Exit(TakeSiemensData(Args[0].AsRef, Args[1].AsInt));
+  if Method.Owner.Name = SiemensConnection then
+    Exit(InvokeSiemens(Method, Args));
   if Method.Owner.Name = Dispatcher then
   begin
     if not FConnections.TryGetValue(Args[0].AsRef, C) or C.Closed or (C.Generation <> Args[1].AsInt) then

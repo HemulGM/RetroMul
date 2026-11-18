@@ -35,6 +35,12 @@ type
 
   IEmulationPointerInput = Core.Emulation.Types.IEmulationPointerInput;
 
+  TEmulationTouchPhase = Core.Emulation.Types.TEmulationTouchPhase;
+
+  TEmulationTouchEvent = Core.Emulation.Types.TEmulationTouchEvent;
+
+  IEmulationTouchInput = Core.Emulation.Types.IEmulationTouchInput;
+
   IEmulationMotionInput = Core.Emulation.Types.IEmulationMotionInput;
 
   IEmulationRotationInput = Core.Emulation.Types.IEmulationRotationInput;

@@ -1,9 +1,5 @@
 ﻿unit Video.AVC.H264;
 
-// Software H.264 CAVLC implementation, adapted from FFmpeg n7.1 algorithms.
-// LGPL-2.1-or-later; Copyright (c) 2003 Michael Niedermayer.
-// Scalar paths deliberately avoid architecture-specific SIMD/assembly.
-
 interface
 
 uses
@@ -69,7 +65,7 @@ type
     FOutput: TQueue<TVideoFrame>;
     FDelayed: TList<TVideoFrame>;
     FDelayedPOC: TList<Integer>;
-    FOrderByPOC: Boolean;
+    FOrderByPOC, FOutputDecodeOrder: Boolean;
     FFillTimestampGaps, FHaveTimestampBase: Boolean;
     FTimestampBase: Int64;
     FTimestampPOC: Integer;
@@ -131,7 +127,7 @@ type
     function CABACPattern: Integer;
     function ReadBlock(Plane, X, Y, Category, MaxCoeff: Integer; out Block: TCoeffBlock): Integer;
   public
-    constructor Create(UseRegionCache: Boolean = False);
+    constructor Create(UseRegionCache: Boolean = False; OutputDecodeOrder: Boolean = False);
     destructor Destroy; override;
     procedure Configure(const Track: TTrackInfo);
     procedure ConfigureAnnexB(PictureOrder: Boolean = False);
@@ -173,10 +169,11 @@ const
   BlockX: array[0..15] of Integer = (0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3);
   BlockY: array[0..15] of Integer = (0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2, 2, 3, 3);
 
-constructor TH264Decoder.Create(UseRegionCache: Boolean);
+constructor TH264Decoder.Create(UseRegionCache, OutputDecodeOrder: Boolean);
 begin
   inherited Create;
   FUseRegionCache := UseRegionCache;
+  FOutputDecodeOrder := OutputDecodeOrder;
   FRefs := TObjectList<TPicture>.Create(True);
   FRemoveRefs := TList<TPicture>.Create;
   FPromoteRefs := TList<TPicture>.Create;
@@ -498,9 +495,14 @@ begin
     for Y := 0 to H - 1 do
       Move(FCurrent.Pixels[P][(Y div (1 + Ord(FFieldPicture)) + Y0) * Stride + X0], Frame.Planes[P][Y * W], W);
   end;
-  FDelayed.Add(Frame);
-  FDelayedPOC.Add(FPOC);
-  OutputDelayed(False);
+  if FOutputDecodeOrder then
+    FOutput.Enqueue(Frame)
+  else
+  begin
+    FDelayed.Add(Frame);
+    FDelayedPOC.Add(FPOC);
+    OutputDelayed(False);
+  end;
   if FRefNAL then
   begin
     FPrevPOCMSB := FPOCMSB;
@@ -2144,7 +2146,7 @@ begin
   GroupCount := 0;
   HaveDirect := False;
   DCT8Allowed := FP.Transform8x8Mode;
-  {$IFDEF PLAYER_TEST_STATS}     Inc(H264TestBTypes[TypeCode]); {$ENDIF}
+  {$IFDEF PLAYER_TEST_STATS}             Inc(H264TestBTypes[TypeCode]); {$ENDIF}
   FDirect[FMB] := TypeCode = 0;
   if TypeCode = 0 then
   begin
@@ -2196,7 +2198,7 @@ begin
         Sub[I] := FBits.ReadUE;
       if Sub[I] > 12 then
         raise EPlayerFormat.Create('Invalid B subpartition');
-      {$IFDEF PLAYER_TEST_STATS}             Inc(H264TestBSubTypes[Sub[I]]); {$ENDIF}
+      {$IFDEF PLAYER_TEST_STATS}                                     Inc(H264TestBSubTypes[Sub[I]]); {$ENDIF}
     end;
     GroupCount := 4;
     for I := 0 to 3 do

@@ -78,6 +78,10 @@ type
     function Available(Lease: TRMSLease): Integer;
   end;
 
+function J2MESuiteStorageKey(const A, B: string): string;
+
+function LockJ2MEDataFile(const Path: string; const Cancelled: TFunc<Boolean>): TObject;
+
 implementation
 
 uses
@@ -113,6 +117,11 @@ type
 var
   Gate, DataGate: TCriticalSection;
   Leases: TList<TRMSLease>;
+
+function LockJ2MEDataFile(const Path: string; const Cancelled: TFunc<Boolean>): TObject;
+begin
+  Result := TRMSFileLock.Create(Path, True, -1, Cancelled);
+end;
 
 constructor ERMS.Create(const ErrorKind, Message: string);
 begin
@@ -286,7 +295,7 @@ begin
     UInt(Stream, Ord(C), 2);
 end;
 
-function Key(const A, B: string): string;
+function J2MESuiteStorageKey(const A, B: string): string;
 begin
   var Stream := TMemoryStream.Create;
   try
@@ -537,12 +546,12 @@ end;
 
 function TRMSDatabase.SuiteFolder(const Vendor, Suite: string): string;
 begin
-  Result := TPath.Combine(FRoot, Key(Vendor, Suite));
+  Result := TPath.Combine(FRoot, J2MESuiteStorageKey(Vendor, Suite));
 end;
 
 function TRMSDatabase.StoreFile(const Vendor, Suite, Name: string): string;
 begin
-  Result := TPath.Combine(SuiteFolder(Vendor, Suite), Key(Name, '') + '.rms');
+  Result := TPath.Combine(SuiteFolder(Vendor, Suite), J2MESuiteStorageKey(Name, '') + '.rms');
 end;
 
 function TRMSDatabase.Load(Lease: TRMSLease): TRMSSnapshot;

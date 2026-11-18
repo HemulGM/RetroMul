@@ -924,10 +924,15 @@ MIDlet uninstallation cleanup and reclaiming orphan files after an interrupted
 commit are not implemented. Native Windows process/locking tests run on the host;
 POSIX locking has been compiled but requires runtime/device validation.
 
-Current MMAPI is audio-only WAV/MIDI plus playTone, resource: locators and the
-default time base, with a finite decoded PCM cache. ToneControl sequences,
-MP3/AMR/other formats, MIDI/rate/tempo/metadata/video/capture controls, custom
-time bases and other protocols remain pending. Limits are 128 live players,
+Current MMAPI plays WAV and MIDI, supports playTone, resource: locators and
+the default time base, and uses a finite PCM cache. MIDI and long WAV clips
+decode on demand. MIDIControl can send live messages to a file player or to device://midi.
+SMF players expose TempoControl and RateControl. The sequencer applies tempo
+and rate changes while the SoundFont synth continues at its native sample rate.
+Snapshots preserve sequencer timing and active voices with the same SoundFont.
+ToneControl sequences, MP3/AMR/other formats, rate control for other media,
+metadata/video/capture controls, custom time bases and other protocols remain
+pending. Limits are 128 live players,
 16 MiB encoded data per player / 64 MiB total, 8 million decoded samples per
 clip / 32 million total, 64 listeners per player and 64 simple tone voices.
 Exceeding limits reports an implementation/resource error. Device audio latency

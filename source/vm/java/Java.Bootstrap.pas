@@ -48,13 +48,15 @@ var
     VM.DefineClass(Result);
   end;
 
-  procedure AddException(const Name, Parent: string);
+  procedure AddException(const Name, Parent: string; AcceptsIndex: Boolean = False);
   var
     E: TJVMClass;
   begin
     E := AddClass('java/lang/' + Name, 'java/lang/' + Parent);
     E.AddNative('<init>', '()V');
     E.AddNative('<init>', '(Ljava/lang/String;)V');
+    if AcceptsIndex then
+      E.AddNative('<init>', '(I)V');
   end;
 
 begin
@@ -70,6 +72,16 @@ begin
   C.AddNative('wait', '(JI)V');
   C.AddNative('notify', '()V');
   C.AddNative('notifyAll', '()V');
+
+  C := AddClass('java/lang/ref/Reference', 'java/lang/Object');
+  C.Access := C.Access or JVM_ACC_ABSTRACT;
+  C.AddNative('get', '()Ljava/lang/Object;');
+  C.AddNative('clear', '()V');
+  C := AddClass('java/lang/ref/WeakReference', 'java/lang/ref/Reference');
+  C.AddNative('<init>', '(Ljava/lang/Object;)V');
+  C.AddNative('get', '()Ljava/lang/Object;');
+  C.AddNative('clear', '()V');
+
   C := AddClass('java/lang/Class', 'java/lang/Object');
   C.Access := C.Access or JVM_ACC_FINAL;
   C.AddNative('getName', '()Ljava/lang/String;');
@@ -100,8 +112,8 @@ begin
   AddException('ArithmeticException', 'RuntimeException');
   AddException('NullPointerException', 'RuntimeException');
   AddException('IndexOutOfBoundsException', 'RuntimeException');
-  AddException('ArrayIndexOutOfBoundsException', 'IndexOutOfBoundsException');
-  AddException('StringIndexOutOfBoundsException', 'IndexOutOfBoundsException');
+  AddException('ArrayIndexOutOfBoundsException', 'IndexOutOfBoundsException', True);
+  AddException('StringIndexOutOfBoundsException', 'IndexOutOfBoundsException', True);
   AddException('ArrayStoreException', 'RuntimeException');
   AddException('NegativeArraySizeException', 'RuntimeException');
   AddException('ClassCastException', 'RuntimeException');
@@ -287,6 +299,17 @@ begin
   N := Method.Name;
   D := Method.Descriptor;
   Result := Default(TJVMValue);
+  if (C = 'java/lang/ref/Reference') or (C = 'java/lang/ref/WeakReference') then
+  begin
+    var Reference := VM.GetObject(Arg(0).AsRef);
+    if N = '<init>' then
+      Reference.WeakReferent := Arg(1).AsRef
+    else if N = 'get' then
+      Exit(TJVMValue.Ref(Reference.WeakReferent))
+    else if N = 'clear' then
+      Reference.WeakReferent := 0;
+    Exit;
+  end;
   if C = 'java/lang/Runtime' then
     Exit(InvokeJavaEnvironment(VM, Method, Arguments));
   if C = 'java/lang/Long' then
@@ -539,7 +562,9 @@ begin
     if N = '<init>' then
     begin
       V := TJVMValue.Ref(0);
-      if Length(Arguments) = 2 then
+      if Method.Descriptor = '(I)V' then
+        V := TJVMValue.Ref(VM.NewString('Index out of range: ' + IntToStr(Arg(1).AsInt)))
+      else if Length(Arguments) = 2 then
         V := Arg(1);
       O.Fields.AddOrSetValue('$message', V);
       O.Text := '';

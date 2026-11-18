@@ -1,9 +1,4 @@
-﻿// Adapted lookup tables from FFmpeg n7.1, LGPL-2.1-or-later.
-// H.264: Copyright (c) 2003 Michael Niedermayer.
-// AAC: Copyright (c) 2005-2006 Oded Shimon; 2006-2007 Maxim Gavrilov;
-// Original copyright notices and additional authors are retained in reference/.
-// See reference originals, COPYING.LGPLv2.1 and NOTICE.txt.
-unit Video.AVC.H264.Tables;
+﻿unit Video.AVC.H264.Tables;
 
 interface
 

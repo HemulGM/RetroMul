@@ -3,18 +3,19 @@
 interface
 
 uses
-  JVM.Types, JVM.ClassFile, JVM.Runtime, J2ME.Effects;
+  System.Generics.Collections, JVM.Types, JVM.ClassFile, JVM.Runtime,
+  J2ME.Effects;
 
 procedure InstallJ2MEVodafoneDevice(VM: TJVM);
 
 function HandlesJ2MEVodafoneDevice(const ClassName: string): Boolean;
 
-function InvokeJ2MEVodafoneDevice(VM: TJVM; Effects: TJ2MEDeviceEffects; Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
+function InvokeJ2MEVodafoneDevice(VM: TJVM; Effects: TJ2MEDeviceEffects; Method: TJVMMethod; const Args: TArray<TJVMValue>; const Keys: TDictionary<Integer, Boolean>): TJVMValue;
 
 implementation
 
 uses
-  Java.Classes;
+  Java.Classes, J2ME.Input;
 
 const
   DeviceName = 'com/vodafone/v10/system/device/DeviceControl';
@@ -36,6 +37,7 @@ begin
     B.JavaClass.AddNative('<init>', '()V').Access := JVM_ACC_PRIVATE or JVM_ACC_NATIVE;
     B.JavaClass.AddNative('getDefaultDeviceControl', '()' + DeviceDescriptor, True);
     B.JavaClass.AddNative('setDeviceActive', '(IZ)Z');
+    B.JavaClass.AddNative('getDeviceState', '(I)I');
     VM.DefineClass(B.Detach);
   finally
     B.Free;
@@ -47,7 +49,20 @@ begin
   Result := ClassName = DeviceName;
 end;
 
-function InvokeJ2MEVodafoneDevice(VM: TJVM; Effects: TJ2MEDeviceEffects; Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
+function KeyState(const Keys: TDictionary<Integer, Boolean>): Integer;
+const
+  Navigation: array[12..18] of Integer = (-1, -3, -4, -2, -5, -6, -7);
+begin
+  Result := 0;
+  for var I := Low(J2MEKeypadCodes) to High(J2MEKeypadCodes) do
+    if Keys.ContainsKey(J2MEKeypadCodes[I]) then
+      Result := Result or (1 shl I);
+  for var I := Low(Navigation) to High(Navigation) do
+    if Keys.ContainsKey(Navigation[I]) then
+      Result := Result or (1 shl I);
+end;
+
+function InvokeJ2MEVodafoneDevice(VM: TJVM; Effects: TJ2MEDeviceEffects; Method: TJVMMethod; const Args: TArray<TJVMValue>; const Keys: TDictionary<Integer, Boolean>): TJVMValue;
 begin
   Result := Default(TJVMValue);
   if Method.Name = '<init>' then
@@ -61,6 +76,18 @@ begin
           F.Value := TJVMValue.Ref(VM.NewObject(DeviceName));
         Exit(F.Value);
       end;
+  end;
+  if Method.Name = 'getDeviceState' then
+  begin
+    case Args[1].AsInt of
+      1:
+        Exit(TJVMValue.Int(100)); // The virtual handset has no battery drain.
+        2:
+        Exit(TJVMValue.Int(0));   // Cellular signal is outside this device model.
+        3:
+        Exit(TJVMValue.Int(KeyState(Keys)));
+    end;
+    VM.RaiseJava('java/lang/IllegalArgumentException', 'Invalid Vodafone device state');
   end;
   if Method.Name = 'setDeviceActive' then
   begin

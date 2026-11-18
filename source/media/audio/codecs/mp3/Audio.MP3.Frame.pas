@@ -11,7 +11,8 @@ type
   TMP3FrameParser = class
   public
     // Sync to next frame header and parse it
-    class function ParseHeader(Stream: TStream; out Header: TMP3FrameHeader): Boolean;
+    class function ParseHeader(Stream: TStream; out Header: TMP3FrameHeader): Boolean; overload;
+    class function ParseHeader(const Data: TBytes; Offset: Integer; out Header: TMP3FrameHeader): Boolean; overload;
 
     // Parse side information using minimp3's L3_read_side_info logic
     // Returns main_data_begin, or -1 on error
@@ -41,111 +42,64 @@ begin
   end;
 end;
 
-class function TMP3FrameParser.ParseHeader(Stream: TStream; out Header: TMP3FrameHeader): Boolean;
-var
-  B0, B1, B2, B3: Byte;
-  StreamPos: Int64;
-  ha: array[0..3] of Byte;
-  br, sr: Integer;
+function DecodeHeader(const Bytes: array of Byte; out Header: TMP3FrameHeader): Boolean;
 begin
-  Result := False;
-  FillChar(Header, SizeOf(Header), 0);
+  Header := Default(TMP3FrameHeader);
+  if (Bytes[0] <> $FF) or ((Bytes[1] and $E0) <> $E0) then
+    Exit(False);
+  var Version := (Bytes[1] shr 3) and 3;
+  var RateIndex := HDR_GET_SAMPLE_RATE(Bytes);
+  var BitrateIndex := HDR_GET_BITRATE(Bytes);
+  if (Version = 1) or (HDR_GET_LAYER(Bytes) <> 1) or (RateIndex = 3) or not (BitrateIndex in [1..14]) then
+    Exit(False);
+  Move(Bytes[0], Header.hdr[0], SizeOf(Header.hdr));
+  Header.Version := Version;
+  Header.Layer := 3;
+  Header.BitrateIndex := BitrateIndex;
+  Header.SampleRateIndex := RateIndex;
+  Header.Padding := Ord(HDR_TEST_PADDING(Bytes));
+  Header.ChannelMode := TChannelMode(HDR_GET_STEREO_MODE(Bytes));
+  Header.ModeExtension := HDR_GET_STEREO_MODE_EXT(Bytes);
+  Header.Copyright := (Bytes[3] and 8) <> 0;
+  Header.Original := (Bytes[3] and 4) <> 0;
+  Header.Emphasis := Bytes[3] and 3;
+  Header.Bitrate := hdr_bitrate_kbps(@Header.hdr[0]);
+  Header.SampleRate := hdr_sample_rate_hz(@Header.hdr[0]);
+  Header.Channels := 2 - Ord(HDR_IS_MONO(Bytes));
+  Header.FrameSize := hdr_frame_bytes(@Header.hdr[0], 0) + hdr_padding(@Header.hdr[0]);
+  Result := Header.FrameSize >= 21;
+end;
 
+class function TMP3FrameParser.ParseHeader(const Data: TBytes; Offset: Integer; out Header: TMP3FrameHeader): Boolean;
+begin
+  if (Offset < 0) or (Offset > Length(Data) - 4) then
+  begin
+    Header := Default(TMP3FrameHeader);
+    Exit(False);
+  end;
+  var Bytes: array[0..3] of Byte;
+  Move(Data[Offset], Bytes[0], SizeOf(Bytes));
+  Result := DecodeHeader(Bytes, Header);
+end;
+
+class function TMP3FrameParser.ParseHeader(Stream: TStream; out Header: TMP3FrameHeader): Boolean;
+begin
+  Header := Default(TMP3FrameHeader);
   while Stream.Position < Stream.Size - 4 do
   begin
-    StreamPos := Stream.Position;
-    if Stream.Read(B0, 1) < 1 then
-      Exit;
-    if B0 <> $FF then
+    var Offset := Stream.Position;
+    var Bytes: array[0..3] of Byte;
+    if Stream.Read(Bytes[0], 1) < 1 then
+      Exit(False);
+    if Bytes[0] <> $FF then
       Continue;
-    if Stream.Read(B1, 1) < 1 then
-      Exit;
-
-    // Check sync: 11 bits all set, or the 0xE2xx pattern for MPEG2.5
-    if not (((B1 and $F0) = $F0) or ((B1 and $FE) = $E2)) then
-    begin
-      Stream.Position := StreamPos + 1;
-      Continue;
-    end;
-
-    if Stream.Read(B2, 1) < 1 then
-      Exit;
-    if Stream.Read(B3, 1) < 1 then
-      Exit;
-
-    ha[0] := B0;
-    ha[1] := B1;
-    ha[2] := B2;
-    ha[3] := B3;
-
-    // Validate using minimp3 hdr_valid logic
-    if (HDR_GET_LAYER(ha) = 0) or
-      (HDR_GET_BITRATE(ha) = 15) or
-      (HDR_GET_SAMPLE_RATE(ha) = 3) then
-    begin
-      Stream.Position := StreamPos + 1;
-      Continue;
-    end;
-
-    // We only handle Layer 3 in this decoder
-    if HDR_GET_LAYER(ha) <> 1 then  // layer=01 means layer3 in header encoding
-    begin
-      Stream.Position := StreamPos + 1;
-      Continue;
-    end;
-
-    br := HDR_GET_BITRATE(ha);
-    if br = 0 then  // free format not supported in simple mode
-    begin
-      Stream.Position := StreamPos + 1;
-      Continue;
-    end;
-
-    sr := HDR_GET_SAMPLE_RATE(ha);
-
-    Header.hdr[0] := B0;
-    Header.hdr[1] := B1;
-    Header.hdr[2] := B2;
-    Header.hdr[3] := B3;
-
-    if HDR_TEST_MPEG1(ha) then
-      Header.Version := 3       // MPEG1
-    else if (ha[1] shr 3) and 3 = 2 then
-      Header.Version := 2       // MPEG2
-    else
-      Header.Version := 0;      // MPEG2.5
-    Header.Layer := 3;
-    Header.BitrateIndex := br;
-    Header.SampleRateIndex := sr;
-    if HDR_TEST_PADDING(ha) then
-      Header.Padding := 1
-    else
-      Header.Padding := 0;
-    Header.ChannelMode := TChannelMode(HDR_GET_STEREO_MODE(ha));
-    Header.ModeExtension := HDR_GET_STEREO_MODE_EXT(ha);
-    Header.Copyright := (B3 shr 3) and 1 = 1;
-    Header.Original := (B3 shr 2) and 1 = 1;
-    Header.Emphasis := B3 and 3;
-
-    Header.Bitrate := hdr_bitrate_kbps(@Header.hdr[0]);
-    Header.SampleRate := hdr_sample_rate_hz(@Header.hdr[0]);
-
-    if HDR_IS_MONO(ha) then
-      Header.Channels := 1
-    else
-      Header.Channels := 2;
-
-    Header.FrameSize := hdr_frame_bytes(@Header.hdr[0], 0) + hdr_padding(@Header.hdr[0]);
-
-    if Header.FrameSize < 21 then
-    begin
-      Stream.Position := StreamPos + 1;
-      Continue;
-    end;
-
-    Result := True;
-    Exit;
+    if Stream.Read(Bytes[1], 3) < 3 then
+      Exit(False);
+    if DecodeHeader(Bytes, Header) then
+      Exit(True);
+    Stream.Position := Offset + 1;
   end;
+  Result := False;
 end;
 
 class function TMP3FrameParser.ParseSideInfo(BS: TMP3BitStream; const Header: TMP3FrameHeader; out SideInfo: TMP3SideInfo): Boolean;

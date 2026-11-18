@@ -4,7 +4,7 @@ interface
 
 uses
   System.Classes, System.UITypes, Core.Emulation, RM.Main.View, RM.Main.State,
-  FMX.Objects;
+  FMX.Objects, Core.Input.Touch;
 
 type
   TInputRuntimeContext = record
@@ -51,18 +51,45 @@ procedure InitializePlatformInputHandlers(const Context: TInputRuntimeContext);
 
 procedure FinalizePlatformInputHandlers(const Context: TInputRuntimeContext);
 
+// Generic screen contacts for any core implementing IEmulationTouchInput.
+function ScreenTouchAllowed(const Context: TInputRuntimeContext): Boolean;
+
+function DispatchScreenTouch(const Context: TInputRuntimeContext; Phase: TEmulationTouchPhase; X, Y: Single): Boolean;
+
+procedure CancelScreenTouch(const Context: TInputRuntimeContext);
+
+procedure ValidateScreenTouch(const Context: TInputRuntimeContext);
+
 function TryGetImagePixel(const Image: TImage; const X, Y: Single; out PixelX, PixelY: Integer): Boolean;
 
 implementation
 
 uses
   System.SysUtils, System.Math, System.Generics.Collections,
-  System.Generics.Defaults, Core.Platforms, RM.Gamepad, RM.ShaderBitmap;
+  System.Generics.Defaults, FMX.Controls, Core.Platforms, RM.Dialogs, RM.Gamepad,
+  RM.ShaderBitmap;
 
 var
   Handlers: TDictionary<string, TPlatformInputHandlerClass>;
 
 type
+  IScreenTouchState = interface
+    ['{FBAE20B0-8F94-4237-A392-4ACF56D94E94}']
+    function Update(const Target: IEmulationTouchInput; Phase: TEmulationTouchPhase; X, Y: Integer; Valid: Boolean): Boolean;
+    procedure Cancel;
+    function Down: Boolean;
+  end;
+
+  TScreenTouchState = class(TInterfacedObject, IScreenTouchState)
+  private
+    FTarget: IEmulationTouchInput;
+    FTracker: TEmulationTouchTracker;
+  public
+    function Update(const Target: IEmulationTouchInput; Phase: TEmulationTouchPhase; X, Y: Integer; Valid: Boolean): Boolean;
+    procedure Cancel;
+    function Down: Boolean;
+  end;
+
   IInputRuntimeData = interface
     ['{E54CB49A-2C01-473C-B135-31E7E7CCCE83}']
     function GetValue(const Key: string): IInterface;
@@ -88,6 +115,97 @@ type
     function BeginFinalization: TArray<TPlatformInputHandlerClass>;
     function IsFinalizing: Boolean;
   end;
+
+function TScreenTouchState.Down: Boolean;
+begin
+  Result := FTracker.Down;
+end;
+
+procedure TScreenTouchState.Cancel;
+var
+  Event: TEmulationTouchEvent;
+begin
+  if FTracker.Update(TEmulationTouchPhase.Cancel, 0, 0, False, Event) and (FTarget <> nil) then
+    FTarget.SendTouch(Event);
+  FTarget := nil;
+end;
+
+function TScreenTouchState.Update(const Target: IEmulationTouchInput; Phase: TEmulationTouchPhase; X, Y: Integer; Valid: Boolean): Boolean;
+begin
+  if FTarget <> Target then
+    Cancel;
+  FTarget := Target;
+  var Event: TEmulationTouchEvent;
+  Result := FTracker.Update(Phase, X, Y, Valid, Event);
+  if Result then
+    FTarget.SendTouch(Event);
+  if not FTracker.Down then
+    FTarget := nil;
+end;
+
+function ScreenTouchAllowed(const Context: TInputRuntimeContext): Boolean;
+begin
+  Result := (Context.State.Session.Emulation <> nil) and Context.View.InputHasFocus and
+    not Context.State.Session.OpeningRom and not Context.State.Session.Reporting and
+    not Context.State.Browser.ViewingLibrary and (Context.State.Settings.View = nil) and
+    (Context.State.Help.View = nil) and not Context.State.Session.EmulationFaulted and
+    not Context.State.Session.Emulation.IsPaused and not RetroDialogVisible(Context.View);
+end;
+
+procedure CancelScreenTouch(const Context: TInputRuntimeContext);
+begin
+  var State := Context.Data('input.screen.touch') as IScreenTouchState;
+  if (State = nil) or not State.Down then
+    Exit;
+  State.Cancel;
+  var Canvas := Context.View.ImageCanvas;
+  if (Canvas <> nil) and (Canvas.Root <> nil) and (Canvas.Root.Captured <> nil) and
+    (Canvas.Root.Captured.GetObject = Canvas) then
+    Canvas.Root.SetCaptured(nil);
+end;
+
+procedure ValidateScreenTouch(const Context: TInputRuntimeContext);
+begin
+  var State := Context.Data('input.screen.touch') as IScreenTouchState;
+  if (State = nil) or not State.Down then
+    Exit;
+  var Canvas := Context.View.ImageCanvas;
+  if not ScreenTouchAllowed(Context) or (Canvas = nil) or (Canvas.Root = nil) or
+    (Canvas.Root.Captured = nil) or (Canvas.Root.Captured.GetObject <> Canvas) then
+    CancelScreenTouch(Context);
+end;
+
+function DispatchScreenTouch(const Context: TInputRuntimeContext; Phase: TEmulationTouchPhase; X, Y: Single): Boolean;
+begin
+  var Target: IEmulationTouchInput;
+  Result := Supports(Context.State.Session.Emulation, IEmulationTouchInput, Target) and Target.UsesTouch;
+  if not Result then
+  begin
+    CancelScreenTouch(Context);
+    Exit;
+  end;
+  if not ScreenTouchAllowed(Context) then
+  begin
+    CancelScreenTouch(Context);
+    Exit;
+  end;
+  var State := Context.Data('input.screen.touch') as IScreenTouchState;
+  if State = nil then
+  begin
+    State := TScreenTouchState.Create;
+    Context.SetData('input.screen.touch', State);
+  end;
+  var PX := 0;
+  var PY := 0;
+  var Valid := TryGetImagePixel(Context.View.ImageCanvas, X, Y, PX, PY);
+  State.Update(Target, Phase, PX, PY, Valid);
+  var Canvas := Context.View.ImageCanvas;
+  if (Canvas <> nil) and (Canvas.Root <> nil) then
+    if State.Down then
+      Canvas.Root.SetCaptured(Canvas)
+    else if (Canvas.Root.Captured <> nil) and (Canvas.Root.Captured.GetObject = Canvas) then
+      Canvas.Root.SetCaptured(nil);
+end;
 
 constructor TInputRuntimeData.Create;
 begin

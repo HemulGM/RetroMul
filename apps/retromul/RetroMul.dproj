@@ -1,4 +1,4 @@
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
         <ProjectGuid>{82132DF3-6773-48AA-904F-4792F7EFBB7C}</ProjectGuid>
         <ProjectVersion>20.4</ProjectVersion>
@@ -15,29 +15,34 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
-        <DCCReference Include="..\..\source\media\audio\Audio.Types.pas"/>
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Morph.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Picking.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Skin.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Animation.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Keyframe.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Sprite.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Lighting.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Environment.pas" />
-        <DCCReference Include="..\..\source\media\image\Media.Image.Types.pas" />
-        <DCCReference Include="..\..\source\media\image\Media.Image.GIF.pas" />
-        <DCCReference Include="..\..\source\media\image\Media.Image.JPEG.pas" />
-        <DCCReference Include="..\..\source\media\image\Media.Image.Decode.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Loader.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Texture.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Format.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Graphics.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Raster.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Mesh.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Scene.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Math.pas" />
-        <DCCReference Include="..\..\source\cores\j2me\J2ME.M3G.Geometry.pas" />
+        <DCCReference Include="..\..\source\runtime\Core.Input.Touch.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Reader.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Geometry.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Bitmap.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Sound.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Movie.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Names.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Numeric.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Coercion.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Runtime.pas"/>
+        <DCCReference Include="..\..\source\vm\avm2\AVM2.ABC.pas"/>
+        <DCCReference Include="..\..\source\vm\avm2\AVM2.Runtime.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Arrays.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Strings.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Dates.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Colors.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Geometry.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Transforms.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Broadcaster.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.BitmapOps.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.BitmapData.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.TextFormat.pas"/>
+        <DCCReference Include="..\..\source\vm\avm1\AVM1.Trigonometry.pas"/>
+        <DCCReference Include="..\..\source\cores\flash\Flash.Player.pas"/>
+        <DCCReference Include="..\..\source\cores\flash\Flash.Text.pas"/>
+        <DCCReference Include="..\..\source\cores\flash\Flash.Audio.pas"/>
+        <DCCReference Include="..\..\source\platforms\flash\Core.Platforms.Flash.Adapter.pas"/>
+        <DCCReference Include="..\..\source\platforms\flash\RM.Platforms.Flash.pas"/>
         <DCCReference Include="..\..\source\platforms\bluetooth\Core.Platforms.Bluetooth.pas"/>
         <DCCReference Include="..\..\source\platforms\bluetooth\Core.Platforms.Bluetooth.Windows.IO.pas"/>
         <DCCReference Include="..\..\source\platforms\bluetooth\Core.Platforms.Bluetooth.Windows.pas"/>
@@ -65,6 +70,7 @@
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Nokia.Sound.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Nokia.UI.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Vodafone.Device.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Vodafone.Micro3D.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Environment.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Builders.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Reflection.pas"/>
@@ -76,6 +82,8 @@
         <DCCReference Include="..\..\source\runtime\Core.Bluetooth.Types.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Network.HTTP.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Network.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.FileSystem.Store.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.FileSystem.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Form.Layout.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Forms.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Item.Layout.pas"/>
@@ -87,14 +95,13 @@
         <DCCReference Include="..\..\source\vm\java\Java.Readers.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Hashtable.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Numbers.pas"/>
-        <DCCReference Include="..\..\source\vm\java\Java.Floating.pas"/>
-        <DCCReference Include="..\..\source\vm\java\Java.Floating.Text.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Collections.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Timers.pas"/>
         <DCCReference Include="..\..\source\media\image\Media.Raster.Shapes.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.LCDUI.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.RMS.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.RMS.Store.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.ToneSequence.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Media.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Audio.State.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Effects.pas"/>
@@ -103,6 +110,7 @@
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Resources.pas"/>
         <DCCReference Include="..\..\source\platforms\j2me\Core.Platforms.J2ME.Playback.pas"/>
         <DCCReference Include="..\..\source\media\audio\Audio.Decoder.pas"/>
+        <DCCReference Include="..\..\source\media\audio\formats\wav\Audio.Codec.GSM.pas"/>
         <DCCReference Include="..\..\source\media\audio\formats\wav\Audio.Format.WAV.pas"/>
         <DCCReference Include="..\..\source\media\audio\formats\midi\Audio.Format.MIDI.pas"/>
         <DCCReference Include="..\..\source\media\audio\common\Audio.Binary.pas"/>
@@ -117,6 +125,7 @@
         <DCCReference Include="..\..\source\media\image\Media.Font.Bitmap.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Image.pas"/>
         <DCCReference Include="..\..\source\media\image\Media.Image.PNG.pas"/>
+        <DCCReference Include="..\..\source\media\image\Media.Image.PixelBuffer.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Graphics.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.Classes.pas"/>
         <DCCReference Include="..\..\source\vm\java\Java.IO.pas"/>
@@ -131,6 +140,11 @@
         <DCCReference Include="..\..\source\vm\jvm\JVM.Runtime.pas"/>
         <DCCReference Include="..\..\source\vm\jvm\JVM.StateIO.pas"/>
         <DCCReference Include="..\..\source\vm\jvm\JVM.Types.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Micro3D.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Micro3D.Texture.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Micro3D.Figure.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Micro3D.Action.pas"/>
+        <DCCReference Include="..\..\source\cores\j2me\J2ME.Micro3D.Graphics.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Runtime.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Compatibility.pas"/>
         <DCCReference Include="..\..\source\cores\j2me\J2ME.Suite.pas"/>
@@ -481,6 +495,8 @@
         <DCCReference Include="..\..\source\media\audio\codecs\mp3\Audio.MP3.Types.pas"/>
         <DCCReference Include="..\..\source\media\audio\codecs\mp3\Audio.MP3.BitStream.pas"/>
         <DCCReference Include="..\..\source\media\audio\codecs\mp3\Audio.MP3.Frame.pas"/>
+        <DCCReference Include="..\..\source\media\audio\codecs\mp3\Audio.MP3.Metadata.pas"/>
+        <DCCReference Include="..\..\source\media\audio\codecs\mp3\Audio.MP3.Source.pas"/>
         <DCCReference Include="..\..\source\media\audio\codecs\mp3\Audio.MP3.Huffman.pas"/>
         <DCCReference Include="..\..\source\media\audio\codecs\mp3\Audio.MP3.ScaleFactors.pas"/>
         <DCCReference Include="..\..\source\media\audio\codecs\mp3\Audio.MP3.Layer3.pas"/>
@@ -1010,6 +1026,24 @@
         <DCCReference Include="..\..\source\media\archive\Core.RAR.VM.pas"/>
         <DCCReference Include="..\..\source\media\archive\Core.Archive.Container.pas"/>
         <DCCReference Include="..\..\source\hardware\cpu\HW.HostFPU.pas"/>
+        <DCCReference Include="..\..\source\cores\flash\Flash.Net.pas"/>
+        <DCCReference Include="..\..\source\cores\flash\Flash.Filters.pas"/>
+        <DCCReference Include="..\..\source\media\audio\Audio.Registry.pas"/>
+        <DCCReference Include="..\..\source\media\audio\Audio.AMR.Windows.pas"/>
+        <DCCReference Include="..\..\source\media\audio\Audio.Format.AMR.pas"/>
+        <DCCReference Include="..\..\source\media\audio\Audio.Types.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.FLV.Script.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.ScreenVideo2.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Spark.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Spark.Tables.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.Video.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.VP6.Entropy.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.VP6.Motion.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.VP6.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.VP6.Tables.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.FLV.AAC.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.FLV.AVC.pas"/>
+        <DCCReference Include="..\..\source\media\swf\SWF.FLV.pas"/>
         <None Include="..\..\source\cores\cps\CPS.RomData.inc"/>
         <None Include="..\..\source\cores\sms\SMS.Region.inc"/>
         <RcCompile Include="..\..\source\gpu\shaders\PSPGE.Pascal.rc"/>
@@ -3664,7 +3698,7 @@
         <ProjectFileVersion>12</ProjectFileVersion>
     </ProjectExtensions>
     <PropertyGroup>
-        <DCC_UnitSearchPath>..\..\source\media\archive;..\..\source\media\audio;..\..\source\media\audio\codecs\aac;..\..\source\media\audio\codecs\atrac3;..\..\source\media\audio\codecs\atrac3plus;..\..\source\media\audio\codecs\mp3;..\..\source\media\audio\common;..\..\source\media\audio\export;..\..\source\media\audio\formats\midi;..\..\source\media\audio\formats\wav;..\..\source\media\audio\music\containers;..\..\source\media\audio\music\dumps;..\..\source\media\audio\music\formats;..\..\source\media\audio\music\trackers;..\..\source\media\audio\music\trackers\amiga;..\..\source\media\audio\processing;..\..\source\media\audio\synthesis\soundfont;..\..\source\media\common;..\..\source\runtime\audio;..\..\source\media\image;..\..\source\vm\jvm;..\..\source\vm\java;..\..\source\cores\j2me;..\..\source\platforms\j2me;..\..\source\cores\system32;..\..\source\platforms\system32;..\..\source\cores\system16;..\..\source\platforms\system16;$(DCC_UnitSearchPath);..\..\dependencies\PasToSPIRV\source</DCC_UnitSearchPath>
+        <DCC_UnitSearchPath>..\..\source\media\swf;..\..\source\vm\avm1;..\..\source\cores\flash;..\..\source\platforms\flash;..\..\source\media\archive;..\..\source\media\audio;..\..\source\media\audio\codecs\aac;..\..\source\media\audio\codecs\atrac3;..\..\source\media\audio\codecs\atrac3plus;..\..\source\media\audio\codecs\mp3;..\..\source\media\audio\common;..\..\source\media\audio\export;..\..\source\media\audio\formats\midi;..\..\source\media\audio\formats\wav;..\..\source\media\audio\music\containers;..\..\source\media\audio\music\dumps;..\..\source\media\audio\music\formats;..\..\source\media\audio\music\trackers;..\..\source\media\audio\music\trackers\amiga;..\..\source\media\audio\processing;..\..\source\media\audio\synthesis\soundfont;..\..\source\media\common;..\..\source\runtime\audio;..\..\source\media\image;..\..\source\vm\jvm;..\..\source\vm\java;..\..\source\cores\j2me;..\..\source\platforms\j2me;..\..\source\cores\system32;..\..\source\platforms\system32;..\..\source\cores\system16;..\..\source\platforms\system16;$(DCC_UnitSearchPath);..\..\dependencies\PasToSPIRV\source</DCC_UnitSearchPath>
         <BRCC_IncludePath>$(BRCC_IncludePath);..\..\source\gpu\shaders</BRCC_IncludePath>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Config)'=='Base' or '$(Base)'!=''">

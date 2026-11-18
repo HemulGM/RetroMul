@@ -1,10 +1,5 @@
 ﻿unit Video.AVC.H264.DSP;
 
-// Scalar Delphi port/adaptation of FFmpeg H.264 CAVLC, IDCT and prediction.
-// Copyright (c) 2003 Michael Niedermayer; LGPL-2.1-or-later.
-// IDCT reference: Copyright (c) 2004-2011 Michael Niedermayer.
-// Original files and full notices are retained in reference/.
-
 interface
 
 uses

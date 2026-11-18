@@ -687,6 +687,9 @@ end;
 
 procedure TBrowserController.LayoutClientDblClick(Sender: TObject);
 begin
+  var Touch: IEmulationTouchInput;
+  if Supports(FState.Session.Emulation, IEmulationTouchInput, Touch) and Touch.UsesTouch then
+    Exit;
   {$IFDEF ISMOBILE}
   Exit;
   {$ENDIF}

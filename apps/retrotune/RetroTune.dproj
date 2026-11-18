@@ -459,6 +459,7 @@
         <DCCReference Include="..\..\source\media\audio\common\Audio.Binary.pas"/>
         <DCCReference Include="..\..\source\runtime\audio\Core.Audio.Player.pas"/>
         <DCCReference Include="..\..\source\media\audio\export\Audio.Export.WAV.pas"/>
+        <DCCReference Include="..\..\source\media\audio\formats\wav\Audio.Codec.GSM.pas"/>
         <DCCReference Include="..\..\source\media\audio\formats\wav\Audio.Format.WAV.pas"/>
         <DCCReference Include="ui\RetroTune.InfoForm.pas"/>
         <DCCReference Include="ui\RetroTune.ReferenceForm.pas"/>

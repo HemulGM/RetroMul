@@ -30,8 +30,8 @@ type
     procedure ResetCursor;
     function NextSegment: Boolean;
   end;
-  // Owned and used only by the VM/audio executor; no device, JVM-global or FMX state.
 
+  // Owned and used only by the VM/audio executor; no device, JVM-global or FMX state.
   TJ2MENokiaSound = class
   private
     FVM: TJVM;
@@ -64,7 +64,8 @@ type
 implementation
 
 uses
-  J2ME.Audio.State, System.Math, Java.Classes, Audio.Format.WAV;
+  J2ME.Audio.State, J2ME.Compatibility, System.Math, Java.Classes,
+  Audio.Format.WAV;
 
 const
   SoundName = 'com/nokia/mid/sound/Sound';
@@ -168,7 +169,7 @@ begin
             Frequency := 440 * Power(2, (I.Value - 10 + Scale * 12) / 12);
           Increment := 2 * Pi * Frequency / 44100;
           SegmentPosition := 0;
-        // Phase is continuous across legato notes; explicit gaps reset it.
+          // Phase is continuous across legato notes; explicit gaps reset it.
           if Style <> 1 then
             Phase := 0;
           Exit(True);
@@ -514,7 +515,7 @@ begin
         V.Format := Format;
         if Format = 1 then
         begin
-          V.Song := DecodeNokiaOTA(V.Data);
+          V.Song := DecodeNokiaOTA(NormalizeJ2MECompatibilityOTA(V.Data));
           V.Data := nil;
           ChangeState(V, 1);
           Exit;

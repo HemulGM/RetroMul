@@ -1,8 +1,5 @@
 ﻿unit Video.AVC.H264.Syntax;
 
-// H.264 syntax adapted with FFmpeg n7.1 h264_ps.c as reference.
-// LGPL-2.1-or-later; see NOTICE.txt and reference originals.
-
 interface
 
 uses

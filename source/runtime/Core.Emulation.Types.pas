@@ -128,6 +128,23 @@ type
     property UsesPointer: Boolean read GetUsesPointer;
   end;
 
+  // Absolute contact events in the published frame's pixels, before any
+  // platform-specific inverse display transform. Contact 0 is the primary
+  // mouse/touch contact. Cancel must release state without activating a tap.
+  TEmulationTouchPhase = (Down, Move, Up, Cancel);
+
+  TEmulationTouchEvent = record
+    Phase: TEmulationTouchPhase;
+    Contact, X, Y: Integer;
+  end;
+
+  IEmulationTouchInput = interface
+    ['{C4FF4237-71C1-4CA4-9B4C-655CC47E18A4}']
+    function GetUsesTouch: Boolean;
+    procedure SendTouch(const Event: TEmulationTouchEvent);
+    property UsesTouch: Boolean read GetUsesTouch;
+  end;
+
   IEmulationMotionInput = interface
     ['{1B7C1D32-86B7-4DCC-BD4B-20B1D41120A7}']
     function GetHasAccelerometer: Boolean;

@@ -19,7 +19,7 @@ uses
     , FMX.ApplicationEvents
   {$ENDIF}
   {$IFDEF ANDROID}
-    , RM.DocumentTransfer.Android
+    , RM.DocumentTransfer.Android, RM.Platform.Host
   {$ENDIF};
 
 type
@@ -124,7 +124,9 @@ type
     {$ENDIF}
     {$IFDEF ANDROID}
     Transfer: TAndroidDocumentTransfer;
-    ChoosingTape: Boolean;
+    PlatformDocumentSelected: TPlatformDocumentAction;
+    PlatformDocumentFolder, PlatformDocumentExtension: string;
+    PlatformDocumentCore: IEmulationCore;
     {$ENDIF}
   end;
 

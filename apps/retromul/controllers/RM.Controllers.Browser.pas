@@ -46,7 +46,7 @@ implementation
 
 uses
   RM.Input.Runtime, System.SysUtils, System.Types, System.Math, FMX.Types,
-  FMX.Controls, FMX.StdCtrls, FMX.Objects, FMX.Layouts, RM.Main.View, RM.Toolbar,
+  FMX.Controls, FMX.StdCtrls, FMX.Objects, FMX.Layouts, RM.Main, RM.Toolbar,
   RM.LibraryView, RM.Dialogs, RM.Styles, RM.Icons, Core.Emulation, Core.Storage;
 
 procedure TBrowserController.InitializeScreenshotTool;
@@ -623,8 +623,7 @@ begin
   if FState.Browser.ScreenshotTool <> nil then
   begin
     var InputContext := Default(TInputRuntimeContext);
-    InputContext.State := FState;
-    InputContext.View := FView;
+    InputContext.Host := FPlatformHost;
     if PlatformInputHandler(FState.Input.SystemId).KeyPolicy(InputContext).ReserveCaptureShortcuts then
       FState.Browser.ScreenshotTool.Hint := Translate('Take screenshot')
     else

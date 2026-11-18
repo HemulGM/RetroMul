@@ -37,7 +37,7 @@ type
     procedure FormSaveState(Sender: TObject);
     procedure ButtonOpenClick(Sender: TObject);
     procedure OpenRom;
-    procedure SelectDocument(ForCassette: Boolean; const FileName: string = '');
+    procedure SelectDocument(const FileName: string = '');
     procedure FinishFileSelection;
     function CanAcceptRomDrop(const Data: TDragObject): Boolean;
     procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False; const SnapshotName: string = ''; const LibraryPlatformId: string = '');
@@ -60,8 +60,7 @@ uses
   System.Classes, System.SyncObjs, System.UITypes, System.Math, RM.Input,
   System.IOUtils, FMX.Forms, FMX.Objects, FMX.Graphics, FMX.OpenDialog,
   Core.Storage, Core.EmulatorFactory, Core.InputConfig, Core.Platforms,
-  Core.PlatformServices, RM.Gamepad, RM.FrameUpload, RM.Dialogs, RM.Styles,
-  Core.SavePaths;
+  RM.Gamepad, RM.FrameUpload, RM.Dialogs, RM.Styles, Core.SavePaths;
 
 function NewLoadCancellation(out CancelLoad: TProc): TProc;
 begin
@@ -91,8 +90,7 @@ end;
 function TSessionController.RuntimeContext: TSessionRuntimeContext;
 begin
   Result := Default(TSessionRuntimeContext);
-  Result.View := FView;
-  Result.State := FState;
+  Result.Host := FPlatformHost;
 end;
 
 procedure TSessionController.DisconnectSession;
@@ -106,7 +104,7 @@ begin
   if FState.Session.OpeningRom or FState.Session.Reporting then
     Exit;
 
-  if FState.Session.AutoPaused and FView.InputHasFocus and not FState.Session.UserPaused and not FState.Browser.ViewingLibrary and
+  if FState.Session.AutoPaused and FView.HostInputHasFocus and not FState.Session.UserPaused and not FState.Browser.ViewingLibrary and
     not RetroDialogVisible(FView) and (FState.Settings.View = nil) and (FState.Help.View = nil) then
   begin
     FState.Session.AutoPaused := False;
@@ -127,7 +125,7 @@ begin
     FState.Input.Rumble.Stop;
 
   {$IFNDEF ISMOBILE}
-  if FState.Preferences.PauseOnFocusLoss and not FView.InputHasFocus and not FState.Browser.ViewingLibrary and not FState.Session.Reporting and
+  if FState.Preferences.PauseOnFocusLoss and not FView.HostInputHasFocus and not FState.Browser.ViewingLibrary and not FState.Session.Reporting and
     not RetroDialogVisible(FView) and (FState.Settings.View = nil) and
     (FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted and not FState.Session.Emulation.IsPaused then
   begin
@@ -203,7 +201,7 @@ begin
       not FState.Browser.ViewingLibrary and not FState.Session.Reporting and (FState.Settings.View = nil) and (FState.Help.View = nil) then
     begin
       {$IFNDEF ISMOBILE}
-      if FState.Preferences.PauseOnFocusLoss and not FView.InputHasFocus then
+      if FState.Preferences.PauseOnFocusLoss and not FView.HostInputHasFocus then
         FState.Session.AutoPaused := True
       else
       {$ENDIF}
@@ -304,9 +302,9 @@ begin
       else if not FState.Session.EmulationFaulted then
         FState.Session.Emulation.Resume;
   end;
-  var DialogInput := RetroDialogVisible(FView) and (FView.Active or FView.InputHasFocus);
+  var DialogInput := RetroDialogVisible(FView) and (FView.Active or FView.HostInputHasFocus);
   var LibraryInput := (FState.Input.Manager <> nil) and not FState.Input.PollingFailed and
-    (FView.InputHasFocus or DialogInput) and not FState.Session.Reporting and
+    (FView.HostInputHasFocus or DialogInput) and not FState.Session.Reporting and
     (FState.Browser.ViewingLibrary or (FState.Settings.View <> nil) or DialogInput);
   FView.TimerUpdate.Enabled := not FState.Mobile.InBackground and
     (LibraryInput or FState.Session.OpeningRom or ((FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted));
@@ -314,9 +312,9 @@ begin
 
   // Library controllers and settings capture need polling even before a core
   // is started. Frame rendering remains limited to a running core.
-  var DialogInput := RetroDialogVisible(FView) and (FView.Active or FView.InputHasFocus);
+  var DialogInput := RetroDialogVisible(FView) and (FView.Active or FView.HostInputHasFocus);
   var NeedsInput := (FState.Input.Manager <> nil) and not FState.Input.PollingFailed and
-    (FView.InputHasFocus or DialogInput) and (not FState.Session.OpeningRom or DialogInput) and
+    (FView.HostInputHasFocus or DialogInput) and (not FState.Session.OpeningRom or DialogInput) and
     not FState.Session.Reporting and ((FState.Settings.View <> nil) or FState.Browser.ViewingLibrary or
     (FState.Session.Emulation <> nil) or DialogInput);
   var NeedsFrames := (FState.Session.Emulation <> nil) and
@@ -371,7 +369,7 @@ end;
 procedure TSessionController.ButtonOpenClick(Sender: TObject);
 begin
   try
-    FView.OpenRom;
+    OpenRom;
   except
     on E: Exception do
       ShowRetroMessage(FView, E.Message);
@@ -381,15 +379,15 @@ end;
 procedure TSessionController.OpenRom;
 begin
   FState.Session.ReportLaunchSource := 'file_picker';
-  FView.SelectDocument(False);
+  SelectDocument;
 end;
 
-procedure TSessionController.SelectDocument(ForCassette: Boolean; const FileName: string);
+procedure TSessionController.SelectDocument(const FileName: string);
 begin
   if FState.Session.OpeningRom then
     Exit;
 
-  if not ForCassette and (FState.Help.View <> nil) then
+  if (FState.Help.View <> nil) then
     FView.CloseControlsHelp;
   FState.Session.OpeningRom := True;
   FView.FormDeactivate(FView);
@@ -401,34 +399,18 @@ begin
       if not IsAlive() then
         Exit;
 
-      var Importing := False;
       try
         try
           if Selection.Error <> '' then
             raise Exception.Create(Selection.Error);
-
           if not Selection.Cancelled then
-          begin
-            if ForCassette then
-            begin
-              {$IFDEF ANDROID}
-              FState.Mobile.ChoosingTape := True;
-              FState.Mobile.Transfer.Import(Selection.Location, True, FState.Input.SystemId);
-              Importing := True;
-              {$ELSE}
-              FView.SelectTapeFile(Selection.Location);
-              {$ENDIF}
-            end
-            else
-              FView.LoadRom(Selection.Location, FState.Session.Storage.Describe(Selection.Location).Name);
-          end;
+            FView.LoadRom(Selection.Location, FState.Session.Storage.Describe(Selection.Location).Name);
         except
           on E: Exception do
             ShowRetroMessage(FView, E.Message);
         end;
       finally
-        if not Importing then
-          FView.FinishFileSelection;
+        FinishFileSelection;
       end;
     end;
   try
@@ -438,31 +420,13 @@ begin
       Selection.Location := FileName;
       Completion(Selection);
     end
-    else if ForCassette then
-    begin
-      FState.Session.FileDialog.InitialDirectory := '';
-      FState.Session.FileDialog.FileMustExist := False;
-      var Selection := PlatformDocumentSelection(FState.Input.SystemId);
-      FState.Session.FileDialog.Title := Translate(Selection.Title);
-      FState.Session.FileDialog.Filter := Translate(Selection.FileFilter);
-      FState.Session.FileDialog.SelectFiles(
-        procedure(const Selection: TFMXSelectionResult)
-        begin
-          var Result := Default(TStorageSelection);
-          Result.Cancelled := Selection.Status = TFMXSelectionStatus.Cancelled;
-          Result.Error := Selection.Error;
-          if Selection.Status = TFMXSelectionStatus.Selected then
-            Result.Location := Selection.Locations[0];
-          Completion(Result);
-        end);
-    end
     else
     begin
       FView.ImageLogo.Visible := False;
       FState.Session.Storage.SelectRom(Completion);
     end;
   except
-    FView.FinishFileSelection;
+    FinishFileSelection;
     raise;
   end;
 end;
@@ -474,7 +438,10 @@ begin
 
   {$IFDEF ANDROID}
   FState.Mobile.Transfer.Finish;
-  FState.Mobile.ChoosingTape := False;
+  FState.Mobile.PlatformDocumentSelected := nil;
+  FState.Mobile.PlatformDocumentFolder := '';
+  FState.Mobile.PlatformDocumentExtension := '';
+  FState.Mobile.PlatformDocumentCore := nil;
   {$ENDIF}
   FState.Session.OpeningRom := False;
   FView.FormActivate(FView);
@@ -497,7 +464,7 @@ begin
   FLoadingCore := False;
   FState.Session.OpeningRom := FState.Session.PendingAutosaveChoice or FSelectingPlatform;
   CloseRetroLoading(FView);
-  FView.FinishFileSelection;
+  FinishFileSelection;
 end;
 
 procedure TSessionController.CancelCoreLoading;
@@ -570,7 +537,7 @@ begin
         FState.Session.PendingAutosaveChoice := False;
         if not FLoadingCore then
           FState.Session.PreserveOpeningAutosave := False;
-        FView.FinishFileSelection;
+        FinishFileSelection;
         FView.SyncActivity;
       end;
     end, 'Load autosave', 'Start new game', 'Cancel launch');
@@ -663,13 +630,13 @@ begin
           on E: Exception do
             ShowRetroMessage(FView, Translate('Unable to open game: ') + TranslateCoreMessage(E.Message));
         end;
-        FView.FinishFileSelection;
+        FinishFileSelection;
         FView.SyncActivity;
       end);
   except
     FSelectingPlatform := False;
     FState.Session.PreserveOpeningAutosave := False;
-    FView.FinishFileSelection;
+    FinishFileSelection;
     raise;
   end;
 end;
@@ -857,7 +824,7 @@ begin
       FState.Session.Emulation.Pause;
     {$ENDIF}
     FState.Session.Emulation.Start;
-    FState.Autosave.LastTick := FView.CurrentTick;
+    FState.Autosave.LastTick := FView.AutosaveClock;
     var Info: IEmulationSnapshotLocation;
     var Directory := '';
     if FState.Session.Emulation.SupportsSnapshots and
@@ -1080,7 +1047,7 @@ begin
     if (AudioError <> '') and not FState.Session.SoundErrorShown then
     begin
       FState.Session.SoundErrorShown := True;
-      FView.ShowAudioError(AudioError);
+      FView.ReportAudioError(AudioError);
     end;
   end;
 

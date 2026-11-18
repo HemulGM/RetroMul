@@ -3,14 +3,15 @@
 interface
 
 uses
-  System.Classes, System.UITypes, Core.Emulation, RM.Main.View, RM.Main.State,
-  FMX.Objects, Core.Input.Touch;
+  System.Classes, System.Types, System.UITypes, Core.Emulation, RM.Platform.Host,
+  FMX.Objects, RM.Gamepad, Core.Input.Touch;
 
 type
   TInputRuntimeContext = record
-    View: TMainView;
-    State: TMainState;
+    Host: IPlatformHost;
     ScreenInputChanged: TNotifyEvent;
+    function Surface: IFmxPlatformSurface;
+    function Gamepad: TScreenGamepad;
     function Data(const Key: string): IInterface;
     procedure SetData(const Key: string; const Value: IInterface);
   end;
@@ -66,8 +67,7 @@ implementation
 
 uses
   System.SysUtils, System.Math, System.Generics.Collections,
-  System.Generics.Defaults, FMX.Controls, Core.Platforms, RM.Dialogs, RM.Gamepad,
-  RM.ShaderBitmap;
+  System.Generics.Defaults, Core.Platforms, RM.ShaderBitmap;
 
 var
   Handlers: TDictionary<string, TPlatformInputHandlerClass>;
@@ -92,8 +92,6 @@ type
 
   IInputRuntimeData = interface
     ['{E54CB49A-2C01-473C-B135-31E7E7CCCE83}']
-    function GetValue(const Key: string): IInterface;
-    procedure SetValue(const Key: string; const Value: IInterface);
     function InitializedHandlers: TArray<TPlatformInputHandlerClass>;
     procedure TrackInitialization(Handler: TPlatformInputHandlerClass);
     function BeginFinalization: TArray<TPlatformInputHandlerClass>;
@@ -102,14 +100,11 @@ type
 
   TInputRuntimeData = class(TInterfacedObject, IInputRuntimeData)
   private
-    FValues: TDictionary<string, IInterface>;
     FInitialized: TList<TPlatformInputHandlerClass>;
     FFinalizing: Boolean;
   public
     constructor Create;
     destructor Destroy; override;
-    function GetValue(const Key: string): IInterface;
-    procedure SetValue(const Key: string; const Value: IInterface);
     function InitializedHandlers: TArray<TPlatformInputHandlerClass>;
     procedure TrackInitialization(Handler: TPlatformInputHandlerClass);
     function BeginFinalization: TArray<TPlatformInputHandlerClass>;
@@ -145,11 +140,7 @@ end;
 
 function ScreenTouchAllowed(const Context: TInputRuntimeContext): Boolean;
 begin
-  Result := (Context.State.Session.Emulation <> nil) and Context.View.InputHasFocus and
-    not Context.State.Session.OpeningRom and not Context.State.Session.Reporting and
-    not Context.State.Browser.ViewingLibrary and (Context.State.Settings.View = nil) and
-    (Context.State.Help.View = nil) and not Context.State.Session.EmulationFaulted and
-    not Context.State.Session.Emulation.IsPaused and not RetroDialogVisible(Context.View);
+  Result := Context.Host.Activity.AcceptsGameInput;
 end;
 
 procedure CancelScreenTouch(const Context: TInputRuntimeContext);
@@ -158,33 +149,22 @@ begin
   if (State = nil) or not State.Down then
     Exit;
   State.Cancel;
-  var Canvas := Context.View.ImageCanvas;
-  if (Canvas <> nil) and (Canvas.Root <> nil) and (Canvas.Root.Captured <> nil) and
-    (Canvas.Root.Captured.GetObject = Canvas) then
-    Canvas.Root.SetCaptured(nil);
+  Context.Host.Video.PointerCaptured := False;
 end;
 
 procedure ValidateScreenTouch(const Context: TInputRuntimeContext);
 begin
   var State := Context.Data('input.screen.touch') as IScreenTouchState;
-  if (State = nil) or not State.Down then
-    Exit;
-  var Canvas := Context.View.ImageCanvas;
-  if not ScreenTouchAllowed(Context) or (Canvas = nil) or (Canvas.Root = nil) or
-    (Canvas.Root.Captured = nil) or (Canvas.Root.Captured.GetObject <> Canvas) then
+  if (State <> nil) and State.Down and
+    (not ScreenTouchAllowed(Context) or not Context.Host.Video.PointerCaptured) then
     CancelScreenTouch(Context);
 end;
 
 function DispatchScreenTouch(const Context: TInputRuntimeContext; Phase: TEmulationTouchPhase; X, Y: Single): Boolean;
 begin
   var Target: IEmulationTouchInput;
-  Result := Supports(Context.State.Session.Emulation, IEmulationTouchInput, Target) and Target.UsesTouch;
-  if not Result then
-  begin
-    CancelScreenTouch(Context);
-    Exit;
-  end;
-  if not ScreenTouchAllowed(Context) then
+  Result := Supports(Context.Host.Core, IEmulationTouchInput, Target) and Target.UsesTouch;
+  if not Result or not ScreenTouchAllowed(Context) then
   begin
     CancelScreenTouch(Context);
     Exit;
@@ -195,43 +175,22 @@ begin
     State := TScreenTouchState.Create;
     Context.SetData('input.screen.touch', State);
   end;
-  var PX := 0;
-  var PY := 0;
-  var Valid := TryGetImagePixel(Context.View.ImageCanvas, X, Y, PX, PY);
-  State.Update(Target, Phase, PX, PY, Valid);
-  var Canvas := Context.View.ImageCanvas;
-  if (Canvas <> nil) and (Canvas.Root <> nil) then
-    if State.Down then
-      Canvas.Root.SetCaptured(Canvas)
-    else if (Canvas.Root.Captured <> nil) and (Canvas.Root.Captured.GetObject = Canvas) then
-      Canvas.Root.SetCaptured(nil);
+  var Pixel: TPoint;
+  var Valid := Context.Host.Video.TryLocalToFrame(PointF(X, Y), Pixel);
+  State.Update(Target, Phase, Pixel.X, Pixel.Y, Valid);
+  Context.Host.Video.PointerCaptured := State.Down;
 end;
 
 constructor TInputRuntimeData.Create;
 begin
   inherited;
-  FValues := TDictionary<string, IInterface>.Create;
   FInitialized := TList<TPlatformInputHandlerClass>.Create;
 end;
 
 destructor TInputRuntimeData.Destroy;
 begin
-  FValues.Free;
   FInitialized.Free;
   inherited;
-end;
-
-function TInputRuntimeData.GetValue(const Key: string): IInterface;
-begin
-  FValues.TryGetValue(Key, Result);
-end;
-
-procedure TInputRuntimeData.SetValue(const Key: string; const Value: IInterface);
-begin
-  if Value = nil then
-    FValues.Remove(Key)
-  else
-    FValues.AddOrSetValue(Key, Value);
 end;
 
 function TInputRuntimeData.InitializedHandlers: TArray<TPlatformInputHandlerClass>;
@@ -259,20 +218,27 @@ begin
   Result := FFinalizing;
 end;
 
+function TInputRuntimeContext.Surface: IFmxPlatformSurface;
+begin
+  Supports(Host, IFmxPlatformSurface, Result);
+end;
+
+function TInputRuntimeContext.Gamepad: TScreenGamepad;
+begin
+  var PlatformSurface := Surface;
+  if PlatformSurface = nil then
+    Exit(nil);
+  Result := PlatformSurface.Gamepad;
+end;
+
 function TInputRuntimeContext.Data(const Key: string): IInterface;
 begin
-  Result := nil;
-  if State.Input.RuntimeData <> nil then
-    Result := (State.Input.RuntimeData as IInputRuntimeData).GetValue(Key);
+  Result := Host.GetData(Key);
 end;
 
 procedure TInputRuntimeContext.SetData(const Key: string; const Value: IInterface);
 begin
-  if (State.Input.RuntimeData = nil) and (Value = nil) then
-    Exit;
-  if State.Input.RuntimeData = nil then
-    State.Input.RuntimeData := TInputRuntimeData.Create;
-  (State.Input.RuntimeData as IInputRuntimeData).SetValue(Key, Value);
+  Host.SetData(Key, Value);
 end;
 
 function TInputKeyPolicy.IsControlKey(Code: Word): Boolean;
@@ -307,9 +273,12 @@ end;
 
 procedure InitializePlatformInputHandlers(const Context: TInputRuntimeContext);
 begin
-  if Context.State.Input.RuntimeData = nil then
-    Context.State.Input.RuntimeData := TInputRuntimeData.Create;
-  var Runtime := Context.State.Input.RuntimeData as IInputRuntimeData;
+  var Runtime := Context.Data('input.runtime') as IInputRuntimeData;
+  if Runtime = nil then
+  begin
+    Runtime := TInputRuntimeData.Create;
+    Context.SetData('input.runtime', Runtime);
+  end;
   if Runtime.IsFinalizing then
     raise EInvalidOperation.Create('Peripheral finalization is in progress');
   var Classes := TList<TPlatformInputHandlerClass>.Create;
@@ -359,16 +328,15 @@ var
   end;
 
 begin
-  if Context.State.Input.RuntimeData = nil then
-    Exit;
-  var Runtime := Context.State.Input.RuntimeData as IInputRuntimeData;
-  if Runtime.IsFinalizing then
+  var Runtime := Context.Data('input.runtime') as IInputRuntimeData;
+  if (Runtime = nil) or Runtime.IsFinalizing then
     Exit;
   Classes := Runtime.BeginFinalization;
   try
     FinalizeAt(High(Classes));
   finally
-    Context.State.Input.RuntimeData := nil;
+    Context.SetData('input.screen.touch', nil);
+    Context.SetData('input.runtime', nil);
   end;
 end;
 
@@ -405,10 +373,10 @@ end;
 
 class procedure TPlatformInputHandler.UpdateFeedback(const Context: TInputRuntimeContext);
 begin
-  if (Context.State.Session.Emulation = nil) or Context.State.Session.EmulationFaulted then
+  if (Context.Host.Core = nil) or (Context.Host.Activity.Phase = TPlatformSessionPhase.Failed) then
     Exit;
-  if (Context.State.Input.Gamepad <> nil) and Context.State.Input.Gamepad.Visible and Context.State.Input.Gamepad.Enabled then
-    Context.State.Input.Gamepad.CoreButtons := Context.State.Session.Emulation.GetInputState.Buttons;
+  if (Context.Gamepad <> nil) and Context.Gamepad.Visible and Context.Gamepad.Enabled then
+    Context.Gamepad.CoreButtons := Context.Host.Core.GetInputState.Buttons;
 end;
 
 class procedure TPlatformInputHandler.PollInput(const Context: TInputRuntimeContext);
@@ -431,6 +399,12 @@ end;
 
 function TryGetImagePixel(const Image: TImage; const X, Y: Single; out PixelX, PixelY: Integer): Boolean;
 begin
+  if Image = nil then
+  begin
+    PixelX := -1;
+    PixelY := -1;
+    Exit(False);
+  end;
   if Image is TShaderBitmap then
     Exit(TShaderBitmap(Image).TryGetFramePixel(X, Y, PixelX, PixelY));
   Result := False;

@@ -6,11 +6,8 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Types,
-  FMX.Platform, FMX.Dialogs, Core.Emulation, Core.Storage, FMXInput,
-  RM.Main.View, RM.Main.State, RM.Controllers.Browser, RM.ShaderBitmap,
-  RM.Feedback, RM.Controllers.Window, RM.Controllers.Settings,
-  RM.Controllers.Snapshots, RM.Controllers.Input, RM.Controllers.Mobile,
-  RM.Controllers.Session, FMX.Menus, FMX.Objects, FMX.StdCtrls,
+  FMX.Platform, FMX.Dialogs, Core.Emulation, Core.Storage, FMXInput, WinUI3.Form,
+  RM.Main.State, RM.ShaderBitmap, FMX.Menus, FMX.Objects, FMX.StdCtrls,
   FMX.Controls.Presentation, FMX.Layouts, FMX.Controls, FMX.TabControl
   {$IF not Defined(LINUX)}
     , System.Sensors
@@ -18,144 +15,164 @@ uses
 ;
 
 type
-  TFormMain = class(TMainView)
+  TFormMain = class(TWinUIForm)
+  protected
+    FState: TMainState;
   published
-    procedure FormActivate(Sender: TObject); override;
-    procedure FormResize(Sender: TObject); override;
-    procedure FormDeactivate(Sender: TObject); override;
-    procedure FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState); override;
-    procedure FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState); override;
-    procedure TimerUpdateTimer(Sender: TObject); override;
-    procedure ButtonOpenClick(Sender: TObject); override;
-    procedure FormSafeAreaChanged(Sender: TObject; const AInsets: TRectF); override;
-    procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean); override;
-    procedure LayoutClientClick(Sender: TObject); override;
-    procedure LayoutClientDblClick(Sender: TObject); override;
-    procedure FormSaveState(Sender: TObject); override;
-    procedure ButtonCloseRomClick(Sender: TObject); override;
-    procedure ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single); override;
+    GameActionsButton, ButtonHidePanel, ButtonShowPanel: TButton;
+    LayoutShowPanel: TLayout;
+    GameActionsMenu, ScreenshotMenu, SaveSnapshotMenu, LoadSnapshotMenu: TPopupMenu;
+    GameActionsPopup: TPopup;
+    GameActionsItems: TLayout;
+    GameActionsScroll: TVertScrollBox;
+    GameActionsBack: TButton;
+    ScreenTabs: TTabControl;
+    LibraryScreen: TTabItem;
+    GameScreen: TTabItem;
+    SettingsScreen: TTabItem;
+    ButtonLibrary: TButton;
+    GamePause: TButton;
+    ButtonReset: TButton;
+    GamePauseIcon: TPath;
+    GameResumeIcon: TPath;
+    GameFullscreen: TButton;
+    GameSettings: TButton;
+    GameInsertCoin: TButton;
+    GameControlsHelp: TButton;
+    GameStatus: TPanel;
+    StatusDot: TCircle;
+    GamePlatform: TLabel;
+    GameFPS: TLabel;
+    GameAudio: TLabel;
+    LayoutVideoOutput: TLayout;
+    TimerUpdate: TTimer;
+    ImageLogo: TImage;
+    RectangleBG: TRectangle;
+    LayoutClient: TLayout;
+    LabelPaused: TLabel;
+    ImageNoBox: TImage;
+    LayoutHead: TLayout;
+    LabelStatus: TLabel;
+    ButtonCloseRom: TButton;
+    procedure FormActivate(Sender: TObject); virtual;
+    procedure FormResize(Sender: TObject); virtual;
+    procedure FormDeactivate(Sender: TObject); virtual;
+    procedure FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState); virtual;
+    procedure FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState); virtual;
+    procedure TimerUpdateTimer(Sender: TObject); virtual;
+    procedure ButtonOpenClick(Sender: TObject); virtual;
+    procedure FormSafeAreaChanged(Sender: TObject; const AInsets: TRectF); virtual;
+    procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean); virtual;
+    procedure LayoutClientClick(Sender: TObject); virtual;
+    procedure LayoutClientDblClick(Sender: TObject); virtual;
+    procedure FormSaveState(Sender: TObject); virtual;
+    procedure ButtonCloseRomClick(Sender: TObject); virtual;
+    procedure ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single); virtual;
     procedure ImageCanvasMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
-    procedure ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single); override;
+    procedure ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single); virtual;
   private
-    FFeedbackView: TFeedbackView;
-    FBrowserController: TBrowserController;
-    FWindowController: TWindowController;
-    FSettingsController: TSettingsController;
-    FSnapshotsController: TSnapshotsController;
-    FInputController: TInputController;
-    FMobileController: TMobileController;
-    FSessionController: TSessionController;
+    // The concrete controller types are private to the implementation.
+    FControllers: TObject;
   public
-    procedure ReportBugClick(Sender: TObject); override;
-    procedure ApplyFeedbackLanguage(const PreviousLanguage: string); override;
-    procedure PollRumble; override;
-    procedure SyncMotionSensor; override;
-    procedure PollMotionSensor; override;
+    ImageCanvas: TShaderBitmap;
+    function DetectSystemLanguage: string; virtual;
+    function AutosaveClock: UInt64; virtual;
+    function HostInputHasFocus: Boolean; virtual;
+    procedure ReportAudioError(const MessageText: string); virtual;
+    function ExecuteSnapshotDialog(Dialog: TOpenDialog): Boolean; virtual;
+    procedure OpenDirectory(const Directory: string); virtual;
+    property State: TMainState read FState;
+    procedure ReportBugClick(Sender: TObject); virtual;
+    procedure ApplyFeedbackLanguage(const PreviousLanguage: string); virtual;
+    procedure PollRumble; virtual;
+    procedure SyncMotionSensor; virtual;
+    procedure PollMotionSensor; virtual;
     {$IF not Defined(LINUX)}
-    procedure ChooseMotionSensor(Sender: TObject; const Sensors: TSensorArray; var ChoseSensorIndex: Integer); override;
+    procedure ChooseMotionSensor(Sender: TObject; const Sensors: TSensorArray; var ChoseSensorIndex: Integer); virtual;
     {$ENDIF}
-    procedure InitializeLibrary; override;
-    procedure InitializeScreenshotTool; override;
-    procedure InitializePeripherals; override;
-    {$IFDEF ISMOBILE}
-    procedure InitializeMobileViews; override;
-    {$ENDIF}
-    {$IFNDEF ISMOBILE}
-    procedure InitializeDesktopViews; override;
-    {$ENDIF}
-    {$IFDEF ANDROID}
-    procedure InitializeAndroidServices; override;
-    {$ENDIF}
-    procedure Load; override;
-    procedure Save; override;
+    procedure InitializeLibrary; virtual;
+    procedure Load; virtual;
+    procedure Save; virtual;
     {$IFDEF MSWINDOWS}
-    procedure RestoreWindowState; override;
-    procedure SaveWindowState; override;
+    procedure RestoreWindowState; virtual;
+    procedure SaveWindowState; virtual;
     {$ENDIF}
-    procedure ApplyControlInset; override;
-    procedure SetStatus(const Text: string); override;
-    procedure SyncActivity; override;
-    procedure DialogActivityChanged(Sender: TObject); override;
-    procedure ApplicationException(Sender: TObject; E: Exception); override;
-    procedure OpenRom; override;
-    procedure SelectDocument(ForCassette: Boolean; const FileName: string = ''); override;
-    procedure FinishFileSelection; override;
-    function CanAcceptRomDrop(const Data: TDragObject): Boolean; override;
-    procedure Stop; override;
-    procedure StopOnError; override;
-    function UpdateFrame: Boolean; override;
-    procedure AutosaveOnExit; override;
-    procedure PollAutosave; override;
-    procedure LibraryPlay(Sender: TObject); override;
-    procedure LibraryBack(Sender: TObject); override;
-    procedure PauseClick(Sender: TObject); override;
-    procedure SwitchPause; override;
-    procedure UpdatePauseOverlay; override;
-    procedure FullscreenClick(Sender: TObject); override;
-    procedure SwitchFullScreen; override;
-    procedure UpdateGameChrome; override;
-    procedure InsertCoinClick(Sender: TObject); override;
-    procedure SettingsClick(Sender: TObject); override;
-    procedure SettingsApplied(Sender: TObject); override;
-    procedure SettingsClose(Sender: TObject); override;
-    procedure ControlsHelpClick(Sender: TObject); override;
-    procedure ControlsHelpClose(Sender: TObject); override;
-    procedure ControlsHelpSettings(Sender: TObject); override;
-    procedure CloseControlsHelp(OpenSettings: Boolean = False); override;
-    function GameSnapshotDirectory: string; override;
-    procedure LoadSnapshotPreview(const Name: string); override;
-    procedure SaveStateClick(Sender: TObject); override;
-    procedure LoadStateClick(Sender: TObject); override;
-    procedure PrepareGameplayMenu(Sender: TObject); override;
-    procedure SaveSnapshotAsClick(Sender: TObject); override;
-    procedure OpenSnapshotClick(Sender: TObject); override;
-    procedure RecentSnapshotClick(Sender: TObject); override;
-    procedure ScreenshotClick(Sender: TObject); override;
-    procedure OpenScreenshotFolderClick(Sender: TObject); override;
-    procedure LoadHostInput(const SystemId: string); override;
-    procedure ReloadHostInputBindings; override;
-    procedure PollHostInput; override;
-    procedure ForwardKeyState(Code: Word; Pressed: Boolean); override;
-    procedure GamepadChanged(Sender: TObject); override;
-    function CombinedGamepadInput: TEmulatorInput; override;
-    procedure UpdatePeripheralInput; override;
-    procedure UpdatePeripheralFeedback; override;
+    procedure ApplyControlInset; virtual;
+    procedure SetStatus(const Text: string); virtual;
+    procedure SyncActivity; virtual;
+    procedure DialogActivityChanged(Sender: TObject); virtual;
+    procedure ApplicationException(Sender: TObject; E: Exception); virtual;
+    procedure OpenRom; virtual;
+    procedure FinishFileSelection; virtual;
+    procedure Stop; virtual;
+    procedure StopOnError; virtual;
+    function UpdateFrame: Boolean; virtual;
+    procedure AutosaveOnExit; virtual;
+    procedure PollAutosave; virtual;
+    procedure LibraryPlay(Sender: TObject); virtual;
+    procedure LibraryBack(Sender: TObject); virtual;
+    procedure PauseClick(Sender: TObject); virtual;
+    procedure SwitchPause; virtual;
+    procedure UpdatePauseOverlay; virtual;
+    procedure FullscreenClick(Sender: TObject); virtual;
+    procedure SwitchFullScreen; virtual;
+    procedure UpdateGameChrome; virtual;
+    procedure InsertCoinClick(Sender: TObject); virtual;
+    procedure SettingsClick(Sender: TObject); virtual;
+    procedure SettingsApplied(Sender: TObject); virtual;
+    procedure SettingsClose(Sender: TObject); virtual;
+    procedure ControlsHelpClick(Sender: TObject); virtual;
+    procedure ControlsHelpClose(Sender: TObject); virtual;
+    procedure ControlsHelpSettings(Sender: TObject); virtual;
+    procedure CloseControlsHelp(OpenSettings: Boolean = False); virtual;
+    function GameSnapshotDirectory: string; virtual;
+    procedure LoadSnapshotPreview(const Name: string); virtual;
+    procedure SaveStateClick(Sender: TObject); virtual;
+    procedure LoadStateClick(Sender: TObject); virtual;
+    procedure PrepareGameplayMenu(Sender: TObject); virtual;
+    procedure SaveSnapshotAsClick(Sender: TObject); virtual;
+    procedure OpenSnapshotClick(Sender: TObject); virtual;
+    procedure RecentSnapshotClick(Sender: TObject); virtual;
+    procedure ScreenshotClick(Sender: TObject); virtual;
+    procedure OpenScreenshotFolderClick(Sender: TObject); virtual;
+    procedure LoadHostInput(const SystemId: string); virtual;
+    procedure ReloadHostInputBindings; virtual;
+    procedure PollHostInput; virtual;
+    procedure ForwardKeyState(Code: Word; Pressed: Boolean); virtual;
+    procedure GamepadChanged(Sender: TObject); virtual;
+    function CombinedGamepadInput: TEmulatorInput; virtual;
+    procedure UpdatePeripheralInput; virtual;
+    procedure UpdatePeripheralFeedback; virtual;
     {$IFDEF ISMOBILE}
-    function ApplicationStateChanged(Sender: TObject; const AAppEvent: TApplicationEvent; const AContext: TObject): Boolean; override;
+    function ApplicationStateChanged(Sender: TObject; const AAppEvent: TApplicationEvent; const AContext: TObject): Boolean; virtual;
     {$ENDIF}
     {$IFDEF ANDROID}
-    procedure PollDocumentTransfer; override;
+    procedure PollDocumentTransfer; virtual;
     {$ENDIF}
   protected
-    function DetectSystemLanguage: string; override;
-    function AutosaveClock: UInt64; override;
-    function CreateStorage: IStorage; override;
-    function CreateHostInput: TInputManager; override;
-    function HostInputHasFocus: Boolean; override;
-    procedure ReportAudioError(const MessageText: string); override;
-    function CreateCore(const FileName: string): IEmulationCore; override;
-    function ExecuteSnapshotDialog(Dialog: TOpenDialog): Boolean; override;
-    procedure OpenDirectory(const Directory: string); override;
+    function CreateStorage: IStorage; virtual;
+    function CreateHostInput: TInputManager; virtual;
+    function CreateCore(const FileName: string): IEmulationCore; virtual;
     procedure DoOnSettingChange; override;
     procedure DoShow; override;
   public
     procedure KeyDown(var Key: Word; var KeyChar: WideChar; Shift: TShiftState); override;
     procedure DragOver(const Data: TDragObject; const Point: TPointF; var Operation: TDragOperation); override;
     procedure DragDrop(const Data: TDragObject; const Point: TPointF); override;
-    procedure SaveSnapshot(const Name: string); override;
-    procedure LoadSnapshot(const Name: string); override;
-    procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False; const SnapshotName: string = ''; const LibraryPlatformId: string = ''); override;
-    procedure ResetConsole(Hard: Boolean); override;
-    procedure ResetClick(Sender: TObject); override;
-    procedure HardRestart; override;
-    procedure SelectTapeFile(const FileName: string); override;
-    function SaveScreenshot: string; override;
+    procedure SaveSnapshot(const Name: string); virtual;
+    procedure LoadSnapshot(const Name: string); virtual;
+    procedure LoadRom(const FileName: string; const DisplayName: string = ''; StartPaused: Boolean = False; const SnapshotName: string = ''; const LibraryPlatformId: string = ''); virtual;
+    procedure ResetConsole(Hard: Boolean); virtual;
+    procedure ResetClick(Sender: TObject); virtual;
+    procedure HardRestart; virtual;
+    procedure SelectTapeFile(const FileName: string); virtual;
+    function SaveScreenshot: string; virtual;
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
   end;
 
 const
-  AppName = RM.Main.View.AppName;
+  AppName = 'RetroMul';
 
 var
   FormMain: TFormMain;
@@ -164,8 +181,11 @@ implementation
 
 uses
   System.IOUtils, System.Messaging, FMX.Forms, FMX.Graphics, FMX.OpenDialog,
-  WinUI3.Form, WinUI3.Style, Core.EmulatorFactory, RM.Storage.Dialogs,
-  RM.Dialogs, RM.Styles, RM.Rumble, FMX.Image, RM.Input.Gamepads
+  WinUI3.Style, Core.EmulatorFactory, RM.Storage.Dialogs, RM.Feedback,
+  RM.Controllers.Browser, RM.Controllers.Window, RM.Controllers.Settings,
+  RM.Controllers.Snapshots, RM.Controllers.Input, RM.Controllers.Mobile,
+  RM.Controllers.Session, RM.Dialogs, RM.Styles, RM.Rumble, FMX.Image,
+  RM.Input.Gamepads
   {$IF not Defined(LINUX)}
     , System.Sensors.Components
   {$ENDIF}
@@ -181,19 +201,52 @@ uses
 
 {$R *.fmx}
 
+type
+  TMainControllers = class
+  public
+    Browser: TBrowserController;
+    Window: TWindowController;
+    Settings: TSettingsController;
+    Snapshots: TSnapshotsController;
+    Input: TInputController;
+    Mobile: TMobileController;
+    Session: TSessionController;
+    Feedback: TFeedbackView; // Owned by the form.
+    constructor Create(Form: TFormMain);
+    destructor Destroy; override;
+  end;
+
+constructor TMainControllers.Create(Form: TFormMain);
+begin
+  inherited Create;
+  Browser := TBrowserController.Create(Form);
+  Window := TWindowController.Create(Form);
+  Settings := TSettingsController.Create(Form);
+  Snapshots := TSnapshotsController.Create(Form);
+  Input := TInputController.Create(Form);
+  Mobile := TMobileController.Create(Form);
+  Session := TSessionController.Create(Form);
+end;
+
+destructor TMainControllers.Destroy;
+begin
+  Session.Free;
+  Mobile.Free;
+  Input.Free;
+  Snapshots.Free;
+  Settings.Free;
+  Window.Free;
+  Browser.Free;
+  inherited;
+end;
+
 constructor TFormMain.Create(AOwner: TComponent);
 begin
   FState := TMainState.Create;
-  FBrowserController := TBrowserController.Create(Self);
-  FWindowController := TWindowController.Create(Self);
-  FSettingsController := TSettingsController.Create(Self);
-  FSnapshotsController := TSnapshotsController.Create(Self);
-  FInputController := TInputController.Create(Self);
-  FMobileController := TMobileController.Create(Self);
-  FSessionController := TSessionController.Create(Self);
+  FControllers := TMainControllers.Create(Self);
   FormStyles := TFormStyles.Create(Application);
   inherited;
-  OnTouch := FInputController.FormTouch;
+  OnTouch := TMainControllers(FControllers).Input.FormTouch;
   ImageCanvas := TShaderBitmap.Create(Self);
   ImageCanvas.Name := 'ImageCanvas';
   ImageCanvas.Parent := LayoutVideoOutput.Parent;
@@ -229,7 +282,7 @@ begin
   {$ENDIF}
   State.Session.FileDialog := TFMXOpenDialog.Create(Self);
   State.Session.FileDialog.MultipleSelection := False;
-  InitializeScreenshotTool;
+  TMainControllers(FControllers).Browser.InitializeScreenshotTool;
   LayoutClient.CanFocus := True;
   LayoutClient.OnKeyDown := FormKeyDown;
   LayoutClient.OnKeyUp := FormKeyUp;
@@ -237,17 +290,17 @@ begin
   LayoutClient.CanParentFocus := True;
   SetStatus('Open ROM');
   {$IFDEF ANDROID}
-  InitializeAndroidServices;
+  TMainControllers(FControllers).Mobile.InitializeAndroidServices;
   {$ENDIF}
   {$IFDEF ISMOBILE}
-  InitializeMobileViews;
+  TMainControllers(FControllers).Mobile.InitializeMobileViews;
   {$ENDIF}
   Fill.Color := TAlphaColors.Black;
   ImageCanvas.WrapMode := TImageWrapMode.Fit;
   ImageCanvas.DisableInterpolation := True;
   ImageCanvas.Bitmap.SetSize(256, 240);
   ImageCanvas.Bitmap.Clear(TAlphaColors.Black);
-  InitializePeripherals;
+  TMainControllers(FControllers).Input.InitializePeripherals;
   State.Input.Rumble := TRumblePlayer.Create;
   {$IF not Defined(LINUX)}
   State.Input.MotionSensor := TMotionSensor.Create(Self);
@@ -256,10 +309,10 @@ begin
   FormResize(Self);
   TimerUpdate.Interval := 8;
   Load;
-  FInputController.InitializeHostInput;
+  TMainControllers(FControllers).Input.InitializeHostInput;
   InitializeLibrary;
   {$IFNDEF ISMOBILE}
-  InitializeDesktopViews;
+  TMainControllers(FControllers).Browser.InitializeDesktopViews;
   {$ENDIF}
   SyncActivity;
 end;
@@ -268,60 +321,27 @@ procedure TFormMain.ReportBugClick(Sender: TObject);
 begin
   if State.Session.OpeningRom then
     Exit;
-  if FFeedbackView = nil then
+  if TMainControllers(FControllers).Feedback = nil then
   begin
-    FFeedbackView := TFeedbackView.Create(Self);
-    FFeedbackView.Parent := Self;
-    FFeedbackView.Align := TAlignLayout.Contents;
+    TMainControllers(FControllers).Feedback := TFeedbackView.Create(Self);
+    TMainControllers(FControllers).Feedback.Parent := Self;
+    TMainControllers(FControllers).Feedback.Align := TAlignLayout.Contents;
   end;
-  FFeedbackView.OpenReport(Self);
+  TMainControllers(FControllers).Feedback.OpenReport(Self);
 end;
 
 procedure TFormMain.ApplyFeedbackLanguage(const PreviousLanguage: string);
 begin
-  if FFeedbackView <> nil then
-    FFeedbackView.ApplyLanguage(PreviousLanguage);
-end;
-
-procedure TFormMain.InitializeScreenshotTool;
-begin
-  FBrowserController.InitializeScreenshotTool;
-end;
-
-procedure TFormMain.InitializePeripherals;
-begin
-  FInputController.InitializePeripherals;
+  if TMainControllers(FControllers).Feedback <> nil then
+    TMainControllers(FControllers).Feedback.ApplyLanguage(PreviousLanguage);
 end;
 
 procedure TFormMain.InitializeLibrary;
 begin
-  FBrowserController.InitializeLibrary;
+  TMainControllers(FControllers).Browser.InitializeLibrary;
   (State.Browser.View.FindComponent('ButtonReportBug') as TButton).OnClick := ReportBugClick;
   (State.Browser.View.FindComponent('ButtonCompactReportBug') as TButton).OnClick := ReportBugClick;
 end;
-
-{$IFNDEF ISMOBILE}
-procedure TFormMain.InitializeDesktopViews;
-begin
-  FBrowserController.InitializeDesktopViews;
-end;
-{$ENDIF}
-
-{$IFDEF ANDROID}
-
-procedure TFormMain.InitializeAndroidServices;
-begin
-  FMobileController.InitializeAndroidServices;
-end;
-{$ENDIF}
-
-{$IFDEF ISMOBILE}
-
-procedure TFormMain.InitializeMobileViews;
-begin
-  FMobileController.InitializeMobileViews;
-end;
-{$ENDIF}
 
 destructor TFormMain.Destroy;
 begin
@@ -358,9 +378,9 @@ begin
   except
     Application.HandleException(Self);
   end;
-  FSessionController.DisconnectSession;
+  TMainControllers(FControllers).Session.DisconnectSession;
   try
-    FInputController.FinalizePeripherals;
+    TMainControllers(FControllers).Input.FinalizePeripherals;
   except
     Application.HandleException(Self);
   end;
@@ -384,13 +404,7 @@ begin
   try
     inherited;
   finally
-    FreeAndNil(FSessionController);
-    FreeAndNil(FMobileController);
-    FreeAndNil(FInputController);
-    FreeAndNil(FSnapshotsController);
-    FreeAndNil(FSettingsController);
-    FreeAndNil(FWindowController);
-    FreeAndNil(FBrowserController);
+    FreeAndNil(FControllers);
     FreeAndNil(FState);
   end;
 end;
@@ -419,12 +433,12 @@ end;
 
 procedure TFormMain.Load;
 begin
-  FSettingsController.Load;
+  TMainControllers(FControllers).Settings.Load;
 end;
 
 procedure TFormMain.Save;
 begin
-  FSettingsController.Save;
+  TMainControllers(FControllers).Settings.Save;
 end;
 
 procedure TFormMain.DoOnSettingChange;
@@ -452,47 +466,47 @@ begin
   end;
   {$ENDIF}
   inherited;
-  if FWindowController <> nil then
-    FWindowController.SyncLibrarySystemUI;
+  if FControllers <> nil then
+    TMainControllers(FControllers).Window.SyncLibrarySystemUI;
 end;
 
 {$IFDEF MSWINDOWS}
 procedure TFormMain.RestoreWindowState;
 begin
-  FWindowController.RestoreWindowState;
+  TMainControllers(FControllers).Window.RestoreWindowState;
 end;
 
 {$ENDIF}
 {$IFDEF MSWINDOWS}
 procedure TFormMain.SaveWindowState;
 begin
-  FWindowController.SaveWindowState;
+  TMainControllers(FControllers).Window.SaveWindowState;
 end;
 
 {$ENDIF}
 procedure TFormMain.FormResize(Sender: TObject);
 begin
-  FWindowController.FormResize(Sender);
+  TMainControllers(FControllers).Window.FormResize(Sender);
 end;
 
 procedure TFormMain.ApplyControlInset;
 begin
-  FWindowController.ApplyControlInset;
+  TMainControllers(FControllers).Window.ApplyControlInset;
 end;
 
 procedure TFormMain.FormSafeAreaChanged(Sender: TObject; const AInsets: TRectF);
 begin
-  FWindowController.FormSafeAreaChanged(Sender, AInsets);
+  TMainControllers(FControllers).Window.FormSafeAreaChanged(Sender, AInsets);
 end;
 
 procedure TFormMain.FormActivate(Sender: TObject);
 begin
-  FSessionController.FormActivate(Sender);
+  TMainControllers(FControllers).Session.FormActivate(Sender);
 end;
 
 procedure TFormMain.FormDeactivate(Sender: TObject);
 begin
-  FSessionController.FormDeactivate(Sender);
+  TMainControllers(FControllers).Session.FormDeactivate(Sender);
 end;
 
 function TFormMain.HostInputHasFocus: Boolean;
@@ -502,58 +516,48 @@ end;
 
 procedure TFormMain.ApplicationException(Sender: TObject; E: Exception);
 begin
-  FSessionController.ApplicationException(Sender, E);
+  TMainControllers(FControllers).Session.ApplicationException(Sender, E);
 end;
 
 procedure TFormMain.DialogActivityChanged(Sender: TObject);
 begin
-  FSessionController.DialogActivityChanged(Sender);
+  TMainControllers(FControllers).Session.DialogActivityChanged(Sender);
 end;
 
 procedure TFormMain.SetStatus(const Text: string);
 begin
-  FBrowserController.SetStatus(Text);
+  TMainControllers(FControllers).Browser.SetStatus(Text);
 end;
 
 procedure TFormMain.SyncActivity;
 begin
-  FWindowController.SyncLibrarySystemUI;
-  FSessionController.SyncActivity;
+  TMainControllers(FControllers).Window.SyncLibrarySystemUI;
+  TMainControllers(FControllers).Session.SyncActivity;
 end;
 
 procedure TFormMain.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
 begin
-  FSessionController.FormCloseQuery(Sender, CanClose);
+  TMainControllers(FControllers).Session.FormCloseQuery(Sender, CanClose);
 end;
 
 procedure TFormMain.FormSaveState(Sender: TObject);
 begin
-  FSessionController.FormSaveState(Sender);
+  TMainControllers(FControllers).Session.FormSaveState(Sender);
 end;
 
 procedure TFormMain.ButtonOpenClick(Sender: TObject);
 begin
-  FSessionController.ButtonOpenClick(Sender);
+  TMainControllers(FControllers).Session.ButtonOpenClick(Sender);
 end;
 
 procedure TFormMain.OpenRom;
 begin
-  FSessionController.OpenRom;
-end;
-
-procedure TFormMain.SelectDocument(ForCassette: Boolean; const FileName: string);
-begin
-  FSessionController.SelectDocument(ForCassette, FileName);
+  TMainControllers(FControllers).Session.OpenRom;
 end;
 
 procedure TFormMain.FinishFileSelection;
 begin
-  FSessionController.FinishFileSelection;
-end;
-
-function TFormMain.CanAcceptRomDrop(const Data: TDragObject): Boolean;
-begin
-  Result := FSessionController.CanAcceptRomDrop(Data);
+  TMainControllers(FControllers).Session.FinishFileSelection;
 end;
 
 procedure TFormMain.DragOver(const Data: TDragObject; const Point: TPointF; var Operation: TDragOperation);
@@ -565,7 +569,7 @@ begin
   end;
   // Handle file drags at form level so child controls cannot consume the ROM.
   Operation := TDragOperation.None;
-  if CanAcceptRomDrop(Data) then
+  if TMainControllers(FControllers).Session.CanAcceptRomDrop(Data) then
     Operation := TDragOperation.Copy;
 end;
 
@@ -576,11 +580,11 @@ begin
     inherited;
     Exit;
   end;
-  if not CanAcceptRomDrop(Data) then
+  if not TMainControllers(FControllers).Session.CanAcceptRomDrop(Data) then
     Exit;
   try
     State.Session.ReportLaunchSource := 'drag_and_drop';
-    SelectDocument(False, Data.Files[0]);
+    TMainControllers(FControllers).Session.SelectDocument(Data.Files[0]);
   except
     on E: Exception do
     begin
@@ -602,7 +606,7 @@ end;
 
 procedure TFormMain.ResetConsole(Hard: Boolean);
 begin
-  FSessionController.ResetConsole(Hard);
+  TMainControllers(FControllers).Session.ResetConsole(Hard);
 end;
 
 procedure TFormMain.ResetClick(Sender: TObject);
@@ -617,59 +621,59 @@ end;
 
 procedure TFormMain.HardRestart;
 begin
-  FSessionController.HardRestart;
+  TMainControllers(FControllers).Session.HardRestart;
 end;
 
 procedure TFormMain.LoadRom(const FileName: string; const DisplayName: string; StartPaused: Boolean; const SnapshotName, LibraryPlatformId: string);
 begin
-  FSessionController.LoadRom(FileName, DisplayName, StartPaused, SnapshotName, LibraryPlatformId);
+  TMainControllers(FControllers).Session.LoadRom(FileName, DisplayName, StartPaused, SnapshotName, LibraryPlatformId);
 end;
 
 procedure TFormMain.ButtonCloseRomClick(Sender: TObject);
 begin
-  FSessionController.ButtonCloseRomClick(Sender);
+  TMainControllers(FControllers).Session.ButtonCloseRomClick(Sender);
 end;
 
 procedure TFormMain.Stop;
 begin
-  FSessionController.Stop;
+  TMainControllers(FControllers).Session.Stop;
 end;
 
 procedure TFormMain.StopOnError;
 begin
-  FSessionController.StopOnError;
+  TMainControllers(FControllers).Session.StopOnError;
 end;
 
 {$IF not Defined(LINUX)}
 procedure TFormMain.ChooseMotionSensor(Sender: TObject; const Sensors: TSensorArray; var ChoseSensorIndex: Integer);
 begin
-  FInputController.ChooseMotionSensor(Sender, Sensors, ChoseSensorIndex);
+  TMainControllers(FControllers).Input.ChooseMotionSensor(Sender, Sensors, ChoseSensorIndex);
 end;
 {$ENDIF}
 
 procedure TFormMain.SyncMotionSensor;
 begin
-  FInputController.SyncMotionSensor;
+  TMainControllers(FControllers).Input.SyncMotionSensor;
 end;
 
 procedure TFormMain.PollMotionSensor;
 begin
-  FInputController.PollMotionSensor;
+  TMainControllers(FControllers).Input.PollMotionSensor;
 end;
 
 procedure TFormMain.PollRumble;
 begin
-  FInputController.PollRumble;
+  TMainControllers(FControllers).Input.PollRumble;
 end;
 
 procedure TFormMain.TimerUpdateTimer(Sender: TObject);
 begin
-  FSessionController.TimerUpdateTimer(Sender);
+  TMainControllers(FControllers).Session.TimerUpdateTimer(Sender);
 end;
 
 function TFormMain.UpdateFrame: Boolean;
 begin
-  Result := FSessionController.UpdateFrame;
+  Result := TMainControllers(FControllers).Session.UpdateFrame;
 end;
 
 procedure TFormMain.ReportAudioError(const MessageText: string);
@@ -685,137 +689,137 @@ end;
 
 procedure TFormMain.AutosaveOnExit;
 begin
-  FSnapshotsController.AutosaveOnExit;
+  TMainControllers(FControllers).Snapshots.AutosaveOnExit;
 end;
 
 procedure TFormMain.PollAutosave;
 begin
-  FSnapshotsController.PollAutosave;
+  TMainControllers(FControllers).Snapshots.PollAutosave;
 end;
 
 procedure TFormMain.LibraryPlay(Sender: TObject);
 begin
-  FBrowserController.LibraryPlay(Sender);
+  TMainControllers(FControllers).Browser.LibraryPlay(Sender);
 end;
 
 procedure TFormMain.LibraryBack(Sender: TObject);
 begin
-  FBrowserController.LibraryBack(Sender);
+  TMainControllers(FControllers).Browser.LibraryBack(Sender);
 end;
 
 procedure TFormMain.PauseClick(Sender: TObject);
 begin
-  FSessionController.PauseClick(Sender);
+  TMainControllers(FControllers).Session.PauseClick(Sender);
 end;
 
 procedure TFormMain.SwitchPause;
 begin
-  FSessionController.SwitchPause;
+  TMainControllers(FControllers).Session.SwitchPause;
 end;
 
 procedure TFormMain.UpdatePauseOverlay;
 begin
-  FSessionController.UpdatePauseOverlay;
+  TMainControllers(FControllers).Session.UpdatePauseOverlay;
 end;
 
 procedure TFormMain.FullscreenClick(Sender: TObject);
 begin
-  FWindowController.FullscreenClick(Sender);
+  TMainControllers(FControllers).Window.FullscreenClick(Sender);
 end;
 
 procedure TFormMain.SwitchFullScreen;
 begin
-  FWindowController.SwitchFullScreen;
+  TMainControllers(FControllers).Window.SwitchFullScreen;
 end;
 
 procedure TFormMain.UpdateGameChrome;
 begin
-  FBrowserController.UpdateGameChrome;
+  TMainControllers(FControllers).Browser.UpdateGameChrome;
 end;
 
 procedure TFormMain.InsertCoinClick(Sender: TObject);
 begin
-  FSessionController.InsertCoinClick(Sender);
+  TMainControllers(FControllers).Session.InsertCoinClick(Sender);
 end;
 
 procedure TFormMain.LayoutClientClick(Sender: TObject);
 begin
-  FBrowserController.LayoutClientClick(Sender);
+  TMainControllers(FControllers).Browser.LayoutClientClick(Sender);
 end;
 
 procedure TFormMain.LayoutClientDblClick(Sender: TObject);
 begin
-  FBrowserController.LayoutClientDblClick(Sender);
+  TMainControllers(FControllers).Browser.LayoutClientDblClick(Sender);
 end;
 
 procedure TFormMain.SettingsClick(Sender: TObject);
 begin
-  FSettingsController.SettingsClick(Sender);
+  TMainControllers(FControllers).Settings.SettingsClick(Sender);
 end;
 
 procedure TFormMain.SettingsApplied(Sender: TObject);
 begin
-  FSettingsController.SettingsApplied(Sender);
+  TMainControllers(FControllers).Settings.SettingsApplied(Sender);
 end;
 
 procedure TFormMain.SettingsClose(Sender: TObject);
 begin
-  FSettingsController.SettingsClose(Sender);
+  TMainControllers(FControllers).Settings.SettingsClose(Sender);
 end;
 
 procedure TFormMain.ControlsHelpClick(Sender: TObject);
 begin
-  FSettingsController.ControlsHelpClick(Sender);
+  TMainControllers(FControllers).Settings.ControlsHelpClick(Sender);
 end;
 
 procedure TFormMain.ControlsHelpClose(Sender: TObject);
 begin
-  FSettingsController.ControlsHelpClose(Sender);
+  TMainControllers(FControllers).Settings.ControlsHelpClose(Sender);
 end;
 
 procedure TFormMain.ControlsHelpSettings(Sender: TObject);
 begin
-  FSettingsController.ControlsHelpSettings(Sender);
+  TMainControllers(FControllers).Settings.ControlsHelpSettings(Sender);
 end;
 
 procedure TFormMain.CloseControlsHelp(OpenSettings: Boolean);
 begin
-  FSettingsController.CloseControlsHelp(OpenSettings);
+  TMainControllers(FControllers).Settings.CloseControlsHelp(OpenSettings);
 end;
 
 function TFormMain.GameSnapshotDirectory: string;
 begin
-  Result := FSnapshotsController.GameSnapshotDirectory;
+  Result := TMainControllers(FControllers).Snapshots.GameSnapshotDirectory;
 end;
 
 procedure TFormMain.SaveSnapshot(const Name: string);
 begin
-  FSnapshotsController.SaveSnapshot(Name);
+  TMainControllers(FControllers).Snapshots.SaveSnapshot(Name);
 end;
 
 procedure TFormMain.LoadSnapshot(const Name: string);
 begin
-  FSnapshotsController.LoadSnapshot(Name);
+  TMainControllers(FControllers).Snapshots.LoadSnapshot(Name);
 end;
 
 procedure TFormMain.LoadSnapshotPreview(const Name: string);
 begin
-  FSnapshotsController.LoadSnapshotPreview(Name);
+  TMainControllers(FControllers).Snapshots.LoadSnapshotPreview(Name);
 end;
 
 procedure TFormMain.SaveStateClick(Sender: TObject);
 begin
-  FSnapshotsController.SaveStateClick(Sender);
+  TMainControllers(FControllers).Snapshots.SaveStateClick(Sender);
 end;
 
 procedure TFormMain.LoadStateClick(Sender: TObject);
 begin
-  FSnapshotsController.LoadStateClick(Sender);
+  TMainControllers(FControllers).Snapshots.LoadStateClick(Sender);
 end;
 
 procedure TFormMain.PrepareGameplayMenu(Sender: TObject);
 begin
-  FSnapshotsController.PrepareGameplayMenu(Sender);
+  TMainControllers(FControllers).Snapshots.PrepareGameplayMenu(Sender);
 end;
 
 function TFormMain.ExecuteSnapshotDialog(Dialog: TOpenDialog): Boolean;
@@ -825,32 +829,32 @@ end;
 
 procedure TFormMain.SaveSnapshotAsClick(Sender: TObject);
 begin
-  FSnapshotsController.SaveSnapshotAsClick(Sender);
+  TMainControllers(FControllers).Snapshots.SaveSnapshotAsClick(Sender);
 end;
 
 procedure TFormMain.OpenSnapshotClick(Sender: TObject);
 begin
-  FSnapshotsController.OpenSnapshotClick(Sender);
+  TMainControllers(FControllers).Snapshots.OpenSnapshotClick(Sender);
 end;
 
 procedure TFormMain.RecentSnapshotClick(Sender: TObject);
 begin
-  FSnapshotsController.RecentSnapshotClick(Sender);
+  TMainControllers(FControllers).Snapshots.RecentSnapshotClick(Sender);
 end;
 
 procedure TFormMain.ScreenshotClick(Sender: TObject);
 begin
-  FSnapshotsController.ScreenshotClick(Sender);
+  TMainControllers(FControllers).Snapshots.ScreenshotClick(Sender);
 end;
 
 function TFormMain.SaveScreenshot: string;
 begin
-  Result := FSnapshotsController.SaveScreenshot;
+  Result := TMainControllers(FControllers).Snapshots.SaveScreenshot;
 end;
 
 procedure TFormMain.OpenScreenshotFolderClick(Sender: TObject);
 begin
-  FSnapshotsController.OpenScreenshotFolderClick(Sender);
+  TMainControllers(FControllers).Snapshots.OpenScreenshotFolderClick(Sender);
 end;
 
 procedure TFormMain.OpenDirectory(const Directory: string);
@@ -873,17 +877,17 @@ end;
 
 procedure TFormMain.LoadHostInput(const SystemId: string);
 begin
-  FInputController.LoadHostInput(SystemId);
+  TMainControllers(FControllers).Input.LoadHostInput(SystemId);
 end;
 
 procedure TFormMain.ReloadHostInputBindings;
 begin
-  FInputController.ReloadHostInputBindings;
+  TMainControllers(FControllers).Input.ReloadHostInputBindings;
 end;
 
 procedure TFormMain.PollHostInput;
 begin
-  FInputController.PollHostInput;
+  TMainControllers(FControllers).Input.PollHostInput;
 end;
 
 procedure TFormMain.KeyDown(var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
@@ -913,7 +917,7 @@ begin
     Exit;
   if Key = vkF11 then
   begin
-    FInputController.FormKeyDown(Self, Key, KeyChar, Shift);
+    TMainControllers(FControllers).Input.FormKeyDown(Self, Key, KeyChar, Shift);
     if (Key = 0) and (KeyChar = #0) then
       Exit;
   end;
@@ -921,7 +925,7 @@ begin
     (State.Browser.View <> nil) and State.Browser.View.GamepadMode then
   begin
     // Library shortcuts and their input-source hints must precede focused edits/buttons.
-    FInputController.FormKeyDown(Self, Key, KeyChar, Shift);
+    TMainControllers(FControllers).Input.FormKeyDown(Self, Key, KeyChar, Shift);
     if (Key = 0) and (KeyChar = #0) then
       Exit;
   end;
@@ -930,63 +934,63 @@ end;
 
 procedure TFormMain.FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
-  FInputController.FormKeyDown(Sender, Key, KeyChar, Shift);
+  TMainControllers(FControllers).Input.FormKeyDown(Sender, Key, KeyChar, Shift);
 end;
 
 procedure TFormMain.FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
-  FInputController.FormKeyUp(Sender, Key, KeyChar, Shift);
+  TMainControllers(FControllers).Input.FormKeyUp(Sender, Key, KeyChar, Shift);
 end;
 
 procedure TFormMain.ForwardKeyState(Code: Word; Pressed: Boolean);
 begin
-  FInputController.ForwardKeyState(Code, Pressed);
+  TMainControllers(FControllers).Input.ForwardKeyState(Code, Pressed);
 end;
 
 procedure TFormMain.GamepadChanged(Sender: TObject);
 begin
-  FInputController.GamepadChanged(Sender);
+  TMainControllers(FControllers).Input.GamepadChanged(Sender);
 end;
 
 function TFormMain.CombinedGamepadInput: TEmulatorInput;
 begin
-  Result := FInputController.CombinedGamepadInput;
+  Result := TMainControllers(FControllers).Input.CombinedGamepadInput;
 end;
 
 procedure TFormMain.UpdatePeripheralInput;
 begin
-  FInputController.UpdatePeripheralInput;
+  TMainControllers(FControllers).Input.UpdatePeripheralInput;
 end;
 
 procedure TFormMain.UpdatePeripheralFeedback;
 begin
-  FInputController.UpdatePeripheralFeedback;
+  TMainControllers(FControllers).Input.UpdatePeripheralFeedback;
 end;
 
 procedure TFormMain.ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
-  FInputController.ImageCanvasMouseDown(Sender, Button, Shift, X, Y);
+  TMainControllers(FControllers).Input.ImageCanvasMouseDown(Sender, Button, Shift, X, Y);
 end;
 
 procedure TFormMain.ImageCanvasMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
 begin
-  FInputController.ImageCanvasMouseMove(Sender, Shift, X, Y);
+  TMainControllers(FControllers).Input.ImageCanvasMouseMove(Sender, Shift, X, Y);
 end;
 
 procedure TFormMain.ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
-  FInputController.ImageCanvasMouseUp(Sender, Button, Shift, X, Y);
+  TMainControllers(FControllers).Input.ImageCanvasMouseUp(Sender, Button, Shift, X, Y);
 end;
 
 procedure TFormMain.SelectTapeFile(const FileName: string);
 begin
-  FInputController.SelectTapeFile(FileName);
+  TMainControllers(FControllers).Input.SelectTapeFile(FileName);
 end;
 
 {$IFDEF ISMOBILE}
 function TFormMain.ApplicationStateChanged(Sender: TObject; const AAppEvent: TApplicationEvent; const AContext: TObject): Boolean;
 begin
-  Result := FMobileController.ApplicationStateChanged(Sender, AAppEvent, AContext);
+  Result := TMainControllers(FControllers).Mobile.ApplicationStateChanged(Sender, AAppEvent, AContext);
 end;
 {$ENDIF}
 
@@ -994,7 +998,7 @@ end;
 
 procedure TFormMain.PollDocumentTransfer;
 begin
-  FMobileController.PollDocumentTransfer;
+  TMainControllers(FControllers).Mobile.PollDocumentTransfer;
 end;
 {$ENDIF}
 

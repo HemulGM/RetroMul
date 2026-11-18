@@ -54,32 +54,31 @@ end;
 class procedure TN64InputHandler.CombineInput(const Context: TInputRuntimeContext; var Input: TEmulatorInput);
 begin
   var N64Input: IN64ControllerInput;
-  if Supports(Context.State.Session.Emulation, IN64ControllerInput, N64Input) then
+  if Supports(Context.Host.Core, IN64ControllerInput, N64Input) then
     for var Port := 0 to 3 do
     begin
       var Pad := Default(TN64Pad);
-      if ((Port = 0) and ((Context.State.Input.Gamepad.AuxiliaryButtons and 1) <> 0)) or
-        ((Context.State.Input.Manager <> nil) and Context.State.Input.Manager.IsPressed(N64LAction + Port)) then
+      if ((Port = 0) and (Context.Gamepad <> nil) and ((Context.Gamepad.AuxiliaryButtons and 1) <> 0)) or
+        ((Context.Host.Input.HasInputSource) and Context.Host.Input.IsActionPressed(N64LAction + Port)) then
         Pad.Buttons := $20;
       if Input.Analog[Port].Valid then
       begin
         Pad.StickX := Round(Input.Analog[Port].X / 32767 * 80);
         Pad.StickY := -Round(Input.Analog[Port].Y / 32767 * 80);
       end;
-      var Manager := Context.State.Input.Manager;
+      var Manager := Context.Host.Input;
       var IndependentStick := False;
-      if Manager <> nil then
+      if Manager.HasInputSource then
       begin
         var Bindings := Manager.Bindings;
-        var Values := Manager.Values;
         for var B in Bindings do
           if (B.Action >= N64StickActionOf(Port, TN64StickDirection.Up)) and
             (B.Action <= N64StickActionOf(Port, TN64StickDirection.Right)) then
             IndependentStick := True;
-        var X := ActionAmount(Manager, Bindings, Values, N64StickActionOf(Port, TN64StickDirection.Right)) -
-          ActionAmount(Manager, Bindings, Values, N64StickActionOf(Port, TN64StickDirection.Left));
-        var Y := ActionAmount(Manager, Bindings, Values, N64StickActionOf(Port, TN64StickDirection.Down)) -
-          ActionAmount(Manager, Bindings, Values, N64StickActionOf(Port, TN64StickDirection.Up));
+        var X := Manager.ActionAmount(N64StickActionOf(Port, TN64StickDirection.Right)) -
+          Manager.ActionAmount(N64StickActionOf(Port, TN64StickDirection.Left));
+        var Y := Manager.ActionAmount(N64StickActionOf(Port, TN64StickDirection.Down)) -
+          Manager.ActionAmount(N64StickActionOf(Port, TN64StickDirection.Up));
         Pad.StickX := EnsureRange(Integer(Pad.StickX) + Round(X * 80), -80, 80);
         Pad.StickY := EnsureRange(Integer(Pad.StickY) - Round(Y * 80), -80, 80);
       end;

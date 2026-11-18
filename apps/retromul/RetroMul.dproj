@@ -354,7 +354,6 @@
         <DCCReference Include="ui\RM.Main.pas">
             <Form>FormMain</Form>
         </DCCReference>
-        <DCCReference Include="ui\RM.Main.View.pas"/>
         <DCCReference Include="ui\RM.Main.State.pas"/>
         <DCCReference Include="controllers\RM.Controllers.Base.pas"/>
         <DCCReference Include="ui\RM.Toolbar.pas"/>
@@ -365,6 +364,8 @@
         <DCCReference Include="controllers\RM.Settings.Runtime.pas"/>
         <DCCReference Include="controllers\RM.Controllers.Snapshots.pas"/>
         <DCCReference Include="controllers\RM.Controllers.Input.pas"/>
+        <DCCReference Include="input\RM.Platform.Host.pas"/>
+        <DCCReference Include="controllers\RM.Platform.Host.RetroMul.pas"/>
         <DCCReference Include="input\RM.Input.Runtime.pas"/>
         <DCCReference Include="controllers\RM.Controllers.Mobile.pas"/>
         <DCCReference Include="controllers\RM.Controllers.Session.pas"/>

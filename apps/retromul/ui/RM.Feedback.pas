@@ -5,7 +5,7 @@ interface
 uses
   System.SysUtils, System.Classes, System.JSON, FMX.Types, FMX.Controls,
   FMX.Forms, FMX.Layouts, FMX.StdCtrls, FMX.Objects, FMX.Memo, FMX.Edit,
-  Core.Emulation, Core.Storage, RM.Main.View, FMX.Memo.Types, FMX.ScrollBox,
+  Core.Emulation, Core.Storage, RM.Main, FMX.Memo.Types, FMX.ScrollBox,
   FMX.Controls.Presentation;
 
 type
@@ -32,7 +32,7 @@ type
     procedure SnapshotTick(Sender: TObject);
     procedure SystemChanged(Sender: TObject);
   private
-    FHost: TMainView;
+    FHost: TFormMain;
     FStorage: IStorage;
     FCore: IEmulationCore;
     FOperation: IEmulationSnapshotOperation;
@@ -54,7 +54,7 @@ type
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     procedure ApplyLanguage(const PreviousLanguage: string);
-    procedure OpenReport(Host: TMainView);
+    procedure OpenReport(Host: TFormMain);
   end;
 
 implementation
@@ -244,7 +244,7 @@ begin
   UpdateButtons;
 end;
 
-procedure TFeedbackView.OpenReport(Host: TMainView);
+procedure TFeedbackView.OpenReport(Host: TFormMain);
 begin
   if Visible or FSending then
     Exit;

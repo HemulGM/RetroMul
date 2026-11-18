@@ -6820,7 +6820,7 @@ begin
     if (I < 2 * Status) and (Offsets[I] >= 0) then
       Match.Offsets[I] := {$IFDEF MSWINDOWS}Offsets[I]
       {$ELSE}
-      Match.Offsets[I] := ByteOffsetToUTF16(Input,Offsets[I])
+      ByteOffsetToUTF16(Input, Offsets[I])
       {$ENDIF}
     else
       Match.Offsets[I] := -1;

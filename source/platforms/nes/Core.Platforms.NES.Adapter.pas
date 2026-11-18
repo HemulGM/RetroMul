@@ -3,10 +3,10 @@
 interface
 
 uses
-  Core.InputConfig, System.Classes, System.IniFiles, Core.Storage,
-  Core.Emulation, NES.Emulation, NES.Input, NES.Types, NES.Controller,
-  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice,
-  NES.Options;
+  Core.InputConfig, System.Classes, System.IniFiles, System.SysUtils,
+  System.Types, Core.Storage, Core.Emulation, NES.Emulation, NES.Input,
+  NES.Types, NES.Controller, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder,
+  NES.MiraclePianoDevice, NES.Options;
 
 type
   TNesZapperMask = NES.Types.TNesZapperMask;
@@ -29,6 +29,7 @@ type
     function GetPowerPadButtons: TPowerPadButtons;
     function Zapper: TZapper;
     function ReadZapperLight(const Mask: TNesZapperMask; X, Y: Integer): Boolean;
+    procedure SetZapperPositionReader(const ReadPosition: TFunc<TPoint>);
     function UsesPowerPad: Boolean;
   end;
 
@@ -183,6 +184,7 @@ type
     function IsPaused: Boolean;
     function Zapper: TZapper;
     function ReadZapperLight(const Mask: TNesZapperMask; X, Y: Integer): Boolean;
+    procedure SetZapperPositionReader(const ReadPosition: TFunc<TPoint>);
     function UsesPowerPad: Boolean;
   end;
 
@@ -191,7 +193,7 @@ function NesUsesSuborKeyboard(const Core: IEmulationCore): Boolean;
 implementation
 
 uses
-  System.SysUtils, System.UITypes;
+  System.UITypes;
 
 { TNesCoreAdapter }
 
@@ -583,6 +585,22 @@ end;
 function TNesCoreAdapter.Zapper: TZapper;
 begin
   Result := FThread.Console.Zapper;
+end;
+
+procedure TNesCoreAdapter.SetZapperPositionReader(const ReadPosition: TFunc<TPoint>);
+begin
+  if not Assigned(ReadPosition) then
+  begin
+    Zapper.OnReadLight := nil;
+    Exit;
+  end;
+  var ReadPixel: TFunc<TPoint> := ReadPosition;
+  Zapper.OnReadLight :=
+    function(const Mask: TNesZapperMask): Boolean
+    begin
+      var Pixel: TPoint := ReadPixel();
+      Result := ReadZapperLight(Mask, Pixel.X, Pixel.Y);
+    end;
 end;
 
 function TNesCoreAdapter.UsesPowerPad: Boolean;

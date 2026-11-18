@@ -5,11 +5,12 @@
 interface
 
 uses
-  System.Classes, System.Types, System.IniFiles, FMXInput, RM.Input,
-  NES.Controller, NES.FamicomKeyboardDevice, NES.MiraclePianoDevice,
-  RM.Platforms.NES.Controls.PowerPad, RM.Input.Runtime, NES.FamicomDataRecorder,
-  RM.Platforms.NES.Controls.DataRecorder, RM.Platforms.NES.Keyboard,
-  RM.Platforms.NES.Controls.MiraclePiano, Core.Emulation;
+  RM.Platform.Host, Core.PlatformServices, System.Classes, System.Types,
+  System.IniFiles, FMXInput, RM.Input, NES.Controller, NES.FamicomKeyboardDevice,
+  NES.MiraclePianoDevice, RM.Platforms.NES.Controls.PowerPad, RM.Input.Runtime,
+  NES.FamicomDataRecorder, RM.Platforms.NES.Controls.DataRecorder,
+  RM.Platforms.NES.Keyboard, RM.Platforms.NES.Controls.MiraclePiano,
+  Core.Emulation;
 
 const
   PowerPadAction = 128;
@@ -73,11 +74,11 @@ type
 // Borrowed state; lifetime is bounded by the owning window or explicit finalization.
 function NesInputState(const Context: TInputRuntimeContext; CreateIfMissing: Boolean = True): TNesInputState;
 
-function ReadSuborInput(Input: TInputManager): TSuborKeys;
+function ReadSuborInput(Input: IPlatformInput): TSuborKeys;
 
-function ReadFamicomInput(Input: TInputManager): TFamicomKeys;
+function ReadFamicomInput(Input: IPlatformInput): TFamicomKeys;
 
-function ReadPianoInput(Input: TInputManager): TMiracleKeys;
+function ReadPianoInput(Input: IPlatformInput): TMiracleKeys;
 
 procedure EnsurePeripheralBindings(Input: TInputManager; Ini: TCustomIniFile);
 
@@ -89,11 +90,9 @@ implementation
 
 uses
   System.SysUtils, System.IOUtils, System.Math, System.UITypes, FMX.Types,
-  FMX.Forms, FMX.Platform, FMX.Dialogs, FMX.OpenDialog,
-  Core.Platforms.NES.Adapter, NES.Input, NES.Types, RM.Gamepad,
-  RM.Settings.Rendering, RM.Dialogs, RM.Rumble
-  {$IFDEF MSWINDOWS}, Winapi.Windows{$ENDIF}
-  {$IFDEF ANDROID}, RM.DocumentTransfer.Android{$ENDIF};
+  FMX.Forms, Core.Platforms.NES.Adapter, NES.Input, NES.Types, RM.Gamepad,
+  RM.Settings.Rendering
+  {$IFDEF MSWINDOWS}, Winapi.Windows{$ENDIF};
 
 type
   TNesDeviceObserver = class(TComponent)
@@ -164,16 +163,7 @@ end;
 
 procedure TNesInputState.KeyboardPower(Sender: TObject);
 begin
-  if (FContext.State.Session.Emulation = nil) or FContext.State.Session.EmulationFaulted then
-    Exit;
-  try
-    if FContext.State.Input.Rumble <> nil then
-      FContext.State.Input.Rumble.Reset;
-    FContext.State.Session.Emulation.Reset;
-  except
-    FContext.View.StopOnError;
-    raise;
-  end;
+  FContext.Host.ResetGame;
 end;
 
 procedure TNesInputState.TapeAction(Sender: TObject; Action: TTapeAction; const FileName: string);
@@ -183,7 +173,22 @@ end;
 
 procedure TNesInputState.ChooseTapeFile(Sender: TObject);
 begin
-  FContext.View.SelectDocument(True);
+  var Documents: IPlatformDocuments;
+  if not Supports(FContext.Host, IPlatformDocuments, Documents) then
+    Exit;
+  var Selection := PlatformDocumentSelection(FContext.Host.SystemId);
+  var Request := Default(TPlatformDocumentRequest);
+  Request.Title := Translate(Selection.Title);
+  Request.Filter := Translate(Selection.FileFilter);
+  Request.AllowedExtensions := Selection.AllowedExtensions;
+  Request.Extension := '.tape';
+  Request.SaveFolder := 'cassettes';
+  var Context := FContext;
+  Documents.OpenDocument(Request,
+    procedure(const FileName: string)
+    begin
+      TNesInputHandler.Command(Context, 'tape.select', 0, FileName);
+    end);
 end;
 
 procedure TNesInputState.SaveTapeAs(Sender: TObject);
@@ -250,36 +255,36 @@ begin
   PowerPadTouchAttached := False;
 end;
 
-function ReadSuborInput(Input: TInputManager): TSuborKeys;
+function ReadSuborInput(Input: IPlatformInput): TSuborKeys;
 begin
   Result := [];
   if Input = nil then
     Exit;
 
   for var K := Low(TSuborKey) to High(TSuborKey) do
-    if (K <> SkNone) and Input.IsPressed(SuborAction + Ord(K)) then
+    if (K <> SkNone) and Input.IsActionPressed(SuborAction + Ord(K)) then
       Include(Result, K);
 end;
 
-function ReadFamicomInput(Input: TInputManager): TFamicomKeys;
+function ReadFamicomInput(Input: IPlatformInput): TFamicomKeys;
 begin
   Result := [];
   if Input = nil then
     Exit;
 
   for var K := Low(TFamicomKey) to High(TFamicomKey) do
-    if (K <> FkNone) and Input.IsPressed(FamicomAction + Ord(K)) then
+    if (K <> FkNone) and Input.IsActionPressed(FamicomAction + Ord(K)) then
       Include(Result, K);
 end;
 
-function ReadPianoInput(Input: TInputManager): TMiracleKeys;
+function ReadPianoInput(Input: IPlatformInput): TMiracleKeys;
 begin
   Result := [];
   if Input = nil then
     Exit;
 
   for var K := Low(TMiracleKey) to High(TMiracleKey) do
-    if Input.IsPressed(PianoAction + K) then
+    if Input.IsActionPressed(PianoAction + K) then
       Include(Result, K);
 end;
 
@@ -362,14 +367,17 @@ end;
 
 class procedure TNesInputHandler.Initialize(const Context: TInputRuntimeContext);
 begin
+  var Surface := Context.Surface;
+  if Surface = nil then
+    Exit;
   var Devices := NesInputState(Context);
   Devices.FContext := Context;
   if Devices.SuborKeyboard = nil then
   begin
-    Devices.SuborKeyboard := TNesSuborKeyboard.Create(Context.View);
+    Devices.SuborKeyboard := TNesSuborKeyboard.Create(Surface.Content);
     Devices.SuborKeyboard.FreeNotification(Devices.FObserver);
     Devices.SuborKeyboard.Name := 'ScreenSuborKeyboard';
-    Devices.SuborKeyboard.Parent := Context.View.LayoutClient;
+    Devices.SuborKeyboard.Parent := Surface.Content;
     Devices.SuborKeyboard.Align := TAlignLayout.Bottom;
     Devices.SuborKeyboard.OnChange := Devices.InputChanged;
     Devices.SuborKeyboard.OnPower := Devices.KeyboardPower;
@@ -379,10 +387,10 @@ begin
   end;
   if Devices.FamicomKeyboard = nil then
   begin
-    Devices.FamicomKeyboard := TNesFamicomKeyboard.Create(Context.View);
+    Devices.FamicomKeyboard := TNesFamicomKeyboard.Create(Surface.Content);
     Devices.FamicomKeyboard.FreeNotification(Devices.FObserver);
     Devices.FamicomKeyboard.Name := 'ScreenFamicomKeyboard';
-    Devices.FamicomKeyboard.Parent := Context.View.LayoutClient;
+    Devices.FamicomKeyboard.Parent := Surface.Content;
     Devices.FamicomKeyboard.Align := TAlignLayout.Bottom;
     Devices.FamicomKeyboard.OnChange := Devices.InputChanged;
     Devices.FamicomKeyboard.Enabled := False;
@@ -390,10 +398,10 @@ begin
   end;
   if Devices.MiraclePiano = nil then
   begin
-    Devices.MiraclePiano := TNesMiraclePiano.Create(Context.View);
+    Devices.MiraclePiano := TNesMiraclePiano.Create(Surface.Content);
     Devices.MiraclePiano.FreeNotification(Devices.FObserver);
     Devices.MiraclePiano.Name := 'ScreenMiraclePiano';
-    Devices.MiraclePiano.Parent := Context.View.LayoutClient;
+    Devices.MiraclePiano.Parent := Surface.Content;
     Devices.MiraclePiano.Align := TAlignLayout.Bottom;
     Devices.MiraclePiano.OnChange := Devices.InputChanged;
     Devices.MiraclePiano.Enabled := False;
@@ -401,10 +409,10 @@ begin
   end;
   if Devices.PowerPad = nil then
   begin
-    Devices.PowerPad := TGamepadNESPowerPad.Create(Context.View);
+    Devices.PowerPad := TGamepadNESPowerPad.Create(Surface.Content);
     Devices.PowerPad.FreeNotification(Devices.FObserver);
     Devices.PowerPad.Name := 'ScreenPowerPad';
-    Devices.PowerPad.Parent := Context.View.LayoutClient;
+    Devices.PowerPad.Parent := Surface.Content;
     Devices.PowerPad.Align := TAlignLayout.Bottom;
     Devices.PowerPad.OnChange := Devices.InputChanged;
     Devices.PowerPad.Enabled := False;
@@ -413,10 +421,10 @@ begin
   end;
   if Devices.DataRecorder = nil then
   begin
-    Devices.DataRecorder := TNesDataRecorder.Create(Context.View);
+    Devices.DataRecorder := TNesDataRecorder.Create(Surface.Content);
     Devices.DataRecorder.FreeNotification(Devices.FObserver);
     Devices.DataRecorder.Name := 'ScreenDataRecorder';
-    Devices.DataRecorder.Parent := Context.View.LayoutClient;
+    Devices.DataRecorder.Parent := Surface.Content;
     Devices.DataRecorder.Align := TAlignLayout.Bottom;
     Devices.DataRecorder.OnAction := Devices.TapeAction;
     Devices.DataRecorder.OnChooseFile := Devices.ChooseTapeFile;
@@ -432,9 +440,9 @@ var
   Piano: INesMiraclePianoCore;
 begin
   Result := inherited KeyPolicy(Context);
-  Result.KeyboardActive := ((Context.State.Session.Emulation <> nil) and NesUsesSuborKeyboard(Context.State.Session.Emulation)) or
-    (Supports(Context.State.Session.Emulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard) or
-    (Supports(Context.State.Session.Emulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano);
+  Result.KeyboardActive := ((Context.Host.Core <> nil) and NesUsesSuborKeyboard(Context.Host.Core)) or
+    (Supports(Context.Host.Core, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard) or
+    (Supports(Context.Host.Core, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano);
 end;
 
 class function TNesInputHandler.ForwardKey(const Context: TInputRuntimeContext; Code: Word; Pressed: Boolean): Boolean;
@@ -443,10 +451,10 @@ begin
   {$IFDEF MSWINDOWS}
   // Windows FMX reports generic Shift. HVC-007 has two separate contacts.
   var Peripheral: INesPeripheralCore;
-  if (Context.State.Input.Manager = nil) and (Code = vkShift) and Supports(Context.State.Session.Emulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard then
+  if (not Context.Host.Input.HasInputSource) and (Code = vkShift) and Supports(Context.Host.Core, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard then
   begin
-    Context.State.Session.Emulation.SetKeyState(vkLShift, Winapi.Windows.GetKeyState(vkLShift) < 0);
-    Context.State.Session.Emulation.SetKeyState(vkRShift, Winapi.Windows.GetKeyState(vkRShift) < 0);
+    Context.Host.Core.SetKeyState(vkLShift, Winapi.Windows.GetKeyState(vkLShift) < 0);
+    Context.Host.Core.SetKeyState(vkRShift, Winapi.Windows.GetKeyState(vkRShift) < 0);
     Exit(True);
   end;
   {$ENDIF}
@@ -460,13 +468,14 @@ const
 begin
   var Devices := NesInputState(Context);
   var Piano: INesMiraclePianoCore;
-  if Supports(Context.State.Session.Emulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano then
+  if Supports(Context.Host.Core, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano then
   begin
-    for var Button in Devices.MiraclePiano.Buttons do
-      Include(Input.Buttons, Mapping[Button]);
-    if Context.State.Input.Manager <> nil then
+    if Devices.MiraclePiano <> nil then
+      for var Button in Devices.MiraclePiano.Buttons do
+        Include(Input.Buttons, Mapping[Button]);
+    if Context.Host.Input.HasInputSource then
       for var Button := Low(TNesButton) to High(TNesButton) do
-        if Context.State.Input.Manager.IsPressed(PadAction(0, Mapping[Button])) then
+        if Context.Host.Input.IsActionPressed(PadAction(0, Mapping[Button])) then
           Include(Input.Buttons, Mapping[Button]);
   end;
 end;
@@ -475,26 +484,43 @@ class procedure TNesInputHandler.UpdateInput(const Context: TInputRuntimeContext
 begin
   var Devices := NesInputState(Context);
   var Peripheral: INesPeripheralCore;
-  if Supports(Context.State.Session.Emulation, INesPeripheralCore, Peripheral) then
+  if Supports(Context.Host.Core, INesPeripheralCore, Peripheral) then
   begin
-    if NesUsesSuborKeyboard(Context.State.Session.Emulation) then
-      Peripheral.SetSuborKeys(Devices.SuborKeyboard.Keys + ReadSuborInput(Context.State.Input.Manager));
+    if NesUsesSuborKeyboard(Context.Host.Core) then
+    begin
+      var Keys := ReadSuborInput(Context.Host.Input);
+      if Devices.SuborKeyboard <> nil then
+        Keys := Keys + Devices.SuborKeyboard.Keys;
+      Peripheral.SetSuborKeys(Keys);
+    end;
     if Peripheral.UsesFamicomKeyboard then
-      Peripheral.SetFamicomKeys(Devices.FamicomKeyboard.Keys + ReadFamicomInput(Context.State.Input.Manager));
+    begin
+      var Keys := ReadFamicomInput(Context.Host.Input);
+      if Devices.FamicomKeyboard <> nil then
+        Keys := Keys + Devices.FamicomKeyboard.Keys;
+      Peripheral.SetFamicomKeys(Keys);
+    end;
     if Peripheral.UsesPowerPad then
     begin
-      var Buttons := Devices.PowerPad.Buttons;
-      if Context.State.Input.Manager <> nil then
+      var Buttons: TPowerPadButtons := [];
+      if Devices.PowerPad <> nil then
+        Buttons := Devices.PowerPad.Buttons;
+      if Context.Host.Input.HasInputSource then
         for var i := 0 to 11 do
-          if Context.State.Input.Manager.IsPressed(PowerPadAction + i) then
+          if Context.Host.Input.IsActionPressed(PowerPadAction + i) then
             Include(Buttons, i + 1);
       Peripheral.SetPowerPadButtons(Buttons);
     end;
   end;
 
   var Piano: INesMiraclePianoCore;
-  if Supports(Context.State.Session.Emulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano then
-    Piano.SetMiracleKeys(Devices.MiraclePiano.Keys + ReadPianoInput(Context.State.Input.Manager));
+  if Supports(Context.Host.Core, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano then
+  begin
+    var Keys := ReadPianoInput(Context.Host.Input);
+    if Devices.MiraclePiano <> nil then
+      Keys := Keys + Devices.MiraclePiano.Keys;
+    Piano.SetMiracleKeys(Keys);
+  end;
 end;
 
 class procedure TNesInputHandler.UpdateFeedback(const Context: TInputRuntimeContext);
@@ -504,17 +530,17 @@ var
   Piano: INesMiraclePianoCore;
 begin
   var Devices := NesInputState(Context);
-  if (Context.State.Session.Emulation = nil) or Context.State.Session.EmulationFaulted then
+  if (Context.Host.Core = nil) or (Context.Host.Activity.Phase = TPlatformSessionPhase.Failed) then
     Exit;
 
   if (Devices.MiraclePiano <> nil) and Devices.MiraclePiano.Visible and Devices.MiraclePiano.Enabled and
-    Supports(Context.State.Session.Emulation, INesMiraclePianoCore, Piano) then
+    Supports(Context.Host.Core, INesMiraclePianoCore, Piano) then
     Devices.MiraclePiano.CoreKeys := Piano.GetMiracleKeys;
-  if (Devices.DataRecorder <> nil) and Supports(Context.State.Session.Emulation, INesTapeCore, Tape) and Tape.UsesDataRecorder then
+  if (Devices.DataRecorder <> nil) and Supports(Context.Host.Core, INesTapeCore, Tape) and Tape.UsesDataRecorder then
     Devices.DataRecorder.Progress := Tape.GetTapeProgress;
-  if (Context.State.Input.Gamepad <> nil) and Context.State.Input.Gamepad.Visible and Context.State.Input.Gamepad.Enabled then
-    Context.State.Input.Gamepad.CoreButtons := Context.State.Session.Emulation.GetInputState.Buttons;
-  if Supports(Context.State.Session.Emulation, INesPeripheralCore, Peripheral) then
+  if (Context.Gamepad <> nil) and Context.Gamepad.Visible and Context.Gamepad.Enabled then
+    Context.Gamepad.CoreButtons := Context.Host.Core.GetInputState.Buttons;
+  if Supports(Context.Host.Core, INesPeripheralCore, Peripheral) then
   begin
     if (Devices.SuborKeyboard <> nil) and Devices.SuborKeyboard.Visible and Devices.SuborKeyboard.Enabled then
     begin
@@ -532,17 +558,12 @@ class procedure TNesInputHandler.PollInput(const Context: TInputRuntimeContext);
 begin
   var Devices := NesInputState(Context);
   var Peripheral: INesPeripheralCore;
-  if Supports(Context.State.Session.Emulation, INesPeripheralCore, Peripheral) then
+  if Supports(Context.Host.Core, INesPeripheralCore, Peripheral) then
   begin
     if Peripheral.Zapper.Enabled then
     begin
-      var Mouse: IFMXMouseService;
-      if TPlatformServices.Current.SupportsPlatformService(IFMXMouseService, Mouse) then
-      begin
-        var Point := Context.View.ImageCanvas.AbsoluteToLocal(Context.View.ScreenToClient(Mouse.GetMousePos));
-        TryGetImagePixel(Context.View.ImageCanvas, Point.X, Point.Y, Devices.ZapperPixel.X, Devices.ZapperPixel.Y);
-      end;
-      Peripheral.Zapper.TriggerPressed := Context.State.Input.Manager.IsPressed(ZapperTriggerAction);
+      Context.Host.Video.TryPointerToFrame(Devices.ZapperPixel);
+      Peripheral.Zapper.TriggerPressed := Context.Host.Input.IsActionPressed(ZapperTriggerAction);
     end;
   end;
 end;
@@ -554,15 +575,14 @@ begin
   var Devices := NesInputState(Context);
   if Sender = Devices.MiraclePiano then
   begin
-    if not Supports(Context.State.Session.Emulation, INesMiraclePianoCore, Piano) or not Piano.UsesMiraclePiano then
+    if not Supports(Context.Host.Core, INesMiraclePianoCore, Piano) or not Piano.UsesMiraclePiano then
       Exit;
 
-    Context.View.UpdatePeripheralInput;
-    Context.State.Session.Emulation.SetGamepadInput(Context.View.CombinedGamepadInput);
+    Context.Host.Input.RequestInputUpdate(True);
   end
   else if (Sender = Devices.SuborKeyboard) or (Sender = Devices.FamicomKeyboard) or
     (Sender = Devices.PowerPad) then
-    Context.View.UpdatePeripheralInput;
+    Context.Host.Input.RequestInputUpdate(False);
 end;
 
 class procedure TNesInputHandler.PointerButton(const Context: TInputRuntimeContext; X, Y: Single; Pressed: Boolean);
@@ -570,10 +590,10 @@ var
   Peripheral: INesPeripheralCore;
 begin
   var Devices := NesInputState(Context);
-  if Supports(Context.State.Session.Emulation, INesPeripheralCore, Peripheral) then
+  if Supports(Context.Host.Core, INesPeripheralCore, Peripheral) then
   begin
     if Pressed then
-      TryGetImagePixel(Context.View.ImageCanvas, X, Y, Devices.ZapperPixel.X, Devices.ZapperPixel.Y);
+      Context.Host.Video.TryLocalToFrame(PointF(X, Y), Devices.ZapperPixel);
     Peripheral.Zapper.TriggerPressed := Pressed;
   end;
 end;
@@ -582,15 +602,16 @@ class procedure TNesInputHandler.DoTapeAction(const Context: TInputRuntimeContex
 begin
   var Devices := NesInputState(Context);
   var Tape: INesTapeCore;
-  if not Supports(Context.State.Session.Emulation, INesTapeCore, Tape) then
+  if not Supports(Context.Host.Core, INesTapeCore, Tape) then
     Exit;
 
   try
     Tape.TapeCommand(Action, FileName);
-    Devices.DataRecorder.Progress := Tape.GetTapeProgress;
+    if Devices.DataRecorder <> nil then
+      Devices.DataRecorder.Progress := Tape.GetTapeProgress;
   except
     on E: Exception do
-      ShowRetroMessage(Context.View, Translate('Cassette: ') + E.Message);
+      Context.Host.ShowMessage(Translate('Cassette: ') + E.Message, True);
   end;
 end;
 
@@ -598,61 +619,44 @@ class procedure TNesInputHandler.DoSelectTapeFile(const Context: TInputRuntimeCo
 begin
   var Devices := NesInputState(Context);
   var Tape: INesTapeCore;
-  if not Supports(Context.State.Session.Emulation, INesTapeCore, Tape) or not Tape.UsesDataRecorder then
+  if not Supports(Context.Host.Core, INesTapeCore, Tape) or not Tape.UsesDataRecorder then
     raise EInvalidOperation.Create(Translate('No data recorder connected'));
 
   Tape.TapeCommand(TapeSelectFile, FileName);
-  Devices.DataRecorder.Progress := Tape.GetTapeProgress;
+  if Devices.DataRecorder <> nil then
+    Devices.DataRecorder.Progress := Tape.GetTapeProgress;
 end;
 
 class procedure TNesInputHandler.DoSaveTapeAs(const Context: TInputRuntimeContext);
 begin
-  {$IFNDEF ANDROID}
-  var Devices := NesInputState(Context);
-  {$ENDIF}
   var Tape: INesTapeCore;
-  if not Supports(Context.State.Session.Emulation, INesTapeCore, Tape) or not Tape.UsesDataRecorder then
+  var Documents: IPlatformDocuments;
+  if not Supports(Context.Host.Core, INesTapeCore, Tape) or not Tape.UsesDataRecorder or
+    not Supports(Context.Host, IPlatformDocuments, Documents) then
     Exit;
-
-  Context.View.FormDeactivate(Context.View);
-  {$IFDEF ANDROID}
-  if Context.State.Session.OpeningRom then
-    Exit;
-
-  var Path := Context.State.Session.Storage.TemporaryFile('.tape');
+  var Request := Default(TPlatformDocumentRequest);
+  Request.Title := Translate('Save cassette as');
+  Request.Filter := Translate('Cassette (*.tape)|*.tape');
+  Request.Extension := '.tape';
+  Request.SuggestedName := ExtractFileName(Tape.GetTapeProgress.FileName);
+  var Host := Context.Host;
   try
-    Tape.TapeCommand(TapeSaveAs, Path);
-    Context.State.Mobile.Transfer.Save(Path, ExtractFileName(Tape.GetTapeProgress.FileName));
-    Context.State.Session.OpeningRom := True;
-    Context.View.SyncActivity;
+    Documents.SaveDocument(Request,
+      procedure(const FileName: string)
+      begin
+        Tape.TapeCommand(TapeSaveAs, FileName);
+        {$IFNDEF ANDROID}
+        var Runtime := Default(TInputRuntimeContext);
+        Runtime.Host := Host;
+        var Devices := NesInputState(Runtime, False);
+        if (Devices <> nil) and (Devices.DataRecorder <> nil) then
+          Devices.DataRecorder.Progress := Tape.GetTapeProgress;
+        {$ENDIF}
+      end);
   except
     on E: Exception do
-    begin
-      Context.State.Session.Storage.Delete(Path);
-      ShowRetroMessage(Context.View, Translate('Cassette: ') + E.Message);
-    end;
+      Host.ShowMessage(Translate('Cassette: ') + E.Message, True);
   end;
-  {$ELSE}
-  var Dialog := TSaveDialog.Create(Context.View);
-  try
-    Dialog.Title := Translate('Save cassette as');
-    Dialog.Filter := Translate('Cassette (*.tape)|*.tape');
-    Dialog.DefaultExt := 'tape';
-    Dialog.Options := [TOpenOption.ofPathMustExist, TOpenOption.ofOverwritePrompt];
-    Dialog.FileName := Tape.GetTapeProgress.FileName;
-    if Dialog.Execute then
-    try
-      Tape.TapeCommand(TapeSaveAs, Dialog.FileName);
-      Devices.DataRecorder.Progress := Tape.GetTapeProgress;
-    except
-      on E: Exception do
-        ShowRetroMessage(Context.View, Translate('Cassette: ') + E.Message);
-    end;
-  finally
-    Dialog.Free;
-    Context.View.FormActivate(Context.View);
-  end;
-  {$ENDIF}
 end;
 
 class procedure TNesInputHandler.Command(const Context: TInputRuntimeContext; const Name: string; Code: Integer; const FileName: string);

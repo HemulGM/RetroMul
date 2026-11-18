@@ -17,7 +17,7 @@ class function TPCESettingsHandler.HelpInfo(const Context: TSettingsRuntimeConte
 begin
   Result := inherited HelpInfo(Context);
   Result.Players := 1;
-  if Context.State.Input.Ports.Multitap[0] then
+  if Context.Host.Input.Ports.Multitap[0] then
     Result.Players := 5;
 end;
 

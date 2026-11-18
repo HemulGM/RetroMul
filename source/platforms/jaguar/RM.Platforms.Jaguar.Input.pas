@@ -90,17 +90,17 @@ end;
 class procedure TJaguarInputHandler.CombineInput(const Context: TInputRuntimeContext; var Input: TEmulatorInput);
 begin
   var Keypad: IJaguarKeypadInput;
-  if not Supports(Context.State.Session.Emulation, IJaguarKeypadInput, Keypad) then
+  if not Supports(Context.Host.Core, IJaguarKeypadInput, Keypad) then
     Exit;
   for var Port := 0 to 7 do
   begin
     var Mask: Word := 0;
-    if Context.State.Input.Manager <> nil then
+    if Context.Host.Input.HasInputSource then
       for var Key := 0 to 11 do
-        if Context.State.Input.Manager.IsPressed(JaguarKeypadAction(Port, Key)) then
+        if Context.Host.Input.IsActionPressed(JaguarKeypadAction(Port, Key)) then
           Mask := Mask or (Word(1) shl Key);
-    if (Port = 0) and (Context.State.Input.Gamepad <> nil) then
-      Mask := Mask or (Context.State.Input.Gamepad.AuxiliaryButtons and $FFF);
+    if (Port = 0) and (Context.Gamepad <> nil) then
+      Mask := Mask or (Context.Gamepad.AuxiliaryButtons and $FFF);
     Keypad.SetVirtualKeypad(Port, Mask);
   end;
 end;

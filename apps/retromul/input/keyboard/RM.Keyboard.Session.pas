@@ -5,7 +5,7 @@
 interface
 
 uses
-  Core.Input.Keyboard, RM.Session.Runtime;
+  RM.Platform.Host, Core.Input.Keyboard, RM.Session.Runtime;
 
 type
   TKeyboardSessionHandler = class(TPlatformSessionHandler)
@@ -35,8 +35,6 @@ begin
   Result := 10;
 end;
 
-
-
 class function TKeyboardSessionHandler.InputControls(const Context: TSessionRuntimeContext): TArray<TSessionInputControl>;
 begin
   var Devices := KeyboardInputState(Context);
@@ -47,7 +45,7 @@ class function TKeyboardSessionHandler.ExclusiveInput(const Context: TSessionRun
 var
   Keyboard: IEmulationKeyboard;
 begin
-  Result := Supports(Context.State.Session.Emulation, IEmulationKeyboard, Keyboard) and Keyboard.HasKeyboard;
+  Result := Supports(Context.Host.Core, IEmulationKeyboard, Keyboard) and Keyboard.HasKeyboard;
 end;
 
 class function TKeyboardSessionHandler.TouchControl(const Context: TSessionRuntimeContext): TSessionInputControl;
@@ -60,7 +58,7 @@ begin
     {$IFDEF IOS}
     Result := Default(TSessionInputControl);
     {$ELSE}
-    Result := SessionControl(Devices.Keyboard);
+  Result := SessionControl(Devices.Keyboard);
     {$ENDIF}
 end;
 
@@ -71,11 +69,12 @@ begin
   if Devices.Keyboard <> nil then
   begin
     Devices.Keyboard.Visible := Active;
-    Devices.Keyboard.Enabled := Active and not Context.State.Session.EmulationFaulted and
-      not Context.State.Session.OpeningRom and not Context.State.Browser.ViewingLibrary and
-      (Context.State.Settings.View = nil) and (Context.State.Help.View = nil) and not RetroDialogVisible(Context.View);
+    var Activity := Context.Host.Activity;
+    Devices.Keyboard.Enabled := Active and Activity.GameplayVisible and
+      not (Activity.Phase in [TPlatformSessionPhase.Failed, TPlatformSessionPhase.Loading]) and
+      not Activity.PeripheralInputBlocked;
   end;
-  {$IFDEF ANDROID}    Devices.TouchAttached := Active;{$ENDIF}
+  {$IFDEF ANDROID}      Devices.TouchAttached := Active;{$ENDIF}
   inherited SyncActivity(Context);
 end;
 
@@ -84,11 +83,10 @@ begin
   inherited;
   {$IFDEF ANDROID}
   var Devices := KeyboardInputState(Context, False);
-  if Devices <> nil then Devices.TouchAttached := False;
+  if Devices <> nil then
+    Devices.TouchAttached := False;
   {$ENDIF}
 end;
-
-
 
 end.
 

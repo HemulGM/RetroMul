@@ -54,15 +54,13 @@ end;
 
 class procedure TPSPInputHandler.CombineInput(const Context: TInputRuntimeContext; var Input: TEmulatorInput);
 begin
-  var Manager := Context.State.Input.Manager;
-  if (Manager = nil) or (Context.State.Input.Ports.Devices[0] = 'none') then
+  var HostInput := Context.Host.Input;
+  if not HostInput.HasInputSource or (Context.Host.Input.Ports.Devices[0] = 'none') then
     Exit;
-  var Bindings := Manager.Bindings;
-  var Values := Manager.Values;
-  var X := ActionAmount(Manager, Bindings, Values, PSPStickActionOf(TPSPStickDirection.StickRight)) -
-    ActionAmount(Manager, Bindings, Values, PSPStickActionOf(TPSPStickDirection.StickLeft));
-  var Y := ActionAmount(Manager, Bindings, Values, PSPStickActionOf(TPSPStickDirection.StickDown)) -
-    ActionAmount(Manager, Bindings, Values, PSPStickActionOf(TPSPStickDirection.StickUp));
+  var X := HostInput.ActionAmount(PSPStickActionOf(TPSPStickDirection.StickRight)) -
+    HostInput.ActionAmount(PSPStickActionOf(TPSPStickDirection.StickLeft));
+  var Y := HostInput.ActionAmount(PSPStickActionOf(TPSPStickDirection.StickDown)) -
+    HostInput.ActionAmount(PSPStickActionOf(TPSPStickDirection.StickUp));
   if (X = 0) and (Y = 0) then
     Exit;
   var Stick := Input.Analog[0];

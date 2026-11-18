@@ -33,8 +33,7 @@ uses
 function TSettingsController.RuntimeContext: TSettingsRuntimeContext;
 begin
   Result := Default(TSettingsRuntimeContext);
-  Result.View := FView;
-  Result.State := FState;
+  Result.Host := FPlatformHost;
 end;
 
 procedure TSettingsController.Load;
@@ -45,7 +44,7 @@ begin
     var FirstLaunch := not Ini.ValueExists('General', 'Language');
     var Language := Ini.ReadString('General', 'Language', 'en');
     if FirstLaunch then
-      Language := FView.SystemLanguage;
+      Language := FView.DetectSystemLanguage;
     var Translation: TStringList := nil;
     var TranslationError := '';
     try
@@ -96,7 +95,7 @@ begin
     FState.Autosave.Periodic := Ini.ReadBool('General', 'AutosavePeriodic', False);
     FState.Autosave.Minutes := EnsureRange(Ini.ReadInteger('General', 'AutosaveMinutes',
         AUTOSAVE_DEFAULT_MINUTES), 1, AUTOSAVE_MAX_MINUTES);
-    FState.Autosave.LastTick := FView.CurrentTick;
+    FState.Autosave.LastTick := FView.AutosaveClock;
     if TranslationError <> '' then
       FView.SetStatus(Translate('Unable to load translation: ') + TranslateCoreMessage(TranslationError));
   finally
@@ -246,7 +245,7 @@ begin
         if RetroDialogVisible(FView) and (FState.Session.DialogCore = FState.Session.Emulation) then
           FState.Session.DialogWasPaused := False;
         {$IFNDEF ISMOBILE}
-        if FState.Preferences.PauseOnFocusLoss and not FView.InputHasFocus and not RetroDialogVisible(FView) then
+        if FState.Preferences.PauseOnFocusLoss and not FView.HostInputHasFocus and not RetroDialogVisible(FView) then
           FState.Session.AutoPaused := True
         else
         {$ENDIF}
@@ -328,7 +327,7 @@ begin
         not FState.Session.UserPaused and
         not FState.Session.AutoPaused and
         not FState.Session.EmulationFaulted and
-        FView.InputHasFocus then
+        FView.HostInputHasFocus then
         FState.Session.Emulation.Resume;
       FState.Input.SuppressInputUntilRelease := True;
       FillChar(FState.Input.KeysDown, SizeOf(FState.Input.KeysDown), 0);

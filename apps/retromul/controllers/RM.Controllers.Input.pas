@@ -151,8 +151,7 @@ end;
 
 function TInputController.RuntimeContext: TInputRuntimeContext;
 begin
-  Result.View := FView;
-  Result.State := FState;
+  Result.Host := FPlatformHost;
   Result.ScreenInputChanged := PeripheralChanged;
 end;
 
@@ -189,7 +188,7 @@ begin
   var Rumble: IEmulationRumbleOutput;
   if (FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted and not FState.Session.OpeningRom and
     not FState.Browser.ViewingLibrary and (FState.Settings.View = nil) and (FState.Help.View = nil) and
-    not RetroDialogVisible(FView) and FView.InputHasFocus and
+    not RetroDialogVisible(FView) and FView.HostInputHasFocus and
     {$IFDEF ISMOBILE}not FState.Mobile.InBackground and {$ENDIF}
     not FState.Session.Emulation.IsPaused and Supports(FState.Session.Emulation, IEmulationRumbleOutput, Rumble) and
     Rumble.HasRumble then
@@ -445,11 +444,11 @@ procedure TInputController.PollHostInput;
 begin
   ValidateScreenTouch(RuntimeContext);
   if (FState.Browser.View <> nil) and
-    (not FView.InputHasFocus or RetroDialogVisible(FView) or (FState.Settings.View <> nil)) then
+    (not FView.HostInputHasFocus or RetroDialogVisible(FView) or (FState.Settings.View <> nil)) then
     FState.Browser.View.PollLibraryInput(nil, False);
   var MouseInput: IEmulationMouseInput;
   var HasMouse := Supports(FState.Session.Emulation, IEmulationMouseInput, MouseInput);
-  if HasMouse and ((FState.Input.Manager = nil) or FState.Input.PollingFailed or not FView.InputHasFocus or
+  if HasMouse and ((FState.Input.Manager = nil) or FState.Input.PollingFailed or not FView.HostInputHasFocus or
     FState.Session.OpeningRom or (FState.Settings.View <> nil) or FState.Browser.ViewingLibrary or
     (FState.Help.View <> nil) or FState.Session.Emulation.IsPaused or FState.Session.EmulationFaulted or
     RetroDialogVisible(FView) or ((FView.Focused <> nil) and (FView.Focused.GetObject is TCustomEdit))) then
@@ -458,7 +457,7 @@ begin
     Exit;
 
   var DialogActive := RetroDialogVisible(FView);
-  FState.Input.Manager.Enabled := (FView.InputHasFocus or (DialogActive and FView.Active)) and
+  FState.Input.Manager.Enabled := (FView.HostInputHasFocus or (DialogActive and FView.Active)) and
     (not FState.Session.OpeningRom or DialogActive);
   if not FState.Input.Manager.Enabled then
   begin

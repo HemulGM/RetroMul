@@ -329,7 +329,7 @@ begin
       Dialog.InitialDir := Directory;
       Dialog.FileName := FormatDateTime('yyyy-mm-dd_hh-nn-ss-zzz', Now) + SNAPSHOT_EXTENSION;
       Dialog.Options := [TOpenOption.ofPathMustExist, TOpenOption.ofOverwritePrompt];
-      if FView.RunSnapshotDialog(Dialog) then
+      if FView.ExecuteSnapshotDialog(Dialog) then
         FView.SaveSnapshot(TPath.GetFullPath(Dialog.FileName));
     except
       on E: Exception do
@@ -364,7 +364,7 @@ begin
       Dialog.DefaultExt := 'snapshot';
       Dialog.InitialDir := Directory;
       Dialog.Options := [TOpenOption.ofPathMustExist, TOpenOption.ofFileMustExist];
-      if FView.RunSnapshotDialog(Dialog) then
+      if FView.ExecuteSnapshotDialog(Dialog) then
         FView.LoadSnapshot(TPath.GetFullPath(Dialog.FileName));
     except
       on E: Exception do
@@ -424,7 +424,7 @@ begin
   try
     var Directory := TPath.Combine(FState.Session.Storage.Root, 'screenshots');
     FState.Session.Storage.EnsureFolder(Directory);
-    FView.ShowDirectory(Directory);
+    FView.OpenDirectory(Directory);
   except
     on E: Exception do
       ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
@@ -484,7 +484,7 @@ begin
     FState.Session.Emulation.IsPaused or not FState.Session.Emulation.SupportsSnapshots then
     Exit;
 
-  var Tick := FView.CurrentTick;
+  var Tick := FView.AutosaveClock;
   if (Tick < FState.Autosave.LastTick) or
     (Tick - FState.Autosave.LastTick < UInt64(FState.Autosave.Minutes) * 60000) then
     Exit;

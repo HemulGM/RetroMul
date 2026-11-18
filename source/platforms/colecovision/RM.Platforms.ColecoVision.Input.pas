@@ -42,7 +42,7 @@ begin
   Result := inherited;
   // Numeric keys belong to the controller, including Q/W/E/R for star/hash.
   // Preserve direct host keys alongside user-configurable pad bindings.
-  Result.KeyboardActive := (Context.State = nil) or Context.State.Input.Ports.KeyboardEnabled;
+  Result.KeyboardActive := (Context.Host = nil) or Context.Host.Input.Ports.KeyboardEnabled;
   Result.ForwardWithManager := True;
   Result.AllowSnapshotsWithKeyboard := True;
 end;
@@ -50,23 +50,19 @@ end;
 class procedure TColecoInputHandler.CombineInput(const Context: TInputRuntimeContext; var Input: TEmulatorInput);
 begin
   var Mask: Cardinal := 0;
-  if Context.State.Input.Gamepad <> nil then
-    Mask := Context.State.Input.Gamepad.AuxiliaryButtons;
+  if Context.Gamepad <> nil then
+    Mask := Context.Gamepad.AuxiliaryButtons;
   var Negative := Single(Ord(Mask and $1000 <> 0));
   var Positive := Single(Ord(Mask and $2000 <> 0));
-  if Context.State.Input.Manager is TGamepadInputManager then
-  begin
-    var Manager := TGamepadInputManager(Context.State.Input.Manager);
-    Negative := Manager.DigitalAnalogAmount($21000, Negative <> 0);
-    Positive := Manager.DigitalAnalogAmount($21001, Positive <> 0);
-  end;
+  Negative := Context.Host.Input.DigitalAnalogAmount($21000, Negative <> 0);
+  Positive := Context.Host.Input.DigitalAnalogAmount($21001, Positive <> 0);
   if Mask and $3000 <> 0 then
   begin
     Input.Analog[0].Valid := True;
     Input.Analog[0].X := Round((Positive - Negative) * 24576);
   end;
   var Keypad: IColecoKeypadInput;
-  if Supports(Context.State.Session.Emulation, IColecoKeypadInput, Keypad) then
+  if Supports(Context.Host.Core, IColecoKeypadInput, Keypad) then
   begin
     Keypad.SetVirtualKeypad(0, Mask and $FFF);
   end;

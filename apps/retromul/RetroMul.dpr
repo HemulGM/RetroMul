@@ -339,7 +339,6 @@ uses
   RM.TouchInput.Android in 'platform\RM.TouchInput.Android.pas',
   RM.Feedback in 'ui\RM.Feedback.pas' {FeedbackView: TFrame},
   RM.Main in 'ui\RM.Main.pas' {FormMain},
-  RM.Main.View in 'ui\RM.Main.View.pas',
   RM.Main.State in 'ui\RM.Main.State.pas',
   RM.Controllers.Base in 'controllers\RM.Controllers.Base.pas',
   RM.Toolbar in 'ui\RM.Toolbar.pas',
@@ -350,6 +349,8 @@ uses
   RM.Settings.Runtime in 'controllers\RM.Settings.Runtime.pas',
   RM.Controllers.Snapshots in 'controllers\RM.Controllers.Snapshots.pas',
   RM.Controllers.Input in 'controllers\RM.Controllers.Input.pas',
+  RM.Platform.Host in 'input\RM.Platform.Host.pas',
+  RM.Platform.Host.RetroMul in 'controllers\RM.Platform.Host.RetroMul.pas',
   RM.Input.Runtime in 'input\RM.Input.Runtime.pas',
   RM.Controllers.Mobile in 'controllers\RM.Controllers.Mobile.pas',
   RM.Controllers.Session in 'controllers\RM.Controllers.Session.pas',
@@ -984,7 +985,9 @@ uses
   Flash.Net in '..\..\source\cores\flash\Flash.Net.pas',
   Flash.Filters in '..\..\source\cores\flash\Flash.Filters.pas',
   Audio.Registry in '..\..\source\media\audio\Audio.Registry.pas',
+  {$IFDEF MSWINDOWS}
   Audio.AMR.Windows in '..\..\source\media\audio\Audio.AMR.Windows.pas',
+  {$ENDIF}
   Audio.Format.AMR in '..\..\source\media\audio\Audio.Format.AMR.pas',
   Audio.Types in '..\..\source\media\audio\Audio.Types.pas',
   SWF.FLV.Script in '..\..\source\media\swf\SWF.FLV.Script.pas',

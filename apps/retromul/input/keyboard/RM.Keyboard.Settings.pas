@@ -22,7 +22,7 @@ var
   Keyboard: IEmulationKeyboard;
 begin
   Result := inherited HelpInfo(Context);
-  Result.KeyboardPeripheral := Supports(Context.State.Session.Emulation, IEmulationKeyboard, Keyboard) and Keyboard.HasKeyboard;
+  Result.KeyboardPeripheral := Supports(Context.Host.Core, IEmulationKeyboard, Keyboard) and Keyboard.HasKeyboard;
 end;
 
 class function TKeyboardSettingsHandler.Peripherals(const Context: TSettingsRuntimeContext): TArray<TSettingsPeripheral>;

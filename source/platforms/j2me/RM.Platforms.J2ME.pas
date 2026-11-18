@@ -5,7 +5,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, RM.Input.Runtime, FMXInput;
+  RM.Platform.Host, Core.EmulatorRegistry, RM.Input, RM.Input.Runtime, FMXInput;
 
 type
   TJ2MEPlatform = class
@@ -162,7 +162,7 @@ end;
 
 class procedure TJ2MEWindowLayout.Arrange(const Context: TWindowLayoutContext);
 begin
-  var Pad := Context.State.Input.Gamepad;
+  var Pad := Context.Gamepad;
   if (Pad = nil) or not Pad.Visible or (Pad.PlatformPad = nil) or not (Pad.Parent is TControl) then
   begin
     inherited;
@@ -173,9 +173,7 @@ begin
   // the sides; they keep the central game picture available in landscape.
   if Pad.PlatformPad.DesignWidth = Pad.PlatformPad.DesignSideSize.Width then
   begin
-    Context.View.ImageCanvas.Margins.Left := 0;
-    Context.View.ImageCanvas.Margins.Right := 0;
-    Context.View.ImageCanvas.WrapMode := TImageWrapMode.Fit;
+    Context.Host.Video.FitFrame;
     if Host.Width > Host.Height then
     begin
       Pad.Align := TAlignLayout.Right;
@@ -197,7 +195,7 @@ begin
   var Options := TJ2MEKeypadOptions.Create;
   Options.Shown := Ini.ReadBool('Phone', 'ShowKeypad', True);
   Context.SetData('j2me.keypad.options', Options);
-  var Pad := Context.State.Input.Gamepad;
+  var Pad := Context.Gamepad;
   if Pad = nil then
     Exit;
   var Layout := NormalizeJ2MEKeypadLayout(Ini.ReadString('Phone', 'KeypadLayout', 'arrows-numbers'));
@@ -208,7 +206,7 @@ end;
 class procedure TJ2MESessionHandler.Connect(const Context: TSessionRuntimeContext);
 begin
   inherited;
-  var Ini := Context.State.Session.Storage.ReadConfig(Context.State.Session.Emulation.Config.FileName);
+  var Ini := Context.Host.Storage.ReadConfig(Context.Host.Core.Config.FileName);
   try
     ConfigureJ2MEKeypad(Context, Ini);
   finally
@@ -219,47 +217,43 @@ end;
 class procedure TJ2MESessionHandler.FramePresented(const Context: TSessionRuntimeContext);
 begin
   inherited;
-  if Context.State.Session.OpeningRom or Context.State.Browser.ViewingLibrary or
-    RetroDialogVisible(Context.View) or (Context.State.Settings.View <> nil) then
+  if not Context.Host.Activity.CanShowGameNotice then
     Exit;
   var Advice: IJ2MEResolutionAdvice;
   var Current, Recommended: TJ2MEScreenSize;
-  if Supports(Context.State.Session.Emulation, IJ2MEResolutionAdvice, Advice) and
+  if Supports(Context.Host.Core, IJ2MEResolutionAdvice, Advice) and
     Advice.TakeResolutionAdvice(Current, Recommended) then
-    ShowRetroMessage(Context.View,
+    Context.Host.ShowMessage(
       Format(Translate('The game repeatedly requests a %d × %d screen. The current size is %d × %d, so part of the image may be clipped.'),
         [Recommended.Width, Recommended.Height, Current.Width, Current.Height]) + sLineBreak + sLineBreak +
       Translate('Set this size in the Java ME platform video settings, then restart the game from the beginning.'),
-      TRetroDialogKind.Information);
+      False);
 end;
 
 class procedure TJ2MESessionHandler.SyncActivity(const Context: TSessionRuntimeContext);
 begin
   inherited;
-  var Pad := Context.State.Input.Gamepad;
+  var Pad := Context.Gamepad;
   if Pad = nil then
     Exit;
   var Options := Context.Data('j2me.keypad.options') as IJ2MEKeypadOptions;
-  Pad.Visible := Pad.Visible and ((Options = nil) or Options.IsShown) and
-    (Context.State.Session.Emulation <> nil) and not Context.State.Browser.ViewingLibrary and
-    (Context.State.Settings.View = nil) and (Context.State.Help.View = nil);
-  Pad.Enabled := Pad.Enabled and Pad.Visible and not Context.State.Session.EmulationFaulted and
-    not Context.State.Session.OpeningRom and not Context.State.Session.Reporting and
-    not Context.State.Session.UserPaused and not Context.State.Session.AutoPaused and
-    not RetroDialogVisible(Context.View);
+  var Activity := Context.Host.Activity;
+  Pad.Visible := Pad.Visible and ((Options = nil) or Options.IsShown);
+  Pad.Enabled := Pad.Enabled and Pad.Visible and Activity.VirtualControlsEnabled and
+    not Activity.PeripheralInputBlocked;
   LayoutControls(Context);
 end;
 
 class procedure TJ2MESessionHandler.Disconnect(const Context: TSessionRuntimeContext);
 begin
-  if Context.State.Input.Gamepad <> nil then
+  if Context.Gamepad <> nil then
   begin
-    Context.State.Input.Gamepad.ReleaseAll;
-    Context.State.Input.Gamepad.Enabled := False;
-    Context.State.Input.Gamepad.Visible := False;
+    Context.Gamepad.ReleaseAll;
+    Context.Gamepad.Enabled := False;
+    Context.Gamepad.Visible := False;
   end;
   var Phone: IJ2MEPhoneInput;
-  if Supports(Context.State.Session.Emulation, IJ2MEPhoneInput, Phone) then
+  if Supports(Context.Host.Core, IJ2MEPhoneInput, Phone) then
     Phone.SetVirtualKeypad(0);
   Context.SetData('j2me.keypad.options', nil);
   inherited;
@@ -274,17 +268,17 @@ end;
 class procedure TJ2MEInputHandler.CombineInput(const Context: TInputRuntimeContext; var Input: TEmulatorInput);
 begin
   var Phone: IJ2MEPhoneInput;
-  if not Supports(Context.State.Session.Emulation, IJ2MEPhoneInput, Phone) then
+  if not Supports(Context.Host.Core, IJ2MEPhoneInput, Phone) then
     Exit;
   var Mask: Word := 0;
-  var Pad := Context.State.Input.Gamepad;
-  if (Context.State.Input.Ports.Devices[0] <> 'none') and
-    not Context.State.Session.EmulationFaulted and not Context.State.Session.Emulation.IsPaused then
+  var Pad := Context.Gamepad;
+  if (Context.Host.Input.Ports.Devices[0] <> 'none') and
+    not (Context.Host.Activity.Phase = TPlatformSessionPhase.Failed) and not Context.Host.Core.IsPaused then
   begin
-    var Manager := Context.State.Input.Manager;
-    if Manager <> nil then
+    var Manager := Context.Host.Input;
+    if Manager.HasInputSource then
       for var Key := 0 to 11 do
-        if Manager.IsPressed(J2MEKeypadAction(Key)) then
+        if Manager.IsActionPressed(J2MEKeypadAction(Key)) then
           Mask := Mask or (Word(1) shl Key);
     if (Pad <> nil) and Pad.Visible and Pad.Enabled then
       Mask := Mask or (Pad.AuxiliaryButtons and J2MEKeypadMask);
@@ -295,8 +289,8 @@ end;
 class function TJ2MEInputHandler.ForwardKey(const Context: TInputRuntimeContext; Code: Word; Pressed: Boolean): Boolean;
 begin
   Result := False;
-  var Manager := Context.State.Input.Manager;
-  if Manager = nil then
+  var Manager := Context.Host.Input;
+  if not Manager.HasInputSource then
     Exit;
   // Binding changes replace default keys rather than add a hard-coded route.
   // Other text/navigation keys still reach the MIDlet.

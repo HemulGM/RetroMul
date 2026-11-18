@@ -49,8 +49,7 @@ uses
 function TWindowController.LayoutContext: TWindowLayoutContext;
 begin
   Result := Default(TWindowLayoutContext);
-  Result.View := FView;
-  Result.State := FState;
+  Result.Host := FPlatformHost;
 end;
 
 procedure TWindowController.SyncLibrarySystemUI;

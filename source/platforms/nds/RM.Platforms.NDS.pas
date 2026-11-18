@@ -51,12 +51,7 @@ end;
 class procedure TNDSSessionHandler.Connect(const Context: TSessionRuntimeContext);
 begin
   inherited;
-  Context.View.ImageCanvas.HitTest := True;
-  Context.View.ImageCanvas.CanFocus := True;
-  Context.View.ImageCanvas.OnKeyDown := Context.View.FormKeyDown;
-  Context.View.ImageCanvas.OnKeyUp := Context.View.FormKeyUp;
-  Context.View.ImageCanvas.DisableFocusEffect := False;
-  Context.View.ImageCanvas.CanParentFocus := True;
+  Context.Host.Video.SetPointerInputEnabled(True, True);
 end;
 
 class function TNDSPlatform.Source(Context: TCoreLoadContext): TCoreMatch;

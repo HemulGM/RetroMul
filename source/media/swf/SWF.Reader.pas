@@ -70,6 +70,7 @@ type
     function U16: Word;
     function S16: SmallInt;
     function U32: Cardinal;
+    function EncodedU32: Cardinal;
     function Bits(Count: Integer): Cardinal;
     function SignedBits(Count: Integer): Integer;
     function Bytes(Count: Integer): TBytes;
@@ -305,6 +306,22 @@ function TSWFReader.U32: Cardinal;
 begin
   Result := U16;
   Result := Result or (Cardinal(U16) shl 16);
+end;
+
+function TSWFReader.EncodedU32: Cardinal;
+var
+  Shift: Integer;
+  Part: Byte;
+begin
+  Result := 0;
+  Shift := 0;
+  repeat
+    Part := U8;
+    if (Shift = 28) and (Part > $0F) then
+      raise ESWFError.Create('Invalid SWF encoded U32');
+    Result := Result or (Cardinal(Part and $7F) shl Shift);
+    Inc(Shift, 7);
+  until Part < $80;
 end;
 
 function TSWFReader.Bits(Count: Integer): Cardinal;

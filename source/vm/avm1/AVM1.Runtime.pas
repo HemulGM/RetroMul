@@ -1194,8 +1194,11 @@ begin
 end;
 
 procedure TAVM1.BeginTick;
+const
+  // Keep a shared cap for bytecode and native work while allowing long frame scripts.
+  WorkPerTick = 4000000;
 begin
-  FBudget := 1000000;
+  FBudget := WorkPerTick;
 end;
 
 procedure TAVM1.SetTraceLimit(Value: Integer);

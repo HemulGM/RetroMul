@@ -48,10 +48,15 @@ type
 
   TAVM2ObjectKind = (a2PlainObject, a2Script, a2Class, a2Function);
 
-  TAVM2EventKind = (aeNone, aeEvent, aeKeyboard, aeMouse);
+  TAVM2EventKind = (aeNone, aeEvent, aeKeyboard, aeMouse, aeTimer);
+
+  TAVM2FrameEvent = (afEnter, afConstructed, afExit);
 
   TAVM2EventMethod = (aeAddListener, aeRemoveListener, aeHasListener, aeWillTrigger,
     aeDispatch, aeStop, aeStopImmediate, aePreventDefault, aeIsDefaultPrevented);
+
+  TAVM2TimerMethod = (tmStart, tmStop, tmReset, tmGetTimer, tmSetInterval, tmSetTimeout,
+    tmClearInterval, tmClearTimeout, tmCloneEvent, tmEventText, tmUpdateAfterEvent);
 
   TAVM2Listener = record
     Name: string;
@@ -65,7 +70,41 @@ type
   TAVM2DisplayMethod = (adAddChild, adAddChildAt, adRemoveChild, adRemoveChildAt,
     adGetChildAt, adGetChildIndex, adSetChildIndex, adContains,
     adClear, adBeginFill, adEndFill, adMoveTo, adLineTo, adCurveTo, adDrawRect,
-    adDrawCircle, adDrawEllipse, adLineStyle);
+    adDrawCircle, adDrawEllipse, adLineStyle, adLocalToGlobal, adGlobalToLocal,
+    adHitTestPoint, adHitTestObject, adGetBounds, adGetRect, adGetChildByName);
+
+  TAVM2TimelineChild = record
+    Handle: TObject;
+    Name, ClassName, SymbolClass: string;
+    X, Y, ScaleX, ScaleY, Rotation, Alpha: Double;
+    Visible: Boolean;
+  end;
+
+  TAVM2PointMethod = (apAdd, apSubtract, apClone, apCopyFrom, apEquals, apNormalize,
+    apOffset, apSetTo, apText, apDistance, apInterpolate, apPolar);
+
+  TAVM2RectangleMethod = (arClone, arIsEmpty, arSetEmpty, arInflate, arInflatePoint,
+    arOffset, arOffsetPoint, arContains, arContainsPoint, arContainsRect, arIntersection,
+    arIntersects, arUnion, arEquals, arText, arCopyFrom, arSetTo);
+
+  TAVM2Rectangle = record
+    X, Y, Width, Height: Double;
+    function Right: Double;
+    function Bottom: Double;
+    function IsEmpty: Boolean;
+  end;
+
+  TAVM2MatrixMethod = (amClone, amConcat, amIdentity, amInvert, amRotate, amScale,
+    amTranslate, amTransformPoint, amDeltaTransformPoint, amCreateBox, amCreateGradientBox,
+    amCopyFrom, amSetTo, amCopyRowFrom, amCopyRowTo, amCopyColumnFrom, amCopyColumnTo, amText);
+
+  TAVM2Matrix = record
+    case Integer of
+      0:
+        (A, B, C, D, TX, TY: Double);
+      1:
+        (Values: array[0..5] of Double);
+  end;
 
   TAVM2ByteArray = class
     Buffer: TBytes;
@@ -103,20 +142,51 @@ type
 
   TAVM2ArrayMethod = (aaPush, aaPop, aaJoin, aaToString, aaShift, aaUnshift,
     aaReverse, aaSlice, aaSplice, aaIndexOf, aaLastIndexOf, aaForEach, aaMap, aaFilter, aaEvery, aaSome,
-    aaSort, aaSortOn);
+    aaSort, aaSortOn, aaConcat);
 
   TAVM2ObjectMethod = (omPropertyIsEnumerable, omSetPropertyIsEnumerable, omHasOwnProperty);
+
+  TAVM2VectorMethod = (vePush, vePop, veShift, veUnshift, veJoin, veToString,
+    veReverse, veIndexOf, veLastIndexOf, veSlice, veConcat, veSplice,
+    veEvery, veSome, veForEach, veMap, veFilter, veInsertAt, veRemoveAt, veSort, veToLocaleString);
 
   TAVM2DynamicProperty = record
     Key: string;
     Enumerable: Boolean;
+    ObjectKey: TAVM2Object;
+  end;
+
+  TAVM2DictionaryEntry = record
+    Slot: Integer;
+    Value: TAVM2Value;
+  end;
+
+  TAVM2TimedCall = record
+    Id, Interval: Integer;
+    Due: Int64;
+    Owner, Callback: TAVM2Object;
+    Args: TArray<TAVM2Value>;
+    Once: Boolean;
   end;
 
   TAVM2DisplayHost = class abstract
-    function CreateDisplay(Document: Boolean): TObject; virtual; abstract;
+    function CreateDisplay(Document: Boolean; const Classes: TArray<string>; out Name: string): TObject; virtual; abstract;
     procedure Place(Child, Parent: TObject; Position: Integer); virtual; abstract;
+    procedure RequestFrameScript(Display: TObject; Frame: Integer); virtual; abstract;
+    procedure SetPlaying(Display: TObject; Playing: Boolean); virtual; abstract;
+    function GotoFrame(Display: TObject; const Target, Scene: string; HasScene, Playing: Boolean): Boolean; virtual; abstract;
+    function TimelineFrame(Display: TObject; Total: Boolean): Integer; virtual; abstract;
     procedure SetProperty(Display: TObject; const Name: string; Value: Double); virtual; abstract;
     procedure Draw(Display: TObject; Command: TAVM2DisplayMethod; const Args: TArray<Double>); virtual; abstract;
+    procedure TransformPoint(Display: TObject; ToGlobal: Boolean; var X, Y: Double); virtual; abstract;
+    function GetScrollRect(Display: TObject; out Rect: TAVM2Rectangle): Boolean; virtual; abstract;
+    procedure SetScrollRect(Display: TObject; Enabled: Boolean; const Rect: TAVM2Rectangle); virtual; abstract;
+    function GetMatrix(Display: TObject; Concatenated, OnStage: Boolean): TAVM2Matrix; virtual; abstract;
+    procedure SetMatrix(Display: TObject; const Matrix: TAVM2Matrix; out X, Y, ScaleX, ScaleY, Rotation: Double); virtual; abstract;
+    function HitTestPoint(Display: TObject; X, Y: Double; Shape, OnStage: Boolean): Boolean; virtual; abstract;
+    function HitTestObject(Display, Other: TObject): Boolean; virtual; abstract;
+    function GetBounds(Display, Target: TObject; IgnoreStrokes, PixelBounds: Boolean): TAVM2Rectangle; virtual; abstract;
+    function DisplayChildren(Display: TObject): TArray<TAVM2TimelineChild>; virtual; abstract;
   end;
 
   TAVM2Object = class
@@ -124,10 +194,18 @@ type
     Props: TDictionary<string, TAVM2Value>;
     DynamicProperties: TList<TAVM2DynamicProperty>;
     DynamicIndices: TDictionary<string, Integer>;
+    DictionaryKeys: TDictionary<TAVM2Object, TAVM2DictionaryEntry>;
+    BoundNativeMethods: TDictionary<TAVM2Object, TAVM2Object>;
     Slots: TDictionary<Integer, string>;
-    ActivationSlotTypes: TDictionary<string, Integer>;
+    SlotTypes: TDictionary<string, TPair<TAVM2Module, Integer>>;
     ByteArrayData: TAVM2ByteArray;
     ArrayData: TAVM2Array;
+    VectorData: TList<TAVM2Value>;
+    VectorFixed, VectorJoining: Boolean;
+    HasNamespaceURI: Boolean;
+    NamespaceURI: string;
+    IsVectorType: Boolean;
+    VectorElementType, VectorSpecialization: TAVM2Object;
     Module: TAVM2Module;
     Parent, ClassObject, Script: TAVM2Object;
     Scope: TArray<TAVM2Value>;
@@ -138,6 +216,9 @@ type
     DisplayData: TObject;
     DisplayParent: TAVM2Object;
     DisplayChildren: TList<TAVM2Object>;
+    TimelineBindings: TDictionary<string, TAVM2Object>;
+    FrameScripts: TDictionary<Integer, TAVM2Object>;
+    TimelinePlaced, TimelineConstructorPending: Boolean;
     BoundReceiver: TAVM2Value;
     FunctionPrototype: TAVM2Object;
     InstancePrototype: TAVM2Object;
@@ -146,8 +227,13 @@ type
     CanDispatch, NativeError: Boolean;
     Listeners: TList<TAVM2Listener>;
     EventKind: TAVM2EventKind;
+    IsTimer: Boolean;
+    IsPoint, IsRectangle: Boolean;
+    IsMatrix, IsVector3D, Matrix3DActive: Boolean;
+    TransformOwner: TAVM2Object;
+    TimerID: Integer;
     EventStop: Integer;
-    EventCancelled, EventDispatching, HostEvent, EventMarked: Boolean;
+    EventCancelled, EventDispatching, HostManaged, HostMarked: Boolean;
     constructor Create(AKind: TAVM2ObjectKind);
     destructor Destroy; override;
   end;
@@ -155,7 +241,7 @@ type
   TAVM2Module = class
     ABC: TABCFile;
     Id: Integer;
-    Scripts, Classes: TArray<TAVM2Object>;
+    Scripts, Classes, NamespaceObjects: TArray<TAVM2Object>;
     Boundaries: TArray<TBytes>;
     constructor Create(const Data: TBytes; AId: Integer);
     destructor Destroy; override;
@@ -167,8 +253,9 @@ type
     FModules: TObjectList<TAVM2Module>;
     FDefinitions: TDictionary<string, TAVM2Object>;
     FLoadedTags: TDictionary<Integer, Boolean>;
-    FNative, FDocument, FAddFrameScript, FErrorToString: TAVM2Object;
-    FByteArrayClass: TAVM2Object;
+    FNative, FDocument, FAddFrameScript, FPlayMovieClip, FStopMovieClip, FErrorToString: TAVM2Object;
+    FGotoAndPlay, FGotoAndStop: TAVM2Object;
+    FByteArrayClass, FDictionaryClass, FNamespaceClass: TAVM2Object;
     FByteArrayMethods: array[TAVM2ByteMethod] of TAVM2Object;
     FByteArrayCapacity: Integer;
     FArrayClass, FArrayPrototype: TAVM2Object;
@@ -181,18 +268,44 @@ type
     FForwardDepth: Integer;
     FArrayMethods: array[TAVM2ArrayMethod] of TAVM2Object;
     FArrayElements: Integer;
+    FVectorClass, FVectorWildcard: TAVM2Object;
+    FVectorMethods: array[TAVM2VectorMethod] of TAVM2Object;
     FSWFVersion: Integer;
-    FFrameScripts: TDictionary<Integer, TAVM2Object>;
     FTrace: TProc<string>;
     FDisplay: TAVM2DisplayHost;
     FDisplayFunctions: array[TAVM2DisplayMethod] of TAVM2Object;
     FStage, FEnterFrameClass, FKeyboardClass, FMouseClass, FFocus: TAVM2Object;
     FEventFunctions: array[TAVM2EventMethod] of TAVM2Object;
-    FHostEvents: TObjectList<TAVM2Object>;
-    FNewHostEvents: Integer;
-    FEnterFrameTargets: TList<TAVM2Object>;
+    FHostObjects: TObjectList<TAVM2Object>;
+    FTimerClass, FTimerEventClass, FPointClass, FRectangleClass: TAVM2Object;
+    FMatrixClass, FTransformClass, FVector3DClass: TAVM2Object;
+    FTimers: TList<TAVM2TimedCall>;
+    FTimerSerial: Integer;
+    FMilliseconds: Int64;
+    FNewHostObjects: Integer;
+    FFrameEventTargets: array[TAVM2FrameEvent] of TList<TAVM2Object>;
     FDisplayObjects: TDictionary<TObject, TAVM2Object>;
     FWork, FDepth: Integer;
+    procedure InstallTimers(EventDispatcher, EventClass: TAVM2Object);
+    procedure InstallPointClass;
+    function PointCall(Method: TAVM2PointMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+    function PointArgument(const Value: TAVM2Value): TAVM2Object;
+    function NewPoint(X, Y: Double): TAVM2Value;
+    procedure InstallRectangleClass;
+    function RectangleCall(Method: TAVM2RectangleMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+    function NewRectangle(const Rect: TAVM2Rectangle): TAVM2Value;
+    function RectangleArgument(const Value: TAVM2Value; AllowNull: Boolean = False): TAVM2Object;
+    function RectangleProperty(Obj: TAVM2Object; const Key: string; out Value: TAVM2Value): Boolean;
+    function SetRectangleProperty(Obj: TAVM2Object; const Key: string; const Value: TAVM2Value): Boolean;
+    procedure InstallMatrixClasses;
+    function MatrixCall(Method: TAVM2MatrixMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+    function NewMatrix(const Matrix: TAVM2Matrix): TAVM2Value;
+    procedure ApplyDisplayMatrix(Obj: TAVM2Object; const Matrix: TAVM2Matrix);
+    function AddTimer(Owner, Callback: TAVM2Object; Delay: Double; Once: Boolean; const Args: TArray<TAVM2Value>): Integer;
+    function FindTimer(Id: Integer): Integer;
+    procedure RemoveTimer(Id: Integer);
+    function TimerCall(Method: TAVM2TimerMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+    procedure SetTimerDelay(Receiver: TAVM2Object; Delay: Double);
     procedure InstallFunctionClass(ObjectClass: TAVM2Object);
     function ForwardFunction(Func: TAVM2Object; const Args: TArray<TAVM2Value>; UseArray: Boolean): TAVM2Value;
     procedure InstallArrayClass(ObjectClass: TAVM2Object);
@@ -201,6 +314,7 @@ type
     procedure SetArrayElement(Data: TAVM2Array; Index: Cardinal; const Value: TAVM2Value);
     procedure RemoveArrayElement(Data: TAVM2Array; Index: Cardinal);
     procedure AppendArray(Data: TAVM2Array; const Args: TArray<TAVM2Value>);
+    function ConcatArray(Data: TAVM2Array; const Args: TArray<TAVM2Value>): TAVM2Value;
     procedure ShiftArrayKeys(Data: TAVM2Array; Delta: Int64);
     procedure ReverseArray(Data: TAVM2Array);
     function SliceArray(Data: TAVM2Array; const Args: TArray<TAVM2Value>): TAVM2Value;
@@ -208,7 +322,7 @@ type
     function SearchArray(Data: TAVM2Array; const Args: TArray<TAVM2Value>; Backwards: Boolean): Integer;
     function ArrayCallback(Command: TAVM2ArrayMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
     function ArrayCall(Command: TAVM2ArrayMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
-    function SortArray(Receiver: TAVM2Object; const Args: TArray<TAVM2Value>; ByFields: Boolean): TAVM2Value;
+    function SortCollection(Receiver: TAVM2Object; const Args: TArray<TAVM2Value>; ByFields: Boolean): TAVM2Value;
     procedure InstallByteArrayClasses(ObjectClass, ErrorClass: TAVM2Object);
     function GetByteArrayProperty(Data: TAVM2ByteArray; const Name: string; out Value: TAVM2Value): Boolean;
     function SetByteArrayProperty(Data: TAVM2ByteArray; const Name: string; const Value: TAVM2Value): Boolean;
@@ -217,22 +331,43 @@ type
     function ByteArrayCall(Command: TAVM2ByteMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
     procedure InstallEventConstants;
     procedure RaiseScriptError(const ClassName: string; Code: Integer; const Detail: string);
-    function ResolveType(Module: TAVM2Module; Index: Integer; out ClassObject: TAVM2Object; out QualifiedName: string): TAVM2TypeKind;
+    function ResolveType(Module: TAVM2Module; Index: Integer; out ClassObject: TAVM2Object; out QualifiedName: string; Depth: Integer = 0): TAVM2TypeKind;
+    function ResolveTypeClass(Module: TAVM2Module; Index, Depth: Integer): TAVM2Object;
+    procedure InstallVectorClass;
+    procedure CheckTypeApplication(Base: TAVM2Object; Count: Integer);
+    function ApplyType(Base: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Object;
+    function VectorType(ElementType: TAVM2Object): TAVM2Object;
+    procedure ResizeVector(Obj: TAVM2Object; NewLength: Cardinal);
+    function VectorElement(Obj: TAVM2Object; const Value: TAVM2Value): TAVM2Value;
+    procedure VectorRangeError(Obj: TAVM2Object; Index: Double);
+    function VectorProperty(Obj: TAVM2Object; const Key: string; out Value: TAVM2Value): Boolean;
+    procedure SetVectorProperty(Obj: TAVM2Object; const Keys: TArray<string>; const Value: TAVM2Value);
+    function InvokeVector(Method: TAVM2VectorMethod; Obj: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+    function ConcatVector(Obj: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+    function SpliceVector(Obj: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+    function VectorCallback(Method: TAVM2VectorMethod; Obj: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+    function ConvertVector(AClass: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
     function ValueHasType(const Value: TAVM2Value; Kind: TAVM2TypeKind; ClassObject: TAVM2Object): Boolean;
+    function ClassHasType(ValueClass, TargetClass: TAVM2Object; Depth: Integer = 0): Boolean;
     function CoerceValue(const Value: TAVM2Value; Kind: TAVM2TypeKind; ClassObject: TAVM2Object; const QualifiedName: string): TAVM2Value;
     function MatchesExceptionType(Module: TAVM2Module; Index: Integer; const Value: TAVM2Value): Boolean;
     procedure BindDispatcher(Instance: TAVM2Object);
-    procedure CollectHostEvents;
+    procedure CollectHostObjects;
     function StageOf(Display: TAVM2Object): TAVM2Object;
     procedure InitEvent(Event: TAVM2Object; Kind: TAVM2EventKind; const Name: string; Bubbles, Cancelable: Boolean);
     function HostEventObject(EventClass: TAVM2Object; const Name: string; Bubbles, Cancelable: Boolean): TAVM2Object;
     function HasListener(Receiver: TAVM2Object; const Name: string; IncludeAncestors: Boolean): Boolean;
     function EventCall(Command: TAVM2EventMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
     function DispatchEventTo(Target, Event: TAVM2Object; BroadcastOnly: Boolean): Boolean;
-    procedure BindDisplay(Instance: TAVM2Object; Kind: TAVM2DisplayKind; Document: Boolean);
+    procedure BindDisplay(Instance: TAVM2Object; Kind: TAVM2DisplayKind; Document: Boolean; Existing: TObject = nil);
+    procedure SyncDisplayChildren(Parent: TAVM2Object; Depth: Integer);
+    procedure ConstructTimelineChildren(Parent: TAVM2Object);
+    function LinkedClass(const Name: string): TAVM2Object;
+    procedure RebuildTimelineBindings(Parent: TAVM2Object);
     function DisplayCall(Command: TAVM2DisplayMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
     procedure SetProperty(Receiver: TAVM2Object; const Keys: TArray<string>; const Value: TAVM2Value);
-    function NewObject(Kind: TAVM2ObjectKind): TAVM2Object;
+    function NewObject(Kind: TAVM2ObjectKind; HostManaged: Boolean = False): TAVM2Object;
+    function BindNativeMethod(Receiver, Method: TAVM2Object): TAVM2Value;
     function Key(Module: TAVM2Module; NamespaceIndex: Integer; const Name: string): string;
     function NamespaceSetKeys(Module: TAVM2Module; SetIndex: Integer; const Name: string): TArray<string>;
     function HasProperty(Receiver: TAVM2Object; const Name: string): Boolean;
@@ -241,6 +376,8 @@ type
     function ConstantValue(Module: TAVM2Module; Index: Integer; Kind: Byte): TAVM2Value;
     procedure StoreSlot(Target: TAVM2Object; const Name: string; const Value: TAVM2Value);
     procedure StoreDynamicProperty(Obj: TAVM2Object; const Key: string; const Value: TAVM2Value; Enumerable: Boolean = True);
+    procedure StoreDictionaryKey(Obj, Key: TAVM2Object; const Value: TAVM2Value);
+    function DictionaryValue(Obj, Key: TAVM2Object): TAVM2Value;
     procedure InstallObjectMethods;
     function InvokeObjectMethod(Method: TAVM2ObjectMethod; const Receiver: TAVM2Value; const Args: TArray<TAVM2Value>): TAVM2Value;
     function DeleteProperty(Obj: TAVM2Object; const Names: TArray<string>): Boolean;
@@ -272,6 +409,7 @@ type
     function RegExpResult(Data: TAVM2RegExp; const Text: string; const Match: TAVM2RegExpMatch; IncludeNames: Boolean): TAVM2Object;
     function CoerceText(const Value: TAVM2Value): string;
     function CoerceNumber(const Value: TAVM2Value): Double;
+    function CoercePrimitive(const Value: TAVM2Value; PreferText: Boolean): TAVM2Value;
     function StringRegExp(Method: TAVM2PrimitiveMethod; const Text: string; const Args: TArray<TAVM2Value>): TAVM2Value;
     function Instantiate(AClass: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
     function Construct(ClassObject: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Object;
@@ -282,12 +420,14 @@ type
   public
     constructor Create(const Trace: TProc<string>; Display: TAVM2DisplayHost = nil; SWFVersion: Integer = 13);
     destructor Destroy; override;
-    procedure BeginFrame;
+    procedure BeginFrame(Milliseconds: Int64 = -1);
+    procedure RunTimers(Milliseconds: Int64);
     procedure LoadABC(TagId: Integer; const Data: TBytes; Lazy: Boolean);
     procedure CreateDocument(const Name: string);
-    procedure RunFrameScript(Frame: Integer);
+    procedure RunFrameScript(Handle: TObject; Frame: Integer);
+    procedure SyncTimelineDisplay(Handle: TObject);
     procedure SetStageSize(Width, Height: Integer);
-    procedure EnterFrame;
+    procedure BroadcastFrameEvent(Phase: TAVM2FrameEvent);
     procedure Keyboard(Code, CharCode: Integer; Pressed, Ctrl, Alt, Shift: Boolean);
     function DisplayObjectAt(Handle: TObject): TAVM2Object;
     procedure Mouse(Target: TAVM2Object; const Name: string; StageX, StageY, LocalX, LocalY: Double; ButtonDown, Ctrl, Alt, Shift: Boolean);
@@ -297,7 +437,8 @@ implementation
 
 uses
   System.Classes, System.Character, System.Math, System.RegularExpressionsAPI,
-  System.ZLib, AVM1.Coercion, AVM1.Strings, Z7.Archive.Lzma;
+  System.StrUtils, System.ZLib, AVM1.Coercion, AVM1.Strings, AVM1.Trigonometry,
+  Z7.Archive.Lzma;
 
 type
   TAVM2Relation = (arUnordered, arLess, arEqual, arGreater);
@@ -321,6 +462,7 @@ const
     ('Object', 'String', 'Boolean', 'Number', 'int', 'uint', 'Function', 'void');
   TextLimit = 1024 * 1024;
   ErrorTextDepthLimit = 8;
+  FrameEventNames: array[TAVM2FrameEvent] of string = ('enterFrame', 'frameConstructed', 'exitFrame');
   ObjectLimit = 65536;
   TraceMethod = -2;
   AddFrameScriptMethod = -3;
@@ -328,9 +470,42 @@ const
   FunctionCallMethod = -5;
   FunctionApplyMethod = -6;
   EmptyFunctionMethod = -7;
+  IsNaNMethod = -8;
+  DictionaryToJSONMethod = -9;
+  MathAtanMethod = -10;
+  Vector3DTextMethod = -11;
+  MovieClipPlayMethod = -12;
+  MovieClipStopMethod = -13;
+  MovieClipGotoAndPlayMethod = -14;
+  MovieClipGotoAndStopMethod = -15;
+  TimerMethodBase = -416;
+  PointMethodBase = -448;
+  RectangleMethodBase = -480;
+  MatrixMethodBase = -512;
+  MatrixFields: array[0..5] of string = (#0 + 'a', #0 + 'b', #0 + 'c', #0 + 'd', #0 + 'tx', #0 + 'ty');
+  Vector3DFields: array[0..3] of string = (#0 + 'x', #0 + 'y', #0 + 'z', #0 + 'w');
+  MatrixNames: array[TAVM2MatrixMethod] of string = ('clone', 'concat', 'identity', 'invert',
+    'rotate', 'scale', 'translate', 'transformPoint', 'deltaTransformPoint', 'createBox',
+    'createGradientBox', 'copyFrom', 'setTo', 'copyRowFrom', 'copyRowTo', 'copyColumnFrom',
+    'copyColumnTo', 'toString');
+  RectangleFields: array[0..3] of string = (#0 + 'x', #0 + 'y', #0 + 'width', #0 + 'height');
+  RectangleAccessors: array[0..6] of string = (#0 + 'left', #0 + 'top', #0 + 'right',
+    #0 + 'bottom', #0 + 'topLeft', #0 + 'bottomRight', #0 + 'size');
+  RectangleNames: array[TAVM2RectangleMethod] of string = ('clone', 'isEmpty', 'setEmpty',
+    'inflate', 'inflatePoint', 'offset', 'offsetPoint', 'contains', 'containsPoint', 'containsRect',
+    'intersection', 'intersects', 'union', 'equals', 'toString', 'copyFrom', 'setTo');
+  PointNames: array[TAVM2PointMethod] of string = ('add', 'subtract', 'clone', 'copyFrom',
+    'equals', 'normalize', 'offset', 'setTo', 'toString', 'distance', 'interpolate', 'polar');
+  TimerNames: array[TAVM2TimerMethod] of string = ('start', 'stop', 'reset', 'getTimer',
+    'setInterval', 'setTimeout', 'clearInterval', 'clearTimeout', 'clone', 'toString', 'updateAfterEvent');
   PrimitiveMethodBase = -256;
   RegExpMethodBase = -320;
   ObjectMethodBase = -336;
+  VectorMethodBase = -384;
+  VectorNamespace = '__AS3__.vec' + #0;
+  VectorMethodNames: array[TAVM2VectorMethod] of string = ('push', 'pop', 'shift',
+    'unshift', 'join', 'toString', 'reverse', 'indexOf', 'lastIndexOf', 'slice', 'concat', 'splice',
+    'every', 'some', 'forEach', 'map', 'filter', 'insertAt', 'removeAt', 'sort', 'toLocaleString');
   RegExpCaptureLimit = 512;
   RegExpPatternLimit = 16384;
   BuiltinNamespace = 'http://adobe.com/AS3/2006/builtin' + #0;
@@ -353,7 +528,7 @@ const
   SortNumeric = 16;
   ArrayMethods: array[TAVM2ArrayMethod] of string =
     ('push', 'pop', 'join', 'toString', 'shift', 'unshift', 'reverse', 'slice', 'splice', 'indexOf', 'lastIndexOf',
-    'forEach', 'map', 'filter', 'every', 'some', 'sort', 'sortOn');
+    'forEach', 'map', 'filter', 'every', 'some', 'sort', 'sortOn', 'concat');
   ByteArraySizeLimit = 16 * 1024 * 1024;
   ByteArrayTotalLimit = 64 * 1024 * 1024;
   ByteArrayMethods: array[TAVM2ByteMethod] of string =
@@ -370,7 +545,8 @@ const
   DisplayMethods: array[TAVM2DisplayMethod] of string =
     ('addChild', 'addChildAt', 'removeChild', 'removeChildAt', 'getChildAt', 'getChildIndex',
     'setChildIndex', 'contains', 'clear', 'beginFill', 'endFill', 'moveTo', 'lineTo',
-    'curveTo', 'drawRect', 'drawCircle', 'drawEllipse', 'lineStyle');
+    'curveTo', 'drawRect', 'drawCircle', 'drawEllipse', 'lineStyle', 'localToGlobal', 'globalToLocal',
+    'hitTestPoint', 'hitTestObject', 'getBounds', 'getRect', 'getChildByName');
 
 class function TAVM2Value.Num(AValue: Double; AKind: TAVM2ValueKind): TAVM2Value;
 begin
@@ -407,14 +583,19 @@ end;
 
 destructor TAVM2Object.Destroy;
 begin
+  BoundNativeMethods.Free;
+  VectorData.Free;
+  DictionaryKeys.Free;
   DynamicIndices.Free;
   DynamicProperties.Free;
   RegExp.Free;
   DisplayChildren.Free;
+  TimelineBindings.Free;
+  FrameScripts.Free;
   Listeners.Free;
   ArrayData.Free;
   ByteArrayData.Free;
-  ActivationSlotTypes.Free;
+  SlotTypes.Free;
   Slots.Free;
   Props.Free;
   inherited;
@@ -438,6 +619,7 @@ begin
   ABC := TABCFile.Create(Data);
   SetLength(Scripts, Length(ABC.Scripts));
   SetLength(Classes, Length(ABC.Classes));
+  SetLength(NamespaceObjects, Length(ABC.Namespaces));
   SetLength(Boundaries, Length(ABC.Bodies));
 end;
 
@@ -504,7 +686,7 @@ begin
   Result := False;
 end;
 
-function ArrayText(Data: TAVM2Array; const Separator: string; Depth: Integer): string;
+function ArrayText(Data: TAVM2Array; const Separator: string; Depth: Integer; Runtime: TAVM2Runtime = nil): string;
 var
   Builder: TStringBuilder;
   I: Integer;
@@ -529,7 +711,10 @@ begin
       end;
       if TryArrayElement(Data, Cardinal(I), Element) and not (Element.Kind in [a2Null, a2Undefined]) then
       begin
-        Part := AsText(Element, Depth + 1);
+        if Runtime <> nil then
+          Part := Runtime.CoerceText(Element)
+        else
+          Part := AsText(Element, Depth + 1);
         if Length(Part) > TextLimit - Builder.Length then
           raise EAVM2Error.Create('AVM2 string size limit');
         Builder.Append(Part);
@@ -538,6 +723,72 @@ begin
     Result := Builder.ToString;
   finally
     Data.Joining := False;
+    Builder.Free;
+  end;
+end;
+
+function VectorText(Obj: TAVM2Object; const Separator: string; Depth: Integer; Runtime: TAVM2Runtime; Localized: Boolean = False): string;
+const
+  LocaleMethod = #0 + 'toLocaleString';
+var
+  Builder: TStringBuilder;
+  I, Count: Integer;
+  Element, Method: TAVM2Value;
+  Holder: TAVM2Object;
+  Part: string;
+begin
+  Count := Obj.VectorData.Count;
+  if (Count = 0) or Obj.VectorJoining then
+    Exit('');
+  if (Depth >= ArrayTextDepthLimit) or (Count > ArrayJoinLimit) or
+    (UInt64(Count - 1) * UInt64(Length(Separator)) > TextLimit) then
+    raise EAVM2Error.Create('AVM2 Vector join limit');
+  Builder := TStringBuilder.Create;
+  Obj.VectorJoining := True;
+  try
+    for I := 0 to Count - 1 do
+    begin
+      if I > 0 then
+      begin
+        if Length(Separator) > TextLimit - Builder.Length then
+          raise EAVM2Error.Create('AVM2 string size limit');
+        Builder.Append(Separator);
+      end;
+      if (Runtime <> nil) and (I >= Obj.VectorData.Count) then
+        Runtime.VectorRangeError(Obj, I);
+      Element := Obj.VectorData[I];
+      if Localized and not (Element.Kind in [a2Null, a2Undefined]) then
+      begin
+        Holder := Element.Obj;
+        if Holder = nil then
+          Holder := Runtime.ValuePrototype(Element);
+        if Runtime.HasProperty(Holder, LocaleMethod) then
+        begin
+          Method := Runtime.ReadProperty(Element, [LocaleMethod], True);
+          Part := Runtime.CoerceText(Runtime.Invoke(Method.Obj, Element, nil));
+        end
+        else if Element.Kind = a2Boolean then
+          Part := '[object Boolean]'
+        else if Element.Kind = a2String then
+          Part := '[object String]'
+        else
+          Part := AsText(Element, Depth + 1);
+      end
+      else if Localized then
+        Part := AsText(Element)
+      else if Element.Kind in [a2Null, a2Undefined] then
+        Part := 'null'
+      else if Runtime <> nil then
+        Part := Runtime.CoerceText(Element)
+      else
+        Part := AsText(Element, Depth + 1);
+      if Length(Part) > TextLimit - Builder.Length then
+        raise EAVM2Error.Create('AVM2 string size limit');
+      Builder.Append(Part);
+    end;
+    Result := Builder.ToString;
+  finally
+    Obj.VectorJoining := False;
     Builder.Free;
   end;
 end;
@@ -589,12 +840,19 @@ begin
     a2String:
       Result := Value.Text;
   else
-    if Value.Obj.Kind = a2Function then
+    if Value.Obj.HasNamespaceURI then
+      Result := Value.Obj.NamespaceURI
+    else if Value.Obj.Kind = a2Function then
       Result := 'function Function() {}'
     else if Value.Obj.RegExp <> nil then
       Result := RegExpLiteral(Value.Obj.RegExp)
     else if Value.Obj.ArrayData <> nil then
       Result := ArrayText(Value.Obj.ArrayData, ',', Depth)
+    else if Value.Obj.VectorData <> nil then
+      Result := VectorText(Value.Obj, ',', Depth, nil)
+    else if Value.Obj.IsVectorType or ((Value.Obj.Kind = a2Class) and (Value.Obj.DisplayName = 'Vector') and
+      (Value.Obj.Module = nil)) then
+      Result := '[class ' + Value.Obj.DisplayName + ']'
     else if Value.Obj.ByteArrayData <> nil then
       Result := ByteArrayText(Value.Obj.ByteArrayData)
     else if (Value.Obj.Kind = a2PlainObject) and Value.Obj.NativeError and (Depth < ErrorTextDepthLimit) then
@@ -741,6 +999,7 @@ var
   Separator: Integer;
   Command: TAVM2DisplayMethod;
   EventCommand: TAVM2EventMethod;
+  Phase: TAVM2FrameEvent;
   PrimitiveKind: TAVM2TypeKind;
 
   function EventClass(const Name: string; Base: TAVM2Object; Kind: TAVM2EventKind): TAVM2Object;
@@ -766,14 +1025,23 @@ begin
   FModules := TObjectList<TAVM2Module>.Create;
   FDefinitions := TDictionary<string, TAVM2Object>.Create;
   FLoadedTags := TDictionary<Integer, Boolean>.Create;
-  FFrameScripts := TDictionary<Integer, TAVM2Object>.Create;
-  FHostEvents := TObjectList<TAVM2Object>.Create;
-  FEnterFrameTargets := TList<TAVM2Object>.Create;
+  FHostObjects := TObjectList<TAVM2Object>.Create;
+  FTimers := TList<TAVM2TimedCall>.Create;
+  for Phase := Low(TAVM2FrameEvent) to High(TAVM2FrameEvent) do
+    FFrameEventTargets[Phase] := TList<TAVM2Object>.Create;
   FDisplayObjects := TDictionary<TObject, TAVM2Object>.Create;
   FFunctionPrototype := NewObject(a2Function);
   FFunctionPrototype.Index := EmptyFunctionMethod;
   FAddFrameScript := NewObject(a2Function);
   FAddFrameScript.Index := AddFrameScriptMethod;
+  FPlayMovieClip := NewObject(a2Function);
+  FPlayMovieClip.Index := MovieClipPlayMethod;
+  FStopMovieClip := NewObject(a2Function);
+  FStopMovieClip.Index := MovieClipStopMethod;
+  FGotoAndPlay := NewObject(a2Function);
+  FGotoAndPlay.Index := MovieClipGotoAndPlayMethod;
+  FGotoAndStop := NewObject(a2Function);
+  FGotoAndStop.Index := MovieClipGotoAndStopMethod;
   FErrorToString := NewObject(a2Function);
   FErrorToString.Index := ErrorToStringMethod;
   FNative := NewObject(a2Script);
@@ -786,7 +1054,7 @@ begin
   Base := nil;
   DisplayObject := nil;
   ObjectClass := nil;
-  for Name in ['Object', 'flash.events.EventDispatcher', 'flash.display.DisplayObject', 'flash.display.InteractiveObject', 'flash.display.DisplayObjectContainer', 'flash.display.Sprite', 'flash.display.MovieClip', 'flash.display.Shape'] do
+  for Name in ['Object', 'flash.events.EventDispatcher', 'flash.display.DisplayObject', 'flash.display.InteractiveObject', 'flash.display.DisplayObjectContainer', 'flash.display.Sprite', 'flash.display.MovieClip', 'flash.display.Shape', 'flash.display.MorphShape'] do
   begin
     Native := NewObject(a2Class);
     Native.DisplayName := Name;
@@ -803,7 +1071,7 @@ begin
       Native.DisplayKind := adSprite
     else if Name = 'flash.display.MovieClip' then
       Native.DisplayKind := adMovieClip
-    else if Name = 'flash.display.Shape' then
+    else if (Name = 'flash.display.Shape') or (Name = 'flash.display.MorphShape') then
     begin
       Native.DisplayKind := adShape;
       Native.Parent := DisplayObject;
@@ -848,11 +1116,26 @@ begin
     FNative.Props.Add(#0 + Name, TAVM2Value.Ref(Native));
   end;
   InstallFunctionClass(ObjectClass);
+  Native := NewObject(a2Function);
+  Native.Index := IsNaNMethod;
+  FNative.Props.Add(#0 + 'isNaN', TAVM2Value.Ref(Native));
   InstallObjectMethods;
   InstallPrimitiveMethods;
   InstallRegExpClass;
   InstallArrayClass(ObjectClass);
+  InstallVectorClass;
   InstallByteArrayClasses(ObjectClass, ErrorClass);
+  FDictionaryClass := NewObject(a2Class);
+  FDictionaryClass.Parent := ObjectClass;
+  FDictionaryClass.DisplayName := 'Dictionary';
+  FNative.Props.Add('flash.utils' + #0 + 'Dictionary', TAVM2Value.Ref(FDictionaryClass));
+  Native := NewObject(a2Function);
+  Native.Index := DictionaryToJSONMethod;
+  StoreDynamicProperty(ClassPrototype(FDictionaryClass), #0 + 'toJSON', TAVM2Value.Ref(Native), False);
+  FNamespaceClass := NewObject(a2Class);
+  FNamespaceClass.Parent := ObjectClass;
+  FNamespaceClass.DisplayName := 'Namespace';
+  FNative.Props.Add(#0 + 'Namespace', TAVM2Value.Ref(FNamespaceClass));
   for Command := Low(TAVM2DisplayMethod) to High(TAVM2DisplayMethod) do
   begin
     Native := NewObject(a2Function);
@@ -867,6 +1150,8 @@ begin
   end;
   FEnterFrameClass := EventClass('Event', ObjectClass, aeEvent);
   ConstantString(FEnterFrameClass, 'ENTER_FRAME', 'enterFrame');
+  ConstantString(FEnterFrameClass, 'FRAME_CONSTRUCTED', 'frameConstructed');
+  ConstantString(FEnterFrameClass, 'EXIT_FRAME', 'exitFrame');
   FKeyboardClass := EventClass('KeyboardEvent', FEnterFrameClass, aeKeyboard);
   ConstantString(FKeyboardClass, 'KEY_DOWN', 'keyDown');
   ConstantString(FKeyboardClass, 'KEY_UP', 'keyUp');
@@ -878,17 +1163,27 @@ begin
   InstallEventConstants;
   FStage := NewObject(a2PlainObject);
   FStage.Parent := ClassPrototype(FNative.Props['flash.events' + #0 + 'EventDispatcher'].Obj);
+  InstallTimers(FNative.Props['flash.events' + #0 + 'EventDispatcher'].Obj, FEnterFrameClass);
+  InstallPointClass;
+  InstallRectangleClass;
+  InstallMatrixClasses;
+  FStage.Props.Add(#0 + 'transform', Default(TAVM2Value));
+  FStage.Props.Add(#0 + 'localToGlobal', TAVM2Value.Ref(FDisplayFunctions[adLocalToGlobal]));
+  FStage.Props.Add(#0 + 'globalToLocal', TAVM2Value.Ref(FDisplayFunctions[adGlobalToLocal]));
   FStage.DisplayName := 'Stage';
   BindDispatcher(FStage);
   FStage.Props.Add(#0 + 'stage', TAVM2Value.Ref(FStage));
 end;
 
 destructor TAVM2Runtime.Destroy;
+var
+  Phase: TAVM2FrameEvent;
 begin
+  FTimers.Free;
   FDisplayObjects.Free;
-  FEnterFrameTargets.Free;
-  FHostEvents.Free;
-  FFrameScripts.Free;
+  for Phase := Low(TAVM2FrameEvent) to High(TAVM2FrameEvent) do
+    FFrameEventTargets[Phase].Free;
+  FHostObjects.Free;
   FLoadedTags.Free;
   FDefinitions.Free;
   FObjects.Free;
@@ -897,18 +1192,914 @@ begin
   inherited;
 end;
 
-procedure TAVM2Runtime.BeginFrame;
+procedure TAVM2Runtime.BeginFrame(Milliseconds: Int64);
 begin
   FWork := WorkLimit;
-  if (FDepth = 0) and (FNewHostEvents >= 64) then
-    CollectHostEvents;
+  if Milliseconds >= 0 then
+    FMilliseconds := Milliseconds;
+  if (FDepth = 0) and (FNewHostObjects >= 64) then
+    CollectHostObjects;
 end;
 
-function TAVM2Runtime.NewObject(Kind: TAVM2ObjectKind): TAVM2Object;
+procedure TAVM2Runtime.InstallPointClass;
+var
+  Method: TAVM2PointMethod;
+  Native, Prototype, MathClass: TAVM2Object;
 begin
-  if FObjects.Count >= ObjectLimit then
+  FPointClass := NewObject(a2Class);
+  FPointClass.Parent := FObjectClass;
+  FPointClass.DisplayName := 'Point';
+  FNative.Props.Add('flash.geom' + #0 + 'Point', TAVM2Value.Ref(FPointClass));
+  Prototype := ClassPrototype(FPointClass);
+  for Method := Low(TAVM2PointMethod) to High(TAVM2PointMethod) do
+  begin
+    if (FSWFVersion < 13) and (Method in [apCopyFrom, apSetTo]) then
+      Continue;
+    Native := NewObject(a2Function);
+    Native.Index := PointMethodBase - Ord(Method);
+    if Method >= apDistance then
+      FPointClass.Props.Add(#0 + PointNames[Method], TAVM2Value.Ref(Native))
+    else
+      Prototype.Props.Add(#0 + PointNames[Method], TAVM2Value.Ref(Native));
+  end;
+  MathClass := NewObject(a2Class);
+  MathClass.Parent := FObjectClass;
+  MathClass.DisplayName := 'Math';
+  Native := NewObject(a2Function);
+  Native.Index := MathAtanMethod;
+  MathClass.Props.Add(#0 + 'atan', TAVM2Value.Ref(Native));
+  MathClass.Props.Add(#0 + 'PI', TAVM2Value.Num(Pi));
+  FNative.Props.Add(#0 + 'Math', TAVM2Value.Ref(MathClass));
+end;
+
+function TAVM2Runtime.NewPoint(X, Y: Double): TAVM2Value;
+begin
+  Result := TAVM2Value.Ref(Construct(FPointClass, [TAVM2Value.Num(X), TAVM2Value.Num(Y)]));
+end;
+
+function TAVM2Runtime.PointArgument(const Value: TAVM2Value): TAVM2Object;
+begin
+  Result := CoerceValue(Value, atClass, FPointClass, 'flash.geom.Point').Obj;
+  if Result = nil then
+    RaiseScriptError('TypeError', 1009, 'Cannot access a property or method of a null object reference.');
+end;
+
+function TAVM2Runtime.PointCall(Method: TAVM2PointMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+const
+  MinimumArgs: array[TAVM2PointMethod] of Integer = (1, 1, 0, 1, 1, 1, 2, 2, 0, 2, 3, 2);
+var
+  X, Y, OtherX, OtherY, Factor: Double;
+  Other: TAVM2Object;
+begin
+  Result := Default(TAVM2Value);
+  if Length(Args) < MinimumArgs[Method] then
+    RaiseScriptError('ArgumentError', 1063, 'Missing argument for Point.' + PointNames[Method] + '.');
+  if Method = apPolar then
+  begin
+    Factor := CoerceNumber(Args[0]);
+    X := CoerceNumber(Args[1]);
+    Exit(NewPoint(Factor * Cos(X), Factor * Sin(X)));
+  end;
+  OtherX := 0;
+  OtherY := 0;
+  if Method in [apDistance, apInterpolate] then
+  begin
+    Receiver := PointArgument(Args[0]);
+    Other := PointArgument(Args[1]);
+    OtherX := Other.Props[#0 + 'x'].Number;
+    OtherY := Other.Props[#0 + 'y'].Number;
+  end
+  else if (Receiver = nil) or not Receiver.IsPoint then
+    RaiseScriptError('TypeError', 1004, 'Method was invoked on an incompatible object.');
+  X := Receiver.Props[#0 + 'x'].Number;
+  Y := Receiver.Props[#0 + 'y'].Number;
+  if Method in [apAdd, apSubtract, apCopyFrom, apEquals] then
+  begin
+    Other := PointArgument(Args[0]);
+    OtherX := Other.Props[#0 + 'x'].Number;
+    OtherY := Other.Props[#0 + 'y'].Number;
+  end;
+  case Method of
+    apAdd:
+      Exit(NewPoint(X + OtherX, Y + OtherY));
+    apSubtract:
+      Exit(NewPoint(X - OtherX, Y - OtherY));
+    apClone:
+      Exit(NewPoint(X, Y));
+    apEquals:
+      Exit(TAVM2Value.Num(Ord((X = OtherX) and (Y = OtherY)), a2Boolean));
+    apText:
+      Exit(TAVM2Value.Str('(x=' + AsText(TAVM2Value.Num(X)) + ', y=' + AsText(TAVM2Value.Num(Y)) + ')'));
+    apDistance:
+      Exit(TAVM2Value.Num(Sqrt(Sqr(OtherX - X) + Sqr(OtherY - Y))));
+    apInterpolate:
+      begin
+        Factor := CoerceNumber(Args[2]);
+        Exit(NewPoint(OtherX - (OtherX - X) * Factor, OtherY - (OtherY - Y) * Factor));
+      end;
+    apCopyFrom:
+      begin
+        X := OtherX;
+        Y := OtherY;
+      end;
+    apNormalize:
+      begin
+        Factor := CoerceNumber(Args[0]);
+        X := Receiver.Props[#0 + 'x'].Number;
+        Y := Receiver.Props[#0 + 'y'].Number;
+        OtherX := Sqrt(Sqr(X) + Sqr(Y));
+        if not (OtherX > 0) then
+          Exit;
+        Factor := Factor / OtherX;
+        X := X * Factor;
+        Y := Y * Factor;
+      end;
+    apOffset, apSetTo:
+      begin
+        OtherX := CoerceNumber(Args[0]);
+        OtherY := CoerceNumber(Args[1]);
+        X := OtherX;
+        Y := OtherY;
+        if Method = apOffset then
+        begin
+          X := X + Receiver.Props[#0 + 'x'].Number;
+          Y := Y + Receiver.Props[#0 + 'y'].Number;
+        end;
+      end;
+  end;
+  Receiver.Props[#0 + 'x'] := TAVM2Value.Num(X);
+  Receiver.Props[#0 + 'y'] := TAVM2Value.Num(Y);
+end;
+
+function TAVM2Rectangle.Right: Double;
+begin
+  Result := X + Width;
+end;
+
+function TAVM2Rectangle.Bottom: Double;
+begin
+  Result := Y + Height;
+end;
+
+function TAVM2Rectangle.IsEmpty: Boolean;
+begin
+  Result := (Width <= 0) or (Height <= 0);
+end;
+
+function ReadNativeRectangle(Obj: TAVM2Object): TAVM2Rectangle;
+begin
+  Result.X := Obj.Props[RectangleFields[0]].Number;
+  Result.Y := Obj.Props[RectangleFields[1]].Number;
+  Result.Width := Obj.Props[RectangleFields[2]].Number;
+  Result.Height := Obj.Props[RectangleFields[3]].Number;
+end;
+
+procedure WriteNativeRectangle(Obj: TAVM2Object; const Rect: TAVM2Rectangle);
+begin
+  Obj.Props[RectangleFields[0]] := TAVM2Value.Num(Rect.X);
+  Obj.Props[RectangleFields[1]] := TAVM2Value.Num(Rect.Y);
+  Obj.Props[RectangleFields[2]] := TAVM2Value.Num(Rect.Width);
+  Obj.Props[RectangleFields[3]] := TAVM2Value.Num(Rect.Height);
+end;
+
+procedure TAVM2Runtime.InstallRectangleClass;
+var
+  Prototype, Native: TAVM2Object;
+  Method: TAVM2RectangleMethod;
+begin
+  FRectangleClass := NewObject(a2Class);
+  FRectangleClass.Parent := FObjectClass;
+  FRectangleClass.DisplayName := 'Rectangle';
+  FNative.Props.Add('flash.geom' + #0 + 'Rectangle', TAVM2Value.Ref(FRectangleClass));
+  Prototype := ClassPrototype(FRectangleClass);
+  for Method := Low(TAVM2RectangleMethod) to High(TAVM2RectangleMethod) do
+  begin
+    if (FSWFVersion < 13) and (Method in [arCopyFrom, arSetTo]) then
+      Continue;
+    Native := NewObject(a2Function);
+    Native.Index := RectangleMethodBase - Ord(Method);
+    Prototype.Props.Add(#0 + RectangleNames[Method], TAVM2Value.Ref(Native));
+  end;
+end;
+
+function TAVM2Runtime.NewRectangle(const Rect: TAVM2Rectangle): TAVM2Value;
+var
+  Obj: TAVM2Object;
+begin
+  Obj := Construct(FRectangleClass, nil);
+  WriteNativeRectangle(Obj, Rect);
+  Result := TAVM2Value.Ref(Obj);
+end;
+
+function TAVM2Runtime.RectangleArgument(const Value: TAVM2Value; AllowNull: Boolean): TAVM2Object;
+begin
+  Result := CoerceValue(Value, atClass, FRectangleClass, 'flash.geom.Rectangle').Obj;
+  if (Result = nil) and not AllowNull then
+    RaiseScriptError('TypeError', 1009, 'Cannot access a property or method of a null object reference.');
+end;
+
+function TAVM2Runtime.RectangleProperty(Obj: TAVM2Object; const Key: string; out Value: TAVM2Value): Boolean;
+var
+  Which: Integer;
+  Rect: TAVM2Rectangle;
+begin
+  Which := IndexStr(Key, RectangleAccessors);
+  if Which < 0 then
+    Exit(False);
+  Rect := ReadNativeRectangle(Obj);
+  case Which of
+    0:
+      Value := TAVM2Value.Num(Rect.X);
+    1:
+      Value := TAVM2Value.Num(Rect.Y);
+    2:
+      Value := TAVM2Value.Num(Rect.Right);
+    3:
+      Value := TAVM2Value.Num(Rect.Bottom);
+    4:
+      Value := NewPoint(Rect.X, Rect.Y);
+    5:
+      Value := NewPoint(Rect.Right, Rect.Bottom);
+    6:
+      Value := NewPoint(Rect.Width, Rect.Height);
+  end;
+  Result := True;
+end;
+
+function TAVM2Runtime.SetRectangleProperty(Obj: TAVM2Object; const Key: string; const Value: TAVM2Value): Boolean;
+var
+  Which: Integer;
+  Rect: TAVM2Rectangle;
+  Point: TAVM2Object;
+  X, Y: Double;
+begin
+  Which := IndexStr(Key, RectangleAccessors);
+  if Which < 0 then
+  begin
+    Result := IndexStr(Key, RectangleFields) >= 0;
+    if Result then
+      Obj.Props[Key] := TAVM2Value.Num(CoerceNumber(Value));
+    Exit;
+  end;
+  if Which >= 4 then
+  begin
+    Point := PointArgument(Value);
+    X := Point.Props[#0 + 'x'].Number;
+    Y := Point.Props[#0 + 'y'].Number;
+  end
+  else
+  begin
+    X := CoerceNumber(Value);
+    Y := X;
+  end;
+  Rect := ReadNativeRectangle(Obj);
+  case Which of
+    0, 1, 4:
+      begin
+        if Which in [0, 4] then
+        begin
+          Rect.Width := Rect.Width + (Rect.X - X);
+          Rect.X := X;
+        end;
+        if Which in [1, 4] then
+        begin
+          Rect.Height := Rect.Height + (Rect.Y - Y);
+          Rect.Y := Y;
+        end;
+      end;
+    2:
+      Rect.Width := X - Rect.X;
+    3:
+      Rect.Height := Y - Rect.Y;
+    5:
+      begin
+        Rect.Width := X - Rect.X;
+        Rect.Height := Y - Rect.Y;
+      end;
+    6:
+      begin
+        Rect.Width := X;
+        Rect.Height := Y;
+      end;
+  end;
+  WriteNativeRectangle(Obj, Rect);
+  Result := True;
+end;
+
+function TAVM2Runtime.RectangleCall(Method: TAVM2RectangleMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+const
+  Required: array[TAVM2RectangleMethod] of Integer = (0, 0, 0, 2, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 0, 1, 4);
+var
+  Rect, Other, Combined: TAVM2Rectangle;
+  Point: TAVM2Object;
+  X, Y: Double;
+  Empty: Boolean;
+
+  function Extremum(A, B: Double; TakeMaximum: Boolean): Double;
+  begin
+    if IsNan(A) or IsNan(B) then
+      Exit(NaN);
+    if TakeMaximum then
+      Result := Max(A, B)
+    else
+      Result := Min(A, B);
+  end;
+
+  function Text(Value: Double): string;
+  begin
+    Result := AsText(TAVM2Value.Num(Value));
+  end;
+
+begin
+  Result := Default(TAVM2Value);
+  if (Receiver = nil) or not Receiver.IsRectangle then
+    RaiseScriptError('TypeError', 1004, 'Method was invoked on an incompatible object.');
+  if Length(Args) < Required[Method] then
+    RaiseScriptError('ArgumentError', 1063, 'Missing argument for Rectangle.' + RectangleNames[Method] + '.');
+  X := 0;
+  Y := 0;
+  Other := Default(TAVM2Rectangle);
+  case Method of
+    arInflate, arOffset, arContains, arSetTo:
+      begin
+        X := CoerceNumber(Args[0]);
+        Y := CoerceNumber(Args[1]);
+      end;
+    arInflatePoint, arOffsetPoint, arContainsPoint:
+      begin
+        Point := PointArgument(Args[0]);
+        X := Point.Props[#0 + 'x'].Number;
+        Y := Point.Props[#0 + 'y'].Number;
+      end;
+    arContainsRect..arEquals, arCopyFrom:
+      Other := ReadNativeRectangle(RectangleArgument(Args[0]));
+  end;
+  Rect := ReadNativeRectangle(Receiver);
+  case Method of
+    arClone:
+      Exit(NewRectangle(Rect));
+    arIsEmpty:
+      Exit(TAVM2Value.Num(Ord(Rect.IsEmpty), a2Boolean));
+    arSetEmpty:
+      Rect := Default(TAVM2Rectangle);
+    arInflate, arInflatePoint:
+      begin
+        Rect.X := Rect.X - X;
+        Rect.Y := Rect.Y - Y;
+        Rect.Width := Rect.Width + 2 * X;
+        Rect.Height := Rect.Height + 2 * Y;
+      end;
+    arOffset, arOffsetPoint:
+      begin
+        Rect.X := Rect.X + X;
+        Rect.Y := Rect.Y + Y;
+      end;
+    arContains, arContainsPoint:
+      Exit(TAVM2Value.Num(Ord((X >= Rect.X) and (X < Rect.Right) and
+            (Y >= Rect.Y) and (Y < Rect.Bottom)), a2Boolean));
+    arContainsRect:
+      Exit(TAVM2Value.Num(Ord((Other.X >= Rect.X) and (Other.X < Rect.Right) and
+            (Other.Y >= Rect.Y) and (Other.Y < Rect.Bottom) and (Other.Right > Rect.X) and
+            (Other.Right <= Rect.Right) and (Other.Bottom > Rect.Y) and (Other.Bottom <= Rect.Bottom)), a2Boolean));
+    arIntersection, arIntersects:
+      begin
+        Empty := Rect.IsEmpty or Other.IsEmpty;
+        Combined := Default(TAVM2Rectangle);
+        if not Empty then
+        begin
+          Combined.X := Extremum(Rect.X, Other.X, True);
+          Combined.Y := Extremum(Rect.Y, Other.Y, True);
+          Combined.Width := Extremum(Rect.Right, Other.Right, False) - Combined.X;
+          Combined.Height := Extremum(Rect.Bottom, Other.Bottom, False) - Combined.Y;
+          Empty := Combined.IsEmpty;
+        end;
+        if Method = arIntersects then
+          Exit(TAVM2Value.Num(Ord(not Empty), a2Boolean));
+        if Empty then
+          Combined := Default(TAVM2Rectangle);
+        Exit(NewRectangle(Combined));
+      end;
+    arUnion:
+      begin
+        if Rect.IsEmpty then
+          Exit(NewRectangle(Other));
+        if Other.IsEmpty then
+          Exit(NewRectangle(Rect));
+        Combined.X := Extremum(Rect.X, Other.X, False);
+        Combined.Y := Extremum(Rect.Y, Other.Y, False);
+        Combined.Width := Extremum(Rect.Right, Other.Right, True) - Combined.X;
+        Combined.Height := Extremum(Rect.Bottom, Other.Bottom, True) - Combined.Y;
+        Exit(NewRectangle(Combined));
+      end;
+    arEquals:
+      Exit(TAVM2Value.Num(Ord((Rect.X = Other.X) and (Rect.Y = Other.Y) and
+            (Rect.Width = Other.Width) and (Rect.Height = Other.Height)), a2Boolean));
+    arText:
+      Exit(TAVM2Value.Str('(x=' + Text(Rect.X) + ', y=' + Text(Rect.Y) + ', w=' +
+          Text(Rect.Width) + ', h=' + Text(Rect.Height) + ')'));
+    arCopyFrom:
+      Rect := Other;
+    arSetTo:
+      begin
+        Rect.X := X;
+        Rect.Y := Y;
+        Rect.Width := CoerceNumber(Args[2]);
+        Rect.Height := CoerceNumber(Args[3]);
+      end;
+  end;
+  WriteNativeRectangle(Receiver, Rect);
+end;
+
+function IdentityMatrix: TAVM2Matrix;
+begin
+  Result := Default(TAVM2Matrix);
+  Result.A := 1;
+  Result.D := 1;
+end;
+
+function ReadNativeMatrix(Obj: TAVM2Object): TAVM2Matrix;
+var
+  I: Integer;
+begin
+  for I := Low(MatrixFields) to High(MatrixFields) do
+    Result.Values[I] := Obj.Props[MatrixFields[I]].Number;
+end;
+
+procedure WriteNativeMatrix(Obj: TAVM2Object; const Matrix: TAVM2Matrix);
+var
+  I: Integer;
+begin
+  for I := Low(MatrixFields) to High(MatrixFields) do
+    Obj.Props.AddOrSetValue(MatrixFields[I], TAVM2Value.Num(Matrix.Values[I]));
+end;
+
+procedure TAVM2Runtime.InstallMatrixClasses;
+var
+  Prototype, Native: TAVM2Object;
+  Method: TAVM2MatrixMethod;
+
+  function GeometryClass(const Name: string): TAVM2Object;
+  begin
+    Result := NewObject(a2Class);
+    Result.Parent := FObjectClass;
+    Result.DisplayName := Name;
+    FNative.Props.Add('flash.geom' + #0 + Name, TAVM2Value.Ref(Result));
+  end;
+
+begin
+  FMatrixClass := GeometryClass('Matrix');
+  FTransformClass := GeometryClass('Transform');
+  FVector3DClass := GeometryClass('Vector3D');
+  Native := NewObject(a2Function);
+  Native.Index := Vector3DTextMethod;
+  ClassPrototype(FVector3DClass).Props.Add(#0 + 'toString', TAVM2Value.Ref(Native));
+  Prototype := ClassPrototype(FMatrixClass);
+  for Method := Low(TAVM2MatrixMethod) to High(TAVM2MatrixMethod) do
+  begin
+    if (FSWFVersion < 13) and (Method in [amCopyFrom..amCopyColumnTo]) then
+      Continue;
+    Native := NewObject(a2Function);
+    Native.Index := MatrixMethodBase - Ord(Method);
+    Prototype.Props.Add(#0 + MatrixNames[Method], TAVM2Value.Ref(Native));
+  end;
+end;
+
+function TAVM2Runtime.NewMatrix(const Matrix: TAVM2Matrix): TAVM2Value;
+var
+  Obj: TAVM2Object;
+begin
+  Obj := Construct(FMatrixClass, nil);
+  WriteNativeMatrix(Obj, Matrix);
+  Result := TAVM2Value.Ref(Obj);
+end;
+
+procedure TAVM2Runtime.ApplyDisplayMatrix(Obj: TAVM2Object; const Matrix: TAVM2Matrix);
+var
+  X, Y, ScaleX, ScaleY, Rotation: Double;
+begin
+  if (FDisplay = nil) or (Obj.DisplayData = nil) then
+    Exit;
+  FDisplay.SetMatrix(Obj.DisplayData, Matrix, X, Y, ScaleX, ScaleY, Rotation);
+  Obj.Props[#0 + 'x'] := TAVM2Value.Num(X);
+  Obj.Props[#0 + 'y'] := TAVM2Value.Num(Y);
+  Obj.Props[#0 + 'scaleX'] := TAVM2Value.Num(ScaleX);
+  Obj.Props[#0 + 'scaleY'] := TAVM2Value.Num(ScaleY);
+  Obj.Props[#0 + 'rotation'] := TAVM2Value.Num(Rotation);
+end;
+
+function TAVM2Runtime.MatrixCall(Method: TAVM2MatrixMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+const
+  Required: array[TAVM2MatrixMethod] of Integer = (0, 1, 0, 0, 1, 2, 2, 1, 1, 2, 2, 1, 6, 2, 2, 2, 2, 0);
+var
+  Current, Other, Output: TAVM2Matrix;
+  Vector: TAVM2Object;
+  X, Y, Z, Det, Angle, SinAngle, CosAngle: Double;
+  I: Integer;
+  Index: Cardinal;
+
+  function NumberArgument(Argument: Integer; DefaultValue: Double = 0): Double;
+  begin
+    Result := DefaultValue;
+    if Argument < Length(Args) then
+      Result := CoerceNumber(Args[Argument]);
+  end;
+
+  function ObjectArgument(Argument: Integer; ValueClass: TAVM2Object): TAVM2Object;
+  begin
+    Result := CoerceValue(Args[Argument], atClass, ValueClass, 'flash.geom.' + ValueClass.DisplayName).Obj;
+    if Result = nil then
+      RaiseScriptError('TypeError', 1009, 'Cannot access a property or method of a null object reference.');
+  end;
+
+  function Product(const First, ThenBy: TAVM2Matrix): TAVM2Matrix;
+  begin
+    Result.A := ThenBy.A * First.A + ThenBy.C * First.B;
+    Result.B := ThenBy.B * First.A + ThenBy.D * First.B;
+    Result.C := ThenBy.A * First.C + ThenBy.C * First.D;
+    Result.D := ThenBy.B * First.C + ThenBy.D * First.D;
+    Result.TX := ThenBy.A * First.TX + ThenBy.C * First.TY + ThenBy.TX;
+    Result.TY := ThenBy.B * First.TX + ThenBy.D * First.TY + ThenBy.TY;
+  end;
+
+  procedure StoreVector(AX, AY, AZ: Double);
+  begin
+    Vector.Props[Vector3DFields[0]] := TAVM2Value.Num(AX);
+    Vector.Props[Vector3DFields[1]] := TAVM2Value.Num(AY);
+    Vector.Props[Vector3DFields[2]] := TAVM2Value.Num(AZ);
+  end;
+
+begin
+  Result := Default(TAVM2Value);
+  if (Receiver = nil) or not Receiver.IsMatrix then
+    RaiseScriptError('TypeError', 1004, 'Method was invoked on an incompatible object.');
+  if Length(Args) < Required[Method] then
+    RaiseScriptError('ArgumentError', 1063, 'Missing argument for Matrix.' + MatrixNames[Method] + '.');
+  Current := ReadNativeMatrix(Receiver);
+  Output := Current;
+  case Method of
+    amClone:
+      Exit(NewMatrix(Current));
+    amIdentity:
+      Output := IdentityMatrix;
+    amConcat:
+      Output := Product(Current, ReadNativeMatrix(ObjectArgument(0, FMatrixClass)));
+    amCopyFrom:
+      Output := ReadNativeMatrix(ObjectArgument(0, FMatrixClass));
+    amInvert:
+      begin
+        Det := Current.A * Current.D - Current.C * Current.B;
+        Output.A := Current.D / Det;
+        Output.B := Current.B /  - Det;
+        Output.C := Current.C /  - Det;
+        Output.D := Current.A / Det;
+        Output.TX := (Current.D * Current.TX - Current.C * Current.TY) /  - Det;
+        Output.TY := (Current.B * Current.TX - Current.A * Current.TY) / Det;
+      end;
+    amRotate:
+      begin
+        Angle := NumberArgument(0);
+        Other := Default(TAVM2Matrix);
+        Other.A := AVMTrig(1, Angle);
+        Other.B := AVMTrig(0, Angle);
+        Other.C := -Other.B;
+        Other.D := Other.A;
+        Output := Product(ReadNativeMatrix(Receiver), Other);
+      end;
+    amScale, amTranslate:
+      begin
+        X := NumberArgument(0);
+        Y := NumberArgument(1);
+        Output := ReadNativeMatrix(Receiver);
+        if Method = amScale then
+        begin
+          Output.A := Output.A * X;
+          Output.B := Output.B * Y;
+          Output.C := Output.C * X;
+          Output.D := Output.D * Y;
+          Output.TX := Output.TX * X;
+          Output.TY := Output.TY * Y;
+        end
+        else
+        begin
+          Output.TX := Output.TX + X;
+          Output.TY := Output.TY + Y;
+        end;
+      end;
+    amTransformPoint, amDeltaTransformPoint:
+      begin
+        Vector := PointArgument(Args[0]);
+        X := Vector.Props[#0 + 'x'].Number;
+        Y := Vector.Props[#0 + 'y'].Number;
+        if Method = amDeltaTransformPoint then
+          Exit(NewPoint(Current.A * X + Current.C * Y, Current.B * X + Current.D * Y));
+        Exit(NewPoint(Current.A * X + Current.C * Y + Current.TX,
+            Current.B * X + Current.D * Y + Current.TY));
+      end;
+    amCreateBox, amCreateGradientBox:
+      begin
+        X := NumberArgument(0);
+        Y := NumberArgument(1);
+        Angle := NumberArgument(2);
+        Output.TX := NumberArgument(3);
+        Output.TY := NumberArgument(4);
+        if Method = amCreateGradientBox then
+        begin
+          Output.TX := Output.TX + X / 2;
+          Output.TY := Output.TY + Y / 2;
+          X := X / 1638.4;
+          Y := Y / 1638.4;
+        end;
+        SinAngle := AVMTrig(0, Angle);
+        CosAngle := AVMTrig(1, Angle);
+        Output.A := CosAngle * X;
+        Output.B := SinAngle * Y;
+        Output.C := -SinAngle * X;
+        Output.D := CosAngle * Y;
+      end;
+    amSetTo:
+      for I := Low(MatrixFields) to High(MatrixFields) do
+        Output.Values[I] := NumberArgument(I);
+    amCopyRowFrom..amCopyColumnTo:
+      begin
+        Index := IntBits(NumberArgument(0));
+        Vector := ObjectArgument(1, FVector3DClass);
+        case Method of
+          amCopyRowFrom, amCopyColumnFrom:
+            begin
+              if Index > 1 then
+                Exit;
+              Output := ReadNativeMatrix(Receiver);
+              X := Vector.Props[Vector3DFields[0]].Number;
+              Y := Vector.Props[Vector3DFields[1]].Number;
+              Z := Vector.Props[Vector3DFields[2]].Number;
+              Output.Values[Index] := X;
+              Output.Values[Index + 2] := Y;
+              Output.Values[Index + 4] := Z;
+            end;
+          amCopyRowTo:
+            begin
+              if Index = 2 then
+                StoreVector(0, 0, 1)
+              else if Index < 2 then
+                StoreVector(Current.Values[Index], Current.Values[Index + 2], Current.Values[Index + 4]);
+              Exit;
+            end;
+          amCopyColumnTo:
+            begin
+              if Index < 3 then
+                StoreVector(Current.Values[2 * Index], Current.Values[2 * Index + 1], Ord(Index = 2));
+              Exit;
+            end;
+        end;
+      end;
+    amText:
+      Exit(TAVM2Value.Str('(a=' + AsText(TAVM2Value.Num(Current.A)) +
+          ', b=' + AsText(TAVM2Value.Num(Current.B)) + ', c=' + AsText(TAVM2Value.Num(Current.C)) +
+          ', d=' + AsText(TAVM2Value.Num(Current.D)) + ', tx=' + AsText(TAVM2Value.Num(Current.TX)) +
+          ', ty=' + AsText(TAVM2Value.Num(Current.TY)) + ')'));
+  end;
+  WriteNativeMatrix(Receiver, Output);
+end;
+
+procedure TAVM2Runtime.InstallTimers(EventDispatcher, EventClass: TAVM2Object);
+var
+  Method: TAVM2TimerMethod;
+  Native, TimerPrototype, EventPrototype: TAVM2Object;
+begin
+  FTimerClass := NewObject(a2Class);
+  FTimerClass.Parent := EventDispatcher;
+  FTimerClass.CanDispatch := True;
+  FTimerClass.DisplayName := 'Timer';
+  FNative.Props.Add('flash.utils' + #0 + 'Timer', TAVM2Value.Ref(FTimerClass));
+  TimerPrototype := ClassPrototype(FTimerClass);
+  FTimerEventClass := NewObject(a2Class);
+  FTimerEventClass.Parent := EventClass;
+  FTimerEventClass.DisplayName := 'TimerEvent';
+  FTimerEventClass.EventKind := aeTimer;
+  FNative.Props.Add('flash.events' + #0 + 'TimerEvent', TAVM2Value.Ref(FTimerEventClass));
+  FTimerEventClass.Props.Add(#0 + 'TIMER', TAVM2Value.Str('timer'));
+  FTimerEventClass.Props.Add(#0 + 'TIMER_COMPLETE', TAVM2Value.Str('timerComplete'));
+  EventPrototype := ClassPrototype(FTimerEventClass);
+  for Method := Low(TAVM2TimerMethod) to High(TAVM2TimerMethod) do
+  begin
+    Native := NewObject(a2Function);
+    Native.Index := TimerMethodBase - Ord(Method);
+    case Method of
+      tmStart..tmReset:
+        TimerPrototype.Props.Add(#0 + TimerNames[Method], TAVM2Value.Ref(Native));
+      tmGetTimer..tmClearTimeout:
+        FNative.Props.Add('flash.utils' + #0 + TimerNames[Method], TAVM2Value.Ref(Native));
+      tmCloneEvent..tmUpdateAfterEvent:
+        EventPrototype.Props.Add(#0 + TimerNames[Method], TAVM2Value.Ref(Native));
+    end;
+  end;
+end;
+
+function TimerInterval(Delay: Double): Integer;
+begin
+  if IsNan(Delay) or (Delay < 10) then
+    Exit(10);
+  if Delay >= MaxInt then
+    Exit(MaxInt);
+  Result := Trunc(Delay);
+end;
+
+function TAVM2Runtime.AddTimer(Owner, Callback: TAVM2Object; Delay: Double; Once: Boolean; const Args: TArray<TAVM2Value>): Integer;
+var
+  Call: TAVM2TimedCall;
+begin
+  if (FTimers.Count >= FunctionArgumentLimit) or (FTimerSerial = MaxInt) then
+    raise EAVM2Error.Create('AVM2 timer limit');
+  Inc(FTimerSerial);
+  Call.Id := FTimerSerial;
+  Call.Interval := TimerInterval(Delay);
+  Call.Due := FMilliseconds + Call.Interval;
+  Call.Owner := Owner;
+  Call.Callback := Callback;
+  Call.Args := Args;
+  Call.Once := Once;
+  FTimers.Add(Call);
+  Result := Call.Id;
+end;
+
+function TAVM2Runtime.FindTimer(Id: Integer): Integer;
+var
+  I: Integer;
+begin
+  if Id <= 0 then
+    Exit(-1);
+  for I := 0 to FTimers.Count - 1 do
+  begin
+    Dec(FWork);
+    if FWork < 0 then
+      raise EAVM2Error.Create('AVM2 instruction limit');
+    if FTimers[I].Id = Id then
+      Exit(I);
+  end;
+  Result := -1;
+end;
+
+procedure TAVM2Runtime.RemoveTimer(Id: Integer);
+var
+  Index: Integer;
+  Owner: TAVM2Object;
+begin
+  Index := FindTimer(Id);
+  if Index < 0 then
+    Exit;
+  Owner := FTimers[Index].Owner;
+  if (Owner <> nil) and (Owner.TimerID = Id) then
+  begin
+    Owner.TimerID := 0;
+    Owner.Props[#0 + 'running'] := TAVM2Value.Num(0, a2Boolean);
+  end;
+  FTimers.Delete(Index);
+end;
+
+procedure TAVM2Runtime.SetTimerDelay(Receiver: TAVM2Object; Delay: Double);
+var
+  Index: Integer;
+  Call: TAVM2TimedCall;
+begin
+  if IsNan(Delay) or IsInfinite(Delay) or (Delay < 0) then
+    RaiseScriptError('RangeError', 2066, 'The Timer delay specified is out of range.');
+  Index := FindTimer(Receiver.TimerID);
+  Receiver.Props.AddOrSetValue(#0 + 'delay', TAVM2Value.Num(Delay));
+  if Index >= 0 then
+  begin
+    Call := FTimers[Index];
+    Call.Interval := TimerInterval(Delay);
+    Call.Due := FMilliseconds + Call.Interval;
+    FTimers[Index] := Call;
+  end;
+end;
+
+function TAVM2Runtime.TimerCall(Method: TAVM2TimerMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+var
+  Callback: TAVM2Object;
+  Delay: Double;
+  EventType, Bubbles, Cancelable: TAVM2Value;
+begin
+  Result := Default(TAVM2Value);
+  case Method of
+    tmStart..tmReset:
+      begin
+        if (Receiver = nil) or not Receiver.IsTimer then
+          RaiseScriptError('TypeError', 1004, 'Method was invoked on an incompatible object.');
+        case Method of
+          tmStart:
+            if Receiver.TimerID = 0 then
+            begin
+              Receiver.TimerID := AddTimer(Receiver, nil, Receiver.Props[#0 + 'delay'].Number, False, nil);
+              Receiver.Props[#0 + 'running'] := TAVM2Value.Num(1, a2Boolean);
+            end;
+          tmStop, tmReset:
+            begin
+              RemoveTimer(Receiver.TimerID);
+              if Method = tmReset then
+                Receiver.Props[#0 + 'currentCount'] := TAVM2Value.Num(0, a2Int);
+            end;
+        end;
+      end;
+    tmGetTimer:
+      Result := TAVM2Value.Num(Integer(IntBits(FMilliseconds)), a2Int);
+    tmSetInterval, tmSetTimeout:
+      begin
+        if Length(Args) < 2 then
+          RaiseScriptError('ArgumentError', 1063, TimerNames[Method] + ' requires a function and a delay.');
+        Callback := CoerceValue(Args[0], atFunction, nil, 'Function').Obj;
+        Delay := CoerceNumber(Args[1]);
+        Result := TAVM2Value.Num(AddTimer(nil, Callback, Delay, Method = tmSetTimeout,
+            Copy(Args, 2, MaxInt)), a2Int);
+      end;
+    tmClearInterval, tmClearTimeout:
+      if Length(Args) > 0 then
+        RemoveTimer(Integer(IntBits(CoerceNumber(Args[0]))));
+    tmCloneEvent, tmEventText, tmUpdateAfterEvent:
+      begin
+        if (Receiver = nil) or (Receiver.EventKind <> aeTimer) then
+          RaiseScriptError('TypeError', 1004, 'Method was invoked on an incompatible object.');
+        EventType := Receiver.Props[#0 + 'type'];
+        Bubbles := Receiver.Props[#0 + 'bubbles'];
+        Cancelable := Receiver.Props[#0 + 'cancelable'];
+        case Method of
+          tmCloneEvent:
+            Result := TAVM2Value.Ref(Construct(FTimerEventClass, [EventType, Bubbles, Cancelable]));
+          tmEventText:
+            Result := TAVM2Value.Str('[TimerEvent type="' + EventType.Text +
+              '" bubbles=' + AsText(Bubbles) + ' cancelable=' + AsText(Cancelable) +
+              ' eventPhase=' + AsText(Receiver.Props[#0 + 'eventPhase']) + ']');
+        end;
+      end;
+  end;
+end;
+
+procedure TAVM2Runtime.RunTimers(Milliseconds: Int64);
+var
+  I, Next, Fired, Count, RepeatCount: Integer;
+  Call: TAVM2TimedCall;
+  Owner: TAVM2Object;
+begin
+  FMilliseconds := Milliseconds;
+  for Fired := 1 to 10 do
+  begin
+    Next := -1;
+    Dec(FWork, FTimers.Count);
+    if FWork < 0 then
+      raise EAVM2Error.Create('AVM2 instruction limit');
+    for I := 0 to FTimers.Count - 1 do
+      if (FTimers[I].Due <= FMilliseconds) and ((Next < 0) or (FTimers[I].Due < FTimers[Next].Due)) then
+        Next := I;
+    if Next < 0 then
+      Exit;
+    Call := FTimers[Next];
+    if Call.Once then
+      FTimers.Delete(Next)
+    else
+    begin
+      // A callback may remove the timer or set a different deadline.
+      Inc(Call.Due, Call.Interval);
+      FTimers[Next] := Call;
+    end;
+    Owner := Call.Owner;
+    if Owner <> nil then
+    begin
+      Count := Integer(IntBits(Owner.Props[#0 + 'currentCount'].Number + 1));
+      Owner.Props[#0 + 'currentCount'] := TAVM2Value.Num(Count, a2Int);
+      DispatchEventTo(Owner, HostEventObject(FTimerEventClass, 'timer', False, False), False);
+      Count := Trunc(Owner.Props[#0 + 'currentCount'].Number);
+      RepeatCount := Trunc(Owner.Props[#0 + 'repeatCount'].Number);
+      if (RepeatCount <> 0) and (Count >= RepeatCount) then
+      begin
+        RemoveTimer(Owner.TimerID);
+        DispatchEventTo(Owner, HostEventObject(FTimerEventClass, 'timerComplete', False, False), False);
+      end;
+    end
+    else
+    begin
+      if Call.Callback = nil then
+        RaiseScriptError('TypeError', 1009, 'Cannot access a property or method of a null object reference.');
+      if Truth(Invoke(Call.Callback, TAVM2Value.Ref(nil), Call.Args)) then
+        RemoveTimer(Call.Id);
+    end;
+  end;
+end;
+
+function TAVM2Runtime.NewObject(Kind: TAVM2ObjectKind; HostManaged: Boolean): TAVM2Object;
+var
+  Owner: TObjectList<TAVM2Object>;
+begin
+  if HostManaged then
+    Owner := FHostObjects
+  else
+    Owner := FObjects;
+  if Owner.Count >= ObjectLimit then
     raise EAVM2Error.Create('AVM2 object limit');
   Result := TAVM2Object.Create(Kind);
+  Owner.Add(Result);
+  Result.HostManaged := HostManaged;
+  if HostManaged then
+    Inc(FNewHostObjects);
   if Kind = a2Function then
   begin
     Result.ClassObject := FFunctionClass;
@@ -916,7 +2107,6 @@ begin
   end
   else if Kind in [a2PlainObject, a2Script] then
     Result.Parent := FObjectPrototype;
-  FObjects.Add(Result);
 end;
 
 function TAVM2Runtime.Key(Module: TAVM2Module; NamespaceIndex: Integer; const Name: string): string;
@@ -970,6 +2160,8 @@ begin
 end;
 
 function TAVM2Runtime.ConstantValue(Module: TAVM2Module; Index: Integer; Kind: Byte): TAVM2Value;
+var
+  Obj: TAVM2Object;
 begin
   Result := Default(TAVM2Value);
   case Kind of
@@ -987,21 +2179,41 @@ begin
       Result := TAVM2Value.Num(Ord(Kind = $0B), a2Boolean);
     $0C:
       Result.Kind := a2Null;
+    5, 8, $16..$1A:
+      begin
+        Obj := Module.NamespaceObjects[Index];
+        if Obj = nil then
+        begin
+          Obj := NewObject(a2PlainObject);
+          Obj.ClassObject := FNamespaceClass;
+          Obj.DisplayName := FNamespaceClass.DisplayName;
+          Obj.Parent := ClassPrototype(FNamespaceClass);
+          Obj.HasNamespaceURI := True;
+          Obj.NamespaceURI := Module.ABC.Strings[Module.ABC.Namespaces[Index].Name];
+          Obj.Props.Add(#0 + 'uri', TAVM2Value.Str(Obj.NamespaceURI));
+          if Obj.NamespaceURI = '' then
+            Obj.Props.Add(#0 + 'prefix', TAVM2Value.Str(''))
+          else
+            Obj.Props.Add(#0 + 'prefix', Default(TAVM2Value));
+          Module.NamespaceObjects[Index] := Obj;
+        end;
+        Result := TAVM2Value.Ref(Obj);
+      end;
   else
-    raise EAVM2Error.Create('AVM2 namespace constant is not executable yet');
+    raise EAVM2Error.Create('Unsupported AVM2 constant kind');
   end;
 end;
 
 procedure TAVM2Runtime.StoreSlot(Target: TAVM2Object; const Name: string; const Value: TAVM2Value);
 var
-  TypeIndex: Integer;
+  SlotType: TPair<TAVM2Module, Integer>;
   ClassObject: TAVM2Object;
   Kind: TAVM2TypeKind;
   TypeName: string;
 begin
-  if (Target.ActivationSlotTypes <> nil) and Target.ActivationSlotTypes.TryGetValue(Name, TypeIndex) then
+  if (Target.SlotTypes <> nil) and Target.SlotTypes.TryGetValue(Name, SlotType) then
   begin
-    Kind := ResolveType(Target.Module, TypeIndex, ClassObject, TypeName);
+    Kind := ResolveType(SlotType.Key, SlotType.Value, ClassObject, TypeName);
     Target.Props.AddOrSetValue(Name, CoerceValue(Value, Kind, ClassObject, TypeName));
   end
   else
@@ -1082,11 +2294,12 @@ begin
           Inc(Slot);
       end;
       Target.Slots.AddOrSetValue(Slot, Name);
-      if Activation and (Trait.Target <> 0) then
+      if (Trait.Kind in [0, 6]) and (Trait.Target <> 0) and
+        (Activation or (Module.ABC.Multinames[Trait.Target].Kind = $1D)) then
       begin
-        if Target.ActivationSlotTypes = nil then
-          Target.ActivationSlotTypes := TDictionary<string, Integer>.Create;
-        Target.ActivationSlotTypes.AddOrSetValue(Name, Trait.Target);
+        if Target.SlotTypes = nil then
+          Target.SlotTypes := TDictionary<string, TPair<TAVM2Module, Integer>>.Create;
+        Target.SlotTypes.AddOrSetValue(Name, TPair<TAVM2Module, Integer>.Create(Module, Trait.Target));
       end;
     end;
   end;
@@ -1267,8 +2480,7 @@ begin
     FArrayMethods[Method] := NewObject(a2Function);
     FArrayMethods[Method].Index := ArrayMethodBase - Ord(Method);
     FArrayPrototype.Props.Add(#0 + ArrayMethods[Method], TAVM2Value.Ref(FArrayMethods[Method]));
-    if Method in [aaSort, aaSortOn] then
-      FArrayPrototype.Props.Add(BuiltinNamespace + ArrayMethods[Method], TAVM2Value.Ref(FArrayMethods[Method]));
+    FArrayPrototype.Props.Add(BuiltinNamespace + ArrayMethods[Method], TAVM2Value.Ref(FArrayMethods[Method]));
   end;
 end;
 
@@ -1613,7 +2825,7 @@ type
     Value: TAVM2Value;
   end;
 
-function TAVM2Runtime.SortArray(Receiver: TAVM2Object; const Args: TArray<TAVM2Value>; ByFields: Boolean): TAVM2Value;
+function TAVM2Runtime.SortCollection(Receiver: TAVM2Object; const Args: TArray<TAVM2Value>; ByFields: Boolean): TAVM2Value;
 var
   Data, ParameterArray: TAVM2Array;
   Callback, IndexArray: TAVM2Object;
@@ -1624,7 +2836,7 @@ var
   Value: TAVM2Value;
   Options: Cardinal;
   I, Count: Integer;
-  Unique: Boolean;
+  Unique, IsVector: Boolean;
 
   function ReadArrayValue(Obj: TAVM2Object; Index: Integer): TAVM2Value;
   begin
@@ -1659,7 +2871,7 @@ var
       if (FSWFVersion < 11) and OldInteger(A) and OldInteger(B) then
       begin
         Result := Integer(Cardinal((UInt64(IntBits(A.Number) shl 3) + UInt64($100000000) -
-          UInt64(IntBits(B.Number) shl 3)) and UInt64($FFFFFFFF)));
+            UInt64(IntBits(B.Number) shl 3)) and UInt64($FFFFFFFF)));
       end
       else
       begin
@@ -1703,7 +2915,7 @@ var
     Dec(FWork);
     if FWork < 0 then
       raise EAVM2Error.Create('AVM2 instruction limit');
-    if (A.Kind = a2Undefined) or (B.Kind = a2Undefined) then
+    if not IsVector and ((A.Kind = a2Undefined) or (B.Kind = a2Undefined)) then
       Result := Ord(A.Kind = a2Undefined) - Ord(B.Kind = a2Undefined)
     else if ByFields then
     begin
@@ -1725,7 +2937,7 @@ var
     else if Callback <> nil then
     begin
       Order := CoerceNumber(Invoke(Callback, Receiver, [A, B]));
-      if FSWFVersion < 13 then
+      if not IsVector and (FSWFVersion < 13) then
         Order := Integer(IntBits(Order));
       if IsNan(Order) then
         Result := 0
@@ -1797,6 +3009,7 @@ var
 
 begin
   Data := Receiver.ArrayData;
+  IsVector := Receiver.VectorData <> nil;
   Callback := nil;
   Options := 0;
   if ByFields then
@@ -1852,15 +3065,37 @@ begin
     end;
   end;
 
-  Count := ArrayParameterCount(Data);
+  if IsVector then
+  begin
+    Count := Receiver.VectorData.Count;
+    Dec(FWork, Count);
+    if FWork < 0 then
+      raise EAVM2Error.Create('AVM2 instruction limit');
+  end
+  else
+    Count := ArrayParameterCount(Data);
   SetLength(Values, Count);
   for I := 0 to Count - 1 do
   begin
     Values[I].Index := Cardinal(I);
-    Values[I].Value := ReadArrayValue(Receiver, I);
+    if IsVector then
+      Values[I].Value := Receiver.VectorData[I]
+    else
+      Values[I].Value := ReadArrayValue(Receiver, I);
   end;
   Unique := True;
   SortRange(0, Count);
+  if IsVector then
+  begin
+    // Vector sorts a snapshot. These flags can suppress writing it back.
+    if (Options and SortReturnIndices = 0) and ((Options and SortUnique = 0) or Unique) then
+    begin
+      ResizeVector(Receiver, Cardinal(Count));
+      for I := 0 to Count - 1 do
+        Receiver.VectorData[I] := Values[I].Value;
+    end;
+    Exit(TAVM2Value.Ref(Receiver));
+  end;
   if (Options and SortUnique <> 0) and not Unique then
     Exit(TAVM2Value.Num(0, a2Int));
   if Options and SortReturnIndices <> 0 then
@@ -1898,6 +3133,48 @@ begin
   Result := TAVM2Value.Ref(Receiver);
 end;
 
+function TAVM2Runtime.ConcatArray(Data: TAVM2Array; const Args: TArray<TAVM2Value>): TAVM2Value;
+var
+  Target: TAVM2Object;
+  Arg: TAVM2Value;
+
+  procedure AddElements(Source: TAVM2Array);
+  var
+    Base, Index, Count: Cardinal;
+    Item: TPair<Cardinal, TAVM2Value>;
+  begin
+    Base := Target.ArrayData.ArrayLength;
+    Count := Source.ArrayLength;
+    if Count > High(Cardinal) - Base then
+      RaiseScriptError('RangeError', 1005, 'Array index is not a positive integer.');
+    while Source <> nil do
+    begin
+      Dec(FWork, Source.Elements.Count);
+      if FWork < 0 then
+        raise EAVM2Error.Create('AVM2 instruction limit');
+      for Item in Source.Elements do
+        if Item.Key < Count then
+        begin
+          Index := Base + Item.Key;
+          if not Target.ArrayData.Elements.ContainsKey(Index) then
+            SetArrayElement(Target.ArrayData, Index, Item.Value);
+        end;
+      Source := Source.Prototype;
+    end;
+    SetArrayLength(Target.ArrayData, Base + Count);
+  end;
+
+begin
+  Target := Construct(FArrayClass, nil);
+  AddElements(Data);
+  for Arg in Args do
+    if (Arg.Obj <> nil) and (Arg.Obj.ArrayData <> nil) then
+      AddElements(Arg.Obj.ArrayData)
+    else
+      AppendArray(Target.ArrayData, [Arg]);
+  Result := TAVM2Value.Ref(Target);
+end;
+
 function TAVM2Runtime.ArrayCall(Command: TAVM2ArrayMethod; Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
 var
   Data: TAVM2Array;
@@ -1914,8 +3191,10 @@ begin
   Data := Receiver.ArrayData;
   Result := Default(TAVM2Value);
   case Command of
+    aaConcat:
+      Result := ConcatArray(Data, Args);
     aaSort, aaSortOn:
-      Result := SortArray(Receiver, Args, Command = aaSortOn);
+      Result := SortCollection(Receiver, Args, Command = aaSortOn);
     aaPush:
       begin
         AppendArray(Data, Args);
@@ -1971,7 +3250,7 @@ begin
         Separator := ',';
         if (Command = aaJoin) and (Length(Args) > 0) and (Args[0].Kind <> a2Undefined) then
           Separator := AsText(Args[0]);
-        Result := TAVM2Value.Str(ArrayText(Data, Separator, 0));
+        Result := TAVM2Value.Str(ArrayText(Data, Separator, 0, Self));
       end;
   end;
 end;
@@ -2509,12 +3788,46 @@ begin
     end;
     if Obj.DynamicProperties.Count >= ArrayElementLimit then
       raise EAVM2Error.Create('AVM2 dynamic property limit');
+    Entry := Default(TAVM2DynamicProperty);
     Entry.Key := Key;
     Entry.Enumerable := Enumerable;
     Obj.DynamicIndices.Add(Key, Obj.DynamicProperties.Count);
     Obj.DynamicProperties.Add(Entry);
   end;
   Obj.Props.AddOrSetValue(Key, Value);
+end;
+
+procedure TAVM2Runtime.StoreDictionaryKey(Obj, Key: TAVM2Object; const Value: TAVM2Value);
+var
+  DictionaryEntry: TAVM2DictionaryEntry;
+  Entry: TAVM2DynamicProperty;
+begin
+  if not Obj.DictionaryKeys.TryGetValue(Key, DictionaryEntry) then
+  begin
+    if Obj.DynamicProperties = nil then
+    begin
+      Obj.DynamicProperties := TList<TAVM2DynamicProperty>.Create;
+      Obj.DynamicIndices := TDictionary<string, Integer>.Create;
+    end;
+    if Obj.DynamicProperties.Count >= ArrayElementLimit then
+      raise EAVM2Error.Create('AVM2 dynamic property limit');
+    DictionaryEntry.Slot := Obj.DynamicProperties.Count;
+    Entry := Default(TAVM2DynamicProperty);
+    Entry.ObjectKey := Key;
+    Entry.Enumerable := True;
+    Obj.DynamicProperties.Add(Entry);
+  end;
+  DictionaryEntry.Value := Value;
+  Obj.DictionaryKeys.AddOrSetValue(Key, DictionaryEntry);
+end;
+
+function TAVM2Runtime.DictionaryValue(Obj, Key: TAVM2Object): TAVM2Value;
+var
+  Entry: TAVM2DictionaryEntry;
+begin
+  if Obj.DictionaryKeys.TryGetValue(Key, Entry) then
+    Exit(Entry.Value);
+  Result := Default(TAVM2Value);
 end;
 
 procedure TAVM2Runtime.InstallObjectMethods;
@@ -2534,6 +3847,16 @@ begin
   end;
 end;
 
+function TryVectorIndex(const Key: string; out Number: Double): Boolean; forward;
+
+function HasVectorProperty(Obj: TAVM2Object; const Key: string): Boolean;
+var
+  Number: Double;
+begin
+  Result := (Key = #0 + 'length') or (Key = #0 + 'fixed') or
+    (TryVectorIndex(Key, Number) and (Number >= 0) and (Number < Obj.VectorData.Count) and (Frac(Number) = 0));
+end;
+
 function TAVM2Runtime.InvokeObjectMethod(Method: TAVM2ObjectMethod; const Receiver: TAVM2Value; const Args: TArray<TAVM2Value>): TAVM2Value;
 var
   Obj: TAVM2Object;
@@ -2546,7 +3869,7 @@ var
 begin
   Key := #0 + 'undefined';
   if Length(Args) > 0 then
-    Key := #0 + AsText(Args[0]);
+    Key := #0 + CoerceText(Args[0]);
   Obj := Receiver.Obj;
   if Obj = nil then
   begin
@@ -2559,7 +3882,7 @@ begin
   case Method of
     omSetPropertyIsEnumerable:
       begin
-        if IsDynamic then
+        if IsDynamic and (Obj.DictionaryKeys = nil) then
         begin
           Entry := Obj.DynamicProperties[Slot];
           Entry.Enumerable := (Length(Args) < 2) or Truth(Args[1]);
@@ -2572,6 +3895,7 @@ begin
         ((Obj.ArrayData <> nil) and TryPublicIndex(Key, Index) and (Index < Obj.ArrayData.ArrayLength));
   else
     HasProperty := Obj.Props.ContainsKey(Key) or
+      ((Obj.VectorData <> nil) and HasVectorProperty(Obj, Key)) or
       ((Obj.Kind in [a2Function, a2Class]) and (Key = #0 + 'prototype')) or
       ((Obj.RegExp <> nil) and RegExpProperty(Obj.RegExp, Key, Value)) or
       ((Obj.ArrayData <> nil) and ((Key = #0 + 'length') or
@@ -2594,6 +3918,13 @@ begin
   for Key in Names do
   begin
     HasPublicName := HasPublicName or (Key[1] = #0);
+    if Obj.VectorData <> nil then
+    begin
+      if (Key = #0 + 'length') or (Key = #0 + 'fixed') then
+        Exit(False);
+      if Key[1] = #0 then
+        Exit(True);
+    end;
     if (Obj.ArrayData <> nil) and TryPublicIndex(Key, Index) then
     begin
       RemoveArrayElement(Obj.ArrayData, Index);
@@ -2627,6 +3958,12 @@ var
 begin
   if Obj = nil then
     Exit(0);
+  if Obj.VectorData <> nil then
+  begin
+    if Previous < Cardinal(Obj.VectorData.Count) then
+      Exit(Previous + 1);
+    Exit(0);
+  end;
   Data := Obj.ArrayData;
   Start := 0;
   if Data <> nil then
@@ -2680,6 +4017,12 @@ begin
   Result := TAVM2Value.Ref(nil);
   if (Obj = nil) or (Index = 0) then
     Exit;
+  if Obj.VectorData <> nil then
+  begin
+    if Index <= Cardinal(Obj.VectorData.Count) then
+      Result := TAVM2Value.Num(Index - 1, a2UInt);
+    Exit;
+  end;
   if Obj.ArrayData <> nil then
   begin
     if Index <= Obj.ArrayData.ArrayLength then
@@ -2688,6 +4031,8 @@ begin
   end;
   if (Obj.DynamicProperties = nil) or (Index > Cardinal(Obj.DynamicProperties.Count)) then
     Exit;
+  if Obj.DynamicProperties[Integer(Index) - 1].ObjectKey <> nil then
+    Exit(TAVM2Value.Ref(Obj.DynamicProperties[Integer(Index) - 1].ObjectKey));
   Key := Obj.DynamicProperties[Integer(Index) - 1].Key;
   if Key = '' then
     Exit;
@@ -2703,6 +4048,8 @@ var
 begin
   while Receiver <> nil do
   begin
+    if (Receiver.VectorData <> nil) and HasVectorProperty(Receiver, Name) then
+      Exit(True);
     if (Receiver.RegExp <> nil) and RegExpProperty(Receiver.RegExp, Name, Value) then
       Exit(True);
     if (Receiver.Kind in [a2Class, a2Function]) and (Name = #0 + 'prototype') then
@@ -2723,6 +4070,8 @@ begin
     end;
     if Receiver.Props.ContainsKey(Name) then
       Exit(True);
+    if (Receiver.TimelineBindings <> nil) and Receiver.TimelineBindings.ContainsKey(Name) then
+      Exit(True);
     Receiver := ObjectPrototype(Receiver);
   end;
   Result := False;
@@ -2732,11 +4081,48 @@ function TAVM2Runtime.PropertyValue(Receiver: TAVM2Object; const Names: TArray<s
 var
   Name: string;
   Index: Cardinal;
+  Rect: TAVM2Rectangle;
+  Matrix: TAVM2Matrix;
+  Owner: TAVM2Object;
 begin
   while Receiver <> nil do
   begin
     for Name in Names do
     begin
+      if (Name = #0 + 'transform') and ((Receiver = FStage) or
+        (Receiver.DisplayKind in [adContainer, adSprite, adMovieClip, adShape])) then
+        Exit(TAVM2Value.Ref(Construct(FTransformClass, [TAVM2Value.Ref(Receiver)])));
+      Owner := Receiver.TransformOwner;
+      if (Owner <> nil) and (Name = #0 + 'pixelBounds') then
+      begin
+        Rect := Default(TAVM2Rectangle);
+        if FDisplay <> nil then
+          Rect := FDisplay.GetBounds(Owner.DisplayData, nil, False, True);
+        Exit(NewRectangle(Rect));
+      end;
+      if (Owner <> nil) and ((Name = #0 + 'matrix') or (Name = #0 + 'concatenatedMatrix')) then
+      begin
+        if (Name = #0 + 'matrix') and Owner.Matrix3DActive then
+          Exit(TAVM2Value.Ref(nil));
+        Matrix := IdentityMatrix;
+        if FDisplay <> nil then
+          Matrix := FDisplay.GetMatrix(Owner.DisplayData, Name = #0 + 'concatenatedMatrix',
+            (Owner <> FStage) and (StageOf(Owner) = FStage));
+        Exit(NewMatrix(Matrix));
+      end;
+      if Receiver.IsRectangle and RectangleProperty(Receiver, Name, Result) then
+        Exit;
+      if (Name = #0 + 'scrollRect') and (Receiver.DisplayKind in [adContainer, adSprite, adMovieClip, adShape]) then
+      begin
+        if (FDisplay <> nil) and FDisplay.GetScrollRect(Receiver.DisplayData, Rect) then
+          Exit(NewRectangle(Rect));
+        Exit(TAVM2Value.Ref(nil));
+      end;
+      if Receiver.IsPoint and (Name = #0 + 'length') then
+        Exit(TAVM2Value.Num(Sqrt(Sqr(Receiver.Props[#0 + 'x'].Number) +
+              Sqr(Receiver.Props[#0 + 'y'].Number))));
+      if (Receiver.VectorData <> nil) and VectorProperty(Receiver, Name, Result) then
+        Exit;
       if (Receiver.RegExp <> nil) and RegExpProperty(Receiver.RegExp, Name, Result) then
         Exit;
       if (Receiver.Kind = a2Class) and (Name = #0 + 'prototype') then
@@ -2760,29 +4146,58 @@ begin
         Exit;
       if Receiver.Props.TryGetValue(Name, Result) then
       begin
+        if (Receiver.DisplayKind = adMovieClip) and (FDisplay <> nil) and
+          ((Name = #0 + 'currentFrame') or (Name = #0 + 'totalFrames')) then
+          Exit(TAVM2Value.Num(FDisplay.TimelineFrame(Receiver.DisplayData, Name = #0 + 'totalFrames'), a2Int));
         if (Name = #0 + 'stage') and (Receiver.DisplayKind <> adNone) then
           Result := TAVM2Value.Ref(StageOf(Receiver))
+        else if Name = #0 + 'root' then
+        begin
+          if (FDocument <> nil) and (Receiver.DisplayKind <> adNone) then
+          begin
+            Owner := Receiver;
+            while (Owner <> nil) and (Owner <> FDocument) do
+              Owner := Owner.DisplayParent;
+            Result := TAVM2Value.Ref(Owner);
+          end;
+        end
         else if (Name = #0 + 'focus') and (Receiver = FStage) and (StageOf(FFocus) <> FStage) then
           Result := TAVM2Value.Ref(nil);
         Exit;
       end;
+      if (Receiver.TimelineBindings <> nil) and Receiver.TimelineBindings.TryGetValue(Name, Owner) then
+        Exit(TAVM2Value.Ref(Owner));
     end;
     Receiver := ObjectPrototype(Receiver);
   end;
   Result := Default(TAVM2Value);
 end;
 
-function TAVM2Runtime.ResolveType(Module: TAVM2Module; Index: Integer; out ClassObject: TAVM2Object; out QualifiedName: string): TAVM2TypeKind;
+function TAVM2Runtime.ResolveType(Module: TAVM2Module; Index: Integer; out ClassObject: TAVM2Object; out QualifiedName: string; Depth: Integer): TAVM2TypeKind;
 var
   Name: string;
   Kind: TAVM2TypeKind;
-  Scope: TAVM2Object;
+  Scope, Base: TAVM2Object;
   TypeValue: TAVM2Value;
+  Generic: TABCMultiname;
 begin
   ClassObject := nil;
   QualifiedName := '';
   if Index = 0 then
     Exit(atAny);
+  if (Index < 0) or (Index >= Length(Module.ABC.Multinames)) then
+    raise EAVM2Error.Create('Invalid AVM2 type multiname');
+  if Depth >= 32 then
+    raise EAVM2Error.Create('AVM2 parameterized type depth limit');
+  Generic := Module.ABC.Multinames[Index];
+  if Generic.Kind = $1D then
+  begin
+    Base := ResolveTypeClass(Module, Generic.BaseType, Depth + 1);
+    CheckTypeApplication(Base, Length(Generic.Parameters));
+    ClassObject := VectorType(ResolveTypeClass(Module, Generic.Parameters[0], Depth + 1));
+    QualifiedName := ClassObject.DisplayName;
+    Exit(atClass);
+  end;
   for Name in Names(Module, Index) do
   begin
     for Kind := Low(BuiltinTypeNames) to High(BuiltinTypeNames) do
@@ -2808,6 +4223,683 @@ begin
     Exit(atClass);
   end;
   raise EAVM2Error.Create('Unresolved AVM2 type ' + Module.ABC.Strings[Module.ABC.Multinames[Index].Name]);
+end;
+
+function TAVM2Runtime.ResolveTypeClass(Module: TAVM2Module; Index, Depth: Integer): TAVM2Object;
+var
+  Kind: TAVM2TypeKind;
+  Name: string;
+begin
+  Kind := ResolveType(Module, Index, Result, Name, Depth);
+  case Kind of
+    atObject:
+      Result := FObjectClass;
+    atFunction:
+      Result := FFunctionClass;
+    atString..atUInt:
+      Result := FPrimitiveClasses[Kind];
+    atVoid:
+      RaiseScriptError('VerifyError', 1107, 'The ABC data is corrupt, attempt to read out of bounds.');
+  end;
+end;
+
+procedure TAVM2Runtime.InstallVectorClass;
+var
+  Method: TAVM2VectorMethod;
+begin
+  FVectorClass := NewObject(a2Class);
+  FVectorClass.Parent := FObjectClass;
+  FVectorClass.DisplayName := 'Vector';
+  FNative.Props.Add(VectorNamespace + 'Vector', TAVM2Value.Ref(FVectorClass));
+  for Method := Low(TAVM2VectorMethod) to High(TAVM2VectorMethod) do
+  begin
+    FVectorMethods[Method] := NewObject(a2Function);
+    FVectorMethods[Method].Index := VectorMethodBase - Ord(Method);
+  end;
+  FNative.Props.Add(VectorNamespace + 'Vector$int', TAVM2Value.Ref(VectorType(FPrimitiveClasses[atInt])));
+  FNative.Props.Add(VectorNamespace + 'Vector$uint', TAVM2Value.Ref(VectorType(FPrimitiveClasses[atUInt])));
+  FNative.Props.Add(VectorNamespace + 'Vector$double', TAVM2Value.Ref(VectorType(FPrimitiveClasses[atNumber])));
+  FNative.Props.Add(VectorNamespace + 'Vector$object', TAVM2Value.Ref(VectorType(nil)));
+end;
+
+procedure TAVM2Runtime.CheckTypeApplication(Base: TAVM2Object; Count: Integer);
+begin
+  if Base <> FVectorClass then
+    RaiseScriptError('TypeError', 1127, 'Type application attempted on a non-parameterized type.');
+  if Count <> 1 then
+    RaiseScriptError('TypeError', 1128, Format('Incorrect number of type parameters for Vector. Expected 1, got %d.',
+        [Count]));
+end;
+
+function TAVM2Runtime.ApplyType(Base: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Object;
+begin
+  CheckTypeApplication(Base, Length(Args));
+  if Args[0].Kind = a2Null then
+    Exit(VectorType(nil));
+  if (Args[0].Obj = nil) or (Args[0].Obj.Kind <> a2Class) then
+    RaiseScriptError('VerifyError', 1107, 'The ABC data is corrupt, attempt to read out of bounds.');
+  Result := VectorType(Args[0].Obj);
+end;
+
+function TAVM2Runtime.VectorType(ElementType: TAVM2Object): TAVM2Object;
+var
+  Name: string;
+  Prototype: TAVM2Object;
+  Method: TAVM2VectorMethod;
+begin
+  if ElementType = nil then
+  begin
+    if FVectorWildcard <> nil then
+      Exit(FVectorWildcard);
+    Name := '*';
+  end
+  else
+  begin
+    if ElementType.VectorSpecialization <> nil then
+      Exit(ElementType.VectorSpecialization);
+    Name := ElementType.DisplayName;
+  end;
+  if Length(Name) > TextLimit - 10 then
+    raise EAVM2Error.Create('AVM2 type name length limit');
+  Result := NewObject(a2Class);
+  Result.Parent := FObjectClass;
+  Result.DisplayName := 'Vector.<' + Name + '>';
+  Result.IsVectorType := True;
+  Result.VectorElementType := ElementType;
+  Prototype := ClassPrototype(Result);
+  for Method := Low(TAVM2VectorMethod) to High(TAVM2VectorMethod) do
+  begin
+    if Method in [veInsertAt, veRemoveAt] then
+    begin
+      if FSWFVersion < 30 then
+        Continue;
+    end
+    else
+      Prototype.Props.Add(#0 + VectorMethodNames[Method], TAVM2Value.Ref(FVectorMethods[Method]));
+    Prototype.Props.Add(BuiltinNamespace + VectorMethodNames[Method], TAVM2Value.Ref(FVectorMethods[Method]));
+  end;
+  if ElementType = nil then
+    FVectorWildcard := Result
+  else
+    ElementType.VectorSpecialization := Result;
+end;
+
+procedure TAVM2Runtime.ResizeVector(Obj: TAVM2Object; NewLength: Cardinal);
+var
+  OldLength, I: Integer;
+  Initial: TAVM2Value;
+  Element: TAVM2Object;
+begin
+  OldLength := Obj.VectorData.Count;
+  if NewLength > Cardinal(ArrayElementLimit - FArrayElements + OldLength) then
+    raise EAVM2Error.Create('AVM2 Vector storage limit');
+  Dec(FWork, Abs(OldLength - Integer(NewLength)));
+  if FWork < 0 then
+    raise EAVM2Error.Create('AVM2 instruction limit');
+  Obj.VectorData.Count := Integer(NewLength);
+  Inc(FArrayElements, Integer(NewLength) - OldLength);
+  if Integer(NewLength) <= OldLength then
+    Exit;
+  Initial := TAVM2Value.Ref(nil);
+  Element := Obj.ClassObject.VectorElementType;
+  if (Element <> nil) and (Element.PrimitiveKind in [atNumber..atUInt]) then
+    Initial := TAVM2Value.Num(0, a2Int);
+  for I := OldLength to Integer(NewLength) - 1 do
+    Obj.VectorData[I] := Initial;
+end;
+
+function TAVM2Runtime.VectorElement(Obj: TAVM2Object; const Value: TAVM2Value): TAVM2Value;
+var
+  Element: TAVM2Object;
+begin
+  Element := Obj.ClassObject.VectorElementType;
+  if (Element = nil) or (Element = FObjectClass) then
+    Exit(CoerceValue(Value, atObject, nil, 'Object'));
+  if Element = FFunctionClass then
+    Exit(CoerceValue(Value, atFunction, nil, 'Function'));
+  case Element.PrimitiveKind of
+    atNumber:
+      Exit(TAVM2Value.Num(CoerceNumber(Value)));
+    atInt:
+      Exit(TAVM2Value.Num(Integer(IntBits(CoerceNumber(Value))), a2Int));
+    atUInt:
+      Exit(TAVM2Value.Num(IntBits(CoerceNumber(Value)), a2UInt));
+    atBoolean:
+      Exit(TAVM2Value.Num(Ord(Truth(Value)), a2Boolean));
+    atString:
+      if Value.Kind in [a2Null, a2Undefined] then
+        Exit(TAVM2Value.Ref(nil))
+      else
+        Exit(TAVM2Value.Str(CoerceText(Value)));
+  end;
+  Result := CoerceValue(Value, atClass, Element, Element.DisplayName);
+end;
+
+procedure TAVM2Runtime.VectorRangeError(Obj: TAVM2Object; Index: Double);
+begin
+  RaiseScriptError('RangeError', 1125, Format('The index %s is out of range %d.',
+      [AsText(TAVM2Value.Num(Index)), Obj.VectorData.Count]));
+end;
+
+function TryVectorIndex(const Key: string; out Number: Double): Boolean;
+var
+  Index: Cardinal;
+  Text: string;
+begin
+  if TryPublicIndex(Key, Index) then
+  begin
+    Number := Index;
+    Exit(True);
+  end;
+  if (Length(Key) < 2) or (Key[1] <> #0) then
+    Exit(False);
+  Text := Copy(Key, 2, MaxInt);
+  Result := (Trim(Text) = Text) and TryStrToFloat(Text, Number, TFormatSettings.Invariant);
+end;
+
+function TAVM2Runtime.VectorProperty(Obj: TAVM2Object; const Key: string; out Value: TAVM2Value): Boolean;
+var
+  Number: Double;
+begin
+  if Key = #0 + 'length' then
+    Value := TAVM2Value.Num(Obj.VectorData.Count, a2UInt)
+  else if Key = #0 + 'fixed' then
+    Value := TAVM2Value.Num(Ord(Obj.VectorFixed), a2Boolean)
+  else if TryVectorIndex(Key, Number) then
+  begin
+    if (Number >= 0) and (Number < Obj.VectorData.Count) and (Frac(Number) = 0) then
+      Value := Obj.VectorData[Trunc(Number)]
+    else
+    begin
+      if FSWFVersion >= 11 then
+        VectorRangeError(Obj, Number);
+      if (Number >= 0) and (Number <= High(Cardinal)) and (Frac(Number) = 0) then
+        VectorRangeError(Obj, Number);
+      Exit(False);
+    end;
+  end
+  else
+    Exit(False);
+  Result := True;
+end;
+
+procedure TAVM2Runtime.SetVectorProperty(Obj: TAVM2Object; const Keys: TArray<string>; const Value: TAVM2Value);
+var
+  Key: string;
+  Number: Double;
+  Normalized: TAVM2Value;
+  Index: Integer;
+begin
+  for Key in Keys do
+  begin
+    if Key = #0 + 'fixed' then
+    begin
+      Obj.VectorFixed := Truth(Value);
+      Exit;
+    end;
+    if Key = #0 + 'length' then
+    begin
+      Number := CoerceNumber(Value);
+      if Obj.VectorFixed then
+        RaiseScriptError('RangeError', 1126, 'Cannot change the length of a fixed Vector.');
+      ResizeVector(Obj, IntBits(Number));
+      Exit;
+    end;
+    if not TryVectorIndex(Key, Number) then
+      Continue;
+    if (Number >= 0) and (Number <= High(Cardinal)) and (Frac(Number) = 0) then
+    begin
+      Normalized := VectorElement(Obj, Value);
+      if (Number > Obj.VectorData.Count) or ((Number = Obj.VectorData.Count) and Obj.VectorFixed) then
+        VectorRangeError(Obj, Number);
+      Index := Trunc(Number);
+      if Index = Obj.VectorData.Count then
+        ResizeVector(Obj, Cardinal(Index) + 1);
+      Obj.VectorData[Index] := Normalized;
+      Exit;
+    end;
+    if FSWFVersion >= 11 then
+      VectorRangeError(Obj, Number);
+  end;
+  RaiseScriptError('ReferenceError', 1056, 'Cannot create property ' +
+    Copy(Keys[0], Pos(#0, Keys[0]) + 1, MaxInt) + ' on ' + Obj.DisplayName + '.');
+end;
+
+function TAVM2Runtime.ConvertVector(AClass: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+var
+  Source, Target: TAVM2Object;
+  I: Integer;
+  Count: Cardinal;
+begin
+  if Length(Args) <> 1 then
+    RaiseScriptError('ArgumentError', 1112, 'Argument count mismatch on class coercion. Expected 1, got ' +
+      IntToStr(Length(Args)) + '.');
+  Source := Args[0].Obj;
+  if Source = nil then
+    RaiseScriptError('TypeError', 1034, 'Type Coercion failed: cannot convert ' + AsText(Args[0]) +
+      ' to ' + AClass.DisplayName + '.');
+  if Source.ClassObject = AClass then
+    Exit(Args[0]);
+  Count := IntBits(CoerceNumber(ReadProperty(Args[0], [#0 + 'length'], False)));
+  Target := Construct(AClass, nil);
+  ResizeVector(Target, Count);
+  for I := 0 to Integer(Count) - 1 do
+    Target.VectorData[I] := VectorElement(Target, ReadProperty(Args[0], [#0 + IntToStr(I)], False));
+  Result := TAVM2Value.Ref(Target);
+end;
+
+function TAVM2Runtime.ConcatVector(Obj: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+var
+  Target, Source, Element, SourceElement: TAVM2Object;
+  Data: TList<TAVM2Value>;
+  Arg: TAVM2Value;
+  Items: TArray<TAVM2Value>;
+  I, Count, Added, StartIndex, OriginalLength: Integer;
+  Numeric, Fixed: Boolean;
+begin
+  OriginalLength := Obj.VectorData.Count;
+  Fixed := Obj.VectorFixed;
+  Element := Obj.ClassObject.VectorElementType;
+  Numeric := (Element <> nil) and (Element.PrimitiveKind in [atNumber..atUInt]);
+  if OriginalLength > ArrayElementLimit - FArrayElements then
+    raise EAVM2Error.Create('AVM2 Vector storage limit');
+  Data := TList<TAVM2Value>.Create;
+  try
+    Data.Count := OriginalLength;
+    for I := 0 to OriginalLength - 1 do
+      Data[I] := Obj.VectorData[I];
+    for Arg in Args do
+    begin
+      if Arg.Kind = a2Null then
+        RaiseScriptError('TypeError', 1009, 'Cannot access a property or method of a null object reference.');
+      if Arg.Kind = a2Undefined then
+        RaiseScriptError('TypeError', 1010, 'A term is undefined and has no properties.');
+      Source := Arg.Obj;
+      if (Source = nil) or (Source.VectorData = nil) then
+        RaiseScriptError('TypeError', 1034, 'Type Coercion failed: expected a Vector.');
+      SourceElement := Source.ClassObject.VectorElementType;
+      if (Numeric and (SourceElement <> Element)) or
+        (not Numeric and (SourceElement <> nil) and (SourceElement.PrimitiveKind in [atNumber..atUInt])) then
+        RaiseScriptError('TypeError', 1034, 'Type Coercion failed: cannot convert ' + Source.DisplayName +
+          ' to ' + Obj.DisplayName + '.');
+      Added := Source.VectorData.Count;
+      if Added = 0 then
+        Continue;
+      Count := Data.Count;
+      if Count + Added > ArrayElementLimit - FArrayElements then
+        raise EAVM2Error.Create('AVM2 Vector storage limit');
+      StartIndex := Count;
+      // SWF 10 inserts every argument immediately after the original vector.
+      if FSWFVersion < 11 then
+        StartIndex := OriginalLength;
+      Dec(FWork, Added + Count - StartIndex);
+      if FWork < 0 then
+        raise EAVM2Error.Create('AVM2 instruction limit');
+      Items := Source.VectorData.ToArray;
+      if Fixed then
+      begin
+        VectorElement(Obj, Items[0]);
+        RaiseScriptError('RangeError', 1126, 'Cannot change the length of a fixed Vector.');
+      end;
+      Data.Count := Count + Added;
+      for I := Count - 1 downto StartIndex do
+        Data[I + Added] := Data[I];
+      for I := 0 to Added - 1 do
+        Data[StartIndex + I] := VectorElement(Obj, Items[I]);
+    end;
+    Target := Construct(Obj.ClassObject, nil);
+    ResizeVector(Target, Cardinal(Data.Count));
+    for I := 0 to Data.Count - 1 do
+      Target.VectorData[I] := Data[I];
+    Target.VectorFixed := Fixed;
+    Result := TAVM2Value.Ref(Target);
+  finally
+    Data.Free;
+  end;
+end;
+
+function TAVM2Runtime.SpliceVector(Obj: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+var
+  Data: TList<TAVM2Value>;
+  Target: TAVM2Object;
+  Items: TArray<TAVM2Value>;
+  Count, StartIndex, EndIndex, DeleteCount, Removed, Delta, ShiftCost, I: Integer;
+begin
+  Data := Obj.VectorData;
+  StartIndex := 0;
+  DeleteCount := 0;
+  if Length(Args) > 0 then
+    StartIndex := Integer(IntBits(CoerceNumber(Args[0])));
+  if Length(Args) > 1 then
+    DeleteCount := Integer(IntBits(CoerceNumber(Args[1])));
+  Count := Data.Count;
+  StartIndex := Integer(ClampArrayIndex(StartIndex, Cardinal(Count)));
+  if DeleteCount < 0 then
+    EndIndex := Max(StartIndex, Integer(ClampArrayIndex(DeleteCount, Cardinal(Count))))
+  else
+    EndIndex := StartIndex + Min(DeleteCount, Count - StartIndex);
+  if Length(Args) > 2 then
+  begin
+    SetLength(Items, Length(Args) - 2);
+    for I := 0 to High(Items) do
+      Items[I] := VectorElement(Obj, Args[I + 2]);
+  end;
+  // Element coercion can call script and resize the receiver.
+  Count := Data.Count;
+  StartIndex := Min(StartIndex, Count);
+  EndIndex := Min(EndIndex, Count);
+  Removed := EndIndex - StartIndex;
+  Delta := Length(Items) - Removed;
+  if Removed + Max(0, Delta) > ArrayElementLimit - FArrayElements then
+    raise EAVM2Error.Create('AVM2 Vector storage limit');
+  ShiftCost := 0;
+  if Delta <> 0 then
+    ShiftCost := Count - EndIndex;
+  if FWork < ShiftCost + Removed + Abs(Delta) then
+    raise EAVM2Error.Create('AVM2 instruction limit');
+  Dec(FWork, ShiftCost);
+  Target := Construct(Obj.ClassObject, nil);
+  ResizeVector(Target, Cardinal(Removed));
+  for I := 0 to Removed - 1 do
+    Target.VectorData[I] := Data[StartIndex + I];
+  if Delta <> 0 then
+  begin
+    // Flash permits splice to resize a fixed Vector.
+    if Delta > 0 then
+    begin
+      ResizeVector(Obj, Cardinal(Count + Delta));
+      for I := Count - 1 downto EndIndex do
+        Data[I + Delta] := Data[I];
+    end
+    else
+    begin
+      for I := EndIndex to Count - 1 do
+        Data[I + Delta] := Data[I];
+      ResizeVector(Obj, Cardinal(Count + Delta));
+    end;
+  end;
+  for I := 0 to High(Items) do
+    Data[StartIndex + I] := Items[I];
+  Result := TAVM2Value.Ref(Target);
+end;
+
+function TAVM2Runtime.VectorCallback(Method: TAVM2VectorMethod; Obj: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+var
+  Callback, Target: TAVM2Object;
+  ThisValue, Item, Returned: TAVM2Value;
+  CallbackArgs: TArray<TAVM2Value>;
+  Items: TList<TAVM2Value>;
+  I, Count: Integer;
+begin
+  Callback := nil;
+  if Length(Args) > 0 then
+    Callback := CoerceValue(Args[0], atFunction, nil, 'Function').Obj;
+  ThisValue := TAVM2Value.Ref(nil);
+  if Length(Args) > 1 then
+    ThisValue := CoerceValue(Args[1], atObject, nil, 'Object');
+  Count := Obj.VectorData.Count;
+  Result := Default(TAVM2Value);
+  case Method of
+    veEvery, veSome:
+      Result := TAVM2Value.Num(Ord(Method = veEvery), a2Boolean);
+    veMap, veFilter:
+      if Callback = nil then
+      begin
+        Target := Construct(Obj.ClassObject, nil);
+        if Method = veMap then
+          ResizeVector(Target, Cardinal(Count));
+        Exit(TAVM2Value.Ref(Target));
+      end;
+  end;
+  if Callback = nil then
+    Exit;
+  Items := nil;
+  if Method in [veMap, veFilter] then
+    Items := TList<TAVM2Value>.Create;
+  try
+    SetLength(CallbackArgs, 3);
+    CallbackArgs[2] := TAVM2Value.Ref(Obj);
+    for I := 0 to Count - 1 do
+    begin
+      Dec(FWork);
+      if FWork < 0 then
+        raise EAVM2Error.Create('AVM2 instruction limit');
+      if I >= Obj.VectorData.Count then
+        VectorRangeError(Obj, I);
+      Item := Obj.VectorData[I];
+      CallbackArgs[0] := Item;
+      CallbackArgs[1] := TAVM2Value.Num(I, a2UInt);
+      Returned := Invoke(Callback, ThisValue, CallbackArgs);
+      case Method of
+        veEvery:
+          if not Truth(Returned) then
+            Exit(TAVM2Value.Num(0, a2Boolean));
+        veSome:
+          if Truth(Returned) then
+            Exit(TAVM2Value.Num(1, a2Boolean));
+        veMap, veFilter:
+          begin
+            if Method = veMap then
+              Item := VectorElement(Obj, Returned)
+            else if not Truth(Returned) then
+              Continue;
+            if Items.Count >= ArrayElementLimit - FArrayElements then
+              raise EAVM2Error.Create('AVM2 Vector storage limit');
+            Items.Add(Item);
+          end;
+      end;
+    end;
+    if Items <> nil then
+    begin
+      Target := Construct(Obj.ClassObject, nil);
+      ResizeVector(Target, Cardinal(Items.Count));
+      for I := 0 to Items.Count - 1 do
+        Target.VectorData[I] := Items[I];
+      Result := TAVM2Value.Ref(Target);
+    end;
+  finally
+    Items.Free;
+  end;
+end;
+
+function TAVM2Runtime.InvokeVector(Method: TAVM2VectorMethod; Obj: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
+var
+  I, J, Count, StartIndex, EndIndex, Added, Step: Integer;
+  Data: TList<TAVM2Value>;
+  Item, Search: TAVM2Value;
+  Items: TArray<TAVM2Value>;
+  Target, Element: TAVM2Object;
+  Separator: string;
+
+  procedure CheckMutable;
+  begin
+    if Obj.VectorFixed then
+      RaiseScriptError('RangeError', 1126, 'Cannot change the length of a fixed Vector.');
+  end;
+
+  function IndexArgument(Argument, DefaultIndex: Integer): Integer;
+  begin
+    Result := DefaultIndex;
+    if Argument < Length(Args) then
+      Result := Integer(IntBits(CoerceNumber(Args[Argument])));
+  end;
+
+begin
+  Result := Default(TAVM2Value);
+  if (Obj = nil) or (Obj.VectorData = nil) then
+    RaiseScriptError('TypeError', 1004, 'Method was invoked on an incompatible object.');
+  Data := Obj.VectorData;
+  Count := Data.Count;
+  case Method of
+    vePush, veUnshift:
+      begin
+        Added := Length(Args);
+        if (Method = vePush) or (Added <> 0) then
+          CheckMutable;
+        if Added = 0 then
+          Exit(TAVM2Value.Num(Count, a2UInt));
+        SetLength(Items, Added);
+        for I := 0 to High(Items) do
+          Items[I] := VectorElement(Obj, Args[I]);
+        CheckMutable;
+        Count := Data.Count;
+        if Method = veUnshift then
+        begin
+          Dec(FWork, Count);
+          if FWork < 0 then
+            raise EAVM2Error.Create('AVM2 instruction limit');
+        end;
+        ResizeVector(Obj, Cardinal(Count + Added));
+        StartIndex := Count;
+        if Method = veUnshift then
+        begin
+          for I := Count - 1 downto 0 do
+            Data[I + Added] := Data[I];
+          StartIndex := 0;
+        end;
+        for I := 0 to High(Items) do
+          Data[StartIndex + I] := Items[I];
+        Exit(TAVM2Value.Num(Data.Count, a2UInt));
+      end;
+    vePop, veShift:
+      begin
+        CheckMutable;
+        if Count = 0 then
+        begin
+          Element := Obj.ClassObject.VectorElementType;
+          if (Element <> nil) and (Element.PrimitiveKind in [atNumber..atUInt]) then
+            Result := TAVM2Value.Num(0, a2Int);
+          Exit;
+        end;
+        if Method = vePop then
+          Result := Data[Count - 1]
+        else
+        begin
+          Dec(FWork, Count);
+          if FWork <= 0 then
+            raise EAVM2Error.Create('AVM2 instruction limit');
+          Result := Data[0];
+          for I := 1 to Count - 1 do
+            Data[I - 1] := Data[I];
+        end;
+        ResizeVector(Obj, Cardinal(Count - 1));
+      end;
+    veJoin, veToString:
+      begin
+        Separator := ',';
+        if (Method = veJoin) and (Length(Args) > 0) and (Args[0].Kind <> a2Undefined) then
+          Separator := CoerceText(Args[0]);
+        Exit(TAVM2Value.Str(VectorText(Obj, Separator, 0, Self)));
+      end;
+    veToLocaleString:
+      begin
+        Element := Obj.ClassObject.VectorElementType;
+        Exit(TAVM2Value.Str(VectorText(Obj, ',', 0, Self,
+              (Element = nil) or not (Element.PrimitiveKind in [atNumber..atUInt]))));
+      end;
+    veSort:
+      Exit(SortCollection(Obj, Args, False));
+    veReverse:
+      begin
+        Dec(FWork, Count);
+        if FWork < 0 then
+          raise EAVM2Error.Create('AVM2 instruction limit');
+        for I := 0 to Count div 2 - 1 do
+        begin
+          J := Count - I - 1;
+          Item := Data[I];
+          Data[I] := Data[J];
+          Data[J] := Item;
+        end;
+        Exit(TAVM2Value.Ref(Obj));
+      end;
+    veIndexOf, veLastIndexOf:
+      begin
+        Search := Default(TAVM2Value);
+        if Length(Args) > 0 then
+          Search := Args[0];
+        if Method = veIndexOf then
+        begin
+          StartIndex := IndexArgument(1, 0);
+          Step := 1;
+        end
+        else
+        begin
+          StartIndex := IndexArgument(1, MaxInt);
+          Step := -1;
+        end;
+        Count := Data.Count;
+        if StartIndex < 0 then
+          Inc(StartIndex, Count);
+        if Method = veIndexOf then
+          StartIndex := Max(0, StartIndex)
+        else
+          StartIndex := Min(Count - 1, StartIndex);
+        I := StartIndex;
+        while (I >= 0) and (I < Count) do
+        begin
+          Dec(FWork);
+          if FWork < 0 then
+            raise EAVM2Error.Create('AVM2 instruction limit');
+          if Equal(Data[I], Search, True) then
+            Exit(TAVM2Value.Num(I, a2Int));
+          Inc(I, Step);
+        end;
+        Exit(TAVM2Value.Num(-1, a2Int));
+      end;
+    veSlice:
+      begin
+        StartIndex := IndexArgument(0, 0);
+        EndIndex := IndexArgument(1, MaxInt);
+        Count := Data.Count;
+        StartIndex := Integer(ClampArrayIndex(StartIndex, Cardinal(Count)));
+        EndIndex := Integer(ClampArrayIndex(EndIndex, Cardinal(Count)));
+        Count := Max(0, EndIndex - StartIndex);
+        Target := Construct(Obj.ClassObject, nil);
+        ResizeVector(Target, Cardinal(Count));
+        for I := 0 to Count - 1 do
+          Target.VectorData[I] := Data[StartIndex + I];
+        Exit(TAVM2Value.Ref(Target));
+      end;
+    veConcat:
+      Exit(ConcatVector(Obj, Args));
+    veSplice:
+      Exit(SpliceVector(Obj, Args));
+    veEvery..veFilter:
+      Exit(VectorCallback(Method, Obj, Args));
+    veInsertAt, veRemoveAt:
+      begin
+        if Length(Args) < 1 + Ord(Method = veInsertAt) then
+          RaiseScriptError('ArgumentError', 1063, 'Missing argument for Vector.' + VectorMethodNames[Method] + '.');
+        StartIndex := IndexArgument(0, 0);
+        if Method = veInsertAt then
+          Item := VectorElement(Obj, Args[1]);
+        CheckMutable;
+        Count := Data.Count;
+        if StartIndex < 0 then
+          StartIndex := Max(0, StartIndex + Count);
+        if Method = veInsertAt then
+        begin
+          StartIndex := Min(StartIndex, Count);
+          Dec(FWork, Count - StartIndex);
+          ResizeVector(Obj, Cardinal(Count + 1));
+          for I := Count - 1 downto StartIndex do
+            Data[I + 1] := Data[I];
+          Data[StartIndex] := Item;
+        end
+        else
+        begin
+          if StartIndex >= Count then
+            VectorRangeError(Obj, StartIndex);
+          Dec(FWork, Count - StartIndex);
+          if FWork < 0 then
+            raise EAVM2Error.Create('AVM2 instruction limit');
+          Result := Data[StartIndex];
+          Data.Delete(StartIndex);
+          Dec(FArrayElements);
+        end;
+      end;
+  end;
 end;
 
 function TAVM2Runtime.ValueHasType(const Value: TAVM2Value; Kind: TAVM2TypeKind; ClassObject: TAVM2Object): Boolean;
@@ -2842,12 +4934,37 @@ begin
       ValueClass := FClassClass
     else
       ValueClass := Value.Obj.ClassObject;
-    while ValueClass <> nil do
-    begin
-      if ValueClass = ClassObject then
-        Exit(True);
-      ValueClass := ValueClass.Parent;
-    end;
+    Exit(ClassHasType(ValueClass, ClassObject));
+  end;
+  Result := False;
+end;
+
+function TAVM2Runtime.ClassHasType(ValueClass, TargetClass: TAVM2Object; Depth: Integer): Boolean;
+var
+  CheckInterfaces: Boolean;
+  InterfaceIndex: Integer;
+begin
+  if TargetClass = nil then
+    Exit(False);
+  CheckInterfaces := (TargetClass.Module <> nil) and (TargetClass.Index >= 0) and
+    (TargetClass.Module.ABC.Instances[TargetClass.Index].Flags and 4 <> 0);
+  while ValueClass <> nil do
+  begin
+    if ValueClass = TargetClass then
+      Exit(True);
+    Inc(Depth);
+    if Depth >= 128 then
+      raise EAVM2Error.Create('AVM2 inheritance depth limit');
+    if CheckInterfaces and (ValueClass.Module <> nil) and (ValueClass.Index >= 0) then
+      for InterfaceIndex in ValueClass.Module.ABC.Instances[ValueClass.Index].Interfaces do
+      begin
+        Dec(FWork);
+        if FWork < 0 then
+          raise EAVM2Error.Create('AVM2 instruction limit');
+        if ClassHasType(ResolveTypeClass(ValueClass.Module, InterfaceIndex, 0), TargetClass, Depth) then
+          Exit(True);
+      end;
+    ValueClass := ValueClass.Parent;
   end;
   Result := False;
 end;
@@ -2976,17 +5093,19 @@ begin
   FStage.Props.AddOrSetValue(#0 + 'focus', TAVM2Value.Ref(nil));
 end;
 
-procedure TAVM2Runtime.CollectHostEvents;
+procedure TAVM2Runtime.CollectHostObjects;
 var
   Work: TList<TAVM2Object>;
   Obj: TAVM2Object;
   Index: Integer;
+  Call: TAVM2TimedCall;
+  Argument: TAVM2Value;
 
   procedure Mark(Subject: TAVM2Object);
   begin
-    if (Subject = nil) or not Subject.HostEvent or Subject.EventMarked then
+    if (Subject = nil) or not Subject.HostManaged or Subject.HostMarked then
       Exit;
-    Subject.EventMarked := True;
+    Subject.HostMarked := True;
     Work.Add(Subject);
   end;
 
@@ -2994,38 +5113,67 @@ var
   var
     Value: TAVM2Value;
     ScopeValue: TAVM2Value;
+    Entry: TPair<TAVM2Object, TAVM2DictionaryEntry>;
+    Routine: TAVM2Object;
+    Listener: TAVM2Listener;
   begin
     for Value in Subject.Props.Values do
       Mark(Value.Obj);
     if Subject.ArrayData <> nil then
       for Value in Subject.ArrayData.Elements.Values do
         Mark(Value.Obj);
+    if Subject.VectorData <> nil then
+      for Value in Subject.VectorData do
+        Mark(Value.Obj);
+    if Subject.DictionaryKeys <> nil then
+      for Entry in Subject.DictionaryKeys do
+      begin
+        Mark(Entry.Key);
+        Mark(Entry.Value.Value.Obj);
+      end;
     for ScopeValue in Subject.Scope do
       Mark(ScopeValue.Obj);
+    for ScopeValue in Subject.InstanceScope do
+      Mark(ScopeValue.Obj);
+    if Subject.BoundNativeMethods <> nil then
+      for Routine in Subject.BoundNativeMethods.Values do
+        Mark(Routine);
+    if Subject.Listeners <> nil then
+      for Listener in Subject.Listeners do
+        Mark(Listener.Callback);
+    if Subject.FrameScripts <> nil then
+      for Routine in Subject.FrameScripts.Values do
+        Mark(Routine);
     Mark(Subject.BoundReceiver.Obj);
     Mark(Subject.Parent);
     Mark(Subject.FunctionPrototype);
   end;
 
 begin
-  // Host-generated events can outlive dispatch if bytecode stores them.
+  // Host-generated events and their method closures can outlive dispatch.
   // Collection runs only between VM calls, when operand stacks are empty.
-  FNewHostEvents := 0;
+  FNewHostObjects := 0;
   Work := TList<TAVM2Object>.Create;
   try
     for Obj in FObjects do
       MarkFields(Obj);
+    for Call in FTimers do
+    begin
+      Mark(Call.Callback);
+      for Argument in Call.Args do
+        Mark(Argument.Obj);
+    end;
     Index := 0;
     while Index < Work.Count do
     begin
       MarkFields(Work[Index]);
       Inc(Index);
     end;
-    for Index := FHostEvents.Count - 1 downto 0 do
-      if FHostEvents[Index].EventMarked then
-        FHostEvents[Index].EventMarked := False
+    for Index := FHostObjects.Count - 1 downto 0 do
+      if FHostObjects[Index].HostMarked then
+        FHostObjects[Index].HostMarked := False
       else
-        FHostEvents.Delete(Index);
+        FHostObjects.Delete(Index);
   finally
     Work.Free;
   end;
@@ -3048,12 +5196,7 @@ end;
 
 function TAVM2Runtime.HostEventObject(EventClass: TAVM2Object; const Name: string; Bubbles, Cancelable: Boolean): TAVM2Object;
 begin
-  if FHostEvents.Count >= ObjectLimit then
-    raise EAVM2Error.Create('AVM2 retained event limit');
-  Result := TAVM2Object.Create(a2PlainObject);
-  FHostEvents.Add(Result);
-  Inc(FNewHostEvents);
-  Result.HostEvent := True;
+  Result := NewObject(a2PlainObject, True);
   Result.DisplayName := EventClass.DisplayName;
   Result.ClassObject := EventClass;
   Result.Parent := ClassPrototype(EventClass);
@@ -3081,7 +5224,7 @@ function TAVM2Runtime.EventCall(Command: TAVM2EventMethod; Receiver: TAVM2Object
 var
   Listener, Existing: TAVM2Listener;
   Event: TAVM2Object;
-  Position, I: Integer;
+  Position, I, BroadcastIndex: Integer;
 begin
   Result := Default(TAVM2Value);
   if Receiver = nil then
@@ -3119,6 +5262,9 @@ begin
     Exit(TAVM2Value.Num(Ord(HasListener(Receiver, Listener.Name, Command = aeWillTrigger)), a2Boolean));
   if (Length(Args) < 2) or (Args[1].Obj = nil) or (Args[1].Obj.Kind <> a2Function) then
     raise EAVM2Error.Create('AVM2 event listener must be a function');
+  BroadcastIndex := -1;
+  if (Receiver = FStage) or (Receiver.DisplayKind in [adContainer, adSprite, adMovieClip, adShape]) then
+    BroadcastIndex := IndexStr(Listener.Name, FrameEventNames);
   Listener.Callback := Args[1].Obj;
   Listener.Capture := (Length(Args) > 2) and Truth(Args[2]);
   Listener.Priority := 0;
@@ -3140,8 +5286,8 @@ begin
       if Command = aeRemoveListener then
       begin
         Receiver.Listeners.Delete(I);
-        if (Listener.Name = 'enterFrame') and not HasListener(Receiver, 'enterFrame', False) then
-          FEnterFrameTargets.Remove(Receiver);
+        if (BroadcastIndex >= 0) and not HasListener(Receiver, Listener.Name, False) then
+          FFrameEventTargets[TAVM2FrameEvent(BroadcastIndex)].Remove(Receiver);
       end;
       Exit;
     end;
@@ -3152,8 +5298,8 @@ begin
     Exit;
   if Receiver.Listeners.Count >= 4096 then
     raise EAVM2Error.Create('AVM2 listener limit');
-  if (Listener.Name = 'enterFrame') and not HasListener(Receiver, 'enterFrame', False) then
-    FEnterFrameTargets.Add(Receiver);
+  if (BroadcastIndex >= 0) and not HasListener(Receiver, Listener.Name, False) then
+    FFrameEventTargets[TAVM2FrameEvent(BroadcastIndex)].Add(Receiver);
   Receiver.Listeners.Insert(Position, Listener);
 end;
 
@@ -3240,13 +5386,15 @@ begin
   end;
 end;
 
-procedure TAVM2Runtime.EnterFrame;
+procedure TAVM2Runtime.BroadcastFrameEvent(Phase: TAVM2FrameEvent);
 var
   Receiver: TAVM2Object;
+  Name: string;
 begin
-  for Receiver in FEnterFrameTargets.ToArray do
-    if HasListener(Receiver, 'enterFrame', False) then
-      DispatchEventTo(Receiver, HostEventObject(FEnterFrameClass, 'enterFrame', False, False), True);
+  Name := FrameEventNames[Phase];
+  for Receiver in FFrameEventTargets[Phase].ToArray do
+    if HasListener(Receiver, Name, False) then
+      DispatchEventTo(Receiver, HostEventObject(FEnterFrameClass, Name, False, False), True);
 end;
 
 procedure TAVM2Runtime.Keyboard(Code, CharCode: Integer; Pressed, Ctrl, Alt, Shift: Boolean);
@@ -3300,22 +5448,43 @@ begin
   DispatchEventTo(Target, Event, False);
 end;
 
-procedure TAVM2Runtime.BindDisplay(Instance: TAVM2Object; Kind: TAVM2DisplayKind; Document: Boolean);
+procedure TAVM2Runtime.BindDisplay(Instance: TAVM2Object; Kind: TAVM2DisplayKind; Document: Boolean; Existing: TObject);
 var
   Graphics: TAVM2Object;
+  AClass: TAVM2Object;
   Command: TAVM2DisplayMethod;
-  Name: string;
+  Name, InstanceName, QualifiedName: string;
+  Classes: TArray<string>;
   Empty: TAVM2Value;
 begin
   if Kind = adNone then
     Exit;
+  InstanceName := '';
   Instance.DisplayKind := Kind;
   if FDisplay <> nil then
   begin
-    Instance.DisplayData := FDisplay.CreateDisplay(Document);
+    Instance.DisplayData := Existing;
+    if Instance.DisplayData = nil then
+    begin
+      if not Document and (Kind in [adSprite, adMovieClip]) then
+      begin
+        AClass := Instance.ClassObject;
+        while (AClass <> nil) and (AClass.Module <> nil) do
+        begin
+          for QualifiedName in Names(AClass.Module, AClass.Module.ABC.Instances[AClass.Index].Name) do
+            if QualifiedName[1] = #0 then
+              Classes := Classes + [Copy(QualifiedName, 2, MaxInt)]
+            else
+              Classes := Classes + [StringReplace(QualifiedName, #0, '.', [])];
+          AClass := AClass.Parent;
+        end;
+      end;
+      Instance.DisplayData := FDisplay.CreateDisplay(Document, Classes, InstanceName);
+    end;
     FDisplayObjects.Add(Instance.DisplayData, Instance);
   end;
   Instance.Props.Add(#0 + 'stage', TAVM2Value.Ref(nil));
+  Instance.Props.Add(#0 + 'root', TAVM2Value.Ref(nil));
   Instance.Props.Add(#0 + 'x', TAVM2Value.Num(0));
   Instance.Props.Add(#0 + 'y', TAVM2Value.Num(0));
   Instance.Props.Add(#0 + 'scaleX', TAVM2Value.Num(1));
@@ -3323,7 +5492,11 @@ begin
   Instance.Props.Add(#0 + 'rotation', TAVM2Value.Num(0));
   Instance.Props.Add(#0 + 'alpha', TAVM2Value.Num(1));
   Instance.Props.Add(#0 + 'visible', TAVM2Value.Num(1, a2Boolean));
-  Instance.Props.Add(#0 + 'name', TAVM2Value.Str(''));
+  Instance.Props.Add(#0 + 'name', TAVM2Value.Str(InstanceName));
+  for Command := adLocalToGlobal to adGetRect do
+    Instance.Props.Add(#0 + DisplayMethods[Command], TAVM2Value.Ref(FDisplayFunctions[Command]));
+  Instance.Props.Add(#0 + 'scrollRect', TAVM2Value.Ref(nil));
+  Instance.Props.Add(#0 + 'transform', Default(TAVM2Value));
   Empty := Default(TAVM2Value);
   Empty.Kind := a2Null;
   Instance.Props.Add(#0 + 'parent', Empty);
@@ -3333,6 +5506,7 @@ begin
     Instance.Props.Add(#0 + 'numChildren', TAVM2Value.Num(0, a2Int));
     for Command := adAddChild to adContains do
       Instance.Props.Add(#0 + DisplayMethods[Command], TAVM2Value.Ref(FDisplayFunctions[Command]));
+    Instance.Props.Add(#0 + 'getChildByName', TAVM2Value.Ref(FDisplayFunctions[adGetChildByName]));
   end;
   if Kind in [adShape, adSprite, adMovieClip] then
   begin
@@ -3349,16 +5523,247 @@ begin
   end;
 end;
 
+procedure TAVM2Runtime.RebuildTimelineBindings(Parent: TAVM2Object);
+var
+  Previous, Current: TDictionary<string, TAVM2Object>;
+  Item: TPair<string, TAVM2Object>;
+  Child, OldChild: TAVM2Object;
+  Key: string;
+  Stored: TAVM2Value;
+begin
+  if (Parent = nil) or (Parent.DisplayChildren = nil) then
+    Exit;
+  Previous := Parent.TimelineBindings;
+  Current := nil;
+  try
+    for Child in Parent.DisplayChildren do
+    begin
+      if not Child.TimelinePlaced then
+        Continue;
+      Key := Child.Props[#0 + 'name'].Text;
+      if Key = '' then
+        Continue;
+      Key := #0 + Key;
+      if Current = nil then
+        Current := TDictionary<string, TAVM2Object>.Create;
+      if not Current.ContainsKey(Key) then
+        Current.Add(Key, Child);
+    end;
+    if Previous <> nil then
+      for Item in Previous do
+        if ((Current = nil) or not Current.TryGetValue(Item.Key, Child) or (Child <> Item.Value)) and
+          Parent.Props.TryGetValue(Item.Key, Stored) and (Stored.Obj = Item.Value) then
+          Parent.Props[Item.Key] := TAVM2Value.Ref(nil);
+    if Current <> nil then
+      for Item in Current do
+        if ((Previous = nil) or not Previous.TryGetValue(Item.Key, OldChild) or (OldChild <> Item.Value)) and
+          Parent.Props.TryGetValue(Item.Key, Stored) and (Stored.Kind in [a2Null, a2Undefined]) then
+          Parent.Props[Item.Key] := TAVM2Value.Ref(Item.Value);
+    Parent.TimelineBindings := Current;
+    Current := nil;
+    Previous.Free;
+  finally
+    Current.Free;
+  end;
+end;
+
+procedure TAVM2Runtime.SyncDisplayChildren(Parent: TAVM2Object; Depth: Integer);
+var
+  Descriptions: TArray<TAVM2TimelineChild>;
+  Description: TAVM2TimelineChild;
+  Seen: TDictionary<TAVM2Object, Boolean>;
+  Children: TArray<TAVM2Object>;
+  Child, NativeClass, SymbolClass, Base: TAVM2Object;
+  I: Integer;
+begin
+  if (FDisplay = nil) or (Parent = nil) or (Parent.DisplayData = nil) or (Parent.DisplayChildren = nil) then
+    Exit;
+  if Depth >= 128 then
+    raise EAVM2Error.Create('AVM2 display nesting limit');
+  Descriptions := FDisplay.DisplayChildren(Parent.DisplayData);
+  if (Length(Descriptions) = 0) and (Parent.DisplayChildren.Count = 0) then
+    Exit;
+  Dec(FWork, Length(Descriptions) + Parent.DisplayChildren.Count);
+  if FWork < 0 then
+    raise EAVM2Error.Create('AVM2 instruction limit');
+  SetLength(Children, Length(Descriptions));
+  Seen := TDictionary<TAVM2Object, Boolean>.Create;
+  try
+    for I := 0 to High(Descriptions) do
+    begin
+      Description := Descriptions[I];
+      if not FDisplayObjects.TryGetValue(Description.Handle, Child) then
+      begin
+        NativeClass := FNative.Props['flash.display' + #0 + Description.ClassName].Obj;
+        SymbolClass := LinkedClass(Description.SymbolClass);
+        Base := SymbolClass;
+        while (Base <> nil) and (Base <> NativeClass) do
+          Base := Base.Parent;
+        if Base = nil then
+          SymbolClass := NativeClass;
+        Child := NewObject(a2PlainObject);
+        Child.ClassObject := SymbolClass;
+        Child.Parent := ClassPrototype(SymbolClass);
+        Child.DisplayName := Description.ClassName;
+        if SymbolClass <> NativeClass then
+          Child.DisplayName := SymbolClass.DisplayName;
+        Child.TimelinePlaced := True;
+        Child.TimelineConstructorPending := True;
+        if SymbolClass.CanDispatch then
+          BindDispatcher(Child);
+        BindDisplay(Child, SymbolClass.DisplayKind, False, Description.Handle);
+        InstallInstanceTraits(SymbolClass, Child);
+        SyncDisplayChildren(Child, Depth + 1);
+      end;
+      if Child.TimelinePlaced then
+      begin
+        Child.Props[#0 + 'name'] := TAVM2Value.Str(Description.Name);
+        Child.Props[#0 + 'x'] := TAVM2Value.Num(Description.X);
+        Child.Props[#0 + 'y'] := TAVM2Value.Num(Description.Y);
+        Child.Props[#0 + 'scaleX'] := TAVM2Value.Num(Description.ScaleX);
+        Child.Props[#0 + 'scaleY'] := TAVM2Value.Num(Description.ScaleY);
+        Child.Props[#0 + 'rotation'] := TAVM2Value.Num(Description.Rotation);
+        Child.Props[#0 + 'alpha'] := TAVM2Value.Num(Description.Alpha);
+        Child.Props[#0 + 'visible'] := TAVM2Value.Num(Ord(Description.Visible), a2Boolean);
+      end;
+      Child.DisplayParent := Parent;
+      Child.Props[#0 + 'parent'] := TAVM2Value.Ref(Parent);
+      Children[I] := Child;
+      Seen.Add(Child, True);
+    end;
+    for Child in Parent.DisplayChildren do
+      if (Child.DisplayParent = Parent) and not Seen.ContainsKey(Child) then
+      begin
+        Child.DisplayParent := nil;
+        Child.Props[#0 + 'parent'] := TAVM2Value.Ref(nil);
+      end;
+    Parent.DisplayChildren.Clear;
+    Parent.DisplayChildren.AddRange(Children);
+    Parent.Props[#0 + 'numChildren'] := TAVM2Value.Num(Length(Children), a2Int);
+    RebuildTimelineBindings(Parent);
+  finally
+    Seen.Free;
+  end;
+end;
+
+procedure TAVM2Runtime.ConstructTimelineChildren(Parent: TAVM2Object);
+var
+  Child: TAVM2Object;
+begin
+  if (Parent = nil) or (Parent.DisplayChildren = nil) then
+    Exit;
+  for Child in Parent.DisplayChildren.ToArray do
+    if (Child.DisplayParent = Parent) and Child.TimelineConstructorPending then
+    begin
+      Child.TimelineConstructorPending := False;
+      ConstructInto(Child.ClassObject, Child, nil);
+    end;
+end;
+
+procedure TAVM2Runtime.SyncTimelineDisplay(Handle: TObject);
+var
+  Parent: TAVM2Object;
+begin
+  Parent := DisplayObjectAt(Handle);
+  SyncDisplayChildren(Parent, 0);
+  ConstructTimelineChildren(Parent);
+end;
+
 procedure TAVM2Runtime.SetProperty(Receiver: TAVM2Object; const Keys: TArray<string>; const Value: TAVM2Value);
 var
   Key, Candidate, Name: string;
   Normalized: TAVM2Value;
   Number: Double;
   Index: Cardinal;
+  RepeatCount: Integer;
+  Rect: TAVM2Rectangle;
+  RectObject: TAVM2Object;
+  SourceObject, Owner: TAVM2Object;
 begin
+  if Receiver.VectorData <> nil then
+  begin
+    SetVectorProperty(Receiver, Keys, Value);
+    Exit;
+  end;
   Key := Keys[0];
   for Candidate in Keys do
   begin
+    if ((Receiver.IsMatrix and (IndexStr(Candidate, MatrixFields) >= 0)) or
+      (Receiver.IsVector3D and (IndexStr(Candidate, Vector3DFields) >= 0))) then
+    begin
+      Receiver.Props[Candidate] := TAVM2Value.Num(CoerceNumber(Value));
+      Exit;
+    end;
+    Owner := Receiver.TransformOwner;
+    if Owner <> nil then
+    begin
+      if Candidate = #0 + 'matrix' then
+      begin
+        SourceObject := CoerceValue(Value, atClass, FMatrixClass, 'flash.geom.Matrix').Obj;
+        if SourceObject <> nil then
+          ApplyDisplayMatrix(Owner, ReadNativeMatrix(SourceObject));
+        Owner.Matrix3DActive := SourceObject = nil;
+        Exit;
+      end;
+      if (Candidate = #0 + 'concatenatedMatrix') or (Candidate = #0 + 'pixelBounds') then
+        RaiseScriptError('ReferenceError', 1074, 'Illegal write to read-only property ' +
+          Copy(Candidate, 2, MaxInt) + ' on Transform.');
+    end;
+    if (Candidate = #0 + 'transform') and (Receiver.DisplayKind in [adContainer, adSprite, adMovieClip, adShape]) then
+    begin
+      SourceObject := CoerceValue(Value, atClass, FTransformClass, 'flash.geom.Transform').Obj;
+      if SourceObject = nil then
+        RaiseScriptError('TypeError', 2007, 'Parameter transform must be non-null.');
+      Owner := SourceObject.TransformOwner;
+      if (Owner <> nil) and (FDisplay <> nil) then
+      begin
+        ApplyDisplayMatrix(Receiver, FDisplay.GetMatrix(Owner.DisplayData, False, False));
+        Receiver.Matrix3DActive := Owner.Matrix3DActive;
+      end;
+      Exit;
+    end;
+    if Receiver.IsRectangle and SetRectangleProperty(Receiver, Candidate, Value) then
+      Exit;
+    if (Candidate = #0 + 'scrollRect') and (Receiver.DisplayKind in [adContainer, adSprite, adMovieClip, adShape]) then
+    begin
+      RectObject := RectangleArgument(Value, True);
+      if RectObject = nil then
+        Rect := Default(TAVM2Rectangle)
+      else
+        Rect := ReadNativeRectangle(RectObject);
+      if FDisplay <> nil then
+        FDisplay.SetScrollRect(Receiver.DisplayData, RectObject <> nil, Rect);
+      Exit;
+    end;
+    if Receiver.IsPoint then
+    begin
+      if (Candidate = #0 + 'x') or (Candidate = #0 + 'y') then
+      begin
+        Receiver.Props[Candidate] := TAVM2Value.Num(CoerceNumber(Value));
+        Exit;
+      end;
+      if Candidate = #0 + 'length' then
+        RaiseScriptError('ReferenceError', 1074, 'Illegal write to read-only property length on Point.');
+    end;
+    if Receiver.IsTimer then
+    begin
+      if Candidate = #0 + 'delay' then
+      begin
+        SetTimerDelay(Receiver, CoerceNumber(Value));
+        Exit;
+      end;
+      if Candidate = #0 + 'repeatCount' then
+      begin
+        RepeatCount := Integer(IntBits(CoerceNumber(Value)));
+        Receiver.Props.AddOrSetValue(Candidate, TAVM2Value.Num(RepeatCount, a2Int));
+        if (RepeatCount <> 0) and (RepeatCount <= Receiver.Props[#0 + 'currentCount'].Number) then
+          RemoveTimer(Receiver.TimerID);
+        Exit;
+      end;
+      if (Candidate = #0 + 'running') or (Candidate = #0 + 'currentCount') then
+        RaiseScriptError('ReferenceError', 1074, 'Illegal write to read-only property ' +
+          Copy(Candidate, 2, MaxInt) + ' on Timer.');
+    end;
     if (Receiver.RegExp <> nil) and RegExpProperty(Receiver.RegExp, Candidate, Normalized) then
     begin
       if Candidate = #0 + 'lastIndex' then
@@ -3415,10 +5820,14 @@ begin
     (Length(Key) > 0) and (Key[1] = #0) then
   begin
     Name := Copy(Key, 2, MaxInt);
-    if (Name = 'parent') or (Name = 'graphics') or (Name = 'numChildren') or (Name = 'stage') then
+    if (Receiver.DisplayKind = adMovieClip) and ((Name = 'currentFrame') or (Name = 'totalFrames')) then
+      RaiseScriptError('ReferenceError', 1074, 'Illegal write to read-only property ' + Name + ' on MovieClip.');
+    if (Name = 'parent') or (Name = 'graphics') or (Name = 'numChildren') or (Name = 'stage') or (Name = 'root') then
       raise EAVM2Error.Create('Read-only AVM2 display property ' + Name);
     if Name = 'name' then
     begin
+      if Receiver.TimelinePlaced then
+        RaiseScriptError('Error', 2078, 'The name property of a timeline-placed object cannot be modified.');
       Receiver.Props.AddOrSetValue(Key, TAVM2Value.Str(AsText(Value)));
       Exit;
     end;
@@ -3472,6 +5881,10 @@ var
   Position, I, Count, Depth: Integer;
   NullValue: TAVM2Value;
   Children: TList<TAVM2Object>;
+  X, Y: Double;
+  Rect: TAVM2Rectangle;
+  Shape: Boolean;
+  Name: string;
 
   procedure Require(Minimum: Integer);
   begin
@@ -3505,7 +5918,53 @@ begin
   Result := Default(TAVM2Value);
   if Receiver = nil then
     raise EAVM2Error.Create('Missing AVM2 native receiver');
-  if Command >= adClear then
+  if Command in [adHitTestPoint..adGetRect] then
+  begin
+    if not (Receiver.DisplayKind in [adContainer, adSprite, adMovieClip, adShape]) then
+      RaiseScriptError('TypeError', 1004, 'Method was invoked on an incompatible object.');
+    if Length(Args) < 1 + Ord(Command = adHitTestPoint) then
+      RaiseScriptError('ArgumentError', 1063, 'Missing argument for ' + DisplayMethods[Command] + '.');
+    if Command = adHitTestPoint then
+    begin
+      X := CoerceNumber(Args[0]);
+      Y := CoerceNumber(Args[1]);
+      Shape := (Length(Args) > 2) and Truth(Args[2]);
+      Exit(TAVM2Value.Num(Ord((FDisplay <> nil) and
+            FDisplay.HitTestPoint(Receiver.DisplayData, X, Y, Shape, StageOf(Receiver) = FStage)), a2Boolean));
+    end;
+    Child := Args[0].Obj;
+    if Args[0].Kind in [a2Null, a2Undefined] then
+    begin
+      if Command = adHitTestObject then
+        RaiseScriptError('TypeError', 2007, 'Parameter obj must be non-null.');
+      Child := Receiver;
+    end;
+    if (Child = nil) or ((Child <> FStage) and
+      not (Child.DisplayKind in [adContainer, adSprite, adMovieClip, adShape])) then
+      RaiseScriptError('TypeError', 1034, 'Type Coercion failed: expected a DisplayObject.');
+    if Command = adHitTestObject then
+      Exit(TAVM2Value.Num(Ord((FDisplay <> nil) and FDisplay.HitTestObject(Receiver.DisplayData,
+              Child.DisplayData)), a2Boolean));
+    Rect := Default(TAVM2Rectangle);
+    if FDisplay <> nil then
+      Rect := FDisplay.GetBounds(Receiver.DisplayData, Child.DisplayData, Command = adGetRect, False);
+    Exit(NewRectangle(Rect));
+  end;
+  if Command in [adLocalToGlobal, adGlobalToLocal] then
+  begin
+    Require(1);
+    if (Receiver <> FStage) and not (Receiver.DisplayKind in [adContainer, adSprite, adMovieClip, adShape]) then
+      RaiseScriptError('TypeError', 1004, 'Method was invoked on an incompatible object.');
+    if Args[0].Kind in [a2Null, a2Undefined] then
+      RaiseScriptError('TypeError', 2007, 'Parameter point must be non-null.');
+    Child := PointArgument(Args[0]);
+    X := Child.Props[#0 + 'x'].Number;
+    Y := Child.Props[#0 + 'y'].Number;
+    if FDisplay <> nil then
+      FDisplay.TransformPoint(Receiver.DisplayData, Command = adLocalToGlobal, X, Y);
+    Exit(NewPoint(X, Y));
+  end;
+  if Command in [adClear..adLineStyle] then
   begin
     if Receiver.DisplayKind <> adGraphics then
       raise EAVM2Error.Create('Invalid AVM2 Graphics receiver');
@@ -3539,6 +5998,15 @@ begin
   if Children = nil then
     raise EAVM2Error.Create('Invalid AVM2 DisplayObjectContainer receiver');
   case Command of
+    adGetChildByName:
+      begin
+        Require(1);
+        Name := CoerceText(Args[0]);
+        for Child in Children do
+          if Child.Props[#0 + 'name'].Text = Name then
+            Exit(TAVM2Value.Ref(Child));
+        Exit(TAVM2Value.Ref(nil));
+      end;
     adGetChildAt:
       begin
         Require(1);
@@ -3577,6 +6045,8 @@ begin
         NullValue.Kind := a2Null;
         Child.Props.AddOrSetValue(#0 + 'parent', NullValue);
         SetChildCount(Receiver);
+        if Child.TimelinePlaced then
+          RebuildTimelineBindings(Receiver);
         Exit(TAVM2Value.Ref(Child));
       end;
   end;
@@ -3621,6 +6091,12 @@ begin
   Child.DisplayParent := Receiver;
   Child.Props.AddOrSetValue(#0 + 'parent', TAVM2Value.Ref(Receiver));
   SetChildCount(Receiver);
+  if Child.TimelinePlaced then
+  begin
+    RebuildTimelineBindings(Receiver);
+    if OldParent <> Receiver then
+      RebuildTimelineBindings(OldParent);
+  end;
   if Command <> adSetChildIndex then
     Result := TAVM2Value.Ref(Child);
 end;
@@ -3657,6 +6133,7 @@ procedure TAVM2Runtime.InstallInstanceTraits(ClassObject, Instance: TAVM2Object;
 var
   Method: TAVM2ByteMethod;
   ArrayMethod: TAVM2ArrayMethod;
+  Name: string;
 begin
   if Depth >= 128 then
     raise EAVM2Error.Create('AVM2 inheritance depth limit');
@@ -3666,8 +6143,46 @@ begin
   begin
     if ClassObject = FRegExpClass then
       Instance.RegExp := TAVM2RegExp.Create;
+    if ClassObject = FDictionaryClass then
+      Instance.DictionaryKeys := TDictionary<TAVM2Object, TAVM2DictionaryEntry>.Create;
+    if ClassObject = FTimerClass then
+      Instance.IsTimer := True;
+    if ClassObject = FPointClass then
+    begin
+      Instance.IsPoint := True;
+      Instance.Props.Add(#0 + 'x', TAVM2Value.Num(0));
+      Instance.Props.Add(#0 + 'y', TAVM2Value.Num(0));
+      Instance.Props.Add(#0 + 'length', TAVM2Value.Num(0));
+    end;
+    if ClassObject = FRectangleClass then
+    begin
+      Instance.IsRectangle := True;
+      for Name in RectangleFields do
+        Instance.Props.Add(Name, TAVM2Value.Num(0));
+      for Name in RectangleAccessors do
+        Instance.Props.Add(Name, Default(TAVM2Value));
+    end;
+    if ClassObject = FMatrixClass then
+    begin
+      Instance.IsMatrix := True;
+      WriteNativeMatrix(Instance, IdentityMatrix);
+    end;
+    if ClassObject = FVector3DClass then
+    begin
+      Instance.IsVector3D := True;
+      for Name in Vector3DFields do
+        Instance.Props.Add(Name, TAVM2Value.Num(0));
+    end;
     if ClassObject.DisplayName = 'flash.display.MovieClip' then
+    begin
       Instance.Props.Add(#0 + 'addFrameScript', TAVM2Value.Ref(FAddFrameScript));
+      Instance.Props.Add(#0 + 'play', TAVM2Value.Ref(FPlayMovieClip));
+      Instance.Props.Add(#0 + 'stop', TAVM2Value.Ref(FStopMovieClip));
+      Instance.Props.Add(#0 + 'gotoAndPlay', TAVM2Value.Ref(FGotoAndPlay));
+      Instance.Props.Add(#0 + 'gotoAndStop', TAVM2Value.Ref(FGotoAndStop));
+      Instance.Props.Add(#0 + 'currentFrame', TAVM2Value.Num(1, a2Int));
+      Instance.Props.Add(#0 + 'totalFrames', TAVM2Value.Num(1, a2Int));
+    end;
     if ClassObject = FArrayClass then
     begin
       Instance.ArrayData := TAVM2Array.Create;
@@ -3696,12 +6211,70 @@ var
   Bubbles, Cancelable: Boolean;
   MessageValue: TAVM2Value;
   ErrorID: Cardinal;
+  RepeatCount, I: Integer;
+  DisplayObject: TAVM2Object;
 begin
   if (ClassObject = nil) or (ClassObject.Kind <> a2Class) then
     raise EAVM2Error.Create('AVM2 receiver is not a class');
   if ClassObject.Index >= 0 then
     Execute(ClassObject.Module, ClassObject.Module.ABC.Instances[ClassObject.Index].Definition.Init,
       TAVM2Value.Ref(Instance), ClassObject.Script, ClassObject, ClassObject.InstanceScope, Args)
+  else if ClassObject.DisplayKind in [adContainer, adSprite, adMovieClip] then
+    ConstructTimelineChildren(Instance)
+  else if ClassObject.IsVectorType then
+  begin
+    if Length(Args) > 0 then
+      ResizeVector(Instance, IntBits(CoerceNumber(Args[0])));
+    if Length(Args) > 1 then
+      Instance.VectorFixed := Truth(Args[1]);
+  end
+  else if ClassObject = FTimerClass then
+  begin
+    if Length(Args) = 0 then
+      RaiseScriptError('ArgumentError', 1063, 'Timer requires a delay.');
+    SetTimerDelay(Instance, CoerceNumber(Args[0]));
+    RepeatCount := 0;
+    if Length(Args) > 1 then
+      RepeatCount := Integer(IntBits(CoerceNumber(Args[1])));
+    Instance.Props.AddOrSetValue(#0 + 'repeatCount', TAVM2Value.Num(RepeatCount, a2Int));
+    Instance.Props.AddOrSetValue(#0 + 'currentCount', TAVM2Value.Num(0, a2Int));
+    Instance.Props.AddOrSetValue(#0 + 'running', TAVM2Value.Num(0, a2Boolean));
+  end
+  else if ClassObject = FPointClass then
+  begin
+    if Length(Args) > 0 then
+      Instance.Props[#0 + 'x'] := TAVM2Value.Num(CoerceNumber(Args[0]));
+    if Length(Args) > 1 then
+      Instance.Props[#0 + 'y'] := TAVM2Value.Num(CoerceNumber(Args[1]));
+  end
+  else if ClassObject = FRectangleClass then
+  begin
+    for I := 0 to Min(High(Args), High(RectangleFields)) do
+      Instance.Props[RectangleFields[I]] := TAVM2Value.Num(CoerceNumber(Args[I]));
+  end
+  else if ClassObject = FMatrixClass then
+  begin
+    for I := 0 to Min(High(Args), High(MatrixFields)) do
+      Instance.Props[MatrixFields[I]] := TAVM2Value.Num(CoerceNumber(Args[I]));
+  end
+  else if ClassObject = FVector3DClass then
+  begin
+    for I := 0 to Min(High(Args), High(Vector3DFields)) do
+      Instance.Props[Vector3DFields[I]] := TAVM2Value.Num(CoerceNumber(Args[I]));
+  end
+  else if ClassObject = FTransformClass then
+  begin
+    if Length(Args) = 0 then
+      RaiseScriptError('ArgumentError', 1063, 'Transform requires a DisplayObject.');
+    DisplayObject := Args[0].Obj;
+    if (DisplayObject = nil) or ((DisplayObject <> FStage) and
+      not (DisplayObject.DisplayKind in [adContainer, adSprite, adMovieClip, adShape])) then
+      RaiseScriptError('TypeError', 1034, 'Transform requires a DisplayObject.');
+    Instance.TransformOwner := DisplayObject;
+    Instance.Props.Add(#0 + 'matrix', Default(TAVM2Value));
+    Instance.Props.Add(#0 + 'concatenatedMatrix', Default(TAVM2Value));
+    Instance.Props.Add(#0 + 'pixelBounds', Default(TAVM2Value));
+  end
   else if ClassObject = FRegExpClass then
     InitRegExp(Instance.RegExp, Args)
   else if ClassObject = FArrayClass then
@@ -3915,29 +6488,67 @@ begin
       Exit(Method);
 end;
 
+function TAVM2Runtime.BindNativeMethod(Receiver, Method: TAVM2Object): TAVM2Value;
+var
+  Closure: TAVM2Object;
+begin
+  if Receiver.BoundNativeMethods = nil then
+    Receiver.BoundNativeMethods := TDictionary<TAVM2Object, TAVM2Object>.Create;
+  if not Receiver.BoundNativeMethods.TryGetValue(Method, Closure) then
+  begin
+    Closure := NewObject(a2Function, Receiver.HostManaged);
+    Closure.Index := Method.Index;
+    Closure.BoundReceiver := TAVM2Value.Ref(Receiver);
+    Receiver.BoundNativeMethods.Add(Method, Closure);
+  end;
+  Result := TAVM2Value.Ref(Closure);
+end;
+
 function TAVM2Runtime.ReadProperty(const Receiver: TAVM2Value; const Names: TArray<string>; ForCall: Boolean): TAVM2Value;
 var
-  AClass, Func, Prototype: TAVM2Object;
+  AClass, Func, Prototype, Obj: TAVM2Object;
   Key: string;
   Method: TAVM2PrimitiveMethod;
+  MethodIndex: Integer;
 begin
   if Receiver.Kind = a2Object then
   begin
-    Result := PropertyValue(Receiver.Obj, Names);
-    if (not ForCall) and (Result.Obj <> nil) and (Result.Obj.Kind = a2Function) then
+    Obj := Receiver.Obj;
+    Result := PropertyValue(Obj, Names);
+    if (not ForCall) and (Result.Obj <> nil) and (Result.Obj.Kind = a2Function) and
+      (Result.Obj.BoundReceiver.Kind = a2Undefined) then
+    begin
+      MethodIndex := Result.Obj.Index;
+      if (Obj.IsMatrix and (MethodIndex <= MatrixMethodBase) and
+        (MethodIndex >= MatrixMethodBase - Ord(High(TAVM2MatrixMethod)))) or
+        (Obj.IsVector3D and (MethodIndex = Vector3DTextMethod)) or
+        (Obj.IsRectangle and (MethodIndex <= RectangleMethodBase) and
+        (MethodIndex >= RectangleMethodBase - Ord(High(TAVM2RectangleMethod)))) or
+        (Obj.IsPoint and (MethodIndex <= PointMethodBase) and (MethodIndex >= PointMethodBase - Ord(apText))) or
+        ((Obj.DisplayKind = adMovieClip) and ((MethodIndex = AddFrameScriptMethod) or
+        ((MethodIndex <= MovieClipPlayMethod) and (MethodIndex >= MovieClipGotoAndStopMethod)))) or
+        (((Obj = FStage) or (Obj.DisplayKind in [adContainer, adSprite, adMovieClip, adShape])) and
+        (MethodIndex <= DisplayMethodBase - Ord(adLocalToGlobal)) and
+        (MethodIndex >= DisplayMethodBase - Ord(adGetRect))) or
+        (Obj.IsTimer and (MethodIndex <= TimerMethodBase) and
+        (MethodIndex >= TimerMethodBase - Ord(tmReset))) or
+        ((Obj.EventKind = aeTimer) and (MethodIndex <= TimerMethodBase - Ord(tmCloneEvent)) and
+        (MethodIndex >= TimerMethodBase - Ord(tmUpdateAfterEvent))) or
+        (Obj.CanDispatch and (MethodIndex <= EventMethodBase) and
+        (MethodIndex >= EventMethodBase - Ord(aeDispatch))) or
+        ((Obj.EventKind <> aeNone) and (MethodIndex <= EventMethodBase - Ord(aeStop)) and
+        (MethodIndex >= EventMethodBase - Ord(aeIsDefaultPrevented))) then
+        Exit(BindNativeMethod(Obj, Result.Obj));
       for Key in Names do
-        if ((Receiver.Obj.RegExp <> nil) and
+        if ((Obj.RegExp <> nil) and
           ((Key = BuiltinNamespace + 'exec') or (Key = BuiltinNamespace + 'test')) and
-          ((Result.Obj.Index = RegExpMethodBase) or (Result.Obj.Index = RegExpMethodBase - 1))) or
-          ((Receiver.Obj.ArrayData <> nil) and
-          (((Key = BuiltinNamespace + 'sort') and (Result.Obj = FArrayMethods[aaSort])) or
-          ((Key = BuiltinNamespace + 'sortOn') and (Result.Obj = FArrayMethods[aaSortOn])))) then
-        begin
-          Func := NewObject(a2Function);
-          Func.Index := Result.Obj.Index;
-          Func.BoundReceiver := Receiver;
-          Exit(TAVM2Value.Ref(Func));
-        end;
+          ((MethodIndex = RegExpMethodBase) or (MethodIndex = RegExpMethodBase - 1))) or
+          ((Obj.ArrayData <> nil) and Key.StartsWith(BuiltinNamespace) and
+          (MethodIndex <= ArrayMethodBase) and (MethodIndex >= ArrayMethodBase - Ord(High(TAVM2ArrayMethod)))) or
+          ((Obj.VectorData <> nil) and Key.StartsWith(BuiltinNamespace) and
+          (MethodIndex <= VectorMethodBase) and (MethodIndex >= VectorMethodBase - Ord(High(TAVM2VectorMethod)))) then
+          Exit(BindNativeMethod(Obj, Result.Obj));
+    end;
     Exit;
   end;
   if Length(Names) = 0 then
@@ -4364,44 +6975,34 @@ begin
   end;
 end;
 
-function TAVM2Runtime.CoerceText(const Value: TAVM2Value): string;
+function TAVM2Runtime.CoercePrimitive(const Value: TAVM2Value; PreferText: Boolean): TAVM2Value;
 const
-  Methods: array[0..1] of string = (#0 + 'toString', #0 + 'valueOf');
+  Methods: array[0..1] of string = (#0 + 'valueOf', #0 + 'toString');
 var
-  Name: string;
+  I: Integer;
   Method, Converted: TAVM2Value;
 begin
   if Value.Obj <> nil then
-    for Name in Methods do
+    for I := 0 to High(Methods) do
     begin
-      Method := PropertyValue(Value.Obj, [Name]);
+      Method := PropertyValue(Value.Obj, [Methods[I xor Ord(PreferText)]]);
       if (Method.Obj = nil) or (Method.Obj.Kind <> a2Function) then
         Continue;
       Converted := Invoke(Method.Obj, Value, nil);
       if Converted.Kind <> a2Object then
-        Exit(AsText(Converted));
+        Exit(Converted);
     end;
-  Result := AsText(Value);
+  Result := Value;
+end;
+
+function TAVM2Runtime.CoerceText(const Value: TAVM2Value): string;
+begin
+  Result := AsText(CoercePrimitive(Value, True));
 end;
 
 function TAVM2Runtime.CoerceNumber(const Value: TAVM2Value): Double;
-const
-  ConversionNames: array[0..1] of string = (#0 + 'valueOf', #0 + 'toString');
-var
-  Key: string;
-  Method, Converted: TAVM2Value;
 begin
-  if Value.Obj <> nil then
-    for Key in ConversionNames do
-    begin
-      Method := PropertyValue(Value.Obj, [Key]);
-      if (Method.Obj = nil) or (Method.Obj.Kind <> a2Function) then
-        Continue;
-      Converted := Invoke(Method.Obj, Value, nil);
-      if Converted.Kind <> a2Object then
-        Exit(AsNumber(Converted));
-    end;
-  Result := AsNumber(Value);
+  Result := AsNumber(CoercePrimitive(Value, False));
 end;
 
 procedure AppendRegExpText(Builder: TStringBuilder; const Text: string);
@@ -5217,6 +7818,8 @@ begin
     RaiseScriptError('TypeError', 1007, 'Instantiation attempted on a non-constructor.');
   if ClassObject = FClassClass then
     RaiseScriptError('TypeError', 1115, 'Class$ is not a constructor.');
+  if ClassObject = FVectorClass then
+    RaiseScriptError('TypeError', 1115, 'Vector$ is not a constructor.');
   if ClassObject.Kind = a2Function then
   begin
     if (ClassObject.BoundReceiver.Kind <> a2Undefined) or ((ClassObject.Module = nil) and
@@ -5248,56 +7851,78 @@ begin
   Result := NewObject(a2PlainObject);
   Result.DisplayName := ClassObject.DisplayName;
   Result.ClassObject := ClassObject;
+  if ClassObject.IsVectorType then
+    Result.VectorData := TList<TAVM2Value>.Create;
   Result.Parent := ClassPrototype(ClassObject);
   if ClassObject.CanDispatch then
     BindDispatcher(Result);
   BindDisplay(Result, ClassObject.DisplayKind, False);
   InstallInstanceTraits(ClassObject, Result);
+  if ClassObject.Module <> nil then
+    SyncDisplayChildren(Result, 0);
   ConstructInto(ClassObject, Result, Args);
 end;
 
-procedure TAVM2Runtime.CreateDocument(const Name: string);
+function TAVM2Runtime.LinkedClass(const Name: string): TAVM2Object;
 var
   KeyName: string;
   I: Integer;
-  Script, Instance: TAVM2Object;
+  Script: TAVM2Object;
   Value: TAVM2Value;
 begin
-  if (Name = '') or (FDocument <> nil) then
-    Exit;
+  if Name = '' then
+    Exit(nil);
   I := LastDelimiter('.', Name);
   if I = 0 then
     KeyName := #0 + Name
   else
     KeyName := Copy(Name, 1, I - 1) + #0 + Copy(Name, I + 1, MaxInt);
   if not FDefinitions.TryGetValue(KeyName, Script) then
-    Exit;
+    Exit(nil);
   Initialize(Script);
   Value := PropertyValue(Script, [KeyName]);
   if (Value.Obj = nil) or (Value.Obj.Kind <> a2Class) then
-    raise EAVM2Error.CreateFmt('Invalid AVM2 document class %s', [Name]);
+    raise EAVM2Error.CreateFmt('Invalid AVM2 symbol class %s', [Name]);
+  Result := Value.Obj;
+end;
+
+procedure TAVM2Runtime.CreateDocument(const Name: string);
+var
+  DocumentClass, Instance: TAVM2Object;
+begin
+  if FDocument <> nil then
+    Exit;
+  if Name = '' then
+    DocumentClass := FNative.Props['flash.display' + #0 + 'MovieClip'].Obj
+  else
+    DocumentClass := LinkedClass(Name);
+  if DocumentClass = nil then
+    Exit;
   Instance := NewObject(a2PlainObject);
-  Instance.Parent := ClassPrototype(Value.Obj);
-  Instance.DisplayName := Value.Obj.DisplayName;
-  if Value.Obj.CanDispatch then
+  Instance.ClassObject := DocumentClass;
+  Instance.Parent := ClassPrototype(DocumentClass);
+  Instance.DisplayName := DocumentClass.DisplayName;
+  if DocumentClass.CanDispatch then
     BindDispatcher(Instance);
-  BindDisplay(Instance, Value.Obj.DisplayKind, True);
+  BindDisplay(Instance, DocumentClass.DisplayKind, True);
   if Instance.DisplayKind <> adNone then
   begin
     Instance.DisplayParent := FStage;
     Instance.Props.AddOrSetValue(#0 + 'parent', TAVM2Value.Ref(FStage));
   end;
-  InstallInstanceTraits(Value.Obj, Instance);
+  InstallInstanceTraits(DocumentClass, Instance);
   FDocument := Instance;
-  ConstructInto(Value.Obj, Instance, nil);
+  SyncDisplayChildren(Instance, 0);
+  ConstructInto(DocumentClass, Instance, nil);
 end;
 
-procedure TAVM2Runtime.RunFrameScript(Frame: Integer);
+procedure TAVM2Runtime.RunFrameScript(Handle: TObject; Frame: Integer);
 var
-  Routine: TAVM2Object;
+  Clip, Routine: TAVM2Object;
 begin
-  if (FDocument <> nil) and FFrameScripts.TryGetValue(Frame, Routine) then
-    Invoke(Routine, FDocument, nil);
+  Clip := DisplayObjectAt(Handle);
+  if (Clip <> nil) and (Clip.FrameScripts <> nil) and Clip.FrameScripts.TryGetValue(Frame, Routine) then
+    Invoke(Routine, Clip, nil);
 end;
 
 function TAVM2Runtime.Invoke(FunctionObject, Receiver: TAVM2Object; const Args: TArray<TAVM2Value>): TAVM2Value;
@@ -5311,12 +7936,39 @@ var
   FrameValue: Double;
   Routine, ThisObject: TAVM2Object;
   Line, Part: string;
+  HasScene: Boolean;
 begin
   Result := Default(TAVM2Value);
   if (FunctionObject = nil) or not (FunctionObject.Kind in [a2Function, a2Class]) then
     RaiseScriptError('TypeError', 1006, 'value is not a function.');
   if FunctionObject.Kind = a2Class then
   begin
+    if (FunctionObject = FMatrixClass) or (FunctionObject = FTransformClass) or (FunctionObject = FVector3DClass) then
+    begin
+      if Length(Args) <> 1 then
+        RaiseScriptError('ArgumentError', 1112, 'Incorrect number of arguments for class coercion.');
+      Exit(CoerceValue(Args[0], atClass, FunctionObject, 'flash.geom.' + FunctionObject.DisplayName));
+    end;
+    if FunctionObject = FRectangleClass then
+    begin
+      if Length(Args) <> 1 then
+        RaiseScriptError('ArgumentError', 1112, 'Incorrect number of arguments for Rectangle coercion.');
+      Exit(CoerceValue(Args[0], atClass, FRectangleClass, 'flash.geom.Rectangle'));
+    end;
+    if FunctionObject = FPointClass then
+    begin
+      if Length(Args) <> 1 then
+        RaiseScriptError('ArgumentError', 1112, 'Incorrect number of arguments for Point coercion.');
+      Exit(CoerceValue(Args[0], atClass, FPointClass, 'flash.geom.Point'));
+    end;
+    if FunctionObject = FDictionaryClass then
+    begin
+      if Length(Args) <> 1 then
+        RaiseScriptError('ArgumentError', 1112, 'Incorrect number of arguments for Dictionary coercion.');
+      Exit(CoerceValue(Args[0], atClass, FDictionaryClass, 'flash.utils.Dictionary'));
+    end;
+    if FunctionObject.IsVectorType then
+      Exit(ConvertVector(FunctionObject, Args));
     if FunctionObject.PrimitiveKind in [atString..atUInt] then
       Exit(ConvertPrimitive(FunctionObject.PrimitiveKind, Args));
     if (FunctionObject = FRegExpClass) and (Length(Args) = 1) and (Args[0].Obj <> nil) and
@@ -5330,6 +7982,31 @@ begin
   if FunctionObject.BoundReceiver.Kind <> a2Undefined then
     Receiver := FunctionObject.BoundReceiver;
   ThisObject := Receiver.Obj;
+  if FunctionObject.Index <= MatrixMethodBase then
+    Exit(MatrixCall(TAVM2MatrixMethod(MatrixMethodBase - FunctionObject.Index), ThisObject, Args));
+  if FunctionObject.Index = Vector3DTextMethod then
+  begin
+    if (ThisObject = nil) or not ThisObject.IsVector3D then
+      RaiseScriptError('TypeError', 1004, 'Method was invoked on an incompatible object.');
+    Exit(TAVM2Value.Str('Vector3D(' + AsText(ThisObject.Props[Vector3DFields[0]]) + ', ' +
+        AsText(ThisObject.Props[Vector3DFields[1]]) + ', ' + AsText(ThisObject.Props[Vector3DFields[2]]) + ')'));
+  end;
+  if FunctionObject.Index <= RectangleMethodBase then
+    Exit(RectangleCall(TAVM2RectangleMethod(RectangleMethodBase - FunctionObject.Index), ThisObject, Args));
+  if FunctionObject.Index <= PointMethodBase then
+    Exit(PointCall(TAVM2PointMethod(PointMethodBase - FunctionObject.Index), ThisObject, Args));
+  if FunctionObject.Index = MathAtanMethod then
+  begin
+    if Length(Args) = 0 then
+      RaiseScriptError('ArgumentError', 1063, 'Missing argument for Math.atan.');
+    Exit(TAVM2Value.Num(ArcTan(CoerceNumber(Args[0]))));
+  end;
+  if FunctionObject.Index <= TimerMethodBase then
+    Exit(TimerCall(TAVM2TimerMethod(TimerMethodBase - FunctionObject.Index), ThisObject, Args));
+  if FunctionObject.Index = DictionaryToJSONMethod then
+    Exit(TAVM2Value.Str('Dictionary'));
+  if FunctionObject.Index <= VectorMethodBase then
+    Exit(InvokeVector(TAVM2VectorMethod(VectorMethodBase - FunctionObject.Index), ThisObject, Args));
   if FunctionObject.Index <= ObjectMethodBase then
     Exit(InvokeObjectMethod(TAVM2ObjectMethod(ObjectMethodBase - FunctionObject.Index), Receiver, Args));
   if FunctionObject.Index <= RegExpMethodBase then
@@ -5340,12 +8017,19 @@ begin
     Exit;
   if (FunctionObject.Index = FunctionCallMethod) or (FunctionObject.Index = FunctionApplyMethod) then
     Exit(ForwardFunction(ThisObject, Args, FunctionObject.Index = FunctionApplyMethod));
+  if FunctionObject.Index = IsNaNMethod then
+  begin
+    FrameValue := NaN;
+    if Length(Args) > 0 then
+      FrameValue := CoerceNumber(Args[0]);
+    Exit(TAVM2Value.Num(Ord(IsNan(FrameValue)), a2Boolean));
+  end;
   if FunctionObject.Index = TraceMethod then
   begin
     Line := '';
     for I := 0 to High(Args) do
     begin
-      Part := AsText(Args[I]);
+      Part := CoerceText(Args[I]);
       if Length(Part) > TextLimit - Length(Line) - Ord(I > 0) then
         raise EAVM2Error.Create('AVM2 trace size limit');
       if I > 0 then
@@ -5363,25 +8047,53 @@ begin
   end
   else if FunctionObject.Index = AddFrameScriptMethod then
   begin
-    if (ThisObject <> FDocument) or (ThisObject = nil) or Odd(Length(Args)) then
-      raise EAVM2Error.Create('Invalid AVM2 addFrameScript arguments');
+    if (Length(Args) = 0) or Odd(Length(Args)) then
+      RaiseScriptError('ArgumentError', 2001, 'Invalid number of arguments for addFrameScript.');
+    if (ThisObject = nil) or (ThisObject.DisplayKind <> adMovieClip) then
+      Exit;
     I := 0;
     while I < Length(Args) do
     begin
-      FrameValue := AsNumber(Args[I]);
-      if IsNan(FrameValue) or (FrameValue < 0) or (FrameValue > 65534) then
-        raise EAVM2Error.Create('Invalid AVM2 frame script index');
-      Frame := Trunc(FrameValue);
+      Frame := Integer(IntBits(CoerceNumber(Args[I])) and $FFFF);
       Routine := Args[I + 1].Obj;
-      if Args[I + 1].Kind = a2Null then
-        FFrameScripts.Remove(Frame)
+      if Routine = nil then
+      begin
+        if ThisObject.FrameScripts <> nil then
+          ThisObject.FrameScripts.Remove(Frame);
+      end
       else
       begin
-        if (Routine = nil) or (Routine.Kind <> a2Function) then
-          raise EAVM2Error.Create('AVM2 frame script must be a function');
-        FFrameScripts.AddOrSetValue(Frame, Routine);
+        if ThisObject.FrameScripts = nil then
+          ThisObject.FrameScripts := TDictionary<Integer, TAVM2Object>.Create;
+        ThisObject.FrameScripts.AddOrSetValue(Frame, Routine);
+        if FDisplay <> nil then
+          FDisplay.RequestFrameScript(ThisObject.DisplayData, Frame);
       end;
       Inc(I, 2);
+    end;
+  end
+  else if (FunctionObject.Index = MovieClipPlayMethod) or (FunctionObject.Index = MovieClipStopMethod) then
+  begin
+    if (FDisplay <> nil) and (ThisObject <> nil) and (ThisObject.DisplayKind = adMovieClip) then
+      FDisplay.SetPlaying(ThisObject.DisplayData, FunctionObject.Index = MovieClipPlayMethod);
+  end
+  else if (FunctionObject.Index = MovieClipGotoAndPlayMethod) or (FunctionObject.Index = MovieClipGotoAndStopMethod) then
+  begin
+    if (Length(Args) < 1) or (Length(Args) > 2) then
+      RaiseScriptError('ArgumentError', 1063, 'MovieClip goto expects one or two arguments.');
+    if (FDisplay = nil) or (ThisObject = nil) or (ThisObject.DisplayKind <> adMovieClip) then
+      Exit;
+    HasScene := (Length(Args) = 2) and not (Args[1].Kind in [a2Undefined, a2Null]);
+    Part := '';
+    if HasScene then
+      Part := CoerceText(Args[1]);
+    Line := CoerceText(Args[0]);
+    if not FDisplay.GotoFrame(ThisObject.DisplayData, Line, Part, HasScene,
+      FunctionObject.Index = MovieClipGotoAndPlayMethod) then
+    begin
+      if not HasScene then
+        Part := Line;
+      RaiseScriptError('ArgumentError', 2109, Format('Frame label %s not found in scene %s.', [Line, Part]));
     end;
   end
   else if FunctionObject.Index <= ArrayMethodBase then
@@ -5444,11 +8156,13 @@ begin
     Result[Offset] := Result[Offset] or InstructionStart;
     Op := Code.U8;
     case Op of
-      $02, $03, $09, $1C..$21, $23, $26..$2B, $30, $47, $48, $64, $70, $73..$76, $77, $81..$85, $88, $89, $90, $91, $93, $96, $97, $A0..$B1, $B4, $C5..$C7, $D0..$D7:
+      $02, $03, $09, $1C..$21, $23, $26..$2B, $30, $47, $48, $64, $70, $73..$76, $77, $81..$85, $88, $89, $90, $91, $93, $96, $97, $A0..$B1, $B3, $B4, $C0, $C1, $C5..$C7, $D0..$D7:
         ;
-      $08, $25, $2C..$2F, $40..$42, $49, $55, $56, $58, $5D..$63, $66, $67, $68, $6A, $6C..$6F, $80, $86, $B2, $F0, $F1:
+      $08, $2C..$2F, $31, $40..$42, $49, $53, $55, $56, $58, $5D..$63, $66, $67, $68, $6A, $6C..$6F, $80, $86, $B2, $F0, $F1:
         Code.U30;
-      $24, $65:
+      $25:
+        Code.U32; // Some compilers sign-extend negative short immediates.
+        $24, $65:
         Code.U8;
       $57:
         if not HasActivation then
@@ -5506,7 +8220,8 @@ var
   StackTop, ScopeTop, Op, Offset, N, I, Target: Integer;
   EnumIndex, LeftBits, RightBits: Cardinal;
   A, B: TAVM2Value;
-  Obj, Callable: TAVM2Object;
+  Obj, Callable, DictionaryKey: TAVM2Object;
+  DictionaryEntry: TAVM2DictionaryEntry;
   L, R: Double;
   Name: string;
   Branch: Boolean;
@@ -5592,17 +8307,30 @@ var
       Result := ValuePrototype(Value);
   end;
 
-  function PropertyNames(Index: Integer; out RuntimeName: string): TArray<string>;
+  function PropertyNames(Index: Integer; out RuntimeName: string; IdentityNames: Boolean = False): TArray<string>;
   var
     Field: TABCMultiname;
+    KeyValue: TAVM2Value;
+    TargetObject: TAVM2Object;
   begin
     if (Index <= 0) or (Index >= Length(Module.ABC.Multinames)) then
       raise EAVM2Error.Create('AVM2 multiname index outside pool');
     Field := Module.ABC.Multinames[Index];
     RuntimeName := '';
+    DictionaryKey := nil;
     if Field.Kind <> $1B then
       Exit(Names(Module, Index));
-    RuntimeName := AsText(Pop);
+    KeyValue := Pop;
+    if IdentityNames and (KeyValue.Obj <> nil) and (StackTop > 0) then
+    begin
+      TargetObject := Stack[StackTop - 1].Obj;
+      if (TargetObject <> nil) and (TargetObject.DictionaryKeys <> nil) then
+      begin
+        DictionaryKey := KeyValue.Obj;
+        Exit(nil);
+      end;
+    end;
+    RuntimeName := AsText(KeyValue);
     Result := NamespaceSetKeys(Module, Field.NamespaceSet, RuntimeName);
   end;
 
@@ -5797,7 +8525,7 @@ begin
             $1E, $1F, $23:
               begin
                 A := Pop;
-                Target := Integer(IntBits(AsNumber(A)));
+                Target := Integer(IntBits(CoerceNumber(A)));
                 B := Pop;
                 if Op = $1F then
                 begin
@@ -5820,8 +8548,16 @@ begin
                   A := EnumerantName(Obj, Cardinal(Target));
                   if Op = $1E then
                     Push(A)
+                  else if (Obj <> nil) and (Obj.DictionaryKeys <> nil) and (A.Obj <> nil) then
+                    Push(DictionaryValue(Obj, A.Obj))
                   else
-                    Push(PropertyValue(Obj, [#0 + AsText(A)]));
+                  begin
+                    Name := #0 + AsText(A);
+                    if (Obj <> nil) and (Obj.VectorData <> nil) and (A.Kind = a2Null) and not HasProperty(Obj, Name) then
+                      RaiseScriptError('ReferenceError', 1069, 'Property null not found on ' +
+                        Obj.DisplayName + ' and there is no default value.');
+                    Push(PropertyValue(Obj, [Name]));
+                  end;
                 end;
               end;
             $20:
@@ -5841,7 +8577,7 @@ begin
               end;
             $25:
               begin
-                N := Code.U30 and $FFFF;
+                N := Integer(Code.U32 and $FFFF);
                 if N >= 32768 then
                   Dec(N, 65536);
                 Push(TAVM2Value.Num(N, a2Int));
@@ -5916,6 +8652,13 @@ begin
                   Push(TAVM2Value.Num(Ord(EnumIndex <> 0), a2Boolean));
                 end;
               end;
+            $31:
+              begin
+                N := CheckedIndex(Length(Module.ABC.Namespaces));
+                if N = 0 then
+                  raise EAVM2Error.Create('Invalid AVM2 pushnamespace operand');
+                Push(ConstantValue(Module, N, Module.ABC.Namespaces[N].Kind));
+              end;
             $40:
               begin
                 N := CheckedIndex(Length(Module.ABC.Methods));
@@ -5976,6 +8719,12 @@ begin
                 A := ReadProperty(B, NamesToTry, True);
                 Push(Instantiate(A.Obj, Parameters));
               end;
+            $53:
+              begin
+                Parameters := TakeParams(Code.U30);
+                A := Pop;
+                Push(TAVM2Value.Ref(ApplyType(A.Obj, Parameters)));
+              end;
             $55:
               begin
                 N := Code.U30;
@@ -6031,23 +8780,31 @@ begin
             $5D, $5E, $5F, $60:
               begin
                 N := Code.U30;
-                Obj := Find(Module, N, Script, Scopes, Outer, ScopeTop, Op);
-                if Op = $60 then
-                  Push(PropertyValue(Obj, Names(Module, N)))
+                if (N > 0) and (N < Length(Module.ABC.Multinames)) and
+                  (Op = $60) and (Module.ABC.Multinames[N].Kind = $1D) then
+                  Push(TAVM2Value.Ref(ResolveTypeClass(Module, N, 0)))
                 else
-                  Push(TAVM2Value.Ref(Obj));
+                begin
+                  Obj := Find(Module, N, Script, Scopes, Outer, ScopeTop, Op);
+                  if Op = $60 then
+                    Push(PropertyValue(Obj, Names(Module, N)))
+                  else
+                    Push(TAVM2Value.Ref(Obj));
+                end;
               end;
             $61, $68:
               begin
                 N := Code.U30;
                 A := Pop;
-                NamesToTry := PropertyNames(N, Name);
-                if Length(NamesToTry) = 0 then
+                NamesToTry := PropertyNames(N, Name, Op = $61);
+                if (Length(NamesToTry) = 0) and (DictionaryKey = nil) then
                   raise EAVM2Error.Create('Empty AVM2 property namespace set');
                 B := Pop;
                 CheckNullReceiver(B, N, Name);
                 if B.Kind <> a2Object then
                   RejectPrimitiveWrite(B, NamesToTry, False)
+                else if DictionaryKey <> nil then
+                  StoreDictionaryKey(B.Obj, DictionaryKey, A)
                 else
                   SetProperty(B.Obj, NamesToTry, A);
               end;
@@ -6070,22 +8827,36 @@ begin
             $66:
               begin
                 N := Code.U30;
-                NamesToTry := PropertyNames(N, Name);
+                NamesToTry := PropertyNames(N, Name, True);
                 A := Pop;
                 CheckNullReceiver(A, N, Name);
-                Push(ReadProperty(A, NamesToTry, False));
+                if DictionaryKey <> nil then
+                  Push(DictionaryValue(A.Obj, DictionaryKey))
+                else
+                  Push(ReadProperty(A, NamesToTry, False));
               end;
             $67:
               Push(Outer[CheckedIndex(Length(Outer))]);
             $6A:
               begin
                 N := Code.U30;
-                NamesToTry := PropertyNames(N, Name);
+                NamesToTry := PropertyNames(N, Name, True);
                 A := Pop;
                 CheckNullReceiver(A, N, Name);
                 if A.Kind <> a2Object then
                   RejectPrimitiveWrite(A, NamesToTry, True);
-                Push(TAVM2Value.Num(Ord(DeleteProperty(A.Obj, NamesToTry)), a2Boolean));
+                if DictionaryKey <> nil then
+                begin
+                  if A.Obj.DictionaryKeys.TryGetValue(DictionaryKey, DictionaryEntry) then
+                  begin
+                    A.Obj.DictionaryKeys.Remove(DictionaryKey);
+                    A.Obj.DynamicProperties[DictionaryEntry.Slot] := Default(TAVM2DynamicProperty);
+                  end;
+                  Branch := True;
+                end
+                else
+                  Branch := DeleteProperty(A.Obj, NamesToTry);
+                Push(TAVM2Value.Num(Ord(Branch), a2Boolean));
               end;
             $6C..$6F:
               begin
@@ -6160,6 +8931,11 @@ begin
               Push(TAVM2Value.Num(AsNumber(Pop) + 1));
             $93:
               Push(TAVM2Value.Num(AsNumber(Pop) - 1));
+            $C0, $C1:
+              begin
+                L := Integer(IntBits(CoerceNumber(Pop)));
+                Push(TAVM2Value.Num(Integer(IntBits(L + 1 - 2 * Ord(Op = $C1))), a2Int));
+              end;
             $96:
               Push(TAVM2Value.Num(Ord(not Truth(Pop)), a2Boolean));
             $97:
@@ -6199,6 +8975,11 @@ begin
               begin
                 B := Pop;
                 A := Pop;
+                if Op = $A0 then
+                begin
+                  A := CoercePrimitive(A, False);
+                  B := CoercePrimitive(B, False);
+                end;
                 if (Op = $A0) and ((A.Kind = a2String) or (B.Kind = a2String)) then
                 begin
                   Name := AsText(A);
@@ -6256,16 +9037,38 @@ begin
                 A := Pop;
                 Push(TAVM2Value.Num(Ord(IsInstanceOf(A, B.Obj)), a2Boolean));
               end;
+            $B3:
+              begin
+                B := Pop;
+                A := Pop;
+                TargetClass := B.Obj;
+                if (TargetClass = nil) or (TargetClass.Kind <> a2Class) then
+                  RaiseScriptError('TypeError', 1041, 'The right-hand side of operator must be a class.');
+                TypeKind := TargetClass.PrimitiveKind;
+                if TargetClass = FObjectClass then
+                  TypeKind := atObject
+                else if TargetClass = FFunctionClass then
+                  TypeKind := atFunction
+                else if TypeKind = atAny then
+                  TypeKind := atClass;
+                Push(TAVM2Value.Num(Ord(ValueHasType(A, TypeKind, TargetClass)), a2Boolean));
+              end;
             $B4:
               begin
                 A := Pop;
                 CheckNullReceiver(A);
-                Name := #0 + AsText(Pop);
-                if A.Kind = a2Object then
-                  Branch := HasProperty(A.Obj, Name)
+                B := Pop;
+                if (B.Obj <> nil) and (A.Obj <> nil) and (A.Obj.DictionaryKeys <> nil) then
+                  Branch := A.Obj.DictionaryKeys.ContainsKey(B.Obj)
                 else
-                  Branch := ((A.Kind = a2String) and (Name = #0 + 'length')) or
-                    HasProperty(ValuePrototype(A), Name);
+                begin
+                  Name := #0 + AsText(B);
+                  if A.Kind = a2Object then
+                    Branch := HasProperty(A.Obj, Name)
+                  else
+                    Branch := ((A.Kind = a2String) and (Name = #0 + 'length')) or
+                      HasProperty(ValuePrototype(A), Name);
+                end;
                 Push(TAVM2Value.Num(Ord(Branch), a2Boolean));
               end;
             $D0..$D7:

@@ -1047,6 +1047,17 @@
         <None Include="..\..\source\cores\cps\CPS.RomData.inc"/>
         <None Include="..\..\source\cores\sms\SMS.Region.inc"/>
         <RcCompile Include="..\..\source\gpu\shaders\PSPGE.Pascal.rc"/>
+        <None Include="..\..\source\gpu\shaders\PSPGEHLEBlend.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PSPGEHLEBlendFrag.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PSPGEHLEClut.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PSPGEHLEDown.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PSPGEHLEFrag.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PSPGEHLEFragment.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PSPGEHLEPush.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PSPGEHLEVert.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PSPGERaster.pasm"/>
+        <None Include="..\..\source\gpu\shaders\PSPGESelfTest.pasm"/>
+        <None Include="..\..\source\gpu\shaders\SoftDouble.pasm"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>
@@ -2195,6 +2206,72 @@
                     </Platform>
                 </DeployFile>
                 <DeployFile LocalName="..\..\source\cores\sms\SMS.Region.inc" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PSPGEHLEBlend.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PSPGEHLEBlendFrag.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PSPGEHLEClut.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PSPGEHLEDown.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PSPGEHLEFrag.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PSPGEHLEFragment.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PSPGEHLEPush.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PSPGEHLEVert.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PSPGERaster.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\PSPGESelfTest.pasm" Configuration="Release" Class="ProjectFile">
+                    <Platform Name="Win64">
+                        <RemoteDir>.\</RemoteDir>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\source\gpu\shaders\SoftDouble.pasm" Configuration="Release" Class="ProjectFile">
                     <Platform Name="Win64">
                         <RemoteDir>.\</RemoteDir>
                         <Overwrite>true</Overwrite>

@@ -65,6 +65,9 @@ type
     CreatedFrame, SynchronousSeekTick: UInt64;
     MovieLibrary: TFlashLibrary;
     MovieRoot, Unloaded, IsLevel, Removing, UnloadDispatching: Boolean;
+    FrameScriptPending: Boolean;
+    AVM2ConstructionPending: Boolean;
+    PendingAVM2Playing, ApplyingAVM2Goto, ExecutingFrameScript: Boolean;
     LevelIndex: Integer;
     LoadGeneration, ContentGeneration, UnloadGeneration: Cardinal;
     DropTarget: TFlashClip;
@@ -176,6 +179,10 @@ type
     FActions: TList<TFlashQueuedAction>;
     FConstructClips: TList<TFlashQueuedConstruct>;
     FDeferFrameActions: Integer;
+    FAVM2FrameScriptDepth: Integer;
+    FAVM2FrameDepth: Integer;
+    FCollectingAVM2Timeline: Boolean;
+    FAVM2FrameScriptsChanged: Boolean;
     FRoot, FPressed, FHovered, FTextFocus: TFlashClip;
     FKeys: array[0..255] of Boolean;
     FMouseX, FMouseY, FLastKey: Integer;
@@ -234,7 +241,12 @@ type
     function ResolveClip(Start: TFlashClip; const Value: TAVMValue): TFlashClip;
     function DuplicateClip(Source: TFlashClip; const Name: string; Depth: Integer; Initial: TAVMObject): TFlashClip;
     procedure StepClip(C: TFlashClip; Advance: Boolean);
+    procedure ConstructAVM2Clip(C: TFlashClip);
+    procedure BroadcastAVM2FrameEvent(Phase: TAVM2FrameEvent);
+    procedure CompleteAVM2Frame;
+    procedure RunAVM2FrameScripts;
     procedure ApplyPendingSeeks(C: TFlashClip);
+    procedure ApplyAVM2Goto(C: TFlashClip);
     procedure InitializeAttachedClip(C: TFlashClip; Initial: TAVMObject);
     procedure FlushActions;
     procedure ApplyFrame(C: TFlashClip; Index: Integer; ExecuteActions: Boolean = True; Origins: TDictionary<Integer, Integer> = nil; TargetFrame: Integer = -1; ClipEnds: TDictionary<Integer, Integer> = nil; SeekRatios: TDictionary<Integer, Word> = nil; SeekBlends: TDictionary<Integer, TAVMBitmapBlend> = nil; SeekFilters: TDictionary<Integer, TSWFFilters> = nil);
@@ -269,7 +281,7 @@ type
     procedure AddDrawingBounds(C: TFlashClip; const Bounds: TSWFBounds);
     function WorldMatrix(C: TFlashClip; IncludeOwnScroll: Boolean = True): TSWFMatrix;
     function ScrollRectProperty(C: TFlashClip; const Name: string; const Args: TArray<TAVMValue>): TAVMValue;
-    function BoundsWithMatrix(C: TFlashClip; const Matrix: TSWFMatrix; IgnoreStrokes: Boolean; PendingScroll: Boolean = False; IncludeFilters: Boolean = False): TSWFBounds;
+    function BoundsWithMatrix(C: TFlashClip; const Matrix: TSWFMatrix; IgnoreStrokes: Boolean; PendingScroll: Boolean = False; IncludeFilters: Boolean = False; UseMorphRatio: Boolean = False): TSWFBounds;
     procedure SetDisplaySize(C: TFlashClip; Value: Double; IsWidth: Boolean);
     function SlashPath(C: TFlashClip): string;
     procedure ResolveIndexedProperty(Start: TAVMObject; const Path, Index: TAVMValue; out Target: TFlashClip; out PropertyIndex: Integer);
@@ -362,10 +374,23 @@ type
     FRoot: TFlashClip;
   public
     constructor Create(Player: TFlashPlayer; Root: TFlashClip);
-    function CreateDisplay(Document: Boolean): TObject; override;
+    function CreateDisplay(Document: Boolean; const Classes: TArray<string>; out Name: string): TObject; override;
     procedure Place(Child, Parent: TObject; Position: Integer); override;
+    procedure RequestFrameScript(Display: TObject; Frame: Integer); override;
+    procedure SetPlaying(Display: TObject; Playing: Boolean); override;
+    function GotoFrame(Display: TObject; const Target, Scene: string; HasScene, Playing: Boolean): Boolean; override;
+    function TimelineFrame(Display: TObject; Total: Boolean): Integer; override;
     procedure SetProperty(Display: TObject; const Name: string; Value: Double); override;
     procedure Draw(Display: TObject; Command: TAVM2DisplayMethod; const Args: TArray<Double>); override;
+    procedure TransformPoint(Display: TObject; ToGlobal: Boolean; var X, Y: Double); override;
+    function GetScrollRect(Display: TObject; out Rect: TAVM2Rectangle): Boolean; override;
+    procedure SetScrollRect(Display: TObject; Enabled: Boolean; const Rect: TAVM2Rectangle); override;
+    function GetMatrix(Display: TObject; Concatenated, OnStage: Boolean): TAVM2Matrix; override;
+    procedure SetMatrix(Display: TObject; const Matrix: TAVM2Matrix; out X, Y, ScaleX, ScaleY, Rotation: Double); override;
+    function HitTestPoint(Display: TObject; X, Y: Double; Shape, OnStage: Boolean): Boolean; override;
+    function HitTestObject(Display, Other: TObject): Boolean; override;
+    function GetBounds(Display, Target: TObject; IgnoreStrokes, PixelBounds: Boolean): TAVM2Rectangle; override;
+    function DisplayChildren(Display: TObject): TArray<TAVM2TimelineChild>; override;
   end;
 
   TFlashSoundState = class
@@ -391,10 +416,14 @@ begin
   FRoot := Root;
 end;
 
-function TFlashAVM2Display.CreateDisplay(Document: Boolean): TObject;
+function TFlashAVM2Display.CreateDisplay(Document: Boolean; const Classes: TArray<string>; out Name: string): TObject;
 var
   Clip: TFlashClip;
+  Definition: TSWFCharacter;
+  ClassName: string;
+  Id: Integer;
 begin
+  Name := '';
   if Document then
     Exit(FRoot);
   if FPlayer.FClips.Count >= 65536 then
@@ -405,6 +434,18 @@ begin
   Clip.CreatedFrame := FPlayer.FFrameNumber;
   Clip.Script := FPlayer.VM.NewObject('MovieClip');
   Clip.Script.HostData := Clip;
+  for ClassName in Classes do
+    if Clip.MovieLibrary.Movie.AVM2ExportNames.TryGetValue(ClassName, Id) and
+      Clip.MovieLibrary.Movie.Characters.TryGetValue(Id, Definition) and (Definition.Kind = 39) then
+    begin
+      Clip.Character := Definition;
+      Break;
+    end;
+  Name := 'instance' + IntToStr(FPlayer.FClips.Count - 1);
+  Clip.Name := Name;
+  Clip.FrameScriptPending := True;
+  if Clip.Character <> nil then
+    FPlayer.StepClip(Clip, False);
   Result := Clip;
 end;
 
@@ -422,7 +463,7 @@ begin
   begin
     OldParent.Children.Remove(Clip);
     for Peer in OldParent.Children do
-      if Peer.Depth > Clip.Depth then
+      if (Peer.Depth >= AVM2ScriptDepth) and (Peer.Depth > Clip.Depth) then
         Dec(Peer.Depth);
   end;
   Clip.Parent := NewParent;
@@ -457,11 +498,420 @@ begin
     Clip.Visible := Value <> 0;
 end;
 
+procedure TFlashAVM2Display.RequestFrameScript(Display: TObject; Frame: Integer);
+var
+  Clip: TFlashClip;
+begin
+  Clip := TFlashClip(Display);
+  if (FPlayer.FAVM2FrameScriptDepth = 0) and (Frame = Max(0, Clip.Frame)) then
+    Clip.FrameScriptPending := True;
+end;
+
+procedure TFlashAVM2Display.SetPlaying(Display: TObject; Playing: Boolean);
+begin
+  TFlashClip(Display).Playing := Playing;
+  if not Playing then
+    FPlayer.FAudio.StopStream(TFlashClip(Display));
+end;
+
+function SceneStart(const Scenes: TArray<TSWFScene>; Frame: Integer): Integer;
+var
+  Item: TSWFScene;
+begin
+  Result := 0;
+  for Item in Scenes do
+    if Item.StartFrame <= Frame then
+      Result := Max(Result, Item.StartFrame);
+end;
+
+function FindFrameLabel(Clip: TFlashClip; const Frames: TArray<TSWFFrame>; const Name: string): Integer;
+var
+  Index: Integer;
+  Tag: TSWFTag;
+  Reader: TSWFReader;
+begin
+  if Clip.MovieRoot and (Clip.MovieLibrary.Movie.SceneFrameLabels <> nil) and
+    Clip.MovieLibrary.Movie.SceneFrameLabels.TryGetValue(Name, Index) then
+    Exit(Index);
+  for Index := 0 to High(Frames) do
+    for Tag in Frames[Index].Tags do
+      if Tag.Code = 43 then
+      begin
+        Reader := TSWFReader.Create(Tag.Data, Clip.MovieLibrary.Movie.Version);
+        try
+          if Reader.Str = Name then
+            Exit(Index);
+        finally
+          Reader.Free;
+        end;
+      end;
+  Result := -1;
+end;
+
+function DecimalFrameNumber(const Text: string; out Number: Int64): Boolean;
+var
+  Digits: string;
+  Index, FirstDigit: Integer;
+begin
+  Digits := Trim(Text);
+  if Digits = '' then
+    Exit(False);
+  FirstDigit := 1;
+  if CharInSet(Digits[1], ['+', '-']) then
+    Inc(FirstDigit);
+  for Index := FirstDigit to Length(Digits) do
+    if not CharInSet(Digits[Index], ['0'..'9']) then
+      Exit(False);
+  Result := TryStrToInt64(Digits, Number);
+end;
+
+function TFlashAVM2Display.GotoFrame(Display: TObject; const Target, Scene: string; HasScene, Playing: Boolean): Boolean;
+var
+  Clip: TFlashClip;
+  Frames: TArray<TSWFFrame>;
+  Scenes: TArray<TSWFScene>;
+  Entry: TSWFScene;
+  Number: Int64;
+  Offset, Index, Last, RequestedScene: Integer;
+begin
+  Clip := TFlashClip(Display);
+  Frames := FPlayer.ClipFrames(Clip);
+  Last := Max(0, High(Frames));
+  if Clip.MovieRoot then
+    Scenes := Clip.MovieLibrary.Movie.SceneLabels;
+  RequestedScene := -1;
+  Offset := SceneStart(Scenes, Max(0, Clip.Frame));
+  if HasScene then
+  begin
+    Offset := 0;
+    for Entry in Scenes do
+      if Entry.Name = Scene then
+      begin
+        RequestedScene := Entry.StartFrame;
+        Offset := RequestedScene;
+        Break;
+      end;
+  end;
+  if DecimalFrameNumber(Target, Number) then
+  begin
+    if (Number = -Offset) and Clip.ExecutingFrameScript then
+      Exit(True);
+    Number := EnsureRange(Number, Int64(-65535), Int64(65535));
+    Index := EnsureRange(Integer(Number) + Offset - 1, 0, Last);
+  end
+  else
+  begin
+    Index := FindFrameLabel(Clip, Frames, Target);
+    if HasScene and ((RequestedScene < 0) or (Index < 0) or (SceneStart(Scenes, Index) <> RequestedScene)) then
+      Exit(False);
+    if Index < 0 then
+    begin
+      if Clip.MovieLibrary.Movie.Version >= 11 then
+        Exit(False);
+      if Clip.ExecutingFrameScript then
+        Exit(True);
+      Index := 0;
+    end;
+  end;
+  Result := True;
+  if Clip.Dead or Clip.Removing then
+    Exit;
+  if Length(Frames) = 0 then
+  begin
+    SetPlaying(Clip, Playing);
+    Exit;
+  end;
+  Clip.PendingFrame := Index;
+  Clip.PendingAVM2Playing := Playing;
+  if Clip.ExecutingFrameScript or Clip.ApplyingAVM2Goto then
+    Exit;
+  FPlayer.ApplyAVM2Goto(Clip);
+  if Clip.MovieLibrary.Movie.Version >= 10 then
+    FPlayer.CompleteAVM2Frame
+  else if Clip.FrameScriptPending and (FPlayer.FAVM2FrameScriptDepth > 0) then
+    FPlayer.FAVM2FrameScriptsChanged := True;
+end;
+
+function TFlashAVM2Display.TimelineFrame(Display: TObject; Total: Boolean): Integer;
+var
+  Clip: TFlashClip;
+begin
+  Clip := TFlashClip(Display);
+  if Total then
+    Exit(Max(1, Length(FPlayer.ClipFrames(Clip))));
+  Result := Max(0, Clip.Frame);
+  if Clip.MovieRoot then
+    Dec(Result, SceneStart(Clip.MovieLibrary.Movie.SceneLabels, Result));
+  Inc(Result);
+end;
+
+procedure TFlashAVM2Display.TransformPoint(Display: TObject; ToGlobal: Boolean; var X, Y: Double);
+var
+  Matrix, Inverse: TSWFMatrix;
+  OutputX, OutputY: Integer;
+begin
+  Matrix := TSWFMatrix.Identity;
+  if Display <> nil then
+    Matrix := FPlayer.WorldMatrix(TFlashClip(Display));
+  if not ToGlobal then
+  begin
+    if SWFInverseMatrix(Matrix, Inverse) then
+      Matrix := Inverse
+    else
+      Matrix := TSWFMatrix.Identity;
+  end;
+  SWFTransformPoint(Matrix, SWFTwipsFromPixels(X), SWFTwipsFromPixels(Y), OutputX, OutputY);
+  X := OutputX / 20;
+  Y := OutputY / 20;
+end;
+
+function TFlashAVM2Display.GetScrollRect(Display: TObject; out Rect: TAVM2Rectangle): Boolean;
+var
+  Clip: TFlashClip;
+  Bounds: TSWFRect;
+begin
+  Clip := TFlashClip(Display);
+  Result := (Clip <> nil) and Clip.HasScrollRect;
+  if not Result then
+    Exit;
+  Bounds := Clip.NextScrollRect;
+  Rect.X := Bounds.Left / 20;
+  Rect.Y := Bounds.Top / 20;
+  Rect.Width := SWFAddCoordinate(Bounds.Right, SWFAddCoordinate(not Bounds.Left, 1)) / 20;
+  Rect.Height := SWFAddCoordinate(Bounds.Bottom, SWFAddCoordinate(not Bounds.Top, 1)) / 20;
+end;
+
+procedure TFlashAVM2Display.SetScrollRect(Display: TObject; Enabled: Boolean; const Rect: TAVM2Rectangle);
+var
+  Clip: TFlashClip;
+  Bounds: TSWFRect;
+
+  function RoundedPixelTwips(Value: Double): Integer;
+  var
+    Pixels: Int64;
+    Bits: Cardinal;
+  begin
+    if IsNan(Value) or IsInfinite(Value) or (Value < -2147483648.5) or (Value >= 2147483647.5) then
+      Pixels := Low(Integer)
+    else
+      Pixels := Round(Value);
+    Bits := Cardinal((Pixels * 20) and Int64($FFFFFFFF));
+    Move(Bits, Result, SizeOf(Result));
+  end;
+
+begin
+  Clip := TFlashClip(Display);
+  if Clip = nil then
+    Exit;
+  if Enabled then
+  begin
+    Bounds.Left := RoundedPixelTwips(Rect.X);
+    Bounds.Top := RoundedPixelTwips(Rect.Y);
+    Bounds.Right := RoundedPixelTwips(Rect.Right);
+    Bounds.Bottom := RoundedPixelTwips(Rect.Bottom);
+    Clip.NextScrollRect := Bounds;
+  end;
+  Clip.HasScrollRect := Enabled;
+end;
+
+function TFlashAVM2Display.GetMatrix(Display: TObject; Concatenated, OnStage: Boolean): TAVM2Matrix;
+const
+  DetachedScale: array[TFlashQuality] of Double = (20, 10, 5, 5, 2.5, 2.5, 1.25, 1.25);
+var
+  Clip: TFlashClip;
+  Matrix: TSWFMatrix;
+begin
+  Clip := TFlashClip(Display);
+  if Clip = nil then
+    Matrix := TSWFMatrix.Identity
+  else if Concatenated and OnStage then
+    Matrix := FPlayer.WorldMatrix(Clip, False)
+  else
+    Matrix := Clip.Matrix;
+  if Concatenated and not OnStage then
+  begin
+    Matrix.A := SWFFloat32(Matrix.A * DetachedScale[FPlayer.Quality]);
+    Matrix.D := SWFFloat32(Matrix.D * DetachedScale[FPlayer.Quality]);
+  end;
+  Result.A := Matrix.A;
+  Result.B := Matrix.B;
+  Result.C := Matrix.C;
+  Result.D := Matrix.D;
+  Result.TX := Matrix.TX / 20;
+  Result.TY := Matrix.TY / 20;
+end;
+
+procedure TFlashAVM2Display.SetMatrix(Display: TObject; const Matrix: TAVM2Matrix; out X, Y, ScaleX, ScaleY, Rotation: Double);
+var
+  Clip: TFlashClip;
+  Native: TSWFMatrix;
+begin
+  Clip := TFlashClip(Display);
+  Native.A := Matrix.A;
+  Native.B := Matrix.B;
+  Native.C := Matrix.C;
+  Native.D := Matrix.D;
+  Native.TX := SWFTwipsFromPixels(Matrix.TX);
+  Native.TY := SWFTwipsFromPixels(Matrix.TY);
+  Clip.SetMatrix(Native);
+  Clip.TransformedByScript := True;
+  X := Clip.X;
+  Y := Clip.Y;
+  ScaleX := Clip.ScaleX;
+  ScaleY := Clip.ScaleY;
+  Rotation := Clip.Rotation;
+end;
+
+function ChildrenInDepthOrder(Clip: TFlashClip): TArray<TFlashClip>;
+begin
+  Result := Clip.Children.ToArray;
+  if Length(Result) > 1 then
+    TArray.Sort<TFlashClip>(Result, TComparer<TFlashClip>.Construct(
+      function(const A, B: TFlashClip): Integer
+      begin
+        Result := CompareValue(A.Depth, B.Depth);
+      end));
+end;
+
+function TFlashAVM2Display.DisplayChildren(Display: TObject): TArray<TAVM2TimelineChild>;
+var
+  Clip, Child: TFlashClip;
+  Sorted: TArray<TFlashClip>;
+  Entry: TAVM2TimelineChild;
+  Count: Integer;
+begin
+  Clip := TFlashClip(Display);
+  if (Clip = nil) or (Clip.Children.Count = 0) then
+    Exit(nil);
+  Sorted := ChildrenInDepthOrder(Clip);
+  SetLength(Result, Length(Sorted));
+  Count := 0;
+  for Child in Sorted do
+  begin
+    if Child.Dead or Child.Removing then
+      Continue;
+    Entry.Handle := Child;
+    Entry.Name := Child.Name;
+    Entry.SymbolClass := '';
+    if (Child.Character <> nil) and (Child.MovieLibrary = Clip.MovieLibrary) then
+      Child.MovieLibrary.Movie.AVM2SymbolNames.TryGetValue(Child.Character.Id, Entry.SymbolClass);
+    Entry.X := Child.X;
+    Entry.Y := Child.Y;
+    Entry.ScaleX := Child.ScaleX;
+    Entry.ScaleY := Child.ScaleY;
+    Entry.Rotation := Child.Rotation;
+    Entry.Alpha := Child.Alpha;
+    Entry.Visible := Child.Visible;
+    if (Child.Character = nil) or (Child.Character.Kind = 39) then
+      Entry.ClassName := 'MovieClip'
+    else if Child.Character.Kind in [46, 84] then
+      Entry.ClassName := 'MorphShape'
+    else
+      Entry.ClassName := 'Shape';
+    Result[Count] := Entry;
+    Inc(Count);
+  end;
+  SetLength(Result, Count);
+end;
+
+function TFlashAVM2Display.HitTestPoint(Display: TObject; X, Y: Double; Shape, OnStage: Boolean): Boolean;
+var
+  Clip, Root: TFlashClip;
+  PX, PY, GlobalX, GlobalY: Integer;
+  Bounds: TSWFBounds;
+  Matrix: TSWFMatrix;
+begin
+  Result := False;
+  Clip := TFlashClip(Display);
+  if (Clip = nil) or (Shape and not OnStage) then
+    Exit;
+  if IsNan(X) or IsNan(Y) or IsInfinite(X) or IsInfinite(Y) then
+    Exit;
+  PX := SWFTwipsFromPixels(X);
+  PY := SWFTwipsFromPixels(Y);
+  if FRoot = FPlayer.FRoot then
+  begin
+    // The top-level SWF receives hitTestPoint coordinates in root space.
+    Root := FPlayer.ClipRoot(Clip);
+    if Root <> nil then
+    begin
+      SWFTransformPoint(FPlayer.WorldMatrix(Root), PX, PY, GlobalX, GlobalY);
+      PX := GlobalX;
+      PY := GlobalY;
+    end;
+  end;
+  Bounds := FPlayer.BoundsWithMatrix(Clip, FPlayer.WorldMatrix(Clip, False), False, False, False, True);
+  if not Bounds.Valid or (PX < Bounds.Rect.Left) or (PX > Bounds.Rect.Right) or
+    (PY < Bounds.Rect.Top) or (PY > Bounds.Rect.Bottom) then
+    Exit;
+  if not Shape then
+    Exit(True);
+  Matrix := TSWFMatrix.Identity;
+  if Clip.Parent <> nil then
+    Matrix := FPlayer.WorldMatrix(Clip.Parent);
+  Result := FPlayer.ContainsPoint(Clip, PX / 20, PY / 20, Matrix, False, True);
+end;
+
+function TFlashAVM2Display.HitTestObject(Display, Other: TObject): Boolean;
+var
+  Clip, OtherClip: TFlashClip;
+  Bounds, OtherBounds: TSWFBounds;
+begin
+  Clip := TFlashClip(Display);
+  OtherClip := TFlashClip(Other);
+  if (Clip = nil) or (OtherClip = nil) then
+    Exit(False);
+  Bounds := FPlayer.BoundsWithMatrix(Clip, FPlayer.WorldMatrix(Clip, False), False);
+  OtherBounds := FPlayer.BoundsWithMatrix(OtherClip, FPlayer.WorldMatrix(OtherClip, False), False);
+  Result := Bounds.Valid and OtherBounds.Valid and (Bounds.Rect.Left <= OtherBounds.Rect.Right) and
+    (Bounds.Rect.Right >= OtherBounds.Rect.Left) and (Bounds.Rect.Top <= OtherBounds.Rect.Bottom) and
+    (Bounds.Rect.Bottom >= OtherBounds.Rect.Top);
+end;
+
+function TFlashAVM2Display.GetBounds(Display, Target: TObject; IgnoreStrokes, PixelBounds: Boolean): TAVM2Rectangle;
+var
+  Clip, TargetClip: TFlashClip;
+  Bounds: TSWFBounds;
+  Matrix, Inverse: TSWFMatrix;
+begin
+  Result := Default(TAVM2Rectangle);
+  Clip := TFlashClip(Display);
+  if Clip = nil then
+    Exit;
+  if PixelBounds then
+    Bounds := FPlayer.BoundsWithMatrix(Clip, FPlayer.WorldMatrix(Clip, False), IgnoreStrokes)
+  else
+  begin
+    Bounds := FPlayer.BoundsWithMatrix(Clip, TSWFMatrix.Identity, IgnoreStrokes);
+    TargetClip := TFlashClip(Target);
+    if Bounds.Valid and (Clip <> TargetClip) then
+    begin
+      Matrix := FPlayer.WorldMatrix(Clip);
+      if (TargetClip <> nil) and SWFInverseMatrix(FPlayer.WorldMatrix(TargetClip), Inverse) then
+        Matrix := Matrix.ThenBy(Inverse);
+      Bounds := Bounds.Transformed(Matrix);
+    end;
+  end;
+  if not Bounds.Valid then
+    Exit;
+  Result.X := Bounds.Rect.Left / 20;
+  Result.Y := Bounds.Rect.Top / 20;
+  Result.Width := (Int64(Bounds.Rect.Right) - Bounds.Rect.Left) / 20;
+  Result.Height := (Int64(Bounds.Rect.Bottom) - Bounds.Rect.Top) / 20;
+end;
+
 procedure TFlashAVM2Display.Draw(Display: TObject; Command: TAVM2DisplayMethod; const Args: TArray<Double>);
+const
+  Diagonal = 0.7071067811865475244;
+  Tangent = 0.4142135623730950488;
+  Anchors: array[1..8, 0..1] of Double = ((Diagonal, Diagonal), (0, 1),
+    (-Diagonal, Diagonal), (-1, 0), (-Diagonal, -Diagonal), (0, -1), (Diagonal, -Diagonal), (1, 0));
+  Controls: array[1..8, 0..1] of Double = ((1, Tangent), (Tangent, 1),
+    (-Tangent, 1), (-1, Tangent), (-1, -Tangent), (-Tangent, -1), (Tangent, -1), (1, -Tangent));
 var
   Clip: TFlashClip;
   Fill: TSWFFill;
-  X, Y, W, H, A, Mid, Factor: Double;
+  X, Y, W, H: Double;
   Arc: Integer;
 
   function Arg(Index: Integer; DefaultValue: Double): Double;
@@ -542,14 +992,10 @@ begin
           X := Args[0] + W;
           Y := Args[1] + H;
         end;
-        Factor := 1 / Cos(Pi / 8);
         MoveTo(X + W, Y);
         for Arc := 1 to 8 do
-        begin
-          A := Arc * Pi / 4;
-          Mid := A - Pi / 8;
-          CurveTo(X + Factor * W * Cos(Mid), Y + Factor * H * Sin(Mid), X + W * Cos(A), Y + H * Sin(A));
-        end;
+          CurveTo(X + W * Controls[Arc, 0], Y + H * Controls[Arc, 1],
+            X + W * Anchors[Arc, 0], Y + H * Anchors[Arc, 1]);
       end;
     adLineStyle:
       begin
@@ -1025,6 +1471,8 @@ begin
   C.AttachedBitmapBounds := TSWFBounds.Empty;
   C.Frame := -1;
   C.PendingFrame := -1;
+  C.FrameScriptPending := False;
+  C.AVM2ConstructionPending := False;
   C.SynchronousSeekTick := 0;
   C.Playing := True;
   C.CreatedFrame := FFrameNumber;
@@ -1961,7 +2409,7 @@ begin
   end;
 end;
 
-function TFlashPlayer.BoundsWithMatrix(C: TFlashClip; const Matrix: TSWFMatrix; IgnoreStrokes: Boolean; PendingScroll, IncludeFilters: Boolean): TSWFBounds;
+function TFlashPlayer.BoundsWithMatrix(C: TFlashClip; const Matrix: TSWFMatrix; IgnoreStrokes: Boolean; PendingScroll, IncludeFilters, UseMorphRatio: Boolean): TSWFBounds;
 
   function Visit(Node: TFlashClip; const Transform: TSWFMatrix; Depth: Integer): TSWFBounds;
   var
@@ -1969,6 +2417,7 @@ function TFlashPlayer.BoundsWithMatrix(C: TFlashClip; const Matrix: TSWFMatrix; 
     local, ChildBounds: TSWFBounds;
     Rect: TSWFRect;
     ChildMatrix: TSWFMatrix;
+    Character: TSWFCharacter;
     PadX, PadY: Integer;
   begin
     Result := TSWFBounds.Empty;
@@ -1985,18 +2434,21 @@ function TFlashPlayer.BoundsWithMatrix(C: TFlashClip; const Matrix: TSWFMatrix; 
       Exit(TSWFBounds.FromRect(ScrollViewport(Node.AppliedScrollRect)).Transformed(Transform));
     if Node.AttachedBitmap <> nil then
       Result.Include(Node.AttachedBitmapBounds.Transformed(Transform));
-    if not Node.IsText and (Node.Character <> nil) then
+    Character := Node.Character;
+    if not Node.IsText and (Character <> nil) then
     begin
-      if Node.Character.ShapeBounds.Valid then
+      if UseMorphRatio then
+        Character := Character.ShapeAt(Node.MorphRatio);
+      if Character.ShapeBounds.Valid then
       begin
         if IgnoreStrokes then
-          local := Node.Character.PathBounds
+          local := Character.PathBounds
         else
-          local := Node.Character.ShapeBounds;
+          local := Character.ShapeBounds;
         Result.Include(local.Transformed(Transform));
       end
-      else if not (Node.Character.Kind in [2, 7, 10, 22, 32, 34, 39, 48, 75, 83, 91]) then
-        Result.Include(TSWFBounds.FromRect(Node.Character.Bounds).Transformed(Transform));
+      else if not (Character.Kind in [2, 7, 10, 22, 32, 34, 39, 48, 75, 83, 91]) then
+        Result.Include(TSWFBounds.FromRect(Character.Bounds).Transformed(Transform));
     end;
     if Node.IsText then
     begin
@@ -4502,11 +4954,12 @@ begin
     TryAVMBlendCode(R.U8, Mode);
 end;
 
-function MorphDefinition(Movie: TSWFMovie; Id: Integer): Boolean;
-var
-  Shape: TSWFCharacter;
+function CanReplaceTimelineGraphic(Current, Replacement: TSWFCharacter): Boolean;
 begin
-  Result := Movie.Characters.TryGetValue(Id, Shape) and (Shape.Kind in [46, 84]);
+  Result := (Current <> nil) and (Replacement <> nil) and
+    (((Current.Kind in [2, 22, 32, 83]) and (Replacement.Kind in [2, 22, 32, 83])) or
+    ((Current.Kind in [46, 84]) and (Replacement.Kind in [46, 84])) or
+    ((Current.Kind in [11, 33]) and (Replacement.Kind in [11, 33])));
 end;
 
 procedure TFlashPlayer.ApplyFrame(C: TFlashClip; Index: Integer; ExecuteActions: Boolean; Origins: TDictionary<Integer, Integer>; TargetFrame: Integer; ClipEnds: TDictionary<Integer, Integer>; SeekRatios: TDictionary<Integer, Word>; SeekBlends: TDictionary<Integer, TAVMBitmapBlend>; SeekFilters: TDictionary<Integer, TSWFFilters>);
@@ -4565,12 +5018,12 @@ begin
               begin
                 if Origin <> Index then
                 begin
-                // Replay morph-to-morph replacements from the original
+                // Replay graphic replacements from the original
                 // placement so omitted attributes keep their earlier values.
                   if (Index < Origin) or (Flags and 1 = 0) or (Child = nil) or
-                    (Child.SeekGeneration <> FSeekGeneration) or (Child.Character = nil) or
-                    not (Child.Character.Kind in [46, 84]) or
-                    not MorphDefinition(C.MovieLibrary.Movie, Id) then
+                    (Child.SeekGeneration <> FSeekGeneration) or
+                    not C.MovieLibrary.Movie.Characters.TryGetValue(Id, Character) or
+                    not CanReplaceTimelineGraphic(Child.Character, Character) then
                     Continue;
                 end
                 else if (Child <> nil) and (Child.TimelineOrigin = Origin) then
@@ -4594,14 +5047,10 @@ begin
             begin
               if not C.MovieLibrary.Movie.Characters.TryGetValue(Id, Character) then
                 raise ESWFError.Create('Missing SWF character');
-              if (Child <> nil) and (Flags and 1 <> 0) and (Child.Character <> nil) and
-                (Child.Character.Kind in [46, 84]) and (Character.Kind in [46, 84]) then
+              if (Child <> nil) and (Flags and 1 <> 0) and CanReplaceTimelineGraphic(Child.Character, Character) then
               begin
-                if Child.Character <> Character then
-                begin
-                // A replacement swaps the definition while keeping placement state.
-                  Child.Character := Character;
-                end;
+                // PlaceObject replacement preserves attributes absent from the tag.
+                Child.Character := Character;
               end
               else if (Child = nil) or ((Flags and 1) = 0) or (Child.Character <> Character) then
               begin
@@ -4781,7 +5230,7 @@ begin
                     VM.Trace.Add(Text);
                 end, TFlashAVM2Display.Create(Self, C), C.MovieLibrary.Movie.Version);
               C.MovieLibrary.AVM2.SetStageSize(C.MovieLibrary.Movie.Width, C.MovieLibrary.Movie.Height);
-              C.MovieLibrary.AVM2.BeginFrame;
+              C.MovieLibrary.AVM2.BeginFrame(VM.Milliseconds);
             end;
             Flags := 0;
             if Tag.Code = 82 then
@@ -4813,13 +5262,12 @@ begin
       R.Free;
     end;
   end;
-  if ExecuteActions and C.MovieRoot and (C.MovieLibrary.AVM2 <> nil) then
-  try
-    C.MovieLibrary.AVM2.CreateDocument(C.MovieLibrary.Movie.DocumentClass);
-    C.MovieLibrary.AVM2.RunFrameScript(Index);
-  except
-    on E: EAVM2Error do
-      raise ESWFError.Create('AVM2 document: ' + E.Message);
+  if ExecuteActions and (C.MovieLibrary.AVM2 <> nil) then
+  begin
+    C.AVM2ConstructionPending := True;
+    C.FrameScriptPending := True;
+    if not FCollectingAVM2Timeline then
+      ConstructAVM2Clip(C);
   end;
   if FDeferFrameActions = 0 then
     ProcessUnloads(True, False);
@@ -4843,16 +5291,20 @@ end;
 procedure TFlashPlayer.SeekBack(C: TFlashClip; Index: Integer);
 var
   Frames: TArray<TSWFFrame>;
+  Current, Replacement: TSWFCharacter;
   Origins, Ids, ClipEnds: TDictionary<Integer, Integer>;
   Ratios: TDictionary<Integer, Word>;
   Blends: TDictionary<Integer, TAVMBitmapBlend>;
   Filters: TDictionary<Integer, TSWFFilters>;
-  Flags, Id, Depth, ClipEnd, Previous: Integer;
+  Flags, Id, Depth, ClipEnd, Previous, TimelineDepthLimit: Integer;
   Ratio: Word;
   Mode: TAVMBitmapBlend;
   FilterList: TSWFFilters;
 begin
   Frames := ClipFrames(C);
+  TimelineDepthLimit := 16384;
+  if C.MovieLibrary.Movie.UsesAVM2 then
+    TimelineDepthLimit := AVM2ScriptDepth;
   Origins := TDictionary<Integer, Integer>.Create;
   Ids := TDictionary<Integer, Integer>.Create;
   ClipEnds := TDictionary<Integer, Integer>.Create;
@@ -4880,8 +5332,9 @@ begin
                 Filters.Remove(Depth);
               end
               else if (Previous <> Id) and
-                not (MorphDefinition(C.MovieLibrary.Movie, Previous) and
-                MorphDefinition(C.MovieLibrary.Movie, Id)) then
+                not (C.MovieLibrary.Movie.Characters.TryGetValue(Previous, Current) and
+                C.MovieLibrary.Movie.Characters.TryGetValue(Id, Replacement) and
+                CanReplaceTimelineGraphic(Current, Replacement)) then
                 Origins.AddOrSetValue(Depth, I);
               Ids.AddOrSetValue(Depth, Id);
             end;
@@ -4909,7 +5362,7 @@ begin
         end;
       end;
     for var Child in C.Children.ToArray do
-      if Child.Depth < 16384 then
+      if Child.Depth < TimelineDepthLimit then
       begin
         var Origin: Integer;
         if not Origins.TryGetValue(Child.Depth, Origin) or (Child.TimelineOrigin <> Origin) or
@@ -5049,6 +5502,22 @@ begin
   end;
 end;
 
+procedure TFlashPlayer.ApplyAVM2Goto(C: TFlashClip);
+begin
+  C.Playing := C.PendingAVM2Playing;
+  if not C.Playing then
+    FAudio.StopStream(C);
+  C.SynchronousSeekTick := FFrameNumber + 1;
+  if C.ApplyingAVM2Goto then
+    Exit;
+  C.ApplyingAVM2Goto := True;
+  try
+    ApplyPendingSeeks(C);
+  finally
+    C.ApplyingAVM2Goto := False;
+  end;
+end;
+
 procedure TFlashPlayer.StepClip(C: TFlashClip; Advance: Boolean);
 var
   Count, Index: Integer;
@@ -5076,6 +5545,132 @@ begin
   end;
   for var Child in C.Children.ToArray do
     StepClip(Child, Advance);
+end;
+
+procedure TFlashPlayer.ConstructAVM2Clip(C: TFlashClip);
+begin
+  if not C.AVM2ConstructionPending then
+    Exit;
+  C.AVM2ConstructionPending := False;
+  try
+    C.MovieLibrary.AVM2.SyncTimelineDisplay(C);
+    if C.MovieRoot then
+      C.MovieLibrary.AVM2.CreateDocument(C.MovieLibrary.Movie.DocumentClass);
+  except
+    on E: EAVM2Error do
+      raise ESWFError.Create('AVM2 document: ' + E.Message);
+  end;
+end;
+
+procedure TFlashPlayer.BroadcastAVM2FrameEvent(Phase: TAVM2FrameEvent);
+var
+  MovieLibrary: TFlashLibrary;
+begin
+  for MovieLibrary in FLibraries.ToArray do
+    if (MovieLibrary.AVM2 <> nil) and (MovieLibrary.Root <> nil) and
+      (MovieLibrary.Root.MovieLibrary = MovieLibrary) and not MovieLibrary.Root.Dead then
+    try
+      MovieLibrary.AVM2.BroadcastFrameEvent(Phase);
+    except
+      on E: EAVM2Error do
+        raise ESWFError.Create('AVM2 frame event: ' + E.Message);
+    end;
+end;
+
+procedure TFlashPlayer.CompleteAVM2Frame;
+var
+  MovieLibrary: TFlashLibrary;
+
+  procedure ConstructTree(Clip: TFlashClip);
+  var
+    Child: TFlashClip;
+  begin
+    if Clip.Dead or Clip.Removing then
+      Exit;
+    ConstructAVM2Clip(Clip);
+    for Child in ChildrenInDepthOrder(Clip) do
+      if (Child.Parent = Clip) and (Child.MovieLibrary = Clip.MovieLibrary) then
+        ConstructTree(Child);
+  end;
+
+begin
+  if FAVM2FrameDepth >= 128 then
+    raise ESWFError.Create('AVM2 nested frame limit');
+  Inc(FAVM2FrameDepth);
+  try
+    for MovieLibrary in FLibraries.ToArray do
+      if (MovieLibrary.AVM2 <> nil) and (MovieLibrary.Root <> nil) and
+        (MovieLibrary.Root.MovieLibrary = MovieLibrary) then
+        ConstructTree(MovieLibrary.Root);
+    BroadcastAVM2FrameEvent(afConstructed);
+    RunAVM2FrameScripts;
+    BroadcastAVM2FrameEvent(afExit);
+  finally
+    Dec(FAVM2FrameDepth);
+  end;
+end;
+
+procedure TFlashPlayer.RunAVM2FrameScripts;
+var
+  LibraryItem: TFlashLibrary;
+  Jumps, Passes: Integer;
+
+  procedure Visit(Clip: TFlashClip; Runtime: TAVM2Runtime);
+  var
+    Child: TFlashClip;
+  begin
+    if Clip.Dead or Clip.Removing then
+      Exit;
+    while Clip.FrameScriptPending and not Clip.ExecutingFrameScript and not Clip.Dead and not Clip.Removing do
+    begin
+      Clip.FrameScriptPending := False;
+      Clip.ExecutingFrameScript := True;
+      try
+        Runtime.RunFrameScript(Clip, Max(0, Clip.Frame));
+      finally
+        Clip.ExecutingFrameScript := False;
+      end;
+      if Clip.PendingFrame >= 0 then
+      begin
+        Inc(Jumps);
+        if Jumps > 1024 then
+          raise ESWFError.Create('AVM2 frame script jump limit');
+        ApplyAVM2Goto(Clip);
+        if Clip.MovieLibrary.Movie.Version >= 10 then
+          CompleteAVM2Frame;
+      end;
+    end;
+    if Clip.Dead or Clip.Removing then
+      Exit;
+    for Child in ChildrenInDepthOrder(Clip) do
+      if (Child.Parent = Clip) and (Child.MovieLibrary = Clip.MovieLibrary) then
+        Visit(Child, Runtime);
+  end;
+
+begin
+  if FAVM2FrameScriptDepth >= 128 then
+    raise ESWFError.Create('AVM2 frame script nesting limit');
+  Inc(FAVM2FrameScriptDepth);
+  Jumps := 0;
+  Passes := 0;
+  try
+    repeat
+      Inc(Passes);
+      if Passes > 1024 then
+        raise ESWFError.Create('AVM2 frame script pass limit');
+      FAVM2FrameScriptsChanged := False;
+      for LibraryItem in FLibraries.ToArray do
+        if (LibraryItem.AVM2 <> nil) and (LibraryItem.Root <> nil) and (LibraryItem.Root.MovieLibrary = LibraryItem) then
+        try
+          Visit(LibraryItem.Root, LibraryItem.AVM2);
+        except
+          on E: EAVM2Error do
+            raise ESWFError.Create('AVM2 frame script: ' + E.Message);
+        end;
+    until not FAVM2FrameScriptsChanged;
+  finally
+    Dec(FAVM2FrameScriptDepth);
+  end;
 end;
 
 procedure TFlashPlayer.Fire(C: TFlashClip; const Name: string; Flags: Cardinal);
@@ -6143,29 +6738,38 @@ procedure TFlashPlayer.Tick;
 var
   Root: TFlashClip;
   MovieLibrary: TFlashLibrary;
+  EndMilliseconds: Int64;
 begin
   VM.BeginTick;
   VM.Milliseconds := Round(FFrameNumber * 1000 / Movie.FPS);
   for MovieLibrary in FLibraries do
     if MovieLibrary.AVM2 <> nil then
-      MovieLibrary.AVM2.BeginFrame;
+      MovieLibrary.AVM2.BeginFrame(VM.Milliseconds);
   ProcessUnloads(False);
   ProcessLoads;
   FNet.Tick;
   VM.RunTimers;
   if FFrameNumber > 0 then
     Broadcast('onEnterFrame', SWFClipEnterFrame);
+  FCollectingAVM2Timeline := True;
+  try
+    for Root in LevelClips do
+      StepClip(Root, True);
+  finally
+    FCollectingAVM2Timeline := False;
+  end;
+  BroadcastAVM2FrameEvent(afEnter);
+  CompleteAVM2Frame;
+  EndMilliseconds := Round((FFrameNumber + 1) * 1000 / Movie.FPS);
   for MovieLibrary in FLibraries do
     if (MovieLibrary.AVM2 <> nil) and (MovieLibrary.Root <> nil) and
       (MovieLibrary.Root.MovieLibrary = MovieLibrary) and not MovieLibrary.Root.Dead then
     try
-      MovieLibrary.AVM2.EnterFrame;
+      MovieLibrary.AVM2.RunTimers(EndMilliseconds);
     except
       on E: EAVM2Error do
-        raise ESWFError.Create('AVM2 enterFrame: ' + E.Message);
+        raise ESWFError.Create('AVM2 timer: ' + E.Message);
     end;
-  for Root in LevelClips do
-    StepClip(Root, True);
   FlushActions;
   UpdateDrag;
   Inc(FFrameNumber);
@@ -6218,6 +6822,7 @@ var
 begin
   for Root in LevelClips do
     StepClip(Root, False);
+  RunAVM2FrameScripts;
   FlushActions;
   UpdateDrag;
 end;

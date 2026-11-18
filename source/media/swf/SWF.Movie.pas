@@ -96,6 +96,11 @@ type
     StreamOffset, StreamEnd: Integer; // Sample frames, with an exclusive end.
   end;
 
+  TSWFScene = record
+    Name: string;
+    StartFrame: Integer; // Zero-based offset in the root timeline.
+  end;
+
   TSWFButtonRecord = record
     States, CharacterId, Depth: Integer;
     Matrix: TSWFMatrix;
@@ -186,6 +191,7 @@ type
     FStreamSounds: TObjectList<TSWFSound>;
     procedure ParseTimeline(R: TSWFReader; Count, Nesting: Integer; out Frames: TArray<TSWFFrame>);
     procedure DecodeTimelineSound(var Frames: TArray<TSWFFrame>);
+    procedure ParseSceneData(R: TSWFReader; FrameCount: Integer);
     procedure ParseShape(C: TSWFCharacter; R: TSWFReader; Version: Integer);
     procedure ParseMorphShape(C: TSWFCharacter; R: TSWFReader);
     procedure ParseButton(C: TSWFCharacter; R: TSWFReader);
@@ -209,6 +215,10 @@ type
     ButtonSounds: TDictionary<Integer, TSWFButtonSounds>;
     ExportNames: TDictionary<string, Integer>;
     SymbolNames: TDictionary<Integer, string>;
+    AVM2SymbolNames: TDictionary<Integer, string>;
+    AVM2ExportNames: TDictionary<string, Integer>;
+    SceneLabels: TArray<TSWFScene>;
+    SceneFrameLabels: TDictionary<string, Integer>;
     Warnings: TStringList;
     constructor Create(const Data: TBytes);
     destructor Destroy; override;
@@ -495,6 +505,8 @@ begin
   FStreamSounds := TObjectList<TSWFSound>.Create;
   ExportNames := TDictionary<string, Integer>.Create;
   SymbolNames := TDictionary<Integer, string>.Create;
+  AVM2SymbolNames := TDictionary<Integer, string>.Create;
+  AVM2ExportNames := TDictionary<string, Integer>.Create;
   Warnings := TStringList.Create;
   Warnings.Sorted := True;
   Warnings.Duplicates := dupIgnore;
@@ -524,6 +536,9 @@ end;
 destructor TSWFMovie.Destroy;
 begin
   Warnings.Free;
+  SceneFrameLabels.Free;
+  AVM2ExportNames.Free;
+  AVM2SymbolNames.Free;
   SymbolNames.Free;
   ExportNames.Free;
   ButtonSounds.Free;
@@ -774,6 +789,38 @@ begin
     Warn(Format('Video %d uses unsupported codec %d', [C.Id, Codec]));
 end;
 
+procedure TSWFMovie.ParseSceneData(R: TSWFReader; FrameCount: Integer);
+var
+  Count, Offset: Cardinal;
+  Index: Integer;
+  Name: string;
+begin
+  Count := R.EncodedU32;
+  if (Count > 65535) or (Count > Cardinal(R.Remaining div 2)) then
+    raise ESWFError.Create('Invalid SWF scene count');
+  SetLength(SceneLabels, Integer(Count));
+  for Index := 0 to High(SceneLabels) do
+  begin
+    Offset := R.EncodedU32;
+    SceneLabels[Index].StartFrame := Integer(Min(Offset, Cardinal(FrameCount)));
+    SceneLabels[Index].Name := R.Str;
+  end;
+  Count := R.EncodedU32;
+  if (Count > 65535) or (Count > Cardinal(R.Remaining div 2)) then
+    raise ESWFError.Create('Invalid SWF frame label count');
+  if SceneFrameLabels = nil then
+    SceneFrameLabels := TDictionary<string, Integer>.Create
+  else
+    SceneFrameLabels.Clear;
+  for Index := 1 to Integer(Count) do
+  begin
+    Offset := R.EncodedU32;
+    Name := R.Str;
+    if Offset < Cardinal(FrameCount) then
+      SceneFrameLabels.AddOrSetValue(Name, Integer(Offset));
+  end;
+end;
+
 procedure TSWFMovie.ParseTimeline(R: TSWFReader; Count, Nesting: Integer; out Frames: TArray<TSWFFrame>);
 var
   Tags: TList<TSWFTag>;
@@ -910,7 +957,12 @@ begin
                 Id := Body.U16;
                 ExportName := Body.Str;
                 if Id = 0 then
-                  DocumentClass := ExportName;
+                  DocumentClass := ExportName
+                else
+                begin
+                  AVM2SymbolNames.AddOrSetValue(Id, ExportName);
+                  AVM2ExportNames.AddOrSetValue(ExportName, Id);
+                end;
               end;
               if Body.Remaining <> 0 then
                 raise ESWFError.Create('Unexpected data after SymbolClass');
@@ -940,7 +992,10 @@ begin
             end;
           12, 15, 18, 19, 26, 28, 4, 5, 43, 45, 70:
             Tags.Add(Tag);
-          24, 58, 64, 65, 66, 77, 86, 63, 41:
+          86:
+            if Nesting = 0 then
+              ParseSceneData(Body, Max(1, Count));
+          24, 58, 64, 65, 66, 77, 63, 41:
             ; // Protection, metadata and authoring data.
         else
           Warn(Format('SWF tag %d is not implemented', [Tag.Code]));

@@ -139,7 +139,6 @@ begin
   FillChar(FRAM, SizeOf(FRAM), 0);
   FillChar(FRegs, SizeOf(FRegs), 0);
   Z80StateInitialise(FCPU);
-  Z80Reset(FCPU);
   FM.Reset;
   if F7751 <> nil then
     F7751.Reset;
@@ -587,9 +586,6 @@ begin
     (FUPDState < 0) or (FUPDState > 12) or (FBank < 0) then
     raise EReadError.Create('Invalid System 16 sound state');
 end;
-
-initialization
-  HW.Z80.ConstantInitialise;
 
 end.
 

@@ -207,53 +207,18 @@ end;
 
 procedure PublishFrame(const Frame: TVideoFrame; var Bitmap: IImagePixelBuffer; const Pool: IImagePixelPool);
 var
-  X, Y, Luma, Chroma, U, V, R, G, B, YScale, YOffset, RV, GU, GV, BU: Integer;
+  Converter: TAVCColorConverter;
   Output: IImagePixelBuffer;
 begin
-  YScale := 76309;
-  YOffset := 16;
-  if Frame.Matrix = TColorMatrix.BT709 then
-  begin
-    RV := 117489;
-    GU := 13975;
-    GV := 34925;
-    BU := 138438;
-  end
-  else
-  begin
-    RV := 104597;
-    GU := 25675;
-    GV := 53279;
-    BU := 132201;
-  end;
-  if Frame.FullRange then
-  begin
-    YScale := 65536;
-    YOffset := 0;
-    RV := RV * 224 div 255;
-    GU := GU * 224 div 255;
-    GV := GV * 224 div 255;
-    BU := BU * 224 div 255;
-  end;
+  Converter.Configure(Frame);
   Output := Bitmap;
   if (Output = nil) or (Output.Width <> Frame.Width) or (Output.Height <> Frame.Height) then
     Output := Pool.Allocate(Frame.Width, Frame.Height, False, 0);
   if Output = nil then
     raise ESWFError.Create('Flash video bitmap pool limit');
-  for Y := 0 to Frame.Height - 1 do
-    for X := 0 to Frame.Width - 1 do
-    begin
-      Luma := (Integer(Frame.Planes[0][Y * Frame.Strides[0] + X]) - YOffset) * YScale + 32768;
-      Chroma := (Y div 2) * Frame.Strides[1] + X div 2;
-      U := Integer(Frame.Planes[1][Chroma]) - 128;
-      Chroma := (Y div 2) * Frame.Strides[2] + X div 2;
-      V := Integer(Frame.Planes[2][Chroma]) - 128;
-      R := EnsureRange((Luma + RV * V) div 65536, 0, 255);
-      G := EnsureRange((Luma - GU * U - GV * V) div 65536, 0, 255);
-      B := EnsureRange((Luma + BU * U) div 65536, 0, 255);
-      Output.SetPixelPremultiplied(X, Y, $FF000000 or (Cardinal(R) shl 16) or
-        (Cardinal(G) shl 8) or Cardinal(B));
-    end;
+  for var Y := 0 to Frame.Height - 1 do
+    for var X := 0 to Frame.Width - 1 do
+      Output.SetPixelPremultiplied(X, Y, Converter.Pixel(Frame, X, Y));
   Bitmap := Output;
 end;
 

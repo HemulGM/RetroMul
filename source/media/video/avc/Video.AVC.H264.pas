@@ -75,6 +75,7 @@ type
     FDirectSpatial: Boolean;
     FHasBiPrediction: Boolean;
     FUseRegionCache: Boolean;
+    FMaxCodedPixels: Integer;
     FRefList1: TArray<TPicture>;
     FActiveRefs1: Integer;
     FLengths, FWidth, FHeight, FGridWidth, FFrameNum, FSliceID, FMB, FQP: Integer;
@@ -127,7 +128,7 @@ type
     function CABACPattern: Integer;
     function ReadBlock(Plane, X, Y, Category, MaxCoeff: Integer; out Block: TCoeffBlock): Integer;
   public
-    constructor Create(UseRegionCache: Boolean = False; OutputDecodeOrder: Boolean = False);
+    constructor Create(UseRegionCache: Boolean = False; OutputDecodeOrder: Boolean = False; MaxCodedPixels: Integer = 0);
     destructor Destroy; override;
     procedure Configure(const Track: TTrackInfo);
     procedure ConfigureAnnexB(PictureOrder: Boolean = False);
@@ -169,10 +170,11 @@ const
   BlockX: array[0..15] of Integer = (0, 1, 0, 1, 2, 3, 2, 3, 0, 1, 0, 1, 2, 3, 2, 3);
   BlockY: array[0..15] of Integer = (0, 0, 1, 1, 0, 0, 1, 1, 2, 2, 3, 3, 2, 2, 3, 3);
 
-constructor TH264Decoder.Create(UseRegionCache, OutputDecodeOrder: Boolean);
+constructor TH264Decoder.Create(UseRegionCache, OutputDecodeOrder: Boolean; MaxCodedPixels: Integer);
 begin
   inherited Create;
   FUseRegionCache := UseRegionCache;
+  FMaxCodedPixels := MaxCodedPixels;
   FOutputDecodeOrder := OutputDecodeOrder;
   FRefs := TObjectList<TPicture>.Create(True);
   FRemoveRefs := TList<TPicture>.Create;
@@ -328,6 +330,9 @@ begin
     7:
       begin
         ParseSPS(RBSP, S);
+        if (FMaxCodedPixels > 0) and
+          (Int64(S.MBWidth) * S.MBHeight * 256 * (2 - Ord(S.FrameOnly)) > FMaxCodedPixels) then
+          raise EPlayerUnsupported.Create('H.264 coded picture exceeds the playback limit');
         FSPS[S.ID] := S
       end;
     8:
@@ -2146,7 +2151,7 @@ begin
   GroupCount := 0;
   HaveDirect := False;
   DCT8Allowed := FP.Transform8x8Mode;
-  {$IFDEF PLAYER_TEST_STATS}             Inc(H264TestBTypes[TypeCode]); {$ENDIF}
+  {$IFDEF PLAYER_TEST_STATS}               Inc(H264TestBTypes[TypeCode]); {$ENDIF}
   FDirect[FMB] := TypeCode = 0;
   if TypeCode = 0 then
   begin
@@ -2198,7 +2203,7 @@ begin
         Sub[I] := FBits.ReadUE;
       if Sub[I] > 12 then
         raise EPlayerFormat.Create('Invalid B subpartition');
-      {$IFDEF PLAYER_TEST_STATS}                                     Inc(H264TestBSubTypes[Sub[I]]); {$ENDIF}
+      {$IFDEF PLAYER_TEST_STATS}                                           Inc(H264TestBSubTypes[Sub[I]]); {$ENDIF}
     end;
     GroupCount := 4;
     for I := 0 to 3 do

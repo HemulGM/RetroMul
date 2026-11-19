@@ -18,7 +18,8 @@ implementation
 
 uses
   System.Classes, System.Math, Audio.Format.WAV, Audio.Format.MIDI,
-  Audio.MP3.Source, Audio.Format.AMR, J2ME.SMAF, J2ME.Compatibility;
+  Audio.MP3.Source, Audio.Format.AMR, J2ME.SMAF, J2ME.Compatibility,
+  J2ME.Media.Video;
 
 function J2MEAudioThreadTerminated: Boolean;
 begin
@@ -38,7 +39,9 @@ begin
   else if SameText(Extension, '.mmf') then
     Result := OpenSMAF(Data)
   else if SameText(Extension, '.amr') then
-    Result := OpenAMR(Data)
+    Result := OpenAMRForPlayback(Data)
+  else if SameText(Extension, '.m4a') then
+    Result := OpenJ2MEContainerAudio(Data)
   else
     raise EArgumentException.Create('Unsupported J2ME audio format: ' + Extension);
 end;

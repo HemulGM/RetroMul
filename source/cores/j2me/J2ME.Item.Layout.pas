@@ -23,7 +23,7 @@ function J2MECaretLine(const Lines: TArray<TJ2METextLine>; Caret: Integer): Inte
 
 function J2MEChoiceRowHeight(VM: TJVM; Row: Integer): Integer;
 
-function J2MEItemMetrics(VM: TJVM; Item, AvailableWidth, ActualWidth: Integer): TJ2MEItemMetrics;
+function J2MEItemMetrics(VM: TJVM; Item, AvailableWidth, ActualWidth: Integer; CustomQuery: Boolean = False): TJ2MEItemMetrics;
 
 implementation
 
@@ -119,11 +119,14 @@ begin
   Result := Max(24, J2MEFontView(VM, Font).Height + 8);
 end;
 
-function J2MEItemMetrics(VM: TJVM; Item, AvailableWidth, ActualWidth: Integer): TJ2MEItemMetrics;
+function J2MEItemMetrics(VM: TJVM; Item, AvailableWidth, ActualWidth: Integer; CustomQuery: Boolean): TJ2MEItemMetrics;
 begin
   Result := Default(TJ2MEItemMetrics);
   var O := VM.GetObject(Item);
   var Kind := UIInt(O, 'itemKind');
+  var CustomPrefix := 'custom';
+  if CustomQuery then
+    CustomPrefix := 'customQuery';
   AvailableWidth := Max(1, AvailableWidth);
   Result.FontRef := UIRef(O, 'font');
   if Result.FontRef = 0 then
@@ -169,6 +172,16 @@ begin
         Minimum := UIInt(O, 'minimumWidth');
         Preferred := Minimum;
       end;
+    J2MECustomItemKind:
+      begin
+        Minimum := UIInt(O, CustomPrefix + 'MinWidth');
+        Preferred := UIInt(O, CustomPrefix + 'PrefWidth');
+      end;
+    J2MEVideoItemKind:
+      begin
+        Minimum := 1;
+        Preferred := UIInt(O, 'videoWidth');
+      end;
     4, 5, 6, 7:
       begin
         Minimum := 24;
@@ -185,6 +198,11 @@ begin
   var Locked := UIInt(O, 'preferredWidth', -1);
   if Locked >= 0 then
     Result.PreferredWidth := Max(Minimum, Locked);
+  if Kind = J2MECustomItemKind then
+  begin
+    Result.MinimumWidth := Min(Result.MinimumWidth, AvailableWidth);
+    Result.PreferredWidth := Min(Result.PreferredWidth, AvailableWidth);
+  end;
   if ActualWidth < 0 then
     ActualWidth := Min(AvailableWidth, Result.PreferredWidth);
   ActualWidth := Max(1, ActualWidth);
@@ -223,6 +241,17 @@ begin
       begin
         BodyHeight := 18;
         Result.MinimumHeight := Result.LabelHeight + BodyHeight;
+      end;
+    J2MECustomItemKind:
+      begin
+        var MinimumHeight := UIInt(O, CustomPrefix + 'MinHeight');
+        BodyHeight := Max(MinimumHeight, UIInt(O, CustomPrefix + 'PrefHeight'));
+        Result.MinimumHeight := Result.LabelHeight + MinimumHeight;
+      end;
+    J2MEVideoItemKind:
+      begin
+        BodyHeight := UIInt(O, 'videoHeight');
+        Result.MinimumHeight := Result.LabelHeight + Min(1, BodyHeight);
       end;
     5, 7:
       begin
@@ -266,6 +295,8 @@ begin
   Locked := UIInt(O, 'preferredHeight', -1);
   if Locked >= 0 then
     Result.PreferredHeight := Max(Result.MinimumHeight, Locked);
+  if Kind = J2MECustomItemKind then
+    Result.PreferredHeight := Min(Result.PreferredHeight, Result.LabelHeight + J2MECustomItemExtent);
 end;
 
 end.

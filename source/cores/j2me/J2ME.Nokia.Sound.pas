@@ -5,7 +5,7 @@ interface
 uses
   Audio.Types, System.Classes, JVM.StateIO, System.SysUtils,
   System.Generics.Collections, JVM.Types, JVM.ClassFile, JVM.Runtime,
-  Audio.Decoder, J2ME.Nokia.OTA;
+  Audio.Decoder, J2ME.Nokia.OTA, J2ME.Suite;
 
 type
   TNokiaSoundEvent = record
@@ -51,7 +51,7 @@ type
     procedure TransferState(S: TJVMStateIO);
     constructor Create(VM: TJVM);
     destructor Destroy; override;
-    procedure Install;
+    procedure Install(Suite: TJ2MESuite);
     function Handles(const Owner: string): Boolean;
     function Invoke(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
     procedure MixInto(var Mix: TArray<Int64>; Frames: Integer);
@@ -95,6 +95,7 @@ begin
   Volume := 7;
   SegmentLength := 0;
   SegmentPosition := 0;
+  SegmentOn := 0;
   Phase := 0;
   if SimpleTone then
   begin
@@ -195,7 +196,7 @@ begin
   inherited;
 end;
 
-procedure TJ2MENokiaSound.Install;
+procedure TJ2MENokiaSound.Install(Suite: TJ2MESuite);
 var
   B: TJavaClassBuilder;
 
@@ -213,6 +214,8 @@ begin
   finally
     B.Free;
   end;
+  if TryInstallJ2MECompatibilityNokiaSound(Suite, FVM) then
+    Exit;
   B := TJavaClassBuilder.Create(SoundName, 'java/lang/Object');
   try
     Constant('FORMAT_TONE', 1);
@@ -522,6 +525,7 @@ begin
         end;
         if (Length(V.Data) < 12) or (TEncoding.ASCII.GetString(V.Data, 0, 4) <> 'RIFF') or (TEncoding.ASCII.GetString(V.Data, 8, 4) <> 'WAVE') then
           raise ENokiaToneFormat.Create('Invalid Nokia WAV header');
+        V.Data := NormalizeJ2MECompatibilityWAV(V.Data);
         V.Decoding := True;
       except
         on E: EJVMThrown do
@@ -660,6 +664,53 @@ begin
     ReleaseVoice(V, False);
 end;
 
+procedure ValidateSnapshotVoice(P: TNokiaSoundVoice);
+begin
+  if not (P.State in [0, 1, 3]) or (P.Gain < 0) or (P.Gain > 255) or
+    (P.Rooted <> (P.State = 0)) or ((P.State = 0) and (not P.HasPlayed or (P.LoopsLeft < -1) or (P.LoopsLeft = 0))) or
+    (P.Decoding and ((P.State <> 3) or (P.Format <> 5) or (Length(P.Data) = 0))) then
+    raise EReadError.Create('Invalid snapshot Nokia sound state');
+  if (P.SampleCount < 0) or (P.SampleCount > Length(P.PCM)) or (P.FrameCount < 0) or (Length(P.PCM) > MaxSamples) then
+    raise EReadError.Create('Invalid snapshot Nokia PCM');
+  if P.Decoding or ((P.State <> 3) and (P.Format = 5)) then
+  begin
+    if not P.Decoding or (P.SampleCount <> 0) then
+    begin
+      if not (P.Info.Channels in [1, 2]) or (P.Info.SampleRate < 1) or (P.Info.SampleRate > 384000) then
+        raise EReadError.Create('Invalid snapshot Nokia WAV format');
+      if P.SampleCount mod P.Info.Channels <> 0 then
+        raise EReadError.Create('Invalid snapshot Nokia WAV sample count');
+    end;
+    var EndPosition := Int64(P.FrameCount) * 44100;
+    if (P.Decoding and ((P.FrameCount <> 0) or (P.Position <> 0))) or
+      (not P.Decoding and ((Int64(P.FrameCount) * P.Info.Channels <> P.SampleCount) or
+      (P.Position < 0) or (P.Position > EndPosition) or ((P.State = 0) and (P.FrameCount = 0)))) then
+      raise EReadError.Create('Invalid snapshot Nokia WAV geometry');
+    Exit;
+  end;
+  if P.State = 3 then
+    Exit;
+  if (P.Format <> 1) or (P.SimpleTone and ((P.ToneLength <= 0) or (Length(P.Song) <> 0))) then
+    raise EReadError.Create('Invalid snapshot Nokia tone format');
+  try
+    for var Pattern in P.Song do
+      ValidateNokiaTonePattern(Pattern);
+  except
+    on E: ENokiaToneFormat do
+      raise EReadError.Create('Invalid snapshot Nokia OTA: ' + E.Message);
+  end;
+  if P.HasPlayed and ((P.Pattern < 0) or (P.Pattern > Length(P.Song)) or
+    (P.Instruction < 0) or ((P.Pattern < Length(P.Song)) and (P.Instruction > Length(P.Song[P.Pattern].Instructions))) or
+    (P.Repetition < 0) or (P.Repetition > 15) or not (P.Scale in [0..3]) or not (P.Style in [0..2]) or
+    (P.Tempo < NokiaTempo(0)) or (P.Tempo > NokiaTempo(31)) or not (P.Volume in [0..15]) or
+    (P.SegmentLength < 0) or (P.SegmentPosition < 0) or (P.SegmentPosition > P.SegmentLength) or
+    (P.SegmentOn < 0) or ((P.SegmentLength <> 0) and (P.SegmentOn > P.SegmentLength)) or
+    IsNan(P.Frequency) or (P.Frequency < 0) or (P.Frequency > 13288) or
+    IsNan(P.Increment) or (P.Increment < 0) or (P.Increment > 2 * Pi) or
+    IsNan(P.Phase) or (P.Phase < 0) or (P.Phase > 2 * Pi)) then
+    raise EReadError.Create('Invalid snapshot Nokia tone cursor');
+end;
+
 procedure TJ2MENokiaSound.TransferState(S: TJVMStateIO);
 begin
   S.Tag('J2ME.Nokia.Sound-1');
@@ -671,6 +722,7 @@ begin
     FVoices.Clear
   else
     TArray.Sort<Integer>(Keys);
+  var TotalSamples := Int64(0);
   for var I := 0 to N - 1 do
   begin
     var Key := 0;
@@ -707,8 +759,11 @@ begin
       S.Bool(P.Decoding);
       S.Bool(P.SimpleTone);
       S.UInt64Value(P.Order);
-      S.Bytes(P.Data);
+      S.Bytes(P.Data, 16 * 1024 * 1024);
       S.PCM(P.PCM);
+      Inc(TotalSamples, Length(P.PCM));
+      if TotalSamples > MaxTotalSamples then
+        raise EReadError.Create('Snapshot Nokia decoded audio memory limit');
       S.Int64Value(P.Position);
       S.Int64Value(P.ToneLength);
       S.Int64Value(P.SegmentLength);
@@ -718,14 +773,14 @@ begin
       S.RealValue(P.Increment);
       S.RealValue(P.Phase);
       var Patterns: Integer := Length(P.Song);
-      S.Count(Patterns, 1024);
+      S.Count(Patterns, 255);
       if S.Loading then
         SetLength(P.Song, Patterns);
       for var J := 0 to Patterns - 1 do
       begin
         S.Int(P.Song[J].Repeats);
         var Notes: Integer := Length(P.Song[J].Instructions);
-        S.Count(Notes, 65536);
+        S.Count(Notes, 255);
         if S.Loading then
           SetLength(P.Song[J].Instructions, Notes);
         for var K := 0 to Notes - 1 do
@@ -736,13 +791,13 @@ begin
           S.Int(P.Song[J].Instructions[K].Modifier);
         end;
       end;
-      if S.Loading and P.Decoding and (P.SampleCount > 0) then
-        P.Decoder := RestoreJ2MEDecoder(P.Data, '.wav', P.SampleCount, P.Info.SampleRate, P.Info.Channels);
-      if (P.SampleCount < 0) or (P.SampleCount > Length(P.PCM)) or (P.FrameCount < 0) then
-        raise EReadError.Create('Invalid snapshot Nokia PCM');
-
       if S.Loading then
       begin
+        if Key <> P.Reference then
+          raise EReadError.Create('Invalid snapshot Nokia sound reference');
+        ValidateSnapshotVoice(P);
+        if P.Decoding and (P.SampleCount > 0) then
+          P.Decoder := RestoreJ2MEDecoder(P.Data, '.wav', P.SampleCount, P.Info.SampleRate, P.Info.Channels);
         FVoices.Add(Key, P);
         P := nil;
       end;

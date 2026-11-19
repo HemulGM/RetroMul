@@ -223,6 +223,7 @@ type
     // Embedders can promptly retire a polled operation after its native call
     // unwinds (exception, interrupt or stop), without waiting for heap GC.
     function HasNativeContinuation(Ref: Integer): Boolean;
+    function IsCurrentInstanceCall(Method: TJVMMethod; Receiver: Integer): Boolean;
     procedure SetNativeContinuation(const Value: TJVMValue);
     procedure RetryNative;
     // Native library calls may trigger ordinary resumable class initialization.
@@ -852,6 +853,15 @@ begin
     for var Frame in Frames do
       if (Frame.NativeContinuation.Kind = TJVMKind.Reference) and (Frame.NativeContinuation.AsRef = Ref) then
         Exit(True);
+  Result := False;
+end;
+
+function TJVM.IsCurrentInstanceCall(Method: TJVMMethod; Receiver: Integer): Boolean;
+begin
+  for var Frame in FFrames do
+    if (Frame.Method = Method) and (Length(Frame.Locals) <> 0) and
+      (Frame.Locals[0].Kind = TJVMKind.Reference) and (Frame.Locals[0].AsRef = Receiver) then
+      Exit(True);
   Result := False;
 end;
 
@@ -2157,6 +2167,15 @@ var
       F.Jump(Int64(F.InstructionPC) + D);
   end;
 
+  procedure UnconditionalBranch(Displacement: Integer);
+  begin
+    F.Jump(Int64(F.InstructionPC) + Displacement);
+    // A goto whose target is itself cannot read guest state, return or
+    // release a monitor. Keep its frame alive and let other threads run.
+    if Displacement = 0 then
+      FCurrent.State := TJVMThreadState.TerminalBranch;
+  end;
+
   procedure CheckArrayOpcode(Family: Integer; Obj: TJVMObject);
   const
     ElementTypes: array[0..7] of Char = ('I', 'J', 'F', 'D', 'L', 'B', 'C', 'S');
@@ -2812,7 +2831,7 @@ begin
         Branch(Test);
       end;
     $A7:
-      Branch(True);
+      UnconditionalBranch(F.S2);
     $A8:
       begin
         I := F.S2;
@@ -3167,10 +3186,7 @@ begin
         Branch((I = 0) = (Op = $C6));
       end;
     $C8:
-      begin
-        I := F.S4;
-        F.Jump(Int64(F.InstructionPC) + I);
-      end;
+      UnconditionalBranch(F.S4);
     $C9:
       begin
         I := F.S4;

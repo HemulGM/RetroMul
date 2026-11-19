@@ -4359,8 +4359,5 @@ begin
   end;
 end;
 
-initialization
-  ConstantInitialise;
-
 end.
 

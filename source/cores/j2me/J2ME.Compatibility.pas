@@ -9,19 +9,35 @@ uses
 // Exact JAR identities only. Names and image dimensions are not reliable hints.
 function TryJ2MECompatibilityScreen(const JarHash: string; out Size: TJ2MEScreenSize): Boolean;
 
+function J2MECompatibilityIgnoredFlashDuration(Suite: TJ2MESuite): Int64;
+
+function J2MECompatibilitySamsungVibrationMillis(Suite: TJ2MESuite): Boolean;
+
+function J2MECompatibilityPlatform(Suite: TJ2MESuite): string;
+
+function J2MECompatibilityLocale(Suite: TJ2MESuite): string;
+
 function J2MECompatibilityKeyLayout(Suite: TJ2MESuite): TJ2MEKeyLayout;
 
 function J2MECompatibilityCanvasFooter(Suite: TJ2MESuite): Boolean;
 
+function J2MECompatibilityNativePixelFormat(Suite: TJ2MESuite): Integer;
+
 function J2MECompatibilityExplicitInitialPaint(Suite: TJ2MESuite): string;
 
+function J2MECompatibilityUsesOwnCanvasLock(Suite: TJ2MESuite): Boolean;
+
 function J2MECompatibilityEmptyGameURLTemplate(Suite: TJ2MESuite): Boolean;
+
+function TryJ2MECompatibilityAppProperty(Suite: TJ2MESuite; const Name: string; out Value: string): Boolean;
 
 function J2MECompatibilitySummerSki(Suite: TJ2MESuite): Boolean;
 
 function J2MECompatibilityStackAttack2(Suite: TJ2MESuite): Boolean;
 
 function J2MECompatibilityMarslander(Suite: TJ2MESuite): Boolean;
+
+function NormalizeJ2MECompatibilityResource(const Name: string; const Data: TBytes): TBytes;
 
 procedure InstallJ2MECompatibilityClasses(Suite: TJ2MESuite; VM: TJVM; out ArmiesOfWarClass: TJVMClass);
 
@@ -41,6 +57,10 @@ function NormalizeJ2MECompatibilityMIDI(const Data: TBytes): TBytes;
 
 function NormalizeJ2MECompatibilityOTA(const Data: TBytes): TBytes;
 
+function NormalizeJ2MECompatibilityWAV(const Data: TBytes): TBytes;
+
+function TryInstallJ2MECompatibilityNokiaSound(Suite: TJ2MESuite; VM: TJVM): Boolean;
+
 procedure MigrateJ2MECompatibilityScreen(const JarHash: string; Runtime: TJ2MERuntime); overload;
 
 procedure MigrateJ2MECompatibilityScreen(const JarHash: string; Runtime: TJ2MERuntime; const Size: TJ2MEScreenSize); overload;
@@ -48,7 +68,8 @@ procedure MigrateJ2MECompatibilityScreen(const JarHash: string; Runtime: TJ2MERu
 implementation
 
 uses
-  System.Classes, System.Math, System.Hash, System.StrUtils, Java.Classes;
+  System.Classes, System.Math, System.Hash, System.StrUtils, Java.Classes,
+  JVM.Bytecode, J2ME.Graphics;
 
 const
   PoolHash = '0dd024a3bc2933d5d40289cfc0071da095dc3c491be428d8b78b647dcd3fe5b5';
@@ -60,33 +81,69 @@ const
   BlockBreakerSiemensHash = '6527a55680c1f9e2ea2f7c4a34aae22d30a9623db1d8bf84be44dc1781b068d7';
   CollisionCourseSiemensHash = '4ac303671c3b9eb990fcfaeb9af130f62a98049b926c331760bd784f55361d2f';
   GameAPIDemoHash = 'fd9cd7763e69fc9add8ebec47414076c2c52cd365b2559bfb2f5dce08c5dd5b9';
+  BalloonShooterHash = '78b1a07389e7aa8997916d1aee1f80f1ff63a2da0fc2457ed47d492159d8d8a6';
+  MoorhuhnSiemensHash = 'e428da29faeefbe7996b208c82b92d1ded58309b1c2b4949413b7b104f8dd67b';
+  RailRiderKernelHash = 'e0a062a2a697e044c6cbaccb7f4c742eb7f76d6ef96be9223878a6ad9ba92a16';
+  RatZSiemensHash = '875688130648b3f84b8aac920f6d09c8cc0be1e3b13e2bbbef1d65265d9b7b3d';
   NinjaMasterHash = '51873044919a41dda1fb4630f0c037c42b0550ecfda1f85f37f5acb200ac3bd1';
   AncientEmpires103Hash = '9955552dc8c09b5416903316c2133d20a8f5fc4315666f8e1f89f3278bb93bd0';
   Asphalt3Hash = '5fe5be707b9996b99220caf19c403059fe11f3f2b201c5dbf792e75ee1e79340';
   DustNDirtHash = '8d4618bffbd3e0c6cd6216d05eebd25be6a3ce4213fa38a0639f32fd8737fa37';
   BiplanesHash = '356e01e2b47fb0fd8868e6729f928cad4c0ad79d43c57195f82e6be4a08ea72c';
+  ParachutePanicHash = '1351ec8f6b0cba0ec0687800c244049151b76292db662c7c6a44e5475c7bb0ba';
   BMWRacingHash = '1c016383f9b5bab968269cbc0fed9939c4c5bf38a881eb11f292ee18a3082a55';
   BimmerStreetRacingHash = '262d2e1765c982cef3681ef6d33605d63c700397e0056da8d0415bceccf68057';
   NFSCarbonHash = '2b43fb9d5f9832e11ea597f329d451312ca019a6296299463679bb04403f540d';
   DiamondRushHash = '1a27a721a4440e8bdf63aa456732d71cb4e0cbd00054899dd233b0f69fd96b00';
+  DieHardHash = '42c9116c1b1933d80d17ad5bf2e7f6a96a0a8dbaa2b828a9a05d1b9c6336e9b1';
+  TennisOpen2007Hash = '5268e591b7fdbc1150cf2c7ccbb77d85a346c06ce248c89ffb55ef3da48c37e4';
   StackAttack2Hash = '21075f871178aa7cd955a0317a9832d634123c59390523b1b8839e92ec756934';
   ForgottenWarriorHash = 'f08c8034da70871fc6b0674288fc7b9f0d9d8a332b2b6cdb40d915372bfd25d1';
   SummerSkiHash = '66fc629e1272a07b64f6d1dc980812a6fabadaf5d24b457d689539f9800667d0';
   RaymanGolfSiemensHash = 'f3ef30455b259e92247ccc7d6ff4dd6ba4d0bd88f30a8b06eb1b5d32c6524af8';
   PrinceHaremSiemensHash = 'f14695f89339ea49d436c14f91040eb931fba9bd2f05dd1f16c7865ffba15c03';
   BrokenWingSiemensHash = '091f81d14c4abff2820bf255e7c88efb06dd9e004b7f6d818cbce676a618781c';
+  MasteringMagicHash = '05b5c0bcb49d97cf9a1250cb783e842b8d792e08f616105480b04c849e50771c';
+  Sims2MobileHash = '15ef83e0c8cb835c10e15ea17a631e06cce48b2612364fa0c7a299931eab8088';
+  StuntmanNokiaHash = '9ea60fbe22b3201a260b709fabcb82c4b406e77d8c6062050d0e46c1734c7848';
+  StuntmanOriginalHash = '964bd6ca0d19edd647055637ff33affe509133c8669f17605da714c7edaca0fd';
+  Shrek2NokiaHash = 'a29b1d7077e3bf4b39d793eee1ae3fd246b124ac09c4058f0accba9d6f8093df';
+  RTLRacerSiemensHash = '7b5d4977fb4e4a27750bc634c9b51725477833487a58a72013fe9dcb6a1c595e';
+  ShepherdessHash = '4f345541bc0ee13745b79fe97cd49911f21d08c5af6dc127991efb8044cbc612';
   MarslanderSiemensHash = 'e93faa05eb3cce547138504955ae6fcda7b4489da3f0b2ce8e1d782f24fe1230';
 
-function ResourceMatchesHash(Suite: TJ2MESuite; const Resource, Digest: string): Boolean;
+function DataMatchesHash(const Data: TBytes; const Digest: string): Boolean;
 begin
-  if not Suite.HasResource(Resource) then
-    Exit(False);
-  var Data := Suite.ReadResource(Resource);
   if Length(Data) = 0 then
     Exit(False);
   var Hash := THashSHA2.Create;
   Hash.Update(Data[0], Length(Data));
   Result := SameText(Hash.HashAsString, Digest);
+end;
+
+function ResourceMatchesHash(Suite: TJ2MESuite; const Resource, Digest: string): Boolean;
+begin
+  Result := Suite.HasResource(Resource) and DataMatchesHash(Suite.ReadResource(Resource), Digest);
+end;
+
+function NormalizeJ2MECompatibilityResource(const Name: string; const Data: TBytes): TBytes;
+const
+  SimonGameScriptHash = '7291a5d5e7dd308980a8db320c7806e69eebabe6f2929638de1b85555f16cc67';
+  SimonTurnGuard = 'if(yourturn.qf==true && gameover==false && numPulse < currentSec.Du())'#10'{'#10;
+begin
+  Result := Data;
+  if (Name <> 'xml/game.xml') or not DataMatchesHash(Data, SimonGameScriptHash) then
+    Exit;
+
+  // The color buttons can enqueue input during playback and after the last guess.
+  // Ignore those callbacks before they change the timer or index the sequence.
+  var Script := TEncoding.ASCII.GetString(Data);
+  for var Color in ['green', 'blue', 'red', 'yellow'] do
+  begin
+    var Callback := Color + '();'#10'userPulse(' + Color + ');'#10'pauseLarge();'#10;
+    Script := Script.Replace(Callback, SimonTurnGuard + Callback + '}'#10);
+  end;
+  Result := TEncoding.ASCII.GetBytes(Script);
 end;
 
 function J2MECompatibilityKeyLayout(Suite: TJ2MESuite): TJ2MEKeyLayout;
@@ -104,8 +161,17 @@ begin
   // codes. The exact classes also cover copies with changed descriptors.
   if ResourceMatchesHash(Suite, 'a/RMGame.class', '91a35f7ad9154a32742e7a51c0c3f5710de8de717923880594485e3142cb6546') or
     ResourceMatchesHash(Suite, 'prince/k.class', '9c3d4b62052d3e6e8ad5cfbdef826fa05951afe93eee4a0b67737f1d54dac745') or
-    ResourceMatchesHash(Suite, 'a/R6Kernel.class', 'e459b5335613ea976b60388dff7d1b047bcdcc00b942fee7fa5f6336249ba983') then
+    ResourceMatchesHash(Suite, 'a/R6Kernel.class', 'e459b5335613ea976b60388dff7d1b047bcdcc00b942fee7fa5f6336249ba983') or
+    ResourceMatchesHash(Suite, 'a/RRKernel.class', RailRiderKernelHash) or
+    ResourceMatchesHash(Suite, 'jac/PlayGameCanvas.class', 'eef063cac05593d2f923f79bcc3c04acb36cc707fcc8ffb1cc662b6a8770f06d') or
+    ResourceMatchesHash(Suite, 't.class', 'd4043be0e0113fec0e956454261d08c29809dc4f36440507843cef8f651d72be') or
+    (ResourceMatchesHash(Suite, 'racegame/b.class', '1579b2e37a65459608347ef6b4c5838cde38a468603c0bb38a16edb4ed017069') and
+    ResourceMatchesHash(Suite, 'racegame/c.class', 'edb8ff2907dfe7a94283a3a7ae41ce15a711975fcc7dcf46f3733824c3e68d66')) then
     Exit(TJ2MEKeyLayout.Siemens);
+  // Snood dispatches its own Canvas commands from the standard -6/-7 keys.
+  if ResourceMatchesHash(Suite, 'J.class', '370d401803b06defa2d3d94e8380844dfe6a292cb79d2eb29ab777c0b91fcf46') and
+    ResourceMatchesHash(Suite, 'O.class', '0e9d0a08f525d56004f139df8b757fd3d32374ed1261821ef01aba5e33bdedc5') then
+    Exit(TJ2MEKeyLayout.StandardWithRawSoftkeys);
   // Reviewed 3D Pool 1.2 Motorola port: a.bi maps navigation 1/6/2/5,
   // fire 20 and softkeys 21/22. Match all consumers, never the filename.
   for var I := Low(Names) to High(Names) do
@@ -137,32 +203,274 @@ begin
   Result := SameText(Hash.HashAsString, '4892e43dc37d228ea5851d8ecc0afb12b7a60d5997aa26d392260175deef6bb0');
 end;
 
+function J2MECompatibilityNativePixelFormat(Suite: TJ2MESuite): Integer;
+begin
+  // Jewel Hunter selects a short array for the Nokia 12-bit color formats
+  // and assumes one-bit grayscale for every other native pixel format.
+  if (Suite <> nil) and
+    ResourceMatchesHash(Suite, 'com/jixel/midp/games/jewels/Main.class',
+    '8f72a36fba4da537e8d85f326997f634a9bddfbffdf3325ff17dc16311acb9e8') and
+    ResourceMatchesHash(Suite, 'a.class',
+      '0d77526549afceddd51e261d00f8faf9bd115965b370a3176068ebb594ca202b') then
+    Exit(4444); // TYPE_USHORT_4444_ARGB
+  // ChinaChess passes getNativePixelFormat straight to the short[] overloads.
+  if (Suite <> nil) and
+    ResourceMatchesHash(Suite, 'ChinaChess.class', '80a874d96901be8b9ba2f0bd4f01b3e61084dee33eef86786ac233a8c1e7d4a3') and
+    ResourceMatchesHash(Suite, 'b.class', 'e0338337c5500feb2e776324bceb5ed7822f3172760a6beb0916006340cd13b4') then
+    Exit(4444);
+  Result := J2MEDefaultNativePixelFormat;
+end;
+
 const
   MiamiEngineHash = '84cb79849ed0d232f4b213a4dccee69b0e5f574b749c29a52806e13fa6ba4b0d';
   MiamiMIDletHash = '8df29fcdec82a6233e3ca84c7774c03e9d1a7adb77044752628c6f917a19aa87';
 
 function NormalizeJ2MECompatibilityMIDI(const Data: TBytes): TBytes;
-const
-  GolfTourTitleMIDIHash = '089cc75e602ae948e324bc93da27f37d9bccb1dc41b6336b0caf412e992adb41';
-  PanValueOffsets: array[0..15] of Integer = (
-    82, 566, 1129, 1351, 1680, 2054, 2084, 2114, 2144, 2174, 2889, 2919, 2949, 2979, 3009, 3039);
+
+  function RepairControllerValues(const Digest: string; const Offsets: array of Integer): TBytes;
+  begin
+    var Hash := THashSHA2.Create;
+    Hash.Update(Data[0], Length(Data));
+    if not SameText(Hash.HashAsString, Digest) then
+      Exit(Data);
+    Result := Copy(Data);
+    for var Offset in Offsets do
+      Result[Offset] := Result[Offset] and $7F;
+  end;
+
 begin
   Result := Data;
-  if Length(Data) <> 3044 then
+  case Length(Data) of
+    // Golf Tour's title uses $C0 for the centered CC 10 value.
+    3044:
+      Result := RepairControllerValues('089cc75e602ae948e324bc93da27f37d9bccb1dc41b6336b0caf412e992adb41',
+        [82, 566, 1129, 1351, 1680, 2054, 2084, 2114, 2144, 2174, 2889, 2919, 2949, 2979, 3009, 3039]);
+    // elkware's Backgammon puts $FD/$FE in the initial CC 10 events
+    // of these three tracks. Keep their seven data bits.
+        12230:
+      Result := RepairControllerValues('4b093833bda324589f988d82423fd80d9b5233cba7f9d4dfc788562d4971e491',
+        [61, 6477, 7260, 7800, 9656, 9659]); // _A1.mid
+      877:
+      Result := RepairControllerValues('e703f69573ed06f793e9236216759f9f251c5f97553bd1289f0a16240fbb9107',
+        [67, 497, 519, 549, 713, 716]); // _A2.mid
+      1585:
+      Result := RepairControllerValues('8f7221b2fc0745a7ff99c661b5c6da2e3fb4b8c3c2faac95a9838931a310d70e',
+        [70, 1133, 1155, 1185, 1349, 1352]); // _A3.mid
+    // Poppin Panda's resource 168 uses $FF for the chorus and reverb levels.
+      235:
+      Result := RepairControllerValues('51b71799ec244efa645ef04c68e1bd1a7334fc682bf77636e6f0071eb55d7099',
+        [135, 139, 205, 209]);
+  end;
+end;
+
+function NormalizeJ2MECompatibilityWAV(const Data: TBytes): TBytes;
+const
+  RollerbladeJumpHash = 'd365948fe4dc612fdbec5975b0770a69c306b544efdcc1a7b80ef5773df6c65c';
+  SonicSegaHash = '89a0bfabda87f3137fed30b560dc233fa570acccbd2c6f93e26821d45caa49af';
+begin
+  Result := Data;
+  if (Length(Data) <> 4076) and (Length(Data) <> 26924) then
     Exit;
   var Hash := THashSHA2.Create;
   Hash.Update(Data[0], Length(Data));
-  if not SameText(Hash.HashAsString, GolfTourTitleMIDIHash) then
+  var Digest := Hash.HashAsString;
+  if SameText(Digest, SonicSegaHash) then
+  begin
+    // Sonic 2's Sega jingle has all of its PCM, with a stale RIFF size.
+    Result := Copy(Data);
+    Result[4] := $24; // RIFF size: 26916 ($6924)
+    Result[5] := $69;
     Exit;
-  // Golf Tour's title music initializes CC 10 on all 16 channels with $C0.
-  // Clear the stray high bit to recover the centered pan value.
+  end;
+  if not SameText(Digest, RollerbladeJumpHash) then
+    Exit;
+  // The final 48 bytes of this 8-bit mono clip are missing.
+  // Update the little-endian RIFF and data sizes to the actual sample count.
   Result := Copy(Data);
-  for var Offset in PanValueOffsets do
-    Result[Offset] := $40;
+  Result[4] := $E4;  // RIFF size: 4068 ($0FE4)
+  Result[5] := $0F;
+  Result[40] := $C0; // data size: 4032 ($0FC0)
+end;
+
+function TryInstallJ2MECompatibilityNokiaSound(Suite: TJ2MESuite; VM: TJVM): Boolean;
+const
+  SoundResource = 'com/nokia/mid/sound/Sound.class';
+begin
+  // VirtualPilot bundles a no-op Sound implementation. Its matching Nsound
+  // sends an incomplete OTA ringtone as WAV and relies on that stub.
+  Result := (Suite <> nil) and
+    ResourceMatchesHash(Suite, 'Nsound.class', '404b8d68e73ff9d469cf70f2e130aa59970cb771c18cba4f616b9e24de4345f1') and
+    ResourceMatchesHash(Suite, SoundResource, 'e7c770e34ac9aff30e195322e33079a7db4dad08f3adf3397177675a5932c0fa');
+  if Result then
+  begin
+    var Sound := TJVMClass.Parse(Suite.ReadResource(SoundResource));
+    try
+      VM.DefineClass(Sound);
+      Sound := nil;
+    finally
+      Sound.Free;
+    end;
+  end;
 end;
 
 function NormalizeJ2MECompatibilityOTA(const Data: TBytes): TBytes;
+type
+  TFieldEdit = record
+    Offset, Width, Value: Integer;
+  end;
 const
+  // Exact malformed effects. Keep normal OTA validation for every other clip.
+  Repairs: array[0..30] of record
+  Digest: string;
+  First, Second: TFieldEdit;
+  AppendEnd: Boolean;
+end = (
+    // Ice Age: Both patterns omit the final complete note from the count.
+(Digest: '59293d6946d745b2368c2fcf0dc7375c94c315341dfca3f16d90944bd318a9c3';
+      First: (Offset: 79; Width: 8; Value: 8);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    (Digest: 'eb13200831ea5c5690246498d4a4be198944263325b468df8a1b2610279e6f34';
+      First: (Offset: 79; Width: 8; Value: 6);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // KO Kickboxing: 31 complete instructions, then a partial note tag.
+      (Digest: 'f4cc8dc7f8b19dc7ce31c272326fc9349d4e95984d4d063257820c0a7b8310a1';
+      First: (Offset: 47; Width: 8; Value: 31);
+      Second: (Offset: 381; Width: 3; Value: 0);
+      AppendEnd: True),
+    // Snakies 7210: Each of these patterns undercounts by one note.
+      (Digest: '9986fd31cecb2e7538182b9ea8ad5887b67cf86595609ae61ee99913d06de181';
+      First: (Offset: 79; Width: 8; Value: 5);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    (Digest: 'a15f5f921bab3cf51be86d14435fa9e84b7609c9ea6bce3e77d73d9cf7297958';
+      First: (Offset: 79; Width: 8; Value: 9);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    (Digest: 'da1adf33d76f215ead41c52dea1b3708b9cedbafde10f935120424dbe5d9dd8d';
+      First: (Offset: 79; Width: 8; Value: 4);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // Backgamon 3510i stores eight one-pattern effects. Six count one
+    // extra instruction; seven omit the command end after the last note.
+      (Digest: 'fed17ed8673d0359baa04f365f4d98007c7143e34337750283fddb18e409e0c4';
+      First: (Offset: 87; Width: 8; Value: 16);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: True),
+    (Digest: '0a42cdd75a7d68c10259d2b5ac4183b76475c706e3dc04d8eaadcc7604f84f6f';
+      First: (Offset: 0; Width: 0; Value: 0);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: True),
+    (Digest: '772b47a996ebee3372a93fcee223404aa3bb479971b68e900e4cd43a1838fd48';
+      First: (Offset: 87; Width: 8; Value: 10);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: True),
+    (Digest: 'd480bf982a1b2cd702221c4d055064a76d98d112aeffcb14f977b1dee3c77d01';
+      First: (Offset: 0; Width: 0; Value: 0);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: True),
+    (Digest: '30ddfdd1eb0cf0365c32248c89f504c0aaa37e526213e49d263f19ff0ad0634c';
+      First: (Offset: 87; Width: 8; Value: 12);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    (Digest: '6becffc3c52b011be79cb2351b52b690563962dccf2d56b05bdb2921878e90b6';
+      First: (Offset: 87; Width: 8; Value: 26);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: True),
+    (Digest: '85f145cea83f46ecf0106b8f118974d583ec8910ac7b9ab7cfb3992efc28b5af';
+      First: (Offset: 87; Width: 8; Value: 126);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: True),
+    (Digest: 'aaccc5784c4cc57a530cc8d25bfc5779d8aa5f7771f26f25455cc13fa6f6637e';
+      First: (Offset: 87; Width: 8; Value: 18);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: True),
+    // AirRaid: Reserved articulation -> natural.
+      (Digest: 'ddf26d3626257e6aeda49fc58b93b54bb2e642b5b1007333ca62796c79f7e18f';
+      First: (Offset: 122; Width: 2; Value: 0);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // bijlee: Reserved articulation and five-bit scale marker.
+      (Digest: '46a083e0dfa3cf33f225b8dfe46be0c143a5cbf60b039c858489e978ce50a1fd';
+      First: (Offset: 98; Width: 2; Value: 0);
+      Second: (Offset: 112; Width: 5; Value: 11);
+      AppendEnd: False),
+    // Cheers: Five-bit scale marker before the remaining complete notes.
+      (Digest: 'a95c587193d9c2daa186e766c88a32044059b1000bcf984cdf654af4b929367b';
+      First: (Offset: 137; Width: 5; Value: 11);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // ChickenRun: Reserved articulation -> natural.
+      (Digest: 'a7ffc280e8c8fc64fc7b11ebb8acd265a65d9701c2e81c11a0db6d2c2ece3077';
+      First: (Offset: 90; Width: 2; Value: 0);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // Cow_Bandits_sek700.ic.cz: Unassigned pitch -> rest of the original duration.
+      (Digest: '62b102208d5585800de4afe1938fdb0eb87f79e58de6dfa4f8a8136e46c4e861';
+      First: (Offset: 137; Width: 4; Value: 0);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // Escape: Complete note stream missing its command end.
+      (Digest: '2e3baa6bf501f48e3049a5c0267ee3c978e2d1c7a749ee1464e0bbafec61e684';
+      First: (Offset: 0; Width: 0; Value: 0);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: True),
+    // HeadBall: Nonzero filler after the last declared note.
+      (Digest: '764a3a1444bfc540cf33ca2d09923b9a1f03dfd0e68d423ce6a59f00dd3b3a87';
+      First: (Offset: 121; Width: 7; Value: 0);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // KingOfFighter: Five complete instructions rather than six.
+      (Digest: '948e9307161f7579cf4ae359a447a05da9391c6134824af5205b82902478fcf5';
+      First: (Offset: 43; Width: 8; Value: 5);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // Rack: Rack: nonzero programming and final sound filler.
+      (Digest: 'f91fa175063d8241ecbbbc988140768a68bcede0d1f8456e4a0eda6bf4d2a539';
+      First: (Offset: 15; Width: 1; Value: 0);
+      Second: (Offset: 105; Width: 7; Value: 0);
+      AppendEnd: False),
+    // Torture Chamber (s60): Reserved articulation and five-bit scale marker.
+      (Digest: 'b21337f3190f3bc9503162cb23fb018d9aff430c4f2c0e45b9590536576f7e58';
+      First: (Offset: 82; Width: 2; Value: 0);
+      Second: (Offset: 113; Width: 5; Value: 11);
+      AppendEnd: False),
+    // JewelQuest_N6230i_N6270: Nine complete instructions rather than fifteen.
+      (Digest: '27ce0e67f74aedf782cb420d8c4d6d97041bf90d5243d312d0334e8a03527aca';
+      First: (Offset: 47; Width: 8; Value: 9);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // ChickenRun: articulation and five-bit scale marker.
+      (Digest: 'b3877d3e2059529aff9daf1c4bdc5a1c0df619e14442c17ed986ad50cfeb3411';
+      First: (Offset: 90; Width: 2; Value: 0);
+      Second: (Offset: 121; Width: 5; Value: 11);
+      AppendEnd: False),
+    // ChickenRun: reserved articulation -> natural.
+      (Digest: 'bad511df47c5498bf15c9a4241df3c664724cd769832c72d7a6b6be6fb6ac97c';
+      First: (Offset: 106; Width: 2; Value: 0);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // HeadBall: replace the nonzero terminator after ten complete instructions.
+      (Digest: '50d75b0d9e990b3072030ca4fbf543804e5bdcdb6cd7394bbdd823ce8f8210f6';
+      First: (Offset: 136; Width: 8; Value: 0);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // Rack: nonzero programming filler.
+      (Digest: 'a89a7cc5c3dd7ffb1a05030de3b4285554aca4f05d96ca31418d813072723474';
+      First: (Offset: 15; Width: 1; Value: 0);
+      Second: (Offset: 0; Width: 0; Value: 0);
+      AppendEnd: False),
+    // Rack: six complete instructions and a missing command end.
+      (Digest: '1f4a25fd71acc4603638cf86b20c7be116f4240d9f17f02e9d06d3299d1904f6';
+      First: (Offset: 15; Width: 1; Value: 0);
+      Second: (Offset: 55; Width: 8; Value: 6);
+      AppendEnd: True),
+    // Rack: seventeen complete instructions rather than eighteen.
+      (Digest: '9d7ec98ee1ef689d110833bcd21eb65b8b0a8d09ee7ccc9c5c359f6e3bdb6b02';
+      First: (Offset: 15; Width: 1; Value: 0);
+      Second: (Offset: 55; Width: 8; Value: 17);
+      AppendEnd: False));
   // Blue Sphere Games releases embed edits of the Nokia example melody
   // that retain the example's declared count of 13 instructions.
   Melodies: array[0..12] of record
@@ -182,13 +490,38 @@ end = (
     (Digest: '6efb8081eeb13edc4ca432eb7e62fb87582cebbd9bfad989c172a1355dfc13a9'; Count: 2),
     (Digest: '5b16d64c6fbbf15e0cd8fe85264fb7a77419a28bfbacbd184b25b08cc9056d07'; Count: 2),
     (Digest: '0f5cc9dd4c722c8db7e778eaf807c86f82cdf3cfe3e5878a8822715b51c605ef'; Count: 15));
+
+  procedure SetField(var Bytes: TBytes; const Edit: TFieldEdit);
+  begin
+    for var I := 0 to Edit.Width - 1 do
+    begin
+      var Position := Edit.Offset + I;
+      var Index := Position div 8;
+      var Mask := Byte(1 shl (7 - (Position mod 8)));
+      if (Edit.Value and (1 shl (Edit.Width - I - 1))) <> 0 then
+        Bytes[Index] := Bytes[Index] or Mask
+      else
+        Bytes[Index] := Bytes[Index] and not Mask;
+    end;
+  end;
+
 begin
   Result := Data;
-  if not (Length(Data) in [15, 16, 18, 21, 22, 24, 25, 29, 32]) then
+  if not (Length(Data) in [12, 13, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 28, 29, 30, 32, 36, 38, 48, 49, 168]) then
     Exit;
   var Hash := THashSHA2.Create;
   Hash.Update(Data[0], Length(Data));
   var Digest := Hash.HashAsString;
+  for var Repair in Repairs do
+    if Digest = Repair.Digest then
+    begin
+      Result := Copy(Data);
+      SetField(Result, Repair.First);
+      SetField(Result, Repair.Second);
+      if Repair.AppendEnd then
+        SetLength(Result, Length(Result) + 1);
+      Exit;
+    end;
   // Puzzle Bobble's second built-in effect has three complete patterns and
   // alignment bits, but no command-end byte. The next effect is initialized
   // in the same guest try block, so this omission suppresses both sounds.
@@ -225,6 +558,16 @@ begin
     Exit('g');
 end;
 
+function J2MECompatibilityUsesOwnCanvasLock(Suite: TJ2MESuite): Boolean;
+begin
+  // True Crime 2 holds its game lock before entering synchronized Canvas methods.
+  // Acquiring the Canvas monitor ahead of paint reverses that order. The game
+  // serializes paint itself and does not call serviceRepaints.
+  Result := (Suite <> nil) and
+    ResourceMatchesHash(Suite, 'ae.class', '1741f4af26b886130e17334ee47c005907769ca20f210bb9793c7637f78d81a0') and
+    ResourceMatchesHash(Suite, 'ac.class', '191af7dfd59f108ee43c82c683c0aca28390c4c09de04f5680477c66257e8643');
+end;
+
 function J2MECompatibilityEmptyGameURLTemplate(Suite: TJ2MESuite): Boolean;
 begin
   // The Miami Nights 2 advertising code trims this optional property without
@@ -232,6 +575,17 @@ begin
   Result := (Suite <> nil) and
     ResourceMatchesHash(Suite, 'GloftMMN2.class', MiamiMIDletHash) and
     ResourceMatchesHash(Suite, 'c.class', '4d237f62c487763aa5f4d594564469bb7675e446f6acfa3a0b99627bccbe19ce');
+end;
+
+function TryJ2MECompatibilityAppProperty(Suite: TJ2MESuite; const Name: string; out Value: string): Boolean;
+begin
+  // My Little Farm expects this setting in the JAD and quits if it is absent.
+  // The reviewed JAR can run offline with the setting disabled.
+  Result := (Name = 'gmg-enabled') and
+    ResourceMatchesHash(Suite, 'o.class', '54f7137d53c9aff174a69ba83f12e9a942b7708bd0c30828f81eb9689bbfc9c6') and
+    ResourceMatchesHash(Suite, J2MEManifestName, '7ae33c77eab3e9421ac690f34a603df6b7f65c00ca94eb7242f8544a447e4e47');
+  if Result then
+    Value := 'false';
 end;
 
 function J2MECompatibilitySummerSki(Suite: TJ2MESuite): Boolean;
@@ -259,6 +613,7 @@ end;
 
 procedure InstallMarslanderIntro(Suite: TJ2MESuite; VM: TJVM);
 const
+  DividePC = 271;
   SetFramePC = 324;
   Helper = '$setIntroFrame';
   HelperSignature = '(Ld;I)V';
@@ -276,6 +631,20 @@ begin
   var C := TJVMClass.Parse(Suite.ReadResource('h.class'));
   try
     var Run := C.FindMethod('run', '()V');
+    // The initial random depth can be 1024, so the projection divisor can be zero.
+    // Use the nearest nonzero divisor and keep the normal per-particle update.
+    var GuardPC := Length(Run.Code);
+    var ContinueOffset := DividePC + 3 - (GuardPC + 9);
+    Run.Code := Run.Code + [
+        $59, $9A, 0, 5, // dup; ifne divide
+        $57, $04, // pop; iconst_1
+        $6C, $36, 4, // idiv; istore 4
+        $A7, Byte(ContinueOffset shr 8), Byte(ContinueOffset)];
+    var GuardOffset := GuardPC - DividePC;
+    Run.Code[DividePC] := $A7;
+    Run.Code[DividePC + 1] := Byte(GuardOffset shr 8);
+    Run.Code[DividePC + 2] := Byte(GuardOffset);
+    Run.InstructionStarts := JVMInstructionMap(Run.Code, Run.MaxLocals);
     // The next instructions already clamp the wrapper's frame to 6.
     // Move the clamp before the native sprite access and keep the saved PCs.
     var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
@@ -891,25 +1260,31 @@ begin
   end;
 end;
 
-procedure InstallGameAPIDemoScreenWait(Suite: TJ2MESuite; VM: TJVM);
+type
+  TScreenWorkerWait = record
+    MethodName, Descriptor: string;
+    PC: Integer;
+  end;
+
+procedure InstallScreenWorkerJoin(Suite: TJ2MESuite; VM: TJVM; const ClassName, ClassHash: string; const Waits: array of TScreenWorkerWait);
 const
-  MIDletClass = 'GameAPI_Demo/GameAPI_Demo';
   ThreadClass = 'java/lang/Thread';
-  WaitCallPC = 25;
   HelperName = '$waitForScreen';
   HelperDesc = '(Ljava/lang/Thread;)Z';
 begin
-  if not ResourceMatchesHash(Suite, MIDletClass + '.class',
-    '7c6686f61f88ae52f0bc1c829538f35722ead8215921619b0f92f001de36a685') then
+  var ResourceName := ClassName + '.class';
+  if not ResourceMatchesHash(Suite, ResourceName, ClassHash) then
     Exit;
-  var C := TJVMClass.Parse(Suite.ReadResource(MIDletClass + '.class'));
+  var C := TJVMClass.Parse(Suite.ReadResource(ResourceName));
   try
-    var Handle := C.FindMethod('Handle', '(LGameAPI_Demo/MyScreen;Ljava/lang/String;)I');
-    if (Handle = nil) or (Length(Handle.Code) < WaitCallPC + 3) or (Handle.Code[WaitCallPC] <> $B6) then
-      Exit;
+    for var Wait in Waits do
+    begin
+      var Caller := C.FindMethod(Wait.MethodName, Wait.Descriptor);
+      if (Caller = nil) or (Length(Caller.Code) < Wait.PC + 3) or (Caller.Code[Wait.PC] <> $B6) then
+        Exit;
+    end;
 
-    // This MIDlet polls isAlive until each screen's worker exits. Suspend
-    // the launcher using JVM join, preserving the existing Handle offsets.
+    // Wait for each screen worker without spinning in the launcher's isAlive loop.
     var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
     try
       B.JavaClass.Constants := C.Constants;
@@ -939,9 +1314,13 @@ begin
       C.Constants := B.JavaClass.Constants;
       C.Methods.Add(Helper);
       B.JavaClass.Methods.Extract(Helper);
-      Handle.Code[WaitCallPC] := $B8;
-      Handle.Code[WaitCallPC + 1] := Byte(Target shr 8);
-      Handle.Code[WaitCallPC + 2] := Byte(Target);
+      for var Wait in Waits do
+      begin
+        var Caller := C.FindMethod(Wait.MethodName, Wait.Descriptor);
+        Caller.Code[Wait.PC] := $B8;
+        Caller.Code[Wait.PC + 1] := Byte(Target shr 8);
+        Caller.Code[Wait.PC + 2] := Byte(Target);
+      end;
     finally
       B.Free;
     end;
@@ -1048,10 +1427,1443 @@ begin
   end;
 end;
 
+procedure InstallMotorolaFullCanvasCompatibility(Suite: TJ2MESuite; VM: TJVM);
+const
+  FullCn = 'com/hellomoto/fullscreen/FullCn';
+  CanvasClass = 'javax/microedition/lcdui/Canvas';
+  OldConstructor = '(L' + FullCn + ';)V';
+  NewConstructor = '(L' + CanvasClass + ';)V';
+  FantasyMIDlet = 'GameMIDlet';
+  FantasyMIDletHash = '742caaa7d589e50f7ea934c4b139f297880daf4ff67ec362e17daa0d6290759c';
+  MIDlets: array[0..20] of record
+  Resource, Digest: string;
+end = (
+    (Resource: 'Sib/Sib.class'; Digest: 'f347ddc91c1de6d54ebc4fbe44380e30c4cb31d1fe4d8e707d0335eca6c0101d'),
+    (Resource: 'AfterDark/AfterDark.class'; Digest: '932373232674fe8601418ca2d9db361abc7bff9b776ab81c7d1d1b2ceb78b44f'),
+    (Resource: 'JDMidlet.class'; Digest: '7d11bcf3de7523f594a127cc9a460155ce747f9ea41787a4756e3552ed1390f9'),
+    (Resource: 'Container/GameMIDlet.class'; Digest: '2764020351938aa5795e527ab75d6332f676926fc92cee809366c35f05dc9200'),
+    (Resource: 'Arkanoid.class'; Digest: '0478c61b40c702ef33c1f48ab63034187f326bf5013e7e9745a53749287a3379'),
+    (Resource: 'mbsBoot.class'; Digest: 'e1f41b1506ef5459aaf2516c77814cdaf253104f6ac4ea242330952eddaf6d18'),
+    (Resource: 'CowBandits.class'; Digest: 'dd3899b95a3cd1623a3daea99b8fca384746543a965093ce8b12dffb2365018d'),
+    (Resource: 'DOTC/DOTC.class'; Digest: 'ca39606759ffb13915fd2ddccc83f9e0dc5b247afe7fbc2a1c43db429235c552'),
+    (Resource: 'com/sorrent/games/GameMIDlet3650.class'; Digest: 'c4a38f45c3929e9285bf833440bad7e8973039fc15ac8481710d2486f1ffdf64'),
+    (Resource: 'com/xendex/games/Adventure/AdvMain.class'; Digest: '42f221ace6c81ac3f04a8171e6ff049330b6f74ec84d3a00b6d6ed9d30f420bf'),
+    (Resource: 'Hockey/MainPRG.class'; Digest: '7d686273652438031915440281f3f5b82e6288efaed931c53408ff036a5c49da'),
+    (Resource: 'mm/mm.class'; Digest: 'ae5bf3c86fbb4999a7fa03b4f069d05692f76ee87d31b8175e066340d9a0b11b'),
+    (Resource: 'CMIDlet.class'; Digest: '563f765a5b9bca6e494370e728f695d130678b1c75ea2e9929d199e3d1293aae'),
+    (Resource: 'MotoGP3/MotoGP3.class'; Digest: '6de88a20c3e760e141c681b7e75bf7073b7e4a01fb0a991fd6551e887b592a2b'),
+    (Resource: 'Init.class'; Digest: '69a82f2339a5db49066becab10d89cec76217d4e0cd06ab8ae5f603a285f0fad'),
+    (Resource: 'GolfMaster.class'; Digest: '5eef4995f4bfeedc480f8c04e2ffafab8102075330dc347469ca36d1d9f020d2'),
+    (Resource: 'ShootingGallery.class'; Digest: 'cb5f7ef0dd2c765bbb9b452163753dc2a6be6bde6a6b1ce6bd037a5948337da2'),
+    (Resource: 'themummy/TheMummyMidlet.class'; Digest: '658ad0c3adc30e5babaa2659d92c73a4cc2a50791790b6c1605e71ce96276af6'),
+    (Resource: 'THAW.class'; Digest: '054c2f5f2a771ecadc45f1edb80b9e34a7f07af9e5e3c6978c8daba92a7c5bad'),
+    (Resource: 'RMIDlet.class'; Digest: '35b475448d496c713cd440d3ea12465bbdba1ce1c978c66b4669f5fc46fe5a87'),
+    (Resource: 'Midlet.class'; Digest: 'a54fc18536d3b19206d05102d192dca270c4d1ac67f224788763867bb80c6641'));
+var
+  RainbowConstructor, FantasyCanvas: Boolean;
+
+  function IsReviewedPort: Boolean;
+  begin
+    for var Entry in MIDlets do
+      if ResourceMatchesHash(Suite, Entry.Resource, Entry.Digest) then
+        Exit(True);
+    Result := False;
+  end;
+
+  function IsCanvasMethod(const Name, Descriptor: string): Boolean;
+  begin
+    Result := ((Descriptor = '()V') and MatchStr(Name, ['repaint', 'serviceRepaints'])) or
+      ((Descriptor = '()I') and MatchStr(Name, ['getWidth', 'getHeight'])) or
+      ((Descriptor = '(I)I') and MatchStr(Name, ['getGameAction', 'getKeyCode'])) or
+      ((Name = 'getKeyName') and (Descriptor = '(I)Ljava/lang/String;')) or
+      ((Name = 'repaint') and (Descriptor = '(IIII)V')) or
+      ((Name = 'setFullScreenMode') and (Descriptor = '(Z)V')) or
+      ((Name = 'isDoubleBuffered') and (Descriptor = '()Z'));
+  end;
+
+  procedure InstallClass(const ClassName: string);
+  var
+    C: TJVMClass;
+    Owner, Name, Descriptor: string;
+  begin
+    var Data := Suite.LoadClass(ClassName);
+    if Length(Data) = 0 then
+      Exit;
+    try
+      C := TJVMClass.Parse(Data);
+    except
+      on EJVMFormatError do
+        Exit; // Retain normal failure if this class is actually loaded.
+    end;
+    try
+      if C.Name <> ClassName then
+        Exit;
+      // Rainbow Island's helper only checks this constructor argument for
+      // null. Widen its descriptor and preverification type to Canvas.
+      var WidenConstructor := RainbowConstructor and ((ClassName = 'e') or (ClassName = 'f'));
+      // Fantasy Warriors casts the Nokia canvas to FullCn before calling
+      // shared Canvas methods. Widen the cast and all its verifier references.
+      var WidenCanvas := FantasyCanvas and (ClassName = FantasyMIDlet);
+      if WidenConstructor or WidenCanvas then
+        for var I := 1 to High(C.Constants) do
+          if C.Constants[I].Tag = 1 then
+          begin
+            if WidenConstructor and (C.Constants[I].Text = OldConstructor) then
+              C.Constants[I].Text := NewConstructor
+            else if (WidenCanvas or (ClassName = 'f')) and (C.Constants[I].Text = FullCn) then
+              C.Constants[I].Text := CanvasClass;
+          end;
+      if WidenConstructor and (ClassName = 'f') then
+        C.FindMethod('<init>', OldConstructor).Descriptor := NewConstructor;
+
+      var Builder: TJavaClassBuilder := nil;
+      try
+        for var Method in C.Methods do
+          for var PC := 0 to High(Method.Code) do
+            if Method.InstructionStarts[PC] and (Method.Code[PC] in [$B6, $B7]) then
+            begin
+              var Index := (Word(Method.Code[PC + 1]) shl 8) or Method.Code[PC + 2];
+              if (Index = 0) or (Index >= Length(C.Constants)) or (C.Constants[Index].Tag <> 10) then
+                Continue;
+              C.MemberRef(Index, Owner, Name, Descriptor);
+              if (Owner <> FullCn) or not IsCanvasMethod(Name, Descriptor) then
+                Continue;
+              // The reviewed Tony Hawk port also has a stale super call.
+              if (Method.Code[PC] = $B7) and
+                ((ClassName <> 'r') or (C.SuperName <> 'com/nokia/mid/ui/FullCanvas') or
+                (Name <> 'getGameAction')) then
+                Continue;
+              if Builder = nil then
+              begin
+                Builder := TJavaClassBuilder.Create(C.Name, C.SuperName);
+                Builder.JavaClass.Constants := C.Constants;
+              end;
+              var Target := Builder.Member(CanvasClass, Name, Descriptor);
+              Method.Code[PC + 1] := Byte(Target shr 8);
+              Method.Code[PC + 2] := Byte(Target);
+            end;
+        if Builder <> nil then
+          C.Constants := Builder.JavaClass.Constants
+        else if not (WidenConstructor or WidenCanvas) then
+          Exit;
+        VM.DefineClass(C);
+        C := nil;
+      finally
+        Builder.Free;
+      end;
+    finally
+      C.Free;
+    end;
+  end;
+
+begin
+  // These ports switched their game classes to Nokia FullCanvas but kept
+  // Motorola owners on inherited Canvas calls. Point only virtual calls at
+  // their common Canvas base, retaining dispatch and original bytecode PCs.
+  if not (ResourceMatchesHash(Suite, FullCn + '.class',
+    '5a49817b87b7b2f7f5ea2a12988322f0b2309e6dec36f4b8503b0b7720717884') or
+    ResourceMatchesHash(Suite, FullCn + '.class',
+      'af3c7d2de1a3c5049c3fdbadc4e294e0babd5d2a5f99b92f6735dbf698067cd2')) then
+    Exit;
+  FantasyCanvas :=
+    ResourceMatchesHash(Suite, 'FantasyWarrior2_Evil.class', '40fb2b3f57d933ef9853e92c24c66997cb713b56e034bebd01e36b88c085ca95') and
+    ResourceMatchesHash(Suite, FantasyMIDlet + '.class', FantasyMIDletHash) and
+    ResourceMatchesHash(Suite, 'b.class', '33e64a82c826c517ef7eeaefe50713077170c0a7685e970cfc245e63de56b280');
+  if not FantasyCanvas and not IsReviewedPort then
+    Exit;
+  RainbowConstructor :=
+    ResourceMatchesHash(Suite, 'e.class', 'fcb0d5741b4bf40a885abc3a6a8e368ca32162b030f83a8f678cd3cea73aa942') and
+    ResourceMatchesHash(Suite, 'f.class', '48c9af6224bc81aea22fd3cf180083dc528ac7dfbc0d44a1bfc7617afc8b083a');
+  for var ClassName in Suite.ClassNames do
+    if ClassName <> FullCn then
+      InstallClass(ClassName);
+end;
+
+procedure InstallReviewedVirtualCalls(Suite: TJ2MESuite; VM: TJVM);
+const
+  OceansCallers: array[0..5] of record
+  Name, Digest: string;
+end = (
+    (Name: 'a9'; Digest: '2863192d60b035fdfd7211d31a2ad1f4e965044c1d6e0c11177af7de2cba8b0d'),
+    (Name: 'av'; Digest: '9af596123b8c286fa4780492305098d27b994dea1b1dbf7fef58d0bfb4cf1be2'),
+    (Name: 'b2'; Digest: '4252c747623ed691d343918ce4e33dabf5e6b69fad4e9d028f6ebc44993d9728'),
+    (Name: 'bk'; Digest: '26ffa7dddd17f2380a22518db0165e0025516fcfcf5c43b4ff5a025a883aa0f5'),
+    (Name: 'bp'; Digest: '2cac52ed2936243784c62a90de4814d15c8fb2e7c2571e5735e6b7ae3356893b'),
+    (Name: 'd'; Digest: '16b4c95059d023231b4c41c52a4a4c8959601eb23a4d90af15bd42c31bc4e9dc'));
+
+  procedure Patch(const Caller, Digest, Name, Descriptor: string; PC: Integer);
+  begin
+    if not ResourceMatchesHash(Suite, Caller + '.class', Digest) then
+      Exit;
+    var C := TJVMClass.Parse(Suite.ReadResource(Caller + '.class'));
+    try
+      C.FindMethod(Name, Descriptor).Code[PC] := $B6;
+      if Caller = 'bk' then
+      begin
+        // This engine also reads the selected actor's coordinates using
+        // invokespecial through a bh field. Both accessors are public final.
+        var Move := C.FindMethod('s', '(I)I');
+        for var Offset in [19, 32, 44, 57] do
+          Move.Code[Offset] := $B6;
+      end;
+      VM.DefineClass(C);
+      C := nil;
+    finally
+      C.Free;
+    end;
+  end;
+
+begin
+  // These calls use invokespecial on a different instance. Their targets
+  // are public final, so invokevirtual preserves dispatch and validates
+  // the receiver against the actual owner.
+  if ResourceMatchesHash(Suite, 'g.class',
+    '2539ed14fb9b3c15f49f2b0cf6cfae6ffbb56d993147609528ba090f65f5bcce') then
+    Patch('l', '3671554bacf1aa6d1ed995f921e0d4e31a4375c8e1f74db6c4f5cbab366bdfe8', 'ah', '()Z', 80);
+  if ResourceMatchesHash(Suite, 'bh.class',
+    '7ed6c37ea953ecf8c37f9cf8a053d014916b94b0994ccd441094094925d6c370') then
+    for var Caller in OceansCallers do
+      Patch(Caller.Name, Caller.Digest, 's', '(Lbh;)V', 1);
+end;
+
+procedure InstallPacedPolling(Suite: TJ2MESuite; VM: TJVM; const ClassName, Digest: string);
+const
+  ThreadClass = 'java/lang/Thread';
+var
+  C: TJVMClass;
+
+  procedure PaceRead(const MethodName, MethodDescriptor, HelperName: string; const Sites: array of Integer; JoinWorker: Boolean = False; PollMillis: Integer = 8);
+  var
+    Owner, Name, Descriptor: string;
+    Handler: TJVMExceptionHandler;
+  begin
+    var Caller := C.FindMethod(MethodName, MethodDescriptor);
+    var First := Sites[0];
+    var Opcode := Caller.Code[First];
+    var Member := (Word(Caller.Code[First + 1]) shl 8) or Caller.Code[First + 2];
+    C.MemberRef(Member, Owner, Name, Descriptor);
+    var HelperDescriptor := Descriptor;
+    if Opcode = $B2 then
+      HelperDescriptor := '()' + Descriptor;
+    var Locals: Word := 0;
+    if Opcode in [$B4, $B6] then
+    begin
+      if Opcode = $B6 then
+        HelperDescriptor := Copy(Descriptor, 3, MaxInt);
+      HelperDescriptor := '(L' + Owner + ';)' + HelperDescriptor;
+      Locals := 1;
+    end;
+    var Builder := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      Builder.JavaClass.Constants := C.Constants;
+      Builder.Start;
+      Builder.Mark('wait');
+      if JoinWorker then
+      begin
+        Builder.Emit([$2A]); // aload_0
+        Builder.Ref($B6, Builder.Member(ThreadClass, 'join', '()V'));
+      end
+      else
+      begin
+        Builder.Ref($14, Builder.LongConstant(PollMillis)); // ldc2_w
+        Builder.Ref($B8, Builder.Member(ThreadClass, 'sleep', '(J)V'));
+      end;
+      Builder.Mark('ready');
+      Builder.Jump($A7, 'read');
+      Builder.Mark('interrupt');
+      Builder.Emit([$57]); // pop InterruptedException
+      Builder.Ref($B8, Builder.Member(ThreadClass, 'currentThread', '()Ljava/lang/Thread;'));
+      Builder.Ref($B6, Builder.Member(ThreadClass, 'interrupt', '()V'));
+      Builder.Mark('read');
+      if Opcode in [$B4, $B6] then
+        Builder.Emit([$2A]);
+      Builder.Ref(Opcode, Member);
+      if HelperDescriptor.EndsWith('V') then
+        Builder.Emit([$B1]) // return
+      else if HelperDescriptor.EndsWith('J') then
+        Builder.Emit([$AD]) // lreturn
+      else
+        Builder.Emit([$AC]); // ireturn, including boolean results
+      Builder.Finish(HelperName, HelperDescriptor, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 2, Locals);
+      Handler.StartPC := Builder.Position('wait');
+      Handler.EndPC := Builder.Position('ready');
+      Handler.HandlerPC := Builder.Position('interrupt');
+      Handler.CatchType := Builder.ClassRef('java/lang/InterruptedException');
+      var Helper := Builder.JavaClass.Methods.Last;
+      Helper.Handlers := [Handler];
+      Helper.Owner := C;
+      var Target := Builder.Member(C.Name, HelperName, HelperDescriptor);
+      C.Constants := Builder.JavaClass.Constants;
+      C.Methods.Add(Helper);
+      Builder.JavaClass.Methods.Extract(Helper);
+      // Keep each original instruction size and all save-state PCs intact.
+      for var Site in Sites do
+      begin
+        Caller.Code[Site] := $B8;
+        Caller.Code[Site + 1] := Byte(Target shr 8);
+        Caller.Code[Site + 2] := Byte(Target);
+      end;
+    finally
+      Builder.Free;
+    end;
+  end;
+
+  procedure SetZeroIntervalFallback(DelayPC: Integer; const Name: string; Delay: Byte; const ExemptionField: string = '');
+  const
+    Descriptor = '()I';
+  begin
+    var Builder := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      Builder.JavaClass.Constants := C.Constants;
+      Builder.Start;
+      var Run := C.FindMethod('run', '()V');
+      var Interval := (Word(Run.Code[DelayPC + 1]) shl 8) or Run.Code[DelayPC + 2];
+      Builder.Ref($B2, Interval);
+      Builder.Emit([$59]); // dup
+      Builder.Jump($9A, 'done'); // ifne
+      if ExemptionField <> '' then
+      begin
+        Builder.Ref($B2, Builder.Member(C.Name, ExemptionField, 'Z', 9));
+        Builder.Jump($9A, 'done'); // ifne
+      end;
+      Builder.Emit([$57, $10, Delay]); // pop; bipush fallback
+      Builder.Mark('done');
+      Builder.Emit([$AC]); // ireturn
+      Builder.Finish(Name, Descriptor, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 2, 0);
+      var Helper := Builder.JavaClass.Methods.Last;
+      Builder.JavaClass.Methods.Extract(Helper);
+      Helper.Owner := C;
+      C.Methods.Add(Helper);
+      var Target := Builder.Member(C.Name, Name, Descriptor);
+      C.Constants := Builder.JavaClass.Constants;
+      Run.Code[DelayPC] := $B8;
+      Run.Code[DelayPC + 1] := Byte(Target shr 8);
+      Run.Code[DelayPC + 2] := Byte(Target);
+    finally
+      Builder.Free;
+    end;
+  end;
+
+begin
+  if not ResourceMatchesHash(Suite, ClassName + '.class', Digest) then
+    Exit;
+  C := TJVMClass.Parse(Suite.ReadResource(ClassName + '.class'));
+  try
+    if ClassName = 'bubble/GaMain' then
+    begin
+      // The foreground waits for a worker or for a screen's result.
+      PaceRead('a', '(Lbubble/b;)I', '$joinScreenWorker', [24], True);
+      PaceRead('a', '(Lbubble/a;)I', '$pollScreenResult', [4]);
+    end
+    else if ClassName = 'bubble/c' then
+      // The gameplay thread polls the wall clock against its 16 ms target.
+      PaceRead('run', '()V', '$pollFrameClock', [124], False, 1)
+    else if ClassName = 'BalloonShooter/TitleScreen' then
+      // The static title screen only yields while waiting for input.
+      PaceRead('run', '()V', '$waitForTitleInput', [13])
+    else if ClassName = 'Moorhuhn/k' then
+      PaceRead('run', '()V', '$waitForTitleInput', [12])
+    else if ClassName = 'j' then
+    begin
+      // RatZ waits for a 100 ms frame interval and separately polls its pause flag.
+      PaceRead('run', '()V', '$waitForUnpause', [45]);
+      PaceRead('run', '()V', '$waitForFrameInterval', [140], False, 1);
+    end
+    else if ClassName = 't' then // RatZ title screen worker, matched by hash.
+      PaceRead('run', '()V', '$waitForTitleInput', [3])
+    else if ClassName = 'a/RMGame' then
+      PaceRead('run', '()V', '$paceFrame', [85], False, 4)
+    else if ClassName = 'a/RRKernel' then
+    begin
+      // DrawMenu retains the Graphics passed to paint. Use the same mutable
+      // image and explicit publication as the rest of this game's renderer.
+      var Menu := C.FindMethod('DrawMenu', '()V');
+      for var PC := 0 to High(Menu.Code) - 2 do
+        if Menu.InstructionStarts[PC] and (Menu.Code[PC] = $B2) and
+          (Menu.Code[PC + 1] = 0) and (Menu.Code[PC + 2] = 210) then
+          Menu.Code[PC + 2] := 14; // g -> Exg
+      SetLength(Menu.Code, Length(Menu.Code) - 1); // replace return
+      Menu.Code := Menu.Code + [
+          $B2, 0, 11, $03, $03, $B6, 0, 112, $B1]; // ExScreenImg.blitToScreen(0, 0)
+      Menu.InstructionStarts := JVMInstructionMap(Menu.Code, Menu.MaxLocals);
+      // This state sets the game's outer loop delay to zero.
+      PaceRead('run', '()V', '$paceMenuDraw', [156, 174, 211, 235], False, 16);
+      // Wait only on the clock poll after a frame has been simulated.
+      PaceRead('d', '()V', '$waitForTrackFrame', [2537], False, 1);
+      SetZeroIntervalFallback(304, '$idleDelay', 8, 'MenuShow');
+    end
+    else if ClassName = 'an' then
+      // Mastering Magic's startup leaves v.b at zero. Later states supply
+      // their own frame intervals, which still go through the original clock.
+      SetZeroIntervalFallback(153, '$minimumIntroFrameInterval', 16)
+    else if ClassName = 'a/RailRider' then
+      // Keep checking inGame because it can clear before the worker exits.
+      PaceRead('startApp', '()V', '$pollInGame', [36])
+    else if ClassName = 'mib2/g' then
+      // Wait in the yield-only loop without changing the intro's deadline.
+      PaceRead('a', '(J)V', '$waitForIntroDeadline', [9], False, 1)
+    else if ClassName = 'SnakeEvolution' then
+      PaceRead('startApp', '()V', '$pollQuitFlag', [238])
+    else
+      PaceRead('startApp', '()V', '$pollGameState', [13, 38, 84, 167, 324, 533, 584, 628]);
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallWigglesRepaint(Suite: TJ2MESuite; VM: TJVM);
+const
+  CanvasClass = 'com/magmic/wiggles/I';
+  WaitPC = 772;
+  NotifyPC = 12;
+begin
+  if not ResourceMatchesHash(Suite, 'com/magmic/wiggles/Wiggles.class',
+    '400e42a906aba177ca3f4def6379774b02b908be8aa8d2e5046666a83053ee88') or
+    not ResourceMatchesHash(Suite, CanvasClass + '.class',
+      'f842c6a2fd66cb6ef30af10543ef6c66cbdd718b0b662f6da87d31af2d951154') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(CanvasClass + '.class'));
+  try
+    var Run := C.FindMethod('run', '()V');
+    var Paint := C.FindMethod('paint', '(Ljavax/microedition/lcdui/Graphics;)V');
+    // serviceRepaints already waits for paint to finish. The extra wait and
+    // notify on an unlocked object are redundant; run retains its own timer.
+    FillChar(Run.Code[WaitPC], 7, $00);
+    FillChar(Paint.Code[NotifyPC], 7, $00);
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallWildWheelsCadence(Suite: TJ2MESuite; VM: TJVM);
+const
+  MIDlet = 'racegame/RaceMain';
+  Game = 'racegame/c';
+  TickPC = 12;
+  HelperName = '$pacedTick';
+  HelperDesc = '(L' + Game + ';)I';
+begin
+  if not ResourceMatchesHash(Suite, MIDlet + '.class',
+    '9bbcb59e4952001362604343fe7ee93229830e17206de8b5d2e39aef630f2d7b') or
+    not ResourceMatchesHash(Suite, Game + '.class',
+      'edb8ff2907dfe7a94283a3a7ae41ce15a711975fcc7dcf46f3733824c3e68d66') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(MIDlet + '.class'));
+  try
+    var Start := C.FindMethod('startApp', '()V');
+    // The game converts ticks to milliseconds using 30 ms per tick. Its
+    // tight startApp loop otherwise exhausts the 5,000-tick replay buffer.
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      B.JavaClass.Constants := C.Constants;
+      B.Start;
+      B.Ref($14, B.LongConstant(30)); // ldc2_w
+      B.Ref($B8, B.Member('java/lang/Thread', 'sleep', '(J)V'));
+      B.Emit([$2A]); // aload_0
+      B.Ref($B6, B.Member(Game, 'char', '()I'));
+      B.Emit([$AC]); // ireturn
+      B.Finish(HelperName, HelperDesc, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 2, 1);
+      var Helper := B.JavaClass.Methods.Last;
+      Helper.Owner := C;
+      var Target := B.Member(C.Name, HelperName, HelperDesc);
+      C.Constants := B.JavaClass.Constants;
+      C.Methods.Add(Helper);
+      B.JavaClass.Methods.Extract(Helper);
+      Start.Code[TickPC] := $B8;
+      Start.Code[TickPC + 1] := Byte(Target shr 8);
+      Start.Code[TickPC + 2] := Byte(Target);
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallWildWheelsRecordingLimit(Suite: TJ2MESuite; VM: TJVM);
+const
+  CanvasClass = 'racegame/c';
+  ReplayClass = 'racegame/h';
+  RecordingDesc = '(III)V';
+  HelperName = '$appendReplaySample';
+  HelperDesc = '(L' + ReplayClass + ';III)V';
+begin
+  if not ResourceMatchesHash(Suite, CanvasClass + '.class',
+    'edb8ff2907dfe7a94283a3a7ae41ce15a711975fcc7dcf46f3733824c3e68d66') or
+    not ResourceMatchesHash(Suite, ReplayClass + '.class',
+      'fd1a37767f55ff9db697d6787316014934ea19d030b0bff141079bf8bce5e5e9') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(CanvasClass + '.class'));
+  try
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      B.JavaClass.Constants := C.Constants;
+      B.Start;
+      // Each update appends three bytes. The bundled ghost is read through
+      // a separate object, and the score file stores only lap times.
+      B.Emit([$2A]);
+      B.Ref($B4, B.Member(ReplayClass, 'e', 'I', 9));
+      B.Emit([$2A]);
+      B.Ref($B4, B.Member(ReplayClass, 'try', '[B', 9));
+      B.Emit([$BE, $06, $64]); // arraylength; iconst_3; isub
+      B.Jump($A3, 'full'); // if_icmpgt
+      B.Emit([$2A, $1B, $1C, $1D]);
+      B.Ref($B6, B.Member(ReplayClass, 'if', RecordingDesc));
+      B.Mark('full');
+      B.Emit([$B1]);
+      B.Finish(HelperName, HelperDesc, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 4, 4);
+      var Helper := B.JavaClass.Methods.Last;
+      Helper.Owner := C;
+      var Target := B.Member(C.Name, HelperName, HelperDesc);
+      C.Constants := B.JavaClass.Constants;
+      C.Methods.Add(Helper);
+      B.JavaClass.Methods.Extract(Helper);
+      var Preview := C.FindMethod('goto', '()I');
+      var Race := C.FindMethod('long', '()I');
+      Preview.Code[165] := $B8;
+      Preview.Code[166] := Byte(Target shr 8);
+      Preview.Code[167] := Byte(Target);
+      Race.Code[147] := $B8;
+      Race.Code[148] := Byte(Target shr 8);
+      Race.Code[149] := Byte(Target);
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallParachutePanicStartup(Suite: TJ2MESuite; VM: TJVM);
+const
+  MIDlet = 'MainEngine';
+  AssignState = '$assignInitialState';
+  StateDesc = '(LMainEngine;)V';
+  AssignMenu = '$assignMenu';
+  MenuDesc = '(Lc;)V';
+begin
+  if not ResourceMatchesHash(Suite, MIDlet + '.class',
+    '04f5715239d32194896056d082d0caf3f581ad897f8de4fcf7794caa3c9eb3eb') or
+    not ResourceMatchesHash(Suite, 'Engine.class',
+      '13721d2dddfa199b1d411d8d83594014dad7d335685267cdab859fd3331c386a') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(MIDlet + '.class'));
+  try
+    var Init := C.FindMethod('<init>', '()V');
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      B.JavaClass.Constants := C.Constants;
+      // Expose the initialized MIDlet to UI callbacks before constructing
+      // the canvas. Retain the original instance field initialization.
+      B.Start;
+      B.Emit([$2A]);
+      B.Ref($B3, B.Member('Engine', 'a', 'LMainEngine;', 9));
+      B.Emit([$2A]);
+      B.Ref($13, B.IntConstant(-793766371));
+      B.Ref($B5, B.Member(MIDlet, 'd', 'I', 9));
+      B.Emit([$B1]);
+      B.Finish(AssignState, StateDesc, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 2, 1);
+      var InitialState := B.Member(MIDlet, AssignState, StateDesc);
+      Init.Code[5] := $B8;
+      Init.Code[6] := Byte(InitialState shr 8);
+      Init.Code[7] := Byte(InitialState);
+      FillChar(Init.Code[8], 2, $00);
+
+      // Apply the font's line height after the menu is constructed.
+      B.Start;
+      B.Emit([$2A]);
+      B.Ref($B3, B.Member('Engine', 'a', 'Lc;', 9));
+      B.Emit([$2A]);
+      B.Ref($B4, B.Member('c', 'a', 'Lab;', 9));
+      B.Emit([$59]);
+      B.Jump($C6, 'dropMenu');
+      B.Ref($B2, B.Member('Engine', 'a', 'Lv;', 9));
+      B.Emit([$59]);
+      B.Jump($C6, 'dropFont');
+      B.Ref($B6, B.Member('v', 'a', '()I'));
+      B.Ref($B5, B.Member('ab', 'D', 'I', 9));
+      B.Emit([$B1]);
+      B.Mark('dropFont');
+      B.Emit([$57]);
+      B.Mark('dropMenu');
+      B.Emit([$57, $B1]);
+      B.Finish(AssignMenu, MenuDesc, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 3, 1);
+      var Menu := B.Member(MIDlet, AssignMenu, MenuDesc);
+      FillChar(Init.Code[125], 15, $00);
+      Init.Code[165] := $B8;
+      Init.Code[166] := Byte(Menu shr 8);
+      Init.Code[167] := Byte(Menu);
+      C.Constants := B.JavaClass.Constants;
+      while B.JavaClass.Methods.Count > 0 do
+      begin
+        var Helper := B.JavaClass.Methods.Last;
+        Helper.Owner := C;
+        C.Methods.Add(Helper);
+        B.JavaClass.Methods.Extract(Helper);
+      end;
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallGomokuMonitorWait(Suite: TJ2MESuite; VM: TJVM);
+const
+  Worker = 'gomoku/d';
+  WaitReceiverPC = 14;
+begin
+  if not ResourceMatchesHash(Suite, 'gomoku/GomokuMain.class',
+    'ec63803357b91d4953243c83e139a24bebc81acda84b6d16fd3650a437fc161d') or
+    not ResourceMatchesHash(Suite, Worker + '.class',
+      '92eb553bfdb9dbf6d9a3f4a0235af226e60110fa57d1cf94aba193bf3d6be02e') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(Worker + '.class'));
+  try
+    var Run := C.FindMethod('run', '()V');
+    // Local 1 is the exact object held by monitorenter/monitorexit.
+    // The worker previously called wait on this instead of that object.
+    Run.Code[WaitReceiverPC] := $2B; // aload_1
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallJangbiStartup(Suite: TJ2MESuite; VM: TJVM);
+const
+  CanvasClass = 'JangbiCanvas';
+  StartPC = 1469;
+begin
+  if not ResourceMatchesHash(Suite, 'Jangbi.class',
+    'a8318c0cb2ce04c3e185033c653fc323adf7fe105a0e52cb8201788337c5aebe') or
+    not ResourceMatchesHash(Suite, CanvasClass + '.class',
+      '9158a457cb190860157d579bd319045d097b68f9760b8254b14d78791161b3ed') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(CanvasClass + '.class'));
+  try
+    var Init := C.FindMethod('<init>', '(LJangbi;)V');
+    // startApp initializes Display and starts the callSerially loop. Remove
+    // the redundant constructor thread, which can run before that setup.
+    FillChar(Init.Code[StartPC], 7, $00); // aload_0; getfield thread; invokevirtual start
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallChickenRaceSilentSound(Suite: TJ2MESuite; VM: TJVM);
+const
+  GuestClass = 'racer3d/s';
+  SoundClass = 'com/nokia/mid/sound/Sound';
+begin
+  if not ResourceMatchesHash(Suite, GuestClass + '.class',
+    '93d8877f7dfc9b7300b37957ba3ee5a7657f6edd82b3d37319ca77c6c2900c5f') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(GuestClass + '.class'));
+  try
+    var Init := C.FindMethod('<clinit>', '()V');
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      // This static fallback is deliberately empty. Construct a silent
+      // one-millisecond tone, preserving instruction positions and the
+      // normal format checks of the byte-array constructor.
+      B.JavaClass.Constants := C.Constants;
+      var Target := B.Member(SoundClass, '<init>', '(IJ)V');
+      C.Constants := B.JavaClass.Constants;
+      Init.Code[9] := $03;  // iconst_0: frequency
+      Init.Code[10] := $0A; // lconst_1: duration
+      Init.Code[11] := $00;
+      Init.Code[12] := $00;
+      Init.Code[14] := Byte(Target shr 8);
+      Init.Code[15] := Byte(Target);
+      Init.MaxStack := Max(5, Init.MaxStack);
+      Init.InstructionStarts := JVMInstructionMap(Init.Code, Init.MaxLocals);
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallResidentEvilPlayerGuard(Suite: TJ2MESuite; VM: TJVM);
+const
+  GuestClass = 'g';
+  PlayerClass = 'javax/microedition/media/Player';
+  Helper = '$loadedPlayerState';
+  StateDesc = '()I';
+  ReadPlayerStatePC = 168;
+begin
+  if not ResourceMatchesHash(Suite, GuestClass + '.class',
+    '3988df95eb91c27d8aa3c5489ab2f1eed00fa664c80b586222fea4392b918067') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(GuestClass + '.class'));
+  try
+    var Play := C.FindMethod('c', '(IZ)V');
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      // The clip loader catches media errors and can leave the player nil.
+      // Keep the original branch that returns when the player is not realized.
+      B.JavaClass.Constants := C.Constants;
+      B.Start;
+      B.Ref($B2, B.Member(GuestClass, 'a', 'L' + PlayerClass + ';', 9));
+      B.Emit([$59]); // dup
+      B.Jump($C6, 'missing');
+      B.Ref($B9, B.Member(PlayerClass, 'getState', StateDesc, 11));
+      B.Emit([$01, $00, $AC]); // one receiver, ireturn
+      B.Mark('missing');
+      B.Emit([$57, $03, $AC]); // pop, iconst_0, ireturn
+      B.Finish(Helper, StateDesc, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 2, 0);
+      var Method := B.JavaClass.Methods.Extract(B.JavaClass.Methods.Last);
+      Method.Owner := C;
+      C.Methods.Add(Method);
+      var Target := B.Member(GuestClass, Helper, StateDesc);
+      C.Constants := B.JavaClass.Constants;
+      Play.Code[ReadPlayerStatePC] := $B8;
+      Play.Code[ReadPlayerStatePC + 1] := Byte(Target shr 8);
+      Play.Code[ReadPlayerStatePC + 2] := Byte(Target);
+      FillChar(Play.Code[ReadPlayerStatePC + 3], 5, $00);
+      Play.InstructionStarts := JVMInstructionMap(Play.Code, Play.MaxLocals);
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+const
+  RTLRacerMenuClass = 'rs_racer/b';
+
+function IsRTLRacerSiemens(Suite: TJ2MESuite): Boolean;
+begin
+  Result := (Suite <> nil) and ResourceMatchesHash(Suite, RTLRacerMenuClass + '.class',
+    '6f1c525a15dbae58d108a5e91658b75d99f89d10cb86eedcd155b405c5be0a37') and
+    ResourceMatchesHash(Suite, 'rs_racer/f.class',
+      '1723d26f913eea61c5b41e7a2873cfb86c137fc04c39d69caff36bddf3db83ec');
+end;
+
+const
+  RTLRacerBitmapClass = 'rs_racer/f';
+  RTLRacerGlyphLookup = '$menuGlyph';
+  RTLRacerGlyphDescriptor = '(I)I';
+  RTLRacerSpaceFrame = 29;
+
+procedure InstallRTLRacerGlyphLookup(Suite: TJ2MESuite; VM: TJVM);
+const
+  UppercaseUmlauts: array[0..2] of Byte = ($C4, $D6, $DC);
+begin
+  var C := TJVMClass.Parse(Suite.ReadResource(RTLRacerBitmapClass + '.class'));
+  try
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      B.JavaClass.Constants := C.Constants;
+      // Map uppercase Latin-1 to the original atlas. Other characters use
+      // the existing space index instead of an out-of-range frame.
+      B.Start;
+      B.Emit([$1A, $10, Ord('A'), $64]); // letter - 'A'
+      B.Emit([$59]);
+      B.Jump($9B, 'other'); // iflt
+      B.Emit([$59, $10, 25]);
+      B.Jump($A3, 'other'); // if_icmpgt
+      B.Emit([$AC]);
+      B.Mark('other');
+      B.Emit([$57]);
+      for var I := 0 to 2 do
+      begin
+        // Byte values of uppercase A-diaeresis, O-diaeresis, U-diaeresis.
+        var Next := IntToStr(I);
+        B.Emit([$1A, $10, UppercaseUmlauts[I]]);
+        B.Jump($A0, Next); // if_icmpne
+        B.Emit([$10, Byte(26 + I), $AC]);
+        B.Mark(Next);
+      end;
+      B.Emit([$10, RTLRacerSpaceFrame, $AC]);
+      B.Finish(RTLRacerGlyphLookup, RTLRacerGlyphDescriptor, JVM_ACC_STATIC, 3, 1);
+      var Glyph := B.Member(C.Name, RTLRacerGlyphLookup, RTLRacerGlyphDescriptor);
+
+      // The per-letter bitmap path already returns a zero-filled bitmap for
+      // blanks. Route its fallback through the same lookup as the menu.
+      var Letter := C.FindMethod('a', '(Ljava/lang/String;Z)[B');
+      Letter.Code[91] := RTLRacerSpaceFrame;
+      Letter.Code[124] := $B8;
+      Letter.Code[125] := Byte(Glyph shr 8);
+      Letter.Code[126] := Byte(Glyph);
+      Letter.Code[133] := RTLRacerSpaceFrame;
+      Letter.InstructionStarts := JVMInstructionMap(Letter.Code, Letter.MaxLocals);
+      C.Constants := B.JavaClass.Constants;
+      var Helper := B.JavaClass.Methods.Extract(B.JavaClass.Methods.Last);
+      Helper.Owner := C;
+      C.Methods.Add(Helper);
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallRTLRacerMenu(Suite: TJ2MESuite; VM: TJVM);
+const
+  ByteArrayGetter = '()[B';
+begin
+  if not IsRTLRacerSiemens(Suite) then
+    Exit;
+  InstallRTLRacerGlyphLookup(Suite, VM);
+  var C := TJVMClass.Parse(Suite.ReadResource(RTLRacerMenuClass + '.class'));
+  try
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      B.JavaClass.Constants := C.Constants;
+
+      var Glyph := B.Member(RTLRacerBitmapClass, RTLRacerGlyphLookup, RTLRacerGlyphDescriptor);
+      var SingleLine := C.FindMethod('a', '(Ljava/lang/String;)V');
+      var MultipleLines := C.FindMethod('a', '([Ljava/lang/String;)V');
+      // Replace the three-byte 'bipush A; isub' at each call site.
+      SingleLine.Code[45] := $B8;
+      SingleLine.Code[46] := Byte(Glyph shr 8);
+      SingleLine.Code[47] := Byte(Glyph);
+      MultipleLines.Code[72] := $B8;
+      MultipleLines.Code[73] := Byte(Glyph shr 8);
+      MultipleLines.Code[74] := Byte(Glyph);
+      SingleLine.InstructionStarts := JVMInstructionMap(SingleLine.Code, SingleLine.MaxLocals);
+      MultipleLines.InstructionStarts := JVMInstructionMap(MultipleLines.Code, MultipleLines.MaxLocals);
+
+      var Init := C.FindMethod('<init>', '(Lrs_racer/n;)V');
+      // The font has 29 frames, each seven 1bpp bytes. The game reserves
+      // index 29 for spaces. Append a blank bitmap and transparent mask,
+      // then increase the frame count of both menu sprite constructors.
+      for var Getter in ['r', 'a'] do
+      begin
+        var HelperName := '$menuFont' + Getter;
+        B.Start;
+        B.Ref($B8, B.Member(RTLRacerBitmapClass, Getter, ByteArrayGetter));
+        B.Emit([$4B, $2A, $BE, $10, 7, $60, $BC, 8, $4C]); // new byte[source.length + 7]
+        B.Emit([$2A, $03, $2B, $03, $2A, $BE]);
+        B.Ref($B8, B.Member('java/lang/System', 'arraycopy', '(Ljava/lang/Object;ILjava/lang/Object;II)V'));
+        B.Emit([$2B, $B0]);
+        B.Finish(HelperName, ByteArrayGetter, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 5, 2);
+        var Target := B.Member(C.Name, HelperName, ByteArrayGetter);
+        if Getter = 'r' then
+        begin
+          Init.Code[205] := Byte(Target shr 8);
+          Init.Code[206] := Byte(Target);
+          Init.Code[235] := Byte(Target shr 8);
+          Init.Code[236] := Byte(Target);
+        end
+        else
+        begin
+          Init.Code[213] := Byte(Target shr 8);
+          Init.Code[214] := Byte(Target);
+        end;
+      end;
+      Init.Code[217] := RTLRacerSpaceFrame + 1;
+      Init.Code[245] := RTLRacerSpaceFrame + 1;
+      C.Constants := B.JavaClass.Constants;
+      while B.JavaClass.Methods.Count > 0 do
+      begin
+        var Helper := B.JavaClass.Methods.Extract(B.JavaClass.Methods[0]);
+        Helper.Owner := C;
+        C.Methods.Add(Helper);
+      end;
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallRTLRacerTrack(Suite: TJ2MESuite; VM: TJVM);
+const
+  TrackClass = 'rs_racer/k.class';
+begin
+  if not IsRTLRacerSiemens(Suite) or not ResourceMatchesHash(Suite, TrackClass,
+      '9640586f003271de80ef33d35bf4e37a68cf59df99aacb6bafc1254cc412a19d') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(TrackClass));
+  try
+    var Init := C.FindMethod('<init>', '(BBBBLrs_racer/n;)V');
+    // Both sprites receive a complete 32-byte strip copied to index zero.
+    // Clear the stale source offset in the reserved Sprite constructor arg.
+    for var OffsetPC in [458, 489] do
+    begin
+      FillChar(Init.Code[OffsetPC], 5, $00);
+      Init.Code[OffsetPC] := $03; // iconst_0
+    end;
+    Init.InstructionStarts := JVMInstructionMap(Init.Code, Init.MaxLocals);
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallWormsFortsMinimapGuard(Suite: TJ2MESuite; VM: TJVM);
+const
+  MinimapResource = 'worms/e.class';
+  ClearPC = 18;
+  TerrainField = 30; // worms/e.a:Lworms/e;
+begin
+  if not ResourceMatchesHash(Suite, MinimapResource,
+    'fd1b1db6a7a72d12183cc422ab926a2e5f59727358d86c495bb690903ca9ba35') or
+    not ResourceMatchesHash(Suite, 'worms/WormsForts3D.class',
+      '7fbda619888c2e4c2156fc944d9df9ab0634ecc0f57f61a318c1c82c8c5f5472') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(MinimapResource));
+  try
+    var Paint := C.FindMethod('a', '()V');
+    var GuardPC := Length(Paint.Code);
+    var Clear := Copy(Paint.Code, ClearPC, 3);
+    // Menu startup configures the minimap before a match provides terrain.
+    // Clear the buffer in either case and draw the terrain once it exists.
+    var DrawOffset := (ClearPC + Length(Clear)) - (GuardPC + Length(Clear) + 6);
+    Paint.Code := Paint.Code + Clear + [
+        $B2, 0, TerrainField, // getstatic
+        $C6, 0, 6, // ifnull return
+        $A7, Byte(DrawOffset shr 8), Byte(DrawOffset), // goto original terrain loop
+        $B1];
+    var GuardOffset := GuardPC - ClearPC;
+    Paint.Code[ClearPC] := $A7;
+    Paint.Code[ClearPC + 1] := Byte(GuardOffset shr 8);
+    Paint.Code[ClearPC + 2] := Byte(GuardOffset);
+    Paint.InstructionStarts := JVMInstructionMap(Paint.Code, Paint.MaxLocals);
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallWorms2LoadingYield(Suite: TJ2MESuite; VM: TJVM);
+const
+  CanvasResource = 'm.class';
+  YieldName = '$yieldLoadingStep';
+  YieldDescriptor = '(Lm;)V';
+  LoaderWaitPC = 254;
+begin
+  if not ResourceMatchesHash(Suite, CanvasResource,
+    'abfb4dc6b0d131e2fb50c57e0a7f061388164e705da31ad1182d170782af065a') or
+    not ResourceMatchesHash(Suite, 'Worms/Worms.class',
+      'f9addabaafad77a2586ce05a83b03311891fab27f1b1990158efae88bedfdde5') then
+    Exit;
+
+  var C := TJVMClass.Parse(Suite.ReadResource(CanvasResource));
+  try
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      B.JavaClass.Constants := C.Constants;
+      B.Start;
+      B.Ref($B8, B.Member('java/lang/Thread', 'yield', '()V'));
+      B.Emit([$B1]);
+      B.Finish(YieldName, YieldDescriptor, JVM_ACC_STATIC or JVM_ACC_PRIVATE, 1, 1);
+      var YieldCall := B.Member(C.Name, YieldName, YieldDescriptor);
+      var Loader := C.FindMethod('h', '()V');
+      // Retain one scheduling point per asset step. The two explicit GCs
+      // and 500 ms sleep are unnecessary here. Keep the other call in
+      // hideNotify and preserve the original stack effect and snapshot PCs.
+      Loader.Code[LoaderWaitPC] := $B8;
+      Loader.Code[LoaderWaitPC + 1] := Byte(YieldCall shr 8);
+      Loader.Code[LoaderWaitPC + 2] := Byte(YieldCall);
+      C.Constants := B.JavaClass.Constants;
+      var Helper := B.JavaClass.Methods.Extract(B.JavaClass.Methods.Last);
+      Helper.Owner := C;
+      C.Methods.Add(Helper);
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallShrek2InputGuard(Suite: TJ2MESuite; VM: TJVM);
+const
+  CanvasClass = 'e.class';
+  PressHelper = '$pressWhenReady';
+  PressDescriptor = '(Ln;I)V';
+  PressSwitchLowKey = -7;
+  FirstPressTarget = 36;
+  SelectKey = 53;
+  FireKey = -5;
+  ReleaseSwitchPC = 1;
+  DefaultReleaseTarget = 4;
+  FirstReleaseTarget = 16;
+begin
+  if not ResourceMatchesHash(Suite, CanvasClass,
+    '7992155f532909b8d4d34fbc004554b5c381c4ae26ac2429ca8c9b27ea37604d') or
+    not ResourceMatchesHash(Suite, 'n.class',
+      '721ca62b17a5fb6b29e8aa31a2c3f0b11be06a77dfb97ade378b0ee4e162a404') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(CanvasClass));
+  try
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      B.JavaClass.Constants := C.Constants;
+      var Controller := B.Member(C.Name, 'b', 'Ln;', 9);
+      var Actor := B.Member('n', 'C', 'Li;', 9);
+      B.Start;
+      B.Emit([$2A]);
+      B.Jump($C6, 'done');
+      B.Emit([$2A, $1B]);
+      B.Ref($B6, B.Member('n', 'c', '(I)V'));
+      B.Mark('done');
+      B.Emit([$B1]);
+      B.Finish(PressHelper, PressDescriptor, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 2, 2);
+      var Press := B.Member(C.Name, PressHelper, PressDescriptor);
+      var Pressed := C.FindMethod('keyPressed', '(I)V');
+      // Canvas is shown before the game thread constructs the controller.
+      // Keep splash and softkey handling, guard only the gameplay calls.
+      for var PC in [297, 309, 320, 331, 343, 354, 365] do
+      begin
+        Pressed.Code[PC] := $B8;
+        Pressed.Code[PC + 1] := Byte(Press shr 8);
+        Pressed.Code[PC + 2] := Byte(Press);
+      end;
+
+      // Nokia's negative FIRE key uses the same case as digit 5.
+      Move(Pressed.Code[FirstPressTarget + (SelectKey - PressSwitchLowKey) * 4],
+        Pressed.Code[FirstPressTarget + (FireKey - PressSwitchLowKey) * 4], 4);
+
+      // Route both handled release cases through a readiness check. Append
+      // branches to preserve the existing instruction positions for snapshots.
+      var Released := C.FindMethod('keyReleased', '(I)V');
+      var TargetPC := Length(Released.Code);
+      var SelectReleasePC := TargetPC;
+      for var OriginalPC in [116, 141] do
+      begin
+        var JumpBack := OriginalPC - (TargetPC + 17);
+        Released.Code := Released.Code + [
+            $2A, $B4, Byte(Controller shr 8), Byte(Controller),
+            $C6, 0, 16, // return if controller is null
+            $2A, $B4, Byte(Controller shr 8), Byte(Controller),
+            $B4, Byte(Actor shr 8), Byte(Actor),
+            $C6, 0, 6,  // return if actor is null
+            $A7, Byte(JumpBack shr 8), Byte(JumpBack), $B1];
+        var Offset := TargetPC - ReleaseSwitchPC;
+        for var I := 0 to 12 do
+        begin
+          var Pos := FirstReleaseTarget + I * 8;
+          if Released.Code[Pos + 3] = OriginalPC - ReleaseSwitchPC then
+          begin
+            Released.Code[Pos + 2] := Byte(Offset shr 8);
+            Released.Code[Pos + 3] := Byte(Offset);
+          end;
+        end;
+        TargetPC := Length(Released.Code);
+      end;
+      // The existing lookup has no negative FIRE entry. Test only that key
+      // in its default branch and send it through the digit 5 release guard.
+      var FireJump := SelectReleasePC - (TargetPC + 6);
+      Released.Code := Released.Code + [
+          $1B, $10, Byte(256 + FireKey),
+          $A0, 0, 6, // if_icmpne: keep the default behavior
+          $A7, Byte(FireJump shr 8), Byte(FireJump), $B1];
+      var DefaultOffset := TargetPC - ReleaseSwitchPC;
+      Released.Code[DefaultReleaseTarget + 2] := Byte(DefaultOffset shr 8);
+      Released.Code[DefaultReleaseTarget + 3] := Byte(DefaultOffset);
+      Released.InstructionStarts := JVMInstructionMap(Released.Code, Released.MaxLocals);
+      C.Constants := B.JavaClass.Constants;
+      var Helper := B.JavaClass.Methods.Extract(B.JavaClass.Methods.Last);
+      Helper.Owner := C;
+      C.Methods.Add(Helper);
+
+      var RepaintPC := 1367;
+      var Run := C.FindMethod('run', '()V');
+      var RepaintRef := (Word(Run.Code[RepaintPC + 1]) shl 8) or Run.Code[RepaintPC + 2];
+      var Mode := B.Member(C.Name, 'p', 'S', 9);
+      B.Start;
+      // Pause and menu have no timer. The loading state only needs pacing
+      // once its ten load steps are complete. Gameplay has its own deadline.
+      B.Ref($B2, Mode);
+      B.Jump($99, 'wait'); // ifeq
+      B.Ref($B2, Mode);
+      B.Emit([$10, 8]); // bipush
+      B.Jump($9F, 'wait'); // if_icmpeq
+      B.Ref($B2, Mode);
+      B.Emit([$04]); // iconst_1
+      B.Jump($A0, 'paint'); // if_icmpne
+      B.Emit([$2A]); // aload_0
+      B.Ref($B4, B.Member(C.Name, 'o', 'S', 9));
+      B.Emit([$10, 10]); // bipush
+      B.Jump($A1, 'paint'); // if_icmplt
+      B.Mark('wait');
+      B.Ref($14, B.LongConstant(16)); // ldc2_w
+      B.Ref($B8, B.Member('java/lang/Thread', 'sleep', '(J)V'));
+      B.Mark('ready');
+      B.Jump($A7, 'paint');
+      B.Mark('interrupt');
+      B.Emit([$57]); // pop
+      B.Ref($B8, B.Member('java/lang/Thread', 'currentThread', '()Ljava/lang/Thread;'));
+      B.Ref($B6, B.Member('java/lang/Thread', 'interrupt', '()V'));
+      B.Mark('paint');
+      B.Emit([$2A]); // aload_0
+      B.Ref($B6, RepaintRef);
+      B.Emit([$B1]); // return
+      B.Finish('$repaintWithMenuDelay', '(Le;)V', JVM_ACC_PRIVATE or JVM_ACC_STATIC, 2, 1);
+      var Repaint := B.JavaClass.Methods.Last;
+      var Interrupted: TJVMExceptionHandler;
+      Interrupted.StartPC := B.Position('wait');
+      Interrupted.EndPC := B.Position('ready');
+      Interrupted.HandlerPC := B.Position('interrupt');
+      Interrupted.CatchType := B.ClassRef('java/lang/InterruptedException');
+      Repaint.Handlers := [Interrupted];
+      Repaint.Owner := C;
+      C.Methods.Add(B.JavaClass.Methods.Extract(Repaint));
+      var RepaintHelper := B.Member(C.Name, '$repaintWithMenuDelay', '(Le;)V');
+      C.Constants := B.JavaClass.Constants;
+      Run.Code[RepaintPC] := $B8;
+      Run.Code[RepaintPC + 1] := Byte(RepaintHelper shr 8);
+      Run.Code[RepaintPC + 2] := Byte(RepaintHelper);
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallGuitarLegendStartup(Suite: TJ2MESuite; VM: TJVM);
+const
+  MIDletResource = 'GloftGILG.class';
+  StartThreadPC = 21;
+  StartThreadSize = 6;
+  InitializationDonePC = 45;
+  ResumePC = 49;
+begin
+  if not ResourceMatchesHash(Suite, MIDletResource,
+    '5e95b1abbf64834fb7d9e2f719ccee43ddc25be589a1b1ba44d07b9072cc8c1b') or
+    not ResourceMatchesHash(Suite, 'e.class',
+      '27bb5d2162d2ca06dfdec613729f15dc6a1996834c6dfb749682e40a3ba7bee6') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(MIDletResource));
+  try
+    var Start := C.FindMethod('startApp', '()V');
+    var StartThread := Copy(Start.Code, StartThreadPC, StartThreadSize);
+    var AppendPC := Length(Start.Code);
+    // The game loop and startup share a static resource stream. Start the
+    // loop only once the key map has been decoded and the stream closed.
+    FillChar(Start.Code[StartThreadPC], StartThreadSize, 0);
+    var Jump := AppendPC - InitializationDonePC;
+    Start.Code[InitializationDonePC + 1] := Byte(Jump shr 8);
+    Start.Code[InitializationDonePC + 2] := Byte(Jump);
+    Jump := ResumePC - (AppendPC + StartThreadSize);
+    Start.Code := Start.Code + StartThread + [$A7, Byte(Jump shr 8), Byte(Jump)];
+    Start.InstructionStarts := JVMInstructionMap(Start.Code, Start.MaxLocals);
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallYetiSports2Gradient(Suite: TJ2MESuite; VM: TJVM);
+const
+  SplashResource = 'ys/pingu2/d.class';
+  Graphics = 'javax/microedition/lcdui/Graphics';
+  Helper = '$setGradientColor';
+  HelperDescriptor = '(Ljavax/microedition/lcdui/Graphics;III)V';
+  ColorPC = 88;
+begin
+  if not ResourceMatchesHash(Suite, SplashResource,
+    '3b320d3d43905bd7d7e058f4c87b4bb23cadcb2936bb717ebe7d8eb4f9a2a0ea') or
+    not ResourceMatchesHash(Suite, 'ys/pingu2/JMain.class',
+      'cebed8098f8acaf0a324ee52e189ca4fa50397e46740dfdebe0cb3e233769778') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(SplashResource));
+  try
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      B.JavaClass.Constants := C.Constants;
+      B.Start;
+      var MinRef := B.Member('java/lang/Math', 'min', '(II)I');
+      // Green and blue grow on every scanline. Saturate them on taller displays.
+      B.Emit([$2A, $1B, $1C, $11, 0, $FF]); // aload_0; iload_1; iload_2; sipush 255
+      B.Ref($B8, MinRef);
+      B.Emit([$1D, $11, 0, $FF]); // iload_3; sipush 255
+      B.Ref($B8, MinRef);
+      B.Ref($B6, B.Member(Graphics, 'setColor', '(III)V'));
+      B.Emit([$B1]);
+      B.Finish(Helper, HelperDescriptor, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 5, 4);
+      var Target := B.Member(C.Name, Helper, HelperDescriptor);
+      var Paint := C.FindMethod('paint', '(Ljavax/microedition/lcdui/Graphics;)V');
+      Paint.Code[ColorPC] := $B8;
+      Paint.Code[ColorPC + 1] := Byte(Target shr 8);
+      Paint.Code[ColorPC + 2] := Byte(Target);
+      C.Constants := B.JavaClass.Constants;
+      var Method := B.JavaClass.Methods.Extract(B.JavaClass.Methods.Last);
+      Method.Owner := C;
+      C.Methods.Add(Method);
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallJacWorkerTarget(Suite: TJ2MESuite; VM: TJVM);
+const
+  MIDletResource = 'jac/jac.class';
+  WorkerTargetPC = 127;
+  WorkerTargetSize = 7;
+begin
+  if not ResourceMatchesHash(Suite, MIDletResource,
+    '5dc550a4faea200fb8f331c746f01be0e134a99c1863e2b7d5c3bb033d38622a') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(MIDletResource));
+  try
+    var Start := C.FindMethod('startApp', '()V');
+    // run already operates on the static playfield. Give the thread the
+    // running MIDlet instead of constructing a second one as its Runnable.
+    FillChar(Start.Code[WorkerTargetPC], WorkerTargetSize, 0);
+    Start.Code[WorkerTargetPC] := $2A; // aload_0
+    Start.InstructionStarts := JVMInstructionMap(Start.Code, Start.MaxLocals);
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallNimStartupReturn(Suite: TJ2MESuite; VM: TJVM);
+const
+  NimClass = 'nim/Nim.class';
+  LoopPC = 24;
+begin
+  if not ResourceMatchesHash(Suite, NimClass,
+    '049bfab6f48884acbe982dff2ffc3bcd777731b20ddaaa0611efb4740af08d5f') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(NimClass));
+  try
+    var Start := C.FindMethod('startApp', '()V');
+    // The screen has been installed. Return control to MIDP instead of
+    // remaining in the original goto-to-self while the menu handles input.
+    Start.Code[LoopPC] := $B1; // return; the original branch operands are zero (nop)
+    Start.InstructionStarts := JVMInstructionMap(Start.Code, Start.MaxLocals);
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallSimonInputGuard(Suite: TJ2MESuite; VM: TJVM);
+const
+  CanvasResource = 'bx.class';
+  ControllerField = 43; // bm.j:Laq;
+begin
+  if not ResourceMatchesHash(Suite, CanvasResource,
+    'b9f2f09865e400ad992fd12fc1b81fc3aa340d53fd6b98db53f8c726802aafa2') or
+    not ResourceMatchesHash(Suite, 'bm.class',
+      'fa94e47863a8bc49109925638cb5491f4d58586f9b24c8ff5a09e29625af9b91') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(CanvasResource));
+  try
+    for var Name in ['keyPressed', 'keyReleased', 'keyRepeated'] do
+    begin
+      var Handler := C.FindMethod(Name, '(I)V');
+      var GuardPC := Length(Handler.Code);
+      // Canvas is displayed before the first controller is installed. Keep
+      // the original offsets and leave the checked reference on the stack.
+      var ContinueOffset := 3 - (GuardPC + 4);
+      Handler.Code := Handler.Code + [
+          $B2, 0, ControllerField, $59, // getstatic, dup
+          $C7, Byte(ContinueOffset shr 8), Byte(ContinueOffset), // ifnonnull
+          $57, $B1]; // pop, return
+      Handler.Code[0] := $A7; // goto
+      Handler.Code[1] := Byte(GuardPC shr 8);
+      Handler.Code[2] := Byte(GuardPC);
+      Handler.InstructionStarts := JVMInstructionMap(Handler.Code, Handler.MaxLocals);
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallSims2KeyFallback(Suite: TJ2MESuite; VM: TJVM);
+const
+  Canvas = 'javax/microedition/lcdui/Canvas';
+  KeyMapClass = 'g.class';
+  KeyMapDescriptor = '(Ljavax/microedition/lcdui/Canvas;I)I';
+  HelperName = '$fallbackGameAction';
+begin
+  if not ResourceMatchesHash(Suite, KeyMapClass,
+    'e803b4beb473f01b38cabba967c276e6021ae736f73de294dc530a2c7132c1bf') or
+    not ResourceMatchesHash(Suite, 'e.class',
+      '93a54d083a3d980a401473e75db43f244c20230f76f86eebf7a0bf9508852da6') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(KeyMapClass));
+  try
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      B.JavaClass.Constants := C.Constants;
+      B.Start;
+      B.Emit([$2A]);
+      B.Ref($C1, B.ClassRef('e'));
+      B.Jump($99, 'otherCanvas');
+      // The game Canvas calls this same lookup from getGameAction. An
+      // unmapped key has the original sentinel value, avoiding recursion.
+      B.Emit([$11, $03, $E7, $AC]); // sipush 999; ireturn
+      B.Mark('otherCanvas');
+      B.Emit([$2A, $1B]);
+      B.Ref($B6, B.Member(Canvas, 'getGameAction', '(I)I'));
+      B.Emit([$AC]);
+      B.Finish(HelperName, KeyMapDescriptor, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 2, 2);
+      var Target := B.Member(C.Name, HelperName, KeyMapDescriptor);
+      var KeyMap := C.FindMethod('a', KeyMapDescriptor);
+      for var PC in [8, 390] do
+      begin
+        KeyMap.Code[PC] := $B8;
+        KeyMap.Code[PC + 1] := Byte(Target shr 8);
+        KeyMap.Code[PC + 2] := Byte(Target);
+      end;
+      C.Constants := B.JavaClass.Constants;
+      var Helper := B.JavaClass.Methods.Extract(B.JavaClass.Methods.Last);
+      Helper.Owner := C;
+      C.Methods.Add(Helper);
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallPopstarSplashLifetime(Suite: TJ2MESuite; VM: TJVM);
+begin
+  if not ResourceMatchesHash(Suite, 'Popstar.class', 'a085ef00bac05db41b3444f2f22b49090358d2332d97473223959c6f606d97a7') or
+    not ResourceMatchesHash(Suite, 'e.class', 'b2c6ed4c7e9ccbb7a9ec153ccb4b47c73882177612e5d62523545d405d0e71bd') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource('Popstar.class'));
+  try
+    var RunMethod := C.FindMethod('run', '()V');
+    // The splash can receive one more paint before setCurrent changes the
+    // screen. Retain its small image set for the lifetime of the MIDlet.
+    FillChar(RunMethod.Code[7], 7, $00); // aload_0; getfield e; invokevirtual e.b
+    RunMethod.InstructionStarts := JVMInstructionMap(RunMethod.Code, RunMethod.MaxLocals);
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallFeanorImagePath(Suite: TJ2MESuite; VM: TJVM);
+const
+  Resource = 'SplitCanvas.class';
+begin
+  if not ResourceMatchesHash(Suite, Resource, '40dc31a4e87c76ae7e224007b6fd9e95691a4d74acad4bf9d88d10852f1118f5') or
+    not ResourceMatchesHash(Suite, 'Feanor.class', 'dd228db83af092253c3819d54b91c815d9d3277fcdd001b0e2d34601803dbaa4') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(Resource));
+  try
+    // This release builds its image paths with a Windows separator.
+    // The corresponding JAR entries all use res/.
+    for var I := 1 to High(C.Constants) do
+      if (C.Constants[I].Tag = 1) and (C.Constants[I].Text = 'res\') then
+        C.Constants[I].Text := 'res/';
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallFeanorGameLoopWait(Suite: TJ2MESuite; VM: TJVM);
+const
+  Resource = 'NHC.class';
+  LoopStartPC = 14;
+  LoopEndPC = 504;
+  BranchPC = LoopEndPC + 5;
+  LoopOffset = ( LoopStartPC - BranchPC) and $FFFF;
+begin
+  if not ResourceMatchesHash(Suite, Resource, '9e46273910f8ac2101db547bf66f846095545abfa8c4a3696d8372fc964e176e') or
+    not ResourceMatchesHash(Suite, 'Feanor.class', 'dd228db83af092253c3819d54b91c815d9d3277fcdd001b0e2d34601803dbaa4') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(Resource));
+  try
+    var GameLoop := C.FindMethod('gameThread', '()V');
+    var SleepRefHigh := GameLoop.Code[5];
+    var SleepRefLow := GameLoop.Code[6];
+    // The receiver is always non-nil. Reuse the existing sleepFor helper
+    // before returning to the state poll.
+    SetLength(GameLoop.Code, LoopEndPC);
+    GameLoop.Code := GameLoop.Code + [
+        $2A, $08, $B6, SleepRefHigh, SleepRefLow,
+        $A7, Byte(LoopOffset shr 8), Byte(LoopOffset and $FF)];
+    GameLoop.InstructionStarts := JVMInstructionMap(GameLoop.Code, GameLoop.MaxLocals);
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallSkullCastleSoftkeys(Suite: TJ2MESuite; VM: TJVM);
+const
+  Path = 'Pinball/PinballCanvas.class';
+  FirstCommandPC = 2239;
+  AfterCommandsPC = 2260;
+begin
+  if not ResourceMatchesHash(Suite, Path, 'c03d554f82e93b7ddfaf6e758443e1c6cca94b4a2c1306c86513d65a4ab022db') then
+    Exit;
+  var C := TJVMClass.Parse(Suite.ReadResource(Path));
+  try
+    var Init := C.FindMethod('<init>', '()V');
+    // The blank commands only translate softkeys into keyPressed calls.
+    // FullCanvas receives those key codes directly.
+    FillChar(Init.Code[FirstCommandPC], AfterCommandsPC - FirstCommandPC, $00);
+    Init.InstructionStarts := JVMInstructionMap(Init.Code, Init.MaxLocals);
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
 procedure InstallJ2MECompatibilityClasses(Suite: TJ2MESuite; VM: TJVM; out ArmiesOfWarClass: TJVMClass);
 const
   RecordStore = 'javax/microedition/rms/RecordStore';
   CountPC = 8;
+  GameAPIDemoWait: TScreenWorkerWait = (MethodName: 'Handle'; Descriptor: '(LGameAPI_Demo/MyScreen;Ljava/lang/String;)I'; PC: 25);
+  BalloonShooterWait: TScreenWorkerWait = (MethodName: 'Handle'; Descriptor: '(LBalloonShooter/MyScreen;Ljava/lang/String;)I'; PC: 25);
+  MoorhuhnTitleWait: TScreenWorkerWait = (MethodName: 'startApp'; Descriptor: '()V'; PC: 82);
+  MoorhuhnScreenWait: TScreenWorkerWait = (MethodName: 'a'; Descriptor: '(LMoorhuhn/j;Ljava/lang/String;)I'; PC: 25);
+  RatZWait: TScreenWorkerWait = (MethodName: 'p'; Descriptor: '(Le;)I'; PC: 48);
+  RaymanGolfWait: TScreenWorkerWait = (MethodName: 'startApp'; Descriptor: '()V'; PC: 69);
   HelperName = '$countAndCloseCaptureStore';
   HelperDesc = '(Ljavax/microedition/rms/RecordStore;)I';
 var
@@ -1068,10 +2880,70 @@ begin
   InstallBimmerScreenTimers(Suite, VM);
   InstallBalloonzUndoGuard(Suite, VM);
   InstallGuitarHero5LocaleFallback(Suite, VM);
+  InstallGuitarLegendStartup(Suite, VM);
   InstallCrashBandicootSoundListener(Suite, VM);
   InstallNinjaMasterLoadingPaint(Suite, VM);
-  InstallGameAPIDemoScreenWait(Suite, VM);
+  InstallScreenWorkerJoin(Suite, VM, 'GameAPI_Demo/GameAPI_Demo',
+    '7c6686f61f88ae52f0bc1c829538f35722ead8215921619b0f92f001de36a685', [GameAPIDemoWait]);
+  InstallScreenWorkerJoin(Suite, VM, 'BalloonShooter/BalloonShooter',
+    '53f804d0dc59ff365fcc686fc5339c08ade5cbc9e79024454c32acd6ac33d8e0', [BalloonShooterWait]);
+  InstallScreenWorkerJoin(Suite, VM, 'Moorhuhn/Moorhuhn',
+    'be9504cc5585fbb560f0a5aa81c2bd6a5b4abad1e62f2d58a0f7fb74c2e1f292', [MoorhuhnTitleWait, MoorhuhnScreenWait]);
+  InstallScreenWorkerJoin(Suite, VM, 'RatZ',
+    'e16b04c7d82b6632894ce5f8d0c5085b0aa8f57458ccf9a20a7f340ef4ed9960', [RatZWait]);
+  InstallScreenWorkerJoin(Suite, VM, 'a/Rayman',
+    'f85947fdff9126bfea6f76d4ab60d699a2844c455f50b1e1d795fb963b9f4b01', [RaymanGolfWait]);
+  InstallPacedPolling(Suite, VM, 'Moorhuhn/k',
+    'fe89b0dbad56755649b6e3daccfe78579afec1f71228b1c3dc1bef89d587733c');
+  InstallPacedPolling(Suite, VM, 't',
+    'd4043be0e0113fec0e956454261d08c29809dc4f36440507843cef8f651d72be');
+  InstallPacedPolling(Suite, VM, 'j',
+    '3c0e43de4ed733b3c3105f83396f636e73d3e2f7a1dac7b38e459c367d12f99e');
+  InstallPacedPolling(Suite, VM, 'a/RMGame',
+    '91a35f7ad9154a32742e7a51c0c3f5710de8de717923880594485e3142cb6546');
+  InstallPacedPolling(Suite, VM, 'BalloonShooter/TitleScreen',
+    '50a443fbf84adbb147bb388f3623cfce590b7b362542d74ad8e9fa7db7e6722b');
   InstallIronMan3MediaTimeLookup(Suite, VM);
+  InstallMotorolaFullCanvasCompatibility(Suite, VM);
+  InstallReviewedVirtualCalls(Suite, VM);
+  InstallPacedPolling(Suite, VM, 'blackjack/BlackJack',
+    '3d92afe4ecc02081d62ed07dc57793c7a3673a262845f14306af07802f741ca9');
+  InstallPacedPolling(Suite, VM, 'a/RRKernel', RailRiderKernelHash);
+  if ResourceMatchesHash(Suite, 'v.class', '956a3981d55e61af85abe04f4f24ee00dcaacb7f5179440a05d23b501d52f7d4') then
+    InstallPacedPolling(Suite, VM, 'an',
+      'd99a593c87393d61f038d8f6ce606b987fc666f78200dfb4d7cecdf87e0bca25');
+  InstallPacedPolling(Suite, VM, 'a/RailRider',
+    '43eb0d03e7730e1da7f5f3294331949525afad2e8bc08501cbc725cf2dc32f5d');
+  InstallPacedPolling(Suite, VM, 'mib2/g',
+    '6468c90776f968c4767cddee7378da61332265f7f2608fe7c5b2027c90f35330');
+  InstallPacedPolling(Suite, VM, 'SnakeEvolution',
+    '805e1abcf96466b210f19e761bc584e9fe995018093cbc8f2afe9f8de481b0ce');
+  InstallPacedPolling(Suite, VM, 'bubble/GaMain',
+    '871be0c2b70103be23e71054976298a14351145d938c647b349b8262c3a7deab');
+  InstallPacedPolling(Suite, VM, 'bubble/c',
+    '61020b8c05e5de03a7f417c34dc5a289245294f7266d5ebbda0a37d9df9ac91e');
+  InstallWigglesRepaint(Suite, VM);
+  InstallJangbiStartup(Suite, VM);
+  InstallGomokuMonitorWait(Suite, VM);
+  InstallParachutePanicStartup(Suite, VM);
+  InstallWildWheelsCadence(Suite, VM);
+  InstallWildWheelsRecordingLimit(Suite, VM);
+  InstallChickenRaceSilentSound(Suite, VM);
+  InstallResidentEvilPlayerGuard(Suite, VM);
+  InstallSkullCastleSoftkeys(Suite, VM);
+  InstallFeanorImagePath(Suite, VM);
+  InstallFeanorGameLoopWait(Suite, VM);
+  InstallPopstarSplashLifetime(Suite, VM);
+  InstallRTLRacerMenu(Suite, VM);
+  InstallRTLRacerTrack(Suite, VM);
+  InstallShrek2InputGuard(Suite, VM);
+  InstallWorms2LoadingYield(Suite, VM);
+  InstallWormsFortsMinimapGuard(Suite, VM);
+  InstallSimonInputGuard(Suite, VM);
+  InstallNimStartupReturn(Suite, VM);
+  InstallJacWorkerTarget(Suite, VM);
+  InstallYetiSports2Gradient(Suite, VM);
+  InstallSims2KeyFallback(Suite, VM);
   if not ResourceMatchesHash(Suite, 'GloftMMN2.class', MiamiMIDletHash) or
     not ResourceMatchesHash(Suite, 'f.class', MiamiEngineHash) then
     Exit;
@@ -1147,6 +3019,25 @@ begin
   Encoding := '';
   if Suite = nil then
     Exit;
+  // These ports pass decoded code units directly to 256-entry bitmap font
+  // tables. Their reviewed font or language data uses one byte per glyph.
+  if (ResourceMatchesHash(Suite, 'b.class', '6f3af8afcca93af102cc7943d9edb0a8b8a3149af52e29c09d3fa23d42671724') and
+    ResourceMatchesHash(Suite, 'res-head.bin', 'c56086a64b7456dea754a8e73e537f82265cea8741fe05466963e6e745679af9')) or
+    (ResourceMatchesHash(Suite, 'd.class', '927bfea8a55306c74c028c766351c1d84f6a48e0b1aed385f6a8aa2638482a0a') and
+    ResourceMatchesHash(Suite, 'font_9x8.map', '582891d5d90f8beb302fc71818bf30ad77e45c320488ea028a802a20921f0e47')) or
+    (ResourceMatchesHash(Suite, 'f.class', 'ed3e1bb70fc76f4223d4ecc79af39598e63247d4fb343fc66b4e1186f5710b5a') and
+    ResourceMatchesHash(Suite, 'd2', 'c6784622c4e97ceae1df8fb29aa903b7d216b6c2190266c27aa055d0b38c267a')) then
+  begin
+    Encoding := 'ISO-8859-1';
+    Exit(True);
+  end;
+
+  if IsRTLRacerSiemens(Suite) then
+  begin
+    Encoding := 'ISO-8859-1';
+    Exit(True);
+  end;
+
   // Airburster measures all language names with a Latin-1 bitmap font. Its
   // String(byte[],offset,length) calls rely on the phone's default encoding.
   // Match both consumers and every language resource; never guess from a name
@@ -1166,6 +3057,33 @@ begin
   Result := True;
 end;
 
+function J2MECompatibilityPlatform(Suite: TJ2MESuite): string;
+begin
+  // The color-only Jedi Dash release selects its resources on Nokia 7210.
+  if (Suite <> nil) and
+    ResourceMatchesHash(Suite, 'a/a/a/b/b.class', '00a045171a83baea95f582c27da06814f2d6c99e9df0c587df53837d40263947') and
+    ResourceMatchesHash(Suite, 'res/colour/jedi.png', '30558568a9d0ba5b6f55b0fa2917eae0a9261fbf053aa4fb24a77fe6e54bb458') then
+    Exit('Nokia7210');
+  // This S40 City Bloxx release selects its Nokia device path from the
+  // platform property and declares Nokia* in the bundled manifest.
+  if (Suite <> nil) and
+    ResourceMatchesHash(Suite, 'House.class', '029556e8b5c2236b2a11094ae3b7a4026df303c62368b80da713328fc85b7ab4') and
+    ResourceMatchesHash(Suite, 'o.class', 'c2ec2deb2cca84740f669c60a97fbb5ba907dbc4bfb280b102da75328f6afb9f') then
+    Exit('NokiaSeries40');
+  Result := 'RetroMul';
+end;
+
+function J2MECompatibilityLocale(Suite: TJ2MESuite): string;
+begin
+  // Oil Rig only initializes its primary string table for a language code
+  // in its exact-match list. This build ships only the English table.
+  if (Suite <> nil) and
+    ResourceMatchesHash(Suite, 'Oilrig.class', 'b2353712eef14284b2c264e4bdc3bfbb05f3f7308e3c8b339b44c45048e30e4d') and
+    ResourceMatchesHash(Suite, 'c.class', '0201e582bdd0c30e3f9ee21c0007fe11f512c2e070ba63c6456fd5ce56792d8a') then
+    Exit('en');
+  Result := '';
+end;
+
 function J2MECompatibilityM3GUnusedTexBias(const ModelHash: string): Boolean;
 const
   // Reviewed Golden Warrior / Bimmer / NFS Carbon / Planet Riders exports: only the unused
@@ -1173,7 +3091,8 @@ const
   // Planet Riders 1.3.2 hashes identify the decoded M3G bytes passed to Loader,
   // after its bo.a resource unscrambler (85 files, 83 distinct models).
   // Pearl Harbor Sky Conquerors uses the same exporter defect in 12 models.
-  Hashes: array[0..128] of string = (
+  // Freeflight and Submarine3D have the same defect in five models.
+  Hashes: array[0..133] of string = (
     '00033c6e9b1a43f3dc9211205d4120270213bb179928342a578ef0bb754bce20',
     '0143a0572a9e802fb09707f7b531508b3168f87fb30d9f759bbc2ee25d9d3a6b',
     '06110012a84d736ec2c354c0afabadd511780d9e265537986667733e72961c8b',
@@ -1302,7 +3221,12 @@ const
     'fb4b7dd3cccf2685c32a398070402d61567d68e5ba4dca9058b6220db59952fe',
     'fb653d48bcd5f8eedc16cc07d82f602dc186f641260668e3094696e2febd7abb',
     'fc2fd6b1ba903d54ce71182020691ba7c250d16b54bd5a99ebe0410c22abcb8b',
-    'fee865c2c9788e4ac39e1b874c070b2e47e487c75097473e8fecf37922394d19');
+    'fee865c2c9788e4ac39e1b874c070b2e47e487c75097473e8fecf37922394d19',
+    'c187f34dea346dd4c22f069b0505c7d2132ec7026c109562942704e7a7d44f12',
+    'fecb4e6fec84c1cbbeaf9ac0122bc567a95b93e0e726512592608ca3d7c3ac2f',
+    '6b9085d6a0dd8e1e4d3693493345f835655ac113d2d865bac76d525916344f2a',
+    '548cf265ead876226cb72cd7de7d8e8f88389daec336d6ebd9878609c2d04a38',
+    'bfe611dc52307437b74c32e12d288ccafed8b20d98234e7a63c131a29cd71032');
 begin
   for var Hash in Hashes do
     if SameText(ModelHash, Hash) then
@@ -1337,6 +3261,37 @@ begin
     SameText(ImageHash, '0eb446c9d9a6b633ada119f04d41edc5f41cdfd7377adaf461b1b431e25a0fbe');
 end;
 
+function J2MECompatibilitySamsungVibrationMillis(Suite: TJ2MESuite): Boolean;
+begin
+  // Forgotten Warrior passes 1000 for its hit effect to Samsung's API.
+  Result := ResourceMatchesHash(Suite, 'Default.class',
+    '3cb754add333861e54e6aa3a543ac76b0cc707bb57483b9c0c8a2bfb238c6cfd') and
+    ResourceMatchesHash(Suite, 'GameScreen.class',
+      '45e4c411d1af0a9e3d03da89bc5e8bb622825a11e303c5a4226a7f9d989abd3e');
+end;
+
+function J2MECompatibilityIgnoredFlashDuration(Suite: TJ2MESuite): Int64;
+begin
+  Result := 0;
+  // Stuntman 1.2.24 requests this duration on every startApp to keep the
+  // display lit. Treat it as steady backlight on the virtual display.
+  if ResourceMatchesHash(Suite, 'StuntmanMIDlet.class',
+    '97316a4fcf1f8eea6912572fe633018cf3b909d6e1a9f41788dbec781999d441') then
+    Result := 40000000;
+end;
+
+function IsSiemensFixedCanvasEdition(const JarHash: string): Boolean;
+begin
+  // RailRider uses a byte-aligned 104-pixel raster. The four Men in Black II
+  // episodes draw a 96x80 playfield. Both target the Siemens 101x80 display.
+  Result := MatchText(JarHash, [
+      'd648580661c94875b88ffe368408d6a719c880b59be364a4848e9062d433b131',
+      'b670f54bfb49e799447fcd81b5e02308a271ecabff00b35911bd925abcf8787d',
+      '75f69626a7f18bae3587f6f3ae35452f5f7e9450163e773f4d5ea7852ce608fb',
+      'e441913f0b502e365fcfe020c7255ec5dd0c37f86438ba5c4ee6d3e00006130a',
+      'eb7f1d28e582e454902b9b5a321ae3a2f5c5e92d71b25f8b2509e340b442b9b3']);
+end;
+
 function TryJ2MECompatibilityScreen(const JarHash: string; out Size: TJ2MEScreenSize): Boolean;
 begin
   Size := Default(TJ2MEScreenSize);
@@ -1347,6 +3302,79 @@ begin
     Size := TJ2MEScreenSize.Create(176, 208)
   // Bounce 1.9 blits its fixed 128x128 gameplay buffer at the Canvas origin.
   else if SameText(JarHash, Bounce19Hash) then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // GemGame targets Nokia Series 40. Its splash gradient depends on width.
+  // Decathlon's track gradients depend on height. Both fit a 128x128 Canvas.
+  else if MatchText(JarHash, [
+      '006f7dca129c19be8a28fc9305d393705087ddd393e7df8458948126f9530993',
+      'f7f4089beb259376b8218f2f865ca3236f259611e08255be5e7dcfed654a65b6']) then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // Backgamon 3510i paints its fixed 96x65 board at the Canvas origin.
+  else if SameText(JarHash, 'fd7dffd8d5478f2ca18d6e645d08cb4efd81b2b7c89a64287bea070cdeaf37f3') then
+    Size := TJ2MEScreenSize.Create(96, 65)
+  // These Nokia 7210 builds select their packaged artwork at 128x128.
+  else if MatchText(JarHash, [
+      '01be32f47a8f50c8723e1473124443a7394524c8810515b09e408cc5dc9b24d4',
+      '4815b2dbac4e2a0e38b7164b32ecf0d8a22c5b6d8dce11d18f8e3687039152b7',
+      'ce8554da281d372af9361b2992ece60ddfefd46581536cf4f69b24978e3a7429',
+      'd67d0c2f12a5e87632ad16445e112c4e2c9d7312c7220e86d812e908013f518f',
+      '88290b42a14cadff1bd61aeed043e35be9b7d168034846a956056d00c0ea9f97',
+      'e5bcae5cfcd583e4549f983a42cef5d7cfea16939e36a9d6c9ab93c46af97bf1',
+      'd64a5eadb4f7a918ce5c1cf1a4f5deb837c5e5c3771eb3903b1e6d696ffe8bca',
+      'ae84bfea54a805be69231cad108e7e271e967136f40a1f676f9961c0e47521a2']) then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // Pro Mahjong for Nokia 7210 centers a fixed 128x128 board and menus.
+  else if SameText(JarHash, 'e6879fc074e0114db5f40dfa55381217db7b5eeabdc70ded0c3911a48da09bda') then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // Gomoku draws a 128-pixel title. A larger Canvas makes its paint loop
+  // exceed the fixed 22-by-22 board backing array.
+  else if SameText(JarHash, 'c37f3311c62a868f6bfd42bfe9ba7a126f237deda8b5b5095f3a75e174b56199') then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // ChinaChess packages its complete board and logo at 176x208.
+  else if SameText(JarHash, 'fd6839865d23cafded13433feadb3626e0f3670efc9fc5696fecb0fccf07dd7e') then
+    Size := TJ2MEScreenSize.Create(176, 208)
+  // Amigo positions the menu softkeys and sets the scene clip at 176x208.
+  else if SameText(JarHash, '6f28751f73c541c8d33c3ca52cce0e39f403017f05adea53ae62da41521f2ee8') then
+    Size := TJ2MEScreenSize.Create(176, 208)
+  // Ice Age clips and centers its gameplay in a fixed 128x128 viewport.
+  else if SameText(JarHash, '1b793d0de0cd3407564dc0475c35583f800791f6237093c48cc6b03b7e8152a3') then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // ChickenRun clears its fixed 128x128 playfield with a 128x110 background and an 18-pixel HUD.
+  else if SameText(JarHash, '387404196dfea34a524ac0faa138a696c2cdcff365fc58ca58ac4283d5adbd75') then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // KO Kickboxing packages its splash, selection and ring at 176x208.
+  else if SameText(JarHash, '83c82f9d4d59653150c5e62f86c682101fe2b0329e22fce258127d9f6c144bbc') then
+    Size := TJ2MEScreenSize.Create(176, 208)
+  // Yetisports Part 2 centers its 127x128 splash on a Nokia-sized screen.
+  else if SameText(JarHash, 'db133476027c7bd3640b01eaa5c8db10dcde471fd698dcc01301ae7848beedf5') then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // Skull Castle Pinball allocates a 128x128 drawing surface.
+  else if SameText(JarHash, '6c7cb112e4325f7a2d469cdc0588a9cf9aef016118f5d7b6828fdf9320bce361') then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // Snood uses a fixed 120x160 area for its custom menus and board.
+  else if SameText(JarHash, '09e5a4feab79fde56ff284b4a55bbf523866b64d46341543d3d4179289ea9cbd') then
+    Size := TJ2MEScreenSize.Create(120, 160)
+  // Evil Dead Pinball draws a 128-pixel table above its score and softkeys.
+  else if SameText(JarHash, '4bc3758d279e84b61b18ccb41d6bf2e953878b54a7ee01369ccac61433de7b78') then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // Ocean's Twelve draws a fixed 176x208 map and HUD.
+  else if SameText(JarHash, '2cd1258f4d06ed1e9e066320271871e5b439b07ee8927ebf7428ee767abbefe5') then
+    Size := TJ2MEScreenSize.Create(176, 208)
+  // Haunts indexes a fixed 178-column array using its Canvas width.
+  else if SameText(JarHash, '1a7d033bd84b3e2de395a92cd521159a9fef2392fb12ea2736d935d8ca249f54') then
+    Size := TJ2MEScreenSize.Create(176, 208)
+  // Jangbi packages fixed 128x128 title and map artwork.
+  else if SameText(JarHash, 'b62840f3ae0410343065687e0c08c9a27dfc21d339df36acc1e1c1a5e20b54b8') then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // Shepherdess derives the camera bounds from an eight-row title map.
+  // A larger Canvas can index outside that map. The 128x128 profile also
+  // fits the game HUD and the tested gameplay stages.
+  else if SameText(JarHash, ShepherdessHash) then
+    Size := TJ2MEScreenSize.Create(128, 128)
+  // These exact builds draw menus at fixed dimensions.
+  else if SameText(JarHash, DieHardHash) then
+    Size := TJ2MEScreenSize.Create(176, 208)
+  else if SameText(JarHash, TennisOpen2007Hash) then
     Size := TJ2MEScreenSize.Create(128, 128)
   // The packed full-screen art and coordinate scales target 176x208.
   else if SameText(JarHash, AncientEmpires103Hash) then
@@ -1363,6 +3391,9 @@ begin
     Size := TJ2MEScreenSize.Create(320, 240)
   else if SameText(JarHash, GuitarHero3PortraitHash) then
     Size := TJ2MEScreenSize.Create(240, 320)
+  // This edition sets its drawing area to 320x240 in boxal.inf.
+  else if SameText(JarHash, ParachutePanicHash) then
+    Size := TJ2MEScreenSize.Create(320, 240)
   // The song and pause menu use a fixed 240x320 drawing area.
   else if SameText(JarHash, GuitarRockTourHash) then
     Size := TJ2MEScreenSize.Create(240, 320)
@@ -1374,12 +3405,27 @@ begin
   // positions at those edges, even though its 3D race viewport can grow.
   else if SameText(JarHash, NFSCarbonHash) then
     Size := TJ2MEScreenSize.Create(176, 220)
+  // Shrek 2 draws a 176x208 title image above its fixed softkey bar.
+  else if SameText(JarHash, Shrek2NokiaHash) then
+    Size := TJ2MEScreenSize.Create(176, 220)
+  // Stuntman paints its visible scene at 176x183; its larger images are
+  // scrolling buffers. The earlier iomo version fills 120x160 directly.
+  else if SameText(JarHash, StuntmanNokiaHash) then
+    Size := TJ2MEScreenSize.Create(176, 183)
+  else if SameText(JarHash, StuntmanOriginalHash) then
+    Size := TJ2MEScreenSize.Create(120, 160)
+  // This edition packages 176x220 splash screens and in-game menus.
+  else if SameText(JarHash, Sims2MobileHash) then
+    Size := TJ2MEScreenSize.Create(176, 220)
   // This edition places its menus, softkeys and splash in a 176x220 Canvas.
   else if SameText(JarHash, BimmerStreetRacingHash) then
     Size := TJ2MEScreenSize.Create(176, 220)
   // The Samsung build draws its full Canvas at fixed 176x220.
   else if SameText(JarHash, ForgottenWarriorHash) then
     Size := TJ2MEScreenSize.Create(176, 220)
+  // This edition paints its splash, menus and levels in a fixed landscape viewport.
+  else if SameText(JarHash, MasteringMagicHash) then
+    Size := TJ2MEScreenSize.Create(320, 240)
   // This export blocks its main paint path when width < height and draws
   // the actual game at fixed 320x240; its orientation warning is misleading.
   else if SameText(JarHash, DiamondRushHash) then
@@ -1390,11 +3436,32 @@ begin
   // Ninja Master fixes the height at 80 and loads a 101x80 background.
   else if SameText(JarHash, NinjaMasterHash) then
     Size := TJ2MEScreenSize.Create(101, 80)
+  // The Worms K750 package contains full-screen splash art at 176x220.
+  else if SameText(JarHash, '14951d46ec408620ba2871f5c0677ee4077c65774d811d8818c9ffbd464bbeca') then
+    Size := TJ2MEScreenSize.Create(176, 220)
+  // These Xidris builds place their full-screen art and menus at 101x80.
+  else if MatchText(JarHash, [
+      '12f94fc988fddb157e8383393dbd602cdae16b2b88038bbad01bedc87e2fda9a',
+      '9739554c1c5c72c48e3680b8c463a5158a4a2bd7e0f132c42441f0316e6582d2',
+      'f4ca5accb66c68b68e9c083cb2662dcbc9266e0f7a8b322c7de5789207de5143']) then
+    Size := TJ2MEScreenSize.Create(101, 80)
+  // Wild Wheels skips initialization unless both Canvas dimensions match.
+  else if SameText(JarHash, 'cb6f53288d4655726bcbc3b8503d820e83e1f37692c477c517361ca1488cfaf4') then
+    Size := TJ2MEScreenSize.Create(101, 80)
+  // Sticker draws a fixed 96x76 board. Leave room for the LCDUI commands.
+  else if SameText(JarHash, 'ebf2de3b16a028634a71f9ef15710dd498260703d3daa016e5d601b16ae26442') then
+    Size := TJ2MEScreenSize.Create(101, 96)
+  // Jac draws a 101x80 board and uses LCDUI commands during gameplay.
+  else if SameText(JarHash, '023c5a028de10065693aaa6ac9fa64e37ac32334cd56cad31f8316b8bb5bac4b') then
+    Size := TJ2MEScreenSize.Create(101, 96)
+  else if IsSiemensFixedCanvasEdition(JarHash) then
+    Size := TJ2MEScreenSize.Create(101, 80)
   // These Siemens editions use the monochrome 101x80 display.
   // The backing bitmap widths use byte-aligned rows.
   else if MatchText(JarHash, [StackAttack2Hash, SummerSkiHash, RaymanGolfSiemensHash,
       PrinceHaremSiemensHash, BrokenWingSiemensHash, MarslanderSiemensHash, GameAPIDemoHash,
-      BlockBreakerSiemensHash, CollisionCourseSiemensHash]) then
+      BalloonShooterHash, MoorhuhnSiemensHash, RatZSiemensHash,
+      BlockBreakerSiemensHash, CollisionCourseSiemensHash, RTLRacerSiemensHash]) then
     Size := TJ2MEScreenSize.Create(101, 80)
   else
     Result := False;
@@ -1433,9 +3500,11 @@ begin
   // Diamond Rush reads Canvas dimensions only in its orientation-warning
   // path; actual layout/buffers are fixed at 320x240. Resizing this ordinary
   // Canvas needs no guest-field edits and resumes the saved game moment.
-  // Pool and Asphalt 3 also paint to fixed buffers on an ordinary Canvas.
+  // Pool, Asphalt 3 and Mastering Magic also use fixed art on an ordinary Canvas.
   // A higher-priority descriptor can supply the target size.
-  if MatchText(JarHash, [DiamondRushHash, PoolHash, Asphalt3Hash]) then
+  // RailRider and Men in Black II use ordinary Canvas with fixed backing rasters.
+  if MatchText(JarHash, [DiamondRushHash, PoolHash, Asphalt3Hash, MasteringMagicHash]) or
+    IsSiemensFixedCanvasEdition(JarHash) then
   begin
     Runtime.ResizeCanvas(Size.Width, Size.Height);
     Exit;

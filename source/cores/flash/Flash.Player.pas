@@ -8839,6 +8839,8 @@ begin
     Exit;
   PadX := 0;
   PadY := 0;
+  SnapX := 0;
+  SnapY := 0;
   OutputColor := FRender.Color;
   InputColor := OutputColor;
   InputMatrix := Matrix;

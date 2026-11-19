@@ -30,6 +30,7 @@ type
     procedure Count(var Value: NativeInt; Limit: Integer = 1048576); overload;
     {$ENDIF}
     procedure Tag(const Expected: string);
+    function HasRemaining: Boolean;
     procedure Finish;
     property Loading: Boolean read FLoading;
   end;
@@ -171,6 +172,11 @@ begin
   Text(Actual);
   if Actual <> Expected then
     raise EReadError.Create('Incompatible Java ME snapshot: ' + Expected);
+end;
+
+function TJVMStateIO.HasRemaining: Boolean;
+begin
+  Result := FStream.Position < FStream.Size;
 end;
 
 procedure TJVMStateIO.Finish;

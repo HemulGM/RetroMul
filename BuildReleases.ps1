@@ -2,6 +2,7 @@
 <#
 .SYNOPSIS
 Builds Release binaries and packages them into releases/RetroMul-<platform>.zip.
+Each ZIP includes the repository's LICENSE and README.md at its root.
 .EXAMPLE
 .\BuildReleases.ps1
 .EXAMPLE
@@ -26,6 +27,11 @@ $projectDirectory = Join-Path $PSScriptRoot 'apps/retromul'
 $projectFile = Join-Path $projectDirectory 'RetroMul.dproj'
 $projectName = [IO.Path]::GetFileNameWithoutExtension($projectFile)
 $releaseDirectory = Join-Path $PSScriptRoot 'releases'
+$releaseDocuments = @('LICENSE', 'README.md')
+foreach ($document in $releaseDocuments) {
+    $documentPath = Join-Path $PSScriptRoot $document
+    if (-not (Test-Path -LiteralPath $documentPath -PathType Leaf)) { throw "Release document not found: $documentPath" }
+}
 
 # Prefer the active installation; otherwise discover Delphi on PATH or in the registry.
 if (-not $BdsPath) {
@@ -66,7 +72,7 @@ New-Item -ItemType Directory -Force -Path $releaseDirectory | Out-Null
 function Set-ZipUnixHost([string] $Path) {
     # .NET on Windows writes a DOS host marker even with Unix ExternalAttributes.
     # Mark central-directory entries as Unix so extractors honor their modes.
-    # These locally created archives have no comment and exactly three entries.
+    # These locally created archives have no ZIP comment.
     $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite)
     $reader = [IO.BinaryReader]::new($stream)
     try {
@@ -76,7 +82,7 @@ function Set-ZipUnixHost([string] $Path) {
         $count = $reader.ReadUInt16()
         $stream.Position = $stream.Length - 6
         $offset = $reader.ReadUInt32()
-        if ($count -ne 3 -or $offset -eq [uint32]::MaxValue) { throw 'Unexpected macOS ZIP directory format.' }
+        if ($count -eq 0 -or $offset -eq [uint32]::MaxValue) { throw 'Unexpected macOS ZIP directory format.' }
         for ($index = 0; $index -lt $count; $index++) {
             $stream.Position = $offset
             if ($reader.ReadUInt32() -ne 0x02014b50) { throw 'ZIP central-directory entry not found.' }
@@ -165,6 +171,11 @@ foreach ($prefix in ($Platforms | Select-Object -Unique)) {
                 $entry.ExternalAttributes = -2119958528 # Unix regular file, mode 0644.
                 $entry = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $iconPath, "$projectName.app/Contents/Resources/$projectName.icns", [IO.Compression.CompressionLevel]::Optimal)
                 $entry.ExternalAttributes = -2119958528
+            }
+            foreach ($document in $releaseDocuments) {
+                $documentPath = Join-Path $PSScriptRoot $document
+                $entry = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $documentPath, $document, [IO.Compression.CompressionLevel]::Optimal)
+                if ($isMacTarget) { $entry.ExternalAttributes = -2119958528 } # Unix regular file, mode 0644.
             }
         } finally { $zip.Dispose() }
         if ($isMacTarget) { Set-ZipUnixHost $temporaryArchive }

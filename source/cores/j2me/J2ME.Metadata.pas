@@ -165,7 +165,10 @@ begin
     Document.AddPair('jad_text', Suite.SourceText('jad'));
     var Descriptor := TJSONObject.Create;
     Descriptor.AddPair('location', JADLocation);
-    Descriptor.AddPair('error', JADError);
+    if JADError <> '' then
+      Descriptor.AddPair('error', JADError)
+    else
+      Descriptor.AddPair('error', Suite.JADLoadError);
     Document.AddPair('descriptor', Descriptor);
     var MIDlets := TJSONArray.Create;
     for var I := 0 to Suite.MIDletCount - 1 do

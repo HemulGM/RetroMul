@@ -21,7 +21,7 @@ type
     FEntries: TDictionary<string, Integer>;
     FProperties, FManifestProperties, FJADProperties: TDictionary<string, string>;
     FMIDlets: TArray<TJ2MEMIDlet>;
-    FManifestName, FManifestText, FJADText: string;
+    FManifestName, FManifestText, FJADText, FJADLoadError: string;
     procedure ValidateStandaloneJAD(JarSize: Int64);
     function HasMIDletAncestor(const ClassName: string): Boolean;
     procedure ReadProperties(const Data: TBytes; MainSection: Boolean);
@@ -44,6 +44,7 @@ type
     property Storage: IStorage read FStorage;
     property Archive: IArchiveContainer read FArchive;
     property ManifestName: string read FManifestName;
+    property JADLoadError: string read FJADLoadError;
   end;
 
 implementation
@@ -64,6 +65,21 @@ begin
   Result := Copy(S, First, Last - First + 1);
 end;
 
+function DecodeDescriptor(const Data: TBytes): string;
+begin
+  try
+    Result := TEncoding.UTF8.GetString(Data);
+  except
+    on EEncodingError do
+    begin
+      // Older manifests and descriptors can contain ISO-8859-1 text.
+      SetLength(Result, Length(Data));
+      for var I := 0 to High(Data) do
+        Result[I + 1] := Char(Data[I]);
+    end;
+  end;
+end;
+
 procedure TJ2MESuite.ReadProperties(const Data: TBytes; MainSection: Boolean);
 var
   Unfolded: TBytes;
@@ -79,10 +95,20 @@ begin
   N := 0;
   while I < Length(Data) do
   begin
-    if (Data[I] = 13) and (I + 2 < Length(Data)) and (Data[I + 1] = 10) and (Data[I + 2] = 32) then
-      Inc(I, 3)
-    else if (Data[I] = 10) and (I + 1 < Length(Data)) and (Data[I + 1] = 32) then
-      Inc(I, 2)
+    if Data[I] in [10, 13] then
+    begin
+      var Next := I + 1;
+      if (Data[I] = 13) and (Next < Length(Data)) and (Data[Next] = 10) then
+        Inc(Next);
+      if (Next < Length(Data)) and (Data[Next] = 32) then
+        I := Next + 1
+      else
+      begin
+        Unfolded[N] := 10;
+        Inc(N);
+        I := Next;
+      end;
+    end
     else
     begin
       Unfolded[N] := Data[I];
@@ -91,7 +117,8 @@ begin
     end;
   end;
   SetLength(Unfolded, N);
-  Lines := TEncoding.UTF8.GetString(Unfolded).Replace(#13#10, #10).Replace(#13, #10).Split([#10]);
+  var Text := DecodeDescriptor(Unfolded);
+  Lines := Text.Split([#10]);
   if (Length(Lines) > 0) and Lines[0].StartsWith(Char($FEFF)) then
     Delete(Lines[0], 1, 1);
   for Line in Lines do
@@ -121,10 +148,37 @@ end;
 
 constructor TJ2MESuite.Create(const Archive: IArchiveContainer; const JAD: TBytes; const Storage: IStorage; JarSize: Int64);
 var
-  I, Index: Integer;
+  I, Index, Existing, FallbackIndex: Integer;
   Entry: TArchiveEntry;
   Total: UInt64;
-  Data: TBytes;
+  Data, Duplicate: TBytes;
+  AmbiguousFallback: Boolean;
+
+  procedure ReadManifest(EntryIndex: Integer; out Bytes: TBytes);
+  begin
+    if Archive.Entries[EntryIndex].Size > 1024 * 1024 then
+      raise EReadError.Create('Manifest exceeds 1 MiB');
+    Archive.Read(EntryIndex, Bytes);
+  end;
+
+  procedure ValidateEntryPoints;
+  begin
+    if Index < 0 then
+      ValidateStandaloneJAD(JarSize);
+    if (GetProperty('MicroEdition-Configuration') <> '') and
+      (GetProperty('MicroEdition-Configuration') <> 'CLDC-1.0') and
+      (GetProperty('MicroEdition-Configuration') <> 'CLDC-1.1') then
+      raise EReadError.Create('Unsupported Java ME configuration');
+    for var Profile in GetProperty('MicroEdition-Profile').Split([' '], TStringSplitOptions.ExcludeEmpty) do
+      if (Profile <> 'MIDP-1.0') and (Profile <> 'MIDP-2.0') then
+        raise EReadError.Create('Unsupported Java ME profile: ' + Profile);
+    ReadMIDlets;
+    if Index < 0 then
+      for var Item in FMIDlets do
+        if not HasMIDletAncestor(Item.ClassName) then
+          raise EReadError.Create('JAD entry class does not extend MIDlet: ' + Item.ClassName);
+  end;
+
 begin
   inherited Create;
   if Archive = nil then
@@ -138,6 +192,8 @@ begin
   FManifestProperties := TDictionary<string, string>.Create;
   FJADProperties := TDictionary<string, string>.Create;
   Total := 0;
+  FallbackIndex := -1;
+  AmbiguousFallback := False;
   for I := 0 to Archive.Count - 1 do
   begin
     Entry := Archive.Entries[I];
@@ -147,42 +203,72 @@ begin
       raise EReadError.Create('J2ME suite exceeds resource size limits');
     Inc(Total, Entry.Size);
     if Entry.Name.Contains('\') or Entry.Name.StartsWith('/') or
-      ('/' + Entry.Name + '/').Contains('/../') or FEntries.ContainsKey(Entry.Name) then
+      ('/' + Entry.Name + '/').Contains('/../') then
       raise EReadError.Create('Invalid or duplicate JAR member: ' + Entry.Name);
+    var IsManifest := SameText(Entry.Name, J2MEManifestName);
+    if FEntries.TryGetValue(Entry.Name, Existing) then
+    begin
+      if not IsManifest or (Entry.Size <> Archive.Entries[Existing].Size) then
+        raise EReadError.Create('Invalid or duplicate JAR member: ' + Entry.Name);
+      ReadManifest(Existing, Data);
+      ReadManifest(I, Duplicate);
+      if (Length(Data) <> Length(Duplicate)) or
+        not CompareMem(Pointer(Data), Pointer(Duplicate), Length(Data)) then
+        raise EReadError.Create('Invalid or duplicate JAR member: ' + Entry.Name);
+      Continue;
+    end;
     FEntries.Add(Entry.Name, I);
+    if IsManifest then
+    begin
+      AmbiguousFallback := FallbackIndex >= 0;
+      FallbackIndex := I;
+    end;
   end;
-  Index := Archive.FindName(J2MEManifestName);
+  // Prefer the canonical JAR name. A lone spelling variant also serves as
+  // a manifest, while an exact duplicate is accepted only after byte comparison.
+  if not FEntries.TryGetValue(J2MEManifestName, Index) then
+  begin
+    if AmbiguousFallback then
+      raise EReadError.Create('Ambiguous archive member: ' + J2MEManifestName);
+    Index := FallbackIndex;
+  end;
   if Index >= 0 then
   begin
-    if Archive.Entries[Index].Size > 1024 * 1024 then
-      raise EReadError.Create('Manifest exceeds 1 MiB');
-    Archive.Read(Index, Data);
+    ReadManifest(Index, Data);
     ReadProperties(Data, True);
     FManifestName := Archive.Entries[Index].Name;
-    FManifestText := TEncoding.UTF8.GetString(Data);
+    FManifestText := DecodeDescriptor(Data);
   end
   else if Length(JAD) = 0 then
     raise EReadError.Create('JAR has no manifest or companion JAD');
 
-  if Length(JAD) <> 0 then
+  if Length(JAD) = 0 then
   begin
-    ReadProperties(JAD, False);
-    FJADText := TEncoding.UTF8.GetString(JAD);
+    ValidateEntryPoints;
+    Exit;
   end;
-  if Index < 0 then
-    ValidateStandaloneJAD(JarSize);
-  if (GetProperty('MicroEdition-Configuration') <> '') and
-    (GetProperty('MicroEdition-Configuration') <> 'CLDC-1.0') and
-    (GetProperty('MicroEdition-Configuration') <> 'CLDC-1.1') then
-    raise EReadError.Create('Unsupported Java ME configuration');
-  for var Profile in GetProperty('MicroEdition-Profile').Split([' '], TStringSplitOptions.ExcludeEmpty) do
-    if (Profile <> 'MIDP-1.0') and (Profile <> 'MIDP-2.0') then
-      raise EReadError.Create('Unsupported Java ME profile: ' + Profile);
-  ReadMIDlets;
-  if Index < 0 then
-    for var Item in FMIDlets do
-      if not HasMIDletAncestor(Item.ClassName) then
-        raise EReadError.Create('JAD entry class does not extend MIDlet: ' + Item.ClassName);
+
+  try
+    if Length(JAD) > 1024 * 1024 then
+      raise EReadError.Create('J2ME descriptor exceeds 1 MiB');
+    FJADText := DecodeDescriptor(JAD);
+    ReadProperties(JAD, False);
+    ValidateEntryPoints;
+  except
+    on E: EReadError do
+    begin
+      if Index < 0 then
+        raise;
+      // Treat the companion as a unit. The embedded descriptor must be
+      // independently usable before we can run the original JAR by itself.
+      FJADLoadError := E.Message;
+      FJADProperties.Clear;
+      FProperties.Clear;
+      for var Pair in FManifestProperties do
+        FProperties.Add(Pair.Key, Pair.Value);
+      ValidateEntryPoints;
+    end;
+  end;
 end;
 
 procedure TJ2MESuite.ValidateStandaloneJAD(JarSize: Int64);
@@ -254,6 +340,7 @@ var
   I, A, B, N: Integer;
   S, ClassName: string;
 begin
+  FMIDlets := nil;
   for I := 1 to 1024 do
   begin
     S := GetProperty('MIDlet-' + IntToStr(I));

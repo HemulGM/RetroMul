@@ -4,13 +4,14 @@ interface
 
 uses
   System.Classes, System.SysUtils, System.Generics.Collections,
-  System.Net.URLClient, JVM.Types, JVM.ClassFile, JVM.Runtime, J2ME.Network.HTTP;
+  System.Net.URLClient, JVM.Types, JVM.ClassFile, JVM.Runtime, J2ME.Network.HTTP,
+  J2ME.Network.Datagram, J2ME.Network.TCP;
 
 type
   TJ2MEHTTPConnection = class
   public
     Ref, Mode, Port, InputRef, OutputRef, Position: Integer;
-    URL, TransportURL, Host, FilePart, Query, Fragment, RequestMethod: string;
+    URL, TransportURL, Protocol, Host, FilePart, Query, Fragment, RequestMethod: string;
     HasFile, HasQuery, HasFragment: Boolean;
     Closed, InputOpened, OutputOpened, OutputClosing, Timeouts: Boolean;
     Headers: TNetHeaders;
@@ -25,9 +26,15 @@ type
     FProtocolOpen: TFunc<string, Integer, Boolean, Integer>;
     FConnections: TObjectDictionary<Integer, TJ2MEHTTPConnection>;
     FRetired: TObjectList<TJ2MEHTTPJob>;
+    FDatagrams: TJ2MEDatagrams;
+    FTCP: TJ2METCP;
     procedure Retire(Connection: TJ2MEHTTPConnection);
     procedure ReleaseClosed(Connection: TJ2MEHTTPConnection);
     function Ready(Connection: TJ2MEHTTPConnection): Boolean;
+    function SecurityInfo(const Certificate: TCertificate): Integer;
+    function NewCertificate(const Certificate: TCertificate): Integer;
+    procedure PutSecurityText(O: TJVMObject; const Name, Value: string);
+    procedure RaiseCertificateFailure(Job: TJ2MEHTTPJob);
     function Open(const URL: string; Mode: Integer; Timeouts: Boolean): Integer;
     function OpenStream(Connection: TJ2MEHTTPConnection; Reading: Boolean): Integer;
   public
@@ -46,7 +53,8 @@ type
 implementation
 
 uses
-  System.Math, System.DateUtils, Java.Classes, JVM.Threading;
+  System.Math, System.DateUtils, System.Net.HttpClient, Java.Classes,
+  JVM.Threading;
 
 {$Q-}{$R-}
 
@@ -54,7 +62,27 @@ const
   IO = 'javax/microedition/io/';
   Factory = IO + 'Connector';
   HTTP = IO + 'HttpConnection';
+  HTTPS = IO + 'HttpsConnection';
+  SecurityAPI = IO + 'SecurityInfo';
+  CertificateAPI = 'javax/microedition/pki/Certificate';
+  CertificateExceptionName = CertificateAPI + 'Exception';
   ImplementationName = Factory + '$HTTP';
+  HTTPSImplementationName = Factory + '$HTTPS';
+  SecurityInfoName = Factory + '$SecurityInfo';
+  CertificateName = Factory + '$Certificate';
+  SecurityInfoDesc = 'L' + SecurityAPI + ';';
+  CertificateDesc = 'L' + CertificateAPI + ';';
+  StringDesc = 'Ljava/lang/String;';
+  CertExpired = 3;
+  CertNotYetValid = 6;
+  CertSiteNameMismatch = 7;
+  CertUnrecognizedIssuer = 8;
+  CertInappropriateKeyUsage = 10;
+  CertVerificationFailed = 14;
+  CertificateReasons: array[1..14] of string = ('BAD_EXTENSIONS', 'CERTIFICATE_CHAIN_TOO_LONG',
+    'EXPIRED', 'UNAUTHORIZED_INTERMEDIATE_CA', 'MISSING_SIGNATURE', 'NOT_YET_VALID',
+    'SITENAME_MISMATCH', 'UNRECOGNIZED_ISSUER', 'UNSUPPORTED_SIGALG', 'INAPPROPRIATE_KEY_USAGE',
+    'BROKEN_CHAIN', 'ROOT_CA_EXPIRED', 'UNSUPPORTED_PUBLIC_KEY_TYPE', 'VERIFICATION_FAILED');
   InputName = Factory + '$Input';
   OutputName = Factory + '$Output';
   ConnectionKey = '$network.connection';
@@ -185,6 +213,8 @@ constructor TJ2MENetwork.Create(VM: TJVM);
 begin
   inherited Create;
   FVM := VM;
+  FDatagrams := TJ2MEDatagrams.Create(VM);
+  FTCP := TJ2METCP.Create(VM);
   FConnections := TObjectDictionary<Integer, TJ2MEHTTPConnection>.Create([doOwnsValues]);
   FRetired := TObjectList<TJ2MEHTTPJob>.Create(True);
 end;
@@ -194,11 +224,15 @@ begin
   Stop;
   FConnections.Free;
   FRetired.Free;
+  FDatagrams.Free;
+  FTCP.Free;
   inherited;
 end;
 
 procedure TJ2MENetwork.Stop;
 begin
+  FDatagrams.Stop;
+  FTCP.Stop;
   for var C in FConnections.Values do
     if C.Job <> nil then
       C.Job.Cancel;
@@ -220,12 +254,14 @@ begin
   if Connection.Closed and (Connection.InputRef = 0) and (Connection.OutputRef = 0) then
   begin
     Retire(Connection);
-    Connection.Body := nil;
+    FConnections.Remove(Connection.Ref);
   end;
 end;
 
 procedure TJ2MENetwork.Collect;
 begin
+  FDatagrams.Collect;
+  FTCP.Collect;
   for var I := FRetired.Count - 1 downto 0 do
     if FRetired[I].Done then
       FRetired.Delete(I);
@@ -293,6 +329,67 @@ var
     end;
   end;
 
+  procedure SecurityProperty(const Name, Desc: string; abstract: Boolean);
+  begin
+    var FieldName := '$' + Name;
+    if abstract then
+      AbstractMethod('get' + Name, '()' + Desc)
+    else
+    begin
+      B.Field(FieldName, Desc, JVM_ACC_PRIVATE);
+      B.Start;
+      B.Emit([$2A]);
+      B.Ref($B4, B.Member(B.JavaClass.Name, FieldName, Desc, 9));
+      if Desc = 'J' then
+        B.Emit([$AD])
+      else if Desc = 'B' then
+        B.Emit([$AC])
+      else
+        B.Emit([$B0]);
+      B.Finish('get' + Name, '()' + Desc, JVM_ACC_PUBLIC, 2, 1);
+    end;
+  end;
+
+  procedure CertificateProperties(abstract: Boolean);
+  begin
+    for var Name in ['Subject', 'Issuer', 'Type', 'Version', 'SigAlgName', 'SerialNumber'] do
+      SecurityProperty(Name, StringDesc, abstract);
+    SecurityProperty('NotBefore', 'J', abstract);
+    SecurityProperty('NotAfter', 'J', abstract);
+  end;
+
+  procedure CertificateExceptionConstructors;
+  begin
+    for var WithMessage in [False, True] do
+    begin
+      var BaseDesc := '()V';
+      var Desc := '(' + CertificateDesc + 'B)V';
+      if WithMessage then
+      begin
+        BaseDesc := '(' + StringDesc + ')V';
+        Desc := '(' + StringDesc + CertificateDesc + 'B)V';
+      end;
+      B.Start;
+      B.Emit([$2A]);
+      if WithMessage then
+        B.Emit([$2B]);
+      B.Ref($B7, B.Member('java/io/IOException', '<init>', BaseDesc));
+      B.Emit([$2A, Byte($2B + Ord(WithMessage))]);
+      B.Ref($B5, B.Member(CertificateExceptionName, '$Certificate', CertificateDesc, 9));
+      B.Emit([$2A, Byte($1C + Ord(WithMessage))]);
+      B.Ref($B5, B.Member(CertificateExceptionName, '$Reason', 'B', 9));
+      B.Emit([$B1]);
+      B.Finish('<init>', Desc, JVM_ACC_PUBLIC, 2, 3 + Ord(WithMessage));
+    end;
+  end;
+
+  procedure SecurityProperties(abstract: Boolean);
+  begin
+    for var Name in ['ProtocolName', 'ProtocolVersion', 'CipherSuite'] do
+      SecurityProperty(Name, StringDesc, abstract);
+    SecurityProperty('ServerCertificate', CertificateDesc, abstract);
+  end;
+
   procedure HTTPMethods(abstract: Boolean);
 
     procedure Method(const Name, Desc: string);
@@ -335,6 +432,7 @@ begin
     InterfaceClass('Connection', []);
     AbstractMethod('close', '()V');
     Done;
+    FDatagrams.Install;
     InterfaceClass('InputConnection', [IO + 'Connection']);
     AbstractMethod('openInputStream', '()Ljava/io/InputStream;');
     AbstractMethod('openDataInputStream', '()Ljava/io/DataInputStream;');
@@ -348,6 +446,7 @@ begin
     InterfaceClass('StreamConnectionNotifier', [IO + 'Connection']);
     AbstractMethod('acceptAndOpen', '()Ljavax/microedition/io/StreamConnection;');
     Done;
+    FTCP.Install;
     InterfaceClass('ContentConnection', [IO + 'StreamConnection']);
     AbstractMethod('getType', '()Ljava/lang/String;');
     AbstractMethod('getEncoding', '()Ljava/lang/String;');
@@ -371,11 +470,42 @@ begin
       B.JavaClass.Fields.Last.Value := TJVMValue.Int(StrToInt(P[1]));
     end;
     Done;
-    B := TJavaClassBuilder.Create(ImplementationName, 'java/lang/Object', JVM_ACC_PUBLIC or JVM_ACC_FINAL);
+    InterfaceClass('HttpsConnection', [HTTP]);
+    AbstractMethod('getSecurityInfo', '()' + SecurityInfoDesc);
+    Done;
+    InterfaceClass('SecurityInfo', []);
+    SecurityProperties(True);
+    Done;
+    B := TJavaClassBuilder.Create(CertificateAPI, 'java/lang/Object', JVM_ACC_PUBLIC or $0200 or JVM_ACC_ABSTRACT);
+    CertificateProperties(True);
+    Done;
+    B := TJavaClassBuilder.Create(SecurityInfoName, 'java/lang/Object', JVM_ACC_PUBLIC or JVM_ACC_FINAL);
+    B.JavaClass.Interfaces := [SecurityAPI];
+    SecurityProperties(False);
+    Done;
+    B := TJavaClassBuilder.Create(CertificateName, 'java/lang/Object', JVM_ACC_PUBLIC or JVM_ACC_FINAL);
+    B.JavaClass.Interfaces := [CertificateAPI];
+    CertificateProperties(False);
+    Done;
+    B := TJavaClassBuilder.Create(CertificateExceptionName, 'java/io/IOException');
+    for var Reason := Low(CertificateReasons) to High(CertificateReasons) do
+    begin
+      B.Field(CertificateReasons[Reason], 'B', JVM_ACC_PUBLIC or JVM_ACC_STATIC or JVM_ACC_FINAL);
+      B.JavaClass.Fields.Last.Value := TJVMValue.Int(Reason);
+    end;
+    SecurityProperty('Certificate', CertificateDesc, False);
+    SecurityProperty('Reason', 'B', False);
+    CertificateExceptionConstructors;
+    Done;
+    B := TJavaClassBuilder.Create(ImplementationName, 'java/lang/Object', JVM_ACC_PUBLIC);
     B.JavaClass.Interfaces := [HTTP];
     Native('close', '()V');
     StreamFactories;
     HTTPMethods(False);
+    Done;
+    B := TJavaClassBuilder.Create(HTTPSImplementationName, ImplementationName, JVM_ACC_PUBLIC or JVM_ACC_FINAL);
+    B.JavaClass.Interfaces := [HTTPS];
+    Native('getSecurityInfo', '()' + SecurityInfoDesc);
     Done;
     B := TJavaClassBuilder.Create(InputName, 'java/io/InputStream', JVM_ACC_PUBLIC or JVM_ACC_FINAL);
     for var N in ['read', 'available'] do
@@ -456,7 +586,9 @@ end;
 
 function TJ2MENetwork.Handles(Method: TJVMMethod): Boolean;
 begin
-  Result := (Method.Owner.Name = Factory) or (Method.Owner.Name = ImplementationName) or (Method.Owner.Name = InputName) or (Method.Owner.Name = OutputName);
+  Result := (Method.Owner.Name = Factory) or (Method.Owner.Name = ImplementationName) or
+    (Method.Owner.Name = HTTPSImplementationName) or (Method.Owner.Name = InputName) or
+    (Method.Owner.Name = OutputName) or FDatagrams.Handles(Method.Owner.Name) or FTCP.Handles(Method.Owner.Name);
 end;
 
 function TJ2MENetwork.Open(const URL: string; Mode: Integer; Timeouts: Boolean): Integer;
@@ -481,7 +613,12 @@ begin
   for var I := 1 to P - 1 do
     if not CharInSet(URL[I], ['a'..'z', 'A'..'Z', '0'..'9', '+', '-', '.']) or ((I = 1) and not CharInSet(URL[I], ['a'..'z', 'A'..'Z'])) then
       Invalid;
-  if not SameText(Copy(URL, 1, P - 1), 'http') then
+  var Protocol := LowerCase(Copy(URL, 1, P - 1));
+  if Protocol = 'datagram' then
+    Exit(FDatagrams.Open(URL, Mode, Timeouts));
+  if Protocol = 'socket' then
+    Exit(FTCP.Open(URL, Mode, Timeouts));
+  if (Protocol <> 'http') and (Protocol <> 'https') then
   begin
     if Assigned(FProtocolOpen) then
     begin
@@ -507,7 +644,10 @@ begin
     Invalid;
   C := TJ2MEHTTPConnection.Create;
   try
+    C.Protocol := Protocol;
     C.Port := 80;
+    if Protocol = 'https' then
+      C.Port := 443;
     C.Mode := Mode;
     C.Timeouts := Timeouts;
     C.URL := URL;
@@ -565,13 +705,16 @@ begin
     end;
     C.FilePart := Rest;
     C.HasFile := Rest <> '';
-    C.TransportURL := 'http://' + Authority + Rest;
+    C.TransportURL := Protocol + '://' + Authority + Rest;
     if C.HasQuery then
       C.TransportURL := C.TransportURL + '?' + C.Query;
     Collect;
     if (FConnections.Count >= 32) or (FRetired.Count >= 32) then
       FVM.RaiseJava('java/io/IOException', 'Connection capacity');
-    Result := FVM.NewObject(ImplementationName);
+    if Protocol = 'https' then
+      Result := FVM.NewObject(HTTPSImplementationName)
+    else
+      Result := FVM.NewObject(ImplementationName);
     C.Ref := Result;
     FConnections.Add(Result, C);
     C := nil;
@@ -604,7 +747,116 @@ begin
     Exit;
   end;
   if Connection.Job.ErrorText <> '' then
+  begin
+    if Connection.Job.CertificateRejected then
+      RaiseCertificateFailure(Connection.Job);
     FVM.RaiseJava('java/io/IOException', Connection.Job.ErrorText);
+  end;
+end;
+
+procedure TJ2MENetwork.PutSecurityText(O: TJVMObject; const Name, Value: string);
+begin
+  O.Fields[O.ClassName + '.$' + Name + ':' + StringDesc] := TJVMValue.Ref(FVM.NewString(Value));
+end;
+
+procedure TJ2MENetwork.RaiseCertificateFailure(Job: TJ2MEHTTPJob);
+begin
+  var Failures := Job.CertificateFailures;
+  var Reason := CertVerificationFailed;
+  if THTTPSecureFailureReason.CertCNInvalid in Failures then
+    Reason := CertSiteNameMismatch
+  else if THTTPSecureFailureReason.CertWrongUsage in Failures then
+    Reason := CertInappropriateKeyUsage
+  else if THTTPSecureFailureReason.CertDateInvalid in Failures then
+  begin
+    var NowUTC := TTimeZone.local.ToUniversalTime(Now);
+    if Job.ServerCertificate.Start > NowUTC then
+      Reason := CertNotYetValid
+    else if (Job.ServerCertificate.Expiry > 0) and (Job.ServerCertificate.Expiry < NowUTC) then
+      Reason := CertExpired;
+  end
+  else if THTTPSecureFailureReason.InvalidCA in Failures then
+    Reason := CertUnrecognizedIssuer;
+  var Ref := FVM.NewObject(CertificateExceptionName);
+  var E := FVM.GetObject(Ref);
+  E.Text := Job.ErrorText;
+  E.Fields[CertificateExceptionName + '.$Reason:B'] := TJVMValue.Int(Reason);
+  E.Fields[CertificateExceptionName + '.$Certificate:' + CertificateDesc] := TJVMValue.Ref(NewCertificate(Job.ServerCertificate));
+  FVM.CaptureThrowableTrace(Ref);
+  raise EJVMThrown.Create(Ref);
+end;
+
+function TJ2MENetwork.NewCertificate(const Certificate: TCertificate): Integer;
+
+  function SerialNumber: Integer;
+  begin
+    Result := 0;
+    var Hex := Certificate.SerialNum.Replace(':', '').Replace(' ', '').ToUpper;
+    if Hex = '' then
+      Exit;
+    for var Ch in Hex do
+      if not CharInSet(Ch, ['0'..'9', 'A'..'F']) then
+        Exit;
+    if Odd(Length(Hex)) then
+      Hex := '0' + Hex;
+    var Pairs: TArray<string>;
+    SetLength(Pairs, Length(Hex) div 2);
+    for var I := 0 to High(Pairs) do
+      Pairs[I] := Copy(Hex, 2 * I + 1, 2);
+    Result := FVM.NewString(string.Join(':', Pairs));
+  end;
+
+begin
+  Result := 0;
+  if Certificate.IsEmpty then
+    Exit;
+  Result := FVM.NewObject(CertificateName);
+  var Cert := FVM.GetObject(Result);
+  PutSecurityText(Cert, 'Subject', Certificate.Subject);
+  PutSecurityText(Cert, 'Issuer', Certificate.Issuer);
+  PutSecurityText(Cert, 'Type', 'X.509');
+  PutSecurityText(Cert, 'Version', '');
+  PutSecurityText(Cert, 'SigAlgName', Certificate.AlgSignature);
+  Cert.Fields[CertificateName + '.$SerialNumber:' + StringDesc] := TJVMValue.Ref(SerialNumber);
+  var Starts := Int64(0);
+  if Certificate.Start > 0 then
+    Starts := DateTimeToUnix(Certificate.Start, True) * 1000;
+  var Expires := High(Int64);
+  if Certificate.Expiry > 0 then
+    Expires := DateTimeToUnix(Certificate.Expiry, True) * 1000;
+  Cert.Fields[CertificateName + '.$NotBefore:J'] := TJVMValue.Long(Starts);
+  Cert.Fields[CertificateName + '.$NotAfter:J'] := TJVMValue.Long(Expires);
+end;
+
+function TJ2MENetwork.SecurityInfo(const Certificate: TCertificate): Integer;
+begin
+  Result := FVM.NewObject(SecurityInfoName);
+  var Info := FVM.GetObject(Result);
+  var ProtocolName := 'TLS';
+  var ProtocolVersion := '';
+  if Certificate.ProtocolName = 'SSL3' then
+  begin
+    ProtocolName := 'SSL';
+    ProtocolVersion := '3.0';
+  end
+  else if Certificate.ProtocolName = 'SSL2' then
+  begin
+    ProtocolName := 'SSL';
+    ProtocolVersion := '2.0';
+  end
+  else if Certificate.ProtocolName = 'TLS1' then
+    ProtocolVersion := '3.1'
+  else if Certificate.ProtocolName = 'TLS1_1' then
+    ProtocolVersion := '3.2'
+  else if Certificate.ProtocolName = 'TLS1_2' then
+    ProtocolVersion := '3.3'
+  else if Certificate.ProtocolName = 'TLS1_3' then
+    ProtocolVersion := '3.4';
+  PutSecurityText(Info, 'ProtocolName', ProtocolName);
+  PutSecurityText(Info, 'ProtocolVersion', ProtocolVersion);
+  // The RTL supplies a cipher algorithm, which cannot identify the suite.
+  PutSecurityText(Info, 'CipherSuite', '');
+  Info.Fields[SecurityInfoName + '.$ServerCertificate:' + CertificateDesc] := TJVMValue.Ref(NewCertificate(Certificate));
 end;
 
 function TJ2MENetwork.OpenStream(Connection: TJ2MEHTTPConnection; Reading: Boolean): Integer;
@@ -691,6 +943,10 @@ begin
       Timeouts := Args[2].AsInt <> 0;
     Exit(TJVMValue.Ref(Open(Text(0), Mode, Timeouts)));
   end;
+  if FDatagrams.Handles(Owner) then
+    Exit(FDatagrams.Invoke(Method, Args));
+  if FTCP.Handles(Owner) then
+    Exit(FTCP.Invoke(Method, Args));
   O := FVM.GetObject(Args[0].AsRef);
   if (Owner = InputName) or (Owner = OutputName) then
   begin
@@ -777,7 +1033,11 @@ begin
     Exit;
   end;
   if not FConnections.TryGetValue(Args[0].AsRef, C) then
-    FVM.RaiseJava('java/io/IOException', 'Connection released');
+  begin
+    if N = 'close' then
+      Exit;
+    FVM.RaiseJava('java/io/IOException', 'Connection closed');
+  end;
   if N = 'close' then
   begin
     C.Closed := True;
@@ -789,7 +1049,7 @@ begin
   if N = 'getURL' then
     Exit(StringValue(C.URL));
   if N = 'getProtocol' then
-    Exit(StringValue('http'));
+    Exit(StringValue(C.Protocol));
   if N = 'getHost' then
     Exit(StringValue(C.Host));
   if N = 'getFile' then
@@ -800,6 +1060,12 @@ begin
     Exit(StringValue(C.Fragment, C.HasFragment));
   if N = 'getPort' then
     Exit(TJVMValue.Int(C.Port));
+  if N = 'getSecurityInfo' then
+  begin
+    if Ready(C) then
+      Result := TJVMValue.Ref(SecurityInfo(C.Job.ServerCertificate));
+    Exit;
+  end;
   if N = 'getRequestMethod' then
     Exit(StringValue(C.RequestMethod));
   if N = 'getRequestProperty' then
@@ -923,7 +1189,9 @@ end;
 
 procedure TJ2MENetwork.RequireSnapshotIdle;
 begin
-  if (FConnections.Count <> 0) or (FRetired.Count <> 0) then
+  Collect;
+  // Retired jobs are detached from the guest and only await host cleanup.
+  if (FConnections.Count <> 0) or not FDatagrams.IsIdle or not FTCP.IsIdle then
     raise EInvalidOpException.Create('Java ME snapshots require inactive network, Bluetooth and messaging connections');
 end;
 

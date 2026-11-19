@@ -74,6 +74,7 @@ const
   LightName = Prefix + 'Light';
   VibratorName = Prefix + 'Vibrator';
   NativeMem = 'com/siemens/mp/misc/NativeMem';
+  DebugName = 'com/siemens/mp/misc/Debug';
   MaxNotes = 4096;
   MaxObjects = 256;
 
@@ -192,6 +193,16 @@ var
   end;
 
 begin
+  B := TJavaClassBuilder.Create(DebugName, 'java/lang/Object', JVM_ACC_PUBLIC or $20);
+  try
+    B.Start;
+    // A guest breakpoint has no effect during normal gameplay.
+    B.Emit([$B1]);
+    B.Finish('breakpoint', '()V', JVM_ACC_PUBLIC or JVM_ACC_STATIC, 0, 0);
+    FVM.DefineClass(B.Detach);
+  finally
+    B.Free;
+  end;
   C := TJVMClass.Create;
   C.Name := NativeMem;
   C.SuperName := 'java/lang/Object';

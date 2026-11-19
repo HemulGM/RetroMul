@@ -10,12 +10,16 @@ type
   TBitmapFontSize = (Small, Medium, Large);
 
   TBitmapGlyph = record
+  private
+    FSourceWidth, FSourceHeight, FSourceBaseline: Integer;
+  public
     Width, Height, Baseline, Left, Right, RowBytes, Offset: Integer;
+    FullWidth: Boolean;
     Data: TBytes; // Shared immutable font data; callers must not modify it.
     function Ink(X, Y: Integer): Boolean;
   end;
 
-function BitmapFontGlyph(Size: TBitmapFontSize; C: Char): TBitmapGlyph;
+function BitmapFontGlyph(Size: TBitmapFontSize; C: Char; EastAsianFallback: Boolean = False): TBitmapGlyph;
 
 implementation
 
@@ -36,17 +40,27 @@ type
     constructor Create(const ResourceName: string);
     function Code(Index: Integer): Integer;
     function Find(C: Char): Integer;
-    function Glyph(C: Char): TBitmapGlyph;
+    function Glyph(Index: Integer): TBitmapGlyph;
   end;
 
 var
   Fonts: array[TBitmapFontSize] of TBitmapFont;
+  EastAsianFont: TBitmapFont;
   FontLock: TObject;
 
 function TBitmapGlyph.Ink(X, Y: Integer): Boolean;
 begin
-  Result := (X >= 0) and (X < Width) and (Y >= 0) and (Y < Height) and
-    ((Data[Offset + Y * RowBytes + X div 8] and ($80 shr (X mod 8))) <> 0);
+  if (X < 0) or (X >= Width) or (Y < 0) or (Y >= Height) then
+    Exit(False);
+  if FSourceHeight <> 0 then
+  begin
+    X := X * FSourceWidth div Width;
+    if Y < Baseline then
+      Y := Y * FSourceBaseline div Baseline
+    else
+      Y := FSourceBaseline + (Y - Baseline) * (FSourceHeight - FSourceBaseline) div (Height - Baseline);
+  end;
+  Result := (Data[Offset + Y * RowBytes + X div 8] and ($80 shr (X mod 8))) <> 0;
 end;
 
 constructor TBitmapFont.Create(const ResourceName: string);
@@ -125,12 +139,12 @@ begin
     else
       R := M - 1;
   end;
-  Result := Fallback;
+  Result := -1;
 end;
 
-function TBitmapFont.Glyph(C: Char): TBitmapGlyph;
+function TBitmapFont.Glyph(Index: Integer): TBitmapGlyph;
 begin
-  var Index := Find(C);
+  Result := Default(TBitmapGlyph);
   Result.Width := Width;
   Result.Height := Height;
   Result.Baseline := Baseline;
@@ -141,7 +155,15 @@ begin
   Result.Data := Data;
 end;
 
-function BitmapFontGlyph(Size: TBitmapFontSize; C: Char): TBitmapGlyph;
+function IsEastAsian(C: Char): Boolean;
+begin
+  Result := ((C >= #$1100) and (C <= #$11FF)) or ((C >= #$2E80) and (C <= #$9FFF)) or
+    ((C >= #$A960) and (C <= #$A97F)) or ((C >= #$AC00) and (C <= #$D7FF)) or
+    ((C >= #$F900) and (C <= #$FAFF)) or ((C >= #$FE10) and (C <= #$FE6F)) or
+    ((C >= #$FF00) and (C <= #$FFEF));
+end;
+
+function BitmapFontGlyph(Size: TBitmapFontSize; C: Char; EastAsianFallback: Boolean): TBitmapGlyph;
 const
   Names: array[TBitmapFontSize] of string = ('RETROMUL_PIXEL_12', 'RETROMUL_PIXEL_16', 'RETROMUL_PIXEL_24');
 begin
@@ -149,7 +171,34 @@ begin
   try
     if Fonts[Size] = nil then
       Fonts[Size] := TBitmapFont.Create(Names[Size]);
-    Result := Fonts[Size].Glyph(C);
+    var Font := Fonts[Size];
+    var Index := Font.Find(C);
+    if (Index < 0) and EastAsianFallback and IsEastAsian(C) then
+    begin
+      if EastAsianFont = nil then
+        EastAsianFont := TBitmapFont.Create('RETROMUL_EAST_ASIAN_12');
+      var EastAsianIndex := EastAsianFont.Find(C);
+      if EastAsianIndex >= 0 then
+      begin
+        Result := EastAsianFont.Glyph(EastAsianIndex);
+        Result.FullWidth := True;
+        if Font.Height <> Result.Height then
+        begin
+          Result.FSourceWidth := Result.Width;
+          Result.FSourceHeight := Result.Height;
+          Result.FSourceBaseline := Result.Baseline;
+          Result.Width := Font.Height;
+          Result.Height := Font.Height;
+          Result.Baseline := Font.Baseline;
+          Result.Left := 0;
+          Result.Right := Result.Width - 1;
+        end;
+        Exit;
+      end;
+    end;
+    if Index < 0 then
+      Index := Font.Fallback;
+    Result := Font.Glyph(Index);
   finally
     TMonitor.Exit(FontLock);
   end;
@@ -161,6 +210,7 @@ initialization
 finalization
   for var Size := Low(TBitmapFontSize) to High(TBitmapFontSize) do
     Fonts[Size].Free;
+  EastAsianFont.Free;
   FontLock.Free;
 
 end.

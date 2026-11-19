@@ -67,6 +67,14 @@ type
     function IsHardware: Boolean;
   end;
 
+  TAVCColorConverter = record
+  private
+    YScale, YOffset, RV, GU, GV, BU: Integer;
+  public
+    procedure Configure(const Frame: TVideoFrame);
+    function Pixel(const Frame: TVideoFrame; X, Y: Integer): UInt32;
+  end;
+
   TAudioFrame = record
     PTS: Int64;
     SamplePosition: Int64;
@@ -119,6 +127,49 @@ type
 function RescaleTime(Value: Int64; SourceScale, DestScale: Cardinal): Int64;
 
 implementation
+
+uses
+  System.Math;
+
+procedure TAVCColorConverter.Configure(const Frame: TVideoFrame);
+begin
+  YScale := 76309;
+  YOffset := 16;
+  if Frame.Matrix = TColorMatrix.BT709 then
+  begin
+    RV := 117489;
+    GU := 13975;
+    GV := 34925;
+    BU := 138438;
+  end
+  else
+  begin
+    RV := 104597;
+    GU := 25675;
+    GV := 53279;
+    BU := 132201;
+  end;
+  if Frame.FullRange then
+  begin
+    YScale := 65536;
+    YOffset := 0;
+    RV := RV * 224 div 255;
+    GU := GU * 224 div 255;
+    GV := GV * 224 div 255;
+    BU := BU * 224 div 255;
+  end;
+end;
+
+function TAVCColorConverter.Pixel(const Frame: TVideoFrame; X, Y: Integer): UInt32;
+begin
+  var Luma := (Integer(Frame.Planes[0][Y * Frame.Strides[0] + X]) - YOffset) * YScale + 32768;
+  var U := Integer(Frame.Planes[1][(Y div 2) * Frame.Strides[1] + X div 2]) - 128;
+  var V := Integer(Frame.Planes[2][(Y div 2) * Frame.Strides[2] + X div 2]) - 128;
+  var R := EnsureRange((Luma + RV * V) div 65536, 0, 255);
+  var G := EnsureRange((Luma - GU * U - GV * V) div 65536, 0, 255);
+  var B := EnsureRange((Luma + BU * U) div 65536, 0, 255);
+  Result := $FF000000 or (Cardinal(R) shl 16) or (Cardinal(G) shl 8) or Cardinal(B);
+end;
 
 function RescaleTime(Value: Int64; SourceScale, DestScale: Cardinal): Int64;
 var

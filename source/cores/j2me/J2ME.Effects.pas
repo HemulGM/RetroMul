@@ -18,12 +18,12 @@ type
   TJ2MEDeviceEffects = class
   private
     FBacklight, FPresented, FVibration: Integer;
-    FFlashStart, FFlashUntil, FVibrationUntil, FLastNow: Int64;
+    FFlashStart, FFlashUntil, FIgnoredFlashDuration, FVibrationUntil, FLastNow: Int64;
     FPending: TJ2MEVibrationSample;
     procedure Advance(Now: Int64);
   public
     procedure TransferState(S: TJVMStateIO);
-    constructor Create(Now: Int64);
+    constructor Create(Now: Int64; IgnoredFlashDuration: Int64 = 0);
     procedure SetBacklight(Level: Integer; CancelFlash: Boolean = False);
     procedure FlashBacklight(Duration, Now: Int64);
     procedure SetVibration(Strength: Integer; Duration, Now: Int64);
@@ -53,12 +53,13 @@ begin
     Result := Byte(EnsureRange(Round(Area / Millis * 255 / 100), Int64(0), Int64(255)));
 end;
 
-constructor TJ2MEDeviceEffects.Create(Now: Int64);
+constructor TJ2MEDeviceEffects.Create(Now, IgnoredFlashDuration: Int64);
 begin
   inherited Create;
   if Now < 0 then
     raise EArgumentOutOfRangeException.Create('Device effect clock');
   FLastNow := Now;
+  FIgnoredFlashDuration := IgnoredFlashDuration;
   FBacklight := 100;
   FPresented := 100;
 end;
@@ -92,7 +93,7 @@ begin
   if (Duration < 0) or (Now < 0) then
     raise EArgumentOutOfRangeException.Create('Backlight duration');
   FFlashUntil := 0;
-  if Duration <> 0 then
+  if (Duration <> 0) and (Duration <> FIgnoredFlashDuration) then
   begin
     FFlashStart := Now;
     FFlashUntil := Deadline(Now, Duration);
@@ -175,6 +176,14 @@ begin
   S.Int64Value(FLastNow);
   S.Int64Value(FPending.Millis);
   S.RealValue(FPending.Area);
+  // Keep snapshot layout stable and apply the suite's presentation policy
+  // to an in-progress request from an older build.
+  if S.Loading and (FIgnoredFlashDuration > 0) and (FFlashStart >= 0) and
+    (FFlashUntil > FFlashStart) and (FFlashUntil - FFlashStart = FIgnoredFlashDuration) then
+  begin
+    FFlashUntil := 0;
+    FPresented := FBacklight;
+  end;
 end;
 
 end.

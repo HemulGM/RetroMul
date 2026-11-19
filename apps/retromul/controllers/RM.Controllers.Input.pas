@@ -217,6 +217,7 @@ begin
     Exit;
 
   var Motion: IEmulationMotionInput;
+  var Motion3D: IEmulationMotionInput3D;
   var RotationInput: IEmulationRotationInput;
   var WantsRotation := Supports(FState.Session.Emulation, IEmulationRotationInput, RotationInput) and RotationInput.HasGyroscope;
   var Wanted := Supports(FState.Session.Emulation, IEmulationMotionInput, Motion);
@@ -239,7 +240,7 @@ begin
       end;
       FState.Input.MotionAttempted := False;
     end;
-    if Motion <> nil then
+    if (Motion <> nil) and not Supports(Motion, IEmulationMotionInput3D, Motion3D) then
       Motion.SetAcceleration(0, 0);
     if RotationInput <> nil then
       RotationInput.SetRotation(0);
@@ -256,7 +257,9 @@ begin
         FState.Input.MotionSensor.Active := False;
       except
       end;
-      if Motion <> nil then
+      if Supports(Motion, IEmulationMotionInput3D, Motion3D) then
+        Motion3D.SetAcceleration3D(0, 0, 0, False)
+      else if Motion <> nil then
         Motion.SetAcceleration(0, 0);
       if RotationInput <> nil then
         RotationInput.SetRotation(0);
@@ -297,14 +300,22 @@ begin
   if not Supports(FState.Session.Emulation, IEmulationMotionInput, Motion) or not Motion.HasAccelerometer then
     Exit;
 
-  var X, Y: Double;
+  var Motion3D: IEmulationMotionInput3D;
+  Supports(Motion, IEmulationMotionInput3D, Motion3D);
+  var X, Y, Z: Double;
+  var Available := False;
   X := 0;
   Y := 0;
+  Z := 0;
   if (FState.Input.MotionSensor <> nil) and FState.Input.MotionSensor.Active and (FState.Input.MotionSensor.Sensor <> nil) then
   try
     // System.Sensors normalizes Android and iOS acceleration to g.
     X := FState.Input.MotionSensor.Sensor.AccelerationX;
     Y := FState.Input.MotionSensor.Sensor.AccelerationY;
+    if Motion3D <> nil then
+      Z := FState.Input.MotionSensor.Sensor.AccelerationZ;
+    Available := not IsNaN(X) and not IsNaN(Y) and not IsNaN(Z) and
+      not IsInfinite(X) and not IsInfinite(Y) and not IsInfinite(Z);
     {$IF Defined(ANDROID) or Defined(IOS)} // Native sensor orientation.
     var Rotation := 0;
     {$IFDEF ANDROID}
@@ -344,14 +355,19 @@ begin
     end;
     {$ENDIF}
   except
+    Available := False;
     X := 0;
     Y := 0;
+    Z := 0;
     try
       FState.Input.MotionSensor.Active := False;
     except
     end;
   end;
-  Motion.SetAcceleration(X, Y);
+  if Motion3D <> nil then
+    Motion3D.SetAcceleration3D(X, Y, Z, Available)
+  else
+    Motion.SetAcceleration(X, Y);
   {$ENDIF}
 end;
 

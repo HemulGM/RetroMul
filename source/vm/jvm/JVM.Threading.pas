@@ -8,7 +8,8 @@ uses
 {$SCOPEDENUMS ON}
 
 type
-  TJVMThreadState = (New, Idle, Runnable, Sleeping, Blocked, Waiting, ClassInitialization, Terminated);
+  TJVMThreadState = (New, Idle, Runnable, Sleeping, Blocked, Waiting, ClassInitialization, Terminated,
+    TerminalBranch);
 
   TJVMThreadContext = class
   public
@@ -161,8 +162,17 @@ begin
     Exit;
   M := Monitor(Ref);
   Dec(M.Depth);
-  if M.Depth = 0 then
-    M.Owner := 0;
+  if M.Depth <> 0 then
+    Exit;
+  M.Owner := 0;
+  // Give contenders a scheduling point before the owner can reacquire.
+  // The round-robin scheduler still decides which runnable thread runs next.
+  for var Contender in FThreads do
+    if (Contender.State = TJVMThreadState.Blocked) and (Contender.WaitMonitor = Ref) then
+    begin
+      Thread.Quantum := 0;
+      Break;
+    end;
 end;
 
 procedure TJVMScheduler.Wait(Thread: TJVMThreadContext; Ref: Integer; Timeout, Now: Int64);
@@ -356,8 +366,13 @@ begin
     S.Int(T.Priority);
     S.Int(T.Quantum);
     var State: Integer := Ord(T.State);
-    S.Count(State, Ord(High(TJVMThreadState)));
-    T.State := TJVMThreadState(State);
+    // The parked state is an interpreter optimization. The saved PC still
+    // points at the branch, so a restored runnable thread can park again.
+    if T.State = TJVMThreadState.TerminalBranch then
+      State := Ord(TJVMThreadState.Runnable);
+    S.Count(State, Ord(TJVMThreadState.Terminated));
+    if S.Loading then
+      T.State := TJVMThreadState(State);
     S.Bool(T.Interrupted);
     S.Bool(T.PendingInterrupted);
     S.Int64Value(T.WakeAt);

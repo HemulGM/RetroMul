@@ -54,8 +54,9 @@ type
     function Enter: TObject;
     procedure Leave(Lock: TObject);
     function Load(Lease: TRMSLease): TRMSSnapshot;
-    function SuiteBytes(const Vendor, Suite: string): Int64;
+    function SuiteBytes(const Vendor, Suite: string; const ExcludedFile: string = ''): Int64;
     procedure Commit(State: TRMSSnapshot);
+    function CaptureLocked: TDictionary<string, TBytes>;
   public
     const
       MaxStoreBytes = 16 * 1024 * 1024;
@@ -68,8 +69,7 @@ type
     function StoreFile(const Vendor, Suite, Name: string): string;
     function Open(const Vendor, Suite, Name: string; CreateIfMissing: Boolean; AuthMode: Integer; Writable: Boolean; Now: Int64): TRMSLease;
     function CaptureStateStores: TDictionary<string, TBytes>;
-    procedure ReplaceStateStores(Stores: TDictionary<string, TBytes>);
-    procedure AttachStateLease(Lease: TRMSLease);
+    procedure RestoreStateStores(Stores: TDictionary<string, TBytes>; const RestoredLeases: TArray<TRMSLease>);
     function Read(Lease: TRMSLease): TRMSSnapshot;
     function Modify(Lease: TRMSLease; Kind, ID: Integer; const Data: TBytes; Now: Int64): Integer;
     procedure SetMode(Lease: TRMSLease; AuthMode: Integer; Writable: Boolean; Now: Int64);
@@ -566,14 +566,14 @@ begin
   end;
 end;
 
-function TRMSDatabase.SuiteBytes(const Vendor, Suite: string): Int64;
+function TRMSDatabase.SuiteBytes(const Vendor, Suite, ExcludedFile: string): Int64;
 begin
   Result := 0;
   var Folder := SuiteFolder(Vendor, Suite);
   if not FStorage.FolderExists(Folder) then
     Exit;
   for var Name in FStorage.Files(Folder) do
-    if LowerCase(ExtractFileExt(Name)) = '.rms' then
+    if not SameFileName(Name, ExcludedFile) and SameText(ExtractFileExt(Name), '.rms') then
     begin
       var Input := FStorage.OpenRead(Name);
       try
@@ -588,17 +588,8 @@ procedure TRMSDatabase.Commit(State: TRMSSnapshot);
 begin
   var FileName := StoreFile(State.Vendor, State.Suite, State.Name);
   var Data := State.Encode;
-  var Previous: Int64 := 0;
-  if FStorage.Exists(FileName) then
-  begin
-    var Input := FStorage.OpenRead(FileName);
-    try
-      Previous := Input.Size;
-    finally
-      Input.Free;
-    end;
-  end;
-  if SuiteBytes(State.Vendor, State.Suite) - Previous + Length(Data) > MaxSuiteBytes then
+  // Quota is the new store plus the other stores in the suite.
+  if SuiteBytes(State.Vendor, State.Suite, FileName) + Length(Data) > MaxSuiteBytes then
     raise ERMS.Create('RecordStoreFullException', 'RMS suite quota');
   FStorage.WriteBytes(FileName, Data);
 end;
@@ -850,81 +841,117 @@ begin
   end;
 end;
 
-function TRMSDatabase.CaptureStateStores: TDictionary<string, TBytes>;
+function TRMSDatabase.CaptureLocked: TDictionary<string, TBytes>;
 begin
   Result := TDictionary<string, TBytes>.Create;
   try
-    var Lock := Enter;
-    try
-      var Folder := SuiteFolder(FVendor, FSuite);
-      if FStorage.FolderExists(Folder) then
-        for var FileName in FStorage.Files(Folder) do
-          if SameText(ExtractFileExt(FileName), '.rms') then
-          begin
-            var Data := FStorage.ReadBytes(FileName);
-            var State := TRMSSnapshot.Decode(Data);
-            try
-              if (State.Vendor <> FVendor) or (State.Suite <> FSuite) or not SameFileName(FileName, StoreFile(FVendor, FSuite, State.Name)) then
-                raise EReadError.Create('Invalid snapshot RMS identity');
-              Result.Add(State.Name, Data);
-            finally
-              State.Free;
-            end;
+    var Folder := SuiteFolder(FVendor, FSuite);
+    if FStorage.FolderExists(Folder) then
+      for var FileName in FStorage.Files(Folder) do
+        if SameText(ExtractFileExt(FileName), '.rms') then
+        begin
+          var Data := FStorage.ReadBytes(FileName);
+          var State := TRMSSnapshot.Decode(Data);
+          try
+            if (State.Vendor <> FVendor) or (State.Suite <> FSuite) or not SameFileName(FileName, StoreFile(FVendor, FSuite, State.Name)) then
+              raise EReadError.Create('Invalid snapshot RMS identity');
+            Result.Add(State.Name, Data);
+          finally
+            State.Free;
           end;
-    finally
-      Leave(Lock);
-    end;
+        end;
   except
     Result.Free;
     raise;
   end;
 end;
 
-procedure TRMSDatabase.ReplaceStateStores(Stores: TDictionary<string, TBytes>);
+function TRMSDatabase.CaptureStateStores: TDictionary<string, TBytes>;
 begin
   var Lock := Enter;
   try
-    EnsureFolder(SuiteFolder(FVendor, FSuite));
-    for var Pair in Stores do
-    begin
-      var Input := TBytesStream.Create(Pair.Value);
-      try
-        FStorage.WriteAtomic(StoreFile(FVendor, FSuite, Pair.Key), Input);
-      finally
-        Input.Free;
-      end;
-    end;
-    for var FileName in FStorage.Files(SuiteFolder(FVendor, FSuite)) do
-      if SameText(ExtractFileExt(FileName), '.rms') then
-      begin
-        var State := TRMSSnapshot.Decode(FStorage.ReadBytes(FileName));
-        try
-          if (State.Vendor <> FVendor) or (State.Suite <> FSuite) then
-            raise EReadError.Create('Invalid snapshot RMS identity');
-          if not Stores.ContainsKey(State.Name) then
-            FStorage.Delete(FileName);
-        finally
-          State.Free;
-        end;
-      end;
+    Result := CaptureLocked;
   finally
     Leave(Lock);
   end;
 end;
 
-procedure TRMSDatabase.AttachStateLease(Lease: TRMSLease);
+procedure TRMSDatabase.RestoreStateStores(Stores: TDictionary<string, TBytes>; const RestoredLeases: TArray<TRMSLease>);
+
+  procedure WriteStore(const Name: string; const Data: TBytes);
+  begin
+    var Input := TBytesStream.Create(Data);
+    try
+      FStorage.WriteAtomic(StoreFile(FVendor, FSuite, Name), Input);
+    finally
+      Input.Free;
+    end;
+  end;
+
 begin
-  if (Lease.Vendor <> FVendor) or (Lease.Suite <> FSuite) or not Lease.Owner then
-    raise EReadError.Create('Java ME snapshots do not support shared foreign record stores');
-  Lease.FileName := StoreFile(Lease.Vendor, Lease.Suite, Lease.Name);
-  var State := Read(Lease);
-  State.Free;
-  Lease.FLock := TRMSFileLock.Create(Lease.FileName + '.open', False, 0);
-  Gate.Acquire;
+  var Previous: TDictionary<string, TBytes> := nil;
+  var Changed: TList<string> := nil;
+  var Lock := Enter;
   try
-    Leases.Add(Lease);
+    Previous := CaptureLocked;
+    EnsureFolder(SuiteFolder(FVendor, FSuite));
+    Changed := TList<string>.Create;
+    Changed.Capacity := Stores.Count + Previous.Count;
+    var Acquired := 0;
+    try
+      for var Lease in RestoredLeases do
+      begin
+        if (Lease.Vendor <> FVendor) or (Lease.Suite <> FSuite) or not Lease.Owner or
+          not Stores.ContainsKey(Lease.Name) or (Lease.FLock <> nil) then
+          raise EReadError.Create('Invalid snapshot RMS lease');
+        Lease.FileName := StoreFile(FVendor, FSuite, Lease.Name);
+        Lease.FLock := TRMSFileLock.Create(Lease.FileName + '.open', False, 0);
+        Inc(Acquired);
+      end;
+      for var Pair in Stores do
+      begin
+        WriteStore(Pair.Key, Pair.Value);
+        Changed.Add(Pair.Key);
+      end;
+      for var Name in Previous.Keys do
+        if not Stores.ContainsKey(Name) then
+        begin
+          FStorage.Delete(StoreFile(FVendor, FSuite, Name));
+          Changed.Add(Name);
+        end;
+      Gate.Acquire;
+      try
+        Leases.AddRange(RestoredLeases);
+      finally
+        Gate.Release;
+      end;
+    except
+      Gate.Acquire;
+      try
+        for var I := 0 to Acquired - 1 do
+        begin
+          Leases.Remove(RestoredLeases[I]);
+          FreeAndNil(RestoredLeases[I].FLock);
+        end;
+      finally
+        Gate.Release;
+      end;
+      // A replacement that failed atomically left its original file intact.
+      for var I := Changed.Count - 1 downto 0 do
+      begin
+        var Name := Changed[I];
+        var Data: TBytes;
+        if Previous.TryGetValue(Name, Data) then
+          WriteStore(Name, Data)
+        else
+          FStorage.Delete(StoreFile(FVendor, FSuite, Name));
+      end;
+      raise;
+    end;
   finally
-    Gate.Release;
+    Changed.Free;
+    Previous.Free;
+    Leave(Lock);
   end;
 end;
 

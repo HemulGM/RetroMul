@@ -3,10 +3,15 @@
 interface
 
 uses
-  System.Classes, JVM.StateIO, System.SysUtils, JVM.Types, JVM.ClassFile,
-  JVM.Runtime, J2ME.Input, J2ME.Alert.Layout, J2ME.Form.Layout, J2ME.Item.Layout;
+  System.Classes, System.Types, JVM.StateIO, System.SysUtils, JVM.Types,
+  JVM.ClassFile, JVM.Runtime, Core.Emulation.Types, J2ME.Input,
+  J2ME.Alert.Layout, J2ME.Form.Layout, J2ME.Item.Layout;
 
 type
+  TJ2MEVideoItemDraw = reference to procedure(Item: Integer; var Pixels: TArray<UInt32>; Stride, X, Y: Integer; const Clip: TRect);
+
+  TJ2MECustomItemPost = reference to procedure(const Name, Descriptor: string; const Args: array of TJVMValue);
+
   TJ2MELCDUI = class
   private
     FVM: TJVM;
@@ -20,11 +25,18 @@ type
     FFormLayout: TJ2MEFormLayout;
     FEditorRef, FEditorText, FEditorConstraints, FEditorWidth, FEditorNegative: Integer;
     FEditorLines: TArray<TJ2METextLine>;
+    FDrawVideoItem: TJ2MEVideoItemDraw;
+    FPostCustomItem: TJ2MECustomItemPost;
+    FOnCustomKeyPressed: TProc<Integer, Integer>;
     FPostItemChanged: TProc<Integer>;
     FChangeScreen: TProc<Integer>;
     FPostTimeout: TProc<Integer, Integer>;
     FAlertStarted, FAlertQueued, FAlertFired, FPaused: Boolean;
     FAlertStart, FPausedAt: Int64;
+    procedure HideCustomItem(Ref: Integer);
+    procedure CallCustomKey(Item: Integer; const Name: string; Code: Integer);
+    procedure PostCustomPointer(Item: Integer; Phase: TEmulationTouchPhase; X, Y: Integer);
+    function CustomItemInvoke(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
     function AlertCommand: Integer;
     function AlertTimeout(Screen: Integer): Integer;
     procedure AlertChanged(O: TJVMObject);
@@ -35,7 +47,12 @@ type
     procedure CommandAction(Command, Screen: Integer);
     procedure SendFormCommand(Screen, Command, Item: Integer);
     procedure ItemChanged(Item: Integer; Queue: Boolean);
-    function FormKey(Screen, Code: Integer): Boolean;
+    function FormKey(Screen, Code: Integer; SkipItemScroll: Boolean = False): Boolean;
+    function CustomNavigationKey(Screen, Code: Integer): Boolean;
+    procedure UpdateCustomTraversal(Screen: Integer);
+    procedure LeaveCustomTraversal(Screen: Integer);
+    procedure BeginCustomTraversal(Screen, Ref, Direction: Integer);
+    function FinishCustomTraversal(Screen: Integer; out Ref: Integer; out Accepted: Boolean): Boolean;
     function FocusedItem(Screen: Integer): Integer;
     function ChoicePopup(Screen: Integer): Boolean;
     procedure Key(Screen, Code: Integer; Pressed: Boolean);
@@ -53,6 +70,12 @@ type
     function IsAlert(Screen: Integer): Boolean;
     function IsForm(Screen: Integer): Boolean;
     function IsTextBox(Screen: Integer): Boolean;
+    function HasCustomPointerInput: Boolean;
+    function CapturePendingCustomPaints(Screen: Integer): Integer;
+    function NeedsCapturedCustomPaint(Screen, Targets, Item: Integer): Boolean;
+    function CustomKeyTarget(Screen, Code: Integer): Integer;
+    procedure CustomPointer(const Event: TEmulationTouchEvent);
+    procedure CancelCustomPointer;
     procedure FocusItem(Item: Integer);
     procedure ConfigureAlert(Screen, Next: Integer);
     procedure PollAlert(Now: Int64);
@@ -61,11 +84,16 @@ type
     function Top(Screen: Integer): Integer;
     function ContentHeight(Screen: Integer): Integer;
     function ContentWidth(Screen: Integer): Integer;
+    function DisplayColor(Specifier: Integer): Integer;
+    function BestImageSize(ImageType: Integer): TSize;
     procedure Current(Screen: Integer);
     procedure Invalidate;
     procedure Resize(Width, Height: Integer);
     function NeedsRender(Now: Int64): Boolean;
     procedure Render(var Pixels: TArray<UInt32>; const Content: TArray<UInt32>; Now: Int64);
+    property DrawVideoItem: TJ2MEVideoItemDraw write FDrawVideoItem;
+    property PostCustomItem: TJ2MECustomItemPost write FPostCustomItem;
+    property OnCustomKeyPressed: TProc<Integer, Integer> write FOnCustomKeyPressed;
     property CurrentRef: Integer read FCurrent;
   end;
 
@@ -81,7 +109,7 @@ implementation
 
 uses
   System.Math, Java.Classes, J2ME.Image, J2ME.Font, J2ME.Items, J2ME.Forms,
-  J2ME.Text, J2ME.UI.Data, J2ME.DateField;
+  J2ME.Text, J2ME.UI.Data, J2ME.DateField, J2ME.GameCanvas;
 
 {$Q-}{$R-}
 
@@ -102,6 +130,14 @@ const
   ID = 'Ljavax/microedition/lcdui/Image;';
   FD = 'Ljavax/microedition/lcdui/Font;';
   SD = 'Ljava/lang/String;';
+  UIBackground = $FFF4F6F9;
+  UIForeground = $FF152536;
+  UIHighlightedBackground = $FF2766A4;
+  UIHighlightedForeground = $FFFFFFFF;
+  UIBorder = $FF8B9BAB;
+  UIHighlightedBorder = $FF2766A4;
+  ChoiceIconWidth = 32;
+  ChoiceIconHeight = 20;
 
 function LCDInt(O: TJVMObject; const Name: string; Default: Integer): Integer;
 var
@@ -343,7 +379,7 @@ end;
 
 function TJ2MELCDUI.Handles(const Owner: string): Boolean;
 begin
-  Result := (Owner = CommandClass) or (Owner = Displayable) or (Owner = TickerClass) or (Owner = UI + 'Screen') or (Owner = ListClass) or (Owner = AlertClass) or (Owner = AlertTypeClass) or (Owner = UI + 'Item') or (Owner = UI + 'Gauge') or (Owner = FormClass) or (Owner = GroupClass) or
+  Result := (Owner = J2MECustomItemClass) or (Owner = CommandClass) or (Owner = Displayable) or (Owner = TickerClass) or (Owner = UI + 'Screen') or (Owner = ListClass) or (Owner = AlertClass) or (Owner = AlertTypeClass) or (Owner = UI + 'Item') or (Owner = UI + 'Gauge') or (Owner = FormClass) or (Owner = GroupClass) or
     (Owner = UI + 'DateField') or (Owner = TextBoxClass) or (Owner = UI + 'TextField') or (Owner = UI + 'StringItem') or (Owner = UI + 'ImageItem') or (Owner = UI + 'Spacer');
 end;
 
@@ -437,6 +473,54 @@ begin
   Result := (Screen <> 0) and FVM.IsAssignable(FVM.GetObject(Screen).ClassName, TextBoxClass);
 end;
 
+function TJ2MELCDUI.CapturePendingCustomPaints(Screen: Integer): Integer;
+begin
+  Result := 0;
+  if not IsForm(Screen) then
+    Exit;
+  var Items := J2MEFormItems(FVM, Screen).Elements;
+  var Count := 0;
+  try
+    for var Value in Items do
+    begin
+      var Item := FVM.GetObject(Value.AsRef);
+      if (LCDInt(Item, 'itemKind') <> J2MECustomItemKind) or
+        ((LCDInt(Item, 'customRepaint') = 0) and (LCDInt(Item, 'customDrawQueued') = 0) and (LCDRef(Item, 'customImage') <> 0)) then
+        Continue;
+      if Result = 0 then
+      begin
+        Result := FVM.NewArray('[Ljava/lang/Object;', Length(Items));
+        FVM.AddRoot(Result);
+      end;
+      var Ref := FVM.NewObject('java/lang/Object');
+      var Target := FVM.GetObject(Ref);
+      LCDPutRef(Target, 'item', Value.AsRef);
+      LCDPut(Target, 'paintVersion', LCDInt(Item, 'customPaintVersion'));
+      FVM.GetObject(Result).Elements[Count] := TJVMValue.Ref(Ref);
+      Inc(Count);
+    end;
+  finally
+    if Result <> 0 then
+      FVM.RemoveRoot(Result);
+  end;
+end;
+
+function TJ2MELCDUI.NeedsCapturedCustomPaint(Screen, Targets, Item: Integer): Boolean;
+begin
+  Result := False;
+  var Custom := FVM.GetObject(Item);
+  if LCDRef(Custom, 'owner') <> Screen then
+    Exit;
+  for var Value in FVM.GetObject(Targets).Elements do
+  begin
+    if Value.AsRef = 0 then
+      Break;
+    var Target := FVM.GetObject(Value.AsRef);
+    if LCDRef(Target, 'item') = Item then
+      Exit(LCDInt(Target, 'paintVersion') = LCDInt(Custom, 'customPaintVersion'));
+  end;
+end;
+
 function TJ2MELCDUI.FocusedItem(Screen: Integer): Integer;
 begin
   Result := 0;
@@ -450,6 +534,9 @@ begin
   if (Owner = 0) or not IsForm(Owner) then
     FVM.RaiseJava('java/lang/IllegalStateException', 'Item is not in a Form');
   FChangeScreen(Owner);
+  if FocusedItem(Owner) <> Item then
+    LeaveCustomTraversal(Owner);
+  LCDPut(FVM.GetObject(Owner), 'traverseEntry', 0);
   J2MEFormFocus(FVM, Owner, Item);
   LCDPutRef(FVM.GetObject(Owner), 'ensureItem', Item);
   FDirty := True;
@@ -493,6 +580,32 @@ begin
   Result := Min(Result, Max(0, FHeight - 1));
 end;
 
+function TJ2MELCDUI.DisplayColor(Specifier: Integer): Integer;
+const
+  Colors: array[0..5] of UInt32 = (UIBackground, UIForeground, UIHighlightedBackground,
+    UIHighlightedForeground, UIBorder, UIHighlightedBorder);
+begin
+  if (Specifier < Low(Colors)) or (Specifier > High(Colors)) then
+    FVM.RaiseJava('java/lang/IllegalArgumentException', 'Display color specifier');
+  Result := Integer(Colors[Specifier] and $FFFFFF);
+end;
+
+function TJ2MELCDUI.BestImageSize(ImageType: Integer): TSize;
+begin
+  Result := Default(TSize);
+  case ImageType of
+    1, 2:
+      begin
+        Result.cx := Min(ChoiceIconWidth, FWidth);
+        Result.cy := Min(ChoiceIconHeight, FHeight);
+      end;
+    3:
+      Exit; // Alerts use the original image dimensions and allow scrolling.
+  else
+    FVM.RaiseJava('java/lang/IllegalArgumentException', 'Display image type');
+  end;
+end;
+
 function TJ2MELCDUI.ContentWidth(Screen: Integer): Integer;
 begin
   Result := FWidth;
@@ -526,6 +639,14 @@ begin
   end;
   if IsTextBox(FCurrent) then
     LCDPut(FVM.GetObject(FCurrent), 'editing', 0);
+  if IsForm(FCurrent) then
+  begin
+    CancelCustomPointer;
+    LeaveCustomTraversal(FCurrent);
+    LCDPut(FVM.GetObject(FCurrent), 'traverseEntry', 0);
+    for var Value in J2MEFormItems(FVM, FCurrent).Elements do
+      HideCustomItem(Value.AsRef);
+  end;
   FCurrent := Screen;
   FMenu := False;
   FMenuIndex := 0;
@@ -744,7 +865,7 @@ begin
     [TJVMValue.Ref(Listener), TJVMValue.Ref(Command), TJVMValue.Ref(Receiver)]);
 end;
 
-function TJ2MELCDUI.FormKey(Screen, Code: Integer): Boolean;
+function TJ2MELCDUI.FormKey(Screen, Code: Integer; SkipItemScroll: Boolean): Boolean;
 begin
   Result := True;
   if not IsForm(Screen) then
@@ -807,9 +928,9 @@ begin
     end;
   end;
   var Direction := 0;
-  if (Code = -1) or ((Code = 50) and (Kind <> 5)) then
+  if (Code = -1) or ((Code = 50) and (Kind <> 5)) or (SkipItemScroll and (Code = -3)) then
     Direction := -1;
-  if (Code = -2) or ((Code = 56) and (Kind <> 5)) or (Code = -1003) then
+  if (Code = -2) or ((Code = 56) and (Kind <> 5)) or (Code = -1003) or (SkipItemScroll and (Code = -4)) then
     Direction := 1;
   if Direction <> 0 then
   begin
@@ -829,7 +950,7 @@ begin
     FFormLayout.Update(Screen, Max(1, FWidth - 12), H);
     var Index := FFormLayout.Find(Item);
     var Scroll := LCDInt(Form, 'scroll');
-    if (Index >= 0) and (Code <> -1003) then
+    if (Index >= 0) and (Code <> -1003) and not SkipItemScroll then
     begin
       var Box := FFormLayout.Boxes[Index];
       var Last := Integer(Min(Int64(MaxInt), Int64(Box.Y) + Box.Height));
@@ -854,13 +975,19 @@ begin
     begin
       if J2MEItemFocusable(FVM, Values.Elements[Next].AsRef) then
       begin
+        if Focus <> Next then
+          LeaveCustomTraversal(Screen);
         J2MEFormFocus(FVM, Screen, Values.Elements[Next].AsRef);
+        if (Code >= -4) and (Code <= -1) then
+          LCDPut(Form, 'traverseEntry', J2MEGameAction(Code));
         LCDPutRef(Form, 'ensureItem', 0);
         FDirty := True;
         Exit;
       end;
       Inc(Next, Direction);
     end;
+    if (Code = -3) or (Code = -4) then
+      Exit;
     LCDPut(Form, 'scroll', Integer(EnsureRange(Int64(Scroll) + Direction * 18, Int64(0), Int64(Max(0, FFormLayout.TotalHeight - H)))));
     LCDPut(Form, 'ensureFocus', 0);
     FDirty := True;
@@ -956,7 +1083,7 @@ begin
     end;
     Exit;
   end;
-  if (Code = -5) or (Code = 53) then
+  if (Code = -5) or ((Code = 53) and (Kind <> J2MECustomItemKind)) then
   begin
     var Default := 0;
     if O <> nil then
@@ -976,6 +1103,202 @@ begin
       end;
     end;
   end;
+end;
+
+procedure TJ2MELCDUI.LeaveCustomTraversal(Screen: Integer);
+begin
+  var Form := FVM.GetObject(Screen);
+  var Ref := LCDRef(Form, 'traverseItem');
+  if Ref = 0 then
+    Exit;
+  LCDPutRef(Form, 'traverseItem', 0);
+  LCDPut(Form, 'traverseEpoch', LCDInt(Form, 'traverseEpoch') + 1);
+  var Item := FVM.GetObject(Ref);
+  LCDPut(Item, 'traverseInvoked', 0);
+  LCDPut(Item, 'traverseRefresh', 0);
+  if LCDInt(Item, 'traverseActive') <> 0 then
+  begin
+    LCDPut(Item, 'traverseActive', 0);
+    FPostCustomItem('$leaveTraversal', '()V', [TJVMValue.Ref(Ref)]);
+  end;
+end;
+
+procedure TJ2MELCDUI.UpdateCustomTraversal(Screen: Integer);
+begin
+  var Form := FVM.GetObject(Screen);
+  var Ref := FocusedItem(Screen);
+  if (Ref <> 0) and (LCDInt(FVM.GetObject(Ref), 'itemKind') <> J2MECustomItemKind) then
+    Ref := 0;
+  if LCDRef(Form, 'traverseItem') <> Ref then
+  begin
+    LeaveCustomTraversal(Screen);
+    LCDPutRef(Form, 'traverseItem', Ref);
+  end;
+  if Ref = 0 then
+  begin
+    LCDPut(Form, 'traverseEntry', 0);
+    Exit;
+  end;
+  var Item := FVM.GetObject(Ref);
+  if (LCDInt(Item, 'customMeasuredWidth', -1) >= 0) and (LCDInt(Item, 'customMeasureQueued') = 0) and
+    (LCDInt(Item, 'traverseQueued') = 0) and (LCDInt(Item, 'traverseCalling') = 0) and
+    ((LCDInt(Item, 'traverseInvoked') = 0) or (LCDInt(Item, 'traverseRefresh') <> 0)) then
+  begin
+    LCDPut(Item, 'traverseQueued', 1);
+    FPostCustomItem('$traverseFocus', '(Ljavax/microedition/lcdui/Form;)V', [TJVMValue.Ref(Ref), TJVMValue.Ref(Screen)]);
+  end;
+end;
+
+procedure TJ2MELCDUI.BeginCustomTraversal(Screen, Ref, Direction: Integer);
+begin
+  var W := ContentWidth(Screen);
+  var H := ContentHeight(Screen);
+  FFormLayout.Update(Screen, W, H);
+  var Index := FFormLayout.Find(Ref);
+  var RectRef := FVM.NewArray('[I', 4);
+  if Index >= 0 then
+  begin
+    var Box := FFormLayout.Boxes[Index];
+    var Scroll := LCDInt(FVM.GetObject(Screen), 'scroll');
+    var Y := Int64(Box.Y) + Box.Metrics.LabelHeight - Scroll;
+    var Height := EnsureRange(Box.Height - Box.Metrics.LabelHeight, 0, J2MECustomItemExtent);
+    var Top := Max(Int64(0), -Y);
+    var Bottom := Min(Int64(Height), Int64(H) - Y);
+    if Bottom > Top then
+    begin
+      var Area := FVM.GetObject(RectRef);
+      Area.ElementValues[1] := TJVMValue.Int(Integer(Top));
+      Area.ElementValues[2] := TJVMValue.Int(Box.Width);
+      Area.ElementValues[3] := TJVMValue.Int(Integer(Bottom - Top));
+    end;
+  end;
+  var Item := FVM.GetObject(Ref);
+  var Continuation := FVM.NewObject('java/lang/Object');
+  var Call := FVM.GetObject(Continuation);
+  LCDPutRef(Call, 'item', Ref);
+  LCDPutRef(Call, 'rectangle', RectRef);
+  LCDPut(Call, 'wasActive', LCDInt(Item, 'traverseActive'));
+  LCDPut(Call, 'epoch', LCDInt(FVM.GetObject(Screen), 'traverseEpoch'));
+  LCDPut(Item, 'traverseInvoked', 1);
+  LCDPut(Item, 'traverseCalling', 1);
+  LCDPut(Item, 'traverseRefresh', 0);
+  FVM.SetNativeContinuation(TJVMValue.Ref(Continuation));
+  FVM.InvokeGuestResult(FVM.ResolveVirtualMethod(Ref,
+      FVM.LoadClass(J2MECustomItemClass).FindMethod('traverse', '(III[I)Z')),
+    [TJVMValue.Ref(Ref), TJVMValue.Int(Direction), TJVMValue.Int(W), TJVMValue.Int(H), TJVMValue.Ref(RectRef)]);
+end;
+
+function TJ2MELCDUI.FinishCustomTraversal(Screen: Integer; out Ref: Integer; out Accepted: Boolean): Boolean;
+begin
+  var Returned: TJVMValue;
+  Result := FVM.TakeGuestResult(Returned);
+  if not Result then
+    Exit;
+  Accepted := Returned.AsInt <> 0;
+  var Call := FVM.GetObject(FVM.NativeContinuation.AsRef);
+  FVM.SetNativeContinuation(TJVMValue.Ref(0));
+  Ref := LCDRef(Call, 'item');
+  var Item := FVM.GetObject(Ref);
+  LCDPut(Item, 'traverseCalling', 0);
+  var Form := FVM.GetObject(Screen);
+  if (FCurrent <> Screen) or (LCDRef(Form, 'traverseItem') <> Ref) or
+    (LCDInt(Form, 'traverseEpoch') <> LCDInt(Call, 'epoch')) or
+    (LCDRef(Item, 'owner') <> Screen) or (FocusedItem(Screen) <> Ref) then
+  begin
+    if Accepted and (LCDInt(Call, 'wasActive') = 0) then
+      FPostCustomItem('$leaveTraversal', '()V', [TJVMValue.Ref(Ref)]);
+    Ref := 0;
+    FDirty := True;
+    Exit;
+  end;
+  if not Accepted then
+    Exit;
+  LCDPut(Item, 'traverseActive', 1);
+  var H := ContentHeight(Screen);
+  FFormLayout.Update(Screen, ContentWidth(Screen), H);
+  var Index := FFormLayout.Find(Ref);
+  if Index >= 0 then
+  begin
+    var Box := FFormLayout.Boxes[Index];
+    var Area := FVM.GetObject(LCDRef(Call, 'rectangle'));
+    var Height := EnsureRange(Box.Height - Box.Metrics.LabelHeight, 0, J2MECustomItemExtent);
+    var Y := EnsureRange(Area.ElementValues[1].AsInt, 0, Max(0, Height - 1));
+    var Span := EnsureRange(Area.ElementValues[3].AsInt, 0, Height - Y);
+    var Row := Int64(Box.Y) + Box.Metrics.LabelHeight + Y;
+    var Scroll := Int64(LCDInt(Form, 'scroll'));
+    if (Row < Scroll) or (Span >= H) or (Row >= Scroll + H) then
+      Scroll := Row;
+    if (Span < H) and (Row + Max(1, Span) > Scroll + H) then
+      Scroll := Row + Max(1, Span) - H;
+    LCDPut(Form, 'scroll', Integer(EnsureRange(Scroll, Int64(0), Int64(Max(0, FFormLayout.TotalHeight - H)))));
+    LCDPut(Form, 'ensureFocus', 0);
+    LCDPutRef(Form, 'ensureItem', 0);
+    FDirty := True;
+  end;
+end;
+
+function TJ2MELCDUI.CustomNavigationKey(Screen, Code: Integer): Boolean;
+begin
+  Result := False;
+  if (Code < -4) or (Code > -1) then
+    Exit;
+  var Ref: Integer;
+  var Accepted: Boolean;
+  if FinishCustomTraversal(Screen, Ref, Accepted) then
+  begin
+    if (Ref <> 0) and not Accepted then
+    begin
+      var Active := LCDInt(FVM.GetObject(Ref), 'traverseActive') <> 0;
+      if not Active and ((Code = -3) or (Code = -4)) then
+        Key(Screen, Code, True)
+      else
+        FormKey(Screen, Code, Active);
+    end;
+    Exit(True);
+  end;
+  if not IsShown(Screen) or not IsForm(Screen) then
+    Exit;
+  UpdateCustomTraversal(Screen);
+  var Form := FVM.GetObject(Screen);
+  Ref := LCDRef(Form, 'traverseItem');
+  if Ref = 0 then
+    Exit;
+  var Item := FVM.GetObject(Ref);
+  var Initial := LCDInt(Item, 'traverseInvoked') = 0;
+  if (LCDInt(Item, 'customMeasuredWidth', -1) < 0) or
+    (not Initial and (LCDInt(Item, 'traverseActive') = 0)) then
+    Exit;
+  var Direction := J2MEGameAction(Code);
+  if Initial then
+  begin
+    Direction := LCDInt(Form, 'traverseEntry', Direction);
+    LCDPut(Form, 'traverseEntry', 0);
+  end;
+  BeginCustomTraversal(Screen, Ref, Direction);
+  Result := True;
+end;
+
+function TJ2MELCDUI.CustomKeyTarget(Screen, Code: Integer): Integer;
+begin
+  Result := 0;
+  if not IsShown(Screen) or not IsForm(Screen) or (Code <= -1000) or
+    (Code = -1) or (Code = -2) or (Code = -6) or (Code = -7) then
+    Exit;
+  var Item := FocusedItem(Screen);
+  if Item = 0 then
+    Exit;
+  var Target := FVM.GetObject(Item);
+  if (LCDInt(Target, 'itemKind') = J2MECustomItemKind) and (LCDInt(Target, 'customShown') <> 0) and
+    (LCDInt(Target, 'customVisible') <> 0) and
+    (((Code <> -3) and (Code <> -4)) or (LCDInt(Target, 'traverseActive') = 0)) and
+    ((Code <> -5) or (LCDRef(Target, 'itemDefault') = 0)) then
+    Result := Item;
+end;
+
+procedure TJ2MELCDUI.CallCustomKey(Item: Integer; const Name: string; Code: Integer);
+begin
+  FVM.InvokeGuest(FVM.ResolveVirtualMethod(Item, FVM.LoadClass(J2MECustomItemClass).FindMethod(Name, '(I)V')),
+    [TJVMValue.Ref(Item), TJVMValue.Int(Code)]);
 end;
 
 procedure TJ2MELCDUI.Key(Screen, Code: Integer; Pressed: Boolean);
@@ -1016,12 +1339,12 @@ begin
     FDirty := True;
     Exit;
   end;
-  // These MIDP 1.0 Siemens games draw and handle their own softkeys even
-  // in normal Canvas mode. Real LCDUI commands keep their usual handling.
+  // Some device profiles deliver raw softkeys for a Canvas with no commands.
   var Canvas := IsCanvas(Screen);
   var Full := Canvas and (LCDInt(O, 'full') <> 0);
-  var RawSiemensSoftkeys := Canvas and (FCanvasKeyLayout = TJ2MEKeyLayout.Siemens) and (Length(Values) = 0);
-  if ((Code = -6) or (Code = -7)) and not RawSiemensSoftkeys then
+  var RawSoftkeys := Canvas and (Length(Values) = 0) and
+    (FCanvasKeyLayout in [TJ2MEKeyLayout.Siemens, TJ2MEKeyLayout.StandardWithRawSoftkeys]);
+  if ((Code = -6) or (Code = -7)) and not RawSoftkeys then
   begin
     if not Pressed then
     begin
@@ -1075,6 +1398,18 @@ begin
   end;
   if IsForm(Screen) then
   begin
+    var Item := CustomKeyTarget(Screen, Code);
+    if Item <> 0 then
+    begin
+      if Pressed then
+      begin
+        FOnCustomKeyPressed(Code, Item);
+        CallCustomKey(Item, 'keyPressed', Code);
+      end
+      else
+        CallCustomKey(Item, 'keyReleased', Code);
+      Exit;
+    end;
     if Pressed then
       FormKey(Screen, Code);
     Exit;
@@ -1531,11 +1866,323 @@ begin
   raise EJVMUnsupported.Create('Choice method ' + Name);
 end;
 
+function TJ2MELCDUI.HasCustomPointerInput: Boolean;
+begin
+  Result := False;
+  if not IsForm(FCurrent) or FMenu or ChoicePopup(FCurrent) then
+    Exit;
+  for var Value in J2MEFormItems(FVM, FCurrent).Elements do
+    if LCDInt(FVM.GetObject(Value.AsRef), 'itemKind') = J2MECustomItemKind then
+      Exit(True);
+end;
+
+procedure TJ2MELCDUI.PostCustomPointer(Item: Integer; Phase: TEmulationTouchPhase; X, Y: Integer);
+begin
+  FPostCustomItem('$pointer', '(Ljavax/microedition/lcdui/Form;III)V',
+    [TJVMValue.Ref(Item), TJVMValue.Ref(FCurrent), TJVMValue.Int(Ord(Phase)), TJVMValue.Int(X), TJVMValue.Int(Y)]);
+end;
+
+procedure TJ2MELCDUI.CancelCustomPointer;
+begin
+  if not IsForm(FCurrent) then
+    Exit;
+  var Form := FVM.GetObject(FCurrent);
+  var Item := LCDRef(Form, 'pointerItem');
+  if Item = 0 then
+    Exit;
+  PostCustomPointer(Item, TEmulationTouchPhase.Cancel, -1, -1);
+  LCDPutRef(Form, 'pointerItem', 0);
+end;
+
+procedure TJ2MELCDUI.CustomPointer(const Event: TEmulationTouchEvent);
+begin
+  if not IsForm(FCurrent) then
+    Exit;
+  if FMenu or ChoicePopup(FCurrent) then
+  begin
+    CancelCustomPointer;
+    Exit;
+  end;
+  var Form := FVM.GetObject(FCurrent);
+  var Ref := LCDRef(Form, 'pointerItem');
+  if Event.Phase = TEmulationTouchPhase.Down then
+  begin
+    if Ref <> 0 then
+      Exit;
+    var ContentTop := Top(FCurrent);
+    if (Event.Y < ContentTop) or (Event.Y >= ContentTop + ContentHeight(FCurrent)) then
+      Exit;
+    for var Value in J2MEFormItems(FVM, FCurrent).Elements do
+    begin
+      var Item := FVM.GetObject(Value.AsRef);
+      if (LCDInt(Item, 'customVisible') = 0) or (LCDRef(Item, 'customImage') = 0) then
+        Continue;
+      if (Event.X >= LCDInt(Item, 'customHitX')) and (Event.X < LCDInt(Item, 'customHitRight')) and
+        (Event.Y >= LCDInt(Item, 'customHitY')) and (Event.Y < LCDInt(Item, 'customHitBottom')) then
+      begin
+        Ref := Value.AsRef;
+        if FocusedItem(FCurrent) <> Ref then
+          LeaveCustomTraversal(FCurrent);
+        J2MEFormFocus(FVM, FCurrent, Ref);
+        LCDPut(Form, 'traverseEntry', 0);
+        // The item already contains a visible point. Leave the viewport still.
+        LCDPut(Form, 'ensureFocus', 0);
+        LCDPutRef(Form, 'ensureItem', 0);
+        LCDPutRef(Form, 'pointerItem', Ref);
+        UpdateCustomTraversal(FCurrent);
+        FDirty := True;
+        Break;
+      end;
+    end;
+  end;
+  if Ref = 0 then
+    Exit;
+  var Item := FVM.GetObject(Ref);
+  PostCustomPointer(Ref, Event.Phase, Event.X - LCDInt(Item, 'customHitX'), Event.Y - LCDInt(Item, 'customHitY'));
+  if Event.Phase = TEmulationTouchPhase.Up then
+    LCDPutRef(Form, 'pointerItem', 0);
+end;
+
+procedure TJ2MELCDUI.HideCustomItem(Ref: Integer);
+begin
+  var Item := FVM.GetObject(Ref);
+  if LCDInt(Item, 'customVisible') = 0 then
+    Exit;
+  if IsForm(FCurrent) and (LCDRef(FVM.GetObject(FCurrent), 'pointerItem') = Ref) then
+    CancelCustomPointer;
+  LCDPut(Item, 'customVisible', 0);
+  FPostCustomItem('$hide', '()V', [TJVMValue.Ref(Ref)]);
+end;
+
+function TJ2MELCDUI.CustomItemInvoke(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
+var
+  Item: TJVMObject;
+
+  function PaintAllowed: Boolean;
+  begin
+    Result := (FCurrent <> 0) and (LCDRef(Item, 'owner') = FCurrent) and (LCDInt(Item, 'customVisible') <> 0);
+    if not Result then
+      LCDPut(Item, 'customDrawQueued', 0);
+  end;
+
+begin
+  Result := TJVMValue.Int(0);
+  Item := FVM.GetObject(Args[0].AsRef);
+  var Name := Method.Name;
+  if Name = '<init>' then
+  begin
+    UIInitItem(Item, Args[1].AsRef);
+    LCDPut(Item, 'itemKind', J2MECustomItemKind);
+    LCDPut(Item, 'customMeasuredWidth', -1);
+  end
+  else if Name = 'getInteractionModes' then
+    Result := TJVMValue.Int(1 or 2 or 4 or 8 or 16 or 32 or 64 or 128)
+  else if Name = 'getGameAction' then
+    Result := TJVMValue.Int(J2MEGameAction(J2MECanonicalKeyCode(FCanvasKeyLayout, Args[1].AsInt)))
+  else if (Name = 'invalidate') or (Name = 'repaint') then
+  begin
+    if Name = 'invalidate' then
+    begin
+      LCDPut(Item, 'customGeneration', LCDInt(Item, 'customGeneration') + 1);
+      if (LCDInt(Item, 'traverseActive') <> 0) and (LCDInt(Item, 'traverseCalling') = 0) then
+        LCDPut(Item, 'traverseRefresh', 1);
+    end;
+    if Length(Args) = 5 then
+    begin
+      var Width := LCDInt(Item, 'customWidth');
+      var Height := LCDInt(Item, 'customHeight');
+      var X := Args[1].AsInt;
+      var Y := Args[2].AsInt;
+      var L := Max(0, X);
+      var T := Max(0, Y);
+      var R := Min(Int64(Width), Int64(X) + Args[3].AsInt);
+      var B := Min(Int64(Height), Int64(Y) + Args[4].AsInt);
+      if (R <= L) or (B <= T) or (LCDInt(Item, 'customRepaint') = 1) then
+        Exit;
+      if LCDInt(Item, 'customRepaint') = 2 then
+      begin
+        L := Min(L, LCDInt(Item, 'customClipL'));
+        T := Min(T, LCDInt(Item, 'customClipT'));
+        R := Max(R, LCDInt(Item, 'customClipR'));
+        B := Max(B, LCDInt(Item, 'customClipB'));
+      end;
+      LCDPut(Item, 'customClipL', L);
+      LCDPut(Item, 'customClipT', T);
+      LCDPut(Item, 'customClipR', Integer(R));
+      LCDPut(Item, 'customClipB', Integer(B));
+      LCDPut(Item, 'customRepaint', 2);
+    end
+    else
+      LCDPut(Item, 'customRepaint', 1);
+    FDirty := True;
+  end
+  else if Name = '$leaveTraversal' then
+    FVM.InvokeGuest(FVM.ResolveVirtualMethod(Args[0].AsRef,
+        FVM.LoadClass(J2MECustomItemClass).FindMethod('traverseOut', '()V')), [Args[0]])
+  else if Name = '$traverseFocus' then
+  begin
+    var Screen := Args[1].AsRef;
+    var Ref := Args[0].AsRef;
+    var FinishedItem: Integer;
+    var Accepted: Boolean;
+    if FinishCustomTraversal(Screen, FinishedItem, Accepted) then
+      Exit;
+    LCDPut(Item, 'traverseQueued', 0);
+    if (Screen <> FCurrent) or (LCDRef(FVM.GetObject(Screen), 'traverseItem') <> Ref) or
+      (FocusedItem(Screen) <> Ref) then
+    begin
+      FDirty := True;
+      Exit;
+    end;
+    var Initial := LCDInt(Item, 'traverseInvoked') = 0;
+    if Initial or (LCDInt(Item, 'traverseRefresh') <> 0) then
+    begin
+      var Form := FVM.GetObject(Screen);
+      var Direction := 0;
+      if Initial then
+        Direction := LCDInt(Form, 'traverseEntry');
+      LCDPut(Form, 'traverseEntry', 0);
+      BeginCustomTraversal(Screen, Ref, Direction);
+    end;
+  end
+  else if Name = '$repeatKey' then
+    CallCustomKey(Args[0].AsRef, 'keyRepeated', Args[1].AsInt)
+  else if Name = '$pointer' then
+  begin
+    var Screen := Args[1].AsRef;
+    var Phase := TEmulationTouchPhase(Args[2].AsInt);
+    var Callback: string;
+    if Phase = TEmulationTouchPhase.Down then
+    begin
+      if (Screen <> FCurrent) or (LCDRef(Item, 'owner') <> Screen) or
+        (LCDInt(Item, 'customShown') = 0) then
+        Exit;
+      LCDPutRef(Item, 'customPointerForm', Screen);
+      Callback := 'pointerPressed';
+    end
+    else
+    begin
+      if LCDRef(Item, 'customPointerForm') <> Screen then
+        Exit;
+      if Phase = TEmulationTouchPhase.Move then
+        Callback := 'pointerDragged'
+      else
+      begin
+        LCDPutRef(Item, 'customPointerForm', 0);
+        Callback := 'pointerReleased';
+      end;
+    end;
+    FVM.InvokeGuest(FVM.ResolveVirtualMethod(Args[0].AsRef,
+        FVM.LoadClass(J2MECustomItemClass).FindMethod(Callback, '(II)V')), [Args[0], Args[3], Args[4]]);
+  end
+  else if Name = '$queryWidth' then
+  begin
+    var Width := Args[1].AsInt;
+    var Locked := LCDInt(Item, 'preferredWidth', -1);
+    if Locked >= 0 then
+    begin
+      var Minimum := Args[2].AsInt;
+      if UIString(FVM, LCDRef(Item, 'label')) <> '' then
+      begin
+        var Font := J2MEFontView(FVM, J2MEGetFont(FVM, 0, 1, 8));
+        Minimum := Max(Minimum, J2MEFontAdvance(Font, 'W') + 4);
+      end;
+      Width := EnsureRange(Max(Locked, Minimum), 1, Max(1, FWidth - 12));
+    end;
+    Result := TJVMValue.Int(Width);
+  end
+  else if (Name = '$dimensions') or (Name = '$queriedDimensions') then
+  begin
+    var IsLayout := Name = '$dimensions';
+    var Prefix := 'customQuery';
+    if IsLayout then
+    begin
+      Prefix := 'custom';
+      LCDPut(Item, 'customMeasureQueued', 0);
+    end;
+    if Args[2].AsInt = LCDInt(Item, 'customGeneration') then
+    begin
+      LCDPut(Item, Prefix + 'MeasuredWidth', Args[1].AsInt);
+      LCDPut(Item, Prefix + 'MeasuredGeneration', Args[2].AsInt);
+      LCDPut(Item, Prefix + 'MinWidth', EnsureRange(Args[3].AsInt, 0, J2MECustomItemExtent));
+      LCDPut(Item, Prefix + 'MinHeight', EnsureRange(Args[4].AsInt, 0, J2MECustomItemExtent));
+      LCDPut(Item, Prefix + 'PrefWidth', EnsureRange(Args[5].AsInt, 0, J2MECustomItemExtent));
+      LCDPut(Item, Prefix + 'PrefHeight', EnsureRange(Args[6].AsInt, 0, J2MECustomItemExtent));
+      if IsLayout then
+        UIInvalidateOwner(FVM, Item);
+    end;
+    if IsLayout then
+      FDirty := True;
+  end
+  else if Name = '$beginDraw' then
+  begin
+    if not PaintAllowed then
+      Exit(TJVMValue.Ref(0));
+    var W := Args[1].AsInt;
+    var H := Args[2].AsInt;
+    var Previous := LCDRef(Item, 'customImage');
+    var Image := J2MENewMutableImage(FVM, W, H);
+    var Graphics := FVM.NewObject(UI + 'Graphics');
+    var Target := FVM.GetObject(Graphics);
+    Target.Fields.Add('$target', TJVMValue.Ref(Image));
+    if (LCDInt(Item, 'customRepaint') = 2) and (Previous <> 0) and
+      (LCDInt(Item, 'customWidth') = W) and (LCDInt(Item, 'customHeight') = H) then
+    begin
+      var OldRaster := J2MEImageView(FVM, Previous);
+      var NewRaster := J2MEImageView(FVM, Image);
+      OldRaster.Pixels.CopyArrayElementsTo(NewRaster.Pixels, 0, 0, W * H);
+      Target.Fields.Add('$clipL', TJVMValue.Int(LCDInt(Item, 'customClipL')));
+      Target.Fields.Add('$clipT', TJVMValue.Int(LCDInt(Item, 'customClipT')));
+      Target.Fields.Add('$clipR', TJVMValue.Int(LCDInt(Item, 'customClipR')));
+      Target.Fields.Add('$clipB', TJVMValue.Int(LCDInt(Item, 'customClipB')));
+    end;
+    LCDPut(Item, 'customRepaint', 0);
+    Result := TJVMValue.Ref(Graphics);
+  end
+  else if Name = '$resize' then
+  begin
+    var W := Args[1].AsInt;
+    var H := Args[2].AsInt;
+    Result := TJVMValue.Int(Ord((LCDInt(Item, 'customWidth') <> W) or (LCDInt(Item, 'customHeight') <> H)));
+    LCDPut(Item, 'customWidth', W);
+    LCDPut(Item, 'customHeight', H);
+  end
+  else if Name = '$showNeeded' then
+  begin
+    Result := TJVMValue.Int(Ord(LCDInt(Item, 'customShown') = 0));
+    LCDPut(Item, 'customShown', 1);
+  end
+  else if Name = '$paintAllowed' then
+    Result := TJVMValue.Int(Ord(PaintAllowed))
+  else if Name = '$hideNeeded' then
+  begin
+    if (LCDInt(Item, 'customVisible') = 0) and (LCDInt(Item, 'customShown') <> 0) then
+    begin
+      LCDPut(Item, 'customShown', 0);
+      LCDPutRef(Item, 'customImage', 0);
+      Result := TJVMValue.Int(1);
+    end;
+  end
+  else if Name = '$endDraw' then
+  begin
+    var Graphics := FVM.GetObject(Args[1].AsRef);
+    if PaintAllowed then
+    begin
+      LCDPutRef(Item, 'customImage', Graphics.Fields['$target'].AsRef);
+      LCDPut(Item, 'customDrawQueued', 0);
+      LCDPut(Item, 'customPaintVersion', LCDInt(Item, 'customPaintVersion') + 1);
+      FDirty := True;
+    end;
+  end;
+end;
+
 function TJ2MELCDUI.Invoke(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
 begin
   Result := Default(TJVMValue);
   var C := Method.Owner.Name;
   var N := Method.Name;
+  if C = J2MECustomItemClass then
+    Exit(CustomItemInvoke(Method, Args));
   if (C = ListClass) or (C = GroupClass) then
   begin
     Result := ChoiceInvoke(Method, Args);
@@ -1550,10 +2197,21 @@ begin
   end;
   if (C = FormClass) or (C = UI + 'StringItem') or (C = UI + 'ImageItem') or (C = UI + 'Spacer') then
   begin
+    var OldItems: TJVMObject := nil;
+    if (C = FormClass) and ((N = 'delete') or (N = 'deleteAll') or (N = 'set')) then
+      OldItems := J2MEFormItems(FVM, Args[0].AsRef);
     var Changed: Boolean;
     Result := InvokeJ2MEForm(FVM, Method, Args, FWidth, ContentHeight(Args[0].AsRef), Changed);
     if Changed then
     begin
+      if OldItems <> nil then
+        for var Value in OldItems.Elements do
+          if LCDRef(FVM.GetObject(Value.AsRef), 'owner') = 0 then
+          begin
+            if LCDRef(FVM.GetObject(Args[0].AsRef), 'traverseItem') = Value.AsRef then
+              LeaveCustomTraversal(Args[0].AsRef);
+            HideCustomItem(Value.AsRef);
+          end;
       UIInvalidateOwner(FVM, FVM.GetObject(Args[0].AsRef));
       FDirty := True;
     end;
@@ -1656,7 +2314,11 @@ begin
       Exit;
     if N = '$key' then
     begin
-      Key(Args[0].AsRef, Args[1].AsInt, Args[2].AsInt <> 0);
+      var Screen := Args[0].AsRef;
+      var Code := Args[1].AsInt;
+      var Pressed := Args[2].AsInt <> 0;
+      if not Pressed or not CustomNavigationKey(Screen, Code) then
+        Key(Screen, Code, Pressed);
       Exit;
     end;
     if N = '$text' then
@@ -1876,9 +2538,9 @@ var
     if not Editable then
       Color := $FFE2E9EF;
     Rect(X, Y, W, H, Color);
-    Color := $FF8B9BAB;
+    Color := UIBorder;
     if Active then
-      Color := $FF2766A4;
+      Color := UIHighlightedBorder;
     Outline(X, Y, W, H, Color);
     Font := J2MEFontView(FVM, J2MEGetFont(FVM, 0, 0, 8));
     var Lines := Cached;
@@ -1918,7 +2580,7 @@ var
     ClipL := Max(ClipL, X + 2);
     ClipR := Min(ClipR, X + W - 2);
     for var I := Scroll to Min(High(Lines), Scroll + Count - 1) do
-      Text(Lines[I].Text, X + 4, Y + 4 + (I - Scroll) * LineHeight, $FF152536);
+      Text(Lines[I].Text, X + 4, Y + 4 + (I - Scroll) * LineHeight, UIForeground);
     if Active and Editable then
     begin
       FScrollText := True;
@@ -1926,7 +2588,7 @@ var
       begin
         var Position := EnsureRange(Caret - Lines[Line].Start, 0, Lines[Line].Count);
         var CaretX := X + 4 + J2MEFontTextWidth(Font, Copy(Lines[Line].Text, 1, Position));
-        Rect(CaretX, Y + 4 + (Line - Scroll) * LineHeight, 1, Font.Height, $FF152536);
+        Rect(CaretX, Y + 4 + (Line - Scroll) * LineHeight, 1, Font.Height, UIForeground);
       end;
     end;
     ClipT := OldT;
@@ -1937,11 +2599,11 @@ var
 
   procedure ChoiceRow(Row: TJVMObject; X, Y, W, H: Integer; Selected, Multiple, Active: Boolean);
   begin
-    var Color: UInt32 := $FF152536;
+    var Color: UInt32 := UIForeground;
     if Active then
     begin
-      Rect(X, Y, W, H, $FF2766A4);
-      Color := $FFFFFFFF;
+      Rect(X, Y, W, H, UIHighlightedBackground);
+      Color := UIHighlightedForeground;
     end;
     var Marker := '( )';
     if Multiple then
@@ -1956,12 +2618,12 @@ var
       var View := J2MEImageView(FVM, Image);
       var OldR := ClipR;
       var OldB := ClipB;
-      ClipR := Min(ClipR, Left + 32);
-      ClipB := Min(ClipB, Y + 22);
+      ClipR := Min(ClipR, Left + ChoiceIconWidth);
+      ClipB := Min(ClipB, Y + 2 + ChoiceIconHeight);
       Picture(Image, Left, Y + 2);
       ClipR := OldR;
       ClipB := OldB;
-      Inc(Left, Min(32, View.Width) + 4);
+      Inc(Left, Min(ChoiceIconWidth, View.Width) + 4);
     end;
     var Ref := LCDRef(Row, 'font');
     if Ref = 0 then
@@ -2019,15 +2681,54 @@ var
     LCDPut(O, 'ensureFocus', 0);
     LCDPutRef(O, 'ensureItem', 0);
     var Bottom := Top + H;
+    // Measurements and paints complete asynchronously and request another
+    // render. Bound each batch so large Forms don't fill the VM event queue.
+    var CustomJobsLeft := 32;
     for var Box in FFormLayout.Boxes do
     begin
+      var Item := FVM.GetObject(Box.Ref);
+      var Kind := LCDInt(Item, 'itemKind');
       var Base := Int64(Top) + Box.Y - Scroll;
+      if Kind = J2MECustomItemKind then
+      begin
+        var WidthHint := Box.Width;
+        if WidthHint <= 0 then
+          WidthHint := Max(1, FWidth - 12);
+        var Generation := LCDInt(Item, 'customGeneration');
+        var NeedsMeasure := (LCDInt(Item, 'customMeasuredWidth') <> WidthHint) or
+          (LCDInt(Item, 'customMeasuredGeneration') <> Generation);
+        if NeedsMeasure and (CustomJobsLeft > 0) and (LCDInt(Item, 'customMeasureQueued') = 0) then
+        begin
+          var HeightHint := LCDInt(Item, 'preferredHeight', -1);
+          if HeightHint >= 0 then
+            HeightHint := EnsureRange(HeightHint - Box.Metrics.LabelHeight, 0, J2MECustomItemExtent);
+          FPostCustomItem('$measureForLayout', '(III)V',
+            [TJVMValue.Ref(Box.Ref), TJVMValue.Int(WidthHint), TJVMValue.Int(Generation), TJVMValue.Int(HeightHint)]);
+          LCDPut(Item, 'customMeasureQueued', 1);
+          Dec(CustomJobsLeft);
+        end;
+        var BodyTop := Base + Box.Metrics.LabelHeight;
+        var Height := EnsureRange(Box.Height - Box.Metrics.LabelHeight, 0, J2MECustomItemExtent);
+        if (Box.Width <= 0) or (Height = 0) or (BodyTop >= Bottom) or (BodyTop + Height <= Top) then
+          HideCustomItem(Box.Ref)
+        else
+        begin
+          LCDPut(Item, 'customVisible', 1);
+          if not NeedsMeasure and (CustomJobsLeft > 0) and (LCDInt(Item, 'customDrawQueued') = 0) and
+            (LCDInt(Item, 'customMeasureQueued') = 0) and
+            ((LCDInt(Item, 'customRepaint') <> 0) or (LCDRef(Item, 'customImage') = 0) or
+            (LCDInt(Item, 'customWidth') <> Box.Width) or (LCDInt(Item, 'customHeight') <> Height)) then
+          begin
+            FPostCustomItem('$draw', '(II)V', [TJVMValue.Ref(Box.Ref), TJVMValue.Int(Box.Width), TJVMValue.Int(Height)]);
+            LCDPut(Item, 'customDrawQueued', 1);
+            Dec(CustomJobsLeft);
+          end;
+        end;
+      end;
       if (Box.Width <= 0) or (Box.Height <= 0) or (Base >= Bottom) or (Base + Box.Height <= Top) then
         Continue;
       var X := Box.X + 6;
       var Y := Integer(Base);
-      var Item := FVM.GetObject(Box.Ref);
-      var Kind := LCDInt(Item, 'itemKind');
       ClipL := X;
       ClipR := Min(FWidth - 4, X + Box.Width);
       ClipT := Max(Top, Y);
@@ -2043,19 +2744,35 @@ var
       ClipT := Max(ClipT, BodyY);
       Font := J2MEFontView(FVM, Box.Metrics.FontRef);
       case Kind of
+        J2MECustomItemKind:
+          begin
+            var Ref := LCDRef(Item, 'customImage');
+            if Ref <> 0 then
+            begin
+              var View := J2MEImageView(FVM, Ref);
+              LCDPut(Item, 'customHitX', X);
+              LCDPut(Item, 'customHitY', BodyY);
+              LCDPut(Item, 'customHitRight', Min(ClipR, X + View.Width));
+              LCDPut(Item, 'customHitBottom', Min(ClipB, BodyY + View.Height));
+              Picture(Ref, X, BodyY);
+            end;
+          end;
+        J2MEVideoItemKind:
+          if Assigned(FDrawVideoItem) and (ClipT < ClipB) then
+            FDrawVideoItem(Box.Ref, Pixels, FWidth, X, BodyY, System.Types.Rect(ClipL, ClipT, ClipR, ClipB));
         1:
           begin
             var Mode := LCDInt(Item, 'appearance');
             var Inset := 0;
             if Mode = 2 then
             begin
-              Outline(X, BodyY, Box.Width, BodyHeight, $FF8B9BAB);
+              Outline(X, BodyY, Box.Width, BodyHeight, UIBorder);
               Inset := 3;
             end;
             var LineHeight := Font.Height + 3;
             First := Max(0, (ClipT - BodyY - Inset) div LineHeight);
             Last := Min(High(Box.Metrics.Lines), (ClipB - BodyY) div LineHeight);
-            var Color: UInt32 := $FF152536;
+            var Color: UInt32 := UIForeground;
             if Mode = 1 then
               Color := $FF145CA3;
             for var I := First to Last do
@@ -2082,7 +2799,7 @@ var
             var Maximum := LCDInt(Item, 'maximum');
             var Value := LCDInt(Item, 'value');
             if Maximum > 0 then
-              Rect(X + 1, BodyY + 1, Integer(Int64(Max(0, Box.Width - 2)) * Value div Maximum), 16, $FF2766A4)
+              Rect(X + 1, BodyY + 1, Integer(Int64(Max(0, Box.Width - 2)) * Value div Maximum), 16, UIHighlightedBackground)
             else if Value >= 2 then
             begin
               var Phase := Int64(UInt32(LCDInt(Item, 'pulse')));
@@ -2093,12 +2810,12 @@ var
               end;
               var Part := Max(1, Box.Width div 4);
               var Position := Integer(Phase mod Max(1, Box.Width - Part - 2));
-              Rect(X + 1 + Position, BodyY + 1, Part, 16, $FF2766A4);
+              Rect(X + 1 + Position, BodyY + 1, Part, 16, UIHighlightedBackground);
             end;
           end;
         7:
           begin
-            Outline(X, BodyY, Box.Width, BodyHeight, $FF8B9BAB);
+            Outline(X, BodyY, Box.Width, BodyHeight, UIBorder);
             var Selection, Count: Integer;
             J2MEDateFieldSelection(Item, Selection, Count);
             var LineHeight := Font.Height + 3;
@@ -2117,7 +2834,7 @@ var
                   Rect(X + 4 + Left, YY, Width, Font.Height, $FFB9D7F2);
                 end;
               end;
-              Text(Line.Text, X + 4, YY, $FF152536);
+              Text(Line.Text, X + 4, YY, UIForeground);
             end;
           end;
         5:
@@ -2130,7 +2847,7 @@ var
             var Popup := (LCDInt(Item, 'choiceType') = 4) and (LCDInt(Item, 'expanded') = 0);
             if Popup then
             begin
-              Outline(X, BodyY, Box.Width, BodyHeight, $FF8B9BAB);
+              Outline(X, BodyY, Box.Width, BodyHeight, UIBorder);
               if Count > 0 then
               begin
                 var Selected := 0;
@@ -2160,8 +2877,8 @@ var
           end;
       end;
       ClipT := Max(Top, Y);
-      if (Box.Ref = Focus) and (Kind <> 5) then
-        Outline(X, Y, Box.Width, Box.Height, $FF2766A4);
+      if (Box.Ref = Focus) and (Kind <> 5) and (LCDInt(Item, 'traverseActive') = 0) then
+        Outline(X, Y, Box.Width, Box.Height, UIHighlightedBorder);
     end;
     ClipL := 0;
     ClipR := FWidth;
@@ -2186,6 +2903,8 @@ begin
   if FCurrent = 0 then
     Exit;
   FDirty := False;
+  if FMenu or ChoicePopup(FCurrent) then
+    CancelCustomPointer;
   FScrollText := False;
   FTickerStep := Now div 50;
   var O := FVM.GetObject(FCurrent);
@@ -2205,7 +2924,7 @@ begin
           Pixels[(Row + ContentTop) * FWidth + Col] := Content[Row * FWidth + Col];
   end
   else
-    Rect(0, 0, FWidth, FHeight, $FFF4F6F9);
+    Rect(0, 0, FWidth, FHeight, UIBackground);
   if ContentTop > 0 then
   begin
     var Y := 0;
@@ -2224,7 +2943,7 @@ begin
       ClipT := Y;
       ClipB := Min(FHeight, Y + 16);
       Rect(0, Y, FWidth, 16, $FFE2E9EF);
-      Text(Value, X, Y + 1, $FF152536);
+      Text(Value, X, Y + 1, UIForeground);
       ClipT := 0;
       ClipB := FHeight;
     end;
@@ -2269,11 +2988,11 @@ begin
       if Y + Heights[I] <= ClipT then
         Continue;
       var Row := FVM.GetObject(Rows.Elements[I].AsRef);
-      var Color: UInt32 := $FF152536;
+      var Color: UInt32 := UIForeground;
       if I = Focus then
       begin
-        Rect(0, Y, FWidth, Heights[I], $FF2766A4);
-        Color := $FFFFFFFF;
+        Rect(0, Y, FWidth, Heights[I], UIHighlightedBackground);
+        Color := UIHighlightedForeground;
       end;
       var X := 5;
       if LCDInt(O, 'choiceType') <> 3 then
@@ -2290,8 +3009,8 @@ begin
       if Image <> 0 then
       begin
         var View := J2MEImageView(FVM, Image);
-        for var R := 0 to Min(20, View.Height) - 1 do
-          for var C := 0 to Min(32, View.Width) - 1 do
+        for var R := 0 to Min(ChoiceIconHeight, View.Height) - 1 do
+          for var C := 0 to Min(ChoiceIconWidth, View.Width) - 1 do
             if (X + C < FWidth) and (Y + R + 2 >= ClipT) and (Y + R + 2 < ClipB) then
             begin
               var Pixel := UInt32(View.Pixels.Elements[R * View.Width + C].AsInt);
@@ -2307,7 +3026,7 @@ begin
                   (((Pixel and 255) * A + (Old and 255) * B + 127) div 255);
               end;
             end;
-        Inc(X, Min(32, View.Width) + 4);
+        Inc(X, Min(ChoiceIconWidth, View.Width) + 4);
       end;
       var FontRef := LCDRef(Row, 'font');
       if FontRef <> 0 then
@@ -2345,7 +3064,10 @@ begin
     ClipB := FHeight;
   end;
   if IsForm(FCurrent) then
+  begin
     FormBody(FCurrent, ContentTop, H);
+    UpdateCustomTraversal(FCurrent);
+  end;
   if IsTextBox(FCurrent) then
   begin
     ClipT := ContentTop;
@@ -2371,7 +3093,7 @@ begin
     var Kind := LCDRef(O, 'alertType');
     if Kind <> 0 then
     begin
-      var Color: UInt32 := $FF2766A4;
+      var Color: UInt32 := UIHighlightedBackground;
       case LCDInt(FVM.GetObject(Kind), 'alertType') of
         2:
           Color := $FFAF7200;
@@ -2410,7 +3132,7 @@ begin
     var First := Max(0, (ClipT - Y) div FAlertLayout.LineHeight);
     var Last := Min(High(FAlertLayout.Lines), (ClipB - Y) div FAlertLayout.LineHeight);
     for var I := First to Last do
-      Text(FAlertLayout.Lines[I], 6, Y + I * FAlertLayout.LineHeight, $FF152536, FWidth - 8);
+      Text(FAlertLayout.Lines[I], 6, Y + I * FAlertLayout.LineHeight, UIForeground, FWidth - 8);
     if FAlertLayout.Indicator <> 0 then
     begin
       var Gauge := FVM.GetObject(FAlertLayout.Indicator);
@@ -2421,7 +3143,7 @@ begin
       var Maximum := LCDInt(Gauge, 'maximum');
       var Value := LCDInt(Gauge, 'value');
       if Maximum > 0 then
-        Rect(9, Top + 1, Integer(Int64(Max(0, Width - 2)) * Value div Maximum), 14, $FF2766A4)
+        Rect(9, Top + 1, Integer(Int64(Max(0, Width - 2)) * Value div Maximum), 14, UIHighlightedBackground)
       else if Value >= 2 then
       begin
         var Phase := Int64(UInt32(LCDInt(Gauge, 'pulse')));
@@ -2432,7 +3154,7 @@ begin
         end;
         var Part := Max(1, Width div 4);
         var Position := Integer(Phase mod Max(1, Width - Part - 2));
-        Rect(9 + Position, Top + 1, Part, 14, $FF2766A4);
+        Rect(9 + Position, Top + 1, Part, 14, UIHighlightedBackground);
       end;
     end;
     if FAlertLayout.TotalHeight > H then
@@ -2492,15 +3214,15 @@ begin
     FMenuIndex := EnsureRange(FMenuIndex, 0, Max(0, High(Values)));
     var Page := Max(1, (FHeight - 24) div 22);
     var First := Max(0, FMenuIndex - Page + 1);
-    Rect(2, 2, FWidth - 4, FHeight - 4, $FFF4F6F9);
-    Text('Options', 6, 4, $FF152536);
+    Rect(2, 2, FWidth - 4, FHeight - 4, UIBackground);
+    Text('Options', 6, 4, UIForeground);
     for var I := First to Min(High(Values), First + Page - 1) do
     begin
       var Y := 22 + (I - First) * 22;
-      var Color: UInt32 := $FF152536;
+      var Color: UInt32 := UIForeground;
       if I = FMenuIndex then
       begin
-        Rect(4, Y, FWidth - 8, 22, $FF2766A4);
+        Rect(4, Y, FWidth - 8, 22, UIHighlightedBackground);
         Color := $FFFFFFFF;
       end;
       Text(CommandLabel(Values[I], True), 7, Y + 3, Color);

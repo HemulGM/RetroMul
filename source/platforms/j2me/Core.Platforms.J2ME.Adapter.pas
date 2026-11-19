@@ -8,7 +8,7 @@ uses
   System.Generics.Collections, Core.Storage, Core.Emulation, J2ME.Suite,
   J2ME.Runtime, Core.Platforms.J2ME.Playback, Core.Bluetooth.Types,
   Core.Messaging.Types, J2ME.Device, J2ME.Screen, J2ME.Display, Core.RomMetadata,
-  J2ME.Input, Core.Input.Touch;
+  J2ME.Input, Core.Input.Touch, J2ME.Sensor;
 
 type
   TJ2MEConfig = class(TEmulatorConfigBase)
@@ -28,7 +28,7 @@ type
     Pressed: Boolean;
   end;
 
-  TJ2MECoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationCompletion, IEmulationGameActions, IEmulationAudioDiagnostics, IEmulationBluetooth, IEmulationMessaging, IEmulationRumbleOutput, IEmulationSnapshotLocation, IEmulationRomMetadata, IJ2MEPhoneInput, IJ2MEResolutionAdvice, IEmulationTouchInput)
+  TJ2MECoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationCompletion, IEmulationGameActions, IEmulationAudioDiagnostics, IEmulationBluetooth, IEmulationMessaging, IEmulationRumbleOutput, IEmulationSnapshotLocation, IEmulationRomMetadata, IJ2MEPhoneInput, IJ2MEResolutionAdvice, IEmulationTouchInput, IEmulationMotionInput, IEmulationMotionInput3D)
   private
     FSnapshotCommands: TSnapshotQueue;
     FSnapshotHash: TBytes;
@@ -46,6 +46,8 @@ type
     FTouchEvents: TList<TEmulationTouchEvent>;
     FTouchTracker: TEmulationTouchTracker;
     FUsesTouch, FTouchOverflow, FTouchFit: Boolean;
+    FUsesAcceleration: Boolean;
+    FSensorInput: TJ2MESensorInput;
     FCanvasWidth, FCanvasHeight: Integer;
     FKeyboard: TDictionary<UInt32, Integer>;
     FHeld: TDictionary<Integer, Integer>;
@@ -56,7 +58,7 @@ type
     FAdviceCurrent, FAdviceRecommended: TJ2MEScreenSize;
     FAdviceReady, FAdviceShown, FAdviceSuppressed: Boolean;
     FFrameReady, FPaused, FFinished: Boolean;
-    FInputResync: Boolean;
+    FInputResetPending, FInputResync: Boolean;
     FError, FAudioError: string;
     FRumbleArea: Double;
     FRumbleMillis: Int64;
@@ -88,10 +90,14 @@ type
     procedure Resume;
     procedure Reset;
     procedure ClearInput;
+    procedure ClearInputLocked;
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
     procedure SetVirtualKeypad(Keys: Word);
     function GetUsesTouch: Boolean;
+    function GetHasAccelerometer: Boolean;
+    procedure SetAcceleration(X, Y: Double);
+    procedure SetAcceleration3D(X, Y, Z: Double; Available: Boolean);
     procedure SendTouch(const Event: TEmulationTouchEvent);
     function GetInputState: TEmulatorInput;
     function GetSnapshotDirectory: string;
@@ -116,7 +122,8 @@ implementation
 
 uses
   System.IOUtils, System.Math, Core.SavePaths, JVM.Types, Core.Bluetooth,
-  Core.Platforms.Bluetooth, Core.Messaging, J2ME.Compatibility, J2ME.Metadata;
+  Core.Platforms.Bluetooth, Core.Messaging, J2ME.Compatibility, J2ME.Metadata
+  {$IFDEF MSWINDOWS}, Core.PerformanceHints{$ENDIF};
 
 const
   PadCodes: array[TEmulatorButton] of Integer = (-1, -2, -3, -4, -5, 48, -6, -7, 49, 51, 55, 57, 53);
@@ -195,6 +202,10 @@ var
 begin
   inherited Create;
   FLock := TCriticalSection.Create;
+  {$IF Defined(ANDROID) or Defined(IOS)}
+  // Mobile suites can query the virtual sensor before the first host poll.
+  FSensorInput.Available := True;
+  {$ENDIF}
   FSnapshotCommands := TSnapshotQueue.Create;
   FAudioFactory := AudioFactory;
   FBluetooth := CreatePlatformBluetoothProvider;
@@ -252,7 +263,7 @@ begin
   Frame.Pixels := TArray<TAlphaColor>(Raster);
   FLock.Acquire;
   try
-    FUsesTouch := Runtime.HasTouchCanvas;
+    FUsesTouch := Runtime.HasTouchInput;
     FTouchFit := FDisplayPlan.Scaling and Runtime.IsFullscreenCanvas;
     FCanvasWidth := Runtime.ScreenWidth;
     FCanvasHeight := Runtime.ScreenHeight;
@@ -303,6 +314,34 @@ begin
   Result := True;
 end;
 
+function TJ2MECoreAdapter.GetHasAccelerometer: Boolean;
+begin
+  FLock.Acquire;
+  try
+    Result := FUsesAcceleration;
+  finally
+    FLock.Release;
+  end;
+end;
+
+procedure TJ2MECoreAdapter.SetAcceleration(X, Y: Double);
+begin
+  SetAcceleration3D(X, Y, 0, True);
+end;
+
+procedure TJ2MECoreAdapter.SetAcceleration3D(X, Y, Z: Double; Available: Boolean);
+begin
+  FLock.Acquire;
+  try
+    FSensorInput.X := X;
+    FSensorInput.Y := Y;
+    FSensorInput.Z := Z;
+    FSensorInput.Available := Available;
+  finally
+    FLock.Release;
+  end;
+end;
+
 function TJ2MECoreAdapter.GetHasRumble: Boolean;
 begin
   Result := True;
@@ -339,17 +378,18 @@ procedure TJ2MECoreAdapter.Start;
 begin
   if FWorker <> nil then
     Exit;
-  FPaused := False;
   FFinished := False;
   FError := '';
   FAudioError := '';
   FFrameReady := False;
   FLock.Acquire;
   try
+    FPaused := False;
     FRumbleArea := 0;
     FRumbleMillis := 0;
     FMotorResetGeneration := 0;
     FUsesTouch := False;
+    FUsesAcceleration := False;
     FTouchEvents.Clear;
     FTouchTracker := Default(TEmulationTouchTracker);
     FTouchOverflow := False;
@@ -388,10 +428,10 @@ end;
 
 procedure TJ2MECoreAdapter.Pause;
 begin
-  ClearInput;
   FLock.Acquire;
   try
     FPaused := True;
+    ClearInputLocked;
     FRumbleArea := 0;
     FRumbleMillis := 0;
     Inc(FMotorResetGeneration);
@@ -502,32 +542,32 @@ begin
 end;
 
 procedure TJ2MECoreAdapter.ClearInput;
-var
-  Event: TJ2MEKeyEvent;
-  Code: Integer;
 begin
   FLock.Acquire;
   try
-    FEvents.Clear;
-    FTouchEvents.Clear;
-    FTouchTracker := Default(TEmulationTouchTracker);
-    FTouchOverflow := False;
-    var Cancel := Default(TEmulationTouchEvent);
-    Cancel.Phase := TEmulationTouchPhase.Cancel;
-    FTouchEvents.Add(Cancel);
-    for Code in FHeld.Keys do
-    begin
-      Event.Code := Code;
-      Event.Pressed := False;
-      FEvents.Enqueue(Event);
-    end;
-    FHeld.Clear;
-    FKeyboard.Clear;
-    FInput := Default(TEmulatorInput);
-    FVirtualKeypad := 0;
+    ClearInputLocked;
   finally
     FLock.Release;
   end;
+end;
+
+procedure TJ2MECoreAdapter.ClearInputLocked;
+begin
+  FEvents.Clear;
+  FTouchEvents.Clear;
+  FTouchTracker := Default(TEmulationTouchTracker);
+  FTouchOverflow := False;
+  var Cancel := Default(TEmulationTouchEvent);
+  Cancel.Phase := TEmulationTouchPhase.Cancel;
+  FTouchEvents.Add(Cancel);
+  // A queued release may already have removed its key from FHeld. Let the
+  // worker release what the guest actually received before accepting new input.
+  FInputResetPending := True;
+  FInputResync := False;
+  FHeld.Clear;
+  FKeyboard.Clear;
+  FInput := Default(TEmulatorInput);
+  FVirtualKeypad := 0;
 end;
 
 procedure TJ2MECoreAdapter.SetKeyState(Code: UInt32; Pressed: Boolean);
@@ -536,6 +576,8 @@ var
 begin
   FLock.Acquire;
   try
+    if FPaused then
+      Exit;
     if not Pressed then
     begin
       if FKeyboard.TryGetValue(Code, JavaCode) then
@@ -595,6 +637,8 @@ begin
   Keys := Keys and J2MEKeypadMask;
   FLock.Acquire;
   try
+    if FPaused then
+      Exit;
     for var I := Low(J2MEKeypadCodes) to High(J2MEKeypadCodes) do
       if ((Keys xor FVirtualKeypad) and (Word(1) shl I)) <> 0 then
         ChangeHeld(J2MEKeypadCodes[I], (Keys and (Word(1) shl I)) <> 0);
@@ -610,6 +654,8 @@ var
 begin
   FLock.Acquire;
   try
+    if FPaused then
+      Exit;
     for B := Low(TEmulatorButton) to High(TEmulatorButton) do
       if (B in Input.Buttons) <> (B in FInput.Buttons) then
         ChangeHeld(PadCodes[B], B in Input.Buttons);
@@ -802,7 +848,7 @@ var
   Events: TArray<TJ2MEKeyEvent>;
   TouchEvents: TArray<TEmulationTouchEvent>;
   Event: TJ2MEKeyEvent;
-  Paused, WasPaused, AudioFailed, Enabled, WasEnabled, Resync: Boolean;
+  Paused, WasPaused, AudioFailed, Enabled, WasEnabled, ResetInput, Resync: Boolean;
   DesiredKeys: TArray<Integer>;
   Frame: TEmulatorFrame;
   Pixels: TArray<UInt32>;
@@ -812,6 +858,12 @@ var
   Samples: TArray<SmallInt>;
   Volume: Single;
   MotorReset, SeenMotorReset: UInt64;
+  SensorInput: TJ2MESensorInput;
+  HaveSensorRequest: Boolean;
+  {$IFDEF MSWINDOWS}
+  IdlePacing: TEmulationPerformanceHints;
+  IdleWake: TEvent;
+  {$ENDIF}
 
   procedure AudioFailure(const Error: string);
   begin
@@ -833,12 +885,21 @@ begin
   WasEnabled := False;
   AudioFailed := False;
   SeenMotorReset := 0;
+  HaveSensorRequest := False;
   Remainder := 0;
   AudioRetryAt := 0;
   Watch := TStopwatch.StartNew;
   LastMillis := 0;
+  {$IFDEF MSWINDOWS}
+  IdlePacing := nil;
+  IdleWake := nil;
+  {$ENDIF}
   try
     try
+      {$IFDEF MSWINDOWS}
+      IdleWake := TEvent.Create(nil, False, False, '');
+      IdlePacing := TEmulationPerformanceHints.Create(1000000, 'J2ME');
+      {$ENDIF}
       var Screen := ConfiguredScreen;
       Runtime := TJ2MERuntime.Create(FSuite, Screen.Width, Screen.Height, FBluetooth, FMessaging);
       Runtime.Start(FSettings.MIDletIndex);
@@ -853,6 +914,8 @@ begin
         end;
         FLock.Acquire;
         try
+          ResetInput := FInputResetPending;
+          FInputResetPending := False;
           Resync := FInputResync;
           FInputResync := False;
           DesiredKeys := nil;
@@ -872,6 +935,25 @@ begin
           FTouchEvents.Clear;
           Paused := FPaused;
           MotorReset := FMotorResetGeneration;
+          SensorInput := FSensorInput;
+          // Rotate screen-space tilt into the guest canvas, like touch input.
+          case FDisplayQuarterTurns of
+            1:
+              begin
+                SensorInput.X := FSensorInput.Y;
+                SensorInput.Y := -FSensorInput.X;
+              end;
+            2:
+              begin
+                SensorInput.X := -FSensorInput.X;
+                SensorInput.Y := -FSensorInput.Y;
+              end;
+            3:
+              begin
+                SensorInput.X := -FSensorInput.Y;
+                SensorInput.Y := FSensorInput.X;
+              end;
+          end;
         finally
           FLock.Release;
         end;
@@ -880,11 +962,8 @@ begin
           Runtime.CancelVibration;
           SeenMotorReset := MotorReset;
         end;
-        // A cancellation is also delivered while host-paused. Its Java release
-        // stays queued until execution resumes, before any fresh press.
-        for var Touch in TouchEvents do
-          if not Paused or (Touch.Phase = TEmulationTouchPhase.Cancel) then
-            Runtime.PointerEvent(Touch);
+        if ResetInput then
+          Runtime.ReleasePhysicalKeys;
         if Paused <> WasPaused then
         begin
           Runtime.SetExecutionPaused(Paused);
@@ -896,21 +975,33 @@ begin
               AudioFailure(E.Message);
           end;
         end;
+        // A cancellation is also delivered while host-paused. Its Java release
+        // stays queued until execution resumes, before any fresh press.
+        for var Touch in TouchEvents do
+          if not Paused or (Touch.Phase = TEmulationTouchPhase.Cancel) then
+            Runtime.PointerEvent(Touch);
         if not Paused then
         begin
           if Resync then
-          begin
-            Runtime.ReleasePhysicalKeys;
-            for var Key in DesiredKeys do
-              Runtime.KeyEvent(Key, True);
-          end;
+            Runtime.ReconcilePhysicalKeys(DesiredKeys);
           for Event in Events do
             Runtime.KeyEvent(Event.Code, Event.Pressed);
         end;
         // Device backpressure applies only to advancing the mixer below.
         // A full PCM FIFO may stay full while healthy playback continues;
         // gating Java here can starve it forever until pause clears the FIFO.
+        Runtime.SetSensorInput(SensorInput);
         Runtime.Tick(2000);
+        if not HaveSensorRequest and Runtime.SensorInputRequested then
+        begin
+          HaveSensorRequest := True;
+          FLock.Acquire;
+          try
+            FUsesAcceleration := True;
+          finally
+            FLock.Release;
+          end;
+        end;
         if TThread.CheckTerminated then
           Break;
         if Runtime.State = TJ2MEState.Destroyed then
@@ -1063,7 +1154,12 @@ begin
         if Runtime.TakeFrame(Pixels, Frame.FrameNumber) then
           PublishFrame(Runtime, Pixels, Frame.FrameNumber);
         if not Runtime.NeedsExecution then
-          TThread.Sleep(1);
+          {$IFDEF MSWINDOWS}
+          // Sleep(1) can overshoot a guest frame on the Windows timer tick.
+          IdlePacing.WaitUntil(IdleWake, TStopwatch.GetTimeStamp + Max(Int64(1), TStopwatch.Frequency div 1000));
+          {$ELSE}
+        TThread.Sleep(1);
+          {$ENDIF}
       end;
     except
       on E: Exception do
@@ -1087,6 +1183,10 @@ begin
     end;
     Playback.Free;
     Runtime.Free;
+    {$IFDEF MSWINDOWS}
+    IdlePacing.Free;
+    IdleWake.Free;
+    {$ENDIF}
   end;
 end;
 

@@ -26,6 +26,8 @@ type
     function InvokeConnection(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
     function InvokeInput(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
     procedure InvokeOutput(Method: TJVMMethod; const Args: TArray<TJVMValue>);
+    function StageOutput(Stream: TJVMObject; Store: TJ2MEFileStore): Integer;
+    procedure CompleteOutput(Stream: TJVMObject; Offset: Integer);
     procedure FlushOutput(Stream: TJVMObject; Store: TJ2MEFileStore);
   public
     constructor Create(VM: TJVM; const Storage: IStorage; const Vendor, Suite: string);
@@ -565,15 +567,15 @@ begin
   Result := TJVMValue.Int(1);
 end;
 
-procedure TJ2MEFileSystem.FlushOutput(Stream: TJVMObject; Store: TJ2MEFileStore);
+function TJ2MEFileSystem.StageOutput(Stream: TJVMObject; Store: TJ2MEFileStore): Integer;
 var
   Entry: TJ2MEFileEntry;
 begin
-  if Stream.Fields[OutClosed].AsInt <> 0 then
-    Exit;
+  if (Stream = nil) or (Stream.Fields[OutClosed].AsInt <> 0) then
+    Exit(-1);
   var Count := Stream.Fields[OutCount].AsInt;
   if Count = 0 then
-    Exit;
+    Exit(-1);
   var Path := StringArgument(Stream.Fields[OutTarget]);
   if not Store.Entries.TryGetValue(Path, Entry) or Entry.Has(FileDirectory or FileUnwritable) or
     (Entry.Identity <> StringArgument(Stream.Fields[OutIdentity])) then
@@ -590,9 +592,22 @@ begin
   Entry.Data := Data;
   Entry.Modified := FileTimeMillis;
   Store.Entries[Path] := Entry;
-  Store.Commit;
-  Stream.Fields[OutOffset] := TJVMValue.Int(Offset + Count);
+  Result := Offset + Count;
+end;
+
+procedure TJ2MEFileSystem.CompleteOutput(Stream: TJVMObject; Offset: Integer);
+begin
+  Stream.Fields[OutOffset] := TJVMValue.Int(Offset);
   Stream.Fields[OutCount] := TJVMValue.Int(0);
+end;
+
+procedure TJ2MEFileSystem.FlushOutput(Stream: TJVMObject; Store: TJ2MEFileStore);
+begin
+  var Offset := StageOutput(Stream, Store);
+  if Offset < 0 then
+    Exit;
+  Store.Commit;
+  CompleteOutput(Stream, Offset);
 end;
 
 function TJ2MEFileSystem.InvokeConnection(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
@@ -606,9 +621,9 @@ var
     if Ref <> 0 then
     begin
       var Output := FVM.GetObject(Ref);
-      FlushOutput(Output, Store);
       Output.Fields[OutClosed] := TJVMValue.Int(1);
       Output.Fields[OutData] := TJVMValue.Ref(0);
+      Output.Fields[OutCount] := TJVMValue.Int(0);
       Obj.Fields[FileOutRef] := TJVMValue.Ref(0);
     end;
     Ref := Obj.Fields[FileInRef].AsRef;
@@ -840,6 +855,10 @@ begin
     end;
     if Entry.Has(FileUnwritable) then
       IOFailure('Virtual file is read-only');
+    var Output: TJVMObject := nil;
+    var OutRef := Obj.Fields[FileOutRef].AsRef;
+    if OutRef <> 0 then
+      Output := FVM.GetObject(OutRef);
     if N = 'truncate' then
     begin
       var Offset := Args[1].AsLong;
@@ -847,23 +866,21 @@ begin
         FVM.RaiseJava('java/lang/IllegalArgumentException', 'Negative file length');
       if Entry.Has(FileDirectory) then
         IOFailure('Cannot truncate a directory');
-      var OutRef := Obj.Fields[FileOutRef].AsRef;
-      if OutRef <> 0 then
-        FlushOutput(FVM.GetObject(OutRef), Store);
+      var PendingOffset := StageOutput(Output, Store);
       Entry := Store.Entries[Path];
-      if Offset < Length(Entry.Data) then
+      var Shortened := Offset < Length(Entry.Data);
+      if Shortened then
       begin
         Entry.Data := Copy(Entry.Data, 0, Integer(Offset));
         Entry.Modified := FileTimeMillis;
         Store.Entries[Path] := Entry;
-        Store.Commit;
-        if OutRef <> 0 then
-        begin
-          var Output := FVM.GetObject(OutRef);
-          if Output.Fields[OutOffset].AsInt > Offset then
-            Output.Fields[OutOffset] := TJVMValue.Int(Integer(Offset));
-        end;
       end;
+      if Shortened or (PendingOffset >= 0) then
+        Store.Commit;
+      if PendingOffset >= 0 then
+        CompleteOutput(Output, PendingOffset);
+      if Shortened and (Output <> nil) and (Output.Fields[OutOffset].AsInt > Offset) then
+        Output.Fields[OutOffset] := TJVMValue.Int(Integer(Offset));
       Exit;
     end;
     if N = 'delete' then
@@ -871,9 +888,10 @@ begin
       for var Key in Store.Entries.Keys do
         if J2MEFileParent(Key) = Path then
           IOFailure('Virtual directory is not empty');
-      CloseStreams(Obj);
+      StageOutput(Output, Store);
       Store.Entries.Remove(Path);
       Store.Commit;
+      CloseStreams(Obj);
       Exit;
     end;
     if N = 'rename' then
@@ -893,7 +911,7 @@ begin
           (Length(Target) + Length(Key) - Length(Path) > J2MEPathChars) then
           IOFailure('Renamed path too long');
       var TargetRef := FVM.NewString(Target);
-      CloseStreams(Obj);
+      StageOutput(Output, Store);
       for var Key in Keys do
         if (Key = Path) or Key.StartsWith(Prefix) then
         begin
@@ -902,6 +920,7 @@ begin
           Store.Entries.Add(Target + Copy(Key, Length(Path) + 1, MaxInt), Moved);
         end;
       Store.Commit;
+      CloseStreams(Obj);
       Obj.Fields[FilePath] := TJVMValue.Ref(TargetRef);
       Obj.Fields[FileFolder] := TJVMValue.Int(Ord(Entry.Has(FileDirectory)));
       Exit;

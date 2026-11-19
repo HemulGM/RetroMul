@@ -211,8 +211,5 @@ begin
   Right := EnsureRange(Round(FDCRight.Process(FSumR / Count) * 24000), -32768, 32767);
 end;
 
-initialization
-  ConstantInitialise;
-
 end.
 

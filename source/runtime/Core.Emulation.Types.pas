@@ -153,6 +153,12 @@ type
   end;
 
   // Rotation about the screen normal, normalized to 180 degrees per second.
+  // Optional three-axis extension of IEmulationMotionInput.
+  IEmulationMotionInput3D = interface
+    ['{C5781AF3-009E-4AF7-9E25-61CB587BBDFE}']
+    procedure SetAcceleration3D(X, Y, Z: Double; Available: Boolean);
+  end;
+
   IEmulationRotationInput = interface
     ['{94335543-B087-4B1B-A26F-5AC933E13A21}']
     function GetHasGyroscope: Boolean;

@@ -18,19 +18,25 @@ uses
   System.Math, Audio.Decoder, Audio.Format.MIDI;
 
 type
-  TSMAFVolume = record
+  TSMAFPCMEvent = record
     Frame: Int64;
-    Gain: Integer; // Squared volume in 127^2 units.
+    Channel, WaveOffset, Frames, Gain: Integer;
+  end;
+
+  PSMAFPCMChannel = ^TSMAFPCMChannel;
+
+  TSMAFPCMChannel = record
+    WaveOffset, Frames, Position, Predictor, Step, Gain: Integer;
   end;
 
   TSMAFSource = class(TAudioMusicSource)
   private
     FData: TBytes;
-    FRate, FWaveOffset, FWaveFrames: Integer;
-    FFirstFrame, FTotalFrames, FPosition: Int64;
-    FPredictor, FStep, FVolumeIndex, FGain: Integer;
-    FVolumes: TArray<TSMAFVolume>;
-    function DecodeSample(Code: Byte): SmallInt;
+    FRate, FNextEvent: Integer;
+    FTotalFrames, FPosition: Int64;
+    FEvents: TArray<TSMAFPCMEvent>;
+    FChannels: array[0..3] of TSMAFPCMChannel;
+    function DecodeSample(var Channel: TSMAFPCMChannel; Code: Byte): SmallInt;
   public
     constructor Create(const Data: TBytes);
     function GetInfo: TAudioInfo; override;
@@ -475,6 +481,7 @@ const
 var
   SequenceStart, SequenceEnd: Integer;
   WaveOffset, WaveBytes: array[1..62] of Integer;
+  ChannelEnd: array[0..3] of Int64;
   DurationBase, GateBase: Integer;
   TrackFound: Boolean;
 
@@ -546,59 +553,65 @@ begin
     UnsupportedSMAF;
   At := SequenceStart;
   var MilliTime: Int64 := 0;
-  var Volume := 127;
-  var Volumes := TList<TSMAFVolume>.Create;
+  var HasWave := False;
+  FillChar(ChannelEnd, SizeOf(ChannelEnd), 0);
+  var Events := TList<TSMAFPCMEvent>.Create;
   try
     while At < SequenceEnd do
     begin
       if (SequenceEnd - At = 4) and SMAFTag(Data, At, #0#0#0#0) then
         Break;
       Inc(MilliTime, Int64(ReadHandyPhoneTicks(Data, At, SequenceEnd)) * DurationBase);
-      if MilliTime > 86400000 then
+      if (MilliTime > 86400000) or (Events.Count >= 262144) then
         InvalidSMAF;
       var Event := ReadSMAFByte(Data, At, SequenceEnd);
-      if Event = 0 then
-      begin
-        // A mono ATR has one audio channel. The standard volume command
-        // changes gain on that channel at its own playback timestamp.
-        var Control := ReadSMAFByte(Data, At, SequenceEnd);
-        if Control <> $37 then
-          UnsupportedSMAF;
-        var NewVolume := ReadSMAFByte(Data, At, SequenceEnd);
-        if NewVolume > 127 then
-          InvalidSMAF;
-        if NewVolume <> Volume then
-        begin
-          Volume := NewVolume;
-          var Change: TSMAFVolume;
-          Change.Frame := MilliTime * FRate div 1000;
-          Change.Gain := Volume * Volume;
-          Volumes.Add(Change);
-        end;
-        Continue;
-      end;
       if Event = $FF then
       begin
         if ReadSMAFByte(Data, At, SequenceEnd) <> 0 then
           UnsupportedSMAF;
         Continue;
       end;
-      var ID := Event and $3F;
-      if (Event shr 6 <> 0) or (ID < Low(WaveOffset)) or (ID > High(WaveOffset)) or (FWaveOffset <> 0) then
-        UnsupportedSMAF;
-      if WaveOffset[ID] = 0 then
-        InvalidSMAF;
-      FWaveOffset := WaveOffset[ID];
-      FFirstFrame := MilliTime * FRate div 1000;
-      FWaveFrames := Min(WaveBytes[ID] * 2, Int64(ReadHandyPhoneTicks(Data, At, SequenceEnd)) * GateBase * FRate div 1000);
+      var Change := Default(TSMAFPCMEvent);
+      Change.Frame := MilliTime * FRate div 1000;
+      if Event = 0 then
+      begin
+        var Control := ReadSMAFByte(Data, At, SequenceEnd);
+        if (Control and $3F) <> $37 then
+          UnsupportedSMAF;
+        Change.Channel := Control shr 6;
+        var Volume := ReadSMAFByte(Data, At, SequenceEnd);
+        if Volume > 127 then
+          InvalidSMAF;
+        Change.Gain := Volume * Volume;
+      end
+      else
+      begin
+        var ID := Event and $3F;
+        if (ID < Low(WaveOffset)) or (ID > High(WaveOffset)) then
+          InvalidSMAF;
+        if WaveOffset[ID] = 0 then
+          InvalidSMAF;
+        var Gate := ReadHandyPhoneTicks(Data, At, SequenceEnd);
+        if Gate = 0 then
+          InvalidSMAF;
+        HasWave := True;
+        Change.Channel := Event shr 6;
+        Change.WaveOffset := WaveOffset[ID];
+        Change.Frames := Min(Int64(WaveBytes[ID]) * 2, Int64(Gate) * GateBase * FRate div 1000);
+        // Each channel has one wave cursor. A new trigger replaces its wave.
+        ChannelEnd[Change.Channel] := Change.Frame + Change.Frames;
+      end;
+      Events.Add(Change);
     end;
-    FVolumes := Volumes.ToArray;
+    FEvents := Events.ToArray;
   finally
-    Volumes.Free;
+    Events.Free;
   end;
-  if (FWaveOffset = 0) or (FWaveFrames = 0) then
+  if not HasWave then
     InvalidSMAF;
-  FTotalFrames := Max(FFirstFrame + FWaveFrames, MilliTime * FRate div 1000);
+  FTotalFrames := MilliTime * FRate div 1000;
+  for var LastFrame in ChannelEnd do
+    FTotalFrames := Max(FTotalFrames, LastFrame);
   FData := Data;
   SelectTrack(0);
 end;
@@ -617,24 +630,24 @@ begin
   if Index <> 0 then
     raise EArgumentOutOfRangeException.Create('SMAF track index');
   FPosition := 0;
-  FPredictor := 0;
-  FStep := 127;
-  FVolumeIndex := 0;
-  FGain := 127 * 127;
+  FNextEvent := 0;
+  FillChar(FChannels, SizeOf(FChannels), 0);
+  for var I := Low(FChannels) to High(FChannels) do
+    FChannels[I].Gain := 127 * 127;
 end;
 
-function TSMAFSource.DecodeSample(Code: Byte): SmallInt;
+function TSMAFSource.DecodeSample(var Channel: TSMAFPCMChannel; Code: Byte): SmallInt;
 const
   // Yamaha ADPCM scale factors in Q8, truncated from the decimal ratios.
   StepScale: array[0..7] of Integer = (230, 230, 230, 230, 307, 409, 512, 614);
 begin
   var Magnitude := Code and 7;
-  var Delta := (2 * Magnitude + 1) * FStep div 8;
+  var Delta := (2 * Magnitude + 1) * Channel.Step div 8;
   if (Code and 8) <> 0 then
     Delta := -Delta;
-  FPredictor := EnsureRange(FPredictor + Delta, -32768, 32767);
-  FStep := EnsureRange(FStep * StepScale[Magnitude] div 256, 127, 24576);
-  Result := SmallInt(FPredictor);
+  Channel.Predictor := EnsureRange(Channel.Predictor + Delta, -32768, 32767);
+  Channel.Step := EnsureRange(Channel.Step * StepScale[Magnitude] div 256, 127, 24576);
+  Result := SmallInt(Channel.Predictor);
 end;
 
 function TSMAFSource.Render(var Samples: array of SmallInt; Frames: Integer): Integer;
@@ -644,22 +657,36 @@ begin
   for var I := 0 to Result - 1 do
   begin
     var Frame := FPosition + I;
-    while (FVolumeIndex < Length(FVolumes)) and (FVolumes[FVolumeIndex].Frame <= Frame) do
+    while (FNextEvent < Length(FEvents)) and (FEvents[FNextEvent].Frame <= Frame) do
     begin
-      FGain := FVolumes[FVolumeIndex].Gain;
-      Inc(FVolumeIndex);
+      var Event := FEvents[FNextEvent];
+      var Channel: PSMAFPCMChannel := @FChannels[Event.Channel];
+      if Event.WaveOffset = 0 then
+        Channel.Gain := Event.Gain
+      else
+      begin
+        Channel.WaveOffset := Event.WaveOffset;
+        Channel.Frames := Event.Frames;
+        Channel.Position := 0;
+        Channel.Predictor := 0;
+        Channel.Step := 127;
+      end;
+      Inc(FNextEvent);
     end;
-    var WaveFrame := Frame - FFirstFrame;
-    if (WaveFrame >= 0) and (WaveFrame < FWaveFrames) then
+    var Mix := 0;
+    for var J := Low(FChannels) to High(FChannels) do
     begin
-      var Code := FData[FWaveOffset + WaveFrame div 2];
+      var Channel: PSMAFPCMChannel := @FChannels[J];
+      if Channel.Position >= Channel.Frames then
+        Continue;
+      var Code := FData[Channel.WaveOffset + Channel.Position div 2];
       // SMAF stores the first mono sample in the low nibble.
-      if Odd(WaveFrame) then
+      if Odd(Channel.Position) then
         Code := Code shr 4;
-      Samples[I] := DecodeSample(Code) * FGain div (127 * 127);
-    end
-    else
-      Samples[I] := 0;
+      Inc(Mix, DecodeSample(Channel^, Code) * Channel.Gain div (127 * 127));
+      Inc(Channel.Position);
+    end;
+    Samples[I] := SmallInt(EnsureRange(Mix, -32768, 32767));
   end;
   Inc(FPosition, Result);
 end;

@@ -682,8 +682,19 @@ end;
 procedure TStorage.Replace(const Source, Target: string);
 begin
   {$IFDEF MSWINDOWS}
-  if not MoveFileEx(PChar(NativeStoragePath(Source)), PChar(NativeStoragePath(Target)), MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
-    RaiseLastOSError;
+  var SourcePath := NativeStoragePath(Source);
+  var TargetPath := NativeStoragePath(Target);
+  var Started := TThread.GetTickCount64;
+  repeat
+    if MoveFileEx(PChar(SourcePath), PChar(TargetPath), MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
+      Exit;
+    var ErrorCode := GetLastError;
+    // An open handle that denies deletion can briefly block the atomic rename.
+    if ((ErrorCode <> ERROR_ACCESS_DENIED) and (ErrorCode <> ERROR_SHARING_VIOLATION)) or
+      (TThread.GetTickCount64 - Started >= 200) then
+      RaiseLastOSError(ErrorCode);
+    TThread.Sleep(10);
+  until False;
   {$ELSE}
   var Src := UTF8String(NativeStoragePath(Source));
   var Dst := UTF8String(NativeStoragePath(Target));

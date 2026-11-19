@@ -128,6 +128,15 @@ var
     end;
   end;
 
+  function HasUnpaddedFinalInfo(ChunkEnd: Integer): Boolean;
+  begin
+    // Some writers put the final INFO list directly after odd-sized data.
+    Result := DataFound and (ChunkEnd = FDataOffset + DataSize) and
+      (Limit - ChunkEnd >= 12) and HasTag(Data, ChunkEnd, 'LIST') and
+      HasTag(Data, ChunkEnd + 8, 'INFO') and
+      (Int64(LE32(Data, ChunkEnd + 4)) = Limit - ChunkEnd - 8);
+  end;
+
 begin
   inherited Create;
   RequireBytes(Data, 0, 12);
@@ -184,7 +193,7 @@ begin
     Offset := Integer(Next);
     // RIFF chunks are padded to even sizes. Accept an unpadded final chunk,
     // as used by common writers for odd-length 8-bit mono audio.
-    if Odd(Size) and (Offset < Limit) then
+    if Odd(Size) and (Offset < Limit) and not HasUnpaddedFinalInfo(Offset) then
       Inc(Offset);
   end;
   if (FormatOffset < 0) or not DataFound then

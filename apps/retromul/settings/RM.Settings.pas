@@ -996,6 +996,11 @@ begin
       begin
         SettingsPlatform.Configuration(FContext);
         Heading('GroupVideo', 'Video');
+        Combo('RowFrameScale', 'Frame scale',
+          'Centers the frame and reduces the selected scale if it does not fit.',
+          'Video', 'FrameScale',
+          ['Stretch', 'Original within window', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10'],
+          ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], '0');
         var Scaling := Combo('RowImagescaling', 'Image scaling', 'Nearest neighbor preserves sharp pixels; smoothing softens the i' + 'mage.', 'Video', 'Filter',
           ['Nearest neighbor', 'Smoothing'], ['nearest', 'linear'], 'nearest');
         FScaling := Scaling;

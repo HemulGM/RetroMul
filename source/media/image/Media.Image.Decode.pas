@@ -3,16 +3,16 @@
 interface
 
 uses
-  System.SysUtils, Media.Image.Types;
+  System.SysUtils, Media.Image.Types, Media.Image.PNG;
 
-function DecodeRasterImage(const Data: TBytes; MaxPixels: Integer = 16 * 1024 * 1024): TRasterImage;
+function DecodeRasterImage(const Data: TBytes; MaxPixels: Integer = 16 * 1024 * 1024; PNGOptions: TPNGDecodeOptions = []): TRasterImage;
 
 implementation
 
 uses
-  Media.Image.PNG, Media.Image.GIF, Media.Image.JPEG;
+  Media.Image.GIF, Media.Image.JPEG;
 
-function DecodeRasterImage(const Data: TBytes; MaxPixels: Integer): TRasterImage;
+function DecodeRasterImage(const Data: TBytes; MaxPixels: Integer; PNGOptions: TPNGDecodeOptions): TRasterImage;
 begin
   if (Length(Data) >= 3) and (Data[0] = Ord('G')) and (Data[1] = Ord('I')) and (Data[2] = Ord('F')) then
     Exit(DecodeGIF(Data, MaxPixels));
@@ -20,7 +20,7 @@ begin
     Exit(DecodeJPEG(Data, MaxPixels));
   // The PNG decoder owns signature/structure errors for the established path.
   try
-    var PNG := DecodePNG(Data, MaxPixels);
+    var PNG := DecodePNG(Data, MaxPixels, PNGOptions);
     Result.Width := PNG.Width;
     Result.Height := PNG.Height;
     Result.Pixels := PNG.Pixels;

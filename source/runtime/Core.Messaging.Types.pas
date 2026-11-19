@@ -70,6 +70,13 @@ type
     function Open(const Address: TMessageAddress; Mode: Integer; out Channel: IMessagingChannel): TMessagingError;
   end;
 
+  // Optional provider capability for inspecting a local inbox without opening
+  // a channel or consuming messages. SenderFilter uses WMA wildcards.
+  IMessagingInbox = interface
+    ['{D50AD84F-838E-46B6-99CB-914B55F29CAD}']
+    function HasUnread(const Address: TMessageAddress; const SenderFilter: string): Boolean;
+  end;
+
   IEmulationMessaging = interface
     ['{B779C2C2-2B37-4818-A5B3-BAFA49947C7F}']
     procedure SetMessagingProvider(const Provider: IMessagingProvider); // while stopped
@@ -79,6 +86,8 @@ type
 function SMSRestrictedPort(Port: Integer): Boolean;
 
 function SMSGSMCost(C: Char): Integer; // 0=UCS2 required,1=default septet,2=extension.
+
+function TryEncodeSMSGSM(const Text: string; out Data: TBytes): Boolean;
 
 function SMSCountSegments(const Text: string; BinaryBytes: Integer; Binary, HasPort: Boolean): Integer;
 
@@ -189,18 +198,78 @@ begin
   end;
 end;
 
+function GSMCode(C: Char): Integer;
+const
+  // ETSI TS 123 038, sections 6.2.1 and 6.2.1.1.
+  Alphabet = '@£$¥èéùìòÇ'#10'Øø'#13'Åå' + 'Δ_ΦΓΛΩΠΨΣΘΞ'#0'ÆæßÉ' +
+    ' !"#¤%&''()*+,-./' + '0123456789:;<=>?' + '¡ABCDEFGHIJKLMNO' +
+    'PQRSTUVWXYZÄÖÑÜ§' + '¿abcdefghijklmno' + 'pqrstuvwxyzäöñüà';
+begin
+  if CharInSet(C, ['A'..'Z', 'a'..'z', '0'..'9', ' '..'#', '%'..'/', ':'..'?', #10, #13]) then
+    Exit(Ord(C));
+  case C of
+    #12:
+      Exit($1B0A);
+    '^':
+      Exit($1B14);
+    '{':
+      Exit($1B28);
+    '}':
+      Exit($1B29);
+    '\':
+      Exit($1B2F);
+    '[':
+      Exit($1B3C);
+    '~':
+      Exit($1B3D);
+    ']':
+      Exit($1B3E);
+    '|':
+      Exit($1B40);
+    '€':
+      Exit($1B65);
+  end;
+  // The zero placeholder is the reserved escape slot, not Unicode NUL.
+  if C = #0 then
+    Exit(-1);
+  Result := Pos(C, Alphabet) - 1;
+end;
+
 function SMSGSMCost(C: Char): Integer;
 begin
-  Result := 1;
-  if CharInSet(C, ['A'..'Z', 'a'..'z', '0'..'9', ' ', '!', '"', '#', '$', '%', '&', '''', '(', ')', '*', '+', ',', '-', '.', '/', ':', ';', '<', '=', '>', '?', '@', '_', #10, #13]) then
-    Exit;
-  case Ord(C) of
-    163, 164, 165, 232, 233, 249, 236, 242, 199, 216, 248, 197, 229, 916, 934, 915, 923, 937, 928, 936, 931, 920, 926, 198, 230, 223, 201, 161, 196, 214, 209, 220, 167, 191, 228, 246, 241, 252, 224:
-      Exit;
-    12, 94, 123, 125, 92, 91, 126, 93, 124, 8364:
-      Exit(2);
+  var Code := GSMCode(C);
+  if Code < 0 then
+    Exit(0);
+  Result := 1 + Ord(Code > $7F);
+end;
+
+function TryEncodeSMSGSM(const Text: string; out Data: TBytes): Boolean;
+begin
+  Data := nil;
+  var Size: Int64 := 0;
+  for var C in Text do
+  begin
+    var Cost := SMSGSMCost(C);
+    if Cost = 0 then
+      Exit(False);
+    Inc(Size, Cost);
   end;
-  Result := 0;
+  if Size > MaxInt then
+    Exit(False);
+  SetLength(Data, Integer(Size));
+  var Offset := 0;
+  for var C in Text do
+  begin
+    var Code := GSMCode(C);
+    if Code > $7F then
+    begin
+      Data[Offset] := Byte(Code shr 8);
+      Inc(Offset);
+    end;
+    Data[Offset] := Byte(Code and $7F);
+    Inc(Offset);
+  end;
+  Result := True;
 end;
 
 function SMSCountSegments(const Text: string; BinaryBytes: Integer; Binary, HasPort: Boolean): Integer;

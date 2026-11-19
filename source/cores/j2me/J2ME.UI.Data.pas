@@ -7,6 +7,10 @@ uses
 
 const
   J2MEUI = 'javax/microedition/lcdui/';
+  J2MEVideoItemKind = 8;
+  J2MECustomItemKind = 9;
+  J2MECustomItemExtent = 1024;
+  J2MECustomItemClass = J2MEUI + 'CustomItem';
 
 function UIInt(O: TJVMObject; const Name: string; Default: Integer = 0): Integer;
 

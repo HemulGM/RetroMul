@@ -1131,22 +1131,22 @@ procedure TJ2MERMS.ApplyRestoredState;
 begin
   if FStateStores = nil then
     Exit;
-  var Previous := FDatabase.CaptureStateStores;
+  var OpenLeases := TList<TRMSLease>.Create;
   try
     try
-      FDatabase.ReplaceStateStores(FStateStores);
       for var H in FHandles.Values do
         if H.Opens > 0 then
         begin
-          FDatabase.AttachStateLease(H.Lease);
-          FOpen.Add(H.Lease.FileName, H.Reference);
+          FOpen.Add(FDatabase.StoreFile(FVendor, FSuite, H.Lease.Name), H.Reference);
+          OpenLeases.Add(H.Lease);
         end;
+      FDatabase.RestoreStateStores(FStateStores, OpenLeases.ToArray);
     except
-      FDatabase.ReplaceStateStores(Previous);
+      FOpen.Clear;
       raise;
     end;
   finally
-    Previous.Free;
+    OpenLeases.Free;
   end;
   FreeAndNil(FStateStores);
 end;

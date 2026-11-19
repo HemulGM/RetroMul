@@ -18,12 +18,16 @@ type
     FLock: TObject;
     FDone, FCancelled: Integer;
     FLimit: Integer;
+    procedure CaptureServerCertificate(const Sender: TObject; const ARequest: TURLRequest; const Certificate: TCertificate; var Accepted: Boolean);
   protected
     procedure Execute; override;
   public
     Code: Integer;
     MessageText, StatusLine, ErrorText: string;
     ResponseHeaders: TNetHeaders;
+    ServerCertificate: TCertificate;
+    CertificateFailures: THTTPSecureFailureReasons;
+    CertificateRejected: Boolean;
     Data: TBytes;
     constructor Create(const URL, Method: string; const Body: TBytes; const Headers: TNetHeaders; Limit: Integer);
     destructor Destroy; override;
@@ -109,6 +113,17 @@ begin
   Result := TInterlocked.CompareExchange(FDone, 0, 0) <> 0;
 end;
 
+procedure TJ2MEHTTPJob.CaptureServerCertificate(const Sender: TObject; const ARequest: TURLRequest; const Certificate: TCertificate; var Accepted: Boolean);
+begin
+  // The platform is responsible for chain and host-name validation.
+  ServerCertificate := Certificate;
+  if not Accepted then
+  begin
+    CertificateRejected := True;
+    CertificateFailures := THTTPClient(Sender).SecureFailureReasons;
+  end;
+end;
+
 procedure TJ2MEHTTPJob.Execute;
 var
   Client: THTTPClient;
@@ -126,6 +141,8 @@ begin
         raise EAbort.Create('HTTP request cancelled');
       Client := THTTPClient.Create;
       Client.HandleRedirects := False;
+      if FURL.StartsWith('https://') then
+        Client.OnValidateServerCertificate := CaptureServerCertificate;
       Client.AllowCookies := False;
       Client.AutomaticDecompression := [];
       Client.ConnectionTimeout := 10000;
@@ -159,6 +176,12 @@ begin
       on E: Exception do
       begin
         ErrorText := E.Message;
+        if (Client <> nil) and FURL.StartsWith('https://') then
+        begin
+          CertificateFailures := CertificateFailures + Client.SecureFailureReasons -
+            [THTTPSecureFailureReason.SecurityChannelError];
+          CertificateRejected := CertificateRejected or (CertificateFailures <> []);
+        end;
         Data := nil;
       end;
     end;

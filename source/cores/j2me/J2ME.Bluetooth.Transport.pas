@@ -329,18 +329,23 @@ begin
     C.Listener.Close;
     C.Listener := nil;
   end;
-  if Force or ((C.InputRef = 0) and (C.OutputRef = 0)) then
+  if Force then
   begin
     if C.Channel <> nil then
       C.Channel.Close;
     C.Channel := nil;
     C.Buffer := nil;
     C.PacketReady := False;
-  end;
+  end
+  // An RFCOMM stream can outlive the connection that opened it.
+  else if (C.InputRef = 0) and (C.OutputRef = 0) then
+    FConnections.Remove(C.Ref);
 end;
 
 procedure TJ2MEBluetoothTransport.Collect;
 begin
+  if FStopped then
+    Exit;
   for var Ref in FWork.Keys.ToArray do
     if not FVM.HasNativeContinuation(Ref) then
       FWork.Remove(Ref);
@@ -680,6 +685,8 @@ begin
   Info := Default(TBluetoothChannelInfo);
   Server := False;
   var C: TBTConnection;
+  if Field(FVM.GetObject(Ref), ClosedKey) <> 0 then
+    FVM.RaiseJava('java/io/IOException', 'Bluetooth connection closed');
   Result := FConnections.TryGetValue(Ref, C);
   if Result then
   begin
@@ -850,25 +857,23 @@ begin
   var IsInput := Owner = Input;
   var IsOutput := Owner = Output;
   var Ref := Args[0].AsRef;
-  if IsInput or IsOutput then
+  if Field(O, ClosedKey) <> 0 then
   begin
-    if Field(O, ClosedKey) <> 0 then
-    begin
-      if N = 'close' then
-        Exit;
-      FVM.RaiseJava('java/io/IOException', 'Bluetooth stream closed');
-    end;
-    Ref := O.Fields[ConnectionKey].AsRef;
+    if N = 'close' then
+      Exit;
+    FVM.RaiseJava('java/io/IOException', 'Bluetooth connection or stream closed');
   end;
+  if IsInput or IsOutput then
+    Ref := O.Fields[ConnectionKey].AsRef;
   if not FConnections.TryGetValue(Ref, C) then
     FVM.RaiseJava('java/io/IOException', 'Bluetooth connection released');
   if N = 'close' then
   begin
+    O.Fields.AddOrSetValue(ClosedKey, TJVMValue.Int(1));
     if not IsInput and not IsOutput then
       Close(C)
     else
     begin
-      O.Fields.AddOrSetValue(ClosedKey, TJVMValue.Int(1));
       O.Fields.AddOrSetValue(ConnectionKey, TJVMValue.Ref(0));
       if IsInput then
         C.InputRef := 0
@@ -1092,6 +1097,7 @@ end;
 
 procedure TJ2MEBluetoothTransport.RequireSnapshotIdle;
 begin
+  Collect;
   if (FConnections.Count <> 0) or (FWork.Count <> 0) then
     raise EInvalidOpException.Create('Java ME snapshots require inactive network, Bluetooth and messaging connections');
 end;

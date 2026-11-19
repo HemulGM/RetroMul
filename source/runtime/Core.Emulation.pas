@@ -43,6 +43,8 @@ type
 
   IEmulationMotionInput = Core.Emulation.Types.IEmulationMotionInput;
 
+  IEmulationMotionInput3D = Core.Emulation.Types.IEmulationMotionInput3D;
+
   IEmulationRotationInput = Core.Emulation.Types.IEmulationRotationInput;
 
   IEmulationRumbleOutput = Core.Emulation.Types.IEmulationRumbleOutput;

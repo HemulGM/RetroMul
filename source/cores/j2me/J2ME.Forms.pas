@@ -153,7 +153,7 @@ begin
     Exit;
   var O := VM.GetObject(Item);
   var Commands := UIRef(O, 'itemCommands');
-  Result := VM.IsAssignable(O.ClassName, J2MEUI + 'DateField') or VM.IsAssignable(O.ClassName, J2MEUI + 'TextField') or VM.IsAssignable(O.ClassName, J2MEUI + 'ChoiceGroup') or
+  Result := (UIInt(O, 'itemKind') = J2MECustomItemKind) or VM.IsAssignable(O.ClassName, J2MEUI + 'DateField') or VM.IsAssignable(O.ClassName, J2MEUI + 'TextField') or VM.IsAssignable(O.ClassName, J2MEUI + 'ChoiceGroup') or
     (VM.IsAssignable(O.ClassName, J2MEUI + 'Gauge') and (UIInt(O, 'interactive') <> 0)) or
     ((Commands <> 0) and (Length(VM.GetObject(Commands).Elements) <> 0));
 end;

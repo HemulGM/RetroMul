@@ -16,18 +16,38 @@ procedure RegisterRetroTuneFormats;
 implementation
 
 uses
-  Audio.Types, Audio.Decoder, Audio.Music.AHX, Audio.Music.Atari, Audio.Music.AY,
-  Audio.Music.AYDumps, Audio.Music.Containers, Audio.Music.Digital,
-  Audio.Music.DSF, Audio.Music.GBS, Audio.Music.GYM, Audio.Music.HES,
-  Audio.Music.KSS, Audio.Format.MIDI, Audio.Music.NSF, Audio.Music.NSFe,
-  Audio.Music.OPLDumps, Audio.Music.ProTracker, Audio.Music.PT3, Audio.Music.SAA,
-  Audio.Music.SID, Audio.Music.SPC, Audio.Music.TIA, Audio.Music.TRDOS,
-  Audio.Music.TurboFM, Audio.Music.VGM, Audio.Format.WAV, Audio.Music.XGM,
-  Audio.Music.ZXTrackers;
+  System.SysUtils, Audio.Types, Audio.Decoder, Audio.Music.AHX,
+  Audio.Music.Atari, Audio.Music.AY, Audio.Music.AYDumps, Audio.Music.Containers,
+  Audio.Music.Digital, Audio.Music.DSF, Audio.Music.Furnace, Audio.Music.GBS,
+  Audio.Music.GYM, Audio.Music.HES, Audio.Music.KSS, Audio.Format.MIDI,
+  Audio.Music.NSF, Audio.Music.NSFe, Audio.Music.OPLDumps,
+  Audio.Music.ProTracker, Audio.Music.PT3, Audio.Music.SAA, Audio.Music.SID,
+  Audio.Music.SPC, Audio.Music.TIA, Audio.Music.TRDOS, Audio.Music.TurboFM,
+  Audio.Music.VGM, Audio.Music.XGM, Audio.Music.XM, Audio.Music.ZXTrackers,
+  Audio.MP3.Source, Audio.Format.AMR, Audio.Format.ADTS, Audio.Format.ATRAC,
+  Audio.Format.FLAC, J2ME.IMelody, J2ME.SMAF;
+
+function OpenIMelodyFile(const Data: TBytes): IAudioSource;
+var
+  Frames: Int64;
+begin
+  Result := OpenIMelody(Data, Frames);
+end;
 
 function CreateRetroTuneFormats: IAudioRegistry;
 begin
   Result := TAudioRegistry.Create;
+  Result.RegisterFormat('.aac', 'AAC (ADTS)', OpenADTS);
+  Result.RegisterFormat('.adts', 'AAC (ADTS)', OpenADTS);
+  Result.RegisterFormat('.at3', 'Sony ATRAC3 / ATRAC3plus', OpenATRAC);
+  Result.RegisterFormat('.oma', 'Sony OpenMG ATRAC', OpenATRAC);
+  Result.RegisterFormat('.aa3', 'Sony OpenMG ATRAC', OpenATRAC);
+  Result.RegisterFormat('.flac', 'FLAC mono / stereo', OpenFLAC);
+  Result.RegisterFormat('.mp3', 'MPEG Layer III', OpenMP3);
+  Result.RegisterFormat('.mmf', 'Yamaha SMAF', OpenSMAF);
+  Result.RegisterFormat('.imy', 'iMelody', OpenIMelodyFile);
+  Result.RegisterFormat('.amr', 'AMR (Narrowband / Wideband)', OpenAMRForPlayback);
+  Result.RegisterFormat('.awb', 'AMR-WB (Wideband)', OpenAMRForPlayback);
   Result.RegisterFormat('.ahx', 'Amiga AHX', Audio.Music.AHX.OpenAHX);
   Result.RegisterFormat('.hvl', 'HivelyTracker', Audio.Music.AHX.OpenAHX);
   Result.RegisterFormat('.d15', 'Atari MPT 15 kHz sample bank', Audio.Music.Atari.D15);
@@ -57,6 +77,7 @@ begin
   Result.RegisterFormat('.minidsf', 'Dreamcast Sound Format (shared libraries)', Audio.Music.DSF.OpenDSF);
   Result.RegisterDataLoader('.dsf', Audio.Music.DSF.ResolveDSF);
   Result.RegisterDataLoader('.minidsf', Audio.Music.DSF.ResolveDSF);
+  Result.RegisterFormat('.fur', 'Furnace (AY-3-8910)', Audio.Music.Furnace.OpenFurnace);
   Result.RegisterFormat('.gbs', 'Game Boy Sound', Audio.Music.GBS.CreateGBS);
   Result.RegisterFormat('.gym', 'Mega Drive GYM', Audio.Music.GYM.CreateGYM);
   Result.RegisterFormat('.hes', 'PC Engine HES', Audio.Music.HES.OpenHES);
@@ -88,7 +109,8 @@ begin
   Result.RegisterFormat('.tfd', 'TurboFM Dump', Audio.Music.TurboFM.OpenTFD);
   Result.RegisterFormat('.vgm', 'Video Game Music', Audio.Music.VGM.CreateVGM);
   Result.RegisterFormat('.vgz', 'Compressed Video Game Music', Audio.Music.VGM.CreateVGM);
-  Result.RegisterFormat('.wav', 'Wave audio (PCM / IEEE Float)', Audio.Format.WAV.OpenWav);
+  Result.RegisterFormat('.wav', 'Wave audio (PCM / Float / ADPCM / ATRAC)', OpenWaveAudio);
+  Result.RegisterFormat('.xm', 'FastTracker II XM', Audio.Music.XM.OpenXM);
   Result.RegisterFormat('.xgm', 'Mega Drive XGM / XGM2', Audio.Music.XGM.OpenXGM);
   Result.RegisterFormat('.xgm2', 'Mega Drive XGM2', Audio.Music.XGM.OpenXGM);
   Result.RegisterFormat('.xgc', 'Compiled Mega Drive XGM2', Audio.Music.XGM.OpenXGM);

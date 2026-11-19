@@ -21,6 +21,8 @@ type
 
 function DecodeNokiaOTA(const Data: TBytes): TNokiaToneSong;
 
+procedure ValidateNokiaTonePattern(const Pattern: TNokiaTonePattern);
+
 function NokiaTempo(Index: Integer): Integer;
 
 implementation
@@ -60,6 +62,37 @@ begin
   if (Index < 0) or (Index > 31) then
     raise ENokiaToneFormat.Create('OTA tempo');
   Result := Values[Index];
+end;
+
+procedure ValidateNokiaTonePattern(const Pattern: TNokiaTonePattern);
+begin
+  if not (Pattern.Repeats in [0..15]) then
+    raise ENokiaToneFormat.Create('OTA pattern repeats');
+  var HasNote := False;
+  for var Ins in Pattern.Instructions do
+    case Ins.Kind of
+      1:
+        begin
+          if not (Ins.Value in [0..12]) or not (Ins.Duration in [0..5]) or not (Ins.Modifier in [0..3]) then
+            raise ENokiaToneFormat.Create('Reserved OTA note');
+          HasNote := True;
+        end;
+      2:
+        if not (Ins.Value in [0..3]) then
+          raise ENokiaToneFormat.Create('OTA scale');
+      3:
+        if not (Ins.Value in [0..2]) then
+          raise ENokiaToneFormat.Create('Reserved OTA style');
+      4:
+        NokiaTempo(Ins.Value);
+      5:
+        if not (Ins.Value in [0..15]) then
+          raise ENokiaToneFormat.Create('OTA volume');
+    else
+      raise ENokiaToneFormat.Create('Reserved OTA instruction');
+    end;
+  if (Pattern.Repeats = 15) and not HasNote then
+    raise ENokiaToneFormat.Create('Nonprogressing infinite OTA pattern');
 end;
 
 function DecodeNokiaOTA(const Data: TBytes): TNokiaToneSong;
@@ -156,15 +189,11 @@ begin
                         Ins.Value := Bits.Read(4);
                         Ins.Duration := Bits.Read(3);
                         Ins.Modifier := Bits.Read(2);
-                        Need((Ins.Value <= 12) and (Ins.Duration <= 5), 'Reserved OTA note');
                       end;
                     2:
                       Ins.Value := Bits.Read(2);
                     3:
-                      begin
-                        Ins.Value := Bits.Read(2);
-                        Need(Ins.Value <= 2, 'Reserved OTA style');
-                      end;
+                      Ins.Value := Bits.Read(2);
                     4:
                       Ins.Value := Bits.Read(5);
                     5:
@@ -176,14 +205,7 @@ begin
                 end;
                 Defined[ID] := Pattern.Instructions;
               end;
-              if Pattern.Repeats = 15 then
-              begin
-                var Progress := False;
-                for var I in Pattern.Instructions do
-                  if I.Kind = 1 then
-                    Progress := True;
-                Need(Progress, 'Nonprogressing infinite OTA pattern');
-              end;
+              ValidateNokiaTonePattern(Pattern);
               Result[P] := Pattern;
             end;
           end;

@@ -148,11 +148,10 @@ begin
   Result.Baseline := Glyph.Baseline;
 end;
 
-function J2MEFontAdvance(const Font: TJ2MEFontView; C: Char): Integer;
+function GlyphAdvance(const Font: TJ2MEFontView; const Glyph: TBitmapGlyph): Integer;
 begin
-  var Glyph := BitmapFontGlyph(BitmapSize(Font.Size), C);
   var Ink := Glyph.Right - Glyph.Left + 1;
-  if Font.Face = 32 then
+  if (Font.Face = 32) or Glyph.FullWidth then
     Result := Glyph.Width
   else if Ink <= 0 then
     Result := Max(1, Glyph.Width div 2)
@@ -164,24 +163,28 @@ begin
     Inc(Result, Max(1, Font.Height div 6));
 end;
 
+function J2MEFontAdvance(const Font: TJ2MEFontView; C: Char): Integer;
+begin
+  Result := GlyphAdvance(Font, BitmapFontGlyph(BitmapSize(Font.Size), C, True));
+end;
+
 function J2MEFontGlyph(const Font: TJ2MEFontView; C: Char): TJ2MEGlyph;
 var
   BaseWidth, Left, Shift: Integer;
 begin
-  var Source := BitmapFontGlyph(BitmapSize(Font.Size), C);
-  Result.Width := J2MEFontAdvance(Font, C);
+  var Source := BitmapFontGlyph(BitmapSize(Font.Size), C, True);
+  Result.Width := GlyphAdvance(Font, Source);
   Result.Height := Font.Height;
   Result.Mask := nil;
   SetLength(Result.Mask, Result.Width * Result.Height);
   Left := 0;
   BaseWidth := Source.Width;
-  if Font.Face <> 32 then
+  if (Font.Face <> 32) and not Source.FullWidth then
   begin
     Left := Source.Left;
     BaseWidth := Max(0, Source.Right - Source.Left + 1);
   end;
-  // Each logical font size has its own native bitmap. Never discard strokes by
-  // sampling a larger font; Font metrics and painted advances use the same data.
+  // Font metrics and painted advances use the same bitmap and cell width.
   for var Y := 0 to Font.Height - 1 do
   begin
     Shift := 0;

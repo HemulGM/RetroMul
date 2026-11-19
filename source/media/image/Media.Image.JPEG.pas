@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, Media.Image.Types;
+  System.SysUtils, System.Classes, Media.Image.Types;
 
 type
   TJPEGStatus = (jpegOK, jpegNoSOI, jpegBadMarkerLength, jpegUnsupportedColorSpace,
@@ -22,6 +22,8 @@ type
 function DecodeJPEGPlanes(const Data: TBytes; HeaderOnly, Restrict420: Boolean; out Image: TJPEGPlanes; MaxPixels: Integer = 16 * 1024 * 1024): TJPEGStatus;
 
 function DecodeJPEG(const Data: TBytes; MaxPixels: Integer = 16 * 1024 * 1024): TRasterImage;
+
+procedure WriteJPEGRGB(Stream: TStream; Width, Height: Integer; const Pixels: TArray<UInt32>; Quality: Integer = 85);
 
 implementation
 
@@ -709,6 +711,209 @@ begin
       Result.Pixels[Y * Image.Width + X] := $FF000000 or (UInt32(EnsureRange(R, 0, 255)) shl 16) or
         (UInt32(EnsureRange(G, 0, 255)) shl 8) or UInt32(EnsureRange(B, 0, 255));
     end;
+end;
+
+procedure WriteJPEGRGB(Stream: TStream; Width, Height: Integer; const Pixels: TArray<UInt32>; Quality: Integer);
+const
+  // Example luminance quantization table from T.81 Annex K. A single table
+  // serves all three full-resolution components in this baseline encoder.
+  BaseQuant: array[0..63] of Byte = (
+    16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55,
+    14, 13, 16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62,
+    18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92,
+    49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99);
+  JFIF: array[0..13] of Byte = ($4A, $46, $49, $46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0);
+type
+  TComponentBlock = array[0..7, 0..7] of Double;
+var
+  Basis: TComponentBlock;
+  Samples: array[0..2] of TComponentBlock;
+  Quant: array[0..63] of Integer;
+  PreviousDC: array[0..2] of Integer;
+  Pending: Cardinal;
+  BitCount: Integer;
+
+  procedure PutByte(Value: Byte);
+  begin
+    Stream.WriteBuffer(Value, 1);
+  end;
+
+  procedure PutWord(Value: Word);
+  begin
+    PutByte(Value shr 8);
+    PutByte(Byte(Value));
+  end;
+
+  procedure PutBits(Value: Cardinal; Count: Integer);
+  begin
+    Pending := (Pending shl Count) or (Value and ((Cardinal(1) shl Count) - 1));
+    Inc(BitCount, Count);
+    while BitCount >= 8 do
+    begin
+      Dec(BitCount, 8);
+      var Encoded := Byte(Pending shr BitCount);
+      PutByte(Encoded);
+      if Encoded = $FF then
+        PutByte(0);
+    end;
+  end;
+
+  function Category(Value: Integer): Integer;
+  begin
+    Value := Abs(Value);
+    Result := 0;
+    while Value > 0 do
+    begin
+      Inc(Result);
+      Value := Value shr 1;
+    end;
+  end;
+
+  procedure Amplitude(Value, Size: Integer);
+  begin
+    if Value < 0 then
+      Dec(Value);
+    PutBits(Cardinal(Value), Size);
+  end;
+
+  procedure EncodeBlock(const Block: TComponentBlock; var DC: Integer);
+  var
+    Intermediate: TComponentBlock;
+    Coefficients: array[0..63] of Integer;
+  begin
+    for var Y := 0 to 7 do
+      for var U := 0 to 7 do
+      begin
+        var Sum := 0.0;
+        for var X := 0 to 7 do
+          Sum := Sum + Block[Y, X] * Basis[U, X];
+        Intermediate[Y, U] := Sum;
+      end;
+    for var V := 0 to 7 do
+      for var U := 0 to 7 do
+      begin
+        var Sum := 0.0;
+        for var Y := 0 to 7 do
+          Sum := Sum + Intermediate[Y, U] * Basis[V, Y];
+        var Index := V * 8 + U;
+        Coefficients[Index] := EnsureRange(Round(Sum / Quant[Index]), -1023, 1023);
+      end;
+    var Delta := Coefficients[0] - DC;
+    DC := Coefficients[0];
+    var Size := Category(Delta);
+    PutBits(Size, 4);
+    Amplitude(Delta, Size);
+    var Zeros := 0;
+    for var I := 1 to 63 do
+    begin
+      var Value := Coefficients[ZigZag[I]];
+      if Value = 0 then
+      begin
+        Inc(Zeros);
+        Continue;
+      end;
+      while Zeros >= 16 do
+      begin
+        PutBits(1, 8);
+        Dec(Zeros, 16);
+      end;
+      Size := Category(Value);
+      PutBits(2 + Zeros * 10 + Size - 1, 8);
+      Amplitude(Value, Size);
+      Zeros := 0;
+    end;
+    if Zeros > 0 then
+      PutBits(0, 8);
+  end;
+
+begin
+  if (Width < 1) or (Height < 1) or (Width > 2048) or (Height > 2048) or
+    (Length(Pixels) <> Width * Height) or (Quality < 1) or (Quality > 100) then
+    raise EArgumentOutOfRangeException.Create('Invalid JPEG dimensions or quality');
+  var Scale := 200 - Quality * 2;
+  if Quality < 50 then
+    Scale := 5000 div Quality;
+  for var I := 0 to 63 do
+    Quant[I] := EnsureRange((Scale * BaseQuant[I] + 50) div 100, 1, 255);
+  for var F := 0 to 7 do
+    for var X := 0 to 7 do
+      if F = 0 then
+        Basis[F, X] := Sqrt(1.0 / 8.0)
+      else
+        Basis[F, X] := 0.5 * Cos((2 * X + 1) * F * Pi / 16);
+
+  PutWord($FFD8);
+  PutWord($FFE0);
+  PutWord(16);
+  Stream.WriteBuffer(JFIF, SizeOf(JFIF));
+  PutWord($FFDB);
+  PutWord(67);
+  PutByte(0);
+  for var I := 0 to 63 do
+    PutByte(Quant[ZigZag[I]]);
+  PutWord($FFC0);
+  PutWord(17);
+  PutByte(8);
+  PutWord(Height);
+  PutWord(Width);
+  PutByte(3);
+  for var C := 1 to 3 do
+  begin
+    PutByte(C);
+    PutByte($11);
+    PutByte(0);
+  end;
+  // Canonical tables with uniform codes: 12 DC categories and the 162
+  // baseline AC symbols, beginning with EOB and the 16-zero run.
+  PutWord($FFC4);
+  PutWord(2 + 17 + 12 + 17 + 162);
+  PutByte(0);
+  for var N := 1 to 16 do
+    PutByte(12 * Ord(N = 4));
+  for var N := 0 to 11 do
+    PutByte(N);
+  PutByte($10);
+  for var N := 1 to 16 do
+    PutByte(162 * Ord(N = 8));
+  PutByte(0);
+  PutByte($F0);
+  for var Run := 0 to 15 do
+    for var Size := 1 to 10 do
+      PutByte((Run shl 4) or Size);
+  PutWord($FFDA);
+  PutWord(12);
+  PutByte(3);
+  for var C := 1 to 3 do
+  begin
+    PutByte(C);
+    PutByte(0);
+  end;
+  PutByte(0);
+  PutByte(63);
+  PutByte(0);
+  FillChar(PreviousDC, SizeOf(PreviousDC), 0);
+  Pending := 0;
+  BitCount := 0;
+  for var BY := 0 to (Height - 1) div 8 do
+    for var BX := 0 to (Width - 1) div 8 do
+    begin
+      for var Y := 0 to 7 do
+        for var X := 0 to 7 do
+        begin
+          var Pixel := Pixels[Min(Height - 1, BY * 8 + Y) * Width + Min(Width - 1, BX * 8 + X)];
+          var R := (Pixel shr 16) and $FF;
+          var G := (Pixel shr 8) and $FF;
+          var B := Pixel and $FF;
+          Samples[0, Y, X] := 0.299 * R + 0.587 * G + 0.114 * B - 128;
+          Samples[1, Y, X] := -0.168736 * R - 0.331264 * G + 0.5 * B;
+          Samples[2, Y, X] := 0.5 * R - 0.418688 * G - 0.081312 * B;
+        end;
+      for var C := 0 to 2 do
+        EncodeBlock(Samples[C], PreviousDC[C]);
+    end;
+  if BitCount > 0 then
+    PutBits($FF, 8 - BitCount);
+  PutWord($FFD9);
 end;
 
 end.

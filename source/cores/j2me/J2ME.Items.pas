@@ -52,6 +52,8 @@ begin
 end;
 
 procedure InstallJ2MEItems(VM: TJVM);
+const
+  GraphicsDesc = 'Ljavax/microedition/lcdui/Graphics;';
 var
   B: TJavaClassBuilder;
 
@@ -60,10 +62,48 @@ var
     B.JavaClass.AddNative(Name, Desc).Access := Flags or JVM_ACC_NATIVE;
   end;
 
-  procedure Constant(const Name: string; Value: Integer);
+  procedure Constant(const Name: string; Value: Integer; Visibility: Word = JVM_ACC_PUBLIC);
   begin
-    B.Field(Name, 'I', JVM_ACC_PUBLIC or JVM_ACC_STATIC or JVM_ACC_FINAL);
+    B.Field(Name, 'I', Visibility or JVM_ACC_STATIC or JVM_ACC_FINAL);
     B.JavaClass.Fields.Last.Value := TJVMValue.Int(Value);
+  end;
+
+  procedure CustomMeasurement(const Name, Completion: string; WithHeightHint: Boolean);
+  begin
+    var Query := Name = '$querySize';
+    B.Start;
+    if Query then
+    begin
+      B.Emit([$2A]);
+      B.Ref($B6, B.Member(J2MECustomItemClass, 'getMinContentWidth', '()I'));
+      B.Emit([$36, 4, $2A, $1B, $15, 4]); // istore_4, receiver, requested width, minimum width
+      B.Ref($B7, B.Member(J2MECustomItemClass, '$queryWidth', '(II)I'));
+      B.Emit([$3C]); // istore_1
+    end;
+    B.Emit([$2A, $1B, $1C]); // receiver, width hint, generation
+    if Query then
+      B.Emit([$15, 4])
+    else
+    begin
+      B.Emit([$2A]);
+      B.Ref($B6, B.Member(J2MECustomItemClass, 'getMinContentWidth', '()I'));
+    end;
+    B.Emit([$2A]);
+    B.Ref($B6, B.Member(J2MECustomItemClass, 'getMinContentHeight', '()I'));
+    B.Emit([$2A]);
+    if WithHeightHint then
+      B.Emit([$1D]) // iload_3
+    else
+      B.Emit([$02]); // iconst_m1
+    B.Ref($B6, B.Member(J2MECustomItemClass, 'getPrefContentWidth', '(I)I'));
+    B.Emit([$2A, $1B]);
+    B.Ref($B6, B.Member(J2MECustomItemClass, 'getPrefContentHeight', '(I)I'));
+    B.Ref($B7, B.Member(J2MECustomItemClass, Completion, '(IIIIII)V'));
+    B.Emit([$B1]);
+    if WithHeightHint then
+      B.Finish(Name, '(III)V', JVM_ACC_PRIVATE, 8, 4 + Ord(Query))
+    else
+      B.Finish(Name, '(II)V', JVM_ACC_PRIVATE, 8, 3);
   end;
 
 begin
@@ -99,6 +139,113 @@ begin
     for var Name in ['getMinimumWidth', 'getMinimumHeight', 'getPreferredWidth', 'getPreferredHeight'] do
       Native(Name, '()I');
     Native('notifyStateChanged', '()V', JVM_ACC_PROTECTED);
+    VM.DefineClass(B.Detach);
+  finally
+    B.Free;
+  end;
+  B := TJavaClassBuilder.Create(J2MECustomItemClass, ItemName, JVM_ACC_PUBLIC or JVM_ACC_ABSTRACT or $0020);
+  try
+    Constant('NONE', 0, JVM_ACC_PROTECTED);
+    Constant('TRAVERSE_HORIZONTAL', 1, JVM_ACC_PROTECTED);
+    Constant('TRAVERSE_VERTICAL', 2, JVM_ACC_PROTECTED);
+    Constant('KEY_PRESS', 4, JVM_ACC_PROTECTED);
+    Constant('KEY_RELEASE', 8, JVM_ACC_PROTECTED);
+    Constant('KEY_REPEAT', 16, JVM_ACC_PROTECTED);
+    Constant('POINTER_PRESS', 32, JVM_ACC_PROTECTED);
+    Constant('POINTER_RELEASE', 64, JVM_ACC_PROTECTED);
+    Constant('POINTER_DRAG', 128, JVM_ACC_PROTECTED);
+    Native('<init>', '(Ljava/lang/String;)V', JVM_ACC_PROTECTED);
+    Native('getGameAction', '(I)I');
+    Native('getInteractionModes', '()I', JVM_ACC_PROTECTED or JVM_ACC_FINAL);
+    Native('invalidate', '()V', JVM_ACC_PROTECTED or JVM_ACC_FINAL);
+    Native('repaint', '()V', JVM_ACC_PROTECTED or JVM_ACC_FINAL);
+    Native('repaint', '(IIII)V', JVM_ACC_PROTECTED or JVM_ACC_FINAL);
+    for var Name in ['getMinContentWidth', 'getMinContentHeight'] do
+      B.JavaClass.AddNative(Name, '()I').Access := JVM_ACC_PROTECTED or JVM_ACC_ABSTRACT;
+    for var Name in ['getPrefContentWidth', 'getPrefContentHeight'] do
+      B.JavaClass.AddNative(Name, '(I)I').Access := JVM_ACC_PROTECTED or JVM_ACC_ABSTRACT;
+    B.JavaClass.AddNative('paint', '(' + GraphicsDesc + 'II)V').Access := JVM_ACC_PROTECTED or JVM_ACC_ABSTRACT;
+    for var Name in ['showNotify', 'hideNotify', 'traverseOut'] do
+    begin
+      B.Start;
+      B.Emit([$B1]);
+      B.Finish(Name, '()V', JVM_ACC_PROTECTED, 0, 1);
+    end;
+    for var Name in ['keyPressed', 'keyReleased', 'keyRepeated'] do
+    begin
+      B.Start;
+      B.Emit([$B1]);
+      B.Finish(Name, '(I)V', JVM_ACC_PROTECTED, 0, 2);
+    end;
+    for var Name in ['pointerPressed', 'pointerReleased', 'pointerDragged', 'sizeChanged'] do
+    begin
+      B.Start;
+      B.Emit([$B1]);
+      B.Finish(Name, '(II)V', JVM_ACC_PROTECTED, 0, 3);
+    end;
+    B.Start;
+    B.Emit([$03, $AC]); // iconst_0, ireturn
+    B.Finish('traverse', '(III[I)Z', JVM_ACC_PROTECTED, 1, 5);
+
+    Native('$dimensions', '(IIIIII)V', JVM_ACC_PRIVATE);
+    Native('$queriedDimensions', '(IIIIII)V', JVM_ACC_PRIVATE);
+    Native('$queryWidth', '(II)I', JVM_ACC_PRIVATE);
+    Native('$beginDraw', '(II)' + GraphicsDesc, JVM_ACC_PRIVATE);
+    Native('$endDraw', '(' + GraphicsDesc + ')V', JVM_ACC_PRIVATE);
+    Native('$resize', '(II)Z', JVM_ACC_PRIVATE);
+    Native('$showNeeded', '()Z', JVM_ACC_PRIVATE);
+    Native('$paintAllowed', '()Z', JVM_ACC_PRIVATE);
+    Native('$hideNeeded', '()Z', JVM_ACC_PRIVATE);
+    Native('$pointer', '(Ljavax/microedition/lcdui/Form;III)V', JVM_ACC_PRIVATE);
+    Native('$repeatKey', '(I)V', JVM_ACC_PRIVATE);
+    Native('$traverseFocus', '(Ljavax/microedition/lcdui/Form;)V', JVM_ACC_PRIVATE);
+    Native('$leaveTraversal', '()V', JVM_ACC_PRIVATE);
+
+    // Retain the original bytecode entry point for queued and running saves.
+    CustomMeasurement('$measure', '$dimensions', False);
+    CustomMeasurement('$measureForLayout', '$dimensions', True);
+    CustomMeasurement('$querySize', '$queriedDimensions', True);
+
+    B.Start;
+    B.Emit([$2A, $1B, $1C]);
+    B.Ref($B7, B.Member(J2MECustomItemClass, '$beginDraw', '(II)' + GraphicsDesc));
+    B.Emit([$4E, $2D]); // astore_3, aload_3
+    B.Jump($C6, 'done');
+    B.Emit([$2A, $1B, $1C]);
+    B.Ref($B7, B.Member(J2MECustomItemClass, '$resize', '(II)Z'));
+    B.Jump($99, 'show');
+    B.Emit([$2A, $1B, $1C]);
+    B.Ref($B6, B.Member(J2MECustomItemClass, 'sizeChanged', '(II)V'));
+    B.Mark('show');
+    B.Emit([$2A]);
+    B.Ref($B7, B.Member(J2MECustomItemClass, '$paintAllowed', '()Z'));
+    B.Jump($99, 'done');
+    B.Emit([$2A]);
+    B.Ref($B7, B.Member(J2MECustomItemClass, '$showNeeded', '()Z'));
+    B.Jump($99, 'paint');
+    B.Emit([$2A]);
+    B.Ref($B6, B.Member(J2MECustomItemClass, 'showNotify', '()V'));
+    B.Mark('paint');
+    B.Emit([$2A]);
+    B.Ref($B7, B.Member(J2MECustomItemClass, '$paintAllowed', '()Z'));
+    B.Jump($99, 'done');
+    B.Emit([$2A, $2D, $1B, $1C]);
+    B.Ref($B6, B.Member(J2MECustomItemClass, 'paint', '(' + GraphicsDesc + 'II)V'));
+    B.Emit([$2A, $2D]);
+    B.Ref($B7, B.Member(J2MECustomItemClass, '$endDraw', '(' + GraphicsDesc + ')V'));
+    B.Mark('done');
+    B.Emit([$B1]);
+    B.Finish('$draw', '(II)V', JVM_ACC_PRIVATE, 4, 4);
+
+    B.Start;
+    B.Emit([$2A]);
+    B.Ref($B7, B.Member(J2MECustomItemClass, '$hideNeeded', '()Z'));
+    B.Jump($99, 'done');
+    B.Emit([$2A]);
+    B.Ref($B6, B.Member(J2MECustomItemClass, 'hideNotify', '()V'));
+    B.Mark('done');
+    B.Emit([$B1]);
+    B.Finish('$hide', '()V', JVM_ACC_PRIVATE, 1, 1);
     VM.DefineClass(B.Detach);
   finally
     B.Free;
@@ -256,7 +403,40 @@ begin
   end;
   if N.StartsWith('getMinimum') or N.StartsWith('getPreferred') then
   begin
-    var Metrics := J2MEItemMetrics(VM, Args[0].AsRef, Max(1, Width - 12), -1);
+    var WidthLimit := Max(1, Width - 12);
+    var IsCustom := UIInt(O, 'itemKind') = J2MECustomItemKind;
+    var Metrics := J2MEItemMetrics(VM, Args[0].AsRef, WidthLimit, -1, IsCustom);
+    if IsCustom then
+    begin
+      var Completed: TJVMValue;
+      var Attempts := 0;
+      if VM.TakeGuestResult(Completed) then
+        Attempts := VM.NativeContinuation.AsInt;
+      var Generation := UIInt(O, 'customGeneration');
+      var WidthHint := WidthLimit;
+      if UIInt(O, 'preferredWidth', -1) >= 0 then
+        WidthHint := Max(1, Metrics.PreferredWidth);
+      if (Attempts < 2) and ((UIInt(O, 'customQueryMeasuredWidth', -1) <> WidthHint) or
+        (UIInt(O, 'customQueryMeasuredGeneration') <> Generation)) then
+      begin
+        var C := VM.LoadClass(J2MECustomItemClass);
+        var Query := C.FindMethod('$querySize', '(III)V');
+        var Ref := Args[0].AsRef;
+        // A dimension callback may itself query the Item. It can use the
+        // last completed dimensions without entering its own callback again.
+        if not VM.IsCurrentInstanceCall(Query, Ref) and
+          not VM.IsCurrentInstanceCall(C.FindMethod('$measureForLayout', '(III)V'), Ref) and
+          not VM.IsCurrentInstanceCall(C.FindMethod('$measure', '(II)V'), Ref) then
+        begin
+          var HeightHint := UIInt(O, 'preferredHeight', -1);
+          if HeightHint >= 0 then
+            HeightHint := EnsureRange(HeightHint - Metrics.LabelHeight, 0, J2MECustomItemExtent);
+          VM.SetNativeContinuation(TJVMValue.Int(Attempts + 1));
+          VM.InvokeGuestResult(Query, [Args[0], TJVMValue.Int(WidthHint), TJVMValue.Int(Generation), TJVMValue.Int(HeightHint)]);
+          Exit;
+        end;
+      end;
+    end;
     var Value := Metrics.PreferredWidth;
     if N.EndsWith('Height') then
     begin
@@ -298,6 +478,8 @@ begin
   end
   else
     raise EJVMUnsupported.Create('Item method: ' + N);
+  if (UIInt(O, 'itemKind') = J2MECustomItemKind) and ((N = 'setPreferredSize') or (N = 'setLabel')) then
+    UIPut(O, 'customGeneration', UIInt(O, 'customGeneration') + 1);
   Changed := True;
 end;
 

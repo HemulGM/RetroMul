@@ -548,18 +548,29 @@ begin
   Counter := 0;
   try
     var P := 8 + Integer(HeaderSize);
-    for var I := 0 to TrackCount - 1 do
+    var I := 0;
+    while I < TrackCount do
     begin
-      if Tag(P) <> 'MTrk' then
+      if P = Length(Data) then
         raise EArgumentException.Create('Missing MIDI track chunk');
+      var ChunkType := Tag(P);
+      if ChunkType = 'MThd' then
+        raise EArgumentException.Create('Duplicate MIDI header chunk');
       var N := BE32(P + 4);
       Inc(P, 8);
       if N > Cardinal(Length(Data) - P) then
-        raise EArgumentException.Create('Truncated MIDI track');
-      ParseTrack(P, P + Integer(N), I);
-      Inc(P, Integer(N));
-      if FormatNumber = 2 then
-        FinishSequence(I, EndTicks[I], Names[I]);
+        raise EArgumentException.Create('Truncated MIDI chunk');
+      var ChunkEnd := P + Integer(N);
+      // SMF permits extension chunks between tracks. Only MTrk counts
+      // toward the number of tracks declared by MThd.
+      if ChunkType = 'MTrk' then
+      begin
+        ParseTrack(P, ChunkEnd, I);
+        if FormatNumber = 2 then
+          FinishSequence(I, EndTicks[I], Names[I]);
+        Inc(I);
+      end;
+      P := ChunkEnd;
     end;
     // Ignore exporter footers after the declared track chunks.
     if FormatNumber <> 2 then

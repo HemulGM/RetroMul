@@ -46,11 +46,12 @@ type
     procedure Close;
   end;
 
-  TProvider = class(TInterfacedObject, IMessagingProvider)
+  TProvider = class(TInterfacedObject, IMessagingProvider, IMessagingInbox)
     Network: TNetwork;
     Keep: IVirtualMessagingNetwork;
     Details: TMessagingInfo;
     function Info: TMessagingInfo;
+    function HasUnread(const Address: TMessageAddress; const SenderFilter: string): Boolean;
     function Open(const Address: TMessageAddress; Mode: Integer; out Channel: IMessagingChannel): TMessagingError;
   end;
 
@@ -174,6 +175,73 @@ end;
 function TProvider.Info: TMessagingInfo;
 begin
   Result := Details;
+end;
+
+function MatchesSender(const Phone, Filter: string): Boolean;
+var
+  Digit, Token, Star, RetryFrom: Integer;
+begin
+  Digit := 1;
+  Token := 1;
+  Star := 0;
+  RetryFrom := 0;
+  while Digit <= Length(Phone) do
+  begin
+    if (Token <= Length(Filter)) and ((Filter[Token] = Phone[Digit]) or (Filter[Token] = '?')) then
+    begin
+      Inc(Digit);
+      Inc(Token);
+    end
+    else if (Token <= Length(Filter)) and (Filter[Token] = '*') then
+    begin
+      Star := Token;
+      RetryFrom := Digit;
+      Inc(Token);
+    end
+    else if Star <> 0 then
+    begin
+      Inc(RetryFrom);
+      Digit := RetryFrom;
+      Token := Star + 1;
+    end
+    else
+      Exit(False);
+  end;
+  while (Token <= Length(Filter)) and (Filter[Token] = '*') do
+    Inc(Token);
+  Result := Token > Length(Filter);
+end;
+
+function TProvider.HasUnread(const Address: TMessageAddress; const SenderFilter: string): Boolean;
+var
+  Inbox: TInbox;
+  Sender: TMessageAddress;
+begin
+  Result := False;
+  if not Address.Server then
+    Exit;
+  case Address.Protocol of
+    TMessagingProtocol.SMS:
+      if not ([TMessagingPermission.SMSConnect, TMessagingPermission.SMSReceive] <= Details.Permissions) then
+        Exit;
+    TMessagingProtocol.CBS:
+      if not ([TMessagingPermission.CBSConnect, TMessagingPermission.CBSReceive] <= Details.Permissions) then
+        Exit;
+  else
+    Exit;
+  end;
+  TMonitor.Enter(Network.Lock);
+  try
+    if not Network.Queues.TryGetValue(QueueKey(Details.PhoneNumber, Address.Protocol, Address.Port), Inbox) then
+      Exit;
+    if SenderFilter = '*' then
+      Exit(Inbox.Values.Count <> 0);
+    for var Message in Inbox.Values do
+      if TMessageAddress.TryParse(Message.Address, Sender) and MatchesSender(Sender.Phone, SenderFilter) then
+        Exit(True);
+  finally
+    TMonitor.Exit(Network.Lock);
+  end;
 end;
 
 function TProvider.Open(const Address: TMessageAddress; Mode: Integer; out Channel: IMessagingChannel): TMessagingError;

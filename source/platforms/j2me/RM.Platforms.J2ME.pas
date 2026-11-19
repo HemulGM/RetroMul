@@ -456,7 +456,17 @@ begin
   end;
   if Archive = nil then
     Exit;
-  if Archive.FindName(J2MEManifestName) < 0 then
+  var HasManifest := False;
+  for var I := 0 to Archive.Count - 1 do
+  begin
+    var Entry := Archive.Entries[I];
+    if not Entry.IsDirectory and SameText(Entry.Name, J2MEManifestName) then
+    begin
+      HasManifest := True;
+      Break;
+    end;
+  end;
+  if not HasManifest then
   begin
     var Location, Error: string;
     var JAD := ReadJ2MEJAD(Context.Stream, Context.EffectiveStorage, Context.RomName, Location, Error);

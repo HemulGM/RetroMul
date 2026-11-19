@@ -10,7 +10,7 @@ const
 {$SCOPEDENUMS ON}
 
 type
-  TJ2MEKeyLayout = (Standard, Motorola, Siemens);
+  TJ2MEKeyLayout = (Standard, Motorola, Siemens, StandardWithRawSoftkeys);
 
   IJ2MEPhoneInput = interface
     ['{6FA3640B-4D39-4240-A054-D0680BDE5C1A}']

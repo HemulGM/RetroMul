@@ -25,7 +25,7 @@ type
     procedure Reset;
     function Read(Port: Word): Byte;
     procedure Write(Port: Word; Value: Byte);
-    procedure Scanline(Line: Integer; var Pixels: TPCEPixelRow; const Options: TPCEOptions);
+    procedure Scanline(Line: Integer; var Pixels: TPCEPixelRow; const Options: TPCEOptions; LastVBlankLine: Integer = MaxInt);
     function IRQ: Boolean;
     function Width: Integer;
     function Height: Integer;
@@ -42,6 +42,7 @@ type
     FVCEControl: Byte;
     FVPC: array[0..7] of Byte;
     FSuperGrafx: Boolean;
+    function LastVBlankLine: Integer;
   public
     constructor Create(SuperGrafx: Boolean);
     destructor Destroy; override;
@@ -215,7 +216,7 @@ begin
   end;
 end;
 
-procedure THuC6270.Scanline(Line: Integer; var Pixels: TPCEPixelRow; const Options: TPCEOptions);
+procedure THuC6270.Scanline(Line: Integer; var Pixels: TPCEPixelRow; const Options: TPCEOptions; LastVBlankLine: Integer);
 const
   MapWidths: array[0..3] of Integer = (32, 64, 128, 128);
   SpriteHeights: array[0..3] of Integer = (16, 32, 64, 64);
@@ -240,7 +241,8 @@ begin
   end;
   if (Line + $41 = (FReg[6] and $3FF)) and (FReg[5] and 4 <> 0) then
     FStatus := FStatus or 4;
-  if Line = Height then
+  var VBlankLine := Min(Height, LastVBlankLine);
+  if Line = VBlankLine then
   begin
     if FReg[5] and 8 <> 0 then
       FStatus := FStatus or $20;
@@ -251,7 +253,7 @@ begin
       FSATPending := False;
     end;
   end;
-  if (Line < 0) or (Line >= Height) then
+  if (Line < 0) or (Line >= VBlankLine) then
     Exit;
   var W := Width;
   var MW := MapWidths[(FReg[9] shr 4) and 3];
@@ -401,6 +403,13 @@ begin
   Result := 262 + Ord(FVCEControl and 4 <> 0);
 end;
 
+function TPCEVideo.LastVBlankLine: Integer;
+begin
+  // VCE sync ends the display even if the VDC programmed a longer active area.
+  // An unfinished display signals VBlank on the second line of that sync.
+  Result := Lines - 2;
+end;
+
 function TPCEVideo.IRQ: Boolean;
 begin
   Result := FVDC[0].IRQ or ((FVDC[1] <> nil) and FVDC[1].IRQ);
@@ -470,10 +479,15 @@ procedure TPCEVideo.Scanline(Line: Integer; var Pixels: TArray<TAlphaColor>; con
 var
   Rows: array[0..1] of TPCEPixelRow;
 begin
-  FVDC[0].Scanline(Line - FVDC[0].DisplayStart, Rows[0], Options);
+  var VBlankLimit := LastVBlankLine;
+  var Start := FVDC[0].DisplayStart;
+  FVDC[0].Scanline(Line - Start, Rows[0], Options, VBlankLimit - Start);
   if FSuperGrafx then
-    FVDC[1].Scanline(Line - FVDC[1].DisplayStart, Rows[1], Options);
-  Line := Line - FVDC[0].DisplayStart;
+  begin
+    var SecondStart := FVDC[1].DisplayStart;
+    FVDC[1].Scanline(Line - SecondStart, Rows[1], Options, VBlankLimit - SecondStart);
+  end;
+  Dec(Line, Start);
   if (Line < 0) or (Line >= Height) or (Line >= OutputHeight) then
     Exit;
   var W := Min(Width, OutputWidth);
@@ -521,10 +535,12 @@ procedure TPCEVideo.Advance(Cycles, Line: Integer);
 const
   Divider: array[0..3] of Integer = (4, 3, 2, 2);
 begin
+  var VBlankLimit := LastVBlankLine;
   for var I := 0 to Ord(FSuperGrafx) do
   begin
     var Start := FVDC[I].DisplayStart;
-    FVDC[I].Advance(Cycles, Divider[FVCEControl and 3], (Line < Start) or (Line >= Start + FVDC[I].Height));
+    var VBlankLine := Min(Start + FVDC[I].Height, VBlankLimit);
+    FVDC[I].Advance(Cycles, Divider[FVCEControl and 3], (Line < Start) or (Line >= VBlankLine));
   end;
 end;
 

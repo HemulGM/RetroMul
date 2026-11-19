@@ -2072,8 +2072,5 @@ begin
   FBatteryDirty := True;
 end;
 
-initialization
-  HW.Z80.ConstantInitialise;
-
 end.
 

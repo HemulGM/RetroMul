@@ -32,7 +32,7 @@ implementation
 
 uses
   System.SysUtils, System.Math, Java.Classes, Java.Bootstrap, Media.Image.Types,
-  Media.Image.Decode;
+  Media.Image.Decode, Media.Image.PNG;
 
 {$Q-}{$R-}
 
@@ -394,7 +394,12 @@ begin
         Bytes[J] := Byte(A.ElementValues[Offset + J].AsInt);
     end;
     try
-      Decoded := DecodeRasterImage(Bytes, VM.MaxArrayLength);
+      var Options: TPNGDecodeOptions := [TPNGDecodeOption.AllowBlockPadding,
+          TPNGDecodeOption.AllowUnusedPaletteEntries, TPNGDecodeOption.RecoverPaletteIndices];
+      // Bounded packed slices may include arbitrary data after a checked IEND.
+      if (N = 'createImage') and D.StartsWith('([BII)') then
+        Include(Options, TPNGDecodeOption.AllowTrailingData);
+      Decoded := DecodeRasterImage(Bytes, VM.MaxArrayLength, Options);
     except
       on E: EImageResourceLimit do
         VM.RaiseJava('java/lang/OutOfMemoryError', E.Message);

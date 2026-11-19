@@ -4,7 +4,8 @@ interface
 
 uses
   System.Classes, System.SysUtils, System.Generics.Collections, JVM.Types,
-  JVM.ClassFile, JVM.Runtime, Core.Bluetooth.Types, J2ME.Bluetooth.Transport;
+  JVM.ClassFile, JVM.Runtime, JVM.StateIO, Core.Bluetooth.Types,
+  J2ME.Bluetooth.Transport;
 
 type
   TJ2MEBluetoothEvent = record
@@ -73,6 +74,8 @@ type
     function InvokeRecord(Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
   public
     procedure RequireSnapshotIdle;
+    function HasSnapshotData: Boolean;
+    procedure TransferSnapshotData(S: TJVMStateIO);
     constructor Create(VM: TJVM; const Provider: IBluetoothProvider);
     destructor Destroy; override;
     procedure Install;
@@ -1645,9 +1648,135 @@ end;
 
 procedure TJ2MEBluetooth.RequireSnapshotIdle;
 begin
-  if (FJobs.Count <> 0) or (FEvents.Count <> 0) or (FRecords.Count <> 0) or (FCache.Count <> 0) or (FSelections.Count <> 0) or (FDiscoverable <> nil) or (FNameQuery.Count <> 0) then
+  if (FJobs.Count <> 0) or (FEvents.Count <> 0) or (FSelections.Count <> 0) or
+    (FDiscoverable <> nil) or (FNameQuery.Count <> 0) then
     raise EInvalidOpException.Create('Java ME snapshots require inactive network, Bluetooth and messaging connections');
   FTransport.RequireSnapshotIdle;
+  for var Ref in FRecords.Keys.ToArray do
+    if not FVM.IsObjectAlive(Ref) then
+      FRecords.Remove(Ref)
+    else if FRecords[Ref].Populate <> nil then
+      raise EInvalidOpException.Create('Java ME snapshots require inactive network, Bluetooth and messaging connections');
+end;
+
+function TJ2MEBluetooth.HasSnapshotData: Boolean;
+begin
+  Result := (FRecords.Count <> 0) or (FCache.Count <> 0) or (FNextID <> 1);
+end;
+
+procedure TJ2MEBluetooth.TransferSnapshotData(S: TJVMStateIO);
+
+  procedure TransferAddress(var Address: TBluetoothAddress);
+  begin
+    S.UInt64Value(Address.Value);
+    var Kind: Integer := Ord(Address.Kind);
+    S.Count(Kind, Ord(High(TBluetoothAddressKind)));
+    if Address.Value > $FFFFFFFFFFFF then
+      raise EReadError.Create('Invalid snapshot Bluetooth address');
+    Address.Kind := TBluetoothAddressKind(Kind);
+  end;
+
+  procedure TransferUUID(var UUID: TBluetoothUUID);
+  begin
+    var Text := UUID.ToString;
+    S.Text(Text);
+    if S.Loading and ((Length(Text) <> 32) or not TBluetoothUUID.TryParse(Text, UUID)) then
+      raise EReadError.Create('Invalid snapshot Bluetooth UUID');
+  end;
+
+  procedure TransferService(var Service: TBluetoothService);
+  begin
+    TransferAddress(Service.Endpoint.Device);
+    var Transport: Integer := Ord(Service.Endpoint.Transport);
+    S.Count(Transport, Ord(High(TBluetoothTransport)));
+    Service.Endpoint.Transport := TBluetoothTransport(Transport);
+    var Channel := Integer(Service.Endpoint.Channel);
+    S.Count(Channel, High(Word));
+    Service.Endpoint.Channel := Word(Channel);
+    TransferUUID(Service.Endpoint.Service);
+    S.Text(Service.Name);
+
+    var Count: Integer := Length(Service.UUIDs);
+    S.Count(Count, 256);
+    if S.Loading then
+      SetLength(Service.UUIDs, Count);
+    for var I := 0 to Count - 1 do
+      TransferUUID(Service.UUIDs[I]);
+
+    Count := Length(Service.Attributes);
+    S.Count(Count, 256);
+    if S.Loading then
+      SetLength(Service.Attributes, Count);
+    var Remaining := BLUETOOTH_SDP_MAX_BYTES;
+    for var I := 0 to Count - 1 do
+    begin
+      var ID := Integer(Service.Attributes[I].ID);
+      S.Count(ID, High(Word));
+      Service.Attributes[I].ID := Word(ID);
+      S.Bytes(Service.Attributes[I].Data, Remaining);
+      Dec(Remaining, Length(Service.Attributes[I].Data));
+    end;
+  end;
+
+begin
+  S.Tag('J2ME.Bluetooth.Discovery-1');
+  S.Int(FNextID);
+  if FNextID < 1 then
+    raise EReadError.Create('Invalid snapshot Bluetooth transaction ID');
+
+  var Devices := FCache.Keys.ToArray;
+  var Count: Integer := Length(Devices);
+  S.Count(Count, 256);
+  if not S.Loading then
+    TArray.Sort<UInt64>(Devices);
+  for var I := 0 to Count - 1 do
+  begin
+    var Device := Default(TBluetoothDevice);
+    if not S.Loading then
+      Device := FCache[Devices[I]];
+    TransferAddress(Device.Address);
+    S.Text(Device.Name);
+    var DeviceClass := Integer(Device.ClassOfDevice);
+    S.Int(DeviceClass);
+    Device.ClassOfDevice := UInt32(DeviceClass);
+    S.Bool(Device.Paired);
+    S.Bool(Device.Connected);
+    S.Bool(Device.Trusted);
+    if S.Loading then
+    begin
+      if FCache.ContainsKey(Device.Address.Value) then
+        raise EReadError.Create('Duplicate snapshot Bluetooth device');
+      FCache.Add(Device.Address.Value, Device);
+    end;
+  end;
+
+  var Records := FRecords.Keys.ToArray;
+  Count := Length(Records);
+  S.Count(Count, 1024);
+  if not S.Loading then
+    TArray.Sort<Integer>(Records);
+  for var I := 0 to Count - 1 do
+  begin
+    var Ref := 0;
+    if not S.Loading then
+      Ref := Records[I];
+    S.Int(Ref);
+    var R: TJ2MEBluetoothRecord;
+    if S.Loading then
+    begin
+      if not FVM.IsObjectAlive(Ref) or (FVM.GetObject(Ref).ClassName <> RecordName) or FRecords.ContainsKey(Ref) then
+        raise EReadError.Create('Invalid snapshot Bluetooth service record');
+      R := TJ2MEBluetoothRecord.Create;
+      R.Ref := Ref;
+      FRecords.Add(Ref, R);
+    end
+    else
+      R := FRecords[Ref];
+    S.Int(R.Origin);
+    if S.Loading and (R.Origin <> GetRef(FVM.GetObject(Ref), '$bt.origin')) then
+      raise EReadError.Create('Invalid snapshot Bluetooth service origin');
+    TransferService(R.Info);
+  end;
 end;
 
 end.

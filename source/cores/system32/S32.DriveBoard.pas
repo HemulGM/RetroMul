@@ -84,7 +84,6 @@ begin
   FTime := 0;
   FNextIRQ := 4000;
   Z80StateInitialise(FCPU);
-  Z80Reset(FCPU);
 end;
 
 function TS32DriveBoard.ReadMemory(Address: Word): Byte;
@@ -167,9 +166,6 @@ begin
   if (FTime < 0) or (FNextIRQ < FTime - 4000) then
     raise EReadError.Create('Invalid System 32 drive board state');
 end;
-
-initialization
-  HW.Z80.ConstantInitialise;
 
 end.
 

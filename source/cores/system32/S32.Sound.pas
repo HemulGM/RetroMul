@@ -104,7 +104,6 @@ end;
 procedure TS32Sound.Reset;
 begin
   Z80StateInitialise(FCPU);
-  Z80Reset(FCPU);
   for var I := 0 to 1 do
   begin
     FFM[I] := Default(TFM);
@@ -439,9 +438,6 @@ begin
     (FTime < 0) or (FCPUCyclesRemaining < 0) then
     raise EReadError.Create('Invalid System 32 sound state');
 end;
-
-initialization
-  HW.Z80.ConstantInitialise;
 
 end.
 

@@ -5,13 +5,16 @@ interface
 uses
   JVM.Types, JVM.ClassFile, JVM.Runtime;
 
+const
+  J2MEDefaultNativePixelFormat = 8888;
+
 function J2MECompositeColor(Old, Value: UInt32): UInt32;
 
 procedure InstallJ2MEGraphics(VM: TJVM);
 
 function InvokeJ2MEDirectUtils(VM: TJVM; Method: TJVMMethod; const Args: TArray<TJVMValue>): TJVMValue;
 
-function InvokeJ2MEGraphics(VM: TJVM; Method: TJVMMethod; const Args: TArray<TJVMValue>; var Pixels: TArray<UInt32>; Width, Height: Integer): TJVMValue;
+function InvokeJ2MEGraphics(VM: TJVM; Method: TJVMMethod; const Args: TArray<TJVMValue>; var Pixels: TArray<UInt32>; Width, Height: Integer; NativePixelFormat: Integer = J2MEDefaultNativePixelFormat): TJVMValue;
 
 implementation
 
@@ -237,7 +240,7 @@ begin
   end;
 end;
 
-function InvokeJ2MEGraphics(VM: TJVM; Method: TJVMMethod; const Args: TArray<TJVMValue>; var Pixels: TArray<UInt32>; Width, Height: Integer): TJVMValue;
+function InvokeJ2MEGraphics(VM: TJVM; Method: TJVMMethod; const Args: TArray<TJVMValue>; var Pixels: TArray<UInt32>; Width, Height, NativePixelFormat: Integer): TJVMValue;
 var
   O, TargetPixels, RGB: TJVMObject;
   TargetRef: TJVMValue;
@@ -803,7 +806,7 @@ begin
   if N = 'getAlphaComponent' then
     Exit(TJVMValue.Int(Color shr 24));
   if N = 'getNativePixelFormat' then
-    Exit(TJVMValue.Int(8888));
+    Exit(TJVMValue.Int(NativePixelFormat));
   if N = 'setColor' then
   begin
     I := Arg(1);
@@ -1022,6 +1025,14 @@ begin
       DH := SW;
     end;
     Anchor(X1, Y1, DW, DH, I);
+    // Clip before narrowing coordinates to pixel indices. The anchor and
+    // translation can place the image outside the Java int range.
+    var Left := Max(Int64(CL), X1);
+    var Top := Max(Int64(CT), Y1);
+    var Right := Min(Int64(CR), X1 + DW);
+    var Bottom := Min(Int64(CB), Y1 + DH);
+    if (Left >= Right) or (Top >= Bottom) then
+      Exit;
     if Source.Pixels = TargetPixels then
     begin
       SetLength(Snapshot, Source.Pixels.ElementCount);
@@ -1044,42 +1055,39 @@ begin
         DirectTarget := TargetPixels.TryIntData(TargetData);
       if DirectTarget and Source.Pixels.TryIntData(SourceData) then
       begin
-        var Left := Integer(Max(Int64(CL), X1));
-        var Right := Integer(Min(Int64(CR), X1 + DW));
-        if Left < Right then
-          for YY := Max(Int64(CT), Y1) to Min(Int64(CB) - 1, Y1 + DH - 1) do
+        for YY := Top to Bottom - 1 do
+        begin
+          var SourceIndex := (SrcY + Integer(YY - Y1)) * Source.Width + SrcX + Integer(Left - X1);
+          var TargetIndex := Integer(YY) * Width + Integer(Left);
+          var Remaining := Integer(Right - Left);
+          while Remaining > 0 do
           begin
-            var SourceIndex := (SrcY + Integer(YY - Y1)) * Source.Width + SrcX + Integer(Int64(Left) - X1);
-            var TargetIndex := Integer(YY) * Width + Left;
-            var Remaining := Right - Left;
-            while Remaining > 0 do
+            var Value := UInt32(SourceData[SourceIndex]);
+            if Value shr 24 = 255 then
             begin
-              var Value := UInt32(SourceData[SourceIndex]);
-              if Value shr 24 = 255 then
-              begin
-                var Count := 1;
-                while (Count < Remaining) and (UInt32(SourceData[SourceIndex + Count]) shr 24 = 255) do
-                  Inc(Count);
-                Move(SourceData[SourceIndex], TargetData[TargetIndex], Count * 4);
-                Inc(SourceIndex, Count);
-                Inc(TargetIndex, Count);
-                Dec(Remaining, Count);
-              end
-              else
-              begin
-                if Value shr 24 <> 0 then
-                  TargetData[TargetIndex] := Integer(J2MECompositeColor(UInt32(TargetData[TargetIndex]), Value));
-                Inc(SourceIndex);
-                Inc(TargetIndex);
-                Dec(Remaining);
-              end;
+              var Count := 1;
+              while (Count < Remaining) and (UInt32(SourceData[SourceIndex + Count]) shr 24 = 255) do
+                Inc(Count);
+              Move(SourceData[SourceIndex], TargetData[TargetIndex], Count * 4);
+              Inc(SourceIndex, Count);
+              Inc(TargetIndex, Count);
+              Dec(Remaining, Count);
+            end
+            else
+            begin
+              if Value shr 24 <> 0 then
+                TargetData[TargetIndex] := Integer(J2MECompositeColor(UInt32(TargetData[TargetIndex]), Value));
+              Inc(SourceIndex);
+              Inc(TargetIndex);
+              Dec(Remaining);
             end;
           end;
+        end;
         Exit;
       end;
     end;
-    for YY := Max(Int64(CT), Y1) to Min(Int64(CB) - 1, Y1 + DH - 1) do
-      for XX := Max(Int64(CL), X1) to Min(Int64(CR) - 1, X1 + DW - 1) do
+    for YY := Top to Bottom - 1 do
+      for XX := Left to Right - 1 do
       begin
         if (N = 'drawImage') and (Length(Args) = 6) then
           DirectSource(Integer(XX - X1), Integer(YY - Y1), SW, SH, Transform, SX, SY)

@@ -109,8 +109,9 @@ begin
     'Select the mapper for a raw ROM. CART headers take precedence.',
     'Cartridge', 'Mapper', SettingChoices(['Automatic', 'Standard 8 KiB', 'Standard 16 KiB',
         'OSS 034M', 'OSS 043M', 'OSS one chip', 'Bounty Bob 40 KiB', 'XEGS 32 KiB',
-        'XEGS 64 KiB', 'XEGS 128 KiB', 'Atarimax 128 KiB'], ['0', '1', '2', '3', '45', '15',
-        '18', '12', '13', '14', '41']), '0', True).ApplyMode := TSettingsApplyMode.OnNextLoad;
+        'XEGS 64 KiB (0–7)', 'XEGS 64 KiB (8–15)', 'XEGS 128 KiB', 'Atarimax 128 KiB'],
+      ['0', '1', '2', '3', '45', '15', '18', '12', '13', '67', '14', '41']), '0', True)
+    .ApplyMode := TSettingsApplyMode.OnNextLoad;
   Context.Heading('GroupAtari8Disk', 'Disk drive');
   Context.AddBoolean('ToggleAtari8DiskProtection', 'Write protect disk',
     'Prevent new disk writes. Reopen the game to apply.',

@@ -37,6 +37,7 @@ type
     FPorts: TCoreInputPorts;
     FKeys, FScreenKeys: THostKeyboardKeys;
     FLastKey: Byte;
+    FAutomaticRawMapper: Integer;
     FPaused: Boolean;
     FError, FRomName, FExtension, FSnapshotDirectory: string;
     function KeyboardState: Word;
@@ -76,8 +77,8 @@ type
 implementation
 
 uses
-  System.UITypes, A5200.Console, A5200.Controller, A8.Media, A8.POKEY,
-  Core.Snapshots;
+  System.Hash, System.UITypes, A5200.Console, A5200.Controller, A8.Media,
+  A8.POKEY, Core.Snapshots;
 
 function ReadAtariFirmware(const Storage: IStorage; const Location: string; Size: Integer): TBytes;
 begin
@@ -131,7 +132,11 @@ begin
   FConfig.Load;
   FPorts := LoadCoreInputPorts(FStorage, Atari8SystemId, FConfig.FileName);
   var Check := TA8Media.Create(FData, FExtension, FConfigObject.Options.Mapper);
-  Check.Free;
+  try
+    FAutomaticRawMapper := Check.AutomaticRawMapper;
+  finally
+    Check.Free;
+  end;
   FSnapshotDirectory := FStorage.GameSnapshots(Atari8SystemId, FRomName, SnapshotIdentity(FData));
 end;
 
@@ -273,8 +278,24 @@ begin
     if Options.Model = TA8Model.AtariXEGS then
       Options.GameROM := ReadAtariFirmware(FStorage, FConfigObject.GameFile, $2000);
   end;
-  var Identity: TBytes := FData + [Byte(Options.Model), Byte(Options.PAL), Byte(Options.Basic), Byte(Options.Mapper)] +
-    Options.OSROM + Options.BasicROM + Options.GameROM;
+  var Settings: TBytes := [Byte(Options.Model), Byte(Options.PAL), Byte(Options.Basic), Byte(Options.Mapper)];
+  var Firmware := Options.OSROM + Options.BasicROM + Options.GameROM;
+  var Identity := FData + Settings + Firmware;
+  var CompatibleHash: TBytes;
+  if (FAutomaticRawMapper <> 0) and ((Options.Mapper = 0) or (Options.Mapper = FAutomaticRawMapper)) then
+  begin
+    // Older snapshots distinguish the menu choices even when they select the same hardware.
+    if Options.Mapper = 0 then
+      Settings[3] := Byte(FAutomaticRawMapper)
+    else
+      Settings[3] := 0;
+    var Hash := THashSHA2.Create;
+    Hash.Update(FData);
+    Hash.Update(Settings);
+    if Length(Firmware) <> 0 then
+      Hash.Update(Firmware);
+    CompatibleHash := Hash.HashAsBytes;
+  end;
   var DiskCopy := '';
   if SameText(FExtension, '.atr') or SameText(FExtension, '.xfd') then
     DiskCopy := FStorage.GameSave(Atari8SystemId, FRomName, SnapshotIdentity(FData)) + FExtension;
@@ -289,7 +310,7 @@ begin
         raise;
       end;
       Result := Machine;
-    end, Atari8Buttons, FStorage);
+    end, Atari8Buttons, FStorage, CompatibleHash);
   FThread.InputPorts := FPorts;
   FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplyLiveSettings;

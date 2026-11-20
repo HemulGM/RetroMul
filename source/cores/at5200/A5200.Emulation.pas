@@ -17,7 +17,7 @@ type
     FWake: TEvent;
     FSnapshots: TSnapshotQueue;
     FStorage: IStorage;
-    FCartridge: TBytes;
+    FCartridge, FCompatibleSnapshotHash: TBytes;
     FCoreId: string;
     FMachineFactory: TAtariMachineFactory;
     FKeyboard: Word;
@@ -37,7 +37,7 @@ type
     SnapshotDirectory: string;
     property InputPorts: TCoreInputPorts read GetInputPorts write SetInputPorts;
     constructor Create(const Cartridge: TBytes; Mapper: Integer; const Storage: IStorage); overload;
-    constructor Create(const Media: TBytes; const CoreId: string; const Factory: TAtariMachineFactory; const Buttons: TEmulatorButtons; const Storage: IStorage); overload;
+    constructor Create(const Media: TBytes; const CoreId: string; const Factory: TAtariMachineFactory; const Buttons: TEmulatorButtons; const Storage: IStorage; const CompatibleSnapshotHash: TBytes = nil); overload;
     destructor Destroy; override;
     procedure Configure(const Input: TEmulatorInput; Paused, AudioEnabled: Boolean; Volume: Single; const Keypads: TA5200Keypads; Keyboard: Word = $FF);
     procedure RequestReset;
@@ -78,7 +78,7 @@ begin
           TEmulatorButton.Select], Storage);
 end;
 
-constructor TA5200Worker.Create(const Media: TBytes; const CoreId: string; const Factory: TAtariMachineFactory; const Buttons: TEmulatorButtons; const Storage: IStorage);
+constructor TA5200Worker.Create(const Media: TBytes; const CoreId: string; const Factory: TAtariMachineFactory; const Buttons: TEmulatorButtons; const Storage: IStorage; const CompatibleSnapshotHash: TBytes);
 begin
   inherited Create(True);
   FInputPortsCommand := TInputPortsCommand.Create;
@@ -87,6 +87,7 @@ begin
   FWake := TEvent.Create(nil, False, False, '');
   FSnapshots := TSnapshotQueue.Create;
   FCartridge := Copy(Media);
+  FCompatibleSnapshotHash := Copy(CompatibleSnapshotHash);
   FCoreId := CoreId;
   FMachineFactory := Factory;
   FKeyboard := $FF;
@@ -271,7 +272,7 @@ begin
               end;
             if Loading then
             begin
-              LoadCoreSnapshot(Path, CoreId, FCartridge, Transfer, FStorage);
+              LoadCoreSnapshot(Path, CoreId, FCartridge, Transfer, FStorage, FCompatibleSnapshotHash);
               if Audio <> nil then
                 Audio.Clear;
               Publish(Console);

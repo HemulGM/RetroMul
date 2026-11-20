@@ -49,6 +49,7 @@ type
     function PortB: Byte;
     function Stick(Port: Integer): Byte;
     function Trigger(Port: Integer): Byte;
+    procedure AccessCartControl(Address: Word; Value: Byte; Writing: Boolean);
     function VideoRead(Address: Word): Byte;
     function RamAddress(Address: Word; Video: Boolean): Integer;
     function MemoryRead(Address: Word; Video: Boolean): Byte;
@@ -324,6 +325,14 @@ begin
   Result := Ord(FPaddlePorts[Port] or (FInput.ButtonAmount(Port, TEmulatorButton.A) < 0.5));
 end;
 
+procedure TA8Machine.AccessCartControl(Address: Word; Value: Byte; Writing: Boolean);
+begin
+  FMedia.CartControl(Address, Value, Writing);
+  // RD5 feeds the GTIA latch even if software never reads TRIG3 while RD5 is low.
+  if not FLegacy then
+    FGTIA.ReadTrigger(3, Trigger(3));
+end;
+
 function TA8Machine.RamAddress(Address: Word; Video: Boolean): Integer;
 begin
   Result := Address;
@@ -359,8 +368,9 @@ begin
             $1F:
               begin
                 Result := FConsole and not FGTIA.ConsoleControl;
-                // Without its keyboard, XEGS selects its game at power-on.
-                if FBootOption and FKeyboardConnected then
+                // Let the XEGS OS see SELECT without a simulated OPTION at boot.
+                if FBootOption and FKeyboardConnected and
+                  ((FOptions.Model <> TA8Model.AtariXEGS) or (FConsole and 2 <> 0)) then
                   Result := Result and 3;
                 Exit;
               end;
@@ -393,7 +403,7 @@ begin
       $D4:
         Exit(FANTIC.Read(Address and 15));
       $D5:
-        FMedia.CartControl(Address, FBus, False);
+        AccessCartControl(Address, FBus, False);
     end;
     Exit(FBus);
   end;
@@ -466,7 +476,7 @@ begin
       $D4:
         FANTIC.Write(Address and 15, Value);
       $D5:
-        FMedia.CartControl(Address, Value, True);
+        AccessCartControl(Address, Value, True);
     end;
     Exit;
   end;

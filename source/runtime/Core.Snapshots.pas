@@ -69,7 +69,7 @@ procedure SaveStreamAtomically(Stream: TMemoryStream; const Path: string; const 
 
 procedure SaveCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage = nil);
 
-procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage = nil);
+procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage = nil; const CompatibleROMHash: TBytes = nil);
 
 procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer; Pixels: Pointer; const Storage: IStorage = nil);
 
@@ -253,7 +253,7 @@ begin
   end;
 end;
 
-procedure LoadCoreSnapshotData(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage; IsDigest: Boolean);
+procedure LoadCoreSnapshotData(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage; IsDigest: Boolean; const CompatibleROMHash: TBytes);
 begin
   var SourceStorage := Storage;
   if SourceStorage = nil then
@@ -280,18 +280,21 @@ begin
         CompareMem(@Id[0], @ExpectedId[0], Length(Id));
     end;
     var Policy := SnapshotPolicy(platform);
+    var IdentityMatches := CompareMem(@Header.ROMHash, @Expected.ROMHash, SizeOf(Header.ROMHash));
+    if not IdentityMatches and (Length(CompatibleROMHash) = SizeOf(Header.ROMHash)) then
+      IdentityMatches := CompareMem(@Header.ROMHash, @CompatibleROMHash[0], SizeOf(Header.ROMHash));
     if PlatformMatches and CompareMem(@Header.Magic, @Expected.Magic, 8) and
       CompareMem(@Header.platform, @Expected.platform, 8) then
     begin
       if (Header.Version <> Expected.Version) and (Policy.VersionError <> '') then
         raise EReadError.CreateFmt(Policy.VersionError, [Header.Version, Expected.Version]);
-      if not CompareMem(@Header.ROMHash, @Expected.ROMHash, 32) and (Policy.IdentityError <> '') then
+      if not IdentityMatches and (Policy.IdentityError <> '') then
         raise EReadError.Create(Policy.IdentityError);
     end;
     if not PlatformMatches or not CompareMem(@Header.Magic, @Expected.Magic, 8) or
       not Policy.Accepts(Header.Version) or
       not CompareMem(@Header.platform, @Expected.platform, 8) or
-      not CompareMem(@Header.ROMHash, @Expected.ROMHash, 32) or
+      not IdentityMatches or
       (Header.PayloadSize = 0) or (Header.PayloadSize > Policy.MaximumSize) or
       (Int64(Header.PayloadSize) <> Input.Size - Input.Position) then
       raise EReadError.Create('Snapshot is incompatible with this game or core');
@@ -325,9 +328,9 @@ begin
   SaveCoreSnapshotData(Path, platform, ROM, Transfer, Storage, False);
 end;
 
-procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
+procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage; const CompatibleROMHash: TBytes);
 begin
-  LoadCoreSnapshotData(Path, platform, ROM, Transfer, Storage, False);
+  LoadCoreSnapshotData(Path, platform, ROM, Transfer, Storage, False, CompatibleROMHash);
 end;
 
 procedure SaveCoreSnapshotHash(const Path, platform: string; const ROMHash: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
@@ -337,7 +340,7 @@ end;
 
 procedure LoadCoreSnapshotHash(const Path, platform: string; const ROMHash: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
 begin
-  LoadCoreSnapshotData(Path, platform, ROMHash, Transfer, Storage, True);
+  LoadCoreSnapshotData(Path, platform, ROMHash, Transfer, Storage, True, nil);
 end;
 
 procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer; Pixels: Pointer; const Storage: IStorage);

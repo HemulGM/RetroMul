@@ -77,7 +77,7 @@ type
     Note: Integer;
     Volume256: Integer;
     PitchOffset: Integer;
-    EnvNum, EnvDen, Tone, MixerMode, FinePitch: Integer;
+    EnvNum, EnvDen, NotePeriod, MixerMode, FinePitch: Integer;
     Arp, ArpTick, ArpSpeed, Vibrato, VibratoPhase, VolumeSlide, CutTick: Integer;
     BeeperVolume, BeeperDuty, BeeperDivisor, BeeperStep: Integer;
     DelayedTick: Integer;
@@ -1121,7 +1121,7 @@ begin
       FChanState[Ch].Volume256 := 2 * 256;
   end;
   FChanState[Ch].BeeperDuty := 128;
-  FChanState[Ch].Tone := -1;
+  FChanState[Ch].NotePeriod := -1;
   FChanState[Ch].SlideTarget := -1;
   FChanState[Ch].ArpSpeed := 1;
   FChanState[Ch].CutTick := -1;
@@ -1448,7 +1448,7 @@ end;
 procedure TFurnaceDecoder.ApplyChannel(Ch: Integer);
 var
   Voice: ^TChannelState;
-  Vol, Tone, Wave, EnvPeriod, Mixer: Integer;
+  Vol, Period, Tone, Wave, EnvPeriod, Mixer: Integer;
   Pitch: Double;
   Note: Int64;
   Arp: Cardinal;
@@ -1508,11 +1508,12 @@ begin
   begin
     if not FixedArp then
       Pitch := Pitch + Voice^.SlideOffset / 128;
-    Tone := EnsureRange(Round(NotePeriod(Ch, Note + Pitch)), 1, 4095);
+    Period := EnsureRange(Round(NotePeriod(Ch, Note + Pitch)), 1, 4095);
   end
   else
-    Tone := EnsureRange(Round(NotePeriod(Ch, Note) * Power(2.0, -Pitch / 12) +
+    Period := EnsureRange(Round(NotePeriod(Ch, Note) * Power(2.0, -Pitch / 12) +
         Voice^.SlideOffset - Voice^.PitchOffset / 2), 1, 4095);
+  Tone := Period;
   if Voice^.FixedPeriodState.Started and (Voice^.FixedPeriodState.Val > 0) then
     Tone := Min(4095, Voice^.FixedPeriodState.Val);
   FYM.WriteRegister(Ch * 2, Tone and $FF);
@@ -1540,10 +1541,11 @@ begin
   EnvPeriod := -1;
   if Voice^.EnvPeriodState.Had then
     EnvPeriod := EnsureRange(Voice^.EnvPeriodState.Val, 0, 65535);
+  // Force Period changes the tone register. Auto-envelope follows the note pitch.
   if (Voice^.EnvNum > 0) and (Voice^.EnvDen > 0) and
-    ((Tone <> Voice^.Tone) or Voice^.EnvNumState.Had or Voice^.EnvDenState.Had) then
-    EnvPeriod := Integer((Int64(Tone) * Voice^.EnvDen div Voice^.EnvNum) shr 4);
-  Voice^.Tone := Tone;
+    ((Period <> Voice^.NotePeriod) or Voice^.EnvNumState.Had or Voice^.EnvDenState.Had) then
+    EnvPeriod := Integer((Int64(Period) * Voice^.EnvDen div Voice^.EnvNum) shr 4);
+  Voice^.NotePeriod := Period;
   if EnvPeriod >= 0 then
   begin
     FYM.WriteRegister(11, EnvPeriod and $FF);
@@ -1635,7 +1637,7 @@ begin
       begin
         FChanState[Ch].EnvNum := Param shr 4;
         FChanState[Ch].EnvDen := Param and 15;
-        FChanState[Ch].Tone := -1;
+        FChanState[Ch].NotePeriod := -1;
       end;
     $00:
       FChanState[Ch].Arp := Param;

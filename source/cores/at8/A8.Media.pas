@@ -19,6 +19,7 @@ type
     FSegments: TArray<TA8Segment>;
     FKind: TA8MediaKind;
     FMapper, FBank, FBank2, FFixedBank, FSectorSize, FDiskOffset, FSectorCount: Integer;
+    FAutomaticRawMapper: Integer;
     FFullBootSectors: Boolean;
     FDisabled, FCommandLine, FWriteProtected, FDiskDirty: Boolean;
     FDiskCopy: string;
@@ -37,6 +38,7 @@ type
     procedure AttachDisk(const Storage: IStorage; const DiskCopy: string; WriteProtected: Boolean);
     procedure Flush;
     procedure Reset;
+    property AutomaticRawMapper: Integer read FAutomaticRawMapper;
     function CartHigh: Boolean;
     function ReadCart(Address: Word; out Value: Byte): Boolean;
     procedure CartControl(Address: Word; Value: Byte; Writing: Boolean);
@@ -61,7 +63,7 @@ function A8ComputerCartType(Mapper: Integer): Boolean;
 implementation
 
 uses
-  System.Classes, System.Generics.Collections;
+  System.Classes, System.Generics.Collections, System.ZLib;
 
 const
   // D1: boot sector with no resident loader. The machine services the
@@ -187,6 +189,31 @@ begin
     raise EReadError.Create('Invalid Atari double-density disk size');
 end;
 
+function DetectRawMapper(const Data: TBytes): Integer;
+begin
+  case Length(Data) of
+    $0800:
+      Exit(57);
+    $1000:
+      Exit(58);
+    $2000:
+      Exit(1);
+    $4000:
+      Exit(2);
+    $A000:
+      Exit(18);
+    $10000, $20000:
+      // Known XEGS dumps from the MAME xegs software list (CC0-1.0).
+      case crc32(0, @Data[0], Length(Data)) of
+        $A8F9324D, $B15CCEF2: // Desert Falcon, Thunderfox
+          Exit(13);
+        $28288DF4, $AB06A3F5, $95E6932D: // Commando, GATO, Summer Games
+          Exit(14);
+      end;
+  end;
+  Result := 0;
+end;
+
 procedure TA8Media.ParseCartridge(Mapper: Integer);
 begin
   if (Length(FData) >= 16) and (FData[0] = Ord('C')) and
@@ -204,23 +231,15 @@ begin
       raise EReadError.Create('Atari cartridge checksum mismatch');
     FData := Copy(FData, 16, MaxInt);
   end
-  else if Mapper <> 0 then
-    FMapper := Mapper
   else
-    case Length(FData) of
-      $0800:
-        FMapper := 57;
-      $1000:
-        FMapper := 58;
-      $2000:
-        FMapper := 1;
-      $4000:
-        FMapper := 2;
-      $A000:
-        FMapper := 18;
-    else
+  begin
+    FAutomaticRawMapper := DetectRawMapper(FData);
+    FMapper := Mapper;
+    if FMapper = 0 then
+      FMapper := FAutomaticRawMapper;
+    if FMapper = 0 then
       raise EReadError.Create('Select a cartridge type for this raw Atari ROM');
-    end;
+  end;
   var Banks: Integer;
   case FMapper of
     3, 15, 45:
@@ -235,7 +254,7 @@ begin
       Banks := 2;
     5, 12, 22, 33, 52, 60:
       Banks := 4;
-    8..10, 13, 34:
+    8..10, 13, 34, 67:
       Banks := 8;
     14, 17, 35, 41:
       Banks := 16;
@@ -391,11 +410,19 @@ begin
       Offset := Address - $8000;
     26..32:
       Offset := Address - $8000 + FBank * $4000;
-    5, 12..14, 23..25, 33..38:
-      if Address < $A000 then
-        Inc(Offset, FBank * $2000)
+    5, 12..14, 23..25, 33..38, 67:
+      if Address >= $A000 then
+        Inc(Offset, FFixedBank * $2000)
       else
-        Inc(Offset, FFixedBank * $2000);
+      begin
+        // The 8–15 board leaves the lower cartridge window undriven until D3 is set.
+        if (FMapper = 67) and (FBank and 8 = 0) then
+        begin
+          Value := $FF;
+          Exit(True);
+        end;
+        Inc(Offset, (FBank and FFixedBank) * $2000);
+      end;
   else
     if Address < $A000 then
       Exit;
@@ -445,6 +472,9 @@ begin
       end;
     5:
       FBank := Address and FFixedBank;
+    67:
+      if Writing then
+        FBank := Value and $0F;
     12..14, 17, 23..38:
       if Writing then
       begin

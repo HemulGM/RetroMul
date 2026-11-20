@@ -6,10 +6,11 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 
 ## Supported systems and ROM formats
 
-The table lists registered systems. Supported images and ROM sets can also be loaded from `.zip`, `.7z`, and `.rar` archives. Disc images must retain their required companion files and tracks.
+The table lists registered systems. Supported files and ROM sets can also be loaded from `.zip`, `.7z`, and `.rar` archives. Disc images must retain their required companion files and tracks.
 
-| System | ROM formats |
+| System | Supported formats |
 | --- | --- |
+| Atari 8-bit (400 / 800 / XL / XE / XEGS) | Cartridge images `.car`, `.rom`, `.bin`; disk images `.atr`, `.xfd`; executables `.xex`, `.com` |
 | Atari 2600 | `.a26`; `.bin`, `.rom` in the system folder |
 | Atari 5200 | `.a52`, Atari 5200 `.car`; `.bin`, `.rom` in the system folder; BIOS embedded |
 | Atari 7800 | `.a78`, `.bin`, `.rom` |
@@ -25,10 +26,13 @@ The table lists registered systems. Supported images and ROM sets can also be lo
 | Game Boy Advance | `.gba` |
 | Nintendo 64 (experimental) | `.z64`, `.n64`, `.v64` |
 | Nintendo DS (experimental) | `.nds` |
+| Adobe Flash (experimental) | `.swf` with ActionScript 1/2 (AVM1) or limited ActionScript 3 (AVM2) support |
 | Java ME / J2ME (initial implementation) | `.jar`, optional adjacent `.jad`; |
 | SEGA Mega Drive / Genesis | `.md`, `.bin`, `.gen`, `.smd` |
 | SEGA CD / Mega-CD | `.cue`, `.iso`, `.chd`, `.mds`, `.nrg` |
 | SEGA 32X | `.32x`, `.bin`, `.gen`, `.md`, `.smd` |
+| SEGA System 16A / 16B | Catalogued MAME `.zip`, `.7z`, `.rar` sets |
+| SEGA System 18 | Catalogued MAME `.zip`, `.7z`, `.rar` sets |
 | SEGA System 32 (experimental) | Catalogued MAME `.zip`, `.7z`, `.rar` sets |
 | SEGA SG-1000 | `.sg` (legacy `.sms` images in `sg1000/`) |
 | SEGA SC-3000 | `.sc` |

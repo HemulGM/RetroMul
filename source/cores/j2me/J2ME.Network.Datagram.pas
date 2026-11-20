@@ -70,8 +70,8 @@ type
 implementation
 
 uses
-  {$IFDEF MSWINDOWS}  Winapi.Winsock2, {$ENDIF}
-  {$IFDEF POSIX}Posix.NetinetIn, Posix.Errno, {$ENDIF}
+  {$IFDEF MSWINDOWS}    Winapi.Winsock2, {$ENDIF}
+  {$IFDEF POSIX}Posix.ArpaInet, Posix.NetinetIn, Posix.Errno, {$ENDIF}
   System.Math, System.StrUtils, System.SysUtils, System.Types, Java.Classes,
   JVM.Threading;
 

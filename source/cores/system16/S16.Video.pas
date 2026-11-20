@@ -16,16 +16,23 @@ type
   private
     FTiles, FSprites: TBytes;
     FA: Boolean;
+  protected
     FSpriteBanks: array[0..15] of Byte;
     FIndex: array[0..S16_WIDTH * S16_HEIGHT - 1] of Word;
     FPriority: array[0..S16_WIDTH * S16_HEIGHT - 1] of Byte;
     FSpritePixels: array[0..S16_WIDTH * S16_HEIGHT - 1] of Word;
     FPages, FScrollX, FScrollY: array[0..3] of Word;
     function TilePixel(Code, X, Y: Integer): Integer;
-    procedure DrawLayer(Which: Integer);
+    procedure DrawLayer(Which: Integer; Opaque: Boolean = True);
+    procedure DrawBackground; virtual;
+    procedure MixLayer(Layer: Integer); virtual;
+    procedure ResetBanks; virtual;
     procedure DrawText;
     procedure DrawSprites;
-    function Color(Index: Integer): TAlphaColor;
+    function Color(Index: Integer): TAlphaColor; virtual;
+    function DecodeTile(Code: Integer): Integer; virtual;
+    function PixelColor(Offset: Integer): TAlphaColor; virtual;
+    procedure ShadePixel(Offset: Integer); virtual;
   public
     TileRAM: array[0..$7FFF] of Word;
     TextRAM: array[0..$7FF] of Word;
@@ -65,14 +72,19 @@ begin
   Reset;
 end;
 
+procedure TS16Video.ResetBanks;
+begin
+  TileBank[0] := 0;
+  TileBank[1] := 1;
+end;
+
 procedure TS16Video.Reset;
 begin
   FillChar(TileRAM, SizeOf(TileRAM), 0);
   FillChar(TextRAM, SizeOf(TextRAM), 0);
   FillChar(SpriteRAM, SizeOf(SpriteRAM), 0);
   FillChar(PaletteRAM, SizeOf(PaletteRAM), 0);
-  TileBank[0] := 0;
-  TileBank[1] := 1;
+  ResetBanks;
   DisplayEnabled := False;
   Flip := False;
   RowScroll := False;
@@ -103,7 +115,12 @@ begin
   Result := Result or (((FTiles[Offset + Plane * 2] shr Shift) and 1) shl 2);
 end;
 
-procedure TS16Video.DrawLayer(Which: Integer);
+function TS16Video.DecodeTile(Code: Integer): Integer;
+begin
+  Result := TileBank[Code div $1000] * $1000 + (Code and $FFF);
+end;
+
+procedure TS16Video.DrawLayer(Which: Integer; Opaque: Boolean);
 begin
   for var Y := 0 to S16_HEIGHT - 1 do
     for var X := 0 to S16_WIDTH - 1 do
@@ -158,13 +175,13 @@ begin
       else
       begin
         Code := Data and $1FFF;
-        Code := TileBank[Code div $1000] * $1000 + (Code and $FFF);
+        Code := DecodeTile(Code);
         Palette := (Data shr 6) and $7F;
         Priority := Data shr 15;
       end;
       var Pixel := TilePixel(Code, SX, SY);
       var Offset := Y * S16_WIDTH + X;
-      if (Pixel <> 0) or (Which = 1) then
+      if (Pixel <> 0) or ((Which = 1) and Opaque) then
         FIndex[Offset] := Palette * 8 + Pixel;
       if Pixel <> 0 then
         FPriority[Offset] := FPriority[Offset] or (1 shl (Priority + 1 - Which));
@@ -186,7 +203,7 @@ begin
       end
       else
       begin
-        Code := TileBank[0] * $1000 + (Data and $1FF);
+        Code := DecodeTile(Data and $1FF);
         Palette := (Data shr 9) and 7;
         Priority := Data shr 15;
       end;
@@ -327,7 +344,7 @@ begin
     var Pixel := FSpritePixels[i];
     if (Pixel <> $FFFF) and ((1 shl ((Pixel shr 10) and 3)) > FPriority[i]) then
       if Pixel and $3F0 = $3F0 then
-        FIndex[i] := (FIndex[i] and $7FF) or $800
+        ShadePixel(i)
       else
         FIndex[i] := $400 or (Pixel and $3FF);
   end;
@@ -358,6 +375,25 @@ begin
   Result := $FF000000 or (Cardinal(R) shl 16) or (Cardinal(G) shl 8) or Cardinal(B);
 end;
 
+procedure TS16Video.DrawBackground;
+begin
+  DrawLayer(1);
+end;
+
+procedure TS16Video.MixLayer(Layer: Integer);
+begin
+end;
+
+procedure TS16Video.ShadePixel(Offset: Integer);
+begin
+  FIndex[Offset] := (FIndex[Offset] and $7FF) or $800;
+end;
+
+function TS16Video.PixelColor(Offset: Integer): TAlphaColor;
+begin
+  Result := Color(FIndex[Offset]);
+end;
+
 procedure TS16Video.Render;
 begin
   if not DisplayEnabled then
@@ -367,9 +403,12 @@ begin
     Exit;
   end;
   FillChar(FPriority, SizeOf(FPriority), 0);
-  DrawLayer(1);
+  DrawBackground;
+  MixLayer(1);
   DrawLayer(0);
+  MixLayer(2);
   DrawText;
+  MixLayer(3);
   if Flip then
     for var i := 0 to High(FIndex) div 2 do
     begin
@@ -385,7 +424,7 @@ begin
   // row fetch order is controlled by pitch, not by rotating the completed image.
   DrawSprites;
   for var i := 0 to High(Pixels) do
-    Pixels[i] := Color(FIndex[i]);
+    Pixels[i] := PixelColor(i);
 end;
 
 procedure TS16Video.SerializeState(State: TStateArchive);

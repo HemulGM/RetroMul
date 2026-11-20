@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.SysUtils, HW.Z80, MD.Sound, Core.Snapshots;
+  System.SysUtils, System.Classes, HW.Z80, MD.Sound, Core.Snapshots;
 
 type
   TS32Sound = class
@@ -17,6 +17,10 @@ type
       end;
   private
     FROM: TBytes;
+    FSystem18: Boolean;
+    FClock, FPCMClock: Integer;
+    FCommand, FReply: Byte;
+    FCommandPending: Boolean;
     FCPU: TZ80State;
     FBus: TZ80ReadAndWriteCallbacks;
     FFM: array[0..1] of TFM;
@@ -44,8 +48,12 @@ type
   public
     Shared: array[0..8191] of Byte;
     MainIRQ: Boolean;
+    OnReply: TNotifyEvent;
     Samples: TArray<SmallInt>;
-    constructor Create(const ROM: TBytes);
+    constructor Create(const ROM: TBytes; System18: Boolean = False);
+    procedure Command(Value: Byte);
+    property Reply: Byte read FReply;
+    property Clock: Integer read FClock;
     procedure Reset;
     procedure BeginFrame;
     procedure EndFrame;
@@ -63,7 +71,7 @@ type
 implementation
 
 uses
-  System.Classes, System.Math;
+  System.Math;
 
 const
   Z80_CLOCK = 8053975;
@@ -88,10 +96,18 @@ begin
   TS32Sound(User).WritePort(Byte(Address), Byte(Value));
 end;
 
-constructor TS32Sound.Create(const ROM: TBytes);
+constructor TS32Sound.Create(const ROM: TBytes; System18: Boolean);
 begin
   inherited Create;
   FROM := ROM;
+  FSystem18 := System18;
+  FClock := Z80_CLOCK;
+  FPCMClock := 12500000;
+  if FSystem18 then
+  begin
+    FClock := 8000000;
+    FPCMClock := 10000000;
+  end;
   FBus := Default(TZ80ReadAndWriteCallbacks);
   FBus.UserData := Self;
   FBus.ReadCallback := ReadZ;
@@ -130,7 +146,12 @@ begin
   FDummy := 0;
   FPCMEnabled := False;
   MainIRQ := False;
-  FResetLine := True;
+  FResetLine := not FSystem18;
+  FCommand := $FF;
+  FReply := $FF;
+  FCommandPending := False;
+  if FSystem18 then
+    FillChar(Shared, SizeOf(Shared), 0);
   FSampleCount := 0;
   Samples := nil;
 end;
@@ -161,6 +182,14 @@ begin
   Z80Interrupt(FCPU, Ord((FPending and not FControl[3] and 7) <> 0));
 end;
 
+procedure TS32Sound.Command(Value: Byte);
+begin
+  FCommand := Value;
+  if not FCommandPending then
+    Z80NonMaskableInterrupt(FCPU);
+  FCommandPending := True;
+end;
+
 procedure TS32Sound.UpdateFMIRQ;
 begin
   // Only YM1 is wired to the interrupt controller. Latch an assertion
@@ -169,7 +198,10 @@ begin
   if Asserted <> FYMIRQ then
   begin
     FYMIRQ := Asserted;
-    SignalIRQ(0, Asserted);
+    if FSystem18 then
+      Z80Interrupt(FCPU, Ord(Asserted))
+    else
+      SignalIRQ(0, Asserted);
   end;
 end;
 
@@ -208,12 +240,38 @@ begin
   Result := $FF;
   if Address and $E0 = $80 then
     Result := FFM[(Address shr 4) and 1].State.Status
+  else if FSystem18 then
+  begin
+    if Address and $E0 = $C0 then
+    begin
+      FCommandPending := False;
+      Result := FCommand;
+    end;
+  end
   else if Address = $F1 then
     Result := FDummy;
 end;
 
 procedure TS32Sound.WritePort(Address, Value: Byte);
 begin
+  if FSystem18 and (Address and $E0 <> $80) then
+  begin
+    case Address and $E0 of
+      $A0:
+        begin
+          FBank := Value;
+          Exit;
+        end;
+      $C0:
+        begin
+          FReply := Value;
+          if Assigned(OnReply) then
+            OnReply(Self);
+          Exit;
+        end;
+    end;
+    Exit;
+  end;
   case Address and $F0 of
     $80, $90:
       begin
@@ -330,8 +388,8 @@ begin
   while Cycles > 0 do
   begin
     var Step := Min(Int64(Cycles), 144 - FFMPhase);
-    Step := Min(Step, (Int64(Z80_CLOCK) * 384 - FPCMPhase + 12499999) div 12500000);
-    Step := Min(Step, (Int64(Z80_CLOCK) - FOutputPhase + 44099) div 44100);
+    Step := Min(Step, (Int64(FClock) * 384 - FPCMPhase + FPCMClock - 1) div FPCMClock);
+    Step := Min(Step, (Int64(FClock) - FOutputPhase + 44099) div 44100);
     Dec(Cycles, Step);
     for var I := 0 to 1 do
       if FFM[I].State.BusyFlagCounter > Cardinal(Step) then
@@ -342,7 +400,7 @@ begin
         FFM[I].State.Status := FFM[I].State.Status and $7F;
       end;
     Inc(FFMPhase, Step);
-    Inc(FPCMPhase, Step * 12500000);
+    Inc(FPCMPhase, Step * FPCMClock);
     Inc(FOutputPhase, Step * 44100);
     if FFMPhase >= 144 then
     begin
@@ -357,18 +415,29 @@ begin
       end;
       UpdateFMIRQ;
     end;
-    if FPCMPhase >= Int64(Z80_CLOCK) * 384 then
+    if FPCMPhase >= Int64(FClock) * 384 then
     begin
-      Dec(FPCMPhase, Int64(Z80_CLOCK) * 384);
+      Dec(FPCMPhase, Int64(FClock) * 384);
       PCMTick;
     end;
-    if FOutputPhase >= Z80_CLOCK then
+    if FOutputPhase >= FClock then
     begin
-      Dec(FOutputPhase, Z80_CLOCK);
+      Dec(FOutputPhase, FClock);
       if Length(FSamples) < FSampleCount + 2 then
         SetLength(FSamples, FSampleCount + 2048);
-      for var C := 0 to 1 do
-        FSamples[FSampleCount + C] := EnsureRange((Integer(FLastFM[0, C]) + FLastFM[1, C]) * 3 div 10 + FLastPCM[C] * 4 div 10, -32768, 32767);
+      if FSystem18 then
+      begin
+        // All three chips feed the cabinet's mono output.
+        var FM := Integer(FLastFM[0, 0]) + FLastFM[0, 1] + FLastFM[1, 0] + FLastFM[1, 1];
+        var PCM := FLastPCM[0] + FLastPCM[1];
+        var Mono := EnsureRange((FM * 2 + PCM * 5) div 10, -32768, 32767);
+        FSamples[FSampleCount] := Mono;
+        FSamples[FSampleCount + 1] := Mono;
+      end
+      else
+        for var C := 0 to 1 do
+          FSamples[FSampleCount + C] := EnsureRange(
+              (Integer(FLastFM[0, C]) + FLastFM[1, C]) * 3 div 10 + FLastPCM[C] * 4 div 10, -32768, 32767);
       Inc(FSampleCount, 2);
     end;
   end;
@@ -434,6 +503,12 @@ begin
   State.Field(Shared, SizeOf(Shared));
   State.Field(FResetLine, SizeOf(FResetLine));
   State.Field(MainIRQ, SizeOf(MainIRQ));
+  if FSystem18 then
+  begin
+    State.Field(FCommand, SizeOf(FCommand));
+    State.Field(FReply, SizeOf(FReply));
+    State.Field(FCommandPending, SizeOf(FCommandPending));
+  end;
   if (FChannel < 0) or (FChannel > 7) or (FWaveBank < 0) or (FWaveBank > $F000) or (FBank < 0) or (FBank > $7FF) or
     (FTime < 0) or (FCPUCyclesRemaining < 0) then
     raise EReadError.Create('Invalid System 32 sound state');

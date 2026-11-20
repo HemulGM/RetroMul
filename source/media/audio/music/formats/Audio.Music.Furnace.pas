@@ -25,7 +25,16 @@ type
 
   TPatternArray = array[0..255] of TNoteArray;
 
-  TChannelPatterns = array[0..2] of TPatternArray;
+  TFurnaceChip = (fcAY, fcPCSpeaker, fcQuadTone);
+
+  TFurnaceSample = record
+    Bits: TBytes;
+    Frames, CenterRate: Integer;
+  end;
+
+  TFurnaceChipMix = record
+    Left, Right: Double;
+  end;
 
   TFurnaceMacro = record
     Values: TArray<Integer>;
@@ -40,6 +49,9 @@ type
   end;
 
   TFurnaceInstrument = record
+    InitialSample: Integer;
+    SampleMap: TArray<SmallInt>;
+    NoteMap: TArray<SmallInt>;
     VolMacro: TFurnaceMacro;
     ArpMacro: TFurnaceMacro;
     NoiseMacro: TFurnaceMacro;
@@ -67,6 +79,7 @@ type
     PitchOffset: Integer;
     EnvNum, EnvDen, Tone, MixerMode, FinePitch: Integer;
     Arp, ArpTick, ArpSpeed, Vibrato, VibratoPhase, VolumeSlide, CutTick: Integer;
+    BeeperVolume, BeeperDuty, BeeperDivisor, BeeperStep: Integer;
     DelayedTick: Integer;
     DelayedRow: TTrackRow;
     SlideRate, SlideTarget: Integer;
@@ -86,6 +99,8 @@ type
     FTickRate, FInitialTickRate, FTuning: Double;
     FInitialVirtNum, FInitialVirtDen: Integer;
     FHalfClock, FStereo, FAYModel: Boolean;
+    FLinearAYPitch, FNoSlidesOnFirstTick, FContinuousVibrato: Boolean;
+    FPitchSlideSpeed: Integer;
     FStereoSep: Integer;
     FMasterVolume: Double;
     FFramesLeft: Int64;
@@ -97,7 +112,20 @@ type
     FVirtDen: Integer;
     FOrdersLen: Integer;
     FOrders: TArray<Integer>;
-    FNoteTable: TChannelPatterns;
+    FNoteTable: TArray<TPatternArray>;
+    FChannelChips: TArray<TFurnaceChip>;
+    FPCChannel, FQuadFirst: Integer;
+    FPCClock, FQuadClock: Integer;
+    FPCMix, FQuadMix: TFurnaceChipMix;
+    FPCCycle, FQuadRemainder: Double;
+    FPCResetPhase, FQuadNoHiss: Boolean;
+    FQuadPhase: array[0..3] of Integer;
+    FQuadSlot, FQuadHistory, FQuadPulse: Integer;
+    FQuadLevel, FQuadDC, FPCDC: Double;
+    FDrums: TArray<TFurnaceSample>;
+    FDrumIndex, FDrumNote: Integer;
+    FDrumPosition, FDrumRate: Double;
+    FFixedDrumRate: Boolean;
     FPatternLength: Integer;
     FInstruments: TArray<TFurnaceInstrument>;
     FSpeeds: array[0..15] of Integer;
@@ -113,7 +141,7 @@ type
     FEnvSlide, FEnvSlideFraction: Integer;
     FJumpOrder: Integer;
     FBreakRow: Integer;
-    FChanState: array[0..2] of TChannelState;
+    FChanState: TArray<TChannelState>;
 
     function ReadFloatLE(const Data: TBytes; P: Integer): Single; inline;
     procedure BuildSong(const Data: TBytes);
@@ -126,7 +154,14 @@ type
     procedure ApplyEffect(Ch, Effect, Param: Integer);
     procedure ApplyChannelRow(Ch: Integer; const RowData: TTrackRow);
     procedure CutNote(Ch: Integer);
-    function NotePeriod(Note: Int64): Double;
+    function NotePeriod(Ch: Integer; Note: Double): Double;
+    function SlidePosition(Ch, Note: Integer): Double;
+    function NoteFrequency(Note: Double): Double;
+    procedure ParseDrum(const Data: TBytes; Index: Integer);
+    procedure TriggerDrum(Index, Note: Integer; FixedRate: Boolean);
+    procedure ApplyBeeperChannel(Ch: Integer; Volume: Integer; Note: Double);
+    procedure RenderBeeperFrame(out Left, Right: SmallInt);
+    function QuadSlotLevel: Double;
     procedure EndTick;
     function BeginTick: Boolean;
     function CountFrames: Int64;
@@ -303,6 +338,26 @@ begin
           ReadMacroData(Feature, MacroPos, Dummy, HeaderLen);
         end;
     end;
+    if (FQuadFirst >= 0) and (Code = $4D53) then // SM
+    begin
+      RequireBytes(Data, P, 4);
+      if FeatureLen < 4 then
+        raise EArgumentException.Create('Furnace: invalid sample instrument');
+      Ins.InitialSample := SmallInt(LE16(Data, P));
+      if (Data[P + 2] and 1) <> 0 then
+      begin
+        const MapSize = 120;
+        if FeatureLen < 4 + MapSize * 4 then
+          raise EArgumentException.Create('Furnace: truncated sample map');
+        SetLength(Ins.SampleMap, MapSize);
+        SetLength(Ins.NoteMap, MapSize);
+        for var N := 0 to MapSize - 1 do
+        begin
+          Ins.NoteMap[N] := SmallInt(LE16(Data, P + 4 + N * 4));
+          Ins.SampleMap[N] := SmallInt(LE16(Data, P + 6 + N * 4));
+        end;
+      end;
+    end;
     Inc(P, FeatureLen);
   end;
   FInstruments[Index] := Ins;
@@ -446,7 +501,8 @@ var
   Raw, Info, Block: TBytes;
   P, I, J, Count, InstrumentCount, PatternCount, WaveCount, SampleCount: Integer;
   InstrumentTable, PatternTable, Channel, Pattern, TimeBase, Offset: Integer;
-  Columns: array[0..2] of Integer;
+  Columns: TArray<Integer>;
+  SampleTable, SystemCount, ChannelCount, SystemIndex: Integer;
   ChipType, ClockSel: Integer;
   Address: Cardinal;
   FlagOffset: Cardinal;
@@ -468,6 +524,60 @@ var
     Result := Copy(Raw, Index + 8, Integer(Size));
   end;
 
+  procedure SetMix(out Mix: TFurnaceChipMix; Volume, Pan: Double);
+  begin
+    if IsNan(Volume) or IsInfinite(Volume) then
+      Volume := 1;
+    if IsNan(Pan) or IsInfinite(Pan) then
+      Pan := 0;
+    Volume := EnsureRange(Volume, -4.0, 4.0);
+    Pan := EnsureRange(Pan, -1.0, 1.0);
+    Mix.Left := Volume * (1 - Max(0.0, Pan));
+    Mix.Right := Volume * (1 + Min(0.0, Pan));
+  end;
+
+  procedure SetBeeperFlags(Chip: TFurnaceChip; FlagAddress: Cardinal);
+  begin
+    var ChipFlags := TStringList.Create;
+    try
+      if FlagAddress <> 0 then
+      begin
+        var FlagData := BlockAt(FlagAddress, 'FLAG');
+        var FlagPos := 0;
+        ChipFlags.Text := ReadString(FlagData, FlagPos);
+      end;
+      var ClockSel := StrToIntDef(ChipFlags.Values['clockSel'], 0);
+      var CustomClock := StrToIntDef(ChipFlags.Values['customClock'], 0);
+      case Chip of
+        fcPCSpeaker:
+          begin
+            case ClockSel of
+              1:
+                FPCClock := 1996800;
+              2:
+                FPCClock := 2457600;
+            else
+              FPCClock := 1193182;
+            end;
+            if InRange(CustomClock, 100000, 8000000) then
+              FPCClock := CustomClock;
+            FPCResetPhase := SameText(ChipFlags.Values['resetPhase'], 'true');
+          end;
+        fcQuadTone:
+          begin
+            FQuadClock := 3579545;
+            if ClockSel <> 0 then
+              FQuadClock := 3546895;
+            if InRange(CustomClock, 100000, 8000000) then
+              FQuadClock := CustomClock;
+            FQuadNoHiss := SameText(ChipFlags.Values['noHiss'], 'true');
+          end;
+      end;
+    finally
+      ChipFlags.Free;
+    end;
+  end;
+
   procedure Skip(Count: Integer);
   begin
     RequireBytes(Info, P, Count);
@@ -485,8 +595,52 @@ begin
 
   Info := BlockAt(LE32(Raw, 20), 'INFO');
   RequireBytes(Info, 0, 248);
-  if (Info[24] <> $80) or (Info[25] <> 0) then
-    raise ENotSupportedException.Create('Furnace: expected a single AY-3-8910 system');
+  FPCChannel := -1;
+  FQuadFirst := -1;
+  if (Info[24] = $80) and (Info[25] = 0) then
+  begin
+    SystemCount := 1;
+    ChannelCount := 3;
+    SetLength(FChannelChips, ChannelCount);
+  end
+  else
+  begin
+    SystemCount := 0;
+    ChannelCount := 0;
+    while (SystemCount < 32) and (Info[24 + SystemCount] <> 0) do
+    begin
+      case Info[24 + SystemCount] of
+        $93:
+          begin
+            if FPCChannel >= 0 then
+              raise ENotSupportedException.Create('Furnace: multiple PC Speaker chips');
+            FPCChannel := ChannelCount;
+            Inc(ChannelCount);
+          end;
+        $CA:
+          begin
+            if FQuadFirst >= 0 then
+              raise ENotSupportedException.Create('Furnace: multiple QuadTone chips');
+            FQuadFirst := ChannelCount;
+            Inc(ChannelCount, 5);
+          end;
+      else
+        raise ENotSupportedException.CreateFmt('Furnace: unsupported sound system %.2x', [Info[24 + SystemCount]]);
+      end;
+      Inc(SystemCount);
+    end;
+    if ChannelCount = 0 then
+      raise EArgumentException.Create('Furnace: no sound system');
+    SetLength(FChannelChips, ChannelCount);
+    if FPCChannel >= 0 then
+      FChannelChips[FPCChannel] := fcPCSpeaker;
+    if FQuadFirst >= 0 then
+      for I := FQuadFirst to FQuadFirst + 4 do
+        FChannelChips[I] := fcQuadTone;
+  end;
+  SetLength(FChanState, ChannelCount);
+  SetLength(FNoteTable, ChannelCount);
+  SetLength(Columns, ChannelCount);
   TimeBase := Info[0] + 1;
   FInitialTickRate := ReadFloatLE(Info, 4);
   if IsNan(FInitialTickRate) or IsInfinite(FInitialTickRate) or
@@ -508,19 +662,24 @@ begin
   FInfo.Title := ReadString(Info, P);
   FInfo.Artist := ReadString(Info, P);
   FTuning := ReadFloatLE(Info, P);
+  RequireBytes(Info, P, 24);
+  FLinearAYPitch := (FChannelChips[0] = fcAY) and (FFormatVer >= 37) and (Info[P + 5] = 2);
+  FContinuousVibrato := (FFormatVer < 62) or (Info[P + 19] <> 0);
   if IsNan(FTuning) or IsInfinite(FTuning) or (FTuning < 1) or (FTuning > 2000) then
     FTuning := 440;
   Skip(24);
 
   InstrumentTable := P;
-  Skip(4 * (InstrumentCount + WaveCount + SampleCount));
+  Skip(4 * (InstrumentCount + WaveCount));
+  SampleTable := P;
+  Skip(4 * SampleCount);
   PatternTable := P;
   Skip(PatternCount * 4);
-  SetLength(FOrders, 3 * FOrdersLen);
-  for I := 0 to 2 do
+  SetLength(FOrders, ChannelCount * FOrdersLen);
+  for I := 0 to ChannelCount - 1 do
     for J := 0 to FOrdersLen - 1 do
-      FOrders[J * 3 + I] := ReadByte(Info, P);
-  for I := 0 to 2 do
+      FOrders[J * ChannelCount + I] := ReadByte(Info, P);
+  for I := 0 to ChannelCount - 1 do
   begin
     Columns[I] := ReadByte(Info, P);
     if (Columns[I] < 1) or (Columns[I] > 8) then
@@ -528,8 +687,8 @@ begin
   end;
   if FFormatVer >= 39 then
   begin
-    Skip(6);
-    for I := 0 to 6 do
+    Skip(2 * ChannelCount);
+    for I := 0 to 2 * ChannelCount do
       ReadString(Info, P);
   end;
   FMasterVolume := 2;
@@ -541,8 +700,16 @@ begin
     FMasterVolume := EnsureRange(FMasterVolume, 0.0, 4.0);
     Skip(4);
   end;
+  FNoSlidesOnFirstTick := True;
+  FPitchSlideSpeed := 4;
   if FFormatVer >= 70 then
+  begin
+    RequireBytes(Info, P, 28);
+    FNoSlidesOnFirstTick := (FFormatVer < 71) or (Info[P + 1] <> 0);
+    if FFormatVer >= 94 then
+      FPitchSlideSpeed := Info[P + 13];
     Skip(28);
+  end;
   FInitialVirtNum := 1;
   FInitialVirtDen := 1;
   if FFormatVer >= 96 then
@@ -552,6 +719,13 @@ begin
   end;
   if FFormatVer >= 70 then
     Skip(4);
+  for SystemIndex := 0 to SystemCount - 1 do
+    case Info[24 + SystemIndex] of
+      $93:
+        SetMix(FPCMix, ShortInt(Info[56 + SystemIndex]) / 64, ShortInt(Info[88 + SystemIndex]) / 127);
+      $CA:
+        SetMix(FQuadMix, ShortInt(Info[56 + SystemIndex]) / 64, ShortInt(Info[88 + SystemIndex]) / 127);
+    end;
   FInitialSpeedsLen := 2;
   FInitialSpeeds[0] := Max(1, Integer(Info[1])) * TimeBase;
   FInitialSpeeds[1] := Max(1, Integer(Info[2])) * TimeBase;
@@ -563,7 +737,18 @@ begin
     Skip(3 + 4 * Count);
     for I := 0 to 5 do
       ReadString(Info, P);
-    Skip(12);
+    for SystemIndex := 0 to SystemCount - 1 do
+    begin
+      var Volume := ReadFloatLE(Info, P);
+      var Pan := ReadFloatLE(Info, P + 4);
+      case Info[24 + SystemIndex] of
+        $93:
+          SetMix(FPCMix, Volume, Pan);
+        $CA:
+          SetMix(FQuadMix, Volume, Pan);
+      end;
+      Skip(12);
+    end;
     if LE32(Info, P) > Cardinal((Length(Info) - P - 13) div 4) then
       raise EArgumentException.Create('Furnace: invalid patchbay');
     Count := Integer(LE32(Info, P));
@@ -585,44 +770,58 @@ begin
     end;
   end;
 
-  FClockHz := AYClock[0];
-  ChipType := 0;
-  if FFormatVer < 119 then
+  if FChannelChips[0] = fcAY then
   begin
-    ClockSel := FlagOffset and $0F;
-    FClockHz := AYClock[ClockSel];
-    ChipType := (FlagOffset shr 4) and 3;
-    FHalfClock := (ChipType = 2) or ((ChipType = 1) and ((FlagOffset and $80) <> 0));
-    FStereo := (FlagOffset and $40) <> 0;
-    FStereoSep := (FlagOffset shr 8) and $FF;
-  end
-  else if FlagOffset <> 0 then
-  begin
-    Block := BlockAt(FlagOffset, 'FLAG');
-    Offset := 0;
-    Flags := TStringList.Create;
-    try
-      Flags.Text := ReadString(Block, Offset);
-      I := StrToIntDef(Flags.Values['clockSel'], 0);
-      if InRange(I, Low(AYClock), High(AYClock)) then
-        FClockHz := AYClock[I];
-      I := StrToIntDef(Flags.Values['customClock'], 0);
-      if I = 0 then
-        I := StrToIntDef(Flags.Values['clock'], 0);
-      if InRange(I, 100000, 8000000) then
-        FClockHz := I;
-      ChipType := StrToIntDef(Flags.Values['chipType'], 0);
-      FHalfClock := (ChipType = 2) or ((ChipType = 1) and SameText(Flags.Values['halfClock'], 'true'));
-      FStereo := SameText(Flags.Values['stereo'], 'true');
-      FStereoSep := EnsureRange(StrToIntDef(Flags.Values['stereoSep'], 0), 0, 255);
-    finally
-      Flags.Free;
+    FClockHz := AYClock[0];
+    ChipType := 0;
+    if FFormatVer < 119 then
+    begin
+      ClockSel := FlagOffset and $0F;
+      FClockHz := AYClock[ClockSel];
+      ChipType := (FlagOffset shr 4) and 3;
+      FHalfClock := (ChipType = 2) or ((ChipType = 1) and ((FlagOffset and $80) <> 0));
+      FStereo := (FlagOffset and $40) <> 0;
+      FStereoSep := (FlagOffset shr 8) and $FF;
+    end
+    else if FlagOffset <> 0 then
+    begin
+      Block := BlockAt(FlagOffset, 'FLAG');
+      Offset := 0;
+      Flags := TStringList.Create;
+      try
+        Flags.Text := ReadString(Block, Offset);
+        I := StrToIntDef(Flags.Values['clockSel'], 0);
+        if InRange(I, Low(AYClock), High(AYClock)) then
+          FClockHz := AYClock[I];
+        I := StrToIntDef(Flags.Values['customClock'], 0);
+        if I = 0 then
+          I := StrToIntDef(Flags.Values['clock'], 0);
+        if InRange(I, 100000, 8000000) then
+          FClockHz := I;
+        ChipType := StrToIntDef(Flags.Values['chipType'], 0);
+        FHalfClock := (ChipType = 2) or ((ChipType = 1) and SameText(Flags.Values['halfClock'], 'true'));
+        FStereo := SameText(Flags.Values['stereo'], 'true');
+        FStereoSep := EnsureRange(StrToIntDef(Flags.Values['stereoSep'], 0), 0, 255);
+      finally
+        Flags.Free;
+      end;
     end;
-  end;
 
-  if not InRange(ChipType, 0, 2) then
-    raise ENotSupportedException.Create('Furnace: unsupported AY chip variant');
-  FAYModel := ChipType = 0;
+    if not InRange(ChipType, 0, 2) then
+      raise ENotSupportedException.Create('Furnace: unsupported AY chip variant');
+    FAYModel := ChipType = 0;
+  end
+  else
+    for SystemIndex := 0 to SystemCount - 1 do
+    begin
+      FlagOffset := 0;
+      if FFormatVer >= 119 then
+        FlagOffset := LE32(Info, 120 + SystemIndex * 4);
+      if Info[24 + SystemIndex] = $93 then
+        SetBeeperFlags(fcPCSpeaker, FlagOffset)
+      else
+        SetBeeperFlags(fcQuadTone, FlagOffset);
+    end;
 
   SetLength(FInstruments, InstrumentCount);
   for I := 0 to InstrumentCount - 1 do
@@ -635,7 +834,14 @@ begin
       ParseInstrument(BlockAt(Address, 'INS2'), I);
   end;
 
-  FillChar(FNoteTable, SizeOf(FNoteTable), $FF);
+  if FQuadFirst >= 0 then
+  begin
+    SetLength(FDrums, SampleCount);
+    for I := 0 to SampleCount - 1 do
+      ParseDrum(BlockAt(LE32(Info, SampleTable + I * 4), 'SMP2'), I);
+  end;
+  for I := 0 to ChannelCount - 1 do
+    FillChar(FNoteTable[I], SizeOf(TPatternArray), $FF);
   for I := 0 to PatternCount - 1 do
   begin
     Address := LE32(Info, PatternTable + I * 4);
@@ -648,7 +854,7 @@ begin
         Continue;
       Channel := LE16(Block, 0);
       Pattern := LE16(Block, 2);
-      if (Channel > 2) or (Pattern > 255) then
+      if (Channel >= ChannelCount) or (Pattern > 255) then
         raise EArgumentException.Create('Furnace: invalid pattern index');
       ParseLegacyTrack(Block, Columns[Channel], FNoteTable[Channel][Pattern]);
     end
@@ -660,13 +866,205 @@ begin
         Continue;
       Channel := Block[1];
       Pattern := LE16(Block, 2);
-      if (Channel > 2) or (Pattern > 255) then
+      if (Channel >= ChannelCount) or (Pattern > 255) then
         raise EArgumentException.Create('Furnace: invalid pattern index');
       Offset := 4;
       ReadString(Block, Offset);
       ParseTrack(Copy(Block, Offset, Length(Block) - Offset), FNoteTable[Channel][Pattern]);
     end;
   end;
+end;
+
+procedure TFurnaceDecoder.ParseDrum(const Data: TBytes; Index: Integer);
+const
+  SampleHeaderSize = 40;
+var
+  P, Count, Rate, PayloadSize: Integer;
+  Depth: Byte;
+begin
+  P := 0;
+  ReadString(Data, P);
+  RequireBytes(Data, P, SampleHeaderSize);
+  if LE32(Data, P) > Cardinal(MaxInt div 2) then
+    raise EArgumentException.Create('Furnace: invalid sample length');
+  Count := Integer(LE32(Data, P));
+  Rate := Integer(LE32(Data, P + 8));
+  if Rate <= 0 then
+    Rate := Integer(LE32(Data, P + 4));
+  if Rate <= 0 then
+    Rate := 8372;
+  Depth := Data[P + 12];
+  Inc(P, SampleHeaderSize);
+  case Depth of
+    0:
+      PayloadSize := (Count + 7) div 8;
+    8:
+      PayloadSize := Count;
+    16:
+      PayloadSize := Count * 2;
+  else
+    raise ENotSupportedException.CreateFmt('Furnace: unsupported QuadTone sample depth %d', [Depth]);
+  end;
+  RequireBytes(Data, P, PayloadSize);
+  FDrums[Index].Frames := Count;
+  FDrums[Index].CenterRate := Rate;
+  if Depth = 0 then
+    FDrums[Index].Bits := Copy(Data, P, PayloadSize)
+  else
+  begin
+    // QuadTone reads the sign of the source PCM as a single beeper bit.
+    SetLength(FDrums[Index].Bits, (Count + 7) div 8);
+    for var I := 0 to Count - 1 do
+    begin
+      var Positive: Boolean;
+      if Depth = 8 then
+        Positive := ShortInt(Data[P + I]) > 0
+      else
+        Positive := SmallInt(LE16(Data, P + 2 * I)) > 0;
+      if Positive then
+        FDrums[Index].Bits[I shr 3] := FDrums[Index].Bits[I shr 3] or (1 shl (I and 7));
+    end;
+  end;
+end;
+
+procedure TFurnaceDecoder.TriggerDrum(Index, Note: Integer; FixedRate: Boolean);
+begin
+  FDrumIndex := -1;
+  if not InRange(Index, 0, High(FDrums)) or (FDrums[Index].Frames = 0) then
+    Exit;
+  FDrumIndex := Index;
+  FDrumNote := Note;
+  FDrumPosition := 0;
+  FFixedDrumRate := FixedRate;
+  if FixedRate then
+    FDrumRate := FQuadClock / 64
+  else
+    FDrumRate := NoteFrequency(Note) * 16 * FDrums[Index].CenterRate / 8372;
+end;
+
+procedure TFurnaceDecoder.ApplyBeeperChannel(Ch: Integer; Volume: Integer; Note: Double);
+begin
+  var Voice: ^TChannelState := @FChanState[Ch];
+  case FChannelChips[Ch] of
+    fcPCSpeaker:
+      begin
+        if Voice^.VolState.Started then
+          Volume := Min(Volume, EnsureRange(Voice^.VolState.Val, 0, 1));
+        Voice^.BeeperVolume := Volume;
+        var Divisor := Round(EnsureRange(FPCClock / NoteFrequency(Note) +
+            Voice^.SlideOffset - Voice^.PitchOffset / 2, 1.0, 65535.0));
+        if FPCResetPhase and (Voice^.BeeperDivisor <> Divisor) then
+          FPCCycle := 0;
+        Voice^.BeeperDivisor := Divisor;
+      end;
+    fcQuadTone:
+      if Ch < FQuadFirst + 4 then
+      begin
+        if Voice^.VolState.Started then
+          Volume := Volume * EnsureRange(Voice^.VolState.Val, 0, 2) div 2;
+        Voice^.BeeperVolume := Volume;
+        if Voice^.NoiseState.Had then
+          Voice^.BeeperDuty := Voice^.NoiseState.Val and $FF;
+        Voice^.BeeperStep := Round(EnsureRange(NoteFrequency(Note) *
+            (65536.0 * 320 / FQuadClock) + Voice^.SlideOffset + Voice^.PitchOffset / 2, 0.0, 32768.0));
+      end
+      else if (FDrumIndex >= 0) and not FFixedDrumRate then
+      begin
+        var Rate := NoteFrequency(FDrumNote + Note - Voice^.Note) *
+          16 * FDrums[FDrumIndex].CenterRate / 8372;
+        var Divider := Round(EnsureRange(FQuadClock / (13 * Rate), 3.0, 258.0));
+        FDrumRate := FQuadClock / (13 * Divider);
+      end;
+  end;
+end;
+
+function TFurnaceDecoder.QuadSlotLevel: Double;
+begin
+  // Each of the four pulse voices owns two consecutive slots on the one-bit output.
+  var Slot := FQuadSlot;
+  FQuadSlot := (Slot + 1) and 7;
+  if FDrumIndex >= 0 then
+  begin
+    var SampleIndex := Trunc(FDrumPosition);
+    if SampleIndex < FDrums[FDrumIndex].Frames then
+    begin
+      var IsHigh := (FDrums[FDrumIndex].Bits[SampleIndex shr 3] and (1 shl (SampleIndex and 7))) <> 0;
+      FDrumPosition := FDrumPosition + FDrumRate * 40 / FQuadClock;
+      Exit(Ord(IsHigh));
+    end;
+    FDrumIndex := -1;
+  end;
+
+  var Channel := Slot shr 1;
+  if not Odd(Slot) then
+  begin
+    var Voice: ^TChannelState := @FChanState[FQuadFirst + Channel];
+    FQuadPhase[Channel] := (FQuadPhase[Channel] + Voice^.BeeperStep) and $FFFF;
+    if Voice^.BeeperVolume = 0 then
+      FQuadPulse := 0
+    else
+    begin
+      var BelowThreshold := (FQuadPhase[Channel] shr 8) < (255 - Voice^.BeeperDuty);
+      if Voice^.BeeperVolume = 2 then
+        FQuadPulse := 3 * Ord(not BelowThreshold)
+      else
+        FQuadPulse := 2 * Ord(BelowThreshold);
+    end;
+  end;
+  var Bit := (FQuadPulse shr (Slot and 1)) and 1;
+  if not FQuadNoHiss then
+    Exit(Bit);
+  FQuadHistory := (FQuadHistory and not (1 shl Slot)) or (Bit shl Slot);
+  var ActiveSlots := 0;
+  for var I := 0 to 7 do
+    Inc(ActiveSlots, (FQuadHistory shr I) and 1);
+  Result := ActiveSlots / 8;
+end;
+
+procedure TFurnaceDecoder.RenderBeeperFrame(out Left, Right: SmallInt);
+
+  function SquareArea(Cycle: Double): Double;
+  begin
+    Result := Floor(Cycle) * 0.5 + Min(0.5, Frac(Cycle));
+  end;
+
+begin
+  var PCLevel := 0.0;
+  if (FPCChannel >= 0) and (FChanState[FPCChannel].BeeperVolume <> 0) then
+  begin
+    var Step := FPCClock / (FInfo.SampleRate * Double(FChanState[FPCChannel].BeeperDivisor));
+    var Next := FPCCycle + Step;
+    PCLevel := (SquareArea(Next) - SquareArea(FPCCycle)) / Step;
+    FPCCycle := Frac(Next);
+  end;
+
+  var ZXLevel := 0.0;
+  if FQuadFirst >= 0 then
+  begin
+    var SlotCount := FQuadClock / (40.0 * FInfo.SampleRate);
+    var Remaining := SlotCount;
+    while Remaining > 0 do
+    begin
+      if FQuadRemainder = 0 then
+      begin
+        FQuadLevel := QuadSlotLevel;
+        FQuadRemainder := 1;
+      end;
+      var Portion := Min(Remaining, FQuadRemainder);
+      ZXLevel := ZXLevel + FQuadLevel * Portion;
+      Remaining := Remaining - Portion;
+      FQuadRemainder := FQuadRemainder - Portion;
+    end;
+    ZXLevel := ZXLevel / SlotCount;
+  end;
+  // AC coupling removes the DC component of each unipolar beeper before mixing.
+  FPCDC := FPCDC + (PCLevel - FPCDC) * 0.003;
+  FQuadDC := FQuadDC + (ZXLevel - FQuadDC) * 0.003;
+  PCLevel := PCLevel - FPCDC;
+  ZXLevel := ZXLevel - FQuadDC;
+  var Gain := FMasterVolume * 32767;
+  Left := SmallInt(EnsureRange(Round(Gain * (PCLevel * FPCMix.Left + ZXLevel * FQuadMix.Left)), -32768, 32767));
+  Right := SmallInt(EnsureRange(Round(Gain * (PCLevel * FPCMix.Right + ZXLevel * FQuadMix.Right)), -32768, 32767));
 end;
 
 procedure TFurnaceDecoder.ParseTrack(const PatData: TBytes; out NoteArray: TNoteArray);
@@ -714,7 +1112,15 @@ begin
   FChanState[Ch].Instrument := -1;
   FChanState[Ch].PlayingInstrument := -1;
   FChanState[Ch].Note := -1;
-  FChanState[Ch].Volume256 := 15 * 256;
+  case FChannelChips[Ch] of
+    fcAY:
+      FChanState[Ch].Volume256 := 15 * 256;
+    fcPCSpeaker:
+      FChanState[Ch].Volume256 := 256;
+    fcQuadTone:
+      FChanState[Ch].Volume256 := 2 * 256;
+  end;
+  FChanState[Ch].BeeperDuty := 128;
   FChanState[Ch].Tone := -1;
   FChanState[Ch].SlideTarget := -1;
   FChanState[Ch].ArpSpeed := 1;
@@ -741,26 +1147,71 @@ begin
   Voice^.FixedPeriodState := Default(TMacroState);
   Voice^.PitchOffset := 0;
   Voice^.SlideOffset := 0;
+  if FLinearAYPitch and (Voice^.SlideTarget >= 0) then
+    Voice^.SlideRate := 0;
   Voice^.SlideTarget := -1;
   Voice^.ArpTick := 0;
+  if FLinearAYPitch and not FContinuousVibrato then
+    Voice^.VibratoPhase := 0;
+  if (FQuadFirst >= 0) and (Ch = FQuadFirst + 4) then
+  begin
+    var SampleIndex := 0;
+    var DrumNote := Note;
+    if InRange(Ins, 0, High(FInstruments)) then
+    begin
+      SampleIndex := FInstruments[Ins].InitialSample;
+      var MapIndex := Note - 60;
+      if InRange(MapIndex, 0, High(FInstruments[Ins].SampleMap)) then
+      begin
+        SampleIndex := FInstruments[Ins].SampleMap[MapIndex];
+        DrumNote := 60 + FInstruments[Ins].NoteMap[MapIndex];
+      end;
+    end;
+    TriggerDrum(SampleIndex, DrumNote, False);
+  end;
 end;
 
 procedure TFurnaceDecoder.CutNote(Ch: Integer);
 begin
   FChanState[Ch].Note := -1;
-  FYM.WriteRegister(8 + Ch, 0);
-  FYM.WriteRegister(7, FYM.ReadRegister(7) or (1 shl Ch) or (1 shl (Ch + 3)));
+  FChanState[Ch].BeeperVolume := 0;
+  if FYM <> nil then
+  begin
+    FYM.WriteRegister(8 + Ch, 0);
+    FYM.WriteRegister(7, FYM.ReadRegister(7) or (1 shl Ch) or (1 shl (Ch + 3)));
+  end
+  else if (FQuadFirst >= 0) and (Ch = FQuadFirst + 4) then
+    FDrumIndex := -1;
 end;
 
-function TFurnaceDecoder.NotePeriod(Note: Int64): Double;
+function TFurnaceDecoder.NoteFrequency(Note: Double): Double;
+begin
+  Result := FTuning * Power(2.0, (EnsureRange(Note, -36.0, 216.0) - 117) / 12);
+end;
+
+function TFurnaceDecoder.NotePeriod(Ch: Integer; Note: Double): Double;
 var
   Clock: Integer;
 begin
+  case FChannelChips[Ch] of
+    fcPCSpeaker:
+      Exit(FPCClock / NoteFrequency(Note));
+    fcQuadTone:
+      Exit(NoteFrequency(Note) * (65536.0 * 320 / FQuadClock));
+  end;
   Clock := FClockHz;
   if FHalfClock then
     Clock := Clock div 2;
   Note := EnsureRange(Note, Int64(0), Int64(179));
   Result := Clock / (16 * FTuning * Power(2.0, (Note - 117) / 12));
+end;
+
+function TFurnaceDecoder.SlidePosition(Ch, Note: Integer): Double;
+begin
+  if FLinearAYPitch then
+    Result := Note * 128
+  else
+    Result := NotePeriod(Ch, Note);
 end;
 
 procedure TFurnaceDecoder.ReleaseNote(Ch: Integer);
@@ -907,7 +1358,7 @@ var
   end;
 
 begin
-  for Ch := 0 to 2 do
+  for Ch := 0 to High(FChanState) do
   begin
     Voice := @FChanState[Ch];
     if Voice^.DelayedTick >= 0 then
@@ -926,15 +1377,19 @@ begin
       Continue;
 
     if FTickInRow > 0 then
-    begin
       Voice^.Volume256 := EnsureRange(Voice^.Volume256 + Voice^.VolumeSlide, 0, 15 * 256);
+    if (FTickInRow > 0) or (FLinearAYPitch and not FNoSlidesOnFirstTick) then
+    begin
+      var Rate := Voice^.SlideRate;
+      if FLinearAYPitch then
+        Rate := Rate * FPitchSlideSpeed;
       if Voice^.SlideTarget >= 0 then
       begin
-        var Target := NotePeriod(Voice^.SlideTarget) - NotePeriod(Voice^.Note);
+        var Target := SlidePosition(Ch, Voice^.SlideTarget) - SlidePosition(Ch, Voice^.Note);
         if Voice^.SlideOffset < Target then
-          Voice^.SlideOffset := Min(Target, Voice^.SlideOffset + Voice^.SlideRate)
+          Voice^.SlideOffset := Min(Target, Voice^.SlideOffset + Rate)
         else
-          Voice^.SlideOffset := Max(Target, Voice^.SlideOffset - Voice^.SlideRate);
+          Voice^.SlideOffset := Max(Target, Voice^.SlideOffset - Rate);
         if Voice^.SlideOffset = Target then
         begin
           Voice^.Note := Voice^.SlideTarget;
@@ -943,8 +1398,10 @@ begin
           Voice^.SlideRate := 0;
         end;
       end
+      else if FLinearAYPitch then
+        Voice^.SlideOffset := EnsureRange(Voice^.SlideOffset + Rate, -Voice^.Note * 128.0, (179 - Voice^.Note) * 128.0)
       else
-        Voice^.SlideOffset := EnsureRange(Voice^.SlideOffset + Voice^.SlideRate, -262144.0, 4095.0);
+        Voice^.SlideOffset := EnsureRange(Voice^.SlideOffset + Rate, -262144.0, 4095.0);
     end;
 
     if InRange(Voice^.PlayingInstrument, 0, High(FInstruments)) then
@@ -967,11 +1424,16 @@ begin
           Voice^.PitchOffset := Integer(EnsureRange(Int64(Voice^.PitchOffset) + Voice^.PitchState.Val,
               Int64(-32768), Int64(32767)));
     end;
+    if FLinearAYPitch and ((Voice^.Vibrato and 15) <> 0) then
+      Voice^.VibratoPhase := (Voice^.VibratoPhase + (Voice^.Vibrato shr 4)) and 63;
     ApplyChannel(Ch);
     Voice^.ArpTick := (Voice^.ArpTick + 1) mod (Voice^.ArpSpeed * 3);
-    Voice^.VibratoPhase := (Voice^.VibratoPhase + (Voice^.Vibrato shr 4)) and 63;
+    if not FLinearAYPitch then
+      Voice^.VibratoPhase := (Voice^.VibratoPhase + (Voice^.Vibrato shr 4)) and 63;
   end;
 
+  if FYM = nil then
+    Exit;
   Inc(FEnvSlideFraction, FEnvSlide);
   if Abs(FEnvSlideFraction) >= 8 then
   begin
@@ -990,16 +1452,19 @@ var
   Pitch: Double;
   Note: Int64;
   Arp: Cardinal;
+  FixedArp: Boolean;
 begin
   Voice := @FChanState[Ch];
   Vol := Voice^.Volume256 shr 8;
-  if Voice^.VolState.Started then
+  if (FChannelChips[Ch] = fcAY) and Voice^.VolState.Started then
     Vol := Max(0, Vol + EnsureRange(Voice^.VolState.Val, 0, 15) - 15);
   Note := Voice^.Note;
+  FixedArp := False;
   if Voice^.ArpState.Started then
   begin
     Arp := Cardinal(Voice^.ArpState.Val);
-    if ((Arp xor (Arp shl 1)) and $80000000) <> 0 then
+    FixedArp := ((Arp xor (Arp shl 1)) and $80000000) <> 0;
+    if FixedArp then
       Note := Int64(Integer(Arp xor $40000000)) + 60
     else
       Inc(Note, Integer(Arp));
@@ -1009,6 +1474,17 @@ begin
       Inc(Note, Voice^.Arp shr 4);
     2:
       Inc(Note, Voice^.Arp and 15);
+  end;
+  var Vibrato := Sin(Voice^.VibratoPhase * (2 * Pi / 64));
+  var VibratoDepth := Voice^.Vibrato and 15;
+  if FLinearAYPitch then
+    Pitch := (Voice^.FinePitch + Voice^.PitchOffset + (Trunc(127 * Vibrato) * VibratoDepth) div 15) / 128
+  else
+    Pitch := Voice^.FinePitch / 128 + Vibrato * VibratoDepth / 15;
+  if FChannelChips[Ch] <> fcAY then
+  begin
+    ApplyBeeperChannel(Ch, Vol, Note + Pitch);
+    Exit;
   end;
   if Voice^.WaveState.Had then
   begin
@@ -1028,10 +1504,15 @@ begin
   if Voice^.NoiseState.Had then
     FYM.WriteRegister(6, (31 - (Voice^.NoiseState.Val and $1F)));
 
-  Pitch := (Voice^.FinePitch / 128) +
-    Sin(Voice^.VibratoPhase * (2 * Pi / 64)) * (Voice^.Vibrato and 15) / 15;
-  Tone := EnsureRange(Round(NotePeriod(Note) * Power(2.0, -Pitch / 12) +
-      Voice^.SlideOffset - Voice^.PitchOffset / 2), 1, 4095);
+  if FLinearAYPitch then
+  begin
+    if not FixedArp then
+      Pitch := Pitch + Voice^.SlideOffset / 128;
+    Tone := EnsureRange(Round(NotePeriod(Ch, Note + Pitch)), 1, 4095);
+  end
+  else
+    Tone := EnsureRange(Round(NotePeriod(Ch, Note) * Power(2.0, -Pitch / 12) +
+        Voice^.SlideOffset - Voice^.PitchOffset / 2), 1, 4095);
   if Voice^.FixedPeriodState.Started and (Voice^.FixedPeriodState.Val > 0) then
     Tone := Min(4095, Voice^.FixedPeriodState.Val);
   FYM.WriteRegister(Ch * 2, Tone and $FF);
@@ -1068,7 +1549,7 @@ begin
     FYM.WriteRegister(11, EnvPeriod and $FF);
     FYM.WriteRegister(12, (EnvPeriod shr 8) and $FF);
   end;
-  if Voice^.EnvState.Had then
+  if Voice^.EnvState.Had and (FYM.ReadRegister(13) <> (Voice^.EnvState.Val and $0F)) then
     FYM.WriteRegister(13, Voice^.EnvState.Val and $0F);
   if (Wave and 4) <> 0 then
     Vol := Vol or $10;
@@ -1087,6 +1568,22 @@ const
   ChannelModes: array[0..7] of Byte = (1, 2, 3, 4, 5, 6, 7, 0);
 begin
   Param := EnsureRange(Param, 0, 255);
+  if FChannelChips[Ch] <> fcAY then
+    case Effect of
+      $12:
+        begin
+          FChanState[Ch].BeeperDuty := Param;
+          Exit;
+        end;
+      $17:
+        begin
+          if FChannelChips[Ch] = fcQuadTone then
+            TriggerDrum(Param, 0, True);
+          Exit;
+        end;
+      $20..$29:
+        Exit;
+    end;
   case Effect of
     $09:
       if FGrooveCount = 0 then
@@ -1129,10 +1626,11 @@ begin
       FYM.WriteRegister(11, Param);
     $24:
       FYM.WriteRegister(12, Param);
-    $25:
-      FEnvSlide := Param;
-    $26:
+    // Pitch rises as the envelope period decreases.
+      $25:
       FEnvSlide := -Param;
+    $26:
+      FEnvSlide := Param;
     $29:
       begin
         FChanState[Ch].EnvNum := Param shr 4;
@@ -1144,7 +1642,7 @@ begin
     $01, $02:
       begin
         FChanState[Ch].SlideTarget := -1;
-        if Effect = $01 then
+        if (Effect = $01) <> (FLinearAYPitch or (FChannelChips[Ch] = fcQuadTone)) then
           FChanState[Ch].SlideRate := -Param
         else
           FChanState[Ch].SlideRate := Param;
@@ -1165,7 +1663,10 @@ begin
         if Effect = $E2 then
           Delta := -Delta;
         FChanState[Ch].SlideTarget := EnsureRange(FChanState[Ch].Note + Delta, 0, 179);
-        FChanState[Ch].SlideRate := Max(1, Param shr 4);
+        if FLinearAYPitch then
+          FChanState[Ch].SlideRate := (Param shr 4) * 4
+        else
+          FChanState[Ch].SlideRate := Max(1, Param shr 4);
       end;
     $E5:
       FChanState[Ch].FinePitch := Param - 128;
@@ -1207,7 +1708,14 @@ begin
   if RowData.Instrument >= 0 then
     Voice^.Instrument := RowData.Instrument;
   if RowData.Volume >= 0 then
-    Voice^.Volume256 := Min(15, Integer(RowData.Volume)) * 256;
+    case FChannelChips[Ch] of
+      fcAY:
+        Voice^.Volume256 := Min(15, Integer(RowData.Volume)) * 256;
+      fcPCSpeaker:
+        Voice^.Volume256 := Min(1, Integer(RowData.Volume)) * 256;
+      fcQuadTone:
+        Voice^.Volume256 := Min(2, Integer(RowData.Volume)) * 256;
+    end;
 
   case RowData.Note of
     0..179:
@@ -1230,9 +1738,9 @@ var
   Ch, I, Delay: Integer;
   RowData: TTrackRow;
 begin
-  for Ch := 0 to 2 do
+  for Ch := 0 to High(FChanState) do
   begin
-    RowData := FNoteTable[Ch][FOrders[Order * 3 + Ch]][PatRow];
+    RowData := FNoteTable[Ch][FOrders[Order * Length(FChanState) + Ch]][PatRow];
     Delay := 0;
     for I := 0 to High(RowData.Effects) do
       case RowData.Effects[I] of
@@ -1255,7 +1763,18 @@ procedure TFurnaceDecoder.ResetPlayback;
 var
   I: Integer;
 begin
-  FYM.Reset;
+  if FYM <> nil then
+    FYM.Reset;
+  FPCCycle := 0;
+  FPCDC := 0;
+  FQuadRemainder := 0;
+  FQuadDC := 0;
+  FQuadLevel := 0;
+  FQuadSlot := 0;
+  FQuadHistory := 0;
+  FQuadPulse := 0;
+  FillChar(FQuadPhase, SizeOf(FQuadPhase), 0);
+  FDrumIndex := -1;
   FCurrentOrder := 0;
   FCurrentPatRow := 0;
   FTickInRow := 0;
@@ -1275,7 +1794,7 @@ begin
   for I := 0 to High(FSpeeds) do
     FSpeeds[I] := FInitialSpeeds[I];
   FillChar(FVisited, SizeOf(FVisited), 0);
-  for I := 0 to 2 do
+  for I := 0 to High(FChanState) do
     InitChannelState(I);
 end;
 
@@ -1363,17 +1882,34 @@ begin
   FInfo.SampleRate := 44100;
   FInfo.TrackCount := 1;
   BuildSong(Data);
-  FInfo.Details := Format('Furnace v%d / AY @ %d Hz / %d orders',
-    [FFormatVer, FClockHz, FOrdersLen]);
-  FYM := TYM2149F.Create(FClockHz, FInfo.SampleRate, not FHalfClock);
-  FYM.AYModel := FAYModel;
-  Center := Min(1.0, 0.7071 * FMasterVolume);
-  Side := Center;
-  if FStereo then
-    Side := Side * (1 - FStereoSep / 255);
-  FYM.SetPan(0, Center, Side);
-  FYM.SetPan(1, Center, Center);
-  FYM.SetPan(2, Side, Center);
+  if FChannelChips[0] = fcAY then
+  begin
+    FInfo.Details := Format('Furnace v%d / AY @ %d Hz / %d orders',
+      [FFormatVer, FClockHz, FOrdersLen]);
+    FYM := TYM2149F.Create(FClockHz, FInfo.SampleRate, not FHalfClock);
+    FYM.AYModel := FAYModel;
+    Center := Min(1.0, 0.7071 * FMasterVolume);
+    Side := Center;
+    if FStereo then
+      Side := Side * (FStereoSep / 256);
+    FYM.SetPan(0, Center, Side);
+    FYM.SetPan(1, Center, Center);
+    FYM.SetPan(2, Side, Center);
+  end
+  else
+  begin
+    FInfo.FormatName := 'Furnace (Beeper)';
+    var Chips := '';
+    if FPCChannel >= 0 then
+      Chips := 'Intel 8253';
+    if FQuadFirst >= 0 then
+    begin
+      if Chips <> '' then
+        Chips := Chips + ' + ';
+      Chips := Chips + 'ZX Spectrum QuadTone';
+    end;
+    FInfo.Details := Format('Furnace v%d / %s / %d orders', [FFormatVer, Chips, FOrdersLen]);
+  end;
   FInfo.TrackDurations := [CountFrames / FInfo.SampleRate];
 end;
 
@@ -1411,7 +1947,10 @@ begin
     end;
     Count := Integer(Min(FFramesLeft, Int64(Frames - Result)));
     for I := Result to Result + Count - 1 do
-      FYM.Sample(Samples[I * 2], Samples[I * 2 + 1]);
+      if FYM <> nil then
+        FYM.Sample(Samples[I * 2], Samples[I * 2 + 1])
+      else
+        RenderBeeperFrame(Samples[I * 2], Samples[I * 2 + 1]);
     Inc(Result, Count);
     Dec(FFramesLeft, Count);
     if FFramesLeft = 0 then

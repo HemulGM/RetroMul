@@ -77,7 +77,7 @@ begin
   Result.RegisterFormat('.minidsf', 'Dreamcast Sound Format (shared libraries)', Audio.Music.DSF.OpenDSF);
   Result.RegisterDataLoader('.dsf', Audio.Music.DSF.ResolveDSF);
   Result.RegisterDataLoader('.minidsf', Audio.Music.DSF.ResolveDSF);
-  Result.RegisterFormat('.fur', 'Furnace (AY-3-8910)', Audio.Music.Furnace.OpenFurnace);
+  Result.RegisterFormat('.fur', 'Furnace', Audio.Music.Furnace.OpenFurnace);
   Result.RegisterFormat('.gbs', 'Game Boy Sound', Audio.Music.GBS.CreateGBS);
   Result.RegisterFormat('.gym', 'Mega Drive GYM', Audio.Music.GYM.CreateGYM);
   Result.RegisterFormat('.hes', 'PC Engine HES', Audio.Music.HES.OpenHES);

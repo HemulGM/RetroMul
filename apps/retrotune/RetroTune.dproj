@@ -1,11 +1,11 @@
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
         <ProjectGuid>{9694002B-970C-45D5-822F-F74C75937619}</ProjectGuid>
         <ProjectVersion>20.4</ProjectVersion>
         <FrameworkType>FMX</FrameworkType>
         <Base>True</Base>
         <Config Condition="'$(Config)'==''">Release</Config>
-        <Platform Condition="'$(Platform)'==''">Win32</Platform>
+        <Platform Condition="'$(Platform)'==''">Win64</Platform>
         <TargetedPlatforms>2790547</TargetedPlatforms>
         <AppType>Application</AppType>
         <MainSource>RetroTune.dpr</MainSource>
@@ -360,9 +360,6 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
-        <DCCReference Include="..\..\source\media\audio\Audio.Registry.pas"/>
-        <DCCReference Include="..\..\source\media\common\Media.Types.pas"/>
-        <DCCReference Include="..\..\source\media\audio\Audio.Types.pas"/>
         <DCCReference Include="RetroTune.Formats.pas"/>
         <DCCReference Include="..\..\source\cores\at5200\A5200.Arithmetic.pas"/>
         <DCCReference Include="..\..\source\cores\at5200\A5200.ASAP.CPU.pas"/>

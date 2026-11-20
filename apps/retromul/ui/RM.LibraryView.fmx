@@ -216,6 +216,7 @@ object LibraryView: TLibraryView
         Size.PlatformDefault = False
         TabOrder = 0
         Text = 'Open ROM'
+        TextSettings.HorzAlign = Leading
         TextSettings.Trimming = Character
         object PathOpenRomIcon: TPath
           Align = Left
@@ -248,6 +249,7 @@ object LibraryView: TLibraryView
         Size.Height = 38.000000000000000000
         Size.PlatformDefault = False
         Text = 'Report a bug'
+        TextSettings.HorzAlign = Leading
         TextSettings.Trimming = Character
         object Path1: TPath
           Align = Left
@@ -341,6 +343,7 @@ object LibraryView: TLibraryView
         Size.PlatformDefault = False
         TabOrder = 1
         Text = 'Settings'
+        TextSettings.HorzAlign = Leading
         TextSettings.Trimming = Character
         object PathSettingsIcon: TPath
           Align = Left

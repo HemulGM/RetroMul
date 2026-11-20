@@ -5,7 +5,7 @@ interface
 uses
   System.SysUtils, System.Classes, System.SyncObjs, System.IniFiles,
   Core.Storage, Core.Emulation, Core.InputConfig, S16.Cartridge, S16.RomSets,
-  Core.Snapshots, PCM.Audio;
+  Core.Snapshots, PCM.Audio, S16.Console;
 
 type
   TS16Keys = array[TEmulatorButton] of UInt32;
@@ -18,6 +18,7 @@ type
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
   public
     DIPs: TS16DIPs;
+    DIPSection: string;
     Keys: array[0..3] of TS16Keys;
     constructor Create(const FileName: string; const Storage: IStorage);
   end;
@@ -39,6 +40,7 @@ type
     FStorage: IStorage;
     FIdentity: TBytes;
     FSavePath, FSnapshotDirectory, FCoreId: string;
+    FConsoleClass: TS16ConsoleClass;
     FSnapshots: TSnapshotQueue;
     FAudioEnabled: Boolean;
     FVolume: Single;
@@ -47,6 +49,7 @@ type
     FWake: TEvent;
     FInput: TEmulatorInput;
     FCoins: array[0..1] of Boolean;
+    FPointerX, FPointerY: Integer;
     FPause, FReset, FAvailable: Boolean;
     FFrame: TEmulatorFrame;
     FError: string;
@@ -55,10 +58,11 @@ type
     procedure Execute; override;
   public
     DIPOverride: TS16DIPs;
-    constructor Create(Cart: TS16Cartridge; const Storage: IStorage; const Identity: TBytes; const SavePath, SnapshotDirectory, CoreId: string);
+    constructor Create(Cart: TS16Cartridge; const Storage: IStorage; const Identity: TBytes; const SavePath, SnapshotDirectory, CoreId: string; ConsoleClass: TS16ConsoleClass = nil);
     destructor Destroy; override;
     procedure Configure(const Input: TEmulatorInput; Paused, Reset, AudioEnabled: Boolean; Volume: Single);
     procedure InsertCoin(Player: Integer);
+    procedure AddPointerMotion(DX, DY: Integer);
     procedure Stop;
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
     procedure Snapshot(const Name: string; Loading: Boolean);
@@ -68,10 +72,11 @@ type
 
   TS16CoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationVirtualControls, IEmulationInputPorts, IEmulationAudioDiagnostics, IEmulationSnapshotLocation)
   private
-    FCart: TS16Cartridge;
     FStorage: IStorage;
     FIdentity: TBytes;
     FSavePath, FSnapshotDirectory: string;
+    FConsoleClass: TS16ConsoleClass;
+    FSystemId, FName: string;
     FWorker: TS16Worker;
     FConfig: IEmulatorConfig;
     FOptions: TS16Config;
@@ -80,6 +85,12 @@ type
     FPaused: Boolean;
     FError, FAudioError: string;
     procedure Configure;
+  protected
+    FCart: TS16Cartridge;
+    procedure UpdateInput;
+    function InputPortEnabled(Port: Integer): Boolean;
+    procedure AddPointerMotion(DX, DY: Integer);
+    procedure InitializeCore(Cart: TS16Cartridge; ConsoleClass: TS16ConsoleClass; const Storage: IStorage; const RomName, SystemId, PlatformName, DIPSection: string);
   public
     procedure ApplyLiveSettings;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string);
@@ -96,11 +107,11 @@ type
     procedure Pause;
     procedure Resume;
     procedure Reset;
-    procedure ClearInput;
+    procedure ClearInput; virtual;
     procedure SetKeyState(Code: UInt32; Pressed: Boolean);
     procedure SetGamepadInput(const Input: TEmulatorInput);
     procedure ApplyInputPorts(const Ports: TCoreInputPorts);
-    function GetInputState: TEmulatorInput;
+    function GetInputState: TEmulatorInput; virtual;
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
     function TryGetFrame(out Frame: TEmulatorFrame): Boolean;
@@ -114,8 +125,8 @@ type
 implementation
 
 uses
-  System.UITypes, System.Diagnostics, System.Math, S16.Console, S16.Video,
-  Core.SavePaths, System.IOUtils;
+  System.UITypes, System.Diagnostics, System.Math, S16.Video, Core.SavePaths,
+  System.IOUtils;
 
 const
   KeyNames: array[TEmulatorButton] of string = ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Select', 'Start', 'C', 'X', 'Y', 'Z', 'Mode');
@@ -204,6 +215,7 @@ const
   P2: TS16Keys = (vkNumpad8, vkNumpad5, vkNumpad4, vkNumpad6, vkNumpad1, vkNumpad2, vk6, vkNumpad0, vkNumpad3, vkNumpad7, vkNumpad9, vkDecimal, 0);
 begin
   inherited Create(FileName, Storage);
+  DIPSection := 'System16';
   Keys[0] := P1;
   Keys[1] := P2;
   for var i := 0 to 1 do
@@ -214,7 +226,7 @@ procedure TS16Config.LoadCoreSettings(Ini: TCustomIniFile);
 begin
   for var i := 0 to 1 do
   begin
-    DIPs[i] := Ini.ReadInteger('System16', 'DIP' + Chr(Ord('A') + i), DIPs[i]);
+    DIPs[i] := Ini.ReadInteger(DIPSection, 'DIP' + Chr(Ord('A') + i), DIPs[i]);
     if (DIPs[i] < -1) or (DIPs[i] > 255) then
       DIPs[i] := -1;
   end;
@@ -231,7 +243,7 @@ end;
 procedure TS16Config.SaveCoreSettings(Ini: TCustomIniFile);
 begin
   for var i := 0 to 1 do
-    Ini.WriteInteger('System16', 'DIP' + Chr(Ord('A') + i), DIPs[i]);
+    Ini.WriteInteger(DIPSection, 'DIP' + Chr(Ord('A') + i), DIPs[i]);
   for var P := 0 to 3 do
   begin
     var Section := 'Keys';
@@ -242,7 +254,7 @@ begin
   end;
 end;
 
-constructor TS16Worker.Create(Cart: TS16Cartridge; const Storage: IStorage; const Identity: TBytes; const SavePath, SnapshotDirectory, CoreId: string);
+constructor TS16Worker.Create(Cart: TS16Cartridge; const Storage: IStorage; const Identity: TBytes; const SavePath, SnapshotDirectory, CoreId: string; ConsoleClass: TS16ConsoleClass);
 begin
   inherited Create(True);
   FreeOnTerminate := False;
@@ -254,6 +266,9 @@ begin
   FSavePath := SavePath;
   FSnapshotDirectory := SnapshotDirectory;
   FCoreId := CoreId;
+  FConsoleClass := ConsoleClass;
+  if FConsoleClass = nil then
+    FConsoleClass := TS16Console;
   FSnapshots := TSnapshotQueue.Create;
   FLock := TCriticalSection.Create;
   FWake := TEvent.Create(nil, False, False, '');
@@ -295,6 +310,17 @@ begin
   FLock.Acquire;
   try
     FCoins[Player - 1] := True;
+  finally
+    FLock.Release;
+  end;
+end;
+
+procedure TS16Worker.AddPointerMotion(DX, DY: Integer);
+begin
+  FLock.Acquire;
+  try
+    FPointerX := (FPointerX + (DX mod $1000)) and $FFF;
+    FPointerY := (FPointerY + (DY mod $1000)) and $FFF;
   finally
     FLock.Release;
   end;
@@ -381,7 +407,7 @@ begin
       var Frame: TEmulatorFrame;
       Frame.Width := S16_WIDTH;
       Frame.Height := S16_HEIGHT;
-      Frame.FramesPerSecond := S16_FPS;
+      Frame.FramesPerSecond := Console.FrameRate;
       Frame.Pixels := Copy(Console.Video.Pixels);
       Frame.FrameNumber := Console.FrameNumber;
       OrientFrame(Frame);
@@ -396,7 +422,7 @@ begin
 
   try
     try
-      Console := TS16Console.Create(FCart);
+      Console := FConsoleClass.Create(FCart);
       for var I := 0 to 1 do
         if DIPOverride[I] >= 0 then
           Console.DIP[I] := Byte(DIPOverride[I]);
@@ -448,6 +474,10 @@ begin
         var Reset := FReset;
         var Coin1 := FCoins[0];
         var Coin2 := FCoins[1];
+        var PointerX := FPointerX;
+        var PointerY := FPointerY;
+        FPointerX := 0;
+        FPointerY := 0;
         FReset := False;
         FCoins[0] := False;
         FCoins[1] := False;
@@ -469,6 +499,8 @@ begin
           Deadline := TStopwatch.GetTimeStamp;
           Continue;
         end;
+        if (PointerX <> 0) or (PointerY <> 0) then
+          Console.AddPointerMotion(PointerX, PointerY);
         Console.RunFrame;
         Publish;
         if Enabled and not AudioFailed then
@@ -478,7 +510,7 @@ begin
             Audio := TPCMAudio.Create(Format);
             Audio.SetPaused(True);
           end;
-          var Samples := Copy(Console.Sound.Samples);
+          var Samples := Copy(Console.AudioSamples);
           for var I := 0 to High(Samples) do
             Samples[I] := Round(Samples[I] * Volume);
           AudioBuffer.Submit(Audio, Samples, Format);
@@ -489,7 +521,7 @@ begin
           begin
             FLock.Acquire;
             try
-              FAudioError := 'System 16 audio: ' + E.Message;
+              FAudioError := FCoreId + ' audio: ' + E.Message;
             finally
               FLock.Release;
             end;
@@ -504,7 +536,7 @@ begin
         end;
         if Console.FrameNumber mod 120 = 0 then
           SaveBattery;
-        Inc(Deadline, Round(TStopwatch.Frequency / S16_FPS));
+        Inc(Deadline, Round(TStopwatch.Frequency / Console.FrameRate));
         var Now := TStopwatch.GetTimeStamp;
         if Now - Deadline > TStopwatch.Frequency div 4 then
           Deadline := Now;
@@ -550,8 +582,16 @@ end;
 constructor TS16CoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
 begin
   inherited Create;
-  FCart := TS16Cartridge.Create(Stream, RomName, Storage);
+  InitializeCore(TS16Cartridge.Create(Stream, RomName, Storage), TS16Console,
+    Storage, RomName, 'system16', 'Sega System 16', 'System16');
+end;
 
+procedure TS16CoreAdapter.InitializeCore(Cart: TS16Cartridge; ConsoleClass: TS16ConsoleClass; const Storage: IStorage; const RomName, SystemId, PlatformName, DIPSection: string);
+begin
+  FCart := Cart;
+  FConsoleClass := ConsoleClass;
+  FSystemId := SystemId;
+  FName := PlatformName;
   var S := Storage;
   if S = nil then
     S := TStorage.Default;
@@ -560,6 +600,7 @@ begin
 
   FOptions := TS16Config.Create(S.ConfigFile(GetSystemId), S);
   FConfig := FOptions;
+  FOptions.DIPSection := DIPSection;
   FConfig.Load;
   FPorts := LoadCoreInputPorts(S, GetSystemId, GetConfig.FileName);
   var IdentityHash := SnapshotIdentity(FIdentity);
@@ -572,6 +613,22 @@ begin
   Stop;
   FCart.Free;
   inherited;
+end;
+
+procedure TS16CoreAdapter.UpdateInput;
+begin
+  Configure;
+end;
+
+function TS16CoreAdapter.InputPortEnabled(Port: Integer): Boolean;
+begin
+  Result := FPorts.Devices[Port] <> 'none';
+end;
+
+procedure TS16CoreAdapter.AddPointerMotion(DX, DY: Integer);
+begin
+  if FWorker <> nil then
+    FWorker.AddPointerMotion(DX, DY);
 end;
 
 procedure TS16CoreAdapter.Configure;
@@ -587,7 +644,7 @@ begin
 
   // Continue Game requests Pause before starting the worker and restoring state.
   // Preserve that request; only Resume should release an existing pause.
-  FWorker := TS16Worker.Create(FCart, FStorage, FIdentity, FSavePath, FSnapshotDirectory, GetSystemId);
+  FWorker := TS16Worker.Create(FCart, FStorage, FIdentity, FSavePath, FSnapshotDirectory, GetSystemId, FConsoleClass);
   FWorker.DIPOverride := FOptions.DIPs;
   Configure;
   FWorker.Start;
@@ -709,12 +766,12 @@ end;
 
 function TS16CoreAdapter.GetSystemId: string;
 begin
-  Result := 'system16';
+  Result := FSystemId;
 end;
 
 function TS16CoreAdapter.GetName: string;
 begin
-  Result := 'Sega System 16';
+  Result := FName;
 end;
 
 function TS16CoreAdapter.GetSupportsSnapshots: Boolean;

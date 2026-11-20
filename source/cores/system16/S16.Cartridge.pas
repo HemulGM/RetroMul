@@ -4,18 +4,24 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Generics.Collections, Core.Storage,
-  S16.RomSets;
+  S16.RomSets, Core.Archive.Container;
 
 type
   ES16Rom = class(EReadError);
 
+  TSegaRomIdentify = function(const Archive: IArchiveContainer; const Hint: string; out RomSet: TS16RomSet): Boolean;
+
+  TSegaRomFind = function(const Name: string; out RomSet: TS16RomSet): Boolean;
+
   TS16Cartridge = class
   private
     FSet: TS16RomSet;
+    FIdentityPrefix: string;
     FRegions: TDictionary<string, TBytes>;
     function GetRegion(const Name: string): TBytes;
   public
-    constructor Create(Stream: TStream; const Name: string; const Storage: IStorage = nil);
+    constructor Create(Stream: TStream; const Name: string; const Storage: IStorage = nil); overload;
+    constructor Create(Stream: TStream; const Name: string; const Storage: IStorage; const platform: string; Identify: TSegaRomIdentify; Find: TSegaRomFind); overload;
     destructor Destroy; override;
     function Identity: TBytes;
     property RomSet: TS16RomSet read FSet;
@@ -25,18 +31,25 @@ type
 implementation
 
 uses
-  System.Hash, Core.Archive.Container, Core.MediaArchive;
+  System.Hash, Core.MediaArchive;
 
 constructor TS16Cartridge.Create(Stream: TStream; const Name: string; const Storage: IStorage);
 begin
+  Create(Stream, Name, Storage, 'Sega System 16', TS16RomSet.Identify, TS16RomSet.Find);
+  FIdentityPrefix := 'System16';
+end;
+
+constructor TS16Cartridge.Create(Stream: TStream; const Name: string; const Storage: IStorage; const platform: string; Identify: TSegaRomIdentify; Find: TSegaRomFind);
+begin
   inherited Create;
+  FIdentityPrefix := platform;
   FRegions := TDictionary<string, TBytes>.Create;
   var S := Storage;
   if S = nil then
     S := TStorage.Default;
   var Archive := OpenMediaArchive(Stream, Name, S);
-  if not TS16RomSet.Identify(Archive, Name, FSet) then
-    raise ES16Rom.Create('Unrecognized Sega System 16 ROM set: ' + Name);
+  if not Identify(Archive, Name, FSet) then
+    raise ES16Rom.CreateFmt('Unrecognized %s ROM set: %s', [platform, Name]);
   if FSet.Unsupported <> '' then
     raise ES16Rom.Create(FSet.Title + ': ' + FSet.Unsupported);
   var Parents := TList<IArchiveContainer>.Create;
@@ -59,7 +72,7 @@ begin
         end;
       end;
       var ParentSet: TS16RomSet;
-      if not TS16RomSet.Find(Parent, ParentSet) then
+      if not Find(Parent, ParentSet) then
         Break;
       Parent := ParentSet.Parent;
     end;
@@ -67,10 +80,10 @@ begin
     for var R in FSet.Regions do
     begin
       if (R.Size <= 0) or (R.Size > 8 * 1024 * 1024) then
-        raise ES16Rom.Create('Invalid System 16 region size');
+        raise ES16Rom.Create(platform + ': Invalid ROM region size');
       Inc(Total, R.Size);
       if Total > 32 * 1024 * 1024 then
-        raise ES16Rom.Create('System 16 ROM regions exceed 32 MiB');
+        raise ES16Rom.Create(platform + ': ROM regions exceed 32 MiB');
       var Bytes: TBytes;
       SetLength(Bytes, R.Size);
       FillChar(Bytes[0], Length(Bytes), $FF);
@@ -89,11 +102,11 @@ begin
           if Index < 0 then
             Continue;
           if A.Entries[Index].Size <> UInt64(F.FileSize) then
-            raise ES16Rom.Create('Incorrect System 16 ROM size: ' + F.Name);
+            raise ES16Rom.Create(platform + ': Incorrect ROM size: ' + F.Name);
           var Input := A.OpenRead(Index);
           try
             if ArchiveCRC(Input) <> F.CRC then
-              raise ES16Rom.Create('Corrupt System 16 ROM: ' + F.Name);
+              raise ES16Rom.Create(platform + ': Corrupt ROM: ' + F.Name);
           finally
             Input.Free;
           end;
@@ -110,7 +123,7 @@ begin
         (Int64(F.SourceOffset) + F.Size > Length(Bytes)) or
         not (F.Stride in [1, 2]) or
         (Int64(F.Offset) + Int64(F.Size - 1) * F.Stride >= Length(Dest)) then
-        raise ES16Rom.Create('Invalid System 16 ROM wiring: ' + F.Name);
+        raise ES16Rom.Create(platform + ': Invalid ROM wiring: ' + F.Name);
       for var I := 0 to F.Size - 1 do
         Dest[F.Offset + I * F.Stride] := Bytes[F.SourceOffset + I];
     end;
@@ -136,7 +149,7 @@ end;
 function TS16Cartridge.Identity: TBytes;
 begin
   var Hash := THashSHA2.Create;
-  Hash.Update(TEncoding.UTF8.GetBytes('System16:' + FSet.Name));
+  Hash.Update(TEncoding.UTF8.GetBytes(FIdentityPrefix + ':' + FSet.Name));
   for var R in FSet.Regions do
   begin
     Hash.Update(TEncoding.UTF8.GetBytes(R.Name));

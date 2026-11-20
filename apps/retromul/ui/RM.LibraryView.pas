@@ -618,7 +618,7 @@ begin
     Border.Visible := False;
   end;
 
-  for var Name in ['ButtonOpenRom', 'ButtonSettings'] do
+  for var Name in ['ButtonOpenRom', 'ButtonSettings', 'ButtonReportBug'] do
   begin
     var Button := FindComponent(Name) as TButton;
     Button.TextSettings.HorzAlign := TTextAlign.Leading;

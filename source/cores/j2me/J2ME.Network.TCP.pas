@@ -103,7 +103,7 @@ implementation
 
 uses
   {$IFDEF MSWINDOWS}  Winapi.Winsock2, {$ENDIF}
-  {$IFDEF POSIX}Posix.Errno, Posix.Fcntl, Posix.NetinetIn, Posix.NetinetTCP,
+  {$IFDEF POSIX}Posix.ArpaInet, Posix.Errno, Posix.Fcntl, Posix.NetinetIn, Posix.NetinetTCP,
   Posix.SysSocket, Posix.Unistd, {$ENDIF}
   System.Math, Java.Classes;
 

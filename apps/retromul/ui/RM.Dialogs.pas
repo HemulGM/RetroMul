@@ -252,7 +252,7 @@ begin
         Exit;
 
   // These prefixes wrap another error, rather than a filename or other data.
-  for var Prefix in TArray<string>.Create('Uncaught ', 'Unable to open game: ', 'Autosave failed: ', 'Input error: ', 'Snapshot: ', 'CPS audio: ', 'CPS save: ', 'System 16 audio: ', 'System 16 save: ', 'System 32 audio: ', 'System 32 save: ', 'N64 save: ', 'PS1 audio: ', 'PS1 save: ', 'Dreamcast audio: ', 'Dreamcast save: ', 'NDS raster: ', 'A7800: ', 'JAGUAR: ', 'A7800 audio: ', 'JAGUAR audio: ', 'Jaguar EEPROM: ') do
+  for var Prefix in TArray<string>.Create('Uncaught ', 'Unable to open game: ', 'Autosave failed: ', 'Input error: ', 'Snapshot: ', 'CPS audio: ', 'CPS save: ', 'System 16 audio: ', 'System 16 save: ', 'System 32 audio: ', 'System 32 save: ', 'N64 save: ', 'PS1 audio: ', 'PS1 save: ', 'Dreamcast audio: ', 'Dreamcast save: ', 'NDS raster: ', 'A7800: ', 'ATARI800: ', 'ATARI800 audio: ', 'JAGUAR: ', 'A7800 audio: ', 'JAGUAR audio: ', 'Jaguar EEPROM: ') do
     if Text.StartsWith(Prefix) then
       Exit(Translate(Prefix) + TranslateCoreMessage(Text.Substring(Prefix.Length)));
 

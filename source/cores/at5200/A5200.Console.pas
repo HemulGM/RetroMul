@@ -5,10 +5,30 @@ interface
 uses
   System.SysUtils, A5200.Types, A5200.CPU, A5200.Cartridge, A5200.ANTIC,
   A5200.GTIA, A5200.POKEY, A5200.Controller, Core.Emulation.Types,
-  Core.Snapshots;
+  Core.Snapshots, Core.InputConfig;
 
 type
-  TA5200Console = class
+  TAtariFrameMachine = class
+  protected
+    FFrame: TEmulatorFrame;
+    FSamples: TArray<SmallInt>;
+    procedure RenderVideoCycle(ANTIC: TA5200ANTIC; GTIA: TA5200GTIA; Line, Cycle: Integer);
+  public
+    procedure Reset; virtual; abstract;
+    procedure SetInput(const Input: TEmulatorInput); virtual; abstract;
+    procedure SetKeypad(Port: Integer; Mask: Word); virtual;
+    procedure SetKeyboard(Keys: Word); virtual;
+    procedure SetInputPorts(const Ports: TCoreInputPorts); virtual;
+    procedure FlushMedia; virtual;
+    procedure RunFrame; virtual; abstract;
+    procedure SerializeState(State: TStateArchive); virtual; abstract;
+    function GetRate: Double; virtual; abstract;
+    property Frame: TEmulatorFrame read FFrame;
+    property Samples: TArray<SmallInt> read FSamples;
+    property Rate: Double read GetRate;
+  end;
+
+  TA5200Console = class(TAtariFrameMachine)
   private
     FCPU: TCPU5200;
     FCartridge: TA5200Cartridge;
@@ -19,29 +39,57 @@ type
     FRAM: array[0..$3FFF] of Byte;
     FBIOS: TBytes;
     FBus: Byte;
-    FFrame: TEmulatorFrame;
-    FSamples: TArray<SmallInt>;
   public
     constructor Create(const Data, BIOS: TBytes; MapperHint: Integer = -1);
     destructor Destroy; override;
-    procedure Reset;
-    procedure SetInput(const Input: TEmulatorInput);
-    procedure SetKeypad(Port: Integer; Mask: Word);
+    procedure Reset; override;
+    procedure SetInput(const Input: TEmulatorInput); override;
+    procedure SetKeypad(Port: Integer; Mask: Word); override;
     function ReadMemory(Address: Word): Byte;
     procedure WriteMemory(Address: Word; Value: Byte);
-    procedure RunFrame;
-    procedure SerializeState(State: TStateArchive);
-    function GetRate: Double;
-    property Frame: TEmulatorFrame read FFrame;
-    property Samples: TArray<SmallInt> read FSamples;
+    procedure RunFrame; override;
+    procedure SerializeState(State: TStateArchive); override;
+    function GetRate: Double; override;
     property CPU: TCPU5200 read FCPU;
-    property Rate: Double read GetRate;
   end;
 
 implementation
 
 uses
   System.Classes, NES.CPU, System.UITypes;
+
+procedure TAtariFrameMachine.RenderVideoCycle(ANTIC: TA5200ANTIC; GTIA: TA5200GTIA; Line, Cycle: Integer);
+begin
+  for var ColorClock := Cycle * 2 to Cycle * 2 + 1 do
+  begin
+    GTIA.ClockObjects(ColorClock);
+    if ANTIC.GraphicsActive and (ColorClock >= 32) and (ColorClock < 224) then
+      for var Pixel := ColorClock * 2 to ColorClock * 2 + 1 do
+      begin
+        var Color: TAlphaColor := $FF000000;
+        if (ColorClock >= $22) and (ColorClock < $DE) then
+          Color := GTIA.Pixel(Pixel, ANTIC.PixelAt(Pixel));
+        if Line < 248 then
+          FFrame.Pixels[(Line - 8) * A5200Width + Pixel - 64] := Color;
+      end;
+  end;
+end;
+
+procedure TAtariFrameMachine.SetInputPorts(const Ports: TCoreInputPorts);
+begin
+end;
+
+procedure TAtariFrameMachine.FlushMedia;
+begin
+end;
+
+procedure TAtariFrameMachine.SetKeyboard(Keys: Word);
+begin
+end;
+
+procedure TAtariFrameMachine.SetKeypad(Port: Integer; Mask: Word);
+begin
+end;
 
 constructor TA5200Console.Create(const Data, BIOS: TBytes; MapperHint: Integer);
 begin
@@ -53,7 +101,7 @@ begin
   FController := TA5200Controller.Create;
   FGTIA := TA5200GTIA.Create;
   FPOKEY := TA5200POKEY.Create;
-  FANTIC := TA5200ANTIC.Create(ReadMemory);
+  FANTIC := TA5200ANTIC.Create(ReadMemory, A5200LinesPerFrame);
   FCPU := TCPU5200.Create;
   FCPU.Connect(ReadMemory, WriteMemory);
   FFrame.Width := A5200Width;
@@ -144,24 +192,19 @@ begin
   for var Line := 0 to A5200LinesPerFrame - 1 do
   begin
     FANTIC.BeginLine(Line, FGTIA);
-    var Pixels := FANTIC.Output;
     for var Cycle := 0 to A5200CyclesPerLine - 1 do
     begin
-      if (Cycle = 7) and FANTIC.TakeNMI then
-        FCPU.TriggerNmi;
+      var Halted := FANTIC.Halted(Cycle);
+      if FANTIC.TakeNMI then
+        FCPU.TriggerAnticNmi(Halted and FANTIC.WaitingForSync);
       FCPU.SetIrqLine(FPOKEY.IRQ);
-      if not FANTIC.Halted(Cycle) or FCPU.NextCycleIsWrite then
+      if not Halted or (FCPU.NextCycleIsWrite and not FANTIC.DMAActive) then
         FCPU.Clock;
       if FCPU.Jammed then
         raise EInvalidOpException.CreateFmt('Atari 5200 CPU jam at %.4x', [FCPU.JamPc]);
+      FANTIC.ClockObjects(Cycle, FGTIA, FBus);
       FPOKEY.Clock(FController, FGTIA.ConsoleControl and 3);
-      if (Line >= 8) and (Line < 248) then
-        for var P := 0 to 3 do
-        begin
-          var X := Cycle * 4 + P;
-          if (X >= 64) and (X < 448) then
-            FFrame.Pixels[(Line - 8) * A5200Width + X - 64] := FGTIA.Pixel(X, Pixels[X]);
-        end;
+      RenderVideoCycle(FANTIC, FGTIA, Line, Cycle);
     end;
     FANTIC.EndLine;
   end;
@@ -177,9 +220,9 @@ begin
   State.Field(FFrame.FrameNumber, SizeOf(UInt64));
   FCPU.SerializeState(State);
   FCartridge.SerializeState(State);
-  FANTIC.SerializeState(State);
-  FGTIA.SerializeState(State);
-  FPOKEY.SerializeState(State);
+  FANTIC.SerializeState(State, State.Version in [1, 2]);
+  FGTIA.SerializeState(State, State.Version in [1, 2]);
+  FPOKEY.SerializeConsole(State);
   FFrame.Pixels := Copy(FFrame.Pixels);
   State.Field(FFrame.Pixels[0], Length(FFrame.Pixels) * SizeOf(TAlphaColor));
 end;

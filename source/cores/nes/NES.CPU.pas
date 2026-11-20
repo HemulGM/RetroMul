@@ -135,6 +135,7 @@ type
     function NextCycleIsWrite: Boolean;
     function NextReadAddress: UInt16;
     procedure NotifyDmaHalt;
+    procedure TriggerAnticNmi(ReadyHeld: Boolean);
     property UnknownOpcodeCount: Integer read FUnknownOpcodeCount;
     property Jammed: Boolean read FJammed;
     property JamOpcode: UInt8 read FJamOpcode;
@@ -705,6 +706,16 @@ end;
 procedure TCPU6502.TriggerNmi;
 begin
   FPendingNmi := True;
+end;
+
+procedure TCPU6502.TriggerAnticNmi(ReadyHeld: Boolean);
+begin
+  // ANTIC's NMI pulse is lost when it overlaps the status push of IRQ/BRK.
+  if FInterruptSequenceActive and (FInterruptKind <> ikNmi) and (CyclesRemaining = 3) then
+    Exit;
+  TriggerNmi;
+  if ReadyHeld and FInstructionActive and (CyclesRemaining = FPollCycle - 1) then
+    FNmiAfterInstruction := True;
 end;
 
 procedure TCPU6502.TriggerIrq;

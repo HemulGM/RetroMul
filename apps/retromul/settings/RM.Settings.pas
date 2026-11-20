@@ -1072,7 +1072,7 @@ begin
       else if PlatformSettingsDevices(CurrentCoreId).HasPortSettings then
       begin
         SettingsPlatform.Peripherals(FContext);
-        for var Port := 0 to SettingsPlatform.Ports - 1 do
+        for var Port := 0 to SettingsPlatform.PeripheralPortCount(FSession.Drafts[FPage]) - 1 do
           BuildPort(Port, Translate('Port ') + IntToStr(Port + 1));
         SettingsPlatform.Expansion(FContext);
       end;

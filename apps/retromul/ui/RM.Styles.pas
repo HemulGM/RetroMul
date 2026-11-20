@@ -33,7 +33,7 @@ var
 implementation
 
 uses
-  System.TypInfo, FMX.Edit, FMX.ListBox, RM.Gamepad.Base;
+  System.TypInfo, FMX.Edit, FMX.ListBox, RM.Gamepad.Base, RM.Keyboard;
 
 {$R *.fmx}
 
@@ -306,6 +306,8 @@ procedure TFormStyles.RelocalizeUI(Root: TFmxObject; const PreviousLanguage: str
   begin
     if Obj is TPlatformGamepad then
       TPlatformGamepad(Obj).ApplyLanguage;
+    if Obj is TScreenKeyboard then
+      TScreenKeyboard(Obj).Repaint;
     // Editable text is user data. Translate prompts and UI captions only.
     for var Name in ['Text', 'TextPrompt', 'Hint'] do
     begin

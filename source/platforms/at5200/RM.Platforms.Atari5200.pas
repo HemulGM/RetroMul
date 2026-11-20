@@ -28,11 +28,11 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads,
-  RM.Platforms.Atari5200.Settings, RM.Settings.Catalog, RM.Settings.Platform,
-  Core.Emulation, Core.Platforms, Core.Platforms.Atari5200.Adapter,
-  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.Atari5200.Gamepads,
-  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.Input.Gamepads, RM.Platforms.Atari5200.Settings, RM.Settings.Catalog,
+  RM.Settings.Platform, Core.Emulation, Core.Platforms,
+  Core.Platforms.Atari5200.Adapter, RM.Platforms.Presentation,
+  RM.Gamepad.Factory, RM.Platforms.Atari5200.Gamepads, RM.Input.Runtime,
+  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
   System.Classes, System.UITypes, Core.Archive.Container, System.IOUtils,
   Core.Snapshots, RM.Platforms.Atari5200.Input;
@@ -130,7 +130,9 @@ end;
 class procedure TA5200Platform.RegisterCore;
 begin
   RegisterPlatforms;
-  RegisterSnapshotPolicy('A5200', TSnapshotPolicy.Create(2));
+  var Policy := TSnapshotPolicy.Create(3);
+  Policy.AcceptedVersions := [2];
+  RegisterSnapshotPolicy('A5200', Policy);
   var Registration := TEmulationCoreRegistration.Create('A5200', ['.a52', '.car', '.bin', '.rom']);
   Registration.Add(TCoreLoadStage.Container, 5, RecognizeArchive);
   Registration.Add(TCoreLoadStage.Image, 5, Recognize);

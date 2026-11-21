@@ -68,7 +68,10 @@ begin
   Registration.Add(TCoreLoadStage.Image, 60, Recognize);
   RegisterEmulationCore(Registration);
   RegisterPlatformInputHandler('flash', TFlashInputHandler);
-  RegisterSettingsPlatform('flash', TSettingsPlatform);
+  RegisterSettingsPlatform('flash', TSettingsPlatform,
+    'Open a local .swf file. ActionScript 1 and 2 use AVM1. ActionScript 3 uses the separate ' +
+    'AVM2 implementation, whose support is limited. Compatibility depends on the Flash APIs ' +
+    'and assets used by the game.');
   RegisterPlatformWindowLayout('flash', TPlatformWindowLayout);
   RegisterPlatformSessionHandler('flash', TPlatformSessionHandler);
   RegisterPlatformSettingsHandler('flash', TPlatformSettingsHandler);

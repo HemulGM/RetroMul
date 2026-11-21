@@ -110,7 +110,10 @@ begin
   Registration.Add(TCoreLoadStage.OverrideHint, 20, ExtensionHint);
   RegisterEmulationCore(Registration);
   RegisterSnapshotPolicy('NDS', TSnapshotPolicy.Create(1, 32 * 1024 * 1024));
-  RegisterSettingsProfile('NDS', TNDSSettings);
+  RegisterSettingsProfile('NDS', TNDSSettings,
+    'Place the upper screen above or beside the touch screen in Video and Audio. Use touch or ' +
+    'pointer input on the lower screen. If an unrecognized game needs a different cartridge ' +
+    'save size, change the setting and restart. Existing save files keep their size.');
   RegisterPlatformSettingsDevices('nds', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('nds', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('nds', TPlatformControlsHelp);

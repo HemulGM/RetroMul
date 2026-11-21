@@ -16,7 +16,7 @@ type
     LayoutSettingEditorContainer: TLayout;
     LayoutAutosaveInterval: TLayout;
     LayoutAutosaveSwitchSlot: TLayout;
-    SwitchAutosavePeriodic: TSwitch;
+    CheckBoxAutosavePeriodic: TCheckBox;
     LayoutAutosaveMinutesSlot: TLayout;
   end;
 

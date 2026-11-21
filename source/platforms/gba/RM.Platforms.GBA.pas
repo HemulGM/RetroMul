@@ -127,7 +127,10 @@ end;
 
 class procedure TGBAPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('GBA', TGBASettings);
+  RegisterSettingsProfile('GBA', TGBASettings,
+    'Leave Save memory on Auto for known cartridges. Override it only when a game needs an ' +
+    'unrecognized cartridge save type. Sunlight adjusts the Boktai light sensor. Motion and ' +
+    'rumble depend on the game and the input device.');
   RegisterPlatformSettingsDevices('gba', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('gba', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('gba', TPlatformControlsHelp);

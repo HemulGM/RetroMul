@@ -149,10 +149,13 @@ begin
   else
     Result := FRIOT.Read(Address, FController.ReadJoysticks,
       FController.ReadSwitches(ConsoleSwitches));
-  // CompuMate identifies itself through grounded controller pins 5L and 9R.
-  if (FCartridge.Mapper = mCM) and (Address and $1080 = 0) and
-    ((Address and 15 = 8) or (Address and 15 = 11)) then
-    Result := Result and $7F;
+  if (FCartridge.Mapper = mCM) and (Address and $1080 = 0) then
+    case Address and 15 of
+      8, 11: // FUNC and SHIFT are low in the power-on keyboard test.
+        Result := Result and $7F;
+      9, 10: // The other two analog inputs are pulled high by the keyboard.
+        Result := Result or $80;
+    end;
   FCartridge.Observe(Address, Result);
   FBus := Result;
 end;

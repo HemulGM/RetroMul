@@ -357,6 +357,7 @@ uses
   RM.Gamepad.Factory in 'input\gamepads\RM.Gamepad.Factory.pas',
   RM.TouchInput.Android in 'platform\RM.TouchInput.Android.pas',
   RM.Feedback in 'ui\RM.Feedback.pas' {FeedbackView: TFrame},
+  RM.Help.Content in 'ui\RM.Help.Content.pas',
   RM.Main in 'ui\RM.Main.pas' {FormMain},
   RM.Main.State in 'ui\RM.Main.State.pas',
   RM.Controllers.Base in 'controllers\RM.Controllers.Base.pas',

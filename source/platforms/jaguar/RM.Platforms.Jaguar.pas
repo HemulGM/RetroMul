@@ -175,7 +175,10 @@ begin
   Registration.Add(TCoreLoadStage.OverrideHint, 6, Recognize);
   Registration.AddDiscPlatform('jaguarcd', LoadDisc);
   RegisterEmulationCore(Registration);
-  RegisterSettingsProfile('Jaguar', TJaguarSettings);
+  RegisterSettingsProfile('Jaguar', TJaguarSettings,
+    'Keep Jaguar cartridges and Jaguar CD images in separate folders. The boot mode offers ' +
+    'fast startup or the original boot ROM. Changes to boot and video standard apply when the ' +
+    'game is reopened.');
   for var Id in ['jaguar', 'jaguarcd'] do
   begin
     RegisterPlatformSettingsDevices(Id, TJaguarSettingsDevices);

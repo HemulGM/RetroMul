@@ -26,7 +26,7 @@ object LibraryView: TLibraryView
       Size.Width = 1224.000000000000000000
       Size.Height = 52.000000000000000000
       Size.PlatformDefault = False
-      StyleLookup = 'retromul_sidebar'
+      StyleLookup = 'retromul_panel_top'
       object ButtonInspectorBack: TButton
         Align = Left
         Position.X = 12.000000000000000000
@@ -49,10 +49,10 @@ object LibraryView: TLibraryView
     Size.Width = 264.000000000000000000
     Size.Height = 691.000000000000000000
     Size.PlatformDefault = False
-    StyleLookup = 'retromul_sidebar'
+    StyleLookup = 'retromul_panel_left'
     TabOrder = 1
-    object LayoutNav: TLayout
-      Align = Top
+    object LayoutSidebarNavigation: TLayout
+      Align = MostTop
       Margins.Left = 12.000000000000000000
       Margins.Top = 12.000000000000000000
       Margins.Right = 12.000000000000000000
@@ -62,122 +62,128 @@ object LibraryView: TLibraryView
       Size.Height = 162.000000000000000000
       Size.PlatformDefault = False
       TabOrder = 1
-      object ButtonNav0: TButton
-        Align = Top
-        StyledSettings = [Family, Style, FontColor]
-        Margins.Bottom = 8.000000000000000000
+      object LayoutNav: TLayout
+        Align = Client
         Size.Width = 240.000000000000000000
-        Size.Height = 46.000000000000000000
+        Size.Height = 162.000000000000000000
         Size.PlatformDefault = False
-        TabOrder = 0
-        Text = 'Library'
-        TextSettings.Font.Size = 15.000000000000000000
-        TextSettings.Trimming = Character
-        object PathNavIcon0: TPath
-          Align = Left
-          Data.Path = {
-            1400000000000000000000400000004001000000000020410000004001000000
-            0000204100002041010000000000004000002041030000000000004000000040
-            000000000000804100000040010000000000C04100000040010000000000C041
-            0000204101000000000080410000204103000000000080410000004000000000
-            000000400000804101000000000020410000804101000000000020410000C041
-            01000000000000400000C0410300000000000040000080410000000000008041
-            00008041010000000000C04100008041010000000000C0410000C04101000000
-            000080410000C041030000000000804100008041}
-          Fill.Kind = None
-          HitTest = False
-          Margins.Left = 16.000000000000000000
-          Margins.Top = 13.000000000000000000
-          Margins.Bottom = 11.000000000000000000
-          Position.X = 16.000000000000000000
-          Position.Y = 13.000000000000000000
-          Size.Width = 22.000000000000000000
-          Size.Height = 22.000000000000000000
+        object ButtonNav0: TButton
+          Align = Top
+          StyledSettings = [Family, Style, FontColor]
+          Margins.Bottom = 8.000000000000000000
+          Size.Width = 240.000000000000000000
+          Size.Height = 46.000000000000000000
           Size.PlatformDefault = False
-          Stroke.Color = xFFB9C2CC
-          Stroke.Thickness = 1.600000023841858000
-          WrapMode = Fit
+          TabOrder = 0
+          Text = 'Library'
+          TextSettings.Font.Size = 15.000000000000000000
+          TextSettings.Trimming = Character
+          object PathNavIcon0: TPath
+            Align = Left
+            Data.Path = {
+              1400000000000000000000400000004001000000000020410000004001000000
+              0000204100002041010000000000004000002041030000000000004000000040
+              000000000000804100000040010000000000C04100000040010000000000C041
+              0000204101000000000080410000204103000000000080410000004000000000
+              000000400000804101000000000020410000804101000000000020410000C041
+              01000000000000400000C0410300000000000040000080410000000000008041
+              00008041010000000000C04100008041010000000000C0410000C04101000000
+              000080410000C041030000000000804100008041}
+            Fill.Kind = None
+            HitTest = False
+            Margins.Left = 16.000000000000000000
+            Margins.Top = 13.000000000000000000
+            Margins.Bottom = 11.000000000000000000
+            Position.X = 16.000000000000000000
+            Position.Y = 13.000000000000000000
+            Size.Width = 18.000000000000000000
+            Size.Height = 22.000000000000000000
+            Size.PlatformDefault = False
+            Stroke.Color = xFFA9AAB9
+            Stroke.Thickness = 1.600000023841858000
+            WrapMode = Fit
+          end
         end
-      end
-      object ButtonNav1: TButton
-        Tag = 1
-        Align = Top
-        StyledSettings = [Family, Style, FontColor]
-        Margins.Bottom = 8.000000000000000000
-        Position.Y = 54.000000000000000000
-        Size.Width = 240.000000000000000000
-        Size.Height = 46.000000000000000000
-        Size.PlatformDefault = False
-        TabOrder = 1
-        Text = 'Recent'
-        TextSettings.Font.Size = 15.000000000000000000
-        TextSettings.Trimming = Character
-        object PathNavIcon1: TPath
-          Align = Left
-          Data.Path = {
-            0B00000000000000000050410000803F020000000000E8410000803F02000000
-            0000E8410000C84102000000000050410000C84102000000000040C00000C841
-            02000000000040C00000803F02000000000050410000803F0300000000005041
-            0000803F00000000000050410000C04001000000000050410000504101000000
-            0000984100008041}
-          Fill.Kind = None
-          HitTest = False
-          Margins.Left = 16.000000000000000000
-          Margins.Top = 13.000000000000000000
-          Margins.Bottom = 11.000000000000000000
-          Position.X = 16.000000000000000000
-          Position.Y = 13.000000000000000000
-          Size.Width = 22.000000000000000000
-          Size.Height = 22.000000000000000000
+        object ButtonNav1: TButton
+          Tag = 1
+          Align = Top
+          StyledSettings = [Family, Style, FontColor]
+          Margins.Bottom = 8.000000000000000000
+          Position.Y = 54.000000000000000000
+          Size.Width = 240.000000000000000000
+          Size.Height = 46.000000000000000000
           Size.PlatformDefault = False
-          Stroke.Color = xFFB9C2CC
-          Stroke.Thickness = 1.600000023841858000
-          WrapMode = Fit
+          TabOrder = 1
+          Text = 'Recent'
+          TextSettings.Font.Size = 15.000000000000000000
+          TextSettings.Trimming = Character
+          object PathNavIcon1: TPath
+            Align = Left
+            Data.Path = {
+              0B00000000000000000050410000803F020000000000E8410000803F02000000
+              0000E8410000C84102000000000050410000C84102000000000040C00000C841
+              02000000000040C00000803F02000000000050410000803F0300000000005041
+              0000803F00000000000050410000C04001000000000050410000504101000000
+              0000984100008041}
+            Fill.Kind = None
+            HitTest = False
+            Margins.Left = 16.000000000000000000
+            Margins.Top = 13.000000000000000000
+            Margins.Bottom = 11.000000000000000000
+            Position.X = 16.000000000000000000
+            Position.Y = 13.000000000000000000
+            Size.Width = 18.000000000000000000
+            Size.Height = 22.000000000000000000
+            Size.PlatformDefault = False
+            Stroke.Color = xFFA9AAB9
+            Stroke.Thickness = 1.600000023841858000
+            WrapMode = Fit
+          end
         end
-      end
-      object ButtonNav2: TButton
-        Tag = 2
-        Align = Top
-        StyledSettings = [Family, Style, FontColor]
-        Margins.Bottom = 8.000000000000000000
-        Position.Y = 108.000000000000000000
-        Size.Width = 240.000000000000000000
-        Size.Height = 46.000000000000000000
-        Size.PlatformDefault = False
-        TabOrder = 2
-        Text = 'Favorites'
-        TextSettings.Font.Size = 15.000000000000000000
-        TextSettings.Trimming = Character
-        object PathNavIcon2: TPath
-          Align = Left
-          Data.Path = {
-            0900000000000000000050410000B84101000000000040400000504102000000
-            0000A0C0000040400200000000000041000000C002000000000050410000E040
-            0200000000009041000000C0020000000000F84100004040020000000000B841
-            0000504103000000000050410000B841}
-          Fill.Kind = None
-          HitTest = False
-          Margins.Left = 16.000000000000000000
-          Margins.Top = 13.000000000000000000
-          Margins.Bottom = 11.000000000000000000
-          Position.X = 16.000000000000000000
-          Position.Y = 13.000000000000000000
-          Size.Width = 22.000000000000000000
-          Size.Height = 22.000000000000000000
+        object ButtonNav2: TButton
+          Tag = 2
+          Align = Top
+          StyledSettings = [Family, Style, FontColor]
+          Margins.Bottom = 8.000000000000000000
+          Position.Y = 108.000000000000000000
+          Size.Width = 240.000000000000000000
+          Size.Height = 46.000000000000000000
           Size.PlatformDefault = False
-          Stroke.Color = xFFB9C2CC
-          Stroke.Thickness = 1.600000023841858000
-          WrapMode = Fit
+          TabOrder = 2
+          Text = 'Favorites'
+          TextSettings.Font.Size = 15.000000000000000000
+          TextSettings.Trimming = Character
+          object PathNavIcon2: TPath
+            Align = Left
+            Data.Path = {
+              0900000000000000000050410000B84101000000000040400000504102000000
+              0000A0C0000040400200000000000041000000C002000000000050410000E040
+              0200000000009041000000C0020000000000F84100004040020000000000B841
+              0000504103000000000050410000B841}
+            Fill.Kind = None
+            HitTest = False
+            Margins.Left = 16.000000000000000000
+            Margins.Top = 13.000000000000000000
+            Margins.Bottom = 11.000000000000000000
+            Position.X = 16.000000000000000000
+            Position.Y = 13.000000000000000000
+            Size.Width = 18.000000000000000000
+            Size.Height = 22.000000000000000000
+            Size.PlatformDefault = False
+            Stroke.Color = xFFA9AAB9
+            Stroke.Thickness = 1.600000023841858000
+            WrapMode = Fit
+          end
         end
       end
     end
     object LayoutPlatforms: TLayout
       Align = Top
       Margins.Left = 12.000000000000000000
-      Margins.Top = 24.000000000000000000
+      Margins.Top = 12.000000000000000000
       Margins.Right = 12.000000000000000000
       Position.X = 12.000000000000000000
-      Position.Y = 274.000000000000000000
+      Position.Y = 262.000000000000000000
       Size.Width = 240.000000000000000000
       Size.Height = 30.000000000000000000
       Size.PlatformDefault = False
@@ -190,7 +196,7 @@ object LibraryView: TLibraryView
         Size.Height = 30.000000000000000000
         Size.PlatformDefault = False
         TextSettings.Font.Size = 13.000000000000000000
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         TextSettings.WordWrap = False
         Text = 'Platforms'
         TabOrder = 0
@@ -209,14 +215,14 @@ object LibraryView: TLibraryView
       TabOrder = 3
       object ButtonOpenRom: TButton
         Align = Bottom
+        Margins.Top = 6.000000000000000000
         Position.X = 12.000000000000000000
-        Position.Y = 18.000000000000000000
+        Position.Y = 14.000000000000000000
         Size.Width = 240.000000000000000000
         Size.Height = 42.000000000000000000
         Size.PlatformDefault = False
         TabOrder = 0
         Text = 'Open ROM'
-        TextSettings.HorzAlign = Leading
         TextSettings.Trimming = Character
         object PathOpenRomIcon: TPath
           Align = Left
@@ -231,119 +237,83 @@ object LibraryView: TLibraryView
           Margins.Bottom = 10.000000000000000000
           Position.X = 16.000000000000000000
           Position.Y = 10.000000000000000000
-          Size.Width = 22.000000000000000000
+          Size.Width = 18.000000000000000000
           Size.Height = 22.000000000000000000
           Size.PlatformDefault = False
-          Stroke.Color = xFFB9C2CC
+          Stroke.Color = xFFA9AAB9
           Stroke.Thickness = 1.600000023841858000
           WrapMode = Fit
         end
       end
-      object ButtonReportBug: TButton
+      object ButtonHelp: TButton
         Align = Bottom
         Margins.Top = 6.000000000000000000
-        Margins.Bottom = 6.000000000000000000
         Position.X = 12.000000000000000000
-        Position.Y = 66.000000000000000000
+        Position.Y = 110.000000000000000000
         Size.Width = 240.000000000000000000
-        Size.Height = 38.000000000000000000
+        Size.Height = 42.000000000000000000
         Size.PlatformDefault = False
-        Text = 'Report a bug'
-        TextSettings.HorzAlign = Leading
+        Text = 'Help'
         TextSettings.Trimming = Character
-        object Path1: TPath
+        object PathHelpIcon: TPath
           Align = Left
           Data.Path = {
-            AB0000000000000000002841C520304002000000000028414C9E154002000000
-            9EA02241C52000400200000000001C41C520004002000000625F1541C5200040
-            02000000000010414C9E15400200000000001041C52030400100000000001041
-            8A41604002000000000010414E62844002000000D1221341022B974002000000
-            E17A1841BF9FA6400200000006B701410A4DB6400200000034AEE3400AADDF40
-            02000000EA51E04023DB0741010000009218D84023DB0741020000001600C540
-            4CD00741020000006FB8B240EBFA0341020000001E47A540CA65FA4002000000
-            CDD59740BFD5EC4002000000B7549040D57CDA40020000007E6A90405964C740
-            01000000A59B90403ADF97400200000042A990400F9E8A400200000088F58540
-            86A87F4002000000966871404C8D7F40020000001DE6564012727F4002000000
-            84524140C36C8A40020000004A37414000AE9740010000009AC440401F33C740
-            02000000FF7E40402208E74002000000B38759407BCE024102000000322E8340
-            721B0E41020000008B9899406968194102000000A512B840DACA1F4102000000
-            8BE7D74019DB1F41010000000000E04019DB1F41010000000000E0400F043841
-            01000000000030400F04384102000000877D15400F0438410200000000000040
-            71633D4102000000000000400F04444102000000FFFFFF3FADA44A4102000000
-            867D15400F04504102000000000030400F045041010000000000E0400F045041
-            010000000000E0404AE36F41010000006DE7D7404AE36F4102000000F613B840
-            8DF36F41020000001D9B9940725576410200000007318340C4D0804102000000
-            E38D5940CF76864102000000518340407E1B8E41020000009FC440405C109641
-            010000004F374140B0F3A14102000000895241400344A5410200000021E65640
-            F2F0A741020000009B6871408BEDA741020000008AF5854024EAA74102000000
-            45A99040B137A54102000000A89B904062E7A14101000000506290400E049641
-            020000008F4C9040913D914102000000C9CE974007A78C4102000000E341A540
-            F642894102000000FDB4B240E5DE854102000000BFFEC44073F4834102000000
-            A718D84093EF834101000000783BE74093EF834102000000E61FFC4035A39441
-            0200000060001D411802A041020000000A0040411802A04102000000B4FF6241
-            1802A0410200000011F8804135A39441020000002C31864193EF834101000000
-            E0F9894193EF834102000000FFBF8E41FEF4834102000000E9519341AEDF8541
-            020000003DAE9641B143894102000000910A9A41B4A78C4102000000D7EA9B41
-            EF3D91410200000065E59B410E049641010000001BD99B4162E7A14102000000
-            B4D59B41AD37A54102000000A3829E4120EAA74102000000F2D2A14187EDA741
-            020000004123A541EEF0A74102000000B4D5A741FF43A541020000001BD9A741
-            B0F3A1410100000065E5A7415C1096410200000058F6A741807F854102000000
-            D5969A414C0770410200000012068A4148E36F41010000000000884148E36F41
-            010000000000884100005041010000000C02AA4100005041020000005B52AD41
-            00005041020000000C02B0419EA04A41020000000C02B0410000444102000000
-            0C02B041625F3D41020000005B52AD4100003841020000000C02AA4100003841
-            01000000000088410000384101000000000088410AD71F410100000025068A41
-            0AD71F41020000005EFB9141C7C61F4102000000E49999415264194102000000
-            79349F4158170E41020000000ECFA4415ECA02410200000022F0A741E5FFE640
-            020000006DE7A741022BC740010000000AD7A74114AE974002000000A3D3A741
-            C56C8A40020000003021A54117727F4002000000E1D0A141508D7F4002000000
-            92809E4189A87F4002000000A3D39B41119E8A40020000000AD79B414EDF9740
-            0100000054E39B419E6CC7400200000089ED9B41242DEF4002000000F5E79341
-            97C4074102000000D2F789412CDB07410100000088EB87412CDB074102000000
-            751487411CADDF4002000000FF487E411D4DB6400200000024856741D29FA640
-            020000001CD96C41E422974002000000EDFB6F416162844002000000EDFB6F41
-            B041604001000000EDFB6F41EC20304002000000EDFB6F41729E154002000000
-            8B9C6A41EC20004002000000EDFB6341EC200040020000004F5B5D41EC200040
-            02000000EDFB5741729E154002000000EDFB5741EC20304001000000EDFB5741
-            B041604002000000EDFB5741EC46814002000000E3685341861F914002000000
-            EDFB4B4190B2994002000000F78E44419A45A24002000000E3683B419A45A240
-            02000000EDFB334190B2994002000000F78E2C41861F914002000000EDFB2741
-            EC46814002000000EDFB2741AF4160400300000000002841C520304000000000
-            0000084162100C4102000000000008412684024102000000F8CA0B410BB8F240
-            020000004E8B12415F37E54002000000A44B1941B4B6D74002000000C4732241
-            C420D0400200000000002C41C420D0400100000000005441C420D04002000000
-            3C8C5D41C420D040020000005CB46641B4B6D74002000000B2746D416037E540
-            02000000083574410CB8F2400200000000007841268402410200000000007841
-            62100C410100000000007841180470410200000000007841ED02824102000000
-            93536D4147418B410200000000005C41B8419041020000006DAC4A4129429541
-            0200000093533541294295410200000000002441B8419041020000006DAC1241
-            47418B410200000000000841ED02824102000000000008411804704103000000
-            0000084162100C41}
-          Fill.Color = xFFB9C2CC
+            53000000000000000000404100000040020000001B2F8C410000004002000000
+            0000B041C74BCF40020000000000B04100004041020000000000B0410E2D8C41
+            020000001B2F8C410000B04102000000000040410000B041020000009643CF40
+            0000B04102000000000000400E2D8C4102000000000000400000404102000000
+            00000040C74BCF40020000009643CF4000000040020000000000404100000040
+            030000000000404100000040000000000000404121B06A4002000000C3F5EC40
+            21B06A400200000021B06A40C3F5EC400200000021B06A400000404102000000
+            21B06A408FC2844102000000C3F5EC40FCA9A2410200000000004041FCA9A241
+            020000008FC28441FCA9A24102000000FCA9A2418FC2844102000000FCA9A241
+            0000404102000000FCA9A241C3F5EC40020000008FC2844121B06A4002000000
+            0000404121B06A40030000000000404121B06A40000000000000404100007841
+            0200000039D64841000078410200000000005041C7297F410200000000005041
+            0000844102000000000050411C6B88410200000039D6484100008C4102000000
+            0000404100008C4102000000C729374100008C4102000000000030411C6B8841
+            0200000000003041000084410200000000003041C7297F4102000000C7293741
+            0000784102000000000040410000784103000000000040410000784100000000
+            000040410000D84002000000014D58410000D8400200000000006C412766FF40
+            0200000000006C41000018410200000000006C413D2C284102000000713D6741
+            1B2F314102000000B22E5B41D3BC3D41010000001C7C58411C7C404102000000
+            CE884E41696F4A410200000000004C412AA94E410200000000004C4100005841
+            0200000000004C4190A05E410200000090A04641000064410200000000004041
+            0000644102000000705F394100006441020000000000344190A05E4102000000
+            00003441000058410200000000003441C3D34741020000008FC23841E5D03E41
+            020000004ED144412D43324101000000E4834741E4832F410200000032775141
+            979025410200000000005441D656214102000000000054410000184102000000
+            0000544149F40C4102000000E10B4B4100000441020000000000404100000441
+            0200000012A535410000044102000000C5202D41B3DE0B4102000000A01A2C41
+            7EF415410100000000002C41000018410200000000002C419BA01E4102000000
+            90A026410000244102000000000020410000244102000000655F194100002441
+            02000000000014419BA01E410200000000001441000018410200000000001441
+            2766FF4002000000FFB227410000D84002000000000040410000D84003000000
+            000040410000D840}
+          Fill.Color = xFFA9AAB9
           HitTest = False
           Margins.Left = 16.000000000000000000
           Margins.Top = 10.000000000000000000
           Margins.Bottom = 10.000000000000000000
           Position.X = 16.000000000000000000
           Position.Y = 10.000000000000000000
-          Size.Width = 22.000000000000000000
-          Size.Height = 18.000000000000000000
+          Size.Width = 18.000000000000000000
+          Size.Height = 22.000000000000000000
           Size.PlatformDefault = False
           Stroke.Kind = None
-          Stroke.Thickness = 1.600000023841858000
           WrapMode = Fit
         end
       end
       object ButtonSettings: TButton
         Align = Bottom
+        Margins.Top = 6.000000000000000000
         Position.X = 12.000000000000000000
-        Position.Y = 110.000000000000000000
+        Position.Y = 62.000000000000000000
         Size.Width = 240.000000000000000000
         Size.Height = 42.000000000000000000
         Size.PlatformDefault = False
         TabOrder = 1
         Text = 'Settings'
-        TextSettings.HorzAlign = Leading
         TextSettings.Trimming = Character
         object PathSettingsIcon: TPath
           Align = Left
@@ -368,10 +338,10 @@ object LibraryView: TLibraryView
           Margins.Bottom = 10.000000000000000000
           Position.X = 16.000000000000000000
           Position.Y = 10.000000000000000000
-          Size.Width = 22.000000000000000000
+          Size.Width = 18.000000000000000000
           Size.Height = 22.000000000000000000
           Size.PlatformDefault = False
-          Stroke.Color = xFFB9C2CC
+          Stroke.Color = xFFA9AAB9
           Stroke.Thickness = 1.600000023841858000
           WrapMode = Fit
         end
@@ -383,13 +353,13 @@ object LibraryView: TLibraryView
       Margins.Right = 12.000000000000000000
       Margins.Bottom = 12.000000000000000000
       Size.Width = 240.000000000000000000
-      Size.Height = 211.000000000000000000
+      Size.Height = 223.000000000000000000
       Size.PlatformDefault = False
       TabOrder = 5
       ScrollAnimation = True
       ShowScrollBars = False
       Viewport.Width = 240.000000000000000000
-      Viewport.Height = 211.000000000000000000
+      Viewport.Height = 223.000000000000000000
     end
     object LayoutLibraryBrand: TLayout
       Align = MostTop
@@ -421,7 +391,7 @@ object LibraryView: TLibraryView
         Size.Width = 30.000000000000000000
         Size.Height = 30.000000000000000000
         Size.PlatformDefault = False
-        Stroke.Color = xFFFFB344
+        Stroke.Color = xFFB8A6FA
         Stroke.Thickness = 1.600000023841858000
         WrapMode = Fit
       end
@@ -436,7 +406,7 @@ object LibraryView: TLibraryView
         Size.PlatformDefault = False
         TextSettings.Font.Size = 23.000000000000000000
         TextSettings.Font.StyleExt = {00070000000000000004000000}
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         TextSettings.WordWrap = False
         Text = 'RetroMul'
         TabOrder = 0
@@ -453,7 +423,7 @@ object LibraryView: TLibraryView
     Size.Width = 292.000000000000000000
     Size.Height = 691.000000000000000000
     Size.PlatformDefault = False
-    StyleLookup = 'retromul_sidebar'
+    StyleLookup = 'retromul_panel_right'
     TabOrder = 2
     object VertScrollBoxDetailScroll: TVertScrollBox
       Align = Client
@@ -487,7 +457,7 @@ object LibraryView: TLibraryView
         Size.PlatformDefault = False
         TextSettings.Font.Size = 23.000000000000000000
         TextSettings.Font.StyleExt = {00070000000000000004000000}
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         Text = 'Select a game'
         TabOrder = 1
       end
@@ -502,7 +472,7 @@ object LibraryView: TLibraryView
         Size.Height = 50.000000000000000000
         Size.PlatformDefault = False
         TextSettings.Font.Size = 13.000000000000000000
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         Text = 'FDetails'
         TabOrder = 2
       end
@@ -513,7 +483,7 @@ object LibraryView: TLibraryView
         TabOrder = 3
         ReadOnly = True
         TextSettings.Font.Size = 13.000000000000000000
-        TextSettings.FontColor = xFFB9C2CC
+        TextSettings.FontColor = xFFA9AAB9
         Position.Y = 410.000000000000000000
         Margins.Right = 12.000000000000000000
         Margins.Bottom = 8.000000000000000000
@@ -593,7 +563,7 @@ object LibraryView: TLibraryView
         Size.Height = 92.000000000000000000
         Size.PlatformDefault = False
         TextSettings.Font.Size = 13.000000000000000000
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         Text = 'FDescription'
         TabOrder = 6
       end
@@ -608,7 +578,7 @@ object LibraryView: TLibraryView
         Size.Height = 48.000000000000000000
         Size.PlatformDefault = False
         TextSettings.Font.Size = 13.000000000000000000
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         Text = 'FGameInfo'
         TabOrder = 7
       end
@@ -622,7 +592,7 @@ object LibraryView: TLibraryView
         Size.Height = 32.000000000000000000
         Size.PlatformDefault = False
         TextSettings.Font.Size = 19.000000000000000000
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         TextSettings.WordWrap = False
         Text = 'Save states'
         TabOrder = 8
@@ -638,7 +608,7 @@ object LibraryView: TLibraryView
         Size.Height = 54.000000000000000000
         Size.PlatformDefault = False
         TextSettings.Font.Size = 13.000000000000000000
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         Text = 'FSavesEmpty'
         TabOrder = 9
       end
@@ -750,22 +720,9 @@ object LibraryView: TLibraryView
       Position.X = 24.000000000000000000
       Position.Y = 22.000000000000000000
       Size.Width = 497.000000000000000000
-      Size.Height = 92.000000000000000000
+      Size.Height = 50.000000000000000000
       Size.PlatformDefault = False
       TabOrder = 0
-      object LabelHeading: TLabel
-        Align = MostTop
-        StyledSettings = []
-        Size.Width = 497.000000000000000000
-        Size.Height = 42.000000000000000000
-        Size.PlatformDefault = False
-        TextSettings.Font.Size = 30.000000000000000000
-        TextSettings.Font.StyleExt = {00070000000000000004000000}
-        TextSettings.FontColor = xFFE8ECF1
-        TextSettings.WordWrap = False
-        Text = 'Library'
-        TabOrder = 0
-      end
       object LayoutHeaderSearchRow: TLayout
         Align = Client
         Size.Width = 497.000000000000000000
@@ -805,7 +762,7 @@ object LibraryView: TLibraryView
               Size.Width = 16.000000000000000000
               Size.Height = 16.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFE8ECF1
+              Stroke.Color = xFFE9E8F1
               WrapMode = Fit
             end
           end
@@ -836,7 +793,7 @@ object LibraryView: TLibraryView
               Size.Width = 16.000000000000000000
               Size.Height = 16.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFE8ECF1
+              Stroke.Color = xFFE9E8F1
               Stroke.Thickness = 1.600000023841858000
               WrapMode = Fit
             end
@@ -872,7 +829,7 @@ object LibraryView: TLibraryView
               Size.Width = 16.000000000000000000
               Size.Height = 16.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFE8ECF1
+              Stroke.Color = xFFE9E8F1
               Stroke.Thickness = 1.600000023841858000
               WrapMode = Fit
             end
@@ -916,7 +873,7 @@ object LibraryView: TLibraryView
                 00008041EA04554102000000EA04554100008041020000000000204100008041
                 0200000016F6D540000080410200000000008040EA0455410200000000008040
                 00002041030000000000804000002041}
-              Fill.Color = xFFE8ECF1
+              Fill.Color = xFFE9E8F1
               HitTest = False
               Size.Width = 16.000000000000000000
               Size.Height = 16.000000000000000000
@@ -936,66 +893,55 @@ object LibraryView: TLibraryView
       end
     end
     object LayoutCompactNavigation: TLayout
-      Align = Top
+      Align = MostTop
       Margins.Bottom = 8.000000000000000000
-      Position.Y = 48.000000000000000000
+      Position.Y = 76.000000000000000000
       Size.Width = 668.000000000000000000
       Size.Height = 44.000000000000000000
       Size.PlatformDefault = False
       Visible = False
     end
     object LayoutCompactActions: TLayout
-      Align = Top
-      Size.Width = 50.000000000000000000
+      Align = MostTop
+      Position.Y = 128.000000000000000000
+      Size.Width = 497.000000000000000000
       Size.Height = 48.000000000000000000
       Size.PlatformDefault = False
       Visible = False
       TabOrder = 1
-      object LayoutCompactPrimaryActions: TLayout
-        Align = Client
-        Size.Width = 50.000000000000000000
-        Size.Height = 48.000000000000000000
+      object ButtonCompactOpen: TButton
+        Align = Left
+        Margins.Right = 8.000000000000000000
+        Margins.Bottom = 12.000000000000000000
+        Size.Width = 136.000000000000000000
+        Size.Height = 36.000000000000000000
         Size.PlatformDefault = False
-        object ButtonCompactOpen: TButton
-          Align = Left
-          Margins.Right = 8.000000000000000000
-          Margins.Bottom = 12.000000000000000000
-          Size.Width = 136.000000000000000000
-          Size.Height = 36.000000000000000000
-          Size.PlatformDefault = False
-          TabOrder = 0
-          Text = 'Open ROM'
-          TextSettings.Trimming = Character
-        end
-        object ButtonCompactReportBug: TButton
-          Align = Right
-          Margins.Left = 6.000000000000000000
-          Position.X = -75.000000000000000000
-          Size.Width = 125.000000000000000000
-          Size.Height = 48.000000000000000000
-          Size.PlatformDefault = False
-          Text = 'Report a bug'
-          TextSettings.Trimming = Character
-        end
-        object ButtonCompactSettings: TButton
-          Align = Left
-          Margins.Right = 8.000000000000000000
-          Margins.Bottom = 12.000000000000000000
-          Position.X = 144.000000000000000000
-          Size.Width = 136.000000000000000000
-          Size.Height = 36.000000000000000000
-          Size.PlatformDefault = False
-          TabOrder = 1
-          Text = 'Settings'
-          TextSettings.Trimming = Character
-        end
+        TabOrder = 0
+        Text = 'Open ROM'
+        TextSettings.Trimming = Character
       end
-      object LayoutCompactSecondaryActions: TLayout
-        Align = MostBottom
-        Size.Width = 50.000000000000000000
-        Size.Height = 48.000000000000000000
+      object ButtonCompactSettings: TButton
+        Align = Left
+        Margins.Right = 8.000000000000000000
+        Margins.Bottom = 12.000000000000000000
+        Position.X = 144.000000000000000000
+        Size.Width = 136.000000000000000000
+        Size.Height = 36.000000000000000000
         Size.PlatformDefault = False
-        Visible = False
+        TabOrder = 1
+        Text = 'Settings'
+        TextSettings.Trimming = Character
+      end
+      object ButtonCompactHelp: TButton
+        Align = Left
+        Margins.Bottom = 12.000000000000000000
+        Position.X = 288.000000000000000000
+        Size.Width = 136.000000000000000000
+        Size.Height = 36.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 2
+        Text = 'Help'
+        TextSettings.Trimming = Character
       end
     end
     object LayoutContinue: TLayout
@@ -1028,7 +974,7 @@ object LibraryView: TLibraryView
         TabOrder = 1
         object RectangleContinueCover: TRectangle
           Align = Contents
-          Fill.Color = xFF181C21
+          Fill.Color = xFF191920
           HitTest = False
           Size.Width = 176.000000000000000000
           Size.Height = 130.000000000000000000
@@ -1054,7 +1000,7 @@ object LibraryView: TLibraryView
           Size.Width = 176.000000000000000000
           Size.Height = 130.000000000000000000
           Size.PlatformDefault = False
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.HorzAlign = Center
           Text = 'No save-state screenshot'
           TabOrder = 2
@@ -1088,7 +1034,7 @@ object LibraryView: TLibraryView
           Size.Height = 18.000000000000000000
           Size.PlatformDefault = False
           TextSettings.Font.Size = 13.000000000000000000
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.WordWrap = False
           Text = 'Continue playing'
           TabOrder = 2
@@ -1104,7 +1050,7 @@ object LibraryView: TLibraryView
           Size.PlatformDefault = False
           TextSettings.Font.Size = 24.000000000000000000
           TextSettings.Font.StyleExt = {00070000000000000004000000}
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.WordWrap = False
           Text = 'FContinueTitle'
           TabOrder = 3
@@ -1118,7 +1064,7 @@ object LibraryView: TLibraryView
           Size.Height = 18.000000000000000000
           Size.PlatformDefault = False
           TextSettings.Font.Size = 13.000000000000000000
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.WordWrap = False
           Text = 'FContinuePlatform'
           TabOrder = 4
@@ -1132,7 +1078,7 @@ object LibraryView: TLibraryView
           Size.Width = 418.000000000000000000
           Size.Height = 18.000000000000000000
           Size.PlatformDefault = False
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.WordWrap = False
           Text = 'FContinueLastPlayed'
           TabOrder = 5
@@ -1146,7 +1092,7 @@ object LibraryView: TLibraryView
           Size.Width = 418.000000000000000000
           Size.Height = 18.000000000000000000
           Size.PlatformDefault = False
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.WordWrap = False
           Text = 'FContinueSave'
           TabOrder = 6
@@ -1156,7 +1102,7 @@ object LibraryView: TLibraryView
     object LayoutFilters: TLayout
       Align = Top
       Position.X = 24.000000000000000000
-      Position.Y = 118.000000000000000000
+      Position.Y = 76.000000000000000000
       Size.Width = 497.000000000000000000
       Size.Height = 46.000000000000000000
       Size.PlatformDefault = False
@@ -1205,11 +1151,11 @@ object LibraryView: TLibraryView
       StyledSettings = []
       Opacity = 0.550000011920929000
       Position.X = 24.000000000000000000
-      Position.Y = 164.000000000000000000
+      Position.Y = 122.000000000000000000
       Size.Width = 497.000000000000000000
       Size.Height = 28.000000000000000000
       Size.PlatformDefault = False
-      TextSettings.FontColor = xFFE8ECF1
+      TextSettings.FontColor = xFFE9E8F1
       TextSettings.WordWrap = False
       Text = '0 games'
       TabOrder = 4
@@ -1217,7 +1163,7 @@ object LibraryView: TLibraryView
     object LayoutLibraryViewport: TLayout
       Align = Client
       Size.Width = 497.000000000000000000
-      Size.Height = 481.000000000000000000
+      Size.Height = 523.000000000000000000
       Size.PlatformDefault = False
       object LayoutLetterNavigationSlot: TLayout
         Align = Left
@@ -1230,12 +1176,12 @@ object LibraryView: TLibraryView
       object VertScrollBoxScroll: TVertScrollBox
         Align = Client
         Size.Width = 497.000000000000000000
-        Size.Height = 481.000000000000000000
+        Size.Height = 523.000000000000000000
         Size.PlatformDefault = False
         TabOrder = 5
         ScrollAnimation = True
         Viewport.Width = 497.000000000000000000
-        Viewport.Height = 481.000000000000000000
+        Viewport.Height = 523.000000000000000000
         object LayoutGrid: TLayout
           Align = Top
           Margins.Right = 16.000000000000000000
@@ -1299,7 +1245,7 @@ object LibraryView: TLibraryView
             Size.Height = 40.000000000000000000
             Size.PlatformDefault = False
             TextSettings.Font.Size = 18.000000000000000000
-            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.FontColor = xFFE9E8F1
             TextSettings.HorzAlign = Center
             Text = 'Loading library...'
           end
@@ -1324,7 +1270,7 @@ object LibraryView: TLibraryView
             Size.Height = 92.000000000000000000
             Size.PlatformDefault = False
             TextSettings.Font.Size = 18.000000000000000000
-            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.FontColor = xFFE9E8F1
             TextSettings.HorzAlign = Center
             Text = 'No games found.'
           end
@@ -1360,7 +1306,7 @@ object LibraryView: TLibraryView
     Visible = False
     object RectanglePadBackground: TRectangle
       Align = Contents
-      Fill.Color = xFF181C21
+      Fill.Color = xFF191920
       HitTest = False
       Size.Width = 1101.000000000000000000
       Size.Height = 691.000000000000000000
@@ -1402,19 +1348,19 @@ object LibraryView: TLibraryView
         Fill.Kind = Gradient
         Fill.Gradient.Points = <
           item
-            Color = xD20B0F14
+            Color = xD2080E17
             Offset = 0.000000000000000000
           end
           item
-            Color = xB8101419
+            Color = xB8111A2B
             Offset = 0.300000011920929000
           end
           item
-            Color = xEF0B0F14
+            Color = xEF080E17
             Offset = 0.649999976158142100
           end
           item
-            Color = xFF0B0F14
+            Color = xFF080E17
             Offset = 1.000000000000000000
           end>
         Fill.Gradient.StartPosition.X = 0.500000000000000000
@@ -1448,7 +1394,7 @@ object LibraryView: TLibraryView
           Text = '21:48'
           TextSettings.Font.Size = 12.800000190734860000
           TextSettings.Font.StyleExt = {00070000000000000004000000}
-          TextSettings.FontColor = xFFB9C2CC
+          TextSettings.FontColor = xFFA9AAB9
           TextSettings.Trimming = Character
           TextSettings.WordWrap = False
           TextSettings.HorzAlign = Trailing
@@ -1476,7 +1422,7 @@ object LibraryView: TLibraryView
           Size.Width = 24.000000000000000000
           Size.Height = 37.000000000000000000
           Size.PlatformDefault = False
-          Stroke.Color = xFFFFB344
+          Stroke.Color = xFFB8A6FA
           Stroke.Thickness = 1.600000023841858000
           WrapMode = Fit
         end
@@ -1488,7 +1434,7 @@ object LibraryView: TLibraryView
           Size.Height = 53.000000000000000000
           Size.PlatformDefault = False
           TextSettings.Font.Size = 14.000000000000000000
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.WordWrap = False
           Text = 'RetroMul'
         end
@@ -1507,7 +1453,7 @@ object LibraryView: TLibraryView
             Size.PlatformDefault = False
             StyleLookup = 'buttonstyle_subtle'
             TextSettings.Font.Size = 13.600000381469730000
-            TextSettings.FontColor = xFFB9C2CC
+            TextSettings.FontColor = xFFA9AAB9
             object LayoutKeyButtonPadPreviousPlatform: TLayout
               Align = Left
               Size.Width = 34.000000000000000000
@@ -1516,12 +1462,12 @@ object LibraryView: TLibraryView
               TabOrder = 138
               object CircleKeyButtonPadPreviousPlatform: TCircle
                 Align = Center
-                Fill.Color = xFF2B323A
+                Fill.Color = xFF34343E
                 HitTest = False
                 Size.Width = 24.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
-                Stroke.Color = xFFE8ECF1
+                Stroke.Color = xFFE9E8F1
                 Stroke.Thickness = 1.399999976158142000
                 object PathKeyButtonPadPreviousPlatform: TPath
                   Align = Center
@@ -1530,7 +1476,7 @@ object LibraryView: TLibraryView
                   Size.Width = 16.000000000000000000
                   Size.Height = 16.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFE8ECF1
+                  Stroke.Color = xFFE9E8F1
                   Stroke.Thickness = 1.200000047683716000
                   WrapMode = Fit
                 end
@@ -1541,7 +1487,7 @@ object LibraryView: TLibraryView
                   Size.Height = 18.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 8.800000190734863000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.Trimming = Character
                   TextSettings.WordWrap = False
                 end
@@ -1559,7 +1505,7 @@ object LibraryView: TLibraryView
             Size.PlatformDefault = False
             StyleLookup = 'buttonstyle_subtle'
             TextSettings.Font.Size = 13.600000381469730000
-            TextSettings.FontColor = xFFB9C2CC
+            TextSettings.FontColor = xFFA9AAB9
             Visible = False
             object LayoutContentButtonPadFilter: TLayout
               Align = Client
@@ -1575,12 +1521,12 @@ object LibraryView: TLibraryView
                 Size.PlatformDefault = False
                 object CircleKeyButtonPadFilter: TCircle
                   Align = Center
-                  Fill.Color = xFF2B323A
+                  Fill.Color = xFF34343E
                   HitTest = False
                   Size.Width = 24.000000000000000000
                   Size.Height = 24.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFE8ECF1
+                  Stroke.Color = xFFE9E8F1
                   Stroke.Thickness = 1.399999976158142000
                   object PathKeyButtonPadFilter: TPath
                     Align = Center
@@ -1589,7 +1535,7 @@ object LibraryView: TLibraryView
                     Size.Width = 16.000000000000000000
                     Size.Height = 16.000000000000000000
                     Size.PlatformDefault = False
-                    Stroke.Color = xFFE8ECF1
+                    Stroke.Color = xFFE9E8F1
                     Stroke.Thickness = 1.200000047683716000
                     WrapMode = Fit
                   end
@@ -1600,7 +1546,7 @@ object LibraryView: TLibraryView
                     Size.Height = 18.000000000000000000
                     Size.PlatformDefault = False
                     TextSettings.Font.Size = 8.800000190734863000
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.Trimming = Character
                     TextSettings.WordWrap = False
                   end
@@ -1613,7 +1559,7 @@ object LibraryView: TLibraryView
                 Size.Width = 74.000000000000000000
                 Size.Height = 40.000000000000000000
                 Size.PlatformDefault = False
-                TextSettings.FontColor = xFFE8ECF1
+                TextSettings.FontColor = xFFE9E8F1
                 TextSettings.Trimming = Character
                 TextSettings.WordWrap = False
                 TextSettings.HorzAlign = Leading
@@ -1631,7 +1577,7 @@ object LibraryView: TLibraryView
             Size.PlatformDefault = False
             StyleLookup = 'buttonstyle_subtle'
             TextSettings.Font.Size = 13.600000381469730000
-            TextSettings.FontColor = xFFB9C2CC
+            TextSettings.FontColor = xFFA9AAB9
             object LayoutKeyButtonPadNextPlatform: TLayout
               Align = Left
               Size.Width = 34.000000000000000000
@@ -1640,12 +1586,12 @@ object LibraryView: TLibraryView
               TabOrder = 138
               object CircleKeyButtonPadNextPlatform: TCircle
                 Align = Center
-                Fill.Color = xFF2B323A
+                Fill.Color = xFF34343E
                 HitTest = False
                 Size.Width = 24.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
-                Stroke.Color = xFFE8ECF1
+                Stroke.Color = xFFE9E8F1
                 Stroke.Thickness = 1.399999976158142000
                 object PathKeyButtonPadNextPlatform: TPath
                   Align = Center
@@ -1654,7 +1600,7 @@ object LibraryView: TLibraryView
                   Size.Width = 16.000000000000000000
                   Size.Height = 16.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFE8ECF1
+                  Stroke.Color = xFFE9E8F1
                   Stroke.Thickness = 1.200000047683716000
                   WrapMode = Fit
                 end
@@ -1665,7 +1611,7 @@ object LibraryView: TLibraryView
                   Size.Height = 18.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 8.800000190734863000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.Trimming = Character
                   TextSettings.WordWrap = False
                 end
@@ -1694,7 +1640,7 @@ object LibraryView: TLibraryView
                 StyleLookup = 'buttonstyle_accent'
                 Text = 'All'
                 TextSettings.Font.Size = 13.600000381469730000
-                TextSettings.FontColor = xFF181C21
+                TextSettings.FontColor = xFF191920
               end
             end
             object LayoutPadPlatformTouchSurface: TLayout
@@ -1709,7 +1655,7 @@ object LibraryView: TLibraryView
       end
       object RectanglePadHeaderDivider: TRectangle
         Align = Bottom
-        Fill.Color = xFF353D46
+        Fill.Color = xFF34343E
         HitTest = False
         Margins.Top = 8.000000000000000000
         Position.Y = 52.000000000000000000
@@ -1764,7 +1710,7 @@ object LibraryView: TLibraryView
           Size.PlatformDefault = False
           object RectanglePadNavDivider: TRectangle
             Align = Right
-            Fill.Color = xFF353D46
+            Fill.Color = xFF34343E
             HitTest = False
             Margins.Left = 8.000000000000000000
             Margins.Top = 8.000000000000000000
@@ -1800,7 +1746,7 @@ object LibraryView: TLibraryView
               Size.Width = 24.000000000000000000
               Size.Height = 26.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFE8ECF1
+              Stroke.Color = xFFE9E8F1
               Stroke.Thickness = 1.399999976158142000
               WrapMode = Fit
             end
@@ -1811,7 +1757,7 @@ object LibraryView: TLibraryView
               Size.Height = 38.000000000000000000
               Size.PlatformDefault = False
               Text = 'Selection'
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               TextSettings.HorzAlign = Leading
             end
@@ -1828,7 +1774,7 @@ object LibraryView: TLibraryView
           Size.PlatformDefault = False
           StyleLookup = 'buttonstyle_subtle'
           TextSettings.Font.Size = 13.600000381469730000
-          TextSettings.FontColor = xFF181C21
+          TextSettings.FontColor = xFF191920
           object RectanglePadPlayBackground: TRectangle
             Align = Contents
             Fill.Kind = None
@@ -1854,12 +1800,12 @@ object LibraryView: TLibraryView
               Size.PlatformDefault = False
               object CircleKeyButtonPadPlay: TCircle
                 Align = Center
-                Fill.Color = xFF2B323A
+                Fill.Color = xFF34343E
                 HitTest = False
                 Size.Width = 24.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
-                Stroke.Color = xFFE8ECF1
+                Stroke.Color = xFFE9E8F1
                 Stroke.Thickness = 1.399999976158142000
                 object PathKeyButtonPadPlay: TPath
                   Align = Center
@@ -1868,7 +1814,7 @@ object LibraryView: TLibraryView
                   Size.Width = 16.000000000000000000
                   Size.Height = 16.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFE8ECF1
+                  Stroke.Color = xFFE9E8F1
                   Stroke.Thickness = 1.200000047683716000
                   WrapMode = Fit
                 end
@@ -1879,7 +1825,7 @@ object LibraryView: TLibraryView
                   Size.Height = 18.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 10.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.Trimming = Character
                   TextSettings.WordWrap = False
                 end
@@ -1892,7 +1838,7 @@ object LibraryView: TLibraryView
               Size.Width = 106.000000000000000000
               Size.Height = 38.000000000000000000
               Size.PlatformDefault = False
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.Trimming = Character
               TextSettings.WordWrap = False
               TextSettings.HorzAlign = Leading
@@ -1907,7 +1853,7 @@ object LibraryView: TLibraryView
           Size.PlatformDefault = False
           object RectanglePadBackDivider: TRectangle
             Align = Right
-            Fill.Color = xFF353D46
+            Fill.Color = xFF34343E
             HitTest = False
             Margins.Left = 8.000000000000000000
             Margins.Top = 8.000000000000000000
@@ -1931,7 +1877,7 @@ object LibraryView: TLibraryView
             Size.PlatformDefault = False
             StyleLookup = 'buttonstyle_subtle'
             TextSettings.Font.Size = 13.600000381469730000
-            TextSettings.FontColor = xFFB9C2CC
+            TextSettings.FontColor = xFFA9AAB9
             object LayoutContentButtonPadDesktop: TLayout
               Align = Client
               Margins.Left = 8.000000000000000000
@@ -1946,12 +1892,12 @@ object LibraryView: TLibraryView
                 Size.PlatformDefault = False
                 object CircleKeyButtonPadDesktop: TCircle
                   Align = Center
-                  Fill.Color = xFF2B323A
+                  Fill.Color = xFF34343E
                   HitTest = False
                   Size.Width = 24.000000000000000000
                   Size.Height = 24.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFE8ECF1
+                  Stroke.Color = xFFE9E8F1
                   Stroke.Thickness = 1.399999976158142000
                   object PathKeyButtonPadDesktop: TPath
                     Align = Center
@@ -1960,7 +1906,7 @@ object LibraryView: TLibraryView
                     Size.Width = 16.000000000000000000
                     Size.Height = 16.000000000000000000
                     Size.PlatformDefault = False
-                    Stroke.Color = xFFE8ECF1
+                    Stroke.Color = xFFE9E8F1
                     Stroke.Thickness = 1.200000047683716000
                     WrapMode = Fit
                   end
@@ -1971,7 +1917,7 @@ object LibraryView: TLibraryView
                     Size.Height = 18.000000000000000000
                     Size.PlatformDefault = False
                     TextSettings.Font.Size = 8.800000190734863000
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.Trimming = Character
                     TextSettings.WordWrap = False
                   end
@@ -1984,7 +1930,7 @@ object LibraryView: TLibraryView
                 Size.Width = 82.000000000000000000
                 Size.Height = 38.000000000000000000
                 Size.PlatformDefault = False
-                TextSettings.FontColor = xFFE8ECF1
+                TextSettings.FontColor = xFFE9E8F1
                 TextSettings.Trimming = Character
                 TextSettings.WordWrap = False
                 TextSettings.HorzAlign = Leading
@@ -2000,7 +1946,7 @@ object LibraryView: TLibraryView
           Size.PlatformDefault = False
           object RectanglePadFavoriteDivider: TRectangle
             Align = Right
-            Fill.Color = xFF353D46
+            Fill.Color = xFF34343E
             HitTest = False
             Margins.Left = 8.000000000000000000
             Margins.Top = 8.000000000000000000
@@ -2024,7 +1970,7 @@ object LibraryView: TLibraryView
             Size.PlatformDefault = False
             StyleLookup = 'buttonstyle_subtle'
             TextSettings.Font.Size = 13.600000381469730000
-            TextSettings.FontColor = xFFB9C2CC
+            TextSettings.FontColor = xFFA9AAB9
             object LayoutContentButtonPadFavorite: TLayout
               Align = Client
               Margins.Left = 8.000000000000000000
@@ -2039,12 +1985,12 @@ object LibraryView: TLibraryView
                 Size.PlatformDefault = False
                 object CircleKeyButtonPadFavorite: TCircle
                   Align = Center
-                  Fill.Color = xFF2B323A
+                  Fill.Color = xFF34343E
                   HitTest = False
                   Size.Width = 24.000000000000000000
                   Size.Height = 24.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFE8ECF1
+                  Stroke.Color = xFFE9E8F1
                   Stroke.Thickness = 1.399999976158142000
                   object PathKeyButtonPadFavorite: TPath
                     Align = Center
@@ -2053,7 +1999,7 @@ object LibraryView: TLibraryView
                     Size.Width = 16.000000000000000000
                     Size.Height = 16.000000000000000000
                     Size.PlatformDefault = False
-                    Stroke.Color = xFFE8ECF1
+                    Stroke.Color = xFFE9E8F1
                     Stroke.Thickness = 1.200000047683716000
                     WrapMode = Fit
                   end
@@ -2064,7 +2010,7 @@ object LibraryView: TLibraryView
                     Size.Height = 18.000000000000000000
                     Size.PlatformDefault = False
                     TextSettings.Font.Size = 8.800000190734863000
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.Trimming = Character
                     TextSettings.WordWrap = False
                   end
@@ -2077,7 +2023,7 @@ object LibraryView: TLibraryView
                 Size.Width = 127.000000000000000000
                 Size.Height = 38.000000000000000000
                 Size.PlatformDefault = False
-                TextSettings.FontColor = xFFE8ECF1
+                TextSettings.FontColor = xFFE9E8F1
                 TextSettings.Trimming = Character
                 TextSettings.WordWrap = False
                 TextSettings.HorzAlign = Leading
@@ -2096,7 +2042,7 @@ object LibraryView: TLibraryView
           Size.PlatformDefault = False
           StyleLookup = 'buttonstyle_subtle'
           TextSettings.Font.Size = 13.600000381469730000
-          TextSettings.FontColor = xFFB9C2CC
+          TextSettings.FontColor = xFFA9AAB9
           object LayoutContentButtonPadSettings: TLayout
             Align = Client
             Margins.Left = 8.000000000000000000
@@ -2111,12 +2057,12 @@ object LibraryView: TLibraryView
               Size.PlatformDefault = False
               object CircleKeyButtonPadSettings: TCircle
                 Align = Center
-                Fill.Color = xFF2B323A
+                Fill.Color = xFF34343E
                 HitTest = False
                 Size.Width = 24.000000000000000000
                 Size.Height = 24.000000000000000000
                 Size.PlatformDefault = False
-                Stroke.Color = xFFE8ECF1
+                Stroke.Color = xFFE9E8F1
                 Stroke.Thickness = 1.399999976158142000
                 object PathKeyButtonPadSettings: TPath
                   Align = Center
@@ -2125,7 +2071,7 @@ object LibraryView: TLibraryView
                   Size.Width = 16.000000000000000000
                   Size.Height = 16.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFE8ECF1
+                  Stroke.Color = xFFE9E8F1
                   Stroke.Thickness = 1.200000047683716000
                   WrapMode = Fit
                 end
@@ -2136,7 +2082,7 @@ object LibraryView: TLibraryView
                   Size.Height = 18.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 8.800000190734863000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.Trimming = Character
                   TextSettings.WordWrap = False
                 end
@@ -2149,7 +2095,7 @@ object LibraryView: TLibraryView
               Size.Width = 104.000000000000000000
               Size.Height = 38.000000000000000000
               Size.PlatformDefault = False
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.Trimming = Character
               TextSettings.WordWrap = False
               TextSettings.HorzAlign = Leading
@@ -2159,7 +2105,7 @@ object LibraryView: TLibraryView
       end
       object RectanglePadFooterDivider: TRectangle
         Align = Top
-        Fill.Color = xFF353D46
+        Fill.Color = xFF34343E
         HitTest = False
         Size.Width = 989.000000000000000000
         Size.Height = 1.000000000000000000
@@ -2188,7 +2134,7 @@ object LibraryView: TLibraryView
           Size.Height = 42.000000000000000000
           Size.PlatformDefault = False
           TextSettings.Font.Size = 11.199999809265140000
-          TextSettings.FontColor = xFFB9C2CC
+          TextSettings.FontColor = xFFA9AAB9
           TextSettings.HorzAlign = Trailing
           TextSettings.WordWrap = False
           Text = '123'
@@ -2201,7 +2147,7 @@ object LibraryView: TLibraryView
           Size.PlatformDefault = False
           TextSettings.Font.Size = 27.200000762939450000
           TextSettings.Font.StyleExt = {00070000000000000004000000}
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.WordWrap = False
         end
         object LabelPadSubtitle: TLabel
@@ -2212,7 +2158,7 @@ object LibraryView: TLibraryView
           Size.Height = 22.000000000000000000
           Size.PlatformDefault = False
           TextSettings.Font.Size = 12.800000190734860000
-          TextSettings.FontColor = xFFB9C2CC
+          TextSettings.FontColor = xFFA9AAB9
           TextSettings.WordWrap = False
         end
       end
@@ -2250,7 +2196,7 @@ object LibraryView: TLibraryView
                   Size.PlatformDefault = False
                   object RectanglePadMetaDividerPlatform: TRectangle
                     Align = Right
-                    Fill.Color = xFF353D46
+                    Fill.Color = xFF34343E
                     HitTest = False
                     Margins.Left = 8.000000000000000000
                     Margins.Top = 8.000000000000000000
@@ -2275,7 +2221,7 @@ object LibraryView: TLibraryView
                       Size.Height = 20.000000000000000000
                       Size.PlatformDefault = False
                       TextSettings.Font.Size = 9.600000381469727000
-                      TextSettings.FontColor = xFFB9C2CC
+                      TextSettings.FontColor = xFFA9AAB9
                       TextSettings.WordWrap = False
                       Text = 'Platform'
                     end
@@ -2286,7 +2232,7 @@ object LibraryView: TLibraryView
                       Size.Height = 22.000000000000000000
                       Size.PlatformDefault = False
                       TextSettings.Font.Size = 12.800000190734860000
-                      TextSettings.FontColor = xFFE8ECF1
+                      TextSettings.FontColor = xFFE9E8F1
                       TextSettings.WordWrap = False
                     end
                   end
@@ -2299,7 +2245,7 @@ object LibraryView: TLibraryView
                   Size.PlatformDefault = False
                   object RectanglePadMetaDividerGenre: TRectangle
                     Align = Right
-                    Fill.Color = xFF353D46
+                    Fill.Color = xFF34343E
                     HitTest = False
                     Margins.Left = 8.000000000000000000
                     Margins.Top = 8.000000000000000000
@@ -2324,7 +2270,7 @@ object LibraryView: TLibraryView
                       Size.Height = 20.000000000000000000
                       Size.PlatformDefault = False
                       TextSettings.Font.Size = 9.600000381469727000
-                      TextSettings.FontColor = xFFB9C2CC
+                      TextSettings.FontColor = xFFA9AAB9
                       TextSettings.WordWrap = False
                       Text = 'Genre: '
                     end
@@ -2335,7 +2281,7 @@ object LibraryView: TLibraryView
                       Size.Height = 22.000000000000000000
                       Size.PlatformDefault = False
                       TextSettings.Font.Size = 12.800000190734860000
-                      TextSettings.FontColor = xFFE8ECF1
+                      TextSettings.FontColor = xFFE9E8F1
                       TextSettings.WordWrap = False
                     end
                   end
@@ -2348,7 +2294,7 @@ object LibraryView: TLibraryView
                   Size.PlatformDefault = False
                   object RectanglePadMetaDividerDeveloper: TRectangle
                     Align = Right
-                    Fill.Color = xFF353D46
+                    Fill.Color = xFF34343E
                     HitTest = False
                     Margins.Left = 8.000000000000000000
                     Margins.Top = 8.000000000000000000
@@ -2373,7 +2319,7 @@ object LibraryView: TLibraryView
                       Size.Height = 20.000000000000000000
                       Size.PlatformDefault = False
                       TextSettings.Font.Size = 9.600000381469727000
-                      TextSettings.FontColor = xFFB9C2CC
+                      TextSettings.FontColor = xFFA9AAB9
                       TextSettings.WordWrap = False
                       Text = 'Developer'
                     end
@@ -2384,7 +2330,7 @@ object LibraryView: TLibraryView
                       Size.Height = 22.000000000000000000
                       Size.PlatformDefault = False
                       TextSettings.Font.Size = 12.800000190734860000
-                      TextSettings.FontColor = xFFE8ECF1
+                      TextSettings.FontColor = xFFE9E8F1
                       TextSettings.WordWrap = False
                     end
                   end
@@ -2402,7 +2348,7 @@ object LibraryView: TLibraryView
                     Size.Height = 20.000000000000000000
                     Size.PlatformDefault = False
                     TextSettings.Font.Size = 9.600000381469727000
-                    TextSettings.FontColor = xFFB9C2CC
+                    TextSettings.FontColor = xFFA9AAB9
                     TextSettings.WordWrap = False
                     Text = 'Players: '
                   end
@@ -2413,7 +2359,7 @@ object LibraryView: TLibraryView
                     Size.Height = 22.000000000000000000
                     Size.PlatformDefault = False
                     TextSettings.Font.Size = 12.800000190734860000
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.WordWrap = False
                   end
                 end
@@ -2425,7 +2371,7 @@ object LibraryView: TLibraryView
                 Size.Width = 989.000000000000000000
                 Size.Height = 42.000000000000000000
                 Size.PlatformDefault = False
-                TextSettings.FontColor = xFFBCC2CD
+                TextSettings.FontColor = xFFA9AAB9
                 TextSettings.WordWrap = False
               end
             end
@@ -2445,7 +2391,7 @@ object LibraryView: TLibraryView
           Size.PlatformDefault = False
           object RectanglePadProgressBackground: TRectangle
             Align = Contents
-            Fill.Color = xFF47505A
+            Fill.Color = xFF444450
             HitTest = False
             Size.Width = 660.000000000000000000
             Size.Height = 3.000000000000000000
@@ -2460,7 +2406,7 @@ object LibraryView: TLibraryView
           end
           object RectanglePadProgressThumb: TRectangle
             Align = Left
-            Fill.Color = xFFFFB344
+            Fill.Color = xFFB8A6FA
             HitTest = False
             Size.Width = 50.000000000000000000
             Size.Height = 3.000000000000000000
@@ -2501,7 +2447,7 @@ object LibraryView: TLibraryView
               Margins.Right = 12.000000000000000000
               Margins.Bottom = 12.000000000000000000
               TextSettings.Font.Size = 12.800000190734860000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.HorzAlign = Center
               Visible = False
             end
@@ -2529,7 +2475,7 @@ object LibraryView: TLibraryView
               Size.Height = 24.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 11.199999809265140000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               Visible = False
             end
@@ -2554,7 +2500,7 @@ object LibraryView: TLibraryView
               Margins.Right = 12.000000000000000000
               Margins.Bottom = 12.000000000000000000
               TextSettings.Font.Size = 12.800000190734860000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.HorzAlign = Center
               Visible = False
             end
@@ -2582,7 +2528,7 @@ object LibraryView: TLibraryView
               Size.Height = 24.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 11.199999809265140000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               Visible = False
             end
@@ -2607,7 +2553,7 @@ object LibraryView: TLibraryView
               Margins.Right = 12.000000000000000000
               Margins.Bottom = 12.000000000000000000
               TextSettings.Font.Size = 12.800000190734860000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.HorzAlign = Center
               Visible = False
             end
@@ -2635,7 +2581,7 @@ object LibraryView: TLibraryView
               Size.Height = 24.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 11.199999809265140000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               Visible = False
             end
@@ -2660,7 +2606,7 @@ object LibraryView: TLibraryView
               Margins.Right = 12.000000000000000000
               Margins.Bottom = 12.000000000000000000
               TextSettings.Font.Size = 12.800000190734860000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.HorzAlign = Center
               Visible = False
             end
@@ -2688,7 +2634,7 @@ object LibraryView: TLibraryView
               Size.Height = 24.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 11.199999809265140000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               Visible = False
             end
@@ -2713,7 +2659,7 @@ object LibraryView: TLibraryView
               Margins.Right = 12.000000000000000000
               Margins.Bottom = 12.000000000000000000
               TextSettings.Font.Size = 12.800000190734860000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.HorzAlign = Center
               Visible = False
             end
@@ -2741,7 +2687,7 @@ object LibraryView: TLibraryView
               Size.Height = 24.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 11.199999809265140000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               Visible = False
             end
@@ -2766,7 +2712,7 @@ object LibraryView: TLibraryView
               Margins.Right = 12.000000000000000000
               Margins.Bottom = 12.000000000000000000
               TextSettings.Font.Size = 12.800000190734860000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.HorzAlign = Center
               Visible = False
             end
@@ -2794,7 +2740,7 @@ object LibraryView: TLibraryView
               Size.Height = 24.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 11.199999809265140000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               Visible = False
             end
@@ -2819,7 +2765,7 @@ object LibraryView: TLibraryView
               Margins.Right = 12.000000000000000000
               Margins.Bottom = 12.000000000000000000
               TextSettings.Font.Size = 12.800000190734860000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.HorzAlign = Center
               Visible = False
             end
@@ -2847,7 +2793,7 @@ object LibraryView: TLibraryView
               Size.Height = 24.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 11.199999809265140000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               Visible = False
             end
@@ -2872,7 +2818,7 @@ object LibraryView: TLibraryView
       Visible = False
       object RectanglePadPageShade: TRectangle
         Align = Contents
-        Fill.Color = xE60B0F14
+        Fill.Color = xE6080E17
         HitTest = False
         Size.Width = 50.000000000000000000
         Size.Height = 50.000000000000000000
@@ -2888,7 +2834,7 @@ object LibraryView: TLibraryView
         Size.Height = 48.000000000000000000
         Size.PlatformDefault = False
         TextSettings.Font.Size = 28.000000000000000000
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         TextSettings.WordWrap = False
       end
       object LayoutPadPageBody: TLayout
@@ -2905,7 +2851,7 @@ object LibraryView: TLibraryView
           Size.PlatformDefault = False
           object RectanglePadPageArt: TRectangle
             Align = Top
-            Fill.Color = xFF252C32
+            Fill.Color = xFF34343E
             Margins.Bottom = 16.000000000000000000
             Size.Width = 260.000000000000000000
             Size.Height = 260.000000000000000000
@@ -2924,7 +2870,7 @@ object LibraryView: TLibraryView
               Size.Height = 236.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 14.000000000000000000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.HorzAlign = Center
             end
             object ImagePadPageCover: TImage
@@ -2949,7 +2895,7 @@ object LibraryView: TLibraryView
             StyleLookup = 'buttonstyle_subtle'
             Text = 'Play'
             TextSettings.Font.Size = 14.000000000000000000
-            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.FontColor = xFFE9E8F1
           end
           object ButtonPadPageFavorite: TButton
             Tag = 1
@@ -2963,7 +2909,7 @@ object LibraryView: TLibraryView
             StyleLookup = 'buttonstyle_subtle'
             Text = 'Add to favorites'
             TextSettings.Font.Size = 14.000000000000000000
-            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.FontColor = xFFE9E8F1
           end
         end
         object VertScrollBoxPadPage: TVertScrollBox
@@ -2986,7 +2932,7 @@ object LibraryView: TLibraryView
               Size.Height = 28.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 12.800000190734860000
-              TextSettings.FontColor = xFFB9C2CC
+              TextSettings.FontColor = xFFA9AAB9
               TextSettings.WordWrap = False
             end
             object LabelPadPageDescription: TLabel
@@ -2999,7 +2945,7 @@ object LibraryView: TLibraryView
               Size.Height = 120.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 14.000000000000000000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.Trimming = None
             end
             object LabelPadPageSaves: TLabel
@@ -3010,7 +2956,7 @@ object LibraryView: TLibraryView
               Size.Height = 32.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 18.000000000000000000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
             end
             object LabelPadPageSavesEmpty: TLabel
@@ -3021,7 +2967,7 @@ object LibraryView: TLibraryView
               Size.Height = 28.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 12.800000190734860000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
             end
             object LayoutPadPageSaveList: TLayout

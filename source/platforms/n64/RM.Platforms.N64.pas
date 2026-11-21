@@ -151,7 +151,10 @@ end;
 
 class procedure TN64Platform.RegisterClient;
 begin
-  RegisterSettingsProfile('N64', TN64Settings);
+  RegisterSettingsProfile('N64', TN64Settings,
+    'The CPU and RSP can use the recompiler where it is available. Cartridge save memory can ' +
+    'be set manually for an unrecognized image. Restart the game after changing the save ' +
+    'memory type.');
   RegisterPlatformSettingsDevices('n64', TN64SettingsDevices);
   RegisterPlatformDeviceCallouts('n64', TN64DeviceCallouts);
   RegisterPlatformControlsHelp('n64', TN64ControlsHelp);

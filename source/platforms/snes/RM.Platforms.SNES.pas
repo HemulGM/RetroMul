@@ -29,12 +29,12 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads,
-  RM.Settings.Catalog, SNES.RomFormat, Core.Snapshots,
-  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.SNES.Adapter, SNES.Cartridge, RM.Platforms.SNES.Settings,
-  RM.Platforms.Presentation, RM.Platforms.SNES.Icons, RM.Gamepad.Factory,
-  RM.Platforms.SNES.Gamepads, SNES.Console, RM.Input.Runtime, RM.Session.Runtime,
-  RM.Window.Layout, RM.Settings.Runtime, RM.Platforms.SNES.SettingsHandler,
+  RM.Input.Gamepads, RM.Settings.Catalog, SNES.RomFormat, Core.Snapshots,
+  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.SNES.Adapter,
+  SNES.Cartridge, RM.Platforms.SNES.Settings, RM.Platforms.Presentation,
+  RM.Platforms.SNES.Icons, RM.Gamepad.Factory, RM.Platforms.SNES.Gamepads,
+  SNES.Console, RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout,
+  RM.Settings.Runtime, RM.Platforms.SNES.SettingsHandler,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Platforms.SNES.Callouts,
   RM.Settings.Devices, System.Classes;
 
@@ -59,10 +59,15 @@ class function TSNESPlatform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
   Result := nil;
   var Header: TSnesHeader;
-  if not DetectSnesHeader(Context.Data, Header) then
-    Exit;
+  var CopierSize: Integer;
+  if DetectSufamiTurbo(Context.Data, CopierSize) = TSufamiImage.None then
+  begin
+    if not DetectSnesHeader(Context.Data, Header) then
+      Exit;
+    CopierSize := Header.CopierSize;
+  end;
   var Encoding := '';
-  if Header.CopierSize <> 0 then
+  if CopierSize <> 0 then
     Encoding := SNES_ENCODING_COPIER;
   Result := ImageMatch(Context, 'SNES',
     function(const Data: TBytes; Input: TStream): IEmulationCore
@@ -75,14 +80,14 @@ class procedure TSNESPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('snes', 'Super Nintendo', 'SNES',
     'Nintendo', 'SNES Super Famicom', 'snes', ['snes'],
-    ['.sfc', '.smc', '.swc', '.fig'],
+    ['.sfc', '.smc', '.swc', '.fig', '.st'],
     'SNES', 'snes', 2);
 end;
 
 class procedure TSNESPlatform.RegisterCore;
 begin
   RegisterPlatforms;
-  var Registration := TEmulationCoreRegistration.Create('SNES', ['.sfc', '.smc', '.swc', '.fig']);
+  var Registration := TEmulationCoreRegistration.Create('SNES', ['.sfc', '.smc', '.swc', '.fig', '.st']);
   Registration.Add(TCoreLoadStage.Header, 140, Recognize);
   RegisterEmulationCore(Registration);
 end;
@@ -133,7 +138,10 @@ end;
 
 class procedure TSNESPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('SNES', TSNESSettings);
+  RegisterSettingsProfile('SNES', TSNESSettings,
+    'Use the controller configuration to enable Multitap for games that support more players. ' +
+    'Use the cartridge image and retain its original header if it includes one. Behavior also ' +
+    'depends on the enhancement chips used by the game.');
   RegisterPlatformSettingsDevices('snes', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('snes', TSNESDeviceCallouts);
   RegisterPlatformControlsHelp('snes', TPlatformControlsHelp);

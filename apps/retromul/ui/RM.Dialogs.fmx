@@ -38,7 +38,7 @@ object RetroDialog: TRetroDialog
         Size.Height = 80.000000000000000000
         Size.PlatformDefault = False
         TextSettings.Font.Size = 14.000000000000000000
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         TextSettings.VertAlign = Leading
         TextSettings.Trimming = None
         TabOrder = 0
@@ -58,7 +58,7 @@ object RetroDialog: TRetroDialog
           Size.Height = 28.000000000000000000
           Size.PlatformDefault = False
           TextSettings.Font.Size = 14.000000000000000000
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           Text = 'Target platform'
         end
         object ComboBoxPlatform: TComboBox
@@ -82,7 +82,7 @@ object RetroDialog: TRetroDialog
       Size.PlatformDefault = False
       object CircleBadge: TCircle
         Align = Left
-        Fill.Color = xFFFFB344
+        Fill.Color = xFFB8A6FA
         HitTest = False
         Margins.Top = 4.000000000000000000
         Margins.Right = 16.000000000000000000
@@ -100,7 +100,7 @@ object RetroDialog: TRetroDialog
           Size.PlatformDefault = False
           TextSettings.Font.Size = 22.000000000000000000
           TextSettings.Font.StyleExt = {00070000000000000004000000}
-          TextSettings.FontColor = xFF1B2026
+          TextSettings.FontColor = xFF25252D
           TextSettings.HorzAlign = Center
           Text = '!'
         end
@@ -113,7 +113,7 @@ object RetroDialog: TRetroDialog
         Size.PlatformDefault = False
         TextSettings.Font.Size = 21.000000000000000000
         TextSettings.Font.StyleExt = {00070000000000000004000000}
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         TextSettings.WordWrap = False
         Text = 'Warning'
       end
@@ -159,7 +159,7 @@ object RetroDialog: TRetroDialog
             000088410000A0400200000000008841BA4E79400200000039D6804100004040
             0200000000007041000040400100000000003041000040400300000000003041
             00004040}
-          Fill.Color = xFFE8ECF1
+          Fill.Color = xFFE9E8F1
           HitTest = False
           Size.Width = 18.000000000000000000
           Size.Height = 18.000000000000000000
@@ -201,7 +201,7 @@ object RetroDialog: TRetroDialog
         StyleLookup = 'buttonstyle'
         TabOrder = 2
         TextSettings.Font.Size = 14.000000000000000000
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         Visible = False
       end
       object ButtonAccept: TButton
@@ -216,7 +216,7 @@ object RetroDialog: TRetroDialog
         TabOrder = 1
         Text = 'OK'
         TextSettings.Font.Size = 14.000000000000000000
-        TextSettings.FontColor = xFF1B2026
+        TextSettings.FontColor = xFF25252D
       end
       object ButtonCancel: TButton
         Align = Right
@@ -229,7 +229,7 @@ object RetroDialog: TRetroDialog
         TabOrder = 0
         Text = 'Cancel'
         TextSettings.Font.Size = 14.000000000000000000
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
       end
     end
     object LayoutDialogAccent: TLayout
@@ -239,7 +239,7 @@ object RetroDialog: TRetroDialog
       Size.PlatformDefault = False
       object RectangleAccent: TRectangle
         Align = TopLeft
-        Fill.Color = xFFFFB344
+        Fill.Color = xFFB8A6FA
         HitTest = False
         Margins.Left = 24.000000000000000000
         Position.X = 24.000000000000000000

@@ -25,12 +25,11 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads,
-  RM.Settings.Catalog, RM.Settings.Platform, Core.Snapshots, System.StrUtils,
-  Core.Emulation, Core.Platforms, Core.Platforms.CPS.Adapter,
-  CPS.RomSets, RM.Platforms.Presentation, RM.Platforms.CPS.Icons,
-  RM.Gamepad.Factory, RM.Platforms.CPS.Gamepads, RM.Input.Runtime,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.Input.Gamepads, RM.Settings.Catalog, RM.Settings.Platform, Core.Snapshots,
+  System.StrUtils, Core.Emulation, Core.Platforms, Core.PlatformServices,
+  Core.Platforms.CPS.Adapter, CPS.RomSets, RM.Platforms.Presentation,
+  RM.Platforms.CPS.Icons, RM.Gamepad.Factory, RM.Platforms.CPS.Gamepads,
+  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
   System.Classes;
 
@@ -96,6 +95,9 @@ begin
   RegisterSnapshotPolicy('CPS1', TSnapshotPolicy.Create(4));
   RegisterSnapshotPolicy('CPS2', TSnapshotPolicy.Create(2));
   RegisterSnapshotPolicy('CPS3', TSnapshotPolicy.Create(1, 128 * 1024 * 1024));
+  var Services := Default(TPlatformServices);
+  Services.CompanionArchives := ['cps1pic'];
+  RegisterPlatformServices('cps1', Services);
 end;
 
 class procedure TCPSPlatform.LoadLegacyKeys(var Keys: TPlatformInputKeyMap);
@@ -145,9 +147,21 @@ end;
 
 class procedure TCPSPlatform.RegisterClient;
 begin
-  RegisterSettingsPlatform('cps1', TSettingsPlatform);
-  RegisterSettingsPlatform('cps2', TSettingsPlatform);
-  RegisterSettingsPlatform('cps3', TSettingsPlatform);
+  RegisterSettingsPlatform('cps1', TSettingsPlatform,
+    'Use a complete, recognized arcade ROM set for the matching board. Keep the ROM archive ' +
+    'name and the expected names inside it. Some variants require parent set data or ' +
+    'board-specific ROMs. The emulation menu offers coin insertion for games with a coin ' +
+    'acceptor.');
+  RegisterSettingsPlatform('cps2', TSettingsPlatform,
+    'Use a complete, recognized arcade ROM set for the matching board. Keep the ROM archive ' +
+    'name and the expected names inside it. Some variants require parent set data or ' +
+    'board-specific ROMs. The emulation menu offers coin insertion for games with a coin ' +
+    'acceptor.');
+  RegisterSettingsPlatform('cps3', TSettingsPlatform,
+    'Use a complete, recognized arcade ROM set for the matching board. Keep the ROM archive ' +
+    'name and the expected names inside it. Some variants require parent set data or ' +
+    'board-specific ROMs. The emulation menu offers coin insertion for games with a coin ' +
+    'acceptor.');
   RegisterPlatformSettingsDevices('cps1', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('cps2', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('cps3', TPlatformSettingsDevices);

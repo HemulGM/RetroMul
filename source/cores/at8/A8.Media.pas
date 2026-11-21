@@ -6,16 +6,34 @@ uses
   System.SysUtils, Core.Snapshots, Core.Storage;
 
 type
-  TA8MediaKind = (Cartridge, Disk, Executable);
+  TA8MediaKind = (Cartridge, Disk, Executable, BasicProgram, Cassette);
 
   TA8Segment = record
     Address: Word;
     Offset, Size: Integer;
   end;
 
+  TA8ProtectedSector = record
+    Offset, Angle, WeakOffset: Integer;
+    Number, Status: Byte;
+  end;
+
+  TA8TapeBlock = record
+    Offset, Count, GapMS, Baud: Integer;
+  end;
+
   TA8Media = class
   private
-    FData: TBytes;
+    FData, FBasicData: TBytes;
+    FProtectedTracks: TArray<TArray<TA8ProtectedSector>>;
+    FTape: TArray<TA8TapeBlock>;
+    FTapeBlock, FTapePulse: Integer;
+    FTapeElapsed, FTapePulseEnd: Int64;
+    FTapeBasic, FTapeBootBasic, FTapeBasicRevA, FTapeShortGaps, FTapeOSB: Boolean;
+    FTapeBasicStatements: Integer;
+    FTapeOriginalXLOS: Boolean;
+    FDiskPhase, FReplyDelay: Integer;
+    FDriveStatus: Byte;
     FSegments: TArray<TA8Segment>;
     FKind: TA8MediaKind;
     FMapper, FBank, FBank2, FFixedBank, FSectorSize, FDiskOffset, FSectorCount: Integer;
@@ -28,6 +46,11 @@ type
     FCommand, FReply: array[0..1027] of Byte;
     FCommandCount, FReplyCount, FReplyIndex, FReplyCycles: Integer;
     procedure ParseExecutable;
+    procedure ParseBasic(const ProgramBytes: TBytes);
+    procedure ParseCassette;
+    procedure IdentifyTapeStartup;
+    procedure ParseProtectedDisk;
+    function ReadProtectedSector(Number: Integer; out Count, Delay: Integer): Boolean;
     procedure ParseDisk(const Extension: string);
     procedure ParseCartridge(Mapper: Integer);
     procedure ReplyToCommand;
@@ -38,6 +61,7 @@ type
     procedure AttachDisk(const Storage: IStorage; const DiskCopy: string; WriteProtected: Boolean);
     procedure Flush;
     procedure Reset;
+    function RequiresOriginalXLOS: Boolean;
     property AutomaticRawMapper: Integer read FAutomaticRawMapper;
     function CartHigh: Boolean;
     function ReadCart(Address: Word; out Value: Byte): Boolean;
@@ -45,8 +69,16 @@ type
     procedure SetCommandLine(Asserted: Boolean);
     procedure Transmit(Value: Byte);
     function Clock(out Value: Byte): Boolean;
+    function ClockTape(Motor: Boolean; ClockHz: Integer): Boolean;
+    property TapeBasic: Boolean read FTapeBasic;
+    property TapeBootBasic: Boolean read FTapeBootBasic;
+    property TapeBasicRevA: Boolean read FTapeBasicRevA;
+    property TapeOSB: Boolean read FTapeOSB;
+    property TapeShortGaps: Boolean read FTapeShortGaps;
+    property TapeBasicStatements: Integer read FTapeBasicStatements;
     procedure SerializeState(State: TStateArchive);
     property Data: TBytes read FData;
+    property BasicData: TBytes read FBasicData;
     property Segments: TArray<TA8Segment> read FSegments;
     property Kind: TA8MediaKind read FKind;
   end;
@@ -63,7 +95,7 @@ function A8ComputerCartType(Mapper: Integer): Boolean;
 implementation
 
 uses
-  System.Classes, System.Generics.Collections, System.ZLib;
+  System.Classes, System.Generics.Collections, System.Math, System.ZLib;
 
 const
   // D1: boot sector with no resident loader. The machine services the
@@ -78,6 +110,34 @@ end;
 function ReadWordLE(const Data: TBytes; Index: Integer): Word;
 begin
   Result := Data[Index] or (Word(Data[Index + 1]) shl 8);
+end;
+
+function ReadLongLE(const Data: TBytes; Index: Integer): Cardinal;
+begin
+  Result := ReadWordLE(Data, Index) or (Cardinal(ReadWordLE(Data, Index + 2)) shl 16);
+end;
+
+function MatchesBytes(const Data: TBytes; Offset: Integer; const Signature: array of Byte): Boolean;
+begin
+  Result := (Offset >= 0) and (Offset <= Length(Data) - Length(Signature)) and
+    CompareMem(@Data[Offset], @Signature[0], Length(Signature));
+end;
+
+function HasCompleteKFilePayload(const Data: TBytes; Offset: Integer): Boolean;
+const
+  BootSize = 3 * 128;
+  BootHeader: array[0..8] of Byte = ($00, $03, $00, $07, $14, $07, $4C, $14, $07);
+  LoaderCode: array[0..17] of Byte = ($A9, $46, $8D, $C6, $02, $D0, $FE, $A0, $00,
+    $A9, $6B, $91, $58, $20, $D9, $07, $B0, $EE);
+begin
+  Result := False;
+  var PayloadSize := Length(Data) - Offset;
+  if (PayloadSize <= BootSize) or not MatchesBytes(Data, Offset, BootHeader) or
+    not MatchesBytes(Data, Offset + 13, LoaderCode) then
+    Exit;
+  // At $0709 the loader stores the number of bytes it reads from sector 4 onward.
+  var PackedSize := ReadWordLE(Data, Offset + 9) or (Integer(Data[Offset + 11]) shl 16);
+  Result := (PackedSize > 0) and (PayloadSize = BootSize + ((PackedSize + 127) div 128) * 128);
 end;
 
 function SIOChecksum(const Bytes: array of Byte; Count: Integer; Start: Integer = 0): Byte;
@@ -104,6 +164,15 @@ begin
     FSectorSize := 128;
     FSectorCount := 1;
   end
+  else if SameText(Extension, '.bas') then
+    ParseBasic(FData)
+  else if SameText(Extension, '.cas') then
+    ParseCassette
+  else if SameText(Extension, '.atx') then
+  begin
+    FKind := TA8MediaKind.Disk;
+    ParseProtectedDisk;
+  end
   else if SameText(Extension, '.atr') or SameText(Extension, '.xfd') then
   begin
     FKind := TA8MediaKind.Disk;
@@ -115,6 +184,419 @@ begin
     ParseCartridge(Mapper);
   end;
   Reset;
+end;
+
+function BasicHeader(const Bytes: TBytes; Offset: Integer; out DataSize, StatementSize: Integer): Boolean;
+begin
+  Result := False;
+  if Offset > Length(Bytes) - 14 then
+    Exit;
+  var NameTable := ReadWordLE(Bytes, Offset + 2);
+  var NameEnd := ReadWordLE(Bytes, Offset + 4);
+  var Values := ReadWordLE(Bytes, Offset + 6);
+  var Statements := ReadWordLE(Bytes, Offset + 8);
+  var Current := ReadWordLE(Bytes, Offset + 10);
+  var ProgramEnd := ReadWordLE(Bytes, Offset + 12);
+  DataSize := ProgramEnd - NameTable;
+  StatementSize := ProgramEnd - Statements;
+  Result := (ReadWordLE(Bytes, Offset) = 0) and (NameTable >= $100) and
+    (NameEnd >= NameTable) and (Values = NameEnd + 1) and (Statements >= Values) and
+    ((Statements - Values) mod 8 = 0) and (Current >= Statements) and (ProgramEnd >= Current);
+end;
+
+procedure TA8Media.ParseBasic(const ProgramBytes: TBytes);
+begin
+  if Length(ProgramBytes) < 14 then
+    raise EReadError.Create('Truncated Atari BASIC program');
+  var DataSize, StatementSize: Integer;
+  if not BasicHeader(ProgramBytes, 0, DataSize, StatementSize) or (DataSize > Length(ProgramBytes) - 14) then
+    raise EReadError.Create('Invalid Atari BASIC SAVE header');
+  FBasicData := ProgramBytes;
+  FKind := TA8MediaKind.BasicProgram;
+end;
+
+procedure TA8Media.ParseCassette;
+const
+  FujiTag = $494A5546;
+  BaudTag = $64756162;
+  DataTag = $61746164;
+  FskTag = $206B7366;
+var
+  Block: TA8TapeBlock;
+begin
+  if (Length(FData) < 8) or (ReadLongLE(FData, 0) <> FujiTag) then
+    raise EReadError.Create('Invalid Atari CAS cassette header');
+
+  FKind := TA8MediaKind.Cassette;
+  var Blocks := TList<TA8TapeBlock>.Create;
+  try
+    var Position := 0;
+    var Baud := 600;
+    while Position < Length(FData) do
+    begin
+      if Position > Length(FData) - 8 then
+        raise EReadError.Create('Truncated Atari CAS chunk');
+      var Tag := ReadLongLE(FData, Position);
+      var Count := ReadWordLE(FData, Position + 4);
+      var Aux := ReadWordLE(FData, Position + 6);
+      Inc(Position, 8);
+      if Count > Length(FData) - Position then
+        raise EReadError.Create('Truncated Atari CAS chunk data');
+      case Tag of
+        FujiTag:
+          ;
+        BaudTag:
+          begin
+            if (Count <> 0) or (Aux = 0) then
+              raise EReadError.Create('Invalid Atari CAS baud chunk');
+            Baud := Aux;
+          end;
+        DataTag, FskTag:
+          begin
+            Block.Offset := Position;
+            Block.Count := Count;
+            Block.GapMS := Aux;
+            Block.Baud := Baud;
+            if Tag = FskTag then
+            begin
+              if Count and 1 <> 0 then
+                raise EReadError.Create('Invalid Atari CAS FSK pulse list');
+              Block.Baud := 0;
+            end;
+            if (Count <> 0) or (Aux <> 0) then
+              Blocks.Add(Block);
+          end;
+      else
+        raise EReadError.Create('Unsupported Atari CAS chunk: ' + TEncoding.ASCII.GetString(FData, Position - 8, 4));
+      end;
+      Inc(Position, Count);
+    end;
+    if Blocks.Count = 0 then
+      raise EReadError.Create('Empty Atari CAS cassette');
+    FTape := Blocks.ToArray;
+  finally
+    Blocks.Free;
+  end;
+
+  IdentifyTapeStartup;
+  if not FTapeBasic then
+    Exit;
+
+  // Keep direct startup for complete Atari BASIC SAVE recordings. A checksum
+  // error in an on-tape record still belongs to the tape and reaches POKEY.
+  var Output := TMemoryStream.Create;
+  try
+    for Block in FTape do
+    begin
+      var Offset := Block.Offset;
+      if (Block.Baud = 0) or (Block.Count <> 132) or (ReadWordLE(FData, Offset) <> $5555) then
+        Break;
+      if SIOChecksum(FData, 131, Offset) <> FData[Offset + 131] then
+        Break;
+      case FData[Offset + 2] of
+        $FC:
+          Output.WriteBuffer(FData[Offset + 3], 128);
+        $FA:
+          begin
+            var Count := FData[Offset + 130];
+            if Count > 127 then
+              Break;
+            Output.WriteBuffer(FData[Offset + 3], Count);
+          end;
+        $FE:
+          begin
+            var Bytes: TBytes;
+            SetLength(Bytes, Output.Size);
+            Output.Position := 0;
+            if Length(Bytes) > 0 then
+              Output.ReadBuffer(Bytes[0], Length(Bytes));
+            try
+              ParseBasic(Bytes);
+            except
+              on E: EReadError do
+                ; // Let BASIC read this image through the real tape path.
+            end;
+            Break;
+          end;
+      else
+        Break;
+      end;
+    end;
+  finally
+    Output.Free;
+  end;
+end;
+
+procedure TA8Media.IdentifyTapeStartup;
+const
+  OriginalBasicLoader: array[0..15] of Byte = ($A9, $B7, $48, $A9, $54, $48,
+    $A9, $04, $20, $B6, $BB, $A9, $FF, $4C, $04, $BB);
+begin
+  var First := FTape[0];
+  var DataSize, StatementSize: Integer;
+  if (First.Baud <> 0) and (First.Count = 132) and MatchesBytes(FData, First.Offset, [$55, $55, $FC]) then
+  begin
+    FTapeBasic := BasicHeader(FData, First.Offset + 3, DataSize, FTapeBasicStatements);
+    if FTapeBasic and (Length(FTape) > 1) then
+      FTapeShortGaps := (FTape[1].GapMS < 1000) and (FTape[1].Baud <> 0) and
+        (FTape[1].Count >= 3) and MatchesBytes(FData, FTape[1].Offset, [$55, $55]);
+    // These loaders call internal BASIC entry points whose locations changed
+    // after the original cartridge release.
+    var FigureFun := MatchesBytes(FData, First.Offset + 3, [$00, $05, $00, $06, $4F, $07]) and
+      MatchesBytes(FData, First.Offset + 11, [$A2, $FD, $9A, $A9, $04, $20, $B6, $BB, $A9, $FF, $20, $04, $BB]);
+    var SquarePairs := MatchesBytes(FData, First.Offset + 3, [$00, $60, $00, $07, $74, $E4]) and
+      MatchesBytes(FData, First.Offset + $3E, [$A2, $FF, $9A, $A9, $A9, $48, $A9, $61, $48, $4C, $4D, $B7]);
+    // The Milliken and steam simulator bootstraps also use the 400/800 OS-B environment.
+    var Milliken := MatchesBytes(FData, First.Offset + 3,
+      [$00, $19, $F0, $2F, $00, $34, $A9, $3C, $8D, $02, $D3, $60]) and
+      MatchesBytes(FData, First.Offset + 28, [$18, $18, $18, $18, $00, $18, $00, $00, $66, $66, $66]);
+    var SteamSimulator := MatchesBytes(FData, First.Offset + 3,
+      [$00, $6C, $00, $07, $19, $07, $A9, $3C, $8D, $02, $D3, $A9, $00, $85, $0C,
+        $A9, $30, $85, $0D, $A9, $00, $8D, $44, $02, $18, $60]);
+    // The two-record editor hook feeds its CLOAD and RUN commands into
+    // the original OS-B editor handler.
+    var EditorBoot := MatchesBytes(FData, First.Offset + 3,
+      [$00, $02, $F8, $05, $00, $06, $18, $60, $A2, $00, $BD, $1A, $03, $C9,
+        $45, $F0, $05, $E8, $E8, $E8, $D0, $F4, $E8, $8E, $69, $06]);
+    FTapeOSB := FigureFun or Milliken or SteamSimulator or EditorBoot;
+    FTapeBasicRevA := FTapeOSB or SquarePairs;
+    // These bootstraps call internal OS addresses or rely on the original
+    // editor layout. Only the BASIC launchers expect BASIC to stay mapped.
+    var LunarLoader := MatchesBytes(FData, First.Offset + 3, [$00, $25, $60, $27, $72, $27]) and
+      MatchesBytes(FData, First.Offset + $41, [$20, $AC, $27, $20, $E0, $27, $A9, $0C, $8D, $FC, $02, $4C, $80, $C6]);
+    var ShortEditorLoader := MatchesBytes(FData, First.Offset + 3, [$00, $01, $80, $06, $8D, $06]) and
+      MatchesBytes(FData, First.Offset + $10, [$AE, $40, $03, $BD, $1B, $03, $85, $D4, $8D, $D5, $06,
+          $BD, $1C, $03, $85, $D5, $8D, $DA, $06]);
+    // Geometria copies the XL ROM to RAM and later calls its NMI handler at $C0E2.
+    var GeometryLoader := MatchesBytes(FData, First.Offset + 3,
+      [$00, $01, $00, $07, $50, $E4, $A2, $00, $BD, $00, $04, $9D, $80, $07, $E8,
+        $10, $F7, $86, $3D, $AD, $0F, $D2, $29, $10]);
+    FTapeOriginalXLOS := LunarLoader or ShortEditorLoader or GeometryLoader;
+    if not FTapeBasic and (FData[First.Offset + 3] = 0) then
+    begin
+      // The boot header gives the record count. An EOF followed by a BASIC SAVE
+      // identifies the BASIC payload expected by the machine-language loader.
+      var BootRecords := Integer(FData[First.Offset + 4]);
+      var LoadAddress := Integer(ReadWordLE(FData, First.Offset + 5));
+      if (BootRecords > 0) and (BootRecords + 1 < Length(FTape)) and
+        (LoadAddress >= $200) and (LoadAddress + BootRecords * 128 <= $A000) then
+      begin
+        var EofRecord := FTape[BootRecords];
+        var ProgramRecord := FTape[BootRecords + 1];
+        FTapeBootBasic := (EofRecord.Baud <> 0) and (EofRecord.Count >= 4) and
+          MatchesBytes(FData, EofRecord.Offset, [$55, $55, $FE]) and
+          (ProgramRecord.Baud <> 0) and (ProgramRecord.Count = 132) and
+          MatchesBytes(FData, ProgramRecord.Offset, [$55, $55, $FC]) and
+          (SIOChecksum(FData, 131, ProgramRecord.Offset) = FData[ProgramRecord.Offset + 131]) and
+          BasicHeader(FData, ProgramRecord.Offset + 3, DataSize, StatementSize);
+      end;
+    end;
+    FTapeBootBasic := FTapeBootBasic or FTapeBasicRevA or LunarLoader or ShortEditorLoader;
+  end;
+  if not FTapeBasic then
+    Exit;
+
+  // Some BASIC files contain a USR routine that jumps into the original
+  // interpreter's private routines to load and run the next file.
+  for var Block in FTape do
+  begin
+    if (Block.Baud = 0) or (Block.Count <> 132) or
+      not MatchesBytes(FData, Block.Offset, [$55, $55]) or (FData[Block.Offset + 2] = $FE) or
+      (SIOChecksum(FData, 131, Block.Offset) <> FData[Block.Offset + 131]) then
+      Break;
+    for var Offset := Block.Offset + 3 to Block.Offset + 131 - Length(OriginalBasicLoader) do
+      if MatchesBytes(FData, Offset, OriginalBasicLoader) then
+      begin
+        FTapeBootBasic := True;
+        Exit;
+      end;
+  end;
+end;
+
+function TA8Media.ClockTape(Motor: Boolean; ClockHz: Integer): Boolean;
+begin
+  Result := True;
+  if not Motor then
+    Exit;
+  while FTapeBlock < Length(FTape) do
+  begin
+    var Block := FTape[FTapeBlock];
+    var Gap := Int64(Block.GapMS) * ClockHz div 1000;
+    if FTapeElapsed < Gap then
+    begin
+      Inc(FTapeElapsed);
+      Exit;
+    end;
+
+    if Block.Baud <> 0 then
+    begin
+      var Position := (FTapeElapsed - Gap) * Block.Baud div ClockHz;
+      if Position < Block.Count * 10 then
+      begin
+        var Bit := Integer(Position mod 10);
+        if Bit <> 9 then
+          Result := (Bit <> 0) and (FData[Block.Offset + Position div 10] and (1 shl Max(Bit - 1, 0)) <> 0);
+        Inc(FTapeElapsed);
+        Exit;
+      end;
+    end
+    else
+    begin
+      while (FTapeElapsed - Gap) * 10000 >= FTapePulseEnd * ClockHz do
+      begin
+        if FTapePulse >= Block.Count then
+          Break;
+        Inc(FTapePulseEnd, ReadWordLE(FData, Block.Offset + FTapePulse));
+        Inc(FTapePulse, 2);
+      end;
+      if (FTapeElapsed - Gap) * 10000 < FTapePulseEnd * ClockHz then
+      begin
+        Result := (FTapePulse and 2 = 0);
+        Inc(FTapeElapsed);
+        Exit;
+      end;
+    end;
+    Inc(FTapeBlock);
+    FTapeElapsed := 0;
+    FTapePulse := 0;
+    FTapePulseEnd := 0;
+  end;
+end;
+
+procedure TA8Media.ParseProtectedDisk;
+const
+  FileHeaderSize = 48;
+  TrackHeaderSize = 32;
+  SectorHeaderSize = 8;
+  TrackCount = 40;
+  SectorsPerTrack = 18;
+begin
+  if (Length(FData) < FileHeaderSize) or (ReadLongLE(FData, 0) <> $58385441) or
+    (ReadWordLE(FData, 4) <> 1) or (ReadWordLE(FData, 6) <> 1) then
+    raise EReadError.Create('Invalid Atari ATX header');
+  if FData[18] <> 0 then
+    raise EReadError.Create('Unsupported Atari ATX disk density');
+  var Position := ReadLongLE(FData, 28);
+  var Finish := ReadLongLE(FData, 32);
+  if (Position < FileHeaderSize) or (Position >= Finish) or (Finish > Cardinal(Length(FData))) then
+    raise EReadError.Create('Invalid Atari ATX track range');
+  SetLength(FProtectedTracks, TrackCount);
+  FSectorSize := 128;
+  FSectorCount := TrackCount * SectorsPerTrack;
+  FWriteProtected := True;
+  var Loaded: array[0..TrackCount - 1] of Boolean;
+  FillChar(Loaded, SizeOf(Loaded), 0);
+  while Position < Finish do
+  begin
+    if Finish - Position < TrackHeaderSize then
+      raise EReadError.Create('Truncated Atari ATX track');
+    var TrackSize := ReadLongLE(FData, Position);
+    var TrackHeader := ReadLongLE(FData, Position + 20);
+    var Track := FData[Position + 8];
+    var Count := ReadWordLE(FData, Position + 10);
+    if (Track >= TrackCount) or (TrackSize < TrackHeaderSize) or (TrackSize > Finish - Position) or
+      (TrackHeader < TrackHeaderSize) or (TrackHeader > TrackSize) or (ReadWordLE(FData, Position + 4) <> 0) then
+      raise EReadError.Create('Invalid Atari ATX track');
+    if Loaded[Track] then
+      raise EReadError.Create('Duplicate Atari ATX track');
+    Loaded[Track] := True;
+    var Chunk := TrackHeader;
+    var HasList := False;
+    while TrackSize - Chunk >= SectorHeaderSize do
+    begin
+      var ChunkSize := ReadLongLE(FData, Position + Chunk);
+      if ChunkSize = 0 then
+        Break;
+      if (ChunkSize < SectorHeaderSize) or (ChunkSize > TrackSize - Chunk) then
+        raise EReadError.Create('Invalid Atari ATX track chunk');
+      var ChunkType := FData[Position + Chunk + 4];
+      if (Chunk = TrackHeader) and (ChunkType = 1) then
+      begin
+        if Cardinal((Count + 1) * SectorHeaderSize) > ChunkSize then
+          raise EReadError.Create('Truncated Atari ATX sector list');
+        HasList := True;
+        SetLength(FProtectedTracks[Track], Count);
+        for var I := 0 to Count - 1 do
+        begin
+          var Entry := Position + Chunk + Cardinal(I + 1) * SectorHeaderSize;
+          var Sector := Default(TA8ProtectedSector);
+          Sector.Number := FData[Entry];
+          Sector.Status := FData[Entry + 1];
+          Sector.Angle := ReadWordLE(FData, Entry + 2);
+          Sector.WeakOffset := -1;
+          if Sector.Status and $10 = 0 then
+          begin
+            var Offset := ReadLongLE(FData, Entry + 4);
+            if (TrackSize < 128) or (Offset < TrackHeader + ChunkSize) or (Offset > TrackSize - 128) then
+              raise EReadError.Create('Invalid Atari ATX sector data');
+            Sector.Offset := Position + Offset;
+          end;
+          FProtectedTracks[Track][I] := Sector;
+        end;
+      end
+      else if ChunkType = $10 then
+      begin
+        var Index := FData[Position + Chunk + 5];
+        var WeakOffset := ReadWordLE(FData, Position + Chunk + 6);
+        if not HasList or (Index >= Count) or (WeakOffset >= 128) then
+          raise EReadError.Create('Invalid Atari ATX weak sector');
+        FProtectedTracks[Track][Index].WeakOffset := WeakOffset;
+      end;
+      Inc(Chunk, ChunkSize);
+    end;
+    if (Count <> 0) and not HasList then
+      raise EReadError.Create('Missing Atari ATX sector list');
+    Inc(Position, TrackSize);
+  end;
+end;
+
+function TA8Media.ReadProtectedSector(Number: Integer; out Count, Delay: Integer): Boolean;
+const
+  SectorsPerTrack = 18;
+  RotationUnits = 26042;
+  CyclePerUnit = 14;
+begin
+  Result := False;
+  Count := 0;
+  Delay := 0;
+  FDriveStatus := $EF;
+  if (Number < 1) or (Number > FSectorCount) then
+    Exit;
+  var Track := (Number - 1) div SectorsPerTrack;
+  var SectorNumber := (Number - 1) mod SectorsPerTrack + 1;
+  var Best := -1;
+  var BestDistance := RotationUnits;
+  for var Index := 0 to High(FProtectedTracks[Track]) do
+  begin
+    var Sector := FProtectedTracks[Track][Index];
+    if (Sector.Number <> SectorNumber) or (Sector.Status and $10 <> 0) then
+      Continue;
+    var Distance := (Sector.Angle + RotationUnits - (FDiskPhase div CyclePerUnit)) mod RotationUnits;
+    if Distance < BestDistance then
+    begin
+      Best := Index;
+      BestDistance := Distance;
+    end;
+  end;
+  if Best < 0 then
+    Exit;
+  var Sector := FProtectedTracks[Track][Best];
+  FDriveStatus := not (Sector.Status and $3C);
+  Count := FSectorSize;
+  Move(FData[Sector.Offset], FReply[2], Count);
+  if Sector.WeakOffset >= 0 then
+  begin
+    var Noise := Cardinal(FDiskPhase + Sector.Offset + 1);
+    for var I := Sector.WeakOffset to Count - 1 do
+    begin
+      Noise := Noise xor (Noise shl 13);
+      Noise := Noise xor (Noise shr 17);
+      Noise := Noise xor (Noise shl 5);
+      FReply[I + 2] := Byte(Noise);
+    end;
+  end;
+  Delay := BestDistance * CyclePerUnit;
+  Result := (Sector.Status and $1C = 0);
 end;
 
 procedure TA8Media.ParseExecutable;
@@ -164,8 +646,17 @@ begin
       raise EReadError.Create('Invalid Atari ATR header');
     FDiskOffset := 16;
     FSectorSize := ReadWordLE(FData, 4);
-    ImageSize := (ReadWordLE(FData, 2) + (Integer(FData[6]) shl 16)) * 16;
-    if (ImageSize <= 0) or (ImageSize > Length(FData) - FDiskOffset) then
+    var PayloadSize := Length(FData) - FDiskOffset;
+    var Paragraphs := UInt64(ReadWordLE(FData, 2)) or (UInt64(ReadWordLE(FData, 6)) shl 16);
+    var DeclaredSize := Paragraphs * 16;
+    if (DeclaredSize > 0) and (DeclaredSize <= UInt64(PayloadSize)) then
+      ImageSize := Integer(DeclaredSize)
+    else if (FSectorSize = 128) and (DeclaredSize = UInt64(PayloadSize) * 2) and
+      HasCompleteKFilePayload(FData, FDiskOffset) then
+      // Some K-file images have a doubled length field. Keep the original bytes
+      // so disk copies and snapshots retain the same media identity.
+      ImageSize := PayloadSize
+    else
       raise EReadError.Create('Truncated Atari ATR disk');
   end
   else if (ImageSize = 3 * 128 + 717 * 256) or (ImageSize = 720 * 256) then
@@ -189,6 +680,32 @@ begin
     raise EReadError.Create('Invalid Atari double-density disk size');
 end;
 
+function TA8Media.RequiresOriginalXLOS: Boolean;
+const
+  // BAS2BOOT calls the internal XL screen routines at $C642 and $C63E.
+  BasicBootHeader: array[0..7] of Byte = ($00, $02, $00, $07, $0A, $07, $18, $60);
+  BasicBootCode: array[0..13] of Byte = ($A2, $BC, $A0, $07, $20, $42, $C6,
+    $A2, $D8, $A0, $07, $20, $42, $C6);
+  // The packed executable builds a return address and jumps into XL ROM at $EF94.
+  PackedExecutableCode: array[0..16] of Byte = ($A9, $B7, $48, $A9, $54, $48,
+    $A5, $6A, $10, $02, $A9, $A0, $85, $6A, $4C, $94, $EF);
+begin
+  if FKind = TA8MediaKind.Cassette then
+    Exit(FTapeOriginalXLOS);
+  if FKind = TA8MediaKind.Disk then
+    Exit(MatchesBytes(FData, FDiskOffset, BasicBootHeader) and
+      MatchesBytes(FData, FDiskOffset + 10, BasicBootCode));
+  if FKind = TA8MediaKind.Executable then
+    for var Segment in FSegments do
+    begin
+      var Limit := Min(Segment.Offset + Segment.Size, 256) - Length(PackedExecutableCode);
+      for var Offset := Segment.Offset to Limit do
+        if MatchesBytes(FData, Offset, PackedExecutableCode) then
+          Exit(True);
+    end;
+  Result := False;
+end;
+
 function DetectRawMapper(const Data: TBytes): Integer;
 begin
   case Length(Data) of
@@ -202,9 +719,11 @@ begin
       Exit(2);
     $A000:
       Exit(18);
-    $10000, $20000:
+    $8000, $10000, $20000:
       // Known XEGS dumps from the MAME xegs software list (CC0-1.0).
       case crc32(0, @Data[0], Length(Data)) of
+        $F31321C2: // Into the Eagle's Nest
+          Exit(12);
         $A8F9324D, $B15CCEF2: // Desert Falcon, Thunderfox
           Exit(13);
         $28288DF4, $AB06A3F5, $95E6932D: // Commando, GATO, Summer Games
@@ -301,13 +820,20 @@ begin
   FReplyCycles := 0;
   FWriteOffset := 0;
   FWriteSize := 0;
+  FDiskPhase := 0;
+  FReplyDelay := 0;
+  FDriveStatus := $FF;
+  FTapeBlock := 0;
+  FTapeElapsed := 0;
+  FTapePulse := 0;
+  FTapePulseEnd := 0;
 end;
 
 procedure TA8Media.AttachDisk(const Storage: IStorage; const DiskCopy: string; WriteProtected: Boolean);
 begin
-  FWriteProtected := WriteProtected or (FKind <> TA8MediaKind.Disk) or
+  FWriteProtected := WriteProtected or (Length(FProtectedTracks) <> 0) or (FKind <> TA8MediaKind.Disk) or
     ((FDiskOffset = 16) and (FData[15] and 1 <> 0));
-  if (FKind <> TA8MediaKind.Disk) or (Storage = nil) or (DiskCopy = '') then
+  if (FKind <> TA8MediaKind.Disk) or (Length(FProtectedTracks) <> 0) or (Storage = nil) or (DiskCopy = '') then
     Exit;
   FStorage := Storage;
   FDiskCopy := DiskCopy;
@@ -553,6 +1079,7 @@ begin
   FReply[0] := Ord('A');
   FReply[1] := Ord('C');
   var Count := 0;
+  var ReadDelay := 0;
   case FCommand[1] of
     Ord('S'):
       begin
@@ -563,7 +1090,7 @@ begin
           FReply[2] := FReply[2] or $20
         else if FSectorCount = 1040 then
           FReply[2] := FReply[2] or $80;
-        FReply[3] := $FF;
+        FReply[3] := FDriveStatus;
         FReply[4] := $E0;
         FReply[5] := 0;
         Count := 4;
@@ -586,7 +1113,7 @@ begin
       begin
         var Sector := FCommand[2] or (Integer(FCommand[3]) shl 8);
         var Offset, Size: Integer;
-        if (FKind = TA8MediaKind.Disk) and SectorLocation(Sector, Offset, Size) then
+        if (FKind = TA8MediaKind.Disk) and (Length(FProtectedTracks) = 0) and SectorLocation(Sector, Offset, Size) then
         begin
           FWriteOffset := Offset;
           FWriteSize := Size;
@@ -601,7 +1128,21 @@ begin
       begin
         var Offset: Integer;
         var Sector := FCommand[2] or (Integer(FCommand[3]) shl 8);
-        if SectorLocation(Sector, Offset, Count) then
+        if Length(FProtectedTracks) <> 0 then
+        begin
+          if not ReadProtectedSector(Sector, Count, ReadDelay) then
+          begin
+            FReply[1] := Ord('E');
+            if Count = 0 then
+            begin
+              FReplyCount := 2;
+              FReplyIndex := 0;
+              FReplyCycles := A8SerialByteCycles * 3;
+              Exit;
+            end;
+          end;
+        end
+        else if SectorLocation(Sector, Offset, Count) then
         begin
           if FKind = TA8MediaKind.Executable then
           begin
@@ -625,11 +1166,13 @@ begin
   end;
   FReplyIndex := 0;
   FReplyCycles := A8SerialByteCycles * 3;
+  // ACK is sent promptly. The completion byte follows the sector's rotation.
+  FReplyDelay := ReadDelay;
 end;
 
 procedure TA8Media.SetCommandLine(Asserted: Boolean);
 begin
-  if (FKind = TA8MediaKind.Cartridge) or (FCommandLine = Asserted) then
+  if not (FKind in [TA8MediaKind.Disk, TA8MediaKind.Executable]) or (FCommandLine = Asserted) then
     Exit;
   FCommandLine := Asserted;
   if Asserted then
@@ -638,6 +1181,7 @@ begin
     FWriteSize := 0;
     FReplyCount := 0;
     FReplyIndex := 0;
+    FReplyDelay := 0;
   end
   else
     ReplyToCommand;
@@ -678,6 +1222,12 @@ end;
 function TA8Media.Clock(out Value: Byte): Boolean;
 begin
   Result := False;
+  if Length(FProtectedTracks) <> 0 then
+  begin
+    Inc(FDiskPhase);
+    if FDiskPhase = 26042 * 14 then
+      FDiskPhase := 0;
+  end;
   if FReplyIndex >= FReplyCount then
     Exit;
   Dec(FReplyCycles);
@@ -687,7 +1237,7 @@ begin
   Inc(FReplyIndex);
   FReplyCycles := A8SerialByteCycles;
   if FReplyIndex = 1 then
-    Inc(FReplyCycles, A8SerialByteCycles);
+    Inc(FReplyCycles, A8SerialByteCycles + FReplyDelay);
   Result := True;
 end;
 
@@ -705,7 +1255,27 @@ begin
   State.Field(FReplyCycles, SizeOf(FReplyCycles));
   State.Field(FWriteOffset, SizeOf(FWriteOffset));
   State.Field(FWriteSize, SizeOf(FWriteSize));
-  if FKind = TA8MediaKind.Disk then
+  if FKind = TA8MediaKind.Cassette then
+  begin
+    State.Field(FTapeBlock, SizeOf(FTapeBlock));
+    State.Field(FTapeElapsed, SizeOf(FTapeElapsed));
+    State.Field(FTapePulse, SizeOf(FTapePulse));
+    State.Field(FTapePulseEnd, SizeOf(FTapePulseEnd));
+    if State.Loading and ((FTapeBlock < 0) or (FTapeBlock > Length(FTape)) or
+      (FTapeElapsed < 0) or (FTapeElapsed > Int64($20000000000)) or
+      (FTapePulse < 0) or (FTapePulse and 1 <> 0) or (FTapePulseEnd < 0) or (FTapePulseEnd > High(Integer)) or
+      ((FTapeBlock < Length(FTape)) and (FTapePulse > FTape[FTapeBlock].Count))) then
+      raise EReadError.Create('Invalid Atari CAS playback state');
+  end
+  else if Length(FProtectedTracks) <> 0 then
+  begin
+    State.Field(FDiskPhase, SizeOf(FDiskPhase));
+    State.Field(FReplyDelay, SizeOf(FReplyDelay));
+    State.Field(FDriveStatus, SizeOf(FDriveStatus));
+    if State.Loading and ((FDiskPhase < 0) or (FDiskPhase >= 26042 * 14)) then
+      raise EReadError.Create('Invalid Atari ATX rotational state');
+  end
+  else if FKind = TA8MediaKind.Disk then
   begin
     if State.Loading then
       Flush;

@@ -6,7 +6,8 @@
 interface
 
 uses
-  System.Classes, System.SysUtils, System.Generics.Collections, Core.Archive.Container;
+  System.Classes, System.SysUtils, System.Generics.Collections,
+  Core.Archive.Container, Core.Storage;
 
 type
   EPSPFormat = class(EReadError);
@@ -70,8 +71,10 @@ type
   TPSPProgram = record
     Executable, Parameters: TBytes;
     Title, DiscId, MediaPath, BootPath: string;
-    TemporaryMedia, UMDVideo: Boolean;
-    Archive: IArchiveContainer;
+    UMDVideo: Boolean;
+    Archive, DiscArchive: IArchiveContainer;
+    DiscEntry: Integer;
+    function OpenDisc(const Storage: IStorage): TStream;
     procedure AttachArchive(const Container: IArchiveContainer; const MemberName: string);
     class function Read(Stream: TStream): TPSPProgram; static;
   end;
@@ -577,6 +580,18 @@ begin
     (Data[3] = Ord('F'))) or ((Data[0] = Ord('~')) and (Data[1] = Ord('P')) and (Data[2] = Ord('S')) and
     (Data[3] = Ord('P'))) or ((Data[0] = Ord('~')) and (Data[1] = Ord('S')) and (Data[2] = Ord('C')) and
     (Data[3] = Ord('E'))));
+end;
+
+function TPSPProgram.OpenDisc(const Storage: IStorage): TStream;
+begin
+  if DiscArchive <> nil then
+    Exit(DiscArchive.OpenRead(DiscEntry));
+  if MediaPath = '' then
+    Exit(nil);
+  if Storage <> nil then
+    Result := Storage.OpenRead(MediaPath)
+  else
+    Result := TFileStream.Create(MediaPath, fmOpenRead or fmShareDenyWrite);
 end;
 
 procedure TPSPProgram.AttachArchive(const Container: IArchiveContainer; const MemberName: string);

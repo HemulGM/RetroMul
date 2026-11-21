@@ -122,7 +122,10 @@ end;
 
 class procedure TNGPPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('NeoGeoPocket', TNGPSettings);
+  RegisterSettingsProfile('NeoGeoPocket', TNGPSettings,
+    'Use the Pocket or Pocket Color folder for the appropriate system. Keep original dumps ' +
+    'when firmware or cartridge detection behaves unexpectedly. Save progress in the game when ' +
+    'it supports cartridge save memory.');
   RegisterPlatformSettingsDevices('ngp', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('ngpc', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('ngp', TPlatformDeviceCallouts);

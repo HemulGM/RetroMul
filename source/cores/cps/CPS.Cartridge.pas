@@ -77,7 +77,7 @@ begin
     // Resolve declared parent archives beside the selected archive. Content still
     // receives the exact same size and actual CRC validation as the child.
     var ParentName := FSet.Parent;
-    if FSet.Machine = 'punipic' then
+    if (FSet.Machine = 'punipic') and (FSet.Init <> 'init_punipic3') then
       OpenSibling('cps1pic');
     var Seen := TList<string>.Create;
     try

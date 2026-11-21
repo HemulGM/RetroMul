@@ -134,7 +134,10 @@ begin
       Result.ExitKey := $1B;
     end;
   RegisterPlatformServices('colecovision', Service);
-  RegisterSettingsProfile('ColecoVision', TColecoSettings);
+  RegisterSettingsProfile('ColecoVision', TColecoSettings,
+    'Use automatic cartridge mapper and video-chip selection for recognized cartridges. F18A ' +
+    'is available for supported enhanced cartridges. The emulated keypad has commands for ' +
+    'digits, asterisk and hash, shown in the controls help.');
   RegisterPlatformSettingsDevices('colecovision', TColecoSettingsDevices);
   RegisterPlatformDeviceCallouts('colecovision', TColecoDeviceCallouts);
   RegisterPlatformControlsHelp('colecovision', TColecoControlsHelp);

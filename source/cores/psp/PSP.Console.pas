@@ -217,13 +217,9 @@ end;
 
 procedure TPSPConsole.MountDisc;
 begin
-  if FProgram.MediaPath = '' then
-    Exit;
-  if FStorage <> nil then
-    FDiscStream := FStorage.OpenRead(FProgram.MediaPath)
-  else
-    FDiscStream := TFileStream.Create(FProgram.MediaPath, fmOpenRead or fmShareDenyWrite);
-  FDisc := TPSPDisc.Create(FDiscStream);
+  FDiscStream := FProgram.OpenDisc(FStorage);
+  if FDiscStream <> nil then
+    FDisc := TPSPDisc.Create(FDiscStream);
 end;
 
 procedure TPSPConsole.HandleLog(const Text: string);

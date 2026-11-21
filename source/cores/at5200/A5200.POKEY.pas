@@ -34,8 +34,8 @@ type
     procedure ReloadTimer(Index: Integer);
     procedure CountTimer(Index: Integer);
     function ClockTimerPulses: Byte;
-    procedure ClockSerial(Pulses: Byte; Receive: TPokeyReceive; Transmit: TPokeyTransmit);
-    procedure ClockTimers(Receive: TPokeyReceive = nil; Transmit: TPokeyTransmit = nil);
+    procedure ClockSerial(Pulses: Byte; Receive: TPokeyReceive; Transmit: TPokeyTransmit; Wire: ShortInt);
+    procedure ClockTimers(Receive: TPokeyReceive = nil; Transmit: TPokeyTransmit = nil; Wire: ShortInt = -1);
     procedure RaiseIRQ(Mask: Byte);
     procedure ScanKeys; virtual;
     function ReadRegister(Index: Byte): Byte;
@@ -229,28 +229,42 @@ begin
     FTwoToneReset := FTwoToneReset or 2;
 end;
 
-procedure TA5200POKEY.ClockSerial(Pulses: Byte; Receive: TPokeyReceive; Transmit: TPokeyTransmit);
+procedure TA5200POKEY.ClockSerial(Pulses: Byte; Receive: TPokeyReceive; Transmit: TPokeyTransmit; Wire: ShortInt);
 begin
   var Mode := (FRegs[15] shr 4) and 7;
-  if FInputCycles > 0 then
-    Dec(FInputCycles);
-  var Input: Byte;
-  if Assigned(Receive) and Receive(Input) then
+  if Wire >= 0 then
   begin
-    FInputByte := Input;
-    FInputCycles := SerialByteCycles;
-    if Mode and 1 <> 0 then
+    var Falling := FLineIn and (Wire = 0);
+    FLineIn := Wire <> 0;
+    if Falling and (Mode and 1 <> 0) and (FRegs[15] and 3 <> 0) and (FInputBit < 0) then
     begin
       FInputBit := 0;
+      FInputByte := 0;
       FReceive := False;
     end;
-  end;
-  FLineIn := True;
-  if FInputCycles <> 0 then
+  end
+  else
   begin
-    var BitIndex := ((SerialByteCycles - FInputCycles) * 10) div SerialByteCycles;
-    if BitIndex < 9 then
-      FLineIn := (BitIndex > 0) and (FInputByte and (1 shl Max(0, BitIndex - 1)) <> 0);
+    if FInputCycles > 0 then
+      Dec(FInputCycles);
+    var Input: Byte;
+    if Assigned(Receive) and Receive(Input) then
+    begin
+      FInputByte := Input;
+      FInputCycles := SerialByteCycles;
+      if Mode and 1 <> 0 then
+      begin
+        FInputBit := 0;
+        FReceive := False;
+      end;
+    end;
+    FLineIn := True;
+    if FInputCycles <> 0 then
+    begin
+      var BitIndex := ((SerialByteCycles - FInputCycles) * 10) div SerialByteCycles;
+      if BitIndex < 9 then
+        FLineIn := (BitIndex > 0) and (FInputByte and (1 shl Max(0, BitIndex - 1)) <> 0);
+    end;
   end;
   if FRegs[15] and 3 = 0 then
     Exit;
@@ -258,9 +272,17 @@ begin
   begin
     Inc(FInputBit);
     if FInputBit = 1 then
-      FReceive := True;
+    begin
+      FReceive := (Wire < 0) or not FLineIn;
+      if not FReceive then
+        FInputBit := -1;
+    end
+    else if (Wire >= 0) and (FInputBit >= 3) and (FInputBit <= 17) and (FInputBit and 1 <> 0) and FLineIn then
+      FInputByte := FInputByte or (1 shl ((FInputBit - 3) div 2));
     if FInputBit = 19 then
     begin
+      if (Wire >= 0) and not FLineIn then
+        FStatus := FStatus and $7F;
       FInputBit := -1;
       FReceive := False;
       if FPair.basePokey.irqst and $20 = 0 then
@@ -312,12 +334,12 @@ begin
   end;
 end;
 
-procedure TA5200POKEY.ClockTimers(Receive: TPokeyReceive; Transmit: TPokeyTransmit);
+procedure TA5200POKEY.ClockTimers(Receive: TPokeyReceive; Transmit: TPokeyTransmit; Wire: ShortInt);
 begin
   var Pulses := ClockTimerPulses;
   RaiseIRQ((Pulses and 3) or ((Pulses and 8) shr 1));
   // The serial state machines see timer pulses after two clock stages.
-  ClockSerial(FSerialDelay shr 8, Receive, Transmit);
+  ClockSerial(FSerialDelay shr 8, Receive, Transmit, Wire);
   FSerialDelay := ((FSerialDelay and $FF) shl 8) or Pulses;
   Inc(FTime);
   Inc(FCycle);

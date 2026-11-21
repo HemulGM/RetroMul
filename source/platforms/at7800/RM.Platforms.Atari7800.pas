@@ -121,7 +121,10 @@ begin
   Registration.Add(TCoreLoadStage.Header, 100, Recognize);
   Registration.Add(TCoreLoadStage.OverrideHint, 6, Recognize);
   RegisterEmulationCore(Registration);
-  RegisterSettingsProfile('Atari7800', TAtari7800Settings);
+  RegisterSettingsProfile('Atari7800', TAtari7800Settings,
+    'Start with automatic cartridge detection. With generic .bin or .rom images, the platform ' +
+    'folder identifies the console. Choose the correct TV standard and, for Atari 2600 paddle ' +
+    'games, configure the paddle controller.');
   RegisterPlatformSettingsDevices('at7800', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('at7800', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('at7800', TPlatformControlsHelp);

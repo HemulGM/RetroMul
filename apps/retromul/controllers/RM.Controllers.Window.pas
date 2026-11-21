@@ -64,7 +64,7 @@ begin
     var Playing := (FState.Session.Emulation <> nil) and
       not FState.Session.EmulationFaulted and not FState.Session.OpeningRom and
       not FState.Browser.ViewingLibrary and (FState.Settings.View = nil) and
-      (FState.Help.View = nil) and not FState.Session.Reporting;
+      (FState.Help.View = nil) and not FView.HelpPageActive and not FState.Session.Reporting;
     var Orientations: TFormOrientations;
     if Playing then
       Orientations := [TFormOrientation.Portrait, TFormOrientation.Landscape,
@@ -77,7 +77,7 @@ begin
       Exit;
     var Wanted := FState.Browser.ViewingLibrary and (FState.Browser.View <> nil) and
       FState.Browser.View.GamepadMode and (FState.Settings.View = nil) and
-      (FState.Help.View = nil) and not FState.Session.Reporting;
+      (FState.Help.View = nil) and not FView.HelpPageActive and not FState.Session.Reporting;
     var Restoring := FLibraryUiOwned and not Wanted;
     if Wanted and not FLibraryUiOwned then
     begin

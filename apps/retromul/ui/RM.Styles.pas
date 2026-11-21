@@ -7,6 +7,15 @@ uses
   System.Generics.Collections,
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, Core.Storage;
 
+const
+  ThemeAccentColor = $FFAC99F0;
+  ThemeAccentTextColor = $FFB8A6FA;
+  ThemeBackgroundColor = $FF191920;
+  ThemePanelColor = $FF25252D;
+  ThemeRaisedColor = $FF34343E;
+  ThemeTextColor = $FFE9E8F1;
+  ThemeSecondaryTextColor = $FFA9AAB9;
+
 type
   TFormStyles = class(TForm)
     StyleBookWinUI3: TStyleBook;

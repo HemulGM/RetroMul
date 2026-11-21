@@ -79,7 +79,7 @@ begin
   Result.StyledSettings := [];
   Result.TextSettings.Font.Family := 'Segoe UI';
   Result.TextSettings.Font.Size := Size;
-  Result.TextSettings.FontColor := $FFE8ECF1;
+  Result.TextSettings.FontColor := ThemeTextColor;
   Result.TextSettings.Trimming := TTextTrimming.Character;
   Result.TextSettings.WordWrap := False;
   Result.HitTest := False;
@@ -337,8 +337,8 @@ begin
   Key.Parent := Row;
   Key.Align := TAlignLayout.Client;
   Key.Margins.Rect := TRectF.Create(8, 4, 0, 4);
-  Key.Fill.Color := $FF1B2126;
-  Key.Stroke.Color := $FF586572;
+  Key.Fill.Color := ThemePanelColor;
+  Key.Stroke.Color := $FF555564;
   Key.XRadius := 5;
   Key.YRadius := 5;
   Key.HitTest := False;

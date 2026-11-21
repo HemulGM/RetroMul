@@ -111,15 +111,15 @@ end;
 
 procedure TBooleanSettingsBinding.Load;
 begin
-  TSwitch(Control).IsChecked := TBooleanSetting(Definition).Value;
+  TCheckBox(Control).IsChecked := TBooleanSetting(Definition).Value;
 end;
 
 function TBooleanSettingsBinding.Pull: Boolean;
 begin
   var Field := TBooleanSetting(Definition);
-  Result := Field.Value <> TSwitch(Control).IsChecked;
+  Result := Field.Value <> TCheckBox(Control).IsChecked;
   if Result then
-    Field.Value := TSwitch(Control).IsChecked;
+    Field.Value := TCheckBox(Control).IsChecked;
 end;
 
 procedure TChoiceSettingsBinding.Load;

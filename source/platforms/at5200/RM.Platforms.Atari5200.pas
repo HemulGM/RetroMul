@@ -114,7 +114,16 @@ begin
     Result := ImageMatch(Context, 'A5200',
       function(const Data: TBytes; Input: TStream): IEmulationCore
       begin
-        Result := TA5200CoreAdapter.Create(Input, Context.Storage, Context.RomName, Context.SourceName);
+        try
+          Result := TA5200CoreAdapter.Create(Input, Context.Storage, Context.RomName, Context.SourceName);
+        except
+          on E: EReadError do
+          begin
+            if Context.HasExtension(['.a52']) then
+              raise ECoreInvalidMedia.Create(E.Message);
+            raise;
+          end;
+        end;
       end);
 end;
 
@@ -174,7 +183,10 @@ end;
 
 class procedure TA5200Platform.RegisterClient;
 begin
-  RegisterSettingsPlatform('at5200', TAtari5200Settings);
+  RegisterSettingsPlatform('at5200', TAtari5200Settings,
+    'Start with automatic cartridge detection. With generic .bin or .rom images, the platform ' +
+    'folder identifies the console. Choose the correct TV standard and, for Atari 2600 paddle ' +
+    'games, configure the paddle controller.');
   RegisterPlatformSettingsDevices('at5200', TAtari5200SettingsDevices);
   RegisterPlatformDeviceCallouts('at5200', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('at5200', TPlatformControlsHelp);

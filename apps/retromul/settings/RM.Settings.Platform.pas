@@ -24,7 +24,7 @@ type
   TSettingsPlatform = class
   public
     PageId: string;
-    CoreId, Name, Brand, SearchTerms: string;
+    CoreId, Name, Brand, SearchTerms, HelpText: string;
     Ports: Integer;
     constructor Create(const Info: TPlatformInfo);
     procedure Configuration(Context: TSettingsPageBuilder); virtual;

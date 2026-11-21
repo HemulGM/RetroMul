@@ -140,8 +140,14 @@ end;
 
 class procedure TSMSPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('MasterSystem', TMasterSystemSettings);
-  RegisterSettingsProfile('GameGear', TGameGearSettings);
+  RegisterSettingsProfile('MasterSystem', TMasterSystemSettings,
+    'Use the cartridge mapper’s automatic selection first. The hardware model and region can ' +
+    'affect compatibility. If you change them for an unusual cartridge, reopen the game to ' +
+    'apply the new configuration.');
+  RegisterSettingsProfile('GameGear', TGameGearSettings,
+    'Use the cartridge mapper’s automatic selection first. The hardware model and region can ' +
+    'affect compatibility. If you change them for an unusual cartridge, reopen the game to ' +
+    'apply the new configuration.');
   RegisterPlatformKeyboard('sms', TSMSKeyboard);
   RegisterPlatformKeyboard('gg', TSMSKeyboard);
   RegisterPlatformSettingsDevices('sms', TPlatformSettingsDevices);

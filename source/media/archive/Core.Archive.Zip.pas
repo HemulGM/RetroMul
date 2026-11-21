@@ -30,7 +30,6 @@ type
 
   TZipContainer = class(TArchiveContainer)
   private
-    FPacked: string;
     FInput, FZipInput: TStream;
     FZip: TZipFile;
   protected
@@ -216,12 +215,19 @@ end;
 constructor TZipContainer.Create(Input: TStream; const Storage: IStorage);
 begin
   inherited Create(Storage);
-  FPacked := CacheArchiveInput(Input, FStorage,
-    procedure(Path: string)
-    begin
-      TrackCacheFile(Path);
-    end);
-  FInput := FStorage.OpenRead(FPacked);
+  FInput := TStorage.TryOpenIndependentRead(Input);
+  if FInput = nil then
+  begin
+    var CachedPath := CacheArchiveInput(Input, FStorage,
+      procedure(Path: string)
+      begin
+        TrackCacheFile(Path);
+      end);
+    FInput := FStorage.OpenRead(CachedPath);
+  end
+  else if FInput.Size > MaxArchiveBytes then
+    raise EReadError.Create('Archive exceeds 4 GiB');
+  FInput.Position := 0;
   var ArchiveStart, ArchiveEnd: Int64;
   CheckZipDirectory(FInput, ArchiveStart, ArchiveEnd);
   if (ArchiveStart <> 0) or (ArchiveEnd <> FInput.Size) then

@@ -33,14 +33,13 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads,
-  MD.Cartridge, RM.Settings.Catalog, MD.RomFormat, Core.Snapshots,
-  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.MD.Adapter,
-  RM.Platforms.MD.Settings, RM.Platforms.Presentation, RM.Platforms.MD.Icons,
-  RM.Gamepad.Factory, RM.Platforms.MD.Gamepads, MD.Console, RM.Input.Runtime,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
-  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  System.Classes;
+  RM.Input.Gamepads, MD.Cartridge, RM.Settings.Catalog, MD.RomFormat,
+  Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
+  Core.Platforms.MD.Adapter, RM.Platforms.MD.Settings, RM.Platforms.Presentation,
+  RM.Platforms.MD.Icons, RM.Gamepad.Factory, RM.Platforms.MD.Gamepads,
+  MD.Console, RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout,
+  RM.Settings.Runtime, RM.ControlsHelp.Content, RM.Settings.Callouts,
+  RM.Settings.Devices, System.Classes;
 
 const
   MD_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
@@ -76,11 +75,14 @@ begin
   var Encoding: string;
   if not MD.RomFormat.TryDetectEncoding(Context.Data, Encoding) then
     Exit;
+  var SystemId := ROM_SYSTEM_MD;
+  if Context.HasExtension(['.32x']) then
+    SystemId := ROM_SYSTEM_SEGA32X;
   Result := ImageMatch(Context, 'MD',
     function(const Data: TBytes; Input: TStream): IEmulationCore
     begin
-      Result := TMDCoreAdapter.Create(Input, Context.Storage, Context.RomName);
-    end, True, 'md', Encoding, MD_IMAGE_MAX_SIZE);
+      Result := TMDCoreAdapter.Create(Input, Context.Storage, Context.RomName, False, Context.SourceName);
+    end, True, SystemId, Encoding, MD_IMAGE_MAX_SIZE);
 end;
 
 class function TMDPlatform.Disc(Context: TCoreLoadContext): TCoreMatch;
@@ -160,7 +162,10 @@ end;
 
 class procedure TMDPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('MegaDrive', TMegaDriveSettings);
+  RegisterSettingsProfile('MegaDrive', TMegaDriveSettings,
+    'Assign separate folders to Mega Drive, Sega CD and 32X. Sega CD uses disc images, so keep ' +
+    'descriptors and tracks together. Choose the control type for the game, such as a three- ' +
+    'or six-button pad.');
   RegisterPlatformSettingsDevices('md', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('segacd', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('sega32x', TPlatformSettingsDevices);

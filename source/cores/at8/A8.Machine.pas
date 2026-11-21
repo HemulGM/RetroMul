@@ -14,7 +14,7 @@ type
     Model: TA8Model;
     PAL, Basic, WriteProtected: Boolean;
     Mapper: Integer;
-    OSROM, BasicROM, GameROM: TBytes;
+    OSROM, BasicROM, GameROM, FallbackOSROM: TBytes;
   end;
 
   TA8PIA = record
@@ -38,7 +38,8 @@ type
     FPaddlePorts: array[0..3] of Boolean;
     FMedia: TA8Media;
     FRAM: array[0..$1FFFF] of Byte;
-    FOS, FBasic: TBytes;
+    FOS, FPrimaryOS, FBasic: TBytes;
+    FUsingFallbackOS: Boolean;
     FBus, FConsole: Byte;
     FBootOption, FKeyboardConnected: Boolean;
     FPIA: array[0..1] of TA8PIA;
@@ -46,6 +47,10 @@ type
     FLegacy, FResetKey, FResetPending, FXexActive: Boolean;
     FRAMSize, FLines, FXexSegment: Integer;
     FClock: Double;
+    FBasicStartPending, FTapeStartPending, FTapeRunPending: Boolean;
+    FHostKeyboard: Word;
+    FClockHz: Integer;
+    FBasicFileChannel, FBasicFileOffset: Integer;
     function PortB: Byte;
     function Stick(Port: Integer): Byte;
     function Trigger(Port: Integer): Byte;
@@ -54,6 +59,7 @@ type
     function RamAddress(Address: Word; Video: Boolean): Integer;
     function MemoryRead(Address: Word; Video: Boolean): Byte;
     procedure LoadExecutable;
+    procedure ServiceBasicCIO;
   public
     constructor Create(const Data: TBytes; const Extension: string; const Options: TA8Options);
     destructor Destroy; override;
@@ -80,7 +86,7 @@ const
 implementation
 
 uses
-  System.UITypes, System.Math, A8.Firmware, NES.CPU;
+  System.Classes, System.UITypes, System.Math, A8.Firmware, NES.CPU;
 
 function TA8PIA.Pins(Inputs: Byte): Byte;
 begin
@@ -169,16 +175,23 @@ begin
     FClock := A5200CPUClock;
   end;
 
+  FClockHz := Round(FClock);
   FMedia := TA8Media.Create(Data, Extension, Options.Mapper);
   FOS := Options.OSROM;
   if Length(FOS) = 0 then
     FOS := AtariOS(FLegacy);
+  FPrimaryOS := FOS;
   if not FLegacy and (Options.Model <> TA8Model.Atari1200XL) then
   begin
     FBasic := Options.BasicROM;
     if Length(FBasic) = 0 then
       FBasic := AtariBasic;
-  end;
+  end
+  else if FLegacy and (FMedia.Kind = TA8MediaKind.Cassette) then
+    // The 400/800 has no internal BASIC, but can boot tape with a BASIC cart in its left slot.
+    FBasic := Options.BasicROM;
+  if (FMedia.Kind = TA8MediaKind.BasicProgram) and (Length(FBasic) = 0) then
+    raise EReadError.Create('Atari BASIC programs require a model with a built-in BASIC ROM');
   if not (Options.Model = TA8Model.AtariXEGS) then
     FOptions.GameROM := nil;
   FillChar(FPots, SizeOf(FPots), 228);
@@ -208,8 +221,15 @@ begin
   FillChar(FPIA, SizeOf(FPIA), 0);
   FBus := $FF;
   FConsole := 7;
-  FBootOption := (Length(FBasic) <> 0) and not FOptions.Basic and
-    (FMedia.Kind <> TA8MediaKind.Cartridge);
+  FBootOption := not FLegacy and (Length(FBasic) <> 0) and not FOptions.Basic and
+    not (FMedia.Kind in [TA8MediaKind.Cartridge, TA8MediaKind.BasicProgram]) and not (FMedia.TapeBasic or FMedia.TapeBootBasic);
+  FBasicStartPending := (FMedia.Kind = TA8MediaKind.BasicProgram) or
+    ((FMedia.Kind = TA8MediaKind.Cassette) and FMedia.TapeBasic and (Length(FBasic) <> 0));
+  FTapeStartPending := FMedia.Kind = TA8MediaKind.Cassette;
+  FTapeRunPending := False;
+  FHostKeyboard := A8NoKey;
+  FBasicFileChannel := -1;
+  FBasicFileOffset := 0;
   FResetKey := False;
   FResetPending := False;
   FXexActive := False;
@@ -281,6 +301,7 @@ end;
 
 procedure TA8Machine.SetKeyboard(Keys: Word);
 begin
+  FHostKeyboard := Keys;
   if FKeyboardConnected then
     FPOKEY.SetKeyboard(Keys);
   FConsole := 7;
@@ -368,6 +389,8 @@ begin
             $1F:
               begin
                 Result := FConsole and not FGTIA.ConsoleControl;
+                if FTapeStartPending and not FMedia.TapeBasic then
+                  Result := Result and 6;
                 // Let the XEGS OS see SELECT without a simulated OPTION at boot.
                 if FBootOption and FKeyboardConnected and
                   ((FOptions.Model <> TA8Model.AtariXEGS) or (FConsole and 2 <> 0)) then
@@ -411,6 +434,8 @@ begin
     Exit;
   if FLegacy then
   begin
+    if (Length(FBasic) <> 0) and (Address >= $A000) and (Address < $C000) then
+      Exit(FBasic[Address - $A000]);
     if Address >= $D800 then
       Exit(FOS[Address - $D800]);
   end
@@ -466,7 +491,11 @@ begin
           0, 1:
             FPIA[Address and 1].Write(Value);
           2:
-            FPIA[0].WriteControl(Value, False);
+            begin
+              FPIA[0].WriteControl(Value, False);
+              if FPIA[0].C2Low then
+                FTapeStartPending := False;
+            end;
           3:
             begin
               FPIA[1].WriteControl(Value, True);
@@ -481,7 +510,8 @@ begin
     Exit;
   end;
   var Ignored: Byte;
-  if FMedia.ReadCart(Address, Ignored) then
+  if FMedia.ReadCart(Address, Ignored) or
+    (FLegacy and (Length(FBasic) <> 0) and (Address >= $A000) and (Address < $C000)) then
     Exit;
   if not FLegacy then
   begin
@@ -537,6 +567,121 @@ begin
   FCPU.Pc := FRAM[$02E0] or (Word(FRAM[$02E1]) shl 8);
 end;
 
+procedure TA8Machine.ServiceBasicCIO;
+const
+  ProgramName: AnsiString = 'D:START.BAS';
+  DiskRun: AnsiString = 'RUN "D:START.BAS"' + #$9B;
+  TapeRun: AnsiString = 'RUN "C:"' + #$9B;
+  TapeLoadShort: AnsiString = 'CLOAD' + #$9B;
+  BasicRun: AnsiString = 'RUN' + #$9B;
+  StatementTable = $88;
+  StringTable = $8C;
+  EndOfFile = 136;
+  Success = 1;
+begin
+  // CIOV, with X indexing one of the eight sixteen-byte IOCBs.
+  var Channel := Integer(FCPU.X);
+  if (Channel > $70) or (Channel and 15 <> 0) or (not FLegacy and (PortB and 1 = 0)) then
+    Exit;
+  var IOCB := $0340 + Channel;
+  var Operation := FRAM[IOCB + 2];
+  var Address := Word(FRAM[IOCB + 4]) or (Word(FRAM[IOCB + 5]) shl 8);
+  var Requested := Integer(FRAM[IOCB + 8]) or (Integer(FRAM[IOCB + 9]) shl 8);
+  var ReturnPC := Word(FRAM[$100 + ((Integer(FCPU.Sp) + 1) and $FF)]) or
+    (Word(FRAM[$100 + ((Integer(FCPU.Sp) + 2) and $FF)]) shl 8);
+  var Status: Byte := Success;
+  var RunCommand := DiskRun;
+  if FMedia.Kind = TA8MediaKind.Cassette then
+    if FTapeRunPending then
+      RunCommand := BasicRun
+    else if FMedia.TapeShortGaps then
+      RunCommand := TapeLoadShort
+    else
+      RunCommand := TapeRun;
+
+  // Supply the first direct-mode line when the built-in BASIC asks the
+  // editor for it. BASIC itself parses, relocates and runs the SAVE file.
+  if (FBasicStartPending or FTapeRunPending) and (Channel = 0) and (Operation = 5) and
+    (ReturnPC >= $A000) and (ReturnPC < $C000) and (FLegacy or (PortB and 2 = 0)) and
+    (Requested >= Length(RunCommand)) and (Integer(Address) + Length(RunCommand) <= FRAMSize) then
+  begin
+    if FTapeRunPending then
+    begin
+      FTapeRunPending := False;
+      // CLOAD has returned to the editor. Run only when its program table
+      // agrees with the saved BASIC header.
+      var Statements := Word(FRAM[StatementTable]) or (Word(FRAM[StatementTable + 1]) shl 8);
+      var Strings := Word(FRAM[StringTable]) or (Word(FRAM[StringTable + 1]) shl 8);
+      if (Statements < $100) or (Statements >= $A000) or
+        (Integer(Strings) - Statements <> FMedia.TapeBasicStatements) or (FRAM[Statements + 1] >= $80) then
+        Exit;
+    end
+    else
+      FTapeRunPending := (FMedia.Kind = TA8MediaKind.Cassette) and FMedia.TapeShortGaps;
+    for var I := 1 to Length(RunCommand) do
+      WriteMemory(Address + I - 1, Byte(RunCommand[I]));
+    FRAM[IOCB + 8] := Length(RunCommand);
+    FRAM[IOCB + 9] := 0;
+    FBasicStartPending := False;
+  end
+  else if (FMedia.Kind = TA8MediaKind.BasicProgram) and (Operation = 3) and
+    (FBasicFileChannel = -1) and (FRAM[IOCB] = $FF) and
+    (FRAM[IOCB + 10] = 4) then
+  begin
+    if Integer(Address) + Length(ProgramName) >= FRAMSize then
+      Exit;
+    for var I := 1 to Length(ProgramName) do
+      if ReadMemory(Address + I - 1) <> Byte(ProgramName[I]) then
+        Exit;
+    if not (ReadMemory(Address + Length(ProgramName)) in [0, $9B]) then
+      Exit;
+    FBasicFileChannel := Channel;
+    FBasicFileOffset := 0;
+    FRAM[IOCB] := $FE;
+    FRAM[IOCB + 1] := 1;
+  end
+  else if FBasicFileChannel = Channel then
+  begin
+    case Operation of
+      7:
+        begin
+          var Data := FMedia.BasicData;
+          var Count := Min(Max(Requested, 1), Length(Data) - FBasicFileOffset);
+          if Count < Max(Requested, 1) then
+            Status := EndOfFile;
+          if Requested = 0 then
+          begin
+            if Count = 1 then
+              FCPU.A := Data[FBasicFileOffset];
+          end
+          else
+          begin
+            for var I := 0 to Count - 1 do
+              WriteMemory(Word((Integer(Address) + I) and $FFFF), Data[FBasicFileOffset + I]);
+            FRAM[IOCB + 8] := Byte(Count);
+            FRAM[IOCB + 9] := Byte(Count shr 8);
+          end;
+          Inc(FBasicFileOffset, Count);
+        end;
+      12:
+        begin
+          FBasicFileChannel := -1;
+          FRAM[IOCB] := $FF;
+        end;
+    else
+      Status := 132; // Invalid command for this read-only device.
+    end;
+  end
+  else
+    Exit;
+
+  FRAM[IOCB + 3] := Status;
+  FCPU.Y := Status;
+  FCPU.P := (FCPU.P and not (FLAG_NEGATIVE or FLAG_ZERO)) or (Status and FLAG_NEGATIVE);
+  FCPU.Sp := Byte((Integer(FCPU.Sp) + 2) and $FF);
+  FCPU.Pc := Word((Integer(ReturnPC) + 1) and $FFFF);
+end;
+
 function TA8Machine.GetRate: Double;
 begin
   Result := FClock / (A5200CyclesPerLine * FLines);
@@ -547,8 +692,11 @@ begin
   if FResetPending then
   begin
     FResetPending := False;
+    FTapeRunPending := False;
     FXexSegment := 0;
     FXexActive := False;
+    FBasicFileChannel := -1;
+    FBasicFileOffset := 0;
     if FLegacy then
       FANTIC.SystemReset
     else
@@ -558,6 +706,16 @@ begin
       FANTIC.Reset;
       FCPU.Reset;
     end;
+  end;
+  if FKeyboardConnected and (FMedia.Kind = TA8MediaKind.Cassette) then
+  begin
+    // With the selected tape in PLAY, acknowledge the OS's initial key prompt.
+    // Once the motor starts, subsequent keyboard prompts are left to the game.
+    var Key := FHostKeyboard;
+    if FTapeStartPending and not FBasicStartPending and (Byte(Key) = A8NoKey) and
+      (FFrame.FrameNumber >= 24) and (FFrame.FrameNumber < 480) and (FFrame.FrameNumber mod 8 < 2) then
+      Key := $21;
+    FPOKEY.SetKeyboard(Key);
   end;
   FFrame.Pixels := Copy(FFrame.Pixels);
   FPOKEY.BeginFrame;
@@ -576,13 +734,33 @@ begin
       begin
         if (FMedia.Kind = TA8MediaKind.Executable) and (FCPU.CyclesRemaining = 0) and
           ((FCPU.Pc = A8XexEntry) or (FCPU.Pc = A8XexContinue)) then
-          LoadExecutable;
+          LoadExecutable
+        else if ((FMedia.Kind = TA8MediaKind.BasicProgram) or FBasicStartPending or FTapeRunPending) and
+          (FCPU.CyclesRemaining = 0) and (FCPU.Pc = $E456) then
+          ServiceBasicCIO;
         FCPU.Clock;
       end;
       if FCPU.Jammed then
-        raise EInvalidOpException.CreateFmt('Atari 8-bit CPU jam at %.4x', [FCPU.JamPc]);
+      begin
+        if not FUsingFallbackOS and (Length(FOptions.FallbackOSROM) <> 0) and (FFrame.FrameNumber < 120) then
+        begin
+          // Retry cold boot early with the verified XL ROM. Avoid resetting
+          // a running game or overriding an explicitly selected ROM.
+          FOS := FOptions.FallbackOSROM;
+          FUsingFallbackOS := True;
+          var Number := FFrame.FrameNumber;
+          Reset;
+          FFrame.FrameNumber := Number;
+          FSamples := nil;
+          Exit;
+        end;
+        var Detail := Format('Atari 8-bit CPU jam at %.4x', [FCPU.JamPc]);
+        if (Length(FOptions.OSROM) = 0) and not FLegacy and FMedia.RequiresOriginalXLOS then
+          Detail := Detail + '. This loader uses internal XL/XE OS addresses. Select an original Atari 800XL/XE OS ROM in firmware settings.';
+        raise EInvalidOpException.Create(Detail);
+      end;
       FANTIC.ClockObjects(Cycle, FGTIA, FBus);
-      FPOKEY.ClockComputer(FMedia);
+      FPOKEY.ClockComputer(FMedia, FPIA[0].C2Low, FClockHz);
       RenderVideoCycle(FANTIC, FGTIA, Line, Cycle);
     end;
     FANTIC.EndLine;
@@ -595,6 +773,21 @@ end;
 
 procedure TA8Machine.SerializeState(State: TStateArchive);
 begin
+  var Fallback := FUsingFallbackOS;
+  if (State.Version = 0) or (State.Version >= 3) then
+    State.Field(Fallback, SizeOf(Fallback))
+  else if State.Loading then
+    Fallback := False;
+  if State.Loading then
+  begin
+    if Fallback and (Length(FOptions.FallbackOSROM) = 0) then
+      raise EReadError.Create('This Atari snapshot requires the original 800XL/XE OS rev 2 ROM');
+    FUsingFallbackOS := Fallback;
+    if Fallback then
+      FOS := FOptions.FallbackOSROM
+    else
+      FOS := FPrimaryOS;
+  end;
   State.Field(FRAM, SizeOf(FRAM));
   if State.Version = 1 then
   begin
@@ -629,6 +822,25 @@ begin
   FGTIA.SerializeState(State);
   FPOKEY.SerializeComputer(State);
   FMedia.SerializeState(State);
+  if FMedia.Kind = TA8MediaKind.Cassette then
+  begin
+    State.Field(FTapeStartPending, SizeOf(FTapeStartPending));
+    State.Field(FBasicStartPending, SizeOf(FBasicStartPending));
+    if (State.Version = 0) or (State.Version >= 4) then
+      State.Field(FTapeRunPending, SizeOf(FTapeRunPending))
+    else if State.Loading then
+      FTapeRunPending := False;
+  end
+  else if FMedia.Kind = TA8MediaKind.BasicProgram then
+  begin
+    State.Field(FBasicStartPending, SizeOf(FBasicStartPending));
+    State.Field(FBasicFileChannel, SizeOf(FBasicFileChannel));
+    State.Field(FBasicFileOffset, SizeOf(FBasicFileOffset));
+    if State.Loading and ((FBasicFileChannel < -1) or (FBasicFileChannel > $70) or
+      ((FBasicFileChannel <> -1) and (FBasicFileChannel and 15 <> 0)) or
+      (FBasicFileOffset < 0) or (FBasicFileOffset > Length(FMedia.BasicData))) then
+      raise EReadError.Create('Invalid Atari BASIC device state');
+  end;
   FFrame.Pixels := Copy(FFrame.Pixels);
   State.Field(FFrame.Pixels[0], Length(FFrame.Pixels) * SizeOf(TAlphaColor));
 end;

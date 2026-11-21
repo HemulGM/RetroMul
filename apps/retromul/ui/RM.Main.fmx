@@ -55,6 +55,8 @@ object FormMain: TFormMain
       1105s
       771s
       1105s
+      771s
+      1105s
       771s)
     object LibraryScreen: TTabItem
       CustomIcon = <
@@ -99,7 +101,7 @@ object FormMain: TFormMain
           Size.Width = 1105.000000000000000000
           Size.Height = 50.000000000000000000
           Size.PlatformDefault = False
-          StyleLookup = 'retromul_sidebar'
+          StyleLookup = 'retromul_panel_top'
         end
         object LayoutGameIdentity: TLayout
           Align = Client
@@ -126,7 +128,7 @@ object FormMain: TFormMain
               Size.Width = 20.000000000000000000
               Size.Height = 20.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFE8ECF1
+              Stroke.Color = xFFE9E8F1
               Stroke.Thickness = 1.600000023841858000
               WrapMode = Fit
             end
@@ -144,7 +146,7 @@ object FormMain: TFormMain
             StyleLookup = 'buttonstyle'
             Text = 'Library'
             TextSettings.Font.Size = 13.000000000000000000
-            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.FontColor = xFFE9E8F1
             TextSettings.Trimming = Character
             ParentShowHint = False
             ShowHint = True
@@ -161,7 +163,7 @@ object FormMain: TFormMain
               Size.Width = 20.000000000000000000
               Size.Height = 20.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFB9C2CC
+              Stroke.Color = xFFA9AAB9
               Stroke.Thickness = 1.600000023841858000
               WrapMode = Fit
             end
@@ -191,7 +193,7 @@ object FormMain: TFormMain
                 02000000611045413DE2DC40020000009DEF3A413DE2DC400200000020B03441
                 3F60E940010000004060894020B06441020000007DC479409DEF6A4102000000
                 7DC47940611075410200000040608940DE4F7B41}
-              Fill.Color = xFFE8ECF1
+              Fill.Color = xFFE9E8F1
               HitTest = False
               Size.Width = 20.000000000000000000
               Size.Height = 12.000000000000000000
@@ -213,7 +215,7 @@ object FormMain: TFormMain
               Size.PlatformDefault = False
               TextSettings.Font.Size = 17.000000000000000000
               TextSettings.Font.StyleExt = {00070000000000000004000000}
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               Text = 'RetroMul - Open ROM'
               TabOrder = 0
@@ -225,7 +227,7 @@ object FormMain: TFormMain
               Size.Width = 293.000000000000000000
               Size.Height = 2.000000000000000000
               Size.PlatformDefault = False
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
             end
           end
@@ -249,7 +251,7 @@ object FormMain: TFormMain
             StyleLookup = 'buttonstyle'
             Text = 'Reset'
             TextSettings.Font.Size = 13.000000000000000000
-            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.FontColor = xFFE9E8F1
             TextSettings.Trimming = Character
             ParentShowHint = False
             ShowHint = True
@@ -278,7 +280,7 @@ object FormMain: TFormMain
                 705F75410000D0400200000000007C410000D04001000000F5CA88410000D040
                 02000000A52C7C415648A840020000006F815F41000090400200000000004041
                 00009040030000000000404100009040}
-              Fill.Color = xFFE8ECF1
+              Fill.Color = xFFE9E8F1
               HitTest = False
               Margins.Left = 12.000000000000000000
               Position.X = 12.000000000000000000
@@ -303,7 +305,7 @@ object FormMain: TFormMain
             StyleLookup = 'buttonstyle'
             Text = 'Pause'
             TextSettings.Font.Size = 13.000000000000000000
-            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.FontColor = xFFE9E8F1
             TextSettings.Trimming = Character
             ParentShowHint = False
             ShowHint = True
@@ -338,7 +340,7 @@ object FormMain: TFormMain
                 000050410000884102000000C72947410000884102000000000040411C6B8441
                 0200000000004041000080410100000000004041000080400300000000004041
                 00008040}
-              Fill.Color = xFFE8ECF1
+              Fill.Color = xFFE9E8F1
               HitTest = False
               Margins.Left = 12.000000000000000000
               Position.X = 12.000000000000000000
@@ -363,7 +365,7 @@ object FormMain: TFormMain
                 020000000000C0409E079040010000000000C04050FC7741020000000000C040
                 34117E4102000000840DCD40C3F58041020000006BB7D740B9FC7E4101000000
                 A1E78541D200274103000000A1E78541D2002741}
-              Fill.Color = xFF1B2026
+              Fill.Color = xFF191920
               HitTest = False
               Margins.Left = 12.000000000000000000
               Position.X = 12.000000000000000000
@@ -388,7 +390,7 @@ object FormMain: TFormMain
             Size.PlatformDefault = False
             StyleLookup = 'buttonstyle'
             TextSettings.Font.Size = 13.000000000000000000
-            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.FontColor = xFFE9E8F1
             TextSettings.Trimming = Character
             ParentShowHint = False
             ShowHint = True
@@ -408,7 +410,7 @@ object FormMain: TFormMain
               Size.Width = 20.000000000000000000
               Size.Height = 20.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFB9C2CC
+              Stroke.Color = xFFA9AAB9
               Stroke.Thickness = 1.600000023841858000
               WrapMode = Fit
             end
@@ -425,7 +427,7 @@ object FormMain: TFormMain
             Size.PlatformDefault = False
             StyleLookup = 'buttonstyle'
             TextSettings.Font.Size = 13.000000000000000000
-            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.FontColor = xFFE9E8F1
             TextSettings.Trimming = Character
             ParentShowHint = False
             ShowHint = True
@@ -453,7 +455,7 @@ object FormMain: TFormMain
               Size.Width = 20.000000000000000000
               Size.Height = 20.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFB9C2CC
+              Stroke.Color = xFFA9AAB9
               Stroke.Thickness = 1.600000023841858000
               WrapMode = Fit
             end
@@ -470,7 +472,7 @@ object FormMain: TFormMain
             StyleLookup = 'buttonstyle'
             Text = 'Insert coin'
             TextSettings.Font.Size = 13.000000000000000000
-            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.FontColor = xFFE9E8F1
             TextSettings.Trimming = Character
             Visible = False
             ParentShowHint = False
@@ -493,7 +495,7 @@ object FormMain: TFormMain
               Size.Width = 20.000000000000000000
               Size.Height = 20.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFB9C2CC
+              Stroke.Color = xFFA9AAB9
               Stroke.Thickness = 1.600000023841858000
               WrapMode = Fit
             end
@@ -511,7 +513,7 @@ object FormMain: TFormMain
             StyleLookup = 'buttonstyle'
             Text = 'F1'
             TextSettings.Font.Size = 13.000000000000000000
-            TextSettings.FontColor = xFFE8ECF1
+            TextSettings.FontColor = xFFE9E8F1
             TextSettings.Trimming = Character
             ParentShowHint = False
             ShowHint = True
@@ -537,7 +539,7 @@ object FormMain: TFormMain
               Size.Width = 20.000000000000000000
               Size.Height = 20.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFB9C2CC
+              Stroke.Color = xFFA9AAB9
               Stroke.Thickness = 1.600000023841858000
               WrapMode = Fit
             end
@@ -548,7 +550,7 @@ object FormMain: TFormMain
               Size.Width = 132.000000000000000000
               Size.Height = 32.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFFFB43B
+              Stroke.Color = xFFB8A6FA
               XRadius = 8.000000000000000000
               YRadius = 8.000000000000000000
             end
@@ -584,7 +586,7 @@ object FormMain: TFormMain
                 00006041000090410200000000006041C72987410200000071AC514100008041
                 020000000000404100008041020000008F532E41000080410200000000002041
                 C7298741020000000000204100009041030000000000204100009041}
-              Fill.Color = xFFE8ECF1
+              Fill.Color = xFFE9E8F1
               HitTest = False
               Size.Width = 4.000000000000000000
               Size.Height = 20.000000000000000000
@@ -601,7 +603,7 @@ object FormMain: TFormMain
         Size.Width = 1105.000000000000000000
         Size.Height = 30.000000000000000000
         Size.PlatformDefault = False
-        StyleLookup = 'retromul_sidebar'
+        StyleLookup = 'retromul_panel_bottom'
         TabOrder = 4
         object StatusDot: TCircle
           Align = Left
@@ -624,7 +626,7 @@ object FormMain: TFormMain
           Size.Width = 948.000000000000000000
           Size.Height = 30.000000000000000000
           Size.PlatformDefault = False
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.WordWrap = False
         end
         object GameAudio: TLabel
@@ -637,7 +639,7 @@ object FormMain: TFormMain
           Size.Width = 61.000000000000000000
           Size.Height = 30.000000000000000000
           Size.PlatformDefault = False
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.HorzAlign = Trailing
           TextSettings.WordWrap = False
           Text = 'Audio state'
@@ -661,7 +663,7 @@ object FormMain: TFormMain
             Size.Width = 16.000000000000000000
             Size.Height = 16.000000000000000000
             Size.PlatformDefault = False
-            Stroke.Color = xFFB9C2CC
+            Stroke.Color = xFFA9AAB9
             Stroke.Thickness = 1.600000023841858000
             WrapMode = Fit
           end
@@ -705,7 +707,7 @@ object FormMain: TFormMain
                 02000000611045413DE2DC40020000009DEF3A413DE2DC400200000020B03441
                 3F60E940010000004060894020B06441020000007DC479409DEF6A4102000000
                 7DC47940611075410200000040608940DE4F7B41}
-              Fill.Color = xFFE8ECF1
+              Fill.Color = xFFE9E8F1
               HitTest = False
               RotationAngle = 180.000000000000000000
               Size.Width = 20.000000000000000000
@@ -28825,6 +28827,281 @@ object FormMain: TFormMain
       ExplicitSize.cx = 1143.000000000000000000
       ExplicitSize.cy = 769.000000000000000000
     end
+    object HelpScreen: TTabItem
+      CustomIcon = <
+        item
+        end>
+      IsSelected = False
+      Size.Width = 16.000000000000000000
+      Size.Height = 16.000000000000000000
+      Size.PlatformDefault = False
+      StyleLookup = ''
+      TabOrder = 0
+      Text = 'Help'
+      ExplicitSize.cx = 1143.000000000000000000
+      ExplicitSize.cy = 769.000000000000000000
+      object PanelHelpBackground: TPanel
+        Align = Contents
+        HitTest = False
+        Size.Width = 1105.000000000000000000
+        Size.Height = 771.000000000000000000
+        Size.PlatformDefault = False
+        StyleLookup = 'retromul_settings'
+        TabOrder = 0
+      end
+      object LayoutHelpPage: TLayout
+        Align = Client
+        Size.Width = 1105.000000000000000000
+        Size.Height = 771.000000000000000000
+        Size.PlatformDefault = False
+        TabOrder = 1
+        OnResize = ResizeHelpPage
+        object PanelHelpSidebar: TPanel
+          Align = MostLeft
+          Size.Width = 264.000000000000000000
+          Size.Height = 771.000000000000000000
+          Size.PlatformDefault = False
+          StyleLookup = 'retromul_panel_left'
+          object LayoutHelpBrand: TLayout
+            Align = MostTop
+            Size.Width = 264.000000000000000000
+            Size.Height = 76.000000000000000000
+            Size.PlatformDefault = False
+            object LabelHelpBrand: TLabel
+              Align = Client
+              StyledSettings = []
+              Margins.Top = 12.000000000000000000
+              Margins.Right = 20.000000000000000000
+              Margins.Bottom = 12.000000000000000000
+              Size.Width = 180.000000000000000000
+              Size.Height = 52.000000000000000000
+              Size.PlatformDefault = False
+              TextSettings.Font.Size = 23.000000000000000000
+              TextSettings.Font.StyleExt = {00070000000000000004000000}
+              TextSettings.FontColor = xFFE9E8F1
+              TextSettings.WordWrap = False
+              Text = 'RetroMul'
+              TabOrder = 0
+            end
+            object PathHelpBrandIcon: TPath
+              Align = Left
+              Data.Path = {
+                1C00000000000000000020410000C040010000000000C0410000C04002000000
+                0000E0410000C040020000000000F04100000041020000000000F84100005041
+                01000000000008420000D0410200000000000C420000F041020000000000F841
+                00000042020000000000E0410000E841010000000000B8410000C04101000000
+                000030410000C041010000000000C0400000E841020000000000404000000042
+                02000000000000000000F041020000000000803F0000D0410100000000008040
+                00005041020000000000A04000000041020000000000C0400000C04002000000
+                000020410000C04003000000000020410000C040000000000000104100004041
+                01000000000010410000A841000000000000A040000080410100000000005041
+                00008041000000000000C04100005041010000000000C0410000704100000000
+                0000E04100009041010000000000E0410000A041}
+              Fill.Kind = None
+              HitTest = False
+              Margins.Left = 24.000000000000000000
+              Margins.Top = 26.000000000000000000
+              Margins.Right = 10.000000000000000000
+              Margins.Bottom = 20.000000000000000000
+              Position.X = 24.000000000000000000
+              Position.Y = 26.000000000000000000
+              Size.Width = 30.000000000000000000
+              Size.Height = 30.000000000000000000
+              Size.PlatformDefault = False
+              Stroke.Color = xFFB8A6FA
+              Stroke.Thickness = 1.600000023841858000
+              WrapMode = Fit
+            end
+          end
+          object LayoutHelpActions: TLayout
+            Align = Client
+            Padding.Left = 12.000000000000000000
+            Padding.Right = 12.000000000000000000
+            Size.Width = 264.000000000000000000
+            Size.Height = 695.000000000000000000
+            Size.PlatformDefault = False
+            object ButtonHelpBack: TButton
+              Align = Top
+              Margins.Bottom = 8.000000000000000000
+              Position.X = 12.000000000000000000
+              Size.Width = 240.000000000000000000
+              Size.Height = 42.000000000000000000
+              Size.PlatformDefault = False
+              StyleLookup = 'buttonstyle_subtle'
+              Text = 'Back'
+              TextSettings.HorzAlign = Leading
+              TextSettings.Trimming = Character
+              OnClick = CloseHelpClick
+              object PathHelpBackIcon: TPath
+                Align = Left
+                Data.Path = {
+                  05000000000000000000C0410000504101000000000000400000504100000000
+                  000020410000A04001000000000000400000504101000000000020410000A841}
+                Fill.Kind = None
+                HitTest = False
+                Margins.Left = 16.000000000000000000
+                Margins.Top = 11.000000000000000000
+                Margins.Bottom = 11.000000000000000000
+                Position.X = 16.000000000000000000
+                Position.Y = 11.000000000000000000
+                Size.Width = 20.000000000000000000
+                Size.Height = 20.000000000000000000
+                Size.PlatformDefault = False
+                Stroke.Color = xFFE9E8F1
+                Stroke.Thickness = 1.600000023841858000
+                WrapMode = Fit
+              end
+            end
+            object ButtonHelpWebsite: TButton
+              Align = Top
+              Margins.Bottom = 8.000000000000000000
+              Position.X = 12.000000000000000000
+              Position.Y = 50.000000000000000000
+              Size.Width = 240.000000000000000000
+              Size.Height = 42.000000000000000000
+              Size.PlatformDefault = False
+              StyleLookup = 'buttonstyle_accent'
+              TabOrder = 1
+              Text = 'Open website'
+              TextSettings.Trimming = Character
+              OnClick = OpenHelpWebsiteClick
+            end
+            object ButtonHelpFeedback: TButton
+              Align = Top
+              Margins.Bottom = 8.000000000000000000
+              Position.X = 12.000000000000000000
+              Position.Y = 100.000000000000000000
+              Size.Width = 240.000000000000000000
+              Size.Height = 42.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 2
+              Text = 'Send feedback'
+              TextSettings.Trimming = Character
+              OnClick = ReportBugClick
+            end
+          end
+        end
+        object PanelHelpPlatforms: TPanel
+          Align = Left
+          Padding.Left = 12.000000000000000000
+          Padding.Top = 20.000000000000000000
+          Padding.Right = 12.000000000000000000
+          Padding.Bottom = 12.000000000000000000
+          Position.X = 264.000000000000000000
+          Size.Width = 216.000000000000000000
+          Size.Height = 771.000000000000000000
+          Size.PlatformDefault = False
+          StyleLookup = 'retromul_panel_left'
+          object LabelHelpPlatformsTitle: TLabel
+            Align = Top
+            StyledSettings = [Family, Style, FontColor]
+            Position.X = 12.000000000000000000
+            Position.Y = 20.000000000000000000
+            Size.Width = 192.000000000000000000
+            Size.Height = 36.000000000000000000
+            Size.PlatformDefault = False
+            TextSettings.Font.Size = 20.000000000000000000
+            TextSettings.WordWrap = False
+            Text = 'Platforms'
+          end
+          object LayoutHelpPlatformSearchSlot: TLayout
+            Align = Top
+            Margins.Bottom = 12.000000000000000000
+            Position.X = 12.000000000000000000
+            Position.Y = 56.000000000000000000
+            Size.Width = 192.000000000000000000
+            Size.Height = 36.000000000000000000
+            Size.PlatformDefault = False
+          end
+          object LabelHelpNoPlatforms: TLabel
+            Align = Top
+            Size.Width = 192.000000000000000000
+            Size.Height = 48.000000000000000000
+            Size.PlatformDefault = False
+            Text = 'No platforms found'
+            Visible = False
+          end
+          object ListBoxHelpPlatforms: TListBox
+            Align = Client
+            Size.Width = 192.000000000000000000
+            Size.Height = 655.000000000000000000
+            Size.PlatformDefault = False
+            ScrollAnimation = True
+            DisableFocusEffect = True
+            ItemHeight = 44.000000000000000000
+            DefaultItemStyles.ItemStyle = ''
+            DefaultItemStyles.GroupHeaderStyle = ''
+            DefaultItemStyles.GroupFooterStyle = ''
+            OnChange = HelpPlatformListChange
+            Viewport.Width = 192.000000000000000000
+            Viewport.Height = 655.000000000000000000
+          end
+        end
+        object LayoutHelpBody: TLayout
+          Align = Client
+          Size.Width = 625.000000000000000000
+          Size.Height = 771.000000000000000000
+          Size.PlatformDefault = False
+          object LayoutHelpPlatformPickerRow: TLayout
+            Align = MostTop
+            Padding.Left = 20.000000000000000000
+            Padding.Top = 12.000000000000000000
+            Padding.Right = 20.000000000000000000
+            Size.Width = 50.000000000000000000
+            Size.Height = 52.000000000000000000
+            Size.PlatformDefault = False
+            Visible = False
+            object ComboBoxHelpPlatforms: TComboBox
+              Align = Client
+              DropDownKind = Custom
+              Size.Width = 10.000000000000000000
+              Size.Height = 40.000000000000000000
+              Size.PlatformDefault = False
+              OnChange = HelpPlatformPickerChange
+            end
+          end
+          object VertScrollBoxHelp: TVertScrollBox
+            Align = Client
+            Size.Width = 625.000000000000000000
+            Size.Height = 771.000000000000000000
+            Size.PlatformDefault = False
+            TabOrder = 0
+            ScrollAnimation = True
+            Viewport.Width = 625.000000000000000000
+            Viewport.Height = 771.000000000000000000
+            object LayoutHelpContent: TLayout
+              Align = Top
+              Padding.Left = 20.000000000000000000
+              Padding.Top = 20.000000000000000000
+              Padding.Right = 20.000000000000000000
+              Padding.Bottom = 24.000000000000000000
+              Size.Width = 625.000000000000000000
+              Size.Height = 354.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 0
+              OnResize = ResizeHelpContent
+              object LabelHelpTitle: TLabel
+                Align = Top
+                AutoSize = True
+                StyledSettings = [Family]
+                Margins.Bottom = 18.000000000000000000
+                Position.X = 20.000000000000000000
+                Position.Y = 20.000000000000000000
+                Size.Width = 585.000000000000000000
+                Size.Height = 43.000000000000000000
+                Size.PlatformDefault = False
+                TextSettings.Font.Size = 32.000000000000000000
+                TextSettings.Font.StyleExt = {00070000000000000004000000}
+                TextSettings.FontColor = xFFE9E8F1
+                TextSettings.VertAlign = Leading
+                Text = 'Help'
+                OnResize = ResizeHelpContent
+              end
+            end
+          end
+        end
+      end
+    end
   end
   object GameActionsPopup: TPopup
     ClipChildren = True
@@ -28839,12 +29116,12 @@ object FormMain: TFormMain
     TabOrder = 2
     object GameActionsBackground: TRectangle
       Align = Contents
-      Fill.Color = xFF1B2026
+      Fill.Color = xFF25252D
       HitTest = False
       Size.Width = 320.000000000000000000
       Size.Height = 440.000000000000000000
       Size.PlatformDefault = False
-      Stroke.Color = xFF343C46
+      Stroke.Color = xFF34343E
       XRadius = 8.000000000000000000
       YRadius = 8.000000000000000000
     end

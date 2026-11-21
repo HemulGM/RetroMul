@@ -67,6 +67,7 @@ begin
     if PreviousLanguage <> FormStyles.Lang.Lang then
     begin
       FormStyles.RelocalizeUI(FView.GameScreen, PreviousLanguage);
+      FView.ApplyHelpLanguage(PreviousLanguage);
       FView.ApplyFeedbackLanguage(PreviousLanguage);
       if FState.Browser.View <> nil then
         if FState.Browser.ViewingLibrary then

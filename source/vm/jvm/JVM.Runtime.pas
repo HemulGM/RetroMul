@@ -13,6 +13,7 @@ type
 
   TJVMHost = class
   public
+    procedure PrepareClass(C: TJVMClass); virtual;
     function LoadClass(const Name: string): TBytes; virtual; abstract;
     function InvokeNative(VM: TJVM; Method: TJVMMethod; const Arguments: TArray<TJVMValue>): TJVMValue; virtual; abstract;
     function TimeMillis: Int64; virtual; abstract;
@@ -911,12 +912,17 @@ begin
     Result := FThreadErrors.Dequeue;
 end;
 
+procedure TJVMHost.PrepareClass(C: TJVMClass);
+begin
+end;
+
 procedure TJVM.DefineClass(C: TJVMClass);
 begin
   if (C = nil) or (C.Name = '') then
     raise EJVMError.Create('Unnamed Java class');
   if FClasses.ContainsKey(C.Name) then
     raise EJVMError.Create('Duplicate Java class: ' + C.Name);
+  FHost.PrepareClass(C);
   FClasses.Add(C.Name, C);
 end;
 
@@ -1493,6 +1499,8 @@ var
   Frame: TJVMFrame;
   I, P, Offset: Integer;
 begin
+  if M.EntryPoint <> nil then
+    M := M.EntryPoint;
   VerifyClass(M.Owner);
   if FFrames.Count >= 512 then
     raise EJVMError.Create('Java call depth limit exceeded');

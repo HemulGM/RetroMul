@@ -62,13 +62,14 @@
           Size.Width = 48.000000000000000000
           Size.Height = 32.000000000000000000
           Size.PlatformDefault = False
-          object SwitchAutosavePeriodic: TSwitch
+          object CheckBoxAutosavePeriodic: TCheckBox
             Align = Center
             IsChecked = False
             Position.Y = 4.000000000000000000
             Size.Width = 48.000000000000000000
             Size.Height = 24.000000000000000000
             Size.PlatformDefault = False
+            StyleLookup = 'checkboxstyle_switch'
           end
         end
         object LayoutAutosaveMinutesSlot: TLayout

@@ -209,7 +209,11 @@ end;
 
 class procedure TDCPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('DC', TDCSettings);
+  RegisterSettingsProfile('DC', TDCSettings,
+    'Built-in boot uses high-level firmware services. Automatic mode can use a boot ROM when ' +
+    'found. Boot ROM file mode starts from a Dreamcast boot ROM. With a .gdi image keep all ' +
+    'referenced tracks. For multi-disc games you can open an .m3u playlist. CPU recompiler ' +
+    'availability depends on the host.');
   RegisterPlatformSettingsDevices('dc', TDCSettingsDevices);
   RegisterPlatformDeviceCallouts('dc', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('dc', TDCControlsHelp);

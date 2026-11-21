@@ -112,7 +112,11 @@ begin
   var Policy := TSnapshotPolicy.Create(10);
   Policy.AcceptedVersions := [8, 9];
   RegisterSnapshotPolicy('system32', Policy);
-  RegisterSettingsPlatform('system32', TSystem32Settings);
+  RegisterSettingsPlatform('system32', TSystem32Settings,
+    'Use a complete, recognized arcade ROM set for the matching board. Keep the ROM archive ' +
+    'name and the expected names inside it. Some variants require parent set data or ' +
+    'board-specific ROMs. The emulation menu offers coin insertion for games with a coin ' +
+    'acceptor.');
   RegisterPlatformSettingsDevices('system32', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('system32', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('system32', TPlatformControlsHelp);

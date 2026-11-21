@@ -105,7 +105,7 @@ begin
     Exit;
 
   if FState.Session.AutoPaused and FView.HostInputHasFocus and not FState.Session.UserPaused and not FState.Browser.ViewingLibrary and
-    not RetroDialogVisible(FView) and (FState.Settings.View = nil) and (FState.Help.View = nil) then
+    not FView.HelpPageActive and not RetroDialogVisible(FView) and (FState.Settings.View = nil) and (FState.Help.View = nil) then
   begin
     FState.Session.AutoPaused := False;
     if (FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted then
@@ -198,7 +198,8 @@ begin
     if (FState.Session.DialogCore <> nil) and (FState.Session.DialogCore = FState.Session.Emulation) and
       not FState.Session.DialogWasPaused and not FState.Session.EmulationFaulted and not FState.Session.UserPaused and
       not FState.Session.AutoPaused and {$IFDEF ISMOBILE}not FState.Mobile.InBackground and {$ENDIF} not FState.Session.OpeningRom and
-      not FState.Browser.ViewingLibrary and not FState.Session.Reporting and (FState.Settings.View = nil) and (FState.Help.View = nil) then
+      not FState.Browser.ViewingLibrary and not FState.Session.Reporting and not FView.HelpPageActive and
+      (FState.Settings.View = nil) and (FState.Help.View = nil) then
     begin
       {$IFNDEF ISMOBILE}
       if FState.Preferences.PauseOnFocusLoss and not FView.HostInputHasFocus then
@@ -244,13 +245,13 @@ begin
   begin
     FView.GamePause.Hint := Translate('Resume');
     FView.GamePause.StyleLookup := 'buttonstyle_accent';
-    FView.GamePause.TextSettings.FontColor := $FF1B2026;
+    FView.GamePause.TextSettings.FontColor := ThemeBackgroundColor;
   end
   else
   begin
     FView.GamePause.Hint := Translate('Pause');
     FView.GamePause.StyleLookup := 'buttonstyle';
-    FView.GamePause.TextSettings.FontColor := $FFE8ECF1;
+    FView.GamePause.TextSettings.FontColor := ThemeTextColor;
   end;
   {$IFNDEF ISMOBILE}
   if FView.GamePauseIcon.Align = TAlignLayout.Center then
@@ -289,7 +290,8 @@ begin
   PlatformSessionHandler(FState.Input.SystemId).LayoutControls(RuntimeContext);
   PlatformSessionHandler(FState.Input.SystemId).ApplyActivityGate(RuntimeContext);
   var Paused := FState.Mobile.InBackground or FView.GameActionsPopup.IsOpen or FState.Session.OpeningRom or FState.Browser.ViewingLibrary or FState.Session.UserPaused or
-    (FState.Settings.View <> nil) or (FState.Help.View <> nil) or RetroDialogVisible(FView) or FState.Session.Reporting;
+    (FState.Settings.View <> nil) or (FState.Help.View <> nil) or FView.HelpPageActive or
+    RetroDialogVisible(FView) or FState.Session.Reporting;
   if Paused <> FState.Mobile.ActivityPaused then
   begin
     FState.Mobile.ActivityPaused := Paused;
@@ -305,7 +307,7 @@ begin
   var DialogInput := RetroDialogVisible(FView) and (FView.Active or FView.HostInputHasFocus);
   var LibraryInput := (FState.Input.Manager <> nil) and not FState.Input.PollingFailed and
     (FView.HostInputHasFocus or DialogInput) and not FState.Session.Reporting and
-    (FState.Browser.ViewingLibrary or (FState.Settings.View <> nil) or DialogInput);
+    (DialogInput or (not FView.HelpPageActive and (FState.Browser.ViewingLibrary or (FState.Settings.View <> nil))));
   FView.TimerUpdate.Enabled := not FState.Mobile.InBackground and
     (LibraryInput or FState.Session.OpeningRom or ((FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted));
   {$ELSE}
@@ -315,8 +317,8 @@ begin
   var DialogInput := RetroDialogVisible(FView) and (FView.Active or FView.HostInputHasFocus);
   var NeedsInput := (FState.Input.Manager <> nil) and not FState.Input.PollingFailed and
     (FView.HostInputHasFocus or DialogInput) and (not FState.Session.OpeningRom or DialogInput) and
-    not FState.Session.Reporting and ((FState.Settings.View <> nil) or FState.Browser.ViewingLibrary or
-    (FState.Session.Emulation <> nil) or DialogInput);
+    not FState.Session.Reporting and (DialogInput or (not FView.HelpPageActive and
+    ((FState.Settings.View <> nil) or FState.Browser.ViewingLibrary or (FState.Session.Emulation <> nil))));
   var NeedsFrames := (FState.Session.Emulation <> nil) and
     not FState.Session.EmulationFaulted and not FState.Session.Emulation.IsPaused;
   FView.TimerUpdate.Enabled := NeedsInput or NeedsFrames;
@@ -451,7 +453,7 @@ function TSessionController.CanAcceptRomDrop(const Data: TDragObject): Boolean;
 begin
   Result := not (csDestroying in FView.ComponentState) and not FState.Session.OpeningRom and
     not FState.Help.Closing and (FState.Settings.View = nil) and
-    (FView.ScreenTabs.ActiveTab <> FView.SettingsScreen) and (Length(Data.Files) = 1);
+    (FView.ScreenTabs.ActiveTab <> FView.SettingsScreen) and not FView.HelpPageActive and (Length(Data.Files) = 1);
   if Result then
     // Like the file picker, accept renamed ROMs and validate their contents on load.
     Result := TFile.Exists(Data.Files[0]);

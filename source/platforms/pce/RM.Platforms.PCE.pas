@@ -197,7 +197,10 @@ end;
 
 class procedure TPCEPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('PCE', TPCESettings);
+  RegisterSettingsProfile('PCE', TPCESettings,
+    'HuCard and CD use separate library folders. For CD games, keep the descriptor and tracks ' +
+    'together and pick the System Card type required by the game. RetroMul includes System ' +
+    'Card 1, 2 and 3 options.');
   RegisterPlatformSettingsDevices('pce', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('sgx', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('pcecd', TPlatformSettingsDevices);

@@ -101,7 +101,7 @@ begin
           Result.Title := F.LabelSettingTitle;
           Result.Detail := F.LabelSettingDetail;
           Result.Editors := F.LayoutSettingEditorContainer;
-          Result.Editor := F.SwitchAutosavePeriodic;
+          Result.Editor := F.CheckBoxAutosavePeriodic;
         end;
       TSettingsRowKind.Volume:
         begin

@@ -165,7 +165,11 @@ end;
 
 class procedure TZXPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('ZXSpectrum', TZXSettings);
+  RegisterSettingsProfile('ZXSpectrum', TZXSettings,
+    'Select a machine model or a configuration preset before opening media. Tapes use the ' +
+    'selected machine. TRD and SCL use a compatible TR-DOS model, and .dsk opens on +3. Enable ' +
+    'the emulated keyboard for typed commands or choose a joystick mode for games that support ' +
+    'it.');
   RegisterPlatformKeyboard('zx', TZXKeyboard);
   RegisterPlatformSettingsDevices('zx', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('zx', TPlatformDeviceCallouts);

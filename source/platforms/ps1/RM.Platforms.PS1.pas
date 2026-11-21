@@ -210,7 +210,11 @@ end;
 
 class procedure TPS1Platform.RegisterClient;
 begin
-  RegisterSettingsProfile('PS1', TPS1Settings);
+  RegisterSettingsProfile('PS1', TPS1Settings,
+    'Open the .cue descriptor or a supported disc image. Use .m3u for multi-disc games. The ' +
+    'BIOS override accepts a 512 KiB PlayStation BIOS. Without an override RetroMul can use a ' +
+    'BIOS beside the game or the built-in BIOS. In-game saving uses virtual memory cards where ' +
+    'applicable.');
   RegisterPlatformSettingsDevices('ps1', TPS1SettingsDevices);
   RegisterPlatformDeviceCallouts('ps1', TPS1DeviceCallouts);
   RegisterPlatformControlsHelp('ps1', TPS1ControlsHelp);

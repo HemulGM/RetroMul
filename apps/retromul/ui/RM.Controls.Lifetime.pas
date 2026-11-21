@@ -44,6 +44,8 @@ begin
     TComboBox(ControlAccess).OnChange := nil;
   if Control is TSwitch then
     TSwitch(ControlAccess).OnSwitch := nil;
+  if Control is TCheckBox then
+    TCheckBox(ControlAccess).OnChange := nil;
   if Control is TSpinBox then
     TSpinBox(ControlAccess).OnChange := nil;
   if Control is TEdit then

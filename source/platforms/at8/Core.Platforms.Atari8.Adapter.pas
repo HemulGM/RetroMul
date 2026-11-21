@@ -38,6 +38,7 @@ type
     FKeys, FScreenKeys: THostKeyboardKeys;
     FLastKey: Byte;
     FAutomaticRawMapper: Integer;
+    FRequiresOriginalXLOS, FTapeBootBasic, FTapeBasicRevA, FTapeOSB: Boolean;
     FPaused: Boolean;
     FError, FRomName, FExtension, FSnapshotDirectory: string;
     function KeyboardState: Word;
@@ -74,11 +75,14 @@ type
     function IsPaused: Boolean;
   end;
 
+function ResolveAtari8BootOptions(const Storage: IStorage; const RomName: string; Config: TA8Config; RequiresOriginalXLOS: Boolean; TapeBootBasic: Boolean = False; TapeBasicRevA: Boolean = False; TapeOSB: Boolean = False): TA8Options;
+
 implementation
 
 uses
-  System.Hash, System.UITypes, A5200.Console, A5200.Controller, A8.Media,
-  A8.POKEY, Core.Snapshots;
+  System.Hash, System.IOUtils, System.UITypes, System.ZLib, A5200.Console,
+  A5200.Controller, A8.Media, A8.POKEY, Core.Snapshots, Core.Archive.Container,
+  Core.Archive.Zip;
 
 function ReadAtariFirmware(const Storage: IStorage; const Location: string; Size: Integer): TBytes;
 begin
@@ -93,6 +97,151 @@ begin
     Stream.ReadBuffer(Result[0], Size);
   finally
     Stream.Free;
+  end;
+end;
+
+function AtariFirmwareFolders(const Storage: IStorage; const RomName, Category: string): TArray<string>;
+begin
+  Result := [TPath.Combine(Storage.Root, 'firmware')];
+  if not RomName.Contains('://') and TPath.IsPathRooted(RomName) then
+  begin
+    var RomFolder := ExtractFileDir(ExpandFileName(RomName));
+    var Firmware := TPath.Combine(ExtractFileDir(RomFolder), 'Atari firmware');
+    Result := Result + [RomFolder, Firmware, TPath.Combine(Firmware, Category)];
+  end;
+end;
+
+function FindOriginalOS(const Storage: IStorage; const RomName: string; Legacy: Boolean): TBytes;
+begin
+  var Names: TArray<string>;
+  var Size: Integer;
+  var Expected: Cardinal;
+  if Legacy then
+  begin
+    Names := ['atariosb.rom', '400-800 OS B NTSC.rom'];
+    Size := $2800;
+    Expected := $0E86D61D;
+  end
+  else
+  begin
+    Names := ['atarixl.rom', '800XL-XE OS rev 2.rom'];
+    Size := $4000;
+    Expected := $1F9CD270;
+  end;
+  for var Folder in AtariFirmwareFolders(Storage, RomName, 'Original OS') do
+    for var Name in Names do
+    begin
+      var Location := TPath.Combine(Folder, Name);
+      if not Storage.Exists(Location) then
+        Continue;
+      try
+        var Data := ReadAtariFirmware(Storage, Location, Size);
+        if crc32(0, @Data[0], Length(Data)) = Expected then
+          Exit(Data);
+      except
+        on E: EInOutError do
+          Continue;
+        on E: EStreamError do
+          Continue;
+      end;
+    end;
+  Result := nil;
+end;
+
+function FindOriginalBasic(const Storage: IStorage; const RomName: string; RevisionA: Boolean): TBytes;
+const
+  BasicSize = $2000;
+  BasicRevACRC32 = $4BEC4DE2;
+  BasicRevCCRC32 = $7D684184;
+begin
+  var Names: TArray<string>;
+  var Expected: Cardinal;
+  if RevisionA then
+  begin
+    Names := ['Atari BASIC rev A.rom', 'BASIC - Revision A.rom', 'BASIC - Revision A.zip'];
+    Expected := BasicRevACRC32;
+  end
+  else
+  begin
+    Names := ['Atari BASIC rev C.rom', 'ataribas.rom'];
+    Expected := BasicRevCCRC32;
+  end;
+  for var Folder in AtariFirmwareFolders(Storage, RomName, 'Original BASIC') do
+    for var Name in Names do
+    begin
+      var Location := TPath.Combine(Folder, Name);
+      if not Storage.Exists(Location) then
+        Continue;
+      try
+        var Data: TBytes;
+        if SameText(ExtractFileExt(Location), '.zip') then
+        begin
+          var Input := Storage.OpenRead(Location);
+          var Archive: IArchiveContainer;
+          try
+            Archive := OpenZip(Input, Storage);
+            var Member := Archive.FindName('BASIC - Revision A.rom');
+            if (Member < 0) or (Archive.Entries[Member].Size <> BasicSize) then
+              Continue;
+            Archive.Read(Member, Data);
+          finally
+            Archive := nil;
+            Input.Free;
+          end;
+        end
+        else
+          Data := ReadAtariFirmware(Storage, Location, BasicSize);
+        if (Length(Data) = BasicSize) and (crc32(0, @Data[0], Length(Data)) = Expected) then
+          Exit(Data);
+      except
+        on E: EInOutError do
+          Continue;
+        on E: EStreamError do
+          Continue;
+      end;
+    end;
+  Result := nil;
+end;
+
+function ResolveAtari8BootOptions(const Storage: IStorage; const RomName: string; Config: TA8Config; RequiresOriginalXLOS, TapeBootBasic, TapeBasicRevA, TapeOSB: Boolean): TA8Options;
+begin
+  Result := Config.Options;
+  var Legacy := Result.Model in [TA8Model.Atari400, TA8Model.Atari800];
+  if TapeOSB and (Legacy or ((Result.Model = TA8Model.Atari800XL) and (Config.XLOSFile = ''))) then
+  begin
+    Result.OSROM := ReadAtariFirmware(Storage, Config.LegacyOSFile, $2800);
+    if Length(Result.OSROM) = 0 then
+      Result.OSROM := FindOriginalOS(Storage, RomName, True);
+    if (Length(Result.OSROM) <> 0) and not Legacy then
+    begin
+      Result.Model := TA8Model.Atari800;
+      Legacy := True;
+    end;
+  end;
+  if Legacy then
+  begin
+    if Length(Result.OSROM) = 0 then
+      Result.OSROM := ReadAtariFirmware(Storage, Config.LegacyOSFile, $2800);
+  end
+  else
+  begin
+    Result.OSROM := ReadAtariFirmware(Storage, Config.XLOSFile, $4000);
+    if (Config.XLOSFile = '') and (Result.Model = TA8Model.Atari800XL) then
+    begin
+      var Original := FindOriginalOS(Storage, RomName, False);
+      if RequiresOriginalXLOS then
+        Result.OSROM := Original
+      else
+        Result.FallbackOSROM := Original;
+    end;
+    if Result.Model = TA8Model.AtariXEGS then
+      Result.GameROM := ReadAtariFirmware(Storage, Config.GameFile, $2000);
+  end;
+  if (Result.Model <> TA8Model.Atari1200XL) and (not Legacy or TapeBootBasic) then
+  begin
+    Result.BasicROM := ReadAtariFirmware(Storage, Config.BasicFile, $2000);
+    if (Config.BasicFile = '') and TapeBootBasic then
+      Result.BasicROM := FindOriginalBasic(Storage, RomName, TapeBasicRevA);
   end;
 end;
 
@@ -134,6 +283,10 @@ begin
   var Check := TA8Media.Create(FData, FExtension, FConfigObject.Options.Mapper);
   try
     FAutomaticRawMapper := Check.AutomaticRawMapper;
+    FRequiresOriginalXLOS := Check.RequiresOriginalXLOS;
+    FTapeBootBasic := Check.TapeBootBasic;
+    FTapeBasicRevA := Check.TapeBasicRevA;
+    FTapeOSB := Check.TapeOSB;
   finally
     Check.Free;
   end;
@@ -267,17 +420,8 @@ procedure TA8CoreAdapter.Start;
 begin
   if FThread <> nil then
     Exit;
-  var Options := FConfigObject.Options;
-  if Options.Model in [TA8Model.Atari400, TA8Model.Atari800] then
-    Options.OSROM := ReadAtariFirmware(FStorage, FConfigObject.LegacyOSFile, $2800)
-  else
-  begin
-    Options.OSROM := ReadAtariFirmware(FStorage, FConfigObject.XLOSFile, $4000);
-    if Options.Model <> TA8Model.Atari1200XL then
-      Options.BasicROM := ReadAtariFirmware(FStorage, FConfigObject.BasicFile, $2000);
-    if Options.Model = TA8Model.AtariXEGS then
-      Options.GameROM := ReadAtariFirmware(FStorage, FConfigObject.GameFile, $2000);
-  end;
+  var Options := ResolveAtari8BootOptions(FStorage, FRomName, FConfigObject, FRequiresOriginalXLOS,
+    FTapeBootBasic, FTapeBasicRevA, FTapeOSB);
   var Settings: TBytes := [Byte(Options.Model), Byte(Options.PAL), Byte(Options.Basic), Byte(Options.Mapper)];
   var Firmware := Options.OSROM + Options.BasicROM + Options.GameROM;
   var Identity := FData + Settings + Firmware;

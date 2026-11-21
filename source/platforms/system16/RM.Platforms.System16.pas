@@ -158,12 +158,20 @@ begin
   if System18 then
   begin
     RegisterSnapshotPolicy(SystemId, TSnapshotPolicy.Create(1));
-    RegisterSettingsPlatform(SystemId, TSystem18Settings);
+    RegisterSettingsPlatform(SystemId, TSystem18Settings,
+      'Use a complete, recognized arcade ROM set for the matching board. Keep the ROM archive ' +
+      'name and the expected names inside it. Some variants require parent set data or ' +
+      'board-specific ROMs. The emulation menu offers coin insertion for games with a coin ' +
+      'acceptor.');
   end
   else
   begin
     RegisterSnapshotPolicy(SystemId, TSnapshotPolicy.Create(2));
-    RegisterSettingsPlatform(SystemId, TSystem16Settings);
+    RegisterSettingsPlatform(SystemId, TSystem16Settings,
+      'Use a complete, recognized arcade ROM set for the matching board. Keep the ROM archive ' +
+      'name and the expected names inside it. Some variants require parent set data or ' +
+      'board-specific ROMs. The emulation menu offers coin insertion for games with a coin ' +
+      'acceptor.');
   end;
   RegisterPlatformSettingsDevices(SystemId, TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts(SystemId, TPlatformDeviceCallouts);

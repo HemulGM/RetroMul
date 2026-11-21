@@ -138,7 +138,7 @@ begin
     Result.Phase := TPlatformSessionPhase.Running;
   Result.SettingsOpen := FState.Settings.View <> nil;
   Result.GameplayVisible := (Core <> nil) and not FState.Browser.ViewingLibrary and
-    not Result.SettingsOpen and (FState.Help.View = nil);
+    not Result.SettingsOpen and (FState.Help.View = nil) and not FView.HelpPageActive;
   var DialogOpen := RetroDialogVisible(FView);
   Result.CanShowGameNotice := Result.GameplayVisible and not DialogOpen and
     (Result.Phase in [TPlatformSessionPhase.Running, TPlatformSessionPhase.Paused]);
@@ -152,7 +152,7 @@ begin
     (Result.Phase = TPlatformSessionPhase.Running);
   Result.VirtualControlsEnabled := (Core <> nil) and not FState.Session.EmulationFaulted and
     not FState.Session.OpeningRom and not FState.Session.UserPaused and
-    not FState.Session.AutoPaused and not FState.Session.Reporting;
+    not FState.Session.AutoPaused and not FState.Session.Reporting and not FView.HelpPageActive;
   Result.ShowVirtualGamepad := FState.Preferences.VirtualGamepadVisibility = TVirtualGamepadVisibility.Show;
   {$IFDEF ISMOBILE}
   if FState.Preferences.VirtualGamepadVisibility = TVirtualGamepadVisibility.Automatic then

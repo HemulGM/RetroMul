@@ -12,7 +12,7 @@ object ControlsHelpView: TControlsHelpView
   end
   object RectangleSurface: TRectangle
     Align = Center
-    Fill.Color = xFF23292F
+    Fill.Color = xFF25252D
     Padding.Left = 24.000000000000000000
     Padding.Top = 20.000000000000000000
     Padding.Right = 24.000000000000000000
@@ -20,7 +20,7 @@ object ControlsHelpView: TControlsHelpView
     Size.Width = 1080.000000000000000000
     Size.Height = 740.000000000000000000
     Size.PlatformDefault = False
-    Stroke.Color = xFF47515D
+    Stroke.Color = xFF444450
     XRadius = 10.000000000000000000
     YRadius = 10.000000000000000000
     object LayoutHeader: TLayout
@@ -54,7 +54,7 @@ object ControlsHelpView: TControlsHelpView
         Size.Width = 40.000000000000000000
         Size.Height = 40.000000000000000000
         Size.PlatformDefault = False
-        Stroke.Color = xFFFFB43B
+        Stroke.Color = xFFB8A6FA
         Stroke.Thickness = 1.600000023841858000
         WrapMode = Fit
       end
@@ -71,7 +71,7 @@ object ControlsHelpView: TControlsHelpView
           Size.PlatformDefault = False
           TextSettings.Font.Size = 25.000000000000000000
           TextSettings.Font.StyleExt = {00070000000000000004000000}
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.WordWrap = False
           Text = 'Controls and shortcuts'
         end
@@ -85,7 +85,7 @@ object ControlsHelpView: TControlsHelpView
           Size.Height = 24.000000000000000000
           Size.PlatformDefault = False
           TextSettings.Font.Size = 13.000000000000000000
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.WordWrap = False
         end
       end
@@ -105,7 +105,7 @@ object ControlsHelpView: TControlsHelpView
         Size.Width = 1032.000000000000000000
         Size.Height = 48.000000000000000000
         Size.PlatformDefault = False
-        TextSettings.FontColor = xFFE8ECF1
+        TextSettings.FontColor = xFFE9E8F1
         Text = 'Change bindings in the controls settings.'
       end
       object LayoutHelpActions: TLayout
@@ -125,7 +125,7 @@ object ControlsHelpView: TControlsHelpView
           StyleLookup = 'buttonstyle'
           Text = 'Configure controls'
           TextSettings.Font.Size = 13.000000000000000000
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           ParentShowHint = False
           ShowHint = True
           object PathSettingsIcon: TPath
@@ -154,7 +154,7 @@ object ControlsHelpView: TControlsHelpView
             Size.Width = 20.000000000000000000
             Size.Height = 20.000000000000000000
             Size.PlatformDefault = False
-            Stroke.Color = xFFB9C2CC
+            Stroke.Color = xFFA9AAB9
             Stroke.Thickness = 1.600000023841858000
             WrapMode = Fit
           end
@@ -171,7 +171,7 @@ object ControlsHelpView: TControlsHelpView
           StyleLookup = 'buttonstyle'
           Text = 'Close   Esc'
           TextSettings.Font.Size = 13.000000000000000000
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           ParentShowHint = False
           ShowHint = True
         end
@@ -215,7 +215,7 @@ object ControlsHelpView: TControlsHelpView
               Size.PlatformDefault = False
               TextSettings.Font.Size = 20.000000000000000000
               TextSettings.Font.StyleExt = {00070000000000000004000000}
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               Text = 'Game controller'
             end
@@ -243,7 +243,7 @@ object ControlsHelpView: TControlsHelpView
                   StyleLookup = 'buttonstyle'
                   Text = 'Player 1'
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                 end
               end
               object LayoutPlayerTabRow1: TLayout
@@ -265,7 +265,7 @@ object ControlsHelpView: TControlsHelpView
                   StyleLookup = 'buttonstyle'
                   Text = 'Player 2'
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                 end
               end
               object LayoutPlayerTabRow2: TLayout
@@ -287,7 +287,7 @@ object ControlsHelpView: TControlsHelpView
                   StyleLookup = 'buttonstyle'
                   Text = 'Player 3'
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   Visible = False
                 end
               end
@@ -310,7 +310,7 @@ object ControlsHelpView: TControlsHelpView
                   StyleLookup = 'buttonstyle'
                   Text = 'Player 4'
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   Visible = False
                 end
               end
@@ -333,7 +333,7 @@ object ControlsHelpView: TControlsHelpView
                   StyleLookup = 'buttonstyle'
                   Text = 'Player 5'
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   Visible = False
                 end
               end
@@ -356,7 +356,7 @@ object ControlsHelpView: TControlsHelpView
                   StyleLookup = 'buttonstyle'
                   Text = 'Player 6'
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   Visible = False
                 end
               end
@@ -379,7 +379,7 @@ object ControlsHelpView: TControlsHelpView
                   StyleLookup = 'buttonstyle'
                   Text = 'Player 7'
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   Visible = False
                 end
               end
@@ -402,7 +402,7 @@ object ControlsHelpView: TControlsHelpView
                   StyleLookup = 'buttonstyle'
                   Text = 'Player 8'
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   Visible = False
                 end
               end
@@ -416,7 +416,7 @@ object ControlsHelpView: TControlsHelpView
               Size.Width = 529.200012207031300000
               Size.Height = 24.000000000000000000
               Size.PlatformDefault = False
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
             end
             object LayoutDiagram: TLayout
@@ -473,7 +473,7 @@ object ControlsHelpView: TControlsHelpView
               Size.PlatformDefault = False
               TextSettings.Font.Size = 20.000000000000000000
               TextSettings.Font.StyleExt = {00070000000000000004000000}
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               Text = 'RetroMul functions'
             end
@@ -486,7 +486,7 @@ object ControlsHelpView: TControlsHelpView
               Size.Height = 24.000000000000000000
               Size.PlatformDefault = False
               TextSettings.Font.Size = 13.000000000000000000
-              TextSettings.FontColor = xFFE8ECF1
+              TextSettings.FontColor = xFFE9E8F1
               TextSettings.WordWrap = False
               Text = 'Emulator shortcuts'
             end
@@ -509,13 +509,13 @@ object ControlsHelpView: TControlsHelpView
                   Size.Height = 44.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.WordWrap = False
                   Text = 'Show controls help'
                 end
                 object RectangleFunctionKeyBox0: TRectangle
                   Align = Right
-                  Fill.Color = xFF1B2126
+                  Fill.Color = xFF25252D
                   HitTest = False
                   Margins.Left = 8.000000000000000000
                   Margins.Top = 4.000000000000000000
@@ -525,7 +525,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 88.000000000000000000
                   Size.Height = 36.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFF586572
+                  Stroke.Color = xFF555564
                   XRadius = 5.000000000000000000
                   YRadius = 5.000000000000000000
                   object LabelFunctionKey0: TLabel
@@ -539,7 +539,7 @@ object ControlsHelpView: TControlsHelpView
                     Size.Width = 72.000000000000000000
                     Size.Height = 36.000000000000000000
                     Size.PlatformDefault = False
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.HorzAlign = Center
                     TextSettings.WordWrap = False
                     Text = 'F1'
@@ -570,7 +570,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 20.000000000000000000
                   Size.Height = 20.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFB9C2CC
+                  Stroke.Color = xFFA9AAB9
                   Stroke.Thickness = 1.600000023841858000
                   WrapMode = Fit
                 end
@@ -588,13 +588,13 @@ object ControlsHelpView: TControlsHelpView
                   Size.Height = 44.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.WordWrap = False
                   Text = 'Save state'
                 end
                 object RectangleFunctionKeyBox1: TRectangle
                   Align = Right
-                  Fill.Color = xFF1B2126
+                  Fill.Color = xFF25252D
                   HitTest = False
                   Margins.Left = 8.000000000000000000
                   Margins.Top = 4.000000000000000000
@@ -604,7 +604,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 88.000000000000000000
                   Size.Height = 36.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFF586572
+                  Stroke.Color = xFF555564
                   XRadius = 5.000000000000000000
                   YRadius = 5.000000000000000000
                   object LabelFunctionKey1: TLabel
@@ -618,7 +618,7 @@ object ControlsHelpView: TControlsHelpView
                     Size.Width = 72.000000000000000000
                     Size.Height = 36.000000000000000000
                     Size.PlatformDefault = False
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.HorzAlign = Center
                     TextSettings.WordWrap = False
                     Text = 'F5'
@@ -644,7 +644,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 20.000000000000000000
                   Size.Height = 20.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFB9C2CC
+                  Stroke.Color = xFFA9AAB9
                   Stroke.Thickness = 1.600000023841858000
                   WrapMode = Fit
                 end
@@ -662,13 +662,13 @@ object ControlsHelpView: TControlsHelpView
                   Size.Height = 44.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.WordWrap = False
                   Text = 'Load state'
                 end
                 object RectangleFunctionKeyBox2: TRectangle
                   Align = Right
-                  Fill.Color = xFF1B2126
+                  Fill.Color = xFF25252D
                   HitTest = False
                   Margins.Left = 8.000000000000000000
                   Margins.Top = 4.000000000000000000
@@ -678,7 +678,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 88.000000000000000000
                   Size.Height = 36.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFF586572
+                  Stroke.Color = xFF555564
                   XRadius = 5.000000000000000000
                   YRadius = 5.000000000000000000
                   object LabelFunctionKey2: TLabel
@@ -692,7 +692,7 @@ object ControlsHelpView: TControlsHelpView
                     Size.Width = 72.000000000000000000
                     Size.Height = 36.000000000000000000
                     Size.PlatformDefault = False
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.HorzAlign = Center
                     TextSettings.WordWrap = False
                     Text = 'F6'
@@ -717,7 +717,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 20.000000000000000000
                   Size.Height = 20.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFB9C2CC
+                  Stroke.Color = xFFA9AAB9
                   Stroke.Thickness = 1.600000023841858000
                   WrapMode = Fit
                 end
@@ -735,13 +735,13 @@ object ControlsHelpView: TControlsHelpView
                   Size.Height = 44.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.WordWrap = False
                   Text = 'Take screenshot'
                 end
                 object RectangleFunctionKeyBox3: TRectangle
                   Align = Right
-                  Fill.Color = xFF1B2126
+                  Fill.Color = xFF25252D
                   HitTest = False
                   Margins.Left = 8.000000000000000000
                   Margins.Top = 4.000000000000000000
@@ -751,7 +751,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 88.000000000000000000
                   Size.Height = 36.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFF586572
+                  Stroke.Color = xFF555564
                   XRadius = 5.000000000000000000
                   YRadius = 5.000000000000000000
                   object LabelFunctionKey3: TLabel
@@ -765,7 +765,7 @@ object ControlsHelpView: TControlsHelpView
                     Size.Width = 72.000000000000000000
                     Size.Height = 36.000000000000000000
                     Size.PlatformDefault = False
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.HorzAlign = Center
                     TextSettings.WordWrap = False
                     Text = 'F8'
@@ -792,7 +792,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 20.000000000000000000
                   Size.Height = 20.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFB9C2CC
+                  Stroke.Color = xFFA9AAB9
                   Stroke.Thickness = 1.600000023841858000
                   WrapMode = Fit
                 end
@@ -810,13 +810,13 @@ object ControlsHelpView: TControlsHelpView
                   Size.Height = 44.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.WordWrap = False
                   Text = 'Pause / resume'
                 end
                 object RectangleFunctionKeyBox4: TRectangle
                   Align = Right
-                  Fill.Color = xFF1B2126
+                  Fill.Color = xFF25252D
                   HitTest = False
                   Margins.Left = 8.000000000000000000
                   Margins.Top = 4.000000000000000000
@@ -826,7 +826,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 88.000000000000000000
                   Size.Height = 36.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFF586572
+                  Stroke.Color = xFF555564
                   XRadius = 5.000000000000000000
                   YRadius = 5.000000000000000000
                   object LabelFunctionKey4: TLabel
@@ -840,7 +840,7 @@ object ControlsHelpView: TControlsHelpView
                     Size.Width = 72.000000000000000000
                     Size.Height = 36.000000000000000000
                     Size.PlatformDefault = False
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.HorzAlign = Center
                     TextSettings.WordWrap = False
                     Text = 'P'
@@ -862,7 +862,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 20.000000000000000000
                   Size.Height = 20.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFB9C2CC
+                  Stroke.Color = xFFA9AAB9
                   Stroke.Thickness = 1.600000023841858000
                   WrapMode = Fit
                 end
@@ -880,13 +880,13 @@ object ControlsHelpView: TControlsHelpView
                   Size.Height = 44.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.WordWrap = False
                   Text = 'Full screen'
                 end
                 object RectangleFunctionKeyBox5: TRectangle
                   Align = Right
-                  Fill.Color = xFF1B2126
+                  Fill.Color = xFF25252D
                   HitTest = False
                   Margins.Left = 8.000000000000000000
                   Margins.Top = 4.000000000000000000
@@ -896,7 +896,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 88.000000000000000000
                   Size.Height = 36.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFF586572
+                  Stroke.Color = xFF555564
                   XRadius = 5.000000000000000000
                   YRadius = 5.000000000000000000
                   object LabelFunctionKey5: TLabel
@@ -910,7 +910,7 @@ object ControlsHelpView: TControlsHelpView
                     Size.Width = 72.000000000000000000
                     Size.Height = 36.000000000000000000
                     Size.PlatformDefault = False
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.HorzAlign = Center
                     TextSettings.WordWrap = False
                     Text = 'F11'
@@ -935,7 +935,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 20.000000000000000000
                   Size.Height = 20.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFB9C2CC
+                  Stroke.Color = xFFA9AAB9
                   Stroke.Thickness = 1.600000023841858000
                   WrapMode = Fit
                 end
@@ -953,13 +953,13 @@ object ControlsHelpView: TControlsHelpView
                   Size.Height = 44.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.WordWrap = False
                   Text = 'Restart game'
                 end
                 object RectangleFunctionKeyBox6: TRectangle
                   Align = Right
-                  Fill.Color = xFF1B2126
+                  Fill.Color = xFF25252D
                   HitTest = False
                   Margins.Left = 8.000000000000000000
                   Margins.Top = 4.000000000000000000
@@ -969,7 +969,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 88.000000000000000000
                   Size.Height = 36.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFF586572
+                  Stroke.Color = xFF555564
                   XRadius = 5.000000000000000000
                   YRadius = 5.000000000000000000
                   object LabelFunctionKey6: TLabel
@@ -983,7 +983,7 @@ object ControlsHelpView: TControlsHelpView
                     Size.Width = 72.000000000000000000
                     Size.Height = 36.000000000000000000
                     Size.PlatformDefault = False
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.HorzAlign = Center
                     TextSettings.WordWrap = False
                     Text = 'R'
@@ -1008,7 +1008,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 20.000000000000000000
                   Size.Height = 20.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFB9C2CC
+                  Stroke.Color = xFFA9AAB9
                   Stroke.Thickness = 1.600000023841858000
                   WrapMode = Fit
                 end
@@ -1026,13 +1026,13 @@ object ControlsHelpView: TControlsHelpView
                   Size.Height = 44.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.WordWrap = False
                   Text = 'Hard restart'
                 end
                 object RectangleFunctionHardRestartKeyBox: TRectangle
                   Align = Right
-                  Fill.Color = xFF1B2126
+                  Fill.Color = xFF25252D
                   HitTest = False
                   Margins.Left = 8.000000000000000000
                   Margins.Top = 4.000000000000000000
@@ -1042,7 +1042,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 88.000000000000000000
                   Size.Height = 36.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFF586572
+                  Stroke.Color = xFF555564
                   XRadius = 5.000000000000000000
                   YRadius = 5.000000000000000000
                   object LabelFunctionHardRestartKey: TLabel
@@ -1056,7 +1056,7 @@ object ControlsHelpView: TControlsHelpView
                     Size.Width = 72.000000000000000000
                     Size.Height = 36.000000000000000000
                     Size.PlatformDefault = False
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.HorzAlign = Center
                     TextSettings.WordWrap = False
                     Text = 'Shift+R'
@@ -1081,7 +1081,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 20.000000000000000000
                   Size.Height = 20.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFB9C2CC
+                  Stroke.Color = xFFA9AAB9
                   Stroke.Thickness = 1.600000023841858000
                   WrapMode = Fit
                 end
@@ -1099,13 +1099,13 @@ object ControlsHelpView: TControlsHelpView
                   Size.Height = 44.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.WordWrap = False
                   Text = 'Open ROM'
                 end
                 object RectangleFunctionKeyBox7: TRectangle
                   Align = Right
-                  Fill.Color = xFF1B2126
+                  Fill.Color = xFF25252D
                   HitTest = False
                   Margins.Left = 8.000000000000000000
                   Margins.Top = 4.000000000000000000
@@ -1115,7 +1115,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 88.000000000000000000
                   Size.Height = 36.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFF586572
+                  Stroke.Color = xFF555564
                   XRadius = 5.000000000000000000
                   YRadius = 5.000000000000000000
                   object LabelFunctionKey7: TLabel
@@ -1129,7 +1129,7 @@ object ControlsHelpView: TControlsHelpView
                     Size.Width = 72.000000000000000000
                     Size.Height = 36.000000000000000000
                     Size.PlatformDefault = False
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.HorzAlign = Center
                     TextSettings.WordWrap = False
                     Text = 'Ctrl + O'
@@ -1152,7 +1152,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 20.000000000000000000
                   Size.Height = 20.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFB9C2CC
+                  Stroke.Color = xFFA9AAB9
                   Stroke.Thickness = 1.600000023841858000
                   WrapMode = Fit
                 end
@@ -1170,13 +1170,13 @@ object ControlsHelpView: TControlsHelpView
                   Size.Height = 44.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.WordWrap = False
                   Text = 'Exit full screen'
                 end
                 object RectangleFunctionKeyBox8: TRectangle
                   Align = Right
-                  Fill.Color = xFF1B2126
+                  Fill.Color = xFF25252D
                   HitTest = False
                   Margins.Left = 8.000000000000000000
                   Margins.Top = 4.000000000000000000
@@ -1186,7 +1186,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 88.000000000000000000
                   Size.Height = 36.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFF586572
+                  Stroke.Color = xFF555564
                   XRadius = 5.000000000000000000
                   YRadius = 5.000000000000000000
                   object LabelFunctionKey8: TLabel
@@ -1200,7 +1200,7 @@ object ControlsHelpView: TControlsHelpView
                     Size.Width = 72.000000000000000000
                     Size.Height = 36.000000000000000000
                     Size.PlatformDefault = False
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.HorzAlign = Center
                     TextSettings.WordWrap = False
                     Text = 'Esc'
@@ -1225,7 +1225,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 20.000000000000000000
                   Size.Height = 20.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFB9C2CC
+                  Stroke.Color = xFFA9AAB9
                   Stroke.Thickness = 1.600000023841858000
                   WrapMode = Fit
                 end
@@ -1244,13 +1244,13 @@ object ControlsHelpView: TControlsHelpView
                   Size.Height = 44.000000000000000000
                   Size.PlatformDefault = False
                   TextSettings.Font.Size = 13.000000000000000000
-                  TextSettings.FontColor = xFFE8ECF1
+                  TextSettings.FontColor = xFFE9E8F1
                   TextSettings.WordWrap = False
                   Text = 'Insert coin'
                 end
                 object RectangleFunctionKeyBox9: TRectangle
                   Align = Right
-                  Fill.Color = xFF1B2126
+                  Fill.Color = xFF25252D
                   HitTest = False
                   Margins.Left = 8.000000000000000000
                   Margins.Top = 4.000000000000000000
@@ -1260,7 +1260,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 88.000000000000000000
                   Size.Height = 36.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFF586572
+                  Stroke.Color = xFF555564
                   XRadius = 5.000000000000000000
                   YRadius = 5.000000000000000000
                   object LabelFunctionKey9: TLabel
@@ -1274,7 +1274,7 @@ object ControlsHelpView: TControlsHelpView
                     Size.Width = 72.000000000000000000
                     Size.Height = 36.000000000000000000
                     Size.PlatformDefault = False
-                    TextSettings.FontColor = xFFE8ECF1
+                    TextSettings.FontColor = xFFE9E8F1
                     TextSettings.HorzAlign = Center
                     TextSettings.WordWrap = False
                     Text = 'F9'
@@ -1301,7 +1301,7 @@ object ControlsHelpView: TControlsHelpView
                   Size.Width = 20.000000000000000000
                   Size.Height = 20.000000000000000000
                   Size.PlatformDefault = False
-                  Stroke.Color = xFFB9C2CC
+                  Stroke.Color = xFFA9AAB9
                   Stroke.Thickness = 1.600000023841858000
                   WrapMode = Fit
                 end
@@ -1311,7 +1311,7 @@ object ControlsHelpView: TControlsHelpView
         end
         object RectangleDivider: TRectangle
           Align = Left
-          Fill.Color = xFF404A55
+          Fill.Color = xFF444450
           Margins.Left = 24.000000000000000000
           Position.X = 567.200012207031300000
           Size.Width = 1.000000000000000000

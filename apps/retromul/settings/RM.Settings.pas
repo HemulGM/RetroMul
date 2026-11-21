@@ -185,7 +185,7 @@ type
     procedure UpdateConditions;
     function Row(const Name, Caption, Description: string; Kind: TSettingsRowKind = TSettingsRowKind.Standard): TPanel;
     function Combo(const Name, Caption, Description, Section, Key: string; const Labels, Values: array of string; const Default: string): TComboBox;
-    function Check(const Name, Caption, Description, Section, Key: string; Default: Boolean): TSwitch;
+    function Check(const Name, Caption, Description, Section, Key: string; Default: Boolean): TCheckBox;
     function Number(const Name, Caption, Description, Section, Key: string; Default, Max: Integer): TSpinBox;
     function EditText(const Name, Caption, Description, Section, Key, Default: string): TEdit;
     function PathEdit(const Name, Caption, Description, Section, Key, Default: string; Folder: Boolean): TEdit;
@@ -372,7 +372,7 @@ begin
   FCaption.StyledSettings := [];
   FCaption.TextSettings.Font.Family := 'Segoe UI';
   FCaption.TextSettings.Font.Size := 14;
-  FCaption.TextSettings.FontColor := $FFE8ECF1;
+  FCaption.TextSettings.FontColor := ThemeTextColor;
 end;
 
 procedure TSettingsComboBox.ApplyStyle;
@@ -929,7 +929,7 @@ begin
         'Save all original strings to a UTF-8 file for translation.',
         'Save translation template', SaveTemplateClick);
       FContext.AddInformation('RowTheme', 'Theme',
-        'RetroMul dark theme with an amber accent.', 'Dark · RetroMul');
+        'RetroMul dark theme with a purple accent.', 'Dark · RetroMul');
 
       Heading('GroupDuringgameplay', 'During gameplay');
       Check('RowPausewhenfocusislost', 'Pause when focus is lost', 'When switching to another application.', 'General', 'PauseOnFocusLoss', True);
@@ -1152,7 +1152,7 @@ begin
     if F.Control = Sender then
     begin
       if not F.Pull then
-        Exit; // Ignore delayed notifications from switch animation.
+        Exit;
       // Multiple panels can edit a shared setting (for example a keyboard
       // connected through different ports). Keep their editors in agreement.
       FBuilding := True;
@@ -1476,7 +1476,11 @@ begin
         if C = nil then
           C := R.Editor;
         if C = nil then
-          C := TSwitch.Create(R.Template);
+        begin
+          var CheckBox := TCheckBox.Create(R.Template);
+          CheckBox.StyleLookup := 'checkboxstyle_switch';
+          C := CheckBox;
+        end;
       end;
     TSettingsFieldKind.Choice:
       begin
@@ -1534,7 +1538,7 @@ begin
       TControl(C.Parent).Margins.Rect := TRectF.Empty;
     C.Align := TAlignLayout.Client;
   end;
-  if C is TSwitch then
+  if C is TCheckBox then
   begin
     C.Align := TAlignLayout.Center;
     C.Size.PlatformDefault := False;
@@ -1559,7 +1563,7 @@ begin
   Binding.Load;
   case Definition.Kind of
     TSettingsFieldKind.BooleanValue:
-      TSwitch(C).OnSwitch := ConfigurationChange;
+      TCheckBox(C).OnChange := ConfigurationChange;
     TSettingsFieldKind.Choice:
       begin
         TComboBox(C).OnChange := ConfigurationChange;
@@ -1604,10 +1608,10 @@ begin
   Result := TComboBox(FFields.Last.Control);
 end;
 
-function TSettingsView.Check(const Name, Caption, Description, Section, Key: string; Default: Boolean): TSwitch;
+function TSettingsView.Check(const Name, Caption, Description, Section, Key: string; Default: Boolean): TCheckBox;
 begin
   FContext.AddBoolean(Name, Caption, Description, Section, Key, Default);
-  Result := TSwitch(FFields.Last.Control);
+  Result := TCheckBox(FFields.Last.Control);
 end;
 
 function TSettingsView.Number(const Name, Caption, Description, Section, Key: string; Default, Max: Integer): TSpinBox;
@@ -1700,9 +1704,9 @@ begin
       LabelTitle.Text := Translate('General settings');
     for var i := Low(FCategoryIcons) to High(FCategoryIcons) do
       if i = FCategory then
-        TPath(FCategoryIcons[i]).Stroke.Color := $FFFFB344
+        TPath(FCategoryIcons[i]).Stroke.Color := ThemeAccentTextColor
       else
-        TPath(FCategoryIcons[i]).Stroke.Color := $FFB9C2CC;
+        TPath(FCategoryIcons[i]).Stroke.Color := ThemeSecondaryTextColor;
     var CompactSearch := LayoutHeader.Width < 740;
     var HeadingRow := LayoutSettingsHeading;
     var CompactSearchSlot := LayoutSettingsCompactSearchSlot;
@@ -1862,7 +1866,7 @@ end;
 procedure TSettingsView.EditorResize(Sender: TObject);
 begin
   var C := TControl(Sender);
-  if C is TSwitch then
+  if C is TCheckBox then
     C.Size.Size := TSizeF.Create(SETTINGS_SWITCH_WIDTH, SETTINGS_SWITCH_HEIGHT)
   else if C.Height > 32 then
     C.Height := 32;
@@ -1925,7 +1929,7 @@ begin
   if R.Editor <> nil then
   begin
     var Editor := R.Editor;
-    if Editor is TSwitch then
+    if Editor is TCheckBox then
     begin
       W := SETTINGS_SWITCH_WIDTH;
       Editor.Align := TAlignLayout.Center;
@@ -2148,6 +2152,9 @@ begin
       begin
         Brand := Match.Brand;
         var Header := TListBoxGroupHeader.Create(ListBoxPlatforms);
+        Header.StyledSettings := Header.StyledSettings - [TStyledSetting.Other];
+        Header.TextSettings.WordWrap := False;
+        Header.TextSettings.Trimming := TTextTrimming.Character;
         Header.Parent := ListBoxPlatforms;
         Header.Text := Brand;
         Header.Height := 36;

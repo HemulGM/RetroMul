@@ -8,7 +8,8 @@ uses
   System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Types,
   FMX.Platform, FMX.Dialogs, Core.Emulation, Core.Storage, FMXInput, WinUI3.Form,
   RM.Main.State, RM.ShaderBitmap, FMX.Menus, FMX.Objects, FMX.StdCtrls,
-  FMX.Controls.Presentation, FMX.Layouts, FMX.Controls, FMX.TabControl
+  FMX.Controls.Presentation, FMX.Layouts, FMX.Controls, FMX.TabControl, FMX.Edit,
+  FMX.ListBox
   {$IF not Defined(LINUX)}
     , System.Sensors
   {$ENDIF}
@@ -30,6 +31,15 @@ type
     LibraryScreen: TTabItem;
     GameScreen: TTabItem;
     SettingsScreen: TTabItem;
+    HelpScreen: TTabItem;
+    VertScrollBoxHelp: TVertScrollBox;
+    LayoutHelpPage, LayoutHelpContent, LayoutHelpBrand, LayoutHelpActions: TLayout;
+    PanelHelpSidebar, PanelHelpPlatforms: TPanel;
+    LayoutHelpPlatformSearchSlot, LayoutHelpPlatformPickerRow: TLayout;
+    ListBoxHelpPlatforms: TListBox;
+    ComboBoxHelpPlatforms: TComboBox;
+    LabelHelpTitle, LabelHelpNoPlatforms: TLabel;
+    ButtonHelpBack, ButtonHelpWebsite, ButtonHelpFeedback: TButton;
     ButtonLibrary: TButton;
     GamePause: TButton;
     ButtonReset: TButton;
@@ -60,6 +70,14 @@ type
     procedure FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState); virtual;
     procedure FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState); virtual;
     procedure TimerUpdateTimer(Sender: TObject); virtual;
+    procedure ResizeHelpPage(Sender: TObject);
+    procedure ResizeHelpContent(Sender: TObject);
+    procedure HelpPlatformListChange(Sender: TObject);
+    procedure HelpPlatformPickerChange(Sender: TObject);
+    procedure HelpPlatformPickerMouseWheel(Sender: TObject; Shift: TShiftState; WheelDelta: Integer; var Handled: Boolean);
+    procedure CloseHelpClick(Sender: TObject);
+    procedure OpenHelpWebsiteClick(Sender: TObject);
+    procedure ReportBugClick(Sender: TObject); virtual;
     procedure ButtonOpenClick(Sender: TObject); virtual;
     procedure FormSafeAreaChanged(Sender: TObject; const AInsets: TRectF); virtual;
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean); virtual;
@@ -73,6 +91,17 @@ type
   private
     // The concrete controller types are private to the implementation.
     FControllers: TObject;
+    FHelpReturnTab: TTabItem;
+    FResizingHelp, FUpdatingHelpPlatforms: Boolean;
+    FHelpPlatformId: string;
+    FHelpPlatformSearch: TEdit;
+    {$IFNDEF ISMOBILE}
+    FHelpResumeCore: IEmulationCore;
+    {$ENDIF}
+    procedure RefreshHelpPlatforms;
+    procedure HelpPlatformSearchChange(Sender: TObject);
+    procedure SelectHelpPlatform(const PageId: string);
+    procedure ShowHelpArticle;
   public
     ImageCanvas: TShaderBitmap;
     function DetectSystemLanguage: string; virtual;
@@ -82,7 +111,9 @@ type
     function ExecuteSnapshotDialog(Dialog: TOpenDialog): Boolean; virtual;
     procedure OpenDirectory(const Directory: string); virtual;
     property State: TMainState read FState;
-    procedure ReportBugClick(Sender: TObject); virtual;
+    function HelpPageActive: Boolean;
+    procedure OpenHelpClick(Sender: TObject);
+    procedure ApplyHelpLanguage(const PreviousLanguage: string);
     procedure ApplyFeedbackLanguage(const PreviousLanguage: string); virtual;
     procedure PollRumble; virtual;
     procedure SyncMotionSensor; virtual;
@@ -151,6 +182,7 @@ type
     {$ENDIF}
   protected
     function CreateStorage: IStorage; virtual;
+    function OpenWebsite: Boolean; virtual;
     function CreateHostInput: TInputManager; virtual;
     function CreateCore(const FileName: string): IEmulationCore; virtual;
     procedure DoOnSettingChange; override;
@@ -180,12 +212,13 @@ var
 implementation
 
 uses
-  System.IOUtils, System.Messaging, FMX.Forms, FMX.Graphics, FMX.OpenDialog,
-  WinUI3.Style, Core.EmulatorFactory, RM.Storage.Dialogs, RM.Feedback,
-  RM.Controllers.Browser, RM.Controllers.Window, RM.Controllers.Settings,
-  RM.Controllers.Snapshots, RM.Controllers.Input, RM.Controllers.Mobile,
-  RM.Controllers.Session, RM.Dialogs, RM.Styles, RM.Rumble, FMX.Image,
-  RM.Input.Gamepads
+  System.IOUtils, System.Math, System.Messaging, FMX.Forms, FMX.Graphics,
+  FMX.OpenDialog, FMX.BehaviorManager, WinUI3.Style, Core.EmulatorFactory,
+  RM.Storage.Dialogs, RM.Feedback, RM.Controllers.Browser, RM.Controllers.Window,
+  RM.Controllers.Settings, RM.Controllers.Snapshots, RM.Controllers.Input,
+  RM.Controllers.Mobile, RM.Controllers.Session, RM.Dialogs, RM.Styles,
+  RM.Rumble, FMX.Image, RM.Input.Gamepads, RM.Help.Content, RM.Settings.Catalog,
+  RM.Settings.Platform, RM.SearchEdit, RM.Icons, RM.Controls.Lifetime
   {$IF not Defined(LINUX)}
     , System.Sensors.Components
   {$ENDIF}
@@ -194,6 +227,14 @@ uses
   {$ENDIF}
   {$IF Defined(MACOS) and not Defined(IOS)}
     , Macapi.AppKit, Macapi.Helpers
+  {$ENDIF}
+  {$IFDEF IOS}
+    , iOSapi.Helpers, Macapi.Helpers
+  {$ENDIF}
+  {$IFDEF ANDROID}
+    , Androidapi.Helpers, Androidapi.JNI.App,
+    Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.JavaTypes,
+    Androidapi.JNI.Net
   {$ENDIF}
   {$IF Defined(LINUX) and not Defined(ANDROID)}
     , Posix.Stdlib
@@ -245,7 +286,11 @@ begin
   FState := TMainState.Create;
   FControllers := TMainControllers.Create(Self);
   FormStyles := TFormStyles.Create(Application);
+  ChangeStyleBookColor(FormStyles.StyleBookWinUI3, ThemeAccentColor);
   inherited;
+  ButtonHelpBack.StylesData['text.Margins.Left'] := 44;
+  ComboBoxHelpPlatforms.ListBox.ScrollAnimation := TBehaviorBoolean.True;
+  ComboBoxHelpPlatforms.ListBox.OnMouseWheel := HelpPlatformPickerMouseWheel;
   OnTouch := TMainControllers(FControllers).Input.FormTouch;
   ImageCanvas := TShaderBitmap.Create(Self);
   ImageCanvas.Name := 'ImageCanvas';
@@ -317,6 +362,397 @@ begin
   SyncActivity;
 end;
 
+function TFormMain.HelpPageActive: Boolean;
+begin
+  Result := (ScreenTabs <> nil) and (HelpScreen <> nil) and (ScreenTabs.ActiveTab = HelpScreen);
+end;
+
+procedure TFormMain.ResizeHelpPage(Sender: TObject);
+begin
+  if (csLoading in ComponentState) or (csDestroying in ComponentState) or (LayoutHelpPage = nil) or
+    (PanelHelpSidebar = nil) or (LayoutHelpBrand = nil) or (LayoutHelpActions = nil) or
+    (PanelHelpPlatforms = nil) or (LayoutHelpPlatformPickerRow = nil) then
+    Exit;
+
+  var Compact := LayoutHelpPage.Width < 760;
+  PanelHelpPlatforms.Visible := LayoutHelpPage.Width >= 1000;
+  LayoutHelpPlatformPickerRow.Visible := not PanelHelpPlatforms.Visible;
+  var SidebarAlign := TAlignLayout.MostLeft;
+  if Compact then
+    SidebarAlign := TAlignLayout.Top;
+  LayoutHelpActions.BeginUpdate;
+  try
+    if PanelHelpSidebar.Align <> SidebarAlign then
+    begin
+      PanelHelpSidebar.Align := SidebarAlign;
+      LayoutHelpBrand.Visible := not Compact;
+      if Compact then
+      begin
+        PanelHelpSidebar.Height := 58;
+        PanelHelpSidebar.StyleLookup := 'retromul_panel_top';
+      end
+      else
+      begin
+        PanelHelpSidebar.Width := 264;
+        PanelHelpSidebar.StyleLookup := 'retromul_panel_left';
+      end;
+      for var I := 0 to LayoutHelpActions.ControlsCount - 1 do
+      begin
+        var Button := LayoutHelpActions.Controls[I];
+        // FMX uses the position along the alignment axis to order sibling controls.
+        if Compact then
+        begin
+          Button.Align := TAlignLayout.Left;
+          Button.Position.X := I * 200;
+          Button.Margins.Rect := TRectF.Create(0, 8, 8 * Ord(I < LayoutHelpActions.ControlsCount - 1), 8);
+        end
+        else
+        begin
+          Button.Align := TAlignLayout.Top;
+          Button.Position.Y := I * 50;
+          Button.Height := 42;
+          Button.Margins.Rect := TRectF.Create(0, 0, 0, 8);
+        end;
+      end;
+    end;
+    if Compact then
+    begin
+      var ActionsWidth := LayoutHelpPage.Width - LayoutHelpActions.Padding.Left - LayoutHelpActions.Padding.Right;
+      var Gaps := 8 * (LayoutHelpActions.ControlsCount - 1);
+      var ButtonWidth := Max(1, (ActionsWidth - Gaps) / LayoutHelpActions.ControlsCount);
+      for var I := 0 to LayoutHelpActions.ControlsCount - 1 do
+        LayoutHelpActions.Controls[I].Width := ButtonWidth;
+    end;
+  finally
+    LayoutHelpActions.EndUpdate;
+  end;
+end;
+
+procedure TFormMain.ResizeHelpContent(Sender: TObject);
+begin
+  if FResizingHelp or (csLoading in ComponentState) or (csDestroying in ComponentState) or
+    (LayoutHelpContent = nil) then
+    Exit;
+
+  FResizingHelp := True;
+  try
+    var Inset := Max(20, (LayoutHelpContent.Width - 720) / 2);
+    LayoutHelpContent.Padding.Left := Inset;
+    LayoutHelpContent.Padding.Right := Inset;
+    var Height := LayoutHelpContent.Padding.Top + LayoutHelpContent.Padding.Bottom;
+    for var I := 0 to LayoutHelpContent.ControlsCount - 1 do
+    begin
+      var Control := LayoutHelpContent.Controls[I];
+      Height := Height + Control.Height + Control.Margins.Top + Control.Margins.Bottom;
+    end;
+    LayoutHelpContent.Height := Height;
+  finally
+    FResizingHelp := False;
+  end;
+end;
+
+procedure TFormMain.OpenHelpClick(Sender: TObject);
+begin
+  var ReturnTab := ScreenTabs.ActiveTab;
+  if ((ReturnTab <> LibraryScreen) and (ReturnTab <> GameScreen)) or
+    State.Session.OpeningRom or State.Session.Reporting or (State.Help.View <> nil) then
+    Exit;
+
+  {$IFNDEF ISMOBILE}
+  var Core := State.Session.Emulation;
+  if (ReturnTab = GameScreen) and (Core <> nil) and
+    not State.Session.EmulationFaulted and not Core.IsPaused then
+  begin
+    Core.Pause;
+    FHelpResumeCore := Core;
+  end;
+  {$ENDIF}
+  FHelpReturnTab := ReturnTab;
+  ScreenTabs.ActiveTab := HelpScreen;
+  FormDeactivate(Self);
+  if State.Browser.View <> nil then
+    State.Browser.View.PollLibraryInput(nil, False);
+  {$IFDEF ISMOBILE}
+  SyncActivity;
+  {$ENDIF}
+  if FHelpPlatformSearch = nil then
+  begin
+    FHelpPlatformSearch := TSearchEdit.Create(Self);
+    FHelpPlatformSearch.Name := 'SearchEditHelpPlatforms';
+    FHelpPlatformSearch.Parent := LayoutHelpPlatformSearchSlot;
+    FHelpPlatformSearch.Align := TAlignLayout.Client;
+    FHelpPlatformSearch.OnChangeTracking := HelpPlatformSearchChange;
+    RefreshHelpPlatforms;
+    ShowHelpArticle;
+  end;
+  VertScrollBoxHelp.ViewportPosition := TPointF.Zero;
+  ResizeHelpPage(Self);
+  ResizeHelpContent(Self);
+  ButtonHelpBack.SetFocus;
+end;
+
+procedure TFormMain.ApplyHelpLanguage(const PreviousLanguage: string);
+begin
+  FormStyles.RelocalizeUI(HelpScreen, PreviousLanguage);
+  if FHelpPlatformSearch <> nil then
+  begin
+    RefreshHelpPlatforms;
+    ShowHelpArticle;
+  end;
+end;
+
+procedure TFormMain.RefreshHelpPlatforms;
+
+  function AddItem(const PageId, Caption: string): TListBoxItem;
+  begin
+    Result := TListBoxItem.Create(ListBoxHelpPlatforms);
+    Result.TagString := PageId;
+    Result.Text := Caption;
+    Result.Height := 44;
+    Result.TextSettings.HorzAlign := TTextAlign.Leading;
+    Result.TextSettings.Trimming := TTextTrimming.Character;
+    Result.TextSettings.WordWrap := False;
+    Result.Parent := ListBoxHelpPlatforms;
+  end;
+
+begin
+  FUpdatingHelpPlatforms := True;
+  ListBoxHelpPlatforms.BeginUpdate;
+  ComboBoxHelpPlatforms.BeginUpdate;
+  try
+    while ListBoxHelpPlatforms.Count > 0 do
+      RetireControl(ListBoxHelpPlatforms.ListItems[0]);
+    ComboBoxHelpPlatforms.Items.Clear;
+    var Overview := Translate('Overview');
+    var Item := AddItem('', Overview);
+    if FHelpPlatformId = '' then
+      ListBoxHelpPlatforms.ItemIndex := Item.Index;
+    ComboBoxHelpPlatforms.Items.Add(Overview);
+    ComboBoxHelpPlatforms.ItemIndex := 0;
+
+    var Brand := '';
+    var Matches := SettingsPlatforms.Matching(FHelpPlatformSearch.Text);
+    for var platform in Matches do
+    begin
+      if Brand <> platform.Brand then
+      begin
+        Brand := platform.Brand;
+        var Header := TListBoxGroupHeader.Create(ListBoxHelpPlatforms);
+        Header.Text := Brand;
+        Header.Height := 36;
+        Header.HitTest := False;
+        Header.Selectable := False;
+        Header.Parent := ListBoxHelpPlatforms;
+        Header.StyledSettings := Header.StyledSettings - [TStyledSetting.Other];
+        Header.TextSettings.WordWrap := False;
+        Header.TextSettings.Trimming := TTextTrimming.Character;
+      end;
+      Item := AddItem(platform.PageId, Translate(platform.Name));
+      Item.StylesData['text.Margins.Left'] := 44;
+      CreatePlatformIcon(Item, platform.CoreId);
+      if platform.PageId = FHelpPlatformId then
+        ListBoxHelpPlatforms.ItemIndex := Item.Index;
+    end;
+
+    for var platform in SettingsPlatforms.Matching('') do
+    begin
+      var I := ComboBoxHelpPlatforms.Items.AddObject(platform.Brand + ' · ' + Translate(platform.Name), platform);
+      if platform.PageId = FHelpPlatformId then
+        ComboBoxHelpPlatforms.ItemIndex := I;
+    end;
+    LabelHelpNoPlatforms.Visible := Length(Matches) = 0;
+    LabelHelpNoPlatforms.Text := Translate('No platforms found');
+    FHelpPlatformSearch.TextPrompt := Translate('Search platforms');
+  finally
+    ComboBoxHelpPlatforms.EndUpdate;
+    ListBoxHelpPlatforms.EndUpdate;
+    FUpdatingHelpPlatforms := False;
+  end;
+end;
+
+procedure TFormMain.HelpPlatformSearchChange(Sender: TObject);
+begin
+  if not FUpdatingHelpPlatforms and not (csDestroying in ComponentState) then
+    RefreshHelpPlatforms;
+end;
+
+procedure TFormMain.HelpPlatformListChange(Sender: TObject);
+begin
+  if not FUpdatingHelpPlatforms and not (csDestroying in ComponentState) and
+    (ListBoxHelpPlatforms.Selected <> nil) then
+    SelectHelpPlatform(ListBoxHelpPlatforms.Selected.TagString);
+end;
+
+procedure TFormMain.HelpPlatformPickerMouseWheel(Sender: TObject; Shift: TShiftState; WheelDelta: Integer; var Handled: Boolean);
+begin
+  // FMX can invalidate the popup list's bounds while applying item styles.
+  // Rebuild them before the inherited wheel handler tests whether the list can scroll.
+  var List := TComboListBox(Sender);
+  if List.ContentBounds.IsEmpty then
+    List.RealignContent;
+end;
+
+procedure TFormMain.HelpPlatformPickerChange(Sender: TObject);
+begin
+  if FUpdatingHelpPlatforms or (csDestroying in ComponentState) or (ComboBoxHelpPlatforms.ItemIndex < 0) then
+    Exit;
+  var platform := TSettingsPlatform(ComboBoxHelpPlatforms.Items.Objects[ComboBoxHelpPlatforms.ItemIndex]);
+  if platform = nil then
+    SelectHelpPlatform('')
+  else
+    SelectHelpPlatform(platform.PageId);
+end;
+
+procedure TFormMain.SelectHelpPlatform(const PageId: string);
+begin
+  if (csDestroying in ComponentState) or (FHelpPlatformId = PageId) then
+    Exit;
+  FHelpPlatformId := PageId;
+  FUpdatingHelpPlatforms := True;
+  try
+    ListBoxHelpPlatforms.ItemIndex := -1;
+    for var I := 0 to ListBoxHelpPlatforms.Count - 1 do
+    begin
+      var Item := ListBoxHelpPlatforms.ListItems[I];
+      if Item.Selectable and (Item.TagString = PageId) then
+      begin
+        ListBoxHelpPlatforms.ItemIndex := I;
+        Break;
+      end;
+    end;
+    var platform := SettingsPlatforms.Find(PageId);
+    ComboBoxHelpPlatforms.ItemIndex := ComboBoxHelpPlatforms.Items.IndexOfObject(platform);
+  finally
+    FUpdatingHelpPlatforms := False;
+  end;
+  ShowHelpArticle;
+end;
+
+procedure TFormMain.ShowHelpArticle;
+
+  procedure AddLabel(const Name, Caption: string; Heading: Boolean; Order: Integer);
+  begin
+    var TextLabel := TLabel.Create(LayoutHelpContent);
+    TextLabel.Name := Name;
+    TextLabel.Align := TAlignLayout.Top;
+    TextLabel.Position.Y := Order * 1000; // Top-alignment order.
+    TextLabel.AutoSize := True;
+    TextLabel.AutoTranslate := False;
+    TextLabel.HitTest := False;
+    TextLabel.StyledSettings := [TStyledSetting.Family];
+    TextLabel.TextSettings.VertAlign := TTextAlign.Leading;
+    TextLabel.TextSettings.WordWrap := True;
+    if Heading then
+    begin
+      TextLabel.TextSettings.Font.Size := 17;
+      TextLabel.TextSettings.Font.Style := [TFontStyle.fsBold];
+      TextLabel.TextSettings.FontColor := ThemeTextColor;
+      TextLabel.Margins.Bottom := 4;
+    end
+    else
+    begin
+      TextLabel.TextSettings.Font.Size := 15;
+      TextLabel.TextSettings.FontColor := ThemeSecondaryTextColor;
+      TextLabel.Margins.Bottom := 20;
+    end;
+    TextLabel.Text := Caption;
+    TextLabel.OnResize := ResizeHelpContent;
+    TextLabel.Parent := LayoutHelpContent;
+  end;
+
+begin
+  var platform := SettingsPlatforms.Find(FHelpPlatformId);
+  var Sections: TArray<THelpSection>;
+  LayoutHelpContent.BeginUpdate;
+  FResizingHelp := True;
+  try
+    for var I := LayoutHelpContent.ControlsCount - 1 downto 0 do
+      if LayoutHelpContent.Controls[I] <> LabelHelpTitle then
+        RetireControl(LayoutHelpContent.Controls[I]);
+    if platform = nil then
+    begin
+      LabelHelpTitle.Text := Translate('Help');
+      Sections := GeneralHelpSections;
+    end
+    else
+    begin
+      LabelHelpTitle.Text := Translate(platform.Name);
+      Sections := PlatformHelpSections(platform);
+    end;
+    for var I := 0 to High(Sections) do
+    begin
+      AddLabel('LabelHelpSection' + IntToStr(I + 1), Sections[I].Title, True, I * 2 + 1);
+      AddLabel('LabelHelpSectionText' + IntToStr(I + 1), Sections[I].Text, False, I * 2 + 2);
+    end;
+  finally
+    LayoutHelpContent.EndUpdate;
+    FResizingHelp := False;
+  end;
+  ResizeHelpContent(Self);
+  VertScrollBoxHelp.ViewportPosition := TPointF.Zero;
+end;
+
+procedure TFormMain.CloseHelpClick(Sender: TObject);
+begin
+  if not HelpPageActive or State.Session.Reporting then
+    Exit;
+
+  ScreenTabs.ActiveTab := FHelpReturnTab;
+  FHelpReturnTab := nil;
+  {$IFNDEF ISMOBILE}
+  var Core := FHelpResumeCore;
+  FHelpResumeCore := nil;
+  if (Core <> nil) and (Core = State.Session.Emulation) and
+    not State.Session.EmulationFaulted and not State.Session.UserPaused and not State.Session.AutoPaused then
+  begin
+    if State.Preferences.PauseOnFocusLoss and not HostInputHasFocus then
+      State.Session.AutoPaused := True
+    else
+      Core.Resume;
+  end;
+  {$ENDIF}
+  FormActivate(Self);
+  if (ScreenTabs.ActiveTab = GameScreen) and LayoutClient.Visible then
+    LayoutClient.SetFocus;
+end;
+
+function TFormMain.OpenWebsite: Boolean;
+const
+  Website = 'https://retromul.retroscraper.pro/';
+begin
+  {$IF Defined(MSWINDOWS)}
+  Result := ShellExecute(WindowHandleToPlatform(Handle).Wnd, 'open', PChar(Website), nil, nil, SW_SHOWNORMAL) > 32;
+  {$ELSEIF Defined(ANDROID)}
+  var Intent := TJIntent.JavaClass.init(TJIntent.JavaClass.ACTION_VIEW,
+    TJnet_Uri.JavaClass.parse(StringToJString(Website)));
+  TAndroidHelper.Activity.startActivity(Intent);
+  Result := True;
+  {$ELSEIF Defined(IOS)}
+  var URL := StrToNSUrl(Website);
+  var App := TiOSHelper.SharedApplication;
+  Result := App.canOpenURL(URL);
+  if Result then
+    App.openURL(URL, nil, nil);
+  {$ELSEIF Defined(MACOS)}
+  Result := TNSWorkspace.Wrap(TNSWorkspace.OCClass.sharedWorkspace).openURL(StrToNSUrl(Website));
+  {$ELSEIF Defined(LINUX)}
+  Result := Posix.Stdlib._system(PAnsiChar(UTF8String('xdg-open ' + Website))) = 0;
+  {$ELSE}
+  Result := False;
+  {$ENDIF}
+end;
+
+procedure TFormMain.OpenHelpWebsiteClick(Sender: TObject);
+begin
+  try
+    if not OpenWebsite then
+      ShowRetroMessage(Self, Translate('Unable to open the website.'));
+  except
+    on E: Exception do
+      ShowRetroMessage(Self, Translate('Unable to open the website.') + sLineBreak + E.Message);
+  end;
+end;
+
 procedure TFormMain.ReportBugClick(Sender: TObject);
 begin
   if State.Session.OpeningRom then
@@ -339,8 +775,8 @@ end;
 procedure TFormMain.InitializeLibrary;
 begin
   TMainControllers(FControllers).Browser.InitializeLibrary;
-  (State.Browser.View.FindComponent('ButtonReportBug') as TButton).OnClick := ReportBugClick;
-  (State.Browser.View.FindComponent('ButtonCompactReportBug') as TButton).OnClick := ReportBugClick;
+  (State.Browser.View.FindComponent('ButtonHelp') as TButton).OnClick := OpenHelpClick;
+  (State.Browser.View.FindComponent('ButtonCompactHelp') as TButton).OnClick := OpenHelpClick;
 end;
 
 destructor TFormMain.Destroy;
@@ -448,7 +884,7 @@ begin
   inherited;
 
   SystemBackdropType := TWindowBackdropType.Disable;
-  Fill.Color := $FF181C21;
+  Fill.Color := ThemeBackgroundColor;
   Fill.Kind := TBrushKind.Solid;
 
   TMessageManager.DefaultManager.SendMessage(Self, TStyleChangedMessage.Create(StyleBook, Self), True);
@@ -910,6 +1346,17 @@ begin
   if State.Session.Reporting then
   begin
     inherited;
+    Exit;
+  end;
+  if HelpPageActive then
+  begin
+    if (Key = vkEscape) {$IFDEF ANDROID} or (Key = vkHardwareBack){$ENDIF} then
+    begin
+      Key := 0;
+      KeyChar := #0;
+    end
+    else
+      inherited;
     Exit;
   end;
   // Intercept before FMX dispatches to focused controls and handles Tab.

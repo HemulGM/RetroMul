@@ -29,7 +29,7 @@ type
   TSnesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics)
   private
     FThread: TSnesWorker;
-    FData, FFirmware: TBytes;
+    FData, FFirmware, FSufamiSlotA: TBytes;
     FSnapshotDirectory: string;
     FStorage: IStorage;
     FSavePath, FError: string;
@@ -73,7 +73,8 @@ type
 implementation
 
 uses
-  RM.Platforms.SNES, System.IOUtils, System.UITypes, System.Hash, SNES.Cartridge, SNES.RomFormat;
+  RM.Platforms.SNES, Core.EmulatorRegistry, System.IOUtils, System.UITypes,
+  System.Hash, SNES.Cartridge, SNES.RomFormat;
 
 const
   KeyNames: array[TSnesButton] of string = ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Select', 'Start', 'X', 'Y', 'L', 'R');
@@ -159,6 +160,32 @@ begin
   end;
 end;
 
+function ReadSufamiBIOS(const Storage: IStorage; const RomName: string): TBytes;
+begin
+  var Directory := ExtractFileDir(RomName);
+  for var Folder in [Directory, Storage.RomFolder(ROM_SYSTEM_SNES), TPath.Combine(Storage.Root, 'bios')] do
+  begin
+    if Folder = '' then
+      Continue;
+    var Path := TPath.Combine(Folder, 'STBIOS.bin');
+    if not Storage.Exists(Path) then
+      Continue;
+    var Input := Storage.OpenRead(Path);
+    try
+      if (Input.Size <> $40000) and (Input.Size <> $40200) then
+        raise ECoreInvalidMedia.Create('Invalid Sufami Turbo BIOS size: ' + Path);
+      Result := SNES.RomFormat.LoadImage(ReadRomData(Input));
+      var CopierSize: Integer;
+      if DetectSufamiTurbo(Result, CopierSize) <> TSufamiImage.BIOS then
+        raise ECoreInvalidMedia.Create('Invalid Sufami Turbo BIOS: ' + Path);
+      Exit;
+    finally
+      Input.Free;
+    end;
+  end;
+  Result := SnesResourceFirmware('stbios');
+end;
+
 constructor TSnesCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
 var
   Cart: TSnesCartridge;
@@ -169,8 +196,13 @@ begin
   FStorage := Storage;
   if FStorage = nil then
     FStorage := TStorage.Default;
-  var Data := ReadRomData(Stream);
-  Data := SNES.RomFormat.LoadImage(Data);
+  var Data := SNES.RomFormat.LoadImage(ReadRomData(Stream));
+  var CopierSize: Integer;
+  if DetectSufamiTurbo(Data, CopierSize) = TSufamiImage.Cartridge then
+  begin
+    FSufamiSlotA := Data;
+    Data := ReadSufamiBIOS(FStorage, RomName);
+  end;
   Config := TSnesConfig.Create(FStorage.ConfigFile(ROM_SYSTEM_SNES), FStorage);
   FConfig := Config;
   Config.Load;
@@ -183,7 +215,7 @@ begin
     else
       FFirmware := SnesResourceFirmware(FirmwareName);
   end;
-  Cart := TSnesCartridge.Create(Data, FFirmware);
+  Cart := TSnesCartridge.Create(Data, FFirmware, FSufamiSlotA);
   try
     FData := Copy(Cart.Data);
   finally
@@ -195,6 +227,8 @@ begin
   Hash.Update(FData);
   if Length(FFirmware) > 0 then
     Hash.Update(FFirmware);
+  if Length(FSufamiSlotA) > 0 then
+    Hash.Update(FSufamiSlotA);
   FSavePath := FStorage.GameSave(ROM_SYSTEM_SNES, RomName, Hash.HashAsString);
   FSnapshotDirectory := FStorage.GameSnapshots(ROM_SYSTEM_SNES, RomName, Hash.HashAsString);
 end;
@@ -222,7 +256,7 @@ begin
   if FThread <> nil then
     Exit;
 
-  FThread := TSnesWorker.Create(FData, FSavePath, FStorage, FFirmware);
+  FThread := TSnesWorker.Create(FData, FSavePath, FStorage, FFirmware, FSufamiSlotA);
   FThread.SnapshotDirectory := FSnapshotDirectory;
   FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_SNES, GetConfig.FileName);
   var Ini := FStorage.ReadConfig(GetConfig.FileName);

@@ -27,7 +27,7 @@ uses
   RM.ControlsHelp.Content, RM.Platforms.SG1000.Icons;
 
 const
-  MediaExtensions: array[0..6] of string = ('.car', '.rom', '.bin', '.atr', '.xfd', '.xex', '.com');
+  MediaExtensions: array[0..9] of string = ('.car', '.rom', '.bin', '.atr', '.xfd', '.xex', '.com', '.bas', '.atx', '.cas');
   ScanFolders: array[0..4] of string = ('atari800', 'atari8', 'atari-8bit', 'atari400', 'atarixe');
 
 type
@@ -96,7 +96,7 @@ begin
     'Optional 10 KiB firmware image. Leave empty to use Altirra OS.',
     'Firmware', 'LegacyOS', '', False, True).ApplyMode := TSettingsApplyMode.OnNextLoad;
   Context.AddPath('PathAtari8XLOS', 'Atari XL/XE OS ROM',
-    'Optional 16 KiB firmware image. Leave empty to use Altirra OS.',
+    'Optional 16 KiB firmware image. Recognized 800XL loaders can find a local Atari OS rev 2 automatically. Other software uses Altirra OS when left empty.',
     'Firmware', 'XLOS', '', False, True).ApplyMode := TSettingsApplyMode.OnNextLoad;
   Context.AddPath('PathAtari8Basic', 'Atari BASIC ROM',
     'Optional 8 KiB interpreter image. Leave empty to use Altirra BASIC.',
@@ -305,6 +305,12 @@ begin
   if (Length(Header) = 16) and (Header[0] = $96) and (Header[1] = $02) and
     (Header[4] in [0, $80]) and (Header[5] in [0, 1]) then
     Extension := '.atr'
+  else if (Length(Header) = 16) and (Header[0] = Ord('A')) and (Header[1] = Ord('T')) and
+    (Header[2] = Ord('8')) and (Header[3] = Ord('X')) then
+    Extension := '.atx'
+  else if (Length(Header) >= 8) and (Header[0] = Ord('F')) and (Header[1] = Ord('U')) and
+    (Header[2] = Ord('J')) and (Header[3] = Ord('I')) then
+    Extension := '.cas'
   else if (Length(Header) = 16) and (Header[0] = Ord('C')) and (Header[1] = Ord('A')) and
     (Header[2] = Ord('R')) and (Header[3] = Ord('T')) then
   begin
@@ -326,7 +332,16 @@ begin
   Result := ImageMatch(Context, Atari8CoreId,
     function(const Data: TBytes; Input: TStream): IEmulationCore
     begin
-      Result := TA8CoreAdapter.Create(Data, Context.Storage, Context.RomName, Extension);
+      try
+        Result := TA8CoreAdapter.Create(Data, Context.Storage, Context.RomName, Extension);
+      except
+        on E: EReadError do
+        begin
+          if (Confidence = TCoreMatchConfidence.Signature) and MatchText(Extension, ['.cas', '.atx']) then
+            raise ECoreInvalidMedia.Create(E.Message);
+          raise;
+        end;
+      end;
     end, False, Atari8SystemId, '', A8MediaLimit);
   Result.Confidence := Confidence;
 end;
@@ -342,8 +357,8 @@ begin
   TPlatformRegistry.RegisterAlias('atari-8bit', Atari8SystemId);
   TPlatformRegistry.RegisterAlias('atari400', Atari8SystemId);
   TPlatformRegistry.RegisterAlias('atarixe', Atari8SystemId);
-  var Policy := TSnapshotPolicy.Create(2);
-  Policy.AcceptedVersions := [1];
+  var Policy := TSnapshotPolicy.Create(4);
+  Policy.AcceptedVersions := [1, 2, 3];
   RegisterSnapshotPolicy(Atari8CoreId, Policy);
   var Services := Default(TPlatformServices);
   Services.TerminalInput :=
@@ -377,7 +392,10 @@ begin
   RegisterPlatformInput(Atari8SystemId, Input);
 
   RegisterPlatformPresentation(Atari8SystemId, Atari8SystemId, PlatformIconSC3000);
-  RegisterSettingsPlatform(Atari8SystemId, TA8Settings);
+  RegisterSettingsPlatform(Atari8SystemId, TA8Settings,
+    'Atari 8-bit software can come as a cartridge, disk image or executable. Choose the ' +
+    'machine configuration and BASIC setting expected by the software. An optional interpreter ' +
+    'ROM can replace the included Altirra BASIC.');
   RegisterPlatformSettingsDevices(Atari8SystemId, TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts(Atari8SystemId, TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp(Atari8SystemId, TA8ControlsHelp);

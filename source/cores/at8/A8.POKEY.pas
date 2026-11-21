@@ -16,7 +16,7 @@ type
     procedure ScanKeys; override;
   public
     procedure Reset; override;
-    procedure ClockComputer(Media: TA8Media);
+    procedure ClockComputer(Media: TA8Media; TapeMotor: Boolean; ClockHz: Integer);
     function ReadComputer(Index: Byte): Byte;
     procedure WriteComputer(Index, Value: Byte);
     procedure SetKeyboard(Keys: Word);
@@ -69,9 +69,12 @@ begin
   FBreakDown := BreakDown;
 end;
 
-procedure TA8POKEY.ClockComputer(Media: TA8Media);
+procedure TA8POKEY.ClockComputer(Media: TA8Media; TapeMotor: Boolean; ClockHz: Integer);
 begin
-  ClockTimers(Media.Clock, Media.Transmit);
+  if Media.Kind = TA8MediaKind.Cassette then
+    ClockTimers(nil, nil, Ord(Media.ClockTape(TapeMotor, ClockHz)))
+  else
+    ClockTimers(Media.Clock, Media.Transmit);
 end;
 
 function TA8POKEY.ReadComputer(Index: Byte): Byte;

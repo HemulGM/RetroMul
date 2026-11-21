@@ -224,7 +224,10 @@ end;
 
 class procedure TMSXPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('MSX', TMSXSettings);
+  RegisterSettingsProfile('MSX', TMSXSettings,
+    'Choose the MSX generation required by the software. Disk and tape images use the original ' +
+    'machine BIOS with BASIC automatically. For cartridges start with automatic mapper ' +
+    'selection. Peripherals include keyboard input and optional devices in the second slot.');
   RegisterPlatformKeyboard('msx1', TMSXKeyboard);
   RegisterPlatformKeyboard('msx2', TMSXKeyboard);
   RegisterPlatformKeyboard('msx2plus', TMSXKeyboard);

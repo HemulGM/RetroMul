@@ -89,26 +89,30 @@ begin
       Description := SelectNeoGeoSet(IdentifyNeoGeoSet(Archive.Names), CRCs);
     if Description = '' then
       Exit;
-    // A filename alone is insufficient: unrelated cartridge archives may
-    // have the same title. Require a program ROM from the identified set.
+    // A named split set can contain only graphics. Verify a chip checksum
+    // and let the cartridge loader check its parent archives for the program.
     var Parts := Description.Split(['|']);
+    var NamedSet := SameText(Parts[0], SetName);
     for var Row in Parts[9].Split([';']) do
     begin
       var Fields := Row.Split([',']);
-      if (Length(Fields) <> 7) or (Fields[0] <> 'P') then
+      if (Length(Fields) <> 7) or (not NamedSet and (Fields[0] <> 'P')) then
         Continue;
-      for var CRC in CRCs do
-        if SameText(CRC, Fields[6]) then
+      if not MatchText(Fields[6], CRCs) then
+        Continue;
+      Result := TCoreMatch.Create('NeoGeo',
+        function: IEmulationCore
         begin
-          Result := TCoreMatch.Create('NeoGeo',
-            function: IEmulationCore
-            begin
-              Context.Stream.Position := 0;
-              Result := TNeoGeoCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
-            end);
-          Result.ArchiveCandidate := False;
-          Exit;
-        end;
+          Context.Stream.Position := 0;
+          try
+            Result := TNeoGeoCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
+          except
+            on E: ENeoGeoIncompleteSet do
+              raise ECoreInvalidMedia.Create(E.Message);
+          end;
+        end);
+      Result.ArchiveCandidate := False;
+      Exit;
     end;
   finally
     Archive := nil;
@@ -187,7 +191,10 @@ end;
 
 class procedure TNeoGeoPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('NeoGeo', TNeoGeoSettings);
+  RegisterSettingsProfile('NeoGeo', TNeoGeoSettings,
+    'Cartridge systems use named arcade sets or supported unencrypted .neo images. Neo Geo CD ' +
+    'uses disc images and has its own library folder. Machine and region settings affect how ' +
+    'the BIOS starts the game.');
   RegisterPlatformSettingsDevices('neogeo', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('neogeoaes', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('neogeocd', TPlatformSettingsDevices);

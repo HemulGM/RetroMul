@@ -154,7 +154,11 @@ end;
 
 class procedure TNESPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('NES', TNESSettings);
+  RegisterSettingsProfile('NES', TNESSettings,
+    'Choose the NES folder for .nes cartridges and Famicom Disk System for .fds or .qd disks. ' +
+    'Keep the region on Automatic unless a game needs a specific region. Choose the device for ' +
+    'each port in Peripherals. Four Score and devices such as Zapper, Power Pad and Miracle ' +
+    'Piano use conflicting port wiring.');
   RegisterPlatformSettingsDevices('nes', TNESSettingsDevices);
   RegisterPlatformDeviceCallouts('nes', TNESDeviceCallouts);
   RegisterPlatformControlsHelp('nes', TNESControlsHelp);

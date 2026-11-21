@@ -46,6 +46,8 @@ begin
     except
       on E: EAbort do
         raise;
+      on E: ECoreInvalidMedia do
+        raise;
       on E: Exception do
         LoadError := E.Message;
     end;

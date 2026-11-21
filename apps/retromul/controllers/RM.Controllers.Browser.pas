@@ -174,7 +174,7 @@ begin
     Button.Margins.Bottom := 4;
     Button.Text := Item.Text;
     Button.StyledSettings := [];
-    Button.TextSettings.FontColor := $FFE8ECF1;
+    Button.TextSettings.FontColor := ThemeTextColor;
     Button.TextSettings.Font.Size := 14;
     Button.TextSettings.HorzAlign := TTextAlign.Leading;
     Button.StyleLookup := 'buttonstyle';
@@ -358,6 +358,7 @@ begin
     and (FState.Settings.View = nil) and (FState.Help.View = nil));
   {$ENDIF}
   Add(Menu, 'Settings', FView.SettingsClick, not FState.Session.OpeningRom);
+  Add(Menu, 'Help', FView.OpenHelpClick, not FState.Session.OpeningRom).Name := 'MenuItemHelp';
   Add(Menu, 'Report a bug', FView.ReportBugClick, not FState.Session.OpeningRom).Name := 'MenuItemReportBug';
   {$IFDEF ISMOBILE}
   Add(Menu, 'Controls and shortcuts', FView.ControlsHelpClick, Ready and not FState.Help.Closing);
@@ -636,9 +637,9 @@ begin
       FState.Browser.HelpTool.StyleLookup := 'buttonstyle_accent'
     else
       FState.Browser.HelpTool.StyleLookup := 'buttonstyle';
-    var Color: TAlphaColor := $FFFFB43B;
+    var Color: TAlphaColor := ThemeAccentTextColor;
     if FState.Help.View <> nil then
-      Color := $FF1B2026;
+      Color := ThemeBackgroundColor;
     FState.Browser.HelpTool.TextSettings.FontColor := Color;
     if FState.Browser.HelpTool.Children <> nil then
       for var Child in FState.Browser.HelpTool.Children do

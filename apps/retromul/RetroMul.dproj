@@ -370,6 +370,7 @@
             <Form>FeedbackView</Form>
             <DesignClass>TFrame</DesignClass>
         </DCCReference>
+        <DCCReference Include="ui\RM.Help.Content.pas"/>
         <DCCReference Include="ui\RM.Main.pas">
             <Form>FormMain</Form>
         </DCCReference>

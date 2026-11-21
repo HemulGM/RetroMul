@@ -92,7 +92,7 @@ type
     function GetFrameNumber: UInt64;
     function GetBatteryDirty: Boolean;
   public
-    constructor Create(const Data: TBytes; const Extension: string = ''; const Firmware: TBytes = nil);
+    constructor Create(const Data: TBytes; const Extension: string = ''; const Firmware: TBytes = nil; const SufamiSlotA: TBytes = nil);
     destructor Destroy; override;
     procedure Reset;
     procedure RunFrame;
@@ -133,10 +133,10 @@ const
     (0, 0, 0, 0),
     (0, 0, 1, 1));
 
-constructor TSnesConsole.Create(const Data: TBytes; const Extension: string; const Firmware: TBytes);
+constructor TSnesConsole.Create(const Data: TBytes; const Extension: string; const Firmware, SufamiSlotA: TBytes);
 begin
   inherited Create;
-  FCartridge := TSnesCartridge.Create(Data, Firmware);
+  FCartridge := TSnesCartridge.Create(Data, Firmware, SufamiSlotA);
   FPPU := TSnesPPU.Create;
   FSPC := TSnesSPC.Create;
   FCPU := TSnesCPU.Create(CPURead, CPUWrite, CPUClock);

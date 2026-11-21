@@ -142,7 +142,10 @@ end;
 
 class procedure TSaturnPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('Saturn', TSaturnSettings);
+  RegisterSettingsProfile('Saturn', TSaturnSettings,
+    'Saturn has a built-in regional BIOS and an optional 512 KiB override. Choose the ' +
+    'cartridge expansion required by the game. For the CD Block, the command model is the ' +
+    'normal choice. Original SH-1 firmware mode is experimental.');
   RegisterPlatformSettingsDevices('saturn', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('saturn', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('saturn', TPlatformControlsHelp);

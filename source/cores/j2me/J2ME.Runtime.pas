@@ -89,6 +89,7 @@ type
     constructor Create(Suite: TJ2MESuite; Width, Height: Integer; const Bluetooth: IBluetoothProvider; const Messaging: IMessagingProvider);
     destructor Destroy; override;
     procedure Install(VM: TJVM);
+    procedure PrepareClass(C: TJVMClass); override;
     function LoadClass(const Name: string): TBytes; override;
     function LoadResource(const Name: string; out Data: TBytes): Boolean; override;
     function LoadClassResource(const ClassName, Name: string; out Data: TBytes): Boolean; override;
@@ -638,6 +639,11 @@ begin
   InstallJ2MESiemensGraphics(VM);
   FDisplay := VM.NewObject('javax/microedition/lcdui/Display');
   VM.AddRoot(FDisplay);
+end;
+
+procedure TJ2MEHost.PrepareClass(C: TJVMClass);
+begin
+  PrepareJ2MEFrameTimers(C);
 end;
 
 function TJ2MEHost.LoadClass(const Name: string): TBytes;

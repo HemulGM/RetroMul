@@ -43,7 +43,7 @@ begin
   Divider.Width := 1;
   Divider.Margins.Top := 9;
   Divider.Margins.Bottom := 9;
-  Divider.Fill.Color := $406C7485;
+  Divider.Fill.Color := $406F6F80;
   Divider.Stroke.Kind := TBrushKind.None;
   Divider.HitTest := False;
   Resize;

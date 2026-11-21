@@ -225,7 +225,7 @@ begin
     Wanted := Motion.HasAccelerometer;
   Wanted := (Wanted or WantsRotation) and not FState.Session.OpeningRom and not FState.Session.EmulationFaulted and not FState.Session.UserPaused and
     not FState.Session.AutoPaused and not FState.Browser.ViewingLibrary and (FState.Settings.View = nil) and
-    (FState.Help.View = nil) and not RetroDialogVisible(FView);
+    (FState.Help.View = nil) and not FView.HelpPageActive and not RetroDialogVisible(FView);
   {$IFDEF ISMOBILE}
   Wanted := Wanted and not FState.Mobile.InBackground;
   {$ENDIF}
@@ -459,6 +459,11 @@ end;
 procedure TInputController.PollHostInput;
 begin
   ValidateScreenTouch(RuntimeContext);
+  if FView.HelpPageActive and not RetroDialogVisible(FView) then
+  begin
+    FMenuShortcut.Reset;
+    Exit;
+  end;
   if (FState.Browser.View <> nil) and
     (not FView.HostInputHasFocus or RetroDialogVisible(FView) or (FState.Settings.View <> nil)) then
     FState.Browser.View.PollLibraryInput(nil, False);
@@ -628,7 +633,7 @@ begin
   // Do not consume system volume keys in gameplay, dialogs or capture.
   if HostKeyCode(Key, KeyChar) in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
     Exit;
-  if FState.Session.Reporting then
+  if FState.Session.Reporting or FView.HelpPageActive then
     Exit;
   if RetroDialogVisible(FView) then
     Exit;
@@ -784,6 +789,17 @@ begin
     {$ENDIF}
     Key := 0;
     KeyChar := #0;
+    Exit;
+  end;
+
+  if FView.HelpPageActive then
+  begin
+    if (Key = vkEscape) {$IFDEF ANDROID} or (Key = vkHardwareBack){$ENDIF} then
+    begin
+      FView.CloseHelpClick(FView);
+      Key := 0;
+      KeyChar := #0;
+    end;
     Exit;
   end;
 

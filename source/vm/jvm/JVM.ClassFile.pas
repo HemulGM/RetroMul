@@ -43,6 +43,8 @@ type
     Access, MaxStack, MaxLocals: Word;
     Signature: TJVMMethodType;
     Code: TBytes;
+    // Optional host entry substitution; active snapshot frames retain this method.
+    EntryPoint: TJVMMethod;
     InstructionStarts: TArray<Boolean>;
     Handlers: TArray<TJVMExceptionHandler>;
     // Raw metadata is consumed by the context-aware JVM.Verifier.

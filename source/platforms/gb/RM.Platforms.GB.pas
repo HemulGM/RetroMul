@@ -161,7 +161,10 @@ end;
 
 class procedure TGBPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('GameBoy', TGameBoySettings);
+  RegisterSettingsProfile('GameBoy', TGameBoySettings,
+    'The palette changes how monochrome games look. Game Boy Color also has LCD color ' +
+    'correction. Boot ROM settings choose the startup sequence. CPU speed above 100% can ' +
+    'change game timing as well as reduce slowdown.');
   RegisterPlatformPalettePreview('gb', TGameBoyPalettePreview);
   RegisterPlatformSettingsDevices('gb', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('gb', TPlatformDeviceCallouts);

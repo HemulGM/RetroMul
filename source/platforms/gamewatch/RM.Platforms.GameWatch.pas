@@ -65,11 +65,11 @@ begin
         end);
     Exit;
   end;
-  if TGWCartridge.Recognizes(Context.Stream, Context.SourceName) then
+  if TGWCartridge.Recognizes(Context.Stream, Context.SourceName, Context.EffectiveStorage) then
     Result := ImageMatch(Context, 'GW',
       function(const Data: TBytes; Input: TStream): IEmulationCore
       begin
-        Result := TGWCoreAdapter.Create(Input, Context.Storage, Context.RomName);
+        Result := TGWCoreAdapter.Create(Input, Context.Storage, Context.RomName, Context.SourceName);
       end);
 end;
 
@@ -126,7 +126,10 @@ end;
 
 class procedure TGWPlatform.RegisterClient;
 begin
-  RegisterSettingsPlatform('gw', TSettingsPlatform);
+  RegisterSettingsPlatform('gw', TSettingsPlatform,
+    'Game & Watch can open .gw and .mgw files and catalogued MAME sets. For a catalogued set, ' +
+    'keep its artwork and data in the expected archive layout. The SVG screen is part of the ' +
+    'game presentation.');
   RegisterPlatformSettingsDevices('gw', TGWSettingsDevices);
   RegisterPlatformDeviceCallouts('gw', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('gw', TGWControlsHelp);

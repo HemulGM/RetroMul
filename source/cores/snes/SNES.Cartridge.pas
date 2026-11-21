@@ -42,6 +42,8 @@ const
 type
   TSnesMapping = (LoROM, HiROM, ExLoROM, ExHiROM);
 
+  TSufamiImage = (None, BIOS, Cartridge);
+
   TSnesHeader = record
     Mapping: TSnesMapping;
     Offset, CopierSize, Score: Integer;
@@ -50,7 +52,25 @@ type
 
   TSnesCartridge = class
   private
+    type
+      TSRTCMode = (SRTCRead, SRTCCommand, SRTCWrite, SRTCReady);
+
+      TSRTCData = packed record
+        Digits: array[0..12] of Byte;
+        LastTime: Int64;
+      end;
+  private
+    FHasSRTC: Boolean;
+    FSRTC: TSRTCData;
+    FSRTCMode: TSRTCMode;
+    FSRTCIndex: ShortInt;
+    FHasBSX: Boolean;
+    FBSXRegisters, FBSXMapping: Word;
+    FBSXHidden: Byte;
+    FBSXPSRAM: TBytes;
     FData, FSRAM: TBytes;
+    FSufamiSlotA: TBytes;
+    FHasSufami: Boolean;
     FHeader: TSnesHeader;
     FDirty: Boolean;
     FActionReplay: Boolean;
@@ -67,6 +87,15 @@ type
     FST: Boolean;
     FDSPFrequency: Integer;
     FDSPTarget: Int64;
+    procedure UpdateSRTC(ResetTime: Boolean = False);
+    function ReadSRTC: Byte;
+    procedure WriteSRTC(Value: Byte);
+    function BSXROMMapped(Bank, Offset: Integer): Boolean;
+    function BSXPSRAMAddress(Bank, Offset: Integer): Integer;
+    function ReadBSX(Address: Cardinal; OpenBus: Byte): Byte;
+    function ReadSufami(Address: Cardinal; OpenBus: Byte): Byte;
+    function SufamiRAMAddress(Address: Cardinal): Integer;
+    procedure WriteBSX(Address: Cardinal; Value: Byte);
     function ReadRawROM(Address: Cardinal): Byte;
     function GSUAddress(Address: Cardinal; out Offset: Cardinal): Integer;
     function CX4Map(Address: Cardinal): TCx4Memory;
@@ -80,7 +109,7 @@ type
     function SRAMAddress(Address: Cardinal): Integer;
     function Obc1Address(Address: Cardinal): Integer;
   public
-    constructor Create(const Data: TBytes; const Firmware: TBytes = nil);
+    constructor Create(const Data: TBytes; const Firmware: TBytes = nil; const SufamiSlotA: TBytes = nil);
     destructor Destroy; override;
     procedure Reset;
     procedure SyncDSP(MasterClock: Int64; MasterRate: Integer; Run: Boolean = False);
@@ -100,6 +129,8 @@ type
 
 function DetectSnesHeader(const Data: TBytes; out Header: TSnesHeader): Boolean;
 
+function DetectSufamiTurbo(const Data: TBytes; out CopierSize: Integer): TSufamiImage;
+
 function SnesDSPFirmwareName(const Data: TBytes): string;
 
 function SnesEmbeddedFirmwareSize(const Data: TBytes): Integer;
@@ -114,7 +145,7 @@ implementation
 {$R 'SNES.Firmware.res' 'SNES.Firmware.rc'}
 
 uses
-  SNES.RomHashes;
+  SNES.RomHashes, System.DateUtils;
 
 function SnesResourceFirmware(const Name: string): TBytes;
 begin
@@ -125,6 +156,8 @@ begin
     ExpectedSize := $D000
   else if Name = 'st018' then
     ExpectedSize := $28000
+  else if Name = 'stbios' then
+    ExpectedSize := $40000
   else
     raise EArgumentException.Create('Unknown SNES firmware: ' + Name);
 
@@ -250,6 +283,28 @@ begin
     Result := $2000;
 end;
 
+function DetectSufamiTurbo(const Data: TBytes; out CopierSize: Integer): TSufamiImage;
+const
+  Signature: AnsiString = 'BANDAI SFC-ADX';
+  Backup: AnsiString = 'SFC-ADX BACKUP';
+begin
+  CopierSize := Length(Data) and ROM_COPIER_ALIGNMENT_MASK;
+  var Size := Length(Data) - CopierSize;
+  if ((CopierSize <> 0) and (CopierSize <> SNES_ROM_COPIER_HEADER_SIZE)) or
+    ((Size <> $40000) and (Size <> $80000) and (Size <> $100000)) then
+    Exit(TSufamiImage.None);
+  if not CompareMem(@Data[CopierSize], PAnsiChar(Signature), Length(Signature)) then
+    Exit(TSufamiImage.None);
+
+  var IsBackup := CompareMem(@Data[CopierSize + $10], PAnsiChar(Backup), Length(Backup));
+  if IsBackup and (Size = $40000) then
+    Exit(TSufamiImage.BIOS);
+  if not IsBackup and (Size = Integer(Data[CopierSize + $36]) * $20000) and
+    (Data[CopierSize + $37] <= 64) and (Data[CopierSize + $21] >= $80) then
+    Exit(TSufamiImage.Cartridge);
+  Result := TSufamiImage.None;
+end;
+
 function DetectSnesHeader(const Data: TBytes; out Header: TSnesHeader): Boolean;
 begin
   Header := Default(TSnesHeader);
@@ -319,9 +374,31 @@ begin
   Result := Header.Score >= 8;
 end;
 
-constructor TSnesCartridge.Create(const Data: TBytes; const Firmware: TBytes);
+constructor TSnesCartridge.Create(const Data, Firmware, SufamiSlotA: TBytes);
 begin
   inherited Create;
+  var CopierSize: Integer;
+  case DetectSufamiTurbo(Data, CopierSize) of
+    TSufamiImage.BIOS:
+      begin
+        FHasSufami := True;
+        FHeader.Mapping := LoROM;
+        FHeader.Offset := SNES_ROM_HEADER_OFFSET;
+        FData := Copy(Data, CopierSize, Length(Data) - CopierSize);
+        if Length(SufamiSlotA) <> 0 then
+        begin
+          if DetectSufamiTurbo(SufamiSlotA, CopierSize) <> TSufamiImage.Cartridge then
+            raise EReadError.Create('Invalid Sufami Turbo cartridge in slot A');
+          FSufamiSlotA := Copy(SufamiSlotA, CopierSize, Length(SufamiSlotA) - CopierSize);
+          SetLength(FSRAM, Integer(FSufamiSlotA[$37]) * $800);
+        end;
+        Exit;
+      end;
+    TSufamiImage.Cartridge:
+      raise EReadError.Create('Sufami Turbo cartridge requires STBIOS.bin');
+  end;
+  if Length(SufamiSlotA) <> 0 then
+    raise EReadError.Create('Invalid Sufami Turbo BIOS');
   if not DetectSnesHeader(Data, FHeader) then
     raise EReadError.Create('Invalid SNES ROM header');
 
@@ -337,6 +414,17 @@ begin
   var FirmwareName := SnesDSPFirmwareName(Data);
   FST := (FirmwareName = 'st010') or (FirmwareName = 'st011');
   FObc1 := Kind = $25;
+  FHasSRTC := Kind = $55;
+  FHasBSX := (Kind = $E5) and (Length(FData) = $100000) and
+    (TEncoding.ASCII.GetString(FData, FHeader.Offset - 14, 4) = 'ZBSJ');
+  if FHasBSX then
+  begin
+    SetLength(FBSXPSRAM, $80000);
+    FBSXHidden := $3F;
+    FBSXRegisters := $0BEC;
+    FBSXMapping := FBSXRegisters;
+  end;
+  FSRTCIndex := -1;
   var HasCX4 := ((Kind and $F) >= 3) and ((Kind shr 4) = $F) and (FData[FHeader.Offset + SNES_ROM_COPROCESSOR_SUBTYPE_OFFSET] = $10);
   var HasSA1 := ((Kind and $F) >= 3) and ((Kind shr 4) = 3);
   var HasGSU := Kind in [$13, $14, $15, $1A];
@@ -345,8 +433,8 @@ begin
     FHeader.Mapping := LoROM;
 
   // Types with low nibble 0-2 have no coprocessor, even with a nonzero family nibble.
-  if not FST and not HasCX4 and not HasSA1 and not HasGSU and not HasSPC and (FirmwareName <> 'st018') and
-    ((Kind and $F) >= 3) and not (Kind in [3, 5, $25, $43, $45]) then
+  if not FHasBSX and not FST and not HasCX4 and not HasSA1 and not HasGSU and not HasSPC and (FirmwareName <> 'st018') and
+    ((Kind and $F) >= 3) and not (Kind in [3, 5, $25, $43, $45, $55]) then
     raise ENotSupportedException.CreateFmt('SNES cartridge coprocessor $%.2x is not ported yet', [Kind]);
 
   var Size := FData[FHeader.Offset + SNES_ROM_RAM_SIZE_OFFSET] and $F;
@@ -433,6 +521,13 @@ end;
 procedure TSnesCartridge.Reset;
 begin
   FReplayControl := 0;
+  if FHasBSX then
+  begin
+    FBSXRegisters := $0BEC;
+    FBSXMapping := FBSXRegisters;
+  end;
+  FSRTCMode := SRTCRead;
+  FSRTCIndex := -1;
   FCX4Target := 0;
   if FCX4 <> nil then
     FCX4.Reset;
@@ -674,8 +769,238 @@ begin
     Result := (((Bank and $1F) shl 13) or (Offset and $1FFF)) and (Length(FSRAM) - 1);
 end;
 
+procedure TSnesCartridge.UpdateSRTC(ResetTime: Boolean);
+begin
+  var CurrentTime := DateTimeToUnix(Now, False);
+  if ResetTime then
+    FSRTC.LastTime := CurrentTime;
+
+  var Stamp: TDateTime;
+  if TryEncodeDateTime(
+    1000 + FSRTC.Digits[9] + FSRTC.Digits[10] * 10 + FSRTC.Digits[11] * 100,
+    FSRTC.Digits[8], FSRTC.Digits[6] + FSRTC.Digits[7] * 10,
+    FSRTC.Digits[4] + FSRTC.Digits[5] * 10,
+    FSRTC.Digits[2] + FSRTC.Digits[3] * 10,
+    FSRTC.Digits[0] + FSRTC.Digits[1] * 10, 0, Stamp) then
+  begin
+    if (FSRTC.LastTime > 0) and (CurrentTime > FSRTC.LastTime) then
+      Stamp := IncSecond(Stamp, CurrentTime - FSRTC.LastTime);
+    var Year, Month, Day, Hour, Minute, Second, Millisecond: Word;
+    DecodeDateTime(Stamp, Year, Month, Day, Hour, Minute, Second, Millisecond);
+    FSRTC.Digits[0] := Second mod 10;
+    FSRTC.Digits[1] := Second div 10;
+    FSRTC.Digits[2] := Minute mod 10;
+    FSRTC.Digits[3] := Minute div 10;
+    FSRTC.Digits[4] := Hour mod 10;
+    FSRTC.Digits[5] := Hour div 10;
+    FSRTC.Digits[6] := Day mod 10;
+    FSRTC.Digits[7] := Day div 10;
+    FSRTC.Digits[8] := Month;
+    FSRTC.Digits[9] := Year mod 10;
+    FSRTC.Digits[10] := (Year div 10) mod 10;
+    FSRTC.Digits[11] := (Year - 1000) div 100 and $0F;
+    FSRTC.Digits[12] := DayOfWeek(Stamp) - 1;
+  end;
+  FSRTC.LastTime := CurrentTime;
+end;
+
+function TSnesCartridge.ReadSRTC: Byte;
+begin
+  if FSRTCMode <> SRTCRead then
+    Exit(0);
+  if FSRTCIndex < 0 then
+  begin
+    UpdateSRTC;
+    FSRTCIndex := 0;
+    Exit($0F);
+  end;
+  if FSRTCIndex >= Length(FSRTC.Digits) then
+  begin
+    FSRTCIndex := -1;
+    Exit($0F);
+  end;
+  Result := FSRTC.Digits[FSRTCIndex];
+  Inc(FSRTCIndex);
+end;
+
+procedure TSnesCartridge.WriteSRTC(Value: Byte);
+begin
+  Value := Value and $0F;
+  case Value of
+    $0D:
+      begin
+        FSRTCMode := SRTCRead;
+        FSRTCIndex := -1;
+        Exit;
+      end;
+    $0E:
+      begin
+        FSRTCMode := SRTCCommand;
+        Exit;
+      end;
+    $0F:
+      Exit;
+  end;
+
+  case FSRTCMode of
+    SRTCCommand:
+      if Value = 0 then
+      begin
+        FSRTCMode := SRTCWrite;
+        FSRTCIndex := 0;
+      end
+      else
+      begin
+        FSRTCMode := SRTCReady;
+        if Value = 4 then
+        begin
+          FSRTC := Default(TSRTCData);
+          FDirty := True;
+        end;
+      end;
+    SRTCWrite:
+      if (FSRTCIndex >= 0) and (FSRTCIndex < 12) then
+      begin
+        FSRTC.Digits[FSRTCIndex] := Value;
+        Inc(FSRTCIndex);
+        if FSRTCIndex = 12 then
+          UpdateSRTC(True);
+        FDirty := True;
+      end;
+  end;
+end;
+
+function TSnesCartridge.BSXROMMapped(Bank, Offset: Integer): Boolean;
+begin
+  Result := ((Bank and $7F) < $40) and (Offset >= $8000) and
+    (FBSXMapping and (1 shl (7 + (Bank shr 7))) <> 0);
+end;
+
+function TSnesCartridge.BSXPSRAMAddress(Bank, Offset: Integer): Integer;
+begin
+  Result := -1;
+  var LowBank := Bank and $7F;
+  var HiROM := FBSXMapping and 4 <> 0;
+  // The fixed PSRAM windows are present even when both movable windows are off.
+  if HiROM then
+  begin
+    if (LowBank in [$20..$3F]) and (Offset >= $6000) and (Offset < $8000) then
+      Exit(((LowBank and 7) shl 16) or Offset);
+  end
+  else if (LowBank >= $70) and (Offset < $8000) then
+    Exit(((LowBank and $F) shl 15) or Offset);
+
+  if FBSXMapping and (1 shl (3 + (Bank shr 7))) = 0 then
+    Exit;
+  var Window := (FBSXMapping shr 5) and 3;
+  if HiROM then
+  begin
+    if (LowBank shr 3) = (8 + Window * 2) then
+      Result := ((LowBank and 7) shl 16) or Offset;
+  end
+  else if ((LowBank shr 4) = (Window * 2)) and ((LowBank >= $40) or (Offset >= $8000)) then
+    Result := ((LowBank and $F) shl 15) or (Offset and $7FFF);
+end;
+
+function TSnesCartridge.ReadBSX(Address: Cardinal; OpenBus: Byte): Byte;
+begin
+  var Bank := Integer(Address shr 16);
+  var Offset := Integer(Address and $FFFF);
+  if (Offset and $F000) = $5000 then
+  begin
+    if Bank < $10 then
+    begin
+      var Bit := 0;
+      if FBSXRegisters and $8000 <> 0 then
+        Bit := (FBSXHidden shr (Bank and 7)) and 1
+      else if Bank = 1 then
+        Bit := (FBSXRegisters shr 1) and 1
+      else if Bank in [2..13] then
+        Bit := (FBSXMapping shr Bank) and 1;
+      Exit((OpenBus and $7F) or Byte(Bit shl 7));
+    end;
+    if Bank in [$10..$17] then
+      Exit(FSRAM[((Bank and 7) shl 12) or (Offset and $FFF)]);
+  end;
+  if BSXROMMapped(Bank, Offset) then
+    Exit(FData[((Bank and $1F) shl 15) or (Offset and $7FFF)]);
+  var Index := BSXPSRAMAddress(Bank, Offset);
+  if Index >= 0 then
+    Exit(FBSXPSRAM[Index]);
+  // There is no pack in the slot when running the base cartridge by itself.
+  Result := OpenBus;
+end;
+
+procedure TSnesCartridge.WriteBSX(Address: Cardinal; Value: Byte);
+begin
+  var Bank := Integer(Address shr 16);
+  var Offset := Integer(Address and $FFFF);
+  if (Offset and $F000) = $5000 then
+  begin
+    if Bank < $10 then
+    begin
+      var Bit := Value shr 7;
+      if FBSXRegisters and $8000 <> 0 then
+      begin
+        var Position := Bank and 7;
+        FBSXHidden := (FBSXHidden and not (1 shl Position)) or (Bit shl Position);
+      end;
+      FBSXRegisters := (FBSXRegisters and not (1 shl Bank)) or (Bit shl Bank);
+      if Bank = 14 then
+        FBSXMapping := FBSXRegisters;
+      Exit;
+    end;
+    if Bank in [$10..$17] then
+    begin
+      var Index := ((Bank and 7) shl 12) or (Offset and $FFF);
+      if FSRAM[Index] <> Value then
+      begin
+        FSRAM[Index] := Value;
+        FDirty := True;
+      end;
+      Exit;
+    end;
+  end;
+  if BSXROMMapped(Bank, Offset) then
+    Exit;
+  var Index := BSXPSRAMAddress(Bank, Offset);
+  if Index >= 0 then
+    FBSXPSRAM[Index] := Value;
+end;
+
+function TSnesCartridge.SufamiRAMAddress(Address: Cardinal): Integer;
+begin
+  var Bank := (Address shr 16) and $7F;
+  if (Length(FSRAM) = 0) or not (Bank in [$60..$63]) or (Address and $8000 = 0) then
+    Exit(-1);
+  Result := (Integer(Bank and 3) * $8000 + Integer(Address and $7FFF)) mod Length(FSRAM);
+end;
+
+function TSnesCartridge.ReadSufami(Address: Cardinal; OpenBus: Byte): Byte;
+begin
+  if Address and $8000 = 0 then
+    Exit(OpenBus);
+  var Bank := (Address shr 16) and $7F;
+  var Offset := Address and $7FFF;
+  if Bank < $20 then
+    Exit(FData[((Bank and 7) shl 15) or Offset]);
+  if (Bank < $40) and (Length(FSufamiSlotA) <> 0) then
+    Exit(FSufamiSlotA[(((Bank and $1F) shl 15) or Offset) mod Cardinal(Length(FSufamiSlotA))]);
+  var Index := SufamiRAMAddress(Address);
+  if Index >= 0 then
+    Exit(FSRAM[Index]);
+  Result := OpenBus;
+end;
+
 function TSnesCartridge.Read(Address: Cardinal; OpenBus: Byte): Byte;
 begin
+  if FHasSufami then
+    Exit(ReadSufami(Address, OpenBus));
+  if FHasBSX then
+    Exit(ReadBSX(Address, OpenBus));
+  if FHasSRTC and ((Address and $40FFFF) = $002800) then
+    Exit(ReadSRTC);
+
   // No game is attached to a standalone BIOS. Control A temporarily exposes it.
   // The 80-BF BIOS mirror remains visible during the 00-3F game-ROM peek.
   if FActionReplay and ((FReplayControl and $10) <> 0) and ((Address shr 16) < $40) and ((Address and $FFFF) >= $8000) then
@@ -779,6 +1104,27 @@ end;
 
 procedure TSnesCartridge.Write(Address: Cardinal; Value: Byte);
 begin
+  if FHasSufami then
+  begin
+    var Index := SufamiRAMAddress(Address);
+    if (Index >= 0) and (FSRAM[Index] <> Value) then
+    begin
+      FSRAM[Index] := Value;
+      FDirty := True;
+    end;
+    Exit;
+  end;
+  if FHasBSX then
+  begin
+    WriteBSX(Address, Value);
+    Exit;
+  end;
+  if FHasSRTC and ((Address and $40FFFF) = $002801) then
+  begin
+    WriteSRTC(Value);
+    Exit;
+  end;
+
   if FActionReplay and (Address = $10001C) then
   begin
     FReplayControl := Value;
@@ -894,10 +1240,17 @@ begin
     Exit;
   end;
 
-  if Length(Data) <> Length(FSRAM) then
-    raise EReadError.Create('SNES SRAM size mismatch');
-
-  FSRAM := Copy(Data);
+  if FHasSRTC and (Length(Data) = Length(FSRAM) + SizeOf(FSRTC)) then
+  begin
+    Move(Data[Length(FSRAM)], FSRTC, SizeOf(FSRTC));
+    FSRAM := Copy(Data, 0, Length(FSRAM));
+  end
+  else
+  begin
+    if Length(Data) <> Length(FSRAM) then
+      raise EReadError.Create('SNES SRAM size mismatch');
+    FSRAM := Copy(Data);
+  end;
   FDirty := False;
 end;
 
@@ -915,6 +1268,13 @@ begin
     Result := Copy(FSRAM);
   if FSPC7110 <> nil then
     Result := Result + FSPC7110.RTCBattery;
+  if FHasSRTC then
+  begin
+    UpdateSRTC;
+    var Offset := Length(Result);
+    SetLength(Result, Offset + SizeOf(FSRTC));
+    Move(FSRTC, Result[Offset], SizeOf(FSRTC));
+  end;
 end;
 
 function TSnesCartridge.GetBatteryDirty: Boolean;
@@ -937,6 +1297,19 @@ end;
 
 procedure TSnesCartridge.SerializeState(State: TStateArchive);
 begin
+  if FHasBSX then
+  begin
+    State.Field(FBSXRegisters, SizeOf(FBSXRegisters));
+    State.Field(FBSXMapping, SizeOf(FBSXMapping));
+    State.Field(FBSXHidden, SizeOf(FBSXHidden));
+    State.Field(FBSXPSRAM[0], Length(FBSXPSRAM));
+  end;
+  if FHasSRTC then
+  begin
+    State.Field(FSRTC, SizeOf(FSRTC));
+    State.Field(FSRTCMode, SizeOf(FSRTCMode));
+    State.Field(FSRTCIndex, SizeOf(FSRTCIndex));
+  end;
   if FActionReplay then
     State.Field(FReplayControl, SizeOf(FReplayControl));
   if Length(FSRAM) > 0 then

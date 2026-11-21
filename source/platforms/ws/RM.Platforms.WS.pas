@@ -132,7 +132,10 @@ end;
 
 class procedure TWSPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('WonderSwan', TWSSettings);
+  RegisterSettingsProfile('WonderSwan', TWSSettings,
+    'Automatic model selection follows the image. Change the model only if the game requires ' +
+    'specific hardware. For vertical games, check the screen orientation and bindings for both ' +
+    'directional pads.');
   RegisterPlatformSettingsDevices('ws', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('wsc', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('ws', TPlatformDeviceCallouts);

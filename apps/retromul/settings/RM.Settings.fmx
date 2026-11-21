@@ -22,7 +22,7 @@ object SettingsView: TSettingsView
       Size.Width = 264.000000000000000000
       Size.Height = 796.000000000000000000
       Size.PlatformDefault = False
-      StyleLookup = 'retromul_sidebar'
+      StyleLookup = 'retromul_panel_left'
       object ButtonSidebarBack: TButton
         Align = Top
         Margins.Left = 12.000000000000000000
@@ -51,7 +51,7 @@ object SettingsView: TSettingsView
           Size.Width = 20.000000000000000000
           Size.Height = 20.000000000000000000
           Size.PlatformDefault = False
-          Stroke.Color = xFFE8ECF1
+          Stroke.Color = xFFE9E8F1
           Stroke.Thickness = 1.600000023841858000
           WrapMode = Fit
         end
@@ -112,7 +112,7 @@ object SettingsView: TSettingsView
             Size.Width = 24.000000000000000000
             Size.Height = 24.000000000000000000
             Size.PlatformDefault = False
-            Stroke.Color = xFFB9C2CC
+            Stroke.Color = xFFA9AAB9
             Stroke.Thickness = 1.600000023841858000
             WrapMode = Fit
           end
@@ -149,7 +149,7 @@ object SettingsView: TSettingsView
             Size.Width = 24.000000000000000000
             Size.Height = 24.000000000000000000
             Size.PlatformDefault = False
-            Stroke.Color = xFFB9C2CC
+            Stroke.Color = xFFA9AAB9
             Stroke.Thickness = 1.600000023841858000
             WrapMode = Fit
           end
@@ -182,7 +182,7 @@ object SettingsView: TSettingsView
             Size.Width = 24.000000000000000000
             Size.Height = 24.000000000000000000
             Size.PlatformDefault = False
-            Stroke.Color = xFFB9C2CC
+            Stroke.Color = xFFA9AAB9
             Stroke.Thickness = 1.600000023841858000
             WrapMode = Fit
           end
@@ -222,7 +222,7 @@ object SettingsView: TSettingsView
             Size.Width = 24.000000000000000000
             Size.Height = 24.000000000000000000
             Size.PlatformDefault = False
-            Stroke.Color = xFFB9C2CC
+            Stroke.Color = xFFA9AAB9
             Stroke.Thickness = 1.600000023841858000
             WrapMode = Fit
           end
@@ -297,7 +297,7 @@ object SettingsView: TSettingsView
               020000000C8270421303194202000000703D73421303194202000000BC747542
               5F3A1B4202000000BC747542C3F51D4202000000BC74754227B1204202000000
               773E734273E82242020000000C82704273E82242030000000C82704273E82242}
-            Fill.Color = xFFB9C2CC
+            Fill.Color = xFFA9AAB9
             HitTest = False
             Margins.Left = 12.000000000000000000
             Margins.Top = 14.000000000000000000
@@ -329,7 +329,7 @@ object SettingsView: TSettingsView
           Size.PlatformDefault = False
           TextSettings.Font.Size = 23.000000000000000000
           TextSettings.Font.StyleExt = {00070000000000000004000000}
-          TextSettings.FontColor = xFFE8ECF1
+          TextSettings.FontColor = xFFE9E8F1
           TextSettings.WordWrap = False
           Text = 'RetroMul'
           TabOrder = 0
@@ -359,7 +359,7 @@ object SettingsView: TSettingsView
           Size.Width = 30.000000000000000000
           Size.Height = 30.000000000000000000
           Size.PlatformDefault = False
-          Stroke.Color = xFFFFB344
+          Stroke.Color = xFFB8A6FA
           Stroke.Thickness = 1.600000023841858000
           WrapMode = Fit
         end
@@ -374,7 +374,7 @@ object SettingsView: TSettingsView
       Size.Width = 216.000000000000000000
       Size.Height = 796.000000000000000000
       Size.PlatformDefault = False
-      StyleLookup = 'retromul_sidebar'
+      StyleLookup = 'retromul_panel_left'
       Visible = False
       object LabelPlatformsTitle: TLabel
         Align = Top

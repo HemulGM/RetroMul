@@ -6,8 +6,7 @@ uses
   System.Classes, Core.Archive.Container, Core.Storage, PSP.Media;
 
 // Recognition inspects a 4 MiB ISO prefix; readers may cache the full member.
-// Disc extraction streams to storage's temporary area. Homebrew retains the
-// container so the PSP can open neighboring modules and resources on demand.
+// The container retains disc members and supplies neighboring homebrew files.
 function IsPSPArchive(const Archive: IArchiveContainer): Boolean;
 
 function ReadPSPArchive(const Archive: IArchiveContainer; const Storage: IStorage; KeepMedia: Boolean = False): TPSPProgram;
@@ -118,69 +117,27 @@ begin
     raise EArgumentNilException.Create('Archive');
   if Storage = nil then
     raise EArgumentNilException.Create('Storage');
-  var Temporary := '';
-  var Retained := False;
-  var Completed := False;
+  var Index := Candidate(Archive);
+  if Index < 0 then
+    raise EPSPFormat.Create('PSP: Archive has no unambiguous boot image (ISO, CSO, PBP, ELF or PRX)');
+  var Size := Archive.Entries[Index].Size;
+  if (Size < 4) or (Size > UInt64(4) * 1024 * 1024 * 1024) then
+    raise EPSPFormat.Create('PSP: Archive image size exceeds 4 GiB');
+  // The archive owns a validated, seekable copy of each opened member.
+  var Input := Archive.OpenRead(Index);
   try
-    var Index := Candidate(Archive);
-    if Index < 0 then
-      raise EPSPFormat.Create('PSP: Archive has no unambiguous boot image (ISO, CSO, PBP, ELF or PRX)');
-    var Size := Archive.Entries[Index].Size;
-    if (Size < 4) or (Size > UInt64(4) * 1024 * 1024 * 1024) then
-      raise EPSPFormat.Create('PSP: Archive image size exceeds 4 GiB');
-    Temporary := Storage.TemporaryFile('.psp-image');
-    var Output := Storage.OpenWrite(Temporary);
-    try
-      var Input: TStream;
-      Input := Archive.OpenRead(Index);
-      try
-        var Buffer: TBytes;
-        SetLength(Buffer, 1024 * 1024);
-        var Remaining := Size;
-        while Remaining <> 0 do
-        begin
-          TStorage.CheckReadCancelled;
-          var N := Length(Buffer);
-          if Remaining < UInt64(N) then
-            N := Remaining;
-          Input.ReadBuffer(Buffer[0], N);
-          Output.WriteBuffer(Buffer[0], N);
-          Dec(Remaining, N);
-        end;
-        var Extra: Byte;
-        if Input.Read(Extra, 1) <> 0 then
-          raise EPSPFormat.Create('PSP: Archive entry exceeds its declared size');
-      finally
-        Input.Free;
-      end;
-    finally
-      Output.Free;
+    var IsDisc := TPSPDisc.Recognizes(Input);
+    Result := TPSPProgram.Read(Input);
+    if not IsDisc then
+      Result.AttachArchive(Archive, Archive.Entries[Index].Name)
+    else if KeepMedia then
+    begin
+      Result.DiscArchive := Archive;
+      Result.DiscEntry := Index;
     end;
-    var Image := Storage.OpenRead(Temporary);
-    try
-      Result := TPSPProgram.Read(Image);
-      if not TPSPDisc.Recognizes(Image) then
-        Result.AttachArchive(Archive, Archive.Entries[Index].Name);
-      if KeepMedia and TPSPDisc.Recognizes(Image) then
-      begin
-        Result.MediaPath := Temporary;
-        Result.TemporaryMedia := True;
-        Retained := True;
-      end;
-    finally
-      Image.Free;
-    end;
-    Completed := True;
   finally
-    if not Retained and (Temporary <> '') and Storage.Exists(Temporary) then
-    try
-      Storage.Delete(Temporary);
-    except
-      if Completed then
-        raise;
-    end;
+    Input.Free;
   end;
 end;
 
 end.
-

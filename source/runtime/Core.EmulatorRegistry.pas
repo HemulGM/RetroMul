@@ -25,6 +25,8 @@ type
     Id, Name: string;
   end;
 
+  ECoreInvalidMedia = class(EReadError);
+
   ECoreSelectionRequired = class(EReadError)
   private
     FPlatforms: TArray<TCorePlatformOption>;

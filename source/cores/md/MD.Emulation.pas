@@ -25,7 +25,7 @@ type
     FWake: TEvent;
     FData: TBytes;
     FSavePath: string;
-    FDiscLocation: string;
+    FDiscLocation, FCartridgeExtension: string;
     FStorage: IStorage;
     FInput, FInput2, FInput3, FInput4: TMDButtons;
     FPause, FReset, FAudioEnabled: Boolean;
@@ -41,7 +41,7 @@ type
   protected
     procedure Execute; override;
   public
-    constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil; const DiscLocation: string = '');
+    constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil; const DiscLocation: string = ''; const CartridgeExtension: string = '');
     destructor Destroy; override;
     procedure WakeSetEvent;
     procedure Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TMDButtons = []; const Input3: TMDButtons = []; const Input4: TMDButtons = []);
@@ -79,7 +79,7 @@ begin
   FInputPortsCommand.Apply(Self, Ports, FWake);
 end;
 
-constructor TMDWorker.Create(const Data: TBytes; const SavePath: string; const Storage: IStorage; const DiscLocation: string);
+constructor TMDWorker.Create(const Data: TBytes; const SavePath: string; const Storage: IStorage; const DiscLocation, CartridgeExtension: string);
 begin
   inherited Create(True);
   FInputPortsCommand := TInputPortsCommand.Create;
@@ -97,6 +97,7 @@ begin
   FData := Copy(Data);
   FSavePath := SavePath;
   FDiscLocation := DiscLocation;
+  FCartridgeExtension := CartridgeExtension;
 end;
 
 destructor TMDWorker.Destroy;
@@ -337,7 +338,7 @@ begin
         Console := TMDConsole.Create(BIOS, ROM_EXTENSION_MD, Disc);
       end
       else
-        Console := TMDConsole.Create(FData, ROM_EXTENSION_MD);
+        Console := TMDConsole.Create(FData, FCartridgeExtension);
       Console.ConfigureInputPorts(InputPorts);
       FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), ROM_CORE_ID_MD);
       if FStorage.Exists(FSavePath) then

@@ -524,7 +524,10 @@ begin
       Result.ExitKey := vkEscape;
     end;
   RegisterPlatformServices('j2me', Services);
-  RegisterSettingsPlatform('j2me', TJ2MESettings);
+  RegisterSettingsPlatform('j2me', TJ2MESettings,
+    'Open the application JAR. Keep its matching JAD beside it when available. Start with ' +
+    'automatic virtual Canvas size and choose a phone keypad layout if the game expects ' +
+    'different keys. Some MIDlets require phone-specific features.');
   RegisterPlatformSettingsDevices('j2me', TJ2MESettingsDevices);
   RegisterPlatformDeviceCallouts('j2me', TJ2MEDeviceCallouts);
   RegisterPlatformControlsHelp('j2me', TJ2MEControlsHelp);

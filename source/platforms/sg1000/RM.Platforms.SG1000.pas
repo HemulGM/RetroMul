@@ -36,16 +36,15 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads,
-  RM.Settings.Catalog, RM.Platforms.SG1000.Keyboard, Core.PlatformServices,
-  Core.Platforms.SG1000.Adapter, Core.Snapshots, System.StrUtils, Core.Emulation,
-  Core.Platforms, SG1000.Console, RM.Platforms.SG1000.Settings,
-  RM.Platforms.Presentation, RM.Platforms.SG1000.Icons, RM.Gamepad.Factory,
-  RM.Platforms.SG1000.Gamepads, System.UITypes, RM.Input.Runtime,
-  RM.Keyboard.Input, RM.Session.Runtime, RM.Keyboard.Session, RM.Window.Layout,
-  RM.Keyboard.Window, RM.Settings.Runtime, RM.Keyboard.Settings,
-  RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
-  System.Classes;
+  RM.Input.Gamepads, RM.Settings.Catalog, RM.Platforms.SG1000.Keyboard,
+  Core.PlatformServices, Core.Platforms.SG1000.Adapter, Core.Snapshots,
+  System.StrUtils, Core.Emulation, Core.Platforms, SG1000.Console,
+  RM.Platforms.SG1000.Settings, RM.Platforms.Presentation,
+  RM.Platforms.SG1000.Icons, RM.Gamepad.Factory, RM.Platforms.SG1000.Gamepads,
+  System.UITypes, RM.Input.Runtime, RM.Keyboard.Input, RM.Session.Runtime,
+  RM.Keyboard.Session, RM.Window.Layout, RM.Keyboard.Window, RM.Settings.Runtime,
+  RM.Keyboard.Settings, RM.ControlsHelp.Content, RM.Settings.Callouts,
+  RM.Settings.Devices, System.Classes;
 
 class procedure TSG1000Platform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
 begin
@@ -133,15 +132,15 @@ begin
   TPlatformRegistry.RegisterPlatform('sc3000', 'SC-3000', 'SC-3000',
     'Sega', 'SC3000 SC-3000H', 'sc3000', ['sc3000', 'sg1000'],
     ['.sc'],
-    'SC3000', 'sc3000', 2);
+    'SC3000', 'sc3000', 2, 'sg1000');
   TPlatformRegistry.RegisterPlatform('sf7000', 'SF-7000', 'SF-7000',
     'Sega', 'SF7000 floppy', 'sf7000', ['sf7000', 'sg1000'],
     ['.sf7', '.sf', '.dsk'],
-    'SF7000', 'sf7000', 2);
+    'SF7000', 'sf7000', 2, 'sg1000');
   TPlatformRegistry.RegisterPlatform('omv', 'Multivision', 'Multivision',
     'Tsukuda Original', 'OMV Othello Multivision', 'omv', ['omv', 'sg1000'],
     ['.mv'],
-    'Multivision', 'omv', 2);
+    'Multivision', 'omv', 2, 'sg1000');
 end;
 
 class procedure TSG1000Platform.RegisterCore;
@@ -231,10 +230,18 @@ end;
 
 class procedure TSG1000Platform.RegisterClient;
 begin
-  RegisterSettingsProfile('SG1000', TSG1000Settings);
-  RegisterSettingsProfile('SC3000', TSC3000Settings);
-  RegisterSettingsProfile('SF7000', TSF7000Settings);
-  RegisterSettingsProfile('Multivision', TMultivisionSettings);
+  RegisterSettingsProfile('SG1000', TSG1000Settings,
+    'Choose the folder for the correct machine. SC-3000 uses computer-style keyboard input. ' +
+    'SF-7000 disk images need the external IPL firmware selected for the system.');
+  RegisterSettingsProfile('SC3000', TSC3000Settings,
+    'Choose the folder for the correct machine. SC-3000 uses computer-style keyboard input. ' +
+    'SF-7000 disk images need the external IPL firmware selected for the system.');
+  RegisterSettingsProfile('SF7000', TSF7000Settings,
+    'Choose the folder for the correct machine. SC-3000 uses computer-style keyboard input. ' +
+    'SF-7000 disk images need the external IPL firmware selected for the system.');
+  RegisterSettingsProfile('Multivision', TMultivisionSettings,
+    'Choose the folder for the correct machine. SC-3000 uses computer-style keyboard input. ' +
+    'SF-7000 disk images need the external IPL firmware selected for the system.');
   RegisterPlatformKeyboard('sg1000', TSGKeyboard);
   RegisterPlatformKeyboard('sc3000', TSGKeyboard);
   RegisterPlatformKeyboard('sf7000', TSGKeyboard);

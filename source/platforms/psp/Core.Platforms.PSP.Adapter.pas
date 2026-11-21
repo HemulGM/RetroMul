@@ -212,7 +212,7 @@ begin
   FSnapshotDirectory := SnapshotDirectory;
   if ProgramData.UMDVideo then
   begin
-    FVideoImage := Storage.OpenRead(ProgramData.MediaPath);
+    FVideoImage := ProgramData.OpenDisc(Storage);
     FVideo := TPSPUMDVideo.Create(FVideoImage);
     FRendererStatus := FVideo.Status;
   end
@@ -767,8 +767,6 @@ end;
 destructor TPSPCoreAdapter.Destroy;
 begin
   Stop;
-  if FProgram.TemporaryMedia and (FStorage <> nil) and FStorage.Exists(FProgram.MediaPath) then
-    FStorage.Delete(FProgram.MediaPath);
   inherited;
 end;
 

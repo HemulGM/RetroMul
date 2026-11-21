@@ -170,7 +170,12 @@ end;
 
 class procedure TPSPPlatform.RegisterClient;
 begin
-  RegisterSettingsPlatform('psp', TPSPSettings);
+  RegisterSettingsPlatform('psp', TPSPSettings,
+    'The CPU renderer is the default. Experimental Vulkan LLE aims to match it using compute ' +
+    'shaders at 480×272. Experimental Vulkan HLE uses the GPU graphics pipeline and supports ' +
+    'higher internal resolution and optional texture scaling, with possible image differences. ' +
+    'The settings show available renderers for the device. Stop and reopen the game after ' +
+    'changing the renderer. JIT controls CPU execution separately.');
   RegisterPlatformSettingsDevices('psp', TPSPSettingsDevices);
   RegisterPlatformDeviceCallouts('psp', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('psp', TPSPControlsHelp);

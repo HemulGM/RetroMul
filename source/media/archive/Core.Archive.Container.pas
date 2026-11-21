@@ -101,13 +101,19 @@ function ArchiveCRC(Stream: TStream): Cardinal;
 
 implementation
 
+uses
+  System.ZLib;
+
 type
   TBoundedArchiveOutput = class(TStream)
   private
     FOutput: TStream;
     FRemaining: UInt64;
+    FCRC: Cardinal;
   public
     constructor Create(Output: TStream; Size: UInt64);
+    property Remaining: UInt64 read FRemaining;
+    property CRC: Cardinal read FCRC;
     function Read(var Buffer; Count: Longint): Longint; override;
     function Write(const Buffer; Count: Longint): Longint; override;
     function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
@@ -124,9 +130,6 @@ type
     function Write(const Buffer; Count: Longint): Longint; override;
     function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
   end;
-
-var
-  CRCTable: array[0..255] of Cardinal;
 
 procedure ReadArchiveBuffer(Input: TStream; var Buffer; Count: Integer);
 begin
@@ -180,7 +183,7 @@ begin
   var Saved := Stream.Position;
   try
     Stream.Position := 0;
-    Result := $FFFFFFFF;
+    Result := 0;
     var Buffer: array[0..65535] of Byte;
     while True do
     begin
@@ -190,10 +193,8 @@ begin
         Break;
       if (N < 0) or (N > SizeOf(Buffer)) then
         raise EReadError.Create('Invalid archive read');
-      for var I := 0 to N - 1 do
-        Result := (Result shr 8) xor CRCTable[(Result xor Buffer[I]) and $FF];
+      Result := crc32(Result, @Buffer[0], N);
     end;
-    Result := not Result;
   finally
     Stream.Position := Saved;
   end;
@@ -339,28 +340,24 @@ begin
     if FReady[Index] then
       Exit;
     try
+      var CRC: Cardinal;
       var Output := BeginEntry(Index);
       try
         var Limited := TBoundedArchiveOutput.Create(Output, FEntries[Index].Size);
         try
           Extract(Index, Limited);
+          if Limited.Remaining <> 0 then
+            raise EReadError.Create('Archive member size mismatch: ' + FEntries[Index].Name);
+          if FEntries[Index].HasCRC and (Limited.CRC <> FEntries[Index].CRC32) then
+            raise EReadError.Create('Archive member CRC mismatch: ' + FEntries[Index].Name);
+          CRC := Limited.CRC;
         finally
           Limited.Free;
         end;
       finally
         Output.Free;
       end;
-      var Input := FStorage.OpenRead(FFiles[Index]);
-      try
-        if UInt64(Input.Size) <> FEntries[Index].Size then
-          raise EReadError.Create('Archive member size mismatch: ' + FEntries[Index].Name);
-        var CRC := ArchiveCRC(Input);
-        if FEntries[Index].HasCRC and (CRC <> FEntries[Index].CRC32) then
-          raise EReadError.Create('Archive member CRC mismatch: ' + FEntries[Index].Name);
-        CompleteEntry(Index, CRC);
-      finally
-        Input.Free;
-      end;
+      CompleteEntry(Index, CRC);
     except
       if FFiles[Index] <> '' then
       begin
@@ -479,6 +476,8 @@ begin
   Result := FOutput.Write(Buffer, Count);
   if (Result < 0) or (Result > Count) then
     raise EWriteError.Create('Invalid archive cache write');
+  if Result > 0 then
+    FCRC := crc32(FCRC, @Buffer, Result);
   Dec(FRemaining, UInt64(Result));
 end;
 
@@ -552,17 +551,4 @@ begin
   Result := FSource.Seek(Offset, Origin);
 end;
 
-initialization
-  for var I := 0 to 255 do
-  begin
-    var C := Cardinal(I);
-    for var J := 0 to 7 do
-      if C and 1 <> 0 then
-        C := (C shr 1) xor $EDB88320
-      else
-        C := C shr 1;
-    CRCTable[I] := C;
-  end;
-
 end.
-

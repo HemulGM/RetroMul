@@ -39,25 +39,39 @@ constructor TCPSPICConsole.Create(Cart: TCPSCartridge);
 begin
   inherited;
 
-  // These preserved bootleg ROMs skip their register initialization and
-  // reduce the game's layer word to an undocumented binary layer command.
-  // Restore initialization and the original full layer-word transfer in our
-  // private program view. Verify the exact instructions before applying the
-  // compatibility fix documented for this revision in MAME cps1bl_pic.cpp.
-  if (FProgram[$5A8] <> $60) or (FProgram[$5A9] <> $68) or
-    (FProgram[$4DF0] <> $0C) or (FProgram[$4DF1] <> $40) then
-    raise ECPSRom.Create('Unrecognized Punisher PIC program revision');
-
+  // Restore the skipped initialization in a private, CRC-selected program view.
+  // The PIC revisions also need to preserve the full layer word on transfer.
   FProgram := Copy(FProgram);
-  FProgram[$5A8] := $4E;
-  FProgram[$5A9] := $71;
-  var Patch := TBytes.Create($33, $ED, $DB, $2E, $00, $80, $01, $52, $4E, $75);
-  Move(Patch[0], FProgram[$4DF0], Length(Patch));
+  if Cart.RomSet.Init = 'init_punipic3' then
+  begin
+    if (FProgram[$5A6] <> $60) or (FProgram[$5A7] <> $00) or
+      (FProgram[$5A8] <> $00) or (FProgram[$5A9] <> $6A) then
+      raise ECPSRom.Create('Unrecognized Punisher bootleg set 3 program revision');
+
+    FProgram[$5A6] := $4E;
+    FProgram[$5A7] := $71;
+    FProgram[$5A8] := $4E;
+    FProgram[$5A9] := $71;
+  end
+  else
+  begin
+    if (FProgram[$5A8] <> $60) or (FProgram[$5A9] <> $68) or
+      (FProgram[$4DF0] <> $0C) or (FProgram[$4DF1] <> $40) then
+      raise ECPSRom.Create('Unrecognized Punisher PIC program revision');
+
+    FProgram[$5A8] := $4E;
+    FProgram[$5A9] := $71;
+    var Patch := TBytes.Create($33, $ED, $DB, $2E, $00, $80, $01, $52, $4E, $75);
+    Move(Patch[0], FProgram[$4DF0], Length(Patch));
+  end;
   SetLength(FSprites, $2000);
   FSerial := TCPS93C46.Create(8);
-  FPIC := TPIC16C57.Create(Cart['pic'], 3750000);
-  FPIC.OnReadPort := ReadPort;
-  FPIC.OnWritePort := WritePort;
+  if Cart.HasRegion('pic') then
+  begin
+    FPIC := TPIC16C57.Create(Cart['pic'], 3750000);
+    FPIC.OnReadPort := ReadPort;
+    FPIC.OnWritePort := WritePort;
+  end;
   FClock := 12000000;
   FZClock := 937500;
   Video.ConfigureBootleg($12, [$14, $16, $08, $0A], $46, 0, $46, $1000, $8000, True);
@@ -124,6 +138,9 @@ end;
 
 procedure TCPSPICConsole.AdvanceSound(Cycles: Integer);
 begin
+  if FPIC = nil then
+    Exit;
+
   Inc(FCountdown, Cycles);
   while FCountdown > 0 do
     Dec(FCountdown, FPIC.Step);
@@ -235,7 +252,8 @@ end;
 procedure TCPSPICConsole.SerializeState(State: TStateArchive);
 begin
   inherited;
-  FPIC.SerializeState(State);
+  if FPIC <> nil then
+    FPIC.SerializeState(State);
   FSerial.SerializeState(State);
   State.Field(FPortB, SizeOf(FPortB));
   State.Field(FPortC, SizeOf(FPortC));

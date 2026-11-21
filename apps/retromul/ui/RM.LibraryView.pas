@@ -60,7 +60,6 @@ type
     LabelContinueCaption, LabelContinuePlatform, LabelContinueLastPlayed, LabelContinueSave: TLabel;
     PathPlayIcon: TPath;
     VertScrollBoxPlatforms: TVertScrollBox;
-    Path1: TPath;
     Path2: TPath;
   private
     FPadMode, FPadStartPending: Boolean;
@@ -285,7 +284,7 @@ implementation
 {$R *.fmx}
 
 uses
-  {$IFDEF ANDROID}    Core.Storage.Android, {$ENDIF}
+  {$IFDEF ANDROID}      Core.Storage.Android, {$ENDIF}
   System.IOUtils, System.Math, System.Math.Vectors, System.Hash,
   System.Character, System.Generics.Defaults, FMX.Graphics, FMX.BehaviorManager,
   Core.GameList, FMX.Image, Core.Platforms, Core.SavePaths, RM.Icons,
@@ -431,7 +430,7 @@ begin
   Result.StyledSettings := [];
   Result.TextSettings.Font.Family := 'Segoe UI';
   Result.TextSettings.Font.Size := Size;
-  Result.TextSettings.FontColor := $FFE8ECF1;
+  Result.TextSettings.FontColor := ThemeTextColor;
   Result.TextSettings.Trimming := TTextTrimming.Character;
   Result.TextSettings.WordWrap := False;
   Result.HitTest := False;
@@ -458,7 +457,7 @@ begin
   var IsMobile := True;
   {$ELSE}
   var IsMobile := False;
-  {$ENDIF}              ;
+  {$ENDIF}                ;
   FNavigation := TLibraryNavigation.Create(IsMobile);
   FPadGames := TList<TLibraryGame>.Create;
   FGames := TObjectList<TLibraryGame>.Create;
@@ -590,7 +589,7 @@ begin
       Heading.Height := 30;
       Heading.Margins.Rect := RectF(12, 12, 0, 4);
       Heading.Position.Y := 0;
-      Heading.TextSettings.FontColor := $FFB9C2CC;
+      Heading.TextSettings.FontColor := ThemeSecondaryTextColor;
       Inc(Order);
     end;
     var Button := ActionButton(Self, Group, platform.Name, FilterClick);
@@ -610,7 +609,7 @@ begin
     Border.Parent := Button;
     Border.Align := TAlignLayout.Contents;
     Border.Fill.Kind := TBrushKind.None;
-    Border.Stroke.Color := $FFFFB344;
+    Border.Stroke.Color := ThemeAccentTextColor;
     Border.Stroke.Thickness := 2;
     Border.XRadius := 6;
     Border.YRadius := 6;
@@ -618,7 +617,7 @@ begin
     Border.Visible := False;
   end;
 
-  for var Name in ['ButtonOpenRom', 'ButtonSettings', 'ButtonReportBug'] do
+  for var Name in ['ButtonOpenRom', 'ButtonSettings', 'ButtonHelp'] do
   begin
     var Button := FindComponent(Name) as TButton;
     Button.TextSettings.HorzAlign := TTextAlign.Leading;
@@ -1453,7 +1452,7 @@ begin
         SelectedBorder.Parent := Card;
         SelectedBorder.Align := TAlignLayout.Contents;
         SelectedBorder.Fill.Kind := TBrushKind.None;
-        SelectedBorder.Stroke.Color := $FFFFB344;
+        SelectedBorder.Stroke.Color := ThemeAccentTextColor;
         SelectedBorder.Stroke.Thickness := 2;
         SelectedBorder.XRadius := 10;
         SelectedBorder.YRadius := 10;
@@ -1492,9 +1491,9 @@ begin
       FNavButtons[i].StyleLookup := 'buttonstyle_subtle';
     FNavButtons[i].StylesData['text.Margins.Left'] := 48;
     if i = FMode then
-      FNavIcons[i].Stroke.Color := $FFFFB344
+      FNavIcons[i].Stroke.Color := ThemeAccentTextColor
     else
-      FNavIcons[i].Stroke.Color := $FFB9C2CC;
+      FNavIcons[i].Stroke.Color := ThemeSecondaryTextColor;
   end;
 
   for var Button in FPlatformButtons do
@@ -1555,12 +1554,12 @@ begin
       if Button.TagString = FLetterFilter then
       begin
         Button.StyleLookup := 'buttonstyle_accent';
-        Button.TextSettings.FontColor := $FF1B2025;
+        Button.TextSettings.FontColor := ThemeBackgroundColor;
       end
       else
       begin
         Button.StyleLookup := 'buttonstyle_subtle';
-        Button.TextSettings.FontColor := $FFE8ECF1;
+        Button.TextSettings.FontColor := ThemeTextColor;
       end;
     end;
     FLetterButtons[0].Hint := Translate('All');
@@ -1698,32 +1697,29 @@ begin
     var CompactNav := FindComponent('LayoutCompactNavigation') as TLayout;
     CompactNav.Visible := not PanelSidebar.Visible;
     var Nav := FindComponent('LayoutNav') as TLayout;
-    if CompactNav.Visible then
-    begin
-      Nav.Parent := CompactNav;
-      Nav.Align := TAlignLayout.Client;
-      Nav.Margins.Rect := TRectF.Empty;
-    end
-    else
-    begin
-      Nav.Parent := PanelSidebar;
-      Nav.Align := TAlignLayout.Top;
-      Nav.Height := 162;
-      Nav.Margins.Rect := RectF(12, 12, 12, 0);
-    end;
+    var NavHost := CompactNav;
+    if not CompactNav.Visible then
+      NavHost := FindComponent('LayoutSidebarNavigation') as TLayout;
+    if Nav.Parent <> NavHost then
+      Nav.Parent := NavHost;
     var InspectorOverlay := FindComponent('LayoutInspectorOverlay') as TLayout;
     var WideInspector := Width >= 1120;
+    var InspectorStyle: string;
     if WideInspector then
     begin
       PanelInspector.Parent := Self;
       PanelInspector.Align := TAlignLayout.Right;
+      InspectorStyle := 'retromul_panel_right';
       PanelInspector.Width := 292;
     end
     else
     begin
       PanelInspector.Parent := FindComponent('LayoutInspectorContent') as TLayout;
       PanelInspector.Align := TAlignLayout.Client;
+      InspectorStyle := 'retromul_panel_flat';
     end;
+    if PanelInspector.StyleLookup <> InspectorStyle then
+      PanelInspector.StyleLookup := InspectorStyle;
     InspectorOverlay.Visible := (FLoadThread = nil) and not WideInspector and FInspectorOpen;
     PanelInspector.Visible := (FLoadThread = nil) and (WideInspector or FInspectorOpen);
     if InspectorOverlay.Visible then
@@ -1753,16 +1749,10 @@ begin
         FNavButtons[i].StylesData['text.Margins.Left'] := 48;
       end;
     end;
-    var NarrowToolbar := LayoutBody.Width - 48 < 500;
     LayoutHeader.BeginUpdate;
     LayoutCompactActions.BeginUpdate;
     try
       var Tools := FindComponent('LayoutHeaderTools') as TLayout;
-      LayoutHeader.Height := IfThen(NarrowToolbar, 142, 92);
-      if NarrowToolbar then
-        Tools.Align := TAlignLayout.Bottom
-      else
-        Tools.Align := TAlignLayout.Right;
       var ToolsWidth: Single := Tools.Padding.Left + Tools.Padding.Right;
       for var i := 0 to Tools.ChildrenCount - 1 do
         if Tools.Children[i] is TControl then
@@ -1772,32 +1762,16 @@ begin
             ToolsWidth := ToolsWidth + Tool.Width + Tool.Margins.Left + Tool.Margins.Right;
         end;
       Tools.Width := ToolsWidth;
-      Tools.Height := 50;
-      (FindComponent('LayoutSearchHost') as TLayout).Margins.Right := IfThen(NarrowToolbar, 0, 12);
-      var PrimaryActions := FindComponent('LayoutCompactPrimaryActions') as TLayout;
-      var SecondaryActions := FindComponent('LayoutCompactSecondaryActions') as TLayout;
-      SecondaryActions.Visible := NarrowToolbar;
-      LayoutCompactActions.Height := IfThen(NarrowToolbar, 96, 48);
-      var Report := FindComponent('ButtonCompactReportBug') as TButton;
-      if NarrowToolbar then
+
+      var ActionsWidth := LayoutBody.Width - LayoutBody.Padding.Left - LayoutBody.Padding.Right;
+      for var I := 0 to LayoutCompactActions.ControlsCount - 1 do
       begin
-        Report.Parent := SecondaryActions;
-        Report.Align := TAlignLayout.Client;
-        Report.Margins.Rect := RectF(0, 0, 0, 12);
-      end
-      else
-      begin
-        Report.Parent := PrimaryActions;
-        Report.Align := TAlignLayout.Right;
-        Report.Width := 125;
-        Report.Margins.Rect := RectF(6, 0, 0, 12);
+        var Button := LayoutCompactActions.Controls[I];
+        ActionsWidth := ActionsWidth - Button.Margins.Left - Button.Margins.Right;
       end;
-      for var Name in ['ButtonCompactOpen', 'ButtonCompactSettings'] do
-      begin
-        var Button := FindComponent(Name) as TButton;
-        Button.Width := IfThen(NarrowToolbar, Max(1, (LayoutBody.Width - 56) / 2), 136);
-        Button.Margins.Right := IfThen(NarrowToolbar and (Name = 'ButtonCompactSettings'), 0, 8);
-      end;
+      var ActionWidth := Min(136, Max(1, ActionsWidth / LayoutCompactActions.ControlsCount));
+      for var I := 0 to LayoutCompactActions.ControlsCount - 1 do
+        LayoutCompactActions.Controls[I].Width := ActionWidth;
     finally
       LayoutCompactActions.EndUpdate;
       LayoutHeader.EndUpdate;
@@ -2315,13 +2289,13 @@ procedure TLibraryView.UpdateViewIcons;
 begin
   if FListMode then
   begin
-    FListIcon.Stroke.Color := $FFFFB344;
-    FGridIcon.Stroke.Color := $FFE8ECF1;
+    FListIcon.Stroke.Color := ThemeAccentTextColor;
+    FGridIcon.Stroke.Color := ThemeTextColor;
   end
   else
   begin
-    FListIcon.Stroke.Color := $FFE8ECF1;
-    FGridIcon.Stroke.Color := $FFFFB344;
+    FListIcon.Stroke.Color := ThemeTextColor;
+    FGridIcon.Stroke.Color := ThemeAccentTextColor;
   end;
 end;
 
@@ -2575,11 +2549,11 @@ begin
   Slot.Stroke.Kind := TBrushKind.None;
   Slot.Fill.Kind := TBrushKind.Solid;
   if Selected then
-    Slot.Fill.Color := $FFFFB344
+    Slot.Fill.Color := ThemeAccentTextColor
   else if Missing then
-    Slot.Fill.Color := $FF252C32
+    Slot.Fill.Color := ThemeRaisedColor
   else
-    Slot.Fill.Color := $99252C32;
+    Slot.Fill.Color := $9934343E;
   Image.Visible := not Missing;
   var ShelfTitle: TLabel := nil;
   if string(Slot.Name).StartsWith('RectanglePadCover') then
@@ -2592,9 +2566,9 @@ begin
     if (Slot.Tag >= 0) and (Slot.Tag < FPadGames.Count) then
       ShelfTitle.Text := FPadGames[Slot.Tag].Title;
     if Selected then
-      ShelfTitle.TextSettings.FontColor := $FF181C21
+      ShelfTitle.TextSettings.FontColor := ThemeBackgroundColor
     else
-      ShelfTitle.TextSettings.FontColor := $FFE8ECF1;
+      ShelfTitle.TextSettings.FontColor := ThemeTextColor;
   end;
   for var i := 0 to Slot.ControlsCount - 1 do
     if (Slot.Controls[i] is TLabel) and (Slot.Controls[i] <> ShelfTitle) then
@@ -2602,9 +2576,9 @@ begin
       var Caption := TLabel(Slot.Controls[i]);
       Caption.Visible := Missing;
       if Selected then
-        Caption.TextSettings.FontColor := $FF181C21
+        Caption.TextSettings.FontColor := ThemeBackgroundColor
       else
-        Caption.TextSettings.FontColor := $FFE8ECF1;
+        Caption.TextSettings.FontColor := ThemeTextColor;
     end;
   RoundPadTextSizes(Slot);
 end;
@@ -2852,11 +2826,11 @@ begin
       if B.TagString = '@favorites' then
         B.Text := Translate('Favorites');
       var Style := 'buttonstyle_subtle';
-      var Color: TAlphaColor := $FFB9C2CC;
+      var Color: TAlphaColor := ThemeSecondaryTextColor;
       if B.TagString = ActivePadTab then
       begin
         Style := 'buttonstyle_accent';
-        Color := $FF181C21;
+        Color := ThemeBackgroundColor;
         ButtonPadPlatform := B;
       end;
       if B.StyleLookup <> Style then
@@ -4009,12 +3983,12 @@ begin
     if i = FPadPageFocus then
     begin
       Controls[i].StyleLookup := 'buttonstyle_accent';
-      Controls[i].TextSettings.FontColor := $FF181C21;
+      Controls[i].TextSettings.FontColor := ThemeBackgroundColor;
     end
     else
     begin
       Controls[i].StyleLookup := 'buttonstyle_subtle';
-      Controls[i].TextSettings.FontColor := $FFE8ECF1;
+      Controls[i].TextSettings.FontColor := ThemeTextColor;
     end;
     Controls[i].ApplyStyleLookup;
     RoundPadTextSizes(Controls[i]);
@@ -4066,11 +4040,11 @@ procedure TLibraryView.UpdatePadHints;
     Path.Visible := False;
     Circle.Visible := True;
     Circle.Fill.Kind := TBrushKind.Solid;
-    Circle.Fill.Color := $FF2B323A;
+    Circle.Fill.Color := ThemeRaisedColor;
     Circle.Stroke.Kind := TBrushKind.Solid;
-    Circle.Stroke.Color := $FFB9C2CC;
-    Text.TextSettings.FontColor := $FFE8ECF1;
-    Path.Stroke.Color := $FFE8ECF1;
+    Circle.Stroke.Color := ThemeSecondaryTextColor;
+    Text.TextSettings.FontColor := ThemeTextColor;
+    Path.Stroke.Color := ThemeTextColor;
     if (FNavigation.Device.Kind = TInputDeviceKind.Controller) and (Command in [2, 3, 4, 5]) then
     begin
       Circle.Stroke.Kind := TBrushKind.None;
@@ -4084,7 +4058,7 @@ procedure TLibraryView.UpdatePadHints;
         5:
           begin
             Circle.Fill.Color := $FFD7BD45;
-            Text.TextSettings.FontColor := $FF181C21;
+            Text.TextSettings.FontColor := ThemeBackgroundColor;
           end;
       end;
     end;
@@ -4100,8 +4074,8 @@ procedure TLibraryView.UpdatePadHints;
       Text.Text := #$2630;
     if Button.StyleLookup = 'buttonstyle_accent' then
     begin
-      (FindComponent('TextCaption' + Name) as TText).TextSettings.FontColor := $FF181C21;
-      Circle.Fill.Color := $FF181C21;
+      (FindComponent('TextCaption' + Name) as TText).TextSettings.FontColor := ThemeBackgroundColor;
+      Circle.Fill.Color := ThemeBackgroundColor;
       Circle.Stroke.Kind := TBrushKind.None;
     end;
     if Key = 'Enter' then
@@ -4172,8 +4146,8 @@ begin
     Hint('ButtonPadPlay', Translate('Selection'), 2)
   else
     Hint('ButtonPadPlay', Translate('Play'), 2);
-  ButtonPadPlay.TextSettings.FontColor := $FFE8ECF1;
-  ButtonPadPlatform.TextSettings.FontColor := $FF181C21;
+  ButtonPadPlay.TextSettings.FontColor := ThemeTextColor;
+  ButtonPadPlatform.TextSettings.FontColor := ThemeBackgroundColor;
   (FindComponent('LabelPadCaptionGenre') as TLabel).Text := Translate('Genre: ').Trim;
   (FindComponent('LabelPadCaptionPlayers') as TLabel).Text := Translate('Players: ').Trim;
   (FindComponent('TextPadClock') as TText).Text := FormatDateTime('hh:nn', Now);

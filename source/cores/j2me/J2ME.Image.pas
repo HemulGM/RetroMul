@@ -396,8 +396,8 @@ begin
     try
       var Options: TPNGDecodeOptions := [TPNGDecodeOption.AllowBlockPadding,
           TPNGDecodeOption.AllowUnusedPaletteEntries, TPNGDecodeOption.RecoverPaletteIndices];
-      // Bounded packed slices may include arbitrary data after a checked IEND.
-      if (N = 'createImage') and D.StartsWith('([BII)') then
+      // Packed slices and JAR resources can contain extra bytes after a verified IEND.
+      if (N = 'createImage') and (D.StartsWith('([BII)') or D.StartsWith('(Ljava/lang/String;)')) then
         Include(Options, TPNGDecodeOption.AllowTrailingData);
       Decoded := DecodeRasterImage(Bytes, VM.MaxArrayLength, Options);
     except

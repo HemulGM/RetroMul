@@ -96,7 +96,9 @@ begin
   Registration.Add(TCoreLoadStage.Header, 5, Recognize);
   Registration.Add(TCoreLoadStage.Image, 90, RecognizeRaw);
   RegisterEmulationCore(Registration);
-  RegisterSettingsProfile('Lynx', TLynxSettings);
+  RegisterSettingsProfile('Lynx', TLynxSettings,
+    'Use the screen-orientation setting for games designed for vertical play. Try automatic ' +
+    'orientation first so that images with known rotation metadata open correctly.');
   RegisterPlatformSettingsDevices('lynx', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('lynx', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('lynx', TPlatformControlsHelp);

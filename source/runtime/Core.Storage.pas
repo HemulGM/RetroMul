@@ -43,6 +43,9 @@ type
     // Keep the returned scope alive on the calling thread during loading.
     class function BeginReadCancellation(const CheckCancelled: TProc): IInterface; static;
     class procedure CheckReadCancelled; static;
+    // Opens an independent cursor on the same immutable local file when supported.
+    // The caller owns the result. Other stream types return nil.
+    class function TryOpenIndependentRead(Input: TStream): TStream; static;
     // Construction-only, thread-local scope. Retained config paths outlive it.
     class function BeginGameSettings(const Storage: IStorage; const RomName: string): IInterface; static;
     function RomFolder(const SystemId: string): string;
@@ -95,7 +98,7 @@ implementation
 
 uses
   Core.PlatformServices, System.IOUtils, System.StrUtils,
-  System.Generics.Collections, Core.Platforms, Core.CD.Disc,
+  System.Generics.Collections, Core.Platforms, Core.CD.Disc, Core.MediaArchive,
   {$IFDEF ANDROID}
   Core.Storage.Android, {$ENDIF}
   {$IFDEF IOS} Macapi.Helpers, {$ENDIF}
@@ -123,6 +126,13 @@ type
     constructor Create(const Check: TProc);
     destructor Destroy; override;
   end;
+
+  {$IFDEF MSWINDOWS}
+  TStorageHandleStream = class(THandleStream)
+  public
+    destructor Destroy; override;
+  end;
+  {$ENDIF}
 
   TCancellableReadStream = class(TStream)
   private
@@ -511,6 +521,8 @@ begin
   var Ini := ReadConfig(ConfigFile('config'));
   try
     Result := Ini.ReadString('RomFolders', platform.Id, '').Trim;
+    if (Result = '') and (platform.SharedRomFolder <> '') then
+      Result := Ini.ReadString('RomFolders', platform.SharedRomFolder, '').Trim;
   finally
     Ini.Free;
   end;
@@ -524,10 +536,9 @@ begin
   var Children := Folders(Location);
   for var Alias in platform.ScanFolders do
   begin
-    // Former shared scan folders relied on extension filters. They are not
-    // aliases when the entire folder now belongs to a different platform.
     var OwnerPlatform: TPlatformInfo;
-    if TPlatformRegistry.Find(Alias, OwnerPlatform) and (OwnerPlatform.Id <> platform.Id) then
+    if TPlatformRegistry.Find(Alias, OwnerPlatform) and (OwnerPlatform.Id <> platform.Id) and
+      (OwnerPlatform.Id <> platform.SharedRomFolder) then
       Continue;
     for var Child in Children do
     begin
@@ -575,6 +586,50 @@ begin
   finally
     Ini.Free;
   end;
+end;
+
+{$IFDEF MSWINDOWS}
+function ReopenStorageFile(Original: THandle; DesiredAccess, ShareMode, Flags: DWORD): THandle; stdcall; external kernel32 name 'ReOpenFile';
+
+destructor TStorageHandleStream.Destroy;
+begin
+  CloseHandle(Handle);
+  inherited;
+end;
+{$ENDIF}
+
+class function TStorage.TryOpenIndependentRead(Input: TStream): TStream;
+begin
+  Result := nil;
+  {$IFDEF MSWINDOWS}
+  var Check: TProc;
+  if Input is TCancellableReadStream then
+  begin
+    Check := TCancellableReadStream(Input).FCheckCancelled;
+    Check();
+    Input := TCancellableReadStream(Input).FSource;
+  end;
+  if (Input = nil) or (Input.ClassType <> TFileStream) then
+    Exit;
+  // ReOpenFile keeps file identity and gets its own position. Deny concurrent
+  // writers, as for a normal read opened by this storage.
+  var Handle := ReopenStorageFile(TFileStream(Input).Handle, GENERIC_READ, FILE_SHARE_READ or FILE_SHARE_DELETE, 0);
+  if Handle = INVALID_HANDLE_VALUE then
+    Exit;
+  try
+    Result := TStorageHandleStream.Create(Handle);
+  except
+    CloseHandle(Handle);
+    raise;
+  end;
+  if Assigned(Check) then
+  try
+    Result := TCancellableReadStream.Create(Result, Check);
+  except
+    Result.Free;
+    raise;
+  end;
+  {$ENDIF}
 end;
 
 function TStorage.OpenRead(const Location: string): TStream;
@@ -950,8 +1005,12 @@ begin
     Extensions.CaseSensitive := False;
     Extensions.Sorted := True;
     Extensions.Duplicates := dupIgnore;
-    for var Extension in TPlatformRegistry.Require(SystemId).Extensions do
-      Extensions.Add(Extension);
+    var platform := TPlatformRegistry.Require(SystemId);
+    var Shared := (platform.SharedRomFolder <> '') and
+      SameFileName(ExcludeTrailingPathDelimiter(Folder), ExcludeTrailingPathDelimiter(RomFolder(platform.SharedRomFolder)));
+    for var Extension in platform.Extensions do
+      if not Shared or not IsMediaArchive(Extension) then
+        Extensions.Add(Extension);
     var Candidates: TArray<TStorageFile>;
     {$IFDEF ANDROID}
     if Folder.StartsWith('content://', True) then
@@ -968,7 +1027,8 @@ begin
             ExpandFileName(Locations[i])).Replace('\', '/');
       end;
     end;
-    var Features := PlatformServices(SystemId).LibraryFeatures;
+    var Services := PlatformServices(SystemId);
+    var Features := Services.LibraryFeatures;
     var DiscSystem := TLibraryFeature.CueTracks in Features;
     if TLibraryFeature.Playlists in Features then
       for var Candidate in Candidates do
@@ -1017,6 +1077,9 @@ begin
       if PlaylistDiscs.IndexOf(Item.Location) >= 0 then
         Continue;
       if Extensions.IndexOf(ExtractFileExt(Item.Name)) < 0 then
+        Continue;
+      if (Length(Services.CompanionArchives) > 0) and IsMediaArchive(Item.Name) and
+        MatchText(ChangeFileExt(Item.Name, ''), Services.CompanionArchives) then
         Continue;
       if TrackFiles.IndexOf(Item.RelativePath) >= 0 then
         Continue;

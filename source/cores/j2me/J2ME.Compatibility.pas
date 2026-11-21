@@ -41,6 +41,8 @@ function NormalizeJ2MECompatibilityResource(const Name: string; const Data: TByt
 
 procedure InstallJ2MECompatibilityClasses(Suite: TJ2MESuite; VM: TJVM; out ArmiesOfWarClass: TJVMClass);
 
+procedure PrepareJ2MEFrameTimers(C: TJVMClass);
+
 procedure InvokeArmiesOfWarCompatibility(VM: TJVM; Method: TJVMMethod; const Arguments: TArray<TJVMValue>);
 
 // Reviewed guest code and text bytes identify a legacy device encoding.
@@ -68,8 +70,8 @@ procedure MigrateJ2MECompatibilityScreen(const JarHash: string; Runtime: TJ2MERu
 implementation
 
 uses
-  System.Classes, System.Math, System.Hash, System.StrUtils, Java.Classes,
-  JVM.Bytecode, J2ME.Graphics;
+  System.Classes, System.Math, System.Hash, System.StrUtils,
+  System.Generics.Collections, Java.Classes, JVM.Bytecode, J2ME.Graphics;
 
 const
   PoolHash = '0dd024a3bc2933d5d40289cfc0071da095dc3c491be428d8b78b647dcd3fe5b5';
@@ -674,6 +676,184 @@ begin
   end;
 end;
 
+procedure PrepareJ2MEFrameTimers(C: TJVMClass);
+const
+  // Complete instruction templates, with constant-pool references normalized
+  // by field identity/type. No title, class name, resource hash or FPS heuristic.
+  Patterns: array[0..3] of string = (
+    'B840005C402AB4100165883E2A1FB510012A59B420022AB430032AB420042E1101F4B8400164B520022A59B420021D1101F4B8400160B520022AB430032AB420041D4F2A2AB42004046010077EB520042AB42002067AAC',
+    'B84000401F2AB4100165883E2A59B420021D60B520022A1FB510011D1101F4A400071101F43E2A59B420032AB430042AB420052E64B520032A59B420031D60B520032AB430042AB420051D4F2A2AB42005046010077EB520052AB42003067AAC',
+    'B840005C402AB4100165883E2A1FB510011D1101F4A400071101F43E2A59B420022AB430032AB420042E64B520022A59B420021D60B520022AB430032AB420041D4F2A2AB42004046010077EB520042AB42002067AAC',
+    'B840005C402AB4100165883E2A59B420021D60B520022A1FB510011D1101F4A400071101F43E2A59B420032AB430042AB420052E64B520032A59B420031D60B520032AB430042AB420051D4F2A2AB42005046010077EB520052AB42003067AAC');
+  HelperName = '$elapsedFrameTime';
+var
+  Fields: TDictionary<string, Integer>;
+
+  function Matches(M: TJVMMethod): Boolean;
+  begin
+    Result := False;
+    if (M.Descriptor <> '()I') or ((M.Access and (JVM_ACC_STATIC or JVM_ACC_NATIVE)) <> 0) or
+      not (Length(M.Code) in [86, 87, 96]) or (Length(M.Handlers) <> 0) then
+      Exit;
+    if (M.Code[0] <> $B8) or (M.Code[High(M.Code)] <> $AC) or
+      (M.Code[High(M.Code) - 1] <> $7A) or (M.Code[High(M.Code) - 2] <> $06) then
+      Exit;
+    if Fields = nil then
+      Fields := TDictionary<string, Integer>.Create
+    else
+      Fields.Clear;
+    var Code := Copy(M.Code);
+    for var PC := 0 to High(Code) do
+      if M.InstructionStarts[PC] and (Code[PC] in [$B4..$B9]) then
+      begin
+        var Owner, Name, Desc: string;
+        C.MemberRef((Word(Code[PC + 1]) shl 8) or Code[PC + 2], Owner, Name, Desc);
+        var ID := 0;
+        if Code[PC] in [$B4, $B5] then
+        begin
+          if Owner <> C.Name then
+            Exit;
+          var Key := Name + ':' + Desc;
+          if not Fields.TryGetValue(Key, ID) then
+          begin
+            ID := Fields.Count + 1;
+            Fields.Add(Key, ID);
+          end;
+          if Desc = 'J' then
+            Inc(ID, $1000)
+          else if Desc = 'I' then
+            Inc(ID, $2000)
+          else if Desc = '[I' then
+            Inc(ID, $3000)
+          else
+            Exit;
+        end
+        else if (Code[PC] = $B8) and (Owner = 'java/lang/System') and
+          (Name = 'currentTimeMillis') and (Desc = '()J') then
+          ID := $4000
+        else if (Code[PC] = $B8) and (Owner = 'java/lang/Math') and
+          (Name = 'min') and (Desc = '(II)I') then
+          ID := $4001
+        else
+          Exit;
+        Code[PC + 1] := Byte(ID shr 8);
+        Code[PC + 2] := Byte(ID);
+      end;
+    var Text := '';
+    for var V in Code do
+      Text := Text + IntToHex(V, 2);
+    for var Pattern in Patterns do
+      if Text = Pattern then
+        Exit(True);
+  end;
+
+begin
+  // The helper name also preserves snapshots made by the earlier Minesweeper
+  // fix. A guest-defined collision is left untouched.
+  if C.FindMethod(HelperName, '()I') <> nil then
+    Exit;
+  Fields := nil;
+  try
+    for var Clock in C.Methods.ToArray do
+      if Matches(Clock) then
+      begin
+        var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+        try
+          B.JavaClass.Constants := C.Constants;
+          B.Start;
+          B.Emit(Clock.Code);
+          B.Finish(HelperName, '()I', Clock.Access, Clock.MaxStack, Clock.MaxLocals);
+          var M := B.JavaClass.Methods.Extract(B.JavaClass.Methods.Last);
+          M.Owner := C;
+          C.Methods.Add(M);
+          var Tail := Length(M.Code) - 7;
+          // Preserve the history updates and any separate elapsed-time counter.
+          // Only replace the lossy integer mean by the actual frame interval.
+          // No artificial minimum: multiple updates in one millisecond return 0.
+          if Length(M.Code) = 87 then
+          begin
+            // This variant caps each ring contribution with Math.min rather
+            // than capping local 3 before the ring update.
+            var MinRef := B.Member('java/lang/Math', 'min', '(II)I');
+            SetLength(M.Code, Tail);
+            M.Code := M.Code + [$1D, $11, 1, $F4, $B8, Byte(MinRef shr 8), Byte(MinRef), $AC];
+          end
+          else
+          begin
+            M.Code[Tail] := $1D;
+            for var PC := Tail + 1 to High(M.Code) - 1 do
+              M.Code[PC] := $00;
+          end;
+          M.InstructionStarts := JVMInstructionMap(M.Code, M.MaxLocals);
+          C.Constants := B.JavaClass.Constants;
+          // New calls (including external/virtual ones) use the helper. Saved
+          // frames resolve to their original method and instruction boundaries.
+          Clock.EntryPoint := M;
+        finally
+          B.Free;
+        end;
+        Break;
+      end;
+  finally
+    Fields.Free;
+  end;
+end;
+
+procedure InstallAbsoluteMinesweeper(Suite: TJ2MESuite; VM: TJVM);
+const
+  Helper = '$menuTileLimit';
+  Signature = '(IIII)I';
+begin
+  if not ResourceMatchesHash(Suite, 'DCField.class',
+    '835e1e8264a433d841df0e137bf3582dff3a10e19fd4395dbc21149224a7cb8a') or
+    not ResourceMatchesHash(Suite, 'g.class',
+      '4eff2d345e371d2860f7ed1bca1c244ffdf20d34ce31979a310efcb807f12d61') or
+    not ResourceMatchesHash(Suite, 'i.class',
+      'fe447b0e7362d78f31d7a8aca17f6b840fcb5e38807384b8170a665c882bb8a4') then
+    Exit;
+
+  var C := TJVMClass.Parse(Suite.ReadResource('i.class'));
+  try
+    var Draw := C.FindMethod('a', '(Ljavax/microedition/lcdui/Graphics;IIIII)V');
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      B.JavaClass.Constants := C.Constants;
+      B.Start;
+      // x + width - 2 * capWidth + tileWidth. The original compares an
+      // absolute tile X against a relative width, leaving the right gap.
+      B.Emit([$1A, $1B, $60, $1C, $04, $78, $64, $1D, $60, $AC]);
+      B.Finish(Helper, Signature, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 3, 4);
+      var M := B.JavaClass.Methods.Extract(B.JavaClass.Methods.Last);
+      M.Owner := C;
+      C.Methods.Add(M);
+      var Ref := B.Member(C.Name, Helper, Signature);
+      C.Constants := B.JavaClass.Constants;
+      var Code: TBytes := [$1C, $15, 4, $15, 7, $15, 8, $B8, Byte(Ref shr 8), Byte(Ref)];
+      B.Start;
+      B.Emit(Draw.Code);
+      B.Finish('$drawMenuBar', Draw.Descriptor, JVM_ACC_PRIVATE, Draw.MaxStack, Draw.MaxLocals);
+      M := B.JavaClass.Methods.Extract(B.JavaClass.Methods.Last);
+      M.Owner := C;
+      C.Methods.Add(M);
+      Move(Code[0], M.Code[69], Length(Code));
+      M.InstructionStarts := JVMInstructionMap(M.Code, M.MaxLocals);
+      Ref := B.Member(C.Name, M.Name, M.Descriptor);
+      // Redirect the constant-pool entry shared by the five calls. Leave the
+      // old draw method intact for a snapshot suspended inside its tile loop.
+      var Call := C.Constants[122];
+      Call.B := B.JavaClass.Constants[Ref].B;
+      B.JavaClass.Constants[122] := Call;
+      C.Constants := B.JavaClass.Constants;
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
 procedure InstallBimmerScreenTimers(Suite: TJ2MESuite; VM: TJVM);
 const
   TimerType = 'Ljava/util/Timer;';
@@ -1265,6 +1445,137 @@ type
     MethodName, Descriptor: string;
     PC: Integer;
   end;
+
+procedure InstallGravityDefiedInputGuard(Suite: TJ2MESuite; VM: TJVM);
+const
+  CanvasClass = 'i';
+  BikeClass = 'b';
+  CallPC = 119;
+  GuardName = '$applyInputIfBikeReady';
+  GuardDesc = '(Lb;II)V';
+begin
+  // GD Red and Gravity Defied Pro use the same canvas. It can receive a
+  // key event before the level loader has assigned its bike.
+  if not ResourceMatchesHash(Suite, CanvasClass + '.class',
+    'ce43b4f0fd1e05a6c8ae5ee9c9c256ed8ad5eaaea9d8cbe96a94402b69aedfcd') then
+    Exit;
+
+  var C := TJVMClass.Parse(Suite.ReadResource(CanvasClass + '.class'));
+  try
+    var Apply := C.FindMethod('xa', '()V');
+    if (Apply = nil) or (Length(Apply.Code) < CallPC + 3) or
+      (Apply.Code[CallPC] <> $B6) or (Apply.Code[CallPC + 1] <> $01) or
+      (Apply.Code[CallPC + 2] <> $14) then
+      Exit;
+
+    var B := TJavaClassBuilder.Create(C.Name, C.SuperName);
+    try
+      B.JavaClass.Constants := C.Constants;
+      B.Start;
+      B.Emit([$2A]);
+      B.Jump($C6, 'done');
+      B.Emit([$2A, $1B, $1C]);
+      B.Ref($B6, B.Member(BikeClass, 'a', '(II)V'));
+      B.Mark('done');
+      B.Emit([$B1]);
+      B.Finish(GuardName, GuardDesc, JVM_ACC_PRIVATE or JVM_ACC_STATIC, 3, 3);
+      var Guard := B.JavaClass.Methods.Last;
+      var Target := B.Member(CanvasClass, GuardName, GuardDesc);
+      Guard.Owner := C;
+      C.Constants := B.JavaClass.Constants;
+      C.Methods.Add(Guard);
+      B.JavaClass.Methods.Extract(Guard);
+      Apply.Code[CallPC] := $B8;
+      Apply.Code[CallPC + 1] := Byte(Target shr 8);
+      Apply.Code[CallPC + 2] := Byte(Target);
+    finally
+      B.Free;
+    end;
+    VM.DefineClass(C);
+    C := nil;
+  finally
+    C.Free;
+  end;
+end;
+
+procedure InstallEuromanSplashInputGuard(Suite: TJ2MESuite; VM: TJVM);
+const
+  SplashClass = 'a/a/a/c';
+  GameClass = 'a/a/a/b';
+  GuardDesc = '(La/a/a/b;)V';
+  CallPCs: array[0..1] of Integer = (9, 24);
+  CallNames: array[0..1] of string = ('if', 'new');
+  GuardNames: array[0..1] of string = ('$splashLeftIfReady', '$splashRightIfReady');
+begin
+  if not ResourceMatchesHash(Suite, SplashClass + '.class',
+    'a9d775e7dbc9e06d5e6b4291a6fa2b8f773b95dfc0eac99c99225489d3cf7e2d') or
+    not ResourceMatchesHash(Suite, GameClass + '.class',
+      '197b7267c146626067b0fc9c59d7a8f39c3161be3a1cdd91524f048768c70a3d') then
+    Exit;
+
+  var Splash := TJVMClass.Parse(Suite.ReadResource(SplashClass + '.class'));
+  var Game: TJVMClass := nil;
+  try
+    var Key := Splash.FindMethod('keyPressed', '(I)V');
+    if (Key = nil) or (Length(Key.Code) <> 28) then
+      Exit;
+    for var Index := 0 to High(CallPCs) do
+    begin
+      var PC := CallPCs[Index];
+      if (Key.Code[PC] <> $B6) or (Key.Code[PC + 1] <> 0) or (Key.Code[PC + 2] <> 97 + Index) then
+        Exit;
+    end;
+
+    Game := TJVMClass.Parse(Suite.ReadResource(GameClass + '.class'));
+    var GameBuilder := TJavaClassBuilder.Create(Game.Name, Game.SuperName);
+    try
+      var SplashBuilder := TJavaClassBuilder.Create(Splash.Name, Splash.SuperName);
+      try
+        GameBuilder.JavaClass.Constants := Game.Constants;
+        SplashBuilder.JavaClass.Constants := Splash.Constants;
+        // The splash can receive soft keys before its loader has created the
+        // game screen's graphics and background. Leave those keys on the
+        // splash until both resources exist, without changing game state.
+        for var Index := 0 to High(CallPCs) do
+        begin
+          GameBuilder.Start;
+          GameBuilder.Emit([$2A]); // aload_0
+          GameBuilder.Jump($C6, 'done'); // ifnull
+          GameBuilder.Emit([$2A]);
+          GameBuilder.Ref($B4, GameBuilder.Member(GameClass, 'az', 'Ljavax/microedition/lcdui/Image;', 9));
+          GameBuilder.Jump($C6, 'done');
+          GameBuilder.Emit([$2A]);
+          GameBuilder.Ref($B6, GameBuilder.Member(GameClass, CallNames[Index], '()V'));
+          GameBuilder.Mark('done');
+          GameBuilder.Emit([$B1]);
+          GameBuilder.Finish(GuardNames[Index], GuardDesc, JVM_ACC_STATIC, 1, 1);
+          var Guard := GameBuilder.JavaClass.Methods.Extract(GameBuilder.JavaClass.Methods.Last);
+          Guard.Owner := Game;
+          Game.Methods.Add(Guard);
+
+          var PC := CallPCs[Index];
+          var Target := SplashBuilder.Member(GameClass, GuardNames[Index], GuardDesc);
+          Key.Code[PC] := $B8;
+          Key.Code[PC + 1] := Byte(Target shr 8);
+          Key.Code[PC + 2] := Byte(Target);
+        end;
+        Game.Constants := GameBuilder.JavaClass.Constants;
+        Splash.Constants := SplashBuilder.JavaClass.Constants;
+      finally
+        SplashBuilder.Free;
+      end;
+    finally
+      GameBuilder.Free;
+    end;
+    VM.DefineClass(Game);
+    Game := nil;
+    VM.DefineClass(Splash);
+    Splash := nil;
+  finally
+    Game.Free;
+    Splash.Free;
+  end;
+end;
 
 procedure InstallScreenWorkerJoin(Suite: TJ2MESuite; VM: TJVM; const ClassName, ClassHash: string; const Waits: array of TScreenWorkerWait);
 const
@@ -2878,6 +3189,7 @@ begin
   InstallGolfTourVolume(Suite, VM);
   InstallMarslanderIntro(Suite, VM);
   InstallBimmerScreenTimers(Suite, VM);
+  InstallAbsoluteMinesweeper(Suite, VM);
   InstallBalloonzUndoGuard(Suite, VM);
   InstallGuitarHero5LocaleFallback(Suite, VM);
   InstallGuitarLegendStartup(Suite, VM);
@@ -2937,6 +3249,8 @@ begin
   InstallRTLRacerMenu(Suite, VM);
   InstallRTLRacerTrack(Suite, VM);
   InstallShrek2InputGuard(Suite, VM);
+  InstallGravityDefiedInputGuard(Suite, VM);
+  InstallEuromanSplashInputGuard(Suite, VM);
   InstallWorms2LoadingYield(Suite, VM);
   InstallWormsFortsMinimapGuard(Suite, VM);
   InstallSimonInputGuard(Suite, VM);

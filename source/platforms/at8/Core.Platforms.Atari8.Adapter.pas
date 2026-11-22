@@ -261,6 +261,7 @@ begin
   Options.Basic := Ini.ReadBool('Machine', 'Basic', False);
   Options.Mapper := Ini.ReadInteger('Cartridge', 'Mapper', 0);
   Options.WriteProtected := Ini.ReadBool('Media', 'DiskWriteProtected', False);
+  Options.MuteDiskRead := not Ini.ReadBool('Media', 'DiskReadSound', True);
   LegacyOSFile := Ini.ReadString('Firmware', 'LegacyOS', '').Trim;
   XLOSFile := Ini.ReadString('Firmware', 'XLOS', '').Trim;
   BasicFile := Ini.ReadString('Firmware', 'Basic', '').Trim;
@@ -412,7 +413,7 @@ begin
   begin
     UnusedKeypads := Default(TA5200Keypads);
     FThread.Configure(FGamepad, FPaused, FConfig.AudioEnabled, FConfig.AudioVolume,
-      UnusedKeypads, KeyboardState);
+      UnusedKeypads, KeyboardState, FConfigObject.Options.MuteDiskRead);
   end;
 end;
 

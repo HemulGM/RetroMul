@@ -45,7 +45,7 @@ type
     property Storage: IStorage read FStorage write FStorage;
     procedure Clock(MasterClock: UInt64);
     procedure Write(Value: Byte);
-    function Read: Byte;
+    function Read(UpdateActivity: Boolean = True): Byte;
     procedure Play(const FileName: string);
     procedure LoadTape(const FileName: string; AllowMissing: Boolean = False);
     procedure ResumeTape;
@@ -196,7 +196,7 @@ begin
   FOutput := Value and 1;
 end;
 
-function TFamicomDataRecorder.Read: Byte;
+function TFamicomDataRecorder.Read(UpdateActivity: Boolean): Byte;
 begin
   Result := 0;
   if not FConnected or not FPlaying then
@@ -205,21 +205,27 @@ begin
   var Position := GetPlaybackPosition;
   if Position >= UInt64(Length(FData)) * 8 then
   begin
-    FPlaybackOffset := Position;
-    FPlaying := False
+    if UpdateActivity then
+    begin
+      FPlaybackOffset := Position;
+      FPlaying := False;
+    end;
   end
   else if FEnabled then
   begin
-    Inc(FReadAccesses);
-    FLastReadClock := FClock;
     var BytePosition := Position div 8;
-    if BytePosition <> FLastReadPosition then
+    if UpdateActivity then
     begin
-      Inc(FReadBytes);
-      FLastReadPosition := BytePosition;
+      Inc(FReadAccesses);
+      FLastReadClock := FClock;
+      if BytePosition <> FLastReadPosition then
+      begin
+        Inc(FReadBytes);
+        FLastReadPosition := BytePosition;
+      end;
+      FLastReadByte := FData[Integer(BytePosition)];
     end;
-    FLastReadByte := FData[Integer(BytePosition)];
-    Result := ((FData[Integer(Position div 8)] shr (Position mod 8)) and 1) shl 1;
+    Result := ((FData[Integer(BytePosition)] shr (Position mod 8)) and 1) shl 1;
   end;
 end;
 
@@ -396,8 +402,8 @@ begin
   State.Field(FSampleClock, SizeOf(FSampleClock));
   State.Field(FSampleCount, SizeOf(FSampleCount));
   State.Field(FOutput, SizeOf(FOutput));
-  var Size := Length(FData);
-  State.Field(Size, SizeOf(Size));
+  var Size: Integer := Length(FData);
+  State.MemoryLength(Size);
 
   if (Size < 0) or (Size > MAX_TAPE_BYTES) then
     raise EReadError.Create('Invalid tape size');
@@ -408,7 +414,7 @@ begin
     State.Field(FData[0], Size);
   var PathData := TEncoding.UTF8.GetBytes(FPath);
   Size := Length(PathData);
-  State.Field(Size, SizeOf(Size));
+  State.MemoryLength(Size);
 
   if (Size < 0) or (Size > 32768) then
     raise EReadError.Create('Invalid tape path');

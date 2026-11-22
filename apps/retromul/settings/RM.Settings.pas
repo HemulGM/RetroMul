@@ -27,6 +27,8 @@ const
   SETTINGS_SWITCH_HEIGHT = 24;
   AUTOSAVE_DEFAULT_MINUTES = 10;
   AUTOSAVE_MAX_MINUTES = 1440;
+  AUDIO_OUTPUT_DEVICE_KEY = 'OutputDevice';
+  AUDIO_MICROPHONE_DEVICE_KEY = 'MicrophoneDevice';
 
 const
   SettingsCategoryNames: array[SETTINGS_CATEGORY_GENERAL..SETTINGS_CATEGORY_PERIPHERALS] of string =
@@ -261,7 +263,8 @@ uses
   RM.Settings.Template.Preview, RM.Settings.Template.Binding, System.Math,
   System.StrUtils, RM.Input, FMX.OpenDialog, FMX.BehaviorManager, FMX.Graphics,
   FMX.SpinBox.Style, FMX.Presentation.Style, FMX.Presentation.Factory, RM.Icons,
-  RM.SearchEdit, RM.Styles, RM.Dialogs, FMX.TextLayout
+  RM.SearchEdit, RM.Styles, RM.Dialogs, FMX.TextLayout, PCM.Audio.Backend,
+  PCM.Audio.Factory
   {$IFDEF ANDROID}, Core.Storage.Android{$ENDIF};
 
 {$R *.fmx}
@@ -895,6 +898,28 @@ begin
   end;
 end;
 
+function AudioDeviceChoices(Kind: TAudioDeviceKind; const Selected: string): TArray<TSettingsChoiceItem>;
+begin
+  Result := [SettingChoice('System default', '')];
+  var Devices := ListPlatformAudioDevices(Kind);
+  var Found := Selected = '';
+  for var Index := 0 to High(Devices) do
+  begin
+    var Device := Devices[Index];
+    var Caption := Device.Name;
+    var Occurrence := 1;
+    for var Previous := 0 to Index - 1 do
+      if SameText(Device.Name, Devices[Previous].Name) then
+        Inc(Occurrence);
+    if Occurrence > 1 then
+      Caption := Caption + ' (' + IntToStr(Occurrence) + ')';
+    Result := Result + [SettingChoice(Caption, Device.EndpointId)];
+    Found := Found or SameText(Device.EndpointId, Selected);
+  end;
+  if not Found then
+    Result := Result + [SettingChoice('Unavailable device', Selected)];
+end;
+
 procedure TSettingsView.BuildPageContent(PreserveScroll: Boolean);
 begin
   var Position := VertScrollBoxScroll.ViewportPosition;
@@ -930,6 +955,17 @@ begin
         'Save translation template', SaveTemplateClick);
       FContext.AddInformation('RowTheme', 'Theme',
         'RetroMul dark theme with a purple accent.', 'Dark · RetroMul');
+
+      if PlatformSupportsAudioDeviceSelection then
+      begin
+        Heading('GroupAudioDevices', 'Audio devices');
+        FContext.AddChoice('RowAudioOutputDevice', 'Audio output device',
+          'Plays RetroMul audio through the selected device.', 'Audio', AUDIO_OUTPUT_DEVICE_KEY,
+          AudioDeviceChoices(TAudioDeviceKind.Playback, FContext.Draft.ReadString('Audio', AUDIO_OUTPUT_DEVICE_KEY, '')), '');
+        FContext.AddChoice('RowMicrophoneDevice', 'Microphone device',
+          'Microphone input for supported games.', 'Audio', AUDIO_MICROPHONE_DEVICE_KEY,
+          AudioDeviceChoices(TAudioDeviceKind.Capture, FContext.Draft.ReadString('Audio', AUDIO_MICROPHONE_DEVICE_KEY, '')), '');
+      end;
 
       Heading('GroupDuringgameplay', 'During gameplay');
       Check('RowPausewhenfocusislost', 'Pause when focus is lost', 'When switching to another application.', 'General', 'PauseOnFocusLoss', True);

@@ -37,6 +37,7 @@ type
     FDiscLocation, FDisplayName, FSystemId, FCartridgeExtension: string;
     FMDConfig: TMDConfig;
     FMicrophone: IMicrophoneSource;
+    FMicrophoneOverridden: Boolean;
     FSnapshotDirectory: string;
     FStorage: IStorage;
     FSavePath, FError: string;
@@ -239,7 +240,7 @@ begin
   if FThread <> nil then
   begin
     FThread.ConfigureExpansionVolume(FMDConfig.CDVolume, FMDConfig.Volume32X);
-    FThread.ConfigureExpansion(True, True, FMDConfig.MicrophoneEnabled, FMicrophone);
+    FThread.ConfigureExpansion(True, True, FMDConfig.MicrophoneEnabled, FMicrophone, not FMicrophoneOverridden);
     FThread.Configure(FKeyboard + FGamepad, FPaused,
       FConfig.AudioEnabled, FConfig.AudioVolume, FKeyboard2 + FGamepad2,
       FKeyboard3 + FGamepad3, FKeyboard4 + FGamepad4);
@@ -251,6 +252,7 @@ begin
   if Source <> nil then
     Source.Clear;
   FMicrophone := Source;
+  FMicrophoneOverridden := True;
   ApplySettings;
 end;
 

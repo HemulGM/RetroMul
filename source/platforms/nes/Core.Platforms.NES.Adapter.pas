@@ -3,10 +3,10 @@
 interface
 
 uses
-  Core.InputConfig, System.Classes, System.IniFiles, System.SysUtils,
-  System.Types, Core.Storage, Core.Emulation, NES.Emulation, NES.Input,
-  NES.Types, NES.Controller, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder,
-  NES.MiraclePianoDevice, NES.Options;
+  Core.InputConfig, Core.Microphone, System.Classes, System.IniFiles,
+  System.SysUtils, System.Types, Core.Storage, Core.Emulation, NES.Emulation,
+  NES.Input, NES.Types, NES.Controller, NES.FamicomKeyboardDevice,
+  NES.FamicomDataRecorder, NES.MiraclePianoDevice, NES.Options;
 
 type
   TNesZapperMask = NES.Types.TNesZapperMask;
@@ -31,6 +31,8 @@ type
     function ReadZapperLight(const Mask: TNesZapperMask; X, Y: Integer): Boolean;
     procedure SetZapperPositionReader(const ReadPosition: TFunc<TPoint>);
     function UsesPowerPad: Boolean;
+    function UsesFcnsController: Boolean;
+    function SetGameinisInfrared(Active: Boolean): Boolean;
   end;
 
   INesMiraclePianoCore = interface
@@ -38,6 +40,11 @@ type
     function UsesMiraclePiano: Boolean;
     procedure SetMiracleKeys(const Keys: TMiracleKeys);
     function GetMiracleKeys: TMiracleKeys;
+  end;
+
+  INesSenarioCore = interface
+    ['{55091B5D-C6B7-4F50-923F-947F7DFA93C8}']
+    function GetSenarioLcd(out TopLine, BottomLine: string): Boolean;
   end;
 
   INesTapeCore = interface
@@ -120,21 +127,25 @@ type
     procedure SetOptions(const Value: TNesOptions);
   end;
 
-  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, INesSuborKeyboardCore, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore, IEmulationDiscControl)
+  TNesCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationLiveSettings, IEmulationInputPorts, IEmulationSnapshotLocation, IEmulationAudioDiagnostics, INesSuborKeyboardCore, INesPeripheralCore, INesTapeCore, INesMiraclePianoCore, INesSenarioCore, IEmulationDiscControl, IEmulationMicrophoneInput)
   private
     FThread: TNesEmulationThread;
     FGamepadInput: TEmulatorInput;
     FDendyPads: array[0..3] of Boolean;
     FPresentedLeft, FPresentedTop, FPresentedWidth, FPresentedHeight: Integer;
+    FPresentedScale: Integer;
+    FWideFrame: TArray<Cardinal>;
     FConfig: INesEmulatorConfig;
     FFrameNumber: UInt64;
     FError, FAudioError: string;
+    FSenarioLcdTop, FSenarioLcdBottom: string;
     procedure ApplyGamepadInput;
     function GetSystemId: string;
     function GetName: string;
     function GetSupportsSnapshots: Boolean;
     function GetUsesSuborKeyboard: Boolean;
   public
+    procedure SetMicrophoneSource(const Source: IMicrophoneSource);
     procedure ApplyLiveSettings;
     function GetDiscCount: Integer;
     function GetDiscName(Index: Integer): string;
@@ -173,6 +184,7 @@ type
     function UsesMiraclePiano: Boolean;
     procedure SetMiracleKeys(const Keys: TMiracleKeys);
     function GetMiracleKeys: TMiracleKeys;
+    function GetSenarioLcd(out TopLine, BottomLine: string): Boolean;
     procedure SetPowerPadButtons(const Buttons: TPowerPadButtons);
     function GetSnapshotDirectory: string;
     procedure SaveSnapshot(const Name: string);
@@ -186,6 +198,8 @@ type
     function ReadZapperLight(const Mask: TNesZapperMask; X, Y: Integer): Boolean;
     procedure SetZapperPositionReader(const ReadPosition: TFunc<TPoint>);
     function UsesPowerPad: Boolean;
+    function UsesFcnsController: Boolean;
+    function SetGameinisInfrared(Active: Boolean): Boolean;
   end;
 
 function NesUsesSuborKeyboard(const Core: IEmulationCore): Boolean;
@@ -193,7 +207,7 @@ function NesUsesSuborKeyboard(const Core: IEmulationCore): Boolean;
 implementation
 
 uses
-  System.UITypes;
+  System.UITypes, NES.Consts;
 
 { TNesCoreAdapter }
 
@@ -225,6 +239,11 @@ end;
 procedure TNesCoreAdapter.EjectDisc;
 begin
   FThread.ChangeDisc(-1);
+end;
+
+procedure TNesCoreAdapter.SetMicrophoneSource(const Source: IMicrophoneSource);
+begin
+  FThread.SetMicrophoneSource(Source);
 end;
 
 procedure TNesCoreAdapter.ApplyLiveSettings;
@@ -553,7 +572,9 @@ var
   NesFrame: TFrameBuffer;
   Status: TEmulationStatus;
 begin
-  Result := FThread.TakeSnapshot(NesFrame, Status);
+  Result := FThread.TakeSnapshot(NesFrame, Status, FWideFrame);
+  FSenarioLcdTop := Status.SenarioLcdTop;
+  FSenarioLcdBottom := Status.SenarioLcdBottom;
   FAudioError := Status.AudioError;
   if Status.Error <> '' then
     FError := Status.Error;
@@ -562,14 +583,22 @@ begin
 
   FPresentedLeft := Status.CropLeft;
   FPresentedTop := Status.CropTop;
-  Frame.Width := 256 - Status.CropLeft - Status.CropRight;
-  Frame.Height := 240 - Status.CropTop - Status.CropBottom;
+  FPresentedScale := Status.FrameScale;
+  Frame.Width := (NES_WIDTH - Status.CropLeft - Status.CropRight) * FPresentedScale;
+  Frame.Height := (NES_HEIGHT - Status.CropTop - Status.CropBottom) * FPresentedScale;
   FPresentedWidth := Frame.Width;
   FPresentedHeight := Frame.Height;
-  SetLength(Frame.Pixels, Frame.Width * Frame.Height);
-  for var Y := 0 to Frame.Height - 1 do
-    for var X := 0 to Frame.Width - 1 do
-      Frame.Pixels[Y * Frame.Width + X] := NesFrame[X + Status.CropLeft, Y + Status.CropTop] or $FF000000;
+  if FPresentedScale = 2 then
+  begin
+    SetLength(Frame.Pixels, Frame.Width * Frame.Height);
+    for var Y := 0 to Frame.Height - 1 do
+    begin
+      var Source := (Y + 2 * Status.CropTop) * VT389_WIDTH + 2 * Status.CropLeft;
+      Move(FWideFrame[Source], Frame.Pixels[Y * Frame.Width], Frame.Width * SizeOf(Cardinal));
+    end;
+  end
+  else
+    CopyNesFrameRows(NesFrame, Frame.Pixels, Status.CropLeft, Status.CropTop, Frame.Width, Frame.Height);
   Inc(FFrameNumber);
   Frame.FrameNumber := FFrameNumber;
   Frame.FramesPerSecond := Status.FramesPerSecond;
@@ -579,7 +608,7 @@ function TNesCoreAdapter.ReadZapperLight(const Mask: TNesZapperMask; X, Y: Integ
 begin
   Result := (X >= 0) and (Y >= 0) and (X < FPresentedWidth) and (Y < FPresentedHeight);
   if Result then
-    Result := TZapper.ReadMask(Mask, X + FPresentedLeft, Y + FPresentedTop);
+    Result := TZapper.ReadMask(Mask, X div FPresentedScale + FPresentedLeft, Y div FPresentedScale + FPresentedTop);
 end;
 
 function TNesCoreAdapter.Zapper: TZapper;
@@ -587,20 +616,48 @@ begin
   Result := FThread.Console.Zapper;
 end;
 
+function TNesCoreAdapter.GetSenarioLcd(out TopLine, BottomLine: string): Boolean;
+begin
+  Result := Zapper.DrawingTablet;
+  TopLine := FSenarioLcdTop;
+  BottomLine := FSenarioLcdBottom;
+end;
+
 procedure TNesCoreAdapter.SetZapperPositionReader(const ReadPosition: TFunc<TPoint>);
 begin
   if not Assigned(ReadPosition) then
   begin
     Zapper.OnReadLight := nil;
+    Zapper.OnReadPosition := nil;
     Exit;
   end;
   var ReadPixel: TFunc<TPoint> := ReadPosition;
+  Zapper.OnReadPosition :=
+    function: TPoint
+    begin
+      Result := ReadPixel();
+      if (Result.X < 0) or (Result.Y < 0) or
+        (Result.X >= FPresentedWidth) or (Result.Y >= FPresentedHeight) then
+        Exit(TPoint.Create(-1, -1));
+      Result.X := Result.X div FPresentedScale + FPresentedLeft;
+      Result.Y := Result.Y div FPresentedScale + FPresentedTop;
+    end;
   Zapper.OnReadLight :=
     function(const Mask: TNesZapperMask): Boolean
     begin
       var Pixel: TPoint := ReadPixel();
       Result := ReadZapperLight(Mask, Pixel.X, Pixel.Y);
     end;
+end;
+
+function TNesCoreAdapter.SetGameinisInfrared(Active: Boolean): Boolean;
+begin
+  Result := FThread.SetGameinisInfrared(Active);
+end;
+
+function TNesCoreAdapter.UsesFcnsController: Boolean;
+begin
+  Result := FThread.Console.UsesFcnsController;
 end;
 
 function TNesCoreAdapter.UsesPowerPad: Boolean;

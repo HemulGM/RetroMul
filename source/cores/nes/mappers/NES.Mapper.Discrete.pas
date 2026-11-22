@@ -3,7 +3,7 @@
 interface
 
 uses
-  NES.State, NES.Types, NES.Mapper, NES.Mapper.Banked;
+  NES.State, NES.Types, NES.Mapper, NES.Mapper.Banked, NES.Audio.Jaleco;
 
 type
   TMapperDiscrete = class(TMapperBanked)
@@ -14,11 +14,18 @@ type
     FSelect, FOuter: Byte;
     FIrqCounter: Integer;
     FIrqEnabled, FIrqPending, FChrWritable, FLegacyChrWrites: Boolean;
+    FHasFittedPrgRam, FLegacyCamericaMirror: Boolean;
+    procedure UpdateDxromBank(RegisterIndex: Byte);
     procedure UpdateIndexedBanks;
   public
+    procedure ReadFormerIrq(out Counter: Integer; out Enabled, Pending: Boolean);
     procedure SerializeState(State: TNesStateArchive); override;
+    procedure LoadLegacyCnromState(State: TNesStateArchive);
+    procedure LoadLegacyUxromState(State: TNesStateArchive);
     constructor Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; LegacyHeader: Boolean = False; Submapper: Integer = 0);
+    procedure PowerOn; override;
     procedure Reset; override;
+    procedure ConfigureFittedPrgRam(Size: UInt64);
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
@@ -27,10 +34,33 @@ type
     function IrqPending: Boolean; override;
   end;
 
+  TMapperJalecoIrqSpeech = class(TMapperDiscrete)
+  private
+    FSpeech: TJalecoSpeech;
+  public
+    constructor Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; LegacyHeader: Boolean; Submapper: Integer; const SpeechRom: TArray<Byte>);
+    destructor Destroy; override;
+    procedure Reset; override;
+    procedure SetRegion(Region: TNesRegion); override;
+    function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
+    procedure ClockCpu; override;
+    function ExpansionAudio: Double; override;
+    procedure SerializeState(State: TNesStateArchive); override;
+    property Speech: TJalecoSpeech read FSpeech;
+  end;
+
 implementation
+
+procedure TMapperDiscrete.ReadFormerIrq(out Counter: Integer; out Enabled, Pending: Boolean);
+begin
+  Counter := FIrqCounter;
+  Enabled := FIrqEnabled;
+  Pending := FIrqPending;
+end;
 
 procedure TMapperDiscrete.SerializeState(State: TNesStateArchive);
 begin
+  var BoardMirror := FInitialMirror;
   inherited;
   State.Field(FBoard, SizeOf(FBoard));
   State.Field(FRegisters, SizeOf(FRegisters));
@@ -41,6 +71,78 @@ begin
   State.Field(FIrqPending, SizeOf(FIrqPending));
   State.Field(FChrWritable, SizeOf(FChrWritable));
   State.Field(FLegacyChrWrites, SizeOf(FLegacyChrWrites));
+  if State.Loading then
+  begin
+    if (FBoard = MAPPER_BNROM_NINA001) and (FSubmapper in [1, 2]) then
+    begin
+      FRamEnabled := FHasFittedPrgRam;
+      FInitialMirror := BoardMirror;
+      FMirror := BoardMirror;
+    end;
+    if FBoard = MAPPER_DXROM then
+    begin
+      FRamEnabled := FHasFittedPrgRam;
+      UpdateIndexedBanks;
+    end;
+    if FBoard = MAPPER_CAMERICA then
+    begin
+      FRamEnabled := False;
+      if FSubmapper = 1 then
+      begin
+        if not (FMirror in [TMirrorMode.Single0, TMirrorMode.Single1]) then
+          Mirror(2);
+        Prg16(0, (FPrgBanks[0] shr 1) and 7);
+        if Length(FPrgRom) > $20000 then
+          Prg16(1, 7);
+      end
+      else if not FLegacyCamericaMirror then
+        FMirror := FInitialMirror;
+    end;
+  end;
+  if State.Loading and (FBoard = MAPPER_IREM_G101) and (FSubmapper = 1) then
+  begin
+    // A snapshot created before G101.1 was identified may carry a bank swap.
+    FSelect := 0;
+    Prg8(0, FRegisters[0]);
+    Prg8(2, -2);
+    Mirror(3);
+  end;
+end;
+
+procedure TMapperDiscrete.LoadLegacyCnromState(State: TNesStateArchive);
+begin
+  // These exact 32 KiB PRG images used an oversized CNROM model before they
+  // were identified as mapper 148. The CHR selector has the same low bits.
+  State.Field(FChrMemory[0], Length(FChrMemory));
+  var FormerChrRam: Boolean;
+  var FormerMirror: TMirrorMode;
+  var ChrBank: Byte;
+  State.Field(FormerChrRam, SizeOf(FormerChrRam));
+  State.Field(FormerMirror, SizeOf(FormerMirror));
+  State.Field(ChrBank, SizeOf(ChrBank));
+  if State.Version >= 6 then
+  begin
+    var FormerPrgRam: array[0..$1FFF] of Byte;
+    State.Field(FormerPrgRam, SizeOf(FormerPrgRam));
+  end;
+  Prg32(0);
+  Chr8(ChrBank and 7);
+end;
+
+procedure TMapperDiscrete.LoadLegacyUxromState(State: TNesStateArchive);
+begin
+  // Older headers described Camerica as UxROM, including a fictitious RAM window.
+  State.Field(FChrMemory[0], Length(FChrMemory));
+  var FormerPrgRam: array[0..$1FFF] of Byte;
+  var FormerChrRam: Boolean;
+  var FormerMirror: TMirrorMode;
+  var PrgBank: Byte;
+  State.Field(FormerPrgRam, SizeOf(FormerPrgRam));
+  State.Field(FormerChrRam, SizeOf(FormerChrRam));
+  State.Field(FormerMirror, SizeOf(FormerMirror));
+  State.Field(PrgBank, SizeOf(PrgBank));
+  PowerOn;
+  CpuWrite($C000, PrgBank);
 end;
 
 constructor TMapperDiscrete.Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; LegacyHeader: Boolean; Submapper: Integer);
@@ -48,6 +150,7 @@ begin
   inherited Create(Prg, Chr, HasChrRam, MirrorMode);
   FBoard := Board;
   FSubmapper := Submapper;
+  FHasFittedPrgRam := (Board = MAPPER_BNROM_NINA001) and (Submapper = 1);
   if (Board = MAPPER_FDS_CONVERSION_108) and (Submapper = 0) then
   begin
     if HasChrRam then
@@ -66,16 +169,62 @@ begin
     FRegisters[7] := $FF;
   // Legacy mapper-15 game hacks require writable CHR in all modes (NESdev).
   FLegacyChrWrites := (Board = MAPPER_MULTICART_15) and LegacyHeader;
+  FLegacyCamericaMirror := (Board = MAPPER_CAMERICA) and (Submapper = 0) and LegacyHeader;
   if Board = MAPPER_CPROM then
   begin
     SetLength(FChrMemory, $4000);
     FHasChrRam := True;
   end;
-  Reset;
+  if Board = MAPPER_CAMERICA then
+    PowerOn
+  else
+    Reset;
+end;
+
+procedure TMapperDiscrete.ConfigureFittedPrgRam(Size: UInt64);
+begin
+  if (Size > UInt64(Length(FPrgRam))) or ((Size <> 0) and ((Size and (Size - 1)) <> 0)) then
+    raise ENesException.Create('Unsupported discrete board PRG RAM size');
+  FHasFittedPrgRam := Size <> 0;
+  FRamEnabled := FHasFittedPrgRam;
+  if FRamEnabled then
+    FPrgRamMask := UInt16(Size - 1);
+end;
+
+procedure TMapperDiscrete.PowerOn;
+begin
+  if FBoard = MAPPER_CAMERICA then
+  begin
+    inherited Reset;
+    FRamEnabled := False;
+    FChrWritable := True;
+    if FSubmapper = 1 then
+    begin
+      if Length(FPrgRom) > $20000 then
+        Prg16(1, 7);
+      Mirror(2);
+    end;
+    Exit;
+  end;
+  if FBoard = MAPPER_RETROUSB_DPCM_CART then
+    Prg16(0, 0);
+  inherited;
 end;
 
 procedure TMapperDiscrete.Reset;
 begin
+  // BF909x has no reset input from the console.
+  if FBoard = MAPPER_CAMERICA then
+    Exit;
+  // The address latch is initialized at power-on and survives CPU reset.
+  if FBoard = MAPPER_RETROUSB_DPCM_CART then
+  begin
+    FRamEnabled := False;
+    FRamWritable := False;
+    FChrWritable := True;
+    Exit;
+  end;
+
   // Mapper 31's latches have power-on defaults but survive the reset button.
   if FBoard = MAPPER_NSF_CART then
   begin
@@ -156,6 +305,8 @@ begin
   end;
   if FBoard in [MAPPER_CPROM, MAPPER_CALTRON, MAPPER_WAIXING_242] then
     Mirror(0);
+  if (FBoard = MAPPER_IREM_G101) and (FSubmapper = 1) then
+    Mirror(3);
   if FBoard = MAPPER_IREM_78 then
   begin
     if (FSubmapper = 3) or ((FSubmapper = 0) and (FInitialMirror = TMirrorMode.FourScreen)) then
@@ -174,20 +325,40 @@ begin
     CpuWrite($8000, 0);
   if FBoard in [MAPPER_NAMCO_118, MAPPER_NAMCO_154, MAPPER_DXROM, MAPPER_DISCRETE_112] then
     UpdateIndexedBanks;
-  FRamEnabled := FBoard in [
+  FRamEnabled := (FBoard in [
       MAPPER_FFE_F3XXX,
       MAPPER_MULTICART_15,
       MAPPER_IREM_G101,
-      MAPPER_BNROM_NINA001,
       MAPPER_VRC3,
       MAPPER_VS_SYSTEM,
       MAPPER_DISCRETE_112,
-      MAPPER_WAIXING_242];
+      MAPPER_WAIXING_242]) or ((FBoard = MAPPER_BNROM_NINA001) and (FSubmapper = 0)) or FHasFittedPrgRam;
+end;
+
+procedure TMapperDiscrete.UpdateDxromBank(RegisterIndex: Byte);
+begin
+  var Value := FRegisters[RegisterIndex];
+  case RegisterIndex of
+    0, 1:
+      Chr2(RegisterIndex, (Value and $3F) shr 1);
+    2..5:
+      Chr1(RegisterIndex + 2, Value and $3F);
+    6, 7:
+      if FSubmapper <> 1 then
+        Prg8(RegisterIndex - 6, Value and $0F);
+  end;
 end;
 
 procedure TMapperDiscrete.UpdateIndexedBanks;
 begin
-  if FBoard = MAPPER_DISCRETE_112 then
+  if FBoard = MAPPER_DXROM then
+  begin
+    if FSubmapper = 1 then
+      Prg32(0);
+    for var Index := 0 to 7 do
+      UpdateDxromBank(Index);
+  end
+  else if FBoard = MAPPER_DISCRETE_112 then
   begin
     Prg8(0, FRegisters[0]);
     Prg8(1, FRegisters[1]);
@@ -259,6 +430,12 @@ begin
   Result := inherited CpuWrite(Address, Value);
   var Bank: Integer;
   case FBoard of
+    MAPPER_RETROUSB_DPCM_CART:
+      if (Address and $F000) = $C000 then
+      begin
+        Prg16(0, Address and $0FFF);
+        Result := True;
+      end;
     MAPPER_JALECO_SS88006:
       if Address >= $8000 then
       begin
@@ -473,8 +650,9 @@ begin
       if Address >= $8000 then
       begin
         Value := Value and FPrgRom[PrgOffset(Address)];
-        Prg32((Value shr 3) and 7);
-        Chr8((Value and 7) or ((Value shr 3) and 8));
+        if Length(FPrgRom) > $8000 then
+          Prg32((Value shr 3) and 1);
+        Chr8(Value and 7);
         Result := True;
       end;
     MAPPER_MULTICART_200:
@@ -698,6 +876,7 @@ begin
           $8000:
             FRegisters[0] := Value and $1F;
           $9000:
+            if FSubmapper <> 1 then
             begin
               FSelect := Value and 2;
               Mirror(Value and 1);
@@ -714,7 +893,7 @@ begin
         Result := True;
       end;
     MAPPER_BNROM_NINA001:
-      if FHasChrRam then
+      if (FSubmapper = 2) or ((FSubmapper <> 1) and FHasChrRam) then
       begin
         if Address >= $8000 then
         begin
@@ -744,10 +923,16 @@ begin
     MAPPER_CAMERICA:
       if Address >= $8000 then
       begin
-        if (Address and $F000) = $9000 then
-          Mirror(2 + ((Value shr 4) and 1))
-        else if Address >= $C000 then
-          Prg16(0, Value and $0F);
+        if Address >= $C000 then
+        begin
+          var CamericaBank := Value and $0F;
+          if FSubmapper = 1 then
+            CamericaBank := CamericaBank and 7;
+          Prg16(0, CamericaBank);
+        end
+        else if ((FSubmapper = 1) and (Address < $A000)) or
+          (FLegacyCamericaMirror and ((Address and $F000) = $9000)) then
+          Mirror(2 + ((Value shr 4) and 1));
         Result := True;
       end;
     MAPPER_NINA03, MAPPER_NINA_113:
@@ -772,7 +957,21 @@ begin
         Chr8(((Value and 1) shl 1) or ((Value and 2) shr 1));
         Result := True;
       end;
-    MAPPER_NAMCO_118, MAPPER_NAMCO_154, MAPPER_DXROM:
+    MAPPER_DXROM:
+      case Address and $E001 of
+        $8000:
+          begin
+            FSelect := Value and 7;
+            Result := True;
+          end;
+        $8001:
+          begin
+            FRegisters[FSelect] := Value;
+            UpdateDxromBank(FSelect);
+            Result := True;
+          end;
+      end;
+    MAPPER_NAMCO_118, MAPPER_NAMCO_154:
       if Address >= $8000 then
       begin
         if FBoard = MAPPER_NAMCO_154 then
@@ -855,7 +1054,11 @@ begin
       if Address >= $8000 then
       begin
         if Address < $C000 then
-          FOuter := (Value shr 3) and 3
+        begin
+          FOuter := (Value shr 3) and 3;
+          if FSubmapper = 1 then
+            FOuter := ((FOuter and 1) shl 1) or (FOuter shr 1);
+        end
         else
           FSelect := Value and 3;
         Prg16(0, (FOuter shl 2) or FSelect);
@@ -961,6 +1164,59 @@ end;
 function TMapperDiscrete.IrqPending: Boolean;
 begin
   Result := FIrqPending;
+end;
+
+constructor TMapperJalecoIrqSpeech.Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; LegacyHeader: Boolean; Submapper: Integer; const SpeechRom: TArray<Byte>);
+begin
+  FSpeech := TJalecoSpeech.Create(SpeechRom);
+  inherited Create(MAPPER_JALECO_SS88006, Prg, Chr, HasChrRam, MirrorMode, LegacyHeader, Submapper);
+end;
+
+destructor TMapperJalecoIrqSpeech.Destroy;
+begin
+  FSpeech.Free;
+  inherited;
+end;
+
+procedure TMapperJalecoIrqSpeech.Reset;
+begin
+  inherited;
+  FSpeech.Reset(True);
+end;
+
+procedure TMapperJalecoIrqSpeech.SetRegion(Region: TNesRegion);
+begin
+  FSpeech.SetRegion(Region);
+end;
+
+function TMapperJalecoIrqSpeech.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
+begin
+  if (Address and $F003) = $F003 then
+  begin
+    FSpeech.WritePins(Value shr 2, (Value and 1) = 0, (Value and 2) <> 0);
+    Exit(True);
+  end;
+  Result := inherited;
+end;
+
+procedure TMapperJalecoIrqSpeech.ClockCpu;
+begin
+  inherited;
+  FSpeech.Clock;
+end;
+
+function TMapperJalecoIrqSpeech.ExpansionAudio: Double;
+begin
+  Result := FSpeech.Output;
+end;
+
+procedure TMapperJalecoIrqSpeech.SerializeState(State: TNesStateArchive);
+begin
+  inherited;
+  if State.Version >= 39 then
+    FSpeech.SerializeState(State)
+  else if State.Loading then
+    FSpeech.Reset(True);
 end;
 
 end.

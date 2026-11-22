@@ -17,7 +17,7 @@ type
 
   TRomNormalizer = reference to function(const Data: TBytes; const Format: TRomFormatInfo): TBytes;
 
-  TCoreLoadStage = (Source, Container, Image, Header, OverrideHint);
+  TCoreLoadStage = (Source, Container, Image, Header, OverrideHint, Stream);
 
   TCoreMatchConfidence = (Fallback, Hint, Signature);
 
@@ -866,6 +866,11 @@ begin
   if TPlatformRegistry.Find(PlatformId, Info) then
     Context.FSelectedPlatform := Info.Id;
   Context.PrepareArchive;
+  // Some formats have a verified header but should never enter the
+  // whole-image buffering and normalization used by other recognizers.
+  Result := SelectRecognizedCore(Context, TCoreLoadStage.Stream);
+  if Result <> nil then
+    Exit;
   if (Context.SelectedPlatform <> '') and (Context.IsDiscSource or Context.HasExtension(['.m3u'])) then
     Exit(SelectDiscPlatform(Context));
   Result := SelectRecognizedCore(Context, TCoreLoadStage.Source, TCoreMatchConfidence.Hint);
@@ -881,7 +886,11 @@ begin
   begin
     SelectArchiveImage(Context);
     if Context.ArchiveEntry then
-      Result := SelectRecognizedCore(Context, TCoreLoadStage.Source, TCoreMatchConfidence.Hint);
+    begin
+      Result := SelectRecognizedCore(Context, TCoreLoadStage.Stream);
+      if Result = nil then
+        Result := SelectRecognizedCore(Context, TCoreLoadStage.Source, TCoreMatchConfidence.Hint);
+    end;
     if (Result = nil) and (Context.IsDiscSource or Context.HasExtension(['.m3u'])) then
       Exit(SelectDiscPlatform(Context));
     if Result = nil then

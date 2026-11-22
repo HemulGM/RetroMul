@@ -15,10 +15,12 @@ type
     FBusConflicts: Boolean;
     FMirrorMode: TMirrorMode;
     FPrgBankSelect: UInt8;
-    function GetPrgBankCount: Integer;
-    function NormalizeBank(Bank: Integer): Integer;
+    FPrgBankCount, FLastPrgOffset, FSelectedPrgOffset: Integer;
+    FPrgRamSize: Integer;
+    procedure SelectPrgBank(Value: UInt8);
   public
     procedure SerializeState(State: TNesStateArchive); override;
+    procedure ConfigurePrgRam(Size: UInt64);
     function GetSaveMemory: TByteArray; override;
     procedure SetSaveMemory(const Data: TByteArray); override;
     constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; AMirrorMode: TMirrorMode; BusConflicts: Boolean = False);
@@ -41,6 +43,15 @@ begin
   State.Field(FHasChrRam, SizeOf(FHasChrRam));
   State.Field(FMirrorMode, SizeOf(FMirrorMode));
   State.Field(FPrgBankSelect, SizeOf(FPrgBankSelect));
+  if State.Loading then
+    SelectPrgBank(FPrgBankSelect);
+end;
+
+procedure TMapperUxrom.ConfigurePrgRam(Size: UInt64);
+begin
+  if Size > SizeOf(FPrgRam) then
+    Size := SizeOf(FPrgRam);
+  FPrgRamSize := Integer(Size);
 end;
 
 function TMapperUxrom.GetSaveMemory: TByteArray;
@@ -67,63 +78,50 @@ begin
   // Immutable board wiring comes from the ROM header, not save states.
   FBusConflicts := BusConflicts;
   FMirrorMode := AMirrorMode;
+  FPrgBankCount := Length(FPrgRom) div $4000;
+  FLastPrgOffset := (FPrgBankCount - 1) * $4000;
+  ConfigurePrgRam(SizeOf(FPrgRam));
   if Length(FChrMemory) = 0 then
     SetLength(FChrMemory, $2000);
   Reset;
 end;
 
-function TMapperUxrom.GetPrgBankCount: Integer;
+procedure TMapperUxrom.SelectPrgBank(Value: UInt8);
 begin
-  Result := Length(FPrgRom) div $4000;
-  if Result <= 0 then
-    Result := 1;
-end;
-
-function TMapperUxrom.NormalizeBank(Bank: Integer): Integer;
-begin
-  Result := Bank mod GetPrgBankCount;
-  if Result < 0 then
-    Inc(Result, GetPrgBankCount);
+  FPrgBankSelect := Value;
+  FSelectedPrgOffset := (Integer(Value) mod FPrgBankCount) * $4000;
 end;
 
 function TMapperUxrom.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
 begin
-  var Bank: Integer;
-  if (Address >= $6000) and (Address < $8000) then
+  if Address >= $8000 then
   begin
-    Value := FPrgRam[Address and $1FFF];
+    var BankOffset := FSelectedPrgOffset;
+    if Address >= $C000 then
+      BankOffset := FLastPrgOffset;
+    Value := FPrgRom[BankOffset + (Address and $3FFF)];
     Exit(True);
   end;
 
-  Result := Address >= $8000;
-  if not Result then
-    Exit;
-
-  if Address < $C000 then
-    Bank := NormalizeBank(FPrgBankSelect)
-  else
-    Bank := GetPrgBankCount - 1;
-
-  var Offset: Integer := Bank * $4000 + (Address and $3FFF);
-  Value := FPrgRom[Offset mod Length(FPrgRom)];
+  Result := (Address >= $6000) and (FPrgRamSize <> 0);
+  if Result then
+    Value := FPrgRam[(Address and $1FFF) mod FPrgRamSize];
 end;
 
 function TMapperUxrom.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
-  if (Address >= $6000) and (Address < $8000) then
-  begin
-    FPrgRam[Address and $1FFF] := Value;
-    Exit(True);
-  end;
-
-  Result := Address >= $8000;
-  if Result then
+  if Address >= $8000 then
   begin
     var RomValue: UInt8;
     if FBusConflicts and CpuRead(Address, RomValue) then
       Value := Value and RomValue;
-    FPrgBankSelect := Value;
+    SelectPrgBank(Value);
+    Exit(True);
   end;
+
+  Result := (Address >= $6000) and (FPrgRamSize <> 0);
+  if Result then
+    FPrgRam[(Address and $1FFF) mod FPrgRamSize] := Value;
 end;
 
 function TMapperUxrom.PpuRead(Address: UInt16; out Value: UInt8): Boolean;
@@ -147,7 +145,7 @@ end;
 
 procedure TMapperUxrom.Reset;
 begin
-  FPrgBankSelect := 0;
+  SelectPrgBank(0);
 end;
 
 end.

@@ -113,6 +113,9 @@ begin
       ['0', '1', '2', '3', '45', '15', '18', '12', '13', '67', '14', '41']), '0', True)
     .ApplyMode := TSettingsApplyMode.OnNextLoad;
   Context.Heading('GroupAtari8Disk', 'Disk drive');
+  Context.AddBoolean('ToggleAtari8DiskReadSound', 'Disk read sound',
+    'Play the Atari disk loading sound.',
+    'Media', 'DiskReadSound', True, True);
   Context.AddBoolean('ToggleAtari8DiskProtection', 'Write protect disk',
     'Prevent new disk writes. Reopen the game to apply.',
     'Media', 'DiskWriteProtected', False, True).ApplyMode := TSettingsApplyMode.OnNextLoad;
@@ -165,7 +168,7 @@ end;
 
 function TA8Keyboard.RowCount: Integer;
 begin
-  Result := 5;
+  Result := 6;
 end;
 
 procedure TA8Keyboard.BuildLayout;
@@ -196,6 +199,10 @@ begin
   AddKey(vkShift, 'Shift', 4, 11.7, 1.5, True);
   AddKey(vkControl, 'Ctrl', 4, 13.2, 1.3, True);
   AddKey(vkSpace, 'Space', 4, 14.5, 1.5);
+  AddKey(vkLeft, '←', 5, 4.8, 1.6);
+  AddKey(vkUp, '↑', 5, 6.4, 1.6);
+  AddKey(vkDown, '↓', 5, 8, 1.6);
+  AddKey(vkRight, '→', 5, 9.6, 1.6);
 end;
 
 class function TA8InputHandler.KeyPolicy(const Context: TInputRuntimeContext): TInputKeyPolicy;

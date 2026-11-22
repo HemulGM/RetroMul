@@ -21,6 +21,7 @@ type
     FCoreId: string;
     FMachineFactory: TAtariMachineFactory;
     FKeyboard: Word;
+    FDiskReadMuted: Boolean;
     FKeypads: TA5200Keypads;
     FInput: TEmulatorInput;
     FControlButtons: TEmulatorButtons;
@@ -39,7 +40,7 @@ type
     constructor Create(const Cartridge: TBytes; Mapper: Integer; const Storage: IStorage); overload;
     constructor Create(const Media: TBytes; const CoreId: string; const Factory: TAtariMachineFactory; const Buttons: TEmulatorButtons; const Storage: IStorage; const CompatibleSnapshotHash: TBytes = nil); overload;
     destructor Destroy; override;
-    procedure Configure(const Input: TEmulatorInput; Paused, AudioEnabled: Boolean; Volume: Single; const Keypads: TA5200Keypads; Keyboard: Word = $FF);
+    procedure Configure(const Input: TEmulatorInput; Paused, AudioEnabled: Boolean; Volume: Single; const Keypads: TA5200Keypads; Keyboard: Word = $FF; DiskReadMuted: Boolean = False);
     procedure RequestReset;
     procedure Stop;
     procedure SaveSnapshot(const Name: string);
@@ -109,7 +110,7 @@ begin
   FLock.Free;
 end;
 
-procedure TA5200Worker.Configure(const Input: TEmulatorInput; Paused, AudioEnabled: Boolean; Volume: Single; const Keypads: TA5200Keypads; Keyboard: Word);
+procedure TA5200Worker.Configure(const Input: TEmulatorInput; Paused, AudioEnabled: Boolean; Volume: Single; const Keypads: TA5200Keypads; Keyboard: Word; DiskReadMuted: Boolean);
 begin
   var Wake: Boolean;
   FLock.Acquire;
@@ -118,6 +119,7 @@ begin
     FInput := Input;
     FKeypads := Keypads;
     FKeyboard := Keyboard;
+    FDiskReadMuted := DiskReadMuted;
     FPause := Paused;
     FAudioEnabled := AudioEnabled;
     FVolume := EnsureRange(Volume, 0.0, 1.0);
@@ -228,7 +230,7 @@ var
   Hints: TEmulationPerformanceHints;
   Input: TEmulatorInput;
   Samples: TArray<SmallInt>;
-  Paused, ResetRequested, Enabled, WasEnabled, WasPaused, AudioFailed: Boolean;
+  Paused, ResetRequested, Enabled, WasEnabled, WasPaused, AudioFailed, DiskReadMuted: Boolean;
   Volume: Single;
   Keypads: TA5200Keypads;
   Deadline: Double;
@@ -293,6 +295,7 @@ begin
           Volume := FVolume;
           Keypads := FKeypads;
           Keyboard := FKeyboard;
+          DiskReadMuted := FDiskReadMuted;
           ResetRequested := FReset;
           FReset := False;
         finally
@@ -340,6 +343,7 @@ begin
         end;
         Console.SetInput(Input);
         Console.SetKeyboard(Keyboard);
+        Console.SetDiskReadMuted(DiskReadMuted);
         Console.RunFrame;
 
         if Terminated then

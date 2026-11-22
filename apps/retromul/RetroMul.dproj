@@ -609,6 +609,11 @@
         <DCCReference Include="..\..\source\platforms\nes\RM.Platforms.NES.Window.pas"/>
         <DCCReference Include="..\..\source\platforms\nes\Core.Platforms.NES.Adapter.pas"/>
         <DCCReference Include="..\..\source\platforms\nes\RM.Platforms.NES.Controls.DataRecorder.pas"/>
+        <DCCReference Include="..\..\source\platforms\nes\RM.Platforms.NES.Controls.SenarioLcd.pas">
+            <Form>FrameSenarioLcd</Form>
+            <FormType>fmx</FormType>
+            <DesignClass>TFrame</DesignClass>
+        </DCCReference>
         <DCCReference Include="..\..\source\platforms\nes\RM.Platforms.NES.Controls.MiraclePiano.pas"/>
         <DCCReference Include="..\..\source\platforms\nes\RM.Platforms.NES.Controls.PowerPad.pas"/>
         <DCCReference Include="..\..\source\platforms\nes\RM.Platforms.NES.Devices.pas"/>
@@ -828,6 +833,8 @@
         <DCCReference Include="..\..\source\cores\nes\NES.RomMetadata.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.State.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.Audio.FDS.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\NES.Audio.Jaleco.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\NES.Audio.Recordings.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.DiskSystem.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.Options.pas"/>
         <DCCReference Include="..\..\source\cores\nes\NES.Firmware.pas"/>
@@ -850,6 +857,16 @@
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Uxrom.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Vrc.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Vrc5.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Mindkids.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.BlazePro.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.SuperGameMega.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.StudyBox.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.CoolGirl.pas"/>
+        <DCCReference Include="..\..\source\hardware\audio\HW.Sound.TSP50C04.pas"/>
+        <DCCReference Include="..\..\source\hardware\audio\HW.Sound.TMS5220.pas"/>
+        <DCCReference Include="..\..\source\hardware\audio\HW.Sound.UPD7756.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Um6578.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\NES.StudyBox.Media.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.VrcAudio.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Warface.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Axrom.pas"/>
@@ -861,13 +878,26 @@
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Discrete.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Drip.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.ExtendedDiscrete.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Jf13.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.ExtendedIrq.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.GameDoctor.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.MagicCard.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Yuxing.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.ExtendedMemory.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Mxm1.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.FlameCyclone.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.OneBus.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\NES.OneBus.Vt32.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\NES.OneBus.Vt369Audio.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\NES.OneBus.Vt369Io.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\NES.OneBus.Senario.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.ExtendedMmc3.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Flash.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Xmas.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Gxrom.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Jy.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Mmc1.pas"/>
+        <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Fcns.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Mmc3.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Mmc3Variants.pas"/>
         <DCCReference Include="..\..\source\cores\nes\mappers\NES.Mapper.Mmc5.pas"/>
@@ -4089,7 +4119,7 @@
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_OSX64)'!=''">
         <DCC_UsePackage>DataSnapServer;fmx;DbxCommonDriver;bindengine;IndyIPCommon;FireDACCommonODBC;emsclient;DBAUtilites;IndyProtocols;dbxcds;FmxTeeUI;DBXFirebirdDriver;FireDACSqliteDriver;DbxClientDriver;soapmidas;dbexpress;inet;FireDACDBXDriver;fmxdae;CustomIPTransport;FireDACMSSQLDriver;IndySystem;FireDACCommon;DataSnapServerMidas;FireDACODBCDriver;emsserverresource;bindcompdbx;rtl;FireDACMySQLDriver;DBXSqliteDriver;DataSnapFireDAC;inetdbxpress;FireDAC;xmlrtl;dsnap;DBXOracleDriver;DBXInformixDriver;fmxobj;DataSnapNativeClient;emshosting;FireDACCommonDriver;IndyIPClient;emsedge;bindcompfmx;inetdb;FireDACASADriver;fmxFireDAC;DBXMySQLDriver;DataSnapCommon;fmxase;dbrtl;FireDACOracleDriver;DataSnapIndy10ServerTransport;DBXInterBaseDriver;FireDACMongoDBDriver;FireDACTDataDriver;bindcomp;VLCPlayer;inetstn;IndyCore;RESTBackendComponents;RESTComponents;IndyIPServer;dsnapxml;DataSnapClient;DataSnapProviderClient;emsclientfiredac;FireDACPgDriver;FireDACDSDriver;tethering;CloudService;DBXSybaseASADriver;FMXTee;soaprtl;soapserver;FireDACIBDriver;$(DCC_UsePackage)</DCC_UsePackage>
-        <VerInfo_Keys>CFBundleName=$(MSBuildProjectName);CFBundleDisplayName=$(MSBuildProjectName);CFBundleIdentifier=$(MSBuildProjectName);CFBundleVersion=1.0.0;CFBundleShortVersionString=1.0.0;CFBundlePackageType=APPL;CFBundleSignature=????;CFBundleAllowMixedLocalizations=YES;CFBundleExecutable=$(MSBuildProjectName);NSHighResolutionCapable=true;LSApplicationCategoryType=public.app-category.utilities;NSLocationUsageDescription=The reason for accessing the location information of the user;NSContactsUsageDescription=The reason for accessing the contacts;NSCalendarsUsageDescription=The reason for accessing the calendar data;NSRemindersUsageDescription=The reason for accessing the reminders;NSCameraUsageDescription=The reason for accessing the camera;NSMicrophoneUsageDescription=The reason for accessing the microphone;NSMotionUsageDescription=The reason for accessing the accelerometer;NSDesktopFolderUsageDescription=The reason for accessing the Desktop folder;NSDocumentsFolderUsageDescription=The reason for accessing the Documents folder;NSDownloadsFolderUsageDescription=The reason for accessing the Downloads folder;NSNetworkVolumesUsageDescription=The reason for accessing files on a network volume;NSRemovableVolumesUsageDescription=The reason for accessing files on a removable volume;NSSpeechRecognitionUsageDescription=The reason for requesting to send user data to Apple&apos;s speech recognition servers;ITSAppUsesNonExemptEncryption=false;NSBluetoothAlwaysUsageDescription=The reason for accessing the Bluetooth interface</VerInfo_Keys>
+        <VerInfo_Keys>CFBundleName=$(MSBuildProjectName);CFBundleDisplayName=$(MSBuildProjectName);CFBundleIdentifier=$(MSBuildProjectName);CFBundleVersion=1.0.0;CFBundleShortVersionString=1.0.0;CFBundlePackageType=APPL;CFBundleSignature=????;CFBundleAllowMixedLocalizations=YES;CFBundleExecutable=$(MSBuildProjectName);NSHighResolutionCapable=true;LSApplicationCategoryType=public.app-category.utilities;NSLocationUsageDescription=The reason for accessing the location information of the user;NSContactsUsageDescription=The reason for accessing the contacts;NSCalendarsUsageDescription=The reason for accessing the calendar data;NSRemindersUsageDescription=The reason for accessing the reminders;NSCameraUsageDescription=The reason for accessing the camera;NSMicrophoneUsageDescription=RetroMul uses the microphone for input in supported games.;NSMotionUsageDescription=The reason for accessing the accelerometer;NSDesktopFolderUsageDescription=The reason for accessing the Desktop folder;NSDocumentsFolderUsageDescription=The reason for accessing the Documents folder;NSDownloadsFolderUsageDescription=The reason for accessing the Downloads folder;NSNetworkVolumesUsageDescription=The reason for accessing files on a network volume;NSRemovableVolumesUsageDescription=The reason for accessing files on a removable volume;NSSpeechRecognitionUsageDescription=The reason for requesting to send user data to Apple&apos;s speech recognition servers;ITSAppUsesNonExemptEncryption=false;NSBluetoothAlwaysUsageDescription=The reason for accessing the Bluetooth interface</VerInfo_Keys>
         <BT_BuildType>Debug</BT_BuildType>
         <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
         <Icon_MainIcon>$(ProjectName).Artwork\macOS\AppIcon.ico</Icon_MainIcon>
@@ -4100,7 +4130,7 @@
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_OSXARM64)'!=''">
         <DCC_UsePackage>DataSnapServer;fmx;DbxCommonDriver;bindengine;IndyIPCommon;FireDACCommonODBC;emsclient;DBAUtilites;IndyProtocols;dbxcds;FmxTeeUI;DBXFirebirdDriver;FireDACSqliteDriver;DbxClientDriver;soapmidas;dbexpress;inet;FireDACDBXDriver;fmxdae;CustomIPTransport;FireDACMSSQLDriver;IndySystem;FireDACCommon;DataSnapServerMidas;FireDACODBCDriver;emsserverresource;bindcompdbx;rtl;FireDACMySQLDriver;DBXSqliteDriver;DataSnapFireDAC;inetdbxpress;FireDAC;xmlrtl;dsnap;DBXOracleDriver;DBXInformixDriver;fmxobj;DataSnapNativeClient;emshosting;FireDACCommonDriver;IndyIPClient;emsedge;bindcompfmx;inetdb;FireDACASADriver;fmxFireDAC;DBXMySQLDriver;DataSnapCommon;fmxase;dbrtl;FireDACOracleDriver;DataSnapIndy10ServerTransport;DBXInterBaseDriver;FireDACMongoDBDriver;FireDACTDataDriver;bindcomp;VLCPlayer;inetstn;IndyCore;RESTBackendComponents;RESTComponents;IndyIPServer;dsnapxml;DataSnapClient;DataSnapProviderClient;emsclientfiredac;FireDACPgDriver;FireDACDSDriver;tethering;CloudService;DBXSybaseASADriver;FMXTee;soaprtl;soapserver;FireDACIBDriver;$(DCC_UsePackage)</DCC_UsePackage>
-        <VerInfo_Keys>CFBundleName=$(MSBuildProjectName);CFBundleDisplayName=$(MSBuildProjectName);CFBundleIdentifier=$(MSBuildProjectName);CFBundleVersion=1.0.0;CFBundleShortVersionString=1.0.0;CFBundlePackageType=APPL;CFBundleSignature=????;CFBundleAllowMixedLocalizations=YES;CFBundleExecutable=$(MSBuildProjectName);NSHighResolutionCapable=true;LSApplicationCategoryType=public.app-category.utilities;NSLocationUsageDescription=The reason for accessing the location information of the user;NSContactsUsageDescription=The reason for accessing the contacts;NSCalendarsUsageDescription=The reason for accessing the calendar data;NSRemindersUsageDescription=The reason for accessing the reminders;NSCameraUsageDescription=The reason for accessing the camera;NSMicrophoneUsageDescription=The reason for accessing the microphone;NSMotionUsageDescription=The reason for accessing the accelerometer;NSDesktopFolderUsageDescription=The reason for accessing the Desktop folder;NSDocumentsFolderUsageDescription=The reason for accessing the Documents folder;NSDownloadsFolderUsageDescription=The reason for accessing the Downloads folder;NSNetworkVolumesUsageDescription=The reason for accessing files on a network volume;NSRemovableVolumesUsageDescription=The reason for accessing files on a removable volume;NSSpeechRecognitionUsageDescription=The reason for requesting to send user data to Apple&apos;s speech recognition servers;ITSAppUsesNonExemptEncryption=false;NSBluetoothAlwaysUsageDescription=The reason for accessing the Bluetooth interface</VerInfo_Keys>
+        <VerInfo_Keys>CFBundleName=$(MSBuildProjectName);CFBundleDisplayName=$(MSBuildProjectName);CFBundleIdentifier=$(MSBuildProjectName);CFBundleVersion=1.0.0;CFBundleShortVersionString=1.0.0;CFBundlePackageType=APPL;CFBundleSignature=????;CFBundleAllowMixedLocalizations=YES;CFBundleExecutable=$(MSBuildProjectName);NSHighResolutionCapable=true;LSApplicationCategoryType=public.app-category.utilities;NSLocationUsageDescription=The reason for accessing the location information of the user;NSContactsUsageDescription=The reason for accessing the contacts;NSCalendarsUsageDescription=The reason for accessing the calendar data;NSRemindersUsageDescription=The reason for accessing the reminders;NSCameraUsageDescription=The reason for accessing the camera;NSMicrophoneUsageDescription=RetroMul uses the microphone for input in supported games.;NSMotionUsageDescription=The reason for accessing the accelerometer;NSDesktopFolderUsageDescription=The reason for accessing the Desktop folder;NSDocumentsFolderUsageDescription=The reason for accessing the Documents folder;NSDownloadsFolderUsageDescription=The reason for accessing the Downloads folder;NSNetworkVolumesUsageDescription=The reason for accessing files on a network volume;NSRemovableVolumesUsageDescription=The reason for accessing files on a removable volume;NSSpeechRecognitionUsageDescription=The reason for requesting to send user data to Apple&apos;s speech recognition servers;ITSAppUsesNonExemptEncryption=false;NSBluetoothAlwaysUsageDescription=The reason for accessing the Bluetooth interface</VerInfo_Keys>
         <BT_BuildType>Debug</BT_BuildType>
         <VerInfo_IncludeVerInfo>true</VerInfo_IncludeVerInfo>
         <Icon_MainIcon>$(ProjectName).Artwork\macOS\AppIcon.ico</Icon_MainIcon>

@@ -10,21 +10,26 @@ type
   private
     FRegisters: array[0..15] of Byte;
     FSelect: Byte;
-    FCounter, FLatch, FCpuDivider, FDelay: Integer;
-    FEnabled, FPending, FReload, FCycleMode, FForceClock, FA12High: Boolean;
-    FA12LowSince: UInt64;
+    FCounter, FLatch: Integer;
+    FCpuReloadDelay, FCpuExpiry: Integer;
+    FEnabled, FPending, FReload, FCycleMode, FScanlineIrqWaiting, FA12High: Boolean;
+    FA12LowFalls: Byte;
     FNametableBoard: Boolean;
     FNameBanks: array[0..3] of Byte;
     FNameRam: array[0..$7FF] of Byte;
-    procedure UpdateBanks;
-    procedure TickIrq(Delay: Integer);
+    procedure UpdatePrgBanks;
+    procedure UpdateChrBanks;
+    procedure ReloadIrq(Value: Byte);
+    procedure ClockScanlineCounter;
   public
     procedure SerializeState(State: TNesStateArchive); override;
     constructor Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; NametableBoard: Boolean = False);
     function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function PpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
+    function NameTableOffset(Address: UInt16): UInt16; override;
+    procedure PowerOn; override;
     procedure Reset; override;
-    procedure ClockCpu; override;
+    procedure ClockCpuBus(Address: UInt16); override;
     procedure ClockPpuAddress(Address: UInt16; PpuCycle: UInt64); override;
     function IrqPending: Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
@@ -39,19 +44,57 @@ begin
   State.Field(FSelect, SizeOf(FSelect));
   State.Field(FCounter, SizeOf(FCounter));
   State.Field(FLatch, SizeOf(FLatch));
-  State.Field(FCpuDivider, SizeOf(FCpuDivider));
-  State.Field(FDelay, SizeOf(FDelay));
-  State.Field(FEnabled, SizeOf(FEnabled));
-  State.Field(FPending, SizeOf(FPending));
-  State.Field(FReload, SizeOf(FReload));
-  State.Field(FCycleMode, SizeOf(FCycleMode));
-  State.Field(FForceClock, SizeOf(FForceClock));
-  State.Field(FA12High, SizeOf(FA12High));
-  State.Field(FA12LowSince, SizeOf(FA12LowSince));
+  if State.Version >= 42 then
+  begin
+    State.Field(FCpuReloadDelay, SizeOf(FCpuReloadDelay));
+    State.Field(FCpuExpiry, SizeOf(FCpuExpiry));
+    State.Field(FEnabled, SizeOf(FEnabled));
+    State.Field(FPending, SizeOf(FPending));
+    State.Field(FReload, SizeOf(FReload));
+    State.Field(FCycleMode, SizeOf(FCycleMode));
+    State.Field(FScanlineIrqWaiting, SizeOf(FScanlineIrqWaiting));
+    State.Field(FA12High, SizeOf(FA12High));
+    State.Field(FA12LowFalls, SizeOf(FA12LowFalls));
+  end
+  else
+  begin
+    var Divider: Integer := (-FCpuExpiry) and 3;
+    var Delay: Integer := Ord(FScanlineIrqWaiting);
+    var ForceClock: Boolean := False;
+    var LowSince: UInt64 := 0;
+    State.Field(Divider, SizeOf(Divider));
+    State.Field(Delay, SizeOf(Delay));
+    State.Field(FEnabled, SizeOf(FEnabled));
+    State.Field(FPending, SizeOf(FPending));
+    State.Field(FReload, SizeOf(FReload));
+    State.Field(FCycleMode, SizeOf(FCycleMode));
+    State.Field(ForceClock, SizeOf(ForceClock));
+    State.Field(FA12High, SizeOf(FA12High));
+    State.Field(LowSince, SizeOf(LowSince));
+    if State.Loading then
+    begin
+      // Earlier states stored a PPU timestamp and a free-running divider.
+      // Preserve the counter and pending line, then resume on a full M2 cycle.
+      FA12LowFalls := 0;
+      FScanlineIrqWaiting := (Delay > 0) and not FCycleMode;
+      FCpuExpiry := 4 * (FCounter and $FF) + 4 - (Divider and 3);
+      FCpuReloadDelay := 0;
+      if FCycleMode and FReload then
+        FCpuReloadDelay := 5
+      else if FCycleMode and (Delay > 0) then
+        FCpuExpiry := Delay;
+    end;
+  end;
   if FNametableBoard then
   begin
     State.Field(FNameBanks, SizeOf(FNameBanks));
-    State.Field(FNameRam, SizeOf(FNameRam))
+    State.Field(FNameRam, SizeOf(FNameRam));
+  end;
+  if State.Loading then
+  begin
+    UpdatePrgBanks;
+    UpdateChrBanks;
+    FRamEnabled := False;
   end;
 end;
 
@@ -59,162 +102,190 @@ constructor TMapperRambo.Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; 
 begin
   inherited Create(Prg, Chr, HasChrRam, MirrorMode);
   FNametableBoard := NametableBoard;
-  Reset;
+  PowerOn;
+end;
+
+procedure TMapperRambo.PowerOn;
+begin
+  inherited Reset;
+  FillChar(FRegisters, SizeOf(FRegisters), 0);
+  FRegisters[6] := $1F;
+  FRegisters[7] := $1F;
+  FRegisters[15] := $1F;
+  FSelect := $20;
+  FCounter := 0;
+  FLatch := $FF;
+  FCpuReloadDelay := 0;
+  FCpuExpiry := 1018;
+  FEnabled := False;
+  FPending := True;
+  FReload := True;
+  FCycleMode := True;
+  FScanlineIrqWaiting := False;
+  FA12High := False;
+  FA12LowFalls := 4;
+  FRamEnabled := False;
+  Mirror(0);
+  UpdatePrgBanks;
+  UpdateChrBanks;
 end;
 
 procedure TMapperRambo.Reset;
 begin
-  inherited;
-  FillChar(FNameBanks, SizeOf(FNameBanks), 0);
-  FillChar(FRegisters, SizeOf(FRegisters), 0);
-  FSelect := 0;
-  FCounter := 0;
-  FLatch := 0;
-  FCpuDivider := 0;
-  FDelay := 0;
-  FEnabled := False;
-  FPending := False;
-  FReload := False;
-  FCycleMode := False;
-  FForceClock := False;
-  FA12High := False;
-  FA12LowSince := 0;
-  FRamEnabled := False;
-  UpdateBanks;
+  // The console reset line does not reach the RAMBO-1.
 end;
 
-procedure TMapperRambo.UpdateBanks;
+procedure TMapperRambo.UpdatePrgBanks;
 begin
-  if (FSelect and $40) = 0 then
+  var Swap := (FSelect and $40) shr 5;
+  Prg8(Swap, FRegisters[6] and $1F);
+  Prg8(1, FRegisters[7] and $1F);
+  Prg8(2 xor Swap, FRegisters[15] and $1F);
+  Prg8(3, $1F);
+end;
+
+procedure TMapperRambo.UpdateChrBanks;
+const
+  LowRegisters: array[0..3] of Byte = (0, 8, 1, 9);
+begin
+  var Flip := (FSelect and $80) shr 5;
+  for var Slot := 0 to 7 do
   begin
-    Prg8(0, FRegisters[6]);
-    Prg8(1, FRegisters[7]);
-    Prg8(2, FRegisters[15]);
-  end
-  else
-  begin
-    Prg8(0, FRegisters[15]);
-    Prg8(1, FRegisters[6]);
-    Prg8(2, FRegisters[7]);
-  end;
-  var Flip := (FSelect shr 5) and 4;
-  Chr1(0 xor Flip, FRegisters[0]);
-  Chr1(2 xor Flip, FRegisters[1]);
-  for var i := 4 to 7 do
-    Chr1(i xor Flip, FRegisters[i - 2]);
-  if (FSelect and $20) <> 0 then
-  begin
-    Chr1(1 xor Flip, FRegisters[8]);
-    Chr1(3 xor Flip, FRegisters[9]);
-  end
-  else
-  begin
-    Chr1(1 xor Flip, FRegisters[0] + 1);
-    Chr1(3 xor Flip, FRegisters[1] + 1);
+    var Source := Slot xor Flip;
+    var Bank: Byte;
+    if Source >= 4 then
+      Bank := FRegisters[Source - 2]
+    else if (FSelect and $20) <> 0 then
+      Bank := FRegisters[LowRegisters[Source]]
+    else
+      Bank := (FRegisters[Source shr 1] and $FE) or (Slot and 1);
+    Chr1(Slot, Bank);
+    if FNametableBoard and (Slot < 4) then
+      FNameBanks[Slot] := Bank shr 7;
   end;
 end;
 
 function TMapperRambo.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
-  if FNametableBoard then
-  begin
-    if (Address and $E001) = $A000 then
-      Exit(True);
-
-    if (Address and $E001) = $8001 then
-    begin
-      var R := FSelect and 7;
-      if (FSelect and $80) <> 0 then
-      begin
-        if (R >= 2) and (R <= 5) then
-          FNameBanks[R - 2] := Value shr 7
-      end
-      else if R < 2 then
-      begin
-        FNameBanks[R * 2] := Value shr 7;
-        FNameBanks[R * 2 + 1] := Value shr 7
-      end;
-    end;
-  end;
   Result := Address >= $8000;
   if not Result then
     Exit;
-
   case Address and $E001 of
     $8000:
       begin
+        var Changed := FSelect xor Value;
         FSelect := Value;
-        UpdateBanks;
+        if (Changed and $40) <> 0 then
+          UpdatePrgBanks;
+        if (Changed and $A0) <> 0 then
+          UpdateChrBanks;
       end;
     $8001:
       begin
-        FRegisters[FSelect and $0F] := Value;
-        UpdateBanks;
+        var Index := FSelect and $0F;
+        case Index of
+          6, 7, 15:
+            begin
+              FRegisters[Index] := Value and $1F;
+              UpdatePrgBanks;
+            end;
+          0..5, 8, 9:
+            begin
+              FRegisters[Index] := Value;
+              UpdateChrBanks;
+            end;
+        end;
       end;
     $A000:
-      Mirror(Value and 1);
+      if not FNametableBoard then
+        Mirror(Value and 1);
     $C000:
       FLatch := Value;
     $C001:
-      begin
-        FForceClock := FCycleMode and ((Value and 1) = 0);
-        FCycleMode := (Value and 1) <> 0;
-        FReload := True;
-        if FCycleMode then
-          FCpuDivider := 0;
-      end;
+      ReloadIrq(Value);
     $E000:
       begin
         FEnabled := False;
         FPending := False;
-        FDelay := 0;
       end;
     $E001:
       FEnabled := True;
   end;
 end;
 
-procedure TMapperRambo.TickIrq(Delay: Integer);
+procedure TMapperRambo.ReloadIrq(Value: Byte);
+begin
+  FScanlineIrqWaiting := False;
+  if (Value and 1) <> 0 then
+  begin
+    FCpuReloadDelay := 6;
+    if not FCycleMode and (FA12LowFalls < 16) then
+      FCpuReloadDelay := 2;
+    FCycleMode := True;
+    Exit;
+  end;
+  FCycleMode := False;
+  FReload := True;
+  if FA12LowFalls = 16 then
+    FA12LowFalls := 17;
+end;
+
+procedure TMapperRambo.ClockScanlineCounter;
 begin
   if FReload then
   begin
-    FCounter := (FLatch + 1 + Ord(FLatch > 1)) and $FF;
     FReload := False;
+    FCounter := FLatch;
   end
   else if FCounter = 0 then
-    FCounter := (FLatch + 1) and $FF;
-  FCounter := (FCounter - 1) and $FF;
-  if (FCounter = 0) and FEnabled then
-    FDelay := Delay;
+  begin
+    FCounter := FLatch;
+    Exit;
+  end
+  else
+    Dec(FCounter);
+  FScanlineIrqWaiting := FCounter = 0;
 end;
 
-procedure TMapperRambo.ClockCpu;
+procedure TMapperRambo.ClockCpuBus(Address: UInt16);
 begin
-  if FDelay > 0 then
+  // Sample M2 after the CPU write. An A12 expiry drives /IRQ on the next fall.
+  if FScanlineIrqWaiting then
   begin
-    Dec(FDelay);
-    if FDelay = 0 then
-      FPending := True;
+    FScanlineIrqWaiting := False;
+    FPending := FPending or FEnabled;
   end;
-  if FCycleMode or FForceClock then
+  if FA12High then
   begin
-    FCpuDivider := (FCpuDivider + 1) and 3;
-    if FCpuDivider = 0 then
+    if (FA12LowFalls = 16) and not FCycleMode then
+      ClockScanlineCounter;
+    FA12LowFalls := 0;
+  end
+  else if FA12LowFalls < 16 then
+    Inc(FA12LowFalls);
+
+  if not FCycleMode then
+    Exit;
+  if FCpuReloadDelay > 0 then
+  begin
+    Dec(FCpuReloadDelay);
+    if FCpuReloadDelay = 0 then
+      FCpuExpiry := 4 * FLatch + 1;
+  end
+  else
+  begin
+    Dec(FCpuExpiry);
+    if FCpuExpiry = 0 then
     begin
-      TickIrq(1);
-      FForceClock := False;
+      FPending := FPending or FEnabled;
+      FCpuExpiry := 4 * (FLatch + 1);
     end;
   end;
 end;
 
 procedure TMapperRambo.ClockPpuAddress(Address: UInt16; PpuCycle: UInt64);
 begin
-  var High := (Address and $1000) <> 0;
-  if not High and FA12High then
-    FA12LowSince := PpuCycle;
-  if High and not FA12High and not FCycleMode and (PpuCycle >= FA12LowSince) and (PpuCycle - FA12LowSince >= 30) then
-    TickIrq(2);
-  FA12High := High;
+  FA12High := (Address and $1000) <> 0;
 end;
 
 function TMapperRambo.IrqPending: Boolean;
@@ -222,14 +293,20 @@ begin
   Result := FPending;
 end;
 
+function TMapperRambo.NameTableOffset(Address: UInt16): UInt16;
+begin
+  if FNametableBoard then
+    Exit((FNameBanks[(Address shr 10) and 3] shl 10) or (Address and $3FF));
+  Result := inherited;
+end;
+
 function TMapperRambo.PpuRead(Address: UInt16; out Value: UInt8): Boolean;
 begin
   if FNametableBoard and (Address >= $2000) and (Address < $3F00) then
   begin
-    Value := FNameRam[FNameBanks[(Address shr 10) and 3] * $400 + (Address and $3FF)];
-    Exit(True)
+    Value := FNameRam[NameTableOffset(Address)];
+    Exit(True);
   end;
-
   Result := inherited;
 end;
 
@@ -237,12 +314,10 @@ function TMapperRambo.PpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
   if FNametableBoard and (Address >= $2000) and (Address < $3F00) then
   begin
-    FNameRam[FNameBanks[(Address shr 10) and 3] * $400 + (Address and $3FF)] := Value;
-    Exit(True)
+    FNameRam[NameTableOffset(Address)] := Value;
+    Exit(True);
   end;
-
   Result := inherited;
 end;
 
 end.
-

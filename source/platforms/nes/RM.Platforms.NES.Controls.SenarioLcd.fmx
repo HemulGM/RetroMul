@@ -1,0 +1,38 @@
+object FrameSenarioLcd: TFrameSenarioLcd
+  Align = Bottom
+  Size.Width = 280.000000000000000000
+  Size.Height = 46.000000000000000000
+  Size.PlatformDefault = False
+  object LayoutDisplay: TLayout
+    Align = Client
+    Padding.Left = 8.000000000000000000
+    Padding.Top = 4.000000000000000000
+    Padding.Right = 8.000000000000000000
+    Padding.Bottom = 4.000000000000000000
+    Size.Width = 280.000000000000000000
+    Size.Height = 46.000000000000000000
+    Size.PlatformDefault = False
+    object ButtonLcd: TButton
+      Align = Left
+      Position.X = 8.000000000000000000
+      Position.Y = 4.000000000000000000
+      Size.Width = 66.000000000000000000
+      Size.Height = 38.000000000000000000
+      Size.PlatformDefault = False
+      Text = 'LCD'
+      OnClick = ButtonLcdClick
+    end
+    object LabelLcdText: TLabel
+      Align = Left
+      StyledSettings = [Style, FontColor]
+      Margins.Left = 8.000000000000000000
+      Size.Width = 105.000000000000000000
+      Size.Height = 17.000000000000000000
+      Size.PlatformDefault = False
+      TextSettings.Font.Family = 'Consolas'
+      TextSettings.Font.Size = 14.000000000000000000
+      TextSettings.HorzAlign = Center
+      Visible = False
+    end
+  end
+end

@@ -3,12 +3,90 @@
 interface
 
 uses
-  System.Math, NES.State, NES.Types, NES.Mapper, NES.Mapper.VrcAudio;
+  System.Math, NES.State, NES.Types, NES.Mapper, NES.Mapper.Banked,
+  NES.Mapper.VrcAudio;
 
 type
   TRainbowFlash = record
     Step, Mode: Integer;
     SoftwareId, Bypass: Boolean;
+  end;
+
+  TRainbowSerialEsp = record
+  private
+    FRemaining, FCommand: Integer;
+    FHead, FCount, FPosition: Integer;
+    FLastRead: Byte;
+    FReplies: array[0..19, 0..2] of Byte;
+    procedure QueueReply(Command, Payload: Integer);
+  public
+    procedure Reset;
+    procedure SerializeState(State: TNesStateArchive);
+    procedure WriteByte(Value: Byte; LegacyOpcodes: Boolean);
+    function ReadByte(Enabled: Boolean): Byte;
+    function DataReady: Boolean;
+  end;
+
+  TMapperRainbowNrom = class(TMapperBanked)
+  private
+    FEspFlags: Byte;
+    FSerialEsp: TRainbowSerialEsp;
+    FPrgStep, FPrgMode, FChrStep, FChrMode: Integer;
+  public
+    constructor Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+    procedure Reset; override;
+    procedure SerializeState(State: TNesStateArchive); override;
+    function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
+    function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
+    function PpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
+    function IrqPending: Boolean; override;
+    function GetSaveMemory: TByteArray; override;
+    procedure SetSaveMemory(const Data: TByteArray); override;
+  end;
+
+  TMapperRainbow13 = class(TMapperVrcAudio)
+  private
+    FConfig, FFpgaBank, FWorkBank, FChrUpper, FEspConfig: Byte;
+    FPrgSelect: array[0..2] of Byte;
+    FChrSelect: array[0..7] of Word;
+    FFpgaRam: array[0..$1FFF] of Byte;
+    FChrRam: array[0..$7FFF] of Byte;
+    FMultiply: array[0..1] of Byte;
+    FFlashStep, FFlashMode: array[0..1] of Integer;
+    FFlashId: array[0..1] of Boolean;
+    FIrqLatch, FIrqCounter: Byte;
+    FIrqReload, FIrqEnabled, FIrqPending, FHasChrRom, FLastA12High: Boolean;
+    FA12LowSince: UInt64;
+    function MappedPrgOffset(Address: UInt16; out IsRam: Boolean): Integer;
+    function MappedChrOffset(Address: UInt16): Integer;
+    function CartNameOffset(Address: UInt16): Integer;
+    function FlashByte(const Image: TByteArray; Chip, Offset: Integer): Byte;
+  public
+    constructor Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; Board: Integer = MAPPER_RAINBOW13);
+    procedure Reset; override;
+    procedure SerializeState(State: TNesStateArchive); override;
+    function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
+    function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
+    function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
+    function PpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
+    procedure ClockPpuAddress(Address: UInt16; PpuCycle: UInt64); override;
+    function IrqPending: Boolean; override;
+    function GetSaveMemory: TByteArray; override;
+    procedure SetSaveMemory(const Data: TByteArray); override;
+  end;
+
+  TMapperRainbowProto = class(TMapperRainbow13)
+  private
+    FSerialEsp: TRainbowSerialEsp;
+    FLegacyOpcodes: Boolean;
+  public
+    constructor Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+    procedure Reset; override;
+    procedure UseLegacyEspOpcodes;
+    procedure SerializeState(State: TNesStateArchive); override;
+    function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
+    function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
+    function IrqPending: Boolean; override;
   end;
 
   TMapperRainbow = class(TMapperVrcAudio)
@@ -56,6 +134,632 @@ type
   end;
 
 implementation
+
+uses
+  NES.Mapper.Flash, NES.Mapper.Mmc3;
+
+procedure TRainbowSerialEsp.Reset;
+begin
+  Self := Default(TRainbowSerialEsp);
+end;
+
+procedure TRainbowSerialEsp.SerializeState(State: TNesStateArchive);
+begin
+  State.Field(FRemaining, SizeOf(FRemaining));
+  State.Field(FCommand, SizeOf(FCommand));
+  State.Field(FHead, SizeOf(FHead));
+  State.Field(FCount, SizeOf(FCount));
+  State.Field(FPosition, SizeOf(FPosition));
+  State.Field(FLastRead, SizeOf(FLastRead));
+  State.Field(FReplies, SizeOf(FReplies));
+end;
+
+procedure TRainbowSerialEsp.QueueReply(Command, Payload: Integer);
+begin
+  if FCount = Length(FReplies) then
+    Exit;
+
+  var Tail := (FHead + FCount) mod Length(FReplies);
+  FReplies[Tail, 0] := 1;
+  FReplies[Tail, 1] := Command;
+  if Payload >= 0 then
+  begin
+    FReplies[Tail, 0] := 2;
+    FReplies[Tail, 2] := Payload;
+  end;
+  Inc(FCount);
+end;
+
+procedure TRainbowSerialEsp.WriteByte(Value: Byte; LegacyOpcodes: Boolean);
+begin
+  if FRemaining = 0 then
+  begin
+    FRemaining := Value;
+    FCommand := -1;
+    Exit;
+  end;
+  if FCommand < 0 then
+    FCommand := Value;
+  Dec(FRemaining);
+  if FRemaining <> 0 then
+    Exit;
+
+  // The early serial firmwares changed opcode numbers between releases.
+  // The connection state of this local ESP model is always disconnected.
+  if FCommand = 0 then
+    QueueReply(0, -1)
+  else if LegacyOpcodes then
+    case FCommand of
+      2:
+        Reset;
+      3:
+        QueueReply(5, 6);
+      8:
+        QueueReply(6, 0);
+    end
+  else
+    case FCommand of
+      4:
+        Reset;
+      6:
+        QueueReply(9, 6);
+      11:
+        QueueReply(10, 0);
+    end;
+end;
+
+function TRainbowSerialEsp.DataReady: Boolean;
+begin
+  Result := FCount <> 0;
+end;
+
+function TRainbowSerialEsp.ReadByte(Enabled: Boolean): Byte;
+begin
+  if Enabled and DataReady then
+  begin
+    // The serial latch still contains the previous byte on the first read.
+    if FPosition <> 0 then
+      FLastRead := FReplies[FHead, FPosition - 1];
+    if FPosition > FReplies[FHead, 0] then
+    begin
+      FPosition := 0;
+      FHead := (FHead + 1) mod Length(FReplies);
+      Dec(FCount);
+    end
+    else
+      Inc(FPosition);
+  end;
+  Result := FLastRead;
+end;
+
+constructor TMapperRainbowNrom.Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+begin
+  if ((Length(Prg) <> $4000) and (Length(Prg) <> $8000)) or ((Length(Chr) <> 0) and (Length(Chr) <> $2000)) then
+    raise ENesException.Create('Invalid Rainbow NROM memory layout');
+
+  inherited Create(Prg, Chr, HasChrRam, MirrorMode);
+  if Length(Prg) = $4000 then
+    FPrgRom := FPrgRom + FPrgRom;
+  Reset;
+end;
+
+procedure TMapperRainbowNrom.Reset;
+begin
+  inherited;
+  FEspFlags := $41;
+  FSerialEsp.Reset;
+  FPrgStep := 0;
+  FPrgMode := 0;
+  FChrStep := 0;
+  FChrMode := 0;
+end;
+
+procedure TMapperRainbowNrom.SerializeState(State: TNesStateArchive);
+begin
+  inherited;
+  State.Field(FEspFlags, SizeOf(FEspFlags));
+  FSerialEsp.SerializeState(State);
+  State.Field(FPrgStep, SizeOf(FPrgStep));
+  State.Field(FPrgMode, SizeOf(FPrgMode));
+  State.Field(FChrStep, SizeOf(FChrStep));
+  State.Field(FChrMode, SizeOf(FChrMode));
+  State.Field(FPrgRom[0], Length(FPrgRom));
+end;
+
+function TMapperRainbowNrom.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
+begin
+  case Address of
+    $5000:
+      Value := FSerialEsp.ReadByte((FEspFlags and 1) <> 0);
+    $5001:
+      Value := FEspFlags or (Ord(((FEspFlags and 1) <> 0) and FSerialEsp.DataReady) shl 7);
+  else
+    Exit(inherited CpuRead(Address, Value));
+  end;
+  Result := True;
+end;
+
+function TMapperRainbowNrom.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
+begin
+  case Address of
+    $5000:
+      if (FEspFlags and 1) <> 0 then
+        FSerialEsp.WriteByte(Value, True);
+    $5001:
+      FEspFlags := Value and $41;
+    $8000..$FFFF:
+      begin
+        var SoftwareId := False;
+        WriteNorFlash(FPrgRom, PrgOffset(Address), $1000, Value, FPrgStep, FPrgMode, SoftwareId);
+      end;
+  else
+    Exit(inherited CpuWrite(Address, Value));
+  end;
+  Result := True;
+end;
+
+function TMapperRainbowNrom.PpuWrite(Address: UInt16; Value: UInt8): Boolean;
+begin
+  if (Address >= $2000) or FHasChrRam then
+    Exit(inherited PpuWrite(Address, Value));
+
+  var SoftwareId := False;
+  WriteNorFlash(FChrMemory, Address, $800, Value, FChrStep, FChrMode, SoftwareId, $1FFF);
+  Result := True;
+end;
+
+function TMapperRainbowNrom.IrqPending: Boolean;
+begin
+  Result := ((FEspFlags and $41) = $41) and FSerialEsp.DataReady;
+end;
+
+function TMapperRainbowNrom.GetSaveMemory: TByteArray;
+begin
+  Result := FPrgRom + FPrgRam;
+  if not FHasChrRam then
+    Result := Result + FChrMemory;
+end;
+
+procedure TMapperRainbowNrom.SetSaveMemory(const Data: TByteArray);
+begin
+  var PrgSize := Length(FPrgRom);
+  var ChrStart := PrgSize + Length(FPrgRam);
+  var RequiredSize := ChrStart;
+  if not FHasChrRam then
+    Inc(RequiredSize, Length(FChrMemory));
+  if Length(Data) <> RequiredSize then
+    raise ENesException.Create('Invalid Rainbow NROM save size');
+  Move(Data[0], FPrgRom[0], PrgSize);
+  Move(Data[PrgSize], FPrgRam[0], Length(FPrgRam));
+  if not FHasChrRam then
+    Move(Data[ChrStart], FChrMemory[0], Length(FChrMemory));
+end;
+
+constructor TMapperRainbow13.Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; Board: Integer);
+begin
+  inherited Create(Board, Prg, Chr, HasChrRam, MirrorMode);
+  FHasChrRom := Length(Chr) <> 0;
+  SetLength(FPrgRam, $8000);
+end;
+
+procedure TMapperRainbow13.Reset;
+begin
+  inherited;
+  FConfig := 0;
+  FFpgaBank := 0;
+  FWorkBank := 0;
+  FChrUpper := 0;
+  FEspConfig := 0;
+  FillChar(FPrgSelect, SizeOf(FPrgSelect), 0);
+  FillChar(FChrSelect, SizeOf(FChrSelect), 0);
+  FillChar(FMultiply, SizeOf(FMultiply), 0);
+  FillChar(FFlashStep, SizeOf(FFlashStep), 0);
+  FillChar(FFlashMode, SizeOf(FFlashMode), 0);
+  FillChar(FFlashId, SizeOf(FFlashId), 0);
+  FIrqLatch := 0;
+  FIrqCounter := 0;
+  FIrqReload := False;
+  FIrqEnabled := False;
+  FIrqPending := False;
+  FLastA12High := False;
+  FA12LowSince := 0;
+  FMirror := TMirrorMode.Vertical;
+end;
+
+procedure TMapperRainbow13.SerializeState(State: TNesStateArchive);
+begin
+  inherited;
+  State.Field(FConfig, SizeOf(FConfig));
+  State.Field(FFpgaBank, SizeOf(FFpgaBank));
+  State.Field(FWorkBank, SizeOf(FWorkBank));
+  State.Field(FChrUpper, SizeOf(FChrUpper));
+  State.Field(FEspConfig, SizeOf(FEspConfig));
+  State.Field(FPrgSelect, SizeOf(FPrgSelect));
+  State.Field(FChrSelect, SizeOf(FChrSelect));
+  State.Field(FFpgaRam, SizeOf(FFpgaRam));
+  State.Field(FChrRam, SizeOf(FChrRam));
+  State.Field(FMultiply, SizeOf(FMultiply));
+  State.Field(FFlashStep, SizeOf(FFlashStep));
+  State.Field(FFlashMode, SizeOf(FFlashMode));
+  State.Field(FFlashId, SizeOf(FFlashId));
+  State.Field(FIrqLatch, SizeOf(FIrqLatch));
+  State.Field(FIrqCounter, SizeOf(FIrqCounter));
+  State.Field(FIrqReload, SizeOf(FIrqReload));
+  State.Field(FIrqEnabled, SizeOf(FIrqEnabled));
+  State.Field(FIrqPending, SizeOf(FIrqPending));
+  State.Field(FLastA12High, SizeOf(FLastA12High));
+  State.Field(FA12LowSince, SizeOf(FA12LowSince));
+  State.Field(FPrgRom[0], Length(FPrgRom));
+end;
+
+function TMapperRainbow13.MappedPrgOffset(Address: UInt16; out IsRam: Boolean): Integer;
+begin
+  IsRam := False;
+  var Slot := (Address - $8000) shr 13;
+  if Slot = 3 then
+    Exit(Length(FPrgRom) - $2000 + (Address and $1FFF));
+  if (Slot < 2) and ((FConfig and 1) = 0) then
+  begin
+    var Bank := FPrgSelect[0];
+    IsRam := (Bank and $80) <> 0;
+    if IsRam then
+      Exit(((Bank + Slot) and 3) * $2000 + (Address and $1FFF));
+    Exit((Bank and $1F) * $4000 + (Address and $3FFF));
+  end;
+  var Bank := FPrgSelect[Slot];
+  IsRam := (Bank and $80) <> 0;
+  if IsRam then
+    Exit((Bank and 3) * $2000 + (Address and $1FFF));
+  Result := (Bank and $3F) * $2000 + (Address and $1FFF);
+end;
+
+function TMapperRainbow13.MappedChrOffset(Address: UInt16): Integer;
+begin
+  var BankShift := 10 + ((FConfig shr 1) and 3);
+  var Bank := Integer(FChrSelect[Address shr BankShift]);
+  if BankShift <> 10 then
+    Bank := Bank and $FF;
+  Result := (Bank shl BankShift) or (Address and ((1 shl BankShift) - 1));
+end;
+
+function TMapperRainbow13.CartNameOffset(Address: UInt16): Integer;
+begin
+  var Page := (FConfig shr 6) and 3;
+  if (FConfig and $30) = $30 then
+    Exit($4000 + ((3 - Page) shl 12) + (Address and $FFF));
+  if ((FConfig and $30) = $20) and (Page >= 2) then
+    Exit($7800 + ((Page - 2) shl 10) + (Address and $3FF));
+  Result := -1;
+end;
+
+function TMapperRainbow13.FlashByte(const Image: TByteArray; Chip, Offset: Integer): Byte;
+begin
+  if not FFlashId[Chip] then
+    Exit(Image[Offset mod Length(Image)]);
+  case Offset and $1FF of
+    0:
+      Result := $BF;
+    1:
+      case Length(Image) of
+        $20000:
+          Result := $B5;
+        $40000:
+          Result := $B6;
+        $80000:
+          Result := $B7;
+      else
+        Result := $FF;
+      end;
+  else
+    Result := $FF;
+  end;
+end;
+
+function TMapperRainbow13.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
+begin
+  case Address of
+    $4100:
+      Value := FEspConfig;
+    $4101:
+      Value := 0;
+    $4102:
+      Value := $80; // TX ready. The offline ESP interface never raises RX-ready.
+      $4110:
+      Value := FConfig;
+    $4113:
+      Value := $21;
+    $4160:
+      Value := (Integer(FMultiply[0]) * FMultiply[1]) shr 8;
+    $4161:
+      Value := (Integer(FMultiply[0]) * FMultiply[1]) and $FF;
+    $4800..$4FFF:
+      Value := FFpgaRam[Address and $7FF];
+    $5000..$5FFF:
+      Value := FFpgaRam[FFpgaBank * $1000 + (Address and $FFF)];
+    $6000..$7FFF:
+      case FWorkBank shr 6 of
+        0:
+          Value := FPrgRam[(FWorkBank and 3) * $2000 + (Address and $1FFF)];
+        1:
+          Value := FFpgaRam[Address and $1FFF];
+      else
+        Value := FlashByte(FPrgRom, 0, (FWorkBank and $3F) * $2000 + (Address and $1FFF));
+      end;
+    $8000..$FFFF:
+      begin
+        var IsRam: Boolean;
+        var Offset := MappedPrgOffset(Address, IsRam);
+        if IsRam then
+          Value := FPrgRam[Offset]
+        else
+          Value := FlashByte(FPrgRom, 0, Offset);
+      end;
+  else
+    Exit(False);
+  end;
+  Result := True;
+end;
+
+function TMapperRainbow13.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
+begin
+  case Address of
+    $4100:
+      FEspConfig := Value and 3;
+    $4101..$4104:
+      Exit(True);
+    $4110:
+      begin
+        FConfig := Value;
+        case (FConfig shr 4) and 3 of
+          0:
+            FMirror := TMirrorMode.Vertical;
+          1:
+            FMirror := TMirrorMode.Horizontal;
+          2:
+            if (FConfig and $40) <> 0 then
+              FMirror := TMirrorMode.Single1
+            else
+              FMirror := TMirrorMode.Single0;
+          3:
+            FMirror := TMirrorMode.FourScreen;
+        end;
+      end;
+    $4120:
+      FPrgSelect[0] := Value;
+    $4121..$4122:
+      FPrgSelect[Address - $4120] := Value and $BF;
+    $4123:
+      FFpgaBank := Value and 1;
+    $4124:
+      FWorkBank := Value;
+    $4130..$4137:
+      begin
+        var Slot := Address - $4130;
+        var HighBit := FChrSelect[Slot] and $100;
+        if (FConfig and 6) = 0 then
+          HighBit := Word(FChrUpper) shl 8;
+        FChrSelect[Slot] := HighBit or Value;
+      end;
+    $4138:
+      FChrUpper := Value and 1;
+    $4140:
+      FIrqLatch := Value;
+    $4141:
+      FIrqReload := True;
+    $4142:
+      begin
+        FIrqEnabled := False;
+        FIrqPending := False;
+      end;
+    $4143:
+      FIrqEnabled := True;
+    $4150..$4158:
+      begin
+        var Reg := Address - $4150;
+        FAudioRegs[Reg div 3, Reg mod 3] := Value;
+      end;
+    $4160..$4161:
+      FMultiply[Address - $4160] := Value;
+    $4800..$4FFF:
+      FFpgaRam[Address and $7FF] := Value;
+    $5000..$5FFF:
+      FFpgaRam[FFpgaBank * $1000 + (Address and $FFF)] := Value;
+    $6000..$7FFF:
+      case FWorkBank shr 6 of
+        0:
+          FPrgRam[(FWorkBank and 3) * $2000 + (Address and $1FFF)] := Value;
+        1:
+          FFpgaRam[Address and $1FFF] := Value;
+      end;
+    $8000..$FFFF:
+      begin
+        var IsRam: Boolean;
+        var Offset := MappedPrgOffset(Address, IsRam);
+        if IsRam then
+          FPrgRam[Offset] := Value
+        else
+          WriteNorFlash(FPrgRom, Offset, $1000, Value, FFlashStep[0], FFlashMode[0], FFlashId[0]);
+      end;
+  else
+    Exit(False);
+  end;
+  Result := True;
+end;
+
+function TMapperRainbow13.PpuRead(Address: UInt16; out Value: UInt8): Boolean;
+begin
+  if Address < $2000 then
+  begin
+    var Offset := MappedChrOffset(Address);
+    if (FConfig and 8) <> 0 then
+      Value := FChrRam[Offset and $7FFF]
+    else if FHasChrRom then
+      Value := FlashByte(FChrMemory, 1, Offset)
+    else
+      Value := FCpuOpenBus;
+    Exit(True);
+  end;
+  var Offset := CartNameOffset(Address);
+  Result := (Address < $3F00) and (Offset >= 0);
+  if Result then
+    Value := FChrRam[Offset];
+end;
+
+function TMapperRainbow13.PpuWrite(Address: UInt16; Value: UInt8): Boolean;
+begin
+  if Address < $2000 then
+  begin
+    var Offset := MappedChrOffset(Address);
+    if (FConfig and 8) <> 0 then
+      FChrRam[Offset and $7FFF] := Value
+    else if FHasChrRom then
+      WriteNorFlash(FChrMemory, Offset, $1000, Value, FFlashStep[1], FFlashMode[1], FFlashId[1]);
+    Exit(True);
+  end;
+  var Offset := CartNameOffset(Address);
+  Result := (Address < $3F00) and (Offset >= 0);
+  if Result then
+    FChrRam[Offset] := Value;
+end;
+
+procedure TMapperRainbow13.ClockPpuAddress(Address: UInt16; PpuCycle: UInt64);
+begin
+  if not Mmc3A12RisingEdge((Address and $1000) <> 0, PpuCycle, FLastA12High, FA12LowSince) then
+    Exit;
+  if (FIrqCounter = 0) or FIrqReload then
+  begin
+    FIrqCounter := FIrqLatch;
+    FIrqReload := False;
+  end
+  else
+    Dec(FIrqCounter);
+  if FIrqEnabled and (FIrqCounter = 0) then
+    FIrqPending := True;
+end;
+
+function TMapperRainbow13.IrqPending: Boolean;
+begin
+  Result := FIrqPending;
+end;
+
+function TMapperRainbow13.GetSaveMemory: TByteArray;
+begin
+  Result := FPrgRom + FPrgRam;
+  if FHasChrRom then
+    Result := Result + FChrMemory;
+end;
+
+procedure TMapperRainbow13.SetSaveMemory(const Data: TByteArray);
+begin
+  var RamOffset := Length(FPrgRom);
+  var ChrOffset := RamOffset + Length(FPrgRam);
+  var Required := ChrOffset;
+  if FHasChrRom then
+    Inc(Required, Length(FChrMemory));
+  if Length(Data) <> Required then
+    raise ENesException.Create('Invalid Rainbow v1.3 save size');
+  Move(Data[0], FPrgRom[0], Length(FPrgRom));
+  Move(Data[RamOffset], FPrgRam[0], Length(FPrgRam));
+  if FHasChrRom then
+    Move(Data[ChrOffset], FChrMemory[0], Length(FChrMemory));
+end;
+
+constructor TMapperRainbowProto.Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+begin
+  inherited Create(Prg, Chr, HasChrRam, MirrorMode, MAPPER_RAINBOW_PROTO);
+end;
+
+procedure TMapperRainbowProto.Reset;
+begin
+  inherited;
+  FWorkBank := $80; // The prototype switches PRG flash into the low window at power-on.
+  FSerialEsp.Reset;
+end;
+
+procedure TMapperRainbowProto.UseLegacyEspOpcodes;
+begin
+  FLegacyOpcodes := True;
+end;
+
+procedure TMapperRainbowProto.SerializeState(State: TNesStateArchive);
+begin
+  inherited;
+  FSerialEsp.SerializeState(State);
+end;
+
+function TMapperRainbowProto.IrqPending: Boolean;
+begin
+  Result := inherited IrqPending or (((FEspConfig and $41) = $41) and FSerialEsp.DataReady);
+end;
+
+function TMapperRainbowProto.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
+begin
+  if Address >= $6000 then
+    Exit(inherited CpuRead(Address, Value));
+  case Address of
+    $5000:
+      Value := FSerialEsp.ReadByte((FEspConfig and 1) <> 0);
+    $5001:
+      Value := FEspConfig or (Ord(((FEspConfig and 1) <> 0) and FSerialEsp.DataReady) shl 7);
+    $5006:
+      Value := FConfig;
+    $5C03:
+      Value := $20;
+    $5002..$5005, $5007..$5C02, $5C04..$5C07:
+      Value := 0;
+  else
+    Exit(False);
+  end;
+  Result := True;
+end;
+
+function TMapperRainbowProto.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
+begin
+  if Address >= $6000 then
+    Exit(inherited CpuWrite(Address, Value));
+  // The early board uses serial ESP I/O and a different register decoder.
+  // Translate writes to the shared bank, sound, and IRQ registers.
+  case Address of
+    $5000:
+      begin
+        if (FEspConfig and 1) <> 0 then
+          FSerialEsp.WriteByte(Value, FLegacyOpcodes);
+        Exit(True);
+      end;
+    $5001:
+      begin
+        FEspConfig := Value and $41;
+        Exit(True);
+      end;
+    $5002:
+      Address := $4120;
+    $5003..$5004:
+      begin
+        Address := $4121 + (Address - $5003);
+        Value := Value and $3F;
+      end;
+    $5005:
+      begin
+        FWorkBank := (Value and $3F) or ((Value xor $80) and $80);
+        Exit(True);
+      end;
+    $5006:
+      Address := $4110;
+    $5007:
+      Address := $4138;
+    $5400..$5407:
+      Address := $4130 + (Address and 7);
+    $5800..$5805:
+      Address := $4150 + (Address and 7);
+    $5C00..$5C02:
+      Address := $4156 + (Address and 3);
+    $5C04..$5C07:
+      Address := $4140 + (Address and 3);
+  else
+    Exit(False);
+  end;
+  Result := inherited CpuWrite(Address, Value);
+end;
 
 // Register and memory behavior follows Rainbow mapper version $21.
 // Raster IRQ offsets still need validation against a Rainbow hardware ROM;
@@ -657,7 +1361,7 @@ end;
 
 procedure TMapperRainbow.CpuIoWrite(Address: UInt16; Value: UInt8);
 begin
-  case Address of
+  case Address and $2007 of
     $2000:
       FSpriteHeight := 8 + Ord((Value and $20) <> 0) * 8;
     $2003:

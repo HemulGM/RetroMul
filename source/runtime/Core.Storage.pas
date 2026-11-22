@@ -88,7 +88,7 @@ type
 function RememberIOSDocumentURL(const URL: NSURL): string;
 {$ENDIF}
 
-function ReadRomData(Stream: TStream): TBytes;
+function ReadRomData(Stream: TStream; MaxSize: Integer = 64 * 1024 * 1024): TBytes;
 
 function GameConfigFile(const Storage: IStorage; const SystemId, RomName: string): string;
 
@@ -188,9 +188,7 @@ begin
   Result := TGameSettingsScope.Create(Storage, RomName);
 end;
 
-function ReadRomData(Stream: TStream): TBytes;
-const
-  MAX_ROM_DATA_SIZE = 64 * 1024 * 1024;
+function ReadRomData(Stream: TStream; MaxSize: Integer): TBytes;
 begin
   if Stream = nil then
     raise EArgumentNilException.Create('Stream');
@@ -204,8 +202,8 @@ begin
       if Count = 0 then
         Break;
 
-      if Memory.Size + Count > MAX_ROM_DATA_SIZE then
-        raise EReadError.Create('ROM exceeds 64 MiB');
+      if Memory.Size + Count > MaxSize then
+        raise EReadError.CreateFmt('ROM exceeds %d bytes', [MaxSize]);
 
       Memory.WriteBuffer(Buffer, Count);
     end;

@@ -3,10 +3,11 @@
 interface
 
 uses
-  Core.Storage, System.Classes, System.SysUtils, System.SyncObjs, NES.Types,
-  NES.Console, NES.Input, PCM.Audio, NES.AudioDiagnostics, NES.Controller,
-  Core.InputConfig, NES.FamicomKeyboardDevice, NES.FamicomDataRecorder,
-  NES.MiraclePianoDevice, NES.Options;
+  Core.Storage, Core.Microphone, System.Classes, System.SysUtils,
+  System.SyncObjs, NES.Types, NES.Console, NES.Input, PCM.Audio,
+  NES.AudioDiagnostics, NES.Controller, Core.InputConfig,
+  NES.FamicomKeyboardDevice, NES.FamicomDataRecorder, NES.MiraclePianoDevice,
+  NES.Options;
 
 const
   NES_SAMPLE_RATE = 44100;
@@ -25,7 +26,9 @@ type
     DiskSide: Integer;
     PlaybackSpeed: Integer;
     CropLeft, CropRight, CropTop, CropBottom: Integer;
+    FrameScale: Integer;
     DiskNames: TArray<string>;
+    SenarioLcdTop, SenarioLcdBottom: string;
   end;
 
   // The core and audio backend belong to Execute after Start. The UI only exchanges
@@ -36,6 +39,8 @@ type
     FInputPortsCommand: TInputPortsCommand;
     FStorage: IStorage;
     FAudio: TPCMAudio;
+    FMicrophone: IMicrophoneSource;
+    FMicrophoneOverridden: Boolean;
     FAudioFormat: TPCMAudioFormat;
     FAudioEnabled: Boolean;
     FAudioVolume: Single;
@@ -65,10 +70,14 @@ type
     FResetRequested, FPauseRequested, FResumeRequested: Boolean;
     FRequestedPaused: Boolean;
     FFrame: TFrameBuffer;
+    FWideFrame: TArray<Cardinal>;
+    FWideFrameReady: Boolean;
     FFramePending: Boolean;
     FUsesSuborKeyboard: Boolean;
     FUsesFamicomKeyboard: Boolean;
     FUsesMiraclePiano: Boolean;
+    FUsesGameinisInfrared: Boolean;
+    FGameinisIrActive, FGameinisIrFell: Boolean;
     FMiracleKeys: TMiracleKeys;
     FStatus: TEmulationStatus;
     FRunFrameMs: Double;
@@ -78,6 +87,7 @@ type
     procedure RunEmulation;
     procedure SnapshotCommand(const Name: string; Loading: Boolean);
     procedure WorkerCommand(const Name: string; Loading, Tape: Boolean; Action: TTapeAction; Disk: Boolean = False);
+    procedure CaptureFrame;
     procedure UpdateDiskStatus;
     function ProcessSnapshot: Boolean;
     function GetInputPorts: TCoreInputPorts;
@@ -90,6 +100,7 @@ type
     constructor Create(const FileName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = ''; const InputConfigFile: string = ''); overload;
     constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; FourScoreEnabled: Boolean = False; RegionOverride: TRegionOverride = TRegionOverride.Auto; AudioEnabled: Boolean = True; AudioVolume: Single = 1; const SaveDirectory: string = ''; const SnapshotRoot: string = ''; const InputConfigFile: string = ''); overload;
     destructor Destroy; override;
+    procedure SetMicrophoneSource(const Source: IMicrophoneSource);
     procedure ConfigureAudio(Volume: Single);
     procedure ConfigureDiskWriteProtection(Value: Boolean);
     procedure ConfigureOptions(const Options: TNesOptions);
@@ -107,13 +118,15 @@ type
     function GetSuborIndicators: TSuborIndicators;
     function GetPowerPadButtons: TPowerPadButtons;
     procedure ClearInput;
+    function SetGameinisInfrared(Active: Boolean): Boolean;
     procedure SetButtons(Source: UInt32; Player: Integer; const Buttons: TNesButtons; const TurboButtons: TNesButtons = []);
     procedure InsertCoin1;
     procedure InsertCoin2;
     procedure RequestReset;
     procedure RequestPause;
     procedure RequestResume;
-    function TakeSnapshot(var Frame: TFrameBuffer; out Status: TEmulationStatus): Boolean;
+    function TakeSnapshot(var Frame: TFrameBuffer; out Status: TEmulationStatus): Boolean; overload;
+    function TakeSnapshot(var Frame: TFrameBuffer; out Status: TEmulationStatus; var WideFrame: TArray<Cardinal>): Boolean; overload;
     procedure SaveDiagnostics(const Prefix: string);
     // Synchronous commands executed by the worker at a frame boundary.
     procedure SaveSnapshot(const Name: string);
@@ -191,7 +204,7 @@ begin
   try
     FDiskWriteProtected := PortIni.ReadBool('FDS', 'WriteProtected', False);
     FConsole.ConfigureDiskSystem(PortIni.ReadString('FDS', 'BIOSFile', ''), FDiskWriteProtected);
-    FConsole.LoadRom(Stream, RomName, RegionOverride);
+    FConsole.LoadRom(Stream, RomName, RegionOverride, ReadMmc3IrqRevision(PortIni));
     FOptions.Load(PortIni);
     FConsole.Ppu.SetCustomPalette(LoadNesPalette(FStorage, FOptions.PaletteFile));
     FConsole.ConfigureOptions(FOptions);
@@ -208,6 +221,7 @@ begin
   FUsesSuborKeyboard := FConsole.SuborKeyboard.Connected;
   FUsesFamicomKeyboard := FConsole.FamicomKeyboard.Connected;
   FUsesMiraclePiano := FConsole.UsesMiraclePiano;
+  FUsesGameinisInfrared := FConsole.UsesGameinisInfrared;
   FUsesDataRecorder := FConsole.DataRecorder.Connected;
   var SnapshotBase := SnapshotRoot;
   if SnapshotBase = '' then
@@ -240,6 +254,17 @@ begin
   // Called before Start or with FLock held by the worker.
   FStatus.DiskSide := -1;
   FStatus.DiskNames := nil;
+  var Floppy := FConsole.PcFloppy;
+  if Floppy <> nil then
+  begin
+    if Floppy.Inserted then
+      FStatus.DiskSide := 0;
+    if Floppy.Name <> '' then
+      FStatus.DiskNames := [Floppy.Name]
+    else
+      FStatus.DiskNames := [Floppy.DriveName];
+    Exit;
+  end;
   var Disk := FConsole.DiskSystem;
   if Disk = nil then
     Exit;
@@ -291,6 +316,18 @@ end;
 procedure TNesEmulationThread.OpenDisc(const Location: string);
 begin
   WorkerCommand(Location, True, False, TapeStop, True);
+end;
+
+procedure TNesEmulationThread.SetMicrophoneSource(const Source: IMicrophoneSource);
+begin
+  FLock.Enter;
+  try
+    FMicrophone := Source;
+    FMicrophoneOverridden := True;
+  finally
+    FLock.Leave;
+  end;
+  FWake.SetEvent;
 end;
 
 procedure TNesEmulationThread.ConfigureAudio(Volume: Single);
@@ -474,10 +511,12 @@ begin
   try
     if Disk then
     begin
-      if FConsole.DiskSystem = nil then
-        raise ENesException.Create('No Famicom Disk System is connected');
       if Loading then
         FConsole.OpenDisk(Name, FSaveDirectory)
+      else if FConsole.PcFloppy <> nil then
+        FConsole.PcFloppy.Inserted := StrToInt(Name) >= 0
+      else if FConsole.DiskSystem = nil then
+        raise ENesException.Create('No NES disk drive is connected')
       else if StrToInt(Name) < 0 then
       begin
         FConsole.SaveBattery;
@@ -548,8 +587,7 @@ begin
         FLock.Enter;
         try
           FDiagnostics.Clear;
-          FFrame := FConsole.Ppu.Frame;
-          FFramePending := True;
+          CaptureFrame;
           FStatus.Error := '';
         finally
           FLock.Leave;
@@ -597,6 +635,8 @@ begin
 
   FLock.Enter;
   try
+    if FConsole.SetFcnsHostKey(Code, Pressed) then
+      Exit;
     if FUsesMiraclePiano then
     begin
       var PianoKey := TMiraclePianoDevice.HostKey(Code);
@@ -723,6 +763,22 @@ begin
   end;
 end;
 
+function TNesEmulationThread.SetGameinisInfrared(Active: Boolean): Boolean;
+begin
+  Result := FUsesGameinisInfrared;
+  if not Result then
+    Exit;
+
+  FLock.Enter;
+  try
+    if FGameinisIrActive and not Active then
+      FGameinisIrFell := True;
+    FGameinisIrActive := Active;
+  finally
+    FLock.Leave;
+  end;
+end;
+
 procedure TNesEmulationThread.ClearInput;
 begin
   FLock.Enter;
@@ -730,6 +786,9 @@ begin
     FInput.Clear;
     FMiracleKeys := [];
     FConsole.MiraclePiano.ClearInput;
+    FConsole.ClearFcnsInput;
+    FGameinisIrActive := False;
+    FGameinisIrFell := False;
     FScreenPowerPad := [];
     FConsole.SuborKeyboard.Clear;
     FConsole.FamicomKeyboard.Clear;
@@ -887,7 +946,31 @@ begin
   end;
 end;
 
+procedure TNesEmulationThread.CaptureFrame;
+begin
+  if FConsole.Zapper.DrawingTablet then
+  begin
+    FStatus.SenarioLcdTop := FConsole.SenarioLcdLine(0);
+    FStatus.SenarioLcdBottom := FConsole.SenarioLcdLine(1);
+  end;
+  FFrame := FConsole.Ppu.Frame;
+  FWideFrameReady := FConsole.Ppu.WideFrameReady;
+  if FWideFrameReady then
+  begin
+    var Source := FConsole.Ppu.WideFrame;
+    SetLength(FWideFrame, Length(Source));
+    Move(Source[0], FWideFrame[0], Length(Source) * SizeOf(Cardinal));
+  end;
+  FFramePending := True;
+end;
+
 function TNesEmulationThread.TakeSnapshot(var Frame: TFrameBuffer; out Status: TEmulationStatus): Boolean;
+begin
+  var Unused: TArray<Cardinal>;
+  Result := TakeSnapshot(Frame, Status, Unused);
+end;
+
+function TNesEmulationThread.TakeSnapshot(var Frame: TFrameBuffer; out Status: TEmulationStatus; var WideFrame: TArray<Cardinal>): Boolean;
 begin
   FLock.Enter;
   try
@@ -900,6 +983,15 @@ begin
     if Result then
     begin
       Frame := FFrame;
+      Status.FrameScale := 1;
+      if FWideFrameReady then
+      begin
+        // Exchange the mailbox with the consumer's reusable buffer.
+        var Previous := WideFrame;
+        WideFrame := FWideFrame;
+        FWideFrame := Previous;
+        Status.FrameScale := 2;
+      end;
       FFramePending := False;
     end;
   finally
@@ -983,6 +1075,9 @@ begin
   var LastDiskSide := FStatus.DiskSide;
   var Options: TNesOptions;
   FPaused := False;
+  var UsesMicrophone := FConsole.UsesKaraokeMicrophone;
+  var DefaultMicrophone: IMicrophoneSource := nil;
+  var TriedDefaultMicrophone := False;
   var Failed := False;
   var NextSave := TStopwatch.GetTimeStamp + TStopwatch.Frequency * 5;
   var FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / FrameRate(FConsole.Region)), ROM_CORE_ID_NES);
@@ -998,8 +1093,7 @@ begin
             FConsole.ConfigureOptions(FOptions);
             FOptionsPending := False;
             // Crop changes must also publish while paused, without advancing CPU.
-            FFrame := FConsole.Ppu.Frame;
-            FFramePending := True;
+            CaptureFrame;
           end;
           Options := FOptions;
         finally
@@ -1038,6 +1132,8 @@ begin
           end;
           Failed := False;
         end;
+        var Microphone: IMicrophoneSource := nil;
+        var UseDefaultMicrophone := False;
         var AudioVolume: Single;
         var PianoKeys: TMiracleKeys;
         var ResetRequested: Boolean;
@@ -1045,6 +1141,11 @@ begin
         var ResumeRequested: Boolean;
         FLock.Enter;
         try
+          if UsesMicrophone then
+          begin
+            Microphone := FMicrophone;
+            UseDefaultMicrophone := not FMicrophoneOverridden;
+          end;
           AudioVolume := FAudioVolume;
           ResetRequested := FResetRequested;
           FResetRequested := False;
@@ -1114,8 +1215,27 @@ begin
         if FPaused then
         begin
           FrameHints.Pause;
+          FConsole.SetMicrophoneSource(nil);
+          DefaultMicrophone := nil;
+          TriedDefaultMicrophone := False;
           FWake.WaitFor(INFINITE);
           Continue;
+        end;
+
+        if UsesMicrophone then
+        begin
+          if UseDefaultMicrophone then
+          begin
+            if not TriedDefaultMicrophone then
+            begin
+              DefaultMicrophone := OpenHostMicrophone;
+              TriedDefaultMicrophone := True;
+            end;
+            Microphone := DefaultMicrophone;
+          end
+          else
+            DefaultMicrophone := nil;
+          FConsole.SetMicrophoneSource(Microphone);
         end;
 
         // Fast loading changes only the host deadline. Every CPU/PPU/disk
@@ -1146,6 +1266,11 @@ begin
         // Consume one request per slot per emulated frame. Pausing keeps requests.
         FLock.Enter;
         try
+          if FUsesGameinisInfrared then
+          begin
+            FConsole.SetGameinisInfrared(FGameinisIrActive, FGameinisIrFell);
+            FGameinisIrFell := False;
+          end;
           if FPendingCoins[0] > 0 then
           begin
             FConsole.InsertCoin1;
@@ -1207,8 +1332,7 @@ begin
         FLock.Enter;
         try
           // One bounded mailbox: a slow UI skips old frames instead of queuing them.
-          FFrame := FConsole.Ppu.Frame;
-          FFramePending := True;
+          CaptureFrame;
           Inc(FStatus.FrameNumber);
           UpdateDiskStatus;
           FInput.AdvanceTurbo;
@@ -1251,6 +1375,7 @@ begin
       end;
     end;
   finally
+    FConsole.SetMicrophoneSource(nil);
     FrameHints.Free;
   end;
 end;

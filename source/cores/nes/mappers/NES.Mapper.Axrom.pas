@@ -12,6 +12,8 @@ type
     FHasChrRam: Boolean;
     FBusConflicts: Boolean;
     FBankRegister: UInt8;
+    FPrgOffset: Integer;
+    procedure SelectBank(Value: UInt8);
   public
     procedure SerializeState(State: TNesStateArchive); override;
     constructor Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; BusConflicts: Boolean = False);
@@ -32,6 +34,8 @@ begin
     State.Field(FChrMemory[0], Length(FChrMemory) * SizeOf(FChrMemory[0]));
   State.Field(FHasChrRam, SizeOf(FHasChrRam));
   State.Field(FBankRegister, SizeOf(FBankRegister));
+  if State.Loading then
+    SelectBank(FBankRegister);
 end;
 
 constructor TMapperAxrom.Create(const APrgRom, AChrData: TByteArray; AHasChrRam: Boolean; BusConflicts: Boolean);
@@ -47,11 +51,23 @@ begin
   Reset;
 end;
 
+procedure TMapperAxrom.SelectBank(Value: UInt8);
+begin
+  FBankRegister := Value;
+  FPrgOffset := ((Integer(Value) and 7) * $8000) mod Length(FPrgRom);
+end;
+
 function TMapperAxrom.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
 begin
   Result := Address >= $8000;
   if Result then
-    Value := FPrgRom[((FBankRegister and 7) * $8000 + Address - $8000) mod Length(FPrgRom)];
+  begin
+    var Offset := FPrgOffset + (Address and $7FFF);
+    // Half-bank images still wrap like the original ROM addressing.
+    if Offset >= Length(FPrgRom) then
+      Offset := Offset mod Length(FPrgRom);
+    Value := FPrgRom[Offset];
+  end;
 end;
 
 function TMapperAxrom.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
@@ -63,7 +79,7 @@ begin
     var RomValue: UInt8;
     if FBusConflicts and CpuRead(Address, RomValue) then
       Value := Value and RomValue;
-    FBankRegister := Value;
+    SelectBank(Value);
   end;
 end;
 
@@ -91,7 +107,7 @@ end;
 
 procedure TMapperAxrom.Reset;
 begin
-  FBankRegister := 0;
+  SelectBank(0);
 end;
 
 end.

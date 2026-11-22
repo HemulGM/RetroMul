@@ -10,7 +10,7 @@ uses
   NES.MiraclePianoDevice, RM.Platforms.NES.Controls.PowerPad, RM.Input.Runtime,
   NES.FamicomDataRecorder, RM.Platforms.NES.Controls.DataRecorder,
   RM.Platforms.NES.Keyboard, RM.Platforms.NES.Controls.MiraclePiano,
-  Core.Emulation;
+  RM.Platforms.NES.Controls.SenarioLcd, Core.Emulation, NES.Mapper.Fcns;
 
 const
   PowerPadAction = 128;
@@ -43,6 +43,7 @@ type
     MiraclePiano: TNesMiraclePiano;
     PowerPad: TGamepadNESPowerPad;
     DataRecorder: TNesDataRecorder;
+    SenarioLcd: TFrameSenarioLcd;
     ZapperPixel: TPoint;
     SuborKeyboardTouchAttached, FamicomKeyboardTouchAttached: Boolean;
     MiraclePianoTouchAttached, PowerPadTouchAttached: Boolean;
@@ -119,6 +120,8 @@ begin
     State.PowerPad := nil;
   if AComponent = State.DataRecorder then
     State.DataRecorder := nil;
+  if AComponent = State.SenarioLcd then
+    State.SenarioLcd := nil;
 end;
 
 constructor TNesInputState.Create(const Context: TInputRuntimeContext);
@@ -247,6 +250,12 @@ begin
     Control.OnAction := nil;
     Control.OnChooseFile := nil;
     Control.OnSaveAs := nil;
+    RetireSettingsControl(Control);
+  end;
+  if SenarioLcd <> nil then
+  begin
+    var Control := SenarioLcd;
+    SenarioLcd := nil;
     RetireSettingsControl(Control);
   end;
   SuborKeyboardTouchAttached := False;
@@ -443,6 +452,8 @@ begin
   Result.KeyboardActive := ((Context.Host.Core <> nil) and NesUsesSuborKeyboard(Context.Host.Core)) or
     (Supports(Context.Host.Core, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard) or
     (Supports(Context.Host.Core, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano);
+  if Supports(Context.Host.Core, INesPeripheralCore, Peripheral) and Peripheral.UsesFcnsController then
+    Result.ControlKeys := Result.ControlKeys + FCNS_HOST_KEYS;
 end;
 
 class function TNesInputHandler.ForwardKey(const Context: TInputRuntimeContext; Code: Word; Pressed: Boolean): Boolean;
@@ -486,6 +497,8 @@ begin
   var Peripheral: INesPeripheralCore;
   if Supports(Context.Host.Core, INesPeripheralCore, Peripheral) then
   begin
+    if Context.Host.Input.HasInputSource then
+      Peripheral.SetGameinisInfrared(Context.Host.Input.IsActionPressed(ZapperTriggerAction));
     if NesUsesSuborKeyboard(Context.Host.Core) then
     begin
       var Keys := ReadSuborInput(Context.Host.Input);
@@ -533,6 +546,28 @@ begin
   if (Context.Host.Core = nil) or (Context.Host.Activity.Phase = TPlatformSessionPhase.Failed) then
     Exit;
 
+  var Senario: INesSenarioCore;
+  var TopLine, BottomLine: string;
+  if Supports(Context.Host.Core, INesSenarioCore, Senario) and Senario.GetSenarioLcd(TopLine, BottomLine) then
+  begin
+    if (Devices.SenarioLcd = nil) and (Context.Surface <> nil) then
+    begin
+      Devices.SenarioLcd := TFrameSenarioLcd.Create(Context.Surface.Content);
+      Devices.SenarioLcd.FreeNotification(Devices.FObserver);
+      Devices.SenarioLcd.Parent := Context.Surface.Content;
+    end;
+    if Devices.SenarioLcd <> nil then
+    begin
+      Devices.SenarioLcd.UpdateText(TopLine, BottomLine);
+      Devices.SenarioLcd.Visible := True;
+    end;
+  end
+  else if Devices.SenarioLcd <> nil then
+  begin
+    Devices.SenarioLcd.HideText;
+    Devices.SenarioLcd.Visible := False;
+  end;
+
   if (Devices.MiraclePiano <> nil) and Devices.MiraclePiano.Visible and Devices.MiraclePiano.Enabled and
     Supports(Context.Host.Core, INesMiraclePianoCore, Piano) then
     Devices.MiraclePiano.CoreKeys := Piano.GetMiracleKeys;
@@ -560,7 +595,7 @@ begin
   var Peripheral: INesPeripheralCore;
   if Supports(Context.Host.Core, INesPeripheralCore, Peripheral) then
   begin
-    if Peripheral.Zapper.Enabled then
+    if Peripheral.Zapper.Enabled or Peripheral.Zapper.SerialMouse or Peripheral.Zapper.DrawingTablet then
     begin
       Context.Host.Video.TryPointerToFrame(Devices.ZapperPixel);
       Peripheral.Zapper.TriggerPressed := Context.Host.Input.IsActionPressed(ZapperTriggerAction);
@@ -592,6 +627,8 @@ begin
   var Devices := NesInputState(Context);
   if Supports(Context.Host.Core, INesPeripheralCore, Peripheral) then
   begin
+    if Peripheral.SetGameinisInfrared(Pressed) then
+      Exit;
     if Pressed then
       Context.Host.Video.TryLocalToFrame(PointF(X, Y), Devices.ZapperPixel);
     Peripheral.Zapper.TriggerPressed := Pressed;

@@ -12,7 +12,7 @@ type
 
   TA8Options = record
     Model: TA8Model;
-    PAL, Basic, WriteProtected: Boolean;
+    PAL, Basic, WriteProtected, MuteDiskRead: Boolean;
     Mapper: Integer;
     OSROM, BasicROM, GameROM, FallbackOSROM: TBytes;
   end;
@@ -66,6 +66,7 @@ type
     procedure Reset; override;
     procedure SetInput(const Input: TEmulatorInput); override;
     procedure SetKeyboard(Keys: Word); override;
+    procedure SetDiskReadMuted(Muted: Boolean); override;
     procedure SetInputPorts(const Ports: TCoreInputPorts); override;
     procedure AttachDisk(const Storage: IStorage; const DiskCopy: string);
     procedure FlushMedia; override;
@@ -299,6 +300,11 @@ begin
       end;
 end;
 
+procedure TA8Machine.SetDiskReadMuted(Muted: Boolean);
+begin
+  FOptions.MuteDiskRead := Muted;
+end;
+
 procedure TA8Machine.SetKeyboard(Keys: Word);
 begin
   FHostKeyboard := Keys;
@@ -461,8 +467,23 @@ begin
 end;
 
 function TA8Machine.ReadMemory(Address: Word): Byte;
+const
+  Soundr = $41;
+  DDevic = $300;
+  DComnd = $302;
+  DiskDevice = $31;
+  ReadSector = $52;
+  DriveStatus = $53;
 begin
-  Result := MemoryRead(Address, False);
+  // The ROM SIO routine uses SOUNDR for its audible indication. Only mask
+  // that read during disk reads and drive status queries. Keep RAM and
+  // direct sound register accesses available to the running program.
+  if (Address = Soundr) and FOptions.MuteDiskRead and (FMedia.Kind = TA8MediaKind.Disk) and
+    (FCPU.Pc >= $D800) and (FLegacy or (PortB and 1 <> 0)) and
+    (FRAM[DDevic] = DiskDevice) and (FRAM[DComnd] in [ReadSector, DriveStatus]) then
+    Result := 0
+  else
+    Result := MemoryRead(Address, False);
   FBus := Result;
 end;
 
@@ -689,6 +710,14 @@ end;
 
 procedure TA8Machine.RunFrame;
 begin
+  if FResetPending and (FRAM[$09] and 1 <> 0) and FMedia.BootsKFile then
+  begin
+    // K-file installs RUNAD as DOSINI. Enter the program with freshly loaded
+    // segments instead of calling its entry point again in modified RAM.
+    var Held := FResetKey;
+    Reset;
+    FResetKey := Held;
+  end;
   if FResetPending then
   begin
     FResetPending := False;
@@ -756,7 +785,8 @@ begin
         end;
         var Detail := Format('Atari 8-bit CPU jam at %.4x', [FCPU.JamPc]);
         if (Length(FOptions.OSROM) = 0) and not FLegacy and FMedia.RequiresOriginalXLOS then
-          Detail := Detail + '. This loader uses internal XL/XE OS addresses. Select an original Atari 800XL/XE OS ROM in firmware settings.';
+          Detail := Detail + sLineBreak +
+            'This loader uses internal XL/XE OS addresses. Select an original Atari 800XL/XE OS ROM in firmware settings.';
         raise EInvalidOpException.Create(Detail);
       end;
       FANTIC.ClockObjects(Cycle, FGTIA, FBus);

@@ -9,14 +9,17 @@ type
   TMapperMulticart = class(TMapperBanked)
   private
     FBoard, FWorkBank, FResetCount: Integer;
+    FMenuDip: Byte;
     FRegs: array[0..3] of Integer;
     FStarted, FEpromFirst: Boolean;
     procedure UpdateBanks;
+    procedure SetMenuDip(Value: Byte);
     procedure Latch234(Address: UInt16; Value: Byte);
   public
     constructor Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
     procedure SerializeState(State: TNesStateArchive); override;
     procedure Reset; override;
+    property MenuDip: Byte read FMenuDip write SetMenuDip;
     function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
     function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
   end;
@@ -42,6 +45,11 @@ begin
     FEpromFirst := (Crc xor $FFFFFFFF) = $63794E25;
   end;
   Reset;
+end;
+
+procedure TMapperMulticart.SetMenuDip(Value: Byte);
+begin
+  FMenuDip := Value and $0F;
 end;
 
 procedure TMapperMulticart.SerializeState(State: TNesStateArchive);
@@ -208,7 +216,7 @@ begin
         end;
         Mirror((FRegs[0] shr 7) and 1);
       end;
-    MAPPER_BMC70IN1:
+    MAPPER_BMC70IN1, MAPPER_REALTEC_8031:
       begin
         Outer := FRegs[2];
         Bank := Outer or FRegs[0];
@@ -220,6 +228,8 @@ begin
           Prg16(0, Bank);
           if Mode = $30 then
             Prg16(1, Bank)
+          else if FBoard = MAPPER_REALTEC_8031 then
+            Prg16(1, Bank or 7)
           else
             Prg16(1, Outer or 7)
         end;
@@ -360,6 +370,8 @@ begin
   if (FBoard = MAPPER_BMC235) and (FRegs[0] <> 0) and (Address >= $8000) then
     Exit(False);
 
+  if (FBoard = MAPPER_REALTEC_8031) and (FRegs[1] = $10) and (Address >= $8000) then
+    Address := Address or FMenuDip;
   // DIP switches default to zero, matching an unconfigured Mesen board.
   if (Address >= $8000) and (((FBoard = MAPPER_BMC70IN1) and (FRegs[1] = $10)) or ((FBoard = MAPPER_EH8813_A) and (FRegs[0] <> 0))) then
     Address := Address and $FFF0;
@@ -586,6 +598,20 @@ begin
           Mirror(2)
         else
           Mirror((Address shr 13) and 1);
+      end;
+    MAPPER_REALTEC_8031:
+      begin
+        if Address >= $C000 then
+        begin
+          FRegs[1] := Address and $30;
+          FRegs[0] := Address and $FF;
+        end
+        else
+        begin
+          FRegs[3] := Address and $FF;
+          Mirror((Address shr 5) and 1);
+        end;
+        UpdateBanks;
       end;
     MAPPER_BMC70IN1:
       begin

@@ -74,6 +74,7 @@ type
     FTriangle: TTriangleChannel;
     FNoise: TNoiseChannel;
     FDmc: TDmcChannel;
+    FOneBusDmcMode, FOneBusPcm: Byte;
     FDmcDmaDelay: Integer;
     FDmcDisableDelay: Integer;
     FDmcAbortRequested: Boolean;
@@ -82,6 +83,7 @@ type
     FFrameCounter: UInt32;
     FFrameMode5: Boolean;
     FFrameIrqInhibit: Boolean;
+    FUm6578Mode: Boolean;
     FPendingFrameMode5: Boolean;
     FPendingFrameIrqInhibit: Boolean;
     FFrameResetDelay: Integer;
@@ -89,6 +91,7 @@ type
     FFrameIrqClearPending: Boolean;
     FSampleRate: Integer;
     FExpansionAudio: Double;
+    FInternalAudioMuted: Boolean;
     FChannelGain: array[0..5] of Double;
     FSwapDutyCycles, FSilenceUltrasonicTriangle, FDisableNoiseMode: Boolean;
     FSampleTimer: Double;
@@ -114,12 +117,10 @@ type
     FLp14Coefficient: Double;
     function LengthFromIndex(Index: UInt8): Integer;
     function PulseSweepTarget(const Channel: TPulseChannel; NegateExtra: Integer): Integer;
-    function PulseVolume(const Channel: TPulseChannel): Integer;
     function NoiseVolume: Integer;
     function PulseRawOutput(const Channel: TPulseChannel; NegateExtra: Integer): Integer;
     function TriangleRawOutput: Integer;
     function NoiseRawOutput: Integer;
-    procedure ClockPulseEnvelope(var Channel: TPulseChannel);
     procedure ClockNoiseEnvelope;
     procedure ClockLinearCounter;
     procedure ClockLengthCounters;
@@ -141,7 +142,14 @@ type
     procedure Reset;
     procedure SetSampleRate(Value: Integer);
     procedure ConfigureMixer(const Volumes: array of Integer; SwapDutyCycles, SilenceUltrasonicTriangle, DisableNoiseMode: Boolean);
+    property Um6578Mode: Boolean read FUm6578Mode write FUm6578Mode;
+    property InternalAudioMuted: Boolean read FInternalAudioMuted write FInternalAudioMuted;
     procedure SetExpansionAudio(Value: Double); inline;
+    function CurrentChannelOutput: Double;
+    procedure SetOneBusDmcMode(Value: Byte);
+    procedure WriteOneBusPcm(Value: Byte);
+    function OneBusPcmOutput: Double;
+    procedure SerializeOneBusPcm(State: TNesStateArchive);
     procedure CpuWrite(Address: UInt16; Value: UInt8);
     function CpuReadStatus: UInt8;
     function IrqPending: Boolean; inline;
@@ -169,11 +177,57 @@ type
     property OnRegisterWrite: TApuRegisterWriteEvent read FOnRegisterWrite write FOnRegisterWrite;
   end;
 
+function DmcTimerPeriod(Region: TNesRegion; Rate: Byte): Integer;
+
+const
+  APU_LENGTH_TABLE: array[0..31] of Integer = (
+    10, 254, 20, 2, 40, 4, 80, 6,
+    160, 8, 60, 10, 14, 12, 26, 14,
+    12, 16, 24, 18, 48, 20, 96, 22,
+    192, 24, 72, 26, 16, 28, 32, 30
+  );
+  APU_DUTY_TABLE: array[0..3, 0..7] of Integer = (
+    (0, 1, 0, 0, 0, 0, 0, 0),
+    (0, 1, 1, 0, 0, 0, 0, 0),
+    (0, 1, 1, 1, 1, 0, 0, 0),
+    (1, 0, 0, 1, 1, 1, 1, 1)
+  );
+
+function ApuPulseVolume(const Channel: TPulseChannel): Integer; inline;
+
+procedure ClockApuPulseEnvelope(var Channel: TPulseChannel);
+
 implementation
 
 procedure TApu.SetExpansionAudio(Value: Double);
 begin
   FExpansionAudio := Value
+end;
+
+procedure TApu.SetOneBusDmcMode(Value: Byte);
+begin
+  FOneBusDmcMode := Value;
+  FMixValid := False;
+end;
+
+procedure TApu.WriteOneBusPcm(Value: Byte);
+begin
+  FOneBusPcm := Value;
+  if (FOneBusDmcMode and $10) = 0 then
+  begin
+    FDmc.OutputLevel := Value and $7F;
+    FMixDirty := True;
+  end;
+end;
+
+function TApu.OneBusPcmOutput: Double;
+begin
+  Result := (Integer(FOneBusPcm) - $80) / 240.0;
+end;
+
+procedure TApu.SerializeOneBusPcm(State: TNesStateArchive);
+begin
+  State.Field(FOneBusPcm, SizeOf(FOneBusPcm));
 end;
 
 procedure TApu.SerializeDmaState(State: TNesStateArchive);
@@ -250,18 +304,6 @@ begin
 end;
 
 const
-  LENGTH_TABLE: array[0..31] of Integer = (
-    10, 254, 20, 2, 40, 4, 80, 6,
-    160, 8, 60, 10, 14, 12, 26, 14,
-    12, 16, 24, 18, 48, 20, 96, 22,
-    192, 24, 72, 26, 16, 28, 32, 30
-  );
-  DUTY_TABLE: array[0..3, 0..7] of Integer = (
-    (0, 1, 0, 0, 0, 0, 0, 0),
-    (0, 1, 1, 0, 0, 0, 0, 0),
-    (0, 1, 1, 1, 1, 0, 0, 0),
-    (1, 0, 0, 1, 1, 1, 1, 1)
-  );
   TRI_TABLE: array[0..31] of Integer = (
     15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15
@@ -288,6 +330,11 @@ begin
     FChannelGain[I] := 1;
   SetLength(FBuffer, 16384);
   Reset;
+end;
+
+function DmcTimerPeriod(Region: TNesRegion; Rate: Byte): Integer;
+begin
+  Result := DMC_PERIOD_TABLE[Region, Rate and $0F];
 end;
 
 procedure TApu.ConfigureMixer(const Volumes: array of Integer; SwapDutyCycles, SilenceUltrasonicTriangle, DisableNoiseMode: Boolean);
@@ -330,14 +377,16 @@ begin
   FDmc.BufferEmpty := True;
   FDmc.Silence := True;
   FDmcDmaDelay := 0;
+  FOneBusDmcMode := 0;
+  FOneBusPcm := $80;
   FDmcDisableDelay := 0;
   FDmcAbortRequested := False;
   FCycle := 0;
   FFrameCounter := 0;
   FFrameMode5 := False;
-  FFrameIrqInhibit := False;
+  FFrameIrqInhibit := FUm6578Mode;
   FPendingFrameMode5 := False;
-  FPendingFrameIrqInhibit := False;
+  FPendingFrameIrqInhibit := FUm6578Mode;
   FFrameResetDelay := 0;
   FFrameIrqFlag := False;
   FFrameIrqClearPending := False;
@@ -376,7 +425,7 @@ end;
 
 function TApu.LengthFromIndex(Index: UInt8): Integer;
 begin
-  Result := LENGTH_TABLE[Index and 31];
+  Result := APU_LENGTH_TABLE[Index and 31];
 end;
 
 function TApu.PulseSweepTarget(const Channel: TPulseChannel; NegateExtra: Integer): Integer;
@@ -388,7 +437,7 @@ begin
     Result := Channel.TimerReload + Change;
 end;
 
-function TApu.PulseVolume(const Channel: TPulseChannel): Integer;
+function ApuPulseVolume(const Channel: TPulseChannel): Integer;
 begin
   if (Channel.Reg0 and $10) <> 0 then
     Result := Channel.Reg0 and $0F
@@ -420,9 +469,9 @@ begin
       Duty := 2
     else if Duty = 2 then
       Duty := 1;
-  if DUTY_TABLE[Duty, Channel.SequenceStep and 7] = 0 then
+  if APU_DUTY_TABLE[Duty, Channel.SequenceStep and 7] = 0 then
     Exit;
-  Result := PulseVolume(Channel);
+  Result := ApuPulseVolume(Channel);
 end;
 
 function TApu.TriangleRawOutput: Integer;
@@ -443,7 +492,7 @@ begin
   Result := NoiseVolume;
 end;
 
-procedure TApu.ClockPulseEnvelope(var Channel: TPulseChannel);
+procedure ClockApuPulseEnvelope(var Channel: TPulseChannel);
 begin
   if Channel.EnvelopeStart then
   begin
@@ -528,8 +577,8 @@ end;
 procedure TApu.QuarterFrame;
 begin
   FMixDirty := True;
-  ClockPulseEnvelope(FPulse1);
-  ClockPulseEnvelope(FPulse2);
+  ClockApuPulseEnvelope(FPulse1);
+  ClockApuPulseEnvelope(FPulse2);
   ClockNoiseEnvelope;
   ClockLinearCounter;
 end;
@@ -571,8 +620,11 @@ begin
         FPulse1.TimerReload := ((Value and 7) shl 8) or (FPulse1.TimerReload and $FF);
         if FPulse1.Enabled then
           FPulse1.LengthCounter := LengthFromIndex(Value shr 3);
-        FPulse1.SequenceStep := 0;
-        FPulse1.EnvelopeStart := True;
+        if not FUm6578Mode then
+        begin
+          FPulse1.SequenceStep := 0;
+          FPulse1.EnvelopeStart := True;
+        end;
       end;
     $4004:
       begin
@@ -594,8 +646,11 @@ begin
         FPulse2.TimerReload := ((Value and 7) shl 8) or (FPulse2.TimerReload and $FF);
         if FPulse2.Enabled then
           FPulse2.LengthCounter := LengthFromIndex(Value shr 3);
-        FPulse2.SequenceStep := 0;
-        FPulse2.EnvelopeStart := True;
+        if not FUm6578Mode then
+        begin
+          FPulse2.SequenceStep := 0;
+          FPulse2.EnvelopeStart := True;
+        end;
       end;
     $4008:
       FTriangle.Reg0 := Value;
@@ -631,7 +686,7 @@ begin
     $4010:
       begin
         FDmc.Control := Value;
-        FDmc.TimerReload := DMC_PERIOD_TABLE[FRegion, Value and $0F];
+        FDmc.TimerReload := DmcTimerPeriod(FRegion, Value);
         // APU clocks before CPU writes. A write on the reload clock supplies
         // the new period to that reload; later writes leave the timer running.
         if FDmcReloaded then
@@ -734,6 +789,11 @@ begin
   Result := FHp440Output;
 end;
 
+function TApu.CurrentChannelOutput: Double;
+begin
+  Result := MixSample;
+end;
+
 function TApu.MixSample: Double;
 begin
   if FMixValid and not FMixDirty then
@@ -748,7 +808,10 @@ begin
   var P2: Integer := PulseRawOutput(FPulse2, 0);
   var Tri: Integer := TriangleRawOutput;
   var Noi: Integer := NoiseRawOutput;
-  var Key := P1 or (P2 shl 4) or (Tri shl 8) or (Noi shl 12) or (Integer(FDmc.OutputLevel) shl 16);
+  var Dmc := FDmc.OutputLevel;
+  if (FOneBusDmcMode and $10) <> 0 then
+    Dmc := 0;
+  var Key := P1 or (P2 shl 4) or (Tri shl 8) or (Noi shl 12) or (Integer(Dmc) shl 16);
   if FMixValid and (FMixKey = Key) then
     Exit(FMixValue);
 
@@ -764,12 +827,12 @@ begin
       PulseMix := 95.88 / PulseDenom;
   end;
 
-  if (Tri = 0) and (Noi = 0) and (FDmc.OutputLevel = 0) then
+  if (Tri = 0) and (Noi = 0) and (Dmc = 0) then
     TndMix := 0
   else
   begin
     TndInput := (Tri * FChannelGain[2] / 8227.0) +
-      (Noi * FChannelGain[3] / 12241.0) + (FDmc.OutputLevel * FChannelGain[4] / 22638.0);
+      (Noi * FChannelGain[3] / 12241.0) + (Dmc * FChannelGain[4] / 22638.0);
     if TndInput <= 0 then
       TndMix := 0
     else
@@ -808,7 +871,7 @@ end;
 
 procedure TApu.RestartDmc;
 begin
-  FDmc.CurrentAddress := FDmc.SampleAddress;
+  FDmc.CurrentAddress := (FDmc.SampleAddress and $3FFF) or (Word(3 xor (FOneBusDmcMode and 3)) shl 14);
   FDmc.BytesRemaining := FDmc.SampleLength;
 end;
 
@@ -849,7 +912,7 @@ begin
   end;
   // A one-byte fetch ending just before the output shifter reload produces
   // a spurious reload request, then the length gate cancels it one cycle later.
-  if (FDmc.SampleLength = 1) and ((FDmc.Control and $40) = 0) and (FDmc.BitsRemaining = 1) and (FDmc.Timer < 2) then
+  if ((FOneBusDmcMode and $10) = 0) and (FDmc.SampleLength = 1) and ((FDmc.Control and $40) = 0) and (FDmc.BitsRemaining = 1) and (FDmc.Timer < 2) then
   begin
     FDmc.Shift := FDmc.SampleBuffer;
     RestartDmc;
@@ -868,7 +931,13 @@ begin
 
   FDmc.Timer := FDmc.TimerReload - 1;
   FDmcReloaded := True;
-  if not FDmc.Silence then
+  if (FOneBusDmcMode and $10) <> 0 then
+  begin
+    if not FDmc.Silence then
+      FOneBusPcm := FDmc.Shift;
+    FDmc.BitsRemaining := 1;
+  end
+  else if not FDmc.Silence then
   begin
     FMixDirty := True;
     if (FDmc.Shift and 1) <> 0 then
@@ -1028,7 +1097,10 @@ begin
 
   // An output-rate low-pass cannot remove frequencies that have already
   // folded into the audible band. Keep its history at the APU clock rate.
-  FLp14Output := FLp14Output + FLp14Coefficient * (FAntiAlias.Process(MixSample + FExpansionAudio * FChannelGain[5]) - FLp14Output);
+  var InternalSample: Double := 0;
+  if not FInternalAudioMuted then
+    InternalSample := MixSample;
+  FLp14Output := FLp14Output + FLp14Coefficient * (FAntiAlias.Process(InternalSample + FExpansionAudio * FChannelGain[5]) - FLp14Output);
   FSampleTimer := FSampleTimer + 1.0;
   while FSampleTimer >= FSampleStep do
   begin

@@ -61,6 +61,7 @@ type
     procedure AttachDisk(const Storage: IStorage; const DiskCopy: string; WriteProtected: Boolean);
     procedure Flush;
     procedure Reset;
+    function BootsKFile: Boolean;
     function RequiresOriginalXLOS: Boolean;
     property AutomaticRawMapper: Integer read FAutomaticRawMapper;
     function CartHigh: Boolean;
@@ -267,7 +268,7 @@ begin
               Blocks.Add(Block);
           end;
       else
-        raise EReadError.Create('Unsupported Atari CAS chunk: ' + TEncoding.ASCII.GetString(FData, Position - 8, 4));
+        raise EReadError.CreateFmt('Unsupported Atari CAS chunk: %s', [TEncoding.ASCII.GetString(FData, Position - 8, 4)]);
       end;
       Inc(Position, Count);
     end;
@@ -678,6 +679,12 @@ begin
   end
   else
     raise EReadError.Create('Invalid Atari double-density disk size');
+end;
+
+function TA8Media.BootsKFile: Boolean;
+begin
+  Result := (FKind = TA8MediaKind.Disk) and (FSectorSize = 128) and
+    (Length(FProtectedTracks) = 0) and HasCompleteKFilePayload(FData, FDiskOffset);
 end;
 
 function TA8Media.RequiresOriginalXLOS: Boolean;

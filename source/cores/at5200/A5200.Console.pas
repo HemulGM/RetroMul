@@ -18,6 +18,7 @@ type
     procedure SetInput(const Input: TEmulatorInput); virtual; abstract;
     procedure SetKeypad(Port: Integer; Mask: Word); virtual;
     procedure SetKeyboard(Keys: Word); virtual;
+    procedure SetDiskReadMuted(Muted: Boolean); virtual;
     procedure SetInputPorts(const Ports: TCoreInputPorts); virtual;
     procedure FlushMedia; virtual;
     procedure RunFrame; virtual; abstract;
@@ -84,6 +85,10 @@ begin
 end;
 
 procedure TAtariFrameMachine.SetKeyboard(Keys: Word);
+begin
+end;
+
+procedure TAtariFrameMachine.SetDiskReadMuted(Muted: Boolean);
 begin
 end;
 

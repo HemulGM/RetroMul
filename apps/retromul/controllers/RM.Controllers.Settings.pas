@@ -28,7 +28,8 @@ implementation
 uses
   System.SysUtils, System.Classes, System.Math, System.UITypes, FMX.Types,
   RM.Gamepad, RM.Settings, RM.ControlsHelp, RM.Styles, RM.Dialogs,
-  RM.Gamepad.Base, RM.Main.State, Core.Emulation, Core.Storage;
+  RM.Gamepad.Base, RM.Main.State, Core.Emulation, Core.Storage,
+  PCM.Audio.Backend;
 
 function TSettingsController.RuntimeContext: TSettingsRuntimeContext;
 begin
@@ -79,6 +80,8 @@ begin
       if FState.Session.Emulation = nil then
         FView.SetStatus(Translate('Open ROM'));
     end;
+    SetPreferredAudioEndpoint(TAudioDeviceKind.Playback, Ini.ReadString('Audio', AUDIO_OUTPUT_DEVICE_KEY, ''));
+    SetPreferredAudioEndpoint(TAudioDeviceKind.Capture, Ini.ReadString('Audio', AUDIO_MICROPHONE_DEVICE_KEY, ''));
     FState.Input.BottomInset := EnsureRange(Ini.ReadInteger('General', 'ControlBottomInset', 100), 0, 400);
     FView.ApplyControlInset;
     FState.Input.Gamepad.LayoutScale := EnsureRange(

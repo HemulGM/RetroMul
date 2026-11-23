@@ -37,6 +37,10 @@ uses
   System.Classes, System.UITypes, Core.Archive.Container, System.IOUtils,
   Core.Snapshots, RM.Platforms.Atari5200.Input;
 
+const
+  PlatformIcon =
+    'M10,25 L90,25 L100,65 L0,65 Z M10,55 L90,55 L90,60 L10,60 Z M20,30 L24,30 L24,48 L20,48 Z M30,30 L34,30 L34,48 L30,48 Z M40,30 L44,30 L44,48 L40,48 Z M50,30 L54,30 L54,48 L50,48 Z M60,30 L64,30 L64,48 L60,48 Z M75,33 L85,33 L85,43 L75,43 Z';
+
 class procedure TA5200Platform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
 begin
   for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
@@ -197,7 +201,7 @@ begin
   RegisterInput;
   RegisterPlatformGamepads('at5200', TGamepadAtari5200Standart,
     [TGamepadDeviceVariant.Create('pad-analog', TGamepadAtari5200Analog)]);
-  RegisterPlatformPresentation('at5200', 'at5200', 'M10,25 L90,25 L100,65 L0,65 Z M10,55 L90,55 L90,60 L10,60 Z M20,30 L24,30 L24,48 L20,48 Z M30,30 L34,30 L34,48 L30,48 Z M40,30 L44,30 L44,48 L40,48 Z M50,30 L54,30 L54,48 L50,48 Z M60,30 L64,30 L64,48 L60,48 Z M75,33 L85,33 L85,43 L75,43 Z');
+  RegisterPlatformPresentation('at5200', 'at5200', PlatformIcon);
 end;
 
 class procedure TA5200Platform.RegisterPlatform;

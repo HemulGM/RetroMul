@@ -3,11 +3,11 @@
 interface
 
 uses
-  System.Classes, Core.Storage, Core.Emulation, Core.Platforms.System16.Adapter,
+  System.Classes, Core.Storage, Core.Emulation, Core.Platforms.SegaArcade.Adapter,
   Core.Emulation.Types;
 
 type
-  TS18CoreAdapter = class(TS16CoreAdapter, IEmulationPointerInput, IEmulationMouseInput)
+  TS18CoreAdapter = class(TSegaArcadeCoreAdapter, IEmulationPointerInput, IEmulationMouseInput)
   private
     FPointer: TEmulatorAnalogPad;
     FMouseButtons: Byte;
@@ -25,13 +25,13 @@ type
 implementation
 
 uses
-  System.Math, System.SysUtils, S16.Video, S16.Cartridge, S18.RomSets,
+  System.Math, System.SysUtils, SegaArcade.Video, S18.Cartridge,
   S18.Console;
 
 constructor TS18CoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
 begin
-  InitializeCore(TS16Cartridge.Create(Stream, RomName, Storage, 'Sega System 18',
-      IdentifySystem18Rom, FindSystem18Rom), TS18Console,
+  inherited Create;
+  InitializeCore(TS18Cartridge.Create(Stream, RomName, Storage), TS18Console,
     Storage, RomName, 'system18', 'Sega System 18', 'System18');
   FTrackball := FCart.RomSet.Inputs.StartsWith('wwally');
 end;
@@ -57,8 +57,8 @@ begin
   FPointer.Valid := True;
   if Valid then
   begin
-    FPointer.X := EnsureRange(X, 0, S16_WIDTH - 1) * 65535 div (S16_WIDTH - 1) - 32768;
-    FPointer.Y := EnsureRange(Y, 0, S16_HEIGHT - 1) * 65535 div (S16_HEIGHT - 1) - 32768;
+    FPointer.X := EnsureRange(X, 0, SEGA_ARCADE_WIDTH - 1) * 65535 div (SEGA_ARCADE_WIDTH - 1) - 32768;
+    FPointer.Y := EnsureRange(Y, 0, SEGA_ARCADE_HEIGHT - 1) * 65535 div (SEGA_ARCADE_HEIGHT - 1) - 32768;
   end
   else
   begin

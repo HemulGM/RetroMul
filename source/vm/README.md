@@ -30,11 +30,12 @@ an interrupt visible to ClearInterrupted; it can release the operation and build
 an I/O exception with the actual transfer count. Ordinary sleeps keep their
 existing automatic InterruptedException behavior.
 
-The reusable Bluetooth contract is in source/runtime/Core.Bluetooth.Types.pas,
-with an explicit unavailable provider in Core.Bluetooth.pas and bounded virtual
-RFCOMM/L2CAP channels in Core.Bluetooth.Channel.pas. These RTL-only modules have
-no JVM, Java, FMX or phone-profile dependency. Device/service discovery and
-connection/listener operations are cancellable and polled by their consumer.
+The reusable Bluetooth units live in dependencies/Bluetooth.
+Core.Bluetooth.Types defines the provider contract. Core.Bluetooth.pas supplies
+an unavailable provider, and Core.Bluetooth.Channel.pas provides bounded virtual
+RFCOMM/L2CAP channels. These RTL-only modules have no JVM, Java, FMX or
+phone-profile dependency. Device/service discovery and connection/listener
+operations are cancellable and polled by their consumer.
 RFCOMM partial writes and L2CAP packet boundaries remain distinct; actual link
 security is separate from requested security. BLE/GATT has an optional interface
 instead of being modelled as a byte stream. Address/UUID helpers use canonical
@@ -44,8 +45,9 @@ decoding, UUID matching and attribute snapshots; both the Java translator and
 native platform backend reuse it.
 
 J2ME runtime accepts an optional IBluetoothProvider. The emulation adapter exposes
-IEmulationBluetooth; bind a provider while stopped, then Start/Reset retains it
-for that runtime. The frontend adapter creates the platform provider by default:
+IEmulationBluetooth, declared in source/runtime/Core.Emulation.Bluetooth.pas.
+Bind a provider while stopped, then Start/Reset retains it for that runtime.
+The frontend adapter creates the platform provider by default:
 Windows uses Core.Platforms.Bluetooth.Windows; other platforms report Unavailable.
 The standalone runtime with no provider, and an explicit adapter reset to nil,
 also report Unavailable, with failed operations rather than successful empty

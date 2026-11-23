@@ -14,11 +14,11 @@ implementation
 
 uses
   System.SysUtils, Core.Bluetooth
-{$IFDEF MSWINDOWS}
+  {$IFDEF MSWINDOWS}
     , System.Classes, System.SyncObjs, System.Math, System.Generics.Collections,
     Winapi.Windows, Winapi.Winsock2, Winapi.Bluetooth, Core.Bluetooth.SDP,
     Core.Bluetooth.Service, Core.Platforms.Bluetooth.Windows.IO
-{$ENDIF};
+  {$ENDIF};
 
 {$IFDEF MSWINDOWS}
 type

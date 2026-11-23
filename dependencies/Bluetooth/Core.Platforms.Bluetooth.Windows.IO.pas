@@ -11,10 +11,11 @@ implementation
 
 uses
   System.SysUtils
-{$IFDEF MSWINDOWS}
+  {$IFDEF MSWINDOWS}
     , System.Classes, System.SyncObjs, System.Math, Winapi.Windows,
     Winapi.Winsock2
-{$ENDIF};
+  {$ENDIF};
+
 {$IFDEF MSWINDOWS}
 
 type

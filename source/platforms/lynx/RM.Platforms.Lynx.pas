@@ -24,17 +24,16 @@ type
 implementation
 
 uses
-  RM.Input.Gamepads,
-  System.Classes, Core.Emulation, Core.Platforms, Core.Snapshots,
-  Core.Platforms.Lynx.Adapter, RM.Platforms.Lynx.Settings,
+  RM.Input.Gamepads, System.Classes, Core.Emulation, Core.Platforms,
+  Core.Snapshots, Core.Platforms.Lynx.Adapter, RM.Platforms.Lynx.Settings,
   RM.Platforms.Lynx.Gamepads, RM.Settings.Catalog, RM.Platforms.Presentation,
   RM.Gamepad.Factory, RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout,
   RM.Settings.Runtime, RM.ControlsHelp.Content, RM.Settings.Callouts,
   RM.Settings.Devices;
 
 const
-  // Device silhouette: the Lynx is a horizontal handheld.
-  PlatformIconLynx = 'M4,0 H60 Q64,0 64,4 V28 Q64,32 60,32 H4 Q0,32 0,28 V4 Q0,0 4,0 Z ' +
+  PlatformIcon =
+    'M4,0 H60 Q64,0 64,4 V28 Q64,32 60,32 H4 Q0,32 0,28 V4 Q0,0 4,0 Z ' +
     'M20,5 V27 H44 V5 Z M8,10 V14 H4 V18 H8 V22 H12 V18 H16 V14 H12 V10 Z ' +
     'M50,20 A3,3 0 1 0 56,20 A3,3 0 1 0 50,20 Z M56,12 A3,3 0 1 0 62,12 A3,3 0 1 0 56,12 Z';
 
@@ -116,7 +115,7 @@ begin
   Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('lynx', Definition);
   RegisterPlatformGamepads('lynx', TGamepadLynxStandard, []);
-  RegisterPlatformPresentation('lynx', 'lynx', PlatformIconLynx);
+  RegisterPlatformPresentation('lynx', 'lynx', PlatformIcon);
   FRegistered := True;
 end;
 

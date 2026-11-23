@@ -3,11 +3,11 @@
 interface
 
 uses
-  Core.Archive.Container, S16.RomSets;
+  Core.Archive.Container, SegaArcade.RomSets;
 
-function FindSystem18Rom(const Name: string; out RomSet: TS16RomSet): Boolean;
+function FindSystem18Rom(const Name: string; out RomSet: TSegaArcadeRomSet): Boolean;
 
-function IdentifySystem18Rom(const Archive: IArchiveContainer; const Hint: string; out RomSet: TS16RomSet): Boolean;
+function IdentifySystem18Rom(const Archive: IArchiveContainer; const Hint: string; out RomSet: TSegaArcadeRomSet): Boolean;
 
 implementation
 
@@ -1018,14 +1018,14 @@ const
     'soundcpu,mpr-14722.c4,$1bd081f8,1572864,524288,1,0,524288'
   );
 
-function FindSystem18Rom(const Name: string; out RomSet: TS16RomSet): Boolean;
+function FindSystem18Rom(const Name: string; out RomSet: TSegaArcadeRomSet): Boolean;
 begin
-  Result := TS16RomSet.FindIn(SYSTEM18_SET_DATA, Name, RomSet);
+  Result := TSegaArcadeRomSet.FindIn(SYSTEM18_SET_DATA, Name, RomSet);
 end;
 
-function IdentifySystem18Rom(const Archive: IArchiveContainer; const Hint: string; out RomSet: TS16RomSet): Boolean;
+function IdentifySystem18Rom(const Archive: IArchiveContainer; const Hint: string; out RomSet: TSegaArcadeRomSet): Boolean;
 begin
-  Result := TS16RomSet.IdentifyIn(SYSTEM18_SET_DATA, Archive, Hint, RomSet);
+  Result := TSegaArcadeRomSet.IdentifyIn(SYSTEM18_SET_DATA, Archive, Hint, RomSet);
 end;
 
 end.

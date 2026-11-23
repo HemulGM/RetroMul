@@ -63,6 +63,7 @@ object RetroDialog: TRetroDialog
         end
         object ComboBoxPlatform: TComboBox
           Align = Top
+          ItemHeight = 32.000000000000000000
           Margins.Top = 4.000000000000000000
           Position.Y = 32.000000000000000000
           Size.Width = 496.000000000000000000

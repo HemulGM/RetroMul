@@ -155,8 +155,8 @@ end;
 
 class procedure TDCPlatform.RegisterRuntimeServices;
 begin
-  var Policy := TSnapshotPolicy.Create(2);
-  Policy.AcceptedVersions := [1];
+  var Policy := TSnapshotPolicy.Create(4);
+  Policy.AcceptedVersions := [1, 2, 3];
   RegisterSnapshotPolicy(ROM_CORE_ID_DC, Policy);
   var Service := Default(TPlatformServices);
   Service.LibraryFeatures := [TLibraryFeature.Playlists, TLibraryFeature.CueTracks] + [TLibraryFeature.GdiTracks];

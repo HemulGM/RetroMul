@@ -23,7 +23,7 @@ type
     FKeys: TPS1KeyMap;
     FExtraKeys: TPS1ExtraKeyMap;
     FBIOSFile, FVideo: string;
-    FRumble: Boolean;
+    FRumble, FAllowBootWithoutSBI: Boolean;
   protected
     procedure LoadCoreSettings(Ini: TCustomIniFile); override;
     procedure SaveCoreSettings(Ini: TCustomIniFile); override;
@@ -37,6 +37,7 @@ type
     // 'auto' (from the BIOS or the disc), 'ntsc' or 'pal'.
     property Video: string read FVideo write FVideo;
     property Rumble: Boolean read FRumble write FRumble;
+    property AllowBootWithoutSBI: Boolean read FAllowBootWithoutSBI write FAllowBootWithoutSBI;
     property Keys: TPS1KeyMap read FKeys;
   end;
 
@@ -133,6 +134,7 @@ type
     FSnapshotDirectory, FError: string;
     FDiscLocations, FDiscNames: TArray<string>;
     FDiscIndex: Integer;
+    procedure CheckLibCrypt(Disc: TCDDisc);
     procedure ReplaceDisc(const Location: string; Index: Integer);
     procedure LoadBIOS(const RomName: string);
     procedure Configure;
@@ -181,7 +183,8 @@ implementation
 
 uses
   RM.Platforms.PS1, Core.PerformanceHints, System.Math, System.Diagnostics,
-  System.UITypes, System.IOUtils, Core.SavePaths, PS1.Types, PS1.Firmware;
+  System.UITypes, System.IOUtils, Core.SavePaths, Core.EmulatorRegistry,
+  PS1.Types, PS1.Firmware, PS1.CDROM, PS1.LibCrypt;
 
 const
   KeyNames: array[TEmulatorButton] of string =
@@ -240,6 +243,7 @@ end;
 procedure TPS1Config.LoadCoreSettings(Ini: TCustomIniFile);
 begin
   FBIOSFile := Ini.ReadString('Hardware', 'BIOS', '');
+  FAllowBootWithoutSBI := Ini.ReadBool('System', 'AllowBootWithoutSBI', False);
   FVideo := Ini.ReadString('System', 'Video', 'auto').ToLower;
   if (FVideo <> 'ntsc') and (FVideo <> 'pal') then
     FVideo := 'auto';
@@ -259,6 +263,7 @@ end;
 procedure TPS1Config.SaveCoreSettings(Ini: TCustomIniFile);
 begin
   Ini.WriteString('Hardware', 'BIOS', FBIOSFile);
+  Ini.WriteBool('System', 'AllowBootWithoutSBI', FAllowBootWithoutSBI);
   Ini.WriteString('System', 'Video', FVideo);
   Ini.WriteBool('Peripherals', 'Rumble', FRumble);
   for var P := 0 to 1 do
@@ -864,8 +869,6 @@ begin
     FDiscLocations := TArray<string>.Create(RomName);
     FDiscNames := TArray<string>.Create(ExtractFileName(SourceName));
   end;
-  if FDisc <> nil then
-    FDiscIndex := 0;
   if FDisc = nil then
   begin
     var Size := Stream.Size - Stream.Position;
@@ -876,7 +879,11 @@ begin
     FIdentity := Copy(FExe);
   end
   else
+  begin
+    CheckLibCrypt(FDisc);
+    FDiscIndex := 0;
     FIdentity := FDisc.Identity;
+  end;
   LoadBIOS(RomName);
 
   // Video standard: setting, else the region of a Sony BIOS, else the disc's
@@ -939,6 +946,15 @@ begin
   Result := FDiscIndex;
 end;
 
+procedure TPS1CoreAdapter.CheckLibCrypt(Disc: TCDDisc);
+begin
+  if FConfigObject.AllowBootWithoutSBI then
+    Exit;
+  var Serial := PS1LibCryptSerial(Disc);
+  if (Serial <> '') and not PS1HasUsableSubchannelQ(Disc) then
+    raise ECoreInvalidMedia.CreateFmt('This PlayStation disc (%s) uses LibCrypt and needs a matching SBI file. ' + 'Place the .sbi beside the disc image with the same base name. ' + 'To continue anyway, enable Allow boot without SBI in the PlayStation settings.', [Serial]);
+end;
+
 procedure TPS1CoreAdapter.ReplaceDisc(const Location: string; Index: Integer);
 begin
   var Stream := FStorage.OpenRead(Location);
@@ -947,6 +963,7 @@ begin
     Disc := TCDDisc.Create(Stream, FStorage, Location);
     if not IsPS1Disc(Disc) then
       raise EReadError.Create('Not a PlayStation disc: ' + Location);
+    CheckLibCrypt(Disc);
     var Identity := Disc.Identity;
     if FWorker <> nil then
       FWorker.ChangeDisc(Disc);

@@ -36,6 +36,7 @@ type
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
     procedure FormSaveState(Sender: TObject);
     procedure ButtonOpenClick(Sender: TObject);
+    procedure ButtonOpenOpticalDiscClick(Sender: TObject);
     procedure OpenRom;
     procedure SelectDocument(const FileName: string = '');
     procedure FinishFileSelection;
@@ -60,7 +61,8 @@ uses
   System.Classes, System.SyncObjs, System.UITypes, System.Math, RM.Input,
   System.IOUtils, FMX.Forms, FMX.Objects, FMX.Graphics, FMX.OpenDialog,
   Core.Storage, Core.EmulatorFactory, Core.InputConfig, Core.Platforms,
-  RM.Gamepad, RM.FrameUpload, RM.Dialogs, RM.Styles, Core.SavePaths;
+  Core.CD.Physical, RM.Gamepad, RM.FrameUpload, RM.Dialogs, RM.Styles,
+  Core.SavePaths;
 
 function NewLoadCancellation(out CancelLoad: TProc): TProc;
 begin
@@ -378,6 +380,37 @@ begin
   end;
 end;
 
+procedure TSessionController.ButtonOpenOpticalDiscClick(Sender: TObject);
+begin
+  if FState.Session.OpeningRom then
+    Exit;
+
+  var Drives := OpticalCDDrives;
+  if Length(Drives) = 0 then
+  begin
+    ShowRetroMessage(FView, Translate('No optical drives found.'));
+    Exit;
+  end;
+  var IsAlive := FState.Session.CallbackAlive;
+  var OpenDrive: TProc<Integer> :=
+    procedure(Index: Integer)
+    begin
+      if not IsAlive() or (Index < 0) or (Index >= Length(Drives)) then
+        Exit;
+      FState.Session.ReportLaunchSource := 'optical_drive';
+      try
+        SelectDocument(OpticalCDLocation(Drives[Index]));
+      except
+        on E: Exception do
+          ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
+      end;
+    end;
+  if Length(Drives) = 1 then
+    OpenDrive(0)
+  else
+    ShowRetroOpticalDriveChoice(FView, Drives, OpenDrive);
+end;
+
 procedure TSessionController.OpenRom;
 begin
   FState.Session.ReportLaunchSource := 'file_picker';
@@ -661,6 +694,8 @@ begin
   var SourceName := FileName;
   if FileName.StartsWith('content://', True) then
     SourceName := FState.Session.Storage.Describe(FileName).Name;
+  if IsOpticalCDLocation(FileName) then
+    SourceName := FState.Session.LastReportFilename;
   // Recognition can open large discs or unpack archives regardless of the
   // filename extension. Keep the entire load off the UI thread for every core.
   // Capture only immutable arguments and storage for the worker. All form/core
@@ -669,6 +704,8 @@ begin
   var IsAlive := FState.Session.CallbackAlive;
   var Path := FileName;
   var Title := DisplayName;
+  if (Title = '') and IsOpticalCDLocation(Path) then
+    Title := SourceName;
   var Snapshot := SnapshotName;
   var Paused := StartPaused;
   var TargetPlatform := PlatformId;
@@ -692,13 +729,27 @@ begin
         ErrorText: string;
         Platforms: TArray<TCorePlatformOption>;
         FailedPlatformId, LoadError: string;
+        CheckDiscAutosave: Boolean;
       begin
+        CheckDiscAutosave := False;
         var Scope := TStorage.BeginReadCancellation(CheckCancelled);
         try
           CheckCancelled();
           var Stream := Storage.OpenRead(Path);
           try
-            Core := CreateEmulationCore(Stream, Storage, Path, TargetPlatform, PreferredPlatform);
+            if Stream is TPhysicalCDSource then
+            begin
+              var Source := TPhysicalCDSource(Stream);
+              if not SameText(Path, Source.Location) then
+              begin
+                Path := Source.Location;
+                if Source.DisplayName <> '' then
+                  Title := Source.DisplayName;
+                CheckDiscAutosave := (Snapshot = '') and (FindRecordedAutosave(Storage, Path) <> '');
+              end;
+            end;
+            if not CheckDiscAutosave then
+              Core := CreateEmulationCore(Stream, Storage, Path, TargetPlatform, PreferredPlatform);
             CheckCancelled();
           finally
             Stream.Free;
@@ -729,6 +780,23 @@ begin
             if Generation <> FLoadGeneration then
               Exit;
 
+            if IsOpticalCDLocation(Path) then
+            begin
+              FState.Session.LastReportRom := Path;
+              FState.Session.LastReportFilename := Title;
+            end;
+            if CheckDiscAutosave and (ErrorText = '') then
+            begin
+              var Launch := FState.Session.LastReportLaunch;
+              EndCoreLoading;
+              FState.Session.ReportLaunchSource := Launch;
+              try
+                LoadRom(Path, Title, Paused, Snapshot, PreferredPlatform);
+              finally
+                FinishFileSelection;
+              end;
+              Exit;
+            end;
             if Length(Platforms) > 0 then
             begin
               ChoosePlatform(Path, Title, Paused, Snapshot, Platforms, FailedPlatformId, LoadError);

@@ -469,6 +469,7 @@ begin
   FState.Browser.View.OnPlay := FView.LibraryPlay;
   FState.Browser.View.OnSettings := FView.SettingsClick;
   FState.Browser.View.OnOpen := FView.ButtonOpenClick;
+  FState.Browser.View.OnOpenOpticalDisc := FView.ButtonOpenOpticalDiscClick;
   FView.LayoutClient.Visible := False;
   FState.Browser.ViewingLibrary := True;
   FView.ScreenTabs.ActiveTab := FView.LibraryScreen;

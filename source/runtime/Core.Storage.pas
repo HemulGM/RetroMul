@@ -98,7 +98,8 @@ implementation
 
 uses
   Core.PlatformServices, System.IOUtils, System.StrUtils,
-  System.Generics.Collections, Core.Platforms, Core.CD.Disc, Core.MediaArchive,
+  System.Generics.Collections, Core.Platforms, Core.CD.Disc, Core.CD.Physical,
+  Core.MediaArchive,
   {$IFDEF ANDROID}
   Core.Storage.Android, {$ENDIF}
   {$IFDEF IOS} Macapi.Helpers, {$ENDIF}
@@ -633,6 +634,8 @@ end;
 function TStorage.OpenRead(const Location: string): TStream;
 begin
   CheckReadCancelled;
+  if IsOpticalCDLocation(Location) then
+    Exit(TPhysicalCDSource.Create(Location));
   {$IFDEF ANDROID}
   if Location.StartsWith('content://') then
     Result := TAndroidStorage.OpenUri(Location)
@@ -655,6 +658,9 @@ end;
 
 function TStorage.Exists(const Location: string): Boolean;
 begin
+  var Drive := OpticalCDDrive(Location);
+  if Drive <> '' then
+    Exit(OpticalCDDriveExists(Drive));
   {$IFDEF ANDROID}
   if Location.StartsWith('content://') then
     Exit(TAndroidStorage.Exists(Location));
@@ -971,6 +977,12 @@ begin
   {$ENDIF}
   Result := System.Default(TStorageFile);
   Result.Location := Location;
+  var Drive := OpticalCDDrive(Location);
+  if Drive <> '' then
+  begin
+    Result.Name := 'CD ' + ExtractFileName(Drive.Replace(':', ''));
+    Exit;
+  end;
   Result.Name := ExtractFileName(Location);
   Result.Size := TFile.GetSize(NativeStoragePath(Location));
 end;

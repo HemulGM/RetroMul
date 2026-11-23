@@ -360,6 +360,20 @@ begin
   begin
     for var I := 0 to 1023 do
       Codebook[I] := Read16(Base + Cardinal(I) * 2);
+    if Format = TexYUV422 then
+      for var I := 0 to 255 do
+        for var Row := 0 to 1 do
+        begin
+          // Each twiddled 2x2 codeword stores a U/V pair per row.
+          var Left := I * 4 + Row;
+          var Right := Left + 2;
+          var A := Codebook[Left];
+          var B := Codebook[Right];
+          var U := Integer(A and $FF);
+          var V := Integer(B and $FF);
+          Codebook[Left] := YUVToARGB(Integer(A shr 8), U, V);
+          Codebook[Right] := YUVToARGB(Integer(B shr 8), U, V);
+        end;
     DataBase := Base + 2048;
   end;
 
@@ -420,13 +434,17 @@ begin
           else
           begin
             Index := Read8(LevelBase);
-            Texel := Codebook[Index * 4];
+            // The 1x1 YUV mip is RGB565 in the last word of the codeword.
+            if Format = TexYUV422 then
+              Texel := DecodeTexel(Read16(Base + Index * 8 + 6), TexRGB565)
+            else
+              Texel := Codebook[Index * 4];
           end;
           if Format = TexPal8 then
             Texel := PaletteColor(PalBase + Integer(Texel and $FF))
           else if Format = TexPal4 then
             Texel := PaletteColor(PalBase + Integer(Texel and 15))
-          else
+          else if Format <> TexYUV422 then
             Texel := DecodeTexel(Texel, Format);
         end
         else
@@ -449,6 +467,9 @@ begin
             TexPal8:
               Texel := PaletteColor(PalBase + Integer(Read8(LevelBase + Cardinal(Index))));
             TexYUV422:
+              if W = 1 then
+                Texel := DecodeTexel(Read16(LevelBase), TexRGB565)
+              else
               begin
                 // Texels pair horizontally: U Y0 V Y1.
                 var PairX := X and not 1;

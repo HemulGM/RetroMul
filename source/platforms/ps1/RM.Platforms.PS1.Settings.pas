@@ -31,6 +31,9 @@ begin
   end;
   Context.AddChoice('RowPS1Video', 'Video standard', 'Automatic follows the BIOS or the disc region.', 'System', 'Video',
     SettingChoices(['Automatic', 'NTSC (60 Hz)', 'PAL (50 Hz)'], ['auto', 'ntsc', 'pal']), 'auto');
+  Context.AddBoolean('RowPS1AllowBootWithoutSBI', 'Allow boot without SBI',
+    'Start LibCrypt-protected discs without subchannel data. Games may freeze or fail later. Reopen the game to apply.',
+    'System', 'AllowBootWithoutSBI', False);
 end;
 
 procedure TPS1Settings.Peripherals(Context: TSettingsPageBuilder);

@@ -1,0 +1,69 @@
+﻿unit PS1.LibCrypt;
+
+interface
+
+uses
+  Core.CD.Disc;
+
+// The boot executable identifies the individual disc, even in a renamed image.
+function PS1LibCryptSerial(Disc: TCDDisc): string;
+
+implementation
+
+uses
+  System.SysUtils, System.StrUtils, System.RegularExpressions;
+
+const
+  // Disc serials from https://psxdatacenter.com/sbifiles.html
+  LibCryptSerials: array[0..202] of string = (
+    'SCES-00311', 'SCES-01431', 'SCES-01444', 'SCES-01492', 'SCES-01493', 'SCES-01494',
+    'SCES-01495', 'SCES-01516', 'SCES-01517', 'SCES-01518', 'SCES-01519', 'SCES-01564',
+    'SCES-01695', 'SCES-01700', 'SCES-01701', 'SCES-01702', 'SCES-01703', 'SCES-01704',
+    'SCES-01763', 'SCES-01882', 'SCES-01909', 'SCES-01979', 'SCES-02004', 'SCES-02005',
+    'SCES-02006', 'SCES-02007', 'SCES-02028', 'SCES-02029', 'SCES-02030', 'SCES-02031',
+    'SCES-02104', 'SCES-02105', 'SCES-02182', 'SCES-02185', 'SCES-02222', 'SCES-02264',
+    'SCES-02290', 'SCES-02365', 'SCES-02366', 'SCES-02367', 'SCES-02368', 'SCES-02369',
+    'SCES-02430', 'SCES-02431', 'SCES-02432', 'SCES-02487', 'SCES-02488', 'SCES-02489',
+    'SCES-02490', 'SCES-02491', 'SCES-02544', 'SCES-02545', 'SCES-02546', 'SCES-02834',
+    'SCES-02835', 'SLES-00017', 'SLES-00995', 'SLES-01041', 'SLES-01226', 'SLES-01241',
+    'SLES-01301', 'SLES-01362', 'SLES-01545', 'SLES-01715', 'SLES-01733', 'SLES-01906',
+    'SLES-01907', 'SLES-01943', 'SLES-02024', 'SLES-02025', 'SLES-02026', 'SLES-02027',
+    'SLES-02061', 'SLES-02071', 'SLES-02080', 'SLES-02081', 'SLES-02082', 'SLES-02083',
+    'SLES-02084', 'SLES-02086', 'SLES-02112', 'SLES-02113', 'SLES-02118', 'SLES-02207',
+    'SLES-02208', 'SLES-02209', 'SLES-02210', 'SLES-02211', 'SLES-02292', 'SLES-02293',
+    'SLES-02328', 'SLES-02329', 'SLES-02330', 'SLES-02355', 'SLES-02395', 'SLES-02529',
+    'SLES-02530', 'SLES-02531', 'SLES-02532', 'SLES-02533', 'SLES-02538', 'SLES-02558',
+    'SLES-02559', 'SLES-02560', 'SLES-02561', 'SLES-02562', 'SLES-02563', 'SLES-02572',
+    'SLES-02573', 'SLES-02681', 'SLES-02688', 'SLES-02689', 'SLES-02698', 'SLES-02700',
+    'SLES-02704', 'SLES-02705', 'SLES-02706', 'SLES-02707', 'SLES-02722', 'SLES-02724',
+    'SLES-02733', 'SLES-02754', 'SLES-02755', 'SLES-02756', 'SLES-02763', 'SLES-02766',
+    'SLES-02767', 'SLES-02824', 'SLES-02830', 'SLES-02831', 'SLES-02839', 'SLES-02857',
+    'SLES-02858', 'SLES-02859', 'SLES-02861', 'SLES-02965', 'SLES-02966', 'SLES-02967',
+    'SLES-02968', 'SLES-02969', 'SLES-02975', 'SLES-02977', 'SLES-02978', 'SLES-02992',
+    'SLES-03061', 'SLES-03062', 'SLES-03189', 'SLES-03191', 'SLES-03241', 'SLES-03242',
+    'SLES-03245', 'SLES-03324', 'SLES-03489', 'SLES-03519', 'SLES-03520', 'SLES-03521',
+    'SLES-03522', 'SLES-03523', 'SLES-03530', 'SLES-03603', 'SLES-03605', 'SLES-03626',
+    'SLES-12080', 'SLES-12081', 'SLES-12082', 'SLES-12083', 'SLES-12084', 'SLES-12328',
+    'SLES-12329', 'SLES-12330', 'SLES-12558', 'SLES-12559', 'SLES-12560', 'SLES-12561',
+    'SLES-12562', 'SLES-12965', 'SLES-12966', 'SLES-12967', 'SLES-12968', 'SLES-12969',
+    'SLES-22080', 'SLES-22081', 'SLES-22082', 'SLES-22083', 'SLES-22084', 'SLES-22328',
+    'SLES-22329', 'SLES-22330', 'SLES-22965', 'SLES-22966', 'SLES-22967', 'SLES-22968',
+    'SLES-22969', 'SLES-32080', 'SLES-32081', 'SLES-32082', 'SLES-32083', 'SLES-32084',
+    'SLES-32965', 'SLES-32966', 'SLES-32967', 'SLES-32968', 'SLES-32969'
+  );
+
+function PS1LibCryptSerial(Disc: TCDDisc): string;
+begin
+  Result := '';
+  var Config := TEncoding.ASCII.GetString(Disc.ReadISOFile('SYSTEM.CNF', 2048));
+  var Boot := TRegEx.Match(Config,
+    '(?im)^[ \t]*BOOT[ \t]*=[ \t]*CDROM0?:[\\/]*(?:[^\\/:\r\n;]+[\\/])*' +
+    '([A-Z]{4})[_-]([0-9]{3})\.?([0-9]{2})(?=[; \t\r\n]|\z)');
+  if not Boot.Success then
+    Exit;
+  var Serial := UpperCase(Boot.Groups[1].Value) + '-' + Boot.Groups[2].Value + Boot.Groups[3].Value;
+  if MatchStr(Serial, LibCryptSerials) then
+    Result := Serial;
+end;
+
+end.

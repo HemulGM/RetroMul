@@ -33,6 +33,7 @@ type
     FGDROM: TDCGDROM;
     FAICA: TDCAICA;
     FMaple: TDCMaple;
+    FCh2ListIRQs: Cardinal;
     function Reg(Address: Cardinal): Cardinal;
     procedure SetReg(Address, Value: Cardinal);
     procedure StartCh2;
@@ -121,6 +122,7 @@ end;
 procedure TDCHolly.Reset;
 begin
   S := Default(TDCHollyState);
+  FCh2ListIRQs := 0;
   for var I := 0 to 3 do
     S.G2Due[I] := DCNever;
 end;
@@ -192,15 +194,22 @@ begin
   var Remaining := Length;
   var Address := Source;
   var Buffer: array[0..7] of Cardinal;
-  while Remaining > 0 do
-  begin
-    Move(RAMPointer(Address)^, Buffer[0], 32);
-    WriteArea4(Dest, @Buffer[0], 8);
-    Inc(Address, 32);
-    // The TA FIFO address stays; the texture path advances.
-    if (Dest and $01000000) <> 0 then
-      Inc(Dest, 32);
-    Dec(Remaining, 32);
+  // The synchronous copy can parse an End Of List before its DMA transfer
+  // would have reached the TA. Publish those notifications at DMA completion.
+  FInterrupts.BeginNormalCapture(HollyTAListMask);
+  try
+    while Remaining > 0 do
+    begin
+      Move(RAMPointer(Address)^, Buffer[0], 32);
+      WriteArea4(Dest, @Buffer[0], 8);
+      Inc(Address, 32);
+      // The TA FIFO address stays; the texture path advances.
+      if (Dest and $01000000) <> 0 then
+        Inc(Dest, 32);
+      Dec(Remaining, 32);
+    end;
+  finally
+    FCh2ListIRQs := FCh2ListIRQs or FInterrupts.EndNormalCapture;
   end;
   FPeriph.S.DMA[2].SAR := Channel.SAR + Length;
   SetReg(SB_C2DSTAT, Dest);
@@ -423,7 +432,9 @@ begin
         S.Ch2Busy := False;
         SetReg(SB_C2DST, 0);
         FPeriph.CompleteDMA(2);
-        FInterrupts.RaiseNormal(HollyCh2DMA);
+        var Mask := (Cardinal(1) shl HollyCh2DMA) or FCh2ListIRQs;
+        FCh2ListIRQs := 0;
+        FInterrupts.RaiseNormalMask(Mask);
       end;
     TDCEvent.SortDMA:
       begin
@@ -560,6 +571,12 @@ end;
 procedure TDCHolly.SerializeState(Archive: TStateArchive);
 begin
   Archive.Field(S, SizeOf(S));
+  if (Archive.Version = 0) or (Archive.Version >= 4) then
+    Archive.Field(FCh2ListIRQs, SizeOf(FCh2ListIRQs))
+  else if Archive.Loading then
+    FCh2ListIRQs := 0;
+  if Archive.Loading and ((FCh2ListIRQs and not Cardinal(HollyTAListMask)) <> 0) then
+    raise EReadError.Create('Dreamcast snapshot channel 2 list interrupts');
   // Old snapshots used the aliased register decoder: G1 values lived in
   // the lower slots. Seed the now-independent bank with those old values.
   if Archive.Loading and (Archive.Version = 1) then

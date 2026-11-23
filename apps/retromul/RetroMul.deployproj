@@ -1625,6 +1625,15 @@
             <Overwrite>True</Overwrite>
             <Required>True</Required>
         </DeployFile>
+        <DeployFile Include="..\..\source\cores\system32\S32.RomData.inc" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>S32.RomData.inc</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
         <DeployFile Include="$(ProjectName).Artwork\Windows\Uwp_44.png" Condition="'$(Config)'=='Release'">
             <RemoteDir>RetroMul\Assets\</RemoteDir>
             <RemoteName>Logo44x44.png</RemoteName>
@@ -1643,6 +1652,33 @@
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
         </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEFragment.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEFragment.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEDown.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEDown.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\SoftDouble.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>SoftDouble.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
         <DeployFile Include="Win64\Release\RetroMul.exe" Condition="'$(Config)'=='Release'">
             <RemoteDir>RetroMul\</RemoteDir>
             <RemoteName>RetroMul.exe</RemoteName>
@@ -1653,11 +1689,47 @@
             <Overwrite>True</Overwrite>
             <Required>True</Required>
         </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEVert.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEVert.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
         <DeployFile Include="Win64\Release\AppxManifest.xml" Condition="'$(Config)'=='Release'">
             <RemoteDir>RetroMul\</RemoteDir>
             <RemoteName>AppxManifest.xml</RemoteName>
             <DeployClass>ProjectUWPManifest</DeployClass>
             <Operation>1</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEBlend.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEBlend.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEClut.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEClut.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEBlendFrag.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEBlendFrag.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
             <LocalCommand/>
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
@@ -1671,11 +1743,47 @@
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
         </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGERaster.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGERaster.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGESelfTest.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGESelfTest.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEPush.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEPush.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
         <DeployFile Include="$(ProjectName).Artwork\Windows\Uwp_150.png" Condition="'$(Config)'=='Release'">
             <RemoteDir>RetroMul\Assets\</RemoteDir>
             <RemoteName>Logo150x150.png</RemoteName>
             <DeployClass>UWP_DelphiLogo150</DeployClass>
             <Operation>1</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEFrag.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEFrag.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
             <LocalCommand/>
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
@@ -2573,6 +2681,69 @@
     </ItemGroup>
     <ItemGroup Condition="'$(Platform)'=='Win64x'"/>
     <ItemGroup Condition="'$(Platform)'=='Linux64'">
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEPush.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEPush.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEFrag.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEFrag.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\cores\sms\SMS.Region.inc" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>SMS.Region.inc</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGERaster.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGERaster.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\cores\system32\S32.RomData.inc" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>S32.RomData.inc</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\SoftDouble.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>SoftDouble.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEDown.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEDown.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
         <DeployFile Include="Linux64\RELEASE_NO_SOUND\RetroMul" Condition="'$(Config)'=='RELEASE_NO_SOUND'">
             <RemoteDir>RetroMul\</RemoteDir>
             <RemoteName>RetroMul</RemoteName>
@@ -2582,6 +2753,15 @@
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
             <Required>True</Required>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEVert.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEVert.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
         </DeployFile>
         <DeployFile Include="Linux64\Debug\RetroMul" Condition="'$(Config)'=='Debug'">
             <RemoteDir>RetroMul\</RemoteDir>
@@ -2593,6 +2773,42 @@
             <Overwrite>True</Overwrite>
             <Required>True</Required>
         </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEFragment.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEFragment.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGESelfTest.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGESelfTest.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\cores\cps\CPS.RomData.inc" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>CPS.RomData.inc</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEBlend.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEBlend.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
         <DeployFile Include="Linux64\Release\RetroMul" Condition="'$(Config)'=='Release'">
             <RemoteDir>RetroMul\</RemoteDir>
             <RemoteName>RetroMul</RemoteName>
@@ -2602,6 +2818,24 @@
             <RemoteCommand/>
             <Overwrite>True</Overwrite>
             <Required>True</Required>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEBlendFrag.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEBlendFrag.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
+        </DeployFile>
+        <DeployFile Include="..\..\source\gpu\shaders\PSPGEHLEClut.pasm" Condition="'$(Config)'=='Release'">
+            <RemoteDir>RetroMul\</RemoteDir>
+            <RemoteName>PSPGEHLEClut.pasm</RemoteName>
+            <DeployClass>ProjectFile</DeployClass>
+            <Operation>0</Operation>
+            <LocalCommand/>
+            <RemoteCommand/>
+            <Overwrite>True</Overwrite>
         </DeployFile>
     </ItemGroup>
 </Project>

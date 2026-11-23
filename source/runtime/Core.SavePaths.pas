@@ -36,11 +36,14 @@ function SnapshotDirectoryHasFiles(const Storage: IStorage; const Directory: str
 implementation
 
 uses
-  System.SysUtils, System.IOUtils, System.StrUtils, System.Hash;
+  System.SysUtils, System.IOUtils, System.StrUtils, System.Hash,
+  Core.CD.Physical;
 
 function SessionKey(const RomLocation: string): string;
 begin
   var Location := RomLocation;
+  if IsOpticalCDLocation(Location) then
+    Exit(THashSHA2.GetHashString(Location.ToLower));
   if not Location.StartsWith('content://', True) then
   begin
     Location := ExpandFileName(Location);

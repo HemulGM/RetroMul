@@ -427,12 +427,16 @@ uses
   {$ENDIF }
   {$IF Defined(MSWINDOWS)}
   FMX.Platform.Win in '..\..\dependencies\DelphiWinUI3\Fixes\D13\FMX.Platform.Win.pas',
+  Core.CD.Physical.Windows in '..\..\source\media\cd\Core.CD.Physical.Windows.pas',
   {$ENDIF }
   {$IF Defined(MSWINDOWS) and not Defined(PCM_AUDIO_NULL)}
   PCM.Audio.Windows.MMSystem in '..\..\dependencies\PCMAudio\PCM.Audio.Windows.MMSystem.pas',
   {$ENDIF }
   {$IF Defined(LINUX) and not Defined(ANDROID) and not Defined(PCM_AUDIO_NULL)}
   PCM.Audio.Linux.Alsa in '..\..\dependencies\PCMAudio\PCM.Audio.Linux.Alsa.pas',
+  {$ENDIF }
+  {$IF Defined(LINUX) and not Defined(ANDROID)}
+  Core.CD.Physical.Linux in '..\..\source\media\cd\Core.CD.Physical.Linux.pas',
   {$ENDIF }
   {$IF (Defined(MACOS) or Defined(IOS)) and not Defined(PCM_AUDIO_NULL)}
   PCM.Audio.Apple.AudioQueue in '..\..\dependencies\PCMAudio\PCM.Audio.Apple.AudioQueue.pas',
@@ -460,6 +464,7 @@ uses
   CHD.LZMA in '..\..\source\media\chd\CHD.LZMA.pas',
   CHD in '..\..\source\media\chd\CHD.pas',
   CHD.Zstd in '..\..\source\media\chd\CHD.Zstd.pas',
+  Core.CD.Physical in '..\..\source\media\cd\Core.CD.Physical.pas',
   Core.CD.CHD in '..\..\source\media\cd\Core.CD.CHD.pas',
   Core.CD.Disc in '..\..\source\media\cd\Core.CD.Disc.pas',
   RM.Platforms.Presentation in 'ui\RM.Platforms.Presentation.pas',
@@ -1055,3 +1060,4 @@ begin
   Application.CreateForm(TFormMain, FormMain);
   Application.Run;
 end.
+

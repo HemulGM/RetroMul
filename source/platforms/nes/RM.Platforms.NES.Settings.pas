@@ -50,7 +50,7 @@ begin
     FileFilter := 'NES palettes (*.pal)|*.pal|All files|*.*';
     PickerTitle := 'Choose NES palette';
   end;
-  Context.Heading('GroupNesOverscan', 'Overscan cropping', True);
+  Context.Heading('GroupNesOverscan', 'Overscan cropping');
   Context.AddInteger('RowNesCropTop', 'Crop top', 'Pixels to hide at the top edge. The full image is still emulated.', 'Video', 'CropTop', 0, 16);
   Context.AddInteger('RowNesCropBottom', 'Crop bottom', 'Pixels to hide at the bottom edge. The full image is still emulated.', 'Video', 'CropBottom', 0, 16);
   Context.AddInteger('RowNesCropLeft', 'Crop left', 'Pixels to hide at the left edge. Zapper aiming follows the cropped image.', 'Video', 'CropLeft', 0, 16);
@@ -61,11 +61,11 @@ procedure TNESSettings.Audio(Context: TSettingsPageBuilder);
 const
   Captions: array[0..5] of string = ('Pulse 1', 'Pulse 2', 'Triangle channel', 'Noise', 'DMC', 'Cartridge expansion audio');
 begin
-  Context.Heading('GroupNesChannelMixer', 'NES channel mixer', True);
+  Context.Heading('GroupNesChannelMixer', 'NES channel mixer');
   for var I := 0 to High(NES_CHANNEL_KEYS) do
     with Context.AddSlider('RowNes' + NES_CHANNEL_KEYS[I], Captions[I], '100% keeps the original level; 0% mutes this channel. Boosting above 100% may clip.', 'Audio', NES_CHANNEL_KEYS[I], 100, 0, 200, 1, True) do
       UnitCaption := '%';
-  Context.Heading('GroupNesSoundCompatibility', 'Sound compatibility', True);
+  Context.Heading('GroupNesSoundCompatibility', 'Sound compatibility');
   Context.AddBoolean('RowNesSwapDutyCycles', 'Swap pulse duty cycles',
     'Reproduce the swapped 25% and 50% pulse widths of some Famicom clones.', 'Audio', 'SwapDutyCycles', False);
   Context.AddBoolean('RowNesSilenceUltrasonicTriangle', 'Silence ultrasonic triangle',
@@ -77,7 +77,7 @@ end;
 
 procedure TNESSettings.Peripherals(Context: TSettingsPageBuilder);
 begin
-  Context.Heading('GroupAdditionalplayers', 'Additional players', True);
+  Context.Heading('GroupAdditionalplayers', 'Additional players');
   var FourScore := Context.AddBoolean('RowFourScore', 'Four Score',
     'Extra controllers for players 3 and 4; incompatible with Zapper,' + ' Power Pad and Miracle Piano.', 'Input',
     'FourScore', False);
@@ -86,7 +86,7 @@ end;
 
 procedure TNESSettings.Expansion(Context: TSettingsPageBuilder);
 begin
-  Context.Heading('GroupFamicomDiskSystem', 'Famicom Disk System', True);
+  Context.Heading('GroupFamicomDiskSystem', 'Famicom Disk System');
   with Context.AddPath('RowFdsBIOS', 'FDS BIOS', 'Optional 8 KiB BIOS override. Leave blank for automatic selection. BIOS changes apply when a game is reopened.', 'FDS', 'BIOSFile', '', False) do
   begin
     ApplyMode := TSettingsApplyMode.OnNextLoad;
@@ -113,7 +113,7 @@ begin
     'FDS', 'ChangeDelayMs', SettingChoices(['0.5 s', '1 s', '2 s'], ['500', '1000', '2000']), '1000');
   with Context.AddSlider('RowFdsAudioVolume', 'FDS audio volume', 'Adjust the FDS wavetable channel independently of NES audio. 100% keeps the original level.', 'FDS', 'Volume', 100, 0, 200, 1, True) do
     UnitCaption := '%';
-  Context.Heading('GroupFamicomexpansionport', 'Famicom expansion port', True);
+  Context.Heading('GroupFamicomexpansionport', 'Famicom expansion port');
   var Expansion := Context.AddChoice('RowConnecteddevice', 'Connected device', 'Automatic uses the ROM metadata.',
     'Ports', 'Expansion',
     SettingChoices(['Automatic', 'None', 'Subor keyboard', 'Famicom keyboard', 'Data Recorder'], ['auto', 'none', 'subor', 'famicom', 'recorder']), 'auto');

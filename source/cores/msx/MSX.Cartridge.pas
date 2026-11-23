@@ -61,6 +61,7 @@ type
     procedure LoadRAM(const Data: TBytes);
     function SaveRAM: TBytes;
     class function Recognizes(const Data: TBytes): Boolean; static;
+    class function HasBasicEntry(const Data: TBytes): Boolean; static;
     class function DetectMapper(const Data: TBytes; UseKnownHashes: Boolean = True): TMSXMapper; static;
     class function AnalyzeMapper(const Data: TBytes; UseKnownHashes: Boolean = True): TMSXMapperDetection; static;
     property Mapper: TMSXMapper read FMapper;
@@ -204,16 +205,7 @@ const
     (Hash: 'fc9adbd816109f7705f342c01f168bb09ca4b2ff'; Mapper: ASCII8) { Deep Forest },
     (Hash: 'fd71df03b0e9f3caf701ecfc6d5232060cab3b13'; Mapper: Konami) { Ganbare Goemon - Samurai },
     (Hash: 'fe4bd35e87dd50fddd255172129b9bec38691188'; Mapper: Konami) { King Kong 2 },
-    (Hash: 'ff72a1788d47f9876d9fabd720f6a289fb409090'; Mapper: KonamiSCC)
-
-
-
-
-
-
-
- { F1 Spirit - The Way To Formula 1 }
-    );
+    (Hash: 'ff72a1788d47f9876d9fabd720f6a289fb409090'; Mapper: KonamiSCC) { F1 Spirit - The Way To Formula 1 });
 {$ENDREGION}
 
 class function TMSXCartridge.Recognizes(const Data: TBytes): Boolean;
@@ -221,6 +213,25 @@ begin
   Result := (Length(Data) >= $2000) and (Length(Data) <= $800000) and
     (((Data[0] = $41) and (Data[1] = $42)) or
     ((Length(Data) >= $4010) and (Data[$4000] = $41) and (Data[$4001] = $42)));
+end;
+
+class function TMSXCartridge.HasBasicEntry(const Data: TBytes): Boolean;
+const
+  Reserved: array[0..5] of Byte = (0, 0, 0, 0, 0, 0);
+begin
+  // An MSX BASIC ROM stores its TEXT pointer in an AB header mapped at $8000.
+  // A banked cartridge can expose this header after its native initializer runs.
+  for var Bank := 0 to Length(Data) div $2000 - 1 do
+  begin
+    var Offset := Bank * $2000;
+    if (Data[Offset] <> $41) or (Data[Offset + 1] <> $42) then
+      Continue;
+    var TextAddress := Integer(Data[Offset + 8]) or (Integer(Data[Offset + 9]) shl 8);
+    if (TextAddress >= $8010) and (TextAddress < $C000) and
+      CompareMem(@Data[Offset + 10], @Reserved, SizeOf(Reserved)) then
+      Exit(True);
+  end;
+  Result := False;
 end;
 
 class function TMSXCartridge.DetectMapper(const Data: TBytes; UseKnownHashes: Boolean): TMSXMapper;

@@ -20,8 +20,7 @@ type
   TSettingsGroup = class(TSettingsPageElement)
   public
     Id, Caption: string;
-    Preview, Emphasized: Boolean;
-    TitleSize: Single;
+    Preview: Boolean;
     VisibleWhen: TSettingsCondition;
   end;
 
@@ -167,7 +166,7 @@ type
     constructor Create;
     destructor Destroy; override;
     procedure Clear;
-    function Heading(const Id, Caption: string; Emphasized: Boolean = False; Preview: Boolean = False; TitleSize: Single = 20): TSettingsGroup;
+    function Heading(const Id, Caption: string; Preview: Boolean = False): TSettingsGroup;
     function AddBoolean(const Id, Caption, Description, Section, Key: string; Default: Boolean; SingleLineDescription: Boolean = False): TBooleanSetting;
     function AddChoice(const Id, Caption, Description, Section, Key: string; const Items: array of TSettingsChoiceItem; const Default: string; SingleLineDescription: Boolean = False): TChoiceSetting;
     function AddInteger(const Id, Caption, Description, Section, Key: string; Default, Maximum: Integer; SingleLineDescription: Boolean = False): TIntegerSetting;
@@ -444,7 +443,7 @@ begin
   AddBlock(Result, Id, Caption, Description);
 end;
 
-function TSettingsPageBuilder.Heading(const Id, Caption: string; Emphasized, Preview: Boolean; TitleSize: Single): TSettingsGroup;
+function TSettingsPageBuilder.Heading(const Id, Caption: string; Preview: Boolean): TSettingsGroup;
 begin
   if Id = '' then
     raise EArgumentException.Create('Empty settings group ID');
@@ -455,8 +454,6 @@ begin
   Result.Id := Id;
   Result.Caption := Caption;
   Result.Preview := Preview;
-  Result.Emphasized := Emphasized;
-  Result.TitleSize := TitleSize;
   FGroups.Add(Result);
   FDefinition.Items.Add(Result);
   CurrentGroup := Result;

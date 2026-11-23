@@ -178,7 +178,8 @@ begin
   var FMPACPrimary := (Length(Data) = $10000) and
     (TEncoding.ASCII.GetString(Data, $18, 8) = 'PAC2OPLL');
   var AudioPrimary := TMSXCartridge.DetectMapper(Data) in [PhilipsAudio, PanasonicAudio];
-  if (Config.BIOSFile = '') and (Config.UseOriginalBIOS or (MediaKind <> CartridgeMedia) or FMPACPrimary or AudioPrimary) then
+  if (Config.BIOSFile = '') and (Config.UseOriginalBIOS or (MediaKind <> CartridgeMedia) or
+    FMPACPrimary or AudioPrimary or TMSXCartridge.HasBasicEntry(Data)) then
   begin
     FBIOS := OriginalMain;
     FSubROM := OriginalSub;

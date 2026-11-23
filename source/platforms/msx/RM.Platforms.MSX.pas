@@ -168,7 +168,7 @@ begin
     ['.rom', '.mx2', '.dsk', '.cas', '.wav'],
     'MSX', 'msx2', 2);
   TPlatformRegistry.RegisterPlatform('msx2plus', 'MSX2+', 'MSX2+',
-    'ASCII', 'MSX2+ V9958 YJK MSX MUSIC', 'msx2plus', ['msx2plus', 'msx2+'],
+    'ASCII / Microsoft', 'MSX2+ V9958 YJK MSX MUSIC', 'msx2plus', ['msx2plus', 'msx2+'],
     ['.rom', '.mx2', '.mxp', '.dsk', '.cas', '.wav'],
     'MSX', 'msx2plus', 2);
 end;

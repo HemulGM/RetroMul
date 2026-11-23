@@ -3,12 +3,12 @@
 interface
 
 uses
-  RetroTune.ReferenceForm, RetroTune.Decoder;
+  Audio.Types, RetroTune.ReferenceForm, Audio.Decoder;
 
 type
   TTuneInfoForm = class(TTuneReferenceForm)
   public
-    procedure SetInfo(const Path: string; FileSize: Int64; const Info: TTuneInfo);
+    procedure SetInfo(const Path: string; FileSize: Int64; const Info: TAudioInfo);
   end;
 
 implementation
@@ -16,7 +16,7 @@ implementation
 uses
   System.SysUtils, System.Types, FMX.Types;
 
-procedure TTuneInfoForm.SetInfo(const Path: string; FileSize: Int64; const Info: TTuneInfo);
+procedure TTuneInfoForm.SetInfo(const Path: string; FileSize: Int64; const Info: TAudioInfo);
 begin
   FScroll.BeginUpdate;
   try

@@ -43,6 +43,11 @@ type
     // Keep the returned scope alive on the calling thread during loading.
     class function BeginReadCancellation(const CheckCancelled: TProc): IInterface; static;
     class procedure CheckReadCancelled; static;
+    // Opens an independent cursor on the same immutable local file when supported.
+    // The caller owns the result. Other stream types return nil.
+    class function TryOpenIndependentRead(Input: TStream): TStream; static;
+    // Construction-only, thread-local scope. Retained config paths outlive it.
+    class function BeginGameSettings(const Storage: IStorage; const RomName: string): IInterface; static;
     function RomFolder(const SystemId: string): string;
     procedure SetRomFolder(const SystemId, Value: string);
     function DetectRomFolder(const Location, SystemId: string): string;
@@ -83,23 +88,36 @@ type
 function RememberIOSDocumentURL(const URL: NSURL): string;
 {$ENDIF}
 
-function ReadRomData(Stream: TStream): TBytes;
+function ReadRomData(Stream: TStream; MaxSize: Integer = 64 * 1024 * 1024): TBytes;
+
+function GameConfigFile(const Storage: IStorage; const SystemId, RomName: string): string;
+
+function NativeStoragePath(const Location: string): string;
 
 implementation
 
 uses
   Core.PlatformServices, System.IOUtils, System.StrUtils,
-  System.Generics.Collections, Core.Platforms, Core.CD.Disc,
+  System.Generics.Collections, Core.Platforms, Core.CD.Disc, Core.MediaArchive,
   {$IFDEF ANDROID}
   Core.Storage.Android, {$ENDIF}
-  {$IFDEF IOS} Macapi.Helpers, System.Hash, {$ENDIF}
+  {$IFDEF IOS} Macapi.Helpers, {$ENDIF}
   {$IFDEF MSWINDOWS} Winapi.Windows, {$ELSE} Posix.Stdio, Posix.Unistd, {$ENDIF}
-  System.Types;
+  System.Types, System.Hash;
 
 const
   DEFAULT_MAX_ROM_FILE_SIZE = 64 * 1024 * 1024;
 
 type
+  TGameSettingsScope = class(TInterfacedObject)
+  private
+    FPrevious: TGameSettingsScope;
+  public
+    Root, RomName: string;
+    constructor Create(const Storage: IStorage; const Game: string);
+    destructor Destroy; override;
+  end;
+
   TReadCancellationScope = class(TInterfacedObject)
   private
     FPrevious: TReadCancellationScope;
@@ -108,6 +126,13 @@ type
     constructor Create(const Check: TProc);
     destructor Destroy; override;
   end;
+
+  {$IFDEF MSWINDOWS}
+  TStorageHandleStream = class(THandleStream)
+  public
+    destructor Destroy; override;
+  end;
+  {$ENDIF}
 
   TCancellableReadStream = class(TStream)
   private
@@ -125,10 +150,45 @@ type
 
 threadvar
   ReadCancellationScope: TReadCancellationScope;
+  GameSettingsScope: TGameSettingsScope;
 
-function ReadRomData(Stream: TStream): TBytes;
-const
-  MAX_ROM_DATA_SIZE = 64 * 1024 * 1024;
+function GameConfigPath(const Root, ConfigPath, RomName: string): string;
+begin
+  var Identity := THashSHA2.GetHashString(RomName);
+  Result := TPath.Combine(TPath.Combine(TPath.Combine(Root, 'game-settings'), Identity), TPath.GetFileName(ConfigPath));
+end;
+
+function GameConfigFile(const Storage: IStorage; const SystemId, RomName: string): string;
+begin
+  if RomName = '' then
+    raise EArgumentException.Create('Game location is empty');
+  Result := GameConfigPath(Storage.Root, Storage.ConfigFile(SystemId), RomName);
+end;
+
+constructor TGameSettingsScope.Create(const Storage: IStorage; const Game: string);
+begin
+  inherited Create;
+  var ActualStorage := Storage;
+  if ActualStorage = nil then
+    ActualStorage := TStorage.Default;
+  Root := ActualStorage.Root;
+  RomName := Game;
+  FPrevious := GameSettingsScope;
+  GameSettingsScope := Self;
+end;
+
+destructor TGameSettingsScope.Destroy;
+begin
+  GameSettingsScope := FPrevious;
+  inherited;
+end;
+
+class function TStorage.BeginGameSettings(const Storage: IStorage; const RomName: string): IInterface;
+begin
+  Result := TGameSettingsScope.Create(Storage, RomName);
+end;
+
+function ReadRomData(Stream: TStream; MaxSize: Integer): TBytes;
 begin
   if Stream = nil then
     raise EArgumentNilException.Create('Stream');
@@ -142,8 +202,8 @@ begin
       if Count = 0 then
         Break;
 
-      if Memory.Size + Count > MAX_ROM_DATA_SIZE then
-        raise EReadError.Create('ROM exceeds 64 MiB');
+      if Memory.Size + Count > MaxSize then
+        raise EReadError.CreateFmt('ROM exceeds %d bytes', [MaxSize]);
 
       Memory.WriteBuffer(Buffer, Count);
     end;
@@ -154,7 +214,6 @@ begin
     Memory.Free;
   end;
 end;
-
 
 constructor TReadCancellationScope.Create(const Check: TProc);
 begin
@@ -460,6 +519,8 @@ begin
   var Ini := ReadConfig(ConfigFile('config'));
   try
     Result := Ini.ReadString('RomFolders', platform.Id, '').Trim;
+    if (Result = '') and (platform.SharedRomFolder <> '') then
+      Result := Ini.ReadString('RomFolders', platform.SharedRomFolder, '').Trim;
   finally
     Ini.Free;
   end;
@@ -473,10 +534,9 @@ begin
   var Children := Folders(Location);
   for var Alias in platform.ScanFolders do
   begin
-    // Former shared scan folders relied on extension filters. They are not
-    // aliases when the entire folder now belongs to a different platform.
     var OwnerPlatform: TPlatformInfo;
-    if TPlatformRegistry.Find(Alias, OwnerPlatform) and (OwnerPlatform.Id <> platform.Id) then
+    if TPlatformRegistry.Find(Alias, OwnerPlatform) and (OwnerPlatform.Id <> platform.Id) and
+      (OwnerPlatform.Id <> platform.SharedRomFolder) then
       Continue;
     for var Child in Children do
     begin
@@ -524,6 +584,50 @@ begin
   finally
     Ini.Free;
   end;
+end;
+
+{$IFDEF MSWINDOWS}
+function ReopenStorageFile(Original: THandle; DesiredAccess, ShareMode, Flags: DWORD): THandle; stdcall; external kernel32 name 'ReOpenFile';
+
+destructor TStorageHandleStream.Destroy;
+begin
+  CloseHandle(Handle);
+  inherited;
+end;
+{$ENDIF}
+
+class function TStorage.TryOpenIndependentRead(Input: TStream): TStream;
+begin
+  Result := nil;
+  {$IFDEF MSWINDOWS}
+  var Check: TProc;
+  if Input is TCancellableReadStream then
+  begin
+    Check := TCancellableReadStream(Input).FCheckCancelled;
+    Check();
+    Input := TCancellableReadStream(Input).FSource;
+  end;
+  if (Input = nil) or (Input.ClassType <> TFileStream) then
+    Exit;
+  // ReOpenFile keeps file identity and gets its own position. Deny concurrent
+  // writers, as for a normal read opened by this storage.
+  var Handle := ReopenStorageFile(TFileStream(Input).Handle, GENERIC_READ, FILE_SHARE_READ or FILE_SHARE_DELETE, 0);
+  if Handle = INVALID_HANDLE_VALUE then
+    Exit;
+  try
+    Result := TStorageHandleStream.Create(Handle);
+  except
+    CloseHandle(Handle);
+    raise;
+  end;
+  if Assigned(Check) then
+  try
+    Result := TCancellableReadStream.Create(Result, Check);
+  except
+    Result.Free;
+    raise;
+  end;
+  {$ENDIF}
 end;
 
 function TStorage.OpenRead(const Location: string): TStream;
@@ -631,8 +735,19 @@ end;
 procedure TStorage.Replace(const Source, Target: string);
 begin
   {$IFDEF MSWINDOWS}
-  if not MoveFileEx(PChar(NativeStoragePath(Source)), PChar(NativeStoragePath(Target)), MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
-    RaiseLastOSError;
+  var SourcePath := NativeStoragePath(Source);
+  var TargetPath := NativeStoragePath(Target);
+  var Started := TThread.GetTickCount64;
+  repeat
+    if MoveFileEx(PChar(SourcePath), PChar(TargetPath), MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
+      Exit;
+    var ErrorCode := GetLastError;
+    // An open handle that denies deletion can briefly block the atomic rename.
+    if ((ErrorCode <> ERROR_ACCESS_DENIED) and (ErrorCode <> ERROR_SHARING_VIOLATION)) or
+      (TThread.GetTickCount64 - Started >= 200) then
+      RaiseLastOSError(ErrorCode);
+    TThread.Sleep(10);
+  until False;
   {$ELSE}
   var Src := UTF8String(NativeStoragePath(Source));
   var Dst := UTF8String(NativeStoragePath(Target));
@@ -705,6 +820,13 @@ begin
   if TPlatformRegistry.Find(SystemId, platform) then
     SettingsId := platform.SettingsCoreId;
   Result := TPath.Combine(FRoot, SafeName(SettingsId) + '.ini');
+  if (GameSettingsScope <> nil) and (GameSettingsScope.RomName <> '') and
+    SameText(GameSettingsScope.Root, FRoot) and not SameText(SettingsId, 'config') then
+  begin
+    var Specific := GameConfigPath(FRoot, Result, GameSettingsScope.RomName);
+    if Exists(Specific) then
+      Result := Specific;
+  end;
 end;
 
 function TStorage.ReadConfig(const Location: string): TMemIniFile;
@@ -877,12 +999,15 @@ begin
     CueNames.CaseSensitive := False;
     CueNames.Sorted := True;
     CueNames.Duplicates := dupIgnore;
-    // Accept known ROM extensions from every platform, regardless of folder.
+    // Each configured folder only contributes formats supported by its platform.
     Extensions.CaseSensitive := False;
     Extensions.Sorted := True;
     Extensions.Duplicates := dupIgnore;
-    for var platform in TPlatformRegistry.All do
-      for var Extension in platform.Extensions do
+    var platform := TPlatformRegistry.Require(SystemId);
+    var Shared := (platform.SharedRomFolder <> '') and
+      SameFileName(ExcludeTrailingPathDelimiter(Folder), ExcludeTrailingPathDelimiter(RomFolder(platform.SharedRomFolder)));
+    for var Extension in platform.Extensions do
+      if not Shared or not IsMediaArchive(Extension) then
         Extensions.Add(Extension);
     var Candidates: TArray<TStorageFile>;
     {$IFDEF ANDROID}
@@ -900,7 +1025,8 @@ begin
             ExpandFileName(Locations[i])).Replace('\', '/');
       end;
     end;
-    var Features := PlatformServices(SystemId).LibraryFeatures;
+    var Services := PlatformServices(SystemId);
+    var Features := Services.LibraryFeatures;
     var DiscSystem := TLibraryFeature.CueTracks in Features;
     if TLibraryFeature.Playlists in Features then
       for var Candidate in Candidates do
@@ -949,6 +1075,9 @@ begin
       if PlaylistDiscs.IndexOf(Item.Location) >= 0 then
         Continue;
       if Extensions.IndexOf(ExtractFileExt(Item.Name)) < 0 then
+        Continue;
+      if (Length(Services.CompanionArchives) > 0) and IsMediaArchive(Item.Name) and
+        MatchText(ChangeFileExt(Item.Name, ''), Services.CompanionArchives) then
         Continue;
       if TrackFiles.IndexOf(Item.RelativePath) >= 0 then
         Continue;

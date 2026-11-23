@@ -27,6 +27,8 @@ const
   NG_MAX_CONTAINER = NEOGEO_ROM_MAX_CONTAINER_SIZE;
 
 type
+  ENeoGeoIncompleteSet = class(EReadError);
+
   TNeoGeoCartridge = class
   private
     procedure LoadNeo(const Data: TBytes);
@@ -471,10 +473,10 @@ var
     end;
 
     if Index < 0 then
-      raise EReadError.Create('Missing Neo Geo ROM: ' + Name);
+      raise ENeoGeoIncompleteSet.Create('Missing Neo Geo ROM: ' + Name);
 
     if not SameText(IntToHex(Container.Checksum(Index), 8), CRC) then
-      raise EReadError.Create('Incorrect Neo Geo ROM CRC: ' + Name);
+      raise ENeoGeoIncompleteSet.Create('Incorrect Neo Geo ROM CRC: ' + Name);
 
     Result := ReadEntry(Container, Index);
   end;

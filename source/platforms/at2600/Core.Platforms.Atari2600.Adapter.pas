@@ -188,7 +188,7 @@ begin
     Exit;
 
   FThread := TA2600Worker.Create(FCartridge, FConfigObject.PAL, FConfigObject.Mapper, FStorage);
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'at2600');
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'at2600', GetConfig.FileName);
   FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplySettings;
   FThread.Start;

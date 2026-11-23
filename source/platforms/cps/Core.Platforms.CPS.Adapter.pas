@@ -708,10 +708,28 @@ begin
           Location := Candidate;
           Break;
         end;
+
+        // A regional clone can share its disc with the parent set.
+        var SetName := FCart.RomSet.Parent;
+        for var Depth := 1 to 16 do
+        begin
+          var Ancestor: TCPSRomSet;
+          if (SetName = '') or not TCPSRomSet.Find(SetName, Ancestor) then
+            Break;
+          Candidate := TPath.Combine(TPath.Combine(Parent, Ancestor.Name), DiscName + Extension);
+          if S.Exists(Candidate) then
+          begin
+            Location := Candidate;
+            Break;
+          end;
+          SetName := Ancestor.Parent;
+        end;
+        if Location <> '' then
+          Break;
       end;
     end;
     if Location = '' then
-      raise ECPSRom.Create('CPS3 CD image missing: place ' + DiscName + '.chd beside the BIOS archive or in its sibling game folder, or set [CPS3] DiscImage in the CPS3 configuration.');
+      raise ECPSRom.Create('CPS3 CD image missing: place ' + DiscName + '.chd beside the BIOS archive or in the game or parent set subfolder, or set [CPS3] DiscImage in the CPS3 configuration.');
 
     var CDStream := S.OpenRead(Location);
     try

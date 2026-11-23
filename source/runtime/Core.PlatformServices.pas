@@ -25,6 +25,7 @@ type
 
   TPlatformServices = record
     LibraryFeatures: TLibraryFeatures;
+    CompanionArchives: TArray<string>;
     UnprefixedSaveIdentity: Boolean;
     TerminalInput: TTerminalInputProvider;
     DocumentSelection: TPlatformDocumentSelection;
@@ -53,6 +54,7 @@ begin
     raise EArgumentException.Create('Empty platform service ID');
   var Value := Services;
   Value.DocumentSelection.AllowedExtensions := Copy(Value.DocumentSelection.AllowedExtensions);
+  Value.CompanionArchives := Copy(Value.CompanionArchives);
   Core.PlatformServices.Services.Add(Id.Trim, Value);
 end;
 
@@ -61,6 +63,7 @@ begin
   if not Services.TryGetValue(TPlatformRegistry.CanonicalId(Id), Result) then
     Result := Default(TPlatformServices);
   Result.DocumentSelection.AllowedExtensions := Copy(Result.DocumentSelection.AllowedExtensions);
+  Result.CompanionArchives := Copy(Result.CompanionArchives);
 end;
 
 function TPlatformDocumentSelection.Accepts(const FileName: string): Boolean;

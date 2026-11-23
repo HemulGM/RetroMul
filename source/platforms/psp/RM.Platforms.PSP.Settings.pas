@@ -15,7 +15,20 @@ type
 implementation
 
 uses
-  RM.Settings.Catalog, FMX.Types, System.SysUtils, HW.JIT;
+  RM.Settings.Catalog, FMX.Types, System.SysUtils, HW.JIT,
+  Core.Platforms.PSP.RendererCaps, Core.Platforms.PSP.Renderer;
+
+function PSPRendererCaption(const Value: string): string;
+begin
+  if SameText(Value, 'cpu') then
+    Result := Translate('CPU (software)')
+  else if SameText(Value, 'vulkan') or SameText(Value, 'vulkan-lle') then
+    Result := Translate('Vulkan LLE (experimental)')
+  else if SameText(Value, 'vulkan-hle') then
+    Result := Translate('Vulkan HLE (experimental)')
+  else
+    Result := Value;
+end;
 
 procedure TPSPSettings.Configuration(Context: TSettingsPageBuilder);
 begin
@@ -34,7 +47,21 @@ end;
 procedure TPSPSettings.Video(Context: TSettingsPageBuilder);
 begin
   Context.Heading('GroupPSPVideo', 'PSP video');
-  Context.AddChoice('RowPSPRenderer', 'Renderer', 'Vulkan LLE draws exactly as the CPU renderer, in compute shaders. Vulkan HLE draws with the GPU''s own pipeline: faster, but not pixel exact. Both are experimental and use the CPU when the host or required features are unsupported. Applies after stopping and starting the game. Reset and LoadExec of a running game keep the current renderer.', 'Video', 'Renderer', SettingChoices([Translate('CPU (software)'), Translate('Vulkan LLE (experimental)'), Translate('Vulkan HLE (experimental)')], ['cpu', 'vulkan', 'vulkan-hle']), 'cpu', True).ApplyMode := TSettingsApplyMode.OnNextLoad;
+  var Support := PSPRendererSupport;
+  var Captions: TArray<string>;
+  var Values: TArray<string>;
+  for var Renderer in AvailablePSPRenderers(Support) do
+  begin
+    var Value := PSPRendererName(Renderer);
+    Captions := Captions + [PSPRendererCaption(Value)];
+    Values := Values + [Value];
+  end;
+  var Choice := Context.AddChoice('RowPSPRenderer', 'Renderer', 'Vulkan LLE draws exactly as the CPU renderer, in compute shaders. Vulkan HLE draws with the GPU''s own pipeline: faster, but not pixel exact. Both are experimental and use the CPU when the host or required features are unsupported. Applies after stopping and starting the game. Reset and LoadExec of a running game keep the current renderer.', 'Video', 'Renderer', SettingChoices(Captions, Values), 'cpu', True);
+  Choice.ApplyMode := TSettingsApplyMode.OnNextLoad;
+  Choice.PreserveUnknownValue := True;
+  if Choice.SelectionIndex < 0 then
+    Context.AddInformation('RowPSPRendererUnavailable', 'Renderer',
+      'The saved renderer is unavailable on this device. Select a supported renderer to change it.', PSPRendererCaption(Choice.Value));
   Context.AddChoice('RowPSPResolution', 'Internal resolution', 'How many times the PSP''s 480x272 the Vulkan HLE renderer draws at. The CPU and Vulkan LLE renderers always draw at 1x. Applies after stopping and starting the game.', 'Video', 'Resolution', SettingChoices([Translate('1x (480x272)'), Translate('2x (960x544)'), Translate('3x (1440x816)'), Translate('4x (1920x1088)'), Translate('6x (2880x1632)'), Translate('8x (3840x2176)')], ['1', '2', '3', '4', '6', '8']), '1', True).ApplyMode := TSettingsApplyMode.OnNextLoad;
   Context.AddChoice('RowPSPTextureScale', 'Texture scaling', 'Makes the games'' textures larger for the Vulkan HLE renderer above 1x, with the filter below. Textures that keep changing (videos) stay as they are. Applies after stopping and starting the game.', 'Video', 'TextureScale', SettingChoices([Translate('Off'), Translate('2x'), Translate('3x'), Translate('4x'), Translate('5x'), Translate('6x')], ['0', '2', '3', '4', '5', '6']), '0', True).ApplyMode := TSettingsApplyMode.OnNextLoad;
   Context.AddChoice('RowPSPTextureFilter', 'Texture filter', 'xBRZ keeps edges sharp: text, interface, drawn outlines; photographic textures may look painted. Bicubic is smooth, for photographic and painted textures. Hybrid uses bicubic in even areas and xBRZ on edges. Applies after stopping and starting the game.', 'Video', 'TextureFilter', SettingChoices([Translate('xBRZ (sharp edges)'), Translate('Hybrid (xBRZ and bicubic)'), Translate('Bicubic (smooth)')], ['xbrz', 'hybrid', 'bicubic']), 'xbrz', True).ApplyMode := TSettingsApplyMode.OnNextLoad;

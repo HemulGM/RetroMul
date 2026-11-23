@@ -12,12 +12,14 @@ type
   private
     FSnapshotOperation: IEmulationSnapshotOperation;
     FSnapshotCore: IEmulationCore;
+    FFinishedAutosaveCore: IEmulationCore;
     FSnapshotTimer: TTimer;
     FSnapshotOwner: TComponent;
     FSnapshotLoading, FSnapshotCancelled: Boolean;
     FSnapshotName: string;
     function StartSnapshot(const Name: string; Loading: Boolean): Boolean;
     procedure SnapshotTick(Sender: TObject);
+    procedure RecordCompletedSnapshot;
   public
     destructor Destroy; override;
     function GameSnapshotDirectory: string;
@@ -40,10 +42,10 @@ type
 implementation
 
 uses
-  System.SysUtils, System.UITypes, System.IOUtils,
-  System.Math, System.Generics.Collections, System.Generics.Defaults,
-  FMX.Graphics, FMX.Dialogs, FMX.Menus, Core.Storage,
-  Core.SavePaths, FMX.Image, RM.Dialogs, RM.Styles;
+  System.SysUtils, System.UITypes, System.IOUtils, System.Math,
+  System.Generics.Collections, System.Generics.Defaults, FMX.Graphics,
+  FMX.Dialogs, FMX.Menus, Core.Storage, Core.SavePaths, FMX.Image, RM.Dialogs,
+  RM.Styles;
 
 destructor TSnapshotsController.Destroy;
 begin
@@ -121,7 +123,9 @@ begin
     FState.Session.EmulationFaulted := False;
     if not FView.UpdateFrame then
       FView.LoadSnapshotPreview(FSnapshotName);
-  end;
+  end
+  else if (Error = '') and not FSnapshotCancelled then
+    RecordCompletedSnapshot;
   FView.SyncActivity;
 end;
 
@@ -142,7 +146,21 @@ begin
     raise ENotSupportedException.Create(Translate('Snapshots are not implemented by this core'));
 
   if not StartSnapshot(Name, False) then
+  begin
     FState.Session.Emulation.SaveSnapshot(Name);
+    RecordCompletedSnapshot;
+  end;
+end;
+
+procedure TSnapshotsController.RecordCompletedSnapshot;
+begin
+  var Directory := GameSnapshotDirectory;
+  RecordGameSnapshotDirectory(FState.Session.Storage, FState.Session.RomLocation, Directory);
+  if FState.Browser.View <> nil then
+  begin
+    FState.Browser.View.RecordSnapshotDirectory(FState.Session.RomLocation, Directory);
+    FState.Browser.View.RefreshSnapshots;
+  end;
 end;
 
 procedure TSnapshotsController.LoadSnapshot(const Name: string);
@@ -156,6 +174,7 @@ begin
   if StartSnapshot(Name, True) then
     Exit;
   FState.Session.Emulation.LoadSnapshot(Name);
+  FFinishedAutosaveCore := nil;
   FState.Session.EmulationFaulted := False;
   FView.SyncActivity;
   if not FView.UpdateFrame then
@@ -310,7 +329,7 @@ begin
       Dialog.InitialDir := Directory;
       Dialog.FileName := FormatDateTime('yyyy-mm-dd_hh-nn-ss-zzz', Now) + SNAPSHOT_EXTENSION;
       Dialog.Options := [TOpenOption.ofPathMustExist, TOpenOption.ofOverwritePrompt];
-      if FView.RunSnapshotDialog(Dialog) then
+      if FView.ExecuteSnapshotDialog(Dialog) then
         FView.SaveSnapshot(TPath.GetFullPath(Dialog.FileName));
     except
       on E: Exception do
@@ -345,7 +364,7 @@ begin
       Dialog.DefaultExt := 'snapshot';
       Dialog.InitialDir := Directory;
       Dialog.Options := [TOpenOption.ofPathMustExist, TOpenOption.ofFileMustExist];
-      if FView.RunSnapshotDialog(Dialog) then
+      if FView.ExecuteSnapshotDialog(Dialog) then
         FView.LoadSnapshot(TPath.GetFullPath(Dialog.FileName));
     except
       on E: Exception do
@@ -405,7 +424,7 @@ begin
   try
     var Directory := TPath.Combine(FState.Session.Storage.Root, 'screenshots');
     FState.Session.Storage.EnsureFolder(Directory);
-    FView.ShowDirectory(Directory);
+    FView.OpenDirectory(Directory);
   except
     on E: Exception do
       ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
@@ -421,11 +440,42 @@ begin
     not FState.Session.PendingAutosaveChoice and not FState.Session.PreserveOpeningAutosave and
     not FState.Session.EmulationFaulted and
     FState.Session.Emulation.SupportsSnapshots then
+  try
     FState.Session.Emulation.SaveSnapshot(SNAPSHOT_AUTOSAVE);
+    RecordCompletedSnapshot;
+  except
+    on E: Exception do
+    begin
+      // Autosaving is best effort. Back/close/replacement must still reach
+      // their cleanup even when the snapshot or its storage is unavailable.
+      FState.Session.LastReportError := E.Message;
+      ShowRetroMessage(FView, Translate('Autosave failed: ') + TranslateCoreMessage(E.Message));
+    end;
+  end;
 end;
 
 procedure TSnapshotsController.PollAutosave;
 begin
+  var Completion: IEmulationCompletion;
+  var Finished := Supports(FState.Session.Emulation, IEmulationCompletion, Completion) and Completion.IsFinished;
+  if not Finished then
+    FFinishedAutosaveCore := nil;
+  if Finished and (FSnapshotOperation = nil) and (FFinishedAutosaveCore <> FState.Session.Emulation) and
+    (FState.Autosave.OnExit or FState.Autosave.Periodic) and
+    not FState.Session.EmulationFaulted and not FState.Session.OpeningRom and
+    not FState.Session.PendingAutosaveChoice and not FState.Session.PreserveOpeningAutosave then
+  begin
+    // Save once at guest exit, even though the completed core is paused.
+    // Remember the attempt so a storage error does not open a dialog every tick.
+    FFinishedAutosaveCore := FState.Session.Emulation;
+    try
+      FView.SaveSnapshot(SNAPSHOT_AUTOSAVE);
+    except
+      on E: Exception do
+        ShowRetroMessage(FView, Translate('Autosave failed: ') + TranslateCoreMessage(E.Message));
+    end;
+    Exit;
+  end;
   if FSnapshotOperation <> nil then
     Exit;
   if not FState.Autosave.Periodic or (FState.Session.Emulation = nil) or FState.Session.EmulationFaulted or
@@ -434,7 +484,7 @@ begin
     FState.Session.Emulation.IsPaused or not FState.Session.Emulation.SupportsSnapshots then
     Exit;
 
-  var Tick := FView.CurrentTick;
+  var Tick := FView.AutosaveClock;
   if (Tick < FState.Autosave.LastTick) or
     (Tick - FState.Autosave.LastTick < UInt64(FState.Autosave.Minutes) * 60000) then
     Exit;

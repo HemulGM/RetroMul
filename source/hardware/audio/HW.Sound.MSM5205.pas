@@ -6,9 +6,16 @@ uses
   Core.Snapshots;
 
 type
+  TOkiAdpcmDecoder = record
+    Signal, StepIndex: Integer;
+    procedure Clock(Nibble: Byte);
+    function Sample: Integer;
+    procedure ValidateState;
+  end;
+
   TMSM5205 = class
   private
-    FSignal, FStep: Integer;
+    FDecoder: TOkiAdpcmDecoder;
     FReset: Boolean;
   public
     procedure Reset;
@@ -29,8 +36,7 @@ const
 
 procedure TMSM5205.Reset;
 begin
-  FSignal := 0;
-  FStep := 0;
+  FDecoder := Default(TOkiAdpcmDecoder);
   FReset := False;
 end;
 
@@ -38,18 +44,18 @@ procedure TMSM5205.SetReset(Value: Boolean);
 begin
   FReset := Value;
   if Value then
-  begin
-    FSignal := 0;
-    FStep := 0;
-  end;
+    FDecoder := Default(TOkiAdpcmDecoder);
 end;
 
 procedure TMSM5205.Clock(Nibble: Byte);
 begin
-  if FReset then
-    Exit;
+  if not FReset then
+    FDecoder.Clock(Nibble);
+end;
 
-  var Step := Steps[FStep];
+procedure TOkiAdpcmDecoder.Clock(Nibble: Byte);
+begin
+  var Step := Steps[StepIndex];
   var Delta := Step div 8;
   if Nibble and 1 <> 0 then
     Inc(Delta, Step div 4);
@@ -59,22 +65,32 @@ begin
     Inc(Delta, Step);
   if Nibble and 8 <> 0 then
     Delta := -Delta;
-  FSignal := EnsureRange(FSignal + Delta, -2048, 2047);
-  FStep := EnsureRange(FStep + Adjust[Nibble and 7], 0, 48);
+  Signal := EnsureRange(Signal + Delta, -2048, 2047);
+  StepIndex := EnsureRange(StepIndex + Adjust[Nibble and 7], 0, 48);
+end;
+
+function TOkiAdpcmDecoder.Sample: Integer;
+begin
+  Result := Signal * 16;
+end;
+
+procedure TOkiAdpcmDecoder.ValidateState;
+begin
+  if (Signal < -2048) or (Signal > 2047) or (StepIndex < 0) or (StepIndex > 48) then
+    raise EArgumentException.Create('Invalid OKI ADPCM state');
 end;
 
 function TMSM5205.Sample: Integer;
 begin
-  Result := FSignal * 16;
+  Result := FDecoder.Sample;
 end;
 
 procedure TMSM5205.SerializeState(State: TStateArchive);
 begin
-  State.Field(FSignal, SizeOf(FSignal));
-  State.Field(FStep, SizeOf(FStep));
+  State.Field(FDecoder.Signal, SizeOf(FDecoder.Signal));
+  State.Field(FDecoder.StepIndex, SizeOf(FDecoder.StepIndex));
   State.Field(FReset, SizeOf(FReset));
-  if (FSignal < -2048) or (FSignal > 2047) or (FStep < 0) or (FStep > 48) then
-    raise EArgumentException.Create('Invalid MSM5205 state');
+  FDecoder.ValidateState;
 end;
 
 end.

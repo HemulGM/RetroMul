@@ -22,7 +22,6 @@ type
   TAndroidDocumentTransfer = class
   private
     FWaiting, FReady: Boolean;
-    FForCassette: Boolean;
     FError: string;
     FExportSource: string;
     FJob: IRomImport;
@@ -31,7 +30,7 @@ type
   public
     constructor Create(const Storage: IStorage);
     destructor Destroy; override;
-    procedure Import(const Uri: string; ForCassette: Boolean = False; const PlatformId: string = '');
+    procedure Import(const Uri: string; const Extensions: TArray<string>; const ErrorTitle: string);
     procedure Save(const SourceFile, SuggestedName: string);
     function Poll(out FileName, DisplayName, Error: string): Boolean;
     // Keep the private file alive until LoadRom has finished reading it.
@@ -55,14 +54,13 @@ type
   TRomImport = class(TInterfacedObject, IRomImport)
   private
     FCancelled, FDone: Boolean;
-    FForCassette: Boolean;
     FExporting: Boolean;
     FSelection: TPlatformDocumentSelection;
     FFileName, FDisplayName, FError: string;
     FStorage: IStorage;
     function Cancelled: Boolean;
   public
-    constructor Create(ForCassette: Boolean; const Storage: IStorage; const ExportSource: string = ''; const PlatformId: string = '');
+    constructor Create(const Storage: IStorage; const ExportSource: string; const Selection: TPlatformDocumentSelection);
     destructor Destroy; override;
     procedure Run(const Resolver: JContentResolver; const Uri: Jnet_Uri);
     procedure Cancel;
@@ -71,13 +69,12 @@ type
 
 { TRomImport }
 
-constructor TRomImport.Create(ForCassette: Boolean; const Storage: IStorage; const ExportSource, PlatformId: string);
+constructor TRomImport.Create(const Storage: IStorage; const ExportSource: string; const Selection: TPlatformDocumentSelection);
 begin
   inherited Create;
   FStorage := Storage;
-  FForCassette := ForCassette;
   FFileName := FStorage.TemporaryFile('.media');
-  FSelection := PlatformDocumentSelection(PlatformId);
+  FSelection := Selection;
   FDisplayName := 'Temp' + ROM_EXTENSION_GENERIC;
   FExporting := ExportSource <> '';
   if FExporting then
@@ -143,7 +140,7 @@ begin
       begin
         var Info := FStorage.Describe(Location);
         FDisplayName := Info.Name;
-        if FForCassette and not FSelection.Accepts(FDisplayName) then
+        if not FSelection.Accepts(FDisplayName) then
           raise EReadError.Create(FSelection.Title);
         // Keep the media suffix for the receiving platform's own decoder.
         FFileName := FStorage.TemporaryFile(ExtractFileExt(FDisplayName));
@@ -215,14 +212,17 @@ begin
   inherited;
 end;
 
-procedure TAndroidDocumentTransfer.Import(const Uri: string; ForCassette: Boolean; const PlatformId: string);
+procedure TAndroidDocumentTransfer.Import(const Uri: string; const Extensions: TArray<string>; const ErrorTitle: string);
 begin
   if FWaiting or FReady or (FJob <> nil) then
     raise EInvalidOperation.Create('A document transfer is already active');
 
   var Resolver := TAndroidHelper.Context.getContentResolver;
   var DocumentUri := TJnet_Uri.JavaClass.parse(StringToJString(Uri));
-  var Job: IRomImport := TRomImport.Create(ForCassette, FStorage, '', PlatformId);
+  var Selection := Default(TPlatformDocumentSelection);
+  Selection.Title := ErrorTitle;
+  Selection.AllowedExtensions := Copy(Extensions);
+  var Job: IRomImport := TRomImport.Create(FStorage, '', Selection);
   FJob := Job;
   TThread.CreateAnonymousThread(
     procedure
@@ -236,7 +236,6 @@ begin
   if FWaiting or FReady or (FJob <> nil) then
     raise EInvalidOperation.Create('A file picker is already open');
 
-  FForCassette := True;
   FExportSource := SourceFile;
   var Intent := TJIntent.JavaClass.init(TJIntent.JavaClass.ACTION_CREATE_DOCUMENT);
   Intent.addCategory(TJIntent.JavaClass.CATEGORY_OPENABLE);
@@ -274,7 +273,7 @@ begin
 
     var Uri := Notification.Value.getData;
     var Resolver := TAndroidHelper.Context.getContentResolver;
-    var Job: IRomImport := TRomImport.Create(FForCassette, FStorage, FExportSource);
+    var Job: IRomImport := TRomImport.Create(FStorage, FExportSource, Default(TPlatformDocumentSelection));
     FJob := Job;
     FExportSource := ''; // The job now owns the temporary export file.
     TThread.CreateAnonymousThread(

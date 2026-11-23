@@ -56,8 +56,8 @@ implementation
 
 uses
   FMX.Types, System.SysUtils, System.Generics.Collections,
-  System.Generics.Defaults, Core.Platforms, RM.Input, RM.Gamepad, RM.Settings,
-  RM.Settings.Rendering, RM.Styles;
+  System.Generics.Defaults, Core.Platforms, RM.Input, RM.Gamepad,
+  RM.Settings.Callouts, RM.Settings.Rendering, RM.Styles;
 
 var
   Providers: TDictionary<string, TPlatformControlsHelpClass>;

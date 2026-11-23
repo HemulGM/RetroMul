@@ -17,13 +17,15 @@ type
 
   TRomNormalizer = reference to function(const Data: TBytes; const Format: TRomFormatInfo): TBytes;
 
-  TCoreLoadStage = (Source, Container, Image, Header, OverrideHint);
+  TCoreLoadStage = (Source, Container, Image, Header, OverrideHint, Stream);
 
   TCoreMatchConfidence = (Fallback, Hint, Signature);
 
   TCorePlatformOption = record
     Id, Name: string;
   end;
+
+  ECoreInvalidMedia = class(EReadError);
 
   ECoreSelectionRequired = class(EReadError)
   private
@@ -151,8 +153,8 @@ function RegisteredEmulationCores: TArray<string>;
 function RecognizeEmulationCore(Context: TCoreLoadContext; Stage: TCoreLoadStage): TCoreMatch;
 
 function ResolveEmulationImage(Context: TCoreLoadContext): TCoreMatch;
-// The caller owns the returned match and must keep Context alive through CreateCore.
 
+// The caller owns the returned match and must keep Context alive through CreateCore.
 function ResolveEmulationCore(Context: TCoreLoadContext; const PlatformId: string = ''; const ExcludedPlatformId: string = ''): TCoreMatch;
 
 // Enumerates compatible targets without constructing an emulator.
@@ -243,8 +245,8 @@ begin
   FLoadError := LoadError;
   var Names: TArray<string>;
   SetLength(Names, Length(Platforms));
-  for var I := 0 to High(Platforms) do
-    Names[I] := Platforms[I].Name;
+  for var i := 0 to High(Platforms) do
+    Names[i] := Platforms[i].Name;
   var Detail := 'Choose a target platform: ' + string.Join(', ', Names);
   if LoadError <> '' then
     Detail := LoadError + sLineBreak + Detail;
@@ -383,7 +385,7 @@ begin
   FreeAndNil(FDisc);
   FDiscChecked := False;
   FreeAndNil(FOwnedStream);
-  FOwnedStream := TBytesStream.Create(Bytes);
+  FOwnedStream := TArchiveImageStream.Create(Bytes, FArchive, Name);
   FStream := FOwnedStream;
   FData := Bytes;
   FDataLoaded := True;
@@ -619,8 +621,7 @@ begin
         // must not change the start position seen by subsequent recognizers.
         Context.Stream.Position := Saved;
       end;
-      if (Result <> nil) and (Context.FExcludedPlatform <> '') and
-        SameText(Result.PlatformId, Context.FExcludedPlatform) then
+      if (Result <> nil) and (Context.FExcludedPlatform <> '') and SameText(Result.PlatformId, Context.FExcludedPlatform) then
         FreeAndNil(Result);
       if Result <> nil then
         Exit;
@@ -672,14 +673,14 @@ begin
     begin
       var Platforms: TArray<TCorePlatformOption>;
       SetLength(Platforms, Choices.Count);
-      for var I := 0 to Choices.Count - 1 do
+      for var i := 0 to Choices.Count - 1 do
       begin
-        Platforms[I].Id := Choices[I].PlatformId;
+        Platforms[i].Id := Choices[i].PlatformId;
         var Info: TPlatformInfo;
-        if TPlatformRegistry.Find(Platforms[I].Id, Info) then
-          Platforms[I].Name := Info.Name
+        if TPlatformRegistry.Find(Platforms[i].Id, Info) then
+          Platforms[i].Name := Info.Name
         else
-          Platforms[I].Name := Choices[I].Id;
+          Platforms[i].Name := Choices[i].Id;
       end;
       TArray.Sort<TCorePlatformOption>(Platforms, TComparer<TCorePlatformOption>.Construct(
         function(const Left, Right: TCorePlatformOption): Integer
@@ -886,9 +887,9 @@ begin
         var OverrideMatch := Overrides.Extract(Overrides[0]);
         // A same-platform override can refine normalization. A different
         // platform is additional evidence, not permission to silently replace it.
-        for var I := Matches.Count - 1 downto 0 do
-          if SameText(Matches[I].PlatformId, OverrideMatch.PlatformId) then
-            Matches.Delete(I);
+        for var i := Matches.Count - 1 downto 0 do
+          if SameText(Matches[i].PlatformId, OverrideMatch.PlatformId) then
+            Matches.Delete(i);
         Matches.Add(OverrideMatch);
       end;
     finally
@@ -908,6 +909,11 @@ begin
   if TPlatformRegistry.Find(PlatformId, Info) then
     Context.FSelectedPlatform := Info.Id;
   Context.PrepareArchive;
+  // Some formats have a verified header but should never enter the
+  // whole-image buffering and normalization used by other recognizers.
+  Result := SelectRecognizedCore(Context, TCoreLoadStage.Stream);
+  if Result <> nil then
+    Exit;
   if (Context.SelectedPlatform <> '') and (Context.IsDiscSource or Context.HasExtension(['.m3u'])) then
     Exit(SelectDiscPlatform(Context));
   Result := SelectRecognizedCore(Context, TCoreLoadStage.Source, TCoreMatchConfidence.Hint);
@@ -923,7 +929,11 @@ begin
   begin
     SelectArchiveImage(Context);
     if Context.ArchiveEntry then
-      Result := SelectRecognizedCore(Context, TCoreLoadStage.Source, TCoreMatchConfidence.Hint);
+    begin
+      Result := SelectRecognizedCore(Context, TCoreLoadStage.Stream);
+      if Result = nil then
+        Result := SelectRecognizedCore(Context, TCoreLoadStage.Source, TCoreMatchConfidence.Hint);
+    end;
     if (Result = nil) and (Context.IsDiscSource or Context.HasExtension(['.m3u'])) then
       Exit(SelectDiscPlatform(Context));
     if Result = nil then

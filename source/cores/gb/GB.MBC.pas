@@ -15,6 +15,8 @@ type
   TGBMBC = class
   private
     FROM: TGBROM;
+    // Immutable cartridge identity; do not copy the managed metadata per bus read.
+    FMapperType: TMapperType;
     FRAMEnabled: Boolean;
     FHasRAM: Boolean;
     FIsROMMode: Boolean;
@@ -105,7 +107,8 @@ begin
   if AROM = nil then
     raise EArgumentNilException.Create('ROM must not be nil');
 
-  if not (AROM.GetCartridgeType.MapperType in
+  FMapperType := AROM.GetCartridgeType.MapperType;
+  if not (FMapperType in
     [TMapperType.ROMOnly, TMapperType.MBC1, TMapperType.MBC2,
       TMapperType.MBC3, TMapperType.MBC5, TMapperType.MBC7,
       TMapperType.PocketCamera, TMapperType.HuC3, TMapperType.HuC1,
@@ -114,9 +117,9 @@ begin
     raise ENotSupportedException.Create('Unsupported cartridge: ' + AROM.GetCartridgeType.Name);
 
   FROM := AROM;
-  FHasRumble := (FROM.GetCartridgeType.MapperType = TMapperType.MBC5) and
+  FHasRumble := (FMapperType = TMapperType.MBC5) and
     FROM.GetCartridgeType.HasRumble;
-  if FROM.GetCartridgeType.MapperType = TMapperType.PocketCamera then
+  if FMapperType = TMapperType.PocketCamera then
     FCamera := TGBCameraController.Create(CameraSource);
   FRTCClock := RTCClock;
   FHasTimer := FROM.GetCartridgeType.HasTimer;
@@ -126,7 +129,7 @@ begin
     FROMBankCount := 1;
   FBankLow := 1;
   FBankHigh := 0;
-  if FROM.GetCartridgeType.MapperType in [TMapperType.M161, TMapperType.WisdomTree] then
+  if FMapperType in [TMapperType.M161, TMapperType.WisdomTree] then
     FBankLow := 0;
   FRAMEnabled := False;
   FIsROMMode := True;
@@ -136,22 +139,22 @@ begin
   FLatchedX := $8000;
   FLatchedY := $8000;
   FEEPROMReadBit := -1;
-  if FROM.GetCartridgeType.MapperType = TMapperType.MBC6 then
+  if FMapperType = TMapperType.MBC6 then
   begin
     SetLength(FFlash, $100000);
     FillChar(FFlash[0], Length(FFlash), $FF);
     FillChar(FFlashHidden, SizeOf(FFlashHidden), $FF);
     ResetFlashCommand;
   end;
-  if FROM.GetCartridgeType.MapperType = TMapperType.MBC7 then
+  if FMapperType = TMapperType.MBC7 then
   begin
     SetLength(FRAM, 256);
     for var i := 0 to High(FRAM) do
       FRAM[i] := $FF;
   end
-  else if FROM.GetCartridgeType.MapperType = TMapperType.MBC2 then
+  else if FMapperType = TMapperType.MBC2 then
     SetLength(FRAM, $200) // 512 four-bit internal RAM cells
-  else if FROM.GetCartridgeType.MapperType = TMapperType.MBC6 then
+  else if FMapperType = TMapperType.MBC6 then
     SetLength(FRAM, $8000)
   else if FHasRAM and Assigned(FROM.Cartridge) then
     // The header also permits 64 KiB (8-bank) and 128 KiB (16-bank) RAM.
@@ -170,7 +173,7 @@ end;
 
 procedure TGBMBC.UpdateBanks;
 begin
-  if FROM.GetCartridgeType.MapperType = TMapperType.MBC6 then
+  if FMapperType = TMapperType.MBC6 then
   begin
     // The public bank number describes the first 8 KiB switchable window.
     ROMBankSelected := FMBC6ROMBanks[0];
@@ -178,12 +181,12 @@ begin
     Exit;
   end;
 
-  if FROM.GetCartridgeType.MapperType in [TMapperType.M161, TMapperType.WisdomTree, TMapperType.HuC1, TMapperType.MMM01] then
+  if FMapperType in [TMapperType.M161, TMapperType.WisdomTree, TMapperType.HuC1, TMapperType.MMM01] then
   begin
     FFixedROMBank := ExtendedROMBank(0);
     ROMBankSelected := ExtendedROMBank($4000);
     RAMBankSelected := FBankHigh;
-    if FROM.GetCartridgeType.MapperType = TMapperType.MMM01 then
+    if FMapperType = TMapperType.MMM01 then
     begin
       RAMBankSelected := FMMMRegisters[2] and 3;
       if (FMMMRegisters[3] and $40) <> 0 then
@@ -195,17 +198,17 @@ begin
     Exit;
   end;
 
-  if FROM.GetCartridgeType.MapperType in [TMapperType.MBC7, TMapperType.PocketCamera, TMapperType.HuC3] then
+  if FMapperType in [TMapperType.MBC7, TMapperType.PocketCamera, TMapperType.HuC3] then
   begin
     ROMBankSelected := FBankLow mod FROMBankCount;
     RAMBankSelected := FPeripheralBank and $0F;
   end
-  else if FROM.GetCartridgeType.MapperType in [TMapperType.MBC3, TMapperType.MBC30] then
+  else if FMapperType in [TMapperType.MBC3, TMapperType.MBC30] then
   begin
     ROMBankSelected := FBankLow mod FROMBankCount;
     RAMBankSelected := FBankHigh and $0F;
   end
-  else if FROM.GetCartridgeType.MapperType = TMapperType.MBC5 then
+  else if FMapperType = TMapperType.MBC5 then
   begin
     // MBC5 uses a nine-bit ROM bank number and does not remap bank zero.
     ROMBankSelected := FBankLow mod FROMBankCount;
@@ -217,7 +220,7 @@ begin
   begin
     var Shift := 5;
     var Mask := $1F;
-    if FROM.GetCartridgeType.MapperType = TMapperType.MBC1M then
+    if FMapperType = TMapperType.MBC1M then
     begin
       Shift := 4;
       Mask := $0F;
@@ -252,7 +255,7 @@ begin
   if (Elapsed <= 0) or ((FRTC[4] and $40) <> 0) then
     Exit;
 
-  if FROM.GetCartridgeType.MapperType = TMapperType.HuC3 then
+  if FMapperType = TMapperType.HuC3 then
   begin
     FHuCSeconds := (FHuCSeconds + Elapsed) mod (Int64(4096) * 86400);
     for var i := 0 to 2 do
@@ -283,7 +286,7 @@ end;
 
 function TGBMBC.SaveMemory: TBytes;
 begin
-  if FROM.GetCartridgeType.MapperType = TMapperType.MBC6 then
+  if FMapperType = TMapperType.MBC6 then
   begin
     SetLength(Result, 4 + Length(FRAM) + Length(FFlash) + SizeOf(FFlashHidden) + 1);
     Result[0] := Ord('M');
@@ -305,7 +308,7 @@ end;
 
 procedure TGBMBC.LoadSaveMemory(const Data: TBytes);
 begin
-  if FROM.GetCartridgeType.MapperType = TMapperType.MBC6 then
+  if FMapperType = TMapperType.MBC6 then
   begin
     if (Length(Data) <> 4 + Length(FRAM) + Length(FFlash) + SizeOf(FFlashHidden) + 1) or
       (Data[0] <> Ord('M')) or (Data[1] <> Ord('B')) or (Data[2] <> Ord('6')) or
@@ -324,7 +327,7 @@ begin
     raise EReadError.Create('Invalid Game Boy battery RAM size');
 
   for var i := 0 to High(FRAM) do
-    if FROM.GetCartridgeType.MapperType = TMapperType.MBC2 then
+    if FMapperType = TMapperType.MBC2 then
       FRAM[i] := Data[i] and $0F
     else
       FRAM[i] := Data[i];
@@ -337,7 +340,7 @@ begin
     Exit;
 
   UpdateRTC;
-  if FROM.GetCartridgeType.MapperType = TMapperType.HuC3 then
+  if FMapperType = TMapperType.HuC3 then
   begin
     SetLength(Result, 276);
     Result[0] := Ord('H');
@@ -361,7 +364,7 @@ end;
 
 procedure TGBMBC.LoadRTCData(const Data: TBytes);
 begin
-  if FROM.GetCartridgeType.MapperType = TMapperType.HuC3 then
+  if FMapperType = TMapperType.HuC3 then
   begin
     if (Length(Data) <> 276) then
       raise EReadError.Create('Invalid HuC3 RTC save size');
@@ -417,14 +420,14 @@ begin
   if (Address < 0) or (Address > $BFFF) then
     Exit;
 
-  if FROM.GetCartridgeType.MapperType in [TMapperType.MMM01, TMapperType.M161,
+  if FMapperType in [TMapperType.MMM01, TMapperType.M161,
       TMapperType.WisdomTree, TMapperType.HuC1, TMapperType.MBC6] then
     Exit(ReadExtended(Address));
 
-  if FROM.GetCartridgeType.MapperType in [TMapperType.MBC7, TMapperType.PocketCamera, TMapperType.HuC3] then
+  if FMapperType in [TMapperType.MBC7, TMapperType.PocketCamera, TMapperType.HuC3] then
     Exit(ReadPeripheral(Address));
 
-  if (FROM.GetCartridgeType.MapperType in [TMapperType.MBC3, TMapperType.MBC30]) and
+  if (FMapperType in [TMapperType.MBC3, TMapperType.MBC30]) and
     (Address >= $A000) and FRAMEnabled and FHasTimer and
     (RAMBankSelected >= 8) and (RAMBankSelected <= 12) then
   begin
@@ -436,7 +439,7 @@ begin
     Exit;
   end;
 
-  case FROM.GetCartridgeType.MapperType of
+  case FMapperType of
     TMapperType.ROMOnly:
       if Address < $8000 then
       begin
@@ -485,7 +488,7 @@ begin
           Result := FROM.ROMData[EffectiveAddress];
       end
       else if (Address >= $A000) and FRAMEnabled and FHasRAM and
-        ((RAMBankSelected <= 3) or ((FROM.GetCartridgeType.MapperType = TMapperType.MBC30) and (RAMBankSelected <= 7))) then
+        ((RAMBankSelected <= 3) or ((FMapperType = TMapperType.MBC30) and (RAMBankSelected <= 7))) then
       begin
         var EffectiveAddress := (RAMBankSelected * $2000 + Address - $A000) mod Length(FRAM);
         Result := FRAM[EffectiveAddress];
@@ -512,26 +515,26 @@ begin
   if (Address < 0) or (Address > $BFFF) then
     Exit;
 
-  if FROM.GetCartridgeType.MapperType in [TMapperType.MMM01, TMapperType.M161,
+  if FMapperType in [TMapperType.MMM01, TMapperType.M161,
       TMapperType.WisdomTree, TMapperType.HuC1, TMapperType.MBC6] then
   begin
     WriteExtended(Address, Value and $FF);
     Exit;
   end;
 
-  if FROM.GetCartridgeType.MapperType in [TMapperType.MBC7, TMapperType.PocketCamera, TMapperType.HuC3] then
+  if FMapperType in [TMapperType.MBC7, TMapperType.PocketCamera, TMapperType.HuC3] then
   begin
     WritePeripheral(Address, Value and $FF);
     Exit;
   end;
 
-  if FROM.GetCartridgeType.MapperType = TMapperType.ROMOnly then
+  if FMapperType = TMapperType.ROMOnly then
   begin
     // Plain ROM+RAM cartridges expose their RAM permanently at A000-BFFF.
     if (Address >= $A000) and FHasRAM then
       FRAM[(Address - $A000) mod Length(FRAM)] := Value and $FF;
   end
-  else if FROM.GetCartridgeType.MapperType in [TMapperType.MBC1, TMapperType.MBC1M] then
+  else if FMapperType in [TMapperType.MBC1, TMapperType.MBC1M] then
   begin
     if Address <= $1FFF then
       FRAMEnabled := (Value and $0F) = $0A
@@ -558,13 +561,13 @@ begin
       FRAM[EffectiveAddress] := Value and $FF;
     end;
   end
-  else if FROM.GetCartridgeType.MapperType in [TMapperType.MBC3, TMapperType.MBC30] then
+  else if FMapperType in [TMapperType.MBC3, TMapperType.MBC30] then
   begin
     if Address <= $1FFF then
       FRAMEnabled := (Value and $0F) = $0A
     else if Address <= $3FFF then
     begin
-      if FROM.GetCartridgeType.MapperType = TMapperType.MBC30 then
+      if FMapperType = TMapperType.MBC30 then
         FBankLow := Value and $FF
       else
         FBankLow := Value and $7F;
@@ -603,13 +606,13 @@ begin
       end;
     end
     else if (Address >= $A000) and FRAMEnabled and FHasRAM and
-      ((RAMBankSelected <= 3) or ((FROM.GetCartridgeType.MapperType = TMapperType.MBC30) and (RAMBankSelected <= 7))) then
+      ((RAMBankSelected <= 3) or ((FMapperType = TMapperType.MBC30) and (RAMBankSelected <= 7))) then
     begin
       var EffectiveAddress := (RAMBankSelected * $2000 + Address - $A000) mod Length(FRAM);
       FRAM[EffectiveAddress] := Value and $FF;
     end;
   end
-  else if FROM.GetCartridgeType.MapperType = TMapperType.MBC5 then
+  else if FMapperType = TMapperType.MBC5 then
   begin
     if Address <= $1FFF then
       FRAMEnabled := (Value and $0F) = $0A
@@ -634,7 +637,7 @@ begin
       FRAM[EffectiveAddress] := Value and $FF;
     end;
   end
-  else if FROM.GetCartridgeType.MapperType = TMapperType.MBC2 then
+  else if FMapperType = TMapperType.MBC2 then
   begin
     if Address <= $3FFF then
     begin
@@ -656,7 +659,7 @@ end;
 function TGBMBC.ExtendedROMBank(Address: Integer): Integer;
 begin
   Result := 0;
-  case FROM.GetCartridgeType.MapperType of
+  case FMapperType of
     TMapperType.M161, TMapperType.WisdomTree:
       Result := FBankLow * 2 + Address div $4000;
     TMapperType.HuC1:
@@ -692,7 +695,7 @@ end;
 function TGBMBC.ReadExtended(Address: Integer): Integer;
 begin
   Result := $FF;
-  var Kind := FROM.GetCartridgeType.MapperType;
+  var Kind := FMapperType;
   if Kind = TMapperType.MBC6 then
   begin
     if Address < $4000 then
@@ -739,7 +742,7 @@ end;
 
 procedure TGBMBC.WriteExtended(Address, Value: Integer);
 begin
-  var Kind := FROM.GetCartridgeType.MapperType;
+  var Kind := FMapperType;
   if Kind = TMapperType.MBC6 then
   begin
     if Address < $4000 then
@@ -1272,7 +1275,7 @@ begin
   if Address < $A000 then
     Exit;
 
-  case FROM.GetCartridgeType.MapperType of
+  case FMapperType of
     TMapperType.MBC7:
       if FRAMEnabled and (FPeripheralBank = $40) and (Address < $B000) then
         case Address and $F0 of
@@ -1324,7 +1327,7 @@ begin
   end
   else if Address < $4000 then
   begin
-    if FROM.GetCartridgeType.MapperType = TMapperType.PocketCamera then
+    if FMapperType = TMapperType.PocketCamera then
       FBankLow := Value and $3F
     else
       FBankLow := Value and $7F;
@@ -1333,12 +1336,12 @@ begin
   else if Address < $6000 then
   begin
     FPeripheralBank := Value;
-    if FROM.GetCartridgeType.MapperType = TMapperType.HuC3 then
+    if FMapperType = TMapperType.HuC3 then
       FPeripheralBank := Value and 3;
     UpdateBanks;
   end
   else if Address >= $A000 then
-    case FROM.GetCartridgeType.MapperType of
+    case FMapperType of
       TMapperType.MBC7:
         if FRAMEnabled and (FPeripheralBank = $40) and (Address < $B000) then
           case Address and $F0 of
@@ -1422,7 +1425,7 @@ begin
 
   // These boards could not create snapshots before peripheral support.
   // Keep the existing layout for ROMOnly/MBC1/2/3/5 snapshots.
-  if FROM.GetCartridgeType.MapperType in [TMapperType.MBC7, TMapperType.PocketCamera, TMapperType.HuC3] then
+  if FMapperType in [TMapperType.MBC7, TMapperType.PocketCamera, TMapperType.HuC3] then
   begin
     State.Field(FPeripheralMode, SizeOf(FPeripheralMode));
     State.Field(FPeripheralBank, SizeOf(FPeripheralBank));
@@ -1451,14 +1454,14 @@ begin
       FCamera.SerializeState(State);
   end;
 
-  if FROM.GetCartridgeType.MapperType in [TMapperType.MMM01, TMapperType.M161, TMapperType.WisdomTree, TMapperType.HuC1] then
+  if FMapperType in [TMapperType.MMM01, TMapperType.M161, TMapperType.WisdomTree, TMapperType.HuC1] then
   begin
     State.Field(FMapLocked, SizeOf(FMapLocked));
     State.Field(FIRMode, SizeOf(FIRMode));
     State.Field(FIROutput, SizeOf(FIROutput));
     State.Field(FMMMRegisters, SizeOf(FMMMRegisters));
   end;
-  if FROM.GetCartridgeType.MapperType = TMapperType.MBC6 then
+  if FMapperType = TMapperType.MBC6 then
   begin
     State.Field(FMBC6ROMBanks, SizeOf(FMBC6ROMBanks));
     State.Field(FMBC6RAMBanks, SizeOf(FMBC6RAMBanks));

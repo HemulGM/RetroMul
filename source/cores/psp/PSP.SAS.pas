@@ -374,7 +374,7 @@ begin
     V.SourceDone := True;
     Exit;
   end;
-  var P := FMemory.Ptr(V.Address + Cardinal(B) * 16, 16);
+  var P := FMemory.ReadPtr(V.Address + Cardinal(B) * 16, 16);
   if P = nil then
   begin
     V.SourceDone := True;

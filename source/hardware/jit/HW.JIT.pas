@@ -225,6 +225,10 @@ const
 
 // This target's code generator with Size bytes of code (nil: none here).
 function CreateJitAsm(Size: NativeInt): TJitAsm;
+
+// AAPCS64 leaf routines: no calls or EnterJump; other hosts use the regular ABI.
+function CreateJitLeafAsm(Size: NativeInt): TJitAsm;
+
 // The model (every target), with Size bytes for its operations.
 function CreateJitModel(Size: NativeInt): TJitAsm;
 
@@ -954,6 +958,7 @@ type
   TJitAsmA64 = class abstract(TJitAsm)
   private
     // The windows: Self + FWinBase[K] in A64WinReg[K].
+    FLeaf: Boolean;
     FWinBase: array[0..1] of Integer;
     FWins: Integer;
   protected
@@ -977,7 +982,7 @@ type
     procedure PatchJump(Field, Target: NativeInt); override;
     function JumpTargetOf(Field: NativeInt): NativeInt; override;
   public
-    constructor Create(Size: NativeInt);
+    constructor Create(Size: NativeInt; Leaf: Boolean = False);
     procedure Move(W: TJitWidth; const Dst, Src: TJitOp); override;
     procedure Alu(Op: TJitAlu; W: TJitWidth; const Dst, Src: TJitOp); override;
     procedure Shift(Op: TJitShift; W: TJitWidth; Dst: TJitReg; Count: Integer); override;
@@ -1069,12 +1074,17 @@ begin
   Result := True;
 end;
 
-constructor TJitAsmA64.Create(Size: NativeInt);
+constructor TJitAsmA64.Create(Size: NativeInt; Leaf: Boolean);
 const
   Phys: array[TJitReg] of Byte = (19, 20, 21, 22, 23, 24, 0, 9, 10, 11, 12, 13, 14, 26);
+  LeafPhys: array[TJitReg] of Byte = (1, 2, 3, 4, 5, 6, 0, 9, 10, 11, 12, 13, 14, 7);
 begin
+  FLeaf := Leaf;
   for var R := Low(TJitReg) to High(TJitReg) do
-    FPhys[R] := Phys[R];
+    if FLeaf then
+      FPhys[R] := LeafPhys[R]
+    else
+      FPhys[R] := Phys[R];
   inherited Create(Size);
 end;
 
@@ -1159,14 +1169,14 @@ begin
   // Self + 32 KB past 32 KB), an unscaled 9-bit one.
   if (Disp >= 0) and (Disp mod Size = 0) and (Disp div Size < 4096) then
     Exit(True);
-  if (Base = FPhys[jrSelf]) and (Disp >= A64High) and ((Disp - A64High) mod Size = 0) and
+  if not FLeaf and (Base = FPhys[jrSelf]) and (Disp >= A64High) and ((Disp - A64High) mod Size = 0) and
     ((Disp - A64High) div Size < 4096) then
   begin
     Base := aHigh;
     Dec(Disp, A64High);
     Exit(True);
   end;
-  if Base = FPhys[jrSelf] then
+  if not FLeaf and (Base = FPhys[jrSelf]) then
     for var K := 0 to FWins - 1 do
       if (Disp >= FWinBase[K]) and ((Disp - FWinBase[K]) mod Size = 0) and ((Disp - FWinBase[K]) div Size < 4096) then
       begin
@@ -1184,6 +1194,8 @@ end;
 
 procedure TJitAsmA64.AddWindow(Disp: Integer);
 begin
+  if FLeaf then
+    Exit;
   // Self + Disp (rounded down to 4 KB) in the next window register, unless
   // a window reaches it already (8-byte fields: 32 KB from its base).
   if (Disp < 0) or (Disp >= 4096 * 4096) then
@@ -1566,6 +1578,8 @@ end;
 
 procedure TJitAsmA64.Call(Routine: Pointer; const Args: array of TJitOp);
 begin
+  if FLeaf then
+    raise EInvalidOpException.Create('JIT leaf: calls are not supported');
   MoveArgs(Args);
   var Delta := (NativeInt(Routine) - NativeInt(Here)) div 4;
   if ((NativeUInt(Routine) and 3) = 0) and (Delta >= -$2000000) and (Delta < $2000000) then
@@ -1581,6 +1595,8 @@ end;
 
 procedure TJitAsmA64.CallAt(const Routine: TJitOp; const Args: array of TJitOp);
 begin
+  if FLeaf then
+    raise EInvalidOpException.Create('JIT leaf: calls are not supported');
   if Routine.Kind <> okMem then
     raise EInvalidOpException.Create('JIT: no such call');
   MoveArgs(Args);
@@ -1597,6 +1613,13 @@ end;
 
 procedure TJitAsmA64.Enter;
 begin
+  if FLeaf then
+  begin
+    // Copy Ctx first: jrSelf uses the original x1 argument register.
+    MovReg(True, FPhys[jrCtx], 1);
+    MovReg(True, FPhys[jrSelf], 0);
+    Exit;
+  end;
   I($A9BA7BFD);               // stp x29, x30, [sp, #-96]!
   I($910003FD);               // mov x29, sp
   I($A90153F3);               // stp x19, x20, [sp, #16]
@@ -1621,6 +1644,11 @@ begin
   end
   else
     Fetch(jw64, Value, 0);
+  if FLeaf then
+  begin
+    I($D65F03C0);             // ret; SP, FP, LR and x19..x28 unchanged
+    Exit;
+  end;
   I($A94573FB);               // ldp x27, x28, [sp, #80]
   I($A9446BF9);               // ldp x25, x26, [sp, #64]
   I($A94363F7);               // ldp x23, x24, [sp, #48]
@@ -1632,6 +1660,8 @@ end;
 
 procedure TJitAsmA64.EnterJump;
 begin
+  if FLeaf then
+    raise EInvalidOpException.Create('JIT leaf: EnterJump is not supported');
   Enter;
   MovReg(True, FPhys[jrT1], 3);
   I($D61F0000 or (2 shl 5));  // br x2
@@ -2097,6 +2127,17 @@ begin
   if Result = MAP_FAILED then
     RaiseLastOSError;
   System.Move(A64Frame, Result^, SizeOf(A64Frame));
+  if FLeaf then
+  begin
+    // DWARF 5 6.4.2.3: same_value for x19..x30; CFA remains SP+0
+    // from the CIE. Apply before registration, with no ordinary frame rules.
+    FillChar((Result + 49)^, 31, 0);
+    for var R := 19 to 30 do
+    begin
+      (Result + 49 + (R - 19) * 2)^ := $08;
+      (Result + 50 + (R - 19) * 2)^ := R;
+    end;
+  end;
   PUInt64(Result + 32)^ := UInt64(Result + A64CodeStart);
   PUInt64(Result + 40)^ := UInt64(Size - A64CodeStart);
   __register_frame(Result + A64FDE);
@@ -2818,6 +2859,20 @@ begin
   end;
   {$ELSE}
   Result := nil;
+  {$ENDIF}
+end;
+
+function CreateJitLeafAsm(Size: NativeInt): TJitAsm;
+begin
+  {$IF JitSupported and Defined(ANDROID)}
+  try
+    Result := TJitAsmAndroid64.Create(Size, True);
+  except
+    on EOSError do
+      Result := nil;
+  end;
+  {$ELSE}
+  Result := CreateJitAsm(Size);
   {$ENDIF}
 end;
 

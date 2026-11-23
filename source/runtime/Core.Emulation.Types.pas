@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.UITypes, System.Types;
+  System.UITypes, System.Types, Core.RomMetadata;
 
 {$SCOPEDENUMS ON}
 
@@ -11,6 +11,12 @@ const
   EmulatorMaxPlayers = 12;
 
 type
+  IEmulationRomMetadata = interface
+    ['{EA16F7EE-6D7B-410D-96ED-0F0F05EAFC59}']
+    function GetRomMetadata: IRomMetadata;
+    property RomMetadata: IRomMetadata read GetRomMetadata;
+  end;
+
   // Every frontend supplies the same logical pad.  A core can ignore buttons
   // which do not exist on its hardware.
   TEmulatorButton = (Up, Down, Left, Right, A, B, Select, Start, C, X, Y, Z, Mode);
@@ -23,6 +29,11 @@ type
     LeftTrigger, RightTrigger: Byte;
   end;
 
+  TEmulatorAnalogButtons = record
+    Valid, Digital, Axes: TEmulatorButtons;
+    Values: array[TEmulatorButton] of Byte;
+  end;
+
   TEmulatorInput = record
     Buttons: TEmulatorButtons;
     Buttons3, Buttons4: TEmulatorButtons; // Additional adapter controllers.
@@ -30,6 +41,17 @@ type
     Buttons2: TEmulatorButtons; // Second controller; ignored by single-player cores.
     Buttons9, Buttons10, Buttons11, Buttons12: TEmulatorButtons; // Two Saturn six-player taps.
     Analog: array[0..EmulatorMaxPlayers - 1] of TEmulatorAnalogPad;
+    // Optional analog travel of digital bindings. Binary pad bits stay instant.
+    AnalogButtons: array[0..EmulatorMaxPlayers - 1] of TEmulatorAnalogButtons;
+    // Keyboard/on-screen commands are relative steering; real bindings stay absolute.
+    RelativeButtons: array[0..EmulatorMaxPlayers - 1] of TEmulatorButtons;
+    SteeringAutoCenter: Boolean;
+    function PortButtons(Port: Integer): TEmulatorButtons;
+    function ButtonAmount(Port: Integer; Button: TEmulatorButton): Single;
+    function DigitalButton(Port: Integer; Button: TEmulatorButton): Boolean;
+    procedure AliasButton(Source, Target: TEmulatorButton);
+    class function LegacySize: Integer; static;
+    class function TravelSize: Integer; static;
   end;
 
   IEmulatorConfig = interface
@@ -52,6 +74,12 @@ type
     property FileName: string read GetFileName;
   end;
 
+  // Settings UI can switch an existing core between platform and game files.
+  IEmulatorConfigLocation = interface
+    ['{22F96BD2-263D-4D2B-B017-033873289FEA}']
+    procedure SetConfigFileName(const Value: string);
+  end;
+
   // Pixels are premultiplied-alpha ARGB colors in row-major order.
   TEmulatorFrame = record
     Width: Integer;
@@ -68,6 +96,13 @@ type
     function GetVideoRegions: TArray<TRect>;
   end;
 
+  // A guest can end normally while its adapter remains available for snapshots.
+  IEmulationCompletion = interface
+    ['{38231ED3-334E-4C30-8D61-2EA69D297CC2}']
+    function IsFinished: Boolean;
+  end;
+
+  // Device warnings do not stop emulation; frontends may report them once.
   // Device warnings do not stop emulation; frontends may report them once.
   IEmulationAudioDiagnostics = interface
     ['{FB3848EA-CA1B-4D12-A7ED-1D31776921A6}']
@@ -93,6 +128,23 @@ type
     property UsesPointer: Boolean read GetUsesPointer;
   end;
 
+  // Absolute contact events in the published frame's pixels, before any
+  // platform-specific inverse display transform. Contact 0 is the primary
+  // mouse/touch contact. Cancel must release state without activating a tap.
+  TEmulationTouchPhase = (Down, Move, Up, Cancel);
+
+  TEmulationTouchEvent = record
+    Phase: TEmulationTouchPhase;
+    Contact, X, Y: Integer;
+  end;
+
+  IEmulationTouchInput = interface
+    ['{C4FF4237-71C1-4CA4-9B4C-655CC47E18A4}']
+    function GetUsesTouch: Boolean;
+    procedure SendTouch(const Event: TEmulationTouchEvent);
+    property UsesTouch: Boolean read GetUsesTouch;
+  end;
+
   IEmulationMotionInput = interface
     ['{1B7C1D32-86B7-4DCC-BD4B-20B1D41120A7}']
     function GetHasAccelerometer: Boolean;
@@ -101,6 +153,12 @@ type
   end;
 
   // Rotation about the screen normal, normalized to 180 degrees per second.
+  // Optional three-axis extension of IEmulationMotionInput.
+  IEmulationMotionInput3D = interface
+    ['{C5781AF3-009E-4AF7-9E25-61CB587BBDFE}']
+    procedure SetAcceleration3D(X, Y, Z: Double; Available: Boolean);
+  end;
+
   IEmulationRotationInput = interface
     ['{94335543-B087-4B1B-A26F-5AC933E13A21}']
     function GetHasGyroscope: Boolean;
@@ -158,6 +216,19 @@ type
     procedure ApplyLiveSettings;
   end;
 
+  // Frontend-thread commands. Captions are translation keys; IDs are stable
+  // within a core. Query again when opening the menu and before execution.
+  TEmulationGameAction = record
+    Id, Caption: string;
+    Enabled: Boolean;
+  end;
+
+  IEmulationGameActions = interface
+    ['{044A3D71-354B-496A-9FF4-78FD523D1232}']
+    function GetGameActions: TArray<TEmulationGameAction>;
+    procedure ExecuteGameAction(const Id: string);
+  end;
+
   IEmulationCore = interface
     ['{60C5F8B6-85D8-46F5-BA4D-0EC532A7E7F0}']
     function GetName: string;
@@ -191,7 +262,107 @@ type
     function IsPaused: Boolean;
   end;
 
+// The pool may overwrite an array only while no consumer owns it.
+function EmulationBufferReferences(Data: Pointer): Integer; inline;
+
 implementation
+
+function TEmulatorInput.PortButtons(Port: Integer): TEmulatorButtons;
+begin
+  case Port of
+    0:
+      Result := Buttons;
+    1:
+      Result := Buttons2;
+    2:
+      Result := Buttons3;
+    3:
+      Result := Buttons4;
+    4:
+      Result := Buttons5;
+    5:
+      Result := Buttons6;
+    6:
+      Result := Buttons7;
+    7:
+      Result := Buttons8;
+    8:
+      Result := Buttons9;
+    9:
+      Result := Buttons10;
+    10:
+      Result := Buttons11;
+    11:
+      Result := Buttons12;
+  else
+    Result := [];
+  end;
+end;
+
+function TEmulatorInput.ButtonAmount(Port: Integer; Button: TEmulatorButton): Single;
+begin
+  if (Port >= 0) and (Port < EmulatorMaxPlayers) and (Button in AnalogButtons[Port].Valid) then
+    Result := AnalogButtons[Port].Values[Button] / 255
+  else
+    Result := Ord(Button in PortButtons(Port));
+end;
+
+function TEmulatorInput.DigitalButton(Port: Integer; Button: TEmulatorButton): Boolean;
+begin
+  if (Port >= 0) and (Port < EmulatorMaxPlayers) and (Button in AnalogButtons[Port].Valid) then
+    Result := Button in AnalogButtons[Port].Digital
+  else
+    Result := Button in PortButtons(Port);
+end;
+
+procedure TEmulatorInput.AliasButton(Source, Target: TEmulatorButton);
+begin
+  if Source in AnalogButtons[0].Valid then
+  begin
+    if not (Target in AnalogButtons[0].Valid) then
+      AnalogButtons[0].Values[Target] := 255 * Ord(Target in Buttons);
+    Include(AnalogButtons[0].Valid, Target);
+    if AnalogButtons[0].Values[Source] > AnalogButtons[0].Values[Target] then
+      AnalogButtons[0].Values[Target] := AnalogButtons[0].Values[Source];
+    if Source in AnalogButtons[0].Digital then
+      Include(AnalogButtons[0].Digital, Target);
+    if Source in AnalogButtons[0].Axes then
+      Include(AnalogButtons[0].Axes, Target);
+  end;
+  if Source in RelativeButtons[0] then
+    Include(RelativeButtons[0], Target);
+  if Source in Buttons then
+    Include(Buttons, Target);
+end;
+
+class function TEmulatorInput.LegacySize: Integer;
+begin
+  var Value: TEmulatorInput;
+  Result := NativeUInt(@Value.AnalogButtons) - NativeUInt(@Value);
+end;
+
+class function TEmulatorInput.TravelSize: Integer;
+begin
+  var Value: TEmulatorInput;
+  Result := NativeUInt(@Value.RelativeButtons) - NativeUInt(@Value);
+end;
+
+function EmulationBufferReferences(Data: Pointer): Integer;
+type
+  THeader = packed record
+{$IFDEF CPU64BITS}
+    Padding: Integer;
+{$ENDIF}
+    RefCount: Integer;
+    Length: NativeInt;
+  end;
+
+  PHeader = ^THeader;
+begin
+  if Data = nil then
+    Exit(0);
+  Result := PHeader(PByte(Data) - SizeOf(THeader))^.RefCount;
+end;
 
 end.
 

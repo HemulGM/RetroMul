@@ -55,10 +55,14 @@ begin
 end;
 
 procedure DisconnectSettingsControl(Control: TControl);
-begin RM.Controls.Lifetime.DisconnectControl(Control); end;
+begin
+  RM.Controls.Lifetime.DisconnectControl(Control);
+end;
 
 procedure RetireSettingsControl(Control: TControl);
-begin RM.Controls.Lifetime.RetireControl(Control); end;
+begin
+  RM.Controls.Lifetime.RetireControl(Control);
+end;
 
 function CreateSettingsRow(Owner: TComponent; Kind: TSettingsRowKind; const Id, Caption, Description: string): TSettingsRowView;
 begin
@@ -97,7 +101,7 @@ begin
           Result.Title := F.LabelSettingTitle;
           Result.Detail := F.LabelSettingDetail;
           Result.Editors := F.LayoutSettingEditorContainer;
-          Result.Editor := F.SwitchAutosavePeriodic;
+          Result.Editor := F.CheckBoxAutosavePeriodic;
         end;
       TSettingsRowKind.Volume:
         begin

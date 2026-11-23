@@ -181,7 +181,7 @@ begin
     Exit;
 
   FThread := TWSWorker.Create(FCartridgeROM, FBIOS, FIdentity, FStorage, FColor, FSystemId);
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, FSystemId);
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, FSystemId, GetConfig.FileName);
   FThread.SaveFile := FSaveFile;
   var HardwareId := ROM_SYSTEM_WS;
   if FColor then

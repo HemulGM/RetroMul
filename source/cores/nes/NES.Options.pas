@@ -3,11 +3,13 @@
 interface
 
 uses
-  System.IniFiles, System.SysUtils, Core.Storage;
+  System.IniFiles, System.SysUtils, Core.Storage, NES.Types;
 
 const
   NES_CHANNEL_KEYS: array[0..5] of string =
     ('Pulse1Volume', 'Pulse2Volume', 'TriangleVolume', 'NoiseVolume', 'DmcVolume', 'ExpansionVolume');
+  NES_MMC3_IRQ_REVISION_KEYS: array[TMmc3IrqRevision] of string =
+    ('Auto', 'SharpBC', 'SharpA', 'NecBC', 'NecA');
 
 type
   TNesChannelVolumes = array[0..5] of Integer;
@@ -27,13 +29,24 @@ type
     procedure Save(Ini: TCustomIniFile);
   end;
 
+function ReadMmc3IrqRevision(const Ini: TCustomIniFile): TMmc3IrqRevision;
+
 // Standard RGB .pal files: 64 colors, or 8 explicit emphasis banks of 64.
 function LoadNesPalette(const Storage: IStorage; const FileName: string): TArray<UInt32>;
 
 implementation
 
 uses
-  System.Math;
+  System.Math, System.StrUtils;
+
+function ReadMmc3IrqRevision(const Ini: TCustomIniFile): TMmc3IrqRevision;
+begin
+  var Index := IndexText(Ini.ReadString('Cartridge', 'Mmc3IrqRevision', ''),
+    NES_MMC3_IRQ_REVISION_KEYS);
+  if Index < 0 then
+    Exit(TMmc3IrqRevision.Auto);
+  Result := TMmc3IrqRevision(Index);
+end;
 
 class function TNesOptions.Defaults: TNesOptions;
 begin

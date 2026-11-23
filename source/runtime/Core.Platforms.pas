@@ -10,6 +10,7 @@ type
   TPlatformInfo = record
     Id, CoreId, Name, ShortName, Manufacturer, SearchTerms, Folder: string;
     ScanFolders, Extensions: TArray<string>;
+    SharedRomFolder: string;
     SettingsProfile, SettingsCoreId: string;
     Ports: Integer;
     function CopyInfo: TPlatformInfo;
@@ -29,7 +30,7 @@ type
     class constructor Create;
     class destructor Destroy;
     // Core modules supply native extensions; shared archive formats are added.
-    class procedure RegisterPlatform(const Id, Name, ShortName, Manufacturer, SearchTerms, Folder: string; const ScanFolders, Extensions: array of string; const SettingsProfile, SettingsCoreId: string; Ports: Integer); static;
+    class procedure RegisterPlatform(const Id, Name, ShortName, Manufacturer, SearchTerms, Folder: string; const ScanFolders, Extensions: array of string; const SettingsProfile, SettingsCoreId: string; Ports: Integer; const SharedRomFolder: string = ''); static;
     class procedure RegisterAlias(const Alias, PlatformId: string); static;
     // Listeners run synchronously for subsequent registrations and aliases.
     class function AddRegistrationListener(const Listener: TPlatformRegistrationListener): Integer; static;
@@ -111,7 +112,7 @@ begin
   NotifyRegistered(Info);
 end;
 
-class procedure TPlatformRegistry.RegisterPlatform(const Id, Name, ShortName, Manufacturer, SearchTerms, Folder: string; const ScanFolders, Extensions: array of string; const SettingsProfile, SettingsCoreId: string; Ports: Integer);
+class procedure TPlatformRegistry.RegisterPlatform(const Id, Name, ShortName, Manufacturer, SearchTerms, Folder: string; const ScanFolders, Extensions: array of string; const SettingsProfile, SettingsCoreId: string; Ports: Integer; const SharedRomFolder: string);
 begin
   if (Id.Trim = '') or (Name = '') or
     (Manufacturer = '') or (Folder = '') or (Length(ScanFolders) = 0) or
@@ -135,6 +136,7 @@ begin
   Item.Manufacturer := Manufacturer;
   Item.SearchTerms := SearchTerms;
   Item.Folder := Folder;
+  Item.SharedRomFolder := SharedRomFolder;
   SetLength(Item.ScanFolders, Length(ScanFolders));
   for var i := 0 to High(ScanFolders) do
     Item.ScanFolders[i] := ScanFolders[i];

@@ -3,9 +3,9 @@
 interface
 
 uses
-  Core.Emulation.Types,
-  RM.Platforms.Presentation, System.Classes, System.SysUtils, System.IniFiles,
-  System.Generics.Collections, RM.Gamepad, Core.Platforms, RM.Settings.Builder;
+  Core.Emulation.Types, RM.Platforms.Presentation, System.Classes,
+  System.SysUtils, System.IniFiles, System.Generics.Collections, RM.Gamepad,
+  Core.Platforms, RM.Settings.Builder;
 
 const
   SETTINGS_CATEGORY_GENERAL = 0;
@@ -24,7 +24,7 @@ type
   TSettingsPlatform = class
   public
     PageId: string;
-    CoreId, Name, Brand, SearchTerms: string;
+    CoreId, Name, Brand, SearchTerms, HelpText: string;
     Ports: Integer;
     constructor Create(const Info: TPlatformInfo);
     procedure Configuration(Context: TSettingsPageBuilder); virtual;
@@ -38,6 +38,7 @@ type
     function ChangeConfiguration(Draft: TMemIniFile; const Section, Key: string): Boolean; virtual;
     function ConfigurationNotice(Draft: TMemIniFile): string; virtual;
     function PlayerCount(Draft: TMemIniFile): Integer; virtual;
+    function PeripheralPortCount(Draft: TMemIniFile): Integer; virtual;
     function PortOptions(Port: Integer): TSettingsPortOptions; virtual;
   end;
 
@@ -121,6 +122,11 @@ begin
   Result := Ports;
 end;
 
+function TSettingsPlatform.PeripheralPortCount(Draft: TMemIniFile): Integer;
+begin
+  Result := Ports;
+end;
+
 function TSettingsPlatform.PortOptions(Port: Integer): TSettingsPortOptions;
 begin
   Result.SingleLineDescription := False;
@@ -184,7 +190,8 @@ end;
 function TSettingsPlatformRegistry.Require(const PageId: string): TSettingsPlatform;
 begin
   Result := Find(PageId);
-  if Result = nil then raise EArgumentException.Create('Unknown settings page: ' + PageId);
+  if Result = nil then
+    raise EArgumentException.Create('Unknown settings page: ' + PageId);
 end;
 
 function TSettingsPlatformRegistry.Matching(const Query: string): TArray<TSettingsPlatform>;
@@ -210,3 +217,4 @@ begin
 end;
 
 end.
+

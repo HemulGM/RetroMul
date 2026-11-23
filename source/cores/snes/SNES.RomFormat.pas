@@ -30,6 +30,9 @@ end;
 
 function LoadImage(const Data: TBytes): TBytes;
 begin
+  var CopierSize: Integer;
+  if DetectSufamiTurbo(Data, CopierSize) <> TSufamiImage.None then
+    Exit(Copy(Data, CopierSize, Length(Data) - CopierSize));
   var Header: TSnesHeader;
   if DetectSnesHeader(Data, Header) and (Header.CopierSize <> 0) then
     Result := NormalizeImage(Data, SNES_ENCODING_COPIER)

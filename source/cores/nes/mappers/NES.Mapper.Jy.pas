@@ -3,7 +3,7 @@
 interface
 
 uses
-  NES.State, NES.Types, NES.Mapper, NES.Mapper.Banked;
+  NES.State, NES.Types, NES.Mapper, NES.Mapper.Banked, NES.Mapper.Mmc3;
 
 type
   TMapperJy = class(TMapperBanked)
@@ -17,13 +17,20 @@ type
     FIrqMode, FPrescaler, FCounter, FXor: Integer;
     FEnabled, FPending, FA12: Boolean;
     FMultiplyA, FMultiplyB, FScratch: Byte;
-    FWorkBank: Integer;
+    FAccumulator: Byte;
+    FOuterBanks, FHasWorkRam: Boolean;
+    FWorkBank, FBoardPrgBase, FBoardChrBase: Integer;
     procedure UpdateBanks;
+    procedure UpdateOuterBanks;
+    function OuterChrBank(Bank: Integer): Integer;
+    function ExtendedMirroring: Boolean;
+    function ChrNametable(Bank: Integer): Boolean;
     procedure TickIrq;
     function NameRamOffset(Address: UInt16): Integer;
   public
     procedure SerializeState(State: TNesStateArchive); override;
     constructor Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
+    procedure ConfigureWorkRam(Enabled: Boolean);
     procedure Reset; override;
     procedure ClockCpu; override;
     procedure ClockCpuWrite; override;
@@ -36,7 +43,42 @@ type
     function PpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
   end;
 
+  TMapperHsk007 = class(TMapperJy)
+  private
+    FMmc3: TMapperMmc3;
+    FSubmapper: Integer;
+    FBoardMode, FOuterBank: Byte;
+    function JySelected: Boolean; inline;
+    procedure UpdateBoardBanks;
+  public
+    constructor Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; Submapper: Integer);
+    destructor Destroy; override;
+    procedure SerializeState(State: TNesStateArchive); override;
+    procedure Reset; override;
+    function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
+    function CpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
+    function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
+    function PpuWrite(Address: UInt16; Value: UInt8): Boolean; override;
+    function GetMirrorMode: TMirrorMode; override;
+    procedure ClockCpu; override;
+    procedure ClockCpuWrite; override;
+    procedure ClockPpuRead; override;
+    procedure ClockPpuAddress(Address: UInt16; PpuCycle: UInt64); override;
+    function IrqPending: Boolean; override;
+  end;
+
 implementation
+
+type
+  THsk007Mmc3 = class(TMapperMmc3)
+  private
+    FPrgStart, FPrgMask, FChrStart, FChrMask: Integer;
+    FFixedPrg: Boolean;
+  public
+    procedure ApplyWiring(Mode, Outer: Byte; PrgBase, ChrBase: Integer);
+    function CpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
+    function PpuRead(Address: UInt16; out Value: UInt8): Boolean; override;
+  end;
 
 procedure TMapperJy.SerializeState(State: TNesStateArchive);
 begin
@@ -62,13 +104,25 @@ begin
   State.Field(FMultiplyB, SizeOf(FMultiplyB));
   State.Field(FScratch, SizeOf(FScratch));
   State.Field(FWorkBank, SizeOf(FWorkBank));
+  if FOuterBanks then
+    State.Field(FAccumulator, SizeOf(FAccumulator));
 end;
 
 constructor TMapperJy.Create(Board: Integer; const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
 begin
   inherited Create(Prg, Chr, HasChrRam, MirrorMode);
   FBoard := Board;
+  FOuterBanks := Board >= MAPPER_JY_281;
   Reset;
+end;
+
+procedure TMapperJy.ConfigureWorkRam(Enabled: Boolean);
+begin
+  if FOuterBanks then
+  begin
+    FHasWorkRam := Enabled;
+    FRamEnabled := Enabled;
+  end;
 end;
 
 procedure TMapperJy.Reset;
@@ -83,6 +137,8 @@ begin
   FMirrorRegister := 0;
   FNameSelect := 0;
   FChrControl := $20;
+  if FOuterBanks then
+    FChrControl := 0;
   FIrqMode := 0;
   FPrescaler := 0;
   FCounter := 0;
@@ -93,12 +149,115 @@ begin
   FMultiplyA := 0;
   FMultiplyB := 0;
   FScratch := 0;
-  FRamEnabled := False;
+  FAccumulator := 0;
+  FRamEnabled := FHasWorkRam;
   UpdateBanks;
+end;
+
+function TMapperJy.OuterChrBank(Bank: Integer): Integer;
+begin
+  case FBoard of
+    MAPPER_HSK007:
+      Exit((FBoardChrBase and not $FF) or (Bank and $FF));
+    MAPPER_JY_SC871115C:
+      Exit(((FChrControl and 3) shl 8) or (Bank and $1FF));
+    MAPPER_JY_281:
+      Exit((Bank and $FF) or (Integer(FChrControl) shl 8));
+    MAPPER_JY_295:
+      Exit((Bank and $7F) or ((FChrControl and 7) shl 7));
+    MAPPER_JY_397:
+      Exit((Bank and $7F) or (Integer(FChrControl) shl 7));
+    MAPPER_JY_282:
+      Result := (Integer(FChrControl) shl 6) and $600;
+    MAPPER_JY_388:
+      Result := (FChrControl and 2) shl 8;
+  else
+    Result := (Integer(FChrControl) shl 7) and $600;
+  end;
+  if (FChrControl and $20) <> 0 then
+    Result := Result or (Bank and $1FF)
+  else
+    Result := Result or ((FChrControl and 1) shl 8) or (Bank and $FF);
+end;
+
+procedure TMapperJy.UpdateOuterBanks;
+begin
+  var PrgMask := $1F;
+  var PrgBase := (Integer(FChrControl) shl 4) and not $1F;
+  case FBoard of
+    MAPPER_HSK007:
+      PrgBase := FBoardPrgBase and not PrgMask;
+    MAPPER_JY_SC871115C:
+      begin
+        if (FChrControl and 4) <> 0 then
+          PrgMask := $3F;
+        PrgBase := (Integer(FChrControl) shl 4) and not PrgMask;
+      end;
+    MAPPER_JY_281:
+      PrgBase := Integer(FChrControl) shl 5;
+    MAPPER_JY_295:
+      begin
+        PrgMask := $0F;
+        PrgBase := (FChrControl and 7) shl 4;
+      end;
+    MAPPER_JY_386:
+      PrgBase := ((FChrControl and 2) shl 4) or ((FChrControl and 8) shl 3);
+    MAPPER_JY_387:
+      begin
+        PrgMask := $0F;
+        PrgBase := ((FChrControl and 2) shl 3) or ((FChrControl and 8) shl 2);
+      end;
+    MAPPER_JY_388:
+      PrgBase := (FChrControl and $0C) shl 3;
+  end;
+
+  var PrgMode := FMode and 3;
+  var PrgShift := 0;
+  if PrgMode < 2 then
+    PrgShift := 2 - PrgMode;
+  var Banks := FPrg;
+  if PrgMode = 3 then
+    for var Slot := 0 to 3 do
+    begin
+      Banks[Slot] := 0;
+      for var BitIndex := 0 to 6 do
+        Banks[Slot] := Banks[Slot] or (((FPrg[Slot] shr BitIndex) and 1) shl (6 - BitIndex));
+    end;
+
+  var LastBank := Banks[3];
+  if (FMode and 4) = 0 then
+    LastBank := PrgMask shr PrgShift;
+  for var Slot := 0 to 3 do
+  begin
+    var RegisterIndex := ((Slot shr PrgShift) shl PrgShift) or ((1 shl PrgShift) - 1);
+    var Bank := Banks[RegisterIndex];
+    if RegisterIndex = 3 then
+      Bank := LastBank;
+    Bank := (Bank shl PrgShift) or (Slot and ((1 shl PrgShift) - 1));
+    Prg8(Slot, PrgBase or (Bank and PrgMask));
+  end;
+  FWorkBank := PrgBase or (((Banks[3] shl PrgShift) or ((1 shl PrgShift) - 1)) and PrgMask);
+
+  var ChrMode := (FMode shr 3) and 3;
+  var ChrShift := 3 - ChrMode;
+  for var Slot := 0 to 7 do
+  begin
+    var RegisterIndex := (Slot shr ChrShift) shl ChrShift;
+    if (ChrMode = 1) and ((FChrControl and $80) <> 0) then
+      RegisterIndex := FLatches[Slot shr 2];
+    Chr1(Slot, OuterChrBank((FChr[RegisterIndex] shl ChrShift) or
+        (Slot and ((1 shl ChrShift) - 1))));
+  end;
+  Mirror(FMirrorRegister and 3);
 end;
 
 procedure TMapperJy.UpdateBanks;
 begin
+  if FOuterBanks then
+  begin
+    UpdateOuterBanks;
+    Exit;
+  end;
   var Banks: array[0..3] of Integer;
   for var i := 0 to 3 do
   begin
@@ -183,6 +342,11 @@ begin
         Value := (Integer(FMultiplyA) * FMultiplyB) and $FF;
       $5801:
         Value := (Integer(FMultiplyA) * FMultiplyB) shr 8;
+      $5802:
+        if FOuterBanks then
+          Value := FAccumulator
+        else
+          Result := False;
       $5803:
         Value := FScratch;
     else
@@ -192,10 +356,11 @@ begin
   end;
   if (Address >= $6000) and (Address < $8000) then
   begin
-    Result := (FMode and $80) <> 0;
-    if Result then
+    if (FMode and $80) <> 0 then
+    begin
       Value := FPrgRom[(FWorkBank * $2000 + (Address and $1FFF)) mod Length(FPrgRom)];
-    Exit;
+      Exit(True);
+    end;
   end;
   Result := inherited CpuRead(Address, Value);
 end;
@@ -205,19 +370,30 @@ begin
   Result := True;
   if (Address >= $5000) and (Address < $6000) then
   begin
+    if FOuterBanks then
+      Address := $5800 or (Address and 3);
     case Address and $F803 of
       $5800:
         FMultiplyA := Value;
       $5801:
         FMultiplyB := Value;
+      $5802:
+        if FOuterBanks then
+          FAccumulator := (Integer(FAccumulator) + Value) and $FF;
       $5803:
-        FScratch := Value;
+        begin
+          FScratch := Value;
+          FAccumulator := 0;
+        end;
     end;
     Exit;
   end;
 
   if Address < $8000 then
-    Exit(False);
+    Exit(((FMode and $80) = 0) and inherited CpuWrite(Address, Value));
+
+  if FOuterBanks and ((Address and $0800) <> 0) and ((Address and $F000) <> $C000) then
+    Exit;
 
   var Index := Address and 7;
   case Address and $F000 of
@@ -238,7 +414,11 @@ begin
           begin
             FEnabled := (Value and 1) <> 0;
             if not FEnabled then
+            begin
               FPending := False;
+              if FOuterBanks then
+                FPrescaler := 0;
+            end;
           end;
         1:
           FIrqMode := Value;
@@ -246,6 +426,8 @@ begin
           begin
             FEnabled := False;
             FPending := False;
+            if FOuterBanks then
+              FPrescaler := 0;
           end;
         3:
           FEnabled := True;
@@ -257,27 +439,52 @@ begin
           FXor := Value;
       end;
     $D000:
-      case Index of
-        0:
-          FMode := Value;
-        1:
-          FMirrorRegister := Value and 3;
-        2:
-          FNameSelect := Value and $80;
-        3:
-          FChrControl := Value;
+      begin
+        if FOuterBanks then
+          Index := Index and 3;
+        case Index of
+          0:
+            FMode := Value;
+          1:
+            if FOuterBanks then
+              FMirrorRegister := Value and $0B
+            else
+              FMirrorRegister := Value and 3;
+          2:
+            if FOuterBanks then
+              FNameSelect := Value and $C0
+            else
+              FNameSelect := Value and $80;
+          3:
+            FChrControl := Value;
+        end;
       end;
   end;
   UpdateBanks;
 end;
 
+function TMapperJy.ExtendedMirroring: Boolean;
+begin
+  if FOuterBanks then
+    Exit((FBoard <> MAPPER_JY_388) and
+      (((FMode and $20) <> 0) or ((FMirrorRegister and 8) <> 0)));
+  Result := ((FBoard = MAPPER_JY_209) and ((FMode and $20) <> 0)) or
+    (FBoard = MAPPER_JY_211);
+end;
+
+function TMapperJy.ChrNametable(Bank: Integer): Boolean;
+begin
+  Result := ExtendedMirroring and (not FOuterBanks or ((FMode and $20) <> 0)) and
+    (((FMode and $40) <> 0) or ((Bank and $80) <> (FNameSelect and $80)));
+end;
+
 function TMapperJy.NameRamOffset(Address: UInt16): Integer;
 begin
   var Slot := ((Address and $0FFF) shr 10);
-  if ((FBoard = MAPPER_JY_209) and ((FMode and $20) <> 0)) or (FBoard = MAPPER_JY_211) then
+  if ExtendedMirroring then
     Slot := FName[Slot] and 1
   else
-    case FMirrorRegister of
+    case FMirrorRegister and 3 of
       0:
         Slot := Slot and 1;
       1:
@@ -295,17 +502,24 @@ begin
   if (Address >= $2000) and (Address < $3F00) then
   begin
     var Bank := FName[(Address and $0FFF) shr 10];
-    if (((FBoard = MAPPER_JY_209) and ((FMode and $20) <> 0)) or (FBoard = MAPPER_JY_211)) and (((FMode and $40) <> 0) or ((Bank and $80) <> FNameSelect)) then
-      Value := FChrMemory[(Bank * $400 + (Address and $3FF)) mod Length(FChrMemory)]
+    if ChrNametable(Bank) then
+    begin
+      if FOuterBanks then
+        Bank := OuterChrBank(Bank);
+      Value := FChrMemory[(Bank * $400 + (Address and $3FF)) mod Length(FChrMemory)];
+    end
     else
       Value := FCiram[NameRamOffset(Address)];
     Exit(True);
   end;
   Result := inherited PpuRead(Address, Value);
-  if Result and (FBoard = MAPPER_JY_209) then
+  if Result and ((FBoard = MAPPER_JY_209) or (FOuterBanks and ((FChrControl and $80) <> 0))) then
     if ((Address and $0FF8) = $0FD8) or ((Address and $0FF8) = $0FE8) then
     begin
-      FLatches[Address shr 12] := (Address shr 4) and (((Address shr 10) and 4) or 2);
+      if FOuterBanks then
+        FLatches[Address shr 12] := ((Address shr 10) and 4) or ((Address shr 4) and 2)
+      else
+        FLatches[Address shr 12] := (Address shr 4) and (((Address shr 10) and 4) or 2);
       UpdateBanks;
     end;
 end;
@@ -314,14 +528,23 @@ function TMapperJy.PpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
   if (Address >= $2000) and (Address < $3F00) then
   begin
-    FCiram[NameRamOffset(Address)] := Value;
+    var Bank := FName[(Address and $0FFF) shr 10];
+    // CHR ROM replaces nametable reads while PPU writes still reach CIRAM.
+    if FOuterBanks and FHasChrRam and ((FNameSelect and $40) <> 0) and ChrNametable(Bank) then
+      FChrMemory[(OuterChrBank(Bank) * $400 + (Address and $3FF)) mod Length(FChrMemory)] := Value
+    else
+      FCiram[NameRamOffset(Address)] := Value;
     Exit(True);
   end;
+  if FOuterBanks and ((FNameSelect and $40) = 0) then
+    Exit(Address < $2000);
   Result := inherited PpuWrite(Address, Value);
 end;
 
 procedure TMapperJy.TickIrq;
 begin
+  if FOuterBanks and not FEnabled then
+    Exit;
   var Direction := (FIrqMode shr 6) and 3;
   if not (Direction in [1, 2]) then
     Exit;
@@ -334,12 +557,18 @@ begin
   else
     Value := (Value - 1) and Mask;
   FPrescaler := (FPrescaler and ($FF xor Mask)) or Value;
-  if Value <> 0 then
+  if FOuterBanks and (Direction = 2) then
+  begin
+    if Value <> Mask then
+      Exit;
+  end
+  else if Value <> 0 then
     Exit;
-  if Direction = 1 then
-    FCounter := (FCounter + 1) and $FF
-  else
-    FCounter := (FCounter - 1) and $FF;
+  if not FOuterBanks or ((FIrqMode and 8) = 0) then
+    if Direction = 1 then
+      FCounter := (FCounter + 1) and $FF
+    else
+      FCounter := (FCounter - 1) and $FF;
   if FEnabled and (((Direction = 1) and (FCounter = 0)) or ((Direction = 2) and (FCounter = $FF))) then
     FPending := True;
 end;
@@ -373,6 +602,204 @@ end;
 function TMapperJy.IrqPending: Boolean;
 begin
   Result := FPending;
+end;
+
+procedure THsk007Mmc3.ApplyWiring(Mode, Outer: Byte; PrgBase, ChrBase: Integer);
+begin
+  FFixedPrg := (Mode and 8) = 0;
+  if FFixedPrg then
+  begin
+    FPrgMask := 3;
+    PrgBase := PrgBase or ((Outer and 7) shl 1);
+  end
+  else
+  begin
+    FPrgMask := $0F;
+    if (Outer and $10) <> 0 then
+      FPrgMask := $1F;
+  end;
+  FPrgStart := PrgBase and not FPrgMask;
+  FChrMask := $7F;
+  if (Outer and $80) <> 0 then
+    FChrMask := $FF;
+  FChrStart := ChrBase and not FChrMask;
+end;
+
+function THsk007Mmc3.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
+begin
+  if Address < $8000 then
+    Exit(False);
+  var Slot := (Address - $8000) shr 13;
+  var Bank := Slot;
+  if not FFixedPrg then
+  begin
+    if ((FBankSelect and $40) <> 0) and ((Slot and 1) = 0) then
+      Slot := Slot xor 2;
+    if Slot < 2 then
+      Bank := FBankRegisters[6 + Slot]
+    else
+      Bank := $FC + Slot;
+  end;
+  Bank := FPrgStart or (Bank and FPrgMask);
+  Value := FPrgRom[((Bank shl 13) or (Address and $1FFF)) mod Length(FPrgRom)];
+  Result := True;
+end;
+
+function THsk007Mmc3.PpuRead(Address: UInt16; out Value: UInt8): Boolean;
+begin
+  if Address >= $2000 then
+    Exit(False);
+  var Bank := FChrStart or ((GetChrOffset(Address) shr 10) and FChrMask);
+  Value := FChrMemory[((Bank shl 10) or (Address and $3FF)) mod Length(FChrMemory)];
+  Result := True;
+end;
+
+constructor TMapperHsk007.Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode; Submapper: Integer);
+begin
+  inherited Create(MAPPER_HSK007, Prg, Chr, HasChrRam, MirrorMode);
+  FSubmapper := Submapper;
+  FMmc3 := THsk007Mmc3.Create(Prg, Chr, HasChrRam, MirrorMode);
+  Reset;
+end;
+
+destructor TMapperHsk007.Destroy;
+begin
+  FMmc3.Free;
+  inherited;
+end;
+
+procedure TMapperHsk007.UpdateBoardBanks;
+begin
+  FBoardPrgBase := ((FOuterBank and 8) shl 1) or ((FBoardMode and 3) shl 5);
+  FBoardChrBase := ((FOuterBank and $40) shl 1) or ((FBoardMode and 2) shl 8);
+  if FSubmapper = 1 then
+    FBoardChrBase := FBoardChrBase or ((FBoardMode and 4) shl 6)
+  else
+    FBoardChrBase := FBoardChrBase or ((FBoardMode and 1) shl 8);
+  UpdateBanks;
+  if FMmc3 <> nil then
+    THsk007Mmc3(FMmc3).ApplyWiring(FBoardMode, FOuterBank, FBoardPrgBase, FBoardChrBase);
+end;
+
+function TMapperHsk007.JySelected: Boolean;
+begin
+  Result := (FBoardMode and $10) <> 0;
+end;
+
+procedure TMapperHsk007.Reset;
+begin
+  FBoardMode := $0F;
+  FOuterBank := $90;
+  inherited;
+  if FMmc3 <> nil then
+    FMmc3.Reset;
+  UpdateBoardBanks;
+end;
+
+procedure TMapperHsk007.SerializeState(State: TNesStateArchive);
+begin
+  inherited;
+  State.Field(FBoardMode, SizeOf(FBoardMode));
+  State.Field(FOuterBank, SizeOf(FOuterBank));
+  FMmc3.SerializeState(State);
+  if State.Loading then
+    UpdateBoardBanks;
+end;
+
+function TMapperHsk007.CpuRead(Address: UInt16; out Value: UInt8): Boolean;
+begin
+  if JySelected then
+    Result := inherited CpuRead(Address, Value)
+  else
+    Result := FMmc3.CpuRead(Address, Value);
+end;
+
+function TMapperHsk007.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
+begin
+  case Address and $F00B of
+    $5009:
+      begin
+        FBoardMode := Value;
+        UpdateBoardBanks;
+        Exit(True);
+      end;
+    $500B:
+      begin
+        FOuterBank := Value;
+        UpdateBoardBanks;
+        Exit(True);
+      end;
+  end;
+  if JySelected then
+    Result := inherited CpuWrite(Address, Value)
+  else
+    Result := (Address >= $8000) and FMmc3.CpuWrite(Address, Value);
+end;
+
+function TMapperHsk007.PpuRead(Address: UInt16; out Value: UInt8): Boolean;
+begin
+  if JySelected then
+    Exit(inherited PpuRead(Address, Value));
+  if (Address >= $2000) and (Address < $3F00) then
+  begin
+    Value := FCiram[FMmc3.NameTableOffset(Address) and $7FF];
+    Exit(True);
+  end;
+  Result := FMmc3.PpuRead(Address, Value);
+end;
+
+function TMapperHsk007.PpuWrite(Address: UInt16; Value: UInt8): Boolean;
+begin
+  if JySelected then
+    Exit(inherited PpuWrite(Address, Value));
+  if (Address >= $2000) and (Address < $3F00) then
+  begin
+    FCiram[FMmc3.NameTableOffset(Address) and $7FF] := Value;
+    Exit(True);
+  end;
+  Result := Address < $2000;
+end;
+
+function TMapperHsk007.GetMirrorMode: TMirrorMode;
+begin
+  if JySelected or (FMmc3 = nil) then
+    Result := inherited
+  else
+    Result := FMmc3.GetMirrorMode;
+end;
+
+procedure TMapperHsk007.ClockCpu;
+begin
+  if JySelected then
+    inherited;
+end;
+
+procedure TMapperHsk007.ClockCpuWrite;
+begin
+  if JySelected then
+    inherited;
+end;
+
+procedure TMapperHsk007.ClockPpuRead;
+begin
+  if JySelected then
+    inherited;
+end;
+
+procedure TMapperHsk007.ClockPpuAddress(Address: UInt16; PpuCycle: UInt64);
+begin
+  if JySelected then
+    inherited
+  else
+    FMmc3.ClockPpuAddress(Address, PpuCycle);
+end;
+
+function TMapperHsk007.IrqPending: Boolean;
+begin
+  if JySelected then
+    Result := inherited
+  else
+    Result := FMmc3.IrqPending;
 end;
 
 end.

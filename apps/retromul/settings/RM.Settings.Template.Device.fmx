@@ -105,7 +105,7 @@ object SettingsDeviceTemplate: TSettingsDeviceTemplate
               Size.Width = 14.000000000000000000
               Size.Height = 14.000000000000000000
               Size.PlatformDefault = False
-              Stroke.Color = xFFE8ECF1
+              Stroke.Color = xFFE9E8F1
               Stroke.Thickness = 1.600000023841858000
               WrapMode = Fit
             end

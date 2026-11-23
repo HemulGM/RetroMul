@@ -40,6 +40,7 @@ type
     FDisc: TPSPDisc;
     FInput: TEmulatorInput;
     FAudioSamples: TArray<SmallInt>;
+    FAudioOutputEnabled: Boolean;
     FFrameNumber: UInt64;
     FRunDeadline: Int64;
     FLog: TStringList;
@@ -48,7 +49,7 @@ type
     FOutput: TStringBuilder;
     FMemstickRoot, FHostRoot, FFlashRoot: string;
     FPendingExec: string;
-    FPendingExecArgs: TBytes;
+    FPendingExecArgs, FPendingExecImage: TBytes;
     FBooted: Boolean;
     FStopAtFrame: Boolean;
     FExecuted: Int64;
@@ -57,6 +58,7 @@ type
     FMediaDigest: TBytes;
     FSettings: TPSPSettings;
     FLastSnapshotFormat: string;
+    FDirectMediaBanks: Boolean;
     function DirectGraph(Schema: TPSPGraphSchema): TPSPGraph;
     procedure TransferDirectMemory(State: TStateArchive);
     function RestoreDirectSnapshot(Data: TPSPStateFile; const Progress: TPSPStateProgress): TPSPConsole;
@@ -71,10 +73,10 @@ type
     procedure SyncTime;
     procedure HandleLog(const Text: string);
     procedure HandleOutput(const Text: RawByteString);
-    procedure HandleLoadExec(const Path: string; ArgSize, ArgPtr: Cardinal);
+    function HandleLoadExec(const Path: string; ArgSize, ArgPtr: Cardinal): Cardinal;
     procedure DispatchEvent(E: TPSPEvent);
     procedure MountDisc;
-    procedure Boot(const Executable: TBytes; const Path: string);
+    procedure Boot(const Executable: TBytes; const Path: string; const Arguments: TBytes = nil; UseArguments: Boolean = False);
   public
     constructor Create(const ProgramData: TPSPProgram; const Storage: IStorage = nil; const HostRoot: string = ''; const MemstickRoot: string = ''; const FontDirectory: string = ''; TrackSnapshots: Boolean = False; Seed: TPSPReplayState = nil; BootProgram: Boolean = True);
     destructor Destroy; override;
@@ -102,6 +104,7 @@ type
     property System: TPSPSystem read FSystem;
     property Scheduler: TPSPScheduler read FScheduler;
     property AudioSamples: TArray<SmallInt> read FAudioSamples;
+    property AudioOutputEnabled: Boolean read FAudioOutputEnabled write FAudioOutputEnabled;
     property FrameNumber: UInt64 read FFrameNumber;
     // CPU cycles run (instructions plus HLE costs), for speed measurements.
     property Executed: Int64 read FExecuted;
@@ -122,6 +125,8 @@ constructor TPSPConsole.Create(const ProgramData: TPSPProgram; const Storage: IS
 begin
   inherited Create;
   FState := Seed;
+  FAudioOutputEnabled := True;
+  FDirectMediaBanks := True;
   FReplaying := Seed <> nil;
   FSettings := PSPSettings;
   if FState = nil then
@@ -212,13 +217,9 @@ end;
 
 procedure TPSPConsole.MountDisc;
 begin
-  if FProgram.MediaPath = '' then
-    Exit;
-  if FStorage <> nil then
-    FDiscStream := FStorage.OpenRead(FProgram.MediaPath)
-  else
-    FDiscStream := TFileStream.Create(FProgram.MediaPath, fmOpenRead or fmShareDenyWrite);
-  FDisc := TPSPDisc.Create(FDiscStream);
+  FDiscStream := FProgram.OpenDisc(FStorage);
+  if FDiscStream <> nil then
+    FDisc := TPSPDisc.Create(FDiscStream);
 end;
 
 procedure TPSPConsole.HandleLog(const Text: string);
@@ -246,9 +247,17 @@ begin
   FLog.Clear;
 end;
 
-procedure TPSPConsole.HandleLoadExec(const Path: string; ArgSize, ArgPtr: Cardinal);
+function TPSPConsole.HandleLoadExec(const Path: string; ArgSize, ArgPtr: Cardinal): Cardinal;
 begin
+  var Image: TBytes;
+  Result := FIO.ReadAll(Path, Image);
+  if Result <> 0 then
+    Exit;
+  Result := FLoader.Validate(Image, Path, ArgSize);
+  if Result <> 0 then
+    Exit;
   FPendingExec := Path;
+  FPendingExecImage := Image;
   SetLength(FPendingExecArgs, ArgSize);
   if ArgSize > 0 then
     FMemory.ReadBytes(ArgPtr, FPendingExecArgs[0], ArgSize);
@@ -276,6 +285,7 @@ begin
   FIO.MemstickRoot := FMemstickRoot;
   FIO.FlashRoot := FFlashRoot;
   FIO.HostDirectory := FHostRoot;
+  FIO.ProgramArchive := FProgram.Archive;
   FIO.Register;
   FLoader.Reset;
   FLoader.Register;
@@ -283,6 +293,8 @@ begin
   FDisplay.Register;
   ResetServices;
   FPendingExec := '';
+  FPendingExecArgs := nil;
+  FPendingExecImage := nil;
   FBooted := False;
 end;
 
@@ -304,7 +316,7 @@ begin
   Boot(FProgram.Executable, Path);
 end;
 
-procedure TPSPConsole.Boot(const Executable: TBytes; const Path: string);
+procedure TPSPConsole.Boot(const Executable: TBytes; const Path: string; const Arguments: TBytes; UseArguments: Boolean);
 begin
   var M: TPSPModule;
   var Err := FLoader.Load(Executable, Path, M);
@@ -317,7 +329,7 @@ begin
   if Slash > 0 then
     Dir := Dir.Substring(0, Slash);
   FIO.Cwd := Dir;
-  FLoader.StartMain(M, Path);
+  FLoader.StartMain(M, Path, Arguments, UseArguments);
   FBooted := True;
 end;
 
@@ -339,14 +351,8 @@ begin
     FKernel.Trap(Code)
   else
   begin
-    var Caller := FKernel.Current;
-    var Back := C.Ctx.PC;
     if not FHLE.Call(Code) then
       raise EPSPGuestFault.CreateFmt('PSP: unknown syscall %x at %.8x', [Code, C.CurPC]);
-    // A call that returns straight to its caller hands back the caller-saved
-    // registers scrambled, as the kernel does.
-    if (Caller <> nil) and (FKernel.Current = Caller) and (C.Ctx.PC = Back) then
-      FKernel.ScrambleCallerSaved;
   end;
   FKernel.AfterSyscall;
   // Call costs count toward the slice too: a loop of calls must not run past
@@ -385,8 +391,10 @@ end;
 
 procedure TPSPConsole.RunUntil(At: Int64);
 begin
+  var SysLibs := TPSPSysLibs(FSystem.Find(TPSPSysLibs));
   while True do
   begin
+    SysLibs.RunMediaEngine(FScheduler.Now);
     // Events that fell due during the last run are handled before returning.
     var E: TPSPEvent;
     while FScheduler.TakeDue(E) do
@@ -396,16 +404,12 @@ begin
     if FPendingExec <> '' then
     begin
       var Path := FPendingExec;
-      FPendingExec := '';
-      var Data: TBytes;
-      if FIO.ReadAll(Path, Data) = 0 then
-      begin
-        // The new program starts on a freshly reset machine; time goes on.
-        ResetMachine(True);
-        Boot(Data, Path);
-      end
-      else
-        HandleLog('loadexec: cannot read ' + Path);
+      var Data := FPendingExecImage;
+      var Args := FPendingExecArgs;
+      // The image and arguments were checked and copied before stopping the
+      // caller; host files cannot change between validation and this boot.
+      ResetMachine(True);
+      Boot(Data, Path, Args, True);
       Continue;
     end;
     FKernel.ProcessInterrupts;
@@ -417,6 +421,8 @@ begin
       var Budget := FScheduler.CyclesUntil(Deadline);
       if Budget > 4000000 then
         Budget := 4000000;
+      if SysLibs.MediaRunning and (Budget > 2048) then
+        Budget := 2048;
       if Budget < 1 then
         Budget := 1;
       FRunDeadline := Deadline;
@@ -450,7 +456,7 @@ begin
     FDisplay.Render(Frame);
   Frame.FrameNumber := FFrameNumber;
   Frame.FramesPerSecond := PSPFrameRate;
-  FAudioSamples := FAudio.TakeSamples;
+  FAudioSamples := FAudio.TakeSamples(FAudioOutputEnabled);
   FSettings := PSPSettings;
 end;
 
@@ -487,6 +493,14 @@ begin
     N := FScheduler.Due(E);
     Hash.Update(N, SizeOf(N));
   end;
+  var SysLibs := TPSPSysLibs(FSystem.Find(TPSPSysLibs));
+  if SysLibs.MediaCycles <> 0 then
+  begin
+    Hash.Update(FMemory.BootRAM);
+    Hash.Update(SysLibs.MediaMemory.MediaRAM);
+    Hash.Update(SysLibs.MediaCPU.Ctx, SizeOf(TPSPContext));
+    Hash.Update(SysLibs.MediaCPU.COP0, SizeOf(SysLibs.MediaCPU.COP0));
+  end;
   Result := Hash.HashAsBytes;
 end;
 
@@ -498,6 +512,24 @@ begin
     begin
       var Hash := THashSHA2.Create;
       Hash.Update(FProgram.Executable);
+      if FProgram.Archive <> nil then
+      begin
+        Hash.Update(TEncoding.UTF8.GetBytes(FProgram.BootPath + #0));
+        for var I := 0 to FProgram.Archive.Count - 1 do
+        begin
+          if Assigned(Progress) and not Progress(0, 0) then
+            raise EAbort.Create('PSP snapshot operation cancelled');
+          var Entry := FProgram.Archive.Entries[I];
+          Hash.Update(TEncoding.UTF8.GetBytes(Entry.Name + #0));
+          Hash.Update(Entry.Size, SizeOf(Entry.Size));
+          Hash.Update(Entry.IsDirectory, SizeOf(Entry.IsDirectory));
+          if not Entry.IsDirectory then
+          begin
+            var CRC := FProgram.Archive.Checksum(I);
+            Hash.Update(CRC, SizeOf(CRC));
+          end;
+        end;
+      end;
       FMediaDigest := Hash.HashAsBytes;
     end
     else
@@ -617,10 +649,17 @@ begin
       Result := FIO.StateStreamMode(Stream);
     end);
   try
+    Schema.Optional(TPSPConsole, ['FPendingExecImage']);
     Result.Bind('console', Self,
       ['FFrameNumber', 'FPendingExec', 'FPendingExecArgs', 'FBooted', 'FExecuted', 'FInput', 'FAudioSamples',
-        'FSettings']);
+        'FSettings', 'FPendingExecImage']);
     Result.Bind('memory', FMemory, []);
+    var SysLibs := TPSPSysLibs(FSystem.Find(TPSPSysLibs));
+    if FDirectMediaBanks then
+    begin
+      Result.Bind('memory:me', SysLibs.MediaMemory, []);
+      Result.Bind('cpu:me', SysLibs.MediaCPU, ['*']);
+    end;
     Result.Bind('cpu', FCPU, ['*']);
     Result.Bind('scheduler', FScheduler, ['*']);
     Result.Bind('hle', FHLE, ['*']);
@@ -658,8 +697,13 @@ end;
 
 procedure TPSPConsole.TransferDirectMemory(State: TStateArchive);
 begin
-  var Shift := Cardinal(FMemory.VRAMShift);
+  // The high bit adds ME banks; unflagged snapshots keep their older layout.
+  var Shift := Cardinal(FMemory.VRAMShift) or $80000000;
   State.Field(Shift, SizeOf(Shift));
+  var HasMediaBanks := (Shift and $80000000) <> 0;
+  if State.Loading then
+    FDirectMediaBanks := HasMediaBanks;
+  Shift := Shift and $7FFFFFFF;
   if Shift > 31 then
     raise EReadError.Create('Invalid PSP VRAM translation');
   if State.Loading then
@@ -670,11 +714,19 @@ begin
   State.Field(Data[0], Length(Data));
   Data := FMemory.Scratch;
   State.Field(Data[0], Length(Data));
+  if HasMediaBanks then
+  begin
+    Data := FMemory.BootRAM;
+    State.Field(Data[0], Length(Data));
+    Data := TPSPSysLibs(FSystem.Find(TPSPSysLibs)).MediaMemory.MediaRAM;
+    State.Field(Data[0], Length(Data));
+  end;
 end;
 
 procedure TPSPConsole.SaveDirectSnapshot(const Path: string; const Progress: TPSPStateProgress);
 begin
   TPSPGE(FSystem.Find(TPSPGE)).Engine.Synchronize;
+  FDirectMediaBanks := True;
   var Schema := NewPSPStateSchema;
   var Data := TPSPStateFile.Create;
   var Current := TPSPReplayState.Create;

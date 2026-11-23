@@ -1,6 +1,6 @@
 ﻿unit HW.PIC16C5x;
 
-// PIC16C57 baseline core. Instruction encoding, banking, stack and reset
+// PIC16C54 and PIC16C57 baseline cores. Instruction encoding, banking, stack and reset
 // behavior follow Microchip DS30453E, sections 5, 6, 8, 9 and 10.
 interface
 
@@ -12,8 +12,12 @@ type
 
   TPICWritePort = procedure(Port: Integer; Value: Byte) of object;
 
+  TPICStateField = procedure(var Value; Size: Integer) of object;
+
   TPIC16C57 = class
   private
+    FProgramMask: Word;
+    FFileMask, FPageBits, FPortCount: Byte;
     FROM: TArray<Word>;
     FRAM: array[0..127] of Byte;
     FStack: array[0..1] of Word;
@@ -26,6 +30,7 @@ type
     FWDTEnabled: Boolean;
     FRead: TPICReadPort;
     FWrite: TPICWritePort;
+    constructor CreateModel(const ROM: TBytes; Oscillator: Integer; Watchdog: Boolean; ProgramWords, FileRegisters, PortCount: Integer);
     function Address(FileNo: Byte): Integer;
     procedure Drive(Port: Integer);
     procedure Flags(Mask, Value: Byte);
@@ -38,23 +43,43 @@ type
     procedure WriteFile(FileNo, Value: Byte);
     procedure SetT0(Level: Boolean);
     function Step: Integer;
-    procedure SerializeState(State: TStateArchive);
+    procedure SerializeState(State: TStateArchive); overload;
+    procedure SerializeState(Field: TPICStateField); overload;
     property PC: Word read FPC;
     property W: Byte read FW;
     property OnReadPort: TPICReadPort read FRead write FRead;
     property OnWritePort: TPICWritePort read FWrite write FWrite;
   end;
 
+  TPIC16C54 = class(TPIC16C57)
+  public
+    constructor Create(const ROM: TBytes; Oscillator: Integer = 1789773; Watchdog: Boolean = False);
+  end;
+
 implementation
 
 constructor TPIC16C57.Create(const ROM: TBytes; Oscillator: Integer; Watchdog: Boolean);
 begin
-  inherited Create;
-  if (Length(ROM) <> $1000) or (Oscillator < 4000) then
-    raise EArgumentException.Create('Invalid PIC16C57 ROM/clock');
+  CreateModel(ROM, Oscillator, Watchdog, $800, $80, 3);
+end;
 
-  SetLength(FROM, $800);
-  for var I := 0 to $7FF do
+constructor TPIC16C54.Create(const ROM: TBytes; Oscillator: Integer; Watchdog: Boolean);
+begin
+  inherited CreateModel(ROM, Oscillator, Watchdog, $200, $20, 2);
+end;
+
+constructor TPIC16C57.CreateModel(const ROM: TBytes; Oscillator: Integer; Watchdog: Boolean; ProgramWords, FileRegisters, PortCount: Integer);
+begin
+  inherited Create;
+  if (Length(ROM) <> ProgramWords * 2) or (Oscillator < 4000) then
+    raise EArgumentException.Create('Invalid PIC16C5x ROM/clock');
+
+  FProgramMask := ProgramWords - 1;
+  FFileMask := FileRegisters - 1;
+  FPortCount := PortCount;
+  FPageBits := (FProgramMask shr 4) and $60;
+  SetLength(FROM, ProgramWords);
+  for var I := 0 to FProgramMask do
     FROM[I] := (Word(ROM[I * 2]) or (Word(ROM[I * 2 + 1]) shl 8)) and $FFF;
   FWDTPeriod := Int64(Oscillator) * 18 div 4000;
   FWDTEnabled := Watchdog;
@@ -85,7 +110,7 @@ begin
   else
     Status := Status and $EF;
   FRAM[3] := Status;
-  FPC := $7FF;
+  FPC := FProgramMask;
   FPCWritten := False;
   FillChar(FTris, SizeOf(FTris), $FF);
   FOption := $FF;
@@ -93,7 +118,7 @@ begin
   FInhibit := 0;
   FWDT := 0;
   FSleep := False;
-  for var I := 0 to 2 do
+  for var I := 0 to FPortCount - 1 do
     Drive(I);
 end;
 
@@ -101,8 +126,8 @@ function TPIC16C57.Address(FileNo: Byte): Integer;
 begin
   Result := FileNo and 31;
   if Result = 0 then
-    Result := FRAM[4] and $7F
-  else if Result >= 16 then
+    Result := FRAM[4] and FFileMask
+  else if (Result >= 16) and (FFileMask > $1F) then
     Result := Result or (FRAM[4] and $60);
   if Result and $10 = 0 then
     Result := Result and 15;
@@ -117,9 +142,11 @@ begin
     2:
       Exit(Byte(FPC and $FF));
     4:
-      Exit(FRAM[4] or $80);
+      Exit(FRAM[4] or ($FF xor FFileMask));
     5..7:
       begin
+        if A >= 5 + FPortCount then
+          Exit(FRAM[A]);
         var Pins: Byte := $FF;
         if Assigned(FRead) then
           Pins := FRead(A - 5);
@@ -146,19 +173,19 @@ begin
       end;
     2:
       begin
-        FPC := ((Word(FRAM[3] and $60) shl 4) or Value) and $7FF;
+        FPC := (Word(FRAM[3] and FPageBits) shl 4) or Value;
         FPCWritten := True;
         Exit;
       end;
     3:
-      Value := (Value and $67) or (FRAM[3] and $18);
+      Value := (Value and (FPageBits or 7)) or (FRAM[3] and $18);
     4:
-      Value := Value and $7F;
+      Value := Value and FFileMask;
     5:
       Value := Value and $0F;
   end;
   FRAM[A] := Value;
-  if (A >= 5) and (A <= 7) then
+  if (A >= 5) and (A < 5 + FPortCount) then
     Drive(A - 5);
 end;
 
@@ -219,7 +246,7 @@ begin
   end;
 
   var Op := FROM[FPC];
-  FPC := (FPC + 1) and $7FF;
+  FPC := (FPC + 1) and FProgramMask;
   FPCWritten := False;
   var FileNo := Byte(Op and $1F);
   var Value := 0;
@@ -247,8 +274,11 @@ begin
         end;
       5..7:
         begin
-          FTris[Op - 5] := FW;
-          Drive(Op - 5);
+          if Op < 5 + FPortCount then
+          begin
+            FTris[Op - 5] := FW;
+            Drive(Op - 5);
+          end;
         end;
     else
       raise EInvalidOpException.CreateFmt('Reserved PIC opcode %.3x', [Op]);
@@ -380,12 +410,12 @@ begin
         begin
           FStack[1] := FStack[0];
           FStack[0] := FPC;
-          FPC := ((Word(FRAM[3] and $60) shl 4) or (Op and $FF));
+          FPC := (Word(FRAM[3] and FPageBits) shl 4) or (Op and $FF);
           FPCWritten := True;
         end;
       $A00, $B00:
         begin
-          FPC := ((Word(FRAM[3] and $60) shl 4) or (Op and $1FF));
+          FPC := (Word(FRAM[3] and FPageBits) shl 4) or (Op and $1FF);
           FPCWritten := True;
         end;
       $C00:
@@ -416,7 +446,7 @@ begin
   end;
   if Skip then
   begin
-    FPC := (FPC + 1) and $7FF;
+    FPC := (FPC + 1) and FProgramMask;
     Result := 2;
   end;
   if FPCWritten then
@@ -426,20 +456,26 @@ end;
 
 procedure TPIC16C57.SerializeState(State: TStateArchive);
 begin
-  State.Field(FRAM, SizeOf(FRAM));
-  State.Field(FStack, SizeOf(FStack));
-  State.Field(FTris, SizeOf(FTris));
-  State.Field(FW, SizeOf(FW));
-  State.Field(FOption, SizeOf(FOption));
-  State.Field(FPC, SizeOf(FPC));
-  State.Field(FSleep, SizeOf(FSleep));
-  State.Field(FT0, SizeOf(FT0));
-  State.Field(FPrescaler, SizeOf(FPrescaler));
-  State.Field(FInhibit, SizeOf(FInhibit));
-  State.Field(FWDT, SizeOf(FWDT));
-  if (FPC > $7FF) or (FStack[0] > $7FF) or (FStack[1] > $7FF) or (FPrescaler < 0) or (FPrescaler > 255) or
+  SerializeState(State.Field);
+end;
+
+procedure TPIC16C57.SerializeState(Field: TPICStateField);
+begin
+  Field(FRAM, SizeOf(FRAM));
+  Field(FStack, SizeOf(FStack));
+  Field(FTris, SizeOf(FTris));
+  Field(FW, SizeOf(FW));
+  Field(FOption, SizeOf(FOption));
+  Field(FPC, SizeOf(FPC));
+  Field(FSleep, SizeOf(FSleep));
+  Field(FT0, SizeOf(FT0));
+  Field(FPrescaler, SizeOf(FPrescaler));
+  Field(FInhibit, SizeOf(FInhibit));
+  Field(FWDT, SizeOf(FWDT));
+  if (FPC > FProgramMask) or (FStack[0] > FProgramMask) or (FStack[1] > FProgramMask) or
+    (FPrescaler < 0) or (FPrescaler > 255) or
     (FInhibit < 0) or (FInhibit > 3) or (FWDT < 0) then
-    raise EArgumentException.Create('Invalid PIC16C57 state');
+    raise EArgumentException.Create('Invalid PIC16C5x state');
 end;
 
 end.

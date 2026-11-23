@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 type
   TCPSPlatform = class
@@ -17,6 +17,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -24,13 +25,28 @@ type
 implementation
 
 uses
-  RM.Settings.Catalog, RM.Settings.Platform, Core.Snapshots, System.StrUtils,
-  Core.Emulation, Core.Platforms, Core.Platforms.CPS.Adapter,
-  CPS.RomSets, RM.Platforms.Presentation, RM.Platforms.CPS.Icons,
-  RM.Gamepad.Factory, RM.Platforms.CPS.Gamepads, RM.Input.Runtime,
-  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.Input.Gamepads, RM.Settings.Catalog, RM.Settings.Platform, Core.Snapshots,
+  System.StrUtils, Core.Emulation, Core.Platforms, Core.PlatformServices,
+  Core.Platforms.CPS.Adapter, CPS.RomSets, RM.Platforms.Presentation,
+  RM.Platforms.CPS.Icons, RM.Gamepad.Factory, RM.Platforms.CPS.Gamepads,
+  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
   System.Classes;
+
+class procedure TCPSPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.LeftShoulder);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Y), TGamepadButton.North);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Z), TGamepadButton.RightShoulder);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Mode), TGamepadButton.RightStick);
+end;
 
 class function TCPSPlatform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -79,6 +95,9 @@ begin
   RegisterSnapshotPolicy('CPS1', TSnapshotPolicy.Create(4));
   RegisterSnapshotPolicy('CPS2', TSnapshotPolicy.Create(2));
   RegisterSnapshotPolicy('CPS3', TSnapshotPolicy.Create(1, 128 * 1024 * 1024));
+  var Services := Default(TPlatformServices);
+  Services.CompanionArchives := ['cps1pic'];
+  RegisterPlatformServices('cps1', Services);
 end;
 
 class procedure TCPSPlatform.LoadLegacyKeys(var Keys: TPlatformInputKeyMap);
@@ -120,6 +139,7 @@ begin
   Definition.LegacyKeyNames[TEmulatorButton.Y] := 'MK';
   Definition.LegacyKeyNames[TEmulatorButton.Z] := 'HK';
   Definition.LegacyKeyNames[TEmulatorButton.Mode] := 'Service';
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('cps1', Definition);
   RegisterPlatformInput('cps2', Definition);
   RegisterPlatformInput('cps3', Definition);
@@ -127,9 +147,21 @@ end;
 
 class procedure TCPSPlatform.RegisterClient;
 begin
-  RegisterSettingsPlatform('cps1', TSettingsPlatform);
-  RegisterSettingsPlatform('cps2', TSettingsPlatform);
-  RegisterSettingsPlatform('cps3', TSettingsPlatform);
+  RegisterSettingsPlatform('cps1', TSettingsPlatform,
+    'Use a complete, recognized arcade ROM set for the matching board. Keep the ROM archive ' +
+    'name and the expected names inside it. Some variants require parent set data or ' +
+    'board-specific ROMs. The emulation menu offers coin insertion for games with a coin ' +
+    'acceptor.');
+  RegisterSettingsPlatform('cps2', TSettingsPlatform,
+    'Use a complete, recognized arcade ROM set for the matching board. Keep the ROM archive ' +
+    'name and the expected names inside it. Some variants require parent set data or ' +
+    'board-specific ROMs. The emulation menu offers coin insertion for games with a coin ' +
+    'acceptor.');
+  RegisterSettingsPlatform('cps3', TSettingsPlatform,
+    'Use a complete, recognized arcade ROM set for the matching board. Keep the ROM archive ' +
+    'name and the expected names inside it. Some variants require parent set data or ' +
+    'board-specific ROMs. The emulation menu offers coin insertion for games with a coin ' +
+    'acceptor.');
   RegisterPlatformSettingsDevices('cps1', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('cps2', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('cps3', TPlatformSettingsDevices);

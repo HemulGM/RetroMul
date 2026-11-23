@@ -169,7 +169,7 @@ begin
     Exit;
 
   FThread := TA5200Worker.Create(FCartridge, FConfigObject.Mapper, FStorage);
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'at5200');
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'at5200', GetConfig.FileName);
   FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplySettings;
   FThread.Start;

@@ -10,6 +10,7 @@ type
   public
     procedure PrepareSave(Draft: TMemIniFile); override;
   public
+    procedure Configuration(Context: TSettingsPageBuilder); override;
     procedure Video(Context: TSettingsPageBuilder); override;
     procedure Audio(Context: TSettingsPageBuilder); override;
     procedure Peripherals(Context: TSettingsPageBuilder); override;
@@ -24,6 +25,16 @@ implementation
 uses
   FMX.Types, System.SysUtils, System.Math, RM.Icons, NES.Options, Core.Storage,
   RM.Dialogs;
+
+procedure TNESSettings.Configuration(Context: TSettingsPageBuilder);
+begin
+  Context.Heading('GroupNesCartridge', 'Cartridge');
+  Context.AddChoice('RowNesMmc3IrqRevision', 'MMC3 IRQ revision',
+    'Choose the chip fitted to the cartridge. Applies to MMC3 submappers 0, 2 and 4 when reopening the game.',
+    'Cartridge', 'Mmc3IrqRevision', SettingChoices(
+      [Translate('Automatic'), 'Sharp MMC3B/C', 'Sharp MMC3A', 'NEC MMC3B/C', 'NEC MMC3A'],
+      NES_MMC3_IRQ_REVISION_KEYS), 'Auto').ApplyMode := TSettingsApplyMode.OnNextLoad;
+end;
 
 procedure TNESSettings.Video(Context: TSettingsPageBuilder);
 begin

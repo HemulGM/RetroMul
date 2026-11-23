@@ -45,6 +45,8 @@ type
     function GetInterruptsRaised: Integer;
 
     function GetAllInterrupts: TGBInterruptArray;
+    // Sample priority without allocating an array of records containing strings.
+    function TryGetPendingInterrupt(out Index, Handler: Integer): Boolean;
 
     class procedure ReleaseInstance;
     class property Instance: TGBInterruptManager read GetInstance;
@@ -116,6 +118,21 @@ begin
     FInterrupts[i].IsEnabled := (RegisterValue div FInterrupts[i].Bit) = 1;
     RegisterValue := RegisterValue mod FInterrupts[i].Bit;
   end;
+end;
+
+function TGBInterruptManager.TryGetPendingInterrupt(out Index, Handler: Integer): Boolean;
+begin
+  // The stored order is Joypad..VBlank; VBlank has the highest priority.
+  for var i := High(FInterrupts) downto 0 do
+    if FInterrupts[i].IsRaised and FInterrupts[i].IsEnabled then
+    begin
+      Index := i;
+      Handler := FInterrupts[i].Handler;
+      Exit(True);
+    end;
+  Index := -1;
+  Handler := 0;
+  Result := False;
 end;
 
 function TGBInterruptManager.GetAllInterrupts: TGBInterruptArray;

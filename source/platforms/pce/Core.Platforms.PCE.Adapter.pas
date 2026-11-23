@@ -241,7 +241,7 @@ begin
   if FThread <> nil then
     Exit;
   FThread := TPCEWorker.Create(FCartridge, FModel, FDisc, FStorage);
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, FSystemId);
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, FSystemId, GetConfig.FileName);
   FThread.IdentityData := Copy(FIdentity);
   FThread.SaveFile := FSaveFile;
   FThread.SnapshotDirectory := FSnapshotDirectory;

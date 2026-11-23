@@ -16,6 +16,8 @@ type
   public
     constructor Create(Stream: TStream; Loading: Boolean; Version: Cardinal = 0);
     procedure Field(var Value; Size: Integer);
+    // Self-sized append-only records can read their earlier prefix layout.
+    procedure CompatibleField(var Value; Size, PreviousSize: Integer; IntermediateSize: Integer = -1);
     property Loading: Boolean read FLoading;
     // The core payload version; zero for direct, current-layout archives.
     property Version: Cardinal read FVersion;
@@ -67,15 +69,15 @@ procedure SaveStreamAtomically(Stream: TMemoryStream; const Path: string; const 
 
 procedure SaveCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage = nil);
 
-procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage = nil);
+procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage = nil; const CompatibleROMHash: TBytes = nil);
 
 procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer; Pixels: Pointer; const Storage: IStorage = nil);
 
 implementation
 
 uses
-  Core.SavePaths, System.Hash, System.ZLib, System.Generics.Collections,
-  System.Generics.Defaults;
+  Core.SavePaths, System.Hash, System.Generics.Collections,
+  System.Generics.Defaults, Media.Image.PNG;
 
 type
   THeader = packed record
@@ -146,6 +148,24 @@ begin
     if Size > 0 then
       FStream.WriteBuffer(Value, Size);
   end;
+end;
+
+procedure TStateArchive.CompatibleField(var Value; Size, PreviousSize: Integer; IntermediateSize: Integer);
+begin
+  if not FLoading then
+  begin
+    Field(Value, Size);
+    Exit;
+  end;
+  var StoredSize: Integer;
+  FStream.ReadBuffer(StoredSize, SizeOf(StoredSize));
+  if ((StoredSize <> Size) and (StoredSize <> PreviousSize) and (StoredSize <> IntermediateSize)) or
+    (StoredSize < 0) or (IntermediateSize > Size) or
+    (PreviousSize < 0) or (PreviousSize > Size) or (StoredSize > FStream.Size - FStream.Position) then
+    raise EReadError.Create('Incompatible or truncated extended snapshot field');
+  FillChar(Value, Size, 0);
+  if StoredSize > 0 then
+    FStream.ReadBuffer(Value, StoredSize);
 end;
 
 procedure TransferStream(Stream: TStream; Loading: Boolean; const Transfer: TStateTransfer; Version: Cardinal);
@@ -233,7 +253,7 @@ begin
   end;
 end;
 
-procedure LoadCoreSnapshotData(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage; IsDigest: Boolean);
+procedure LoadCoreSnapshotData(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage; IsDigest: Boolean; const CompatibleROMHash: TBytes);
 begin
   var SourceStorage := Storage;
   if SourceStorage = nil then
@@ -260,18 +280,21 @@ begin
         CompareMem(@Id[0], @ExpectedId[0], Length(Id));
     end;
     var Policy := SnapshotPolicy(platform);
+    var IdentityMatches := CompareMem(@Header.ROMHash, @Expected.ROMHash, SizeOf(Header.ROMHash));
+    if not IdentityMatches and (Length(CompatibleROMHash) = SizeOf(Header.ROMHash)) then
+      IdentityMatches := CompareMem(@Header.ROMHash, @CompatibleROMHash[0], SizeOf(Header.ROMHash));
     if PlatformMatches and CompareMem(@Header.Magic, @Expected.Magic, 8) and
       CompareMem(@Header.platform, @Expected.platform, 8) then
     begin
       if (Header.Version <> Expected.Version) and (Policy.VersionError <> '') then
         raise EReadError.CreateFmt(Policy.VersionError, [Header.Version, Expected.Version]);
-      if not CompareMem(@Header.ROMHash, @Expected.ROMHash, 32) and (Policy.IdentityError <> '') then
+      if not IdentityMatches and (Policy.IdentityError <> '') then
         raise EReadError.Create(Policy.IdentityError);
     end;
     if not PlatformMatches or not CompareMem(@Header.Magic, @Expected.Magic, 8) or
       not Policy.Accepts(Header.Version) or
       not CompareMem(@Header.platform, @Expected.platform, 8) or
-      not CompareMem(@Header.ROMHash, @Expected.ROMHash, 32) or
+      not IdentityMatches or
       (Header.PayloadSize = 0) or (Header.PayloadSize > Policy.MaximumSize) or
       (Int64(Header.PayloadSize) <> Input.Size - Input.Position) then
       raise EReadError.Create('Snapshot is incompatible with this game or core');
@@ -305,9 +328,9 @@ begin
   SaveCoreSnapshotData(Path, platform, ROM, Transfer, Storage, False);
 end;
 
-procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
+procedure LoadCoreSnapshot(const Path, platform: string; const ROM: TBytes; const Transfer: TStateTransfer; const Storage: IStorage; const CompatibleROMHash: TBytes);
 begin
-  LoadCoreSnapshotData(Path, platform, ROM, Transfer, Storage, False);
+  LoadCoreSnapshotData(Path, platform, ROM, Transfer, Storage, False, CompatibleROMHash);
 end;
 
 procedure SaveCoreSnapshotHash(const Path, platform: string; const ROMHash: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
@@ -317,104 +340,16 @@ end;
 
 procedure LoadCoreSnapshotHash(const Path, platform: string; const ROMHash: TBytes; const Transfer: TStateTransfer; const Storage: IStorage);
 begin
-  LoadCoreSnapshotData(Path, platform, ROMHash, Transfer, Storage, True);
+  LoadCoreSnapshotData(Path, platform, ROMHash, Transfer, Storage, True, nil);
 end;
 
 procedure SaveSnapshotPreview(const Path: string; Width, Height, Stride: Integer; Pixels: Pointer; const Storage: IStorage);
-const
-  Signature: array[0..7] of Byte = ($89, $50, $4E, $47, $0D, $0A, $1A, $0A);
-var
-  Stream, Compressed: TMemoryStream;
-
-  procedure WriteUInt32(Value: Cardinal);
-  begin
-    var Bytes: array[0..3] of Byte;
-    Bytes[0] := Value shr 24;
-    Bytes[1] := (Value shr 16) and $FF;
-    Bytes[2] := (Value shr 8) and $FF;
-    Bytes[3] := Value and $FF;
-    Stream.WriteBuffer(Bytes, SizeOf(Bytes));
-  end;
-
-  procedure WriteChunk(const Kind: AnsiString; const Data: TBytes);
-  var
-    CRC: Cardinal;
-
-    procedure UpdateCRC(Value: Byte);
-    begin
-      CRC := CRC xor Value;
-      for var Bit := 0 to 7 do
-        if (CRC and 1) <> 0 then
-          CRC := (CRC shr 1) xor $EDB88320
-        else
-          CRC := CRC shr 1;
-    end;
-
-  begin
-    WriteUInt32(Length(Data));
-    Stream.WriteBuffer(Kind[1], 4);
-    if Length(Data) > 0 then
-      Stream.WriteBuffer(Data[0], Length(Data));
-    CRC := $FFFFFFFF;
-    for var I := 1 to 4 do
-      UpdateCRC(Ord(Kind[I]));
-    for var Value in Data do
-      UpdateCRC(Value);
-    WriteUInt32(CRC xor $FFFFFFFF);
-  end;
-
 begin
-  if (Pixels = nil) or (Width < 1) or (Height < 1) or
-    (Width > 2048) or (Height > 2048) or (Stride < Width) or
-    (Int64(Stride) * Height * 4 > MaxInt) then
-    raise EArgumentOutOfRangeException.Create('Invalid snapshot preview dimensions');
-
-  Stream := TMemoryStream.Create;
-  Compressed := TMemoryStream.Create;
+  var Stream := TMemoryStream.Create;
   try
-    Stream.WriteBuffer(Signature, SizeOf(Signature));
-    var Header: TBytes;
-    SetLength(Header, 13);
-    Header[2] := (Width shr 8) and $FF;
-    Header[3] := Width and $FF;
-    Header[6] := (Height shr 8) and $FF;
-    Header[7] := Height and $FF;
-    Header[8] := 8; // Eight-bit RGB; emulator output is opaque ARGB.
-    Header[9] := 2;
-    WriteChunk('IHDR', Header);
-    var Row: TBytes;
-    SetLength(Row, 1 + Width * 3);
-    Row[0] := 0; // PNG filter None.
-    var Compressor := TZCompressionStream.Create(Compressed);
-    try
-      // Copy the host framebuffer once; all traversal uses checked array indices.
-      var Source: TArray<Cardinal>;
-      SetLength(Source, (Height - 1) * Stride + Width);
-      Move(Pixels^, Source[0], Length(Source) * SizeOf(Cardinal));
-      for var Y := 0 to Height - 1 do
-      begin
-        for var X := 0 to Width - 1 do
-        begin
-          var Color := Source[Y * Stride + X];
-          Row[1 + X * 3] := (Color shr 16) and $FF;
-          Row[2 + X * 3] := (Color shr 8) and $FF;
-          Row[3 + X * 3] := Color and $FF;
-        end;
-        Compressor.WriteBuffer(Row[0], Length(Row));
-      end;
-    finally
-      Compressor.Free;
-    end;
-    var Payload: TBytes;
-    SetLength(Payload, Compressed.Size);
-    Compressed.Position := 0;
-    if Length(Payload) > 0 then
-      Compressed.ReadBuffer(Payload[0], Length(Payload));
-    WriteChunk('IDAT', Payload);
-    WriteChunk('IEND', nil);
+    WritePNGRGB(Stream, Width, Height, Stride, Pixels);
     SaveStreamAtomically(Stream, ChangeFileExt(Path, '.png'), Storage);
   finally
-    Compressed.Free;
     Stream.Free;
   end;
 end;

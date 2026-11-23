@@ -400,10 +400,10 @@ begin
               Kind := 0
             else if Ports.Devices[Player] = 'pad-analog' then
               Kind := 2;
-            var X: Byte := 128;
-            var Y: Byte := 128;
-            var L: Byte := 0;
-            var R: Byte := 0;
+            var X: Byte;
+            var Y: Byte;
+            var L: Byte;
+            var R: Byte;
             if Input.Analog[Player].Valid then
             begin
               X := (Integer(Input.Analog[Player].X) + 32768) shr 8;
@@ -413,18 +413,12 @@ begin
             end
             else
             begin
-              if TEmulatorButton.Left in Pads[Player] then
-                X := 0
-              else if TEmulatorButton.Right in Pads[Player] then
-                X := 255;
-              if TEmulatorButton.Up in Pads[Player] then
-                Y := 0
-              else if TEmulatorButton.Down in Pads[Player] then
-                Y := 255;
-              if TEmulatorButton.Select in Pads[Player] then
-                L := 255;
-              if TEmulatorButton.Mode in Pads[Player] then
-                R := 255;
+              X := EnsureRange(128 - Round(128 * Input.ButtonAmount(Player, TEmulatorButton.Left)) +
+                Round(127 * Input.ButtonAmount(Player, TEmulatorButton.Right)), 0, 255);
+              Y := EnsureRange(128 - Round(128 * Input.ButtonAmount(Player, TEmulatorButton.Up)) +
+                Round(127 * Input.ButtonAmount(Player, TEmulatorButton.Down)), 0, 255);
+              L := Round(255 * Input.ButtonAmount(Player, TEmulatorButton.Select));
+              R := Round(255 * Input.ButtonAmount(Player, TEmulatorButton.Mode));
             end;
             Console.SMPC.SetPeripheral(Port, Slot, Kind, SaturnPad(Pads[Player]), X, Y, R, L);
           end;

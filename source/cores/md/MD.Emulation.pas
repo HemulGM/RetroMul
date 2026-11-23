@@ -25,7 +25,7 @@ type
     FWake: TEvent;
     FData: TBytes;
     FSavePath: string;
-    FDiscLocation: string;
+    FDiscLocation, FCartridgeExtension: string;
     FStorage: IStorage;
     FInput, FInput2, FInput3, FInput4: TMDButtons;
     FPause, FReset, FAudioEnabled: Boolean;
@@ -33,6 +33,7 @@ type
     FCDAudioEnabled, F32XAudioEnabled, FMicrophoneEnabled: Boolean;
     FCDVolume, F32XVolume: Integer;
     FMicrophone: IMicrophoneSource;
+    FUseHostMicrophone: Boolean;
     FFrame: TEmulatorFrame;
     FAvailable: Boolean;
     FError, FAudioError, FFinalSaveError: string;
@@ -41,12 +42,12 @@ type
   protected
     procedure Execute; override;
   public
-    constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil; const DiscLocation: string = '');
+    constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil; const DiscLocation: string = ''; const CartridgeExtension: string = '');
     destructor Destroy; override;
     procedure WakeSetEvent;
     procedure Configure(const Input: TMDButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TMDButtons = []; const Input3: TMDButtons = []; const Input4: TMDButtons = []);
     procedure ConfigureExpansionVolume(CDVolume, Volume32X: Integer);
-    procedure ConfigureExpansion(CDAudio, Audio32X, Microphone: Boolean; const Source: IMicrophoneSource);
+    procedure ConfigureExpansion(CDAudio, Audio32X, Microphone: Boolean; const Source: IMicrophoneSource; UseHostMicrophone: Boolean = False);
     procedure SaveSnapshot(const Name: string);
     procedure LoadSnapshot(const Name: string);
   public
@@ -79,7 +80,7 @@ begin
   FInputPortsCommand.Apply(Self, Ports, FWake);
 end;
 
-constructor TMDWorker.Create(const Data: TBytes; const SavePath: string; const Storage: IStorage; const DiscLocation: string);
+constructor TMDWorker.Create(const Data: TBytes; const SavePath: string; const Storage: IStorage; const DiscLocation, CartridgeExtension: string);
 begin
   inherited Create(True);
   FInputPortsCommand := TInputPortsCommand.Create;
@@ -97,6 +98,7 @@ begin
   FData := Copy(Data);
   FSavePath := SavePath;
   FDiscLocation := DiscLocation;
+  FCartridgeExtension := CartridgeExtension;
 end;
 
 destructor TMDWorker.Destroy;
@@ -138,7 +140,7 @@ begin
   end;
 end;
 
-procedure TMDWorker.ConfigureExpansion(CDAudio, Audio32X, Microphone: Boolean; const Source: IMicrophoneSource);
+procedure TMDWorker.ConfigureExpansion(CDAudio, Audio32X, Microphone: Boolean; const Source: IMicrophoneSource; UseHostMicrophone: Boolean);
 begin
   FLock.Acquire;
   try
@@ -146,6 +148,7 @@ begin
     F32XAudioEnabled := Audio32X;
     FMicrophoneEnabled := Microphone;
     FMicrophone := Source;
+    FUseHostMicrophone := UseHostMicrophone;
   finally
     FLock.Release;
   end;
@@ -288,7 +291,9 @@ begin
   var Paused, ResetRequested, Enabled, WasPaused, WasEnabled: Boolean;
   var Volume: Single;
   var Microphone: IMicrophoneSource;
-  var MicEnabled: Boolean;
+  var HostMicrophone: IMicrophoneSource;
+  var TriedHostMicrophone := False;
+  var MicEnabled, UseHostMicrophone: Boolean;
   var MicSamples: TArray<SmallInt>;
   var Frame: TEmulatorFrame;
   var Samples: TArray<SmallInt>;
@@ -337,7 +342,7 @@ begin
         Console := TMDConsole.Create(BIOS, ROM_EXTENSION_MD, Disc);
       end
       else
-        Console := TMDConsole.Create(FData, ROM_EXTENSION_MD);
+        Console := TMDConsole.Create(FData, FCartridgeExtension);
       Console.ConfigureInputPorts(InputPorts);
       FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), ROM_CORE_ID_MD);
       if FStorage.Exists(FSavePath) then
@@ -419,6 +424,7 @@ begin
           Console.Audio32XEnabled := F32XAudioEnabled;
           Microphone := FMicrophone;
           MicEnabled := FMicrophoneEnabled and (FDiscLocation <> '');
+          UseHostMicrophone := FUseHostMicrophone and MicEnabled and not Paused and (Microphone = nil);
           ResetRequested := FReset;
           FReset := False;
         finally
@@ -426,6 +432,22 @@ begin
         end;
         if (Microphone <> nil) and (Paused or ResetRequested or not MicEnabled) then
           Microphone.Clear;
+        if not UseHostMicrophone then
+        begin
+          HostMicrophone := nil;
+          TriedHostMicrophone := False;
+        end
+        else
+        begin
+          if not TriedHostMicrophone then
+          begin
+            HostMicrophone := OpenHostMicrophone;
+            TriedHostMicrophone := True;
+          end;
+          Microphone := HostMicrophone;
+          if ResetRequested and (Microphone <> nil) then
+            Microphone.Clear;
+        end;
         if ResetRequested then
         begin
           FrameHints.Pause;

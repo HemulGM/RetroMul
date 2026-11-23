@@ -58,8 +58,7 @@ type
     procedure LoadCue(Stream: TStream; const Storage: IStorage; const Location: string);
     procedure LoadMDS(Stream: TStream; const Storage: IStorage; const Location, FileName: string);
     procedure LoadNRG(const Storage: IStorage; const Location: string);
-    procedure LoadISO(const Storage: IStorage; const Location: string);
-    procedure LoadRaw(const Storage: IStorage; const Location: string);
+    procedure LoadSingleTrack(const Storage: IStorage; const Location: string; RawOnly: Boolean);
     procedure ValidateAndHash(HashContent: Boolean);
   public
     // Generic CD media: TOC, companion streams and sectors. Filesystem/boot
@@ -439,19 +438,6 @@ begin
     FLeadOut := FTracks[High(FTracks)].EndLBA;
   LoadSBI(Storage, Location, SourceName);
   ValidateAndHash(not DeferIdentity);
-end;
-
-procedure TCDDisc.LoadISO(const Storage: IStorage; const Location: string);
-begin
-  SetLength(FTracks, 1);
-  FTracks[0].Number := 1;
-  FTracks[0].SectorSize := 2048;
-  FTracks[0].Stream := Storage.OpenRead(Location);
-  FTracks[0].ByteSize := FTracks[0].Stream.Size;
-  if (FTracks[0].ByteSize < 2048) or (FTracks[0].ByteSize > Int64(800) * 1024 * 1024) or (FTracks[0].ByteSize mod 2048 <> 0) then
-    raise EReadError.Create('Invalid CD ISO size');
-
-  FTracks[0].EndLBA := FTracks[0].ByteSize div 2048;
 end;
 
 destructor TCDDisc.Destroy;
@@ -1686,25 +1672,38 @@ begin
   end;
 end;
 
-// One data track over the whole file; the mode comes from the first sector.
-procedure TCDDisc.LoadRaw(const Storage: IStorage; const Location: string);
+// An ISO filename can also identify a raw single-track disc image.
+procedure TCDDisc.LoadSingleTrack(const Storage: IStorage; const Location: string; RawOnly: Boolean);
+var
+  Track: ^TCDTrack;
 begin
   SetLength(FTracks, 1);
-  FTracks[0].Number := 1;
-  FTracks[0].SectorSize := 2352;
-  FTracks[0].Stream := Storage.OpenRead(Location);
-  FTracks[0].ByteSize := FTracks[0].Stream.Size;
-  FTracks[0].SourceName := ExtractFileName(Location);
-  if not IsCDRawImage(FTracks[0].Stream) then
-    raise EReadError.Create('BIN without CUE must be a raw 2352-byte data track');
+  Track := @FTracks[0];
+  Track^.Number := 1;
+  Track^.Stream := Storage.OpenRead(Location);
+  Track^.ByteSize := Track^.Stream.Size;
 
-  var Header: array[0..15] of Byte;
-  FTracks[0].Stream.Position := 0;
-  FTracks[0].Stream.ReadBuffer(Header, SizeOf(Header));
-  FTracks[0].DataOffset := 16;
-  if Header[15] = 2 then
-    FTracks[0].DataOffset := 24;
-  FTracks[0].EndLBA := FTracks[0].ByteSize div 2352;
+  if IsCDRawImage(Track^.Stream) then
+  begin
+    var Header: array[0..15] of Byte;
+    Track^.Stream.Position := 0;
+    Track^.Stream.ReadBuffer(Header, SizeOf(Header));
+    Track^.SourceName := ExtractFileName(Location);
+    Track^.SectorSize := 2352;
+    Track^.DataOffset := 16;
+    if Header[15] = 2 then
+      Track^.DataOffset := 24;
+  end
+  else
+  begin
+    if RawOnly then
+      raise EReadError.Create('BIN without CUE must be a raw 2352-byte data track');
+    Track^.SectorSize := 2048;
+    if (Track^.ByteSize < Track^.SectorSize) or (Track^.ByteSize > Int64(800) * 1024 * 1024) or
+      (Track^.ByteSize mod Track^.SectorSize <> 0) then
+      raise EReadError.Create('Invalid CD ISO size');
+  end;
+  Track^.EndLBA := Track^.ByteSize div Track^.SectorSize;
 end;
 
 procedure TCDDisc.LoadCHD(const Storage: IStorage; const Location: string);
@@ -2410,7 +2409,7 @@ begin
   Format.Loader :=
     procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
     begin
-      Disc.LoadISO(Storage, Location);
+      Disc.LoadSingleTrack(Storage, Location, False);
     end;
   RegisterCDMediaFormat('.iso', Format);
   Format := Default(TCDMediaFormat);
@@ -2454,7 +2453,7 @@ begin
   Format.Loader :=
     procedure(Disc: TCDDisc; Stream: TStream; const Storage: IStorage; const Location, SourceName: string)
     begin
-      Disc.LoadRaw(Storage, Location);
+      Disc.LoadSingleTrack(Storage, Location, True);
     end;
   Format.Probe := IsCDRawImage;
   RegisterCDMediaFormat('.bin', Format);

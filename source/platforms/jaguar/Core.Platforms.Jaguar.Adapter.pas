@@ -224,7 +224,7 @@ begin
     Exit;
 
   FThread := TJaguarWorker.Create(FCartridge, FStorage, FConfigObject.PAL, FConfigObject.BootBIOS, FDisc, FCDHardware);
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'jaguar');
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'jaguar', GetConfig.FileName);
   FThread.SnapshotDirectory := FSnapshotDirectory;
   FThread.BatteryPath := FBatteryPath;
   ApplySettings;

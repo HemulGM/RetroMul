@@ -33,18 +33,18 @@ end;
 
 class function TZXSessionHandler.ShowPauseShortcut(const Context: TSessionRuntimeContext): Boolean;
 begin
-  Result := not Context.State.Input.Ports.KeyboardEnabled;
+  Result := not Context.Host.Input.Ports.KeyboardEnabled;
 end;
 
 class procedure TZXSessionHandler.FrameStatus(const Context: TSessionRuntimeContext);
 var
   Tape: IZXTapeCore;
 begin
-  if Supports(Context.State.Session.Emulation, IZXTapeCore, Tape) then
+  if Supports(Context.Host.Core, IZXTapeCore, Tape) then
   begin
     var Status := Tape.GetTapeStatus;
     if Status <> '' then
-      Context.View.SetStatus(Status);
+      Context.Host.SetStatus(Status);
   end;
 end;
 

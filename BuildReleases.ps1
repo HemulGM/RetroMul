@@ -2,6 +2,8 @@
 <#
 .SYNOPSIS
 Builds Release binaries and packages them into releases/RetroMul-<platform>.zip.
+Each ZIP includes the repository's LICENSE and README.md at its root.
+Build logs are written to releases/build-logs.
 .EXAMPLE
 .\BuildReleases.ps1
 .EXAMPLE
@@ -26,6 +28,11 @@ $projectDirectory = Join-Path $PSScriptRoot 'apps/retromul'
 $projectFile = Join-Path $projectDirectory 'RetroMul.dproj'
 $projectName = [IO.Path]::GetFileNameWithoutExtension($projectFile)
 $releaseDirectory = Join-Path $PSScriptRoot 'releases'
+$releaseDocuments = @('LICENSE', 'README.md')
+foreach ($document in $releaseDocuments) {
+    $documentPath = Join-Path $PSScriptRoot $document
+    if (-not (Test-Path -LiteralPath $documentPath -PathType Leaf)) { throw "Release document not found: $documentPath" }
+}
 
 # Prefer the active installation; otherwise discover Delphi on PATH or in the registry.
 if (-not $BdsPath) {
@@ -61,12 +68,13 @@ $msbuild = Join-Path $env:FrameworkDir 'MSBuild.exe'
 if (-not (Test-Path -LiteralPath $msbuild -PathType Leaf)) { throw "MSBuild not found: $msbuild" }
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-New-Item -ItemType Directory -Force -Path $releaseDirectory | Out-Null
+$buildLogDirectory = Join-Path $releaseDirectory 'build-logs'
+New-Item -ItemType Directory -Force -Path $buildLogDirectory | Out-Null
 
 function Set-ZipUnixHost([string] $Path) {
     # .NET on Windows writes a DOS host marker even with Unix ExternalAttributes.
     # Mark central-directory entries as Unix so extractors honor their modes.
-    # These locally created archives have no comment and exactly three entries.
+    # These locally created archives have no ZIP comment.
     $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite)
     $reader = [IO.BinaryReader]::new($stream)
     try {
@@ -76,7 +84,7 @@ function Set-ZipUnixHost([string] $Path) {
         $count = $reader.ReadUInt16()
         $stream.Position = $stream.Length - 6
         $offset = $reader.ReadUInt32()
-        if ($count -ne 3 -or $offset -eq [uint32]::MaxValue) { throw 'Unexpected macOS ZIP directory format.' }
+        if ($count -eq 0 -or $offset -eq [uint32]::MaxValue) { throw 'Unexpected macOS ZIP directory format.' }
         for ($index = 0; $index -lt $count; $index++) {
             $stream.Position = $offset
             if ($reader.ReadUInt32() -ne 0x02014b50) { throw 'ZIP central-directory entry not found.' }
@@ -105,6 +113,7 @@ foreach ($prefix in ($Platforms | Select-Object -Unique)) {
         Join-Path $outputDirectory $binaryName
     }
     $archivePath = Join-Path $releaseDirectory "RetroMul-$prefix.zip"
+    $buildLogPath = Join-Path $buildLogDirectory "RetroMul-$prefix.log"
     $temporaryArchive = Join-Path $releaseDirectory (".RetroMul-$prefix-" + [guid]::NewGuid().ToString('N') + '.zip')
 
     if ($isMacTarget) {
@@ -129,7 +138,8 @@ foreach ($prefix in ($Platforms | Select-Object -Unique)) {
     # Artwork paths in the .dproj use ProjectName before Delphi targets define it.
     # Set it as a global property so it is available during project evaluation.
     $arguments = @($projectFile, '/nologo', '/v:minimal', $target, "/p:ProjectName=$projectName", '/p:Config=Release', "/p:Platform=$platform",
-        '/p:DCC_Optimize=true', '/p:DCC_DebugDCUs=false', '/p:DCC_DebugInformation=0', '/p:DCC_LocalDebugSymbols=false')
+        '/p:DCC_Optimize=true', '/p:DCC_DebugDCUs=false', '/p:DCC_DebugInformation=0', '/p:DCC_LocalDebugSymbols=false',
+        '/fl', "/flp:LogFile=$buildLogPath;Verbosity=Normal;Encoding=UTF-8")
     if ($isAndroid) {
         # Debug is RAD Studio's APK packaging mode; Config=Release still controls
         # native compilation. AppStore produces an AAB instead. Use the SDK debug
@@ -138,20 +148,20 @@ foreach ($prefix in ($Platforms | Select-Object -Unique)) {
         $arguments += @('/p:BT_BuildType=Debug', '/p:DeviceId=')
     }
 
-    Write-Host "Building $platform / Release..."
+    Write-Host "Building $platform / Release. Log: $buildLogPath"
     Push-Location $projectDirectory
     try {
         & $msbuild @arguments
-        if ($LASTEXITCODE -ne 0) { throw "$platform build failed (MSBuild exit code $LASTEXITCODE)." }
+        if ($LASTEXITCODE -ne 0) { throw "$platform build failed (MSBuild exit code $LASTEXITCODE). Log: $buildLogPath" }
     } finally { Pop-Location }
-    if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf) -or (Get-Item -LiteralPath $binaryPath).Length -eq 0) {
-        throw "Build did not produce a nonempty executable: $binaryPath"
-    }
-    if ($isMacTarget -and (-not (Test-Path -LiteralPath $plistPath -PathType Leaf) -or (Get-Item -LiteralPath $plistPath).Length -eq 0)) {
-        throw "Build did not produce macOS bundle metadata: $plistPath"
-    }
-
     try {
+        if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf) -or (Get-Item -LiteralPath $binaryPath).Length -eq 0) {
+            throw "Build did not produce a nonempty executable: $binaryPath"
+        }
+        if ($isMacTarget -and (-not (Test-Path -LiteralPath $plistPath -PathType Leaf) -or (Get-Item -LiteralPath $plistPath).Length -eq 0)) {
+            throw "Build did not produce macOS bundle metadata: $plistPath"
+        }
+
         $zip = [IO.Compression.ZipFile]::Open($temporaryArchive, [IO.Compression.ZipArchiveMode]::Create)
         try {
             $entryName = if ($isMacTarget) { "$projectName.app/Contents/MacOS/$binaryName" } else { $binaryName }
@@ -166,9 +176,17 @@ foreach ($prefix in ($Platforms | Select-Object -Unique)) {
                 $entry = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $iconPath, "$projectName.app/Contents/Resources/$projectName.icns", [IO.Compression.CompressionLevel]::Optimal)
                 $entry.ExternalAttributes = -2119958528
             }
+            foreach ($document in $releaseDocuments) {
+                $documentPath = Join-Path $PSScriptRoot $document
+                $entry = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $documentPath, $document, [IO.Compression.CompressionLevel]::Optimal)
+                if ($isMacTarget) { $entry.ExternalAttributes = -2119958528 } # Unix regular file, mode 0644.
+            }
         } finally { $zip.Dispose() }
         if ($isMacTarget) { Set-ZipUnixHost $temporaryArchive }
         Move-Item -LiteralPath $temporaryArchive -Destination $archivePath -Force
+    } catch {
+        Add-Content -LiteralPath $buildLogPath -Encoding UTF8 -Value ($_ | Out-String) -ErrorAction Continue
+        throw
     } finally {
         if (Test-Path -LiteralPath $temporaryArchive) { Remove-Item -LiteralPath $temporaryArchive -Force }
     }

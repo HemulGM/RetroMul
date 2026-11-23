@@ -3,8 +3,8 @@
 interface
 
 uses
-  System.Classes, System.Types, System.UITypes, System.Generics.Collections, FMX.Types, FMX.Controls,
-  FMX.Forms, Core.Input.Keyboard;
+  System.Classes, System.Types, System.UITypes, System.Generics.Collections,
+  FMX.Types, FMX.Controls, FMX.Forms, Core.Input.Keyboard;
 
 type
   // Touch attachment is shared by host-code and hardware-matrix keyboards.
@@ -43,6 +43,7 @@ type
     function RowCount: Integer; virtual;
     function ColumnCount: Integer; virtual;
     procedure BuildLayout; virtual; abstract;
+    function KeyCaption(const Caption: string): string; virtual;
     procedure AddKey(Code: Byte; const Caption: string; Row: Integer; Column, Span: Single; Sticky: Boolean = False);
     procedure Paint; override;
     procedure Resize; override;
@@ -140,14 +141,16 @@ function TScreenKeyboard.KeyBounds(Code: Byte): TRectF;
 begin
   Result := TRectF.Empty;
   for var Key in FVisualKeys do
-    if Key.Code = Code then Exit(Key.Bounds);
+    if Key.Code = Code then
+      Exit(Key.Bounds);
 end;
 
 function TScreenKeyboard.IsStickyKey(Code: Byte): Boolean;
 begin
   Result := False;
   for var Key in FVisualKeys do
-    if Key.Code = Code then Exit(Key.Sticky);
+    if Key.Code = Code then
+      Exit(Key.Sticky);
 end;
 
 function TScreenKeyboard.KeyAt(const Point: TPointF): Byte;
@@ -264,6 +267,11 @@ begin
     PointerUp(-1);
 end;
 
+function TScreenKeyboard.KeyCaption(const Caption: string): string;
+begin
+  Result := Caption;
+end;
+
 procedure TScreenKeyboard.Paint;
 begin
   Canvas.Fill.Color := $FF20242C;
@@ -277,7 +285,7 @@ begin
       Canvas.Fill.Color := $FF3C424D;
     Canvas.FillRect(K.Bounds, 4, 4, AllCorners, AbsoluteOpacity);
     Canvas.Fill.Color := $FFF0F0F0;
-    Canvas.FillText(K.Bounds, K.Caption, False, AbsoluteOpacity, [], TTextAlign.Center, TTextAlign.Center);
+    Canvas.FillText(K.Bounds, KeyCaption(K.Caption), False, AbsoluteOpacity, [], TTextAlign.Center, TTextAlign.Center);
   end;
 end;
 

@@ -1358,6 +1358,10 @@ begin
     end;
     for var TimerIndex := 0 to High(Fm.State.Timers) do
     begin
+      // Register $27 LOAD starts/stops the counter; ENABLE only gates
+      // the overflow flag. Stopped timers must not run or trigger CSM.
+      if Fm.State.CachedAddress27 and (1 shl TimerIndex) = 0 then
+        Continue;
       Dec(Fm.State.Timers[TimerIndex].Counter);
       if Fm.State.Timers[TimerIndex].Counter = 0 then
       begin

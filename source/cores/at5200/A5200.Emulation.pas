@@ -8,6 +8,8 @@ uses
   A5200.Controller;
 
 type
+  TAtariMachineFactory = reference to function: TAtariFrameMachine;
+
   TA5200Worker = class(TThread)
   private
     FInputPortsCommand: TInputPortsCommand;
@@ -15,8 +17,11 @@ type
     FWake: TEvent;
     FSnapshots: TSnapshotQueue;
     FStorage: IStorage;
-    FCartridge: TBytes;
-    FMapper: Integer;
+    FCartridge, FCompatibleSnapshotHash: TBytes;
+    FCoreId: string;
+    FMachineFactory: TAtariMachineFactory;
+    FKeyboard: Word;
+    FDiskReadMuted: Boolean;
     FKeypads: TA5200Keypads;
     FInput: TEmulatorInput;
     FControlButtons: TEmulatorButtons;
@@ -26,15 +31,16 @@ type
     FError, FAudioError: string;
     function GetInputPorts: TCoreInputPorts;
     procedure SetInputPorts(const Ports: TCoreInputPorts);
-    procedure Publish(Console: TA5200Console);
+    procedure Publish(Console: TAtariFrameMachine);
   protected
     procedure Execute; override;
   public
     SnapshotDirectory: string;
     property InputPorts: TCoreInputPorts read GetInputPorts write SetInputPorts;
-    constructor Create(const Cartridge: TBytes; Mapper: Integer; const Storage: IStorage);
+    constructor Create(const Cartridge: TBytes; Mapper: Integer; const Storage: IStorage); overload;
+    constructor Create(const Media: TBytes; const CoreId: string; const Factory: TAtariMachineFactory; const Buttons: TEmulatorButtons; const Storage: IStorage; const CompatibleSnapshotHash: TBytes = nil); overload;
     destructor Destroy; override;
-    procedure Configure(const Input: TEmulatorInput; Paused, AudioEnabled: Boolean; Volume: Single; const Keypads: TA5200Keypads);
+    procedure Configure(const Input: TEmulatorInput; Paused, AudioEnabled: Boolean; Volume: Single; const Keypads: TA5200Keypads; Keyboard: Word = $FF; DiskReadMuted: Boolean = False);
     procedure RequestReset;
     procedure Stop;
     procedure SaveSnapshot(const Name: string);
@@ -63,15 +69,30 @@ end;
 
 constructor TA5200Worker.Create(const Cartridge: TBytes; Mapper: Integer; const Storage: IStorage);
 begin
+  Create(Cartridge, 'A5200',
+    function: TAtariFrameMachine
+    begin
+      Result := TA5200Console.Create(FCartridge, LoadBuiltinAtari5200BIOS, Mapper);
+    end,
+        [TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right,
+          TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Mode, TEmulatorButton.Start,
+          TEmulatorButton.Select], Storage);
+end;
+
+constructor TA5200Worker.Create(const Media: TBytes; const CoreId: string; const Factory: TAtariMachineFactory; const Buttons: TEmulatorButtons; const Storage: IStorage; const CompatibleSnapshotHash: TBytes);
+begin
   inherited Create(True);
   FInputPortsCommand := TInputPortsCommand.Create;
   FreeOnTerminate := False;
   FLock := TCriticalSection.Create;
   FWake := TEvent.Create(nil, False, False, '');
   FSnapshots := TSnapshotQueue.Create;
-  FCartridge := Copy(Cartridge);
-  FMapper := Mapper;
-  FControlButtons := [TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Mode, TEmulatorButton.Start, TEmulatorButton.Select];
+  FCartridge := Copy(Media);
+  FCompatibleSnapshotHash := Copy(CompatibleSnapshotHash);
+  FCoreId := CoreId;
+  FMachineFactory := Factory;
+  FKeyboard := $FF;
+  FControlButtons := Buttons;
   FStorage := Storage;
 end;
 
@@ -89,7 +110,7 @@ begin
   FLock.Free;
 end;
 
-procedure TA5200Worker.Configure(const Input: TEmulatorInput; Paused, AudioEnabled: Boolean; Volume: Single; const Keypads: TA5200Keypads);
+procedure TA5200Worker.Configure(const Input: TEmulatorInput; Paused, AudioEnabled: Boolean; Volume: Single; const Keypads: TA5200Keypads; Keyboard: Word; DiskReadMuted: Boolean);
 begin
   var Wake: Boolean;
   FLock.Acquire;
@@ -97,6 +118,8 @@ begin
     Wake := FPause <> Paused;
     FInput := Input;
     FKeypads := Keypads;
+    FKeyboard := Keyboard;
+    FDiskReadMuted := DiskReadMuted;
     FPause := Paused;
     FAudioEnabled := AudioEnabled;
     FVolume := EnsureRange(Volume, 0.0, 1.0);
@@ -187,14 +210,12 @@ begin
   end;
 end;
 
-procedure TA5200Worker.Publish(Console: TA5200Console);
+procedure TA5200Worker.Publish(Console: TAtariFrameMachine);
 begin
   var Frame := Console.Frame;
-  var Buttons: TEmulatorButtons := [TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left, TEmulatorButton.Right, TEmulatorButton.A, TEmulatorButton.B, TEmulatorButton.Mode, TEmulatorButton.Start, TEmulatorButton.Select];
   FLock.Acquire;
   try
     FFrame := Frame;
-    FControlButtons := Buttons;
     FAvailable := True;
   finally
     FLock.Release;
@@ -203,12 +224,13 @@ end;
 
 procedure TA5200Worker.Execute;
 var
-  Console: TA5200Console;
+  Console: TAtariFrameMachine;
+  Keyboard: Word;
   Audio: TPCMAudio;
   Hints: TEmulationPerformanceHints;
   Input: TEmulatorInput;
   Samples: TArray<SmallInt>;
-  Paused, ResetRequested, Enabled, WasEnabled, WasPaused, AudioFailed: Boolean;
+  Paused, ResetRequested, Enabled, WasEnabled, WasPaused, AudioFailed, DiskReadMuted: Boolean;
   Volume: Single;
   Keypads: TA5200Keypads;
   Deadline: Double;
@@ -217,10 +239,11 @@ begin
   Console := nil;
   Audio := nil;
   Hints := nil;
-  CoreId := 'A5200';
+  CoreId := FCoreId;
   try
     try
-      Console := TA5200Console.Create(FCartridge, LoadBuiltinAtari5200BIOS, FMapper);
+      Console := FMachineFactory();
+      Console.SetInputPorts(InputPorts);
       Publish(Console); // Also expose the keymap when starting paused.
       Hints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.Rate), CoreId);
       var Format: TPCMAudioFormat;
@@ -234,7 +257,11 @@ begin
       AudioFailed := False;
       while not Terminated do
       begin
-        FInputPortsCommand.Process(nil);
+        FInputPortsCommand.Process(
+          procedure(const Ports: TCoreInputPorts)
+          begin
+            Console.SetInputPorts(Ports);
+          end);
         FSnapshots.Process(
           procedure(const Name: string; Loading: Boolean)
           begin
@@ -247,7 +274,7 @@ begin
               end;
             if Loading then
             begin
-              LoadCoreSnapshot(Path, CoreId, FCartridge, Transfer, FStorage);
+              LoadCoreSnapshot(Path, CoreId, FCartridge, Transfer, FStorage, FCompatibleSnapshotHash);
               if Audio <> nil then
                 Audio.Clear;
               Publish(Console);
@@ -267,6 +294,8 @@ begin
           Enabled := FAudioEnabled;
           Volume := FVolume;
           Keypads := FKeypads;
+          Keyboard := FKeyboard;
+          DiskReadMuted := FDiskReadMuted;
           ResetRequested := FReset;
           FReset := False;
         finally
@@ -307,16 +336,22 @@ begin
           begin
             Keypads[Port] := 0;
             Input.Analog[Port] := Default(TEmulatorAnalogPad);
+            Input.AnalogButtons[Port] := Default(TEmulatorAnalogButtons);
+            Input.RelativeButtons[Port] := [];
           end;
           Console.SetKeypad(Port, Keypads[Port]);
         end;
         Console.SetInput(Input);
+        Console.SetKeyboard(Keyboard);
+        Console.SetDiskReadMuted(DiskReadMuted);
         Console.RunFrame;
 
         if Terminated then
           Break;
 
         Publish(Console);
+        if Console.Frame.FrameNumber mod 60 = 0 then
+          Console.FlushMedia;
         if Enabled and not AudioFailed then
         try
           if Audio = nil then
@@ -354,6 +389,7 @@ begin
           Deadline := TStopwatch.GetTimeStamp;
         Hints.WaitUntil(FWake, Round(Deadline));
       end;
+      Console.FlushMedia;
     except
       on E: Exception do
       begin

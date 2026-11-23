@@ -1204,7 +1204,6 @@ end;
 
 initialization
   MD.VDP.ConstantInitialise;
-  HW.Z80.ConstantInitialise;
 
 end.
 

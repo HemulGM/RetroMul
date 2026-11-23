@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 type
   TNeoGeoPlatform = class
@@ -20,6 +20,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -27,13 +28,25 @@ type
 implementation
 
 uses
-  NeoGeo.Cartridge, NeoGeo.RomSets, Core.Archive.Container, RM.Settings.Catalog,
-  Core.Snapshots, System.StrUtils, Core.Emulation, Core.Platforms,
-  Core.Platforms.NeoGeo.Adapter, RM.Platforms.NeoGeo.Settings,
+  RM.Input.Gamepads, NeoGeo.Cartridge, NeoGeo.RomSets, Core.Archive.Container,
+  RM.Settings.Catalog, Core.Snapshots, System.StrUtils, Core.Emulation,
+  Core.Platforms, Core.Platforms.NeoGeo.Adapter, RM.Platforms.NeoGeo.Settings,
   RM.Platforms.Presentation, RM.Platforms.NeoGeo.Icons, RM.Gamepad.Factory,
   RM.Platforms.NeoGeo.Gamepads, RM.Input.Runtime, RM.Session.Runtime,
   RM.Window.Layout, RM.Settings.Runtime, RM.ControlsHelp.Content,
   RM.Settings.Callouts, RM.Settings.Devices, System.Classes;
+
+class procedure TNeoGeoPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadButton.North);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.East);
+end;
 
 class function TNeoGeoPlatform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -76,26 +89,30 @@ begin
       Description := SelectNeoGeoSet(IdentifyNeoGeoSet(Archive.Names), CRCs);
     if Description = '' then
       Exit;
-    // A filename alone is insufficient: unrelated cartridge archives may
-    // have the same title. Require a program ROM from the identified set.
+    // A named split set can contain only graphics. Verify a chip checksum
+    // and let the cartridge loader check its parent archives for the program.
     var Parts := Description.Split(['|']);
+    var NamedSet := SameText(Parts[0], SetName);
     for var Row in Parts[9].Split([';']) do
     begin
       var Fields := Row.Split([',']);
-      if (Length(Fields) <> 7) or (Fields[0] <> 'P') then
+      if (Length(Fields) <> 7) or (not NamedSet and (Fields[0] <> 'P')) then
         Continue;
-      for var CRC in CRCs do
-        if SameText(CRC, Fields[6]) then
+      if not MatchText(Fields[6], CRCs) then
+        Continue;
+      Result := TCoreMatch.Create('NeoGeo',
+        function: IEmulationCore
         begin
-          Result := TCoreMatch.Create('NeoGeo',
-            function: IEmulationCore
-            begin
-              Context.Stream.Position := 0;
-              Result := TNeoGeoCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
-            end);
-          Result.ArchiveCandidate := False;
-          Exit;
-        end;
+          Context.Stream.Position := 0;
+          try
+            Result := TNeoGeoCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
+          except
+            on E: ENeoGeoIncompleteSet do
+              raise ECoreInvalidMedia.Create(E.Message);
+          end;
+        end);
+      Result.ArchiveCandidate := False;
+      Exit;
     end;
   finally
     Archive := nil;
@@ -166,6 +183,7 @@ begin
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
   Definition.LegacyKeyNames[TEmulatorButton.X] := 'D';
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('neogeo', Definition);
   RegisterPlatformInput('neogeoaes', Definition);
   RegisterPlatformInput('neogeocd', Definition);
@@ -173,7 +191,10 @@ end;
 
 class procedure TNeoGeoPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('NeoGeo', TNeoGeoSettings);
+  RegisterSettingsProfile('NeoGeo', TNeoGeoSettings,
+    'Cartridge systems use named arcade sets or supported unencrypted .neo images. Neo Geo CD ' +
+    'uses disc images and has its own library folder. Machine and region settings affect how ' +
+    'the BIOS starts the game.');
   RegisterPlatformSettingsDevices('neogeo', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('neogeoaes', TPlatformSettingsDevices);
   RegisterPlatformSettingsDevices('neogeocd', TPlatformSettingsDevices);

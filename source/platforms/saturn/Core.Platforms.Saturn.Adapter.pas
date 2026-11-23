@@ -230,7 +230,7 @@ begin
   FThread.Protection := FConfigObject.Protection;
   if FConfigObject.RAMCart in [$21..$24] then
     FThread.CartSaveFile := FStorage.GameSave('saturn', 'backup-cartridge-' + IntToStr(FConfigObject.RAMCart), 'backup-cartridge-' + IntToStr(FConfigObject.RAMCart));
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'saturn');
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'saturn', GetConfig.FileName);
   FThread.SaveFile := FSaveFile;
   FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplySettings;

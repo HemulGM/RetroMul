@@ -25,6 +25,7 @@ type
     class procedure LoadLegacyExtras(Input: TInputManager; Ini: TCustomIniFile); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -32,6 +33,7 @@ type
 implementation
 
 uses
+  RM.Input.Gamepads,
   RM.Settings.Catalog, Core.CD.Disc, Core.PlatformServices, System.StrUtils,
   Core.Emulation, Core.Platforms, Core.Platforms.DC.Adapter, Core.Snapshots,
   DC.ELF, RM.Platforms.DC.Settings, RM.Platforms.Presentation,
@@ -43,6 +45,19 @@ uses
 
 const
   DC_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
+
+class procedure TDCPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.East);
+  AddStandardTrigger(Input, Port, PadAction(Port, TEmulatorButton.Select), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Y), TGamepadButton.North);
+  AddStandardTrigger(Input, Port, PadAction(Port, TEmulatorButton.Mode), False);
+end;
 
 class function TDCPlatform.LoadDisc(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -180,18 +195,25 @@ begin
   Definition.Devices := TArray<TInputDeviceVariant>.Create(TInputDeviceVariant.Create('none', []));
   Definition.ButtonNames[TEmulatorButton.Select] := 'L';
   Definition.ButtonNames[TEmulatorButton.Mode] := 'R';
+  // The controller's L and R are analog triggers (ReadDCPad).
+  Definition.AnalogButtons := [TEmulatorButton.Select, TEmulatorButton.Mode];
   Definition.LegacyPorts := 4;
   Definition.LegacySection := 'Keys';
   Definition.AfterLegacyBindings := LoadSharedLegacyBindings;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
   Definition.BeforeLegacyBindings := LoadLegacyExtras;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('dc', Definition);
 end;
 
 class procedure TDCPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('DC', TDCSettings);
+  RegisterSettingsProfile('DC', TDCSettings,
+    'Built-in boot uses high-level firmware services. Automatic mode can use a boot ROM when ' +
+    'found. Boot ROM file mode starts from a Dreamcast boot ROM. With a .gdi image keep all ' +
+    'referenced tracks. For multi-disc games you can open an .m3u playlist. CPU recompiler ' +
+    'availability depends on the host.');
   RegisterPlatformSettingsDevices('dc', TDCSettingsDevices);
   RegisterPlatformDeviceCallouts('dc', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('dc', TDCControlsHelp);

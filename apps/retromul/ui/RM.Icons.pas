@@ -4,7 +4,7 @@ interface
 
 uses
   RM.Platforms.Presentation, System.Types, System.UITypes, FMX.Types,
-  FMX.Controls, FMX.Objects, FMX.StdCtrls, FMX.Graphics;
+  FMX.Controls, FMX.Objects, FMX.StdCtrls, FMX.Graphics, RM.Styles;
 
 const
   //IconBack = 'M24,13 L2,13 M10,5 L2,13 L10,21';
@@ -37,9 +37,9 @@ const
 // Registry artwork can be reused by any FMX view without loading the library frame.
 function CreatePlatformIcon(Parent: TControl; const PlatformId: string; Size: Single = 22): TPath;
 
-function CreatePathIcon(Parent: TControl; const Data: string; X, Y, Size: Single; Color: TAlphaColor = $FFB9C2CC): TPath;
+function CreatePathIcon(Parent: TControl; const Data: string; X, Y, Size: Single; Color: TAlphaColor = ThemeSecondaryTextColor): TPath;
 
-function AddButtonIcon(Button: TCustomButton; const Data: string; Size: Single = 16; Color: TAlphaColor = $FFE8ECF1): TPath;
+function AddButtonIcon(Button: TCustomButton; const Data: string; Size: Single = 16; Color: TAlphaColor = ThemeTextColor): TPath;
 
 procedure GameplayButton(Button: TButton; const Text, Icon, Hint: string);
 
@@ -54,7 +54,7 @@ begin
   Result := TPath.Create(Parent);
   Result.Parent := Parent;
   Result.Data.Data := Presentation.IconData;
-  Result.Fill.Color := $FFB9C2CC;
+  Result.Fill.Color := ThemeSecondaryTextColor;
   Result.Stroke.Kind := TBrushKind.None;
   Result.WrapMode := TPathWrapMode.Fit;
   Result.HitTest := False;
@@ -99,7 +99,7 @@ begin
   Button.StyledSettings := [];
   Button.TextSettings.Font.Family := 'Segoe UI';
   Button.TextSettings.Font.Size := 13;
-  Button.TextSettings.FontColor := $FFE8ECF1;
+  Button.TextSettings.FontColor := ThemeTextColor;
   Button.TextSettings.Trimming := TTextTrimming.Character;
   Button.TextSettings.WordWrap := False;
   Button.StyleLookup := 'buttonstyle';

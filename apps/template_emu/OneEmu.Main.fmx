@@ -1,0 +1,542 @@
+object FormMain: TFormMain
+  Left = 0
+  Top = 0
+  Caption = 'OneEmu'
+  ClientHeight = 690
+  ClientWidth = 1010
+  Position = ScreenCenter
+  Constraints.MinHeight = 570.000000000000000000
+  Constraints.MinWidth = 400.000000000000000000
+  FormFactor.Width = 320
+  FormFactor.Height = 480
+  FormFactor.Devices = [Desktop, iPhone, iPad]
+  OnActivate = FormActivate
+  OnDeactivate = FormDeactivate
+  DesignerMasterStyle = 0
+  object TimerFrame: TTimer
+    Enabled = False
+    Interval = 8
+    OnTimer = TimerFrameTimer
+  end
+  object RectangleWindow: TRectangle
+    Align = Contents
+    Fill.Color = xFF191920
+    HitTest = False
+    Size.Width = 1010.000000000000000000
+    Size.Height = 690.000000000000000000
+    Size.PlatformDefault = False
+    Stroke.Kind = None
+    object LayoutHeader: TLayout
+      Align = Top
+      Padding.Left = 20.000000000000000000
+      Padding.Right = 20.000000000000000000
+      Size.Width = 1010.000000000000000000
+      Size.Height = 46.000000000000000000
+      Size.PlatformDefault = False
+      object LabelBrand: TLabel
+        Align = Left
+        StyledSettings = []
+        Position.X = 20.000000000000000000
+        Size.Width = 107.000000000000000000
+        Size.Height = 46.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 18.000000000000000000
+        TextSettings.Font.StyleExt = {00070000000000000004000000}
+        TextSettings.FontColor = xFFB8A6FA
+        Text = 'OneEmu'
+      end
+      object LabelPlatform: TLabel
+        Align = Client
+        StyledSettings = []
+        Size.Width = 863.000000000000000000
+        Size.Height = 46.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.Font.Size = 13.000000000000000000
+        TextSettings.FontColor = xFFA9AAB9
+      end
+    end
+    object LayoutToolbar: TLayout
+      Align = Top
+      Padding.Left = 16.000000000000000000
+      Padding.Top = 8.000000000000000000
+      Padding.Right = 16.000000000000000000
+      Padding.Bottom = 8.000000000000000000
+      Position.Y = 46.000000000000000000
+      Size.Width = 1010.000000000000000000
+      Size.Height = 56.000000000000000000
+      Size.PlatformDefault = False
+      object ButtonMenu: TButton
+        Align = Left
+        Margins.Right = 16.000000000000000000
+        Position.X = 16.000000000000000000
+        Position.Y = 8.000000000000000000
+        Size.Width = 118.000000000000000000
+        Size.Height = 40.000000000000000000
+        Size.PlatformDefault = False
+        Text = #1052#1077#1085#1102'   Esc'
+        OnClick = MenuClick
+      end
+      object ButtonFullscreen: TButton
+        Align = Right
+        Position.X = 832.000000000000000000
+        Position.Y = 8.000000000000000000
+        Size.Width = 162.000000000000000000
+        Size.Height = 40.000000000000000000
+        Size.PlatformDefault = False
+        Text = #1055#1086#1083#1085#1099#1081' '#1101#1082#1088#1072#1085'   F11'
+        OnClick = FullscreenClick
+      end
+      object LayoutGameIdentity: TLayout
+        Align = Client
+        Size.Width = 682.000000000000000000
+        Size.Height = 40.000000000000000000
+        Size.PlatformDefault = False
+        object LabelRom: TLabel
+          Align = Top
+          StyledSettings = []
+          Size.Width = 682.000000000000000000
+          Size.Height = 21.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.Font.Size = 14.000000000000000000
+          TextSettings.Font.StyleExt = {00070000000000000004000000}
+          TextSettings.FontColor = xFFE9E8F1
+          Text = 'ROM '#1085#1077' '#1086#1090#1082#1088#1099#1090
+        end
+        object LabelActivity: TLabel
+          Align = Client
+          StyledSettings = []
+          Size.Width = 682.000000000000000000
+          Size.Height = 19.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.Font.Size = 11.000000000000000000
+          TextSettings.FontColor = xFFA9AAB9
+          Text = #1043#1086#1090#1086#1074' '#1082' '#1079#1072#1087#1091#1089#1082#1091
+        end
+      end
+    end
+    object LayoutStatus: TLayout
+      Align = Bottom
+      Padding.Left = 16.000000000000000000
+      Padding.Right = 16.000000000000000000
+      Position.Y = 658.000000000000000000
+      Size.Width = 1010.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+      object LabelFrame: TLabel
+        Align = Right
+        StyledSettings = []
+        Position.X = 739.000000000000000000
+        Size.Width = 255.000000000000000000
+        Size.Height = 32.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.FontColor = xFFA9AAB9
+        TextSettings.HorzAlign = Trailing
+      end
+      object LabelStatus: TLabel
+        Align = Client
+        StyledSettings = []
+        Size.Width = 723.000000000000000000
+        Size.Height = 32.000000000000000000
+        Size.PlatformDefault = False
+        TextSettings.FontColor = xFFA9AAB9
+        Text = #1043#1086#1090#1086#1074' '#1082' '#1079#1072#1087#1091#1089#1082#1091
+      end
+    end
+    object LayoutStage: TLayout
+      Align = Client
+      Size.Width = 1010.000000000000000000
+      Size.Height = 556.000000000000000000
+      Size.PlatformDefault = False
+      OnResize = StageResize
+      object RectangleStage: TRectangle
+        Align = Contents
+        Fill.Color = xFF111A2B
+        HitTest = False
+        Size.Width = 1010.000000000000000000
+        Size.Height = 556.000000000000000000
+        Size.PlatformDefault = False
+        Stroke.Kind = None
+      end
+      object LayoutOutput: TLayout
+        Align = Client
+        Visible = False
+      end
+      object LayoutEmpty: TLayout
+        Align = Center
+        Size.Width = 328.000000000000000000
+        Size.Height = 160.000000000000000000
+        Size.PlatformDefault = False
+        object LabelEmptyTitle: TLabel
+          Align = Top
+          StyledSettings = []
+          Size.Width = 328.000000000000000000
+          Size.Height = 48.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.Font.Size = 28.000000000000000000
+          TextSettings.Font.StyleExt = {00070000000000000004000000}
+          TextSettings.FontColor = xFFE9E8F1
+          TextSettings.HorzAlign = Center
+          Text = #1054#1090#1082#1088#1086#1081#1090#1077' '#1080#1075#1088#1091
+        end
+        object ButtonEmptyOpen: TButton
+          Align = Top
+          Margins.Left = 30.000000000000000000
+          Margins.Top = 12.000000000000000000
+          Margins.Right = 30.000000000000000000
+          Margins.Bottom = 10.000000000000000000
+          Position.X = 30.000000000000000000
+          Position.Y = 60.000000000000000000
+          Size.Width = 268.000000000000000000
+          Size.Height = 46.000000000000000000
+          Size.PlatformDefault = False
+          StyleLookup = 'buttonstyle_accent'
+          Text = #1054#1090#1082#1088#1099#1090#1100' ROM'#8230'   Ctrl+O'
+          OnClick = OpenRomClick
+        end
+        object LabelEmptyFormats: TLabel
+          Align = Top
+          StyledSettings = []
+          Position.Y = 116.000000000000000000
+          Size.Width = 328.000000000000000000
+          Size.Height = 24.000000000000000000
+          Size.PlatformDefault = False
+          TextSettings.FontColor = xFFA9AAB9
+          TextSettings.HorzAlign = Center
+        end
+      end
+      object LayoutOverlay: TLayout
+        Align = Contents
+        Visible = False
+        object RectangleShade: TRectangle
+          Align = Contents
+          Fill.Color = xAD080E17
+          Size.Width = 50.000000000000000000
+          Size.Height = 50.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Kind = None
+          OnClick = ResumeClick
+        end
+        object RectangleMenu: TRectangle
+          Align = Left
+          Fill.Color = xFF25252D
+          Padding.Left = 20.000000000000000000
+          Padding.Top = 14.000000000000000000
+          Padding.Right = 20.000000000000000000
+          Padding.Bottom = 14.000000000000000000
+          Margins.Left = 14.000000000000000000
+          Margins.Top = 14.000000000000000000
+          Margins.Bottom = 14.000000000000000000
+          Position.X = 14.000000000000000000
+          Position.Y = 14.000000000000000000
+          Size.Width = 318.000000000000000000
+          Size.Height = 22.000000000000000000
+          Size.PlatformDefault = False
+          Stroke.Kind = None
+          XRadius = 9.000000000000000000
+          YRadius = 9.000000000000000000
+          object VertScrollBoxMainMenu: TVertScrollBox
+            Align = Client
+            Size.Width = 278.000000000000000000
+            Size.Height = 0.000000000000000000
+            Size.PlatformDefault = False
+            Viewport.Width = 34.000000000000000000
+            Viewport.Height = 50.000000000000000000
+            object LabelMenuGame: TLabel
+              Align = Top
+              StyledSettings = []
+              Size.Width = 34.000000000000000000
+              Size.Height = 46.000000000000000000
+              Size.PlatformDefault = False
+              TextSettings.Font.Size = 21.000000000000000000
+              TextSettings.Font.StyleExt = {00070000000000000004000000}
+              TextSettings.FontColor = xFFB8A6FA
+              Text = 'ROM '#1085#1077' '#1086#1090#1082#1088#1099#1090
+              TabOrder = 0
+            end
+            object ButtonResume: TButton
+              Align = Top
+              Margins.Bottom = 4.000000000000000000
+              Position.Y = 46.000000000000000000
+              Size.Width = 34.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              StyleLookup = 'buttonstyle_accent'
+              TabOrder = 1
+              Text = #1055#1088#1086#1076#1086#1083#1078#1080#1090#1100' '#1080#1075#1088#1091'   Esc'
+              OnClick = ResumeClick
+            end
+            object ButtonOpenRom: TButton
+              Align = Top
+              Margins.Bottom = 4.000000000000000000
+              Position.Y = 86.000000000000000000
+              Size.Width = 34.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 2
+              Text = #1054#1090#1082#1088#1099#1090#1100' ROM'#8230'   Ctrl+O'
+              OnClick = OpenRomClick
+            end
+            object ButtonOptions: TButton
+              Align = Top
+              Margins.Bottom = 4.000000000000000000
+              Position.Y = 126.000000000000000000
+              Size.Width = 34.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 3
+              Text = #1048#1075#1088#1086#1074#1099#1077' '#1086#1087#1094#1080#1080
+              OnClick = OptionsClick
+            end
+            object LayoutSlots: TLayout
+              Align = Top
+              Margins.Top = 6.000000000000000000
+              Margins.Bottom = 7.000000000000000000
+              Position.Y = 172.000000000000000000
+              Size.Width = 34.000000000000000000
+              Size.Height = 32.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 4
+              object LabelSlot: TLabel
+                Align = Client
+                StyledSettings = []
+                Size.Width = 0.000000000000000000
+                Size.Height = 32.000000000000000000
+                Size.PlatformDefault = False
+                TextSettings.FontColor = xFFA9AAB9
+                Text = #1057#1086#1089#1090#1086#1103#1085#1080#1077' '#183' '#1089#1083#1086#1090
+              end
+              object ComboBoxSlot: TComboBox
+                Align = Right
+                Items.Strings = (
+                  '01'
+                  '02'
+                  '03'
+                  '04')
+                Position.X = -48.000000000000000000
+                Size.Width = 82.000000000000000000
+                Size.Height = 32.000000000000000000
+                Size.PlatformDefault = False
+                OnChange = SlotChange
+              end
+            end
+            object LayoutStatePreview: TLayout
+              Align = Top
+              Margins.Bottom = 8.000000000000000000
+              Position.Y = 211.000000000000000000
+              Size.Width = 34.000000000000000000
+              Size.Height = 52.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 5
+              object RectangleStatePreview: TRectangle
+                Align = Left
+                Fill.Color = xFF34343E
+                Margins.Right = 12.000000000000000000
+                Size.Width = 72.000000000000000000
+                Size.Height = 52.000000000000000000
+                Size.PlatformDefault = False
+                Stroke.Kind = None
+                object ImageState: TImage
+                  MultiResBitmap = <
+                    item
+                    end>
+                  Align = Client
+                  HitTest = False
+                  Size.Width = 72.000000000000000000
+                  Size.Height = 52.000000000000000000
+                  Size.PlatformDefault = False
+                end
+              end
+              object LayoutStateDescription: TLayout
+                Align = Client
+                Size.Width = 0.000000000000000000
+                Size.Height = 52.000000000000000000
+                Size.PlatformDefault = False
+                object LabelState: TLabel
+                  Align = Top
+                  StyledSettings = []
+                  Size.Width = 50.000000000000000000
+                  Size.Height = 23.000000000000000000
+                  Size.PlatformDefault = False
+                  TextSettings.Font.Size = 13.000000000000000000
+                  TextSettings.FontColor = xFFE9E8F1
+                  Text = #1057#1083#1086#1090' '#1087#1091#1089#1090
+                end
+                object LabelStateTime: TLabel
+                  Align = Client
+                  StyledSettings = []
+                  Size.Width = 50.000000000000000000
+                  Size.Height = 27.000000000000000000
+                  Size.PlatformDefault = False
+                  TextSettings.Font.Size = 11.000000000000000000
+                  TextSettings.FontColor = xFFA9AAB9
+                  Text = #1053#1077#1090' '#1089#1086#1093#1088#1072#1085#1077#1085#1080#1103
+                end
+              end
+            end
+            object LayoutStateButtons: TLayout
+              Align = Top
+              Margins.Bottom = 10.000000000000000000
+              Position.Y = 271.000000000000000000
+              Size.Width = 34.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 6
+              object ButtonSaveState: TButton
+                Align = Left
+                Margins.Right = 6.000000000000000000
+                Size.Width = 135.000000000000000000
+                Size.Height = 36.000000000000000000
+                Size.PlatformDefault = False
+                Text = #1057#1086#1093#1088#1072#1085#1080#1090#1100'   F5'
+                OnClick = SaveStateClick
+              end
+              object ButtonLoadState: TButton
+                Align = Client
+                Size.Width = 0.000000000000000000
+                Size.Height = 36.000000000000000000
+                Size.PlatformDefault = False
+                Text = #1047#1072#1075#1088#1091#1079#1080#1090#1100'   F8'
+                OnClick = LoadStateClick
+              end
+            end
+            object ButtonSettings: TButton
+              Align = Top
+              Margins.Bottom = 4.000000000000000000
+              Position.Y = 317.000000000000000000
+              Size.Width = 34.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 7
+              Text = #1053#1072#1089#1090#1088#1086#1081#1082#1080' '#1087#1083#1072#1090#1092#1086#1088#1084#1099
+              OnClick = SettingsClick
+            end
+            object ButtonMenuFullscreen: TButton
+              Align = Top
+              Margins.Bottom = 4.000000000000000000
+              Position.Y = 357.000000000000000000
+              Size.Width = 34.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 8
+              Text = #1055#1086#1083#1085#1099#1081' '#1101#1082#1088#1072#1085'   F11'
+              OnClick = FullscreenClick
+            end
+            object ButtonCloseRom: TButton
+              Align = Top
+              Margins.Bottom = 4.000000000000000000
+              Position.Y = 397.000000000000000000
+              Size.Width = 34.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              TabOrder = 9
+              Text = #1047#1072#1082#1088#1099#1090#1100' ROM'
+              OnClick = CloseRomClick
+            end
+          end
+          object LayoutGameOptions: TLayout
+            Align = Client
+            Visible = False
+            object ButtonOptionsBack: TButton
+              Align = Top
+              Margins.Bottom = 4.000000000000000000
+              Size.Width = 50.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              Text = #1043#1083#1072#1074#1085#1086#1077' '#1084#1077#1085#1102
+              OnClick = BackToMenuClick
+            end
+            object LabelOptions: TLabel
+              Align = Top
+              StyledSettings = []
+              Position.Y = 40.000000000000000000
+              Size.Width = 50.000000000000000000
+              Size.Height = 46.000000000000000000
+              Size.PlatformDefault = False
+              TextSettings.Font.Size = 21.000000000000000000
+              TextSettings.Font.StyleExt = {00070000000000000004000000}
+              TextSettings.FontColor = xFFB8A6FA
+              Text = #1048#1075#1088#1086#1074#1099#1077' '#1086#1087#1094#1080#1080
+            end
+            object ButtonPause: TButton
+              Align = Top
+              Margins.Bottom = 4.000000000000000000
+              Position.Y = 86.000000000000000000
+              Size.Width = 50.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              Text = #1055#1072#1091#1079#1072
+              OnClick = PauseClick
+            end
+            object ButtonMute: TButton
+              Align = Top
+              Margins.Bottom = 4.000000000000000000
+              Position.Y = 126.000000000000000000
+              Size.Width = 50.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              Text = #1042#1099#1082#1083#1102#1095#1080#1090#1100' '#1079#1074#1091#1082
+              OnClick = MuteClick
+            end
+            object ButtonRestart: TButton
+              Align = Top
+              Margins.Bottom = 4.000000000000000000
+              Position.Y = 166.000000000000000000
+              Size.Width = 50.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              Text = #1055#1077#1088#1077#1079#1072#1087#1091#1089#1090#1080#1090#1100' '#1080#1075#1088#1091'   Ctrl+R'
+              OnClick = RestartClick
+            end
+            object ButtonCoin: TButton
+              Align = Top
+              Margins.Bottom = 4.000000000000000000
+              Position.Y = 206.000000000000000000
+              Size.Width = 50.000000000000000000
+              Size.Height = 36.000000000000000000
+              Size.PlatformDefault = False
+              Text = #1042#1089#1090#1072#1074#1080#1090#1100' '#1084#1086#1085#1077#1090#1091
+              OnClick = CoinClick
+            end
+            object VertScrollBoxActions: TVertScrollBox
+              Align = Client
+              Size.Width = 50.000000000000000000
+              Size.Height = 0.000000000000000000
+              Size.PlatformDefault = False
+              Viewport.Width = 50.000000000000000000
+              Viewport.Height = 50.000000000000000000
+            end
+          end
+        end
+      end
+      object LayoutFullscreenOverlay: TLayout
+        Align = Contents
+        Size.Width = 1010.000000000000000000
+        Size.Height = 556.000000000000000000
+        Size.PlatformDefault = False
+        object LayoutFullscreenToolbar: TLayout
+          Align = Top
+          Margins.Left = 8.000000000000000000
+          Margins.Top = 8.000000000000000000
+          Margins.Right = 8.000000000000000000
+          Size.Width = 50.000000000000000000
+          Size.Height = 36.000000000000000000
+          Size.PlatformDefault = False
+          Visible = False
+          object ButtonFullscreenMenu: TButton
+            Align = Right
+            Position.X = -56.000000000000000000
+            Size.Width = 106.000000000000000000
+            Size.Height = 36.000000000000000000
+            Size.PlatformDefault = False
+            Text = #1052#1077#1085#1102'   Esc'
+            OnClick = MenuClick
+          end
+        end
+      end
+    end
+    object LayoutSettings: TLayout
+      Align = Client
+      Visible = False
+    end
+  end
+end

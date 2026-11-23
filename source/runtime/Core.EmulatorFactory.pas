@@ -32,6 +32,9 @@ end;
 
 function CreateEmulationCore(Stream: TStream; const Storage: IStorage; const RomName, PlatformId, PreferredPlatformId: string): IEmulationCore;
 begin
+  // Core constructors must read per-game hardware settings before boot.
+  // The scope is local to this loader thread and is restored on every exit.
+  var GameSettings := TStorage.BeginGameSettings(Storage, RomName);
   // Try the library platform first, then auto-detect among the other platforms.
   // Ask the user only when recognition cannot choose a single alternative.
   if (PreferredPlatformId <> '') and (PlatformId = '') then
@@ -42,6 +45,8 @@ begin
       Exit(CreateEmulationCore(Stream, Storage, RomName, PreferredPlatformId));
     except
       on E: EAbort do
+        raise;
+      on E: ECoreInvalidMedia do
         raise;
       on E: Exception do
         LoadError := E.Message;

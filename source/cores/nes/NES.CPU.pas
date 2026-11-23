@@ -18,6 +18,12 @@ const
 type
   TCpuReadFunc = function(Address: UInt16): UInt8 of object;
 
+  TCpuOpcodeDecoder = function(Value: UInt8): UInt8 of object;
+
+  TCpuJumpEvent = procedure of object;
+
+  TCpuSoundDataRead = function(Address: Cardinal): Byte of object;
+
   TCpuWriteProc = procedure(Address: UInt16; Value: UInt8) of object;
 
   TInterruptKind = (ikNone, ikIrq, ikNmi);
@@ -38,11 +44,16 @@ type
   TCPU6502 = class
   private
     FRead: TCpuReadFunc;
+    FOpcodeDecoder: TCpuOpcodeDecoder;
+    FOnJump: TCpuJumpEvent;
+    FSoundDataRead: TCpuSoundDataRead;
+    FSoundDataBank: Byte;
     FWrite: TCpuWriteProc;
     FPendingNmi: Boolean;
     FPendingIrq: Boolean;
     FNmiAfterInstruction: Boolean;
     FIrqAfterInstruction: Boolean;
+    FDecimalArithmeticEnabled: Boolean;
     FUnknownOpcodeCount: Integer;
     FJammed: Boolean;
     FJamOpcode: UInt8;
@@ -71,6 +82,8 @@ type
     FWriteValues: array[0..2] of UInt8;
     FLastUnknownOpcode: UInt8;
     FLastUnknownPc: UInt16;
+    function ExecuteSoundOpcode(Opcode: Byte): Boolean;
+    function BusWriteCount(Opcode: Byte): Integer;
     function Read(Address: UInt16): UInt8;
     procedure Write(Address: UInt16; Value: UInt8);
     procedure Push(Value: UInt8);
@@ -126,6 +139,9 @@ type
     procedure SerializeState(State: TNesStateArchive);
     constructor Create;
     procedure Connect(Reader: TCpuReadFunc; Writer: TCpuWriteProc);
+    property OpcodeDecoder: TCpuOpcodeDecoder read FOpcodeDecoder write FOpcodeDecoder;
+    property OnJump: TCpuJumpEvent read FOnJump write FOnJump;
+    property SoundDataRead: TCpuSoundDataRead read FSoundDataRead write FSoundDataRead;
     procedure Reset;
     procedure Clock(DeferInterruptPoll: Boolean = False);
     procedure PollInterrupts;
@@ -135,6 +151,8 @@ type
     function NextCycleIsWrite: Boolean;
     function NextReadAddress: UInt16;
     procedure NotifyDmaHalt;
+    procedure TriggerAnticNmi(ReadyHeld: Boolean);
+    property DecimalArithmeticEnabled: Boolean read FDecimalArithmeticEnabled write FDecimalArithmeticEnabled;
     property UnknownOpcodeCount: Integer read FUnknownOpcodeCount;
     property Jammed: Boolean read FJammed;
     property JamOpcode: UInt8 read FJamOpcode;
@@ -266,6 +284,8 @@ begin
     State.Field(FDmaOnStoreDummy, SizeOf(FDmaOnStoreDummy))
   else if State.Loading then
     FDmaOnStoreDummy := False;
+  if Assigned(FSoundDataRead) then
+    State.Field(FSoundDataBank, SizeOf(FSoundDataBank));
 end;
 
 constructor TCPU6502.Create;
@@ -457,6 +477,22 @@ begin
     CarryIn := 0;
   var Sum: UInt16 := UInt16(A) + UInt16(Value) + CarryIn;
   var Result8: UInt8 := Sum and $FF;
+  if FDecimalArithmeticEnabled and GetFlag(FLAG_DECIMAL) then
+  begin
+    var Low := (A and $F) + (Value and $F) + CarryIn;
+    if Low > 9 then
+      Low := ((Low + 6) and $F) or $10;
+    var Adjusted := (A and $F0) + (Value and $F0) + Low;
+    // NMOS Z uses the binary result; N and V use the sum before high-digit correction.
+    SetFlag(FLAG_ZERO, Result8 = 0);
+    SetFlag(FLAG_NEGATIVE, (Adjusted and $80) <> 0);
+    SetFlag(FLAG_OVERFLOW, ((not (A xor Value)) and (A xor Adjusted) and $80) <> 0);
+    if Adjusted >= $A0 then
+      Inc(Adjusted, $60);
+    SetFlag(FLAG_CARRY, Adjusted >= $100);
+    A := Adjusted and $FF;
+    Exit;
+  end;
   SetFlag(FLAG_CARRY, Sum > $FF);
   SetFlag(FLAG_OVERFLOW, ((not (A xor Value)) and (A xor Result8) and $80) <> 0);
   A := Result8;
@@ -465,7 +501,28 @@ end;
 
 procedure TCPU6502.Sbc(Value: UInt8);
 begin
-  Adc(Value xor $FF);
+  if not FDecimalArithmeticEnabled or not GetFlag(FLAG_DECIMAL) then
+  begin
+    Adc(Value xor $FF);
+    Exit;
+  end;
+
+  var Borrow := Ord(not GetFlag(FLAG_CARRY));
+  var Difference := Integer(A) - Integer(Value) - Borrow;
+  SetFlag(FLAG_CARRY, Difference >= 0);
+  SetFlag(FLAG_OVERFLOW, ((A xor Value) and (A xor Difference) and $80) <> 0);
+  SetZeroNegative(Difference and $FF);
+
+  var Low := (A and $F) - (Value and $F) - Borrow;
+  var High := (A and $F0) - (Value and $F0);
+  if Low < 0 then
+  begin
+    Dec(Low, 6);
+    Dec(High, $10);
+  end;
+  if High < 0 then
+    Dec(High, $60);
+  A := (High and $F0) or (Low and $F);
 end;
 
 procedure TCPU6502.Cmp(RegValue, Value: UInt8);
@@ -570,12 +627,22 @@ end;
 
 procedure TCPU6502.Arr(Value: UInt8);
 begin
-  A := A and Value;
+  var Masked := A and Value;
   var Carry: UInt8 := Ord(GetFlag(FLAG_CARRY));
-  A := (A shr 1) or (Carry shl 7);
+  A := (Masked shr 1) or (Carry shl 7);
   SetZeroNegative(A);
-  SetFlag(FLAG_CARRY, (A and $40) <> 0);
-  SetFlag(FLAG_OVERFLOW, (((A shr 6) xor (A shr 5)) and 1) <> 0);
+  SetFlag(FLAG_OVERFLOW, ((A xor Masked) and $40) <> 0);
+  if FDecimalArithmeticEnabled and GetFlag(FLAG_DECIMAL) then
+  begin
+    if (Masked and $F) + (Masked and 1) > 5 then
+      A := (A and $F0) or ((A + 6) and $F);
+    var HighCarry := (Masked and $F0) + (Masked and $10) > $50;
+    if HighCarry then
+      A := (A + $60) and $FF;
+    SetFlag(FLAG_CARRY, HighCarry);
+  end
+  else
+    SetFlag(FLAG_CARRY, (A and $40) <> 0);
 end;
 
 procedure TCPU6502.Atx(Value: UInt8);
@@ -661,6 +728,7 @@ end;
 
 procedure TCPU6502.Reset;
 begin
+  FSoundDataBank := 0;
   FDmaOnStoreDummy := False;
   FBusSequence := Default(TBusSequence);
   FApplyLatchedReads := False;
@@ -705,6 +773,16 @@ end;
 procedure TCPU6502.TriggerNmi;
 begin
   FPendingNmi := True;
+end;
+
+procedure TCPU6502.TriggerAnticNmi(ReadyHeld: Boolean);
+begin
+  // ANTIC's NMI pulse is lost when it overlaps the status push of IRQ/BRK.
+  if FInterruptSequenceActive and (FInterruptKind <> ikNmi) and (CyclesRemaining = 3) then
+    Exit;
+  TriggerNmi;
+  if ReadyHeld and FInstructionActive and (CyclesRemaining = FPollCycle - 1) then
+    FNmiAfterInstruction := True;
 end;
 
 procedure TCPU6502.TriggerIrq;
@@ -765,6 +843,8 @@ begin
     else
     begin
       Opcode := Read(Pc);
+      if Assigned(FOpcodeDecoder) then
+        Opcode := FOpcodeDecoder(Opcode);
       FPollInterruptDisable := GetFlag(FLAG_INTERRUPT);
       if Opcode = $20 then
       begin
@@ -773,7 +853,8 @@ begin
         Pc := (Pc + 1) and $FFFF;
         CyclesRemaining := 6;
       end
-      else if Opcode in [$00, $02, $12, $22, $32, $42, $52, $62, $72, $92, $B2, $D2, $F2] then
+      else if (Opcode in [$00, $02, $12, $22, $32, $42, $52, $62, $72, $92, $B2, $D2, $F2]) and
+        (not Assigned(FSoundDataRead) or not (Opcode in [$62, $D2])) then
       begin
         FExecutingOpcode := True;
         try
@@ -856,6 +937,13 @@ begin
   TotalCycles := (UInt64(TotalCycles) + 1) and $FFFFFFFF;
 end;
 
+function TCPU6502.BusWriteCount(Opcode: Byte): Integer;
+begin
+  Result := BUS_WRITES[Opcode];
+  if Assigned(FSoundDataRead) and (Opcode in [$C2, $D2]) then
+    Result := 1;
+end;
+
 procedure TCPU6502.StartBusSequence(Opcode: UInt8);
 begin
   FDmaOnStoreDummy := False;
@@ -866,6 +954,39 @@ begin
   FBusSequence.Cycle := 1;
   FBusSequence.Mode := BUS_MODES[Opcode];
   CyclesRemaining := BUS_CYCLES[Opcode];
+  if Assigned(FSoundDataRead) then
+    case Opcode of
+      $34, $3C:
+        begin
+          FBusSequence.Mode := bmPull;
+          CyclesRemaining := 4;
+        end;
+      $62:
+        begin
+          FBusSequence.Mode := bmAbsolute;
+          CyclesRemaining := 4;
+        end;
+      $A7:
+        begin
+          FBusSequence.Mode := bmIndirectY;
+          CyclesRemaining := 5;
+        end;
+      $B7:
+        begin
+          FBusSequence.Mode := bmAbsoluteY;
+          CyclesRemaining := 4;
+        end;
+      $BF:
+        begin
+          FBusSequence.Mode := bmAbsoluteX;
+          CyclesRemaining := 4;
+        end;
+      $C2, $D2:
+        begin
+          FBusSequence.Mode := bmPush;
+          CyclesRemaining := 3;
+        end;
+    end;
   Pc := (Pc + 1) and $FFFF;
 end;
 
@@ -1017,7 +1138,12 @@ end;
 procedure TCPU6502.ClockBusSequence;
 begin
   var BusAddress := NextReadAddress;
-  var Value := FRead(BusAddress);
+  var Value: Byte;
+  if Assigned(FSoundDataRead) and (CyclesRemaining = 1) and
+    (FBusSequence.Opcode in [$A7, $B7, $BF]) then
+    Value := FSoundDataRead((Cardinal(FSoundDataBank) shl 16) or BusAddress)
+  else
+    Value := FRead(BusAddress);
   with FBusSequence do
   begin
     Addresses[Count] := BusAddress;
@@ -1034,7 +1160,7 @@ begin
         Address := (Base + X) and $FFFF
       else if Mode in [bmAbsoluteY, bmIndirectY] then
         Address := (Base + Y) and $FFFF;
-      if (BUS_WRITES[Opcode] = 0) and ((Base and $FF00) <> (Address and $FF00)) then
+      if (BusWriteCount(Opcode) = 0) and ((Base and $FF00) <> (Address and $FF00)) then
         Inc(CyclesRemaining);
     end;
     if (Mode = bmRti) and (Cycle = 4) then
@@ -1075,9 +1201,73 @@ begin
           FPollCycle := 3;
       end;
     end;
-    if CyclesRemaining = BUS_WRITES[Opcode] + 1 then
+    if CyclesRemaining = BusWriteCount(Opcode) + 1 then
       ApplyBusSequence;
   end;
+end;
+
+function TCPU6502.ExecuteSoundOpcode(Opcode: Byte): Boolean;
+begin
+  var Crossed: Boolean;
+  case Opcode of
+    $34, $3C:
+      begin
+        Read(Pc);
+        Read($0100 or Sp);
+        if Opcode = $34 then
+        begin
+          X := Pull;
+          SetZeroNegative(X);
+        end
+        else
+        begin
+          Y := Pull;
+          SetZeroNegative(Y);
+        end;
+      end;
+    $5A:
+      begin
+        Read(Pc);
+        FSoundDataBank := A;
+      end;
+    $7A:
+      begin
+        Read(Pc);
+        A := FSoundDataBank;
+      end;
+    $62:
+      begin
+        var Value := Read(AbsAddr);
+        var Sum := Integer(X) + Value + Ord(GetFlag(FLAG_CARRY));
+        SetFlag(FLAG_CARRY, Sum > $FF);
+        SetFlag(FLAG_OVERFLOW, (not (X xor Value) and (Integer(X) xor Sum) and $80) <> 0);
+        X := Sum and $FF;
+        SetZeroNegative(X);
+      end;
+    $A7, $B7, $BF:
+      begin
+        case Opcode of
+          $A7:
+            A := Read(Izy(Crossed));
+          $B7:
+            A := Read(Aby(Crossed));
+          $BF:
+            A := Read(Abx(Crossed));
+        end;
+        SetZeroNegative(A);
+      end;
+    $C2, $D2:
+      begin
+        Read(Pc);
+        if Opcode = $C2 then
+          Push(X)
+        else
+          Push(Y);
+      end;
+  else
+    Exit(False);
+  end;
+  Result := True;
 end;
 
 procedure TCPU6502.ExecuteOpcode(Opcode: UInt8);
@@ -1086,6 +1276,9 @@ begin
   Pc := (Pc + 1) and $FFFF;
   var PageCrossed: Boolean := False;
   var Cycles: Integer := 2;
+  FIndexedDummyRead := False;
+  if Assigned(FSoundDataRead) and ExecuteSoundOpcode(Opcode) then
+    Exit;
   FIndexedDummyRead := Opcode in [
       $13, $1B, $1E, $1F, $33, $3B, $3E, $3F, $53,
       $5B, $5E, $5F, $73, $7B, $7E, $7F, $91, $99,
@@ -1523,6 +1716,8 @@ begin
     $4C:
       begin
         Pc := AbsAddr;
+        if Assigned(FOnJump) then
+          FOnJump;
         Cycles := 3;
       end;
     $4D:
@@ -1691,6 +1886,8 @@ begin
     $6C:
       begin
         Pc := Ind;
+        if Assigned(FOnJump) then
+          FOnJump;
         Cycles := 5;
       end;
     $6D:

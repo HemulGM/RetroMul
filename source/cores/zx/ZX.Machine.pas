@@ -22,6 +22,7 @@ type
   TZXMachineConfig = record
     Model: TZXMachineModel;
     ULAPlus, TimexVideo, KempstonMouse: Boolean;
+    Issue2: Boolean; // Original 16/48K EAR/MIC input circuit; ignored by other models.
     ByteCompatibility: Boolean;
     TKTiming: TZXTKTiming;
     TKSpanish: Boolean;

@@ -54,7 +54,7 @@ type
     function ExportAddress(const Lib: string; NID: Cardinal): Cardinal;
   end;
 
-  TPSPLoadExecEvent = procedure(const Path: string; ArgSize, ArgPtr: Cardinal) of object;
+  TPSPLoadExecEvent = function(const Path: string; ArgSize, ArgPtr: Cardinal): Cardinal of object;
 
   TPSPLoader = class
   private
@@ -84,6 +84,7 @@ type
     procedure ScheduleThreadDelete(Id: Cardinal);
     procedure StateThreadDelete(Action: TPSPStateAction; Value: Cardinal);
     procedure StateThreadExited(Action: TPSPStateAction; Value: Cardinal);
+    procedure StateLoadWait(Action: TPSPStateAction; Value: Cardinal);
     procedure StateLoad(Action: TPSPStateAction; Value: Cardinal);
     procedure LoadForCaller(const Data: TBytes; const Path: string);
     procedure hKprintf;
@@ -111,7 +112,8 @@ type
     // Loads a module image (ELF, PRX, ~PSP, ~SCE). Returns 0 or a kernel error.
     function Load(const Data: TBytes; const Path: string; out M: TPSPModule): Cardinal;
     // Starts the main module: creates and starts its thread with the path as argument.
-    procedure StartMain(M: TPSPModule; const Path: string);
+    procedure StartMain(M: TPSPModule; const Path: string; const Arguments: TBytes = nil; UseArguments: Boolean = False);
+    function Validate(const Data: TBytes; const Path: string; ArgumentSize: Cardinal = 0): Cardinal;
     function Describe: string;
     property Modules: TList<TPSPModule> read FModules;
     property MainModule: TPSPModule read FMainModule;
@@ -121,7 +123,7 @@ type
 implementation
 
 uses
-  System.Classes, System.ZLib, System.Math, PSP.PRX;
+  System.Classes, System.ZLib, System.Math, PSP.PRX, PSP.Scheduler;
 
 const
   SHT_PSPREL = $700000A0;
@@ -822,7 +824,7 @@ begin
   Result := nil;
 end;
 
-procedure TPSPLoader.StartMain(M: TPSPModule; const Path: string);
+procedure TPSPLoader.StartMain(M: TPSPModule; const Path: string; const Arguments: TBytes; UseArguments: Boolean);
 begin
   FMainModule := M;
   var Prio: Integer := $20;
@@ -846,9 +848,13 @@ begin
     raise EPSPError.Create('PSP: no memory for the main thread');
   // The module manager deletes the start thread once module_start returns.
   T.DeleteOnExit := True;
-  var Arg := TEncoding.ANSI.GetBytes(Path);
-  SetLength(Arg, Length(Arg) + 1);
-  Arg[High(Arg)] := 0;
+  var Arg := Arguments;
+  if not UseArguments then
+  begin
+    Arg := TEncoding.ANSI.GetBytes(Path);
+    SetLength(Arg, Length(Arg) + 1);
+    Arg[High(Arg)] := 0;
+  end;
   FKernel.StartThread(T, 0, 0, Arg);
   M.Started := True;
   FKernel.Reschedule;
@@ -992,6 +998,27 @@ begin
   end;
   // The file is read while the caller waits; the module reaches memory at the end.
   var Caller := FKernel.Current;
+  var Host: Boolean;
+  if FIO.CostedDevice(Path, Host) then
+  begin
+    // The driver's open, read and close, then relocating and linking on the
+    // caller's time (probe io_cost; threads/scheduling/callcosts).
+    var Busy: Int64 := 1860000 + Int64(Length(Data)) * 264 div 10;
+    var Wait: Int64 := 0;
+    for var C in [icOpen, icRead, icClose] do
+    begin
+      var B, W: Int64;
+      TPSPIO.DeviceCost(Host, C, Length(Data), 0, B, W);
+      Inc(Busy, B);
+      Inc(Wait, W);
+    end;
+    FHLE.Result(0);
+    var Next := TPSPStateAction.Create(StateLoadWait, [], [Caller.UID, Wait]);
+    Next.Data := Data;
+    Next.Text := Path;
+    FKernel.SpendThen(Busy, Next);
+    Exit;
+  end;
   var Latency := Int64(2000000) + Int64(Length(Data)) * 1000000000 div (8 * 1024 * 1024);
   FHLE.Result(0);
   FKernel.BeginWait(PSPWaitEventFlag, nil, 0, 0, False, NoRetry, nil, 'loadmodule');
@@ -999,6 +1026,18 @@ begin
   A.Data := Data;
   A.Text := Path;
   FKernel.AddStateTimer(FKernel.Scheduler.Now + Latency, Caller, A);
+end;
+
+procedure TPSPLoader.StateLoadWait(Action: TPSPStateAction; Value: Cardinal);
+begin
+  var Caller := FKernel.Current;
+  if (Caller = nil) or (Caller.UID <> Cardinal(Action.Arg(0))) then
+    Exit;
+  FKernel.BeginWait(PSPWaitEventFlag, nil, 0, 0, False, NoRetry, nil, 'loadmodule');
+  var A := TPSPStateAction.Create(StateLoad, [], [Caller.UID]);
+  A.Data := Action.Data;
+  A.Text := Action.Text;
+  FKernel.AddStateTimer(FKernel.Scheduler.Now + Action.Arg(1), Caller, A);
 end;
 
 procedure TPSPLoader.StateLoad(Action: TPSPStateAction; Value: Cardinal);
@@ -1181,7 +1220,7 @@ begin
   // Higher-priority threads can preempt it. The manager's completion handoff
   // lets an equal-priority ready thread run, without donating CPU time to a
   // lower-priority spinner while the manager works.
-  FKernel.SpendPreemptible(300000 + FillTime, True);
+  FKernel.SpendPreemptible(245000 + FillTime, True);
 end;
 
 procedure TPSPLoader.hStopUnloadSelfModule;
@@ -1301,6 +1340,48 @@ begin
   FHLE.Result(0);
 end;
 
+function TPSPLoader.Validate(const Data: TBytes; const Path: string; ArgumentSize: Cardinal): Cardinal;
+begin
+  // Parse, relocate and link against an isolated machine before loadexec can
+  // discard the running program. This follows the real loader's checks.
+  var Memory := TPSPMemory.Create;
+  var CPU := TPSPCPU.Create(Memory);
+  var Scheduler := TPSPScheduler.Create;
+  var HLE := TPSPHLE.Create(CPU, Memory);
+  var Kernel := TPSPKernel.Create(CPU, Memory, HLE, Scheduler);
+  var Loader := TPSPLoader.Create(Kernel, nil);
+  try
+    var Module: TPSPModule;
+    Result := Loader.Load(Data, Path, Module);
+    if (Result = 0) and Module.Fake then
+      Result := SCE_KERNEL_ERROR_UNSUPPORTED_PRX_TYPE;
+    if Result = 0 then
+    begin
+      var Stack: Cardinal := $40000;
+      if Module.StartStack >= $200 then
+        Stack := Module.StartStack;
+      if ArgumentSize > Stack - $140 then
+        Result := SCE_KERNEL_ERROR_ILLEGAL_SIZE;
+      if Result = 0 then
+        try
+          // Also reserve the main stack: malformed thread parameters or an
+          // image leaving no room for it must fail before the live reset.
+          Loader.StartMain(Module, Path, nil, True);
+        except
+          on EPSPError do
+            Result := SCE_KERNEL_ERROR_NO_MEMORY;
+        end;
+    end;
+  finally
+    Loader.Free;
+    Kernel.Free;
+    HLE.Free;
+    Scheduler.Free;
+    CPU.Free;
+    Memory.Free;
+  end;
+end;
+
 procedure TPSPLoader.hLoadExec;
 begin
   var Path := FMemory.ReadString(FHLE.Arg(0), 1024);
@@ -1309,12 +1390,23 @@ begin
   var ArgPtr: Cardinal := 0;
   if Param <> 0 then
   begin
+    if not FMemory.Valid(Param, 12) then
+    begin
+      FHLE.Result(SCE_KERNEL_ERROR_ILLEGAL_ADDR);
+      Exit;
+    end;
     ArgSize := FMemory.Read32(Param + 4);
     ArgPtr := FMemory.Read32(Param + 8);
   end;
-  FHLE.Result(0);
+  if (ArgSize > 0) and ((ArgPtr = 0) or not FMemory.Valid(ArgPtr, ArgSize)) then
+  begin
+    FHLE.Result(SCE_KERNEL_ERROR_ILLEGAL_ADDR);
+    Exit;
+  end;
   if Assigned(FOnLoadExec) then
-    FOnLoadExec(Path, ArgSize, ArgPtr);
+    FHLE.Result(FOnLoadExec(Path, ArgSize, ArgPtr))
+  else
+    FHLE.Result(SCE_KERNEL_ERROR_NOTIMP);
 end;
 
 procedure TPSPLoader.hKprintf;
@@ -1326,6 +1418,7 @@ end;
 
 procedure TPSPLoader.hIcacheClearAll;
 begin
+  FHLE.CPU.FlushDecoded;
   FHLE.Result(0);
 end;
 

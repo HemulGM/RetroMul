@@ -63,6 +63,9 @@ type
     procedure SetValue(const Value: string);
   public
     Items: TArray<TSettingsChoiceItem>;
+    // Filtering unavailable options must not rewrite the saved value on Apply.
+    PreserveUnknownValue: Boolean;
+    function SelectionIndex: Integer;
     property Value: string read GetValue write SetValue;
   end;
 
@@ -258,6 +261,24 @@ end;
 procedure TChoiceSetting.SetValue(const Value: string);
 begin
   Draft.WriteString(Section, Key, Value);
+end;
+
+function TChoiceSetting.SelectionIndex: Integer;
+begin
+  var Current := Value;
+  var Fallback := -1;
+  for var I := 0 to High(Items) do
+  begin
+    if SameText(Items[I].Value, Current) then
+      Exit(I);
+    if SameText(Items[I].Value, DefaultValue) then
+      Fallback := I;
+  end;
+  if PreserveUnknownValue then
+    Exit(-1);
+  Result := Fallback;
+  if (Result < 0) and (Length(Items) > 0) then
+    Result := 0;
 end;
 
 function TIntegerSetting.GetValue: Integer;

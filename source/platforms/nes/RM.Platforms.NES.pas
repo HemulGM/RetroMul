@@ -3,13 +3,14 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 type
   TNESPlatform = class
   strict private
     class var
       FRegistered: Boolean;
+    class function RecognizeStream(Context: TCoreLoadContext): TCoreMatch; static;
     class function Recognize(Context: TCoreLoadContext): TCoreMatch; static;
     class procedure RegisterPlatforms; static;
     class procedure RegisterCore; static;
@@ -17,6 +18,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -24,19 +26,47 @@ type
 implementation
 
 uses
-  NES.Cartridge, NES.DiskSystem, RM.Settings.Catalog, Core.InputConfig,
-  System.IniFiles, Core.PlatformServices, System.StrUtils, Core.Emulation,
-  Core.Platforms, Core.Platforms.NES.Adapter, RM.Platforms.NES.Settings,
-  RM.Platforms.Presentation, RM.Platforms.NES.Icons, RM.Gamepad.Factory,
-  RM.Platforms.NES.Gamepads, NES.Controller, NES.Types, RM.Input.Runtime,
-  RM.Platforms.NES.Input, RM.Session.Runtime, RM.Platforms.NES.Session,
-  RM.Window.Layout, RM.Platforms.NES.Window, RM.Settings.Runtime,
-  RM.Platforms.NES.SettingsHandler, RM.ControlsHelp.Content,
+  RM.Input.Gamepads, NES.Cartridge, NES.DiskSystem, NES.StudyBox.Media,
+  RM.Settings.Catalog, Core.InputConfig, System.IniFiles, Core.PlatformServices,
+  System.StrUtils, Core.Emulation, Core.Platforms, Core.Platforms.NES.Adapter,
+  RM.Platforms.NES.Settings, RM.Platforms.Presentation, RM.Platforms.NES.Icons,
+  RM.Gamepad.Factory, RM.Platforms.NES.Gamepads, NES.Controller, NES.Types,
+  RM.Input.Runtime, RM.Platforms.NES.Input, RM.Session.Runtime,
+  RM.Platforms.NES.Session, RM.Window.Layout, RM.Platforms.NES.Window,
+  RM.Settings.Runtime, RM.Platforms.NES.SettingsHandler, RM.ControlsHelp.Content,
   RM.Platforms.NES.Help, RM.Settings.Callouts, RM.Platforms.NES.Devices,
   RM.Settings.Devices, System.Classes;
 
-const
-  NES_IMAGE_MAX_SIZE = 64 * 1024 * 1024;
+class procedure TNESPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Y), TGamepadButton.North);
+end;
+
+class function TNESPlatform.RecognizeStream(Context: TCoreLoadContext): TCoreMatch;
+begin
+  Result := nil;
+  var FileSize := Context.Stream.Size;
+  var Prefix := Context.Prefix(NES_ROM_HEADER_SIZE);
+  var StudyBox := (FileSize <= STUDY_BOX_MAX_SIZE) and (Length(Prefix) >= Length(STUDY_BOX_SIGNATURE)) and
+    CompareMem(@Prefix[0], PAnsiChar(STUDY_BOX_SIGNATURE), Length(STUDY_BOX_SIGNATURE));
+  if not StudyBox and not IsLargeNesImage(Prefix, FileSize) then
+    Exit;
+
+  Result := TCoreMatch.Create('NES',
+    function: IEmulationCore
+    begin
+      Context.Stream.Position := 0;
+      Result := TNesCoreAdapter.Create(Context.Stream, Context.Storage, Context.RomName);
+    end);
+  Result.Format.SystemId := 'nes';
+end;
 
 class function TNESPlatform.Recognize(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -44,7 +74,7 @@ begin
 
   var DiskImage := Context.Signature(0, FDS_SIGNATURE) or
     Context.Signature(0, #1'*NINTENDO-HVC*') or Context.HasExtension(['.fds', '.qd']);
-  if Context.Signature(0, NES_ROM_SIGNATURE) or DiskImage then
+  if Context.Signature(0, NES_ROM_SIGNATURE) or DiskImage or Context.HasExtension(['.fcn']) then
   begin
     var SystemId := 'nes';
     if DiskImage then
@@ -53,7 +83,7 @@ begin
       function(const Data: TBytes; Input: TStream): IEmulationCore
       begin
         Result := TNesCoreAdapter.Create(Input, Context.Storage, Context.RomName);
-      end, True, SystemId, '', NES_IMAGE_MAX_SIZE);
+      end, True, SystemId, '', NES_ROM_FILE_MAX_SIZE);
   end;
 end;
 
@@ -61,7 +91,7 @@ class procedure TNESPlatform.RegisterPlatforms;
 begin
   TPlatformRegistry.RegisterPlatform('nes', 'NES / Famicom', 'NES',
     'Nintendo', 'NES Famicom Dendy Disk System FDS', 'nes', ['nes'],
-    ['.nes', '.fds', '.qd'], 'NES', 'nes', 2);
+    ['.nes', '.fds', '.qd', '.study', '.studybox', '.stbx', '.fcn'], 'NES', 'nes', 2);
   TPlatformRegistry.RegisterPlatform('fds', 'Famicom Disk System', 'FDS',
     'Nintendo', 'FDS Famicom Disk System Twin Famicom', 'fds', ['fds', 'famicomdisksystem'],
     ['.fds', '.qd'], 'NES', 'nes', 2);
@@ -70,7 +100,9 @@ end;
 class procedure TNESPlatform.RegisterCore;
 begin
   RegisterPlatforms;
-  var Registration := TEmulationCoreRegistration.Create('NES', ['.nes', '.fds', '.qd']);
+  var Registration := TEmulationCoreRegistration.Create('NES', ['.nes', '.fds', '.qd', '.study', '.studybox', '.stbx', '.fcn']);
+  Registration.MaxArchiveImageSize := NES_ROM_LARGE_MAX_SIZE;
+  Registration.Add(TCoreLoadStage.Stream, 100, RecognizeStream);
   Registration.Add(TCoreLoadStage.Header, 100, Recognize);
   RegisterEmulationCore(Registration);
 end;
@@ -84,7 +116,7 @@ begin
   Service.DocumentSelection.AllowedExtensions := ['.tape'];
   RegisterPlatformServices('nes', Service);
   Service.DocumentSelection.Title := 'Choose FDS disk image';
-  Service.DocumentSelection.FileFilter := 'FDS disks (*.fds;*.qd)|*.fds;*.qd|All files|*.*';
+  Service.DocumentSelection.FileFilter := 'NES disk images (*.fds;*.qd;*.img;*.ima)|*.fds;*.qd;*.img;*.ima|All files|*.*';
   Service.DocumentSelection.AllowedExtensions := ['.fds', '.qd'];
   RegisterPlatformServices('fds', Service);
 end;
@@ -134,12 +166,17 @@ begin
   Definition.SharedLegacyBindings := LoadNesLegacyAuxiliaries;
   Definition.SharedFilterBinding := FilterNesCompatibilityBinding;
   Definition.SharedBindingOrder := 10;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('nes', Definition);
 end;
 
 class procedure TNESPlatform.RegisterClient;
 begin
-  RegisterSettingsProfile('NES', TNESSettings);
+  RegisterSettingsProfile('NES', TNESSettings,
+    'Choose the NES folder for .nes cartridges and Famicom Disk System for .fds or .qd disks. ' +
+    'Keep the region on Automatic unless a game needs a specific region. Choose the device for ' +
+    'each port in Peripherals. Four Score and devices such as Zapper, Power Pad and Miracle ' +
+    'Piano use conflicting port wiring.');
   RegisterPlatformSettingsDevices('nes', TNESSettingsDevices);
   RegisterPlatformDeviceCallouts('nes', TNESDeviceCallouts);
   RegisterPlatformControlsHelp('nes', TNESControlsHelp);

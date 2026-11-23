@@ -29,6 +29,7 @@ class function TZXConfiguration.ReadMachine(Ini: TCustomIniFile): TZXMachineConf
 begin
   Result := TZXMachineConfig.FromId(Ini.ReadString('Hardware', 'TapeModel', '48k'));
   Result.ULAPlus := Ini.ReadBool('Hardware', 'ULAPlus', False);
+  Result.Issue2 := Ini.ReadBool('Hardware', 'Issue2', False);
   Result.ByteCompatibility := Ini.ReadBool('Hardware', 'ByteCompatibility', True);
   Result.TimexVideo := Ini.ReadBool('Hardware', 'TimexVideo', False);
   Result.KempstonMouse := Ini.ReadBool('Hardware', 'KempstonMouse', False);
@@ -165,6 +166,7 @@ begin
     Ini.WriteString('Hardware', 'TKTiming', '50hz');
   Ini.WriteBool('Hardware', 'TKSpanish', Machine.TKSpanish);
   Ini.WriteBool('Hardware', 'ULAPlus', Machine.ULAPlus);
+  Ini.WriteBool('Hardware', 'Issue2', Machine.Issue2);
   Ini.WriteBool('Hardware', 'ByteCompatibility', Machine.ByteCompatibility);
   Ini.WriteBool('Hardware', 'TimexVideo', Machine.TimexVideo);
   Ini.WriteBool('Hardware', 'KempstonMouse', Machine.KempstonMouse);
@@ -254,6 +256,8 @@ begin
               // Configurations saved before HardSID implicitly use eZX/MB.
               if SameText(Section, 'Hardware') and SameText(Key, 'SIDInterface') and
                 (P.Machine.SIDInterface = 0) then
+                Continue;
+              if SameText(Section, 'Hardware') and SameText(Key, 'Issue2') and not P.Machine.Issue2 then
                 Continue;
               Exit;
             end;

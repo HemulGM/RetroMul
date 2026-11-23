@@ -364,7 +364,7 @@ begin
   FThread.TapeAutoPlay := TSGConfig(FConfig).TapeAutoPlay;
   FThread.SaveFile := FSaveFile;
   FThread.SnapshotDirectory := FSnapshotDirectory;
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, TSGConfig(FConfig).SystemId);
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, TSGConfig(FConfig).SystemId, GetConfig.FileName);
   ApplySettings;
   FThread.Start;
 end;

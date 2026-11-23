@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 const
   ROM_SYSTEM_A2600 = 'at2600';
@@ -20,6 +20,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -27,10 +28,11 @@ type
 implementation
 
 uses
-  RM.Platforms.Atari2600.Settings, RM.Settings.Catalog, RM.Settings.Platform,
-  Core.Emulation, Core.Platforms, Core.Platforms.Atari2600.Adapter,
-  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.Atari2600.Gamepads,
-  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.Input.Gamepads, RM.Platforms.Atari2600.Settings, RM.Settings.Catalog,
+  RM.Settings.Platform, Core.Emulation, Core.Platforms,
+  Core.Platforms.Atari2600.Adapter, RM.Platforms.Presentation,
+  RM.Gamepad.Factory, RM.Platforms.Atari2600.Gamepads, RM.Input.Runtime,
+  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
   System.Classes, System.UITypes, Core.Archive.Container, System.IOUtils,
   Core.Snapshots, Core.InputConfig, System.IniFiles;
@@ -60,6 +62,16 @@ begin
       end;
     end;
   end;
+end;
+
+class procedure TA2600Platform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
 end;
 
 class function TA2600Platform.RecognizeArchive(Context: TCoreLoadContext): TCoreMatch;
@@ -121,7 +133,16 @@ begin
     Result := ImageMatch(Context, 'A2600',
       function(const Data: TBytes; Input: TStream): IEmulationCore
       begin
-        Result := TA2600CoreAdapter.Create(Input, Context.Storage, Context.RomName, Context.SourceName);
+        try
+          Result := TA2600CoreAdapter.Create(Input, Context.Storage, Context.RomName, Context.SourceName);
+        except
+          on E: EReadError do
+          begin
+            if Context.HasExtension(['.a26']) then
+              raise ECoreInvalidMedia.Create(E.Message);
+            raise;
+          end;
+        end;
       end);
 end;
 
@@ -177,12 +198,16 @@ begin
   Definition.AfterLegacyBindings := LoadSharedLegacyBindings;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('at2600', Definition);
 end;
 
 class procedure TA2600Platform.RegisterClient;
 begin
-  RegisterSettingsPlatform('at2600', TAtari2600Settings);
+  RegisterSettingsPlatform('at2600', TAtari2600Settings,
+    'Start with automatic cartridge detection. With generic .bin or .rom images, the platform ' +
+    'folder identifies the console. Choose the correct TV standard and, for Atari 2600 paddle ' +
+    'games, configure the paddle controller.');
   RegisterPlatformSettingsDevices('at2600', TAtari2600SettingsDevices);
   RegisterPlatformDeviceCallouts('at2600', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('at2600', TPlatformControlsHelp);

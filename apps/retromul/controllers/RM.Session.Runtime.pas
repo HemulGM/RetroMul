@@ -63,7 +63,7 @@ implementation
 
 uses
   System.SysUtils, System.Math, System.Generics.Collections,
-  System.Generics.Defaults, Core.Platforms, RM.Input, RM.Dialogs,
+  Core.Emulation.Types, System.Generics.Defaults, Core.Platforms, RM.Input,
   RM.Window.Layout;
 
 var
@@ -227,6 +227,7 @@ end;
 
 procedure ReleaseSessionInputs(const Context: TSessionRuntimeContext);
 begin
+  CancelScreenTouch(Context);
   var Classes := TList<TPlatformSessionHandlerClass>.Create;
   var Released := TList<TControl>.Create;
   try
@@ -255,10 +256,13 @@ end;
 
 procedure SyncSessionTouch(const Context: TSessionRuntimeContext);
 begin
-  var Target := PlatformSessionHandler(Context.State.Input.SystemId).TouchControl(Context);
-  if Context.State.Settings.View <> nil then
+  var Surface := Context.Surface;
+  if Surface = nil then
+    Exit;
+  var Target := PlatformSessionHandler(Context.Host.SystemId).TouchControl(Context);
+  if Context.Host.Activity.SettingsOpen then
     Target := Default(TSessionInputControl);
-  TouchState(Context, True).Select(Target, Context.View);
+  TouchState(Context, True).Select(Target, Surface.InputForm);
 end;
 
 procedure DetachSessionTouch(const Context: TSessionRuntimeContext);
@@ -270,11 +274,14 @@ end;
 
 procedure ReattachSessionTouch(const Context: TSessionRuntimeContext);
 begin
+  var Surface := Context.Surface;
+  if Surface = nil then
+    Exit;
   var Touch := TouchState(Context, False);
   if Touch <> nil then
-    Touch.Reattach(Context.View)
+    Touch.Reattach(Surface.InputForm)
   else
-    TouchState(Context, True).Select(SessionControl(Context.State.Input.Gamepad), Context.View);
+    TouchState(Context, True).Select(SessionControl(Context.Gamepad), Surface.InputForm);
 end;
 
 class function TPlatformSessionHandler.Order: Integer;
@@ -284,11 +291,12 @@ end;
 
 class procedure TPlatformSessionHandler.Connect(const Context: TSessionRuntimeContext);
 begin
-  Context.State.Input.Gamepad.Configure(Context.State.Input.SystemId, Context.State.Input.Ports.Devices[0],
-    CoreButtons(Context.State.Input.SystemId, Context.State.Input.Ports.Devices[0]));
-  Context.View.ImageCanvas.HitTest := False;
-  Context.View.ImageCanvas.CanFocus := False;
-  Context.View.ImageCanvas.DisableFocusEffect := True;
+  var Pad := Context.Gamepad;
+  if Pad <> nil then
+    Pad.Configure(Context.Host.SystemId, Context.Host.Input.Ports.Devices[0],
+      CoreButtons(Context.Host.SystemId, Context.Host.Input.Ports.Devices[0]));
+  var Touch: IEmulationTouchInput;
+  Context.Host.Video.SetPointerInputEnabled(Supports(Context.Host.Core, IEmulationTouchInput, Touch), False);
 end;
 
 class procedure TPlatformSessionHandler.Disconnect(const Context: TSessionRuntimeContext);
@@ -320,37 +328,35 @@ end;
 
 class function TPlatformSessionHandler.TouchControl(const Context: TSessionRuntimeContext): TSessionInputControl;
 begin
-  Result := SessionControl(Context.State.Input.Gamepad);
+  Result := SessionControl(Context.Gamepad);
 end;
 
 class procedure TPlatformSessionHandler.SyncActivity(const Context: TSessionRuntimeContext);
 begin
-  {$IFDEF ISMOBILE}
-  if Context.State.Input.Gamepad <> nil then
-  begin
-    Context.State.Input.Gamepad.Visible := not ExclusiveInput(Context);
-    Context.State.Input.Gamepad.Enabled := (Context.State.Session.Emulation <> nil) and
-      not Context.State.Session.EmulationFaulted and not Context.State.Session.OpeningRom and not ExclusiveInput(Context);
-  end;
-  {$ENDIF}
+  var Pad := Context.Gamepad;
+  if Pad = nil then
+    Exit;
+  var Activity := Context.Host.Activity;
+  Pad.Visible := Activity.ShowVirtualGamepad and Activity.GameplayVisible and not ExclusiveInput(Context);
+  Pad.Enabled := Pad.Visible and Activity.VirtualControlsEnabled;
 end;
 
 class procedure TPlatformSessionHandler.ApplyActivityGate(const Context: TSessionRuntimeContext);
 begin
-  {$IFDEF ISMOBILE}
-  var Allowed := not Context.State.Mobile.InBackground and not Context.View.GameActionsPopup.IsOpen and
-    not RetroDialogVisible(Context.View);
-  if Context.State.Input.Gamepad <> nil then
-    Context.State.Input.Gamepad.Enabled := Context.State.Input.Gamepad.Enabled and Allowed;
+  var Allowed := not Context.Host.Activity.PeripheralInputBlocked;
+  if not Allowed or not ScreenTouchAllowed(Context) then
+    CancelScreenTouch(Context);
+  var Pad := Context.Gamepad;
+  if Pad <> nil then
+    Pad.Enabled := Pad.Enabled and Allowed;
   for var Item in InputControls(Context) do
     if Item.Control <> nil then
       Item.Control.Enabled := Item.Control.Enabled and Allowed;
-  {$ENDIF}
 end;
 
 class procedure TPlatformSessionHandler.LayoutControls(const Context: TSessionRuntimeContext);
 begin
-  ArrangePlatformWindowControls(Context);
+  PlatformWindowLayout(Context.Host.SystemId).Arrange(Context);
 end;
 
 class procedure TPlatformSessionHandler.FrameStatus(const Context: TSessionRuntimeContext);

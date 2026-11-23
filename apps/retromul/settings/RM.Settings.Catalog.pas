@@ -10,18 +10,19 @@ var
 
 // Called by platform classes through RegisterPlatform. Registrations wait for
 // metadata and presentation; an unregistered platform contributes no settings pages.
-procedure RegisterSettingsPlatform(const Id: string; PageClass: TSettingsPlatformClass);
+procedure RegisterSettingsPlatform(const Id: string; PageClass: TSettingsPlatformClass; const HelpText: string = '');
 
-procedure RegisterSettingsProfile(const Profile: string; PageClass: TSettingsPlatformClass);
+procedure RegisterSettingsProfile(const Profile: string; PageClass: TSettingsPlatformClass; const HelpText: string = '');
 
 implementation
 
 uses
-  Core.Platforms, RM.Platforms.Presentation, System.SysUtils, System.Generics.Collections;
+  Core.Platforms, RM.Platforms.Presentation, System.SysUtils,
+  System.Generics.Collections;
 
 type
   TSettingsRegistration = class
-    Selector: string;
+    Selector, HelpText: string;
     ByProfile: Boolean;
     PageClass: TSettingsPlatformClass;
     AppliedIds: TArray<string>;
@@ -36,31 +37,39 @@ procedure TSettingsRegistration.Apply(const Info: TPlatformInfo);
 begin
   if ByProfile then
   begin
-    if not SameText(Info.SettingsProfile, Selector) or not SameText(Info.Id, Info.SettingsCoreId) then Exit;
+    if not SameText(Info.SettingsProfile, Selector) or not SameText(Info.Id, Info.SettingsCoreId) then
+      Exit;
   end
   else
   begin
     var Target: TPlatformInfo;
-    if not TPlatformRegistry.Find(Selector, Target) or not SameText(Target.Id, Info.Id) then Exit;
+    if not TPlatformRegistry.Find(Selector, Target) or not SameText(Target.Id, Info.Id) then
+      Exit;
   end;
   for var Id in AppliedIds do
-    if SameText(Id, Info.Id) then Exit;
+    if SameText(Id, Info.Id) then
+      Exit;
   if not SameText(Info.Id, Info.SettingsCoreId) then
     raise EArgumentException.Create('Register the canonical settings platform: ' + Info.SettingsCoreId);
   var Presentation: TPlatformPresentation;
-  if not TryPlatformPresentation(Info.Id, Presentation) then Exit;
-  SettingsPlatforms.Add(PageClass.Create(Info));
+  if not TryPlatformPresentation(Info.Id, Presentation) then
+    Exit;
+  var Page := PageClass.Create(Info);
+  Page.HelpText := HelpText;
+  SettingsPlatforms.Add(Page);
   AppliedIds := AppliedIds + [Info.Id];
 end;
 
-procedure QueueRegistration(const Selector: string; ByProfile: Boolean; PageClass: TSettingsPlatformClass);
+procedure QueueRegistration(const Selector: string; ByProfile: Boolean; PageClass: TSettingsPlatformClass; const HelpText: string);
 begin
   var Registration := TSettingsRegistration.Create;
   try
     Registration.Selector := Selector;
     Registration.ByProfile := ByProfile;
     Registration.PageClass := PageClass;
-    for var Info in TPlatformRegistry.All do Registration.Apply(Info);
+    Registration.HelpText := HelpText;
+    for var Info in TPlatformRegistry.All do
+      Registration.Apply(Info);
     Registrations.Add(Registration);
   except
     Registration.Free;
@@ -68,29 +77,31 @@ begin
   end;
 end;
 
-procedure RegisterSettingsPlatform(const Id: string; PageClass: TSettingsPlatformClass);
+procedure RegisterSettingsPlatform(const Id: string; PageClass: TSettingsPlatformClass; const HelpText: string);
 begin
   if (Id = '') or (PageClass = nil) then
     raise EArgumentException.Create('Settings page class and platform ID are required: ' + Id);
-  QueueRegistration(Id, False, PageClass);
+  QueueRegistration(Id, False, PageClass, HelpText);
 end;
 
-procedure RegisterSettingsProfile(const Profile: string; PageClass: TSettingsPlatformClass);
+procedure RegisterSettingsProfile(const Profile: string; PageClass: TSettingsPlatformClass; const HelpText: string);
 begin
   if (Profile = '') or (PageClass = nil) then
     raise EArgumentException.Create('Settings profile and page class are required');
-  QueueRegistration(Profile, True, PageClass);
+  QueueRegistration(Profile, True, PageClass, HelpText);
 end;
 
 procedure PlatformRegistered(const Info: TPlatformInfo);
 begin
-  for var Registration in Registrations do Registration.Apply(Info);
+  for var Registration in Registrations do
+    Registration.Apply(Info);
 end;
 
 procedure PresentationRegistered(const Id: string);
 begin
   var Info: TPlatformInfo;
-  if TPlatformRegistry.Find(Id, Info) then PlatformRegistered(Info);
+  if TPlatformRegistry.Find(Id, Info) then
+    PlatformRegistered(Info);
 end;
 
 initialization
@@ -106,3 +117,4 @@ finalization
   SettingsPlatforms.Free;
 
 end.
+

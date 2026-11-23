@@ -3,7 +3,7 @@
 interface
 
 uses
-  System.Classes, RetroTune.ReferenceForm;
+  RetroTune.Formats, Audio.Types, System.Classes, RetroTune.ReferenceForm;
 
 type
   TTuneFormatsForm = class(TTuneReferenceForm)
@@ -14,12 +14,12 @@ type
 implementation
 
 uses
-  System.SysUtils, FMX.Types, RetroTune.Decoder;
+  System.SysUtils, FMX.Types, Audio.Decoder;
 
 constructor TTuneFormatsForm.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
-  var Formats := TTuneDecoders.SupportedFormats;
+  var Formats := RetroTuneDecoders.SupportedFormats;
   SetHeading(Translate('Supported formats'),
     Format(Translate('%d extensions · Playback format reference'), [Length(Formats)]));
   FScroll.BeginUpdate;

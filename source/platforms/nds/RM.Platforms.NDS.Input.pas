@@ -14,35 +14,32 @@ type
 implementation
 
 uses
-  System.SysUtils, Core.Emulation, FMX.Platform, FMX.Types, FMX.Forms;
+  System.SysUtils, System.Types, Core.Emulation;
 
 class procedure TNDSInputHandler.PointerButton(const Context: TInputRuntimeContext; X, Y: Single; Pressed: Boolean);
 var
   Pointer: IEmulationPointerInput;
   Mouse: IEmulationMouseInput;
 begin
-  if Supports(Context.State.Session.Emulation, IEmulationPointerInput, Pointer) then
+  if Supports(Context.Host.Core, IEmulationPointerInput, Pointer) then
   begin
-    var PX, PY: Integer;
-    var Valid := TryGetImagePixel(Context.View.ImageCanvas, X, Y, PX, PY);
-    Pointer.SetPointer(PX, PY, Valid);
+    var Pixel: TPoint;
+    var Valid := Context.Host.Video.TryLocalToFrame(PointF(X, Y), Pixel);
+    Pointer.SetPointer(Pixel.X, Pixel.Y, Valid);
   end;
-  if Supports(Context.State.Session.Emulation, IEmulationMouseInput, Mouse) then
+  if Supports(Context.Host.Core, IEmulationMouseInput, Mouse) then
     Mouse.SendMouseDelta(0, 0, Ord(Pressed));
 end;
 
 class procedure TNDSInputHandler.PollInput(const Context: TInputRuntimeContext);
 var
   Pointer: IEmulationPointerInput;
-  Mouse: IFMXMouseService;
 begin
-  if Supports(Context.State.Session.Emulation, IEmulationPointerInput, Pointer) and
-    TPlatformServices.Current.SupportsPlatformService(IFMXMouseService, Mouse) then
+  if Supports(Context.Host.Core, IEmulationPointerInput, Pointer) then
   begin
-    var Point := Context.View.ImageCanvas.AbsoluteToLocal(Context.View.ScreenToClient(Mouse.GetMousePos));
-    var PX, PY: Integer;
-    var Valid := TryGetImagePixel(Context.View.ImageCanvas, Point.X, Point.Y, PX, PY);
-    Pointer.SetPointer(PX, PY, Valid);
+    var Pixel: TPoint;
+    var Valid := Context.Host.Video.TryPointerToFrame(Pixel);
+    Pointer.SetPointer(Pixel.X, Pixel.Y, Valid);
   end;
 end;
 

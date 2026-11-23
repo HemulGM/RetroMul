@@ -174,6 +174,14 @@ const
   GERunAhead = 2000;
   // CPU cycles of the driver's interrupt handler.
   GEISRCycles = 500;
+  // sceGeListEnQueue starts the GE 8 us into the call and returns 13 us
+  // later (probe ge_enqueue). A finish that comes meanwhile is handled in it
+  // (unless interrupts are off), which then returns 11 us after the finish,
+  // the handler's cycles included: a list of a few hundred commands is done
+  // by the time it returns. Besides the call's own cost.
+  GEEnqueueStartNs = 6700;
+  GEEnqueueRestNs = 12300;
+  GEEnqueueFinishNs = 8500;
 
 constructor TPSPGE.Create(System: TPSPSystem);
 begin
@@ -949,8 +957,30 @@ begin
     L.State := glsQueued;
     FQueue.Add(Slot);
     if (FHWList < 0) and (ActiveHead = Slot) then
-      StartOnHW(Slot);
+    begin
+      FKernel.Spend(GEEnqueueStartNs);
+      var CallEnd := Now + GEEnqueueRestNs;
+      // Its interrupt is not taken as one: the call handles a finish itself.
+      var Saved := FContext;
+      FContext := gcEvent;
+      try
+        StartOnHW(Slot);
+        RunHW(CallEnd);
+      finally
+        FContext := Saved;
+      end;
+      if (FHWList = Slot) and FHWHalted and (FHWInt <> gikNone) and not FHWIntQueued and (FHWIntAt <= CallEnd) and
+        FSystem.CPU.InterruptsEnabled and not FKernel.InInterrupt then
+      begin
+        if FHWIntAt + GEEnqueueFinishNs > CallEnd then
+          CallEnd := FHWIntAt + GEEnqueueFinishNs;
+        Interrupt;
+      end;
+      FKernel.Spend(CallEnd - Now);
+      Exit;
+    end;
   end;
+  FKernel.Spend(GEEnqueueStartNs + GEEnqueueRestNs);
 end;
 
 procedure TPSPGE.hListEnQueue;

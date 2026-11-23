@@ -6,7 +6,7 @@ uses
   System.SysUtils, A2600.Console;
 
 type
-  // RetroTune's sample-pull adapter over the same hardware used by RetroMul.
+  // Sample-pull adapter over the shared Atari 2600 hardware.
   TAtari2600Audio = class
   private
     FConsole: TA2600Console;

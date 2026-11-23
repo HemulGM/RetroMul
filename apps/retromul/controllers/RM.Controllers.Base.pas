@@ -3,25 +3,30 @@
 interface
 
 uses
-  RM.Main.View, RM.Main.State;
+  RM.Main, RM.Main.State, RM.Platform.Host;
 
 type
   TMainController = class
   protected
     // Non-owning references; the form outlives its controllers.
-    FView: TMainView;
+    FView: TFormMain;
     FState: TMainState;
+    FPlatformHost: IPlatformHost;
   public
-    constructor Create(AView: TMainView);
+    constructor Create(AView: TFormMain);
   end;
 
 implementation
 
-constructor TMainController.Create(AView: TMainView);
+uses
+  RM.Platform.Host.RetroMul;
+
+constructor TMainController.Create(AView: TFormMain);
 begin
   inherited Create;
   FView := AView;
   FState := AView.State;
+  FPlatformHost := CreateRetroMulPlatformHost(AView);
 end;
 
 end.

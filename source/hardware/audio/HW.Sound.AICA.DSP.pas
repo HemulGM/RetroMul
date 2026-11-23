@@ -45,22 +45,29 @@ type
 
 implementation
 
-uses
-  System.Math;
-
+// Arithmetic shift right (rounds toward minus infinity). Without branches:
+// the signs of DSP values do not follow a pattern a predictor could learn.
 function Sar(Value: Int64; Count: Integer): Integer; inline;
 begin
-  if Value >= 0 then
-    Result := Value shr Count
-  else
-    Result := -((-Value + (Int64(1) shl Count) - 1) shr Count);
+  var Sign := -(Value shr 63);
+  Result := ((Value xor Sign) shr Count) xor Sign;
 end;
 
+// The low Bits (up to 31) bits of Value, sign-extended.
 function SignedBits(Value: Int64; Bits: Integer): Integer; inline;
 begin
-  Result := Value and ((Int64(1) shl Bits) - 1);
-  if Result and (1 shl (Bits - 1)) <> 0 then
-    Dec(Result, 1 shl Bits);
+  var Sign := 1 shl (Bits - 1);
+  Result := ((Integer(Value) and (Sign * 2 - 1)) xor Sign) - Sign;
+end;
+
+// Value saturated to 24 bits.
+function Saturate24(Value: Integer): Integer; inline;
+begin
+  Result := Value;
+  if Result > $7FFFFF then
+    Result := $7FFFFF
+  else if Result < -$800000 then
+    Result := -$800000;
 end;
 
 function Pack(Value: Integer): Word;
@@ -276,11 +283,11 @@ begin
     var Shifted := 0;
     case Shift of
       0:
-        Shifted := EnsureRange(Acc, -$800000, $7FFFFF);
+        Shifted := Saturate24(Acc);
       1:
-        Shifted := EnsureRange(Int64(Acc) * 2, -$800000, $7FFFFF);
+        Shifted := Saturate24(Acc * 2);
       2:
-        Shifted := SignedBits(Int64(Acc) * 2, 24);
+        Shifted := SignedBits(Acc * 2, 24);
       3:
         Shifted := SignedBits(Acc, 24);
     end;

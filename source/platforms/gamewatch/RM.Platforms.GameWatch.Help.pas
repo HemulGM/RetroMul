@@ -14,12 +14,16 @@ type
 implementation
 
 uses
-  RM.LibraryView;
+  FMX.Types, Core.Platforms;
 
 class function TGWControlsHelp.Info(const Context: TControlsHelpContext): TControlsHelpInfo;
 begin
   Result := inherited Info(Context);
-  Result.ControllerTitle := LibrarySystemName(Context.SystemId);
+  var Info: TPlatformInfo;
+  if TPlatformRegistry.Find(Context.SystemId, Info) then
+    Result.ControllerTitle := Translate(Info.ShortName)
+  else
+    Result.ControllerTitle := Context.SystemId;
   Result.AssignmentColumns := 1;
   Result.AssignmentRowHeight := 32;
   Result.AssignmentCaptionWidth := 112;

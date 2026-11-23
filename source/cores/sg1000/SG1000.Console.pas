@@ -892,8 +892,5 @@ begin
   end;
 end;
 
-initialization
-  HW.Z80.ConstantInitialise;
-
 end.
 

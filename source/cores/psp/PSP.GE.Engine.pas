@@ -146,6 +146,12 @@ type
     FGeomPort: array[0..7] of Cardinal;
     FGeomBones: array[0..95] of Cardinal;
     FGeomCached: Boolean;
+    // The projection times view and world (rows of x, y, z, w) as the vertex
+    // unit forms it for positions (probe ge_xyround), when FGeom.Combined;
+    // made again when FGeomClipValid is False.
+    FGeomClip: array[0..3, 0..3] of Double;
+    FGeomClipSmall: Boolean;
+    FGeomClipValid: Boolean;
     // What BuildRaster built FRaster from (the 79 registers of GERasterRuns,
     // the VRAM layout), while FRaster is as it built it.
     FRasterKey: array[0..81] of Cardinal;
@@ -155,24 +161,28 @@ type
     FTexCache: TGETexCache;
     FTexEpoch: Cardinal;
     // Threads that decode and transform the vertices of large primitives
-    // (TGEVertexPool, Windows x64; nil elsewhere, on few cores or with
+    // (TGEVertexPool on 64-bit hosts; nil on few cores or with
     // PSP_GE_VERTEX_THREADS=0), the vertices' indices and the results.
     FVertexPool: TObject;
     FParIndex: TArray<Integer>;
     FParOut: TArray<TGEAsmVertex>;
+    FVertexFormatKey: Cardinal;
+    FVertexFormatValid: Boolean;
     procedure PrepareLight;
     procedure PrepareGeometry;
+    procedure PrepareClip;
     procedure PrepareBones(Count: Integer);
     procedure SetupVertexFormat(VType: Cardinal);
     procedure DecodeVertex(Addr, VType: Cardinal; out V: TGEInVertex);
     procedure DecodeVertexWith(Addr, VType: Cardinal; out V: TGEInVertex; var LastU, LastV: Single; var LastN: TGEVec3);
     function TransformInParallel(Count: Integer; VType: Cardinal): Boolean;
-{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFDEF CPU64BITS}
     procedure TransformRange(VType: Cardinal; First, Last: Integer; LastU, LastV: Single; const LastN: TGEVec3);
 {$ENDIF}
     function ReadVertex(Index: Integer; VType: Cardinal; out V: TGEInVertex): Boolean;
     procedure Skin(const V: TGEInVertex; VType: Cardinal; var P, N: TGEVec3);
-    procedure Light(const V: TGEInVertex; const WP, WN: TGEVec3; var R, G, B, A, SR, SG, SB: Integer);
+    // MP: the model position (after skinning), WP: the world position.
+    procedure Light(const V: TGEInVertex; const MP, WP, WN: TGEVec3; var R, G, B, A, SR, SG, SB: Integer);
     function LightVector(L: Integer; const WP: TGEVec3): TGEVec3;
     procedure TexGen(const V: TGEInVertex; const P, N, WP, WN: TGEVec3; out S, T, Q: Single);
     procedure ClipPosition(const P: TGEVec3; out CX, CY, CZ, CW: Double; out VP: TGEVec3);
@@ -184,6 +194,7 @@ type
     procedure BuildRaster;
     procedure RasterChanged; inline;
     function ScissoredArea(X1, Y1, X2, Y2: Integer): Int64;
+    function FillCost(Pixels: Int64): Int64;
     procedure EmitTriangle(const A, B, C: TGEVertex; Odd: Boolean);
     procedure ClipTriangle(const A, B, C: TGEAsmVertex; Odd: Boolean);
     procedure ClipLine(const A, B: TGEAsmVertex);
@@ -233,7 +244,7 @@ implementation
 uses
   HW.HostFPU;
 
-{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFDEF CPU64BITS}
 type
   // Workers that decode and transform ranges of a primitive's vertices
   // (TPSPGEEngine.TransformRange) while the GE's thread does its own share.
@@ -251,6 +262,8 @@ type
     FLastU, FLastV: Single;
     FLastN: TGEVec3;
     FMXCSR: Cardinal;
+    FRound: TRoundingMode;
+    FMask: TArithmeticExceptionMask;
     FFailed: Boolean;
     procedure Work;
     procedure Share;
@@ -264,6 +277,15 @@ type
 const
   // Vertices a worker takes at a time.
   VertexChunk = 32;
+
+procedure VertexYield; inline;
+begin
+{$IFDEF MSWINDOWS}
+  YieldProcessor;
+{$ELSE}
+  TThread.Yield;
+{$ENDIF}
+end;
 
 constructor TGEVertexPool.Create(Threads: Integer);
 begin
@@ -318,7 +340,7 @@ begin
       // A while spinning (jobs come in bursts), then asleep until the next.
       Inc(Idle);
       if Idle < 4000 then
-        YieldProcessor
+        VertexYield
       else
       begin
         FWake.WaitFor(2);
@@ -331,6 +353,8 @@ begin
     AtomicIncrement(FActive);
     if AtomicCmpExchange(FGen, 0, 0) = G then
     begin
+      SetExceptionMask(FMask);
+      SetRoundMode(FRound);
       WriteHostMXCSR(FMXCSR);
       Share;
     end;
@@ -342,7 +366,7 @@ function TGEVertexPool.Run(Engine: TPSPGEEngine; VType: Cardinal; Count: Integer
 begin
   AtomicIncrement(FGen);
   while AtomicCmpExchange(FActive, 0, 0) <> 0 do
-    YieldProcessor;
+    VertexYield;
   FEngine := Engine;
   FVType := VType;
   FCount := Count;
@@ -351,13 +375,15 @@ begin
   FLastN := LastN;
   // The workers compute in this thread's floating-point modes.
   FMXCSR := ReadHostMXCSR;
+  FRound := GetRoundMode;
+  FMask := GetExceptionMask;
   FFailed := False;
   FNext := 0;
   AtomicIncrement(FGen);
   FWake.SetEvent;
   Share;
   while AtomicCmpExchange(FActive, 0, 0) <> 0 do
-    YieldProcessor;
+    VertexYield;
   FWake.ResetEvent;
   Result := not FFailed;
 end;
@@ -378,7 +404,7 @@ begin
       end;
   end;
   FWorkers := TGEWorkers.Create(FMemory);
-{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFDEF CPU64BITS}
   // Up to three workers, leaving the emulation, its sound and the front end
   // their cores.
   var Threads := Min(TThread.ProcessorCount - 3, 3);
@@ -419,7 +445,9 @@ end;
 
 procedure TPSPGEEngine.Restored;
 begin
+  FVertexFormatValid := False;
   FGeomValid := False;
+  FGeomClipValid := False;
   FGeomCached := False;
   FLightValid := False;
   FLightRegsValid := False;
@@ -434,10 +462,12 @@ end;
 
 procedure TPSPGEEngine.Reset;
 begin
+  FVertexFormatValid := False;
   Regs := Default(TPSPGERegs);
   for var I := 0 to 255 do
     Regs.Cmd[I] := Cardinal(I) shl 24;
   FGeomValid := False;
+  FGeomClipValid := False;
   FLightValid := False;
   FLightRegsValid := False;
   FRasterKeyValid := False;
@@ -579,6 +609,10 @@ const
 
 procedure TPSPGEEngine.SetupVertexFormat(VType: Cardinal);
 begin
+  if FVertexFormatValid and (FVertexFormatKey = VType) then
+    Exit;
+  FVertexFormatKey := VType;
+  FVertexFormatValid := True;
   var Tc := VType and 3;
   var Col := (VType shr 2) and 7;
   var Nrm := (VType shr 5) and 3;
@@ -1409,6 +1443,47 @@ begin
   Result := T24(TruncPow2(T0.V, L.Q) + TruncPow2(T1.V, L.Q) + TruncPow2(T2.V, L.Q) + TruncPow2(T3.V, L.Q));
 end;
 
+// The vector from a vertex to a positional light (L the light's coordinate,
+// Row the world matrix's row, X, Y, Z the model position) as the vertex unit
+// forms it, a row of its own (recorded on a PSP-E1000, probe ge_wpos2: every
+// one of 2,176 rows of distances to the last bit, where the world position
+// less the light left 21-37%): the translation less the light coordinate (both
+// cut toward zero at the larger's 16th bit, the difference to a 24-bit float)
+// is the row's term; the products (Product24) and it are cut at the largest
+// quantum among them (not the largest value's), summed and cut to a 24-bit
+// float; the vector is its negation.
+function LightRow24(const Row: TGERow24; X, Y, Z, L: Double): Double;
+var
+  T: array[0..3] of TGETerm24;
+begin
+  var D: Double;
+  if Row[3] = 0 then
+    D := T24(-L)
+  else if L = 0 then
+    D := T24(Row[3])
+  else
+  begin
+    var QL := Max(Exponent(Row[3]), Exponent(L)) - 15;
+    D := T24(TruncPow2(Row[3], QL) - TruncPow2(L, QL));
+  end;
+  T[0] := Product24(Row[0], X);
+  T[1] := Product24(Row[1], Y);
+  T[2] := Product24(Row[2], Z);
+  T[3] := Term24(D);
+  var Any := False;
+  var Q := 0;
+  for var I := 0 to 3 do
+    if T[I].V <> 0 then
+    begin
+      if not Any or (T[I].Q > Q) then
+        Q := T[I].Q;
+      Any := True;
+    end;
+  if not Any then
+    Exit(0);
+  Result := -T24(TruncPow2(T[0].V, Q) + TruncPow2(T[1].V, Q) + TruncPow2(T[2].V, Q) + TruncPow2(T[3].V, Q));
+end;
+
 function Row24(const Row: TGERow24; X, Y, Z: Double): Double; inline;
 begin
   Result := Sum24(Product24(Row[0], X), Product24(Row[1], Y), Product24(Row[2], Z), Term24(Row[3]));
@@ -1514,245 +1589,8 @@ asm
   // RCX Row (kept in RSI), XMM1..XMM3 X, Y, Z. Terms in R8..R11, quanta in
   // EBX, EDI, R12D, R13D.
         MOV     RSI, RCX
-  // Product 0: the row's factor times X; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 0]
-        MOVQ    RDX, XMM1
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero0
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero0
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     EBX, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 0]
-        MULSD   XMM0, XMM1
-        MOVQ    R8, XMM0
-        MOV     RAX, R8
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R8, CL
-        SHL     R8, CL
-        JMP     @@Done0
-
-@@Zero0:
-        XOR     R8, R8
-        XOR     EBX, EBX
-
-@@Done0:
-  // Product 1: the row's factor times Y; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 8]
-        MOVQ    RDX, XMM2
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero1
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero1
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     EDI, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 8]
-        MULSD   XMM0, XMM2
-        MOVQ    R9, XMM0
-        MOV     RAX, R9
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R9, CL
-        SHL     R9, CL
-        JMP     @@Done1
-
-@@Zero1:
-        XOR     R9, R9
-        XOR     EDI, EDI
-
-@@Done1:
-  // Product 2: the row's factor times Z; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 16]
-        MOVQ    RDX, XMM3
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero2
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero2
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     R12D, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 16]
-        MULSD   XMM0, XMM3
-        MOVQ    R10, XMM0
-        MOV     RAX, R10
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R10, CL
-        SHL     R10, CL
-        JMP     @@Done2
-
-@@Zero2:
-        XOR     R10, R10
-        XOR     R12D, R12D
-
-@@Done2:
-  // The term added, its quantum 16 bits below its leading one (zero: 0).
-        MOV     R11, [RSI + 24]
-        XOR     R13D, R13D
-        MOV     RAX, R11
-        ADD     RAX, RAX
-        JZ      @@TermZero
-        MOV     RAX, R11
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        LEA     R13D, [RAX - 1038]
-
-@@TermZero:
-  // The largest magnitude, the first of equal ones, gives the quantum (R14D).
-        MOV     RDX, $7FFFFFFFFFFFFFFF
-        MOV     RAX, R8
-        AND     RAX, RDX
-        MOV     R14D, EBX
-        MOV     RCX, R9
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, EDI
-        MOV     RCX, R10
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, R12D
-        MOV     RCX, R11
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, R13D
-        TEST    RAX, RAX
-        JZ      @@ZeroSum
-  // Term 0 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R8
-        ADD     RAX, RAX
-        JZ      @@Cut0
-        MOV     RAX, R8
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign0
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R8, CL
-        SHL     R8, CL
-        JMP     @@Cut0
-
-@@Sign0:
-        MOV     RAX, $8000000000000000
-        AND     R8, RAX
-
-@@Cut0:
-  // Term 1 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R9
-        ADD     RAX, RAX
-        JZ      @@Cut1
-        MOV     RAX, R9
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign1
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R9, CL
-        SHL     R9, CL
-        JMP     @@Cut1
-
-@@Sign1:
-        MOV     RAX, $8000000000000000
-        AND     R9, RAX
-
-@@Cut1:
-  // Term 2 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R10
-        ADD     RAX, RAX
-        JZ      @@Cut2
-        MOV     RAX, R10
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign2
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R10, CL
-        SHL     R10, CL
-        JMP     @@Cut2
-
-@@Sign2:
-        MOV     RAX, $8000000000000000
-        AND     R10, RAX
-
-@@Cut2:
-  // Term 3 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R11
-        ADD     RAX, RAX
-        JZ      @@Cut3
-        MOV     RAX, R11
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign3
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R11, CL
-        SHL     R11, CL
-        JMP     @@Cut3
-
-@@Sign3:
-        MOV     RAX, $8000000000000000
-        AND     R11, RAX
-
-@@Cut3:
-        MOVQ    XMM0, R8
-        MOVQ    XMM4, R9
-        ADDSD   XMM0, XMM4
-        MOVQ    XMM4, R10
-        ADDSD   XMM0, XMM4
-        MOVQ    XMM4, R11
-        ADDSD   XMM0, XMM4
-  // T24 of the sum: a zero kept, a normal one cut to 16 bits.
-        MOVQ    RAX, XMM0
-        MOV     RCX, RAX
-        SHR     RCX, 52
-        AND     ECX, $7FF
-        JZ      @@Exit
-        MOV     RCX, $FFFFFFE000000000
-        AND     RAX, RCX
-        MOVQ    XMM0, RAX
-        JMP     @@Exit
-
-@@ZeroSum:
-        XORPD   XMM0, XMM0
-
-@@Exit:
+{$I PSP.GE.Row24.inc}
+@@RowResult:
 end;
 
 // Rows24's fast path for Count rows, X, Y and Z at XYZ: Row24Asm's steps,
@@ -1778,245 +1616,8 @@ asm
         MOVSD   XMM3, [R9 + 16]
 
 @@Row:
-  // Product 0: the row's factor times X; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 0]
-        MOVQ    RDX, XMM1
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero0
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero0
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     EBX, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 0]
-        MULSD   XMM0, XMM1
-        MOVQ    R8, XMM0
-        MOV     RAX, R8
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R8, CL
-        SHL     R8, CL
-        JMP     @@Done0
-
-@@Zero0:
-        XOR     R8, R8
-        XOR     EBX, EBX
-
-@@Done0:
-  // Product 1: the row's factor times Y; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 8]
-        MOVQ    RDX, XMM2
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero1
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero1
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     EDI, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 8]
-        MULSD   XMM0, XMM2
-        MOVQ    R9, XMM0
-        MOV     RAX, R9
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R9, CL
-        SHL     R9, CL
-        JMP     @@Done1
-
-@@Zero1:
-        XOR     R9, R9
-        XOR     EDI, EDI
-
-@@Done1:
-  // Product 2: the row's factor times Z; a zero factor gives +0 and quantum 0.
-        MOV     RAX, [RSI + 16]
-        MOVQ    RDX, XMM3
-        MOV     RCX, RAX
-        ADD     RCX, RCX
-        JZ      @@Zero2
-        MOV     RCX, RDX
-        ADD     RCX, RCX
-        JZ      @@Zero2
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SHR     RDX, 52
-        AND     EDX, $7FF
-  // Q := XA + XB - 2061; the product cut below 2^Q: 52 - Keep = XA + XB - XP - 986 bits.
-        LEA     R12D, [RAX + RDX - 2061]
-        LEA     EDX, [RAX + RDX - 986]
-        MOVSD   XMM0, [RSI + 16]
-        MULSD   XMM0, XMM3
-        MOVQ    R10, XMM0
-        MOV     RAX, R10
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EDX, EAX
-        MOV     ECX, EDX
-        SHR     R10, CL
-        SHL     R10, CL
-        JMP     @@Done2
-
-@@Zero2:
-        XOR     R10, R10
-        XOR     R12D, R12D
-
-@@Done2:
-  // The term added, its quantum 16 bits below its leading one (zero: 0).
-        MOV     R11, [RSI + 24]
-        XOR     R13D, R13D
-        MOV     RAX, R11
-        ADD     RAX, RAX
-        JZ      @@TermZero
-        MOV     RAX, R11
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        LEA     R13D, [RAX - 1038]
-
-@@TermZero:
-  // The largest magnitude, the first of equal ones, gives the quantum (R14D).
-        MOV     RDX, $7FFFFFFFFFFFFFFF
-        MOV     RAX, R8
-        AND     RAX, RDX
-        MOV     R14D, EBX
-        MOV     RCX, R9
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, EDI
-        MOV     RCX, R10
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, R12D
-        MOV     RCX, R11
-        AND     RCX, RDX
-        CMP     RCX, RAX
-        CMOVA   RAX, RCX
-        CMOVA   R14D, R13D
-        TEST    RAX, RAX
-        JZ      @@ZeroSum
-  // Term 0 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R8
-        ADD     RAX, RAX
-        JZ      @@Cut0
-        MOV     RAX, R8
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign0
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R8, CL
-        SHL     R8, CL
-        JMP     @@Cut0
-
-@@Sign0:
-        MOV     RAX, $8000000000000000
-        AND     R8, RAX
-
-@@Cut0:
-  // Term 1 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R9
-        ADD     RAX, RAX
-        JZ      @@Cut1
-        MOV     RAX, R9
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign1
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R9, CL
-        SHL     R9, CL
-        JMP     @@Cut1
-
-@@Sign1:
-        MOV     RAX, $8000000000000000
-        AND     R9, RAX
-
-@@Cut1:
-  // Term 2 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R10
-        ADD     RAX, RAX
-        JZ      @@Cut2
-        MOV     RAX, R10
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign2
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R10, CL
-        SHL     R10, CL
-        JMP     @@Cut2
-
-@@Sign2:
-        MOV     RAX, $8000000000000000
-        AND     R10, RAX
-
-@@Cut2:
-  // Term 3 cut at 2^Q (R14D): a zero kept, below 2^Q its sign alone.
-        MOV     RAX, R11
-        ADD     RAX, RAX
-        JZ      @@Cut3
-        MOV     RAX, R11
-        SHR     RAX, 52
-        AND     EAX, $7FF
-        SUB     EAX, 1023
-        SUB     EAX, R14D
-        JS      @@Sign3
-        MOV     ECX, 52
-        SUB     ECX, EAX
-        SHR     R11, CL
-        SHL     R11, CL
-        JMP     @@Cut3
-
-@@Sign3:
-        MOV     RAX, $8000000000000000
-        AND     R11, RAX
-
-@@Cut3:
-        MOVQ    XMM0, R8
-        MOVQ    XMM4, R9
-        ADDSD   XMM0, XMM4
-        MOVQ    XMM4, R10
-        ADDSD   XMM0, XMM4
-        MOVQ    XMM4, R11
-        ADDSD   XMM0, XMM4
-  // T24 of the sum: a zero kept, a normal one cut to 16 bits.
-        MOVQ    RAX, XMM0
-        MOV     RCX, RAX
-        SHR     RCX, 52
-        AND     ECX, $7FF
-        JZ      @@Store
-        MOV     RCX, $FFFFFFE000000000
-        AND     RAX, RCX
-        MOVQ    XMM0, RAX
-        JMP     @@Store
-
-@@ZeroSum:
-        XORPD   XMM0, XMM0
-
-@@Store:
+{$I PSP.GE.Row24.inc}
+@@RowResult:
         MOVSD   [R15], XMM0
         ADD     R15, 8
         ADD     RSI, 32
@@ -2287,34 +1888,36 @@ const
   // from where linear attenuation steps along a sweep of KB): for
   // V = (1 + G / 2^15) 2^E, segment (E and 1) * 128 + G shr 8 starts at
   // GERSqrtNode (in 2^-23) and falls by GERSqrtSlope (in 2^-23) a step of G;
-  // the result keeps 16 bits, truncated (RSqrt24).
+  // the result keeps 16 bits, truncated (RSqrt24). Each node within the
+  // range the sweep allows, where ge_wpos's spot factors and ge_dist's random
+  // offsets put it (56 above the range's foot).
   GERSqrtNode: array[0..255] of Integer = (
-    8388670, 8356031, 8323836, 8292030, 8260543, 8229432, 8198654, 8168254, 8138172, 8108412,
-    8078974, 8049844, 8021054, 7992574, 7964412, 7936511, 7908862, 7881599, 7854520, 7827775,
-    7801278, 7775039, 7749116, 7723391, 7697918, 7672766, 7647776, 7623103, 7598584, 7574391,
-    7550396, 7526588, 7503037, 7479676, 7456575, 7433656, 7410943, 7388479, 7366204, 7344127,
-    7322236, 7300537, 7279037, 7257663, 7236538, 7215615, 7194864, 7174269, 7153840, 7133630,
+    8388671, 8356031, 8323836, 8292030, 8260543, 8229432, 8198654, 8168255, 8138172, 8108414,
+    8078975, 8049844, 8021055, 7992574, 7964412, 7936511, 7908862, 7881599, 7854520, 7827775,
+    7801278, 7775039, 7749116, 7723391, 7697918, 7672767, 7647776, 7623103, 7598588, 7574399,
+    7550396, 7526588, 7503039, 7479678, 7456575, 7433656, 7410943, 7388479, 7366206, 7344127,
+    7322236, 7300543, 7279039, 7257663, 7236543, 7215615, 7194864, 7174270, 7153854, 7133630,
     7113535, 7093631, 7073916, 7054335, 7034943, 7015678, 6996607, 6977663, 6958904, 6940280,
-    6921789, 6903416, 6885246, 6867199, 6849277, 6831544, 6813880, 6796414, 6779071, 6761791,
-    6744702, 6727741, 6710908, 6694172, 6677582, 6661119, 6644799, 6628542, 6612478, 6596478,
-    6580606, 6564861, 6549180, 6533628, 6518207, 6502911, 6487679, 6472574, 6457598, 6442686,
-    6427902, 6413176, 6398584, 6384120, 6369727, 6355455, 6341247, 6327102, 6313084, 6299194,
-    6285373, 6271615, 6257980, 6244412, 6230908, 6217535, 6204223, 6191038, 6177916, 6164858,
-    6151870, 6139004, 6126206, 6113471, 6100862, 6088240, 6075760, 6063344, 6051007, 6038783,
-    6026559, 6014462, 6002402, 5990462, 5978558, 5966719, 5955006, 5943295, 5931647, 5908606,
-    5885887, 5863358, 5841084, 5819132, 5797372, 5775871, 5754558, 5733503, 5712688, 5692159,
-    5671742, 5651646, 5631679, 5611964, 5592447, 5573118, 5553983, 5535103, 5516344, 5497791,
-    5479422, 5461246, 5443263, 5425468, 5407804, 5390334, 5373054, 5355902, 5338943, 5322111,
-    5305422, 5288959, 5272575, 5256382, 5240382, 5224447, 5208703, 5193084, 5177591, 5162239,
+    6921791, 6903423, 6885246, 6867199, 6849279, 6831548, 6813884, 6796415, 6779071, 6761791,
+    6744702, 6727743, 6710911, 6694172, 6677582, 6661119, 6644799, 6628542, 6612478, 6596478,
+    6580607, 6564863, 6549180, 6533628, 6518207, 6502911, 6487679, 6472574, 6457598, 6442687,
+    6427903, 6413176, 6398584, 6384120, 6369727, 6355455, 6341247, 6327102, 6313086, 6299198,
+    6285375, 6271615, 6257980, 6244412, 6230908, 6217535, 6204223, 6191039, 6177918, 6164862,
+    6151870, 6139006, 6126207, 6113471, 6100862, 6088240, 6075760, 6063344, 6051007, 6038783,
+    6026559, 6014462, 6002428, 5990462, 5978558, 5966719, 5955007, 5943295, 5931647, 5908606,
+    5885887, 5863358, 5841087, 5819132, 5797372, 5775871, 5754558, 5733503, 5712688, 5692159,
+    5671742, 5651647, 5631679, 5611964, 5592447, 5573118, 5553983, 5535103, 5516344, 5497791,
+    5479422, 5461246, 5443263, 5425468, 5407804, 5390335, 5373054, 5355902, 5338943, 5322111,
+    5305422, 5288959, 5272575, 5256382, 5240382, 5224447, 5208703, 5193084, 5177599, 5162239,
     5147070, 5131966, 5117055, 5102207, 5087544, 5072953, 5058559, 5044223, 5030078, 5015998,
-    5002046, 4988223, 4974463, 4960830, 4947388, 4933947, 4920703, 4907519, 4894462, 4881470,
-    4868607, 4855868, 4843199, 4830640, 4818160, 4805820, 4793535, 4781311, 4769278, 4757246,
-    4745342, 4733502, 4721790, 4710143, 4698620, 4687100, 4675708, 4664447, 4653183, 4642046,
-    4630974, 4619966, 4609086, 4598270, 4587519, 4576830, 4566207, 4555647, 4545208, 4534840,
-    4524479, 4514239, 4504062, 4493951, 4483902, 4473982, 4464060, 4454206, 4444415, 4434687,
-    4425087, 4415487, 4405948, 4396476, 4387068, 4377724, 4368444, 4359231, 4350079, 4340926,
-    4331902, 4322876, 4313982, 4305086, 4296254, 4287486, 4278719, 4270079, 4261438, 4252863,
-    4244351, 4235874, 4227488, 4219104, 4210785, 4202520);
+    5002046, 4988223, 4974463, 4960830, 4947388, 4933951, 4920703, 4907519, 4894462, 4881470,
+    4868607, 4855871, 4843199, 4830640, 4818160, 4805823, 4793535, 4781311, 4769278, 4757246,
+    4745342, 4733503, 4721791, 4710143, 4698620, 4687100, 4675708, 4664447, 4653183, 4642047,
+    4630974, 4619966, 4609086, 4598270, 4587519, 4576831, 4566207, 4555647, 4545208, 4534840,
+    4524479, 4514239, 4504063, 4493951, 4483902, 4473982, 4464062, 4454206, 4444415, 4434687,
+    4425087, 4415487, 4405948, 4396476, 4387068, 4377724, 4368444, 4359231, 4350079, 4340927,
+    4331903, 4322878, 4313982, 4305086, 4296254, 4287486, 4278719, 4270079, 4261439, 4252863,
+    4244351, 4235874, 4227488, 4219104, 4210785, 4202528);
   GERSqrtSlope: array[0..255] of Byte = (
     127, 125, 124, 122, 121, 120, 118, 117, 116, 114, 113, 112, 111, 110, 108, 107,
     106, 105, 104, 103, 102, 101, 100, 99, 98, 97, 96, 95, 94, 93, 92, 92,
@@ -2378,16 +1981,22 @@ begin
   Result := (PCardinal(@V)^ and $7FFFFFFF) > $7F800000;
 end;
 
-// A light's coordinate less the vertex's world one: the light's cut at the
-// larger one's 16th bit (as Add24), the vertex's whole, the difference cut
-// to a 24-bit float.
-function LightSub24(L, P: Double): Double;
+// Lighting's normal unit: cut the components to 24-bit floats, form their
+// squared length as a sum of products and scale them by RSqrt24, cutting
+// again. All 393,216 signed-axis factors of the raw-normal PSP sweep match.
+function NormalF24(const P: TGEVec3): TGEVec3;
 begin
-  if L = 0 then
-    Exit(T24(-P));
-  if P = 0 then
-    Exit(T24(L));
-  Result := T24(TruncPow2(L, Max(Exp24(L), Exp24(P)) - 16) - P);
+  if not (FiniteS(P.X) and FiniteS(P.Y) and FiniteS(P.Z)) then
+    Exit(Normalized(P));
+  var X: Double := T24(P.X);
+  var Y: Double := T24(P.Y);
+  var Z: Double := T24(P.Z);
+  var RS := RSqrt24(Length2F24(X, Y, Z));
+  if RS = 0 then
+    Exit(Normalized(P));
+  Result.X := T24(X * RS);
+  Result.Y := T24(Y * RS);
+  Result.Z := T24(Z * RS);
 end;
 
 function F24(V: Single): Single; inline;
@@ -2424,6 +2033,31 @@ end;
 function Dot(const A, B: TGEVec3): Single; inline;
 begin
   Result := A.X * B.X + A.Y * B.Y + A.Z * B.Z;
+end;
+
+// The spot cosine's dot product: align Product24's terms at the largest
+// quantum, not the largest value's (as LightRow24). Recorded on a PSP-E1000:
+// every factor in ge_wpos and ge_spot; the largest value's left eight
+// ge_wpos factors one step off after the reciprocal-root table was refined.
+function SpotDot24(const A, B: TGEVec3): Double;
+var
+  T: array[0..2] of TGETerm24;
+begin
+  T[0] := Product24(T24(A.X), B.X);
+  T[1] := Product24(T24(A.Y), B.Y);
+  T[2] := Product24(T24(A.Z), B.Z);
+  var Any := False;
+  var Q := 0;
+  for var I := 0 to 2 do
+    if T[I].V <> 0 then
+    begin
+      if not Any or (T[I].Q > Q) then
+        Q := T[I].Q;
+      Any := True;
+    end;
+  if not Any then
+    Exit(0);
+  Result := T24(TruncPow2(T[0].V, Q) + TruncPow2(T[1].V, Q) + TruncPow2(T[2].V, Q));
 end;
 
 function Vec3(X, Y, Z: Single): TGEVec3; inline;
@@ -2497,8 +2131,31 @@ procedure TPSPGEEngine.PrepareLight;
 var
   C: PGECmds;
   Now: TGELightRegs;
+  Mode, Control: Cardinal;
 begin
   C := @Regs.Cmd;
+{$IF Defined(MSWINDOWS) and (Defined(CPUX86) or Defined(CPUX64))}
+  {$WARN SYMBOL_PLATFORM OFF}
+  Mode := GetMXCSR and $FFC0; // sticky exception flags do not affect setup
+  {$WARN SYMBOL_PLATFORM ON}
+{$ELSE}
+  Mode := Ord(GetRoundMode);
+{$ENDIF}
+{$IFDEF CPUX86}
+  Control := Get8087CW;
+{$ELSE}
+  Control := 0;
+{$ENDIF}
+  if FLightRegsValid and
+    CompareMem(@C[GE_LIGHTENABLE0], @FLightRegs[0], 4 * SizeOf(Cardinal)) and
+    CompareMem(@C[GE_MATERIALEMISSIVE], @FLightRegs[4],
+      (GE_LAC0 + 12 - GE_MATERIALEMISSIVE) * SizeOf(Cardinal)) and
+    (FLightRegs[75] = Regs.View[2]) and (FLightRegs[76] = Regs.View[5]) and
+    (FLightRegs[77] = Regs.View[8]) and (FLightRegs[78] = Mode) and (FLightRegs[79] = Control) then
+  begin
+    FLightValid := True;
+    Exit;
+  end;
   // What it reads: LIGHTENABLE0..3, the material and light registers from
   // MATERIALEMISSIVE to the last light's colours, the view's z axis and the
   // floating-point modes its divisions run in. The same ones give the same
@@ -2510,23 +2167,8 @@ begin
   Now[75] := Regs.View[2];
   Now[76] := Regs.View[5];
   Now[77] := Regs.View[8];
-{$IF Defined(MSWINDOWS)}
-  {$WARN SYMBOL_PLATFORM OFF}
-  Now[78] := GetMXCSR;
-  {$WARN SYMBOL_PLATFORM ON}
-{$ELSE}
-  Now[78] := Ord(GetRoundMode);
-{$ENDIF}
-{$IFDEF CPUX86}
-  Now[79] := Get8087CW;
-{$ELSE}
-  Now[79] := 0;
-{$ENDIF}
-  if FLightRegsValid and CompareMem(@Now, @FLightRegs, SizeOf(Now)) then
-  begin
-    FLightValid := True;
-    Exit;
-  end;
+  Now[78] := Mode;
+  Now[79] := Control;
   FLightRegs := Now;
   FLightRegsValid := True;
   for var Ch := 0 to 2 do
@@ -2587,7 +2229,7 @@ begin
   FLightValid := True;
 end;
 
-procedure TPSPGEEngine.Light(const V: TGEInVertex; const WP, WN: TGEVec3; var R, G, B, A, SR, SG, SB: Integer);
+procedure TPSPGEEngine.Light(const V: TGEInVertex; const MP, WP, WN: TGEVec3; var R, G, B, A, SR, SG, SB: Integer);
 var
   Upd: Cardinal;
   MA, MD, MS, Lit, Spec: TGERGB;
@@ -2630,7 +2272,7 @@ begin
     Lit[Ch] := FLight.E[Ch] + Mul8(FLight.AL[Ch], MA[Ch]);
     Spec[Ch] := 0;
   end;
-  N := Normalized(WN);
+  N := NormalF24(WN);
   for var L := 0 to 3 do
   begin
     var U: PGELightUnit := @FLight.Lights[L];
@@ -2644,13 +2286,13 @@ begin
       D := U.Pos;
       if U.PosFinite and FiniteS(WP.X) and FiniteS(WP.Y) and FiniteS(WP.Z) then
       begin
-        // The vector to the light (LightSub24), its squared length as a sum
+        // The vector to the light (LightRow24), its squared length as a sum
         // of products, the length and the unit vector through RSqrt24
         // (ge_dist: every distance of the sweep, 99.3% of random offsets),
         // and KA + KB d + KC d^2 as a sum of products.
-        var DX := LightSub24(D.X, WP.X);
-        var DY := LightSub24(D.Y, WP.Y);
-        var DZ := LightSub24(D.Z, WP.Z);
+        var DX := LightRow24(PGERow24(@FGeom.Rows[0])^, T24(MP.X), T24(MP.Y), T24(MP.Z), D.X);
+        var DY := LightRow24(PGERow24(@FGeom.Rows[1])^, T24(MP.X), T24(MP.Y), T24(MP.Z), D.Y);
+        var DZ := LightRow24(PGERow24(@FGeom.Rows[2])^, T24(MP.X), T24(MP.Y), T24(MP.Z), D.Z);
         var Dist2 := Length2F24(DX, DY, DZ);
         var RS := RSqrt24(Dist2);
         Dist := T24(Dist2 * RS);
@@ -2679,7 +2321,7 @@ begin
       // The dot product with the direction as it was given, a sum of
       // products, times RSqrt24 of the direction's squared length (ge_spot).
       if U.SpotFinite and not (NanS(D.X) or NanS(D.Y) or NanS(D.Z)) then
-        CosA := T24(Dot24(T24(D.X), U.SpotRaw.X, T24(D.Y), U.SpotRaw.Y, T24(D.Z), U.SpotRaw.Z, 0) * U.SpotRS)
+        CosA := T24(SpotDot24(D, U.SpotRaw) * U.SpotRS)
       else
         CosA := Dot(D, U.SpotDir);
       // An infinite direction lights everything or nothing by its sign.
@@ -2810,18 +2452,42 @@ begin
   var A, B: array[0..2] of Double;
   var Q: array[0..3] of Double;
   if G.Combined then
-    Rows24(@G.ViewWorld[0], T24(P.X), T24(P.Y), T24(P.Z), @B[0], 3, G.ViewWorldSmall)
+  begin
+    Rows24(@G.ViewWorld[0], T24(P.X), T24(P.Y), T24(P.Z), @B[0], 3, G.ViewWorldSmall);
+    // The position goes through all three matrices at once.
+    if not FGeomClipValid then
+      PrepareClip;
+    Rows24(@FGeomClip[0], T24(P.X), T24(P.Y), T24(P.Z), @Q[0], 4, FGeomClipSmall);
+  end
   else
   begin
     Rows24(@G.Rows[0], T24(P.X), T24(P.Y), T24(P.Z), @A[0], 3, G.WorldSmall);
     Rows24(@G.Rows[3], A[0], A[1], A[2], @B[0], 3, G.ViewSmall);
+    Rows24(@G.Rows[6], B[0], B[1], B[2], @Q[0], 4, G.ProjSmall);
   end;
-  Rows24(@G.Rows[6], B[0], B[1], B[2], @Q[0], 4, G.ProjSmall);
   CX := Q[0];
   CY := Q[1];
   CZ := Q[2];
   CW := Q[3];
   VP := Vec3(B[0], B[1], B[2]);
+end;
+
+// The projection times view and world: each element a row sum of products cut
+// to 16 bits (probe ge_xyround), the projection's translation the term added.
+procedure TPSPGEEngine.PrepareClip;
+begin
+  var G: ^TGEGeometry := @FGeom;
+  for var R := 0 to 3 do
+    for var J := 0 to 3 do
+    begin
+      var T: Double := 0;
+      if J = 3 then
+        T := G.Rows[6 + R, 3];
+      FGeomClip[R, J] := Sum24(Term24(T24(G.Rows[6 + R, 0] * G.ViewWorld[0, J])), Term24(T24(G.Rows[6 + R, 1] *
+        G.ViewWorld[1, J])), Term24(T24(G.Rows[6 + R, 2] * G.ViewWorld[2, J])), Term24(T));
+    end;
+  FGeomClipSmall := RowsSmall(@FGeomClip[0], 4);
+  FGeomClipValid := True;
 end;
 
 procedure TPSPGEEngine.PrepareGeometry;
@@ -3024,7 +2690,7 @@ begin
   SG := 0;
   SB := 0;
   if (C[GE_LIGHTINGENABLE] and 1) <> 0 then
-    Light(V, WP, WN, R, G, B, A, SR, SG, SB);
+    Light(V, P, WP, WN, R, G, B, A, SR, SG, SB);
   O.V.R := R;
   O.V.G := G;
   O.V.B := B;
@@ -3063,13 +2729,13 @@ begin
   for var R := 0 to High(GERasterRuns) do
   begin
     var P: PCardinal := @C[GERasterRuns[R, 0]];
-    for var I := 0 to GERasterRuns[R, 1] - 1 do
+    var Bytes := GERasterRuns[R, 1] * SizeOf(Cardinal);
+    if not FRasterKeyValid or not CompareMem(P, K, Bytes) then
     begin
-      Diff := Diff or (P^ xor K^);
-      K^ := P^;
-      Inc(P);
-      Inc(K);
+      Diff := 1;
+      Move(P^, K^, Bytes);
     end;
+    Inc(K, GERasterRuns[R, 1]);
   end;
   var Extra: array[0..2] of Cardinal;
   Extra[0] := Cardinal(FMemory.VRAMShift);
@@ -3077,8 +2743,11 @@ begin
   Extra[2] := Cardinal(UInt64(NativeUInt(@FMemory.VRAM[0])) shr 32);
   for var I := 0 to 2 do
   begin
-    Diff := Diff or (Extra[I] xor K^);
-    K^ := Extra[I];
+    if K^ <> Extra[I] then
+    begin
+      Diff := 1;
+      K^ := Extra[I];
+    end;
     Inc(K);
   end;
   var Same := FRasterKeyValid and (Diff = 0);
@@ -3277,6 +2946,22 @@ const
   ParallelVertices = 96;
 
 // Pixels of a 1/16 pixel box inside the scissor, for the drawing cost.
+// ns the GE takes to fill Pixels pixels of the current primitive (probe
+// ge_fill): 4.77 a pixel into a 32-bit target, 7.19 with its depth written,
+// 3.17 into a 16-bit one either way; blending adds nothing.
+function TPSPGEEngine.FillCost(Pixels: Int64): Int64;
+begin
+  var Depth := (FRaster.ClearMode and FRaster.ClearDepth) or
+    (not FRaster.ClearMode and FRaster.DepthTest and FRaster.DepthWrite);
+  var PerPixel: Int64 := 317;
+  if FRaster.FBFormat = 3 then
+    if Depth then
+      PerPixel := 719
+    else
+      PerPixel := 477;
+  Result := Pixels * PerPixel div 100;
+end;
+
 function TPSPGEEngine.ScissoredArea(X1, Y1, X2, Y2: Integer): Int64;
 begin
   var W := Min(X2 div 16, FRaster.ScissorX2 + 1) - Max(X1 div 16, FRaster.ScissorX1);
@@ -3303,10 +2988,9 @@ begin
     Backend.DrawTriangle(FRaster, A, B, C)
   else
     FWorkers.Triangle(FRaster, A, B, C);
-  Inc(FPrimCost, 100 + Min(Abs(Int64(B.X - A.X) * (C.Y - A.Y) - Int64(B.Y - A.Y) * (C.X - A.X)) div 512,
-      ScissoredArea(Min(A.X, Min(B.X, C.X)), Min(A.Y, Min(B.Y, C.Y)), Max(A.X, Max(B.X, C.X)),
-        Max(A.Y, Max(B.Y, C.Y)))) *
-    3);
+  Inc(FPrimCost, 100 + FillCost(Min(Abs(Int64(B.X - A.X) * (C.Y - A.Y) - Int64(B.Y - A.Y) * (C.X - A.X)) div 512,
+    ScissoredArea(Min(A.X, Min(B.X, C.X)), Min(A.Y, Min(B.Y, C.Y)), Max(A.X, Max(B.X, C.X)),
+    Max(A.Y, Max(B.Y, C.Y))))));
 end;
 
 type
@@ -3498,7 +3182,8 @@ begin
     Backend.DrawSprite(FRaster, A.V, B.V)
   else
     FWorkers.Sprite(FRaster, A.V, B.V);
-  Inc(FPrimCost, 100 + ScissoredArea(Min(A.V.X, B.V.X), Min(A.V.Y, B.V.Y), Max(A.V.X, B.V.X), Max(A.V.Y, B.V.Y)) * 3);
+  Inc(FPrimCost, 100 + FillCost(ScissoredArea(Min(A.V.X, B.V.X), Min(A.V.Y, B.V.Y), Max(A.V.X, B.V.X),
+    Max(A.V.Y, B.V.Y))));
 end;
 
 procedure TPSPGEEngine.AddVertex(const A: TGEAsmVertex);
@@ -3575,6 +3260,7 @@ begin
   var VType := Regs.Cmd[GE_VTYPE];
   FLightValid := False;
   FGeomValid := False;
+  FGeomClipValid := False;
   SetupVertexFormat(VType);
   var HasPos := ((VType shr 7) and 3) <> 0;
   if PrimType <> 7 then
@@ -3621,7 +3307,7 @@ end;
 function TPSPGEEngine.TransformInParallel(Count: Integer; VType: Cardinal): Boolean;
 begin
   Result := False;
-{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFDEF CPU64BITS}
   if (FRAMBase = nil) or (((VType shr 18) and 7) <> 0) then
     Exit;
   if Length(FParIndex) < Count then
@@ -3651,7 +3337,7 @@ begin
 {$ENDIF}
 end;
 
-{$IF Defined(CPUX64) and Defined(MSWINDOWS)}
+{$IFDEF CPU64BITS}
 // Vertices First..Last of TransformInParallel's primitive, on a pool thread.
 procedure TPSPGEEngine.TransformRange(VType: Cardinal; First, Last: Integer; LastU, LastV: Single; const LastN: TGEVec3);
 var
@@ -3720,6 +3406,7 @@ begin
   var Count := Integer(Op and $FFFF);
   var VType := Regs.Cmd[GE_VTYPE];
   FGeomValid := False;
+  FGeomClipValid := False;
   SetupVertexFormat(VType);
   FPrimCost := Int64(Count) * 40;
   BoxVisible := False;
@@ -3883,24 +3570,32 @@ begin
   Result := FloorInt(N / 256) * Ulp;
 end;
 
-// A curve's value, and the difference of its last step's two values (its
-// tangent there, in its units).
-function PatchCurve(P0, P1, P2, P3: Double; const A: TGEPatchSteps; out D: Double): Double; overload;
+// A curve's value and its last pair, before the final interpolation.
+function PatchCurve(P0, P1, P2, P3: Double; const A: TGEPatchSteps; out L, R: Double): Double; overload;
 begin
   var AB := PatchLerp(P0, P1, A[0]);
   var BC := PatchLerp(P1, P2, A[1]);
   var CD := PatchLerp(P2, P3, A[2]);
-  var ABC := PatchLerp(AB, BC, A[3]);
-  var BCD := PatchLerp(BC, CD, A[4]);
-  D := BCD - ABC;
-  Result := PatchLerp(ABC, BCD, A[5]);
+  L := PatchLerp(AB, BC, A[3]);
+  R := PatchLerp(BC, CD, A[4]);
+  Result := PatchLerp(L, R, A[5]);
+end;
+
+// A curve's value, and the difference of its last pair (its tangent there,
+// in its units), in the vertex unit's add precision.
+function PatchCurve(P0, P1, P2, P3: Double; const A: TGEPatchSteps; out D: Double): Double; overload;
+var
+  L, R: Double;
+begin
+  Result := PatchCurve(P0, P1, P2, P3, A, L, R);
+  D := Add24(R, -L);
 end;
 
 function PatchCurve(P0, P1, P2, P3: Double; const A: TGEPatchSteps): Double; overload;
 var
-  D: Double;
+  L, R: Double;
 begin
-  Result := PatchCurve(P0, P1, P2, P3, A, D);
+  Result := PatchCurve(P0, P1, P2, P3, A, L, R);
 end;
 
 function PatchCurveC(C0, C1, C2, C3: Integer; const A: TGEPatchSteps): Integer;
@@ -3920,6 +3615,8 @@ end;
 // (top-left, bottom-left, top-right, ...), drawn as triangles, a line strip
 // or points by PATCHPRIMITIVE. Without normals, a Bezier patch's come from
 // its tangents (along u cross along v: gpu/exact's curves normals jobs).
+// DU takes v's value then u's last pair; DV takes v's last pair through u
+// before subtracting. The stage order matters at the patch unit's precision.
 procedure TPSPGEEngine.DrawPatch(Op: Cardinal; Spline: Boolean);
 var
   Ev: TGEInVertex;
@@ -3931,6 +3628,7 @@ begin
   var VType := C[GE_VTYPE];
   FLightValid := False;
   FGeomValid := False;
+  FGeomClipValid := False;
   SetupVertexFormat(VType);
   var Total := UCount * VCount;
   if (UCount < 4) or (VCount < 4) then
@@ -4014,13 +3712,12 @@ begin
     end;
   var PCol: array[0..3] of TGEPatchValues;
   var Pt: TGEPatchValues;
-  // Each column's tangent along v (for normals), carried along u.
-  var DCol: array[0..3, 0..2] of Double;
+  // Each column's last pair along v, carried separately through u.
+  var VLo, VHi: array[0..3, 0..2] of Double;
   var MakeNormals := not Spline and not HasNrm and HasPos;
   // (Values a vertex does not have stay 0.)
   FillChar(PCol, SizeOf(PCol), 0);
   FillChar(Pt, SizeOf(Pt), 0);
-  FillChar(DCol, SizeOf(DCol), 0);
 
   BuildRaster;
   FCullOn := ((C[GE_CULLENABLE] and 1) <> 0) and not FRaster.ClearMode;
@@ -4093,7 +3790,7 @@ begin
               begin
                 var X := Comps[K];
                 if MakeNormals and (X < 3) then
-                  PCol[A].F[X] := PatchCurve(P0.F[X], P1.F[X], P2.F[X], P3.F[X], SV, DCol[A, X])
+                  PCol[A].F[X] := PatchCurve(P0.F[X], P1.F[X], P2.F[X], P3.F[X], SV, VLo[A, X], VHi[A, X])
                 else
                   PCol[A].F[X] := PatchCurve(P0.F[X], P1.F[X], P2.F[X], P3.F[X], SV);
               end;
@@ -4108,16 +3805,23 @@ begin
             if MakeNormals and (X < 3) then
             begin
               Pt.F[X] := PatchCurve(PCol[0].F[X], PCol[1].F[X], PCol[2].F[X], PCol[3].F[X], SU, DU[X]);
-              DV[X] := PatchCurve(DCol[0, X], DCol[1, X], DCol[2, X], DCol[3, X], SU);
+              // Two steps along v, then all three along u on each side,
+              // then the difference. Neither v-first nor u-first
+              // interpolation of an already formed difference is the same.
+              DV[X] := Add24(PatchCurve(VHi[0, X], VHi[1, X], VHi[2, X], VHi[3, X], SU),
+                -PatchCurve(VLo[0, X], VLo[1, X], VLo[2, X], VLo[3, X], SU));
             end
             else
               Pt.F[X] := PatchCurve(PCol[0].F[X], PCol[1].F[X], PCol[2].F[X], PCol[3].F[X], SU);
           end;
           if MakeNormals then
           begin
-            Pt.F[3] := DU[1] * DV[2] - DU[2] * DV[1];
-            Pt.F[4] := DU[2] * DV[0] - DU[0] * DV[2];
-            Pt.F[5] := DU[0] * DV[1] - DU[1] * DV[0];
+            // Each product is cut to 24 bits before the subtraction in
+            // Add24 precision. A fused sum of products is not equivalent;
+            // nor is rounding to Single before the cut.
+            Pt.F[3] := Add24(T24(DU[1] * DV[2]), -T24(DU[2] * DV[1]));
+            Pt.F[4] := Add24(T24(DU[2] * DV[0]), -T24(DU[0] * DV[2]));
+            Pt.F[5] := Add24(T24(DU[0] * DV[1]), -T24(DU[1] * DV[0]));
             if (C[GE_PATCHFACING] and 1) <> 0 then
               for var X := 3 to 5 do
                 Pt.F[X] := -Pt.F[X];
@@ -4271,6 +3975,19 @@ begin
     M.WriteBytes($04000000, PByte(@Buf)[N], Size - N);
 end;
 
+const
+  // What a block transfer costs, ns per 10 bytes moved, by whether its
+  // source and destination are in VRAM (probe ge_transfer): main RAM to RAM
+  // is slowest, and RAM is slower to read than to write. Besides a start.
+  GETransferCost: array[Boolean, Boolean] of Integer = ((81, 57), (34, 42));
+  GETransferStartNs = 3000;
+
+function InVRAM(A: Cardinal): Boolean; inline;
+begin
+  var P := A and $1FFFFFFF;
+  Result := (P >= $04000000) and (P < $08000000);
+end;
+
 // TRANSFERSTART: a rectangle copy. The buffer addresses lose their low 4
 // bits, and each row moves in 64-byte pieces, each read before it is
 // written, so an overlapping copy repeats what it has just written once the
@@ -4309,7 +4026,7 @@ begin
       Inc(Done, N);
     end;
   end;
-  FPrimCost := Int64(W) * H * Bpp * 2;
+  FPrimCost := GETransferStartNs + Int64(W) * H * Bpp * GETransferCost[InVRAM(Src), InVRAM(Dst)] div 10;
 end;
 
 { Context }

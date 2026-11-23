@@ -5,7 +5,8 @@ interface
 uses
   System.SysUtils, System.Classes, System.IniFiles, System.SyncObjs,
   Core.Storage, Core.Emulation, PSP.Types, PSP.Media, PSP.Console,
-  RM.Vulkan.TexScale, Core.Platforms.PSP.Playback, Core.Platforms.PSP.Renderer;
+  RM.Vulkan.TexScale, Core.Platforms.PSP.Playback, Core.Platforms.PSP.Renderer,
+  PSP.UMDVideo;
 
 type
   TPSPKeyMap = array[TEmulatorButton] of UInt32;
@@ -50,6 +51,8 @@ type
     FLock: TCriticalSection;
     FWake: TEvent;
     FConsole: TPSPConsole;
+    FVideo: TPSPUMDVideo;
+    FVideoImage: TStream;
     FStorage: IStorage;
     FAudio: TPSPAudioPlayback;
     FAudioEnabled: Boolean;
@@ -64,12 +67,14 @@ type
     FTextureScale: Integer;
     FTextureFilter: TTexScaleFilter;
     FRendererStatus: string;
+    FStatusRequested: Boolean;
     FRate: TEmulationFrameRate;
     FSnapshotDone: TEvent;
     FSnapshotPending, FSnapshotBusy, FSnapshotLoading, FSnapshotCancel: Boolean;
     FSnapshotName, FSnapshotError, FSnapshotDirectory: string;
     FSnapshotProgress, FSnapshotTotal: UInt64;
     function ProcessSnapshot(var Renderer: TPSPRendererSession): Boolean;
+    procedure ExecuteVideo;
   protected
     procedure Execute; override;
   public
@@ -134,12 +139,9 @@ type
 implementation
 
 uses
-{$IFDEF MSWINDOWS}
-  Winapi.MMSystem,
-{$ENDIF}
-  Core.MediaArchive, System.UITypes, System.Diagnostics, System.Math,
-  Core.Platforms, Core.Platforms.PSP.Archive, PSP.Settings, Core.Snapshots,
-  Core.SavePaths;
+  Core.PerformanceHints, Core.MediaArchive, System.UITypes, System.Diagnostics,
+  System.Math, Core.Platforms, Core.Platforms.PSP.Archive, PSP.Settings,
+  Core.Snapshots, Core.SavePaths;
 
 const
   KeyNames: array[TEmulatorButton] of string =
@@ -208,7 +210,14 @@ begin
   FWake := TEvent.Create(nil, False, False, '');
   FSnapshotDone := TEvent.Create(nil, True, False, '');
   FSnapshotDirectory := SnapshotDirectory;
-  FConsole := TPSPConsole.Create(ProgramData, Storage, '', '', FontDirectory, True);
+  if ProgramData.UMDVideo then
+  begin
+    FVideoImage := ProgramData.OpenDisc(Storage);
+    FVideo := TPSPUMDVideo.Create(FVideoImage);
+    FRendererStatus := FVideo.Status;
+  end
+  else
+    FConsole := TPSPConsole.Create(ProgramData, Storage, '', '', FontDirectory, True);
 end;
 
 destructor TPSPWorker.Destroy;
@@ -216,6 +225,8 @@ begin
   Join;
   inherited;
   FConsole.Free;
+  FVideo.Free;
+  FVideoImage.Free;
   FAudio.Free;
   FWake.Free;
   FSnapshotDone.Free;
@@ -224,6 +235,8 @@ end;
 
 procedure TPSPWorker.BeginSnapshot(const Name: string; Loading: Boolean);
 begin
+  if FVideo <> nil then
+    raise EInvalidOpException.Create('Snapshots are unavailable during UMD Video playback');
   ValidateSnapshotName(Name);
   FLock.Acquire;
   try
@@ -427,15 +440,114 @@ begin
   FWake.SetEvent;
 end;
 
+procedure TPSPWorker.ExecuteVideo;
+begin
+  var AudioFailed := False;
+  var WasEnabled := False;
+  var WasPaused := False;
+  var ClockHost := TStopwatch.GetTimeStamp;
+  var Ticks := Int64(0);
+  while not Terminated do
+  begin
+    var Paused, Reset, AudioEnabled: Boolean;
+    var Input: TEmulatorInput;
+    var Volume: Single;
+    FLock.Acquire;
+    try
+      Paused := FPaused;
+      Reset := FReset;
+      FReset := False;
+      AudioEnabled := FAudioEnabled;
+      Input := FInput;
+      Volume := FVolume;
+    finally
+      FLock.Release;
+    end;
+    if Reset then
+      FVideo.Reset;
+    var Changed := FVideo.Control(Input);
+    if Reset or Changed or (Paused <> WasPaused) or (AudioEnabled <> WasEnabled) then
+    begin
+      if (FAudio <> nil) and not AudioFailed then
+      try
+        FAudio.Clear;
+      except
+        AudioFailed := True;
+      end;
+      ClockHost := TStopwatch.GetTimeStamp;
+      Ticks := 0;
+    end;
+    WasEnabled := AudioEnabled;
+    WasPaused := Paused;
+    if Paused then
+    begin
+      FWake.WaitFor(20);
+      Continue;
+    end;
+    if AudioEnabled and not AudioFailed and (FAudio <> nil) then
+    try
+      if not FAudio.CanAdvance then
+      begin
+        FWake.WaitFor(1);
+        Continue;
+      end;
+    except
+      AudioFailed := True;
+    end;
+    var Frame: TEmulatorFrame;
+    FVideo.RunFrame(Frame);
+    if AudioEnabled and not AudioFailed then
+    try
+      if FAudio = nil then
+        FAudio := TPSPAudioPlayback.Create;
+      FAudio.Enqueue(FVideo.AudioSamples, Volume);
+    except
+      AudioFailed := True;
+    end;
+    var Status := FVideo.Status;
+    FLock.Acquire;
+    try
+      FFrame := Frame;
+      FAvailable := True;
+      FRendererStatus := Status;
+      FStatusRequested := False;
+    finally
+      FLock.Release;
+    end;
+    Inc(Ticks);
+    if not AudioEnabled or AudioFailed then
+    begin
+      var Target := ClockHost + Ticks * 1001 * TStopwatch.Frequency div 60000;
+      while not Terminated do
+      begin
+        var Remaining := (Target - TStopwatch.GetTimeStamp) * 1000 div TStopwatch.Frequency;
+        if Remaining <= 0 then
+        begin
+          if Remaining < -250 then
+          begin
+            ClockHost := TStopwatch.GetTimeStamp;
+            Ticks := 0;
+          end;
+          Break;
+        end;
+        FWake.WaitFor(Cardinal(Min(Int64(20), Remaining)));
+      end;
+    end;
+  end;
+end;
+
 procedure TPSPWorker.Execute;
 begin
   if Terminated then
     Exit;
-{$IFDEF MSWINDOWS}
-  var TimerSet := timeBeginPeriod(1) = TIMERR_NOERROR;
-{$ENDIF}
+  var TimerSet := TEmulationPerformanceHints.BeginTimerPeriod(1);
   try
     try
+      if FVideo <> nil then
+      begin
+        ExecuteVideo;
+        Exit;
+      end;
       var Renderer := TPSPRendererSession.Create(FConsole, FRenderer, FResolution, FTextureScale, FTextureFilter);
       try
         FLock.Acquire;
@@ -457,9 +569,11 @@ begin
           var Volume: Single;
           var Input: TEmulatorInput;
           var Recompiler: Boolean;
+          var RefreshStatus: Boolean;
           FLock.Acquire;
           try
             Recompiler := FRecompiler;
+            RefreshStatus := FStatusRequested;
             Paused := FPaused;
             Reset := FReset;
             FReset := False;
@@ -511,6 +625,7 @@ begin
             FConsole.Recompiler.Enabled := Recompiler;
           FConsole.Input := Input;
           var Frame: TEmulatorFrame;
+          FConsole.AudioOutputEnabled := AudioEnabled and not AudioFailed;
           FConsole.RunFrame(Frame);
           // Frames emulated per host second, not the PSP's nominal refresh rate.
           Frame.FramesPerSecond := FRate.Update(Frame.FrameNumber, TStopwatch.GetTimeStamp, TStopwatch.Frequency);
@@ -522,11 +637,18 @@ begin
           except
             AudioFailed := True;
           end;
+          var Status: string;
+          if RefreshStatus then
+            Status := Renderer.Status;
           FLock.Acquire;
           try
             FFrame := Frame;
             FAvailable := True;
-            FRendererStatus := Renderer.Status;
+            if RefreshStatus then
+            begin
+              FRendererStatus := Status;
+              FStatusRequested := False;
+            end;
           finally
             FLock.Release;
           end;
@@ -577,10 +699,8 @@ begin
     finally
       FLock.Release;
     end;
-{$IFDEF MSWINDOWS}
     if TimerSet then
-      timeEndPeriod(1);
-{$ENDIF}
+      TEmulationPerformanceHints.EndTimerPeriod(1);
   end;
 end;
 
@@ -629,12 +749,15 @@ begin
   else
   begin
     FProgram := TPSPProgram.Read(Stream);
-    if (FProgram.BootPath <> '') and (RomName <> '') then
+    if FProgram.BootPath.StartsWith('disc0:/', True) and (RomName <> '') then
       FProgram.MediaPath := RomName;
   end;
   // Reject unsupported executables during loading, before starting a worker.
-  var Probe := TPSPConsole.Create(FProgram, FStorage);
-  Probe.Free;
+  if not FProgram.UMDVideo then
+  begin
+    var Probe := TPSPConsole.Create(FProgram, FStorage);
+    Probe.Free;
+  end;
   FConfigObject := TPSPConfig.Create(ActualStorage.ConfigFile('psp'), ActualStorage);
   FConfig := FConfigObject;
   FConfig.Load;
@@ -644,8 +767,6 @@ end;
 destructor TPSPCoreAdapter.Destroy;
 begin
   Stop;
-  if FProgram.TemporaryMedia and (FStorage <> nil) and FStorage.Exists(FProgram.MediaPath) then
-    FStorage.Delete(FProgram.MediaPath);
   inherited;
 end;
 
@@ -763,6 +884,7 @@ function TPSPWorker.RendererStatus: string;
 begin
   FLock.Acquire;
   try
+    FStatusRequested := True;
     Result := FRendererStatus;
   finally
     FLock.Release;
@@ -789,7 +911,7 @@ end;
 
 function TPSPCoreAdapter.GetSupportsSnapshots: Boolean;
 begin
-  Result := True;
+  Result := not FProgram.UMDVideo;
 end;
 
 function TPSPCoreAdapter.GetHasCoinAcceptor: Boolean;

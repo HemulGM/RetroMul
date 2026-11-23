@@ -1,0 +1,4 @@
+RETROMUL_PIXEL_12 RCDATA "fonts/RetroMulPixel12.bin"
+RETROMUL_PIXEL_16 RCDATA "fonts/RetroMulPixel16.bin"
+RETROMUL_PIXEL_24 RCDATA "fonts/RetroMulPixel24.bin"
+RETROMUL_EAST_ASIAN_12 RCDATA "fonts/RetroMulEastAsian12.bin"

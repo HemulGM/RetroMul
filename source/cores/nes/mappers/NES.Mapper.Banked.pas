@@ -12,7 +12,9 @@ type
     FPrgBanks: array[0..3] of Integer;
     FChrBanks: array[0..7] of Integer;
     FHasChrRam, FRamEnabled, FRamWritable: Boolean;
+    FPrgRamMask: UInt16;
     FInitialMirror, FMirror: TMirrorMode;
+    function ShareProgramRom: Boolean; virtual;
     procedure Prg8(Slot, Bank: Integer);
     procedure Prg16(Slot, Bank: Integer);
     procedure Prg32(Bank: Integer);
@@ -56,8 +58,7 @@ end;
 
 function TMapperBanked.GetSaveMemory: TByteArray;
 begin
-  SetLength(Result, Length(FPrgRam));
-  Move(FPrgRam[0], Result[0], Length(Result));
+  Result := Copy(FPrgRam);
 end;
 
 procedure TMapperBanked.SetSaveMemory(const Data: TByteArray);
@@ -65,19 +66,24 @@ begin
   if Length(Data) <> Length(FPrgRam) then
     raise ENesException.Create('Invalid cartridge save size');
 
-  Move(Data[0], FPrgRam[0], Length(Data));
+  if Length(Data) <> 0 then
+    Move(Data[0], FPrgRam[0], Length(Data));
 end;
 
 constructor TMapperBanked.Create(const Prg, Chr: TByteArray; HasChrRam: Boolean; MirrorMode: TMirrorMode);
 begin
   inherited Create;
   ValidateMemory(Prg, Chr);
-  FPrgRom := Copy(Prg);
+  if ShareProgramRom then
+    FPrgRom := Prg
+  else
+    FPrgRom := Copy(Prg);
   FChrMemory := Copy(Chr);
   FHasChrRam := HasChrRam;
   if Length(FChrMemory) = 0 then
     SetLength(FChrMemory, $2000);
   SetLength(FPrgRam, $2000);
+  FPrgRamMask := $1FFF;
   FInitialMirror := MirrorMode;
   FMirror := FInitialMirror;
   FRamEnabled := True;
@@ -85,6 +91,11 @@ begin
   Prg16(0, 0);
   Prg16(1, -1);
   Chr8(0);
+end;
+
+function TMapperBanked.ShareProgramRom: Boolean;
+begin
+  Result := False;
 end;
 
 procedure TMapperBanked.Prg8(Slot, Bank: Integer);
@@ -95,8 +106,14 @@ end;
 
 procedure TMapperBanked.Prg16(Slot, Bank: Integer);
 begin
-  for var i := 0 to 1 do
-    Prg8(Slot * 2 + i, Bank * 2 + i);
+  // Program ROM consists of complete 16 KiB banks. Both 8 KiB slots wrap together.
+  var Count := Length(FPrgRom) div $4000;
+  var Mapped := Bank mod Count;
+  if Mapped < 0 then
+    Inc(Mapped, Count);
+  var FirstPage := Mapped * 2;
+  FPrgBanks[Slot * 2] := FirstPage;
+  FPrgBanks[Slot * 2 + 1] := FirstPage + 1;
 end;
 
 procedure TMapperBanked.Prg32(Bank: Integer);
@@ -158,7 +175,7 @@ begin
   if Address >= $8000 then
     Value := FPrgRom[PrgOffset(Address)]
   else if (Address >= $6000) and FRamEnabled then
-    Value := FPrgRam[Address and $1FFF]
+    Value := FPrgRam[Address and FPrgRamMask]
   else
     Result := False;
 end;
@@ -167,7 +184,7 @@ function TMapperBanked.CpuWrite(Address: UInt16; Value: UInt8): Boolean;
 begin
   Result := (Address >= $6000) and (Address < $8000) and FRamEnabled;
   if Result and FRamWritable then
-    FPrgRam[Address and $1FFF] := Value;
+    FPrgRam[Address and FPrgRamMask] := Value;
 end;
 
 function TMapperBanked.PpuRead(Address: UInt16; out Value: UInt8): Boolean;

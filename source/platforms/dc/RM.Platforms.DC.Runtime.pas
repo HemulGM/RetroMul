@@ -5,8 +5,9 @@
 interface
 
 uses
-  System.IniFiles, FMXInput, RM.Input, Core.Platforms.DC.Adapter,
-  RM.Input.Runtime, Core.Emulation, RM.Session.Runtime;
+  RM.Platform.Host, System.IniFiles, FMXInput, RM.Input,
+  Core.Platforms.DC.Adapter, RM.Input.Runtime, Core.Emulation,
+  RM.Session.Runtime;
 
 const
   DCExtraAction = 4160;
@@ -21,7 +22,7 @@ function DCAction(Port: Integer; Extra: TDCExtra): Integer;
 
 function DCExtraName(Extra: TDCExtra): string;
 
-function ReadDCPad(Input: TInputManager; Port: Integer): TDCAnalogPad;
+function ReadDCPad(Input: IPlatformInput; Port: Integer): TDCAnalogPad;
 
 type
   TDCSessionHandler = class(TPlatformSessionHandler)
@@ -48,22 +49,20 @@ begin
   Result := Names[Extra];
 end;
 
-function ReadDCPad(Input: TInputManager; Port: Integer): TDCAnalogPad;
+function ReadDCPad(Input: IPlatformInput; Port: Integer): TDCAnalogPad;
 begin
   Result := Default(TDCAnalogPad);
   if Input = nil then
     Exit;
 
-  var Bindings := Input.Bindings;
-  var Values := Input.Values;
-  var X := ActionAmount(Input, Bindings, Values, DCAction(Port, TDCExtra.StickRight)) -
-    ActionAmount(Input, Bindings, Values, DCAction(Port, TDCExtra.StickLeft));
-  var Y := ActionAmount(Input, Bindings, Values, DCAction(Port, TDCExtra.StickDown)) -
-    ActionAmount(Input, Bindings, Values, DCAction(Port, TDCExtra.StickUp));
+  var X := Input.ActionAmount(DCAction(Port, TDCExtra.StickRight)) -
+    Input.ActionAmount(DCAction(Port, TDCExtra.StickLeft));
+  var Y := Input.ActionAmount(DCAction(Port, TDCExtra.StickDown)) -
+    Input.ActionAmount(DCAction(Port, TDCExtra.StickUp));
   Result.StickX := EnsureRange(Round(X * 32767), -32768, 32767);
   Result.StickY := EnsureRange(Round(Y * 32767), -32768, 32767);
-  Result.LeftTrigger := Round(ActionAmount(Input, Bindings, Values, PadAction(Port, TEmulatorButton.Select)) * 255);
-  Result.RightTrigger := Round(ActionAmount(Input, Bindings, Values, PadAction(Port, TEmulatorButton.Mode)) * 255);
+  Result.LeftTrigger := Round(Input.ActionAmount(PadAction(Port, TEmulatorButton.Select)) * 255);
+  Result.RightTrigger := Round(Input.ActionAmount(PadAction(Port, TEmulatorButton.Mode)) * 255);
 end;
 
 class procedure TDCInputHandler.CombineInput(const Context: TInputRuntimeContext; var Input: TEmulatorInput);
@@ -71,9 +70,9 @@ begin
   // Dreamcast stick and trigger axes from host bindings (the on-screen stick
   // and triggers arrive as Analog[0]).
   var DCInput: IDCControllerInput;
-  if Supports(Context.State.Session.Emulation, IDCControllerInput, DCInput) then
+  if Supports(Context.Host.Core, IDCControllerInput, DCInput) then
     for var Port := 0 to 3 do
-      DCInput.SetDCController(Port, ReadDCPad(Context.State.Input.Manager, Port));
+      DCInput.SetDCController(Port, ReadDCPad(Context.Host.Input, Port));
 end;
 
 type
@@ -116,10 +115,13 @@ begin
   var Value := Context.Data(OverlayKey);
   if Value = nil then
   begin
-    Value := TDCSessionOverlay.Create(Context.View.ImageCanvas);
+    var Surface := Context.Surface;
+    if Surface = nil then
+      Exit;
+    Value := TDCSessionOverlay.Create(Surface.FrameLayer);
     Context.SetData(OverlayKey, Value);
   end;
-  (Value as IDCSessionOverlay).Overlay.Update(Context.State.Session.Emulation);
+  (Value as IDCSessionOverlay).Overlay.Update(Context.Host.Core);
 end;
 
 class procedure TDCSessionHandler.Disconnect(const Context: TSessionRuntimeContext);

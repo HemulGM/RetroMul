@@ -52,17 +52,41 @@ function SameInputPorts(const A, B: TCoreInputPorts): Boolean;
 
 function ReadCoreInputPorts(Ini: TCustomIniFile; const SystemId: string = ''): TCoreInputPorts;
 
-function LoadCoreInputPorts(const Storage: IStorage; const SystemId: string): TCoreInputPorts;
+function LoadCoreInputPorts(const Storage: IStorage; const SystemId: string; const ConfigFileName: string = ''): TCoreInputPorts;
+
+// Fill only missing platform values from the former global settings.
+function MigrateAnalogControlSettings(Ini, Legacy: TCustomIniFile): Boolean;
 
 procedure UpdateMappedButtons(Code: UInt32; Pressed: Boolean; const Keys: array of UInt32; var Buttons: TEmulatorButtons);
 
 implementation
 
 uses
-  Core.Platforms, System.Generics.Defaults;
+  Core.Platforms, System.Generics.Defaults, System.Math;
 
 var
   Readers: TDictionary<string, TInputPortsReader>;
+
+function MigrateAnalogControlSettings(Ini, Legacy: TCustomIniFile): Boolean;
+begin
+  Result := False;
+  if not Ini.ValueExists('AnalogControls', 'ButtonRampMs') then
+  begin
+    var Value := 160;
+    if Legacy <> nil then
+      Value := Legacy.ReadInteger('General', 'AnalogButtonRampMs', Value);
+    Ini.WriteInteger('AnalogControls', 'ButtonRampMs', EnsureRange(Value, 0, 5000));
+    Result := True;
+  end;
+  if not Ini.ValueExists('AnalogControls', 'SteeringAutoCenter') then
+  begin
+    var Value := False;
+    if Legacy <> nil then
+      Value := Legacy.ReadBool('General', 'SteeringAutoCenter', Value);
+    Ini.WriteBool('AnalogControls', 'SteeringAutoCenter', Value);
+    Result := True;
+  end;
+end;
 
 procedure RegisterInputPortsReader(const SystemId: string; const Reader: TInputPortsReader);
 begin
@@ -255,9 +279,12 @@ begin
     Reader(Ini, Result);
 end;
 
-function LoadCoreInputPorts(const Storage: IStorage; const SystemId: string): TCoreInputPorts;
+function LoadCoreInputPorts(const Storage: IStorage; const SystemId, ConfigFileName: string): TCoreInputPorts;
 begin
-  var Ini := Storage.ReadConfig(Storage.ConfigFile(SystemId));
+  var Path := ConfigFileName;
+  if Path = '' then
+    Path := Storage.ConfigFile(SystemId);
+  var Ini := Storage.ReadConfig(Path);
   try
     Result := ReadCoreInputPorts(Ini, SystemId);
   finally

@@ -34,9 +34,10 @@ type
   private
     FThread: TMDWorker;
     FData: TBytes;
-    FDiscLocation, FDisplayName, FSystemId: string;
+    FDiscLocation, FDisplayName, FSystemId, FCartridgeExtension: string;
     FMDConfig: TMDConfig;
     FMicrophone: IMicrophoneSource;
+    FMicrophoneOverridden: Boolean;
     FSnapshotDirectory: string;
     FStorage: IStorage;
     FSavePath, FError: string;
@@ -49,7 +50,7 @@ type
   public
     procedure ApplyLiveSettings;
     constructor Create(const FileName: string); overload;
-    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; IsCD: Boolean = False); overload;
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; IsCD: Boolean = False; const ImageName: string = ''); overload;
     destructor Destroy; override;
     function GetSystemId: string;
     function GetName: string;
@@ -82,8 +83,8 @@ type
 implementation
 
 uses
-  RM.Platforms.MD, System.IOUtils, System.UITypes, System.Hash, System.Math, MD.Cartridge,
-  MD.RomFormat, Core.CD.Disc, MD.MegaCD;
+  RM.Platforms.MD, System.IOUtils, System.UITypes, System.Hash, System.Math,
+  MD.Cartridge, MD.RomFormat, Core.CD.Disc, MD.MegaCD;
 
 const
   KeyNames: array[TMDButton] of string = ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'C', 'Start', 'X', 'Y', 'Z', 'Mode');
@@ -162,7 +163,7 @@ begin
   end;
 end;
 
-constructor TMDCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string; IsCD: Boolean);
+constructor TMDCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string; IsCD: Boolean; const ImageName: string);
 var
   Cart: TMDCartridge;
   Config: TMDConfig;
@@ -193,7 +194,15 @@ begin
     var Data := ReadRomData(Stream);
     var Encoding: string;
     MD.RomFormat.TryDetectEncoding(Data, Encoding);
-    Cart := TMDCartridge.Create(MD.RomFormat.NormalizeImage(Data, Encoding), '');
+    var SourceName := ImageName;
+    if SourceName = '' then
+    begin
+      SourceName := RomName;
+      if SourceName.StartsWith('content://', True) then
+        SourceName := FStorage.Describe(RomName).Name;
+    end;
+    FCartridgeExtension := ExtractFileExt(SourceName);
+    Cart := TMDCartridge.Create(MD.RomFormat.NormalizeImage(Data, Encoding), FCartridgeExtension);
     try
       FData := Copy(Cart.Data);
       if Cart.Is32X then
@@ -231,7 +240,7 @@ begin
   if FThread <> nil then
   begin
     FThread.ConfigureExpansionVolume(FMDConfig.CDVolume, FMDConfig.Volume32X);
-    FThread.ConfigureExpansion(True, True, FMDConfig.MicrophoneEnabled, FMicrophone);
+    FThread.ConfigureExpansion(True, True, FMDConfig.MicrophoneEnabled, FMicrophone, not FMicrophoneOverridden);
     FThread.Configure(FKeyboard + FGamepad, FPaused,
       FConfig.AudioEnabled, FConfig.AudioVolume, FKeyboard2 + FGamepad2,
       FKeyboard3 + FGamepad3, FKeyboard4 + FGamepad4);
@@ -243,6 +252,7 @@ begin
   if Source <> nil then
     Source.Clear;
   FMicrophone := Source;
+  FMicrophoneOverridden := True;
   ApplySettings;
 end;
 
@@ -253,9 +263,9 @@ begin
 
   if FMicrophone <> nil then
     FMicrophone.Clear;
-  FThread := TMDWorker.Create(FData, FSavePath, FStorage, FDiscLocation);
+  FThread := TMDWorker.Create(FData, FSavePath, FStorage, FDiscLocation, FCartridgeExtension);
   FThread.SnapshotDirectory := FSnapshotDirectory;
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_MD);
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, ROM_SYSTEM_MD, GetConfig.FileName);
   ApplySettings;
   FThread.Start;
 end;

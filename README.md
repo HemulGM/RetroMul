@@ -6,10 +6,11 @@ RetroMul is a multi-system retro game emulator written in Delphi with a FireMonk
 
 ## Supported systems and ROM formats
 
-The table covers all 45 registered systems. Supported images and ROM sets can also be loaded from `.zip`, `.7z`, and `.rar` archives. Disc images must retain their required companion files and tracks.
+The table lists registered systems. Supported files and ROM sets can also be loaded from `.zip`, `.7z`, and `.rar` archives. Disc images must retain their required companion files and tracks.
 
-| System | ROM formats |
+| System | Supported formats |
 | --- | --- |
+| Atari 8-bit (400 / 800 / XL / XE / XEGS) | Cartridge images `.car`, `.rom`, `.bin`; disk images `.atr`, `.xfd`; executables `.xex`, `.com` |
 | Atari 2600 | `.a26`; `.bin`, `.rom` in the system folder |
 | Atari 5200 | `.a52`, Atari 5200 `.car`; `.bin`, `.rom` in the system folder; BIOS embedded |
 | Atari 7800 | `.a78`, `.bin`, `.rom` |
@@ -26,9 +27,14 @@ The table covers all 45 registered systems. Supported images and ROM sets can al
 | Nintendo 64 (experimental) | `.z64`, `.n64`, `.v64` |
 | PlayStation 2 (experimental, no BIOS needed; see [PS2 core](source/cores/ps2/README.md)) | `.iso`, `.mds`/`.mdf`, DVD `.chd`, `.elf` (homebrew) |
 | Nintendo DS (experimental) | `.nds` |
+| Adobe Flash (experimental) | `.swf` with ActionScript 1/2 (AVM1) or limited ActionScript 3 (AVM2) support |
+| Java ME / J2ME (initial implementation) | `.jar`, optional adjacent `.jad`; |
 | SEGA Mega Drive / Genesis | `.md`, `.bin`, `.gen`, `.smd` |
 | SEGA CD / Mega-CD | `.cue`, `.iso`, `.chd`, `.mds`, `.nrg` |
 | SEGA 32X | `.32x`, `.bin`, `.gen`, `.md`, `.smd` |
+| SEGA System 16A / 16B | Catalogued MAME `.zip`, `.7z`, `.rar` sets |
+| SEGA System 18 | Catalogued MAME `.zip`, `.7z`, `.rar` sets |
+| SEGA System 32 (experimental) | Catalogued MAME `.zip`, `.7z`, `.rar` sets |
 | SEGA SG-1000 | `.sg` (legacy `.sms` images in `sg1000/`) |
 | SEGA SC-3000 | `.sc` |
 | SEGA SF-7000 | `.sf7`, `.sf`, `.dsk` (external IPL required) |
@@ -41,7 +47,7 @@ The table covers all 45 registered systems. Supported images and ROM sets can al
 | SEGA Saturn | `.iso`, `.cue`, `.chd`, `.mds`, `.nrg`; BIOS images `.bin`, `.rom`, `.bios` |
 | SEGA Dreamcast | `.gdi`, `.cdi`, `.chd`, `.cue`, `.iso`, `.mds`, `.nrg`, homebrew `.elf`, multi-disc `.m3u` |
 | Sony PlayStation (PS1) | `.cue`, `.chd`, `.iso`, `.mds`, `.nrg`, raw `.bin`, PS-X `.exe`, multi-disc `.m3u` |
-| Sony PSP (experimental) | `.elf`, `.prx`, `.pbp`, encrypted executables, ISO9660 `.iso`, CISO v1 `.cso`; single-image archives; commercial compatibility is being validated |
+| Sony PSP (experimental) | `.elf`, `.prx`, `.pbp`, encrypted executables, ISO9660 `.iso`, CISO v1 `.cso` |
 | ZX Spectrum family / clones | `.sna`, `.z80`, `.tap`, `.tzx`, `.trd`, `.scl`, `.dsk`, `.dck`, `.pro`, `.kdi`, `.ide`, `.mmc` |
 | Super Nintendo / Super Famicom | `.sfc`, `.smc`, `.swc`, `.fig` |
 | Neo Geo MVS / AES | Named MAME ROM sets in `.zip`, `.7z`, `.rar`; unencrypted NeoSD `.neo` images |
@@ -101,7 +107,7 @@ These shortcuts are suspended while an emulated NES or Subor keyboard is active.
 | `source/cores` | System-specific emulation, cartridges, audio machines and firmware |
 | `source/hardware` | Shared CPU, audio-chip and video implementations |
 | `source/media` | ROM identification, CD access and native CHD decoding |
-| `source/music` | Reusable decoders, trackers, playback, synthesis and export |
+| `source/media/audio` | Native audio codecs, file formats, trackers, synthesis, processing and export |
 | `source/ui` | Shared FMX controls, SVG rendering and shaders |
 | `apps/*/*.dproj` | Explicit relative unit search paths and module references |
 | `source/platforms/RetroMul.Platforms.pas` | Explicit platform composition and calls to platform class registration methods |
@@ -114,7 +120,7 @@ Initialize dependencies with `git submodule update --init --recursive`. Their re
 <details>
 <summary>RetroTune features, supported music formats, and Delphi integration</summary>
 
-RetroTune is the companion player for retro game music, chiptunes, tracker modules, MIDI / General MIDI, and WAV audio. Its decoder registry and threaded PCM player can also be used in another Delphi application without the RetroTune interface.
+RetroTune is the companion player for retro game music, chiptunes, tracker modules, MIDI / General MIDI, and WAV audio. RetroMul's shared decoder registry and threaded PCM player can also be used in another Delphi application without the RetroTune interface.
 
 - Play NES NSF/NSFe, SNES SPC, Game Boy GBS, Commodore SID, Atari music, VGM/VGZ, and a wide range of Spectrum tracker and chip-dump formats.
 - Listen to MSX / Master System KSS, PC Engine HES, Amiga AHX/HVL/MOD, Dreamcast DSF/MiniDSF, TIATracker, TurboSound, TurboFM, IMF/DRO, XGM/XGM2, and digital tracker music.
@@ -189,9 +195,9 @@ MiniDSF needs its referenced library files beside the source file. MD1 needs the
 
 ### Using the player in another Delphi application
 
-`TTunePlayer` in `source/music/playback/RetroTune.Player.pas` owns the playback thread and PCM device; it does not depend on FireMonkey or `RetroTune.Main`. Add `source/music/decoders`, `source/music/common`, `source/music/chips`, `source/music/playback`, and `dependencies/PCMAudio` to your project's unit search path. Other decoders can additionally require `source/music/trackers` (including its `amiga` directory), `source/runtime`, `source/runtime`, the relevant `source/hardware` directories and system-specific core directories. The complete decoder set's paths are listed in `apps/retrotune/RetroTune.dproj`.
+`TAudioPlayer` in `source/runtime/audio/Core.Audio.Player.pas` owns the playback thread and PCM device; it does not depend on FireMonkey or `RetroTune.Main`. Add `source/media/audio`, `source/media/audio/common`, `source/media/audio/synthesis/soundfont`, `source/runtime/audio`, the relevant format subdirectories, `source/media/common`, `source/media/audio/processing`, and `dependencies/PCMAudio` to your project's unit search path. Other decoders can additionally require `source/media/audio/music/trackers` (including its `amiga` directory), `source/runtime`, the relevant `source/hardware` directories and system-specific core directories. The complete decoder set's paths are listed in `apps/retrotune/RetroTune.dproj`.
 
-Decoder units register their formats in their `initialization` sections. This standalone console example enables WAV and MIDI; add the other `RetroTune.Decoder.*` units used by [RetroTune.dpr](apps/retrotune/RetroTune.dpr) to enable their formats. Keep dependent decoder units when using containers. For MIDI, prepare the `sf2` directory beside **your application's** EXE, or call `SetMidiSoundFont` with a custom SF2 path before opening the MIDI file.
+Shared decoder units expose factories and do not register formats automatically. `Audio.Types` separates PCM (`IAudioSource`) from optional metadata, track selection and seeking. `Audio.Registry` provides independent registry instances; each application populates its own instance before starting playback. RetroTune calls `RegisterRetroTuneFormats` from `apps/retrotune/RetroTune.Formats.pas`; RetroMul's J2ME core directly creates only WAV and MIDI decoders. This standalone example explicitly registers WAV and MIDI. Container factories receive an `IAudioResolver` for their embedded formats. Export workers retain the resolver supplied by their caller; reusable modules never import RetroTune. For MIDI, prepare `sf2` beside your application's EXE, or call `SetMidiSoundFont` with a custom SF2 path.
 
 The example plays the default track for up to ten seconds, checks asynchronous playback errors, and releases the player even if playback fails:
 
@@ -201,19 +207,22 @@ program StandaloneTune;
 {$APPTYPE CONSOLE}
 
 uses
-  System.SysUtils, System.Classes,
-  RetroTune.Decoder, RetroTune.Player,
-  RetroTune.Decoder.WAV, RetroTune.Decoder.MIDI;
+  Audio.Registry, Audio.Types, System.SysUtils, System.Classes,
+  Audio.Decoder, Core.Audio.Player,
+  Audio.Format.WAV, Audio.Format.MIDI;
 
 begin
   try
+    var Formats: IAudioRegistry := TAudioRegistry.Create;
     if ParamCount <> 1 then
       raise Exception.Create('Usage: StandaloneTune <music.wav|music.mid>');
 
+    Formats.RegisterFormat('.wav', 'Wave audio', OpenWav);
+    Formats.RegisterFormat('.mid', 'Standard MIDI File', OpenMidi);
     // Optional for MIDI: SetMidiSoundFont('C:\Music\MyBank.sf2');
-    var Decoder := TTuneDecoders.Open(ParamStr(1));
-    var Info := Decoder.GetInfo;
-    var Player := TTunePlayer.Create(Decoder);
+    var Decoder := Formats.Open(ParamStr(1));
+    var Info := GetAudioInfo(Decoder);
+    var Player := TAudioPlayer.Create(Decoder);
     try
       Player.SetVolume(80); // 0..100
       Player.SelectTrack(Info.DefaultTrack); // Track indexes start at zero.
@@ -223,7 +232,7 @@ begin
         var State := Player.Status;
         if State.Error <> '' then
           raise Exception.Create(State.Error);
-        if State.State = TTunePlayerState.Finished then
+        if State.State = TAudioPlayerState.Finished then
           Break;
         TThread.Sleep(20);
       until TThread.GetTickCount64 - Started >= 10000;

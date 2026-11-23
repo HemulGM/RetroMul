@@ -333,8 +333,5 @@ begin
   Right := EnsureRange(Round(FDC[1].Process(SumR)), -32768, 32767);
 end;
 
-initialization
-  ConstantInitialise;
-
 end.
 

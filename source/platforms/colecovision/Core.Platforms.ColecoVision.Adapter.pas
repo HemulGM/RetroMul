@@ -247,7 +247,7 @@ begin
   FThread.VideoHint := TCVConfig(FConfig).VideoHint;
   FThread.SaveFile := FSaveFile;
   FThread.SnapshotDirectory := FSnapshotDirectory;
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'colecovision');
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'colecovision', GetConfig.FileName);
   ApplySettings;
   FThread.Start;
 end;

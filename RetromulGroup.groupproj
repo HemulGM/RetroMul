@@ -18,6 +18,9 @@
         <Projects Include="apps\gpu_tests\GPUTest.dproj">
             <Dependencies/>
         </Projects>
+        <Projects Include="apps\template_emu\OneEmu.dproj">
+            <Dependencies/>
+        </Projects>
     </ItemGroup>
     <ProjectExtensions>
         <Borland.Personality>Default.Personality.12</Borland.Personality>
@@ -71,14 +74,23 @@
     <Target Name="GPUTest:Make">
         <MSBuild Projects="apps\gpu_tests\GPUTest.dproj" Targets="Make"/>
     </Target>
+    <Target Name="OneEmu">
+        <MSBuild Projects="apps\template_emu\OneEmu.dproj"/>
+    </Target>
+    <Target Name="OneEmu:Clean">
+        <MSBuild Projects="apps\template_emu\OneEmu.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="OneEmu:Make">
+        <MSBuild Projects="apps\template_emu\OneEmu.dproj" Targets="Make"/>
+    </Target>
     <Target Name="Build">
-        <CallTarget Targets="RetroMul;RetromulTerm;FMXInputDemo;RetroTune;GPUTest"/>
+        <CallTarget Targets="RetroMul;RetromulTerm;FMXInputDemo;RetroTune;GPUTest;OneEmu"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="RetroMul:Clean;RetromulTerm:Clean;FMXInputDemo:Clean;RetroTune:Clean;GPUTest:Clean"/>
+        <CallTarget Targets="RetroMul:Clean;RetromulTerm:Clean;FMXInputDemo:Clean;RetroTune:Clean;GPUTest:Clean;OneEmu:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="RetroMul:Make;RetromulTerm:Make;FMXInputDemo:Make;RetroTune:Make;GPUTest:Make"/>
+        <CallTarget Targets="RetroMul:Make;RetromulTerm:Make;FMXInputDemo:Make;RetroTune:Make;GPUTest:Make;OneEmu:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>

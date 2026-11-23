@@ -74,7 +74,7 @@ procedure CheckAndroidEGL(Value: Boolean; const Operation: string);
 implementation
 
 uses
-  Androidapi.Egl, Androidapi.Gles2, RM.Vulkan.Loader;
+  Androidapi.Egl, Androidapi.Gles2, Androidapi.JNI.Os, RM.Vulkan.Loader;
 
 procedure CheckAndroidGL(const Operation: string);
 var
@@ -100,6 +100,8 @@ var
   Extensions: string;
 begin
   inherited Create;
+  if TJBuild_VERSION.JavaClass.SDK_INT < 26 then
+    raise EVulkanError.Create('AHardwareBuffer requires Android API 26 or later.');
   FLibrary := LoadLibrary('libandroid.so');
   if FLibrary = 0 then
     raise EVulkanError.Create('The Android system library is unavailable.');

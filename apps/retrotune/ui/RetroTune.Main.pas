@@ -3,12 +3,12 @@
 interface
 
 uses
-  System.SysUtils, System.Types, System.UITypes, System.Classes, System.Variants,
-  FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs, FMX.StdCtrls,
-  FMX.Filter.Effects, FMX.ListBox, FMX.Controls.Presentation, RetroTune.Decoder,
-  RetroTune.Player, RetroTune.Spectrum, RetroTune.Export.WAV, FMX.Layouts,
-  FMX.Objects, RetroTune.InfoForm, RetroTune.FormatsForm, FMX.Menus,
-  RetroTune.SoundFontCatalog;
+  RetroTune.Formats, Audio.Types, System.SysUtils, System.Types, System.UITypes,
+  System.Classes, System.Variants, FMX.Types, FMX.Controls, FMX.Forms,
+  FMX.Graphics, FMX.Dialogs, FMX.StdCtrls, FMX.Filter.Effects, FMX.ListBox,
+  FMX.Controls.Presentation, Audio.Decoder, Core.Audio.Player, Audio.Spectrum,
+  Audio.Export.WAV, FMX.Layouts, FMX.Objects, RetroTune.InfoForm,
+  RetroTune.FormatsForm, FMX.Menus, Audio.Synthesis.SoundFont.Catalog;
 
 type
   TFormMain = class(TForm)
@@ -86,20 +86,20 @@ type
     FSoundFontButton: TButton;
     FSoundFontMenu: TPopupMenu;
     FStandardSoundFonts: TArray<TStandardSoundFont>;
-    FPlayer: TTunePlayer;
-    FExport: TTuneWavExport;
+    FPlayer: TAudioPlayer;
+    FExport: TAudioWavExport;
     FInfoWindow: TTuneInfoForm;
     FFormatsWindow: TTuneFormatsForm;
     FSourceData: TBytes;
     FSourcePath: string;
-    FInfo: TTuneInfo;
+    FInfo: TAudioInfo;
     FUpdating: Boolean;
-    FBands: TTuneSpectrum;
-    FStereoBands: array[0..1] of TTuneSpectrum;
-    FStereoPCM: TTuneStereoWindow;
-    FStereoLevels: TTuneStereoLevels;
-    FPeaks: TTuneSpectrum;
-    FPeakHold: array[0..TuneSpectrumBands - 1] of Integer;
+    FBands: TAudioSpectrum;
+    FStereoBands: array[0..1] of TAudioSpectrum;
+    FStereoPCM: TAudioStereoWindow;
+    FStereoLevels: TAudioStereoLevels;
+    FPeaks: TAudioSpectrum;
+    FPeakHold: array[0..AudioSpectrumBands - 1] of Integer;
     FHistory: TBitmap;
     procedure UpdatePlayButton;
     procedure UpdateLayout(Sender: TObject);
@@ -128,17 +128,8 @@ function TuneLanguageForLocale(const LocaleID: string): string;
 implementation
 
 uses
-  System.IOUtils, System.Math, System.StrUtils, FMX.DialogService,
-  FMX.Platform, FMX.BehaviorManager, RetroTune.Decoder.TIA, RetroTune.Decoder.KSS,
-  RetroTune.Decoder.HES, RetroTune.Decoder.AHX, RetroTune.Decoder.DSF,
-  RetroTune.Decoder.TRDOS, RetroTune.Decoder.NSF, RetroTune.Decoder.NSFe,
-  RetroTune.Decoder.SPC, RetroTune.Decoder.GBS, RetroTune.Decoder.VGM,
-  RetroTune.Decoder.GYM, RetroTune.Decoder.OPLDumps, RetroTune.Decoder.XGM,
-  RetroTune.Decoder.ProTracker, RetroTune.Decoder.PT3,
-  RetroTune.Decoder.ZXTrackers, RetroTune.Decoder.AYDumps,
-  RetroTune.Decoder.Atari, RetroTune.Decoder.TurboFM,
-  RetroTune.Decoder.Containers, RetroTune.Decoder.Digital, RetroTune.Decoder.SAA,
-  RetroTune.Decoder.WAV, RetroTune.Decoder.MIDI, System.IniFiles;
+  System.IOUtils, System.Math, System.StrUtils, FMX.DialogService, FMX.Platform,
+  FMX.BehaviorManager, Audio.Format.MIDI, System.IniFiles;
 
 {$R *.fmx}
 
@@ -178,7 +169,7 @@ begin
   LabelDetails.Text := Translate('Game music · RetroTune');
   OpenDialog.Title := Translate('Open music file');
   SaveDialog.Title := Translate('Export WAV');
-  FHistory := TBitmap.Create(TuneSpectrumBands, 128);
+  FHistory := TBitmap.Create(AudioSpectrumBands, 128);
   ResetSpectrum;
   FSoundFontButton := FindComponent('ButtonSoundFont') as TButton;
   FSoundFontButton.OnClick := SoundFontClick;
@@ -257,7 +248,7 @@ begin
   LabelMusicIcon.TextSettings.Font.Family := '';
   {$ENDIF}
   UpdateLayout(nil);
-  OpenDialog.Filter := TTuneDecoders.DialogFilter.Replace('Supported formats|',
+  OpenDialog.Filter := RetroTuneDecoders.DialogFilter.Replace('Supported formats|',
     Translate('Supported formats') + '|');
   TimerTick(nil);
   PlaybackTimer.Enabled := True;
@@ -267,14 +258,16 @@ end;
 
 procedure TFormMain.UpdateLayout(Sender: TObject);
 begin
-  if FUpdatingLayout or (FContentScroll = nil) then Exit;
+  if FUpdatingLayout or (FContentScroll = nil) then
+    Exit;
   FUpdatingLayout := True;
   try
     var Compact := FContentScroll.Width < 700;
     var Inset := IfThen(Compact, 12, 24);
     LayoutContent.Margins.Rect := RectF(Inset, Inset, Inset, Inset);
     var W := LayoutContent.Width;
-    if W <= 0 then Exit;
+    if W <= 0 then
+      Exit;
     var OpenActions := FindComponent('LayoutTuneOpenActions') as TLayout;
     var FooterActions := FindComponent('LayoutTuneFooterActions') as TLayout;
     var TransportButtons := FindComponent('LayoutTuneTransportButtons') as TLayout;
@@ -292,14 +285,14 @@ begin
     ButtonExport.Margins.Right := IfThen(Compact, 8, 12);
     PanelArtwork.Visible := not Compact;
     PanelNowPlaying.Height := IfThen(Compact, 184, 144);
-    LayoutMetadata.Margins.Rect := RectF(IfThen(Compact,12,20),IfThen(Compact,12,16),IfThen(Compact,12,20),IfThen(Compact,12,16));
+    LayoutMetadata.Margins.Rect := RectF(IfThen(Compact, 12, 20), IfThen(Compact, 12, 16), IfThen(Compact, 12, 20), IfThen(Compact, 12, 16));
     TitleRow.Height := IfThen(Compact, 56, 44);
     LabelTitle.TextSettings.WordWrap := Compact;
     LabelArtist.Height := IfThen(Compact, 40, 24);
     LabelCopyright.Height := 20;
     LabelDetails.Height := 20;
-    LabelArtist.Margins.Top := IfThen(Compact,8,0);
-    LabelCopyright.Margins.Top := IfThen(Compact,4,1);
+    LabelArtist.Margins.Top := IfThen(Compact, 8, 0);
+    LabelCopyright.Margins.Top := IfThen(Compact, 4, 1);
     PanelTransport.Height := IfThen(Compact, 308, 244);
     ComboTracks.Height := 44;
     ComboTracks.ItemHeight := 44;
@@ -314,35 +307,35 @@ begin
       TransportButtons.Height := 44;
       LayoutVolume.Align := TAlignLayout.Bottom;
       LayoutVolume.Height := 64;
-      LayoutVolume.Margins.Rect := RectF(0,12,0,0);
+      LayoutVolume.Margins.Rect := RectF(0, 12, 0, 0);
     end
     else
     begin
       LayoutVolume.Align := TAlignLayout.Client;
-      LayoutVolume.Margins.Rect := RectF(24,0,0,0);
+      LayoutVolume.Margins.Rect := RectF(24, 0, 0, 0);
     end;
     LayoutSpectrumHeader.Height := IfThen(Compact, 76, 44);
     ComboSpectrum.Align := TAlignLayout.Right;
     ComboSpectrum.Width := 220;
-    ComboSpectrum.Margins.Rect := RectF(12,0,0,0);
+    ComboSpectrum.Margins.Rect := RectF(12, 0, 0, 0);
     if Compact then
     begin
       ComboSpectrum.Align := TAlignLayout.Bottom;
       ComboSpectrum.Height := 44;
-      ComboSpectrum.Margins.Rect := RectF(0,8,0,0);
+      ComboSpectrum.Margins.Rect := RectF(0, 8, 0, 0);
     end;
     ComboSpectrum.ItemHeight := 44;
-    PanelSpectrum.Height := IfThen(Compact,232,Max(196,FContentScroll.Height - 2*Inset - LayoutHeader.Height - PanelNowPlaying.Height - PanelTransport.Height - 96 - IfThen(LayoutExport.Visible,76,0)));
+    PanelSpectrum.Height := IfThen(Compact, 232, Max(196, FContentScroll.Height - 2 * Inset - LayoutHeader.Height - PanelNowPlaying.Height - PanelTransport.Height - 96 - IfThen(LayoutExport.Visible, 76, 0)));
     FooterActions.Align := TAlignLayout.Right;
     FooterActions.Width := 268;
-    LayoutFooter.Height := IfThen(Compact,84,44);
+    LayoutFooter.Height := IfThen(Compact, 84, 44);
     if Compact then
     begin
       FooterActions.Align := TAlignLayout.Bottom;
       FooterActions.Height := 44;
     end;
-    ButtonFormats.Width := IfThen(Compact,Max(44,(W-8)/2),136);
-    ButtonFormats.Margins.Rect := RectF(IfThen(Compact,8,12),0,0,0);
+    ButtonFormats.Width := IfThen(Compact, Max(44, (W - 8) / 2), 136);
+    ButtonFormats.Margins.Rect := RectF(IfThen(Compact, 8, 12), 0, 0, 0);
     LabelStatus.TextSettings.Trimming := TTextTrimming.Character;
     var ContentHeight: Single := 0;
     for var Child in LayoutContent.Children do
@@ -359,15 +352,21 @@ end;
 
 procedure TFormMain.UpdatePlayButton;
 begin
-  var Playing := (FPlayer <> nil) and (FPlayer.Status.State = TTunePlayerState.Playing);
-  var Paused := (FPlayer <> nil) and (FPlayer.Status.State = TTunePlayerState.Paused);
-  if Playing then ButtonPlay.Hint := Translate('Pause')
-  else if Paused then ButtonPlay.Hint := Translate('Resume')
-  else ButtonPlay.Hint := Translate('Play');
+  var Playing := (FPlayer <> nil) and (FPlayer.Status.State = TAudioPlayerState.Playing);
+  var Paused := (FPlayer <> nil) and (FPlayer.Status.State = TAudioPlayerState.Paused);
+  if Playing then
+    ButtonPlay.Hint := Translate('Pause')
+  else if Paused then
+    ButtonPlay.Hint := Translate('Resume')
+  else
+    ButtonPlay.Hint := Translate('Play');
   ButtonPlay.AutoTranslate := False;
   if ButtonPlay.Width < 160 then
   begin
-    if Playing then ButtonPlay.Text := 'Ⅱ' else ButtonPlay.Text := '▶';
+    if Playing then
+      ButtonPlay.Text := 'Ⅱ'
+    else
+      ButtonPlay.Text := '▶';
   end
   else
     ButtonPlay.Text := ButtonPlay.Hint;
@@ -396,11 +395,11 @@ end;
 
 procedure TFormMain.LoadTune(const Path: string; UseSnapshot: Boolean);
 var
-  Decoder: ITuneDecoder;
-  Info: TTuneInfo;
+  Decoder: IAudioSource;
+  Info: TAudioInfo;
   Data: TBytes;
   I: Integer;
-  PreviousPlayback: TTunePlayerStatus;
+  PreviousPlayback: TAudioPlayerStatus;
   RestorePosition: Boolean;
 begin
   try
@@ -408,14 +407,14 @@ begin
     if UseSnapshot then
       Data := Copy(FSourceData)
     else
-      Data := TTuneDecoders.ReadData(Path);
-    Decoder := TTuneDecoders.OpenData(Data, ExtractFileExt(Path));
-    Info := Decoder.GetInfo;
+      Data := RetroTuneDecoders.ReadData(Path);
+    Decoder := RetroTuneDecoders.OpenData(Data, ExtractFileExt(Path));
+    Info := GetAudioInfo(Decoder);
     // Parse first, so an invalid file leaves the currently loaded tune intact.
     if RestorePosition then
       PreviousPlayback := FPlayer.Status;
     FreeAndNil(FPlayer);
-    FPlayer := TTunePlayer.Create(Decoder);
+    FPlayer := TAudioPlayer.Create(Decoder);
     FInfo := Info;
     FSourceData := Data;
     FSourcePath := ExpandFileName(Path);
@@ -595,7 +594,8 @@ var
   Seconds: Double;
   Name: string;
 begin
-  if (FPlayer = nil) or (FExport <> nil) then Exit;
+  if (FPlayer = nil) or (FExport <> nil) then
+    Exit;
   try
     if not TryStrToFloat(Duration, Seconds) then
       if not TryStrToFloat(Duration.Replace(',', '.'), Seconds, TFormatSettings.Invariant) then
@@ -614,7 +614,7 @@ begin
       raise EArgumentException.Create(Translate('Specify a filename with the .wav extension'));
     if SameFileName(ExpandFileName(SaveDialog.FileName), FSourcePath) then
       raise EArgumentException.Create(Translate('Choose another filename to preserve the source file'));
-    FExport := TTuneWavExport.Create(FSourceData, ExtractFileExt(FSourcePath),
+    FExport := TAudioWavExport.Create(RetroTuneDecoders, FSourceData, ExtractFileExt(FSourcePath),
       SaveDialog.FileName, Track, Seconds);
     LayoutExport.Visible := True;
     UpdateLayout(nil);
@@ -663,7 +663,7 @@ end;
 
 procedure TFormMain.UpdateExport;
 var
-  State: TTuneExportStatus;
+  State: TAudioExportStatus;
 begin
   FSoundFontButton.Enabled := FExport = nil;
   ButtonOpen.Enabled := FExport = nil;
@@ -678,7 +678,7 @@ begin
   ButtonExport.Text := Translate('Cancel export');
   if State.TotalFrames > 0 then
     ProgressExport.Value := 100.0 * State.Frames / State.TotalFrames;
-  if State.State = TTuneExportState.Rendering then
+  if State.State = TAudioExportState.Rendering then
   begin
     LabelExport.Text := Format(Translate('Exporting WAV: %.0f%%'), [ProgressExport.Value]);
     Exit;
@@ -689,15 +689,15 @@ begin
   ButtonExport.Enabled := FPlayer <> nil;
   ButtonOpen.Enabled := True;
   case State.State of
-    TTuneExportState.Completed:
+    TAudioExportState.Completed:
       begin
         ProgressExport.Value := 100;
         LabelExport.Text := Format(Translate('WAV saved: %s · %s'),
           [ExtractFileName(State.Path), PlaybackTime(State.Frames / Max(1, State.SampleRate))]);
       end;
-    TTuneExportState.Cancelled:
+    TAudioExportState.Cancelled:
       LabelExport.Text := Translate('WAV export cancelled');
-    TTuneExportState.Failed:
+    TAudioExportState.Failed:
       begin
         LabelExport.Text := Translate('WAV export failed');
         ShowMessage(Translate('Could not export WAV: ') + Translate(State.Error));
@@ -709,7 +709,7 @@ procedure TFormMain.PlayClick(Sender: TObject);
 begin
   if FPlayer = nil then
     Exit;
-  if FPlayer.Status.State = TTunePlayerState.Playing then
+  if FPlayer.Status.State = TAudioPlayerState.Playing then
     FPlayer.Pause
   else
     FPlayer.Play;
@@ -780,10 +780,10 @@ end;
 
 procedure TFormMain.TimerTick(Sender: TObject);
 const
-  StateText: array[TTunePlayerState] of string =
+  StateText: array[TAudioPlayerState] of string =
     ('Stopped', 'Playing', 'Pause', 'Track ended');
 var
-  State: TTunePlayerStatus;
+  State: TAudioPlayerStatus;
   Seconds: Integer;
 begin
   UpdateExport;
@@ -839,11 +839,11 @@ end;
 
 procedure TFormMain.ResetSpectrum;
 begin
-  FBands := Default(TTuneSpectrum);
+  FBands := Default(TAudioSpectrum);
   FillChar(FStereoBands, SizeOf(FStereoBands), 0);
-  FStereoPCM := Default(TTuneStereoWindow);
-  FStereoLevels := Default(TTuneStereoLevels);
-  FPeaks := Default(TTuneSpectrum);
+  FStereoPCM := Default(TAudioStereoWindow);
+  FStereoLevels := Default(TAudioStereoLevels);
+  FPeaks := Default(TAudioSpectrum);
   FillChar(FPeakHold, SizeOf(FPeakHold), 0);
   if FHistory <> nil then
     FHistory.Clear($FF0E172A);
@@ -867,9 +867,9 @@ end;
 
 procedure TFormMain.UpdateSpectrum;
 var
-  Samples: TTunePCMWindow;
-  Target: TTuneSpectrum;
-  StereoTarget: array[0..1] of TTuneSpectrum;
+  Samples: TAudioPCMWindow;
+  Target: TAudioSpectrum;
+  StereoTarget: array[0..1] of TAudioSpectrum;
   Rate, I, X, Y: Integer;
   Value: Single;
   Pixels: TBitmapData;
@@ -879,15 +879,15 @@ begin
     Exit;
   if FPlayer = nil then
     Exit;
-  if FPlayer.Status.State in [TTunePlayerState.Stopped, TTunePlayerState.Finished] then
+  if FPlayer.Status.State in [TAudioPlayerState.Stopped, TAudioPlayerState.Finished] then
   begin
     ResetSpectrum;
     Exit;
   end;
-  if FPlayer.Status.State <> TTunePlayerState.Playing then
+  if FPlayer.Status.State <> TAudioPlayerState.Playing then
     Exit;
   FPlayer.GetStereoVisualization(FStereoPCM, Rate);
-  for I := 0 to TuneFFTSize - 1 do
+  for I := 0 to AudioFFTSize - 1 do
     Samples[I] := (FStereoPCM.Left[I] + FStereoPCM.Right[I]) * 0.5;
   AnalyzeStereo(FStereoPCM, FStereoLevels);
   if ComboSpectrum.ItemIndex in [7, 8] then
@@ -895,13 +895,13 @@ begin
     AnalyzeSpectrum(FStereoPCM.Left, Rate, StereoTarget[0]);
     AnalyzeSpectrum(FStereoPCM.Right, Rate, StereoTarget[1]);
     for var Channel := 0 to 1 do
-      for I := 0 to TuneSpectrumBands - 1 do
+      for I := 0 to AudioSpectrumBands - 1 do
         FStereoBands[Channel][I] := FStereoBands[Channel][I] +
           (StereoTarget[Channel][I] - FStereoBands[Channel][I]) *
           IfThen(StereoTarget[Channel][I] > FStereoBands[Channel][I], 0.65, 0.18);
   end;
   AnalyzeSpectrum(Samples, Rate, Target);
-  for I := 0 to TuneSpectrumBands - 1 do
+  for I := 0 to AudioSpectrumBands - 1 do
   begin
     if Target[I] > FBands[I] then
       FBands[I] := FBands[I] + (Target[I] - FBands[I]) * 0.65
@@ -920,9 +920,9 @@ begin
   if FHistory.Map(TMapAccess.ReadWrite, Pixels) then
   try
     for Y := FHistory.Height - 1 downto 1 do
-      for X := 0 to TuneSpectrumBands - 1 do
+      for X := 0 to AudioSpectrumBands - 1 do
         Pixels.SetPixel(X, Y, Pixels.GetPixel(X, Y - 1));
-    for X := 0 to TuneSpectrumBands - 1 do
+    for X := 0 to AudioSpectrumBands - 1 do
     begin
       Value := Target[X];
       if Value < 0.5 then
@@ -985,11 +985,11 @@ begin
     Canvas.Fill.Kind := TBrushKind.Solid;
     if ComboSpectrum.ItemIndex = 7 then
     begin
-      Step := W / TuneSpectrumBands;
+      Step := W / AudioSpectrumBands;
       for Channel := 0 to 1 do
       begin
         Canvas.Fill.Color := ChannelColor(Channel);
-        for I := 0 to TuneSpectrumBands - 1 do
+        for I := 0 to AudioSpectrumBands - 1 do
         begin
           X := I * Step;
           Level := FStereoBands[Channel][I] * Max(0.0, H / 2 - 14);
@@ -1013,9 +1013,9 @@ begin
         for Channel := 0 to 1 do
         begin
           Curve.Clear;
-          for I := 0 to TuneSpectrumBands - 1 do
+          for I := 0 to AudioSpectrumBands - 1 do
           begin
-            X := I * W / (TuneSpectrumBands - 1);
+            X := I * W / (AudioSpectrumBands - 1);
             Y := H - FStereoBands[Channel][I] * Max(0.0, H - 18) - 2;
             if I = 0 then
               Curve.MoveTo(PointF(X, Y))
@@ -1049,7 +1049,7 @@ begin
         Gain := 0;
       Curve := TPathData.Create;
       try
-        for I := 0 to TuneFFTSize - 1 do
+        for I := 0 to AudioFFTSize - 1 do
         begin
           Mid := (FStereoPCM.Left[I] + FStereoPCM.Right[I]) * 0.5;
           Side := (FStereoPCM.Right[I] - FStereoPCM.Left[I]) * 0.5;
@@ -1113,9 +1113,9 @@ begin
       Canvas.DrawEllipse(RectF(CenterX - Radius, CenterY - Radius,
           CenterX + Radius, CenterY + Radius), 1);
       Canvas.Stroke.Thickness := Max(1.0, Min(4.0, Radius * 0.09));
-      for I := 0 to TuneSpectrumBands - 1 do
+      for I := 0 to AudioSpectrumBands - 1 do
       begin
-        Angle := -Pi / 2 + I * 2 * Pi / TuneSpectrumBands;
+        Angle := -Pi / 2 + I * 2 * Pi / AudioSpectrumBands;
         Level := FBands[I];
         Canvas.Stroke.Color := $FF1683D8;
         Canvas.DrawLine(PointF(CenterX + Cos(Angle) * Radius, CenterY + Sin(Angle) * Radius),
@@ -1132,8 +1132,8 @@ begin
     if ComboSpectrum.ItemIndex = 6 then
     begin
       // Two FFT bands per column; lit cells show the stronger of the pair.
-      Step := W / (TuneSpectrumBands div 2);
-      for I := 0 to TuneSpectrumBands div 2 - 1 do
+      Step := W / (AudioSpectrumBands div 2);
+      for I := 0 to AudioSpectrumBands div 2 - 1 do
       begin
         Level := Max(FBands[I * 2], FBands[I * 2 + 1]);
         X := I * Step;
@@ -1156,14 +1156,14 @@ begin
     end;
     for I := 1 to 4 do
       Canvas.DrawLine(PointF(0, H * I / 4), PointF(W, H * I / 4), 1);
-    Step := W / TuneSpectrumBands;
+    Step := W / AudioSpectrumBands;
     Canvas.Fill.Kind := TBrushKind.Solid;
     Canvas.Fill.Color := $FF1683D8;
     if ComboSpectrum.ItemIndex = 4 then
     begin
       Canvas.Stroke.Color := $6088CDEE;
       Canvas.DrawLine(PointF(0, H / 2), PointF(W, H / 2), 1);
-      for I := 0 to TuneSpectrumBands - 1 do
+      for I := 0 to AudioSpectrumBands - 1 do
       begin
         X := I * Step;
         Level := FBands[I] * Max(0.0, H / 2 - 2);
@@ -1178,7 +1178,7 @@ begin
     end;
     if ComboSpectrum.ItemIndex <> 1 then
     begin
-      for I := 0 to TuneSpectrumBands - 1 do
+      for I := 0 to AudioSpectrumBands - 1 do
       begin
         X := I * Step;
         Y := H - Max(2.0, FBands[I] * (H - 4));
@@ -1198,9 +1198,9 @@ begin
       Curve := TPathData.Create;
       try
         Area.MoveTo(PointF(0, H));
-        for I := 0 to TuneSpectrumBands - 1 do
+        for I := 0 to AudioSpectrumBands - 1 do
         begin
-          X := I * W / (TuneSpectrumBands - 1);
+          X := I * W / (AudioSpectrumBands - 1);
           Y := H - Max(2.0, FBands[I] * (H - 4));
           Area.LineTo(PointF(X, Y));
           if I = 0 then

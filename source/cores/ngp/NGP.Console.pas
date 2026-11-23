@@ -158,7 +158,6 @@ begin
   FSound.Reset;
   FCartridge.Reset;
   Z80StateInitialise(FZ80);
-  Z80Reset(FZ80);
   FCPU.Reset;
   FVideo.BeginLine(0);
   if Length(SystemRAM) > 0 then
@@ -695,9 +694,6 @@ begin
     FSampleFrames := 0;
   end;
 end;
-
-initialization
-  HW.Z80.ConstantInitialise;
 
 end.
 

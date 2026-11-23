@@ -962,7 +962,7 @@ begin
   end;
   State.Field(FEEPROM, SizeOf(FEEPROM));
   State.Field(FEERead, SizeOf(FEERead));
-  State.Field(FInput, SizeOf(FInput));
+  State.CompatibleField(FInput, SizeOf(FInput), TEmulatorInput.LegacySize, TEmulatorInput.TravelSize);
   State.Field(FCoins, SizeOf(FCoins));
   State.Field(FTime, SizeOf(FTime));
   State.Field(FFrameNumber, SizeOf(FFrameNumber));

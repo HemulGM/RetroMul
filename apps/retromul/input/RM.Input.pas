@@ -21,6 +21,8 @@ type
 
   TInputBindingsSetup = reference to procedure(Input: TInputManager; Ini: TCustomIniFile);
 
+  TInputGamepadPreset = reference to procedure(Input: TInputManager; Port: Integer);
+
   TInputBindingPolicy = record
     Enabled: Boolean;
     SourceKey: string;
@@ -43,12 +45,19 @@ type
     LegacyPorts: Integer;
     LegacySection: string;
     LegacyButtons: TEmulatorButtons;
+    // Pad buttons read as travel (0..1) when bound to an axis. Digital
+    // buttons and keys press them fully. Capture prefers the axis of a
+    // controller trigger that also reports a digital button.
+    AnalogButtons: TEmulatorButtons;
     // Existing profiles opt into shared historical codecs. New profiles are independent.
     UseSharedBindingRules: Boolean;
     SharedBindingOrder: Integer;
     SharedLegacyBindings: TInputBindingsSetup;
     SharedFilterBinding, FilterBinding: TInputBindingFilter;
     LoadLegacyKeys: TInputKeyMapLoader;
+    // The owning platform contributes its full standard layout for one port.
+    // Called only on first initialization or an explicit Controls reset.
+    LoadGamepadPreset: TInputGamepadPreset;
     BeforeLegacyBindings, AfterLegacyBindings, AfterLoadBindings: TInputBindingsSetup;
     class function Create(const Buttons: TEmulatorButtons): TPlatformInputDefinition; static;
   end;
@@ -69,6 +78,16 @@ function HostKeyToHid(Code: Word): Integer;
 
 function PadAction(Port: Integer; Button: TEmulatorButton): Integer;
 
+function IsAnalogInputAction(const SystemId: string; Action: Integer): Boolean;
+
+// Rest positions of the current controller axes, as binding capture records
+// them (NaN: deflected at the start, never chosen).
+function AxisOrigins(Input: TInputManager): TArray<TInputValue>;
+
+// The axis of DeviceId that has moved furthest from its origin, by at least
+// MinimumTravel of its range, as a binding for Action.
+function FindMovedAxis(const Origins, Values: TArray<TInputValue>; Action: Integer; const DeviceId: string; MinimumTravel: Single; out Binding: TInputBinding): Boolean;
+
 // Generic axis travel, including calibrated trigger origins and digital fallback.
 function ActionAmount(Input: TInputManager; const Bindings: TArray<TInputBinding>; const Values: TArray<TInputValue>; Action: Integer): Single;
 
@@ -82,12 +101,14 @@ procedure SaveInputBindings(Input: TInputManager; Ini: TCustomIniFile);
 
 procedure FilterInputBindings(Input: TInputManager; Ini: TCustomIniFile; const SystemId: string = '');
 
-function BindingCaption(Input: TInputManager; Action: Integer): string;
+function BindingCaption(Input: TInputManager; Action: Integer; const SystemId: string = ''): string;
 
 // First available rumble controller bound to this player's pad buttons.
 function RumbleDeviceId(Input: TInputManager; Port: Integer): string;
 
 function ReadHostKeys(Input: TInputManager): THostKeys;
+
+procedure MergeVirtualAnalogButtons(Input: TInputManager; const VirtualPad: TEmulatorInput; var Packet: TEmulatorInput);
 
 function ReadPadInput(Input: TInputManager; const Ports: TCoreInputPorts): TEmulatorInput;
 
@@ -98,7 +119,7 @@ implementation
 
 uses
   System.Generics.Collections, System.Generics.Defaults, Core.Platforms,
-  System.Math, FMX.Types;
+  System.Math, FMX.Types, RM.Input.Gamepads;
 
 var
   PlatformInputs: TDictionary<string, TPlatformInputDefinition>;
@@ -255,7 +276,7 @@ begin
     for var Button := Low(TEmulatorButton) to High(TEmulatorButton) do
       if Binding.Action = PadAction(Port, Button) then
         for var Device in Devices do
-          if (Device.Id = Binding.DeviceId) and (Device.Kind = TInputDeviceKind.Controller) and Device.Available and
+          if (Device.Id = ResolveGamepadSource(Input, Binding.DeviceId)) and (Device.Kind = TInputDeviceKind.Controller) and Device.Available and
             Device.RumbleSupported then
             Exit(Device.Id);
 end;
@@ -268,21 +289,173 @@ begin
     Result := ExtraPadAction + (Port - 4) * 32 + Ord(Button);
 end;
 
-// 0..1: the deflection of an axis bound to the action, else 1 while pressed.
-function ActionAmount(Input: TInputManager; const Bindings: TArray<TInputBinding>; const Values: TArray<TInputValue>; Action: Integer): Single;
+function IsAnalogInputAction(const SystemId: string; Action: Integer): Boolean;
 begin
-  Result := 0;
+  Result := False;
+  var Definition: TPlatformInputDefinition;
+  if (Action < 0) or not FindPlatformInput(SystemId, Definition) or (Definition.AnalogButtons = []) then
+    Exit;
+  var Base := Action;
+  if Action >= ExtraPadAction then
+    Base := Action - ExtraPadAction + 4 * 32;
+  var Slot := Base mod 32;
+  if (Base div 32 >= 12) or (Slot > Ord(High(TEmulatorButton))) then
+    Exit;
+  Result := TEmulatorButton(Slot) in Definition.AnalogButtons;
+end;
+
+function AxisOrigins(Input: TInputManager): TArray<TInputValue>;
+begin
+  Result := nil;
+  if Input = nil then
+    Exit;
+  for var V in Input.Values do
+    if V.Kind = TInputElementKind.Axis then
+    begin
+      // As FMXInput's capture: triggers rest at an end, sticks at the center.
+      var Origin := V;
+      Origin.Value := 0;
+      if V.Value <= -0.9 then
+        Origin.Value := -1
+      else if V.Value >= 0.9 then
+        Origin.Value := 1
+      else if Abs(V.Value) > 0.25 then
+        Origin.Value := NaN;
+      Result := Result + [Origin];
+    end;
+end;
+
+function FindMovedAxis(const Origins, Values: TArray<TInputValue>; Action: Integer; const DeviceId: string; MinimumTravel: Single; out Binding: TInputBinding): Boolean;
+begin
+  Result := False;
+  var Best: Single := MinimumTravel;
+  for var O in Origins do
+  begin
+    if (O.DeviceId <> DeviceId) or IsNan(O.Value) then
+      Continue;
+    for var V in Values do
+      if (V.DeviceId = O.DeviceId) and (V.Kind = TInputElementKind.Axis) and (V.Code = O.Code) then
+      begin
+        var Direction := 1;
+        if V.Value < O.Value then
+          Direction := -1;
+        var Range: Extended := 1.0 - O.Value * Direction;
+        if Range <= 0 then
+          Continue;
+        var Travel: Extended := Abs(V.Value - O.Value) / Range;
+        if Travel >= Best then
+        begin
+          Best := Travel;
+          Binding := TInputBinding.Create(Action, V);
+          Binding.AxisOrigin := O.Value;
+          Binding.Direction := Direction;
+          Result := True;
+        end;
+      end;
+  end;
+end;
+
+type
+  TActionTravel = record
+    Amount: Single;
+    Digital, Axis, Continuous, Relative: Boolean;
+  end;
+
+procedure AccumulateTravel(const B: TInputBinding; const V: TInputValue; var Travel: TActionTravel);
+begin
+  case B.Kind of
+    TInputElementKind.Axis:
+      begin
+        Travel.Axis := True;
+        Travel.Continuous := True;
+        var Range := 1.0 - B.AxisOrigin * B.Direction;
+        if Range > 0 then
+          Travel.Amount := Max(Travel.Amount,
+            EnsureRange((V.Value - B.AxisOrigin) * B.Direction / Range, 0.0, 1.0));
+      end;
+    TInputElementKind.RelativeAxis:
+      begin
+        Travel.Axis := True;
+        if V.Value * B.Direction >= B.PressThreshold then
+          Travel.Amount := 1;
+      end;
+    TInputElementKind.Hat:
+      begin
+        var Down := (Round(V.Value) >= 0) and
+          ((Round(V.Value) = B.Direction) or (((B.Direction and 1) = 0) and
+          (((Round(V.Value) + 1) mod 8 = B.Direction) or ((Round(V.Value) + 7) mod 8 = B.Direction))));
+        Travel.Digital := Travel.Digital or Down;
+        if Down then
+          Travel.Amount := 1;
+      end;
+    TInputElementKind.Button:
+      begin
+        // Real device buttons retain their instantaneous travel too.
+        Travel.Digital := Travel.Digital or (V.Value > 0.5);
+        if V.Value > 0.5 then
+          Travel.Amount := 1;
+      end;
+  else
+    Travel.Digital := Travel.Digital or (V.Value > 0.5);
+    Travel.Relative := Travel.Relative or (V.Value > 0.5);
+  end;
+end;
+
+function ResolvedTravel(Input: TInputManager; Action: Integer; const Travel: TActionTravel): Single;
+begin
+  var Digital := Single(Ord(Travel.Digital));
+  if Input is TGamepadInputManager then
+    Digital := TGamepadInputManager(Input).DigitalAnalogAmount(Action, Travel.Digital);
+  Result := Max(Travel.Amount, Digital);
+end;
+
+// Raw physical axes bypass interpolation. Only digital bindings get travel.
+procedure ReadActionAmount(Input: TInputManager; const Bindings: TArray<TInputBinding>; const Values: TArray<TInputValue>; Action: Integer; out Amount: Single; out Digital, Axis: Boolean);
+begin
+  var Travel := Default(TActionTravel);
   for var B in Bindings do
-    if (B.Action = Action) and (B.Kind = TInputElementKind.Axis) then
+    if B.Action = Action then
       for var V in Values do
         if (V.DeviceId = B.DeviceId) and (V.Kind = B.Kind) and (V.Code = B.Code) then
-        begin
-          var Travel := 1.0 - B.AxisOrigin * B.Direction;
-          if Travel > 0 then
-            Result := Max(Result, EnsureRange((V.Value - B.AxisOrigin) * B.Direction / Travel, 0.0, 1.0));
-        end;
-  if (Result = 0) and Input.IsPressed(Action) then
-    Result := 1;
+          AccumulateTravel(B, V, Travel);
+  Digital := Travel.Digital;
+  Axis := Travel.Axis;
+  Amount := ResolvedTravel(Input, Action, Travel);
+end;
+
+function ActionAmount(Input: TInputManager; const Bindings: TArray<TInputBinding>; const Values: TArray<TInputValue>; Action: Integer): Single;
+begin
+  if Input = nil then
+    Exit(0);
+  if not Input.Enabled or Input.Capturing then
+  begin
+    if Input is TGamepadInputManager then
+      TGamepadInputManager(Input).ResetAnalogRamps;
+    Exit(0);
+  end;
+  var Digital, Axis: Boolean;
+  ReadActionAmount(Input, Bindings, Values, Action, Result, Digital, Axis);
+end;
+
+procedure MergeVirtualAnalogButtons(Input: TInputManager; const VirtualPad: TEmulatorInput; var Packet: TEmulatorInput);
+begin
+  for var P := 0 to EmulatorMaxPlayers - 1 do
+    for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
+    begin
+      var Down := B in VirtualPad.PortButtons(P);
+      var Amount := Single(Ord(Down));
+      if Input is TGamepadInputManager then
+        Amount := TGamepadInputManager(Input).DigitalAnalogAmount($20000 + P * 32 + Ord(B), Down);
+      if not (B in Packet.AnalogButtons[P].Valid) then
+        Packet.AnalogButtons[P].Values[B] := Round(Packet.ButtonAmount(P, B) * 255);
+      Include(Packet.AnalogButtons[P].Valid, B);
+      if Down then
+      begin
+        Include(Packet.AnalogButtons[P].Digital, B);
+        Include(Packet.RelativeButtons[P], B);
+      end;
+      Packet.AnalogButtons[P].Values[B] := Max(Packet.AnalogButtons[P].Values[B], Round(Amount * 255));
+    end;
 end;
 
 function CoreButtons(const SystemId, Device: string): TEmulatorButtons;
@@ -336,6 +509,8 @@ procedure LoadInputBindings(Input: TInputManager; Ini: TCustomIniFile; const Sys
 begin
   Input.CancelCapture;
   Input.ClearBindings;
+  if Input is TGamepadInputManager then
+    TGamepadInputManager(Input).LoadAnalogSettings(Ini);
   var Definition: TPlatformInputDefinition;
   var Registered := FindPlatformInput(SystemId, Definition);
   var JSON := Ini.ReadString('FMXInput', 'Bindings', '');
@@ -366,12 +541,16 @@ begin
       end;
     if Assigned(Definition.AfterLegacyBindings) then
       Definition.AfterLegacyBindings(Input, Ini);
+    if Assigned(Definition.LoadGamepadPreset) then
+      for var Port := 0 to Definition.LegacyPorts - 1 do
+        Definition.LoadGamepadPreset(Input, Port);
   end;
   if Registered and Assigned(Definition.AfterLoadBindings) then
     Definition.AfterLoadBindings(Input, Ini);
 end;
 
-function BindingCaption(Input: TInputManager; Action: Integer): string;
+// The element of the action's first binding.
+function PlainBindingCaption(Input: TInputManager; Action: Integer): string;
 begin
   Result := Translate('Unassigned');
   if Input = nil then
@@ -380,6 +559,13 @@ begin
   for var B in Input.Bindings do
     if B.Action = Action then
     begin
+      if IsStandardGamepadId(B.DeviceId) then
+      begin
+        var Port := StandardGamepadPort(B.DeviceId);
+        if Port >= 0 then
+          Exit(Format('%s %d · %s', [Translate('Gamepad'), Port + 1, StandardGamepadCaption(B)]));
+        Exit(Translate('Gamepad') + ' · ' + StandardGamepadCaption(B));
+      end;
       if B.Kind = TInputElementKind.Key then
         Exit(InputKeyName(B.Code));
 
@@ -396,6 +582,38 @@ begin
           for var E in D.Elements do
             if (E.Kind = B.Kind) and (E.Code = B.Code) then
               Exit(E.Name);
+      Exit;
+    end;
+end;
+
+function BindingCaption(Input: TInputManager; Action: Integer; const SystemId: string): string;
+begin
+  Result := PlainBindingCaption(Input, Action);
+  if Input <> nil then
+    for var B in Input.Bindings do
+      if B.Action = Action then
+      begin
+        if IsStandardGamepadId(B.DeviceId) then
+          Break;
+        // The first legacy keyboard binding remains visible. Add one concise
+        // standard mapping; redundant hat/button/axis alternatives stay hidden.
+        for var Standard in Input.Bindings do
+          if (Standard.Action = Action) and IsStandardGamepadId(Standard.DeviceId) then
+          begin
+            Result := Result + ' / ' + StandardGamepadCaption(Standard);
+            Break;
+          end;
+        Break;
+      end;
+  if (Input = nil) or not IsAnalogInputAction(SystemId, Action) then
+    Exit;
+
+  // An analog action bound to an axis reads its travel.
+  for var B in Input.Bindings do
+    if B.Action = Action then
+    begin
+      if B.Kind = TInputElementKind.Axis then
+        Result := Result + ' · ' + Translate('Analog');
       Exit;
     end;
 end;
@@ -451,6 +669,8 @@ begin
     var Port := Binding.Action div 32;
     if Binding.Action >= ExtraPadAction then
       Port := 4 + (Binding.Action - ExtraPadAction) div 32;
+    if StandardGamepadPort(Binding.DeviceId) >= 0 then
+      Port := StandardGamepadPort(Binding.DeviceId);
     if (Port >= 0) and (Port < 12) then
       Policy.SourceKey := 'Source' + IntToStr(Port + 1);
     if not Registered or Definition.UseSharedBindingRules then
@@ -467,89 +687,112 @@ begin
     var Source := '';
     if Policy.SourceKey <> '' then
       Source := Ini.ReadString('Ports', Policy.SourceKey, '');
-    if (Source = '') or (Source = Binding.DeviceId) then
+    if (Source <> '') and (StandardGamepadPort(Binding.DeviceId) >= 0) then
+    begin
+      // A chosen physical source gets its own normalized stream, independently
+      // of its current player slot. Keyboard/mouse selection excludes gamepads.
+      if (Source = SystemKeyboardId) or (Source = SystemMouseId) then
+        Continue;
+      var Selected := Binding;
+      Selected.DeviceId := StandardGamepadSource(Source);
+      Input.AddBinding(Selected);
+    end
+    else if (Source = '') or (Source = Binding.DeviceId) or
+      (IsStandardGamepadId(Binding.DeviceId) and (Binding.DeviceId = StandardGamepadSource(Source))) then
       Input.AddBinding(Binding);
   end;
 end;
 
 function ReadPadInput(Input: TInputManager; const Ports: TCoreInputPorts): TEmulatorInput;
-var
-  Pads: array[0..11] of TEmulatorButtons;
 begin
   Result := Default(TEmulatorInput);
-  for var P := 0 to 11 do
+  if Input is TGamepadInputManager then
+    Result.SteeringAutoCenter := TGamepadInputManager(Input).SteeringAutoCenter;
+  if Input = nil then
+    Exit;
+  if not Input.Enabled or Input.Capturing then
   begin
-    Pads[P] := [];
-    if (Ports.Devices[P] = 'auto') or Ports.Devices[P].StartsWith('pad') then
-      for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
-        if Input.IsPressed(PadAction(P, B)) then
-          Include(Pads[P], B);
+    if Input is TGamepadInputManager then
+      TGamepadInputManager(Input).ResetAnalogRamps;
+    Exit;
   end;
-  Result.Buttons := Pads[0];
-  Result.Buttons2 := Pads[1];
-  Result.Buttons3 := Pads[2];
-  Result.Buttons4 := Pads[3];
-  Result.Buttons5 := Pads[4];
-  Result.Buttons6 := Pads[5];
-  Result.Buttons7 := Pads[6];
-  Result.Buttons8 := Pads[7];
-  Result.Buttons9 := Pads[8];
-  Result.Buttons10 := Pads[9];
-  Result.Buttons11 := Pads[10];
-  Result.Buttons12 := Pads[11];
   var Bindings := Input.Bindings;
   var Values := Input.Values;
-  for var P := 0 to High(Ports.Devices) do
-  begin
-    if Ports.Devices[P] <> 'pad-analog' then
-      Continue;
-
+  var Raw := TDictionary<Integer, TActionTravel>.Create;
+  try
     for var B in Bindings do
-    begin
-      if B.Kind <> TInputElementKind.Axis then
-        Continue;
-
       for var V in Values do
         if (V.DeviceId = B.DeviceId) and (V.Kind = B.Kind) and (V.Code = B.Code) then
         begin
-          var Travel := 1.0 - B.AxisOrigin * B.Direction;
-          if Travel <= 0 then
-            Continue;
-
-          var Amount := EnsureRange((V.Value - B.AxisOrigin) * B.Direction / Travel, 0.0, 1.0);
-          var Magnitude := Round(Amount * 32767);
-          if B.Action = PadAction(P, TEmulatorButton.Left) then
-          begin
-            Result.Analog[P].X := EnsureRange(Integer(Result.Analog[P].X) - Magnitude, -32768, 32767);
-            Result.Analog[P].Valid := True;
-          end;
-          if B.Action = PadAction(P, TEmulatorButton.Right) then
-          begin
-            Result.Analog[P].X := EnsureRange(Integer(Result.Analog[P].X) + Magnitude, -32768, 32767);
-            Result.Analog[P].Valid := True;
-          end;
-          if B.Action = PadAction(P, TEmulatorButton.Up) then
-          begin
-            Result.Analog[P].Y := EnsureRange(Integer(Result.Analog[P].Y) - Magnitude, -32768, 32767);
-            Result.Analog[P].Valid := True;
-          end;
-          if B.Action = PadAction(P, TEmulatorButton.Down) then
-          begin
-            Result.Analog[P].Y := EnsureRange(Integer(Result.Analog[P].Y) + Magnitude, -32768, 32767);
-            Result.Analog[P].Valid := True;
-          end;
-          if B.Action = PadAction(P, TEmulatorButton.Select) then
-          begin
-            Result.Analog[P].LeftTrigger := Round(Amount * 255);
-            Result.Analog[P].Valid := True;
-          end;
-          if B.Action = PadAction(P, TEmulatorButton.Mode) then
-          begin
-            Result.Analog[P].RightTrigger := Round(Amount * 255);
-            Result.Analog[P].Valid := True;
-          end;
+          var Travel: TActionTravel;
+          if not Raw.TryGetValue(B.Action, Travel) then
+            Travel := Default(TActionTravel);
+          AccumulateTravel(B, V, Travel);
+          Raw.AddOrSetValue(B.Action, Travel);
         end;
+    var Pads: array[0..EmulatorMaxPlayers - 1] of TEmulatorButtons;
+    for var P := 0 to High(Ports.Devices) do
+    begin
+      Pads[P] := [];
+      for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
+      begin
+        var Action := PadAction(P, B);
+        var Travel: TActionTravel;
+        if not Raw.TryGetValue(Action, Travel) then
+          Travel := Default(TActionTravel);
+        Include(Result.AnalogButtons[P].Valid, B);
+        if Ports.Devices[P] = 'none' then
+        begin
+          if Input is TGamepadInputManager then
+            TGamepadInputManager(Input).DigitalAnalogAmount(Action, False);
+          Continue;
+        end;
+        var Amount := ResolvedTravel(Input, Action, Travel);
+        Result.AnalogButtons[P].Values[B] := Round(Amount * 255);
+        if Travel.Digital then
+          Include(Result.AnalogButtons[P].Digital, B);
+        if Travel.Relative then
+          Include(Result.RelativeButtons[P], B);
+        if Travel.Axis then
+          Include(Result.AnalogButtons[P].Axes, B);
+        if ((Ports.Devices[P] = 'auto') or Ports.Devices[P].StartsWith('pad')) and Input.IsPressed(Action) then
+          Include(Pads[P], B);
+        if (Ports.Devices[P] <> 'pad-analog') or not Travel.Continuous then
+          Continue;
+        var Magnitude := Round(Travel.Amount * 32767);
+        case B of
+          TEmulatorButton.Left:
+            Dec(Result.Analog[P].X, Magnitude);
+          TEmulatorButton.Right:
+            Inc(Result.Analog[P].X, Magnitude);
+          TEmulatorButton.Up:
+            Dec(Result.Analog[P].Y, Magnitude);
+          TEmulatorButton.Down:
+            Inc(Result.Analog[P].Y, Magnitude);
+          TEmulatorButton.Select:
+            Result.Analog[P].LeftTrigger := Round(Travel.Amount * 255);
+          TEmulatorButton.Mode:
+            Result.Analog[P].RightTrigger := Round(Travel.Amount * 255);
+        end;
+        if B in [TEmulatorButton.Left, TEmulatorButton.Right, TEmulatorButton.Up,
+            TEmulatorButton.Down, TEmulatorButton.Select, TEmulatorButton.Mode] then
+          Result.Analog[P].Valid := True;
+      end;
     end;
+    Result.Buttons := Pads[0];
+    Result.Buttons2 := Pads[1];
+    Result.Buttons3 := Pads[2];
+    Result.Buttons4 := Pads[3];
+    Result.Buttons5 := Pads[4];
+    Result.Buttons6 := Pads[5];
+    Result.Buttons7 := Pads[6];
+    Result.Buttons8 := Pads[7];
+    Result.Buttons9 := Pads[8];
+    Result.Buttons10 := Pads[9];
+    Result.Buttons11 := Pads[10];
+    Result.Buttons12 := Pads[11];
+  finally
+    Raw.Free;
   end;
 end;
 

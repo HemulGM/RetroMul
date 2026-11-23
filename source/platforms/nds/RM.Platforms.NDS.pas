@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry;
+  FMXInput, Core.EmulatorRegistry;
 
 type
   TNDSPlatform = class
@@ -13,6 +13,7 @@ type
     class function Source(Context: TCoreLoadContext): TCoreMatch; static;
     class function Header(Context: TCoreLoadContext): TCoreMatch; static;
     class function ExtensionHint(Context: TCoreLoadContext): TCoreMatch; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -20,8 +21,8 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Classes, Core.Platforms, Core.Emulation,
-  Core.Platforms.NDS.Adapter, NDS.Cartridge, RM.Settings.Catalog,
+  RM.Input.Gamepads, System.SysUtils, System.Classes, Core.Platforms,
+  Core.Emulation, Core.Platforms.NDS.Adapter, NDS.Cartridge, RM.Settings.Catalog,
   RM.Platforms.NDS.Settings, RM.Platforms.NDS.Input, RM.Input, RM.Input.Runtime,
   RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
@@ -33,15 +34,24 @@ type
     class procedure Connect(const Context: TSessionRuntimeContext); override;
   end;
 
+class procedure TNDSPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadButton.LeftShoulder);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.North);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Y), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Z), TGamepadButton.RightShoulder);
+end;
+
 class procedure TNDSSessionHandler.Connect(const Context: TSessionRuntimeContext);
 begin
   inherited;
-  Context.View.ImageCanvas.HitTest := True;
-  Context.View.ImageCanvas.CanFocus := True;
-  Context.View.ImageCanvas.OnKeyDown := Context.View.FormKeyDown;
-  Context.View.ImageCanvas.OnKeyUp := Context.View.FormKeyUp;
-  Context.View.ImageCanvas.DisableFocusEffect := False;
-  Context.View.ImageCanvas.CanParentFocus := True;
+  Context.Host.Video.SetPointerInputEnabled(True, True);
 end;
 
 class function TNDSPlatform.Source(Context: TCoreLoadContext): TCoreMatch;
@@ -100,7 +110,10 @@ begin
   Registration.Add(TCoreLoadStage.OverrideHint, 20, ExtensionHint);
   RegisterEmulationCore(Registration);
   RegisterSnapshotPolicy('NDS', TSnapshotPolicy.Create(1, 32 * 1024 * 1024));
-  RegisterSettingsProfile('NDS', TNDSSettings);
+  RegisterSettingsProfile('NDS', TNDSSettings,
+    'Place the upper screen above or beside the touch screen in Video and Audio. Use touch or ' +
+    'pointer input on the lower screen. If an unrecognized game needs a different cartridge ' +
+    'save size, change the setting and restart. Existing save files keep their size.');
   RegisterPlatformSettingsDevices('nds', TPlatformSettingsDevices);
   RegisterPlatformDeviceCallouts('nds', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('nds', TPlatformControlsHelp);
@@ -125,6 +138,7 @@ begin
       for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
         Keys[0, B] := C.Keys[B];
     end;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('nds', Definition);
   RegisterPlatformGamepads('nds', TGamepadSNESStandart, []);
   RegisterPlatformPresentation('nds', 'nds', PlatformIconGBA);

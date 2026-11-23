@@ -3,7 +3,7 @@
 interface
 
 uses
-  FMX.Controls, RM.Input.Runtime, RM.Gamepad.Viewport;
+  RM.Platform.Host, FMX.Controls, RM.Input.Runtime, RM.Gamepad.Viewport;
 
 type
   TWindowLayoutContext = TInputRuntimeContext;
@@ -24,6 +24,8 @@ type
   TPlatformWindowLayout = class
   public
     class function Controls(const Context: TWindowLayoutContext): TArray<TWindowControlLayout>; virtual;
+    class function UseDesktopViewport: Boolean; virtual;
+    class procedure Arrange(const Context: TWindowLayoutContext); virtual;
   end;
 
   TPlatformWindowLayoutClass = class of TPlatformWindowLayout;
@@ -64,6 +66,16 @@ begin
   Result := nil;
 end;
 
+class function TPlatformWindowLayout.UseDesktopViewport: Boolean;
+begin
+  Result := False;
+end;
+
+class procedure TPlatformWindowLayout.Arrange(const Context: TWindowLayoutContext);
+begin
+  ArrangePlatformWindowControls(Context);
+end;
+
 procedure RegisterPlatformWindowLayout(const PlatformId: string; Layout: TPlatformWindowLayoutClass);
 begin
   var Id := PlatformId.Trim.ToLower;
@@ -96,11 +108,11 @@ begin
   var Seen := TList<TControl>.Create;
   try
     // The common gamepad facade exists even when no platform module is linked.
-    if Context.State.Input.Gamepad <> nil then
+    if Context.Gamepad <> nil then
     begin
-      Items.Add(TWindowControlLayout.Create(Context.State.Input.Gamepad,
+      Items.Add(TWindowControlLayout.Create(Context.Gamepad,
           TScreenGamepad.PreferredHeight, TWindowControlWidth.FormContent, 40, 0, 10));
-      Seen.Add(Context.State.Input.Gamepad);
+      Seen.Add(Context.Gamepad);
     end;
     for var Layout in Layouts.Values do
       if not Classes.Contains(Layout) then
@@ -127,25 +139,31 @@ end;
 
 procedure ResizePlatformControls(const Context: TWindowLayoutContext);
 begin
+  var Surface := Context.Surface;
+  if Surface = nil then
+    Exit;
   var Items := WindowControls(Context);
   TArray.Sort<TWindowControlLayout>(Items, TComparer<TWindowControlLayout>.Construct(
     function(const A, B: TWindowControlLayout): Integer
     begin
       Result := CompareValue(A.ResizeOrder, B.ResizeOrder);
     end));
+  var Size := Surface.UsableSize;
   for var Item in Items do
     if Assigned(Item.PreferredHeight) then
     begin
-      var Width := Context.View.ClientWidth - Context.View.Padding.Left - Context.View.Padding.Right;
+      var Width := Size.Width;
       if Item.WidthSource = TWindowControlWidth.ClientLayout then
-        Width := Context.View.LayoutClient.Width;
-      Item.Control.Height := Item.PreferredHeight(Width,
-        Context.View.ClientHeight - Context.View.Padding.Top - Context.View.Padding.Bottom - Context.View.LayoutHead.Height);
+        Width := Surface.Content.Width;
+      Item.Control.Height := Item.PreferredHeight(Width, Size.Height);
     end;
 end;
 
 procedure ApplyPlatformControlInset(const Context: TWindowLayoutContext);
 begin
+  var Surface := Context.Surface;
+  if Surface = nil then
+    Exit;
   var Items := WindowControls(Context);
   TArray.Sort<TWindowControlLayout>(Items, TComparer<TWindowControlLayout>.Construct(
     function(const A, B: TWindowControlLayout): Integer
@@ -154,12 +172,12 @@ begin
     end));
   for var Item in Items do
     if Item.InsetOrder >= 0 then
-      Item.Control.Margins.Bottom := Context.State.Input.BottomInset;
+      Item.Control.Margins.Bottom := Surface.BottomInset;
 end;
 
 procedure ArrangePlatformWindowControls(const Context: TWindowLayoutContext);
 begin
-  if (Context.State.Input.Gamepad = nil) or not (Context.State.Input.Gamepad.Parent is TControl) then
+  if (Context.Gamepad = nil) or not (Context.Gamepad.Parent is TControl) then
     Exit;
   var Items := WindowControls(Context);
   TArray.Sort<TWindowControlLayout>(Items, TComparer<TWindowControlLayout>.Construct(
@@ -172,7 +190,7 @@ begin
     for var Item in Items do
       if Item.ViewportOrder >= 0 then
         Overlays.Add(TViewportControl.Create(Item.Control, Item.PreferredHeight));
-    ArrangeVirtualControls(TControl(Context.State.Input.Gamepad.Parent), Context.View.ImageCanvas, Overlays.ToArray);
+    ArrangeVirtualControls(TControl(Context.Gamepad.Parent), Context.Surface.FrameLayer, Overlays.ToArray);
   finally
     Overlays.Free;
   end;

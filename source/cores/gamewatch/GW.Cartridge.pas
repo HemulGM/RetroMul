@@ -4,7 +4,8 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.UITypes, GW.CPU, GW.Catalog,
-  GW.MGW.Package, GW.Artwork, Core.Emulation.Types, Core.Archive.Container;
+  GW.MGW.Package, GW.Artwork, Core.Emulation.Types, Core.Archive.Container,
+  Core.Storage;
 
 type
   TGWLayer = GW.Artwork.TGWLayer;
@@ -28,12 +29,12 @@ type
     Title: string;
     Artwork: TGWArtwork;
     destructor Destroy; override;
-    constructor Create(const Bytes: TBytes; const Name: string; const Renderer: IGWArtworkRenderer = nil; const Container: IArchiveContainer = nil); overload;
+    constructor Create(const Bytes: TBytes; const Name: string; const Renderer: IGWArtworkRenderer = nil; const Container: IArchiveContainer = nil; const Storage: IStorage = nil); overload;
     constructor Create(const Container: IArchiveContainer; const Name: string; const Renderer: IGWArtworkRenderer = nil); overload;
     function SupportedButtons: TEmulatorButtons;
     class function Recognizes(const Container: IArchiveContainer; const Name: string): Boolean; overload; static;
     class function Recognizes(const Bytes: TBytes; const Name: string): Boolean; overload; static;
-    class function Recognizes(Stream: TStream; const Name: string): Boolean; overload; static;
+    class function Recognizes(Stream: TStream; const Name: string; const Storage: IStorage = nil): Boolean; overload; static;
   end;
 
 function GWColor565(Value: Word): TAlphaColor;
@@ -217,7 +218,7 @@ begin
   end;
 end;
 
-class function TGWCartridge.Recognizes(Stream: TStream; const Name: string): Boolean;
+class function TGWCartridge.Recognizes(Stream: TStream; const Name: string; const Storage: IStorage): Boolean;
 begin
   var Saved := Stream.Position;
   try
@@ -240,7 +241,7 @@ begin
     if not Result and IsMediaArchive(Name) then
     begin
       Stream.Position := Saved;
-      Result := Recognizes(OpenMediaArchive(Stream, Name), Name);
+      Result := Recognizes(OpenMediaArchive(Stream, Name, Storage), Name);
     end;
   finally
     Stream.Position := Saved;
@@ -288,7 +289,7 @@ begin
   SnapshotHash := IdentityHash.HashAsBytes;
 end;
 
-constructor TGWCartridge.Create(const Bytes: TBytes; const Name: string; const Renderer: IGWArtworkRenderer; const Container: IArchiveContainer);
+constructor TGWCartridge.Create(const Bytes: TBytes; const Name: string; const Renderer: IGWArtworkRenderer; const Container: IArchiveContainer; const Storage: IStorage);
 begin
   inherited Create;
   Initialize(Renderer);
@@ -307,7 +308,7 @@ begin
   begin
     var Input := TBytesStream.Create(Bytes);
     try
-      LoadMAME(OpenMediaArchive(Input, Name), Name);
+      LoadMAME(OpenMediaArchive(Input, Name, Storage), Name);
     finally
       Input.Free;
     end;

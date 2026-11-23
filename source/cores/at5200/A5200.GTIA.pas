@@ -12,18 +12,29 @@ type
     FHits: array[0..15] of Byte;
     FTriggers: array[0..3] of Byte;
     FPalette: TA5200Palette;
-    function PlayerBits(X: Integer; Missile: Boolean): Byte;
+    FHiresEnable: Boolean;
+    FShift, FPhase: array[0..7] of Byte;
+    FPlayers, FMissiles: Byte;
+    FClock: Integer;
+    FPending: array[0..7] of record
+      Mask: Cardinal;
+      Values: array[0..$1B] of Byte;
+    end;
+    function ClockSprite(Clock, Position, Size: Integer; Latch: Byte; Index: Integer): Boolean;
     function BaseColor(Pixel: Byte; out Playfield: Byte): Byte;
+    function CompositeColor(Pixel, Playfield, Players, Missiles, Background: Byte): Byte;
   public
-    constructor Create;
+    constructor Create(PAL: Boolean = False);
     procedure Reset;
+    procedure ClockObjects(X: Integer);
     function Read(Index: Byte; Controller: TA5200Controller): Byte;
+    function ReadTrigger(Port: Integer; Level: Byte): Byte;
     procedure Write(Index, Value: Byte);
     procedure LoadPlayer(Index: Integer; Value: Byte; Line: Integer);
     function Pixel(X: Integer; Playfield: Byte): TAlphaColor;
     function Priority: Byte;
     function ConsoleControl: Byte;
-    procedure SerializeState(State: TStateArchive);
+    procedure SerializeState(State: TStateArchive; LegacyTiming: Boolean = False);
   end;
 
 implementation
@@ -31,22 +42,40 @@ implementation
 uses
   System.Math;
 
-constructor TA5200GTIA.Create;
+constructor TA5200GTIA.Create(PAL: Boolean);
+const
+  PALHue: array[0..15] of Single = (0, 135, 112.5, 90, 67.5, 45, 22.5, 337.5,
+    315, 292.5, 270, 225, 202.5, 180, 157.5, 135);
 begin
-  inherited;
+  inherited Create;
   for var i := 0 to 255 do
   begin
     var H := i shr 4;
     var L := (i and 15) / 16;
     var A := (H - 1) * Pi / 7 - 0.8;
     var C := 0.23;
+    if PAL then
+    begin
+      // PAL has unequal hue intervals. Decode its ideal, line-averaged chroma.
+      A := DegToRad(PALHue[H]);
+      C := 0.18;
+    end;
     if H = 0 then
       C := 0;
     var U := Cos(A) * C;
     var V := Sin(A) * C;
-    FPalette[i] := $FF000000 or (Cardinal(EnsureRange(Round((L + 0.956 * U + 0.621 * V) * 255), 0, 255)) shl 16)
-      or (Cardinal(EnsureRange(Round((L - 0.272 * U - 0.647 * V) * 255), 0, 255)) shl 8)
-      or Cardinal(EnsureRange(Round((L - 1.106 * U + 1.703 * V) * 255), 0, 255));
+    var Red := L + 0.956 * U + 0.621 * V;
+    var Green := L - 0.272 * U - 0.647 * V;
+    var Blue := L - 1.106 * U + 1.703 * V;
+    if PAL then
+    begin
+      Red := L + 1.140 * V;
+      Green := L - 0.395 * U - 0.581 * V;
+      Blue := L + 2.032 * U;
+    end;
+    FPalette[i] := $FF000000 or (Cardinal(EnsureRange(Round(Red * 255), 0, 255)) shl 16)
+      or (Cardinal(EnsureRange(Round(Green * 255), 0, 255)) shl 8)
+      or Cardinal(EnsureRange(Round(Blue * 255), 0, 255));
   end;
   Reset;
 end;
@@ -56,6 +85,13 @@ begin
   FillChar(FRegs, SizeOf(FRegs), 0);
   FillChar(FHits, SizeOf(FHits), 0);
   FillChar(FTriggers, SizeOf(FTriggers), 1);
+  FillChar(FShift, SizeOf(FShift), 0);
+  FillChar(FPhase, SizeOf(FPhase), 0);
+  FillChar(FPending, SizeOf(FPending), 0);
+  FClock := 0;
+  FHiresEnable := False;
+  FPlayers := 0;
+  FMissiles := 0;
 end;
 
 function TA5200GTIA.Priority: Byte;
@@ -75,12 +111,7 @@ begin
     Exit(FHits[Index]);
   if Index < 20 then
   begin
-    var i := Index - 16;
-    if FRegs[$1D] and 4 = 0 then
-      FTriggers[i] := Controller.Trigger(i)
-    else
-      FTriggers[i] := FTriggers[i] and Controller.Trigger(i);
-    Exit(FTriggers[i]);
+    Exit(ReadTrigger(Index - 16, Controller.Trigger(Index - 16)));
   end;
   if Index = 20 then
     Exit(15);
@@ -89,13 +120,45 @@ begin
   Result := $0F;
 end;
 
+function TA5200GTIA.ReadTrigger(Port: Integer; Level: Byte): Byte;
+begin
+  if FRegs[$1D] and 4 = 0 then
+    FTriggers[Port] := Level
+  else
+    FTriggers[Port] := FTriggers[Port] and Level;
+  Result := FTriggers[Port];
+end;
+
 procedure TA5200GTIA.Write(Index, Value: Byte);
 begin
   Index := Index and 31;
   if Index = $1E then
     FillChar(FHits, SizeOf(FHits), 0)
   else
-    FRegs[Index] := Value;
+  begin
+    case Index of
+      $12..$1A:
+        Value := Value and $FE;
+      $1D:
+        if Value and 4 = 0 then
+          FillChar(FTriggers, SizeOf(FTriggers), 1);
+    end;
+    if (Index <= $11) or (Index = $1B) then
+    begin
+      var Delay := 4;
+      case Index of
+        0..7:
+          Delay := 6;
+        $1B:
+          Delay := 2;
+      end;
+      var Slot := (FClock + Delay) and High(FPending);
+      FPending[Slot].Mask := FPending[Slot].Mask or (Cardinal(1) shl Index);
+      FPending[Slot].Values[Index] := Value;
+    end
+    else
+      FRegs[Index] := Value;
+  end;
 end;
 
 procedure TA5200GTIA.LoadPlayer(Index: Integer; Value: Byte; Line: Integer);
@@ -111,28 +174,58 @@ begin
         FRegs[$11] := (FRegs[$11] and not (3 shl (i * 2))) or (Value and (3 shl (i * 2)));
 end;
 
-function TA5200GTIA.PlayerBits(X: Integer; Missile: Boolean): Byte;
-const
-  Widths: array[0..3] of Integer = (1, 2, 1, 4);
+function TA5200GTIA.ClockSprite(Clock, Position, Size: Integer; Latch: Byte; Index: Integer): Boolean;
 begin
-  Result := 0;
-  for var i := 0 to 3 do
+  FPhase[Index] := (FPhase[Index] + 1) and Size;
+  if Clock = Position then
+    FPhase[Index] := 0;
+  if FPhase[Index] = 0 then
+    FShift[Index] := (FShift[Index] shl 1) and $FF;
+  if Clock = Position then
+    FShift[Index] := FShift[Index] or Latch;
+  Result := FShift[Index] and $80 <> 0;
+end;
+
+procedure TA5200GTIA.ClockObjects(X: Integer);
+begin
+  var Slot := FClock and High(FPending);
+  var PositionIndex := -1;
+  var OldPosition := -1;
+  if FPending[Slot].Mask <> 0 then
   begin
-    var Position := FRegs[i] * 2;
-    var Size := Widths[FRegs[8 + i] and 3] * 2;
-    var Data := FRegs[$0D + i];
-    var Bits := 8;
-    if Missile then
-    begin
-      Position := FRegs[4 + i] * 2;
-      Size := Widths[(FRegs[$0C] shr (i * 2)) and 3] * 2;
-      Data := (FRegs[$11] shr (i * 2)) and 3;
-      Bits := 2;
-    end;
-    var Offset := X - Position;
-    if (Offset >= 0) and (Offset < Bits * Size) then
-      if Data and (1 shl (Bits - 1 - Offset div Size)) <> 0 then
-        Result := Result or (1 shl i);
+    for var Index := 0 to High(FPending[Slot].Values) do
+      if FPending[Slot].Mask and (Cardinal(1) shl Index) <> 0 then
+      begin
+        if Index <= 7 then
+        begin
+          PositionIndex := Index;
+          OldPosition := FRegs[Index];
+        end;
+        FRegs[Index] := FPending[Slot].Values[Index];
+      end;
+    FPending[Slot].Mask := 0;
+  end;
+  if X = 32 then
+    FHiresEnable := FRegs[$1B] shr 6 = 0;
+  if FRegs[$1B] shr 6 <> 0 then
+    FHiresEnable := False;
+  FClock := (FClock + 1) and High(FPending);
+  FPlayers := 0;
+  FMissiles := 0;
+  for var I := 0 to 3 do
+  begin
+    var Position := Integer(FRegs[I]);
+    if (PositionIndex = I) and (X = OldPosition) then
+      Position := OldPosition;
+    if ClockSprite(X, Position, FRegs[8 + I] and 3, FRegs[$0D + I], I) then
+      FPlayers := FPlayers or (1 shl I);
+    var Shift := 2 * I;
+    Position := FRegs[4 + I];
+    if (PositionIndex = I + 4) and (X = OldPosition) then
+      Position := OldPosition;
+    if ClockSprite(X, Position, (FRegs[$0C] shr Shift) and 3,
+      ((FRegs[$11] shr Shift) and 3) shl 6, I + 4) then
+      FMissiles := FMissiles or (1 shl I);
   end;
 end;
 
@@ -176,12 +269,91 @@ begin
   end;
 end;
 
+function TA5200GTIA.CompositeColor(Pixel, Playfield, Players, Missiles, Background: Byte): Byte;
+begin
+  var Prior := FRegs[$1B];
+  var SpecialMode := Prior shr 6;
+  if (Players = 0) and (Missiles = 0) then
+    Exit(Background);
+
+  var FifthPlayer := (Prior and $10 <> 0) and (Missiles <> 0);
+  if not FifthPlayer then
+    Players := Players or Missiles;
+  if (SpecialMode = 2) and (Pixel and $FC = $80) then
+    Players := Players or (1 shl (Pixel and 3));
+  if Pixel = 6 then
+    Playfield := 4;
+  if FifthPlayer then
+    Playfield := Playfield or 8;
+
+  // Gate the two player groups and the two playfield groups independently.
+  // Conflicting priority bits can suppress all layers, yielding black.
+  var P01 := Players and 3 <> 0;
+  var P23 := Players and 12 <> 0;
+  var PF01 := Playfield and 3 <> 0;
+  var PF23 := Playfield and 12 <> 0;
+  var LowerPlayfield := PF23 and not (P23 and (Prior and 9 <> 0)) and
+    not (P01 and (Prior and 4 = 0));
+  Result := 0;
+  if LowerPlayfield and (Playfield and 8 <> 0) then
+  begin
+    Result := FRegs[$19];
+    if FifthPlayer and (Pixel and $80 <> 0) then
+      case SpecialMode of
+        1:
+          Result := Result or (Pixel and 15);
+        3:
+          if Pixel and 15 = 0 then
+            Result := Result and $F0
+          else
+            Result := Result or ((Pixel and 15) shl 4);
+      end;
+  end
+  else
+  begin
+    if PF01 and not (P23 and (Prior and 1 <> 0)) and not (P01 and (Prior and 3 <> 0)) then
+      Result := FRegs[$16 + Ord(Playfield and 2 <> 0)];
+    if LowerPlayfield then
+      Result := Result or FRegs[$18];
+  end;
+  if P01 and not (PF01 and (Prior and 12 <> 0)) and not (PF23 and (Prior and 4 <> 0)) then
+  begin
+    if Players and 1 <> 0 then
+      Result := Result or FRegs[$12];
+    if (Players and 2 <> 0) and ((Players and 1 = 0) or (Prior and $20 <> 0)) then
+      Result := Result or FRegs[$13];
+  end
+  else if not P01 and P23 and not (PF23 and (Prior and 6 <> 0)) and not (PF01 and (Prior and 1 = 0)) then
+  begin
+    if Players and 4 <> 0 then
+      Result := Result or FRegs[$14];
+    if (Players and 8 <> 0) and ((Players and 4 = 0) or (Prior and $20 <> 0)) then
+      Result := Result or FRegs[$15];
+  end;
+  if Pixel = 5 then
+    Result := (Result and $F0) or (FRegs[$17] and 15);
+end;
+
 function TA5200GTIA.Pixel(X: Integer; Playfield: Byte): TAlphaColor;
 begin
+  var Mode := FRegs[$1B] shr 6;
+  if (Playfield = 0) and (Mode = 2) then
+    Playfield := $80
+  else if Playfield and $80 <> 0 then
+    if Mode <> 0 then
+      Playfield := Playfield and $8F
+    else
+    begin
+      var Pair := (Playfield shr 4) and 3;
+      if FHiresEnable then
+        Playfield := 6 - ((Pair shr (1 - (X and 1))) and 1)
+      else
+        Playfield := Pair + 1;
+    end;
   var PF: Byte;
   var Color := BaseColor(Playfield, PF);
-  var P := PlayerBits(X, False);
-  var M := PlayerBits(X, True);
+  var P := FPlayers;
+  var M := FMissiles;
   for var i := 0 to 3 do
   begin
     if M and (1 shl i) <> 0 then
@@ -195,42 +367,28 @@ begin
       FHits[12 + i] := FHits[12 + i] or (P and not (1 shl i));
     end;
   end;
-  if (M <> 0) and (FRegs[$1B] and 16 <> 0) then
-  begin
-    PF := PF or 8;
-    Color := FRegs[$19];
-    M := 0;
-  end;
-  var Sprites := P or M;
-  for var i := 3 downto 0 do
-    if Sprites and (1 shl i) <> 0 then
-    begin
-      var Front := PF = 0;
-      case FRegs[$1B] and 15 of
-        0, 1:
-          Front := True;
-        2:
-          Front := (PF = 0) or (i < 2);
-        4:
-          Front := PF = 0;
-        8:
-          Front := (PF and 3 = 0);
-      end;
-      if Front then
-      begin
-        Color := FRegs[$12 + i];
-        if (FRegs[$1B] and 32 <> 0) and (i and 1 = 0) and (Sprites and (2 shl i) <> 0) then
-          Color := Color or FRegs[$13 + i];
-      end;
-    end;
-  Result := FPalette[Color];
+  Result := FPalette[CompositeColor(Playfield, PF, P, M, Color)];
 end;
 
-procedure TA5200GTIA.SerializeState(State: TStateArchive);
+procedure TA5200GTIA.SerializeState(State: TStateArchive; LegacyTiming: Boolean);
 begin
   State.Field(FRegs, SizeOf(FRegs));
   State.Field(FHits, SizeOf(FHits));
   State.Field(FTriggers, SizeOf(FTriggers));
+  if not LegacyTiming and (State.Version <> 1) then
+  begin
+    State.Field(FShift, SizeOf(FShift));
+    State.Field(FPhase, SizeOf(FPhase));
+    State.Field(FPending, SizeOf(FPending));
+    State.Field(FClock, SizeOf(FClock));
+  end
+  else if State.Loading then
+  begin
+    FillChar(FShift, SizeOf(FShift), 0);
+    FillChar(FPhase, SizeOf(FPhase), 0);
+    FillChar(FPending, SizeOf(FPending), 0);
+    FClock := 0;
+  end;
 end;
 
 end.

@@ -122,8 +122,20 @@ var
 function DecodeOp(Op: Cardinal): TPSPOpHandler;
 procedure OpReserved(C: TPSPCPU; Op: Cardinal);
 procedure OpNop(C: TPSPCPU; Op: Cardinal);
+procedure PSPClobberCallerSaved(var Context: TPSPContext); inline;
 
 implementation
+
+procedure PSPClobberCallerSaved(var Context: TPSPContext);
+begin
+  Context.GPR[1] := $DEADBEEF;
+  for var R := 4 to 15 do
+    Context.GPR[R] := $DEADBEEF;
+  Context.GPR[24] := $DEADBEEF;
+  Context.GPR[25] := $DEADBEEF;
+  Context.HI := $DEADBEEF;
+  Context.LO := $DEADBEEF;
+end;
 
 { Field helpers }
 
@@ -2089,10 +2101,20 @@ begin
   while True do
   begin
     var Page := FDecoded[(A and $1FFFFFFF) shr PSPPageShift];
-    if Page <> nil then
+    if Page = nil then
     begin
-      var Entry: PPSPDecoded := @Page[(A and PSPPageMask) shr 2];
-      Entry.Op := PCardinal(Memory.PageBase(A) + (A and PSPPageMask))^;
+      // Large DMA/fill ranges commonly contain only a few decoded pages.
+      var PageLast := A or Cardinal(PSPPageMask and not 3);
+      if PageLast >= Last then
+        Break;
+      A := PageLast + 4;
+      Continue;
+    end;
+    var Entry: PPSPDecoded := @Page[(A and PSPPageMask) shr 2];
+    var Op := PCardinal(Memory.PageBase(A) + (A and PSPPageMask))^;
+    if Entry.Op <> Op then
+    begin
+      Entry.Op := Op;
       Entry.Handler := OpDecode;
     end;
     if A >= Last then
@@ -2106,21 +2128,8 @@ end;
 // Outside Run's FP-environment try/finally, the dispatch loop can keep its locals in registers.
 procedure TPSPCPU.Interpret;
 begin
-  while FRemaining > 0 do
-  begin
-    var PC := Ctx.PC;
-    var Page := FDecoded[(PC and $1FFFFFFF) shr PSPPageShift];
-    if Page = nil then
-      Page := DecodePage(PC);
-    var Entry: PPSPDecoded := @Page[(PC and PSPPageMask) shr 2];
-    CurPC := PC;
-    Ctx.PC := Ctx.NPC;
-    Ctx.NPC := Ctx.NPC + 4;
-    Dec(FRemaining);
-    Entry.Handler(Self, Entry.Op);
-    if Stopping then
-      Break;
-  end;
+  var C := Self;
+{$I PSP.CPU.Dispatch.inc}
 end;
 
 function TPSPCPU.Run(MaxCycles: Integer): Integer;

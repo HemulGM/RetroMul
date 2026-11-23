@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  FMXInput, Core.EmulatorRegistry, RM.Input, System.SysUtils;
 
 const
   ROM_SYSTEM_A5200 = 'at5200';
@@ -20,6 +20,7 @@ type
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
   public
     class procedure RegisterPlatform; static;
   end;
@@ -27,13 +28,25 @@ type
 implementation
 
 uses
-  RM.Platforms.Atari5200.Settings, RM.Settings.Catalog, RM.Settings.Platform,
-  Core.Emulation, Core.Platforms, Core.Platforms.Atari5200.Adapter,
-  RM.Platforms.Presentation, RM.Gamepad.Factory, RM.Platforms.Atari5200.Gamepads,
-  RM.Input.Runtime, RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
+  RM.Input.Gamepads, RM.Platforms.Atari5200.Settings, RM.Settings.Catalog,
+  RM.Settings.Platform, Core.Emulation, Core.Platforms,
+  Core.Platforms.Atari5200.Adapter, RM.Platforms.Presentation,
+  RM.Gamepad.Factory, RM.Platforms.Atari5200.Gamepads, RM.Input.Runtime,
+  RM.Session.Runtime, RM.Window.Layout, RM.Settings.Runtime,
   RM.ControlsHelp.Content, RM.Settings.Callouts, RM.Settings.Devices,
   System.Classes, System.UITypes, Core.Archive.Container, System.IOUtils,
   Core.Snapshots, RM.Platforms.Atari5200.Input;
+
+class procedure TA5200Platform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), True);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Mode), TGamepadButton.RightShoulder);
+end;
 
 class function TA5200Platform.RecognizeArchive(Context: TCoreLoadContext): TCoreMatch;
 begin
@@ -101,7 +114,16 @@ begin
     Result := ImageMatch(Context, 'A5200',
       function(const Data: TBytes; Input: TStream): IEmulationCore
       begin
-        Result := TA5200CoreAdapter.Create(Input, Context.Storage, Context.RomName, Context.SourceName);
+        try
+          Result := TA5200CoreAdapter.Create(Input, Context.Storage, Context.RomName, Context.SourceName);
+        except
+          on E: EReadError do
+          begin
+            if Context.HasExtension(['.a52']) then
+              raise ECoreInvalidMedia.Create(E.Message);
+            raise;
+          end;
+        end;
       end);
 end;
 
@@ -117,7 +139,9 @@ end;
 class procedure TA5200Platform.RegisterCore;
 begin
   RegisterPlatforms;
-  RegisterSnapshotPolicy('A5200', TSnapshotPolicy.Create(2));
+  var Policy := TSnapshotPolicy.Create(3);
+  Policy.AcceptedVersions := [2];
+  RegisterSnapshotPolicy('A5200', Policy);
   var Registration := TEmulationCoreRegistration.Create('A5200', ['.a52', '.car', '.bin', '.rom']);
   Registration.Add(TCoreLoadStage.Container, 5, RecognizeArchive);
   Registration.Add(TCoreLoadStage.Image, 5, Recognize);
@@ -153,12 +177,16 @@ begin
   Definition.FilterBinding := FilterAtari5200Binding;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
   RegisterPlatformInput('at5200', Definition);
 end;
 
 class procedure TA5200Platform.RegisterClient;
 begin
-  RegisterSettingsPlatform('at5200', TAtari5200Settings);
+  RegisterSettingsPlatform('at5200', TAtari5200Settings,
+    'Start with automatic cartridge detection. With generic .bin or .rom images, the platform ' +
+    'folder identifies the console. Choose the correct TV standard and, for Atari 2600 paddle ' +
+    'games, configure the paddle controller.');
   RegisterPlatformSettingsDevices('at5200', TAtari5200SettingsDevices);
   RegisterPlatformDeviceCallouts('at5200', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('at5200', TPlatformControlsHelp);

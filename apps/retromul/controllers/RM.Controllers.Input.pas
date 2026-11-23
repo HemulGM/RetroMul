@@ -5,8 +5,8 @@
 interface
 
 uses
-  System.Classes, System.UITypes, Core.Emulation, RM.Controllers.Base,
-  RM.Input.Runtime
+  System.Classes, System.UITypes, FMX.Types, Core.Emulation, RM.Controllers.Base,
+  RM.Input.Runtime, RM.LibraryNavigation
   {$IF not Defined(LINUX)}
     , System.Sensors
   {$ENDIF};
@@ -14,6 +14,8 @@ uses
 type
   TInputController = class(TMainController)
   private
+    FMenuShortcut: TGamepadMenuShortcut;
+    F11Down: Boolean;
     function RuntimeContext: TInputRuntimeContext;
     procedure PeripheralChanged(Sender: TObject);
   public
@@ -29,6 +31,7 @@ type
     procedure LoadHostInput(const SystemId: string);
     procedure ReloadHostInputBindings;
     procedure PollHostInput;
+    procedure FormTouch(Sender: TObject; const Touches: TTouches; const Action: TTouchAction);
     procedure FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
     procedure FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
     procedure ForwardKeyState(Code: Word; Pressed: Boolean);
@@ -37,6 +40,7 @@ type
     procedure UpdatePeripheralInput;
     procedure UpdatePeripheralFeedback;
     procedure ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
+    procedure ImageCanvasMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
     procedure ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
     procedure SelectTapeFile(const FileName: string);
   end;
@@ -44,17 +48,44 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Types, System.IOUtils, System.Math, FMX.Types,
-  FMX.Forms, FMX.Objects, FMX.Dialogs, FMX.Platform, FMX.Edit, FMX.OpenDialog,
-  FMXInput, RM.Input, RM.Rumble, Core.InputConfig, RM.Gamepad, RM.Dialogs,
-  RM.Styles
+  System.SysUtils, System.Types, System.IOUtils, System.Math, FMX.Forms,
+  FMX.Objects, FMX.Dialogs, FMX.Platform, FMX.VirtualKeyboard, FMX.Edit,
+  FMX.OpenDialog, FMXInput, RM.Input, RM.Input.Gamepads, RM.Rumble,
+  Core.InputConfig, RM.Gamepad, RM.Dialogs, RM.Styles
   {$IF not Defined(LINUX)}
     , System.Sensors.Components
   {$ENDIF}
   {$IFDEF ANDROID}
-    , Androidapi.Helpers, Androidapi.JNI.GraphicsContentViewText,
-    RM.DocumentTransfer.Android
+    , Androidapi.Helpers, Androidapi.JNI.App,
+    Androidapi.JNI.GraphicsContentViewText, Androidapi.JNI.Embarcadero,
+    Androidapi.Input, RM.DocumentTransfer.Android
   {$ENDIF};
+
+function IsPhysicalLibraryKeyboard(Key: Word): Boolean;
+begin
+  {$IFDEF ANDROID}
+  Result := False;
+  var Event := TJFMXNativeActivity.Wrap(TAndroidHelper.Activity).getLastEvent;
+  if Event = nil then
+    Exit;
+  var Device := Event.getDevice;
+  if (Device = nil) or Device.isVirtual or
+    (Device.getKeyboardType <> TJInputDevice.JavaClass.KEYBOARD_TYPE_ALPHABETIC) then
+    Exit;
+  var Source := Event.getSource;
+  Result := ((Source and AINPUT_SOURCE_GAMEPAD) <> AINPUT_SOURCE_GAMEPAD) and
+    ((Source and AINPUT_SOURCE_JOYSTICK) <> AINPUT_SOURCE_JOYSTICK);
+  {$ELSEIF Defined(IOS)}
+  // UIKit text insertion can also synthesize Return/Tab. Never select
+  // keyboard hints while the on-screen keyboard is supplying text.
+  var Keyboard: IFMXVirtualKeyboardService;
+  Result := Key <> 0;
+  if TPlatformServices.Current.SupportsPlatformService(IFMXVirtualKeyboardService, Keyboard) then
+    Result := Result and not (TVirtualKeyboardState.Visible in Keyboard.VirtualKeyboardState);
+  {$ELSE}
+  Result := True;
+  {$ENDIF}
+end;
 
 function HostKeyCode(Key: Word; KeyChar: WideChar): Word;
 begin
@@ -120,8 +151,7 @@ end;
 
 function TInputController.RuntimeContext: TInputRuntimeContext;
 begin
-  Result.View := FView;
-  Result.State := FState;
+  Result.Host := FPlatformHost;
   Result.ScreenInputChanged := PeripheralChanged;
 end;
 
@@ -158,7 +188,7 @@ begin
   var Rumble: IEmulationRumbleOutput;
   if (FState.Session.Emulation <> nil) and not FState.Session.EmulationFaulted and not FState.Session.OpeningRom and
     not FState.Browser.ViewingLibrary and (FState.Settings.View = nil) and (FState.Help.View = nil) and
-    not RetroDialogVisible(FView) and FView.InputHasFocus and
+    not RetroDialogVisible(FView) and FView.HostInputHasFocus and
     {$IFDEF ISMOBILE}not FState.Mobile.InBackground and {$ENDIF}
     not FState.Session.Emulation.IsPaused and Supports(FState.Session.Emulation, IEmulationRumbleOutput, Rumble) and
     Rumble.HasRumble then
@@ -187,6 +217,7 @@ begin
     Exit;
 
   var Motion: IEmulationMotionInput;
+  var Motion3D: IEmulationMotionInput3D;
   var RotationInput: IEmulationRotationInput;
   var WantsRotation := Supports(FState.Session.Emulation, IEmulationRotationInput, RotationInput) and RotationInput.HasGyroscope;
   var Wanted := Supports(FState.Session.Emulation, IEmulationMotionInput, Motion);
@@ -194,7 +225,7 @@ begin
     Wanted := Motion.HasAccelerometer;
   Wanted := (Wanted or WantsRotation) and not FState.Session.OpeningRom and not FState.Session.EmulationFaulted and not FState.Session.UserPaused and
     not FState.Session.AutoPaused and not FState.Browser.ViewingLibrary and (FState.Settings.View = nil) and
-    (FState.Help.View = nil) and not RetroDialogVisible(FView);
+    (FState.Help.View = nil) and not FView.HelpPageActive and not RetroDialogVisible(FView);
   {$IFDEF ISMOBILE}
   Wanted := Wanted and not FState.Mobile.InBackground;
   {$ENDIF}
@@ -209,7 +240,7 @@ begin
       end;
       FState.Input.MotionAttempted := False;
     end;
-    if Motion <> nil then
+    if (Motion <> nil) and not Supports(Motion, IEmulationMotionInput3D, Motion3D) then
       Motion.SetAcceleration(0, 0);
     if RotationInput <> nil then
       RotationInput.SetRotation(0);
@@ -226,7 +257,9 @@ begin
         FState.Input.MotionSensor.Active := False;
       except
       end;
-      if Motion <> nil then
+      if Supports(Motion, IEmulationMotionInput3D, Motion3D) then
+        Motion3D.SetAcceleration3D(0, 0, 0, False)
+      else if Motion <> nil then
         Motion.SetAcceleration(0, 0);
       if RotationInput <> nil then
         RotationInput.SetRotation(0);
@@ -267,14 +300,22 @@ begin
   if not Supports(FState.Session.Emulation, IEmulationMotionInput, Motion) or not Motion.HasAccelerometer then
     Exit;
 
-  var X, Y: Double;
+  var Motion3D: IEmulationMotionInput3D;
+  Supports(Motion, IEmulationMotionInput3D, Motion3D);
+  var X, Y, Z: Double;
+  var Available := False;
   X := 0;
   Y := 0;
+  Z := 0;
   if (FState.Input.MotionSensor <> nil) and FState.Input.MotionSensor.Active and (FState.Input.MotionSensor.Sensor <> nil) then
   try
     // System.Sensors normalizes Android and iOS acceleration to g.
     X := FState.Input.MotionSensor.Sensor.AccelerationX;
     Y := FState.Input.MotionSensor.Sensor.AccelerationY;
+    if Motion3D <> nil then
+      Z := FState.Input.MotionSensor.Sensor.AccelerationZ;
+    Available := not IsNaN(X) and not IsNaN(Y) and not IsNaN(Z) and
+      not IsInfinite(X) and not IsInfinite(Y) and not IsInfinite(Z);
     {$IF Defined(ANDROID) or Defined(IOS)} // Native sensor orientation.
     var Rotation := 0;
     {$IFDEF ANDROID}
@@ -314,14 +355,19 @@ begin
     end;
     {$ENDIF}
   except
+    Available := False;
     X := 0;
     Y := 0;
+    Z := 0;
     try
       FState.Input.MotionSensor.Active := False;
     except
     end;
   end;
-  Motion.SetAcceleration(X, Y);
+  if Motion3D <> nil then
+    Motion3D.SetAcceleration3D(X, Y, Z, Available)
+  else
+    Motion.SetAcceleration(X, Y);
   {$ENDIF}
 end;
 
@@ -346,15 +392,19 @@ procedure TInputController.InitializeHostInput;
 begin
   // Before the first game there is no platform profile to load.
   FState.Input.SystemId := '';
+  FState.Input.PrimarySourceId := '';
   FState.Input.Ports := TCoreInputPorts.Defaults;
   FState.Input.GamepadInput := Default(TEmulatorInput);
   FState.Input.PollingFailed := False;
+  FState.Input.HostStartDown := False;
   FState.Input.SuppressInputUntilRelease := True;
   FillChar(FState.Input.KeysDown, SizeOf(FState.Input.KeysDown), 0);
   if FState.Input.Manager <> nil then
   begin
     FState.Input.Manager.CancelCapture;
     FState.Input.Manager.ClearBindings;
+    if FState.Input.Manager is TGamepadInputManager then
+      TGamepadInputManager(FState.Input.Manager).LoadAnalogSettings(nil);
   end;
 end;
 
@@ -377,13 +427,23 @@ begin
     InitializeHostInput;
     Exit;
   end;
-  if FState.Input.Manager = nil then
-    Exit;
-
   // Assignments belong to the active game, independently of the settings page.
   // Connection changes are applied separately on the owning emulation thread.
-  var Ini := FState.Session.Storage.ReadConfig(FState.Session.Storage.ConfigFile(FState.Input.SystemId));
+  var ConfigPath := FState.Session.Storage.ConfigFile(FState.Input.SystemId);
+  if FState.Session.Emulation <> nil then
+    ConfigPath := FState.Session.Emulation.Config.FileName;
+  var Ini := FState.Session.Storage.ReadConfig(ConfigPath);
   try
+    FState.Input.PrimarySourceId := Ini.ReadString('Ports', 'Source1', '');
+    if FState.Input.Manager = nil then
+      Exit;
+    var Legacy := FState.Session.Storage.ReadConfig(FState.Session.Storage.ConfigFile('config'));
+    try
+      if MigrateAnalogControlSettings(Ini, Legacy) then
+        FState.Session.Storage.WriteConfig(Ini);
+    finally
+      Legacy.Free;
+    end;
     LoadInputBindings(FState.Input.Manager, Ini, FState.Input.SystemId);
     FilterInputBindings(FState.Input.Manager, Ini, FState.Input.SystemId);
     FState.Input.PollingFailed := False;
@@ -398,9 +458,18 @@ end;
 
 procedure TInputController.PollHostInput;
 begin
+  ValidateScreenTouch(RuntimeContext);
+  if FView.HelpPageActive and not RetroDialogVisible(FView) then
+  begin
+    FMenuShortcut.Reset;
+    Exit;
+  end;
+  if (FState.Browser.View <> nil) and
+    (not FView.HostInputHasFocus or RetroDialogVisible(FView) or (FState.Settings.View <> nil)) then
+    FState.Browser.View.PollLibraryInput(nil, False);
   var MouseInput: IEmulationMouseInput;
   var HasMouse := Supports(FState.Session.Emulation, IEmulationMouseInput, MouseInput);
-  if HasMouse and ((FState.Input.Manager = nil) or FState.Input.PollingFailed or not FView.InputHasFocus or
+  if HasMouse and ((FState.Input.Manager = nil) or FState.Input.PollingFailed or not FView.HostInputHasFocus or
     FState.Session.OpeningRom or (FState.Settings.View <> nil) or FState.Browser.ViewingLibrary or
     (FState.Help.View <> nil) or FState.Session.Emulation.IsPaused or FState.Session.EmulationFaulted or
     RetroDialogVisible(FView) or ((FView.Focused <> nil) and (FView.Focused.GetObject is TCustomEdit))) then
@@ -408,13 +477,35 @@ begin
   if (FState.Input.Manager = nil) or FState.Input.PollingFailed then
     Exit;
 
-  FState.Input.Manager.Enabled := FView.InputHasFocus and not FState.Session.OpeningRom;
+  var DialogActive := RetroDialogVisible(FView);
+  FState.Input.Manager.Enabled := (FView.HostInputHasFocus or (DialogActive and FView.Active)) and
+    (not FState.Session.OpeningRom or DialogActive);
   if not FState.Input.Manager.Enabled then
+  begin
+    FMenuShortcut.Reset;
+    PollRetroDialogInput(FView, nil, False);
     Exit;
+  end;
 
   FState.Input.Manager.Poll;
-  if RetroDialogVisible(FView) then
+  var Keys := ReadHostKeys(FState.Input.Manager);
+  var MenuActive := not DialogActive and not FState.Browser.ViewingLibrary and
+    (FState.Settings.View = nil) and (FState.Help.View = nil) and
+    not FState.Session.Reporting and not FState.Session.OpeningRom and (FState.Session.Emulation <> nil) and
+    not ((FView.Focused <> nil) and (FView.Focused.GetObject is TCustomEdit));
+  if FMenuShortcut.Poll(FState.Input.Manager.Devices, FState.Input.Manager.Values,
+    TThread.GetTickCount64, MenuActive) then
+  begin
+    FView.LibraryBack(FView);
+    FState.Input.SuppressInputUntilRelease := True;
     Exit;
+  end;
+  if DialogActive then
+  begin
+    FState.Input.SuppressInputUntilRelease := True;
+    PollRetroDialogInput(FView, FState.Input.Manager);
+    Exit;
+  end;
 
   if FState.Settings.View <> nil then
   begin
@@ -426,7 +517,14 @@ begin
     Exit;
 
   if FState.Browser.ViewingLibrary then
+    FState.Input.SuppressInputUntilRelease := True;
+  if FState.Browser.View <> nil then
+    FState.Browser.View.PollLibraryInput(FState.Input.Manager, FState.Browser.ViewingLibrary);
+  if FState.Browser.ViewingLibrary then
+  begin
+    FState.Input.SuppressInputUntilRelease := True;
     Exit;
+  end;
 
   if (FView.Focused <> nil) and (FView.Focused.GetObject is TCustomEdit) then
   begin
@@ -437,9 +535,21 @@ begin
     Exit;
   end;
 
-  var Keys := ReadHostKeys(FState.Input.Manager);
+  // Bindings have already been filtered to each port's selected host source.
+  // Poll the logical action, so buttons, axes and hats all work alike.
+  var StartPressed := False;
+  for var Port := 0 to High(FState.Input.Ports.Devices) do
+    if ((FState.Input.Ports.Devices[Port] = 'auto') or FState.Input.Ports.Devices[Port].StartsWith('pad')) and
+      FState.Input.Manager.IsPressed(PadAction(Port, TEmulatorButton.Start)) then
+      StartPressed := True;
+  var StartJustPressed := StartPressed and not FState.Input.HostStartDown;
+  FState.Input.HostStartDown := StartPressed;
+
   if FState.Input.SuppressInputUntilRelease then
   begin
+    // Also wait for Start when it is assigned to an axis or a hat.
+    if StartPressed then
+      Exit;
     for var V in FState.Input.Manager.Values do
       if (V.Kind in [TInputElementKind.Key, TInputElementKind.Button]) and (V.Value > 0.5) then
         Exit;
@@ -458,7 +568,8 @@ begin
   FState.Input.DispatchingInput := True;
   try
     for var i := 1 to High(Keys) do
-      if Keys[i] <> FState.Input.KeysDown[i] then
+      // Native F11 is handled before focused controls; never replay it as game input.
+      if (i <> vkF11) and (Keys[i] <> FState.Input.KeysDown[i]) then
       begin
         var Code := Word(i);
         var Ch: WideChar := #0;
@@ -469,6 +580,20 @@ begin
       end;
   finally
     FState.Input.DispatchingInput := False;
+  end;
+
+  if StartJustPressed and (FState.Session.UserPaused or FState.Session.AutoPaused) and
+    (FState.Session.Emulation <> nil) and FState.Session.Emulation.IsPaused and
+    not FState.Session.EmulationFaulted and not FState.Session.Reporting and
+    (FState.Help.View = nil) and not FView.GameActionsPopup.IsOpen
+    {$IFDEF ISMOBILE} and not FState.Mobile.InBackground{$ENDIF} then
+  begin
+    FView.SwitchPause;
+    // Consume the resume press: the game must not immediately pause itself.
+    FState.Input.SuppressInputUntilRelease := True;
+    FState.Input.GamepadInput := Default(TEmulatorInput);
+    FState.Session.Emulation.ClearInput;
+    Exit;
   end;
 
   if (FState.Help.View <> nil) or (FState.Session.Emulation = nil) or FState.Session.Emulation.IsPaused or FState.Session.EmulationFaulted then
@@ -505,11 +630,38 @@ end;
 
 procedure TInputController.FormKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
+  // Do not consume system volume keys in gameplay, dialogs or capture.
+  if HostKeyCode(Key, KeyChar) in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
+    Exit;
+  if FState.Session.Reporting or FView.HelpPageActive then
+    Exit;
   if RetroDialogVisible(FView) then
     Exit;
 
-  if (FState.Settings.View <> nil) or FState.Browser.ViewingLibrary then
+  if HostKeyCode(Key, KeyChar) = vkF11 then
+  begin
+    if not F11Down then
+    begin
+      F11Down := True;
+      FState.Input.KeysDown[vkF11] := True;
+      FView.SwitchFullScreen;
+    end;
+    Key := 0;
+    KeyChar := #0;
     Exit;
+  end;
+  if FState.Settings.View <> nil then
+    Exit;
+  if FState.Browser.ViewingLibrary then
+  begin
+    if (FState.Browser.View <> nil) and
+      FState.Browser.View.LibraryKey(HostKeyCode(Key, KeyChar), IsPhysicalLibraryKeyboard(Key)) then
+    begin
+      Key := 0;
+      KeyChar := #0;
+    end;
+    Exit;
+  end;
 
   if (FState.Input.Manager <> nil) and (FState.Session.Emulation <> nil) and not FState.Input.DispatchingInput then
   begin
@@ -522,8 +674,6 @@ begin
   end;
 
   Key := HostKeyCode(Key, KeyChar);
-  if Key in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
-    Exit;
 
   if Key = 0 then
   begin
@@ -564,8 +714,6 @@ begin
       if FView.FullScreen then
         FView.SwitchFullScreen
     end
-    else if (Code = vkF11) then
-      FView.SwitchFullScreen
     else if (Code = vkO) and (ssCtrl in Shift) and not KeyboardActive then
       FView.OpenRom
     else if (Code = vkR) and (FState.Session.Emulation <> nil) and not KeyboardActive then
@@ -619,6 +767,20 @@ end;
 
 procedure TInputController.FormKeyUp(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
 begin
+  // Do not consume system volume keys in gameplay, dialogs or capture.
+  if HostKeyCode(Key, KeyChar) in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
+    Exit;
+  if HostKeyCode(Key, KeyChar) = vkF11 then
+  begin
+    F11Down := False;
+    FState.Input.KeysDown[vkF11] := False;
+    Key := 0;
+    KeyChar := #0;
+    Exit;
+  end;
+
+  if FState.Session.Reporting then
+    Exit;
   if RetroDialogVisible(FView) then
   begin
     {$IFDEF ANDROID}
@@ -627,6 +789,17 @@ begin
     {$ENDIF}
     Key := 0;
     KeyChar := #0;
+    Exit;
+  end;
+
+  if FView.HelpPageActive then
+  begin
+    if (Key = vkEscape) {$IFDEF ANDROID} or (Key = vkHardwareBack){$ENDIF} then
+    begin
+      FView.CloseHelpClick(FView);
+      Key := 0;
+      KeyChar := #0;
+    end;
     Exit;
   end;
 
@@ -639,6 +812,10 @@ begin
       FView.SettingsClose(FView)
     else if not FState.Browser.ViewingLibrary then
       FView.LibraryBack(FView)
+    else if (FState.Browser.View <> nil) and FState.Browser.View.LibraryKey(vkEscape, False) then
+    begin
+      // System Back leaves the gamepad presentation before leaving the app.
+    end
     else if (FState.Browser.View <> nil) and FState.Browser.View.CloseDetails then
     begin
       // Close the compact game details before leaving the library.
@@ -673,8 +850,6 @@ begin
   end;
 
   Key := HostKeyCode(Key, KeyChar);
-  if Key in [vkVolumeUp, vkVolumeDown, vkVolumeMute] then
-    Exit;
 
   if Key = 0 then
   begin
@@ -715,6 +890,7 @@ end;
 function TInputController.CombinedGamepadInput: TEmulatorInput;
 begin
   Result := FState.Input.GamepadInput;
+  var VirtualPad := Result;
   if FState.Input.Manager <> nil then
   begin
     var Host := ReadPadInput(FState.Input.Manager, FState.Input.Ports);
@@ -732,6 +908,10 @@ begin
     Result.Buttons12 := Host.Buttons12;
     var VirtualAnalog := Result.Analog[0];
     Result.Analog := Host.Analog;
+    Result.AnalogButtons := Host.AnalogButtons;
+    Result.RelativeButtons := Host.RelativeButtons;
+    Result.SteeringAutoCenter := Host.SteeringAutoCenter;
+    MergeVirtualAnalogButtons(FState.Input.Manager, VirtualPad, Result);
     if VirtualAnalog.Valid then
       Result.Analog[0] := VirtualAnalog;
   end;
@@ -740,6 +920,8 @@ begin
   begin
     Result.Buttons := [];
     Result.Analog[0].Valid := False;
+    Result.AnalogButtons[0] := Default(TEmulatorAnalogButtons);
+    Result.RelativeButtons[0] := [];
   end;
 
   PlatformInputHandler(FState.Input.SystemId).CombineInput(RuntimeContext, Result);
@@ -757,15 +939,43 @@ begin
   PlatformInputHandler(FState.Input.SystemId).UpdateFeedback(RuntimeContext);
 end;
 
+procedure TInputController.FormTouch(Sender: TObject; const Touches: TTouches; const Action: TTouchAction);
+var
+  Touch: TTouch;
+begin
+  // FMX may synthesize MouseUp after a cancelled gesture. Android reports
+  // Cancel for the event, whereas iOS reports it on the individual touches.
+  if Action = TTouchAction.Cancel then
+  begin
+    CancelScreenTouch(RuntimeContext);
+    Exit;
+  end;
+  for Touch in Touches do
+    if Touch.Action = TTouchAction.Cancel then
+    begin
+      CancelScreenTouch(RuntimeContext);
+      Exit;
+    end;
+end;
+
 procedure TInputController.ImageCanvasMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
+  if (Button = TMouseButton.mbLeft) and DispatchScreenTouch(RuntimeContext, TEmulationTouchPhase.Down, X, Y) then
+    Exit;
   if (FState.Input.Manager <> nil) or (Button <> TMouseButton.mbLeft) then
     Exit;
   PlatformInputHandler(FState.Input.SystemId).PointerButton(RuntimeContext, X, Y, True);
 end;
 
+procedure TInputController.ImageCanvasMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
+begin
+  DispatchScreenTouch(RuntimeContext, TEmulationTouchPhase.Move, X, Y);
+end;
+
 procedure TInputController.ImageCanvasMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
+  if (Button = TMouseButton.mbLeft) and DispatchScreenTouch(RuntimeContext, TEmulationTouchPhase.Up, X, Y) then
+    Exit;
   if (FState.Input.Manager <> nil) or (Button <> TMouseButton.mbLeft) then
     Exit;
   PlatformInputHandler(FState.Input.SystemId).PointerButton(RuntimeContext, X, Y, False);

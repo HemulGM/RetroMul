@@ -36,7 +36,7 @@ type
     procedure ConfigureCartridge(const RomName: string);
   public
     procedure ApplyLiveSettings;
-    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string); overload;
+    constructor Create(Stream: TStream; const Storage: IStorage; const RomName: string; const ImageName: string = ''); overload;
     constructor Create(const Container: IArchiveContainer; const Storage: IStorage; const RomName: string; const SourceHash: TBytes = nil); overload;
     destructor Destroy; override;
     function GetSystemId: string;
@@ -107,7 +107,7 @@ begin
   end;
 end;
 
-constructor TGWCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName: string);
+constructor TGWCoreAdapter.Create(Stream: TStream; const Storage: IStorage; const RomName, ImageName: string);
 begin
   inherited Create;
   FStorage := Storage;
@@ -119,10 +119,14 @@ begin
   var Data: TBytes;
   SetLength(Data, Stream.Size - Stream.Position);
   Stream.ReadBuffer(Data[0], Length(Data));
-  var SourceName := RomName;
-  if RomName.StartsWith('content://', True) then
-    SourceName := FStorage.Describe(RomName).Name;
-  FCartridge := TGWCartridge.Create(Data, SourceName);
+  var SourceName := ImageName;
+  if SourceName = '' then
+  begin
+    SourceName := RomName;
+    if RomName.StartsWith('content://', True) then
+      SourceName := FStorage.Describe(RomName).Name;
+  end;
+  FCartridge := TGWCartridge.Create(Data, SourceName, nil, nil, FStorage);
   ConfigureCartridge(RomName);
 end;
 
@@ -173,7 +177,7 @@ begin
     Exit;
 
   FThread := TGWWorker.Create(FCartridge, FStorage);
-  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'gw');
+  FThread.InputPorts := LoadCoreInputPorts(FStorage, 'gw', GetConfig.FileName);
   FThread.SaveFile := FSaveFile;
   FThread.SnapshotDirectory := FSnapshotDirectory;
   ApplySettings;

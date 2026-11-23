@@ -106,7 +106,21 @@ function GBAColor(Value: Integer): TAlphaColor;
 
 implementation
 
+type
+  // Rows have four-byte alignment; a packed view permits paired stores.
+  TGBAPixelPair = packed record
+    case Byte of
+      0:
+        (Value: UInt64);
+      1:
+        (First, Second: Integer);
+  end;
+
+  PGBAPixelPair = ^TGBAPixelPair;
+
 var
+  // Palette indices, not colors: palette RAM is still read on its own clock.
+  GBATextPairs: array[0..31, 0..255] of TGBAPixelPair;
   GBAColors: array[0..32767] of TAlphaColor;
 
 function LookupColor(Value: Integer): TAlphaColor; inline;
@@ -1016,30 +1030,58 @@ begin
       Column := (4 shl Ord(BPP8)) - 2 - Column;
     var WordData := PWord(@VRAM[(S.Address + Column) and $FFFE])^;
     FMemoryPorts := FMemoryPorts or 2;
-    for var i := 0 to Count - 1 do
+    var FirstX := (local - 4) div 4 - 7;
+    if (C and $C0 = 0) and (FirstX >= 0) and (FirstX <= 244) then
     begin
-      var DataX := (local - 4) div 4 - 7 + i;
-      if (DataX < 0) or (DataX > 247) then
-        Continue;
-
-      var Shift := i * (4 shl Ord(BPP8));
-      if S.Entry and $400 <> 0 then
-        Shift := (Count - 1 - i) * (4 shl Ord(BPP8));
-      var Index := (WordData shr Shift) and (15 + 240 * Ord(BPP8));
-      if (C and $40 = 0) or (DataX mod ((IO[$4C] and 15) + 1) = 0) then
-        S.Mosaic := Index
-      else
-        Index := S.Mosaic;
-      var Color := -1;
-      if Index <> 0 then
+      // One completed 4bpp fetch supplies four pixels. Keep the same VRAM
+      // read/port reservation and preserve the last raw mosaic sample.
+      var Bank := S.Entry shr 12;
+      var Pair0, Pair1: PGBAPixelPair;
+      if S.Entry and $400 = 0 then
       begin
-        if not BPP8 then
-          Inc(Index, (S.Entry shr 12) * 16);
-        Color := Index;
+        Pair0 := @GBATextPairs[Bank, WordData and 255];
+        Pair1 := @GBATextPairs[Bank, WordData shr 8];
+        S.Mosaic := WordData shr 12;
+      end
+      else
+      begin
+        Pair0 := @GBATextPairs[Bank + 16, WordData shr 8];
+        Pair1 := @GBATextPairs[Bank + 16, WordData and 255];
+        S.Mosaic := WordData and 15;
       end;
-      FBackgroundRow[BG, DataX] := Color;
-      FBackgroundFIFO[BG, DataX and 7] := Color;
-    end;
+      PGBAPixelPair(@FBackgroundRow[BG, FirstX]).Value := Pair0.Value;
+      PGBAPixelPair(@FBackgroundRow[BG, FirstX + 2]).Value := Pair1.Value;
+      // The FIFO wraps independently of the linear row (including scroll 1..7).
+      FBackgroundFIFO[BG, FirstX and 7] := Pair0.First;
+      FBackgroundFIFO[BG, (FirstX + 1) and 7] := Pair0.Second;
+      FBackgroundFIFO[BG, (FirstX + 2) and 7] := Pair1.First;
+      FBackgroundFIFO[BG, (FirstX + 3) and 7] := Pair1.Second;
+    end
+    else
+      for var i := 0 to Count - 1 do
+      begin
+        var DataX := FirstX + i;
+        if (DataX < 0) or (DataX > 247) then
+          Continue;
+
+        var Shift := i * (4 shl Ord(BPP8));
+        if S.Entry and $400 <> 0 then
+          Shift := (Count - 1 - i) * (4 shl Ord(BPP8));
+        var Index := (WordData shr Shift) and (15 + 240 * Ord(BPP8));
+        if (C and $40 = 0) or (DataX mod ((IO[$4C] and 15) + 1) = 0) then
+          S.Mosaic := Index
+        else
+          Index := S.Mosaic;
+        var Color := -1;
+        if Index <> 0 then
+        begin
+          if not BPP8 then
+            Inc(Index, (S.Entry shr 12) * 16);
+          Color := Index;
+        end;
+        FBackgroundRow[BG, DataX] := Color;
+        FBackgroundFIFO[BG, DataX and 7] := Color;
+      end;
     Inc(S.Column, 2);
     Dec(S.Remaining);
     Inc(S.NextCycle, 16 shr Ord(BPP8));
@@ -1489,8 +1531,84 @@ begin
     (((7 - (IO[$18] and 7)) and 7) shl 6) or
     (((7 - (IO[$1C] and 7)) and 7) shl 9);
 
-  for var Cycle := FirstCycle to LastCycle do
+  var GroupEnd := Min(LastCycle - 3, 1000);
+  var Cycle := FirstCycle;
+  while Cycle <= LastCycle do
   begin
+    // Registers remain fixed throughout this slice. Complete mode-0 groups
+    // have the same OBJ/BG/palette/merger order, with constant phase indices.
+    // Prefixes, tails, forced blank and every other mode use the scalar path.
+    if (Line < 160) and (Mode = 0) and (Cycle >= 48) and
+      (Cycle <= GroupEnd) and (Cycle and 3 = 0) and
+      ((D or FDisplayLatch[2]) and $80 = 0) then
+    begin
+      while Cycle <= GroupEnd do
+      begin
+        var local := Cycle - 4;
+        FClockCycle := Cycle;
+        FMemoryPorts := 0;
+        if (D and $1080 = $1000) and ((FObjectFetch.Index < 128) or FObjectDrawing) then
+          ClockObject(Cycle);
+        if Enable and $100 <> 0 then
+          if ((local < 988) and ((local shr 2 and 7) = (TextMapPhases and 7))) or
+            ((FFetch[0].Remaining > 0) and (local = FFetch[0].NextCycle)) then
+            ClockTextBackground(0, Cycle);
+        FClockCycle := Cycle + 1;
+        FMemoryPorts := 0;
+        if Enable and $200 <> 0 then
+          if ((local < 988) and ((local shr 2 and 7) = (TextMapPhases shr 3 and 7))) or
+            ((FFetch[1].Remaining > 0) and (local = FFetch[1].NextCycle)) then
+            ClockTextBackground(1, Cycle + 1);
+        FMergeSubColor := FMergeBottom and $7FFF;
+        var Blend := Reg16($50);
+        var Alpha := ((Blend shr 6 and 3 = 1) or FMergeSemi) and (FMergeMask and $20 <> 0) and
+          (Blend and (1 shl (8 + FMergeBottomLayer)) <> 0) and
+          (FMergeSemi or (Blend and (1 shl FMergeTopLayer) <> 0));
+        if Alpha and (FMergeBottom and $8000 = 0) then
+        begin
+          FMemoryPorts := FMemoryPorts or 1;
+          FMergeSubColor := PAL16(FMergeBottom);
+        end;
+        FClockCycle := Cycle + 2;
+        FMemoryPorts := 0;
+        if (D and $1080 = $1000) and ((FObjectFetch.Index < 128) or FObjectDrawing) then
+          ClockObject(Cycle + 2);
+        if Enable and $400 <> 0 then
+          if ((local < 988) and ((local shr 2 and 7) = (TextMapPhases shr 6 and 7))) or
+            ((FFetch[2].Remaining > 0) and (local = FFetch[2].NextCycle)) then
+            ClockTextBackground(2, Cycle + 2);
+        // Complete groups cover X=1..239: publish X-1, then merge X.
+        var X := (Cycle - 44) shr 2;
+        var Position := Line * 240 + X - 1;
+        FFrame[Position] := LookupColor(EffectColor(FMergeMainColor, FMergeSubColor,
+              FMergeTopLayer, FMergeBottomLayer, FMergeMask, FMergeSemi));
+        if (X and 1 = 0) and (IO[2] and 1 <> 0) then
+        begin
+          var A := FFrame[Position - 1];
+          var B := FFrame[Position];
+          FFrame[Position - 1] := (A and $FFFF00FF) or (B and $FF00);
+          FFrame[Position] := (B and $FFFF00FF) or (A and $FF00);
+        end;
+        if FWindowCursor <= (Cycle + 2) div 4 then
+          AdvanceWindows((Cycle + 2) div 4);
+        MergeLayers(X);
+        FClockCycle := Cycle + 3;
+        FMemoryPorts := 0;
+        if Enable and $800 <> 0 then
+          if ((local < 988) and ((local shr 2 and 7) = (TextMapPhases shr 9 and 7))) or
+            ((FFetch[3].Remaining > 0) and (local = FFetch[3].NextCycle)) then
+            ClockTextBackground(3, Cycle + 3);
+        FMergeMainColor := FMergeTop and $7FFF;
+        if FMergeTop and $8000 = 0 then
+        begin
+          FMemoryPorts := FMemoryPorts or 1;
+          FMergeMainColor := PAL16(FMergeTop);
+        end;
+        Inc(Cycle, 4);
+      end;
+      Continue;
+    end;
+
     FClockCycle := Cycle;
     FMemoryPorts := 0;
 
@@ -1509,7 +1627,10 @@ begin
       ClockObject(Cycle);
 
     if Line >= 160 then
+    begin
+      Inc(Cycle);
       Continue;
+    end;
 
     if Cycle = 6 then
       ClockAffine;
@@ -1518,6 +1639,7 @@ begin
     begin
       if (Cycle >= 50) and (Cycle < 1010) and ((Cycle - 50) and 3 = 0) then
         FFrame[Line * 240 + (Cycle - 50) div 4] := $FFFFFFFF;
+      Inc(Cycle);
       Continue;
     end;
 
@@ -1597,6 +1719,7 @@ begin
             end;
           end;
       end;
+    Inc(Cycle);
   end;
 
   // Preserve comparator history before the next CPU/DMA register write.
@@ -1606,6 +1729,24 @@ begin
 end;
 
 initialization
+  for var Bank := 0 to 15 do
+    for var Data := 0 to 255 do
+    begin
+      var First: Integer := Data and 15;
+      var Second: Integer := Data shr 4;
+      if First = 0 then
+        First := -1
+      else
+        Inc(First, Bank * 16);
+      if Second = 0 then
+        Second := -1
+      else
+        Inc(Second, Bank * 16);
+      GBATextPairs[Bank, Data].First := First;
+      GBATextPairs[Bank, Data].Second := Second;
+      GBATextPairs[Bank + 16, Data].First := Second;
+      GBATextPairs[Bank + 16, Data].Second := First;
+    end;
   for var Value := 0 to High(GBAColors) do
   begin
     var R := Value and 31;

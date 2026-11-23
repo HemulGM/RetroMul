@@ -15,7 +15,7 @@ interface
 
 uses
   System.SysUtils, PSP.Types, PSP.Memory, PSP.CPU, PSP.HLE, PSP.Kernel,
-  PSP.Scheduler, PSP.Service;
+  PSP.Scheduler, PSP.Service, Core.Emulation.Types;
 
 const
   PSPAudioChannelCount = 8;
@@ -66,6 +66,7 @@ type
     FCh: array[0..PSPAudioChannelCount - 1] of TPSPAudioChannel;
     FRing: TArray<Integer>;
     FTaken: Int64;
+    FSamplePool: array[0..2] of TArray<SmallInt>;
     // Main mixer DMA.
     FMixRunning: Boolean;
     FMixStart: Int64;
@@ -102,7 +103,8 @@ type
     procedure MixTick;
     procedure MixChannel(var C: TPSPAudioChannel);
     procedure Arm(Index: Integer; Buffer: Cardinal);
-    procedure InstallWaiter(Index: Integer);
+    // WakeAt: when its thread runs again.
+    procedure InstallWaiter(Index: Integer; WakeAt: Int64);
     procedure RenderDescriptor(const D: TPSPAudioDescriptor);
     // SetupUs: for an idle DMA, how far into the call playback starts.
     procedure ArmDescriptor(Buffer: Cardinal; Volume: Integer; SetupUs: Integer = 0);
@@ -163,7 +165,7 @@ type
     procedure Register; override;
     procedure OnEvent(Event: TPSPEvent); override;
     // Stereo samples produced since the last call, up to the current guest time.
-    function TakeSamples: TArray<SmallInt>;
+    function TakeSamples(Materialize: Boolean = True): TArray<SmallInt>;
   end;
 
 implementation
@@ -176,6 +178,16 @@ const
   RingMask = RingFrames - 1;
   // The descriptor DMA keeps running briefly after its last descriptor retires.
   Output2StopNs = 500000;
+  // A buffer handed to an idle mixer has its first block mixed at once and
+  // the next ones from 87 us into the call (probe audio_null).
+  AudioStartNs = 87000;
+  // The driver's interrupt for each later block takes the CPU from every
+  // thread, longer with more channels to mix (probe audio_isr); a thread
+  // whose buffer it took runs 19 us after it (probe audio_null).
+  AudioMixBaseNs = 51600;
+  AudioMixChannelNs = 7300;
+  AudioWakeNs = 19000;
+
   SCE_ERROR_NOT_INIT_INPUT = Cardinal($80000001);
   SCE_ERROR_NOT_SUPPORTED_3 = Cardinal($80000003);
   SCE_ERROR_BUSY = Cardinal($80000021);
@@ -224,10 +236,10 @@ end;
 procedure TPSPAudio.Reset;
 begin
   FillChar(FCh, SizeOf(FCh), 0);
-  for var I := 0 to High(FCh) do
+  for var i := 0 to High(FCh) do
   begin
-    FCh[I].VolLeft := $8000;
-    FCh[I].VolRight := $8000;
+    FCh[i].VolLeft := $8000;
+    FCh[i].VolRight := $8000;
   end;
   FillChar(FRing[0], Length(FRing) * SizeOf(Integer), 0);
   FTaken := SamplePos(FScheduler.Now);
@@ -260,9 +272,9 @@ procedure TPSPAudio.AddRing(Pos: Int64; L, R: Integer);
 begin
   if (Pos < FTaken) or (Pos >= FTaken + RingFrames) then
     Exit;
-  var I := Integer(Pos and RingMask) * 2;
-  Inc(FRing[I], L);
-  Inc(FRing[I + 1], R);
+  var i := Integer(Pos and RingMask) * 2;
+  Inc(FRing[i], L);
+  Inc(FRing[i + 1], R);
 end;
 
 procedure TPSPAudio.Cost(Us: Integer);
@@ -270,20 +282,58 @@ begin
   FHLE.CPU.AddCycles(Us * Integer(FScheduler.MHz));
 end;
 
-function TPSPAudio.TakeSamples: TArray<SmallInt>;
+function TPSPAudio.TakeSamples(Materialize: Boolean): TArray<SmallInt>;
 begin
   var Total := SamplePos(FScheduler.Now);
   var N := Total - FTaken;
   if N < 0 then
     N := 0;
-  SetLength(Result, N * 2);
+  Result := nil;
+  if not Materialize then
+  begin
+    if N >= RingFrames then
+      FillChar(FRing[0], Length(FRing) * SizeOf(Integer), 0)
+    else
+      for var K := 0 to N - 1 do
+      begin
+        var i := Integer((FTaken + K) and RingMask) * 2;
+        FRing[i] := 0;
+        FRing[i + 1] := 0;
+      end;
+    FTaken := Total;
+    Exit;
+  end;
+  if N > 0 then
+  begin
+    var Pick := -1;
+    for var i := 0 to High(FSamplePool) do
+      if (Length(FSamplePool[i]) = N * 2) and
+        (EmulationBufferReferences(Pointer(FSamplePool[i])) = 1) then
+      begin
+        Pick := i;
+        Break
+      end;
+    if Pick < 0 then
+    begin
+      Pick := 0;
+      for var i := 0 to High(FSamplePool) do
+        if EmulationBufferReferences(Pointer(FSamplePool[i])) <= 1 then
+        begin
+          Pick := i;
+          Break
+        end;
+      FSamplePool[Pick] := nil;
+      SetLength(FSamplePool[Pick], N * 2);
+    end;
+    Result := FSamplePool[Pick];
+  end;
   for var K := 0 to N - 1 do
   begin
-    var I := Integer((FTaken + K) and RingMask) * 2;
-    Result[K * 2] := EnsureRange(FRing[I], -32768, 32767);
-    Result[K * 2 + 1] := EnsureRange(FRing[I + 1], -32768, 32767);
-    FRing[I] := 0;
-    FRing[I + 1] := 0;
+    var i := Integer((FTaken + K) and RingMask) * 2;
+    Result[K * 2] := EnsureRange(FRing[i], -32768, 32767);
+    Result[K * 2 + 1] := EnsureRange(FRing[i + 1], -32768, 32767);
+    FRing[i] := 0;
+    FRing[i + 1] := 0;
   end;
   FTaken := Total;
 end;
@@ -298,7 +348,7 @@ end;
 procedure TPSPAudio.StartMixer;
 begin
   FMixRunning := True;
-  FMixStart := FScheduler.Now;
+  FMixStart := FScheduler.Now + AudioStartNs;
   FMixStartPos := SamplePos(FMixStart);
   FMixTick := 0;
   MixTick;
@@ -313,25 +363,25 @@ begin
   begin
     if C.PlayFormat = $10 then
     begin
-      var P := PSmallInt(FMemory.Ptr(C.Buffer + Cardinal(Offset) * 2, N * 2));
+      var P := PSmallInt(FMemory.ReadPtr(C.Buffer + Cardinal(Offset) * 2, N * 2));
       if P <> nil then
-        for var I := 0 to N - 1 do
+        for var i := 0 to N - 1 do
         begin
           var S := Integer(P^);
-          Inc(FBlock[I * 2], Scale(S, C.VolLeft));
-          Inc(FBlock[I * 2 + 1], Scale(S, C.VolRight));
+          Inc(FBlock[i * 2], Scale(S, C.VolLeft));
+          Inc(FBlock[i * 2 + 1], Scale(S, C.VolRight));
           Inc(P);
         end;
     end
     else
     begin
-      var P := PSmallInt(FMemory.Ptr(C.Buffer + Cardinal(Offset) * 4, N * 4));
+      var P := PSmallInt(FMemory.ReadPtr(C.Buffer + Cardinal(Offset) * 4, N * 4));
       if P <> nil then
-        for var I := 0 to N - 1 do
+        for var i := 0 to N - 1 do
         begin
-          Inc(FBlock[I * 2], Scale(P^, C.VolLeft));
+          Inc(FBlock[i * 2], Scale(P^, C.VolLeft));
           Inc(P);
-          Inc(FBlock[I * 2 + 1], Scale(P^, C.VolRight));
+          Inc(FBlock[i * 2 + 1], Scale(P^, C.VolRight));
           Inc(P);
         end;
     end;
@@ -341,12 +391,13 @@ end;
 
 procedure TPSPAudio.MixTick;
 begin
-  var Any := False;
+  var Mixed := 0;
+  var Woken: TArray<Integer> := nil;
   FillChar(FBlock, SizeOf(FBlock), 0);
   for var Ch := 0 to High(FCh) do
     if FCh[Ch].Playing then
     begin
-      Any := True;
+      Inc(Mixed);
       MixChannel(FCh[Ch]);
       if FCh[Ch].Rest <= 0 then
       begin
@@ -354,17 +405,28 @@ begin
         FCh[Ch].Playing := False;
         FCh[Ch].Buffer := 0;
         if FCh[Ch].Waiter <> nil then
-          InstallWaiter(Ch);
+          Woken := Woken + [Ch];
       end;
     end;
-  if not Any then
+  if Mixed = 0 then
   begin
     FMixRunning := False;
     Exit;
   end;
+  // The first block is mixed in the call that starts the mixer.
+  var WakeAt := FScheduler.Now;
+  if FMixTick > 0 then
+  begin
+    var Busy := TickTime(FMixTick) + AudioMixBaseNs + Mixed * AudioMixChannelNs;
+    if Busy > FKernel.BusyUntil then
+      FKernel.BusyUntil := Busy;
+    WakeAt := Busy + AudioWakeNs;
+  end;
+  for var Ch in Woken do
+    InstallWaiter(Ch, WakeAt);
   var Pos := FMixStartPos + FMixTick * PSPAudioBlock;
-  for var I := 0 to PSPAudioBlock - 1 do
-    AddRing(Pos + I, FBlock[I * 2], FBlock[I * 2 + 1]);
+  for var i := 0 to PSPAudioBlock - 1 do
+    AddRing(Pos + i, FBlock[i * 2], FBlock[i * 2 + 1]);
   Inc(FMixTick);
 end;
 
@@ -387,7 +449,7 @@ begin
     StartMixer;
 end;
 
-procedure TPSPAudio.InstallWaiter(Index: Integer);
+procedure TPSPAudio.InstallWaiter(Index: Integer; WakeAt: Int64);
 begin
   var C: PPSPAudioChannel := @FCh[Index];
   var T := C.Waiter;
@@ -404,8 +466,12 @@ begin
     C.PlayFormat := C.Format;
     C.Playing := True;
   end;
-  if T.IsWaiting and (T.Wait.HLETag = 'audio') then
-    FKernel.EndWait(T, Cardinal(C.SampleCount));
+  if not T.IsWaiting or (T.Wait.HLETag <> 'audio') then
+    Exit;
+  if WakeAt <= FScheduler.Now then
+    FKernel.EndWait(T, Cardinal(C.SampleCount))
+  else
+    FKernel.AddWakeTimer(WakeAt, T, 'audio', Cardinal(C.SampleCount));
 end;
 
 { Output2 / SRC }
@@ -417,19 +483,30 @@ begin
   var Freq := FO2Freq;
   var Pos := SamplePos(D.StartAt);
   var OutCount := Int64(D.Count) * PSPAudioRate div Freq;
-  var P := PSmallInt(FMemory.Ptr(D.Buffer, D.Count * 4));
+  var P := PSmallInt(FMemory.ReadPtr(D.Buffer, D.Count * 4));
   if P = nil then
     Exit;
-  for var I := 0 to OutCount - 1 do
+  // Exact floor(I*Freq/Rate), without a division for every output sample.
+  var Step := Freq div PSPAudioRate;
+  var Fraction := Freq mod PSPAudioRate;
+  var Src := 0;
+  var Remainder := 0;
+  for var i := 0 to OutCount - 1 do
   begin
-    var Src := Integer(I * Freq div PSPAudioRate);
     if Src >= D.Count then
       Break;
     var S := PSmallInt(PByte(P) + Src * 4);
     var L := Integer(S^);
     Inc(S);
     var R := Integer(S^);
-    AddRing(Pos + I, Scale(L, D.Volume), Scale(R, D.Volume));
+    AddRing(Pos + i, Scale(L, D.Volume), Scale(R, D.Volume));
+    Inc(Src, Step);
+    Inc(Remainder, Fraction);
+    if Remainder >= PSPAudioRate then
+    begin
+      Dec(Remainder, PSPAudioRate);
+      Inc(Src);
+    end;
   end;
 end;
 
@@ -556,9 +633,9 @@ end;
 
 procedure TPSPAudio.AbortChannelWait(T: TPSPThread);
 begin
-  for var I := 0 to High(FCh) do
-    if FCh[I].Waiter = T then
-      FCh[I].Waiter := nil;
+  for var i := 0 to High(FCh) do
+    if FCh[i].Waiter = T then
+      FCh[i].Waiter := nil;
 end;
 
 procedure TPSPAudio.AbortOutput2Wait(T: TPSPThread);
@@ -634,10 +711,13 @@ begin
     C.VolRight := Right;
   var Starts := (Buffer <> 0) and not FMixRunning;
   Arm(Ch, Buffer);
+  // Probe audio_null.
   if Starts then
-    Cost(150)
+    Cost(122)
+  else if Buffer <> 0 then
+    Cost(4)
   else
-    Cost(10);
+    Cost(1);
   FHLE.Result(Cardinal(C.SampleCount));
 end;
 
@@ -654,10 +734,10 @@ begin
   if Ch < 0 then
   begin
     // The automatic search skips channels still playing out a buffer.
-    for var I := High(FCh) downto 0 do
-      if not FCh[I].Reserved and not FCh[I].Playing then
+    for var i := High(FCh) downto 0 do
+      if not FCh[i].Reserved and not FCh[i].Playing then
       begin
-        Ch := I;
+        Ch := i;
         Break;
       end;
     if Ch < 0 then
@@ -818,10 +898,10 @@ begin
   end;
   if Ch < 0 then
   begin
-    for var I := High(FCh) downto 0 do
-      if not FCh[I].Reserved and not FCh[I].Playing then
+    for var i := High(FCh) downto 0 do
+      if not FCh[i].Reserved and not FCh[i].Playing then
       begin
-        Ch := I;
+        Ch := i;
         Break;
       end;
     if Ch < 0 then

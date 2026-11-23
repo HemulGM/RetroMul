@@ -10,12 +10,18 @@ uses
 
 function CHDFLAC(const Source: TBytes; Offset, OutputSize: Integer; BigEndian: Boolean; out Consumed: Integer; ChannelCount: Integer = 2): TBytes;
 
+function DecodeFLACFrame(const Source: TBytes; Offset, ChannelCount, Depth, SampleRate: Integer; out Consumed: Integer): TBytes;
+
 implementation
 
 uses
   CHD.Common;
 
-function CHDFLAC(const Source: TBytes; Offset, OutputSize: Integer; BigEndian: Boolean; out Consumed: Integer; ChannelCount: Integer): TBytes;
+function DecodeFrames(const Source: TBytes; Offset, OutputSize: Integer; BigEndian: Boolean; out Consumed: Integer; ChannelCount, Depth, SampleRate: Integer; OneFrame: Boolean): TBytes;
+const
+  SampleWidths: array[0..7] of Integer = (0, 8, 12, -1, 16, 20, 24, 32);
+  HeaderRates: array[0..11] of Integer =
+    (0, 88200, 176400, 192000, 8000, 16000, 22050, 24000, 32000, 44100, 48000, 96000);
 var
   Bits: TCHDBits;
   Channels: array[0..1] of TArray<Int64>;
@@ -63,7 +69,7 @@ begin
   Bits.Init(Source, False, Offset);
   SetLength(Result, OutputSize);
   Output := 0;
-  while Output < OutputSize do
+  while OneFrame or (Output < OutputSize) do
   begin
     FrameStart := Bits.BytePosition;
     CHDRequire(Bits.Read(14) = $3FFE, 'FLAC frame sync');
@@ -75,7 +81,7 @@ begin
     SampleCode := Bits.Read(3);
     CHDRequire(Bits.Read(1) = 0, 'FLAC reserved bit');
     CHDRequire((Assignment = ChannelCount - 1) or ((ChannelCount = 2) and (Assignment >= 8) and (Assignment <= 10)), 'CHD FLAC channel count');
-    CHDRequire((SampleCode = 0) or (SampleCode = 4), 'CHD FLAC sample width');
+    CHDRequire((SampleCode = 0) or (SampleWidths[SampleCode] = Depth), 'FLAC sample width');
 
     V := Bits.Read(8);
     if V >= 128 then
@@ -107,20 +113,29 @@ begin
     end;
 
     case RateCode of
+      0..11:
+        V := HeaderRates[RateCode];
       12:
-        Bits.Read(8);
-      13, 14:
-        Bits.Read(16);
-      15:
-        raise ECHDError.Create(ceInvalidData, 'FLAC reserved sample rate');
+        V := Integer(Bits.Read(8)) * 1000;
+      13:
+        V := Bits.Read(16);
+      14:
+        V := Integer(Bits.Read(16)) * 10;
+    else
+      raise ECHDError.Create(ceInvalidData, 'FLAC reserved sample rate');
     end;
+    if (SampleRate <> 0) and (RateCode <> 0) then
+      CHDRequire(V = SampleRate, 'FLAC sample rate changes');
 
     HeaderEnd := Bits.BytePosition;
     CHDRequire(Bits.Read(8) = Cardinal(FrameCRC(FrameStart, HeaderEnd, $07, $FF)), 'FLAC header CRC', ceChecksum);
-    CHDRequire(BlockSize <= (OutputSize - Output) div (2 * ChannelCount), 'FLAC frame exceeds output');
+    if OneFrame then
+      SetLength(Result, BlockSize * ChannelCount * 2)
+    else
+      CHDRequire(BlockSize <= (OutputSize - Output) div (2 * ChannelCount), 'FLAC frame exceeds output');
     for var Ch := 0 to ChannelCount - 1 do
     begin
-      BPS := 16;
+      BPS := Depth;
       if ((Assignment = 8) and (Ch = 1)) or ((Assignment = 9) and (Ch = 0)) or ((Assignment = 10) and (Ch = 1)) then
         Inc(BPS);
       CHDRequire(Bits.Read(1) = 0, 'FLAC subframe padding');
@@ -261,14 +276,18 @@ begin
             B := SignedShift(S - B, 1);
           end;
       end;
-      CheckSample(A, 16);
-      CheckSample(B, 16);
+      CheckSample(A, Depth);
+      CheckSample(B, Depth);
       for var Ch := 0 to ChannelCount - 1 do
       begin
         if Ch = 0 then
           S := A
         else
           S := B;
+        if Depth < 16 then
+          S := S * (Int64(1) shl (16 - Depth))
+        else if Depth > 16 then
+          S := SignedShift(S, Depth - 16);
         if S < 0 then
           Inc(S, 65536);
         if BigEndian then
@@ -284,8 +303,21 @@ begin
         Inc(Output, 2);
       end;
     end;
+    if OneFrame then
+      Break;
   end;
   Consumed := Bits.BytePosition - Offset;
+end;
+
+function CHDFLAC(const Source: TBytes; Offset, OutputSize: Integer; BigEndian: Boolean; out Consumed: Integer; ChannelCount: Integer): TBytes;
+begin
+  Result := DecodeFrames(Source, Offset, OutputSize, BigEndian, Consumed, ChannelCount, 16, 0, False);
+end;
+
+function DecodeFLACFrame(const Source: TBytes; Offset, ChannelCount, Depth, SampleRate: Integer; out Consumed: Integer): TBytes;
+begin
+  CHDRequire((Depth >= 4) and (Depth <= 24), 'Unsupported FLAC sample width');
+  Result := DecodeFrames(Source, Offset, 0, False, Consumed, ChannelCount, Depth, SampleRate, True);
 end;
 
 end.

@@ -1,7 +1,7 @@
 ﻿unit PSP.GE.VulkanLLE;
 
 // The GE's rasterizer and pixel pipeline on a Vulkan compute device, with the
-// arithmetic of PSP.GE.Raster bit for bit (source/gpu/shaders/PSPGERaster.comp).
+// arithmetic of PSP.GE.Raster bit for bit (source/gpu/shaders/PSPGERaster.pasm).
 //
 // Primitives are set up here exactly as PSP.GE.Raster sets them up and go
 // with their packed raster state into a batch of passes: runs of primitives
@@ -12,7 +12,8 @@
 // the VRAM pages they draw into are held (TPSPMemory.HoldVRAM) and the pages
 // their textures come from are watched (TPSPMemory.WatchPage): any access to
 // a held page, or a write to a watched one, first draws everything (Sync)
-// and copies the drawn pages back into guest memory. The GPU's copy of a page
+// and copies requested drawn pages back into guest memory (Sync returns all).
+// The GPU's copy of a page
 // is compared with guest memory when a batch first uses it in an epoch;
 // textures in main memory are copied into the batch. Mipmapped textures and
 // the level of detail are sampled as GESampleTextureLod does. What the
@@ -55,6 +56,8 @@ type
   end;
 
   TGEVulkanLLEMessage = reference to procedure(const Text: string);
+  TGEVulkanLLEPageMask = array[0..VRAMPageCount - 1] of Boolean;
+  PGEVulkanLLEPageMask = ^TGEVulkanLLEPageMask;
 
   TGEVulkanLLESpan = record
     Lo, Len: Int64; // VRAM offset and length, may run past the end (wraps)
@@ -173,7 +176,8 @@ type
     procedure Bind(Slot: Integer);
     // Sends the batch to the GPU; with ReadBack, also every page drawn since
     // the last read back, to be put into guest memory when it completes.
-    procedure Submit(ReadBack: Boolean);
+    procedure Submit(ReadBack: Boolean; ReadPages: PGEVulkanLLEPageMask = nil);
+    procedure SyncRange(Address, Size: Cardinal);
     procedure Complete(Slot: Integer);
     procedure Split(const Why: string);
     function BinPass(const P: TGEVulkanLLEPass; out TilesX, TilesY: Integer): Cardinal;
@@ -215,17 +219,20 @@ type
     property OnMessage: TGEVulkanLLEMessage read FOnMessage write FOnMessage;
   end;
 
+// Features and startup arithmetic qualification, without allocating a backend.
+function QualifyGEVulkanLLE(Compute: TVulkanCompute; out Error: string): Boolean;
+
 // A GPU backend, or False with the reason when there is no suitable device.
 function CreateGEVulkanLLEBackend(Memory: TPSPMemory; Check: Boolean; out Backend: TGEVulkanLLEBackend;
-  out Error: string; const DeviceName: string = ''): Boolean;
+  out Error: string; const DeviceName: string = ''; MaxAPIVersion: Cardinal = VK_API_VERSION_1_2): Boolean;
 
 implementation
 
 uses
-  SPV.PSPGERaster, SPV.PSPGESelfTest;
+  PSP.GE.PascalShaders;
 
 const
-  PrimWords = 128;
+  PrimWords = 160;
   StateWords = 128;
   FragWords = 16;
   PageSize = 4096;
@@ -348,7 +355,7 @@ begin
   try
     Src := Compute.CreateBuffer(N * 16, vbkUpload);
     Dst := Compute.CreateBuffer(N * Stride * 4, vbkReadback);
-    K := Compute.CreateKernel(PSPGESelfTestSPV, 2, 4);
+    K := Compute.CreateKernel(PSPGEKernelCode(TPSPGEKernel.SelfTest), 2, 4, PSPGEEntryPoint);
     Cmd := Compute.CreateCommands;
     Src.Write(0, Inputs[0], N * 16);
     K.Bind(0, Src);
@@ -431,8 +438,23 @@ begin
   end;
 end;
 
+function QualifyGEVulkanLLE(Compute: TVulkanCompute; out Error: string): Boolean;
+begin
+  var F := Compute.Features;
+  if not (F.Int64 and F.Int16 and F.Int8 and F.Float64 and F.Storage8 and F.Storage16 and F.DenormPreserve32 and
+    F.DenormPreserve64 and F.RoundEven32 and F.RoundEven64 and F.SignedZeroInfNan32 and F.SignedZeroInfNan64) then
+  begin
+    Error := Compute.Name + ' lacks 64/16/8-bit integers, doubles, small storage or IEEE float controls.';
+    Exit(False);
+  end;
+  Error := SelfTest(Compute);
+  if Error <> '' then
+    Error := Compute.Name + ': ' + Error;
+  Result := Error = '';
+end;
+
 function CreateGEVulkanLLEBackend(Memory: TPSPMemory; Check: Boolean; out Backend: TGEVulkanLLEBackend;
-  out Error: string; const DeviceName: string): Boolean;
+  out Error: string; const DeviceName: string; MaxAPIVersion: Cardinal): Boolean;
 var
   Compute: TVulkanCompute;
   Taken: Boolean;
@@ -448,21 +470,11 @@ begin
   Error := 'The Win32/x87 raster reference is not qualified for GPU rendering; use Win64.';
   Exit(False);
 {$ENDIF}
-  if not TryCreateVulkanCompute(Compute, Error, DeviceName) then
+  if not TryCreateVulkanCompute(Compute, Error, DeviceName, False, False, MaxAPIVersion) then
     Exit(False);
-  var F := Compute.Features;
-  if not (F.Int64 and F.Int16 and F.Int8 and F.Float64 and F.Storage8 and F.Storage16 and F.DenormPreserve32 and
-    F.DenormPreserve64 and F.RoundEven32 and F.RoundEven64 and F.SignedZeroInfNan32 and F.SignedZeroInfNan64) then
-  begin
-    Error := Compute.Name + ' lacks 64/16/8-bit integers, doubles, small storage or IEEE float controls.';
-    Compute.Free;
-    Exit(False);
-  end;
   try
-    Error := SelfTest(Compute);
-    if Error <> '' then
+    if not QualifyGEVulkanLLE(Compute, Error) then
     begin
-      Error := Compute.Name + ': ' + Error;
       Compute.Free;
       Exit(False);
     end;
@@ -765,6 +777,11 @@ begin
   var MaxS: Double := 0;
   var MinT: Double := 0;
   var MaxT: Double := 0;
+  // Transform mode's planes (GEPerspPlanes) round as SpritePerspTexels'.
+  var Top: Double := 0;
+  var TopW: Double := 0;
+  var MinQW: Double := 0;
+  var MaxQW: Double := 0;
   for var I := 0 to 2 do
   begin
     var V: PGEVertex := @V0;
@@ -778,6 +795,19 @@ begin
     var CT: Double := V.T / V.Q;
     if not ((Abs(CS) < TexelLimit) and (Abs(CT) < TexelLimit)) then
       Exit;
+    var QW: Double := Double(V.Q) * V.W;
+    Top := Max(Top, Max(Abs(CS), Abs(CT)));
+    TopW := Max(TopW, Max(Abs(V.S), Abs(V.T)) * V.W);
+    if I = 0 then
+    begin
+      MinQW := QW;
+      MaxQW := QW;
+    end
+    else
+    begin
+      MinQW := Min(MinQW, QW);
+      MaxQW := Max(MaxQW, QW);
+    end;
     if I = 0 then
     begin
       MinS := CS;
@@ -793,12 +823,22 @@ begin
       MaxT := Max(MaxT, CT);
     end;
   end;
+  if not S.Through then
+  begin
+    var Err := (TopW + Top * MaxQW) / MinQW / 8192 + 1;
+    if not (Err < TexelLimit) then
+      Exit;
+    MinS := MinS - Err;
+    MaxS := MaxS + Err;
+    MinT := MinT - Err;
+    MaxT := MaxT + Err;
+  end;
   Result := TexelWindow(S, MinS, MaxS, MinT, MaxT, Full);
 end;
 
-// The texels an unprojected sprite (box PX1..PX2, PY1..PY2) can sample. S
-// and T are linear across the box, so every pixel's lie between their values
-// at the corner pixels (GEDrawSprite).
+// The texels an unprojected through-mode sprite (box PX1..PX2, PY1..PY2) can
+// sample. S and T are linear across the box, so every pixel's lie between
+// their values at the corner pixels (GEDrawSprite).
 function SpriteTexels(const S: TGERaster; const V0: TGEVertex; SX, SY, TX, TY: Single; PX1, PY1, PX2, PY2: Integer;
   const Full: TGEVulkanLLESpan): TGEVulkanLLESpan;
 begin
@@ -839,6 +879,60 @@ begin
   Result := TexelWindow(S, MinS, MaxS, MinT, MaxT, Full);
 end;
 
+// The texels a transform-mode sprite can sample (GEDrawSprite). With positive
+// Q and w its S runs between the vertices' S/Q and T between either one's T
+// over either one's Q, through GESpritePerspPlanes (S W and T W over Q W) or
+// its fallback (S and T over Q), widened by the planes' rounding: values with
+// 15 significant bits, so S/Q within 2^-13 of the largest S W and S/Q times Q W
+// over the smallest Q W.
+function SpritePerspTexels(const S: TGERaster; const V0, V1: TGEVertex; const Full: TGEVulkanLLESpan): TGEVulkanLLESpan;
+var
+  MinS, MaxS, MinT, MaxT, Top: Double;
+  First: Boolean;
+
+  procedure Take(CS, CT: Double);
+  begin
+    if First then
+    begin
+      MinS := CS;
+      MaxS := CS;
+      MinT := CT;
+      MaxT := CT;
+      First := False;
+    end;
+    MinS := Min(MinS, CS);
+    MaxS := Max(MaxS, CS);
+    MinT := Min(MinT, CT);
+    MaxT := Max(MaxT, CT);
+    Top := Max(Top, Max(Abs(CS), Abs(CT)));
+  end;
+
+begin
+  Result := Full;
+  if not ((V0.Q >= 1E-15) and (V1.Q >= 1E-15) and (V0.W >= 1E-15) and (V1.W >= 1E-15)) then
+    Exit;
+  var QW0: Double := Double(V0.Q) * V0.W;
+  var QW1: Double := Double(V1.Q) * V1.W;
+  First := True;
+  Top := 0;
+  Take(V0.S / V0.Q, V0.T / V0.Q);
+  Take(V1.S / V1.Q, V1.T / V1.Q);
+  Take(V0.S / V0.Q, V0.T / V1.Q);
+  Take(V1.S / V1.Q, V1.T / V0.Q);
+  Take(V0.S / V0.Q, Double(V0.T) * V0.W / QW0);
+  Take(V0.S / V0.Q, Double(V0.T) * V0.W / QW1);
+  Take(V0.S / V0.Q, Double(V1.T) * V1.W / QW0);
+  Take(V0.S / V0.Q, Double(V1.T) * V1.W / QW1);
+  // Also not NaNs (which Min and Max drop).
+  if not (Top < TexelLimit) then
+    Exit;
+  var TopW := Max(Max(Abs(V0.S), Abs(V0.T)) * V0.W, Max(Abs(V1.S), Abs(V1.T)) * V1.W);
+  var Err := (TopW + Top * Max(QW0, QW1)) / Min(QW0, QW1) / 8192 + 1;
+  if not (Err < TexelLimit) then
+    Exit;
+  Result := TexelWindow(S, MinS - Err, MaxS + Err, MinT - Err, MaxT + Err, Full);
+end;
+
 // Whether Size bytes from Address all lie in VRAM's mirrors.
 function InVRAM(Address, Size: Cardinal): Boolean;
 begin
@@ -868,7 +962,8 @@ begin
   FSnapshots := TDictionary<UInt64, Integer>.Create;
   SetLength(FShadow, PSPVRAMSize);
   FVRAM := Compute.CreateBuffer(PSPVRAMSize + 256, vbkDevice);
-  FKernel := Compute.CreateKernel(PSPGERasterSPV, 8, SizeOf(TGEVulkanLLEPush), [], Length(FSlots));
+  FKernel := Compute.CreateKernel(PSPGEKernelCode(TPSPGEKernel.Raster), 8,
+    SizeOf(TGEVulkanLLEPush), [], Length(FSlots), PSPGEEntryPoint);
   for var I := 0 to High(FSlots) do
   begin
     var S: PGEVulkanLLESlot := @FSlots[I];
@@ -948,6 +1043,8 @@ begin
   FVerified[Page] := True;
   FVerifiedList[FVerifiedCount] := Page;
   Inc(FVerifiedCount);
+  // A still-held page is authoritative on the GPU, not in guest memory.
+  if FHeld[Page] then Exit;
   Inc(FStats.ComparedPages);
   var Guest := @FMemory.VRAM[Page * PageSize];
   if not SameBytes(Guest, @FShadow[Page * PageSize], PageSize) then
@@ -1057,7 +1154,8 @@ end;
 procedure TGEVulkanLLEBackend.VRAMFault;
 begin
   Inc(FStats.AccessSyncs);
-  Sync;
+  if FCheck or FQueued or (FMemory.SyncSize = 0) then Sync
+  else SyncRange(FMemory.SyncAddress, FMemory.SyncSize);
 end;
 
 procedure TGEVulkanLLEBackend.Split(const Why: string);
@@ -1806,6 +1904,29 @@ begin
   Anchor[1] := Cardinal(Integer(VP.AY));
 end;
 
+// Perspective texture coordinate planes (GEPerspPlanes) in a triangle's
+// words: 128..133 S, 134..139 T, 140..145 Q (start and steps), 146, 147 their
+// vertex, 148..150 their fraction bits, 151 bit 0 whether they are used (152:
+// the level of detail's pixel, GELodPixel).
+procedure PutPerspPlanes(P: PCardinal; const PP: TGEPerspPlanes);
+begin
+  PInt64(P + 128)^ := PP.S.C0;
+  PInt64(P + 130)^ := PP.S.GX;
+  PInt64(P + 132)^ := PP.S.GY;
+  PInt64(P + 134)^ := PP.T.C0;
+  PInt64(P + 136)^ := PP.T.GX;
+  PInt64(P + 138)^ := PP.T.GY;
+  PInt64(P + 140)^ := PP.Q.C0;
+  PInt64(P + 142)^ := PP.Q.GX;
+  PInt64(P + 144)^ := PP.Q.GY;
+  P[146] := Cardinal(Integer(PP.Q.AX));
+  P[147] := Cardinal(Integer(PP.Q.AY));
+  P[148] := Cardinal(PP.KS);
+  P[149] := Cardinal(PP.KT);
+  P[150] := Cardinal(PP.KQ);
+  P[151] := 1;
+end;
+
 // Texture coordinate planes (GEUVPlanes) in a triangle's or a sprite's words:
 // 111..116 S, 117..122 T (start and steps), 123, 124 their vertex, 125 bit 0
 // whether they are used, bits 8.. and 16.. their fraction bits.
@@ -1829,43 +1950,7 @@ var
 begin
   BeginPrim;
   // The set-up of GEDrawTriangle.
-  var X0 := Int64(V0.X);
-  var Y0 := Int64(V0.Y);
-  var X1 := Int64(V1.X);
-  var Y1 := Int64(V1.Y);
-  var X2 := Int64(V2.X);
-  var Y2 := Int64(V2.Y);
-  var Area := (X1 - X0) * (Y2 - Y0) - (Y1 - Y0) * (X2 - X0);
-  if Area = 0 then
-    Exit;
-  var A0, A1, A2: PGEVertex;
-  A0 := @V0;
-  A1 := @V1;
-  A2 := @V2;
-  if Area < 0 then
-  begin
-    A1 := @V2;
-    A2 := @V1;
-    X1 := V2.X;
-    Y1 := V2.Y;
-    X2 := V1.X;
-    Y2 := V1.Y;
-    Area := -Area;
-  end;
-  var MinX := Min(X0, Min(X1, X2));
-  var MaxX := Max(X0, Max(X1, X2));
-  var MinY := Min(Y0, Min(Y1, Y2));
-  var MaxY := Max(Y0, Max(Y1, Y2));
-  var PX1 := Integer((MinX - 8 + 15 + $100000) div 16) - $10000;
-  var PX2 := Integer((MaxX - 8 + $100000) div 16) - $10000;
-  var PY1 := Integer((MinY - 8 + 15 + $100000) div 16) - $10000;
-  var PY2 := Integer((MaxY - 8 + $100000) div 16) - $10000;
-  PX1 := Max(PX1, S.ScissorX1);
-  PY1 := Max(PY1, Max(S.ScissorY1, S.BandY1));
-  PX2 := Min(PX2, S.ScissorX2);
-  PY2 := Min(PY2, Min(S.ScissorY2, S.BandY2));
-  if (PX1 > PX2) or (PY1 > PY2) then
-    Exit;
+{$I PSP.GE.TriangleSetup.inc}
   if OnCPU(Int64(PX2 - PX1 + 1) * (PY2 - PY1 + 1)) then
   begin
     Enqueue(KindTriangle, S, V0, V1, V2);
@@ -1953,6 +2038,10 @@ begin
   P[125] := 0;
   if S.Textured and S.Through and GEUVPlanes(S, V0, V1, V2, UV) then
     PutUVPlanes(P, UV);
+  // Transform mode: the perspective planes (GEPerspPlanes).
+  var PP: TGEPerspPlanes;
+  if S.Textured and not S.Through and GEPerspPlanes(V0, V1, V2, PP) then
+    PutPerspPlanes(P, PP);
   // The fog plane, from the vertices' 8-bit fog factors (GEFogByte).
   if S.FogEnabled then
     PutPlane(P + 96, P + 64, V0, V1, V2, GEFogByte(V0.Fog), GEFogByte(V1.Fog), GEFogByte(V2.Fog));
@@ -1986,10 +2075,20 @@ begin
     NSY := A0.S * A0.W * BY0 + A1.S * A1.W * BY1 + A2.S * A2.W * BY2;
     NTX := A0.T * A0.W * BX0 + A1.T * A1.W * BX1 + A2.T * A2.W * BX2;
     NTY := A0.T * A0.W * BY0 + A1.T * A1.W * BY1 + A2.T * A2.W * BY2;
+    // With the perspective planes: their G (GEPerspLodG) alone.
+    if P[151] and 1 <> 0 then
+    begin
+      NSX := GEPerspLodG(PP);
+      NSY := 0;
+      NTX := 0;
+      NTY := 0;
+    end;
     P[90] := PCardinal(@NSX)^;
     P[91] := PCardinal(@NSY)^;
     P[92] := PCardinal(@NTX)^;
     P[93] := PCardinal(@NTY)^;
+    // 152: GELodPixel.
+    P[152] := Cardinal(GELodPixel(V0, V1, V2));
   end;
   Record_(KindTriangle, S, V0, V1, V2);
 end;
@@ -2005,7 +2104,7 @@ begin
   var X2 := Max(V0.X, V1.X);
   var Y1 := Min(V0.Y, V1.Y);
   var Y2 := Max(V0.Y, V1.Y);
-  var PX1 := (X1 - 8 + 15 + 65536) div 16 - 4096;
+  var PX1 := (X1 - 9 + 15 + 65536) div 16 - 4096;
   var PX2 := (X2 - 8 + 15 + 65536) div 16 - 4096 - 1;
   var PY1 := (Y1 - 8 + 15 + 65536) div 16 - 4096;
   var PY2 := (Y2 - 8 + 15 + 65536) div 16 - 4096 - 1;
@@ -2050,8 +2149,11 @@ begin
 
   var State := PackState(S, Tex, Ok);
   // Only the texels it samples: it may draw beside them in the same buffer.
-  if Ok and (Tex.Count = 1) and Tex.OneLevel and (Tex.Spans[0].Stride > 0) and (V0.Q = 1) and (V1.Q = 1) then
-    Tex.Spans[0] := SpriteTexels(S, V0, SX, SY, TX, TY, PX1, PY1, PX2, PY2, Tex.Spans[0]);
+  if Ok and (Tex.Count = 1) and Tex.OneLevel and (Tex.Spans[0].Stride > 0) then
+    if not S.Through then
+      Tex.Spans[0] := SpritePerspTexels(S, V0, V1, Tex.Spans[0])
+    else if (V0.Q = 1) and (V1.Q = 1) then
+      Tex.Spans[0] := SpriteTexels(S, V0, SX, SY, TX, TY, PX1, PY1, PX2, PY2, Tex.Spans[0]);
   if not Ok or not Place(S, State, Tex, PX1, PY1, PX2, PY2) then
   begin
     Fallback;
@@ -2085,11 +2187,15 @@ begin
     Lod := GETexLod(S, Max(Max(Abs(SX), Abs(SY)), Max(Abs(TX), Abs(TY))), 1, IW);
   end;
   P[42] := Cardinal(Lod);
-  // The texture coordinates' planes (GESpriteUVPlanes), as a triangle's.
+  // The texture coordinates' planes as a triangle's: through mode
+  // GESpriteUVPlanes, transform mode GESpritePerspPlanes.
   var UV: TGEUVPlanes;
   P[125] := 0;
-  if S.Textured and GESpriteUVPlanes(S, V0, V1, UV) then
+  if S.Textured and S.Through and GESpriteUVPlanes(S, V0, V1, UV) then
     PutUVPlanes(P, UV);
+  var PP: TGEPerspPlanes;
+  if S.Textured and not S.Through and GESpritePerspPlanes(V0, V1, PP) then
+    PutPerspPlanes(P, PP);
   Record_(KindSprite, S, V0, V1, V1);
 end;
 
@@ -2281,11 +2387,8 @@ begin
   Q[9] := Cardinal(V.Z);
   var FS: Single := V.S;
   var FT: Single := V.T;
-  if (V.Q <> 1) and (V.Q <> 0) then
-  begin
-    FS := V.S / V.Q;
-    FT := V.T / V.Q;
-  end;
+  if S.Textured then
+    GEPointUV(S, V, FS, FT);
   Q[10] := PCardinal(@FS)^;
   Q[11] := PCardinal(@FT)^;
   Q[12] := PCardinal(@V.Fog)^;
@@ -2303,7 +2406,7 @@ begin
   Record_(KindPoint, S, V, V, V);
 end;
 
-procedure TGEVulkanLLEBackend.Submit(ReadBack: Boolean);
+procedure TGEVulkanLLEBackend.Submit(ReadBack: Boolean; ReadPages: PGEVulkanLLEPageMask);
 var
   Push: TGEVulkanLLEPush;
 begin
@@ -2394,11 +2497,16 @@ begin
         Cmd.Barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT or VK_PIPELINE_STAGE_TRANSFER_BIT,
           VK_ACCESS_SHADER_WRITE_BIT or VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
           VK_ACCESS_TRANSFER_READ_BIT);
-      Move(FDrawn, Slot.Pages, SizeOf(FDrawn));
-      Slot.PageCount := FDrawnCount;
-      Inc(FStats.ReadbackPages, FDrawnCount);
-      FillChar(FDrawn, SizeOf(FDrawn), 0);
-      FDrawnCount := 0;
+      FillChar(Slot.Pages, SizeOf(Slot.Pages), 0);
+      for var Page := 0 to VRAMPages - 1 do
+        if FDrawn[Page] and ((ReadPages = nil) or ReadPages[Page]) then
+        begin
+          Slot.Pages[Page] := True;
+          FDrawn[Page] := False;
+          Inc(Slot.PageCount);
+          Dec(FDrawnCount);
+        end;
+      Inc(FStats.ReadbackPages, Slot.PageCount);
       var Run := -1;
       for var Page := 0 to VRAMPages do
       begin
@@ -2482,6 +2590,53 @@ begin
   Result := (FPrimCount > 0) or (FDrawnCount > 0) or (FUploadCount > 0) or (FVerifiedCount > 0) or FWatchedRAM;
   for var I := 0 to High(FSlots) do
     Result := Result or FSlots[I].Busy;
+end;
+
+procedure TGEVulkanLLEBackend.SyncRange(Address, Size: Cardinal);
+var
+  Pages: TGEVulkanLLEPageMask;
+begin
+  if FSyncing then Exit;
+  FSyncing := True;
+  try
+    FillChar(Pages, SizeOf(Pages), 0);
+    var Lo := Max(UInt64(Address and $1FFFFFFF), UInt64(PSPVRAMBase));
+    var Hi := Min(UInt64(Address and $1FFFFFFF) + Size, UInt64(PSPVRAMBase + 4 * PSPVRAMSize));
+    var ReadBack := False;
+    if Hi > Lo then
+      for var Guest := Lo shr PSPPageShift to (Hi - 1) shr PSPPageShift do
+      begin
+        var Page := FMemory.VRAMPageAt(Cardinal(Guest shl PSPPageShift));
+        if Page >= 0 then
+        begin
+          Pages[Page] := True;
+          ReadBack := ReadBack or FDrawn[Page];
+        end;
+      end;
+    if Pending then Inc(FStats.Syncs);
+    // All preceding commands retain queue order, but only the requested
+    // pages cross to the CPU. RAM texture snapshots need no GPU wait.
+    Submit(ReadBack, @Pages);
+    if ReadBack then
+    begin
+      var First := FNextSlot;
+      for var I := 0 to High(FSlots) do Complete((First + I) mod Length(FSlots));
+    end;
+    for var Page := 0 to VRAMPages - 1 do
+      if Pages[Page] and FHeld[Page] and not FDrawn[Page] then
+      begin
+        FHeld[Page] := False;
+        FMemory.ReleaseVRAMPage(Page);
+      end;
+    // Submitted RAM snapshots are immutable. New uses validate unheld pages;
+    // the other dirty VRAM pages stay held and authoritative on the GPU.
+    FMemory.ReleaseWatches;
+    for var I := 0 to FVerifiedCount - 1 do FVerified[FVerifiedList[I]] := False;
+    FVerifiedCount := 0;
+    FWatchedRAM := False;
+    FillChar(FWatched, SizeOf(FWatched), 0);
+    FillChar(FWatchedBanks, SizeOf(FWatchedBanks), 0);
+  finally FSyncing := False end;
 end;
 
 procedure TGEVulkanLLEBackend.Sync;

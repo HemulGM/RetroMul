@@ -79,8 +79,6 @@ type
     DoublePrefixMode: Byte; // IX/IY mode for DD/FD CB; execution resets State.RegisterMode.
   end;
 
-procedure ConstantInitialise;
-
 procedure Z80StateInitialise(var State: TZ80State);
 
 procedure Z80Reset(var State: TZ80State);
@@ -2170,7 +2168,7 @@ begin
       CLOWNZ80_OPCODE_OTDR]);
 end;
 
-procedure ConstantInitialise;
+procedure InitialiseInstructionMetadata;
 begin
   for var ItemIndex := 0 to $100 - 1 do
   begin
@@ -2291,6 +2289,9 @@ begin
     Dec(State.EIDelay);
   Result := Cardinal(State.Cycles);
 end;
+
+initialization
+  InitialiseInstructionMetadata;
 
 end.
 

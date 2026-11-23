@@ -5,7 +5,7 @@ interface
 uses
   System.SysUtils, System.Classes, System.Types, System.UITypes, FMX.Types,
   FMX.Controls, FMX.Forms, FMX.Layouts, FMX.Objects, FMX.StdCtrls,
-  FMX.Controls.Presentation, FMX.ListBox;
+  FMX.Controls.Presentation, FMX.ListBox, FMXInput;
 
 type
   TRetroDialogKind = (Information, Warning, Error, Confirmation, Loading, PlatformChoice);
@@ -23,6 +23,8 @@ type
     LabelPlatform: TLabel;
     ComboBoxPlatform: TComboBox;
     ButtonClose, ButtonCancel, ButtonAccept, ButtonAlternative: TButton;
+    ButtonCopyError: TButton;
+    PathCopyErrorIcon: TPath;
   private
     FReady, FConfirmation, FLoading, FCustomActions, FArranging: Boolean;
     FBusyIndicator: TAniIndicator;
@@ -32,6 +34,7 @@ type
     procedure AcceptClick(Sender: TObject);
     procedure CancelClick(Sender: TObject);
     procedure AlternativeClick(Sender: TObject);
+    procedure CopyErrorClick(Sender: TObject);
     procedure Arrange;
   protected
     procedure Resize; override;
@@ -41,6 +44,7 @@ type
     procedure ConfigurePlatforms(const Names: TArray<string>);
     procedure FocusDefault;
     procedure HandleKey(var Key: Word; var KeyChar: WideChar);
+    procedure HandleGamepad(Command: Integer);
   end;
 
 // All dialogs are asynchronous and belong to the host form. Call on the UI thread.
@@ -66,11 +70,14 @@ function RetroDialogVisible(Owner: TCustomForm): Boolean;
 
 function HandleRetroDialogKey(Owner: TCustomForm; var Key: Word; var KeyChar: WideChar): Boolean;
 
+function PollRetroDialogInput(Owner: TCustomForm; Input: TInputManager; Active: Boolean = True): Boolean;
+
 implementation
 
 uses
   System.Math, System.Generics.Collections, FMX.TextLayout, FMX.Graphics,
-  RM.Icons, RM.Styles, System.RegularExpressions;
+  FMX.Platform, RM.Icons, RM.Styles, System.RegularExpressions,
+  RM.LibraryNavigation;
 
 {$R *.fmx}
 
@@ -90,6 +97,7 @@ type
   private
     FForm: TCustomForm;
     FDialog: TRetroDialog;
+    FNavigation: TLibraryNavigation;
     FQueue: TObjectList<TDialogRequest>;
     FActive: TDialogRequest;
     FBlocked: TList<TControl>;
@@ -244,7 +252,7 @@ begin
         Exit;
 
   // These prefixes wrap another error, rather than a filename or other data.
-  for var Prefix in TArray<string>.Create('Unable to open game: ', 'Autosave failed: ', 'Input error: ', 'Snapshot: ', 'CPS audio: ', 'CPS save: ', 'N64 save: ', 'PS1 audio: ', 'PS1 save: ', 'Dreamcast audio: ', 'Dreamcast save: ', 'NDS raster: ', 'A7800: ', 'JAGUAR: ', 'A7800 audio: ', 'JAGUAR audio: ', 'Jaguar EEPROM: ') do
+  for var Prefix in TArray<string>.Create('Uncaught ', 'Unable to open game: ', 'Autosave failed: ', 'Input error: ', 'Snapshot: ', 'CPS audio: ', 'CPS save: ', 'System 16 audio: ', 'System 16 save: ', 'System 32 audio: ', 'System 32 save: ', 'N64 save: ', 'PS1 audio: ', 'PS1 save: ', 'Dreamcast audio: ', 'Dreamcast save: ', 'NDS raster: ', 'A7800: ', 'ATARI800: ', 'ATARI800 audio: ', 'JAGUAR: ', 'A7800 audio: ', 'JAGUAR audio: ', 'Jaguar EEPROM: ') do
     if Text.StartsWith(Prefix) then
       Exit(Translate(Prefix) + TranslateCoreMessage(Text.Substring(Prefix.Length)));
 
@@ -252,6 +260,12 @@ begin
   var ExceptionText := TRegEx.Match(Text, '\A(E[A-Za-z][A-Za-z0-9_.]*): ([\s\S]+)\z');
   if ExceptionText.Success then
     Exit(ExceptionText.Groups[1].Value + ': ' + TranslateCoreMessage(ExceptionText.Groups[2].Value));
+
+  // Preserve the Java exception class and stack frames; translate the reason at
+  // the presentation boundary, without changing messages seen by MIDlet code.
+  var JavaException := TRegEx.Match(Text, '\A([A-Za-z_$][A-Za-z0-9_$/]*/[A-Za-z0-9_$]+): ([\s\S]+)\z');
+  if JavaException.Success then
+    Exit(JavaException.Groups[1].Value + ': ' + TranslateCoreMessage(JavaException.Groups[2].Value));
 
   var BreakAt := Text.IndexOf(#10);
   if BreakAt >= 0 then
@@ -354,6 +368,22 @@ begin
     Host.FDialog.HandleKey(Key, KeyChar);
 end;
 
+function PollRetroDialogInput(Owner: TCustomForm; Input: TInputManager; Active: Boolean): Boolean;
+begin
+  var Host := FindHost(Owner, False);
+  Result := (Host <> nil) and (Host.FActive <> nil);
+  if not Result then
+    Exit;
+  if not Active or (Input = nil) then
+  begin
+    Host.FNavigation.Reset;
+    Exit;
+  end;
+  var Command := Host.FNavigation.Poll(Input.Devices, Input.Values, TThread.GetTickCount64);
+  if Command >= 0 then
+    Host.FDialog.HandleGamepad(Command);
+end;
+
 constructor TRetroDialog.Create(AOwner: TComponent);
 begin
   inherited;
@@ -362,6 +392,7 @@ begin
   ButtonCancel.OnClick := CancelClick;
   ButtonAlternative.OnClick := AlternativeClick;
   ButtonClose.OnClick := CancelClick;
+  ButtonCopyError.OnClick := CopyErrorClick;
   AddButtonIcon(ButtonClose, IconClose, 16);
 
   FBusyIndicator := TAniIndicator.Create(Self);
@@ -398,6 +429,10 @@ begin
   LabelTitle.Text := Translate(Titles[Kind]);
   LabelBadge.Text := Symbols[Kind];
   LabelMessage.Text := Text;
+  ButtonCopyError.Visible := Kind = TRetroDialogKind.Error;
+  ButtonCopyError.Hint := Translate('Copy');
+  var Clipboard: IFMXClipboardService;
+  ButtonCopyError.Enabled := TPlatformServices.Current.SupportsPlatformService(IFMXClipboardService, Clipboard);
   ButtonClose.Hint := Translate('Close');
   ButtonCancel.Text := Translate('Cancel');
   if FConfirmation then
@@ -430,6 +465,13 @@ end;
 procedure TRetroDialog.PlatformChanged(Sender: TObject);
 begin
   ButtonAccept.Enabled := not LayoutPlatform.Visible or (ComboBoxPlatform.ItemIndex >= 0);
+end;
+
+procedure TRetroDialog.CopyErrorClick(Sender: TObject);
+begin
+  var Clipboard: IFMXClipboardService;
+  if TPlatformServices.Current.SupportsPlatformService(IFMXClipboardService, Clipboard) then
+    Clipboard.SetClipboard(LabelMessage.Text);
 end;
 
 procedure TRetroDialog.FocusDefault;
@@ -495,7 +537,9 @@ begin
   end
   else if Key = vkReturn then
   begin
-    if ButtonAlternative.Visible and ButtonAlternative.IsFocused then
+    if ButtonCopyError.Visible and ButtonCopyError.IsFocused then
+      CopyErrorClick(Self)
+    else if ButtonAlternative.Visible and ButtonAlternative.IsFocused then
       AlternativeClick(Self)
     else if FLoading or (FConfirmation and not ButtonAccept.IsFocused) or ButtonClose.IsFocused then
       CancelClick(Self)
@@ -509,6 +553,65 @@ begin
     Key := 0;
     KeyChar := #0;
   end;
+end;
+
+procedure TRetroDialog.HandleGamepad(Command: Integer);
+
+  procedure ScrollMessage(Direction: Integer);
+  begin
+    VertScrollBoxMessage.ViewportPosition := PointF(0, Max(0,
+        VertScrollBoxMessage.ViewportPosition.Y + Direction * VertScrollBoxMessage.Height * 0.7));
+  end;
+
+begin
+  if Command = 3 then
+  begin
+    CancelClick(Self);
+    Exit;
+  end;
+  if Command in [2, 8] then
+  begin
+    var Key: Word := vkReturn;
+    var Ch: WideChar := #0;
+    HandleKey(Key, Ch);
+    Exit;
+  end;
+  if Command in [6, 7] then
+  begin
+    ScrollMessage(IfThen(Command = 6, -1, 1));
+    Exit;
+  end;
+  if not (Command in [0, 1, 10, 11]) then
+    Exit;
+  var Delta := IfThen(Command in [0, 10], -1, 1);
+  if LayoutPlatform.Visible and ComboBoxPlatform.IsFocused and (Command in [10, 11]) then
+  begin
+    ComboBoxPlatform.ItemIndex := EnsureRange(ComboBoxPlatform.ItemIndex + Delta, 0, ComboBoxPlatform.Count - 1);
+    Exit;
+  end;
+  var Controls: TArray<TControl> := nil;
+  if LayoutPlatform.Visible and ComboBoxPlatform.Enabled then
+    Controls := Controls + [ComboBoxPlatform];
+  for var Button in [ButtonAccept, ButtonAlternative, ButtonCancel, ButtonCopyError] do
+    if Button.Visible and Button.Enabled then
+      Controls := Controls + [Button];
+  if Length(Controls) = 0 then
+    Exit;
+  if (Length(Controls) = 1) and (Command in [10, 11]) then
+  begin
+    ScrollMessage(Delta);
+    Exit;
+  end;
+  var Index := -1;
+  for var I := 0 to High(Controls) do
+    if Controls[I].IsFocused then
+      Index := I;
+  if Index < 0 then
+    Index := 0
+  else
+    Index := (Index + Delta + Length(Controls)) mod Length(Controls);
+  if Controls[Index].CanFocus then
+    Controls[Index].SetFocus;
 end;
 
 procedure TRetroDialog.Resize;
@@ -648,6 +751,7 @@ begin
   inherited;
   FForm := AOwner as TCustomForm;
   FQueue := TObjectList<TDialogRequest>.Create;
+  FNavigation := TLibraryNavigation.Create;
   FBlocked := TList<TControl>.Create;
   FDialog := TRetroDialog.Create(Self);
   FDialog.Parent := FForm;
@@ -657,6 +761,7 @@ end;
 destructor TRetroDialogHost.Destroy;
 begin
   FOnActivity := nil;
+  FNavigation.Free;
   FDialog.Free;
   FActive.Free;
   FQueue.Free;
@@ -743,6 +848,7 @@ begin
   end;
 
   FActive := FQueue.Extract(FQueue[0]);
+  FNavigation.Reset;
   BeginModal;
   FDialog.Configure(FActive.Text, FActive.Kind,
     procedure(Confirmed: Boolean)

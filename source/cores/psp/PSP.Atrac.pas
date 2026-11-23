@@ -840,6 +840,7 @@ begin
   var HaveData := False;
   var FactEnd: Int64 := -1;
   var FactOffset: Int64 := 0;
+  var LoopOffsetAdjust: Int64 := 0;
   var SmplStart, SmplEnd: Int64;
   S.HasLoop := False;
   SmplStart := 0;
@@ -889,6 +890,11 @@ begin
           FactEnd := FMemory.Read32(Body);
           if Size >= 8 then
             FactOffset := FMemory.Read32(Body + 4);
+          // Extended fact headers express smpl loop points relative to a
+          // separate encoder offset. Convert them to the playback offset.
+          LoopOffsetAdjust := 0;
+          if Size >= 12 then
+            LoopOffsetAdjust := FactOffset - Int64(FMemory.Read32(Body + 8));
         end;
       SMPL_:
         if (Size >= 36 + 24) and (FMemory.Read32(Body + 28) > 0) then
@@ -927,8 +933,8 @@ begin
   S.FileEnd := S.DataOff + DataSize;
   if S.HasLoop then
   begin
-    S.LoopStart := Integer(SmplStart) + S.Delay;
-    S.LoopEnd := Integer(SmplEnd) + S.Delay;
+    S.LoopStart := Integer(SmplStart + LoopOffsetAdjust) + S.Delay;
+    S.LoopEnd := Integer(SmplEnd + LoopOffsetAdjust) + S.Delay;
     if (S.LoopStart > S.LoopEnd) or (S.LoopEnd > S.EndSample) then
       Exit(ERROR_ATRAC_BAD_CODEC_PARAMS);
   end;

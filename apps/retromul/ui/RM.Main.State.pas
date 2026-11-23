@@ -8,7 +8,7 @@ uses
   System.SysUtils, System.Types, System.UITypes, FMX.Forms, FMX.StdCtrls,
   FMX.Menus, Core.Emulation, Core.Storage, Core.InputConfig, FMX.OpenDialog,
   RM.LibraryView, RM.Settings, RM.ControlsHelp, RM.Input, FMXInput, RM.Rumble,
-  RM.Gamepad
+  RM.Gamepad, Core.RomMetadata
   {$IFDEF MSWINDOWS}
     , Winapi.Windows
   {$ENDIF}
@@ -19,7 +19,7 @@ uses
     , FMX.ApplicationEvents
   {$ENDIF}
   {$IFDEF ANDROID}
-    , RM.DocumentTransfer.Android
+    , RM.DocumentTransfer.Android, RM.Platform.Host
   {$ENDIF};
 
 type
@@ -32,7 +32,11 @@ type
     SoundErrorShown: Boolean;
     RomDisplayName: string;
     RomLocation: string;
+    RomMetadata: IRomMetadata;
+    LastReportError, LastReportRom, LastReportFilename, LastReportPlatform: string;
+    LastReportLaunch, LastReportLaunchState, ReportLaunchSource: string;
     OpeningRom: Boolean;
+    Reporting: Boolean;
     PendingAutosaveChoice: Boolean;
     PreserveOpeningAutosave: Boolean;
     EmulationFaulted: Boolean;
@@ -58,8 +62,11 @@ type
     FullScreenPadding: TRectF;
   end;
 
+  TVirtualGamepadVisibility = (Automatic, Show, Hide);
+
   TMainPreferencesState = record
     PauseOnFocusLoss, StartFullscreen: Boolean;
+    VirtualGamepadVisibility: TVirtualGamepadVisibility;
   end;
 
   TMainHelpState = record
@@ -85,8 +92,10 @@ type
     Manager: TInputManager;
     Ports: TCoreInputPorts;
     SystemId: string;
+    PrimarySourceId: string; // Explicit host source for player one; empty allows touch.
     BottomInset: Integer;
     DispatchingInput, SuppressInputUntilRelease, PollingFailed: Boolean;
+    HostStartDown: Boolean;
     Gamepad: TScreenGamepad;
     Rumble: TRumblePlayer;
     RumbleDeviceId: string;
@@ -104,6 +113,7 @@ type
     FullScreenWindowState: TWindowState;
     FullScreenPlacement: TWindowPlacement;
     WindowStateRestored, WindowStateSaved: Boolean;
+    WindowStateSaveAttempted: Boolean;
     {$ENDIF}
   end;
 
@@ -114,7 +124,9 @@ type
     {$ENDIF}
     {$IFDEF ANDROID}
     Transfer: TAndroidDocumentTransfer;
-    ChoosingTape: Boolean;
+    PlatformDocumentSelected: TPlatformDocumentAction;
+    PlatformDocumentFolder, PlatformDocumentExtension: string;
+    PlatformDocumentCore: IEmulationCore;
     {$ENDIF}
   end;
 

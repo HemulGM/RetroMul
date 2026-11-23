@@ -15,7 +15,8 @@ type
     LabelSettingDetail: TLabel;
     LayoutSettingEditorContainer: TLayout;
     LayoutAutosaveInterval: TLayout;
-    SwitchAutosavePeriodic: TSwitch;
+    LayoutAutosaveSwitchSlot: TLayout;
+    CheckBoxAutosavePeriodic: TCheckBox;
     LayoutAutosaveMinutesSlot: TLayout;
   end;
 

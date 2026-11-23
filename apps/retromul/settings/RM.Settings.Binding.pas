@@ -111,15 +111,15 @@ end;
 
 procedure TBooleanSettingsBinding.Load;
 begin
-  TSwitch(Control).IsChecked := TBooleanSetting(Definition).Value;
+  TCheckBox(Control).IsChecked := TBooleanSetting(Definition).Value;
 end;
 
 function TBooleanSettingsBinding.Pull: Boolean;
 begin
   var Field := TBooleanSetting(Definition);
-  Result := Field.Value <> TSwitch(Control).IsChecked;
+  Result := Field.Value <> TCheckBox(Control).IsChecked;
   if Result then
-    Field.Value := TSwitch(Control).IsChecked;
+    Field.Value := TCheckBox(Control).IsChecked;
 end;
 
 procedure TChoiceSettingsBinding.Load;
@@ -127,21 +127,9 @@ begin
   var Field := TChoiceSetting(Definition);
   var Combo := TComboBox(Control);
   Combo.Items.Clear;
-  var Selected := -1;
-  var Fallback := -1;
   for var i := 0 to High(Field.Items) do
-  begin
     Combo.Items.Add(Translate(Field.Items[i].Caption));
-    if SameText(Field.Items[i].Value, Field.Value) then
-      Selected := i;
-    if SameText(Field.Items[i].Value, Field.DefaultValue) then
-      Fallback := i;
-  end;
-  if Selected < 0 then
-    Selected := Fallback;
-  if (Selected < 0) and (Length(Field.Items) > 0) then
-    Selected := 0;
-  Combo.ItemIndex := Selected;
+  Combo.ItemIndex := Field.SelectionIndex;
 end;
 
 function TChoiceSettingsBinding.Pull: Boolean;

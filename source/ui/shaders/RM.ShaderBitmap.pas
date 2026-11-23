@@ -28,6 +28,7 @@ type
     FD2DRenderer: TD2DBitmapShaderRenderer;
     {$ENDIF}
     FMode: TBitmapShaderMode;
+    FFrameScale: Integer;
     FSettings: TBitmapShaderSettings;
     FDirty: Boolean;
     FOutput: TBitmap;
@@ -42,7 +43,9 @@ type
     procedure SetScreenRegions(const Value: TArray<TRect>);
     procedure ReleaseSurfaces;
     function ValidScreenRegions: Boolean;
-    function ScreenBounds(Index: Integer; out PixelSize: TSize): TRectF;
+    function OutputScale: Single;
+    function FrameBounds(Scale: Single): TRectF;
+    function ScreenBounds(Index: Integer; const Frame: TRectF; Scale: Single; out PixelSize: TSize): TRectF;
     function PaintScreens: Boolean;
     procedure SetResponseClock(Enabled: Boolean);
     procedure ResponseFrame(const Time, DeltaTime: Double);
@@ -175,6 +178,9 @@ var
   NextMode: TBitmapShaderMode;
   Options: TBitmapShaderSettings;
 begin
+  FFrameScale := Ini.ReadInteger('Video', 'FrameScale', 0);
+  if (FFrameScale < 0) or (FFrameScale > 10) then
+    FFrameScale := 0;
   Value := Ini.ReadString('Shaders', 'Mode', 'off');
   NextMode := TBitmapShaderMode.Original;
   if SameText(Value, 'scanlines') then
@@ -388,15 +394,34 @@ begin
   Result := True;
 end;
 
-function TShaderBitmap.ScreenBounds(Index: Integer; out PixelSize: TSize): TRectF;
+function TShaderBitmap.OutputScale: Single;
+begin
+  Result := 1;
+  if Scene <> nil then
+    Result := Scene.GetSceneScale;
+end;
+
+function TShaderBitmap.FrameBounds(Scale: Single): TRectF;
 begin
   var Fit := Min(Width / Bitmap.Width, Height / Bitmap.Height);
+  if FFrameScale > 0 then
+  begin
+    // At 1x, one source pixel occupies one physical output pixel.
+    var PixelFit := Fit * Scale;
+    if PixelFit >= 1 then
+      Fit := Min(FFrameScale, Floor(PixelFit)) / Scale;
+  end;
+  Result := RectF(0, 0, Bitmap.Width * Fit, Bitmap.Height * Fit);
+  Result.Offset((Width - Result.Width) * 0.5, (Height - Result.Height) * 0.5);
+end;
+
+function TShaderBitmap.ScreenBounds(Index: Integer; const Frame: TRectF; Scale: Single; out PixelSize: TSize): TRectF;
+begin
+  var SX := Frame.Width / Bitmap.Width;
+  var SY := Frame.Height / Bitmap.Height;
   var Bounds := FScreenRegions[Index];
-  Result := RectF(Bounds.Left * Fit, Bounds.Top * Fit, Bounds.Right * Fit, Bounds.Bottom * Fit);
-  Result.Offset((Width - Bitmap.Width * Fit) * 0.5, (Height - Bitmap.Height * Fit) * 0.5);
-  var Scale: Single := 1;
-  if Canvas <> nil then
-    Scale := Canvas.Scale;
+  Result := RectF(Frame.Left + Bounds.Left * SX, Frame.Top + Bounds.Top * SY,
+    Frame.Left + Bounds.Right * SX, Frame.Top + Bounds.Bottom * SY);
   Result := AlignBitmapOutput(Result, AbsoluteMatrix, Scale, PixelSize);
 end;
 
@@ -405,8 +430,10 @@ begin
   Result := False;
   PixelX := -1;
   PixelY := -1;
-  if (Width <= 0) or (Height <= 0) or Bitmap.IsEmpty then
+  if (X < 0) or (Y < 0) or (X >= Width) or (Y >= Height) or Bitmap.IsEmpty then
     Exit;
+  var Scale := OutputScale;
+  var Frame := FrameBounds(Scale);
   if Length(FScreenRegions) <> 0 then
   begin
     if not ValidScreenRegions then
@@ -414,7 +441,7 @@ begin
     for var I := 0 to High(FScreenRegions) do
     begin
       var Size: TSize;
-      var Bounds := ScreenBounds(I, Size);
+      var Bounds := ScreenBounds(I, Frame, Scale, Size);
       if (X < Bounds.Left) or (Y < Bounds.Top) or (X >= Bounds.Right) or (Y >= Bounds.Bottom) then
         Continue;
       var U := (X - Bounds.Left) / Bounds.Width;
@@ -436,13 +463,15 @@ begin
     end;
     Exit;
   end;
-  var Fit := Min(Width / Bitmap.Width, Height / Bitmap.Height);
-  var Left := (Width - Bitmap.Width * Fit) * 0.5;
-  var Top := (Height - Bitmap.Height * Fit) * 0.5;
-  if (X < Left) or (Y < Top) or (X >= Left + Bitmap.Width * Fit) or (Y >= Top + Bitmap.Height * Fit) then
+  if (FFrameScale > 0) or (FMode <> TBitmapShaderMode.Original) then
+  begin
+    var Size: TSize;
+    Frame := AlignBitmapOutput(Frame, AbsoluteMatrix, Scale, Size);
+  end;
+  if not Frame.Contains(PointF(X, Y)) then
     Exit;
-  PixelX := Min(Bitmap.Width - 1, Floor((X - Left) / Fit));
-  PixelY := Min(Bitmap.Height - 1, Floor((Y - Top) / Fit));
+  PixelX := Min(Bitmap.Width - 1, Floor((X - Frame.Left) / Frame.Width * Bitmap.Width));
+  PixelY := Min(Bitmap.Height - 1, Floor((Y - Frame.Top) / Frame.Height * Bitmap.Height));
   Result := True;
 end;
 
@@ -467,12 +496,14 @@ begin
   var Custom: TContextShader := nil;
   if FFilter <> nil then
     Custom := FFilter.CustomShader;
+  var Scale := Canvas.Scale;
+  var Frame := FrameBounds(Scale);
   for var I := 0 to High(FSurfaces) do
   begin
     if FDirty then
       FSurfaces[I].UpdateSource(Bitmap, FScreenRegions[I]);
     var Size: TSize;
-    var Bounds := ScreenBounds(I, Size);
+    var Bounds := ScreenBounds(I, Frame, Scale, Size);
     FSurfaces[I].Draw(Canvas, Bounds, Size, FMode, FSettings, AbsoluteOpacity,
         Max(0.0, NowMS - FLastPaintMS), Custom, DisableInterpolation);
   end;
@@ -483,27 +514,29 @@ end;
 procedure TShaderBitmap.Paint;
 var
   Dest: TRectF;
-  Fit: Single;
   W, H: Integer;
   PixelSize: TSize;
   NowMS: Double;
 begin
   if PaintScreens then
     Exit;
-  if FMode = TBitmapShaderMode.Original then
+  if (FMode = TBitmapShaderMode.Original) and (FFrameScale = 0) then
   begin
     inherited;
     Exit;
   end;
-  EnsureShaderResources;
   Canvas.Fill.Color := TAlphaColors.Black;
   Canvas.FillRect(LocalRect, 0, 0, [], AbsoluteOpacity);
   if Bitmap.IsEmpty or (Width <= 0) or (Height <= 0) then
     Exit;
-  Fit := Min(Width / Bitmap.Width, Height / Bitmap.Height);
-  Dest := TRectF.Create(0, 0, Bitmap.Width * Fit, Bitmap.Height * Fit);
-  Dest.Offset((Width - Dest.Width) * 0.5, (Height - Dest.Height) * 0.5);
-  Dest := AlignBitmapOutput(Dest, Canvas.Matrix, Canvas.Scale, PixelSize);
+  Dest := AlignBitmapOutput(FrameBounds(Canvas.Scale), Canvas.Matrix, Canvas.Scale, PixelSize);
+  if FMode = TBitmapShaderMode.Original then
+  begin
+    Canvas.DrawBitmap(Bitmap, RectF(0, 0, Bitmap.Width, Bitmap.Height), Dest,
+      AbsoluteOpacity, DisableInterpolation);
+    Exit;
+  end;
+  EnsureShaderResources;
   W := PixelSize.Width;
   H := PixelSize.Height;
   NowMS := ClockMilliseconds;

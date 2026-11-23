@@ -117,18 +117,21 @@ begin
       if Error <> '' then
         raise Exception.Create(Error);
       if FileName <> '' then
-        if FState.Mobile.ChoosingTape then
+        if Assigned(FState.Mobile.PlatformDocumentSelected) then
         begin
-          // SAF documents are imported into a durable app-owned cassette file.
-          var Root := System.IOUtils.TPath.Combine(FState.Session.Storage.SaveRoot, 'cassettes');
-          var Path := FState.Session.Storage.GamePath(Root, DisplayName, TGUID.NewGuid.ToString, '.tape');
-          var Input := FState.Session.Storage.OpenRead(FileName);
+          if FState.Session.Emulation <> FState.Mobile.PlatformDocumentCore then
+            Exit;
+          var Storage := FState.Session.Storage;
+          var Folder := System.IOUtils.TPath.Combine(Storage.SaveRoot, FState.Mobile.PlatformDocumentFolder);
+          var Path := Storage.GamePath(Folder, DisplayName, TGUID.NewGuid.ToString,
+            FState.Mobile.PlatformDocumentExtension);
+          var Input := Storage.OpenRead(FileName);
           try
-            FState.Session.Storage.WriteAtomic(Path, Input);
+            Storage.WriteAtomic(Path, Input);
           finally
             Input.Free;
           end;
-          FView.SelectTapeFile(Path);
+          FState.Mobile.PlatformDocumentSelected(Path);
         end
         else
           FView.LoadRom(FileName, DisplayName);

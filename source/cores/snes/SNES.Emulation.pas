@@ -22,7 +22,7 @@ type
     FSnapshotDirectory: string;
     FLock: TCriticalSection;
     FWake: TEvent;
-    FData, FFirmware: TBytes;
+    FData, FFirmware, FSufamiSlotA: TBytes;
     FSavePath: string;
     FStorage: IStorage;
     FInputs: TSnesPads;
@@ -36,7 +36,7 @@ type
   protected
     procedure Execute; override;
   public
-    constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil; const Firmware: TBytes = nil);
+    constructor Create(const Data: TBytes; const SavePath: string; const Storage: IStorage = nil; const Firmware: TBytes = nil; const SufamiSlotA: TBytes = nil);
     destructor Destroy; override;
     procedure WakeSetEvent;
     procedure Configure(const Input: TSnesButtons; Paused, AudioEnabled: Boolean; Volume: Single; const Input2: TSnesButtons = []);
@@ -72,7 +72,7 @@ begin
   FInputPortsCommand.Apply(Self, Ports, FWake);
 end;
 
-constructor TSnesWorker.Create(const Data: TBytes; const SavePath: string; const Storage: IStorage; const Firmware: TBytes);
+constructor TSnesWorker.Create(const Data: TBytes; const SavePath: string; const Storage: IStorage; const Firmware, SufamiSlotA: TBytes);
 begin
   inherited Create(True);
   FInputPortsCommand := TInputPortsCommand.Create;
@@ -85,6 +85,7 @@ begin
   FWake := TEvent.Create(nil, False, False, '');
   FData := Copy(Data);
   FFirmware := Copy(Firmware);
+  FSufamiSlotA := Copy(SufamiSlotA);
   FSavePath := SavePath;
 end;
 
@@ -262,13 +263,15 @@ begin
   var SnapshotData := FData;
   if Length(FFirmware) > 0 then
     SnapshotData := FData + FFirmware;
+  if Length(FSufamiSlotA) > 0 then
+    SnapshotData := SnapshotData + FSufamiSlotA;
   var Console: TSnesConsole := nil;
   var Audio: TPCMAudio := nil;
   var FrameHints: TEmulationPerformanceHints := nil;
   var LastBattery: TBytes;
   try
     try
-      Console := TSnesConsole.Create(FData, ROM_EXTENSION_SFC, FFirmware);
+      Console := TSnesConsole.Create(FData, ROM_EXTENSION_SFC, FFirmware, FSufamiSlotA);
       Console.ConfigureInputPorts(InputPorts);
       FrameHints := TEmulationPerformanceHints.Create(Round(1000000000.0 / Console.FramesPerSecond), ROM_CORE_ID_SNES);
       if FStorage.Exists(FSavePath) then

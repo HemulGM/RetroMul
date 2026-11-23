@@ -5,7 +5,7 @@
 interface
 
 uses
-  RM.Session.Runtime;
+  RM.Platform.Host, RM.Session.Runtime;
 
 type
   TNesSessionActivity = record
@@ -29,8 +29,8 @@ type
 implementation
 
 uses
-  RM.Platforms.NES.Input, System.SysUtils, Core.Platforms.NES.Adapter,
-  NES.Controller, RM.Platforms.NES.Keyboard,
+  RM.Platforms.NES.Input, System.SysUtils, System.Types,
+  Core.Platforms.NES.Adapter, NES.Controller, RM.Platforms.NES.Keyboard,
   RM.Platforms.NES.Controls.MiraclePiano, RM.Platforms.NES.Controls.PowerPad,
   RM.Platforms.NES.Controls.DataRecorder;
 
@@ -79,11 +79,11 @@ var
   Tape: INesTapeCore;
 begin
   Result := Default(TNesSessionActivity);
-  Result.Subor := (Context.State.Session.Emulation <> nil) and NesUsesSuborKeyboard(Context.State.Session.Emulation);
-  Result.Famicom := Supports(Context.State.Session.Emulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard;
-  Result.Piano := Supports(Context.State.Session.Emulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano;
+  Result.Subor := (Context.Host.Core <> nil) and NesUsesSuborKeyboard(Context.Host.Core);
+  Result.Famicom := Supports(Context.Host.Core, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard;
+  Result.Piano := Supports(Context.Host.Core, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano;
   Result.PowerPad := (Peripheral <> nil) and Peripheral.UsesPowerPad and not Result.KeyboardActive;
-  Result.Tape := Supports(Context.State.Session.Emulation, INesTapeCore, Tape) and Tape.UsesDataRecorder;
+  Result.Tape := Supports(Context.Host.Core, INesTapeCore, Tape) and Tape.UsesDataRecorder;
 end;
 
 class procedure TNesSessionHandler.Connect(const Context: TSessionRuntimeContext);
@@ -92,21 +92,14 @@ var
 begin
   var Devices := NesInputState(Context);
   inherited;
-  if Supports(Context.State.Session.Emulation, INesPeripheralCore, Peripheral) then
+  if Supports(Context.Host.Core, INesPeripheralCore, Peripheral) then
   begin
-    Context.View.ImageCanvas.HitTest := True;
-    Context.View.ImageCanvas.CanFocus := True;
-    Context.View.ImageCanvas.OnKeyDown := Context.View.FormKeyDown;
-    Context.View.ImageCanvas.OnKeyUp := Context.View.FormKeyUp;
-    Context.View.ImageCanvas.DisableFocusEffect := False;
-    Context.View.ImageCanvas.CanParentFocus := True;
-    Peripheral.Zapper.OnReadLight :=
-      function(const Mask: TNesZapperMask): Boolean
+    Context.Host.Video.SetPointerInputEnabled(True, True);
+    Peripheral.SetZapperPositionReader(
+      function: TPoint
       begin
-        var Core: INesPeripheralCore;
-        Result := Supports(Context.State.Session.Emulation, INesPeripheralCore, Core) and
-          Core.ReadZapperLight(Mask, Devices.ZapperPixel.X, Devices.ZapperPixel.Y);
-      end;
+        Result := Devices.ZapperPixel;
+      end);
   end;
 end;
 
@@ -115,8 +108,8 @@ var
   Peripheral: INesPeripheralCore;
 begin
   var Devices := NesInputState(Context);
-  if Supports(Context.State.Session.Emulation, INesPeripheralCore, Peripheral) then
-    Peripheral.Zapper.OnReadLight := nil;
+  if Supports(Context.Host.Core, INesPeripheralCore, Peripheral) then
+    Peripheral.SetZapperPositionReader(nil);
   inherited;
   if Devices.DataRecorder <> nil then
   begin
@@ -176,31 +169,31 @@ begin
   if Devices.DataRecorder <> nil then
   begin
     Devices.DataRecorder.Visible := Active.Tape;
-    Devices.DataRecorder.Enabled := Active.Tape and not Context.State.Session.OpeningRom and not Context.State.Session.EmulationFaulted;
-    if Active.Tape and Supports(Context.State.Session.Emulation, INesTapeCore, Tape) then
+    Devices.DataRecorder.Enabled := Active.Tape and not (Context.Host.Activity.Phase = TPlatformSessionPhase.Loading) and not (Context.Host.Activity.Phase = TPlatformSessionPhase.Failed);
+    if Active.Tape and Supports(Context.Host.Core, INesTapeCore, Tape) then
       Devices.DataRecorder.Progress := Tape.GetTapeProgress;
   end;
   if Devices.MiraclePiano <> nil then
   begin
     Devices.MiraclePiano.Visible := Active.Piano;
-    Devices.MiraclePiano.Enabled := Active.Piano and not Context.State.Session.EmulationFaulted and not Context.State.Session.OpeningRom;
+    Devices.MiraclePiano.Enabled := Active.Piano and not (Context.Host.Activity.Phase = TPlatformSessionPhase.Failed) and not (Context.Host.Activity.Phase = TPlatformSessionPhase.Loading);
   end;
   inherited SyncActivity(Context);
   if Devices.SuborKeyboard <> nil then
   begin
     Devices.SuborKeyboard.Visible := Active.Subor;
-    Devices.SuborKeyboard.Enabled := Active.Subor and not Context.State.Session.EmulationFaulted and not Context.State.Session.OpeningRom;
+    Devices.SuborKeyboard.Enabled := Active.Subor and not (Context.Host.Activity.Phase = TPlatformSessionPhase.Failed) and not (Context.Host.Activity.Phase = TPlatformSessionPhase.Loading);
   end;
   if Devices.FamicomKeyboard <> nil then
   begin
     Devices.FamicomKeyboard.Visible := Active.Famicom;
-    Devices.FamicomKeyboard.Enabled := Active.Famicom and not Context.State.Session.EmulationFaulted and not Context.State.Session.OpeningRom;
+    Devices.FamicomKeyboard.Enabled := Active.Famicom and not (Context.Host.Activity.Phase = TPlatformSessionPhase.Failed) and not (Context.Host.Activity.Phase = TPlatformSessionPhase.Loading);
   end;
   {$IFDEF ISMOBILE}
   if Devices.PowerPad <> nil then
   begin
     Devices.PowerPad.Visible := Active.PowerPad;
-    Devices.PowerPad.Enabled := Active.PowerPad and not Context.State.Session.EmulationFaulted and not Context.State.Session.OpeningRom;
+    Devices.PowerPad.Enabled := Active.PowerPad and not (Context.Host.Activity.Phase = TPlatformSessionPhase.Failed) and not (Context.Host.Activity.Phase = TPlatformSessionPhase.Loading);
   end;
   {$ENDIF}
   {$IFDEF ANDROID}

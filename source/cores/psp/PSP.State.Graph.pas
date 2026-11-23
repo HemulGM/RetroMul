@@ -38,7 +38,7 @@ type
   public
     constructor Create;
     destructor Destroy; override;
-    procedure AddClass(C: TClass; const Skip: array of string);
+    procedure AddClass(C: TClass; const Skip: array of string; const SerializedName: string = '');
     procedure Optional(C: TClass; const Names: array of string);
     function IsOptional(C: TClass; const Name: string): Boolean;
     procedure AddPublicTypes(const Prefixes: array of string);
@@ -195,9 +195,11 @@ begin
   inherited;
 end;
 
-procedure TPSPGraphSchema.AddClass(C: TClass; const Skip: array of string);
+procedure TPSPGraphSchema.AddClass(C: TClass; const Skip: array of string; const SerializedName: string);
 begin
-  var N := C.UnitName + '.' + C.ClassName;
+  var N := SerializedName;
+  if N = '' then
+    N := C.UnitName + '.' + C.ClassName;
   var Existing: TClass;
   if FClasses.TryGetValue(N, Existing) and (Existing <> C) then
     raise EInvalidOpException.Create('Ambiguous state class ' + N);
@@ -521,7 +523,15 @@ function TPSPGraph.ObjectID(O: TObject): Cardinal;
 begin
   if O = nil then
     Exit(0);
-  if (NativeUInt(O) < $10000) or (NativeUInt(O) > NativeUInt(High(NativeInt))) then
+  var Address := NativeUInt(O);
+  var MaxAddress := NativeUInt(High(NativeInt));
+  {$IF Defined(ANDROID) and Defined(CPUARM64)}
+  // Android heap pointers can carry a tag in their top byte (ARM TBI).
+  // Inspect only the address here; retain the tagged pointer for all accesses.
+  Address := Address and $00FFFFFFFFFFFFFF;
+  MaxAddress := MaxAddress shr 8;
+  {$ENDIF}
+  if (Address < $10000) or (Address > MaxAddress) then
     raise EPSPStateOpaque.Create('Invalid transient object reference at ' + FPath);
   if FIDs.TryGetValue(O, Result) then
     Exit;

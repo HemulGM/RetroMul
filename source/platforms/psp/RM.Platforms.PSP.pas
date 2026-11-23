@@ -3,7 +3,7 @@
 interface
 
 uses
-  Core.EmulatorRegistry, RM.Input, System.SysUtils;
+  Core.EmulatorRegistry, RM.Input, System.SysUtils, FMXInput, System.IniFiles;
 
 type
   TPSPPlatform = class
@@ -15,6 +15,7 @@ type
     class procedure RegisterPlatforms; static;
     class procedure RegisterCore; static;
     class procedure LoadLegacyKeys(var Keys: TPlatformInputKeyMap); static;
+    class procedure LoadGamepadPreset(Input: TInputManager; Port: Integer); static;
     class procedure RegisterInput; static;
     class procedure RegisterClient; static;
   public
@@ -23,7 +24,9 @@ type
 
 implementation
 
+
 uses
+  RM.Input.Gamepads,
   RM.Settings.Catalog, RM.Settings.Platform, System.StrUtils, Core.Emulation,
   Core.Platforms, Core.Platforms.PSP.Adapter, Core.Platforms.PSP.Archive,
   PSP.Media, RM.Platforms.Presentation, RM.Platforms.GBA.Icons,
@@ -122,6 +125,23 @@ begin
     Keys[0, B] := C.Keys[B];
 end;
 
+class procedure TPSPPlatform.LoadGamepadPreset(Input: TInputManager; Port: Integer);
+begin
+  for var Direction := TEmulatorButton.Up to TEmulatorButton.Right do
+    AddStandardDirection(Input, Port, PadAction(Port, Direction), Ord(Direction), False);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.A), TGamepadButton.South);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.B), TGamepadButton.East);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Select), TGamepadButton.Select);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Start), TGamepadButton.Start);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.C), TGamepadButton.LeftShoulder);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.X), TGamepadButton.West);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Y), TGamepadButton.North);
+  AddStandardButton(Input, Port, PadAction(Port, TEmulatorButton.Z), TGamepadButton.RightShoulder);
+  AddStandardStick(Input, Port, False, [
+    PSPStickActionOf(TPSPStickDirection.StickUp), PSPStickActionOf(TPSPStickDirection.StickDown),
+    PSPStickActionOf(TPSPStickDirection.StickLeft), PSPStickActionOf(TPSPStickDirection.StickRight)]);
+end;
+
 class procedure TPSPPlatform.RegisterInput;
 begin
   var Definition := TPlatformInputDefinition.Create([TEmulatorButton.Up, TEmulatorButton.Down, TEmulatorButton.Left,
@@ -138,12 +158,24 @@ begin
   Definition.AfterLegacyBindings := LoadSharedLegacyBindings;
   Definition.UseSharedBindingRules := True;
   Definition.LoadLegacyKeys := LoadLegacyKeys;
+  Definition.LoadGamepadPreset := LoadGamepadPreset;
+  Definition.FilterBinding :=
+    procedure(const Binding: TInputBinding; Ini: TCustomIniFile; var Policy: TInputBindingPolicy)
+    begin
+      if (Binding.Action >= PSPStickAction) and (Binding.Action < PSPStickAction + 4) then
+        Policy.SourceKey := 'Source1';
+    end;
   RegisterPlatformInput('psp', Definition);
 end;
 
 class procedure TPSPPlatform.RegisterClient;
 begin
-  RegisterSettingsPlatform('psp', TPSPSettings);
+  RegisterSettingsPlatform('psp', TPSPSettings,
+    'The CPU renderer is the default. Experimental Vulkan LLE aims to match it using compute ' +
+    'shaders at 480×272. Experimental Vulkan HLE uses the GPU graphics pipeline and supports ' +
+    'higher internal resolution and optional texture scaling, with possible image differences. ' +
+    'The settings show available renderers for the device. Stop and reopen the game after ' +
+    'changing the renderer. JIT controls CPU execution separately.');
   RegisterPlatformSettingsDevices('psp', TPSPSettingsDevices);
   RegisterPlatformDeviceCallouts('psp', TPlatformDeviceCallouts);
   RegisterPlatformControlsHelp('psp', TPSPControlsHelp);

@@ -23,45 +23,18 @@ const
   SETTINGS_CATEGORY_PERIPHERALS = RM.Settings.platform.SETTINGS_CATEGORY_PERIPHERALS;
 
 const
+  SETTINGS_SWITCH_WIDTH = 48;
+  SETTINGS_SWITCH_HEIGHT = 24;
   AUTOSAVE_DEFAULT_MINUTES = 10;
   AUTOSAVE_MAX_MINUTES = 1440;
+  AUDIO_OUTPUT_DEVICE_KEY = 'OutputDevice';
+  AUDIO_MICROPHONE_DEVICE_KEY = 'MicrophoneDevice';
 
 const
   SettingsCategoryNames: array[SETTINGS_CATEGORY_GENERAL..SETTINGS_CATEGORY_PERIPHERALS] of string =
     ('General', 'Library', 'Video and audio', 'Controls', 'Peripherals');
 
 type
-  TDeviceCallouts = class;
-
-  TBindingLines = class(TControl)
-  protected
-    procedure Paint; override;
-  end;
-
-  TBindingCallout = record
-    Definition: TDeviceCalloutDefinition;
-    LabelControl: TLabel;
-  end;
-
-  TDeviceCallouts = class(TControl)
-  private
-    FDevice: TControl;
-    FCalloutProvider: TPlatformDeviceCalloutsClass;
-    FCalloutContext: TDeviceCalloutContext;
-    FItems: TArray<TBindingCallout>;
-    FLines: TBindingLines;
-    FInput: TInputManager;
-    FAnnotations: Boolean;
-    function ButtonBounds(Index: Integer): TRectF;
-    procedure AddCallout(const Definition: TDeviceCalloutDefinition; Click: TNotifyEvent);
-  protected
-    procedure Resize; override;
-  public
-    procedure Configure(Device: TControl; Input: TInputManager; const Core: string; Port: Integer; Click: TNotifyEvent);
-    procedure Refresh;
-    procedure ShowAnnotations(Value: Boolean);
-  end;
-
   TSettingsLocationPicker = reference to procedure(Folder: Boolean; const Current: string; const Callback: TStorageSelectionCallback);
 
   TSettingsTemplatePicker = reference to procedure(const SuggestedName: string; const Callback: TStorageSelectionCallback);
@@ -84,6 +57,7 @@ type
   end;
 
   TSettingsView = class(TFrame)
+    ScaledLayoutSettings: TScaledLayout;
     PanelSidebar: TPanel;
     PanelPlatforms: TPanel;
     LayoutPlatformSearchSlot: TLayout;
@@ -97,6 +71,10 @@ type
     LayoutSettingsMainColumn, LayoutSettingsPreviewColumn: TLayout;
     VertScrollBoxScroll: TVertScrollBox;
     LabelTitle, LabelStatus: TLabel;
+    PanelGameSettings: TPanel;
+    LayoutGameSettingsActions: TLayout;
+    CheckBoxSaveForGame: TCheckBox;
+    ButtonResetGameSettings: TButton;
     PanelConfigurationNotice: TPanel;
     VertScrollBoxConfigurationNotice: TVertScrollBox;
     LabelConfigurationNotice: TLabel;
@@ -111,6 +89,7 @@ type
     PathBrandIcon: TPath;
   private
     FStorage: IStorage;
+    FGameName: string;
     FPicker: TSettingsLocationPicker;
     FTemplatePicker: TSettingsTemplatePicker;
     FPickingFilter, FPickingTitle: string;
@@ -146,6 +125,7 @@ type
     FPlatformPicker: TComboBox;
     FCategoryIcons: array[SETTINGS_CATEGORY_GENERAL..SETTINGS_CATEGORY_PERIPHERALS] of TControl;
     FPage: string;
+    FFixedPlatformPage: string;
     FPageBuildError: string;
     FGroup: TPanel;
     FPreview: TControl;
@@ -159,8 +139,18 @@ type
     FCaptureAction: Integer;
     FCaptureDeadline: UInt64;
     FCaptureButton: TButton;
+    // Analog actions: axis rest positions at capture start, and a captured
+    // digital button held back briefly while its trigger axis may follow.
+    FCaptureOrigins: TArray<TInputValue>;
+    FPendingButton: TInputBinding;
+    FPendingButtonSet: Boolean;
+    FPendingDeadline: UInt64;
     FOnApply, FOnClose: TNotifyEvent;
+    procedure UpdateGameSettingsPanel;
+    procedure ResetGameSettingsClick(Sender: TObject);
+    procedure StoreCapturedBinding(const Binding: TInputBinding);
     procedure InitializeRuntimeControls;
+    procedure UpdateContentScale;
     procedure RefreshPlatformList;
     procedure SyncPlatformSelection;
     procedure PlatformSearchChange(Sender: TObject);
@@ -197,7 +187,7 @@ type
     procedure UpdateConditions;
     function Row(const Name, Caption, Description: string; Kind: TSettingsRowKind = TSettingsRowKind.Standard): TPanel;
     function Combo(const Name, Caption, Description, Section, Key: string; const Labels, Values: array of string; const Default: string): TComboBox;
-    function Check(const Name, Caption, Description, Section, Key: string; Default: Boolean): TSwitch;
+    function Check(const Name, Caption, Description, Section, Key: string; Default: Boolean): TCheckBox;
     function Number(const Name, Caption, Description, Section, Key: string; Default, Max: Integer): TSpinBox;
     function EditText(const Name, Caption, Description, Section, Key, Default: string): TEdit;
     function PathEdit(const Name, Caption, Description, Section, Key, Default: string; Folder: Boolean): TEdit;
@@ -241,7 +231,7 @@ type
     procedure PickLocation(Folder: Boolean; const Current: string; const Callback: TStorageSelectionCallback); virtual;
     procedure PickTemplateLocation(const Callback: TStorageSelectionCallback); virtual;
   public
-    constructor CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager);
+    constructor CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName: string = ''; const GameRomName: string = ''; const GameSettingsId: string = ''; const FixedPlatformPage: string = '');
     destructor Destroy; override;
     procedure SelectCategory(Index: Integer);
     procedure SelectCore(const PageId: string; PreserveCategory: Boolean = False);
@@ -272,14 +262,17 @@ uses
   RM.Settings.Template.Volume, RM.Settings.Template.Track,
   RM.Settings.Template.Preview, RM.Settings.Template.Binding, System.Math,
   System.StrUtils, RM.Input, FMX.OpenDialog, FMX.BehaviorManager, FMX.Graphics,
-  FMX.SpinBox.Style, FMX.Presentation.Style, FMX.Presentation.Factory,
-  RM.LibraryView, RM.Icons, RM.SearchEdit, RM.Styles, RM.Dialogs, FMX.TextLayout
+  FMX.SpinBox.Style, FMX.Presentation.Style, FMX.Presentation.Factory, RM.Icons,
+  RM.SearchEdit, RM.Styles, RM.Dialogs, FMX.TextLayout, PCM.Audio.Backend,
+  PCM.Audio.Factory
   {$IFDEF ANDROID}, Core.Storage.Android{$ENDIF};
 
 {$R *.fmx}
 
 type
   TSettingsLayoutAccess = class(TLayout);
+
+  TSettingsScaledLayoutAccess = class(TScaledLayout);
 
   TSettingsInputBackend = class(TInputBackend)
   private
@@ -382,7 +375,7 @@ begin
   FCaption.StyledSettings := [];
   FCaption.TextSettings.Font.Family := 'Segoe UI';
   FCaption.TextSettings.Font.Size := 14;
-  FCaption.TextSettings.FontColor := $FFE8ECF1;
+  FCaption.TextSettings.FontColor := ThemeTextColor;
 end;
 
 procedure TSettingsComboBox.ApplyStyle;
@@ -488,171 +481,20 @@ begin
   // TStyledEditBox increments even when Handled is true; bypass that implementation.
 end;
 
-function TDeviceCallouts.ButtonBounds(Index: Integer): TRectF;
-begin
-  Result := FCalloutProvider.ButtonBounds(FCalloutContext, FItems[Index].Definition.Button);
-end;
-
-procedure TDeviceCallouts.AddCallout(const Definition: TDeviceCalloutDefinition; Click: TNotifyEvent);
-begin
-  var Index := Length(FItems);
-  SetLength(FItems, Index + 1);
-  FItems[Index].Definition := Definition;
-  var L := SettingsLabel(Self);
-  FItems[Index].LabelControl := L;
-  L.Parent := Self;
-  L.Height := 28;
-  L.HitTest := FInput <> nil;
-  L.OnClick := Click;
-  L.Tag := Definition.Action;
-  L.TagString := Definition.Caption;
-  L.StyledSettings := L.StyledSettings - [TStyledSetting.Size, TStyledSetting.Other];
-  L.TextSettings.Font.Size := 12;
-  L.TextSettings.WordWrap := False;
-  L.TextSettings.Trimming := TTextTrimming.Character;
-  if Definition.Left then
-    L.TextSettings.HorzAlign := TTextAlign.Trailing
-  else
-    L.TextSettings.HorzAlign := TTextAlign.Leading;
-end;
-
-procedure TDeviceCallouts.Configure(Device: TControl; Input: TInputManager; const Core: string; Port: Integer; Click: TNotifyEvent);
-begin
-  FCalloutContext.SystemId := Core;
-  FCalloutContext.Port := Port;
-  FCalloutContext.Device := Device;
-  FCalloutProvider := PlatformDeviceCallouts(Core);
-  HitTest := False;
-  FDevice := Device;
-  FInput := Input;
-  FDevice.Parent := Self;
-  FAnnotations := True;
-  FDevice.Align := TAlignLayout.None;
-  FLines := TBindingLines.Create(Self);
-  FLines.Parent := Self;
-  FLines.Align := TAlignLayout.Client;
-  FLines.HitTest := False;
-  for var Definition in FCalloutProvider.Definitions(FCalloutContext) do
-    AddCallout(Definition, Click);
-  Refresh;
-  Resize;
-end;
-
-procedure TDeviceCallouts.Refresh;
-begin
-  for var Item in FItems do
-  begin
-    var L := Item.LabelControl;
-    if L = nil then
-      Continue;
-
-    var Assignment := BindingCaption(FInput, L.Tag);
-    L.Text := Item.Definition.Name + ' · ' + Assignment;
-    if Width < 460 then
-      L.Text := Assignment;
-    L.Hint := L.TagString + ': ' + Assignment;
-    L.ShowHint := True;
-  end;
-end;
-
-procedure TDeviceCallouts.Resize;
-begin
-  inherited;
-  if csDestroying in ComponentState then
-    Exit;
-  if (FDevice = nil) or (FLines = nil) then
-    Exit;
-
-  var Rail := Min(170, Max(40, Width * 0.18));
-  if not FAnnotations then
-    Rail := 0;
-  var Aspect := FCalloutProvider.AspectRatio(FCalloutContext);
-  var Limit := IfThen(FAnnotations, 400, 640);
-  var PadWidth := Min(Min(Limit, Max(40, Height / Aspect)), Max(40, Width - 2 * (Rail + 12)));
-  FDevice.SetBounds((Width - PadWidth) / 2, (Height - PadWidth * Aspect) / 2,
-    PadWidth, PadWidth * Aspect);
-  for var Side := 0 to 1 do
-  begin
-    var Buttons: TArray<Integer> := nil;
-    for var B := 0 to High(FItems) do
-      if FItems[B].Definition.Left = (Side = 0) then
-      begin
-        var N := Length(Buttons);
-        SetLength(Buttons, N + 1);
-        Buttons[N] := B;
-      end;
-    // Match vertical button order to the callouts to limit crossed leaders.
-    for var i := 0 to High(Buttons) - 1 do
-      for var J := i + 1 to High(Buttons) do
-      begin
-        var ReverseColumns := FCalloutProvider.ReverseColumns(FCalloutContext, Side = 0);
-        var EarlierColumn := ButtonBounds(Buttons[J]).CenterPoint.X < ButtonBounds(Buttons[i]).CenterPoint.X;
-        if ReverseColumns then
-          EarlierColumn := ButtonBounds(Buttons[J]).CenterPoint.X > ButtonBounds(Buttons[i]).CenterPoint.X;
-        if (ButtonBounds(Buttons[J]).CenterPoint.Y < ButtonBounds(Buttons[i]).CenterPoint.Y) or
-          ((ButtonBounds(Buttons[J]).CenterPoint.Y = ButtonBounds(Buttons[i]).CenterPoint.Y) and
-          EarlierColumn) then
-        begin
-          var B := Buttons[i];
-          Buttons[i] := Buttons[J];
-          Buttons[J] := B;
-        end;
-      end;
-    var Step := Min(34, Height / Max(1, Length(Buttons)));
-    for var i := 0 to High(Buttons) do
-    begin
-      var L := FItems[Buttons[i]].LabelControl;
-      var X: Single := 0;
-      if Side = 1 then
-        X := Width - Rail;
-      L.SetBounds(X, (Height - Step * Length(Buttons)) / 2 + i * Step + (Step - L.Height) / 2,
-        Rail, L.Height);
-    end;
-  end;
-  Refresh;
-  FLines.Repaint;
-end;
-
-procedure TDeviceCallouts.ShowAnnotations(Value: Boolean);
-begin
-  FAnnotations := Value;
-  for var Item in FItems do
-    Item.LabelControl.Visible := Value;
-  FLines.Visible := Value;
-  Resize;
-end;
-
-procedure TBindingLines.Paint;
-begin
-  inherited;
-  // PaintTo temporarily detaches Parent when rendering to a bitmap.
-  var D := TDeviceCallouts(Owner);
-  Canvas.Stroke.Kind := TBrushKind.Solid;
-  Canvas.Stroke.Color := TAlphaColors.Gray;
-  Canvas.Stroke.Thickness := 1;
-  for var B := 0 to High(D.FItems) do
-  begin
-    var R := D.ButtonBounds(B);
-    var L := D.FItems[B].LabelControl;
-    var Points := D.FCalloutProvider.LinePath(D.FCalloutContext, D.FItems[B].Definition, R, L);
-    for var i := 0 to High(Points) - 1 do
-      Canvas.DrawLine(Points[i], Points[i + 1], AbsoluteOpacity * 0.8);
-    if Length(Points) > 0 then
-    begin
-      var Start := Points[0];
-      Canvas.Fill.Color := TAlphaColors.Gray;
-      Canvas.FillEllipse(TRectF.Create(Start.X - 2, Start.Y - 2, Start.X + 2, Start.Y + 2), AbsoluteOpacity);
-    end;
-  end;
-end;
-
-constructor TSettingsView.CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager);
+constructor TSettingsView.CreateSettings(AOwner: TComponent; const Storage: IStorage; Input: TInputManager; const GameName, GameRomName, GameSettingsId, FixedPlatformPage: string);
 begin
   FBuilding := True;
   inherited Create(AOwner);
   FCategory := SETTINGS_CATEGORY_GENERAL;
   FPage := 'main';
   FCorePage := '';
+  if FixedPlatformPage <> '' then
+  begin
+    FFixedPlatformPage := SettingsPlatforms.Require(FixedPlatformPage).PageId;
+    FCorePage := FFixedPlatformPage;
+    FPage := FFixedPlatformPage;
+    FCategory := SETTINGS_CATEGORY_VIDEO_AUDIO;
+  end;
   if SettingsPlatforms.Find(FCorePage) = nil then
   begin
     var Available := SettingsPlatforms.Matching('');
@@ -662,6 +504,7 @@ begin
       FCorePage := 'main';
   end;
   FStorage := Storage;
+  FGameName := GameName;
   FHostInput := Input;
   if Input <> nil then
     FInput := TInputManager.Create(TSettingsInputBackend.Create(Input));
@@ -683,10 +526,11 @@ begin
     begin
       Alive := False;
     end;
-  FSession := TSettingsSession.Create(FStorage);
+  FSession := TSettingsSession.Create(FStorage, GameRomName, GameSettingsId);
   FSession.Open('main', 'config');
   for var SettingsPlatform in SettingsPlatforms.Items do
-    FSession.Open(SettingsPlatform.PageId, SettingsPlatform.CoreId);
+    if (FFixedPlatformPage = '') or SameText(SettingsPlatform.PageId, FFixedPlatformPage) then
+      FSession.Open(SettingsPlatform.PageId, SettingsPlatform.CoreId);
   FContext := TSettingsPageBuilder.Create;
   FContext.OnRebuild := PortChange;
   FContext.OnGroup :=
@@ -716,6 +560,13 @@ begin
     end;
   InitializeRuntimeControls;
   FormStyles.RelocalizeUI(Self, 'en');
+  if FFixedPlatformPage <> '' then
+  begin
+    ButtonSidebarBack.Text := Translate('Back');
+    ButtonBack.Text := Translate('Back');
+    ListBoxNavigation.ListItems[SETTINGS_CATEGORY_GENERAL].Visible := False;
+    ListBoxNavigation.ListItems[SETTINGS_CATEGORY_LIBRARY].Visible := False;
+  end;
   ButtonSidebarBack.OnClick := BackClick;
   ButtonSidebarBack.StylesData['text.Margins.Left'] := 36;
   ButtonSidebarBack.StylesData['text.Margins.Right'] := 10;
@@ -741,6 +592,8 @@ begin
   ButtonApply.OnClick := ApplyClick;
   ButtonBack.OnClick := BackClick;
   ButtonReset.OnClick := ResetClick;
+  ButtonResetGameSettings.OnClick := ResetGameSettingsClick;
+  UpdateGameSettingsPanel;
   ButtonRefresh.OnClick := RefreshDevicesClick;
   ButtonRefresh.Enabled := FInput <> nil;
   ButtonCancelCapture.OnClick := CancelCaptureClick;
@@ -965,8 +818,8 @@ begin
   FSearch := TEdit(CreateInSlot(LayoutSettingsSearchSlot, TSearchEdit));
   FSearch.TextPrompt := Translate('Search this section');
   FPagePicker := TComboBox(CreateInSlot(LayoutSettingsPagePickerSlot, TSettingsComboBox));
-  for var Caption in SettingsCategoryNames do
-    FPagePicker.Items.Add(Translate(Caption));
+  for var Category := Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO to High(SettingsCategoryNames) do
+    FPagePicker.Items.Add(Translate(SettingsCategoryNames[Category]));
   FPlatformSearch := TEdit(CreateInSlot(LayoutPlatformSearchSlot, TSearchEdit));
   FPlatformPicker := TComboBox(CreateInSlot(LayoutPlatformPickerSlot, TSettingsComboBox));
   FCategoryIcons[0] := PathCategoryGeneral;
@@ -1045,6 +898,28 @@ begin
   end;
 end;
 
+function AudioDeviceChoices(Kind: TAudioDeviceKind; const Selected: string): TArray<TSettingsChoiceItem>;
+begin
+  Result := [SettingChoice('System default', '')];
+  var Devices := ListPlatformAudioDevices(Kind);
+  var Found := Selected = '';
+  for var Index := 0 to High(Devices) do
+  begin
+    var Device := Devices[Index];
+    var Caption := Device.Name;
+    var Occurrence := 1;
+    for var Previous := 0 to Index - 1 do
+      if SameText(Device.Name, Devices[Previous].Name) then
+        Inc(Occurrence);
+    if Occurrence > 1 then
+      Caption := Caption + ' (' + IntToStr(Occurrence) + ')';
+    Result := Result + [SettingChoice(Caption, Device.EndpointId)];
+    Found := Found or SameText(Device.EndpointId, Selected);
+  end;
+  if not Found then
+    Result := Result + [SettingChoice('Unavailable device', Selected)];
+end;
+
 procedure TSettingsView.BuildPageContent(PreserveScroll: Boolean);
 begin
   var Position := VertScrollBoxScroll.ViewportPosition;
@@ -1054,7 +929,7 @@ begin
   LayoutSettingsMainColumn.BeginUpdate;
   LayoutSettingsPreviewColumn.BeginUpdate;
   try
-    FPagePicker.ItemIndex := FCategory;
+    FPagePicker.ItemIndex := FCategory - Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO;
     CancelCapture;
     FAutosaveMinutes := nil;
     FVolumeValue := nil;
@@ -1079,7 +954,18 @@ begin
         'Save all original strings to a UTF-8 file for translation.',
         'Save translation template', SaveTemplateClick);
       FContext.AddInformation('RowTheme', 'Theme',
-        'RetroMul dark theme with an amber accent.', 'Dark · RetroMul');
+        'RetroMul dark theme with a purple accent.', 'Dark · RetroMul');
+
+      if PlatformSupportsAudioDeviceSelection then
+      begin
+        Heading('GroupAudioDevices', 'Audio devices');
+        FContext.AddChoice('RowAudioOutputDevice', 'Audio output device',
+          'Plays RetroMul audio through the selected device.', 'Audio', AUDIO_OUTPUT_DEVICE_KEY,
+          AudioDeviceChoices(TAudioDeviceKind.Playback, FContext.Draft.ReadString('Audio', AUDIO_OUTPUT_DEVICE_KEY, '')), '');
+        FContext.AddChoice('RowMicrophoneDevice', 'Microphone device',
+          'Microphone input for supported games.', 'Audio', AUDIO_MICROPHONE_DEVICE_KEY,
+          AudioDeviceChoices(TAudioDeviceKind.Capture, FContext.Draft.ReadString('Audio', AUDIO_MICROPHONE_DEVICE_KEY, '')), '');
+      end;
 
       Heading('GroupDuringgameplay', 'During gameplay');
       Check('RowPausewhenfocusislost', 'Pause when focus is lost', 'When switching to another application.', 'General', 'PauseOnFocusLoss', True);
@@ -1098,11 +984,13 @@ begin
       var Minutes := FContext.AddInteger('AutosaveMinutes', 'Autosave interval', '',
         'General', 'AutosaveMinutes', AUTOSAVE_DEFAULT_MINUTES, AUTOSAVE_MAX_MINUTES);
       Minutes.Min := 1;
-      Periodic.Align := TAlignLayout.Right;
       FAutosaveMinutes.Align := TAlignLayout.Client;
       FAutosaveMinutes.Enabled := Periodic.IsChecked;
       Minutes.EnabledWhen := PeriodicDefinition.IsTrue();
       Heading('GroupOnscreenbuttons', 'On-screen buttons');
+      Combo('RowVirtualGamepadVisibility', 'Virtual gamepad',
+        'Automatic hides the gamepad on desktop and follows the selected input device on mobile. Show and Hide override automatic display.',
+        'General', 'VirtualGamepadVisibility', ['Automatic', 'Show', 'Hide'], ['auto', 'show', 'hide'], 'auto');
       var PadScale := Number('RowGamepadscale', 'Gamepad scale (%)', '50-200%. Limited by available screen space.', 'General', 'GamepadScale', 100, 200);
       TIntegerSetting(FFields.Last.Definition).Min := 50;
       PadScale.Min := 50;
@@ -1126,7 +1014,7 @@ begin
       Check('RowLetternavigation', 'Letter navigation', 'Filter ROMs by their first letter using the column on the left.', 'Library', 'ShowLetters', False);
       Heading('GroupMetadata', 'Metadata');
       FContext.AddInformation('RowCoversanddescriptions', 'Covers and descriptions',
-        'Files with known ROM extensions from all platforms are listed. Optional gamelist.xml adds descriptions and artwork.', '');
+        'Each platform folder lists only formats supported by that platform. Optional gamelist.xml adds descriptions and artwork.', '');
     end
     else
     begin
@@ -1144,6 +1032,11 @@ begin
       begin
         SettingsPlatform.Configuration(FContext);
         Heading('GroupVideo', 'Video');
+        Combo('RowFrameScale', 'Frame scale',
+          'Centers the frame and reduces the selected scale if it does not fit.',
+          'Video', 'FrameScale',
+          ['Stretch', 'Original within window', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8', 'x9', 'x10'],
+          ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], '0');
         var Scaling := Combo('RowImagescaling', 'Image scaling', 'Nearest neighbor preserves sharp pixels; smoothing softens the i' + 'mage.', 'Video', 'Filter',
           ['Nearest neighbor', 'Smoothing'], ['nearest', 'linear'], 'nearest');
         FScaling := Scaling;
@@ -1204,11 +1097,18 @@ begin
         FContext.AddSelection('RowPlayer', 'Player', 'Bindings are saved separately for each player.',
           Players, FPlayer, PlayerChange);
         BuildPort(FPlayer, Translate('Bindings · player ') + IntToStr(FPlayer + 1));
+        Heading('GroupAnalogControls', 'Analog controls');
+        Number('RowAnalogButtonRamp', 'Analog button ramp (ms)',
+          'Time for keyboard and on-screen buttons to reach full analog travel. 0 is immediate. Physical device buttons and axes are unaffected.',
+          'AnalogControls', 'ButtonRampMs', 160, 5000);
+        Check('RowSteeringAutoCenter', 'Steering auto-center',
+          'Return the wheel to center after releasing keyboard or on-screen steering buttons. Physical device bindings are unaffected.',
+          'AnalogControls', 'SteeringAutoCenter', False);
       end
       else if PlatformSettingsDevices(CurrentCoreId).HasPortSettings then
       begin
         SettingsPlatform.Peripherals(FContext);
-        for var Port := 0 to SettingsPlatform.Ports - 1 do
+        for var Port := 0 to SettingsPlatform.PeripheralPortCount(FSession.Drafts[FPage]) - 1 do
           BuildPort(Port, Translate('Port ') + IntToStr(Port + 1));
         SettingsPlatform.Expansion(FContext);
       end;
@@ -1288,7 +1188,7 @@ begin
     if F.Control = Sender then
     begin
       if not F.Pull then
-        Exit; // Ignore delayed notifications from switch animation.
+        Exit;
       // Multiple panels can edit a shared setting (for example a keyboard
       // connected through different ports). Keep their editors in agreement.
       FBuilding := True;
@@ -1347,7 +1247,7 @@ begin
     Layout.EndUpdate;
     LabelConfigurationNotice.Height := Max(24, Ceil(Layout.TextHeight) + 8);
     PanelConfigurationNotice.Height := Min(Max(64, LabelConfigurationNotice.Height + 16),
-      Max(64, Min(180, Height * 0.25)));
+      Max(64, Min(180, ScaledLayoutSettings.OriginalHeight * 0.25)));
   finally
     Layout.Free;
   end;
@@ -1612,7 +1512,11 @@ begin
         if C = nil then
           C := R.Editor;
         if C = nil then
-          C := TSwitch.Create(R.Template);
+        begin
+          var CheckBox := TCheckBox.Create(R.Template);
+          CheckBox.StyleLookup := 'checkboxstyle_switch';
+          C := CheckBox;
+        end;
       end;
     TSettingsFieldKind.Choice:
       begin
@@ -1670,11 +1574,23 @@ begin
       TControl(C.Parent).Margins.Rect := TRectF.Empty;
     C.Align := TAlignLayout.Client;
   end;
-  if Definition.Kind = TSettingsFieldKind.BooleanValue then
+  if C is TCheckBox then
+  begin
+    C.Align := TAlignLayout.Center;
+    C.Size.PlatformDefault := False;
+    C.Size.Size := TSizeF.Create(SETTINGS_SWITCH_WIDTH, SETTINGS_SWITCH_HEIGHT);
     if not (R.Template is TSettingsIntervalTemplate) then
-      R.Editors.Width := 64;
+    begin
+      R.Editors.Width := SETTINGS_SWITCH_WIDTH;
+      var Slot := TControl(C.Parent);
+      Slot.Align := TAlignLayout.Right;
+      Slot.Width := SETTINGS_SWITCH_WIDTH;
+    end;
+  end;
   if R.Editor = nil then
     R.Editor := C;
+  if R.Template is TSettingsIntervalTemplate then
+    R.Editor := TSettingsIntervalTemplate(R.Template).LayoutAutosaveInterval;
   if R.Template is TSettingsVolumeTemplate then
     R.Editor := TSettingsVolumeTemplate(R.Template).LayoutVolumeEditor;
   if C.Name = '' then
@@ -1683,7 +1599,7 @@ begin
   Binding.Load;
   case Definition.Kind of
     TSettingsFieldKind.BooleanValue:
-      TSwitch(C).OnSwitch := ConfigurationChange;
+      TCheckBox(C).OnChange := ConfigurationChange;
     TSettingsFieldKind.Choice:
       begin
         TComboBox(C).OnChange := ConfigurationChange;
@@ -1728,10 +1644,10 @@ begin
   Result := TComboBox(FFields.Last.Control);
 end;
 
-function TSettingsView.Check(const Name, Caption, Description, Section, Key: string; Default: Boolean): TSwitch;
+function TSettingsView.Check(const Name, Caption, Description, Section, Key: string; Default: Boolean): TCheckBox;
 begin
   FContext.AddBoolean(Name, Caption, Description, Section, Key, Default);
-  Result := TSwitch(FFields.Last.Control);
+  Result := TCheckBox(FFields.Last.Control);
 end;
 
 function TSettingsView.Number(const Name, Caption, Description, Section, Key: string; Default, Max: Integer): TSpinBox;
@@ -1750,6 +1666,20 @@ function TSettingsView.PathEdit(const Name, Caption, Description, Section, Key, 
 begin
   FContext.AddPath(Name, Caption, Description, Section, Key, Default, Folder);
   Result := TEdit(FFields.Last.Control);
+end;
+
+procedure TSettingsView.UpdateContentScale;
+begin
+  // Keep FMX's density handling and scale only the settings content. Both
+  // original dimensions use the same factor, preserving text and icon shapes.
+  var ContentScale: Single := 1;
+  {$IFDEF ISMOBILE}
+  if (Width >= 600) and (Width > Height) and (Height > 0) then
+    ContentScale := RoundTo(EnsureRange(Min(Width / 1100, Height / 520), 0.65, 1.0), -3);
+  {$ENDIF}
+  ScaledLayoutSettings.OriginalWidth := Max(1, Width / ContentScale);
+  ScaledLayoutSettings.OriginalHeight := Max(1, Height / ContentScale);
+  TSettingsScaledLayoutAccess(ScaledLayoutSettings).Realign;
 end;
 
 procedure TSettingsView.Resize;
@@ -1782,28 +1712,37 @@ begin
 
   FArranging := True;
   try
-    PanelSidebar.Visible := Width >= 1050;
+    UpdateContentScale;
+    PanelSidebar.Visible := ScaledLayoutSettings.OriginalWidth >= 1050;
     PanelSidebar.Width := 264;
-    PanelPlatforms.Visible := (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and (Width >= 760);
+    if FFixedPlatformPage <> '' then
+    begin
+      PanelSidebar.Visible := ScaledLayoutSettings.OriginalWidth >= 760;
+      PanelSidebar.Width := 220;
+    end;
+    PanelPlatforms.Visible := (FFixedPlatformPage = '') and (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and
+      (ScaledLayoutSettings.OriginalWidth >= 760);
     PanelPlatforms.Width := 216;
     PanelSidebar.Align := TAlignLayout.MostLeft;
     PanelPlatforms.Align := TAlignLayout.Left;
     LayoutBody.Align := TAlignLayout.Client;
     ListBoxNavigation.Visible := PanelSidebar.Visible;
     FPagePicker.Visible := not PanelSidebar.Visible;
-    FPlatformPicker.Visible := (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and not PanelPlatforms.Visible;
+    FPlatformPicker.Visible := (FFixedPlatformPage = '') and (FCategory >= SETTINGS_CATEGORY_VIDEO_AUDIO) and
+      not PanelPlatforms.Visible;
     // Settle the sidebar widths before using the header's available width.
     // During a window-state transition the parent can still be realigning.
     Realign;
+    TSettingsScaledLayoutAccess(ScaledLayoutSettings).Realign;
     TSettingsLayoutAccess(LayoutBody).Realign;
     LabelTitle.Text := Translate(SettingsCategoryNames[FCategory]);
     if FCategory = SETTINGS_CATEGORY_GENERAL then
       LabelTitle.Text := Translate('General settings');
     for var i := Low(FCategoryIcons) to High(FCategoryIcons) do
       if i = FCategory then
-        TPath(FCategoryIcons[i]).Stroke.Color := $FFFFB344
+        TPath(FCategoryIcons[i]).Stroke.Color := ThemeAccentTextColor
       else
-        TPath(FCategoryIcons[i]).Stroke.Color := $FFB9C2CC;
+        TPath(FCategoryIcons[i]).Stroke.Color := ThemeSecondaryTextColor;
     var CompactSearch := LayoutHeader.Width < 740;
     var HeadingRow := LayoutSettingsHeading;
     var CompactSearchSlot := LayoutSettingsCompactSearchSlot;
@@ -1963,10 +1902,10 @@ end;
 procedure TSettingsView.EditorResize(Sender: TObject);
 begin
   var C := TControl(Sender);
-  if C.Height > 32 then
+  if C is TCheckBox then
+    C.Size.Size := TSizeF.Create(SETTINGS_SWITCH_WIDTH, SETTINGS_SWITCH_HEIGHT)
+  else if C.Height > 32 then
     C.Height := 32;
-  if (C is TSwitch) and (C.Width > 64) then
-    C.Width := 64;
 end;
 
 procedure TSettingsView.ComboResize(Sender: TObject);
@@ -2026,17 +1965,18 @@ begin
   if R.Editor <> nil then
   begin
     var Editor := R.Editor;
-    if Editor is TSwitch then
-      W := 64
-    else if Editor is TLayout then
-      W := 268;
-    if Narrow and (Editor is TSwitch) then
+    if Editor is TCheckBox then
     begin
-      Editor.Align := TAlignLayout.Right;
-      Editor.Width := 64;
+      W := SETTINGS_SWITCH_WIDTH;
+      Editor.Align := TAlignLayout.Center;
+      Editor.Size.Size := TSizeF.Create(SETTINGS_SWITCH_WIDTH, SETTINGS_SWITCH_HEIGHT);
     end
     else
+    begin
+      if Editor is TLayout then
+        W := 268;
       Editor.Align := TAlignLayout.Client;
+    end;
     Editor.Margins.Rect := TRectF.Empty;
   end;
   if Narrow then
@@ -2155,7 +2095,8 @@ end;
 
 procedure TSettingsView.SelectCategory(Index: Integer);
 begin
-  if FBuilding or (Index < Low(SettingsCategoryNames)) or (Index > High(SettingsCategoryNames)) or (Index = FCategory) then
+  if FBuilding or (Index < Low(SettingsCategoryNames)) or (Index > High(SettingsCategoryNames)) or (Index = FCategory) or
+    ((FFixedPlatformPage <> '') and (Index < SETTINGS_CATEGORY_VIDEO_AUDIO)) then
     Exit;
 
   StorePage;
@@ -2167,7 +2108,7 @@ begin
   FBuilding := True;
   try
     ListBoxNavigation.ItemIndex := Index;
-    FPagePicker.ItemIndex := Index;
+    FPagePicker.ItemIndex := Index - Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO;
   finally
     FBuilding := False;
   end;
@@ -2177,7 +2118,8 @@ end;
 
 procedure TSettingsView.SelectCore(const PageId: string; PreserveCategory: Boolean);
 begin
-  if FBuilding or (SettingsPlatforms.Find(PageId) = nil) then
+  if FBuilding or (SettingsPlatforms.Find(PageId) = nil) or
+    ((FFixedPlatformPage <> '') and not SameText(FFixedPlatformPage, PageId)) then
     Exit;
 
   StorePage;
@@ -2192,7 +2134,7 @@ begin
   FBuilding := True;
   try
     ListBoxNavigation.ItemIndex := FCategory;
-    FPagePicker.ItemIndex := FCategory;
+    FPagePicker.ItemIndex := FCategory - Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO;
   finally
     FBuilding := False;
   end;
@@ -2208,7 +2150,8 @@ end;
 
 procedure TSettingsView.PagePickerChange(Sender: TObject);
 begin
-  SelectCategory(FPagePicker.ItemIndex);
+  if FPagePicker.ItemIndex >= 0 then
+    SelectCategory(FPagePicker.ItemIndex + Ord(FFixedPlatformPage <> '') * SETTINGS_CATEGORY_VIDEO_AUDIO);
 end;
 
 function PlatformItemName(const PageId: string): string;
@@ -2245,6 +2188,9 @@ begin
       begin
         Brand := Match.Brand;
         var Header := TListBoxGroupHeader.Create(ListBoxPlatforms);
+        Header.StyledSettings := Header.StyledSettings - [TStyledSetting.Other];
+        Header.TextSettings.WordWrap := False;
+        Header.TextSettings.Trimming := TTextTrimming.Character;
         Header.Parent := ListBoxPlatforms;
         Header.Text := Brand;
         Header.Height := 36;
@@ -2464,7 +2410,7 @@ begin
     begin
       var Template := TSettingsBindingTemplate(R.Template);
       Capture := Template.ButtonBindingEditorsCapture;
-      Capture.Text := Translate('Assign · ') + BindingCaption(FInput, Action);
+      Capture.Text := Translate('Assign · ') + BindingCaption(FInput, Action, CurrentCoreId);
       Capture.Tag := Action;
       Capture.TagString := IntToStr(Port);
       Capture.OnClick := CaptureClick;
@@ -2489,7 +2435,7 @@ begin
   Binding.Tag := Action;
   FBindingDevices.Add(Binding, Device);
   Binding.TagString := Caption;
-  Binding.Text := Translate(Caption) + '   ·   ' + BindingCaption(FInput, Action);
+  Binding.Text := Translate(Caption) + '   ·   ' + BindingCaption(FInput, Action, CurrentCoreId);
   Binding.OnClick := AssignmentClick;
   Binding.Enabled := FInput <> nil;
 end;
@@ -2590,10 +2536,10 @@ begin
         if D.AssignmentList.Children[i] is TButton then
         begin
           var B := TButton(D.AssignmentList.Children[i]);
-          B.Text := Translate(B.TagString) + '   ·   ' + BindingCaption(FInput, B.Tag);
+          B.Text := Translate(B.TagString) + '   ·   ' + BindingCaption(FInput, B.Tag, CurrentCoreId);
         end;
     if (D.Capture.Tag >= 0) and (D.Capture <> FCaptureButton) then
-      D.Capture.Text := Translate('Assign · ') + BindingCaption(FInput, D.Capture.Tag);
+      D.Capture.Text := Translate('Assign · ') + BindingCaption(FInput, D.Capture.Tag, CurrentCoreId);
   end;
 end;
 
@@ -2603,7 +2549,7 @@ begin
   Device.Capture.Tag := Action;
   Device.Clear.Tag := Action;
   Device.Caption.Text := Caption;
-  Device.Capture.Text := Translate('Assign · ') + BindingCaption(FInput, Action);
+  Device.Capture.Text := Translate('Assign · ') + BindingCaption(FInput, Action, CurrentCoreId);
   Device.Capture.Visible := True;
   Device.Clear.Visible := True;
   CaptureClick(Device.Capture);
@@ -2684,6 +2630,9 @@ begin
   var Port := StrToIntDef(FCaptureButton.TagString, 0);
   FHostInput.Poll;
   FInput.BeginCapture(FCaptureAction, FDeviceIds[Port]);
+  FCaptureOrigins := nil;
+  if IsAnalogInputAction(CurrentCoreId, FCaptureAction) then
+    FCaptureOrigins := AxisOrigins(FInput);
   FCaptureDeadline := TThread.GetTickCount64 + 10000;
   LabelStatus.Text := Translate('Press a button or direction. Esc cancels. Waiting: 10 seconds.');
   FCaptureButton.Text := Translate('Waiting for input…');
@@ -2705,8 +2654,10 @@ procedure TSettingsView.CancelCapture;
 begin
   if FInput <> nil then
     FInput.CancelCapture;
+  FCaptureOrigins := nil;
+  FPendingButtonSet := False;
   if FCaptureButton <> nil then
-    FCaptureButton.Text := Translate('Assign · ') + BindingCaption(FInput, FCaptureAction);
+    FCaptureButton.Text := Translate('Assign · ') + BindingCaption(FInput, FCaptureAction, CurrentCoreId);
   FCaptureButton := nil;
   if ButtonCancelCapture <> nil then
     ButtonCancelCapture.Visible := False;
@@ -2744,6 +2695,22 @@ begin
     Exit;
 
   var Binding: TInputBinding;
+  if FPendingButtonSet then
+  begin
+    // A trigger reporting both a digital button and an axis keeps its axis.
+    // The button is kept when the axis does not follow (a plain button).
+    var Held := False;
+    for var V in FInput.Values do
+      if (V.DeviceId = FPendingButton.DeviceId) and (V.Kind = TInputElementKind.Button) and
+        (V.Code = FPendingButton.Code) and (V.Value > 0.5) then
+        Held := True;
+    if FindMovedAxis(FCaptureOrigins, FInput.Values, FCaptureAction, FPendingButton.DeviceId, 0.3, Binding) then
+      StoreCapturedBinding(Binding)
+    else if not Held or (TThread.GetTickCount64 >= FPendingDeadline) then
+      StoreCapturedBinding(FPendingButton);
+    Exit;
+  end;
+
   if FInput.TakeCaptured(Binding) then
   begin
     if (Binding.Kind = TInputElementKind.Key) and (Binding.Code = 41) then
@@ -2752,15 +2719,27 @@ begin
       Exit;
     end;
 
-    FInput.RemoveBindings(FCaptureAction);
-    FInput.AddBinding(Binding);
-    CancelCapture;
-    RefreshBindings;
-    LabelStatus.Text := Translate('Binding saved in the draft. Click Apply.');
-    Resize;
+    if (Length(FCaptureOrigins) > 0) and (Binding.Kind = TInputElementKind.Button) then
+    begin
+      FPendingButton := Binding;
+      FPendingButtonSet := True;
+      FPendingDeadline := TThread.GetTickCount64 + 1500;
+      Exit;
+    end;
+    StoreCapturedBinding(Binding);
   end
   else if TThread.GetTickCount64 >= FCaptureDeadline then
     CancelCaptureClick(Self);
+end;
+
+procedure TSettingsView.StoreCapturedBinding(const Binding: TInputBinding);
+begin
+  FInput.RemoveBindings(FCaptureAction);
+  FInput.AddBinding(Binding);
+  CancelCapture;
+  RefreshBindings;
+  LabelStatus.Text := Translate('Binding saved in the draft. Click Apply.');
+  Resize;
 end;
 
 procedure TSettingsView.VolumeChange(Sender: TObject);
@@ -3000,6 +2979,8 @@ begin
 
     for var SettingsPlatform in SettingsPlatforms.Items do
     begin
+      if (FFixedPlatformPage <> '') and not SameText(SettingsPlatform.PageId, FFixedPlatformPage) then
+        Continue;
       var Draft := FSession.Drafts[SettingsPlatform.PageId];
       Draft.DeleteKey('Audio', 'Enabled');
       SettingsPlatform.PrepareSave(Draft);
@@ -3007,7 +2988,8 @@ begin
     end;
 
     // Config writes are per core and retain all settings that this UI does not expose.
-    FSession.Save;
+    FSession.Save(CheckBoxSaveForGame.IsChecked);
+    UpdateGameSettingsPanel;
     if Assigned(FOnApply) then
       FOnApply(Self);
     LabelStatus.Text := Translate('Saved. Runtime settings applied. Hardware and boot options apply when you next open a ROM.');
@@ -3016,6 +2998,33 @@ begin
       LabelStatus.Text := Translate('Unable to save settings: ') + E.Message;
   end;
   UpdateConfigurationNotice;
+end;
+
+procedure TSettingsView.UpdateGameSettingsPanel;
+begin
+  PanelGameSettings.Visible := FGameName <> '';
+  CheckBoxSaveForGame.Text := Format(Translate('Save only for %s'), [FGameName]);
+  ButtonResetGameSettings.Text := Format(Translate('Reset for %s'), [FGameName]);
+  var Specific := FSession.HasGameSettings;
+  CheckBoxSaveForGame.Visible := PanelGameSettings.Visible and not Specific;
+  ButtonResetGameSettings.Visible := PanelGameSettings.Visible and Specific;
+end;
+
+procedure TSettingsView.ResetGameSettingsClick(Sender: TObject);
+begin
+  try
+    CancelCapture;
+    FSession.ResetGameSettings;
+    CheckBoxSaveForGame.IsChecked := False;
+    UpdateGameSettingsPanel;
+    BuildPage(True);
+    if Assigned(FOnApply) then
+      FOnApply(Self);
+    LabelStatus.Text := Translate('Game settings reset. Shared platform settings restored.');
+  except
+    on E: Exception do
+      LabelStatus.Text := Translate('Unable to save settings: ') + E.Message;
+  end;
 end;
 
 procedure TSettingsView.ApplyLanguage(const PreviousLanguage: string);
@@ -3027,6 +3036,7 @@ begin
     FBuilding := False;
   end;
   RefreshPlatformList;
+  UpdateGameSettingsPanel;
   BuildPage(True);
 end;
 

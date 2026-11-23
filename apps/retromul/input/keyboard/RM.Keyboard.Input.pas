@@ -44,7 +44,8 @@ function KeyboardInputState(const Context: TInputRuntimeContext; CreateIfMissing
 implementation
 
 uses
-  System.SysUtils, System.UITypes, FMX.Types, RM.Settings.Rendering, System.Generics.Collections;
+  System.SysUtils, System.UITypes, FMX.Types, RM.Settings.Rendering,
+  System.Generics.Collections;
 
 var
   KeyboardClasses: TDictionary<string, TScreenKeyboardClass>;
@@ -106,9 +107,9 @@ begin
   Result := (Value as IKeyboardInputState).GetState;
   if CreateIfMissing then
   begin
-    var PlatformId := Context.State.Input.SystemId;
-    if Context.State.Session.Emulation <> nil then
-      PlatformId := Context.State.Session.Emulation.SystemId;
+    var PlatformId := Context.Host.SystemId;
+    if Context.Host.Core <> nil then
+      PlatformId := Context.Host.Core.SystemId;
     var KeyboardClass: TScreenKeyboardClass;
     if not KeyboardClasses.TryGetValue(PlatformId.ToLower, KeyboardClass) then
       KeyboardClass := nil;
@@ -116,10 +117,13 @@ begin
       Result.ReleaseDevice;
     if (Result.Keyboard = nil) and (KeyboardClass <> nil) then
     begin
-      Result.Keyboard := KeyboardClass.Create(Context.View);
+      var Surface := Context.Surface;
+      if Surface = nil then
+        Exit;
+      Result.Keyboard := KeyboardClass.Create(Surface.Content);
       Result.Keyboard.Name := Copy(KeyboardClass.ClassName, 2, MaxInt) + 'Peripheral';
       Result.Keyboard.FreeNotification(Result.FObserver);
-      Result.Keyboard.Parent := Context.View.LayoutClient;
+      Result.Keyboard.Parent := Surface.Content;
       Result.Keyboard.Align := TAlignLayout.Bottom;
       Result.Keyboard.OnChange := Context.ScreenInputChanged;
       Result.Keyboard.Enabled := False;
@@ -166,7 +170,7 @@ var
   Keyboard: IEmulationKeyboard;
 begin
   Result := inherited KeyPolicy(Context);
-  Result.KeyboardActive := Supports(Context.State.Session.Emulation, IEmulationKeyboard, Keyboard) and Keyboard.HasKeyboard;
+  Result.KeyboardActive := Supports(Context.Host.Core, IEmulationKeyboard, Keyboard) and Keyboard.HasKeyboard;
   Result.ForwardWithManager := Result.KeyboardActive;
 end;
 
@@ -174,7 +178,7 @@ class procedure TKeyboardInputHandler.UpdateInput(const Context: TInputRuntimeCo
 begin
   var Devices := KeyboardInputState(Context);
   var Keyboard: IEmulationKeyboard;
-  if (Devices.Keyboard <> nil) and Supports(Context.State.Session.Emulation, IEmulationKeyboard, Keyboard) and Keyboard.HasKeyboard then
+  if (Devices.Keyboard <> nil) and Supports(Context.Host.Core, IEmulationKeyboard, Keyboard) and Keyboard.HasKeyboard then
     Keyboard.SetScreenKeys(Devices.Keyboard.Keys);
 end;
 
@@ -185,10 +189,11 @@ begin
     UpdateInput(Context);
 end;
 
-
 initialization
   KeyboardClasses := TDictionary<string, TScreenKeyboardClass>.Create;
+
 finalization
   KeyboardClasses.Free;
+
 end.
 

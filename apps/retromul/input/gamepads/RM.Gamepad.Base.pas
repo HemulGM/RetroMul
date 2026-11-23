@@ -178,7 +178,7 @@ end;
 
 function TVirtualGamepadControl.AspectRatio: Single;
 begin
-  Result := DesignSideSize.Height / (DesignSideSize.Width * 2);
+  Result := DesignSideSize.Height / DesignWidth;
 end;
 
 function TVirtualGamepadControl.PointInObjectLocal(X, Y: Single): Boolean;

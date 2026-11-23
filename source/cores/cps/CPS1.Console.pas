@@ -163,7 +163,6 @@ begin
   FSoundEnabled := True;
   Video.Reset;
   Z80StateInitialise(FZ80);
-  Z80Reset(FZ80);
   Clown68000Reset(FCPU, FBus, FProgramRead);
 end;
 
@@ -516,7 +515,7 @@ begin
   State.Field(FCommand, SizeOf(FCommand));
   State.Field(FFade, SizeOf(FFade));
   State.Field(FBank, SizeOf(FBank));
-  State.Field(FInput, SizeOf(FInput));
+  State.CompatibleField(FInput, SizeOf(FInput), TEmulatorInput.LegacySize, TEmulatorInput.TravelSize);
   State.Field(FCoins, SizeOf(FCoins));
   State.Field(FTime, SizeOf(FTime));
   State.Field(FNextIRQ, SizeOf(FNextIRQ));
@@ -547,9 +546,6 @@ begin
   if Length(Data) <> 0 then
     raise EReadError.Create('Unexpected CPS1 battery data');
 end;
-
-initialization
-  HW.Z80.ConstantInitialise;
 
 end.
 

@@ -9,17 +9,25 @@ uses
   Core.Emulation.Timing;
 
 type
+  IEmulationRomMetadata = Core.Emulation.Types.IEmulationRomMetadata;
+
   TEmulatorButton = Core.Emulation.Types.TEmulatorButton;
 
   TEmulatorButtons = Core.Emulation.Types.TEmulatorButtons;
 
   TEmulatorInput = Core.Emulation.Types.TEmulatorInput;
 
+  TEmulatorAnalogButtons = Core.Emulation.Types.TEmulatorAnalogButtons;
+
   IEmulatorConfig = Core.Emulation.Types.IEmulatorConfig;
+
+  IEmulatorConfigLocation = Core.Emulation.Types.IEmulatorConfigLocation;
 
   TEmulatorFrame = Core.Emulation.Types.TEmulatorFrame;
 
   IEmulationVideoRegions = Core.Emulation.Types.IEmulationVideoRegions;
+
+  IEmulationCompletion = Core.Emulation.Types.IEmulationCompletion;
 
   IEmulationAudioDiagnostics = Core.Emulation.Types.IEmulationAudioDiagnostics;
 
@@ -27,7 +35,15 @@ type
 
   IEmulationPointerInput = Core.Emulation.Types.IEmulationPointerInput;
 
+  TEmulationTouchPhase = Core.Emulation.Types.TEmulationTouchPhase;
+
+  TEmulationTouchEvent = Core.Emulation.Types.TEmulationTouchEvent;
+
+  IEmulationTouchInput = Core.Emulation.Types.IEmulationTouchInput;
+
   IEmulationMotionInput = Core.Emulation.Types.IEmulationMotionInput;
+
+  IEmulationMotionInput3D = Core.Emulation.Types.IEmulationMotionInput3D;
 
   IEmulationRotationInput = Core.Emulation.Types.IEmulationRotationInput;
 
@@ -36,11 +52,16 @@ type
   IEmulationDiscControl = Core.Emulation.Types.IEmulationDiscControl;
 
   IEmulationSnapshotLocation = Core.Emulation.Types.IEmulationSnapshotLocation;
+
   IEmulationSnapshotOperation = Core.Emulation.Types.IEmulationSnapshotOperation;
 
   IEmulationVirtualControls = Core.Emulation.Types.IEmulationVirtualControls;
 
   IEmulationLiveSettings = Core.Emulation.Types.IEmulationLiveSettings;
+
+  TEmulationGameAction = Core.Emulation.Types.TEmulationGameAction;
+
+  IEmulationGameActions = Core.Emulation.Types.IEmulationGameActions;
 
   IEmulationCore = Core.Emulation.Types.IEmulationCore;
 
@@ -49,6 +70,7 @@ type
   TEmulationFrameRate = Core.Emulation.Timing.TEmulationFrameRate;
 
 const
+  EmulatorMaxPlayers = Core.Emulation.Types.EmulatorMaxPlayers;
   DEFAULT_AUDIO_VOLUME = Core.Emulation.Config.DEFAULT_AUDIO_VOLUME;
 
 function EmulatorConfigFileName(const EmulatorId: string): string;

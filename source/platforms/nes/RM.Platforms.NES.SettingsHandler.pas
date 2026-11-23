@@ -26,11 +26,14 @@ var
   Piano: INesMiraclePianoCore;
 begin
   Result := inherited HelpInfo(Context);
-  if Supports(Context.State.Session.Emulation.Config, INesEmulatorConfig, Config) and Config.FourScore then
+  var Core := Context.Host.Core;
+  if Core = nil then
+    Exit;
+  if Supports(Core.Config, INesEmulatorConfig, Config) and Config.FourScore then
     Result.Players := 4;
-  Result.KeyboardPeripheral := NesUsesSuborKeyboard(Context.State.Session.Emulation) or
-    (Supports(Context.State.Session.Emulation, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard) or
-    (Supports(Context.State.Session.Emulation, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano);
+  Result.KeyboardPeripheral := NesUsesSuborKeyboard(Core) or
+    (Supports(Core, INesPeripheralCore, Peripheral) and Peripheral.UsesFamicomKeyboard) or
+    (Supports(Core, INesMiraclePianoCore, Piano) and Piano.UsesMiraclePiano);
 end;
 
 class function TNesSettingsHandler.Peripherals(const Context: TSettingsRuntimeContext): TArray<TSettingsPeripheral>;

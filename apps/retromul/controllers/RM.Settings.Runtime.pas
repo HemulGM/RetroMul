@@ -120,8 +120,8 @@ end;
 
 procedure ReleaseSettingsPeripherals(const Context: TSettingsRuntimeContext);
 begin
-  if Context.State.Input.Gamepad <> nil then
-    Context.State.Input.Gamepad.ReleaseAll;
+  if Context.Gamepad <> nil then
+    Context.Gamepad.ReleaseAll;
   for var Item in SettingsPeripherals(Context, False) do
     if Assigned(Item.Input.Release) then
       Item.Input.Release;
@@ -130,8 +130,8 @@ end;
 procedure DetachSettingsPeripherals(const Context: TSettingsRuntimeContext);
 begin
   DetachSessionTouch(Context);
-  if Context.State.Input.Gamepad <> nil then
-    Context.State.Input.Gamepad.AttachToForm(nil);
+  if Context.Gamepad <> nil then
+    Context.Gamepad.AttachToForm(nil);
   for var Item in SettingsPeripherals(Context, True) do
     if Assigned(Item.Input.Attach) then
       Item.Input.Attach(nil);
@@ -139,31 +139,35 @@ end;
 
 class procedure TPlatformSettingsHandler.Apply(const Context: TSettingsRuntimeContext; Ini: TCustomIniFile);
 begin
-  Context.State.Session.Emulation.Config.Load;
+  var Core := Context.Host.Core;
+  if Core = nil then
+    Exit;
+  Core.Config.Load;
   var InputPorts: IEmulationInputPorts;
-  if Supports(Context.State.Session.Emulation, IEmulationInputPorts, InputPorts) then
+  if Supports(Context.Host.Core, IEmulationInputPorts, InputPorts) then
   begin
-    var Ports := ReadCoreInputPorts(Ini, Context.State.Input.SystemId);
-    if not SameInputPorts(Context.State.Input.Ports, Ports) then
+    var Ports := ReadCoreInputPorts(Ini, Context.Host.SystemId);
+    if not SameInputPorts(Context.Host.Input.Ports, Ports) then
     begin
       ReleaseSettingsPeripherals(Context);
-      Context.State.Input.GamepadInput := Default(TEmulatorInput);
+      Context.Host.Input.ClearCachedInput;
       InputPorts.ApplyInputPorts(Ports);
-      Context.State.Input.Ports := Ports;
-      var platform := TPlatformRegistry.Require(Context.State.Input.SystemId);
-      Context.State.Input.Gamepad.Configure(platform.Id, Ports.Devices[0],
-        CoreButtons(Context.State.Input.SystemId, Ports.Devices[0]));
+      Context.Host.Input.Ports := Ports;
+      var platform := TPlatformRegistry.Require(Context.Host.SystemId);
+      if Context.Gamepad <> nil then
+        Context.Gamepad.Configure(platform.Id, Ports.Devices[0],
+          CoreButtons(Context.Host.SystemId, Ports.Devices[0]));
     end;
   end;
   var LiveSettings: IEmulationLiveSettings;
-  if Supports(Context.State.Session.Emulation, IEmulationLiveSettings, LiveSettings) then
+  if Supports(Context.Host.Core, IEmulationLiveSettings, LiveSettings) then
     LiveSettings.ApplyLiveSettings;
 end;
 
 class function TPlatformSettingsHandler.HelpInfo(const Context: TSettingsRuntimeContext): TSettingsHelpInfo;
 begin
   Result := Default(TSettingsHelpInfo);
-  Result.Players := TPlatformRegistry.Require(Context.State.Input.SystemId).Ports;
+  Result.Players := TPlatformRegistry.Require(Context.Host.SystemId).Ports;
 end;
 
 class function TPlatformSettingsHandler.Peripherals(const Context: TSettingsRuntimeContext): TArray<TSettingsPeripheral>;

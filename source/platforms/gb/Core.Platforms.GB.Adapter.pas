@@ -224,7 +224,7 @@ begin
     FStorage := TStorage.Default;
   FConfig := CreateConfig(FStorage.ConfigFile(ConfigPrefix));
   FConfig.Load;
-  FControllerEnabled := LoadCoreInputPorts(FStorage, ConfigPrefix).Devices[0] <> 'none';
+  FControllerEnabled := LoadCoreInputPorts(FStorage, ConfigPrefix, GetConfig.FileName).Devices[0] <> 'none';
   var ROM := TGBROM.Create;
   try
     ROM.ReadROM(Stream);

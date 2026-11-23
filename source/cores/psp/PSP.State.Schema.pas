@@ -22,7 +22,7 @@ uses
   PSP.Atrac, PSP.Mpeg, PSP.MpegDemux, PSP.MpegVideo, PSP.Jpeg, PSP.Net,
   PSP.Utility, PSP.Videocodec, Audio.MP3.Layer3, Core.Snapshots,
   PSP.State.Action, Video.AVC.H264, Video.AVC.H264.Syntax, Video.AVC.Types,
-  FMXAudio.Transform;
+  Audio.Transform;
 
 type
   TU32x2 = array[0..1] of Cardinal;
@@ -108,15 +108,21 @@ begin
     Result.AddPublicTypes(['PSP.', 'Audio.ATRAC3', 'Audio.MP3', 'Audio.MPEG', 'Video.AVC']);
     RegisterPSPKernelStateTypes(Result);
     Result.Optional(TPSPStateAction, ['Failure', 'Arrays', 'Buffers', 'Texts', 'Results', 'Owned']);
+    Result.Optional(TPSPGEEngine, ['FGeomClip', 'FGeomClipSmall', 'FGeomClipValid']);
     Result.Optional(TPSPIO, ['FFatNames', 'FAsyncStub', 'FAsyncPriority', 'FMemstickInserted', 'FMemstickCallbacks']);
+    Result.Optional(TPSPSysLibs, ['FMediaReset', 'FMediaClock', 'FMediaHalted', 'FMediaAt', 'FMediaFraction', 'FMediaCycles']);
+    Result.AddClass(TPSPSysLibs, ['FMediaCPU', 'FMediaMemory', 'FMediaRunner']);
+    Result.Optional(TPSPMpegInstance, ['RingPending', 'AtracInit']);
     Result.Optional(TPSPOpenFile, ['AsyncWorker', 'AsyncPriority', 'AsyncLatency', 'AsyncTask']);
     Result.Optional(TPSPAudio, ['FO2WaitFailed']);
-    Result.Optional(TPSPThread, ['BusyYieldEqual']);
+    Result.Optional(TPSPThread, ['BusyYieldEqual', 'BusyWaitNs', 'BusyWaitResult', 'BusyThen', 'BusyResumeNs']);
     Result.Optional(TPSPAtracSlot, ['Decoded']);
+    Result.Optional(TPSPUtility, ['FShutdownDialog', 'FShutdownSteps']);
     Result.AddClass(TMemoryStream, []);
     Result.AddClass(TFileStream, []);
     Result.AddClass(TStringBuilder, []);
-    Result.AddClass(TInverseMDCT, []);
+    // Keep the snapshot wire name stable across the audio unit reorganization.
+    Result.AddClass(TInverseMDCT, [], 'FMXAudio.Transform.TInverseMDCT');
     Result.AddClass(TObjectDictionary<string, TDictionary<Cardinal, Cardinal>>, []);
     Result.Native(TMP3Layer3Decoder,
       function: TObject
@@ -129,16 +135,16 @@ begin
       end);
     Result.AddClass(TPSPCPU, ['FDecoded', 'FPages', 'FOnSyscall', 'FOnBreak', 'Runner']);
     Result.AddClass(TPSPHLE, ['FOnLog']);
+    Result.AddClass(TPSPDisplay, ['FFrames']);
+    Result.AddClass(TPSPAudio, ['FSamplePool']);
     Result.AddClass(TPSPKernel, ['FOnExit', 'FOnSyncTime']);
-    Result.AddClass(TPSPIO,
-      ['FOnOutput', 'FOnScreenshot', 'FOnHostChange', 'FMemstickRoot', 'FFlashRoot', 'FHostRoot', 'FDisc']);
+    Result.AddClass(TPSPIO, ['FOnOutput', 'FOnScreenshot', 'FOnHostChange', 'FMemstickRoot', 'FFlashRoot', 'FHostRoot', 'FDisc', 'FProgramArchive']);
     Result.AddClass(TPSPLoader, ['FOnLoadExec']);
     Result.AddClass(TPSPSystem, ['FlashRoot', 'FontDirectory', 'Services']);
     Result.AddClass(TPSPUtility, ['FView', 'FSoftwareView']);
     // Slice-local readers and reference-list workspaces can retain sentinels
     // or removed pictures. The next access unit builds them from the DPB.
-    Result.AddClass(TH264Decoder,
-      ['FBits', 'FCABAC', 'FRemoveRefs', 'FPromoteRefs', 'FPromoteIndexes', 'FRefList', 'FRefList1']);
+    Result.AddClass(TH264Decoder, ['FBits', 'FCABAC', 'FRemoveRefs', 'FPromoteRefs', 'FPromoteIndexes', 'FRefList', 'FRefList1']);
     Result.Factory(TH264Decoder,
       function: TObject
       begin

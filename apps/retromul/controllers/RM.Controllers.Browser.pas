@@ -13,6 +13,7 @@ type
     FMenuParent: TMenuItem;
     FMenuPointerDown, FMenuDragged: Boolean;
     FMenuPointerY, FMenuScrollY: Single;
+    procedure CoreGameActionClick(Sender: TObject);
     procedure DiscMenuClick(Sender: TObject);
     procedure OpenDiscClick(Sender: TObject);
     procedure MobileMenuDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
@@ -45,7 +46,7 @@ implementation
 
 uses
   RM.Input.Runtime, System.SysUtils, System.Types, System.Math, FMX.Types,
-  FMX.Controls, FMX.StdCtrls, FMX.Objects, FMX.Layouts, RM.Main.View, RM.Toolbar,
+  FMX.Controls, FMX.StdCtrls, FMX.Objects, FMX.Layouts, RM.Main, RM.Toolbar,
   RM.LibraryView, RM.Dialogs, RM.Styles, RM.Icons, Core.Emulation, Core.Storage;
 
 procedure TBrowserController.InitializeScreenshotTool;
@@ -173,7 +174,7 @@ begin
     Button.Margins.Bottom := 4;
     Button.Text := Item.Text;
     Button.StyledSettings := [];
-    Button.TextSettings.FontColor := $FFE8ECF1;
+    Button.TextSettings.FontColor := ThemeTextColor;
     Button.TextSettings.Font.Size := 14;
     Button.TextSettings.HorzAlign := TTextAlign.Leading;
     Button.StyleLookup := 'buttonstyle';
@@ -308,13 +309,25 @@ begin
     PauseText := 'Resume';
   Add(Menu, PauseText, FView.PauseClick, Ready);
   {$ENDIF}
-  if (FState.Session.Emulation <> nil) and FState.Session.Emulation.HasCoinAcceptor then
-    Add(Menu, 'Insert coin', FView.InsertCoinClick, Ready and not FState.Browser.ViewingLibrary
-      and (FState.Settings.View = nil) and (FState.Help.View = nil));
+  var Actions: IEmulationGameActions;
+  var Commands: TArray<TEmulationGameAction>;
+  if Ready and Supports(FState.Session.Emulation, IEmulationGameActions, Actions) then
+    Commands := Actions.GetGameActions;
+  var Game := Add(Menu, 'Game', nil, Ready);
+  Game.Name := 'MenuItemGame';
+  for var Command in Commands do
+  begin
+    var Item := Add(Game, Command.Caption, CoreGameActionClick, Command.Enabled);
+    Item.Name := 'MenuItemCoreAction' + IntToStr(Game.ItemsCount);
+    Item.TagString := Command.Id;
+  end;
+  if Ready and FState.Session.Emulation.HasCoinAcceptor then
+    Add(Game, 'Insert coin', FView.InsertCoinClick, Ready and not FState.Browser.ViewingLibrary
+      and (FState.Settings.View = nil) and (FState.Help.View = nil)).Name := 'MenuItemInsertCoin';
   var Discs: IEmulationDiscControl;
   if Ready and Supports(FState.Session.Emulation, IEmulationDiscControl, Discs) and (Discs.GetDiscCount > 0) then
   begin
-    var DiscMenu := Add(Menu, 'Change disc', nil);
+    var DiscMenu := Add(Game, 'Change disc', nil);
     DiscMenu.Name := 'MenuItemChangeDisc';
     for var I := 0 to Discs.GetDiscCount - 1 do
     begin
@@ -330,6 +343,7 @@ begin
     Eject.Name := 'MenuItemEjectDisc';
     Eject.Tag := -1;
   end;
+  Game.Enabled := Ready and (Game.ItemsCount > 0);
   var Save := Add(Menu, 'Save', nil, Snapshots);
   Add(Save, 'Quick save · F5', FView.SaveStateClick);
   AddOptions(Save, FState.Browser.SaveMenu);
@@ -344,9 +358,34 @@ begin
     and (FState.Settings.View = nil) and (FState.Help.View = nil));
   {$ENDIF}
   Add(Menu, 'Settings', FView.SettingsClick, not FState.Session.OpeningRom);
+  Add(Menu, 'Help', FView.OpenHelpClick, not FState.Session.OpeningRom).Name := 'MenuItemHelp';
+  Add(Menu, 'Report a bug', FView.ReportBugClick, not FState.Session.OpeningRom).Name := 'MenuItemReportBug';
   {$IFDEF ISMOBILE}
   Add(Menu, 'Controls and shortcuts', FView.ControlsHelpClick, Ready and not FState.Help.Closing);
   {$ENDIF}
+end;
+
+procedure TBrowserController.CoreGameActionClick(Sender: TObject);
+begin
+  var Actions: IEmulationGameActions;
+  if FState.Session.OpeningRom or FState.Session.EmulationFaulted or
+    not Supports(FState.Session.Emulation, IEmulationGameActions, Actions) then
+    Exit;
+  var Id := TMenuItem(Sender).TagString;
+  for var Command in Actions.GetGameActions do
+    if (Command.Id = Id) and Command.Enabled then
+    begin
+      try
+        FState.Session.Emulation.ClearInput;
+        Actions.ExecuteGameAction(Id);
+        FView.UpdateFrame;
+        FView.SyncActivity;
+      except
+        on E: Exception do
+          ShowRetroMessage(FView, TranslateCoreMessage(E.Message));
+      end;
+      Exit;
+    end;
 end;
 
 procedure TBrowserController.DiscMenuClick(Sender: TObject);
@@ -410,12 +449,14 @@ begin
   FState.Browser.View := TLibraryView.CreateLibrary(FView, FState.Session.Storage);
   FState.Browser.View.Parent := FView.LibraryScreen;
   FState.Browser.View.Align := TAlignLayout.Client;
+  FState.Browser.View.OnPresentationChanged := FView.FormResize;
   FState.Browser.View.OnPlay := FView.LibraryPlay;
   FState.Browser.View.OnSettings := FView.SettingsClick;
   FState.Browser.View.OnOpen := FView.ButtonOpenClick;
   FView.LayoutClient.Visible := False;
   FState.Browser.ViewingLibrary := True;
   FView.ScreenTabs.ActiveTab := FView.LibraryScreen;
+  FView.FormResize(FView);
 end;
 
 {$IFNDEF ISMOBILE}
@@ -470,6 +511,7 @@ begin
   if (FState.Browser.View.Selected = nil) or FState.Session.OpeningRom then
     Exit;
 
+  FState.Session.ReportLaunchSource := 'library';
   var Game := FState.Browser.View.Selected;
   var Snapshot := FState.Browser.View.SnapshotName;
   try
@@ -481,6 +523,8 @@ begin
 end;
 
 procedure TBrowserController.LibraryBack(Sender: TObject);
+var
+  PauseError: string;
 begin
   if FState.Browser.View = nil then
     Exit;
@@ -488,12 +532,20 @@ begin
   FView.FormDeactivate(FView);
   if FState.Session.Emulation <> nil then
   begin
-    FState.Session.Emulation.Pause;
+    if not FState.Session.EmulationFaulted then
+    try
+      FState.Session.Emulation.Pause;
+    except
+      on E: Exception do
+      begin
+        PauseError := E.Message;
+        FState.Session.LastReportError := E.Message;
+        FState.Session.EmulationFaulted := True;
+      end;
+    end;
     if not FState.Browser.ViewingLibrary then
       FView.AutosaveOnExit;
   end;
-  if FView.FullScreen then
-    FView.SwitchFullScreen;
   FView.LayoutClient.Visible := False;
   FView.ScreenTabs.ActiveTab := FView.LibraryScreen;
   FState.Browser.View.Visible := True;
@@ -515,6 +567,8 @@ begin
   FState.Browser.View.BringToFront;
   FState.Browser.ViewingLibrary := True;
   FView.SyncActivity;
+  if PauseError <> '' then
+    ShowRetroMessage(FView, TranslateCoreMessage(PauseError));
 end;
 
 procedure TBrowserController.UpdateGameChrome;
@@ -570,8 +624,7 @@ begin
   if FState.Browser.ScreenshotTool <> nil then
   begin
     var InputContext := Default(TInputRuntimeContext);
-    InputContext.State := FState;
-    InputContext.View := FView;
+    InputContext.Host := FPlatformHost;
     if PlatformInputHandler(FState.Input.SystemId).KeyPolicy(InputContext).ReserveCaptureShortcuts then
       FState.Browser.ScreenshotTool.Hint := Translate('Take screenshot')
     else
@@ -584,13 +637,14 @@ begin
       FState.Browser.HelpTool.StyleLookup := 'buttonstyle_accent'
     else
       FState.Browser.HelpTool.StyleLookup := 'buttonstyle';
-    var Color: TAlphaColor := $FFFFB43B;
+    var Color: TAlphaColor := ThemeAccentTextColor;
     if FState.Help.View <> nil then
-      Color := $FF1B2026;
+      Color := ThemeBackgroundColor;
     FState.Browser.HelpTool.TextSettings.FontColor := Color;
-    for var Child in FState.Browser.HelpTool.Children do
-      if Child is FMX.Objects.TPath then
-        FMX.Objects.TPath(Child).Stroke.Color := Color;
+    if FState.Browser.HelpTool.Children <> nil then
+      for var Child in FState.Browser.HelpTool.Children do
+        if Child is FMX.Objects.TPath then
+          FMX.Objects.TPath(Child).Stroke.Color := Color;
   end;
 
   {$IFNDEF ISMOBILE}
@@ -598,9 +652,10 @@ begin
   begin
     // SyncActivity and frame/status updates can make controls visible again.
     // Hide game chrome while retaining the pause overlay.
-    for var Child in FView.LayoutClient.Children do
-      if (Child is TControl) and (Child <> FView.ImageCanvas) and (Child <> FView.RectangleBG) and (Child <> FView.LabelPaused) then
-        TControl(Child).Visible := False;
+    if FView.LayoutClient.Children <> nil then
+      for var Child in FView.LayoutClient.Children do
+        if (Child is TControl) and (Child <> FView.ImageCanvas) and (Child <> FView.RectangleBG) and (Child <> FView.LabelPaused) then
+          TControl(Child).Visible := False;
     FView.ImageLogo.Visible := False;
   end;
   {$ENDIF}
@@ -632,6 +687,9 @@ end;
 
 procedure TBrowserController.LayoutClientDblClick(Sender: TObject);
 begin
+  var Touch: IEmulationTouchInput;
+  if Supports(FState.Session.Emulation, IEmulationTouchInput, Touch) and Touch.UsesTouch then
+    Exit;
   {$IFDEF ISMOBILE}
   Exit;
   {$ENDIF}

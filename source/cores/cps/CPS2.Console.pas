@@ -173,16 +173,15 @@ begin
       var Delta := 0;
       if FInput.Analog[P].Valid then
         Delta := FInput.Analog[P].X div 1024;
-      if TEmulatorButton.X in Buttons then
-        Dec(Delta, 8);
-      if TEmulatorButton.Y in Buttons then
-        Inc(Delta, 8);
-      if (FCart.RomSet.Init = 'init_pzloop2') and not FReadPaddle then
+      Dec(Delta, Round(8 * FInput.ButtonAmount(P, TEmulatorButton.X)));
+      Inc(Delta, Round(8 * FInput.ButtonAmount(P, TEmulatorButton.Y)));
+      if (FCart.RomSet.Init = 'init_pzloop2') and not FReadPaddle and
+        (not FInput.Analog[P].Valid or
+        (FInput.AnalogButtons[P].Valid = []) or
+        FInput.DigitalButton(P, TEmulatorButton.Left) or FInput.DigitalButton(P, TEmulatorButton.Right)) then
       begin
-        if TEmulatorButton.Left in Buttons then
-          Dec(Delta, 8);
-        if TEmulatorButton.Right in Buttons then
-          Inc(Delta, 8);
+        Dec(Delta, Round(8 * FInput.ButtonAmount(P, TEmulatorButton.Left)));
+        Inc(Delta, Round(8 * FInput.ButtonAmount(P, TEmulatorButton.Right)));
       end;
       if Delta <> 0 then
         FEcoDirection[P] := Ord(Delta > 0);

@@ -1,0 +1,3 @@
+A8_OS800 RCDATA "firmware/altirraos_800.rom"
+A8_OSXL RCDATA "firmware/altirraos_xl.rom"
+A8_BASIC RCDATA "firmware/altirra_basic.rom"

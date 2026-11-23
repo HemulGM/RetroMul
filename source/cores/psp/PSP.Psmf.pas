@@ -165,7 +165,7 @@ type
 implementation
 
 uses
-  System.Math;
+  System.Math, PSP.Mpeg;
 
 const
   LibPlayer = 'scePsmfPlayer';
@@ -439,6 +439,14 @@ begin
   begin
     FMemory.Write32(Ptr, 0);
     FHLE.Result(ERROR_PSMFPLAYER_INVALID_PARAM);
+    Exit;
+  end;
+  // The player's sceMpeg needs sceMpegInit (probe psmf_create).
+  var Mpeg := TPSPMpeg(FSystem.Find(TPSPMpeg));
+  if (Mpeg <> nil) and not Mpeg.Initialized then
+  begin
+    FMemory.Write32(Ptr, 0);
+    Delay(1000, $80618009);
     Exit;
   end;
   if FPlayers.Count > 0 then

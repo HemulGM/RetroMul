@@ -6,8 +6,7 @@ uses
   System.Classes, Core.Archive.Container, Core.Storage, PSP.Media;
 
 // Recognition inspects a 4 MiB ISO prefix; readers may cache the full member.
-// Full extraction streams to
-// storage's temporary area, with cancellation, a size cap and cleanup on error.
+// The container retains disc members and supplies neighboring homebrew files.
 function IsPSPArchive(const Archive: IArchiveContainer): Boolean;
 
 function ReadPSPArchive(const Archive: IArchiveContainer; const Storage: IStorage; KeepMedia: Boolean = False): TPSPProgram;
@@ -22,20 +21,42 @@ begin
   Result := -1;
   if Archive = nil then
     Exit;
+  var Count := 0;
+  var Boot := -1;
+  var BootDepth := MaxInt;
+  var BootTied := False;
+  var HasDisc := False;
   for var i := 0 to Archive.Count - 1 do
   begin
     if Archive.Entries[i].IsDirectory then
       Continue;
-    var Name := Archive.Entries[i].Name;
+    var Name := Archive.Entries[i].Name.Replace('\', '/');
     if Name.Contains('__MACOSX/') or ExtractFileName(Name).StartsWith('._') then
       Continue;
     var Ext := ExtractFileExt(Name).ToLower;
     if (Ext <> '.iso') and (Ext <> '.cso') and (Ext <> '.pbp') and (Ext <> '.elf') and (Ext <> '.prx') then
       Continue;
-    if Result >= 0 then
-      Exit(-1); // Ambiguous sets retain existing factory handling.
+    Inc(Count);
+    HasDisc := HasDisc or (Ext = '.iso') or (Ext = '.cso');
+    if SameText(Name.Substring(Name.LastIndexOf('/') + 1), 'EBOOT.PBP') then
+    begin
+      var Depth := Length(Name.Split(['/']));
+      if Depth < BootDepth then
+      begin
+        Boot := i;
+        BootDepth := Depth;
+        BootTied := False;
+      end
+      else if Depth = BootDepth then
+        BootTied := True;
+    end;
     Result := i;
   end;
+  if Count > 1 then
+    if (Boot >= 0) and not BootTied and not HasDisc then
+      Result := Boot
+    else
+      Result := -1; // Unrelated programs/discs retain factory handling.
 end;
 
 function IsPSPArchive(const Archive: IArchiveContainer): Boolean;
@@ -96,67 +117,27 @@ begin
     raise EArgumentNilException.Create('Archive');
   if Storage = nil then
     raise EArgumentNilException.Create('Storage');
-  var Temporary := '';
-  var Retained := False;
-  var Completed := False;
+  var Index := Candidate(Archive);
+  if Index < 0 then
+    raise EPSPFormat.Create('PSP: Archive has no unambiguous boot image (ISO, CSO, PBP, ELF or PRX)');
+  var Size := Archive.Entries[Index].Size;
+  if (Size < 4) or (Size > UInt64(4) * 1024 * 1024 * 1024) then
+    raise EPSPFormat.Create('PSP: Archive image size exceeds 4 GiB');
+  // The archive owns a validated, seekable copy of each opened member.
+  var Input := Archive.OpenRead(Index);
   try
-    var Index := Candidate(Archive);
-    if Index < 0 then
-      raise EPSPFormat.Create('PSP: Archive must contain exactly one ISO, CSO, PBP or ELF');
-    var Size := Archive.Entries[Index].Size;
-    if (Size < 4) or (Size > UInt64(4) * 1024 * 1024 * 1024) then
-      raise EPSPFormat.Create('PSP: Archive image size exceeds 4 GiB');
-    Temporary := Storage.TemporaryFile('.psp-image');
-    var Output := Storage.OpenWrite(Temporary);
-    try
-      var Input: TStream;
-      Input := Archive.OpenRead(Index);
-      try
-        var Buffer: TBytes;
-        SetLength(Buffer, 1024 * 1024);
-        var Remaining := Size;
-        while Remaining <> 0 do
-        begin
-          TStorage.CheckReadCancelled;
-          var N := Length(Buffer);
-          if Remaining < UInt64(N) then
-            N := Remaining;
-          Input.ReadBuffer(Buffer[0], N);
-          Output.WriteBuffer(Buffer[0], N);
-          Dec(Remaining, N);
-        end;
-        var Extra: Byte;
-        if Input.Read(Extra, 1) <> 0 then
-          raise EPSPFormat.Create('PSP: Archive entry exceeds its declared size');
-      finally
-        Input.Free;
-      end;
-    finally
-      Output.Free;
+    var IsDisc := TPSPDisc.Recognizes(Input);
+    Result := TPSPProgram.Read(Input);
+    if not IsDisc then
+      Result.AttachArchive(Archive, Archive.Entries[Index].Name)
+    else if KeepMedia then
+    begin
+      Result.DiscArchive := Archive;
+      Result.DiscEntry := Index;
     end;
-    var Image := Storage.OpenRead(Temporary);
-    try
-      Result := TPSPProgram.Read(Image);
-      if KeepMedia and TPSPDisc.Recognizes(Image) then
-      begin
-        Result.MediaPath := Temporary;
-        Result.TemporaryMedia := True;
-        Retained := True;
-      end;
-    finally
-      Image.Free;
-    end;
-    Completed := True;
   finally
-    if not Retained and (Temporary <> '') and Storage.Exists(Temporary) then
-    try
-      Storage.Delete(Temporary);
-    except
-      if Completed then
-        raise;
-    end;
+    Input.Free;
   end;
 end;
 
 end.
-

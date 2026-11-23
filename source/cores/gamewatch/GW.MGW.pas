@@ -733,7 +733,7 @@ begin
   FEngine.TransferValue(Archive, FTicker);
   FEngine.TransferValue(Archive, FRead);
   FEngine.TransferValue(Archive, FWrite);
-  Archive.Field(FInput, SizeOf(FInput));
+  Archive.CompatibleField(FInput, SizeOf(FInput), TEmulatorInput.LegacySize, TEmulatorInput.TravelSize);
   Archive.Field(FNow, SizeOf(FNow));
   Archive.Field(FStartTime, SizeOf(FStartTime));
   Archive.Field(FRandom, SizeOf(FRandom));

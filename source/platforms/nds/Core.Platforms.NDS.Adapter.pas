@@ -64,7 +64,7 @@ type
     function HasFaulted: Boolean;
   end;
 
-  TNDSCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationPointerInput, IEmulationMouseInput, IEmulationLiveSettings, IEmulationAudioDiagnostics, IEmulationSnapshotLocation, IEmulationVideoRegions)
+  TNDSCoreAdapter = class(TInterfacedObject, IEmulationCore, IEmulationPointerInput, IEmulationMouseInput, IEmulationLiveSettings, IEmulationGameActions, IEmulationAudioDiagnostics, IEmulationSnapshotLocation, IEmulationVideoRegions)
   private
     FData: TBytes;
     FStorage: IStorage;
@@ -109,6 +109,8 @@ type
     procedure SetPointer(X, Y: Integer; Valid: Boolean);
     procedure SendMouseDelta(DX, DY: Integer; Buttons: Byte);
     procedure ApplyLiveSettings;
+    function GetGameActions: TArray<TEmulationGameAction>;
+    procedure ExecuteGameAction(const Id: string);
   end;
 
 implementation
@@ -120,6 +122,8 @@ uses
 const
   KeyNames: array[TEmulatorButton] of string =
     ('Up', 'Down', 'Left', 'Right', 'A', 'B', 'Select', 'Start', 'L', 'X', 'Y', 'R', 'Mode');
+  ScreenLayoutIds: array[TNDSDisplayMode] of string = ('stacked', 'side-by-side');
+  ScreenLayoutCaptions: array[TNDSDisplayMode] of string = ('Stacked', 'Side by side');
 
 constructor TNDSConfig.Create(const FileName: string; const Storage: IStorage);
 const
@@ -140,7 +144,8 @@ end;
 procedure TNDSConfig.LoadCoreSettings(Ini: TCustomIniFile);
 begin
   ScreenMode := TNDSDisplayMode.Stacked;
-  if SameText(Ini.ReadString('Video', 'ScreenLayout', 'stacked'), 'side-by-side') then
+  if SameText(Ini.ReadString('Video', 'ScreenLayout', ScreenLayoutIds[TNDSDisplayMode.Stacked]),
+    ScreenLayoutIds[TNDSDisplayMode.SideBySide]) then
     ScreenMode := TNDSDisplayMode.SideBySide;
   ScreenGap := EnsureRange(Ini.ReadInteger('Video', 'ScreenGap', 0), 0, NDS_SCREEN_GAP_MAX);
   SaveSize := Ini.ReadInteger('Cartridge', 'SaveSize', 0);
@@ -156,10 +161,7 @@ end;
 
 procedure TNDSConfig.SaveCoreSettings(Ini: TCustomIniFile);
 begin
-  var LayoutName := 'stacked';
-  if ScreenMode = TNDSDisplayMode.SideBySide then
-    LayoutName := 'side-by-side';
-  Ini.WriteString('Video', 'ScreenLayout', LayoutName);
+  Ini.WriteString('Video', 'ScreenLayout', ScreenLayoutIds[ScreenMode]);
   Ini.WriteInteger('Video', 'ScreenGap', DisplayLayout.Gap);
   Ini.WriteInteger('Cartridge', 'SaveSize', SaveSize);
   for var B := Low(TEmulatorButton) to High(TEmulatorButton) do
@@ -804,6 +806,43 @@ begin
       FWorker.Touch(0, 0, False);
   end;
   Configure;
+end;
+
+function TNDSCoreAdapter.GetGameActions: TArray<TEmulationGameAction>;
+begin
+  SetLength(Result, Length(ScreenLayoutIds));
+  for var Mode := Low(TNDSDisplayMode) to High(TNDSDisplayMode) do
+  begin
+    var Index := Ord(Mode);
+    Result[Index].Id := ScreenLayoutIds[Mode];
+    Result[Index].Caption := ScreenLayoutCaptions[Mode];
+    Result[Index].Enabled := True;
+    Result[Index].GroupCaption := 'Screen arrangement';
+    Result[Index].Checked := Mode = FConfigObject.ScreenMode;
+  end;
+end;
+
+procedure TNDSCoreAdapter.ExecuteGameAction(const Id: string);
+begin
+  var Mode: TNDSDisplayMode;
+  if Id = ScreenLayoutIds[TNDSDisplayMode.Stacked] then
+    Mode := TNDSDisplayMode.Stacked
+  else if Id = ScreenLayoutIds[TNDSDisplayMode.SideBySide] then
+    Mode := TNDSDisplayMode.SideBySide
+  else
+    raise EArgumentException.Create('Unknown Nintendo DS game action');
+  if Mode = FConfigObject.ScreenMode then
+    Exit;
+
+  var Ini := FStorage.ReadConfig(FConfig.FileName);
+  try
+    Ini.WriteString('Video', 'ScreenLayout', ScreenLayoutIds[Mode]);
+    FStorage.WriteConfig(Ini);
+  finally
+    Ini.Free;
+  end;
+  FConfigObject.ScreenMode := Mode;
+  ApplyLiveSettings;
 end;
 
 end.

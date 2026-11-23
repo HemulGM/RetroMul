@@ -941,12 +941,14 @@ begin
             if A and $2000 <> 0 then
               Depth := 64;
             var Tile := Integer(C and $3FF);
-            if Depth = 64 then
-              Tile := Tile and not 1;
             if D and $10 <> 0 then
               Inc(Address, Cardinal(Tile) * (32 shl ((D shr 20) and 3)) + Cardinal((TY shr 3) * (W shr 3) + (TX shr 3)) * Cardinal(Depth))
             else
+            begin
+              if Depth = 64 then
+                Tile := Tile and not 1;
               Inc(Address, Cardinal(Tile * 32 + (TY shr 3) * 1024 + (TX shr 3) * Depth));
+            end;
             Index := ReadMemory(Address + Cardinal((TY and 7) * Depth div 8 + (TX and 7) * Depth div 64));
             if Depth = 32 then
               Index := (Index shr ((TX and 1) * 4)) and 15;

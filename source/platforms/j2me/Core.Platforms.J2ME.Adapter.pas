@@ -711,7 +711,7 @@ end;
 
 function TJ2MECoreAdapter.GetGameActions: TArray<TEmulationGameAction>;
 begin
-  SetLength(Result, 1);
+  Result := [Default(TEmulationGameAction)];
   Result[0].Id := 'rotate-screen';
   Result[0].Caption := 'Rotate screen';
   Result[0].Enabled := True;
